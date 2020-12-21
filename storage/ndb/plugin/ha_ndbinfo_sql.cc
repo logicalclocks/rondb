@@ -471,7 +471,7 @@ struct view {
     {"ndbinfo", "resources",
      "SELECT node_id, "
      " CASE resource_id"
-     "  WHEN 0 THEN \"RESERVED\""
+     "  WHEN 0 THEN \"TOTAL_GLOBAL_MEMORY\""
      "  WHEN 1 THEN \"TRANSACTION_MEMORY\""
      "  WHEN 2 THEN \"DISK_RECORDS\""
      "  WHEN 3 THEN \"DATA_MEMORY\""

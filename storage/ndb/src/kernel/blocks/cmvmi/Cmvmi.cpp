@@ -2493,6 +2493,20 @@ void Cmvmi::execDBINFO_SCANREQ(Signal *signal)
 
     if (resource_id == 0)
     {
+      jam();
+      Ndbinfo::Row row(signal, req);
+      row.write_uint32(getOwnNodeId()); // Node id
+      row.write_uint32(resource_id);
+
+      Uint32 curr_used = m_ctx.m_mm.get_in_use();
+      Uint32 max = m_ctx.m_mm.get_allocated();
+      row.write_uint32(max); // reserved
+      row.write_uint32(curr_used); // current in use
+      row.write_uint32(max); // max
+      row.write_uint32(0); // high water mark, TODO
+      row.write_uint32(0); // spare
+      ndbinfo_send_row(signal, req, row, rl);
+
       resource_id++;
     }
     while(m_ctx.m_mm.get_resource_limit(resource_id, resource_limit))
