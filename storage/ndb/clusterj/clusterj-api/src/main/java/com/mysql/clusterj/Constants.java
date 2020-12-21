@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2010, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2020, LogicalClocks AB, and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -165,6 +166,24 @@ public interface Constants {
 
     /** The default value of the database property */
     static final String DEFAULT_PROPERTY_CLUSTER_DATABASE = "test";
+
+    /** The maximum number of object instances cached per Session object, 0 = no caching */
+    static final String PROPERTY_CLUSTER_MAX_CACHED_INSTANCES = "com.mysql.clusterj.max.cached.instances";
+
+    /** The default value of the maximum number of cached object instances. */
+    static final int DEFAULT_PROPERTY_CLUSTER_MAX_CACHED_INSTANCES = 128;
+
+    /** The number of Session instances put into cache per Session Factory object, 0 = no warmup */
+    static final String PROPERTY_CLUSTER_WARMUP_CACHED_SESSIONS = "com.mysql.clusterj.warmup.cached.sessions";
+
+    /** The default value of the maximum number of cached object instances. */
+    static final int DEFAULT_PROPERTY_CLUSTER_WARMUP_CACHED_SESSIONS = 0;
+
+    /** The maximum number of Session instances cached per Session Factory object, 0 = no caching */
+    static final String PROPERTY_CLUSTER_MAX_CACHED_SESSIONS = "com.mysql.clusterj.max.cached.sessions";
+
+    /** The default value of the maximum number of cached object instances. */
+    static final int DEFAULT_PROPERTY_CLUSTER_MAX_CACHED_SESSIONS = 0;
 
     /** The name of the maximum number of transactions property. For details, see
      * <a href="http://dev.mysql.com/doc/ndbapi/en/ndb-ndb-methods.html#ndb-ndb-init">Ndb::init()</a>
