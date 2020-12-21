@@ -305,9 +305,10 @@ InitConfigFileParser::storeNameValuePair(Context& ctx,
 					 const char* fname,
 					 const char* value)
 {
-  if (native_strcasecmp(fname, "MaxNoOfConcurrentScans") == 0 ||
+  if (native_strcasecmp(fname, "MaxNoOfLocalScans") == 0 ||
       native_strcasecmp(fname, "MaxNoOfConcurrentIndexOperations") == 0 ||
-      native_strcasecmp(fname, "MaxNoOfConcurrentOperations") == 0 ||
+      native_strcasecmp(fname, "MaxNoOfLocalOperations") == 0 ||
+      native_strcasecmp(fname, "MaxNoOfFiredTriggers") == 0 ||
       native_strcasecmp(fname, "MaxNoOfConcurrentTransactions") == 0)
   {
     if (ctx.m_currentSection->contains("TransactionMemory"))
@@ -321,16 +322,17 @@ InitConfigFileParser::storeNameValuePair(Context& ctx,
 
   if (native_strcasecmp(fname, "TransactionMemory") == 0)
   {
-    if (ctx.m_currentSection->contains("MaxNoOfConcurrentScans") ||
+    if (ctx.m_currentSection->contains("MaxNoOfLocalScans") ||
         ctx.m_currentSection->contains("MaxNoOfConcurrentIndexOperations") ||
-        ctx.m_currentSection->contains("MaxNoOfConcurrentOperations") ||
+        ctx.m_currentSection->contains("MaxNoOfLocalOperations") ||
+        ctx.m_currentSection->contains("MaxNoOfFiredTriggers") ||
         ctx.m_currentSection->contains("MaxNoOfConcurrentTransactions"))
     {
       ctx.reportError(
           "[%s] Parameter %s can not be set along with any of the below "
-          "deprecated parameter(s) MaxNoOfConcurrentScans, "
-          "MaxNoOfConcurrentIndexOperations, MaxNoOfConcurrentOperations "
-          "and MaxNoOfConcurrentTransactions",
+          "deprecated parameter(s) MaxNoOfLocalScans, "
+          "MaxNoOfConcurrentIndexOperations, MaxNoOfLocalOperations "
+          "and MaxNoOfConcurrentTransactions, MaxNoOfFiredTriggers",
           ctx.fname, fname);
       return false;
     }
