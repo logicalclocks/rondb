@@ -1,5 +1,6 @@
 /*
- *  Copyright (c) 2009, 2019, Oracle and/or its affiliates. All rights reserved.
+ *  Copyright (c) 2009, 2019, Oracle and/or its affiliates.
+ *  Copyright (c) 2020, LogicalClocks AB, and/or its affiliates.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License, version 2.0,
@@ -127,6 +128,9 @@ class ClusterTransactionImpl implements ClusterTransaction {
 
     private List<Operation> operationsToCheck = new ArrayList<Operation>();
 
+    private boolean isPartitionKeySet = false;
+    private final boolean hops_pk_fix = true;
+
     public ClusterTransactionImpl(ClusterConnectionImpl clusterConnectionImpl,
             DbImpl db, Dictionary ndbDictionary, String joinTransactionId) {
         this.db = db;
@@ -144,6 +148,7 @@ class ClusterTransactionImpl implements ClusterTransaction {
         if (ndbTransaction != null) {
             ndbTransaction.close();
             ndbTransaction = null;
+            isPartitionKeySet = false;
         }
     }
 
@@ -656,7 +661,14 @@ class ClusterTransactionImpl implements ClusterTransaction {
             throw new ClusterJFatalInternalException(
                     local.message("ERR_Partition_Key_Null"));
         }
-        this.partitionKey = (PartitionKeyImpl)partitionKey;
+        if (hops_pk_fix) {
+            if (!isPartitionKeySet) {
+                this.partitionKey = (PartitionKeyImpl)partitionKey;
+                isPartitionKeySet = true;
+            }
+        } else {
+            this.partitionKey = (PartitionKeyImpl)partitionKey;
+        }
     }
 
     public String getCoordinatedTransactionId() {

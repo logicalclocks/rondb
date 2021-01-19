@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2010, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2020, LogicalClocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -38,6 +39,7 @@ import com.mysql.clusterj.core.spi.DomainTypeHandler;
 import com.mysql.clusterj.core.spi.DomainTypeHandlerFactory;
 import com.mysql.clusterj.core.spi.ValueHandlerFactory;
 import com.mysql.clusterj.core.metadata.DomainTypeHandlerFactoryImpl;
+import com.mysql.clusterj.core.SessionImpl;
 
 import com.mysql.clusterj.core.store.Db;
 import com.mysql.clusterj.core.store.ClusterConnection;
@@ -54,6 +56,8 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
+import java.util.LinkedList;
 
 public class SessionFactoryImpl implements SessionFactory, Constants {
 
@@ -72,6 +76,10 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
     /** The properties */
     protected Map<?, ?> props;
 
+    Queue<Session> cached_sessions;
+    int num_cached_sessions;
+    int max_cached_sessions;
+
     /** NdbCluster connect properties */
     String CLUSTER_CONNECTION_SERVICE;
     String CLUSTER_CONNECT_STRING;
@@ -89,6 +97,9 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
     int[] CLUSTER_BYTE_BUFFER_POOL_SIZES;
     int CLUSTER_RECONNECT_TIMEOUT;
     int CLUSTER_RECV_THREAD_ACTIVATION_THRESHOLD;
+    int CLUSTER_WARMUP_CACHED_SESSIONS;
+    int CLUSTER_MAX_CACHED_SESSIONS;
+    int CLUSTER_MAX_CACHED_INSTANCES;
 
 
     /** Node ids obtained from the property PROPERTY_CONNECTION_POOL_NODEIDS */
@@ -97,13 +108,14 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
     /** Connection pool size obtained from the property PROPERTY_CONNECTION_POOL_SIZE */
     int connectionPoolSize;
 
+    /** Boolean flag indicating if connection pool is disabled or not */
+    boolean connectionPoolDisabled = false;
+
     /** Map of Proxy Interfaces to Domain Class */
-    // TODO make this non-static
-    static private Map<String, Class<?>> proxyInterfacesToDomainClass = new HashMap<String, Class<?>>();
+    final private Map<String, Class<?>> proxyInterfacesToDomainClassMap = new HashMap<String, Class<?>>();
 
     /** Map of Domain Class to DomainTypeHandler. */
-    // TODO make this non-static
-    static final protected Map<Class<?>, DomainTypeHandler<?>> typeToHandlerMap =
+    final private Map<Class<?>, DomainTypeHandler<?>> typeToHandlerMap =
             new HashMap<Class<?>, DomainTypeHandler<?>>();
 
     /** DomainTypeHandlerFactory for this session factory. */
@@ -179,6 +191,12 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         this.key = getSessionFactoryKey(props);
         this.connectionPoolSize = getIntProperty(props, 
                 PROPERTY_CONNECTION_POOL_SIZE, DEFAULT_PROPERTY_CONNECTION_POOL_SIZE);
+        if (connectionPoolSize == 0) {
+            // Connection pool is disabled. This is handled internally almost
+            // same as a SessionFactory with a connection pool of size 1.
+            connectionPoolSize = 1;
+            connectionPoolDisabled = true;
+        }
         CLUSTER_RECONNECT_TIMEOUT = getIntProperty(props,
                 PROPERTY_CONNECTION_RECONNECT_TIMEOUT, DEFAULT_PROPERTY_CONNECTION_RECONNECT_TIMEOUT);
         CLUSTER_CONNECT_STRING = getRequiredStringProperty(props, PROPERTY_CLUSTER_CONNECTSTRING);
@@ -206,6 +224,29 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
                 Constants.DEFAULT_PROPERTY_CLUSTER_CONNECT_AUTO_INCREMENT_START);
         CLUSTER_CONNECTION_SERVICE = getStringProperty(props, PROPERTY_CLUSTER_CONNECTION_SERVICE);
         CLUSTER_BYTE_BUFFER_POOL_SIZES = getByteBufferPoolSizes(props);
+
+        CLUSTER_MAX_CACHED_INSTANCES = getIntProperty(props, PROPERTY_CLUSTER_MAX_CACHED_INSTANCES,
+                Constants.DEFAULT_PROPERTY_CLUSTER_MAX_CACHED_INSTANCES);
+        if (CLUSTER_MAX_CACHED_INSTANCES < 0) {
+            CLUSTER_MAX_CACHED_INSTANCES = DEFAULT_PROPERTY_CLUSTER_MAX_CACHED_INSTANCES;
+        }
+
+        CLUSTER_WARMUP_CACHED_SESSIONS = getIntProperty(props, PROPERTY_CLUSTER_WARMUP_CACHED_SESSIONS,
+                Constants.DEFAULT_PROPERTY_CLUSTER_WARMUP_CACHED_SESSIONS);
+        if (CLUSTER_WARMUP_CACHED_SESSIONS < 0) {
+            CLUSTER_WARMUP_CACHED_SESSIONS = DEFAULT_PROPERTY_CLUSTER_WARMUP_CACHED_SESSIONS;
+        }
+
+        CLUSTER_MAX_CACHED_SESSIONS = getIntProperty(props, PROPERTY_CLUSTER_MAX_CACHED_SESSIONS,
+                Constants.DEFAULT_PROPERTY_CLUSTER_MAX_CACHED_SESSIONS);
+        if (CLUSTER_MAX_CACHED_SESSIONS < 0) {
+            CLUSTER_MAX_CACHED_SESSIONS = DEFAULT_PROPERTY_CLUSTER_MAX_CACHED_SESSIONS;
+        }
+
+        if (CLUSTER_WARMUP_CACHED_SESSIONS > CLUSTER_MAX_CACHED_SESSIONS) {
+            CLUSTER_WARMUP_CACHED_SESSIONS = CLUSTER_MAX_CACHED_SESSIONS;
+        }
+ 
         CLUSTER_RECV_THREAD_ACTIVATION_THRESHOLD = getIntProperty(props, PROPERTY_CONNECTION_POOL_RECV_THREAD_ACTIVATION_THRESHOLD,
                 Constants.DEFAULT_PROPERTY_CONNECTION_POOL_RECV_THREAD_ACTIVATION_THRESHOLD);
         if (CLUSTER_RECV_THREAD_ACTIVATION_THRESHOLD < 0) {
@@ -215,10 +256,12 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
             logger.warn(msg);
             throw new ClusterJFatalUserException(msg);
         }
+        createSessionCache();
         createClusterConnectionPool();
         // now get a Session for each connection in the pool and
         // complete a transaction to make sure that each connection is ready
         verifyConnectionPool();
+        warmupSessionCache();
         state = State.Open;
     }
 
@@ -252,7 +295,14 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
                             nodeIdsProperty, connectionPoolSize);
                     logger.warn(msg);
                     throw new ClusterJFatalUserException(msg);
-                    
+                }
+            } else if (connectionPoolDisabled) {
+                if (nodeIds.size() != 1) {
+                    // Connection pool is disabled but more than one nodeId specified
+                    msg = local.message("ERR_Multiple_Node_Ids_For_Disabled_Connection_Pool",
+                            nodeIdsProperty);
+                    logger.warn(msg);
+                    throw new ClusterJFatalUserException(msg);
                 }
             } else {
                 // only node ids are specified; make pool size match number of node ids
@@ -267,8 +317,13 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
             String[] cpuIdsStringArray = cpuIdsProperty.split("[,; \t\n\r]+", 64);
             if (cpuIdsStringArray.length != connectionPoolSize) {
                 // cpu ids property didn't match connection pool size
-                msg = local.message("ERR_CPU_Ids_Must_Match_Connection_Pool_Size",
+                if (connectionPoolDisabled) {
+                    msg = local.message("ERR_Multiple_CPU_Ids_For_Disabled_Connection_Pool",
+                        cpuIdsProperty);
+                } else {
+                    msg = local.message("ERR_CPU_Ids_Must_Match_Connection_Pool_Size",
                         cpuIdsProperty, connectionPoolSize);
+                }
                 logger.warn(msg);
                 throw new ClusterJFatalUserException(msg);
             }
@@ -399,6 +454,70 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         return result;
     }
 
+    /**
+     * Warm up Session cache as part of creating SessionFactory object
+     *
+     * We set limits to the number of cached objects and the number of Session
+     * objects created as part creating the SessionFactory is handled.
+     */
+    private void createSessionCache() {
+        num_cached_sessions = 0;
+        max_cached_sessions = CLUSTER_MAX_CACHED_SESSIONS;
+        cached_sessions = new LinkedList();
+    }
+
+    private void warmupSessionCache() {
+        for (int i = 0; i < 8; i++) {
+            Session session = getSession(null, true);
+            storeCachedSession(session);
+        }
+    }
+
+    public void dropSessionCache() {
+        synchronized(this) {
+            while (true) {
+                Session session = getCachedSession();
+                if (session == null)
+                    return;
+                SessionImpl ses = (SessionImpl) session;
+                ses.setCached(false);
+                session.close();
+            }
+        }
+    }
+
+    /**
+     * Get a session cached for reuse.
+     * This improves performance by avoiding having to recreate the Session object
+     * in applications that frequently create and close Session objects.
+     *
+     * This method is called with synchronized, so already protected.
+     */
+    private Session getCachedSession() {
+        if (num_cached_sessions == 0) {
+            return null;
+        }
+        num_cached_sessions--;
+        Session cached_session = cached_sessions.poll();
+        SessionImpl ses = (SessionImpl) cached_session;
+        ses.setCached(false);
+        return cached_session;
+    }
+
+    public void storeCachedSession(Session session) {
+        SessionImpl ses = (SessionImpl) session;
+        synchronized(this) {
+            if (num_cached_sessions < max_cached_sessions) {
+                num_cached_sessions++;
+                ses.setCached(true);
+                cached_sessions.add(session);
+                return;
+            }
+        }
+        ses.setCached(false);
+        ses.close();
+    }
+
     /** Get a session to use with the cluster.
      *
      * @return the session
@@ -424,12 +543,18 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
                 if (!(State.Open.equals(state)) && !internal) {
                     throw new ClusterJUserException(local.message("ERR_SessionFactory_not_open"));
                 }
+                if (!internal) {
+                    Session session = getCachedSession();
+                    if (session != null) {
+                        return session;
+                    }
+                }
                 ClusterConnection clusterConnection = getClusterConnectionFromPool();
                 checkConnection(clusterConnection);
                 db = clusterConnection.createDb(CLUSTER_DATABASE, CLUSTER_MAX_TRANSACTIONS);
             }
             Dictionary dictionary = db.getDictionary();
-            return new SessionImpl(this, properties, db, dictionary);
+            return new SessionImpl(this, properties, db, dictionary, CLUSTER_MAX_CACHED_INSTANCES);
         } catch (ClusterJException ex) {
             throw ex;
         } catch (Exception ex) {
@@ -439,7 +564,7 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
     }
 
     private ClusterConnection getClusterConnectionFromPool() {
-        if (connectionPoolSize <= 1) {
+        if (connectionPoolSize == 1) {
             return pooledConnections.get(0);
         }
         // find the best pooled connection (the connection with the least active sessions)
@@ -468,7 +593,7 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
      * @param cls the Class for which to get domain type handler
      * @return the DomainTypeHandler or null if not available
      */
-    public static <T> DomainTypeHandler<T> getDomainTypeHandler(Class<T> cls) {
+    public <T> DomainTypeHandler<T> getDomainTypeHandler(Class<T> cls) {
         // synchronize here because the map is not synchronized
         synchronized(typeToHandlerMap) {
             @SuppressWarnings( "unchecked" )
@@ -515,7 +640,7 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
                 Class<?>[] proxyInterfaces = domainTypeHandler.getProxyInterfaces();
                 if (proxyInterfaces != null) {
                     String key = generateProxyInterfacesKey(proxyInterfaces);
-                    proxyInterfacesToDomainClass.put(key, cls);
+                    proxyInterfacesToDomainClassMap.put(key, cls);
                 }
             }
             return domainTypeHandler;
@@ -539,7 +664,7 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
      * @param object the object
      * @return the Domain class of the object
      */
-    protected static <T> Class<T> getClassForProxy(T object) {
+    protected <T> Class<T> getClassForProxy(T object) {
         Class<?> cls = object.getClass();
         if (java.lang.reflect.Proxy.isProxyClass(cls)) {
             // The underlying class is a Proxy. Retrieve the interfaces implemented
@@ -547,7 +672,7 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
             // proxyInterfacesToDomainClass map.
             Class<?>[] proxyInterfaces = cls.getInterfaces();
             String key = generateProxyInterfacesKey(proxyInterfaces);
-            cls = proxyInterfacesToDomainClass.get(key);
+            cls = proxyInterfacesToDomainClassMap.get(key);
         }
         return (Class<T>)cls;
     }
@@ -754,6 +879,7 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
      */
     public void reconnect(int timeout) {
         logger.warn(local.message("WARN_Reconnect", getConnectionPoolSessionCounts().toString()));
+        dropSessionCache();
         synchronized(this) {
             // if already restarting, do nothing
             if (State.Reconnecting.equals(state)) {
@@ -825,7 +951,8 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
             factory.pooledConnections.clear();
             // remove all DomainTypeHandlers, as they embed references to
             // Ndb dictionary objects which have been removed
-            typeToHandlerMap.clear();
+            factory.typeToHandlerMap.clear();
+            factory.proxyInterfacesToDomainClassMap.clear();
 
             logger.warn(local.message("WARN_Reconnect_creating"));
             factory.createClusterConnectionPool();

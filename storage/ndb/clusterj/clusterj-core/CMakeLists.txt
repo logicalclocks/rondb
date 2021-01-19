@@ -1,4 +1,5 @@
-# Copyright (c) 2010, 2019, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2010, 2019, Oracle and/or its affiliates.
+# Copyright (c) 2020, LogicalClocks AB and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -29,6 +30,7 @@ SET ( BROKEN_JAVAC
   ${CMAKE_CURRENT_SOURCE_DIR}/src/main/java/com/mysql/clusterj/core/query/*.java
   ${CMAKE_CURRENT_SOURCE_DIR}/src/main/java/com/mysql/clusterj/core/spi/*.java
   ${CMAKE_CURRENT_SOURCE_DIR}/src/main/java/com/mysql/clusterj/core/store/*.java
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/main/java/com/mysql/clusterj/core/dtocache/*.java
   ${CMAKE_CURRENT_SOURCE_DIR}/src/main/java/com/mysql/clusterj/core/util/*.java)
 
 SET(JAVA_SOURCES
@@ -39,6 +41,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_CORE_PREFIX}/StateManager.java
   ${CLUSTERJ_CORE_PREFIX}/StoreManager.java
   ${CLUSTERJ_CORE_PREFIX}/TransactionImpl.java
+  ${CLUSTERJ_CORE_PREFIX}/dtocache/DTOCache.java
   ${CLUSTERJ_CORE_PREFIX}/metadata/AbstractDomainFieldHandlerImpl.java
   ${CLUSTERJ_CORE_PREFIX}/metadata/AbstractDomainTypeHandlerImpl.java
   ${CLUSTERJ_CORE_PREFIX}/metadata/DomainFieldHandlerImpl.java
