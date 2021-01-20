@@ -1,6 +1,9 @@
 Copyright (c) 2000, 2021, Oracle and/or its affiliates.
+Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
-This is a release of MySQL, an SQL database server.
+This is a release of RoNDB, this is a development distribution
+of NDB Cluster, a key-value store with SQL capabilities.
+It is based on a release of MySQL, an SQL database server.
 
 License information can be found in the LICENSE file.
 
@@ -11,10 +14,19 @@ This distribution may include materials developed by third parties.
 For license and attribution notices for these materials,
 please refer to the LICENSE file.
 
+For further information on RoNDB visit
+  http://rondb.com
+
+For further information on Logical Clocks AB, visit
+  http://logicalclocks.com
+
 For further information on MySQL or additional documentation, visit
   http://dev.mysql.com/doc/
 
 For additional downloads and the source of MySQL, visit
   http://dev.mysql.com/downloads/
+
+RoNDB is brought to you by the NDB team at Logical Clocks AB
+and the development team at iClaustron AB.
 
 MySQL is brought to you by the MySQL team at Oracle.
