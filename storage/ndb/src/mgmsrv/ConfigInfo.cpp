@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -388,7 +389,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_BOOL,
-    "true",
+    "false",
     "false",
     "true" },
 
@@ -766,7 +767,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_STRING,
-    "StaticSpinning", 0, 0 },
+    "LatencyOptimisedSpinning", 0, 0 },
 
   {
     CFG_DB_SCHED_RESPONSIVENESS,
@@ -1306,7 +1307,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "2",
+    "8",
     "0",  
     STR_VALUE(MAX_INT_RNIL) },
 
@@ -1611,7 +1612,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT64,
-    "10M",
+    "2M",
     "1M",
     "1024G" },
   
@@ -1624,7 +1625,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT64,
-    "20M",
+    "4M",
     "1M",
     "1024G" },
 
@@ -1907,7 +1908,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     CI_RESTART_SYSTEM | CI_RESTART_INITIAL,
     ConfigInfo::CI_BOOL,
-    "false",
+    "true",
     "false",
     "true"
   },
