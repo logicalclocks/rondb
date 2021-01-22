@@ -2,6 +2,7 @@
 
 [cluster_config.1]
 NoOfReplicas=                  2
+PartitionsPerNode=4
 ndbd=,,,
 ndb_mgmd=
 mysqld=,

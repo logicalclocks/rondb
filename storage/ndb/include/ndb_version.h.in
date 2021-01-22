@@ -53,7 +53,7 @@
 
 /* Version string for NDB, ex: "ndb-7.0.22" */
 #define NDB_NDB_VERSION_STRING \
-  "ndb-" NDB_MAKE_STRING_VERSION(NDB_VERSION_MAJOR, \
+  "iRoNDB-" NDB_MAKE_STRING_VERSION(NDB_VERSION_MAJOR, \
                                  NDB_VERSION_MINOR, \
                                  NDB_VERSION_BUILD) NDB_VERSION_STATUS
 

@@ -2,4 +2,5 @@
 
 [cluster_config]
 ThreadConfig=ldm={count=4}
+PartitionsPerNode=4
 TimeBetweenGlobalCheckpoints=  200
