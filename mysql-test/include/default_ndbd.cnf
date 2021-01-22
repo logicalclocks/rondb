@@ -16,7 +16,7 @@ NoOfFragmentLogFiles=          4
 FragmentLogFileSize=           12M
 DiskPageBufferMemory=          4M
 SharedGlobalMemory=            20M
-LongMessageBuffer=             4M
+LongMessageBuffer=             8M
 RedoBuffer=                    4M
 BackupDataBufferSize=          2M
 BackupLogBufferSize=           2M
@@ -25,6 +25,8 @@ TwoPassInitialNodeRestartCopy=1
 TransactionDeadlockDetectionTimeout=3000
 Checksum=1
 SpinMethod=CostBasedSpinning
+AutomaticThreadConfig=0
+PartitionsPerNode=4
 
 ODirect= 1
 CompressedLCP= 1
@@ -46,7 +48,7 @@ DiskIOThreadPool=1
 #
 # (Option is ignored for non-MT'ed NDB)
 #
-ThreadConfig=main={count=1},tc={count=3},ldm={count=4},io={count=1},rep={count=1},recv={count=2},send={count=2}
+ThreadConfig=main={count=1},tc={count=3},ldm={count=4},query={count=4},io={count=1},rep={count=1},recv={count=2},send={count=2}
 
 [ndb_mgm]
 verbose=0

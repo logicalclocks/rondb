@@ -818,14 +818,30 @@ printLogEvent(struct ndb_logevent* event)
 #undef  EVENT
 #define EVENT NDBStartStarted
     case NDB_LE_NDBStartStarted:
-      ndbout_c("Node %u: Start initiated (version %d.%d.%d)",
-               R, QVERSION);
+      if (getMinor(Q(version)) == 0 || (getMinor(Q(version)) >= 10))
+      {
+        ndbout_c("Node %u: Start initiated (iRoNDB version %d.%d.%d)",
+                 R, QVERSION);
+      }
+      else
+      {
+        ndbout_c("Node %u: Start initiated (iRoNDB version %d.0%d.%d)",
+                 R, QVERSION);
+      }
       break;
 #undef  EVENT
 #define EVENT NDBStartCompleted
     case NDB_LE_NDBStartCompleted:
-      ndbout_c("Node %u: Started (version %d.%d.%d)",
-               R, QVERSION);
+      if (getMinor(Q(version)) == 0 || (getMinor(Q(version)) >= 10))
+      {
+        ndbout_c("Node %u: Started (iRoNDB version %d.%d.%d)",
+                 R, QVERSION);
+      }
+      else
+      {
+        ndbout_c("Node %u: Started (iRoNDB version %d.0%d.%d)",
+                 R, QVERSION);
+      }
       break;
 #undef  EVENT
 #define EVENT NDBStopStarted
@@ -2499,10 +2515,20 @@ print_status(const ndb_mgm_node_state * state)
     if (version != 0)
     {
       ndbout << "Node " << state->node_id <<": connected" ;
-      ndbout_c(" (Version %d.%d.%d)",
-               getMajor(version) ,
-               getMinor(version),
-               getBuild(version));
+      if (getMinor(version) == 0 || (getMinor(version) >= 10))
+      {
+        ndbout_c(" (iRoNDB Version %d.%d.%d)",
+                 getMajor(version) ,
+                 getMinor(version),
+                 getBuild(version));
+      }
+      else
+      {
+        ndbout_c(" (iRoNDB Version %d.0%d.%d)",
+                 getMajor(version) ,
+                 getMinor(version),
+                 getBuild(version));
+      }
       
     }
     else

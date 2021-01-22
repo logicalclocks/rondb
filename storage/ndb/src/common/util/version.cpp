@@ -69,22 +69,81 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
 
   if (mysql_version)
   {
-    snprintf(buf, sz, "mysql-%d.%d.%d ndb-%d.%d.%d%s",
-             getMajor(mysql_version),
-             getMinor(mysql_version),
-             getBuild(mysql_version),
-             getMajor(version),
-             getMinor(version),
-             getBuild(version),
-             tmp);
+    bool add_mysql_zero = getMinor(mysql_version) != 0 &&
+                          getMinor(mysql_version) < 10;
+    bool add_ndb_zero = getMinor(version) != 0 &&
+                        getMinor(version) < 10;
+    if (!add_mysql_zero)
+    {
+      if (!add_ndb_zero)
+      {
+        snprintf(buf, sz, "mysql-%d.%d.%d iRoNDB-%d.%d.%d%s",
+                 getMajor(mysql_version),
+                 getMinor(mysql_version),
+                 getBuild(mysql_version),
+                 getMajor(version),
+                 getMinor(version),
+                 getBuild(version),
+                 tmp);
+      }
+      else
+      {
+        snprintf(buf, sz, "mysql-%d.%d.%d iRoNDB-%d.0%d.%d%s",
+                 getMajor(mysql_version),
+                 getMinor(mysql_version),
+                 getBuild(mysql_version),
+                 getMajor(version),
+                 getMinor(version),
+                 getBuild(version),
+                 tmp);
+      }
+    }
+    else
+    {
+      if (!add_ndb_zero)
+      {
+        snprintf(buf, sz, "mysql-%d.0%d.%d iRoNDB-%d.%d.%d%s",
+                 getMajor(mysql_version),
+                 getMinor(mysql_version),
+                 getBuild(mysql_version),
+                 getMajor(version),
+                 getMinor(version),
+                 getBuild(version),
+                 tmp);
+      }
+      else
+      {
+        snprintf(buf, sz, "mysql-%d.0%d.%d iRoNDB-%d.0%d.%d%s",
+                 getMajor(mysql_version),
+                 getMinor(mysql_version),
+                 getBuild(mysql_version),
+                 getMajor(version),
+                 getMinor(version),
+                 getBuild(version),
+                 tmp);
+      }
+    }
   }
   else
   {
-    snprintf(buf, sz, "ndb-%d.%d.%d%s",
-             getMajor(version),
-             getMinor(version),
-             getBuild(version),
-             tmp);
+    bool add_ndb_zero = getMinor(version) != 0 &&
+                        getMinor(version) < 10;
+    if (!add_ndb_zero)
+    {
+      snprintf(buf, sz, "iRoNDB-%d.%d.%d%s",
+               getMajor(version),
+               getMinor(version),
+               getBuild(version),
+               tmp);
+    }
+    else
+    {
+      snprintf(buf, sz, "iRoNDB-%d.0%d.%d%s",
+               getMajor(version),
+               getMinor(version),
+               getBuild(version),
+               tmp);
+    }
   }
   return buf;
 }

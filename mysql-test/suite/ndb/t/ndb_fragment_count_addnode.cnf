@@ -3,6 +3,7 @@
 
 [cluster_config.1]
 ThreadConfig=ldm={count=4}
+PartitionsPerNode=4
 NoOfReplicas=                  2
 TimeBetweenGlobalCheckpoints=  200
 ndbd=,,,,,
