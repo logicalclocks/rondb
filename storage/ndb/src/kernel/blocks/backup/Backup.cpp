@@ -4427,8 +4427,7 @@ Backup::execBACKUP_REQ(Signal* signal)
    * Seize a backup record
    */
   BackupRecordPtr ptr;
-  c_backups.seizeFirst(ptr);
-  if (ptr.i == RNIL)
+  if (!c_backups.seizeFirst(ptr))
   {
     jam();
     sendBackupRef(senderRef, flags, signal, senderData,
@@ -6875,8 +6874,8 @@ Backup::execLIST_TABLES_CONF(Signal* signal)
       }
 
       TablePtr tabPtr;
-      ptr.p->tables.seizeLast(tabPtr);
-      if(tabPtr.i == RNIL) {
+      if (!ptr.p->tables.seizeLast(tabPtr))
+      {
         jam();
         defineBackupRef(signal, ptr, DefineBackupRef::FailedToAllocateTables);
         releaseSections(handle);
