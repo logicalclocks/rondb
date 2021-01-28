@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -121,7 +122,9 @@ private:
   struct TuxCtx;
 
   // AttributeHeader size is assumed to be 1 word
+public:
   STATIC_CONST( AttributeHeaderSize = 1 );
+private:
 
   /*
    * Logical tuple address, "local key".  Identifies table tuples.
@@ -274,11 +277,15 @@ private:
     Uint16 m_magic;
     enum { Magic = 0xDE5C };
   };
+public:
   STATIC_CONST( DescHeadSize = sizeof(DescHead) >> 2 );
+private:
 
   typedef NdbPack::Type KeyType;
   typedef NdbPack::Spec KeySpec;
+public:
   STATIC_CONST( KeyTypeSize = sizeof(KeyType) >> 2 );
+private:
 
   typedef NdbPack::DataC KeyDataC;
   typedef NdbPack::Data KeyData;
@@ -1043,6 +1050,14 @@ public:
     Uint32 instanceNo = get_instance_from_scan_instance(scanInstance);
     tux_block = (Dbtux*) globalData.getBlock(blockNo, instanceNo);
     return tux_block->getScanOpPtrP(scanPtrI);
+  }
+  static size_t getFragmentRecordSize()
+  {
+    return sizeof(struct Frag);
+  }
+  static size_t getTableRecordSize()
+  {
+    return sizeof(struct Index);
   }
 };
 

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -123,11 +124,18 @@ extern EventLogger * g_eventLogger;
 //#define EVENT_PH3_DEBUG
 //#define EVENT_DEBUG
 //#define DEBUG_API_FAIL
+//#define DEBUG_STRING_MEMORY 1
 
 #ifdef DEBUG_API_FAIL
 #define DEB_API_FAIL(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_API_FAIL(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_STRING_MEMORY
+#define DEB_STRING_MEMORY(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_STRING_MEMORY(arglist) do { } while (0)
 #endif
 
 
@@ -3089,8 +3097,7 @@ void Dbdict::execREAD_CONFIG_REQ(Signal* signal)
   ndbrequire(p != 0);
 
   Uint32 attributesize;
-  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_NO_TRIGGERS,
-					&c_maxNoOfTriggers));
+  c_maxNoOfTriggers = globalData.theMaxNoOfTriggers;
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DICT_ATTRIBUTE,&attributesize));
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DICT_TABLE, &c_noOfMetaTables));
   c_indexStatAutoCreate = 0;
@@ -3207,29 +3214,17 @@ void Dbdict::execREAD_CONFIG_REQ(Signal* signal)
     (SchemaFile*)c_schemaPageRecordArray.getPtr(1 * NDB_SF_MAX_PAGES);
   c_schemaFile[1].noOfPages = 0;
 
-  Uint32 rps = 0;  // Roughly calculate rope pool size:
-  rps += c_noOfMetaTables * (MAX_TAB_NAME_SIZE + ROPE_COPY_BUFFER_SIZE);
-  rps += attributesize * (MAX_ATTR_NAME_SIZE + MAX_ATTR_DEFAULT_VALUE_SIZE);
-  rps += c_maxNoOfTriggers * MAX_TAB_NAME_SIZE;
-  rps += (10 + 10) * MAX_TAB_NAME_SIZE;
-
-  Uint32 sm = 5;
+  Uint32 sm = 6;
   ndb_mgm_get_int_parameter(p, CFG_DB_STRING_MEMORY, &sm);
-  if (sm == 0)
-    sm = 25;
+  Uint64 safety = 100 * LocalRope::getSegmentSizeInBytes();
+  Uint64 rps = get_rope_pool_size(c_noOfMetaTables,
+                                  attributesize,
+                                  c_maxNoOfTriggers,
+                                  sm,
+                                  safety);
 
-  Uint64 sb = 0;
-  if (sm <= 100)
-  {
-    sb = (Uint64(rps) * Uint64(sm)) / 100;
-  }
-  else
-  {
-    sb = sm;
-  }
-
-  sb /= LocalRope::getSegmentSizeInBytes();
-  sb += 100; // more safty
+  DEB_STRING_MEMORY(("String memory allocates %llu MBytes", rps/MBYTE64));
+  Uint64 sb = rps / LocalRope::getSegmentSizeInBytes();
   ndbrequire(sb < (Uint64(1) << 32));
   c_rope_pool.setSize(Uint32(sb));
 

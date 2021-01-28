@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -196,6 +197,7 @@ inline const Uint32* ALIGN_WORD(const void* ptr)
 
 #define ZTH_MM_FREE 3                     /* PAGE STATE, TUPLE HEADER PAGE WITH FREE AREA      */
 #define ZTH_MM_FULL 4                     /* PAGE STATE, TUPLE HEADER PAGE WHICH IS FULL       */
+#endif
 
 #define ZTD_HEADER 0                      /* HEADER POSITION                   */
 #define ZTD_DATASIZE 1                    /* SIZE OF THE DATA IN THIS CHUNK    */
@@ -222,6 +224,7 @@ inline const Uint32* ALIGN_WORD(const void* ptr)
 #define ZLEAF 1
 #define ZNON_LEAF 2
 
+#ifdef DBTUP_C
           /* RETURN POINTS. */
           /* RESTART PHASES */
 #define ZSTARTPHASE1 1
@@ -3625,7 +3628,6 @@ private:
   void setTabDescrWord(Uint32 index, Uint32 word);
 
 // Private methods
-  Uint32 sizeOfReadFunction();
   void   removeTdArea(Uint32 tabDesRef, Uint32 list);
   void   insertTdArea(Uint32 tabDesRef, Uint32 list);
   void   itdaMergeTabDescr(Uint32& retRef, Uint32& retNo, bool normal);
@@ -4399,7 +4401,49 @@ public:
     return m_backup_block;
   }
   Operationrec* getOperationPtrP(Uint32 opPtrI);
+
+  static Uint32 sizeOfReadFunction()
+  {
+    TableDescriptor loc_tableDescriptor[1];
+    ReadFunction* tmp= (ReadFunction*)&loc_tableDescriptor[0];
+    TableDescriptor* start= &loc_tableDescriptor[0];
+    TableDescriptor * end= (TableDescriptor*)(tmp + 1);
+    return (Uint32)(end - start);
+  }
+  static Uint32 getTabDescPerAttribute()
+  {
+    return
+    sizeOfReadFunction() + // Read
+    sizeOfReadFunction() + // UPDATE
+    (sizeof(char*) >> 2) + // Charset
+    ZAD_SIZE +             // Descriptor
+    1 +                    // real order
+    InternalMaxDynFix;     // Worst case dynamic
+  }
+  static Uint32 getTabDescPerTable()
+  {
+    return 2 * (ZTD_SIZE + ZTD_TRAILER_SIZE);
+  }
+
+  static size_t getTableRecordSize()
+  {
+    return sizeof(struct Tablerec) +
+           (4 * getTabDescPerTable());
+  }
+  static size_t getFragmentRecordSize()
+  {
+    return sizeof(struct Fragrecord);
+  }
+  static size_t getTriggerRecordSize()
+  {
+    return sizeof(struct TupTriggerData);
+  }
+  static size_t getAttributeRecordSize()
+  {
+    return (4 * (getTabDescPerAttribute() + 1));
+  }
 };
+
 
 inline void
 Dbtup::prepare_op_pointer(Uint32 opPtrI,

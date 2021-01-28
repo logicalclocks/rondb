@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -871,6 +872,19 @@ private:
   static const char* get_sublist_name(Uint32 list_no);
   friend class NdbOut& operator<<(NdbOut&, Ptr<Page_request>);
   friend class NdbOut& operator<<(NdbOut&, Ptr<Page_entry>);
+public:
+  static size_t getFragmentRecordSize()
+  {
+    return sizeof(struct FragmentRecord);
+  }
+  static size_t getTableRecordSize()
+  {
+    return sizeof(struct TableRecord);
+  }
+  static size_t getPageEntryRecordSize()
+  {
+    return sizeof(struct Page_entry);
+  }
 };
 
 class NdbOut& operator<<(NdbOut&, Ptr<Pgman::Page_request>);

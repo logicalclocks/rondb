@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -4836,6 +4837,50 @@ private:
    * and handle failure-to-seize
    */
   SafeCounterManager c_reservedCounterMgr;
+public:
+  
+  static size_t getTableRecordSize()
+  {
+    return sizeof(struct TableRecord);
+  }
+  static size_t getAttributeRecordSize()
+  {
+    return sizeof(struct AttributeRecord);
+  }
+  static size_t getTriggerRecordSize()
+  {
+    return sizeof(struct TriggerRecord);
+  }
+  static size_t getDictObjectRecordSize()
+  {
+    return sizeof(struct DictObject);
+  }
+  static Uint64 get_rope_pool_size(Uint64 num_tables,
+                                   Uint64 num_attributes,
+                                   Uint64 num_triggers,
+                                   Uint32 percent,
+                                   Uint64 safety)
+  {
+    Uint64 percent64 = Uint64(percent);
+    if (percent64 == 0)
+      percent64 = 6;
+
+    Uint64 rps = 0;  // Roughly calculate rope pool size:
+    rps += num_tables * (MAX_TAB_NAME_SIZE + ROPE_COPY_BUFFER_SIZE);
+    rps += (num_attributes * (MAX_ATTR_NAME_SIZE + MAX_ATTR_DEFAULT_VALUE_SIZE) / Uint64(10));
+    rps += num_triggers * MAX_TAB_NAME_SIZE;
+    rps += (10 + 10) * MAX_TAB_NAME_SIZE;
+    if (percent64 <= 100)
+    {
+      rps = (rps * percent64) / Uint64(100);
+    }
+    else
+    {
+      rps = percent64;
+    }
+    rps += safety;
+    return rps;
+  }
 };
 
 inline bool

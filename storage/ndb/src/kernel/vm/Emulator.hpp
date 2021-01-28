@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -172,12 +173,6 @@ struct EmulatorData {
 };
 
 extern struct EmulatorData globalEmulatorData;
-
-/**
- * Get number of extra send buffer pages to use
- */
-Uint32 mt_get_extra_send_buffer_pages(Uint32 curr_num_pages,
-                                      Uint32 extra_mem_pages);
 
 /**
  * Compute no of pages to be used as job-buffer

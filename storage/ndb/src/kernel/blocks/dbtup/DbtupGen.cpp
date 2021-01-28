@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -48,6 +49,13 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DO_TRANSIENT_POOL_STAT 1
+//#define DEBUG_AUTOMATIC_MEMORY 1
+#endif
+
+#ifdef DEBUG_AUTOMATIC_MEMORY
+#define DEB_AUTOMATIC_MEMORY(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_AUTOMATIC_MEMORY(arglist) do { } while (0)
 #endif
 
 #define JAM_FILE_ID 420
@@ -616,12 +624,9 @@ void Dbtup::execREAD_CONFIG_REQ(Signal* signal)
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TUP_FRAG, &cnoOfFragrec));
   
   Uint32 noOfTriggers= 0;
-  Uint32 noOfAttribs = 0;
+  Uint32 noOfAttribs = globalData.theMaxNoOfAttributes;
   
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TUP_TABLE, &cnoOfTablerec));
-  ndbrequire(!ndb_mgm_get_int_parameter(p,
-                                        CFG_DB_NO_ATTRIBUTES,
-                                        &noOfAttribs));
 
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TUP_NO_TRIGGERS, 
 					&noOfTriggers));
@@ -641,16 +646,12 @@ void Dbtup::execREAD_CONFIG_REQ(Signal* signal)
     }
 
     cnoOfTabDescrRec =
-      cnoOfTablerec * 2 * (ZTD_SIZE + ZTD_TRAILER_SIZE) +
-      noOfAttribs * (sizeOfReadFunction() + // READ
-                     sizeOfReadFunction() + // UPDATE
-                     (sizeof(char*) >> 2) + // Charset
-                     ZAD_SIZE +             // Descriptor
-                     1 +                    // real order
-                     InternalMaxDynFix) +   // Worst case dynamic
+      cnoOfTablerec * getTabDescPerTable() +
+      noOfAttribs * getTabDescPerAttribute() +
       keyDesc;                              // key-descr
 
     cnoOfTabDescrRec = (cnoOfTabDescrRec & 0xFFFFFFF0) + 16;
+    DEB_AUTOMATIC_MEMORY(("cnoOfTabDescRec %u", cnoOfTabDescrRec));
   }
 
   initRecords(p);
@@ -660,7 +661,9 @@ void Dbtup::execREAD_CONFIG_REQ(Signal* signal)
 
   if (m_is_query_block)
   {
+    jam();
     c_noOfBuildIndexRec = 0;
+    noOfTriggers = 0;
   }
   c_buildIndexPool.setSize(c_noOfBuildIndexRec);
   c_triggerPool.setSize(noOfTriggers, false, true, true, CFG_TUP_NO_TRIGGERS);
@@ -689,14 +692,14 @@ void Dbtup::execREAD_CONFIG_REQ(Signal* signal)
   
   /* read ahead for disk scan can not be more that disk page buffer */
   {
-    Uint64 tmp = 64*1024*1024;
-    ndb_mgm_get_int64_parameter(p, CFG_DB_DISK_PAGE_BUFFER_MEMORY, &tmp);
-    tmp = (tmp  + GLOBAL_PAGE_SIZE - 1) / GLOBAL_PAGE_SIZE; // in pages
+    Uint64 page_cache_size = globalData.theDiskPageBufferMemory;
+    page_cache_size = (page_cache_size  + GLOBAL_PAGE_SIZE - 1) /
+                       GLOBAL_PAGE_SIZE; // in pages
     // never read ahead more than 32 pages
-    if (tmp > 32)
+    if (page_cache_size > 32)
       m_max_page_read_ahead = 32;
     else
-      m_max_page_read_ahead = (Uint32)tmp;
+      m_max_page_read_ahead = (Uint32)page_cache_size;
   }
 
 

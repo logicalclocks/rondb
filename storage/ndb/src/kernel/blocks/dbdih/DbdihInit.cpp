@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,6 +29,17 @@
 #include <ndb_limits.h>
 
 #define JAM_FILE_ID 355
+
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+#define DEBUG_AUTOMATIC_MEMORY 1
+#endif
+
+#ifdef DEBUG_AUTOMATIC_MEMORY
+#define DEB_AUTOMATIC_MEMORY(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_AUTOMATIC_MEMORY(arglist) do { } while (0)
+#endif
+
 
 
 #define DEBUG(x) { ndbout << "DIH::" << x << endl; }
@@ -126,9 +138,13 @@ void Dbdih::initRecords()
 
   c_replicaRecordPool.setSize(creplicaFileSize);
 
+  DEB_AUTOMATIC_MEMORY(("Size(TabRecord): %zu, num_tables: %u, mem: %zu",
+                        sizeof(TabRecord),
+                        ctabFileSize,
+                        sizeof(TabRecord) * ctabFileSize / MBYTE32));
   tabRecord = (TabRecord*)allocRecord("TabRecord",
-                                              sizeof(TabRecord), 
-                                              ctabFileSize);
+                                      sizeof(TabRecord), 
+                                      ctabFileSize);
 
   // Initialize BAT for interface to file system
   NewVARIABLE* bat = allocateBat(3);

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -900,6 +901,14 @@ private:
 public:
   void execACC_LOCKREQ(Signal* signal);
 
+  static size_t getFragmentRecordSize()
+  {
+    return sizeof(struct Fragmentrec);
+  }
+  static size_t getTableRecordSize()
+  {
+    return sizeof(struct Tabrec);
+  }
 private:
   // Transit signals
   void execDEBUG_SIG(Signal* signal);

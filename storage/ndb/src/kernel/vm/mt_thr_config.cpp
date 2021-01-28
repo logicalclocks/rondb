@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2011, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1105,21 +1106,23 @@ THRConfig::do_parse(unsigned realtime,
                                   rep_threads,
                                   send_threads,
                                   recv_threads);
-  DEB_AUTO_THREAD_CONFIG(("Auto thread config uses:"
-                          " %u LDM threads, "
-                          "%u Query threads, "
-                          "%u Recover threads, "
-                          "%u main threads, "
-                          "%u rep threads, "
-                          "%u recv threads, "
-                          "%u send threads",
-                          ldm_threads,
-                          query_threads,
-                          recover_threads,
-                          main_threads,
-                          rep_threads,
-                          recv_threads,
-                          send_threads));
+  g_eventLogger->info("Auto thread config uses: \n"
+                      " %u LDM threads, \n"
+                      " %u Query threads, \n"
+                      " %u tc threads, \n"
+                      " %u Recover threads, \n"
+                      " %u main threads, \n"
+                      " %u rep threads, \n"
+                      " %u recv threads, \n"
+                      " %u send threads",
+                      ldm_threads,
+                      query_threads,
+                      tc_threads,
+                      recover_threads,
+                      main_threads,
+                      rep_threads,
+                      recv_threads,
+                      send_threads);
   for (Uint32 i = 0; i < main_threads; i++)
   {
     add(T_MAIN, realtime, spintime);

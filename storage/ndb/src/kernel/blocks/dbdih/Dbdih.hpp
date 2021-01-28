@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -109,6 +110,7 @@
 #define ZNDB_SPH6 6
 #define ZNDB_SPH7 7
 #define ZNDB_SPH8 8
+#endif
 /*#########*/
 /* SIZES   */
 /*#########*/
@@ -119,13 +121,12 @@
  */
 #define MAX_CONCURRENT_LCP_TAB_DEF_FLUSHES 4
 #define MAX_CONCURRENT_DIH_TAB_DEF_OPS (MAX_CONCURRENT_LCP_TAB_DEF_FLUSHES + 2)
-#define ZPAGEREC (MAX_CONCURRENT_DIH_TAB_DEF_OPS * PACK_TABLE_PAGES)
 #define ZCREATE_REPLICA_FILE_SIZE 4
+#define ZPAGEREC (MAX_CONCURRENT_DIH_TAB_DEF_OPS * PACK_TABLE_PAGES)
 #define ZPROXY_MASTER_FILE_SIZE (MAX_NDB_NODES + 1)
 
 /*MaxConcurrent proxied WaitGcpReq.  Set to 10 as safety margin on 1.*/
 #define ZPROXY_FILE_SIZE 10
-#endif
 
 /*
  * Pack table into pages.
@@ -2839,6 +2840,27 @@ public:
   
   NdbNodeBitmask c_shutdownReqNodes;
   void print_lcp_state();
+
+  static size_t getFragmentRecordSize()
+  {
+    return sizeof(struct Fragmentstore);
+  }
+  static size_t getTableRecordSize()
+  {
+    return sizeof(struct TabRecord);
+  }
+  static size_t getReplicaRecordSize()
+  {
+    return sizeof(struct ReplicaRecord);
+  }
+  static size_t getFileRecordSize()
+  {
+    return sizeof(struct FileRecord);
+  }
+  static size_t getPageRecordSize()
+  {
+    return sizeof(struct PageRecord);
+  }
 };
 
 #if (DIH_CDATA_SIZE < _SYSFILE_SIZE32_v2)

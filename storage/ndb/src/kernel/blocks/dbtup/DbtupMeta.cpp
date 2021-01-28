@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1885,15 +1886,6 @@ void Dbtup::setupDynDescriptorReferences(Uint32 dynDescr,
   Uint32* desc= &tableDescriptor[dynDescr].tabDescr;
   regTabPtr->dynVarSizeMask[ind] = desc+offset[0];
   regTabPtr->dynFixSizeMask[ind] = desc+offset[1];
-}
-
-Uint32
-Dbtup::sizeOfReadFunction()
-{
-  ReadFunction* tmp= (ReadFunction*)&tableDescriptor[0];
-  TableDescriptor* start= &tableDescriptor[0];
-  TableDescriptor * end= (TableDescriptor*)(tmp + 1);
-  return (Uint32)(end - start);
 }
 
 void Dbtup::setUpKeyArray(Tablerec* const regTabPtr)

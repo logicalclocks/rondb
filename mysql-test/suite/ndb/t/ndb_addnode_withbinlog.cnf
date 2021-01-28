@@ -3,6 +3,7 @@
 [cluster_config.1]
 NoOfReplicas=                  2
 PartitionsPerNode=4
+AutomaticMemoryConfig=0
 ndbd=,,,
 ndb_mgmd=
 mysqld=,

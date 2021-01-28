@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -241,9 +242,9 @@ void *ndbd_malloc_watched(size_t size, volatile Uint32* watch_dog)
     {
       size_t s_m, s_k, s_b;
       xxx(size, &s_m, &s_k, &s_b);
-      fprintf(stderr, "%p malloc(%um %uk %ub)", p, s_m, s_k, s_b);
+      fprintf(stderr, "%p malloc(%zum %zuk %zub)", p, s_m, s_k, s_b);
       xxx(g_allocated_memory, &s_m, &s_k, &s_b);
-      fprintf(stderr, "\t\ttotal(%um %uk %ub)\n", s_m, s_k, s_b);
+      fprintf(stderr, "\t\ttotal(%zum %zuk %zub)\n", s_m, s_k, s_b);
     }
 #endif
   }
@@ -270,7 +271,7 @@ void ndbd_free(void *p, size_t size)
   {
     g_allocated_memory -= size;
 #ifdef TRACE_MALLOC
-    fprintf(stderr, "%p free(%d)\n", p, size);
+    fprintf(stderr, "%p free(%zu)\n", p, size);
 #endif
   }
 }

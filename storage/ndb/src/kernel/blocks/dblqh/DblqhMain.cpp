@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2180,9 +2181,7 @@ void Dblqh::execREAD_CONFIG_REQ(Signal* signal)
 					&cnoLogFiles));
   ndbrequire(cnoLogFiles > 0);
 
-  Uint32 log_page_size= 0;
-  ndb_mgm_get_int_parameter(p, CFG_DB_REDO_BUFFER,  
-			    &log_page_size);
+  Uint64 log_page_size = globalData.theRedoBuffer;
 
   c_max_scan_direct_count = ZMAX_SCAN_DIRECT_COUNT;
   ndb_mgm_get_int_parameter(p, CFG_DB_SCHED_SCAN_PRIORITY,
@@ -2191,7 +2190,9 @@ void Dblqh::execREAD_CONFIG_REQ(Signal* signal)
   /**
    * Always set page size in half MBytes
    */
-  clogPageFileSize= (log_page_size / sizeof(LogPageRecord));
+  Uint64 logPageFileSize= (log_page_size / sizeof(LogPageRecord));
+  clogPageFileSize = Uint32(logPageFileSize);
+
   Uint32 mega_byte_part= clogPageFileSize & 15;
   if (mega_byte_part != 0) {
     jam();

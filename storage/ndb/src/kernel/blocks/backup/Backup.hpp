@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1540,6 +1541,23 @@ public:
 public:
   bool is_change_part_state(Uint32 page_id);
   Uint32 get_max_words_per_scan_batch(Uint32, Uint32&, Uint32, Uint32);
+
+  static size_t getTableRecordSize()
+  {
+    return sizeof(struct Table);
+  }
+  static size_t getFragmentRecordSize()
+  {
+    return sizeof(struct Fragment);
+  }
+  static size_t getTriggerRecordSize()
+  {
+    return sizeof(struct TriggerRecord);
+  }
+  static size_t getDeleteLcpFileRecordSize()
+  {
+    return sizeof(struct DeleteLcpFile);
+  }
 };
 
 inline

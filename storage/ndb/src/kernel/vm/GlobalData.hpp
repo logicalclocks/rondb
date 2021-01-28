@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -105,6 +106,20 @@ struct GlobalData {
   Uint64     theMicrosSend;
   Uint64     theMicrosSpin;
 
+  Uint64     theDataMemory;
+  Uint64     theDiskPageBufferMemory;
+  Uint64     theRedoBuffer;
+  Uint64     theUndoBuffer;
+  Uint64     theTransactionMemory;
+  Uint64     theSharedGlobalMemory;
+  Uint64     theLongSignalMemory;
+
+  Uint32     theMaxNoOfAttributes;
+  Uint32     theMaxNoOfTriggers;
+  Uint32     theMaxNoOfTables;
+  Uint32     theMaxNoOfOrderedIndexes;
+  Uint32     theMaxNoOfUniqueHashIndexes;
+
   NdbMutex   *theIO_lag_mutex;
 
   GlobalData(){ 
@@ -134,6 +149,18 @@ struct GlobalData {
 #ifdef GCP_TIMER_HACK
     gcp_timer_limit = 0;
 #endif
+    theDataMemory = 0;
+    theDiskPageBufferMemory = 0;
+    theRedoBuffer = 0;
+    theUndoBuffer = 0;
+    theTransactionMemory = 0;
+    theSharedGlobalMemory = 0;
+    theLongSignalMemory = 0;
+    theMaxNoOfAttributes = 0;
+    theMaxNoOfTriggers = 0;
+    theMaxNoOfTables = 0;
+    theMaxNoOfOrderedIndexes = 0;
+    theMaxNoOfUniqueHashIndexes = 0;
     theIO_lag_mutex = NdbMutex_Create();
   }
 
