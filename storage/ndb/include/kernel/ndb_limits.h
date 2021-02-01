@@ -31,6 +31,8 @@
 #define RNIL    0xffffff00
 #define MBYTE64 Uint64(1024 * 1024)
 #define MBYTE32 Uint32(1024 * 1024)
+
+#define DEFAULT_STRING_MEMORY 6
 /**
  * Note that actual value = MAX_NODES - 1,
  *  since NodeId = 0 can not be used

@@ -1819,7 +1819,8 @@ get_meminfo(struct ndb_hwinfo *hwinfo)
     perror("Found no MemTotal in /proc/meminfo");
     return -1;
   }
-  hwinfo->hw_memory_size = memory_size;
+  /* Memory is in kBytes */
+  hwinfo->hw_memory_size = (memory_size * 1024);
   return 0;
 }
 

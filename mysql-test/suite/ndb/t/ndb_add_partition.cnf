@@ -12,7 +12,6 @@
 # here.
 #
 PartitionsPerNode=1
-AutomaticMemoryConfig=0
 ThreadConfig=ldm={count=1}
 TimeBetweenGlobalCheckpoints=200
 

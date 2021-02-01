@@ -1264,9 +1264,18 @@ Lgman::execCREATE_FILEGROUP_IMPL_REQ(Signal* signal){
     }
 
     new (ptr.p) Logfile_group(req);
-    
+
+    Uint64 undo_log_buffer_size = 0;
+    if (globalData.theUndoBuffer == 0)
+    {
+      undo_log_buffer_size = req->logfile_group.buffer_size;
+    }
+    else
+    {
+      undo_log_buffer_size = globalData.theUndoBuffer;
+    }
     if (unlikely(ERROR_INSERTED(15001)) ||
-        !alloc_logbuffer_memory(ptr, req->logfile_group.buffer_size))
+        !alloc_logbuffer_memory(ptr, undo_log_buffer_size))
     {
       jam();
       err= CreateFilegroupImplRef::OutOfLogBufferMemory;
@@ -2130,10 +2139,11 @@ Lgman::Logfile_group::Logfile_group(const CreateFilegroupImplReq* req)
 }
 
 bool
-Lgman::alloc_logbuffer_memory(Ptr<Logfile_group> ptr, Uint32 bytes)
+Lgman::alloc_logbuffer_memory(Ptr<Logfile_group> ptr, Uint64 bytes)
 {
-  Uint32 pages= (((bytes + 3) >> 2) + File_formats::NDB_PAGE_SIZE_WORDS - 1)
+  Uint64 pages64= (((bytes + 3) >> 2) + File_formats::NDB_PAGE_SIZE_WORDS - 1)
     / File_formats::NDB_PAGE_SIZE_WORDS;
+  Uint32 pages = Uint32(pages64);
 #if defined VM_TRACE || defined ERROR_INSERT
   Uint32 requested= pages;
 #endif

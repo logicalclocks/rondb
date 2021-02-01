@@ -520,6 +520,15 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
                         reserved_transmem/32);
   }
 
+  if (globalData.theUndoBuffer != 0)
+  {
+    Uint64 undo_buffer_pages = globalData.theUndoBuffer /
+                               Uint64(GLOBAL_PAGE_SIZE);
+    g_eventLogger->info("Adding %llu MBytes to TransactionMemory"
+                        " for Undo Buffer",
+                        globalData.theUndoBuffer / MBYTE64);
+    transmem += undo_buffer_pages;
+  }
   {
     /**
      * Request extra undo buffer memory to be allocated when

@@ -470,7 +470,7 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p)
     sizeof(struct KeyDescriptor) * num_table_objects;
 
   Uint64 safety = 100 * LocalRope::getSegmentSizeInBytes();
-  Uint32 sm = 3;
+  Uint32 sm = DEFAULT_STRING_MEMORY;
   ndb_mgm_get_int_parameter(p, CFG_DB_STRING_MEMORY, &sm);
   Uint32 dict_string_mem = Dbdict::get_rope_pool_size(num_table_objects,
                                                       num_attributes,
@@ -826,7 +826,7 @@ Configuration::get_and_set_long_message_buffer(
   {
     Uint32 num_threads = get_num_threads();
     long_signal_buffer64 = Uint64(32 * 1024 * 1024);
-    long_signal_buffer64 = Uint64(num_threads - 1) * Uint64(12 * 1024 * 1024);
+    long_signal_buffer64 += Uint64(num_threads - 1) * Uint64(12 * 1024 * 1024);
   }
   globalData.theLongSignalMemory = long_signal_buffer64;
   return long_signal_buffer64;
@@ -835,9 +835,21 @@ Configuration::get_and_set_long_message_buffer(
 Uint64
 Configuration::compute_os_overhead()
 {
+  /**
+   * This includes memory used by the OS for all sorts of internal operations.
+   * It also includes some free memory that is a safety to ensure that there
+   * is some room for small processes to start and do some action on the VM.
+   * Also includes buffers for file system access, thus providing fast access
+   * to some commonly used files. We provide a bit more space for those things
+   * with more threads used.
+   *
+   * When running ndbmtd in a graphical user environment it is a good idea to
+   * use the TotalMemoryConfig variable since this number here is based on
+   * running ndbmtd in a VM in the cloud.
+   */
   Uint32 num_threads = get_num_threads();
-  Uint64 os_static_overhead = Uint64(1800 * 1024 * 1024);
-  Uint64 os_cpu_overhead = Uint64(num_threads) * Uint64(100 * 1024 * 1024);
+  Uint64 os_static_overhead = Uint64(1200) * MBYTE64;
+  Uint64 os_cpu_overhead = Uint64(num_threads) * Uint64(15 * 1024 * 1024);
   return os_static_overhead + os_cpu_overhead;
 }
 
@@ -870,8 +882,19 @@ Configuration::compute_pack_memory()
 Uint64
 Configuration::compute_fs_memory()
 {
+  /**
+   * Each FS thread allocates:
+   * 32 kB read buffer
+   * 16 kB write buffer
+   * 256 kB inflate/deflate buffer
+   * 64 kB stack memory
+   * Thus around 384 kB of memory per FS thread.
+   * The number of FS threads is a bit dynamic and increases with the
+   * number of LDM threads. Around 4-8 threads are added per LDM thread.
+   * Thus we add 3 MByte of memory space here for each LDM thread.
+   */
   Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
-  Uint64 size_fs_mem = Uint64(1024 * 1024) * Uint64(num_ldm_threads);
+  Uint64 size_fs_mem = Uint64(2 * 1024 * 1024) * Uint64(num_ldm_threads);
   size_fs_mem = MAX(size_fs_mem, Uint64(32 * 1024 * 1024));
   return size_fs_mem;
 }

@@ -354,7 +354,7 @@ private:
   void client_lock(BlockNumber block, int line, SimulatedBlock*);
   void client_unlock(BlockNumber block, int line, SimulatedBlock*);
 
-  bool alloc_logbuffer_memory(Ptr<Logfile_group>, Uint32 pages);
+  bool alloc_logbuffer_memory(Ptr<Logfile_group>, Uint64 undo_log_buffer_size);
   void init_logbuffer_pointers(Ptr<Logfile_group>);
   void free_logbuffer_memory(Ptr<Logfile_group>);
   Uint32 compute_free_file_pages(Ptr<Logfile_group>,

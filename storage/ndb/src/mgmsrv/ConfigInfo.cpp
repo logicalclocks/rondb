@@ -996,7 +996,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_INT64,
     "0",
     "8G",
-    "16384G" },
+    "65536G" },
 
   {
     CFG_DB_TRANSACTION_MEM,
@@ -1008,7 +1008,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_INT64,
     "0",
     "0",
-    "16384G" },
+    "65536G" },
 
   {
     CFG_DB_UNDO_INDEX_BUFFER,
@@ -1056,7 +1056,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_INT64,
     "0",
     "1M",
-    STR_VALUE(MAX_INT_RNIL)},
+    "65536G" },
 
   {
     CFG_DB_LONG_SIGNAL_BUFFER,
@@ -1080,7 +1080,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_INT64,
     "0",
     "4M",
-    "16384G" },
+    "65536G" },
 
   {
     CFG_DB_SGA,
@@ -1772,7 +1772,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "6",
+    STR_VALUE(DEFAULT_STRING_MEMORY),
     "0",
     STR_VALUE(MAX_INT_RNIL) },
 

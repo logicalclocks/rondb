@@ -3214,7 +3214,7 @@ void Dbdict::execREAD_CONFIG_REQ(Signal* signal)
     (SchemaFile*)c_schemaPageRecordArray.getPtr(1 * NDB_SF_MAX_PAGES);
   c_schemaFile[1].noOfPages = 0;
 
-  Uint32 sm = 6;
+  Uint32 sm = DEFAULT_STRING_MEMORY;
   ndb_mgm_get_int_parameter(p, CFG_DB_STRING_MEMORY, &sm);
   Uint64 safety = 100 * LocalRope::getSegmentSizeInBytes();
   Uint64 rps = get_rope_pool_size(c_noOfMetaTables,
