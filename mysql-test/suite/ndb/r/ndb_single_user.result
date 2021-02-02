@@ -97,7 +97,7 @@ id=2	LOCALHOST  (MYSQL_VERSION NDB_VERSION, single user mode, Nodegroup: 0)
 [ndb_mgmd(MGM)]	1 node(s)
 id=3	LOCALHOST  (MYSQL_VERSION NDB_VERSION)
 
-[MYSQL_VERSION NDB_VERSION)]	14 node(s)
+[mysqld(API)]	14 node(s)
 id=16	LOCALHOST  (MYSQL_VERSION NDB_VERSION)
 id=32 (not connected, accepting connect from localhost)
 id=48 (not connected, accepting connect from localhost)

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -67,7 +68,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
   else
     tmp[0] = 0;
 
-  if (mysql_version)
+  if (false && mysql_version)
   {
     bool add_mysql_zero = getMinor(mysql_version) != 0 &&
                           getMinor(mysql_version) < 10;

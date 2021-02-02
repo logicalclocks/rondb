@@ -758,8 +758,8 @@ Configuration::get_and_set_transaction_memory(
   if (transaction_memory == 0)
   {
     Uint32 num_threads = get_num_threads();
-    transaction_memory = Uint64(300 * 1024 * 1024);
-    transaction_memory += (Uint64(num_threads) * Uint64(45 * 1024 * 1024));
+    transaction_memory = Uint64(300) * MBYTE64;
+    transaction_memory += (Uint64(num_threads) * Uint64(45) * MBYTE64);
   }
   globalData.theTransactionMemory = transaction_memory;
   return transaction_memory;
@@ -776,8 +776,9 @@ Configuration::get_and_set_redo_buffer(const ndb_mgm_configuration_iterator *p)
   if (redo_buffer == 0)
   {
     Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
-    redo_buffer64 = Uint64(num_ldm_threads) * Uint64(32 * 1024 * 1024);
+    redo_buffer64 = Uint64(num_ldm_threads) * Uint64(32) * MBYTE64;
     redo_buffer64 /= Uint64(num_log_parts);
+    redo_buffer64 = MIN(redo_buffer64, Uint64(32) * MBYTE64);
   }
   globalData.theRedoBuffer = redo_buffer64;
   Uint64 ret_size = redo_buffer64 * Uint64(num_log_parts);
@@ -792,7 +793,7 @@ Configuration::get_and_set_undo_buffer(const ndb_mgm_configuration_iterator *p)
   if (undo_buffer == 0)
   {
     Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
-    undo_buffer = Uint64(32 * 1024 * 1024) * Uint64(num_ldm_threads);
+    undo_buffer = Uint64(32) * MBYTE64 * Uint64(num_ldm_threads);
   }
   globalData.theUndoBuffer = undo_buffer;
   return undo_buffer;
@@ -825,8 +826,8 @@ Configuration::get_and_set_long_message_buffer(
   if (long_signal_buffer64 == 0)
   {
     Uint32 num_threads = get_num_threads();
-    long_signal_buffer64 = Uint64(32 * 1024 * 1024);
-    long_signal_buffer64 += Uint64(num_threads - 1) * Uint64(12 * 1024 * 1024);
+    long_signal_buffer64 = (Uint64(32) * MBYTE64);
+    long_signal_buffer64 += (Uint64(num_threads - 1) * Uint64(12) * MBYTE64);
   }
   globalData.theLongSignalMemory = long_signal_buffer64;
   return long_signal_buffer64;
@@ -849,7 +850,7 @@ Configuration::compute_os_overhead()
    */
   Uint32 num_threads = get_num_threads();
   Uint64 os_static_overhead = Uint64(1200) * MBYTE64;
-  Uint64 os_cpu_overhead = Uint64(num_threads) * Uint64(15 * 1024 * 1024);
+  Uint64 os_cpu_overhead = Uint64(num_threads) * Uint64(15) * MBYTE64;
   return os_static_overhead + os_cpu_overhead;
 }
 
@@ -874,8 +875,8 @@ Configuration::compute_pack_memory()
 {
   Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
   Uint32 num_tc_threads = globalData.ndbMtTcWorkers;
-  Uint64 ldm_pack_memory = Uint64(num_ldm_threads) * Uint64(8 * 1024 * 1024);
-  Uint64 tc_pack_memory = Uint64(num_tc_threads) * Uint64(11 * 1024 * 1024);
+  Uint64 ldm_pack_memory = Uint64(num_ldm_threads) * Uint64(8) * MBYTE64;
+  Uint64 tc_pack_memory = Uint64(num_tc_threads) * Uint64(11) * MBYTE64;
   return ldm_pack_memory + tc_pack_memory;
 }
 
@@ -894,8 +895,8 @@ Configuration::compute_fs_memory()
    * Thus we add 3 MByte of memory space here for each LDM thread.
    */
   Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
-  Uint64 size_fs_mem = Uint64(2 * 1024 * 1024) * Uint64(num_ldm_threads);
-  size_fs_mem = MAX(size_fs_mem, Uint64(32 * 1024 * 1024));
+  Uint64 size_fs_mem = Uint64(2) * MBYTE64 * Uint64(num_ldm_threads);
+  size_fs_mem = MAX(size_fs_mem, Uint64(32) * MBYTE64);
   return size_fs_mem;
 }
 
@@ -908,8 +909,8 @@ Configuration::get_and_set_shared_global_memory(
   if (shared_global_memory == 0)
   {
     Uint32 num_threads = get_num_threads();
-    shared_global_memory = Uint64(700 * 1024 * 1024);
-    shared_global_memory += (Uint64(num_threads) * Uint64(75 * 1024 * 1024));
+    shared_global_memory = Uint64(700) * MBYTE64;
+    shared_global_memory += (Uint64(num_threads) * Uint64(75) * MBYTE64);
   }
   globalData.theSharedGlobalMemory = shared_global_memory;
   return shared_global_memory;
@@ -935,12 +936,12 @@ Configuration::assign_default_memory_sizes(
                               &page_cache_size);
   if (long_signal_buffer == 0)
   {
-    long_signal_buffer = Uint64(64 * 1024 * 1024);
+    long_signal_buffer = Uint64(64) * MBYTE64;
   }
   globalData.theLongSignalMemory = Uint64(long_signal_buffer);
   if (redo_buffer == 0)
   {
-    redo_buffer = Uint64(32 * 1024 * 1024);
+    redo_buffer = Uint64(32) * MBYTE64;
   }
   globalData.theRedoBuffer = Uint64(redo_buffer);
   if (undo_buffer != 0)
@@ -949,17 +950,17 @@ Configuration::assign_default_memory_sizes(
   }
   if (shared_global_memory == 0)
   {
-    shared_global_memory = Uint64(128 * 1024 * 1024);
+    shared_global_memory = Uint64(128) * MBYTE64;
   }
   globalData.theSharedGlobalMemory = shared_global_memory;
   if (data_memory == 0)
   {
-    data_memory = Uint64(98 * 1024 * 1024);
+    data_memory = Uint64(98) * MBYTE64;
   }
   globalData.theDataMemory = data_memory;
   if (page_cache_size == 0)
   {
-    page_cache_size = Uint64(64 * 1024 * 1024);
+    page_cache_size = Uint64(64) * MBYTE64;
   }
   globalData.theDiskPageBufferMemory = page_cache_size;
 }
@@ -970,7 +971,7 @@ Configuration::compute_restore_memory()
   Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
   Uint32 num_restore_threads = globalData.ndbMtRecoverThreads;
   num_ldm_threads += num_restore_threads;
-  Uint64 restore_memory = Uint64(4 * 1024 * 1024) * Uint64(num_ldm_threads);
+  Uint64 restore_memory = Uint64(4) * MBYTE64 * Uint64(num_ldm_threads);
   return restore_memory;
 }
 
@@ -981,11 +982,11 @@ Configuration::compute_static_overhead()
    * Overhead from DBDIH pages, DBINFO, DBUTIL, DBDICT, block overhead
    * 122 MByte from mt.cpp. Schema transaction memory.
    */
-  Uint64 static_overhead = 208 * 1024 * 1024;
+  Uint64 static_overhead = Uint64(208) * MBYTE64;
   Uint32 num_threads = get_num_threads();
   Uint32 num_extra_threads = globalData.ndbMtRecoverThreads;
   static_overhead += // Small memory allocations
-    ((num_threads + num_extra_threads) * 1 * MBYTE64);
+    ((num_threads + num_extra_threads) * MBYTE64);
   Uint32 num_send_threads = globalData.ndbMtSendThreads;
   Uint64 num_all_threads = num_threads + num_extra_threads + num_send_threads;
   static_overhead += (num_all_threads * MBYTE64); // Stack memory
@@ -1008,7 +1009,8 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p)
   Uint64 redo_buffer = get_and_set_redo_buffer(p);
   Uint64 undo_buffer = get_and_set_undo_buffer(p);
   Uint64 long_message_buffer = get_and_set_long_message_buffer(p);
-  Uint64 job_buffer = compute_jb_pages(&globalEmulatorData) * 32768;
+  Uint64 job_buffer = compute_jb_pages(&globalEmulatorData) * 
+                      GLOBAL_PAGE_SIZE;
   Uint64 static_overhead = compute_static_overhead();
   Uint64 os_overhead = compute_os_overhead();
   Uint64 send_buffer = get_send_buffer(p);
@@ -1058,9 +1060,12 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p)
                       shared_global_memory / MBYTE64);
   g_eventLogger->info("Total memory is %llu MBytes", total_memory / MBYTE64);
   g_eventLogger->info("Used memory is %llu MBytes", used_memory / MBYTE64);
-  if (used_memory + (Uint64(1024 * 1024 * 1024)) >= total_memory)
+  if (used_memory + (Uint64(1024) * MBYTE64) >= total_memory)
   {
-    abort();
+    /**
+     * We require at least 1 GByte for DataMemory and DiskPageBufferMemory
+     * to even start in AutomaticMemoryConfig mode.
+     */
     g_eventLogger->alert("Not enough memory using automatic memory config,"
                          " exiting");
     return false;
@@ -1083,7 +1088,7 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p)
     }
     else
     {
-      if (data_memory > (remaining_memory - Uint64(64 * 1024 * 1024)))
+      if (data_memory > (remaining_memory - Uint64(64) * MBYTE64))
       {
         g_eventLogger->alert("Not enough memory left for DiskPageBufferMemory,"
                              " exiting");
@@ -1096,7 +1101,7 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p)
   {
     if (data_memory == 0)
     {
-      if (page_cache_size > (remaining_memory - Uint64(512 * 1024 * 1024)))
+      if (page_cache_size > (remaining_memory - Uint64(512) * MBYTE64))
       {
         g_eventLogger->alert("Not enough memory left for DataMemory, exiting");
         return false;
