@@ -943,11 +943,10 @@ Configuration::assign_default_memory_sizes(
     redo_buffer = Uint64(32 * 1024 * 1024);
   }
   globalData.theRedoBuffer = Uint64(redo_buffer);
-  if (undo_buffer == 0)
+  if (undo_buffer != 0)
   {
-    undo_buffer = Uint64(64 * 1024 * 1024);
+    globalData.theUndoBuffer = undo_buffer;
   }
-  globalData.theUndoBuffer = undo_buffer;
   if (shared_global_memory == 0)
   {
     shared_global_memory = Uint64(128 * 1024 * 1024);

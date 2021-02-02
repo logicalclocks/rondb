@@ -745,7 +745,7 @@ MgmtSrvr::setClusterLog(const Config* config)
 
 #ifdef _WIN32
   /* Output to Windows event log */
-  g_eventLogger->createEventLogHandler("MySQL Cluster Management Server");
+  g_eventLogger->createEventLogHandler("iRoNDB Management Server");
 #endif
 
   if (m_opts.verbose)

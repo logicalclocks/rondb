@@ -77,7 +77,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
     {
       if (!add_ndb_zero)
       {
-        snprintf(buf, sz, "mysql-%d.%d.%d iRoNDB-%d.%d.%d%s",
+        snprintf(buf, sz, "iRoNDB-%d.%d.%d iRoNDB-%d.%d.%d%s",
                  getMajor(mysql_version),
                  getMinor(mysql_version),
                  getBuild(mysql_version),
@@ -88,7 +88,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
       }
       else
       {
-        snprintf(buf, sz, "mysql-%d.%d.%d iRoNDB-%d.0%d.%d%s",
+        snprintf(buf, sz, "iRoNDB-%d.%d.%d iRoNDB-%d.0%d.%d%s",
                  getMajor(mysql_version),
                  getMinor(mysql_version),
                  getBuild(mysql_version),
@@ -102,7 +102,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
     {
       if (!add_ndb_zero)
       {
-        snprintf(buf, sz, "mysql-%d.0%d.%d iRoNDB-%d.%d.%d%s",
+        snprintf(buf, sz, "iRoNDB-%d.0%d.%d iRoNDB-%d.%d.%d%s",
                  getMajor(mysql_version),
                  getMinor(mysql_version),
                  getBuild(mysql_version),
@@ -113,7 +113,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
       }
       else
       {
-        snprintf(buf, sz, "mysql-%d.0%d.%d iRoNDB-%d.0%d.%d%s",
+        snprintf(buf, sz, "iRoNDB-%d.0%d.%d iRoNDB-%d.0%d.%d%s",
                  getMajor(mysql_version),
                  getMinor(mysql_version),
                  getBuild(mysql_version),

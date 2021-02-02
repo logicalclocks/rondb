@@ -486,10 +486,10 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   if (TransactionMemory != 0)
   {
     Uint32 new_transmem = Uint32(TransactionMemory / Uint64(32768));
-    g_eventLogger->warning("Calculated TransactionMemory %u MB replaced by"
-                           " setting it to %u MB",
-                           transmem/32,
-                           new_transmem/32);
+    g_eventLogger->info("Calculated TransactionMemory %u MB replaced by"
+                        " setting it to %u MB",
+                        transmem/32,
+                        new_transmem/32);
     transmem = new_transmem;
   }
   /**
