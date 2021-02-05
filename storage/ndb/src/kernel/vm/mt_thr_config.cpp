@@ -1189,19 +1189,22 @@ THRConfig::do_parse(unsigned realtime,
     Uint32 num_query_threads_per_ldm = g_num_query_threads_per_ldm;
     num_rr_groups =
       Ndb_CreateCPUMap(ldm_threads, num_query_threads_per_ldm);
-    DEB_AUTO_THREAD_CONFIG(("Number of RR Groups = %u", num_rr_groups));
+    g_eventLogger->info("Number of RR Groups = %u", num_rr_groups);
     Uint32 next_cpu_id = Ndb_GetFirstCPUInMap();
     Uint32 query_instance = 0;
     for (Uint32 i = 0; i < ldm_threads; i++)
     {
       require(next_cpu_id != Uint32(RNIL));
       m_threads[T_LDM][i].m_bind_no = next_cpu_id;
+      m_threads[T_LDM][i].m_bind_type = T_Thread::B_CPU_BIND;
       next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
       m_threads[T_LDM][i].m_core_bind = true;
       for (Uint32 j = 0; j < num_query_threads_per_ldm; j++)
       {
         require(next_cpu_id != Uint32(RNIL));
         m_threads[T_QUERY][query_instance].m_bind_no = next_cpu_id;
+        m_threads[T_QUERY][query_instance].m_bind_type =
+          T_Thread::B_CPU_BIND;
         m_threads[T_QUERY][query_instance].m_core_bind = true;
         next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
         query_instance++;
@@ -1211,6 +1214,7 @@ THRConfig::do_parse(unsigned realtime,
     {
       require(next_cpu_id != Uint32(RNIL));
       m_threads[T_TC][i].m_bind_no = next_cpu_id;
+      m_threads[T_TC][i].m_bind_type = T_Thread::B_CPU_BIND;
       m_threads[T_TC][i].m_core_bind = true;
       next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
     }
@@ -1218,6 +1222,7 @@ THRConfig::do_parse(unsigned realtime,
     {
       require(next_cpu_id != Uint32(RNIL));
       m_threads[T_SEND][i].m_bind_no = next_cpu_id;
+      m_threads[T_SEND][i].m_bind_type = T_Thread::B_CPU_BIND;
       m_threads[T_SEND][i].m_core_bind = true;
       next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
     }
@@ -1225,6 +1230,7 @@ THRConfig::do_parse(unsigned realtime,
     {
       require(next_cpu_id != Uint32(RNIL));
       m_threads[T_RECV][i].m_bind_no = next_cpu_id;
+      m_threads[T_RECV][i].m_bind_type = T_Thread::B_CPU_BIND;
       m_threads[T_RECV][i].m_core_bind = true;
       next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
     }
@@ -1232,6 +1238,7 @@ THRConfig::do_parse(unsigned realtime,
     {
       require(next_cpu_id != Uint32(RNIL));
       m_threads[T_MAIN][i].m_bind_no = next_cpu_id;
+      m_threads[T_MAIN][i].m_bind_type = T_Thread::B_CPU_BIND;
       m_threads[T_MAIN][i].m_core_bind = true;
       next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
     }
@@ -1239,6 +1246,7 @@ THRConfig::do_parse(unsigned realtime,
     {
       require(next_cpu_id != Uint32(RNIL));
       m_threads[T_REP][i].m_bind_no = next_cpu_id;
+      m_threads[T_REP][i].m_bind_type = T_Thread::B_CPU_BIND;
       m_threads[T_REP][i].m_core_bind = true;
       next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
     }
