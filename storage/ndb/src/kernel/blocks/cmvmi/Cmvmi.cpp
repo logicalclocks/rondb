@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -68,6 +69,15 @@
 
 #define JAM_FILE_ID 380
 
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_AUTOMATIC_MEMORY 1
+#endif
+
+#ifdef DEBUG_AUTOMATIC_MEMORY
+#define DEB_AUTOMATIC_MEMORY(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_AUTOMATIC_MEMORY(arglist) do { } while (0)
+#endif
 
 #define ZREPORT_MEMORY_USAGE 1000
 
@@ -87,13 +97,7 @@ Cmvmi::Cmvmi(Block_context& ctx) :
 {
   BLOCK_CONSTRUCTOR(Cmvmi);
 
-  Uint32 long_sig_buffer_size;
-  const ndb_mgm_configuration_iterator * p = 
-    m_ctx.m_config.getOwnConfigIterator();
-  ndbrequire(p != 0);
-
-  ndb_mgm_get_int_parameter(p, CFG_DB_LONG_SIGNAL_BUFFER,  
-			    &long_sig_buffer_size);
+  Uint64 long_sig_buffer_size = globalData.theLongSignalMemory;
 
   /* Ensure that aligned allocation will result in 64-bit
    * aligned offset for theData
@@ -101,8 +105,11 @@ Cmvmi::Cmvmi(Block_context& ctx) :
   STATIC_ASSERT((sizeof(SectionSegment) % 8) == 0);
   STATIC_ASSERT((offsetof(SectionSegment, theData) % 8) == 0); 
 
+  DEB_AUTOMATIC_MEMORY(("Allocating %llu MBytes for LongMessageBuffer",
+                        long_sig_buffer_size / MBYTE64));
   long_sig_buffer_size= long_sig_buffer_size / sizeof(SectionSegment);
-  g_sectionSegmentPool.setSize(long_sig_buffer_size,
+  Uint32 long_sig_segments = Uint32(long_sig_buffer_size);
+  g_sectionSegmentPool.setSize(long_sig_segments,
                                true,true,true,CFG_DB_LONG_SIGNAL_BUFFER);
 
   mt_init_receiver_cache();

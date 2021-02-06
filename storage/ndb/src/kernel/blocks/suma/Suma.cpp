@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -108,6 +109,16 @@ extern EventLogger * g_eventLogger;
 
 #define DBG_3R 0
 
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_AUTOMATIC_MEMORY 1
+#endif
+
+#ifdef DEBUG_AUTOMATIC_MEMORY
+#define DEB_AUTOMATIC_MEMORY(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_AUTOMATIC_MEMORY(arglist) do { } while (0)
+#endif
+
 /**
  * @todo:
  * SUMA crashes if an index is created at the same time as
@@ -151,9 +162,11 @@ Suma::execREAD_CONFIG_REQ(Signal* signal)
   ndb_mgm_get_int_parameter(p, CFG_DB_MAX_BUFFERED_EPOCHS,
                             &maxBufferedEpochs);
 
+  DEB_AUTOMATIC_MEMORY(("Allocating c_tablePool, %u tables", noTables));
   c_tablePool.setSize(noTables);
+  DEB_AUTOMATIC_MEMORY(("Allocating c_tables"));
   c_tables.setSize(noTables);
-  
+  DEB_AUTOMATIC_MEMORY(("Allocating c_subscriptions"));
   c_subscriptions.setSize(noTables);
 
   Uint32 cnt = 0;
@@ -164,6 +177,7 @@ Suma::execREAD_CONFIG_REQ(Signal* signal)
     jam();
     cnt = noTables;
   }
+  DEB_AUTOMATIC_MEMORY(("Allocating c_subscriptionPool, cnt: %u", cnt));
   c_subscriptionPool.setSize(cnt);
 
   cnt *= 2;
@@ -176,21 +190,25 @@ Suma::execREAD_CONFIG_REQ(Signal* signal)
       cnt =  val;
     }
   }
+  DEB_AUTOMATIC_MEMORY(("Allocating c_subscriberPool, cnt: %u", cnt));
   c_subscriberPool.setSize(cnt);
 
   cnt = 0;
   ndb_mgm_get_int_parameter(p, CFG_DB_SUB_OPERATIONS, &cnt);
+  DEB_AUTOMATIC_MEMORY(("Allocating c_subOpPool, cnt: %u", cnt));
   if (cnt)
     c_subOpPool.setSize(cnt);
   else
     c_subOpPool.setSize(256);
   
+  DEB_AUTOMATIC_MEMORY(("Allocating c_syncPool, cnt: %u", cnt));
   c_syncPool.setSize(2);
 
   // Trix: max 5 concurrent index stats ops with max 9 words bounds
   Uint32 noOfBoundWords = 5 * 9;
 
   // XXX multiplies number of words by 15 ???
+  DEB_AUTOMATIC_MEMORY(("Allocating c_dataBufferPool, noAttrs: %u", noAttrs));
   c_dataBufferPool.setSize(noAttrs + noOfBoundWords);
 
   c_maxBufferedEpochs = maxBufferedEpochs;
@@ -227,6 +245,7 @@ Suma::execREAD_CONFIG_REQ(Signal* signal)
 
   const Uint32 poolSize= disconnectBufferEpochs + c_maxBufferedEpochs;
 
+  DEB_AUTOMATIC_MEMORY(("Allocating c_gcp_pool, size: %u", poolSize));
   c_gcp_pool.setSize(poolSize);
 
   Uint32 maxBufferedEpochBytes, numPages, numPageChunks;
@@ -236,6 +255,8 @@ Suma::execREAD_CONFIG_REQ(Signal* signal)
              / Page_chunk::CHUNK_PAGE_SIZE;
   numPageChunks = (numPages + Page_chunk::PAGES_PER_CHUNK - 1)
                   / Page_chunk::PAGES_PER_CHUNK;
+  DEB_AUTOMATIC_MEMORY(("Allocating c_page_chunk_pool, size: %u",
+                        numPageChunks));
   c_page_chunk_pool.setSize(numPageChunks);
   
   {

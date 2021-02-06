@@ -525,7 +525,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "1000",
+    "0",
     "32",
     STR_VALUE(MAX_INT_RNIL) },
   
@@ -537,7 +537,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "128",
+    "0",
     "8",
     STR_VALUE(NDB_MAX_TABLES) },
   
@@ -549,7 +549,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "128",
+    "0",
     "0",
     STR_VALUE(MAX_INT_RNIL) },
 
@@ -561,7 +561,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "64",
+    "0",
     "0",
     STR_VALUE(MAX_INT_RNIL) },
 
@@ -586,7 +586,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "768",
+    "0",
     "0",
     STR_VALUE(MAX_INT_RNIL) },
 
@@ -970,9 +970,33 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT64,
-    "98M",
+    "0",
     "1M",
     "16384G" },
+
+  {
+    CFG_DB_AUTO_MEMORY_CONFIG,
+    "AutomaticMemoryConfig",
+    DB_TOKEN,
+    "Memory configuration fully automated",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "true",
+    "false",
+    "true" },
+
+  {
+    CFG_DB_TOTAL_MEMORY_CONFIG,
+    "TotalMemoryConfig",
+    DB_TOKEN,
+    "Specific amount of memory used",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT64,
+    "0",
+    "8G",
+    "65536G" },
 
   {
     CFG_DB_TRANSACTION_MEM,
@@ -984,7 +1008,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_INT64,
     "0",
     "0",
-    "16384G" },
+    "65536G" },
 
   {
     CFG_DB_UNDO_INDEX_BUFFER,
@@ -1018,9 +1042,21 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "32M",
+    "0",
     "1M",
     STR_VALUE(MAX_INT_RNIL)},
+
+  {
+    CFG_DB_UNDO_BUFFER,
+    "UndoBuffer",
+    DB_TOKEN,
+    "Number bytes on each " DB_TOKEN_PRINT " node allocated for writing UNDO logs",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT64,
+    "0",
+    "1M",
+    "65536G" },
 
   {
     CFG_DB_LONG_SIGNAL_BUFFER,
@@ -1030,7 +1066,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "64M",
+    "0",
     "512k",
     STR_VALUE(MAX_INT_RNIL)},
 
@@ -1042,9 +1078,9 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT64,
-    "64M",
+    "0",
     "4M",
-    "16384G" },
+    "65536G" },
 
   {
     CFG_DB_SGA,
@@ -1054,7 +1090,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT64,
-    "128M",
+    "0",
     "0",
     "65536G" }, // 32k pages * 32-bit i value
   
@@ -1230,11 +1266,11 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     CFG_DB_MAX_BUFFERED_EPOCH_BYTES,
     "MaxBufferedEpochBytes",
     DB_TOKEN,
-    "Total number of bytes allocated for buffering epochs.",
+    "Max number of bytes available for buffering epochs.",
     ConfigInfo::CI_USED,
     0,
     ConfigInfo::CI_INT,
-    "26214400",
+    "500M",
     "26214400",
     STR_VALUE(MAX_INT_RNIL) },
 
@@ -1284,7 +1320,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     CI_RESTART_INITIAL,
     ConfigInfo::CI_INT,
-    "16M",
+    "1G",
     "4M",
     "1G" },
 
@@ -1736,7 +1772,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "5",
+    STR_VALUE(DEFAULT_STRING_MEMORY),
     "0",
     STR_VALUE(MAX_INT_RNIL) },
 
@@ -2380,7 +2416,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "5",
+    "10",
     "0",
     "100"
   },
@@ -3419,7 +3455,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "2M",
+    "8M",
     "64K",
     STR_VALUE(MAX_INT_RNIL) },
 
@@ -3781,7 +3817,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "2M",
+    "8M",
     "64K",
     STR_VALUE(MAX_INT_RNIL)
   },

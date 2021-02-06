@@ -289,7 +289,7 @@ static void mgmd_run()
   }
   else
   {
-    g_eventLogger->info("MySQL Cluster Management Server %s started",
+    g_eventLogger->info("iRoNDB Management Server %s started",
                         NDB_VERSION_STRING);
 
     while (!g_StopServer)
@@ -325,7 +325,7 @@ static int mgmd_main(int argc, char** argv)
   Ndb_opts ndb_opts(argc, argv, my_long_options, load_default_groups);
   ndb_opts.set_usage_funcs(short_usage_sub);
 
-  printf("MySQL Cluster Management Server %s\n", NDB_VERSION_STRING);
+  printf("iRoNDB Management Server %s\n", NDB_VERSION_STRING);
 
   int ho_error;
 #ifndef DBUG_OFF
@@ -401,7 +401,7 @@ static int mgmd_main(int argc, char** argv)
 
 #ifdef _WIN32
   /* Output to Windows event log */
-  g_eventLogger->createEventLogHandler("MySQL Cluster Management Server");
+  g_eventLogger->createEventLogHandler("iRoNDB Management Server");
 #endif
 
   if (opts.verbose)
@@ -477,5 +477,5 @@ static void mgmd_stop(void)
 int main(int argc, char** argv)
 {
   return ndb_daemon_init(argc, argv, mgmd_main, mgmd_stop,
-                         "ndb_mgmd", "MySQL Cluster Management Server");
+                         "ndb_mgmd", "iRoNDB Management Server");
 }

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -67,7 +68,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
   else
     tmp[0] = 0;
 
-  if (mysql_version)
+  if (false && mysql_version)
   {
     bool add_mysql_zero = getMinor(mysql_version) != 0 &&
                           getMinor(mysql_version) < 10;
@@ -77,7 +78,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
     {
       if (!add_ndb_zero)
       {
-        snprintf(buf, sz, "mysql-%d.%d.%d iRoNDB-%d.%d.%d%s",
+        snprintf(buf, sz, "iRoNDB-%d.%d.%d iRoNDB-%d.%d.%d%s",
                  getMajor(mysql_version),
                  getMinor(mysql_version),
                  getBuild(mysql_version),
@@ -88,7 +89,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
       }
       else
       {
-        snprintf(buf, sz, "mysql-%d.%d.%d iRoNDB-%d.0%d.%d%s",
+        snprintf(buf, sz, "iRoNDB-%d.%d.%d iRoNDB-%d.0%d.%d%s",
                  getMajor(mysql_version),
                  getMinor(mysql_version),
                  getBuild(mysql_version),
@@ -102,7 +103,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
     {
       if (!add_ndb_zero)
       {
-        snprintf(buf, sz, "mysql-%d.0%d.%d iRoNDB-%d.%d.%d%s",
+        snprintf(buf, sz, "iRoNDB-%d.0%d.%d iRoNDB-%d.%d.%d%s",
                  getMajor(mysql_version),
                  getMinor(mysql_version),
                  getBuild(mysql_version),
@@ -113,7 +114,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
       }
       else
       {
-        snprintf(buf, sz, "mysql-%d.0%d.%d iRoNDB-%d.0%d.%d%s",
+        snprintf(buf, sz, "iRoNDB-%d.0%d.%d iRoNDB-%d.0%d.%d%s",
                  getMajor(mysql_version),
                  getMinor(mysql_version),
                  getBuild(mysql_version),

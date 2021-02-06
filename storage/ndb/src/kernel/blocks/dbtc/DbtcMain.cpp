@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1110,7 +1111,7 @@ void Dbtc::execREAD_CONFIG_REQ(Signal* signal)
   Pool_context pc;
   pc.m_block = this;
 
-  c_fk_hash.setSize(16);
+  c_fk_hash.setSize(4096);
   c_fk_pool.init(RT_DBDICT_FILE, pc); // TODO
 
   time_track_init_histogram_limits();

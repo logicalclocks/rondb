@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2944,6 +2945,15 @@ static Uint64 getTransactionMemoryNeed(
     const Uint32 dbtc_instance_count,
     const ndb_mgm_configuration_iterator * mgm_cfg,
     const bool use_reserved);
+
+  static size_t getTableRecordSize()
+  {
+    return sizeof(struct TableRecord) + sizeof(struct TcIndexData);
+  }
+  static size_t getTriggerRecordSize()
+  {
+    return sizeof(struct TcDefinedTriggerData);
+  }
 #endif
 };
 

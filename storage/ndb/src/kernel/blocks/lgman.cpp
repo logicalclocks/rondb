@@ -53,6 +53,7 @@ extern EventLogger * g_eventLogger;
 //#define DEBUG_DROP_LG 1
 //#define DEBUG_LGMAN_LCP 1
 //#define DEBUG_UNDO_SPACE 1
+#define DEBUG_UNDO_BUFFER 1
 #endif
 
 #ifdef DEBUG_LGMAN
@@ -71,6 +72,12 @@ extern EventLogger * g_eventLogger;
 #define DEB_UNDO_SPACE(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_UNDO_SPACE(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_UNDO_BUFFER
+#define DEB_UNDO_BUFFER(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_UNDO_BUFFER(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_DROP_LG
@@ -1264,9 +1271,24 @@ Lgman::execCREATE_FILEGROUP_IMPL_REQ(Signal* signal){
     }
 
     new (ptr.p) Logfile_group(req);
-    
+
+    Uint64 undo_log_buffer_size = 0;
+    if (globalData.theUndoBuffer == 0)
+    {
+      jam();
+      undo_log_buffer_size = req->logfile_group.buffer_size;
+      DEB_UNDO_BUFFER(("Undo buffer from command: %llu MBytes",
+                       undo_log_buffer_size / MBYTE64));
+    }
+    else
+    {
+      jam();
+      undo_log_buffer_size = globalData.theUndoBuffer;
+      DEB_UNDO_BUFFER(("Undo buffer from config: %llu MBytes",
+                       undo_log_buffer_size / MBYTE64));
+    }
     if (unlikely(ERROR_INSERTED(15001)) ||
-        !alloc_logbuffer_memory(ptr, req->logfile_group.buffer_size))
+        !alloc_logbuffer_memory(ptr, undo_log_buffer_size))
     {
       jam();
       err= CreateFilegroupImplRef::OutOfLogBufferMemory;
@@ -2130,10 +2152,11 @@ Lgman::Logfile_group::Logfile_group(const CreateFilegroupImplReq* req)
 }
 
 bool
-Lgman::alloc_logbuffer_memory(Ptr<Logfile_group> ptr, Uint32 bytes)
+Lgman::alloc_logbuffer_memory(Ptr<Logfile_group> ptr, Uint64 bytes)
 {
-  Uint32 pages= (((bytes + 3) >> 2) + File_formats::NDB_PAGE_SIZE_WORDS - 1)
+  Uint64 pages64= (((bytes + 3) >> 2) + File_formats::NDB_PAGE_SIZE_WORDS - 1)
     / File_formats::NDB_PAGE_SIZE_WORDS;
+  Uint32 pages = Uint32(pages64);
 #if defined VM_TRACE || defined ERROR_INSERT
   Uint32 requested= pages;
 #endif

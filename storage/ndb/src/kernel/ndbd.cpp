@@ -1,4 +1,5 @@
 /* Copyright (c) 2009, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -180,26 +181,6 @@ parse_key_value_before_filespecs(const char *src,
   }
 }
 
-Uint32
-compute_acc_32kpages(const ndb_mgm_configuration_iterator * p)
-{
-  Uint64 accmem = 0;
-  ndb_mgm_get_int64_parameter(p, CFG_DB_INDEX_MEM, &accmem);
-  if (accmem)
-  {
-    accmem /= GLOBAL_PAGE_SIZE;
-    
-    Uint32 lqhInstances = 1;
-    if (globalData.isNdbMtLqh)
-    {
-      lqhInstances = globalData.ndbMtLqhWorkers;
-    }
-    
-    accmem += lqhInstances * (32 / 4); // Added as safety in Configuration.cpp
-  }
-  return Uint32(accmem);
-}
-
 /**
  * We currently allocate the following large chunks of memory:
  * -----------------------------------------------------------
@@ -310,26 +291,12 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
                         res == 0 ? "OK" : "no numa support");
   }
 
-  Uint64 shared_mem = 8*1024*1024;
-  ndb_mgm_get_int64_parameter(p, CFG_DB_SGA, &shared_mem);
+  Uint64 shared_mem = globalData.theSharedGlobalMemory;
   Uint32 shared_pages = Uint32(shared_mem /= GLOBAL_PAGE_SIZE);
 
   g_eventLogger->info("SharedGlobalMemory set to %u MB", shared_pages/32);
-  Uint32 tupmem = 0;
-  if (ndb_mgm_get_int_parameter(p, CFG_TUP_PAGE, &tupmem))
-  {
-    g_eventLogger->alert("Failed to get CFG_TUP_PAGE parameter from "
-                        "config, exiting.");
-    return -1;
-  }
-
-  {
-    /**
-     * IndexMemory
-     */
-    Uint32 accpages = compute_acc_32kpages(p);
-    tupmem += accpages; // Add to RG_DATAMEM
-  }
+  Uint64 dataMem = globalData.theDataMemory;
+  Uint32 tupmem= (Uint32)(dataMem / 32768);
 
   Uint32 lqhInstances = 1;
   if (globalData.isNdbMtLqh)
@@ -364,10 +331,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     /**
      * RedoBuffer
      */
-    Uint32 redomem = 0;
-    ndb_mgm_get_int_parameter(p, CFG_DB_REDO_BUFFER,
-                              &redomem);
-
+    Uint32 redomem = globalData.theRedoBuffer;
     if (redomem)
     {
       redomem /= GLOBAL_PAGE_SIZE;
@@ -422,32 +386,8 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
      * For ndbd it is hard coded similarly to be set to true in
      * TransporterCallback.cpp. So for ndbd this code isn't executed.
      */
-    Uint64 mem;
-    {
-      Uint32 tot_mem = 0;
-      ndb_mgm_get_int_parameter(p, CFG_TOTAL_SEND_BUFFER_MEMORY, &tot_mem);
-      if (tot_mem)
-      {
-        mem = (Uint64)tot_mem;
-      }
-      else
-      {
-        mem = globalTransporterRegistry.get_total_max_send_buffer();
-      }
-    }
-
+    Uint64 mem = Configuration::get_send_buffer(p);
     sbpages = Uint32((mem + GLOBAL_PAGE_SIZE - 1) / GLOBAL_PAGE_SIZE);
-
-    /**
-     * Add extra send buffer pages for NDB multithreaded case
-     */
-    {
-      Uint64 extra_mem = 0;
-      ndb_mgm_get_int64_parameter(p, CFG_EXTRA_SEND_BUFFER_MEMORY, &extra_mem);
-      Uint32 extra_mem_pages = Uint32(Uint64(extra_mem + GLOBAL_PAGE_SIZE - 1) /
-                                      Uint64(GLOBAL_PAGE_SIZE));
-      sbpages += mt_get_extra_send_buffer_pages(sbpages, extra_mem_pages);
-    }
 
     Resource_limit rl;
     rl.m_min = sbpages;
@@ -481,8 +421,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
      */
     Uint32 recoverInstances = globalData.ndbMtRecoverThreads +
                               globalData.ndbMtQueryThreads;
-    Uint64 page_buffer = 64*1024*1024;
-    ndb_mgm_get_int64_parameter(p, CFG_DB_DISK_PAGE_BUFFER_MEMORY,&page_buffer);
+    Uint64 page_buffer = globalData.theDiskPageBufferMemory;
 
     Uint32 pages = 0;
     pages += Uint32(page_buffer / GLOBAL_PAGE_SIZE); // in pages
@@ -525,10 +464,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     tcInstances = globalData.ndbMtTcThreads;
   }
 
-  Uint64 TransactionMemory = 0;
-
-  ndb_mgm_get_int64_parameter(p, CFG_DB_TRANSACTION_MEM,
-                              &TransactionMemory);
+  Uint64 TransactionMemory = globalData.theTransactionMemory;
 
   Uint64 transmem_bytes =
       globalEmulatorData.theSimBlockList->getTransactionMemoryNeed(
@@ -550,10 +486,10 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   if (TransactionMemory != 0)
   {
     Uint32 new_transmem = Uint32(TransactionMemory / Uint64(32768));
-    g_eventLogger->warning("Calculated TransactionMemory %u MB replaced by"
-                           " setting it to %u MB",
-                           transmem/32,
-                           new_transmem/32);
+    g_eventLogger->info("Calculated TransactionMemory %u MB replaced by"
+                        " setting it to %u MB",
+                        transmem/32,
+                        new_transmem/32);
     transmem = new_transmem;
   }
   /**
@@ -584,6 +520,15 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
                         reserved_transmem/32);
   }
 
+  if (globalData.theUndoBuffer != 0)
+  {
+    Uint64 undo_buffer_pages = globalData.theUndoBuffer /
+                               Uint64(GLOBAL_PAGE_SIZE);
+    g_eventLogger->info("Adding %llu MBytes to TransactionMemory"
+                        " for Undo Buffer",
+                        globalData.theUndoBuffer / MBYTE64);
+    transmem += undo_buffer_pages;
+  }
   {
     /**
      * Request extra undo buffer memory to be allocated when
@@ -668,20 +613,11 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   Uint32 extra_chunk_pages = (2 * (sum / (32768 * 8))) + 3;
   sum += extra_chunk_pages;
 
-  if (!ed.m_mem_manager->init(watchCounter, sum))
+  if (!ed.m_mem_manager->init(watchCounter, sum, false))
   {
-    struct ndb_mgm_param_info dm;
-    struct ndb_mgm_param_info sga;
-    size_t size;
-
-    size = sizeof(ndb_mgm_param_info);
-    ndb_mgm_get_db_parameter_info(CFG_DB_DATA_MEM, &dm, &size);
-    size = sizeof(ndb_mgm_param_info);
-    ndb_mgm_get_db_parameter_info(CFG_DB_SGA, &sga, &size);
-
-    g_eventLogger->alert("Malloc (%lld bytes) for %s and %s failed, exiting",
+    g_eventLogger->alert("Malloc (%lld bytes) for %s and others failed, exiting",
                          Uint64(shared_mem + tupmem) * GLOBAL_PAGE_SIZE,
-                         dm.m_name, sga.m_name);
+                         "DataMemory");
     return -1;
   }
 

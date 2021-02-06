@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -570,12 +571,9 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
   ndbrequire(p != 0);
 
   Uint32 maxNoOfIndexes = 0;
-  Uint32 maxNoOfTriggers = 0;
-
+  Uint32 maxNoOfTriggers = globalData.theMaxNoOfTriggers;
   ndb_mgm_get_int_parameter(p, CFG_DICT_TABLE,
 			    &maxNoOfIndexes);
-  ndb_mgm_get_int_parameter(p, CFG_DB_NO_TRIGGERS, 
-			    &maxNoOfTriggers);
   
   c_maxNumberOfIndexes = maxNoOfIndexes;
   c_maxNumberOfDefinedTriggers = maxNoOfTriggers;

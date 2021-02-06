@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,7 +29,10 @@
 #include "ndb_version.h"  // Limits might depend on NDB version
 
 #define RNIL    0xffffff00
+#define MBYTE64 Uint64(1024 * 1024)
+#define MBYTE32 Uint32(1024 * 1024)
 
+#define DEFAULT_STRING_MEMORY 6
 /**
  * Note that actual value = MAX_NODES - 1,
  *  since NodeId = 0 can not be used

@@ -2403,7 +2403,7 @@ sub collect_mysqld_features {
         $mysql_base_version =
           int($mysql_version_id / 10000) . "." .
           int(($mysql_version_id % 10000) / 100);
-        mtr_report("MySQL Version $1.$2.$3");
+        mtr_report("iRoNDB Version $1.$2.$3");
         $mysql_version_extra = $4;
       }
     } else {
@@ -2434,7 +2434,7 @@ sub collect_mysqld_features {
   }
 
   rmtree($tmpdir);
-  mtr_error("Could not find version of MySQL") unless $mysql_version_id;
+  mtr_error("Could not find version of iRoNDB") unless $mysql_version_id;
   mtr_error("Could not find variabes list") unless $found_variable_list_start;
 
   # InnoDB is always enabled as of 5.7.
@@ -2481,10 +2481,10 @@ sub collect_mysqld_features_from_running_server () {
     $mysql_base_version =
       int($mysql_version_id / 10000) . "." .
       int(($mysql_version_id % 10000) / 100);
-    mtr_report("MySQL Version $1.$2.$3");
+    mtr_report("iRoNDB Version $1.$2.$3");
     $mysql_version_extra = $4;
   }
-  mtr_error("Could not find version of MySQL") unless $mysql_version_id;
+  mtr_error("Could not find version of iRoNDB") unless $mysql_version_id;
 }
 
 sub find_mysqld {

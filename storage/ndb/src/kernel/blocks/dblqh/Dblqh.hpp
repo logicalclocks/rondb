@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -723,7 +724,7 @@ public:
  */
 #define ZMAX_SCAN_DIRECT_COUNT 16
 
-#define DEBUG_FRAGMENT_LOCK 1
+//#define DEBUG_FRAGMENT_LOCK 1
 #define LOCK_LINE_MASK 2047
 #define LOCK_READ_SPIN_TIME 30
 #define LOCK_WRITE_SPIN_TIME 40
@@ -1182,7 +1183,7 @@ public:
   typedef ArrayPool<Fragrecord> Fragrecord_pool;
   typedef SLList<Fragrecord_pool> Fragrecord_list;
   typedef DLFifoList<Fragrecord_pool> Fragrecord_fifo;
-  
+
   /* $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$ */
   /* $$$$$$$                GLOBAL CHECKPOINT RECORD                  $$$$$$ */
   /* $$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$ */
@@ -3559,7 +3560,7 @@ private:
                   Uint32 errcode,
                   TcConnectionrecPtr);
   void localAbortStateHandlerLab(Signal* signal, TcConnectionrecPtr);
-  void writePrepareLog(Signal* signal, TcConnectionrecPtr, bool);
+  void writePrepareLog(Signal* signal, TcConnectionrecPtr, bool, bool);
   void writePrepareLog_problems(Signal* signal,
                                 const TcConnectionrecPtr,
                                 LogPartRecord *logPartPtrP);
@@ -4890,6 +4891,15 @@ public:
     const Uint32 ldm_instance_count,
     const ndb_mgm_configuration_iterator * mgm_cfg,
     const bool use_reserved);
+
+  static size_t getFragmentRecordSize()
+  {
+    return sizeof(struct Fragrecord);
+  }
+  static size_t getTableRecordSize()
+  {
+    return sizeof(struct Tablerec);
+  }
 #endif
 };
 

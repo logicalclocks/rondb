@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -351,9 +352,7 @@ Pgman::execREAD_CONFIG_REQ(Signal* signal)
                             &dd_using_same_disk);
   m_dd_using_same_disk = dd_using_same_disk;
 
-  Uint64 page_buffer = 64*1024*1024;
-  ndb_mgm_get_int64_parameter(p, CFG_DB_DISK_PAGE_BUFFER_MEMORY, &page_buffer);
-  
+  Uint64 page_buffer = globalData.theDiskPageBufferMemory;
   if (page_buffer > 0)
   {
     jam();
@@ -412,12 +411,18 @@ Pgman::execREAD_CONFIG_REQ(Signal* signal)
   m_file_entry_pool.init(RT_PGMAN_FILE, pc);
   
   Uint32 noFragments = 0;
-  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_LQH_FRAG, &noFragments));
+  if (!m_extra_pgman)
+  {
+    ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_LQH_FRAG, &noFragments));
+  }
   m_fragmentRecordPool.setSize(noFragments);
   m_fragmentRecordHash.setSize(noFragments);
 
   Uint32 noTables = 0;
-  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_LQH_TABLE, &noTables));
+  if (!m_extra_pgman)
+  {
+    ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_LQH_TABLE, &noTables));
+  }
   m_tableRecordPool.setSize(noTables);
 
   for (Uint32 i = 0; i < noTables; i++)

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -266,9 +267,8 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
 #endif
   // Records with dynamic sizes
   hostRecord = (HostRecord*)allocRecord("HostRecord",
-					sizeof(HostRecord), 
-					chostFileSize);
-
+                                        sizeof(HostRecord), 
+                                        chostFileSize);
   if (!m_is_query_block)
   {
     addFragRecord = (AddFragRecord*)allocRecord("AddFragRecord",

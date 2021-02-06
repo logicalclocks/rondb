@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -339,6 +340,7 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
   {
     noTables = 0;
     noFrags = 0;
+    noDeleteLcpFile = 0;
   }
   /* To make sure we fix things if we allow other values */
   ndbrequire(noBackups == 1);
@@ -483,7 +485,15 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
            sizeof(Page32)));
 
   Uint32 seizeNumPages = noPages + (1*NO_OF_PAGES_META_FILE)+ 9;
-  c_pagePool.setSize(seizeNumPages, true);
+  if (!m_is_query_block)
+  {
+    jam();
+    c_pagePool.setSize(seizeNumPages, true);
+  }
+  else
+  {
+    c_pagePool.setSize(1, true);
+  }
 
   jam();
 

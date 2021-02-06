@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -145,7 +146,7 @@ public:
 
   bool getInitialStart() const { return _initialStart; }
 
-  const ndb_mgm_configuration_iterator * getOwnConfigIterator() const;
+  ndb_mgm_configuration_iterator * getOwnConfigIterator() const;
 
   ConfigRetriever* get_config_retriever() { return m_config_retriever; }
 
@@ -199,6 +200,36 @@ private:
 
   void calcSizeAlt(class ConfigValues * );
   const char *get_type_string(enum ThreadTypes type);
+  bool calculate_automatic_memory(
+         ndb_mgm_configuration_iterator *p);
+  void assign_default_memory_sizes(const ndb_mgm_configuration_iterator *p);
+  static Uint32 get_num_threads();
+  static Uint64 get_total_memory(
+                  const ndb_mgm_configuration_iterator *p);
+  Uint64 get_schema_memory(ndb_mgm_configuration_iterator *p);
+  static Uint64 get_and_set_transaction_memory(
+           const ndb_mgm_configuration_iterator *p);
+  static Uint64 get_and_set_redo_buffer(
+           const ndb_mgm_configuration_iterator *p);
+  static Uint64 get_and_set_undo_buffer(
+           const ndb_mgm_configuration_iterator *p);
+  static Uint64 get_and_set_long_message_buffer(
+           const ndb_mgm_configuration_iterator *p);
+  static Uint64 compute_os_overhead();
+  static Uint64 compute_static_overhead();
+  static Uint64 compute_backup_page_memory(
+                  const ndb_mgm_configuration_iterator *p);
+  static Uint64 compute_restore_memory();
+  static Uint64 compute_pack_memory();
+  static Uint64 compute_fs_memory();
+  static Uint64 get_and_set_shared_global_memory(
+           const ndb_mgm_configuration_iterator *p);
+public:
+  static Uint64 get_send_buffer(const ndb_mgm_configuration_iterator *p);
+  void get_num_nodes(Uint32 & noOfNodes,
+                     Uint32 & noOfDBNodes,
+                     Uint32 & noOfAPINodes,
+                     Uint32 & noOfMGMNodes);
 };
 
 inline

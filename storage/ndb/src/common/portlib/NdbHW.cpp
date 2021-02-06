@@ -32,7 +32,7 @@
 #include <iostream>
 #include <thread>
 
-//#define DEBUG_HW(arglist) do { printf arglist ; } while (0)
+//#define DEBUG_HW(arglist) do { fprintf arglist ; } while (0)
 #define DEBUG_HW(arglist) do { } while(0)
 
 #ifdef HAVE_UNISTD_H
@@ -513,7 +513,8 @@ create_l3_cache_list(struct ndb_hwinfo *hwinfo)
     }
     g_num_l3_cpus[l3_cache_id] = found;
     g_num_l3_cpus_online[l3_cache_id] = found_online;
-    DEBUG_HW(("%u CPUs found and %u CPUs online in L3 cache group %u\n",
+    DEBUG_HW((stderr,
+              "%u CPUs found and %u CPUs online in L3 cache group %u\n",
               found,
               found_online,
               l3_cache_id));
@@ -532,7 +533,8 @@ check_if_virt_l3_cache_will_be_ok(struct ndb_hwinfo *hwinfo,
   Uint32 count_non_full_groups_found = 0;
   Uint32 full_group_size = group_size * ldm_group_size;
   Uint32 non_full_group_size = (group_size - 1) * ldm_group_size;
-  DEBUG_HW(("full group size: %u, non full group size: %u"
+  DEBUG_HW((stderr,
+            "full group size: %u, non full group size: %u"
             ", ldm group size: %u\n",
             full_group_size,
             non_full_group_size,
@@ -540,7 +542,8 @@ check_if_virt_l3_cache_will_be_ok(struct ndb_hwinfo *hwinfo,
   for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
   {
     Uint32 num_cpus_in_group = g_num_virt_l3_cpus[i];
-    DEBUG_HW(("num_cpus %u in group %u\n",
+    DEBUG_HW((stderr,
+              "num_cpus %u in group %u\n",
               num_cpus_in_group, i));
     while (num_cpus_in_group >= full_group_size)
     {
@@ -552,7 +555,8 @@ check_if_virt_l3_cache_will_be_ok(struct ndb_hwinfo *hwinfo,
       count_non_full_groups_found++;
     }
   }
-  DEBUG_HW(("Full groups: %u, Non-full groups: %u\n",
+  DEBUG_HW((stderr,
+            "Full groups: %u, Non-full groups: %u\n",
             count_full_groups_found,
             count_non_full_groups_found));
   /* Only count non full groups up until the searched number of groups */
@@ -561,7 +565,8 @@ check_if_virt_l3_cache_will_be_ok(struct ndb_hwinfo *hwinfo,
   Uint32 tot_ldm_groups_found =
     count_full_groups_found * group_size +
     count_non_full_groups_found * (group_size - 1);
-  DEBUG_HW(("Total LDM groups found: %u\n", tot_ldm_groups_found));
+  DEBUG_HW((stderr,
+            "Total LDM groups found: %u\n", tot_ldm_groups_found));
   return (tot_ldm_groups_found >= num_ldm_instances);
 }
 
@@ -593,7 +598,8 @@ check_if_virt_l3_cache_is_ok(struct ndb_hwinfo *hwinfo,
   Uint32 tot_ldm_groups_found =
     count_full_groups_found * group_size +
     count_non_full_groups_found * (group_size - 1);
-  DEBUG_HW(("Total LDM groups found: %u\n", tot_ldm_groups_found));
+  DEBUG_HW((stderr,
+            "Total LDM groups found: %u\n", tot_ldm_groups_found));
   return (tot_ldm_groups_found >= num_ldm_instances);
 }
 
@@ -605,7 +611,8 @@ merge_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
                          Uint32 min_group_size,
                          Uint32 ldm_group_size)
 {
-  DEBUG_HW(("merge_virt_l3_cache_list, "
+  DEBUG_HW((stderr,
+            "merge_virt_l3_cache_list, "
             " into group %u from group %u, "
             " min_group_size: %u, ldm_group_size: %u\n",
             largest_list,
@@ -633,7 +640,8 @@ merge_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
   Uint32 first_in_sec_cpu_list = g_first_virt_l3_cache[second_largest_list];
   Uint32 max_moved_cpus = group_size - num_cpus_in_first_list;
   Uint32 moved_cpus = 0;
-  DEBUG_HW(("max_moved_cpus: %u\n", max_moved_cpus));
+  DEBUG_HW((stderr,
+            "max_moved_cpus: %u\n", max_moved_cpus));
   for (Uint32 i = 0; i < max_moved_cpus; i++)
   {
     if (first_in_sec_cpu_list != RNIL)
@@ -739,7 +747,8 @@ split_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
                          Uint32 group_size,
                          Uint32 ldm_group_size)
 {
-  DEBUG_HW(("split_virt_l3_cache_list\n"));
+  DEBUG_HW((stderr,
+            "split_virt_l3_cache_list\n"));
   Uint32 check_group_size = group_size * ldm_group_size;
   Uint32 largest_group_size = 0;
   Uint32 largest_group_id = RNIL;
@@ -755,7 +764,8 @@ split_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
   {
     return false;
   }
-  DEBUG_HW(("Split Group[%u] = %u\n",
+  DEBUG_HW((stderr,
+            "Split Group[%u] = %u\n",
             largest_group_id,
             largest_group_size));
   split_group(hwinfo,
@@ -776,8 +786,10 @@ create_min_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
   Uint32 largest_group_id = RNIL;
   Uint32 largest_group_size = 0;
   Uint32 group_size = ldm_group_size * min_group_size;
-  DEBUG_HW(("create_min_virt_l3_cache_list\n"));
-  DEBUG_HW(("Min Group size is: %u\n", group_size));
+  DEBUG_HW((stderr,
+            "create_min_virt_l3_cache_list\n"));
+  DEBUG_HW((stderr,
+            "Min Group size is: %u\n", group_size));
   /**
    * When we arrive here, no groups should be larger than the min_group_size
    * and at least two groups still exists that we can create into a new merged
@@ -786,7 +798,8 @@ create_min_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
    */
   for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
   {
-    DEBUG_HW(("Group[%u]: %u \n", i, g_num_virt_l3_cpus[i]));
+    DEBUG_HW((stderr,
+              "Group[%u]: %u \n", i, g_num_virt_l3_cpus[i]));
     if (g_num_virt_l3_cpus[i] < group_size &&
         g_num_virt_l3_cpus[i] > largest_group_size)
     {
@@ -807,7 +820,8 @@ create_min_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
       sec_largest_group_id = i;
     }
   }
-  DEBUG_HW(("Largest Group[%u] = %u: SL Group[%u] = %u to be merged\n",
+  DEBUG_HW((stderr,
+            "Largest Group[%u] = %u: SL Group[%u] = %u to be merged\n",
              largest_group_id,
              largest_group_size,
              sec_largest_group_id,
@@ -882,7 +896,8 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
                                             num_ldm_instances,
                                             ldm_group_size))
       {
-        DEBUG_HW(("Virtual L3 cache will be ok with group size %u\n",
+        DEBUG_HW((stderr,
+                  "Virtual L3 cache will be ok with group size %u\n",
                   check_group_size));
         used_group_size = check_group_size;
         used_num_groups = num_groups;
@@ -902,7 +917,7 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
     {
       return used_num_groups;
     }
-    DEBUG_HW(("Split virtual L3 cache list\n"));
+    DEBUG_HW((stderr, "Split virtual L3 cache list\n"));
     if (!split_virt_l3_cache_list(hwinfo,
                                   used_group_size,
                                   ldm_group_size))
@@ -938,7 +953,8 @@ create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
     {
       return max_num_groups;
     }
-    DEBUG_HW(("Merge entries in the virtual L3 cache list"
+    DEBUG_HW((stderr,
+              "Merge entries in the virtual L3 cache list"
               ", minimum group size is %u\n",
               min_group_size));
     if (!create_min_virt_l3_cache_list(hwinfo,
@@ -976,7 +992,8 @@ Ndb_CreateCPUMap(Uint32 num_ldm_instances,
   Uint32 min_group_size = (num_ldm_instances + (max_num_groups - 1)) /
                           max_num_groups;
   hwinfo->num_cpus_per_group = num_cpus_per_ldm_group;
-  DEBUG_HW(("Call create_virt_l3_cache_list: "
+  DEBUG_HW((stderr,
+            "Call create_virt_l3_cache_list: "
             " %u opt groups, size: %u ::"
             " %u min groups, size: %u ::"
             " num ldms: %u CPUs per group: %u\n",
@@ -1819,7 +1836,8 @@ get_meminfo(struct ndb_hwinfo *hwinfo)
     perror("Found no MemTotal in /proc/meminfo");
     return -1;
   }
-  hwinfo->hw_memory_size = memory_size;
+  /* Memory is in kBytes */
+  hwinfo->hw_memory_size = (memory_size * 1024);
   return 0;
 }
 

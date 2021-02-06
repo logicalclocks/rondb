@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -815,6 +816,23 @@ private:
   Uint32 m_typeOfStart;
 
   void sendScanSubTableData(Signal* signal, Ptr<SyncRecord>, Uint32);
+public:
+  static size_t getTableRecordSize()
+  {
+    return sizeof(struct Table);
+  }
+  static size_t getSubscriptionRecordSize()
+  {
+    return sizeof(struct Subscription);
+  }
+  static size_t getSubscriberRecordSize()
+  {
+    return sizeof(struct Subscriber);
+  }
+  static size_t getDataBufferRecordSize()
+  {
+    return size_t(4 * (15 + 2));
+  }
 };
 
 inline
