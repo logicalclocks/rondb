@@ -563,7 +563,7 @@ Dblqh::handle_queued_log_write(Signal *signal,
     else
     {
       jam();
-      writePrepareLog(signal, tcConnectptr, true);
+      writePrepareLog(signal, tcConnectptr, true, true);
     }
     return;
   }
@@ -10920,7 +10920,7 @@ void Dblqh::rwConcludedLab(Signal* signal,
        * A NORMAL WRITE OPERATION THAT NEEDS LOGGING AND WILL NOT BE 
        * PREMATURELY COMMITTED.                                   
        * ------------------------------------------------------------------ */
-      writePrepareLog(signal, tcConnectptr, false);
+      writePrepareLog(signal, tcConnectptr, false, false);
     }//if
   }//if
 }//Dblqh::rwConcludedLab()
@@ -11010,9 +11010,14 @@ Dblqh::set_use_mutex_for_log_parts()
   }
 }
 
+/**
+ * This method is called both from normal LQHKEYREQ code to write REDO log.
+ * It is also called when executing the REDO log from the REDO log queue.
+ */
 void Dblqh::writePrepareLog(Signal* signal,
                             const TcConnectionrecPtr tcConnectptr,
-                            bool is_log_part_locked)
+                            bool is_log_part_locked,
+                            bool is_called_from_log_queue)
 {
   LogPageRecordPtr logPagePtr;
   LogFileRecordPtr logFilePtr;
@@ -11021,7 +11026,7 @@ void Dblqh::writePrepareLog(Signal* signal,
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
   LogPartRecord * const regLogPartPtr = regTcPtr->m_log_part_ptr_p;
 
-  if (!is_log_part_locked)
+  if (likely(!is_log_part_locked))
   {
     jam();
     lock_log_part(regLogPartPtr);
@@ -11080,24 +11085,31 @@ void Dblqh::writePrepareLog(Signal* signal,
     unlock_log_part(regLogPartPtr);
     return;
   }
-  
-  if (regLogPartPtr->logPartState != LogPartRecord::IDLE)
+
+  if (likely(!is_called_from_log_queue))
   {
-    jam();
-    /**
-     * We are in a state where the REDO log is only writing Prepare REDO
-     * log entries through the REDO log queue. Thus we need to insert the
-     * entry into the REDO log queue.
-     */
+    if (unlikely(regLogPartPtr->logPartState != LogPartRecord::IDLE))
+    {
+      jam();
+      /**
+       * We are in a state where the REDO log is only writing Prepare REDO
+       * log entries through the REDO log queue. Thus we need to insert the
+       * entry into the REDO log queue.
+       */
+      ndbrequire(regLogPartPtr->logPartState == LogPartRecord::ACTIVE);
+      linkWaitLog(signal,
+                  regLogPartPtr,
+                  regLogPartPtr->m_log_prepare_queue,
+                  tcConnectptr.p);
+      regTcPtr->transactionState = TcConnectionrec::LOG_QUEUED;
+      unlock_log_part(regLogPartPtr);
+      return;
+    }
+  }
+  else
+  {
     ndbrequire(regLogPartPtr->logPartState == LogPartRecord::ACTIVE);
-    linkWaitLog(signal,
-               regLogPartPtr,
-               regLogPartPtr->m_log_prepare_queue,
-               tcConnectptr.p);
-    regTcPtr->transactionState = TcConnectionrec::LOG_QUEUED;
-    unlock_log_part(regLogPartPtr);
-    return;
-  }//if
+  }
 
   increment_committed_mbytes(regLogPartPtr,
                              regTcPtr);
