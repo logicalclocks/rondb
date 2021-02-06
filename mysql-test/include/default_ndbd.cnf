@@ -26,7 +26,7 @@ TransactionDeadlockDetectionTimeout=3000
 Checksum=1
 SpinMethod=CostBasedSpinning
 AutomaticThreadConfig=0
-AutomatedMemoryConfig=0
+AutomaticMemoryConfig=0
 PartitionsPerNode=4
 
 ODirect= 1

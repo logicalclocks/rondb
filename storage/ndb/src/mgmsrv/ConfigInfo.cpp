@@ -976,7 +976,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 
   {
     CFG_DB_AUTO_MEMORY_CONFIG,
-    "AutomatedMemoryConfig",
+    "AutomaticMemoryConfig",
     DB_TOKEN,
     "Memory configuration fully automated",
     ConfigInfo::CI_USED,
