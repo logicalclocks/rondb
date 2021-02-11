@@ -42,6 +42,8 @@
 #include "NdbWaiter.hpp"
 #include "WakeupHandler.hpp"
 
+#define MAX_NDB_FREE_LIST_SIZE 128
+
 template <class T>
 struct Ndb_free_list_t 
 {
@@ -73,6 +75,7 @@ private:
   {
     m_stats.update(m_used_cnt);
     m_estm_max_used = (Uint32)(m_stats.getMean() + (2 * m_stats.getStdDev()));
+    m_estm_max_used = MIN(MAX_NDB_FREE_LIST_SIZE, m_estm_max_used);
   }
 
   /** Shrink m_free_list such that m_used_cnt+'free' <= 'm_estm_max_used' */
