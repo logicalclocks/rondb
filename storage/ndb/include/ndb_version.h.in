@@ -71,7 +71,7 @@
                    NDB_MYSQL_VERSION_MINOR, \
                    NDB_MYSQL_VERSION_BUILD)
 
-#define NDB_VERSION_STRING_BUF_SZ 100
+#define NDB_VERSION_STRING_BUF_SZ 200
 
 #ifdef __cplusplus
 extern "C" {
