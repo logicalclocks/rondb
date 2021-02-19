@@ -811,7 +811,11 @@ Configuration::get_send_buffer(const ndb_mgm_configuration_iterator *p)
   }
   else
   {
+    Uint32 num_threads = get_num_threads();
+    Uint32 num_extra_threads = globalData.ndbMtRecoverThreads;
+    num_threads += num_extra_threads;
     mem = globalTransporterRegistry.get_total_max_send_buffer();
+    mem += (Uint64(2) * MBYTE64 * num_threads);
   }
   return mem;
 }
