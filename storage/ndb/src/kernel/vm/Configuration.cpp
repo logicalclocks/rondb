@@ -853,8 +853,8 @@ Configuration::compute_os_overhead()
    * running ndbmtd in a VM in the cloud.
    */
   Uint32 num_threads = get_num_threads();
-  Uint64 os_static_overhead = Uint64(1200) * MBYTE64;
-  Uint64 os_cpu_overhead = Uint64(num_threads) * Uint64(15) * MBYTE64;
+  Uint64 os_static_overhead = Uint64(1400) * MBYTE64;
+  Uint64 os_cpu_overhead = Uint64(num_threads) * Uint64(50) * MBYTE64;
   return os_static_overhead + os_cpu_overhead;
 }
 
