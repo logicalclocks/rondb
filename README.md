@@ -1,6 +1,4 @@
-<p align="center">
-  <img src='https://uploads-ssl.webflow.com/6013cab68382f702f5481fa8/60352b4df656f022c78efe78_banner.png'>
-</p>
+![iRoNDB Logo](https://uploads-ssl.webflow.com/6013cab68382f702f5481fa8/60352b4df656f022c78efe78_banner.png)
 ​
 ---
 ​
