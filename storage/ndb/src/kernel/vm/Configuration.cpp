@@ -811,7 +811,11 @@ Configuration::get_send_buffer(const ndb_mgm_configuration_iterator *p)
   }
   else
   {
+    Uint32 num_threads = get_num_threads();
+    Uint32 num_extra_threads = globalData.ndbMtRecoverThreads;
+    num_threads += num_extra_threads;
     mem = globalTransporterRegistry.get_total_max_send_buffer();
+    mem += (Uint64(2) * MBYTE64 * num_threads);
   }
   return mem;
 }
@@ -849,8 +853,8 @@ Configuration::compute_os_overhead()
    * running ndbmtd in a VM in the cloud.
    */
   Uint32 num_threads = get_num_threads();
-  Uint64 os_static_overhead = Uint64(1200) * MBYTE64;
-  Uint64 os_cpu_overhead = Uint64(num_threads) * Uint64(15) * MBYTE64;
+  Uint64 os_static_overhead = Uint64(1400) * MBYTE64;
+  Uint64 os_cpu_overhead = Uint64(num_threads) * Uint64(50) * MBYTE64;
   return os_static_overhead + os_cpu_overhead;
 }
 
