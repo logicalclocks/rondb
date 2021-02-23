@@ -18,16 +18,15 @@ please refer to the LICENSE file.
 - [Logical Clocks Website](http://logicalclocks.com)
 - [More information on MySQL or additional documentation](http://dev.mysql.com/doc)
 - [Additional downloads and the source of MySQL](http://dev.mysql.com/downloads)
----
+
+## iRoNDB
 iRoNDB is brought to you by the NDB team at Logical Clocks AB
 and the development team at iClaustron AB.
 ---
-MySQL is brought to you by the MySQL team at Oracle.
-## Copyright information
-
-Copyright (c) 2000, 2021, Oracle and/or its affiliates.
-
----
-
 Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
+## MySQL
+MySQL is brought to you by the MySQL team at Oracle.
+## Copyright information
+---
+Copyright (c) 2000, 2021, Oracle and/or its affiliates.
