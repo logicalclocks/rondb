@@ -24956,6 +24956,7 @@ void Dblqh::timeSup(Signal* signal)
          LogPartRecord::P_FILE_CHANGE_PROBLEM)!= 0)
     {
       jam();
+      unlock_log_part(logPartPtr.p);
       g_eventLogger->info("LDM(%u): Gci record write is waiting for "
                           "the redo log file to be changed: "
                           "logpart: %u log part state: %u "
@@ -24975,6 +24976,8 @@ void Dblqh::timeSup(Signal* signal)
                           logFilePtr.p->currentMbyte,
                           logPagePtr.i);
       /* Wait for current file to be ready for writes */
+      signal->theData[0] = ZTIME_SUPERVISION;
+      signal->theData[1] = logPartPtr.i;
       sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 50, 2);
       return;
     }
