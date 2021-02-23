@@ -27,9 +27,12 @@ please refer to the LICENSE file.
 iRoNDB is brought to you by the NDB team at Logical Clocks AB
 and the development team at iClaustron AB.
 ​
+---
+​
 MySQL is brought to you by the MySQL team at Oracle.
 ​
 ---
 ​
 Copyright (c) 2000, 2021, Oracle and/or its affiliates.
+​
 Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
