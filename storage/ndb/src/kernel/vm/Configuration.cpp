@@ -838,7 +838,7 @@ Configuration::get_and_set_long_message_buffer(
 }
 
 Uint64
-Configuration::compute_os_overhead()
+Configuration::compute_os_overhead(Uint64 total_memory)
 {
   /**
    * This includes memory used by the OS for all sorts of internal operations.
@@ -851,11 +851,15 @@ Configuration::compute_os_overhead()
    * When running ndbmtd in a graphical user environment it is a good idea to
    * use the TotalMemoryConfig variable since this number here is based on
    * running ndbmtd in a VM in the cloud.
+   *
+   * We remove 1% of the total memory, 100 MBytes per thread, in addition
+   * we remove 1.4 GByte to handle smaller VM sizes.
    */
-  Uint32 num_threads = get_num_threads();
+  Uint64 reserved_part = total_memory / Uint64(100);
+  Uint32 num_threads = get_num_threads() + globalData.ndbMtRecoverThreads;
   Uint64 os_static_overhead = Uint64(1400) * MBYTE64;
-  Uint64 os_cpu_overhead = Uint64(num_threads) * Uint64(50) * MBYTE64;
-  return os_static_overhead + os_cpu_overhead;
+  Uint64 os_cpu_overhead = Uint64(num_threads) * Uint64(100) * MBYTE64;
+  return os_static_overhead + os_cpu_overhead + reserved_part;
 }
 
 Uint64
@@ -1016,7 +1020,7 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p)
   Uint64 job_buffer = compute_jb_pages(&globalEmulatorData) * 
                       GLOBAL_PAGE_SIZE;
   Uint64 static_overhead = compute_static_overhead();
-  Uint64 os_overhead = compute_os_overhead();
+  Uint64 os_overhead = compute_os_overhead(total_memory);
   Uint64 send_buffer = get_send_buffer(p);
   Uint64 backup_page_memory = compute_backup_page_memory(p);
   Uint64 restore_memory = compute_restore_memory();
