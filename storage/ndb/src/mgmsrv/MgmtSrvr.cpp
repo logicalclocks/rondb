@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -745,7 +746,7 @@ MgmtSrvr::setClusterLog(const Config* config)
 
 #ifdef _WIN32
   /* Output to Windows event log */
-  g_eventLogger->createEventLogHandler("iRoNDB Management Server");
+  g_eventLogger->createEventLogHandler("RonDB Management Server");
 #endif
 
   if (m_opts.verbose)
