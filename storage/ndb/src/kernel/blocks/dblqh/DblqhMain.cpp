@@ -757,19 +757,12 @@ void Dblqh::queued_log_write(Signal *signal, LogPartRecord *logPartPtrP)
       }
     }
     {
-      /**
-       * We use get_table_frag_record here only to get the instance
-       * to ensure we call handle_queued_log_write in the correct
-       * instance. We don't use tabptr and fragptr after this call.
-       */
       TcConnectionrec *tcPtrP = 0;
       getFirstInLogQueue(signal, &tcPtrP, logPartPtrP);
       Uint32 instanceNo;
-      ndbrequire(get_table_frag_record(tcPtrP->tableref,
-                                       tcPtrP->fragmentid,
-                                       tabptr,
-                                       fragptr,
-                                       instanceNo));
+      get_table_frag_instance(tcPtrP->tableref,
+                              tcPtrP->fragmentid,
+                              instanceNo);
       if (instanceNo == instance())
       {
         jam();
@@ -29740,7 +29733,6 @@ void Dblqh::execLogRecord(Signal* signal,
   tcConnectptr.i = logPartPtrP->logTcConrec;
   ndbrequire(tcConnect_pool.getUncheckedPtrRW(tcConnectptr));
   ndbrequire(Magic::check_ptr(tcConnectptr.p));
-  Uint32 instance;
   /**
    * We need to get the pointer to the fragment record here. There is no
    * need to protect this use of the fragment record. The fragment record
@@ -29752,8 +29744,7 @@ void Dblqh::execLogRecord(Signal* signal,
   ndbrequire(get_table_frag_record(tcConnectptr.p->tableref,
                                    tcConnectptr.p->fragmentid,
                                    tabptr,
-                                   fragptr,
-                                   instance));
+                                   fragptr));
   tcConnectptr.p->m_log_part_ptr_p = fragptr.p->m_log_part_ptr_p;
 
   // Read a log record and prepare it for execution
@@ -31357,22 +31348,35 @@ void Dblqh::changeMbyte(Signal* signal,
   writeFileDescriptor(signal, logFilePtr.p, logPartPtrP);
 }//Dblqh::changeMbyte()
 
+void Dblqh::get_table_frag_instance(Uint32 tableId,
+                                    Uint32 fragId,
+                                    Uint32 & instanceNo)
+{
+  if (globalData.ndbLogParts < globalData.ndbMtLqhWorkers)
+  {
+    jam();
+    Uint32 instanceKey = getInstanceKey(tableId, fragId);
+    instanceNo = getInstanceFromKey(instanceKey);
+  }
+  else
+  {
+    jam();
+    instanceNo = instance();
+  }
+}
+
 bool Dblqh::get_table_frag_record(Uint32 tableId,
                                   Uint32 fragId,
                                   TablerecPtr & tabPtr,
-                                  FragrecordPtr & fragPtr,
-                                  Uint32 & instanceNo)
+                                  FragrecordPtr & fragPtr)
 {
   Dblqh *lqh_block = this;
   if (globalData.ndbLogParts < globalData.ndbMtLqhWorkers)
   {
+    jam();
     Uint32 instanceKey = getInstanceKey(tableId, fragId);
-    instanceNo = getInstanceFromKey(instanceKey);
+    Uint32 instanceNo = getInstanceFromKey(instanceKey);
     lqh_block = (Dblqh*)globalData.getBlock(DBLQH, instanceNo);
-  }
-  else
-  {
-    instanceNo = instance();
   }
   return lqh_block->getTableFragmentrec(tableId, fragId, tabPtr, fragPtr);
 }
@@ -31934,6 +31938,7 @@ Dblqh::getFirstInLogQueue(Signal* signal,
      * element to RNIL to indicate it is now first in the
      * list.
      */
+    jam();
     TcConnectionrec *new_first;
     new_first = tmpPtrP->nextTcLogQueue;
     ndbrequire(Magic::check_ptr(new_first));
