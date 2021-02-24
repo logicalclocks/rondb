@@ -4776,11 +4776,13 @@ private:
   void deinit_restart_synch();
   void restart_synch_state(Signal*, Uint32, Uint32);
   void start_send_exec_conf(Signal*);
+  void get_table_frag_instance(Uint32 tableId,
+                               Uint32 fragId,
+                               Uint32 & instanceNo);
   bool get_table_frag_record(Uint32 tableId,
                              Uint32 fragId,
                              TablerecPtr & tabPtr,
-                             FragrecordPtr & fragPtr,
-                             Uint32 & instance);
+                             FragrecordPtr & fragPtr);
   bool get_table_frag_record_can_fail(Uint32 tableId,
                                       Uint32 fragId,
                                       TablerecPtr & tabPtr,

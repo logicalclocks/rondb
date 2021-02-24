@@ -1,7 +1,7 @@
-![iRoNDB Logo](https://uploads-ssl.webflow.com/6013cab68382f702f5481fa8/60352b4df656f022c78efe78_banner.png)
+![RonDB Logo](https://uploads-ssl.webflow.com/6013cab68382f702f5481fa8/6036462eab5a723283128689_banner-ron.jpg)
 ---
 
-This is a release of iRoNDB, this is a stable distribution
+This is a release of RonDB, this is a stable distribution
 of NDB Cluster, a key-value store with SQL capabilities.
 It is based on a release of MySQL, an SQL database server.
 
@@ -14,13 +14,13 @@ For license and attribution notices for these materials,
 please refer to the LICENSE file.
 
 ## Further information
-- [iRonDB website](http://irondb.ai)
+- [RonDB website](http://rondb.com)
 - [Logical Clocks Website](http://logicalclocks.com)
 - [More information on MySQL or additional documentation](http://dev.mysql.com/doc)
 - [Additional downloads and the source of MySQL](http://dev.mysql.com/downloads)
 
-## iRoNDB
- iRoNDB is brought to you by the NDB team at Logical Clocks AB
+## RonDB
+RonDB is brought to you by the NDB team at Logical Clocks AB
 and the development team at iClaustron AB.
 ---
 
