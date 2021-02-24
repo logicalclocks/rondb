@@ -25,12 +25,12 @@ let $ndb_version_string=
   `SELECT @@ndb_version_string`;
 #echo ndb_version_string: $ndb_version_string;
 
-# Check that NDB version string starts with "iRoNDB-"
+# Check that NDB version string starts with "RonDB-"
 --disable_query_log ONCE
-eval SELECT REGEXP_LIKE('$ndb_version_string', '^iRoNDB-')
-       AS "NDB version starts with 'iRoNDB-'";
+eval SELECT REGEXP_LIKE('$ndb_version_string', '^RonDB-')
+       AS "NDB version starts with 'RonDB-'";
 
-# Extract NDB version number, three numbers separated with dots after "iRoNDB-"
+# Extract NDB version number, three numbers separated with dots after "RonDB-"
 let $ndb_version_number=
   `SELECT REGEXP_SUBSTR('$ndb_version_string', '[0-9]*[.][0-9]*[.][0-9]*')`;
 #echo ndb_version_number: $ndb_version_number;
