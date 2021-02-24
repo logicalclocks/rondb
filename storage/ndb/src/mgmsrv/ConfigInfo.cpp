@@ -1056,7 +1056,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_INT64,
     "0",
     "1M",
-    "65536G" },
+    "16G" },
 
   {
     CFG_DB_LONG_SIGNAL_BUFFER,
