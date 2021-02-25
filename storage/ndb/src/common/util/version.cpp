@@ -78,7 +78,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
     {
       if (!add_ndb_zero)
       {
-        snprintf(buf, sz, "iRoNDB-%d.%d.%d iRoNDB-%d.%d.%d%s",
+        snprintf(buf, sz, "RonDB-%d.%d.%d RonDB-%d.%d.%d%s",
                  getMajor(mysql_version),
                  getMinor(mysql_version),
                  getBuild(mysql_version),
@@ -89,7 +89,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
       }
       else
       {
-        snprintf(buf, sz, "iRoNDB-%d.%d.%d iRoNDB-%d.0%d.%d%s",
+        snprintf(buf, sz, "RonDB-%d.%d.%d RonDB-%d.0%d.%d%s",
                  getMajor(mysql_version),
                  getMinor(mysql_version),
                  getBuild(mysql_version),
@@ -103,7 +103,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
     {
       if (!add_ndb_zero)
       {
-        snprintf(buf, sz, "iRoNDB-%d.0%d.%d iRoNDB-%d.%d.%d%s",
+        snprintf(buf, sz, "RonDB-%d.0%d.%d RonDB-%d.%d.%d%s",
                  getMajor(mysql_version),
                  getMinor(mysql_version),
                  getBuild(mysql_version),
@@ -114,7 +114,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
       }
       else
       {
-        snprintf(buf, sz, "iRoNDB-%d.0%d.%d iRoNDB-%d.0%d.%d%s",
+        snprintf(buf, sz, "RonDB-%d.0%d.%d RonDB-%d.0%d.%d%s",
                  getMajor(mysql_version),
                  getMinor(mysql_version),
                  getBuild(mysql_version),
@@ -131,7 +131,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
                         getMinor(version) < 10;
     if (!add_ndb_zero)
     {
-      snprintf(buf, sz, "iRoNDB-%d.%d.%d%s",
+      snprintf(buf, sz, "RonDB-%d.%d.%d%s",
                getMajor(version),
                getMinor(version),
                getBuild(version),
@@ -139,7 +139,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
     }
     else
     {
-      snprintf(buf, sz, "iRoNDB-%d.0%d.%d%s",
+      snprintf(buf, sz, "RonDB-%d.0%d.%d%s",
                getMajor(version),
                getMinor(version),
                getBuild(version),

@@ -793,7 +793,11 @@ Configuration::get_and_set_undo_buffer(const ndb_mgm_configuration_iterator *p)
   if (undo_buffer == 0)
   {
     Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
-    undo_buffer = Uint64(64) * MBYTE64 * Uint64(num_ldm_threads);
+    undo_buffer = Uint64(48) * MBYTE64 * Uint64(num_ldm_threads);
+  }
+  if (undo_buffer > Uint64(16384) * MBYTE64)
+  {
+    undo_buffer = Uint64(16384) * MBYTE64;
   }
   globalData.theUndoBuffer = undo_buffer;
   return undo_buffer;

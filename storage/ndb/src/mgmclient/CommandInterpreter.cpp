@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -820,12 +821,12 @@ printLogEvent(struct ndb_logevent* event)
     case NDB_LE_NDBStartStarted:
       if (getMinor(Q(version)) == 0 || (getMinor(Q(version)) >= 10))
       {
-        ndbout_c("Node %u: Start initiated (iRoNDB version %d.%d.%d)",
+        ndbout_c("Node %u: Start initiated (RonDB version %d.%d.%d)",
                  R, QVERSION);
       }
       else
       {
-        ndbout_c("Node %u: Start initiated (iRoNDB version %d.0%d.%d)",
+        ndbout_c("Node %u: Start initiated (RonDB version %d.0%d.%d)",
                  R, QVERSION);
       }
       break;
@@ -834,12 +835,12 @@ printLogEvent(struct ndb_logevent* event)
     case NDB_LE_NDBStartCompleted:
       if (getMinor(Q(version)) == 0 || (getMinor(Q(version)) >= 10))
       {
-        ndbout_c("Node %u: Started (iRoNDB version %d.%d.%d)",
+        ndbout_c("Node %u: Started (RonDB version %d.%d.%d)",
                  R, QVERSION);
       }
       else
       {
-        ndbout_c("Node %u: Started (iRoNDB version %d.0%d.%d)",
+        ndbout_c("Node %u: Started (RonDB version %d.0%d.%d)",
                  R, QVERSION);
       }
       break;
@@ -2517,14 +2518,14 @@ print_status(const ndb_mgm_node_state * state)
       ndbout << "Node " << state->node_id <<": connected" ;
       if (getMinor(version) == 0 || (getMinor(version) >= 10))
       {
-        ndbout_c(" (iRoNDB Version %d.%d.%d)",
+        ndbout_c(" (RonDB Version %d.%d.%d)",
                  getMajor(version) ,
                  getMinor(version),
                  getBuild(version));
       }
       else
       {
-        ndbout_c(" (iRoNDB Version %d.0%d.%d)",
+        ndbout_c(" (RonDB Version %d.0%d.%d)",
                  getMajor(version) ,
                  getMinor(version),
                  getBuild(version));

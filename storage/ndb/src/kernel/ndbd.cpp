@@ -447,7 +447,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     ldmInstances = globalData.ndbMtLqhThreads;
   }
 
-  Uint32 stpages = 64;
+  Uint32 stpages = 128;
   {
     Resource_limit rl;
     rl.m_min = stpages;
@@ -455,7 +455,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     rl.m_resource_id = RG_SCHEMA_TRANS_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
-  g_eventLogger->info("SchemaTransactionMemory uses 2 MB");
+  g_eventLogger->info("SchemaTransactionMemory uses 4 MB");
 
   Uint32 transmem = 0;
   Uint32 tcInstances = 1;
@@ -552,15 +552,18 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
       if (!ndb_mgm_get_string_parameter(p, CFG_DB_DD_LOGFILEGROUP_SPEC,
                                         &lgspec))
       {
-        Uint64 undo_buffer_size = 64 * 1024 * 1024; // Default
-        parse_key_value_before_filespecs(lgspec,
-                                         "undo_buffer_size=",
-                                         undo_buffer_size);
+        if (globalData.theUndoBuffer == 0)
+        {
+          Uint64 undo_buffer_size = 64 * 1024 * 1024; // Default
+          parse_key_value_before_filespecs(lgspec,
+                                           "undo_buffer_size=",
+                                           undo_buffer_size);
 
-        undopages = Uint32(undo_buffer_size / GLOBAL_PAGE_SIZE);
-        g_eventLogger->info("Reserving %u MB for undo buffer memory",
-                            undopages/32);
-        transmem += undopages;
+          undopages = Uint32(undo_buffer_size / GLOBAL_PAGE_SIZE);
+          g_eventLogger->info("Reserving %u MB for undo buffer memory",
+                              undopages/32);
+          transmem += undopages;
+        }
       }
     }
     Resource_limit rl;
@@ -568,11 +571,13 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     rl.m_max = Resource_limit::HIGHEST_LIMIT;
     rl.m_resource_id = RG_TRANSACTION_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
-    if (undopages == 0)
+    if (undopages == 0 && globalData.theUndoBuffer == 0)
     {
       g_eventLogger->info("No Undo log buffer used, will be allocated from"
                           " TransactionMemory if later defined by command");
     }
+    g_eventLogger->info("Total TransactionMemory size is %llu MBytes",
+                         transmem/32);
   }
   g_eventLogger->info("TransactionMemory can expand and use"
                       " SharedGlobalMemory if required");

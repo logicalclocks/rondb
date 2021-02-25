@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2008, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -133,7 +134,7 @@ void ndb_std_print_version()
 #else
   const char *suffix= "";
 #endif
-  printf("iRoNDB distrib %s%s, for %s (%s)\n",
+  printf("RonDB distrib %s%s, for %s (%s)\n",
          NDB_VERSION_STRING,suffix,SYSTEM_TYPE,MACHINE_TYPE);
 }
 

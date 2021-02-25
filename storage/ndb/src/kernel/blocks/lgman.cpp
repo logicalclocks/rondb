@@ -772,8 +772,14 @@ Lgman::execREAD_CONFIG_REQ(Signal* signal)
   m_log_waiter_pool.wo_pool_init(RT_LGMAN_LOG_WAITER, pc);
   m_file_pool.init(RT_LGMAN_FILE, pc);
   m_logfile_group_pool.init(RT_LGMAN_FILEGROUP, pc);
-  // 10 -> 150M
-  m_data_buffer_pool.setSize(40);
+  // 1200 -> 18000M
+  /**
+   * This the map for Log buffer pages, each entry will have
+   * 7 entries for a page range of 2 MByte. Thus 1200 such
+   * in an array will be able to handle an Undo Log Buffer
+   * of up to 16G.
+   */
+  m_data_buffer_pool.setSize(1200);
 
   ReadConfigConf * conf = (ReadConfigConf*)signal->getDataPtrSend();
   conf->senderRef = reference();
