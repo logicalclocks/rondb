@@ -22,7 +22,7 @@ let $mysql_version = mysql-$mysql_version;
 # load ndb-X.X.X from the "ndb_version_string" variable, trim off
 # the version status indicator i.e -dmr etc.
 let $ndb_version=
-  `select REGEXP_SUBSTR(@@ndb_version_string, "^iRoNDB-[0-9]*[.][0-9]*[.][0-9]*")`;
+  `select REGEXP_SUBSTR(@@ndb_version_string, "^RonDB-[0-9]*[.][0-9]*[.][0-9]*")`;
 # echo ndb_version: $ndb_version;
 
 #masking mgm version and id

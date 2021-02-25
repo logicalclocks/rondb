@@ -132,6 +132,13 @@ extern EventLogger * g_eventLogger;
 //#define DEBUG_RESTORE 1
 //#define NDB_DEBUG_REDO_EXEC 1
 //#define NDB_DEBUG_REDO_REC 1
+//#define DEBUG_LOG_QUEUE 1
+#endif
+
+#ifdef DEBUG_LOG_QUEUE
+#define DEB_LOG_QUEUE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_LOG_QUEUE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_NEWEST_GCI
@@ -465,37 +472,54 @@ Dblqh::send_handle_queued_log_write(Signal *signal,
                                     LogPartRecord *logPartPtrP,
                                     Uint32 instanceNo)
 {
-  BlockReference ref = numberToRef(DBLQH, instanceNo, getOwnNodeId());
-  signal->theData[0] = ZCONTINUE_WRITE_LOG;
-  signal->theData[1] = tcPtrP->ptrI;
-  signal->theData[2] = tcPtrP->transid[0];
-  signal->theData[3] = tcPtrP->transid[1];
+  Uint32 booked_space = 0;
   switch (tcPtrP->transactionState)
   {
     case TcConnectionrec::LOG_COMMIT_QUEUED_WAIT_SIGNAL:
+    {
+      jam();
+      booked_space = ZCOMMIT_LOG_SIZE;
+      DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u,%u) Send Wait Commit Q",
+                     instance(),
+                     logPartPtrP->logPartNo,
+                     instanceNo,
+                     tcPtrP->ptrI));
+      break;
+    }
     case TcConnectionrec::LOG_COMMIT_QUEUED:
     {
       jam();
-      signal->theData[4] = ZCOMMIT_LOG_SIZE;
-      logPartPtrP->m_booked_redo_log_space += ZCOMMIT_LOG_SIZE;
+      booked_space = ZCOMMIT_LOG_SIZE;
+      DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u,%u) Send Wait Commit",
+                     instance(),
+                     logPartPtrP->logPartNo,
+                     instanceNo,
+                     tcPtrP->ptrI));
       break;
     }
     case TcConnectionrec::LOG_ABORT_QUEUED:
     {
       jam();
-      signal->theData[4] = ZABORT_LOG_SIZE;
-      logPartPtrP->m_booked_redo_log_space += ZABORT_LOG_SIZE;
+      booked_space = ZABORT_LOG_SIZE;
+      DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u,%u) Send Abort",
+                     instance(),
+                     logPartPtrP->logPartNo,
+                     instanceNo,
+                     tcPtrP->ptrI));
       break;
     }
     case TcConnectionrec::LOG_QUEUED:
     {
       jam();
-      Uint32 booked_space =
+      booked_space =
         tcPtrP->currTupAiLen +
         tcPtrP->primKeyLen +
         ZLOG_HEAD_SIZE;
-      signal->theData[4] = booked_space;
-      logPartPtrP->m_booked_redo_log_space += booked_space;
+      DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u,%u) Send Prepare",
+                     instance(),
+                     logPartPtrP->logPartNo,
+                     instanceNo,
+                     tcPtrP->ptrI));
       break;
     }
     default:
@@ -503,6 +527,13 @@ Dblqh::send_handle_queued_log_write(Signal *signal,
       ndbabort();
     }
   }
+  logPartPtrP->m_booked_redo_log_space += booked_space;
+  BlockReference ref = numberToRef(DBLQH, instanceNo, getOwnNodeId());
+  signal->theData[0] = ZCONTINUE_WRITE_LOG;
+  signal->theData[1] = tcPtrP->ptrI;
+  signal->theData[2] = tcPtrP->transid[0];
+  signal->theData[3] = tcPtrP->transid[1];
+  signal->theData[4] = booked_space;
   sendSignal(ref, GSN_CONTINUEB, signal, 5, JBB);
 }
 
@@ -523,6 +554,9 @@ Dblqh::prepare_queued_log_write(Signal *signal,
   {
     jam();
     logPartPtrP->logPartState = LogPartRecord::IDLE;
+    DEB_LOG_QUEUE(("(%u) LogPart(%u) IDLE",
+                   instance(),
+                   logPartPtrP->logPartNo));
   }
 }
 
@@ -558,11 +592,19 @@ Dblqh::handle_queued_log_write(Signal *signal,
        * log record have been written.
        */
       unlock_log_part(logPartPtrP);
+      DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) ABORT",
+                     instance(),
+                     logPartPtrP->logPartNo,
+                     tcConnectptr.i));
       abortCommonLab(signal, tcConnectptr);
     }
     else
     {
       jam();
+      DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) PREPARE",
+                     instance(),
+                     logPartPtrP->logPartNo,
+                     tcConnectptr.i));
       writePrepareLog(signal, tcConnectptr, true, true);
     }
     return;
@@ -577,6 +619,10 @@ Dblqh::handle_queued_log_write(Signal *signal,
                   logPartPtrP);
     removeLogTcrec(tcConnectptr.p, logPartPtrP);
     unlock_log_part(logPartPtrP);
+    DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) ABORT Queued",
+                   instance(),
+                   logPartPtrP->logPartNo,
+                   tcConnectptr.i));
     continueAfterLogAbortWriteLab(signal, tcConnectptr);
     break;
   }
@@ -590,6 +636,10 @@ Dblqh::handle_queued_log_write(Signal *signal,
     if (tcConnectptr.p->transactionState ==
         TcConnectionrec::LOG_COMMIT_QUEUED)
     {
+      DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) Commit Queued",
+                     instance(),
+                     logPartPtrP->logPartNo,
+                     tcConnectptr.i));
       if (tcConnectptr.p->seqNoReplica == 0 ||
           tcConnectptr.p->activeCreat == Fragrecord::AC_NR_COPY)
       {
@@ -605,6 +655,10 @@ Dblqh::handle_queued_log_write(Signal *signal,
     else
     {
       jam();
+      DEB_LOG_QUEUE(("(%u) LogPart(%u) TcConPtr(%u) Commit Queued Wait",
+                     instance(),
+                     logPartPtrP->logPartNo,
+                     tcConnectptr.i));
       tcConnectptr.p->transactionState =
         TcConnectionrec::LOG_COMMIT_WRITTEN_WAIT_SIGNAL;
     }
@@ -679,6 +733,11 @@ void Dblqh::queued_log_write(Signal *signal, LogPartRecord *logPartPtrP)
      * REDO log entries to give the REDO log file system a chance to catch
      * up with the REDO log write speed.
      */
+    DEB_LOG_QUEUE(("(%u) Buffer in Log Part %u is full",
+                   instance(),
+                   logPartPtrP->logPartNo));
+    signal->theData[0] = ZLOG_LQHKEYREQ;
+    signal->theData[1] = logPartPtrP->ptrI;
     sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 10, 2);
     return;
   }//if
@@ -691,6 +750,9 @@ void Dblqh::queued_log_write(Signal *signal, LogPartRecord *logPartPtrP)
     {
       jam();
       unlock_log_part(logPartPtrP);
+      DEB_LOG_QUEUE(("(%u) Buffer in Log Part %u waiting for GCI write",
+                     instance(),
+                     logPartPtrP->logPartNo));
       /**
        * We need to write a Completed GCI entry, perform this before any
        * other action is performed. This happens in logNextStart.
@@ -733,6 +795,10 @@ void Dblqh::queued_log_write(Signal *signal, LogPartRecord *logPartPtrP)
          */
         jam();
         unlock_log_part(logPartPtrP);
+        DEB_LOG_QUEUE(("(%u) Log Part %u waiting for problem %u",
+                       instance(),
+                       logPartPtrP->logPartNo,
+                       logPartPtrP->m_log_problems));
         return;
       }
       if (noOfFreeLogPages < ZMIN_LOG_PAGES_OPERATION)
@@ -752,6 +818,8 @@ void Dblqh::queued_log_write(Signal *signal, LogPartRecord *logPartPtrP)
          * to catch up. During this time we can still write COMMIT and
          * ABORT messages until the REDO log buffer is full.
          */
+        signal->theData[0] = ZLOG_LQHKEYREQ;
+        signal->theData[1] = logPartPtrP->ptrI;
         sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 10, 2);
         return;
       }
@@ -11074,6 +11142,12 @@ void Dblqh::writePrepareLog(Signal* signal,
                   regLogPartPtr->m_log_prepare_queue,
                   tcConnectptr.p);
       regTcPtr->transactionState = TcConnectionrec::LOG_QUEUED;
+      DEB_LOG_QUEUE(("(%u) LOG_QUEUED logPart(%u), tcPtr(%u),"
+                     " from_log_queue: %u",
+                     instance(),
+                     regLogPartPtr->logPartNo,
+                     regTcPtr->ptrI,
+                     is_called_from_log_queue));
     }
     unlock_log_part(regLogPartPtr);
     return;
@@ -11096,12 +11170,27 @@ void Dblqh::writePrepareLog(Signal* signal,
                   tcConnectptr.p);
       regTcPtr->transactionState = TcConnectionrec::LOG_QUEUED;
       unlock_log_part(regLogPartPtr);
+      DEB_LOG_QUEUE(("(%u) LOG_QUEUED logPart(%u), TcPtr(%u)",
+                     instance(),
+                     regLogPartPtr->logPartNo,
+                     regTcPtr->ptrI));
       return;
     }
   }
   else
   {
-    ndbrequire(regLogPartPtr->logPartState == LogPartRecord::ACTIVE);
+    if (regLogPartPtr->logPartState != LogPartRecord::ACTIVE)
+    {
+      if ((regLogPartPtr->logPartState != LogPartRecord::IDLE) ||
+          (!regLogPartPtr->m_log_prepare_queue.isEmpty()) ||
+          (!regLogPartPtr->m_log_complete_queue.isEmpty()) ||
+          (regLogPartPtr->waitWriteGciLog == LogPartRecord::WWGL_TRUE) ||
+          (regLogPartPtr->m_booked_redo_log_space != 0))
+      {
+        jam();
+        ndbabort();
+      }
+    }
   }
 
   increment_committed_mbytes(regLogPartPtr,
@@ -13748,7 +13837,7 @@ void Dblqh::abortStateHandlerLab(Signal* signal,
        * necessarily colocated with the REDO log parts. This only happens
        * if there are more LDM instances than there are REDO log parts.
        */
-      ndbrequire(globalData.ndbMtLqhWorkers > globalData.ndbLogParts);
+      ndbrequire(m_use_mutex_for_log_parts);
       return;
     }
     break;
@@ -31352,7 +31441,7 @@ void Dblqh::get_table_frag_instance(Uint32 tableId,
                                     Uint32 fragId,
                                     Uint32 & instanceNo)
 {
-  if (globalData.ndbLogParts < globalData.ndbMtLqhWorkers)
+  if (m_use_mutex_for_log_parts)
   {
     jam();
     Uint32 instanceKey = getInstanceKey(tableId, fragId);
@@ -31371,7 +31460,7 @@ bool Dblqh::get_table_frag_record(Uint32 tableId,
                                   FragrecordPtr & fragPtr)
 {
   Dblqh *lqh_block = this;
-  if (globalData.ndbLogParts < globalData.ndbMtLqhWorkers)
+  if (m_use_mutex_for_log_parts)
   {
     jam();
     Uint32 instanceKey = getInstanceKey(tableId, fragId);
@@ -31388,7 +31477,7 @@ bool Dblqh::get_table_frag_record_can_fail(Uint32 tableId,
                                            Uint32 & instanceNo)
 {
   Dblqh *lqh_block = this;
-  if (globalData.ndbLogParts < globalData.ndbMtLqhWorkers)
+  if (m_use_mutex_for_log_parts)
   {
     Uint32 instanceKey = getInstanceKeyCanFail(tableId, fragId);
     if (likely(instanceKey != RNIL))
