@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,6 +27,158 @@
 
 #include <inttypes.h>
 
+/**
+ * Architecture Description:
+ * -------------------------
+ * ndb_import uses a Job to execute the import of one file. ndb_import
+ * supports importing multiple files. Thus when starting ndb_import one
+ * uses the following sequence:
+ * ndb_import DATABASE FILE1 FILE2 ... FILEn OPTIONS
+ *
+ * ndb_import uses a heavily multithreaded and heavily batched approach.
+ * To simplify error handling we will always stop the ndb_import program
+ * when we reach an error condition. Thus we have removed support for
+ * the --continue option.
+ *
+ * The following thread types we have.
+ * Job thread
+ * Diag thread
+ * Input workers
+ * Ouput workers
+ * Execution workers
+ *
+ * The Job thread is the controlling thread that keeps track of the
+ * job processing. It doesn't do any real work. It checks the
+ * workers for progress, in particular it checks for the job to be
+ * done, the time between those checks are set by --checkloop, it
+ * defaults to 100 (set in milliseconds).
+ *
+ * The diag thread is used to handle various diagnostics, statistics
+ * and other similar things. The diag thread constitutes a Team, this
+ * team is handled a bit special since it isn't part of the execution
+ * pipeline.
+ *
+ * The input workers are handling the CSV input, they constitute one
+ * of the 4 teams, the second one of them. They receive the rows from
+ * the files from the thread that reads the CSV files. After processing
+ * the rows the rows are sent to the output workers.
+ *
+ * The number of input workers is decided by the --input-workers and
+ * defaults to 4.
+ *
+ * The number of rejected lines before the job fails is given by
+ * --rejects. It defaults to 0.
+ *
+ * The output workers are there to ensure that we get perfect batching
+ * of the insert operations. The output thread will check in which node
+ * the primary replica resides, it sends the row to an execution thread
+ * that handles this particular node. In this manner the execution
+ * threads will only communicate with one node. In this manner we get
+ * perfect batching even in large clusters.
+ *
+ * The number of output workers is decided by the --output-workers and
+ * defaults to 2.
+ *
+ * The output thread acts on a row queue. The size of this row queue can
+ * be set by --rowqueue and one can also the size of the row queue in
+ * bytes through --rowbytes. Both defaults to 0 which means no limit.
+ *
+ * The chunk size used to allocate rows is set by --alloc-chunk, increasing
+ * this decreases impact of mutexes but also decreases parallelism. The
+ * number represents the number of rows allocated at a time.
+ *
+ * Finally the execution threads or db workers are there to handle the
+ * NDB API performing Inserts or Writes. If we want to handle existing
+ * rows by overwriting them we can set --use-write=1. The execution threads
+ * is controlled by a number of options.
+ * --ai-increment can be used for hidden PK tables, it specifies the
+ * auto increment step.
+ *
+ * --ai-prefetch-sz specifies the number of auto increment values that
+ * are prefetched.
+ *
+ * --no-asynch=1 can be used to use the Synchronous NDB API. This is not
+ * recommended to use since it has less support for error handling.
+ *
+ * --no-hint=1 can be used to disable the optimisation where rows are
+ * sent to the primary replica data node. This is not recommended to use.
+ * It has no real benefits.
+ *
+ * --polltimeout. This sets the time when we will wake up in a poll for
+ * completed transactions even if not all transactions are completed.
+ * Should be no reason to change this. Defaults to 1000 milliseconds.
+ *
+ * --opbatch=X sets the maximum number of rows sent per batch through
+ * the NDB API in each batch. Defaults to 250.
+ *
+ * --opbytes=X sets the maximum number of bytes in a batch. Defaults to
+ * 100000 bytes.
+ *
+ * --connections=X can be used to use several cluster connections. Each
+ * cluster connection will have one socket to each data node. So it is
+ * quite unlikely that this will be useful, one cluster connection per
+ * ndb_import instance should be quite sufficient. But one can consider
+ * running multiple ndb_import instances to speed up the import process
+ * further since this also gives more parallelism in reading of CSV files.
+ *
+ * Each execution thread will limit the amount of temporary errors to
+ * the number set in --temperrors, default is 0, thus we will fail after
+ * the first failure of any sort. It is also possible to insert a delay
+ * after the failure using --tempdelay which is number of milliseconds
+ * the execution thread will sleep after a failed operation.
+ *
+ * Ouput workers and execution workers wait up to 10 milliseconds by default
+ * for new rows. One can look for new rows more often by setting --rowswait.
+ *
+ * All workers wait for 1 ms by default when there is no work to do for
+ * the moment. This timeout can be changed using --idlesleep. One can set
+ * the number of loops to check for work before going to sleep using the
+ * --idlespin option. This defaults to no spinning (= 0).
+ *
+ * The thread that reads the CSV file can be controlled in the following
+ * manner. --ignore-lines=X means that the first X lines in the CSV file
+ * should be ignored (could be a data file header e.g.).
+ * --pagesize specifies the IO page size. (Default 4096 bytes)
+ * --pagebuffer specifies the page buffer size used when reading the CSV
+ * file. This sets the page count.
+ *
+ * The CSV file parsing is effected by the following parameters:
+ * --fields-terminated-by
+ * --fields-enclosed-by
+ * --fields-optionally-enclosed-by
+ * --fields-escaped-by
+ * --lines-terminated-by
+ * These can also be set by the --csvopt using a string of letters when it
+ * is difficult to set the parameters in the above options.
+ *
+ * ndb_import contains the possibility to resume operations after too many
+ * failures. In this case the option --resume=1 should be set. It is possible
+ * to set the maximum number of rows to process, not sure what this should
+ * be used for, but it is possible.
+ *
+ * ndb_import defaults to writing .rej, .res, .map files in the current
+ * working directory. One can set the directory for those state files
+ * through the --state-dir=path option. This is useful when one isn't fully
+ * aware of where the current working directory e.g. in a script.
+ *
+ * --keep-state=1 means that state files are kept when the job completes,
+ * by default they will be removed unless the job failed.
+ * --stats=1 stores performance related information in .sto and .stt files.
+ *
+ * There are two test options:
+ * --input-type=random, this means that input is generated using random
+ * instead of from a file.
+ * --output-type=null, this means that the output thread will send the data
+ * to Null workers that do nothing. This can be used to test the CSV and
+ * output worker handling.
+ *
+ * To get more status information on stdout one can set --monitor=1.
+ *
+ * For debugging one can set --log-level to 1 or 2 with higher value giving
+ * more log output.
+ * To better analyze problems one can use --abort-on-error=1 to ensure that
+ * the process aborts with a core at first failure.
+ */
 NdbImportImpl::NdbImportImpl(NdbImport& facade) :
   NdbImport(*this),
   m_facade(&facade),
@@ -1973,12 +2126,22 @@ NdbImportImpl::CsvInputWorker::state_send()
     if (m_csvinput->has_error())
     {
       m_util.copy_error(m_error, m_csvinput->m_error);
+      if (m_dostop)
+      {
+        log_debug(1, "stop by request");
+        m_state = WorkerState::State_stop;
+      }
       break;
     }
     if (left != 0)
     {
       log_debug(2, "send not ready");
       m_idle = true;
+      if (m_dostop)
+      {
+        log_debug(1, "stop by request");
+        m_state = WorkerState::State_stop;
+      }
       break;
     }
     if (!m_eof)
@@ -2542,6 +2705,11 @@ NdbImportImpl::RelayOpWorker::state_send()
     return;
   }
   m_idle = true;
+  if (m_dostop)
+  {
+    log_debug(1, "stop by request");
+    m_state = WorkerState::State_stop;
+  }
 }
 
 void
@@ -2821,7 +2989,7 @@ NdbImportImpl::ExecOpWorkerSynch::do_end()
     Tx* tx = m_tx_open.front();
     close_trans(tx);
   }
-  //   2) Release the ops not called with insertTuple()
+  //   2) Release the ops not called with insertTuple()/writeTuple
   //      These will be taken care of when import resumes
   Op* one_op = NULL;
   while ((one_op = m_ops.pop_front()) != NULL)
@@ -2853,15 +3021,21 @@ NdbImportImpl::ExecOpWorkerSynch::state_define()
   }
   NdbTransaction* trans = tx->m_trans;
   require(trans != 0);
+  const Opt& opt = m_util.c_opt;
   while (m_ops.cnt() != 0)
   {
     Op* op = m_ops.pop_front();
     Row* row = op->m_row;
     require(row != 0);
     const Table& table = m_util.get_table(row->m_tabid);
-    const NdbOperation* rowop = 0;
     const char* rowdata = (const char*)row->m_data;
-    if ((rowop = trans->insertTuple(table.m_rec, rowdata)) == 0)
+    const NdbOperation* rowop;
+    if (!opt.m_use_write)
+      rowop = trans->insertTuple(table.m_rec, rowdata);
+    else
+      rowop = trans->writeTuple(table.m_rec, rowdata,
+                                table.m_rec, rowdata);
+    if (rowop == 0)
     {
       m_util.set_error_ndb(m_error, __LINE__, trans->getNdbError());
       break;
@@ -3169,9 +3343,14 @@ NdbImportImpl::ExecOpWorkerAsynch::state_define()
     }
     NdbTransaction* trans = tx->m_trans;
     require(trans != 0);
-    const NdbOperation* rowop = 0;
     const char* rowdata = (const char*)row->m_data;
-    if ((rowop = trans->insertTuple(table.m_rec, rowdata)) == 0)
+    const NdbOperation* rowop;
+    if (!opt.m_use_write)
+      rowop = trans->insertTuple(table.m_rec, rowdata);
+    else
+      rowop = trans->writeTuple(table.m_rec, rowdata,
+                                table.m_rec, rowdata);
+    if (rowop == 0)
     {
       m_util.set_error_ndb(m_error, __LINE__, trans->getNdbError());
       break;

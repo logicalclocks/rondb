@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -3046,6 +3047,7 @@ NdbImportUtil::set_error_gen(Error& error, int line,
                              const char* fmt, ...)
 {
   c_error_lock.lock();
+  NdbImport::set_stop_all();
   new (&error) Error;
   error.line = line;
   error.type = Error::Type_gen;
@@ -3067,6 +3069,7 @@ NdbImportUtil::set_error_usage(Error& error, int line,
                                const char* fmt, ...)
 {
   c_error_lock.lock();
+  NdbImport::set_stop_all();
   new (&error) Error;
   error.line = line;
   error.type = Error::Type_usage;
@@ -3087,6 +3090,7 @@ void
 NdbImportUtil::set_error_alloc(Error& error, int line)
 {
   c_error_lock.lock();
+  NdbImport::set_stop_all();
   new (&error) Error;
   error.line = line;
   error.type = Error::Type_alloc;
@@ -3101,6 +3105,7 @@ NdbImportUtil::set_error_mgm(Error& error, int line,
                              NdbMgmHandle handle)
 {
   c_error_lock.lock();
+  NdbImport::set_stop_all();
   new (&error) Error;
   error.line = line;
   error.type = Error::Type_mgm;
@@ -3118,6 +3123,7 @@ NdbImportUtil::set_error_con(Error& error, int line,
                              const Ndb_cluster_connection* con)
 {
   c_error_lock.lock();
+  NdbImport::set_stop_all();
   new (&error) Error;
   error.line = line;
   error.type = Error::Type_con;
@@ -3134,6 +3140,7 @@ NdbImportUtil::set_error_ndb(Error& error, int line,
                              const NdbError& ndberror, const char* fmt, ...)
 {
   c_error_lock.lock();
+  NdbImport::set_stop_all();
   new (&error) Error;
   error.line = line;
   error.type = Error::Type_ndb;
@@ -3150,6 +3157,7 @@ NdbImportUtil::set_error_os(Error& error, int line,
                             const char* fmt, ...)
 {
   c_error_lock.lock();
+  NdbImport::set_stop_all();
   new (&error) Error;
   error.line = line;
   error.type = Error::Type_os;
@@ -3181,6 +3189,7 @@ NdbImportUtil::set_error_data(Error& error, int line,
                               int code, const char* fmt, ...)
 {
   c_error_lock.lock();
+  NdbImport::set_stop_all();
   new (&error) Error;
   error.line = line;
   error.type = Error::Type_data;
