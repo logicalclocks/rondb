@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2018, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -76,6 +77,7 @@ public:
     const char* m_stopt_file;
     const char* m_stats_file;
     bool m_continue;
+    bool m_use_write;
     bool m_resume;
     uint m_monitor;
     uint m_ai_prefetch_sz;

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -73,7 +74,7 @@ NdbImport::Opt::Opt()
   m_table = 0;
   m_input_type = "csv";
   m_input_file = 0;
-  m_input_workers = 4;
+  m_input_workers = 2;
   m_output_type = "ndb";
   m_output_workers = 2;
   m_db_workers = 4;
@@ -85,6 +86,7 @@ NdbImport::Opt::Opt()
   m_stopt_file = 0;
   m_stats_file = 0;
   m_continue = false;
+  m_use_write = false;
   m_resume = false;
   m_monitor = 2;
   m_ai_prefetch_sz = 1024;
@@ -97,15 +99,15 @@ NdbImport::Opt::Opt()
   m_pagebuffer = 500000;
   m_rowbatch = 0;
   m_rowbytes = 500000;
-  m_opbatch = 500;
-  m_opbytes = 0;
+  m_opbatch = 250;
+  m_opbytes = 100000;
   m_polltimeout = 1000;
   m_temperrors = 0;
   m_tempdelay = 10;
-  m_rowswait = 10;
+  m_rowswait = 1;
   m_idlespin = 0;
   m_idlesleep = 1;
-  m_checkloop = 100;
+  m_checkloop = 1;
   m_alloc_chunk = 20;
   m_rejects = 0;
   // character set

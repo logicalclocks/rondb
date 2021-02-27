@@ -125,8 +125,12 @@ my_long_options[] =
     &g_opt.m_max_rows, &g_opt.m_max_rows, 0,
     GET_UINT, REQUIRED_ARG, g_opt.m_max_rows, 0, 0, 0, 0, 0 },
   { "continue", NDB_OPT_NOSHORT,
-    "If one job (e.g. CSV import) fails, continue to next job",
+    "continue is no longer supported, we will always stop at failure",
     &g_opt.m_continue, &g_opt.m_continue, 0,
+    GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0 },
+  { "use-write", NDB_OPT_NOSHORT,
+    "Use Write instead of Insert",
+    &g_opt.m_use_write, &g_opt.m_use_write, 0,
     GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0 },
   { "resume", NDB_OPT_NOSHORT,
     "If the job(s) are aborted due to e.g. too many rejects or"
@@ -922,8 +926,7 @@ doimp()
       {
         jobs_fail++;
         ret = -1;
-        if (imp_error || !g_opt.m_continue)
-          break;
+        break;
       }
     }
     CHK1(ret == 0);
