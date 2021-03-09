@@ -59,6 +59,7 @@ DROP TABLE charsetutf8;
 DROP TABLE conversation_summary;
 DROP TABLE datetimetypes;
 DROP TABLE datetypes;
+DROP TABLE datetypes_pk;
 DROP TABLE decimaltypes;
 DROP TABLE dn2id;
 DROP TABLE doubletypes;

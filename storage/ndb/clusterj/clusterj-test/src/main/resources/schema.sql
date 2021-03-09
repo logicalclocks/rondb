@@ -795,6 +795,32 @@ create table timetypes (
 
 ) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
 
+drop table if exists datetypes_pk;
+create table datetypes_pk (
+ id int not null,
+ pk_key_date date,
+
+ date_null_hash date,
+ date_null_btree date,
+ date_null_both date,
+ date_null_none date,
+
+ date_not_null_hash date,
+ date_not_null_btree date,
+ date_not_null_both date,
+ date_not_null_none date,
+
+ unique key idx_date_null_hash (date_null_hash) using hash,
+ key idx_date_null_btree (date_null_btree),
+ unique key idx_date_null_both (date_null_both),
+
+ unique key idx_date_not_null_hash (date_not_null_hash) using hash,
+ key idx_date_not_null_btree (date_not_null_btree),
+ unique key idx_date_not_null_both (date_not_null_both),
+
+ PRIMARY KEY (id, pk_key_date)
+) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
+
 drop table if exists datetypes;
 create table datetypes (
  id int not null primary key,

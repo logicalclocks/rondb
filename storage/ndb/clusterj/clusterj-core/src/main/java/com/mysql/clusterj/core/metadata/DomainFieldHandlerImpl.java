@@ -197,6 +197,8 @@ public class DomainFieldHandlerImpl extends AbstractDomainFieldHandlerImpl {
                 objectOperationHandlerDelegate = objectOperationHandlerKeyShort;
             } else if (type.equals(byte.class)) {
                 objectOperationHandlerDelegate = objectOperationHandlerKeyByte;
+            } else if (type.equals(java.sql.Date.class)) {
+                objectOperationHandlerDelegate = objectOperationHandlerKeyJavaSqlDate;
             } else {
                 objectOperationHandlerDelegate = objectOperationHandlerUnsupportedType;
                 error(
