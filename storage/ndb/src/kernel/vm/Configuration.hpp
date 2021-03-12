@@ -205,7 +205,8 @@ private:
   void assign_default_memory_sizes(const ndb_mgm_configuration_iterator *p);
   static Uint32 get_num_threads();
   static Uint64 get_total_memory(
-                  const ndb_mgm_configuration_iterator *p);
+                  const ndb_mgm_configuration_iterator *p,
+                  bool & total_memory_set);
   Uint64 get_schema_memory(ndb_mgm_configuration_iterator *p);
   static Uint64 get_and_set_transaction_memory(
            const ndb_mgm_configuration_iterator *p);

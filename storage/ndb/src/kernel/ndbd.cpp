@@ -576,7 +576,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
       g_eventLogger->info("No Undo log buffer used, will be allocated from"
                           " TransactionMemory if later defined by command");
     }
-    g_eventLogger->info("Total TransactionMemory size is %llu MBytes",
+    g_eventLogger->info("Total TransactionMemory size is %u MBytes",
                          transmem/32);
   }
   g_eventLogger->info("TransactionMemory can expand and use"

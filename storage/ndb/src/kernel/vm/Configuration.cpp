@@ -332,7 +332,8 @@ Configuration::get_num_threads()
 }
 
 Uint64
-Configuration::get_total_memory(const ndb_mgm_configuration_iterator *p)
+Configuration::get_total_memory(const ndb_mgm_configuration_iterator *p,
+                                bool &total_memory_set)
 {
   Uint64 total_memory_size = 0;
   ndb_mgm_get_int64_parameter(p,
@@ -342,9 +343,11 @@ Configuration::get_total_memory(const ndb_mgm_configuration_iterator *p)
   {
     struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
     return hwinfo->hw_memory_size;
+    total_memory_set = false;
   }
   else
   {
+    total_memory_set = true;
     return total_memory_size;
   }
 }
@@ -1008,11 +1011,12 @@ Configuration::compute_static_overhead()
 bool
 Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p)
 {
+  bool total_memory_set = false;
   g_eventLogger->info("Automatic Memory Configuration start");
-  Uint64 total_memory = get_total_memory(p);
-  if (total_memory < (Uint64(8192) * MBYTE64))
+  Uint64 total_memory = get_total_memory(p, total_memory_set);
+  if (total_memory < (Uint64(2048) * MBYTE64))
   {
-    g_eventLogger->alert("AutomaticMemoryConfig requires at least 8 GByte of"
+    g_eventLogger->alert("AutomaticMemoryConfig requires at least 2 GByte of"
                          " available memory");
     return false;
   }
@@ -1024,7 +1028,11 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p)
   Uint64 job_buffer = compute_jb_pages(&globalEmulatorData) * 
                       GLOBAL_PAGE_SIZE;
   Uint64 static_overhead = compute_static_overhead();
-  Uint64 os_overhead = compute_os_overhead(total_memory);
+  Uint64 os_overhead = 0;
+  if (!total_memory_set)
+  {
+    os_overhead = compute_os_overhead(total_memory);
+  }
   Uint64 send_buffer = get_send_buffer(p);
   Uint64 backup_page_memory = compute_backup_page_memory(p);
   Uint64 restore_memory = compute_restore_memory();
