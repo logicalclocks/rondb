@@ -995,7 +995,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     false,
     ConfigInfo::CI_INT64,
     "0",
-    "8G",
+    "2G",
     "65536G" },
 
   {
@@ -3455,7 +3455,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "8M",
+    "4M",
     "64K",
     STR_VALUE(MAX_INT_RNIL) },
 
@@ -3817,7 +3817,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "8M",
+    "4M",
     "64K",
     STR_VALUE(MAX_INT_RNIL)
   },
