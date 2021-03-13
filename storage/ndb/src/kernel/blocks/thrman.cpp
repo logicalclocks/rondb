@@ -3508,7 +3508,7 @@ Thrman::execGET_CPU_USAGE_REQ(Signal *signal)
   {
     jam();
     Uint64 real_exec_time = get_real_exec_time(&curr_measure);
-    Uint64 percentage = ((Uint64(100) * real_exec_time) /
+    Uint64 percentage = (Uint64(100) * real_exec_time) /
                           curr_measure.m_elapsed_time;
     signal->theData[0] = Uint32(percentage);
   }

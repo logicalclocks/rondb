@@ -392,10 +392,12 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     Resource_limit rl;
     rl.m_min = sbpages;
     /**
-     * allow over allocation (from SharedGlobalMemory) of up to 25% of
+     * allow over allocation (from SharedGlobalMemory) of up to 50% of
      *   totally allocated SendBuffer, at most 25% of SharedGlobalMemory.
      */
-    const Uint32 sb_max_shared_pages = 25 * std::min(sbpages, shared_pages) / 100;
+    Uint32 max_use_of_shared_pages = shared_pages / 2;
+    const Uint32 sb_max_shared_pages =
+      50 * std::min(sbpages, max_use_of_shared_pages) / 100;
     require(sbpages + sb_max_shared_pages > 0);
     rl.m_max = sbpages + sb_max_shared_pages;
     rl.m_resource_id = RG_TRANSPORTER_BUFFERS;
