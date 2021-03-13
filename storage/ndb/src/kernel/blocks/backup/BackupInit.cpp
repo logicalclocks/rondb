@@ -607,6 +607,53 @@ void Backup::calculate_real_disk_write_speed_parameters(void)
       c_defaults.m_disk_write_speed_max_other_node_restart;
   }
 
+  Uint32 num_ldm_threads = globalData.ndbMtLqhThreads;
+  if (num_ldm_threads == 0)
+  {
+    /* We are running with ndbd binary */
+    jam();
+    num_ldm_threads = 1;
+  }
+
+  c_defaults.m_disk_write_speed_min /= num_ldm_threads;
+  c_defaults.m_disk_write_speed_max /= num_ldm_threads;
+  c_defaults.m_disk_write_speed_max_other_node_restart /= num_ldm_threads;
+  c_defaults.m_disk_write_speed_max_own_restart /= num_ldm_threads;
+
+  /**
+   * We use these parameters as a minimum LCP speed in all situations
+   * including overload situations. We don't want to go below the
+   * numbers here since LCP processing is vital for the recoverability
+   * of the database.
+   *
+   * 2 MByte of LCP processing per second consumes around 1-2% of the
+   * CPU capacity in the LDM thread.
+   */
+  if (c_defaults.m_disk_write_speed_min < (2 * MBYTE64))
+  {
+    jam();
+    c_defaults.m_disk_write_speed_min = 2 * MBYTE64;
+    g_eventLogger->info("Setting minimum disk write speed per LDM thread"
+                        " for LCP processing to 2 MByte");
+  }
+
+  if (c_defaults.m_disk_write_speed_max < (3 * MBYTE64))
+  {
+    jam();
+    c_defaults.m_disk_write_speed_max = 3 * MBYTE64;
+  }
+
+  if (c_defaults.m_disk_write_speed_max_other_node_restart < (12 * MBYTE64))
+  {
+    jam();
+    c_defaults.m_disk_write_speed_max_other_node_restart = 12 * MBYTE64;
+  }
+
+  if (c_defaults.m_disk_write_speed_max_own_restart < (50 * MBYTE64))
+  {
+    jam();
+    c_defaults.m_disk_write_speed_max_own_restart = 50 * MBYTE64;
+  }
   /*
     We adjust the disk speed parameters from bytes per second to rather be
     words per 100 milliseconds. We convert disk synch size from bytes per
@@ -621,17 +668,6 @@ void Backup::calculate_real_disk_write_speed_parameters(void)
   c_defaults.m_disk_write_speed_max_own_restart /=
     CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
 
-  Uint32 num_ldm_threads = globalData.ndbMtLqhThreads;
-  if (num_ldm_threads == 0)
-  {
-    /* We are running with ndbd binary */
-    jam();
-    num_ldm_threads = 1;
-  }
-  c_defaults.m_disk_write_speed_min /= num_ldm_threads;
-  c_defaults.m_disk_write_speed_max /= num_ldm_threads;
-  c_defaults.m_disk_write_speed_max_other_node_restart /= num_ldm_threads;
-  c_defaults.m_disk_write_speed_max_own_restart /= num_ldm_threads;
 }
 
 void Backup::restore_disk_write_speed_numbers(void)
