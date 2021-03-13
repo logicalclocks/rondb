@@ -336,6 +336,7 @@ private:
   void set_spin_stat(Uint32, bool);
   Uint32 calc_new_spin(ndb_spin_stat*);
   void measure_wakeup_time(Signal*, Uint32);
+  Uint64 get_real_exec_time(MeasurementRecord *measurePtrP);
 
   void set_configured_spintime(Uint32 val, bool specific);
   void set_allowed_spin_overhead(Uint32 val);

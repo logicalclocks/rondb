@@ -2650,12 +2650,11 @@ Thrman::measure_cpu_usage(Signal *signal)
                           &loc_measure,
                           &m_last_50ms_base_measure,
                           elapsed_50ms);
-    Uint64 exec_time = measurePtr.p->m_exec_time_thread -
-                       measurePtr.p->m_spin_time_thread;
+    Uint64 real_exec_time = get_real_exec_time(measurePtr.p);
     Uint64 elapsed_time = measurePtr.p->m_elapsed_time;
     if (elapsed_time > 0)
     {
-      Uint64 exec_perc = exec_time * 1000 + 500;
+      Uint64 exec_perc = real_exec_time * 1000 + 500;
       exec_perc /= (10 * elapsed_time);
       if (exec_perc <= 100)
       {
@@ -3484,6 +3483,23 @@ Thrman::calculate_mean_send_thread_load()
   return tot_percentage;
 }
 
+Uint64
+Thrman::get_real_exec_time(MeasurementRecord *measurePtrP)
+{
+  /**
+   * We count buffer full time as real execution time here
+   */
+  Uint64 exec_time = measurePtrP->m_exec_time_thread;
+  Uint64 spin_time = measurePtrP->m_spin_time_thread;
+  if (spin_time > exec_time)
+  {
+    jam();
+    return 0;
+  }
+  jam();
+  return (exec_time - spin_time);
+}
+
 void
 Thrman::execGET_CPU_USAGE_REQ(Signal *signal)
 {
@@ -3491,8 +3507,8 @@ Thrman::execGET_CPU_USAGE_REQ(Signal *signal)
   if (calculate_cpu_load_last_second(&curr_measure))
   {
     jam();
-    Uint64 percentage = (Uint64(100) *
-                        curr_measure.m_exec_time_thread) /
+    Uint64 real_exec_time = get_real_exec_time(&curr_measure);
+    Uint64 percentage = ((Uint64(100) * real_exec_time) /
                           curr_measure.m_elapsed_time;
     signal->theData[0] = Uint32(percentage);
   }
