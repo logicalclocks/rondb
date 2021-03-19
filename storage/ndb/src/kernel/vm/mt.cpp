@@ -3433,24 +3433,23 @@ thr_send_threads::assist_send_thread(Uint32 max_num_trps,
       break;
     }
 
-    watchdog_counter = 3;
-    send_buffer_pool.release_global(g_thr_repository->m_mm,
-                                    RG_TRANSPORTER_BUFFERS,
-                                    send_instance->m_instance_no);
 
     loop++;
   }
-  if (trp_id == 0)
+  bool pending_send = false;
+  if (trp_id != 0)
   {
-    NdbMutex_Unlock(send_instance->send_thread_mutex);
-    return false;
+    /**
+     * There is more work to do, keep pending_send flag to true such
+     * that we will quickly work off the queue of send tasks available.
+     */
+    pending_send = send_instance->check_pending_data();
   }
-  /**
-   * There is more work to do, keep pending_send flag to true such
-   * that we will quickly work off the queue of send tasks available.
-   */
-  bool pending_send = send_instance->check_pending_data();
   NdbMutex_Unlock(send_instance->send_thread_mutex);
+  watchdog_counter = 3;
+  send_buffer_pool.release_global(g_thr_repository->m_mm,
+                                  RG_TRANSPORTER_BUFFERS,
+                                  send_instance->m_instance_no);
   return pending_send;
 }
 
@@ -3545,13 +3544,34 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
   }
 
   /**
-   * Note that we do not yet return any send_buffers to the
-   * global pool: handle_send_trp() may be called from either
-   * a send-thread, or a worker-thread doing 'assist send'.
-   * These has different policies for releasing send_buffers,
-   * which should be handled by the respective callers.
-   * (release_chunk() or release_global())
+   * We only return buffers here when we are calling this from a send
+   * thread. The send thread returns the send buffers using chunks,
+   * thus in most cases the call to release_chunk will return
+   * immediately, but at times it will release a chunk of send buffers.
+   * It is important to not hold the send mutex while performing this
+   * call since that would require holding two hot mutexes at the same
+   * time. There is no requirement to hold them simultaneously since
+   * they protect different things.
    *
+   * The send thread mutex protects the order to send to transporters.
+   * The send thread buffer mutexes protects the list of free send
+   * buffers kept by each send thread instance.
+   *
+   * When this is called from the block thread we don't need to release
+   * any buffers, this is done in the block thread after completing its
+   * assistance to the send thread.
+   */
+  if (is_send_thread(thr_no))
+  {
+    /* Release chunk-wise to decrease pressure on lock */
+    send_instance->m_watchdog_counter = 3;
+    send_instance->m_send_buffer_pool.release_chunk(
+                                   g_thr_repository->m_mm,
+                                   RG_TRANSPORTER_BUFFERS,
+                                   send_instance->m_instance_no);
+  }
+
+  /**
    * Either own perform_send() processing, or external 'alert'
    * could have signaled that there are more sends pending.
    * If we had no progress in perform_send, we conclude that
@@ -3843,13 +3863,6 @@ thr_send_threads::run_send_thread(Uint32 instance_no)
         break;
       }
       
-      /* Release chunk-wise to decrease pressure on lock */
-      this_send_thread->m_watchdog_counter = 3;
-      this_send_thread->m_send_buffer_pool.release_chunk(
-                                     g_thr_repository->m_mm,
-                                     RG_TRANSPORTER_BUFFERS,
-                                     instance_no);
-
       /**
        * We set trp_id = 0 for the very rare case where theRestartFlag is set
        * to perform_stop, we should never need this, but add it in just in
