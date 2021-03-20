@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -140,12 +141,14 @@ struct PackedWordsContainer
 
 #define LIGHT_LOAD_CONST 0
 #define MEDIUM_LOAD_CONST 1
-#define OVERLOAD_CONST 2
+#define HIGH_LOAD_CONST 2
+#define OVERLOAD_CONST 3
 enum OverloadStatus
 {
   LIGHT_LOAD = LIGHT_LOAD_CONST,
   MEDIUM_LOAD = MEDIUM_LOAD_CONST,
-  OVERLOAD = OVERLOAD_CONST
+  HIGH_LOAD = HIGH_LOAD_CONST,
+  OVERLOAD_LOAD = OVERLOAD_CONST
 };
 
 /**
@@ -696,12 +699,17 @@ protected:
   Uint32 getEstimatedJobBufferLevel();
   Uint32 getCPUSocket(Uint32 thr_no);
   void setOverloadStatus(OverloadStatus new_status);
+  void setMaxSendDelay(Uint32 max_send_delay);
+  void setMinSendDelay(Uint32 min_send_delay);
+  bool is_recover_thread(Uint32 thr_no);
   void setWakeupThread(Uint32 wakeup_instance);
   void setNodeOverloadStatus(OverloadStatus new_status);
   void setSendNodeOverloadStatus(OverloadStatus new_status);
   void startChangeNeighbourNode();
   void setNeighbourNode(NodeId node);
-  void setNoSend();
+  void setNoSend(Uint32 val);
+  void setNoSendTmp(Uint32 val);
+  Uint32 getNoSend();
   void endChangeNeighbourNode();
   void getPerformanceTimers(Uint64 &micros_sleep,
                             Uint64 &spin_time,

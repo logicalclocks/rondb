@@ -1,4 +1,5 @@
 /* Copyright (c) 2008, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -93,11 +94,16 @@ void mt_getSendBufferLevel(Uint32 self, NodeId node, SB_LevelType &level);
 Uint32 mt_getEstimatedJobBufferLevel(Uint32 self);
 bool mt_isEstimatedJobBufferLevelChanged(Uint32 self);
 NDB_TICKS mt_getHighResTimer(Uint32 self);
-void mt_setNoSend(Uint32 self);
+void mt_setNoSend(Uint32 self, Uint32 val);
+void mt_setNoSendTmp(Uint32 self, Uint32 val);
+Uint32 mt_getNoSend(Uint32 self);
 void mt_startChangeNeighbourNode();
 void mt_setNeighbourNode(NodeId node);
 void mt_endChangeNeighbourNode();
 void mt_setWakeupThread(Uint32 self, Uint32 wakeup_instance);
+void mt_setMaxSendDelay(Uint32 max_send_delay);
+void mt_setMinSendDelay(Uint32 min_send_delay);
+bool mt_is_recover_thread(Uint32 thr_no);
 void mt_setOverloadStatus(Uint32 self,
                          OverloadStatus new_status);
 void mt_setNodeOverloadStatus(Uint32 self,

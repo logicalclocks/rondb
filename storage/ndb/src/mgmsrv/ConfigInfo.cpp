@@ -715,7 +715,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "MaxSendDelay",
     DB_TOKEN,
     "Max number of microseconds to delay sending in ndbmtd",
-    ConfigInfo::CI_USED,
+    ConfigInfo::CI_DEPRECATED,
     false,
     ConfigInfo::CI_INT,
     "0",

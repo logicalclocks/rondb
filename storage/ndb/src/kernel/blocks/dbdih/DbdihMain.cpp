@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2424,7 +2425,7 @@ void Dbdih::execREAD_NODESCONF(Signal* signal)
      * doesn't assist the send thread in this scenario.
      */
     log_setNoSend();
-    setNoSend();
+    setNoSend(1);
   }
   if (c_2pass_inr)
   {
@@ -4822,7 +4823,7 @@ void Dbdih::execINCL_NODEREQ(Signal* signal)
       con_lineNodes >= 16)
   {
     log_setNoSend();
-    setNoSend();
+    setNoSend(1);
   }
 
   /*-------------------------------------------------------------------------*/
@@ -10048,7 +10049,7 @@ void Dbdih::execNODE_FAILREP(Signal* signal)
       con_lineNodes >= 16)
   {
     log_setNoSend();
-    setNoSend();
+    setNoSend(1);
   }
   const bool masterTakeOver = (oldMasterId != newMasterId);
   bool check_more_start_lcp = false;
