@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2011, 2020 Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -43,8 +44,20 @@ static NdbCondition *g_freeze_condition = 0;
 static Uint32 g_freeze_waiters = 0;
 static bool g_freeze_wakeup = 0;
 
+
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_SPIN 1
 //#define DEBUG_SCHED_WEIGHTS 1
+//#define HIGH_DEBUG_CPU_USAGE 1
+//#define DEBUG_CPU_USAGE 1
+//#define DEBUG_OVERLOAD_STATUS 1
+#endif
+
+#ifdef DEBUG_OVERLOAD_STATUS
+#define DEB_OVERLOAD_STATUS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_OVERLOAD_STATUS(arglist) do { } while (0)
+#endif
 
 #ifdef DEBUG_SPIN
 #define DEB_SPIN(arglist) do { g_eventLogger->info arglist ; } while (0)
@@ -58,8 +71,6 @@ static bool g_freeze_wakeup = 0;
 #define DEB_SCHED_WEIGHTS(arglist) do { } while (0)
 #endif
 
-//define HIGH_DEBUG_CPU_USAGE 1
-//#define DEBUG_CPU_USAGE 1
 extern EventLogger * g_eventLogger;
 
 Thrman::Thrman(Block_context & ctx, Uint32 instanceno) :
@@ -643,12 +654,13 @@ Thrman::execSTTOR(Signal *signal)
     m_burstiness = 0;
     m_current_decision_stats = &c_1sec_stats;
     m_send_thread_percentage = 0;
+    m_send_thread_assistance_level = 0;
     m_node_overload_level = 0;
 
     for (Uint32 i = 0; i < MAX_BLOCK_THREADS + 1; i++)
     {
       m_thread_overload_status[i].overload_status =
-        (OverloadStatus)MEDIUM_LOAD_CONST;
+        (OverloadStatus)LIGHT_LOAD_CONST;
       m_thread_overload_status[i].wakeup_instance = 0;
     }
 
@@ -935,7 +947,30 @@ Thrman::execCONTINUEB(Signal *signal)
     case ZCONTINUEB_MEASURE_CPU_USAGE:
     {
       jam();
+      if (instance() == m_main_thrman_instance ||
+          instance() == m_rep_thrman_instance)
+      {
+        /**
+         * Restore nosend after short period of sending, in most threads
+         * this will simply set nosend_tmp to nosend which it was before
+         * and this call will be ignored. But for main and rep threads
+         * the nosend is set by default, it is only enabled when the
+         * adaptive algorithm decides that they should participate.
+         *
+         * This only applies to main and rep thread that have the capability
+         * to assist send threads, but only when the send threads themselves
+         * are very loaded. The main and rep threads are activated through
+         * the signal WAKEUP_THREAD_ORD, but this only sets the nosend_tmp
+         * until this signal arrives.
+         */
+        setNoSendTmp(1);
+      }
       measure_cpu_usage(signal);
+      if (instance() == m_main_thrman_instance)
+      {
+        jam();
+        check_send_thread_helpers(signal);
+      }
       sendNextCONTINUEB(signal, 50, ZCONTINUEB_MEASURE_CPU_USAGE);
       if (m_is_cpudata_available)
       {
@@ -1046,9 +1081,14 @@ Thrman::assign_wakeup_threads(Signal *signal,
         current_wakeup_instance)
     {
       jam();
+      DEB_OVERLOAD_STATUS(("SET_WAKEUP_THREAD_ORD(%u): %u",
+                           instance_no,
+                           current_wakeup_instance));
       sendSET_WAKEUP_THREAD_ORD(signal,
                                 instance_no,
                                 current_wakeup_instance);
+      m_thread_overload_status[instance_no].wakeup_instance =
+        current_wakeup_instance;
     }
     update_current_wakeup_instance(thread_list,
                                    num_threads_found,
@@ -1058,27 +1098,253 @@ Thrman::assign_wakeup_threads(Signal *signal,
 }
 
 void
-Thrman::get_idle_block_threads(Uint32 *thread_list, Uint32 & num_threads_found)
+Thrman::get_idle_block_threads(Uint32 *thread_list,
+                               Uint32 & num_threads_found,
+                               Uint32 max_helpers)
 {
   /**
-   * We never use more than 4 threads as idle threads. It's highly unlikely
-   * that making use of more idle threads than this for sending is going to
-   * be worthwhile. By starting the search from 1 we will always find the most
-   * common idle threads, the main thread and the rep thread which are instance
-   * 1 and 2.
+   * We only use main threads (the main and rep thread) as idle threads. These
+   * are likely to be idle a lot and to be able to assist as send threads. But
+   * using other threads as assistant is likely to cause unbalanced loads that
+   * will be scalability hogs. By starting the search from 1 we will always find
+   * the main threads, the main thread and the rep thread which are
+   * instance 1 and 2 when both exist, if only one exist it will be instance 1
+   * and if none exists we will not use any idle block threads.
    */
   Uint32 instance_no;
-  for (instance_no = 1; instance_no <= m_num_threads; instance_no++)
+  for (instance_no = 1;
+       instance_no <= globalData.ndbMtMainThreads;
+       instance_no++)
   {
+    if (m_thread_overload_status[instance_no].overload_status ==
+        (OverloadStatus)LIGHT_LOAD_CONST &&
+        getNoSend() == 0)
+    {
+      DEB_OVERLOAD_STATUS(("1: thr_no(%u).overload_status = %u",
+                           instance_no - 1,
+              m_thread_overload_status[instance_no].overload_status));
+      thread_list[num_threads_found] = instance_no;
+      num_threads_found++;
+    }
+    else
+    {
+      DEB_OVERLOAD_STATUS(("2: thr_no(%u).overload_status = %u",
+                           instance_no - 1,
+              m_thread_overload_status[instance_no].overload_status));
+    }
+    if (num_threads_found == max_helpers)
+    {
+      jam();
+      break;
+    }
+  }
+}
+
+void
+Thrman::handle_send_delay()
+{
+  Uint32 num_medium_load = 0;
+  Uint32 num_light_load = 0;
+  Uint32 num_high_load = 0;
+  Uint32 num_overload = 0;
+  /* Ignore restore threads in this calculation */
+  Uint32 num_threads = m_num_threads - globalData.ndbMtRecoverThreads;
+  if (num_threads < 6)
+  {
+    /**
+     * In situations with only a small number of threads, the likelihood
+     * of improvements based on waiting to send is small. Thus the
+     * adaptive handling of sending is limited to a bit larger data nodes.
+     */
+    return;
+  }
+  Uint32 half_num_threads = num_threads / 2;
+  Uint32 num_threads_25_percent = (1 * num_threads) / 4;
+  Uint32 num_threads_75_percent = (3 * num_threads) / 4;
+
+  /**
+   * The more threads we have in the data nodes, the higher the likelihood
+   * that send delay will be beneficial. Larger data nodes need a bit more
+   * batch-like handling to be efficient. Thus we increase the max send
+   * delay that can be set based on the number of threads in the node.
+   * We will however never set this number to be higher than 200 microseconds.
+   */
+  Uint32 max_delay_settable = 0;
+  if (num_threads <= 16)
+  {
+    jam();
+    max_delay_settable = 80;
+  }
+  else if (num_threads <= 32)
+  {
+    jam();
+    max_delay_settable = 120;
+  }
+  else if (num_threads <= 64)
+  {
+    jam();
+    max_delay_settable = 160;
+  }
+  else
+  {
+    jam();
+    max_delay_settable = 200;
+  }
+  for (Uint32 instance_no = 1;
+       instance_no <= m_num_threads;
+       instance_no++)
+  {
+    if (is_recover_thread(instance_no - 1))
+    {
+      /* Ignore restore threads */
+      continue;
+    }
     if (m_thread_overload_status[instance_no].overload_status ==
         (OverloadStatus)LIGHT_LOAD_CONST)
     {
-      thread_list[num_threads_found] = instance_no;
-      num_threads_found++;
-      if (num_threads_found == 4)
-        return;
+      jam();
+      num_light_load++;
+    }
+    else if (m_thread_overload_status[instance_no].overload_status ==
+             (OverloadStatus)MEDIUM_LOAD_CONST)
+    {
+      jam();
+      num_medium_load++;
+    }
+    else if (m_thread_overload_status[instance_no].overload_status ==
+             (OverloadStatus)HIGH_LOAD_CONST)
+    {
+      jam();
+      num_high_load++;
+    }
+    else if (m_thread_overload_status[instance_no].overload_status ==
+             (OverloadStatus)OVERLOAD_CONST)
+    {
+      jam();
+      num_overload++;
+    }
+    else
+    {
+      ndbabort();
     }
   }
+  Uint32 send_delay_percent = 0;
+  Uint32 min_send_delay = 40;
+  if (num_medium_load == 0 && num_high_load == 0 && num_overload == 0)
+  {
+    jam();
+    /**
+     * Not a single thread in high load or overload. In this case
+     * we will set max_send_delay to 0 and min_send_delay to 0
+     * as well.
+     */
+    send_delay_percent = 0;
+    min_send_delay = 0;
+  }
+  else if (num_high_load == 0 && num_overload == 0)
+  {
+    jam();
+    /**
+     * We have a number of threads at medium load level, we will start
+     * protecting the receivers by setting min_send_delay.
+     */
+    if (num_medium_load < num_threads_25_percent)
+    {
+      jam();
+      min_send_delay = 10;
+    }
+    else if (num_medium_load < half_num_threads)
+    {
+      jam();
+      min_send_delay = 20;
+    }
+    else if (num_medium_load < num_threads_75_percent)
+    {
+      jam();
+      min_send_delay = 30;
+    }
+    else
+    {
+      jam();
+      min_send_delay = 40;
+    }
+  }
+  else if (num_overload == 0)
+  {
+    /**
+     * Highest load level is high load level. Based on the number of threads
+     * that are at this level, we will set the send delay appropriately.
+     */
+    if (num_high_load < num_threads_25_percent)
+    {
+      jam();
+      send_delay_percent = 30;
+    }
+    else if (num_high_load < half_num_threads)
+    {
+      jam();
+      send_delay_percent = 50;
+    }
+    else if (num_high_load < num_threads_75_percent)
+    {
+      jam();
+      send_delay_percent = 70;
+    }
+    else
+    {
+      jam();
+      send_delay_percent = 90;
+    }
+  }
+  else
+  {
+    /**
+     * We have threads at overload level, set send delay based on the
+     * number of threads at high or critical level.
+     */
+    Uint32 num_check_load = num_overload + num_high_load;
+    if (num_check_load < num_threads_25_percent)
+    {
+      jam();
+      send_delay_percent = 50;
+    }
+    else if (num_check_load < half_num_threads)
+    {
+      jam();
+      send_delay_percent = 70;
+    }
+    else if (num_check_load < num_threads_75_percent)
+    {
+      jam();
+      send_delay_percent = 90;
+    }
+    else
+    {
+      jam();
+      send_delay_percent = 100;
+    }
+  }
+  Uint32 max_send_delay = send_delay_percent * max_delay_settable / 100;
+  if (max_send_delay < 20)
+  {
+    /* We won't set MaxSendDelay smaller than 20 microseconds */
+    max_send_delay = 0;
+  }
+
+  DEB_OVERLOAD_STATUS(("max_delay_settable: %u, send_delay_percent: %u,"
+                       " max_send_delay: %u, min_send_delay: %u",
+                       max_delay_settable,
+                       send_delay_percent,
+                       max_send_delay,
+                       min_send_delay));
+  DEB_OVERLOAD_STATUS(("num_light_load: %u, num_medium_load: %u,"
+                       " num_high_load: %u, num_overload: %u",
+                       num_light_load,
+                       num_medium_load,
+                       num_high_load,
+                       num_overload));
+  setMaxSendDelay(max_send_delay);
+  setMinSendDelay(min_send_delay);
 }
 
 /**
@@ -1100,7 +1366,12 @@ Thrman::execOVERLOAD_STATUS_REP(Signal *signal)
     if (m_thread_overload_status[instance_no].overload_status >=
         (OverloadStatus)MEDIUM_LOAD_CONST)
     {
-      node_overload_level = 1;
+      /**
+       * Used to ensure that send thread only sleeps for 1 millisecond before
+       * waking up again to do some work. This will happen when we reach
+       * medium load level.
+       */
+      node_overload_level = MEDIUM_LOAD_CONST;
     }
   }
   if (node_overload_level == m_node_overload_level)
@@ -1116,10 +1387,84 @@ Thrman::execOVERLOAD_STATUS_REP(Signal *signal)
       sendSignal(ref, GSN_NODE_OVERLOAD_STATUS_ORD, signal, 1, JBB);
     }
   }
+  handle_send_delay();
+  check_send_thread_helpers(signal);
+}
 
+/* First level of send help */
+#define SEND_LEVEL_NO_MORE_REQUIRE_ASSISTANCE 60
+#define SEND_LEVEL_REQUIRE_ASSISTANCE 75
+
+/* Second level of send help */
+#define SEND_LEVEL_NO_MORE_REQUIRE_EXTRA_ASSISTANCE 70
+#define SEND_LEVEL_REQUIRE_EXTRA_ASSISTANCE 85
+
+void
+Thrman::check_send_thread_helpers(Signal *signal)
+{
   Uint32 num_threads_found = 0;
   Uint32 thread_list[4];
-  get_idle_block_threads(thread_list, num_threads_found);
+
+  ndbrequire(instance() == m_main_thrman_instance);
+  Uint32 send_thread_percentage = calculate_mean_send_thread_load(200);
+  DEB_OVERLOAD_STATUS(("send_thread_percentage is %u",
+                       send_thread_percentage));
+  Uint32 send_level_require_assistance = SEND_LEVEL_REQUIRE_ASSISTANCE;
+  Uint32 send_level_require_extra_assistance =
+    SEND_LEVEL_REQUIRE_EXTRA_ASSISTANCE;
+  if (m_send_thread_assistance_level > 0)
+  {
+    jam();
+    /**
+     * We are in the state that we are already helping the send thread.
+     * To avoid a behaviour where we constantly turn send help on and off
+     * we use a hysteresis. To offer send help is likely to cause send
+     * thread percentage to go down. Thus after activating send help we
+     * will continue providing send help even if the load goes down on
+     * the senders.
+     */
+    send_level_require_assistance = SEND_LEVEL_NO_MORE_REQUIRE_ASSISTANCE;
+  }
+  if (send_thread_percentage >= send_level_require_assistance)
+  {
+    jam();
+    /* Send help is to be offered if possible */
+    if (m_send_thread_assistance_level > 1)
+    {
+      jam();
+      /**
+       * We are at second level of help, we use a hysteresis before we
+       * leave this level.
+       */
+      send_level_require_extra_assistance =
+        SEND_LEVEL_NO_MORE_REQUIRE_EXTRA_ASSISTANCE;
+    }
+    {
+      jam();
+      /* Enter first level of send thread assistance. */
+      m_send_thread_assistance_level = 1;
+    }
+    Uint32 max_helpers = 1;
+    if (send_thread_percentage >= send_level_require_extra_assistance)
+    {
+      jam();
+      /* Enter second level of send thread assistance. */
+      m_send_thread_assistance_level = 2;
+      max_helpers = 2;
+    }
+    else
+    {
+      jam();
+      /* First level of send thread assistance, either stay or go back. */
+      m_send_thread_assistance_level = 1;
+    }
+    get_idle_block_threads(thread_list, num_threads_found, max_helpers);
+  }
+  else if (m_send_thread_assistance_level > 0)
+  {
+    jam();
+    m_send_thread_assistance_level--;
+  }
   if (num_threads_found == 0)
   {
     jam();
@@ -1133,7 +1478,6 @@ Thrman::execOVERLOAD_STATUS_REP(Signal *signal)
      */
     num_threads_found = 1;
     thread_list[0] = 0;
-    return;
   }
   assign_wakeup_threads(signal, thread_list, num_threads_found);
   return;
@@ -1178,7 +1522,12 @@ Thrman::execWAKEUP_THREAD_ORD(Signal *signal)
    * This signal is sent to wake the thread up. We're using the send signal
    * semantics to wake the thread up. So no need to execute anything, the
    * purpose of waking the thread has already been achieved when getting here.
+   *
+   * We will temporarily enable the wake up thread (main or rep thread) to
+   * assist in sending. The thread itself will stop this temporary sending
+   * each 50 ms by restoring the original nosend value.
    */
+  setNoSendTmp(0);
   return;
 }
 void
@@ -2779,7 +3128,7 @@ Thrman::measure_cpu_usage(Signal *signal)
     if (check_1sec)
     {
       Uint32 send_thread_percentage =
-        calculate_mean_send_thread_load();
+        calculate_mean_send_thread_load(1000);
       sendSEND_THREAD_STATUS_REP(signal, send_thread_percentage);
     }
   }
@@ -3375,8 +3724,9 @@ Thrman::calculate_stats_last_400seconds(MeasureStats *stats)
 }
 
 bool
-Thrman::calculate_send_thread_load_last_second(Uint32 send_instance,
-                                               SendThreadMeasurement *measure)
+Thrman::calculate_send_thread_load_last_ms(Uint32 send_instance,
+                                           SendThreadMeasurement *measure,
+                                           Uint32 num_milliseconds)
 {
   SendThreadPtr sendThreadPtr;
   SendThreadMeasurementPtr sendThreadMeasurementPtr;
@@ -3405,7 +3755,7 @@ Thrman::calculate_send_thread_load_last_second(Uint32 send_instance,
       measure->m_idle_time_os += sendThreadMeasurementPtr.p->m_idle_time_os;
       list_50ms.next(sendThreadMeasurementPtr);
     } while (sendThreadMeasurementPtr.i != RNIL &&
-             measure->m_elapsed_time < Uint64(1000 * 1000));
+             measure->m_elapsed_time < Uint64(num_milliseconds * 1000));
     return true;
   }
   jam();
@@ -3413,7 +3763,7 @@ Thrman::calculate_send_thread_load_last_second(Uint32 send_instance,
 }
 
 Uint32
-Thrman::calculate_mean_send_thread_load()
+Thrman::calculate_mean_send_thread_load(Uint32 num_milliseconds)
 {
   SendThreadMeasurement measure;
   Uint32 tot_percentage = 0;
@@ -3424,7 +3774,9 @@ Thrman::calculate_mean_send_thread_load()
   for (Uint32 i = 0; i < m_num_send_threads; i++)
   {
     jam();
-    bool succ = calculate_send_thread_load_last_second(i, &measure);
+    bool succ = calculate_send_thread_load_last_ms(i,
+                                                   &measure,
+                                                   num_milliseconds);
     if (!succ)
     {
       jam();
@@ -3586,7 +3938,7 @@ Thrman::calculate_load(MeasureStats  & stats, Uint32 & burstiness)
 }
 
 #define LIGHT_LOAD_LEVEL 30
-#define MEDIUM_LOAD_LEVEL 75
+#define MEDIUM_LOAD_LEVEL 60
 #define CRITICAL_SEND_LEVEL 75
 #define CRITICAL_OVERLOAD_LEVEL 85
 
@@ -3606,17 +3958,23 @@ Thrman::get_load_status(Uint32 load, Uint32 send_load)
     jam();
     return (OverloadStatus)LIGHT_LOAD_CONST;
   }
-  else if (base_load < MEDIUM_LOAD_LEVEL)
+  else if (base_load < MEDIUM_LOAD_LEVEL &&
+           load < CRITICAL_OVERLOAD_LEVEL)
   {
     jam();
     return (OverloadStatus)MEDIUM_LOAD_CONST;
+  }
+  else if (base_load < CRITICAL_SEND_LEVEL)
+  {
+    jam();
+    return (OverloadStatus)HIGH_LOAD_CONST;
   }
   else if (base_load < CRITICAL_OVERLOAD_LEVEL)
   {
     if (m_send_thread_percentage >= CRITICAL_SEND_LEVEL)
     {
       jam();
-      return (OverloadStatus)MEDIUM_LOAD_CONST;
+      return (OverloadStatus)HIGH_LOAD_CONST;
     }
     else
     {
@@ -3636,6 +3994,10 @@ Thrman::change_warning_level(Int32 diff_status, Uint32 factor)
 {
   switch (diff_status)
   {
+    case Int32(-3):
+      jam();
+      inc_warning(4 * factor);
+      break;
     case Int32(-2):
       jam();
       inc_warning(3 * factor);
@@ -3655,6 +4017,10 @@ Thrman::change_warning_level(Int32 diff_status, Uint32 factor)
     case Int32(2):
       jam();
       dec_warning(3 * factor);
+      break;
+    case Int32(3):
+      jam();
+      dec_warning(4 * factor);
       break;
     default:
       ndbabort();
@@ -3833,6 +4199,11 @@ Thrman::handle_state_change(Signal *signal)
     else if (m_current_overload_status == (OverloadStatus)MEDIUM_LOAD_CONST)
     {
       jam();
+      m_current_overload_status = (OverloadStatus)HIGH_LOAD_CONST;
+    }
+    else if (m_current_overload_status == (OverloadStatus)HIGH_LOAD_CONST)
+    {
+      jam();
       m_current_overload_status = (OverloadStatus)OVERLOAD_CONST;
     }
     else
@@ -3866,10 +4237,15 @@ Thrman::handle_state_change(Signal *signal)
       jam();
       m_current_overload_status = (OverloadStatus)LIGHT_LOAD_CONST;
     }
-    else if (m_current_overload_status == (OverloadStatus)OVERLOAD_CONST)
+    else if (m_current_overload_status == (OverloadStatus)HIGH_LOAD_CONST)
     {
       jam();
       m_current_overload_status = (OverloadStatus)MEDIUM_LOAD_CONST;
+    }
+    else if (m_current_overload_status == (OverloadStatus)OVERLOAD_CONST)
+    {
+      jam();
+      m_current_overload_status = (OverloadStatus)HIGH_LOAD_CONST;
     }
     else
     {
@@ -4939,11 +5315,12 @@ Thrman::execDBINFO_SCANREQ(Signal* signal)
           return;
         }
         SendThreadMeasurement measure;
-        bool success = calculate_send_thread_load_last_second(pos - 1,
-                                                              &measure);
+        bool success = calculate_send_thread_load_last_ms(pos - 1,
+                                                          &measure,
+                                                          1000);
         if (!success)
         {
-          g_eventLogger->info("Failed calculate_send_thread_load_last_second");
+          g_eventLogger->info("Failed calculate_send_thread_load_last_ms");
           ndbassert(false);
           ndbinfo_send_scan_conf(signal, req, rl);
           return;

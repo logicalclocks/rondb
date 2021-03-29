@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -656,10 +657,28 @@ SimulatedBlock::setNeighbourNode(NodeId node)
 }
 
 void
-SimulatedBlock::setNoSend()
+SimulatedBlock::setNoSend(Uint32 val)
 {
 #ifdef NDBD_MULTITHREADED
-  mt_setNoSend(m_threadId);
+  mt_setNoSend(m_threadId, val);
+#endif
+}
+
+void
+SimulatedBlock::setNoSendTmp(Uint32 val)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setNoSendTmp(m_threadId, val);
+#endif
+}
+
+Uint32
+SimulatedBlock::getNoSend()
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_getNoSend(m_threadId);
+#else
+  return 0;
 #endif
 }
 
@@ -677,6 +696,32 @@ SimulatedBlock::setWakeupThread(Uint32 wakeup_instance)
 {
 #ifdef NDBD_MULTITHREADED
   mt_setWakeupThread(m_threadId, wakeup_instance);
+#endif
+}
+
+bool
+SimulatedBlock::is_recover_thread(Uint32 thr_no)
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_is_recover_thread(thr_no);
+#else
+  return false;
+#endif
+}
+
+void
+SimulatedBlock::setMaxSendDelay(Uint32 max_send_delay)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setMaxSendDelay(max_send_delay);
+#endif
+}
+
+void
+SimulatedBlock::setMinSendDelay(Uint32 min_send_delay)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_setMinSendDelay(min_send_delay);
 #endif
 }
 

@@ -89,8 +89,6 @@ public:
 
   Uint32 spinTimePerCall() const;
 
-  Uint32 maxSendDelay() const;
-
   Uint32 schedulerResponsiveness() const
   { return _schedulerResponsiveness; }
   void setSchedulerResponsiveness(Uint32 val)
@@ -170,7 +168,6 @@ private:
   Uint32 _schedulerSpinTimer;
   Uint32 _spinTimePerCall;
   Uint32 _realtimeScheduler;
-  Uint32 _maxSendDelay;
   Uint32 _schedulerResponsiveness;
   Uint32 _timeBetweenWatchDogCheckInitial;
 #ifdef ERROR_INSERT

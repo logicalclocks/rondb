@@ -1257,9 +1257,6 @@ Configuration::setupConfiguration(){
   _spinTimePerCall = 1000;
   iter.get(CFG_DB_SPIN_TIME_PER_CALL, &_spinTimePerCall);
 
-  _maxSendDelay = 0;
-  iter.get(CFG_DB_MAX_SEND_DELAY, &_maxSendDelay);
-
   _realtimeScheduler = 0;
   iter.get(CFG_DB_REALTIME_SCHEDULER, &_realtimeScheduler);
 
@@ -1595,12 +1592,6 @@ bool
 Configuration::realtimeScheduler() const
 {
   return (bool)_realtimeScheduler;
-}
-
-Uint32
-Configuration::maxSendDelay() const
-{
-  return _maxSendDelay;
 }
 
 void 

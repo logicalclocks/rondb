@@ -1,5 +1,7 @@
 /*
    Copyright (c) 2011, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
+
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -73,6 +75,7 @@ private:
   Uint32 m_num_send_threads;
   Uint32 m_num_threads;
   Uint32 m_send_thread_percentage;
+  Uint32 m_send_thread_assistance_level;
   Uint32 m_node_overload_level;
 
   Uint32 m_spin_time_change_count;
@@ -331,6 +334,7 @@ private:
   void sendSTTORRY(Signal*, bool);
   void sendNextCONTINUEB(Signal*, Uint32 delay, Uint32 type);
   void measure_cpu_usage(Signal*);
+  void check_send_thread_helpers(Signal*);
   void mark_measurements_not_done();
   void check_overload_status(Signal*, bool, bool);
   void set_spin_stat(Uint32, bool);
@@ -343,7 +347,7 @@ private:
   void set_enable_adaptive_spinning(bool val);
   void set_spintime_per_call(Uint32 val);
 
-  Uint32 calculate_mean_send_thread_load();
+  Uint32 calculate_mean_send_thread_load(Uint32 num_milliseconds);
   void calculate_measurement(MeasurementRecordPtr measurePtr,
                              struct ndb_rusage *curr_rusage,
                              struct ndb_rusage *base_rusage,
@@ -383,8 +387,10 @@ private:
   void sendSET_WAKEUP_THREAD_ORD(Signal *signal,
                                  Uint32 instance_no,
                                  Uint32 wakeup_instance);
+  void handle_send_delay();
   void get_idle_block_threads(Uint32 *thread_list,
-                              Uint32 & num_threads_found);
+                              Uint32 & num_threads_found,
+                              Uint32 max_helpers);
   void assign_wakeup_threads(Signal*, Uint32*, Uint32);
   void update_current_wakeup_instance(Uint32 * threads_list,
                                       Uint32 num_threads_found,
@@ -400,8 +406,9 @@ private:
   bool calculate_cpu_load_last_20seconds(MeasurementRecord *measure);
   bool calculate_cpu_load_last_400seconds(MeasurementRecord *measure);
 
-  bool calculate_send_thread_load_last_second(Uint32 send_instance,
-                                              SendThreadMeasurement *measure);
+  bool calculate_send_thread_load_last_ms(Uint32 send_instance,
+                                          SendThreadMeasurement *measure,
+                                          Uint32 num_milliseconds);
   void fill_in_current_measure(CPURecordPtr cpuPtr,
                                struct ndb_hwinfo *hwinfo);
   bool calculate_next_CPU_measure(CPUMeasurementRecord *lastMeasurePtrP,

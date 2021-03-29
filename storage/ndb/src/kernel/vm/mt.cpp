@@ -1,4 +1,5 @@
 /* Copyright (c) 2008, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -148,7 +149,8 @@ static constexpr Uint32 MAX_LOCAL_BUFFER_USAGE = 8140;
 static Uint32 glob_num_threads = 0;
 static Uint32 glob_num_tc_threads = 1;
 static Uint32 first_receiver_thread_no = 0;
-static Uint32 max_send_delay = 0;
+static Uint32 g_max_send_delay = 0;
+static Uint32 g_min_send_delay = 0;
 static Uint32 glob_ndbfs_thr_no = 0;
 static Uint32 glob_wakeup_latency = 25;
 static Uint32 glob_num_job_buffers_per_thread = 0;
@@ -1085,6 +1087,12 @@ is_recover_thread(unsigned thr_no)
          thr_no <  query_base + num_recover_threads;
 }
 
+bool
+mt_is_recover_thread(Uint32 thr_no)
+{
+  return is_recover_thread(thr_no);
+}
+
 static bool
 is_tc_thread(unsigned thr_no)
 {
@@ -1360,8 +1368,13 @@ struct alignas(NDB_CL) thr_data
 
   /**
    * nosend option on a thread means that it will never assist with sending.
+   * This is the permanent value. We also have a temporary value which is used
+   * by the execution of the do_send. This is set normally to the same value,
+   * but could temporarily be set to another value for send thread assistance
+   * of the main and the rep thread.
    */
   unsigned m_nosend;
+  unsigned m_nosend_tmp;
 
   /**
    * Realtime scheduler activated for this thread. This means this
@@ -1608,6 +1621,20 @@ struct alignas(NDB_CL) thr_data
   void* m_global_variables_uint32_ptrs[1024];
   void* m_global_variables_uint32[1024];
 #endif
+  bool
+  is_real_main_thread(unsigned thr_no)
+  {
+    return (thr_no < globalData.ndbMtMainThreads);
+  }
+  bool
+  check_pending_send(bool pending_send)
+  {
+    pending_send = (!is_real_main_thread(m_thr_no)) ? false :
+                   ((m_overload_status !=
+                    (OverloadStatus)LIGHT_LOAD_CONST) ? false :
+                     pending_send);
+    return pending_send;
+  }
 };
 
 struct mt_send_handle  : public TransporterSendBufferHandle
@@ -2444,7 +2471,9 @@ thr_send_threads::assign_threads_to_assist_send_threads()
     thr_data *selfptr = &rep->m_thread[thr_no];
     selfptr->m_nosend = conf.do_get_nosend(selfptr->m_instance_list,
                                            selfptr->m_instance_count);
-    if (is_recv_thread(thr_no) || selfptr->m_nosend == 1)
+    if (is_recv_thread(thr_no) ||
+        is_recover_thread(thr_no) ||
+        selfptr->m_nosend == 1)
     {
       selfptr->m_send_instance_no = 0;
       selfptr->m_send_instance = NULL;
@@ -2461,8 +2490,10 @@ thr_send_threads::assign_threads_to_assist_send_threads()
         next_send_instance = 0;
       }
     }
-    else
+    selfptr->m_nosend_tmp = selfptr->m_nosend;
+    if (is_main_thread(thr_no))
     {
+      selfptr->m_nosend_tmp = 1;
     }
   }
   for (thr_no = 0; thr_no < glob_num_threads; thr_no++)
@@ -2568,6 +2599,77 @@ thr_send_threads::insert_trp(TrpId trp_id,
  * Called under mutex protection of send_thread_mutex
  * The timer is taken before grabbing the mutex and can thus be a
  * bit older than now when compared to other times.
+ *
+ * The purpose of set_max_delay is to avoid sending to another node
+ * too often. This method is called when we insert a transporter
+ * into the queue of transporters to send to. This is performed in
+ * the alert_send_thread call that is called for each transporter
+ * we need to send to in the do_send call.
+ *
+ * This method is called if this is the first thread that wants to
+ * to send to this node. Now if we have a large data node with many
+ * block threads that are executing at the same time, it is very
+ * likely that another block thread will also want to send to this
+ * node.
+ *
+ * Without send delay in a 48 CPU data node with 12 LDMs, 12 Query
+ * threads, 10 tc threads, 1 main, 1 rep and 4 send threads, with
+ * around 16 concurrent transporters to send to. In this case it
+ * is easy to be sending to each transporter every 10 microseconds.
+ *
+ * Sending to a transporter so often will have several negative
+ * consequences. First of all it will increase the CPU usage for
+ * sending. The reason for this is that each send system call has
+ * large overhead independent of whether the message size is small
+ * or large. This can have severe negative effects.
+ * Second not only does it drive up the CPU usage in the data node
+ * that sends, it also drives up the CPU usage in the API node/data
+ * node receiving the messages.
+ *
+ * Again, delaying sends have a negative impact as well. Delaying
+ * messages means that the CPU cache situation in the receiving
+ * end can change. Thus the longer the delay, the less of the
+ * CPU cache will be beneficial to executing the receive message.
+ *
+ * This means that we want a trade off between efficient sending
+ * and low latency sending.
+ *
+ * The solution to this problem is that we invent an adaptive
+ * algorithm that dependent on the following parameters will set
+ * the max delay parameter in mt.cpp. The g_max_send_delay used to
+ * be a configurable parameter set by MaxSendDelay.
+ *
+ * Now this parameter is automated and the configuration parameter
+ * is calculated based on the following input:
+ *
+ * - Number of block threads
+ * - Current load situation in the block threads.
+ *
+ * This adaptive algorithm is handled in thrman.cpp which has a good
+ * view on the current load situations. It will interact with mt.cpp
+ * through calls to set the global variable g_max_send_delay.
+ *
+ * The method handling this is called handle_send_max_delay and uses
+ * the overload status calculated for adaptive send handling. The more
+ * threads that are highly loaded, the more send delay we invoke. At the
+ * same time the send delay is higher in larger data nodes.
+ *
+ * If the g_max_send_delay is set to 50, it means that after inserting
+ * into the queue of transporters we will not send until 50 microseconds
+ * have passed. Thus blocks threads that assist_send_thread will ignore
+ * sending when a transporter is next to send to, and the transporter
+ * is not ready for sending.
+ *
+ * When this happens in the send thread, the send thread will pause
+ * for a few microseconds until this condition has passed and the
+ * transporter is ready to send to. This pause happens through the
+ * futex_wait call.
+ *
+ * Another delay handling happens at overload. Overload happens when a
+ * send returns having sent 0 bytes. In this case we will set the
+ * delay to 200 microseconds. However the transporter will in this
+ * case still be in the transporter queue, this one will never call
+ * set_max_delay while waiting for those 200 microseconds to arrive.
  */
 void 
 thr_send_threads::set_max_delay(TrpId trp_id, NDB_TICKS now, Uint32 delay_usec)
@@ -2578,7 +2680,6 @@ thr_send_threads::set_max_delay(TrpId trp_id, NDB_TICKS now, Uint32 delay_usec)
 
   trp_state.m_micros_delayed = delay_usec;
   trp_state.m_inserted_time = now;
-  trp_state.m_overload_counter++;
 }
 
 /**
@@ -3059,9 +3160,9 @@ thr_send_threads::alert_send_thread(TrpId trp_id,
    * This is the first send to this trp, so we start the
    * delay timer now.
    */
-  if (max_send_delay > 0)                   // Wait for more payload?
+  if (g_max_send_delay > 0)                   // Wait for more payload?
   {
-    set_max_delay(trp_id, now, max_send_delay);
+    set_max_delay(trp_id, now, g_max_send_delay);
   }
 
   if (send_instance == my_send_instance)
@@ -3486,7 +3587,7 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
       if (thr_no >= glob_num_threads)
       {
         /**
-         * When encountering max_send_delay from send thread we
+         * When encountering g_max_send_delay from send thread we
          * will let the send thread go to sleep for as long as
          * this trp has to wait (it is the shortest sleep we
          * we have. For non-send threads the trp will simply
@@ -3596,6 +3697,20 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
     if (unlikely(more && bytes_sent == 0)) //Trp is overloaded
     {
       set_overload_delay(trp_id, now, 200);//Delay send-retry by 200 us
+    }
+    else
+    {
+      /**
+       * Delay next send such that it doesn't happen until 40 microseconds
+       * have passed. This is to ensure that we don't swamp the receiver
+       * with lots of small messages. If our load is high we will ensure
+       * this by calling this method when g_max_send_delay is set. But this
+       * parameter is also useful when g_max_send_delay is set to 0.
+       *
+       * Thus it protects API nodes and other data nodes from us swamping
+       * them when we have resources to do so.
+       */
+      set_max_delay(trp_id, now, g_min_send_delay);
     }
   }                            // ACTIVE   -> IDLE
   else
@@ -5607,39 +5722,61 @@ send_wakeup_thread_ord(struct thr_data* selfptr,
  *
  * LIGHT_LOAD:
  * -----------
- * In this state we will send to all trps we generate data for. In addition
- * we will also send to one trp if we are going to sleep, we will stay awake
- * until no more trps to send to. However between each send we will also
- * ensure that we execute any signals destined for us.
+ * In this state we will send to all trps we generate data for.
  *
- * LIGHT_LOAD threads can also be provided to other threads as wakeup targets.
- * This means that these threads will be woken up regularly under load to
- * assist with sending.
+ * The main and rep thread has a special role. They will normally not help out
+ * in providing send thread assistance. But if the send thread load increases
+ * to certain levels the main and rep thread will offer such help. In a way the
+ * main and rep thread stays fairly idle to provide emergency assistance at
+ * extreme workloads.
+ *
+ * When main and rep threads do assist, they will assist until there is no more
+ * assistance required or until all transporters are waiting for max send delay
+ * to pass. When those threads are required for assistance, the other threads
+ * will work hard to keep them busy by waking them up once per 100 microseconds.
  *
  * MEDIUM_LOAD:
  * ------------
  * At this load level we will also assist send threads before going to sleep
- * and continue so until we have work ourselves to do or until there are no
- * more trps to send to. We will additionally send partially our own data.
- * We will also wake up a send thread during send to ensure that sends are
- * performed ASAP.
+ * by sending to one transporter, but no more.
  *
- * OVERLOAD:
- * ---------
+ * HIGH_LOAD:
+ * ----------
+ * At this load level we will also assist send threads before going to sleep
+ * by sending to one transporter, but no more.
+ *
+ * OVERLOAD_LOAD:
+ * --------------
  * At this level we will simply inform the send threads about the trps we
  * sent some data to, the actual sending will be handled by send threads
  * and other block threads assisting the send threads.
  *
- * In addition if any thread is at overload level we will sleep for a shorter
+ * In addition if any thread is at medium level we will sleep for a shorter
  * time.
  *
- * The decision about which idle threads to wake up, which overload level to
- * use and when to sleep for shorter time is all taken by the local THRMAN
- * block. Some decisions is also taken by the THRMAN instance in the main
- * thread.
+ * MaxSendDelay
+ * ------------
+ * Send thread assistance can become too effective. To avoid this scenario we
+ * use a feature called MaxSendDelay. This means that when the method
+ * set_max_delay is called on a transporter, this transporter will not be
+ * sent to until this delay has passed.
  *
- * Send threads are woken up in a round robin fashion, each time they are
- * awoken they will continue executing until no more work is around.
+ * Previously this was a configurable parameter. However this parameter is
+ * only required at high loads, at low loads it will simply increase the
+ * latency. Thus we have implemented an adaptive algorithm that tracks the
+ * current load level and sets the desired level for send delay. The larger
+ * the data node, the longer delay we will impose since larger data nodes
+ * tend to require a bit more batching to become efficient. However the
+ * delay will never be set higher than 200 microseconds and never smaller
+ * than 20 microseconds.
+ *
+ * In addition we also use the same mechanism to ensure that we don't send
+ * too often even when the load is low. This is implemented by always
+ * calling set_max_delay on a transporter after a successful send call.
+ * We set the delay to 40 microseconds to ensure that we never send faster
+ * than this to any other transporter. This is of importance since the
+ * data node can easily swamp the API nodes with lots of small messages that
+ * will render the API nodes less efficient.
  */
 static
 bool
@@ -5656,8 +5793,8 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
   if (count == 0)
   {
     if (must_send && assist_send && g_send_threads &&
-        selfptr->m_overload_status <= (OverloadStatus)MEDIUM_LOAD_CONST &&
-        (selfptr->m_nosend == 0))
+        selfptr->m_overload_status <= (OverloadStatus)HIGH_LOAD_CONST &&
+        (selfptr->m_nosend_tmp == 0))
     {
       /**
        * For some overload states we will here provide some
@@ -5704,6 +5841,7 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
                                          selfptr->m_watchdog_counter,
                                          selfptr->m_send_instance,
                                          selfptr->m_send_buffer_pool);
+      pending_send = selfptr->check_pending_send(pending_send);
       NDB_TICKS after = NdbTick_getCurrentTicks();
       selfptr->m_micros_send += NdbTick_Elapsed(now, after).microSec();
     }
@@ -5748,7 +5886,7 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
      * never assist with the sending.
      */
     if (selfptr->m_overload_status == (OverloadStatus)OVERLOAD_CONST ||
-        selfptr->m_nosend != 0)
+        selfptr->m_nosend_tmp != 0)
     {
       for (Uint32 i = 0; i < count; i++)
       {
@@ -5786,16 +5924,21 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
        */
 
       Uint32 num_trps_inserted = 0;
+      struct thr_send_thread_instance *my_send_instance = NULL;
+      if (selfptr->m_overload_status == (OverloadStatus)LIGHT_LOAD_CONST)
+      {
+        my_send_instance = selfptr->m_send_instance;
+      }
       for (Uint32 i = 0; i < count; i++)
       {
         num_trps_inserted += g_send_threads->alert_send_thread(trps[i],
                                                                now,
-                                             selfptr->m_send_instance);
+                                                      my_send_instance);
       }
       Uint32 num_trps_to_send_to = num_trps_inserted;
-      if (selfptr->m_overload_status != (OverloadStatus)MEDIUM_LOAD_CONST)
+      if (selfptr->m_overload_status == (OverloadStatus)MEDIUM_LOAD_CONST)
       {
-        num_trps_to_send_to++;
+        num_trps_to_send_to = num_trps_inserted != 0 ? 1 : 0;
       }
       send_wakeup_thread_ord(selfptr, now);
       if (num_trps_to_send_to > 0)
@@ -5807,12 +5950,16 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
                                            selfptr->m_watchdog_counter,
                                            selfptr->m_send_instance,
                                            selfptr->m_send_buffer_pool);
+        pending_send = selfptr->check_pending_send(pending_send);
       }
       NDB_TICKS after = NdbTick_getCurrentTicks();
       selfptr->m_micros_send += NdbTick_Elapsed(now, after).microSec();
-      g_send_threads->wake_my_send_thread_if_needed(&trps[0],
-                                    count,
-                                    selfptr->m_send_instance);
+      if (selfptr->m_overload_status == (OverloadStatus)LIGHT_LOAD_CONST)
+      {
+        g_send_threads->wake_my_send_thread_if_needed(&trps[0],
+                                      count,
+                                      selfptr->m_send_instance);
+      }
     }
     return pending_send;
   }
@@ -7428,7 +7575,14 @@ static void
 update_spin_config(struct thr_data *selfptr,
                    Uint64 & min_spin_timer)
 {
-  min_spin_timer = selfptr->m_spintime;
+  if (!is_recover_thread(selfptr->m_thr_no))
+  {
+    min_spin_timer = selfptr->m_spintime;
+  }
+  else
+  {
+    min_spin_timer = 0;
+  }
 }
 
 static void check_congestion(thr_data *selfptr);
@@ -7979,22 +8133,22 @@ mt_job_thread_main(void *thr_arg)
       }
       check_congestion(selfptr);
     }
+    else if (send_sum > 0 || pending_send == true)
+    {
+      /* No signals processed, prepare to sleep to wait for more */
+      /* About to sleep, _must_ send now. */
+      flush_all_local_signals_and_wakeup(selfptr);
+      pending_send = do_send(selfptr, TRUE, TRUE);
+      send_sum = 0;
+      flush_sum = 0;
+    }
+
     /**
      * Scheduler is not allowed to yield until its internal
      * time has caught up on real time.
      */
-    else if (lagging_timers == 0)
+    if (sum == 0 && lagging_timers == 0)
     {
-      /* No signals processed, prepare to sleep to wait for more */
-      if (send_sum > 0 || pending_send == true)
-      {
-        /* About to sleep, _must_ send now. */
-        flush_all_local_signals_and_wakeup(selfptr);
-        pending_send = do_send(selfptr, TRUE, TRUE);
-        send_sum = 0;
-        flush_sum = 0;
-      }
-
       /**
        * No more incoming signals to process yet, and we have 
        * either completed all pending sends, or had no progress
@@ -8280,11 +8434,30 @@ mt_getHighResTimer(Uint32 self)
 }
 
 void
-mt_setNoSend(Uint32 self)
+mt_setNoSendTmp(Uint32 self, Uint32 val)
 {
   struct thr_repository* rep = g_thr_repository;
   struct thr_data *selfptr = &rep->m_thread[self];
-  selfptr->m_nosend = 1;
+  if (selfptr->m_nosend_tmp == val)
+    return;
+  selfptr->m_nosend_tmp = val;
+}
+
+void
+mt_setNoSend(Uint32 self, Uint32 val)
+{
+  struct thr_repository* rep = g_thr_repository;
+  struct thr_data *selfptr = &rep->m_thread[self];
+  selfptr->m_nosend = val;
+  selfptr->m_nosend_tmp = val;
+}
+
+Uint32
+mt_getNoSend(Uint32 self)
+{
+  struct thr_repository* rep = g_thr_repository;
+  struct thr_data *selfptr = &rep->m_thread[self];
+  return selfptr->m_nosend;
 }
 
 void
@@ -8311,6 +8484,24 @@ mt_endChangeNeighbourNode()
   if (g_send_threads)
   {
     g_send_threads->endChangeNeighbourNode();
+  }
+}
+
+void
+mt_setMaxSendDelay(Uint32 max_send_delay)
+{
+  if (max_send_delay != g_max_send_delay)
+  {
+    g_max_send_delay = max_send_delay;
+  }
+}
+
+void
+mt_setMinSendDelay(Uint32 min_send_delay)
+{
+  if (min_send_delay != g_min_send_delay)
+  {
+    g_min_send_delay = min_send_delay;
   }
 }
 
@@ -9265,7 +9456,8 @@ thr_init(struct thr_repository* rep, struct thr_data *selfptr, unsigned int cnt,
   selfptr->m_first_unused = 0;
   selfptr->m_send_instance_no = 0;
   selfptr->m_send_instance = NULL;
-  selfptr->m_nosend = 1;
+  selfptr->m_nosend = 0;
+  selfptr->m_nosend_tmp = 0;
   selfptr->m_local_signals_mask.clear();
   selfptr->m_wake_threads_mask.clear();
   selfptr->m_jbb_estimated_queue_size_in_words = 0;
@@ -9868,8 +10060,6 @@ ThreadConfig::ipControlLoop(NdbThread* pThis)
 
   rep->m_thread[first_receiver_thread_no].m_thr_index =
     globalEmulatorData.theConfiguration->addThread(pThis, ReceiveThread);
-
-  max_send_delay = globalEmulatorData.theConfiguration->maxSendDelay();
 
   /**
    * Set the configured time we will spend in spinloop before coming
