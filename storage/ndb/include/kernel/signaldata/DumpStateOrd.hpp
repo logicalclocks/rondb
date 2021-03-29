@@ -94,6 +94,9 @@ public:
     CmvmiRelayDumpStateOrd = 103003,
     CmvmiDummySignal = 103004,
     CmvmiSendDummySignal = 103005,
+    CmvmiSetMaxSendDelay = 103006,
+    CmvmiSetMinSendDelay = 103007,
+    CmvmiSetMaxSendBufferSizeDelay = 103008,
     _CMVMIMax = 103099,
 
     _THRMANMin = 104000,

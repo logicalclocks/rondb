@@ -144,13 +144,24 @@ static constexpr Uint32 MAX_SIGNALS_BEFORE_FLUSH_OTHER = 20;
  
 static constexpr Uint32 MAX_LOCAL_BUFFER_USAGE = 8140;
 
-//#define NDB_MT_LOCK_TO_CPU
+/**
+ * MAX_SEND_BUFFER_SIZE_TO_DELAY is a heauristic constant that specifies
+ * a send buffer size that will always be sent. The size of this is based
+ * on experience that maximum performance of the send part is achieved at
+ * around 64 kBytes of send buffer size and that the difference between
+ * 20 kB and 64 kByte is small. So thus avoiding unnecessary delays that
+ * gain no significant performance gain.
+ */
+static const Uint64 MAX_SEND_BUFFER_SIZE_TO_DELAY = (20 * 1024);
 
 static Uint32 glob_num_threads = 0;
 static Uint32 glob_num_tc_threads = 1;
 static Uint32 first_receiver_thread_no = 0;
+static Uint32 g_conf_max_send_delay = 0;
+static Uint32 g_conf_min_send_delay = 0;
 static Uint32 g_max_send_delay = 0;
 static Uint32 g_min_send_delay = 0;
+static Uint32 g_max_send_buffer_size_delay = MAX_SEND_BUFFER_SIZE_TO_DELAY;
 static Uint32 glob_ndbfs_thr_no = 0;
 static Uint32 glob_wakeup_latency = 25;
 static Uint32 glob_num_job_buffers_per_thread = 0;
@@ -2678,8 +2689,78 @@ thr_send_threads::set_max_delay(TrpId trp_id, NDB_TICKS now, Uint32 delay_usec)
   assert(trp_state.m_data_available > 0);
   assert(!trp_state.m_send_overload);
 
-  trp_state.m_micros_delayed = delay_usec;
-  trp_state.m_inserted_time = now;
+  if (delay_usec == 0 || trp_state.m_micros_delayed < delay_usec)
+  {
+    /**
+     * Always important to perform set_max_delay when resetting timer.
+     *
+     * The model for setting max delay requires it to be set only once.
+     * The model is the following.
+     *
+     * RonDB often receives batch requests.
+     * 1) A range scan is sent to all partitions of the table. This
+     *    means that it will be common that we will have multiple
+     *    LDM/Query threads that execute queries towards the table
+     *    in parallel. The first one that arrives sets the max delay,
+     *    if we set it also for subsequent threads it means that
+     *    at the end we will simply wait for the threads to stop
+     *    sending towards this node. This can be a very long wait
+     *    and this would cause a batch-oriented behaviour.
+     *
+     * 2) A batch of key lookups are performed towards the table or a set
+     *    of tables. Again in this case we want to ensure that as many of
+     *    them are completed as possible before we move on.
+     *
+     * The adaptive algorithm for max send delay should strive to
+     * find a delay that is long enough to wait for all threads to complete
+     * the batch request or scan request. At the same time it should be short
+     * enough to not cause the sender to be waiting so long that it loses too
+     * much CPU cache content. We want an efficient model while at the same
+     * time providing a low latency operation.
+     *
+     * We expect a key lookup to take on the order of 1-2 microseconds and
+     * a range scan can consume around 10 microseconds. On top of this we
+     * have a delay to wake threads up on the order of 10 microseconds.
+     * A batch of 100 key lookups are likely to be spread among the LDM and
+     * query threads. Thus we can expect the execution time for a batch to
+     * be around 10+10 microseconds. At the same time at high load there is
+     * many concurrent batch activities. These means that we need a higher
+     * latency setting at high loads.
+     *
+     * The RonDB thread model receives those batches on one receiver thread,
+     * sends them off to multiple block threads and on the send side we try
+     * to assemble them together again.
+     *
+     * For RonDB to scale with large data nodes, it is imperative that the
+     * number of sends for the same operation isn't increasing. To accomplish
+     * this we use max send delay as the tool to accomplish this. It is
+     * expected in a larger data node that the delay need to be a bit
+     * bigger, the reason is due to the mathematical model. We start a number
+     * of parallel activities, first the more threads we need to start up,
+     * the longer the start up time is, second the wait is waiting for all
+     * to return, this with more to wait for, we increase the probability
+     * that some waits will be longer. So a normal statistical model shows
+     * that we need to increase the max send delay a bit, but not linearly,
+     * in growing size of data nodes.
+     *
+     * To be able to send earlier if possible, we can use two mechanisms,
+     * we can keep track of the number of block threads that are now
+     * waiting for a send on this transporter, and we can keep track of
+     * the number of bytes that are waiting to be sent. There is no reason
+     * to wait for sending if the transporter is already loaded and needs
+     * no more bytes to achieve an efficient send.
+     *
+     * We set the m_micros_delayed again also when the delay to be set is
+     * higher than the one already set. This implies that we either
+     * upgraded the latency from the adaptive algorithm. Alternatively
+     * it is the min send delay that was previously set, when setting the
+     * max send delay, this should override the min send delay. The min
+     * send delay is primarily intended for scenarios where the max send
+     * delay isn't activated yet.
+     */
+    trp_state.m_micros_delayed = delay_usec;
+    trp_state.m_inserted_time = now;
+  }
 }
 
 /**
@@ -2753,16 +2834,6 @@ thr_send_threads::check_delay_expired(TrpId trp_id, NDB_TICKS now)
  */
 
 static Uint64 mt_get_send_buffer_bytes(NodeId id);
-
-/**
- * MAX_SEND_BUFFER_SIZE_TO_DELAY is a heauristic constant that specifies
- * a send buffer size that will always be sent. The size of this is based
- * on experience that maximum performance of the send part is achieved at
- * around 64 kBytes of send buffer size and that the difference between
- * 20 kB and 64 kByte is small. So thus avoiding unnecessary delays that
- * gain no significant performance gain.
- */
-static const Uint64 MAX_SEND_BUFFER_SIZE_TO_DELAY = (20 * 1024);
 
 
 /**
@@ -3160,9 +3231,10 @@ thr_send_threads::alert_send_thread(TrpId trp_id,
    * This is the first send to this trp, so we start the
    * delay timer now.
    */
-  if (g_max_send_delay > 0)                   // Wait for more payload?
+  Uint32 max_send_delay = MAX(g_conf_max_send_delay, g_max_send_delay);
+  if (max_send_delay > 0)                   // Wait for more payload?
   {
-    set_max_delay(trp_id, now, g_max_send_delay);
+    set_max_delay(trp_id, now, max_send_delay);
   }
 
   if (send_instance == my_send_instance)
@@ -3701,7 +3773,7 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
     else
     {
       /**
-       * Delay next send such that it doesn't happen until 40 microseconds
+       * Delay next send such that it doesn't happen until some time
        * have passed. This is to ensure that we don't swamp the receiver
        * with lots of small messages. If our load is high we will ensure
        * this by calling this method when g_max_send_delay is set. But this
@@ -3709,8 +3781,11 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
        *
        * Thus it protects API nodes and other data nodes from us swamping
        * them when we have resources to do so.
+       *
+       * We control this parameter using an adaptive algorithm in THRMAN.
        */
-      set_max_delay(trp_id, now, g_min_send_delay);
+      Uint32 min_send_delay = MAX(g_min_send_delay, g_conf_min_send_delay);
+      set_max_delay(trp_id, now, min_send_delay);
     }
   }                            // ACTIVE   -> IDLE
   else
@@ -8488,6 +8563,12 @@ mt_endChangeNeighbourNode()
 }
 
 void
+mt_setConfMaxSendDelay(Uint32 send_delay)
+{
+  g_conf_max_send_delay = send_delay;
+}
+
+void
 mt_setMaxSendDelay(Uint32 max_send_delay)
 {
   if (max_send_delay != g_max_send_delay)
@@ -8497,11 +8578,26 @@ mt_setMaxSendDelay(Uint32 max_send_delay)
 }
 
 void
+mt_setConfMinSendDelay(Uint32 send_delay)
+{
+  g_conf_min_send_delay = send_delay;
+}
+
+void
 mt_setMinSendDelay(Uint32 min_send_delay)
 {
   if (min_send_delay != g_min_send_delay)
   {
     g_min_send_delay = min_send_delay;
+  }
+}
+
+void
+mt_setMaxSendBufferSizeDelay(Uint32 max_send_buffer_size_delay)
+{
+  if (max_send_buffer_size_delay <= 65536)
+  {
+    g_max_send_buffer_size_delay = max_send_buffer_size_delay;
   }
 }
 
