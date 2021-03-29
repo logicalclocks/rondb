@@ -139,7 +139,7 @@ static constexpr  Uint32 MAX_SIGNALS_PER_JB = 75;
 static constexpr Uint32 MAX_SIGNALS_BEFORE_WAKEUP = 128;
 
 /* Max signals written to other thread before calling flush_local_signals */
-static constexpr Uint32 MAX_SIGNALS_BEFORE_FLUSH_RECEIVER = 2;
+static constexpr Uint32 MAX_SIGNALS_BEFORE_FLUSH_RECEIVER = 20;
 static constexpr Uint32 MAX_SIGNALS_BEFORE_FLUSH_OTHER = 20;
  
 static constexpr Uint32 MAX_LOCAL_BUFFER_USAGE = 8140;
