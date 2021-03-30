@@ -270,6 +270,13 @@ Configuration::fetch_configuration(const char* _connect_string,
 	      "StopOnError missing");
   }
 
+  const char * pidfile_dir;
+  if(iter.get(CFG_NODE_PIDFILE_DIR, &pidfile_dir) == 0)
+  {
+    NdbConfig_SetPidfilePath(pidfile_dir);
+    g_eventLogger->debug("Using Directory: %s for pid file", pidfile_dir);
+  }
+
   const char * datadir;
   if(iter.get(CFG_NODE_DATADIR, &datadir)){
     ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, "Invalid configuration fetched",

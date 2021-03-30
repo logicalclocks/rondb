@@ -1467,6 +1467,17 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     0, 0 },
 
   {
+    CFG_NODE_PIDFILE_DIR,
+    "FileSystemPathPidfile",
+    DB_TOKEN,
+    "Path to directory where the " DB_TOKEN_PRINT " node stores its pid file",
+    ConfigInfo::CI_USED,
+    CI_CHECK_WRITABLE | CI_RESTART_INITIAL,
+    ConfigInfo::CI_STRING,
+    0,
+    0, 0 },
+
+  {
     CFG_DB_FILESYSTEM_PATH,
     "FileSystemPath",
     DB_TOKEN,
@@ -3126,6 +3137,17 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     CI_CHECK_WRITABLE,
     ConfigInfo::CI_STRING,
     "",
+    0, 0 },
+
+  {
+    CFG_NODE_PIDFILE_DIR,
+    "FileSystemPathPidfile",
+    MGM_TOKEN,
+    "Path to directory where the " DB_TOKEN_PRINT " node stores its pid file",
+    ConfigInfo::CI_USED,
+    CI_CHECK_WRITABLE,
+    ConfigInfo::CI_STRING,
+    0,
     0, 0 },
 
   {
