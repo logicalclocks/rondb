@@ -712,6 +712,13 @@ MgmtSrvr::setClusterLog(const Config* config)
   require(iter.get(CFG_NODE_DATADIR, &datadir) == 0);
   NdbConfig_SetPath(datadir);
 
+  const char *pidfile_dir = nullptr;
+  if (iter.get(CFG_NODE_PIDFILE_DIR, &pidfile_dir) == 0)
+  {
+    NdbConfig_SetPidfilePath(pidfile_dir);
+    g_eventLogger->debug("Using Directory: %s for pid file", pidfile_dir);
+  }
+
   if (NdbDir::chdir(NdbConfig_get_path(NULL)) != 0)
   {
     g_eventLogger->warning("Cannot change directory to '%s', error: %d",

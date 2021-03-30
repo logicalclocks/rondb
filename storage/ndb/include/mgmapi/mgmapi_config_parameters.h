@@ -39,6 +39,7 @@
 #define CFG_TOTAL_SEND_BUFFER_MEMORY  9
 #define CFG_LOCATION_DOMAIN_ID        10
 #define CFG_NODE_DEDICATED            11
+#define CFG_NODE_PIDFILE_DIR          12
 
 /**
  * DB config parameters
