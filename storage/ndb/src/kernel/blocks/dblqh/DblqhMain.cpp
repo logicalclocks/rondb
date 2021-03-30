@@ -36012,8 +36012,8 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal)
       Ndbinfo::Row row(signal, req);
       row.write_uint32(getOwnNodeId());
       row.write_uint32(Ndbinfo::REDO);  // log type = REDO
-      row.write_uint32(logPartPtr.p->logPartNo);
-      row.write_uint32(instance());     // log part, instance for ndbmtd
+      row.write_uint32(0);              // log id, always 0 in LQH
+      row.write_uint32(logPartPtr.p->logPartNo); // log part
 
       row.write_uint64(total*entry_size);        // total allocated
       row.write_uint64((total-free)*entry_size); // currently in use
