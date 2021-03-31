@@ -94,7 +94,7 @@ systemInfo(const Configuration & config, const LogLevel & logLevel)
 #endif
 
   if(logLevel.getLogLevel(LogLevel::llStartUp) > 0){
-    g_eventLogger->info("NDB Cluster -- DB node %d", globalData.ownId);
+    g_eventLogger->info("RonDB -- DB node %d", globalData.ownId);
     g_eventLogger->info("%s --", NDB_VERSION_STRING);
 #ifdef NDB_SOLARIS
     g_eventLogger->info("NDB is running on a machine with %d processor(s) at %d MHz",

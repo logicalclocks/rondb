@@ -1,4 +1,5 @@
 /* Copyright (c) 2008, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -146,6 +147,7 @@ class ConfigManager : public MgmtThread {
   bool init_nodeid(void);
 
   /* Set the new config and inform subscribers */
+  void update_mgm_nodemask(bool early); // Update node mask of MGM Servers
   void set_config(Config* config);
   Vector<ConfigSubscriber*> m_subscribers;
 
@@ -239,7 +241,10 @@ class ConfigManager : public MgmtThread {
 
   } m_dynamic_ports;
 
+  Uint32 m_retry;
 public:
+  void set_node_failed(Uint32 nodeId);
+
   ConfigManager(const MgmtSrvr::MgmtOpts&,
                 const char* configdir);
   ~ConfigManager() override;

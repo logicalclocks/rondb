@@ -166,7 +166,7 @@ int main(int argc, char** argv){
       read_history(histfile.c_str());
 #endif
 
-    ndbout << "-- NDB Cluster -- Management Client --" << endl;
+    ndbout << "-- RonDB -- Management Client --" << endl;
     while(read_and_execute(com, opt_connect_retries))
       ;
 

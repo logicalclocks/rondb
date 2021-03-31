@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -402,6 +403,8 @@ private:
   
   void execSTART_ORD(Signal*);
   void execSYNC_THREAD_VIA_CONF(Signal*);
+
+  void execACTIVATE_REQ(Signal*);
 
   // Arbitration signals
   void execARBIT_CFG(Signal* signal);

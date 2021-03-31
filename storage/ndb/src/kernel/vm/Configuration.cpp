@@ -70,6 +70,9 @@ extern EventLogger * g_eventLogger;
 
 extern Uint32 g_start_type;
 
+NdbNodeBitmask g_nowait_nodes;
+NodeBitmask g_not_active_nodes;
+
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_AUTOMATIC_MEMORY 1
 #endif
@@ -270,6 +273,13 @@ Configuration::fetch_configuration(const char* _connect_string,
 	      "StopOnError missing");
   }
 
+  const char * pidfile_dir;
+  if(iter.get(CFG_NODE_PIDFILE_DIR, &pidfile_dir) == 0)
+  {
+    NdbConfig_SetPidfilePath(pidfile_dir);
+    g_eventLogger->debug("Using Directory: %s for pid file", pidfile_dir);
+  }
+
   const char * datadir;
   if(iter.get(CFG_NODE_DATADIR, &datadir)){
     ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, "Invalid configuration fetched",
@@ -353,6 +363,74 @@ Configuration::get_total_memory(const ndb_mgm_configuration_iterator *p,
 }
 
 void
+Configuration::set_not_active_nodes()
+{
+  const char * msg = "Invalid configuration fetched";
+  char buf[255];
+  ndb_mgm_configuration_iterator * p = m_clusterConfigIter;
+
+  Uint32 nodeNo = 0;
+  NodeBitmask nodes;
+  for(ndb_mgm_first(p); ndb_mgm_valid(p); ndb_mgm_next(p), nodeNo++)
+  {
+    Uint32 nodeId;
+    Uint32 nodeType;
+    
+    if(ndb_mgm_get_int_parameter(p, CFG_NODE_ID, &nodeId)){
+      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg,
+                "Node data (Id) missing");
+    }
+    
+    if(ndb_mgm_get_int_parameter(p, CFG_TYPE_OF_SECTION, &nodeType)){
+      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg,
+                "Node data (Type) missing");
+    }
+    
+    if(nodeId > MAX_NODES || nodeId == 0){
+      BaseString::snprintf(buf, sizeof(buf),
+	       "Invalid node id: %d", nodeId);
+      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
+    }
+    
+    if(nodes.get(nodeId)){
+      BaseString::snprintf(buf, sizeof(buf),
+                           "Two nodes can not have the same node id: %d",
+	                   nodeId);
+      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
+    }
+    nodes.set(nodeId);
+        
+    switch(nodeType){
+    case NODE_TYPE_DB:
+      if(nodeId > MAX_NDB_NODES){
+		  BaseString::snprintf(buf, sizeof(buf),
+                  "Maximum node id for a ndb node is: %d", 
+		 MAX_NDB_NODES);
+	ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
+      }
+      break;
+    case NODE_TYPE_API:
+      break;
+    case NODE_TYPE_MGM:
+      break;
+    default:
+      BaseString::snprintf(buf, sizeof(buf),
+                           "Unknown node type: %d", nodeType);
+      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
+    }
+    Uint32 active_node = 1;
+    ndb_mgm_get_int_parameter(p, CFG_NODE_ACTIVE, &active_node);
+    if (active_node == 0)
+    {
+      g_not_active_nodes.set(nodeId);
+      if (nodeType == NODE_TYPE_DB)
+        g_nowait_nodes.set(nodeId);
+      globalTransporterRegistry.set_active_node(nodeId, 0);
+    }
+  }
+}
+
+void
 Configuration::get_num_nodes(Uint32 &noOfNodes,
                              Uint32 &noOfDBNodes,
                              Uint32 &noOfAPINodes,
@@ -370,11 +448,13 @@ Configuration::get_num_nodes(Uint32 &noOfNodes,
     Uint32 nodeType;
     
     if(ndb_mgm_get_int_parameter(p, CFG_NODE_ID, &nodeId)){
-      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, "Node data (Id) missing");
+      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg,
+                "Node data (Id) missing");
     }
     
     if(ndb_mgm_get_int_parameter(p, CFG_TYPE_OF_SECTION, &nodeType)){
-      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, "Node data (Type) missing");
+      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg,
+                "Node data (Type) missing");
     }
     
     if(nodeId > MAX_NODES || nodeId == 0){
@@ -384,8 +464,9 @@ Configuration::get_num_nodes(Uint32 &noOfNodes,
     }
     
     if(nodes.get(nodeId)){
-      BaseString::snprintf(buf, sizeof(buf), "Two node can not have the same node id: %d",
-	       nodeId);
+      BaseString::snprintf(buf, sizeof(buf),
+                           "Two node can not have the same node id: %d",
+	                   nodeId);
       ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
     }
     nodes.set(nodeId);
@@ -395,7 +476,8 @@ Configuration::get_num_nodes(Uint32 &noOfNodes,
       noOfDBNodes++; // No of NDB processes
       
       if(nodeId > MAX_NDB_NODES){
-		  BaseString::snprintf(buf, sizeof(buf), "Maximum node id for a ndb node is: %d", 
+		  BaseString::snprintf(buf, sizeof(buf),
+                  "Maximum node id for a ndb node is: %d", 
 		 MAX_NDB_NODES);
 	ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
       }
@@ -407,7 +489,8 @@ Configuration::get_num_nodes(Uint32 &noOfNodes,
       noOfMGMNodes++; // No of MGM processes
       break;
     default:
-      BaseString::snprintf(buf, sizeof(buf), "Unknown node type: %d", nodeType);
+      BaseString::snprintf(buf, sizeof(buf),
+                           "Unknown node type: %d", nodeType);
       ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, msg, buf);
     }
   }
@@ -1552,6 +1635,7 @@ Configuration::setupConfiguration(){
   {
     assign_default_memory_sizes(it_p);
   }
+  set_not_active_nodes();
   DBUG_VOID_RETURN;
 }
 

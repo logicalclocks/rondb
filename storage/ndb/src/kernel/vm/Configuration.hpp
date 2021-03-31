@@ -222,6 +222,7 @@ private:
   static Uint64 compute_fs_memory();
   static Uint64 get_and_set_shared_global_memory(
            const ndb_mgm_configuration_iterator *p);
+  void set_not_active_nodes();
 public:
   static Uint64 get_send_buffer(const ndb_mgm_configuration_iterator *p);
   void get_num_nodes(Uint32 & noOfNodes,

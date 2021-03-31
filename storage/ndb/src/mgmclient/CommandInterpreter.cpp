@@ -26,6 +26,7 @@
 #include <ndb_global.h>
 
 #include <mgmapi.h>
+#include <ConfigValues.hpp>
 #include <ndbd_exit_codes.h>
 
 #include <util/BaseString.hpp>
@@ -33,6 +34,16 @@
 #include <kernel/BlockNumbers.h>
 #include <kernel/signaldata/DumpStateOrd.hpp>
 #include <NdbTCP.h>
+#include <../../src/mgmapi/mgmapi_configuration.hpp>
+
+enum StopState
+{
+  StopIdle = 0,
+  StopAborted = 1,
+  StopStarted = 2,
+  StopCompleted = 3
+};
+static StopState g_stop_state[MAX_NDB_NODES];
 
 /**
  *  @class CommandInterpreter
@@ -111,7 +122,24 @@ private:
   int  executePrompt(char* parameters);
   void executeClusterLog(char* parameters);
 
+  bool get_node_section(ConfigValues::Iterator & iter,
+                        int node_id,
+                        Uint32 type);
+  bool get_node_status(int processId,
+                       int &num_mgm_nodes_alive,
+                       int &num_data_nodes_alive,
+                       int &num_api_nodes_alive,
+                       bool &is_node_up,
+                       ndb_mgm_node_type &node_type);
+  void wait_for_stop_report(int processId);
+  Uint32 count_active_nodes(ndb_mgm_configuration *conf,
+                            ndb_mgm_node_type node_type);
+  int stop_node(int processId);
+  bool check_before_config_change(int, bool&, ndb_mgm_node_type &);
 public:
+  int  executeHostname(int processId, const char* parameters, bool all);
+  int  executeActivate(int processId, const char* parameters, bool all);
+  int  executeDeactivate(int processId, const char* parameters, bool all);
   int  executeStop(int processId, const char* parameters, bool all);
   int  executeEnterSingleUser(char* parameters);
   int  executeExitSingleUser(char* parameters);
@@ -231,7 +259,7 @@ const char*Ndb_mgmclient::get_current_prompt() const
  *****************************************************************************/
 static const char* helpText =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help\n"
+" RonDB -- Management Client -- Help\n"
 "---------------------------------------------------------------------------\n"
 "HELP                                   Print help text\n"
 "HELP COMMAND                           Print detailed help for COMMAND(e.g. SHOW)\n"
@@ -251,6 +279,9 @@ static const char* helpText =
 "CLUSTERLOG OFF [<severity>] ...        Disable Cluster logging\n"
 "CLUSTERLOG TOGGLE [<severity>] ...     Toggle severity filter on/off\n"
 "CLUSTERLOG INFO                        Print cluster log information\n"
+"<id> HOSTNAME [<hostname/IP>]          Change hostname of a deactivated node\n"
+"<id> ACTIVATE                          Activate a node previously deactivated\n"
+"<id> DEACTIVATE                        Deactivate a node (and stop it)\n"
 "<id> START                             Start data node (started with -n)\n"
 "<id> RESTART [-n] [-i] [-a] [-f]       Restart data or management server node\n"
 "<id> STOP [-a] [-f]                    Stop data or management server node\n"
@@ -268,7 +299,7 @@ static const char* helpText =
 
 static const char* helpTextShow =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for SHOW command\n"
+" RonDB -- Management Client -- Help for SHOW command\n"
 "---------------------------------------------------------------------------\n"
 "SHOW Print information about cluster\n\n"
 "SHOW               Print information about cluster.The status reported is from\n"
@@ -278,15 +309,15 @@ static const char* helpTextShow =
 
 static const char* helpTextHelp =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for HELP command\n"
+" RonDB -- Management Client -- Help for HELP command\n"
 "---------------------------------------------------------------------------\n"
-"HELP List available commands of NDB Cluster Management Client\n\n"
+"HELP List available commands of RonDB Management Client\n\n"
 "HELP               List available commands.\n"
 ;
 
 static const char* helpTextBackup =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for BACKUP command\n"
+" RonDB -- Management Client -- Help for BACKUP command\n"
 "---------------------------------------------------------------------------\n"
 "BACKUP  A backup is a snapshot of the database at a given time. \n"
 "        The backup consists of three main parts:\n\n"
@@ -303,7 +334,7 @@ static const char* helpTextBackup =
 
 static const char* helpTextStartBackup =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for START BACKUP command\n"
+" RonDB -- Management Client -- Help for START BACKUP command\n"
 "---------------------------------------------------------------------------\n"
 "START BACKUP  Start a cluster backup\n\n"
 "START BACKUP [<backup id>] [ENCRYPT PASSWORD='<password>']\n"
@@ -345,7 +376,7 @@ static const char* helpTextStartBackup =
 
 static const char* helpTextAbortBackup =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for ABORT BACKUP command\n"
+" RonDB -- Management Client -- Help for ABORT BACKUP command\n"
 "---------------------------------------------------------------------------\n"
 "ABORT BACKUP  Abort a cluster backup\n\n"
 "ABORT BACKUP <backup id>  \n"
@@ -356,7 +387,7 @@ static const char* helpTextAbortBackup =
 
 static const char* helpTextShutdown =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for SHUTDOWN command\n"
+" RonDB -- Management Client -- Help for SHUTDOWN command\n"
 "---------------------------------------------------------------------------\n"
 "SHUTDOWN  Shutdown the cluster\n\n"
 "SHUTDOWN           Shutdown the data nodes and management nodes.\n"
@@ -366,7 +397,7 @@ static const char* helpTextShutdown =
 
 static const char* helpTextClusterlogOn =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for CLUSTERLOG ON command\n"
+" RonDB -- Management Client -- Help for CLUSTERLOG ON command\n"
 "---------------------------------------------------------------------------\n"
 "CLUSTERLOG ON  Enable Cluster logging\n\n"
 "CLUSTERLOG ON [<severity>] ... \n"
@@ -379,7 +410,7 @@ static const char* helpTextClusterlogOn =
 
 static const char* helpTextClusterlogOff =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for CLUSTERLOG OFF command\n"
+" RonDB -- Management Client -- Help for CLUSTERLOG OFF command\n"
 "---------------------------------------------------------------------------\n"
 "CLUSTERLOG OFF  Disable Cluster logging\n\n"
 "CLUSTERLOG OFF [<severity>] ...  \n"
@@ -392,7 +423,7 @@ static const char* helpTextClusterlogOff =
 
 static const char* helpTextClusterlogToggle =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for CLUSTERLOG TOGGLE command\n"
+" RonDB -- Management Client -- Help for CLUSTERLOG TOGGLE command\n"
 "---------------------------------------------------------------------------\n"
 "CLUSTERLOG TOGGLE  Toggle severity filter on/off\n\n"
 "CLUSTERLOG TOGGLE [<severity>] ...  \n"
@@ -405,16 +436,58 @@ static const char* helpTextClusterlogToggle =
 
 static const char* helpTextClusterlogInfo =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for CLUSTERLOG INFO command\n"
+" RonDB -- Management Client -- Help for CLUSTERLOG INFO command\n"
 "---------------------------------------------------------------------------\n"
 "CLUSTERLOG INFO  Print cluster log information\n\n"
 "CLUSTERLOG INFO    Display which severity levels have been enabled,\n"
 "                   see HELP CLUSTERLOG for list of the severity levels.\n"
 ;
 
+static const char* helpTextHostname =
+"---------------------------------------------------------------------------\n"
+" RonDB -- Management Client -- Help for HOSTNAME command\n"
+"---------------------------------------------------------------------------\n"
+"HOSTNAME Change hostname of a currently deactive node\n\n"
+"<id> HOSTNAME [<hostname>]    Set the new hostname of the node identified   \n"
+"                              by <id>.\n\n"
+;
+
+static const char* helpTextActivate =
+"---------------------------------------------------------------------------\n"
+" RonDB -- Management Client -- Help for ACTIVATE command\n"
+"---------------------------------------------------------------------------\n"
+"ACTIVATE Activate a previously deactive node\n\n"
+"<id> ACTIVATE        Activate the node identified by <id>.\n\n"
+"We can define a node in the configuration for future growth. For example we\n"
+"can start with a single node, but still define the number of replicas to be\n"
+"3 and 3 nodes are defined. 2 of those of nodes are defined as Not Active.  \n"
+"If later we want to start any of these nodes we need to execute the        \n"
+"ACTIVATE NODE command. The active nodes won't allow an inactive node to    \n"
+"join the cluster. It is possible to create inactive nodes of all types, API\n"
+", Management nodes and Data nodes. When starting an inactive node it must  \n"
+"always be started with the flag --initial since it is assumed to be an     \n"
+"initial start of the node. The actual start will then be treated as a      \n"
+"normal initial node restart of the now activated node.                     \n"
+;
+static const char* helpTextDeactivate =
+"---------------------------------------------------------------------------\n"
+" RonDB -- Management Client -- Help for DEACTIVATE command\n"
+"---------------------------------------------------------------------------\n"
+"DEACTIVATE Dectivate a previously deactive node\n\n"
+"<id> DEACTIVATE        Deactivate the node identified by <id>.\n\n"
+"We can deactivate a node currently active. A node can be used temporarily  \n"
+"during a change of the cluster to ensure that we have proper replication   \n"
+"during the change. As an example if we have a cluster with 2 data nodes and\n"
+"we want to change one of the data nodes to another machine we can first    \n"
+"activate a node and start it up. Thus after this start we have 3 replicas, \n"
+"now we can deactivate the node we no longer need. This will both stop the  \n"
+"node and deactivate the node. The node can only rejoin the cluster through \n"
+"a new activation and initial start after this. Thus we cannot reuse any    \n"
+"log files and checkpoint files from the deactivated node.                  \n"
+;
 static const char* helpTextStart =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for START command\n"
+" RonDB -- Management Client -- Help for START command\n"
 "---------------------------------------------------------------------------\n"
 "START  Start data node (started with -n)\n\n"
 "<id> START         Start the data node identified by <id>.\n"
@@ -428,7 +501,7 @@ static const char* helpTextStart =
 
 static const char* helpTextRestart =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for RESTART command\n"
+" RonDB -- Management Client -- Help for RESTART command\n"
 "---------------------------------------------------------------------------\n"
 "RESTART  Restart data or management server node\n\n"
 "<id> RESTART [-n] [-i] [-a] [-f]\n"
@@ -449,7 +522,7 @@ static const char* helpTextRestart =
 
 static const char* helpTextStop =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for STOP command\n"
+" RonDB -- Management Client -- Help for STOP command\n"
 "---------------------------------------------------------------------------\n"
 "STOP  Stop data or management server node\n\n"
 "<id> STOP [-a] [-f]\n"
@@ -464,7 +537,7 @@ static const char* helpTextStop =
 
 static const char* helpTextEnterSingleUserMode =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for ENTER SINGLE USER MODE command\n"
+" RonDB -- Management Client -- Help for ENTER SINGLE USER MODE command\n"
 "---------------------------------------------------------------------------\n"
 "ENTER SINGLE USER MODE  Enter single user mode\n\n"
 "ENTER SINGLE USER MODE <id> \n"
@@ -474,7 +547,7 @@ static const char* helpTextEnterSingleUserMode =
 
 static const char* helpTextExitSingleUserMode =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for EXIT SINGLE USER MODE command\n"
+" RonDB -- Management Client -- Help for EXIT SINGLE USER MODE command\n"
 "---------------------------------------------------------------------------\n"
 "EXIT SINGLE USER MODE  Exit single user mode\n\n"
 "EXIT SINGLE USER MODE \n"
@@ -484,7 +557,7 @@ static const char* helpTextExitSingleUserMode =
 
 static const char* helpTextNodelog =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for NODELOG command\n"
+" RonDB -- Management Client -- Help for NODELOG command\n"
 "---------------------------------------------------------------------------\n"
 "<id> NODELOG DEBUG ON   Enable debug messages in node log\n"
 "<id> NODELOG DEBUG OFF  Disable debug messages in node log\n"
@@ -492,7 +565,7 @@ static const char* helpTextNodelog =
 
 static const char* helpTextStatus =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for STATUS command\n"
+" RonDB -- Management Client -- Help for STATUS command\n"
 "---------------------------------------------------------------------------\n"
 "STATUS  Print status\n\n"
 "<id> STATUS        Displays status information for the data node <id>\n"
@@ -524,7 +597,7 @@ static const char* helpTextStatus =
 
 static const char* helpTextClusterlog =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for CLUSTERLOG command\n"
+" RonDB -- Management Client -- Help for CLUSTERLOG command\n"
 "---------------------------------------------------------------------------\n"
 "CLUSTERLOG  Set log level for cluster log\n\n"
 " <id> CLUSTERLOG {<category>=<level>}+  \n"
@@ -543,7 +616,7 @@ static const char* helpTextClusterlog =
 
 static const char* helpTextPurgeStaleSessions =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for PURGE STALE SESSIONS command\n"
+" RonDB -- Management Client -- Help for PURGE STALE SESSIONS command\n"
 "---------------------------------------------------------------------------\n"
 "PURGE STALE SESSIONS  Reset reserved nodeid's in the mgmt server\n\n"
 "PURGE STALE SESSIONS \n"
@@ -559,7 +632,7 @@ static const char* helpTextPurgeStaleSessions =
 
 static const char* helpTextConnect =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for CONNECT command\n"
+" RonDB -- Management Client -- Help for CONNECT command\n"
 "---------------------------------------------------------------------------\n"
 "CONNECT  Connect to management server (reconnect if already connected)\n\n"
 "CONNECT [<connectstring>] \n"
@@ -579,7 +652,7 @@ static const char* helpTextConnect =
 
 static const char* helpTextReport =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for REPORT command\n"
+" RonDB -- Management Client -- Help for REPORT command\n"
 "---------------------------------------------------------------------------\n"
 "REPORT  Displays a report of type <report-type> for the specified data \n"
 "        node, or for all data nodes using ALL\n"
@@ -590,7 +663,7 @@ static void helpTextReportTypeOptionFn();
 
 static const char* helpTextQuit =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for QUIT command\n"
+" RonDB -- Management Client -- Help for QUIT command\n"
 "---------------------------------------------------------------------------\n"
 "QUIT  Quit management client\n\n"
 "QUIT               Terminates the management client. \n"                    
@@ -599,7 +672,7 @@ static const char* helpTextQuit =
 
 static const char* helpTextPrompt =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for PROMPT command\n"
+" RonDB -- Management Client -- Help for PROMPT command\n"
 "---------------------------------------------------------------------------\n"
 "PROMPT  Toggle the prompt between string specified\n"
 "        or default prompt if no string specified\n\n"
@@ -611,7 +684,7 @@ static const char* helpTextPrompt =
 #ifdef VM_TRACE // DEBUG ONLY
 static const char* helpTextDebug =
 "---------------------------------------------------------------------------\n"
-" NDB Cluster -- Management Client -- Help for Debugging (Internal use only)\n"
+" RonDB -- Management Client -- Help for Debugging (Internal use only)\n"
 "---------------------------------------------------------------------------\n"
 "SHOW PROPERTIES                       Print config properties object\n"
 "<id> LOGLEVEL {<category>=<level>}+   Set log level\n"
@@ -646,6 +719,9 @@ struct st_cmd_help {
   {"CLUSTERLOG OFF", helpTextClusterlogOff, NULL},
   {"CLUSTERLOG TOGGLE", helpTextClusterlogToggle, NULL},
   {"CLUSTERLOG INFO", helpTextClusterlogInfo, NULL},
+  {"HOSTNAME", helpTextHostname, NULL},
+  {"ACTIVATE", helpTextActivate, NULL},
+  {"DEACTIVATE", helpTextDeactivate, NULL},
   {"START", helpTextStart, NULL},
   {"RESTART", helpTextRestart, NULL},
   {"STOP", helpTextStop, NULL},
@@ -849,6 +925,7 @@ printLogEvent(struct ndb_logevent* event)
     case NDB_LE_NDBStopStarted:
       ndbout_c("Node %u: %s shutdown initiated", R,
                (Q(stoptype) == 1 ? "Cluster" : "Node"));
+      g_stop_state[R] = StopState::StopStarted;
       break;
 #undef  EVENT
 #define EVENT NDBStopCompleted
@@ -862,6 +939,7 @@ printLogEvent(struct ndb_logevent* event)
                             Q(signum));
         ndbout_c("Node %u: Node shutdown completed%s.%s", 
                  R, action_str.c_str(), signum_str.c_str());
+        g_stop_state[R] = StopState::StopCompleted;
       }
       break;
 #undef  EVENT
@@ -895,12 +973,14 @@ printLogEvent(struct ndb_logevent* event)
         ndbout_c("Node %u: Forced node shutdown completed%s.%s%s",
                  R, action_str.c_str(), sphase_str.c_str(), 
                  reason_str.c_str());
+        g_stop_state[R] = StopState::StopCompleted;
       }
       break;
 #undef  EVENT
 #define EVENT StopAborted
     case NDB_LE_NDBStopAborted:
       ndbout_c("Node %u: Node shutdown aborted", R);
+      g_stop_state[R] = StopState::StopAborted;
       break;
     /** 
      * NDB_MGM_EVENT_CATEGORY_STATISTIC
@@ -1470,6 +1550,9 @@ static const CommandInterpreter::CommandFunctionPair commands[] = {
   ,{ "TESTOFF", &CommandInterpreter::executeTestOff }
   ,{ "DUMP", &CommandInterpreter::executeDumpState }
   ,{ "REPORT", &CommandInterpreter::executeReport }
+  ,{ "HOSTNAME", &CommandInterpreter::executeHostname }
+  ,{ "ACTIVATE", &CommandInterpreter::executeActivate }
+  ,{ "DEACTIVATE", &CommandInterpreter::executeDeactivate }
 };
 
 
@@ -1754,12 +1837,12 @@ CommandInterpreter::executeShutdown(char* parameters)
   int need_disconnect;
   result = ndb_mgm_stop3(m_mgmsrv, -1, 0, 0, &need_disconnect);
   if (result < 0) {
-    ndbout << "Shutdown of NDB Cluster node(s) failed." << endl;
+    ndbout << "Shutdown of RonDB node(s) failed." << endl;
     printError();
     return result;
   }
 
-  ndbout << result << " NDB Cluster node(s) have shutdown." << endl;
+  ndbout << result << " RonDB node(s) have shutdown." << endl;
 
   if(need_disconnect) {
     ndbout << "Disconnecting to allow management server to shutdown."
@@ -1837,7 +1920,8 @@ print_nodes(ndb_mgm_cluster_state2 *state, ndb_mgm_configuration_iterator *it,
     if(node_state->node_type == type) {
       int node_id= node_state->node_id;
       ndbout << "id=" << node_id;
-      if(node_state->version != 0) {
+      if(node_state->version != 0)
+      {
 	const char *hostname= node_state->connect_address;
 	if (hostname == 0
 	    || strlen(hostname) == 0
@@ -1877,22 +1961,34 @@ print_nodes(ndb_mgm_cluster_state2 *state, ndb_mgm_configuration_iterator *it,
           }
         }
 	ndbout << ")" << endl;
-      } else {
+      }
+      else
+      {
 	ndb_mgm_first(it);
-	if(ndb_mgm_find(it, CFG_NODE_ID, node_id) == 0){
+	if(ndb_mgm_find(it, CFG_NODE_ID, node_id) == 0)
+        {
 	  const char *config_hostname= 0;
-	  ndb_mgm_get_string_parameter(it, CFG_NODE_HOST, &config_hostname);
-	  if (config_hostname == 0 || config_hostname[0] == 0)
-	    config_hostname= "any host";
-          if (type == NDB_MGM_NODE_TYPE_API && node_state->is_single_user)
+          Uint32 active_node = 1;
+          ndb_mgm_get_int_parameter(it, CFG_NODE_ACTIVE, &active_node);
+          if (active_node == 0)
           {
-            ndbout_c(" (not connected, accepting connect from %s, "
-              "allowed single user)", config_hostname);
+            ndbout_c(" (not connected, node is deactivated)");
           }
           else
           {
-            ndbout_c(" (not connected, accepting connect from %s)",
-              config_hostname);
+	    ndb_mgm_get_string_parameter(it, CFG_NODE_HOST, &config_hostname);
+	    if (config_hostname == 0 || config_hostname[0] == 0)
+	      config_hostname= "any host";
+            if (type == NDB_MGM_NODE_TYPE_API && node_state->is_single_user)
+            {
+              ndbout_c(" (not connected, accepting connect from %s, "
+                "allowed single user)", config_hostname);
+            }
+            else
+            {
+              ndbout_c(" (not connected, accepting connect from %s)",
+                config_hostname);
+            }
           }
 	}
 	else
@@ -2265,7 +2361,7 @@ CommandInterpreter::executeStop(Vector<BaseString> &command_list,
   else
   {
     if (node_ids == 0)
-      ndbout_c("NDB Cluster has shutdown.");
+      ndbout_c("RonDB has shutdown.");
     else
     {
       ndbout << "Node";
@@ -2326,6 +2422,546 @@ CommandInterpreter::executeExitSingleUser(char* parameters)
   }
 }
 
+bool
+CommandInterpreter::get_node_section(ConfigValues::Iterator & iter,
+                                      int node_id,
+                                      Uint32 type)
+{
+  bool ret;
+  Uint32 check_node_id = 0;
+  for (int i = 0; i < MAX_NODES; i++)
+  {
+    if (!iter.openSection(CFG_SECTION_NODE, i))
+      continue;
+    ret = iter.get(CFG_NODE_ID, &check_node_id);
+    assert(ret);
+    if (check_node_id == (Uint32)node_id)
+      break;
+    iter.closeSection();
+  }
+  if (check_node_id != (Uint32)node_id)
+  {
+    ndbout_c("Node %d not found in configuration", node_id);
+    return false;
+  }
+  if (type == 0)
+  {
+    return true;
+  }
+  Uint32 check_type;
+  ret = iter.get(CFG_TYPE_OF_SECTION, &check_type);
+  require(ret);
+  if (check_type != type)
+  {
+    iter.closeSection();
+    ndbout_c("Node %d found, but with wrong node type", node_id);
+    return false;
+  }
+  return true;
+}
+
+Uint32
+CommandInterpreter::count_active_nodes(ndb_mgm_configuration *conf,
+                                       ndb_mgm_node_type node_type)
+{
+  Uint32 node_count = 0;
+  ConfigValues::Iterator iter(conf->m_config);
+  for (int i = 0; i < MAX_NODES; i++)
+  {
+    if (!iter.openSection(CFG_SECTION_NODE, i))
+      continue;
+    Uint32 check_type;
+    Uint32 is_active = 1;
+    iter.get(CFG_TYPE_OF_SECTION, &check_type);
+    iter.get(CFG_NODE_ACTIVE, &is_active);
+    if ((ndb_mgm_node_type)check_type == node_type &&
+        is_active)
+    {
+      node_count++;
+    }
+    iter.closeSection();
+  }
+  return node_count;
+}
+
+bool
+CommandInterpreter::check_before_config_change(int processId,
+                                               bool & is_node_up,
+                                               ndb_mgm_node_type & node_type)
+{
+  int num_mgm_nodes_alive;
+  int num_data_nodes_alive;
+  int num_api_nodes_alive;
+  if (!get_node_status(processId,
+                       num_mgm_nodes_alive,
+                       num_data_nodes_alive,
+                       num_api_nodes_alive,
+                       is_node_up,
+                       node_type))
+  {
+    ndbout_c("Failed get_node_status");
+    return false;
+  }
+
+  if (num_mgm_nodes_alive == 0)
+  {
+    ndbout_c("At least one MGM server need to be alive to change the config");
+    return false;
+  }
+  return true;
+}
+
+int
+CommandInterpreter::executeHostname(int processId,
+                                    const char* parameters,
+                                    bool all)
+{
+  if (all)
+  {
+    ndbout << "ALL HOSTNAME command not allowed" << endl;
+    return -1;
+  }
+  bool is_node_up;
+  ndb_mgm_node_type node_type;
+  if (!check_before_config_change(processId, is_node_up, node_type))
+  {
+    return -1;
+  }
+  (void)is_node_up;
+  (void)node_type;
+
+  Vector<BaseString> command_list;
+  if (!parameters)
+  {
+    ndbout_c("Need a hostname parameter to this command");
+    ndbout_c("<id> HOSTNAME hostname");
+    return -1;
+  }
+  split_args(parameters, command_list);
+  if (command_list.size() != 1)
+  {
+    ndbout_c("Command have too many parameters");
+    ndbout_c("<id> HOSTNAME hostname");
+    return -1;
+  }
+
+  ndb_mgm_configuration * conf = ndb_mgm_get_configuration(m_mgmsrv,0);
+  if (conf == 0)
+  {
+    ndbout_c("Could not get configuration");
+    printError();
+    return -1;
+  }
+
+  ConfigValues::Iterator iter(conf->m_config);
+  bool ret = get_node_section(iter, processId, 0);
+  if (!ret)
+  {
+    printError();
+    ndbout_c("Failed to get configuration of node %d", processId);
+    ndb_mgm_destroy_configuration(conf);
+    return -1;
+  }
+  Uint32 is_active = 1;
+  iter.get(CFG_NODE_ACTIVE, &is_active);
+  if (is_active)
+  {
+    iter.closeSection();
+    ndbout_c("Node %d is active, can only change hostname of a deactivated"
+             " node",
+             processId);
+    ndb_mgm_destroy_configuration(conf);
+    return -1;
+  }
+  const char *new_hostname = command_list[0].c_str();
+  iter.set(CFG_NODE_HOST, new_hostname);
+  iter.closeSection();
+
+  int ret_code = ndb_mgm_set_configuration(m_mgmsrv, conf);
+  if (ret_code != 0)
+  {
+    ndbout_c("Failed to change configuration");
+    printError();
+    ndb_mgm_destroy_configuration(conf);
+    return -1;
+  }
+  ndbout_c("Configuration changed to reflect new hostname of node %d",
+           processId);
+  ndbout_c("Now changing hostname in the cluster");
+
+  ret_code = ndb_mgm_set_hostname(m_mgmsrv, processId, new_hostname);
+  if (ret_code < 0)
+  {
+    ndbout_c("Failed to set hostname for node %d in the cluster",
+             processId);
+    printError();
+    return -1;
+  }
+  else
+  {
+    ndbout_c("Node %d now has hostname %s in the cluster",
+             processId,
+             new_hostname);
+  }
+  return 0;
+}
+
+
+int
+CommandInterpreter::executeActivate(int processId,
+                                    const char* parameters,
+				    bool all) 
+{
+  if (all)
+  {
+    ndbout << "ALL ACTIVATE command not allowed" << endl;
+    return -1;
+  }
+
+
+  bool is_node_up;
+  ndb_mgm_node_type node_type;
+  if (!check_before_config_change(processId, is_node_up, node_type))
+  {
+    return -1;
+  }
+  (void)is_node_up;
+  (void)node_type;
+
+  ndb_mgm_configuration * conf = ndb_mgm_get_configuration(m_mgmsrv,0);
+  if (conf == 0)
+  {
+    ndbout_c("Could not get configuration");
+    printError();
+    return -1;
+  }
+
+  ConfigValues::Iterator iter(conf->m_config);
+  bool ret = get_node_section(iter, processId, 0);
+  if (!ret)
+  {
+    printError();
+    ndbout_c("Failed to get configuration of node %d", processId);
+    ndb_mgm_destroy_configuration(conf);
+    return -1;
+  }
+  Uint32 is_active = 1;
+  iter.get(CFG_NODE_ACTIVE, &is_active);
+  if (is_active == 1)
+  {
+    ndbout_c("Node %d is already activated", processId);
+    return 0;
+  }
+  iter.set(CFG_NODE_ACTIVE, Uint32(1));
+  iter.closeSection();
+
+  int ret_code = ndb_mgm_set_configuration(m_mgmsrv, conf);
+  if (ret_code != 0)
+  {
+    ndbout_c("Failed to change configuration");
+    printError();
+    ndb_mgm_destroy_configuration(conf);
+    return -1;
+  }
+
+  ndbout_c("Configuration changed to reflect activated node");
+  ndbout_c("Now activating the node in the cluster");
+
+  ret_code = ndb_mgm_activate(m_mgmsrv, processId);
+  if (ret_code < 0)
+  {
+    ndbout_c("Failed to activate node %d in the cluster",
+             processId);
+    printError();
+    return -1;
+  }
+  else
+  {
+    ndbout_c("Node %d is now activated in the cluster", processId);
+  }
+  return 0;
+}
+
+void
+CommandInterpreter::wait_for_stop_report(int processId)
+{
+  int timer_count = 0;
+  while (g_stop_state[processId] == StopState::StopIdle)
+  {
+    timer_count++;
+    if (timer_count > 30)
+    {
+      return;
+    }
+    NdbSleep_MilliSleep(100);
+  }
+}
+
+bool
+CommandInterpreter::get_node_status(int processId,
+                                    int &num_mgm_nodes_alive,
+                                    int &num_data_nodes_alive,
+                                    int &num_api_nodes_alive,
+                                    bool & is_node_up,
+                                    ndb_mgm_node_type & node_type)
+{
+  bool found = false;
+  num_mgm_nodes_alive = 0;
+  num_data_nodes_alive = 0;
+  num_api_nodes_alive = 0;
+  ndb_mgm_cluster_state2 *state = ndb_mgm_get_status3(m_mgmsrv, nullptr);
+  if (state == NULL)
+  {
+    ndbout_c("Could not get status of node to deactivate");
+    printError();
+    return false;
+  }
+  for (int i = 0; i < ndb_mgm_get_status_node_count(state); i++)
+  {
+    struct ndb_mgm_node_state2 *node_state = ndb_mgm_get_node_status(state, i);
+    if (node_state->node_type == NDB_MGM_NODE_TYPE_MGM)
+    {
+      num_mgm_nodes_alive++;
+    }
+    else if (node_state->node_type == NDB_MGM_NODE_TYPE_NDB)
+    {
+      num_data_nodes_alive++;
+    }
+    else if (node_state->node_type == NDB_MGM_NODE_TYPE_API)
+    {
+      num_api_nodes_alive++;
+    }
+    else
+    {
+      ndbout_c("Unknown node type in status for node %d",
+               node_state->node_id);
+      return false;
+    }
+    if (node_state->node_id == processId)
+    {
+      found = true;
+      node_type = node_state->node_type;
+      if (node_state->version == 0)
+      {
+        is_node_up = false;
+      }
+      else
+      {
+        is_node_up = true;
+      }
+    }
+  }
+  if (!found)
+  {
+    ndbout_c("Node %d doesn't exist in cluster", processId);
+    return false;
+  }
+  return true;
+}
+
+int
+CommandInterpreter::stop_node(int processId)
+{
+  ndbout_c("Stopping node %d", processId);
+  g_stop_state[processId] = StopState::StopIdle;
+  int need_disconnect;
+  int result = ndb_mgm_stop4(m_mgmsrv, 1, &processId, 0, 0, &need_disconnect);
+  if (result < 0)
+  {
+    wait_for_stop_report(processId);
+    if (g_stop_state[processId] == StopState::StopAborted)
+    {
+      ndbout_c("Node %d cannot be stopped/deactivated since it would stop the"
+               " cluster",
+               processId);
+      printError();
+      return -1;
+    }
+    else
+    {
+      ndbout_c("Node %d failed to stop", processId);
+      printError();
+      return -1;
+    }
+  }
+  else
+  {
+    wait_for_stop_report(processId);
+  }
+  ndbout_c("Node %d was successfully stopped",
+           processId);
+  return 0;
+}
+
+int
+CommandInterpreter::executeDeactivate(int processId,
+                                      const char* parameters,
+                                      bool all) 
+{
+  if (all)
+  {
+    ndbout << "ALL DEACTIVATE command not allowed" << endl;
+    return -1;
+  }
+
+  bool is_node_up;
+  ndb_mgm_node_type node_type;
+  if (!check_before_config_change(processId, is_node_up, node_type))
+  {
+    return -1;
+  }
+
+  ndb_mgm_configuration * conf = ndb_mgm_get_configuration(m_mgmsrv,0);
+  if (conf == 0)
+  {
+    ndbout_c("Could not get configuration");
+    printError();
+    return -1;
+  }
+
+  ConfigValues::Iterator iter(conf->m_config);
+  bool ret = get_node_section(iter, processId, 0);
+  if (!ret)
+  {
+    printError();
+    ndbout_c("Failed to get configuration of node %d", processId);
+    ndb_mgm_destroy_configuration(conf);
+    return -1;
+  }
+
+  Uint32 is_active = 1;
+  iter.get(CFG_NODE_ACTIVE, &is_active);
+  if (!is_active)
+  {
+    ndbout_c("Node %d is already deactivated, need not be deactivated",
+             processId);
+    ndb_mgm_destroy_configuration(conf);
+    return -1;
+  }
+
+  Uint32 node_count = count_active_nodes(conf, node_type);
+  if (node_count == 1)
+  {
+    if (node_type == NDB_MGM_NODE_TYPE_MGM)
+    {
+      ndbout_c("Cannot deactivate node %d since we need at least"
+               " one active MGM server in a cluster",
+               processId);
+      iter.closeSection();
+      ndb_mgm_destroy_configuration(conf);
+      return -1;
+    }
+    else if (node_type == NDB_MGM_NODE_TYPE_NDB)
+    {
+      ndbout_c("Cannot deactivate node %d since we need at least"
+               " one active Data node in a cluster",
+               processId);
+      iter.closeSection();
+      ndb_mgm_destroy_configuration(conf);
+      return -1;
+    }
+    else
+    {
+      ndbout_c("Deactivating node %d means no API nodes can connect"
+               " to the cluster, this is allowed, so proceeding",
+               processId);
+    }
+  }
+  else if (node_count == 0)
+  {
+    ndbout_c("There are no active nodes to deactivate");
+    iter.closeSection();
+    return 0;
+  }
+  else if (node_type == NDB_MGM_NODE_TYPE_MGM)
+  {
+    int node_id = 0;
+    int result = ndb_mgm_get_nodeid(m_mgmsrv, node_id);
+    if (result < 0)
+    {
+      printError();
+      ndbout_c("Failed to get node id of connected MGM server");
+      iter.closeSection();
+      ndb_mgm_destroy_configuration(conf);
+      return -1;
+    }
+    if (node_id == processId)
+    {
+      ndbout_c("The MGM client is connected to the node you are trying to "
+               "deactivate, this is not allowed.\nConnect to the other "
+               "MGM server to perform the deactivation");
+      iter.closeSection();
+      ndb_mgm_destroy_configuration(conf);
+      return -1;
+    }
+  }
+  iter.set(CFG_NODE_ACTIVE, Uint32(0));
+  iter.closeSection();
+
+  if (is_node_up)
+  {
+    if (node_type == NDB_MGM_NODE_TYPE_NDB)
+    {
+      int result = stop_node(processId);
+      if (result < 0)
+      {
+        return -1;
+      }
+    }
+    else if (node_type == NDB_MGM_NODE_TYPE_MGM)
+    {
+      ndbout_c("Node %d is a MGM server, need to deactivate it before "
+               "stopping it\nsince otherwise the config change transaction"
+               " will fail",
+               processId);
+    }
+    else
+    {
+      ndbout_c("Node %d is an API/mysqld node, we cannot stop it from here\n"
+               "we will proceeed with deactivation still",
+               processId);
+    }
+  }
+  else
+  {
+    ndbout_c("Node %d is already down, proceeding to deactivation"
+             " immediately",
+             processId);
+  }
+  int ret_code = ndb_mgm_set_configuration(m_mgmsrv, conf);
+  if (ret_code != 0)
+  {
+    ndbout_c("Failed to change configuration");
+    printError();
+    ndb_mgm_destroy_configuration(conf);
+    return -1;
+  }
+  ndbout_c("Configuration changed to reflect deactivated node");
+  ndbout_c("Now deactivating the node in the cluster");
+
+  ret_code = ndb_mgm_deactivate(m_mgmsrv, processId);
+  if (ret_code < 0)
+  {
+    ndbout_c("Failed to deactivate node %d in the cluster",
+             processId);
+    printError();
+    return -1;
+  }
+  else
+  {
+    ndbout_c("Node %d is now deactivated in the cluster", processId);
+  }
+  if (node_type == NDB_MGM_NODE_TYPE_MGM)
+  {
+    int result = stop_node(processId);
+    if (result < 0)
+    {
+      return -1;
+    }
+  }
+  return 0;
+}
+
 int
 CommandInterpreter::executeStart(int processId, const char* parameters,
 				 bool all) 
@@ -2338,17 +2974,19 @@ CommandInterpreter::executeStart(int processId, const char* parameters,
     result = ndb_mgm_start(m_mgmsrv, 1, &processId);
   }
 
-  if (result <= 0) {
+  if (result <= 0)
+  {
     ndbout << "Start failed." << endl;
     printError();
     retval = -1;
-  } else
-    {
-      if(all)
-	ndbout_c("NDB Cluster is being started.");
-      else
-	ndbout_c("Database node %d is being started.", processId);
-    }
+  }
+  else
+  {
+    if(all)
+      ndbout_c("RonDB is being started.");
+    else
+      ndbout_c("Database node %d is being started.", processId);
+  }
   return retval;
 }
 

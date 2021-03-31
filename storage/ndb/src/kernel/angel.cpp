@@ -1,4 +1,5 @@
 /* Copyright (c) 2009, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -99,6 +100,10 @@ reportShutdown(const ndb_mgm_configuration* config,
        type != NODE_TYPE_MGM)
       continue;
 
+    Uint32 active_node = 1;
+    iter.get(CFG_NODE_ACTIVE, &active_node);
+    if (active_node == 0)
+      continue;
     Uint32 port;
     if (iter.get(CFG_MGM_PORT, &port))
       continue;
@@ -533,7 +538,12 @@ configure(const ndb_mgm_configuration* conf, NodeId nodeid)
     /* Old Management node, use default value */
     config_restart_delay_secs = 0;
   }
-  
+  const char * pidfile_dir;
+  if (iter.get(CFG_NODE_PIDFILE_DIR, &pidfile_dir) == 0)
+  {
+    NdbConfig_SetPidfilePath(pidfile_dir);
+    g_eventLogger->debug("Using Directory: %s for pid file", pidfile_dir);
+  }
   const char * datadir;
   if (iter.get(CFG_NODE_DATADIR, &datadir))
   {

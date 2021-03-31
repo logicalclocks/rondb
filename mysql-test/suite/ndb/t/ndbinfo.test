@@ -1043,5 +1043,5 @@ select * from cpudata_50ms;
 select * from cpudata_1sec;
 select * from cpudata_20sec;
 --enable_result_log
-
+select * from logbuffers;
 #--remove_file $NDB_TOOLS_OUTPUT

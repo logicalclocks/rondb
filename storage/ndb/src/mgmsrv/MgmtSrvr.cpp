@@ -53,6 +53,8 @@
 #include <signaldata/DropNodegroup.hpp>
 #include <signaldata/Sync.hpp>
 #include <signaldata/GetConfig.hpp>
+#include <signaldata/Activate.hpp>
+#include <signaldata/SetHostname.hpp>
 #include <NdbSleep.h>
 #include <portlib/NdbDir.hpp>
 #include <EventLogger.hpp>
@@ -100,6 +102,12 @@ int g_errorInsert = 0;
       return result;\
     }\
   }
+
+#if 0
+#define DEBUG_FPRINTF(arglist) do { fprintf arglist ; } while (0)
+#else
+#define DEBUG_FPRINTF(a)
+#endif
 
 extern "C" bool opt_core;
 
@@ -712,6 +720,13 @@ MgmtSrvr::setClusterLog(const Config* config)
   require(iter.get(CFG_NODE_DATADIR, &datadir) == 0);
   NdbConfig_SetPath(datadir);
 
+  const char *pidfile_dir = nullptr;
+  if (iter.get(CFG_NODE_PIDFILE_DIR, &pidfile_dir) == 0)
+  {
+    NdbConfig_SetPidfilePath(pidfile_dir);
+    g_eventLogger->debug("Using Directory: %s for pid file", pidfile_dir);
+  }
+
   if (NdbDir::chdir(NdbConfig_get_path(NULL)) != 0)
   {
     g_eventLogger->warning("Cannot change directory to '%s', error: %d",
@@ -1048,15 +1063,23 @@ MgmtSrvr::~MgmtSrvr()
 
 int MgmtSrvr::okToSendTo(NodeId nodeId, bool unCond) 
 {
-  if(nodeId == 0 || getNodeType(nodeId) != NDB_MGM_NODE_TYPE_NDB)
+  if (nodeId == 0 || getNodeType(nodeId) != NDB_MGM_NODE_TYPE_NDB)
+  {
     return WRONG_PROCESS_TYPE;
+  }
   // Check if we have contact with it
-  if(unCond){
+  if(unCond)
+  {
     if (getNodeInfo(nodeId).is_confirmed())
+    {
+      DEBUG_FPRINTF((stderr, "okSendTo:is_confirmed(%u)", nodeId));
       return 0;
+    }
   }
   else if (getNodeInfo(nodeId).m_alive == true)
+  {
     return 0;
+  }
   return NO_CONTACT_WITH_PROCESS;
 }
 
@@ -1329,6 +1352,354 @@ int MgmtSrvr::sendStopMgmd(NodeId nodeId,
   return 0;
 }
 
+int
+MgmtSrvr::set_hostname_request(int nodeId, const char *new_hostname)
+{
+  DBUG_ENTER("MgmtSrvr::set_hostname_request");
+  DBUG_PRINT("enter", ("set_hostname node %d", nodeId));
+
+  SignalSender ss(theFacade);
+  SimpleSignal ssig;
+  ss.lock(); // lock will be released on exit
+  SetHostnameReq* const setHostnameReq = CAST_PTR(SetHostnameReq,
+                                            ssig.getDataPtrSend());
+  union
+  {
+    char hostname_buf[256];
+    Uint32 hostname_buf32[64];
+  };
+  memset(&hostname_buf[0], 0, 256);
+  Uint32 hostname_len = strlen(&hostname_buf[0]);
+  strcpy(hostname_buf, new_hostname);
+
+  ssig.ptr[0].p = &hostname_buf32[0];
+  ssig.ptr[0].sz = (hostname_len + 3) / 4;
+  ssig.header.m_noOfSections = 1;
+
+  setHostnameReq->senderRef = ss.getOwnRef();
+  setHostnameReq->changeNodeId = Uint32(nodeId);
+
+  if (!check_node_support_activate())
+  {
+    DBUG_RETURN(FAILED_SET_HOSTNAME_REQUEST);
+  }
+  // send the signals
+  int failed = 0;
+  NodeBitmask nodes;
+  {
+    NodeId nodeId = 0;
+    while(getNextNodeId(&nodeId, NDB_MGM_NODE_TYPE_NDB))
+    {
+      if (okToSendTo(nodeId, true) == 0)
+      {
+        int result = ss.sendFragmentedSignal(nodeId,
+                                             ssig,
+                                             CMVMI,
+                                             GSN_SET_HOSTNAME_REQ,
+                                             SetHostnameReq::SignalLength);
+        if (result == SEND_OK)
+          nodes.set(nodeId);
+        else
+          failed++;
+      }
+    }
+  }
+  if (nodes.isclear() && failed > 0)
+  {
+    DBUG_RETURN(SEND_OR_RECEIVE_FAILED);
+  }
+  while (!nodes.isclear())
+  {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+    case GSN_SET_HOSTNAME_REF:
+    {
+      DBUG_RETURN(FAILED_SET_HOSTNAME_REQUEST);
+      break;
+    }
+    case GSN_SET_HOSTNAME_CONF:
+    {
+      const SetHostnameConf* setHostnameConf = CAST_CONSTPTR(SetHostnameConf,
+                                                       signal->getDataPtr());
+      assert(setHostnameConf->changeNodeId == Uint32(nodeId));
+      assert(setHostnameConf->senderNodeId <= nodes.max_size());
+      nodes.clear(setHostnameConf->senderNodeId);
+      break;
+    }
+    case GSN_NF_COMPLETEREP:
+    {
+      const NFCompleteRep * rep = CAST_CONSTPTR(NFCompleteRep,
+                                                signal->getDataPtr());
+      if (rep->failedNodeId <= nodes.max_size())
+        nodes.clear(rep->failedNodeId); // clear the failed node
+      break;
+    }
+    case GSN_NODE_FAILREP:
+    {
+      const NodeFailRep * rep = CAST_CONSTPTR(NodeFailRep,
+                                              signal->getDataPtr());
+      Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
+      assert(len == NodeBitmask::Size || // only full length in ndbapi
+             len == 0);
+      NodeBitmask mask;
+      if (signal->header.m_noOfSections >= 1)
+      {
+        mask.assign(signal->ptr[0].sz, signal->ptr[0].p);
+      }
+      else
+      {
+        mask.assign(len, rep->theAllNodes);
+      }
+      nodes.bitANDC(mask);
+      break;
+    }
+    case GSN_API_REGCONF:
+    case GSN_TAKE_OVERTCCONF:
+    case GSN_CONNECT_REP:
+      continue;
+    default:
+      report_unknown_signal(signal);
+      DBUG_RETURN(SEND_OR_RECEIVE_FAILED);
+    }
+  }
+  DBUG_RETURN(0);
+}
+
+NodeId
+MgmtSrvr::get_mgm_nodeid_request()
+{
+  DBUG_ENTER("MgmtSrvr::get_mgm_nodeid_request");
+  SignalSender ss(theFacade);
+  BlockReference ref = ss.getOwnRef();
+  NodeId node_id = refToNode(ref);
+  DBUG_RETURN(node_id);
+}
+
+bool
+MgmtSrvr::check_node_support_activate()
+{
+  NodeId nodeId = 0;
+  while(getNextNodeId(&nodeId, NDB_MGM_NODE_TYPE_NDB))
+  {
+    if (okToSendTo(nodeId, true) == 0)
+    {
+      Uint32 version = getNodeInfo(nodeId).m_info.m_version;
+      if (!ndbd_support_activate(version))
+      {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+int
+MgmtSrvr::activate_request(int activateNodeId)
+{
+  DBUG_ENTER("MgmtSrvr::activate_request");
+  DBUG_PRINT("enter", ("activate node %d", activateNodeId));
+
+  SignalSender ss(theFacade);
+  SimpleSignal ssig;
+  ss.lock(); // lock will be released on exit
+  ActivateReq* const activateReq = CAST_PTR(ActivateReq,
+                                            ssig.getDataPtrSend());
+  ssig.set(ss,
+           TestOrd::TraceAPI,
+           CMVMI,
+           GSN_ACTIVATE_REQ,
+           ActivateReq::SignalLength);
+  activateReq->senderRef = ss.getOwnRef();
+  activateReq->activateNodeId = Uint32(activateNodeId);
+
+  if (!check_node_support_activate())
+  {
+    DBUG_RETURN(FAILED_ACTIVATE_REQUEST);
+  }
+  // send the signals
+  int failed = 0;
+  NodeBitmask nodes;
+  {
+    NodeId nodeId = 0;
+    while(getNextNodeId(&nodeId, NDB_MGM_NODE_TYPE_NDB))
+    {
+      if (okToSendTo(nodeId, true) == 0)
+      {
+        SendStatus result = ss.sendSignal(nodeId, &ssig);
+        if (result == SEND_OK)
+          nodes.set(nodeId);
+        else
+          failed++;
+      }
+    }
+  }
+  if (nodes.isclear() && failed > 0)
+  {
+    DBUG_RETURN(SEND_OR_RECEIVE_FAILED);
+  }
+  while (!nodes.isclear())
+  {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+    case GSN_ACTIVATE_REF:
+    {
+      DBUG_RETURN(FAILED_ACTIVATE_REQUEST);
+      break;
+    }
+    case GSN_ACTIVATE_CONF:
+    {
+      const ActivateConf* activateConf = CAST_CONSTPTR(ActivateConf,
+                                                       signal->getDataPtr());
+      assert(activateConf->activateNodeId == Uint32(activateNodeId));
+      assert(activateConf->senderNodeId <= nodes.max_size());
+      nodes.clear(activateConf->senderNodeId);
+      break;
+    }
+    case GSN_NF_COMPLETEREP:
+    {
+      const NFCompleteRep * rep = CAST_CONSTPTR(NFCompleteRep,
+                                                signal->getDataPtr());
+      if (rep->failedNodeId <= nodes.max_size())
+        nodes.clear(rep->failedNodeId); // clear the failed node
+      break;
+    }
+    case GSN_NODE_FAILREP:
+    {
+      const NodeFailRep * rep = CAST_CONSTPTR(NodeFailRep,
+                                              signal->getDataPtr());
+      Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
+      assert(len == NodeBitmask::Size || // only full length in ndbapi
+             len == 0);
+      NodeBitmask mask;
+      if (signal->header.m_noOfSections >= 1)
+      {
+        mask.assign(signal->ptr[0].sz, signal->ptr[0].p);
+      }
+      else
+      {
+        mask.assign(len, rep->theAllNodes);
+      }
+      nodes.bitANDC(mask);
+      break;
+    }
+    case GSN_API_REGCONF:
+    case GSN_TAKE_OVERTCCONF:
+    case GSN_CONNECT_REP:
+      continue;
+    default:
+      report_unknown_signal(signal);
+      DBUG_RETURN(SEND_OR_RECEIVE_FAILED);
+    }
+  }
+  DBUG_RETURN(0);
+}
+
+int
+MgmtSrvr::deactivate_request(int deactivateNodeId)
+{
+  DBUG_ENTER("MgmtSrvr::deactivate_request");
+  DBUG_PRINT("enter", ("deactivate node %d", deactivateNodeId));
+
+  SignalSender ss(theFacade);
+  SimpleSignal ssig;
+  ss.lock(); // lock will be released on exit
+  DeactivateReq* const deactivateReq = CAST_PTR(DeactivateReq,
+                                                ssig.getDataPtrSend());
+  ssig.set(ss,
+           TestOrd::TraceAPI,
+           CMVMI,
+           GSN_DEACTIVATE_REQ,
+           DeactivateReq::SignalLength);
+  deactivateReq->senderRef = ss.getOwnRef();
+  deactivateReq->deactivateNodeId = Uint32(deactivateNodeId);
+
+  m_config_manager->set_node_failed(deactivateNodeId);
+
+  if (!check_node_support_activate())
+  {
+    DBUG_RETURN(FAILED_DEACTIVATE_REQUEST);
+  }
+  // send the signals
+  int failed = 0;
+  NodeBitmask nodes;
+  {
+    NodeId nodeId = 0;
+    while(getNextNodeId(&nodeId, NDB_MGM_NODE_TYPE_NDB))
+    {
+      if (okToSendTo(nodeId, true) == 0)
+      {
+        SendStatus result = ss.sendSignal(nodeId, &ssig);
+        if (result == SEND_OK)
+          nodes.set(nodeId);
+        else
+          failed++;
+      }
+    }
+  }
+  if (nodes.isclear() && failed > 0)
+  {
+    DBUG_RETURN(SEND_OR_RECEIVE_FAILED);
+  }
+  while (!nodes.isclear())
+  {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+    case GSN_DEACTIVATE_REF:
+    {
+      DBUG_RETURN(FAILED_DEACTIVATE_REQUEST);
+      break;
+    }
+    case GSN_DEACTIVATE_CONF:
+    {
+      const DeactivateConf* deactivateConf = CAST_CONSTPTR(DeactivateConf,
+                                                       signal->getDataPtr());
+      assert(deactivateConf->deactivateNodeId == Uint32(deactivateNodeId));
+      assert(deactivateConf->senderNodeId <= nodes.max_size());
+      nodes.clear(deactivateConf->senderNodeId);
+      break;
+    }
+    case GSN_NF_COMPLETEREP:
+    {
+      const NFCompleteRep * rep = CAST_CONSTPTR(NFCompleteRep,
+                                                signal->getDataPtr());
+      if (rep->failedNodeId <= nodes.max_size())
+        nodes.clear(rep->failedNodeId); // clear the failed node
+      break;
+    }
+    case GSN_NODE_FAILREP:
+    {
+      const NodeFailRep * rep = CAST_CONSTPTR(NodeFailRep,
+                                              signal->getDataPtr());
+      Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
+      assert(len == NodeBitmask::Size || // only full length in ndbapi
+             len == 0);
+      NodeBitmask mask;
+      if (signal->header.m_noOfSections >= 1)
+      {
+        mask.assign(signal->ptr[0].sz, signal->ptr[0].p);
+      }
+      else
+      {
+        mask.assign(len, rep->theAllNodes);
+      }
+      nodes.bitANDC(mask);
+      break;
+    }
+    case GSN_API_REGCONF:
+    case GSN_TAKE_OVERTCCONF:
+    case GSN_CONNECT_REP:
+      continue;
+    default:
+      report_unknown_signal(signal);
+      DBUG_RETURN(SEND_OR_RECEIVE_FAILED);
+    }
+  }
+  DBUG_RETURN(0);
+}
+
 /**
  * send STOP_REQ to all DB-nodes
  *   and wait for them to stop or refuse
@@ -1366,7 +1737,7 @@ MgmtSrvr::sendall_STOP_REQ(NodeBitmask &stoppedNodes,
 
   SimpleSignal ssig;
   StopReq* const stopReq = CAST_PTR(StopReq, ssig.getDataPtrSend());
-  ssig.set(ss, TestOrd::TraceAPI, NDBCNTR, GSN_STOP_REQ, StopReq::SignalLength);
+  ssig.set(ss, TestOrd::TraceAPI, NDBCNTR, GSN_STOP_REQ,StopReq::SignalLength);
 
   stopReq->requestInfo = 0;
   stopReq->apiTimeout = 5000;
@@ -3649,6 +4020,8 @@ MgmtSrvr::trp_deliver_signal(const NdbApiSignal* signal,
     {
       theData[1] = i;
       eventReport(theData, 1, theData);
+      g_eventLogger->debug("NODE_FAILREP for node: %u", i);
+      m_config_manager->set_node_failed(i);
 
       /* Clear local nodeid reservation(if any) */
       release_local_nodeid_reservation(i);
@@ -3847,6 +4220,11 @@ MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
   NodeId nodeId = 0;
   while (1)
   {
+    NodeBitmask active_nodes;
+    {
+      Guard g(m_local_config_mutex);
+      m_local_config->get_nodemask(active_nodes);
+    }
     if (nodeId == 0)
     {
       bool next;
@@ -3857,8 +4235,17 @@ MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
         return NO_CONTACT_WITH_DB_NODES;
       do_send = 1;
     }
+    if (free_node_id != 0)
+    {
+      if (!active_nodes.get(free_node_id))
+      {
+        g_eventLogger->info("Node %u is currently deactivated", free_node_id);
+        return NODE_CURRENTLY_DEACTIVATED;
+      }
+    }
     if (do_send)
     {
+      g_eventLogger->info("Sending ALLOC_NODE_ID_REQ to node %u", nodeId);
       if (ss.sendSignal(nodeId, &ssig) != SEND_OK)
         return SEND_OR_RECEIVE_FAILED;
       do_send = 0;
@@ -4244,7 +4631,6 @@ MgmtSrvr::try_alloc(NodeId id,
       assert(id > 0);
       return id;
     }
-
     if (res == NO_CONTACT_WITH_DB_NODES &&
         type == NDB_MGM_NODE_TYPE_API)
     {
@@ -4282,6 +4668,13 @@ MgmtSrvr::try_alloc(NodeId id,
                            "since cluster was not available ", id);
       return id;
     }
+    if (res == NODE_CURRENTLY_DEACTIVATED)
+    {
+      g_eventLogger->debug("Nodeid %u for data node not active currently", id);
+      error_string.appfmt("Nodeid %u currently deactive", id);
+      error_code = NDB_MGM_ALLOCID_ERROR;
+      return -1;
+    }
 
     /* Unspecified error */
     return 0;
@@ -4307,12 +4700,22 @@ MgmtSrvr::try_alloc_from_list(NodeId& nodeid,
                               int& error_code,
                               BaseString& error_string)
 {
+  NodeBitmask active_nodes;
+  {
+    Guard g(m_local_config_mutex);
+    m_local_config->get_nodemask(active_nodes);
+  }
   for (unsigned i = 0; i < nodes.size(); i++)
   {
     const unsigned id= nodes[i].id;
     if (theFacade->ext_isConnected(id))
     {
       // Node is already reserved(connected via transporter)
+      continue;
+    }
+    if (!active_nodes.get(id))
+    {
+      /* Node is deactivated, so not to be choosen as a free node id */
       continue;
     }
 
@@ -4412,6 +4815,24 @@ MgmtSrvr::alloc_node_id_impl(NodeId& nodeid,
                           nodeid);
     }
     return false;
+  }
+  else if (nodeid != 0)
+  {
+    NodeBitmask active_nodes;
+    {
+      Guard g(m_local_config_mutex);
+      m_local_config->get_nodemask(active_nodes);
+    }
+    if (!active_nodes.get(nodeid))
+    {
+      g_eventLogger->debug("Nodeid %u deactivated, failed to alloc id",
+                           nodeid);
+      error_code = NDB_MGM_ALLOCID_ERROR;
+      error_string.appfmt("Unable to allocate nodeid %u as node is"
+                          " currently deactivated",
+                          nodeid);
+      return false;
+    }
   }
 
   /* Make sure that config is confirmed before allocating nodeid */
@@ -5183,9 +5604,7 @@ MgmtSrvr::change_config(Config& new_config, BaseString& msg)
 
     }
   }
-
   g_eventLogger->info("Config change completed");
-
   return true;
 }
 

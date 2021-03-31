@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -239,7 +240,18 @@ ParserRow<MgmApiSession> commands[] = {
     MGM_ARG("nodeId", Int, Mandatory, "Node"),
   
   MGM_CMD("exit single user", &MgmApiSession::exitSingleUser, ""),
-  
+
+  MGM_CMD("get mgm nodeid", &MgmApiSession::get_mgm_nodeid, ""),
+
+  MGM_CMD("set_hostname", &MgmApiSession::set_hostname, ""),
+    MGM_ARG("node", Int, Mandatory, "node"),
+    MGM_ARG("new_hostname", String, Mandatory, "new hostname"),
+
+  MGM_CMD("activate", &MgmApiSession::activate, ""),
+    MGM_ARG("node", Int, Mandatory, "node"),
+
+  MGM_CMD("deactivate", &MgmApiSession::deactivate, ""),
+    MGM_ARG("node", Int, Mandatory, "node"),
 
   MGM_CMD("start", &MgmApiSession::start, ""),
     MGM_ARG("node", Int, Mandatory, "Node"),
@@ -1415,6 +1427,91 @@ MgmApiSession::logSignals(Parser<MgmApiSession>::Context &,
 }
 
 void
+MgmApiSession::get_mgm_nodeid(Parser<MgmApiSession>::Context &,
+                              Properties const &args)
+{
+  NodeId node_id = m_mgmsrv.get_mgm_nodeid_request();
+  m_output->println("get mgm nodeid reply");
+  m_output->println("result: Ok");
+  m_output->println("nodeid: %u", node_id);
+  m_output->println("%s", "");
+}
+
+void
+MgmApiSession::set_hostname(Parser<MgmApiSession>::Context &,
+                            Properties const &args)
+{
+  Uint32 node;
+  const char *new_hostname;
+
+  bool arg1 = args.get("node", &node);
+  bool arg2 = args.get("new_hostname", &new_hostname);
+  int result;
+  if (arg1 && arg2)
+  {
+    result = m_mgmsrv.set_hostname_request(node, new_hostname);
+  }
+  else
+  {
+    result = INCORRECT_MGM_COMMAND;
+  }
+
+  m_output->println("set_hostname reply");
+  if(result != 0)
+    m_output->println("result: %s", get_error_text(result));
+  else
+    m_output->println("result: Ok");
+  m_output->println("%s", "");
+}
+
+void
+MgmApiSession::activate(Parser<MgmApiSession>::Context &,
+                        Properties const &args)
+{
+  Uint32 node;
+
+  int result;
+  if (args.get("node", &node))
+  {
+    result = m_mgmsrv.activate_request(node);
+  }
+  else
+  {
+    result = INCORRECT_MGM_COMMAND;
+  }
+
+  m_output->println("activate reply");
+  if(result != 0)
+    m_output->println("result: %s", get_error_text(result));
+  else
+    m_output->println("result: Ok");
+  m_output->println("%s", "");
+}
+
+void
+MgmApiSession::deactivate(Parser<MgmApiSession>::Context &,
+                          Properties const &args)
+{
+  Uint32 node;
+  int result;
+
+  if (args.get("node", &node))
+  {
+    result = m_mgmsrv.deactivate_request(node);
+  }
+  else
+  {
+    result = INCORRECT_MGM_COMMAND;
+  }
+  m_output->println("deactivate reply");
+  if(result != 0)
+    m_output->println("result: %s", get_error_text(result));
+  else
+    m_output->println("result: Ok");
+  m_output->println("%s", "");
+}
+
+void
 MgmApiSession::start(Parser<MgmApiSession>::Context &,
 		     Properties const &args) {
   Uint32 node;
@@ -2244,7 +2341,7 @@ void MgmApiSession::setConfig(Parser_t::Context &ctx,
     if (!ret)
     {
       delete[] decoded;
-      result.assfmt("Failed to unpack config, error: %u", cvf.get_error_code());
+      result.assfmt("Failed to unpack config, error: %u",cvf.get_error_code());
       goto done;
     }
     delete[] decoded;

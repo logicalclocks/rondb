@@ -52,6 +52,8 @@
 #include <signaldata/AllocMem.hpp>
 #include <signaldata/NodeStateSignalData.hpp>
 #include <signaldata/GetConfig.hpp>
+#include <signaldata/Activate.hpp>
+#include <signaldata/SetHostname.hpp>
 
 #ifdef ERROR_INSERT
 #include <signaldata/FsOpenReq.hpp>
@@ -84,6 +86,7 @@
 // Used here only to print event reports on stdout/console.
 extern EventLogger * g_eventLogger;
 extern int simulate_error_during_shutdown;
+extern NodeBitmask g_not_active_nodes;
 
 // Index pages used by ACC instances
 Uint32 g_acc_pages_used[1 + MAX_NDBMT_LQH_WORKERS];
@@ -149,6 +152,9 @@ Cmvmi::Cmvmi(Block_context& ctx) :
 
   addRecSignal(GSN_GET_CONFIG_REQ, &Cmvmi::execGET_CONFIG_REQ);
 
+  addRecSignal(GSN_ACTIVATE_REQ, &Cmvmi::execACTIVATE_REQ);
+  addRecSignal(GSN_DEACTIVATE_REQ, &Cmvmi::execDEACTIVATE_REQ);
+  addRecSignal(GSN_SET_HOSTNAME_REQ, &Cmvmi::execSET_HOSTNAME_REQ);
 #ifdef ERROR_INSERT
   addRecSignal(GSN_FSOPENCONF, &Cmvmi::execFSOPENCONF);
   addRecSignal(GSN_FSCLOSECONF, &Cmvmi::execFSCLOSECONF);
@@ -3799,4 +3805,114 @@ void Cmvmi::execGET_CONFIG_REQ(Signal *signal)
                        ptr,
                        nSections,
                        TheEmptyCallback);
+}
+
+void Cmvmi::execSET_HOSTNAME_REQ(Signal *signal)
+{
+  jamEntry();
+  const SetHostnameReq* const req =
+    (const SetHostnameReq *)signal->getDataPtr();
+  BlockReference senderRef = req->senderRef;
+  Uint32 nodeId = req->changeNodeId;
+
+  ndbrequire(signal->getNoOfSections() == 1);
+  SectionHandle handle(this, signal);
+  SegmentedSectionPtr ptr;
+  handle.getSection(ptr, 0);
+
+  if (!g_not_active_nodes.get(nodeId))
+  {
+    SetHostnameRef* const ref = (SetHostnameRef*)signal->getDataPtrSend();
+    ref->changeNodeId = nodeId;
+    ref->senderNodeId = getOwnNodeId();
+    ref->senderRef = reference();
+    sendSignal(senderRef,
+               GSN_SET_HOSTNAME_REF,
+               signal,
+               SetHostnameRef::SignalLength,
+               JBB);
+    return;
+  }
+
+  union
+  {
+    char hostname_buf[256];
+    Uint32 hostname_buf32[64];
+  };
+  memset(&hostname_buf[0], 0, 256);
+  copy(&hostname_buf32[0], ptr);
+  releaseSections(handle);
+
+  globalTransporterRegistry.set_hostname(nodeId, &hostname_buf[0]);
+
+  SetHostnameConf* const conf = (SetHostnameConf*)signal->getDataPtrSend();
+  conf->changeNodeId = nodeId;
+  conf->senderNodeId = getOwnNodeId();
+  conf->senderRef = reference();
+  sendSignal(senderRef,
+             GSN_SET_HOSTNAME_CONF,
+             signal,
+             SetHostnameConf::SignalLength,
+             JBB);
+}
+/**
+ * A node that was part of the configuration is activated such that
+ * it can connect and become a part of the cluster. A deactivated
+ * node cannot join the cluster.
+ */
+void Cmvmi::execACTIVATE_REQ(Signal *signal)
+{
+  jamEntry();
+  const ActivateReq* const req = (const ActivateReq *)signal->getDataPtr();
+  BlockReference senderRef = req->senderRef;
+  Uint32 nodeId = req->activateNodeId;
+
+  g_not_active_nodes.clear(nodeId);
+  globalTransporterRegistry.set_active_node(nodeId, 1);
+
+  ActivateConf* const conf = (ActivateConf*)signal->getDataPtrSend();
+  conf->activateNodeId = nodeId;
+  conf->senderNodeId = getOwnNodeId();
+  conf->senderRef = reference();
+  sendSignal(senderRef,
+             GSN_ACTIVATE_CONF,
+             signal,
+             ActivateConf::SignalLength,
+             JBB);
+
+  /* Ensure that QMGR opens up communication in a proper manner */
+  ActivateReq* const send_req = (ActivateReq*)signal->getDataPtrSend();
+  send_req->senderRef = reference();
+  send_req->activateNodeId = nodeId;
+  sendSignal(QMGR_REF,
+             GSN_ACTIVATE_REQ,
+             signal,
+             ActivateReq::SignalLength,
+             JBB);
+}
+
+/**
+ * A node that has been active is now deactivated, this means that it can no
+ * longer reconnect to the cluster. If the node is still alive it will continue
+ * to be alive, ensuring that it stops is handled by the DEACTIVATE command.
+ */
+void Cmvmi::execDEACTIVATE_REQ(Signal *signal)
+{
+  jamEntry();
+  const DeactivateReq* const req = (const DeactivateReq *)signal->getDataPtr();
+  BlockReference senderRef = req->senderRef;
+  Uint32 nodeId = req->deactivateNodeId;
+
+  g_not_active_nodes.set(nodeId);
+  globalTransporterRegistry.set_active_node(nodeId, 0);
+
+  DeactivateConf* const conf = (DeactivateConf*)signal->getDataPtrSend();
+  conf->deactivateNodeId = nodeId;
+  conf->senderNodeId = getOwnNodeId();
+  conf->senderRef = reference();
+  sendSignal(senderRef,
+             GSN_DEACTIVATE_CONF,
+             signal,
+             DeactivateConf::SignalLength,
+             JBB);
 }

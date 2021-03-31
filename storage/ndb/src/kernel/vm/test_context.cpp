@@ -87,7 +87,7 @@ void dummy_calls_to_force_some_modules_from_libkernel_needed_by_libsched()
 
 Uint32 g_currentStartPhase;
 Uint32 g_start_type;
-NdbNodeBitmask g_nowait_nodes;
+extern NdbNodeBitmask g_nowait_nodes;
 
 void
 SimBlockList::unload()
