@@ -1,4 +1,5 @@
 /* Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -139,7 +140,8 @@ public:
     returns all defined nodes by default.
    */
   void get_nodemask(NodeBitmask& mask,
-                    ndb_mgm_node_type type = NDB_MGM_NODE_TYPE_UNKNOWN) const;
+                    ndb_mgm_node_type type = NDB_MGM_NODE_TYPE_UNKNOWN,
+                    bool include_not_active = false) const;
 
   struct ndb_mgm_configuration * m_configValues;
   struct ndb_mgm_configuration * values(void) const { return m_configValues; }

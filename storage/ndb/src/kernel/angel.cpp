@@ -100,6 +100,10 @@ reportShutdown(const ndb_mgm_configuration* config,
        type != NODE_TYPE_MGM)
       continue;
 
+    Uint32 active_node = 1;
+    iter.get(CFG_NODE_ACTIVE, &active_node);
+    if (active_node == 0)
+      continue;
     Uint32 port;
     if (iter.get(CFG_MGM_PORT, &port))
       continue;

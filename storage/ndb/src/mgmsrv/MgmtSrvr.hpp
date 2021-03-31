@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -194,9 +195,37 @@ public:
   /**
    *   Start DB process by sending START_ORD to it.
    *   @param   processId  Id of the DB process to start
-   *   @return 0 if succeeded, otherwise: as stated above, plus:
+   *   @return 0 if succeeded, otherwise: error code
    */
- int sendSTART_ORD(int processId);
+  int sendSTART_ORD(int processId);
+
+
+  /**
+   * Get node id of MGM server
+   */
+  NodeId get_mgm_nodeid_request();
+
+  /**
+   * Set a new hostname on a deactivated node.
+   *   @param         processId  Id of the DB process to activate
+   *   @new_hostname  new hostname for the node
+   *   @return 0 if succeeded, otherwise: error code
+   */
+  int set_hostname_request(int processId, const char *new_hostname);
+
+  /**
+   * Activate a node such that it can be started and join cluster.
+   *   @param   processId  Id of the DB process to activate
+   *   @return 0 if succeeded, otherwise: error code
+   */
+  int activate_request(int processId);
+
+  /**
+   * Deactivate a node such that it cannot be part of cluster.
+   *   @param   processId  Id of the DB process to deactivate 
+   *   @return 0 if succeeded, otherwise: error code
+   */
+  int deactivate_request(int processId);
 
   /**
    *   Restart a list of nodes
@@ -571,6 +600,7 @@ private:
                           const struct sockaddr* client_addr,
                           int& error_code, BaseString& error_string,
                           Uint32 timeout_s = 20);
+  bool check_node_support_activate();
 public:
   /*
     Nodeid allocation

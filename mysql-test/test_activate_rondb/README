@@ -1,0 +1,37 @@
+This diectory is used to test the following commands in the
+RonDB management client:
+activate
+deactivate
+hostname
+
+These commands are used to make it possible to scale up and scale
+down the number of replicas in a cluster even though NoOfReplicas
+cannot be changed. This is performed by adding nodes to the configuration
+that are currently not used. Since the hostname of those is not
+necessarily known before the nodes are activated, there is also a
+command to change the hostname of a node that is not currently active.
+
+To execute those tests make a normal build by creating a build
+directory, e.g. debug_build. Next compile RonDB. There is a set of
+scripts for building RonDB in the build directory.
+
+Before executing the test runs perform the following actions:
+1) Create the environment variable TEST_ACTIVATE_PATH. Set this
+variable to point to the debug_build/bin directory to ensure that
+we use the correct ndb_mgmd and ndbmtd program and ndb_desc program.
+
+2) Ensure that the directory $HOME/test_activate is not used for
+any other purpose. This directory will be used for temporary
+storage during the test.
+
+3) Edit the config.ini to set the DataDir to a place that corresponds
+to /home/username/test_activate/ndb.
+
+Execute the test case with the command
+./test_activate.sh
+
+At the end of the test there is a comparison between the executed
+test result and the result stored in the tree. If the result of
+the execution was correct and differs from the stored result one
+updates the test_activate.res file through the command:
+cp test.res test_activate.res

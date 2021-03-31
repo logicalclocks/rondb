@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,6 +30,9 @@
 #include "ConfigInfo.hpp"
 
 #include <HashMap.hpp>
+
+#include <EventLogger.hpp>
+extern EventLogger * g_eventLogger;
 
 Config::Config(struct ndb_mgm_configuration *config_values) :
   m_configValues(config_values)
@@ -836,7 +840,8 @@ void Config::getConnectString(BaseString& connectstring,
 
 void
 Config::get_nodemask(NodeBitmask& mask,
-                     ndb_mgm_node_type type) const
+                     ndb_mgm_node_type type,
+                     bool include_not_active) const
 {
   mask.clear();
   ConfigIter it(this, CFG_SECTION_NODE);
@@ -850,7 +855,15 @@ Config::get_nodemask(NodeBitmask& mask,
     {
       Uint32 nodeid;
       require(it.get(CFG_NODE_ID, &nodeid) == 0);
-      mask.set(nodeid);
+      Uint32 is_active = 1;
+      if (!include_not_active)
+      {
+        it.get(CFG_NODE_ACTIVE, &is_active);
+      }
+      if (is_active)
+      {
+        mask.set(nodeid);
+      }
     }
   }
 }

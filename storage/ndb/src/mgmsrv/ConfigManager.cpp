@@ -1,4 +1,5 @@
 /* Copyright (c) 2008, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -65,7 +66,8 @@ ConfigManager::ConfigManager(const MgmtSrvr::MgmtOpts& opts,
   m_previous_state(CS_UNINITIALIZED),
   m_prepared_config(NULL),
   m_node_id(0),
-  m_configdir(configdir)
+  m_configdir(configdir),
+  m_retry(0)
 {
 }
 
@@ -374,15 +376,6 @@ ConfigManager::init(void)
 
   if (m_opts.initial)
   {
-    /**
-     * Verify valid -f before delete_saved_configs()
-     */
-    Config* conf = load_config();
-    if (conf == NULL)
-      DBUG_RETURN(false);
-
-    delete conf;
-
     if (!delete_saved_configs())
       DBUG_RETURN(false);
   }
@@ -641,7 +634,9 @@ ConfigManager::commitConfigChange(void)
   }
   m_config_name.clear();
 
-  g_eventLogger->info("Configuration %d commited", m_config->getGeneration());
+  g_eventLogger->debug("Update mgm nodemask");
+  update_mgm_nodemask(false);
+  g_eventLogger->info("Configuration %d committed", m_config->getGeneration());
 }
 
 
@@ -973,6 +968,7 @@ void ConfigManager::set_config_change_state(ConfigChangeState::States state)
     // Rebuild m_all_mgm so that each node in config is included
     // new mgm nodes might have been added
     assert(m_config_change.m_error == ConfigChangeRef::OK);
+    g_eventLogger->debug("Update mgm nodemask");
     m_config->get_nodemask(m_all_mgm, NDB_MGM_NODE_TYPE_MGM);
   }
 
@@ -1294,7 +1290,7 @@ ConfigManager::sendConfigChangeImplReq(SignalSender& ss, const Config* conf)
   req->initial = (m_config_state == CS_INITIAL);
   req->length = buf.length();
 
-  g_eventLogger->debug("Sending CONFIG_CHANGE_IMPL_REQ(prepare) to %u", nodeId);
+  g_eventLogger->debug("Sending CONFIG_CHANGE_IMPL_REQ(prepare) to %u",nodeId);
   int result = ss.sendFragmentedSignal(nodeId, ssig, MGM_CONFIG_MAN,
                                        GSN_CONFIG_CHANGE_IMPL_REQ,
                                        ConfigChangeImplReq::SignalLength);
@@ -1417,6 +1413,18 @@ ConfigManager::execCONFIG_CHECK_REQ(SignalSender& ss, SimpleSignal* sig)
     exit(0);
   }
 
+  NodeBitmask active_nodes;
+  m_config->get_nodemask(active_nodes);
+  if (!active_nodes.get(nodeId))
+  {
+    g_eventLogger->debug("Got CONFIG_CHECK_REQ from node: %d that is"
+                         " deactivated",
+                         nodeId);
+    sendConfigCheckRef(ss, from, ConfigCheckRef::NodeDeactivated,
+                       generation, other_generation,
+                       m_config_state, CS_UNINITIALIZED);
+    return;
+  }
   // checksum
   Uint32 checksum = config_check_checksum(m_config, v2);
   Uint32 other_checksum = req->checksum;
@@ -1679,6 +1687,7 @@ ConfigManager::execCONFIG_CHECK_CONF(SignalSender& ss, SimpleSignal* sig)
   m_waiting_for.clear(nodeId);
   m_checked.set(nodeId);
 
+  m_retry = 0;
   g_eventLogger->debug("Got CONFIG_CHECK_CONF from node: %d",
                        nodeId);
 
@@ -1709,16 +1718,32 @@ ConfigManager::execCONFIG_CHECK_REF(SignalSender& ss, SimpleSignal* sig)
                       ref->state, ref->expected_state,
                       m_config_state);
 
+  if (ref->error == ConfigCheckRef::NodeDeactivated)
+  {
+    g_eventLogger->error("Node is stopped since it is deactivated for"
+                         " the moment, exiting...");
+    exit(1);
+  }
   assert(ref->generation != ref->expected_generation ||
          ref->state != ref->expected_state ||
          ref->error == ConfigCheckRef::WrongChecksum);
   if((Uint32)m_config_state != ref->state)
   {
-    // The config state changed while this check was in the air
-    // drop the signal and thus cause it to run again later
-    require(!m_checked.get(nodeId));
-    m_waiting_for.clear(nodeId);
-    return;
+    if (m_retry == 0)
+    {
+      // The config state changed while this check was in the air
+      // drop the signal and thus cause it to run again later
+      m_retry++;
+      require(!m_checked.get(nodeId));
+      m_waiting_for.clear(nodeId);
+      return;
+    }
+    else
+    {
+      g_eventLogger->error("Already retried, probably need to"
+                           " start with --initial, exiting...");
+      exit(1);
+    }
   }
 
   switch(m_config_state)
@@ -1875,6 +1900,19 @@ ConfigManager::prepareLoadedConfig(Config * new_conf)
 }
 
 void
+ConfigManager::update_mgm_nodemask(bool early)
+{
+  // Build bitmaks of all mgm nodes in config
+  m_config->get_nodemask(m_all_mgm, NDB_MGM_NODE_TYPE_MGM);
+  if (early)
+  {
+    // exclude nowait-nodes from config change protcol
+    m_all_mgm.bitANDC(m_opts.nowait_nodes);
+    m_all_mgm.set(m_facade->ownId()); // Never exclude own node
+  }
+}
+
+void
 ConfigManager::run()
 {
   assert(m_facade);
@@ -1896,19 +1934,11 @@ ConfigManager::run()
   }
 
   ss.lock();
-
-  // Build bitmaks of all mgm nodes in config
-  m_config->get_nodemask(m_all_mgm, NDB_MGM_NODE_TYPE_MGM);
-
-  // exclude nowait-nodes from config change protcol
-  m_all_mgm.bitANDC(m_opts.nowait_nodes);
-  m_all_mgm.set(m_facade->ownId()); // Never exclude own node
-
+  update_mgm_nodemask(true);
   start_checkers();
 
   while (!is_stopped())
   {
-
     if (m_config_change.m_state == ConfigChangeState::IDLE)
     {
       bool print_state = false;
@@ -2023,7 +2053,7 @@ ConfigManager::run()
       if (!m_all_mgm.get(nodeId)) // Not mgm node
         break;
 
-      ndbout_c("Node %d failed", nodeId);
+      g_eventLogger->info("Node %d failed", nodeId);
       m_started.clear(nodeId);
       m_checked.clear(nodeId);
       m_defragger.node_failed(nodeId);
@@ -2045,13 +2075,13 @@ ConfigManager::run()
     case GSN_NODE_FAILREP:
       // ignore, NF_COMPLETEREP will come
       break;
-
     case GSN_API_REGCONF:{
       NodeId nodeId = refToNode(sig->header.theSendersBlockRef);
       if (m_all_mgm.get(nodeId) &&      // Is a mgm node
           !m_started.get(nodeId))       // Not already marked as started
       {
         g_eventLogger->info("Node %d connected", nodeId);
+        g_eventLogger->info("Node %d set m_started", nodeId);
         m_started.set(nodeId);
       }
       break;
@@ -2088,6 +2118,12 @@ ConfigManager::run()
   ss.unlock();
 }
 
+void
+ConfigManager::set_node_failed(Uint32 nodeId)
+{
+  m_started.clear(nodeId);
+  g_eventLogger->info("Node %d clear m_started, disconnected", nodeId);
+}
 
 #include "InitConfigFileParser.hpp"
 

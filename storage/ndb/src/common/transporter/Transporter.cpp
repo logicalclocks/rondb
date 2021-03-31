@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -245,7 +246,7 @@ Transporter::connect_server(NDB_SOCKET_TYPE sockfd,
 
 
 bool
-Transporter::connect_client()
+Transporter::connect_client(bool multi_connection)
 {
   NDB_SOCKET_TYPE sockfd;
   DBUG_ENTER("Transporter::connect_client");
@@ -264,6 +265,12 @@ Transporter::connect_client()
     // to the client via the ndb_mgmd.
     // Reverse the negative port number to get the connectable port
     port= -port;
+  }
+
+  if (!m_transporter_registry.get_active_node(getRemoteNodeId()) &&
+      !multi_connection)
+  {
+    DBUG_RETURN(false);
   }
 
   if(isMgmConnection)
@@ -431,6 +438,13 @@ Transporter::connect_client(NDB_SOCKET_TYPE sockfd)
     DBUG_RETURN(false);
   }
 
+  if (!m_transporter_registry.get_active_node(remoteNodeId))
+  {
+    g_eventLogger->error("Connection to node: %d refused since node"
+                         " is not active", remoteNodeId);
+    ndb_socket_close(sockfd);
+    DBUG_RETURN(false);
+  }
   // Cache the connect address
   ndb_socket_connect_address(sockfd, &m_connect_address);
 

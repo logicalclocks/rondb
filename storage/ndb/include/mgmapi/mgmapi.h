@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1031,6 +1032,60 @@ extern "C" {
 		    int no_of_nodes,
 		    const int * node_list);
 
+  /**
+   * Get node id of Management server we are connected to
+   *
+   * @param   handle        Management handle.
+   * @param   nodeId        The nodeId returned from MGM Server
+   *
+   * @return                0 for success, -1 on error
+   *
+   * @note Request information about node id we are connected to
+   */
+  int ndb_mgm_get_nodeid(NdbMgmHandle handle, int &nodeId);
+
+  /**
+   * Set hostname for a deactivated node
+   *
+   * @param   handle        Management handle.
+   * @param   node          Node IDs of node to get new hostname
+   * @param   new_hostname  New hostname to be set for node
+   *
+   * @return                0 for success, -1 on error
+   *
+   * @note    The node to set hostname for must be deactived when this command
+   *          is executed.
+   */
+  int ndb_mgm_set_hostname(NdbMgmHandle handle,
+                           const int nodeId,
+                           const char *new_hostname);
+
+  /**
+   * Activate node
+   *
+   * @param   handle        Management handle.
+   * @param   node          Node IDs of node to be activated
+   *
+   * @return                0 for success, -1 on error
+   *
+   * @note    The node to activate must be deactived when this command is
+   *          executed.
+   */
+  int ndb_mgm_activate(NdbMgmHandle handle, const int nodeId);
+
+  /**
+   * Deactivate node
+   *
+   * @param   handle        Management handle.
+   * @param   node          Node IDs of node to be deactivated
+   *
+   * @return                0 for success, -1 on error
+   *
+   * @note    The node to deactivate must be active when this command is
+   *          executed.
+   */
+  int ndb_mgm_deactivate(NdbMgmHandle handle, const int nodeId);
+
   /** @} *********************************************************************/
   /**
    * @name Functions: Controlling Clusterlog output
@@ -1411,6 +1466,7 @@ extern "C" {
    */
   struct ndb_mgm_configuration * ndb_mgm_get_configuration(NdbMgmHandle handle,
 							   unsigned version);
+  int ndb_mgm_set_configuration(NdbMgmHandle handle, struct ndb_mgm_configuration*);
   void ndb_mgm_destroy_configuration(struct ndb_mgm_configuration *);
 
   int ndb_mgm_alloc_nodeid(NdbMgmHandle handle,

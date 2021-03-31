@@ -665,4 +665,14 @@ ndbd_support_backup_file_encryption(Uint32 x)
 {
   return x >= NDBD_SUPPORT_BACKUP_FILE_ENCRYPTION;
 }
+
+#define NDBD_SUPPORT_ACTIVATE NDB_MAKE_VERSION(21,04,0)
+
+static
+inline
+bool
+ndbd_support_activate(Uint32 x)
+{
+  return x >= NDBD_SUPPORT_ACTIVATE;
+}
 #endif

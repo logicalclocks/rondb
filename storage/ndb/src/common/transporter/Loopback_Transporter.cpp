@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2010, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -45,8 +46,9 @@ Loopback_Transporter::~Loopback_Transporter()
 }
 
 bool
-Loopback_Transporter::connect_client()
+Loopback_Transporter::connect_client(bool multi_connection)
 {
+  (void)multi_connection;
   NDB_SOCKET_TYPE pair[2];
   if (ndb_socketpair(pair))
   {

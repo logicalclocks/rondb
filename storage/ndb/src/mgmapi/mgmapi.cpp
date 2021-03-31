@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2720,6 +2721,153 @@ ndb_mgm_insert_error2(NdbMgmHandle handle, int nodeId,
 		     struct ndb_mgm_reply* reply)
 {
   return ndb_mgm_insert_error_impl(handle, nodeId, errorCode, &extra, reply);
+}
+
+extern "C"
+int
+ndb_mgm_get_nodeid(NdbMgmHandle handle,
+                  int & nodeId)
+{
+  DBUG_ENTER("ndb_mgm_get_nodeid");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_get_nodeid");
+  const ParserRow<ParserDummy> get_mgm_nodeid_reply[] = {
+    MGM_CMD("get mgm nodeid reply", NULL, ""),
+    MGM_ARG("nodeid", Int, Mandatory, "Nodeid"),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_END()
+  };
+  int result = -1;
+  CHECK_CONNECTED(handle, -1);
+  Properties args;
+  const Properties *reply;
+  reply = ndb_mgm_call(handle, get_mgm_nodeid_reply, "get mgm nodeid", &args);
+  if (reply != NULL)
+  {
+    BaseString result_str;
+    reply->get("result", result_str);
+    if (strcmp(result_str.c_str(), "Ok") == 0)
+    {
+      Uint32 node_id;
+      reply->get("nodeid", &node_id);
+      nodeId = node_id;
+      result = 0;
+    }
+    else
+    {
+      SET_ERROR(handle, EINVAL, result_str.c_str());
+    }
+  }
+  delete reply;
+  DBUG_RETURN(result);
+}
+
+extern "C"
+int
+ndb_mgm_set_hostname(NdbMgmHandle handle,
+                     const int nodeId,
+                     const char *new_hostname)
+{
+  DBUG_ENTER("ndb_mgm_set_hostname");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_set_hostname");
+  const ParserRow<ParserDummy> set_hostname_reply[] = {
+    MGM_CMD("set_hostname reply", NULL, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_END()
+  };
+  int activated = -1;
+  CHECK_CONNECTED(handle, -1);
+  Properties args;
+  args.put("node", nodeId);
+  args.put("new_hostname", new_hostname);
+  const Properties *reply;
+  reply = ndb_mgm_call(handle, set_hostname_reply, "set_hostname", &args);
+  if (reply != NULL)
+  {
+    BaseString result;
+    reply->get("result", result);
+    if (strcmp(result.c_str(), "Ok") == 0)
+    {
+      activated = 0;
+    }
+    else
+    {
+      SET_ERROR(handle, EINVAL, result.c_str());
+    }
+  }
+  delete reply;
+  DBUG_RETURN(activated);
+}
+
+extern "C"
+int
+ndb_mgm_activate(NdbMgmHandle handle, const int nodeId)
+{
+  DBUG_ENTER("ndb_mgm_activate");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_activate");
+  const ParserRow<ParserDummy> activate_reply[] = {
+    MGM_CMD("activate reply", NULL, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_END()
+  };
+  int activated = -1;
+  CHECK_CONNECTED(handle, -1);
+  Properties args;
+  args.put("node", nodeId);
+  const Properties *reply;
+  reply = ndb_mgm_call(handle, activate_reply, "activate", &args);
+  if (reply != NULL)
+  {
+    BaseString result;
+    reply->get("result", result);
+    if (strcmp(result.c_str(), "Ok") == 0)
+    {
+      activated = 0;
+    }
+    else
+    {
+      SET_ERROR(handle, EINVAL, result.c_str());
+    }
+  }
+  delete reply;
+  DBUG_RETURN(activated);
+}
+
+extern "C"
+int
+ndb_mgm_deactivate(NdbMgmHandle handle, const int nodeId)
+{
+  DBUG_ENTER("ndb_mgm_deactivate");
+  CHECK_HANDLE(handle, -1);
+  SET_ERROR(handle, NDB_MGM_NO_ERROR, "Executing: ndb_mgm_deactivate");
+  const ParserRow<ParserDummy> deactivate_reply[] = {
+    MGM_CMD("deactivate reply", NULL, ""),
+    MGM_ARG("result", String, Mandatory, "Error message"),
+    MGM_END()
+  };
+  int deactivated = -1;
+  CHECK_CONNECTED(handle, -1);
+  Properties args;
+  args.put("node", nodeId);
+  const Properties *reply;
+  reply = ndb_mgm_call(handle, deactivate_reply, "deactivate", &args);
+  if (reply != NULL)
+  {
+    BaseString result;
+    reply->get("result", result);
+    if (strcmp(result.c_str(), "Ok") == 0)
+    {
+      deactivated = 0;
+    }
+    else
+    {
+      SET_ERROR(handle, EINVAL, result.c_str());
+    }
+  }
+  delete reply;
+  DBUG_RETURN(deactivated);
 }
 
 extern "C"
