@@ -124,7 +124,7 @@ public:
    * None blocking
    *    Use isConnected() to check status
    */
-  virtual bool connect_client();
+  virtual bool connect_client(bool);
   bool connect_client(NDB_SOCKET_TYPE sockfd);
   bool connect_server(NDB_SOCKET_TYPE socket, BaseString& errormsg);
 
@@ -213,6 +213,10 @@ public:
    */
   virtual void shutdown() { abort();}
 
+  void set_hostname(const char* new_hostname)
+  {
+    memcpy(&remoteHostName, new_hostname, 256);
+  }
 protected:
   Transporter(TransporterRegistry &,
               TrpId transporter_index,

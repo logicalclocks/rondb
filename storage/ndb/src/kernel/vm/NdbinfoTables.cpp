@@ -888,7 +888,7 @@ DECLARE_NDBINFO_TABLE(PROCESSES, 8) =
     { "reporting_node_id",         Ndbinfo::Number,    "Reporting data node ID"},
     { "node_id",                   Ndbinfo::Number,    "Connected node ID"},
     { "node_type",                 Ndbinfo::Number,    "Type of node"},
-    { "node_version",              Ndbinfo::String,    "Node MySQL Cluster version string"},
+    { "node_version",              Ndbinfo::String,    "Node RonDB version string"},
     { "process_id",                Ndbinfo::Number,    "PID of node process on host"},
     { "angel_process_id",          Ndbinfo::Number,    "PID of node\\\'s angel process"},
     { "process_name",              Ndbinfo::String,    "Node\\\'s executable process name"},

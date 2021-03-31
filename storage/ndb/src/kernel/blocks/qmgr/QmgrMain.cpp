@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -54,11 +55,13 @@
 #include <signaldata/SyncThreadViaReqConf.hpp>
 #include <signaldata/TakeOverTcConf.hpp>
 #include <signaldata/GetNumMultiTrp.hpp>
+#include <signaldata/Activate.hpp>
 #include <signaldata/Sync.hpp>
 #include <ndb_version.h>
 #include <OwnProcessInfo.hpp>
 #include <NodeInfo.hpp>
 #include <NdbSleep.h>
+#include <Configuration.hpp>
 #ifdef _WIN32
 #include <ws2tcpip.h>
 #endif
@@ -69,6 +72,7 @@
 #include "../dbdih/Dbdih.hpp"
 #include <EventLogger.hpp>
 extern EventLogger * g_eventLogger;
+extern NodeBitmask g_not_active_nodes;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_MULTI_TRP 1
@@ -1129,7 +1133,9 @@ void Qmgr::execCM_INFOCONF(Signal* signal)
 }//Qmgr::execCM_INFOCONF()
 
 Uint32 g_start_type = 0;
-NdbNodeBitmask g_nowait_nodes; // Set by clo
+
+extern NdbNodeBitmask g_nowait_nodes;
+extern NodeBitmask g_not_active_nodes;
 
 void Qmgr::cmInfoconf010Lab(Signal* signal) 
 {
@@ -3711,6 +3717,39 @@ void Qmgr::apiHbHandlingLab(Signal* signal, NDB_TICKS now)
   return;
 }//Qmgr::apiHbHandlingLab()
 
+void Qmgr::execACTIVATE_REQ(Signal *signal)
+{
+  jamEntry();
+  NodeRecPtr nodePtr;
+  const ActivateReq* const req = (const ActivateReq *)signal->getDataPtr();
+  Uint32 nodeId = req->activateNodeId;
+  nodePtr.i = nodeId;
+  ptrCheckGuard(nodePtr, MAX_NODES, nodeRec);
+  if (nodePtr.p->phase == ZFAIL_CLOSING)
+  {
+    /**
+     * QMGR will handle it in checkStartInterfaces as normal restart of
+     * API node.
+     */
+    jam();
+    g_eventLogger->debug("ZFAIL_CLOSING state of node %u after activation",
+                         nodePtr.i);
+    return;
+  }
+  else if (nodePtr.p->phase == ZINIT || nodePtr.p->phase == ZAPI_INACTIVE)
+  {
+    jam();
+    g_eventLogger->info("Open up communication to node %u after activation",
+                        nodePtr.i);
+    signal->theData[0] = 0;
+    signal->theData[1] = nodePtr.i;
+    sendSignal(TRPMAN_REF, GSN_OPEN_COMORD, signal, 2, JBB);
+    return;
+  }
+  g_eventLogger->warning("Activated a node in phase %u",
+                         nodePtr.p->phase);
+}
+
 void Qmgr::checkStartInterface(Signal* signal, NDB_TICKS now) 
 {
   NodeRecPtr nodePtr;
@@ -3774,9 +3813,13 @@ void Qmgr::checkStartInterface(Signal* signal, NDB_TICKS now)
         }
 
         set_hb_count(nodePtr.i) = 0;
-        signal->theData[0] = 0;
-        signal->theData[1] = nodePtr.i;
-        sendSignal(TRPMAN_REF, GSN_OPEN_COMORD, signal, 2, JBB);
+        if (!g_not_active_nodes.get(nodePtr.i))
+        {
+          jam();
+          signal->theData[0] = 0;
+          signal->theData[1] = nodePtr.i;
+          sendSignal(TRPMAN_REF, GSN_OPEN_COMORD, signal, 2, JBB);
+        }
       }
       else
       {

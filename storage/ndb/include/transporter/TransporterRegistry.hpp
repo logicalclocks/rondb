@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -276,6 +277,7 @@ public:
   bool isMultiTransporter(Transporter*);
   void switch_active_trp(Multi_Transporter*);
   Uint32 get_num_active_transporters(Multi_Transporter*);
+  void set_hostname(Uint32 nodeId, const char *new_hostname);
 private:
 
   NdbMutex *theMultiTransporterMutex;
@@ -575,6 +577,7 @@ private:
    * State arrays, index by host id
    */
   PerformState* performStates;
+  bool*         nodeActiveStates;
   int*          m_disconnect_errnum;
   Uint32*       m_disconnect_enomem_error;
   IOState*      ioStates;
@@ -728,6 +731,8 @@ public:
   TrpId getTransporterIndex(Transporter* t);
   void set_recv_thread_idx(Transporter* t, Uint32 recv_thread_idx);
 
+  void set_active_node(Uint32 nodeId, Uint32 active);
+  bool get_active_node(Uint32 nodeId);
 #ifdef ERROR_INSERT
   /* Utils for testing latency issues */
   bool isBlocked(NodeId nodeId);

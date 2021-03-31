@@ -1,4 +1,5 @@
 /* Copyright (c) 2008, 2013, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -246,7 +247,8 @@ struct ConfigCheckRef
   enum ErrorCode {
     WrongState                 = 1,
     WrongGeneration            = 2,
-    WrongChecksum              = 3
+    WrongChecksum              = 3,
+    NodeDeactivated            = 4
   };
 
   static const char* errorMessage(Uint32 error) {
@@ -257,6 +259,8 @@ struct ConfigCheckRef
       return "Wrong generation";
     case WrongChecksum:
       return "Wrong checksum";
+    case NodeDeactivated:
+      return "Trying to start a deactivated node";
 
     default:
       return "ConfigCheckRef, unknown error";

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -156,6 +157,9 @@ ClusterMgr::configure(Uint32 nodeId,
     default:
       break;
     }
+    Uint32 is_active = 1;
+    iter.get(CFG_NODE_ACTIVE, &is_active);
+    theNode.m_node_active = (is_active == 1);
   }
 
   /* Mark all non existing nodes as not defined */
@@ -1266,7 +1270,6 @@ ClusterMgr::reportDisconnected(NodeId nodeId)
 {
   assert(theFacade.is_poll_owner_thread());
   assert(nodeId > 0 && nodeId < MAX_NODES);
-
   if (theFacade.m_poll_owner != this)
     lock();
 

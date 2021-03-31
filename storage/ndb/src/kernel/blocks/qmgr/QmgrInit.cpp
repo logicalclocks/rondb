@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -247,6 +248,7 @@ Qmgr::Qmgr(Block_context& ctx)
   addRecSignal(GSN_ENABLE_COMCONF,  &Qmgr::execENABLE_COMCONF);
   addRecSignal(GSN_PROCESSINFO_REP, &Qmgr::execPROCESSINFO_REP);
   addRecSignal(GSN_SYNC_THREAD_VIA_CONF, &Qmgr::execSYNC_THREAD_VIA_CONF);
+  addRecSignal(GSN_ACTIVATE_REQ, &Qmgr::execACTIVATE_REQ);
 
   // Arbitration signals
   addRecSignal(GSN_ARBIT_PREPREQ, &Qmgr::execARBIT_PREPREQ);

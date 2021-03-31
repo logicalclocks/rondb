@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2004, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -394,14 +395,16 @@ Ndb_cluster_connection::wait_until_ready(int timeout,
   int secondsCounter = 0;
   int milliCounter = 0;
   int noChecksSinceFirstAliveFound = 0;
+  Uint32 connected_db_nodes = 0;
   do {
-    const Uint32 unconnected_nodes = m_impl.get_unconnected_nodes();
+    const Uint32 unconnected_db_nodes =
+      m_impl.get_unconnected_db_nodes(connected_db_nodes);
 
-    if (unconnected_nodes == 0)
+    if (unconnected_db_nodes == 0 && connected_db_nodes > 0)
     {
       DBUG_RETURN(0);
     }
-    else if (unconnected_nodes < no_db_nodes())
+    else if (connected_db_nodes > 0)
     {
       noChecksSinceFirstAliveFound++;
       // 100 ms delay -> 10*
@@ -1153,10 +1156,12 @@ Ndb_cluster_connection_impl::get_db_nodes(Uint8 arr[MAX_NDB_NODES]) const
 }
 
 Uint32
-Ndb_cluster_connection_impl::get_unconnected_nodes() const
+Ndb_cluster_connection_impl::get_unconnected_db_nodes(
+  Uint32 & num_connected_db_nodes) const
 {
   TransporterFacade *tp = m_transporter_facade;
 
+  NdbNodeBitmask not_active;// All nodes not_active
   NdbNodeBitmask connected; // All nodes connected
   NdbNodeBitmask started;   // All started nodes known by connected db nodes
 
@@ -1166,6 +1171,11 @@ Ndb_cluster_connection_impl::get_unconnected_nodes() const
        node_id = m_db_nodes.find_next(node_id + 1))
   {
     const trp_node& node = tp->theClusterMgr->getNodeInfo(node_id);
+    if (!node.m_node_active)
+    {
+      not_active.set(node_id);
+      continue;
+    }
     if (!node.m_alive)
     {
       continue;
@@ -1190,8 +1200,14 @@ Ndb_cluster_connection_impl::get_unconnected_nodes() const
 
   /**
    * Return count of started but not connected db nodes
+   * also exclude not active nodes since they are not
+   * expected to be connected.
    */
+  connected.bitAND(m_db_nodes);
+  num_connected_db_nodes = connected.count();
+  not_active.bitAND(m_db_nodes);
   started.bitAND(m_db_nodes);
+  started.bitANDC(not_active);
   return started.bitANDC(connected).count();
 }
 

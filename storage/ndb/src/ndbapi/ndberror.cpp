@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2004, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -982,6 +983,16 @@ ErrorBundle ErrorCodes[] = {
   { QRY_NEST_NOT_SUPPORTED, DMEC, AE,
     "FirstInner/Upper has to be an ancestor or a sibling" },
 
+  { FAILED_ACTIVATE_REQUEST, DMEC, AE,
+    "Data nodes failed Activate Request"},
+  { FAILED_DEACTIVATE_REQUEST, DMEC, AE,
+    "Data nodes failed Deactivate Request"},
+  { NODE_CURRENTLY_DEACTIVATED, DMEC, AE,
+    "Alloc node id failed since node is deactivated"},
+  { INCORRECT_MGM_COMMAND, DMEC, AE,
+    "MGM Server received incorrect command from client"},
+  { FAILED_SET_HOSTNAME_REQUEST, DMEC, AE,
+    "Data nodes failed to set new hostname"},
   { NO_CONTACT_WITH_PROCESS, DMEC, AE,
     "No contact with the process (dead ?)."},
   { WRONG_PROCESS_TYPE, DMEC, AE,

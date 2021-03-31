@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -302,6 +303,7 @@ TransporterRegistry::TransporterRegistry(TransporterCallback *callback,
   theNodeIdTransporters = new Transporter   * [MAX_NODES];
   theMultiTransporters = new Multi_Transporter * [MAX_NODES];
   performStates       = new PerformState      [MAX_NODES];
+  nodeActiveStates    = new bool              [MAX_NODES];
   ioStates            = new IOState           [MAX_NODES]; 
   peerUpIndicators    = new bool              [maxTransporters];
   connectingTime      = new Uint32            [maxTransporters];
@@ -327,6 +329,7 @@ TransporterRegistry::TransporterRegistry(TransporterCallback *callback,
     theNodeIdTransporters[i] = NULL;
     theMultiTransporters[i] = NULL;
     performStates[i]      = DISCONNECTED;
+    nodeActiveStates[i]   = true;
     ioStates[i]           = NoHalt;
     peerUpIndicators[i]   = true; // Assume all nodes are up, will be
                                   // cleared at first connect attempt
@@ -385,6 +388,7 @@ TransporterRegistry::~TransporterRegistry()
   delete[] theMultiTransporters;
   delete[] theNodeIdTransporters;
   delete[] performStates;
+  delete[] nodeActiveStates;
   delete[] ioStates;
   delete[] peerUpIndicators;
   delete[] connectingTime;
@@ -470,6 +474,28 @@ TransporterRegistry::init(TransporterReceiveHandle& recvhandle)
   return recvhandle.init(maxTransporters);
 }
 
+void
+TransporterRegistry::set_hostname(Uint32 nodeId,
+                                  const char *new_hostname)
+{
+  for (Uint32 i = 0; i < nTCPTransporters; i++)
+  {
+    if (theTCPTransporters[i]->remoteNodeId == nodeId)
+    {
+      theTCPTransporters[i]->set_hostname(new_hostname);
+    }
+  }
+#ifdef NDB_SHM_TRANSPORTER_SUPPORTED
+  for (Uint32 i = 0; i < nSHMTransporters; i++)
+  {
+    if (theSHMTransporters[i]->remoteNodeId == nodeId)
+    {
+      theSHMTransporters[i]->set_hostname(new_hostname);
+    }
+  }
+#endif
+}
+
 bool
 TransporterRegistry::connect_server(NDB_SOCKET_TYPE sockfd,
                                     BaseString & msg,
@@ -548,7 +574,13 @@ TransporterRegistry::connect_server(NDB_SOCKET_TYPE sockfd,
     DBUG_PRINT("error", ("%s", msg.c_str()));
     DBUG_RETURN(false);
   }
-
+  if (!nodeActiveStates[nodeId])
+  {
+    msg.assfmt("Ignored connection attempt as client "
+               "nodeid %u is not active", nodeId);
+    DBUG_PRINT("error", ("%s", msg.c_str()));
+    DBUG_RETURN(false);
+  }
   lockMultiTransporters();
   // Check that transporter is allocated
   Transporter *t= theNodeIdTransporters[nodeId];
@@ -2380,7 +2412,7 @@ TransporterRegistry::do_connect(NodeId node_id)
      * We should probably have waited for DISCONNECTED state,
      * before allowing reCONNECTING ....
      */
-    assert(false);
+    //assert(false);
     break;
   }
   DEBUG_FPRINTF((stderr, "(%u)REG:do_connect(%u)\n", localNodeId, node_id));
@@ -3203,6 +3235,10 @@ TransporterRegistry::start_clients_thread()
         {
           break;
         }
+        if (!get_active_node(nodeId))
+        {
+          continue;
+        }
         if (!t->isConnected() && !t->isServer)
         {
           if (get_and_clear_node_up_indicator(nodeId))
@@ -3227,7 +3263,7 @@ TransporterRegistry::start_clients_thread()
             DBUG_PRINT("info", ("connecting to node %d using port %d",
                                 nodeId, t->get_s_port()));
             unlockMultiTransporters();
-            connected= t->connect_client();
+            connected= t->connect_client(false);
             lockMultiTransporters();
           }
 
@@ -3351,7 +3387,7 @@ TransporterRegistry::start_clients_thread()
                      nodeId,
                      t->get_s_port()));
           unlockMultiTransporters();
-          t->connect_client();
+          t->connect_client(true);
           DEBUG_FPRINTF((stderr, "Connect client of trp id %u, res: %u\n",
                         t->getTransporterIndex(),
                         t->isConnected()));
@@ -3890,6 +3926,38 @@ TransporterRegistry::get_num_active_transporters(Multi_Transporter *t)
   require(t->isMultiTransporter());
   {
     return t->get_num_active_transporters();
+  }
+}
+
+bool
+TransporterRegistry::get_active_node(Uint32 node_id)
+{
+  return nodeActiveStates[node_id];
+}
+
+void
+TransporterRegistry::set_active_node(Uint32 node_id, Uint32 active)
+{
+  if (active == 0)
+  {
+    /**
+     * We are setting the state of the node to not be
+     * active.
+     *
+     * This can happen as part of startup, but can also happen
+     * as a result of a command to the MGM client while the
+     * node is in the active state, but the node must first
+     * reach the state DISCONNECTED.
+     */
+    nodeActiveStates[node_id] = false;
+  }
+  else
+  {
+    /**
+     * Setting the state back to Node being Active can only be done
+     * through an operation while the node is operational.
+     */
+    nodeActiveStates[node_id] = true;
   }
 }
 

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -897,5 +898,14 @@ const GsnName SignalNames [] = {
   ,{ GSN_MEASURE_WAKEUP_TIME_ORD, "MEASURE_WAKEUP_TIME_ORD" }
   ,{ GSN_UPD_QUERY_DIST_ORD, "UPD_QUERY_DIST_ORD" }
   ,{ GSN_UPD_THR_LOAD_ORD, "UPDATE_THR_LOAD_ORD" }
+  ,{ GSN_ACTIVATE_REQ, "ACTIVATE_REQ" }
+  ,{ GSN_ACTIVATE_CONF, "ACTIVATE_CONF" }
+  ,{ GSN_ACTIVATE_REF, "ACTIVATE_REF" }
+  ,{ GSN_DEACTIVATE_REQ, "DEACTIVATE_REQ" }
+  ,{ GSN_DEACTIVATE_CONF, "DEACTIVATE_CONF" }
+  ,{ GSN_DEACTIVATE_REF, "DEACTIVATE_REF" }
+  ,{ GSN_SET_HOSTNAME_REQ, "SET_HOSTNAME_REQ" }
+  ,{ GSN_SET_HOSTNAME_CONF, "SET_HOSTNAME_CONF" }
+  ,{ GSN_SET_HOSTNAME_REF, "SET_HOSTNAME_REF" }
 };
 const unsigned short NO_OF_SIGNAL_NAMES = sizeof(SignalNames)/sizeof(GsnName);
