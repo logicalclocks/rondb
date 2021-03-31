@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -104,6 +105,10 @@ public:
   void stop_v2(Parser_t::Context &ctx, const class Properties &args);
   void stop(const class Properties &args, int version);
   void stopAll(Parser_t::Context &ctx, const class Properties &args);
+  void get_mgm_nodeid(Parser_t::Context &ctx, const class Properties &args);
+  void set_hostname(Parser_t::Context &ctx, const class Properties &args);
+  void activate(Parser_t::Context &ctx, const class Properties &args);
+  void deactivate(Parser_t::Context &ctx, const class Properties &args);
   void start(Parser_t::Context &ctx, const class Properties &args);
   void startAll(Parser_t::Context &ctx, const class Properties &args);
   void bye(Parser_t::Context &ctx, const class Properties &args);

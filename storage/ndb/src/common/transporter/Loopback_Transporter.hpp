@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2010, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -52,7 +53,7 @@ private:
    * setup socket pair
    * @overload Transporter::connect_client()
    */
-  bool connect_client() override;
+  bool connect_client(bool) override;
 
   /**
    * @overload TCP_Transporter::disconnectImpl

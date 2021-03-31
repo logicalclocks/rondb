@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -31,7 +32,7 @@
  *
  * When adding a new signal, remember to update MAX_GSN and SignalNames.cpp
  */
-const GlobalSignalNumber MAX_GSN = 849;
+const GlobalSignalNumber MAX_GSN = 908;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -1213,4 +1214,15 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_MEASURE_WAKEUP_TIME_ORD     847
 #define GSN_UPD_QUERY_DIST_ORD          848
 #define GSN_UPD_THR_LOAD_ORD            849
+
+#define GSN_ACTIVATE_REQ                900
+#define GSN_ACTIVATE_CONF               901
+#define GSN_ACTIVATE_REF                902
+#define GSN_DEACTIVATE_REQ              903
+#define GSN_DEACTIVATE_CONF             904
+#define GSN_DEACTIVATE_REF              905
+#define GSN_SET_HOSTNAME_REQ            906
+#define GSN_SET_HOSTNAME_CONF           907
+#define GSN_SET_HOSTNAME_REF            908
+
 #endif

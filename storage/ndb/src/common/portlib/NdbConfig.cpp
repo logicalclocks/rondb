@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,6 +29,7 @@
 #include <NdbHost.h>
 
 static const char *datadir_path= 0;
+static const char *pid_file_dir_path= 0;
 
 const char *
 NdbConfig_get_path(int *_len)
@@ -53,11 +55,44 @@ NdbConfig_get_path(int *_len)
   return path;
 }
 
+static const char *
+NdbConfig_get_pidfile_path(int *_len)
+{
+  const char *path = NULL;
+  int path_len = 0;
+  if (pid_file_dir_path)
+  {
+    path = pid_file_dir_path;
+    path_len = (int)strlen(path);
+  }
+  else if (datadir_path)
+  {
+    path = datadir_path;
+    path_len = (int)strlen(path);
+  }
+  if (path_len == 0)
+  {
+    path = ".";
+    path_len = (int)strlen(path);
+  }
+  if (_len)
+    *_len= path_len;
+  return path;
+}
+
 static char* 
-NdbConfig_AllocHomePath(int _len)
+NdbConfig_AllocHomePath(int _len, bool pid_file)
 {
   int path_len;
-  const char *path= NdbConfig_get_path(&path_len);
+  const char *path;
+  if (pid_file)
+  {
+    path = NdbConfig_get_pidfile_path(&path_len);
+  }
+  else
+  {
+    path = NdbConfig_get_path(&path_len);
+  }
   int len= _len+path_len;
   char *buf= (char *)malloc(len);
   snprintf(buf, len, "%s%s", path, DIR_SEPARATOR);
@@ -69,13 +104,18 @@ NdbConfig_SetPath(const char* path){
   datadir_path= path;
 }
 
+void
+NdbConfig_SetPidfilePath(const char* path){
+  pid_file_dir_path= path;
+}
+
 char* 
 NdbConfig_NdbCfgName(int with_ndb_home){
   char *buf;
   int len= 0;
 
   if (with_ndb_home) {
-    buf= NdbConfig_AllocHomePath(PATH_MAX);
+    buf= NdbConfig_AllocHomePath(PATH_MAX, false);
     len= (int)strlen(buf);
   } else
     buf= (char *)malloc(PATH_MAX);
@@ -84,7 +124,7 @@ NdbConfig_NdbCfgName(int with_ndb_home){
 }
 
 static
-char *get_prefix_buf(int len, int node_id)
+char *get_prefix_buf(int len, int node_id, bool pidfile)
 {
   char tmp_buf[sizeof("ndb_pid#############")+1];
   char *buf;
@@ -95,7 +135,7 @@ char *get_prefix_buf(int len, int node_id)
              NdbHost_GetProcessId());
   tmp_buf[sizeof(tmp_buf)-1]= 0;
 
-  buf= NdbConfig_AllocHomePath(len+(int)strlen(tmp_buf));
+  buf= NdbConfig_AllocHomePath(len+(int)strlen(tmp_buf), pidfile);
   require(len > 0); // avoid buffer overflow
   strcat(buf, tmp_buf);
   return buf;
@@ -103,7 +143,7 @@ char *get_prefix_buf(int len, int node_id)
 
 char* 
 NdbConfig_ErrorFileName(int node_id){
-  char *buf= get_prefix_buf(PATH_MAX, node_id);
+  char *buf= get_prefix_buf(PATH_MAX, node_id, false);
   int len= (int)strlen(buf);
   snprintf(buf+len, PATH_MAX, "_error.log");
   return buf;
@@ -111,7 +151,7 @@ NdbConfig_ErrorFileName(int node_id){
 
 char*
 NdbConfig_ClusterLogFileName(int node_id){
-  char *buf= get_prefix_buf(PATH_MAX, node_id);
+  char *buf= get_prefix_buf(PATH_MAX, node_id, false);
   int len= (int)strlen(buf);
   snprintf(buf+len, PATH_MAX, "_cluster.log");
   return buf;
@@ -119,7 +159,7 @@ NdbConfig_ClusterLogFileName(int node_id){
 
 char*
 NdbConfig_SignalLogFileName(int node_id){
-  char *buf= get_prefix_buf(PATH_MAX, node_id);
+  char *buf= get_prefix_buf(PATH_MAX, node_id, false);
   int len= (int)strlen(buf);
   snprintf(buf+len, PATH_MAX, "_signal.log");
   return buf;
@@ -127,7 +167,7 @@ NdbConfig_SignalLogFileName(int node_id){
 
 char*
 NdbConfig_TraceFileName(int node_id, int file_no){
-  char *buf= get_prefix_buf(PATH_MAX, node_id);
+  char *buf= get_prefix_buf(PATH_MAX, node_id, false);
   int len= (int)strlen(buf);
   snprintf(buf+len, PATH_MAX, "_trace.log.%u", file_no);
   return buf;
@@ -135,7 +175,7 @@ NdbConfig_TraceFileName(int node_id, int file_no){
 
 char*
 NdbConfig_NextTraceFileName(int node_id){
-  char *buf= get_prefix_buf(PATH_MAX, node_id);
+  char *buf= get_prefix_buf(PATH_MAX, node_id, false);
   int len= (int)strlen(buf);
   snprintf(buf+len, PATH_MAX, "_trace.log.next");
   return buf;
@@ -143,7 +183,7 @@ NdbConfig_NextTraceFileName(int node_id){
 
 char*
 NdbConfig_PidFileName(int node_id){
-  char *buf= get_prefix_buf(PATH_MAX, node_id);
+  char *buf= get_prefix_buf(PATH_MAX, node_id, true);
   int len= (int)strlen(buf);
   snprintf(buf+len, PATH_MAX, ".pid");
   return buf;
@@ -151,7 +191,7 @@ NdbConfig_PidFileName(int node_id){
 
 char*
 NdbConfig_StdoutFileName(int node_id){
-  char *buf= get_prefix_buf(PATH_MAX, node_id);
+  char *buf= get_prefix_buf(PATH_MAX, node_id, false);
   int len= (int)strlen(buf);
   snprintf(buf+len, PATH_MAX, "_out.log");
   return buf;

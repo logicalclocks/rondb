@@ -829,7 +829,7 @@ struct st_mysql_plugin ndbinfo_plugin = {
     &ndbinfo_storage_engine,
     "ndbinfo",
     PLUGIN_AUTHOR_ORACLE,
-    "MySQL Cluster system information storage engine",
+    "RonDB system information storage engine",
     PLUGIN_LICENSE_GPL,
     ndbinfo_init,             /* plugin init */
     NULL,                     /* plugin uninstall check */

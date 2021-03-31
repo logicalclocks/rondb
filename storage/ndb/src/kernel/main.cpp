@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -55,6 +56,7 @@ static int opt_delay;
 static unsigned long opt_logbuffer_size;
 
 extern NdbNodeBitmask g_nowait_nodes;
+extern NodeBitmask g_not_active_nodes;
 
 static struct my_option my_long_options[] =
 {
@@ -156,7 +158,7 @@ real_main(int argc, char** argv)
 
 #ifdef _WIN32
   /* Output to Windows event log */
-  g_eventLogger->createEventLogHandler("MySQL Cluster Data Node Daemon");
+  g_eventLogger->createEventLogHandler("RonDB Data Node Daemon");
 #endif
 
   g_eventLogger->setCategory("ndbd");
@@ -256,7 +258,7 @@ main(int argc, char** argv)
 {
   ndb_openssl_evp::library_init();
   int rc = ndb_daemon_init(argc, argv, real_main, angel_stop,
-                           "ndbd", "MySQL Cluster Data Node Daemon");
+                           "ndbd", "RonDB Data Node Daemon");
   ndb_openssl_evp::library_end();
   return rc;
 }

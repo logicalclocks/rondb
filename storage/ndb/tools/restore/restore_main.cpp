@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -288,11 +289,11 @@ static struct my_option my_long_options[] =
     (uchar**) &g_backup_password, (uchar**) &g_backup_password, 0,
     GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
   { "restore_data", 'r', 
-    "Restore table data/logs into NDB Cluster using NDBAPI", 
+    "Restore table data/logs into RonDB using NDBAPI", 
     (uchar**) &_restore_data, (uchar**) &_restore_data,  0,
     GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
   { "restore_meta", 'm',
-    "Restore meta data into NDB Cluster using NDBAPI",
+    "Restore meta data into RonDB using NDBAPI",
     (uchar**) &_restore_meta, (uchar**) &_restore_meta,  0,
     GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
   { "no-upgrade", 'u',

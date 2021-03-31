@@ -319,7 +319,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     CFG_SYS_NAME,
     "Name",
     "SYSTEM",
-    "Name of system (NDB Cluster)",
+    "Name of system (RonDB)",
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_STRING,
@@ -439,6 +439,20 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_STRING,
     "localhost",
     0, 0 },
+
+  {
+    CFG_NODE_ACTIVE,
+    "NodeActive",
+    DB_TOKEN,
+    "NodeActive set to false means that the node isn't currently active"
+    ", this means that the node will not start and cannot be introduced"
+    " into the cluster until this variable is set to true for the node",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "true",
+    "false",
+    "true" },
 
   {
     CFG_NODE_DEDICATED,
@@ -654,7 +668,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     CFG_DB_REALTIME_SCHEDULER,
     "RealtimeScheduler",
     DB_TOKEN,
-    "If yes, then NDB Cluster threads will be scheduled as real-time threads",
+    "If yes, then RonDB threads will be scheduled as real-time threads",
     ConfigInfo::CI_USED,
     0,
     ConfigInfo::CI_BOOL,
@@ -678,7 +692,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     CFG_DB_MEMLOCK,
     "LockPagesInMainMemory",
     DB_TOKEN,
-    "If set to yes, then NDB Cluster data will not be swapped out to disk",
+    "If set to yes, then RonDB data will not be swapped out to disk",
     ConfigInfo::CI_USED,
     0,
     ConfigInfo::CI_INT,
@@ -1464,6 +1478,17 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     CI_CHECK_WRITABLE | CI_RESTART_INITIAL,
     ConfigInfo::CI_STRING,
     ".",
+    0, 0 },
+
+  {
+    CFG_NODE_PIDFILE_DIR,
+    "FileSystemPathPidfile",
+    DB_TOKEN,
+    "Path to directory where the " DB_TOKEN_PRINT " node stores its pid file",
+    ConfigInfo::CI_USED,
+    CI_CHECK_WRITABLE | CI_RESTART_INITIAL,
+    ConfigInfo::CI_STRING,
+    0,
     0, 0 },
 
   {
@@ -2782,6 +2807,20 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     0, 0 },
 
   {
+    CFG_NODE_ACTIVE,
+    "NodeActive",
+    API_TOKEN,
+    "NodeActive set to false means that the node isn't currently active"
+    ", this means that the node will not start and cannot be introduced"
+    " into the cluster until this variable is set to true for the node",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "true",
+    "false",
+    "true" },
+
+  {
     CFG_NODE_DEDICATED,
     "Dedicated",
     API_TOKEN,
@@ -3101,6 +3140,20 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     0, 0 },
 
   {
+    CFG_NODE_ACTIVE,
+    "NodeActive",
+    MGM_TOKEN,
+    "NodeActive set to false means that the node isn't currently active"
+    ", this means that the node will not start and cannot be introduced"
+    " into the cluster until this variable is set to true for the node",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "true",
+    "false",
+    "true" },
+
+  {
     CFG_NODE_DEDICATED,
     "Dedicated",
     MGM_TOKEN,
@@ -3126,6 +3179,17 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     CI_CHECK_WRITABLE,
     ConfigInfo::CI_STRING,
     "",
+    0, 0 },
+
+  {
+    CFG_NODE_PIDFILE_DIR,
+    "FileSystemPathPidfile",
+    MGM_TOKEN,
+    "Path to directory where the " DB_TOKEN_PRINT " node stores its pid file",
+    ConfigInfo::CI_USED,
+    CI_CHECK_WRITABLE,
+    ConfigInfo::CI_STRING,
+    0,
     0, 0 },
 
   {
