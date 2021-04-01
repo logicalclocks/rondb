@@ -32,8 +32,8 @@
 #include <iostream>
 #include <thread>
 
-//#define DEBUG_HW(arglist) do { fprintf arglist ; } while (0)
-#define DEBUG_HW(arglist) do { } while(0)
+#define DEBUG_HW(arglist) do { fprintf arglist ; } while (0)
+//#define DEBUG_HW(arglist) do { } while(0)
 
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
@@ -979,9 +979,18 @@ Ndb_CreateCPUMap(Uint32 num_ldm_instances,
    * We have set up HW information and now we need to set up the CPU map
    * to make it easy to assign CPUs to the various threads.
    * We will return the number of Round Robin groups from this method.
+   * 
+   * This code is based on finding a set of Round Robin groups. The
+   * special case of 0 LDM instances requires no Round Robin groups,
+   * but the code is designed to create Round Robin groups. The special
+   * case of 0 LDM threads is easiest by creating 1 Round Robin group.
+   * The upper level will simply use this to create a list of CPUs and
+   * this list will be ok even if we set number of LDM instances to 0
+   * here.
    */
+  num_ldm_instances = (num_ldm_instances == 0) ? 1 : num_ldm_instances;
   Uint32 num_cpus_per_ldm_group = 1 + num_query_threads_per_ldm;
-  Uint32 optimal_num_ldm_groups = 
+  Uint32 optimal_num_ldm_groups =
     (num_ldm_instances + (MAX_RR_GROUP_SIZE - 1)) /
     MAX_RR_GROUP_SIZE;
   Uint32 optimal_group_size = 
@@ -2607,7 +2616,95 @@ static void test_15(struct test_cpumap_data *map)
   map->cores_per_package = 4;
   map->exact_core = false;
   map->intel_core = true;
-  printf("Run test 14 with 16 L3 group with 0/1 CPU, 4 LDMs\n");
+  printf("Run test 15 with 16 L3 group with 0/1 CPU, 4 LDMs\n");
+}
+
+static void test_16(struct test_cpumap_data *map)
+{
+  map->num_l3_caches = 1;
+  map->num_cpus_in_l3_cache[0] = 2;
+  map->num_query_threads_per_ldm = 1;
+  map->num_ldm_instances = 0;
+  map->cores_per_package = 1;
+  map->exact_core = true;
+  map->intel_core = true;
+  printf("Run test 16 with 1 L3 group with 2 CPU, 0 LDMs\n");
+}
+
+static void test_17(struct test_cpumap_data *map)
+{
+  map->num_l3_caches = 1;
+  map->num_cpus_in_l3_cache[0] = 2;
+  map->num_query_threads_per_ldm = 1;
+  map->num_ldm_instances = 0;
+  map->cores_per_package = 1;
+  map->exact_core = false;
+  map->intel_core = true;
+  printf("Run test 17 with 1 L3 group with 2 CPU, 0 LDMs\n");
+}
+
+static void test_18(struct test_cpumap_data *map)
+{
+  map->num_l3_caches = 1;
+  map->num_cpus_in_l3_cache[0] = 2;
+  map->num_query_threads_per_ldm = 1;
+  map->num_ldm_instances = 0;
+  map->cores_per_package = 1;
+  map->exact_core = true;
+  map->intel_core = false;
+  printf("Run test 18 with 1 L3 group with 2 CPU, 0 LDMs\n");
+}
+
+static void test_19(struct test_cpumap_data *map)
+{
+  map->num_l3_caches = 1;
+  map->num_cpus_in_l3_cache[0] = 2;
+  map->num_query_threads_per_ldm = 1;
+  map->num_ldm_instances = 0;
+  map->cores_per_package = 1;
+  map->exact_core = false;
+  map->intel_core = false;
+  printf("Run test 19 with 1 L3 group with 2 CPU, 0 LDMs\n");
+}
+
+static void test_20(struct test_cpumap_data *map)
+{
+  map->num_l3_caches = 2;
+  map->num_cpus_in_l3_cache[0] = 2;
+  map->num_cpus_in_l3_cache[1] = 1;
+  map->num_query_threads_per_ldm = 1;
+  map->num_ldm_instances = 0;
+  map->cores_per_package = 1;
+  map->exact_core = false;
+  map->intel_core = true;
+  printf("Run test 20 with 2 L3 group with 1 CPU, 0 LDMs\n");
+}
+
+static void test_21(struct test_cpumap_data *map)
+{
+  map->num_l3_caches = 3;
+  map->num_cpus_in_l3_cache[0] = 1;
+  map->num_cpus_in_l3_cache[1] = 1;
+  map->num_cpus_in_l3_cache[2] = 1;
+  map->num_query_threads_per_ldm = 1;
+  map->num_ldm_instances = 0;
+  map->cores_per_package = 1;
+  map->exact_core = false;
+  map->intel_core = true;
+  printf("Run test 21 with 3 L3 group with 1 CPU, 0 LDMs\n");
+}
+
+static void test_22(struct test_cpumap_data *map)
+{
+  map->num_l3_caches = 2;
+  map->num_cpus_in_l3_cache[0] = 1;
+  map->num_cpus_in_l3_cache[1] = 1;
+  map->num_query_threads_per_ldm = 1;
+  map->num_ldm_instances = 0;
+  map->cores_per_package = 2;
+  map->exact_core = true;
+  map->intel_core = true;
+  printf("Run test 22 with 2 L3 group with 1 CPU, 0 LDMs\n");
 }
 
 static void
@@ -2781,6 +2878,41 @@ test_create(struct test_cpumap_data *map, Uint32 test_case)
       test_15(map);
       break;
     }
+    case 15:
+    {
+      test_16(map);
+      break;
+    }
+    case 16:
+    {
+      test_17(map);
+      break;
+    }
+    case 17:
+    {
+      test_18(map);
+      break;
+    }
+    case 18:
+    {
+      test_19(map);
+      break;
+    }
+    case 19:
+    {
+      test_20(map);
+      break;
+    }
+    case 20:
+    {
+      test_21(map);
+      break;
+    }
+    case 21:
+    {
+      test_22(map);
+      break;
+    }
     default:
     {
       require(false);
@@ -2790,7 +2922,7 @@ test_create(struct test_cpumap_data *map, Uint32 test_case)
   return;
 }
 
-#define NUM_TESTS 15
+#define NUM_TESTS 22
 static void
 test_create_cpumap()
 {
@@ -2810,6 +2942,13 @@ test_create_cpumap()
   expected_res[12] = 6;
   expected_res[13] = 1;
   expected_res[14] = 6;
+  expected_res[15] = 1;
+  expected_res[16] = 1;
+  expected_res[17] = 1;
+  expected_res[18] = 1;
+  expected_res[19] = 1;
+  expected_res[20] = 1;
+  expected_res[21] = 1;
   struct test_cpumap_data test_map;
   for (Uint32 i = 0; i < NUM_TESTS; i++)
   {
@@ -2828,6 +2967,9 @@ test_create_cpumap()
       Uint32 cpu_ids[8];
       Uint32 num_cpus;
       Ndb_GetCoreCPUIds(id, &cpu_ids[0], num_cpus);
+      printf("Ndb_GetCoreCPUIds: id: %u, num_cpus: %u\n",
+             id,
+             num_cpus);
       if (test_map.exact_core)
       {
         OK(num_cpus == (test_map.num_query_threads_per_ldm + 1));
