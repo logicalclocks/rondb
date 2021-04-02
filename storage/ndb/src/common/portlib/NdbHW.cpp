@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2013, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,8 +33,8 @@
 #include <iostream>
 #include <thread>
 
-#define DEBUG_HW(arglist) do { fprintf arglist ; } while (0)
-//#define DEBUG_HW(arglist) do { } while(0)
+//#define DEBUG_HW(arglist) do { fprintf arglist ; } while (0)
+#define DEBUG_HW(arglist) do { } while(0)
 
 #ifdef HAVE_UNISTD_H
 #include <unistd.h>
