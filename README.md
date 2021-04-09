@@ -1,35 +1,56 @@
 ![RonDB Logo](https://uploads-ssl.webflow.com/6013cab68382f702f5481fa8/6036462eab5a723283128689_banner-ron.jpg)
+
+<p align="center">
+    <a href="https://rondb.com" alt="rondb.com">
+        <img src="https://img.shields.io/badge/rondb-com-green" /></a>
+    <a href="https://logicalclocks.com" alt="logicalclocks.com">
+        <img src="https://img.shields.io/static/v1?label=logicalclocks&message=com&color=blueviolet" /></a>
+    <a href="https://dev.mysql.com/doc/" alt="dev.mysql.com/doc">
+        <img src="https://img.shields.io/static/v1?label=mysql&message=doc&color=blue" /></a>
+    <a href="https://dev.mysql.com/downloads/" alt="dev.mysql.com/downloads">
+        <img src="https://img.shields.io/static/v1?label=mysql&message=more&color=orange" /></a>
+</p>
+
+<p align="center">
+  Give a star and make a developer happy <img src="https://content.logicalclocks.com/hubfs/1f49a.png">
+</p>
+
 ---
 
-This is a release of RonDB, this is a stable distribution
-of NDB Cluster, a key-value store with SQL capabilities.
-It is based on a release of MySQL, an SQL database server.
+## What is RonDB?
 
-## License 
-License information can be found in the LICENSE file.
-In test packages where this file is renamed README-test, the license
-file is renamed LICENSE-test.
-This distribution may include materials developed by third parties.
-For license and attribution notices for these materials,
-please refer to the LICENSE file.
+RonDB is a stable distribution of NDB Cluster, a key-value store with SQL capabilities. It is based on a release of MySQL, an SQL database server.
 
-## Further information
-- [RonDB website](http://rondb.com)
-- [Logical Clocks Website](http://logicalclocks.com)
-- [More information on MySQL or additional documentation](http://dev.mysql.com/doc)
-- [Additional downloads and the source of MySQL](http://dev.mysql.com/downloads)
+## Quick start
 
-## RonDB
-RonDB is brought to you by the NDB team at Logical Clocks AB
-and the development team at iClaustron AB.
----
+Coming soon.
 
-Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
+## License
+
+License information can be found [here](https://github.com/logicalclocks/rondb/blob/21.04/LICENSE). In test packages where this file is renamed README-test, the license file is renamed LICENSE-test. This distribution may include materials developed by third parties. For license and attribution notices for these materials, please refer to the [license](https://github.com/logicalclocks/rondb/blob/21.04/LICENSE) file.
+
+## Who is behind RondDB?
+
+RonDB is brought to you by the RonDB team at [Logical Clocks AB](https://www.logicalclocks.com/) and the development team at iClaustron AB.
+
+## More information
+
+RonDB is the fastest key-value store with SQL capabilities, available now in the cloud. It’s an open source distribution of NDB Cluster, thus providing the same core technology and performance as NDB, but as a managed platform in the cloud. And also brings large data storage capabilities.
+RonDB has dedicated support for features required for a high-performance online feature store, including the LATS performance.
+
+
+LAT: low Latency, high Availability, high Throughput, scalable Storage
+
+You can read more about RonDB on our blog.
 
 ## MySQL
+It is brought to you by the MySQL team at Oracle.
 
-MySQL is brought to you by the MySQL team at Oracle.
+## Collaborate with us
+
+There are no existing managed databases available today with these attributes. Would you like to be part of it? Feel free to contribute!
 
 ---
 
-Copyright (c) 2000, 2021, Oracle and/or its affiliates.
+Copyright (c) 2000, 2021, Oracle and/or its affiliates.   
+Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
