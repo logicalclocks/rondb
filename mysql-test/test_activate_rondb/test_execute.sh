@@ -54,6 +54,9 @@ echo "## Wait for data node to start"
 sleep ${SLEEP_START_TIME}
 ndb_mgm -e "show"
 #
+echo "Run ndb_waiter --timeout=30"
+ndb_waiter --timeout=30
+#
 echo "## Run ndb_desc using node 67, should not connect"
 ndb_desc --ndb-nodeid=67
 ndb_mgm -e "show"
@@ -66,12 +69,16 @@ ndb_mgm -e "show"
 #
 echo "## Activate node 2, expect success"
 ndb_mgm -e "2 activate"
+echo "## ndb_waiter, allow partial start, expect success"
+ndb_waiter --timeout=5 --allow-partial-start
 #
 echo "## Now expecting successful start of node 2"
 ndbmtd --ndb-nodeid=2 --initial >> tmp_file
 echo "Wait for data node to start"
 sleep ${SLEEP_START_TIME}
 ndb_mgm -e "show"
+echo "## ndb_waiter, expect success"
+ndb_waiter --timeout=5
 #
 echo "## Activate API node 67, expect success"
 ndb_mgm -e "67 activate"
