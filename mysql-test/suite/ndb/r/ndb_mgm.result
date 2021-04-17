@@ -76,7 +76,7 @@ Node 2: Backup not started
 
 Testing HELP for REPORT
 ---------------------------------------------------------------------------
- NDB Cluster -- Management Client -- Help for REPORT command
+ RonDB -- Management Client -- Help for REPORT command
 ---------------------------------------------------------------------------
 REPORT  Displays a report of type <report-type> for the specified data 
         node, or for all data nodes using ALL
