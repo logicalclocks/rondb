@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,10 +28,12 @@
 #include <time.h>
 
 #include <mgmapi.h>
+#include <ConfigValues.hpp>
 #include <NdbOut.hpp>
 #include <NdbSleep.h>
 #include <NdbTick.h>
 #include <portlib/ndb_localtime.h>
+#include <../src/mgmapi/mgmapi_configuration.hpp>
 
 #include <NdbToolsProgramExitCodes.hpp>
 
@@ -42,6 +45,7 @@ static int
 waitClusterStatus(const char* _addr, ndb_mgm_node_status _status);
 
 static int _no_contact = 0;
+static int _allow_partial_start = 0;
 static int _not_started = 0;
 static int _single_user = 0;
 static int _timeout = 120; // Seconds
@@ -57,6 +61,10 @@ static struct my_option my_long_options[] =
     GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 }, 
   { "not-started", NDB_OPT_NOSHORT, "Wait for cluster not started",
     (uchar**) &_not_started, (uchar**) &_not_started, 0,
+    GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 }, 
+  { "allow-partial-start", NDB_OPT_NOSHORT,
+    "Wait for cluster started, allow partial start",
+    (uchar**) &_allow_partial_start, (uchar**) &_allow_partial_start, 0,
     GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 }, 
   { "single-user", NDB_OPT_NOSHORT,
     "Wait for cluster to enter single user mode",
@@ -81,6 +89,59 @@ void catch_signal(int signum)
 }
 
 #include "../src/common/util/parse_mask.hpp"
+
+static bool
+set_inactive_nodes_as_nowait(NdbMgmHandle mgmsrv)
+{
+  int ret;
+  ndb_mgm_configuration * conf = ndb_mgm_get_configuration(mgmsrv,0);
+  if (conf == 0)
+  {
+    ndbout_c("Could not get configuration from MGM Server, exiting");
+    return false;
+  }
+  ConfigValues::Iterator iter(conf->m_config);
+  for (Uint32 i = 0; i < MAX_NODES; i++)
+  {
+    if (!iter.openSection(CFG_SECTION_NODE, i))
+      continue;
+    Uint32 check_type;
+    ret = iter.get(CFG_TYPE_OF_SECTION, &check_type);
+    if (ret == 0)
+    {
+      ndbout_c("Failed to get type of section, exiting");
+      ndb_mgm_destroy_configuration(conf);
+      return false;
+    }
+    if (check_type == NDB_MGM_NODE_TYPE_NDB)
+    {
+      Uint32 nodeId;
+      ret = iter.get(CFG_NODE_ID, &nodeId);
+      if (ret == 0)
+      {
+        ndbout_c("Failed to get node id, exiting");
+        ndb_mgm_destroy_configuration(conf);
+        return false;
+      }
+      Uint32 is_active = 1;
+      ret = iter.get(CFG_NODE_ACTIVE, &is_active);
+      if (ret == 0)
+      {
+        ndbout_c("Failed to node active status, exiting");
+        ndb_mgm_destroy_configuration(conf);
+        return false;
+      }
+      if (!is_active)
+      {
+        ndbout_c("Node %u: INACTIVE", nodeId);
+        nowait_nodes_bitmask.set(nodeId);
+      }
+    }
+    iter.closeSection();
+  }
+  ndb_mgm_destroy_configuration(conf);
+  return true;
+}
 
 int main(int argc, char** argv){
   NDB_INIT(argv[0]);
@@ -159,7 +220,6 @@ int main(int argc, char** argv){
                _wait_nodes);
       exit(-1);
     }
-
     // Don't wait for any other nodes than the ones we have set explicitly
     nowait_nodes_bitmask.bitNOT();
   }
@@ -292,6 +352,11 @@ waitClusterStatus(const char* _addr,
     return -1;
   }
 
+  if (!set_inactive_nodes_as_nowait(handle))
+  {
+    MGMERR(handle);
+    exit(-1);
+  }
   int attempts = 0;
   int resetAttempts = 0;
   const int MAX_RESET_ATTEMPTS = 10;
@@ -359,6 +424,7 @@ waitClusterStatus(const char* _addr,
     allInState = (ndbNodes.size() > 0);
 
     /* Loop through all nodes and check their state */
+    bool any_started = false;
     for (unsigned n = 0; n < ndbNodes.size(); n++) {
       ndb_mgm_node_state* ndbNode = &ndbNodes[n];
 
@@ -369,8 +435,18 @@ waitClusterStatus(const char* _addr,
 
       if (ndbNode->node_status !=  _status)
 	  allInState = false;
+      if (ndbNode->node_status == NDB_MGM_NODE_STATUS_STARTED)
+      {
+        any_started = true;
+      }
     }
 
+    if (_status == NDB_MGM_NODE_STATUS_STARTED &&
+        any_started &&
+        _allow_partial_start)
+    {
+      allInState = true;
+    }
     if (!allInState) {
       char timestamp[9];
       ndbout << "[" << getTimeAsString(timestamp, sizeof(timestamp)) << "] "

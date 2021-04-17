@@ -83,8 +83,8 @@ Executing RESTART on all nodes.
 Starting shutdown. This may take a while. Please wait...
 All DB nodes are being restarted.
 
-NDB Cluster is being started.
-NDB Cluster is being started.
+RonDB is being started.
+RonDB is being started.
 
 # verify that the mysqld detected the restart
 include/assert_grep.inc [Detect normal restart in MySQL Server 1]
@@ -118,8 +118,8 @@ Executing RESTART on all nodes.
 Starting shutdown. This may take a while. Please wait...
 All DB nodes are being restarted.
 
-NDB Cluster is being started.
-NDB Cluster is being started.
+RonDB is being started.
+RonDB is being started.
 
 # verify that the mysqld detected the initial restart
 include/assert_grep.inc [Detect initial restart in MySQL Server 1]
