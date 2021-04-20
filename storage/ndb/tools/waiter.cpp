@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
    Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -100,7 +100,7 @@ set_inactive_nodes_as_nowait(NdbMgmHandle mgmsrv)
     ndbout_c("Could not get configuration from MGM Server, exiting");
     return false;
   }
-  ConfigValues::Iterator iter(conf->m_config);
+  ConfigValues::Iterator iter(conf->m_config_values);
   for (Uint32 i = 0; i < MAX_NODES; i++)
   {
     if (!iter.openSection(CFG_SECTION_NODE, i))
@@ -147,7 +147,7 @@ int main(int argc, char** argv){
   NDB_INIT(argv[0]);
   Ndb_opts opts(argc, argv, my_long_options);
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   opt_debug= "d:t:O,/tmp/ndb_waiter.trace";
 #endif
 

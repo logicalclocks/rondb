@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
    Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -129,7 +129,7 @@ void
 ClusterMgr::configure(Uint32 nodeId,
                       const ndb_mgm_configuration* config)
 {
-  ndb_mgm_configuration_iterator iter(* config, CFG_SECTION_NODE);
+  ndb_mgm_configuration_iterator iter(config, CFG_SECTION_NODE);
   for(iter.first(); iter.valid(); iter.next()){
     Uint32 nodeId = 0;
     if(iter.get(CFG_NODE_ID, &nodeId))

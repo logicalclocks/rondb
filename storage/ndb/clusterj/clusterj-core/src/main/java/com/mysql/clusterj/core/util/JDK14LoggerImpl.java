@@ -1,5 +1,5 @@
 /*
-   Copyright 2010 Sun Microsystems, Inc.
+   Copyright (c) 2010, 2021, Oracle and/or its affiliates.
    Use is subject to license terms.
 
    Copyright (c) 2020, LogicalClocks AB and/or its affiliates.

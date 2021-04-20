@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
    Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -393,7 +393,7 @@ SimulatedBlock::signal_error(Uint32 gsn, Uint32 len, Uint32 recBlockNo,
 extern class SectionSegmentPool g_sectionSegmentPool;
 
 void
-SimulatedBlock::handle_invalid_sections_in_send_signal(const Signal* signal) 
+SimulatedBlock::handle_invalid_sections_in_send_signal(const Signal25* signal)
 const
 {
   char errMsg[160];
@@ -423,7 +423,7 @@ const
 }
 
 void
-SimulatedBlock::handle_invalid_fragmentInfo(Signal* signal) const
+SimulatedBlock::handle_invalid_fragmentInfo(Signal25* signal) const
 {
   ErrorReporter::handleError(NDBD_EXIT_BLOCK_BNR_ZERO,
                              "Incorrect header->m_fragmentInfo in sendSignal()",
@@ -431,7 +431,7 @@ SimulatedBlock::handle_invalid_fragmentInfo(Signal* signal) const
 }
 
 void
-SimulatedBlock::handle_out_of_longsignal_memory(Signal * signal) const
+SimulatedBlock::handle_out_of_longsignal_memory(Signal25 * signal) const
 {
   ErrorReporter::handleError(NDBD_EXIT_OUT_OF_LONG_SIGNAL_MEMORY,
 			     "Out of LongMessageBuffer in sendSignal",
@@ -441,7 +441,7 @@ SimulatedBlock::handle_out_of_longsignal_memory(Signal * signal) const
 template<typename SecPtr>
 void
 SimulatedBlock::handle_send_failed(SendStatus ss,
-                                   Signal * signal,
+                                   Signal25 * signal,
                                    Uint32 recNode,
                                    SecPtr ptr[]) const
 {
@@ -968,7 +968,7 @@ SimulatedBlock::getMainThrmanInstance()
 void 
 SimulatedBlock::sendSignal(BlockReference ref, 
 			   GlobalSignalNumber gsn, 
-			   Signal* signal, 
+                           Signal25* signal,
 			   Uint32 length, 
 			   JobBufferLevel jobBuffer) const {
 
@@ -1014,8 +1014,7 @@ SimulatedBlock::sendSignal(BlockReference ref,
     else
       sendprioa(m_threadId, &signal->header, signal->theData, NULL);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock,
-			    gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
     return;
   } else { 
@@ -1065,7 +1064,7 @@ SimulatedBlock::sendSignal(BlockReference ref,
 void 
 SimulatedBlock::sendSignal(NodeReceiverGroup rg, 
 			   GlobalSignalNumber gsn, 
-			   Signal* signal, 
+                           Signal25* signal,
 			   Uint32 length, 
 			   JobBufferLevel jobBuffer) const {
 
@@ -1083,7 +1082,6 @@ SimulatedBlock::sendSignal(NodeReceiverGroup rg,
   signal->header.theSendersBlockRef = reference();
   signal->header.m_noOfSections = 0;
 
-ndbrequire(noOfSections == 0);
   check_sections(signal, noOfSections, 0);
 
   if ((length == 0) || (length > 25) || (recBlock == 0)) {
@@ -1121,7 +1119,7 @@ ndbrequire(noOfSections == 0);
     else
       sendprioa(m_threadId, &signal->header, signal->theData, NULL);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock, gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
     
     rg.m_nodes.clear((Uint32)0);
@@ -1179,7 +1177,7 @@ bool import(Ptr<SectionSegment> & first, const Uint32 * src, Uint32 len);
 void 
 SimulatedBlock::sendSignal(BlockReference ref, 
 			   GlobalSignalNumber gsn, 
-			   Signal* signal, 
+                           Signal25* signal,
 			   Uint32 length, 
 			   JobBufferLevel jobBuffer,
 			   LinearSectionPtr ptr[3],
@@ -1191,7 +1189,6 @@ SimulatedBlock::sendSignal(BlockReference ref,
   Uint32 recNode   = refToNode(ref);
   Uint32 ourProcessor         = globalData.ownId;
   
-ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, noOfSections);
   
   signal->header.theLength = length;
@@ -1246,8 +1243,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
       sendprioa(m_threadId, &signal->header, signal->theData,
                 signal->theData+length);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock,
-			    gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
     signal->header.m_noOfSections = 0;
     return;
@@ -1302,7 +1298,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
 void 
 SimulatedBlock::sendSignal(NodeReceiverGroup rg, 
 			   GlobalSignalNumber gsn, 
-			   Signal* signal, 
+                           Signal25* signal,
 			   Uint32 length, 
 			   JobBufferLevel jobBuffer,
 			   LinearSectionPtr ptr[3],
@@ -1315,7 +1311,6 @@ SimulatedBlock::sendSignal(NodeReceiverGroup rg,
   Uint32 ourProcessor = globalData.ownId;
   Uint32 recBlock = rg.m_block;
   
-ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, noOfSections);
   
   signal->header.theLength = length;
@@ -1376,7 +1371,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
       sendprioa(m_threadId, &signal->header, signal->theData,
                 signal->theData + length);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock, gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
     
     rg.m_nodes.clear((Uint32)0);
@@ -1437,7 +1432,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
 void
 SimulatedBlock::sendSignal(BlockReference ref,
 			   GlobalSignalNumber gsn,
-			   Signal* signal,
+                           Signal25* signal,
 			   Uint32 length,
 			   JobBufferLevel jobBuffer,
 			   SectionHandle* sections) const {
@@ -1449,7 +1444,6 @@ SimulatedBlock::sendSignal(BlockReference ref,
   Uint32 recNode   = refToNode(ref);
   Uint32 ourProcessor         = globalData.ownId;
 
-ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, noOfSections);
 
   signal->header.theLength = length;
@@ -1497,7 +1491,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
       sendprioa(m_threadId, &signal->header, signal->theData,
                 signal->theData + length);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock, gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
   } else {
     // send distributed Signal
@@ -1552,7 +1546,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
 void
 SimulatedBlock::sendSignal(NodeReceiverGroup rg,
 			   GlobalSignalNumber gsn,
-			   Signal* signal,
+                           Signal25* signal,
 			   Uint32 length,
 			   JobBufferLevel jobBuffer,
 			   SectionHandle * sections) const {
@@ -1565,7 +1559,6 @@ SimulatedBlock::sendSignal(NodeReceiverGroup rg,
   Uint32 ourProcessor = globalData.ownId;
   Uint32 recBlock = rg.m_block;
 
-ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, noOfSections);
 
   signal->header.theLength = length;
@@ -1621,7 +1614,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
       sendprioa(m_threadId, &signal->header, signal->theData,
                 signal->theData + length);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock, gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
 
     rg.m_nodes.clear((Uint32)0);
@@ -1688,7 +1681,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
 void
 SimulatedBlock::sendSignalNoRelease(BlockReference ref,
                                     GlobalSignalNumber gsn,
-                                    Signal* signal,
+                                    Signal25* signal,
                                     Uint32 length,
                                     JobBufferLevel jobBuffer,
                                     SectionHandle* sections) const {
@@ -1706,7 +1699,6 @@ SimulatedBlock::sendSignalNoRelease(BlockReference ref,
   Uint32 recNode   = refToNode(ref);
   Uint32 ourProcessor         = globalData.ownId;
 
-ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, noOfSections);
 
   signal->header.theLength = length;
@@ -1762,7 +1754,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
       sendprioa(m_threadId, &signal->header, signal->theData,
                 signal->theData + length);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock, gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
   } else {
     // send distributed Signal
@@ -1814,7 +1806,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
 void
 SimulatedBlock::sendSignalNoRelease(NodeReceiverGroup rg,
                                     GlobalSignalNumber gsn,
-                                    Signal* signal,
+                                    Signal25* signal,
                                     Uint32 length,
                                     JobBufferLevel jobBuffer,
                                     SectionHandle * sections) const {
@@ -1832,7 +1824,6 @@ SimulatedBlock::sendSignalNoRelease(NodeReceiverGroup rg,
   Uint32 ourProcessor = globalData.ownId;
   Uint32 recBlock = rg.m_block;
 
-ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, noOfSections);
 
   signal->header.theLength = length;
@@ -1896,7 +1887,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
       sendprioa(m_threadId, &signal->header, signal->theData,
                 signal->theData + length);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock, gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
 
     rg.m_nodes.clear((Uint32)0);
@@ -1958,13 +1949,12 @@ ndbrequire(signal->header.m_noOfSections == 0);
 void
 SimulatedBlock::sendSignalWithDelay(BlockReference ref, 
 				    GlobalSignalNumber gsn,
-				    Signal* signal,
+                                    Signal25* signal,
 				    Uint32 delayInMilliSeconds, 
 				    Uint32 length) const {
   
   BlockNumber bnr = refToBlock(ref);
 
-ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, 0);
   
   signal->header.theLength = length;
@@ -1989,7 +1979,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
 #ifdef NDBD_MULTITHREADED
   senddelay(m_threadId, &signal->header, delayInMilliSeconds);
 #else
-  globalTimeQueue.insert(signal, bnr, gsn, delayInMilliSeconds);
+  globalTimeQueue.insert(signal, delayInMilliSeconds);
 #endif
 
   // befor 2nd parameter to globalTimeQueue.insert
@@ -1999,7 +1989,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
 void
 SimulatedBlock::sendSignalWithDelay(BlockReference ref,
 				    GlobalSignalNumber gsn,
-				    Signal* signal,
+                                    Signal25* signal,
 				    Uint32 delayInMilliSeconds,
 				    Uint32 length,
 				    SectionHandle * sections) const {
@@ -2013,7 +2003,6 @@ SimulatedBlock::sendSignalWithDelay(BlockReference ref,
     bnr_error();
   }//if
 
-ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, noOfSections);
 
   signal->header.theLength = length;
@@ -2044,7 +2033,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
 #ifdef NDBD_MULTITHREADED
   senddelay(m_threadId, &signal->header, delayInMilliSeconds);
 #else
-  globalTimeQueue.insert(signal, bnr, gsn, delayInMilliSeconds);
+  globalTimeQueue.insert(signal, delayInMilliSeconds);
 #endif
 
   signal->header.m_noOfSections = 0;
@@ -2383,7 +2372,7 @@ SimulatedBlock::infoEvent(const char * msg, ...) const
   if(msg == 0)
     return;
   
-  SignalT<25> signalT;
+  Signal25 signalT;
   signalT.theData[0] = NDB_LE_InfoEvent;
   Uint32 buf_str[MAX_EVENT_REP_SIZE_WORDS];
   char * buf = (char *)&buf_str[1];
@@ -2442,7 +2431,7 @@ SimulatedBlock::warningEvent(const char * msg, ...)
   if(msg == 0)
     return;
 
-  SignalT<25> signalT;
+  Signal25 signalT;
   signalT.theData[0] = NDB_LE_WarningEvent;
   Uint32 buf_str[MAX_EVENT_REP_SIZE_WORDS];
   char * buf = (char *)&buf_str[1];
@@ -3758,8 +3747,9 @@ SimulatedBlock::sendFirstFragment(FragmentSendInfo & info,
 				  Uint32 noOfSections,
 				  Uint32 messageSize){
   
-ndbrequire(signal->header.m_noOfSections == 0);
-  check_sections(signal, signal->header.m_noOfSections, noOfSections);
+  check_sections(reinterpret_cast<Signal25*>(signal),
+                 signal->header.m_noOfSections,
+                 noOfSections);
   
   info.m_sectionPtr[0].m_linear.p = NULL;
   info.m_sectionPtr[1].m_linear.p = NULL;
