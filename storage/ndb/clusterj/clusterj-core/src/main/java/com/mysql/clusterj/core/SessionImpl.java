@@ -1658,6 +1658,8 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
      */
     public String unloadSchema(Class<?> cls) {
         assertNotClosed();
+        //drop all caches as they are invalid now due to change in schema ID
+        dropInstanceCache();
         return factory.unloadSchema(cls, dictionary);
     }
 
