@@ -131,11 +131,17 @@ public:
    * DEBUG to detect concurrent calls to ::update_connections and
    * ::performReceive() which isn't allowed.
    */
-  TransporterReceiveHandle() : m_active(false) {}
+  TransporterReceiveHandle() :
+    m_active(false),
+    m_has_extra_wakeup_socket(false)
+  {}
+
   volatile bool m_active;
 #endif
   Uint32 nTCPTransporters;
   Uint32 nSHMTransporters;
+  bool m_has_extra_wakeup_socket;
+  NDB_SOCKET_TYPE m_extra_wakeup_sockets[2];
 };
 
 /**

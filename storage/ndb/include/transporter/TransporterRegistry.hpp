@@ -652,8 +652,10 @@ private:
   Uint32 m_transp_count;
 
 public:
+  bool setup_recv_wakeup_socket(TransporterReceiveHandle&);
   bool setup_wakeup_socket(TransporterReceiveHandle&);
   void wakeup();
+  void wakeup(TransporterReceiveHandle*);
 
   inline bool setup_wakeup_socket() {
     assert(receiveHandle != 0);
@@ -663,6 +665,7 @@ private:
   bool m_has_extra_wakeup_socket;
   NDB_SOCKET_TYPE m_extra_wakeup_sockets[2];
   void consume_extra_sockets();
+  void consume_extra_sockets(TransporterReceiveHandle &recvdata);
 
   Uint32 *getWritePtr(TransporterSendBufferHandle *handle,
                       Transporter*,

@@ -1280,6 +1280,66 @@ TransporterRegistry::prepareSend(TransporterSendBufferHandle *sendHandle,
 }
 
 bool
+TransporterRegistry::setup_recv_wakeup_socket(
+  TransporterReceiveHandle& recvdata)
+{
+  assert(receiveHandle == 0);
+
+  if (recvdata.m_has_extra_wakeup_socket)
+  {
+    return true;
+  }
+
+  assert(!recvdata.m_transporters.get(0));
+
+  if (ndb_socketpair(recvdata.m_extra_wakeup_sockets))
+  {
+    perror("socketpair failed!");
+    return false;
+  }
+
+  if (!TCP_Transporter::setSocketNonBlocking(
+         recvdata.m_extra_wakeup_sockets[0]) ||
+      !TCP_Transporter::setSocketNonBlocking(
+         recvdata.m_extra_wakeup_sockets[1]))
+  {
+    goto err;
+  }
+
+#if defined(HAVE_EPOLL_CREATE)
+  if (recvdata.m_epoll_fd != -1)
+  {
+    int sock = recvdata.m_extra_wakeup_sockets[0].fd;
+    struct epoll_event event_poll;
+    memset(&event_poll, 0, sizeof(event_poll));
+    event_poll.data.u32 = 0;
+    event_poll.events = EPOLLIN;
+    int ret_val = epoll_ctl(recvdata.m_epoll_fd, EPOLL_CTL_ADD, sock,
+                            &event_poll);
+    if (ret_val != 0)
+    {
+      int error= errno;
+      fprintf(stderr, "Failed to add extra sock %u to epoll-set: %u\n",
+              sock, error);
+      fflush(stderr);
+      goto err;
+    }
+  }
+#endif
+  recvdata.m_has_extra_wakeup_socket = true;
+  recvdata.m_transporters.set(Uint32(0));
+  return true;
+
+err:
+  ndb_socket_close(recvdata.m_extra_wakeup_sockets[0]);
+  ndb_socket_close(recvdata.m_extra_wakeup_sockets[1]);
+  ndb_socket_invalidate(recvdata.m_extra_wakeup_sockets+0);
+  ndb_socket_invalidate(recvdata.m_extra_wakeup_sockets+1);
+  perror("setup_recv_wakeup_socket failed!");
+  return false;
+}
+
+bool
 TransporterRegistry::setup_wakeup_socket(TransporterReceiveHandle& recvdata)
 {
   assert((receiveHandle == &recvdata) || (receiveHandle == 0));
@@ -1345,6 +1405,16 @@ TransporterRegistry::wakeup()
   }
 }
 
+void
+TransporterRegistry::wakeup(TransporterReceiveHandle *recvdata)
+{
+  if (recvdata->m_has_extra_wakeup_socket)
+  {
+    static char c = 37;
+    ndb_send(recvdata->m_extra_wakeup_sockets[1], &c, 1, 0);
+  }
+}
+
 Uint32
 TransporterRegistry::check_TCP(TransporterReceiveHandle& recvdata,
                                Uint32 timeOutMillis)
@@ -1355,7 +1425,10 @@ TransporterRegistry::check_TCP(TransporterReceiveHandle& recvdata,
   {
     int tcpReadSelectReply = 0;
     Uint32 num_trps = nTCPTransporters + nSHMTransporters +
-                      (m_has_extra_wakeup_socket ? 1 : 0);
+                      (m_has_extra_wakeup_socket ? 1 : 0) +
+                      (recvdata.m_has_extra_wakeup_socket ? 1 : 0);
+
+    assert(num_trps <= (nTCPTransporters + nSHMTransporters + 1));
 
     if (num_trps)
     {
@@ -1696,12 +1769,22 @@ TransporterRegistry::poll_TCP(Uint32 timeOutMillis,
 
   recvdata.m_socket_poller.clear();
 
-  const bool extra_socket = m_has_extra_wakeup_socket;
+  bool extra_socket = m_has_extra_wakeup_socket;
   if (extra_socket && recvdata.m_transporters.get(0))
   {
     const NDB_SOCKET_TYPE socket = m_extra_wakeup_sockets[0];
     assert(&recvdata == receiveHandle); // not used by ndbmtd...
 
+    // Poll the wakup-socket for read
+    recvdata.m_socket_poller.add(socket, true, false, false);
+  }
+  if (recvdata.m_has_extra_wakeup_socket &&
+      recvdata.m_transporters.get(0))
+  {
+    const NDB_SOCKET_TYPE socket = recvdata.m_extra_wakeup_sockets[0];
+    assert(receiveHandle == 0);
+    assert(!extra_socket);
+    extra_socket = true;
     // Poll the wakup-socket for read
     recvdata.m_socket_poller.add(socket, true, false, false);
   }
@@ -1864,9 +1947,15 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
   if (recvdata.m_recv_transporters.get(0))
   {
     assert(recvdata.m_transporters.get(0));
-    assert(&recvdata == receiveHandle); // not used by ndbmtd
     recvdata.m_recv_transporters.clear(Uint32(0));
-    consume_extra_sockets();
+    if (&recvdata != receiveHandle)
+    {
+      consume_extra_sockets(recvdata);
+    }
+    else
+    {
+      consume_extra_sockets();
+    }
   }
 
 #ifdef ERROR_INSERT
@@ -2080,6 +2169,20 @@ TransporterRegistry::consume_extra_sockets()
 
   /* Notify upper layer of explicit wakeup */
   callbackObj->reportWakeup();
+}
+
+void
+TransporterRegistry::consume_extra_sockets(TransporterReceiveHandle &recvdata)
+{
+  char buf[4096];
+  ssize_t ret;
+  int err;
+  NDB_SOCKET_TYPE sock = recvdata.m_extra_wakeup_sockets[0];
+  do
+  {
+    ret = ndb_recv(sock, buf, sizeof(buf), 0);
+    err = ndb_socket_errno();
+  } while (ret == sizeof(buf) || (ret == -1 && err == EINTR));
 }
 
 /**

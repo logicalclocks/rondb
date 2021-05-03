@@ -185,6 +185,12 @@ alignas (NDB_CL) static Uint32 glob_unused[NDB_CL/4];
 #endif
 
 #ifdef USE_FUTEX
+static inline void thr_wakeup(struct thr_data *thr_ptr);
+#else
+static inline void thr_wakeup(struct thr_wait *, struct thr_data *thr_ptr);
+#endif
+
+#ifdef USE_FUTEX
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -281,6 +287,23 @@ yield(struct thr_wait* wait, const Uint32 nsec,
 
 static inline
 int
+wakeup(struct thr_wait* wait, struct thr_data *thrptr)
+{
+  volatile unsigned * val = &wait->m_futex_state;
+  /**
+   * We must ensure that any state update (new data in buffers...) are visible
+   * to the other thread before we can look at the sleep state of that other
+   * thread.
+   */
+  if (xcng(val, thr_wait::FS_RUNNING) == thr_wait::FS_SLEEPING)
+  {
+    thr_wakeup(thr_ptr);
+  }
+  return 0;
+}
+
+static inline
+int
 wakeup(struct thr_wait* wait)
 {
   volatile unsigned * val = &wait->m_futex_state;
@@ -298,9 +321,9 @@ wakeup(struct thr_wait* wait)
 
 static inline
 int
-try_wakeup(struct thr_wait* wait)
+try_wakeup(struct thr_wait* wait, struct thr_data *thrptr)
 {
-  return wakeup(wait);
+  return wakeup(wait, thrptr);
 }
 #else
 
@@ -310,7 +333,7 @@ struct alignas(NDB_CL) thr_wait
   NdbCondition *m_cond;
   bool m_need_wakeup;
   thr_wait() : m_mutex(0), m_cond(0), m_need_wakeup(false) {
-    assert((sizeof(*this) % NDB_CL) == 0); //Maintain any CL-allignment
+    assert((sizeof(*this) % NDB_CL) == 0); //Maintain any CL-alignment
   }
 
   void init() {
@@ -353,7 +376,7 @@ yield(struct thr_wait* wait, const Uint32 nsec,
 
 static inline
 int
-try_wakeup(struct thr_wait* wait)
+try_wakeup(struct thr_wait* wait, struct thr_data *thr_ptr)
 {
   int success = NdbMutex_Trylock(wait->m_mutex);
   if (success != 0)
@@ -363,7 +386,23 @@ try_wakeup(struct thr_wait* wait)
   if (wait->m_need_wakeup)
   {
     wait->m_need_wakeup = false;
-    NdbCondition_Signal(wait->m_cond);
+    thr_wakeup(wait, thr_ptr);
+  }
+  NdbMutex_Unlock(wait->m_mutex);
+  return 0;
+}
+
+static inline
+int
+wakeup(struct thr_wait* wait, struct thr_data *thr_ptr)
+{
+  NdbMutex_Lock(wait->m_mutex);
+  // We should avoid signaling when not waiting for wakeup
+  if (wait->m_need_wakeup)
+  {
+    wait->m_need_wakeup = false;
+    thr_wakeup(wait, thr_ptr);
+    return 0;
   }
   NdbMutex_Unlock(wait->m_mutex);
   return 0;
@@ -1362,6 +1401,17 @@ struct alignas(NDB_CL) thr_data
    */
 
   alignas(NDB_CL) unsigned m_thr_no;
+
+  /**
+   * Is this a recv thread
+   */
+  unsigned m_is_recv_thread;
+
+  /**
+   * A pointer to the TransporterReceiveHandle for the receive threads.
+   * A nullptr for all other threads.
+   */
+  TransporterReceiveHandle *m_recvdata;
 
   /**
    * Thread 0 doesn't necessarily handle all threads in a loop.
@@ -3418,6 +3468,36 @@ check_real_time_break(NDB_TICKS now,
     *yield_time = now;
   }
 }
+
+#ifdef USE_FUTEX
+static inline
+void thr_wakeup(struct thr_data *thr_ptr)
+{
+  if (thr_ptr->m_is_recv_thread)
+  {
+    globalTransporterRegistry.wakeup(thr_ptr->m_recvthread);
+  }
+  else
+  {
+    futex_wake(val);
+  }
+}
+#else
+static inline
+void thr_wakeup(struct thr_wait *wait, struct thr_data *thr_ptr)
+{
+  if (thr_ptr->m_is_recv_thread)
+  {
+    NdbMutex_Unlock(wait->m_mutex);
+    globalTransporterRegistry.wakeup(thr_ptr->m_recvdata);
+  }
+  else
+  {
+    NdbCondition_Signal(wait->m_cond);
+    NdbMutex_Unlock(wait->m_mutex);
+  }
+}
+#endif
 
 #define NUM_WAITS_TO_CHECK_SPINTIME 6
 static void
@@ -7706,6 +7786,7 @@ mt_receiver_thread_main(void *thr_arg)
   NDB_TICKS before;
 
   init_thread(selfptr);
+  selfptr->m_is_recv_thread = true;
   signal = aligned_signal(signal_buf, thr_no);
   update_rt_config(selfptr, real_time, ReceiveThread);
   update_spin_config(selfptr, min_spin_timer);
@@ -7723,6 +7804,9 @@ mt_receiver_thread_main(void *thr_arg)
    * Save pointer to this for management/error-insert
    */
   g_trp_receive_handle_ptr[recv_thread_idx] = &recvdata;
+
+  globalTransporterRegistry.setup_recv_wakeup_socket(recvdata);
+  selfptr->m_recvdata = &recvdata;
 
   NDB_TICKS now = NdbTick_getCurrentTicks();
   before = now;
@@ -7817,10 +7901,6 @@ mt_receiver_thread_main(void *thr_arg)
                            before))))
     {
       delay = 10; // 10 ms
-      if (globalData.ndbMtMainThreads == 0)
-      {
-        delay = 1;
-      }
     }
 
     has_received = false;
@@ -8144,6 +8224,8 @@ mt_job_thread_main(void *thr_arg)
 
   struct thr_data* selfptr = (struct thr_data *)thr_arg;
   init_thread(selfptr);
+  selfptr->m_is_recv_thread = false;
+  selfptr->m_recvdata = nullptr;
   Uint32& watchDogCounter = selfptr->m_watchdog_counter;
 
   unsigned thr_no = selfptr->m_thr_no;
@@ -8952,7 +9034,7 @@ check_congestion(thr_data *selfptr)
           for (Uint32 i = 0; i < glob_num_threads; i++)
           {
             thr_data *dstptr = &rep->m_thread[i];
-            wakeup(&(dstptr->m_congestion_waiter));
+            wakeup(&(dstptr->m_congestion_waiter), dstptr);
           }
         }
       }
@@ -8966,7 +9048,7 @@ check_congestion(thr_data *selfptr)
           for (Uint32 i = 0; i < glob_num_threads; i++)
           {
             thr_data *dstptr = &rep->m_thread[i];
-            wakeup(&(dstptr->m_congestion_waiter));
+            wakeup(&(dstptr->m_congestion_waiter), dstptr);
           }
         }
       }
@@ -9108,7 +9190,7 @@ flush_local_signals(struct thr_data *selfptr,
     {
       // Wakeup immediately
       selfptr->m_wake_threads_mask.clear(dst);
-      wakeup(&dstptr->m_waiter);
+      wakeup(&dstptr->m_waiter, dstptr);
     }
     else
     {
@@ -9169,7 +9251,7 @@ wakeup_pending_signals(thr_data *selfptr)
   {
     require(selfptr->m_wake_threads_mask.get(thr_no));
     thr_data *thrptr = &g_thr_repository->m_thread[thr_no];
-    wakeup(&thrptr->m_waiter);
+    wakeup(&thrptr->m_waiter, thrptr);
   }
   selfptr->m_wake_threads_mask.clear();
 }
@@ -9399,7 +9481,7 @@ sendprioa(Uint32 self, const SignalHeader *s, const uint32 *data,
   unlock(&dstptr->m_jba.m_write_lock);
   if (selfptr != dstptr)
   {
-    wakeup(&(dstptr->m_waiter));
+    wakeup(&(dstptr->m_waiter), dstptr);
   }
   if (buf_used)
     selfptr->m_next_buffer = seize_buffer(rep, self, true);
@@ -9528,7 +9610,7 @@ sendprioa_STOP_FOR_CRASH(const struct thr_data *selfptr, Uint32 dst)
      * dump process forever. We will wait at most 3 seconds.
      */
     const NDB_TICKS start_try_wakeup = NdbTick_getCurrentTicks();
-    while (try_wakeup(&(dstptr->m_waiter)) != 0)
+    while (try_wakeup(&(dstptr->m_waiter), dstptr) != 0)
     {
       if (++loop_count >= 10000)
       {
@@ -10936,7 +11018,7 @@ mt_wakeup(class SimulatedBlock* block)
 {
   Uint32 thr_no = block->getThreadId();
   struct thr_data *thrptr = &g_thr_repository->m_thread[thr_no];
-  wakeup(&thrptr->m_waiter);
+  wakeup(&thrptr->m_waiter, thrptr);
 }
 
 #ifdef VM_TRACE

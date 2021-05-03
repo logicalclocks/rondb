@@ -5331,7 +5331,7 @@ SimulatedBlock::setup_wakeup()
 {
 #ifdef NDBD_MULTITHREADED
 #else
-  globalTransporterRegistry.setup_wakeup_socket();
+  ndbabort(); // ndbd no longer supported
 #endif
 }
 
