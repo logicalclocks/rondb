@@ -696,6 +696,7 @@ protected:
    *
    * Finally also the ability to query for send thread information.
    */
+  Uint32 map_api_node_to_recv_instance(NodeId);
   void getSendBufferLevel(NodeId node, SB_LevelType &level);
   Uint32 getEstimatedJobBufferLevel();
   Uint32 getCPUSocket(Uint32 thr_no);
@@ -2208,10 +2209,7 @@ public:
   {
     if (unlikely(!isNdbMtLqh()))
       return 1;
-    else if (unlikely(globalData.ndbMtTcThreads == 0))
-      return 1;
-    else
-      return globalData.ndbMtTcThreads;
+    return globalData.ndbMtTcWorkers;
   }
   void query_thread_memory_barrier()
   {

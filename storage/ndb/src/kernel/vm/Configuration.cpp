@@ -1518,20 +1518,24 @@ Configuration::setupConfiguration(){
     if (!globalData.isNdbMt)
       break;
 
+    globalData.ndbMtReceiveThreads =
+      m_thr_config.getThreadCount(THRConfig::T_RECV);
+    globalData.ndbMtSendThreads =
+      m_thr_config.getThreadCount(THRConfig::T_SEND);
     globalData.ndbMtQueryThreads =
       m_thr_config.getThreadCount(THRConfig::T_QUERY);
     globalData.ndbMtRecoverThreads =
       m_thr_config.getThreadCount(THRConfig::T_RECOVER);
     globalData.ndbMtTcThreads = m_thr_config.getThreadCount(THRConfig::T_TC);
-    globalData.ndbMtTcWorkers = globalData.ndbMtTcThreads;
-    if (globalData.ndbMtTcWorkers == 0)
+    if (globalData.ndbMtTcThreads == 0)
     {
-      globalData.ndbMtTcWorkers = 1;
+      globalData.ndbMtTcWorkers = globalData.ndbMtReceiveThreads;
     }
-    globalData.ndbMtSendThreads =
-      m_thr_config.getThreadCount(THRConfig::T_SEND);
-    globalData.ndbMtReceiveThreads =
-      m_thr_config.getThreadCount(THRConfig::T_RECV);
+    else
+    {
+      globalData.ndbMtTcWorkers = globalData.ndbMtTcThreads;
+    }
+    require(globalData.ndbMtTcWorkers > 0);
     /**
      * ndbMtMainThreads is the total number of main and rep threads.
      * There can be 0 or 1 main threads, 0 or 1 rep threads. If there
@@ -1899,9 +1903,9 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   }
 
   Uint32 tcInstances = 1;
-  if (globalData.ndbMtTcThreads > 1)
+  if (globalData.ndbMtTcWorkers > 1)
   {
-    tcInstances = globalData.ndbMtTcThreads;
+    tcInstances = globalData.ndbMtTcWorkers;
   }
 
 #define DO_DIV(x,y) (((x) + (y - 1)) / (y))

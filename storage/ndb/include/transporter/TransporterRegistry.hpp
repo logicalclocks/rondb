@@ -518,6 +518,7 @@ public:
 
   int get_transporter_count() const;
   Transporter* get_transporter(TrpId id) const;
+  NodeId get_node_id_trp(TrpId id) const;
   Transporter* get_node_transporter(NodeId nodeId) const;
   bool is_shm_transporter(NodeId nodeId);
   struct in6_addr get_connect_address(NodeId node_id) const;

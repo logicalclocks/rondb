@@ -3677,6 +3677,13 @@ TransporterRegistry::is_shm_transporter(TrpId trp_id)
     return false;
 }
 
+NodeId
+TransporterRegistry::get_node_id_trp(TrpId trp_id) const
+{
+  assert(trp_id < MAX_NTRANSPORTERS);
+  return allTransporters[trp_id]->getRemoteNodeId();
+}
+
 Transporter*
 TransporterRegistry::get_transporter(TrpId trp_id) const
 {

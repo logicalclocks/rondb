@@ -461,9 +461,9 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
 
   Uint32 transmem = 0;
   Uint32 tcInstances = 1;
-  if (globalData.ndbMtTcThreads > 1)
+  if (globalData.ndbMtTcWorkers > 1)
   {
-    tcInstances = globalData.ndbMtTcThreads;
+    tcInstances = globalData.ndbMtTcWorkers;
   }
 
   Uint64 TransactionMemory = globalData.theTransactionMemory;

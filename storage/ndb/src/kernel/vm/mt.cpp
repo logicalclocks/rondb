@@ -243,6 +243,50 @@ struct alignas(NDB_CL) thr_wait
  *
  * Returns 'true' if it actually did sleep.
  */
+
+template<typename T>
+static inline
+bool
+recv_yield(struct thr_wait* wait, bool (*check_callback)(T*), T* check_arg)
+{
+  volatile unsigned * val = &wait->m_futex_state;
+#ifndef NDEBUG
+  int old = 
+#endif
+    xcng(val, thr_wait::FS_SLEEPING);
+  assert(old == thr_wait::FS_RUNNING);
+
+  /**
+   * At this point, we need to re-check the condition that made us decide to
+   * sleep, and skip sleeping if it changed..
+   *
+   * Otherwise, the condition may have not changed, and the thread making the
+   * change have already decided not to wake us, as our state was FS_RUNNING
+   * at the time.
+   *
+   * Also need a memory barrier to ensure this extra check is race-free.
+   *   but that is already provided by xcng
+   */
+  const bool waited = (*check_callback)(check_arg);
+  if (!waited)
+  {
+    xcng(val, thr_wait::FS_RUNNING);
+  }
+  return waited;
+}
+
+static inline
+void
+recv_awake(struct thr_wait* wait)
+{
+  volatile unsigned * val = &wait->m_futex_state;
+#ifndef NDEBUG
+  int old = 
+#endif
+    xcng(val, thr_wait::FS_RUNNING);
+  assert(old == thr_wait::FS_SLEEPING);
+}
+
 template<typename T>
 static inline
 bool
@@ -341,6 +385,31 @@ struct alignas(NDB_CL) thr_wait
     m_cond = NdbCondition_Create();
   }
 };
+
+template<typename T>
+static inline
+bool
+recv_yield(struct thr_wait* wait, bool (*check_callback)(T*), T* check_arg)
+{
+  NdbMutex_Lock(wait->m_mutex);
+  Uint32 waits = 0;
+  if ((*check_callback)(check_arg))
+  {
+    wait->m_need_wakeup = true;
+    waits++;
+  }
+  NdbMutex_Unlock(wait->m_mutex);
+  return (waits > 0);
+}
+
+static inline
+void
+recv_awake(struct thr_wait* wait)
+{
+  NdbMutex_Lock(wait->m_mutex);
+  wait->m_need_wakeup = false;
+  NdbMutex_Unlock(wait->m_mutex);
+}
 
 template<typename T>
 static inline
@@ -3639,7 +3708,6 @@ check_recv_yield(thr_data *selfptr,
        * queues to not be empty. This happens when another thread or
        * the receive thread sends a signal to the thread.
        */
-      NdbSpin();
       if ((!check_queues_empty(selfptr)) ||
           ((num_events =
             globalTransporterRegistry.pollReceive(0, recvdata)) > 0))
@@ -3649,6 +3717,8 @@ check_recv_yield(thr_data *selfptr,
         now = NdbTick_getCurrentTicks();
         break;
       }
+      NdbSpin();
+      NdbSpin();
       /* Check if we have done enough spinning once per 3 us */
       if ((i & 3) == 3)
         continue;
@@ -7274,6 +7344,8 @@ mt_init_thr_map()
   else if (globalData.ndbMtMainThreads == 0)
   {
     Uint32 main_thread_no = globalData.ndbMtLqhThreads +
+                            globalData.ndbMtQueryThreads +
+                            globalData.ndbMtRecoverThreads +
                             globalData.ndbMtTcThreads;
     thr_LOCAL = main_thread_no;
     thr_GLOBAL = main_thread_no;
@@ -7423,23 +7495,14 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
   case DBTC:
   case DBSPJ:
   {
-    if (globalData.ndbMtTcThreads == 0 &&
-        globalData.ndbMtMainThreads > 0)
-    {
-      /**
-       * No TC threads and not ndbd emulation and there is at
-       * at least one main thread, use the first main thread as
-       * thread to handle the the DBTC worker.
-       */
-      thr_no = 0;
-    }
-    else
-    {
-      /* TC threads comes after LDM and Query threads */
-      thr_no += num_lqh_threads +
-                num_query_threads +
-                (instance - 1);
-    }
+    /**
+     * No TC threads, this means that TC is located in the receive threads.
+     * TC threads comes after LDM and Query threads
+     * Thus same calculation in both cases, both with and without TC threads.
+     */
+    thr_no += (num_lqh_threads +
+               num_query_threads +
+               (instance - 1));
     break;
   }
   case THRMAN:
@@ -7724,6 +7787,8 @@ static TransporterReceiveHandleKernel *
  */
 static Uint32 g_trp_to_recv_thr_map[MAX_NTRANSPORTERS];
 
+static Uint32 g_api_node_to_recv_instance_map[MAX_NODES];
+
 /**
  * We use this method both to initialise the realtime variable
  * and also for updating it. Currently there is no method to
@@ -7875,6 +7940,8 @@ mt_receiver_thread_main(void *thr_arg)
      * 1) We are not lagging behind in handling timer events.
      * 2) No more pending sends, or no send progress.
      * 3) There are no jobs waiting to be executed in the job buffer
+     *    This check is performed in check_recv_yield as well as in
+     *    recv_yield, so no need to do it before everything as well.
      * 4) There are no 'min_spin' configured or min_spin has elapsed
      * We will not check spin timer until we have checked the
      * transporters at least one loop and discovered no data. We also
@@ -7889,7 +7956,6 @@ mt_receiver_thread_main(void *thr_arg)
 
     if (lagging_timers == 0 &&          // 1)
         pending_send  == false &&       // 2)
-        check_queues_empty(selfptr) &&  // 3)
         (min_spin_timer == 0 ||         // 4)
          (sum == 0 &&
           !has_received &&
@@ -7907,7 +7973,22 @@ mt_receiver_thread_main(void *thr_arg)
     if (num_events == 0)
     {
       /* Need to call pollReceive if not already done in check_recv_yield */
+      bool slept = false;
+      if (delay > 0 && !recv_yield(&selfptr->m_waiter,
+                                   check_queues_empty,
+                                   selfptr))
+      {
+        delay = 0;
+      }
+      else if (delay > 0)
+      {
+        slept = true;
+      }
       num_events = globalTransporterRegistry.pollReceive(delay, recvdata);
+      if (slept)
+      {
+        recv_awake(&selfptr->m_waiter);
+      }
     }
     if (delay > 0)
     {
@@ -9900,6 +9981,7 @@ compute_jb_pages(struct EmulatorData * ed)
   Uint32 num_lqh_threads = globalData.ndbMtLqhThreads > 0 ?
                            globalData.ndbMtLqhThreads : 1;
   Uint32 num_tc_threads = globalData.ndbMtTcThreads;
+  Uint32 num_tc_workers = globalData.ndbMtTcWorkers;
   /**
    * In 'perthread' we calculate number of pages required by
    * all 'block threads' (excludes 'send-threads'). 'perthread'
@@ -9930,18 +10012,23 @@ compute_jb_pages(struct EmulatorData * ed)
      * to add buffers for unused links.
      *
      * Receiver threads will be able to communicate with all other
-     * threads except other receive threads.
+     * threads if they contain TC workers. If they do not contain
+     * TC workers they cannot communicate with other receive threads.
+     *
+     * If
      */
+    Uint32 other_threads_no_comm = (num_tc_workers == 0) ?
+                            0 : num_receive_threads;
     tot += num_receive_threads *
-           (cnt - num_receive_threads) *
+           (cnt - other_threads_no_comm) *
            thr_job_queue::SIZE;
     /**
-     * LQH threads can communicate with TC threads and main threads.
+     * LQH threads can communicate with TC workers and main threads.
      * Cannot communicate with receive threads and other LQH threads,
      * but it can communicate with itself.
      */
     tot += num_lqh_threads *
-             (num_tc_threads + num_main_threads + 1) *
+             (num_tc_workers + num_main_threads + 1) *
              thr_job_queue::SIZE;
 
     /**
@@ -9978,11 +10065,18 @@ compute_jb_pages(struct EmulatorData * ed)
      * So for those links where we cannot communicate we add one extra
      * job buffer.
      */
-    tot += num_receive_threads * (num_receive_threads - 1);
-    tot += num_tc_threads * num_receive_threads;
-    tot += (num_lqh_threads - 1) *
-             (num_receive_threads + num_lqh_threads - 1);
-    tot += num_receive_threads;
+    if (num_tc_threads != 0)
+    {
+      tot += num_receive_threads * (num_receive_threads - 1);
+      tot += num_tc_threads * num_receive_threads;
+      tot += (num_lqh_threads - 1) *
+               (num_receive_threads + num_lqh_threads - 1);
+      tot += num_receive_threads;
+    }
+    else
+    {
+      tot += (num_lqh_threads - 1) * (num_lqh_threads - 1);
+    }
   }
 
   /**
@@ -10104,6 +10198,13 @@ mt_get_recv_thread_idx(TrpId trp_id)
   return g_trp_to_recv_thr_map[trp_id];
 }
 
+Uint32
+mt_map_api_node_to_recv_instance(NodeId node_id)
+{
+  require(node_id < MAX_NODES);
+  return g_api_node_to_recv_instance_map[node_id];
+}
+
 static
 void
 assign_receiver_threads(void)
@@ -10111,6 +10212,10 @@ assign_receiver_threads(void)
   Uint32 num_recv_threads = globalData.ndbMtReceiveThreads;
   Uint32 recv_thread_idx = 0;
   Uint32 recv_thread_idx_shm = 0;
+  for (Uint32 i = 0; i < MAX_NODES; i++)
+  {
+    g_api_node_to_recv_instance_map[i] = RNIL;
+  }
   for (Uint32 trp_id = 1; trp_id < MAX_NTRANSPORTERS; trp_id++)
   {
     Transporter *trp =
@@ -10123,9 +10228,11 @@ assign_receiver_threads(void)
      */
     if (trp)
     {
+      Uint32 node_id = globalTransporterRegistry.get_node_id_trp(trp_id);
       if (globalTransporterRegistry.is_shm_transporter(trp_id))
       {
         g_trp_to_recv_thr_map[trp_id] = recv_thread_idx_shm;
+        g_api_node_to_recv_instance_map[node_id] = recv_thread_idx_shm;
         globalTransporterRegistry.set_recv_thread_idx(trp,recv_thread_idx_shm);
         DEB_MULTI_TRP(("SHM trp %u uses recv_thread_idx: %u",
                        trp_id, recv_thread_idx_shm));
@@ -10136,6 +10243,7 @@ assign_receiver_threads(void)
       else
       {
         g_trp_to_recv_thr_map[trp_id] = recv_thread_idx;
+        g_api_node_to_recv_instance_map[node_id] = recv_thread_idx;
         DEB_MULTI_TRP(("TCP trp %u uses recv_thread_idx: %u",
                        trp_id, recv_thread_idx));
         globalTransporterRegistry.set_recv_thread_idx(trp,recv_thread_idx);

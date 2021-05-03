@@ -616,6 +616,17 @@ releaseSections(SPC_ARG Uint32 secCount, SegmentedSectionPtr ptr[3]){
   ErrorReporter::handleAssert(msg, __FILE__, __LINE__);
 }
 
+Uint32
+SimulatedBlock::map_api_node_to_recv_instance(NodeId node)
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_map_api_node_to_recv_instance(node);
+#else
+   ndbabort();
+   return 0;
+#endif
+}
+
 void
 SimulatedBlock::getSendBufferLevel(NodeId node, SB_LevelType &level)
 {

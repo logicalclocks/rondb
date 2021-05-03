@@ -494,10 +494,14 @@ Qmgr::execREAD_CONFIG_REQ(Signal* signal)
        *
        * So we select the configured number unless the maximum number of
        * LDM and/or TC threads is smaller than this number.
+       *
+       * We use ndbMtTcWorkers which is equal to ndbMtTcThreads if tc
+       * threads are used and otherwise is equal to the number of
+       * receive threads with one TC worker per receive thread.
        */
       m_num_multi_trps = MIN(m_num_multi_trps,
                          MAX(globalData.ndbMtLqhThreads,
-                             globalData.ndbMtTcThreads));
+                             globalData.ndbMtTcWorkers));
     }
     /**
      * Whatever value this node has choosen, we will never be able to use

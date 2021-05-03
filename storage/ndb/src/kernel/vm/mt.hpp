@@ -90,6 +90,7 @@ void mt_execSTOP_FOR_CRASH();
 /**
  * Interface methods to SimulatedBlock for ndbtmd.
  */
+Uint32 mt_map_api_node_to_recv_instance(NodeId);
 void mt_getSendBufferLevel(Uint32 self, NodeId node, SB_LevelType &level);
 Uint32 mt_getEstimatedJobBufferLevel(Uint32 self);
 bool mt_isEstimatedJobBufferLevelChanged(Uint32 self);
