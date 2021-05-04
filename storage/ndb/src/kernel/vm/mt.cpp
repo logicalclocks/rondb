@@ -184,11 +184,7 @@ alignas (NDB_CL) static Uint32 glob_unused[NDB_CL/4];
 #define USE_FUTEX
 #endif
 
-#ifdef USE_FUTEX
-static inline void thr_wakeup(struct thr_data *thr_ptr);
-#else
 static inline void thr_wakeup(struct thr_wait *, struct thr_data *thr_ptr);
-#endif
 
 #ifdef USE_FUTEX
 #ifndef _GNU_SOURCE
@@ -331,7 +327,7 @@ yield(struct thr_wait* wait, const Uint32 nsec,
 
 static inline
 int
-wakeup(struct thr_wait* wait, struct thr_data *thrptr)
+wakeup(struct thr_wait* wait, struct thr_data *thr_ptr)
 {
   volatile unsigned * val = &wait->m_futex_state;
   /**
@@ -341,7 +337,7 @@ wakeup(struct thr_wait* wait, struct thr_data *thrptr)
    */
   if (xcng(val, thr_wait::FS_RUNNING) == thr_wait::FS_SLEEPING)
   {
-    thr_wakeup(thr_ptr);
+    thr_wakeup(wait, thr_ptr);
   }
   return 0;
 }
@@ -3540,14 +3536,15 @@ check_real_time_break(NDB_TICKS now,
 
 #ifdef USE_FUTEX
 static inline
-void thr_wakeup(struct thr_data *thr_ptr)
+void thr_wakeup(struct thr_wait *wait, struct thr_data *thr_ptr)
 {
   if (thr_ptr->m_is_recv_thread)
   {
-    globalTransporterRegistry.wakeup(thr_ptr->m_recvthread);
+    globalTransporterRegistry.wakeup(thr_ptr->m_recvdata);
   }
   else
   {
+    volatile unsigned * val = &wait->m_futex_state;
     futex_wake(val);
   }
 }
