@@ -1899,10 +1899,12 @@ THRConfig::handle_spec(char *str,
     if (values[IX_NOSEND].found &&
         !(type == T_LDM ||
           type == T_TC ||
+          type == T_RECV ||
           type == T_MAIN ||
           type == T_REP))
     {
-      m_err_msg.assfmt("Can only set nosend on main, ldm, tc and rep threads");
+      m_err_msg.assfmt("Can only set nosend on main, ldm, tc, recv and rep"
+                       " threads");
       return -1;
     }
     if (values[IX_THREAD_PRIO].found && type == T_IXBLD)

@@ -2274,9 +2274,7 @@ public:
                        struct thr_send_thread_instance *send_instance);
 
   /* A block thread has flushed data for a trp and wants it sent */
-  Uint32 alert_send_thread(TrpId trp_id,
-                           NDB_TICKS now,
-                           struct thr_send_thread_instance* send_instance);
+  Uint32 alert_send_thread(TrpId trp_id, NDB_TICKS now);
 
   /* Method used to run the send thread */
   void run_send_thread(Uint32 instance_no);
@@ -2298,10 +2296,6 @@ public:
   {
     return &m_send_threads[thr_no - glob_num_threads].m_send_buffer_pool;
   }
-
-  void wake_my_send_thread_if_needed(TrpId *trp_id_array,
-                                     Uint32 count,
-                   struct thr_send_thread_instance *my_send_instance);
   Uint32 get_send_instance(TrpId trp_id);
 private:
   struct thr_send_thread_instance* get_send_thread_instance_by_trp(TrpId);
@@ -2332,11 +2326,6 @@ private:
 
   /* Completed sending data to this trp, check if more work pending. */ 
   bool check_done_trp(TrpId trp_id);
-
-  /* Get a send thread which isn't awake currently */
-  struct thr_send_thread_instance* get_not_awake_send_thread(
-                 TrpId trp_id,
-                 struct thr_send_thread_instance *send_instance);
 
   /* Try to lock send_buffer for this trp. */
   static
@@ -2662,8 +2651,7 @@ thr_send_threads::assign_threads_to_assist_send_threads()
     thr_data *selfptr = &rep->m_thread[thr_no];
     selfptr->m_nosend = conf.do_get_nosend(selfptr->m_instance_list,
                                            selfptr->m_instance_count);
-    if (is_recv_thread(thr_no) ||
-        is_recover_thread(thr_no) ||
+    if (is_recover_thread(thr_no) ||
         selfptr->m_nosend == 1)
     {
       selfptr->m_send_instance_no = 0;
@@ -2690,8 +2678,7 @@ thr_send_threads::assign_threads_to_assist_send_threads()
   for (thr_no = 0; thr_no < glob_num_threads; thr_no++)
   {
     thr_data *selfptr = &rep->m_thread[thr_no];
-    if (is_recv_thread(thr_no) ||
-        selfptr->m_nosend == 1 ||
+    if (selfptr->m_nosend == 1 ||
         is_ldm_thread(thr_no))
     {
       continue;
@@ -3295,67 +3282,6 @@ thr_send_threads::check_done_trp(TrpId trp_id)
   return (trp_state.m_data_available == 0);
 }
 
-/* Called under mutex protection of send_thread_mutex */
-struct thr_send_thread_instance*
-thr_send_threads::get_not_awake_send_thread(TrpId trp_id,
-                         struct thr_send_thread_instance *send_instance)
-{
-  struct thr_send_thread_instance *used_send_thread;
-  if (trp_id != 0)
-  {
-    Uint32 send_thread = get_send_instance(trp_id);
-    if (!m_send_threads[send_thread].m_awake)
-    {
-      used_send_thread= &m_send_threads[send_thread];
-      assert(used_send_thread == send_instance);
-      return used_send_thread;
-    }
-  }
-  if (!send_instance->m_awake)
-    return send_instance;
-  return NULL;
-}
-
-/**
- * We have assisted our send thread instance, check if it still
- * need to be woken up.
- */
-void
-thr_send_threads::wake_my_send_thread_if_needed(TrpId *trp_id_array,
-                                                Uint32 count,
-                   struct thr_send_thread_instance *my_send_instance)
-{
-  bool mutex_locked = false;
-  struct thr_send_thread_instance *wake_send_instance = NULL;
-  for (Uint32 i = 0; i < count; i++)
-  {
-    TrpId trp_id = trp_id_array[i];
-    struct thr_send_thread_instance *send_instance =
-      get_send_thread_instance_by_trp(trp_id);
-    if (send_instance != my_send_instance)
-      continue;
-    if (!mutex_locked)
-    {
-      mutex_locked = true;
-      NdbMutex_Lock(my_send_instance->send_thread_mutex);
-    }
-    struct thr_send_trps& trp_state = m_trp_state[trp_id];
-    if (trp_state.m_data_available > 0)
-    {
-      wake_send_instance = my_send_instance;
-      break;
-    }
-  }
-  if (mutex_locked)
-  {
-    NdbMutex_Unlock(my_send_instance->send_thread_mutex);
-  }
-  if (wake_send_instance != NULL)
-  {
-    wakeup(&(wake_send_instance->m_waiter_struct));
-  }
-}
-
 /**
  * Insert transporter into send thread instance data structures.
  * Wake send thread unless it is the one which we handle ourselves.
@@ -3370,9 +3296,7 @@ thr_send_threads::wake_my_send_thread_if_needed(TrpId *trp_id_array,
  * NULL here and we will wake all required send threads.
  */
 Uint32
-thr_send_threads::alert_send_thread(TrpId trp_id,
-                                    NDB_TICKS now,
-                   struct thr_send_thread_instance *my_send_instance)
+thr_send_threads::alert_send_thread(TrpId trp_id, NDB_TICKS now)
 {
   struct thr_send_thread_instance *send_instance =
     get_send_thread_instance_by_trp(trp_id);
@@ -3416,23 +3340,16 @@ thr_send_threads::alert_send_thread(TrpId trp_id,
   {
     set_max_delay(trp_id, now, max_send_delay);
   }
-
-  if (send_instance == my_send_instance)
-  {
-    NdbMutex_Unlock(send_instance->send_thread_mutex);
-    return 1;
-  }
-
   /*
    * Check if the send thread especially responsible for this transporter
    * is awake, if not wake it up.
    */
-  struct thr_send_thread_instance *avail_send_thread
-    = get_not_awake_send_thread(trp_id, send_instance);
+  struct thr_send_thread_instance *asleep_send_thread =
+    (send_instance->m_awake) ? nullptr : send_instance;
 
   NdbMutex_Unlock(send_instance->send_thread_mutex);
 
-  if (avail_send_thread)
+  if (asleep_send_thread)
   {
     /*
      * Wake the assigned sleeping send thread, potentially a spurious wakeup,
@@ -3441,7 +3358,7 @@ thr_send_threads::alert_send_thread(TrpId trp_id,
      * awake and takes care of our request before we get to wake someone up
      * it's not a problem.
      */
-    wakeup(&(avail_send_thread->m_waiter_struct));
+    wakeup(&(asleep_send_thread->m_waiter_struct));
   }
   return 1;
 }
@@ -3868,7 +3785,7 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
       set_max_delay(trp_id, now, 0);              // Large packet -> Send now
     else                                          // Sleep, let last awake send
     {
-      if (thr_no >= glob_num_threads)
+      if (is_send_thread(thr_no))
       {
         /**
          * When encountering g_max_send_delay from send thread we
@@ -3978,6 +3895,31 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
   {
     insert_trp(trp_id, send_instance);
 
+    if (!is_send_thread(thr_no))
+    {
+      /**
+       * There are two reasons for coming here. One case is that the
+       * send didn't manage to send everything and a new send is
+       * required later on. Since we are not the send thread we need
+       * to wakeup the send thread to take responsibility for this
+       * action.
+       *
+       * The second reason is similar and requires the same action to
+       * wake the send thread up to take responsibility. In this case
+       * some other thread have added a send request while we were
+       * processing the current request. Thus someone has to take
+       * responsibility that the send is performed. When we started
+       * the send we set m_data_available to 1, if check_done_trp
+       * returns false it means that someone incremented
+       * m_data_available in a call to insert_trp. This thread
+       * would not wake any send thread up since there is already
+       * activity happening to send.
+       *
+       * In both cases the solution is to ensure that the responsible
+       * send thread is awake to ensure that the send is done in time.
+       */
+      wakeup(&(send_instance->m_waiter_struct));
+    }
     if (unlikely(more && bytes_sent == 0)) //Trp is overloaded
     {
       set_overload_delay(trp_id, now, 200);//Delay send-retry by 200 us
@@ -4278,7 +4220,6 @@ thr_send_threads::run_send_thread(Uint32 instance_no)
     const Uint32 trp_wait = (trp_id != 0) ?
       m_trp_state[trp_id].m_micros_delayed : 0;
     NdbMutex_Unlock(this_send_thread->send_thread_mutex);
-
 
     if (real_time)
     {
@@ -6172,15 +6113,13 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
      * When the user have set nosend=1 on this thread we will
      * never assist with the sending.
      */
-    if (selfptr->m_overload_status == (OverloadStatus)OVERLOAD_CONST ||
-        selfptr->m_nosend_tmp != 0)
+    Uint32 num_trps_inserted = 0;
+    for (Uint32 i = 0; i < count; i++)
     {
-      for (Uint32 i = 0; i < count; i++)
-      {
-        g_send_threads->alert_send_thread(trps[i], now, NULL);
-      }
+      num_trps_inserted += g_send_threads->alert_send_thread(trps[i], now);
     }
-    else
+    if (selfptr->m_overload_status != (OverloadStatus)OVERLOAD_CONST &&
+        selfptr->m_nosend_tmp == 0)
     {
       /**
        * While we are in an light load state we will always try to
@@ -6209,21 +6148,9 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
        * do some send assistance. We check so that we don't perform
        * this wakeup function too often.
        */
-
-      Uint32 num_trps_inserted = 0;
-      struct thr_send_thread_instance *my_send_instance = NULL;
-      if (selfptr->m_overload_status == (OverloadStatus)LIGHT_LOAD_CONST)
-      {
-        my_send_instance = selfptr->m_send_instance;
-      }
-      for (Uint32 i = 0; i < count; i++)
-      {
-        num_trps_inserted += g_send_threads->alert_send_thread(trps[i],
-                                                               now,
-                                                      my_send_instance);
-      }
+      OverloadStatus overload_status = selfptr->m_overload_status;
       Uint32 num_trps_to_send_to = num_trps_inserted;
-      if (selfptr->m_overload_status == (OverloadStatus)MEDIUM_LOAD_CONST)
+      if (overload_status == (OverloadStatus)MEDIUM_LOAD_CONST)
       {
         num_trps_to_send_to = num_trps_inserted != 0 ? 1 : 0;
       }
@@ -6241,12 +6168,6 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
       }
       NDB_TICKS after = NdbTick_getCurrentTicks();
       selfptr->m_micros_send += NdbTick_Elapsed(now, after).microSec();
-      if (selfptr->m_overload_status == (OverloadStatus)LIGHT_LOAD_CONST)
-      {
-        g_send_threads->wake_my_send_thread_if_needed(&trps[0],
-                                      count,
-                                      selfptr->m_send_instance);
-      }
     }
     return pending_send;
   }
@@ -7877,6 +7798,9 @@ mt_receiver_thread_main(void *thr_arg)
   selfptr->m_ticks = selfptr->m_scan_real_ticks = yield_ticks = now;
   Ndb_GetRUsage(&selfptr->m_scan_time_queue_rusage, false);
 
+  Uint32 send_sum = 0;
+  Uint32 flush_sum = 0;
+  bool pending_send = false;
   while (globalData.theRestartFlag != perform_stop)
   {
     if (cnt == 0)
@@ -7900,14 +7824,30 @@ mt_receiver_thread_main(void *thr_arg)
 
     watchDogCounter = 2;
 
+    /**
+     * prefill our thread local send buffers
+     *   up to THR_SEND_BUFFER_PRE_ALLOC (1Mb)
+     *
+     * and if this doesnt work pack buffers before start to execute signals
+     */
+    watchDogCounter = 11;
+    if (!selfptr->m_send_buffer_pool.fill(g_thr_repository->m_mm,
+                                          RG_TRANSPORTER_BUFFERS,
+                                          THR_SEND_BUFFER_PRE_ALLOC,
+                                          selfptr->m_send_instance_no))
+    {
+      try_pack_send_buffers(selfptr);
+    }
+
     now = NdbTick_getCurrentTicks();
     selfptr->m_curr_ticks = now;
     const Uint32 lagging_timers = scan_time_queues(selfptr, now);
-    Uint32 dummy1 = 0;
-    Uint32 dummy2 = 0;
-    bool dummy3 = false;
 
-    Uint32 sum = run_job_buffers(selfptr, signal, dummy1, dummy2, dummy3);
+    Uint32 sum = run_job_buffers(selfptr,
+                                 signal,
+                                 send_sum,
+                                 flush_sum,
+                                 pending_send);
     /**
      * Need to call sendpacked even when no signals have been executed since
      * it can be used for NDBFS communication.
@@ -7916,11 +7856,22 @@ mt_receiver_thread_main(void *thr_arg)
     if (sum || has_received)
     {
       watchDogCounter = 6;
-      flush_all_local_signals_and_wakeup(selfptr);
-      check_congestion(selfptr);
+      if (flush_sum > 0)
+      {
+        flush_all_local_signals_and_wakeup(selfptr);
+        do_flush(selfptr);
+        check_congestion(selfptr);
+        flush_sum = 0;
+      }
     }
-
-    const bool pending_send = do_send(selfptr, TRUE, FALSE);
+    else if (send_sum > 0 || pending_send == true)
+    {
+      watchDogCounter = 6;
+      flush_all_local_signals_and_wakeup(selfptr);
+      pending_send = do_send(selfptr, TRUE, TRUE);
+      send_sum = 0;
+      flush_sum = 0;
+    }
 
     watchDogCounter = 7;
 
@@ -7953,6 +7904,7 @@ mt_receiver_thread_main(void *thr_arg)
 
     if (lagging_timers == 0 &&          // 1)
         pending_send  == false &&       // 2)
+        send_sum == 0 &&                // 2)
         (min_spin_timer == 0 ||         // 4)
          (sum == 0 &&
           !has_received &&
@@ -8023,6 +7975,17 @@ mt_receiver_thread_main(void *thr_arg)
             NdbTick_Elapsed(before, after).microSec();
         }
       }
+    }
+    /**
+     * Ensure that all received signals are sent to the receivers before
+     * we start processing local signals to ourselves.
+     */
+    if (has_received)
+    {
+      watchDogCounter = 6;
+      flush_all_local_signals_and_wakeup(selfptr);
+      do_flush(selfptr);
+      flush_sum = 0;
     }
     selfptr->m_stat.m_loop_cnt++;
   }
@@ -8363,6 +8326,11 @@ mt_job_thread_main(void *thr_arg)
                                  flush_sum,
                                  pending_send);
 
+    /**
+     * Need to call sendpacked even when no signals have been executed since
+     * it can be used for NDBFS communication.
+     */
+    sendpacked(selfptr, signal);
     if (sum)
     {
       /**
@@ -8377,12 +8345,7 @@ mt_job_thread_main(void *thr_arg)
        *
        * No need to flush however if no signals have been executed since
        * last flush.
-       *
-       * No need to check for send packed signals if we didn't send
-       * any signals, packed signals are sent as a result of an
-       * executed signal.
        */
-      sendpacked(selfptr, signal);
       watchDogCounter = 6;
       if (flush_sum > 0)
       {
@@ -8542,31 +8505,40 @@ mt_job_thread_main(void *thr_arg)
     now = NdbTick_getCurrentTicks();
     selfptr->m_curr_ticks = now;
 
-    if (NdbTick_Elapsed(selfptr->m_jbb_estimate_start, now).microSec() > 400)
+    if (is_ldm_thread(selfptr->m_thr_no) ||
+        is_query_thread(selfptr->m_thr_no))
     {
       /**
-       * Report queue size to other threads in our data node after executing
-       * for at least 400 microseconds. We will always report idle mode when
-       * we go to sleep, thus the only manner to report higher load is if we
-       * execute without going to sleep for at least 400 microseconds. On top
-       * of that we need to have many jobs queued such that each job only gets
-       * a small portion of the used CPU.
-       *
-       * When CPU isn't fully utilised we use the CPU load measurements that
-       * shows long term behaviour. But if we start up a number of jobs that
-       * constantly execute we will run constantly (e.g. a scan on a very
-       * large table, or a number of complex queries that are evaluated by the
-       * SPJ block constantly. In these cases load can very quickly build up
-       * from an idle or a light load to a very high load in just a few
-       * microseconds.
-       *
-       * The action we perform here is to set a load indicator that all other
-       * threads can see. This means that each change will cause a cache miss
-       * where we will need to fetch the load indicator again. Thus we don't
-       * want to toggle this value frequently since this might cause high
-       * overhead.
+       * Queue sizes in LDM and Query threads is part of the load balancing
+       * performed by TC threads and receive threads to schedule committed
+       * read requests to the proper thread based on load indicators.
        */
-      handle_queue_size_stats(selfptr, now);
+      if (NdbTick_Elapsed(selfptr->m_jbb_estimate_start, now).microSec() > 400)
+      {
+        /**
+         * Report queue size to other threads in our data node after executing
+         * for at least 400 microseconds. We will always report idle mode when
+         * we go to sleep, thus the only manner to report higher load is if we
+         * execute without going to sleep for at least 400 microseconds. On top
+         * of that we need to have many jobs queued such that each job only
+         * gets a small portion of the used CPU.
+         *
+         * When CPU isn't fully utilised we use the CPU load measurements that
+         * shows long term behaviour. But if we start up a number of jobs that
+         * constantly execute we will run constantly (e.g. a scan on a very
+         * large table, or a number of complex queries that are evaluated by
+         * the SPJ block constantly. In these cases load can very quickly build
+         * up from an idle or a light load to a very high load in just a few
+         * microseconds.
+         *
+         * The action we perform here is to set a load indicator that all other
+         * threads can see. This means that each change will cause a cache miss
+         * where we will need to fetch the load indicator again. Thus we don't
+         * want to toggle this value frequently since this might cause high
+         * overhead.
+         */
+        handle_queue_size_stats(selfptr, now);
+      }
     }
     if (loops > maxloops)
     {
