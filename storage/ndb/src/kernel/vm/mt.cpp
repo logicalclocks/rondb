@@ -3894,7 +3894,6 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
       !check_done_trp(trp_id))  // ACTIVE-P -> PENDING
   {
     insert_trp(trp_id, send_instance);
-
     if (!is_send_thread(thr_no))
     {
       /**
