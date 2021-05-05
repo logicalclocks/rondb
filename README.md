@@ -39,7 +39,7 @@ RonDB is the fastest key-value store with SQL capabilities, available now in the
 RonDB has dedicated support for features required for a high-performance online feature store, including the LATS performance.
 
 
-LAT: low Latency, high Availability, high Throughput, scalable Storage
+LATS: low Latency, high Availability, high Throughput, scalable Storage
 
 You can read more about RonDB on our blog.
 
