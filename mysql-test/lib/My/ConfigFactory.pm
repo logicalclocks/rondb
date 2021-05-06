@@ -119,6 +119,23 @@ sub fix_host {
   return $hosts[$host_no];
 }
 
+sub fix_cpubind {
+  my ($self, $config, $group_name, $group) = @_;
+  # Replace cpubind with #cpubind
+  my $value = $group->if_exist('cpubind');
+  if (defined $value) {
+    $group->remove('cpubind');
+  }
+  return $value;
+}
+
+sub fix_cluster_config_suffix {
+  my ($self, $config, $group_name, $group) = @_;
+
+  my ($process_type, $idx, $suffix) = split(/\./, $group_name);
+  return ".$suffix";
+}
+
 sub is_unique {
   my ($config, $name, $value) = @_;
 
@@ -260,6 +277,7 @@ sub fix_rsa_public_key {
 #    in the order listed here
 my @mysqld_rules = (
   { '#abs_datadir'                                 => \&fix_abs_datadir },
+  { '#cpubind'                                     => \&fix_cpubind },
   { '#host'                                        => \&fix_host },
   { '#log-error'                                   => \&fix_log_error },
   { 'caching_sha2_password_private_key_path'       => \&fix_rsa_private_key },
@@ -333,13 +351,15 @@ sub fix_cluster_backup_dir {
 #  - will be run in order listed here
 my @ndb_mgmd_rules =
   ({ 'DataDir' => \&fix_cluster_dir },
-   { 'PortNumber' => \&fix_ndb_mgmd_port },);
+   { 'PortNumber' => \&fix_ndb_mgmd_port },
+   { '#cpubind'   => \&fix_cpubind },);
 
 # Rules to run for each ndbd in the config
 #  - will be run in order listed here
 my @ndbd_rules = ({ 'BackupDataDir' => \&fix_cluster_backup_dir },
                   { 'DataDir'       => \&fix_cluster_dir },
-                  { 'HostName'      => \&fix_host },);
+                  { 'HostName'      => \&fix_host },
+                  { '#cpubind'      => \&fix_cpubind },);
 
 # Rules to run for each memcached in the config
 #  - will be run in order listed here
@@ -359,7 +379,8 @@ my @client_rules = ();
 # Rules to run for [mysqltest] section
 #  - will be run in order listed here
 my @mysqltest_rules = ({ 'server-public-key-path' => \&fix_rsa_public_key },
-                       { 'ssl-mode'               => \&fix_ssl_disabled },);
+                       { 'ssl-mode'               => \&fix_ssl_disabled },
+                       { '#cpubind'               => \&fix_cpubind },);
 
 # Rules to run for [mysqlbinlog] section
 #  - will be run in order listed here
