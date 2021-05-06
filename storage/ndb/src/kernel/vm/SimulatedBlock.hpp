@@ -2093,6 +2093,11 @@ public:
   }
   void fill_distr_references(DistributionHandler *handle)
   {
+    if (globalData.ndbMtQueryThreads == 0)
+    {
+      jam();
+      return;
+    }
     Uint32 num_query_thread_per_ldm = globalData.QueryThreadsPerLdm;
     Uint32 num_ldm_instances = getNumLDMInstances();
     Uint32 num_distr_threads = num_ldm_instances +
@@ -2185,9 +2190,7 @@ public:
    */
   Uint32 getFirstLDMThreadInstance()
   {
-    if (unlikely(!isNdbMtLqh()))
-      return 0;
-    else if (unlikely(globalData.ndbMtLqhThreads == 0))
+    if (unlikely(globalData.ndbMtLqhThreads == 0))
     {
       return globalData.ndbMtMainThreads +
              globalData.ndbMtQueryThreads +
@@ -2201,19 +2204,15 @@ public:
   }
   Uint32 getNumLDMInstances()
   {
-    if (unlikely(!isNdbMtLqh()))
-      return 1;
     return globalData.ndbMtLqhWorkers;
   }
   Uint32 getNumTCInstances()
   {
-    if (unlikely(!isNdbMtLqh()))
-      return 1;
     return globalData.ndbMtTcWorkers;
   }
   void query_thread_memory_barrier()
   {
-    if (globalData.ndbMtQueryThreads > 0)
+    if (globalData.ndbMtQueryWorkers > 0)
     {
       mb();
     }

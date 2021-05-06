@@ -902,18 +902,26 @@ Trpman::distribute_signal(SignalHeader * const header,
 {
   DistributionHandler *handle = &m_distribution_handle;
   Uint32 gsn = header->theVerId_signalNumber;
-  ndbrequire(m_distribution_handler_inited);
-  if (gsn == GSN_LQHKEYREQ)
+  if (globalData.ndbMtQueryThreads > 0)
   {
-    return get_lqhkeyreq_ref(handle, instance_no);
-  }
-  else if (gsn == GSN_SCAN_FRAGREQ)
-  {
-    return get_scan_fragreq_ref(handle, instance_no);
+    ndbrequire(m_distribution_handler_inited);
+    if (gsn == GSN_LQHKEYREQ)
+    {
+      return get_lqhkeyreq_ref(handle, instance_no);
+    }
+    else if (gsn == GSN_SCAN_FRAGREQ)
+    {
+      return get_scan_fragreq_ref(handle, instance_no);
+    }
+    else
+    {
+      return 0;
+    }
   }
   else
   {
-    return 0;
+    ndbrequire(globalData.ndbMtQueryWorkers > 0);
+    return numberToRef(DBQLQH, instance(), getOwnNodeId());
   }
 }
 

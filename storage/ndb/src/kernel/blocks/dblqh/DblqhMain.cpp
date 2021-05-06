@@ -1316,7 +1316,7 @@ Dblqh::sttor_startphase1(Signal *signal)
              c_pgman != 0 &&
              c_lgman != 0 &&
              c_restore != 0);
-  if (isNdbMtLqh() && !m_is_query_block)
+  if (!m_is_query_block)
   {
     jam();
     c_restore_mutex_lqh = (Dblqh*)globalData.getBlock(DBLQH, 1);
@@ -1326,8 +1326,7 @@ Dblqh::sttor_startphase1(Signal *signal)
   if (instance() == 1 &&
       !m_is_query_block &&
       (globalData.ndbMtRecoverThreads +
-       globalData.ndbMtQueryThreads) > 0 &&
-      isNdbMtLqh())
+       globalData.ndbMtQueryWorkers) > 0)
   {
     jam();
     m_restore_mutex = NdbMutex_Create();
@@ -1362,21 +1361,13 @@ Dblqh::sttor_startphase1(Signal *signal)
   }
   if (!m_is_query_block)
   {
-    if (isNdbMtLqh())
-    {
-      jam();
-      Uint32 num_restore_threads = 1 + (
-        ((globalData.ndbMtRecoverThreads +
-          globalData.ndbMtQueryThreads) +
-         (globalData.ndbMtLqhWorkers - 1)) /
-        globalData.ndbMtLqhWorkers);
-      m_num_restore_threads = num_restore_threads;
-    }
-    else
-    {
-      jam();
-      m_num_restore_threads = 1;
-    }
+    jam();
+    Uint32 num_restore_threads = 1 + (
+      ((globalData.ndbMtRecoverThreads +
+        globalData.ndbMtQueryThreads) +
+       (globalData.ndbMtLqhWorkers - 1)) /
+      globalData.ndbMtLqhWorkers);
+    m_num_restore_threads = num_restore_threads;
   }
     
 #ifdef NDBD_TRACENR
@@ -2509,11 +2500,6 @@ Dblqh::get_log_part_record(Uint32 instanceKey)
 {
   LogPartRecord *logPartPtrP;
   Uint32 part_instance = (instanceKey - 1) % globalData.ndbLogParts;
-  if (!isNdbMtLqh())
-  {
-    logPartPtrP = &logPartRecord[part_instance];
-  }
-  else
   {
     Uint32 num_ldm_instances = globalData.ndbMtLqhWorkers;
     Uint32 ldm_instance = part_instance % num_ldm_instances;
@@ -2546,7 +2532,7 @@ void Dblqh::restart_synch_state(Signal *signal,
     m_restart_synch_ready++;
   }
   Uint32 num_ready = m_restart_synch_ready;
-  Uint32 num_expecting = isNdbMtLqh() ? globalData.ndbMtLqhWorkers : 1;
+  Uint32 num_expecting = globalData.ndbMtLqhWorkers;
   if (num_ready == num_expecting)
   {
     m_restart_synch_state = NO_SYNCH_ONGOING;
@@ -2572,19 +2558,12 @@ void Dblqh::restart_synch_state(Signal *signal,
 void Dblqh::send_CONTINUEB_all(Signal *signal, Uint32 continueb_case)
 {
   signal->theData[0] = continueb_case;
-  if (!isNdbMtLqh())
+  for (Uint32 instance = 1;
+       instance <= globalData.ndbMtLqhWorkers;
+       instance++)
   {
-    sendSignal(DBLQH_REF, GSN_CONTINUEB, signal, 1, JBB);
-  }
-  else
-  {
-    for (Uint32 instance = 1;
-         instance <= globalData.ndbMtLqhWorkers;
-         instance++)
-    {
-      BlockReference ref = numberToRef(DBLQH, instance, getOwnNodeId());
-      sendSignal(ref, GSN_CONTINUEB, signal, 1, JBB);
-    }
+    BlockReference ref = numberToRef(DBLQH, instance, getOwnNodeId());
+    sendSignal(ref, GSN_CONTINUEB, signal, 1, JBB);
   }
 }
 
@@ -9105,7 +9084,7 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
       0;
   }//if
   ndbassert(regTcPtr->totReclenAi == regTcPtr->currReclenAi);
-  if (qt_likely((globalData.ndbMtQueryThreads > 0) &&
+  if (qt_likely((globalData.ndbMtQueryWorkers > 0) &&
       refToMain(regTcPtr->clientBlockref) != getRESTORE()))
   {
     acquire_frag_prepare_key_access(fragptr.p, regTcPtr);
@@ -11036,8 +11015,7 @@ Dblqh::set_use_mutex_for_log_parts()
   m_use_mutex_for_log_parts = true;
   if (globalData.ndbMtLqhWorkers == globalData.ndbLogParts ||
       globalData.ndbMtLqhWorkers == 1 ||
-      globalData.ndbMtLqhWorkers == 2 ||
-      !isNdbMtLqh())
+      globalData.ndbMtLqhWorkers == 2)
   {
     m_use_mutex_for_log_parts = false;
   }
@@ -15099,7 +15077,7 @@ void Dblqh::setup_key_pointers(Uint32 tcIndex, bool acquire_lock)
   ndbrequire(Magic::check_ptr(tcConnectptr.p));
   ndbrequire(Magic::check_ptr(tcConnectptr.p->tupConnectPtrP));
   ndbrequire(Magic::check_ptr(tcConnectptr.p->accConnectPtrP));
-  if (qt_likely((globalData.ndbMtQueryThreads > 0) && acquire_lock))
+  if (qt_likely((globalData.ndbMtQueryWorkers > 0) && acquire_lock))
   {
     acquire_frag_prepare_key_access(fragptr.p, m_tc_connect_ptr.p);
   }

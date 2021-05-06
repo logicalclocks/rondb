@@ -306,10 +306,6 @@ Uint32 SimulatedBlock::getInstanceNoCanFail(Uint32 tableId, Uint32 fragId)
   if (likely(instanceKey != RNIL))
   {
     Uint32 lqhWorkers = globalData.ndbMtLqhWorkers;
-    if (lqhWorkers == 0)
-    {
-      return 0;
-    }
     return (1 + ((instanceKey - 1) % lqhWorkers));
   }
   else
@@ -361,15 +357,8 @@ SimulatedBlock::getInstanceFromKey(Uint32 instanceKey)
 {
   Uint32 lqhWorkers = globalData.ndbMtLqhWorkers;
   Uint32 instanceNo;
-  if (lqhWorkers == 0)
-  {
-    instanceNo = 0;
-  }
-  else
-  {
-    assert(instanceKey != 0);
-    instanceNo = 1 + (instanceKey - 1) % lqhWorkers;
-  }
+  assert(instanceKey != 0);
+  instanceNo = 1 + (instanceKey - 1) % lqhWorkers;
   return instanceNo;
 }
 

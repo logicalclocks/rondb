@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2019, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -39,7 +40,7 @@ Dbqlqh::Dbqlqh(Block_context& ctx,
 Uint64 Dbqlqh::getTransactionMemoryNeed()
 {
   Uint32 query_instance_count =
-    globalData.ndbMtQueryThreads +
+    globalData.ndbMtQueryWorkers +
     globalData.ndbMtRecoverThreads;
   Uint32 lqh_scan_recs = 1;
   Uint32 lqh_op_recs = 1;

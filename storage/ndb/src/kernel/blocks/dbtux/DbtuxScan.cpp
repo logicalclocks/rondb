@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1563,7 +1564,7 @@ Dbtux::relinkScan(ScanOp& scan,
     scan.m_scanLinkedPos = NullTupLoc;
     return;
   }
-  if (qt_unlikely(globalData.ndbMtQueryThreads == 0))
+  if (qt_unlikely(globalData.ndbMtQueryWorkers == 0))
   {
     need_lock = false;
   }

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2019, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -39,7 +40,7 @@ Dbqtux::Dbqtux(Block_context& ctx,
 Uint64 Dbqtux::getTransactionMemoryNeed()
 {
   Uint32 query_instance_count =
-    globalData.ndbMtQueryThreads +
+    globalData.ndbMtQueryWorkers +
     globalData.ndbMtRecoverThreads;
   Uint64 scan_op_byte_count = 1;
   Uint32 tux_scan_recs = 1;

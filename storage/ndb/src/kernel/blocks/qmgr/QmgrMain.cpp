@@ -480,7 +480,7 @@ Qmgr::execREAD_CONFIG_REQ(Signal* signal)
        * transporter to the send thread the LDM thread assists as
        * well.
        */
-      m_num_multi_trps = globalData.ndbMtLqhThreads;
+      m_num_multi_trps = globalData.ndbMtLqhWorkers;
     }
     else
     {
@@ -500,7 +500,7 @@ Qmgr::execREAD_CONFIG_REQ(Signal* signal)
        * receive threads with one TC worker per receive thread.
        */
       m_num_multi_trps = MIN(m_num_multi_trps,
-                         MAX(globalData.ndbMtLqhThreads,
+                         MAX(globalData.ndbMtLqhWorkers,
                              globalData.ndbMtTcWorkers));
     }
     /**
@@ -1707,7 +1707,7 @@ void Qmgr::execCM_REGCONF(Signal* signal)
 
   // set own MT config here or in REF, and others in CM_NODEINFOREQ/CONF
   setNodeInfo(getOwnNodeId()).m_lqh_workers = globalData.ndbMtLqhWorkers;
-  setNodeInfo(getOwnNodeId()).m_query_threads = globalData.ndbMtQueryThreads;
+  setNodeInfo(getOwnNodeId()).m_query_threads = globalData.ndbMtQueryWorkers;
   setNodeInfo(getOwnNodeId()).m_log_parts = globalData.ndbLogParts;
 
 #ifdef DEBUG_STARTUP
@@ -2045,7 +2045,7 @@ void Qmgr::execCM_REGREF(Signal* signal)
 
   // set own MT config here or in CONF, and others in CM_NODEINFOREQ/CONF
   setNodeInfo(getOwnNodeId()).m_lqh_workers = globalData.ndbMtLqhWorkers;
-  setNodeInfo(getOwnNodeId()).m_query_threads = globalData.ndbMtQueryThreads;
+  setNodeInfo(getOwnNodeId()).m_query_threads = globalData.ndbMtQueryWorkers;
   setNodeInfo(getOwnNodeId()).m_log_parts = globalData.ndbLogParts;
   
   char buf[100];

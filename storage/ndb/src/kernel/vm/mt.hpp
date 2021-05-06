@@ -74,7 +74,6 @@ void mt_finalize_thr_map();
 #ifdef DEBUG_SCHED_STATS
 void get_jbb_estimated_stats(Uint32, Uint32, Uint64**, Uint64**);
 #endif
-Uint32 get_qt_jbb_level(Uint32 instance);
 void prefetch_load_indicators(Uint32 *rr_groups, Uint32 rr_group);
 Uint32 get_load_indicator(Uint32 dst);
 

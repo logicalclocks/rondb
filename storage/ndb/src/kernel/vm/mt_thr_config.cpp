@@ -2129,6 +2129,10 @@ THRConfigApplier::find_thread(const unsigned short instancelist[], unsigned cnt)
   {
     return &m_threads[T_MAIN][instanceNo];
   }
+  else if ((instanceNo = findBlock(TRPMAN, instancelist, cnt)) >= 0)
+  {
+    return &m_threads[T_RECV][instanceNo - 1]; // remove proxy
+  }
   else if ((instanceNo = findBlock(DBLQH, instancelist, cnt)) >= 0)
   {
     return &m_threads[T_LDM][instanceNo - 1]; // remove proxy...
@@ -2145,10 +2149,6 @@ THRConfigApplier::find_thread(const unsigned short instancelist[], unsigned cnt)
       instanceNo -= num_query_threads;
       return &m_threads[T_RECOVER][instanceNo - 1]; // remove proxy...
     }
-  }
-  else if ((instanceNo = findBlock(TRPMAN, instancelist, cnt)) >= 0)
-  {
-    return &m_threads[T_RECV][instanceNo - 1]; // remove proxy
   }
   else if ((instanceNo = findBlock(DBTC, instancelist, cnt)) >= 0)
   {

@@ -7324,7 +7324,7 @@ mt_get_instance_count(Uint32 block)
   case DBQTUX:
   case QBACKUP:
   case QRESTORE:
-    return globalData.ndbMtQueryThreads + globalData.ndbMtRecoverThreads;
+    return globalData.ndbMtQueryWorkers + globalData.ndbMtRecoverThreads;
   case PGMAN:
     return globalData.ndbMtLqhWorkers + 1;
     break;
@@ -7351,8 +7351,11 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
   Uint32 num_query_threads =
     globalData.ndbMtQueryThreads +
     globalData.ndbMtRecoverThreads;
+  bool receive_threads_only = false;
 
-  if (num_lqh_threads == 0 && globalData.ndbMtMainThreads == 0)
+  if (num_lqh_threads == 0 &&
+      globalData.ndbMtMainThreads == 0 &&
+      globalData.ndbMtReceiveThreads == 1)
   {
     /**
      * ndbd emulation, all blocks are in the receive thread.
@@ -7360,25 +7363,32 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
     thr_no = 0;
     require(num_tc_threads == 0);
     require(num_query_threads == 0);
-    require(globalData.ndbMtMainThreads == 0);
-    require(globalData.ndbMtReceiveThreads == 1);
     add_thr_map(block, instance, thr_no);
     return;
   }
-  else if (num_lqh_threads == 0)
+  else if (num_lqh_threads == 0 &&
+           globalData.ndbMtMainThreads == 1 &&
+           globalData.ndbMtReceiveThreads == 1)
   {
     /**
      * Configuration optimised for 1 CPU core with 2 CPUs.
-     * This has a receive thread + 1 thread for main, rep, ldm and tc
+     * This has a receive thread + 1 thread for main, rep
      */
-    thr_no = 0;
+    receive_threads_only = true;
     require(num_tc_threads == 0);
     require(globalData.ndbMtQueryThreads == 0);
     require(globalData.ndbMtRecoverThreads == 0 ||
             globalData.ndbMtRecoverThreads == 1);
-    require(globalData.ndbMtMainThreads == 1);
-    require(globalData.ndbMtReceiveThreads == 1);
     num_lqh_threads = 1;
+  }
+  else if (num_lqh_threads == 0 &&
+           globalData.ndbMtReceiveThreads > 1)
+  {
+    require(num_tc_threads == 0);
+    require(globalData.ndbMtRecoverThreads <= globalData.ndbMtMainThreads);
+    receive_threads_only = true;
+    num_lqh_threads = globalData.ndbMtReceiveThreads;
+    require(num_lqh_threads == globalData.ndbMtLqhWorkers);
   }
   require(instance != 0);
   switch(block){
@@ -7388,7 +7398,14 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
   case DBTUX:
   case BACKUP:
   case RESTORE:
-    thr_no += (instance - 1) % num_lqh_threads;
+    if (receive_threads_only)
+    {
+      thr_no += (instance - 1);
+    }
+    else
+    {
+      thr_no += (instance - 1) % num_lqh_threads;
+    }
     break;
   case DBQLQH:
   case DBQACC:
@@ -7396,7 +7413,14 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
   case DBQTUX:
   case QBACKUP:
   case QRESTORE:
-    thr_no += num_lqh_threads + (instance - 1);
+    if (receive_threads_only)
+    {
+      thr_no += (instance - 1);
+    }
+    else
+    {
+      thr_no += num_lqh_threads + (instance - 1);
+    }
     break;
   case PGMAN:
     if (instance == num_lqh_threads + 1)
@@ -7417,19 +7441,33 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
      * TC threads comes after LDM and Query threads
      * Thus same calculation in both cases, both with and without TC threads.
      */
-    thr_no += (num_lqh_threads +
-               num_query_threads +
-               (instance - 1));
+    if (receive_threads_only)
+    {
+      thr_no += (instance - 1);
+    }
+    else
+    {
+      thr_no += (num_lqh_threads +
+                 num_query_threads +
+                 (instance - 1));
+    }
     break;
   }
   case THRMAN:
     thr_no = instance - 1;
     break;
   case TRPMAN:
-    thr_no += num_lqh_threads +
-              num_query_threads +
-              num_tc_threads +
-              (instance - 1);
+    if (receive_threads_only)
+    {
+      thr_no += (instance - 1);
+    }
+    else
+    {
+      thr_no += num_lqh_threads +
+                num_query_threads +
+                num_tc_threads +
+                (instance - 1);
+    }
     break;
   default:
     require(false);
@@ -10013,9 +10051,12 @@ compute_jb_pages(struct EmulatorData * ed)
      * but as SPJ is located together with TC, it is counted as it
      * communicate with all TC threads.
      */
-    tot += num_tc_threads *
-           (num_lqh_threads + num_main_threads + num_tc_threads) *
-           thr_job_queue::SIZE;
+    if (num_tc_threads > 0)
+    {
+      tot += num_tc_threads *
+             (num_lqh_threads + num_main_threads + num_tc_threads) *
+             thr_job_queue::SIZE;
+    }
 
     /**
      * Main threads can communicate with all other threads
@@ -10856,9 +10897,6 @@ FastScheduler::dumpSignalMemory(Uint32 thr_no, FILE* out)
     if (siglen > MAX_SIGNAL_SIZE)
       siglen = MAX_SIGNAL_SIZE;              // Sanity check
     memcpy(&signal.header, s, 4*siglen);
-    // instance number in trace file is confusing if not MT LQH
-    if (globalData.ndbMtLqhWorkers == 0)
-      signal.header.theReceiversBlockNumber &= NDBMT_BLOCK_MASK;
 
     const Uint32 *posptr = reinterpret_cast<const Uint32 *>(s);
     signal.m_sectionPtrI[0] = posptr[siglen + 0];

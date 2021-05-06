@@ -720,7 +720,7 @@ void Dbtup::execREAD_CONFIG_REQ(Signal* signal)
   ndb_mgm_get_int_parameter(p, CFG_DB_MT_BUILD_INDEX,
                             &m_max_parallel_index_build);
 
-  if (isNdbMtLqh() && globalData.ndbMtLqhWorkers > 1)
+  if (globalData.ndbMtLqhWorkers > 1)
   {
     /**
      * Divide by LQH threads
