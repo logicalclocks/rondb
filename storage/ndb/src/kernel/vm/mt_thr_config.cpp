@@ -1900,6 +1900,7 @@ THRConfig::handle_spec(char *str,
         !(type == T_LDM ||
           type == T_TC ||
           type == T_RECV ||
+          type == T_QUERY ||
           type == T_MAIN ||
           type == T_REP))
     {
