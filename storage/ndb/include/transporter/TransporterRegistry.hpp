@@ -147,15 +147,6 @@ struct TransporterReceiveData
   TrpBitmask m_has_data_transporters;
 
   /**
-   * Subset of m_has_data_transporters which we completed handling
-   * of in previous ::performReceive before we was interrupted due
-   * to lack of job buffers. Will skip these when we later retry 
-   * ::performReceive in order to avoid starvation of non-handled
-   * transporters.
-   */
-  TrpBitmask m_handled_transporters;
-
-  /**
    * Bitmask of transporters having received corrupted or unsupported
    * message. No more unpacking and delivery of messages allowed.
    */

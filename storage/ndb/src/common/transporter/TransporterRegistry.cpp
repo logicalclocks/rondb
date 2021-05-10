@@ -149,7 +149,6 @@ TransporterReceiveData::TransporterReceiveData()
   : m_transporters(),
     m_recv_transporters(),
     m_has_data_transporters(),
-    m_handled_transporters(),
     m_bad_data_transporters(),
     m_last_trp_id(0)
 {
@@ -1570,7 +1569,6 @@ TransporterRegistry::pollReceive(Uint32 timeOutMillis,
   assert((receiveHandle == &recvdata) || (receiveHandle == 0));
 
   Uint32 retVal = 0;
-  recvdata.m_recv_transporters.clear();
 
   /**
    * If any transporters have left-over data that was not fully executed in
@@ -1984,68 +1982,8 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
    * For SHM transporter the socket is only used to send wakeup
    * bytes. The m_has_data_transporters bitmap was set already in
    * pollReceive for SHM transporters.
-   */
-  for(Uint32 trp_id = recvdata.m_recv_transporters.find_first();
-      trp_id != BitmaskImpl::NotFound;
-      trp_id = recvdata.m_recv_transporters.find_next(trp_id + 1))
-  {
-    Transporter *transp = allTransporters[trp_id];
-    NodeId node_id = transp->getRemoteNodeId();
-    if (transp->getTransporterType() == tt_TCP_TRANSPORTER)
-    {
-      TCP_Transporter * t = (TCP_Transporter*)transp;
-      assert(recvdata.m_transporters.get(trp_id));
-      assert(recv_thread_idx == transp->get_recv_thread_idx());
-
-      /**
-       * First check connection 'is CONNECTED.
-       * A connection can only be set into, or taken out of, is_connected'
-       * state by ::update_connections(). See comment there about 
-       * synchronication between ::update_connections() and 
-       * performReceive()
-       *
-       * Transporter::isConnected() state my change asynch.
-       * A mismatch between the TransporterRegistry::is_connected(),
-       * and Transporter::isConnected() state is possible, and indicate 
-       * that a change is underway. (Completed by update_connections())
-       */
-      if (is_connected(node_id))
-      {
-        if (t->isConnected())
-        {
-          int nBytes = t->doReceive(recvdata);
-          if (nBytes > 0)
-          {
-            recvdata.transporter_recv_from(node_id);
-            recvdata.m_has_data_transporters.set(trp_id);
-          }
-        }
-      }
-    }
-    else
-    {
-#ifdef NDB_SHM_TRANSPORTER_SUPPORTED
-      require(transp->getTransporterType() == tt_SHM_TRANSPORTER);
-      SHM_Transporter * t = (SHM_Transporter*)transp;
-      assert(recvdata.m_transporters.get(trp_id));
-      if (is_connected(node_id) && t->isConnected())
-      {
-        t->doReceive();
-        /**
-         * Ignore any data we read, the data wasn't collected by the
-         * shared memory transporter, it was simply read and thrown
-         * away, it is only a wakeup call to send data over the socket
-         * for shared memory transporters.
-         */
-      }
-#else
-      require(false);
-#endif
-    }
-  }
-  recvdata.m_recv_transporters.clear();
-
-  /**
+   *
+   * 
    * Unpack data either received above or pending from prev rounds.
    * For the Shared memory transporter m_has_data_transporters can
    * be set in pollReceive as well.
@@ -2068,8 +2006,12 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
    *  CLOSE_COMCONF was sent. For the moment the risk of taking
    *  advantage of this small optimization is not worth the risk.
    */
+  TrpBitmask handle_trps(recvdata.m_recv_transporters);
+  bool stop_unpacking = false;
+  handle_trps.bitOR(recvdata.m_has_data_transporters);
+  Uint32 last_trp_id = 0;
   Uint32 trp_id = recvdata.m_last_trp_id;
-  while ((trp_id = recvdata.m_has_data_transporters.find_next(trp_id + 1)) !=
+  while ((trp_id = handle_trps.find_next(trp_id + 1)) !=
 	 BitmaskImpl::NotFound)
   {
     bool hasdata = false;
@@ -2077,34 +2019,105 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
     NodeId node_id = t->getRemoteNodeId();
 
     assert(recvdata.m_transporters.get(trp_id));
+    assert(recv_thread_idx == t->get_recv_thread_idx());
 
+    /**
+     * First check connection 'is CONNECTED.
+     * A connection can only be set into, or taken out of, is_connected'
+     * state by ::update_connections(). See comment there about 
+     * synchronication between ::update_connections() and 
+     * performReceive()
+     *
+     * Transporter::isConnected() state my change asynch.
+     * A mismatch between the TransporterRegistry::is_connected(),
+     * and Transporter::isConnected() state is possible, and indicate 
+     * that a change is underway. (Completed by update_connections())
+     */
     if (is_connected(node_id))
     {
       if (t->isConnected())
       {
-        if (unlikely(recvdata.checkJobBuffer()))
+        if (unlikely(stop_unpacking || recvdata.checkJobBuffer()))
         {
-          recvdata.m_last_trp_id = trp_id;  //Resume from node after 'last_node'
-          return 1;     // Full, can't unpack more
+          if (recvdata.m_recv_transporters.get(trp_id))
+          {
+            if (t->getTransporterType() == tt_TCP_TRANSPORTER)
+            {
+              TCP_Transporter *t_tcp = (TCP_Transporter*)t;
+              int nBytes = t_tcp->doReceive(recvdata);
+              if (nBytes > 0)
+              {
+                recvdata.transporter_recv_from(node_id);
+                recvdata.m_has_data_transporters.set(trp_id);
+              }
+            }
+            else
+            {
+#ifdef NDB_SHM_TRANSPORTER_SUPPORTED
+              require(t->getTransporterType() == tt_SHM_TRANSPORTER);
+              SHM_Transporter * t_shm = (SHM_Transporter*)t;
+              t_shm->doReceive();
+              recvdata.transporter_recv_from(node_id);
+              recvdata.m_has_data_transporters.set(trp_id);
+#else
+              require(false);
+#endif
+            }
+            /**
+             * At job buffer full we read all transporters into read buffer
+             * to make use of read buffers to avoid that the link is shut
+             * down due to no response from receiver.
+             *
+             * We flag with m_has_data_transporters that we should unpack
+             * data from this transporter.
+             */
+            if (!stop_unpacking)
+            {
+              /**
+               * After discovering a Job buffer full condition we will continue
+               * to read all transporters, but we will not check the job buffer
+               * full condition again until we return to this loop for another
+               * attempt. This new attempt will start from where we previously
+               * stopped. This means we have to step back one transporter.
+               */
+              stop_unpacking = true;
+              last_trp_id = trp_id - 1;
+            }
+          }
+          continue;
         }
-        if (unlikely(recvdata.m_handled_transporters.get(trp_id)))
-          continue;     // Skip now to avoid starvation
+        /**
+         * We will handle the read buffer, thus clear the m_recv_transporters
+         * bitmap for this transporter.
+         */
         if (t->getTransporterType() == tt_TCP_TRANSPORTER)
         {
           TCP_Transporter *t_tcp = (TCP_Transporter*)t;
-          Uint32 * ptr;
-          Uint32 sz = t_tcp->getReceiveData(&ptr);
-          Uint32 szUsed = unpack(recvdata,
-                                 ptr,
-                                 sz,
-                                 node_id,
-                                 ioStates[node_id],
-                                 stopReceiving);
-          if (likely(szUsed))
+          int nBytes = 0;
+          if (recvdata.m_recv_transporters.get(trp_id))
           {
-            assert(recv_thread_idx == t_tcp->get_recv_thread_idx());
-            t_tcp->updateReceiveDataPtr(szUsed);
-            hasdata = t_tcp->hasReceiveData();
+            nBytes = t_tcp->doReceive(recvdata);
+          }
+          if (nBytes > 0 || recvdata.m_has_data_transporters.get(trp_id))
+          {
+            Uint32 * ptr;
+            recvdata.transporter_recv_from(node_id);
+            Uint32 sz = t_tcp->getReceiveData(&ptr);
+            Uint32 szUsed = unpack(recvdata,
+                                   ptr,
+                                   sz,
+                                   node_id,
+                                   ioStates[node_id],
+                                   stopReceiving);
+            if (likely(szUsed))
+            {
+              assert(recv_thread_idx == t_tcp->get_recv_thread_idx());
+              t_tcp->updateReceiveDataPtr(szUsed);
+              hasdata = t_tcp->hasReceiveData();
+            }
+            // else, we didn't unpack anything:
+            //   Avail ReceiveData to short to be useful, need to
+            //   receive more before we can resume this transporter.
           }
         }
         else
@@ -2112,6 +2125,17 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
 #ifdef NDB_SHM_TRANSPORTER_SUPPORTED
           require(t->getTransporterType() == tt_SHM_TRANSPORTER);
           SHM_Transporter *t_shm = (SHM_Transporter*)t;
+          if (recvdata.m_recv_transporters.get(trp_id))
+          {
+            t_shm->doReceive();
+            /**
+             * Ignore any data we read, the data wasn't collected by the
+             * shared memory transporter, it was simply read and thrown
+             * away, it is only a wakeup call to send data over the socket
+             * for shared memory transporters.
+             */
+
+          }
           Uint32 * readPtr, * eodPtr, * endPtr;
           t_shm->getReceivePtr(&readPtr, &eodPtr, &endPtr);
           recvdata.transporter_recv_from(node_id);
@@ -2126,31 +2150,26 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
           /**
            * Set hasdata dependent on if data is still available in
            * transporter to ensure we follow rules about setting
-           * m_has_data_transporters and m_handled_transporters
-           * when returning from performReceive.
+           * m_has_data_transporters when returning from performReceive.
            */
           hasdata = t_shm->hasDataToRead();
 #else
           require(false);
 #endif
         }
-        // else, we didn't unpack anything:
-        //   Avail ReceiveData to short to be useful, need to
-        //   receive more before we can resume this transporter.
       }
     }
     // If transporter still have data, make sure that it's remember to next time
     recvdata.m_has_data_transporters.set(trp_id, hasdata);
-    recvdata.m_handled_transporters.set(trp_id, hasdata);
+    recvdata.m_recv_transporters.clear(trp_id);
 
     if (unlikely(stopReceiving))
     {
-      recvdata.m_last_trp_id = trp_id;  //Resume from node after 'last_node'
-      return 1;
+      last_trp_id = trp_id;
+      stop_unpacking = true;
     }
   }
-  recvdata.m_handled_transporters.clear();
-  recvdata.m_last_trp_id = 0;
+  recvdata.m_last_trp_id = last_trp_id;
   return 0;
 }
 
@@ -2744,7 +2763,6 @@ TransporterRegistry::report_disconnect(TransporterReceiveHandle& recvdata,
       callbackObj->disable_send_buffer(node_id, trp_id);
       recvdata.m_recv_transporters.clear(trp_id);
       recvdata.m_has_data_transporters.clear(trp_id);
-      recvdata.m_handled_transporters.clear(trp_id);
     }
     else
     {
