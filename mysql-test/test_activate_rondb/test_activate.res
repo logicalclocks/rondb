@@ -120,6 +120,11 @@ id=66	@127.0.0.1  (RonDB-21.04.0)
 id=67 (not connected, node is deactivated)
 id=68 (not connected, node is deactivated)
 
+Run ndb_waiter --timeout=30
+Connecting to mgmsrv at (null)
+Node 2: INACTIVE
+Node 3: INACTIVE
+Node 1: STARTED
 ## Run ndb_desc using node 67, should not connect
 Unable to connect to management server.
 
@@ -169,6 +174,11 @@ Configuration changed to reflect activated node
 Now activating the node in the cluster
 Node 2 is now activated in the cluster
 
+## ndb_waiter, allow partial start, expect success
+Connecting to mgmsrv at (null)
+Node 3: INACTIVE
+Node 1: STARTED
+Node 2: NO_CONTACT
 ## Now expecting successful start of node 2
 Wait for data node to start
 Connected to Management Server at: 127.0.0.1:1187
@@ -187,6 +197,11 @@ id=66	@127.0.0.1  (RonDB-21.04.0)
 id=67 (not connected, node is deactivated)
 id=68 (not connected, node is deactivated)
 
+## ndb_waiter, expect success
+Connecting to mgmsrv at (null)
+Node 3: INACTIVE
+Node 1: STARTED
+Node 2: STARTED
 ## Activate API node 67, expect success
 Connected to Management Server at: 127.0.0.1:1187
 Configuration changed to reflect activated node
