@@ -10237,6 +10237,9 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
     sendSignal(calcQmgrBlockRef(node_id), GSN_ACTIVATE_TRP_REQ, signal,
                ActivateTrpReq::SignalLength, JBB);
 
+    DEB_MULTI_TRP(("Change neighbour node setup for node %u",
+                   node_id));
+    startChangeNeighbourNode();
     flush_send_buffers();
     /* Either perform send or insert_trp below TODO */
     multi_trp->get_callback_obj()->unlock_send_transporter(node_id,
@@ -10265,10 +10268,6 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
     {
       NdbSleep_MilliSleep(2500);
     }
-    DEB_MULTI_TRP(("Change neighbour node setup for node %u",
-                   node_id));
-    startChangeNeighbourNode();
-    insert_activate_trp(current_trp_id);
     setNeighbourNode(node_id);
     endChangeNeighbourNode();
 
