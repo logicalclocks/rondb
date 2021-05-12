@@ -2123,6 +2123,10 @@ public:
                                      Uint32 count,
                    struct thr_send_thread_instance *my_send_instance);
   Uint32 get_send_instance(TrpId trp_id);
+
+  /* Insert trp into send queue during activate multi trp */
+  void insert_activate_trp(TrpId);
+
 private:
   struct thr_send_thread_instance* get_send_thread_instance_by_trp(TrpId);
 
@@ -2547,6 +2551,30 @@ thr_send_threads::start_send_threads()
         SendThread);
   }
   m_started_threads = TRUE;
+}
+
+void
+thr_send_threads::insert_activate_trp(TrpId trp_id)
+{
+  /**
+   * During change neighbours to ensure that we send the
+   * ACTIVATE_TRP_REQ signal to the other side independent of timing
+   * of when we change to the multi transporters.
+   *
+   * During this state we hold all send thread mutexes. The transporter
+   * has been removed as neighbour previous to this call, thus it won't
+   * disappear due to us removing the neighbour flag.
+   */
+  if (m_trp_state[trp_id].m_data_available > 0)
+  {
+    m_trp_state[trp_id].m_data_available++;
+    if (m_trp_state[trp_id].m_thr_no_sender == NO_OWNER_THREAD)
+    {
+      struct thr_send_thread_instance *send_instance;
+      send_instance = get_send_thread_instance_by_trp(trp_id);
+      insert_trp(trp_id, send_instance);
+    }
+  }
 }
 
 struct thr_send_thread_instance*
@@ -8710,6 +8738,15 @@ mt_flush_send_buffers(Uint32 self)
   struct thr_repository* rep = g_thr_repository;
   struct thr_data *selfptr = &rep->m_thread[self];
   do_flush(selfptr);
+}
+
+void
+mt_insert_activate_trp(TrpId trp_id)
+{
+  if (g_send_threads)
+  {
+    g_send_threads->insert_activate_trp(trp_id);
+  }
 }
 
 void
