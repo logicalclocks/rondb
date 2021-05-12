@@ -10237,12 +10237,41 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
     sendSignal(calcQmgrBlockRef(node_id), GSN_ACTIVATE_TRP_REQ, signal,
                ActivateTrpReq::SignalLength, JBB);
 
+    /**
+     * We have sent a signal to the node we are setting up the multi
+     * transporters to.
+     *
+     * We have to consider interaction with send threads in this case.
+     * If there is no outstanding sends to the transporter, then it is
+     * enough to call flush_send_buffers. In this case the variable
+     * m_data_available is equal to 0, thus when we reach do_send in
+     * this thread we will call insert_trp after we reset the
+     * neighbour flag, this means that we will insert the transporter
+     * into the list and we will call perform_send eventually.
+     *
+     * If the m_data_available > 0 then we will be removed from list
+     * by calling setNeighbourNode. In this case we have two cases,
+     * either the send thread is currently preparing to write,
+     * in this case we will send the buffers we flush in
+     * flush_send_buffers.
+     *
+     * However if we find ourselves after the perform_send being called,
+     * and we are currently waiting to get the send thread mutex. In both
+     * those cases it will be sufficient to simply increment m_data_available.
+     *
+     * However we still have one issue, this is the case where we are still
+     * in the transporter list through insert_trp, since we are removed from
+     * this list by calling setNeighbourNode. In this case we need to
+     * be inserted into the list using insert_trp. We can check which case
+     * we see by using m_thr_no_sender, this is != NO_SEND_THREAD if it
+     * isn't currently sending. In this case we increment the
+     * m_data_available AND call insert_trp.
+     */
     DEB_MULTI_TRP(("Change neighbour node setup for node %u",
                    node_id));
     startChangeNeighbourNode();
     flush_send_buffers();
     insert_activate_trp(current_trp_id);
-    /* Either perform send or insert_trp below TODO */
     multi_trp->get_callback_obj()->unlock_send_transporter(node_id,
                                                            current_trp_id);
 

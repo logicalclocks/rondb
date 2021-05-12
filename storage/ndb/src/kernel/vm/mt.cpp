@@ -2734,10 +2734,13 @@ thr_send_threads::insert_activate_trp(TrpId trp_id)
    */
   if (m_trp_state[trp_id].m_data_available > 0)
   {
-    struct thr_send_thread_instance *send_instance;
     m_trp_state[trp_id].m_data_available++;
-    send_instance = get_send_thread_instance_by_trp(trp_id);
-    insert_trp(trp_id, send_instance);
+    if (m_trp_state[trp_id].m_thr_no_sender == NO_OWNER_THREAD)
+    {
+      struct thr_send_thread_instance *send_instance;
+      send_instance = get_send_thread_instance_by_trp(trp_id);
+      insert_trp(trp_id, send_instance);
+    }
   }
 }
 
@@ -8910,7 +8913,10 @@ mt_flush_send_buffers(Uint32 self)
 void
 mt_insert_activate_trp(TrpId trp_id)
 {
-  g_send_threads->insert_activate_trp(trp_id);
+  if (g_send_threads)
+  {
+    g_send_threads->insert_activate_trp(trp_id);
+  }
 }
 
 
