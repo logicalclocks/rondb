@@ -10268,6 +10268,7 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
     DEB_MULTI_TRP(("Change neighbour node setup for node %u",
                    node_id));
     startChangeNeighbourNode();
+    insert_activate_trp(current_trp_id);
     setNeighbourNode(node_id);
     endChangeNeighbourNode();
 

@@ -910,6 +910,14 @@ SimulatedBlock::flush_send_buffers()
 }
 
 void
+SimulatedBlock::insert_activate_trp(TrpId trp_id)
+{
+#ifdef NDBD_MULTITHREADED
+  mt_insert_activate_trp(trp_id);
+#endif
+}
+
+void
 SimulatedBlock::set_watchdog_counter()
 {
 #ifdef NDBD_MULTITHREADED

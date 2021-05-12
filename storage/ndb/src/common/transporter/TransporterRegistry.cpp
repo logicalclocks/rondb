@@ -2033,130 +2033,126 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
      * and Transporter::isConnected() state is possible, and indicate 
      * that a change is underway. (Completed by update_connections())
      */
-    if (is_connected(node_id))
+    if (likely(is_connected(node_id) && t->isConnected()))
     {
-      if (t->isConnected())
+      if (unlikely(stop_unpacking || recvdata.checkJobBuffer()))
       {
-        if (unlikely(stop_unpacking || recvdata.checkJobBuffer()))
+        if (recvdata.m_recv_transporters.get(trp_id))
         {
-          if (recvdata.m_recv_transporters.get(trp_id))
+          if (t->getTransporterType() == tt_TCP_TRANSPORTER)
           {
-            if (t->getTransporterType() == tt_TCP_TRANSPORTER)
+            TCP_Transporter *t_tcp = (TCP_Transporter*)t;
+            int nBytes = t_tcp->doReceive(recvdata);
+            if (nBytes > 0)
             {
-              TCP_Transporter *t_tcp = (TCP_Transporter*)t;
-              int nBytes = t_tcp->doReceive(recvdata);
-              if (nBytes > 0)
-              {
-                recvdata.transporter_recv_from(node_id);
-                recvdata.m_has_data_transporters.set(trp_id);
-              }
-            }
-            else
-            {
-#ifdef NDB_SHM_TRANSPORTER_SUPPORTED
-              require(t->getTransporterType() == tt_SHM_TRANSPORTER);
-              SHM_Transporter * t_shm = (SHM_Transporter*)t;
-              t_shm->doReceive();
               recvdata.transporter_recv_from(node_id);
               recvdata.m_has_data_transporters.set(trp_id);
+            }
+          }
+          else
+          {
+#ifdef NDB_SHM_TRANSPORTER_SUPPORTED
+            require(t->getTransporterType() == tt_SHM_TRANSPORTER);
+            SHM_Transporter * t_shm = (SHM_Transporter*)t;
+            t_shm->doReceive();
+            recvdata.transporter_recv_from(node_id);
+            recvdata.m_has_data_transporters.set(trp_id);
 #else
               require(false);
 #endif
-            }
-            /**
-             * At job buffer full we read all transporters into read buffer
-             * to make use of read buffers to avoid that the link is shut
-             * down due to no response from receiver.
-             *
-             * We flag with m_has_data_transporters that we should unpack
-             * data from this transporter.
-             */
-            if (!stop_unpacking)
-            {
-              /**
-               * After discovering a Job buffer full condition we will continue
-               * to read all transporters, but we will not check the job buffer
-               * full condition again until we return to this loop for another
-               * attempt. This new attempt will start from where we previously
-               * stopped. This means we have to step back one transporter.
-               */
-              stop_unpacking = true;
-              last_trp_id = trp_id - 1;
-            }
           }
-          continue;
-        }
-        /**
-         * We will handle the read buffer, thus clear the m_recv_transporters
-         * bitmap for this transporter.
-         */
-        if (t->getTransporterType() == tt_TCP_TRANSPORTER)
-        {
-          TCP_Transporter *t_tcp = (TCP_Transporter*)t;
-          int nBytes = 0;
-          if (recvdata.m_recv_transporters.get(trp_id))
-          {
-            nBytes = t_tcp->doReceive(recvdata);
-          }
-          if (nBytes > 0 || recvdata.m_has_data_transporters.get(trp_id))
-          {
-            Uint32 * ptr;
-            recvdata.transporter_recv_from(node_id);
-            Uint32 sz = t_tcp->getReceiveData(&ptr);
-            Uint32 szUsed = unpack(recvdata,
-                                   ptr,
-                                   sz,
-                                   node_id,
-                                   ioStates[node_id],
-                                   stopReceiving);
-            if (likely(szUsed))
-            {
-              assert(recv_thread_idx == t_tcp->get_recv_thread_idx());
-              t_tcp->updateReceiveDataPtr(szUsed);
-              hasdata = t_tcp->hasReceiveData();
-            }
-            // else, we didn't unpack anything:
-            //   Avail ReceiveData to short to be useful, need to
-            //   receive more before we can resume this transporter.
-          }
-        }
-        else
-        {
-#ifdef NDB_SHM_TRANSPORTER_SUPPORTED
-          require(t->getTransporterType() == tt_SHM_TRANSPORTER);
-          SHM_Transporter *t_shm = (SHM_Transporter*)t;
-          if (recvdata.m_recv_transporters.get(trp_id))
-          {
-            t_shm->doReceive();
-            /**
-             * Ignore any data we read, the data wasn't collected by the
-             * shared memory transporter, it was simply read and thrown
-             * away, it is only a wakeup call to send data over the socket
-             * for shared memory transporters.
-             */
-
-          }
-          Uint32 * readPtr, * eodPtr, * endPtr;
-          t_shm->getReceivePtr(&readPtr, &eodPtr, &endPtr);
-          recvdata.transporter_recv_from(node_id);
-          Uint32 *newPtr = unpack(recvdata,
-                                  readPtr,
-                                  eodPtr,
-                                  endPtr,
-                                  node_id,
-                                  ioStates[node_id],
-				  stopReceiving);
-          t_shm->updateReceivePtr(recvdata, newPtr);
           /**
-           * Set hasdata dependent on if data is still available in
-           * transporter to ensure we follow rules about setting
-           * m_has_data_transporters when returning from performReceive.
+           * At job buffer full we read all transporters into read buffer
+           * to make use of read buffers to avoid that the link is shut
+           * down due to no response from receiver.
+           *
+           * We flag with m_has_data_transporters that we should unpack
+           * data from this transporter.
            */
-          hasdata = t_shm->hasDataToRead();
-#else
-          require(false);
-#endif
+          if (!stop_unpacking)
+          {
+            /**
+             * After discovering a Job buffer full condition we will continue
+             * to read all transporters, but we will not check the job buffer
+             * full condition again until we return to this loop for another
+             * attempt. This new attempt will start from where we previously
+             * stopped. This means we have to step back one transporter.
+             */
+            stop_unpacking = true;
+            last_trp_id = trp_id - 1;
+          }
         }
+        continue;
+      }
+      /**
+       * We will handle the read buffer, thus clear the m_recv_transporters
+       * bitmap for this transporter.
+       */
+      if (t->getTransporterType() == tt_TCP_TRANSPORTER)
+      {
+        TCP_Transporter *t_tcp = (TCP_Transporter*)t;
+        int nBytes = 0;
+        if (likely(recvdata.m_recv_transporters.get(trp_id)))
+        {
+          nBytes = t_tcp->doReceive(recvdata);
+        }
+        if (likely(nBytes > 0 ||
+                   recvdata.m_has_data_transporters.get(trp_id)))
+        {
+          Uint32 * ptr;
+          recvdata.transporter_recv_from(node_id);
+          Uint32 sz = t_tcp->getReceiveData(&ptr);
+          Uint32 szUsed = unpack(recvdata,
+                                 ptr,
+                                 sz,
+                                 node_id,
+                                 ioStates[node_id],
+                                 stopReceiving);
+          if (likely(szUsed))
+          {
+            t_tcp->updateReceiveDataPtr(szUsed);
+            hasdata = t_tcp->hasReceiveData();
+          }
+          // else, we didn't unpack anything:
+          //   Avail ReceiveData to short to be useful, need to
+          //   receive more before we can resume this transporter.
+        }
+      }
+      else
+      {
+#ifdef NDB_SHM_TRANSPORTER_SUPPORTED
+        require(t->getTransporterType() == tt_SHM_TRANSPORTER);
+        SHM_Transporter *t_shm = (SHM_Transporter*)t;
+        if (likely(recvdata.m_recv_transporters.get(trp_id)))
+        {
+          t_shm->doReceive();
+          /**
+           * Ignore any data we read, the data wasn't collected by the
+           * shared memory transporter, it was simply read and thrown
+           * away, it is only a wakeup call to send data over the socket
+           * for shared memory transporters.
+           */
+        }
+        Uint32 * readPtr, * eodPtr, * endPtr;
+        t_shm->getReceivePtr(&readPtr, &eodPtr, &endPtr);
+        recvdata.transporter_recv_from(node_id);
+        Uint32 *newPtr = unpack(recvdata,
+                                readPtr,
+                                eodPtr,
+                                endPtr,
+                                node_id,
+                                ioStates[node_id],
+                                stopReceiving);
+        t_shm->updateReceivePtr(recvdata, newPtr);
+        /**
+         * Set hasdata dependent on if data is still available in
+         * transporter to ensure we follow rules about setting
+         * m_has_data_transporters when returning from performReceive.
+         */
+        hasdata = t_shm->hasDataToRead();
+#else
+        require(false);
+#endif
       }
     }
     // If transporter still have data, make sure that it's remember to next time
