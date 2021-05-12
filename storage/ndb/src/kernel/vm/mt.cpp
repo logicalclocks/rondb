@@ -8919,7 +8919,6 @@ mt_insert_activate_trp(TrpId trp_id)
   }
 }
 
-
 void
 mt_set_watchdog_counter(Uint32 self)
 {
