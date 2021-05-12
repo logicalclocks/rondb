@@ -147,15 +147,6 @@ struct TransporterReceiveData
   TrpBitmask m_has_data_transporters;
 
   /**
-   * Subset of m_has_data_transporters which we completed handling
-   * of in previous ::performReceive before we was interrupted due
-   * to lack of job buffers. Will skip these when we later retry 
-   * ::performReceive in order to avoid starvation of non-handled
-   * transporters.
-   */
-  TrpBitmask m_handled_transporters;
-
-  /**
    * Bitmask of transporters having received corrupted or unsupported
    * message. No more unpacking and delivery of messages allowed.
    */
@@ -518,6 +509,7 @@ public:
 
   int get_transporter_count() const;
   Transporter* get_transporter(TrpId id) const;
+  NodeId get_node_id_trp(TrpId id) const;
   Transporter* get_node_transporter(NodeId nodeId) const;
   bool is_shm_transporter(NodeId nodeId);
   struct in6_addr get_connect_address(NodeId node_id) const;
@@ -652,8 +644,10 @@ private:
   Uint32 m_transp_count;
 
 public:
+  bool setup_recv_wakeup_socket(TransporterReceiveHandle&);
   bool setup_wakeup_socket(TransporterReceiveHandle&);
   void wakeup();
+  void wakeup(TransporterReceiveHandle*);
 
   inline bool setup_wakeup_socket() {
     assert(receiveHandle != 0);
@@ -663,6 +657,7 @@ private:
   bool m_has_extra_wakeup_socket;
   NDB_SOCKET_TYPE m_extra_wakeup_sockets[2];
   void consume_extra_sockets();
+  void consume_extra_sockets(TransporterReceiveHandle &recvdata);
 
   Uint32 *getWritePtr(TransporterSendBufferHandle *handle,
                       Transporter*,

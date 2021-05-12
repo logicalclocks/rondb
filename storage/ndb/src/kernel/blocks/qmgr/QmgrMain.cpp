@@ -480,7 +480,7 @@ Qmgr::execREAD_CONFIG_REQ(Signal* signal)
        * transporter to the send thread the LDM thread assists as
        * well.
        */
-      m_num_multi_trps = globalData.ndbMtLqhThreads;
+      m_num_multi_trps = globalData.ndbMtLqhWorkers;
     }
     else
     {
@@ -494,10 +494,14 @@ Qmgr::execREAD_CONFIG_REQ(Signal* signal)
        *
        * So we select the configured number unless the maximum number of
        * LDM and/or TC threads is smaller than this number.
+       *
+       * We use ndbMtTcWorkers which is equal to ndbMtTcThreads if tc
+       * threads are used and otherwise is equal to the number of
+       * receive threads with one TC worker per receive thread.
        */
       m_num_multi_trps = MIN(m_num_multi_trps,
-                         MAX(globalData.ndbMtLqhThreads,
-                             globalData.ndbMtTcThreads));
+                         MAX(globalData.ndbMtLqhWorkers,
+                             globalData.ndbMtTcWorkers));
     }
     /**
      * Whatever value this node has choosen, we will never be able to use
@@ -1703,7 +1707,7 @@ void Qmgr::execCM_REGCONF(Signal* signal)
 
   // set own MT config here or in REF, and others in CM_NODEINFOREQ/CONF
   setNodeInfo(getOwnNodeId()).m_lqh_workers = globalData.ndbMtLqhWorkers;
-  setNodeInfo(getOwnNodeId()).m_query_threads = globalData.ndbMtQueryThreads;
+  setNodeInfo(getOwnNodeId()).m_query_threads = globalData.ndbMtQueryWorkers;
   setNodeInfo(getOwnNodeId()).m_log_parts = globalData.ndbLogParts;
 
 #ifdef DEBUG_STARTUP
@@ -2041,7 +2045,7 @@ void Qmgr::execCM_REGREF(Signal* signal)
 
   // set own MT config here or in CONF, and others in CM_NODEINFOREQ/CONF
   setNodeInfo(getOwnNodeId()).m_lqh_workers = globalData.ndbMtLqhWorkers;
-  setNodeInfo(getOwnNodeId()).m_query_threads = globalData.ndbMtQueryThreads;
+  setNodeInfo(getOwnNodeId()).m_query_threads = globalData.ndbMtQueryWorkers;
   setNodeInfo(getOwnNodeId()).m_log_parts = globalData.ndbLogParts;
   
   char buf[100];
@@ -10233,8 +10237,41 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
     sendSignal(calcQmgrBlockRef(node_id), GSN_ACTIVATE_TRP_REQ, signal,
                ActivateTrpReq::SignalLength, JBB);
 
+    /**
+     * We have sent a signal to the node we are setting up the multi
+     * transporters to.
+     *
+     * We have to consider interaction with send threads in this case.
+     * If there is no outstanding sends to the transporter, then it is
+     * enough to call flush_send_buffers. In this case the variable
+     * m_data_available is equal to 0, thus when we reach do_send in
+     * this thread we will call insert_trp after we reset the
+     * neighbour flag, this means that we will insert the transporter
+     * into the list and we will call perform_send eventually.
+     *
+     * If the m_data_available > 0 then we will be removed from list
+     * by calling setNeighbourNode. In this case we have two cases,
+     * either the send thread is currently preparing to write,
+     * in this case we will send the buffers we flush in
+     * flush_send_buffers.
+     *
+     * However if we find ourselves after the perform_send being called,
+     * and we are currently waiting to get the send thread mutex. In both
+     * those cases it will be sufficient to simply increment m_data_available.
+     *
+     * However we still have one issue, this is the case where we are still
+     * in the transporter list through insert_trp, since we are removed from
+     * this list by calling setNeighbourNode. In this case we need to
+     * be inserted into the list using insert_trp. We can check which case
+     * we see by using m_thr_no_sender, this is != NO_SEND_THREAD if it
+     * isn't currently sending. In this case we increment the
+     * m_data_available AND call insert_trp.
+     */
+    DEB_MULTI_TRP(("Change neighbour node setup for node %u",
+                   node_id));
+    startChangeNeighbourNode();
     flush_send_buffers();
-    /* Either perform send or insert_trp below TODO */
+    insert_activate_trp(current_trp_id);
     multi_trp->get_callback_obj()->unlock_send_transporter(node_id,
                                                            current_trp_id);
 
@@ -10261,9 +10298,6 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
     {
       NdbSleep_MilliSleep(2500);
     }
-    DEB_MULTI_TRP(("Change neighbour node setup for node %u",
-                   node_id));
-    startChangeNeighbourNode();
     setNeighbourNode(node_id);
     endChangeNeighbourNode();
 

@@ -696,6 +696,7 @@ protected:
    *
    * Finally also the ability to query for send thread information.
    */
+  Uint32 map_api_node_to_recv_instance(NodeId);
   void getSendBufferLevel(NodeId node, SB_LevelType &level);
   Uint32 getEstimatedJobBufferLevel();
   Uint32 getCPUSocket(Uint32 thr_no);
@@ -736,6 +737,7 @@ protected:
   const char * getThreadName();
   const char * getThreadDescription();
   void flush_send_buffers();
+  void insert_activate_trp(TrpId trp_id);
   void set_watchdog_counter();
   void assign_recv_thread_new_trp(Uint32 trp_id);
   void assign_multi_trps_to_send_threads();
@@ -2092,6 +2094,11 @@ public:
   }
   void fill_distr_references(DistributionHandler *handle)
   {
+    if (globalData.ndbMtQueryThreads == 0)
+    {
+      jam();
+      return;
+    }
     Uint32 num_query_thread_per_ldm = globalData.QueryThreadsPerLdm;
     Uint32 num_ldm_instances = getNumLDMInstances();
     Uint32 num_distr_threads = num_ldm_instances +
@@ -2184,9 +2191,7 @@ public:
    */
   Uint32 getFirstLDMThreadInstance()
   {
-    if (unlikely(!isNdbMtLqh()))
-      return 0;
-    else if (unlikely(globalData.ndbMtLqhThreads == 0))
+    if (unlikely(globalData.ndbMtLqhThreads == 0))
     {
       return globalData.ndbMtMainThreads +
              globalData.ndbMtQueryThreads +
@@ -2200,22 +2205,15 @@ public:
   }
   Uint32 getNumLDMInstances()
   {
-    if (unlikely(!isNdbMtLqh()))
-      return 1;
     return globalData.ndbMtLqhWorkers;
   }
   Uint32 getNumTCInstances()
   {
-    if (unlikely(!isNdbMtLqh()))
-      return 1;
-    else if (unlikely(globalData.ndbMtTcThreads == 0))
-      return 1;
-    else
-      return globalData.ndbMtTcThreads;
+    return globalData.ndbMtTcWorkers;
   }
   void query_thread_memory_barrier()
   {
-    if (globalData.ndbMtQueryThreads > 0)
+    if (globalData.ndbMtQueryWorkers > 0)
     {
       mb();
     }

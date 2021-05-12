@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2011, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -5201,11 +5202,22 @@ Dbspj::lookup_send(Signal* signal,
       Uint32 instance_no = refToInstance(ref);
       if (LqhKeyReq::getNoDiskFlag(req->requestInfo))
       {
-        if (Tnode == getOwnNodeId() &&
-            globalData.ndbMtQueryThreads > 0)
+        if (Tnode == getOwnNodeId())
         {
-          jam();
-          ref = get_lqhkeyreq_ref(&c_tc->m_distribution_handle, instance_no);
+          if (globalData.ndbMtQueryThreads > 0)
+          {
+            jam();
+            ref = get_lqhkeyreq_ref(&c_tc->m_distribution_handle, instance_no);
+          }
+          else if (globalData.ndbMtQueryWorkers > 0)
+          {
+            /**
+             * We don't have any query threads, but we run with TC, LDM and Query
+             * thread workers in each receive thread. In this case we will always
+             * use the local query worker.
+             */
+            ref = numberToRef(DBQLQH, instance(), Tnode);
+          }
         }
       }
       else
@@ -7731,12 +7743,26 @@ Dbspj::scanFrag_send(Signal* signal,
              * even though they were part of the same SQL query and even the
              * same pushdown join part.
              *
-             * We need to set the query thread flag since this ensures that
-             * the query thread use shared access to the fragment.
+             * We need not set the query thread flag since we already know
+             * the receiver of this signal.
              */
             jam();
             ref = get_scan_fragreq_ref(&c_tc->m_distribution_handle,
                                        instance_no);
+            fragPtr.p->m_next_ref = ref;
+          }
+          else if (globalData.ndbMtQueryWorkers > 0)
+          {
+            /**
+             * We are not using Query threads, but we have local query workers
+             * in each receive thread. Send the signal to the local DBQLQH
+             * block.
+             *
+             * We need not set the query thread flag since we already know
+             * the receiver of this signal.
+             */
+            ref = numberToRef(DBQLQH, instance(), nodeId);
+            fragPtr.p->m_ref = ref;
             fragPtr.p->m_next_ref = ref;
           }
           else

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -5818,8 +5819,7 @@ Ndbcntr::send_restorable_gci_rep_to_backup(Signal *signal, Uint32 gci)
    * This method is also used at every write of the local sysfile
    * to inform the backup block about the new restorable GCI.
    */
-  Uint32 ldm_workers = globalData.ndbMtLqhWorkers == 0 ?
-                       1 : globalData.ndbMtLqhWorkers;
+  Uint32 ldm_workers = globalData.ndbMtLqhWorkers;
   signal->theData[0] = gci;
   if (isNdbMtLqh())
   {
@@ -6528,8 +6528,7 @@ Ndbcntr::send_to_all_backup(Signal *signal,
                             Uint32 gsn,
                             Uint32 sig_len)
 {
-  Uint32 ldm_workers = globalData.ndbMtLqhWorkers == 0 ?
-                       1 : globalData.ndbMtLqhWorkers;
+  Uint32 ldm_workers = globalData.ndbMtLqhWorkers;
   if (isNdbMtLqh())
   {
     jam();
@@ -6554,8 +6553,7 @@ Ndbcntr::send_to_all_lqh(Signal *signal,
                          Uint32 gsn,
                          Uint32 sig_len)
 {
-  Uint32 ldm_workers = globalData.ndbMtLqhWorkers == 0 ?
-                       1 : globalData.ndbMtLqhWorkers;
+  Uint32 ldm_workers = globalData.ndbMtLqhWorkers;
   if (isNdbMtLqh())
   {
     jam();
@@ -6714,8 +6712,7 @@ void Ndbcntr::execSTART_LOCAL_LCP_ORD(Signal *signal)
 
 void Ndbcntr::execSET_LOCAL_LCP_ID_REQ(Signal *signal)
 {
-  Uint32 ldm_workers = globalData.ndbMtLqhWorkers == 0 ?
-                       1 : globalData.ndbMtLqhWorkers;
+  Uint32 ldm_workers = globalData.ndbMtLqhWorkers;
   Uint32 max_lcp_id = signal->theData[0];
   Uint32 max_local_lcp_id = signal->theData[1];
 
@@ -6884,8 +6881,7 @@ void Ndbcntr::execRESTORABLE_GCI_REP(Signal *signal)
 void Ndbcntr::execSTART_DISTRIBUTED_LCP_ORD(Signal *signal)
 {
   jamEntry();
-  Uint32 ldm_workers = globalData.ndbMtLqhWorkers == 0 ?
-                       1 : globalData.ndbMtLqhWorkers;
+  Uint32 ldm_workers = globalData.ndbMtLqhWorkers;
   Uint32 lcpId = signal->theData[0];
   if (!m_distributed_lcp_started)
   {

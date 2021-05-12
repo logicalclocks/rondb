@@ -74,7 +74,6 @@ void mt_finalize_thr_map();
 #ifdef DEBUG_SCHED_STATS
 void get_jbb_estimated_stats(Uint32, Uint32, Uint64**, Uint64**);
 #endif
-Uint32 get_qt_jbb_level(Uint32 instance);
 void prefetch_load_indicators(Uint32 *rr_groups, Uint32 rr_group);
 Uint32 get_load_indicator(Uint32 dst);
 
@@ -90,6 +89,7 @@ void mt_execSTOP_FOR_CRASH();
 /**
  * Interface methods to SimulatedBlock for ndbtmd.
  */
+Uint32 mt_map_api_node_to_recv_instance(NodeId);
 void mt_getSendBufferLevel(Uint32 self, NodeId node, SB_LevelType &level);
 Uint32 mt_getEstimatedJobBufferLevel(Uint32 self);
 bool mt_isEstimatedJobBufferLevelChanged(Uint32 self);
@@ -135,6 +135,7 @@ void mt_getSendPerformanceTimers(Uint32 send_instance,
 Uint32 mt_getNumSendThreads();
 Uint32 mt_getNumThreads();
 void mt_flush_send_buffers(Uint32 self);
+void mt_insert_activate_trp(TrpId trp_id);
 void mt_set_watchdog_counter(Uint32 self);
 void mt_assign_recv_thread_new_trp(Uint32 trp_id);
 void mt_assign_multi_trps_to_send_threads();

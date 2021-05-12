@@ -1515,23 +1515,31 @@ Configuration::setupConfiguration(){
   do
   {
     globalData.isNdbMt = NdbIsMultiThreaded();
-    if (!globalData.isNdbMt)
-      break;
+    require(globalData.isNdbMt);
 
+    globalData.ndbMtReceiveThreads =
+      m_thr_config.getThreadCount(THRConfig::T_RECV);
+    globalData.ndbMtSendThreads =
+      m_thr_config.getThreadCount(THRConfig::T_SEND);
     globalData.ndbMtQueryThreads =
       m_thr_config.getThreadCount(THRConfig::T_QUERY);
     globalData.ndbMtRecoverThreads =
       m_thr_config.getThreadCount(THRConfig::T_RECOVER);
     globalData.ndbMtTcThreads = m_thr_config.getThreadCount(THRConfig::T_TC);
-    globalData.ndbMtTcWorkers = globalData.ndbMtTcThreads;
-    if (globalData.ndbMtTcWorkers == 0)
+    if (globalData.ndbMtTcThreads == 0)
     {
-      globalData.ndbMtTcWorkers = 1;
+      globalData.ndbMtTcWorkers = globalData.ndbMtReceiveThreads;
     }
-    globalData.ndbMtSendThreads =
-      m_thr_config.getThreadCount(THRConfig::T_SEND);
-    globalData.ndbMtReceiveThreads =
-      m_thr_config.getThreadCount(THRConfig::T_RECV);
+    else
+    {
+      globalData.ndbMtTcWorkers = globalData.ndbMtTcThreads;
+    }
+    if (globalData.ndbMtReceiveThreads == 0)
+    {
+      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
+               "Invalid configuration fetched. ",
+                "Setting number of receive threads to 0 isn't allowed");
+    }
     /**
      * ndbMtMainThreads is the total number of main and rep threads.
      * There can be 0 or 1 main threads, 0 or 1 rep threads. If there
@@ -1552,6 +1560,7 @@ Configuration::setupConfiguration(){
       m_thr_config.getThreadCount(THRConfig::T_MAIN) +
       m_thr_config.getThreadCount(THRConfig::T_REP);
 
+    require(globalData.ndbMtMainThreads <= 2);
     globalData.isNdbMtLqh = true;
     {
       if (m_thr_config.getMtClassic())
@@ -1559,50 +1568,100 @@ Configuration::setupConfiguration(){
         globalData.isNdbMtLqh = false;
       }
     }
+    require(globalData.isNdbMtLqh);
 
-    if (!globalData.isNdbMtLqh)
-      break;
-
-    Uint32 threads = m_thr_config.getThreadCount(THRConfig::T_LDM);
-    Uint32 workers = threads;
-    if (threads == 0)
-      workers = 1;
-
-    globalData.ndbMtLqhWorkers = workers;
-    globalData.ndbMtLqhThreads = threads;
-    if (threads == 0)
+    Uint32 ldm_threads = m_thr_config.getThreadCount(THRConfig::T_LDM);
+    Uint32 ldm_workers = ldm_threads;
+    if (ldm_threads == 0)
     {
-      if (!((globalData.ndbMtTcThreads == 0 &&
-             globalData.ndbMtMainThreads == 0 &&
-             globalData.ndbMtReceiveThreads == 1 &&
-             globalData.ndbMtQueryThreads == 0) ||
-            (globalData.ndbMtTcThreads == 0 &&
-             globalData.ndbMtMainThreads == 1 &&
-             globalData.ndbMtReceiveThreads == 1 &&
-             globalData.ndbMtQueryThreads == 0)))
+      /**
+       * If there are no LDM Threads we will use 1 LDM worker per
+       * receive thread.
+       */
+      ldm_workers = globalData.ndbMtReceiveThreads;
+    }
+
+    globalData.ndbMtLqhWorkers = ldm_workers;
+    globalData.ndbMtLqhThreads = ldm_threads;
+    if (ldm_threads == 0)
+    {
+      /**
+       * With no LDM threads we will only allow them to be combined
+       * with receive threads. We will allow 0-2 main threads. These
+       * will only handle main thread. Thus receive threads will handle
+       * receive, tc and ldm and even query thread work and potentially
+       * even sending.
+       *
+       * With 1 receive thread we will allow for a maximum of 1 main
+       * thread.
+       */
+      if ((globalData.ndbMtTcThreads > 0) ||
+          (globalData.ndbMtQueryThreads > 0) ||
+          (globalData.ndbMtRecoverThreads > 0))
       {
         ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
                   "Invalid configuration fetched. ",
                   "Setting number of ldm threads to 0 must be combined"
-                  " with 0 query, tc, rep thread and 0/1 main thread"
-                  " and 1 recv thread");
+                  " with 0 tc, query and recover threads");
+      }
+      if (globalData.ndbMtReceiveThreads > 1)
+      {
+        /**
+         * In the case of 1 receive thread and no LDM threads we will not
+         * assign any Query workers. But with more than 1 receive thread
+         * and no LDM thread we will use 1 LDM worker and 1 Query worker in
+         * each receive thread in addition to a TC worker.
+         *
+         * This ensures that the receive thread can take care of the entire
+         * query for Committed Read queries, a sort of parallel ndbd setup.
+         */
+        globalData.ndbMtQueryWorkers = globalData.ndbMtReceiveThreads;
+      }
+      else
+      {
+        globalData.ndbMtQueryWorkers = 0;
+        if (globalData.ndbMtMainThreads > 1)
+        {
+          ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
+                    "Invalid configuration fetched. ",
+                    "No LDM threads with 1 receive thread allows for"
+                    " 1 main thread, but no more");
+        }
       }
     }
-    Uint32 query_threads_per_ldm = globalData.ndbMtQueryThreads / workers;
-    if (workers * query_threads_per_ldm != globalData.ndbMtQueryThreads)
+    else
     {
-      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
-                "Invalid configuration fetched. ",
-                "Number of query threads must be a multiple of the number"
-                " of LDM threads.");
+      globalData.ndbMtQueryWorkers = globalData.ndbMtQueryThreads;
     }
-    globalData.QueryThreadsPerLdm = query_threads_per_ldm;
-    if (globalData.ndbMtRecoverThreads > MAX_NDBMT_QUERY_THREADS)
+
+    globalData.QueryThreadsPerLdm = 0;
+    if (globalData.ndbMtQueryThreads > 0)
+    {
+      Uint32 query_threads_per_ldm = globalData.ndbMtQueryThreads / ldm_workers;
+      if (ldm_workers * query_threads_per_ldm != globalData.ndbMtQueryThreads)
+      {
+        ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
+                  "Invalid configuration fetched. ",
+                  "Number of query threads must be a multiple of the number"
+                  " of LDM threads.");
+      }
+      globalData.QueryThreadsPerLdm = query_threads_per_ldm;
+    }
+    else if (globalData.ndbMtQueryWorkers > 0)
+    {
+      globalData.QueryThreadsPerLdm = 1;
+    }
+
+    if ((globalData.ndbMtRecoverThreads + globalData.ndbMtQueryWorkers) >
+         MAX_NDBMT_QUERY_THREADS)
     {
       ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
                 "Invalid configuration fetched. ",
                 "Sum of recover threads and query threads can be max 127");
     }
+    require(globalData.ndbMtQueryWorkers == globalData.ndbMtQueryThreads ||
+            (globalData.ndbMtQueryThreads == 0 &&
+             globalData.ndbMtQueryWorkers == globalData.ndbMtReceiveThreads));
   } while (0);
 
   calcSizeAlt(cf);
@@ -1899,9 +1958,9 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   }
 
   Uint32 tcInstances = 1;
-  if (globalData.ndbMtTcThreads > 1)
+  if (globalData.ndbMtTcWorkers > 1)
   {
-    tcInstances = globalData.ndbMtTcThreads;
+    tcInstances = globalData.ndbMtTcWorkers;
   }
 
 #define DO_DIV(x,y) (((x) + (y - 1)) / (y))

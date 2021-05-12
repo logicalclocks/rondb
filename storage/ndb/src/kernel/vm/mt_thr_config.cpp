@@ -829,30 +829,30 @@ THRConfig::compute_automatic_thread_config(
     Uint32 recv_threads;
   } table[] = {
     { 0, 0, 0, 0, 0, 0, 0, 1 }, // 1 CPU
-    { 1, 1, 0, 0, 0, 0, 0, 1 }, // 2-3 CPUs
-    { 2, 1, 0, 1, 1, 0, 0, 1 }, // 4-5 CPUs
-    { 3, 1, 0, 2, 2, 0, 0, 1 }, // 6-7 CPUs
-    { 4, 1, 0, 2, 2, 2, 0, 1 }, // 8-9 CPUs
-    { 5, 1, 0, 3, 3, 2, 0, 1 }, // 10-11 CPUs
+    { 1, 0, 0, 1, 0, 0, 0, 1 }, // 2-3 CPUs
+    { 2, 1, 0, 2, 0, 0, 0, 1 }, // 4-5 CPUs
+    { 3, 0, 0, 2, 2, 0, 0, 2 }, // 6-7 CPUs
+    { 4, 0, 0, 2, 2, 0, 1, 3 }, // 8-9 CPUs
+    { 5, 0, 0, 3, 3, 0, 1, 3 }, // 10-11 CPUs
     { 6, 1, 0, 3, 3, 2, 1, 2 }, // 12-13 CPUs
     { 7, 1, 0, 4, 4, 2, 1, 2 }, // 14-15 CPUs
-    { 8, 1, 1, 4, 4, 3, 1, 2 }, // 16-17 CPUs
-    { 9, 1, 1, 5, 5, 3, 1, 2 }, // 18-19 CPUs
-    { 10, 1, 1, 5, 5, 4, 2, 2 }, // 20-21 CPUs
+    { 8, 1, 0, 4, 4, 3, 1, 3 }, // 16-17 CPUs
+    { 9, 1, 0, 5, 5, 3, 1, 3 }, // 18-19 CPUs
+    { 10, 1, 1, 5, 5, 4, 1, 3 }, // 20-21 CPUs
     { 11, 1, 1, 5, 5, 5, 2, 3 }, // 22-23 CPUs
     { 12, 1, 1, 6, 6, 5, 2, 3 }, // 24-25 CPUs
     { 13, 1, 1, 6, 6, 6, 2, 4 }, // 26-27 CPUs
     { 14, 1, 1, 7, 7, 6, 2, 4 }, // 28-29 CPUs
-    { 15, 1, 1, 7, 7, 7, 3, 4 }, // 30-31 CPUs
-    { 16, 1, 1, 8, 8, 7, 3, 4 }, // 32-35 CPUs
+    { 15, 1, 1, 7, 7, 7, 2, 5 }, // 30-31 CPUs
+    { 16, 1, 1, 8, 8, 7, 2, 5 }, // 32-35 CPUs
     { 17, 1, 1, 9, 9, 8, 3, 5 }, // 36-39 CPUs
-    { 18, 1, 1, 10, 10, 9, 4, 5 }, // 40-43 CPUs
-    { 19, 1, 1, 11, 11, 9, 5, 6 }, // 44-47 CPUs
-    { 20, 1, 1, 12, 12, 10, 6, 6 }, // 48-51 CPUs
-    { 21, 1, 1, 13, 13, 11, 6, 7 }, // 52-55 CPUs
+    { 18, 1, 1, 10, 10, 8, 4, 6 }, // 40-43 CPUs
+    { 19, 1, 1, 11, 11, 9, 4, 7 }, // 44-47 CPUs
+    { 20, 1, 1, 12, 12, 10, 4, 8 }, // 48-51 CPUs
+    { 21, 1, 1, 13, 13, 11, 5, 8 }, // 52-55 CPUs
     { 22, 1, 1, 14, 14, 12, 6, 8 }, // 56-59 CPUs
     { 23, 1, 1, 15, 15, 12, 7, 9 }, // 60-63 CPUs
-    { 24, 1, 1, 16, 16, 14, 7, 9 }, // 64-71 CPUs
+    { 24, 1, 1, 16, 16, 14, 6, 10 }, // 64-71 CPUs
     { 25, 1, 1, 18, 18, 16, 8, 10 }, // 72-79 CPUs
     { 26, 1, 1, 20, 20, 18, 9, 11 }, // 80-87 CPUs
     { 27, 1, 1, 22, 22, 20, 10, 12 }, // 88-95 CPUs
@@ -1899,10 +1899,13 @@ THRConfig::handle_spec(char *str,
     if (values[IX_NOSEND].found &&
         !(type == T_LDM ||
           type == T_TC ||
+          type == T_RECV ||
+          type == T_QUERY ||
           type == T_MAIN ||
           type == T_REP))
     {
-      m_err_msg.assfmt("Can only set nosend on main, ldm, tc and rep threads");
+      m_err_msg.assfmt("Can only set nosend on main, ldm, tc, recv and rep"
+                       " threads");
       return -1;
     }
     if (values[IX_THREAD_PRIO].found && type == T_IXBLD)
@@ -2127,6 +2130,10 @@ THRConfigApplier::find_thread(const unsigned short instancelist[], unsigned cnt)
   {
     return &m_threads[T_MAIN][instanceNo];
   }
+  else if ((instanceNo = findBlock(TRPMAN, instancelist, cnt)) >= 0)
+  {
+    return &m_threads[T_RECV][instanceNo - 1]; // remove proxy
+  }
   else if ((instanceNo = findBlock(DBLQH, instancelist, cnt)) >= 0)
   {
     return &m_threads[T_LDM][instanceNo - 1]; // remove proxy...
@@ -2143,10 +2150,6 @@ THRConfigApplier::find_thread(const unsigned short instancelist[], unsigned cnt)
       instanceNo -= num_query_threads;
       return &m_threads[T_RECOVER][instanceNo - 1]; // remove proxy...
     }
-  }
-  else if ((instanceNo = findBlock(TRPMAN, instancelist, cnt)) >= 0)
-  {
-    return &m_threads[T_RECV][instanceNo - 1]; // remove proxy
   }
   else if ((instanceNo = findBlock(DBTC, instancelist, cnt)) >= 0)
   {
