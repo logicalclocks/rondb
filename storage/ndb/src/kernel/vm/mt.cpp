@@ -2735,6 +2735,7 @@ thr_send_threads::insert_activate_trp(TrpId trp_id)
   if (m_trp_state[trp_id].m_data_available > 0)
   {
     struct thr_send_thread_instance *send_instance;
+    m_trp_state[trp_id].m_data_available++;
     send_instance = get_send_thread_instance_by_trp(trp_id);
     insert_trp(trp_id, send_instance);
   }
