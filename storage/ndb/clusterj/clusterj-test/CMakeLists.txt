@@ -1,5 +1,5 @@
 # Copyright (c) 2010, 2021, Oracle and/or its affiliates.
-#
+# Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
 # as published by the Free Software Foundation.
@@ -74,6 +74,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/LongIntStringPKTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/LongLongStringPKTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/LongvarbinaryPKTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/LongvarcharPKTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/MediumIntegerTypesTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/MediumUnsignedTypesTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/MultiplePKTest.java
@@ -143,6 +144,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/UpdateTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/VarbinaryPKTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/VarbinaryTypesTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/VarcharPKTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/VarcharStringLengthTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/domaintypehandler/CrazyDomainTypeHandlerFactoryImpl.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/AllPrimitives.java
@@ -192,6 +194,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/LongIntStringPK.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/LongLongStringPK.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/LongvarbinaryPK.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/model/LongvarcharPK.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/MediumIntegerTypes.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/MediumUnsignedTypes.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/NotPersistentTypes.java
@@ -207,6 +210,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/TimestampAsUtilDateTypes.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/VarbinaryPK.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/VarbinaryTypes.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/model/VarcharPK.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/YearTypes.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/util/MgmClient.java
 
