@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2010, 2016, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -367,6 +368,7 @@ public class DomainFieldHandlerImpl extends AbstractDomainFieldHandlerImpl {
                     break;
                 case Char:
                 case Varchar:
+                case Longvarchar:
                     this.objectOperationHandlerDelegate = objectOperationHandlerKeyString;
                     this.type = String.class;
                     break;
