@@ -4816,24 +4816,6 @@ MgmtSrvr::alloc_node_id_impl(NodeId& nodeid,
     }
     return false;
   }
-  else if (nodeid != 0)
-  {
-    NodeBitmask active_nodes;
-    {
-      Guard g(m_local_config_mutex);
-      m_local_config->get_nodemask(active_nodes);
-    }
-    if (!active_nodes.get(nodeid))
-    {
-      g_eventLogger->debug("Nodeid %u deactivated, failed to alloc id",
-                           nodeid);
-      error_code = NDB_MGM_ALLOCID_ERROR;
-      error_string.appfmt("Unable to allocate nodeid %u as node is"
-                          " currently deactivated",
-                          nodeid);
-      return false;
-    }
-  }
 
   /* Make sure that config is confirmed before allocating nodeid */
   Uint32 timeout_ms = timeout_s * 1000;
@@ -4864,6 +4846,25 @@ MgmtSrvr::alloc_node_id_impl(NodeId& nodeid,
   if (find_node_type(nodeid, type, client_addr,
                      nodes, error_code, error_string))
     return false;
+
+  if (nodeid != 0)
+  {
+    NodeBitmask active_nodes;
+    {
+      Guard g(m_local_config_mutex);
+      m_local_config->get_nodemask(active_nodes);
+    }
+    if (!active_nodes.get(nodeid))
+    {
+      g_eventLogger->debug("Nodeid %u deactivated, failed to alloc id",
+                           nodeid);
+      error_code = NDB_MGM_ALLOCID_ERROR;
+      error_string.appfmt("Unable to allocate nodeid %u as node is"
+                          " currently deactivated",
+                          nodeid);
+      return false;
+    }
+  }
 
   // Print list of possible nodes
   for (unsigned i = 0; i < nodes.size(); i++)
