@@ -144,6 +144,20 @@ create table binarypk (
  name varchar(10) not null
 ) ENGINE=ndbcluster DEFAULT CHARSET=latin1;
 
+drop table if exists varcharpk;
+create table varcharpk (
+ id varchar(25) primary key not null,
+ number int not null,
+ name varchar(10) not null
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8;
+
+drop table if exists longvarcharpk;
+create table longvarcharpk (
+ id varchar(512) primary key not null,
+ number int not null,
+ name varchar(10) not null
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8;
+
 drop table if exists varbinarypk;
 create table varbinarypk (
  id varbinary(255) primary key not null,
