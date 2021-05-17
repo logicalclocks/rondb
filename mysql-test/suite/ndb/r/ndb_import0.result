@@ -62,34 +62,12 @@ b int not null
 ) engine=ndb;
 select count(*) from t4;
 count(*)
-997
+998
 # test with rejects and --stats
 delete from t4;
 select count(*) from t4;
 count(*)
-997
-# test --continue option with missing table
-create table t5a (a int primary key) engine=ndb;
-create table t5c like t5a;
-select count(*) from t5a;
-count(*)
-2
-select count(*) from t5c;
-count(*)
-2
-# test --continue option with rejects
-delete from t5a;
-delete from t5c;
-create table t5b like t5a;
-select count(*) from t5a;
-count(*)
-2
-select count(*) from t5b;
-count(*)
-1
-select count(*) from t5c;
-count(*)
-2
+998
 # test quoting and escapes
 create table t6 (
 a int primary key,
@@ -176,5 +154,5 @@ date_died DATE NOT NULL
 ) engine=ndb CHARACTER SET latin1;
 include/assert_grep.inc [Require CSV parser to fail with syntax error]
 drop table tpersons;
-drop table t1, t1ver, t2, t2ver, t3, t3ver, t4, t5a, t5b, t5c,
+drop table t1, t1ver, t2, t2ver, t3, t3ver, t4,
 t6, t6ver, t7, t7ver, t8, t8ver, t9, t9ver;

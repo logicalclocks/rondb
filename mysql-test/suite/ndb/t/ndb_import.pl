@@ -922,7 +922,9 @@ sub gen_csvline {
   # if no errors from fields, create error on the row
   if ($opts->{rejectsflag}) {
     while ($opts->{rejectserrs} eq "") {
-      if (myrand(2) == 0 && $rowid > 0) {
+      if (myrand(2) == 0 && $rowid > 0 && $rowid == 0) {
+	# Will never generate duplicate pk, this type of error
+	# is unrecoverable in ndb_import in RonDB.
         # duplicate pk (one will be accepted, could be this one)
         my $oldrowid = myrand($rowid);
         my $oldpkvals = $opts->{pkvals}{$oldrowid};

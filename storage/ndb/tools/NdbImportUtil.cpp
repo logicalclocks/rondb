@@ -3188,8 +3188,14 @@ void
 NdbImportUtil::set_error_data(Error& error, int line,
                               int code, const char* fmt, ...)
 {
+  /**
+   * Error in CSV data is the only error which will not cause
+   * ndb_import to immediately fail. This type of error is
+   * recoverable, but as the code is written, errors in
+   * NDB API processing isn't recoverable and thus it is
+   * better to fail fast for those errors.
+   */
   c_error_lock.lock();
-  NdbImport::set_stop_all();
   new (&error) Error;
   error.line = line;
   error.type = Error::Type_data;
