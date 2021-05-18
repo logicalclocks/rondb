@@ -65,6 +65,7 @@ ConfigManager::ConfigManager(const MgmtSrvr::MgmtOpts& opts,
   m_config_state(CS_UNINITIALIZED),
   m_previous_state(CS_UNINITIALIZED),
   m_prepared_config(NULL),
+  m_prepared_already(false),
   m_node_id(0),
   m_configdir(configdir),
   m_retry(0)
@@ -518,13 +519,24 @@ ConfigManager::init(void)
 bool
 ConfigManager::prepareConfigChange(const Config* config)
 {
+  unsigned exclude[] = {CFG_SECTION_SYSTEM, 0};
   if (m_prepared_config)
   {
-    g_eventLogger->error("Can't prepare configuration change " \
-                         "when already prepared");
-    return false;
+    if (m_prepared_config->equal(config, exclude))
+    {
+      m_prepared_already = true;
+      g_eventLogger->info("Prepared configuration change is equal to the"
+                          " one we are changing to");
+      g_eventLogger->debug("Configuration already prepared");
+      return true;
+    }
+    else
+    {
+      g_eventLogger->error("Can't prepare configuration change " \
+                           "when already prepared");
+      return false;
+    }
   }
-
   Uint32 generation= config->getGeneration();
   if (generation == 0)
   {
@@ -613,7 +625,17 @@ ConfigManager::prepareConfigChange(const Config* config)
 void
 ConfigManager::commitConfigChange(void)
 {
-  require(m_prepared_config != 0);
+  g_eventLogger->info("commitConfigChange");
+  if (m_prepared_config == nullptr)
+  {
+    g_eventLogger->info("m_prepared_config == nullptr");
+    if (!m_prepared_already)
+    {
+      require(m_prepared_config != 0);
+    }
+    m_prepared_already = false;
+    return;
+  }
 
   /* Set new config locally and in all subscribers */
   set_config(m_prepared_config);
@@ -734,6 +756,7 @@ ConfigManager::config_ok(const Config* conf)
 void
 ConfigManager::abortConfigChange(void)
 {
+  g_eventLogger->info("abortConfigChange");
   /* Should always succeed */
 
   /* Remove the prepared file */
@@ -1456,7 +1479,9 @@ ConfigManager::execCONFIG_CHECK_REQ(SignalSender& ss, SimpleSignal* sig)
                        m_config_state, CS_UNINITIALIZED);
     return;
   }
-
+  /**
+   * We support reload from any node, this is antique test that is no
+   * no longer valid. 
   if (m_config_change.m_loaded_config && ss.getOwnNodeId() < nodeId)
   {
     g_eventLogger->debug("Got CONFIG_CHECK_REQ from node: %d while "
@@ -1469,7 +1494,7 @@ ConfigManager::execCONFIG_CHECK_REQ(SignalSender& ss, SimpleSignal* sig)
                        m_config_state, CS_UNINITIALIZED);
     return;
   }
-
+  */
   g_eventLogger->debug("Got CONFIG_CHECK_REQ from node: %d. "
                        "Our generation: %d, other generation: %d, "
                        "our state: %d, other state: %d, "
@@ -1589,6 +1614,9 @@ ConfigManager::sendConfigCheckReq(SignalSender& ss, NodeBitmask to)
 
   g_eventLogger->debug("Sending CONFIG_CHECK_REQ to %s",
                        BaseString::getPrettyText(to).c_str());
+
+  /* Avoid busy waiting, 10 ms we can wait without any harm done. */
+  NdbSleep_MilliSleep(10);
 
   require(m_waiting_for.isclear());
 
