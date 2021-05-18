@@ -177,5 +177,5 @@ NDBT_find_ndb_mgmd(BaseString& path)
 void
 NDBT_find_ndbd(BaseString& path)
 {
-  return NDBT_find_executable_in_test_env(path, "ndbd");
+  return NDBT_find_executable_in_test_env(path, "ndbmtd");
 }
