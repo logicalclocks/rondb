@@ -1447,7 +1447,9 @@ ConfigManager::execCONFIG_CHECK_REQ(SignalSender& ss, SimpleSignal* sig)
                        m_config_state, CS_UNINITIALIZED);
     return;
   }
-
+  /**
+   * We support reload from any node, this is antique test that is no
+   * no longer valid. 
   if (m_config_change.m_loaded_config && ss.getOwnNodeId() < nodeId)
   {
     g_eventLogger->debug("Got CONFIG_CHECK_REQ from node: %d while "
@@ -1460,7 +1462,7 @@ ConfigManager::execCONFIG_CHECK_REQ(SignalSender& ss, SimpleSignal* sig)
                        m_config_state, CS_UNINITIALIZED);
     return;
   }
-
+  */
   g_eventLogger->debug("Got CONFIG_CHECK_REQ from node: %d. "
                        "Our generation: %d, other generation: %d, "
                        "our state: %d, other state: %d, "
@@ -1580,6 +1582,9 @@ ConfigManager::sendConfigCheckReq(SignalSender& ss, NodeBitmask to)
 
   g_eventLogger->debug("Sending CONFIG_CHECK_REQ to %s",
                        BaseString::getPrettyText(to).c_str());
+
+  /* Avoid busy waiting, 10 ms we can wait without any harm done. */
+  NdbSleep_MilliSleep(10);
 
   require(m_waiting_for.isclear());
 
