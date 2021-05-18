@@ -2245,6 +2245,7 @@ void Thrman::measure_cpu_data(Signal *signal)
 void
 Thrman::execUPD_THR_LOAD_ORD(Signal *signal)
 {
+  ndbrequire(globalData.ndbMtLqhThreads > 0);
   UpdThrLoadOrd * const thrLoadOrd = (UpdThrLoadOrd*)&signal->theData[0];
   ndbrequire(instance() == m_rep_thrman_instance);
   Uint32 cpu_load = thrLoadOrd->cpuLoad;
@@ -2273,7 +2274,8 @@ Thrman::send_measure_to_rep_thrman(Signal *signal,
   Uint32 last_query_instance = last_ldm_instance +
                                globalData.ndbMtQueryThreads;
   Uint32 our_instance = instance();
-  if (our_instance < first_ldm_instance ||
+  if (globalData.ndbMtLqhThreads == 0 ||
+      our_instance < first_ldm_instance ||
       our_instance > last_query_instance)
   {
     jam();

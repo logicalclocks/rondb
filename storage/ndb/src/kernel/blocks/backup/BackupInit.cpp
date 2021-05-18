@@ -607,13 +607,7 @@ void Backup::calculate_real_disk_write_speed_parameters(void)
       c_defaults.m_disk_write_speed_max_other_node_restart;
   }
 
-  Uint32 num_ldm_threads = globalData.ndbMtLqhThreads;
-  if (num_ldm_threads == 0)
-  {
-    /* We are running with ndbd binary */
-    jam();
-    num_ldm_threads = 1;
-  }
+  Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
 
   c_defaults.m_disk_write_speed_min /= num_ldm_threads;
   c_defaults.m_disk_write_speed_max /= num_ldm_threads;
@@ -681,13 +675,7 @@ void Backup::restore_disk_write_speed_numbers(void)
   c_defaults.m_disk_write_speed_max_own_restart *=
     CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
 
-  Uint32 num_ldm_threads = globalData.ndbMtLqhThreads;
-  if (num_ldm_threads == 0)
-  {
-    /* We are running with ndbd binary */
-    jam();
-    num_ldm_threads = 1;
-  }
+  Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
 
   c_defaults.m_disk_write_speed_min *= num_ldm_threads;
   c_defaults.m_disk_write_speed_max *= num_ldm_threads;

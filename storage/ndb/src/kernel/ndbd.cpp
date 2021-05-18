@@ -298,11 +298,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   Uint64 dataMem = globalData.theDataMemory;
   Uint32 tupmem= (Uint32)(dataMem / 32768);
 
-  Uint32 lqhInstances = 1;
-  if (globalData.isNdbMtLqh)
-  {
-    lqhInstances = globalData.ndbMtLqhWorkers;
-  }
+  Uint32 lqhInstances = globalData.ndbMtLqhWorkers;
 
   if (tupmem)
   {
@@ -443,11 +439,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   Uint32 pgman_mbytes = pgman_pages / 32;
   g_eventLogger->info("DiskPageBuffer uses %u MB", pgman_mbytes);
 
-  Uint32 ldmInstances = 1;
-  if (globalData.ndbMtLqhWorkers > 1)
-  {
-    ldmInstances = globalData.ndbMtLqhThreads;
-  }
+  Uint32 ldmInstances = globalData.ndbMtLqhWorkers;
 
   Uint32 stpages = 128;
   {
@@ -461,9 +453,9 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
 
   Uint32 transmem = 0;
   Uint32 tcInstances = 1;
-  if (globalData.ndbMtTcThreads > 1)
+  if (globalData.ndbMtTcWorkers > 1)
   {
-    tcInstances = globalData.ndbMtTcThreads;
+    tcInstances = globalData.ndbMtTcWorkers;
   }
 
   Uint64 TransactionMemory = globalData.theTransactionMemory;
@@ -655,27 +647,17 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
 static int
 get_multithreaded_config(EmulatorData& ed)
 {
-  // multithreaded is compiled in ndbd/ndbmtd for now
-  if (!globalData.isNdbMt)
-  {
-    ndbout << "NDBMT: non-mt" << endl;
-    return 0;
-  }
-
-  THRConfig & conf = ed.theConfiguration->m_thr_config;
-  Uint32 threadcount = conf.getThreadCount();
-  ndbout << "NDBMT: MaxNoOfExecutionThreads=" << threadcount << endl;
-
-  if (!globalData.isNdbMtLqh)
-    return 0;
-
-  ndbout << "NDBMT: workers=" << globalData.ndbMtLqhWorkers
-         << " threads=" << globalData.ndbMtLqhThreads
-         << " tc=" << globalData.ndbMtTcThreads
+  ndbout << "NDBMT: ldm_workers=" << globalData.ndbMtLqhWorkers
+         << " ldm_threads=" << globalData.ndbMtLqhThreads
+         << " query_workers=" << globalData.ndbMtQueryWorkers
+         << " query_threads=" << globalData.ndbMtQueryThreads
+         << endl
+         << " tc_threads=" << globalData.ndbMtTcThreads
+         << " tc_workers=" << globalData.ndbMtTcWorkers
          << " send=" << globalData.ndbMtSendThreads
          << " receive=" << globalData.ndbMtReceiveThreads
+         << " main_threads=" << globalData.ndbMtMainThreads
          << endl;
-
   return 0;
 }
 

@@ -5215,7 +5215,7 @@ Dblqh::is_exclusive_condition_ready(Fragrecord *fragPtrP)
 inline void
 Dblqh::upgrade_to_write_key_frag_access()
 {
-  if (qt_likely(globalData.ndbMtQueryThreads > 0))
+  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
   {
     jamDebug();
     handle_upgrade_to_write_key_frag_access(fragptr.p);
@@ -5225,7 +5225,7 @@ Dblqh::upgrade_to_write_key_frag_access()
 inline void
 Dblqh::upgrade_to_exclusive_frag_access_no_return()
 {
-  if (qt_likely(globalData.ndbMtQueryThreads > 0))
+  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
   {
     jamDebug();
     handle_upgrade_to_exclusive_frag_access(fragptr.p);
@@ -5236,7 +5236,7 @@ Dblqh::upgrade_to_exclusive_frag_access_no_return()
 inline void
 Dblqh::upgrade_to_exclusive_frag_access()
 {
-  if (qt_likely(globalData.ndbMtQueryThreads > 0))
+  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
   {
     jamDebug();
     handle_upgrade_to_exclusive_frag_access(fragptr.p);
@@ -5246,7 +5246,7 @@ Dblqh::upgrade_to_exclusive_frag_access()
 inline void
 Dblqh::upgrade_to_exclusive_frag_access(Fragrecord *fragPtrP)
 {
-  if (qt_likely(globalData.ndbMtQueryThreads > 0))
+  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
   {
     jamDebug();
     handle_upgrade_to_exclusive_frag_access(fragPtrP);
@@ -5256,7 +5256,7 @@ Dblqh::upgrade_to_exclusive_frag_access(Fragrecord *fragPtrP)
 inline void
 Dblqh::downgrade_from_exclusive_frag_access()
 {
-  if (qt_likely(globalData.ndbMtQueryThreads > 0))
+  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
   {
     jamDebug();
     handle_downgrade_from_exclusive_frag_access(fragptr.p);
@@ -5266,7 +5266,7 @@ Dblqh::downgrade_from_exclusive_frag_access()
 inline void
 Dblqh::downgrade_from_exclusive_frag_access(Fragrecord *fragPtrP)
 {
-  if (qt_likely(globalData.ndbMtQueryThreads > 0))
+  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
   {
     jamDebug();
     handle_downgrade_from_exclusive_frag_access(fragPtrP);
@@ -5276,7 +5276,7 @@ Dblqh::downgrade_from_exclusive_frag_access(Fragrecord *fragPtrP)
 inline void
 Dblqh::acquire_frag_commit_access_write_key()
 {
-  if (qt_likely(globalData.ndbMtQueryThreads > 0))
+  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
   {
     Fragrecord *fragPtrP = fragptr.p;
     if (m_fragment_lock_status == FRAGMENT_UNLOCKED)
@@ -5315,7 +5315,7 @@ Dblqh::acquire_frag_commit_access_write_key()
 inline void
 Dblqh::acquire_frag_commit_access_exclusive()
 {
-  if (qt_likely(globalData.ndbMtQueryThreads > 0))
+  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
   {
     jamDebug();
     Fragrecord *fragPtrP = fragptr.p;
@@ -5338,7 +5338,7 @@ inline void
 Dblqh::acquire_frag_abort_access(Fragrecord *fragPtrP,
                                   TcConnectionrec *regTcPtr)
 {
-  if (qt_likely(globalData.ndbMtQueryThreads > 0))
+  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
   {
     jamDebug();
     handle_acquire_frag_abort_access(fragPtrP, regTcPtr);
@@ -5396,7 +5396,7 @@ inline void
 Dblqh::acquire_frag_scan_access(Fragrecord *fragPtrP,
                                        TcConnectionrec *regTcPtr)
 {
-  if (qt_likely(globalData.ndbMtQueryThreads > 0))
+  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
   {
     if (m_fragment_lock_status == FRAGMENT_UNLOCKED)
     {
@@ -5413,7 +5413,7 @@ inline void
 Dblqh::acquire_frag_scan_access_new(Fragrecord *fragPtrP,
                                     TcConnectionrec *regTcPtr)
 {
-  if (qt_likely(globalData.ndbMtQueryThreads > 0))
+  if (qt_likely(globalData.ndbMtQueryWorkers > 0))
   {
     jamDebug();
     handle_acquire_scan_frag_access(fragPtrP);
