@@ -1,5 +1,6 @@
 --result_format 2
 --source include/have_ndb.inc
+--source include/not_parallel.inc
 
 SELECT PLUGIN_NAME,PLUGIN_VERSION,PLUGIN_STATUS,PLUGIN_TYPE,
        PLUGIN_LIBRARY,PLUGIN_LIBRARY_VERSION,PLUGIN_AUTHOR,PLUGIN_DESCRIPTION

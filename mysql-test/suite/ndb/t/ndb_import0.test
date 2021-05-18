@@ -213,8 +213,6 @@ open($fh, ">:raw", $file)
 for my $i (0..999) {
   if ($i == 333) {
     print $fh $i, "\t", $i*10, "\t", 333, $lt;
-  } elsif ($i == 666) {
-    print $fh 111, "\t", $i*10, $lt;
   } elsif ($i == 999) {
     print $fh $i, "\t", "abcde", $lt;
   } else {
@@ -232,7 +230,7 @@ create table t4 (
 ) engine=ndb;
 
 exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp --log-level=1
-     --rejects=3
+     --rejects=2
      test $MYSQLTEST_VARDIR/tmp/t4.csv >> $NDB_TOOLS_OUTPUT 2>&1;
 select count(*) from t4;
 
@@ -250,7 +248,7 @@ select count(*) from t4;
 delete from t4;
 
 exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp --log-level=1
-     --rejects=3 --stats
+     --rejects=2 --stats
      test $MYSQLTEST_VARDIR/tmp/t4.csv >> $NDB_TOOLS_OUTPUT 2>&1;
 select count(*) from t4;
 
@@ -262,55 +260,6 @@ select count(*) from t4;
 --file_exists $MYSQLTEST_VARDIR/tmp/t4.map
 --error 0
 --file_exists $MYSQLTEST_VARDIR/tmp/t4.stt
-
---echo # test --continue option with missing table
-
-create table t5a (a int primary key) engine=ndb;
-create table t5c like t5a;
-
-write_file $MYSQLTEST_VARDIR/tmp/t5a.csv;
-111
-222
-EOF
-
-write_file $MYSQLTEST_VARDIR/tmp/t5b.csv;
-111
-111
-EOF
-
-write_file $MYSQLTEST_VARDIR/tmp/t5c.csv;
-111
-222
-EOF
-
-# files have '\n' terminator so add --csvopt=n
-
---error 1
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp --log-level=1
-     --continue --csvopt=n
-     test
-     $MYSQLTEST_VARDIR/tmp/t5a.csv
-     $MYSQLTEST_VARDIR/tmp/t5b.csv
-     $MYSQLTEST_VARDIR/tmp/t5c.csv >> $NDB_TOOLS_OUTPUT 2>&1;
-select count(*) from t5a;
-select count(*) from t5c;
-
---echo # test --continue option with rejects
-
-delete from t5a;
-delete from t5c;
-create table t5b like t5a;
-
---error 1
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp --log-level=1
-     --continue --csvopt=n
-     test
-     $MYSQLTEST_VARDIR/tmp/t5a.csv
-     $MYSQLTEST_VARDIR/tmp/t5b.csv
-     $MYSQLTEST_VARDIR/tmp/t5c.csv >> $NDB_TOOLS_OUTPUT 2>&1;
-select count(*) from t5a;
-select count(*) from t5b;
-select count(*) from t5c;
 
 --echo # test quoting and escapes
 
@@ -709,7 +658,7 @@ exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
 
 drop table tpersons;
 
-drop table t1, t1ver, t2, t2ver, t3, t3ver, t4, t5a, t5b, t5c,
+drop table t1, t1ver, t2, t2ver, t3, t3ver, t4,
            t6, t6ver, t7, t7ver, t8, t8ver, t9, t9ver;
 --source suite/ndb/include/backup_restore_cleanup.inc
 --remove_files_wildcard $MYSQLTEST_VARDIR/tmp t*.csv
