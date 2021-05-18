@@ -1,6 +1,5 @@
 result_format: 2
 
-
 SELECT PLUGIN_NAME,PLUGIN_VERSION,PLUGIN_STATUS,PLUGIN_TYPE,
        PLUGIN_LIBRARY,PLUGIN_LIBRARY_VERSION,PLUGIN_AUTHOR,PLUGIN_DESCRIPTION
 FROM information_schema.plugins WHERE PLUGIN_NAME = 'ndbinfo';
@@ -1796,12 +1795,3 @@ select * from cpudata_50ms;
 select * from cpudata_1sec;
 select * from cpudata_20sec;
 select * from logbuffers;
-node_id	log_type	log_id	log_part	total	used
-1	REDO	0	0	4194304	65536
-1	REDO	0	1	4194304	65536
-1	REDO	0	2	4194304	65536
-1	REDO	0	3	4194304	65536
-2	REDO	0	0	4194304	65536
-2	REDO	0	1	4194304	65536
-2	REDO	0	2	4194304	65536
-2	REDO	0	3	4194304	65536
