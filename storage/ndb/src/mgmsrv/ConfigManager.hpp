@@ -119,6 +119,7 @@ class ConfigManager : public MgmtThread {
 
   BaseString m_config_name;
   Config* m_prepared_config;
+  bool m_prepared_already;
 
   NodeBitmask m_all_mgm;
   NodeBitmask m_started;
