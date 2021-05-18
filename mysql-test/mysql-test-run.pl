@@ -2,6 +2,7 @@
 # -*- cperl -*-
 
 # Copyright (c) 2004, 2021, Oracle and/or its affiliates.
+# Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -3514,12 +3515,12 @@ sub check_ndbcluster_support ($) {
               " and --skip-ndbcluster was specified");
   }
 
-  # Check if this is MySQL Cluster, ie. mysql version extra string
+  # Check if this is RonDB, ie. mysql version extra string
   # contains -cluster
   if (defined $mysql_version_extra &&
       $mysql_version_extra =~ /-cluster/) {
-    # MySQL Cluster tree
-    mtr_report(" - MySQL Cluster detected");
+    # RonDB tree
+    mtr_report(" - RonDB detected");
 
     if ($opt_skip_ndbcluster) {
       mtr_report(" - skipping ndbcluster(--skip-ndbcluster)");
@@ -3527,16 +3528,16 @@ sub check_ndbcluster_support ($) {
     }
 
     if (!$ndbcluster_supported) {
-      # MySQL Cluster tree, but mysqld was not compiled with
+      # RonDB tree, but mysqld was not compiled with
       # ndbcluster -> fail unless --skip-ndbcluster was used
-      mtr_error("This is MySQL Cluster but mysqld does not " .
+      mtr_error("This is RonDB but mysqld does not " .
                 "support ndbcluster. Use --skip-ndbcluster to " .
                 "force mtr to run without it.");
     }
 
     # mysqld was compiled with ndbcluster -> auto enable
   } else {
-    # Not a MySQL Cluster tree
+    # Not a RonDB tree
     if (!$ndbcluster_supported) {
       if ($opt_include_ndbcluster) {
         mtr_error("Could not detect ndbcluster support " .
@@ -3566,7 +3567,7 @@ sub check_ndbcluster_support ($) {
 
   mtr_report(" - enabling ndbcluster");
   $ndbcluster_enabled = 1;
-  # Add MySQL Cluster test suites
+  # Add RonDB test suites
   $DEFAULT_SUITES .= "," if $DEFAULT_SUITES;
   $DEFAULT_SUITES .= "ndb,ndb_binlog,rpl_ndb,ndb_rpl,ndbcluster,ndb_ddl,".
                      "gcol_ndb,json_ndb,ndb_opt";
