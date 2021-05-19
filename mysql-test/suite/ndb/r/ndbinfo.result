@@ -1796,16 +1796,6 @@ select * from cpudata_50ms;
 select * from cpudata_1sec;
 select * from cpudata_20sec;
 select * from logbuffers;
-node_id	log_type	log_id	log_part	total	used
-1	REDO	0	0	4194304	65536
-1	REDO	0	1	4194304	65536
-1	REDO	0	2	4194304	65536
-1	REDO	0	3	4194304	65536
-2	REDO	0	0	4194304	65536
-2	REDO	0	1	4194304	65536
-2	REDO	0	2	4194304	65536
-2	REDO	0	3	4194304	65536
-
 #
 # BUG#32073640 Add ndbinfo.backup_id
 #  - the table have one column and one row
