@@ -782,6 +782,8 @@ NdbImportUtil::Table::Table()
   m_keyrec = NULL;
   m_recsize = 0;
   m_has_hidden_pk = false;
+  m_has_auto_increment = false;
+  m_auto_increment_col = 0;
 }
 
 void
@@ -928,6 +930,7 @@ NdbImportUtil::add_table(NdbDictionary::Dictionary* dic,
       attr.m_attrno = i;
       attr.m_attrid = i;
       attr.m_type = col->getType();
+      attr.m_auto_increment = col->getAutoIncrement();
       attr.m_pk = col->getPrimaryKey();
       attr.m_nullable = col->getNullable();
       attr.m_precision = col->getPrecision();
@@ -1037,6 +1040,23 @@ NdbImportUtil::add_table(NdbDictionary::Dictionary* dic,
             set_error_usage(error, __LINE__,
                             "column %u: "
                             "invalid use of reserved column name $PK", i);
+            ok = false;
+            break;
+          }
+        }
+        else if (attr.m_auto_increment &&
+                 c_opt.m_use_auto_increment)
+        {
+          table.m_has_auto_increment = true;
+          table.m_auto_increment_col = i;
+          if (!(attr.m_type == NdbDictionary::Column::Bigunsigned ||
+                attr.m_type == NdbDictionary::Column::Bigint ||
+                attr.m_type == NdbDictionary::Column::Int ||
+                attr.m_type == NdbDictionary::Column::Unsigned))
+          {
+            set_error_usage(error, __LINE__,
+                            "column %u: "
+                            "invalid auto_increment data type ", i);
             ok = false;
             break;
           }

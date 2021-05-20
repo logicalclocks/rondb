@@ -3265,12 +3265,11 @@ NdbImportImpl::ExecOpWorkerAsynch::state_define()
     Row* row = op->m_row;
     require(row != 0);
     const Table& table = m_util.get_table(row->m_tabid);
-    if (table.m_has_hidden_pk)
+    if (table.m_has_hidden_pk ||
+        table.m_has_auto_increment)
     {
       const Attrs& attrs = table.m_attrs;
       const uint attrcnt = attrs.size();
-      const Attr& attr = attrs[attrcnt - 1];
-      require(attr.m_type == NdbDictionary::Column::Bigunsigned);
       Uint64 val;
       if (m_ndb->getAutoIncrementValue(table.m_tab, val,
                                        opt.m_ai_prefetch_sz,
@@ -3304,7 +3303,39 @@ NdbImportImpl::ExecOpWorkerAsynch::state_define()
           break;
         }
       }
-      attr.set_value(row, &val, 8);
+      if (table.m_has_hidden_pk)
+      {
+        const Attr& attr = attrs[attrcnt - 1];
+        require(attr.m_type == NdbDictionary::Column::Bigunsigned);
+        attr.set_value(row, &val, 8);
+      }
+      else
+      {
+        const Attr& attr = attrs[table.m_auto_increment_col];
+        if (attr.m_type == NdbDictionary::Column::Bigunsigned)
+        {
+          attr.set_value(row, &val, 8);
+        }
+        else if (attr.m_type == NdbDictionary::Column::Bigint)
+        {
+          Int64 val64 = Int64(val);
+          attr.set_value(row, &val64, 8);
+        }
+        else if (attr.m_type == NdbDictionary::Column::Int)
+        {
+          Int32 val32 = Uint32(val);
+          attr.set_value(row, &val32, 4);
+        }
+        else if (attr.m_type == NdbDictionary::Column::Unsigned)
+        {
+          Uint32 val32 = Uint32(val);
+          attr.set_value(row, &val32, 4);
+        }
+        else
+        {
+          require(false);
+        }
+      }
     }
     const bool no_hint = opt.m_no_hint;
     Tx* tx = 0;

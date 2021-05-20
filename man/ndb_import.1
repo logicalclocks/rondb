@@ -2,12 +2,12 @@
 .\"     Title: \fBndb_import\fR
 .\"    Author: [FIXME: author] [see http://docbook.sf.net/el/author]
 .\" Generator: DocBook XSL Stylesheets v1.79.1 <http://docbook.sf.net/>
-.\"      Date: 11/26/2020
-.\"    Manual: MySQL Database System
-.\"    Source: MySQL 8.0
+.\"      Date: 05/20/2021
+.\"    Manual: RonDB Database System
+.\"    Source: RonDB 21.04
 .\"  Language: English
 .\"
-.TH "\FBNDB_IMPORT\FR" "1" "11/26/2020" "MySQL 8\&.0" "MySQL Database System"
+.TH "\FBNDB_IMPORT\FR" "1" "05/20/2021" "RonDB 21\&.04" "RonDB Database System"
 .\" -----------------------------------------------------------------
 .\" * Define some portability stuff
 .\" -----------------------------------------------------------------
@@ -28,7 +28,7 @@
 .\" * MAIN CONTENT STARTS HERE *
 .\" -----------------------------------------------------------------
 .SH "NAME"
-ndb_import \- Import CSV data into NDB
+ndb_import \- Import CSV data into RonDB
 .SH "SYNOPSIS"
 .HP \w'\fBndb_import\ \fR\fB\fIoptions\fR\fR\ 'u
 \fBndb_import \fR\fB\fIoptions\fR\fR
@@ -38,10 +38,10 @@ ndb_import \- Import CSV data into NDB
 imports CSV\-formatted data, such as that produced by
 \fBmysqldump\fR
 \fB\-\-tab\fR, directly into
-NDB
+RonDB
 using the NDB API\&.
 \fBndb_import\fR
-requires a connection to an NDB management server (\fBndb_mgmd\fR) to function; it does not require a connection to a MySQL Server\&.
+requires a connection to an RonDB management server (\fBndb_mgmd\fR) to function; it does not require a connection to a MySQL Server\&.
 Usage
 .sp
 .if n \{\
@@ -63,7 +63,7 @@ is the name of the CSV file from which to read the data; this must include the p
 \fBndb_import\fR
 include those for specifying field separators, escapes, and line terminators, and are described later in this section\&.
 \fBndb_import\fR
-must be able to connect to an NDB Cluster management server; for this reason, there must be an unused
+must be able to connect to an RonDB Cluster management server; for this reason, there must be an unused
 [api]
 slot in the cluster
 config\&.ini
@@ -71,7 +71,7 @@ file\&.
 .PP
 To duplicate an existing table that uses a different storage engine, such as
 InnoDB, as an
-NDB
+RonDB
 table, use the
 \fBmysql\fR
 client to perform a
@@ -83,7 +83,7 @@ ALTER TABLE \&.\&.\&. ENGINE=NDB
 on the new table; after this, from the system shell, invoke
 \fBndb_import\fR
 to load the data into the new
-NDB
+RonDB
 table\&. For example, an existing
 InnoDB
 table named
@@ -91,7 +91,7 @@ myinnodb_table
 in a database named
 myinnodb
 can be exported into an
-NDB
+RonDB
 table named
 myndb_table
 in a database named
@@ -248,6 +248,16 @@ Dump core on any fatal error; used for debugging
 T}:T{
 .PP
 (Supported in all MySQL 8.0 based releases)
+T}
+T{
+.PP
+\fB \fR\fB--use-auto-increment=#\fR\fB \fR
+T}:T{
+For table with auto increment, ignore value in CSV file and generate
+normal auto increment value
+T}:T{
+.PP
+(Supported in all RonDB 21.04.1 based releases)
 T}
 T{
 .PP
@@ -472,8 +482,8 @@ T{
 .PP
 \fB \fR\fB--opbatch=#\fR\fB \fR
 T}:T{
-A db execution batch is a set of transactions and operations sent to NDB
-              kernel. This option limits NDB operations (including blob
+A db execution batch is a set of transactions and operations sent to RonDB
+              kernel. This option limits RonDB operations (including blob
               operations) in a db execution batch. Therefore it also
               limits number of asynch transactions. Value 0 is not valid
 T}:T{
@@ -664,6 +674,43 @@ T}
 .TE
 .sp 1
 Dump core on any fatal error; used for debugging only\&.
+.RE
+.sp
+.RS 4
+.ie n \{\
+\h'-04'\(bu\h'+03'\c
+.\}
+.el \{\
+.sp -1
+.IP \(bu 2.3
+.\}
+\fB\-\-use\-auto\-increment\fR=\fI#\fR
+.TS
+allbox tab(:);
+lB l
+lB l
+lB l
+lB l
+lB l.
+T{
+Command-Line Format
+T}:T{
+--use-auto-increment=#
+T}
+T{
+Type
+T}:T{
+Boolealn
+T}
+T{
+Default Value
+T}:T{
+TRUE
+T}
+.TE
+.sp 1
+For a table with auto increment, ignore the value in the CSV file and instead
+generate a normal auto increment value\&.
 .RE
 .sp
 .RS 4
@@ -1107,7 +1154,7 @@ T}
 T{
 Default Value
 T}:T{
-\
+Backslash
 T}
 .TE
 .sp 1
@@ -1184,7 +1231,7 @@ T}
 T{
 Default Value
 T}:T{
-\t
+TAB
 T}
 .TE
 .sp 1
@@ -1496,7 +1543,7 @@ T}
 T{
 Default Value
 T}:T{
-\n
+CR
 T}
 .TE
 .sp 1
@@ -1552,7 +1599,7 @@ T}
 .sp 1
 Performs internal logging at the given level\&. This option is intended primarily for internal and development use\&.
 .sp
-In debug builds of NDB only, the logging level can be set using this option to a maximum of 4\&.
+In debug builds of RonDB only, the logging level can be set using this option to a maximum of 4\&.
 .RE
 .sp
 .RS 4
@@ -2488,6 +2535,8 @@ was added in NDB 7\&.6\&.2\&.
 .br
 .PP
 Copyright \(co 1997, 2020, Oracle and/or its affiliates.
+.br
+Copyright \(co 2021, 2021, Logical Clocks AB and/or its affiliates.
 .PP
 This documentation is free software; you can redistribute it and/or modify it only under the terms of the GNU General Public License as published by the Free Software Foundation; version 2 of the License.
 .PP
@@ -2496,8 +2545,10 @@ This documentation is distributed in the hope that it will be useful, but WITHOU
 You should have received a copy of the GNU General Public License along with the program; if not, write to the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA or see http://www.gnu.org/licenses/.
 .sp
 .SH "SEE ALSO"
-For more information, please refer to the MySQL Reference Manual,
+For more information, please refer to the MySQL Reference Manual and the RonDB Documentation
 which may already be installed locally and which is also available
-online at http://dev.mysql.com/doc/.
+online at http://dev.mysql.com/doc/ and at http://docs.rondb.com.
 .SH AUTHOR
 Oracle Corporation (http://dev.mysql.com/).
+.br
+Logical Clocks AB (http://logicalclocks.com/).

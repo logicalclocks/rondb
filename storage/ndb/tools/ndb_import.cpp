@@ -146,18 +146,23 @@ my_long_options[] =
     " up to some pre-defined limit",
     &g_opt.m_monitor, &g_opt.m_monitor, 0,
     GET_UINT, REQUIRED_ARG, g_opt.m_monitor, 0, 0, 0, 0, 0 },
+  { "use-auto-increment", NDB_OPT_NOSHORT,
+    "Ignore value in CSV file for auto increment fields, "
+    " instead use an automatically incremented value",
+    &g_opt.m_use_auto_increment, &g_opt.m_use_auto_increment, 0,
+    GET_UINT, REQUIRED_ARG, g_opt.m_ai_increment, 0, 0, 0, 0, 0 },
   { "ai-prefetch-sz", NDB_OPT_NOSHORT,
-    "For table with hidden PK, specify number of autoincrement values"
-    " that are prefetched. See mysqld",
+    "For table with hidden PK/auto increment, specify number of autoincrement"
+    " values that are prefetched. See mysqld",
     &g_opt.m_ai_prefetch_sz, &g_opt.m_ai_prefetch_sz, 0,
     GET_UINT, REQUIRED_ARG, g_opt.m_ai_prefetch_sz, 0, 0, 0, 0, 0 },
   { "ai-increment", NDB_OPT_NOSHORT,
-    "For table with hidden PK, specify autoincrement increment."
+    "For table with hidden PK/auto increment, specify autoincrement increment."
     " See mysqld",
     &g_opt.m_ai_increment, &g_opt.m_ai_increment, 0,
     GET_UINT, REQUIRED_ARG, g_opt.m_ai_increment, 0, 0, 0, 0, 0 },
   { "ai-offset", NDB_OPT_NOSHORT,
-    "For table with hidden PK, specify autoincrement offset."
+    "For table with hidden PK/auto increment, specify autoincrement offset."
     " See mysqld",
     &g_opt.m_ai_offset, &g_opt.m_ai_offset, 0,
     GET_UINT, REQUIRED_ARG, g_opt.m_ai_offset, 0, 0, 0, 0, 0 },

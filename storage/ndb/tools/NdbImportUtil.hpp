@@ -239,6 +239,7 @@ public:
     uint m_offset;
     uint m_null_byte;
     uint m_null_bit;
+    bool m_auto_increment;
   };
 
   typedef std::vector<Attr> Attrs;
@@ -258,6 +259,8 @@ public:
     const NdbRecord* m_keyrec;
     uint m_recsize;     // size of main record
     bool m_has_hidden_pk;
+    bool m_has_auto_increment;
+    uint m_auto_increment_col;
     Attrs m_attrs;
     std::vector<uint> m_blobids;
     // map fragid to nodeid
