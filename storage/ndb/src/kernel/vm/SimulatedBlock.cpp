@@ -2295,7 +2295,7 @@ SimulatedBlock::allocChunks(AllocChunk dst[],
   for (; i<arraysize && pages > 0; i++)
   {
     Uint32 cnt = pages;
-    m_ctx.m_mm.alloc_pages(rg, &dst[i].ptrI, &cnt, 1);
+    m_ctx.m_mm.alloc_pages(rg, &dst[i].ptrI, &cnt, pages);
     if (unlikely(cnt == 0))
       goto fail;
     pages -= cnt;
