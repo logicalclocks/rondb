@@ -316,6 +316,17 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
       logPartPtr.p->logPageFileSize = clogPageFileSize / clogPartFileSize;
       logPartPtr.p->firstFreeLogPage = RNIL;
       logPartPtr.p->logPageCount = 0;
+      /**
+       * We cannot really handle more than 1 chunk since we use
+       * ptrCheckGuard to verify that the logPagePtr.i is within
+       * the boundaries. Allowing holes in this memory allocation
+       * is very hard to support with checks that log page accesses
+       * are ok.
+       *
+       * However quite easy to ensure that allocChunks always returns
+       * memory in consecutive order in 1 chunk.
+       */
+      ndbrequire(chunkcnt == 1);
       for (Int32 i = chunkcnt - 1; i >= 0; i--)
       {
         const Uint32 cnt = chunks[i].cnt;

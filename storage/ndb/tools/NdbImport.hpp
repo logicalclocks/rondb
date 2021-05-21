@@ -83,6 +83,7 @@ public:
     uint m_ai_prefetch_sz;
     uint m_ai_increment;
     uint m_ai_offset;
+    bool m_use_auto_increment;
     bool m_no_asynch;
     bool m_no_hint;
     uint m_pagesize;

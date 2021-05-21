@@ -192,7 +192,7 @@ struct Pool_context
   void release_page(Uint32 type_id, Uint32 i);
 
   /**
-   * Alloc consekutive pages
+   * Alloc consecutive pages
    *
    *   @param[in,out] cnt  no of requested pages,
    *                       return no of allocated (undefined return NULL)

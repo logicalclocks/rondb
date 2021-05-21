@@ -648,6 +648,86 @@ exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
  --csvopt=cqn --pagesize=256 --pagebuffer=512
  test $MYSQLTEST_VARDIR/tmp/tpersons.csv >> $NDB_TOOLS_OUTPUT 2>&1;
 
+perl;
+use strict;
+use Symbol;
+my $lt = !$ENV{IS_WINDOWS} ? "\n" : "\r\n";
+my $vardir = $ENV{MYSQLTEST_VARDIR}
+  or die "need MYSQLTEST_VARDIR";
+my $file = "$vardir/tmp/tauto_inc1.csv";
+my $fh = gensym();
+open($fh, ">:raw", $file)
+  or die "$file: open for write failed: $!";
+for my $i (1..5) {
+  print $fh $i, "\t", $i, $lt;
+}
+close($fh)
+  or die "$file: close after write failed: $!";
+exit(0)
+EOF
+
+perl;
+use strict;
+use Symbol;
+my $lt = !$ENV{IS_WINDOWS} ? "\n" : "\r\n";
+my $vardir = $ENV{MYSQLTEST_VARDIR}
+  or die "need MYSQLTEST_VARDIR";
+my $file = "$vardir/tmp/tauto_inc2.csv";
+my $fh = gensym();
+open($fh, ">:raw", $file)
+  or die "$file: open for write failed: $!";
+for my $i (1..5) {
+  print $fh $i+4, "\t", $i, $lt;
+}
+close($fh)
+  or die "$file: close after write failed: $!";
+exit(0)
+EOF
+
+perl;
+use strict;
+use Symbol;
+my $lt = !$ENV{IS_WINDOWS} ? "\n" : "\r\n";
+my $vardir = $ENV{MYSQLTEST_VARDIR}
+  or die "need MYSQLTEST_VARDIR";
+my $file = "$vardir/tmp/tauto_inc3.csv";
+my $fh = gensym();
+open($fh, ">:raw", $file)
+  or die "$file: open for write failed: $!";
+for my $i (1..5) {
+  print $fh $i+4, "\t", $i, $lt;
+}
+close($fh)
+  or die "$file: close after write failed: $!";
+exit(0)
+EOF
+
+CREATE TABLE tauto_inc1 (
+id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+val INT NOT NULL
+) engine=NDB;
+
+CREATE TABLE tauto_inc2 (
+id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+val INT NOT NULL
+) engine=NDB;
+
+CREATE TABLE tauto_inc3 (
+id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+val INT NOT NULL
+) engine=NDB;
+
+exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp --ai-prefetch-sz=1
+ test $MYSQLTEST_VARDIR/tmp/tauto_inc1.csv >> $NDB_TOOLS_OUTPUT 2>&1;
+exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp --ai-prefetch-sz=1
+ test $MYSQLTEST_VARDIR/tmp/tauto_inc2.csv >> $NDB_TOOLS_OUTPUT 2>&1;
+exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp --ai-prefetch-sz=1
+ test $MYSQLTEST_VARDIR/tmp/tauto_inc3.csv >> $NDB_TOOLS_OUTPUT 2>&1;
+
+select id from tauto_inc1 order by id;
+select id from tauto_inc2 order by id;
+select id from tauto_inc3 order by id;
+
 # Look for the specific error message from ndb_import
 --let $assert_file=$NDB_TOOLS_OUTPUT
 --let $assert_only_after=import test.tpersons
@@ -655,6 +735,10 @@ exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
 --let $assert_select=syntax error, unexpected T_DATA
 --let $assert_count=1
 --source include/assert_grep.inc
+
+drop table tauto_inc1;
+drop table tauto_inc2;
+drop table tauto_inc3;
 
 drop table tpersons;
 
