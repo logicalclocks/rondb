@@ -5329,10 +5329,22 @@ void Dbdih::execUPDATE_FRAG_STATEREQ(Signal* signal)
   Uint32 startGci = req->startGci;
   Uint32 replicaType = req->replicaType;
   Uint32 tFailedNodeId = req->failedNodeId;
+  Uint32 primaryNode = req->primaryNode;
+  if (signal->length() == UpdateFragStateReq::OldSignalLength)
+  {
+    jam();
+    primaryNode = 0;
+  }
 
   FragmentstorePtr fragPtr;
   getFragstore(tabPtr.p, fragId, fragPtr);
   RETURN_IF_NODE_NOT_ALIVE(tdestNodeid);
+  fragPtr.p->primaryNode = 0;
+  if (replicaType == UpdateFragStateReq::COMMIT_STORED)
+  {
+    jam();
+    fragPtr.p->primaryNode = primaryNode;
+  }
   ReplicaRecordPtr frReplicaPtr;
   findReplica(frReplicaPtr, fragPtr.p, tFailedNodeId,
               replicaType == UpdateFragStateReq::START_LOGGING ? false : true);
@@ -8490,6 +8502,33 @@ Dbdih::execSTART_TOCONF(Signal* signal)
   c_activeThreadTakeOverPtr.i = RNIL;
   check_take_over_completed_correctly();
 
+  /**
+   * While we perform the takeover processing we will also calculate
+   * the new distribution of fragments. The idea is that the first
+   * takeover thread will call calc_primary_replicas that calculates
+   * the new distribution to be used after finishing the copying of
+   * the table fragments.
+   *
+   * The flag set here will be seen by the first takeover thread which
+   * will call calc_primary_replica and reset the flag. The result of
+   * calc_primary_replicas will in this case be spread in the
+   * UPDATE_FRAG_STATEREQ signal in the state COMMIT_STORED.
+   */
+  for (Uint32 tableId = 0; tableId < ctabFileSize; tableId++)
+  {
+    TabRecordPtr tabPtr;
+    tabPtr.i = tableId;
+    ptrAss(tabPtr, tabRecord);
+    if (tabPtr.p->tabStatus == TabRecord::TS_ACTIVE)
+    {
+      tabPtr.p->m_calc_primary_replicas = true;
+    }
+    else
+    {
+      tabPtr.p->m_calc_primary_replicas = false;
+    }
+  }
+
   for (Uint32 i = 0; i < c_max_takeover_copy_threads; i++)
   {
     /**
@@ -8576,6 +8615,23 @@ void Dbdih::startNextCopyFragment(Signal* signal, Uint32 takeOverPtrI)
       takeOverPtr.p->toCurrentTabref++;
       continue;
     }//if
+    if (tabPtr.p->m_calc_primary_replicas)
+    {
+      jam();
+      /**
+       * Prepare new distribution of primary replicas that
+       * includes the starting node. This will be effective
+       * when the signal UPDATE_FRAG_STATEREQ is called with
+       * the state COMMIT_STORED.
+       */
+      tabPtr.p->m_calc_primary_replicas = false;
+      calc_primary_replicas(tabPtr.p,
+                            0,
+                            tabPtr.p->totalfragments,
+                            0,
+                            true,
+                            __LINE__);
+    }
     Uint32 fragId = takeOverPtr.p->toCurrentFragid;
     if (fragId >= tabPtr.p->totalfragments) {
       jam();
@@ -8975,7 +9031,15 @@ void Dbdih::sendUpdateFragStateReq(Signal* signal,
   req->failedNodeId = takeOverPtr.p->toFailedNode;
   req->startGci = startGci;
   req->replicaType = replicaType;
-  
+
+  FragmentstorePtr fragPtr;
+  TabRecordPtr tabPtr;
+  tabPtr.i = req->tableId;
+  ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
+  getFragstore(tabPtr.p, req->fragId, fragPtr);
+  req->primaryNode = fragPtr.p->calc_primaryNode;
+  fragPtr.p->calc_primaryNode = 0;
+
   NodeRecordPtr nodePtr;
   nodePtr.i = cfirstAliveNode;
   do {
@@ -11585,6 +11649,12 @@ void Dbdih::removeNodeFromTables(Signal* signal,
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 300, 3);
 }
 
+#define DIH_TAB_WRITE_LOCK(tabPtrP) \
+  do { assertOwnThread(); tabPtrP->m_lock.write_lock(); } while (0)
+
+#define DIH_TAB_WRITE_UNLOCK(tabPtrP) \
+  do { assertOwnThread(); tabPtrP->m_lock.write_unlock(); } while (0)
+
 void Dbdih::removeNodeFromTable(Signal* signal, 
 				Uint32 nodeId, TabRecordPtr tabPtr){ 
   
@@ -11615,8 +11685,25 @@ void Dbdih::removeNodeFromTable(Signal* signal,
 
   const bool lcpOngoingFlag = (tabPtr.p->tabLcpStatus== TabRecord::TLS_ACTIVE);
   const bool unlogged = (tabPtr.p->tabStorage != TabRecord::ST_NORMAL);
-  
+
+  /**
+   * Calculate primary replicas based on that the failed node is no longer
+   * present. In the normal situation with 2 replicas and 1 failed, this
+   * will have no effect. However in the case of 3 replicas and 1 failed,
+   * we will redistribute the primary replicas to ensure that the load on
+   * LDM threads is more evenly spread.
+   *
+   * The change of primary replica can lead to a possibility of deadlocks
+   * for a very short time.
+   */
   FragmentstorePtr fragPtr;
+  calc_primary_replicas(tabPtr.p,
+                        0,
+                        tabPtr.p->totalfragments,
+                        0,
+                        false,
+                        __LINE__);
+  DIH_TAB_WRITE_LOCK(tabPtr.p);
   for(Uint32 fragNo = 0; fragNo < tabPtr.p->totalfragments; fragNo++){
     jam();
     getFragstore(tabPtr.p, fragNo, fragPtr);    
@@ -11683,6 +11770,7 @@ void Dbdih::removeNodeFromTable(Signal* signal,
     updateNodeInfo(fragPtr);
     noOfRemainingLcpReplicas += fragPtr.p->noLcpReplicas;
   }
+  DIH_TAB_WRITE_UNLOCK(tabPtr.p);
   
   if (noOfRemovedReplicas == 0)
   {
@@ -12760,6 +12848,11 @@ static inline void inc_node_or_group(Uint32 &node, Uint32 max_node)
   node = (next == max_node ? 0 : next);
 }
 
+static inline void dec_node_or_group(Uint32 &node, Uint32 max_node)
+{
+  node = (node == 0) ? (max_node - 1) : (node - 1);
+}
+
 /*
   Spread fragments in backwards compatible mode
 */
@@ -12870,6 +12963,7 @@ Dbdih::find_min_used_log_part()
       }
     }
     NGPtr.p->m_new_next_log_part = min_used_log_part;
+    NGPtr.p->m_round_robin_count = 0;
   }
 }
 
@@ -12932,19 +13026,35 @@ void
 Dbdih::add_nodes_to_fragment(Uint16 *fragments,
                              Uint32 & node_index,
                              Uint32 & count,
+                             Uint32 partition_count_per_node,
                              NodeGroupRecordPtr NGPtr,
                              Uint32 noOfReplicas)
 {
   ndbrequire(node_index < noOfReplicas);
+  bool even = ((NGPtr.p->m_round_robin_count & 1) == 0);
   for (Uint32 replicaNo = 0; replicaNo < noOfReplicas; replicaNo++)
   {
-    jam();
     const Uint16 nodeId = NGPtr.p->nodesInGroup[node_index];
     fragments[count++]= nodeId;
-    inc_node_or_group(node_index, NGPtr.p->nodeCount);
+    if (even)
+    {
+      jam();
+      inc_node_or_group(node_index, NGPtr.p->nodeCount);
+    }
+    else
+    {
+      jam();
+      dec_node_or_group(node_index, NGPtr.p->nodeCount);
+    }
     ndbrequire(node_index < noOfReplicas);
   }
-  inc_node_or_group(node_index, NGPtr.p->nodeCount);
+  NGPtr.p->m_round_robin_count++;
+  if (NGPtr.p->m_round_robin_count >= partition_count_per_node)
+  {
+    jam();
+    NGPtr.p->m_round_robin_count = 0;
+    inc_node_or_group(node_index, NGPtr.p->nodeCount);
+  }
   ndbrequire(node_index < noOfReplicas);
 }
 
@@ -12987,6 +13097,200 @@ Dbdih::find_next_log_part(TabRecord *primTabPtrP, Uint32 & next_log_part)
     next_log_part = log_part;
   }
   return can_use_new_fragmentation;
+}
+
+void
+Dbdih::calc_primary_replicas(TabRecord *tabPtrP,
+                             Uint32 first_fid,
+                             Uint32 limit_fid,
+                             Uint32 remove_node,
+                             bool use_new_replica,
+                             Uint32 line)
+{
+  g_eventLogger->info("calc_primary_replicas, line: %u", line);
+  /**
+   * When we create the table we strive to spread the fragments to a
+   * balanced set of node groups. Next we strive to spread the fragments
+   * over the LDM threads in each node. With this unknown we decide on
+   * a starting logical log part id based on the smallest used one so
+   * far and add one to this number in each node group.
+   *
+   * This ensures that we achieve a fairly balanced set of fragments
+   * allocated to the node groups and LDM threads. This setup cannot
+   * be dynamically changed after creating it.
+   *
+   * When we create a table we also try to spread the primary replicas
+   * in a balanced manner. This attempts to do a good job assuming that
+   * all nodes are up and running. However in RonDB 21.04.0 we added
+   * the option that nodes are Not Active, this means that they might
+   * never ever start up. This means that we will often achieve an
+   * unbalanced setup of the primary replicas.
+   *
+   * Primary replicas can be changed dynamically, however if nodes in
+   * the cluster have differing opinions on who is the primary replica,
+   * we will have a lot of unnecessary deadlocks in the cluster.
+   *
+   * There are thus two reasons to not redistribute the primary replicas
+   * within a node group.
+   *
+   * The first reason is that all nodes in the node group is up and running.
+   * The second reason is that some version in the cluster is not using
+   * RonDB 21.10.0 or newer software which is the version where this
+   * feature was introduced. If we redistribute the primary replicas in
+   * this case we would have differing primary replicas in the data nodes.
+   * This would lead to a constant set of deadlocks which is much worse than
+   * the performance disadvantage of not distributing primary replicas in
+   * a fair manner.
+   *
+   * We want to spread the primary replica fragments over different LDM
+   * threads. Thus if we have 3 replicas per node group we will use
+   * 6 fragments per node group in a default setup. Assuming that we have
+   * 2 nodes in the node group active we will thus want to spread the
+   * primary fragments over 3 different LDM threads if possible. The
+   * only safe manner to do this is to use 3 consecutive log part ids.
+   * Similarly if we have 4 replicas per node group and only 2 is alive,
+   * in this case we want to use 4 log part id's after each other and
+   * the next 4 log parts will use the next 4 log part id's. This is
+   * likely to create a fairly balanced use of LDM resources.
+   */
+  bool use_calc_primary_replica = true;
+  bool more_than_one_replica = false;
+  /**
+   * Check that all nodes support calculating new primary replicas.
+   * If they don't we must use the old way of calculating the
+   * primary replicas.
+   */
+  NodeRecordPtr nodePtr;
+  nodePtr.i = cfirstAliveNode;
+  do
+  {
+    ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+    if (!ndbd_support_dynamic_primary_replicas(
+          getNodeInfo(nodePtr.i).m_version))
+    {
+      jam();
+      jamLine(Uint16(nodePtr.i));
+      use_calc_primary_replica = false;
+    }
+    nodePtr.i = nodePtr.p->nextNode;
+  } while (nodePtr.i != RNIL);
+
+  /**
+   * Initialise node group temporary variables.
+   */
+  for (Uint32 ng = 0; ng < cnoOfNodeGroups; ng++)
+  {
+    jam();
+    NodeGroupRecordPtr NGPtr;
+    NGPtr.i = ng;
+    ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
+    NGPtr.p->m_temp_num_fragments = 0;
+    NGPtr.p->m_temp_nodes_alive = 0;
+    NGPtr.p->m_temp_fragment_count_in_batch = 0;
+    NGPtr.p->m_temp_batch_index = 0;
+    Uint32 index = 0;
+    for (Uint32 i = 0; i < NGPtr.p->nodeCount; i++)
+    {
+      nodePtr.i = NGPtr.p->nodesInGroup[i];
+      ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+      if (nodePtr.p->nodeStatus == NodeRecord::ALIVE)
+      {
+        NGPtr.p->m_temp_nodes_alive++;
+        NGPtr.p->m_temp_alive_nodes[index++] = nodePtr.i;
+      }
+    }
+    ndbrequire(NGPtr.p->m_temp_nodes_alive > 0);
+    if (NGPtr.p->m_temp_nodes_alive > 1)
+    {
+      jam();
+      more_than_one_replica = true;
+    }
+  }
+  for (Uint32 fragId = first_fid; fragId < limit_fid; fragId++)
+  {
+    NodeGroupRecordPtr NGPtr;
+    FragmentstorePtr fragPtr;
+    getFragstore(tabPtrP, fragId, fragPtr);
+    fragPtr.p->primaryNode = 0;
+    fragPtr.p->calc_primaryNode = 0;
+    nodePtr.i = fragPtr.p->activeNodes[0];
+    ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+    NGPtr.i = nodePtr.p->nodeGroup;
+    if (NGPtr.i != NO_NODE_GROUP_ID)
+    {
+      ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
+      NGPtr.p->m_temp_num_fragments++;
+    }
+  }
+  if (!use_calc_primary_replica)
+  {
+    jam();
+    return;
+  }
+  if (!more_than_one_replica)
+  {
+    jam();
+    return;
+  }
+  for (Uint32 ng = 0; ng < cnoOfNodeGroups; ng++)
+  {
+    NodeGroupRecordPtr NGPtr;
+    NGPtr.i = ng;
+    ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
+    NGPtr.p->m_temp_fragments_per_batch =
+      (NGPtr.p->m_temp_num_fragments +
+       (NGPtr.p->m_temp_nodes_alive - 1)) /
+      NGPtr.p->m_temp_nodes_alive;
+  }
+  for (Uint32 fragId = first_fid; fragId < limit_fid; fragId++)
+  {
+    jamDebug();
+    NodeGroupRecordPtr NGPtr;
+    FragmentstorePtr fragPtr;
+    getFragstore(tabPtrP, fragId, fragPtr);
+    nodePtr.i = fragPtr.p->activeNodes[0];
+    ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+    NGPtr.i = nodePtr.p->nodeGroup;
+    ndbrequire(NGPtr.i != NO_NODE_GROUP_ID);
+    ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
+    if (true || ((NGPtr.p->m_temp_nodes_alive > 1) &&
+                 (NGPtr.p->m_temp_nodes_alive < NGPtr.p->nodeCount)))
+    {
+      jamDebug();
+      /**
+       * We will reorganize all node groups that have more than one
+       * replica (1 replica node groups will have 1 primary replica
+       * and there is no special handling required).
+       *
+       * We will ignore reorganizing node groups with all replicas
+       * existing. Those should have a balanced setup as defined by
+       * the table and thus using the preferredPrimary to select
+       * the primary node will be good enough.
+       */
+      ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
+      Uint32 primaryNode =
+        NGPtr.p->m_temp_alive_nodes[NGPtr.p->m_temp_batch_index];
+      if (use_new_replica)
+      {
+        jamDebug();
+        fragPtr.p->calc_primaryNode = primaryNode;
+      }
+      else
+      {
+        jamDebug();
+        fragPtr.p->primaryNode = primaryNode;
+      }
+      NGPtr.p->m_temp_fragment_count_in_batch++;
+      if (NGPtr.p->m_temp_fragment_count_in_batch >=
+          NGPtr.p->m_temp_num_fragments)
+      {
+        jamDebug();
+        NGPtr.p->m_temp_batch_index++;
+        ndbrequire(NGPtr.p->m_temp_batch_index < NGPtr.p->m_temp_nodes_alive);
+        NGPtr.p->m_temp_fragment_count_in_batch = 0;
+      }
+    }
+  }
 }
 
 /**
@@ -13131,6 +13435,10 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal * signal)
     getFragmentsPerNode() * cnoOfNodeGroups * cnoReplicas;
   const Uint32 maxFragments =
     MAX_FRAG_PER_LQH * getFragmentsPerNode() * cnoOfNodeGroups;
+
+  ndbrequire(cnoOfNodeGroups > 0);
+  Uint32 partitions_per_node = noOfFragments / cnoOfNodeGroups;
+  partitions_per_node /= cnoReplicas;
 
   if (flags != CreateFragmentationReq::RI_GET_FRAGMENTATION)
   {
@@ -13279,6 +13587,7 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal * signal)
         add_nodes_to_fragment(fragments,
                               node_index,
                               count,
+                              partitions_per_node,
                               NGPtr,
                               noOfReplicas);
         (*next_replica_node)[NGPtr.i][0] = node_index;
@@ -13595,6 +13904,7 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal * signal)
         add_nodes_to_fragment(fragments,
                               node_index,
                               count,
+                              1,
                               NGPtr,
                               noOfReplicas);
         (*next_replica_node)[NGPtr.i][logPart] = node_index;
@@ -13859,41 +14169,48 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal * signal)
           }
 
           /* Select primary replica node */
-          Uint32 primary_node;
+          Uint32 node_index;
           if (tmp_next_replica_node_set[NGPtr.i][logPartIndex] ||
               partitionBalance == NDB_PARTITION_BALANCE_FOR_RP_BY_LDM)
           {
             jam();
-            Uint32 node_index = (*next_replica_node)[NGPtr.i][logPartIndex];
-            primary_node = NGPtr.p->nodesInGroup[node_index];
-            inc_node_or_group(node_index, NGPtr.p->nodeCount);
-            ndbrequire(node_index < noOfReplicas);
-            (*next_replica_node)[NGPtr.i][logPart] = node_index;
+            node_index = (*next_replica_node)[NGPtr.i][logPartIndex];
           }
           else
           {
             jam();
-            Uint32 node_index = c_next_replica_node[NGPtr.i][logPartIndex];
-            primary_node = NGPtr.p->nodesInGroup[node_index];
-            inc_node_or_group(node_index, NGPtr.p->nodeCount);
-            c_next_replica_node[NGPtr.i][logPart] = node_index;
+            node_index = c_next_replica_node[NGPtr.i][logPartIndex];
           }
-          ndbrequire(primary_node < MAX_NDB_NODES);
           fragments[count++] = logPart;
-          fragments[count++] = primary_node;
-          tmp_fragments_per_ldm[primary_node][logPartIndex]++;
-          /* Ensure that we don't report this as min immediately again */
-          tmp_fragments_per_node[primary_node]++;
+          add_nodes_to_fragment(fragments,
+                                node_index,
+                                count,
+                                partitions_per_node,
+                                NGPtr,
+                                noOfReplicas);
           for (Uint32 r = 0; r < noOfReplicas; r++)
           {
+            Uint32 replicaNode = NGPtr.p->nodesInGroup[r];
+            tmp_fragments_per_node[replicaNode]++;
+            tmp_fragments_per_ldm[replicaNode][logPartIndex]++;
+          }
+          if (NGPtr.p->m_round_robin_count == 0)
+          {
             jam();
-            if (NGPtr.p->nodesInGroup[r] != primary_node)
+            /* Ensure that we don't report this as min immediately again */
+            Uint32 primary_node = NGPtr.p->nodesInGroup[node_index];
+            tmp_fragments_per_node[primary_node]++;
+            inc_node_or_group(node_index, NGPtr.p->nodeCount);
+            if (tmp_next_replica_node_set[NGPtr.i][logPartIndex] ||
+                partitionBalance == NDB_PARTITION_BALANCE_FOR_RP_BY_LDM)
             {
               jam();
-              Uint32 replicaNode = NGPtr.p->nodesInGroup[r];
-              fragments[count++] = replicaNode;
-              tmp_fragments_per_node[replicaNode]++;
-              tmp_fragments_per_ldm[replicaNode][logPartIndex]++;
+              (*next_replica_node)[NGPtr.i][logPart] = node_index;
+            }
+            else
+            {
+              jam();
+              c_next_replica_node[NGPtr.i][logPart] = node_index;
             }
           }
         }
@@ -14431,6 +14748,23 @@ void Dbdih::execDIADDTABREQ(Signal* signal)
       jam();
       insertCopyFragmentList(tabPtr.p, fragPtr.p, fragId);
     }
+  }
+  /**
+   * Calculate the primary replicas to be used by the new table
+   * created.
+   */
+  calc_primary_replicas(tabPtr.p,
+                        0,
+                        noFragments,
+                        0,
+                        false,
+                        __LINE__);
+  for (Uint32 fragId = 0; fragId < noFragments; fragId++)
+  {
+    jam();
+    FragmentstorePtr fragPtr;
+    getFragstore(tabPtr.p, fragId, fragPtr);
+    updateNodeInfo(fragPtr);
   }
   initTableFile(tabPtr);
   tabPtr.p->tabCopyStatus = TabRecord::CS_ADD_TABLE_MASTER;
@@ -15289,7 +15623,23 @@ Dbdih::add_fragments_to_table(Ptr<TabRecord> tabPtr, const Uint16 buf[])
     }
     fragPtr.p->fragReplicas = activeIndex;
   }
-
+  /**
+   * Calculate the primary replicas to be used in the new set of
+   * fragments in the table.
+   */
+  calc_primary_replicas(tabPtr.p,
+                        current,
+                        current + cnt,
+                        0,
+                        false,
+                        __LINE__);
+  for (i = 0; i < cnt; i++)
+  {
+    FragmentstorePtr fragPtr;
+    Uint32 fragId = current + i;
+    getFragstore(tabPtr.p, fragId, fragPtr);
+    updateNodeInfo(fragPtr);
+  }
   return 0;
 error:
   for(i = i + current; i != current; i--)
@@ -16537,12 +16887,6 @@ Uint32 Dbdih::extractNodeInfo(EmulatedJamBuffer *jambuf,
   ndbrequire(nodeCount > 0 || !crash_on_error);
   return nodeCount;
 }//Dbdih::extractNodeInfo()
-
-#define DIH_TAB_WRITE_LOCK(tabPtrP) \
-  do { assertOwnThread(); tabPtrP->m_lock.write_lock(); } while (0)
-
-#define DIH_TAB_WRITE_UNLOCK(tabPtrP) \
-  do { assertOwnThread(); tabPtrP->m_lock.write_unlock(); } while (0)
 
 void
 Dbdih::start_scan_on_table(TabRecordPtr tabPtr,
@@ -19860,6 +20204,23 @@ Dbdih::resetReplicaSr(TabRecordPtr tabPtr){
                 NDBD_EXIT_INSUFFICENT_NODES,
                 buf);
     }
+  }
+  /**
+   * Calculate the new primary replicas during a System restart.
+   * This is likely to be recomputed again when starting the
+   * fragments.
+   */
+  calc_primary_replicas(tabPtr.p,
+                        0,
+                        tabPtr.p->totalfragments,
+                        0,
+                        false,
+                        __LINE__);
+  for(Uint32 i = 0; i<tabPtr.p->totalfragments; i++)
+  {
+    jam();
+    FragmentstorePtr fragPtr;
+    getFragstore(tabPtr.p, i, fragPtr);
     updateNodeInfo(fragPtr);
   }
 }
@@ -20084,6 +20445,18 @@ Dbdih::copyTabReq_complete(Signal* signal, TabRecordPtr tabPtr){
      * and DBTC hasn't started using these tables yet.
      */
     tabPtr.p->tabStatus = TabRecord::TS_ACTIVE;
+    /**
+     * Calculate the new primary replicas after copying the meta data of
+     * the table. Happens while performing a node restart, likely
+     * recomputed later on when copying the table fragments from the live
+     * node(s).
+     */
+    calc_primary_replicas(tabPtr.p,
+                          0,
+                          tabPtr.p->totalfragments,
+                          0,
+                          false,
+                          __LINE__);
     for (Uint32 fragId = 0; fragId < tabPtr.p->totalfragments; fragId++) {
       jam();
       FragmentstorePtr fragPtr;
@@ -20475,7 +20848,22 @@ void Dbdih::startFragment(Signal* signal, Uint32 tableId, Uint32 fragId)
     jam();
     break;
   }//while
-  
+
+  if (fragId == 0)
+  {
+    jam();
+    /**
+     * Calculate the new set of primary replicas to be used when the
+     * node is up and running and performing the actions of a live
+     * node again.
+     */
+    calc_primary_replicas(tabPtr.p,
+                          0,
+                          tabPtr.p->totalfragments,
+                          0,
+                          false,
+                          __LINE__);
+  }
   FragmentstorePtr fragPtr;
   getFragstore(tabPtr.p, fragId, fragPtr);
   /* ----------------------------------------------------------------------- */
@@ -24913,6 +25301,8 @@ void Dbdih::initFragstore(FragmentstorePtr fragPtr, Uint32 fragId)
   fragPtr.p->noOldStoredReplicas = 0;
   fragPtr.p->fragReplicas = 0;
   fragPtr.p->preferredPrimary = 0;
+  fragPtr.p->primaryNode = 0;
+  fragPtr.p->calc_primaryNode = 0;
 
   for (Uint32 i = 0; i < MAX_REPLICAS; i++)
     fragPtr.p->activeNodes[i] = 0;
@@ -25084,6 +25474,7 @@ void Dbdih::initTable(TabRecordPtr tabPtr)
   tabPtr.p->tableType = DictTabInfo::UndefTableType;
   tabPtr.p->schemaTransId = 0;
   tabPtr.p->tabActiveLcpFragments = 0;
+  tabPtr.p->m_calc_primary_replicas = false;
 }//Dbdih::initTable()
 
 /*************************************************************************/
@@ -27086,12 +27477,18 @@ void Dbdih::updateNodeInfo(FragmentstorePtr fragPtr)
 {
   ReplicaRecordPtr replicatePtr;
   Uint32 index = 0;
+  Uint32 primaryNode = fragPtr.p->primaryNode;
+  fragPtr.p->primaryNode = 0;
+  bool found = false;
   replicatePtr.i = fragPtr.p->storedReplicas;
   do {
     jam();
     c_replicaRecordPool.getPtr(replicatePtr);
     ndbrequire(index < MAX_REPLICAS);
-    fragPtr.p->activeNodes[index] = replicatePtr.p->procNode;
+    Uint32 nodeId = replicatePtr.p->procNode;
+    if (nodeId == primaryNode)
+      found = true;
+    fragPtr.p->activeNodes[index] = nodeId;
     index++;
     replicatePtr.i = replicatePtr.p->nextPool;
   } while (replicatePtr.i != RNIL);
@@ -27101,7 +27498,16 @@ void Dbdih::updateNodeInfo(FragmentstorePtr fragPtr)
   // We switch primary to the preferred primary if the preferred primary is
   // in the list.
   /* ----------------------------------------------------------------------- */
-  const Uint32 prefPrim = fragPtr.p->preferredPrimary;
+  Uint32 prefPrim = fragPtr.p->preferredPrimary;
+  if (found)
+  {
+    jam();
+    /**
+     * We have previously calculated the primary nodes to use for
+     * the fragment to use, use this here.
+     */
+    prefPrim = primaryNode;
+  }
   for (Uint32 i = 1; i < index; i++) {
     jam();
     ndbrequire(i < MAX_REPLICAS);
@@ -28553,13 +28959,23 @@ Dbdih::switchReplica(Signal* signal,
       tableId++;
       fragNo = 0;
       continue;
-    }//if    
+    }//if
     if (fragNo >= tabPtr.p->totalfragments) {
       jam();
       tableId++;
       fragNo = 0;
       continue;
     }//if    
+    if (fragNo == 0)
+    {
+      jam();
+      calc_primary_replicas(tabPtr.p,
+                            0,
+                            tabPtr.p->totalfragments,
+                            nodeId,
+                            false,
+                            __LINE__);
+    }
     FragmentstorePtr fragPtr;
     getFragstore(tabPtr.p, fragNo, fragPtr);
     
@@ -28568,18 +28984,76 @@ Dbdih::switchReplica(Signal* signal,
                                                 fragPtr.p,
                                                 oldOrder);
 
-    if(oldOrder[0] != nodeId) {
+    bool found_stop_node = false;
+    for (Uint32 i = 0; i < noOfReplicas; i++)
+    {
+      jam();
+      if (oldOrder[i] == nodeId)
+      {
+        /**
+         * Move the stopping node to be last in node list.
+         */
+        jam();
+        found_stop_node = true;
+        Uint32 switch_node = oldOrder[noOfReplicas - 1];
+        oldOrder[i] = switch_node;
+        oldOrder[noOfReplicas - 1] = nodeId;
+        break;
+      }
+    }
+    if (!found_stop_node ||
+        noOfReplicas <= 1)
+    {
       jam();
       fragNo++;
       continue;
-    }//if    
+    }//if
+    Uint32 primaryNode = 0;
+    if (fragPtr.p->primaryNode == nodeId)
+    {
+      jam();
+      fragPtr.p->primaryNode = 0;
+    }
+    if (fragPtr.p->primaryNode == 0 ||
+        getNodeStatus(fragPtr.p->primaryNode) != NodeRecord::ALIVE)
+    {
+      jam();
+      primaryNode = oldOrder[0];
+      fragPtr.p->primaryNode = 0;
+    }
+    else
+    {
+      jam();
+      primaryNode = fragPtr.p->primaryNode;
+      bool found = false;
+      for (Uint32 i = 0; i < noOfReplicas; i++)
+      {
+        if (oldOrder[i] == fragPtr.p->primaryNode)
+        {
+          found = true;
+          break;
+        }
+      }
+      ndbrequire(found == true);
+      ndbrequire(fragPtr.p->primaryNode != nodeId);
+    }
     req->tableId = tableId;
     req->fragNo = fragNo;
     req->noOfReplicas = noOfReplicas;
-    for (Uint32 i = 0; i < (noOfReplicas - 1); i++) {
-      req->newNodeOrder[i] = oldOrder[i+1];
+    req->newNodeOrder[0] = primaryNode;
+    Uint32 index = 0;
+    for (Uint32 i = 0; i < noOfReplicas; i++)
+    {
+      jam();
+      if (oldOrder[i] == primaryNode)
+      {
+        jam();
+        continue;
+      }
+      index++;
+      req->newNodeOrder[index] = oldOrder[i];
     }//for
-    req->newNodeOrder[noOfReplicas-1] = nodeId;
+    ndbrequire(index == (noOfReplicas - 1));
     req->senderRef = reference();
     
     /**

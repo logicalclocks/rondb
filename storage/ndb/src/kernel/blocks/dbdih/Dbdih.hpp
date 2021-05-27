@@ -295,6 +295,8 @@ public:
     Uint8 noOldStoredReplicas;  /* NUMBER OF "DEAD" STORED REPLICAS */
     Uint8 noStoredReplicas;     /* NUMBER OF "ALIVE" STORED REPLICAS*/
     Uint8 noLcpReplicas;        ///< No of replicas remaining to be LCP:ed
+    Uint8 primaryNode;
+    Uint8 calc_primaryNode;
   };
   typedef Ptr<Fragmentstore> FragmentstorePtr;
 
@@ -310,8 +312,19 @@ public:
     Uint32 activeTakeOverCount;
     Uint32 m_next_log_part;
     Uint32 m_new_next_log_part;
+    Uint32 m_round_robin_count;
     Uint32 nodegroupIndex;
     Uint32 m_ref_count;
+    /**
+     * Temporary variables used by calc_primary_replicas
+     */
+    Uint32 m_temp_num_fragments;
+    Uint32 m_temp_nodes_alive;
+    Uint32 m_temp_fragments_per_batch;
+    Uint32 m_temp_fragment_count_in_batch;
+    Uint32 m_temp_batch_index;
+    Uint32 m_temp_alive_nodes[MAX_REPLICAS];
+
     Uint32 m_used_log_parts[MAX_INSTANCE_KEYS];
   };
   typedef Ptr<NodeGroupRecord> NodeGroupRecordPtr;
@@ -740,8 +753,6 @@ public:
     };
     Method method;
 
-
-
 //-----------------------------------------------------------------------------
 // Each entry in this array contains a reference to 16 fragment records in a
 // row. Thus finding the correct record is very quick provided the fragment id.
@@ -758,6 +769,8 @@ public:
     Uint32 tabRemoveNode;
     Uint32 noOfFragChunks;
     Uint32 tabActiveLcpFragments;
+
+    bool m_calc_primary_replicas;
 
     struct {
       Uint32 tabUserRef;
@@ -2831,10 +2844,18 @@ private:
   void add_nodes_to_fragment(Uint16 *fragments,
                              Uint32 & node_index,
                              Uint32 & count,
+                             Uint32 partitions_per_node,
                              NodeGroupRecordPtr NGPtr,
                              Uint32 noOfReplicas);
   bool find_next_log_part(TabRecord *primTabPtrP, Uint32 & next_log_part);
   void getNodeGroupPtr(Uint32 nodeId, NodeGroupRecordPtr & NGPtr);
+
+  void calc_primary_replicas(TabRecord *tabPtrP,
+                             Uint32 first_fid,
+                             Uint32 limit_fid,
+                             Uint32 remove_node,
+                             bool use_new_replica,
+                             Uint32 line);
 public:
   bool is_master() { return isMaster(); }
   
