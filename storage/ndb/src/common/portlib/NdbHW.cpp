@@ -2239,7 +2239,6 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
     {
       return -1;
     }
-    return 0;
   }
   Uint32 max_socket_id = 0;
   for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
