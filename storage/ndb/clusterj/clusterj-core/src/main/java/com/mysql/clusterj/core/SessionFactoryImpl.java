@@ -467,7 +467,7 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
     }
 
     private void warmupSessionCache() {
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < CLUSTER_WARMUP_CACHED_SESSIONS; i++) {
             Session session = getSession(null, true);
             storeCachedSession(session);
         }
