@@ -138,7 +138,8 @@ struct UpdateToConf
 
 struct UpdateFragStateReq 
 {
-  STATIC_CONST( SignalLength = 9 );
+  STATIC_CONST( OldSignalLength = 9 );
+  STATIC_CONST( SignalLength = 10 );
 
   enum ReplicaType {
     STORED = 7,
@@ -155,6 +156,7 @@ struct UpdateFragStateReq
   Uint32 startGci;
   Uint32 replicaType;
   Uint32 failedNodeId;
+  Uint32 primaryNode;
 };
 
 struct UpdateFragStateConf 

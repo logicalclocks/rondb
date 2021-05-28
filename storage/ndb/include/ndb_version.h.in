@@ -675,4 +675,14 @@ ndbd_support_activate(Uint32 x)
 {
   return x >= NDBD_SUPPORT_ACTIVATE;
 }
+
+#define NDBD_SUPPORT_DYNAMIC_PRIMARY_REPLICAS NDB_MAKE_VERSION(21,10,0)
+static
+inline
+bool
+ndbd_support_dynamic_primary_replicas(Uint32 x)
+{
+  return x >= NDBD_SUPPORT_ACTIVATE;
+}
+
 #endif
