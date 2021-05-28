@@ -13107,7 +13107,6 @@ Dbdih::calc_primary_replicas(TabRecord *tabPtrP,
                              bool use_new_replica,
                              Uint32 line)
 {
-  g_eventLogger->info("calc_primary_replicas, line: %u", line);
   /**
    * When we create the table we strive to spread the fragments to a
    * balanced set of node groups. Next we strive to spread the fragments
@@ -13253,6 +13252,7 @@ Dbdih::calc_primary_replicas(TabRecord *tabPtrP,
     NGPtr.i = nodePtr.p->nodeGroup;
     ndbrequire(NGPtr.i != NO_NODE_GROUP_ID);
     ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
+    ndbrequire(NGPtr.p->m_temp_batch_index < NGPtr.p->m_temp_nodes_alive);
     if (true || ((NGPtr.p->m_temp_nodes_alive > 1) &&
                  (NGPtr.p->m_temp_nodes_alive < NGPtr.p->nodeCount)))
     {
@@ -13282,11 +13282,10 @@ Dbdih::calc_primary_replicas(TabRecord *tabPtrP,
       }
       NGPtr.p->m_temp_fragment_count_in_batch++;
       if (NGPtr.p->m_temp_fragment_count_in_batch >=
-          NGPtr.p->m_temp_num_fragments)
+          NGPtr.p->m_temp_fragments_per_batch)
       {
         jamDebug();
         NGPtr.p->m_temp_batch_index++;
-        ndbrequire(NGPtr.p->m_temp_batch_index < NGPtr.p->m_temp_nodes_alive);
         NGPtr.p->m_temp_fragment_count_in_batch = 0;
       }
     }
