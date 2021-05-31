@@ -9125,8 +9125,6 @@ void Dblqh::prepareContinueAfterBlockedLab(
                 Signal* signal,
                 const TcConnectionrecPtr tcConnectptr)
 {
-  UintR ttcScanOp;
-
 /* -------------------------------------------------------------------------- */
 /*       INPUT:          TC_CONNECTPTR           ACTIVE CONNECTION RECORD     */
 /*                       FRAGPTR                 FRAGMENT RECORD              */
@@ -9136,7 +9134,6 @@ void Dblqh::prepareContinueAfterBlockedLab(
 /* -------------------------------------------------------------------------- */
 /*       ALSO AFTER NORMAL PROCEDURE WE CONTINUE HERE                         */
 /* -------------------------------------------------------------------------- */
-  Uint32 tc_ptr_i = tcConnectptr.i;
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
   Uint32 activeCreat = regTcPtr->activeCreat;
   if (regTcPtr->operation == ZUNLOCK)
@@ -9151,7 +9148,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
   {
     jam();
     ndbassert(!m_is_query_block);
-    ttcScanOp = KeyInfo20::getScanOp(regTcPtr->tcScanInfo);
+    Uint32 ttcScanOp = KeyInfo20::getScanOp(regTcPtr->tcScanInfo);
     scanptr.i = RNIL;
     {
       ScanRecord key;
@@ -9228,6 +9225,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
       /**
        * Delete by ROWID from RESTORE
        */
+      ndbassert(!m_is_query_block);
       ndbrequire(LqhKeyReq::getRowidFlag(regTcPtr->reqinfo));
       ndbrequire(regTcPtr->operation == ZDELETE);
       handle_nr_copy(signal, tcConnectptr);
@@ -9244,6 +9242,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
      * this starting fragment with the live fragment.
      */
     jam();
+    ndbassert(!m_is_query_block);
     ndbrequire(!regTcPtr->indTakeOver);
     regTcPtr->totSendlenAi = regTcPtr->totReclenAi;
     handle_nr_copy(signal, tcConnectptr);
@@ -9258,14 +9257,13 @@ void Dblqh::prepareContinueAfterBlockedLab(
      * changes.
      */
     jam();
+    ndbassert(!m_is_query_block);
     ndbrequire(!regTcPtr->indTakeOver);
     ndbassert(activeCreat == Fragrecord::AC_IGNORED);
     if (TRACENR_FLAG)
       TRACENR(" IGNORING (activeCreat == 2)" << endl);
     
-    signal->theData[0] = tc_ptr_i;
     regTcPtr->transactionState = TcConnectionrec::WAIT_ACC_ABORT;
-    
     signal->theData[0] = regTcPtr->tupConnectrec;
     c_tup->do_tup_abortreq(signal, 0);
     jamEntryDebug();
@@ -12545,7 +12543,7 @@ void Dblqh::execCOMPLETE(Signal* signal)
       jam();
       localCommitLab(signal, tcConnectptr);
       return;
-    } 
+    }
     else if (tcConnectptr.p->seqNoReplica == 0)
     {
       jam();
@@ -18123,9 +18121,9 @@ Uint32 Dblqh::initScanrec(const ScanFragReq* scanFragReq,
   ExecFunction f;
   if (accScan)
   {
-    blockRef = caccBlockref;
-    block = c_acc;
-    f = c_acc->getExecuteFunction(GSN_NEXT_SCANREQ);
+    blockRef = ctupBlockref;
+    block = c_tup;
+    f = c_tup->getExecuteFunction(GSN_NEXT_SCANREQ);
   }
   else if (! tupScan)
   {
