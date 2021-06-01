@@ -13028,7 +13028,8 @@ Dbdih::add_nodes_to_fragment(Uint16 *fragments,
                              Uint32 & count,
                              Uint32 partition_count_per_node,
                              NodeGroupRecordPtr NGPtr,
-                             Uint32 noOfReplicas)
+                             Uint32 noOfReplicas,
+                             bool add_node)
 {
   ndbrequire(node_index < noOfReplicas);
   bool even = ((NGPtr.p->m_round_robin_count & 1) == 0);
@@ -13053,7 +13054,11 @@ Dbdih::add_nodes_to_fragment(Uint16 *fragments,
   {
     jam();
     NGPtr.p->m_round_robin_count = 0;
-    inc_node_or_group(node_index, NGPtr.p->nodeCount);
+    if (!add_node)
+    {
+      jam();
+      inc_node_or_group(node_index, NGPtr.p->nodeCount);
+    }
   }
   ndbrequire(node_index < noOfReplicas);
 }
@@ -13588,7 +13593,8 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal * signal)
                               count,
                               partitions_per_node,
                               NGPtr,
-                              noOfReplicas);
+                              noOfReplicas,
+                              false);
         (*next_replica_node)[NGPtr.i][0] = node_index;
         inc_ng(fragNo,
                noOfFragments,
@@ -13905,7 +13911,8 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal * signal)
                               count,
                               1,
                               NGPtr,
-                              noOfReplicas);
+                              noOfReplicas,
+                              false);
         (*next_replica_node)[NGPtr.i][logPart] = node_index;
         inc_ng(fragNo,
                noOfFragments,
@@ -14186,7 +14193,8 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal * signal)
                                 count,
                                 partitions_per_node,
                                 NGPtr,
-                                noOfReplicas);
+                                noOfReplicas,
+                                true);
           for (Uint32 r = 0; r < noOfReplicas; r++)
           {
             Uint32 replicaNode = NGPtr.p->nodesInGroup[r];
@@ -14204,12 +14212,12 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal * signal)
                 partitionBalance == NDB_PARTITION_BALANCE_FOR_RP_BY_LDM)
             {
               jam();
-              (*next_replica_node)[NGPtr.i][logPart] = node_index;
+              (*next_replica_node)[NGPtr.i][logPartIndex] = node_index;
             }
             else
             {
               jam();
-              c_next_replica_node[NGPtr.i][logPart] = node_index;
+              c_next_replica_node[NGPtr.i][logPartIndex] = node_index;
             }
           }
         }

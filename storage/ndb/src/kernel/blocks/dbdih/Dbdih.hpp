@@ -2846,7 +2846,8 @@ private:
                              Uint32 & count,
                              Uint32 partitions_per_node,
                              NodeGroupRecordPtr NGPtr,
-                             Uint32 noOfReplicas);
+                             Uint32 noOfReplicas,
+                             bool add_node);
   bool find_next_log_part(TabRecord *primTabPtrP, Uint32 & next_log_part);
   void getNodeGroupPtr(Uint32 nodeId, NodeGroupRecordPtr & NGPtr);
 
