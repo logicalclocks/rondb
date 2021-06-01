@@ -13182,11 +13182,11 @@ Dbdih::calc_primary_replicas(TabRecord *tabPtrP,
   /**
    * Initialise node group temporary variables.
    */
-  for (Uint32 ng = 0; ng < cnoOfNodeGroups; ng++)
+  for (Uint32 ng_i = 0; ng_i < cnoOfNodeGroups; ng_i++)
   {
     jam();
     NodeGroupRecordPtr NGPtr;
-    NGPtr.i = ng;
+    NGPtr.i = c_node_groups[ng_i];
     ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
     NGPtr.p->m_temp_num_fragments = 0;
     NGPtr.p->m_temp_nodes_alive = 0;
@@ -13220,11 +13220,9 @@ Dbdih::calc_primary_replicas(TabRecord *tabPtrP,
     nodePtr.i = fragPtr.p->activeNodes[0];
     ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
     NGPtr.i = nodePtr.p->nodeGroup;
-    if (NGPtr.i != NO_NODE_GROUP_ID)
-    {
-      ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
-      NGPtr.p->m_temp_num_fragments++;
-    }
+    ndbrequire(NGPtr.i != NO_NODE_GROUP_ID);
+    ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
+    NGPtr.p->m_temp_num_fragments++;
   }
   if (!use_calc_primary_replica)
   {
@@ -13236,10 +13234,10 @@ Dbdih::calc_primary_replicas(TabRecord *tabPtrP,
     jam();
     return;
   }
-  for (Uint32 ng = 0; ng < cnoOfNodeGroups; ng++)
+  for (Uint32 ng_i = 0; ng_i < cnoOfNodeGroups; ng_i++)
   {
     NodeGroupRecordPtr NGPtr;
-    NGPtr.i = ng;
+    NGPtr.i = c_node_groups[ng_i];
     ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
     NGPtr.p->m_temp_fragments_per_batch =
       (NGPtr.p->m_temp_num_fragments +
@@ -25884,6 +25882,9 @@ void Dbdih::makeNodeGroups(Uint32 nodeArray[])
     ptrCheckGuard(mngNodeptr, MAX_NDB_NODES, nodeRecord);
     if (mngNodeptr.p->nodeGroup == RNIL)
     {
+      jam();
+      /* nodeGroup can never be set to RNIL */
+      ndbabort();
       mngNodeptr.p->nodeGroup = NGPtr.i;
       NGPtr.p->nodesInGroup[NGPtr.p->nodeCount++] = mngNodeptr.i;
 
@@ -25912,6 +25913,7 @@ void Dbdih::makeNodeGroups(Uint32 nodeArray[])
     if (NGPtr.p->nodeCount == 0)
     {
       jam();
+      ndbabort(); //TODO test to see if it ever happens
     }
     else if (NGPtr.p->nodeCount != cnoReplicas)
     {
