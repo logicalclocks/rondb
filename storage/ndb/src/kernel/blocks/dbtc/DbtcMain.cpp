@@ -21044,8 +21044,8 @@ Dbtc::fk_scanFromChildTable(Signal* signal,
   {
     jam();
     ndbrequire(terrorCode != ZOK);
-    abortTransFromTrigger(signal, *transPtr, terrorCode);
     releaseTcCon();
+    abortTransFromTrigger(signal, *transPtr, terrorCode);
     checkPoolShrinkNeed(DBTC_CONNECT_RECORD_TRANSIENT_POOL_INDEX,
                         tcConnectRecord);
     return;
