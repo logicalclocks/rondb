@@ -276,11 +276,7 @@ void
 recv_awake(struct thr_wait* wait)
 {
   volatile unsigned * val = &wait->m_futex_state;
-#ifndef NDEBUG
-  int old = 
-#endif
-    xcng(val, thr_wait::FS_RUNNING);
-  assert(old == thr_wait::FS_SLEEPING);
+  xcng(val, thr_wait::FS_RUNNING);
 }
 
 template<typename T>
