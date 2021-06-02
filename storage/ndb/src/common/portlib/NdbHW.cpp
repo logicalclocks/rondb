@@ -2058,8 +2058,6 @@ get_l3_cache_info(struct ndb_hwinfo *hwinfo)
     FILE *cache_info = fopen(buf, "r");
     if (cache_info == nullptr)
     {
-      snprintf(error_buf, sizeof(error_buf), "Failed to open %s", buf);
-      perror(error_buf);
       return -1;
     }
     FileGuard g(cache_info); // close at end...
@@ -2275,6 +2273,10 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
     for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
     {
       hwinfo->cpu_info[i].l3_cache_id = hwinfo->cpu_info[i].socket_id;
+    }
+    if (num_cpu_sockets == 0)
+    {
+      num_cpu_sockets = 1;
     }
     num_shared_l3_caches = num_cpu_sockets;
   }
