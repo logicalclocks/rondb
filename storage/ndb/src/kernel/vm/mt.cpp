@@ -2738,7 +2738,8 @@ thr_send_threads::insert_activate_trp(TrpId trp_id)
   if (m_trp_state[trp_id].m_data_available > 0)
   {
     m_trp_state[trp_id].m_data_available++;
-    if (m_trp_state[trp_id].m_thr_no_sender == NO_OWNER_THREAD)
+    if (m_trp_state[trp_id].m_thr_no_sender == NO_OWNER_THREAD &&
+        m_trp_state[trp_id].m_in_list_no_neighbour == FALSE)
     {
       struct thr_send_thread_instance *send_instance;
       send_instance = get_send_thread_instance_by_trp(trp_id);
