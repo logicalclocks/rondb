@@ -2418,7 +2418,7 @@ public:
       Uint32 this_id = id[index];
       Uint32 send_instance = get_send_instance(this_id);
       m_trp_state[this_id].m_neighbour_trp = TRUE;
-      m_trp_state[this_id].m_in_list_no_neighbour = TRUE;
+      m_trp_state[this_id].m_in_list_no_neighbour = FALSE;
       for (Uint32 i = 0; i < MAX_NEIGHBOURS; i++)
       {
         require(m_send_threads[send_instance].m_neighbour_trps[i] != this_id);
@@ -2792,8 +2792,8 @@ thr_send_threads::insert_trp(TrpId trp_id,
     m_trp_state[send_instance->m_last_trp];
   trp_state.m_next = 0;
   assert(trp_state.m_data_available > 0);
-  assert(trp_state.m_in_list_no_neighbour == false);
-  trp_state.m_in_list_no_neighbour = true;
+  assert(trp_state.m_in_list_no_neighbour == FALSE);
+  trp_state.m_in_list_no_neighbour = TRUE;
   send_instance->m_last_trp = trp_id;
 
   if (first_trp == 0)
@@ -3281,7 +3281,7 @@ found_non_neighbour:
   if (trp_id == send_instance->m_last_trp)
     send_instance->m_last_trp = prev;
 
-  m_trp_state[trp_id].m_in_list_no_neighbour = false;
+  m_trp_state[trp_id].m_in_list_no_neighbour = FALSE;
 
   /**
    * Fall through for non-neighbour trps to same return handling as
@@ -3852,7 +3852,7 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
   assert(m_trp_state[trp_id].m_thr_no_sender == NO_OWNER_THREAD);
   m_trp_state[trp_id].m_thr_no_sender = thr_no;
   assert(m_trp_state[trp_id].m_neighbour_trp ||
-         m_trp_state[trp_id].m_in_list_no_neighbour == false);
+         m_trp_state[trp_id].m_in_list_no_neighbour == FALSE);
   NdbMutex_Unlock(send_instance->send_thread_mutex);
 
   watchdog_counter = 6;
@@ -3923,7 +3923,7 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
 
   NdbMutex_Lock(send_instance->send_thread_mutex);
   assert(m_trp_state[trp_id].m_neighbour_trp ||
-         m_trp_state[trp_id].m_in_list_no_neighbour == false);
+         m_trp_state[trp_id].m_in_list_no_neighbour == FALSE);
 #ifdef VM_TRACE
   my_thread_yield();
 #endif
