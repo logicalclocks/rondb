@@ -2398,8 +2398,11 @@ public:
     }
     for (Uint32 i = 0; i < MAX_NTRANSPORTERS; i++)
     {
-      m_trp_state[i].m_neighbour_trp = FALSE;
-      m_trp_state[i].m_in_list_no_neighbour = FALSE;
+      if (m_trp_state[i].m_neighbour_trp == TRUE)
+      {
+        m_trp_state[i].m_neighbour_trp = FALSE;
+        m_trp_state[i].m_in_list_no_neighbour = FALSE;
+      }
     }
   }
   void setNeighbourNode(NodeId nodeId)
