@@ -1509,11 +1509,15 @@ runTestUnresolvedHosts2(NDBT_Context* ctx, NDBT_Step* step)
   ndbd1.wait(ndbd_exit_code, 50);                   // Wait for first data node to connect
 
   /**
-   * Start data node 2. Expect it to fail immediately since hostname is wrong
+     Start data node 2.
+     ------------------
+     Expect it to run for at least 20 seconds, trying to allocate a node id.
+     But in the second 20-second interval, it will time out and shut down.
   */
   Ndbd ndb2(2);
   CHECK(ndb2.start(wd.path(), mgmd.connectstring(config)));
-  CHECK(ndb2.wait(ndbd_exit_code, 50) == 1);
+  CHECK(ndb2.wait(ndbd_exit_code, 200) == 0);   // first 20-second wait
+  CHECK(ndb2.wait(ndbd_exit_code, 200) == 1);   // second 20-second wait
 
   /* Shut down the cluster */
   ndb_mgm_stop2(mgmd.handle(), -1, 0, 0);
