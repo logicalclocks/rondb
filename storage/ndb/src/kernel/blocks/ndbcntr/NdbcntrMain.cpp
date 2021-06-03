@@ -5987,7 +5987,33 @@ Ndbcntr::execWRITE_LOCAL_SYSFILE_REQ(Signal *signal)
        ReadLocalSysfileReq::NODE_NOT_RESTORABLE_ON_ITS_OWN))
   {
     jam();
-    c_local_sysfile.m_restorable_flag = req.nodeRestorableOnItsOwn;
+    /**
+     * We will only change in 2 cases:
+     * 1) We are in state NODE_RESTORABLE_ON_ITS_OWN
+     *    In this case we allow setting it to
+     *    NODE_RESTORABLE_ON_ITS_OWN and
+     *    NODE_REQUIRE_INITIAL_RESTART in all situations.
+     *    However setting it to NODE_NOT_RESTORABLE_ON_ITS_OWN
+     *    we only allow in a Node Restart. Initial start should
+     *    set it to NODE_REQUIRE_INITIAL_START and the same holds
+     *    for Initial Node Restart. However System Restart doesn't
+     *    make a node unrecoverable and thus we only allow the
+     *    transition to NODE_NOT_RESTORABLE_ON_ITS_OWN when we
+     *    perform a Node Restart, this is the only time when we
+     *    can actually make a node unrecoverable. This specifically
+     *    means that a 1-node setup will never set it to
+     *    NODE_NOT_RESTORABLE_ON_ITS_OWN.
+     *
+     * 2) We are in state NODE_NOT_RESTORABLE_ON_ITS_OWN
+     *    In this state all transitions are ok.
+     */
+    if (!((req.nodeRestorableOnItsOwn ==
+          ReadLocalSysfileReq::NODE_NOT_RESTORABLE_ON_ITS_OWN) &&
+          (ctypeOfStart != NodeState::ST_NODE_RESTART)))
+    {
+      jam();
+      c_local_sysfile.m_restorable_flag = req.nodeRestorableOnItsOwn;
+    }
   }
   else
   {
