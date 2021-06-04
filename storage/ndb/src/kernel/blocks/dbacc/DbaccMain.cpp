@@ -1109,20 +1109,61 @@ void Dbacc::sendAcckeyconf(Signal* signal) const
   signal->theData[4] = operationRecPtr.p->localdata.m_page_idx;
 }//Dbacc::sendAcckeyconf()
 
-/* ******************--------------------------------------------------------------- */
-/* ACCKEYREQ                                         REQUEST FOR INSERT, DELETE,     */
-/*                                                   RERAD AND UPDATE, A TUPLE.      */
-/*                                                   SENDER: LQH,    LEVEL B         */
-/*  SIGNAL DATA:      OPERATION_REC_PTR,             CONNECTION PTR                  */
-/*                    TABPTR,                        TABLE ID = TABLE RECORD POINTER */
-/*                    TREQINFO,                                                      */
-/*                    THASHVALUE,                    HASH VALUE OF THE TUP           */
-/*                    TKEYLEN,                       LENGTH OF THE PRIMARY KEYS      */
-/*                    TKEY1,                         PRIMARY KEY 1                   */
-/*                    TKEY2,                         PRIMARY KEY 2                   */
-/*                    TKEY3,                         PRIMARY KEY 3                   */
-/*                    TKEY4,                         PRIMARY KEY 4                   */
-/* ******************--------------------------------------------------------------- */
+/**
+ * Query threads used also for locking operations.
+ * -----------------------------------------------
+ * To support locking reads and also locking writes in the future, it is
+ * necessary to handle a few things.
+ * 
+ * Lock owner operation records
+ * ............................
+ * The lock owner operation records are referred to from the DBACC hash data
+ * structure. This is the element data structure for unlocked records:
+ * Header word
+ * -----------
+ * Bit 0 = 0: The record isn't locked indicator
+ * Bit 1-13:  The page index in the DBTUP fixed page
+ * Bit 14-15: Unused
+ * Bit 16-31: Reduced hash value
+ * Local Key word
+ * --------------
+ * Bit 0-31:  Logical Page id of DBTUP fixed page
+ *
+ * When the row is locked the Header word instead contains:
+ * Bit 0 = 1: The record is locked indicator
+ * Bit 1-31:  The i-value of the operation record
+ *
+ * Thus the element data structure is packed and cannot contain any
+ * information about which thread the operation record belongs to.
+ *
+ * This gives us two choices, either all locked operations use operation from
+ * the owning LDM block, or we change the element data structure to contain
+ * one more word to fit. The current element data structure limits the amount
+ * of concurrent operations on a single LDM thread to 2 billion operations.
+ * This should not be a problem in most cases. It does require a bit of
+ * synchronization of the allocation and deallocation of operation records,
+ * it also provides some challenges to scanning operation records.
+ *
+ * However adding another word to the DBACC element data structure increases
+ * the size of each row in the hash index by 4 bytes. This is an increase of
+ * 40% on the hash index size. Eventually we might have to increase the
+ * element size for other reasons to support larger tables and other reasons.
+ * But for now it makes more sense to keep the size and instead handle the
+ * problems in allocating the operation records.
+ *
+ * Solution to allocation of operation records.
+ */
+/* ******************------------------------------------------------------- */
+/* ACCKEYREQ                                 REQUEST FOR INSERT, DELETE,     */
+/*                                           READ AND UPDATE, A TUPLE.       */
+/*                                           SENDER: LQH,    LEVEL B         */
+/*  SIGNAL DATA: OPERATION_REC_PTR,          CONNECTION PTR                  */
+/*               TABPTR,                     TABLE ID = TABLE RECORD POINTER */
+/*               TREQINFO,                                                   */
+/*               THASHVALUE,                 HASH VALUE OF THE TUP           */
+/*               TKEYLEN,                    LENGTH OF THE PRIMARY KEYS      */
+/*               KEY,                        PRIMARY KEY                     */
+/* ******************------------------------------------------------------- */
 void Dbacc::execACCKEYREQ(Signal* signal,
                           Uint32 opPtrI,
                           Dbacc::Operationrec *opPtrP) 
@@ -3974,7 +4015,7 @@ Dbacc::getElement(const AccKeyReq* signal,
   elemPageptr = bucketPageptr;
   tgePageindex = bucketConidx;
   /*
-   * The value seached is
+   * The value searched is
    * - table key for ACCKEYREQ, stored in TUP
    * - local key (1 word) for ACC_LOCKREQ and UNDO, stored in ACC
    */

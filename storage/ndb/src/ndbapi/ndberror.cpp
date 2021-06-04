@@ -266,7 +266,7 @@ ErrorBundle ErrorCodes[] = {
    */
   { 217,  DMEC, TR, "217" },
   { 218,  DMEC, TR, "Out of LongMessageBuffer" },
-  { 219,  DMEC, TR, "219" },
+  { 219,  DMEC, TR, "Out of transaction records (increase SharedGlobalMemory)" },
   { 221,  DMEC, TR, "Too many concurrently fired triggers, increase "
     "SharedGlobalMemory" },
   { 233,  DMEC, TR,
