@@ -6363,7 +6363,6 @@ Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr)
   TcConnectionrecPtr opPtr;
   if (unlikely(!tcConnect_pool.seize(opPtr)))
   {
-    jam();
     return false;
   }
   opPtr.p->ptrI = opPtr.i;
@@ -6388,18 +6387,17 @@ Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr)
                             opPtr.p->tupConnectPtrP);
   tcConnectptr = opPtr;
   m_tc_connect_ptr = opPtr;
+  tcConnectptr.p->ldm_owning_block = this;
   ndbrequire(Magic::check_ptr(opPtr.p->accConnectPtrP));
   ndbrequire(Magic::check_ptr(opPtr.p->tupConnectPtrP));
   return true;
 
 tup_fail:
-  jam();
   ndbrequire(Magic::check_ptr(opPtr.p));
   c_acc->release_op_rec(opPtr.p->accConnectrec,
                         opPtr.p->accConnectPtrP);
 
 acc_fail:
-  jam();
   ndbrequire(Magic::check_ptr(opPtr.p));
   tcConnect_pool.release(opPtr);
   checkPoolShrinkNeed(DBLQH_OPERATION_RECORD_TRANSIENT_POOL_INDEX,
@@ -6468,6 +6466,7 @@ void Dblqh::seizeTcrec(TcConnectionrecPtr& tcConnectptr)
   locTcConnectptr.p->gci_hi = 0;
   locTcConnectptr.p->gci_lo = 0;
   locTcConnectptr.p->errorCode = 0;
+  locTcConnectptr.p->ldm_owning_block = this;
   c_tup->prepare_op_pointer(locTcConnectptr.p->tupConnectrec,
                             locTcConnectptr.p->tupConnectPtrP);
 
@@ -8404,33 +8403,61 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
   }
 
   sig0 = lqhKeyReq->clientConnectPtr;
-  if (likely((ctcNumFree > ZNUM_RESERVED_UTIL_CONNECT_RECORDS &&
-              !ERROR_INSERTED(5031)) ||
-             (ctcNumFree > ZNUM_RESERVED_TC_CONNECT_RECORDS &&
-              LqhKeyReq::getUtilFlag(Treqinfo))))
-  {
-    jamEntryDebug();
-    seizeTcrec(tcConnectptr);
-  }
-  else
+  if (unlikely(ERROR_INSERTED(5031)) ||
+      unlikely(m_is_query_block && !LqhKeyReq::getDirtyFlag(Treqinfo)) ||
+      unlikely(ctcNumFree <= ZNUM_RESERVED_TC_CONNECT_RECORDS &&
+               (ctcNumFree <= ZNUM_RESERVED_UTIL_CONNECT_RECORDS &&
+                LqhKeyReq::getUtilFlag(Treqinfo))))
   {
     jamEntry();
-    if (unlikely(ERROR_INSERTED_CLEAR(5031) ||
-                 (!seize_op_rec(tcConnectptr))))
+    Dblqh *lqh = this;
+    bool use_lock = true;
+    if (m_is_query_block)
+    {
+      if (!LqhKeyReq::getDirtyFlag(Treqinfo))
+      {
+        jam();
+        /**
+         * We are performing a non-dirty operation in a Query thread, this means
+         * that we need to acquire an operation record from the LDM block owning
+         * the fragment.
+         */
+        Uint32 instanceNo =
+          getInstanceNoCanFail(LqhKeyReq::getTableId(lqhKeyReq->tableSchemaVersion),
+                               LqhKeyReq::getFragmentId(lqhKeyReq->fragmentData));
+        if (likely(instanceNo != RNIL))
+        {
+          lqh = (Dblqh*)globalData.getBlock(DBLQH, instanceNo);
+        }
+        NdbMutex_Lock(&lqh->alloc_operation_mutex);
+      }
+      else
+      {
+        jamDebug();
+        use_lock = false;
+      }
+    }
+    else
+    {
+      NdbMutex_Lock(&lqh->alloc_operation_mutex);
+    }
+    bool succ = lqh->seize_op_rec(tcConnectptr);
+    if (use_lock)
+      NdbMutex_Unlock(&lqh->alloc_operation_mutex);
+    if (unlikely(!succ || ERROR_INSERTED_CLEAR(5031)))
     {
       jam();
-/* ------------------------------------------------------------------------- */
-/* NO FREE TC RECORD AVAILABLE, THUS WE CANNOT HANDLE THE REQUEST.           */
-/* ------------------------------------------------------------------------- */
       releaseSections(handle);
       earlyKeyReqAbort(signal,
                        lqhKeyReq,
                        ZNO_TC_CONNECT_ERROR,
                        tcConnectptr);
-      return;
     }
-  }//if
-
+  }
+  else
+  {
+    seizeTcrec(tcConnectptr);
+  }
   if(ERROR_INSERTED(5038) && 
      refToNode(signal->getSendersBlockRef()) != getOwnNodeId()){
     jam();
@@ -8469,9 +8496,10 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
   regTcPtr->savePointId = sig1;
   regTcPtr->hashValue = sig2;
   const Uint32 schemaVersion = regTcPtr->schemaVersion = LqhKeyReq::getSchemaVersion(sig4);
-  tabptr.i = LqhKeyReq::getTableId(sig4);
   regTcPtr->tcBlockref = sig5;
   regTcPtr->tcHashKeyHi = sig5;
+
+  tabptr.i = LqhKeyReq::getTableId(sig4);
 
   const Uint8 op = LqhKeyReq::getOperation(Treqinfo);
   if (ERROR_INSERTED(5080) ||
@@ -13395,7 +13423,20 @@ void Dblqh::releaseTcrec(Signal* signal, TcConnectionrecPtr locTcConnectptr)
   else
   {
     jam();
-    release_op_rec(locTcConnectptr);
+    bool use_lock = false;
+    Dblqh *lqh = this;
+    if (!m_is_query_block ||
+        locTcConnectptr.p->ldm_owning_block != this)
+    {
+      use_lock = true;
+      lqh = locTcConnectptr.p->ldm_owning_block;
+      NdbMutex_Lock(&lqh->alloc_operation_mutex);
+    }
+    lqh->release_op_rec(locTcConnectptr);
+    if (use_lock)
+    {
+      NdbMutex_Unlock(&lqh->alloc_operation_mutex);
+    }
   }
 }//Dblqh::releaseTcrec()
 
@@ -16482,9 +16523,12 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
   }
   else
   {
+    if (!m_is_query_block)
+      NdbMutex_Lock(&alloc_operation_mutex);
     if (unlikely(ERROR_INSERTED_CLEAR(5055) ||
                  (!seize_op_rec(tcConnectptr))))
     {
+      NdbMutex_Unlock(&alloc_operation_mutex);
       jam();
       /* --------------------------------------------------------------------
        *      NO FREE TC RECORD AVAILABLE, THUS WE CANNOT HANDLE THE REQUEST.
@@ -16499,6 +16543,7 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
                         senderBlockRef,
                         ZNO_TC_CONNECT_ERROR);
     }
+    NdbMutex_Unlock(&alloc_operation_mutex);
     jamEntry();
   }//if
   jamLineDebug(Uint16(tcConnectptr.i));

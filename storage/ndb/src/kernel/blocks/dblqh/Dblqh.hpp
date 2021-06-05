@@ -2732,6 +2732,7 @@ public:
     TcConnectionrec *nextTcLogQueue;
     TcConnectionrec *prevTcLogQueue;
 
+    Dblqh *ldm_owning_block;
     UintR readlenAi;
     UintR reqinfo;
     UintR schemaVersion;

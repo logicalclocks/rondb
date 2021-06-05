@@ -1000,7 +1000,6 @@ bool Dbacc::seize_op_rec(Uint32 userptr,
   OperationrecPtr opPtr;
   if (unlikely(!oprec_pool.seize(opPtr)))
   {
-    jam();
     return false;
   }
   opPtr.p->userptr = userptr;

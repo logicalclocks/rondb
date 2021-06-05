@@ -1204,7 +1204,6 @@ bool Dbtup::seize_op_rec(Uint32 userPtr,
   (void)ref;
   if (unlikely(!c_operation_pool.seize(opPtr)))
   {
-    jam();
     return false;
   }
   opPtr.p->userpointer = userPtr;

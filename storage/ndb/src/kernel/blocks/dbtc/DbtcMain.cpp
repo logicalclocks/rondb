@@ -4805,14 +4805,13 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
       if (qt_likely(blockNo == V_QUERY))
       {
         Uint32 nodeId = refToNode(TBRef);
-        if (LqhKeyReq::getDirtyFlag(lqhKeyReq->requestInfo) &&
-            LqhKeyReq::getNoDiskFlag(lqhKeyReq->requestInfo) &&
+        if (LqhKeyReq::getNoDiskFlag(lqhKeyReq->requestInfo) &&
             (LqhKeyReq::getOperation(lqhKeyReq->requestInfo) == ZREAD) &&
             (regApiPtr->m_exec_write_count == 0))
         {
           /**
            * We allow the use of Query threads when
-           * 1) The operation is a dirty read operation
+           * 1) The operation is a read operation
            * 2) The operation is not reading from disk
            * 3) The transaction hasn't performed any writes yet
            *    in the current execution batch. The m_exec_write_count
