@@ -6269,6 +6269,8 @@ int Dblqh::findTransaction(UintR Transid1,
 
   ndbassert(partial_fit_ok == false || is_key_operation == true);
   Uint32 ThashIndex = (Transid1 ^ TcOprec) & (TRANSID_HASH_SIZE - 1);
+  Uint32 mutexIndex = ThashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
+  NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
   locTcConnectptr.i = ctransidHash[ThashIndex];
   while (locTcConnectptr.i != RNIL) {
     ndbrequire(tcConnect_pool.getUncheckedPtrRW(locTcConnectptr));
@@ -6288,6 +6290,7 @@ int Dblqh::findTransaction(UintR Transid1,
 /* FIRST PART OF TRANSACTION CORRECT */
 /* SECOND PART ALSO CORRECT */
 /* THE OPERATION RECORD POINTER IN TC WAS ALSO CORRECT */
+          NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
           jam();
           tcConnectptr = locTcConnectptr;
           ndbrequire(Magic::check_ptr(locTcConnectptr.p));
@@ -6301,9 +6304,38 @@ int Dblqh::findTransaction(UintR Transid1,
     locTcConnectptr.i = locTcConnectptr.p->nextHashRec;
     ndbrequire(Magic::check_ptr(locTcConnectptr.p));
   }//while
+  NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
 /* WE DID NOT FIND THE TRANSACTION, REPORT NOT FOUND */
   return (int)ZNOT_FOUND;
 }//Dblqh::findTransaction()
+
+bool
+Dblqh::checkTransaction(TcConnectionrecPtr nextPtr,
+                        Uint32 tcHashKeyHi,
+                        TcConnectionrec *regTcPtr,
+                        bool is_key_operation)
+{
+  do
+  {
+    if (nextPtr.p->transid[0] == regTcPtr->transid[0] &&
+        nextPtr.p->transid[1] == regTcPtr->transid[1] &&
+        nextPtr.p->tcOprec == regTcPtr->tcOprec &&
+        nextPtr.p->tcHashKeyHi == tcHashKeyHi)
+    {
+      if (is_key_operation)
+        return nextPtr.p->tcScanRec == RNIL;
+      else
+        return nextPtr.p->tcScanRec != RNIL;
+    }
+    nextPtr.i = nextPtr.p->nextHashRec;
+    if (nextPtr.i == RNIL)
+    {
+      return false;
+    }
+    ndbrequire(tcConnect_pool.getValidPtr(nextPtr));
+  } while (1);
+  return false;
+}
 
 inline
 static void
@@ -8792,30 +8824,29 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
   if (regTcPtr->dirtyOp == ZFALSE) //Transactional operation
   {
     jamDebug();
-    /* Check that no equal element exists */
-    ndbrequire(findTransaction(regTcPtr->transid[0],
-                               regTcPtr->transid[1], 
-                               regTcPtr->tcOprec,
-                               regTcPtr->tcHashKeyHi,
-                               true,
-                               false,
-                               tcConnectptr) == ZNOT_FOUND);
-
     TcConnectionrecPtr localNextTcConnectptr;
     Uint32 hashIndex = (regTcPtr->transid[0] ^ regTcPtr->tcOprec) &
                        (TRANSID_HASH_SIZE - 1);
+    Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
+    regTcPtr->prevHashRec = RNIL;
+    regTcPtr->hashIndex = hashIndex;
+    NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
     localNextTcConnectptr.i = ctransidHash[hashIndex];
     ctransidHash[hashIndex] = tcConnectptr.i;
-    regTcPtr->prevHashRec = RNIL;
-    regTcPtr->nextHashRec = localNextTcConnectptr.i;
-    regTcPtr->hashIndex = hashIndex;
-    if (localNextTcConnectptr.i != RNIL)
+    if (unlikely(localNextTcConnectptr.i != RNIL))
     {
       jamDebug();
       ndbrequire(tcConnect_pool.getValidPtr(localNextTcConnectptr));
+      /* Check that no equal element exists */
+      ndbrequire(!checkTransaction(localNextTcConnectptr,
+                                   regTcPtr->tcHashKeyHi,
+                                   regTcPtr,
+                                   true));
       ndbassert(localNextTcConnectptr.p->prevHashRec == RNIL);
       localNextTcConnectptr.p->prevHashRec = tcConnectptr.i;
     }//if
+    regTcPtr->nextHashRec = localNextTcConnectptr.i;
+    NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
   }//if
   /**
    * Up until this point in execLQHKEYREQ all we have done is setting up
@@ -10073,13 +10104,13 @@ void Dblqh::handleUserUnlockRequest(Signal* signal,
    * On success this sets tcConnectptr.i and .p to the 
    * operation-to-unlock's record.
    */
-  if (unlikely( findTransaction(regTcPtr->transid[0], 
-                                regTcPtr->transid[1], 
-                                tcOpRecIndex,
-                                regTcPtr->tcHashKeyHi,
-                                true,
-                                false,
-                                tcConnectptr) != ZOK))
+  if (unlikely(findTransaction(regTcPtr->transid[0], 
+                               regTcPtr->transid[1], 
+                               tcOpRecIndex,
+                               regTcPtr->tcHashKeyHi,
+                               true,
+                               false,
+                               tcConnectptr) != ZOK))
   {
     jam();
     unlockError(signal, ZBAD_OP_REF, tcConnectptr);
@@ -11924,7 +11955,7 @@ void Dblqh::deleteTransidHash(Signal* signal, TcConnectionrecPtr& tcConnectptr)
    * (It is a non-transactional 'dirtyOp', or the request failed
    *  before it was ever inserted in the hash list.)
    */ 
-  if (regTcPtr->hashIndex == RNIL)
+  if (unlikely(regTcPtr->hashIndex == RNIL))
   {
     jamDebug();
     /* If this operation is 'non-dirty', there should be no duplicates */
@@ -11943,33 +11974,36 @@ void Dblqh::deleteTransidHash(Signal* signal, TcConnectionrecPtr& tcConnectptr)
   nextHashptr.i = regTcPtr->nextHashRec;
   /* prevHashptr and nextHashptr may be RNIL when the bucket has 1 element */
 
-  if (prevHashptr.i != RNIL)
-  {
-    jamDebug();
-    ndbrequire(tcConnect_pool.getValidPtr(prevHashptr));
-    ndbassert(prevHashptr.p->nextHashRec == tcConnectptr.i);
-    prevHashptr.p->nextHashRec = nextHashptr.i;
-  }
-  else
+  Uint32 hashIndex = regTcPtr->hashIndex;
+  Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
+  NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
+  ndbassert(hashIndex == ((regTcPtr->transid[0] ^ regTcPtr->tcOprec) & 
+                           (TRANSID_HASH_SIZE - 1)));
+  if (likely(prevHashptr.i == RNIL))
   {
     jamDebug();
 /* ------------------------------------------------------------------------- */
 /* THE OPERATION WAS PLACED FIRST IN THE LIST OF THE HASH TABLE. NEED TO SET */
 /* A NEW LEADER OF THE LIST.                                                 */
 /* ------------------------------------------------------------------------- */
-    Uint32 hashIndex = regTcPtr->hashIndex;
-    ndbassert(hashIndex == ((regTcPtr->transid[0] ^ regTcPtr->tcOprec) & 
-                             (TRANSID_HASH_SIZE - 1)));
-    ndbassert(ctransidHash[hashIndex] == tcConnectptr.i);
+    ndbrequire(ctransidHash[hashIndex] == tcConnectptr.i);
     ctransidHash[hashIndex] = nextHashptr.i;
+  }
+  else
+  {
+    jamDebug();
+    ndbrequire(tcConnect_pool.getValidPtr(prevHashptr));
+    ndbassert(prevHashptr.p->nextHashRec == tcConnectptr.i);
+    prevHashptr.p->nextHashRec = nextHashptr.i;
   }//if
-  if (nextHashptr.i != RNIL)
+  if (unlikely(nextHashptr.i != RNIL))
   {
     jamDebug();
     ndbrequire(tcConnect_pool.getValidPtr(nextHashptr));
     ndbassert(nextHashptr.p->prevHashRec == tcConnectptr.i);
     nextHashptr.p->prevHashRec = prevHashptr.i;
   }//if
+  NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
   regTcPtr->hashIndex = regTcPtr->prevHashRec = regTcPtr->nextHashRec = RNIL;
 }//Dblqh::deleteTransidHash()
 
@@ -16623,31 +16657,31 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
       goto error_handler2;
     }//if
 
-    /* Check that no equal element already exists */
-    ndbrequire(findTransaction(regTcPtr->transid[0],
-                               regTcPtr->transid[1],
-                               regTcPtr->tcOprec,
-                               senderBlockRef,
-                               false,
-                               false,
-                               tcConnectptr) == ZNOT_FOUND);
     hashIndex = (regTcPtr->transid[0] ^ regTcPtr->tcOprec) &
                  (TRANSID_HASH_SIZE - 1);
+    Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
+    regTcPtr->prevHashRec = RNIL;
+    regTcPtr->hashIndex = hashIndex;
+    NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
     nextHashptr.i = ctransidHash[hashIndex];
     ctransidHash[hashIndex] = tcConnectptr.i;
-    regTcPtr->prevHashRec = RNIL;
-    regTcPtr->nextHashRec = nextHashptr.i;
-    regTcPtr->hashIndex = hashIndex;
-    if (nextHashptr.i != RNIL)
+    if (unlikely(nextHashptr.i != RNIL))
     {
       /* ---------------------------------------------------------------------
        *   ENSURE THAT THE NEXT RECORD HAS SET PREVIOUS TO OUR RECORD 
        *   IF IT EXISTS
        * --------------------------------------------------------------------- */
       ndbrequire(tcConnect_pool.getValidPtr(nextHashptr));
+      /* Check that no equal element already exists */
+      ndbrequire(!checkTransaction(nextHashptr,
+                                   senderBlockRef,
+                                   regTcPtr,
+                                   false));
       ndbassert(nextHashptr.p->prevHashRec == RNIL);
       nextHashptr.p->prevHashRec = tcConnectptr.i;
     }//if
+    regTcPtr->nextHashRec = nextHashptr.i;
+    NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
     continueAfterReceivingAllAiLab(signal, tcConnectptr);
     release_frag_access(prim_tab_fragptr.p);
     return;

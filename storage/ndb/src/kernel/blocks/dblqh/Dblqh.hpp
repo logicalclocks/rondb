@@ -3317,6 +3317,10 @@ private:
                    CommitLogRecord* commitLogRecord,
                    LogPageRecordPtr & logPagePtr,
                    LogPartRecord *logPartPtrP);
+  bool checkTransaction(TcConnectionrecPtr nextPtr,
+                        Uint32 tcHashKeyHi,
+                        TcConnectionrec *regTcPtr,
+                        bool is_key_operation);
   int  findTransaction(UintR Transid1,
                        UintR Transid2,
                        UintR TcOprec,
@@ -4905,6 +4909,9 @@ public:
   {
     return sizeof(struct Tablerec);
   }
+#define NUM_TRANSACTION_HASH_MUTEXES 4
+  NdbMutex alloc_operation_mutex;
+  NdbMutex transaction_hash_mutex[NUM_TRANSACTION_HASH_MUTEXES];
 #endif
 };
 

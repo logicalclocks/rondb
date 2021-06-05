@@ -421,11 +421,12 @@ struct Fragmentrec {
   Uint32 expSenderIndex;
   Uint32 expSenderPageptr;
 
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
 //-----------------------------------------------------------------------------
 // List of lock owners currently used only for self-check
 //-----------------------------------------------------------------------------
-  Uint32 lockOwnersList;
-
+  Uint32 lockOwnersList[NUM_ACC_FRAGMENT_MUTEXES];
+#endif
 //-----------------------------------------------------------------------------
 // References to Directory Ranges (which in turn references directories, which
 // in its turn references the pages) for the bucket pages and the overflow
@@ -743,14 +744,16 @@ struct Operationrec {
   Uint32 fid;
   Uint32 fragptr;
   LHBits32 hashValue;
-  Uint32 nextLockOwnerOp;
   Uint32 nextParallelQue;
   union {
     Uint32 nextSerialQue;      
     Uint32 m_lock_owner_ptr_i; // if nextParallelQue = RNIL, else undefined
   };
   Uint32 prevOp;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
   Uint32 prevLockOwnerOp;
+  Uint32 nextLockOwnerOp;
+#endif
   union {
     Uint32 prevParallelQue;
     Uint32 m_lo_last_parallel_op_ptr_i;
@@ -1118,9 +1121,10 @@ private:
 			  OperationrecPtr release_op) const;
   Uint32 allocOverflowPage();
   bool getfragmentrec(FragmentrecPtr&, Uint32 fragId);
-  void insertLockOwnersList(const OperationrecPtr&) const;
-  void takeOutLockOwnersList(const OperationrecPtr&) const;
-
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  void insertLockOwnersList(OperationrecPtr&);
+  void takeOutLockOwnersList(OperationrecPtr&);
+#endif
   void initFsOpRec(Signal* signal) const;
   void initOverpage(Page8Ptr);
   void initPage(Page8Ptr, Uint32);
@@ -1282,28 +1286,6 @@ public:
   bool check_expand_shrink_ongoing(Uint32 fragPtrI);
   Operationrec* getOperationPtrP(Uint32 opPtrI);
 
-  bool acquire_frag_mutex_get(Fragmentrec *fragPtrP,
-                              OperationrecPtr opPtr)
-  {
-    if (unlikely(m_is_in_query_thread))
-    {
-      LHBits32 hashVal = getElementHash(opPtr);
-      Uint32 inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
-      NdbMutex_Lock(&fragPtrP->acc_frag_mutex[inx]);
-      return true;
-    }
-    return false;
-  }
-  void release_frag_mutex_get(Fragmentrec *fragPtrP,
-                              OperationrecPtr opPtr)
-  {
-    if (unlikely(m_is_in_query_thread))
-    {
-      LHBits32 hashVal = getElementHash(opPtr);
-      Uint32 inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
-      NdbMutex_Unlock(&fragPtrP->acc_frag_mutex[inx]);
-    }
-  }
   bool acquire_frag_mutex_hash(Fragmentrec *fragPtrP,
                                OperationrecPtr opPtr)
   {
