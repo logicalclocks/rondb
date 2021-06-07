@@ -1247,6 +1247,7 @@ private:
   Uint32 c_copy_frag_oprec;
 
 public:
+  Dbacc *m_curr_acc;
   static Uint64 getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
     const ndb_mgm_configuration_iterator * mgm_cfg,
@@ -1340,6 +1341,7 @@ inline void
 Dbacc::release_op_rec(Uint32 opPtrI,
                       Dbacc::Operationrec *opPtrP)
 {
+  /* Cannot use jam here, called from other thread */
   OperationrecPtr opPtr;
   opPtr.i = opPtrI;
   opPtr.p = opPtrP;
@@ -1825,6 +1827,7 @@ inline
 Dbacc::Operationrec*
 Dbacc::getOperationPtrP(Uint32 opPtrI)
 {
+  /* Cannot use jam here, called from other thread */
   OperationrecPtr opPtr;
   opPtr.i = opPtrI;
   ndbrequire(oprec_pool.getValidPtr(opPtr));

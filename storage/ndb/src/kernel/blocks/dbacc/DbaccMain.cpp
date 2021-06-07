@@ -997,6 +997,7 @@ bool Dbacc::seize_op_rec(Uint32 userptr,
                          Uint32 &i_val,
                          Dbacc::Operationrec **ptr)
 {
+  /* Cannot use jam here, called from other thread */
   OperationrecPtr opPtr;
   if (unlikely(!oprec_pool.seize(opPtr)))
   {
@@ -1382,7 +1383,7 @@ void Dbacc::execACCKEYREQ(Signal* signal,
     OperationrecPtr lockOpPtr;
     ndbassert(!m_is_query_block);
     lockOpPtr.i = req->lockConnectPtr;
-    bool is_valid = oprec_pool.getValidPtr(lockOpPtr);
+    bool is_valid = m_curr_acc->oprec_pool.getValidPtr(lockOpPtr);
     if (lockOwnerPtr.i == RNIL ||
         !(lockOwnerPtr.i == lockOpPtr.i ||
         !is_valid ||
@@ -1466,6 +1467,10 @@ void Dbacc::execACCKEYREQ(Signal* signal,
                                            != ZREADLOCK,
                                            operationRecPtr.p->m_lockTime,
                                            getHighResTimer());
+          }
+          else
+          {
+            operationRecPtr.p->m_lockTime = getHighResTimer();
           }
         }
         else
@@ -1605,7 +1610,7 @@ Dbacc::startNext(Signal* signal, OperationrecPtr lastOp)
   if (nextOp.i != RNIL)
   {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(nextOp));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextOp));
     nextbits = nextOp.p->m_op_bits;
     goto checkop;
   }
@@ -1613,7 +1618,7 @@ Dbacc::startNext(Signal* signal, OperationrecPtr lastOp)
   if ((opbits & Operationrec::OP_LOCK_OWNER) == 0)
   {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(loPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loPtr));
   }
   else
   {
@@ -1634,7 +1639,7 @@ Dbacc::startNext(Signal* signal, OperationrecPtr lastOp)
    * There is an op in serie queue...
    *   Check if it can run
    */
-  ndbrequire(oprec_pool.getValidPtr(nextOp));
+  ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextOp));
   nextbits = nextOp.p->m_op_bits;
   
   {
@@ -1717,7 +1722,7 @@ Dbacc::startNext(Signal* signal, OperationrecPtr lastOp)
   tmp= loPtr;
   while (tmp.i != RNIL)
   {
-    ndbrequire(oprec_pool.getValidPtr(tmp));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tmp));
     if (!nextOp.p->is_same_trans(tmp.p))
     {
       jam();
@@ -1746,7 +1751,7 @@ upgrade:
   if (tmp.i != RNIL)
   {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(tmp));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tmp));
     tmp.p->prevSerialQue = loPtr.i;
   }
   else
@@ -1765,6 +1770,7 @@ upgrade:
   /**
    * Track end-of-wait
    */
+  if (!m_is_in_query_thread)
   {
     FragmentrecPtr frp;
     frp.i = nextOp.p->fragptr;
@@ -1775,6 +1781,10 @@ upgrade:
                                 != ZREADLOCK),
                                nextOp.p->m_lockTime,
                                getHighResTimer());
+  }
+  else
+  {
+    operationRecPtr.p->m_lockTime = getHighResTimer();
   }
   
 checkop:
@@ -1902,6 +1912,10 @@ Dbacc::accIsLockedLab(Signal* signal, OperationrecPtr lockOwnerPtr)
                                               operationRecPtr.p->m_lockTime,
                                               getHighResTimer());
       }
+      else
+      {
+        operationRecPtr.p->m_lockTime = getHighResTimer();
+      }
       sendAcckeyconf(signal);
       return;
     }
@@ -1915,6 +1929,10 @@ Dbacc::accIsLockedLab(Signal* signal, OperationrecPtr lockOwnerPtr)
                                             != ZREADLOCK,
                                             operationRecPtr.p->m_lockTime,
                                             getHighResTimer());
+      }
+      else
+      {
+        operationRecPtr.p->m_lockTime = getHighResTimer();
       }
       signal->theData[0] = RNIL;
       return;
@@ -2036,9 +2054,16 @@ void Dbacc::insertelementLab(Signal* signal,
                 Operationrec::ANY_SCANBITS,
                 false);
   release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
-  fragrecptr.p->m_lockStats.req_start_imm_ok(true /* Exclusive */,
-                                             operationRecPtr.p->m_lockTime,
-                                             getHighResTimer());
+  if (!m_is_in_query_thread)
+  {
+    fragrecptr.p->m_lockStats.req_start_imm_ok(true /* Exclusive */,
+                                               operationRecPtr.p->m_lockTime,
+                                               getHighResTimer());
+  }
+  else
+  {
+    operationRecPtr.p->m_lockTime = getHighResTimer();
+  }
   c_tup->prepareTUPKEYREQ(localKey.m_page_no,
                           localKey.m_page_idx,
                           fragrecptr.p->tupFragptr);
@@ -2060,7 +2085,7 @@ Dbacc::getNoParallelTransaction(const Operationrec * op) const
   while (tmp.i != RNIL) 
   {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(tmp));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tmp));
     if (tmp.p->transId1 == transId[0] && tmp.p->transId2 == transId[1])
       tmp.i = tmp.p->nextParallelQue;
     else
@@ -2081,7 +2106,7 @@ Dbacc::getNoParallelTransactionFull(Operationrec * op) const
     tmp.i = tmp.p->prevParallelQue;
     if (tmp.i != RNIL)
     {
-      ndbrequire(oprec_pool.getValidPtr(tmp));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tmp));
     }
     else
     {
@@ -2102,7 +2127,7 @@ Dbacc::get_parallel_head(OperationrecPtr opPtr) const
 	 opPtr.p->prevParallelQue != RNIL)
   {
     opPtr.i = opPtr.p->prevParallelQue;
-    ndbrequire(oprec_pool.getValidPtr(opPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(opPtr));
   }    
   
   return opPtr.i;
@@ -2117,13 +2142,13 @@ Dbacc::validate_lock_queue(OperationrecPtr opPtr)const
   }
   OperationrecPtr loPtr;
   loPtr.i = get_parallel_head(opPtr);
-  ndbrequire(oprec_pool.getValidPtr(loPtr));
+  ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loPtr));
   
   while((loPtr.p->m_op_bits & Operationrec::OP_LOCK_OWNER) == 0 &&
 	loPtr.p->prevSerialQue != RNIL)
   {
     loPtr.i = loPtr.p->prevSerialQue;
-    ndbrequire(oprec_pool.getValidPtr(loPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loPtr));
   }
   
   // Now we have lock owner...
@@ -2174,7 +2199,7 @@ Dbacc::validate_lock_queue(OperationrecPtr opPtr)const
     {
       Uint32 prev = lastP.i;
       lastP.i = lastP.p->nextParallelQue;
-      ndbrequire(oprec_pool.getValidPtr(lastP));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(lastP));
       
       vlqrequire(lastP.p->prevParallelQue == prev);
 
@@ -2259,7 +2284,7 @@ Dbacc::validate_lock_queue(OperationrecPtr opPtr)const
     lastS.i = loPtr.p->nextSerialQue;
     while (true)
     {
-      ndbrequire(oprec_pool.getValidPtr(lastS));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(lastS));
       vlqrequire(lastS.p->prevSerialQue == prev);
       vlqrequire(getNoParallelTransaction(lastS.p) == 1);
       vlqrequire((lastS.p->m_op_bits & Operationrec::OP_LOCK_OWNER) == 0);
@@ -2403,14 +2428,14 @@ Dbacc::dump_lock_queue(OperationrecPtr loPtr)const
 	   loPtr.p->prevParallelQue != RNIL)
     {
       loPtr.i = loPtr.p->prevParallelQue;
-      ndbrequire(oprec_pool.getValidPtr(loPtr));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loPtr));
     }
     
     while ((loPtr.p->m_op_bits & Operationrec::OP_LOCK_OWNER) == 0 &&
 	   loPtr.p->prevSerialQue != RNIL)
     {
       loPtr.i = loPtr.p->prevSerialQue;
-      ndbrequire(oprec_pool.getValidPtr(loPtr));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loPtr));
     }
 
     ndbassert(loPtr.p->m_op_bits & Operationrec::OP_LOCK_OWNER);
@@ -2420,7 +2445,7 @@ Dbacc::dump_lock_queue(OperationrecPtr loPtr)const
   OperationrecPtr tmp = loPtr;
   while (tmp.i != RNIL)
   {
-    ndbrequire(oprec_pool.getValidPtr(tmp));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tmp));
     ndbout << tmp << " ";
     tmp.i = tmp.p->nextParallelQue;
     
@@ -2435,7 +2460,7 @@ Dbacc::dump_lock_queue(OperationrecPtr loPtr)const
   tmp.i = loPtr.p->nextSerialQue;
   while (tmp.i != RNIL)
   {
-    ndbrequire(oprec_pool.getValidPtr(tmp));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tmp));
     OperationrecPtr tmp2 = tmp;
     
     if (tmp.i == loPtr.i)
@@ -2446,7 +2471,7 @@ Dbacc::dump_lock_queue(OperationrecPtr loPtr)const
 
     while (tmp2.i != RNIL)
     {
-      ndbrequire(oprec_pool.getValidPtr(tmp2));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tmp2));
       ndbout << tmp2 << " ";
       tmp2.i = tmp2.p->nextParallelQue;
 
@@ -2487,7 +2512,7 @@ Dbacc::placeWriteInLockQueue(OperationrecPtr lockOwnerPtr) const
   }
   else
   {
-    ndbrequire(oprec_pool.getValidPtr(lastOpPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(lastOpPtr));
   }
   
   ndbassert(get_parallel_head(lastOpPtr) == lockOwnerPtr.i);
@@ -2514,7 +2539,7 @@ Dbacc::placeWriteInLockQueue(OperationrecPtr lockOwnerPtr) const
     OperationrecPtr loopPtr = lockOwnerPtr;
     do
     {
-      ndbrequire(oprec_pool.getValidPtr(loopPtr));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
       if (!loopPtr.p->is_same_trans(operationRecPtr.p))
       {
 	goto serial;
@@ -2608,7 +2633,7 @@ Dbacc::placeReadInLockQueue(OperationrecPtr lockOwnerPtr) const
   }
   else
   {
-    ndbrequire(oprec_pool.getValidPtr(lastOpPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(lastOpPtr));
   }
 
   ndbassert(get_parallel_head(lastOpPtr) == lockOwnerPtr.i);
@@ -2646,7 +2671,7 @@ Dbacc::placeReadInLockQueue(OperationrecPtr lockOwnerPtr) const
    */
   do
   {
-    ndbrequire(oprec_pool.getValidPtr(loopPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
     if (loopPtr.p->is_same_trans(operationRecPtr.p))
       goto checkop;
     loopPtr.i = loopPtr.p->nextParallelQue;
@@ -2721,7 +2746,7 @@ void Dbacc::placeSerialQueue(OperationrecPtr lockOwnerPtr,
   }
   else
   {
-    ndbrequire(oprec_pool.getValidPtr(lastOpPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(lastOpPtr));
   }
   
   operationRecPtr.p->prevSerialQue = lastOpPtr.i;
@@ -2800,7 +2825,7 @@ Dbacc::removerow(Uint32 opPtrI, const Local_key* key)
 {
   jamEntry();
   operationRecPtr.i = opPtrI;
-  ndbrequire(oprec_pool.getValidPtr(operationRecPtr));
+  ndbrequire(m_curr_acc->oprec_pool.getValidPtr(operationRecPtr));
   Uint32 opbits = operationRecPtr.p->m_op_bits;
   fragrecptr.i = operationRecPtr.p->fragptr;
 
@@ -3009,11 +3034,16 @@ void Dbacc::execACC_LOCKREQ(Signal* signal)
     {
       jam();
       operationRecPtr.i = c_copy_frag_oprec;
-      ndbrequire(oprec_pool.getValidPtr(operationRecPtr));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(operationRecPtr));
       ndbrequire(operationRecPtr.p->m_op_bits == Operationrec::OP_INITIAL);
     }
     else
     {
+      /**
+       * Here scan operations that use locks that are executed in Query
+       * threads will have to allocate from owning LDM thread instead of
+       * from its own thread.
+       */
       if (unlikely(!oprec_pool.seize(operationRecPtr)))
       {
         jam();
@@ -3087,7 +3117,7 @@ void Dbacc::execACC_LOCKREQ(Signal* signal)
     return;
   }
   operationRecPtr.i = req->accOpPtr;
-  ndbrequire(oprec_pool.getValidPtr(operationRecPtr));
+  ndbrequire(m_curr_acc->oprec_pool.getValidPtr(operationRecPtr));
   if (lockOp == AccLockReq::Unlock)
   {
     jam();
@@ -4641,7 +4671,7 @@ void Dbacc::deleteElement(Page8Ptr delPageptr,
       /* TO UPDATE THE OPERATION RECORD WITH THE NEW REFERENCE TO THE ELEMENT.             */
       /* --------------------------------------------------------------------------------- */
       deOperationRecPtr.i = ElementHeader::getOpPtrI(tdeElemhead);
-      ndbrequire(oprec_pool.getValidPtr(deOperationRecPtr));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(deOperationRecPtr));
       deOperationRecPtr.p->elementPage = delPageptr.i;
       deOperationRecPtr.p->elementContainer = delConptr;
       deOperationRecPtr.p->elementPointer = delElemptr;
@@ -5060,7 +5090,7 @@ Dbacc::mark_pending_abort(OperationrecPtr abortingOp, Uint32 nextParallelOp)
   follower.i = nextParallelOp;
   while (follower.i != RNIL)
   {
-    ndbrequire(oprec_pool.getValidPtr(follower));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(follower));
     if (likely(follower.p->is_same_trans(abortingOp.p)))
     {
       jam();
@@ -5096,7 +5126,7 @@ Dbacc::checkOpPendingAbort(Uint32 accConnectPtr) const
 {
   OperationrecPtr opPtr;
   opPtr.i = accConnectPtr;
-  ndbrequire(oprec_pool.getValidPtr(opPtr));
+  ndbrequire(m_curr_acc->oprec_pool.getValidPtr(opPtr));
   
   return ((opPtr.p->m_op_bits & 
            Operationrec::OP_PENDING_ABORT) != 0);
@@ -5134,20 +5164,20 @@ Dbacc::abortParallelQueueOperation(Signal* signal, OperationrecPtr opPtr)
   ndbassert(! (opbits & Operationrec::OP_LOCK_OWNER));
   ndbassert(opbits & Operationrec::OP_RUN_QUEUE);
 
-  ndbrequire(oprec_pool.getValidPtr(prevP));
+  ndbrequire(m_curr_acc->oprec_pool.getValidPtr(prevP));
   ndbassert(prevP.p->nextParallelQue == opPtr.i);
   prevP.p->nextParallelQue = nextP.i;
   
   if (nextP.i != RNIL)
   {
-    ndbrequire(oprec_pool.getValidPtr(nextP));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextP));
     ndbassert(nextP.p->prevParallelQue == opPtr.i);
     nextP.p->prevParallelQue = prevP.i;
   }
   else if (prevP.i != loPtr.i)
   {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(loPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loPtr));
     ndbassert(loPtr.p->m_op_bits & Operationrec::OP_LOCK_OWNER);
     ndbassert(loPtr.p->m_lo_last_parallel_op_ptr_i == opPtr.i);
     loPtr.p->m_lo_last_parallel_op_ptr_i = prevP.i;
@@ -5196,7 +5226,7 @@ Dbacc::abortParallelQueueOperation(Signal* signal, OperationrecPtr opPtr)
       if (nextP.p->nextParallelQue != RNIL)
       {
 	nextP.i = nextP.p->nextParallelQue;
-        ndbrequire(oprec_pool.getValidPtr(nextP));
+        ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextP));
 	nextbits = nextP.p->m_op_bits;
       }
       else
@@ -5227,12 +5257,12 @@ Dbacc::abortParallelQueueOperation(Signal* signal, OperationrecPtr opPtr)
   {
     jam();
     nextP.i = nextP.p->nextParallelQue;
-    ndbrequire(oprec_pool.getValidPtr(nextP));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextP));
   }
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   loPtr.i = nextP.p->m_lock_owner_ptr_i;
-  ndbrequire(oprec_pool.getValidPtr(loPtr));
+  ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loPtr));
   ndbassert(loPtr.p->m_op_bits & Operationrec::OP_LOCK_OWNER);
   ndbassert(loPtr.p->m_lo_last_parallel_op_ptr_i == nextP.i);
 #endif
@@ -5261,6 +5291,7 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
   ndbassert((opbits & Operationrec::OP_LOCK_OWNER) == 0);
   ndbassert((opbits & Operationrec::OP_RUN_QUEUE) == 0);
 
+  if (!m_is_in_query_thread)
   {
     FragmentrecPtr frp;
     frp.i = opPtr.p->fragptr;
@@ -5272,19 +5303,23 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
                                  opPtr.p->m_lockTime,
                                  getHighResTimer());
   }
+  else
+  {
+    opPtr.p->m_lockTime = getHighResTimer();
+  }
   
   if (prevP.i != RNIL)
   {
     /**
      * We're not list head...
      */
-    ndbrequire(oprec_pool.getValidPtr(prevP));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(prevP));
     ndbassert(prevP.p->nextParallelQue == opPtr.i);
     prevP.p->nextParallelQue = nextP.i;
 
     if (nextP.i != RNIL)
     {
-      ndbrequire(oprec_pool.getValidPtr(nextP));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextP));
       ndbassert(nextP.p->prevParallelQue == opPtr.i);
       ndbassert((nextP.p->m_op_bits & Operationrec::OP_STATE_MASK) == 
 		Operationrec::OP_STATE_WAITING);
@@ -5303,7 +5338,7 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
 	  nextP.i = nextP.p->nextParallelQue;
 	  if (nextP.i == RNIL)
 	    break;
-          ndbrequire(oprec_pool.getValidPtr(nextP));
+          ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextP));
 	}
       }
     }
@@ -5315,7 +5350,7 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
     /**
      * We're a list head
      */
-    ndbrequire(oprec_pool.getValidPtr(prevS));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(prevS));
     ndbassert(prevS.p->nextSerialQue == opPtr.i);
     
     if (nextP.i != RNIL)
@@ -5323,7 +5358,7 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
       /**
        * Promote nextP to list head
        */
-      ndbrequire(oprec_pool.getValidPtr(nextP));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextP));
       ndbassert(nextP.p->prevParallelQue == opPtr.i);
       prevS.p->nextSerialQue = nextP.i;
       nextP.p->prevParallelQue = RNIL;
@@ -5331,7 +5366,7 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
       if (nextS.i != RNIL)
       {
 	jam();
-        ndbrequire(oprec_pool.getValidPtr(nextS));
+        ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextS));
 	ndbassert(nextS.p->prevSerialQue == opPtr.i);
 	nextS.p->prevSerialQue = nextP.i;
 	validate_lock_queue(prevS);
@@ -5345,7 +5380,7 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
 	while ((loPtr.p->m_op_bits & Operationrec::OP_LOCK_OWNER) == 0)
 	{
 	  loPtr.i = loPtr.p->prevSerialQue;
-          ndbrequire(oprec_pool.getValidPtr(loPtr));
+          ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loPtr));
 	}
 	ndbassert(loPtr.p->m_lo_last_serial_op_ptr_i == opPtr.i);
 	loPtr.p->m_lo_last_serial_op_ptr_i = nextP.i;
@@ -5369,7 +5404,7 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
       while ((loPtr.p->m_op_bits & Operationrec::OP_LOCK_OWNER) == 0)
       {
 	loPtr.i = loPtr.p->prevSerialQue;
-        ndbrequire(oprec_pool.getValidPtr(loPtr));
+        ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loPtr));
       }
       ndbassert(loPtr.p->m_lo_last_serial_op_ptr_i == opPtr.i);
       if (prevS.i != loPtr.i)
@@ -5385,7 +5420,7 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
     }
     else if (nextP.i == RNIL)
     {
-      ndbrequire(oprec_pool.getValidPtr(nextS));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextS));
       ndbassert(nextS.p->prevSerialQue == opPtr.i);
       prevS.p->nextSerialQue = nextS.i;
       nextS.p->prevSerialQue = prevS.i;
@@ -5400,7 +5435,7 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
 	if (lastOp.i != RNIL)
 	{
 	  jam();
-          ndbrequire(oprec_pool.getValidPtr(lastOp));
+          ndbrequire(m_curr_acc->oprec_pool.getValidPtr(lastOp));
 	  ndbassert(lastOp.p->m_lock_owner_ptr_i == prevS.i);
 	}
 	else
@@ -5512,7 +5547,7 @@ Dbacc::commitDeleteCheck(Signal* signal)
   opPtr.i = operationRecPtr.p->nextParallelQue;
   while (opPtr.i != RNIL) {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(opPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(opPtr));
     lastOpPtr = opPtr;
     opPtr.i = opPtr.p->nextParallelQue;
   }//while
@@ -5552,7 +5587,7 @@ Dbacc::commitDeleteCheck(Signal* signal)
         deleteCheckOngoing = false;
       } else {
         jam();
-        ndbrequire(oprec_pool.getValidPtr(deleteOpPtr));
+        ndbrequire(m_curr_acc->oprec_pool.getValidPtr(deleteOpPtr));
       }//if
     } else {
       jam();
@@ -5579,7 +5614,7 @@ Dbacc::commitDeleteCheck(Signal* signal)
       jam();
       break;
     }//if
-    ndbrequire(oprec_pool.getValidPtr(opPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(opPtr));
   } while (true);
 }//Dbacc::commitDeleteCheck()
 
@@ -5686,13 +5721,13 @@ void Dbacc::commitOperation(Signal* signal)
     prev.i = operationRecPtr.p->prevParallelQue;
     next.i = operationRecPtr.p->nextParallelQue;
     lockOwner.i = operationRecPtr.p->m_lock_owner_ptr_i;
-    ndbrequire(oprec_pool.getValidPtr(prev));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(prev));
     
     prev.p->nextParallelQue = next.i;
     if (next.i != RNIL) 
     {
       jam();
-      ndbrequire(oprec_pool.getValidPtr(next));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(next));
       next.p->prevParallelQue = prev.i;
     }
     else if (prev.p->m_op_bits & Operationrec::OP_LOCK_OWNER)
@@ -5709,7 +5744,7 @@ void Dbacc::commitOperation(Signal* signal)
        * Last operation in parallel queue
        */
       ndbassert(prev.i != lockOwner.i);
-      ndbrequire(oprec_pool.getValidPtr(lockOwner));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(lockOwner));
       ndbassert(lockOwner.p->m_op_bits & Operationrec::OP_LOCK_OWNER);
       lockOwner.p->m_lo_last_parallel_op_ptr_i = prev.i;
       prev.p->m_lock_owner_ptr_i = lockOwner.i;
@@ -5752,7 +5787,7 @@ void Dbacc::commitOperation(Signal* signal)
     {
       jam();
       next.i = next.p->nextParallelQue;
-      ndbrequire(oprec_pool.getValidPtr(next));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(next));
       
       if ((next.p->m_op_bits & Operationrec::OP_STATE_MASK) != 
 	  Operationrec::OP_STATE_EXECUTED)
@@ -5794,7 +5829,7 @@ Dbacc::release_lockowner(Signal* signal, OperationrecPtr opPtr, bool commit)
   if (nextP.i != RNIL)
   {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(nextP));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextP));
     newOwner = nextP;
 
     if (lastP.i == newOwner.i)
@@ -5804,7 +5839,7 @@ Dbacc::release_lockowner(Signal* signal, OperationrecPtr opPtr, bool commit)
     }
     else
     {
-      ndbrequire(oprec_pool.getValidPtr(lastP));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(lastP));
       newOwner.p->m_lo_last_parallel_op_ptr_i = lastP.i;
       lastP.p->m_lock_owner_ptr_i = newOwner.i;
     }
@@ -5815,7 +5850,7 @@ Dbacc::release_lockowner(Signal* signal, OperationrecPtr opPtr, bool commit)
     if (nextS.i != RNIL)
     {
       jam();
-      ndbrequire(oprec_pool.getValidPtr(nextS));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextS));
       ndbassert(nextS.p->prevSerialQue == opPtr.i);
       nextS.p->prevSerialQue = newOwner.i;
     }
@@ -5889,7 +5924,7 @@ Dbacc::release_lockowner(Signal* signal, OperationrecPtr opPtr, bool commit)
 	  if (nextP.p->nextParallelQue != RNIL)
 	  {
 	    nextP.i = nextP.p->nextParallelQue;
-            ndbrequire(oprec_pool.getValidPtr(nextP));
+            ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextP));
 	    nextbits = nextP.p->m_op_bits;
 	  }
 	  else
@@ -5903,7 +5938,7 @@ Dbacc::release_lockowner(Signal* signal, OperationrecPtr opPtr, bool commit)
   else
   {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(nextS));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextS));
     newOwner = nextS;
     
     newOwner.p->m_op_bits |= Operationrec::OP_RUN_QUEUE;
@@ -5923,7 +5958,7 @@ Dbacc::release_lockowner(Signal* signal, OperationrecPtr opPtr, bool commit)
     while (lastP.p->nextParallelQue != RNIL)
     {
       lastP.i = lastP.p->nextParallelQue;
-      ndbrequire(oprec_pool.getValidPtr(lastP));
+      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(lastP));
       lastP.p->m_op_bits |= Operationrec::OP_RUN_QUEUE;
     }
     
@@ -6039,6 +6074,7 @@ Dbacc::startNew(Signal* signal, OperationrecPtr newOwner)
     goto scan;
 
   /* Waiting op now runnable... */
+  if (!m_is_in_query_thread)
   {
     FragmentrecPtr frp;
     frp.i = newOwner.p->fragptr;
@@ -6047,6 +6083,10 @@ Dbacc::startNew(Signal* signal, OperationrecPtr newOwner)
                                != ZREADLOCK,
                                operationRecPtr.p->m_lockTime,
                                getHighResTimer());
+  }
+  else
+  {
+    operationRecPtr.p->m_lockTime = getHighResTimer();
   }
 
   if (deleted)
@@ -6130,7 +6170,7 @@ void Dbacc::takeOutLockOwnersList(OperationrecPtr& outOperPtr)
   bool inList = false;
   tmpOperPtr.i = fragrecptr.p->lockOwnersList[hash];
   while (tmpOperPtr.i != RNIL){
-    ndbrequire(oprec_pool.getValidPtr(tmpOperPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tmpOperPtr));
     if (tmpOperPtr.i == outOperPtr.i)
       inList = true;
     tmpOperPtr.i = tmpOperPtr.p->nextLockOwnerOp;
@@ -6152,7 +6192,7 @@ void Dbacc::takeOutLockOwnersList(OperationrecPtr& outOperPtr)
     jam();
     OperationrecPtr prevOp;
     prevOp.i = Tprev;
-    ndbrequire(oprec_pool.getValidPtr(prevOp));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(prevOp));
     prevOp.p->nextLockOwnerOp = Tnext;
   } else {
     fragrecptr.p->lockOwnersList[hash] = Tnext;
@@ -6165,7 +6205,7 @@ void Dbacc::takeOutLockOwnersList(OperationrecPtr& outOperPtr)
     jam();
     OperationrecPtr nextOp;
     nextOp.i = Tnext;
-    ndbrequire(oprec_pool.getValidPtr(nextOp));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextOp));
     nextOp.p->prevLockOwnerOp = Tprev;
   }//if
 
@@ -6189,7 +6229,7 @@ void Dbacc::insertLockOwnersList(OperationrecPtr& insOperPtr)
   // Check that operation is not already in list
   tmpOperPtr.i = fragrecptr.p->lockOwnersList[hash];
   while(tmpOperPtr.i != RNIL){
-    ndbrequire(oprec_pool.getValidPtr(tmpOperPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tmpOperPtr));
     ndbrequire(tmpOperPtr.i != insOperPtr.i);
     tmpOperPtr.i = tmpOperPtr.p->nextLockOwnerOp;    
   }
@@ -6210,7 +6250,7 @@ void Dbacc::insertLockOwnersList(OperationrecPtr& insOperPtr)
   else
   {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(tmpOperPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tmpOperPtr));
     tmpOperPtr.p->prevLockOwnerOp = insOperPtr.i;
   }//if
 }//Dbacc::insertLockOwnersList()
@@ -6701,7 +6741,7 @@ LHBits32 Dbacc::getElementHash(Uint32 const* elemptr, OperationrecPtr& oprec)
   {
     jam();
     oprec.i = ElementHeader::getOpPtrI(elemhead);
-    ndbrequire(oprec_pool.getValidPtr(oprec));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(oprec));
     return getElementHash(oprec);
   }
 }
@@ -6779,7 +6819,7 @@ void Dbacc::expandcontainer(Page8Ptr pageptr, Uint32 conidx)
   {
     jam();
     oprecptr.i = ElementHeader::getOpPtrI(tidrElemhead);
-    ndbrequire(oprec_pool.getValidPtr(oprecptr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(oprecptr));
     ndbassert(oprecptr.p->reducedHashValue.valid_bits() >= 1);
     move = oprecptr.p->reducedHashValue.get_bit(1);
     oprecptr.p->reducedHashValue.shift_out();
@@ -6898,7 +6938,7 @@ void Dbacc::expandcontainer(Page8Ptr pageptr, Uint32 conidx)
   {
     jam();
     oprecptr.i = ElementHeader::getOpPtrI(tidrElemhead);
-    ndbrequire(oprec_pool.getValidPtr(oprecptr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(oprecptr));
     ndbassert(oprecptr.p->reducedHashValue.valid_bits() >= 1);
     move = oprecptr.p->reducedHashValue.get_bit(1);
     oprecptr.p->reducedHashValue.shift_out();
@@ -7573,7 +7613,7 @@ Dbacc::shrink_adjust_reduced_hash_value(Uint32 bucket_number)
           jam();
           OperationrecPtr oprec;
           oprec.i = ElementHeader::getOpPtrI(tgeElementHeader);
-          ndbrequire(oprec_pool.getValidPtr(oprec));
+          ndbrequire(m_curr_acc->oprec_pool.getValidPtr(oprec));
           oprec.p->reducedHashValue.shift_in(false);
         }
         else
@@ -7656,7 +7696,7 @@ void Dbacc::shrinkcontainer(Page8Ptr pageptr,
     /*       FROM THE ELEMENT HEADER.                                                    */
     /* --------------------------------------------------------------------------------- */
     oprecptr.i = ElementHeader::getOpPtrI(tidrElemhead);
-    ndbrequire(oprec_pool.getValidPtr(oprecptr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(oprecptr));
     oprecptr.p->reducedHashValue.shift_in(true);
   }//if
   else
@@ -7881,7 +7921,7 @@ void Dbacc::execNEXT_SCANREQ(Signal* signal)
     /* COMMIT ACTIVE OPERATION. 
      * SEND NEXT SCAN ELEMENT IF IT IS ZCOPY_NEXT_COMMIT.
      * --------------------------------------------------------------------- */
-    ndbrequire(oprec_pool.getUncheckedPtrRW(operationRecPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getUncheckedPtrRW(operationRecPtr));
     fragrecptr.i = operationRecPtr.p->fragptr;
     ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
     ndbrequire(Magic::check_ptr(operationRecPtr.p));
@@ -8054,18 +8094,24 @@ void Dbacc::checkNextBucketLab(Signal* signal)
   ndbrequire(cfreeopRec != RNIL);
   operationRecPtr.i = cfreeopRec;
   cfreeopRec = RNIL;
-  ndbrequire(oprec_pool.getValidPtr(operationRecPtr));
+  ndbrequire(m_curr_acc->oprec_pool.getValidPtr(operationRecPtr));
   initScanOpRec(nsPageptr, tnsContainerptr, tnsElementptr);
  
   if (!tnsIsLocked){
     if (!scanPtr.p->scanReadCommittedFlag) {
       jam();
       /* Immediate lock grant as element unlocked */
-      fragrecptr.p->m_lockStats.
-        req_start_imm_ok(scanPtr.p->scanLockMode != ZREADLOCK,
-                         operationRecPtr.p->m_lockTime,
-                         getHighResTimer());
-      
+      if (!m_is_in_query_thread)
+      {
+        fragrecptr.p->m_lockStats.
+          req_start_imm_ok(scanPtr.p->scanLockMode != ZREADLOCK,
+                           operationRecPtr.p->m_lockTime,
+                           getHighResTimer());
+      }
+      else
+      {
+        operationRecPtr.p->m_lockTime = getHighResTimer();
+      }
       setlock(nsPageptr, tnsElementptr);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
       insertLockOwnersList(operationRecPtr);
@@ -8077,7 +8123,7 @@ void Dbacc::checkNextBucketLab(Signal* signal)
     arrGuard(tnsElementptr, 2048);
     queOperPtr.i = 
       ElementHeader::getOpPtrI(nsPageptr.p->word32[tnsElementptr]);
-    ndbrequire(oprec_pool.getValidPtr(queOperPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(queOperPtr));
     if (queOperPtr.p->m_op_bits & Operationrec::OP_ELEMENT_DISAPPEARED ||
 	queOperPtr.p->localdata.isInvalid())
     {
@@ -8112,10 +8158,17 @@ void Dbacc::checkNextBucketLab(Signal* signal)
 	 * WE PLACED THE OPERATION INTO A SERIAL QUEUE AND THUS WE HAVE TO 
 	 * WAIT FOR THE LOCK TO BE RELEASED. WE CONTINUE WITH THE NEXT ELEMENT
 	 * ----------------------------------------------------------------- */
-        fragrecptr.p->
-          m_lockStats.req_start(scanPtr.p->scanLockMode != ZREADLOCK,
-                                operationRecPtr.p->m_lockTime,
-                                getHighResTimer());
+        if (!m_is_in_query_thread)
+        {
+          fragrecptr.p->
+            m_lockStats.req_start(scanPtr.p->scanLockMode != ZREADLOCK,
+                                  operationRecPtr.p->m_lockTime,
+                                  getHighResTimer());
+        }
+        else
+        {
+          operationRecPtr.p->m_lockTime = getHighResTimer();
+        }
         putOpScanLockQue();	/* PUT THE OP IN A QUE IN THE SCAN REC */
         scanPtr.p->scan_lastSeen = __LINE__;
         BlockReference ref = scanPtr.p->scanUserblockref;
@@ -8144,10 +8197,17 @@ void Dbacc::checkNextBucketLab(Signal* signal)
       }//if
       ndbassert(return_result == ZPARALLEL_QUEUE);
       /* We got into the parallel queue - immediate grant */
-      fragrecptr.p->m_lockStats.
-        req_start_imm_ok(scanPtr.p->scanLockMode != ZREADLOCK,
-                         operationRecPtr.p->m_lockTime,
-                         getHighResTimer());
+      if (!m_is_in_query_thread)
+      {
+        fragrecptr.p->m_lockStats.
+          req_start_imm_ok(scanPtr.p->scanLockMode != ZREADLOCK,
+                           operationRecPtr.p->m_lockTime,
+                           getHighResTimer());
+      }
+      else
+      {
+        operationRecPtr.p->m_lockTime = getHighResTimer();
+      }
     }//if
   }//if
   /* ----------------------------------------------------------------------- */
@@ -8280,7 +8340,7 @@ void Dbacc::releaseAndCommitActiveOps(Signal* signal)
   operationRecPtr.i = scanPtr.p->scanFirstActiveOp;
   while (operationRecPtr.i != RNIL) {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(operationRecPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(operationRecPtr));
     trsoOperPtr.i = operationRecPtr.p->nextOp;
     fragrecptr.i = operationRecPtr.p->fragptr;
     ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
@@ -8311,7 +8371,7 @@ void Dbacc::releaseAndCommitQueuedOps(Signal* signal)
   operationRecPtr.i = scanPtr.p->scanFirstQueuedOp;
   while (operationRecPtr.i != RNIL) {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(operationRecPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(operationRecPtr));
     trsoOperPtr.i = operationRecPtr.p->nextOp;
     fragrecptr.i = operationRecPtr.p->fragptr;
     ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
@@ -8341,7 +8401,7 @@ void Dbacc::releaseAndAbortLockedOps(Signal* signal) {
   operationRecPtr.i = scanPtr.p->scanFirstLockedOp;
   while (operationRecPtr.i != RNIL) {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(operationRecPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(operationRecPtr));
     trsoOperPtr.i = operationRecPtr.p->nextOp;
     fragrecptr.i = operationRecPtr.p->fragptr;
     ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
@@ -8384,16 +8444,22 @@ void Dbacc::execACC_CHECK_SCAN(Signal* signal)
     // ready to report the tuple now.
     //------------------------------------------------------------------------
     operationRecPtr.i = scanPtr.p->scanFirstQueuedOp;
-    ndbrequire(oprec_pool.getValidPtr(operationRecPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(operationRecPtr));
     takeOutReadyScanQueue();
     fragrecptr.i = operationRecPtr.p->fragptr;
     ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
 
     /* Scan op that had to wait for a lock is now runnable */
-    fragrecptr.p->m_lockStats.wait_ok(scanPtr.p->scanLockMode != ZREADLOCK,
-                                      operationRecPtr.p->m_lockTime,
-                                      getHighResTimer());
-
+    if (!m_is_in_query_thread)
+    {
+      fragrecptr.p->m_lockStats.wait_ok(scanPtr.p->scanLockMode != ZREADLOCK,
+                                        operationRecPtr.p->m_lockTime,
+                                        getHighResTimer());
+    }
+    else
+    {
+      operationRecPtr.p->m_lockTime = getHighResTimer();
+    }
     if (operationRecPtr.p->m_op_bits & Operationrec::OP_ELEMENT_DISAPPEARED) 
     {
       jam();
@@ -8466,6 +8532,10 @@ void Dbacc::execACC_CHECK_SCAN(Signal* signal)
    */
   if (cfreeopRec == RNIL)
   {
+    /**
+     * If a query thread is to scan with locked reads, this must
+     * allocate from owning LDM thread.
+     */
     OperationrecPtr opPtr;
     if (oprec_pool.seize(opPtr))
     {
@@ -8537,7 +8607,7 @@ void Dbacc::execACC_TO_REQ(Signal* signal)
 
   jamEntry();
   tatrOpPtr.i = signal->theData[1];     /*  OPER PTR OF ACC                */
-  ndbrequire(oprec_pool.getValidPtr(tatrOpPtr));
+  ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tatrOpPtr));
 
   /* Only scan locks can be taken over */
   if ((tatrOpPtr.p->m_op_bits & Operationrec::OP_MASK) == ZSCAN_OP)
@@ -8736,7 +8806,7 @@ void Dbacc::initScanOpRec(Page8Ptr pageptr,
   {
     OperationrecPtr oprec;
     oprec.i = ElementHeader::getOpPtrI(pageptr.p->word32[elemptr]);
-    ndbrequire(oprec_pool.getValidPtr(oprec));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(oprec));
     ndbassert(oprec.p->localdata.m_page_no == pageptr.p->word32[tisoLocalPtr]);
     operationRecPtr.p->localdata = oprec.p->localdata;
   }
@@ -8800,7 +8870,7 @@ void Dbacc::putActiveScanOp() const
   pasOperationRecPtr.i = scanPtr.p->scanFirstActiveOp;
   if (pasOperationRecPtr.i != RNIL) {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(pasOperationRecPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(pasOperationRecPtr));
     pasOperationRecPtr.p->prevOp = operationRecPtr.i;
   }//if
   operationRecPtr.p->nextOp = pasOperationRecPtr.i;
@@ -8833,7 +8903,7 @@ void Dbacc::putOpScanLockQue() const
   tmpOp.i = scanPtr.p->scanFirstLockedOp;
   while(tmpOp.i != RNIL){
     numLockedOpsBefore++;
-    ndbrequire(oprec_pool.getValidPtr(tmpOp));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tmpOp));
     if (tmpOp.p->nextOp == RNIL)
     {
       ndbrequire(tmpOp.i == scanPtr.p->scanLastLockedOp);
@@ -8852,7 +8922,7 @@ void Dbacc::putOpScanLockQue() const
   operationRecPtr.p->nextOp = RNIL;
   if (pslOperationRecPtr.i != RNIL) {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(pslOperationRecPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(pslOperationRecPtr));
     pslOperationRecPtr.p->nextOp = operationRecPtr.i;
   } else {
     jam();
@@ -8881,7 +8951,7 @@ void Dbacc::putReadyScanQueue(Uint32 scanRecIndex) const
   TscanPtr.p->scanLastQueuedOp = operationRecPtr.i;
   if (prsOperationRecPtr.i != RNIL) {
     jam();
-    ndbrequire(oprec_pool.getValidPtr(prsOperationRecPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(prsOperationRecPtr));
     prsOperationRecPtr.p->nextOp = operationRecPtr.i;
   } else {
     jam();
@@ -9152,7 +9222,7 @@ void Dbacc::takeOutActiveScanOp() const
   if (operationRecPtr.p->prevOp != RNIL) {
     jam();
     tasOperationRecPtr.i = operationRecPtr.p->prevOp;
-    ndbrequire(oprec_pool.getValidPtr(tasOperationRecPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tasOperationRecPtr));
     tasOperationRecPtr.p->nextOp = operationRecPtr.p->nextOp;
   } else {
     jam();
@@ -9161,7 +9231,7 @@ void Dbacc::takeOutActiveScanOp() const
   if (operationRecPtr.p->nextOp != RNIL) {
     jam();
     tasOperationRecPtr.i = operationRecPtr.p->nextOp;
-    ndbrequire(oprec_pool.getValidPtr(tasOperationRecPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tasOperationRecPtr));
     tasOperationRecPtr.p->prevOp = operationRecPtr.p->prevOp;
   }//if
 }//Dbacc::takeOutActiveScanOp()
@@ -9187,7 +9257,7 @@ void Dbacc::takeOutScanLockQueue(Uint32 scanRecIndex) const
   if (operationRecPtr.p->prevOp != RNIL) {
     jam();
     tslOperationRecPtr.i = operationRecPtr.p->prevOp;
-    ndbrequire(oprec_pool.getValidPtr(tslOperationRecPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tslOperationRecPtr));
     tslOperationRecPtr.p->nextOp = operationRecPtr.p->nextOp;
   } else {
     jam();
@@ -9198,7 +9268,7 @@ void Dbacc::takeOutScanLockQueue(Uint32 scanRecIndex) const
   if (operationRecPtr.p->nextOp != RNIL) {
     jam();
     tslOperationRecPtr.i = operationRecPtr.p->nextOp;
-    ndbrequire(oprec_pool.getValidPtr(tslOperationRecPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tslOperationRecPtr));
     tslOperationRecPtr.p->prevOp = operationRecPtr.p->prevOp;
   } else {
     jam();
@@ -9217,7 +9287,7 @@ void Dbacc::takeOutScanLockQueue(Uint32 scanRecIndex) const
   tmpOp.i = TscanPtr.p->scanFirstLockedOp;
   while(tmpOp.i != RNIL){
     numLockedOps++;
-    ndbrequire(oprec_pool.getValidPtr(tmpOp));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tmpOp));
     if (tmpOp.p->nextOp == RNIL)
     {
       ndbrequire(tmpOp.i == TscanPtr.p->scanLastLockedOp);
@@ -9238,7 +9308,7 @@ void Dbacc::takeOutReadyScanQueue() const
   if (operationRecPtr.p->prevOp != RNIL) {
     jam();
     trsOperationRecPtr.i = operationRecPtr.p->prevOp;
-    ndbrequire(oprec_pool.getValidPtr(trsOperationRecPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(trsOperationRecPtr));
     trsOperationRecPtr.p->nextOp = operationRecPtr.p->nextOp;
   } else {
     jam();
@@ -9247,7 +9317,7 @@ void Dbacc::takeOutReadyScanQueue() const
   if (operationRecPtr.p->nextOp != RNIL) {
     jam();
     trsOperationRecPtr.i = operationRecPtr.p->nextOp;
-    ndbrequire(oprec_pool.getValidPtr(trsOperationRecPtr));
+    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(trsOperationRecPtr));
     trsOperationRecPtr.p->prevOp = operationRecPtr.p->prevOp;
   } else {
     jam();
@@ -9444,6 +9514,10 @@ void Dbacc::initPage(Page8Ptr inpPageptr, Uint32 tipPageId)
 /* --------------------------------------------------------------------------------- */
 void Dbacc::releaseOpRec()
 {
+  /**
+   * Need to interact with LDM owning blocks here if SCANs will be able
+   * to use locked reads in query threads.
+   */
   ndbrequire(operationRecPtr.p->m_op_bits == Operationrec::OP_INITIAL);
   if (likely(operationRecPtr.i != c_copy_frag_oprec))
   {
@@ -9837,6 +9911,7 @@ void Dbacc::execDBINFO_SCANREQ(Signal *signal)
         ndbinfo_send_scan_break(signal, req, rl, i);
         return;
       }
+      NdbMutex_Lock(&c_lqh->alloc_operation_mutex);
       bool found = getNextOpRec(i, opRecPtr, 10);
       /**
        * ACC holds lock requests/operations in a 2D queue 
@@ -9912,8 +9987,13 @@ void Dbacc::execDBINFO_SCANREQ(Signal *signal)
         row.write_uint32(nextParallelQue);
         row.write_uint32(durationMillis);
         row.write_uint32(userPtr);
+        NdbMutex_Unlock(&c_lqh->alloc_operation_mutex);
 
         ndbinfo_send_row(signal, req, row, rl);
+      }
+      else
+      {
+        NdbMutex_Unlock(&c_lqh->alloc_operation_mutex);
       }
       maxToCheck--;
       if (i == RNIL)

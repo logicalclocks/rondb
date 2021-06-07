@@ -2732,7 +2732,6 @@ public:
     TcConnectionrec *nextTcLogQueue;
     TcConnectionrec *prevTcLogQueue;
 
-    Dblqh *ldm_owning_block;
     UintR readlenAi;
     UintR reqinfo;
     UintR schemaVersion;
@@ -3892,8 +3891,11 @@ private:
   /**
    * TUPle deallocation ref counting
    */
-  void incrDeallocRefCount(Signal* signal, Uint32 opPtrI, Uint32 countOpPtrI);
-  Uint32 decrDeallocRefCount(Signal* signal, Uint32 opPtrI);
+  void incrDeallocRefCount(Signal* signal,
+                           TcConnectionrecPtr opPtr,
+                           Uint32 countOpPtrI);
+  Uint32 decrDeallocRefCount(Signal* signal,
+                             TcConnectionrecPtr opPtr);
   void handleDeallocOp(Signal* signal, TcConnectionrecPtr regTcPtr);
 
   Dbtup* c_tup;
@@ -4910,6 +4912,13 @@ public:
   {
     return sizeof(struct Tablerec);
   }
+  void reset_curr_ldm()
+  {
+    m_curr_lqh = this;
+    c_acc->m_curr_acc = c_acc;
+    c_tup->m_curr_tup = c_tup;
+  }
+  Dblqh *m_curr_lqh;
 #define NUM_TRANSACTION_HASH_MUTEXES 4
   NdbMutex alloc_operation_mutex;
   NdbMutex transaction_hash_mutex[NUM_TRANSACTION_HASH_MUTEXES];
@@ -4999,6 +5008,7 @@ inline
 bool
 Dblqh::is_same_trans(Uint32 opId, Uint32 trid1, Uint32 trid2)
 {
+  /* Cannot use jam here, called from other thread */
   TcConnectionrecPtr regTcPtr;  
   regTcPtr.i= opId;
   ndbrequire(tcConnect_pool.getValidPtr(regTcPtr));
@@ -5110,6 +5120,7 @@ bool Dblqh::is_lcp_idle(LcpRecord *lcpPtrP)
 inline bool
 Dblqh::has_key_info(Uint32 opPtrI)
 {
+  /* Cannot use jam here, called from other thread */
   TcConnectionrecPtr opPtr;
   opPtr.i = opPtrI;
   if (tcConnect_pool.getValidPtr(opPtr))
@@ -5448,6 +5459,7 @@ inline
 Dblqh::TcConnectionrec*
 Dblqh::getOperationPtrP(Uint32 opPtrI)
 {
+  /* Cannot use jam here, called from other thread */
   TcConnectionrecPtr opPtr;
   opPtr.i = opPtrI;
   ndbrequire(tcConnect_pool.getValidPtr(opPtr));

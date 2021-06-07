@@ -80,6 +80,8 @@ void Dblqh::initData()
   c_master_node_id = RNIL;
 #endif
 
+  m_curr_lqh = this;
+
   c_num_fragments_created_since_restart = 0;
   c_fragments_in_lcp = 0;
 

@@ -43,7 +43,7 @@ void Dbtup::execSTORED_PROCREQ(Signal* signal)
   TablerecPtr regTabPtr;
   jamEntryDebug();
   regOperPtr.i = signal->theData[0];
-  ndbrequire(c_operation_pool.getValidPtr(regOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(regOperPtr));
   regTabPtr.i = signal->theData[1];
   ptrCheckGuard(regTabPtr, cnoOfTablerec, tablerec);
 

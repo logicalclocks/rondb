@@ -68,6 +68,7 @@ Uint64 Dbacc::getTransactionMemoryNeed(
 
 void Dbacc::initData() 
 {
+  m_curr_acc = this;
   ctablesize = ZTABLESIZE;
   cfragmentsize = ZFRAGMENTSIZE;
 

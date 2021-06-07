@@ -4806,6 +4806,9 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
       {
         Uint32 nodeId = refToNode(TBRef);
         if (LqhKeyReq::getNoDiskFlag(lqhKeyReq->requestInfo) &&
+            !LqhKeyReq::getScanTakeOverFlag(lqhKeyReq->requestInfo) &&
+            (LqhKeyReq::getDirtyFlag(lqhKeyReq->requestInfo) ||
+             tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG)) &&
             (LqhKeyReq::getOperation(lqhKeyReq->requestInfo) == ZREAD) &&
             (regApiPtr->m_exec_write_count == 0))
         {
@@ -6073,16 +6076,16 @@ void Dbtc::execSEND_PACKED(Signal* signal)
   UintR TpackedListIndex = cpackedListIndex;
   jamEntryDebug();
   for (i = 0; i < TpackedListIndex; i++) {
-    jam();
     Thostptr.i = cpackedList[i];
     ptrAss(Thostptr, localHostRecord);
     arrGuard(Thostptr.i - 1, MAX_NODES - 1);
     for (Uint32 j = 0; j < NDB_ARRAY_SIZE(Thostptr.p->lqh_pack); j++)
     {
       struct PackedWordsContainer * container = &Thostptr.p->lqh_pack[j];
-      jamDebug();
       if (container->noOfPackedWords > 0) {
         jamDebug();
+        jamLineDebug(Uint16(i));
+        jamLineDebug(Uint16(j));
         sendPackedSignal(signal, container);
       }
     }

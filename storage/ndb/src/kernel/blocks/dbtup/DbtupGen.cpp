@@ -64,6 +64,7 @@ extern EventLogger * g_eventLogger;
 
 void Dbtup::initData() 
 {
+  m_curr_tup = this;
   cownNodeId = getOwnNodeId();
   TablerecPtr tablePtr;
   (void)tablePtr; // hide unused warning
@@ -1200,6 +1201,7 @@ bool Dbtup::seize_op_rec(Uint32 userPtr,
                          Uint32 &i_val,
                          Dbtup::Operationrec **opPtrP)
 {
+  /* Cannot use jam here, called from other thread */
   OperationrecPtr opPtr;
   (void)ref;
   if (unlikely(!c_operation_pool.seize(opPtr)))

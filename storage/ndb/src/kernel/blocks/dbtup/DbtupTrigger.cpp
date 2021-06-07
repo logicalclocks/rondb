@@ -625,7 +625,7 @@ Dbtup::execFIRE_TRIG_REQ(Signal* signal)
 
   jamEntry();
 
-  ndbrequire(c_operation_pool.getValidPtr(regOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(regOperPtr));
 
   regFragPtr.i = regOperPtr.p->fragmentPtr;
   Uint32 no_of_fragrec = cnoOfFragrec;
@@ -653,7 +653,7 @@ Dbtup::execFIRE_TRIG_REQ(Signal* signal)
 
   OperationrecPtr lastOperPtr;
   lastOperPtr.i = tuple_ptr->m_operation_ptr_i;
-  ndbrequire(c_operation_pool.getValidPtr(lastOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(lastOperPtr));
   ndbassert(regOperPtr.p->op_struct.bit_field.m_reorg ==
             lastOperPtr.p->op_struct.bit_field.m_reorg);
 
