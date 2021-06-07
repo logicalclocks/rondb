@@ -4806,7 +4806,7 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
       {
         Uint32 nodeId = refToNode(TBRef);
         if (LqhKeyReq::getNoDiskFlag(lqhKeyReq->requestInfo) &&
-            !LqhKeyReq::getScanTakeOverFlag(lqhKeyReq->requestInfo) &&
+            (!LqhKeyReq::getScanTakeOverFlag(lqhKeyReq->attrLen)) &&
             (LqhKeyReq::getDirtyFlag(lqhKeyReq->requestInfo) ||
              tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG)) &&
             (LqhKeyReq::getOperation(lqhKeyReq->requestInfo) == ZREAD) &&
