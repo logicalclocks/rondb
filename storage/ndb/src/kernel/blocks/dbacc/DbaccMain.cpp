@@ -64,6 +64,11 @@
 //#define DO_TRANSIENT_POOL_STAT 1
 #endif
 
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+#define DEBUG_LOCK_STATS true
+#else
+#define DEBUG_LOCK_STATS false
+#endif
 // primary key is stored in TUP
 #include "../dbtup/Dbtup.hpp"
 #include "../dblqh/Dblqh.hpp"
@@ -1459,7 +1464,7 @@ void Dbacc::execACCKEYREQ(Signal* signal,
            */
           elemPageptr.p->word32[elemptr] = eh;
           release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
-          if (!m_is_in_query_thread)
+          if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
           {
             fragrecptr.p->
               m_lockStats.req_start_imm_ok((opbits & 
@@ -1497,7 +1502,6 @@ void Dbacc::execACCKEYREQ(Signal* signal,
         return;
       }//if
     case ZINSERT:
-      release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
       jam();
       ndbassert(!m_is_in_query_thread);
       insertExistElemLab(signal, lockOwnerPtr);
@@ -1560,6 +1564,75 @@ Dbacc::execACCKEY_ORD(Signal* signal,
                       Uint32 opPtrI,
                       Dbacc::Operationrec *opPtrP)
 {
+  /**
+   * ---> ACCKEYREQ
+   * STATE: Row unlocked
+   * ==>  Lock row
+   *      Set exclusive access to row
+   * STATE: Row locked by same transaction, no exclusive access
+   * ==>  Lock row
+   *      Set exclusive access to row
+   * STATE: Row locked by same transaction, exclusive access set
+   * ==>  Lock row
+   *      Wait in Parallel Lock Queue until row is free to use again
+   * STATE: Row locked by other transaction in Read mode, no exclusive
+   * Read Operation:
+   * ==>  Lock row
+   *      Set exclusive access to row
+   * Exclusive Operation:
+   * ==>  Wait in Serial Lock Queue until it's our turn
+   * STATE: Row locked by other transaction in Exclusive mode
+   * ==>  Wait in Serial Lock Queue until it's our turn
+   *
+   * Eventually we will acquire a lock on the row and acquire exclusive
+   * access to the row.
+   * After acquiring this we will either return directly from
+   * execACCKEYREQ or we will send a return signal ACCKEYCONF to DBLQH.
+   *
+   * DBLQH will upon returning be ready to read the row, insert the
+   * row, update the row or mark the row as deleted. During these operations
+   * no other operations can access the row with a row lock, thus the
+   * lock queue functions both as a logical lock on the row as well as a
+   * physical lock on the row ensuring that only one operation at a time
+   * can access the row.
+   *
+   * The Committed Reads is an exception to this rule. Committed reads can
+   * execute in parallel with other operations since it always reads a
+   * specific row version that isn't allowed to be deleted until all readers
+   * have completed.
+   *
+   * After completing the operations on the row most operations return to
+   * DBACC using the message ACCKEY_ORD. This message is not about
+   * releasing the row lock, this message is about releasing the exclusive
+   * access to the row, thus allowing other operations from the Parallel
+   * Lock Queue to proceed.
+   *
+   * Row locks acquired by a scan operation always returns with ACCKEY_ORD
+   * after completing the operation.
+   *
+   * Key operations can also return with the message ACC_ABORTREQ, this
+   * is both a release of the exclusive access as well as releasing the
+   * row lock. Similarly it can also return with the message
+   * ACC_COMMITREQ in recovery operations. Also in this case the row lock
+   * as well as the exclusive row access is released.
+   *
+   * The ACC fragment mutex is required to hold during the ACCKEYREQ
+   * message and the ACCKEY_ORD, ACC_ABORTREQ and ACC_COMMITREQ messages.
+   * It isn't necessary to hold any ACC fragment mutex if no query
+   * threads are used.
+   *
+   * With the changes in HOPSWORKS-2573 we are able to execute
+   * operations in parallel, however the ACC fragment mutex ensures
+   * that we still retain the property that only one operation at
+   * a time is able to access the row for locked reads and update
+   * operations. Again the Committed Reads are an exception that is
+   * allowed to execute in parallel with many other operations.
+   *
+   * Some NDB API batch operations require that operations are executed in
+   * the order they were sent. This cannot be handled by DBACC on its own.
+   * This must be handled by DBTC in scheduling those operations to the
+   * LDM and Query threads.
+   */
   jamEntryDebug();
   OperationrecPtr lastOp;
   lastOp.i = opPtrI;
@@ -1575,16 +1648,19 @@ Dbacc::execACCKEY_ORD(Signal* signal,
   }
   else if (likely(opstate == Operationrec::OP_STATE_RUNNING))
   {
+    jamDebug();
+    fragrecptr.i = lastOp.p->fragptr;
     opbits |= Operationrec::OP_STATE_EXECUTED;
+    ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
+    acquire_frag_mutex_hash(fragrecptr.p, lastOp);
     lastOp.p->m_op_bits = opbits;
+    /* This function is responsible to release ACC fragment mutex */
     startNext(signal, lastOp);
-    validate_lock_queue(lastOp);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    ndbrequire(m_acc_mutex_locked == RNIL);
+#endif
     return;
   } 
-  else
-  {
-  }
-
   ndbout_c("bits: %.8x state: %.8x", opbits, opstate);
   ndbabort();
 }
@@ -1603,6 +1679,8 @@ Dbacc::startNext(Signal* signal, OperationrecPtr lastOp)
   if ((opbits & Operationrec::OP_STATE_MASK)!= Operationrec::OP_STATE_EXECUTED)
   {
     jam();
+    validate_lock_queue(lastOp);
+    release_frag_mutex_hash(fragrecptr.p, lastOp);
     return;
   }
   
@@ -1632,6 +1710,8 @@ Dbacc::startNext(Signal* signal, OperationrecPtr lastOp)
   if (nextOp.i == RNIL)
   {
     jam();
+    validate_lock_queue(lastOp);
+    release_frag_mutex_hash(fragrecptr.p, lastOp);
     return;
   }
   
@@ -1654,6 +1734,8 @@ Dbacc::startNext(Signal* signal, OperationrecPtr lastOp)
        *  and either last hold exclusive lock
        *          or next need exclusive lock
        */
+      validate_lock_queue(lastOp);
+      release_frag_mutex_hash(fragrecptr.p, lastOp);
       return;
     }
 
@@ -1687,6 +1769,8 @@ Dbacc::startNext(Signal* signal, OperationrecPtr lastOp)
        * transaction is fully committed @ ACC
        *
        */
+      validate_lock_queue(lastOp);
+      release_frag_mutex_hash(fragrecptr.p, lastOp);
       return;
     }
     
@@ -1729,6 +1813,8 @@ Dbacc::startNext(Signal* signal, OperationrecPtr lastOp)
       /**
        * parallel queue contained another transaction, dont let it run
        */
+      validate_lock_queue(lastOp);
+      release_frag_mutex_hash(fragrecptr.p, lastOp);
       return;
     }
     tmp.i = tmp.p->nextParallelQue;
@@ -1770,7 +1856,7 @@ upgrade:
   /**
    * Track end-of-wait
    */
-  if (!m_is_in_query_thread)
+  if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
   {
     FragmentrecPtr frp;
     frp.i = nextOp.p->fragptr;
@@ -1833,10 +1919,14 @@ checkop:
 conf:
   nextOp.p->m_op_bits = nextbits;
   nextOp.p->localdata = lastOp.p->localdata;
+  validate_lock_queue(lastOp);
+  release_frag_mutex_hash(fragrecptr.p, lastOp);
   
-  if (nextop == ZSCAN_OP && (nextbits & Operationrec::OP_LOCK_REQ) == 0)
+  if (unlikely(nextop == ZSCAN_OP &&
+              (nextbits & Operationrec::OP_LOCK_REQ) == 0))
   {
     jam();
+    ndbabort();
     takeOutScanLockQueue(nextOp.p->scanRecPtr);
     putReadyScanQueue(nextOp.p->scanRecPtr);
   }
@@ -1856,10 +1946,14 @@ conf:
   
 ref:
   nextOp.p->m_op_bits = nextbits;
+  validate_lock_queue(lastOp);
+  release_frag_mutex_hash(fragrecptr.p, lastOp);
   
-  if (nextop == ZSCAN_OP && (nextbits & Operationrec::OP_LOCK_REQ) == 0)
+  if (unlikely(nextop == ZSCAN_OP &&
+              (nextbits & Operationrec::OP_LOCK_REQ) == 0))
   {
     jam();
+    ndbabort();
     nextOp.p->m_op_bits |= Operationrec::OP_ELEMENT_DISAPPEARED;
     takeOutScanLockQueue(nextOp.p->scanRecPtr);
     putReadyScanQueue(nextOp.p->scanRecPtr);
@@ -1904,7 +1998,7 @@ Dbacc::accIsLockedLab(Signal* signal, OperationrecPtr lockOwnerPtr)
                               operationRecPtr.p->localdata.m_page_idx,
                               fragrecptr.p->tupFragptr);
 
-      if (!m_is_in_query_thread)
+      if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
       {
         fragrecptr.p->m_lockStats.req_start_imm_ok((bits & 
                                               Operationrec::OP_LOCK_MODE) 
@@ -1922,7 +2016,7 @@ Dbacc::accIsLockedLab(Signal* signal, OperationrecPtr lockOwnerPtr)
     else if (return_result == ZSERIAL_QUEUE)
     {
       jam();
-      if (!m_is_in_query_thread)
+      if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
       {
         fragrecptr.p->m_lockStats.req_start((bits & 
                                              Operationrec::OP_LOCK_MODE) 
@@ -1986,6 +2080,7 @@ void Dbacc::insertExistElemLab(Signal* signal,
   if (!lockOwnerPtr.p)
   {
     jam();
+    release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
     acckeyref1Lab(signal, ZWRITE_ERROR);/* THE ELEMENT ALREADY EXIST */
     return;
   }//if
@@ -2054,7 +2149,7 @@ void Dbacc::insertelementLab(Signal* signal,
                 Operationrec::ANY_SCANBITS,
                 false);
   release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
-  if (!m_is_in_query_thread)
+  if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
   {
     fragrecptr.p->m_lockStats.req_start_imm_ok(true /* Exclusive */,
                                                operationRecPtr.p->m_lockTime,
@@ -2875,6 +2970,9 @@ void Dbacc::execACC_COMMITREQ(Signal* signal,
   ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
   ndbrequire(Magic::check_ptr(operationRecPtr.p));
   commitOperation(signal);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  ndbrequire(m_acc_mutex_locked == RNIL);
+#endif
   ndbassert(operationRecPtr.i == tmp);
   ndbassert(operationRecPtr.p == ptr);
   operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
@@ -2963,18 +3061,20 @@ void Dbacc::execACC_ABORTREQ(Signal* signal,
   if (opbits == Operationrec::OP_EXECUTED_DIRTY_READ)
   {
     jam();
+    operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
   }
   else if (opstate == Operationrec::OP_STATE_EXECUTED ||
 	   opstate == Operationrec::OP_STATE_WAITING ||
 	   opstate == Operationrec::OP_STATE_RUNNING)
   {
     jam();
-    ndbassert(!m_is_query_block);
     ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
     abortOperation(signal);
+    operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
   }
-  
-  operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  ndbrequire(m_acc_mutex_locked == RNIL);
+#endif
 
   signal->theData[0] = operationRecPtr.p->userptr;
   signal->theData[1] = 0;
@@ -4422,6 +4522,14 @@ Dbacc::report_pending_dealloc(Signal* signal,
  *
  * ACC is now done with the TUPle storage, so inform LQH
  * that it can go ahead with deallocation when it is able
+ *
+ * At this point ACC has disconnected the ACC element from the
+ * row in TUP. This means that there is no way to come to the
+ * TUPle row, thus we need no lock in ACC while carrying out
+ * this operation. Actually performing this operation requires
+ * exclusive access and we don't want to upgrade the lock to
+ * exclusive access while holding the ACC fragment mutex. This
+ * makes it possible to introduce a deadlock.
  */
 void
 Dbacc::trigger_dealloc(Signal* signal, const Operationrec* opPtrP)
@@ -4471,9 +4579,6 @@ void Dbacc::commitdelete(Signal* signal)
   Page8Ptr lastBucketPageptr;
   Uint32 lastBucketConidx;
 
-  jam();
-  trigger_dealloc(signal, operationRecPtr.p);
-  
   getdirindex(lastBucketPageptr, lastBucketConidx);
   lastPageptr = lastBucketPageptr;
   tlastPageindex = lastBucketConidx;
@@ -5186,8 +5291,8 @@ Dbacc::abortParallelQueueOperation(Signal* signal, OperationrecPtr opPtr)
     /**
      * Abort P3...check start next
      */
+    /* This function is responsible to release ACC fragment mutex */
     startNext(signal, prevP);
-    validate_lock_queue(prevP);
     return;
   }
   else
@@ -5200,8 +5305,8 @@ Dbacc::abortParallelQueueOperation(Signal* signal, OperationrecPtr opPtr)
      */
     ndbassert(prevP.p->m_op_bits & Operationrec::OP_LOCK_OWNER);
     prevP.p->m_lo_last_parallel_op_ptr_i = RNIL;
+    /* This function is responsible to release ACC fragment mutex */
     startNext(signal, prevP);
-    validate_lock_queue(prevP);
     return;
   }
 
@@ -5242,8 +5347,8 @@ Dbacc::abortParallelQueueOperation(Signal* signal, OperationrecPtr opPtr)
   if (opstate == Operationrec::OP_STATE_RUNNING)
   {
     jam();
+    /* This function is responsible to release ACC fragment mutex */
     startNext(signal, prevP);
-    validate_lock_queue(prevP);
     return;
   }
   
@@ -5266,9 +5371,8 @@ Dbacc::abortParallelQueueOperation(Signal* signal, OperationrecPtr opPtr)
   ndbassert(loPtr.p->m_op_bits & Operationrec::OP_LOCK_OWNER);
   ndbassert(loPtr.p->m_lo_last_parallel_op_ptr_i == nextP.i);
 #endif
+  /* This function is responsible to release ACC fragment mutex */
   startNext(signal, nextP);
-  validate_lock_queue(nextP);
-  
   return;
 }
 
@@ -5291,7 +5395,7 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
   ndbassert((opbits & Operationrec::OP_LOCK_OWNER) == 0);
   ndbassert((opbits & Operationrec::OP_RUN_QUEUE) == 0);
 
-  if (!m_is_in_query_thread)
+  if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
   {
     FragmentrecPtr frp;
     frp.i = opPtr.p->fragptr;
@@ -5370,6 +5474,7 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
 	ndbassert(nextS.p->prevSerialQue == opPtr.i);
 	nextS.p->prevSerialQue = nextP.i;
 	validate_lock_queue(prevS);
+        release_frag_mutex_hash(fragrecptr.p, opPtr);
 	return;
       }
       else
@@ -5385,6 +5490,7 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
 	ndbassert(loPtr.p->m_lo_last_serial_op_ptr_i == opPtr.i);
 	loPtr.p->m_lo_last_serial_op_ptr_i = nextP.i;
 	validate_lock_queue(loPtr);
+        release_frag_mutex_hash(fragrecptr.p, opPtr);
 	return;
       }
     }
@@ -5443,8 +5549,9 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
 	  jam();
 	  lastOp = prevS;
 	}
+        /* This function is responsible to release ACC fragment mutex */
 	startNext(signal, lastOp);
-	validate_lock_queue(lastOp);
+        return;
       }
       else
       {
@@ -5452,15 +5559,15 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
       }
     }
   }
+  release_frag_mutex_hash(fragrecptr.p, opPtr);
 }
 
 
 void Dbacc::abortOperation(Signal* signal)
 {
+  acquire_frag_mutex_hash(fragrecptr.p, operationRecPtr);
   Uint32 opbits = operationRecPtr.p->m_op_bits;
-
   validate_lock_queue(operationRecPtr);
-
   if (opbits & Operationrec::OP_LOCK_OWNER) 
   {
     /**
@@ -5470,12 +5577,11 @@ void Dbacc::abortOperation(Signal* signal)
      * thread is reading it. This could cause the query thread to
      * consider a row deleted which isn't and vice versa.
      */
-    acquire_frag_mutex_hash(fragrecptr.p, operationRecPtr);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
     takeOutLockOwnersList(operationRecPtr);
 #endif
     opbits &= ~(Uint32)Operationrec::OP_LOCK_OWNER;
-    if (opbits & Operationrec::OP_INSERT_IS_DONE)
+    if (unlikely(opbits & Operationrec::OP_INSERT_IS_DONE))
     { 
       jam();
       opbits |= Operationrec::OP_ELEMENT_DISAPPEARED;
@@ -5486,9 +5592,20 @@ void Dbacc::abortOperation(Signal* signal)
     
     if (queue)
     {
-      jam();
+      bool trigger_dealloc_op = false;
       mark_pending_abort(operationRecPtr, operationRecPtr.p->nextParallelQue);
-      release_lockowner(signal, operationRecPtr, false);
+      /* This function is responsible to release ACC fragment mutex */
+      release_lockowner(signal, operationRecPtr, false, trigger_dealloc_op);
+      if (unlikely(trigger_dealloc_op))
+      {
+        jam();
+        trigger_dealloc(signal, operationRecPtr.p);
+      }
+      else
+      {
+        jam();
+      }
+      return;
     } 
     else 
     {
@@ -5499,7 +5616,6 @@ void Dbacc::abortOperation(Signal* signal)
        * ------------------------------------------------------------------ */
       if ((opbits & Operationrec::OP_ELEMENT_DISAPPEARED) == 0)
       {
-        jam();
 	Page8Ptr aboPageidptr;
 	Uint32 taboElementptr;
 	Uint32 tmp2Olq;
@@ -5514,22 +5630,27 @@ void Dbacc::abortOperation(Signal* signal)
         arrGuard(taboElementptr, 2048);
         aboPageidptr.p->word32[taboElementptr] = tmp2Olq;
         release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
+        jam();
         return;
       } 
       else 
       {
-        jam();
         commitdelete(signal);
+        release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
+        jam();
+        trigger_dealloc(signal, operationRecPtr.p);
+        return;
       }//if
     }//if
-    release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
   }
   else if (opbits & Operationrec::OP_RUN_QUEUE)
   {
+    /* This function is responsible to release ACC fragment mutex */
     abortParallelQueueOperation(signal, operationRecPtr);
   }
   else
   {
+    /* This function is responsible to release ACC fragment mutex */
     abortSerieQueueOperation(signal, operationRecPtr);
   }
 }
@@ -5626,11 +5747,13 @@ Dbacc::commitDeleteCheck(Signal* signal)
 /* ------------------------------------------------------------------------- */
 void Dbacc::commitOperation(Signal* signal)
 {
+  acquire_frag_mutex_hash(fragrecptr.p, operationRecPtr);
   validate_lock_queue(operationRecPtr);
 
   Uint32 opbits = operationRecPtr.p->m_op_bits;
   Uint32 op = opbits & Operationrec::OP_MASK;
-  ndbrequire((opbits & Operationrec::OP_STATE_MASK) == Operationrec::OP_STATE_EXECUTED);
+  ndbrequire((opbits & Operationrec::OP_STATE_MASK) ==
+              Operationrec::OP_STATE_EXECUTED);
   ndbassert((opbits & Operationrec::OP_PENDING_ABORT) == 0);
   if ((opbits & Operationrec::OP_COMMIT_DELETE_CHECK) == 0 && 
       (op != ZREAD && op != ZSCAN_OP))
@@ -5654,7 +5777,6 @@ void Dbacc::commitOperation(Signal* signal)
   if (opbits & Operationrec::OP_LOCK_OWNER) 
   {
     jam();
-    acquire_frag_mutex_hash(fragrecptr.p, operationRecPtr);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
     takeOutLockOwnersList(operationRecPtr);
 #endif
@@ -5666,7 +5788,6 @@ void Dbacc::commitOperation(Signal* signal)
     
     if (!queue && (opbits & Operationrec::OP_ELEMENT_DISAPPEARED) == 0) 
     {
-      jam();
       /* 
        * This is the normal path through the commit for operations owning the
        * lock without any queues and not a delete operation.
@@ -5685,28 +5806,36 @@ void Dbacc::commitOperation(Signal* signal)
       arrGuard(tcoElementptr, 2048);
       coPageidptr.p->word32[tcoElementptr] = tmp2Olq;
       release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
+      jam();
       return;
     }
     else if (queue)
     {
-      jam();
       /*
        * The case when there is a queue lined up.
        * Release the lock and pass it to the next operation lined up.
        */
-      release_lockowner(signal, operationRecPtr, true);
-      release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
+      bool trigger_dealloc_op = false;
+      /* This function is responsible to release ACC fragment mutex */
+      release_lockowner(signal, operationRecPtr, true, trigger_dealloc_op);
+      if (unlikely(trigger_dealloc_op))
+      {
+        jam();
+        trigger_dealloc(signal, operationRecPtr.p);
+      }
+      jam();
       return;
     } 
     else 
     {
-      jam();
       /*
        * No queue and elementIsDisappeared is true. 
        * We perform the actual delete operation.
        */
       commitdelete(signal);
       release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
+      jam();
+      trigger_dealloc(signal, operationRecPtr.p);
       return;
     }//if
   } 
@@ -5776,6 +5905,7 @@ void Dbacc::commitOperation(Signal* signal)
        *     as T1(R),T2(x) should also commit
        */
       validate_lock_queue(prev);
+      release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
       return;
     }
 
@@ -5793,18 +5923,21 @@ void Dbacc::commitOperation(Signal* signal)
 	  Operationrec::OP_STATE_EXECUTED)
       {
 	jam();
+        validate_lock_queue(prev);
+        release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
 	return;
       }
     }
-    
+    /* This function is responsible to release ACC fragment mutex */
     startNext(signal, next);
-    
-    validate_lock_queue(prev);
   }
 }//Dbacc::commitOperation()
 
 void 
-Dbacc::release_lockowner(Signal* signal, OperationrecPtr opPtr, bool commit)
+Dbacc::release_lockowner(Signal* signal,
+                         OperationrecPtr opPtr,
+                         bool commit,
+                         bool & trigger_dealloc_op)
 {
   OperationrecPtr nextP;
   OperationrecPtr nextS;
@@ -5898,7 +6031,7 @@ Dbacc::release_lockowner(Signal* signal, OperationrecPtr opPtr, bool commit)
 	if (opbits & Operationrec::OP_ELEMENT_DISAPPEARED)
 	{
 	  jam();
-          trigger_dealloc(signal, opPtr.p);
+          trigger_dealloc_op = true;
 	  newOwner.p->localdata.setInvalid();
 	}
 	else
@@ -5937,7 +6070,6 @@ Dbacc::release_lockowner(Signal* signal, OperationrecPtr opPtr, bool commit)
   }
   else
   {
-    jam();
     ndbrequire(m_curr_acc->oprec_pool.getValidPtr(nextS));
     newOwner = nextS;
     
@@ -5945,7 +6077,8 @@ Dbacc::release_lockowner(Signal* signal, OperationrecPtr opPtr, bool commit)
     
     if (opbits & Operationrec::OP_ELEMENT_DISAPPEARED)
     {
-      trigger_dealloc(signal, opPtr.p);
+      jam();
+      trigger_dealloc_op = true;
       newOwner.p->localdata.setInvalid();
     }
     else
@@ -6040,17 +6173,17 @@ Dbacc::release_lockowner(Signal* signal, OperationrecPtr opPtr, bool commit)
   switch(action){
   case NOTHING:
     validate_lock_queue(newOwner);
+    release_frag_mutex_hash(fragrecptr.p, opPtr);
     return;
   case START_NEW:
+    /* This function is responsible to release ACC fragment mutex */
     startNew(signal, newOwner);
-    validate_lock_queue(newOwner);
     return;
   case CHECK_LOCK_UPGRADE:
+    /* This function is responsible to release ACC fragment mutex */
     startNext(signal, lastP);
-    validate_lock_queue(lastP);
     break;
   }
-  
 }
 
 void
@@ -6070,11 +6203,11 @@ Dbacc::startNew(Signal* signal, OperationrecPtr newOwner)
   opbits &= opbits & ~(Uint32)Operationrec::OP_STATE_MASK;
   opbits |= Operationrec::OP_STATE_RUNNING;
   
-  if (op == ZSCAN_OP && (opbits & Operationrec::OP_LOCK_REQ) == 0)
+  if (unlikely(op == ZSCAN_OP && (opbits & Operationrec::OP_LOCK_REQ) == 0))
     goto scan;
 
   /* Waiting op now runnable... */
-  if (!m_is_in_query_thread)
+  if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
   {
     FragmentrecPtr frp;
     frp.i = newOwner.p->fragptr;
@@ -6120,6 +6253,8 @@ Dbacc::startNew(Signal* signal, OperationrecPtr newOwner)
 
 conf:
   newOwner.p->m_op_bits = opbits;
+  validate_lock_queue(newOwner);
+  release_frag_mutex_hash(fragrecptr.p, newOwner);
 
   sendAcckeyconf(signal);
   sendSignal(newOwner.p->userblockref, GSN_ACCKEYCONF, 
@@ -6130,6 +6265,7 @@ conf:
   
 scan:
   jam();
+  ndbabort();
   newOwner.p->m_op_bits = opbits;
   
   takeOutScanLockQueue(newOwner.p->scanRecPtr);
@@ -6140,6 +6276,8 @@ scan:
   
 ref:
   newOwner.p->m_op_bits = opbits;
+  validate_lock_queue(newOwner);
+  release_frag_mutex_hash(fragrecptr.p, newOwner);
   
   signal->theData[0] = newOwner.p->userptr;
   signal->theData[1] = errCode;
@@ -7893,6 +8031,7 @@ void Dbacc::execNEXT_SCANREQ(Signal* signal)
 {
   Uint32 tscanNextFlag;
   jamEntryDebug();
+  ndbabort();
   scanPtr.i = signal->theData[0];
   ndbrequire(scanRec_pool.getUncheckedPtrRW(scanPtr));
   operationRecPtr.i = signal->theData[1];
@@ -8101,7 +8240,7 @@ void Dbacc::checkNextBucketLab(Signal* signal)
     if (!scanPtr.p->scanReadCommittedFlag) {
       jam();
       /* Immediate lock grant as element unlocked */
-      if (!m_is_in_query_thread)
+      if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
       {
         fragrecptr.p->m_lockStats.
           req_start_imm_ok(scanPtr.p->scanLockMode != ZREADLOCK,
@@ -8158,7 +8297,7 @@ void Dbacc::checkNextBucketLab(Signal* signal)
 	 * WE PLACED THE OPERATION INTO A SERIAL QUEUE AND THUS WE HAVE TO 
 	 * WAIT FOR THE LOCK TO BE RELEASED. WE CONTINUE WITH THE NEXT ELEMENT
 	 * ----------------------------------------------------------------- */
-        if (!m_is_in_query_thread)
+        if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
         {
           fragrecptr.p->
             m_lockStats.req_start(scanPtr.p->scanLockMode != ZREADLOCK,
@@ -8197,7 +8336,7 @@ void Dbacc::checkNextBucketLab(Signal* signal)
       }//if
       ndbassert(return_result == ZPARALLEL_QUEUE);
       /* We got into the parallel queue - immediate grant */
-      if (!m_is_in_query_thread)
+      if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
       {
         fragrecptr.p->m_lockStats.
           req_start_imm_ok(scanPtr.p->scanLockMode != ZREADLOCK,
@@ -8336,6 +8475,7 @@ void Dbacc::releaseScanLab(Signal* signal)
 
 void Dbacc::releaseAndCommitActiveOps(Signal* signal)
 {
+  ndbabort();
   OperationrecPtr trsoOperPtr;
   operationRecPtr.i = scanPtr.p->scanFirstActiveOp;
   while (operationRecPtr.i != RNIL) {
@@ -8367,6 +8507,7 @@ void Dbacc::releaseAndCommitActiveOps(Signal* signal)
 
 void Dbacc::releaseAndCommitQueuedOps(Signal* signal)
 {
+  ndbabort();
   OperationrecPtr trsoOperPtr;
   operationRecPtr.i = scanPtr.p->scanFirstQueuedOp;
   while (operationRecPtr.i != RNIL) {
@@ -8396,7 +8537,7 @@ void Dbacc::releaseAndCommitQueuedOps(Signal* signal)
 }//Dbacc::releaseAndCommitQueuedOps()
 
 void Dbacc::releaseAndAbortLockedOps(Signal* signal) {
-
+  ndbabort();
   OperationrecPtr trsoOperPtr;
   operationRecPtr.i = scanPtr.p->scanFirstLockedOp;
   while (operationRecPtr.i != RNIL) {
@@ -8430,6 +8571,7 @@ void Dbacc::execACC_CHECK_SCAN(Signal* signal)
 {
   Uint32 TcheckLcpStop;
   jamEntryDebug();
+  ndbabort();
   scanPtr.i = signal->theData[0];
   ndbrequire(scanRec_pool.getUncheckedPtrRW(scanPtr));
   TcheckLcpStop = signal->theData[1];
@@ -8450,7 +8592,7 @@ void Dbacc::execACC_CHECK_SCAN(Signal* signal)
     ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
 
     /* Scan op that had to wait for a lock is now runnable */
-    if (!m_is_in_query_thread)
+    if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
     {
       fragrecptr.p->m_lockStats.wait_ok(scanPtr.p->scanLockMode != ZREADLOCK,
                                         operationRecPtr.p->m_lockTime,

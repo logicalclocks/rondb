@@ -68,6 +68,9 @@ Uint64 Dbacc::getTransactionMemoryNeed(
 
 void Dbacc::initData() 
 {
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  m_acc_mutex_locked = RNIL;
+#endif
   m_curr_acc = this;
   ctablesize = ZTABLESIZE;
   cfragmentsize = ZFRAGMENTSIZE;

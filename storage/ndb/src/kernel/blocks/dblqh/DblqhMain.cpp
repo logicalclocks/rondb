@@ -13093,8 +13093,8 @@ void Dblqh::commitContinueAfterBlockedLab(
         /**
          * Commit operation have already been performed, no work for TUP to
          * do and we can simply proceed with the cleanup of this operation.
-         * No locks are required for this part since we will merely clean up
-         * operation records.
+         * We need not exclusive locks, ACC will ensure that the operation
+         * can execute concurrent with other operations in DBACC.
          */
         ndbrequire(ret_code == ZTUP_COMMITTED);
       }

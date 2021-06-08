@@ -1108,7 +1108,10 @@ private:
   void copyOpInfo(OperationrecPtr dst, OperationrecPtr src) const;
   Uint32 executeNextOperation(Signal* signal) const;
   void releaselock(Signal* signal) const;
-  void release_lockowner(Signal* signal, OperationrecPtr, bool commit);
+  void release_lockowner(Signal* signal,
+                         OperationrecPtr,
+                         bool commit,
+                         bool & trigger_dealloc_op);
   void startNew(Signal* signal, OperationrecPtr newOwner);
   void abortWaitingOperation(Signal*, OperationrecPtr) const;
   void abortExecutedOperation(Signal*, OperationrecPtr) const;
@@ -1248,6 +1251,9 @@ private:
 
 public:
   Dbacc *m_curr_acc;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  Uint32 m_acc_mutex_locked;
+#endif 
   static Uint64 getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
     const ndb_mgm_configuration_iterator * mgm_cfg,
@@ -1294,6 +1300,9 @@ public:
     {
       LHBits32 hashVal = getElementHash(opPtr);
       Uint32 inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+      m_acc_mutex_locked = inx;
+#endif
       NdbMutex_Lock(&fragPtrP->acc_frag_mutex[inx]);
       return true;
     }
@@ -1306,6 +1315,10 @@ public:
     {
       LHBits32 hashVal = getElementHash(opPtr);
       Uint32 inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+      ndbassert(m_acc_mutex_locked == inx);
+      m_acc_mutex_locked = RNIL;
+#endif
       NdbMutex_Unlock(&fragPtrP->acc_frag_mutex[inx]);
     }
   }
@@ -1315,6 +1328,9 @@ public:
     if (qt_likely(globalData.ndbMtQueryWorkers > 0))
     {
       Uint32 inx = bucket & (NUM_ACC_FRAGMENT_MUTEXES - 1);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+      m_acc_mutex_locked = inx;
+#endif
       NdbMutex_Lock(&fragPtrP->acc_frag_mutex[inx]);
     }
   }
@@ -1323,6 +1339,10 @@ public:
     if (qt_likely(globalData.ndbMtQueryWorkers > 0))
     {
       Uint32 inx = bucket & (NUM_ACC_FRAGMENT_MUTEXES - 1);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+      ndbassert(m_acc_mutex_locked == inx);
+      m_acc_mutex_locked = RNIL;
+#endif
       NdbMutex_Unlock(&fragPtrP->acc_frag_mutex[inx]);
     }
   }
