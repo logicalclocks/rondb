@@ -1473,7 +1473,7 @@ void Dbacc::execACCKEYREQ(Signal* signal,
 	  insertLockOwnersList(operationRecPtr);
 #endif
 	  opbits |= Operationrec::OP_LOCK_OWNER;
-          operationRecPtr.p->m_op_bits;
+          operationRecPtr.p->m_op_bits = opbits;
           /**
            * Ensure that any thread that reads element header also can see
            * the updates to the operation record. Only required when we are
