@@ -1652,32 +1652,44 @@ Dbacc::execACCKEY_ORD(Signal* signal,
   OperationrecPtr lastOp;
   lastOp.i = opPtrI;
   lastOp.p = opPtrP;
-  Uint32 opbits = lastOp.p->m_op_bits;
-  Uint32 opstate = opbits & Operationrec::OP_STATE_MASK;
   
-  if (likely(opbits == Operationrec::OP_EXECUTED_DIRTY_READ))
+  if (likely(lastOp.p->m_op_bits == Operationrec::OP_EXECUTED_DIRTY_READ))
   {
     jamDebug();
+    /**
+     * Committed reads are not present in any Lock Queue list and is
+     * therefore not something that is protected by the ACC fragment mutex.
+     */
     lastOp.p->m_op_bits = Operationrec::OP_INITIAL;
     return;
   }
-  else if (likely(opstate == Operationrec::OP_STATE_RUNNING))
+  else
   {
-    jamDebug();
     fragrecptr.i = lastOp.p->fragptr;
-    opbits |= Operationrec::OP_STATE_EXECUTED;
     ptrCheckGuard(fragrecptr, cfragmentsize, fragmentrec);
     acquire_frag_mutex_hash(fragrecptr.p, lastOp);
-    lastOp.p->m_op_bits = opbits;
-    /* This function is responsible to release ACC fragment mutex */
-    startNext(signal, lastOp);
+    /**
+     * The m_op_bits are protected by the mutex when the operation
+     * is in the Lock Queue, thus we cannot base any updates of
+     * this variable on reads before acquiring the mutex.
+     */
+    Uint32 opbits = lastOp.p->m_op_bits;
+    Uint32 opstate = opbits & Operationrec::OP_STATE_MASK;
+    if (likely(opstate == Operationrec::OP_STATE_RUNNING))
+    {
+      jamDebug();
+      opbits |= Operationrec::OP_STATE_EXECUTED;
+      lastOp.p->m_op_bits = opbits;
+      /* This function is responsible to release ACC fragment mutex */
+      startNext(signal, lastOp);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
-    ndbrequire(m_acc_mutex_locked == RNIL);
+      ndbrequire(m_acc_mutex_locked == RNIL);
 #endif
-    return;
+      return;
+    }
+    ndbout_c("bits: %.8x state: %.8x", opbits, opstate);
+    ndbabort();
   } 
-  ndbout_c("bits: %.8x state: %.8x", opbits, opstate);
-  ndbabort();
 }
 
 void
