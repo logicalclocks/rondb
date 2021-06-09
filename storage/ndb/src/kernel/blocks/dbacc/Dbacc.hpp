@@ -396,6 +396,9 @@ typedef LocalDLCFifoList<Page8_pool, IA_Page8> LocalContainerPageList;
 #define NUM_ACC_FRAGMENT_MUTEXES 4
 struct Fragmentrec {
   NdbMutex acc_frag_mutex[NUM_ACC_FRAGMENT_MUTEXES];
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  Uint32 acc_frag_mutex_count[NUM_ACC_FRAGMENT_MUTEXES];
+#endif
   Uint32 scan[MAX_PARALLEL_SCANS_PER_FRAG];
   Uint16 activeScanMask;
   union {
@@ -1300,10 +1303,14 @@ public:
     {
       LHBits32 hashVal = getElementHash(opPtr);
       Uint32 inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
+      NdbMutex_Lock(&fragPtrP->acc_frag_mutex[inx]);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
       m_acc_mutex_locked = inx;
+      jam();
+      jamLine(Uint16(inx));
+      fragPtrP->acc_frag_mutex_count[inx]++;
+      jamLine(Uint16(fragPtrP->acc_frag_mutex_count[inx]));
 #endif
-      NdbMutex_Lock(&fragPtrP->acc_frag_mutex[inx]);
       return true;
     }
     return false;
@@ -1316,6 +1323,8 @@ public:
       LHBits32 hashVal = getElementHash(opPtr);
       Uint32 inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
+      jam();
+      jamLine(Uint16(inx));
       ndbassert(m_acc_mutex_locked == inx);
       m_acc_mutex_locked = RNIL;
 #endif
