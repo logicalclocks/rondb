@@ -1295,13 +1295,30 @@ void Dbacc::sendAcckeyconf(Signal* signal) const
  * Conclusion
  * ----------
  * The only place where we will have additional concurrency around locked
- * reads is in execACCKEYREQ. Here we need to require also LDM threads to
+ * reads is in execLQHKEYREQ. Here we need to require also LDM threads to
  * use the ACC fragment mutex before accessing the lock data structures.
  * The LDM thread must lock from the point where one reads the lock owner
  * reference in getElement. It makes the code a lot easier if one simply
  * acquires the mutex before calling getElement for both LDM and query
  * threads even if LDM threads could hold off for a while more. This makes
  * the code a lot easier to maintain.
+ *
+ * We need to access DBACC and lock the ACC fragment mutex during the
+ * execution of execLQHKEYREQ. Most of the time this is first the
+ * access in execACCKEYREQ and later an access through execACCKEY_ORD.
+ *
+ * ACCKEYREQ acquires the lock and ensures exclusive access to the
+ * row.
+ * ACCKEY_ORD retains the row lock and releases exclusive access to
+ * the row.
+ * A new interaction that has to be handled in this case is that between those
+ * two signals a COMMIT message might arrive and change the lock queue. For
+ * example the lock owner (with a READ LOCK and from a different transaction)
+ * could commit while we are still performing the operation. This sequence
+ * of events are possible thus:
+ * 1) ACCKEYREQ (T1)
+ * 2) COMMIT (T2)
+ * 3) ACCKEY_ORD (T1)
  */
 /* ******************------------------------------------------------------- */
 /* ACCKEYREQ                                 REQUEST FOR INSERT, DELETE,     */
@@ -1455,9 +1472,7 @@ void Dbacc::execACCKEYREQ(Signal* signal,
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
 	  insertLockOwnersList(operationRecPtr);
 #endif
-	  opbits |= Operationrec::OP_LOCK_OWNER;
-	  operationRecPtr.p->m_op_bits = opbits;
-
+	  operationRecPtr.p->m_op_bits |= Operationrec::OP_LOCK_OWNER;
           /**
            * Ensure that any thread that reads element header also can see
            * the updates to the operation record. Only required when we are
@@ -1487,8 +1502,7 @@ void Dbacc::execACCKEYREQ(Signal* signal,
 	  // It is a dirty read. We do not lock anything. Set state to
 	  // IDLE since no COMMIT call will come.
 	  /*---------------------------------------------------------------*/
-	  opbits = Operationrec::OP_EXECUTED_DIRTY_READ;
-	  operationRecPtr.p->m_op_bits = opbits;
+	  operationRecPtr.p->m_op_bits = Operationrec::OP_EXECUTED_DIRTY_READ;
         }//if
         c_tup->prepareTUPKEYREQ(operationRecPtr.p->localdata.m_page_no,
                                 operationRecPtr.p->localdata.m_page_idx,
@@ -2126,6 +2140,7 @@ void Dbacc::insertelementLab(Signal* signal,
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   insertLockOwnersList(operationRecPtr);
 #endif
+  operationRecPtr.p->m_op_bits |= Operationrec::OP_LOCK_OWNER;
   operationRecPtr.p->reducedHashValue =
     fragrecptr.p->level.reduce(operationRecPtr.p->hashValue);
   const Uint32 tidrElemhead = ElementHeader::setLocked(operationRecPtr.i);
@@ -6129,6 +6144,7 @@ Dbacc::release_lockowner(Signal* signal,
    *
    */
   {
+    newOwner.p->m_op_bits |= Operationrec::OP_LOCK_OWNER;
     newOwner.p->elementPage = opPtr.p->elementPage;
     newOwner.p->elementPointer = opPtr.p->elementPointer;
     newOwner.p->elementContainer = opPtr.p->elementContainer;
@@ -6377,7 +6393,6 @@ void Dbacc::insertLockOwnersList(OperationrecPtr& insOperPtr)
   
   ndbrequire(! (insOperPtr.p->m_op_bits & Operationrec::OP_LOCK_OWNER));
 
-  insOperPtr.p->m_op_bits |= Operationrec::OP_LOCK_OWNER;
   insOperPtr.p->prevLockOwnerOp = RNIL;
   insOperPtr.p->nextLockOwnerOp = tmpOperPtr.i;
   
@@ -8256,6 +8271,7 @@ void Dbacc::checkNextBucketLab(Signal* signal)
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
       insertLockOwnersList(operationRecPtr);
 #endif
+      operationRecPtr.p->m_op_bits |= Operationrec::OP_LOCK_OWNER;
       operationRecPtr.p->m_op_bits |= 
 	Operationrec::OP_STATE_RUNNING | Operationrec::OP_RUN_QUEUE;
     }//if

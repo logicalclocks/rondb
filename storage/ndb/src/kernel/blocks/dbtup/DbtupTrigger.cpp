@@ -878,7 +878,8 @@ void Dbtup::checkDeferredTriggers(KeyReqStruct *req_struct,
   case ZUPDATE:
   case ZINSERT:
     jam();
-    req_struct->m_tuple_ptr =get_copy_tuple(&regOperPtr->m_copy_tuple_location);
+    req_struct->m_tuple_ptr =
+      get_copy_tuple(&regOperPtr->m_copy_tuple_location);
     break;
   }
 

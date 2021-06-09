@@ -4801,6 +4801,82 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
     if (ndbd_frag_lqhkeyreq(version))
     {
       jamDebug();
+      /**
+       * Here we will select whether we should use a query thread or not.
+       * Also if we select a query thread we need to decide which one.
+       * In some cases we can pick any query thread, this is the case for
+       * all Committed Read operations, both the ones using LQHKEYREQ and
+       * the ones using SCAN_FRAGREQ.
+       *
+       * It doesn't apply to the transactions that use various forms of
+       * batching of TCKEYREQ and TCINDXREQ. There are no specific rules
+       * required to handle SCAN_FRAGREQ even if we are scanning using
+       * locks. Actually scans using locks can most likely even use
+       * less locks on fragment level since each row goes through a
+       * lock procedure.
+       *
+       * If we receive a TCKEYREQ with a single operation, thus the
+       * operation is the first one in its batch and it sets the
+       * TF_EXEC_FLAG in the transaction. In this case we can pick any
+       * Query thread to execute the LQHKEYREQ messages.
+       *
+       * A single TCINDXREQ leads to 2 LQHKEYREQ messages, but they are on
+       * different tables and different rows. Also they are executed one at
+       * a time, so we cannot mix up the order by allowing different threads
+       * to execute those LQHKEYREQ messages.
+       *
+       * A single LQHKEYREQ can trigger numerous new LQHKEYREQ operations.
+       * We have again that these operations are executed after completing
+       * the operation in DBLQH. Thus they are serialised to the original
+       * operation.
+       *
+       * The question is then, is the parallel trigger operations fired from
+       * one operation going to lead to trouble? The answer should be no,
+       * if that is a problem, we already have it since the triggers are
+       * executed in the order they are defined and not in any other
+       * specific order.
+       *
+       * Thus trigger executions of LQHKEYREQ can be executed from any
+       * Query thread. One manner to discover that a trigger is executed
+       * is by checking the variable immediateTriggerId, if this isn't
+       * equal to RNIL, the operation is an immediate fired trigger.
+       * This can discover Unique index writes and Foreign Key checks.
+       * Also Reorg operations are discovered in this manner and so is
+       * Fully replicated triggers. Thus actually all triggers can be
+       * handled in this manner.
+       *
+       * There is one exception, this is the Deferred Triggers. These triggers
+       * are executed at Commit time and are used to verify that Unique
+       * constraints and Foreign Key constraints are valid after finalising
+       * the query.
+       *
+       * Deferred Triggers are executed using the signal FIRE_TRIG_REQ. This
+       * is currently always sent to the LDM thread, but also this one should
+       * be possible to offload to query threads eventually.
+       *
+       * Some trigger operations are scan operations and these need no special
+       * treatment since they are always allowed to pass to any query thread
+       * if the operation is supported in a query thread.
+       *
+       * So the problem comes from batch operations, actually the only problem
+       * we have with batched operations are operations that act on the same
+       * primary key. As an example we have operations on the meta data table
+       * ndb_schema where we first Read the row with a lock, after this we
+       * Write the row. The Read is supposed to read the before value and not
+       * the after value.
+       *
+       * From the beginning this was specifically said to give undefined result.
+       * However in particular our metadata handling and also our solution to
+       * handle external replication relies on that the order of writes are
+       * sustained.
+       *
+       * Handling batched operations in an efficient manner is important, in
+       * particular for various load operations like Importing data, Restoring
+       * data and so forth. Thus we need some model to ensure that this is
+       * handled properly.
+       *
+       * The solution is that in those batched cases 
+       */
       Uint32 blockNo = refToMain(TBRef);
       if (qt_likely(blockNo == V_QUERY))
       {
@@ -20449,7 +20525,8 @@ bool Dbtc::executeTrigger(Signal* signal,
   definedTriggerPtr.i = firedTriggerData->triggerId;
   c_theDefinedTriggers.getPool().getPtrIgnoreAlloc(definedTriggerPtr);
 
-  // If triggerIds don't match, the trigger has been dropped -> skip trigger exec.
+  // If triggerIds don't match, the trigger has been dropped
+  // -> skip trigger exec.
   if (likely(definedTriggerPtr.p->triggerId == firedTriggerData->triggerId))
   {
     TcDefinedTriggerData* const definedTriggerData = definedTriggerPtr.p;
