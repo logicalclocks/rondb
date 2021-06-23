@@ -1,4 +1,5 @@
 /* Copyright (c) 2009, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -64,7 +65,7 @@ NdbShutdown(int error_code,
             NdbShutdownType type,
 	    NdbRestartType restartType = NRT_Default);
 
-
+void childReportSignal(int);
 
 
 #undef JAM_FILE_ID

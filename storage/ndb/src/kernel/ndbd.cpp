@@ -705,7 +705,7 @@ writeChildInfo(const char *token, int val)
   fflush(angel_info_w);
 }
 
-static void
+void
 childReportSignal(int signum)
 {
   writeChildInfo("signal", signum);
@@ -743,9 +743,7 @@ extern "C"
 void
 handler_shutdown(int signum){
   g_eventLogger->info("Received signal %d. Performing stop.", signum);
-  ndb_print_stacktrace();
-  childReportSignal(signum);
-  globalData.theRestartFlag = perform_stop;
+  globalData.theGracefulShutdownFlag = true;
 }
 
 extern NdbMutex * theShutdownMutex;
