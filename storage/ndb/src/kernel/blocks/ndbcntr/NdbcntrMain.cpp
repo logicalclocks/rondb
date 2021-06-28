@@ -4563,6 +4563,7 @@ Ndbcntr::execSTOP_REQ(Signal* signal)
   BlockReference senderRef = req->senderRef;
   bool abort = StopReq::getStopAbort(req->requestInfo);
   bool stopnodes = StopReq::getStopNodes(req->requestInfo);
+  bool force_flag = StopReq::getForceFlag(req->requestInfo);
 
   if (signal->getNoOfSections() >= 1)
   {
@@ -4637,6 +4638,11 @@ Ndbcntr::execSTOP_REQ(Signal* signal)
     
     if (senderRef != RNIL)
       sendSignal(senderRef, GSN_STOP_REF, signal, StopRef::SignalLength, JBB);
+    /**
+     * We can come here even with force flag, this means that the shutdown is
+     * already on its way and we can safely allow it to continue. If it takes
+     * too long time we will shutdown anyways.
+     */
     return;
   }
 
@@ -4708,7 +4714,7 @@ Ndbcntr::execSTOP_REQ(Signal* signal)
 	((Configuration&)m_ctx.m_config).stopOnError(false);
       }
     }
-    if(!c_stopRec.checkNodeFail(signal))
+    if(!force_flag && !c_stopRec.checkNodeFail(signal))
     {
       jam();
       return;

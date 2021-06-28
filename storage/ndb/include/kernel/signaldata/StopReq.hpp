@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -69,6 +70,11 @@ public:
   static void setNoStart(Uint32 & requestInfo, bool value);
   static void setInitialStart(Uint32 & requestInfo, bool value);
   /**
+   * Called when receiving kill -TERM signal, this means that we must
+   * stop unconditionally.
+   */
+  static void setForceFlag(Uint32 & requestInfo, bool value);
+  /**
    * Don't perform "graceful" shutdown/restart...
    */
   static void setStopAbort(Uint32 & requestInfo, bool value);
@@ -80,6 +86,7 @@ public:
   static bool getInitialStart(const Uint32 & requestInfo);
   static bool getStopAbort(const Uint32 & requestInfo);
   static bool getStopNodes(const Uint32 & requestInfo);
+  static bool getForceFlag(const Uint32 & requestInfo);
 };
 
 struct StopConf
@@ -165,6 +172,13 @@ StopReq::getStopNodes(const Uint32 & requestInfo)
   return requestInfo & 64;
 }
 
+inline
+bool
+StopReq::getForceFlag(const Uint32 & requestInfo)
+{
+  return requestInfo & 128;
+}
+
 
 inline
 void
@@ -226,6 +240,15 @@ StopReq::setStopNodes(Uint32 & requestInfo, bool value)
     requestInfo &= ~64;
 }
 
+inline
+void
+StopReq::setForceFlag(Uint32 & requestInfo, bool value)
+{
+  if(value)
+    requestInfo |= 128;
+  else
+    requestInfo &= ~128;
+}
 
 #undef JAM_FILE_ID
 

@@ -36,6 +36,7 @@
 
 void Qmgr::initData() 
 {
+  m_graceful_shutdown_started = false;
   creadyDistCom = ZFALSE;
   m_current_switch_multi_trp_node = 0;
   m_get_num_multi_trps_sent = 0;

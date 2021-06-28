@@ -668,6 +668,8 @@ private:
   // user-defined hbOrder must set all values non-zero and distinct
   int check_hb_order_config();
   bool m_hb_order_config_used;
+  bool m_graceful_shutdown_started;
+  NDB_TICKS m_graceful_shutdown_start_time;
 
 #ifdef ERROR_INSERT
   Uint32 nodeFailCount;
@@ -697,6 +699,7 @@ private:
   void complete_multi_trp_setup(Signal*, bool);
   void dec_get_num_multi_trps_sent(NodeId);
   void inc_get_num_multi_trps_sent(NodeId);
+  void handle_graceful_shutdown(Signal*);
 };
 #undef JAM_FILE_ID
 

@@ -48,7 +48,8 @@ class SimulatedBlock;
 enum  restartStates {initial_state, 
                      perform_start, 
                      system_started, 
-                     perform_stop};
+                     perform_stop,
+                     graceful_stop};
 
 typedef ArrayPool<GlobalPage> GlobalPage_pool;
 typedef SafeArrayPool<GlobalPage> GlobalPage_safepool;
@@ -121,6 +122,8 @@ struct GlobalData {
   Uint32     theMaxNoOfOrderedIndexes;
   Uint32     theMaxNoOfUniqueHashIndexes;
 
+  bool       theGracefulShutdownFlag;
+
   NdbMutex   *theIO_lag_mutex;
 
   GlobalData(){ 
@@ -163,6 +166,7 @@ struct GlobalData {
     theMaxNoOfTables = 0;
     theMaxNoOfOrderedIndexes = 0;
     theMaxNoOfUniqueHashIndexes = 0;
+    theGracefulShutdownFlag = false;
     theIO_lag_mutex = NdbMutex_Create();
   }
 

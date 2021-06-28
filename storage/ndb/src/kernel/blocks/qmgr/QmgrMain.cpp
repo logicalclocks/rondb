@@ -29,8 +29,9 @@
 #include <NdbTick.h>
 #include <signaldata/NodeRecoveryStatusRep.hpp>
 #include <signaldata/EventReport.hpp>
-#include <signaldata/StartOrd.hpp>
 #include <signaldata/CloseComReqConf.hpp>
+#include <signaldata/StartOrd.hpp>
+#include <signaldata/StopReq.hpp>
 #include <signaldata/PrepFailReqRef.hpp>
 #include <signaldata/NodeFailRep.hpp>
 #include <signaldata/ReadNodesConf.hpp>
@@ -3417,6 +3418,36 @@ void Qmgr::initData(Signal* signal)
   ndbrequire(hb_order_error == 0);
 }//Qmgr::initData()
 
+void Qmgr::handle_graceful_shutdown(Signal *signal)
+{
+  NDB_TICKS now = NdbTick_getCurrentTicks();
+  if (m_graceful_shutdown_started)
+  {
+    Uint32 elapsed = NdbTick_Elapsed(m_graceful_shutdown_start_time, now).seconds();
+    if (elapsed > 27)
+    {
+      jam();
+      g_eventLogger->info("We initiated a graceful shutdown after kill -TERM, more than 30"
+                          " seconds passed without completion, we stop now");
+      childReportSignal(15);
+      globalData.theRestartFlag = perform_stop;
+    }
+    return;
+  }
+  m_graceful_shutdown_started = true;
+  m_graceful_shutdown_start_time = now;
+  StopReq* stopReq = (StopReq*)signal->getDataPtrSend();
+  stopReq->senderData = 124;
+  stopReq->senderRef = RNIL;
+  stopReq->requestInfo = 0;
+  StopReq::setForceFlag(stopReq->requestInfo, 1);
+  stopReq->apiTimeout = 5000;
+  stopReq->transactionTimeout = 1000;
+  stopReq->readOperationTimeout = 1000;
+  stopReq->operationTimeout = 1000;
+  stopReq->singleuser = 0;
+  sendSignal(NDBCNTR_REF, GSN_STOP_REQ, signal, StopReq::SignalLength, JBB);
+}
 
 /**---------------------------------------------------------------------------
  * HERE WE RECEIVE THE JOB TABLE SIGNAL EVERY 10 MILLISECONDS. 
@@ -3566,6 +3597,11 @@ void Qmgr::timerHandlingLab(Signal* signal)
 
   Ndb_GetRUsage(&m_timer_handling_rusage, false);
 
+  if (globalData.theGracefulShutdownFlag)
+  {
+    jam();
+    handle_graceful_shutdown(signal);
+  }
   //--------------------------------------------------
   // Resend this signal with 10 milliseconds delay.
   //--------------------------------------------------

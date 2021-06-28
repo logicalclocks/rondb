@@ -1987,10 +1987,10 @@ MgmApiSession::transporter_connect(Parser_t::Context &ctx,
   if (!m_mgmsrv.transporter_connect(m_socket, errormsg, close_with_reset))
   {
     // Connection not allowed or failed
-    g_eventLogger->warning("Failed to convert connection "
-                           "from '%s' to transporter: %s",
-                           name(),
-                           errormsg.c_str());
+    g_eventLogger->debug("Failed to convert connection "
+                         "from '%s' to transporter: %s",
+                         name(),
+                         errormsg.c_str());
     // Close the socket to indicate failure to client
     ndb_socket_close_with_reset(m_socket, close_with_reset);
     ndb_socket_invalidate(&m_socket); // Already closed
