@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -65,6 +66,7 @@ private:
     ,ZSCAN_FOR_READ_BACKUP                 = 25
     ,ZTRANSIENT_POOL_STAT                  = 26
     ,ZSHRINK_TRANSIENT_POOLS               = 27
+    ,ZQUERY_THREAD_USAGE                   = 28
   };
 };
 

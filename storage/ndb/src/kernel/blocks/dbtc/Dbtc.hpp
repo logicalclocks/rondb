@@ -2938,6 +2938,29 @@ private:
   void dump_trans(ApiConnectRecordPtr transPtr);
   bool hasOp(ApiConnectRecordPtr transPtr, Uint32 op);
 
+#define DEBUG_QUERY_THREAD_USAGE
+#ifdef DEBUG_QUERY_THREAD_USAGE
+  Uint64 c_qt_used_dirty_flag;
+  Uint64 c_qt_used_locked_read;
+
+  Uint64 c_no_qt_no_read_flag;
+  Uint64 c_no_qt_disk_flag;
+  Uint64 c_no_qt_take_over_flag;
+  Uint64 c_no_qt_no_exec_flag;
+  Uint64 c_no_qt_exec_write_count;
+  Uint64 c_no_qt_wrong_version;
+
+  Uint64 c_last_qt_used_dirty_flag;
+  Uint64 c_last_qt_used_locked_read;
+
+  Uint64 c_last_no_qt_no_read_flag;
+  Uint64 c_last_no_qt_disk_flag;
+  Uint64 c_last_no_qt_take_over_flag;
+  Uint64 c_last_no_qt_no_exec_flag;
+  Uint64 c_last_no_qt_exec_write_count;
+  Uint64 c_last_no_qt_wrong_version;
+  void query_thread_usage(Signal*);
+#endif
 public:
   DistributionHandler m_distribution_handle;
 

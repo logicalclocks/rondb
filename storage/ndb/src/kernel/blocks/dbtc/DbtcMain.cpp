@@ -296,6 +296,14 @@ void Dbtc::execCONTINUEB(Signal* signal)
   UintR Tdata5 = signal->theData[6];
 #endif
   switch (tcase) {
+#ifdef DEBUG_QUERY_THREAD_USAGE
+  case TcContinueB::ZQUERY_THREAD_USAGE:
+  {
+    jam();
+    query_thread_usage(signal);
+    return;
+  }
+#endif
   case TcContinueB::ZSCAN_FOR_READ_BACKUP:
     jam();
     scan_for_read_backup(signal, Tdata0, Tdata1, Tdata2);
@@ -1231,6 +1239,11 @@ void Dbtc::execNDB_STTOR(Signal* signal)
     const Uint32 len = c_counters.build_continueB(signal);
     signal->theData[0] = TcContinueB::ZTRANS_EVENT_REP;
     sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 10, len);
+
+#ifdef DEBUG_QUERY_THREAD_USAGE
+    signal->theData[0] = TcContinueB::ZQUERY_THREAD_USAGE;
+    sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 1000, 1);
+#endif
 
 #ifdef DO_TRANSIENT_POOL_STAT
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
@@ -4875,18 +4888,22 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
        * data and so forth. Thus we need some model to ensure that this is
        * handled properly.
        *
-       * The solution is that in those batched cases 
+       * Currently writes cannot be executed by Query threads, so this will
+       * require a solution when this is implemented.
        */
       Uint32 blockNo = refToMain(TBRef);
+      Uint32 operation_type = LqhKeyReq::getOperation(lqhKeyReq->requestInfo);
+      bool read_flag = (operation_type == ZREAD || operation_type == ZREAD_EX);
       if (qt_likely(blockNo == V_QUERY))
       {
         Uint32 nodeId = refToNode(TBRef);
-        if (LqhKeyReq::getNoDiskFlag(lqhKeyReq->requestInfo) &&
+        if (read_flag &&
+            LqhKeyReq::getNoDiskFlag(lqhKeyReq->requestInfo) &&
             (!LqhKeyReq::getScanTakeOverFlag(lqhKeyReq->attrLen)) &&
             (LqhKeyReq::getDirtyFlag(lqhKeyReq->requestInfo) ||
-             tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG)) &&
-            (LqhKeyReq::getOperation(lqhKeyReq->requestInfo) == ZREAD) &&
-            (regApiPtr->m_exec_write_count == 0))
+             ((tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG)) &&
+              (regApiPtr->m_exec_write_count == 0) &&
+              ndbd_support_locked_reads_in_query_threads(version))))
         {
           /**
            * We allow the use of Query threads when
@@ -4899,6 +4916,16 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
            *    work if the write and the dirty read can be scheduled
            *    onto different threads.
            */
+#ifdef DEBUG_QUERY_THREAD_USAGE
+          if (LqhKeyReq::getDirtyFlag(lqhKeyReq->requestInfo))
+          {
+            c_qt_used_dirty_flag++;
+          }
+          else
+          {
+            c_qt_used_locked_read++;
+          }
+#endif
           if (nodeId == getOwnNodeId())
           {
             if (globalData.ndbMtQueryThreads > 0)
@@ -4936,6 +4963,33 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
         }
         else
         {
+#ifdef DEBUG_QUERY_THREAD_USAGE
+          if (!read_flag)
+          {
+            c_no_qt_no_read_flag++;
+          }
+          else if (!LqhKeyReq::getNoDiskFlag(lqhKeyReq->requestInfo))
+          {
+            c_no_qt_disk_flag++;
+          }
+          else if (LqhKeyReq::getScanTakeOverFlag(lqhKeyReq->attrLen))
+          {
+            c_no_qt_take_over_flag++;
+          }
+          else if (!tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG))
+          {
+            c_no_qt_no_exec_flag++;
+          }
+          else if (regApiPtr->m_exec_write_count > 0)
+          {
+            c_no_qt_exec_write_count++;
+          }
+          else
+          {
+            ndbrequire(!ndbd_support_locked_reads_in_query_threads(version));
+            c_no_qt_wrong_version++;
+          }
+#endif
           TBRef = numberToRef(DBLQH, refToInstance(TBRef), nodeId);
         }
       }
@@ -23270,3 +23324,47 @@ Dbtc::execUPD_QUERY_DIST_ORD(Signal *signal)
   }
 #endif
 }
+
+#ifdef DEBUG_QUERY_THREAD_USAGE
+void
+Dbtc::query_thread_usage(Signal *signal)
+{
+  Uint64 used_dirty_flag = c_qt_used_dirty_flag - c_last_qt_used_dirty_flag;
+  Uint64 used_locked_read = c_qt_used_locked_read - c_last_qt_used_locked_read;
+
+  Uint64 no_read_flag = c_no_qt_no_read_flag - c_last_no_qt_no_read_flag;
+  Uint64 disk_flag = c_no_qt_disk_flag - c_last_no_qt_disk_flag;
+  Uint64 take_over_flag = c_no_qt_take_over_flag - c_last_no_qt_take_over_flag;
+  Uint64 no_exec_flag = c_no_qt_no_exec_flag - c_last_no_qt_no_exec_flag;
+  Uint64 exec_write_count = c_no_qt_exec_write_count - c_last_no_qt_exec_write_count;
+  Uint64 wrong_version = c_no_qt_wrong_version - c_last_no_qt_wrong_version;
+
+  g_eventLogger->info("(%u): QT used_dirty_flag: %llu, QT used_locked_read: %llu\n"
+                      " noQT: no_read_flag: %llu, noQT: disk_flag: %llu\n"
+                      " noQT: take_over_flag: %llu, noQT: no_exec_flag: %llu\n"
+                      " noQT: exec_write_count: %llu, noQT: wrong_version: %llu",
+                      instance(),
+                      used_dirty_flag,
+                      used_locked_read,
+                      no_read_flag,
+                      disk_flag,
+                      take_over_flag,
+                      no_exec_flag,
+                      exec_write_count,
+                      wrong_version);
+
+  c_last_qt_used_dirty_flag = c_qt_used_dirty_flag;
+  c_last_qt_used_locked_read = c_qt_used_locked_read;
+
+  c_last_no_qt_no_read_flag = c_no_qt_no_read_flag;
+  c_last_no_qt_disk_flag = c_no_qt_disk_flag;
+  c_last_no_qt_take_over_flag = c_no_qt_take_over_flag;
+  c_last_no_qt_no_exec_flag = c_no_qt_no_exec_flag;
+  c_last_no_qt_exec_write_count = c_no_qt_exec_write_count;
+  c_last_no_qt_wrong_version = c_no_qt_wrong_version;
+
+  signal->theData[0] = TcContinueB::ZQUERY_THREAD_USAGE;
+  sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 1000, 1);
+}
+
+#endif

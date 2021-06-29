@@ -191,6 +191,27 @@ Uint64 Dbtc::getTransactionMemoryNeed(
 
 void Dbtc::initData() 
 {
+#ifdef DEBUG_QUERY_THREAD_USAGE
+  c_qt_used_dirty_flag = 0;
+  c_qt_used_locked_read = 0;
+
+  c_no_qt_no_read_flag = 0;
+  c_no_qt_disk_flag = 0;
+  c_no_qt_take_over_flag = 0;
+  c_no_qt_no_exec_flag = 0;
+  c_no_qt_exec_write_count = 0;
+  c_no_qt_wrong_version = 0;
+
+  c_last_qt_used_dirty_flag = 0;
+  c_last_qt_used_locked_read = 0;
+
+  c_last_no_qt_no_read_flag = 0;
+  c_last_no_qt_disk_flag = 0;
+  c_last_no_qt_take_over_flag = 0;
+  c_last_no_qt_no_exec_flag = 0;
+  c_last_no_qt_exec_write_count = 0;
+  c_last_no_qt_wrong_version = 0;
+#endif
   chostFilesize = MAX_NODES;
   cscanrecFileSize = ZSCANREC_FILE_SIZE;
   ctabrecFilesize = ZTABREC_FILESIZE;
