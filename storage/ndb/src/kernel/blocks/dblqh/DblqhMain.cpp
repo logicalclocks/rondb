@@ -8441,16 +8441,18 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
         m_curr_lqh = lqh;
         c_acc->m_curr_acc = lqh->c_acc;
         c_tup->m_curr_tup = lqh->c_tup;
-        NdbMutex_Lock(&lqh->alloc_operation_mutex);
+        lqh->lock_alloc_operation();
       }
     }
     else
     {
-      NdbMutex_Lock(&lqh->alloc_operation_mutex);
+      lqh->lock_alloc_operation();
     }
     bool succ = lqh->seize_op_rec(tcConnectptr);
     if (use_lock)
-      NdbMutex_Unlock(&lqh->alloc_operation_mutex);
+    {
+      lqh->unlock_alloc_operation();
+    }
     if (unlikely(!succ || ERROR_INSERTED_CLEAR(5031)))
     {
       jam();
@@ -13427,12 +13429,12 @@ void Dblqh::releaseTcrec(Signal* signal, TcConnectionrecPtr locTcConnectptr)
         lqh != this)
     {
       use_lock = true;
-      NdbMutex_Lock(&lqh->alloc_operation_mutex);
+      lqh->lock_alloc_operation();
     }
     lqh->release_op_rec(locTcConnectptr);
     if (use_lock)
     {
-      NdbMutex_Unlock(&lqh->alloc_operation_mutex);
+      lqh->unlock_alloc_operation();
     }
   }
 }//Dblqh::releaseTcrec()

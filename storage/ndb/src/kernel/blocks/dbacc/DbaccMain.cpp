@@ -3173,11 +3173,13 @@ void Dbacc::execACC_LOCKREQ(Signal* signal)
        * threads will have to allocate from owning LDM thread instead of
        * from its own thread.
        */
+      c_lqh->lock_alloc_operation();
       if (unlikely(!oprec_pool.seize(operationRecPtr)))
       {
         jam();
         succ = false;
       }
+      c_lqh->unlock_alloc_operation();
     }
     if (likely(succ))
     {
@@ -9693,7 +9695,9 @@ void Dbacc::releaseOpRec()
   ndbrequire(operationRecPtr.p->m_op_bits == Operationrec::OP_INITIAL);
   if (likely(operationRecPtr.i != c_copy_frag_oprec))
   {
+    c_lqh->lock_alloc_operation();
     oprec_pool.release(operationRecPtr);
+    c_lqh->unlock_alloc_operation();
     checkPoolShrinkNeed(DBACC_OPERATION_RECORD_TRANSIENT_POOL_INDEX,
                         oprec_pool);
   }
@@ -9710,8 +9714,10 @@ void Dbacc::releaseOpRec()
      * allocated and managed by LQH. Therefore we can be sure to get back
      * to the same record again.
      */
+    c_lqh->lock_alloc_operation();
     oprec_pool.release(operationRecPtr);
     ndbrequire(oprec_pool.seize(operationRecPtr));
+    c_lqh->unlock_alloc_operation();
     ndbrequire(operationRecPtr.i == c_copy_frag_oprec);
   }
 }
@@ -9725,7 +9731,9 @@ void Dbacc::releaseFreeOpRec()
     cfreeopRec = RNIL;
     oprec_pool.getValidPtr(opPtr);
     ndbrequire(opPtr.p->m_op_bits == Operationrec::OP_INITIAL);
+    c_lqh->lock_alloc_operation();
     oprec_pool.release(opPtr);
+    c_lqh->unlock_alloc_operation();
     checkPoolShrinkNeed(DBACC_OPERATION_RECORD_TRANSIENT_POOL_INDEX,
                         oprec_pool);
   }
