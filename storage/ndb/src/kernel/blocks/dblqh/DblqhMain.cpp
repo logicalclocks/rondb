@@ -12006,17 +12006,15 @@ void Dblqh::deleteTransidHash(Signal* signal, TcConnectionrecPtr& tcConnectptr)
                                tcConnectptr) == ZNOT_FOUND);
     return;
   }
-
-  prevHashptr.i = regTcPtr->prevHashRec;
-  nextHashptr.i = regTcPtr->nextHashRec;
-  /* prevHashptr and nextHashptr may be RNIL when the bucket has 1 element */
-
   Uint32 hashIndex = regTcPtr->hashIndex;
   Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
   jamDebug();
   jamLineDebug(Uint16(hashIndex));
   jamLineDebug(Uint16(m_curr_lqh->instance()));
   NdbMutex_Lock(&m_curr_lqh->transaction_hash_mutex[mutexIndex]);
+  /* prevHashptr and nextHashptr may be RNIL when the bucket has 1 element */
+  prevHashptr.i = regTcPtr->prevHashRec;
+  nextHashptr.i = regTcPtr->nextHashRec;
 #if defined VM_TRACE || defined ERROR_INSERT
   jamLineDebug(Uint16(m_curr_lqh->trans_hash_mutex_counter[mutexIndex]));
   m_curr_lqh->trans_hash_mutex_counter[mutexIndex]++;
