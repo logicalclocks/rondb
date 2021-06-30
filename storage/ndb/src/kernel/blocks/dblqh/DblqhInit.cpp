@@ -80,6 +80,12 @@ void Dblqh::initData()
   c_master_node_id = RNIL;
 #endif
 
+#if defined VM_TRACE || defined ERROR_INSERT
+  for (Uint32 i = 0; i < NUM_TRANSACTION_HASH_MUTEXES; i++)
+  {
+    trans_hash_mutex_counter[i] = 0;
+  }
+#endif
   m_curr_lqh = this;
 
   c_num_fragments_created_since_restart = 0;
