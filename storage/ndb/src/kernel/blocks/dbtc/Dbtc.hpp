@@ -2938,7 +2938,7 @@ private:
   void dump_trans(ApiConnectRecordPtr transPtr);
   bool hasOp(ApiConnectRecordPtr transPtr, Uint32 op);
 
-#define DEBUG_QUERY_THREAD_USAGE
+//#define DEBUG_QUERY_THREAD_USAGE
 #ifdef DEBUG_QUERY_THREAD_USAGE
   Uint64 c_qt_used_dirty_flag;
   Uint64 c_qt_used_locked_read;
