@@ -3616,15 +3616,17 @@ void Dbtc::execTCKEYREQ(Signal* signal)
     regCachePtr->m_read_committed_base = 0;
     regCachePtr->m_noWait = 0;
   }
+  bool util_flag = ZFALSE;
   if (unlikely(refToMain(sendersBlockRef) == DBUTIL))
   {
     jam();
-    Tspecial_op_flags |= TcConnectRecord::SOF_UTIL_FLAG;
+    util_flag = ZTRUE;
   }
   regCachePtr->keylen = TkeyLength;
   regCachePtr->lenAiInTckeyreq = titcLenAiInTckeyreq;
   regCachePtr->currReclenAi = titcLenAiInTckeyreq;
 
+  regTcPtr->m_util_flag = util_flag;
   regTcPtr->apiConnect = TapiConnectptrIndex;
   regTcPtr->clientData = TsenderData;
   regTcPtr->commitAckMarker = RNIL;
@@ -4796,8 +4798,7 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
     handle.m_ptr[ LqhKeyReq::KeyInfoSectionNum ]= keyInfoSection;
     handle.m_cnt= 1;
 
-    if (unlikely(regTcPtr->m_special_op_flags &
-                 TcConnectRecord::SOF_UTIL_FLAG))
+    if (unlikely(regTcPtr->m_util_flag))
     {
       LqhKeyReq::setUtilFlag(lqhKeyReq->requestInfo, 1);
     }
@@ -4893,17 +4894,20 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
        */
       Uint32 blockNo = refToMain(TBRef);
       Uint32 operation_type = LqhKeyReq::getOperation(lqhKeyReq->requestInfo);
+      bool support_locked_reads = ndbd_support_locked_reads_in_query_threads(version);
       bool read_flag = (operation_type == ZREAD || operation_type == ZREAD_EX);
       if (qt_likely(blockNo == V_QUERY))
       {
         Uint32 nodeId = refToNode(TBRef);
         if (read_flag &&
             LqhKeyReq::getNoDiskFlag(lqhKeyReq->requestInfo) &&
-            (!LqhKeyReq::getScanTakeOverFlag(lqhKeyReq->attrLen)) &&
+            ((!LqhKeyReq::getScanTakeOverFlag(lqhKeyReq->attrLen) ||
+              support_locked_reads)) &&
+            (!LqhKeyReq::getUtilFlag(lqhKeyReq->requestInfo)) &&
             (LqhKeyReq::getDirtyFlag(lqhKeyReq->requestInfo) ||
              ((tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG)) &&
               (regApiPtr->m_exec_write_count == 0) &&
-              ndbd_support_locked_reads_in_query_threads(version))))
+              support_locked_reads)))
         {
           /**
            * We allow the use of Query threads when
@@ -4920,6 +4924,10 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
           if (LqhKeyReq::getDirtyFlag(lqhKeyReq->requestInfo))
           {
             c_qt_used_dirty_flag++;
+          }
+          else if (LqhKeyReq::getScanTakeOverFlag(lqhKeyReq->attrLen))
+          {
+            c_qt_used_locked_read_takeover++;
           }
           else
           {
@@ -4972,9 +4980,9 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
           {
             c_no_qt_disk_flag++;
           }
-          else if (LqhKeyReq::getScanTakeOverFlag(lqhKeyReq->attrLen))
+          else if (LqhKeyReq::getUtilFlag(lqhKeyReq->requestInfo))
           {
-            c_no_qt_take_over_flag++;
+            c_no_qt_util_flag++;
           }
           else if (!tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG))
           {
@@ -23331,34 +23339,39 @@ Dbtc::query_thread_usage(Signal *signal)
 {
   Uint64 used_dirty_flag = c_qt_used_dirty_flag - c_last_qt_used_dirty_flag;
   Uint64 used_locked_read = c_qt_used_locked_read - c_last_qt_used_locked_read;
+  Uint64 used_locked_read_take_over = c_qt_used_locked_read_take_over -
+                                      c_last_qt_used_locked_read_take_over;
 
   Uint64 no_read_flag = c_no_qt_no_read_flag - c_last_no_qt_no_read_flag;
   Uint64 disk_flag = c_no_qt_disk_flag - c_last_no_qt_disk_flag;
-  Uint64 take_over_flag = c_no_qt_take_over_flag - c_last_no_qt_take_over_flag;
+  Uint64 util_flag = c_no_qt_util_flag - c_last_no_qt_util_flag;
   Uint64 no_exec_flag = c_no_qt_no_exec_flag - c_last_no_qt_no_exec_flag;
   Uint64 exec_write_count = c_no_qt_exec_write_count - c_last_no_qt_exec_write_count;
   Uint64 wrong_version = c_no_qt_wrong_version - c_last_no_qt_wrong_version;
 
-  g_eventLogger->info("(%u): QT used_dirty_flag: %llu, QT used_locked_read: %llu\n"
+  g_eventLogger->info("(%u): QT used_dirty_flag: %llu, QT used_locked_read: %llu"
+                      ", QT used_locked_read_take_over: %llu\n"
                       " noQT: no_read_flag: %llu, noQT: disk_flag: %llu\n"
-                      " noQT: take_over_flag: %llu, noQT: no_exec_flag: %llu\n"
+                      " noQT: util_flag: %llu, noQT: no_exec_flag: %llu\n"
                       " noQT: exec_write_count: %llu, noQT: wrong_version: %llu",
                       instance(),
                       used_dirty_flag,
                       used_locked_read,
+                      used_locked_read_take_over,
                       no_read_flag,
                       disk_flag,
-                      take_over_flag,
+                      util_flag,
                       no_exec_flag,
                       exec_write_count,
                       wrong_version);
 
   c_last_qt_used_dirty_flag = c_qt_used_dirty_flag;
   c_last_qt_used_locked_read = c_qt_used_locked_read;
+  c_last_qt_used_locked_read_take_over = c_qt_used_locked_read_take_over;
 
   c_last_no_qt_no_read_flag = c_no_qt_no_read_flag;
   c_last_no_qt_disk_flag = c_no_qt_disk_flag;
-  c_last_no_qt_take_over_flag = c_no_qt_take_over_flag;
+  c_last_no_qt_util_flag = c_no_qt_util_flag;
   c_last_no_qt_no_exec_flag = c_no_qt_no_exec_flag;
   c_last_no_qt_exec_write_count = c_no_qt_exec_write_count;
   c_last_no_qt_wrong_version = c_no_qt_wrong_version;

@@ -1214,6 +1214,7 @@ void Trix::executeBuildInsertTransaction(Signal* signal,
   utilExecuteReq->senderRef = reference();
   utilExecuteReq->senderData = subRecPtr.i;
   utilExecuteReq->prepareId = subRec->prepareId;
+  utilExecuteReq->scanTakeOver = 0;
 #if 0
   printf("Header size %u\n", headerPtr.sz);
   for(int i = 0; i < headerPtr.sz; i++)
@@ -1841,6 +1842,7 @@ Trix::executeBuildFKTransaction(Signal* signal,
   utilExecuteReq->senderRef = reference();
   utilExecuteReq->senderData = subRecPtr.i;
   utilExecuteReq->prepareId = subRec->prepareId;
+  utilExecuteReq->scanTakeOver = 0;
 
   // Save scan result in linear buffers
   SectionHandle handle(this, signal);

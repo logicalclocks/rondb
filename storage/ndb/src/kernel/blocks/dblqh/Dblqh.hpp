@@ -582,6 +582,7 @@ public:
       scanTcWaiting(0),
       scanState(SCAN_FREE),
       scanType(ST_IDLE),
+      m_takeOverRefCount(0),
       m_reserved(0),
       m_send_early_hbrep(0)
     {
@@ -605,7 +606,8 @@ public:
       IN_QUEUE = 10,
       COPY_FRAG_HALTED = 11,
       WAIT_START_QUEUED_SCAN = 12,
-      QUIT_START_QUEUE_SCAN = 13
+      QUIT_START_QUEUE_SCAN = 13,
+      WAIT_SCAN_NEXTREQ_ending = 14
     };
     enum ScanType {
       ST_IDLE = 0,
@@ -675,6 +677,7 @@ public:
     ScanState scanState;
     ScanType scanType;
     Uint32 scan_startLine;
+    std::atomic<unsigned int> m_takeOverRefCount;
     NodeId scanNodeId;
     Uint16 scanReleaseCounter;
     Uint16 scanNumber;
@@ -717,6 +720,7 @@ public:
   ScanRecord_pool c_scanRecordPool;
   ScanRecord_list m_reserved_scans; // LCP + NR
   ScanRecord_hash c_scanTakeOverHash;
+  NdbMutex c_scanTakeOverMutex;
 
   struct LogPartRecord;
   struct LogPageRecord;
@@ -4937,6 +4941,20 @@ public:
     if (qt_likely(globalData.ndbMtQueryWorkers > 0))
     {
       NdbMutex_Unlock(&alloc_operation_mutex);
+    }
+  }
+  void lock_take_over_hash()
+  {
+    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+    {
+      NdbMutex_Lock(&c_scanTakeOverMutex);
+    }
+  }
+  void unlock_take_over_hash()
+  {
+    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+    {
+      NdbMutex_Unlock(&c_scanTakeOverMutex);
     }
   }
 #endif

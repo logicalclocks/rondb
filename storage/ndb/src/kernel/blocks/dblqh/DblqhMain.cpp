@@ -8409,7 +8409,7 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
       unlikely(m_is_query_block && !LqhKeyReq::getDirtyFlag(Treqinfo)) ||
       unlikely(ctcNumFree <= ZNUM_RESERVED_TC_CONNECT_RECORDS) ||
       unlikely(ctcNumFree <= ZNUM_RESERVED_UTIL_CONNECT_RECORDS &&
-               LqhKeyReq::getUtilFlag(Treqinfo)))
+               (!LqhKeyReq::getUtilFlag(Treqinfo))))
   {
     jamEntry();
     Dblqh *lqh = this;
@@ -8460,6 +8460,7 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
     if (unlikely(!succ || ERROR_INSERTED_CLEAR(5031)))
     {
       jam();
+      ERROR_INSERTED_CLEAR(5031);
       releaseSections(handle);
       earlyKeyReqAbort(signal,
                        lqhKeyReq,
@@ -9231,35 +9232,147 @@ void Dblqh::prepareContinueAfterBlockedLab(
 
   if (unlikely(regTcPtr->indTakeOver == ZTRUE))
   {
+    /**
+     * When Take Over requests are executed in the Query threads we have the
+     * following issues to handle:
+     *
+     * 1) We must find the scan record
+     * 2) We must find the operation record in DBACC
+     * 3) When we found the scan record the record must not be removed while
+     *    we use it.
+     * 4) When we found the operation record in DBACC the record must not
+     *    be removed while we are using it.
+     *
+     * We find the scan record using the hash table in the variable
+     * c_scanTakeOverHash. This means that this hash table is read from the
+     * query threads, but only written from the LDM threads.
+     *
+     * This means that we need to use a mutex to access the hash table from
+     * query threads.
+     *
+     * To understand the concurrency issue for Take Over requests we must
+     * understand when they occur. The scan protocol relies on that the
+     * take over request comes after sending SCAN_FRAGCONF to DBTC which
+     * in return sends SCAN_TABCONF to the NDB API. The NDB API can then
+     * send TCKEYREQ with the Take Over flag set and some scan information
+     * used to find the correct scan record and DBACC operation record.
+     *
+     * Thus we cannot receive LQHKEYREQ when we are currently scanning.
+     * The scan state we set after sending SCAN_FRAGCONF is
+     * WAIT_SCAN_NEXTREQ. This is the only state in which it is allowed
+     * to receive a LQHKEYREQ with Take Over flag set.
+     *
+     * In this state the only signal we can receive to continue the scan
+     * is SCAN_NEXTREQ. The normal protocol cannot send such a signal
+     * while we are performing a Take Over operation. However a timeout
+     * in DBTC, or a timeout in DBLQH can lead to a close of the scan
+     * even when we are allowed to receive LQHKEYREQ with the Take Over
+     * flag set. Thus we need to find a protection for this.
+     *
+     * When an LQHKEYREQ with Take Over flag set is received we need to
+     * lock the mutex in the Query threads to access the hash table
+     * in c_scanTakeOverHash and to access scanState on the scan record.
+     * If the scan record is found in the hash table and it is in the
+     * state WAIT_SCAN_NEXTREQ then we can proceed with the LQHKEYREQ
+     * execution. However we must do something to block SCAN_NEXTREQ
+     * from proceeding in this case. This protection is only required
+     * if we are executing in the query thread. No such protection is
+     * required for Take Over operations arriving in LDM threads since
+     * in this case we are serialised compared to the SCAN operation.
+     *
+     * Given that the LQHKEYREQ will execute without any real-time breaks
+     * during the take over process, we only need to wait until this
+     * LQHKEYREQ has completed before any SCAN_NEXTREQ can proceed (or
+     * timeout actions in DBLQH).
+     *
+     * We need to make sure that the setting of scanState to
+     * WAIT_SCAN_NEXTREQ in LDM thread must be seen by the Query thread.
+     * There are two ways to do this, we can either use a mutex when
+     * setting scanState. The other option is to use a memory barrier
+     * right before setting scanState and immediately after setting it.
+     * Thus either a mutex lock or 2 calls to wmb() (we only need a
+     * write memory barrier if we use a read memory barrier in the Query
+     * thread. However the query thread reads scanState under mutex
+     * protection which implies a memory barrier. So no need to add more
+     * memory barriers here.
+     *
+     * When we receive a close scan request either from timeout or from
+     * SCAN_NEXTREQ we need to perform the following:
+     * 1) Wait until any ongoing LQHKEYREQ in Query thread is completed
+     * 2) Change scanState to ensure that no more Take Over operations
+     * are accepted for this scan.
+     *
+     * So what we need to do are the following actions:
+     * 1) Here we need to perform the following for Query threads
+     *    - Lock mutex covering take over hash
+     *    - Check that scanState == WAIT_SCAN_NEXTREQ (also for LDM threads)
+     *    - Increment refCount indicating an LQHKEYREQ take over is active
+     *    - Decrement refCount when done with the LQHKEYREQ request
+     * 2) While sending SCAN_FRAGCONF we need to use 2 memory barriers while
+     *    setting scanState to WAIT_SCAN_NEXTREQ.
+     * 3) When receiving SCAN_NEXTREQ(close) or timeout of scan request we
+     *    need to acquire mutex and set scanState to new state indicating
+     *    that we are closing. After releasing mutex we loop waiting for
+     *    refCount to be 0 (usually happen immediately). After this we
+     *    complete the close of the scan request.
+     */
     jam();
-    ndbassert(!m_is_query_block);
     Uint32 ttcScanOp = KeyInfo20::getScanOp(regTcPtr->tcScanInfo);
     scanptr.i = RNIL;
+    if (m_is_query_block)
+    {
+      m_curr_lqh->lock_take_over_hash();
+    }
     {
       ScanRecord key;
       key.scanNumber = KeyInfo20::getScanNo(regTcPtr->tcScanInfo);
       key.fragPtrI = fragptr.i;
-      c_scanTakeOverHash.find(scanptr, key);
+      m_curr_lqh->c_scanTakeOverHash.find(scanptr, key);
 #ifdef TRACE_SCAN_TAKEOVER
       if(scanptr.i == RNIL)
 	ndbout_c("not finding (%d %d)", key.scanNumber, key.fragPtrI);
 #endif
     }
-    if (unlikely(scanptr.i == RNIL))
+    if (unlikely((scanptr.i == RNIL) ||
+        ((scanptr.p->scanState != ScanRecord::WAIT_SCAN_NEXTREQ) &&
+         (!LqhKeyReq::getUtilFlag(regTcPtr->reqinfo)))))
     {
+      /**
+       * NDB API applications cannot start a take over operation until
+       * they have received SCAN_TABCONF. DBUTIL can since it starts
+       * the take over operation immediately on receiving a TRANSID_AI
+       * signal. To ensure that this works ok we ensure that DBUTIL
+       * always use an LDM thread for the take over operations.
+       *
+       * Thus only NDB API users will get access to the query threads.
+       */
       jam();
+      if (m_is_query_block)
+      {
+        m_curr_lqh->unlock_take_over_hash();
+      }
+      ndbabort();
       takeOverErrorLab(signal, tcConnectptr);
       return;
     }//if
-    regTcPtr->accOpPtr= get_acc_ptr_from_scan_record(scanptr.p,
-                                                     ttcScanOp,
-                                                     true);
+    regTcPtr->accOpPtr = get_acc_ptr_from_scan_record(scanptr.p,
+                                                      ttcScanOp,
+                                                      true);
     if (unlikely(regTcPtr->accOpPtr == RNIL))
     {
       jam();
+      if (m_is_query_block)
+      {
+        m_curr_lqh->unlock_take_over_hash();
+      }
       takeOverErrorLab(signal, tcConnectptr);
       return;
     }//if
+    if (m_is_query_block)
+    {
+      scanptr.p->m_takeOverRefCount++;
+      m_curr_lqh->unlock_take_over_hash();
+    }
   }//if
 /*-------------------------------------------------------------------*/
 /*       IT IS NOW TIME TO CONTACT ACC. THE TUPLE KEY WILL BE SENT   */
@@ -9303,6 +9416,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
     {
       /* Normal path */
       exec_acckeyreq(signal, tcConnectptr);
+      return;
     }
     else
     {
@@ -9311,6 +9425,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
        * Delete by ROWID from RESTORE
        */
       ndbassert(!m_is_query_block);
+      ndbrequire(!regTcPtr->indTakeOver);
       ndbrequire(LqhKeyReq::getRowidFlag(regTcPtr->reqinfo));
       ndbrequire(regTcPtr->operation == ZDELETE);
       handle_nr_copy(signal, tcConnectptr);
@@ -9402,6 +9517,11 @@ Dblqh::exec_acckeyreq(Signal* signal, TcConnectionrecPtr regTcPtr)
                        regTcPtr.p->accConnectPtrP);
   jamEntryDebug();
   m_tc_connect_ptr = regTcPtr;
+  if ((regTcPtr.p->indTakeOver == ZTRUE) && m_is_query_block)
+  {
+    jam();
+    scanptr.p->m_takeOverRefCount--;
+  }
   if (signal->theData[0] < RNIL)
   {
     jamDebug();
@@ -15645,6 +15765,7 @@ void Dblqh::execSCAN_NEXTREQ(Signal* signal)
   }//if
   scanptr.p->prioAFlag = ScanFragNextReq::getPrioAFlag(nextReq->requestInfo);
   scanptr.p->m_exec_direct_batch_size_words = 0;
+  ndbrequire(scanptr.p->m_takeOverRefCount == 0);
 
   ScanRecord * const scanPtr = scanptr.p;
   const Uint32 max_rows = nextReq->batch_size_rows;
@@ -15747,7 +15868,6 @@ void Dblqh::continueScanNextReqLab(Signal* signal,
   {
     jamDebug();
     scanPtr->scanCompletedStatus = ZTRUE;
-    scanPtr->scanState = ScanRecord::WAIT_SCAN_NEXTREQ;
     scanPtr->scan_lastSeen = __LINE__;
     sendScanFragConf(signal, ZFALSE, regTcPtr);
     return;
@@ -15836,7 +15956,6 @@ void Dblqh::scanLockReleasedLab(Signal* signal,
                scanPtr->scanLockHold != ZTRUE)
     {
       jam();
-      scanPtr->scanState = ScanRecord::WAIT_SCAN_NEXTREQ;
       scanPtr->scan_lastSeen = __LINE__;
       sendScanFragConf(signal, ZFALSE, regTcPtr);
     }
@@ -15864,7 +15983,6 @@ void Dblqh::scanLockReleasedLab(Signal* signal,
     the record we didn't want, but now we are returning all found records to
     the API.
     */
-    scanPtr->scanState = ScanRecord::WAIT_SCAN_NEXTREQ;
     scanPtr->scan_lastSeen = __LINE__;
     sendScanFragConf(signal, ZFALSE, regTcPtr);
   }
@@ -16050,16 +16168,44 @@ void Dblqh::closeScanRequestLab(Signal* signal,
        * WICH HAVE CRASHED. CLOSE THE SCAN
        * ------------------------------------------------------------------- */
       scanPtr->scanCompletedStatus = ZTRUE;
-
-      if (scanPtr->scanLockHold == ZTRUE) {
-	if (scanPtr->m_curr_batch_size_rows > 0) {
+      if (scanPtr->scanLockHold == ZTRUE)
+      {
+        /**
+         * Ensure that we change scanState under mutex protection.
+         * After changing the state we should be safe that no more
+         * LQHKEYREQ with take over action is executed for this
+         * scan operation.
+         *
+         * After changing the state we will still need to wait for the
+         * m_takeOverRefCount to go down to 0 to ensure that we don't
+         * release any locks before the take over operation is
+         * completed. Should be extremely rare that this happens.
+         */
+        jam();
+        lock_take_over_hash();
+        scanPtr->scanState = ScanRecord::WAIT_SCAN_NEXTREQ_ending;
+        unlock_take_over_hash();
+        Uint32 loopCount = 0;
+        while (scanPtr->m_takeOverRefCount > 0)
+        {
+          NdbSpin();
+          loopCount++;
+          ndbrequire(loopCount < 3000000);
+        }
+	if (scanPtr->m_curr_batch_size_rows > 0)
+        {
 	  jam();
 	  scanPtr->scanReleaseCounter = 1;
 	  scanReleaseLocksLab(signal, tcConnectptr.p);
 	  return;
 	}//if
+        jam();
       }//if
       closeScanLab(signal, tcConnectptr.p);
+      return;
+    case ScanRecord::WAIT_SCAN_NEXTREQ_ending:
+      //Already being closed
+      jam();
       return;
     default:
       ndbabort();
@@ -17012,7 +17158,6 @@ void Dblqh::storedProcConfScanLab(Signal* signal,
   {
     jam();
     scanPtr->m_last_row = 0;
-    scanPtr->scanState = ScanRecord::WAIT_SCAN_NEXTREQ;
     scanPtr->scan_lastSeen = __LINE__;
     sendScanFragConf(signal, ZFALSE, tcConnectptr.p);
     return;
@@ -17458,7 +17603,6 @@ void Dblqh::nextScanConfScanLab(Signal* signal,
       else
       {
         jam();
-        scanPtr->scanState = ScanRecord::WAIT_SCAN_NEXTREQ;
         scanPtr->scan_lastSeen = __LINE__;
         sendScanFragConf(signal, ZFALSE, regTcPtr);
         return;
@@ -17543,7 +17687,6 @@ void Dblqh::nextScanConfScanLab(Signal* signal,
       }
       jam();
       scanPtr->scan_check_lcp_stop = 0;
-      scanPtr->scanState = ScanRecord::WAIT_SCAN_NEXTREQ;
       scanPtr->scan_lastSeen = __LINE__;
       sendScanFragConf(signal, ZFALSE, tcConnectptr.p);
       return;
@@ -17839,7 +17982,6 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     if (scanPtr->scanLockHold == ZTRUE)
     {
       jam();
-      scanPtr->scanState = ScanRecord::WAIT_SCAN_NEXTREQ;
       scanPtr->scan_lastSeen = __LINE__;
       sendScanFragConf(signal, ZFALSE, regTcPtr);
       return;
@@ -18431,6 +18573,7 @@ Uint32 Dblqh::initScanrec(const ScanFragReq* scanFragReq,
   if (scanPtr->scanKeyinfoFlag)
   {
     jam();
+    lock_take_over_hash();
 #if defined VM_TRACE || defined ERROR_INSERT
     ScanRecordPtr tmp;
     ndbrequire(!c_scanTakeOverHash.find(tmp, * scanptr.p));
@@ -18442,6 +18585,7 @@ Uint32 Dblqh::initScanrec(const ScanFragReq* scanFragReq,
 	     fragptr.i, fragptr.p->tableFragptr);
 #endif
     c_scanTakeOverHash.add(scanptr);
+    unlock_take_over_hash();
   }
   return ZOK;
 }
@@ -18554,7 +18698,9 @@ bool Dblqh::finishScanrec(Signal* signal,
 #ifdef TRACE_SCAN_TAKEOVER
     ndbout_c("removing (%d %d)", scanPtr->scanNumber, scanPtr->fragPtrI);
 #endif
+    lock_take_over_hash();
     c_scanTakeOverHash.remove(tmp, * scanPtr);
+    unlock_take_over_hash();
     ndbrequire(tmp.p == scanPtr);
   }
 
@@ -18636,11 +18782,13 @@ bool Dblqh::finishScanrec(Signal* signal,
   if(restart.p->scanKeyinfoFlag)
   {
     jam();
+    lock_take_over_hash();
 #if defined VM_TRACE || defined ERROR_INSERT
     ScanRecordPtr tmp;
     ndbrequire(!c_scanTakeOverHash.find(tmp, * restart.p));
 #endif
     c_scanTakeOverHash.add(restart);
+    unlock_take_over_hash();
 #ifdef TRACE_SCAN_TAKEOVER
     ndbout_c("adding-r (%d %d)", restart.p->scanNumber, restart.p->fragPtrI);
 #endif
@@ -19120,6 +19268,16 @@ void Dblqh::sendScanFragConf(Signal* signal,
     jamDebug();
     scanPtr->m_curr_batch_size_rows = 0;
     scanPtr->m_curr_batch_size_bytes= 0;
+    if (!scanCompleted)
+    {
+      scanPtr->scanState = ScanRecord::WAIT_SCAN_NEXTREQ;
+    }
+  }
+  else if (!scanCompleted)
+  {
+    wmb();
+    scanPtr->scanState = ScanRecord::WAIT_SCAN_NEXTREQ;
+    wmb();
   }
 
   if (!scanCompleted &&
@@ -34752,6 +34910,7 @@ Dblqh::match_and_print(Signal* signal, Ptr<TcConnectionrec> tcRec)
     case ScanRecord::WAIT_ACC_COPY:
     case ScanRecord::WAIT_ACC_SCAN:
     case ScanRecord::WAIT_SCAN_NEXTREQ:
+    case ScanRecord::WAIT_SCAN_NEXTREQ_ending:
     case ScanRecord::WAIT_CLOSE_SCAN:
     case ScanRecord::WAIT_CLOSE_COPY:
     case ScanRecord::WAIT_TUPKEY_COPY:

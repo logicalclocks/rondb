@@ -389,8 +389,8 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
                                                 sizeof(PageRefRecord),
                                                 cpageRefFileSize);
 
-    c_scanTakeOverHash.setSize(128);
-
+    c_scanTakeOverHash.setSize(2048);
+    NdbMutex_Init(&c_scanTakeOverMutex);
     tablerec = (Tablerec*)allocRecord("Tablerec",
                                       sizeof(Tablerec),
                                       ctabrecFileSize);
@@ -828,6 +828,7 @@ Dblqh::~Dblqh()
     NdbMutex_Deinit(&transaction_hash_mutex[i]);
   }
   NdbMutex_Deinit(&alloc_operation_mutex);
+  NdbMutex_Deinit(&c_scanTakeOverMutex);
   deinit_restart_synch();
   if (!m_is_query_block)
   {

@@ -829,6 +829,7 @@ public:
                              /* 2 = INSERT REQUEST                          */
                              /* 3 = DELETE REQUEST                          */
     Uint8 m_overtakeable_operation;
+    Uint8 m_util_flag;
     Uint16 m_special_op_flags; // See ApiConnectRecord::SpecialOpFlags
     enum SpecialOpFlags {
       SOF_NORMAL = 0,
@@ -841,8 +842,7 @@ public:
       SOF_DEFERRED_UK_TRIGGER = 128,  // Op has deferred trigger
       SOF_DEFERRED_FK_TRIGGER = 256,
       SOF_FK_READ_COMMITTED = 512,    // reply to TC even for dirty read
-      SOF_FULLY_REPLICATED_TRIGGER = 1024,
-      SOF_UTIL_FLAG = 2048            // Sender to TC is DBUTIL (higher prio)
+      SOF_FULLY_REPLICATED_TRIGGER = 1024
     };
 
     static inline bool isIndexOp(Uint16 flags) {
@@ -2942,20 +2942,22 @@ private:
 #ifdef DEBUG_QUERY_THREAD_USAGE
   Uint64 c_qt_used_dirty_flag;
   Uint64 c_qt_used_locked_read;
+  Uint64 c_qt_used_locked_read_take_over;
 
   Uint64 c_no_qt_no_read_flag;
   Uint64 c_no_qt_disk_flag;
-  Uint64 c_no_qt_take_over_flag;
+  Uint64 c_no_qt_util_flag;
   Uint64 c_no_qt_no_exec_flag;
   Uint64 c_no_qt_exec_write_count;
   Uint64 c_no_qt_wrong_version;
 
   Uint64 c_last_qt_used_dirty_flag;
   Uint64 c_last_qt_used_locked_read;
+  Uint64 c_last_qt_used_locked_read_take_over;
 
   Uint64 c_last_no_qt_no_read_flag;
   Uint64 c_last_no_qt_disk_flag;
-  Uint64 c_last_no_qt_take_over_flag;
+  Uint64 c_last_no_qt_util_flag;
   Uint64 c_last_no_qt_no_exec_flag;
   Uint64 c_last_no_qt_exec_write_count;
   Uint64 c_last_no_qt_wrong_version;

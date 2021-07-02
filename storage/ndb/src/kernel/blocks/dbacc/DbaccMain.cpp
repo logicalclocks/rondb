@@ -1404,7 +1404,6 @@ void Dbacc::execACCKEYREQ(Signal* signal,
      */
     jamDebug();
     OperationrecPtr lockOpPtr;
-    ndbassert(!m_is_query_block);
     lockOpPtr.i = req->lockConnectPtr;
     bool is_valid = m_curr_acc->oprec_pool.getValidPtr(lockOpPtr);
     if (lockOwnerPtr.i == RNIL ||
@@ -1415,7 +1414,6 @@ void Dbacc::execACCKEYREQ(Signal* signal,
       signal->theData[0] = Uint32(-1);
       signal->theData[1] = ZTO_OP_STATE_ERROR;
       operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
-      ndbassert(!m_is_in_query_thread);
       release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
       return; /* Take over failed */
     }
@@ -1428,7 +1426,6 @@ void Dbacc::execACCKEYREQ(Signal* signal,
     {
       operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
       ndbassert(signal->theData[1] == ZTO_OP_STATE_ERROR);
-      ndbassert(!m_is_in_query_thread);
       release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
       return; /* Take over failed */
     }
