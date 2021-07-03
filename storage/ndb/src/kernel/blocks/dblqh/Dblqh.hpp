@@ -4284,7 +4284,7 @@ private:
 /* ACTUALLY USED FOR ALL ABORTS COMMANDED BY TC.                             */
 /* ------------------------------------------------------------------------- */
   UintR preComputedRequestInfoMask;
-#define TRANSID_HASH_SIZE 4096
+#define TRANSID_HASH_SIZE 131072
   UintR ctransidHash[TRANSID_HASH_SIZE];
   
   Uint32 c_diskless;

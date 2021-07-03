@@ -6271,6 +6271,7 @@ int Dblqh::findTransaction(UintR Transid1,
 
   ndbassert(partial_fit_ok == false || is_key_operation == true);
   Uint32 ThashIndex = (Transid1 ^ TcOprec) & (TRANSID_HASH_SIZE - 1);
+  NDB_PREFETCH_READ(&m_curr_lqh->ctransidHash[ThashIndex]);
   Uint32 mutexIndex = ThashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
   jamDebug();
   jamLineDebug(Uint16(ThashIndex));
@@ -8873,6 +8874,7 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
     TcConnectionrecPtr localNextTcConnectptr;
     Uint32 hashIndex = (regTcPtr->transid[0] ^ regTcPtr->tcOprec) &
                        (TRANSID_HASH_SIZE - 1);
+    NDB_PREFETCH_WRITE(&m_curr_lqh->ctransidHash[hashIndex]);
     jamDebug();
     jamLineDebug(Uint16(hashIndex));
     jamLineDebug(Uint16(m_curr_lqh->instance()));
@@ -12127,6 +12129,7 @@ void Dblqh::deleteTransidHash(Signal* signal, TcConnectionrecPtr& tcConnectptr)
     return;
   }
   Uint32 hashIndex = regTcPtr->hashIndex;
+  NDB_PREFETCH_WRITE(&m_curr_lqh->ctransidHash[hashIndex]);
   Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
   jamDebug();
   jamLineDebug(Uint16(hashIndex));
@@ -16866,6 +16869,7 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
 
     hashIndex = (regTcPtr->transid[0] ^ regTcPtr->tcOprec) &
                  (TRANSID_HASH_SIZE - 1);
+    NDB_PREFETCH_WRITE(&m_curr_lqh->ctransidHash[hashIndex]);
     Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
     regTcPtr->prevHashRec = RNIL;
     regTcPtr->hashIndex = hashIndex;
