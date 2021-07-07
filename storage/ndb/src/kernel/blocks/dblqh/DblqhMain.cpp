@@ -6374,7 +6374,9 @@ prefetch_op_record_4(Uint32 *op_ptr)
 }
 
 bool
-Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr, bool use_lock)
+Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr,
+                    bool use_lock,
+                    EmulatedJamBuffer *jamBuf)
 {
   /* Cannot use jam here, called from other thread */
   TcConnectionrecPtr opPtr;
@@ -6384,6 +6386,7 @@ Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr, bool use_lock)
   }
   if (ctcNumFreeShared > 0)
   {
+    thrjamDebug(jamBuf);
     seizeTcrec(tcConnectptr,
                ctcNumFreeShared,
                cfirstfreeTcConrecShared);
@@ -6393,6 +6396,7 @@ Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr, bool use_lock)
     }
     return true;
   }
+  thrjamDebug(jamBuf);
   if (unlikely(!tcConnect_pool.seize(opPtr)))
   {
     if (use_lock)
@@ -6509,11 +6513,8 @@ void Dblqh::seizeTcrec(TcConnectionrecPtr& tcConnectptr,
   locTcConnectptr.p->gci_hi = 0;
   locTcConnectptr.p->gci_lo = 0;
   locTcConnectptr.p->errorCode = 0;
-  c_tup->prepare_op_pointer(locTcConnectptr.p->tupConnectrec,
-                            locTcConnectptr.p->tupConnectPtrP);
 
   tcConnectptr = locTcConnectptr;
-  m_tc_connect_ptr = locTcConnectptr;
   ndbrequire(Magic::check_ptr(locTcConnectptr.p->tupConnectPtrP));
 }//Dblqh::seizeTcrec()
 
@@ -8487,7 +8488,7 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
         c_tup->m_curr_tup = lqh->c_tup;
       }
     }
-    bool succ = lqh->seize_op_rec(tcConnectptr, use_lock);
+    bool succ = lqh->seize_op_rec(tcConnectptr, use_lock, jamBuffer());
     if (unlikely(!succ || ERROR_INSERTED_CLEAR(5031)))
     {
       jam();
@@ -8506,6 +8507,9 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
   else
   {
     seizeTcrec(tcConnectptr, ctcNumFree, cfirstfreeTcConrec);
+    c_tup->prepare_op_pointer(tcConnectptr.p->tupConnectrec,
+                              tcConnectptr.p->tupConnectPtrP);
+    m_tc_connect_ptr = tcConnectptr;
   }
   if(ERROR_INSERTED(5038) && 
      refToNode(signal->getSendersBlockRef()) != getOwnNodeId()){
@@ -13576,40 +13580,44 @@ void Dblqh::releaseTcrec(Signal* signal, TcConnectionrecPtr locTcConnectptr)
       ndbrequire(pre_usageCountW > 0);
     }
   }
-  if (likely(locTcConnectptr.i < ctcConnectReserved))
+  Dblqh *lqh = m_curr_lqh;
+  if (likely(locTcConnectptr.i < lqh->ctcConnectReserved))
   {
     jamDebug();
-    const Uint32 firstFree = cfirstfreeTcConrec;
-    Uint32 numFree = ctcNumFree;
+    const Uint32 firstFree = lqh->cfirstfreeTcConrec;
+    Uint32 numFree = lqh->ctcNumFree;
     locTcConnectptr.p->tcTimer = 0;
     locTcConnectptr.p->transactionState = TcConnectionrec::TC_NOT_CONNECTED;
     locTcConnectptr.p->nextTcConnectrec = firstFree;
-    cfirstfreeTcConrec = locTcConnectptr.i;
-    ctcNumFree = numFree + 1;
-  }
-  else if (locTcConnectptr.i < ctcConnectReservedShared)
-  {
-    jamDebug();
-    const Uint32 firstFree = cfirstfreeTcConrecShared;
-    Uint32 numFree = ctcNumFreeShared;
-    locTcConnectptr.p->tcTimer = 0;
-    locTcConnectptr.p->transactionState = TcConnectionrec::TC_NOT_CONNECTED;
-    locTcConnectptr.p->nextTcConnectrec = firstFree;
-    cfirstfreeTcConrecShared = locTcConnectptr.i;
-    ctcNumFreeShared = numFree + 1;
+    lqh->cfirstfreeTcConrec = locTcConnectptr.i;
+    lqh->ctcNumFree = numFree + 1;
   }
   else
   {
     jam();
     bool use_lock = false;
-    Dblqh *lqh = m_curr_lqh;
     if (!m_is_query_block ||
         lqh != this)
     {
       use_lock = true;
       lqh->lock_alloc_operation();
     }
-    lqh->release_op_rec(locTcConnectptr);
+    if (locTcConnectptr.i < lqh->ctcConnectReservedShared)
+    {
+      jamDebug();
+      const Uint32 firstFree = lqh->cfirstfreeTcConrecShared;
+      Uint32 numFree = lqh->ctcNumFreeShared;
+      locTcConnectptr.p->tcTimer = 0;
+      locTcConnectptr.p->transactionState = TcConnectionrec::TC_NOT_CONNECTED;
+      locTcConnectptr.p->nextTcConnectrec = firstFree;
+      lqh->cfirstfreeTcConrecShared = locTcConnectptr.i;
+      lqh->ctcNumFreeShared = numFree + 1;
+    }
+    else
+    {
+      jamDebug();
+      lqh->release_op_rec(locTcConnectptr);
+    }
     if (use_lock)
     {
       lqh->unlock_alloc_operation();
@@ -16722,12 +16730,17 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
      * still have preference over DBUTIL operations.
      */
     seizeTcrec(tcConnectptr, ctcNumFree, cfirstfreeTcConrec);
+    c_tup->prepare_op_pointer(tcConnectptr.p->tupConnectrec,
+                              tcConnectptr.p->tupConnectPtrP);
+    m_tc_connect_ptr = tcConnectptr;
     jamEntry();
   }
   else
   {
     if (unlikely(ERROR_INSERTED_CLEAR(5055) ||
-                 (!seize_op_rec(tcConnectptr, !m_is_query_block))))
+                 (!seize_op_rec(tcConnectptr,
+                                !m_is_query_block,
+                                jamBuffer()))))
     {
       jam();
       /* --------------------------------------------------------------------
@@ -19662,6 +19675,9 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
    */
   TcConnectionrecPtr tcConnectptr;
   seizeTcrec(tcConnectptr, ctcNumFree, cfirstfreeTcConrec);
+  c_tup->prepare_op_pointer(tcConnectptr.p->tupConnectrec,
+                            tcConnectptr.p->tupConnectPtrP);
+  m_tc_connect_ptr = tcConnectptr;
   tcConnectptr.p->clientBlockref = userRef;
   ndbrequire(Magic::check_ptr(tcConnectptr.p)); 
   /**
@@ -29456,6 +29472,9 @@ void Dblqh::openExecSrStartLab(Signal* signal,
    * ------------------------------------------------------------------------ */
   TcConnectionrecPtr tcConnectptr;
   seizeTcrec(tcConnectptr, ctcNumFree, cfirstfreeTcConrec);
+  c_tup->prepare_op_pointer(tcConnectptr.p->tupConnectrec,
+                            tcConnectptr.p->tupConnectPtrP);
+  m_tc_connect_ptr = tcConnectptr;
   ndbrequire(Magic::check_ptr(tcConnectptr.p)); 
   logPartPtrP->logTcConrec = tcConnectptr.i;
   /* ------------------------------------------------------------------------

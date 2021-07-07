@@ -2871,10 +2871,11 @@ public:
   alignas(NDB_CL) TcConnectionrecPtr m_tc_connect_ptr;
   UintR cfirstfreeTcConrec;
   Uint32 ctcNumFree;
+public:
   alignas(NDB_CL) Uint32 cfirstfreeTcConrecShared;
   Uint32 ctcNumFreeShared;
   Uint32 ctcConnectReservedShared;
-
+private:
   struct TcNodeFailRecord {
     enum TcFailStatus {
       TC_STATE_TRUE = 0,
@@ -4779,7 +4780,9 @@ public:
   }
   bool check_expand_shrink_ongoing(Uint32, Uint32);
 private:
-  bool seize_op_rec(TcConnectionrecPtr &tcConnectptr, bool use_lock);
+  bool seize_op_rec(TcConnectionrecPtr &tcConnectptr,
+                    bool use_lock,
+                    EmulatedJamBuffer *jamBuf);
   void release_op_rec(TcConnectionrecPtr tcConnectptr);
   void send_scan_fragref(Signal*, Uint32, Uint32, Uint32, Uint32, Uint32);
   void init_release_scanrec(ScanRecord*);
