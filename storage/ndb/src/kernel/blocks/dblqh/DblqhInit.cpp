@@ -418,9 +418,33 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
   if (m_is_query_block)
   {
     reserveTcConnRecs = 1000;
+    ctcConnectReserved = reserveTcConnRecs;
+    ctcConnectReservedShared = ctcConnectReserved;
+    ctcNumFree = reserveTcConnRecs;
+    ctcNumFreeShared = 0;
   }
-  ctcConnectReserved = reserveTcConnRecs;
-  ctcNumFree = reserveTcConnRecs;
+  else
+  {
+    /**
+     * 40% of the operation records are reserved for the LDM thread.
+     * The remainder is shared with Query threads for locked reads.
+     */
+    Uint32 reserveTcConnRecsShared = reserveTcConnRecs;
+    reserveTcConnRecs /= 10;
+    if (globalData.ndbMtQueryWorkers > 0)
+    {
+      reserveTcConnRecs *= 4;
+    }
+    else
+    {
+      reserveTcConnRecs = reserveTcConnRecsShared;
+    }
+    ctcConnectReserved = reserveTcConnRecs;
+    ctcConnectReservedShared = reserveTcConnRecsShared;
+    ctcNumFree = reserveTcConnRecs;
+    ctcNumFreeShared = reserveTcConnRecsShared - reserveTcConnRecs;
+  }
+
   tcConnect_pool.init(
     TcConnectionrec::TYPE_ID,
     pc,

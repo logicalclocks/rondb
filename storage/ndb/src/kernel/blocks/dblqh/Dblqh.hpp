@@ -2871,6 +2871,9 @@ public:
   alignas(NDB_CL) TcConnectionrecPtr m_tc_connect_ptr;
   UintR cfirstfreeTcConrec;
   Uint32 ctcNumFree;
+  alignas(NDB_CL) Uint32 cfirstfreeTcConrecShared;
+  Uint32 ctcNumFreeShared;
+  Uint32 ctcConnectReservedShared;
 
   struct TcNodeFailRecord {
     enum TcFailStatus {
@@ -3438,7 +3441,9 @@ private:
 
   void seizeFragmentrec(Signal* signal);
   void seizePageRef(PageRefRecordPtr & pageRefPtr);
-  void seizeTcrec(TcConnectionrecPtr& tcConnectptr);
+  void seizeTcrec(TcConnectionrecPtr& tcConnectptr,
+                  Uint32 & tcNumFree,
+                  Uint32 & tcFirstFree);
   void sendAborted(Signal* signal, TcConnectionrecPtr);
   void sendLqhTransconf(Signal* signal,
                         LqhTransConf::OperationStatus,
