@@ -4774,7 +4774,7 @@ public:
   }
   bool check_expand_shrink_ongoing(Uint32, Uint32);
 private:
-  bool seize_op_rec(TcConnectionrecPtr &tcConnectptr);
+  bool seize_op_rec(TcConnectionrecPtr &tcConnectptr, bool use_lock);
   void release_op_rec(TcConnectionrecPtr tcConnectptr);
   void send_scan_fragref(Signal*, Uint32, Uint32, Uint32, Uint32, Uint32);
   void init_release_scanrec(ScanRecord*);

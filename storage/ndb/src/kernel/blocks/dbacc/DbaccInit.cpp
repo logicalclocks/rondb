@@ -39,23 +39,22 @@ Uint64 Dbacc::getTransactionMemoryNeed(
     const bool use_reserved)
 {
   Uint32 acc_scan_recs = 0;
+  Uint32 acc_op_reserved_recs = 0;
   Uint32 acc_op_recs = 0;
 
-  if (use_reserved)
   {
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_ACC_RESERVED_SCAN_RECORDS,
                                        &acc_scan_recs));
+    acc_scan_recs += (500 * globalData.ndbMtQueryWorkers);
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_LDM_RESERVED_OPERATIONS,
-                                       &acc_op_recs));
-  }
-  else
-  {
-    require(!ndb_mgm_get_int_parameter(mgm_cfg, CFG_ACC_SCAN, &acc_scan_recs));
+                                       &acc_op_reserved_recs));
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_ACC_OP_RECS,
                                        &acc_op_recs));
+    acc_op_recs += acc_op_reserved_recs;
+    acc_op_recs += (1000 * globalData.ndbMtQueryWorkers);
   }
   Uint64 scan_byte_count = 0;
   scan_byte_count += ScanRec_pool::getMemoryNeed(acc_scan_recs);
@@ -148,7 +147,7 @@ void Dbacc::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
             CFG_ACC_RESERVED_SCAN_RECORDS, &reserveScanRecs));
   if (m_is_query_block)
   {
-    reserveScanRecs = 1;
+    reserveScanRecs = 500;
   }
   scanRec_pool.init(
     ScanRec::TYPE_ID,
@@ -161,12 +160,15 @@ void Dbacc::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
   }
 
   Uint32 reserveOpRecs = 1;
+  Uint32 local_acc_operations = 1;
   ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg,
             CFG_LDM_RESERVED_OPERATIONS, &reserveOpRecs));
-  reserveOpRecs += 200;
+  ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg,
+            CFG_ACC_OP_RECS, &local_acc_operations));
+  reserveOpRecs += local_acc_operations;
   if (m_is_query_block)
   {
-    reserveOpRecs = 200;
+    reserveOpRecs = 1000;
   }
   oprec_pool.init(
     Operationrec::TYPE_ID,

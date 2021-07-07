@@ -157,19 +157,12 @@ Uint64 Dbtux::getTransactionMemoryNeed(
   Uint64 scan_op_byte_count = 0;
   Uint32 tux_scan_recs = 0;
   Uint32 tux_scan_lock_recs = 0;
-  if (use_reserved)
   {
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_TUX_RESERVED_SCAN_RECORDS,
                                        &tux_scan_recs));
-    tux_scan_lock_recs = 1000;
-  }
-  else
-  {
-    Uint32 scanBatch = 0;
-    require(!ndb_mgm_get_int_parameter(mgm_cfg, CFG_TUX_SCAN_OP, &tux_scan_recs));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg, CFG_LDM_BATCH_SIZE, &scanBatch));
-    tux_scan_lock_recs = tux_scan_recs * scanBatch;
+    tux_scan_lock_recs = 4096;
+    tux_scan_recs += (globalData.ndbMtQueryWorkers * 500);
   }
   scan_op_byte_count += ScanOp_pool::getMemoryNeed(tux_scan_recs);
   scan_op_byte_count *= ldm_instance_count;
@@ -372,7 +365,6 @@ Dbtux::execREAD_CONFIG_REQ(Signal* signal)
   Uint32 nIndex;
   Uint32 nFragment;
   Uint32 nAttribute;
-  Uint32 nScanOp; 
   Uint32 nScanBatch;
   Uint32 nStatAutoUpdate;
   Uint32 nStatSaveSize;
@@ -418,7 +410,6 @@ Dbtux::execREAD_CONFIG_REQ(Signal* signal)
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TUX_INDEX, &nIndex));
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TUX_FRAGMENT, &nFragment));
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TUX_ATTRIBUTE, &nAttribute));
-  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TUX_SCAN_OP, &nScanOp));
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_BATCH_SIZE, &nScanBatch));
 
   nStatAutoUpdate = 0;

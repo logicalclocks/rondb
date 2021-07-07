@@ -6364,12 +6364,20 @@ prefetch_op_record_4(Uint32 *op_ptr)
 }
 
 bool
-Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr)
+Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr, bool use_lock)
 {
   /* Cannot use jam here, called from other thread */
   TcConnectionrecPtr opPtr;
+  if (use_lock)
+  {
+    lock_alloc_operation();
+  }
   if (unlikely(!tcConnect_pool.seize(opPtr)))
   {
+    if (use_lock)
+    {
+      unlock_alloc_operation();
+    }
     return false;
   }
   opPtr.p->ptrI = opPtr.i;
@@ -6388,6 +6396,10 @@ Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr)
                                     &opPtr.p->tupConnectPtrP)))
   {
     goto tup_fail;
+  }
+  if (use_lock)
+  {
+    unlock_alloc_operation();
   }
   opPtr.p->tcTimer = cLqhTimeOutCount;
   tcConnectptr = opPtr;
@@ -8446,14 +8458,9 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
         m_curr_lqh = lqh;
         c_acc->m_curr_acc = lqh->c_acc;
         c_tup->m_curr_tup = lqh->c_tup;
-        lqh->lock_alloc_operation();
       }
     }
-    else
-    {
-      lqh->lock_alloc_operation();
-    }
-    bool succ = lqh->seize_op_rec(tcConnectptr);
+    bool succ = lqh->seize_op_rec(tcConnectptr, use_lock);
     if (use_lock)
     {
       lqh->unlock_alloc_operation();
@@ -16685,12 +16692,9 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
   }
   else
   {
-    if (!m_is_query_block)
-      NdbMutex_Lock(&alloc_operation_mutex);
     if (unlikely(ERROR_INSERTED_CLEAR(5055) ||
-                 (!seize_op_rec(tcConnectptr))))
+                 (!seize_op_rec(tcConnectptr, !m_is_query_block))))
     {
-      NdbMutex_Unlock(&alloc_operation_mutex);
       jam();
       /* --------------------------------------------------------------------
        *      NO FREE TC RECORD AVAILABLE, THUS WE CANNOT HANDLE THE REQUEST.

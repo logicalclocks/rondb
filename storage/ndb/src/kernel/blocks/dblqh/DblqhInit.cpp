@@ -42,7 +42,6 @@ Uint64 Dblqh::getTransactionMemoryNeed(
 {
   Uint32 lqh_scan_recs = 0;
   Uint32 lqh_op_recs = 0;
-  if (use_reserved)
   {
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_LDM_RESERVED_OPERATIONS,
@@ -50,13 +49,7 @@ Uint64 Dblqh::getTransactionMemoryNeed(
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_LQH_RESERVED_SCAN_RECORDS,
                                        &lqh_scan_recs));
-  }
-  else
-  {
-    require(!ndb_mgm_get_int_parameter(mgm_cfg, CFG_LQH_SCAN, &lqh_scan_recs));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_LQH_TC_CONNECT,
-                                       &lqh_op_recs));
+    lqh_op_recs += (globalData.ndbMtQueryWorkers * 1000);
   }
   Uint64 scan_byte_count = 0;
   scan_byte_count += ScanRecord_pool::getMemoryNeed(lqh_scan_recs);
@@ -422,10 +415,9 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
   ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg,
               CFG_LDM_RESERVED_OPERATIONS, &reserveTcConnRecs));
 
-
   if (m_is_query_block)
   {
-    reserveTcConnRecs = 200;
+    reserveTcConnRecs = 1000;
   }
   ctcConnectReserved = reserveTcConnRecs;
   ctcNumFree = reserveTcConnRecs;
@@ -445,7 +437,7 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
                             &reserveScanRecs));
   if (m_is_query_block)
   {
-    reserveScanRecs = 1;
+    reserveScanRecs = 500;
   }
   c_scanRecordPool.init(
     ScanRecord::TYPE_ID,
@@ -457,8 +449,7 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
     refresh_watch_dog();
   }
 
-  Uint32 reserveCommitAckMarkers = 1024;
-
+  Uint32 reserveCommitAckMarkers = 4096;
   if (m_is_query_block)
   {
     reserveCommitAckMarkers = 1;
