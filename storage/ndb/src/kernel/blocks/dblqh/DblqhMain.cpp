@@ -873,12 +873,22 @@ void Dblqh::execCONTINUEB(Signal* signal)
   Uint32 data2 = signal->theData[3];
   TcConnectionrecPtr tcConnectptr;
   switch (tcase) {
+#ifdef CONNECT_DEBUG
+  case ZPRINT_CONNECT_DEBUG:
+  {
+    jam();
+    print_connect_debug(signal);
+    return;
+  }
+#endif
+#ifdef DEBUG_MUTEX_STATS
   case ZPRINT_MUTEX_STATS:
   {
     jam();
     print_fragment_mutex_stats(signal);
     return;
   }
+#endif
   case ZSTART_SEND_EXEC_CONF:
   {
     jam();
@@ -1580,7 +1590,12 @@ void Dblqh::execSTTOR(Signal* signal)
       write_local_sysfile_restart_complete_done(signal);
       DEB_START_PHASE9(("(%u)Start phase 9 wait completed", instance()));
     }
+#ifdef DEBUG_MUTEX_STATS
     send_print_mutex_stats(signal);
+#endif
+#ifdef CONNECT_DEBUG
+    send_connect_debug(signal);
+#endif
     return;
   default:
     jam();
@@ -6387,6 +6402,9 @@ Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr,
   if (ctcNumFreeShared > 0)
   {
     thrjamDebug(jamBuf);
+#ifdef CONNECT_DEBUG
+    ctcNumUseShared++;
+#endif
     seizeTcrec(tcConnectptr,
                ctcNumFreeShared,
                cfirstfreeTcConrecShared);
@@ -6396,6 +6414,9 @@ Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr,
     }
     return true;
   }
+#ifdef CONNECT_DEBUG
+    ctcNumUseTM++;
+#endif
   thrjamDebug(jamBuf);
   if (unlikely(!tcConnect_pool.seize(opPtr)))
   {
@@ -7158,6 +7179,34 @@ static inline Uint32 getProgramWordCount(SegmentedSectionPtr attrInfo)
 #define DEB_PRINT_MUTEX_STATS(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_PRINT_MUTEX_STATS(arglist) do { g_eventLogger->debug arglist ; } while (0)
+#endif
+
+#ifdef CONNECT_DEBUG
+void
+Dblqh::print_connect_debug(Signal *signal)
+{
+  Uint64 numUseLocal = ctcNumUseLocal - ctcLastNumUseLocal;
+  Uint64 numUseShared = ctcNumUseShared - ctcLastNumUseShared;
+  Uint64 numUseTM = ctcNumUseTM - ctcLastNumUseTM;
+
+  g_eventLogger->info("(%u,%u): UseLocal: %llu, UseShared: %llu, UseTM: %llu",
+                      m_is_query_block,
+                      instance(),
+                      numUseLocal,
+                      numUseShared,
+                      numUseTM);
+  send_connect_debug(signal);
+}
+
+void
+Dblqh::send_connect_debug(Signal *signal)
+{
+  ctcLastNumUseLocal = ctcNumUseLocal;
+  ctcLastNumUseShared = ctcNumUseShared;
+  ctcLastNumUseTM = ctcNumUseTM;
+  signal->theData[0] = ZPRINT_CONNECT_DEBUG;
+  sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 1000, 1);
+}
 #endif
 
 void
@@ -8510,6 +8559,9 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
     c_tup->prepare_op_pointer(tcConnectptr.p->tupConnectrec,
                               tcConnectptr.p->tupConnectPtrP);
     m_tc_connect_ptr = tcConnectptr;
+#ifdef CONNECT_DEBUG
+    ctcNumUseLocal++;
+#endif
   }
   if(ERROR_INSERTED(5038) && 
      refToNode(signal->getSendersBlockRef()) != getOwnNodeId()){
@@ -16733,6 +16785,9 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
     c_tup->prepare_op_pointer(tcConnectptr.p->tupConnectrec,
                               tcConnectptr.p->tupConnectPtrP);
     m_tc_connect_ptr = tcConnectptr;
+#ifdef CONNECT_DEBUG
+    ctcNumUseLocal++;
+#endif
     jamEntry();
   }
   else

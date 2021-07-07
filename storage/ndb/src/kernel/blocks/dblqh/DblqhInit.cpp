@@ -73,6 +73,14 @@ void Dblqh::initData()
   c_master_node_id = RNIL;
 #endif
 
+#ifdef CONNECT_DEBUG
+  ctcNumUseLocal = 0;
+  ctcNumUseShared = 0;
+  ctcNumUseTM = 0;
+  ctcLastNumUseLocal = 0;
+  ctcLastNumUseShared = 0;
+  ctcLastNumUseTM = 0;
+#endif
 #if defined VM_TRACE || defined ERROR_INSERT
   for (Uint32 i = 0; i < NUM_TRANSACTION_HASH_MUTEXES; i++)
   {

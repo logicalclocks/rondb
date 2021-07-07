@@ -291,6 +291,7 @@ class FsReadWriteReq;
 #define ZCONTINUE_WRITE_LOG 38
 #define ZSTART_SEND_EXEC_CONF 39
 #define ZPRINT_MUTEX_STATS 40
+#define ZPRINT_CONNECT_DEBUG 41
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -2871,6 +2872,17 @@ public:
   alignas(NDB_CL) TcConnectionrecPtr m_tc_connect_ptr;
   UintR cfirstfreeTcConrec;
   Uint32 ctcNumFree;
+#define CONNECT_DEBUG 1
+#ifdef CONNECT_DEBUG
+  Uint64 ctcNumUseLocal;
+  Uint64 ctcNumUseShared;
+  Uint64 ctcNumUseTM;
+  Uint64 ctcLastNumUseLocal;
+  Uint64 ctcLastNumUseShared;
+  Uint64 ctcLastNumUseTM;
+  void send_connect_debug(Signal*);
+  void print_connect_debug(Signal*);
+#endif
 public:
   alignas(NDB_CL) Uint32 cfirstfreeTcConrecShared;
   Uint32 ctcNumFreeShared;
