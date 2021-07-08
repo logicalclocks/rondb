@@ -2537,6 +2537,13 @@ start_failure:
     abortErrorLab(signal, apiConnectptr);
     return;
   }
+  case 68:
+  {
+    jam();
+    terrorCode = ZHIT_TC_CONNECTION_LIMIT;
+    abortErrorLab(signal, apiConnectptr);
+    return;
+  }
   default:
     jam();
     systemErrorLab(signal, __LINE__);
@@ -3827,7 +3834,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
                    m_take_over_operations))
       {
         jam();
-        TCKEY_abort(signal, 65, apiConnectptr);
+        /* Not allowed any more stateful operations */
+        TCKEY_abort(signal, 68, apiConnectptr);
         return;
       }
       regTcPtr->m_overtakeable_operation = 1;
@@ -3914,6 +3922,7 @@ void Dbtc::execTCKEYREQ(Signal* signal)
         if (unlikely(regApiPtr->m_write_count > m_take_over_operations))
         {
           jam();
+          /* This transaction is too big */
           TCKEY_abort(signal, 65, apiConnectptr);
           return;
         }
@@ -3921,6 +3930,7 @@ void Dbtc::execTCKEYREQ(Signal* signal)
       else if (unlikely(regApiPtr->m_write_count > m_max_writes_per_trans))
       {
         jam();
+        /* This transaction is too big */
         TCKEY_abort(signal, 65, apiConnectptr);
         return;
       }
@@ -3928,7 +3938,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
                    m_take_over_operations))
       {
         jam();
-        TCKEY_abort(signal, 65, apiConnectptr);
+        /* Not allowed any more stateful operations */
+        TCKEY_abort(signal, 68, apiConnectptr);
         return;
       }
       regTcPtr->m_overtakeable_operation = 1;
