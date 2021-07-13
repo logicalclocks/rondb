@@ -1,4 +1,4 @@
-/* Copyright (c) 2009, 2018, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2009, 2021, Oracle and/or its affiliates.
    Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify

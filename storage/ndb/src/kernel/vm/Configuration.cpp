@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
    Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -121,8 +121,6 @@ Configuration::Configuration()
   _backupPath = 0;
   _initialStart = false;
   m_config_retriever= 0;
-  m_clusterConfig= 0;
-  m_clusterConfigIter= 0;
   m_logLevel= 0;
 }
 
@@ -141,6 +139,7 @@ Configuration::~Configuration(){
   if(m_logLevel) {
     delete m_logLevel;
   }
+  ndb_mgm_destroy_iterator(m_clusterConfigIter);
 }
 
 void
@@ -194,8 +193,6 @@ Configuration::fetch_configuration(const char* _connect_string,
     ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, "Could not connect to ndb_mgmd", s);
   }
 
-  ConfigRetriever &cr= *m_config_retriever;
-
   if (allocated_nodeid)
   {
     // The angel has already allocated the nodeid, no need to
@@ -207,7 +204,8 @@ Configuration::fetch_configuration(const char* _connect_string,
 
     const int alloc_retries = 10;
     const int alloc_delay = 3;
-    globalData.ownId = cr.allocNodeId(alloc_retries, alloc_delay);
+    globalData.ownId =
+        m_config_retriever->allocNodeId(alloc_retries, alloc_delay);
     if(globalData.ownId == 0)
     {
       ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
@@ -217,9 +215,9 @@ Configuration::fetch_configuration(const char* _connect_string,
   }
   assert(globalData.ownId);
 
-  ndb_mgm_configuration * p = cr.getConfig(globalData.ownId);
-  if(p == 0){
-    const char * s = cr.getErrorString();
+  m_clusterConfig = m_config_retriever->getConfig(globalData.ownId);
+  if(!m_clusterConfig){
+    const char * s = m_config_retriever->getErrorString();
     if(s == 0)
       s = "No error given!";
     
@@ -230,26 +228,23 @@ Configuration::fetch_configuration(const char* _connect_string,
     ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, "Could not fetch configuration"
 	      "/invalid configuration", s);
   }
-  if(m_clusterConfig)
-    free(m_clusterConfig);
-  
-  m_clusterConfig = p;
 
-  const ConfigValues * cfg = (ConfigValues*)m_clusterConfig;
-  cfg->pack_v1(m_clusterConfigPacked_v1);
+  const ConfigValues& cfg = m_clusterConfig.get()->m_config_values;
+  cfg.pack_v1(m_clusterConfigPacked_v1);
   if (OUR_V2_VERSION)
   {
-    cfg->pack_v2(m_clusterConfigPacked_v2);
+    cfg.pack_v2(m_clusterConfigPacked_v2);
   }
 
   {
     Uint32 generation;
-    ndb_mgm_configuration_iterator sys_iter(*p, CFG_SECTION_SYSTEM);
-    char buf[512];
+    ndb_mgm_configuration_iterator sys_iter(m_clusterConfig.get(),
+                                            CFG_SECTION_SYSTEM);
+    char sockaddr_buf[512];
     char* sockaddr_string =
-        Ndb_combine_address_port(buf, sizeof(buf),
-        m_config_retriever->get_mgmd_host(),
-        m_config_retriever->get_mgmd_port());
+        Ndb_combine_address_port(sockaddr_buf, sizeof(sockaddr_buf),
+                                 m_config_retriever->get_mgmd_host(),
+                                 m_config_retriever->get_mgmd_port());
 
     if (sys_iter.get(CFG_SYS_CONFIG_GENERATION, &generation))
     {
@@ -263,11 +258,12 @@ Configuration::fetch_configuration(const char* _connect_string,
     }
   }
 
-  ndb_mgm_configuration_iterator iter(* p, CFG_SECTION_NODE);
-  if (iter.find(CFG_NODE_ID, globalData.ownId)){
-    ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, "Invalid configuration fetched", "DB missing");
+  ndb_mgm_configuration_iterator iter(m_clusterConfig.get(), CFG_SECTION_NODE);
+  if (iter.find(CFG_NODE_ID, globalData.ownId)) {
+    ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, "Invalid configuration fetched",
+              "DB missing");
   }
-  
+
   if(iter.get(CFG_DB_STOP_ON_ERROR, &_stopOnError)){
     ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, "Invalid configuration fetched", 
 	      "StopOnError missing");
@@ -1257,8 +1253,6 @@ Configuration::setupConfiguration(){
 
   DBUG_ENTER("Configuration::setupConfiguration");
 
-  ndb_mgm_configuration * p = m_clusterConfig;
-
   /**
    * Configure transporters
    */
@@ -1270,7 +1264,7 @@ Configuration::setupConfiguration(){
   }
 
   if (!IPCConfig::configureTransporters(globalData.ownId,
-                                        * p,
+                                        m_clusterConfig.get(),
                                         globalTransporterRegistry))
   {
     ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
@@ -1279,9 +1273,9 @@ Configuration::setupConfiguration(){
   }
 
   /**
-   * Setup cluster configuration data
+   * Setup cluster configuration for this node
    */
-  ndb_mgm_configuration_iterator iter(* p, CFG_SECTION_NODE);
+  ndb_mgm_configuration_iterator iter(m_clusterConfig.get(), CFG_SECTION_NODE);
   if (iter.find(CFG_NODE_ID, globalData.ownId)){
     ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, "Invalid configuration fetched", "DB missing");
   }
@@ -1511,10 +1505,9 @@ Configuration::setupConfiguration(){
 
   ConfigValues* cf = ConfigValuesFactory::extractCurrentSection(iter.m_config);
 
-  if(m_clusterConfigIter)
-    ndb_mgm_destroy_iterator(m_clusterConfigIter);
-  m_clusterConfigIter = ndb_mgm_create_configuration_iterator
-    (p, CFG_SECTION_NODE);
+  ndb_mgm_destroy_iterator(m_clusterConfigIter);
+  m_clusterConfigIter = ndb_mgm_create_configuration_iterator(
+      m_clusterConfig.get(), CFG_SECTION_NODE);
 
   /**
    * This is parts of get_multithreaded_config
@@ -1744,10 +1737,10 @@ Configuration::getOwnConfigIterator() const {
   return m_ownConfigIterator;
 }
 
-const class ConfigValues*
+const ConfigValues*
 Configuration::get_own_config_values()
 {
-  return &m_ownConfig->m_config;
+  return &m_ownConfig->m_config_values;
 }
 
 
@@ -1759,7 +1752,7 @@ Configuration::getClusterConfigIterator() const {
 Uint32 
 Configuration::get_config_generation() const {
   Uint32 generation = ~0;
-  ndb_mgm_configuration_iterator sys_iter(*m_clusterConfig,
+  ndb_mgm_configuration_iterator sys_iter(m_clusterConfig.get(),
                                           CFG_SECTION_SYSTEM);
   sys_iter.get(CFG_SYS_CONFIG_GENERATION, &generation);
   return generation;
@@ -1840,8 +1833,9 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
     { CFG_DB_AUTO_MEMORY_CONFIG, &automaticMemoryConfig, false },
   };
 
-  ndb_mgm_configuration_iterator db(*(ndb_mgm_configuration*)ownConfig, 0);
-  
+  ndb_mgm_configuration_iterator db(
+      reinterpret_cast<ndb_mgm_configuration *>(ownConfig), 0);
+
   const int sz = sizeof(tmp)/sizeof(AttribStorage);
   for(int i = 0; i<sz; i++){
     if(ndb_mgm_get_int_parameter(&db, tmp[i].paramId, tmp[i].storage)){
@@ -2307,8 +2301,7 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
 
   require(cfg.commit(true));
   m_ownConfig = (ndb_mgm_configuration*)cfg.getConfigValues();
-  m_ownConfigIterator = ndb_mgm_create_configuration_iterator
-    (m_ownConfig, 0);
+  m_ownConfigIterator = ndb_mgm_create_configuration_iterator(m_ownConfig, 0);
 }
 
 void

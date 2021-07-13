@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2013, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2013, 2021, Oracle and/or its affiliates.
    Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1831,23 +1831,23 @@ get_meminfo(struct ndb_hwinfo *hwinfo)
 
   FileGuard g(meminfo); // close at end...
 
-  Uint64 memory_size = 0;
+  Uint64 memory_size_kb = 0;
   while (fgets(buf, sizeof(buf), meminfo))
   {
     Uint64 val;
     if (sscanf(buf, "MemTotal: %llu", &val) == 1)
     {
-      memory_size = val;
+      memory_size_kb = val; // /proc/meminfo reports MemTotal in kb
       break;
     }
   }
-  if (memory_size == 0)
+  if (memory_size_kb == 0)
   {
     perror("Found no MemTotal in /proc/meminfo");
     return -1;
   }
   /* Memory is in kBytes */
-  hwinfo->hw_memory_size = (memory_size * 1024);
+  hwinfo->hw_memory_size = memory_size_kb * 1024; // hw_memory_size in bytes
   return 0;
 }
 
@@ -1954,6 +1954,7 @@ static int
 get_physical_package_ids(struct ndb_hwinfo* hwinfo)
 {
   char error_buf[512];
+  Uint32 num_cpu_sockets = 0;
   for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
   {
     if (hwinfo->cpu_info[i].socket_id != Uint32(~0))
@@ -2021,7 +2022,12 @@ get_physical_package_ids(struct ndb_hwinfo* hwinfo)
     hwinfo->cpu_info[i].package_id = package_id;
     hwinfo->cpu_info[i].socket_id = socket_id;
     hwinfo->cpu_info[i].l3_cache_id = socket_id;
+
+    if (socket_id == num_cpu_sockets)
+      num_cpu_sockets++;
   }
+  hwinfo->num_shared_l3_caches = num_cpu_sockets;
+  hwinfo->num_cpu_sockets = num_cpu_sockets;
   return 0;
 }
 
@@ -2227,13 +2233,13 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
     /* Linux ARM needs information from other sources */
     hwinfo->cpu_cnt = cpu_online_count;
     int res = get_core_siblings_info(hwinfo);
-    if (res == (int)-1)
+    if (res == -1)
     {
       return -1;
     }
     hwinfo->num_cpu_cores = (Uint32)res;
     res = get_physical_package_ids(hwinfo);
-    if (res == (int)-1)
+    if (res == -1)
     {
       return -1;
     }

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
    Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -835,7 +835,7 @@ Suma::execCHECKNODEGROUPSCONF(Signal *signal)
 
   fix_nodegroup();
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   for (Uint32 i = 0; i < c_noNodesInGroup; i++) {
     DBUG_PRINT("exit",("Suma: NodeGroup %u, me %u, "
 		       "member[%u] %u",
@@ -6008,7 +6008,7 @@ Suma::execALTER_TAB_REQ(Signal *signal)
   }
   // dict coordinator sends info to API
   
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   ndbout_c("DICT_TAB_INFO in SUMA,  tabInfoPtr.sz = %d", tabInfoPtr.sz);
   SimplePropertiesSectionReader reader(handle.m_ptr[0],
 				       getSectionSegmentPool());

@@ -2,12 +2,12 @@
 .\"     Title: \fBndb_import\fR
 .\"    Author: [FIXME: author] [see http://docbook.sf.net/el/author]
 .\" Generator: DocBook XSL Stylesheets v1.79.1 <http://docbook.sf.net/>
-.\"      Date: 05/20/2021
+.\"      Date: 07/13/2021
 .\"    Manual: RonDB Database System
-.\"    Source: RonDB 21.04
+.\"    Source: RonDB 21.10
 .\"  Language: English
 .\"
-.TH "\FBNDB_IMPORT\FR" "1" "05/20/2021" "RonDB 21\&.04" "RonDB Database System"
+.TH "\FBNDB_IMPORT\FR" "1" "07/13/2021" "RonDB 21\&.10" "RonDB Database System"
 .\" -----------------------------------------------------------------
 .\" * Define some portability stuff
 .\" -----------------------------------------------------------------
@@ -188,7 +188,7 @@ Options Common to NDB Cluster Programs(1)\&.
 .nr an-no-space-flag 1
 .nr an-break-flag 1
 .br
-.B Table\ \&23.34.\ \&Command\-line options for the ndb_import program
+.B Table\ \&23.35.\ \&Command\-line options used with the program ndb_import
 .TS
 allbox tab(:);
 lB lB lB.
@@ -247,7 +247,7 @@ T}:T{
 Dump core on any fatal error; used for debugging
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -266,7 +266,7 @@ T}:T{
 For table with hidden PK, specify autoincrement increment. See mysqld
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -275,7 +275,7 @@ T}:T{
 For table with hidden PK, specify autoincrement offset. See mysqld
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -285,7 +285,7 @@ For table with hidden PK, specify number of autoincrement values that
               are prefetched. See mysqld
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -294,7 +294,7 @@ T}:T{
 Number of cluster connections to create
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -303,7 +303,7 @@ T}:T{
 When job fails, continue to next job
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -312,7 +312,7 @@ T}:T{
 Number of threads, per data node, executing database operations
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -322,7 +322,7 @@ Error insert type, for testing purposes; use "list" to obtain all
               possible values
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -331,7 +331,7 @@ T}:T{
 Error insert delay in milliseconds; random variation is added
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -342,7 +342,7 @@ Same as FIELDS ENCLOSED BY option for LOAD DATA statements. For CSV
               --fields-optionally-enclosed-by
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -351,7 +351,7 @@ T}:T{
 Same as FIELDS ESCAPED BY option for LOAD DATA statements
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -360,7 +360,7 @@ T}:T{
 Same as FIELDS OPTIONALLY ENCLOSED BY option for LOAD DATA statements
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -369,7 +369,7 @@ T}:T{
 Same as FIELDS TERMINATED BY option for LOAD DATA statements
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -378,7 +378,7 @@ T}:T{
 Number of milliseconds to sleep waiting for more to do
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -387,7 +387,7 @@ T}:T{
 Number of times to re-try before idlesleep
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -396,7 +396,7 @@ T}:T{
 Ignore first # lines in input file. Used to skip a non-data header
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -405,7 +405,7 @@ T}:T{
 Input type: random or csv
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -415,7 +415,7 @@ Number of threads processing input. Must be 2 or more if --input-type is
               csv
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -426,7 +426,7 @@ State files (except non-empty *.rej files) are normally removed on job
               preserved instead
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -435,7 +435,7 @@ T}:T{
 Same as LINES TERMINATED BY option for LOAD DATA statements
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -445,7 +445,7 @@ Import only this number of input data rows; default is 0, which imports
               all rows
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -458,7 +458,7 @@ Periodically print status of running job if something has changed
               pre-defined limit
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -467,7 +467,7 @@ T}:T{
 Run database operations as batches, in single transactions
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -476,7 +476,7 @@ T}:T{
 Do not use distribution key hint to select data node (TC)
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -488,7 +488,7 @@ A db execution batch is a set of transactions and operations sent to RonDB
               limits number of asynch transactions. Value 0 is not valid
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -497,7 +497,7 @@ T}:T{
 Limit bytes in execution batch (default 0 = no limit)
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -506,7 +506,7 @@ T}:T{
 Output type: ndb is default, null used for testing
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -515,7 +515,7 @@ T}:T{
 Number of threads processing output or relaying database operations
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -524,7 +524,7 @@ T}:T{
 Align I/O buffers to given size
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -534,7 +534,7 @@ Size of I/O buffers as multiple of page size. CSV input worker allocates
               a double-sized buffer
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -544,7 +544,7 @@ Timeout per poll for completed asynchonous transactions; polling
               continues until all polls are completed, or error occurs
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -556,7 +556,7 @@ Limit number of rejected rows (rows with permanent error) in data load.
               *.rej
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -566,7 +566,7 @@ If job aborted (temporary error, user interrupt), resume with rows not
               yet processed
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -576,7 +576,7 @@ Limit rows in row queues (default 0 = no limit); must be 1 or more if
               --input-type is random
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -585,7 +585,7 @@ T}:T{
 Limit bytes in row queues (0 = no limit)
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -594,7 +594,7 @@ T}:T{
 Where to write state files; currect directory is default
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -605,7 +605,7 @@ Save performance related options and internal statistics in *.sto and
               even if --keep-state is not used
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -614,7 +614,7 @@ T}:T{
 Number of milliseconds to sleep between temporary errors
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -626,7 +626,7 @@ Number of times a transaction can fail due to a temporary error, per
               file
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 T{
 .PP
@@ -637,7 +637,7 @@ T}:T{
 Enable verbose output
 T}:T{
 .PP
-(Supported in all MySQL 8.0 based releases)
+(Supported in all NDB releases based on MySQL 8.0)
 T}
 .TE
 .sp 1
@@ -2528,13 +2528,10 @@ LOAD DATA
 statement
 STARTING WITH
 option\&.
-.PP
-\fBndb_import\fR
-was added in NDB 7\&.6\&.2\&.
 .SH "COPYRIGHT"
 .br
 .PP
-Copyright \(co 1997, 2020, Oracle and/or its affiliates.
+Copyright \(co 1997, 2021, Oracle and/or its affiliates.
 .br
 Copyright \(co 2021, 2021, Logical Clocks AB and/or its affiliates.
 .PP

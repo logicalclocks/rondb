@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
    Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -357,7 +357,7 @@ void TransporterRegistry::set_mgm_handle(NdbMgmHandle h)
     ndb_mgm_destroy_handle(&m_mgm_handle);
   m_mgm_handle= h;
   ndb_mgm_set_timeout(m_mgm_handle, 5000);
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   if (h)
   {
     char buf[256];
@@ -2471,7 +2471,7 @@ TransporterRegistry::do_disconnect(NodeId node_id,
      * setup the transporter. Therefore we assert here to get a simple
      * handling of test failures such that we can fix the test config.
      */
-    //DBUG_ASSERT(false);
+    //assert(false);
     break;
   case DISCONNECTING:
   {
