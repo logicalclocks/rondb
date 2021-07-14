@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2011, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -36,6 +37,7 @@
 #include "storage/ndb/plugin/ha_ndbcluster.h"
 #include "storage/ndb/plugin/ha_ndbcluster_connection.h"
 #include "storage/ndb/plugin/ndb_require.h"
+#include <atomic>
 
 // Implementation still uses its own instance
 extern Ndb_index_stat_thread ndb_index_stat_thread;
@@ -103,6 +105,7 @@ struct Ndb_index_stat {
 #ifndef NDEBUG
   char id[32];
 #endif
+  uint query_count;
   time_t access_time;  /* by any table handler */
   time_t update_time;  /* latest successful update by us */
   time_t load_time;    /* when stats were created by kernel */
@@ -125,9 +128,9 @@ struct Ndb_index_stat {
   struct Ndb_index_stat *list_next;
   struct Ndb_index_stat *list_prev;
   struct NDB_SHARE *share;
-  uint ref_count;     /* from client requests */
+  std::atomic<unsigned int> ref_count;     /* from client requests */
   bool to_delete;     /* detached from share and marked for delete */
-  bool abort_request; /* abort all requests and allow no more */
+                      /* abort all requests and allow no more */
   Ndb_index_stat();
 };
 
@@ -478,6 +481,7 @@ void ndb_index_stat_option_update(THD *, SYS_VAR *, void *var_ptr,
 
 /* Global stuff */
 
+std::atomic<unsigned int> glob_query_count;
 struct Ndb_index_stat_glob {
   bool th_allow;  /* Queries allowed */
   bool th_enable; /* Stats thread idea of ndb_index_stat_enable */
@@ -490,7 +494,6 @@ struct Ndb_index_stat_glob {
   /* Accumulating counters */
   uint analyze_count; /* Client counters */
   uint analyze_error;
-  uint query_count;
   uint query_no_stats;
   uint query_error;
   uint event_act;     /* Events acted on */
@@ -526,7 +529,6 @@ Ndb_index_stat_glob::Ndb_index_stat_glob() {
   wait_stats = 0;
   analyze_count = 0;
   analyze_error = 0;
-  query_count = 0;
   query_no_stats = 0;
   query_error = 0;
   event_act = 0;
@@ -547,6 +549,13 @@ Ndb_index_stat_glob::Ndb_index_stat_glob() {
 }
 
 static Ndb_index_stat_glob ndb_index_stat_glob;
+
+static void
+move_to_glob(Ndb_index_stat *st)
+{
+  glob_query_count += st->query_count;
+  st->query_count = 0;
+}
 
 /*
   Check if stats thread is running and has initialized required
@@ -607,7 +616,8 @@ void Ndb_index_stat_glob::set_status() {
   p += strlen(p);
   sprintf(p, "analyze:(all:%u,error:%u)", analyze_count, analyze_error);
   p += strlen(p);
-  sprintf(p, ",query:(all:%u,nostats:%u,error:%u)", query_count, query_no_stats,
+  uint loc_query_count = glob_query_count;
+  sprintf(p, ",query:(all:%u,nostats:%u,error:%u)", loc_query_count, query_no_stats,
           query_error);
   p += strlen(p);
   sprintf(p, ",event:(act:%u,skip:%u,miss:%u)", event_act, event_skip,
@@ -650,7 +660,7 @@ void Ndb_index_stat_glob::set_status() {
 void Ndb_index_stat_glob::zero_total() {
   analyze_count = 0;
   analyze_error = 0;
-  query_count = 0;
+  glob_query_count = 0;
   query_no_stats = 0;
   query_error = 0;
   event_act = 0;
@@ -674,6 +684,7 @@ Ndb_index_stat::Ndb_index_stat() {
 #ifndef NDEBUG
   memset(id, 0, sizeof(id));
 #endif
+  query_count = 0;
   access_time = 0;
   update_time = 0;
   load_time = 0;
@@ -694,7 +705,6 @@ Ndb_index_stat::Ndb_index_stat() {
   share = 0;
   ref_count = 0;
   to_delete = false;
-  abort_request = false;
 }
 
 /*
@@ -803,6 +813,7 @@ static void ndb_index_stat_list_move(Ndb_index_stat *st, int lt) {
 
 static void ndb_index_stat_force_update(Ndb_index_stat *st, bool onoff) {
   Ndb_index_stat_glob &glob = ndb_index_stat_glob;
+  move_to_glob(st);
   if (onoff) {
     if (!st->force_update) {
       glob.force_update++;
@@ -821,6 +832,7 @@ static void ndb_index_stat_force_update(Ndb_index_stat *st, bool onoff) {
 
 static void ndb_index_stat_no_stats(Ndb_index_stat *st, bool flag) {
   Ndb_index_stat_glob &glob = ndb_index_stat_glob;
+  move_to_glob(st);
   if (st->no_stats != flag) {
     if (flag) {
       glob.no_stats++;
@@ -843,8 +855,10 @@ static void ndb_index_stat_ref_count(Ndb_index_stat *st, bool flag) {
     assert(st->ref_count != 0);
     st->ref_count--;
   }
+  uint loc_ref_count = st->ref_count;
+  (void)loc_ref_count;
   DBUG_PRINT("index_stat",
-             ("st %s ref_count:%u->%u", st->id, old_count, st->ref_count));
+             ("st %s ref_count:%u->%u", st->id, old_count, loc_ref_count));
 }
 
 /* Find or add entry under the share */
@@ -923,8 +937,74 @@ static Ndb_index_stat *ndb_index_stat_get_share(NDB_SHARE *share,
                                                 bool force_update) {
   Ndb_index_stat_glob &glob = ndb_index_stat_glob;
 
+  /**
+   * The fast path when we arrive here is that we will find a share
+   * in the call to ndb_index_stat_find_share. This searches for a
+   * Ndb_index_stat in the NDB_SHARE object which is local to each
+   * handler object (one such object per MySQL connection.
+   *
+   * The only thing to worry about in this path is to ensure that
+   * the object isn't deleted before we have managed to increment
+   * ref_count on this object.
+   *
+   * The deletion of those objects happens in the function
+   * ndb_index_stat_proc_delete. However the deletion happens in
+   * steps, before the object can be released it must be removed
+   * from the list on the NDB_SHARE object. At this point the
+   * variable to_delete is set to true. Thus if an object is
+   * found in ndb_index_stat_find_share it cannot have the
+   * variable to_delete set to true. Thus it cannot be deleted
+   * while it is still in this list.
+   *
+   * Since we removed holding the stat_mutex while processing this
+   * list we have to protect this list. This protection comes from
+   * holding the share->mutex while both inserting, deleting and
+   * reading from this list.
+   *
+   * However as soon as we have released this mutex the deletion
+   * process can continue. However the Ndb_index_stat object will
+   * not be deleted if it has a ref_count which is higher than 0.
+   *
+   * Thus before we release the share->mutex we need to ensure that
+   * the ref_count is incremented. This ensures that the object is
+   * not deleted until we are done using it.
+   *
+   * If find_share doesn't find an object in its list of objects,
+   * then we create a new Ndb_index_stat, this is still happening
+   * using protection from the global stat_mutex since we will
+   * insert it into a global list of Ndb_index_stat objects.
+   *
+   * The share->mutex also protects changes to the to_delete
+   * variable on the Ndb_index_stat object.
+   *
+   * Thus if this function returns an object it will be in the
+   * NDB_SHARE and thus cannot be deleted. It can still be
+   * removed from the share object, but it cannot be deleted
+   * due to incrementing the ref_count. Thus it is safe to use
+   * until we are done with it.
+   *
+   * One problem to handle is counting the query_count, this is
+   * statistics on how often we queried the index statistics.
+   * To avoid making this variable a global bottleneck we increment
+   * it in the Ndb_index_stat object instead and regularly move
+   * the result of those increments to the global object. In
+   * addition we check it during the hot path to see if it reaches
+   * beyond 1000 when we perform a move to the global object.
+   * The global query count is an atomic variable to avoid the
+   * need to update it during holding the global index stats mutex.
+   *
+   * The ref_count is an atomic variable. Thus it is always incremented
+   * while holding the share->mutex, this mutex ensures that it stays
+   * in the NDB_SHARE list, the ref_count is only checked before
+   * deleting the object. Thus it is sufficient to use an atomic
+   * variable here. We will not execute the delete logic before the
+   * object has moved from the list, and moving from the NDB_SHARE
+   * list happens under protection of share->mutex. Thus it is
+   * sufficient to ensure that no updates of the ref_count is lost
+   * through making it an atomic variable. It isn't necessary to
+   * protect it with a mutex.
+   */
   mysql_mutex_lock(&share->mutex);
-  mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
   time_t now = ndb_index_stat_time();
   err_out = 0;
 
@@ -936,7 +1016,7 @@ static Ndb_index_stat *ndb_index_stat_get_share(NDB_SHARE *share,
       break;
     }
     st = ndb_index_stat_find_share(share, index, st_last);
-    if (st == 0) {
+    if (unlikely(st == 0)) {
       if (!allow_add) {
         err_out = NdbIndexStat::MyNotFound;
         break;
@@ -947,26 +1027,32 @@ static Ndb_index_stat *ndb_index_stat_get_share(NDB_SHARE *share,
         break;
       }
       ndb_index_stat_add_share(share, st, st_last);
+      move_to_glob(st);
+      mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
       ndb_index_stat_list_add(st, Ndb_index_stat::LT_New);
       glob.set_status();
-    } else if (unlikely(st->abort_request)) {
+      mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
+    } else if (unlikely(st->to_delete)) {
       err_out = NdbIndexStat::MyAbortReq;
       break;
     }
-    if (force_update) ndb_index_stat_force_update(st, true);
+    if (unlikely(force_update)) {
+      mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
+      ndb_index_stat_force_update(st, true);
+      mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
+    }
     snap.load_time = st->load_time;
     snap.sample_version = st->sample_version;
     snap.error_count = st->error_count;
     st->access_time = now;
   } while (0);
 
-  if (err_out == 0) {
+  if (likely(err_out == 0)) {
     assert(st != 0);
     ndb_index_stat_ref_count(st, true);
   } else
     st = 0;
 
-  mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
   mysql_mutex_unlock(&share->mutex);
   return st;
 }
@@ -988,6 +1074,7 @@ static void ndb_index_stat_free(Ndb_index_stat *st) {
   Ndb_index_stat *st_loop = share->index_stat_list;
   uint found = 0;
   while (st_loop != 0) {
+    move_to_glob(st_loop);
     if (st == st_loop) {
       // Unlink entry from NDB_SHARE and request it to be released
       DBUG_PRINT("index_stat", ("st %s stat free one", st->id));
@@ -996,7 +1083,6 @@ static void ndb_index_stat_free(Ndb_index_stat *st) {
       st->share = 0;
       assert(!st->to_delete);
       st->to_delete = true;
-      st->abort_request = true;
       found++;
     } else {
       if (st_head == 0)
@@ -1020,10 +1106,12 @@ void ndb_index_stat_free(NDB_SHARE *share, int index_id, int index_version) {
   DBUG_PRINT("index_stat",
              ("(index_id:%d index_version:%d", index_id, index_version));
   Ndb_index_stat_glob &glob = ndb_index_stat_glob;
+  mysql_mutex_lock(&share->mutex);
   mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
 
   Ndb_index_stat *st = share->index_stat_list;
   while (st != 0) {
+    move_to_glob(st);
     if (st->index_id == index_id && st->index_version == index_version) {
       ndb_index_stat_free(st);
       glob.drop_count++;
@@ -1037,15 +1125,18 @@ void ndb_index_stat_free(NDB_SHARE *share, int index_id, int index_version) {
 
   glob.set_status();
   mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
+  mysql_mutex_unlock(&share->mutex);
 }
 
 void ndb_index_stat_free(NDB_SHARE *share) {
   DBUG_TRACE;
   Ndb_index_stat_glob &glob = ndb_index_stat_glob;
+  mysql_mutex_lock(&share->mutex);
   mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
 
   Ndb_index_stat *st;
   while ((st = share->index_stat_list) != 0) {
+    move_to_glob(st);
     // Unlink entry from NDB_SHARE and request it to be released
     DBUG_PRINT("index_stat", ("st %s stat free all", st->id));
     share->index_stat_list = st->share_next;
@@ -1053,7 +1144,6 @@ void ndb_index_stat_free(NDB_SHARE *share) {
     st->share = 0;
     assert(!st->to_delete);
     st->to_delete = true;
-    st->abort_request = true;
     glob.drop_count++;
     assert(st->drop_bytes == 0);
     st->drop_bytes += st->query_bytes + st->clean_bytes;
@@ -1062,6 +1152,7 @@ void ndb_index_stat_free(NDB_SHARE *share) {
 
   glob.set_status();
   mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
+  mysql_mutex_unlock(&share->mutex);
 }
 
 /**
@@ -1198,6 +1289,7 @@ static void ndb_index_stat_proc_new(Ndb_index_stat_proc &pr) {
 
   Ndb_index_stat *st_loop = list.head;
   while (st_loop != 0) {
+    move_to_glob(st_loop);
     Ndb_index_stat *st = st_loop;
     st_loop = st_loop->list_next;
     DBUG_PRINT("index_stat", ("st %s proc %s", st->id, list.name));
@@ -1257,6 +1349,7 @@ static void ndb_index_stat_proc_update(Ndb_index_stat_proc &pr) {
     assert(pr.lt != Ndb_index_stat::LT_Update);
     ndb_index_stat_list_move(st, pr.lt);
     // db op so update status after each
+    move_to_glob(st);
     mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
     glob.set_status();
     mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
@@ -1325,6 +1418,7 @@ static void ndb_index_stat_proc_read(Ndb_index_stat_proc &pr) {
     assert(pr.lt != Ndb_index_stat::LT_Read);
     ndb_index_stat_list_move(st, pr.lt);
     // db op so update status after each
+    move_to_glob(st);
     mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
     glob.set_status();
     mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
@@ -1411,6 +1505,7 @@ static void ndb_index_stat_proc_idle(Ndb_index_stat_proc &pr) {
     // rotates list if entry remains LT_Idle
     ndb_index_stat_list_move(st, pr.lt);
     cnt++;
+    move_to_glob(st);
   }
   // full batch does not set pr.busy
   mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
@@ -1465,6 +1560,7 @@ static void ndb_index_stat_proc_check(Ndb_index_stat_proc &pr) {
     assert(pr.lt != Ndb_index_stat::LT_Check);
     ndb_index_stat_list_move(st, pr.lt);
     // db op so update status after each
+    move_to_glob(st);
     mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
     glob.set_status();
     mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
@@ -1622,11 +1718,12 @@ static void ndb_index_stat_proc_delete(Ndb_index_stat_proc &pr) {
     /*
       Do not wait for requests to terminate since this could
       risk stats thread hanging.  Instead try again next time.
-      Presumably clients will eventually notice abort_request.
+      Presumably clients will eventually notice to_delete.
     */
-    if (st->ref_count != 0) {
+    uint loc_ref_count = st->ref_count;
+    if (loc_ref_count != 0) {
       DBUG_PRINT("index_stat", ("st %s proc %s: ref_count:%u", st->id,
-                                list.name, st->ref_count));
+                                list.name, loc_ref_count));
       continue;
     }
 
@@ -1636,6 +1733,7 @@ static void ndb_index_stat_proc_delete(Ndb_index_stat_proc &pr) {
     assert(glob.cache_evict_bytes >= st->evict_bytes);
     glob.cache_evict_bytes -= st->evict_bytes;
     ndb_index_stat_list_remove(st);
+    move_to_glob(st);
     delete st->is;
     delete st;
     cnt++;
@@ -1697,6 +1795,7 @@ static void ndb_index_stat_proc_error(Ndb_index_stat_proc &pr) {
     // rotates list if entry remains LT_Error
     ndb_index_stat_list_move(st, pr.lt);
     cnt++;
+    move_to_glob(st);
   }
   // full batch does not set pr.busy
   mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
@@ -1772,6 +1871,7 @@ static void ndb_index_stat_proc_event(Ndb_index_stat_proc &pr) {
         glob.event_act++;
       } else
         glob.event_skip++;
+      move_to_glob(st);
     } else {
       DBUG_PRINT("index_stat", ("entry not found in this mysqld"));
       glob.event_miss++;
@@ -2307,17 +2407,20 @@ static int ndb_index_stat_wait_query(Ndb_index_stat *st,
                                      const Ndb_index_stat_snap &snap) {
   DBUG_TRACE;
 
+  bool hold_lock = false;
   Ndb_index_stat_glob &glob = ndb_index_stat_glob;
-  mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
   int err = 0;
   uint count = 0;
   struct timespec abstime;
-  glob.wait_stats++;
-  glob.query_count++;
   while (true) {
     int ret = 0;
     /* Query waits for any samples */
-    if (st->sample_version > 0) break;
+    if (likely(st->sample_version > 0)) break;
+    if (!hold_lock) {
+      mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
+      glob.wait_stats++;
+    }
+    hold_lock = true;
     if (st->no_stats) {
       /* Have detected no stats now or before */
       err = NdbIndexStat::NoIndexStats;
@@ -2340,7 +2443,7 @@ static int ndb_index_stat_wait_query(Ndb_index_stat *st,
       err = NdbIndexStat::NoIndexStats;
       break;
     }
-    if (st->abort_request) {
+    if (st->to_delete) {
       err = NdbIndexStat::MyAbortReq;
       break;
     }
@@ -2356,10 +2459,12 @@ static int ndb_index_stat_wait_query(Ndb_index_stat *st,
       break;
     }
   }
-  assert(glob.wait_stats != 0);
-  glob.wait_stats--;
-  mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
-  if (err != 0) {
+  if (unlikely(hold_lock)) {
+    assert(glob.wait_stats != 0);
+    glob.wait_stats--;
+    mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
+  }
+  if (unlikely(err != 0)) {
     DBUG_PRINT("index_stat", ("st %s wait_query error: %d", st->id, err));
     return err;
   }
@@ -2400,7 +2505,7 @@ static int ndb_index_stat_wait_analyze(Ndb_index_stat *st,
       err = NdbIndexStat::AlienUpdate;
       break;
     }
-    if (st->abort_request) {
+    if (st->to_delete) {
       err = NdbIndexStat::MyAbortReq;
       break;
     }
@@ -2466,10 +2571,14 @@ int ha_ndbcluster::ndb_index_stat_query(uint inx, const key_range *min_key,
   Ndb_index_stat_snap snap;
   Ndb_index_stat *st =
       ndb_index_stat_get_share(m_share, index, m_table, snap, err, true, false);
-  if (st == 0) return err;
+  if (unlikely(st == 0)) return err;
   /* Now holding reference to st */
 
   do {
+    st->query_count++;
+    if (unlikely(st->query_count > 1000)) {
+      move_to_glob(st);
+    }
     err = ndb_index_stat_wait_query(st, snap);
     if (err != 0) break;
     assert(st->sample_version != 0);
@@ -2498,9 +2607,7 @@ int ha_ndbcluster::ndb_index_stat_query(uint inx, const key_range *min_key,
   } while (0);
 
   /* Release reference to st */
-  mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
   ndb_index_stat_ref_count(st, false);
-  mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
   return err;
 }
 
@@ -2650,9 +2757,7 @@ int ha_ndbcluster::ndb_index_stat_analyze(uint *inx_list, uint inx_count) {
       DBUG_PRINT("index_stat", ("wait for update: %s", index->getName()));
       r.err = ndb_index_stat_wait_analyze(r.st, r.snap);
       /* Release reference to r.st */
-      mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
       ndb_index_stat_ref_count(r.st, false);
-      mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
     }
   }
 
