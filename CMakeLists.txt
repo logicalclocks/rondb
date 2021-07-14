@@ -255,7 +255,7 @@ IF(CMAKE_HOST_UNIX AND NOT FORCE_UNSUPPORTED_COMPILER
       IF(LINUX_RHEL6)
         SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-8")
       ELSEIF(LINUX_RHEL7)
-        SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-10")
+        SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-8")
       ELSEIF(LINUX_RHEL8)
         SET(ALTERNATIVE_PATHS "/opt/rh/gcc-toolset-10")
       ENDIF()
