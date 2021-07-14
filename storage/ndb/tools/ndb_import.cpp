@@ -133,9 +133,7 @@ my_long_options[] =
     &g_opt.m_use_write, &g_opt.m_use_write, 0,
     GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0 },
   { "resume", NDB_OPT_NOSHORT,
-    "If the job(s) are aborted due to e.g. too many rejects or"
-     " too many temporary NDB errors or user interrupt,"
-    " add this option to try to resume with rows not yet processed",
+    "resume is not supported, the error handling is too unsafe",
     &g_opt.m_resume, &g_opt.m_resume, 0,
     GET_BOOL, NO_ARG, false, 0, 0, 0, 0, 0 },
   { "monitor", NDB_OPT_NOSHORT,
@@ -453,6 +451,8 @@ checkarg(TableArg& arg, const char* str)
     arg.m_stopt_file = path + stem + ".sto";
     arg.m_stats_file = path + stem + ".stt";
   } while (0);
+  g_opt.m_resume = 0;
+  g_opt.m_continue = 0;
   return ret;
 }
 

@@ -944,10 +944,21 @@ NdbImportImpl::Job::collect_stats()
   uint64 total_rows;
   uint64 total_reject;
   rowmap.get_total(total_rows, total_reject);
-  require(total_rows >= m_old_rows);
-  require(total_reject >= m_old_reject);
-  m_new_rows = total_rows - m_old_rows;
-  m_new_reject = total_reject - m_old_reject;
+  uint64 old_rows = m_old_rows;
+  uint64 old_reject = m_old_reject;
+  if (total_rows < old_rows ||
+      total_reject < old_reject)
+  {
+    log_debug(1, "collect_stats" <<
+               " m_old_rows = " << old_rows <<
+               " total_rows = " << total_rows <<
+               " m_old_reject = " << old_reject <<
+               " total_reject = " << total_reject << flush);
+  }
+  require(total_rows >= old_rows);
+  require(total_reject >= old_reject);
+  m_new_rows = total_rows - old_rows;
+  m_new_reject = total_reject - old_reject;
   m_stat_rows->add(m_new_rows);
   m_stat_reject->add(m_new_reject);
   // times
