@@ -736,7 +736,7 @@ private:
   void linkScan(NodeHandle& node, ScanOpPtr scanPtr, Uint32 scanInstance);
   void unlinkScan(NodeHandle& node, ScanOpPtr scanPtr, Uint32 scanInstance);
   bool islinkScan(NodeHandle& node, ScanOpPtr scanPtr, Uint32 scanInstance);
-  void relinkScan(ScanOp&, Frag&, bool need_lock = true, Uint32 line = 0);
+  void relinkScan(ScanOp&, Uint32 scanInstance, Frag&, bool need_lock, Uint32 line);
 
   /*
    * DbtuxTree.cpp
@@ -1746,7 +1746,7 @@ Dbtux::relinkScan(Uint32 line)
   {
     ScanOp& scan = *c_ctx.scanPtr.p;
     Frag& frag = *c_ctx.fragPtr.p;
-    relinkScan(scan, frag, true, line);
+    relinkScan(scan, m_my_scan_instance, frag, true, line);
   }
 }
 #undef JAM_FILE_ID
