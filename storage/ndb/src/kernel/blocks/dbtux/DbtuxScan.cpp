@@ -270,7 +270,11 @@ Dbtux::execACC_CHECK_SCAN(Signal* signal)
     {
       jamEntryDebug();
       release_c_free_scan_lock();
-      relinkScan(scan, frag, true, __LINE__);
+      relinkScan(scan,
+                 frag,
+                 m_my_scan_instance,
+                 true,
+                 __LINE__);
       /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
       return;
     }
@@ -680,7 +684,11 @@ Dbtux::execNEXT_SCANREQ(Signal* signal)
     {
       jam();
       scan.m_scanPos.m_loc = NullTupLoc;
-      relinkScan(scan, frag, true, __LINE__);
+      relinkScan(scan,
+                 frag,
+                 m_my_scan_instance,
+                 true,
+                 __LINE__);
       ndbassert(scan.m_scanLinkedPos == NullTupLoc);
     }
     if (unlikely(scan.m_lockwait))
@@ -750,7 +758,11 @@ Dbtux::continue_scan(Signal *signal,
      */
     release_c_free_scan_lock();
     jamLine(Uint16(scanPtr.i));
-    relinkScan(*scanPtr.p, frag, true, __LINE__);
+    relinkScan(*scanPtr.p,
+               frag,
+               m_my_scan_instance,
+               true,
+               __LINE__);
     NextScanConf* const conf = (NextScanConf*)signal->getDataPtrSend();
     conf->scanPtr = scan.m_userPtr;
     conf->accOperationPtr = RNIL;       // no tuple returned
@@ -879,7 +891,11 @@ Dbtux::continue_scan(Signal *signal,
           jamEntryDebug();
           /* Normal path */
           release_c_free_scan_lock();
-          relinkScan(scan, frag, true, __LINE__);
+          relinkScan(scan,
+                     frag,
+                     m_my_scan_instance,
+                     true,
+                     __LINE__);
           /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
           return; // stop for a while
         }
@@ -912,7 +928,11 @@ Dbtux::continue_scan(Signal *signal,
           jamEntryDebug();
           /* Normal path */
           release_c_free_scan_lock();
-          relinkScan(scan, frag, true, __LINE__);
+          relinkScan(scan,
+                     frag,
+                     m_my_scan_instance,
+                     true,
+                     __LINE__);
           /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
           return; // stop for a while
         }
@@ -937,7 +957,11 @@ Dbtux::continue_scan(Signal *signal,
           jamEntryDebug();
           /* Normal path */
           release_c_free_scan_lock();
-          relinkScan(scan, frag, true, __LINE__);
+          relinkScan(scan,
+                     frag,
+                     m_my_scan_instance,
+                     true,
+                     __LINE__);
           /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
           return; // stop for a while
         }
@@ -967,7 +991,11 @@ Dbtux::continue_scan(Signal *signal,
     c_lqh->execCHECK_LCP_STOP(signal);
     jamEntryDebug();
     ndbrequire(signal->theData[0] == CheckLcpStop::ZTAKE_A_BREAK);
-    relinkScan(scan, frag, true, __LINE__);
+    relinkScan(scan,
+               frag,
+               m_my_scan_instance,
+               true,
+               __LINE__);
     /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
     return;
   }
@@ -1528,6 +1556,7 @@ found_none:
 void
 Dbtux::relinkScan(ScanOp& scan,
                   Frag& frag,
+                  Uint32 scanInstance,
                   bool need_lock,
                   Uint32 line)
 {
@@ -1588,13 +1617,13 @@ Dbtux::relinkScan(ScanOp& scan,
   if (scan.m_scanLinkedPos != NullTupLoc)
   {
     jamDebug();
-    unlinkScan(old_node, c_ctx.scanPtr, m_my_scan_instance);
+    unlinkScan(old_node, c_ctx.scanPtr, scanInstance);
   }
   if (scan.m_scanPos.m_loc != NullTupLoc)
   {
     jamDebug();
     scan.m_is_linked_scan = true;
-    linkScan(new_node, c_ctx.scanPtr, m_my_scan_instance);
+    linkScan(new_node, c_ctx.scanPtr, scanInstance);
   }
   else
   {

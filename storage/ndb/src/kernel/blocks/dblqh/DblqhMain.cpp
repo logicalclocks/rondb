@@ -15966,21 +15966,29 @@ void Dblqh::closeScanRequestLab(Signal* signal,
       /* -------------------------------------------------------------------
        *  WE ARE CURRENTLY STARTING UP THE SCAN. SET COMPLETED STATUS 
        *  AND WAIT FOR COMPLETION OF STARTUP.
+       *
+       * We should never arrive here, there is no real-time break in this
+       * state.
        * ------------------------------------------------------------------- */
       scanPtr->scanCompletedStatus = ZTRUE;
+      ndbabort();
       break;
     case ScanRecord::WAIT_CLOSE_SCAN:
       jam();
       scanPtr->scanCompletedStatus = ZTRUE;
-      break;
       /* -------------------------------------------------------------------
        *       CLOSE IS ALREADY ONGOING. WE NEED NOT DO ANYTHING.
+       *
+       * It is even important to not call relinkScan below since we already
+       * set scanAccPtr = RNIL which means that we haven't setup the scan
+       * context and we should avoid calling relinkScan without scan context.
        * ------------------------------------------------------------------- */
+      return;
     case ScanRecord::WAIT_SCAN_NEXTREQ:
       jam();
       /* -------------------------------------------------------------------
        * WE ARE WAITING FOR A SCAN_NEXTREQ FROM SCAN COORDINATOR(TC)
-       * WICH HAVE CRASHED. CLOSE THE SCAN
+       * WHICH HAVE CRASHED. CLOSE THE SCAN
        * ------------------------------------------------------------------- */
       scanPtr->scanCompletedStatus = ZTRUE;
 
@@ -17930,6 +17938,16 @@ void Dblqh::closeScanLab(Signal* signal, TcConnectionrec* regTcPtr)
   signal->theData[0] = sig0;
   ndbrequire(is_scan_ok(scanPtr, fragstatus));
   scanPtr->scanAccPtr = RNIL;
+  /**
+   * It is too early here to set scanAccPtr to RNIL, we could enter a
+   * real-time break before the scan record is released. During this
+   * real-time break we might receive a SCAN_NEXTREQ call with the
+   * close scan flag set. If this happens we will not prepare the
+   * scan context but still call relinkScan in closeScanRequestLab.
+   * This will cause havoc in all sorts of ways.
+   * 
+   * Fixed by not calling relinkScan from closeScanRequestLab.
+   */
   block->EXECUTE_DIRECT_FN(f, signal);
 }//Dblqh::closeScanLab()
 
@@ -20221,11 +20239,11 @@ void Dblqh::closeCopyLab(Signal* signal,
   scanPtr->scanState = ScanRecord::WAIT_CLOSE_COPY;
   scanPtr->scan_lastSeen = __LINE__;
   scanPtr->scan_check_lcp_stop = 0;
+  scanPtr->scanAccPtr = RNIL;
   signal->theData[0] = sig0;
   signal->theData[1] = RNIL;
   signal->theData[2] = NextScanReq::ZSCAN_CLOSE;
   ndbrequire(fragstatus == Fragrecord::FSACTIVE);
-  scanPtr->scanAccPtr = RNIL;
   block->EXECUTE_DIRECT_FN(f, signal);
 }//Dblqh::closeCopyLab()
 
