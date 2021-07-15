@@ -755,7 +755,9 @@ Dbtux::moveScanList(NodeHandle& node, unsigned pos)
       ScanOp& scan = *scanPtr.p;
       scan.m_scanLinkedPos = scan.m_scanPos.m_loc;
       scanNext(scanPtr, true, frag);
-      relinkScan(scan, m_my_scan_instance, frag, false, __LINE__);
+      /* Relink scan in new pos, passing in its instance (can be a QTUX scan) */
+      ndbrequire(m_my_scan_instance == scanInstance);
+      relinkScan(scan, scanInstance, frag, false, __LINE__);
       ndbassert(scanPtr.p->m_scanLinkedPos == NullTupLoc);
       ndbrequire(! (scanPos.m_loc == node.m_loc && scanPos.m_pos == pos));
     }
