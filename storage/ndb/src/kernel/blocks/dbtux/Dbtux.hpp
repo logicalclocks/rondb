@@ -1012,6 +1012,7 @@ private:
   Uint32 get_my_scan_instance();
   Uint32 get_block_from_scan_instance(Uint32);
   Uint32 get_instance_from_scan_instance(Uint32);
+  bool checkScanInstance(Uint32 scanInstance);
 public:
   static Uint64 getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,

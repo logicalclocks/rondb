@@ -1525,6 +1525,52 @@ found_none:
   return ScanOp::Last;
 }
 
+bool
+Dbtux::checkScanInstance(Uint32 scanInstance)
+{
+  // General scanInstance handling rules :
+  //                  Instances handled :
+  //  - TUX block   : TUX or (QTUX iff Q threads)
+  //  - QTUX thread : (My QTUX id only iff Q threads)
+  const bool i_am_tux = ! m_is_query_block;
+  const bool scanInstance_is_tux =
+    (get_block_from_scan_instance(scanInstance) == DBTUX);
+
+  /* Basic sanity */
+  ndbrequire((i_am_tux && scanInstance_is_tux) ||
+             (globalData.ndbMtQueryThreads > 0));
+
+  if (i_am_tux)
+  {
+    /* TUX */
+    if (scanInstance_is_tux)
+    {
+      if (scanInstance != m_my_scan_instance)
+      {
+        /* TUX should not deal with some other TUX's scanInstances */
+        ndbrequire(false);
+      }
+      else
+      {
+        /* ok - TUX instance dealing with own scanInstance */
+      }
+    }
+    else
+    {
+      /* TUX instance dealing with QTUX scan - ok */
+    }
+  }
+  else
+  {
+    /**
+     * QTUX instance should only ever deal with its own scanInstances,
+     * not other QTUX's, or TUX's.
+     */
+    ndbrequire(scanInstance == m_my_scan_instance);
+  }
+  return true;
+}
+
 void
 Dbtux::relinkScan(ScanOp& scan,
                   Uint32 scanInstance,
@@ -1532,6 +1578,7 @@ Dbtux::relinkScan(ScanOp& scan,
                   bool need_lock,
                   Uint32 line)
 {
+  ndbrequire(checkScanInstance(scanInstance));
   /**
    * This is called at the end of a real-time break. We do
    * two actions here. At first we move the linked scan record
