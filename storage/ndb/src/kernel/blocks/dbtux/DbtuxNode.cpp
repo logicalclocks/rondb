@@ -744,6 +744,14 @@ Dbtux::moveScanList(NodeHandle& node, unsigned pos)
        * that relates to the originating instance, thus we have to provide
        * the instance to the prepare_move_scan_ctx to ensure we get the
        * correct range when we move the scan reference.
+       *
+       * It is ok to set up the move scan context here. This is used for
+       * scanNext calls, the moveScanList is called as part of updating
+       * the index which requires an exclusive access to the fragment,
+       * or when building the index which means that no one will access
+       * the index for scanning and thus we have no concurrency to worry
+       * about. In this context we will not call scanNext ourselves and
+       * thus no locks are required to be used in relinkScan.
        */
       Uint32 blockNo = get_block_from_scan_instance(scanInstance);
       Uint32 instanceNo = get_instance_from_scan_instance(scanInstance);
@@ -753,7 +761,11 @@ Dbtux::moveScanList(NodeHandle& node, unsigned pos)
       ScanOp& scan = *scanPtr.p;
       scan.m_scanLinkedPos = scan.m_scanPos.m_loc;
       scanNext(scanPtr, true, frag);
-      relinkScan(scan, frag, false, __LINE__);
+      relinkScan(scan,
+                 frag,
+                 scanInstance,
+                 false,
+                 __LINE__);
       ndbassert(scanPtr.p->m_scanLinkedPos == NullTupLoc);
       ndbrequire(! (scanPos.m_loc == node.m_loc && scanPos.m_pos == pos));
     }
@@ -792,6 +804,7 @@ Dbtux::unlinkScan(NodeHandle& node,
   node.getNodeScan(currPtr.i, loc_scanInstance);
   ScanOpPtr prevPtr;
   prevPtr.i = RNIL;
+  prevPtr.p = nullptr;
   while (true)
   {
     jamDebug();
