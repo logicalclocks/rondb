@@ -818,7 +818,7 @@ Dblqh::~Dblqh()
     if (!isNdbMtLqh() || instance() == 1)
     {
       if ((globalData.ndbMtRecoverThreads +
-           globalData.ndbMtQueryThreads) > 0)
+           globalData.ndbMtQueryWorkers) > 0)
       {
         NdbMutex_Destroy(m_restore_mutex);
       }

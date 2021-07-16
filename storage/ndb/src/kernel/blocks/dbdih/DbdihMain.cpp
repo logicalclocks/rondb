@@ -1657,7 +1657,7 @@ void Dbdih::execREAD_CONFIG_REQ(Signal* signal)
          globalData.ndbMtLqhWorkers > MAX_FRAG_PER_LQH)
     {
       progError(__LINE__, NDBD_EXIT_INVALID_CONFIG,
-        "PartitionsPerNode * NoOfReplicas divided by Number of LDM threads"
+        "PartitionsPerNode * NoOfReplicas divided by Number of LDM workers"
         " must not be larger than 16, increase number of LDMs in"
         " configuration");
     }
@@ -10009,7 +10009,7 @@ void Dbdih::execNODE_FAILREP(Signal* signal)
   sendSignal(DBSPJ_REF, GSN_NODE_FAILREP, signal,
              NodeFailRep::SignalLength, JBB, lsptr, 1);
 
-  if ((globalData.ndbMtQueryThreads +
+  if ((globalData.ndbMtQueryWorkers +
        globalData.ndbMtRecoverThreads) > 0)
   {
     sendSignal(DBQLQH_REF, GSN_NODE_FAILREP, signal,
@@ -10413,7 +10413,7 @@ void Dbdih::failedNodeSynchHandling(Signal* signal,
   failedNodePtr.p->dbtcFailCompleted = ZFALSE;
   failedNodePtr.p->dbdihFailCompleted = ZFALSE;
   failedNodePtr.p->dblqhFailCompleted = ZFALSE;
-  if ((globalData.ndbMtQueryThreads +
+  if ((globalData.ndbMtQueryWorkers +
        globalData.ndbMtRecoverThreads) > 0)
   {
     jam();

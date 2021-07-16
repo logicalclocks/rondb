@@ -93,6 +93,7 @@ struct GlobalData {
   Uint32     ndbMtTcWorkers;
   Uint32     ndbMtTcThreads;
   Uint32     ndbMtQueryThreads;
+  Uint32     ndbMtQueryWorkers;
   Uint32     ndbMtRecoverThreads;
   Uint32     ndbMtSendThreads;
   Uint32     ndbMtReceiveThreads;
@@ -136,6 +137,7 @@ struct GlobalData {
     ndbMtTcWorkers = 0;
     ndbMtTcThreads = 0;
     ndbMtQueryThreads = 0;
+    ndbMtQueryWorkers = 0;
     ndbMtRecoverThreads = 0;
     ndbMtSendThreads = 0;
     ndbMtReceiveThreads = 0;
@@ -187,7 +189,10 @@ struct GlobalData {
   Uint32 * getWatchDogPtr();
 
   Uint32 getBlockThreads() const {
-    return ndbMtLqhThreads + ndbMtTcThreads + ndbMtReceiveThreads;
+    return ndbMtLqhThreads +
+           ndbMtQueryThreads +
+           ndbMtTcThreads +
+           ndbMtReceiveThreads;
   }
 
   Uint32 get_hb_count(Uint32 nodeId) const {

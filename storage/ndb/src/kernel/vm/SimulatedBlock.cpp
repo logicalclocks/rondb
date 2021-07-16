@@ -306,10 +306,6 @@ Uint32 SimulatedBlock::getInstanceNoCanFail(Uint32 tableId, Uint32 fragId)
   if (likely(instanceKey != RNIL))
   {
     Uint32 lqhWorkers = globalData.ndbMtLqhWorkers;
-    if (lqhWorkers == 0)
-    {
-      return 0;
-    }
     return (1 + ((instanceKey - 1) % lqhWorkers));
   }
   else
@@ -361,15 +357,8 @@ SimulatedBlock::getInstanceFromKey(Uint32 instanceKey)
 {
   Uint32 lqhWorkers = globalData.ndbMtLqhWorkers;
   Uint32 instanceNo;
-  if (lqhWorkers == 0)
-  {
-    instanceNo = 0;
-  }
-  else
-  {
-    assert(instanceKey != 0);
-    instanceNo = 1 + (instanceKey - 1) % lqhWorkers;
-  }
+  assert(instanceKey != 0);
+  instanceNo = 1 + (instanceKey - 1) % lqhWorkers;
   return instanceNo;
 }
 
@@ -614,6 +603,17 @@ releaseSections(SPC_ARG Uint32 secCount, SegmentedSectionPtr ptr[3]){
   char msg[40];
   sprintf(msg, "secCount=%d", secCount);
   ErrorReporter::handleAssert(msg, __FILE__, __LINE__);
+}
+
+Uint32
+SimulatedBlock::map_api_node_to_recv_instance(NodeId node)
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_map_api_node_to_recv_instance(node);
+#else
+   ndbabort();
+   return 0;
+#endif
 }
 
 void
@@ -5339,7 +5339,7 @@ SimulatedBlock::setup_wakeup()
 {
 #ifdef NDBD_MULTITHREADED
 #else
-  globalTransporterRegistry.setup_wakeup_socket();
+  ndbabort(); // ndbd no longer supported
 #endif
 }
 

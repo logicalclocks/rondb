@@ -829,8 +829,8 @@ THRConfig::compute_automatic_thread_config(
     Uint32 recv_threads;
   } table[] = {
     { 0, 0, 0, 0, 0, 0, 0, 1 }, // 1 CPU
-    { 1, 1, 0, 0, 0, 0, 0, 1 }, // 2-3 CPUs
-    { 2, 1, 0, 1, 1, 0, 0, 1 }, // 4-5 CPUs
+    { 1, 0, 0, 0, 0, 0, 0, 2 }, // 2-3 CPUs
+    { 2, 1, 0, 2, 0, 0, 0, 1 }, // 4-5 CPUs
     { 3, 1, 0, 2, 2, 0, 0, 1 }, // 6-7 CPUs
     { 4, 1, 0, 2, 2, 2, 0, 1 }, // 8-9 CPUs
     { 5, 1, 0, 3, 3, 2, 0, 1 }, // 10-11 CPUs
@@ -1907,10 +1907,13 @@ THRConfig::handle_spec(char *str,
     if (values[IX_NOSEND].found &&
         !(type == T_LDM ||
           type == T_TC ||
+          type == T_RECV ||
+          type == T_QUERY ||
           type == T_MAIN ||
           type == T_REP))
     {
-      m_err_msg.assfmt("Can only set nosend on main, ldm, tc and rep threads");
+      m_err_msg.assfmt("Can only set nosend on main, ldm, tc, recv and rep"
+                       " threads");
       return -1;
     }
     if (values[IX_THREAD_PRIO].found && type == T_IXBLD)
@@ -2135,6 +2138,10 @@ THRConfigApplier::find_thread(const unsigned short instancelist[], unsigned cnt)
   {
     return &m_threads[T_MAIN][instanceNo];
   }
+  else if ((instanceNo = findBlock(TRPMAN, instancelist, cnt)) >= 0)
+  {
+    return &m_threads[T_RECV][instanceNo - 1]; // remove proxy
+  }
   else if ((instanceNo = findBlock(DBLQH, instancelist, cnt)) >= 0)
   {
     return &m_threads[T_LDM][instanceNo - 1]; // remove proxy...
@@ -2151,10 +2158,6 @@ THRConfigApplier::find_thread(const unsigned short instancelist[], unsigned cnt)
       instanceNo -= num_query_threads;
       return &m_threads[T_RECOVER][instanceNo - 1]; // remove proxy...
     }
-  }
-  else if ((instanceNo = findBlock(TRPMAN, instancelist, cnt)) >= 0)
-  {
-    return &m_threads[T_RECV][instanceNo - 1]; // remove proxy
   }
   else if ((instanceNo = findBlock(DBTC, instancelist, cnt)) >= 0)
   {
