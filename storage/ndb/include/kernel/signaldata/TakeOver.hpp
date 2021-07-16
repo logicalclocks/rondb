@@ -1,5 +1,6 @@
 /* 
    Copyright (c) 2007, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -138,7 +139,8 @@ struct UpdateToConf
 
 struct UpdateFragStateReq 
 {
-  STATIC_CONST( SignalLength = 9 );
+  STATIC_CONST( OldSignalLength = 9 );
+  STATIC_CONST( SignalLength = 10 );
 
   enum ReplicaType {
     STORED = 7,
@@ -155,6 +157,7 @@ struct UpdateFragStateReq
   Uint32 startGci;
   Uint32 replicaType;
   Uint32 failedNodeId;
+  Uint32 primaryNode;
 };
 
 struct UpdateFragStateConf 
