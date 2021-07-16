@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -839,12 +840,12 @@ next_tuple:
        * Start from first operation.  This is only to make things more
        * clear.  It is not required by ordered index implementation.
        */
-      ndbrequire(c_operation_pool.getValidPtr(pageOperPtr));
+      ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(pageOperPtr));
       while (pageOperPtr.p->prevActiveOp != RNIL)
       {
         jam();
         pageOperPtr.i = pageOperPtr.p->prevActiveOp;
-        ndbrequire(c_operation_pool.getValidPtr(pageOperPtr));
+        ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(pageOperPtr));
       }
       /*
        * Do not use req->errorCode as global control.
@@ -885,7 +886,7 @@ next_tuple:
       while (pageOperPtr.i != RNIL && ok)
       {
         jam();
-        ndbrequire(c_operation_pool.getValidPtr(pageOperPtr));
+        ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(pageOperPtr));
         req->errorCode = RNIL;
         req->tupVersion = pageOperPtr.p->op_struct.bit_field.tupVersion;
         EXECUTE_DIRECT(buildPtr.p->m_buildRef, GSN_TUX_MAINT_REQ,

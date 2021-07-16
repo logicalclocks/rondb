@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -343,7 +344,7 @@ Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
   {
     jam();
     jamLineDebug(Uint16(prevOpPtr.i));
-    ndbrequire(c_operation_pool.getValidPtr(prevOpPtr));
+    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOpPtr));
     req_struct->prevOpPtr.p = prevOpPtr.p;
 
     regOperPtr.p->op_struct.bit_field.m_wait_log_buffer= 
@@ -582,7 +583,7 @@ Dbtup::load_diskpage(Signal* signal,
   Ptr<Operationrec> operPtr;
 
   operPtr.i = opRec;
-  ndbrequire(c_operation_pool.getValidPtr(operPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
 
   Operationrec *  regOperPtr= operPtr.p;
   Fragrecord * regFragPtr= prepare_fragptr.p;
@@ -685,7 +686,7 @@ Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
 {
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
-  ndbrequire(c_operation_pool.getValidPtr(operPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
   c_lqh->acckeyconf_load_diskpage_callback(signal, 
 					   operPtr.p->userpointer, page_id);
 }
@@ -698,7 +699,7 @@ Dbtup::load_diskpage_scan(Signal* signal,
 {
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
-  ndbrequire(c_operation_pool.getValidPtr(operPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
 
   Operationrec *  regOperPtr= operPtr.p;
   Fragrecord * regFragPtr= prepare_fragptr.p;
@@ -760,7 +761,7 @@ Dbtup::disk_page_load_scan_callback(Signal* signal,
 {
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
-  ndbrequire(c_operation_pool.getValidPtr(operPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
   c_lqh->next_scanconf_load_diskpage_callback(signal, 
 					      operPtr.p->userpointer, page_id);
 }
@@ -5280,7 +5281,7 @@ Dbtup::validate_page(Tablerec* regTabPtr, Var_page* p)
 	  {
             OperationrecPtr operPtr;
             operPtr.i = ptr->m_operation_ptr_i;
-	    ndbrequire(c_operation_pool.getValidPtr(operPtr));
+	    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
 	  }
 	} 
 	else if(!(idx & Var_page::FREE))
@@ -5625,7 +5626,7 @@ Dbtup::nr_read_pk(Uint32 fragPtrI,
     {
       OperationrecPtr opPtr;
       opPtr.i = req_struct.m_tuple_ptr->m_operation_ptr_i;
-      ndbrequire(c_operation_pool.getValidPtr(opPtr));
+      ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(opPtr));
       ndbassert(!opPtr.p->m_copy_tuple_location.isNull());
       req_struct.m_tuple_ptr=
         get_copy_tuple(&opPtr.p->m_copy_tuple_location);

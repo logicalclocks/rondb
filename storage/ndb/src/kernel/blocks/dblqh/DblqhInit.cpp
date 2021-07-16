@@ -42,7 +42,6 @@ Uint64 Dblqh::getTransactionMemoryNeed(
 {
   Uint32 lqh_scan_recs = 0;
   Uint32 lqh_op_recs = 0;
-  if (use_reserved)
   {
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_LDM_RESERVED_OPERATIONS,
@@ -50,13 +49,7 @@ Uint64 Dblqh::getTransactionMemoryNeed(
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_LQH_RESERVED_SCAN_RECORDS,
                                        &lqh_scan_recs));
-  }
-  else
-  {
-    require(!ndb_mgm_get_int_parameter(mgm_cfg, CFG_LQH_SCAN, &lqh_scan_recs));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_LQH_TC_CONNECT,
-                                       &lqh_op_recs));
+    lqh_op_recs += (globalData.ndbMtQueryWorkers * 1000);
   }
   Uint64 scan_byte_count = 0;
   scan_byte_count += ScanRecord_pool::getMemoryNeed(lqh_scan_recs);
@@ -79,6 +72,22 @@ void Dblqh::initData()
 #ifdef ERROR_INSERT
   c_master_node_id = RNIL;
 #endif
+
+#ifdef CONNECT_DEBUG
+  ctcNumUseLocal = 0;
+  ctcNumUseShared = 0;
+  ctcNumUseTM = 0;
+  ctcLastNumUseLocal = 0;
+  ctcLastNumUseShared = 0;
+  ctcLastNumUseTM = 0;
+#endif
+#if defined VM_TRACE || defined ERROR_INSERT
+  for (Uint32 i = 0; i < NUM_TRANSACTION_HASH_MUTEXES; i++)
+  {
+    trans_hash_mutex_counter[i] = 0;
+  }
+#endif
+  m_curr_lqh = this;
 
   c_num_fragments_created_since_restart = 0;
   c_fragments_in_lcp = 0;
@@ -165,10 +174,15 @@ void Dblqh::initData()
   m_startup_report_frequency = 0;
 
   c_active_add_frag_ptr_i = RNIL;
-  for (Uint32 i = 0; i < 4096; i++) {
+  for (Uint32 i = 0; i < TRANSID_HASH_SIZE; i++) {
     ctransidHash[i] = RNIL;
   }//for
 
+  for (Uint32 i = 0; i < NUM_TRANSACTION_HASH_MUTEXES; i++)
+  {
+    NdbMutex_Init(&transaction_hash_mutex[i]);
+  }
+  NdbMutex_Init(&alloc_operation_mutex);
   c_last_force_lcp_time = 0;
   c_free_mb_force_lcp_limit = 16;
   c_free_mb_tail_problem_limit = 4;
@@ -376,8 +390,8 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
                                                 sizeof(PageRefRecord),
                                                 cpageRefFileSize);
 
-    c_scanTakeOverHash.setSize(128);
-
+    c_scanTakeOverHash.setSize(2048);
+    NdbMutex_Init(&c_scanTakeOverMutex);
     tablerec = (Tablerec*)allocRecord("Tablerec",
                                       sizeof(Tablerec),
                                       ctabrecFileSize);
@@ -409,13 +423,36 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
   ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg,
               CFG_LDM_RESERVED_OPERATIONS, &reserveTcConnRecs));
 
-
   if (m_is_query_block)
   {
-    reserveTcConnRecs = 200;
+    reserveTcConnRecs = 1000;
+    ctcConnectReserved = reserveTcConnRecs;
+    ctcConnectReservedShared = ctcConnectReserved;
+    ctcNumFree = reserveTcConnRecs;
+    ctcNumFreeShared = 0;
   }
-  ctcConnectReserved = reserveTcConnRecs;
-  ctcNumFree = reserveTcConnRecs;
+  else
+  {
+    /**
+     * 40% of the operation records are reserved for the LDM thread.
+     * The remainder is shared with Query threads for locked reads.
+     */
+    Uint32 reserveTcConnRecsShared = reserveTcConnRecs;
+    reserveTcConnRecs /= 10;
+    if (globalData.ndbMtQueryWorkers > 0)
+    {
+      reserveTcConnRecs *= 4;
+    }
+    else
+    {
+      reserveTcConnRecs = reserveTcConnRecsShared;
+    }
+    ctcConnectReserved = reserveTcConnRecs;
+    ctcConnectReservedShared = reserveTcConnRecsShared;
+    ctcNumFree = reserveTcConnRecs;
+    ctcNumFreeShared = reserveTcConnRecsShared - reserveTcConnRecs;
+  }
+
   tcConnect_pool.init(
     TcConnectionrec::TYPE_ID,
     pc,
@@ -432,7 +469,7 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
                             &reserveScanRecs));
   if (m_is_query_block)
   {
-    reserveScanRecs = 1;
+    reserveScanRecs = 500;
   }
   c_scanRecordPool.init(
     ScanRecord::TYPE_ID,
@@ -444,8 +481,7 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
     refresh_watch_dog();
   }
 
-  Uint32 reserveCommitAckMarkers = 1024;
-
+  Uint32 reserveCommitAckMarkers = 4096;
   if (m_is_query_block)
   {
     reserveCommitAckMarkers = 1;
@@ -810,6 +846,12 @@ Dblqh::Dblqh(Block_context& ctx,
 
 Dblqh::~Dblqh()
 {
+  for (Uint32 i = 0; i < NUM_TRANSACTION_HASH_MUTEXES; i++)
+  {
+    NdbMutex_Deinit(&transaction_hash_mutex[i]);
+  }
+  NdbMutex_Deinit(&alloc_operation_mutex);
+  NdbMutex_Deinit(&c_scanTakeOverMutex);
   deinit_restart_synch();
   if (!m_is_query_block)
   {

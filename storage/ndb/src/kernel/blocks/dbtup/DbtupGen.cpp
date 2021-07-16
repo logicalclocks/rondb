@@ -64,6 +64,7 @@ extern EventLogger * g_eventLogger;
 
 void Dbtup::initData() 
 {
+  m_curr_tup = this;
   cownNodeId = getOwnNodeId();
   TablerecPtr tablePtr;
   (void)tablePtr; // hide unused warning
@@ -324,7 +325,6 @@ Uint64 Dbtup::getTransactionMemoryNeed(
   Uint32 tup_sp_recs = 0;
   Uint32 tup_scan_lock_recs = 0;
 
-  if (use_reserved)
   {
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_TUP_RESERVED_SCAN_RECORDS,
@@ -334,23 +334,6 @@ Uint64 Dbtup::getTransactionMemoryNeed(
                                        &tup_op_recs));
     tup_sp_recs = tup_scan_recs;
     tup_scan_lock_recs = 1000;
-  }
-  else
-  {
-    Uint32 scanBatch = 0;
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TUX_SCAN_OP,
-                                       &tup_scan_recs));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_LDM_BATCH_SIZE,
-                                       &scanBatch));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TUP_OP_RECS,
-                                       &tup_op_recs));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TUP_STORED_PROC,
-                                       &tup_sp_recs));
-    tup_scan_lock_recs = tup_scan_recs * scanBatch;
   }
   Uint64 scan_op_byte_count = 0;
   scan_op_byte_count += ScanOp_pool::getMemoryNeed(tup_scan_recs + 1);
@@ -1200,11 +1183,11 @@ bool Dbtup::seize_op_rec(Uint32 userPtr,
                          Uint32 &i_val,
                          Dbtup::Operationrec **opPtrP)
 {
+  /* Cannot use jam here, called from other thread */
   OperationrecPtr opPtr;
   (void)ref;
   if (unlikely(!c_operation_pool.seize(opPtr)))
   {
-    jam();
     return false;
   }
   opPtr.p->userpointer = userPtr;

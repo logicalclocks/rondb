@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -43,7 +44,7 @@ void Dbtup::execSTORED_PROCREQ(Signal* signal)
   TablerecPtr regTabPtr;
   jamEntryDebug();
   regOperPtr.i = signal->theData[0];
-  ndbrequire(c_operation_pool.getValidPtr(regOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(regOperPtr));
   regTabPtr.i = signal->theData[1];
   ptrCheckGuard(regTabPtr, cnoOfTablerec, tablerec);
 

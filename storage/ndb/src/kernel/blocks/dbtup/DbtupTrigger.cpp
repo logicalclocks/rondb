@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -625,7 +626,7 @@ Dbtup::execFIRE_TRIG_REQ(Signal* signal)
 
   jamEntry();
 
-  ndbrequire(c_operation_pool.getValidPtr(regOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(regOperPtr));
 
   regFragPtr.i = regOperPtr.p->fragmentPtr;
   Uint32 no_of_fragrec = cnoOfFragrec;
@@ -653,7 +654,7 @@ Dbtup::execFIRE_TRIG_REQ(Signal* signal)
 
   OperationrecPtr lastOperPtr;
   lastOperPtr.i = tuple_ptr->m_operation_ptr_i;
-  ndbrequire(c_operation_pool.getValidPtr(lastOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(lastOperPtr));
   ndbassert(regOperPtr.p->op_struct.bit_field.m_reorg ==
             lastOperPtr.p->op_struct.bit_field.m_reorg);
 
@@ -877,7 +878,8 @@ void Dbtup::checkDeferredTriggers(KeyReqStruct *req_struct,
   case ZUPDATE:
   case ZINSERT:
     jam();
-    req_struct->m_tuple_ptr =get_copy_tuple(&regOperPtr->m_copy_tuple_location);
+    req_struct->m_tuple_ptr =
+      get_copy_tuple(&regOperPtr->m_copy_tuple_location);
     break;
   }
 

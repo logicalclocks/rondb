@@ -4369,6 +4369,7 @@ private:
   void release_scan_lock(ScanLockPtr);
 
 public:
+  Dbtup *m_curr_tup;
   static Uint64 getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
     const ndb_mgm_configuration_iterator * mgm_cfg,
@@ -4449,7 +4450,7 @@ inline void
 Dbtup::prepare_op_pointer(Uint32 opPtrI,
                           Dbtup::Operationrec *opPtrP)
 {
-  jamDebug();
+  /* Cannot use jam here, called from other thread */
   Uint32 *op_ptr = (Uint32*)opPtrP;
   NDB_PREFETCH_WRITE(op_ptr);
   NDB_PREFETCH_WRITE(op_ptr + 16);
@@ -4462,6 +4463,7 @@ inline void
 Dbtup::release_op_rec(Uint32 opPtrI,
                       Dbtup::Operationrec *opPtrP)
 {
+  /* Cannot use jam here, called from other thread */
   OperationrecPtr opPtr;
   opPtr.i = opPtrI;
   opPtr.p = opPtrP;
@@ -4807,6 +4809,7 @@ inline
 Dbtup::Operationrec*
 Dbtup::getOperationPtrP(Uint32 opPtrI)
 {
+  /* Cannot use jam here, called from other thread */
   OperationrecPtr opPtr;
   opPtr.i = opPtrI;
   ndbrequire(c_operation_pool.getValidPtr(opPtr));

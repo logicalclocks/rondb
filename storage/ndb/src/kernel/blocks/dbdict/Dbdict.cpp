@@ -17512,13 +17512,7 @@ Dbdict::copyData_prepare(Signal* signal, SchemaOpPtr op_ptr)
     }
   }
 
-  /* Request Tup-ordered copy when we have disk columns for efficiency */
-  if (tabHasDiskCols)
-  {
-    jam();
-    req->requestInfo |= CopyDataReq::TupOrder;
-  }
-
+  req->requestInfo |= CopyDataReq::TupOrder;
   /**
    * Fully replicated uses COPY_DATA to copy data to copy fragment, never
    * copy to same fragment.
@@ -17618,13 +17612,7 @@ Dbdict::copyData_complete(Signal* signal, SchemaOpPtr op_ptr)
       }
     }
   }
-
-  /* Request Tup-ordered delete when we have disk columns for efficiency */
-  if (tabHasDiskCols)
-  {
-    jam();
-    req->requestInfo |= CopyDataReq::TupOrder;
-  }
+  req->requestInfo |= CopyDataReq::TupOrder;
 
   LinearSectionPtr ls_ptr[3];
   ls_ptr[0].sz = cnt;

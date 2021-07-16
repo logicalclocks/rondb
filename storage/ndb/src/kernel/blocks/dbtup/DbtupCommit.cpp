@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -186,13 +187,13 @@ void Dbtup::execTUP_WRITELOG_REQ(Signal* signal)
   loopOpPtr.i= signal->theData[0];
   Uint32 gci_hi = signal->theData[1];
   Uint32 gci_lo = signal->theData[2];
-  ndbrequire(c_operation_pool.getValidPtr(loopOpPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(loopOpPtr));
   ndbassert(!m_is_query_block);
   while (loopOpPtr.p->prevActiveOp != RNIL)
   {
     jamDebug();
     loopOpPtr.i= loopOpPtr.p->prevActiveOp;
-    ndbrequire(c_operation_pool.getValidPtr(loopOpPtr));
+    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(loopOpPtr));
   }
   do
   {
@@ -210,7 +211,7 @@ void Dbtup::execTUP_WRITELOG_REQ(Signal* signal)
     c_lqh->execLQH_WRITELOG_REQ(signal);
     jamEntryDebug();
     loopOpPtr.i= loopOpPtr.p->nextActiveOp;
-    ndbrequire(c_operation_pool.getValidPtr(loopOpPtr));
+    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(loopOpPtr));
   } while (true);
 }
 
@@ -219,6 +220,7 @@ void Dbtup::execTUP_WRITELOG_REQ(Signal* signal)
 /* ---------------------------------------------------------------- */
 void Dbtup::initOpConnection(Operationrec* regOperPtr)
 {
+  /* Cannot use jam here, called from other thread */
   set_tuple_state(regOperPtr, TUPLE_ALREADY_ABORTED);
   set_trans_state(regOperPtr, TRANS_IDLE);
   regOperPtr->m_commit_state = Operationrec::CommitNotStarted;
@@ -1134,7 +1136,7 @@ Dbtup::disk_page_commit_callback(Signal* signal,
   jamEntry();
 
   regOperPtr.i = opPtrI;
-  ndbrequire(c_operation_pool.getValidPtr(regOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(regOperPtr));
   c_lqh->get_op_info(regOperPtr.p->userpointer, &hash_value, &gci_hi, &gci_lo,
                      &transId1, &transId2);
 
@@ -1175,7 +1177,7 @@ Dbtup::disk_page_log_buffer_callback(Signal* signal,
   jamEntry();
   
   regOperPtr.i = opPtrI;
-  ndbrequire(c_operation_pool.getValidPtr(regOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(regOperPtr));
   c_lqh->get_op_info(regOperPtr.p->userpointer,
                      &hash_value,
                      &gci_hi,
@@ -1302,7 +1304,7 @@ Dbtup::findFirstOp(OperationrecPtr & firstPtr)
   while(firstPtr.p->prevActiveOp != RNIL)
   {
     firstPtr.i = firstPtr.p->prevActiveOp;
-    ndbrequire(c_operation_pool.getValidPtr(firstPtr));
+    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(firstPtr));
   }
 }
 
@@ -1438,7 +1440,7 @@ Dbtup::exec_prepare_tup_commit(Uint32 regOperPtrI)
 {
   OperationrecPtr regOperPtr;
   regOperPtr.i = regOperPtrI;
-  ndbrequire(c_operation_pool.getUncheckedPtrRW(regOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getUncheckedPtrRW(regOperPtr));
   Operationrec::CommitState commit_state = regOperPtr.p->m_commit_state;
   prepare_oper_ptr = regOperPtr;
   ndbrequire(Magic::check_ptr(regOperPtr.p));
@@ -1507,7 +1509,7 @@ Dbtup::set_commit_started(Uint32 leaderOperPtrI)
   loopOperPtr.i = leaderOperPtrI;
   do
   {
-    ndbrequire(c_operation_pool.getValidPtr(loopOperPtr));
+    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(loopOperPtr));
     if (loopOperPtr.p->m_commit_state == Operationrec::CommitNotStarted)
     {
       loopOperPtr.p->m_commit_state = Operationrec::CommitStartedNotReceived;
@@ -1524,7 +1526,7 @@ Dbtup::set_commit_performed(OperationrecPtr firstOperPtr,
   goto first;
   do
   {
-    ndbrequire(c_operation_pool.getValidPtr(loopOperPtr));
+    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(loopOperPtr));
     first:
     switch (loopOperPtr.p->m_commit_state)
     {
@@ -1570,7 +1572,7 @@ Dbtup::continue_report_commit_performed(Signal *signal, Uint32 firstOperPtrI)
   FragrecordPtr regFragPtr;
   OperationrecPtr firstOperPtr;
   firstOperPtr.i = firstOperPtrI;
-  ndbrequire(c_operation_pool.getValidPtr(firstOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(firstOperPtr));
   c_lqh->setup_key_pointers(firstOperPtr.p->userpointer, false);
   regFragPtr.i = firstOperPtr.p->fragmentPtr;
   ptrCheckGuard(regFragPtr, cnoOfFragrec, fragrecord);
@@ -1610,7 +1612,7 @@ Dbtup::report_commit_performed(Signal *signal,
   do
   {
     loopOperPtr.i = nextOp;
-    ndbrequire(c_operation_pool.getValidPtr(loopOperPtr));
+    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(loopOperPtr));
     first:
     nextOp = loopOperPtr.p->nextActiveOp;
     loopOperPtr.p->nextActiveOp = RNIL;
@@ -1704,7 +1706,7 @@ Dbtup::execTUP_COMMITREQ(Signal *signal)
   OperationrecPtr leaderOperPtr;
   TupCommitReq * const tupCommitReq= (TupCommitReq *)signal->getDataPtr();
   leaderOperPtr.i = tupCommitReq->opPtr;
-  ndbrequire(c_operation_pool.getValidPtr(leaderOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(leaderOperPtr));
   prepare_oper_ptr = leaderOperPtr;
 
   Uint32 hash_value;
@@ -1821,7 +1823,7 @@ Dbtup::exec_tup_commit(Signal *signal)
   prepare_tabptr = regTabPtr;
 
   leaderOperPtr.i = tuple_ptr->m_operation_ptr_i;
-  ndbrequire(c_operation_pool.getValidPtr(leaderOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(leaderOperPtr));
   if (leaderOperPtr.p->op_struct.bit_field.m_load_diskpage_on_commit ||
       leaderOperPtr.p->op_struct.bit_field.m_wait_log_buffer)
   {
@@ -1887,7 +1889,7 @@ Dbtup::get_execute_commit_operation(OperationrecPtr & executeOperPtr)
      * and this would normally be the operation that started the commit.
      * But there could be more than one as well.
      */
-    ndbrequire(c_operation_pool.getValidPtr(executeOperPtr));
+    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(executeOperPtr));
   }
   ndbrequire(executeOperPtr.p->m_commit_state ==
              Operationrec::CommitStartedReceived);
@@ -1995,7 +1997,7 @@ Dbtup::execute_real_commit(Signal *signal,
       goto first;
       while(loopPtr.i != RNIL)
       {
-        ndbrequire(c_operation_pool.getValidPtr(loopPtr));
+        ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(loopPtr));
     first:
         executeTuxCommitTriggers(signal,
                                  loopPtr.p,
@@ -2095,7 +2097,7 @@ Dbtup::execute_real_commit(Signal *signal,
      * the first record and move first to be the second operation record.
      */
     firstOperPtr.i = executeOperPtr.p->nextActiveOp;
-    ndbrequire(c_operation_pool.getValidPtr(firstOperPtr));
+    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(firstOperPtr));
   }
   else
   {
@@ -2111,7 +2113,7 @@ Dbtup::execute_real_commit(Signal *signal,
      */
     OperationrecPtr prevOperPtr;
     prevOperPtr.i = executeOperPtr.p->prevActiveOp;
-    ndbrequire(c_operation_pool.getValidPtr(prevOperPtr));
+    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOperPtr));
     prevOperPtr.p->nextActiveOp = executeOperPtr.p->nextActiveOp;
   }
   finalize_commit(executeOperPtr.p, regFragPtrP);

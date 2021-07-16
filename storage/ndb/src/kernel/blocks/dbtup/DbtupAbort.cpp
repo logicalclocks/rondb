@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -184,7 +185,7 @@ void Dbtup::do_tup_abortreq(Signal* signal, Uint32 flags)
   regOperPtr.i = signal->theData[0];
   jamDebug();
   jamLineDebug(Uint16(regOperPtr.i));
-  ndbrequire(c_operation_pool.getValidPtr(regOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(regOperPtr));
   TransState trans_state= get_trans_state(regOperPtr.p);
   ndbrequire((trans_state == TRANS_STARTED) ||
              (trans_state == TRANS_TOO_MUCH_AI) ||
@@ -236,7 +237,7 @@ void Dbtup::do_tup_abortreq(Signal* signal, Uint32 flags)
       while (loopOpPtr.i != RNIL) 
       {
         jam();
-        ndbrequire(c_operation_pool.getValidPtr(loopOpPtr));
+        ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(loopOpPtr));
         if (get_tuple_state(loopOpPtr.p) != TUPLE_ALREADY_ABORTED)
         {
           jam();
@@ -264,7 +265,7 @@ void Dbtup::do_tup_abortreq(Signal* signal, Uint32 flags)
       while (loopOpPtr.i != RNIL) 
       {
         jam();
-        ndbrequire(c_operation_pool.getValidPtr(loopOpPtr));
+        ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(loopOpPtr));
         if (get_tuple_state(loopOpPtr.p) != TUPLE_ALREADY_ABORTED)
         {
           jam();
@@ -559,7 +560,7 @@ void Dbtup::removeActiveOpList(Operationrec*  const regOperPtr,
     if (nextOperPtr.i != RNIL)
     {
       jam();
-      ndbrequire(c_operation_pool.getValidPtr(nextOperPtr));
+      ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(nextOperPtr));
       nextOperPtr.p->prevActiveOp = prevOperPtr.i;
     }
     else
@@ -583,7 +584,7 @@ void Dbtup::removeActiveOpList(Operationrec*  const regOperPtr,
   if (prevOperPtr.i != RNIL)
   {
     jam();
-    ndbrequire(c_operation_pool.getValidPtr(prevOperPtr));
+    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOperPtr));
     prevOperPtr.p->nextActiveOp = nextOperPtr.i;
     if (nextOperPtr.i == RNIL)
     {

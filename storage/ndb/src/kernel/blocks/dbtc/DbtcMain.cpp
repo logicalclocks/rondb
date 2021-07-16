@@ -296,6 +296,14 @@ void Dbtc::execCONTINUEB(Signal* signal)
   UintR Tdata5 = signal->theData[6];
 #endif
   switch (tcase) {
+#ifdef DEBUG_QUERY_THREAD_USAGE
+  case TcContinueB::ZQUERY_THREAD_USAGE:
+  {
+    jam();
+    query_thread_usage(signal);
+    return;
+  }
+#endif
   case TcContinueB::ZSCAN_FOR_READ_BACKUP:
     jam();
     scan_for_read_backup(signal, Tdata0, Tdata1, Tdata2);
@@ -1231,6 +1239,11 @@ void Dbtc::execNDB_STTOR(Signal* signal)
     const Uint32 len = c_counters.build_continueB(signal);
     signal->theData[0] = TcContinueB::ZTRANS_EVENT_REP;
     sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 10, len);
+
+#ifdef DEBUG_QUERY_THREAD_USAGE
+    signal->theData[0] = TcContinueB::ZQUERY_THREAD_USAGE;
+    sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 1000, 1);
+#endif
 
 #ifdef DO_TRANSIENT_POOL_STAT
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
@@ -3603,15 +3616,17 @@ void Dbtc::execTCKEYREQ(Signal* signal)
     regCachePtr->m_read_committed_base = 0;
     regCachePtr->m_noWait = 0;
   }
+  bool util_flag = ZFALSE;
   if (unlikely(refToMain(sendersBlockRef) == DBUTIL))
   {
     jam();
-    Tspecial_op_flags |= TcConnectRecord::SOF_UTIL_FLAG;
+    util_flag = ZTRUE;
   }
   regCachePtr->keylen = TkeyLength;
   regCachePtr->lenAiInTckeyreq = titcLenAiInTckeyreq;
   regCachePtr->currReclenAi = titcLenAiInTckeyreq;
 
+  regTcPtr->m_util_flag = util_flag;
   regTcPtr->apiConnect = TapiConnectptrIndex;
   regTcPtr->clientData = TsenderData;
   regTcPtr->commitAckMarker = RNIL;
@@ -4783,8 +4798,7 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
     handle.m_ptr[ LqhKeyReq::KeyInfoSectionNum ]= keyInfoSection;
     handle.m_cnt= 1;
 
-    if (unlikely(regTcPtr->m_special_op_flags &
-                 TcConnectRecord::SOF_UTIL_FLAG))
+    if (unlikely(regTcPtr->m_util_flag))
     {
       LqhKeyReq::setUtilFlag(lqhKeyReq->requestInfo, 1);
     }
@@ -4801,18 +4815,103 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
     if (ndbd_frag_lqhkeyreq(version))
     {
       jamDebug();
+      /**
+       * Here we will select whether we should use a query thread or not.
+       * Also if we select a query thread we need to decide which one.
+       * In some cases we can pick any query thread, this is the case for
+       * all Committed Read operations, both the ones using LQHKEYREQ and
+       * the ones using SCAN_FRAGREQ.
+       *
+       * It doesn't apply to the transactions that use various forms of
+       * batching of TCKEYREQ and TCINDXREQ. There are no specific rules
+       * required to handle SCAN_FRAGREQ even if we are scanning using
+       * locks. Actually scans using locks can most likely even use
+       * less locks on fragment level since each row goes through a
+       * lock procedure.
+       *
+       * If we receive a TCKEYREQ with a single operation, thus the
+       * operation is the first one in its batch and it sets the
+       * TF_EXEC_FLAG in the transaction. In this case we can pick any
+       * Query thread to execute the LQHKEYREQ messages.
+       *
+       * A single TCINDXREQ leads to 2 LQHKEYREQ messages, but they are on
+       * different tables and different rows. Also they are executed one at
+       * a time, so we cannot mix up the order by allowing different threads
+       * to execute those LQHKEYREQ messages.
+       *
+       * A single LQHKEYREQ can trigger numerous new LQHKEYREQ operations.
+       * We have again that these operations are executed after completing
+       * the operation in DBLQH. Thus they are serialised to the original
+       * operation.
+       *
+       * The question is then, is the parallel trigger operations fired from
+       * one operation going to lead to trouble? The answer should be no,
+       * if that is a problem, we already have it since the triggers are
+       * executed in the order they are defined and not in any other
+       * specific order.
+       *
+       * Thus trigger executions of LQHKEYREQ can be executed from any
+       * Query thread. One manner to discover that a trigger is executed
+       * is by checking the variable immediateTriggerId, if this isn't
+       * equal to RNIL, the operation is an immediate fired trigger.
+       * This can discover Unique index writes and Foreign Key checks.
+       * Also Reorg operations are discovered in this manner and so is
+       * Fully replicated triggers. Thus actually all triggers can be
+       * handled in this manner.
+       *
+       * There is one exception, this is the Deferred Triggers. These triggers
+       * are executed at Commit time and are used to verify that Unique
+       * constraints and Foreign Key constraints are valid after finalising
+       * the query.
+       *
+       * Deferred Triggers are executed using the signal FIRE_TRIG_REQ. This
+       * is currently always sent to the LDM thread, but also this one should
+       * be possible to offload to query threads eventually.
+       *
+       * Some trigger operations are scan operations and these need no special
+       * treatment since they are always allowed to pass to any query thread
+       * if the operation is supported in a query thread.
+       *
+       * So the problem comes from batch operations, actually the only problem
+       * we have with batched operations are operations that act on the same
+       * primary key. As an example we have operations on the meta data table
+       * ndb_schema where we first Read the row with a lock, after this we
+       * Write the row. The Read is supposed to read the before value and not
+       * the after value.
+       *
+       * From the beginning this was specifically said to give undefined result.
+       * However in particular our metadata handling and also our solution to
+       * handle external replication relies on that the order of writes are
+       * sustained.
+       *
+       * Handling batched operations in an efficient manner is important, in
+       * particular for various load operations like Importing data, Restoring
+       * data and so forth. Thus we need some model to ensure that this is
+       * handled properly.
+       *
+       * Currently writes cannot be executed by Query threads, so this will
+       * require a solution when this is implemented.
+       */
       Uint32 blockNo = refToMain(TBRef);
+      Uint32 operation_type = LqhKeyReq::getOperation(lqhKeyReq->requestInfo);
+      bool support_locked_reads = ndbd_support_locked_reads_in_query_threads(version);
+      bool read_flag = (operation_type == ZREAD || operation_type == ZREAD_EX);
       if (qt_likely(blockNo == V_QUERY))
       {
         Uint32 nodeId = refToNode(TBRef);
-        if (LqhKeyReq::getDirtyFlag(lqhKeyReq->requestInfo) &&
+        if (read_flag &&
             LqhKeyReq::getNoDiskFlag(lqhKeyReq->requestInfo) &&
-            (LqhKeyReq::getOperation(lqhKeyReq->requestInfo) == ZREAD) &&
-            (regApiPtr->m_exec_write_count == 0))
+            ((!LqhKeyReq::getScanTakeOverFlag(lqhKeyReq->attrLen) ||
+              support_locked_reads)) &&
+            (!LqhKeyReq::getUtilFlag(lqhKeyReq->requestInfo)) &&
+            (LqhKeyReq::getDirtyFlag(lqhKeyReq->requestInfo) ||
+             ((tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG)) &&
+              (regApiPtr->m_exec_write_count == 0) &&
+              support_locked_reads)))
         {
           /**
            * We allow the use of Query threads when
-           * 1) The operation is a dirty read operation
+           * 1) The operation is a read operation
            * 2) The operation is not reading from disk
            * 3) The transaction hasn't performed any writes yet
            *    in the current execution batch. The m_exec_write_count
@@ -4821,6 +4920,20 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
            *    work if the write and the dirty read can be scheduled
            *    onto different threads.
            */
+#ifdef DEBUG_QUERY_THREAD_USAGE
+          if (LqhKeyReq::getDirtyFlag(lqhKeyReq->requestInfo))
+          {
+            c_qt_used_dirty_flag++;
+          }
+          else if (LqhKeyReq::getScanTakeOverFlag(lqhKeyReq->attrLen))
+          {
+            c_qt_used_locked_read_takeover++;
+          }
+          else
+          {
+            c_qt_used_locked_read++;
+          }
+#endif
           if (nodeId == getOwnNodeId())
           {
             if (globalData.ndbMtQueryThreads > 0)
@@ -4858,6 +4971,33 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
         }
         else
         {
+#ifdef DEBUG_QUERY_THREAD_USAGE
+          if (!read_flag)
+          {
+            c_no_qt_no_read_flag++;
+          }
+          else if (!LqhKeyReq::getNoDiskFlag(lqhKeyReq->requestInfo))
+          {
+            c_no_qt_disk_flag++;
+          }
+          else if (LqhKeyReq::getUtilFlag(lqhKeyReq->requestInfo))
+          {
+            c_no_qt_util_flag++;
+          }
+          else if (!tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG))
+          {
+            c_no_qt_no_exec_flag++;
+          }
+          else if (regApiPtr->m_exec_write_count > 0)
+          {
+            c_no_qt_exec_write_count++;
+          }
+          else
+          {
+            ndbrequire(!ndbd_support_locked_reads_in_query_threads(version));
+            c_no_qt_wrong_version++;
+          }
+#endif
           TBRef = numberToRef(DBLQH, refToInstance(TBRef), nodeId);
         }
       }
@@ -6074,16 +6214,16 @@ void Dbtc::execSEND_PACKED(Signal* signal)
   UintR TpackedListIndex = cpackedListIndex;
   jamEntryDebug();
   for (i = 0; i < TpackedListIndex; i++) {
-    jam();
     Thostptr.i = cpackedList[i];
     ptrAss(Thostptr, localHostRecord);
     arrGuard(Thostptr.i - 1, MAX_NODES - 1);
     for (Uint32 j = 0; j < NDB_ARRAY_SIZE(Thostptr.p->lqh_pack); j++)
     {
       struct PackedWordsContainer * container = &Thostptr.p->lqh_pack[j];
-      jamDebug();
       if (container->noOfPackedWords > 0) {
         jamDebug();
+        jamLineDebug(Uint16(i));
+        jamLineDebug(Uint16(j));
         sendPackedSignal(signal, container);
       }
     }
@@ -20447,7 +20587,8 @@ bool Dbtc::executeTrigger(Signal* signal,
   definedTriggerPtr.i = firedTriggerData->triggerId;
   c_theDefinedTriggers.getPool().getPtrIgnoreAlloc(definedTriggerPtr);
 
-  // If triggerIds don't match, the trigger has been dropped -> skip trigger exec.
+  // If triggerIds don't match, the trigger has been dropped
+  // -> skip trigger exec.
   if (likely(definedTriggerPtr.p->triggerId == firedTriggerData->triggerId))
   {
     TcDefinedTriggerData* const definedTriggerData = definedTriggerPtr.p;
@@ -23191,3 +23332,52 @@ Dbtc::execUPD_QUERY_DIST_ORD(Signal *signal)
   }
 #endif
 }
+
+#ifdef DEBUG_QUERY_THREAD_USAGE
+void
+Dbtc::query_thread_usage(Signal *signal)
+{
+  Uint64 used_dirty_flag = c_qt_used_dirty_flag - c_last_qt_used_dirty_flag;
+  Uint64 used_locked_read = c_qt_used_locked_read - c_last_qt_used_locked_read;
+  Uint64 used_locked_read_take_over = c_qt_used_locked_read_take_over -
+                                      c_last_qt_used_locked_read_take_over;
+
+  Uint64 no_read_flag = c_no_qt_no_read_flag - c_last_no_qt_no_read_flag;
+  Uint64 disk_flag = c_no_qt_disk_flag - c_last_no_qt_disk_flag;
+  Uint64 util_flag = c_no_qt_util_flag - c_last_no_qt_util_flag;
+  Uint64 no_exec_flag = c_no_qt_no_exec_flag - c_last_no_qt_no_exec_flag;
+  Uint64 exec_write_count = c_no_qt_exec_write_count - c_last_no_qt_exec_write_count;
+  Uint64 wrong_version = c_no_qt_wrong_version - c_last_no_qt_wrong_version;
+
+  g_eventLogger->info("(%u): QT used_dirty_flag: %llu, QT used_locked_read: %llu"
+                      ", QT used_locked_read_take_over: %llu\n"
+                      " noQT: no_read_flag: %llu, noQT: disk_flag: %llu\n"
+                      " noQT: util_flag: %llu, noQT: no_exec_flag: %llu\n"
+                      " noQT: exec_write_count: %llu, noQT: wrong_version: %llu",
+                      instance(),
+                      used_dirty_flag,
+                      used_locked_read,
+                      used_locked_read_take_over,
+                      no_read_flag,
+                      disk_flag,
+                      util_flag,
+                      no_exec_flag,
+                      exec_write_count,
+                      wrong_version);
+
+  c_last_qt_used_dirty_flag = c_qt_used_dirty_flag;
+  c_last_qt_used_locked_read = c_qt_used_locked_read;
+  c_last_qt_used_locked_read_take_over = c_qt_used_locked_read_take_over;
+
+  c_last_no_qt_no_read_flag = c_no_qt_no_read_flag;
+  c_last_no_qt_disk_flag = c_no_qt_disk_flag;
+  c_last_no_qt_util_flag = c_no_qt_util_flag;
+  c_last_no_qt_no_exec_flag = c_no_qt_no_exec_flag;
+  c_last_no_qt_exec_write_count = c_no_qt_exec_write_count;
+  c_last_no_qt_wrong_version = c_no_qt_wrong_version;
+
+  signal->theData[0] = TcContinueB::ZQUERY_THREAD_USAGE;
+  sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 1000, 1);
+}
+
+#endif

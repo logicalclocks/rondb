@@ -841,7 +841,7 @@ Configuration::get_and_set_transaction_memory(
   {
     Uint32 num_threads = get_num_threads();
     transaction_memory = Uint64(300) * MBYTE64;
-    transaction_memory += (Uint64(num_threads) * Uint64(45) * MBYTE64);
+    transaction_memory += (Uint64(num_threads) * Uint64(70) * MBYTE64);
   }
   globalData.theTransactionMemory = transaction_memory;
   return transaction_memory;
@@ -1004,7 +1004,7 @@ Configuration::get_and_set_shared_global_memory(
   {
     Uint32 num_threads = get_num_threads();
     shared_global_memory = Uint64(700) * MBYTE64;
-    shared_global_memory += (Uint64(num_threads) * Uint64(75) * MBYTE64);
+    shared_global_memory += (Uint64(num_threads) * Uint64(50) * MBYTE64);
   }
   globalData.theSharedGlobalMemory = shared_global_memory;
   return shared_global_memory;
@@ -2087,11 +2087,30 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   }
   if (reservedLocalScanRecords == 0)
   {
-    reservedLocalScanRecords = noOfLocalScanRecords / 4;
+    /**
+     * We allocate 4096 scan records per LDM instance. This affects operation
+     * records in LDMs and TC threads. This consumes about 2.5 MByte of storage
+     * in LDM threads and 
+     */
+#if (defined(VM_TRACE)) || (defined(ERROR_INSERT))
+    reservedLocalScanRecords = 16;
+#else
+    reservedLocalScanRecords = 4096 * ldmInstances;
+#endif
   }
   if (reservedOperations == 0)
   {
-    reservedOperations = noOfOperations / 4;
+    /**
+     * We reserve 50 MByte per LDM instance for use as operation
+     * records. The performance drops significantly in using the
+     * non-reserved operation records, so we ensure that we use a
+     * large portion of the memory for reserved operation records.
+     */
+#if (defined(VM_TRACE)) || (defined(ERROR_INSERT))
+    reservedOperations = 32;
+#else
+    reservedOperations = 100000 * ldmInstances;
+#endif
   }
   if (reservedTransactions == 0)
   {
@@ -2161,23 +2180,21 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
      * non-dedicated things for local usage.
      */
 #define EXTRA_LOCAL_OPERATIONS 150
-    Uint32 local_operations = 
-	    (noOfLocalOperations + EXTRA_LOCAL_OPERATIONS) + 
-	    (noOfLocalScanRecords * noBatchSize) +
-	    NODE_RECOVERY_SCAN_OP_RECORDS;
-    local_operations = MIN(local_operations, UINT28_MAX);
-    cfg.put(CFG_ACC_OP_RECS, local_operations);
+    Uint32 local_acc_operations = 
+#if (defined(VM_TRACE)) || (defined(ERROR_INSERT))
+                               16;
+#else
+                               4096;
+#endif
+    local_acc_operations = MIN(local_acc_operations, UINT28_MAX);
+    cfg.put(CFG_ACC_OP_RECS, local_acc_operations);
 
 #ifdef VM_TRACE
     ndbout_c("reservedOperations: %u, reservedLocalScanRecords: %u,"
-             " NODE_RECOVERY_SCAN_OP_RECORDS: %u, "
-             "noOfLocalScanRecords: %u, "
-             "noOfLocalOperations: %u",
+             " NODE_RECOVERY_SCAN_OP_RECORDS: %u, ",
              reservedOperations,
              reservedLocalScanRecords,
-             NODE_RECOVERY_SCAN_OP_RECORDS,
-             noOfLocalScanRecords,
-             noOfLocalOperations);
+             NODE_RECOVERY_SCAN_OP_RECORDS);
 #endif
     Uint32 ldm_reserved_operations =
             (reservedOperations / ldmInstances) + EXTRA_LOCAL_OPERATIONS +
@@ -2188,7 +2205,6 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
 
     cfg.put(CFG_ACC_TABLE, noOfAccTables);
     
-    cfg.put(CFG_ACC_SCAN, noOfLocalScanRecords);
     cfg.put(CFG_ACC_RESERVED_SCAN_RECORDS,
             reservedLocalScanRecords / ldmInstances);
     cfg.put(CFG_TUP_RESERVED_SCAN_RECORDS,
@@ -2221,14 +2237,6 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
     
     cfg.put(CFG_LQH_TABLE, 
 	    noOfMetaTables);
-
-    Uint32 local_operations =
-	    noOfLocalOperations + EXTRA_LOCAL_OPERATIONS;
-    local_operations = MIN(local_operations, UINT28_MAX);
-    cfg.put(CFG_LQH_TC_CONNECT, local_operations);
-    
-    cfg.put(CFG_LQH_SCAN, 
-	    noOfLocalScanRecords);
   }
   
   {
@@ -2331,16 +2339,8 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
      */
     cfg.put(CFG_TUP_FRAG, numFragmentsPerNodePerLdm);
     
-    Uint32 local_operations =
-	    noOfLocalOperations + EXTRA_LOCAL_OPERATIONS;
-    local_operations = MIN(local_operations, UINT28_MAX);
-    cfg.put(CFG_TUP_OP_RECS, local_operations);
-
     cfg.put(CFG_TUP_TABLE, 
 	    noOfMetaTables);
-    
-    cfg.put(CFG_TUP_STORED_PROC,
-	    noOfLocalScanRecords);
   }
 
   {
@@ -2354,8 +2354,6 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
     
     cfg.put(CFG_TUX_ATTRIBUTE, 
 	    noOfMetaTables * 4);
-
-    cfg.put(CFG_TUX_SCAN_OP, noOfLocalScanRecords); 
   }
 
   require(cfg.commit(true));

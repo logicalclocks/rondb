@@ -291,6 +291,7 @@ class FsReadWriteReq;
 #define ZCONTINUE_WRITE_LOG 38
 #define ZSTART_SEND_EXEC_CONF 39
 #define ZPRINT_MUTEX_STATS 40
+#define ZPRINT_CONNECT_DEBUG 41
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -582,6 +583,7 @@ public:
       scanTcWaiting(0),
       scanState(SCAN_FREE),
       scanType(ST_IDLE),
+      m_takeOverRefCount(0),
       m_reserved(0),
       m_send_early_hbrep(0)
     {
@@ -605,7 +607,8 @@ public:
       IN_QUEUE = 10,
       COPY_FRAG_HALTED = 11,
       WAIT_START_QUEUED_SCAN = 12,
-      QUIT_START_QUEUE_SCAN = 13
+      QUIT_START_QUEUE_SCAN = 13,
+      WAIT_SCAN_NEXTREQ_ending = 14
     };
     enum ScanType {
       ST_IDLE = 0,
@@ -675,6 +678,7 @@ public:
     ScanState scanState;
     ScanType scanType;
     Uint32 scan_startLine;
+    std::atomic<unsigned int> m_takeOverRefCount;
     NodeId scanNodeId;
     Uint16 scanReleaseCounter;
     Uint16 scanNumber;
@@ -717,6 +721,7 @@ public:
   ScanRecord_pool c_scanRecordPool;
   ScanRecord_list m_reserved_scans; // LCP + NR
   ScanRecord_hash c_scanTakeOverHash;
+  NdbMutex c_scanTakeOverMutex;
 
   struct LogPartRecord;
   struct LogPageRecord;
@@ -2867,7 +2872,22 @@ public:
   alignas(NDB_CL) TcConnectionrecPtr m_tc_connect_ptr;
   UintR cfirstfreeTcConrec;
   Uint32 ctcNumFree;
-
+#define CONNECT_DEBUG 1
+#ifdef CONNECT_DEBUG
+  Uint64 ctcNumUseLocal;
+  Uint64 ctcNumUseShared;
+  Uint64 ctcNumUseTM;
+  Uint64 ctcLastNumUseLocal;
+  Uint64 ctcLastNumUseShared;
+  Uint64 ctcLastNumUseTM;
+  void send_connect_debug(Signal*);
+  void print_connect_debug(Signal*);
+#endif
+public:
+  alignas(NDB_CL) Uint32 cfirstfreeTcConrecShared;
+  Uint32 ctcNumFreeShared;
+  Uint32 ctcConnectReservedShared;
+private:
   struct TcNodeFailRecord {
     enum TcFailStatus {
       TC_STATE_TRUE = 0,
@@ -3317,6 +3337,10 @@ private:
                    CommitLogRecord* commitLogRecord,
                    LogPageRecordPtr & logPagePtr,
                    LogPartRecord *logPartPtrP);
+  bool checkTransaction(TcConnectionrecPtr nextPtr,
+                        Uint32 tcHashKeyHi,
+                        TcConnectionrec *regTcPtr,
+                        bool is_key_operation);
   int  findTransaction(UintR Transid1,
                        UintR Transid2,
                        UintR TcOprec,
@@ -3430,7 +3454,9 @@ private:
 
   void seizeFragmentrec(Signal* signal);
   void seizePageRef(PageRefRecordPtr & pageRefPtr);
-  void seizeTcrec(TcConnectionrecPtr& tcConnectptr);
+  void seizeTcrec(TcConnectionrecPtr& tcConnectptr,
+                  Uint32 & tcNumFree,
+                  Uint32 & tcFirstFree);
   void sendAborted(Signal* signal, TcConnectionrecPtr);
   void sendLqhTransconf(Signal* signal,
                         LqhTransConf::OperationStatus,
@@ -3887,8 +3913,11 @@ private:
   /**
    * TUPle deallocation ref counting
    */
-  void incrDeallocRefCount(Signal* signal, Uint32 opPtrI, Uint32 countOpPtrI);
-  Uint32 decrDeallocRefCount(Signal* signal, Uint32 opPtrI);
+  void incrDeallocRefCount(Signal* signal,
+                           TcConnectionrecPtr opPtr,
+                           Uint32 countOpPtrI);
+  Uint32 decrDeallocRefCount(Signal* signal,
+                             TcConnectionrecPtr opPtr);
   void handleDeallocOp(Signal* signal, TcConnectionrecPtr regTcPtr);
 
   Dbtup* c_tup;
@@ -4273,7 +4302,7 @@ private:
 /* ACTUALLY USED FOR ALL ABORTS COMMANDED BY TC.                             */
 /* ------------------------------------------------------------------------- */
   UintR preComputedRequestInfoMask;
-#define TRANSID_HASH_SIZE 4096
+#define TRANSID_HASH_SIZE 131072
   UintR ctransidHash[TRANSID_HASH_SIZE];
   
   Uint32 c_diskless;
@@ -4763,7 +4792,9 @@ public:
   }
   bool check_expand_shrink_ongoing(Uint32, Uint32);
 private:
-  bool seize_op_rec(TcConnectionrecPtr &tcConnectptr);
+  bool seize_op_rec(TcConnectionrecPtr &tcConnectptr,
+                    bool use_lock,
+                    EmulatedJamBuffer *jamBuf);
   void release_op_rec(TcConnectionrecPtr tcConnectptr);
   void send_scan_fragref(Signal*, Uint32, Uint32, Uint32, Uint32, Uint32);
   void init_release_scanrec(ScanRecord*);
@@ -4905,6 +4936,47 @@ public:
   {
     return sizeof(struct Tablerec);
   }
+  void reset_curr_ldm()
+  {
+    m_curr_lqh = this;
+    c_acc->m_curr_acc = c_acc;
+    c_tup->m_curr_tup = c_tup;
+  }
+  Dblqh *m_curr_lqh;
+#define NUM_TRANSACTION_HASH_MUTEXES 4
+  NdbMutex alloc_operation_mutex;
+  NdbMutex transaction_hash_mutex[NUM_TRANSACTION_HASH_MUTEXES];
+#if defined VM_TRACE || defined ERROR_INSERT
+  Uint64 trans_hash_mutex_counter[NUM_TRANSACTION_HASH_MUTEXES];
+#endif
+  void lock_alloc_operation()
+  {
+    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+    {
+      NdbMutex_Lock(&alloc_operation_mutex);
+    }
+  }
+  void unlock_alloc_operation()
+  {
+    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+    {
+      NdbMutex_Unlock(&alloc_operation_mutex);
+    }
+  }
+  void lock_take_over_hash()
+  {
+    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+    {
+      NdbMutex_Lock(&c_scanTakeOverMutex);
+    }
+  }
+  void unlock_take_over_hash()
+  {
+    if (qt_likely(globalData.ndbMtQueryWorkers > 0))
+    {
+      NdbMutex_Unlock(&c_scanTakeOverMutex);
+    }
+  }
 #endif
 };
 
@@ -4991,6 +5063,7 @@ inline
 bool
 Dblqh::is_same_trans(Uint32 opId, Uint32 trid1, Uint32 trid2)
 {
+  /* Cannot use jam here, called from other thread */
   TcConnectionrecPtr regTcPtr;  
   regTcPtr.i= opId;
   ndbrequire(tcConnect_pool.getValidPtr(regTcPtr));
@@ -5102,6 +5175,7 @@ bool Dblqh::is_lcp_idle(LcpRecord *lcpPtrP)
 inline bool
 Dblqh::has_key_info(Uint32 opPtrI)
 {
+  /* Cannot use jam here, called from other thread */
   TcConnectionrecPtr opPtr;
   opPtr.i = opPtrI;
   if (tcConnect_pool.getValidPtr(opPtr))
@@ -5440,6 +5514,7 @@ inline
 Dblqh::TcConnectionrec*
 Dblqh::getOperationPtrP(Uint32 opPtrI)
 {
+  /* Cannot use jam here, called from other thread */
   TcConnectionrecPtr opPtr;
   opPtr.i = opPtrI;
   ndbrequire(tcConnect_pool.getValidPtr(opPtr));
