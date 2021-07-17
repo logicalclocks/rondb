@@ -88,6 +88,7 @@ exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp --keep-state --log-level=1
 # started and that we wait for it to complete. Otherwise we can get
 # random errors in all parts of this test including tests after this one.
 
+--sleep 15.0
 --source ndb_wait_started.inc
 --source include/ndb_not_readonly.inc
 

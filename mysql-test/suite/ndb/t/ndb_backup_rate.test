@@ -6,7 +6,8 @@
 --source include/have_nodebug.inc
 
 use test;
-create table t1 (a varchar(1024)) engine=ndb max_rows=100000000;
+create table t1 (a varchar(1024)) engine=ndb;
+--sleep 5.0
 insert into t1 values (repeat('I', 1024));
 
 # ~2kB : 1 row
@@ -100,3 +101,4 @@ while ($mysql_errno)
   
 drop table t1;
 drop table t1_8192;
+--sleep 5.0
