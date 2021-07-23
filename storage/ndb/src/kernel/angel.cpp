@@ -40,7 +40,6 @@
 
 #include <EventLogger.hpp>
 #include <NdbTCP.h>
-extern EventLogger * g_eventLogger;
 
 static void
 angel_exit(int code)
@@ -224,7 +223,7 @@ pid_t waitpid(pid_t pid, int *stat_loc, int options)
   assert(options == WNOHANG);
   assert(stat_loc);
 
-  HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+  HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, false, pid);
   if (handle == NULL)
   {
     g_eventLogger->error("waitpid: Could not open handle for pid %d, "
@@ -289,7 +288,7 @@ kill(pid_t pid, int sig)
   /* Open the event to signal */
   HANDLE shutdown_event;
   while ((shutdown_event =
-          OpenEvent(EVENT_MODIFY_STATE, FALSE, shutdown_event_name)) == NULL)
+          OpenEvent(EVENT_MODIFY_STATE, false, shutdown_event_name)) == NULL)
   {
      /*
       Check if the process is alive, otherwise there is really
@@ -297,7 +296,7 @@ kill(pid_t pid, int sig)
      */
     DWORD exit_code;
     HANDLE process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_INFORMATION,
-                                  FALSE, pid);
+                                  false, pid);
     if (!process)
     {
       /* Already died */
@@ -320,7 +319,7 @@ kill(pid_t pid, int sig)
     }
 
     if (retry_open_event--)
-      Sleep(100);
+      NdbSleep_MilliSleep(100);
     else
     {
       g_eventLogger->error("Failed to open shutdown_event '%s', error: %d",
@@ -748,7 +747,7 @@ angel_run(const char* progname,
       else if (sscanf(buf, "sphase=%d\n", &value) == 1)
         child_sphase = value;
       else if (strcmp(buf, "\n") != 0)
-        fprintf(stderr, "unknown info from child: '%s'\n", buf);
+        g_eventLogger->info("unknown info from child: '%s'", buf);
     }
     g_eventLogger->debug("error: %u, signal: %u, sphase: %u",
                          child_error, child_signal, child_sphase);

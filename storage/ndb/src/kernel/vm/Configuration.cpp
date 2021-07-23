@@ -66,7 +66,6 @@
 
 #define JAM_FILE_ID 301
 
-extern EventLogger * g_eventLogger;
 
 extern Uint32 g_start_type;
 
@@ -1348,7 +1347,7 @@ Configuration::setupConfiguration(){
   iter.get(CFG_MIXOLOGY_LEVEL, &_mixologyLevel);
   if (_mixologyLevel)
   {
-    ndbout_c("Mixology level set to 0x%x", _mixologyLevel);
+    g_eventLogger->info("Mixology level set to 0x%x", _mixologyLevel);
     globalTransporterRegistry.setMixologyLevel(_mixologyLevel);
   }
 #endif
@@ -1481,25 +1480,22 @@ Configuration::setupConfiguration(){
   {
     if (thrconfigstring)
     {
-      ndbout_c("ThreadConfig: input: %s LockExecuteThreadToCPU: %s =>"
-               " parsed: %s",
-               thrconfigstring,
-               lockmask ? lockmask : "",
-               m_thr_config.getConfigString());
+      g_eventLogger->info(
+          "ThreadConfig: input: %s LockExecuteThreadToCPU: %s => parsed: %s",
+          thrconfigstring, lockmask ? lockmask : "",
+          m_thr_config.getConfigString());
     }
     else if (mtthreads == 0)
     {
-      ndbout_c("Automatic Thread Config: LockExecuteThreadToCPU: %s =>"
-               " parsed: %s",
-               lockmask ? lockmask : "",
-               m_thr_config.getConfigString());
+      g_eventLogger->info(
+          "Automatic Thread Config: LockExecuteThreadToCPU: %s => parsed: %s",
+          lockmask ? lockmask : "", m_thr_config.getConfigString());
     }
     else
     {
-      ndbout_c("ThreadConfig (old ndb_mgmd) LockExecuteThreadToCPU: %s =>"
-               " parsed: %s",
-               lockmask ? lockmask : "",
-               m_thr_config.getConfigString());
+      g_eventLogger->info(
+          "ThreadConfig (old ndb_mgmd) LockExecuteThreadToCPU: %s => parsed: %s",
+          lockmask ? lockmask : "", m_thr_config.getConfigString());
     }
   }
 
@@ -2190,11 +2186,11 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
     cfg.put(CFG_ACC_OP_RECS, local_acc_operations);
 
 #ifdef VM_TRACE
-    ndbout_c("reservedOperations: %u, reservedLocalScanRecords: %u,"
-             " NODE_RECOVERY_SCAN_OP_RECORDS: %u, ",
-             reservedOperations,
-             reservedLocalScanRecords,
-             NODE_RECOVERY_SCAN_OP_RECORDS);
+    g_eventLogger->info(
+        "reservedOperations: %u, reservedLocalScanRecords: %u,"
+        " NODE_RECOVERY_SCAN_OP_RECORDS: %u, ",
+        reservedOperations, reservedLocalScanRecords,
+        NODE_RECOVERY_SCAN_OP_RECORDS);
 #endif
     Uint32 ldm_reserved_operations =
             (reservedOperations / ldmInstances) + EXTRA_LOCAL_OPERATIONS +
@@ -2372,7 +2368,7 @@ Configuration::setAllRealtimeScheduler()
       if (setRealtimeScheduler(threadInfo[i].pThread,
                                threadInfo[i].type,
                                _realtimeScheduler,
-                               FALSE))
+                               false))
         return;
     }
   }
@@ -2609,7 +2605,7 @@ Configuration::addThread(struct NdbThread* pThread,
   bool real_time;
   if (single_threaded)
   {
-    setRealtimeScheduler(pThread, type, _realtimeScheduler, TRUE);
+    setRealtimeScheduler(pThread, type, _realtimeScheduler, true);
   }
   else if (type == WatchDogThread ||
            type == SocketClientThread ||
@@ -2629,16 +2625,14 @@ Configuration::addThread(struct NdbThread* pThread,
        * breaks.
        */
       real_time = m_thr_config.do_get_realtime_wd();
-      setRealtimeScheduler(pThread, type, real_time, TRUE);
+      setRealtimeScheduler(pThread, type, real_time, true);
     }
     /**
      * main threads are set in ThreadConfig::ipControlLoop
      * as it's handled differently with mt
      */
-    ndbout_c("Started thread, index = %u, id = %d, type = %s",
-             i,
-             NdbThread_GetTid(pThread),
-             type_str);
+    g_eventLogger->info("Started thread, index = %u, id = %d, type = %s", i,
+                        NdbThread_GetTid(pThread), type_str);
     setLockCPU(pThread, type);
   }
   /**
@@ -2673,13 +2667,13 @@ Configuration::yield_main(Uint32 index, bool start)
     if (start)
       setRealtimeScheduler(threadInfo[index].pThread,
                            threadInfo[index].type,
-                           FALSE,
-                           FALSE);
+                           false,
+                           false);
     else
       setRealtimeScheduler(threadInfo[index].pThread,
                            threadInfo[index].type,
-                           TRUE,
-                           FALSE);
+                           true,
+                           false);
   }
 }
 

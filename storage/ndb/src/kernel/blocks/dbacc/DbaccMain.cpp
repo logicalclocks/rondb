@@ -23,6 +23,7 @@
 */
 
 #include <cstdint>
+#include <cstring>
 
 #define DBACC_C
 #include "Dbacc.hpp"
@@ -1685,7 +1686,7 @@ Dbacc::execACCKEY_ORD(Signal* signal,
 #endif
       return;
     }
-    ndbout_c("bits: %.8x state: %.8x", opbits, opstate);
+    g_eventLogger->info("bits: %.8x state: %.8x", opbits, opstate);
     ndbabort();
   } 
 }
@@ -4200,7 +4201,7 @@ Dbacc::readTablePk(Uint32 localkey1,
   int ret = -ZTUPLE_DELETED_ERROR;
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   const int xfrm_multiply = (xfrm) ? MAX_XFRM_MULTIPLY : 1;
-  memset(keys, 0x1f, (fragrecptr.p->keyLength * xfrm_multiply) << 2);
+  std::memset(keys, 0x1f, (fragrecptr.p->keyLength * xfrm_multiply) << 2);
 #endif
   bool invalid_local_key = true;
   if (likely(! Local_key::isInvalid(localkey1, localkey2)))
@@ -6455,7 +6456,7 @@ Dbacc::get_lock_information(Dbacc **acc_block, Dblqh** lqh_block)
     (*lqh_block) = c_lqh;
     if (!c_lqh->is_restore_phase_done() &&
         (globalData.ndbMtRecoverThreads +
-         globalData.ndbMtQueryThreads) > 0)
+         globalData.ndbMtQueryWorkers) > 0)
     {
       lock_flag = true;
     }
@@ -9536,8 +9537,9 @@ void Dbacc::initOverpage(Page8Ptr iopPageptr)
   // Setting word32[ALLOC_CONTAINERS] and word32[CHECK_SUM] to zero is essential
   Uint32 nextPage = iopPageptr.p->word32[Page8::NEXT_PAGE];
   Uint32 prevPage = iopPageptr.p->word32[Page8::PREV_PAGE];
-  bzero(iopPageptr.p->word32 + Page8::P32_WORD_COUNT,
-        sizeof(iopPageptr.p->word32) - Page8::P32_WORD_COUNT * sizeof(Uint32));
+  std::memset(iopPageptr.p->word32 + Page8::P32_WORD_COUNT,
+              0,
+              sizeof(iopPageptr.p->word32) - Page8::P32_WORD_COUNT * sizeof(Uint32));
   iopPageptr.p->word32[Page8::NEXT_PAGE] = nextPage;
   iopPageptr.p->word32[Page8::PREV_PAGE] = prevPage;
 

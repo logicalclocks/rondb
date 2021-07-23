@@ -27,6 +27,7 @@
 #define DBTC_C
 
 #include "Dbtc.hpp"
+#include <cstring>
 #include "md5_hash.hpp"
 #include <RefConvert.hpp>
 #include <ndb_limits.h>
@@ -123,7 +124,6 @@
 
 #define TC_TIME_SIGNAL_DELAY 50
 
-extern EventLogger * g_eventLogger;
 
 // Use DEBUG to print messages that should be
 // seen only when we debug the product
@@ -595,7 +595,7 @@ void Dbtc::execCONTINUEB(Signal* signal)
     const Uint32 pool_index = Tdata0;
     const Uint32 MAX_SHRINKS = 1;
 #ifdef VM_TRACE
-    g_eventLogger->info("SHRINK_TRANSIENT_POOLS: pool %u\n", pool_index);
+    g_eventLogger->info("SHRINK_TRANSIENT_POOLS: pool %u", pool_index);
 #endif
 
     ndbrequire(pool_index < c_transient_pool_count);
@@ -1915,7 +1915,7 @@ void Dbtc::execTCSEIZEREQ(Signal* signal)
 	    }
             if (errCode)
             {
-              ndbout << "error: " << errCode << " on " << tapiPointer << endl;
+              g_eventLogger->error("error: %u on %u", errCode, tapiPointer);
               signal->theData[0] = tapiPointer;
               signal->theData[1] = errCode;
               sendSignal(tapiBlockref, GSN_TCSEIZEREF, signal, 2, JBB);
@@ -1946,7 +1946,7 @@ void Dbtc::execTCSEIZEREQ(Signal* signal)
   }
   ndbrequire(terrorCode != ZOK);
 
-  ndbout << "4006 on " << tapiPointer << endl;
+  g_eventLogger->info("4006 on %u", tapiPointer);
   signal->theData[0] = tapiPointer;
   signal->theData[1] = terrorCode;
   sendSignal(tapiBlockref, GSN_TCSEIZEREF, signal, 2, JBB);
@@ -2089,29 +2089,38 @@ void Dbtc::printState(Signal* signal, int place, ApiConnectRecordPtr const apiCo
 
   if (!force_trace)
     return;
-  
-  ndbout << "-- Dbtc::printState -- " << endl;
-  ndbout << "Received from place = " << place
-	 << " apiConnectptr.i = " << apiConnectptr.i
-	 << " apiConnectstate = " << apiConnectptr.p->apiConnectstate << endl;
-  ndbout << "ctcTimer = " << ctcTimer
-	 << " ndbapiBlockref = " << hex <<apiConnectptr.p->ndbapiBlockref
-	 << " Transid = " << apiConnectptr.p->transid[0]
-	 << " " << apiConnectptr.p->transid[1] << endl;
-  ndbout << "apiTimer = " << getApiConTimer(apiConnectptr)
-	 << " counter = " << apiConnectptr.p->counter
-	 << " lqhkeyconfrec = " << apiConnectptr.p->lqhkeyconfrec
-	 << " lqhkeyreqrec = " << apiConnectptr.p->lqhkeyreqrec
-         << " cascading_scans = " << apiConnectptr.p->cascading_scans_count
-         << endl;
-  ndbout << "executing_trigger_ops = "
-         << apiConnectptr.p->m_executing_trigger_ops
-         << " abortState = " << apiConnectptr.p->abortState
-	 << " apiScanRec = " << apiConnectptr.p->apiScanRec
-	 << " returncode = " << apiConnectptr.p->returncode << endl;
-  ndbout << "tckeyrec = " << apiConnectptr.p->tckeyrec
-	 << " returnsignal = " << apiConnectptr.p->returnsignal
-	 << " apiFailState = " << apiConnectptr.p->apiFailState << endl;
+
+  g_eventLogger->info(
+      "-- Dbtc::printState -- "
+      "Received from place = %d"
+      " apiConnectptr.i = %u"
+      " apiConnectstate = %d "
+      "ctcTimer = %u"
+      " ndbapiBlockref = %X"
+      " Transid = %u"
+      " %u "
+      "apiTimer = %u"
+      " counter = %u"
+      " lqhkeyconfrec = %u"
+      " lqhkeyreqrec = %u"
+      " cascading_scans = %u "
+      "executing_trigger_ops = %u,"
+      " abortState = %d"
+      " apiScanRec = %u"
+      " returncode = %u "
+      "tckeyrec = %u"
+      " returnsignal = %d"
+      " apiFailState = %u",
+      place, apiConnectptr.i, apiConnectptr.p->apiConnectstate, ctcTimer,
+      apiConnectptr.p->ndbapiBlockref, apiConnectptr.p->transid[0],
+      apiConnectptr.p->transid[1], getApiConTimer(apiConnectptr),
+      apiConnectptr.p->counter, apiConnectptr.p->lqhkeyconfrec,
+      apiConnectptr.p->lqhkeyreqrec, apiConnectptr.p->cascading_scans_count,
+      apiConnectptr.p->m_executing_trigger_ops, apiConnectptr.p->abortState,
+      apiConnectptr.p->apiScanRec, apiConnectptr.p->returncode,
+      apiConnectptr.p->tckeyrec, apiConnectptr.p->returnsignal,
+      apiConnectptr.p->apiFailState);
+
   if (apiConnectptr.p->cachePtr != RNIL)
   {
     jam();
@@ -2130,10 +2139,13 @@ void Dbtc::printState(Signal* signal, int place, ApiConnectRecordPtr const apiCo
     {
       jam();
       CacheRecord * const regCachePtr = cachePtr.p;
-      ndbout << "currReclenAi = " << regCachePtr->currReclenAi
-             << " attrlength = " << regCachePtr->attrlength
-	     << " tableref = " << regCachePtr->tableref
-	     << " keylen = " << regCachePtr->keylen << endl;
+      g_eventLogger->info(
+          "currReclenAi = %u"
+          " attrlength = %u"
+          " tableref = %u"
+          " keylen = %u",
+          regCachePtr->currReclenAi, regCachePtr->attrlength,
+          regCachePtr->tableref, regCachePtr->keylen);
     } else {
       jam();
       systemErrorLab(signal, __LINE__);
@@ -3158,13 +3170,12 @@ Dbtc::releaseCacheRecord(ApiConnectRecordPtr transPtr, CacheRecord* regCachePtr)
 void
 Dbtc::dump_trans(ApiConnectRecordPtr transPtr)
 {
-  printf("transid %u [ 0x%x 0x%x ] state: %u flags: 0x%x m_pre_commit_pass: %u\n",
-         transPtr.i,
-         transPtr.p->transid[0],
-         transPtr.p->transid[1],
-         transPtr.p->apiConnectstate,
-         transPtr.p->m_flags,
-         transPtr.p->m_pre_commit_pass);
+  g_eventLogger->info(
+      "transid %u [ 0x%x 0x%x ] state: %u flags: 0x%x"
+      " m_pre_commit_pass: %u",
+      transPtr.i, transPtr.p->transid[0], transPtr.p->transid[1],
+      transPtr.p->apiConnectstate, transPtr.p->m_flags,
+      transPtr.p->m_pre_commit_pass);
 
   Uint32 i = 0;
   LocalTcConnectRecord_fifo tcConList(tcConnectRecord, transPtr.p->tcConnect);
@@ -3177,16 +3188,17 @@ Dbtc::dump_trans(ApiConnectRecordPtr transPtr)
       c_theDefinedTriggers.getPtr(trigPtr, tcConnectptr.p->currentTriggerId);
     }
 
-    printf(" %u : opPtrI: 0x%x op: %u state: %u triggeringOperation: 0x%x flags: 0x%x triggerType: %u apiConnect: %u\n",
-           i++,
-           tcConnectptr.i,
-           tcConnectptr.p->operation,
-           tcConnectptr.p->tcConnectstate,
-           tcConnectptr.p->triggeringOperation,
-           tcConnectptr.p->m_special_op_flags,
-           tcConnectptr.p->currentTriggerId == RNIL ? RNIL :
-           (Uint32)trigPtr.p->triggerType,
-           tcConnectptr.p->apiConnect);
+    g_eventLogger->info(
+        " %u : opPtrI: 0x%x op: %u state: %u"
+        " triggeringOperation: 0x%x flags: 0x%x"
+        " triggerType: %u apiConnect: %u",
+        i++, tcConnectptr.i, tcConnectptr.p->operation,
+        tcConnectptr.p->tcConnectstate, tcConnectptr.p->triggeringOperation,
+        tcConnectptr.p->m_special_op_flags,
+        tcConnectptr.p->currentTriggerId == RNIL
+            ? RNIL
+            : (Uint32)trigPtr.p->triggerType,
+        tcConnectptr.p->apiConnect);
   } while (tcConList.next(tcConnectptr));
 }
 
@@ -4334,9 +4346,9 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
 	  if (Tnode != TownNode) {
 	    jam();
 	    regTcPtr->tcNodedata[0] = Tnode;
-	    ndbout_c("Choosing %d", Tnode);
-	  }//if
-	}//for
+            g_eventLogger->info("Choosing %d", Tnode);
+          }// if
+        }// for
       }
     }//if
     jamDebug();
@@ -5618,7 +5630,7 @@ void Dbtc::execLQHKEYCONF(Signal* signal)
   if (ERROR_INSERTED(8107))
   {
     jam();
-    ndbout_c("Error 8107, timing out transaction");
+    g_eventLogger->info("Error 8107, timing out transaction");
     timeOutFoundLab(signal, apiConnectptr.i, ZTIME_OUT_ERROR);
     return;
   }
@@ -6564,7 +6576,7 @@ void Dbtc::execDIVERIFYCONF(Signal* signal)
     const Uint32 apiNodeId = refToNode(regApiPtr->ndbapiBlockref);
     if (getNodeInfo(apiNodeId).getType() == NodeInfo::API)
     {
-      ndbout_c("Error insert 8110, disconnecting API during COMMIT");
+      g_eventLogger->info("Error insert 8110, disconnecting API during COMMIT");
       signal->theData[0] = apiNodeId;
       sendSignal(QMGR_REF, GSN_API_FAILREQ, signal, 1, JBA);
 
@@ -6612,11 +6624,11 @@ void Dbtc::commitGciHandling(Signal* signal,
       }
       if (unlikely(! (regApiPtr.p->globalcheckpointid > localGcpPointer.p->gcpId)))
       {
-        ndbout_c("%u/%u %u/%u",
-                 Uint32(regApiPtr.p->globalcheckpointid >> 32),
-                 Uint32(regApiPtr.p->globalcheckpointid),
-                 Uint32(localGcpPointer.p->gcpId >> 32),
-                 Uint32(localGcpPointer.p->gcpId));
+        g_eventLogger->info("%u/%u %u/%u",
+                            Uint32(regApiPtr.p->globalcheckpointid >> 32),
+                            Uint32(regApiPtr.p->globalcheckpointid),
+                            Uint32(localGcpPointer.p->gcpId >> 32),
+                            Uint32(localGcpPointer.p->gcpId));
         crash_gcp(__LINE__, "Can not find global checkpoint record for commit.");
       }
       jam();
@@ -6651,14 +6663,14 @@ Dbtc::crash_gcp(Uint32 line, const char msg[])
   {
     do
     {
-      ndbout_c("%u : %u/%u nomoretrans: %u api %u %u next: %u",
-               localGcpPointer.i,
-               Uint32(localGcpPointer.p->gcpId >> 32),
-               Uint32(localGcpPointer.p->gcpId),
-               localGcpPointer.p->gcpNomoretransRec,
-               localGcpPointer.p->apiConnectList.getFirst(),
-               localGcpPointer.p->apiConnectList.getLast(),
-               localGcpPointer.p->nextList);
+      g_eventLogger->info("%u : %u/%u nomoretrans: %u api %u %u next: %u",
+                          localGcpPointer.i,
+                          Uint32(localGcpPointer.p->gcpId >> 32),
+                          Uint32(localGcpPointer.p->gcpId),
+                          localGcpPointer.p->gcpNomoretransRec,
+                          localGcpPointer.p->apiConnectList.getFirst(),
+                          localGcpPointer.p->apiConnectList.getLast(),
+                          localGcpPointer.p->nextList);
     } while (gcp_list.next(localGcpPointer));
   }
   progError(line, NDBD_EXIT_NDBREQUIRE, msg);
@@ -6671,7 +6683,7 @@ void Dbtc::seizeGcp(Ptr<GcpRecord> & dst, Uint64 Tgci)
 
   if (unlikely(!c_gcpRecordPool.seize(localGcpPointer)))
   {
-    ndbout_c("%u/%u", Uint32(Tgci >> 32), Uint32(Tgci));
+    g_eventLogger->info("%u/%u", Uint32(Tgci >> 32), Uint32(Tgci));
     crash_gcp(__LINE__, "Too many active global checkpoints.");
   }
   localGcpPointer.p->gcpId = Tgci;
@@ -6953,7 +6965,8 @@ void Dbtc::execCOMMITTED(Signal* signal)
     const Uint32 apiNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
     if (getNodeInfo(apiNodeId).getType() == NodeInfo::API)
     {
-      ndbout_c("Error insert 8111, disconnecting API during COMPLETE");
+      g_eventLogger->info(
+          "Error insert 8111, disconnecting API during COMPLETE");
       signal->theData[0] = apiNodeId;
       sendSignal(QMGR_REF, GSN_API_FAILREQ, signal, 1, JBA);
 
@@ -7382,12 +7395,11 @@ Dbtc::sendFireTrigReq(Signal* signal,
       tc_clearbit(flags, passflag);
       if (unlikely(! (localTcConnectptr.p->tcConnectstate == OS_PREPARED)))
       {
-        ndbout_c("op: 0x%x trans [ 0x%.8x 0x%.8x ] state: %u (TopPtrI: %x)",
-                 localTcConnectptr.i,
-                 regApiPtr.p->transid[0],
-                 regApiPtr.p->transid[1],
-                 localTcConnectptr.p->tcConnectstate,
-                 TopPtrI);
+        g_eventLogger->info(
+            "op: 0x%x trans [ 0x%.8x 0x%.8x ] state: %u (TopPtrI: %x)",
+            localTcConnectptr.i, regApiPtr.p->transid[0],
+            regApiPtr.p->transid[1], localTcConnectptr.p->tcConnectstate,
+            TopPtrI);
         dump_trans(regApiPtr);
       }
 
@@ -8067,7 +8079,7 @@ void Dbtc::execLQHKEYREF(Signal* signal)
   {
     /*-----------------------------------------------------------------------
      * WE HAVE TO CHECK THAT THE TRANSACTION IS STILL VALID. FIRST WE CHECK 
-     * THAT THE LQH IS STILL CONNECTED TO A TC, IF THIS HOLDS TRUE THEN THE 
+     * THAT THE LQH IS STILL CONNECTED TO A TC, IF THIS HOLDS true THEN THE
      * TC MUST BE CONNECTED TO AN API CONNECT RECORD. 
      * WE MUST ENSURE THAT THE TRANSACTION ID OF THIS API CONNECT 
      * RECORD IS STILL THE SAME AS THE ONE LQHKEYREF REFERS TO. 
@@ -8169,24 +8181,25 @@ void Dbtc::execLQHKEYREF(Signal* signal)
           if (opType == ZINSERT && errCode == ZALREADYEXIST)
           {
             jam();
-            ndbout_c("reorg, ignore ZALREADYEXIST");
+            g_eventLogger->info("reorg, ignore ZALREADYEXIST");
             goto do_ignore;
           }
           else if (errCode == ZNOT_FOUND)
           {
             jam();
-            ndbout_c("reorg, ignore ZNOT_FOUND");
+            g_eventLogger->info("reorg, ignore ZNOT_FOUND");
             goto do_ignore;
           }
           else if (errCode == 839)
           {
             jam();
-            ndbout_c("reorg, ignore 839");
+            g_eventLogger->info("reorg, ignore 839");
             goto do_ignore;
           }
           else
           {
-            ndbout_c("reorg: opType: %u errCode: %u", opType, errCode);
+            g_eventLogger->info("reorg: opType: %u errCode: %u", opType,
+                                errCode);
           }
           // fall-through
           goto do_abort;
@@ -8542,7 +8555,7 @@ void Dbtc::execTCROLLBACKREQ(Signal* signal)
 
   if(unlikely((signal->getLength() >= 4) && (signal->theData[3] & 0x1)))
   {
-    ndbout_c("Trying to roll back potentially bad txn\n");
+    g_eventLogger->info("Trying to roll back potentially bad txn");
     potentiallyBad= true;
   }
 
@@ -9083,7 +9096,7 @@ void Dbtc::abort010Lab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
 /*       EVEN IF NO NODE OF THIS PARTICULAR NODE NUMBER NEEDS ABORTION WE   */
 /*       MUST ENSURE THAT ALL NODES ARE CHECKED. THUS A FAULTY NODE DOES    */
 /*       NOT MEAN THAT ALL NODES IN AN OPERATION IS ABORTED. FOR THIS REASON*/
-/*       WE SET THE TCONTINUE_ABORT TO TRUE WHEN A FAULTY NODE IS DETECTED. */
+/*       WE SET THE TCONTINUE_ABORT TO true WHEN A FAULTY NODE IS DETECTED. */
 /*--------------------------------------------------------------------------*/
 void Dbtc::abort015Lab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
 {
@@ -9659,10 +9672,10 @@ void Dbtc::timeOutFoundLab(Signal* signal, Uint32 TapiConPtr, Uint32 errCode)
         time_passed > (10 * ctimeOutValue))
     {
       jam();
-      ndbout_c("timeOutFoundLab trans: 0x%x 0x%x state: %u",
-               apiConnectptr.p->transid[0],
-               apiConnectptr.p->transid[1],
-               (Uint32)apiConnectptr.p->apiConnectstate);
+      g_eventLogger->info("timeOutFoundLab trans: 0x%x 0x%x state: %u",
+                          apiConnectptr.p->transid[0],
+                          apiConnectptr.p->transid[1],
+                          (Uint32)apiConnectptr.p->apiConnectstate);
 
       // Reset timeout to not flood log...
       setApiConTimer(apiConnectptr, 0, __LINE__);
@@ -9836,14 +9849,11 @@ void Dbtc::sendAbortedAfterTimeout(Signal* signal, int Tcheck, ApiConnectRecordP
                  transP->tcConnect.getFirst(),
                  getApiConTimer(apiConnectptr)
 		 );
-    ndbout_c("TC: %d: %d state=%d abort==IDLE place: %d fop=%d t: %d", 
-	     __LINE__,
-	     apiConnectptr.i, 
-	     transP->apiConnectstate,
-             apiConnectptr.p->m_apiConTimer_line,
-             transP->tcConnect.getFirst(),
-             getApiConTimer(apiConnectptr)
-	     );
+    g_eventLogger->info(
+        "TC: %d: %d state=%d abort==IDLE place: %d fop=%d t: %d", __LINE__,
+        apiConnectptr.i, transP->apiConnectstate,
+        apiConnectptr.p->m_apiConTimer_line, transP->tcConnect.getFirst(),
+        getApiConTimer(apiConnectptr));
     ndbabort();
     setApiConTimer(apiConnectptr, 0, __LINE__);
     return;
@@ -9859,8 +9869,8 @@ void Dbtc::sendAbortedAfterTimeout(Signal* signal, int Tcheck, ApiConnectRecordP
       jam();
 
 #ifdef VM_TRACE
-      ndbout_c("found: %d Tcheck: %d apiConnectptr.p->counter: %d",
-	       found, Tcheck, apiConnectptr.p->counter);
+      g_eventLogger->info("found: %d Tcheck: %d apiConnectptr.p->counter: %d",
+                          found, Tcheck, apiConnectptr.p->counter);
 #endif
       if (found || apiConnectptr.p->counter)
       {
@@ -9899,8 +9909,8 @@ void Dbtc::sendAbortedAfterTimeout(Signal* signal, int Tcheck, ApiConnectRecordP
 	  BaseString::snprintf(buf, sizeof(buf), "%s", buf2);
 	}
 	warningEvent("%s", buf);
-	ndbout_c("%s", buf);
-	ndbabort();
+        g_eventLogger->info("%s", buf);
+        ndbabort();
         releaseAbortResources(signal, apiConnectptr);
 	return;
       }
@@ -9921,9 +9931,9 @@ void Dbtc::sendAbortedAfterTimeout(Signal* signal, int Tcheck, ApiConnectRecordP
       signal->theData[2] = apiConnectptr.i;      
       if (ERROR_INSERTED(8080))
       {
-	ndbout_c("sending ZABORT_TIMEOUT_BREAK delayed (%d %d)", 
-		 Tcheck, apiConnectptr.p->counter);
-	sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 2000, 3);
+        g_eventLogger->info("sending ZABORT_TIMEOUT_BREAK delayed (%d %d)",
+                            Tcheck, apiConnectptr.p->counter);
+        sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 2000, 3);
       }
       else
       {
@@ -11187,7 +11197,7 @@ void Dbtc::startTakeOverLab(Signal* signal,
       sig_len = LqhTransReq::SignalLength;
       if (ERROR_INSERTED(8064) && hostptr.i == getOwnNodeId())
       {
-        ndbout_c("sending delayed GSN_LQH_TRANSREQ to self");
+        g_eventLogger->info("sending delayed GSN_LQH_TRANSREQ to self");
         sendSignalWithDelay(tblockref, GSN_LQH_TRANSREQ, signal, 100, sig_len);
         CLEAR_ERROR_INSERT_VALUE;
       }
@@ -11419,8 +11429,8 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
          ERROR_INSERTED(8118)))
     {
       jam();
-      ndbout_c("Delaying final LQH_TRANSCONF from Lqh @ node %u",
-               refToNode(signal->getSendersBlockRef()));
+      g_eventLogger->info("Delaying final LQH_TRANSCONF from Lqh @ node %u",
+                          refToNode(signal->getSendersBlockRef()));
       // Force multi-tc takeover
       ((LqhTransConf*)lqhTransConf)->maxInstanceId = 4;
       sendSignalWithDelay(reference(),
@@ -13104,7 +13114,7 @@ void Dbtc::releaseAtErrorLab(Signal* signal, ApiConnectRecordPtr const apiConnec
 void Dbtc::warningHandlerLab(Signal* signal, int line) 
 {
 #if defined VM_TRACE || defined ERROR_INSERT
-  ndbout_c("warningHandler: line %d", line);
+  g_eventLogger->info("warningHandler: line %d", line);
 #endif
 }//Dbtc::warningHandlerLab()
 
@@ -13477,7 +13487,7 @@ void Dbtc::execSCAN_TABREQ(Signal* signal)
     if (scanptr.p->m_scan_dist_key_flag)
     {
       jam();
-      ndbout_c("Forcing scan distribution key to 0xffffffff");
+      g_eventLogger->info("Forcing scan distribution key to 0xffffffff");
       scanptr.p->m_scan_dist_key = 0xffffffff;
     }
   }
@@ -15029,7 +15039,7 @@ void Dbtc::execSCAN_NEXTREQ(Signal* signal)
        *  We will send a SCAN_TABREF to indicate a time-out occurred.
        *********************************************************************/
       DEBUG("scanTabRefLab: ZSCANTIME_OUT_ERROR2");
-      ndbout_c("apiConnectptr(%d) -> abort", apiConnectptr.i);
+      g_eventLogger->info("apiConnectptr(%d) -> abort", apiConnectptr.i);
       ndbabort(); //B2 indication of strange things going on
       scanTabRefLab(signal, ZSCANTIME_OUT_ERROR2, apiConnectptr.p);
       return;
@@ -15925,7 +15935,7 @@ void Dbtc::gcpTcfinished(Signal* signal, Uint64 gci)
       /* Kill multi 'assumes' NoOfReplicas=2, and skipping one
        * live node at a time avoids taking out a nodegroup
        */
-      ndbout_c("TC killing multi : %u  me : %u", multi, kill_me);
+      g_eventLogger->info("TC killing multi : %u  me : %u", multi, kill_me);
       Uint32 start = getOwnNodeId();
       bool skip = !kill_me;
       Uint32 pos = start;
@@ -15938,7 +15948,7 @@ void Dbtc::gcpTcfinished(Signal* signal, Uint64 gci)
           /* Found a db node... */
           if (!skip)
           {
-            ndbout_c("TC : Killing node %u", pos);
+            g_eventLogger->info("TC : Killing node %u", pos);
             signal->theData[0] = 9999;
             sendSignal(numberToRef(CMVMI, pos), GSN_DUMP_STATE_ORD, signal,
                        1, JBA);
@@ -15948,7 +15958,7 @@ void Dbtc::gcpTcfinished(Signal* signal, Uint64 gci)
           }
           else
           {
-            ndbout_c("TC : Skipping node %u", pos);
+            g_eventLogger->info("TC : Skipping node %u", pos);
             skip = false;
           }
         }
@@ -15972,8 +15982,10 @@ void Dbtc::gcpTcfinished(Signal* signal, Uint64 gci)
   if (ERROR_INSERTED(8099))
   {
     /* Slow it down */
-    ndbout_c("TC : Sending delayed GCP_TCFINISHED (%u/%u), failNo %u to local DIH(%x)",
-             conf->gci_hi, conf->gci_lo, cfailure_nr, cdihblockref);
+    g_eventLogger->info(
+        "TC : Sending delayed GCP_TCFINISHED (%u/%u), failNo %u to local "
+        "DIH(%x)",
+        conf->gci_hi, conf->gci_lo, cfailure_nr, cdihblockref);
     sendSignalWithDelay(c_gcp_ref, GSN_GCP_TCFINISHED, signal,
                         2000, GCPTCFinished::SignalLength);
     return;
@@ -16365,7 +16377,7 @@ void Dbtc::releaseAbortResources(Signal* signal, ApiConnectRecordPtr const apiCo
     }    
     if(!ok){
       jam();
-      ndbout_c("returnsignal = %d", apiConnectptr.p->returnsignal);
+      g_eventLogger->info("returnsignal = %d", apiConnectptr.p->returnsignal);
       sendSystemError(signal, __LINE__);
     }//if
 
@@ -17131,8 +17143,8 @@ Dbtc::execDUMP_STATE_ORD(Signal* signal)
       {
         return;
       }
-      ndbout_c("Start of ApiConnectRec summary (%u total allocated)",
-               c_apiConnectRecordPool.getSize());
+      g_eventLogger->info("Start of ApiConnectRec summary (%u total allocated)",
+                          c_apiConnectRecordPool.getSize());
       /*
        * total allocated = MaxNoOfConcurrentTransactions
        * total allocated = unseized + SUM_over_Api_nodes(seized)
@@ -17177,7 +17189,7 @@ Dbtc::execDUMP_STATE_ORD(Signal* signal)
     
     if (apiNode >= MAX_NODES)
     {
-      ndbout_c("End of ApiConnectRec summary");
+      g_eventLogger->info("End of ApiConnectRec summary");
       return;
     }
 
@@ -17233,8 +17245,10 @@ Dbtc::execDUMP_STATE_ORD(Signal* signal)
       /* Finished with this apiNode, output info, if any */
 //      if (seized_count > 0)
       {
-        ndbout_c("  Api node %u connect records seized : %u stateless : %u stateful : %u scan : %u",
-                 apiNode, seized_count, stateless_count, stateful_count, scan_count);
+        g_eventLogger->info(
+            "  Api node %u connect records seized : %u stateless : %u stateful "
+            ": %u scan : %u",
+            apiNode, seized_count, stateless_count, stateful_count, scan_count);
         seized_count = 0;
         stateless_count = 0;
         stateful_count = 0;
@@ -17469,7 +17483,8 @@ Dbtc::execDUMP_STATE_ORD(Signal* signal)
     }
     if (signal->getLength() != 5)
     {
-      ndbout_c("DUMP TcDumpPoolLevels : Bad signal length : %u", signal->getLength());
+      g_eventLogger->info("DUMP TcDumpPoolLevels : Bad signal length : %u",
+                          signal->getLength());
       return;
     }
     if (signal->theData[4] != instance())
@@ -17718,7 +17733,7 @@ void Dbtc::execDBINFO_SCANREQ(Signal *signal)
     for ( ; hostPtr.i < MAX_NODES; hostPtr.i++)
     {
       ptrCheckGuard(hostPtr, chostFilesize, hostRecord);
-      if (hostPtr.p->time_tracked == FALSE)
+      if (hostPtr.p->time_tracked == false)
         continue;
       for (Uint32 i = first_index; i < TIME_TRACK_HISTOGRAM_RANGES; i++)
       {
@@ -18851,8 +18866,8 @@ void Dbtc::execTRIG_ATTRINFO(Signal* signal)
       /**
        * Will be handled when FIRE_TRIG_ORD arrives
        */
-      ndbout_c("op: %d node: %d failed to seize",
-	       key.fireingOperation, key.nodeId);
+      g_eventLogger->info("op: %d node: %d failed to seize",
+                          key.fireingOperation, key.nodeId);
       return;
     }
     ndbrequire(firedTrigPtr.p->keyValues.getSize() == 0 &&
@@ -19305,7 +19320,8 @@ Dbtc::saveINDXKEYINFO(Signal* signal,
     jam();
     // Failed to seize keyInfo, abort transaction
 #ifdef VM_TRACE
-    ndbout_c("Dbtc::saveINDXKEYINFO: Failed to seize buffer for KeyInfo\n");
+    g_eventLogger->info(
+        "Dbtc::saveINDXKEYINFO: Failed to seize buffer for KeyInfo");
 #endif
     // Abort transaction
     ApiConnectRecordPtr apiConnectptr;
@@ -19350,7 +19366,8 @@ Dbtc::saveINDXATTRINFO(Signal* signal,
   {
     jam();
 #ifdef VM_TRACE
-    ndbout_c("Dbtc::saveINDXATTRINFO: Failed to seize buffer for attrInfo\n");
+    g_eventLogger->info(
+        "Dbtc::saveINDXATTRINFO: Failed to seize buffer for attrInfo");
 #endif
     ApiConnectRecordPtr apiConnectptr;
     apiConnectptr.i = indexOp->connectionIndex;
@@ -19485,7 +19502,8 @@ Uint32 Dbtc::saveTRANSID_AI(Signal* signal,
       {
         jam();
 #ifdef VM_TRACE
-        ndbout_c("Dbtc::saveTRANSID_AI: Failed to seize buffer for TRANSID_AI\n");
+        g_eventLogger->info(
+            "Dbtc::saveTRANSID_AI: Failed to seize buffer for TRANSID_AI");
 #endif
         indexOp->transIdAIState= ITAS_WAIT_KEY_FAIL;
       }
@@ -19524,7 +19542,7 @@ Uint32 Dbtc::saveTRANSID_AI(Signal* signal,
       /* Bad state, or bad state to receive TransId_Ai in */
       // Todo : Check error handling here.
 #ifdef VM_TRACE
-      ndbout_c("Dbtc::saveTRANSID_AI: Bad state when receiving\n");
+      g_eventLogger->info("Dbtc::saveTRANSID_AI: Bad state when receiving");
 #endif
       ApiConnectRecordPtr apiConnectptr;
       apiConnectptr.i = indexOp->connectionIndex;
@@ -19840,7 +19858,8 @@ void Dbtc::execTRANSID_AI(Signal* signal)
   case(IOS_INDEX_ACCESS_WAIT_FOR_TCKEYCONF): {
     jam();
 #ifdef VM_TRACE
-    ndbout_c("Dbtc::execTRANSID_AI: Too many TRANSID_AI, ignore for now\n");
+    g_eventLogger->info(
+        "Dbtc::execTRANSID_AI: Too many TRANSID_AI, ignore for now");
 #endif
     /*
     // Too many TRANSID_AI
@@ -19943,7 +19962,7 @@ void Dbtc::readIndexTable(Signal* signal,
 
   if (ERROR_INSERTED(8037))
   {
-    ndbout_c("shifting index version");
+    g_eventLogger->info("shifting index version");
     tcKeyReq->tableSchemaVersion = ~(Uint32)indexOp->tcIndxReq.tableSchemaVersion;
   }
   tcKeyReq->attrLen = 1; // Primary key is stored as one attribute
@@ -19971,7 +19990,8 @@ void Dbtc::readIndexTable(Signal* signal,
      */
     // TODO - verify error handling
 #ifdef VM_TRACE
-    ndbout_c("Dbtc::readIndexTable: Failed to create AttrInfo section");
+    g_eventLogger->info(
+        "Dbtc::readIndexTable: Failed to create AttrInfo section");
 #endif
     ApiConnectRecordPtr apiConnectptr;
     apiConnectptr.i = indexOp->connectionIndex;
@@ -20351,9 +20371,8 @@ Dbtc::trigger_op_finished(Signal* signal,
     jam();
     if (unlikely((triggeringOp->triggerExecutionCount == 0)))
     {
-      printf("%u : %p->triggerExecutionCount == 0\n",
-             __LINE__,
-             triggeringOp);
+      g_eventLogger->info("%u : %p->triggerExecutionCount == 0", __LINE__,
+                          triggeringOp);
       dump_trans(apiConnectptr);
     }
     ndbrequire(triggeringOp->triggerExecutionCount > 0);
@@ -20386,7 +20405,7 @@ void Dbtc::continueTriggeringOp(Signal* signal,
 
   if (unlikely(trigOp->savedState[LqhKeyConf::SignalLength-1] == ~Uint32(0)))
   {
-    g_eventLogger->info("%u : savedState not set\n", __LINE__);
+    g_eventLogger->info("%u : savedState not set", __LINE__);
     printLQHKEYCONF(stderr,signal->getDataPtr(),LqhKeyConf::SignalLength,DBTC);
     dump_trans(regApiPtr);
   }
@@ -23047,7 +23066,7 @@ Dbtc::time_track_init_histogram_limits(void)
   {
     hostPtr.i = node;
     ptrCheckGuard(hostPtr, chostFilesize, hostRecord);
-    hostPtr.p->time_tracked = FALSE;
+    hostPtr.p->time_tracked = false;
     for (Uint32 i = 0; i < TIME_TRACK_HISTOGRAM_RANGES; i++)
     {
       hostPtr.p->time_track_scan_histogram[i] = 0;
@@ -23114,7 +23133,7 @@ Dbtc::time_track_complete_scan(ScanRecord * const scanPtr,
   hostPtr.i = apiNodeId;
   ptrCheckGuard(hostPtr, chostFilesize, hostRecord);
   hostPtr.p->time_track_scan_histogram[pos]++;
-  hostPtr.p->time_tracked = TRUE;
+  hostPtr.p->time_tracked = true;
 }
 
 void
@@ -23127,7 +23146,7 @@ Dbtc::time_track_complete_scan_error(ScanRecord * const scanPtr,
   hostPtr.i = apiNodeId;
   ptrCheckGuard(hostPtr, chostFilesize, hostRecord);
   hostPtr.p->time_track_scan_error_histogram[pos]++;
-  hostPtr.p->time_tracked = TRUE;
+  hostPtr.p->time_tracked = true;
 }
 
 void
@@ -23152,12 +23171,12 @@ Dbtc::time_track_complete_index_key_operation(
   apiHostPtr.i = apiNodeId;
   ptrCheckGuard(apiHostPtr, chostFilesize, hostRecord);
   apiHostPtr.p->time_track_index_key_histogram[pos]++;
-  apiHostPtr.p->time_tracked = TRUE;
+  apiHostPtr.p->time_tracked = true;
 
   dbHostPtr.i = dbNodeId;
   ptrCheckGuard(dbHostPtr, chostFilesize, hostRecord);
   dbHostPtr.p->time_track_index_key_histogram[pos]++;
-  dbHostPtr.p->time_tracked = TRUE;
+  dbHostPtr.p->time_tracked = true;
 }
 
 void
@@ -23194,8 +23213,8 @@ Dbtc::time_track_complete_key_operation(
     apiHostPtr.p->time_track_write_key_histogram[pos]++;
     dbHostPtr.p->time_track_write_key_histogram[pos]++;
   }
-  apiHostPtr.p->time_tracked = TRUE;
-  dbHostPtr.p->time_tracked = TRUE;
+  apiHostPtr.p->time_tracked = true;
+  dbHostPtr.p->time_tracked = true;
 }
 
 void
@@ -23215,8 +23234,8 @@ Dbtc::time_track_complete_key_operation_error(
 
   apiHostPtr.p->time_track_key_error_histogram[pos]++;
   dbHostPtr.p->time_track_key_error_histogram[pos]++;
-  apiHostPtr.p->time_tracked = TRUE;
-  dbHostPtr.p->time_tracked = TRUE;
+  apiHostPtr.p->time_tracked = true;
+  dbHostPtr.p->time_tracked = true;
 }
 
 void
@@ -23241,7 +23260,7 @@ Dbtc::time_track_complete_scan_frag(
   hostPtr.i = dbNodeId;
   ptrCheckGuard(hostPtr, chostFilesize, hostRecord);
   hostPtr.p->time_track_scan_frag_histogram[pos]++;
-  hostPtr.p->time_tracked = TRUE;
+  hostPtr.p->time_tracked = true;
 }
 
 void
@@ -23267,7 +23286,7 @@ Dbtc::time_track_complete_scan_frag_error(
   hostPtr.i = dbNodeId;
   ptrCheckGuard(hostPtr, chostFilesize, hostRecord);
   hostPtr.p->time_track_scan_frag_error_histogram[pos]++;
-  hostPtr.p->time_tracked = TRUE;
+  hostPtr.p->time_tracked = true;
 }
 
 void
@@ -23281,7 +23300,7 @@ Dbtc::time_track_complete_transaction(ApiConnectRecord* const regApiPtr)
   hostPtr.i = apiNodeId;
   ptrCheckGuard(hostPtr, chostFilesize, hostRecord);
   hostPtr.p->time_track_transaction_histogram[pos]++;
-  hostPtr.p->time_tracked = TRUE;
+  hostPtr.p->time_tracked = true;
 }
 
 void
@@ -23304,7 +23323,7 @@ Dbtc::time_track_complete_transaction_error(
   hostPtr.i = apiNodeId;
   ptrCheckGuard(hostPtr, chostFilesize, hostRecord);
   hostPtr.p->time_track_transaction_error_histogram[pos]++;
-  hostPtr.p->time_tracked = TRUE;
+  hostPtr.p->time_tracked = true;
 }
 
 void

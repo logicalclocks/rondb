@@ -272,8 +272,8 @@ Dbtux::execACC_CHECK_SCAN(Signal* signal)
       jamEntryDebug();
       release_c_free_scan_lock();
       relinkScan(scan,
-                 frag,
                  m_my_scan_instance,
+                 frag,
                  true,
                  __LINE__);
       /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
@@ -686,8 +686,8 @@ Dbtux::execNEXT_SCANREQ(Signal* signal)
       jam();
       scan.m_scanPos.m_loc = NullTupLoc;
       relinkScan(scan,
-                 frag,
                  m_my_scan_instance,
+                 frag,
                  true,
                  __LINE__);
       ndbassert(scan.m_scanLinkedPos == NullTupLoc);
@@ -760,8 +760,8 @@ Dbtux::continue_scan(Signal *signal,
     release_c_free_scan_lock();
     jamLine(Uint16(scanPtr.i));
     relinkScan(*scanPtr.p,
-               frag,
                m_my_scan_instance,
+               frag,
                true,
                __LINE__);
     NextScanConf* const conf = (NextScanConf*)signal->getDataPtrSend();
@@ -893,8 +893,8 @@ Dbtux::continue_scan(Signal *signal,
           /* Normal path */
           release_c_free_scan_lock();
           relinkScan(scan,
-                     frag,
                      m_my_scan_instance,
+                     frag,
                      true,
                      __LINE__);
           /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
@@ -930,8 +930,8 @@ Dbtux::continue_scan(Signal *signal,
           /* Normal path */
           release_c_free_scan_lock();
           relinkScan(scan,
-                     frag,
                      m_my_scan_instance,
+                     frag,
                      true,
                      __LINE__);
           /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
@@ -959,8 +959,8 @@ Dbtux::continue_scan(Signal *signal,
           /* Normal path */
           release_c_free_scan_lock();
           relinkScan(scan,
-                     frag,
                      m_my_scan_instance,
+                     frag,
                      true,
                      __LINE__);
           /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
@@ -993,8 +993,8 @@ Dbtux::continue_scan(Signal *signal,
     jamEntryDebug();
     ndbrequire(signal->theData[0] == CheckLcpStop::ZTAKE_A_BREAK);
     relinkScan(scan,
-               frag,
                m_my_scan_instance,
+               frag,
                true,
                __LINE__);
     /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
@@ -1554,13 +1554,60 @@ found_none:
   return ScanOp::Last;
 }
 
+bool
+Dbtux::checkScanInstance(Uint32 scanInstance)
+{
+  // General scanInstance handling rules :
+  //                  Instances handled :
+  //  - TUX block   : TUX or (QTUX iff Q threads)
+  //  - QTUX thread : (My QTUX id only iff Q threads)
+  const bool i_am_tux = ! m_is_query_block;
+  const bool scanInstance_is_tux =
+    (get_block_from_scan_instance(scanInstance) == DBTUX);
+
+  /* Basic sanity */
+  ndbrequire((i_am_tux && scanInstance_is_tux) ||
+             (globalData.ndbMtQueryWorkers > 0));
+
+  if (i_am_tux)
+  {
+    /* TUX */
+    if (scanInstance_is_tux)
+    {
+      if (scanInstance != m_my_scan_instance)
+      {
+        /* TUX should not deal with some other TUX's scanInstances */
+        ndbrequire(false);
+      }
+      else
+      {
+        /* ok - TUX instance dealing with own scanInstance */
+      }
+    }
+    else
+    {
+      /* TUX instance dealing with QTUX scan - ok */
+    }
+  }
+  else
+  {
+    /**
+     * QTUX instance should only ever deal with its own scanInstances,
+     * not other QTUX's, or TUX's.
+     */
+    ndbrequire(scanInstance == m_my_scan_instance);
+  }
+  return true;
+}
+
 void
 Dbtux::relinkScan(ScanOp& scan,
-                  Frag& frag,
                   Uint32 scanInstance,
+                  Frag& frag,
                   bool need_lock,
                   Uint32 line)
 {
+  ndbrequire(checkScanInstance(scanInstance));
   /**
    * This is called at the end of a real-time break. We do
    * two actions here. At first we move the linked scan record

@@ -42,7 +42,7 @@ class SetHostnameReq
   friend class MgmtSrvr;
 
 public:
-  STATIC_CONST (SignalLength = 2);
+  static constexpr Uint32 SignalLength = 2;
   
 public:
   Uint32 senderRef;
@@ -63,7 +63,7 @@ class SetHostnameConf
   friend class MgmtSrvr;
 
 public:
-  STATIC_CONST (SignalLength = 3);
+  static constexpr Uint32 SignalLength = 3;
   
 public:
   Uint32 senderRef;
@@ -84,7 +84,7 @@ class SetHostnameRef
   friend class MgmtSrvr;
 
 public:
-  STATIC_CONST (SignalLength = 3);
+  static constexpr Uint32 SignalLength = 3;
 
 public:
   Uint32 senderRef;

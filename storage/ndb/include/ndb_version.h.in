@@ -667,7 +667,6 @@ ndbd_support_backup_file_encryption(Uint32 x)
 }
 
 #define NDBD_SUPPORT_ACTIVATE NDB_MAKE_VERSION(21,04,0)
-
 static
 inline
 bool
@@ -692,5 +691,19 @@ bool
 ndbd_support_locked_reads_in_query_threads(Uint32 x)
 {
   return x >= NDBD_SUPPORT_LOCKED_READS_IN_QUERY_THREADS;
+}
+
+/*
+ * NdbInterpreter may compare NULL values according to the semantic
+ * specified by the SQL standard, which is what MySQL expect. (WL#14476)
+ * Introduced in MySQL 8.0.26 which maps to RonDB 21.10.2
+ */
+#define NDBD_SUPPORT_SQL_COMPARE_SEMANTICS NDB_MAKE_VERSION(21,10,2)
+static
+inline
+int
+ndbd_support_sql_compare_semantics(Uint32 x)
+{
+  return x >= NDBD_SUPPORT_SQL_COMPARE_SEMANTICS;
 }
 #endif
