@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -151,10 +152,7 @@ Dbtup::execACC_SCANREQ(Signal* signal)
     tablePtr.i = req->tableId;
     ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
     FragrecordPtr fragPtr;
-    Uint32 fragId = req->fragmentNo;
-    fragPtr.i = RNIL;
-    getFragmentrec(fragPtr, fragId, tablePtr.p);
-    ndbrequire(fragPtr.i != RNIL);
+    fragPtr = prepare_fragptr;
     Fragrecord& frag = *fragPtr.p;
     // flags
     Uint32 bits = 0;
@@ -390,7 +388,7 @@ Dbtup::execACC_CHECK_SCAN(Signal* signal)
   // fragment
   FragrecordPtr fragPtr;
   fragPtr.i = scan.m_fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  c_fragment_pool.getPtr(fragPtr);
   Fragrecord& frag = *fragPtr.p;
   bool wait_for_scan_lock_record = false;
   if (scan.m_bits & ScanOp::SCAN_LOCK &&
@@ -527,7 +525,7 @@ Dbtup::scanReply(Signal* signal, ScanOpPtr scanPtr)
   ScanOp& scan = *scanPtr.p;
   FragrecordPtr fragPtr;
   fragPtr.i = scan.m_fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  c_fragment_pool.getPtr(fragPtr);
   Fragrecord& frag = *fragPtr.p;
   // for reading tuple key in Current state
   Uint32* pkData = (Uint32*)c_dataBuffer;
@@ -569,7 +567,6 @@ Dbtup::scanReply(Signal* signal, ScanOpPtr scanPtr)
       lockReq->userRef = reference();
       lockReq->tableId = scan.m_tableId;
       lockReq->fragId = frag.fragmentId;
-      lockReq->fragPtrI = RNIL; // no cached frag ptr yet
       lockReq->hashValue = md5_hash((Uint64*)pkData, pkSize);
       lockReq->page_id = key_mm.m_page_no;
       lockReq->page_idx = key_mm.m_page_idx;
@@ -912,7 +909,7 @@ Dbtup::scanFirst(Signal*, ScanOpPtr scanPtr)
   // fragment
   FragrecordPtr fragPtr;
   fragPtr.i = scan.m_fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  c_fragment_pool.getPtr(fragPtr);
   Fragrecord& frag = *fragPtr.p;
 
   if (bits & ScanOp::SCAN_NR)
@@ -1860,7 +1857,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
   // fragment
   FragrecordPtr fragPtr;
   fragPtr.i = scan.m_fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  c_fragment_pool.getPtr(fragPtr);
   Fragrecord& frag = *fragPtr.p;
   m_curr_fragptr = fragPtr;
   // tuple found
@@ -3539,14 +3536,10 @@ void
 Dbtup::stop_lcp_scan(Uint32 tableId, Uint32 fragId)
 {
   jamEntry();
-  TablerecPtr tablePtr;
-  tablePtr.i = tableId;
-  ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
-
   FragrecordPtr fragPtr;
   fragPtr.i = RNIL;
-  getFragmentrec(fragPtr, fragId, tablePtr.p);
-  ndbrequire(fragPtr.i != RNIL);
+  getFragmentrec(fragPtr, fragId, tableId);
+  ndbrequire(fragPtr.i != RNIL64);
   Fragrecord& frag = *fragPtr.p;
 
   ndbrequire(frag.m_lcp_scan_op != RNIL && c_lcp_scan_op != RNIL);
@@ -3556,7 +3549,7 @@ Dbtup::stop_lcp_scan(Uint32 tableId, Uint32 fragId)
   ndbrequire(scanPtr.p->m_fragPtrI != RNIL);
 
   fragPtr.p->m_lcp_scan_op = RNIL;
-  scanPtr.p->m_fragPtrI = RNIL;
+  scanPtr.p->m_fragPtrI = RNIL64;
   scanPtr.p->m_tableId = RNIL;
 }
 
@@ -3565,7 +3558,7 @@ Dbtup::releaseScanOp(ScanOpPtr& scanPtr)
 {
   FragrecordPtr fragPtr;
   fragPtr.i = scanPtr.p->m_fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  c_fragment_pool.getPtr(fragPtr);
 
   if (scanPtr.p->m_bits & ScanOp::SCAN_LCP)
   {
@@ -3597,14 +3590,10 @@ Dbtup::start_lcp_scan(Uint32 tableId,
                       Uint32 & max_page_cnt)
 {
   jamEntry();
-  TablerecPtr tablePtr;
-  tablePtr.i = tableId;
-  ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
-
   FragrecordPtr fragPtr;
-  fragPtr.i = RNIL;
-  getFragmentrec(fragPtr, fragId, tablePtr.p);
-  ndbrequire(fragPtr.i != RNIL);
+  fragPtr.i = RNIL64;
+  getFragmentrec(fragPtr, fragId, tableId);
+  ndbrequire(fragPtr.i != RNIL64);
   Fragrecord& frag = *fragPtr.p;
   
   ndbrequire(frag.m_lcp_scan_op == RNIL && c_lcp_scan_op != RNIL);
@@ -3612,7 +3601,7 @@ Dbtup::start_lcp_scan(Uint32 tableId,
   ScanOpPtr scanPtr;
   scanPtr.i = frag.m_lcp_scan_op;
   ndbrequire(c_scanOpPool.getValidPtr(scanPtr));
-  ndbrequire(scanPtr.p->m_fragPtrI == RNIL);
+  ndbrequire(scanPtr.p->m_fragPtrI == RNIL64);
   new (scanPtr.p) ScanOp;
   scanPtr.p->m_fragPtrI = fragPtr.i;
   scanPtr.p->m_tableId = tableId;
@@ -3628,19 +3617,15 @@ Dbtup::start_lcp_scan(Uint32 tableId,
 void
 Dbtup::lcp_frag_watchdog_print(Uint32 tableId, Uint32 fragId)
 {
-  TablerecPtr tablePtr;
-  tablePtr.i = tableId;
   if (tableId > cnoOfTablerec)
   {
     jam();
     return;
   }
-  ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
-
   FragrecordPtr fragPtr;
   fragPtr.i = RNIL;
-  getFragmentrec(fragPtr, fragId, tablePtr.p);
-  ndbrequire(fragPtr.i != RNIL);
+  getFragmentrec(fragPtr, fragId, tableId);
+  ndbrequire(fragPtr.i != RNIL64);
   Fragrecord& frag = *fragPtr.p;
 
   if (c_lcp_scan_op == RNIL)

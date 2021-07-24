@@ -279,6 +279,66 @@ struct ConstPtr
   }
 };
 
+template <typename T>
+struct Ptr64
+{
+  typedef Uint64 I;
+  T * p;
+  Uint64 i;
+
+  static Ptr64 get(T* _p, Uint64 _i)
+  {
+    Ptr64 x;
+    x.p = _p;
+    x.i = _i;
+    return x;
+  }
+
+  Ptr64(){assert(memset(this, 0xff, sizeof(*this)));}
+  Ptr64(T* pVal, Uint64 iVal):p(pVal), i(iVal){}
+
+
+  bool isNull() const 
+  { 
+    assert(i <= RNIL64);
+    return i == RNIL64; 
+  }
+
+  inline void setNull()
+  {
+    i = RNIL64;
+  }
+};
+
+template <typename T>
+struct ConstPtr64
+{
+  const T * p;
+  Uint64 i;
+
+  static ConstPtr64 get(T const* _p, Uint32 _i)
+  {
+    ConstPtr64 x;
+    x.p = _p;
+    x.i = _i;
+    return x;
+  }
+
+  ConstPtr64(){assert(memset(this, 0xff, sizeof(*this)));}
+  ConstPtr64(T* pVal, Uint64 iVal):p(pVal), i(iVal){}
+
+  bool isNull() const 
+  { 
+    assert(i <= RNIL64);
+    return i == RNIL64; 
+  }
+
+  inline void setNull()
+  {
+    i = RNIL64;
+  }
+};
+
 #ifdef XX_DOCUMENTATION_XX
 /**
  * Any pool should implement the following
@@ -524,6 +584,169 @@ RecordPool<P, T>::release(Ptr<T> ptr)
   m_pool.release(tmp);
 }
 
+template <typename P, typename T = typename P::Type>
+class RecordPool64 {
+public:
+  typedef T Type;
+  RecordPool64();
+  ~RecordPool64();
+  
+  void init(Uint32 type_id, const Pool_context& pc);
+  
+  /**
+   * Update p value for ptr according to i value 
+   */
+  void getPtr(Ptr64<T> &) const;
+  void getPtr(ConstPtr64<T> &) const;
+  
+  /**
+   * Get pointer for i value
+   */
+  T * getPtr(Uint64 i) const;
+  const T * getConstPtr(Uint64 i) const;
+
+  /**
+   * Update p & i value for ptr according to <b>i</b> value 
+   */
+  void getPtr(Ptr64<T> &, Uint64 i) const;
+  void getPtr(ConstPtr64<T> &, Uint64 i) const;
+
+  /**
+   * Allocate an object from pool - update Ptr
+   *
+   * Return i
+   */
+  bool seize(Ptr64<T> &);
+
+  /**
+   * Return an object to pool
+   */
+  void release(Uint64 i);
+
+  /**
+   * Return an object to pool
+   */
+  void release(Ptr64<T>);
+private:
+  P m_pool;
+};
+
+template <typename P, typename T>
+inline
+RecordPool64<P, T>::RecordPool64()
+{
+}
+
+template <typename P, typename T>
+inline
+void
+RecordPool64<P, T>::init(Uint32 type_id, const Pool_context& pc)
+{
+  T tmp;
+  const char * off_base = (char*)&tmp;
+  const char * off_next = (char*)&tmp.nextPool;
+  const char * off_magic = (char*)&tmp.m_magic;
+
+  Record_info ri;
+  ri.m_size = sizeof(T);
+  ri.m_offset_next_pool = Uint32(off_next - off_base);
+  ri.m_offset_magic = Uint32(off_magic - off_base);
+  ri.m_type_id = type_id;
+  m_pool.init(ri, pc);
+}
+
+template <typename P, typename T>
+inline
+RecordPool64<P, T>::~RecordPool64()
+{
+}
+  
+template <typename P, typename T>
+inline
+void
+RecordPool64<P, T>::getPtr(Ptr64<T> & ptr) const
+{
+  ptr.p = static_cast<T*>(m_pool.getPtr(ptr.i));
+}
+
+template <typename P, typename T>
+inline
+void
+RecordPool64<P, T>::getPtr(ConstPtr64<T> & ptr) const 
+{
+  ptr.p = static_cast<const T*>(m_pool.getPtr(ptr.i));
+}
+
+template <typename P, typename T>
+inline
+void
+RecordPool64<P, T>::getPtr(Ptr64<T> & ptr, Uint64 i) const
+{
+  ptr.i = i;
+  ptr.p = static_cast<T*>(m_pool.getPtr(ptr.i));  
+}
+
+template <typename P, typename T>
+inline
+void
+RecordPool64<P, T>::getPtr(ConstPtr64<T> & ptr, Uint64 i) const 
+{
+  ptr.i = i;
+  ptr.p = static_cast<const T*>(m_pool.getPtr(ptr.i));  
+}
+  
+template <typename P, typename T>
+inline
+T * 
+RecordPool64<P, T>::getPtr(Uint64 i) const
+{
+  return static_cast<T*>(m_pool.getPtr(i));  
+}
+
+template <typename P, typename T>
+inline
+const T * 
+RecordPool64<P, T>::getConstPtr(Uint64 i) const 
+{
+  return static_cast<const T*>(m_pool.getPtr(i)); 
+}
+  
+template <typename P, typename T>
+inline
+bool
+RecordPool64<P, T>::seize(Ptr64<T> & ptr)
+{
+  Ptr64<T> tmp;
+  bool ret = m_pool.seize(tmp);
+  if(likely(ret))
+  {
+    ptr.i = tmp.i;
+    ptr.p = static_cast<T*>(tmp.p);
+  }
+  return ret;
+}
+
+template <typename P, typename T>
+inline
+void
+RecordPool64<P, T>::release(Uint64 i)
+{
+  Ptr64<T> ptr;
+  ptr.i = i;
+  ptr.p = m_pool.getPtr(i);
+  m_pool.release(ptr);
+}
+
+template <typename P, typename T>
+inline
+void
+RecordPool64<P, T>::release(Ptr64<T> ptr)
+{
+  Ptr64<T> tmp;
+  tmp.i = ptr.i;
+  tmp.p = ptr.p;
+  m_pool.release(tmp);
+}
 
 #undef JAM_FILE_ID
 

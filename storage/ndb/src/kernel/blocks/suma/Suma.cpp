@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
+   Copyright (c) 2020, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -123,12 +123,20 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_AUTOMATIC_MEMORY 1
+//#define DEBUG_REP_MEM 1
+//#define DO_TRANSIENT_POOL_STAT 1
 #endif
 
 #ifdef DEBUG_AUTOMATIC_MEMORY
 #define DEB_AUTOMATIC_MEMORY(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_AUTOMATIC_MEMORY(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_REP_MEM
+#define DEB_REP_MEM(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_REP_MEM(arglist) do { } while (0)
 #endif
 
 /**
@@ -166,75 +174,79 @@ Suma::execREAD_CONFIG_REQ(Signal* signal)
   ndbrequire(p != 0);
 
   // SumaParticipant
-  Uint32 noTables, noAttrs, maxBufferedEpochs;
-  ndb_mgm_get_int_parameter(p, CFG_DICT_TABLE,
-			    &noTables);
-  ndb_mgm_get_int_parameter(p, CFG_DICT_ATTRIBUTE,
-			    &noAttrs);
+  Uint32 maxBufferedEpochs;
   ndb_mgm_get_int_parameter(p, CFG_DB_MAX_BUFFERED_EPOCHS,
                             &maxBufferedEpochs);
 
-  DEB_AUTOMATIC_MEMORY(("Allocating c_tablePool, %u tables", noTables));
-  c_tablePool.setSize(noTables);
-  DEB_AUTOMATIC_MEMORY(("Allocating c_tables"));
-  c_tables.setSize(noTables);
-  DEB_AUTOMATIC_MEMORY(("Allocating c_subscriptions"));
-  c_subscriptions.setSize(noTables);
+  DEB_AUTOMATIC_MEMORY(("Allocating c_tablePool"));
+  Pool_context pc;
+  pc.m_block = this;
 
-  Uint32 cnt = 0;
-  ndb_mgm_get_int_parameter(p, CFG_DB_SUBSCRIPTIONS, &cnt);
-  if (cnt == 0)
-  {
-    jam();
-    cnt = noTables;
+  c_tablePool.init(
+    Table::TYPE_ID,
+    pc,
+    1,
+    UINT32_MAX);
+
+  while (c_tablePool.startup())
+  { 
+    refresh_watch_dog();
   }
-  DEB_AUTOMATIC_MEMORY(("Allocating c_subscriptionPool, cnt: %u", cnt));
-  c_subscriptionPool.setSize(cnt);
 
-  cnt *= 2;
+  DEB_AUTOMATIC_MEMORY(("Allocating c_tables with size 8192"));
+  c_tables.setSize(8192);
+  DEB_AUTOMATIC_MEMORY(("Allocating c_subscriptions with size 8192"));
+  c_subscriptions.setSize(8192);
+
+  DEB_AUTOMATIC_MEMORY(("Allocating c_subscriptionPool"));
+  c_subscriptionPool.init(
+    Subscription::TYPE_ID,
+    pc,
+    1,
+    UINT32_MAX);
+
+  while (c_subscriptionPool.startup())
   {
-    Uint32 val = 0;
-    ndb_mgm_get_int_parameter(p, CFG_DB_SUBSCRIBERS, &val);
-    if (val)
-    {
-      jam();
-      cnt =  val;
-    } else {
-      // Autosize: Add two subscribers for each API node (since each
-      // MySQL Server uses two for detecting schema changes)
-      Uint32 num_api_nodes = 0;
-      ndb_mgm_configuration_iterator * iter = m_ctx.m_config.getClusterConfigIterator();
-      for(ndb_mgm_first(iter); ndb_mgm_valid(iter); ndb_mgm_next(iter)){
-        Uint32 node_type;
-        ndbrequire(!ndb_mgm_get_int_parameter(iter, CFG_TYPE_OF_SECTION,
-                                              &node_type));
-        if (node_type == NODE_TYPE_API) {
-          num_api_nodes++;
-        }
-      }
-      cnt += 2 * num_api_nodes;
-    }
+    refresh_watch_dog();
   }
-  DEB_AUTOMATIC_MEMORY(("Allocating c_subscriberPool, cnt: %u", cnt));
-  c_subscriberPool.setSize(cnt);
 
-  cnt = 0;
-  ndb_mgm_get_int_parameter(p, CFG_DB_SUB_OPERATIONS, &cnt);
-  DEB_AUTOMATIC_MEMORY(("Allocating c_subOpPool, cnt: %u", cnt));
-  if (cnt)
-    c_subOpPool.setSize(cnt);
-  else
-    c_subOpPool.setSize(256);
-  
-  DEB_AUTOMATIC_MEMORY(("Allocating c_syncPool, cnt: %u", cnt));
+  DEB_AUTOMATIC_MEMORY(("Allocating c_subscriberPool"));
+  c_subscriberPool.init(
+    Subscriber::TYPE_ID,
+    pc,
+    1,
+    UINT32_MAX);
+
+  while (c_subscriberPool.startup())
+  {
+    refresh_watch_dog();
+  }
+
+  DEB_AUTOMATIC_MEMORY(("Allocating c_subOpPool"));
+  c_subOpPool.init(
+    SubOpRecord::TYPE_ID,
+    pc,
+    1,
+    UINT32_MAX);
+
+  while (c_subOpPool.startup())
+  {
+    refresh_watch_dog();
+  }
+
+  DEB_AUTOMATIC_MEMORY(("Allocating c_dataBufferPool"));
+  c_dataBufferPool.init(
+    RT_SUMA_DATA_BUFFER,
+    pc,
+    15,
+    UINT32_MAX);
+
+  while (c_dataBufferPool.startup())
+  {
+    refresh_watch_dog();
+  }
+  DEB_AUTOMATIC_MEMORY(("Allocating c_syncPool, cnt: 2"));
   c_syncPool.setSize(2);
-
-  // Trix: max 5 concurrent index stats ops with max 9 words bounds
-  Uint32 noOfBoundWords = 5 * 9;
-
-  // XXX multiplies number of words by 15 ???
-  DEB_AUTOMATIC_MEMORY(("Allocating c_dataBufferPool, noAttrs: %u", noAttrs));
-  c_dataBufferPool.setSize(noAttrs + noOfBoundWords);
 
   c_maxBufferedEpochs = maxBufferedEpochs;
   infoEvent("Buffering maximum epochs %u", c_maxBufferedEpochs);
@@ -273,17 +285,68 @@ Suma::execREAD_CONFIG_REQ(Signal* signal)
   DEB_AUTOMATIC_MEMORY(("Allocating c_gcp_pool, size: %u", poolSize));
   c_gcp_pool.setSize(poolSize);
 
+  /**
+   * We can increase the number of page chunks if the user
+   * has setup a very large ReplicationMemory.
+   */
+  Uint64 ReplicationMemory = 0;
+  ndb_mgm_get_int64_parameter(p, CFG_DB_REPLICATION_MEM,
+                              &ReplicationMemory);
+  ReplicationMemory /= (Uint64(32768) * Uint64(32));
+  Uint32 rep_mb = Uint32(ReplicationMemory);
+  /**
+   * We always allocate page chunk records to handle at least 16 GB of
+   * page buffers. This only represents 16384 records of 20 bytes each.
+   * This represents an upper limit on what normally can be used for
+   * the page pool in SUMA. Setting the maximum buffered epoch bytes
+   * even higher can be done using configuration. However we can use
+   * up to 16 GByte of page buffers even if we haven't configured for
+   * this.
+   *
+   * We allocate trigger page chunks to be able to handle 4 GByte of
+   * buffers in sending from DBTUP to SUMA. This should be more than
+   * enough.
+   *
+   * We allocate 4 * 1 MByte of Trigger pages in 1 chunk in all 4
+   * LDM Trigger page records. This will mostly be sufficient and
+   * will ensure that we at least have a basic set of pages for
+   * communication of replication events between DBTUP and SUMA.
+   */
   Uint32 maxBufferedEpochBytes, numPages, numPageChunks;
   ndb_mgm_get_int_parameter(p, CFG_DB_MAX_BUFFERED_EPOCH_BYTES,
 			    &maxBufferedEpochBytes);
   numPages = (maxBufferedEpochBytes + Page_chunk::CHUNK_PAGE_SIZE - 1)
              / Page_chunk::CHUNK_PAGE_SIZE;
-  numPageChunks = (numPages + Page_chunk::PAGES_PER_CHUNK - 1)
-                  / Page_chunk::PAGES_PER_CHUNK;
+
+  numPageChunks = MAX(rep_mb, 16384);
   DEB_AUTOMATIC_MEMORY(("Allocating c_page_chunk_pool, size: %u",
                         numPageChunks));
   c_page_chunk_pool.setSize(numPageChunks);
-  
+  c_trigger_page_record_pool.setSize(NUM_LDM_TRIGGER_PAGE_RECORDS);
+  c_trigger_page_chunk_pool.setSize(4096);
+  for (Uint32 i = 0; i < NUM_LDM_TRIGGER_PAGE_RECORDS; i++)
+  {
+    Ptr<LdmTriggerPageRecord> triggerPagePtr;
+    c_trigger_page_record_pool.seize(triggerPagePtr);
+    triggerPagePtr.p->m_trigger_page_free_chunks.init();
+    triggerPagePtr.p->m_trigger_page_full_chunks.init();
+    NdbMutex_Init(&triggerPagePtr.p->theMutex);
+  }
+  NdbMutex_Init(&theTriggerPageChunkMutex);
+  for (Uint32 i = 0; i < NUM_LDM_TRIGGER_PAGE_RECORDS; i++)
+  {
+    Ptr<LdmTriggerPageRecord> triggerPagePtr;
+    Ptr<Trigger_page_chunk> triggerChunkPtr;
+    c_trigger_page_record_pool.getPtr(triggerPagePtr, i);
+    ndbrequire(alloc_trigger_page_chunk(triggerPagePtr,
+                                        triggerChunkPtr,
+                                        jamBuffer()));
+  }
+  m_total_pages_allocated = 0;
+  m_total_pages_free = 0;
+  m_min_pages_allocated = numPages;
+  m_min_pages_free = numPages / 2;
+
   {
     SyncRecord_sllist tmp(c_syncPool);
     Ptr<SyncRecord> ptr;
@@ -334,6 +397,27 @@ Suma::execREAD_CONFIG_REQ(Signal* signal)
 }
 
 void
+Suma::init_page_chunks()
+{
+  /**
+   * Ensure that 4 MByte of Replication Event Buffers are always
+   * allocated to ensure that we at least have some level of memory
+   * even with extreme memory environments.
+   */
+  Uint32 page_id[128];
+  for (Uint32 i = 0; i < 128; i++)
+  {
+    page_id[i] = seize_page();
+    ndbrequire(page_id[i] != RNIL);
+  }
+  for (Uint32 i = 0; i < 128; i++)
+  {
+    Buffer_page* page= c_page_pool.getPtr(page_id[i]);
+    free_page(page_id[i], page);
+  }
+}
+
+void
 Suma::execSTTOR(Signal* signal) {
   jamEntry();                            
 
@@ -349,6 +433,16 @@ Suma::execSTTOR(Signal* signal) {
     jam();
     void* ptr = m_ctx.m_mm.get_memroot();
     c_page_pool.set((Buffer_page*)ptr, (Uint32)~0);
+    init_page_chunks();
+#if (defined(VM_TRACE) || \
+     defined(ERROR_INSERT)) && \
+    defined(DO_TRANSIENT_POOL_STAT)
+
+    /* Start reporting statistics for transient pools */
+    signal->theData[0] = SumaContinueB::SUMA_TRANSIENT_POOL_STAT;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
+#endif
+
   }
 
   if (m_startphase == 5)
@@ -1128,6 +1222,41 @@ Suma::execCONTINUEB(Signal* signal){
   jamEntry();
   Uint32 type= signal->theData[0];
   switch(type){
+  case SumaContinueB::SHRINK_TRANSIENT_POOLS:
+  {
+    jam();
+    Uint32 pool_index = signal->theData[1];
+    ndbassert(signal->getLength() == 2);
+    shrinkTransientPools(pool_index);
+    return;
+  }
+#if (defined(VM_TRACE) || \
+     defined(ERROR_INSERT)) && \
+    defined(DO_TRANSIENT_POOL_STAT)
+
+  case SumaContinueB::SUMA_TRANSIENT_POOL_STAT:
+  {
+    for (Uint32 pool_index = 0;
+         pool_index < c_transient_pool_count;
+         pool_index++)
+    {
+      g_eventLogger->info(
+        "SUMA %u: Transient slot pool %u %p: Entry size %u:"
+       " Free %u: Used %u: Used high %u: Size %u: For shrink %u",
+       instance(),
+       pool_index,
+       c_transient_pools[pool_index],
+       c_transient_pools[pool_index]->getEntrySize(),
+       c_transient_pools[pool_index]->getNoOfFree(),
+       c_transient_pools[pool_index]->getUsed(),
+       c_transient_pools[pool_index]->getUsedHi(),
+       c_transient_pools[pool_index]->getSize(),
+       c_transient_pools_shrinking.get(pool_index));
+    }
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 5000, 1);
+    break;
+  }
+#endif
   case SumaContinueB::RELEASE_GCI:
   {
     Uint32 gci_hi = signal->theData[2];
@@ -1390,7 +1519,7 @@ Suma::api_fail_subscriber_list(Signal* signal, Uint32 nodeId)
   else
   {
     jam();
-    c_subOpPool.getPtr(subOpPtr);
+    ndbrequire(c_subOpPool.getValidPtr(subOpPtr));
   }
 
   Uint32 bucket = signal->theData[3];
@@ -1464,12 +1593,14 @@ Suma::api_fail_subscription(Signal* signal)
 {
   jam();
   Ptr<SubOpRecord> subOpPtr;
-  c_subOpPool.getPtr(subOpPtr, signal->theData[1]);
+  subOpPtr.i = signal->theData[1];
+  ndbrequire(c_subOpPool.getValidPtr(subOpPtr));
 
   Uint32 nodeId = subOpPtr.p->m_senderRef;
 
   Ptr<Subscription> subPtr;
-  c_subscriptionPool.getPtr(subPtr, subOpPtr.p->m_subPtrI);
+  subPtr.i = subOpPtr.p->m_subPtrI;
+  ndbrequire(c_subscriptionPool.getValidPtr(subPtr));
 
   Ptr<Subscriber> ptr;
   {
@@ -1513,6 +1644,8 @@ Suma::api_fail_subscription(Signal* signal)
       }
     }
   }
+  checkPoolShrinkNeed(SUMA_SUBSCRIBER_RECORD_TRANSIENT_POOL_INDEX,
+                      c_subscriberPool);
 
   if (!ptr.isNull())
   {
@@ -1549,6 +1682,8 @@ Suma::api_fail_subscription(Signal* signal)
   }
 
   c_subOpPool.release(subOpPtr);
+  checkPoolShrinkNeed(SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX,
+                      c_subOpPool);
 
   /* Now do block level cleanup */
   api_fail_block_cleanup(signal, nodeId);
@@ -1592,7 +1727,8 @@ Suma::execNODE_FAILREP(Signal* signal){
     {
       jam();
       Ptr<Subscription> subPtr;
-      c_subscriptionPool.getPtr(subPtr, c_restart.m_subPtrI);
+      subPtr.i = c_restart.m_subPtrI;
+      ndbrequire(c_subscriptionPool.getValidPtr(subPtr));
       abort_start_me(signal, subPtr, false);
     }
   }
@@ -1913,20 +2049,19 @@ Suma::execDUMP_STATE_ORD(Signal* signal){
   {
     jam();
     Uint32 bucket = signal->theData[1];
-    Table_keyhash::Iterator it;
+    TableIterator iter;
     if (signal->getLength() == 1)
     {
       jam();
       bucket = 0;
       infoEvent("-- Starting dump of subscribers --");
     }
-
-    c_tables.next(bucket, it);
+    c_tables.next(bucket, iter);
     const Uint32 RT_BREAK = 16;
-    for(Uint32 i = 0; i<RT_BREAK || it.bucket == bucket; i++)
+    for(Uint32 i = 0; i<RT_BREAK || iter.bucket == bucket; i++)
     {
       jam();
-      if(it.curr.i == RNIL)
+      if(iter.curr.i == RNIL)
       {
         jam();
         infoEvent("-- Ending dump of subscribers --");        
@@ -1934,13 +2069,13 @@ Suma::execDUMP_STATE_ORD(Signal* signal){
       }
 
       infoEvent("Table %u ver %u",
-                it.curr.p->m_tableId,
-                it.curr.p->m_schemaVersion);
+                iter.curr.p->m_tableId,
+                iter.curr.p->m_schemaVersion);
 
       Uint32 cnt = 0;
       Ptr<Subscription> subPtr;
       Local_Subscription_list subList(c_subscriptionPool,
-                                        it.curr.p->m_subscriptions);
+                                      iter.curr.p->m_subscriptions);
       for(subList.first(subPtr); !subPtr.isNull(); subList.next(subPtr))
       {
         infoEvent(" Subcription %u", subPtr.i);
@@ -1962,7 +2097,7 @@ Suma::execDUMP_STATE_ORD(Signal* signal){
         {
           Ptr<SubOpRecord> ptr;
           Local_SubOpRecord_fifo list(c_subOpPool,
-                                       subPtr.p->m_create_req);
+                                      subPtr.p->m_create_req);
 
           for (list.first(ptr); !ptr.isNull(); list.next(ptr), i++)
           {
@@ -1976,7 +2111,7 @@ Suma::execDUMP_STATE_ORD(Signal* signal){
         {
           Ptr<SubOpRecord> ptr;
           Local_SubOpRecord_fifo list(c_subOpPool,
-                                       subPtr.p->m_start_req);
+                                      subPtr.p->m_start_req);
 
           for (list.first(ptr); !ptr.isNull(); list.next(ptr), i++)
           {
@@ -1990,7 +2125,7 @@ Suma::execDUMP_STATE_ORD(Signal* signal){
         {
           Ptr<SubOpRecord> ptr;
           Local_SubOpRecord_fifo list(c_subOpPool,
-                                        subPtr.p->m_stop_req);
+                                      subPtr.p->m_stop_req);
 
           for (list.first(ptr); !ptr.isNull(); list.next(ptr), i++)
           {
@@ -2002,12 +2137,12 @@ Suma::execDUMP_STATE_ORD(Signal* signal){
           }
         }
       }
-      infoEvent("Table %u #subscribers %u", it.curr.p->m_tableId, cnt);
-      c_tables.next(it);
+      infoEvent("Table %u #subscribers %u", iter.curr.p->m_tableId, cnt);
+      c_tables.next(iter);
     }
 
     signal->theData[0] = tCase;
-    signal->theData[1] = it.bucket;
+    signal->theData[1] = iter.bucket;
     sendSignalWithDelay(reference(), GSN_DUMP_STATE_ORD, signal, 100, 2);
     return;
   }
@@ -2016,7 +2151,7 @@ Suma::execDUMP_STATE_ORD(Signal* signal){
   {
     jam();
     Uint32 bucket = signal->theData[1];
-    Subscription_keyhash::Iterator it;
+    Subscription_hash::Iterator iter;
     if (signal->getLength() == 1)
     {
       jam();
@@ -2024,21 +2159,22 @@ Suma::execDUMP_STATE_ORD(Signal* signal){
       infoEvent("-- Starting dump of subscribers --");
     }
 
-    c_subscriptions.next(bucket, it);
+    c_subscriptions.next(bucket, iter);
     const Uint32 RT_BREAK = 16;
-    for(Uint32 i = 0; i<RT_BREAK || it.bucket == bucket; i++)
+    for(Uint32 i = 0; i<RT_BREAK || iter.bucket == bucket; i++)
     {
       jam();
-      if(it.curr.i == RNIL)
+      if(iter.curr.i == RNIL)
       {
         jam();
         infoEvent("-- Ending dump of subscribers --");
         return;
       }
 
-      Ptr<Subscription> subPtr = it.curr;
+      Ptr<Subscription> subPtr = iter.curr;
       Ptr<Table> tabPtr;
-      c_tablePool.getPtr(tabPtr, subPtr.p->m_table_ptrI);
+      tabPtr.i = subPtr.p->m_table_ptrI;
+      ndbrequire(c_tablePool.getValidPtr(tabPtr));
       infoEvent("Subcription %u id: 0x%.8x key: 0x%.8x state: %s",
                 subPtr.i,
                 subPtr.p->m_subscriptionId,
@@ -2069,7 +2205,7 @@ Suma::execDUMP_STATE_ORD(Signal* signal){
       {
         Ptr<SubOpRecord> ptr;
         Local_SubOpRecord_fifo list(c_subOpPool,
-                                          subPtr.p->m_create_req);
+                                    subPtr.p->m_create_req);
 
         for (list.first(ptr); !ptr.isNull(); list.next(ptr), i++)
         {
@@ -2083,7 +2219,7 @@ Suma::execDUMP_STATE_ORD(Signal* signal){
       {
         Ptr<SubOpRecord> ptr;
         Local_SubOpRecord_fifo list(c_subOpPool,
-                                          subPtr.p->m_start_req);
+                                    subPtr.p->m_start_req);
 
         for (list.first(ptr); !ptr.isNull(); list.next(ptr), i++)
         {
@@ -2097,7 +2233,7 @@ Suma::execDUMP_STATE_ORD(Signal* signal){
       {
         Ptr<SubOpRecord> ptr;
         Local_SubOpRecord_fifo list(c_subOpPool,
-                                          subPtr.p->m_stop_req);
+                                    subPtr.p->m_stop_req);
 
         for (list.first(ptr); !ptr.isNull(); list.next(ptr), i++)
         {
@@ -2108,11 +2244,11 @@ Suma::execDUMP_STATE_ORD(Signal* signal){
                     ptr.p->m_senderData);
         }
       }
-      c_subscriptions.next(it);
+      c_subscriptions.next(iter);
     }
 
     signal->theData[0] = tCase;
-    signal->theData[1] = it.bucket;
+    signal->theData[1] = iter.bucket;
     sendSignalWithDelay(reference(), GSN_DUMP_STATE_ORD, signal, 100, 2);
     return;
   }
@@ -2299,7 +2435,8 @@ Suma::execCREATE_SUBID_REQ(Signal* signal)
   CreateSubscriptionIdReq const * req =
     (CreateSubscriptionIdReq*)signal->getDataPtr();
   SubscriberPtr subbPtr;
-  if(!c_subscriberPool.seize(subbPtr)){
+  if (!c_subscriberPool.seize(subbPtr))
+  {
     jam();
     sendSubIdRef(signal, req->senderRef, req->senderData, 1412);
     DBUG_VOID_RETURN;
@@ -2339,7 +2476,8 @@ Suma::execUTIL_SEQUENCE_CONF(Signal* signal)
   Uint64 subId;
   memcpy(&subId,conf->sequenceValue,8);
   SubscriberPtr subbPtr;
-  c_subscriberPool.getPtr(subbPtr,conf->senderData);
+  subbPtr.i = conf->senderData;
+  ndbrequire(c_subscriberPool.getValidPtr(subbPtr));
 
   CreateSubscriptionIdConf * subconf = (CreateSubscriptionIdConf*)conf;
   subconf->senderRef      = reference();
@@ -2351,6 +2489,8 @@ Suma::execUTIL_SEQUENCE_CONF(Signal* signal)
 	     CreateSubscriptionIdConf::SignalLength, JBB);
 
   c_subscriberPool.release(subbPtr);
+  checkPoolShrinkNeed(SUMA_SUBSCRIBER_RECORD_TRANSIENT_POOL_INDEX,
+                      c_subscriberPool);
   DBUG_PRINT("info",("c_subscriberPool  size: %d free: %d",
 		     c_subscriberPool.getSize(),
 		     c_subscriberPool.getNoOfFree()));
@@ -2375,7 +2515,8 @@ Suma::execUTIL_SEQUENCE_REF(Signal* signal)
   Uint32 subData = ref->senderData;
 
   SubscriberPtr subbPtr;
-  c_subscriberPool.getPtr(subbPtr,subData);
+  subbPtr.i = subData;
+  ndbrequire(c_subscriberPool.getValidPtr(subbPtr));
   if (err == UtilSequenceRef::TCError)
   {
     jam();
@@ -2383,6 +2524,8 @@ Suma::execUTIL_SEQUENCE_REF(Signal* signal)
   }
   sendSubIdRef(signal, subbPtr.p->m_senderRef, subbPtr.p->m_senderData, err);
   c_subscriberPool.release(subbPtr);
+  checkPoolShrinkNeed(SUMA_SUBSCRIBER_RECORD_TRANSIENT_POOL_INDEX,
+                      c_subscriberPool);
   DBUG_PRINT("info",("c_subscriberPool  size: %d free: %d",
 		     c_subscriberPool.getSize(),
 		     c_subscriberPool.getNoOfFree()));
@@ -2529,6 +2672,8 @@ Suma::execSUB_CREATE_REQ(Signal* signal)
         CLEAR_ERROR_INSERT_VALUE;
       }
       c_subscriptionPool.release(subPtr); // not yet in hash
+      checkPoolShrinkNeed(SUMA_SUBSCRIPTION_RECORD_TRANSIENT_POOL_INDEX,
+                          c_subscriptionPool);
     }
     sendSubCreateRef(signal, senderRef, senderData,
                      SubCreateRef::OutOfTableRecords);
@@ -2545,12 +2690,15 @@ Suma::execSUB_CREATE_REQ(Signal* signal)
   }
 
   TablePtr tabPtr;
+  Table check;
+  check.m_tableId = tableId;
   if (found)
   {
     jam();
-    c_tablePool.getPtr(tabPtr, subPtr.p->m_table_ptrI);
+    tabPtr.i = subPtr.p->m_table_ptrI;
+    ndbrequire(c_tablePool.getValidPtr(tabPtr));
   }
-  else if (c_tables.find(tabPtr, tableId))
+  else if (c_tables.find(tabPtr, check))
   {
     jam();
   }
@@ -2569,6 +2717,10 @@ Suma::execSUB_CREATE_REQ(Signal* signal)
       c_subscriptionPool.release(subPtr); // not yet in hash
       sendSubCreateRef(signal, senderRef, senderData,
                        SubCreateRef::OutOfTableRecords);
+      checkPoolShrinkNeed(SUMA_SUBSCRIPTION_RECORD_TRANSIENT_POOL_INDEX,
+                          c_subscriptionPool);
+      checkPoolShrinkNeed(SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX,
+                          c_subOpPool);
       return;
     }
 
@@ -2587,7 +2739,7 @@ Suma::execSUB_CREATE_REQ(Signal* signal)
     jam();
     c_subscriptions.add(subPtr);
     Local_Subscription_list list(c_subscriptionPool,
-                                   tabPtr.p->m_subscriptions);
+                                 tabPtr.p->m_subscriptions);
     list.addFirst(subPtr);
     subPtr.p->m_table_ptrI = tabPtr.i;
   }
@@ -2603,6 +2755,8 @@ Suma::execSUB_CREATE_REQ(Signal* signal)
     conf->senderData = senderData;
     sendSignal(senderRef, GSN_SUB_CREATE_CONF, signal,
                SubCreateConf::SignalLength, JBB);
+    checkPoolShrinkNeed(SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX,
+                        c_subOpPool);
     return;
   }
   case Table::UNDEFINED:{
@@ -2650,13 +2804,16 @@ Suma::execSUB_CREATE_REQ(Signal* signal)
 
     {
       Local_Subscription_list list(c_subscriptionPool,
-                                     tabPtr.p->m_subscriptions);
+                                   tabPtr.p->m_subscriptions);
       list.remove(subPtr);
     }
     c_subscriptions.release(subPtr);
-
     sendSubCreateRef(signal, senderRef, senderData,
                      SubCreateRef::TableDropped);
+    checkPoolShrinkNeed(SUMA_SUBSCRIPTION_RECORD_TRANSIENT_POOL_INDEX,
+                        c_subscriptionPool);
+    checkPoolShrinkNeed(SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX,
+                        c_subOpPool);
     return;
   }
   }
@@ -2746,7 +2903,8 @@ Suma::execSUB_SYNC_REQ(Signal* signal)
     {
       SegmentedSectionPtr ptr;
       handle.getSection(ptr, SubSyncReq::ATTRIBUTE_LIST);
-      LocalSyncRecordBuffer attrBuf(c_dataBufferPool, syncPtr.p->m_attributeList);
+      LocalSyncRecordBuffer attrBuf(c_dataBufferPool,
+                                    syncPtr.p->m_attributeList);
       append(attrBuf, ptr, getSectionSegmentPool());
     }
     if (req->requestInfo & SubSyncReq::RangeScan)
@@ -3015,7 +3173,8 @@ Suma::execGET_TABINFOREF(Signal* signal){
     (GetTabInfoRef::ErrorCode) ref->errorCode;
   int do_resend_request = 0;
   TablePtr tabPtr;
-  c_tablePool.getPtr(tabPtr, senderData);
+  tabPtr.i = senderData;
+  ndbrequire(c_tablePool.getValidPtr(tabPtr));
   switch (errorCode)
   {
   case GetTabInfoRef::TableNotDefined:
@@ -3060,7 +3219,7 @@ void
 Suma::get_tabinfo_ref_release(Signal* signal, Ptr<Table> tabPtr)
 {
   Local_Subscription_list subList(c_subscriptionPool,
-                                    tabPtr.p->m_subscriptions);
+                                  tabPtr.p->m_subscriptions);
   Ptr<Subscription> subPtr;
   ndbassert(!subList.isEmpty());
   for(subList.first(subPtr); !subPtr.isNull();)
@@ -3087,8 +3246,11 @@ Suma::get_tabinfo_ref_release(Signal* signal, Ptr<Table> tabPtr)
     c_subscriptions.remove(tmp1);
     subList.release(tmp1);
   }
-
   c_tables.release(tabPtr);
+  checkPoolShrinkNeed(SUMA_TABLE_RECORD_TRANSIENT_POOL_INDEX,
+                      c_tablePool);
+  checkPoolShrinkNeed(SUMA_SUBSCRIPTION_RECORD_TRANSIENT_POOL_INDEX,
+                      c_subscriptionPool);
 }
 
 void
@@ -3104,7 +3266,8 @@ Suma::execGET_TABINFO_CONF(Signal* signal){
   SectionHandle handle(this, signal);
   GetTabInfoConf* conf = (GetTabInfoConf*)signal->getDataPtr();
   TablePtr tabPtr;
-  c_tablePool.getPtr(tabPtr, conf->senderData);
+  tabPtr.i = conf->senderData;
+  ndbrequire(c_tablePool.getValidPtr(tabPtr));
   SegmentedSectionPtr ptr;
   handle.getSection(ptr, GetTabInfoConf::DICT_TAB_INFO);
   ndbrequire(tabPtr.p->parseTable(ptr, *this));
@@ -3120,7 +3283,7 @@ Suma::execGET_TABINFO_CONF(Signal* signal){
   tabPtr.p->m_state = Table::DEFINED;
 
   Local_Subscription_list subList(c_subscriptionPool,
-                                    tabPtr.p->m_subscriptions);
+                                  tabPtr.p->m_subscriptions);
   Ptr<Subscription> subPtr;
   ndbassert(!subList.isEmpty());
   for(subList.first(subPtr); !subPtr.isNull(); subList.next(subPtr))
@@ -3144,6 +3307,8 @@ Suma::execGET_TABINFO_CONF(Signal* signal){
       list.release(tmp);
     }
   }
+  checkPoolShrinkNeed(SUMA_SUBSCRIPTION_RECORD_TRANSIENT_POOL_INDEX,
+                      c_subscriptionPool);
 
 }
 
@@ -3203,7 +3368,8 @@ Suma::SyncRecord::getNextFragment(TablePtr * tab,
   SyncRecordBuffer::DataBufferIterator fragIt;
   
   TablePtr tabPtr;
-  suma.c_tablePool.getPtr(tabPtr, subPtr.p->m_table_ptrI);
+  tabPtr.i = subPtr.p->m_table_ptrI;
+  ndbrequire(suma.c_tablePool.getValidPtr(tabPtr));
   LocalSyncRecordBuffer fragBuf(suma.c_dataBufferPool,  m_fragments);
     
   fragBuf.position(fragIt, m_currentFragment);
@@ -3463,7 +3629,8 @@ Suma::SyncRecord::completeScan(Signal* signal, int error)
   DBUG_ENTER("Suma::SyncRecord::completeScan");
 
   SubscriptionPtr subPtr;
-  suma.c_subscriptionPool.getPtr(subPtr, m_subscriptionPtrI);
+  subPtr.i = m_subscriptionPtrI;
+  ndbrequire(suma.c_subscriptionPool.getValidPtr(subPtr));
 
   DihScanTabCompleteRep* rep = (DihScanTabCompleteRep*)signal->getDataPtr();
   rep->tableId = subPtr.p->m_tableId;
@@ -3657,6 +3824,8 @@ Suma::execSUB_START_REQ(Signal* signal){
     c_subscriberPool.release(subbPtr);
     sendSubStartRef(signal,
                     senderRef, senderData, SubStartRef::OutOfSubOpRecords);
+    checkPoolShrinkNeed(SUMA_SUBSCRIBER_RECORD_TRANSIENT_POOL_INDEX,
+                        c_subscriberPool);
     return;
   }
 
@@ -3667,6 +3836,10 @@ Suma::execSUB_START_REQ(Signal* signal){
     c_subOpPool.release(subOpPtr);
     sendSubStartRef(signal,
                     senderRef, senderData, SubStartRef::NodeDied);
+    checkPoolShrinkNeed(SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX,
+                        c_subOpPool);
+    checkPoolShrinkNeed(SUMA_SUBSCRIBER_RECORD_TRANSIENT_POOL_INDEX,
+                        c_subscriberPool);
     return;
   }
   
@@ -3741,7 +3914,8 @@ Suma::create_triggers(Signal* signal, SubscriptionPtr subPtr)
   subPtr.p->m_trigger_state = Subscription::T_CREATING;
 
   TablePtr tabPtr;
-  c_tablePool.getPtr(tabPtr, subPtr.p->m_table_ptrI);
+  tabPtr.i = subPtr.p->m_table_ptrI;
+  ndbrequire(c_tablePool.getValidPtr(tabPtr));
 
   AttributeMask attrMask;
   tabPtr.p->createAttributeMask(attrMask, *this);
@@ -3797,7 +3971,8 @@ Suma::execCREATE_TRIG_IMPL_CONF(Signal* signal)
   TablePtr tabPtr;
   SubscriptionPtr subPtr;
   c_subscriptions.getPtr(subPtr, conf->senderData);
-  c_tables.getPtr(tabPtr, subPtr.p->m_table_ptrI);
+  tabPtr.i = subPtr.p->m_table_ptrI;
+  ndbrequire(c_tablePool.getValidPtr(tabPtr));
 
   ndbrequire(tabPtr.p->m_tableId == tableId);
   ndbrequire(subPtr.p->m_trigger_state == Subscription::T_CREATING);
@@ -3845,7 +4020,8 @@ Suma::execCREATE_TRIG_IMPL_REF(Signal* signal)
   TablePtr tabPtr;
   SubscriptionPtr subPtr;
   c_subscriptions.getPtr(subPtr, ref->senderData);
-  c_tables.getPtr(tabPtr, subPtr.p->m_table_ptrI);
+  tabPtr.i = subPtr.p->m_table_ptrI;
+  ndbrequire(c_tablePool.getValidPtr(tabPtr));
 
   ndbrequire(tabPtr.p->m_tableId == tableId);
   ndbrequire(subPtr.p->m_trigger_state == Subscription::T_CREATING);
@@ -3901,7 +4077,8 @@ Suma::report_sub_start_conf(Signal* signal, Ptr<Subscription> subPtr)
 
       Uint32 senderRef = subOpPtr.p->m_senderRef;
       Uint32 senderData = subOpPtr.p->m_senderData;
-      c_subscriberPool.getPtr(ptr, subOpPtr.p->m_subscriberRef);
+      ptr.i = subOpPtr.p->m_subscriberRef;
+      ndbrequire(c_subscriberPool.getValidPtr(ptr));
 
       if (check_sub_start(ptr.p->m_senderRef))
       {
@@ -3944,7 +4121,10 @@ Suma::report_sub_start_conf(Signal* signal, Ptr<Subscription> subPtr)
       subOpList.release(tmp);
     }
   }
-  
+  checkPoolShrinkNeed(SUMA_SUBSCRIBER_RECORD_TRANSIENT_POOL_INDEX,
+                      c_subscriberPool);
+  checkPoolShrinkNeed(SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX,
+                      c_subOpPool);
   check_release_subscription(signal, subPtr);
 }
 
@@ -3965,7 +4145,8 @@ Suma::report_sub_start_ref(Signal* signal,
 
     Uint32 senderRef = subOpPtr.p->m_senderRef;
     Uint32 senderData = subOpPtr.p->m_senderData;
-    c_subscriberPool.getPtr(ptr, subOpPtr.p->m_subscriberRef);
+    ptr.i = subOpPtr.p->m_subscriberRef;
+    ndbrequire(c_subscriberPool.getValidPtr(ptr));
 
     SubStartRef* ref = (SubStartRef*)signal->getDataPtrSend();
     ref->senderRef  = reference();
@@ -3981,6 +4162,10 @@ Suma::report_sub_start_ref(Signal* signal,
     subOpList.release(tmp);
     c_subscriberPool.release(ptr);
   }
+  checkPoolShrinkNeed(SUMA_SUBSCRIBER_RECORD_TRANSIENT_POOL_INDEX,
+                      c_subscriberPool);
+  checkPoolShrinkNeed(SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX,
+                      c_subOpPool);
 }
 
 void
@@ -3991,7 +4176,8 @@ Suma::drop_triggers(Signal* signal, SubscriptionPtr subPtr)
   subPtr.p->m_outstanding_trigger = 0;
 
   Ptr<Table> tabPtr;
-  c_tablePool.getPtr(tabPtr, subPtr.p->m_table_ptrI);
+  tabPtr.i = subPtr.p->m_table_ptrI;
+  ndbrequire(c_tablePool.getValidPtr(tabPtr));
   if (tabPtr.p->m_state == Table::DROPPED)
   {
     jam();
@@ -4067,8 +4253,10 @@ Suma::execDROP_TRIG_IMPL_REF(Signal* signal)
   const Uint32 triggerId = ref->triggerId;
   const Uint32 type = (triggerId >> 16) & 0x3;
 
-  c_subscriptionPool.getPtr(subPtr, ref->senderData);
-  c_tables.getPtr(tabPtr, subPtr.p->m_table_ptrI);
+  subPtr.i = ref->senderData;
+  ndbrequire(c_subscriptionPool.getValidPtr(subPtr));
+  tabPtr.i = subPtr.p->m_table_ptrI;
+  ndbrequire(c_tablePool.getValidPtr(tabPtr));
   ndbrequire(tabPtr.p->m_tableId == ref->tableId);
 
   ndbrequire(type < 3);
@@ -4105,8 +4293,10 @@ Suma::execDROP_TRIG_IMPL_CONF(Signal* signal)
   const Uint32 triggerId = conf->triggerId;
   const Uint32 type = (triggerId >> 16) & 0x3;
 
-  c_subscriptionPool.getPtr(subPtr, conf->senderData);
-  c_tables.getPtr(tabPtr, subPtr.p->m_table_ptrI);
+  subPtr.i = conf->senderData;
+  ndbrequire(c_subscriptionPool.getValidPtr(subPtr));
+  tabPtr.i = subPtr.p->m_table_ptrI;
+  ndbrequire(c_tablePool.getValidPtr(tabPtr));
   ndbrequire(tabPtr.p->m_tableId == conf->tableId);
 
   ndbrequire(type < 3);
@@ -4278,10 +4468,12 @@ Suma::sub_stop_req(Signal* signal)
   }
 
   Ptr<SubOpRecord> subOpPtr;
-  c_subOpPool.getPtr(subOpPtr, signal->theData[1]);
+  subOpPtr.i = signal->theData[1];
+  ndbrequire(c_subOpPool.getValidPtr(subOpPtr));
 
   Ptr<Subscription> subPtr;
-  c_subscriptionPool.getPtr(subPtr, subOpPtr.p->m_subPtrI);
+  subPtr.i = subOpPtr.p->m_subPtrI;
+  ndbrequire(c_subscriptionPool.getValidPtr(subPtr));
 
   Ptr<Subscriber> ptr;
   {
@@ -4335,6 +4527,8 @@ found:
     bool report = subPtr.p->m_options & Subscription::REPORT_SUBSCRIBE;
     report_sub_stop_conf(signal, subOpPtr, ptr, report, list);
     c_subscriberPool.release(ptr);
+    checkPoolShrinkNeed(SUMA_SUBSCRIBER_RECORD_TRANSIENT_POOL_INDEX,
+                        c_subscriberPool);
   }
   check_remove_queue(signal, subPtr, subOpPtr, true, true);
   check_release_subscription(signal, subPtr);
@@ -4368,6 +4562,8 @@ Suma::check_remove_queue(Signal* signal,
   {
     jam();
     list.release(subOpPtr);
+    checkPoolShrinkNeed(SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX,
+                        c_subOpPool);
   }
   else
   {
@@ -4937,6 +5133,8 @@ Suma::execFIRE_TRIG_ORD_L(Signal* signal)
   ndbassert(signal->getNoOfSections() == 0);
   Uint32 pageId = signal->theData[0];
   Uint32 len = signal->theData[1];
+  Uint32 ldm_instance = signal->theData[2];
+  Uint32 chunkId = signal->theData[3];
   const Uint32 page_count =
       (len + GLOBAL_PAGE_SIZE_WORDS - 1) / GLOBAL_PAGE_SIZE_WORDS;
 
@@ -5002,7 +5200,7 @@ Suma::execFIRE_TRIG_ORD_L(Signal* signal)
   }
 
   // Pages allocated in Dbtup::ndbmtd_buffer_suma_trigger().
-  m_ctx.m_mm.release_pages(RT_SUMA_TRIGGER_BUFFER, pageId, page_count);
+  release_trigger_page(ldm_instance, pageId++, chunkId, page_count);
 }
 
 void
@@ -5139,13 +5337,16 @@ Suma::doFIRE_TRIG_ORD(Signal* signal, LinearSectionPtr lsptr[3])
   const Uint32 transId2  = trg->m_transId2;
 
   Ptr<Subscription> subPtr;
-  c_subscriptionPool.getPtr(subPtr, trigId & 0xFFFF);
+  subPtr.i = trigId & 0xFFFF;
+  ndbrequire(c_subscriptionPool.getValidPtr(subPtr));
 
   ndbrequire(gci > m_last_complete_gci);
 
   Uint32 tableId = subPtr.p->m_tableId;
-  Uint32 schemaVersion =
-    c_tablePool.getPtr(subPtr.p->m_table_ptrI)->m_schemaVersion;
+  Ptr<Table> tabPtr;
+  tabPtr.i = subPtr.p->m_table_ptrI;
+  ndbrequire(c_tablePool.getValidPtr(tabPtr));
+  Uint32 schemaVersion = tabPtr.p->m_schemaVersion;
   
   Uint32 bucket= hashValue % c_no_of_buckets;
   m_max_seen_gci = (gci > m_max_seen_gci ? gci : m_max_seen_gci);
@@ -5877,7 +6078,9 @@ Suma::execDROP_TAB_CONF(Signal *signal)
   Uint32 tableId= conf->tableId;
 
   TablePtr tabPtr;
-  if (!c_tables.find(tabPtr, tableId))
+  Table check;
+  check.m_tableId = tableId;
+  if (!c_tables.find(tabPtr, check))
   {
     jam();
     return;
@@ -5906,7 +6109,7 @@ Suma::execDROP_TAB_CONF(Signal *signal)
 
     Ptr<Subscription> subPtr;
     Local_Subscription_list subList(c_subscriptionPool,
-                                      tabPtr.p->m_subscriptions);
+                                    tabPtr.p->m_subscriptions);
 
     for (subList.first(subPtr); !subPtr.isNull(); subList.next(subPtr))
     {
@@ -5948,6 +6151,8 @@ Suma::execDROP_TAB_CONF(Signal *signal)
     jam();
     tabPtr.p->release(* this);
     c_tablePool.release(tabPtr);
+    checkPoolShrinkNeed(SUMA_TABLE_RECORD_TRANSIENT_POOL_INDEX,
+                        c_tablePool);
     return;
   }
   else
@@ -5959,7 +6164,7 @@ Suma::execDROP_TAB_CONF(Signal *signal)
     Ptr<Subscription> subPtr;
     {
       Local_Subscription_list subList(c_subscriptionPool,
-                                        tabPtr.p->m_subscriptions);
+                                      tabPtr.p->m_subscriptions);
       subList.first(subPtr);
     }
     while (!subPtr.isNull())
@@ -5967,7 +6172,7 @@ Suma::execDROP_TAB_CONF(Signal *signal)
       Ptr<Subscription> tmp = subPtr;
       {
         Local_Subscription_list subList(c_subscriptionPool,
-                                          tabPtr.p->m_subscriptions);
+                                        tabPtr.p->m_subscriptions);
         subList.next(subPtr);
       }
       check_release_subscription(signal, tmp);
@@ -6007,7 +6212,9 @@ Suma::execALTER_TAB_REQ(Signal *signal)
   SegmentedSectionPtr tabInfoPtr;
   handle.getSection(tabInfoPtr, 0);
 
-  if (!c_tables.find(tabPtr, tableId))
+  Table check;
+  check.m_tableId = tableId;
+  if (!c_tables.find(tabPtr, check))
   {
     jam();
     releaseSections(handle);
@@ -6051,7 +6258,7 @@ Suma::execALTER_TAB_REQ(Signal *signal)
   data->totalLen       = tabInfoPtr.sz;
   Ptr<Subscription> subPtr;
   Local_Subscription_list subList(c_subscriptionPool,
-                                    tabPtr.p->m_subscriptions);
+                                  tabPtr.p->m_subscriptions);
 
   for (subList.first(subPtr); !subPtr.isNull(); subList.next(subPtr))
   {
@@ -6310,7 +6517,8 @@ Suma::check_release_subscription(Signal* signal, Ptr<Subscription> subPtr)
 
 do_release:
   TablePtr tabPtr;
-  c_tables.getPtr(tabPtr, subPtr.p->m_table_ptrI);
+  tabPtr.i = subPtr.p->m_table_ptrI;
+  ndbrequire(c_tablePool.getValidPtr(tabPtr));
 
   if (tabPtr.p->m_state == Table::DROPPED)
   {
@@ -6326,7 +6534,7 @@ do_release:
 
   {
     Local_Subscription_list list(c_subscriptionPool,
-                                   tabPtr.p->m_subscriptions);
+                                 tabPtr.p->m_subscriptions);
     list.remove(subPtr);
   }
 
@@ -6346,10 +6554,13 @@ do_release:
       jam();
       tabPtr.p->release(* this);
       c_tablePool.release(tabPtr);
+      checkPoolShrinkNeed(SUMA_TABLE_RECORD_TRANSIENT_POOL_INDEX,
+                          c_tablePool);
     };
   }
-  
   c_subscriptions.release(subPtr);
+  checkPoolShrinkNeed(SUMA_SUBSCRIPTION_RECORD_TRANSIENT_POOL_INDEX,
+                      c_subscriptionPool);
 }
 
 void
@@ -6390,6 +6601,8 @@ Suma::SyncRecord::release(){
   LocalSyncRecordBuffer boundBuf(suma.c_dataBufferPool, m_boundInfo);
   boundBuf.release();  
 
+  suma.checkPoolShrinkNeed(SUMA_DATA_BUFFER_TRANSIENT_POOL_INDEX,
+                           suma.c_dataBufferPool);
   ndbassert(m_sourceInstance == RNIL);
   ndbassert(m_headersSection == RNIL);
   ndbassert(m_dataSection == RNIL);
@@ -6472,7 +6685,8 @@ Suma::copySubscription(Signal* signal, Subscription_hash::Iterator it)
   jam();
 
   Ptr<SubOpRecord> subOpPtr;
-  c_subOpPool.getPtr(subOpPtr, c_restart.m_subOpPtrI);
+  subOpPtr.i = c_restart.m_subOpPtrI;
+  ndbrequire(c_subOpPool.getValidPtr(subOpPtr));
 
   Ptr<Subscription> subPtr = it.curr;
   if (!subPtr.isNull())
@@ -6507,6 +6721,8 @@ Suma::copySubscription(Signal* signal, Subscription_hash::Iterator it)
 
     c_subOpPool.release(subOpPtr);
     c_restart.m_ref = 0;
+    checkPoolShrinkNeed(SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX,
+                        c_subOpPool);
     return;
   }
 }
@@ -6555,7 +6771,8 @@ Suma::sendSubCreateReq(Signal* signal, Ptr<Subscription> subPtr)
   }
 
   Ptr<Table> tabPtr;
-  c_tablePool.getPtr(tabPtr, subPtr.p->m_table_ptrI);
+  tabPtr.i = subPtr.p->m_table_ptrI;
+  ndbrequire(c_tablePool.getValidPtr(tabPtr));
   if (tabPtr.p->m_state != Table::DROPPED)
   {
     jam();
@@ -6595,7 +6812,8 @@ Suma::execSUB_CREATE_REF(Signal* signal)
   }
 
   Ptr<Subscription> subPtr;
-  c_subscriptionPool.getPtr(subPtr, c_restart.m_subPtrI);
+  subPtr.i = c_restart.m_subPtrI;
+  ndbrequire(c_subscriptionPool.getValidPtr(subPtr));
   abort_start_me(signal, subPtr, true);
 }
 
@@ -6608,7 +6826,8 @@ Suma::execSUB_CREATE_CONF(Signal* signal)
    * We have lock...start all subscriber(s)
    */
   Ptr<Subscription> subPtr;
-  c_subscriptionPool.getPtr(subPtr, c_restart.m_subPtrI);
+  subPtr.i = c_restart.m_subPtrI;
+  ndbrequire(c_subscriptionPool.getValidPtr(subPtr));
 
   c_restart.m_waiting_on_self = 0;
 
@@ -6624,7 +6843,8 @@ Suma::execSUB_CREATE_CONF(Signal* signal)
   }
   
   Ptr<Table> tabPtr;
-  c_tablePool.getPtr(tabPtr, subPtr.p->m_table_ptrI);
+  tabPtr.i = subPtr.p->m_table_ptrI;
+  ndbrequire(c_tablePool.getValidPtr(tabPtr));
 
   Ptr<Subscriber> ptr;
   if (tabPtr.p->m_state != Table::DROPPED)
@@ -6671,7 +6891,8 @@ Suma::copySubscriber(Signal* signal,
   {
     // remove lock from this subscription
     Ptr<SubOpRecord> subOpPtr;
-    c_subOpPool.getPtr(subOpPtr, c_restart.m_subOpPtrI);
+    subOpPtr.i = c_restart.m_subOpPtrI;
+    ndbrequire(c_subOpPool.getValidPtr(subOpPtr));
     check_remove_queue(signal, subPtr, subOpPtr, true, false);
     check_release_subscription(signal, subPtr);
 
@@ -6691,10 +6912,12 @@ Suma::execSUB_START_CONF(Signal* signal)
   SubStartConf * const conf = (SubStartConf*)signal->getDataPtr();
 
   Ptr<Subscription> subPtr;
-  c_subscriptionPool.getPtr(subPtr, c_restart.m_subPtrI);
+  subPtr.i = c_restart.m_subPtrI;
+  ndbrequire(c_subscriptionPool.getValidPtr(subPtr));
 
   Ptr<Subscriber> ptr;
-  c_subscriberPool.getPtr(ptr, conf->senderData);
+  ptr.i = conf->senderData;
+  ndbrequire(c_subscriberPool.getValidPtr(ptr));
 
   Local_Subscriber_list list(c_subscriberPool, subPtr.p->m_subscribers);
   list.next(ptr);
@@ -6717,7 +6940,8 @@ Suma::execSUB_START_REF(Signal* signal)
   }
 
   Ptr<Subscription> subPtr;
-  c_subscriptionPool.getPtr(subPtr, c_restart.m_subPtrI);
+  subPtr.i = c_restart.m_subPtrI;
+  ndbrequire(c_subscriptionPool.getValidPtr(subPtr));
 
   abort_start_me(signal, subPtr, true);
 }
@@ -6727,7 +6951,8 @@ Suma::abort_start_me(Signal* signal, Ptr<Subscription> subPtr,
                      bool lockowner)
 {
   Ptr<SubOpRecord> subOpPtr;
-  c_subOpPool.getPtr(subOpPtr, c_restart.m_subOpPtrI);
+  subOpPtr.i = c_restart.m_subOpPtrI;
+  ndbrequire(c_subOpPool.getValidPtr(subOpPtr));
   check_remove_queue(signal, subPtr, subOpPtr, lockowner, true);
   check_release_subscription(signal, subPtr);
 
@@ -6963,7 +7188,11 @@ operator<<(NdbOut & out, const Suma::Page_pos & pos)
 #endif
 
 Uint32*
-Suma::get_buffer_ptr(Signal* signal, Uint32 buck, Uint64 gci, Uint32 sz, Uint32 part)
+Suma::get_buffer_ptr(Signal* signal,
+                     Uint32 buck,
+                     Uint64 gci,
+                     Uint32 sz,
+                     Uint32 part)
 {
   jam();
   sz += 1; // len
@@ -7018,7 +7247,8 @@ loop:
      * 1) save header on last page
      * 2) seize new page
      */
-    static_assert(1 + 6 + SUMA_BUF_SZ + Buffer_page::GCI_SZ32 <= Buffer_page::DATA_WORDS, "");
+    static_assert(1 + 6 + SUMA_BUF_SZ + Buffer_page::GCI_SZ32 <=
+                  Buffer_page::DATA_WORDS, "");
     Uint32 next;
     if(unlikely((next= seize_page()) == RNIL))
     {
@@ -7126,6 +7356,32 @@ Suma::out_of_buffer_release(Signal* signal, Uint32 buck)
   m_missing_data = false;
 }
 
+/**
+ * MODULE: Replication Event Buffer Handling
+ * -----------------------------------------
+ * SUMA maintains replication events organised per GCI. These replication
+ * events are stored in a number of page chunks. Each such page chunk
+ * contains 1 MByte of global memory pages.
+ *
+ * The amount of memory that we can maximum allocate for this purpose is
+ * limited to 16384 page chunks which is sufficient to handle 16 GByte
+ * of Event Buffers. One can increase this even more by setting
+ * ReplicationMemory even higher although it's unlikely it will be required
+ * in any realistic setup.
+ *
+ * ReplicationMemory can grow using SharedGlobalMemory up to when the
+ * memory is used up to 90% of the SharedGlobalMemory. One can still
+ * set MaxBufferedEpochBytes to ensure that memory is reserved for this
+ * purpose. For normal operation we reserve at most 16 MByte of memory
+ * for this purpose.
+ *
+ * If more memory is needed temporarily this memory will be released when
+ * no longer required to ensure that other parts of the NDB data node can
+ * get access to the global shared memory.
+ *
+ * To ensure that we don't overload the global memory mutex we allocate
+ * and release 1 MByte at a time.
+ */
 Uint32
 Suma::seize_page()
 {
@@ -7138,6 +7394,7 @@ Suma::seize_page()
   }
   if(unlikely(m_out_of_buffer_gci))
   {
+    jam();
     return RNIL;
   }
 loop:
@@ -7145,41 +7402,154 @@ loop:
   Uint32 ref= m_first_free_page;
   if(likely(ref != RNIL))
   {
-    m_first_free_page = (c_page_pool.getPtr(ref))->m_next_page;
-    Uint32 chunk = (c_page_pool.getPtr(ref))->m_page_chunk_ptr_i;
+    jam();
+    Buffer_page* page = nullptr;
+    page = c_page_pool.getPtr(ref);
+    m_first_free_page = page->m_next_page;
+    Uint32 chunk = page->m_page_chunk_ptr_i;
     c_page_chunk_pool.getPtr(ptr, chunk);
     ndbassert(ptr.p->m_free);
+    page->m_next_page = RNIL;
+    page->m_prev_page = RNIL;
     ptr.p->m_free--;
+    ndbrequire(m_total_pages_free > 0);
+    m_total_pages_free--;
+    if (m_first_free_page != RNIL)
+    {
+      jam();
+      Buffer_page* new_first_page = nullptr;
+      new_first_page = c_page_pool.getPtr(ref);
+      new_first_page->m_prev_page = RNIL;
+    }
+    if (ptr.p->m_free == 0)
+    {
+      jam();
+      c_free_page_chunks.remove(ptr);
+    }
     return ref;
   }
 
-  if(!c_page_chunk_pool.seize(ptr))
-    return RNIL;
+  bool allocated_new_pages = true;
+  if (!c_free_page_chunks.first(ptr))
+  {
+    jam();
+    if (!c_page_chunk_pool.seize(ptr))
+    {
+      jam();
+      return RNIL;
+    }
 
-  Uint32 count = Page_chunk::PAGES_PER_CHUNK;
-  m_ctx.m_mm.alloc_pages(RT_SUMA_EVENT_BUFFER, &ref, &count, 1);
-  if (count == 0)
-    return RNIL;
+    Uint32 count = Page_chunk::PAGES_PER_CHUNK;
+    m_ctx.m_mm.alloc_pages(RT_SUMA_EVENT_BUFFER, &ref, &count, 1);
+    if (count == 0)
+    {
+      jam();
+      return RNIL;
+    }
 
-  g_eventLogger->info("Allocate event buffering page chunk in SUMA, %u pages,"
-                      " first page ref = %u",
-                      count, ref);
+    g_eventLogger->info("Allocate event buffering page chunk in SUMA, %u"
+                        " pages, first page ref = %u",
+                        count, ref);
 
-  m_first_free_page = ptr.p->m_page_id = ref;
-  ptr.p->m_size = count;
-  ptr.p->m_free = count;
+    ptr.p->m_size = count;
+    ptr.p->m_free = count;
+    ptr.p->m_page_id = ref;
+    c_free_page_chunks.addFirst(ptr);
+  }
+  else
+  {
+    jam();
+    allocated_new_pages = false;
+    c_free_page_chunks.remove(ptr);
+  }
+  insert_chunk_pages(ptr);
+  if (allocated_new_pages)
+  {
+    m_total_pages_allocated += ptr.p->m_free;
+    m_total_pages_free += ptr.p->m_free;
+  }
+  goto loop;
+}
 
+void
+Suma::insert_chunk_pages(Ptr<Page_chunk> ptr)
+{
+  Uint32 ref = ptr.p->m_page_id;
+  Uint32 count = ptr.p->m_free;
   Buffer_page* page = nullptr;
+  Uint32 prev_first_free = m_first_free_page;
+  m_first_free_page = ref;
   for(Uint32 i = 0; i<count; i++)
   {
     page = c_page_pool.getPtr(ref);
     page->m_page_state= SUMA_SEQUENCE;
     page->m_page_chunk_ptr_i = ptr.i;
-    page->m_next_page = ++ref;
+    if (i != 0)
+    {
+      page->m_prev_page = ref - 1;
+    }
+    else
+    {
+      page->m_prev_page = RNIL;
+    }
+    if (i != (count - 1))
+    {
+      page->m_next_page = ++ref;
+    }
+    else
+    {
+      page->m_next_page = prev_first_free;
+    }
   }
   page->m_next_page = RNIL;
-  
-  goto loop;
+}
+
+void
+Suma::release_chunk_pages(Ptr<Page_chunk> ptr)
+{
+  /* Release all pages from free list */
+  for (Uint32 i = 0; i < ptr.p->m_free; i++)
+  {
+    Buffer_page *page;
+    page = c_page_pool.getPtr(ptr.p->m_page_id + i);
+    if (page->m_prev_page != RNIL)
+    {
+      Buffer_page *prev_page;
+      prev_page = c_page_pool.getPtr(page->m_prev_page);
+      prev_page->m_next_page = page->m_next_page;
+    }
+    else
+    {
+      /* We are the first page in the list */
+      m_first_free_page = page->m_next_page;
+    }
+    if (page->m_next_page != RNIL)
+    {
+      Buffer_page *next_page;
+      next_page = c_page_pool.getPtr(page->m_next_page);
+      next_page->m_prev_page = page->m_prev_page;
+    }
+  }
+  c_free_page_chunks.addFirst(ptr);
+}
+
+void
+Suma::release_chunk()
+{
+  Ptr<Page_chunk> ptr;
+  if (!c_free_page_chunks.first(ptr))
+  {
+    jam();
+    return;
+  }
+  ndbrequire(m_total_pages_allocated >= ptr.p->m_free);
+  m_total_pages_allocated -= ptr.p->m_free;
+
+  m_ctx.m_mm.release_pages(RG_REPLICATION_MEMORY,
+                           ptr.p->m_page_id,
+                           ptr.p->m_free);
+  c_free_page_chunks.remove(ptr);
+  c_page_chunk_pool.release(ptr);
 }
 
 void
@@ -7192,11 +7562,350 @@ Suma::free_page(Uint32 page_id, Buffer_page* page)
 
   c_page_chunk_pool.getPtr(ptr, chunk);  
   
-  ptr.p->m_free ++;
+  ptr.p->m_free++;
   page->m_next_page = m_first_free_page;
+  page->m_prev_page = RNIL;
   ndbrequire(ptr.p->m_free <= ptr.p->m_size);
-  
+
+  if (m_first_free_page != RNIL)
+  {
+    Buffer_page *first_page;
+    first_page = c_page_pool.getPtr(m_first_free_page);
+    first_page->m_prev_page = page_id;
+  }
+
   m_first_free_page = page_id;
+  m_total_pages_free++;
+
+  if (ptr.p->m_free == ptr.p->m_size)
+  {
+    jam();
+    release_chunk_pages(ptr);
+  }
+  /**
+   * When we have more pages free than what is required and we have allocated
+   * the required amount then we will attempt to release a full chunk of
+   * pages back to the global memory pool.
+   */
+  if ((m_total_pages_allocated >
+       (m_min_pages_allocated + Page_chunk::PAGES_PER_CHUNK)) &&
+      (m_total_pages_free >
+        (m_min_pages_free + Page_chunk::PAGES_PER_CHUNK)))
+  {
+    jam();
+    release_chunk();
+  }
+}
+
+/**
+ * MODULE: Trigger page handling
+ * -----------------------------
+ * When DBTUP sends replication events to SUMA it does so in special
+ * pages that are allocated from the global memory. To avoid mutex
+ * contention on the global memory mutex we manage this memory in
+ * 4 different Page chunks. Each trigger page chunk manages 1 MByte of
+ * global memory pages. We manage 4 different sets of page chunks to
+ * ensure that we split the mutex contention from different LDM threads.
+ *
+ * The page chunk records are global in SUMA and thus this record must
+ * use a special mutex when the records are seized and released. As soon
+ * as a page chunk record has been seized it is managed by a
+ * LdmTriggerPageRecord. This record has its own mutex protecting it.
+ * In this manner we should avoid having any serious mutex contention
+ * coming from this set of pages.
+ *
+ * The memory allocated for this purpose belongs to the ReplicationMemory
+ * and this memory can grow to use up to 90% of the SharedGlobalMemory.
+ * When SharedGlobalMemory is limited, we avoid allocating any more and
+ * this will lead to failed global replication events, but NDB can continue to
+ * work for reads and writes.
+ */
+bool
+Suma::alloc_trigger_page_chunk(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
+                               Ptr<Trigger_page_chunk> &triggerChunkPtr,
+                               EmulatedJamBuffer *jambuf)
+{
+  NdbMutex_Lock(&theTriggerPageChunkMutex);
+  if (!c_trigger_page_chunk_pool.seize(triggerChunkPtr))
+  {
+    thrjam(jambuf);
+    NdbMutex_Unlock(&theTriggerPageChunkMutex);
+    return false;
+  }
+  NdbMutex_Unlock(&theTriggerPageChunkMutex);
+  thrjam(jambuf);
+  triggerChunkPtr.p->m_page_id_allocated_bitmask.clear();
+  /* Allocate 1 MB consecutive memory, 32 * 32 kB pages */
+  Uint32 count = Trigger_page_chunk::PAGES_PER_CHUNK;
+  Uint32 page_id;
+  m_ctx.m_mm.alloc_pages(RT_SUMA_TRIGGER_BUFFER,
+                         &page_id,
+                         &count,
+                         Trigger_page_chunk::MIN_PAGES_PER_CHUNK);
+  if (count == 0)
+  {
+    thrjam(jambuf);
+    DEB_REP_MEM(("(%u)Failed to allocate trigger pages",
+                 ldmTriggerPagePtr.i));
+    NdbMutex_Lock(&theTriggerPageChunkMutex);
+    c_trigger_page_chunk_pool.release(triggerChunkPtr);
+    NdbMutex_Unlock(&theTriggerPageChunkMutex);
+    return false;
+  }
+  DEB_REP_MEM(("(%u)Allocated %u pages starting at page id %u using chunk %u",
+               ldmTriggerPagePtr.i,
+               count,
+               page_id,
+               triggerChunkPtr.i));
+  triggerChunkPtr.p->m_page_id = page_id;
+  triggerChunkPtr.p->m_count = count;
+  for (Uint32 i = 0; i < count; i++)
+  {
+    triggerChunkPtr.p->m_page_id_allocated_bitmask.set(i);
+  }
+  {
+    Local_Trigger_page_chunk_fifo loc_free(
+      c_trigger_page_chunk_pool,
+      ldmTriggerPagePtr.p->m_trigger_page_free_chunks);
+    loc_free.addFirst(triggerChunkPtr);
+  }
+  return true;
+}
+
+void
+Suma::move_chunk_to_full(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
+                         Ptr<Trigger_page_chunk> triggerChunkPtr)
+{
+  DEB_REP_MEM(("(%u) Move chunk %u from free to full",
+               ldmTriggerPagePtr.i,
+               triggerChunkPtr.i));
+  {
+    Local_Trigger_page_chunk_fifo loc_free(
+      c_trigger_page_chunk_pool,
+      ldmTriggerPagePtr.p->m_trigger_page_free_chunks);
+    loc_free.remove(triggerChunkPtr);
+  }
+  {
+    Local_Trigger_page_chunk_fifo loc_full(
+      c_trigger_page_chunk_pool,
+      ldmTriggerPagePtr.p->m_trigger_page_full_chunks);
+    loc_full.addFirst(triggerChunkPtr);
+  }
+}
+
+void
+Suma::move_chunk_to_free(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
+                         Ptr<Trigger_page_chunk> triggerChunkPtr)
+{
+  DEB_REP_MEM(("(%u) Move chunk %u from full to free",
+               ldmTriggerPagePtr.i,
+               triggerChunkPtr.i));
+  {
+    Local_Trigger_page_chunk_fifo loc_full(
+      c_trigger_page_chunk_pool,
+      ldmTriggerPagePtr.p->m_trigger_page_full_chunks);
+    loc_full.remove(triggerChunkPtr);
+  }
+  {
+    Local_Trigger_page_chunk_fifo loc_free(
+      c_trigger_page_chunk_pool,
+      ldmTriggerPagePtr.p->m_trigger_page_free_chunks);
+    loc_free.addLast(triggerChunkPtr);
+  }
+}
+
+void
+Suma::get_first_trigger_page_chunk(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
+                                   Ptr<Trigger_page_chunk> &triggerChunkPtr,
+                                   bool &found)
+{
+  Local_Trigger_page_chunk_fifo loc_free(
+    c_trigger_page_chunk_pool,
+    ldmTriggerPagePtr.p->m_trigger_page_free_chunks);
+  found = loc_free.first(triggerChunkPtr);
+}
+
+Uint32
+Suma::find_trigger_pages(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
+                         Ptr<Trigger_page_chunk> triggerChunkPtr,
+                         Uint32 page_count,
+                         EmulatedJamBuffer *jambuf)
+{
+  Uint32 chunk_page_id = triggerChunkPtr.p->m_page_id;
+  Uint32 first_free_page =
+    triggerChunkPtr.p->m_page_id_allocated_bitmask.find_first();
+  ndbrequire(first_free_page != BitmaskImpl::NotFound);
+  if (page_count > 1)
+  {
+    Uint32 found = 1;
+    for (Uint32 i = first_free_page + 1;
+         i < Trigger_page_chunk::PAGES_PER_CHUNK;
+         i++)
+    {
+      if (triggerChunkPtr.p->m_page_id_allocated_bitmask.get(i))
+      {
+        found++;
+        if (found == page_count)
+        {
+          thrjam(jambuf);
+          break;
+        }
+      }
+      else
+      {
+        jam();
+        found = 0;
+        first_free_page = i + 1;
+      }
+    }
+    if (found == page_count)
+    {
+      for (Uint32 i = 0; i < page_count; i++)
+      {
+        triggerChunkPtr.p->m_page_id_allocated_bitmask.set(
+          first_free_page + i, false);
+      }
+    }
+    else
+    {
+      thrjam(jambuf);
+      move_chunk_to_full(ldmTriggerPagePtr, triggerChunkPtr);
+      return RNIL;
+    }
+  }
+  else
+  {
+    thrjam(jambuf);
+    triggerChunkPtr.p->m_page_id_allocated_bitmask.set(first_free_page, false);
+  }
+  if (triggerChunkPtr.p->m_page_id_allocated_bitmask.isclear())
+  {
+    thrjamDebug(jambuf);
+    move_chunk_to_full(ldmTriggerPagePtr, triggerChunkPtr);
+  }
+  return first_free_page + chunk_page_id;
+}
+
+void
+Suma::alloc_trigger_page(Uint32 ldm_instance,
+                         Uint32 *page_id,
+                         Uint32 *chunk_id,
+                         EmulatedJamBuffer *jambuf,
+                         Uint32 page_count)
+{
+  Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr;
+  Uint32 ptrI = ldm_instance & (NUM_LDM_TRIGGER_PAGE_RECORDS - 1);
+  c_trigger_page_record_pool.getPtr(ldmTriggerPagePtr, ptrI);
+  NdbMutex_Lock(&ldmTriggerPagePtr.p->theMutex);
+  Ptr<Trigger_page_chunk> triggerChunkPtr;
+  bool found = false;
+  bool alloc_chunk = false;
+  Uint32 found_page_id = RNIL;
+  do
+  {
+    get_first_trigger_page_chunk(ldmTriggerPagePtr, triggerChunkPtr, found);
+    if (!found)
+    {
+      ndbrequire(alloc_chunk == false);
+      alloc_chunk = true;
+      if (!alloc_trigger_page_chunk(ldmTriggerPagePtr,
+                                    triggerChunkPtr,
+                                    jambuf))
+      {
+        NdbMutex_Unlock(&ldmTriggerPagePtr.p->theMutex);
+        thrjam(jambuf);
+        *page_id = RNIL;
+        return;
+      }
+    }
+    found_page_id = find_trigger_pages(ldmTriggerPagePtr,
+                                       triggerChunkPtr,
+                                       page_count,
+                                       jambuf);
+  } while (found_page_id == RNIL);
+  NdbMutex_Unlock(&ldmTriggerPagePtr.p->theMutex);
+  *page_id = found_page_id;
+  *chunk_id = triggerChunkPtr.i;
+  DEB_REP_MEM(("(%u) Allocate page_id %u in chunk %u",
+               ldmTriggerPagePtr.i,
+               *page_id,
+               triggerChunkPtr.i));
+}
+
+void
+Suma::release_trigger_page_chunk(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
+                                 Ptr<Trigger_page_chunk> triggerChunkPtr)
+{
+  Uint32 page_id = triggerChunkPtr.p->m_page_id;
+  Uint32 count = triggerChunkPtr.p->m_count;
+  DEB_REP_MEM(("(%u) Release chunk %u first pageid: %u, count: %u",
+               ldmTriggerPagePtr.i,
+               triggerChunkPtr.i,
+               page_id,
+               count));
+  m_ctx.m_mm.release_pages(RG_REPLICATION_MEMORY, page_id, count);
+  {
+    Local_Trigger_page_chunk_fifo loc_free(
+      c_trigger_page_chunk_pool,
+      ldmTriggerPagePtr.p->m_trigger_page_free_chunks);
+    loc_free.remove(triggerChunkPtr);
+  }
+  NdbMutex_Lock(&theTriggerPageChunkMutex);
+  c_trigger_page_chunk_pool.release(triggerChunkPtr);
+  NdbMutex_Unlock(&theTriggerPageChunkMutex);
+}
+
+void
+Suma::release_trigger_page(Uint32 ldm_instance,
+                           Uint32 page_id,
+                           Uint32 chunk_id,
+                           Uint32 page_count)
+{
+  Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr;
+  Ptr<Trigger_page_chunk> triggerChunkPtr;
+  Uint32 ptrI = ldm_instance & (NUM_LDM_TRIGGER_PAGE_RECORDS - 1);
+  c_trigger_page_record_pool.getPtr(ldmTriggerPagePtr, ptrI);
+  NdbMutex_Lock(&ldmTriggerPagePtr.p->theMutex);
+  c_trigger_page_chunk_pool.getPtr(triggerChunkPtr,
+                                   chunk_id);
+  DEB_REP_MEM(("(%u) Release page_id %u in chunk %u",
+               ldmTriggerPagePtr.i,
+               page_id,
+               triggerChunkPtr.i));
+  Uint32 chunk_page_id = triggerChunkPtr.p->m_page_id;
+  ndbrequire(page_id >= chunk_page_id &&
+             page_id <= (chunk_page_id + Trigger_page_chunk::PAGES_PER_CHUNK));
+  Uint32 page_id_bit = page_id - chunk_page_id;
+  for (Uint32 i = 0; i < page_count; i++)
+  {
+    ndbrequire((page_id_bit + i) < Trigger_page_chunk::PAGES_PER_CHUNK);
+    ndbrequire(!triggerChunkPtr.p->m_page_id_allocated_bitmask.get(
+      page_id_bit + i));
+    triggerChunkPtr.p->m_page_id_allocated_bitmask.set(page_id_bit + i);
+  }
+  Uint32 bit_count =
+    triggerChunkPtr.p->m_page_id_allocated_bitmask.count();
+  if (bit_count == triggerChunkPtr.p->m_count)
+  {
+    if (ldmTriggerPagePtr.p->m_trigger_page_free_chunks.getCount() > 1)
+    {
+      jamDebug();
+      release_trigger_page_chunk(ldmTriggerPagePtr, triggerChunkPtr);
+    }
+    else
+    {
+      DEB_REP_MEM(("(%u) Chunk %u all free",
+                   ldmTriggerPagePtr.i,
+                   triggerChunkPtr.i));
+      jamDebug();
+    }
+  }
+  else if (bit_count == 1)
+  {
+    jamDebug();
+    move_chunk_to_free(ldmTriggerPagePtr, triggerChunkPtr);
+  }
+  NdbMutex_Unlock(&ldmTriggerPagePtr.p->theMutex);
 }
 
 void
@@ -7551,7 +8260,8 @@ Suma::resend_bucket(Signal* signal, Uint32 buck, Uint64 min_gci,
           ptr = src2 + sz2;
         }
 
-        part = (tmp2 >> Buffer_page::PART_NUM_SHIFT) & Buffer_page::PART_NUM_MASK;
+        part = (tmp2 >> Buffer_page::PART_NUM_SHIFT) &
+                Buffer_page::PART_NUM_MASK;
         ndbrequire(part == 2);
 
         if ((tmp2 & Buffer_page::SAME_GCI_FLAG) == 0)
@@ -7589,9 +8299,11 @@ Suma::resend_bucket(Signal* signal, Uint32 buck, Uint64 min_gci,
        * Signal to subscriber(s)
        */
       Ptr<Subscription> subPtr;
-      c_subscriptionPool.getPtr(subPtr, subPtrI);
+      subPtr.i = subPtrI;
+      ndbrequire(c_subscriptionPool.getValidPtr(subPtr));
       Ptr<Table> tabPtr;
-      c_tablePool.getPtr(tabPtr, subPtr.p->m_table_ptrI);
+      tabPtr.i = subPtr.p->m_table_ptrI;
+      ndbrequire(c_tablePool.getValidPtr(tabPtr));
       Uint32 table = subPtr.p->m_tableId;
       if (table_version_major(tabPtr.p->m_schemaVersion) ==
           table_version_major(schemaVersion))
@@ -7849,6 +8561,35 @@ Suma::execDROP_NODEGROUP_IMPL_REQ(Signal* signal)
   sendSignal(req->senderRef, GSN_DROP_NODEGROUP_IMPL_REF, signal,
              DropNodegroupImplRef::SignalLength, JBB);
   return;
+}
+
+void
+Suma::sendPoolShrink(const Uint32 pool_index)
+{
+  const bool need_send = c_transient_pools_shrinking.get(pool_index) == 0;
+  c_transient_pools_shrinking.set(pool_index);
+  if (need_send)
+  {
+    Signal25 signal[1] = {};
+    signal->theData[0] = SumaContinueB::SHRINK_TRANSIENT_POOLS;
+    signal->theData[1] = pool_index;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+  }
+}
+
+void
+Suma::shrinkTransientPools(Uint32 pool_index)
+{
+  ndbrequire(pool_index < c_transient_pool_count);
+  ndbrequire(c_transient_pools_shrinking.get(pool_index));
+  if (c_transient_pools[pool_index]->rearrange_free_list_and_shrink(1))
+  {
+    sendPoolShrink(pool_index);
+  }
+  else
+  {
+    c_transient_pools_shrinking.clear(pool_index);
+  }
 }
 
 //template void append(DataBuffer<11>&,SegmentedSectionPtr,SectionSegmentPool&);

@@ -1,4 +1,5 @@
 # Copyright (c) 2008, 2021, Oracle and/or its affiliates.
+# Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -81,19 +82,6 @@ IF(WIN32)
     ${CMAKE_SOURCE_DIR}/storage/ndb/src/common/logger/message.rc
     ${CMAKE_SOURCE_DIR}/storage/ndb/src/common/logger/MSG00001.bin)
 ENDIF()
-
-MYSQL_ADD_EXECUTABLE(ndbd
-  ${NDBD_EXTRA_SRC}
-  SimBlockList.cpp
-  angel.cpp
-  main.cpp
-  ndbd.cpp
-
-  DESTINATION ${INSTALL_SBINDIR}
-  COMPONENT ClusterDataNode
-  ENABLE_EXPORTS
-  LINK_LIBRARIES ${NDBD_LIBS} ndbsched ${LIBDL}
-  )
 
 IF(WITH_NDBMTD)
   MYSQL_ADD_EXECUTABLE(ndbmtd

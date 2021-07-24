@@ -3185,7 +3185,8 @@ Dbtc::dump_trans(ApiConnectRecordPtr transPtr)
     Ptr<TcDefinedTriggerData> trigPtr;
     if (tcConnectptr.p->currentTriggerId != RNIL)
     {
-      c_theDefinedTriggers.getPtr(trigPtr, tcConnectptr.p->currentTriggerId);
+      ndbrequire(getDefinedTriggerData(trigPtr,
+                                       tcConnectptr.p->currentTriggerId));
     }
 
     g_eventLogger->info(
@@ -3662,7 +3663,7 @@ void Dbtc::execTCKEYREQ(Signal* signal)
     regTcPtr->currentTriggerId= regApiPtr->immediateTriggerId;
 
     Ptr<TcDefinedTriggerData> trigPtr;
-    c_theDefinedTriggers.getPtr(trigPtr, regTcPtr->currentTriggerId);
+    ndbrequire(getDefinedTriggerData(trigPtr, regTcPtr->currentTriggerId));
     trigPtr.p->refCount++;
   }
 
@@ -5184,7 +5185,7 @@ void Dbtc::releaseTcCon()
   {
     jam();
     Ptr<TcDefinedTriggerData> trigPtr;
-    c_theDefinedTriggers.getPtr(trigPtr, regTcPtr->currentTriggerId);
+    ndbrequire(getDefinedTriggerData(trigPtr, regTcPtr->currentTriggerId));
     ndbrequire(trigPtr.p->refCount > 0);
     trigPtr.p->refCount--;
   }
@@ -8131,13 +8132,14 @@ void Dbtc::execLQHKEYREF(Signal* signal)
 
         const Uint32 opType = regTcPtr->operation;
         Ptr<TcDefinedTriggerData> trigPtr;
-        c_theDefinedTriggers.getPtr(trigPtr, regTcPtr->currentTriggerId);
+        ndbrequire(getDefinedTriggerData(trigPtr, regTcPtr->currentTriggerId));
         switch(trigPtr.p->triggerType){
         case TriggerType::SECONDARY_INDEX:{
           jam();
-	
           // The operation executed an index trigger
-          TcIndexData* indexData = c_theIndexes.getPtr(trigPtr.p->indexId);
+          TcIndexDataPtr indexPtr;
+          ndbrequire(getIndexDataOperation(indexPtr, trigPtr.p->indexId));
+          TcIndexData* indexData = indexPtr.p;
           indexId = indexData->indexId;
           regApiPtr->errorData = indexId;
           if (errCode == ZALREADYEXIST)
@@ -18204,11 +18206,14 @@ void Dbtc::execCREATE_TRIG_IMPL_REQ(Signal* signal)
 
   triggerPtr.i = req->triggerId;
   if (ERROR_INSERTED(8033) ||
-      !c_theDefinedTriggers.getPool().seizeId(triggerPtr, req->triggerId)) {
+      !c_theDefinedTriggerPool.seize(triggerPtr))
+  {
     jam();
     CLEAR_ERROR_INSERT_VALUE;
     // Failed to allocate trigger record
 ref:
+    checkPoolShrinkNeed(DBTC_DEFINED_TRIGGER_RECORD_TRANSIENT_POOL_INDEX,
+                        c_theDefinedTriggerPool);
     CreateTrigImplRef* ref =  (CreateTrigImplRef*)signal->getDataPtrSend();
     
     ref->senderRef = reference();
@@ -18219,10 +18224,10 @@ ref:
                signal, CreateTrigImplRef::SignalLength, JBB);
     return;
   }
-  c_theDefinedTriggers.addFirst(triggerPtr);
-
   triggerData = triggerPtr.p;
   triggerData->triggerId = req->triggerId;
+  c_theDefinedTriggerHash.add(triggerPtr);
+
   triggerData->triggerType = TriggerInfo::getTriggerType(req->triggerInfo);
   triggerData->triggerEvent = TriggerInfo::getTriggerEvent(req->triggerInfo);
   triggerData->oldTriggerIds[0] = RNIL;
@@ -18244,7 +18249,7 @@ ref:
     triggerData->fkId = req->indexId;
     break;
   default:
-    c_theDefinedTriggers.release(triggerPtr);
+    c_theDefinedTriggerHash.release(triggerPtr);
     goto ref;
   }
 
@@ -18260,26 +18265,27 @@ ref:
     DefinedTriggerPtr insertPtr = triggerPtr;
     DefinedTriggerPtr updatePtr;
     DefinedTriggerPtr deletePtr;
-    if (c_theDefinedTriggers.getPool().seizeId(updatePtr, req->upgradeExtra[1]) == false)
+    if (c_theDefinedTriggerPool.seize(updatePtr) == false)
     {
       jam();
-      c_theDefinedTriggers.release(insertPtr);
+      c_theDefinedTriggerHash.release(insertPtr);
       goto ref;
     }
-    c_theDefinedTriggers.addFirst(updatePtr);
+    updatePtr.p->triggerId = req->upgradeExtra[1];
+    c_theDefinedTriggerHash.add(updatePtr);
 
-    if (c_theDefinedTriggers.getPool().seizeId(deletePtr, req->upgradeExtra[2]) == false)
+    if (c_theDefinedTriggerPool.seize(deletePtr) == false)
     {
       jam();
-      c_theDefinedTriggers.release(insertPtr);
-      c_theDefinedTriggers.release(updatePtr);
+      c_theDefinedTriggerHash.release(insertPtr);
+      c_theDefinedTriggerHash.release(updatePtr);
       goto ref;
     }
-    c_theDefinedTriggers.addFirst(deletePtr);
+    deletePtr.p->triggerId = req->upgradeExtra[2];
+    c_theDefinedTriggerHash.add(deletePtr);
 
     insertPtr.p->triggerEvent = TriggerEvent::TE_INSERT;
 
-    updatePtr.p->triggerId = req->upgradeExtra[1];
     updatePtr.p->triggerType = TriggerType::SECONDARY_INDEX;
     updatePtr.p->triggerEvent = TriggerEvent::TE_UPDATE;
     updatePtr.p->oldTriggerIds[0] = RNIL;
@@ -18287,7 +18293,6 @@ ref:
     updatePtr.p->indexId = req->indexId;
     updatePtr.p->refCount = 0;
 
-    deletePtr.p->triggerId = req->upgradeExtra[2];
     deletePtr.p->triggerType = TriggerType::SECONDARY_INDEX;
     deletePtr.p->triggerEvent = TriggerEvent::TE_DELETE;
     deletePtr.p->oldTriggerIds[0] = RNIL;
@@ -18314,11 +18319,10 @@ void Dbtc::execDROP_TRIG_IMPL_REQ(Signal* signal)
    * The validity of the trigger should be checked subsequently.
    */
   DefinedTriggerPtr triggerPtr;
-  triggerPtr.i = req->triggerId;
-  c_theDefinedTriggers.getPool().getPtrIgnoreAlloc(triggerPtr);
+  bool found = getDefinedTriggerData(triggerPtr, req->triggerId);
 
   // If triggerIds don't match, the trigger has probably already been dropped.
-  if (triggerPtr.p->triggerId != req->triggerId || ERROR_INSERTED(8035))
+  if (!found || ERROR_INSERTED(8035))
   {
     jam();
     CLEAR_ERROR_INSERT_VALUE;
@@ -18347,22 +18351,22 @@ void Dbtc::execDROP_TRIG_IMPL_REQ(Signal* signal)
     jam();
 
     const Uint32 * oldId = triggerPtr.p->oldTriggerIds;
-    if (c_theDefinedTriggers.getPtr(oldId[0])->refCount > 0 ||
-        c_theDefinedTriggers.getPtr(oldId[1])->refCount > 0)
+    DefinedTriggerPtr oldPtr0, oldPtr1;
+    ndbrequire(getDefinedTriggerData(oldPtr0, oldId[0]));
+    ndbrequire(getDefinedTriggerData(oldPtr1, oldId[1]));
+    if (oldPtr0.p->refCount > 0 || oldPtr1.p->refCount > 0)
     {
       jam();
       sendSignalWithDelay(reference(), GSN_DROP_TRIG_IMPL_REQ,
                           signal, 100, signal->getLength());
       return;
     }
-
-    c_theDefinedTriggers.release(triggerPtr.p->oldTriggerIds[0]);
-    c_theDefinedTriggers.release(triggerPtr.p->oldTriggerIds[1]);
+    c_theDefinedTriggerHash.release(oldPtr0);
+    c_theDefinedTriggerHash.release(oldPtr1);
   }
-
-  // Mark trigger record as dropped/invalid and release it
-  triggerPtr.p->triggerId = 0xffffffff;
-  c_theDefinedTriggers.release(triggerPtr);
+  c_theDefinedTriggerHash.release(triggerPtr);
+  checkPoolShrinkNeed(DBTC_DEFINED_TRIGGER_RECORD_TRANSIENT_POOL_INDEX,
+                      c_theDefinedTriggerPool);
 
   DropTrigImplConf* conf = (DropTrigImplConf*)signal->getDataPtrSend();
 
@@ -18384,8 +18388,10 @@ void Dbtc::execCREATE_INDX_IMPL_REQ(Signal* signal)
   TcIndexDataPtr indexPtr;
 
   SectionHandle handle(this, signal);
+
   if (ERROR_INSERTED(8034) ||
-      !c_theIndexes.getPool().seizeId(indexPtr, req->indexId)) {
+      !c_theIndexPool.seize(indexPtr))
+  {
     jam();
     CLEAR_ERROR_INSERT_VALUE;
     // Failed to allocate index record
@@ -18401,12 +18407,12 @@ void Dbtc::execCREATE_INDX_IMPL_REQ(Signal* signal)
                 signal, CreateIndxImplRef::SignalLength, JBB);
      return;
   }
-  c_theIndexes.addFirst(indexPtr);
+  indexPtr.p->indexId = req->indexId;
+  c_theIndexHash.add(indexPtr);
   indexData = indexPtr.p;
   // Indexes always start in state IS_BUILDING
   // Will become IS_ONLINE in execALTER_INDX_IMPL_REQ
   indexData->indexState = IS_BUILDING;
-  indexData->indexId = indexPtr.i;
   indexData->primaryTableId = req->tableId;
 
   // So far need only attribute count
@@ -18439,10 +18445,11 @@ void Dbtc::execALTER_INDX_IMPL_REQ(Signal* signal)
   const Uint32 senderRef = req->senderRef;
   const Uint32 senderData = req->senderData;
   TcIndexData* indexData;
+  TcIndexDataPtr indexPtr;
   const Uint32 requestType = req->requestType;
-  const Uint32 indexId = req->indexId;
 
-  if ((indexData = c_theIndexes.getPtr(indexId)) == NULL) {
+  if (unlikely(!getIndexDataOperation(indexPtr, req->indexId)))
+  {
     jam();
     // Failed to find index record
     AlterIndxImplRef * const ref =  
@@ -18457,6 +18464,7 @@ void Dbtc::execALTER_INDX_IMPL_REQ(Signal* signal)
 	       signal, AlterIndxImplRef::SignalLength, JBB);
     return;
   }
+  indexData = indexPtr.p;
   // Found index record, alter it's state  
   switch (requestType) {
   case AlterIndxImplReq::AlterIndexOnline:
@@ -18916,9 +18924,11 @@ void Dbtc::execDROP_INDX_IMPL_REQ(Signal* signal)
   const Uint32 senderRef = req->senderRef;
   const Uint32 senderData = req->senderData;
   TcIndexData* indexData;
+  TcIndexDataPtr indexPtr;
   
   if (ERROR_INSERTED(8036) ||
-      (indexData = c_theIndexes.getPtr(req->indexId)) == NULL) {
+      unlikely(!getIndexDataOperation(indexPtr, req->indexId)))
+  {
     jam();
     CLEAR_ERROR_INSERT_VALUE;
     // Failed to find index record
@@ -18933,9 +18943,11 @@ void Dbtc::execDROP_INDX_IMPL_REQ(Signal* signal)
                signal, DropIndxImplRef::SignalLength, JBB);
     return;
   }
+  indexData = indexPtr.p;
   // Release index record
-  indexData->indexState = IS_OFFLINE;
-  c_theIndexes.release(req->indexId);
+  c_theIndexHash.release(indexPtr);
+  checkPoolShrinkNeed(DBTC_INDEX_DATA_RECORD_TRANSIENT_POOL_INDEX,
+                      c_theIndexPool);
 
   DropIndxImplConf * const conf =  
     (DropIndxImplConf *)signal->getDataPtrSend();
@@ -19925,12 +19937,9 @@ void Dbtc::readIndexTable(Signal* signal,
     (Operation_t)TcKeyReq::getOperationType(tcKeyRequestInfo);
 
   // Find index table
-  indexDataPtr.i = indexOp->tcIndxReq.tableId;
-  /* Using a IgnoreAlloc variant of getPtr to make the lookup safe.
-   * The validity of the index is checked subsequently using indexState. */
-  c_theIndexes.getPool().getPtrIgnoreAlloc(indexDataPtr);
-  if (indexDataPtr.p == NULL ||
-      indexDataPtr.p->indexState == IS_OFFLINE )
+  /* The validity of the index is checked subsequently using indexState. */
+  if (unlikely(!getIndexDataOperation(indexDataPtr,
+                                      indexOp->tcIndxReq.tableId)))
   {
     /* The index was either null or was already dropped.
      * Abort the operation and release the resources. */
@@ -20056,10 +20065,11 @@ void Dbtc::executeIndexOperation(Signal* signal,
   TcKeyReq * const tcIndxReq = &indexOp->tcIndxReq;
   TcKeyReq * const tcKeyReq = (TcKeyReq *)signal->getDataPtrSend();
   Uint32 tcKeyRequestInfo = tcIndxReq->requestInfo;
-  TcIndexData* indexData;
       
   // Find index table
-  if ((indexData = c_theIndexes.getPtr(tcIndxReq->tableId)) == NULL) {
+  TcIndexDataPtr indexPtr;
+  if (unlikely(!getIndexDataOperation(indexPtr, tcIndxReq->tableId)))
+  {
     jam();
     // Failed to find index record 
     // TODO : How is this operation cleaned up?
@@ -20074,6 +20084,8 @@ void Dbtc::executeIndexOperation(Signal* signal,
 	       TcKeyRef::SignalLength, JBB);
     return;
   }
+  TcIndexData* indexData;
+  indexData = indexPtr.p;
 
   // Find schema version of primary table
   TableRecordPtr tabPtr;
@@ -20309,7 +20321,7 @@ Dbtc::trigger_op_finished(Signal* signal,
   {
     jam();
     Ptr<TcDefinedTriggerData> trigPtr;
-    c_theDefinedTriggers.getPtr(trigPtr, trigPtrI);
+    ndbrequire(getDefinedTriggerData(trigPtr, trigPtrI));
     switch(trigPtr.p->triggerType){
     case TriggerType::FK_PARENT:
     {
@@ -20603,12 +20615,12 @@ bool Dbtc::executeTrigger(Signal* signal,
    * The validity of the trigger should be checked subsequently.
    */
   DefinedTriggerPtr definedTriggerPtr;
-  definedTriggerPtr.i = firedTriggerData->triggerId;
-  c_theDefinedTriggers.getPool().getPtrIgnoreAlloc(definedTriggerPtr);
+  bool found = getDefinedTriggerData(definedTriggerPtr,
+                                     firedTriggerData->triggerId);
 
   // If triggerIds don't match, the trigger has been dropped
   // -> skip trigger exec.
-  if (likely(definedTriggerPtr.p->triggerId == firedTriggerData->triggerId))
+  if (likely(found))
   {
     TcDefinedTriggerData* const definedTriggerData = definedTriggerPtr.p;
     transPtr->p->pendingTriggers--;
@@ -20652,8 +20664,9 @@ void Dbtc::executeIndexTrigger(Signal* signal,
                                ApiConnectRecordPtr const* transPtr,
                                TcConnectRecordPtr* opPtr)
 {
-  TcIndexData* indexData = c_theIndexes.getPtr(definedTriggerData->indexId);
-  ndbassert(indexData != NULL);
+  TcIndexDataPtr indexPtr;
+  ndbrequire(getIndexDataOperation(indexPtr, definedTriggerData->indexId));
+  TcIndexData *indexData = indexPtr.p;
 
   switch (firedTriggerData->triggerEvent) {
   case(TriggerEvent::TE_INSERT): {
@@ -21242,7 +21255,7 @@ Dbtc::fk_scanFromChildTable(Signal* signal,
 
   {
     Ptr<TcDefinedTriggerData> trigPtr;
-    c_theDefinedTriggers.getPtr(trigPtr, tcPtr.p->currentTriggerId);
+    ndbrequire(getDefinedTriggerData(trigPtr, tcPtr.p->currentTriggerId));
     trigPtr.p->refCount++;
   }
 
@@ -21454,7 +21467,7 @@ Dbtc::execKEYINFO20(Signal* signal)
   }
 
   Ptr<TcDefinedTriggerData> trigPtr;
-  c_theDefinedTriggers.getPtr(trigPtr, tcPtr.p->currentTriggerId);
+  ndbrequire(getDefinedTriggerData(trigPtr, tcPtr.p->currentTriggerId));
 
   /* Extract KeyData */
   Uint32 keyInfoPtrI = RNIL;
@@ -21656,7 +21669,7 @@ Dbtc::execSCAN_TABCONF(Signal* signal)
   ndbrequire(Magic::check_ptr(orgApiConnectPtr.p));
 
   Ptr<TcDefinedTriggerData> trigPtr;
-  c_theDefinedTriggers.getPtr(trigPtr, tcPtr.p->currentTriggerId);
+  ndbrequire(getDefinedTriggerData(trigPtr, tcPtr.p->currentTriggerId));
 
   Ptr<TcFKData> fkPtr;
   // TODO make it a pool.getPtr() instead

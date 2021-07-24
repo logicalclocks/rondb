@@ -2,6 +2,7 @@
 # -*- cperl -*-
 
 # Copyright (c) 2004, 2021, Oracle and/or its affiliates.
+# Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -2616,12 +2617,6 @@ sub executable_setup () {
                 "mysql_keyring_encryption_test");
 
   if ($ndbcluster_enabled) {
-    # Look for single threaded NDB
-    $exe_ndbd =
-      my_find_bin($bindir,
-                  [ "runtime_output_directory", "libexec", "sbin", "bin" ],
-                  "ndbd");
-
     # Look for multi threaded NDB
     $exe_ndbmtd =
       my_find_bin($bindir,

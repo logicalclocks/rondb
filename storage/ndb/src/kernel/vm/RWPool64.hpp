@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2006, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2020, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,49 +23,130 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#if 0
-#include "RWPool.hpp"
-#include <ndbd_exit_codes.h>
+#ifndef RWPOOL64_HPP
+#define RWPOOL64_HPP
 
-#define JAM_FILE_ID 278
-#endif
+#include "ndbd_exit_codes.h"
+#include "NdbOut.hpp"
+#include "Pool.hpp"
 
-#define REC_NIL GLOBAL_PAGE_SIZE_WORDS
+#define JAM_FILE_ID 541
+
+#define REC_NIL64 GLOBAL_PAGE_SIZE_WORDS
+
+struct RWPage64
+{
+  static constexpr Uint32 RWPAGE_WORDS = GLOBAL_PAGE_SIZE_WORDS - 4;
+
+  Uint32 m_type_id;
+  Uint16 m_first_free;
+  Uint16 m_ref_count;
+  Uint32 m_next_page;
+  Uint32 m_prev_page;
+  Uint32 m_data[RWPAGE_WORDS];
+};
+
+/**
+ * Read Write  Pool
+ */
+template<typename T>
+struct RWPool64
+{
+  Record_info m_record_info;
+  RWPage64* m_memroot;
+  RWPage64* m_current_page;
+  Pool_context m_ctx;
+  Uint32 m_first_free_page;
+  Uint64 m_current_page_no;
+  Uint16 m_current_pos;
+  Uint16 m_current_first_free;
+  Uint16 m_current_ref_count;
+public:
+  typedef T Type;
+  RWPool64();
+  
+  void init(const Record_info& ri, const Pool_context& pc);
+  bool seize(Ptr64<T>&);
+  void release(Ptr64<T>);
+  void * getPtr(Uint64 i) const;
+  void * getPtr(const Record_info&ri, Uint64 i) const;
+  
+  static constexpr Uint32 WORDS_PER_PAGE = RWPage64::RWPAGE_WORDS;
+
+private:  
+  [[noreturn]] void handle_invalid_release(Ptr64<T>);
+  [[noreturn]] void handle_invalid_get_ptr(Uint64 i) const;
+};
 
 template<typename T>
-RWPool<T>::RWPool() 
+inline
+void*
+RWPool64<T>::getPtr(Uint64 i) const
+{
+  Uint32 page_no = i >> POOL_RECORD_BITS;
+  Uint32 page_idx = i & POOL_RECORD_MASK;
+  RWPage64 * page = m_memroot + page_no;
+  Uint32 * record = page->m_data + page_idx;
+  Uint32 magic_val = * (record + m_record_info.m_offset_magic);
+  if (likely(magic_val == ~(Uint32)m_record_info.m_type_id))
+  {
+    return record;
+  }
+  handle_invalid_get_ptr(i);
+  return 0;                                     /* purify: deadcode */
+}
+
+template<typename T>
+inline
+void*
+RWPool64<T>::getPtr(const Record_info &ri, Uint64 i) const
+{
+  Uint32 page_no = i >> POOL_RECORD_BITS;
+  Uint32 page_idx = i & POOL_RECORD_MASK;
+  RWPage64 * page = m_memroot + page_no;
+  Uint32 * record = page->m_data + page_idx;
+  Uint32 magic_val = * (record + ri.m_offset_magic);
+  if (likely(magic_val == ~(Uint32)ri.m_type_id))
+  {
+    return record;
+  }
+  handle_invalid_get_ptr(i);
+  return 0;                                     /* purify: deadcode */
+}
+
+template<typename T>
+RWPool64<T>::RWPool64() 
 {
   memset(this, 0, sizeof(* this));
-  m_current_pos = RWPage::RWPAGE_WORDS;
-  m_current_first_free = REC_NIL;
+  m_current_pos = RWPage64::RWPAGE_WORDS;
+  m_current_first_free = REC_NIL64;
   m_first_free_page = RNIL;
 }
 
 template<typename T>
 void
-RWPool<T>::init(const Record_info& ri, const Pool_context& pc)
+RWPool64<T>::init(const Record_info& ri, const Pool_context& pc)
 {
   m_ctx = pc;
   m_record_info = ri;
   m_record_info.m_size = ((ri.m_size + 3) >> 2); // Align to word boundary
   m_record_info.m_offset_magic = ((ri.m_offset_magic + 3) >> 2);
   m_record_info.m_offset_next_pool = ((ri.m_offset_next_pool + 3) >> 2);
-  m_memroot = (RWPage*)m_ctx.get_memroot();
+  m_memroot = (RWPage64*)m_ctx.get_memroot();
 #ifdef VM_TRACE
-  g_eventLogger->info("RWPool::init(%x, %d)", ri.m_type_id,
-                      m_record_info.m_size);
+  ndbout_c("RWPool::init(%x, %d)",ri.m_type_id, m_record_info.m_size);
 #endif
 }
 
 template<typename T>
 bool
-RWPool<T>::seize(Ptr<T>& ptr)
+RWPool64<T>::seize(Ptr64<T>& ptr)
 {
   Uint32 pos = m_current_pos;
   Uint32 size = m_record_info.m_size;
   Uint32 off = m_record_info.m_offset_magic;
-  RWPage *pageP = m_current_page;
-  if (likely(m_current_first_free != REC_NIL))
+  RWPage64 *pageP = m_current_page;
+  if (likely(m_current_first_free != REC_NIL64))
   {
 seize_free:
     pos = m_current_first_free;
@@ -76,7 +158,7 @@ seize_free:
     m_current_first_free = pageP->m_data[pos+m_record_info.m_offset_next_pool];
     return true;
   }
-  else if (pos + size < RWPage::RWPAGE_WORDS)
+  else if (pos + size < RWPage64::RWPAGE_WORDS)
   {
 seize_first:
     ptr.i = (m_current_page_no << POOL_RECORD_BITS) + pos;
@@ -90,7 +172,7 @@ seize_first:
 
   if (m_current_page)
   {
-    m_current_page->m_first_free = REC_NIL;
+    m_current_page->m_first_free = REC_NIL64;
     m_current_page->m_next_page = RNIL;
     m_current_page->m_prev_page = RNIL;
     m_current_page->m_type_id = m_record_info.m_type_id;
@@ -101,7 +183,7 @@ seize_first:
   {
     pageP = m_current_page = m_memroot + m_first_free_page;
     m_current_page_no = m_first_free_page;
-    m_current_pos = RWPage::RWPAGE_WORDS;
+    m_current_pos = RWPage64::RWPAGE_WORDS;
     m_current_first_free = m_current_page->m_first_free;
     m_first_free_page = m_current_page->m_next_page;
     m_current_ref_count = m_current_page->m_ref_count;
@@ -114,29 +196,29 @@ seize_first:
 
   m_current_ref_count = 0;
   
-  RWPage* page;
+  RWPage64* page;
   Uint32 page_no = RNIL;
-  if ((page = (RWPage*)m_ctx.alloc_page19(m_record_info.m_type_id, &page_no)))
+  if ((page = (RWPage64*)m_ctx.alloc_page32(m_record_info.m_type_id,
+                                            &page_no)))
   {
     pos = 0;
     m_current_page_no = page_no;
     pageP = m_current_page = page;
-    m_current_first_free = REC_NIL;
+    m_current_first_free = REC_NIL64;
     page->m_type_id = m_record_info.m_type_id;
     goto seize_first;
   }
 
   m_current_page = 0;
   m_current_page_no = RNIL;
-  m_current_pos = RWPage::RWPAGE_WORDS;
-  m_current_first_free = REC_NIL;
-  
+  m_current_pos = RWPage64::RWPAGE_WORDS;
+  m_current_first_free = REC_NIL64;
   return false;
 }
 
 template<typename T>
 void
-RWPool<T>::release(Ptr<T> ptr)
+RWPool64<T>::release(Ptr64<T> ptr)
 {
   Uint32 cur_page = m_current_page_no;
   Uint32 ptr_page = ptr.i >> POOL_RECORD_BITS;
@@ -156,7 +238,7 @@ RWPool<T>::release(Ptr<T> ptr)
     }
 
     // Cache miss on page...
-    RWPage* page = m_memroot + ptr_page;
+    RWPage64* page = m_memroot + ptr_page;
     Uint32 ref_cnt = page->m_ref_count;
     Uint32 ff = page->m_first_free;
 
@@ -164,7 +246,7 @@ RWPool<T>::release(Ptr<T> ptr)
     page->m_first_free = ptr.i & POOL_RECORD_MASK;
     page->m_ref_count = ref_cnt - 1;
     
-    if (ff == REC_NIL)
+    if (ff == REC_NIL64)
     {
       /**
        * It was full...add to free page list
@@ -172,7 +254,7 @@ RWPool<T>::release(Ptr<T> ptr)
       Uint32 ffp = m_first_free_page;
       if (ffp != RNIL)
       {
-	RWPage* next = (m_memroot + ffp);
+	RWPage64* next = (m_memroot + ffp);
 	assert(next->m_prev_page == RNIL);
 	next->m_prev_page = ptr_page;
       }
@@ -181,7 +263,7 @@ RWPool<T>::release(Ptr<T> ptr)
       m_first_free_page = ptr_page;
       return;
     }
-    else if(ref_cnt == 1)
+    else if (ref_cnt == 1)
     {
       /**
        * It's now empty...release it
@@ -212,7 +294,7 @@ RWPool<T>::release(Ptr<T> ptr)
 
 template<typename T>
 void
-RWPool<T>::handle_invalid_release(Ptr<T> ptr)
+RWPool64<T>::handle_invalid_release(Ptr64<T> ptr)
 {
   char buf[255];
 
@@ -223,7 +305,7 @@ RWPool<T>::handle_invalid_release(Ptr<T> ptr)
   
   Uint32 magic = * (record_ptr_p + m_record_info.m_offset_magic);
   BaseString::snprintf(buf, sizeof(buf),
-	   "Invalid memory release: ptr (%x %p %p) magic: (%.8x %.8x) memroot: %p page: %x",
+	   "Invalid memory release: ptr (%llx %p %p) magic: (%.8x %.8x) memroot: %p page: %x",
 	   ptr.i, ptr.p, record_ptr_i, magic, m_record_info.m_type_id,
 	   m_memroot,
 	   (m_memroot+pageI)->m_type_id);
@@ -233,7 +315,7 @@ RWPool<T>::handle_invalid_release(Ptr<T> ptr)
 
 template<typename T>
 void
-RWPool<T>::handle_invalid_get_ptr(Uint32 ptrI) const
+RWPool64<T>::handle_invalid_get_ptr(Uint64 ptrI) const
 {
   char buf[255];
 
@@ -243,10 +325,14 @@ RWPool<T>::handle_invalid_get_ptr(Uint32 ptrI) const
   
   Uint32 magic = * (record_ptr_i + m_record_info.m_offset_magic);
   BaseString::snprintf(buf, sizeof(buf),
-	   "Invalid memory access: ptr (%x %p) magic: (%.8x %.8x) memroot: %p page: %x",
+	   "Invalid memory access: ptr (%llx %p) magic: (%.8x %.8x) memroot: %p page: %x",
 	   ptrI, record_ptr_i, magic, m_record_info.m_type_id,
 	   m_memroot,
 	   (m_memroot+pageI)->m_type_id);
   
   m_ctx.handleAbort(NDBD_EXIT_PRGERR, buf);
 }
+
+#undef JAM_FILE_ID
+
+#endif

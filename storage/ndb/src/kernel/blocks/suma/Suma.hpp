@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
+   Copyright (c) 2020, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -42,6 +42,9 @@
 #include <signaldata/SumaImpl.hpp>
 #include <ndbapi/NdbDictionary.hpp>
 #include <NdbTick.h>
+
+#include "TransientPool.hpp"
+#include "TransientSlotPool.hpp"
 
 #define JAM_FILE_ID 469
 
@@ -162,15 +165,22 @@ public:
   };
 
   struct Subscriber {
-    Subscriber() {}
+    static constexpr Uint32 TYPE_ID = RT_SUMA_SUBSCRIBER_RECORD;
+    Uint32 m_magic;
+
+    Subscriber() :
+      m_magic(Magic::make(TYPE_ID))
+    {}
+
     Uint32 m_senderRef;
     Uint32 m_senderData;
     Uint32 nextList;
 
     union { Uint32 nextPool; Uint32 prevList; };
   };
+  static constexpr Uint32 SUMA_SUBSCRIBER_RECORD_TRANSIENT_POOL_INDEX = 3;
   typedef Ptr<Subscriber> SubscriberPtr;
-  typedef ArrayPool<Subscriber> Subscriber_pool;
+  typedef TransientPool<Subscriber> Subscriber_pool;
   typedef DLList<Subscriber_pool> Subscriber_list;
   typedef ConstLocalDLList<Subscriber_pool> ConstLocal_Subscriber_list;
   typedef LocalDLList<Subscriber_pool> Local_Subscriber_list;
@@ -179,9 +189,15 @@ public:
   friend struct Table;
   typedef Ptr<Table> TablePtr;
 
-  typedef ArrayPool<DataBufferSegment<15> > SyncRecordBuffer_pool;
-  typedef DataBuffer<15,SyncRecordBuffer_pool> SyncRecordBuffer;
-  typedef LocalDataBuffer<15,SyncRecordBuffer_pool> LocalSyncRecordBuffer;
+  static constexpr Uint32 SUMA_DATA_BUFFER_TRANSIENT_POOL_INDEX = 4;
+  typedef DataBufferSegment<15, RT_SUMA_DATA_BUFFER> SyncRecordBufferSegment;
+  typedef TransientPool<SyncRecordBufferSegment> SyncRecordBuffer_pool;
+  typedef DataBuffer<15,
+                     SyncRecordBuffer_pool,
+                     RT_SUMA_DATA_BUFFER> SyncRecordBuffer;
+  typedef LocalDataBuffer<15,
+                          SyncRecordBuffer_pool,
+                          RT_SUMA_DATA_BUFFER> LocalSyncRecordBuffer;
   struct SyncRecord {
     SyncRecord(Suma& s, SyncRecordBuffer_pool & p)
       : suma(s)
@@ -249,6 +265,7 @@ public:
     Uint32 prevList; Uint32 ptrI;
     union { Uint32 nextPool; Uint32 nextList; };
   };
+  static constexpr Uint32 SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX = 1;
   typedef ArrayPool<SyncRecord> SyncRecord_pool;
   typedef SLList<SyncRecord_pool> SyncRecord_sllist;
   typedef DLList<SyncRecord_pool> SyncRecord_dllist;
@@ -257,7 +274,12 @@ public:
 
   struct SubOpRecord
   {
-    SubOpRecord() {}
+    static constexpr Uint32 TYPE_ID = RT_SUMA_SUB_OP_RECORD;
+    Uint32 m_magic;
+
+    SubOpRecord() :
+      m_magic(Magic::make(TYPE_ID))
+    {}
 
     enum OpType
     {
@@ -281,13 +303,20 @@ public:
       Uint32 nextPool;
     };
   };
-  typedef ArrayPool<SubOpRecord> SubOpRecord_pool;
+  typedef TransientPool<SubOpRecord> SubOpRecord_pool;
   typedef DLFifoList<SubOpRecord_pool> SubOpRecord_fifo;
   typedef LocalDLFifoList<SubOpRecord_pool> Local_SubOpRecord_fifo;
   friend struct SubOpRecord;
 
   struct Subscription
   {
+    static constexpr Uint32 TYPE_ID = RT_SUMA_SUBSCRIPTION_RECORD;
+    Uint32 m_magic;
+
+    Subscription() :
+      m_magic(Magic::make(TYPE_ID))
+    {}
+
     Uint32 m_seq_no;
     Uint32 m_subscriptionId;
     Uint32 m_subscriptionKey;
@@ -349,15 +378,21 @@ public:
     Uint32 m_tableId;
     Uint32 m_table_ptrI;
   };
+  static constexpr Uint32 SUMA_SUBSCRIPTION_RECORD_TRANSIENT_POOL_INDEX = 0;
   typedef Ptr<Subscription> SubscriptionPtr;
-  typedef ArrayPool<Subscription> Subscription_pool;
+  typedef TransientPool<Subscription> Subscription_pool;
   typedef DLList<Subscription_pool> Subscription_list;
   typedef LocalDLList<Subscription_pool> Local_Subscription_list;
   typedef DLHashTable<Subscription_pool> Subscription_hash;
-  typedef KeyTable<Subscription_pool> Subscription_keyhash;
 
   struct Table {
-    Table() { m_tableId = ~0; }
+    static constexpr Uint32 TYPE_ID = RT_SUMA_TABLE_RECORD;
+    Uint32 m_magic;
+
+    Table() :
+      m_magic(Magic::make(TYPE_ID))
+    { m_tableId = ~0; }
+
     void release(Suma&);
 
     Subscription_list::Head m_subscriptions;
@@ -400,8 +435,9 @@ public:
     // copy from Subscription
     Uint32 m_schemaTransId;
   };
-  typedef ArrayPool<Table> Table_pool;
-  typedef KeyTable<Table_pool> Table_keyhash;
+  static constexpr Uint32 SUMA_TABLE_RECORD_TRANSIENT_POOL_INDEX = 2;
+  typedef TransientPool<Table> Table_pool;
+  typedef DLHashTable<Table_pool> Table_hash;
   /**
    * 
    */
@@ -409,8 +445,10 @@ public:
   /**
    * Lists
    */
-  Table_keyhash c_tables;
+  Table_hash c_tables;
+  typedef Table_hash::Iterator TableIterator;
   Subscription_hash c_subscriptions;
+  typedef Subscription_hash::Iterator SubscriptionIterator;
   
   /**
    * Pools
@@ -418,6 +456,7 @@ public:
   Subscriber_pool c_subscriberPool;
   Table_pool c_tablePool;
   Subscription_pool c_subscriptionPool;
+
   SyncRecord_pool c_syncPool;
   SyncRecordBuffer_pool c_dataBufferPool;
   SubOpRecord_pool c_subOpPool;
@@ -683,7 +722,7 @@ private:
   
   struct Buffer_page 
   {
-    static constexpr Uint32 DATA_WORDS = 8192 - 10;
+    static constexpr Uint32 DATA_WORDS = 8192 - 11;
     static constexpr Uint32 GCI_SZ32 = 2;
     static constexpr Uint32 SAME_GCI_FLAG = 0x80000000;
     static constexpr Uint32 SIZE_MASK = 0x0000FFFF;
@@ -700,6 +739,7 @@ private:
     Uint32 m_words_used;     // 
     Uint32 m_max_gci_hi;     //
     Uint32 m_max_gci_lo;     //
+    Uint32 m_prev_page;
     Uint32 m_data[DATA_WORDS];
   };
   typedef ArrayPool<Buffer_page> Buffer_page_pool;
@@ -715,7 +755,11 @@ private:
   Bucket_mask m_switchover_buckets;  
   
   void init_buffers();
-  Uint32* get_buffer_ptr(Signal*, Uint32 buck, Uint64 gci, Uint32 sz, Uint32 part);
+  Uint32* get_buffer_ptr(Signal*,
+                         Uint32 buck,
+                         Uint64 gci,
+                         Uint32 sz,
+                         Uint32 part);
   Uint32 seize_page();
   void free_page(Uint32 page_id, Buffer_page* page);
   void out_of_buffer(Signal*);
@@ -773,6 +817,8 @@ private:
 
   Uint32 m_first_free_page;
   Page_chunk_pool c_page_chunk_pool;
+  typedef DLFifoList<Page_chunk_pool> Page_chunk_fifo;
+  Page_chunk_fifo c_free_page_chunks;
   Buffer_page_pool c_page_pool;
 
 #ifdef VM_TRACE
@@ -815,6 +861,75 @@ private:
   Uint32 m_startphase;
   Uint32 m_typeOfStart;
 
+#define NUM_LDM_TRIGGER_PAGE_RECORDS 4
+  struct Trigger_page_chunk
+  {
+    Trigger_page_chunk() {}
+
+    static constexpr Uint32 PAGES_PER_CHUNK = 32;
+    static constexpr Uint32 MIN_PAGES_PER_CHUNK = 2;
+    Uint32 m_page_id;
+    Uint32 m_count;
+    BitmaskPOD<1> m_page_id_allocated_bitmask;
+    union {
+      Uint32 nextPool;
+      Uint32 nextList;
+    };
+    Uint32 prevList;
+  };
+  typedef ArrayPool<Trigger_page_chunk> Trigger_page_chunk_pool;
+  typedef DLCFifoList<Trigger_page_chunk_pool> Trigger_page_chunk_fifo;
+  typedef LocalDLCFifoList<Trigger_page_chunk_pool>
+    Local_Trigger_page_chunk_fifo;
+  Trigger_page_chunk_pool c_trigger_page_chunk_pool;
+  struct LdmTriggerPageRecord
+  {
+    LdmTriggerPageRecord() {}
+
+    Trigger_page_chunk_fifo::Head m_trigger_page_free_chunks;
+    Trigger_page_chunk_fifo::Head m_trigger_page_full_chunks;
+    NdbMutex theMutex;
+    Uint32 nextPool;
+  };
+  typedef ArrayPool<LdmTriggerPageRecord> LdmTriggerPageRecord_pool;
+  LdmTriggerPageRecord_pool c_trigger_page_record_pool;
+  NdbMutex theTriggerPageChunkMutex;
+public:
+  void alloc_trigger_page(Uint32 ldm_instance,
+                          Uint32 *page_id,
+                          Uint32 *chunk_id,
+                          EmulatedJamBuffer*,
+                          Uint32 page_count);
+private:
+  bool alloc_trigger_page_chunk(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
+                                Ptr<Trigger_page_chunk> &triggerChunkPtr,
+                                EmulatedJamBuffer*);
+  Uint32 find_trigger_pages(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
+                            Ptr<Trigger_page_chunk> triggerChunkPtr,
+                            Uint32 page_count,
+                            EmulatedJamBuffer *jambuf);
+  void get_first_trigger_page_chunk(Ptr<LdmTriggerPageRecord> triggerPagePtr,
+                                    Ptr<Trigger_page_chunk> &triggerChunkPtr,
+                                    bool &found);
+  void move_chunk_to_full(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
+                          Ptr<Trigger_page_chunk> triggerChunkPtr);
+  void move_chunk_to_free(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
+                          Ptr<Trigger_page_chunk> triggerChunkPtr);
+  void release_trigger_page(Uint32 ldm_instance,
+                            Uint32 page_id,
+                            Uint32 chunk_id,
+                            Uint32 page_count);
+  void release_trigger_page_chunk(Ptr<LdmTriggerPageRecord> ldmTriggerPagePtr,
+                                  Ptr<Trigger_page_chunk> triggerChunkPtr);
+
+  Uint32 m_total_pages_allocated;
+  Uint32 m_total_pages_free;
+  Uint32 m_min_pages_allocated;
+  Uint32 m_min_pages_free;
+  void release_chunk();
+  void init_page_chunks();
+  void release_chunk_pages(Ptr<Page_chunk>);
+  void insert_chunk_pages(Ptr<Page_chunk>);
   void sendScanSubTableData(Signal* signal, Ptr<SyncRecord>, Uint32);
 public:
   static size_t getTableRecordSize()
@@ -833,6 +948,15 @@ public:
   {
     return size_t(4 * (15 + 2));
   }
+
+  void checkPoolShrinkNeed(Uint32 pool_index,
+                           const TransientFastSlotPool& pool);
+  void sendPoolShrink(Uint32 pool_index);
+  void shrinkTransientPools(Uint32 pool_index);
+
+  static const Uint32 c_transient_pool_count = 5;
+  TransientFastSlotPool* c_transient_pools[c_transient_pool_count];
+  Bitmask<1> c_transient_pools_shrinking;
 };
 
 inline
@@ -842,6 +966,19 @@ Suma::get_sub_data_stream(Uint16 bucket) const
   ndbassert(bucket < NO_OF_BUCKETS);
   const Bucket* ptr= c_buckets + bucket;
   return ptr->m_sub_data_stream;
+}
+
+inline void Suma::checkPoolShrinkNeed(const Uint32 pool_index,
+                                      const TransientFastSlotPool& pool)
+{
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  ndbrequire(pool_index < c_transient_pool_count);
+  ndbrequire(c_transient_pools[pool_index] == &pool);
+#endif
+  if (pool.may_shrink())
+  {
+    sendPoolShrink(pool_index);
+  }
 }
 
 #undef JAM_FILE_ID

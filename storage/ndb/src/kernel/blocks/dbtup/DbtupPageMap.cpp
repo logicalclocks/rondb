@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1334,9 +1335,9 @@ Dbtup::rebuild_page_free_list(Signal* signal)
   Uint32 tail = signal->theData[3];
   ptrCheckGuard(fragOpPtr, cnoOfFragoprec, fragoperrec);
   
-  Ptr<Fragrecord> fragPtr;
+  FragrecordPtr fragPtr;
   fragPtr.i= fragOpPtr.p->fragPointer;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  c_fragment_pool.getPtr(fragPtr);
   
   if (pageId == fragPtr.p->m_max_page_cnt)
   {
@@ -1348,6 +1349,8 @@ Dbtup::rebuild_page_free_list(Signal* signal)
     conf->restoredLocalLcpId = fragOpPtr.p->m_restoredLocalLcpId;
     conf->maxGciCompleted = fragOpPtr.p->m_maxGciCompleted;
     conf->afterRestore = 1;
+    conf->tableId = fragPtr.p->fragTableId;
+    conf->fragId = fragPtr.p->fragmentId;
     sendSignal(fragOpPtr.p->m_senderRef,
 	       GSN_RESTORE_LCP_CONF, signal, 
 	       RestoreLcpConf::SignalLength, JBB);

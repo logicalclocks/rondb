@@ -8,6 +8,8 @@ mysqld=,
 ndbapi=,,,,,,,,,,,
 DefaultOperationRedoProblemAction=queue
 NoOfReplicas=3
+SchemaMemory=100M
+DataMemory=250M
 
 [cluster_config.mysqld.1.1]
 NodeId=49

@@ -41,10 +41,10 @@ class AddFragReq {
    */
   friend class Dbdict;
   
-  friend bool printADD_FRAG_REQ(FILE *, const Uint32 *, Uint32, Uint16);
+  friend bool printADDFRAGREQ(FILE *, const Uint32 *, Uint32, Uint16);
 
 public:
-  static constexpr Uint32 SignalLength = 14;
+  static constexpr Uint32 SignalLength = 15;
   
   enum RequestInfo {
     CreateInRunning = 0x8000000,
@@ -65,6 +65,7 @@ private:
   Uint32 changeMask;
   Uint32 partitionId;
   Uint32 createGci;
+  Uint32 nodeFragCount;
 };
 
 class AddFragRef {
@@ -78,7 +79,7 @@ class AddFragRef {
    */
   friend class Dbdih;
 
-  friend bool printADD_FRAG_REF(FILE *, const Uint32 *, Uint32, Uint16);
+  friend bool printADDFRAGREF(FILE *, const Uint32 *, Uint32, Uint16);
 public:
   static constexpr Uint32 SignalLength = 2;
   
@@ -98,7 +99,7 @@ class AddFragConf {
    */
   friend class Dbdih;
 
-  friend bool printADD_FRAG_CONF(FILE *, const Uint32 *, Uint32, Uint16);
+  friend bool printADDFRAGCONF(FILE *, const Uint32 *, Uint32, Uint16);
 public:
   static constexpr Uint32 SignalLength = 2;
   
@@ -119,12 +120,11 @@ class LqhFragReq {
   friend class Dblqh;
   friend class DblqhProxy;
   
-  friend bool printLQH_FRAG_REQ(FILE *, const Uint32 *, Uint32, Uint16);
+  friend bool printLQHFRAGREQ(FILE *, const Uint32 *, Uint32, Uint16);
 
 public:
-  static constexpr Uint32 SignalLength = 24;
-  static constexpr Uint32 OldSignalLength = 23;
-  static constexpr Uint32 OldestSignalLength = 22;
+  static constexpr Uint32 SignalLength = 25;
+  static constexpr Uint32 OldSignalLength = 24;
   
   enum RequestInfo {
     CreateInRunning = 0x8000000,
@@ -162,6 +162,7 @@ private:
   Uint32 changeMask;
   Uint32 partitionId;
   Uint32 createGci;
+  Uint32 nodeFragCount;
 };
 
 class LqhFragConf {
@@ -176,7 +177,7 @@ class LqhFragConf {
    */
   friend class Dbdict;
 
-  friend bool printLQH_FRAG_CONF(FILE *, const Uint32 *, Uint32, Uint16);
+  friend bool printLQHFRAGCONF(FILE *, const Uint32 *, Uint32, Uint16);
 public:
   static constexpr Uint32 SignalLength = 5;
 
@@ -200,7 +201,7 @@ class LqhFragRef {
    */
   friend class Dbdict;
 
-  friend bool printLQH_FRAG_REF(FILE *, const Uint32 *, Uint32, Uint16);
+  friend bool printLQHFRAGREF(FILE *, const Uint32 *, Uint32, Uint16);
 public:
   static constexpr Uint32 SignalLength = 6;
 

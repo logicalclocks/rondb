@@ -1,6 +1,7 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
     Use is subject to license terms.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -76,7 +77,7 @@ printACC_LOCKREQ(FILE* output, const Uint32* theData, Uint32 len, Uint16 rbn)
       reqtype == AccLockReq::LockExclusive) {
     fprintf(output, " userPtr: 0x%x userRef: 0x%x\n", sig->userPtr, sig->userRef);
     fprintf(output, " table: id=%u", sig->tableId);
-    fprintf(output, " fragment: id=%u ptr=0x%x\n", sig->fragId, sig->fragPtrI);
+    fprintf(output, " fragment: id=%u\n", sig->fragId);
     fprintf(output, " tuple: addr=%u/%u hashValue=%x\n", sig->page_id, sig->page_idx, sig->hashValue);
     fprintf(output, " transid: %08x %08x\n", sig->transId1, sig->transId2);
   }

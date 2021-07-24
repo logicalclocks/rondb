@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -112,10 +113,10 @@ void Dbtup::execDBINFO_SCANREQ(Signal* signal)
         { CFG_DB_NO_LOCAL_SCANS,0,0,0 },
         0},
       { "Trigger",
-        c_triggerPool.getUsed(),
-        c_triggerPool.getSize(),
-        c_triggerPool.getEntrySize(),
-        c_triggerPool.getUsedHi(),
+        cnoOfAllocatedTriggerRec,
+        0,
+        sizeof(TupTriggerData)/4,
+        cnoOfMaxAllocatedTriggerRec,
         { CFG_DB_NO_TRIGGERS,0,0,0 },
         0},
       { "Stored Proc",
@@ -439,7 +440,7 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
       RSS_OP_SNAPSHOT_SAVE(defaultValueWordsLo);
     }
     RSS_OP_SNAPSHOT_SAVE(cnoOfFreeFragoprec);
-    RSS_OP_SNAPSHOT_SAVE(cnoOfFreeFragrec);
+    RSS_OP_SNAPSHOT_SAVE(cnoOfAllocatedFragrec);
     RSS_OP_SNAPSHOT_SAVE(cnoOfFreeTabDescrRec);
 
     RSS_AP_SNAPSHOT_SAVE2(c_storedProcPool, c_storedProcCountNonAPI);
@@ -458,7 +459,7 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
       RSS_OP_SNAPSHOT_CHECK(defaultValueWordsLo);
     }
     RSS_OP_SNAPSHOT_CHECK(cnoOfFreeFragoprec);
-    RSS_OP_SNAPSHOT_CHECK(cnoOfFreeFragrec);
+    RSS_OP_SNAPSHOT_CHECK(cnoOfAllocatedFragrec);
     RSS_OP_SNAPSHOT_CHECK(cnoOfFreeTabDescrRec);
 
     RSS_AP_SNAPSHOT_CHECK2(c_storedProcPool, c_storedProcCountNonAPI);
@@ -501,7 +502,7 @@ void Dbtup::execMEMCHECKREQ(Signal* signal)
   regTabPtr.i = 2;
   ptrCheckGuard(regTabPtr, cnoOfTablerec, tablerec);
   if(tablerec && regTabPtr.p->tableStatus == DEFINED)
-    validate_page(regTabPtr.p, 0);
+    validate_page(regTabPtr, 0);
 
 #if 0
   const Dbtup::Tablerec& tab = *tup->tabptr.p;
@@ -529,32 +530,6 @@ void Dbtup::execMEMCHECKREQ(Signal* signal)
   sendSignal(blockref, GSN_MEMCHECKCONF, signal, 25, JBB);
 #endif
 }//Dbtup::memCheck()
-
-// ------------------------------------------------------------------------
-// Help function to be used when debugging. Prints out a tuple page.
-// printLimit is the number of bytes that is printed out from the page. A 
-// page is of size 32768 bytes as of March 2003.
-// ------------------------------------------------------------------------
-void Dbtup::printoutTuplePage(Uint32 fragid, Uint32 pageid, Uint32 printLimit) 
-{
-  PagePtr tmpPageP;
-  FragrecordPtr tmpFragP;
-  TablerecPtr tmpTableP;
-
-  c_page_pool.getPtr(tmpPageP, pageid);
-
-  tmpFragP.i = fragid;
-  ptrCheckGuard(tmpFragP, cnoOfFragrec, fragrecord);
-
-  tmpTableP.i = tmpFragP.p->fragTableId;
-  ptrCheckGuard(tmpTableP, cnoOfTablerec, tablerec);
-
-  ndbout << "Fragid: " << fragid << " Pageid: " << pageid << endl
-	 << "----------------------------------------" << endl;
-
-  ndbout << "PageHead : ";
-  ndbout << endl;
-}//Dbtup::printoutTuplePage
 
 #ifdef VM_TRACE
 NdbOut&

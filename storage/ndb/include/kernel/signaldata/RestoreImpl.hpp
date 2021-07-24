@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -71,7 +72,9 @@ struct RestoreLcpConf
   Uint32 restoredLocalLcpId;
   Uint32 maxGciCompleted;
   Uint32 afterRestore;
-  static constexpr Uint32 SignalLength = 6;
+  Uint32 tableId;
+  Uint32 fragId;
+  static constexpr Uint32 SignalLength = 8;
 };
 
 struct RestoreContinueB {

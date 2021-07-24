@@ -230,8 +230,34 @@ void Dbtc::initData()
   ctcTimer = 0;
 
   // Trigger and index pools
-  c_theDefinedTriggerPool.setSize(c_maxNumberOfDefinedTriggers);
-  c_theIndexPool.setSize(c_maxNumberOfIndexes);
+  Pool_context pc;
+  pc.m_block = this;
+
+  c_theDefinedTriggerPool.init(
+    TcDefinedTriggerData::TYPE_ID,
+    pc,
+    c_maxNumberOfDefinedTriggers,
+    UINT32_MAX);
+
+  while (c_theDefinedTriggerPool.startup())
+  {
+    refresh_watch_dog();
+  }
+  Uint32 triggerHashSize = MAX(c_maxNumberOfDefinedTriggers, 16384);
+  c_theDefinedTriggerHash.setSize(triggerHashSize);
+
+  c_theIndexPool.init(
+    TcIndexData::TYPE_ID,
+    pc,
+    c_maxNumberOfIndexes,
+    UINT32_MAX);
+
+  while (c_theIndexPool.startup())
+  {
+    refresh_watch_dog();
+  }
+  Uint32 indexHashSize = MAX(c_maxNumberOfIndexes, 8192);
+  c_theIndexHash.setSize(indexHashSize);
 }//Dbtc::initData()
 
 void Dbtc::initRecords(const ndb_mgm_configuration_iterator * mgm_cfg) 
@@ -379,7 +405,6 @@ void Dbtc::initRecords(const ndb_mgm_configuration_iterator * mgm_cfg)
                                           &reserveFailCommitAckMarkerBuffer));
   }
 
-  void *p;
 #if defined(USE_INIT_GLOBAL_VARIABLES)
   {
     void* tmp[] = { &tcConnectptr,
@@ -393,14 +418,6 @@ void Dbtc::initRecords(const ndb_mgm_configuration_iterator * mgm_cfg)
   // Records with dynamic sizes
 
   // Init all index records
-  TcIndexData_list indexes(c_theIndexPool);
-  TcIndexDataPtr iptr;
-  while(indexes.seizeFirst(iptr) == true) {
-    p= iptr.p;
-    new (p) TcIndexData();
-  }
-  while (indexes.releaseFirst());
-
   hostRecord = (HostRecord*)allocRecord("HostRecord",
 					sizeof(HostRecord),
 					chostFilesize);
@@ -575,10 +592,10 @@ Dbtc::getParam(const char* name, Uint32* count)
 Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
   SimulatedBlock(DBTC, ctx, instanceNo),
   c_dih(0),
-  c_theDefinedTriggers(c_theDefinedTriggerPool),
+  c_theDefinedTriggerHash(c_theDefinedTriggerPool),
   c_firedTriggerHash(c_theFiredTriggerPool),
   c_maxNumberOfDefinedTriggers(0),
-  c_theIndexes(c_theIndexPool),
+  c_theIndexHash(c_theIndexPool),
   c_maxNumberOfIndexes(0),
   c_fk_hash(c_fk_pool),
   c_currentApiConTimers(NULL),
@@ -731,7 +748,11 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
     &scanRecordPool;
   c_transient_pools[DBTC_COMMIT_ACK_MARKER_TRANSIENT_POOL_INDEX] =
     &m_commitAckMarkerPool;
-  NDB_STATIC_ASSERT(c_transient_pool_count == 13);
+  c_transient_pools[DBTC_INDEX_DATA_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_theIndexPool;
+  c_transient_pools[DBTC_DEFINED_TRIGGER_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_theDefinedTriggerPool;
+  NDB_STATIC_ASSERT(c_transient_pool_count == 15);
   c_transient_pools_shrinking.clear();
 }//Dbtc::Dbtc()
 

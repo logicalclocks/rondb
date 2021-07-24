@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -134,6 +135,8 @@ Dbtux::Dbtux(Block_context& ctx,
     addRecSignal(GSN_NODE_STATE_REP, &Dbtux::execNODE_STATE_REP, true);
   }
   c_signal_bug32040 = 0;
+  cnoOfAllocatedFragrec = 0;
+  cnoOfMaxAllocatedFragrec = 0;
 
   c_transient_pools[DBTUX_SCAN_OPERATION_TRANSIENT_POOL_INDEX] =
     &c_scanOpPool;
@@ -446,14 +449,12 @@ Dbtux::execREAD_CONFIG_REQ(Signal* signal)
   {
     c_fragOpPool.setSize(0);
     c_indexPool.setSize(0);
-    c_fragPool.setSize(0);
     c_descPagePool.setSize(0);
   }
   else
   {
-    c_fragOpPool.setSize(MaxIndexFragments);
+    c_fragOpPool.setSize(16);
     c_indexPool.setSize(nIndex);
-    c_fragPool.setSize(nFragment);
     c_descPagePool.setSize(nDescPage);
   }
   c_statOpPool.setSize(nStatOp);
@@ -506,6 +507,8 @@ Dbtux::execREAD_CONFIG_REQ(Signal* signal)
 
   Pool_context pc;
   pc.m_block = this;
+
+  c_fragPool.init(RT_DBTUX_FRAGMENT, pc);
 
   Uint32 reserveScanOpRecs = 0;
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TUX_RESERVED_SCAN_RECORDS,
@@ -585,7 +588,7 @@ Dbtux::readKeyAttrs(TuxCtx& ctx,
   const Uint32 pageId = tupLoc.getPageId();
   const Uint32 pageOffset = tupLoc.getPageOffset();
   const Uint32 tupVersion = ent.m_tupVersion;
-  const Uint32 tableFragPtrI = frag.m_tupTableFragPtrI;
+  const Uint64 tableFragPtrI = frag.m_tupTableFragPtrI;
   const Uint32* keyAttrs32 = (const Uint32*)&keyAttrs[0];
 
   int ret;
@@ -666,7 +669,7 @@ Dbtux::readTablePk(TreeEnt ent, Uint32* pkData, unsigned& pkSize)
   {
     Frag& frag = *c_ctx.fragPtr.p;
     Uint32 lkey1, lkey2;
-    getTupAddr(frag, ent, lkey1, lkey2);
+    getTupAddr(ent, lkey1, lkey2);
     g_eventLogger->info("(%u) readTablePk error tab(%u,%u) row(%u,%u)",
                         instance(),
                         frag.m_tableId,
@@ -704,20 +707,22 @@ Dbtux::unpackBound(Uint32* const outputBuffer,
 }
 
 void
-Dbtux::findFrag(EmulatedJamBuffer* jamBuf, const Index& index, 
-                Uint32 fragId, FragPtr& fragPtr)
+Dbtux::findFrag(EmulatedJamBuffer* jamBuf,
+                Uint32 indexId,
+                Uint32 fragId,
+                FragPtr& fragPtr)
 {
-  const Uint32 numFrags = index.m_numFrags;
-  for (Uint32 i = 0; i < numFrags; i++) {
+  fragPtr.i = c_lqh->m_ldm_instance_used->getTuxFragPtrI(
+                    jamBuf,
+                    indexId,
+                    fragId);
+  if (fragPtr.i != RNIL64)
+  {
     thrjamDebug(jamBuf);
-    if (index.m_fragId[i] == fragId) {
-      thrjamDebug(jamBuf);
-      fragPtr.i = index.m_fragPtrI[i];
-      c_fragPool.getPtr(fragPtr);
-      return;
-    }
+    c_fragPool.getPtr(fragPtr);
+    return;
   }
-  fragPtr.i = RNIL;
+  fragPtr.i = RNIL64;
 }
 
 void

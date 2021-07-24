@@ -1,4 +1,5 @@
 # Copyright (c) 2008, 2021, Oracle and/or its affiliates.
+# Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -49,8 +50,6 @@ ADD_LIBRARY(ndbkernel STATIC
   ndbd_malloc.cpp
   ndbd_malloc_impl.cpp
 )
-#    WOPool.cpp
-#    RWPool.cpp
 
 ADD_LIBRARY(ndbsched STATIC
   FastScheduler.cpp
@@ -100,6 +99,7 @@ FOREACH(testprog
     CountingPool
     DynArr256
     IntrusiveList
+    Intrusive64List
     LHLevel
     Rope
     SegmentList

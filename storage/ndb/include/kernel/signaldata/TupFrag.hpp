@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -85,7 +86,7 @@ class TuxFragReq {
   friend class Dblqh;
   friend class Dbtux;
 public:
-  static constexpr Uint32 SignalLength = 9;
+  static constexpr Uint32 SignalLength = 6;
 private:
   Uint32 userPtr;
   Uint32 userRef;
@@ -93,9 +94,6 @@ private:
   Uint32 tableId;
   Uint32 fragId;
   Uint32 primaryTableId;
-  Uint32 tupIndexFragPtrI;
-  Uint32 tupTableFragPtrI;
-  Uint32 accTableFragPtrI;
 };
 
 class TuxFragConf {

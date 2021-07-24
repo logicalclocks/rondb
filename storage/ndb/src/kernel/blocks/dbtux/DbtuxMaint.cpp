@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -72,8 +73,8 @@ Dbtux::execTUX_MAINT_REQ(Signal* signal)
   const Uint32 fragId = req->fragId;
   // get the fragment
   FragPtr fragPtr;
-  findFrag(jamBuffer(), *indexPtr.p, fragId, fragPtr);
-  ndbrequire(fragPtr.i != RNIL);
+  findFrag(jamBuffer(), indexPtr.i, fragId, fragPtr);
+  ndbrequire(fragPtr.i != RNIL64);
   Frag& frag = *fragPtr.p;
   prepare_build_ctx(c_ctx, fragPtr);
   // set up search entry

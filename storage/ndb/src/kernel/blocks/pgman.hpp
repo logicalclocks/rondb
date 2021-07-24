@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
+   Copyright (c) 2020, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,6 +30,8 @@
 
 #include <DLCHashTable.hpp>
 #include <IntrusiveList.hpp>
+#include <Intrusive64List.hpp>
+#include <DL64HashTable.hpp>
 #include <NodeBitmask.hpp>
 #include <signaldata/LCP.hpp>
 #include <signaldata/RedoStateRep.hpp>
@@ -286,6 +288,10 @@ private:
     Uint32 m_file_no;
     Uint32 nextPool;
   };
+  /**
+   * The number of tablespace files is very limited and thus no need to
+   * convert this pool into a RWPool64 record.
+   */
   typedef RecordPool<RWPool<File_entry> > File_entry_pool;
   File_entry_pool m_file_entry_pool;
 
@@ -321,7 +327,7 @@ private:
     NDB_TICKS m_start_time;
   };
 
-  typedef RecordPool<WOPool<Page_request> > Page_request_pool;
+  typedef RecordPool<RWPool<Page_request> > Page_request_pool;
   typedef SLFifoList<Page_request_pool> Page_request_list;
   typedef LocalSLFifoList<Page_request_pool> Local_page_request_list;
   
@@ -451,7 +457,9 @@ private:
    */
   struct FragmentRecord
   {
+    FragmentRecord() {}
     FragmentRecord(Pgman &pgman, Uint32, Uint32);
+    Uint32 m_magic;
     Uint32 m_table_id;
     Uint32 m_fragment_id;
 
@@ -460,13 +468,13 @@ private:
     DirtyState m_current_lcp_dirty_state;
 
     bool m_is_frag_ready_for_prep_lcp_writes;
-    Uint32 prevList;
-    Uint32 nextList;
-    Uint32 prevHash;
+    Uint64 prevList;
+    Uint64 nextList;
+    Uint64 prevHash;
     union
     {
-      Uint32 nextPool;
-      Uint32 nextHash;
+      Uint64 nextPool;
+      Uint64 nextHash;
     };
 
     inline bool equal(const FragmentRecord & p) const
@@ -485,19 +493,19 @@ private:
               ((m_fragment_id >> 1) & 1));
     }
   };
-  typedef Ptr<FragmentRecord> FragmentRecordPtr;
-  typedef ArrayPool<FragmentRecord> FragmentRecord_pool;
+  typedef Ptr64<FragmentRecord> FragmentRecordPtr;
+  typedef RecordPool64<RWPool64<FragmentRecord> > FragmentRecord_pool;
   FragmentRecord_pool m_fragmentRecordPool;
 #define NUM_ORDERED_LISTS 128
-  typedef LocalDLFifoList<FragmentRecord_pool> Local_FragmentRecord_list;
-  DLFifoList<FragmentRecord_pool>::Head
+  typedef LocalDLFifo64List<FragmentRecord_pool> Local_FragmentRecord_list;
+  DLFifo64List<FragmentRecord_pool>::Head64
     m_fragmentRecordList[NUM_ORDERED_LISTS];
   void insert_ordered_fragment_list(FragmentRecordPtr);
   bool get_first_ordered_fragment(FragmentRecordPtr&);
   bool get_next_ordered_fragment(FragmentRecordPtr&);
   Uint32 get_ordered_list_from_table_id(Uint32 table_id);
 
-  DLHashTable<FragmentRecord_pool, FragmentRecord> m_fragmentRecordHash;
+  DL64HashTable<FragmentRecord_pool, FragmentRecord> m_fragmentRecordHash;
 
   struct TableRecord
   {

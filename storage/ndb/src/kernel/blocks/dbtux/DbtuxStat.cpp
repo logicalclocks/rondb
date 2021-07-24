@@ -485,8 +485,8 @@ Dbtux::execINDEX_STAT_REP(Signal* signal)
     {
       Index& index = *c_indexPool.getPtr(rep->indexId);
       FragPtr fragPtr;
-      findFrag(jamBuffer(), index, rep->fragId, fragPtr);
-      ndbrequire(fragPtr.i != RNIL);
+      findFrag(jamBuffer(), rep->indexId, rep->fragId, fragPtr);
+      ndbrequire(fragPtr.i != RNIL64);
       // index.m_statFragPtrI need not be defined yet
       D("loadTime" << V(index.m_statLoadTime) << " ->" << V(rep->loadTime));
       index.m_statLoadTime = rep->loadTime;
@@ -534,10 +534,10 @@ Dbtux::statMonStart(Signal* signal, StatMon& mon)
   if (req->fragId != ZNIL)
   {
     jam();
-    findFrag(jamBuffer(), index, req->fragId, fragPtr);
+    findFrag(jamBuffer(), req->indexId, req->fragId, fragPtr);
   }
 
-  if (fragPtr.i != RNIL)
+  if (fragPtr.i != RNIL64)
   {
     jam();
     index.m_statFragPtrI = fragPtr.i;
@@ -547,7 +547,7 @@ Dbtux::statMonStart(Signal* signal, StatMon& mon)
   else
   {
     jam();
-    index.m_statFragPtrI = RNIL;
+    index.m_statFragPtrI = RNIL64;
   }
 
   statMonConf(signal, mon);
@@ -562,7 +562,7 @@ Dbtux::statMonStop(Signal* signal, StatMon& mon)
 
   // RT_STOP_MON simply sends ZNIL to every node
   ndbrequire(req->fragId == ZNIL);
-  index.m_statFragPtrI = RNIL;
+  index.m_statFragPtrI = RNIL64;
 
   statMonConf(signal, mon);
 }
@@ -628,7 +628,7 @@ Dbtux::statMonCheck(Signal* signal, StatMon& mon)
     const Index& index = *c_indexPool.getPtr(mon.m_loopIndexId);
     if (index.m_state == Index::NotDefined ||
         index.m_state == Index::Dropping ||
-        index.m_statFragPtrI == RNIL)
+        index.m_statFragPtrI == RNIL64)
     {
       jam();
       continue;

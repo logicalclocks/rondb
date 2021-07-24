@@ -550,28 +550,11 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p)
   Uint64 dict_key_descriptor_mem =
     sizeof(struct KeyDescriptor) * num_table_objects;
 
-  Uint64 safety = 100 * LocalRope::getSegmentSizeInBytes();
-  Uint32 sm = DEFAULT_STRING_MEMORY;
-  ndb_mgm_get_int_parameter(p, CFG_DB_STRING_MEMORY, &sm);
-  Uint32 dict_string_mem = Dbdict::get_rope_pool_size(num_table_objects,
-                                                      num_attributes,
-                                                      num_triggers,
-                                                      sm,
-                                                      safety);
-  /**
-   * Add overhead of Rope pool for string memory
-   * 2 words of overhead and 7 words of payload.
-   */
-  dict_string_mem = (dict_string_mem * Uint64(128)) / Uint64(100);
-  DEB_AUTOMATIC_MEMORY(("String memory is %llu MBytes",
-                        dict_string_mem/MBYTE64));
-
   Uint64 dict_mem = dict_attribute_mem +
                     dict_trigger_mem +
                     dict_table_mem +
                     dict_obj_mem +
-                    dict_key_descriptor_mem +
-                    dict_string_mem;
+                    dict_key_descriptor_mem;
   DEB_AUTOMATIC_MEMORY(("DICT Schema Memory %llu MBytes", dict_mem / MBYTE64));
   DEB_AUTOMATIC_MEMORY(("DICT Attribute record size: %zu",
                         Dbdict::getAttributeRecordSize()));
@@ -775,7 +758,6 @@ Configuration::get_schema_memory(ndb_mgm_configuration_iterator *p)
   Uint64 table_mem = dict_table_mem +
                      dict_obj_mem +
                      dict_key_descriptor_mem +
-                     dict_string_mem +
                      acc_table_mem +
                      tup_table_mem +
                      tux_table_mem +
@@ -2137,18 +2119,12 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   {
     numFragmentsPerNodePerLdm =
       (partitionsPerNode + 1) * noOfMetaTables * noOfReplicas / ldmInstances;
-    noFragPerTable= (((noOfDBNodes * (partitionsPerNode + 1)) + 
-                       NO_OF_FRAGS_PER_CHUNK - 1) >>
-                     LOG_NO_OF_FRAGS_PER_CHUNK) <<
-      LOG_NO_OF_FRAGS_PER_CHUNK;
+    noFragPerTable= (noOfDBNodes * (partitionsPerNode + 1));
     numReplicas = noOfMetaTables * (partitionsPerNode + 1) * noOfReplicas;
   }
   else
   {
-    noFragPerTable= (((noOfDBNodes * ldmInstances) + 
-                       NO_OF_FRAGS_PER_CHUNK - 1) >>
-                     LOG_NO_OF_FRAGS_PER_CHUNK) <<
-      LOG_NO_OF_FRAGS_PER_CHUNK;
+    noFragPerTable= noOfDBNodes * ldmInstances;
     numFragmentsPerNodePerLdm =
       noOfMetaTables * NO_OF_FRAG_PER_NODE * noOfReplicas;
     numReplicas = NO_OF_FRAG_PER_NODE * noOfMetaTables *

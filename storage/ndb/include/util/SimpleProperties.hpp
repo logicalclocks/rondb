@@ -178,9 +178,26 @@ public:
     void printAll(NdbOut& ndbout);
     void printAll(EventLogger* logger);
 
+   /**
+    * Has any error occurred
+    */
+   bool getError()
+   {
+     return m_error;
+   }
+   void setError()
+   {
+     m_error = true;
+   }
+    void resetError()
+    {
+      m_error = false;
+    }
+
    private:
     bool readValue();
-    
+
+    bool m_error;
     Uint16 m_key;
     Uint16 m_itemLen;
     union {
@@ -203,7 +220,10 @@ public:
    */
   class Writer {
   public:
-    Writer() {}
+    Writer()
+    {
+      m_error = false;
+    }
 
     bool first();
     bool add(Uint16 key, Uint32 value);
@@ -222,6 +242,18 @@ public:
     */
     bool addKey(Uint16 key, ValueType type, Uint32 value_length);
     int append(const char * buf, Uint32 buf_size);
+    bool getError()
+    {
+      return m_error;
+    }
+    void setError()
+    {
+      m_error = true;
+    }
+    void resetError()
+    {
+      m_error = false;
+    }
 
   protected:
     bool add(ValueType type, Uint16 key, const void * value, int len);
@@ -233,6 +265,7 @@ public:
     bool add(const char* value, int len);
 
   private:
+    bool m_error;
     Uint32 m_value_length;
     Uint32 m_bytes_written;
   };

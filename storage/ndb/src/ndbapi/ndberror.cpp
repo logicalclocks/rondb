@@ -514,7 +514,9 @@ ErrorBundle ErrorCodes[] = {
    * SchemaError
    */
   { 306,  DMEC, IE, "Out of fragment records in DIH" },
+  { 308,  DMEC, IE, "Out of Schema Memory" },
   { 311,  DMEC, AE, "Undefined partition used in setPartitionId" },
+  { 460,  DMEC, SE, "Out of SchemaMemory, please modify SchemaMemory config parameter" },
   { 703,  DMEC, SE, "Invalid table format" },
   { 704,  DMEC, SE, "Attribute name too long" },
   { 705,  DMEC, SE, "Table name too long" },
@@ -609,7 +611,7 @@ ErrorBundle ErrorCodes[] = {
   { 1517, DMEC, SE, "Insufficient disk page buffer memory. Increase DiskPageBufferMemory or reduce data file size." },
   { 1518, DMEC, OL, "IO overload error" },
 
-  { 773,  DMEC, SE, "Out of string memory, please modify StringMemory config parameter" },
+  { 773,  DMEC, SE, "Out of SchemaMemory, please modify SchemaMemory config parameter" },
   { 775,  DMEC, SE, "Create file is not supported when Diskless=1" },
   { 776,  DMEC, AE, "Index created on temporary table must itself be temporary" },
   { 777,  DMEC, AE, "Cannot create a temporary index on a non-temporary table" },

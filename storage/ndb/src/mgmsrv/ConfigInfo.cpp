@@ -1034,6 +1034,33 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "65536G" },
 
   {
+    CFG_DB_SCHEMA_MEM,
+    "SchemaMemory",
+    DB_TOKEN,
+    "Number bytes on each " DB_TOKEN_PRINT " node allocated for schema"
+    " objects",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT64,
+    "16M",
+    "0",
+    "16384G" },
+
+  {
+    CFG_DB_REPLICATION_MEM,
+    "ReplicationMemory",
+    DB_TOKEN,
+    "Number bytes on each " DB_TOKEN_PRINT " node allocated for replication"
+    " events"
+    " objects",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT64,
+    "8M",
+    "0",
+    "16384G" },
+
+  {
     CFG_DB_UNDO_INDEX_BUFFER,
     "UndoIndexBuffer",
     DB_TOKEN,

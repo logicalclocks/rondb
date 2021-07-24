@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -239,14 +240,7 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
 // need large value.
 /* ------------------------------------------------------------------------- */
 #define NO_OF_FRAG_PER_NODE 1
-#define MAX_FRAG_PER_LQH 16
-
-/**
-* DIH allocates fragments in chunk for fast find of fragment record.
-* These parameters define chunk size and log of chunk size.
-*/
-#define NO_OF_FRAGS_PER_CHUNK 4
-#define LOG_NO_OF_FRAGS_PER_CHUNK 2
+#define MAX_FRAG_PER_LQH (4 * MAX_NDB_PARTITIONS + 16)
 
 /* ---------------------------------------------------------------- */
 // To avoid synching too big chunks at a time we synch after writing

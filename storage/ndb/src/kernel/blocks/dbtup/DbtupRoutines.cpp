@@ -44,13 +44,10 @@
 void
 Dbtup::setUpQueryRoutines(Tablerec *regTabPtr)
 {
-  Uint32 startDescriptor= regTabPtr->tabDescriptor;
-  ndbrequire((startDescriptor + (regTabPtr->m_no_of_attributes << ZAD_LOG_SIZE)) 
-	     <= cnoOfTabDescrRec);
   for (Uint32 i= 0; i < regTabPtr->m_no_of_attributes; i++) {
-    Uint32 attrDescrStart= startDescriptor + (i << ZAD_LOG_SIZE);
-    Uint32 attrDescr= tableDescriptor[attrDescrStart].tabDescr;
-    Uint32 attrOffset= tableDescriptor[attrDescrStart + 1].tabDescr;
+    Uint32 attrDescrStart= (i * ZAD_SIZE);
+    Uint32 attrDescr = regTabPtr->tabDescriptor[attrDescrStart];
+    Uint32 attrOffset = regTabPtr->tabDescriptor[attrDescrStart + 1];
 
     //Uint32 type = AttributeDescriptor::getType(attrDescr);
     Uint32 array = AttributeDescriptor::getArrayType(attrDescr);
@@ -370,7 +367,7 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct,
                           bool    xfrm_flag)
 {
   Uint32 attributeId, descr_index, tmpAttrBufIndex, tmpAttrBufBits, inBufIndex;
-  TableDescriptor* attr_descr;
+  Uint32* attr_descr;
   AttributeHeader* ahOut;
 
   Tablerec* const regTabPtr = req_struct->tablePtrP;
@@ -391,7 +388,7 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct,
     AttributeHeader ahIn(inBuffer[inBufIndex]);
     inBufIndex++;
     attributeId= ahIn.getAttributeId();
-    descr_index= attributeId << ZAD_LOG_SIZE;
+    descr_index= attributeId * ZAD_SIZE;
 
     tmpAttrBufIndex = pad32(tmpAttrBufIndex, tmpAttrBufBits);
     AttributeHeader::init((Uint32 *)&outBuffer[tmpAttrBufIndex],
@@ -402,8 +399,8 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct,
     attr_descr= req_struct->attr_descr;
     if (likely(attributeId < numAttributes))
     {
-      Uint32 attrDescriptor = attr_descr[descr_index].tabDescr;
-      Uint32 attrDes2 = attr_descr[descr_index + 1].tabDescr;
+      Uint32 attrDescriptor = attr_descr[descr_index];
+      Uint32 attrDes2 = attr_descr[descr_index + 1];
       Uint64 attrDes = (Uint64(attrDes2) << 32) +
                         Uint64(attrDescriptor);
 
@@ -1782,7 +1779,7 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
   Tablerec * const regTabPtr = req_struct->tablePtrP;
   Operationrec* const regOperPtr = req_struct->operPtrP;
   Uint32 numAttributes= regTabPtr->m_no_of_attributes;
-  TableDescriptor *attr_descr= req_struct->attr_descr;
+  Uint32 *attr_descr= req_struct->attr_descr;
 
   Uint32 inBufIndex= 0;
   req_struct->in_buf_index= 0;
@@ -1793,11 +1790,11 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
   {
     AttributeHeader ahIn(inBuffer[inBufIndex]);
     Uint32 attributeId= ahIn.getAttributeId();
-    Uint32 attrDescriptorIndex= attributeId << ZAD_LOG_SIZE;
+    Uint32 attrDescriptorIndex= attributeId * ZAD_SIZE;
     if (likely(attributeId < numAttributes))
     {
-      Uint32 attrDescriptor = attr_descr[attrDescriptorIndex].tabDescr;
-      Uint32 attrDes2 = attr_descr[attrDescriptorIndex + 1].tabDescr;
+      Uint32 attrDescriptor = attr_descr[attrDescriptorIndex];
+      Uint32 attrDes2 = attr_descr[attrDescriptorIndex + 1];
       Uint64 attrDes = (Uint64(attrDes2) << 32) +
                         Uint64(attrDescriptor);
       if ((AttributeDescriptor::getPrimaryKey(attrDescriptor)) &&
@@ -1959,12 +1956,12 @@ Dbtup::checkUpdateOfPrimaryKey(KeyReqStruct* req_struct,
                                Tablerec* const regTabPtr)
 {
   Uint32 keyReadBuffer[MAX_KEY_SIZE_IN_WORDS];
-  TableDescriptor* attr_descr = req_struct->attr_descr;
+  Uint32* attr_descr = req_struct->attr_descr;
   AttributeHeader ahIn(*updateBuffer);
   Uint32 attributeId = ahIn.getAttributeId();
-  Uint32 attrDescriptorIndex = attributeId << ZAD_LOG_SIZE;
-  Uint32 attrDescriptor = attr_descr[attrDescriptorIndex].tabDescr;
-  Uint32 attrDes2 = attr_descr[attrDescriptorIndex + 1].tabDescr;
+  Uint32 attrDescriptorIndex = attributeId * ZAD_SIZE;
+  Uint32 attrDescriptor = attr_descr[attrDescriptorIndex];
+  Uint32 attrDes2 = attr_descr[attrDescriptorIndex + 1];
   Uint64 attrDes = (Uint64(attrDes2) << 32) + Uint64(attrDescriptor);
 
   Uint32 charsetFlag = AttributeOffset::getCharsetFlag(attrDes2);
@@ -2989,7 +2986,7 @@ Dbtup::read_packed(const Uint32* inBuf, Uint32 inPos,
 
   Uint32 cnt;
   Uint32 numAttributes = regTabPtr->m_no_of_attributes;
-  Uint32 attrDescriptorStart = regTabPtr->tabDescriptor;
+  Uint32* attrDescriptorStart = regTabPtr->tabDescriptor;
   Uint32 attrId =  (* (inBuf + inPos - 1)) >> 16;
   Uint32 bmlen32 = ((* (inBuf + inPos - 1)) & 0xFFFF);
 
@@ -3030,9 +3027,9 @@ Dbtup::read_packed(const Uint32* inBuf, Uint32 inPos,
       if (mask.get(attrId))
       {
         jamLineDebug(attrId);
-        Uint32 attrDescrIdx = attrDescriptorStart + (attrId << ZAD_LOG_SIZE);
-        Uint32 attrDescriptor = tableDescriptor[attrDescrIdx].tabDescr;
-        Uint32 attrDes2 = tableDescriptor[attrDescrIdx + 1].tabDescr;
+        Uint32 attrDescrIdx = (attrId * ZAD_SIZE);
+        Uint32 attrDescriptor = attrDescriptorStart[attrDescrIdx];
+        Uint32 attrDes2 = attrDescriptorStart[attrDescrIdx + 1];
         Uint64 attrDes = (Uint64(attrDes2) << 32) + Uint64(attrDescriptor);
         ReadFunction f = regTabPtr->readFunctionArray[attrId];
 
@@ -3920,11 +3917,10 @@ Dbtup::read_lcp_keys(Uint32 tableId,
     }
   }
 
-  Uint32 descr_start= tabPtrP->tabDescriptor;
-  TableDescriptor *tab_descr= &tableDescriptor[descr_start];
-  req_struct.attr_descr= tab_descr;
-  const Uint32* attrIds= &tableDescriptor[tabPtrP->readKeyArray].tabDescr;
+  Uint32 *tab_descr = tabPtrP->tabDescriptor;
+  const Uint32* attrIds = tabPtrP->readKeyArray;
   const Uint32 numAttrs= tabPtrP->noOfKeyAttr;
+  req_struct.attr_descr= tab_descr;
   // read pk attributes from original tuple
 
   // save globals
@@ -3969,13 +3965,11 @@ Dbtup::store_extra_row_bits(Uint32 extra_no,
    */
   Uint32 num_attr= regTabPtr->m_no_of_attributes;
   Uint32 attrId = num_attr + extra_no;
-  Uint32 descr_start = regTabPtr->tabDescriptor;
-  TableDescriptor *tab_descr = &tableDescriptor[descr_start];
-  ndbrequire(descr_start + (attrId << ZAD_LOG_SIZE)<= cnoOfTabDescrRec);
+  Uint32* tab_descr = regTabPtr->tabDescriptor;
 
-  Uint32 attrDescriptorIndex = attrId << ZAD_LOG_SIZE;
-  Uint32 attrDescriptor = tab_descr[attrDescriptorIndex].tabDescr;
-  Uint32 attrOffset = tab_descr[attrDescriptorIndex + 1].tabDescr;
+  Uint32 attrDescriptorIndex = attrId * ZAD_SIZE;
+  Uint32 attrDescriptor = tab_descr[attrDescriptorIndex];
+  Uint32 attrOffset = tab_descr[attrDescriptorIndex + 1];
 
   Uint32 pos = AttributeOffset::getNullFlagPos(attrOffset);
   Uint32 bitCount = AttributeDescriptor::getArraySize(attrDescriptor);
@@ -4012,13 +4006,10 @@ Dbtup::read_extra_row_bits(Uint32 extra_no,
   ndbrequire(extra_no < regTabPtr->m_no_of_extra_columns);
   Uint32 num_attr= regTabPtr->m_no_of_attributes;
   Uint32 attrId = num_attr + extra_no;
-  Uint32 descr_start = regTabPtr->tabDescriptor;
-  TableDescriptor *tab_descr = &tableDescriptor[descr_start];
-  ndbrequire(descr_start + (attrId << ZAD_LOG_SIZE)<= cnoOfTabDescrRec);
-
-  Uint32 attrDescriptorIndex = attrId << ZAD_LOG_SIZE;
-  Uint32 attrDescriptor = tab_descr[attrDescriptorIndex].tabDescr;
-  Uint32 attrOffset = tab_descr[attrDescriptorIndex + 1].tabDescr;
+  Uint32* tab_descr = regTabPtr->tabDescriptor;
+  Uint32 attrDescriptorIndex = attrId * ZAD_SIZE;
+  Uint32 attrDescriptor = tab_descr[attrDescriptorIndex];
+  Uint32 attrOffset = tab_descr[attrDescriptorIndex + 1];
 
   Uint32 pos = AttributeOffset::getNullFlagPos(attrOffset);
   Uint32 bitCount = AttributeDescriptor::getArraySize(attrDescriptor);

@@ -39,7 +39,9 @@ SimpleProperties::Writer::addKey(Uint16 key, ValueType type, Uint32 data) {
   head <<= 16;
   head += key;
   if(!putWord(htonl(head)))
+  {
     return false;
+  }
 
   m_value_length = data;
   m_bytes_written = 0;
@@ -64,7 +66,9 @@ SimpleProperties::Writer::add(const char * value, int len){
 
   const Uint32 putLen= valLen - 1;
   if (!putWords((Uint32*)value, putLen))
+  {
     return false;
+  }
 
   // Special handling of last bytes
   union {
@@ -82,8 +86,10 @@ bool
 SimpleProperties::Writer::add(ValueType type, Uint16 key,
                               const void * value, int len){
   if(! addKey(key, type, len))
+  {
+    setError();
     return false;
-
+  }
   return add((const char*)value, len);
 }
 
@@ -97,6 +103,7 @@ SimpleProperties::Writer::append(const char * buf, Uint32 buf_size) {
       m_bytes_written += bytesToAdd;
       return bytesToAdd;
     } else {
+      setError();
       return -1;
     }
   }
@@ -105,6 +112,7 @@ SimpleProperties::Writer::append(const char * buf, Uint32 buf_size) {
 
 SimpleProperties::Reader::Reader(){
   m_itemLen = 0;
+  m_error = false;
 }
 
 bool 
@@ -398,6 +406,7 @@ SimplePropertiesLinearReader::SimplePropertiesLinearReader
 void 
 SimplePropertiesLinearReader::reset() { 
   m_pos = 0;
+  resetError();
 }
 
 bool 
@@ -447,6 +456,7 @@ LinearWriter::putWord(Uint32 val){
     m_src[m_pos++] = val;
     return true;
   }
+  setError();
   return false;
 }
 
@@ -457,6 +467,7 @@ LinearWriter::putWords(const Uint32 * src, Uint32 len){
     m_pos += len;
     return true;
   }
+  setError();
   return false;
 }
 
@@ -473,12 +484,22 @@ bool UtilBufferWriter::reset() { m_buf.clear(); return true;}
 
 bool 
 UtilBufferWriter::putWord(Uint32 val){
-  return (m_buf.append(&val, 4) == 0);
+  bool ret = (m_buf.append(&val, 4) == 0);
+  if (!ret)
+  {
+    setError();
+  }
+  return ret;
 }
 
 bool 
 UtilBufferWriter::putWords(const Uint32 * src, Uint32 len){
-  return (m_buf.append(src, 4 * len) == 0);
+  bool ret (m_buf.append(src, 4 * len) == 0);
+  if (!ret)
+  {
+    setError();
+  }
+  return ret;
 }
 
 

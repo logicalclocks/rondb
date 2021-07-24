@@ -251,7 +251,6 @@ Dbdict::execDUMP_STATE_ORD(Signal* signal)
   if(signal->theData[0] == 1226){
     MEMINFO("c_obj_pool", c_obj_pool);
     MEMINFO("c_opRecordPool", c_opRecordPool);
-    MEMINFO("c_rope_pool", c_rope_pool);
   }
 
   if (signal->theData[0] == 1227)
@@ -260,9 +259,9 @@ Dbdict::execDUMP_STATE_ORD(Signal* signal)
     bool ok = c_obj_name_hash.first(iter);
     for (; ok; ok = c_obj_name_hash.next(iter))
     {
-      LocalRope name(c_rope_pool, iter.curr.p->m_name);
+      LcLocalRope name(iter.curr.p->m_name);
       char buf[1024];
-      name.copy(buf);
+      name.copy(buf, sizeof(buf));
       g_eventLogger->info("%s m_ref_count: %d", buf, iter.curr.p->m_ref_count);
       if (iter.curr.p->m_trans_key != 0)
         g_eventLogger->info("- m_trans_key: %u m_op_ref_count: %u",
@@ -370,7 +369,6 @@ Dbdict::execDUMP_STATE_ORD(Signal* signal)
 
   if (signal->theData[0] == DumpStateOrd::SchemaResourceSnapshot)
   {
-    RSS_AP_SNAPSHOT_SAVE(c_rope_pool);
     RSS_AP_SNAPSHOT_SAVE(c_attributeRecordPool);
     RSS_AP_SNAPSHOT_SAVE(c_tableRecordPool_);
     RSS_AP_SNAPSHOT_SAVE(c_triggerRecordPool_);
@@ -381,7 +379,6 @@ Dbdict::execDUMP_STATE_ORD(Signal* signal)
 
   if (signal->theData[0] == DumpStateOrd::SchemaResourceCheckLeak)
   {
-    RSS_AP_SNAPSHOT_CHECK(c_rope_pool);
     RSS_AP_SNAPSHOT_CHECK(c_attributeRecordPool);
     RSS_AP_SNAPSHOT_CHECK(c_tableRecordPool_);
     RSS_AP_SNAPSHOT_CHECK(c_triggerRecordPool_);
@@ -535,10 +532,12 @@ void Dbdict::execDBINFO_SCANREQ(Signal *signal)
                                      parentObjType,
                                      parentObjId));
       
-      LocalRope name(c_rope_pool, iter.curr.p->m_name);
       char nameBuff[PATH_MAX];
-      name.copy(nameBuff);
-      ndbassert(strlen(nameBuff) < PATH_MAX);
+      {
+        LcLocalRope name(iter.curr.p->m_name);
+        name.copy(nameBuff, sizeof(nameBuff));
+        ndbassert(strlen(nameBuff) < PATH_MAX);
+      }
 
       /*
         Try to find the parent of blob tables. Blob tables are named 
@@ -656,6 +655,41 @@ void Dbdict::execCONTINUEB(Signal* signal)
 {
   jamEntry();
   switch (signal->theData[0]) {
+  case ZDICT_SHRINK_TRANSIENT_POOLS:
+  {
+    jam();
+    Uint32 pool_index = signal->theData[1];
+    ndbassert(signal->getLength() == 2);
+    shrinkTransientPools(pool_index);
+    return;
+  }
+#if (defined(VM_TRACE) || \
+     defined(ERROR_INSERT)) && \
+    defined(DO_TRANSIENT_POOL_STAT)
+
+  case ZDICT_TRANSIENT_POOL_STAT:
+  {
+    for (Uint32 pool_index = 0;
+         pool_index < c_transient_pool_count;
+         pool_index++)
+    {
+      g_eventLogger->info(
+        "SUMA %u: Transient slot pool %u %p: Entry size %u:"
+       " Free %u: Used %u: Used high %u: Size %u: For shrink %u",
+       instance(),
+       pool_index,
+       c_transient_pools[pool_index],
+       c_transient_pools[pool_index]->getEntrySize(),
+       c_transient_pools[pool_index]->getNoOfFree(),
+       c_transient_pools[pool_index]->getUsed(),
+       c_transient_pools[pool_index]->getUsedHi(),
+       c_transient_pools[pool_index]->getSize(),
+       c_transient_pools_shrinking.get(pool_index));
+    }
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 5000, 1);
+    break;
+  }
+#endif
   case ZPACK_TABLE_INTO_PAGES :
     jam();
     if (ERROR_INSERTED(6800))
@@ -900,7 +934,7 @@ void Dbdict::packTableIntoPages(Signal* signal)
 }//packTableIntoPages()
 
 bool
-packRopeData(SimpleProperties::Writer & w, ConstRope & rope) {
+packRopeData(SimpleProperties::Writer & w, LcConstRope & rope) {
   const int bufsize = ROPE_COPY_BUFFER_SIZE;
   char buffer[bufsize];
   Uint32 offset = 0;
@@ -914,15 +948,21 @@ packRopeData(SimpleProperties::Writer & w, ConstRope & rope) {
 }
 
 bool
-unpackDataToRope(SimpleProperties::Reader &it, LocalRope & rope) {
+unpackDataToRope(SimpleProperties::Reader &it, LcLocalRope & rope)
+{
   const int bufsize = ROPE_COPY_BUFFER_SIZE;
   char buffer[bufsize];
   int nread;
 
   rope.erase();
-  while((nread = it.getBuffered(buffer, bufsize)) > 0)
-    if(! rope.appendBuffer(buffer, nread))
+  while ((nread = it.getBuffered(buffer, bufsize)) > 0)
+  {
+    if (!rope.appendBuffer(buffer, nread))
+    {
+      rope.erase();
       return false;
+    }
+  }
   return true;
 }
 
@@ -938,8 +978,8 @@ Dbdict::packTableIntoPages(SimpleProperties::Writer & w,
     char defaultValue[MAX_ATTR_DEFAULT_VALUE_SIZE];
     char attributeName[MAX_ATTR_NAME_SIZE];
   };
-  ConstRope r(c_rope_pool, tablePtr.p->tableName);
-  r.copy(tableName);
+  LcConstRope r(tablePtr.p->tableName);
+  r.copy(tableName, sizeof(tableName));
   w.add(DictTabInfo::TableName, tableName);
   w.add(DictTabInfo::TableId, tablePtr.p->tableId);
   w.add(DictTabInfo::TableVersion, tablePtr.p->tableVersion);
@@ -1045,15 +1085,15 @@ Dbdict::packTableIntoPages(SimpleProperties::Writer & w,
       signal->theData[0] = err;
       return;
     }
-    ConstRope r2(c_rope_pool, primTab.p->tableName);
-    r2.copy(tableName);
+    LcConstRope r2(primTab.p->tableName);
+    r2.copy(tableName, sizeof(tableName));
     w.add(DictTabInfo::PrimaryTable, tableName);
     w.add(DictTabInfo::PrimaryTableId, tablePtr.p->primaryTableId);
     w.add(DictTabInfo::IndexState, tablePtr.p->indexState);
     w.add(DictTabInfo::CustomTriggerId, tablePtr.p->triggerId);
   }
 
-  ConstRope frm(c_rope_pool, tablePtr.p->frmData);
+  LcConstRope frm(tablePtr.p->frmData);
   if (frm.size() <= NDB_SHORT_OPAQUE_METADATA_MAX_BYTES)
   {
     /**
@@ -1087,13 +1127,13 @@ Dbdict::packTableIntoPages(SimpleProperties::Writer & w,
     jam();
     w.add(DictTabInfo::TablespaceDataLen, (Uint32)0);
 
-    ConstRope ng(c_rope_pool, tablePtr.p->ngData);
-    ng.copy(ngData);
+    LcConstRope ng(tablePtr.p->ngData);
+    ng.copy(ngData, sizeof(ngData));
     w.add(DictTabInfo::FragmentDataLen, ng.size());
     w.add(DictTabInfo::FragmentData, ngData, ng.size());
 
-    ConstRope range(c_rope_pool, tablePtr.p->rangeData);
-    range.copy(rangeData);
+    LcConstRope range(tablePtr.p->rangeData);
+    range.copy(rangeData, sizeof(rangeData));
     w.add(DictTabInfo::RangeListDataLen, range.size());
     w.add(DictTabInfo::RangeListData, rangeData, range.size());
   }
@@ -1108,12 +1148,12 @@ Dbdict::packTableIntoPages(SimpleProperties::Writer & w,
 
   AttributeRecordPtr attrPtr;
   LocalAttributeRecord_list list(c_attributeRecordPool,
-				    tablePtr.p->m_attributes);
+                                 tablePtr.p->m_attributes);
   for(list.first(attrPtr); !attrPtr.isNull(); list.next(attrPtr)){
     jam();
 
-    ConstRope name(c_rope_pool, attrPtr.p->attributeName);
-    name.copy(attributeName);
+    LcConstRope name(attrPtr.p->attributeName);
+    name.copy(attributeName, sizeof(attributeName));
 
     w.add(DictTabInfo::AttributeName, attributeName);
     w.add(DictTabInfo::AttributeId, attrPtr.p->attributeId);
@@ -1149,8 +1189,8 @@ Dbdict::packTableIntoPages(SimpleProperties::Writer & w,
     else
       w.add(DictTabInfo::AttributeStorageType, (Uint32)NDB_STORAGETYPE_MEMORY);
 
-    ConstRope def(c_rope_pool, attrPtr.p->defaultValue);
-    def.copy(defaultValue);
+    LcConstRope def(attrPtr.p->defaultValue);
+    def.copy(defaultValue, sizeof(defaultValue));
 
     if (def.size())
     {
@@ -1179,6 +1219,12 @@ Dbdict::packTableIntoPages(SimpleProperties::Writer & w,
   }
 
   w.add(DictTabInfo::TableEnd, 1);
+  if (w.getError())
+  {
+    ndbrequire(signal != nullptr);
+    Uint32 err = CreateFragmentationRef::InvalidPrimaryTable;
+    signal->theData[0] = err;
+  }
 }
 
 void
@@ -1188,8 +1234,8 @@ Dbdict::packFilegroupIntoPages(SimpleProperties::Writer & w,
 			       const Uint32 undo_free_lo){
 
   DictFilegroupInfo::Filegroup fg; fg.init();
-  ConstRope r(c_rope_pool, fg_ptr.p->m_name);
-  r.copy(fg.FilegroupName);
+  LcConstRope r(fg_ptr.p->m_name);
+  r.copy(fg.FilegroupName, sizeof(fg.FilegroupName));
 
   fg.FilegroupId = fg_ptr.p->key;
   fg.FilegroupType = fg_ptr.p->m_type;
@@ -1230,8 +1276,8 @@ Dbdict::packFileIntoPages(SimpleProperties::Writer & w,
 			  FilePtr f_ptr, const Uint32 free_extents){
 
   DictFilegroupInfo::File f; f.init();
-  ConstRope r(c_rope_pool, f_ptr.p->m_path);
-  r.copy(f.FileName);
+  LcConstRope r(f_ptr.p->m_path);
+  r.copy(f.FileName, sizeof(f.FileName));
 
   f.FileType = f_ptr.p->m_type;
   f.FilegroupId = f_ptr.p->m_filegroup_id;; //group.m_id;
@@ -2567,6 +2613,15 @@ Dbdict::Dbdict(Block_context& ctx):
   addRecSignal(GSN_DROP_FK_REQ, &Dbdict::execDROP_FK_REQ);
   addRecSignal(GSN_DROP_FK_IMPL_REF, &Dbdict::execDROP_FK_IMPL_REF);
   addRecSignal(GSN_DROP_FK_IMPL_CONF, &Dbdict::execDROP_FK_IMPL_CONF);
+
+  c_transient_pools[DBDICT_OBJECT_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_obj_pool;
+  c_transient_pools[DBDICT_TRIGGER_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_triggerRecordPool_;
+  c_transient_pools[DBDICT_TABLE_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_tableRecordPool_;
+  c_transient_pools[DBDICT_ATTRIBUTE_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_attributeRecordPool;
 }//Dbdict::Dbdict()
 
 Dbdict::~Dbdict()
@@ -3047,13 +3102,28 @@ void Dbdict::execSTTOR(Signal* signal)
   c_startPhase = signal->theData[1];
   switch (c_startPhase) {
   case 1:
+  {
+    const ndb_mgm_configuration_iterator * p = 
+      m_ctx.m_config.getOwnConfigIterator();
+    ndbrequireErr(p != 0, NDBD_EXIT_INVALID_CONFIG);
+    cnoReplicas = 1;
+    ndb_mgm_get_int_parameter(p, CFG_DB_NO_REPLICAS, &cnoReplicas);
     break;
+  }
   case 3:
     c_restartType = signal->theData[7];         /* valid if 3 */
     ndbrequire(c_restartType == NodeState::ST_INITIAL_START ||
                c_restartType == NodeState::ST_SYSTEM_RESTART ||
                c_restartType == NodeState::ST_INITIAL_NODE_RESTART ||
                c_restartType == NodeState::ST_NODE_RESTART);
+#if (defined(VM_TRACE) || \
+     defined(ERROR_INSERT)) && \
+    defined(DO_TRANSIENT_POOL_STAT)
+
+    /* Start reporting statistics for transient pools */
+    signal->theData[0] = ZDICT_TRANSIENT_POOL_STAT;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
+#endif
     break;
   case 7:
     /*
@@ -3126,29 +3196,70 @@ void Dbdict::execREAD_CONFIG_REQ(Signal* signal)
     and bigger than CreateIndexRec (784 bytes)
   */
 
-  c_attributeRecordPool.setSize(attributesize);
-  c_attributeRecordHash.setSize(64);
   c_fsConnectRecordPool.setSize(ZFS_CONNECT_SIZE);
   c_nodes.setSize(MAX_NDB_NODES);
   c_pageRecordArray.setSize(ZNUMBER_OF_PAGES);
   c_schemaPageRecordArray.setSize(2 * NDB_SF_MAX_PAGES);
-  c_tableRecordPool_.setSize(c_noOfMetaTables);
   g_key_descriptor_pool.setSize(c_noOfMetaTables);
-  c_triggerRecordPool_.setSize(c_maxNoOfTriggers);
+
+  c_attributeRecordPool.init(
+    AttributeRecord::TYPE_ID,
+    pc,
+    attributesize,
+    UINT32_MAX);
+
+  while (c_attributeRecordPool.startup())
+  {
+    refresh_watch_dog();
+  }
+  c_attributeRecordHash.setSize(512);
+
+  c_tableRecordPool_.init(
+    TriggerRecord::TYPE_ID,
+    pc,
+    c_noOfMetaTables,
+    UINT32_MAX);
+
+  while (c_tableRecordPool_.startup())
+  {
+    refresh_watch_dog();
+  }
+
+  c_triggerRecordPool_.init(
+    TriggerRecord::TYPE_ID,
+    pc,
+    c_maxNoOfTriggers,
+    UINT32_MAX);
+
+  while (c_triggerRecordPool_.startup())
+  {
+    refresh_watch_dog();
+  }
 
   Record_info ri;
   OpSectionBuffer::createRecordInfo(ri, RT_DBDICT_OP_SECTION_BUFFER);
   c_opSectionBufferPool.init(&c_arenaAllocator, ri, pc);
 
   c_schemaOpHash.setSize(MAX_SCHEMA_OPERATIONS);
-  c_schemaTransPool.arena_pool_init(&c_arenaAllocator, RT_DBDICT_SCHEMA_TRANSACTION, pc);
+  c_schemaTransPool.arena_pool_init(&c_arenaAllocator,
+                                    RT_DBDICT_SCHEMA_TRANSACTION, pc);
   c_schemaTransHash.setSize(2);
   c_txHandlePool.setSize(2);
   c_txHandleHash.setSize(2);
 
-  c_obj_pool.setSize(c_noOfMetaTables+c_maxNoOfTriggers);
-  c_obj_name_hash.setSize((c_noOfMetaTables+c_maxNoOfTriggers+1)/2);
-  c_obj_id_hash.setSize((c_noOfMetaTables+c_maxNoOfTriggers+1)/2);
+  c_obj_pool.init(
+    DictObject::TYPE_ID,
+    pc,
+    c_noOfMetaTables+c_maxNoOfTriggers,
+    UINT32_MAX);
+
+  while (c_obj_pool.startup())
+  {
+    refresh_watch_dog();
+  }
+
+  c_obj_name_hash.setSize(c_noOfMetaTables+c_maxNoOfTriggers);
+  c_obj_id_hash.setSize(c_noOfMetaTables+c_maxNoOfTriggers);
   m_dict_lock_pool.setSize(MAX_NDB_NODES);
 
   c_file_pool.init(RT_DBDICT_FILE, pc);
@@ -3213,20 +3324,6 @@ void Dbdict::execREAD_CONFIG_REQ(Signal* signal)
     (SchemaFile*)c_schemaPageRecordArray.getPtr(1 * NDB_SF_MAX_PAGES);
   c_schemaFile[1].noOfPages = 0;
 
-  Uint32 sm = DEFAULT_STRING_MEMORY;
-  ndb_mgm_get_int_parameter(p, CFG_DB_STRING_MEMORY, &sm);
-  Uint64 safety = 100 * LocalRope::getSegmentSizeInBytes();
-  Uint64 rps = get_rope_pool_size(c_noOfMetaTables,
-                                  attributesize,
-                                  c_maxNoOfTriggers,
-                                  sm,
-                                  safety);
-
-  DEB_STRING_MEMORY(("String memory allocates %llu MBytes", rps/MBYTE64));
-  Uint64 sb = rps / LocalRope::getSegmentSizeInBytes();
-  ndbrequire(sb < (Uint64(1) << 32));
-  c_rope_pool.setSize(Uint32(sb));
-
   // Initialize BAT for interface to file system
   NewVARIABLE* bat = allocateBat(2);
   bat[0].WA = &c_schemaPageRecordArray.getPtr(0)->word[0];
@@ -3251,7 +3348,7 @@ void Dbdict::execREAD_CONFIG_REQ(Signal* signal)
   conf->senderData = senderData;
   sendSignal(ref, GSN_READ_CONFIG_CONF, signal,
 	     ReadConfigConf::SignalLength, JBB);
-
+/*
   {
     DictObjectPtr ptr;
     DictObject_list objs(c_obj_pool);
@@ -3259,7 +3356,7 @@ void Dbdict::execREAD_CONFIG_REQ(Signal* signal)
       new (ptr.p) DictObject();
     while (objs.releaseFirst());
   }
-
+*/
   bool use_get_env = false;
 #ifdef NDB_USE_GET_ENV
   use_get_env = true;
@@ -3548,7 +3645,8 @@ Dbdict::activateIndex_fromBeginTrans(Signal* signal, Uint32 tx_key, Uint32 ret)
   c_tableRecordPool_.getPtr(indexPtr, tx_ptr.p->m_userData);
   ndbrequire(!indexPtr.isNull());
   DictObjectPtr index_obj_ptr;
-  c_obj_pool.getPtr(index_obj_ptr, indexPtr.p->m_obj_ptr_i);
+  index_obj_ptr.i = indexPtr.p->m_obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(index_obj_ptr));
 
   AlterIndxReq* req = (AlterIndxReq*)signal->getDataPtrSend();
 
@@ -3614,12 +3712,13 @@ Dbdict::activateIndex_fromEndTrans(Signal* signal, Uint32 tx_key, Uint32 ret)
   TableRecordPtr indexPtr;
   c_tableRecordPool_.getPtr(indexPtr, tx_ptr.p->m_userData);
   DictObjectPtr index_obj_ptr;
-  c_obj_pool.getPtr(index_obj_ptr, indexPtr.p->m_obj_ptr_i);
+  index_obj_ptr.i = indexPtr.p->m_obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(index_obj_ptr));
 
   char indexName[MAX_TAB_NAME_SIZE];
   {
-    LocalRope name(c_rope_pool, index_obj_ptr.p->m_name);
-    name.copy(indexName);
+    LcLocalRope name(index_obj_ptr.p->m_name);
+    name.copy(indexName, sizeof(indexName));
   }
 
   ErrorInfo error = tx_ptr.p->m_error;
@@ -3704,7 +3803,8 @@ Dbdict::rebuildIndex_fromBeginTrans(Signal* signal, Uint32 tx_key, Uint32 ret)
   TableRecordPtr indexPtr;
   c_tableRecordPool_.getPtr(indexPtr, tx_ptr.p->m_userData);
   DictObjectPtr index_obj_ptr;
-  c_obj_pool.getPtr(index_obj_ptr,indexPtr.p->m_obj_ptr_i);
+  index_obj_ptr.i = indexPtr.p->m_obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(index_obj_ptr));
 
   BuildIndxReq* req = (BuildIndxReq*)signal->getDataPtrSend();
 
@@ -3782,12 +3882,13 @@ Dbdict::rebuildIndex_fromEndTrans(Signal* signal, Uint32 tx_key, Uint32 ret)
   }
 
   DictObjectPtr obj_ptr;
-  c_obj_pool.getPtr(obj_ptr, indexPtr.p->m_obj_ptr_i);
+  obj_ptr.i = indexPtr.p->m_obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(obj_ptr));
 
   char indexName[MAX_TAB_NAME_SIZE];
   {
-    LocalRope name(c_rope_pool, obj_ptr.p->m_name);
-    name.copy(indexName);
+    LcLocalRope name(obj_ptr.p->m_name);
+    name.copy(indexName, sizeof(indexName));
   }
 
   ErrorInfo error = tx_ptr.p->m_error;
@@ -4071,7 +4172,8 @@ Dbdict::enableFK_fromBeginTrans(Signal* signal, Uint32 tx_key, Uint32 ret)
   c_fk_pool.getPtr(fk_ptr, tx_ptr.p->m_userData);
   ndbrequire(!fk_ptr.isNull());
   DictObjectPtr fk_obj_ptr;
-  c_obj_pool.getPtr(fk_obj_ptr, fk_ptr.p->m_obj_ptr_i);
+  fk_obj_ptr.i = fk_ptr.p->m_obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(fk_obj_ptr));
 
   CreateFKReq* req = (CreateFKReq*)signal->getDataPtrSend();
 
@@ -4141,12 +4243,13 @@ Dbdict::enableFK_fromEndTrans(Signal* signal, Uint32 tx_key, Uint32 ret)
   Ptr<ForeignKeyRec> fk_ptr;
   c_fk_pool.getPtr(fk_ptr, tx_ptr.p->m_userData);
   DictObjectPtr fk_obj_ptr;
-  c_obj_pool.getPtr(fk_obj_ptr, fk_ptr.p->m_obj_ptr_i);
+  fk_obj_ptr.i = fk_ptr.p->m_obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(fk_obj_ptr));
 
   char fk_name[MAX_TAB_NAME_SIZE];
   {
-    LocalRope name(c_rope_pool, fk_obj_ptr.p->m_name);
-    name.copy(fk_name);
+    LcLocalRope name(fk_obj_ptr.p->m_name);
+    name.copy(fk_name, sizeof(fk_name));
   }
 
   ErrorInfo error = tx_ptr.p->m_error;
@@ -5650,8 +5753,8 @@ void Dbdict::printTables()
   char name[PATH_MAX];
   while (moreTables) {
     DictObjectPtr tablePtr = iter.curr;
-    ConstRope r(c_rope_pool, tablePtr.p->m_name);
-    r.copy(name);
+    LcConstRope r(tablePtr.p->m_name);
+    r.copy(name, sizeof(name));
     moreTables = c_obj_name_hash.next(iter);
   }
   g_eventLogger->info("OBJECT IN DICT:%s", name);
@@ -5683,7 +5786,6 @@ Dbdict::get_object(DictObjectPtr& obj_ptr, const char* name, Uint32 len, Uint32 
   DictObject key;
   key.m_key.m_name_ptr = name;
   key.m_key.m_name_len = len;
-  key.m_key.m_pool = &c_rope_pool;
   key.m_name.m_hash = hash;
   return c_obj_name_hash.find(obj_ptr, key);
 }
@@ -5691,11 +5793,13 @@ Dbdict::get_object(DictObjectPtr& obj_ptr, const char* name, Uint32 len, Uint32 
 void
 Dbdict::release_object(Uint32 obj_ptr_i, DictObject* obj_ptr_p){
   jam();
-  RopeHandle obj_name = obj_ptr_p->m_name;
+  LcRopeHandle obj_name = obj_ptr_p->m_name;
   DictObjectPtr ptr(obj_ptr_p, obj_ptr_i);
 
-  LocalRope name(c_rope_pool, obj_name);
-  name.erase();
+  {
+    LcLocalRope name(obj_name);
+    name.erase();
+  }
 
   jam();
   c_obj_name_hash.remove(ptr);
@@ -5704,21 +5808,27 @@ Dbdict::release_object(Uint32 obj_ptr_i, DictObject* obj_ptr_p){
   jam();
   c_obj_pool.release(ptr);
   jam();
+  checkPoolShrinkNeed(DBDICT_OBJECT_RECORD_TRANSIENT_POOL_INDEX,
+                      c_obj_pool);
 }
 
 void
 Dbdict::increase_ref_count(Uint32 obj_ptr_i)
 {
-  DictObject* ptr = c_obj_pool.getPtr(obj_ptr_i);
-  ptr->m_ref_count++;
+  DictObjectPtr ptr;
+  ptr.i = obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(ptr));
+  ptr.p->m_ref_count++;
 }
 
 void
 Dbdict::decrease_ref_count(Uint32 obj_ptr_i)
 {
-  DictObject* ptr = c_obj_pool.getPtr(obj_ptr_i);
-  ndbrequire(ptr->m_ref_count);
-  ptr->m_ref_count--;
+  DictObjectPtr ptr;
+  ptr.i = obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(ptr));
+  ndbrequire(ptr.p->m_ref_count);
+  ptr.p->m_ref_count--;
 }
 
 /* TabInfoLongData provides temporary storage to unpack the data
@@ -5726,8 +5836,8 @@ Dbdict::decrease_ref_count(Uint32 obj_ptr_i)
  */
 class TabInfoLongData {
 public:
-  TabInfoLongData(RopePool &pool, RopeHandle & handle) :
-    m_frm(pool, handle), m_valid(true)
+  TabInfoLongData(LcRopeHandle & handle) :
+    m_frm(handle), m_valid(true)
   {}
 
   bool isValid() { return m_valid; }
@@ -5741,7 +5851,7 @@ public:
   static SimpleProperties::IndirectReader IndirectReader;
 
 public:
-  LocalRope m_frm;
+  LcLocalRope m_frm;
   bool m_valid;
 };
 
@@ -5764,12 +5874,12 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
 
   it.first();
 
-  RopeHandle frmData;
+  LcRopeHandle frmData;
   c_tableDesc.init();
 
-  /* Create a scope over the LocalRope in TabInfoLongData */
+  /* Create a scope over the LcLocalRope in TabInfoLongData */
   {
-    TabInfoLongData tabInfoLongData(c_rope_pool, frmData);
+    TabInfoLongData tabInfoLongData(frmData);
     SimpleProperties::UnpackStatus status;
     status = SimpleProperties::unpack(it, &c_tableDesc,
                                       DictTabInfo::TableMapping,
@@ -5809,7 +5919,6 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
   // TODO
   /* ---------------------------------------------------------------- */
   const Uint32 tableNameLength = Uint32(strlen(c_tableDesc.TableName) + 1);
-  const Uint32 name_hash = LocalRope::hash(c_tableDesc.TableName, tableNameLength);
 
   if(checkExist){
     jam();
@@ -5869,8 +5978,8 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
   }//switch
 
   {
-    LocalRope name(c_rope_pool, tablePtr.p->tableName);
-    tabRequire(name.assign(c_tableDesc.TableName, tableNameLength, name_hash),
+    LcLocalRope name(tablePtr.p->tableName);
+    tabRequire(name.assign(c_tableDesc.TableName, tableNameLength),
 	       CreateTableRef::OutOfStringBuffer);
   }
 
@@ -6166,11 +6275,11 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
   }
   tablePtr.p->frmData = frmData;
   {
-    LocalRope range(c_rope_pool, tablePtr.p->rangeData);
+    LcLocalRope range(tablePtr.p->rangeData);
     tabRequire(range.assign((const char*)c_tableDesc.RangeListData,
                c_tableDesc.RangeListDataLen),
 	      CreateTableRef::OutOfStringBuffer);
-    LocalRope fd(c_rope_pool, tablePtr.p->ngData);
+    LcLocalRope fd(tablePtr.p->ngData);
     tabRequire(fd.assign((const char*)c_tableDesc.FragmentData,
                          c_tableDesc.FragmentDataLen),
 	       CreateTableRef::OutOfStringBuffer);
@@ -6358,7 +6467,8 @@ Dbdict::upgrade_seizeTrigger(TableRecordPtr tabPtr,
   ndbrequire(deleteTriggerId == RNIL || deleteTriggerId < size);
 
   DictObjectPtr tab_obj_ptr;
-  c_obj_pool.getPtr(tab_obj_ptr, tabPtr.p->m_obj_ptr_i);
+  tab_obj_ptr.i = tabPtr.p->m_obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(tab_obj_ptr));
 
   TriggerRecordPtr triggerPtr;
   if (updateTriggerId != RNIL)
@@ -6384,7 +6494,7 @@ Dbdict::upgrade_seizeTrigger(TableRecordPtr tabPtr,
       BaseString::snprintf(buf, sizeof(buf),
                            "UPG_UPD_NDB$INDEX_%u_UI", tab_obj_ptr.p->m_id);
       {
-        LocalRope name(c_rope_pool, triggerPtr.p->triggerName);
+        LcLocalRope name(triggerPtr.p->triggerName);
         name.assign(buf);
       }
 
@@ -6427,7 +6537,7 @@ Dbdict::upgrade_seizeTrigger(TableRecordPtr tabPtr,
                            "UPG_DEL_NDB$INDEX_%u_UI", tab_obj_ptr.p->m_id);
 
       {
-        LocalRope name(c_rope_pool, triggerPtr.p->triggerName);
+        LcLocalRope name(triggerPtr.p->triggerName);
         name.assign(buf);
       }
 
@@ -6468,7 +6578,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader & it,
   c_attributeRecordHash.removeAll();
 
   LocalAttributeRecord_list list(c_attributeRecordPool,
-					tablePtr.p->m_attributes);
+                                 tablePtr.p->m_attributes);
 
   Uint32 counts[] = {0,0,0,0,0};
 
@@ -6493,13 +6603,12 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader & it,
      * Check that attribute is not defined twice
      */
     const Uint32 len = Uint32(strlen(attrDesc.AttributeName)+1);
-    const Uint32 name_hash = LocalRope::hash(attrDesc.AttributeName, len);
+    const Uint32 name_hash = LcLocalRope::hash(attrDesc.AttributeName, len);
     {
       AttributeRecord key;
       key.m_key.m_name_ptr = attrDesc.AttributeName;
       key.m_key.m_name_len = len;
       key.attributeName.m_hash = name_hash;
-      key.m_key.m_pool = &c_rope_pool;
       AttributeRecordPtr old_ptr;
       c_attributeRecordHash.find(old_ptr, key);
 
@@ -6525,7 +6634,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader & it,
      * TmpAttrib to Attribute mapping
      */
     {
-      LocalRope name(c_rope_pool, attrPtr.p->attributeName);
+      LcLocalRope name(attrPtr.p->attributeName);
       if (!name.assign(attrDesc.AttributeName, len, name_hash))
       {
 	jam();
@@ -6631,7 +6740,7 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader & it,
         }
       }
 
-      LocalRope defaultValue(c_rope_pool, attrPtr.p->defaultValue);
+      LcLocalRope defaultValue(attrPtr.p->defaultValue);
       defaultValue.assign(defaultValueBuf,
                           attrDesc.AttributeDefaultValueLen);
     }
@@ -7232,12 +7341,27 @@ Dbdict::createTable_parse(Signal* signal, bool master,
 
     SimplePropertiesSectionReader r(tabInfoPtr, getSectionSegmentPool());
 
+    Uint32 propSize = r.getSize();
     bool checkExist = true;
     handleTabInfoInit(signal, trans_ptr, r, &parseRecord, checkExist);
 
+    Uint32 replicaLenBytes = 2 + 2 * ((1 + cnoReplicas) *
+                                     parseRecord.tablePtr.p->fragmentCount);
+    Uint32 replicaLenWords = replicaLenBytes / 4;
+    propSize += replicaLenWords;
     if (parseRecord.errorCode != 0)
     {
       jam();
+      setError(error, parseRecord);
+      BaseString::snprintf(error.errorObjectName, sizeof(error.errorObjectName),
+                           "%s", c_tableDesc.TableName);
+      return;
+    }
+    if (propSize >= MAX_WORDS_META_FILE)
+    {
+      jam();
+      parseRecord.errorCode = CreateTableRef::TableDefinitionTooBig;
+      parseRecord.errorLine = __LINE__;
       setError(error, parseRecord);
       BaseString::snprintf(error.errorObjectName, sizeof(error.errorObjectName),
                            "%s", c_tableDesc.TableName);
@@ -7653,7 +7777,7 @@ Dbdict::createTab_local(Signal* signal,
     Uint32 key = 0;
     AttributeRecordPtr attrPtr;
     LocalAttributeRecord_list list(c_attributeRecordPool,
-                                          tabPtr.p->m_attributes);
+                                   tabPtr.p->m_attributes);
     for(list.first(attrPtr); !attrPtr.isNull(); list.next(attrPtr))
     {
       AttributeRecord* aRec = attrPtr.p;
@@ -7759,8 +7883,8 @@ Dbdict::sendLQHADDATTRREQ(Signal* signal,
     // charset number passed to TUP, TUX in upper half
     entry.extTypeInfo |= (attrPtr.p->extPrecision & ~0xFFFF);
 
-    ConstRope def(c_rope_pool, attrPtr.p->defaultValue);
-    def.copy((char*)defVal_dst);
+    LcConstRope def(attrPtr.p->defaultValue);
+    def.copy((char*)defVal_dst, (sizeof(signal->theData) - 25 * 4));
 
     Uint32 defValueLen = def.size();
     defVal_length += (defValueLen + 3)/4;
@@ -7786,8 +7910,8 @@ Dbdict::sendLQHADDATTRREQ(Signal* signal,
        *   If unique index is "old" rewrite it to new format
        */
       char tmp[MAX_TAB_NAME_SIZE];
-      ConstRope name(c_rope_pool, attrPtr.p->attributeName);
-      name.copy(tmp);
+      LcConstRope name(attrPtr.p->attributeName);
+      name.copy(tmp, sizeof(tmp));
       ndbrequire(memcmp(tmp, "NDB$PK", sizeof("NDB$PK")) == 0);
       Uint32 at = AttributeDescriptor::getArrayType(entry.attrDescriptor);
       if (at == NDB_ARRAYTYPE_MEDIUM_VAR)
@@ -7993,6 +8117,7 @@ Dbdict::execADD_FRAGREQ(Signal* signal)
   Uint32 changeMask = req->changeMask;
   Uint32 partitionId = req->partitionId;
   Uint32 createGci = req->createGci;
+  Uint32 nodeFragCount = req->nodeFragCount;
   D("execADD_FRAGREQ(" << tableId << "), dihPtr = " << dihPtr);
 
   ndbrequire(node == getOwnNodeId());
@@ -8082,6 +8207,7 @@ Dbdict::execADD_FRAGREQ(Signal* signal)
     req->changeMask = changeMask;
     req->partitionId = partitionId;
     req->createGci = createGci;
+    req->nodeFragCount = nodeFragCount;
     sendSignal(DBLQH_REF, GSN_LQHFRAGREQ, signal,
 	       LqhFragReq::SignalLength, JBB);
   }
@@ -8707,31 +8833,32 @@ void Dbdict::releaseTableObject(Uint32 table_ptr_i, bool removeFromHash)
   else
   {
     ndbrequire(tablePtr.p->m_obj_ptr_i == RNIL);
-    LocalRope tmp(c_rope_pool, tablePtr.p->tableName);
+    LcLocalRope tmp(tablePtr.p->tableName);
     tmp.erase();
   }
 
   {
-    LocalRope tmp(c_rope_pool, tablePtr.p->frmData);
+    LcLocalRope tmp(tablePtr.p->frmData);
     tmp.erase();
   }
 
   {
-    LocalRope tmp(c_rope_pool, tablePtr.p->ngData);
+    LcLocalRope tmp(tablePtr.p->ngData);
     tmp.erase();
   }
 
   {
-    LocalRope tmp(c_rope_pool, tablePtr.p->rangeData);
+    LcLocalRope tmp(tablePtr.p->rangeData);
     tmp.erase();
   }
 
   LocalAttributeRecord_list list(c_attributeRecordPool,
-					tablePtr.p->m_attributes);
+                                 tablePtr.p->m_attributes);
   AttributeRecordPtr attrPtr;
-  for(list.first(attrPtr); !attrPtr.isNull(); list.next(attrPtr)){
-    LocalRope name(c_rope_pool, attrPtr.p->attributeName);
-    LocalRope def(c_rope_pool, attrPtr.p->defaultValue);
+  for (list.first(attrPtr); !attrPtr.isNull(); list.next(attrPtr))
+  {
+    LcLocalRope name(attrPtr.p->attributeName);
+    LcLocalRope def(attrPtr.p->defaultValue);
     name.erase();
     def.erase();
   }
@@ -8774,6 +8901,12 @@ void Dbdict::releaseTableObject(Uint32 table_ptr_i, bool removeFromHash)
     }
   }
   c_tableRecordPool_.release(tablePtr);
+  checkPoolShrinkNeed(DBDICT_TRIGGER_RECORD_TRANSIENT_POOL_INDEX,
+                      c_triggerRecordPool_);
+  checkPoolShrinkNeed(DBDICT_TABLE_RECORD_TRANSIENT_POOL_INDEX,
+                      c_tableRecordPool_);
+  checkPoolShrinkNeed(DBDICT_ATTRIBUTE_RECORD_TRANSIENT_POOL_INDEX,
+                      c_attributeRecordPool);
 }//releaseTableObject()
 
 // CreateTable: END
@@ -9194,8 +9327,8 @@ Dbdict::dropTable_commit(Signal* signal, SchemaOpPtr op_ptr)
   // from a newer execDROP_TAB_REQ version
   {
     char buf[1024];
-    LocalRope name(c_rope_pool, tablePtr.p->tableName);
-    name.copy(buf);
+    LcLocalRope name(tablePtr.p->tableName);
+    name.copy(buf, sizeof(buf));
     g_eventLogger->info("Dbdict: drop name=%s,id=%u,obj_id=%u", buf, dropTabPtr.p->m_request.tableId,
                         tablePtr.p->m_obj_ptr_i);
   }
@@ -9571,14 +9704,15 @@ Dbdict::alterTable_release(SchemaOpPtr op_ptr)
   AlterTableRecPtr alterTabPtr;
   getOpRec(op_ptr, alterTabPtr);
   {
-    LocalRope r(c_rope_pool, alterTabPtr.p->m_oldTableName);
+    LcLocalRope r(alterTabPtr.p->m_oldTableName);
     r.erase();
   }
   {
-    LocalRope r(c_rope_pool, alterTabPtr.p->m_oldFrmData);
+    LcLocalRope r(alterTabPtr.p->m_oldFrmData);
     r.erase();
   }
-  LocalArenaPool<OpSectionSegment> op_sec_pool(op_ptr.p->m_trans_ptr.p->m_arena, c_opSectionBufferPool);
+  LocalArenaPool<OpSectionSegment> op_sec_pool(op_ptr.p->m_trans_ptr.p->m_arena,
+                                               c_opSectionBufferPool);
   release(op_sec_pool, alterTabPtr.p->m_newAttrData);
   releaseOpRec<AlterTableRec>(op_ptr);
 }
@@ -9769,12 +9903,28 @@ Dbdict::alterTable_parse(Signal* signal, bool master,
     ndbrequire(ok);
     SimplePropertiesSectionReader r(ptr, getSectionSegmentPool());
 
+    Uint32 propSize = r.getSize();
     handleTabInfoInit(signal,
                       trans_ptr, r, &parseRecord, false); // Will not save info
+
+    Uint32 replicaLenBytes = 2 + 2 * ((1 + cnoReplicas) *
+                                     parseRecord.tablePtr.p->fragmentCount);
+    Uint32 replicaLenWords = replicaLenBytes / 4;
+    propSize += replicaLenWords;
 
     if (parseRecord.errorCode != 0) {
       jam();
       setError(error, parseRecord);
+      return;
+    }
+    if (propSize >= MAX_WORDS_META_FILE)
+    {
+      jam();
+      parseRecord.errorCode = CreateTableRef::TableDefinitionTooBig;
+      parseRecord.errorLine = __LINE__;
+      setError(error, parseRecord);
+      BaseString::snprintf(error.errorObjectName, sizeof(error.errorObjectName),
+                           "%s", c_tableDesc.TableName);
       return;
     }
 
@@ -9816,11 +9966,11 @@ Dbdict::alterTable_parse(Signal* signal, bool master,
 
   // rename stuff
   {
-    ConstRope r1(c_rope_pool, tablePtr.p->tableName);
-    ConstRope r2(c_rope_pool, newTablePtr.p->tableName);
+    LcConstRope r1(tablePtr.p->tableName);
+    LcConstRope r2(newTablePtr.p->tableName);
 
     char name[MAX_TAB_NAME_SIZE];
-    r2.copy(name);
+    r2.copy(name, sizeof(name));
 
     if (r1.compare(name) != 0)
     {
@@ -9854,8 +10004,8 @@ Dbdict::alterTable_parse(Signal* signal, bool master,
 
   // frm stuff
   {
-    ConstRope r1(c_rope_pool, tablePtr.p->frmData);
-    ConstRope r2(c_rope_pool, newTablePtr.p->frmData);
+    LcConstRope r1(tablePtr.p->frmData);
+    LcConstRope r2(newTablePtr.p->frmData);
     if (!r1.equal(r2))
     {
       if (master)
@@ -9885,8 +10035,8 @@ Dbdict::alterTable_parse(Signal* signal, bool master,
       jam();
       // Find the table name for debug purpose:
       char table_name[MAX_TAB_NAME_SIZE];
-      ConstRope table_name_r(c_rope_pool, tablePtr.p->tableName);
-      table_name_r.copy(table_name);
+      LcConstRope table_name_r(tablePtr.p->tableName);
+      table_name_r.copy(table_name, sizeof(table_name));
       // Find any changed attributes
       bool modified_attribute = false;
       LocalAttributeRecord_list
@@ -9902,10 +10052,10 @@ Dbdict::alterTable_parse(Signal* signal, bool master,
       char new_column_name[MAX_TAB_NAME_SIZE];
       for (i = 0; i < tablePtr.p->noOfAttributes; i++)
       {
-        ConstRope old_name_r(c_rope_pool, oldAttrPtr.p->attributeName);
-        old_name_r.copy(old_column_name);
-        ConstRope new_name_r(c_rope_pool, newAttrPtr.p->attributeName);
-        new_name_r.copy(new_column_name);
+        LcConstRope old_name_r(oldAttrPtr.p->attributeName);
+        old_name_r.copy(old_column_name, sizeof(old_column_name));
+        LcConstRope new_name_r(newAttrPtr.p->attributeName);
+        new_name_r.copy(new_column_name, sizeof(new_column_name));
         if (old_name_r.compare(new_column_name))
         {
           jam();
@@ -10662,9 +10812,9 @@ Dbdict::alterTable_toReadBackup(Signal* signal,
 
   w.add(DictTabInfo::TableId, indexPtr.p->tableId);
   {
-    LocalRope name(c_rope_pool, indexPtr.p->tableName);
+    LcLocalRope name(indexPtr.p->tableName);
     char tableName[MAX_TAB_NAME_SIZE];
-    name.copy(tableName);
+    name.copy(tableName, sizeof(tableName));
     w.add(DictTabInfo::TableName, tableName);
   }
   {
@@ -10695,9 +10845,9 @@ Dbdict::alterTable_toReadBackup(Signal* signal,
 
   w.add(DictTabInfo::TableTypeVal, indexPtr.p->tableType);
   {
-    LocalRope name(c_rope_pool, tablePtr.p->tableName);
+    LcLocalRope name(tablePtr.p->tableName);
     char tableName[MAX_TAB_NAME_SIZE];
-    name.copy(tableName);
+    name.copy(tableName, sizeof(tableName));
     w.add(DictTabInfo::PrimaryTable, tableName);
   }
   w.add(DictTabInfo::PrimaryTableId, tablePtr.p->tableId);
@@ -10715,9 +10865,10 @@ Dbdict::alterTable_toReadBackup(Signal* signal,
     for (list.first(attrPtr); !attrPtr.isNull(); list.next(attrPtr))
     {
       jam();
-      { LocalRope attrName(c_rope_pool, attrPtr.p->attributeName);
+      {
+        LcLocalRope attrName(attrPtr.p->attributeName);
         char attributeName[MAX_ATTR_NAME_SIZE];
-        attrName.copy(attributeName);
+        attrName.copy(attributeName, sizeof(attributeName));
         w.add(DictTabInfo::AttributeName, attributeName);
       }
 
@@ -10801,9 +10952,9 @@ Dbdict::alterTable_toAlterUniqueIndex(Signal* signal,
 
   w.add(DictTabInfo::TableId, indexPtr.p->tableId);
   {
-    LocalRope name(c_rope_pool, indexPtr.p->tableName);
+    LcLocalRope name(indexPtr.p->tableName);
     char tableName[MAX_TAB_NAME_SIZE];
-    name.copy(tableName);
+    name.copy(tableName, sizeof(tableName));
     w.add(DictTabInfo::TableName, tableName);
   }
   {
@@ -10842,9 +10993,9 @@ Dbdict::alterTable_toAlterUniqueIndex(Signal* signal,
 
   w.add(DictTabInfo::TableTypeVal, indexPtr.p->tableType);
   {
-    LocalRope name(c_rope_pool, tablePtr.p->tableName);
+    LcLocalRope name(tablePtr.p->tableName);
     char tableName[MAX_TAB_NAME_SIZE];
-    name.copy(tableName);
+    name.copy(tableName, sizeof(tableName));
     w.add(DictTabInfo::PrimaryTable, tableName);
   }
   w.add(DictTabInfo::PrimaryTableId, tablePtr.p->tableId);
@@ -10863,9 +11014,9 @@ Dbdict::alterTable_toAlterUniqueIndex(Signal* signal,
     {
       jam();
       {
-        LocalRope attrName(c_rope_pool, attrPtr.p->attributeName);
+        LcLocalRope attrName(attrPtr.p->attributeName);
         char attributeName[MAX_ATTR_NAME_SIZE];
-        attrName.copy(attributeName);
+        attrName.copy(attributeName, sizeof(attributeName));
         w.add(DictTabInfo::AttributeName, attributeName);
       }
 
@@ -11549,7 +11700,8 @@ Dbdict::alterTable_commit(Signal* signal, SchemaOpPtr op_ptr)
         << " new=" << copyRope<sz>(newTablePtr.p->tableName));
 
       DictObjectPtr obj_ptr;
-      c_obj_pool.getPtr(obj_ptr, tablePtr.p->m_obj_ptr_i);
+      obj_ptr.i = tablePtr.p->m_obj_ptr_i;
+      ndbrequire(c_obj_pool.getValidPtr(obj_ptr));
 
       // remove old name from hash
       c_obj_name_hash.remove(obj_ptr);
@@ -11570,13 +11722,13 @@ Dbdict::alterTable_commit(Signal* signal, SchemaOpPtr op_ptr)
       jam();
       // save old frm and replace it by new
       {
-        ConstRope r_frm(c_rope_pool, tablePtr.p->frmData);
-        LocalRope r_old(c_rope_pool, alterTabPtr.p->m_oldFrmData);
+        LcConstRope r_frm(tablePtr.p->frmData);
+        LcLocalRope r_old(alterTabPtr.p->m_oldFrmData);
         ndbrequire(r_frm.copy(r_old));
       }
       {
-        ConstRope r_new(c_rope_pool, newTablePtr.p->frmData);
-        LocalRope r_frm(c_rope_pool, tablePtr.p->frmData);
+        LcConstRope r_new(newTablePtr.p->frmData);
+        LcLocalRope r_frm(tablePtr.p->frmData);
         ndbrequire(r_new.copy(r_frm));
       }
     }
@@ -11619,8 +11771,8 @@ Dbdict::alterTable_commit(Signal* signal, SchemaOpPtr op_ptr)
       jam();
       // Find the table name for debug purpose:
       char table_name[MAX_TAB_NAME_SIZE];
-      ConstRope table_name_r(c_rope_pool, tablePtr.p->tableName);
-      table_name_r.copy(table_name);
+      LcConstRope table_name_r(tablePtr.p->tableName);
+      table_name_r.copy(table_name, sizeof(table_name));
       D("alterTable_commit: getModifyAttrFlag set");
       // Find and save any changed attributes
       LocalAttributeRecord_list
@@ -11636,17 +11788,17 @@ Dbdict::alterTable_commit(Signal* signal, SchemaOpPtr op_ptr)
       char new_column_name[MAX_TAB_NAME_SIZE];
       for (i = 0; i < tablePtr.p->noOfAttributes; i++)
       {
-        ConstRope old_name_r(c_rope_pool, oldAttrPtr.p->attributeName);
-        old_name_r.copy(old_column_name);
-        ConstRope new_name_r(c_rope_pool, newAttrPtr.p->attributeName);
-        new_name_r.copy(new_column_name);
+        LcConstRope old_name_r(oldAttrPtr.p->attributeName);
+        old_name_r.copy(old_column_name, sizeof(old_column_name));
+        LcConstRope new_name_r(newAttrPtr.p->attributeName);
+        new_name_r.copy(new_column_name, sizeof(new_column_name));
         if (old_name_r.compare(new_column_name))
         {
           jam();
           g_eventLogger->info(
               "DBDICT: Renaming attribute %s to %s for table %s",
               old_column_name, new_column_name, table_name);
-          LocalRope attrName(c_rope_pool, oldAttrPtr.p->attributeName);
+          LcLocalRope attrName(oldAttrPtr.p->attributeName);
           attrName.assign(new_column_name);
         }
         list.next(oldAttrPtr);
@@ -11903,12 +12055,12 @@ Dbdict::alterTable_fromCommitComplete(Signal* signal,
     char oldTableName[MAX_TAB_NAME_SIZE];
     std::memset(oldTableName, 0, sizeof(oldTableName));
     {
-      const RopeHandle& rh =
+      const LcRopeHandle& rh =
         AlterTableReq::getNameFlag(impl_req->changeMask)
           ? alterTabPtr.p->m_oldTableName
           : tablePtr.p->tableName;
-      ConstRope r(c_rope_pool, rh);
-      r.copy(oldTableName);
+      LcConstRope r(rh);
+      r.copy(oldTableName, sizeof(oldTableName));
     }
 
     LinearSectionPtr ptr[3];
@@ -12988,11 +13140,11 @@ void Dbdict::sendLIST_TABLES_CONF(Signal* signal, ListTablesReq* req)
     if (reqListNames)
     {
       jam();
-      LocalRope name(c_rope_pool, iter.curr.p->m_name);
+      LcLocalRope name(iter.curr.p->m_name);
       const Uint32 size = name.size(); // String length including \0
       const Uint32 wsize = (size + 3) / 4;
       tableNamesWriter.putWord(size);
-      name.copy(tname);
+      name.copy(tname, sizeof(tname));
       tableNamesWriter.putWords((Uint32 *) tname, wsize);
     }
 
@@ -13574,9 +13726,10 @@ Dbdict::createIndex_toCreateTable(Signal* signal, SchemaOpPtr op_ptr)
   }
 
   w.add(DictTabInfo::TableTypeVal, createIndexPtr.p->m_request.indexType);
-  { LocalRope name(c_rope_pool, tablePtr.p->tableName);
+  {
+    LcLocalRope name(tablePtr.p->tableName);
     char tableName[MAX_TAB_NAME_SIZE];
-    name.copy(tableName);
+    name.copy(tableName, sizeof(tableName));
     w.add(DictTabInfo::PrimaryTable, tableName);
   }
   w.add(DictTabInfo::PrimaryTableId, tablePtr.p->tableId);
@@ -13599,9 +13752,10 @@ Dbdict::createIndex_toCreateTable(Signal* signal, SchemaOpPtr op_ptr)
     AttributeRecordPtr attrPtr;
     c_attributeRecordPool.getPtr(attrPtr, attrMap[k].attr_ptr_i);
 
-    { LocalRope attrName(c_rope_pool, attrPtr.p->attributeName);
+    {
+      LcLocalRope attrName(attrPtr.p->attributeName);
       char attributeName[MAX_ATTR_NAME_SIZE];
-      attrName.copy(attributeName);
+      attrName.copy(attributeName, sizeof(attributeName));
       w.add(DictTabInfo::AttributeName, attributeName);
     }
 
@@ -13634,7 +13788,7 @@ Dbdict::createIndex_toCreateTable(Signal* signal, SchemaOpPtr op_ptr)
     Uint32 key_type = NDB_ARRAYTYPE_FIXED;
     AttributeRecordPtr attrPtr;
     LocalAttributeRecord_list list(c_attributeRecordPool,
-                                          tablePtr.p->m_attributes);
+                                   tablePtr.p->m_attributes);
     // XXX move to parse
     for (list.first(attrPtr); !attrPtr.isNull(); list.next(attrPtr))
     {
@@ -14595,8 +14749,8 @@ Dbdict::alterIndex_parse(Signal* signal, bool master,
   char indexName[MAX_TAB_NAME_SIZE];
   std::memset(indexName, 0, sizeof(indexName));
   {
-    ConstRope r(c_rope_pool, indexPtr.p->tableName);
-    r.copy(indexName);
+    LcConstRope r(indexPtr.p->tableName);
+    r.copy(indexName, sizeof(indexName));
   }
   D("index " << indexName);
 
@@ -14771,7 +14925,8 @@ Dbdict::set_index_stat_frag(Signal* signal, TableRecordPtr indexPtr)
 {
   jam();
   DictObjectPtr index_obj_ptr;
-  c_obj_pool.getPtr(index_obj_ptr, indexPtr.p->m_obj_ptr_i);
+  index_obj_ptr.i = indexPtr.p->m_obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(index_obj_ptr));
   const Uint32 indexId = index_obj_ptr.p->m_id;
   Uint32 err = get_fragmentation(signal, indexId);
   ndbrequire(err == 0);
@@ -17494,7 +17649,7 @@ Dbdict::copyData_prepare(Signal* signal, SchemaOpPtr op_ptr)
   ndbrequire(ok);
   {
     LocalAttributeRecord_list alist(c_attributeRecordPool,
-                                           tabPtr.p->m_attributes);
+                                    tabPtr.p->m_attributes);
     AttributeRecordPtr attrPtr;
     for (alist.first(attrPtr); !attrPtr.isNull(); alist.next(attrPtr))
     {
@@ -17600,7 +17755,7 @@ Dbdict::copyData_complete(Signal* signal, SchemaOpPtr op_ptr)
   ndbrequire(ok);
   {
     LocalAttributeRecord_list alist(c_attributeRecordPool,
-                                           tabPtr.p->m_attributes);
+                                    tabPtr.p->m_attributes);
     AttributeRecordPtr attrPtr;
     for (alist.first(attrPtr); !attrPtr.isNull(); alist.next(attrPtr))
     {
@@ -20578,8 +20733,9 @@ Dbdict::createTrigger_parse(Signal* signal, bool master,
   }
 
   {
-    LocalRope name(c_rope_pool, triggerPtr.p->triggerName);
-    if (!name.assign(createTriggerPtr.p->m_triggerName)) {
+    LcLocalRope name(triggerPtr.p->triggerName);
+    if (!name.assign(createTriggerPtr.p->m_triggerName))
+    {
       jam();
       setError(error, CreateTrigRef::OutOfStringBuffer, __LINE__);
       return;
@@ -21154,6 +21310,8 @@ Dbdict::createTrigger_abortParse(Signal* signal, SchemaOpPtr op_ptr)
       }
 
       c_triggerRecordPool_.release(triggerPtr);
+      checkPoolShrinkNeed(DBDICT_TRIGGER_RECORD_TRANSIENT_POOL_INDEX,
+                          c_triggerRecordPool_);
     }
 
     // ignore Feedback for now (referencing object will be dropped too)
@@ -21545,8 +21703,9 @@ Dbdict::dropTrigger_parse(Signal* signal, bool master,
     ndbrequire(obj_ptr.p->m_id == triggerPtr.p->triggerId);
 
     // fill in name just to be complete
-    ConstRope name(c_rope_pool, triggerPtr.p->triggerName);
-    name.copy(dropTriggerPtr.p->m_triggerName); //wl3600_todo length check
+    LcConstRope name(triggerPtr.p->triggerName);
+    name.copy(dropTriggerPtr.p->m_triggerName,
+              sizeof(dropTriggerPtr.p->m_triggerName));
   }
 
   // check the table (must match trigger record)
@@ -21836,6 +21995,8 @@ Dbdict::dropTrigger_commit(Signal* signal, SchemaOpPtr op_ptr)
 
     // remove trigger
     c_triggerRecordPool_.release(triggerPtr);
+    checkPoolShrinkNeed(DBDICT_TRIGGER_RECORD_TRANSIENT_POOL_INDEX,
+                        c_triggerRecordPool_);
     releaseDictObject(op_ptr);
 
     sendTransConf(signal, op_ptr);
@@ -21992,7 +22153,7 @@ Dbdict::getTableKeyList(TableRecordPtr tablePtr,
   list.sz = 0;
   list.id[list.sz++] = AttributeHeader::FRAGMENT;
   LocalAttributeRecord_list alist(c_attributeRecordPool,
-                                         tablePtr.p->m_attributes);
+                                  tablePtr.p->m_attributes);
   AttributeRecordPtr attrPtr;
   for (alist.first(attrPtr); !attrPtr.isNull(); alist.next(attrPtr)) {
     if (attrPtr.p->tupleKey) {
@@ -22018,15 +22179,16 @@ Dbdict::getIndexAttr(TableRecordPtr indexPtr, Uint32 itAttr, Uint32* id)
   ndbrequire(ok);
   AttributeRecord* iaRec = c_attributeRecordPool.getPtr(itAttr);
   {
-    ConstRope tmp(c_rope_pool, iaRec->attributeName);
-    tmp.copy(name);
+    LcConstRope tmp(iaRec->attributeName);
+    tmp.copy(name, sizeof(name));
     len = tmp.size();
   }
   LocalAttributeRecord_list alist(c_attributeRecordPool,
-					 tablePtr.p->m_attributes);
+                                  tablePtr.p->m_attributes);
   for (alist.first(attrPtr); !attrPtr.isNull(); alist.next(attrPtr)){
-    ConstRope tmp(c_rope_pool, attrPtr.p->attributeName);
-    if(tmp.compare(name, len) == 0){
+    LcConstRope tmp(attrPtr.p->attributeName);
+    if(tmp.compare(name, len) == 0)
+    {
       id[0] = attrPtr.p->attributeId;
       return;
     }
@@ -22092,7 +22254,7 @@ Dbdict::getIndexAttrMask(TableRecordPtr indexPtr, AttributeMask& mask)
 
   AttributeRecordPtr attrPtr, currPtr;
   LocalAttributeRecord_list alist(c_attributeRecordPool,
-					 indexPtr.p->m_attributes);
+                                  indexPtr.p->m_attributes);
 
 
   for (alist.first(attrPtr); currPtr = attrPtr, alist.next(attrPtr); ){
@@ -23885,7 +24047,7 @@ Dbdict::createFile_parse(Signal* signal, bool master,
   }
 
   Uint32 len = Uint32(strlen(f.FileName) + 1);
-  Uint32 hash = LocalRope::hash(f.FileName, len);
+  Uint32 hash = LcLocalRope::hash(f.FileName, len);
   if(get_object(f.FileName, len, hash) != 0)
   {
     jam();
@@ -23933,7 +24095,7 @@ Dbdict::createFile_parse(Signal* signal, bool master,
   new (filePtr.p) File();
 
   {
-    LocalRope name(c_rope_pool, obj_ptr.p->m_name);
+    LcLocalRope name(obj_ptr.p->m_name);
     if(!name.assign(f.FileName, len, hash))
     {
       jam();
@@ -24273,8 +24435,8 @@ Dbdict::createFile_fromWriteObjInfo(Signal* signal,
   }
 
   char name[PATH_MAX];
-  ConstRope tmp(c_rope_pool, f_ptr.p->m_path);
-  tmp.copy(name);
+  LcConstRope tmp(f_ptr.p->m_path);
+  tmp.copy(name, sizeof(name));
   LinearSectionPtr ptr[3];
   ptr[0].p = (Uint32*)&name[0];
   ptr[0].sz = Uint32(strlen(name)+1+3)/4;
@@ -24595,7 +24757,7 @@ Dbdict::createFilegroup_parse(Signal* signal, bool master,
   }
 
   Uint32 len = Uint32(strlen(fg.FilegroupName) + 1);
-  Uint32 hash = LocalRope::hash(fg.FilegroupName, len);
+  Uint32 hash = LcLocalRope::hash(fg.FilegroupName, len);
   if(get_object(fg.FilegroupName, len, hash) != 0)
   {
     jam();
@@ -24622,7 +24784,7 @@ Dbdict::createFilegroup_parse(Signal* signal, bool master,
   new (fg_ptr.p) Filegroup();
 
   {
-    LocalRope name(c_rope_pool, obj_ptr.p->m_name);
+    LcLocalRope name(obj_ptr.p->m_name);
     if(!name.assign(fg.FilegroupName, len, hash))
     {
       jam();
@@ -25201,8 +25363,8 @@ Dbdict::dropFile_parse(Signal* signal, bool master,
 #if defined VM_TRACE || defined ERROR_INSERT
   {
     char buf[1024];
-    LocalRope name(c_rope_pool, f_ptr.p->m_path);
-    name.copy(buf);
+    LcLocalRope name(f_ptr.p->m_path);
+    name.copy(buf, sizeof(buf));
     g_eventLogger->info("Dbdict: drop name=%s,id=%u,obj_id=%u", buf,
                         impl_req->file_id, f_ptr.p->m_obj_ptr_i);
   }
@@ -25539,7 +25701,10 @@ Dbdict::dropFilegroup_parse(Signal* signal, bool master,
     return;
   }
 
-  DictObject * obj = c_obj_pool.getPtr(fg_ptr.p->m_obj_ptr_i);
+  DictObjectPtr obj_ptr;
+  obj_ptr.i = fg_ptr.p->m_obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(obj_ptr));
+  DictObject *obj = obj_ptr.p;
   if (obj->m_ref_count)
   {
     jam();
@@ -25569,8 +25734,8 @@ Dbdict::dropFilegroup_parse(Signal* signal, bool master,
 #if defined VM_TRACE || defined ERROR_INSERT
   {
     char buf[1024];
-    LocalRope name(c_rope_pool, fg_ptr.p->m_name);
-    name.copy(buf);
+    LcLocalRope name(fg_ptr.p->m_name);
+    name.copy(buf, sizeof(buf));
     g_eventLogger->info("Dbdict: drop name=%s,id=%u,obj_id=%u", buf,
                         impl_req->filegroup_id, fg_ptr.p->m_obj_ptr_i);
   }
@@ -25659,7 +25824,8 @@ Dbdict::dropFilegroup_prepare(Signal* signal, SchemaOpPtr op_ptr)
       jam();
 
       DictObjectPtr objPtr;
-      c_obj_pool.getPtr(objPtr, filePtr.p->m_obj_ptr_i);
+      objPtr.i = filePtr.p->m_obj_ptr_i;
+      ndbrequire(c_obj_pool.getValidPtr(objPtr));
       SchemaFile::TableEntry * entry = getTableEntry(xsf, objPtr.p->m_id);
       entry->m_tableState = SchemaFile::SF_DROP;
       entry->m_transId = trans_ptr.p->m_transId;
@@ -25697,7 +25863,8 @@ Dbdict::dropFilegroup_abortPrepare(Signal* signal, SchemaOpPtr op_ptr)
       jam();
 
       DictObjectPtr objPtr;
-      c_obj_pool.getPtr(objPtr, filePtr.p->m_obj_ptr_i);
+      objPtr.i = filePtr.p->m_obj_ptr_i;
+      ndbrequire(c_obj_pool.getValidPtr(objPtr));
       SchemaFile::TableEntry * entry = getTableEntry(xsf, objPtr.p->m_id);
       entry->m_tableState = SchemaFile::SF_IN_USE;
       entry->m_transId = 0;
@@ -25741,7 +25908,8 @@ Dbdict::dropFilegroup_commit(Signal* signal, SchemaOpPtr op_ptr)
       jam();
 
       DictObjectPtr objPtr;
-      c_obj_pool.getPtr(objPtr, filePtr.p->m_obj_ptr_i);
+      objPtr.i = filePtr.p->m_obj_ptr_i;
+      ndbrequire(c_obj_pool.getValidPtr(objPtr));
       SchemaFile::TableEntry * entry = getTableEntry(xsf, objPtr.p->m_id);
       entry->m_tableState = SchemaFile::SF_UNUSED;
       entry->m_transId = 0;
@@ -27390,7 +27558,7 @@ Dbdict::createFK_parse(Signal* signal, bool master,
   }
 
   Uint32 len = Uint32(strlen(fk.Name) + 1);
-  Uint32 hash = LocalRope::hash(fk.Name, len);
+  Uint32 hash = LcLocalRope::hash(fk.Name, len);
   if (get_object(fk.Name, len, hash) != 0)
   {
     jam();
@@ -27418,7 +27586,7 @@ Dbdict::createFK_parse(Signal* signal, bool master,
   new (fk_ptr.p) ForeignKeyRec();
 
   {
-    LocalRope name(c_rope_pool, obj_ptr.p->m_name);
+    LcLocalRope name(obj_ptr.p->m_name);
     if(!name.assign(fk.Name, len, hash))
     {
       jam();
@@ -27543,8 +27711,8 @@ Dbdict::packFKIntoPages(SimpleProperties::Writer & w,
 {
   D("packFKIntoPages");
   DictForeignKeyInfo::ForeignKey fk; fk.init();
-  ConstRope r(c_rope_pool, fk_ptr.p->m_name);
-  r.copy(fk.Name);
+  LcConstRope r(fk_ptr.p->m_name);
+  r.copy(fk.Name, sizeof(fk.Name));
 
   fk.ForeignKeyId = fk_ptr.p->m_fk_id;
   fk.ForeignKeyVersion = fk_ptr.p->m_version;
@@ -27553,16 +27721,16 @@ Dbdict::packFKIntoPages(SimpleProperties::Writer & w,
     TableRecordPtr tablePtr;
     ndbrequire(find_object(tablePtr, fk_ptr.p->m_parentTableId));
     fk.ParentTableVersion = tablePtr.p->tableVersion;
-    ConstRope name(c_rope_pool, tablePtr.p->tableName);
-    name.copy(fk.ParentTableName);
+    LcConstRope name(tablePtr.p->tableName);
+    name.copy(fk.ParentTableName, sizeof(fk.ParentTableName));
   }
   fk.ChildTableId = fk_ptr.p->m_childTableId;
   {
     TableRecordPtr tablePtr;
     ndbrequire(find_object(tablePtr, fk_ptr.p->m_childTableId));
     fk.ChildTableVersion = tablePtr.p->tableVersion;
-    ConstRope name(c_rope_pool, tablePtr.p->tableName);
-    name.copy(fk.ChildTableName);
+    LcConstRope name(tablePtr.p->tableName);
+    name.copy(fk.ChildTableName, sizeof(fk.ChildTableName));
   }
 
   fk.ParentIndexId = fk_ptr.p->m_parentIndexId;
@@ -27571,8 +27739,8 @@ Dbdict::packFKIntoPages(SimpleProperties::Writer & w,
     TableRecordPtr tablePtr;
     ndbrequire(find_object(tablePtr, fk_ptr.p->m_parentIndexId));
     fk.ParentIndexVersion = tablePtr.p->tableVersion;
-    ConstRope name(c_rope_pool, tablePtr.p->tableName);
-    name.copy(fk.ParentIndexName);
+    LcConstRope name(tablePtr.p->tableName);
+    name.copy(fk.ParentIndexName, sizeof(fk.ParentIndexName));
   }
   fk.ChildIndexId = fk_ptr.p->m_childIndexId;
   if (fk.ChildIndexId != RNIL)
@@ -27580,8 +27748,8 @@ Dbdict::packFKIntoPages(SimpleProperties::Writer & w,
     TableRecordPtr tablePtr;
     ndbrequire(find_object(tablePtr, fk_ptr.p->m_childIndexId));
     fk.ChildIndexVersion = tablePtr.p->tableVersion;
-    ConstRope name(c_rope_pool, tablePtr.p->tableName);
-    name.copy(fk.ChildIndexName);
+    LcConstRope name(tablePtr.p->tableName);
+    name.copy(fk.ChildIndexName, sizeof(fk.ChildIndexName));
   }
 
   // bytes...
@@ -28707,8 +28875,8 @@ Dbdict::dropFK_parse(Signal* signal, bool master,
 #if defined VM_TRACE || defined ERROR_INSERT
   {
     char buf[1024];
-    LocalRope name(c_rope_pool, fk_ptr.p->m_name);
-    name.copy(buf);
+    LcLocalRope name(fk_ptr.p->m_name);
+    name.copy(buf, sizeof(buf));
     g_eventLogger->info("Dbdict: drop name=%s,id=%u,obj_id=%u", buf,
                         impl_req->fkId, fk_ptr.p->m_obj_ptr_i);
   }
@@ -29601,7 +29769,8 @@ Dbdict::getDictObject(SchemaOpPtr op_ptr, DictObjectPtr& obj_ptr)
 {
   OpRecPtr oprec_ptr = op_ptr.p->m_oprec_ptr;
   ndbrequire(oprec_ptr.p->m_obj_ptr_i != RNIL);
-  c_obj_pool.getPtr(obj_ptr, oprec_ptr.p->m_obj_ptr_i);
+  obj_ptr.i = oprec_ptr.p->m_obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(obj_ptr));
 }
 
 // create link from schema op to dict object
@@ -29643,7 +29812,8 @@ Dbdict::unlinkDictObject(SchemaOpPtr op_ptr)
   DictObjectPtr obj_ptr;
   OpRecPtr oprec_ptr = op_ptr.p->m_oprec_ptr;
   ndbrequire(oprec_ptr.p->m_obj_ptr_i != RNIL);
-  c_obj_pool.getPtr(obj_ptr, oprec_ptr.p->m_obj_ptr_i);
+  obj_ptr.i = oprec_ptr.p->m_obj_ptr_i;
+  ndbrequire(c_obj_pool.getValidPtr(obj_ptr));
 
   D("unlinkDictObject" << V(op_ptr.p->op_key) << V(obj_ptr.i));
 
@@ -29662,7 +29832,7 @@ Dbdict::unlinkDictObject(SchemaOpPtr op_ptr)
 void
 Dbdict::seizeDictObject(SchemaOpPtr op_ptr,
                         DictObjectPtr& obj_ptr,
-                        const RopeHandle& name)
+                        const LcRopeHandle& name)
 {
   D("seizeDictObject" << *op_ptr.p);
 
@@ -29702,7 +29872,8 @@ Dbdict::findDictObject(SchemaOpPtr op_ptr,
   D("findDictObject" << *op_ptr.p << V(obj_ptr.i));
   if (obj_ptr_i != RNIL) {
     jam();
-    c_obj_pool.getPtr(obj_ptr, obj_ptr_i);
+    obj_ptr.i = obj_ptr_i;
+    ndbrequire(c_obj_pool.getValidPtr(obj_ptr));
     linkDictObject(op_ptr, obj_ptr);
     return true;
   }
@@ -33179,7 +33350,6 @@ Dbdict::sendTransClientReply(Signal* signal, SchemaTransPtr trans_ptr)
 {
   const Uint32 clientFlags = trans_ptr.p->m_clientFlags;
   D("sendTransClientReply" << hex << V(clientFlags));
-  D("c_rope_pool free: " << c_rope_pool.getNoOfFree());
 
   Uint32 receiverRef = 0;
   Uint32 transId = 0;
@@ -34055,7 +34225,7 @@ Dbdict::createHashMap_parse(Signal* signal, bool master,
   }
 
   Uint32 len = Uint32(strlen(hm.HashMapName) + 1);
-  Uint32 hash = LocalRope::hash(hm.HashMapName, len);
+  Uint32 hash = LcLocalRope::hash(hm.HashMapName, len);
 
   if (ERROR_INSERTED(6205))
   {
@@ -34120,9 +34290,9 @@ Dbdict::createHashMap_parse(Signal* signal, bool master,
     return;
   }
 
-  RopeHandle name;
+  LcRopeHandle name;
   {
-    LocalRope tmp(c_rope_pool, name);
+    LcLocalRope tmp(name);
     if(!tmp.assign(hm.HashMapName, len, hash))
     {
       jam();
@@ -34311,7 +34481,7 @@ error:
   else
   {
     jam();
-    LocalRope tmp(c_rope_pool, name);
+    LcLocalRope tmp(name);
     tmp.erase();
   }
 }
@@ -34476,8 +34646,8 @@ Dbdict::packHashMapIntoPages(SimpleProperties::Writer & w,
   Ptr<Hash2FragmentMap> map_ptr;
   g_hash_map.getPtr(map_ptr, hm_ptr.p->m_map_ptr_i);
 
-  ConstRope r(c_rope_pool, hm_ptr.p->m_name);
-  r.copy(hm.HashMapName);
+  LcConstRope r(hm_ptr.p->m_name);
+  r.copy(hm.HashMapName, sizeof(hm.HashMapName));
   hm.HashMapBuckets = map_ptr.p->m_cnt;
   hm.HashMapObjectId = hm_ptr.p->m_object_id;
   hm.HashMapVersion = hm_ptr.p->m_object_version;
@@ -34744,7 +34914,7 @@ Dbdict::check_consistency_table(TableRecordPtr tablePtr)
   DictObjectPtr obj_ptr;
   obj_ptr.i = tablePtr.p->m_obj_ptr_i;
   ndbrequire(obj_ptr.i != RNIL);
-  c_obj_pool.getPtr(obj_ptr);
+  ndbrequire(c_obj_pool.getValidPtr(obj_ptr));
   check_consistency_object(obj_ptr);
 
   ndbrequire(obj_ptr.p->m_id == tablePtr.p->tableId);
@@ -34800,7 +34970,7 @@ Dbdict::check_consistency_index(TableRecordPtr indexPtr)
   DictObjectPtr obj_ptr;
   obj_ptr.i = triggerPtr.p->m_obj_ptr_i;
   ndbrequire(obj_ptr.i != RNIL);
-  c_obj_pool.getPtr(obj_ptr);
+  ndbrequire(c_obj_pool.getValidPtr(obj_ptr));
   check_consistency_object(obj_ptr);
 
   ndbrequire(obj_ptr.p->m_id == triggerPtr.p->triggerId);
@@ -34982,5 +35152,34 @@ Dbdict::startNextGetTabInfoReq(Signal* signal)
       sendSignal(reference(), GSN_CONTINUEB, signal,
                  1, JBB);
     }
+  }
+}
+
+void
+Dbdict::sendPoolShrink(const Uint32 pool_index)
+{
+  const bool need_send = c_transient_pools_shrinking.get(pool_index) == 0;
+  c_transient_pools_shrinking.set(pool_index);
+  if (need_send)
+  {
+    Signal25 signal[1];
+    signal->theData[0] = ZDICT_SHRINK_TRANSIENT_POOLS;
+    signal->theData[1] = pool_index;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+  }
+}
+
+void
+Dbdict::shrinkTransientPools(Uint32 pool_index)
+{
+  ndbrequire(pool_index < c_transient_pool_count);
+  ndbrequire(c_transient_pools_shrinking.get(pool_index));
+  if (c_transient_pools[pool_index]->rearrange_free_list_and_shrink(1))
+  {
+    sendPoolShrink(pool_index);
+  }
+  else
+  {
+    c_transient_pools_shrinking.clear(pool_index);
   }
 }

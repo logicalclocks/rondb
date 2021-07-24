@@ -261,6 +261,19 @@ parse_key_value_before_filespecs(const char *src,
  * In situations there there are small amount of free memory left one want to
  * Dbtc to be prioritized over Dbspj.
  *
+ * RG_REPLICATION_MEMORY:
+ * This memory is used by SUMA to store records of changes to be sent out
+ * to the clients subscribing to replication events in NDB Cluster.
+ * Similar to the RG_QUERY_MEMORY it is a low priority resource, but it can
+ * grow as long as there is no memory shortage. It will never decrease
+ * below the configured memory size (configure parameter is
+ * MaxBufferedEpochBytes).
+ *
+ * RG_SCHEMA_MEMORY:
+ * This memory is used to handle memory resources connected to schema
+ * objects such as tables, fragments and so forth. It can grow substantially
+ * beyond its configured value since it is a prioritized resource.
+ *
  * Overallocating and total memory
  * -------------------------------
  * The total memory allocated by the global memory manager is the sum of the
@@ -592,6 +605,43 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   g_eventLogger->info("QueryMemory can use memory from SharedGlobalMemory"
                       " until 90%% used");
 
+  /**
+   * We add 32 MByte for replication memory, but this memory will get memory
+   * from SharedGlobalMemory and the resources using this memory up to 90%
+   * of the memory limit. So no concern that it is small for now.
+   * Mostly not set to 0 for small installations that might not take height
+   * for this memory.
+   */
+  Uint32 replication_memory = 8 * 1024;
+  Uint64 ReplicationMemory = 0;
+  ndb_mgm_get_int64_parameter(p, CFG_DB_REPLICATION_MEM,
+                              &ReplicationMemory);
+  replication_memory = Uint32(ReplicationMemory / Uint64(32768));
+  Uint32 rep_mb = replication_memory / 32;
+  g_eventLogger->info("Adding %u MByte for replication memory", rep_mb);
+  {
+    Resource_limit rl;
+    rl.m_min = 0;
+    rl.m_max = Resource_limit::HIGHEST_LIMIT;
+    rl.m_resource_id = RG_REPLICATION_MEMORY;
+    ed.m_mem_manager->set_resource_limit(rl);
+  }
+  g_eventLogger->info("MaxBufferedEpochBytes can use memory from"
+                      " SharedGlobalMemory until 90%% used");
+
+  Uint64 SchemaMemory = 0;
+  ndb_mgm_get_int64_parameter(p, CFG_DB_SCHEMA_MEM,
+                              &SchemaMemory);
+  Uint32 schema_memory = Uint32(SchemaMemory / Uint64(32768));
+  {
+    Resource_limit rl;
+    rl.m_min = schema_memory;
+    rl.m_max = Resource_limit::HIGHEST_LIMIT;
+    rl.m_resource_id = RG_SCHEMA_MEMORY;
+    ed.m_mem_manager->set_resource_limit(rl);
+  }
+  g_eventLogger->info("SchemaMemory can expand and use"
+                      " SharedGlobalMemory if required");
   {
     Resource_limit rl;
     rl.m_min = 0;
@@ -601,7 +651,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   }
 
   Uint32 sum = shared_pages + tupmem + filepages + jbpages + sbpages +
-    pgman_pages + stpages + transmem;
+    pgman_pages + stpages + transmem + replication_memory + schema_memory;
 
   /**
    * We allocate a bit of extra pages to handle map pages in the NDB memory
@@ -638,7 +688,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   {
     ed.m_mem_manager->map(watchCounter, memlock); // Map all
   }
-
+  ed.m_mem_manager->init_memory_pools();
   return 0;                     // Success
 }
 
@@ -1116,7 +1166,6 @@ ndbd_run(bool foreground, int report_fd,
     globalEmulatorData.theWatchDog->unregisterWatchedThread(0);
   }
   g_eventLogger->info("Memory Allocation for global memory pools Completed");
-
   log_memusage("Global memory pools allocated");
 
   /**

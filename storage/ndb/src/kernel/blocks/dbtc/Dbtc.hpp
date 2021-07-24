@@ -372,7 +372,13 @@ public:
   /* WHEN THE TRIGGER IS DEACTIVATED.         */
   /* **************************************** */
   struct TcDefinedTriggerData {
-    TcDefinedTriggerData() {}
+    static constexpr Uint32 TYPE_ID = RT_DBTC_DEFINED_TRIGGER;
+    Uint32 m_magic;
+
+    TcDefinedTriggerData() :
+      m_magic(Magic::make(TYPE_ID))
+    {}
+
     /**
      * Trigger id, used to identify the trigger
      */
@@ -395,7 +401,7 @@ public:
      */
     union {
       Uint32 nextPool;
-      Uint32 nextList;
+      Uint32 nextHash;
     };
     
     /**
@@ -409,19 +415,30 @@ public:
     };
 
     /**
-     * Prev pointer (used in list)
+     * Prev pointer (used in hash)
      */
-    Uint32 prevList;
+    Uint32 prevHash;
 
     Uint32 oldTriggerIds[2]; // For upgrade :(
 
     inline void print(NdbOut & s) const { 
       s << "[DefinedTriggerData = " << triggerId << "]"; 
     }
+
+    bool equal(const TcDefinedTriggerData &defined_trigger) const
+    {
+      return (triggerId == defined_trigger.triggerId);
+    }
+    Uint32 hashValue() const
+    {
+      return triggerId;
+    }
   };
+  static constexpr
+    Uint32 DBTC_DEFINED_TRIGGER_RECORD_TRANSIENT_POOL_INDEX = 14;
   typedef Ptr<TcDefinedTriggerData> DefinedTriggerPtr;
-  typedef ArrayPool<TcDefinedTriggerData> TcDefinedTriggerData_pool;
-  typedef DLList<TcDefinedTriggerData_pool> TcDefinedTriggerData_list;
+  typedef TransientPool<TcDefinedTriggerData> TcDefinedTriggerData_pool;
+  typedef DLHashTable<TcDefinedTriggerData_pool> TcDefinedTriggerData_hash;
   
   /**
    * Pool of trigger data record
@@ -430,9 +447,22 @@ public:
   RSS_AP_SNAPSHOT(c_theDefinedTriggerPool);
 
   /**
-   * The list of active triggers
+   * The hash table of triggers
    */  
-  TcDefinedTriggerData_list c_theDefinedTriggers;
+  TcDefinedTriggerData_hash c_theDefinedTriggerHash;
+
+  bool getDefinedTriggerData(DefinedTriggerPtr &defTriggerPtr,
+                             Uint32 triggerId)
+  {
+    TcDefinedTriggerData triggerData;
+    triggerData.triggerId = triggerId;
+    if (c_theDefinedTriggerHash.find(defTriggerPtr, triggerData))
+    {
+      ndbassert(defTriggerPtr.p->triggerId == triggerId);
+      return true;
+    }
+    return false;
+  }
 
   alignas(64) AttributeBuffer_pool c_theAttributeBufferPool;
   RSS_AP_SNAPSHOT(c_theAttributeBufferPool);
@@ -593,7 +623,10 @@ public:
   /* WHEN THE INDEX IS DROPPED.               */
   /* **************************************** */
   struct TcIndexData {
+    static constexpr Uint32 TYPE_ID = RT_DBTC_INDEX_DATA;
+    Uint32 m_magic;
     TcIndexData() :
+      m_magic(Magic::make(TYPE_ID)),
       indexState(IS_OFFLINE)
     {}
 
@@ -623,33 +656,54 @@ public:
     Uint32 primaryKeyPos;
 
     /**
-     * Next ptr (used in pool/list)
+     * Next ptr (used in pool/hash)
      */
     union {
       Uint32 nextPool;
-      Uint32 nextList;
+      Uint32 nextHash;
     };
     /**
-     * Prev pointer (used in list)
+     * Prev pointer (used in hash)
      */
-    Uint32 prevList;
+    Uint32 prevHash;
+
+    Uint32 hashValue() const
+    {
+      return indexId;
+    }
+    bool equal(const TcIndexData &index_data) const
+    {
+      return indexId == index_data.indexId;
+    }
   };
-  
+  static constexpr Uint32 DBTC_INDEX_DATA_RECORD_TRANSIENT_POOL_INDEX = 13;
   typedef Ptr<TcIndexData> TcIndexDataPtr;
-  typedef ArrayPool<TcIndexData> TcIndexData_pool;
-  typedef DLList<TcIndexData_pool> TcIndexData_list;
+  typedef TransientPool<TcIndexData> TcIndexData_pool;
+  typedef DLHashTable<TcIndexData_pool> TcIndexData_hash;
 
   /**
    * Pool of index data record
    */
   TcIndexData_pool c_theIndexPool;
+  TcIndexData_hash c_theIndexHash;
   RSS_AP_SNAPSHOT(c_theIndexPool);
-  
+ 
   /**
    * The list of defined indexes
    */  
-  TcIndexData_list c_theIndexes;
   UintR c_maxNumberOfIndexes;
+
+  bool getIndexDataOperation(TcIndexDataPtr &indexPtr, Uint32 indexId)
+  {
+    TcIndexData check;
+    check.indexId = indexId;
+    if (likely(c_theIndexHash.find(indexPtr, check)))
+    {
+      ndbassert(indexPtr.p->indexId == indexId);
+      return true;
+    }
+    return false;
+  }
 
   struct TcIndexOperation {
     static constexpr Uint32 TYPE_ID = RT_DBTC_INDEX_OPERATION;
@@ -2774,7 +2828,7 @@ private:
   CommitAckMarker_hash m_commitAckMarkerHash;
   RSS_AP_SNAPSHOT(m_commitAckMarkerPool);
   
-  static const Uint32 c_transient_pool_count = 13;
+  static const Uint32 c_transient_pool_count = 15;
   TransientFastSlotPool* c_transient_pools[c_transient_pool_count];
   Bitmask<1> c_transient_pools_shrinking;
 
@@ -2966,11 +3020,6 @@ private:
 public:
   DistributionHandler m_distribution_handle;
 
-static Uint64 getTransactionMemoryNeed(
-    const Uint32 dbtc_instance_count,
-    const ndb_mgm_configuration_iterator * mgm_cfg,
-    const bool use_reserved);
-
   static size_t getTableRecordSize()
   {
     return sizeof(struct TableRecord) + sizeof(struct TcIndexData);
@@ -2979,6 +3028,10 @@ static Uint64 getTransactionMemoryNeed(
   {
     return sizeof(struct TcDefinedTriggerData);
   }
+  static Uint64 getTransactionMemoryNeed(
+      const Uint32 dbtc_instance_count,
+      const ndb_mgm_configuration_iterator * mgm_cfg,
+      const bool use_reserved);
 #endif
 };
 
@@ -2995,7 +3048,6 @@ inline void Dbtc::checkPoolShrinkNeed(const Uint32 pool_index,
     sendPoolShrink(pool_index);
   }
 }
-
 #endif
 
 #ifdef DBTC_MAIN

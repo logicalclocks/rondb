@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -67,7 +68,6 @@ private:
   Uint32 userRef;
   Uint32 tableId;
   Uint32 fragId;
-  Uint32 fragPtrI;
   Uint32 hashValue;
   Uint32 page_id;
   Uint32 page_idx;

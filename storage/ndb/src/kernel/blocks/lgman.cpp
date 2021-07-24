@@ -1,4 +1,5 @@
 /* Copyright (c) 2005, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -767,7 +768,7 @@ Lgman::execREAD_CONFIG_REQ(Signal* signal)
 #endif
   Pool_context pc;
   pc.m_block = this;
-  m_log_waiter_pool.wo_pool_init(RT_LGMAN_LOG_WAITER, pc);
+  m_log_waiter_pool.init(RT_LGMAN_LOG_WAITER, pc);
   m_file_pool.init(RT_LGMAN_FILE, pc);
   m_logfile_group_pool.init(RT_LGMAN_FILEGROUP, pc);
   // 1200 -> 18000M
@@ -1031,12 +1032,12 @@ Lgman::execDUMP_STATE_ORD(Signal* signal){
       g_eventLogger->info("%s", tmp);
       if (!ptr.p->m_log_buffer_waiters.isEmpty())
       {
-	Ptr<Log_waiter> waiter;
+	Ptr64<Log_waiter> waiter;
 	Local_log_waiter_list 
 	  list(m_log_waiter_pool, ptr.p->m_log_buffer_waiters);
 	list.first(waiter);
         BaseString::snprintf(tmp, sizeof(tmp),
-                             "  head(waiters).sz: %u %u",
+                             "  head(waiters).sz: %llu %u",
                              waiter.p->m_size,
                              FREE_BUFFER_MARGIN(this, ptr));
         if (clusterLog)
@@ -1045,12 +1046,13 @@ Lgman::execDUMP_STATE_ORD(Signal* signal){
       }
       if (!ptr.p->m_log_sync_waiters.isEmpty())
       {
-	Ptr<Log_waiter> waiter;
+	Ptr64<Log_waiter> waiter;
 	Local_log_waiter_list 
 	  list(m_log_waiter_pool, ptr.p->m_log_sync_waiters);
 	list.first(waiter);
         BaseString::snprintf(tmp, sizeof(tmp),
-                             "  m_last_synced_lsn: %llu head(waiters %x).m_sync_lsn: %llu",
+                             "  m_last_synced_lsn: %llu head(waiters %llx)"
+                             ".m_sync_lsn: %llu",
                              ptr.p->m_last_synced_lsn,
                              waiter.i,
                              waiter.p->m_sync_lsn);
@@ -1060,7 +1062,7 @@ Lgman::execDUMP_STATE_ORD(Signal* signal){
 
         while (!waiter.isNull())
         {
-          g_eventLogger->info("ptr: %x %p lsn: %llu next: %x", waiter.i,
+          g_eventLogger->info("ptr: %llx %p lsn: %llu next: %llx", waiter.i,
                               waiter.p, waiter.p->m_sync_lsn,
                               waiter.p->nextList);
           list.next(waiter);
@@ -2506,7 +2508,7 @@ Logfile_client::sync_lsn(Signal* signal,
       return 1;
     }
     
-    Ptr<Lgman::Log_waiter> wait;
+    Ptr64<Lgman::Log_waiter> wait;
     {
       Lgman::Local_log_waiter_list
 	list(m_lgman->m_log_waiter_pool, ptr.p->m_log_sync_waiters);
@@ -2667,7 +2669,7 @@ Lgman::process_log_sync_waiters(Signal* signal, Ptr<Logfile_group> ptr)
   }
 
   bool removed= false;
-  Ptr<Log_waiter> waiter;
+  Ptr64<Log_waiter> waiter;
   list.first(waiter);
   Uint32 logfile_group_id = ptr.p->m_logfile_group_id;
 
@@ -2851,7 +2853,7 @@ Logfile_client::get_log_buffer(Signal* signal,
     
     bool empty= false;
     {
-      Ptr<Lgman::Log_waiter> wait;
+      Ptr64<Lgman::Log_waiter> wait;
       Lgman::Local_log_waiter_list
 	list(m_lgman->m_log_waiter_pool, ptr.p->m_log_buffer_waiters);
       
@@ -3165,7 +3167,7 @@ Lgman::process_log_buffer_waiters(Signal* signal, Ptr<Logfile_group> ptr)
   }
   
   bool removed= false;
-  Ptr<Log_waiter> waiter;
+  Ptr64<Log_waiter> waiter;
   list.first(waiter);
   Uint32 sz  = waiter.p->m_size;
   Uint32 logfile_group_id = ptr.p->m_logfile_group_id;

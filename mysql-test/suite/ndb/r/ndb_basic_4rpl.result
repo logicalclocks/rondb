@@ -1112,13 +1112,10 @@ id	parent_id
 3	3
 DROP TABLE child, parent;
 CREATE TABLE t1 (a INT PRIMARY KEY, b TEXT)
-ENGINE=ndb PARTITION BY KEY(a) PARTITIONS 144;
-ERROR HY000: Can't create table 't1' (use SHOW WARNINGS for more info).
+ENGINE=ndb PARTITION BY KEY(a) PARTITIONS 8160;
 show warnings;
 Level	Code	Message
-Warning	1296	Got error 1224 'Too many fragments' from NDB
-Warning	1296	Failed to commit NDB schema transaction
-Error	1005	Can't create table 't1' (use SHOW WARNINGS for more info).
+drop table t1;
 CREATE TABLE t1 (a INT PRIMARY KEY, b TEXT)
 ENGINE=ndb;
 show warnings;

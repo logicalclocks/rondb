@@ -10,3 +10,4 @@ where block_name="DBSPJ";
 
 Report (and fail) if there are too much skew in 'TABLE_SCANS_RECEIVED':
 Skewed SPJ load	counter_name	min(cnt.val-old.val)	max(cnt.val-old.val)
+Skewed SPJ load	TABLE_SCANS_RECEIVED	36	38

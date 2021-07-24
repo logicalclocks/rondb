@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -593,6 +594,8 @@ struct SumaContinueB
     ,WAIT_SCAN_TAB_REQ = 10
     ,WAIT_GET_FRAGMENT = 11
     ,SEND_SUB_GCP_COMPLETE_REP = 12
+    ,SUMA_TRANSIENT_POOL_STAT = 13
+    ,SHRINK_TRANSIENT_POOLS = 14
   };
 };
 

@@ -28,7 +28,8 @@
 
 #include "ndb_version.h"  // Limits might depend on NDB version
 
-#define RNIL    0xffffff00
+#define RNIL    Uint32(0xffffff00)
+#define RNIL64  Uint64(0xffffffffffffff00)
 #define MBYTE64 Uint64(1024 * 1024)
 #define MBYTE32 Uint32(1024 * 1024)
 
@@ -160,9 +161,19 @@
 #define NDB_PARTITION_BITS 16
 #define NDB_PARTITION_MASK ((Uint32)((1 << NDB_PARTITION_BITS) - 1))
 
-#define MAX_RANGE_DATA (131072+MAX_NDB_PARTITIONS) //0.5 MByte of list data
-
-#define MAX_WORDS_META_FILE 24576
+/**
+ * Not an exact number, but calculated something like this:
+ * 512 columns of upto 192 bytes per name
+ * Up to 30000 bytes of default values
+ * Up to 80 kB of ReplicaData (8160 fragments with 4 replicas)
+ * Up to 16 kB of FragmentData
+ * Up to an extra 50 kB of Frm data for partitions
+ * Up to an extra 32 kB of TablespaceData
+ * Up to an extra 32 kB of attribute information
+ * Thus allocating 256 kB of space for metadata should be sufficient
+ * for almost every case.
+ */
+#define MAX_WORDS_META_FILE 65536
 
 #define MIN_ATTRBUF ((MAX_ATTRIBUTES_IN_TABLE/24) + 1)
 /*
@@ -195,7 +206,7 @@
 /*
  * Maximum number of Parallel Scan queries on one hash index fragment
  */
-#define MAX_PARALLEL_SCANS_PER_FRAG 12
+#define MAX_PARALLEL_SCANS_PER_FRAG 0
 
 /**
  * Computed defines
@@ -403,7 +414,7 @@
 
 #define MAX_UNDO_DATA            20 + MAX_TUPLE_SIZE_IN_WORDS
 // Max. number of pending undo records allowed per LDM
-#define MAX_PENDING_UNDO_RECORDS 100
+#define MAX_PENDING_UNDO_RECORDS 1000
 
 // Maximum handling of DROP_TRIG_REQs in parallel by LocalProxy
 #define NDB_MAX_PROXY_DROP_TRIG_IMPL_REQ 21

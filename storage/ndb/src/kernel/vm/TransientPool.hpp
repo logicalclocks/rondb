@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2017, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -55,6 +56,7 @@ public:
   void release(Ptr<T> p);
   T *getPtr(Uint32 i) const;
   void getPtr(Ptr<T> &p) const;
+  void getPtr(Ptr<T> &p, Uint32 i) const;
   /**
    * getValidPtr is often called on an operation record from a thread that
    * doesn't own the operation record. A few examples are:
@@ -178,6 +180,12 @@ template<typename T, Uint32 Slot_size> inline T *TransientPool<T, Slot_size>::ge
 
 template<typename T, Uint32 Slot_size> inline void TransientPool<T, Slot_size>::getPtr(Ptr<T> &p) const
 {
+  p.p = getPtr(p.i);
+}
+
+template<typename T, Uint32 Slot_size> inline void TransientPool<T, Slot_size>::getPtr(Ptr<T> &p, Uint32 i) const
+{
+  p.i = i;
   p.p = getPtr(p.i);
 }
 

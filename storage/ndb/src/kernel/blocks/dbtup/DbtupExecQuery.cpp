@@ -574,8 +574,10 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
 
 int
 Dbtup::load_diskpage(Signal* signal,
-		     Uint32 opRec, Uint32 fragPtrI,
-		     Uint32 lkey1, Uint32 lkey2, Uint32 flags)
+		     Uint32 opRec,
+		     Uint32 lkey1,
+                     Uint32 lkey2,
+                     Uint32 flags)
 {
   Ptr<Operationrec> operPtr;
 
@@ -690,8 +692,10 @@ Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
 
 int
 Dbtup::load_diskpage_scan(Signal* signal,
-			  Uint32 opRec, Uint32 fragPtrI,
-			  Uint32 lkey1, Uint32 lkey2, Uint32 tux_flag,
+			  Uint32 opRec,
+			  Uint32 lkey1,
+                          Uint32 lkey2,
+                          Uint32 tux_flag,
                           Uint32 disk_flag)
 {
   Ptr<Operationrec> operPtr;
@@ -793,27 +797,25 @@ void Dbtup::prepare_tab_pointers_acc(Uint32 table_id, Uint32 frag_id)
   tablePtr.i = table_id;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
   FragrecordPtr fragPtr;
-  getFragmentrec(fragPtr, frag_id, tablePtr.p);
+  getFragmentrec(fragPtr, frag_id, tablePtr.i);
+  ndbrequire(fragPtr.i != RNIL64);
   prepare_fragptr = fragPtr;
   prepare_tabptr = tablePtr;
 }
 
 void Dbtup::prepareTUPKEYREQ(Uint32 page_id,
                              Uint32 page_idx,
-                             Uint32 frag_id)
+                             Uint64 fragPtrI)
 {
   FragrecordPtr fragptr;
   TablerecPtr tabptr;
 
-  fragptr.i = frag_id;
-  const Uint32 RnoOfFragrec= cnoOfFragrec;
+  fragptr.i = fragPtrI;
+  c_fragment_pool.getPtr(fragptr);
   const Uint32 RnoOfTablerec= cnoOfTablerec;
-  Fragrecord * Rfragrecord = fragrecord;
   Tablerec * Rtablerec = tablerec;
 
   jamEntryDebug();
-  ndbrequire(fragptr.i < RnoOfFragrec);
-  ptrAss(fragptr, Rfragrecord);
   tabptr.i = fragptr.p->fragTableId;
   ptrCheckGuard(tabptr, RnoOfTablerec, Rtablerec);
   prepare_tabptr = tabptr;
@@ -925,9 +927,8 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
      }
      ndbassert(prepare_orig_local_key.m_page_no == key.m_page_no);
      ndbassert(prepare_orig_local_key.m_page_idx == key.m_page_idx);
-     ndbassert(prepare_fragptr.i == tupKeyReq->fragPtr);
      FragrecordPtr fragPtr = prepare_fragptr;
-     ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+     c_fragment_pool.getPtr(fragPtr);
      ndbassert(prepare_fragptr.p == fragPtr.p);
    }
 #endif
@@ -1187,6 +1188,12 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
 
    regOperPtr->m_any_value = 0;
 
+   Uint32 *tabDesc = (Uint32*)regTabPtr->readFunctionArray;
+   g_eventLogger->info("(%u) tab(%u) offset: %u, size: %u",
+                       instance(),
+                       prepare_tabptr.i,
+                       tabDesc[-1],
+                       tabDesc[-2]);
    const Uint32 loc_prepare_page_id = prepare_page_no;
    /**
     * Check operation
@@ -1692,18 +1699,13 @@ Dbtup::setup_fixed_part(KeyReqStruct* req_struct,
   ndbassert(regOperPtr->op_type == ZINSERT ||
             (! (req_struct->m_tuple_ptr->m_header_bits & Tuple_header::FREE)));
 
-  Uint32 descr_start = regTabPtr->tabDescriptor;
-  TableDescriptor *loc_tab_descriptor = tableDescriptor;
-  Uint32 num_attr= regTabPtr->m_no_of_attributes;
-  Uint32 TnoOfTabDescrRec = cnoOfTabDescrRec;
+  Uint32* tab_descr = regTabPtr->tabDescriptor;
   Uint32 mm_check_offset = regTabPtr->get_check_offset(MM);
   Uint32 dd_check_offset = regTabPtr->get_check_offset(DD);
-  TableDescriptor *tab_descr= &loc_tab_descriptor[descr_start];
   
-  ndbrequire(descr_start + (num_attr << ZAD_LOG_SIZE) <= TnoOfTabDescrRec);
   req_struct->check_offset[MM] = mm_check_offset;
   req_struct->check_offset[DD] = dd_check_offset;
-  req_struct->attr_descr= tab_descr;
+  req_struct->attr_descr = tab_descr;
   NDB_PREFETCH_READ((char*)tab_descr);
 }
 
@@ -1724,16 +1726,13 @@ Dbtup::setup_lcp_read_copy_tuple(KeyReqStruct* req_struct,
   req_struct->frag_page_id = rowid.m_page_no;
   regOperPtr->m_tuple_location.m_page_idx = rowid.m_page_idx;
 
+  Uint32* tab_descr = regTabPtr->tabDescriptor;
   Tuple_header * th = get_copy_tuple(copytuple);
   req_struct->m_page_ptr.setNull();
   req_struct->m_tuple_ptr = (Tuple_header*)th;
   th->m_operation_ptr_i = RNIL;
   ndbassert((th->m_header_bits & Tuple_header::COPY_TUPLE) != 0);
 
-  Uint32 num_attr= regTabPtr->m_no_of_attributes;
-  Uint32 descr_start= regTabPtr->tabDescriptor;
-  TableDescriptor *tab_descr= &tableDescriptor[descr_start];
-  ndbrequire(descr_start + (num_attr << ZAD_LOG_SIZE) <= cnoOfTabDescrRec);
   req_struct->attr_descr= tab_descr;
 
   bool disk = false;
@@ -2335,13 +2334,9 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
   req_struct->check_offset[MM]= regTabPtr->get_check_offset(MM);
   req_struct->check_offset[DD]= regTabPtr->get_check_offset(DD);
   
-  Uint32 num_attr= regTabPtr->m_no_of_attributes;
-  Uint32 descr_start= regTabPtr->tabDescriptor;
-  Uint32 order_desc= regTabPtr->m_real_order_descriptor;
-  TableDescriptor *tab_descr= &tableDescriptor[descr_start];
-  ndbrequire(descr_start + (num_attr << ZAD_LOG_SIZE) <= cnoOfTabDescrRec);
-  req_struct->attr_descr= tab_descr; 
-  Uint16* order= (Uint16*)&tableDescriptor[order_desc];
+  Uint16* order = regTabPtr->m_real_order_descriptor;
+  Uint32 *tab_descr = regTabPtr->tabDescriptor;
+  req_struct->attr_descr = tab_descr; 
   order += regTabPtr->m_attributes[MM].m_no_of_fixsize;
 
   Uint32 bits = Tuple_header::COPY_TUPLE;
@@ -2387,7 +2382,7 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
         * pos_ptr++ = pos;
         * len_ptr++ = pos;
         pos += AttributeDescriptor::getSizeInBytes(
-                 tab_descr[*order++].tabDescr);
+          tab_descr[*order++]);
       }
       
       // Disk/dynamic part is 32-bit aligned
@@ -2438,7 +2433,7 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
 
 int Dbtup::handleInsertReq(Signal* signal,
                            Ptr<Operationrec> regOperPtr,
-                           Ptr<Fragrecord> fragPtr,
+                           FragrecordPtr fragPtr,
                            Tablerec* regTabPtr,
                            KeyReqStruct *req_struct,
                            Local_key ** accminupdateptr,
@@ -3073,7 +3068,7 @@ error:
 int
 Dbtup::handleRefreshReq(Signal* signal,
                         Ptr<Operationrec> regOperPtr,
-                        Ptr<Fragrecord>  regFragPtr,
+                        FragrecordPtr regFragPtr,
                         Tablerec* regTabPtr,
                         KeyReqStruct *req_struct,
                         bool disk)
@@ -3285,8 +3280,7 @@ Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
      */
     Bitmask<MAXNROFATTRIBUTESINWORDS> tableMask;
     tableMask.clear();
-    const Uint32 * primarykeys =
-      (Uint32*)&tableDescriptor[regTabPtr->readKeyArray].tabDescr;
+    const Uint32 * primarykeys = regTabPtr->readKeyArray;
      for (Uint32 i = 0; i<regTabPtr->noOfKeyAttr; i++)
        tableMask.set(primarykeys[i] >> 16);
     attributeMask.bitAND(tableMask);
@@ -3846,10 +3840,10 @@ int Dbtup::interpreterNextLab(Signal* signal,
       case Interpreter::WRITE_ATTR_FROM_REG:
 	{
 	  jamDebug();
-	  Uint32 TattrId= theInstruction >> 16;
-	  Uint32 TattrDescrIndex= req_struct->tablePtrP->tabDescriptor +
-	    (TattrId << ZAD_LOG_SIZE);
-	  Uint32 TattrDesc1= tableDescriptor[TattrDescrIndex].tabDescr;
+	  Uint32 TattrId = theInstruction >> 16;
+	  Uint32 TattrDescrIndex = (TattrId * ZAD_SIZE);
+          Uint32 TattrDesc1 =
+            req_struct->tablePtrP->tabDescriptor[TattrDescrIndex];
 	  Uint32 TregType= TregMemBuffer[theRegister];
 
 	  /* --------------------------------------------------------------- */
@@ -4214,10 +4208,10 @@ int Dbtup::interpreterNextLab(Signal* signal,
 
         // get type
 	attrId >>= 16;
-	const Uint32 TattrDescrIndex = req_struct->tablePtrP->tabDescriptor +
-	  (attrId << ZAD_LOG_SIZE);
-	const Uint32 TattrDesc1 = tableDescriptor[TattrDescrIndex].tabDescr;
-	const Uint32 TattrDesc2 = tableDescriptor[TattrDescrIndex+1].tabDescr;
+	const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
+	  (attrId * ZAD_SIZE);
+	const Uint32 TattrDesc1 = attrDescriptor[0];
+	const Uint32 TattrDesc2 = attrDescriptor[1];
 	const Uint32 typeId = AttributeDescriptor::getType(TattrDesc1);
 	const CHARSET_INFO *cs = nullptr;
 	if (AttributeOffset::getCharsetFlag(TattrDesc2))
@@ -4302,9 +4296,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
           {
             // Get type
             attr2Id >>= 16;
-            const Uint32 Tattr2DescrIndex = req_struct->tablePtrP->tabDescriptor +
-              (attr2Id << ZAD_LOG_SIZE);
-            const Uint32 Tattr2Desc1 = tableDescriptor[Tattr2DescrIndex].tabDescr;
+            const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
+              (attr2Id * ZAD_SIZE);
+            const Uint32 Tattr2Desc1 = attrDescriptor[0];
             const Uint32 type2Id = AttributeDescriptor::getType(Tattr2Desc1);
 
             argLen = AttributeDescriptor::getSizeInBytes(Tattr2Desc1);
@@ -4695,14 +4689,13 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
   Uint16 mm_dynfix= tabPtrP->m_attributes[MM].m_no_of_dyn_fix;
   Uint16 mm_dyns= tabPtrP->m_attributes[MM].m_no_of_dynamic;
   Uint32 fix_size= tabPtrP->m_offsets[MM].m_fix_header_size;
-  Uint32 order_desc= tabPtrP->m_real_order_descriptor;
 
   Uint32 *dst_ptr= ptr->get_end_of_fix_part_ptr(tabPtrP);
   const Uint32 *disk_ref= src->get_disk_ref_ptr(tabPtrP);
   const Uint32 *src_ptr= src->get_end_of_fix_part_ptr(tabPtrP);
   const Var_part_ref* var_ref = src->get_var_part_ref_ptr(tabPtrP);
-  const Uint32 *desc= (Uint32*)req_struct->attr_descr;
-  const Uint16 *order = (Uint16*)(&tableDescriptor[order_desc]);
+  const Uint32 *desc = req_struct->attr_descr;
+  const Uint16 *order = tabPtrP->m_real_order_descriptor;
   order += tabPtrP->m_attributes[MM].m_no_of_fixsize;
   
   // Copy fix part
@@ -4850,7 +4843,6 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
   {
     jamDebug();
     const Uint16 dd_vars= tabPtrP->m_attributes[DD].m_no_of_varsize;
-    order+= mm_vars+mm_dynvar+mm_dynfix;
     
     if(bits & Tuple_header::DISK_INLINE)
     {
@@ -5138,9 +5130,8 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
   ndbassert(ptr->m_header_bits & Tuple_header::COPY_TUPLE);
   
   KeyReqStruct::Var_data* dst= &req_struct->m_var_data[MM];
-  Uint32 order_desc= tabPtrP->m_real_order_descriptor;
-  const Uint32 * tabDesc= (Uint32*)req_struct->attr_descr;
-  const Uint16 *order = (Uint16*)(&tableDescriptor[order_desc]);
+  const Uint16* order= tabPtrP->m_real_order_descriptor;
+  const Uint32 * tabDesc = req_struct->attr_descr;
   Uint16 dd_tot= tabPtrP->m_no_of_disk_attributes;
   Uint16 mm_fix= tabPtrP->m_attributes[MM].m_no_of_fixsize;
   Uint16 mm_vars= tabPtrP->m_attributes[MM].m_no_of_varsize;
@@ -5240,24 +5231,25 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
 }
 
 void
-Dbtup::validate_page(Tablerec* regTabPtr, Var_page* p)
+Dbtup::validate_page(TablerecPtr regTabPtr, Var_page* p)
 {
   /* ToDo: We could also do some checks here for any dynamic part. */
-  Uint32 mm_vars= regTabPtr->m_attributes[MM].m_no_of_varsize;
-  Uint32 fix_sz= regTabPtr->m_offsets[MM].m_fix_header_size + 
+  Uint32 mm_vars= regTabPtr.p->m_attributes[MM].m_no_of_varsize;
+  Uint32 fix_sz= regTabPtr.p->m_offsets[MM].m_fix_header_size + 
     Tuple_header::HeaderSize;
     
   if(mm_vars == 0)
     return;
   
-  for(Uint32 F= 0; F<NDB_ARRAY_SIZE(regTabPtr->fragrec); F++)
+  for(Uint32 F= 0; F < MAX_FRAG_PER_LQH; F++)
   {
     FragrecordPtr fragPtr;
 
-    if((fragPtr.i = regTabPtr->fragrec[F]) == RNIL)
+    fragPtr.i = c_lqh->m_ldm_instance_used->getNextTupFragrec(regTabPtr.i, F);
+    if (fragPtr.i == RNIL64)
       continue;
 
-    ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+    c_fragment_pool.getPtr(fragPtr);
     for(Uint32 P= 0; P<fragPtr.p->noOfPages; P++)
     {
       Uint32 real= getRealpid(fragPtr.p, P);
@@ -5270,7 +5262,7 @@ Dbtup::validate_page(Tablerec* regTabPtr, Var_page* p)
 	if(!(idx & Var_page::FREE) && !(idx & Var_page::CHAIN))
 	{
 	  Tuple_header *ptr= (Tuple_header*)page->get_ptr(i);
-	  Uint32 *part= ptr->get_end_of_fix_part_ptr(regTabPtr);
+	  Uint32 *part= ptr->get_end_of_fix_part_ptr(regTabPtr.p);
 	  if(! (ptr->m_header_bits & Tuple_header::COPY_TUPLE))
 	  {
 	    ndbrequire(len == fix_sz + 1);
@@ -5538,14 +5530,14 @@ Dbtup::optimize_var_part(KeyReqStruct* req_struct,
 }
 
 int
-Dbtup::nr_update_gci(Uint32 fragPtrI,
+Dbtup::nr_update_gci(Uint64 fragPtrI,
                      const Local_key* key,
                      Uint32 gci,
                      bool tuple_exists)
 {
   FragrecordPtr fragPtr;
   fragPtr.i= fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  c_fragment_pool.getPtr(fragPtr);
   TablerecPtr tablePtr;
   tablePtr.i= fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
@@ -5600,13 +5592,13 @@ Dbtup::nr_update_gci(Uint32 fragPtrI,
 }
 
 int
-Dbtup::nr_read_pk(Uint32 fragPtrI, 
+Dbtup::nr_read_pk(Uint64 fragPtrI, 
 		  const Local_key* key, Uint32* dst, bool& copy)
 {
   
   FragrecordPtr fragPtr;
   fragPtr.i= fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  c_fragment_pool.getPtr(fragPtr);
   TablerecPtr tablePtr;
   tablePtr.i= fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
@@ -5646,19 +5638,15 @@ Dbtup::nr_read_pk(Uint32 fragPtrI,
         get_copy_tuple(&opPtr.p->m_copy_tuple_location);
       copy = true;
     }
+    Uint32 *tab_descr = tablePtr.p->tabDescriptor;
     req_struct.check_offset[MM]= tablePtr.p->get_check_offset(MM);
     req_struct.check_offset[DD]= tablePtr.p->get_check_offset(DD);
-    
-    Uint32 num_attr= tablePtr.p->m_no_of_attributes;
-    Uint32 descr_start= tablePtr.p->tabDescriptor;
-    TableDescriptor *tab_descr= &tableDescriptor[descr_start];
-    ndbrequire(descr_start + (num_attr << ZAD_LOG_SIZE) <= cnoOfTabDescrRec);
-    req_struct.attr_descr= tab_descr; 
+    req_struct.attr_descr= tab_descr;
 
     if (tablePtr.p->need_expand())
       prepare_read(&req_struct, tablePtr.p, false);
     
-    const Uint32* attrIds= &tableDescriptor[tablePtr.p->readKeyArray].tabDescr;
+    const Uint32* attrIds = tablePtr.p->readKeyArray;
     const Uint32 numAttrs= tablePtr.p->noOfKeyAttr;
     // read pk attributes from original tuple
     
@@ -5707,11 +5695,11 @@ Dbtup::nr_read_pk(Uint32 fragPtrI,
 
 int
 Dbtup::nr_delete(Signal* signal, Uint32 senderData,
-		 Uint32 fragPtrI, const Local_key* key, Uint32 gci)
+		 Uint64 fragPtrI, const Local_key* key, Uint32 gci)
 {
   FragrecordPtr fragPtr;
   fragPtr.i= fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  c_fragment_pool.getPtr(fragPtr);
   TablerecPtr tablePtr;
   tablePtr.i= fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
@@ -5938,7 +5926,7 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
     } // Unlock the LGMAN lock
 
     PagePtr disk_page((Tup_page*)diskPagePtr.p, diskPagePtr.i);
-    disk_page_set_dirty(disk_page);
+    disk_page_set_dirty(disk_page, fragPtr.p);
 
     switch(res){
     case 0:
@@ -5973,16 +5961,16 @@ Dbtup::nr_delete_page_callback(Signal* signal,
   Ptr<GlobalPage> gpage;
   m_global_page_pool.getPtr(gpage, page_id);
   PagePtr pagePtr((Tup_page*)gpage.p, gpage.i);
-  disk_page_set_dirty(pagePtr);
   Dblqh::Nr_op_info op;
   op.m_ptr_i = userpointer;
   op.m_disk_ref.m_page_no = pagePtr.p->m_page_no;
   op.m_disk_ref.m_file_no = pagePtr.p->m_file_no;
   c_lqh->get_nr_op_info(&op, page_id);
 
-  Ptr<Fragrecord> fragPtr;
+  FragrecordPtr fragPtr;
   fragPtr.i= op.m_tup_frag_ptr_i;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  c_fragment_pool.getPtr(fragPtr);
+  disk_page_set_dirty(pagePtr, fragPtr.p);
 
   Ptr<Tablerec> tablePtr;
   tablePtr.i = fragPtr.p->fragTableId;
@@ -6030,9 +6018,9 @@ Dbtup::nr_delete_log_buffer_callback(Signal* signal,
   op.m_ptr_i = userpointer;
   c_lqh->get_nr_op_info(&op, RNIL);
   
-  Ptr<Fragrecord> fragPtr;
+  FragrecordPtr fragPtr;
   fragPtr.i= op.m_tup_frag_ptr_i;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  c_fragment_pool.getPtr(fragPtr);
 
   Ptr<Tablerec> tablePtr;
   tablePtr.i = fragPtr.p->fragTableId;

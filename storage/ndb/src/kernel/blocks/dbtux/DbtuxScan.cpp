@@ -306,8 +306,8 @@ Dbtux::execACC_SCANREQ(Signal* signal)
     c_indexPool.getPtr(indexPtr, req->tableId);
     // get the fragment
     FragPtr fragPtr;
-    findFrag(jamBuffer(), *indexPtr.p, req->fragmentNo, fragPtr);
-    ndbrequire(fragPtr.i != RNIL);
+    findFrag(jamBuffer(), indexPtr.i, req->fragmentNo, fragPtr);
+    ndbrequire(fragPtr.i != RNIL64);
     Frag& frag = *fragPtr.p;
     // check for index not Online (i.e. Dropping)
     c_ctx.indexPtr = indexPtr;
@@ -840,12 +840,11 @@ Dbtux::continue_scan(Signal *signal,
       lockReq->userRef = reference();
       lockReq->tableId = scan.m_tableId;
       lockReq->fragId = frag.m_fragId;
-      lockReq->fragPtrI = frag.m_accTableFragPtrI;
       const Uint32* const buf32 = static_cast<Uint32*>(pkData);
       const Uint64* const buf64 = reinterpret_cast<const Uint64*>(buf32);
       lockReq->hashValue = md5_hash(buf64, pkSize);
       Uint32 lkey1, lkey2;
-      getTupAddr(frag, ent, lkey1, lkey2);
+      getTupAddr(ent, lkey1, lkey2);
       lockReq->page_id = lkey1;
       lockReq->page_idx = lkey2;
       lockReq->transId1 = scan.m_transId1;

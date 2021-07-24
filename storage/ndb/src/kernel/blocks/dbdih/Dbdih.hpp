@@ -40,6 +40,8 @@
 #include <NdbSeqLock.hpp>
 #include <CountingSemaphore.hpp>
 #include <Mutex.hpp>
+#include <RWPool64.hpp>
+#include <Intrusive64List.hpp>
 
 #define JAM_FILE_ID 356
 
@@ -82,6 +84,7 @@
 // --------------------------------------
 #define ZREPLERROR1 306
 #define ZREPLERROR2 307
+#define ZOUT_OF_SCHEMA_MEMORY 308
 
 // --------------------------------------
 // Other DIH error codes
@@ -210,7 +213,7 @@ public:
     Uint16 logNodeId[MAX_LOG_EXEC];
     Uint32 createLcpId;
 
-    Uint32 replicaRec;
+    Uint64 replicaRec;
     Uint16 dataNodeId;
     Uint16 lcpNo;
     Uint16 noLogNodes;
@@ -270,12 +273,13 @@ public:
    * ALSO HAVE THE STATUS OF THE FRAGMENT.
    */
   struct Fragmentstore {
+    Uint32 m_magic;
     Uint16 activeNodes[MAX_REPLICAS];
     Uint32 preferredPrimary;
 
-    Uint32 oldStoredReplicas;    /* "DEAD" STORED REPLICAS */
-    Uint32 storedReplicas;       /* "ALIVE" STORED REPLICAS */
-    Uint32 nextFragmentChunk;
+    Uint64 nextPool;
+    Uint64 oldStoredReplicas;    /* "DEAD" STORED REPLICAS */
+    Uint64 storedReplicas;       /* "ALIVE" STORED REPLICAS */
     
     Uint32 m_log_part_id;
 
@@ -285,7 +289,7 @@ public:
      */
     Uint32 fragId;
     Uint32 partition_id;
-    Uint32 nextCopyFragment;
+    Uint32 nextCopyFragmentId;
     
     Uint8 m_inc_used_log_parts;
     Uint8 distributionKey;
@@ -296,7 +300,9 @@ public:
     Uint8 primaryNode;
     Uint8 calc_primaryNode;
   };
-  typedef Ptr<Fragmentstore> FragmentstorePtr;
+  typedef Ptr64<Fragmentstore> FragmentstorePtr;
+  typedef RecordPool64<RWPool64<Fragmentstore>> Fragmentstore_pool;
+  Fragmentstore_pool c_fragmentRecordPool;
 
   /*########### PAGE RECORD ############*/
   /**
@@ -469,7 +475,7 @@ public:
     struct FragmentCheckpointInfo {
       Uint32 tableId;
       Uint32 fragId;
-      Uint32 replicaPtr;
+      Uint64 replicaPtr;
     };
     
     Sysfile::ActiveStatus activeStatus;
@@ -525,6 +531,7 @@ public:
   /* THIS RECORD KEEPS THE INFORMATION ABOUT A REPLICA OF A FRAGMENT    */
   /**********************************************************************/
   struct ReplicaRecord {
+    Uint32 m_magic;
     /* -------------------------------------------------------------------- */
     /* THE GLOBAL CHECKPOINT IDENTITY WHEN THIS REPLICA WAS CREATED.        */
     /* THERE IS ONE INDEX PER REPLICA. A REPLICA INDEX IS CREATED WHEN ANODE*/
@@ -560,13 +567,6 @@ public:
     Uint32 initialGci;
 
     /* -------------------------------------------------------------------- */
-    /* THE REFERENCE TO THE NEXT REPLICA. EITHER IT REFERS TO THE NEXT IN   */
-    /* THE FREE LIST OR IT REFERS TO THE NEXT IN A LIST OF REPLICAS ON A    */
-    /* FRAGMENT.                                                            */
-    /* -------------------------------------------------------------------- */
-    Uint32 nextPool;
-
-    /* -------------------------------------------------------------------- */
     /*       THE NODE ID WHERE THIS REPLICA IS STORED.                      */
     /* -------------------------------------------------------------------- */
     Uint16 procNode;
@@ -596,8 +596,15 @@ public:
      * new node with a snapshot of the metadata from the master node
      * without having to stop the progress with the LCP execution.
      */
-    Uint32 nextList;
-    Uint32 prevList;
+    Uint64 nextList;
+    Uint64 prevList;
+    /* -------------------------------------------------------------------- */
+    /* THE REFERENCE TO THE NEXT REPLICA. EITHER IT REFERS TO THE NEXT IN   */
+    /* THE FREE LIST OR IT REFERS TO THE NEXT IN A LIST OF REPLICAS ON A    */
+    /* FRAGMENT.                                                            */
+    /* -------------------------------------------------------------------- */
+    Uint64 nextPool;
+
     Uint32 repMaxGciStarted;
     Uint32 repMaxGciCompleted;
     Uint32 fragId;
@@ -630,9 +637,9 @@ public:
      */
     Uint8 lcpOngoingFlag;
   };
-  typedef Ptr<ReplicaRecord> ReplicaRecordPtr;
-  typedef ArrayPool<ReplicaRecord> ReplicaRecord_pool;
-  typedef DLFifoList<ReplicaRecord_pool> ReplicaRecord_fifo;
+  typedef Ptr64<ReplicaRecord> ReplicaRecordPtr;
+  typedef RecordPool64<RWPool64<ReplicaRecord>> ReplicaRecord_pool;
+  typedef DLFifo64List<ReplicaRecord_pool> ReplicaRecord_fifo;
 
   ReplicaRecord_pool c_replicaRecordPool;
   ReplicaRecord_fifo c_queued_lcp_frag_rep;
@@ -751,11 +758,8 @@ public:
     };
     Method method;
 
-//-----------------------------------------------------------------------------
-// Each entry in this array contains a reference to 16 fragment records in a
-// row. Thus finding the correct record is very quick provided the fragment id.
-//-----------------------------------------------------------------------------
-    Uint32 startFid[(MAX_NDB_PARTITIONS - 1) / NO_OF_FRAGS_PER_CHUNK + 1];
+    Uint32 startFidSize;
+    Uint64 *startFid;
 
     CopyStatus tabCopyStatus;
     UpdateState tabUpdateState;
@@ -765,7 +769,6 @@ public:
     Uint32 tabFile[2];
     Uint32 noOfWords;
     Uint32 tabRemoveNode;
-    Uint32 noOfFragChunks;
     Uint32 tabActiveLcpFragments;
 
     bool m_calc_primary_replicas;
@@ -903,7 +906,7 @@ public:
     Uint32 maxPage;
     Uint32 toCopyNode;
     Uint32 toCurrentFragid;
-    Uint32 toCurrentReplica;
+    Uint64 toCurrentReplica;
     Uint32 toCurrentTabref;
     Uint32 toFailedNode;
     Uint32 toStartingNode;
@@ -1388,7 +1391,7 @@ private:
   void addTable_closeConf(Signal* signal, Uint32 tabPtrI);
   void resetReplicaSr(TabRecordPtr tabPtr);
   void resetReplicaLcp(ReplicaRecord * replicaP, Uint32 stopGci);
-  void resetReplica(Ptr<ReplicaRecord>);
+  void resetReplica(ReplicaRecordPtr);
 
 /**
  * Methods part of Transaction Handling module
@@ -1426,7 +1429,7 @@ private:
 //------------------------------------
 // Methods for LCP functionality
 //------------------------------------
-  void checkKeepGci(TabRecordPtr, Uint32, Fragmentstore*, Uint32);
+  void checkKeepGci(TabRecordPtr, Uint32, Fragmentstore*, Uint64);
   void checkLcpStart(Signal *, Uint32 lineNo, Uint32 delay);
   bool checkStartMoreLcp(Signal *, Uint32 nodeId, bool startNext);
   bool reportLcpCompletion(const struct LcpFragRep *);
@@ -1531,7 +1534,7 @@ private:
   void readTabfile(Signal *, TabRecord* tab, FileRecordPtr regFilePtr);
   void writeFragment(RWFragment* wf, FragmentstorePtr regFragptr);
   void writePageWord(RWFragment* wf, Uint32 dataWord);
-  void writeReplicas(RWFragment* wf, Uint32 replicaStartIndex);
+  void writeReplicas(RWFragment* wf, Uint64 replicaStartIndex);
   void writeRestorableGci(Signal *, FileRecordPtr regFilePtr);
   void writeTabfile(Signal *, TabRecord* tab, FileRecordPtr regFilePtr);
   void copyTabReq_complete(Signal* signal, TabRecordPtr tabPtr);
@@ -1656,18 +1659,18 @@ private:
 //------------------------------------
 // Replica record specific methods
 //------------------------------------
-  Uint32 findLogInterval(ConstPtr<ReplicaRecord> regReplicaPtr, 
+  Uint32 findLogInterval(ReplicaRecordPtr regReplicaPtr, 
 			 Uint32 startGci);
   void findMinGci(ReplicaRecordPtr fmgReplicaPtr,
                   Uint32& keeGci,
                   Uint32& oldestRestorableGci);
-  bool findStartGci(Ptr<ReplicaRecord> fstReplicaPtr,
+  bool findStartGci(ReplicaRecordPtr fstReplicaPtr,
                     Uint32 tfstStopGci,
                     Uint32& tfstStartGci,
                     Uint32& tfstLcp);
   void newCrashedReplica(ReplicaRecordPtr ncrReplicaPtr);
   void packCrashedReplicas(ReplicaRecordPtr pcrReplicaPtr);
-  void releaseReplicas(Uint32 * replicaPtr);
+  void releaseReplicas(Uint64 * replicaPtr);
   void removeOldCrashedReplicas(Uint32, Uint32, ReplicaRecordPtr rocReplicaPtr);
   void removeTooNewCrashedReplicas(ReplicaRecordPtr rtnReplicaPtr, Uint32 lastCompletedGCI);
   void mergeCrashedReplicas(ReplicaRecordPtr pcrReplicaPtr);
@@ -1690,12 +1693,12 @@ private:
                          Uint32 nodes[],
                          bool crash_on_error = true);
   Uint32 findLocalFragment(const TabRecord *,
-                           Ptr<Fragmentstore> & fragPtr,
+                           FragmentstorePtr & fragPtr,
                            EmulatedJamBuffer *jambuf);
   Uint32 findPartitionOrder(const TabRecord *tabPtrP,
                             FragmentstorePtr fragPtr);
   Uint32 findFirstNewFragment(const TabRecord *,
-                              Ptr<Fragmentstore> & fragPtr,
+                              FragmentstorePtr & fragPtr,
                               Uint32 fragId,
                               EmulatedJamBuffer *jambuf);
   bool check_if_local_fragment(EmulatedJamBuffer *jambuf,
@@ -1729,24 +1732,23 @@ private:
                            ReplicaRecordPtr replicaPtr);
   void searchStoredReplicas(FragmentstorePtr regFragptr);
   bool setup_create_replica(FragmentstorePtr, CreateReplicaRecord*,
-			    Ptr<ReplicaRecord>);
+			    ReplicaRecordPtr);
   void updateNodeInfo(FragmentstorePtr regFragptr);
 
 //------------------------------------
 // Fragment allocation, deallocation and
 // find methods
 //------------------------------------
-  void allocFragments(Uint32 noOfFragments, TabRecordPtr regTabPtr);
+  bool allocFragments(Uint32 noOfFragments, TabRecordPtr regTabPtr);
   void releaseFragments(TabRecordPtr regTabPtr);
   void getFragstore(const TabRecord *, Uint32 fragNo, FragmentstorePtr & ptr);
   void getFragstoreCanFail(const TabRecord *,
                            Uint32 fragNo,
                            FragmentstorePtr & ptr);
-  void initialiseFragstore();
 
   void wait_old_scan(Signal*);
   Uint32 add_fragments_to_table(Ptr<TabRecord>, const Uint16 buf[]);
-  Uint32 add_fragment_to_table(Ptr<TabRecord>, Uint32, Ptr<Fragmentstore>&);
+  Uint32 add_fragment_to_table(Ptr<TabRecord>, Uint32, FragmentstorePtr&);
 
   void drop_fragments(Signal*, ConnectRecordPtr, Uint32 last);
   void release_fragment_from_table(Ptr<TabRecord>, Uint32 fragId);
@@ -1820,7 +1822,7 @@ private:
   Fragmentstore *fragmentstore;
   Uint32 cfirstfragstore;
   Uint32 cfragstoreFileSize;
-  RSS_OP_SNAPSHOT(cremainingfrags);
+  RSS_OP_SNAPSHOT(callocated_frags);
 
   NodeGroupRecord *nodeGroupRecord;
   RSS_OP_SNAPSHOT(cnghash);
@@ -1849,9 +1851,8 @@ private:
   Uint32 cfirstfreepage;
   Uint32 cpageFileSize;
 
-  Uint32 cnoFreeReplicaRec;
-  Uint32 creplicaFileSize;
-  RSS_OP_SNAPSHOT(cnoFreeReplicaRec);
+  Uint32 cnoUsedReplicaRec;
+  RSS_OP_SNAPSHOT(cnoUsedReplicaRec);
 
   TabRecord *tabRecord;
   Uint32 ctabFileSize;
@@ -2429,7 +2430,7 @@ private:
   BlockReference cntrlblockref;
   Uint32 con_lineNodes;
   Uint32 creceivedfrag;
-  Uint32 cremainingfrags;
+  Uint32 callocated_frags;
   Uint32 cstarttype;
   Uint32 csystemnodes;
   Uint32 c_newest_restorable_gci;

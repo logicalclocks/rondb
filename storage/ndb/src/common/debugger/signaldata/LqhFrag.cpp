@@ -26,7 +26,7 @@
 #include <signaldata/LqhFrag.hpp>
 
 bool
-printLQH_FRAG_REQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 recB){
+printLQHFRAGREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 recB){
   LqhFragReq* sig = (LqhFragReq*)theData;
   
   fprintf(output, " senderData: %d senderRef: %x",
@@ -48,10 +48,11 @@ printLQH_FRAG_REQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 recB
           sig->tableVersion, sig->startGci, sig->requestInfo);
   fprintf(output, " changeMask: %x, partitionId: %u, createGci: %u\n",
           sig->changeMask, sig->partitionId, sig->createGci);
+  fprintf(output, " nodeFragmentCount: %u\n", sig->nodeFragCount);
   return true;
 }
 bool
-printLQH_FRAG_CONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 rec){
+printLQHFRAGCONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 rec){
   LqhFragConf* sig = (LqhFragConf*)theData;
   
   fprintf(output, " senderData: %d lqhFragPtr: %d\n",
@@ -60,7 +61,7 @@ printLQH_FRAG_CONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 rec
 }
 
 bool
-printLQH_FRAG_REF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 rec){
+printLQHFRAGREF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 rec){
   LqhFragRef* sig = (LqhFragRef*)theData;
   
   fprintf(output, " senderData: %d errorCode: %d\n",

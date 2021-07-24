@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2006, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -112,7 +113,7 @@ struct Free_page_data
 
 #define FPD_2LOG 2
 
-#define MM_RG_COUNT 9
+#define MM_RG_COUNT 11
 
 /**
   Information of restriction and current usage of shared global page memory.
@@ -291,6 +292,7 @@ public:
   void map(Uint32 * watchCounter, bool memlock = false, Uint32 resources[] = 0);
   void init_resource_spare(Uint32 id, Uint32 pct);
   void* get_memroot() const;
+  void init_memory_pools();
   
   void dump(bool locked) const ;
   void dump_on_alloc_fail(bool on);

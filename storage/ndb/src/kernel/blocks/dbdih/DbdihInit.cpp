@@ -46,6 +46,7 @@
 
 void Dbdih::initData() 
 {
+  callocated_frags = 0;
   m_set_up_multi_trp_in_node_restart = false;
   cpageFileSize = ZPAGEREC;
 
@@ -128,15 +129,21 @@ void Dbdih::initRecords()
                                         sizeof(FileRecord),
                                         cfileFileSize);
 
-  fragmentstore = (Fragmentstore*)allocRecord("Fragmentstore",
-                                              sizeof(Fragmentstore),
-                                              cfragstoreFileSize);
-
   pageRecord = (PageRecord*)allocRecord("PageRecord",
                                   sizeof(PageRecord), 
                                   cpageFileSize);
 
-  c_replicaRecordPool.setSize(creplicaFileSize);
+  {
+    Pool_context pc;
+    pc.m_block = this;
+    c_replicaRecordPool.init(RT_DBDIH_REPLICA, pc);
+  }
+
+  {
+    Pool_context pc;
+    pc.m_block = this;
+    c_fragmentRecordPool.init(RT_DBDIH_FRAGMENT, pc);
+  }
 
   DEB_AUTOMATIC_MEMORY(("Size(TabRecord): %zu, num_tables: %u, mem: %zu",
                         sizeof(TabRecord),
@@ -386,7 +393,6 @@ Dbdih::Dbdih(Block_context& ctx):
 
   connectRecord = 0;
   fileRecord = 0;
-  fragmentstore = 0;
   pageRecord = 0;
   tabRecord = 0;
   createReplicaRecord = 0;
@@ -416,10 +422,6 @@ Dbdih::~Dbdih()
                 sizeof(FileRecord),
                 cfileFileSize);
   
-  deallocRecord((void **)&fragmentstore, "Fragmentstore",
-                sizeof(Fragmentstore),
-                cfragstoreFileSize);
-
   deallocRecord((void **)&pageRecord, "PageRecord",
                 sizeof(PageRecord), 
                 cpageFileSize);
