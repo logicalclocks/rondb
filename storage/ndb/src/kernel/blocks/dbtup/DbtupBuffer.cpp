@@ -366,7 +366,7 @@ void Dbtup::sendReadAttrinfo(Signal* signal,
     } //nodeId != getOwnNodeId()
   
     /**
-     * BACKUP, LQH & SUMA run in our thread, so we can EXECUTE_DIRECT().
+     * BACKUP, LQH run in our thread, so we can EXECUTE_DIRECT().
      *
      * The UTIL/TC blocks are in another thread (in multi-threaded ndbd), so
      * must use sendSignal().
@@ -378,8 +378,7 @@ void Dbtup::sendReadAttrinfo(Signal* signal,
     const Uint32 blockNumber= refToMain(recBlockref);
     if (sameInstance &&
         (blockNumber == getBACKUP() ||
-         blockNumber == getDBLQH() ||
-         blockNumber == SUMA))
+         blockNumber == getDBLQH()))
     {
       static_assert(MAX_TUPLE_SIZE_IN_WORDS + MAX_ATTRIBUTES_IN_TABLE <=
                       NDB_ARRAY_SIZE(signal->theData) - TransIdAI::HeaderLength,
@@ -395,9 +394,19 @@ void Dbtup::sendReadAttrinfo(Signal* signal,
       /**
        * Data is 'short', send short signal
        */
-      jam();
+      JobBufferLevel prioLevel;
+      if (!req_struct->m_prio_a_flag)
+      {
+        jam();
+        prioLevel = JBB;
+      }
+      else
+      {
+        jam();
+        prioLevel = JBA;
+      }
       sendSignal(recBlockref, GSN_TRANSID_AI, signal,
-                 TransIdAI::HeaderLength+ToutBufIndex, JBB);
+                 TransIdAI::HeaderLength+ToutBufIndex, prioLevel);
     }
     else
     {
@@ -430,7 +439,17 @@ void Dbtup::sendReadAttrinfo(Signal* signal,
          * To ensure that TRANSID_AI arrives there before SCAN_FRAGCONF we
          * send also TRANSID_AI on priority A if the signal is sent on prio A.
          */
-        JobBufferLevel prioLevel = req_struct->m_prio_a_flag ? JBA : JBB;
+        JobBufferLevel prioLevel;
+        if (!req_struct->m_prio_a_flag)
+        {
+          jam();
+          prioLevel = JBB;
+        }
+        else
+        {
+          jam();
+          prioLevel = JBA;
+        }
         sendSignal(recBlockref,
                    GSN_TRANSID_AI,
                    signal,

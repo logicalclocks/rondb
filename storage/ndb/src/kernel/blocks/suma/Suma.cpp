@@ -4646,6 +4646,7 @@ Suma::execTRANSID_AI(Signal* signal)
   if ((syncPtr.p->m_requestInfo & SubSyncReq::LM_Exclusive) == 0)
   {
     /* Send it now */
+    jam();
     sendScanSubTableData(signal, syncPtr, 0);
   }
 

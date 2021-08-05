@@ -1,4 +1,5 @@
 /* Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,7 +33,7 @@ printSUB_CREATE_REQ(FILE * output, const Uint32 * theData,
   fprintf(output, " subscriptionId: %x\n", sig->subscriptionId);
   fprintf(output, " subscriptionKey: %x\n", sig->subscriptionKey);
   fprintf(output, " subscriptionType: %x\n", sig->subscriptionType);
-  fprintf(output, " tableId: %x\n", sig->tableId);
+  fprintf(output, " tableId: %u\n", sig->tableId);
   fprintf(output, " schemaTransId: %x\n", sig->schemaTransId);
   return false;
 }
