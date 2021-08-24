@@ -15245,11 +15245,7 @@ void Dblqh::setup_scan_pointers_from_tc_con(TcConnectionrecPtr tcConnectptr,
    * ensured shared access to the fragment.
    */
   acquire_frag_scan_access_new(prim_tab_fragptr.p, m_tc_connect_ptr.p);
-  if (likely(loc_scanptr.p->scanAccPtr != RNIL))
-  {
-    jamDebug();
-    block->prepare_scan_ctx(loc_scanptr.p->scanAccPtr);
-  }
+  block->prepare_scan_ctx(loc_scanptr.p->scanAccPtr);
   ndbrequire(Magic::check_ptr(tcConnectptr.p->tupConnectPtrP));
   ndbrequire(Magic::check_ptr(tcConnectptr.p->accConnectPtrP));
   loc_scanptr.p->scan_startLine = line;
@@ -15301,11 +15297,7 @@ void Dblqh::setup_scan_pointers(Uint32 scanPtrI, Uint32 line)
     ndbassert(loc_scanptr.p->scanAiLength == storedProcLen);
   }
   acquire_frag_scan_access_new(prim_tab_fragptr.p, m_tc_connect_ptr.p);
-  if (likely(loc_scanptr.p->scanAccPtr != RNIL))
-  {
-    jamDebug();
-    block->prepare_scan_ctx(loc_scanptr.p->scanAccPtr);
-  }
+  block->prepare_scan_ctx(loc_scanptr.p->scanAccPtr);
   ndbrequire(Magic::check_ptr(loc_tcConnectptr.p->tupConnectPtrP));
   ndbrequire(Magic::check_ptr(loc_tcConnectptr.p->accConnectPtrP));
   loc_scanptr.p->scan_startLine = line;
