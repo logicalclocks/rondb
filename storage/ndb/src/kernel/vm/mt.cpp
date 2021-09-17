@@ -663,6 +663,7 @@ struct alignas(NDB_CL) thr_safe_pool
               (mm->alloc_page(rg,
                               &dummy,
                               Ndbd_mem_manager::NDB_ZONE_LE_32,
+                              false,
                               locked,
                               use_max_part));
             if (ret != 0)

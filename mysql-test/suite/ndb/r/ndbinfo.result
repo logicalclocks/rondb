@@ -874,6 +874,7 @@ select distinct resource_name
 from resources
 order by 1;
 resource_name
+BACKUP_SCHEMA_MEMORY
 DATA_MEMORY
 DISK_PAGE_BUFFER
 DISK_RECORDS

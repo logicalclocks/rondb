@@ -96,6 +96,7 @@ class Dbtux : public SimulatedBlock {
   Dbtup* c_tup;
   Dblqh* c_lqh;
   Dbacc* c_acc;
+  Dbtux* m_ldm_instance_used;
   void execTUX_BOUND_INFO(Signal* signal);
   void execREAD_PSEUDO_REQ(Uint32 scanPtrI, Uint32 attrId, Uint32* out, Uint32 out_words);
 
@@ -255,21 +256,28 @@ private:
   struct DescPage;
   friend struct DescPage;
   struct DescPage {
-    Uint32 m_nextPage;
-    Uint32 m_numFree;           // number of free words
-    union {
-    Uint32 m_data[DescPageSize];
-    Uint32 nextPool;
-    };
+    static constexpr Uint32 TYPE_ID = RT_DBTUX_DESC_PAGE;
+    Uint32 m_magic;
     DescPage();
+    ~DescPage()
+    {
+    }
+    Uint32 m_numFree;           // number of free words
+    Uint32 m_data[DescPageSize];
+    union
+    {
+      Uint64 nextPool;
+      Uint64 nextList;
+    };
+    Uint64 prevList;
   };
-  typedef Ptr<DescPage> DescPagePtr;
-  typedef ArrayPool<DescPage> DescPage_pool;
+  typedef Ptr64<DescPage> DescPage64Ptr;
+  typedef RecordPool64<RWPool64<DescPage> > DescPage_pool;
+  typedef DLCFifo64List<DescPage_pool> DescPage_fifo;
 
-public:
   DescPage_pool c_descPagePool;
-private:
-  Uint32 c_descPageList;
+  DescPage_fifo c_descPageList;
+  Uint32 c_descMaxPagesAllocated;
 
   struct DescHead {
     Uint32 m_indexId;
@@ -442,22 +450,22 @@ private:
       Online = 2,               // triggers activated and build done
       Dropping = 9
     };
-    State m_state;
-    DictTabInfo::TableType m_tableType;
-    Uint32 m_tableId;
-    Uint16 unused;
-    Uint32 m_descPage;          // descriptor page
-    Uint16 m_descOff;           // offset within the page
-    Uint16 m_numAttrs;
-    Uint16 m_prefAttrs;         // attributes in min prefix
-    Uint16 m_prefBytes;         // max bytes in min prefix
-    KeySpec m_keySpec;
+    Uint64 m_descPage;          // descriptor page
     Uint64 m_statFragPtrI;      // fragment to monitor if not RNIL
+    Uint32 m_tableId;
     Uint32 m_statLoadTime;      // load time of index stats
     union {
     bool m_storeNullKey;
     Uint32 nextPool;
     };
+    KeySpec m_keySpec;
+    State m_state;
+    DictTabInfo::TableType m_tableType;
+    Uint16 unused;
+    Uint16 m_descOff;           // offset within the page
+    Uint16 m_numAttrs;
+    Uint16 m_prefAttrs;         // attributes in min prefix
+    Uint16 m_prefBytes;         // max bytes in min prefix
     Index();
   };
   typedef Ptr<Index> IndexPtr;
@@ -1029,8 +1037,7 @@ private:
 public:
   static Uint64 getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
-    const ndb_mgm_configuration_iterator *mgm_cfg,
-    const bool use_reserved);
+    const ndb_mgm_configuration_iterator *mgm_cfg);
   Uint32 getDBACC()
   {
     return m_acc_block;
@@ -1287,7 +1294,6 @@ Dbtux::TreePos::TreePos() :
 
 inline
 Dbtux::DescPage::DescPage() :
-  m_nextPage(RNIL),
   m_numFree(ZNIL)
 {
   for (unsigned i = 0; i < DescPageSize; i++) {
@@ -1331,18 +1337,18 @@ Dbtux::ScanOp::ScanOp() :
 
 inline
 Dbtux::Index::Index() :
+  m_descPage(RNIL64),
+  m_statFragPtrI(RNIL64),
+  m_tableId(RNIL),
+  m_statLoadTime(0),
+  m_storeNullKey(false),
+  m_keySpec(),
   m_state(NotDefined),
   m_tableType(DictTabInfo::UndefTableType),
-  m_tableId(RNIL),
-  m_descPage(RNIL),
   m_descOff(0),
   m_numAttrs(0),
   m_prefAttrs(0),
-  m_prefBytes(0),
-  m_keySpec(),
-  m_statFragPtrI(RNIL64),
-  m_statLoadTime(0),
-  m_storeNullKey(false)
+  m_prefBytes(0)
 {
 }
 
@@ -1644,12 +1650,13 @@ Dbtux::getDescSize(const Index& index)
 inline Dbtux::DescHead&
 Dbtux::getDescHead(const Index& index)
 {
-  DescPagePtr pagePtr;
+  DescPage64Ptr pagePtr;
   pagePtr.i = index.m_descPage;
-  c_descPagePool.getPtr(pagePtr);
+  m_ldm_instance_used->c_descPagePool.getUncheckedPtr(pagePtr);
   ndbrequire(index.m_descOff < DescPageSize);
   Uint32* ptr = &pagePtr.p->m_data[index.m_descOff];
   DescHead* descHead = reinterpret_cast<DescHead*>(ptr);
+  ndbrequire(Magic::check_ptr_rw(pagePtr.p));
   ndbrequire(descHead->m_magic == DescHead::Magic);
   return *descHead;
 }

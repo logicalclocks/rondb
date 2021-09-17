@@ -1042,7 +1042,20 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT64,
-    "16M",
+    "0",
+    "0",
+    "16384G" },
+
+  {
+    CFG_DB_BACKUP_SCHEMA_MEM,
+    "BackupSchemaMemory",
+    DB_TOKEN,
+    "Number bytes on each " DB_TOKEN_PRINT " node allocated for backup"
+    " objects",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_INT64,
+    "0",
     "0",
     "16384G" },
 
@@ -1056,7 +1069,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT64,
-    "8M",
+    "0",
     "0",
     "16384G" },
 
@@ -2477,9 +2490,9 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "10",
+    "5",
     "0",
-    "100"
+    "20"
   },
 
   {

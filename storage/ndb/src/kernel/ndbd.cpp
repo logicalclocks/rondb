@@ -106,80 +106,6 @@ systemInfo(const Configuration & config, const LogLevel & logLevel)
   }
 }
 
-static
-Uint64
-parse_size(const char * src)
-{
-  Uint64 num = 0;
-  char * endptr = 0;
-  num = strtoll(src, &endptr, 10);
-
-  if (endptr)
-  {
-    switch(* endptr){
-    case 'k':
-    case 'K':
-      num *= 1024;
-      break;
-    case 'm':
-    case 'M':
-      num *= 1024;
-      num *= 1024;
-      break;
-    case 'g':
-    case 'G':
-      num *= 1024;
-      num *= 1024;
-      num *= 1024;
-      break;
-    }
-  }
-  return num;
-}
-
-/*
-  Return the value given by specified key in semicolon separated list
-  of name=value and name:value pairs which is found before first
-  name:value pair
-
-  i.e list looks like
-    [name1=value1][;name2=value2][;name3:value3][;name4:value4][;name5=value5]
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    searches this part of list
-
-  the function will terminate it's search when first name:value pair
-  is found
-
-  NOTE! This is anlogue to how the InitialLogFileGroup and
-  InitialTablespace strings are parsed in NdbCntrMain.cpp
-*/
-
-static void
-parse_key_value_before_filespecs(const char *src,
-                                 const char* key, Uint64& value)
-{
-  const size_t keylen = strlen(key);
-  BaseString arg(src);
-  Vector<BaseString> list;
-  arg.split(list, ";");
-
-  for (unsigned i = 0; i < list.size(); i++)
-  {
-    list[i].trim();
-    if (native_strncasecmp(list[i].c_str(), key, keylen) == 0)
-    {
-      // key found, save its value
-      value = parse_size(list[i].c_str() + keylen);
-    }
-
-    if (strchr(list[i].c_str(), ':'))
-    {
-      // found name:value pair, look no further
-      return;
-    }
-  }
-}
-
 /**
  * We currently allocate the following large chunks of memory:
  * -----------------------------------------------------------
@@ -317,8 +243,15 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     Resource_limit rl;
     rl.m_min = tupmem;
     rl.m_max = tupmem;
+    rl.m_max_high_prio = tupmem;
     rl.m_resource_id = RG_DATAMEM;
+    // Cannot use last piece of memory
+    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
+
+    Uint32 free_pct = 5;
+    ndb_mgm_get_int_parameter(p, CFG_DB_FREE_PCT, &free_pct);
+    ed.m_mem_manager->init_resource_spare(RG_DATAMEM, free_pct);
   }
   else
   {
@@ -356,7 +289,10 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   Resource_limit rl;
   rl.m_min = filepages;
   rl.m_max = filepages;
+  rl.m_max_high_prio = filepages;
   rl.m_resource_id = RG_FILE_BUFFERS;
+  // Cannot use last piece of memory
+  rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
   ed.m_mem_manager->set_resource_limit(rl);
   g_eventLogger->info("RedoLogBuffer uses %u MB", filepages/32);
 
@@ -365,28 +301,24 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   {
     require(globalData.isNdbMt);
     Resource_limit rl;
-    rl.m_min = jbpages;
+    shared_pages += (jbpages / 2);
+    rl.m_min = jbpages / 2;
     rl.m_max = jbpages;
+    rl.m_max_high_prio = jbpages;
     rl.m_resource_id = RG_JOBBUFFER;
+    // Can use last piece of memory
+    rl.m_prio_memory = Resource_limit::ULTRA_HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
-    g_eventLogger->info("Job buffers use %u MB", jbpages/32);
+    g_eventLogger->info("Job buffers use up to %u MB", jbpages/32);
   }
-  else if (globalData.isNdbMt)
+  else
   {
     g_eventLogger->alert("No job buffer memory, exiting.");
     return -1;
   }
-  else
-  {
-    Resource_limit rl;
-    rl.m_min = 0;
-    rl.m_max = 0; // Not used by ndbd
-    rl.m_resource_id = RG_JOBBUFFER;
-    ed.m_mem_manager->set_resource_limit(rl);
-  }
 
   Uint32 sbpages = 0;
-  if (globalData.isNdbMt)
+  require(globalData.isNdbMt);
   {
     /**
      * This path is normally always taken for ndbmtd as the transporter
@@ -396,32 +328,28 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
      */
     Uint64 mem = Configuration::get_send_buffer(p);
     sbpages = Uint32((mem + GLOBAL_PAGE_SIZE - 1) / GLOBAL_PAGE_SIZE);
+    shared_pages += (sbpages / 2);
 
     Resource_limit rl;
-    rl.m_min = sbpages;
+    rl.m_min = sbpages / 2;
     /**
      * allow over allocation (from SharedGlobalMemory) of up to 50% of
      *   totally allocated SendBuffer, at most 25% of SharedGlobalMemory.
      */
-    Uint32 max_use_of_shared_pages = shared_pages / 2;
+    Uint32 max_use_of_shared_pages = shared_pages / 4;
     const Uint32 sb_max_shared_pages =
       50 * std::min(sbpages, max_use_of_shared_pages) / 100;
     require(sbpages + sb_max_shared_pages > 0);
     rl.m_max = sbpages + sb_max_shared_pages;
+    rl.m_max_high_prio = sbpages + sb_max_shared_pages;
     rl.m_resource_id = RG_TRANSPORTER_BUFFERS;
+    // Can use last piece of memory
+    rl.m_prio_memory = Resource_limit::ULTRA_HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
-    g_eventLogger->info("Send buffers use %u MB, can overallocate %u MB"
-                        " more using SharedGlobalMemory.",
+    g_eventLogger->info("Send buffers use up to %u MB, can overallocate"
+                        " %u MB more using SharedGlobalMemory.",
                         sbpages / 32,
                         sb_max_shared_pages / 32);
-  }
-  else
-  {
-    Resource_limit rl;
-    rl.m_min = 0;
-    rl.m_max = 0; // Not used by ndbd
-    rl.m_resource_id = RG_TRANSPORTER_BUFFERS;
-    ed.m_mem_manager->set_resource_limit(rl);
   }
 
   Uint32 pgman_pages = 0;
@@ -445,86 +373,35 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     rl.m_min = pgman_pages;
     require(pgman_pages > 0);
     rl.m_max = pgman_pages;
+    rl.m_max_high_prio = pgman_pages;
     rl.m_resource_id = RG_DISK_PAGE_BUFFER;  // Add to RG_DISK_PAGE_BUFFER
+    // Cannot use last piece of memory
+    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
   Uint32 pgman_mbytes = pgman_pages / 32;
   g_eventLogger->info("DiskPageBuffer uses %u MB", pgman_mbytes);
-
-  Uint32 ldmInstances = globalData.ndbMtLqhWorkers;
 
   Uint32 stpages = 128;
   {
     Resource_limit rl;
     rl.m_min = stpages;
     rl.m_max = Resource_limit::HIGHEST_LIMIT;
+    rl.m_max_high_prio = Resource_limit::HIGHEST_LIMIT;
     rl.m_resource_id = RG_SCHEMA_TRANS_MEMORY;
+    /**
+     * If we are in a tight memory situation it seems like a good idea to
+     * not allow creation of new schema objects.
+     */
+    // Cannot use last piece of memory
+    rl.m_prio_memory = Resource_limit::LOW_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
   g_eventLogger->info("SchemaTransactionMemory uses 4 MB");
 
-  Uint32 transmem = 0;
-  Uint32 tcInstances = 1;
-  if (globalData.ndbMtTcWorkers > 1)
-  {
-    tcInstances = globalData.ndbMtTcWorkers;
-  }
-
   Uint64 TransactionMemory = globalData.theTransactionMemory;
-
-  Uint64 transmem_bytes =
-      globalEmulatorData.theSimBlockList->getTransactionMemoryNeed(
-        tcInstances,
-        ldmInstances,
-        p,
-        false);
-
-  Uint64 reserved_transmem_bytes =
-      globalEmulatorData.theSimBlockList->getTransactionMemoryNeed(
-        tcInstances,
-        ldmInstances,
-        p,
-        true);
-
-  Uint32 reserved_transmem = Uint32(reserved_transmem_bytes / Uint64(32768));
-  transmem = Uint32(transmem_bytes / Uint64(32768));
-
-  if (TransactionMemory != 0)
-  {
-    Uint32 new_transmem = Uint32(TransactionMemory / Uint64(32768));
-    g_eventLogger->info("Calculated TransactionMemory %u MB replaced by"
-                        " setting it to %u MB",
-                        transmem/32,
-                        new_transmem/32);
-    transmem = new_transmem;
-  }
-  /**
-   * The minimum setting of TransactionMemory is the reserved transaction
-   * memory and an additional 4 MByte (128 pages) per LDM and TC instance.
-   */
-  Uint32 min_transmem = reserved_transmem +
-                        (tcInstances + ldmInstances) * 128;
-
-  if (transmem < min_transmem)
-  {
-    g_eventLogger->info("TransactionMemory %u MB isn't enough, setting it to"
-                        " %u MB",
-                        transmem/32,
-                        min_transmem/32);
-    transmem = min_transmem;
-  }
-  if (TransactionMemory != 0)
-  {
-    g_eventLogger->info("TransactionMemory set to %u MB", transmem/32);
-    g_eventLogger->info("Reserved part of TransactionMemory is %u MB",
-                        reserved_transmem/32);
-  }
-  else
-  {
-    g_eventLogger->info("TransactionMemory calculated to %u MB", transmem/32);
-    g_eventLogger->info("Reserved part of TransactionMemory is %u MB",
-                        reserved_transmem/32);
-  }
+  Uint32 transmem = Uint32(TransactionMemory / Uint64(32768));
+  g_eventLogger->info("TransactionMemory set to %u MB", transmem/32);
 
   if (globalData.theUndoBuffer != 0)
   {
@@ -536,70 +413,41 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
     transmem += undo_buffer_pages;
   }
   {
-    /**
-     * Request extra undo buffer memory to be allocated when
-     * InitialLogFileGroup is specifed in config.
-     *
-     *  - Use default size or the value specified by the
-     *    undo_buffer_size= key.
-     *
-     * Note! The default value should be aligned with code in NdbCntrMain.cpp
-     * which does the full parse of InitialLogFileGroup. This code only peeks
-     * at the undo_buffer_size value
-     *
-     */
-    Uint32 dl = 0;
-    Uint32 undopages = 0;
-    ndb_mgm_get_int_parameter(p, CFG_DB_DISCLESS, &dl);
-
-    if (dl == 0)
-    {
-      const char * lgspec = 0;
-      if (!ndb_mgm_get_string_parameter(p, CFG_DB_DD_LOGFILEGROUP_SPEC,
-                                        &lgspec))
-      {
-        if (globalData.theUndoBuffer == 0)
-        {
-          Uint64 undo_buffer_size = 64 * 1024 * 1024; // Default
-          parse_key_value_before_filespecs(lgspec,
-                                           "undo_buffer_size=",
-                                           undo_buffer_size);
-
-          undopages = Uint32(undo_buffer_size / GLOBAL_PAGE_SIZE);
-          g_eventLogger->info("Reserving %u MB for undo buffer memory",
-                              undopages/32);
-          transmem += undopages;
-        }
-      }
-    }
     Resource_limit rl;
+    Uint32 shared_pages_part = shared_pages / 2;
     rl.m_min = transmem;
     rl.m_max = Resource_limit::HIGHEST_LIMIT;
+    rl.m_max_high_prio = transmem + shared_pages_part;
     rl.m_resource_id = RG_TRANSACTION_MEMORY;
+    // Cannot use last piece of memory
+    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
-    if (undopages == 0 && globalData.theUndoBuffer == 0)
+    if (globalData.theUndoBuffer == 0)
     {
       g_eventLogger->info("No Undo log buffer used, will be allocated from"
                           " TransactionMemory if later defined by command");
     }
     g_eventLogger->info("Total TransactionMemory size is %u MBytes",
-                         transmem/32);
+                        transmem/32);
+    g_eventLogger->info("TransactionMemory can expand and use"
+                        " SharedGlobalMemory if required");
   }
-  g_eventLogger->info("TransactionMemory can expand and use"
-                      " SharedGlobalMemory if required");
-
   {
     Resource_limit rl;
     /*
-     * Setting m_min = 0 makes QUERY_MEMORY a low priority resource group
-     * which can not use the last 10% of shared global page memory.
+     * Setting LOW_PRIO_MEMORY makes QUERY_MEMORY a low priority resource
+     * group which can not use the last 10% of shared global page memory
+     * (when the ultra high part has been removed).
      *
      * For example TRANSACTION_MEMORY will have access to those last
      * percent of global shared global page memory.
      */
     rl.m_min = 0;
     rl.m_max = Resource_limit::HIGHEST_LIMIT;
+    rl.m_max_high_prio = Resource_limit::HIGHEST_LIMIT;
     rl.m_resource_id = RG_QUERY_MEMORY;
+    // Cannot use last piece of memory
+    rl.m_prio_memory = Resource_limit::LOW_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
   g_eventLogger->info("QueryMemory can use memory from SharedGlobalMemory"
@@ -612,46 +460,70 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
    * Mostly not set to 0 for small installations that might not take height
    * for this memory.
    */
-  Uint32 replication_memory = 8 * 1024;
-  Uint64 ReplicationMemory = 0;
-  ndb_mgm_get_int64_parameter(p, CFG_DB_REPLICATION_MEM,
-                              &ReplicationMemory);
-  replication_memory = Uint32(ReplicationMemory / Uint64(32768));
+  Uint64 ReplicationMemory = globalData.theReplicationMemory;
+  Uint32 replication_memory = Uint32(ReplicationMemory / Uint64(32768));
   Uint32 rep_mb = replication_memory / 32;
   g_eventLogger->info("Adding %u MByte for replication memory", rep_mb);
   {
     Resource_limit rl;
-    rl.m_min = 0;
-    rl.m_max = Resource_limit::HIGHEST_LIMIT;
+    Uint32 shared_pages_part = (shared_pages / 10) * 3;
+    rl.m_max = replication_memory + shared_pages_part;
+    rl.m_max_high_prio = replication_memory + shared_pages_part;
     rl.m_resource_id = RG_REPLICATION_MEMORY;
+    // Cannot use last piece of memory
+    rl.m_prio_memory = Resource_limit::HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
   g_eventLogger->info("MaxBufferedEpochBytes can use memory from"
                       " SharedGlobalMemory until 90%% used");
 
-  Uint64 SchemaMemory = 0;
-  ndb_mgm_get_int64_parameter(p, CFG_DB_SCHEMA_MEM,
-                              &SchemaMemory);
+  Uint64 SchemaMemory = globalData.theSchemaMemory;
   Uint32 schema_memory = Uint32(SchemaMemory / Uint64(32768));
   {
     Resource_limit rl;
+    Uint32 shared_pages_part = (shared_pages / 10) * 2;
     rl.m_min = schema_memory;
-    rl.m_max = Resource_limit::HIGHEST_LIMIT;
+    rl.m_max = schema_memory + shared_pages_part;
+    rl.m_max_high_prio = schema_memory + shared_pages_part;
     rl.m_resource_id = RG_SCHEMA_MEMORY;
+    // Cannot use last piece of memory
+    rl.m_prio_memory = Resource_limit::LOW_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
+  g_eventLogger->info("Adding %u MByte for schema memory", schema_memory/32);
   g_eventLogger->info("SchemaMemory can expand and use"
+                      " SharedGlobalMemory if required");
+
+  Uint64 BackupSchemaMemory = globalData.theBackupSchemaMemory;
+  Uint32 backup_schema_memory = Uint32(BackupSchemaMemory / Uint64(32768));
+  {
+    Resource_limit rl;
+    rl.m_min = backup_schema_memory;
+    rl.m_max = Resource_limit::HIGHEST_LIMIT;
+    rl.m_max_high_prio = Resource_limit::HIGHEST_LIMIT;
+    rl.m_resource_id = RG_BACKUP_SCHEMA_MEMORY;
+    // Can use last piece of memory
+    rl.m_prio_memory = Resource_limit::ULTRA_HIGH_PRIO_MEMORY;
+    ed.m_mem_manager->set_resource_limit(rl);
+  }
+  g_eventLogger->info("Adding %u MByte for backup schema memory",
+                      backup_schema_memory/32);
+  g_eventLogger->info("BackupSchemaMemory can expand and use"
                       " SharedGlobalMemory if required");
   {
     Resource_limit rl;
     rl.m_min = 0;
     rl.m_max = Resource_limit::HIGHEST_LIMIT;
+    rl.m_max_high_prio = Resource_limit::HIGHEST_LIMIT;
     rl.m_resource_id = RG_DISK_RECORDS;
+    // Can use last piece of memory
+    rl.m_prio_memory = Resource_limit::ULTRA_HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
 
   Uint32 sum = shared_pages + tupmem + filepages + jbpages + sbpages +
-    pgman_pages + stpages + transmem + replication_memory + schema_memory;
+    pgman_pages + stpages + transmem + replication_memory + schema_memory +
+    backup_schema_memory;
 
   /**
    * We allocate a bit of extra pages to handle map pages in the NDB memory
@@ -661,6 +533,7 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   Uint32 extra_chunk_pages = (2 * (sum / (32768 * 8))) + 3;
   sum += extra_chunk_pages;
 
+  g_eventLogger->info("Total sum of all pages is %u", sum);
   if (!ed.m_mem_manager->init(watchCounter, sum, false))
   {
     g_eventLogger->alert("Malloc (%lld bytes) for %s and others failed, exiting",
@@ -688,6 +561,11 @@ init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter)
   {
     ed.m_mem_manager->map(watchCounter, memlock); // Map all
   }
+  Uint32 ultra_prio_free_limit = (jbpages / 2) + (sbpages / 2);
+  ed.m_mem_manager->set_prio_free_limits(ultra_prio_free_limit);
+  ed.m_mem_manager->lock();
+  ed.m_mem_manager->check();
+  ed.m_mem_manager->unlock();
   ed.m_mem_manager->init_memory_pools();
   return 0;                     // Success
 }
@@ -1131,7 +1009,27 @@ ndbd_run(bool foreground, int report_fd,
   log_memusage("Config fetch");
 
   theConfig->setupConfiguration();
-
+  {
+    /**
+     * The minimum setting of TransactionMemory is the reserved transaction
+     * memory and an additional 4 MByte (128 pages) per LDM and TC instance.
+     */
+    const ndb_mgm_configuration_iterator * p =
+      globalEmulatorData.theConfiguration->getOwnConfigIterator();
+    if (p == 0)
+    {
+      abort();
+    }
+    Uint64 reserved_transmem_bytes =
+        globalEmulatorData.theSimBlockList->getTransactionMemoryNeed(
+          globalData.ndbMtTcWorkers,
+          globalData.ndbMtLqhWorkers,
+          p);
+    Uint64 min_transmem_bytes = reserved_transmem_bytes +
+      (globalData.ndbMtTcWorkers + globalData.ndbMtLqhWorkers)
+       * 128 * Uint64(32768);
+    theConfig->setupMemoryConfiguration(min_transmem_bytes);
+  }
 
   /**
     Printout various information about the threads in the

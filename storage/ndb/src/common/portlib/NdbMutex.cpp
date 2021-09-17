@@ -341,7 +341,7 @@ int NdbMutex_Unlock(NdbMutex* p_mutex)
 #else
   result = native_mutex_unlock(p_mutex);
 #endif
-  assert(result == 0);
+  //assert(result == 0);
 
 #ifdef NDB_MUTEX_DEADLOCK_DETECTOR
   ndb_mutex_unlocked(p_mutex);

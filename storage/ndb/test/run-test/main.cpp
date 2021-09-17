@@ -319,9 +319,7 @@ int main(int argc, char **argv) {
     coverage_config.m_prefix_strip = compute_path_level(g_build_dir);
   }
 
-  if (g_mt != 0) {
-    g_resources.setRequired(g_resources.NDBMTD);
-  }
+  g_resources.setRequired(g_resources.NDBMTD);
 
   {
     std::vector<std::string> error;

@@ -38,6 +38,7 @@
 #include <signaldata/DbinfoScan.hpp>
 #include <signaldata/TransIdAI.hpp>
 #include "AttributeOffset.hpp"
+#include "../dblqh/Dblqh.hpp"
 #ifdef TEST_MR
 #include <time.h>
 #endif
@@ -380,7 +381,13 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
         sum_req += alloc;
     doalloc:
 	Chunk chunk;
-	allocConsPages(jamBuffer(), alloc, chunk.pageCount, chunk.pageId);
+        Tablerec tab(c_triggerPool);
+        tab.m_allow_use_spare = false;
+	allocConsPages(jamBuffer(),
+                       &tab,
+                       alloc,
+                       chunk.pageCount,
+                       chunk.pageId);
 	ndbrequire(chunk.pageCount <= alloc);
 	if(chunk.pageCount != 0){
 	  chunks.push_back(chunk);
@@ -474,6 +481,10 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
       return;
     const Uint32 pool_index = signal->theData[1];
     const Uint32 new_size = signal->theData[2];
+    if (pool_index == DBTUP_OPERATION_RECORD_TRANSIENT_POOL_INDEX)
+    {
+      c_lqh->set_error_value(5099);
+    }
     if (pool_index >= c_transient_pool_count)
       return;
     c_transient_pools[pool_index]->setMaxSize(new_size);
@@ -485,6 +496,10 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
     if(signal->getLength() < 2)
       return;
     const Uint32 pool_index = signal->theData[1];
+    if (pool_index == DBTUP_OPERATION_RECORD_TRANSIENT_POOL_INDEX)
+    {
+      c_lqh->set_error_value(0);
+    }
     if (pool_index >= c_transient_pool_count)
       return;
     c_transient_pools[pool_index]->resetMaxSize();

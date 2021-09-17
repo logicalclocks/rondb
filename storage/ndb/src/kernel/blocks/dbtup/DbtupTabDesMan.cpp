@@ -32,7 +32,7 @@
 #define JAM_FILE_ID 412
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_TAB_MALLOC 1
+//#define DEBUG_TAB_MALLOC 1
 #endif
 
 #ifdef DEBUG_TAB_MALLOC

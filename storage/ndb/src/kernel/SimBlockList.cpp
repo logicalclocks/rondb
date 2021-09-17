@@ -229,29 +229,23 @@ SimBlockList::unload(){
 Uint64 SimBlockList::getTransactionMemoryNeed(
   const Uint32 dbtc_instance_count,
   const Uint32 ldm_instance_count,
-  const ndb_mgm_configuration_iterator * mgm_cfg,
-  const bool use_reserved) const
+  const ndb_mgm_configuration_iterator * mgm_cfg) const
 {
   Uint64 byte_count = Dbtc::getTransactionMemoryNeed(
     dbtc_instance_count,
-    mgm_cfg,
-    use_reserved);
+    mgm_cfg);
   byte_count += Dbacc::getTransactionMemoryNeed(
     ldm_instance_count,
-    mgm_cfg,
-    use_reserved);
+    mgm_cfg);
   byte_count += Dblqh::getTransactionMemoryNeed(
     ldm_instance_count,
-    mgm_cfg,
-    use_reserved);
+    mgm_cfg);
   byte_count += Dbtup::getTransactionMemoryNeed(
     ldm_instance_count,
-    mgm_cfg,
-    use_reserved);
+    mgm_cfg);
   byte_count += Dbtux::getTransactionMemoryNeed(
     ldm_instance_count,
-    mgm_cfg,
-    use_reserved);
+    mgm_cfg);
 
   byte_count += Dbqacc::getTransactionMemoryNeed();
   byte_count += Dbqlqh::getTransactionMemoryNeed();

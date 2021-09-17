@@ -31,35 +31,47 @@
 
 
 void*
-Pool_context::alloc_page19(Uint32 type_id, Uint32 *i)
+Pool_context::alloc_page19(Uint32 type_id,
+                           Uint32 *i,
+                           bool allow_use_spare)
 {
   return m_block->m_ctx.m_mm.alloc_page(type_id,
                                         i,
-                                        Ndbd_mem_manager::NDB_ZONE_LE_19);
+                                        Ndbd_mem_manager::NDB_ZONE_LE_19,
+                                        allow_use_spare);
 }
 
 void*
-Pool_context::alloc_page27(Uint32 type_id, Uint32 *i)
+Pool_context::alloc_page27(Uint32 type_id,
+                           Uint32 *i,
+                           bool allow_use_spare)
 {
   return m_block->m_ctx.m_mm.alloc_page(type_id,
                                         i,
-                                        Ndbd_mem_manager::NDB_ZONE_LE_27);
+                                        Ndbd_mem_manager::NDB_ZONE_LE_27,
+                                        allow_use_spare);
 }
 
 void*
-Pool_context::alloc_page30(Uint32 type_id, Uint32 *i)
+Pool_context::alloc_page30(Uint32 type_id,
+                           Uint32 *i,
+                           bool allow_use_spare)
 {
   return m_block->m_ctx.m_mm.alloc_page(type_id,
                                         i,
-                                        Ndbd_mem_manager::NDB_ZONE_LE_30);
+                                        Ndbd_mem_manager::NDB_ZONE_LE_30,
+                                        allow_use_spare);
 }
 
 void*
-Pool_context::alloc_page32(Uint32 type_id, Uint32 *i)
+Pool_context::alloc_page32(Uint32 type_id,
+                           Uint32 *i,
+                           bool allow_use_spare)
 {
   return m_block->m_ctx.m_mm.alloc_page(type_id,
                                         i,
-                                        Ndbd_mem_manager::NDB_ZONE_LE_32);
+                                        Ndbd_mem_manager::NDB_ZONE_LE_32,
+                                        allow_use_spare);
 }
 
 void 

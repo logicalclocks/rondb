@@ -298,8 +298,7 @@ BLOCK_FUNCTIONS(Dbtup)
 
 Uint64 Dbtup::getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
-    const ndb_mgm_configuration_iterator * mgm_cfg,
-    const bool use_reserved)
+    const ndb_mgm_configuration_iterator * mgm_cfg)
 {
   Uint32 tup_scan_recs = 0;
   Uint32 tup_op_recs = 0;
@@ -547,6 +546,11 @@ void Dbtup::execSTTOR(Signal* signal)
 #endif
     break;
   }
+  case 8:
+  {
+    c_restart_allow_use_spare = false;
+    break;
+  }
   case 50:
     c_started = true;
     break;
@@ -562,9 +566,10 @@ void Dbtup::execSTTOR(Signal* signal)
     signal->theData[2] = 2;
     signal->theData[3] = ZSTARTPHASE1;
     signal->theData[4] = 3;
-    signal->theData[5] = 50;
-    signal->theData[6] = 255;
-    sendSignal(DBQTUP_REF, GSN_STTORRY, signal, 7, JBB);
+    signal->theData[5] = 8;
+    signal->theData[6] = 50;
+    signal->theData[7] = 255;
+    sendSignal(DBQTUP_REF, GSN_STTORRY, signal, 8, JBB);
   }
   else
   {
@@ -574,10 +579,11 @@ void Dbtup::execSTTOR(Signal* signal)
     signal->theData[2] = 2;
     signal->theData[3] = ZSTARTPHASE1;
     signal->theData[4] = 3;
-    signal->theData[5] = 50;
-    signal->theData[6] = 255;
+    signal->theData[5] = 8;
+    signal->theData[6] = 50;
+    signal->theData[7] = 255;
     BlockReference cntrRef = !isNdbMtLqh() ? NDBCNTR_REF : DBTUP_REF;
-    sendSignal(cntrRef, GSN_STTORRY, signal, 7, JBB);
+    sendSignal(cntrRef, GSN_STTORRY, signal, 8, JBB);
   }
 }//Dbtup::execSTTOR()
 
@@ -734,7 +740,7 @@ void Dbtup::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
   // Records with dynamic sizes
   void* ptr = m_ctx.m_mm.get_memroot();
   c_page_pool.set((Page*)ptr, (Uint32)~0);
-  c_allow_alloc_spare_page=false;
+  c_restart_allow_use_spare = true;
 
   if (m_is_query_block)
   {
@@ -1031,6 +1037,7 @@ Dbtup::initTab(Tablerec* const regTabPtr)
   regTabPtr->m_no_of_attributes = 0;
   memset(&regTabPtr->m_attributes, 0, sizeof(regTabPtr->m_attributes));
   memset(&regTabPtr->m_offsets, 0, sizeof(regTabPtr->m_offsets));
+  regTabPtr->m_allow_use_spare = false;
 
   regTabPtr->m_dropTable.tabUserPtr = RNIL;
   regTabPtr->m_dropTable.tabUserRef = 0;

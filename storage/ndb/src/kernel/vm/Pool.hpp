@@ -99,32 +99,36 @@ struct Resource_limit
   Uint32 m_max;
 
   /**
+   * After reaching this number we are only allowed to request pages using a
+   * lower priority.
+   */
+  Uint32 m_max_high_prio;
+
+  /**
     Number of pages currently in use by resource group.
   */
   Uint32 m_curr;
 
   /**
     Number of pages currently reserved as spare.
-
-    These spare pages may be used in exceptional cases, and to use them one
-    need to call special allocations functions, see alloc_spare_page in
-    Ndbd_mem_manager.
-
-    See also m_spare_pct below.
+    These pages are used by DataMemory as a way to ensure that we spare a bit
+    of memory for restart situations, for situations where we want to add new
+    fragments or reorganize fragments in some other fashion.
   */
   Uint32 m_spare;
 
   /**
-    The number of dedicated pages that a resource do not use but made available
-    for other resources to use, using give_up_pages().
+   * We have run completely out of resources and stolen pages from some other
+   * resource with reserved memory. To be able to keep the counters consistent
+   * we need to ensure that these are returned as soon as possible.
    */
-  Uint32 m_lent;
+  Uint32 m_stolen_reserved;
 
   /**
-    The number of pages this resource use from pages otherwise dedicated to
-    other resources, using take_pages().
-  */
-  Uint32 m_borrowed;
+   * We have used all our reserved resources, but calls to alloc_spare_page
+   * have extended our set of reserved pages.
+   */
+  Uint32 m_overflow_reserved;
 
   /**
     A positive number identifying the resource group.
@@ -132,9 +136,15 @@ struct Resource_limit
   Uint32 m_resource_id;
 
   /**
-    Control how many spare pages there should be for each page in use.
-  */
-  Uint32 m_spare_pct;
+   * See explanation in Resource_limits class.
+   */
+  enum PrioMemory
+  {
+    LOW_PRIO_MEMORY = 0,
+    HIGH_PRIO_MEMORY = 1,
+    ULTRA_HIGH_PRIO_MEMORY = 2
+  };
+  PrioMemory m_prio_memory;
 };
 
 class Magic
@@ -142,9 +152,18 @@ class Magic
 public:
   explicit Magic(Uint32 type_id) { m_magic = make(type_id); }
   bool check(Uint32 type_id) { return match(m_magic, type_id); }
-  template<typename T> static bool check_ptr(const T* ptr) { return match(ptr->m_magic, T::TYPE_ID); }
-static bool match(Uint32 magic, Uint32 type_id);
-static Uint32 make(Uint32 type_id);
+  template<typename T> static bool check_ptr(const T* ptr)
+  {
+    return match(ptr->m_magic, T::TYPE_ID);
+  }
+  template<typename T> static bool check_ptr_rw(const T* ptr)
+  {
+    return match_rw(ptr->m_magic, T::TYPE_ID);
+  }
+  static Uint32 make(Uint32 type_id);
+  static bool match(Uint32 magic, Uint32 type_id);
+  static Uint32 make_rw(Uint32 type_id);
+  static bool match_rw(Uint32 magic, Uint32 type_id);
 private:
   Uint32 m_magic;
 };
@@ -157,6 +176,16 @@ inline Uint32 Magic::make(Uint32 type_id)
 inline bool Magic::match(Uint32 magic, Uint32 type_id)
 {
   return magic == make(type_id);
+}
+
+inline Uint32 Magic::make_rw(Uint32 type_id)
+{
+  return ~type_id;
+}
+
+inline bool Magic::match_rw(Uint32 magic, Uint32 type_id)
+{
+  return magic == make_rw(type_id);
 }
 
 class Ndbd_mem_manager;
@@ -179,10 +208,10 @@ struct Pool_context
    *
    * Will handle resource limit
    */
-  void* alloc_page19(Uint32 type_id, Uint32 *i);
-  void* alloc_page27(Uint32 type_id, Uint32 *i);
-  void* alloc_page30(Uint32 type_id, Uint32 *i);
-  void* alloc_page32(Uint32 type_id, Uint32 *i);
+  void* alloc_page19(Uint32 type_id, Uint32 *i, bool allow_use_spare = false);
+  void* alloc_page27(Uint32 type_id, Uint32 *i, bool allow_use_spare = false);
+  void* alloc_page30(Uint32 type_id, Uint32 *i, bool allow_use_spare = false);
+  void* alloc_page32(Uint32 type_id, Uint32 *i, bool allow_use_spare = false);
 
   /**
    * Release page
@@ -592,10 +621,12 @@ public:
   ~RecordPool64();
   
   void init(Uint32 type_id, const Pool_context& pc);
-  
+
+  bool checkMagic(void *record) const;
   /**
    * Update p value for ptr according to i value 
    */
+  void getUncheckedPtr(Ptr64<T> &) const;
   void getPtr(Ptr64<T> &) const;
   void getPtr(ConstPtr64<T> &) const;
   
@@ -660,7 +691,23 @@ inline
 RecordPool64<P, T>::~RecordPool64()
 {
 }
-  
+
+template <typename P, typename T>
+inline
+bool
+RecordPool64<P, T>::checkMagic(void *record) const
+{
+  return m_pool.checkMagic(record);
+}
+
+template <typename P, typename T>
+inline
+void
+RecordPool64<P, T>::getUncheckedPtr(Ptr64<T> & ptr) const
+{
+  ptr.p = static_cast<T*>(m_pool.getUncheckedPtr(ptr.i));
+}
+
 template <typename P, typename T>
 inline
 void

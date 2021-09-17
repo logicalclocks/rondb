@@ -1112,7 +1112,7 @@ id	parent_id
 3	3
 DROP TABLE child, parent;
 CREATE TABLE t1 (a INT PRIMARY KEY, b TEXT)
-ENGINE=ndb PARTITION BY KEY(a) PARTITIONS 8160;
+ENGINE=ndb PARTITION BY KEY(a) PARTITIONS 144;
 show warnings;
 Level	Code	Message
 drop table t1;

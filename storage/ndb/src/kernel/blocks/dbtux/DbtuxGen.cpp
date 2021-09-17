@@ -41,7 +41,8 @@ Dbtux::Dbtux(Block_context& ctx,
   c_tup(0),
   c_lqh(0),
   c_acc(0),
-  c_descPageList(RNIL),
+  c_descPageList(c_descPagePool),
+  c_descMaxPagesAllocated(0),
 #ifdef VM_TRACE
   debugFile(0),
   tuxDebugOut(*new NullOutputStream()),
@@ -111,6 +112,7 @@ Dbtux::Dbtux(Block_context& ctx,
     m_acc_block = DBACC;
     m_lqh_block = DBLQH;
     m_tux_block = DBTUX;
+    m_ldm_instance_used = this;
   }
   else
   {
@@ -118,6 +120,7 @@ Dbtux::Dbtux(Block_context& ctx,
     m_acc_block = DBQACC;
     m_lqh_block = DBQLQH;
     m_tux_block = DBQTUX;
+    m_ldm_instance_used = nullptr;
     ndbrequire(blockNo == DBQTUX);
     addRecSignal(GSN_CONTINUEB, &Dbtux::execCONTINUEB);
     addRecSignal(GSN_STTOR, &Dbtux::execSTTOR);
@@ -154,8 +157,7 @@ Dbtux::~Dbtux()
 
 Uint64 Dbtux::getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
-    const ndb_mgm_configuration_iterator * mgm_cfg,
-    bool use_reserved)
+    const ndb_mgm_configuration_iterator * mgm_cfg)
 {
   Uint64 scan_op_byte_count = 0;
   Uint32 tux_scan_recs = 0;
@@ -439,23 +441,17 @@ Dbtux::execREAD_CONFIG_REQ(Signal* signal)
   ndb_mgm_get_int_parameter(p, CFG_DB_INDEX_STAT_UPDATE_DELAY,
                             &nStatUpdateDelay);
 
-  const Uint32 nDescPage = (nIndex * DescHeadSize +
-                            nAttribute * KeyTypeSize +
-                            nAttribute * AttributeHeaderSize +
-                            DescPageSize - 1) / DescPageSize;
-  const Uint32 nStatOp = 8;
+  const Uint32 nStatOp = 16;
 
   if (m_is_query_block)
   {
     c_fragOpPool.setSize(0);
     c_indexPool.setSize(0);
-    c_descPagePool.setSize(0);
   }
   else
   {
     c_fragOpPool.setSize(16);
     c_indexPool.setSize(nIndex);
-    c_descPagePool.setSize(nDescPage);
   }
   c_statOpPool.setSize(nStatOp);
   c_indexStatAutoUpdate = nStatAutoUpdate;
@@ -509,6 +505,7 @@ Dbtux::execREAD_CONFIG_REQ(Signal* signal)
   pc.m_block = this;
 
   c_fragPool.init(RT_DBTUX_FRAGMENT, pc);
+  c_descPagePool.init(RT_DBTUX_DESC_PAGE, pc);
 
   Uint32 reserveScanOpRecs = 0;
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_TUX_RESERVED_SCAN_RECORDS,
@@ -526,6 +523,7 @@ Dbtux::execREAD_CONFIG_REQ(Signal* signal)
   {
     refresh_watch_dog();
   }
+
 
   c_freeScanLock = RNIL;
   Uint32 reserveScanLockRecs = 1000;

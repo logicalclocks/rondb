@@ -134,7 +134,8 @@ Dbtup::alloc_var_part(Uint32 * err,
   pagePtr.i= get_alloc_page(fragPtr, (alloc_size + 1));
   if (pagePtr.i == RNIL) { 
     jam();
-    if ((pagePtr.i= get_empty_var_page(fragPtr)) == RNIL) {
+    if ((pagePtr.i= get_empty_var_page(fragPtr, tabPtr)) == RNIL)
+    {
       jam();
       * err = ZMEM_NOMEM_ERROR;
       return 0;
@@ -491,11 +492,12 @@ Dbtup::get_alloc_page(Fragrecord* fragPtr, Uint32 alloc_size)
 }
 
 Uint32
-Dbtup::get_empty_var_page(Fragrecord* fragPtr)
+Dbtup::get_empty_var_page(Fragrecord* fragPtr,
+                          Tablerec* tabPtrP)
 {
   PagePtr ptr;
   Uint32 cnt;
-  allocConsPages(jamBuffer(), 1, cnt, ptr.i);
+  allocConsPages(jamBuffer(), tabPtrP, 1, cnt, ptr.i);
   fragPtr->noOfVarPages+= cnt;
   if (unlikely(cnt == 0))
   {

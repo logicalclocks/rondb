@@ -45,8 +45,7 @@
 
 Uint64 Dbtc::getTransactionMemoryNeed(
     const Uint32 dbtc_instance_count,
-    const ndb_mgm_configuration_iterator * mgm_cfg,
-    const bool use_reserved)
+    const ndb_mgm_configuration_iterator * mgm_cfg)
 {
   Uint32 numFragLocation = 0;
   Uint32 numScanFragment = 0;
@@ -64,7 +63,6 @@ Uint64 Dbtc::getTransactionMemoryNeed(
   Uint32 numCommitAckMarkerBuffer = 0;
   Uint32 numTakeOverCommitAckMarkerBuffer = 0;
 
-  if (use_reserved)
   {
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_TC_RESERVED_FRAG_LOCATION,
@@ -111,54 +109,6 @@ Uint64 Dbtc::getTransactionMemoryNeed(
                                        &numTakeOverApiConnectRecord));
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_TC_RESERVED_TO_COMMIT_ACK_MARKER_BUFFER,
-                                       &numTakeOverCommitAckMarkerBuffer));
-  }
-  else
-  {
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_FRAG_LOCATION,
-                                       &numFragLocation));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_SCAN_FRAGMENT,
-                                       &numScanFragment));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_SCAN_RECORD,
-                                       &numScanRecord));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_CONNECT_RECORD,
-                                       &numConnectRecord));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_TO_CONNECT_RECORD,
-                                       &numTakeOverConnectRecord));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_COMMIT_ACK_MARKER,
-                                       &numCommitAckMarker));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_TO_COMMIT_ACK_MARKER,
-                                       &numTakeOverCommitAckMarker));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_INDEX_OPERATION,
-                                       &numIndexOperations));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_API_CONNECT_RECORD,
-                                       &numApiConnectRecord));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_TO_API_CONNECT_RECORD,
-                                       &numTakeOverApiConnectRecord));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_CACHE_RECORD,
-                                       &numCacheRecord));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_FIRED_TRIGGER_DATA,
-                                       &numFiredTriggerData));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_ATTRIBUTE_BUFFER,
-                                       &numAttributeBuffer));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_COMMIT_ACK_MARKER_BUFFER,
-                                       &numCommitAckMarkerBuffer));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_TO_COMMIT_ACK_MARKER_BUFFER,
                                        &numTakeOverCommitAckMarkerBuffer));
   }
 

@@ -603,15 +603,9 @@ static bool load_process(atrt_config& config,
       proc.m_proc.m_name.assfmt("%u-%s", proc_no, "ndbd");
       proc.m_proc.m_cwd.assfmt("%sndbd.%u", dir.c_str(), proc.m_index);
 
-      if (g_mt == 0 || (g_mt == 1 && ((g_mt_rr++) & 1) == 0)) {
-        BaseString ndbd_bin_path =
-            g_resources.getExecutableFullPath(g_resources.NDBD).c_str();
-        proc.m_proc.m_path.assign(ndbd_bin_path);
-      } else {
-        BaseString ndbmtd_bin_path =
-            g_resources.getExecutableFullPath(g_resources.NDBMTD).c_str();
-        proc.m_proc.m_path.assign(ndbmtd_bin_path);
-      }
+      BaseString ndbmtd_bin_path =
+          g_resources.getExecutableFullPath(g_resources.NDBMTD).c_str();
+      proc.m_proc.m_path.assign(ndbmtd_bin_path);
 
       proc.m_proc.m_env.appfmt(" MYSQL_GROUP_SUFFIX=%s",
                                cluster.m_name.c_str());

@@ -114,6 +114,9 @@ struct GlobalData {
   Uint64     theRedoBuffer;
   Uint64     theUndoBuffer;
   Uint64     theTransactionMemory;
+  Uint64     theSchemaMemory;
+  Uint64     theBackupSchemaMemory;
+  Uint64     theReplicationMemory;
   Uint64     theSharedGlobalMemory;
   Uint64     theLongSignalMemory;
 

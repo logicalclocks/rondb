@@ -383,6 +383,11 @@ void Dbacc::execSTTOR(Signal* signal)
 #endif
     jam();
     break;
+  case 8:
+  {
+    c_restart_allow_use_spare = false;
+    break;
+  }
   }
   Uint32 signalkey = signal->theData[6];
   if (m_is_query_block)
@@ -392,8 +397,9 @@ void Dbacc::execSTTOR(Signal* signal)
     signal->theData[2] = 2;
     signal->theData[3] = ZSPH1;
     signal->theData[4] = ZSPH3;
-    signal->theData[5] = 255;
-    sendSignal(DBQACC_REF, GSN_STTORRY, signal, 6, JBB);
+    signal->theData[5] = 8;
+    signal->theData[6] = 255;
+    sendSignal(DBQACC_REF, GSN_STTORRY, signal, 7, JBB);
   }
   else
   {
@@ -402,9 +408,10 @@ void Dbacc::execSTTOR(Signal* signal)
     signal->theData[2] = 2;
     signal->theData[3] = ZSPH1;
     signal->theData[4] = ZSPH3;
+    signal->theData[5] = 8;
     signal->theData[5] = 255;
     BlockReference cntrRef = !isNdbMtLqh() ? NDBCNTR_REF : DBACC_REF;
-    sendSignal(cntrRef, GSN_STTORRY, signal, 6, JBB);
+    sendSignal(cntrRef, GSN_STTORRY, signal, 7, JBB);
   }
 }//Dbacc::execSTTOR()
 
@@ -512,6 +519,7 @@ void Dbacc::initTable(Tabrec *tabPtrP)
   tabPtrP->tabUserRef = Uint32(~0);
   tabPtrP->tabUserPtr = RNIL;
   tabPtrP->tabUserGsn = Uint32(~0);
+  tabPtrP->m_allow_use_spare = false;
 }
 
 void Dbacc::initialiseTableRec()
@@ -592,9 +600,17 @@ void Dbacc::execACCFRAGREQ(Signal* signal)
   }//if
   Page8Ptr spPageptr;
   ndbassert(!m_is_query_block);
+  bool use_spare = false;
+  if (tabptr.p->m_allow_use_spare ||
+      c_restart_allow_use_spare)
+  {
+    jam();
+    use_spare = true;
+  }
   Uint32 result = seizePage(spPageptr,
                             Page32Lists::ANY_SUB_PAGE,
-                            c_allow_use_of_spare_pages,
+                            false,
+                            use_spare,
                             fragrecptr,
                             jamBuffer());
   if (result > ZLIMIT_OF_ERROR) {
@@ -6428,6 +6444,19 @@ Dbacc::seizePage_lock(Page8Ptr& spPageptr, int sub_page_id)
 {
   Dblqh *lqh_block;
   Dbacc *acc_block;
+  TabrecPtr tabPtr;
+  tabPtr.i = fragrecptr.p->myTableId;
+  ptrCheckGuard(tabPtr,
+                m_ldm_instance_used->ctablesize,
+                m_ldm_instance_used->tabrec);
+  bool use_spare = false;
+  if (tabPtr.p->m_allow_use_spare ||
+      m_ldm_instance_used->c_restart_allow_use_spare)
+  {
+    jam();
+    use_spare = true;
+  }
+
   bool lock_flag = get_lock_information(&acc_block, &lqh_block);
   if (lock_flag)
   {
@@ -6436,6 +6465,7 @@ Dbacc::seizePage_lock(Page8Ptr& spPageptr, int sub_page_id)
   Uint32 result = acc_block->seizePage(spPageptr,
                                        Page32Lists::ANY_SUB_PAGE,
                                        c_allow_use_of_spare_pages,
+                                       use_spare,
                                        fragrecptr,
                                        jamBuffer());
   if (lock_flag)
@@ -9484,11 +9514,13 @@ void Dbacc::getFragPtr(FragmentrecPtr &rootPtr,
                        bool ok_to_fail)
 {
   tabptr.i = tableId;
-  ptrCheckGuard(tabptr, ctablesize, tabrec);
+  ptrCheckGuard(tabptr,
+                m_ldm_instance_used->ctablesize,
+                m_ldm_instance_used->tabrec);
   rootPtr.i = c_lqh->m_ldm_instance_used->getAccFragPtrI(tabptr.i, fragId);
   if (rootPtr.i != RNIL64)
   {
-    c_fragment_pool.getPtr(rootPtr);
+    m_ldm_instance_used->c_fragment_pool.getPtr(rootPtr);
     ndbrequire(!ok_to_fail);
     return;
   }
@@ -9831,6 +9863,7 @@ void Dbacc::zpagesize_error(const char* where){
 Uint32 Dbacc::seizePage(Page8Ptr& spPageptr,
                         int sub_page_id,
                         bool allow_use_of_spare_pages,
+                        bool use_spare,
                         FragmentrecPtr fragPtr,
                         EmulatedJamBuffer *jamBuf)
 {
@@ -9845,18 +9878,29 @@ Uint32 Dbacc::seizePage(Page8Ptr& spPageptr,
     Page32Ptr ptr;
     void * p = m_ctx.m_mm.alloc_page(RT_DBACC_PAGE,
                                      &ptr.i,
-                                     Ndbd_mem_manager::NDB_ZONE_LE_30);
+                                     Ndbd_mem_manager::NDB_ZONE_LE_30,
+                                     use_spare);
     if (p == NULL && allow_use_of_spare_pages)
     {
       thrjam(jamBuf);
       p = m_ctx.m_mm.alloc_spare_page(RT_DBACC_PAGE,
                                       &ptr.i,
-                                      Ndbd_mem_manager::NDB_ZONE_LE_30);
+                                      Ndbd_mem_manager::NDB_ZONE_LE_30,
+                                      false,
+                                      FORCE_RESERVED);
     }
     if (p == NULL)
     {
       thrjam(jamBuf);
       zpagesize_error("Dbacc::seizePage");
+      char buf[256];
+      BaseString::snprintf(buf, sizeof(buf),
+                           "Global memory manager is out of memory completely,"
+                           " no memory in shared global memory left and no"
+                           " memory in reserved memory either.");
+      progError(__LINE__,
+                NDBD_OUT_OF_MEMORY,
+                buf);
       return Uint32(ZPAGESIZE_ERROR);
     }
     ptr.p = static_cast<Page32*>(p);

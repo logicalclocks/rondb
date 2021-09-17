@@ -750,6 +750,8 @@ public:
   MapFragRecord_pool c_map_fragment_pool;
 
   struct Fragrecord {
+    static constexpr Uint32 TYPE_ID = RT_DBLQH_FRAGMENT;
+    Uint32 m_magic;
     Fragrecord()
     {
       m_concurrent_scan_count = 0;
@@ -764,13 +766,6 @@ public:
       fragStatus = FREE;
     }
 
-    NdbMutex frag_mutex;
-#ifdef DEBUG_FRAGMENT_LOCK
-    Uint16 lock_line[LOCK_LINE_MASK + 1];
-    Uint32 lock_line_index;
-#endif
-    struct NdbCondition frag_write_cond;
-    struct NdbCondition frag_read_cond;
     Uint32 m_concurrent_scan_count;
     Uint32 m_concurrent_read_key_count;
     Uint32 m_cond_read_waiters;
@@ -839,25 +834,6 @@ public:
       LCP_STATE_TRUE = 0,
       LCP_STATE_FALSE = 1
     };
-    Uint32 m_magic;
-    /**
-     *        Last GCI for executing the fragment log in this phase.
-     */
-    UintR execSrLastGci[4];
-    /**
-     *       Start GCI for executing the fragment log in this phase.
-     */
-    UintR execSrStartGci[4];
-    /**
-     *       Requesting user pointer for executing the fragment log in
-     *       this phase
-     */
-    UintR execSrUserptr[4];
-    /**
-     *       The LCP identifier of the LCP's. 
-     *       =0 means that the LCP number has not been stored.
-     *       The LCP identifier is supplied by DIH when starting the LCP.   
-     */
     UintR lcpId[MAX_LCP_STORED];
     UintR maxGciInLcp;
 
@@ -869,27 +845,6 @@ public:
      *       Maximum 4 local checkpoints is possible in this release.
      */
     UintR maxGciCompletedInLcp;
-    UintR srLastGci[4];
-    UintR srStartGci[4];
-    /**
-     *       The fragment pointers in ACC
-     */
-    Uint64 accFragptr;
-    /**
-     *       The EXEC_SR variables are used to keep track of which fragments  
-     *       that are interested in being executed as part of executing the    
-     *       fragment loop. 
-     *       It is initialised for every phase of executing the 
-     *       fragment log (the fragment log can be executed upto four times).  
-     *                                                                         
-     *       Each execution is capable of executing the log records on four    
-     *       fragment replicas.                                                
-     */
-    /**
-     *       Requesting block reference for executing the fragment log
-     *       in this phase.
-     */
-    BlockReference execSrBlockref[4];
     /**
      *       This variable contains references to active scan and copy     
      *       fragment operations on the fragment. 
@@ -902,12 +857,40 @@ public:
     ScanRecord_fifo::Head m_queuedTupScans;
     ScanRecord_fifo::Head m_queuedAccScans;
 
-    Uint16 srLqhLognode[4];
     /**
      *       The fragment pointers in TUP and TUX
      */
     Uint64 tupFragptr;
     Uint64 tuxFragptr;
+    /**
+     *       The fragment pointer in ACC
+     */
+    Uint64 accFragptr;
+
+    /**
+     *       Reference to the next fragment record in a free list of fragment 
+     *       records.              
+     */
+    union {
+      Uint64 nextPool;
+      Uint64 nextList;
+    };
+    Uint64 prevList;
+    /**
+     *       For ordered index fragment, i-value of corresponding
+     *       fragment in primary table.
+     */
+    Uint64 tableFragptr;
+ 
+    /**
+     * Log part
+     */
+    LogPartRecord *m_log_part_ptr_p;
+
+    /**
+     *       The GCI when the table was created
+     */
+    Uint32 createGci;
 
     /**
      *       This variable keeps track of how many operations that are 
@@ -933,18 +916,6 @@ public:
     FragStatus fragStatus;
 
     /**
-     * 0 = undefined i.e fragStatus != ACTIVE_CREATION
-     * 1 = yes
-     * 2 = no
-     */
-    enum ActiveCreat {
-      AC_NORMAL = 0,  // fragStatus != ACTIVE_CREATION
-      AC_IGNORED = 1, // Operation that got ignored during NR
-      AC_NR_COPY = 2  // Operation that got performed during NR
-    };
-    Uint8 m_copy_started_state; 
-
-    /**
      *       This flag indicates whether logging is currently activated at 
      *       the fragment.  
      *       During a system restart it is temporarily shut off. 
@@ -956,21 +927,6 @@ public:
      *       This variable contains the maximum global checkpoint identifier 
      *       which was completed when the local checkpoint was started.
      */
-    /**
-     *       Reference to the next fragment record in a free list of fragment 
-     *       records.              
-     */
-    union {
-      Uint64 nextPool;
-      Uint64 nextList;
-    };
-    Uint64 prevList;
-    /**
-     *       For ordered index fragment, i-value of corresponding
-     *       fragment in primary table.
-     */
-    Uint64 tableFragptr;
-    
     /**
      *       The newest GCI that has been committed on fragment             
      */
@@ -1037,11 +993,29 @@ public:
      */
     Uint16 lqhInstanceKey;
     /**
+     *       How many local checkpoints does the fragment contain
+     */
+    Uint16 srChkpnr;
+
+    /**
      *       The number of fragment replicas that will execute the log
      *       records in this round of executing the fragment
      *       log.  Maximum four is possible.
      */
     Uint8 execSrNoReplicas;
+
+    /**
+     * 0 = undefined i.e fragStatus != ACTIVE_CREATION
+     * 1 = yes
+     * 2 = no
+     */
+    enum ActiveCreat {
+      AC_NORMAL = 0,  // fragStatus != ACTIVE_CREATION
+      AC_IGNORED = 1, // Operation that got ignored during NR
+      AC_NR_COPY = 2  // Operation that got performed during NR
+    };
+    Uint8 m_copy_started_state; 
+
     /**
      *       This variable contains what type of replica this fragment
      *       is.  Two types are possible:  
@@ -1060,24 +1034,11 @@ public:
      *       heard of.
      */
     Uint8 fragDistributionKey;
-   /**
-     *       How many local checkpoints does the fragment contain
-     */
-    Uint16 srChkpnr;
     Uint8  srNoLognodes;
     /**
      *       Table type.
      */
     Uint8 tableType;
-    /**
-     *       The GCI when the table was created
-     */
-    Uint32 createGci;
-
-    /**
-     * Log part
-     */
-    LogPartRecord *m_log_part_ptr_p;
     /**
      * LCP_FRAG_ORD info for the c_queued_lcp_frag_ord queue.
      */
@@ -1200,6 +1161,52 @@ public:
      * first local LCP is 1.
      */
     Uint8 m_local_lcp_instance_started;
+
+    /**
+     *        Last GCI for executing the fragment log in this phase.
+     */
+    UintR execSrLastGci[4];
+    /**
+     *       Start GCI for executing the fragment log in this phase.
+     */
+    UintR execSrStartGci[4];
+    /**
+     *       Requesting user pointer for executing the fragment log in
+     *       this phase
+     */
+    UintR execSrUserptr[4];
+    /**
+     *       The LCP identifier of the LCP's. 
+     *       =0 means that the LCP number has not been stored.
+     *       The LCP identifier is supplied by DIH when starting the LCP.   
+     */
+
+    UintR srLastGci[4];
+    UintR srStartGci[4];
+    /**
+     *       The EXEC_SR variables are used to keep track of which fragments  
+     *       that are interested in being executed as part of executing the    
+     *       fragment loop. 
+     *       It is initialised for every phase of executing the 
+     *       fragment log (the fragment log can be executed upto four times).  
+     *                                                                         
+     *       Each execution is capable of executing the log records on four    
+     *       fragment replicas.                                                
+     */
+    /**
+     *       Requesting block reference for executing the fragment log
+     *       in this phase.
+     */
+    BlockReference execSrBlockref[4];
+    Uint16 srLqhLognode[4];
+
+    NdbMutex frag_mutex;
+#ifdef DEBUG_FRAGMENT_LOCK
+    Uint16 lock_line[LOCK_LINE_MASK + 1];
+    Uint32 lock_line_index;
+#endif
+    struct NdbCondition frag_write_cond;
+    struct NdbCondition frag_read_cond;
   };
   typedef Ptr64<Fragrecord> FragrecordPtr;
   typedef RecordPool64<RWPool64<Fragrecord> > Fragrecord_pool;
@@ -4923,6 +4930,10 @@ private:
   void init_frags_to_execute_sr();
   Uint32 get_frags_to_execute_sr();
 public:
+  void set_error_value(Uint32 val)
+  {
+    SET_ERROR_INSERT_VALUE(val);
+  }
   void increment_usage_count_for_table(Uint32 tableId);
   void decrement_usage_count_for_table(Uint32 tableId);
   void reset_old_fragment_lock_status();
@@ -5045,8 +5056,7 @@ public:
 
   static Uint64 getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
-    const ndb_mgm_configuration_iterator * mgm_cfg,
-    const bool use_reserved);
+    const ndb_mgm_configuration_iterator * mgm_cfg);
 
   static size_t getFragmentRecordSize()
   {

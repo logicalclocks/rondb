@@ -83,20 +83,17 @@ Dbtup::tuxAllocNode(EmulatedJamBuffer * jamBuf,
 
   Local_key key;
   Uint32* ptr, frag_page_id, err;
-  c_allow_alloc_spare_page=true;
   if ((ptr = alloc_fix_rec(jamBuf,
                            &err,
                            fragPtrP,
                            tablePtrP,
-                           &key, 
+                           &key,
                            &frag_page_id)) == 0)
   {
-    c_allow_alloc_spare_page=false;
     thrjam(jamBuf);
     return err;
   }
   release_frag_mutex(fragPtrP, frag_page_id);
-  c_allow_alloc_spare_page=false;
   pageId= key.m_page_no;
   pageOffset= key.m_page_idx;
   Uint32 attrDes2 = tablePtrP->tabDescriptor[1];

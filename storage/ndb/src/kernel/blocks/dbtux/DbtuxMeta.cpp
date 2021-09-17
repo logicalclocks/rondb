@@ -99,7 +99,7 @@ Dbtux::execCREATE_TAB_REQ(Signal* signal)
                DictTabInfo::isOrderedIndex(req->tableType) &&
                req->noOfAttributes > 0 &&
                req->noOfAttributes <= MaxIndexAttributes &&
-               indexPtr.p->m_descPage == RNIL);
+               indexPtr.p->m_descPage == RNIL64);
 
     indexPtr.p->m_state = Index::Defining;
     indexPtr.p->m_tableType = (DictTabInfo::TableType)req->tableType;
@@ -587,10 +587,11 @@ Dbtux::dropIndex(Signal* signal,
     }
   }
   // drop attributes
-  if (indexPtr.p->m_descPage != RNIL) {
+  if (indexPtr.p->m_descPage != RNIL64)
+  {
     jam();
     freeDescEnt(indexPtr);
-    indexPtr.p->m_descPage = RNIL;
+    indexPtr.p->m_descPage = RNIL64;
   }
   if (senderRef != 0) {
     jam();
@@ -613,28 +614,37 @@ bool
 Dbtux::allocDescEnt(IndexPtr indexPtr)
 {
   jam();
+  ndbrequire(!m_is_query_block);
   const Uint32 size = getDescSize(*indexPtr.p);
-  DescPagePtr pagePtr;
-  pagePtr.i = c_descPageList;
-  while (pagePtr.i != RNIL) {
+  DescPage64Ptr pagePtr;
+  c_descPageList.first(pagePtr);
+  while (pagePtr.i != RNIL64)
+  {
     jam();
     c_descPagePool.getPtr(pagePtr);
-    if (pagePtr.p->m_numFree >= size) {
+    if (pagePtr.p->m_numFree >= size)
+    {
       jam();
       break;
     }
-    pagePtr.i = pagePtr.p->m_nextPage;
+    c_descPageList.next(pagePtr);
   }
-  if (pagePtr.i == RNIL) {
+  if (pagePtr.i == RNIL64)
+  {
     jam();
-    if (! c_descPagePool.seize(pagePtr)) {
+    if (! c_descPagePool.seize(pagePtr))
+    {
       jam();
       return false;
     }
-    new (pagePtr.p) DescPage();
     // add in front of list
-    pagePtr.p->m_nextPage = c_descPageList;
-    c_descPageList = pagePtr.i;
+    c_descPageList.addFirst(pagePtr);
+    if (c_descPageList.getCount() > c_descMaxPagesAllocated)
+    {
+      jam();
+      c_descMaxPagesAllocated = c_descPageList.getCount();
+    }
+    new (pagePtr.p) DescPage();
     pagePtr.p->m_numFree = DescPageSize;
   }
   ndbrequire(pagePtr.p->m_numFree >= size);
@@ -654,8 +664,10 @@ Dbtux::allocDescEnt(IndexPtr indexPtr)
 void
 Dbtux::freeDescEnt(IndexPtr indexPtr)
 {
-  DescPagePtr pagePtr;
-  c_descPagePool.getPtr(pagePtr, indexPtr.p->m_descPage);
+  ndbrequire(!m_is_query_block);
+  DescPage64Ptr pagePtr;
+  pagePtr.i = indexPtr.p->m_descPage;
+  c_descPagePool.getPtr(pagePtr);
   Uint32* const data = pagePtr.p->m_data;
   const Uint32 size = getDescSize(*indexPtr.p);
   Uint32 off = indexPtr.p->m_descOff;
@@ -690,6 +702,12 @@ Dbtux::freeDescEnt(IndexPtr indexPtr)
   }
   ndbrequire(off + size == DescPageSize - pagePtr.p->m_numFree);
   pagePtr.p->m_numFree += size;
+  if (pagePtr.p->m_numFree == DescPageSize)
+  {
+    jam();
+    c_descPageList.remove(pagePtr);
+    c_descPagePool.release(pagePtr);
+  }
 }
 
 void

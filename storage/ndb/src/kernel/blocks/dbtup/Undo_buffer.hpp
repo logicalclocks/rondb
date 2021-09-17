@@ -43,8 +43,9 @@ struct Undo_buffer
    *
    * @return 0 if unable to alloc space
    */
-  Uint32 * alloc_copy_tuple(Local_key* dst, Uint32 words);
-  bool reuse_page_for_copy_tuple(Uint32 reuse_page);
+  Uint32 * alloc_copy_tuple(Local_key* dst,
+                            Uint32 words,
+                            bool allow_use_spare = false);
 
   /**
    * Shrink size of copy tuple

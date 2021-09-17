@@ -1027,14 +1027,6 @@ void Cmvmi::execSTTOR(Signal* signal)
       return;
     }
 #endif
-    const ndb_mgm_configuration_iterator * p =
-      m_ctx.m_config.getOwnConfigIterator();
-    ndbrequire(p != 0);
-
-    Uint32 free_pct = 5;
-    ndb_mgm_get_int_parameter(p, CFG_DB_FREE_PCT, &free_pct);
-    m_ctx.m_mm.init_resource_spare(RG_DATAMEM, free_pct);
-
     globalData.theStartLevel = NodeState::SL_STARTED;
     sendSTTORRY(signal);
   }
@@ -2113,10 +2105,9 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
       infoEvent("Resource reserved total: %u used: %u",
                 m_ctx.m_mm.get_reserved(),
                 m_ctx.m_mm.get_reserved_in_use());
-      infoEvent("Resource shared total: %u used: %u spare: %u",
+      infoEvent("Resource shared total: %u used: %u",
                 m_ctx.m_mm.get_shared(),
-                m_ctx.m_mm.get_shared_in_use(),
-                m_ctx.m_mm.get_spare());
+                m_ctx.m_mm.get_shared_in_use());
       id++;
     }
     Resource_limit rl;
@@ -2126,10 +2117,23 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
       {
         continue;
       }
-      if (rl.m_min || rl.m_curr || rl.m_max || rl.m_spare)
+      if (rl.m_min ||
+          rl.m_curr ||
+          rl.m_max ||
+          rl.m_spare)
       {
-        infoEvent("Resource %u min: %u max: %u curr: %u spare: %u",
-                  id, rl.m_min, rl.m_max, rl.m_curr, rl.m_spare);
+        infoEvent("Resource %u min: %u max: %u curr: %u spare: %u"
+                  ", stolen: %u, overflow: %u, max_high_prio: %u"
+                  ", prio: %u",
+                  id,
+                  rl.m_min,
+                  rl.m_max,
+                  rl.m_curr,
+                  rl.m_spare,
+                  rl.m_stolen_reserved,
+                  rl.m_overflow_reserved,
+                  rl.m_max_high_prio,
+                  (Uint32)rl.m_prio_memory);
       }
     }
     m_ctx.m_mm.dump(false); // To data node log
@@ -2608,8 +2612,7 @@ void Cmvmi::execDBINFO_SCANREQ(Signal *signal)
     m_ctx.m_mm.get_resource_limit(RG_DATAMEM, res_limit);
 
     const Uint32 dm_pages_used = res_limit.m_curr;
-    const Uint32 dm_pages_total =
-      res_limit.m_max > 0 ? res_limit.m_max : res_limit.m_min;
+    const Uint32 dm_pages_total = m_ctx.m_mm.get_reserved(RG_DATAMEM);
 
     Ndbinfo::pool_entry pools[] =
     {
@@ -3620,8 +3623,7 @@ Cmvmi::execCONTINUEB(Signal* signal)
     m_ctx.m_mm.get_resource_limit(RG_DATAMEM, rl);
     {
       const Uint32 dm_pages_used = rl.m_curr;
-      const Uint32 dm_pages_total =
-          (rl.m_max < Resource_limit::HIGHEST_LIMIT) ? rl.m_max : rl.m_min;
+      const Uint32 dm_pages_total = m_ctx.m_mm.get_reserved(RG_DATAMEM);
       const Uint32 dm_percent_now = calc_percent(dm_pages_used,
                                                  dm_pages_total);
 
@@ -3699,8 +3701,7 @@ Cmvmi::reportDMUsage(Signal* signal, int incDec, BlockReference ref)
   m_ctx.m_mm.get_resource_limit(RG_DATAMEM, rl);
 
   const Uint32 dm_pages_used = rl.m_curr;
-  const Uint32 dm_pages_total =
-      (rl.m_max < Resource_limit::HIGHEST_LIMIT) ? rl.m_max : rl.m_min;
+  const Uint32 dm_pages_total = m_ctx.m_mm.get_reserved(RG_DATAMEM);
 
   const Uint32 acc_pages_used =
     sum_array(g_acc_pages_used, NDB_ARRAY_SIZE(g_acc_pages_used));
@@ -3725,8 +3726,7 @@ Cmvmi::reportIMUsage(Signal* signal, int incDec, BlockReference ref)
   m_ctx.m_mm.get_resource_limit(RG_DATAMEM, rl);
 
   const Uint32 dm_pages_used = rl.m_curr;
-  const Uint32 dm_pages_total =
-      (rl.m_max < Resource_limit::HIGHEST_LIMIT) ? rl.m_max : rl.m_min;
+  const Uint32 dm_pages_total = m_ctx.m_mm.get_reserved(RG_DATAMEM);
 
   const Uint32 acc_pages_used =
     sum_array(g_acc_pages_used, NDB_ARRAY_SIZE(g_acc_pages_used));

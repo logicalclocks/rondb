@@ -3030,8 +3030,7 @@ public:
   }
   static Uint64 getTransactionMemoryNeed(
       const Uint32 dbtc_instance_count,
-      const ndb_mgm_configuration_iterator * mgm_cfg,
-      const bool use_reserved);
+      const ndb_mgm_configuration_iterator * mgm_cfg);
 #endif
 };
 

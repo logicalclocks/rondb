@@ -48,13 +48,7 @@ if [ -f "$MYSQL_BASE_DIR/bin/ndb_mgm" ]; then
   NDB_MGM="$MYSQL_BASE_DIR/bin/ndb_mgm"
 fi
 
-NDB_NDBD="$MYSQL_BASE_DIR/bin/ndbd"
-if [ -f "$MYSQL_BASE_DIR/bin/ndbmtd" ]; then
-  NDB_NDBD="$MYSQL_BASE_DIR/bin/ndbmtd"
-fi
-if [ -f "$MYSQL_BASE_DIR/storage/ndb/src/kernel/ndbd" ]; then
-  NDB_NDBD="$MYSQL_BASE_DIR/storage/ndb/src/kernel/ndbd"
-fi
+NDB_NDBD="$MYSQL_BASE_DIR/bin/ndbmtd"
 if [ -f "$MYSQL_BASE_DIR/storage/ndb/src/kernel/ndbmtd" ]; then
   NDB_NDBD="$MYSQL_BASE_DIR/storage/ndb/src/kernel/ndbmtd"
 fi

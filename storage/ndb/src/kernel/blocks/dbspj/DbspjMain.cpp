@@ -617,7 +617,7 @@ void Dbspj::execSTTOR(Signal* signal)
       }
 
       Resource_limit rl;
-      if (m_ctx.m_mm.get_resource_limit(7, rl))
+      if (m_ctx.m_mm.get_resource_limit(RG_QUERY_MEMORY, rl))
       {
         g_eventLogger->info("Resource %d min: %d max: %d curr: %d", 7, rl.m_min,
                             rl.m_max, rl.m_curr);

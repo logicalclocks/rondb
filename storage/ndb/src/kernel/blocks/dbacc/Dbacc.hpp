@@ -882,6 +882,7 @@ struct Tabrec {
   Uint32 tabUserPtr;
   BlockReference tabUserRef;
   Uint32 tabUserGsn;
+  bool m_allow_use_spare;
 };
   typedef Ptr<Tabrec> TabrecPtr;
 
@@ -1158,6 +1159,7 @@ private:
   Uint32 seizePage(Page8Ptr& spPageptr,
                    int sub_page_id,
                    bool allow_use_of_spare_pages,
+                   bool use_spare,
                    FragmentrecPtr fragPtr,
                    EmulatedJamBuffer *jamBuf);
   Uint32 seizePage_lock(Page8Ptr& spPageptr, int sub_page_id);
@@ -1217,6 +1219,7 @@ private:
   Page32_pool c_page_pool;
   Page8_pool c_page8_pool;
   bool c_allow_use_of_spare_pages;
+  bool c_restart_allow_use_spare;
 /* --------------------------------------------------------------------------------- */
 /* ROOTFRAGMENTREC                                                                   */
 /*          DURING EXPAND FRAGMENT PROCESS, EACH FRAGMEND WILL BE EXPAND INTO TWO    */
@@ -1258,8 +1261,7 @@ public:
                   bool ok_to_fail);
   static Uint64 getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
-    const ndb_mgm_configuration_iterator * mgm_cfg,
-    const bool use_reserved);
+    const ndb_mgm_configuration_iterator * mgm_cfg);
   bool seize_op_rec(Uint32 userptr,
                     BlockReference ref,
                     Uint32 &i_val,

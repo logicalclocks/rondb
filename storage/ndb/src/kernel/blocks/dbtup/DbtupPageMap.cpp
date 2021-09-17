@@ -844,7 +844,11 @@ Dbtup::allocFragPage(EmulatedJamBuffer* jamBuf,
   Uint32 noOfPagesAllocated = 0;
   Uint32 list = regFragPtr->m_free_page_id_list;
 
-  allocConsPages(jamBuf, 1, noOfPagesAllocated, pagePtr.i);
+  allocConsPages(jamBuf,
+                 regTabPtr,
+                 1,
+                 noOfPagesAllocated,
+                 pagePtr.i);
   if (noOfPagesAllocated == 0) 
   {
     thrjam(jamBuf);
@@ -954,7 +958,11 @@ Dbtup::allocFragPage(Uint32 * err,
   }
   
   Uint32 noOfPagesAllocated = 0;
-  allocConsPages(jamBuffer(), 1, noOfPagesAllocated, pagePtr.i);
+  allocConsPages(jamBuffer(),
+                 tabPtrP,
+                 1,
+                 noOfPagesAllocated,
+                 pagePtr.i);
   if (unlikely(noOfPagesAllocated == 0))
   {
     release_frag_page_map_mutex(fragPtrP);

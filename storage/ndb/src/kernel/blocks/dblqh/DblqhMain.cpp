@@ -1531,8 +1531,6 @@ void Dblqh::execSTTOR(Signal* signal)
       Dbtux *tux_block = (Dbtux*)globalData.getBlock(DBTUX, 1);
       c_tux->c_indexPool.setNewSize(
         tux_block->c_indexPool.getSize());
-      c_tux->c_descPagePool.setNewSize(
-        tux_block->c_descPagePool.getSize());
       signal->theData[0] = cownref;
       sendSignal(NDBCNTR_REF, GSN_READ_NODESREQ, signal, 1, JBB);
       return;
@@ -6590,7 +6588,9 @@ Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr,
   {
     lock_alloc_operation();
   }
-  if (ctcNumFreeShared > 0)
+  if (ctcNumFreeShared > 0 &&
+      (!ERROR_INSERTED(5031)) &&
+      (!ERROR_INSERTED(5099)))
   {
     thrjamDebug(jamBuf);
 #ifdef CONNECT_DEBUG
@@ -6606,7 +6606,7 @@ Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr,
     return true;
   }
 #ifdef CONNECT_DEBUG
-    ctcNumUseTM++;
+  ctcNumUseTM++;
 #endif
   thrjamDebug(jamBuf);
   if (unlikely(!tcConnect_pool.seize(opPtr)))
@@ -8731,10 +8731,9 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
       }
     }
     bool succ = lqh->seize_op_rec(tcConnectptr, use_lock, jamBuffer());
-    if (unlikely(!succ || ERROR_INSERTED_CLEAR(5031)))
+    if (unlikely(!succ))
     {
       jam();
-      ERROR_INSERTED_CLEAR(5031);
       releaseSections(handle);
       earlyKeyReqAbort(signal,
                        lqhKeyReq,
@@ -9582,6 +9581,26 @@ void Dblqh::prepareContinueAfterBlockedLab(
      * When we receive a close scan request either from timeout or from
      * SCAN_NEXTREQ we need to perform the following:
      * 1) Wait until any ongoing LQHKEYREQ in Query thread is completed
+     *
+     *    This is accomplished by incrementing scanPtrP->m_takeOverRefCount
+     *    before taking over the lock from the scan operation. When
+     *    starting this takeover, we don't want another thread to remove the
+     *    scan in the short time while we are taking over the lock.
+     *    This is checked in closeScanRequestLab.
+     *
+     *    The m_takeOverRefCount is protected by the take over hash mutex.
+     *    This means that it is incremented with a lock, also the first
+     *    check of the counter must be protected. However when discovering
+     *    that the counter is > 0 the only thing that can bring it to 0 is
+     *    that the lock take over is completed. There is no need to protect
+     *    this with a mutex. Also no need to protect the decrement of the
+     *    counter. Before starting the check of the counter we changed the
+     *    state of the scan to ensure that no more incremements to the
+     *    counter can happen. Thus we are only waiting for active LQHKEYREQ
+     *    take overs to complete their take over action before we proceed.
+     *    Once the take over is complete the operation is independent of
+     *    the scan operation, thus no need for more checks.
+     *    
      * 2) Change scanState to ensure that no more Take Over operations
      * are accepted for this scan.
      *
@@ -9635,7 +9654,6 @@ void Dblqh::prepareContinueAfterBlockedLab(
       {
         m_curr_lqh->unlock_take_over_hash();
       }
-      ndbabort();
       takeOverErrorLab(signal, tcConnectptr);
       return;
     }//if
@@ -9657,7 +9675,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
       scanptr.p->m_takeOverRefCount++;
       m_curr_lqh->unlock_take_over_hash();
     }
-  }//if
+  }
 /*-------------------------------------------------------------------*/
 /*       IT IS NOW TIME TO CONTACT ACC. THE TUPLE KEY WILL BE SENT   */
 /*       AND THIS WILL BE TRANSLATED INTO A LOCAL KEY BY USING THE   */
@@ -9708,7 +9726,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
       /**
        * Delete by ROWID from RESTORE
        */
-      ndbassert(!m_is_query_block);
+      ndbassert(!m_is_in_query_thread);
       ndbrequire(!regTcPtr->indTakeOver);
       ndbrequire(LqhKeyReq::getRowidFlag(regTcPtr->reqinfo));
       ndbrequire(regTcPtr->operation == ZDELETE);
@@ -9804,6 +9822,7 @@ Dblqh::exec_acckeyreq(Signal* signal, TcConnectionrecPtr regTcPtr)
   {
     jam();
     scanptr.p->m_takeOverRefCount--;
+    mb();
   }
   if (signal->theData[0] < RNIL)
   {
@@ -14496,7 +14515,6 @@ void Dblqh::abortContinueAfterBlockedLab(Signal* signal,
   if (signal->theData[1] == RNIL)
   {
     jam();
-    ndbassert(!m_is_query_block);
     /* ------------------------------------------------------------------------
      * We need to insert a real-time break by sending ACC_ABORTCONF through the
      * job buffer to ensure that we catch any ACCKEYCONF or TUPKEYCONF or
@@ -15398,6 +15416,7 @@ Dblqh::setup_query_thread_for_scan_access(Uint32 instanceNo)
   Dbtux *tux_block = (Dbtux*) globalData.getBlock(DBTUX, instanceNo);
   c_acc->m_ldm_instance_used = acc_block;
   c_tup->m_ldm_instance_used = tup_block;
+  c_tux->m_ldm_instance_used = tux_block;
   this->m_ldm_instance_used = lqh_block;
   this->tablerec = lqh_block->tablerec;
 
@@ -15408,8 +15427,6 @@ Dblqh::setup_query_thread_for_scan_access(Uint32 instanceNo)
 
   c_tux->c_indexPool.setArrayPtr(
     tux_block->c_indexPool.getArrayPtr());
-  c_tux->c_descPagePool.setArrayPtr(
-    tux_block->c_descPagePool.getArrayPtr());
 }
 
 void
@@ -15546,20 +15563,23 @@ void Dblqh::setup_key_pointers(Uint32 tcIndex, bool acquire_lock)
   FragrecordPtr fragPtr;
   tcConnectptr.i = tcIndex;
   ndbassert(!m_is_query_block);
-  ndbrequire(tcConnect_pool.getUncheckedPtrRW(tcConnectptr));
+  bool ret_tc = tcConnect_pool.getUncheckedPtrRW(tcConnectptr);
   c_tup->prepare_op_pointer(tcConnectptr.p->tupConnectrec,
                             tcConnectptr.p->tupConnectPtrP);
-  c_fragment_pool.getPtr(fragPtr, tcConnectptr.p->fragmentptr);
+  fragPtr.i = tcConnectptr.p->fragmentptr;
+  c_fragment_pool.getUncheckedPtr(fragPtr);
   fragptr = fragPtr;
   c_tup->prepare_tab_pointers(fragPtr.p->tupFragptr);
   c_acc->prepare_tab_pointers(fragPtr.p->accFragptr);
   m_tc_connect_ptr = tcConnectptr;
+  ndbrequire(ret_tc);
+  ndbrequire(Magic::check_ptr_rw(fragPtr.p));
   ndbrequire(Magic::check_ptr(tcConnectptr.p));
   ndbrequire(Magic::check_ptr(tcConnectptr.p->tupConnectPtrP));
   ndbrequire(Magic::check_ptr(tcConnectptr.p->accConnectPtrP));
   if (qt_likely((globalData.ndbMtQueryWorkers > 0) && acquire_lock))
   {
-    acquire_frag_prepare_key_access(fragptr.p, m_tc_connect_ptr.p);
+    acquire_frag_prepare_key_access(fragPtr.p, tcConnectptr.p);
   }
 }
 
@@ -15675,21 +15695,22 @@ void Dblqh::setup_scan_pointers_from_tc_con(TcConnectionrecPtr tcConnectptr,
   {
     setup_query_thread_for_scan_access(tcConnectptr.p->ldmInstance);
   }
-  ndbrequire(c_scanRecordPool.getUncheckedPtrRW(loc_scanptr));
+  bool ret_scan = c_scanRecordPool.getUncheckedPtrRW(loc_scanptr);
   loc_prim_tab_fragptr.i = loc_scanptr.p->fragPtrI;
-  c_fragment_pool.getPtr(loc_fragptr);
+  c_fragment_pool.getUncheckedPtr(loc_fragptr);
   m_scan_direct_count = 1;
   m_tot_scan_direct_count = 0;
   SimulatedBlock *block = loc_scanptr.p->scanBlock;
   scanptr = loc_scanptr;
   fragptr = loc_fragptr;
-  c_fragment_pool.getPtr(loc_prim_tab_fragptr);
+  c_fragment_pool.getUncheckedPtr(loc_prim_tab_fragptr);
   c_tup->prepare_op_pointer(tcConnectptr.p->tupConnectrec,
                             tcConnectptr.p->tupConnectPtrP);
   m_tc_connect_ptr = tcConnectptr;
   prim_tab_fragptr = loc_prim_tab_fragptr;
   c_tup->prepare_tab_pointers(loc_prim_tab_fragptr.p->tupFragptr);
   c_acc->prepare_tab_pointers(loc_prim_tab_fragptr.p->accFragptr);
+  ndbrequire(ret_scan);
   ndbrequire(Magic::check_ptr(loc_scanptr.p));
   if (likely(loc_scanptr.p->scanStoredProcId != RNIL))
   {
@@ -15707,12 +15728,14 @@ void Dblqh::setup_scan_pointers_from_tc_con(TcConnectionrecPtr tcConnectptr,
    * position, so it isn't safe to prepare scan context without having
    * ensured shared access to the fragment.
    */
-  acquire_frag_scan_access_new(prim_tab_fragptr.p, m_tc_connect_ptr.p);
+  acquire_frag_scan_access_new(loc_prim_tab_fragptr.p, tcConnectptr.p);
   if (likely(loc_scanptr.p->scanAccPtr != RNIL))
   {
     jamDebug();
     block->prepare_scan_ctx(loc_scanptr.p->scanAccPtr);
   }
+  ndbrequire(Magic::check_ptr_rw(loc_fragptr.p));
+  ndbrequire(Magic::check_ptr_rw(loc_prim_tab_fragptr.p));
   ndbrequire(Magic::check_ptr(tcConnectptr.p->tupConnectPtrP));
   ndbrequire(Magic::check_ptr(tcConnectptr.p->accConnectPtrP));
   loc_scanptr.p->scan_startLine = line;
@@ -15732,23 +15755,25 @@ void Dblqh::setup_scan_pointers(Uint32 scanPtrI, Uint32 line)
   ScanRecordPtr loc_scanptr;
   TcConnectionrecPtr loc_tcConnectptr;
   loc_scanptr.i = scanPtrI;
-  ndbrequire(c_scanRecordPool.getUncheckedPtrRW(loc_scanptr));
+  bool ret_scan = c_scanRecordPool.getUncheckedPtrRW(loc_scanptr);
   loc_tcConnectptr.i = loc_scanptr.p->scanTcrec;
   loc_prim_tab_fragptr.i = loc_scanptr.p->fragPtrI;
-  ndbrequire(tcConnect_pool.getUncheckedPtrRW(loc_tcConnectptr));
+  bool ret_tc = tcConnect_pool.getUncheckedPtrRW(loc_tcConnectptr);
   if (qt_likely(m_is_query_block))
   {
     setup_query_thread_for_scan_access(loc_tcConnectptr.p->ldmInstance);
   }
   loc_fragptr.i = loc_tcConnectptr.p->fragmentptr;
-  c_fragment_pool.getPtr(loc_prim_tab_fragptr);
-  c_fragment_pool.getPtr(loc_fragptr);
+  c_fragment_pool.getUncheckedPtr(loc_prim_tab_fragptr);
+  c_fragment_pool.getUncheckedPtr(loc_fragptr);
   m_scan_direct_count = 1;
   m_tot_scan_direct_count = 0;
   prim_tab_fragptr = loc_prim_tab_fragptr;
   scanptr = loc_scanptr;
   ndbrequire(Magic::check_ptr(loc_scanptr.p));
   SimulatedBlock *block = loc_scanptr.p->scanBlock;
+  ndbrequire(ret_scan);
+  ndbrequire(ret_tc);
   ndbrequire(Magic::check_ptr(loc_tcConnectptr.p));
   c_tup->prepare_op_pointer(loc_tcConnectptr.p->tupConnectrec,
                             loc_tcConnectptr.p->tupConnectPtrP);
@@ -15764,12 +15789,14 @@ void Dblqh::setup_scan_pointers(Uint32 scanPtrI, Uint32 line)
     (void)storedProcLen;
     ndbassert(loc_scanptr.p->scanAiLength == storedProcLen);
   }
-  acquire_frag_scan_access_new(prim_tab_fragptr.p, m_tc_connect_ptr.p);
+  acquire_frag_scan_access_new(loc_prim_tab_fragptr.p, loc_tcConnectptr.p);
   if (likely(loc_scanptr.p->scanAccPtr != RNIL))
   {
     jamDebug();
     block->prepare_scan_ctx(loc_scanptr.p->scanAccPtr);
   }
+  ndbrequire(Magic::check_ptr_rw(loc_fragptr.p));
+  ndbrequire(Magic::check_ptr_rw(loc_prim_tab_fragptr.p));
   ndbrequire(Magic::check_ptr(loc_tcConnectptr.p->tupConnectPtrP));
   ndbrequire(Magic::check_ptr(loc_tcConnectptr.p->accConnectPtrP));
   loc_scanptr.p->scan_startLine = line;
@@ -16466,15 +16493,19 @@ void Dblqh::closeScanRequestLab(Signal* signal,
          * completed. Should be extremely rare that this happens.
          */
         jam();
+        Uint32 takeOverRefCount;
         lock_take_over_hash();
         scanPtr->scanState = ScanRecord::WAIT_SCAN_NEXTREQ_ending;
+        takeOverRefCount = scanPtr->m_takeOverRefCount;
         unlock_take_over_hash();
         Uint32 loopCount = 0;
-        while (scanPtr->m_takeOverRefCount > 0)
+        while (takeOverRefCount > 0)
         {
           NdbSpin();
           loopCount++;
           ndbrequire(loopCount < 3000000);
+          mb();
+          takeOverRefCount = scanPtr->m_takeOverRefCount;
         }
 	if (scanPtr->m_curr_batch_size_rows > 0)
         {
@@ -16945,7 +16976,8 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
   const Uint32 senderBlockNo = refToMain(senderBlockRef);
   TcConnectionrecPtr tcConnectptr;
   if (likely(ctcNumFree > ZNUM_RESERVED_UTIL_CONNECT_RECORDS &&
-             !ERROR_INSERTED(5055)) ||
+             (!ERROR_INSERTED(5099)) &&
+             (!ERROR_INSERTED(5055))) ||
       (ScanFragReq::getLcpScanFlag(scanFragReq->requestInfo)) ||
       (senderBlockNo == getBACKUP()) ||
       (senderBlockNo == DBUTIL &&
@@ -16990,6 +17022,7 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
                         senderData,
                         senderBlockRef,
                         ZNO_TC_CONNECT_ERROR);
+      return;
     }
     m_tc_connect_ptr = tcConnectptr;
     c_tup->prepare_op_pointer(tcConnectptr.p->tupConnectrec,

@@ -44,8 +44,7 @@ public:
   Uint64 getTransactionMemoryNeed(
     const Uint32 dbtc_instance_count,
     const Uint32 ldm_instance_count,
-    const ndb_mgm_configuration_iterator * mgm_cfg,
-    const bool use_reserved) const;
+    const ndb_mgm_configuration_iterator * mgm_cfg) const;
 private:
   int noOfBlocks;
   SimulatedBlock** theList;

@@ -35,8 +35,7 @@
 
 Uint64 Dbacc::getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
-    const ndb_mgm_configuration_iterator * mgm_cfg,
-    const bool use_reserved)
+    const ndb_mgm_configuration_iterator * mgm_cfg)
 {
   Uint32 acc_scan_recs = 0;
   Uint32 acc_op_reserved_recs = 0;
@@ -66,11 +65,12 @@ Uint64 Dbacc::getTransactionMemoryNeed(
   return (scan_byte_count + op_byte_count);
 }
 
-void Dbacc::initData() 
+void Dbacc::initData()
 {
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   m_acc_mutex_locked = RNIL;
 #endif
+  c_restart_allow_use_spare = true;
   m_curr_acc = this;
   ctablesize = ZTABLESIZE;
 

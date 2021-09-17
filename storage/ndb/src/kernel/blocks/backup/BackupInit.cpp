@@ -45,6 +45,7 @@ Backup::Backup(Block_context& ctx,
                Uint32 instanceNumber,
                Uint32 blockNo) :
   SimulatedBlock(blockNo, ctx, instanceNumber),
+  m_delete_lcp_file_list(c_deleteLcpFilePool),
   c_nodes(c_nodePool),
   c_backups(c_backupPool)
 {
@@ -360,9 +361,30 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
   c_backupFilePool.setSize(3 * noBackups +
                            4 + (2*BackupFormat::NDB_MAX_FILES_PER_LCP));
   c_tablePool.setSize(noBackups * noTables + 2);
-  c_triggerPool.setSize(noBackups * 3 * noTables);
-  c_fragmentPool.setSize(noBackups * noFrags + 2);
-  c_deleteLcpFilePool.setSize(noDeleteLcpFile);
+
+  c_transient_pools[BACKUP_TRIGGER_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_triggerPool;
+  NDB_STATIC_ASSERT(c_transient_pool_count == 1);
+  c_transient_pools_shrinking.clear();
+
+  Pool_context pc;
+  pc.m_block = this;
+  Uint32 reserveBackupTriggerRecords = 1000;
+  if (m_is_query_block)
+  {
+    reserveBackupTriggerRecords = 1;
+  }
+  c_triggerPool.init(
+    TriggerRecord::TYPE_ID,
+    pc,
+    reserveBackupTriggerRecords,
+    UINT32_MAX);
+  while (c_triggerPool.startup())
+  {
+    refresh_watch_dog();
+  }
+
+  c_deleteLcpFilePool.init(RT_BACKUP_DELETE_LCP, pc);
 
   c_tableMap = (Uint32*)allocRecord("c_tableMap",
                                     sizeof(Uint32),
@@ -501,7 +523,7 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
     Table_list tables(c_tablePool);
     TablePtr ptr;
     while (tables.seizeFirst(ptr)){
-      new (ptr.p) Table(c_fragmentPool);
+      new (ptr.p) Table();
       ptr.p->backupPtrI = RNIL;
       ptr.p->tableId = RNIL;
     }

@@ -668,7 +668,9 @@ DynArr256Pool::seize()
   if (ff == RNIL)
   { 
     Uint32 page_no;
-    if (likely((page = (DA256Page*)m_ctx.alloc_page27(type_id, &page_no)) != 0))
+    if (likely((page = (DA256Page*)m_ctx.alloc_page27(type_id,
+                                                      &page_no,
+                                                      true)) != 0))
     {
       initpage(page, page_no, type_id);
       m_pg_count++;

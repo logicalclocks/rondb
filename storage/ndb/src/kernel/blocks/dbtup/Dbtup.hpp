@@ -1276,6 +1276,8 @@ TupTriggerData_pool c_triggerPool;
     Uint16 m_no_of_disk_attributes;
     Uint16 m_no_of_attributes;
 
+    bool m_allow_use_spare;
+
     bool need_expand() const { 
       return m_no_of_attributes > m_attributes[MM].m_no_of_fixsize;
     }
@@ -3647,11 +3649,11 @@ private:
   
 // Public methods
   void allocConsPages(EmulatedJamBuffer* jamBuf,
+                      Tablerec *regTabPtr,
                       Uint32 noOfPagesToAllocate,
                       Uint32& noOfPagesAllocated,
                       Uint32& allocPageRef);
   void returnCommonArea(Uint32 retPageRef, Uint32 retNo);
-  bool returnCommonArea_for_reuse(Uint32 retPageRef, Uint32 retNo);
   void update_pages_allocated(int ret_num);
   void initializePage();
 
@@ -3691,7 +3693,7 @@ private:
                        Uint32 logicalPageId,
                        PagePtr);
   void rebuild_page_free_list(Signal*);
-  Uint32 get_empty_var_page(Fragrecord* frag_ptr);
+  Uint32 get_empty_var_page(Fragrecord* frag_ptr, Tablerec*);
   void init_page(Fragrecord*, PagePtr, Uint32 page_no);
   
 // Private methods
@@ -3842,7 +3844,7 @@ private:
   DynArr256Pool c_page_map_pool;
   Operationrec_pool c_operation_pool;
 
-  bool c_allow_alloc_spare_page;
+  bool c_restart_allow_use_spare;
   Page_pool c_page_pool;
 
   /* read ahead in pages during disk order scan */
@@ -4363,8 +4365,7 @@ public:
   Dbtup *m_curr_tup;
   static Uint64 getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
-    const ndb_mgm_configuration_iterator * mgm_cfg,
-    const bool use_reserved);
+    const ndb_mgm_configuration_iterator * mgm_cfg);
   bool seize_op_rec(Uint32 userptr,
                     BlockReference ref,
                     Uint32 &i_val,

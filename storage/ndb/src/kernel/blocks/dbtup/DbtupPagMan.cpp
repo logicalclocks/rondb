@@ -131,6 +131,7 @@ void Dbtup::initializePage()
 }//Dbtup::initializePage()
 
 void Dbtup::allocConsPages(EmulatedJamBuffer* jamBuf,
+                           Tablerec *regTabPtr,
                            Uint32 noOfPagesToAllocate,
                            Uint32& noOfPagesAllocated,
                            Uint32& allocPageRef)
@@ -143,9 +144,17 @@ void Dbtup::allocConsPages(EmulatedJamBuffer* jamBuf,
 
   if (noOfPagesToAllocate == 1)
   {
+    bool allow_use_spare = false;
+    if (regTabPtr->m_allow_use_spare ||
+        c_restart_allow_use_spare)
+    {
+      thrjam(jamBuf);
+      allow_use_spare = true;
+    }
     void* p = m_ctx.m_mm.alloc_page(RT_DBTUP_PAGE,
                                     &allocPageRef,
-                                    Ndbd_mem_manager::NDB_ZONE_LE_30);
+                                    Ndbd_mem_manager::NDB_ZONE_LE_30,
+                                    allow_use_spare);
     if (p != NULL)
     {
       noOfPagesAllocated = 1;
@@ -168,17 +177,6 @@ void Dbtup::allocConsPages(EmulatedJamBuffer* jamBuf,
                            1);
 #endif
   }
-  if(noOfPagesAllocated == 0 && c_allow_alloc_spare_page)
-  {
-    void* p = m_ctx.m_mm.alloc_spare_page(RT_DBTUP_PAGE,
-                                          &allocPageRef,
-                                          Ndbd_mem_manager::NDB_ZONE_LE_30);
-    if (p != NULL)
-    {
-      noOfPagesAllocated = 1;
-    }
-  }
-
   // Count number of allocated pages
   update_pages_allocated(noOfPagesAllocated);
 
@@ -192,18 +190,6 @@ void Dbtup::returnCommonArea(Uint32 retPageRef, Uint32 retNo)
   // Count number of allocated pages
   update_pages_allocated(-retNo);
 }//Dbtup::returnCommonArea()
-
-bool Dbtup::returnCommonArea_for_reuse(Uint32 retPageRef, Uint32 retNo)
-{
-  if (!m_ctx.m_mm.give_up_pages(RT_DBTUP_PAGE, retNo))
-  {
-    return false;
-  }
-
-  // Count number of allocated pages
-  update_pages_allocated(-retNo);
-  return true;
-}
 
 void
 Dbtup::update_pages_allocated(int retNo)

@@ -1187,13 +1187,6 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
    const Uint32 Roptype = regOperPtr->op_type;
 
    regOperPtr->m_any_value = 0;
-
-   Uint32 *tabDesc = (Uint32*)regTabPtr->readFunctionArray;
-   g_eventLogger->info("(%u) tab(%u) offset: %u, size: %u",
-                       instance(),
-                       prepare_tabptr.i,
-                       tabDesc[-1],
-                       tabDesc[-2]);
    const Uint32 loc_prepare_page_id = prepare_page_no;
    /**
     * Check operation

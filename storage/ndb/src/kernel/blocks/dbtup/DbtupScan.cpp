@@ -3311,19 +3311,25 @@ Dbtup::handle_lcp_drop_change_page(Fragrecord *fragPtrP,
     returnCommonArea(pagePtr.i, 1);
     return;
   }
+  m_ctx.m_mm.lock();
+  m_ctx.m_mm.release_page(RT_DBTUP_PAGE, pagePtr.i, true);
   Uint32 words = 6 + ((found_idx_count + 1) / 2);
-  if (likely(c_undo_buffer.alloc_copy_tuple(&location, words) != nullptr))
+  if (unlikely(c_undo_buffer.alloc_copy_tuple(&location,
+                                              words,
+                                              true) ==
+               nullptr))
   {
-    jam();
-    returnCommonArea(pagePtr.i, 1);
+    char buf[256];
+    BaseString::snprintf(buf, sizeof(buf),
+                         "Global memory manager is out of memory completely,"
+                         " no memory in shared global memory left and no"
+                         " memory in reserved memory either.");
+    progError(__LINE__,
+              NDBD_OUT_OF_MEMORY,
+              buf);
   }
-  else
-  {
-    jam();
-    ndbrequire(returnCommonArea_for_reuse(pagePtr.i, 1));
-    ndbrequire(c_undo_buffer.reuse_page_for_copy_tuple(pagePtr.i));
-    ndbrequire(c_undo_buffer.alloc_copy_tuple(&location, words) != nullptr);
-  }
+  m_ctx.m_mm.unlock();
+  update_pages_allocated(-1);
   Uint32 * copytuple = get_copy_tuple_raw(&location);
   Local_key flag_key;
   flag_key.m_page_no = FREE_PAGE_RNIL;

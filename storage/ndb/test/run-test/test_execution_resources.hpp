@@ -34,7 +34,6 @@
 class TestExecutionResources {
  public:
   const char* const NDB_MGMD = "ndb_mgmd";
-  const char* const NDBD = "ndbd";
   const char* const NDBMTD = "ndbmtd";
   const char* const MYSQLD = "mysqld";
   const char* const MYSQL_INSTALL_DB = "mysql_install_db";
@@ -84,7 +83,6 @@ class TestExecutionResources {
 
   std::map<std::string, TestExecutionResources::Resource> m_resources = {
       {NDB_MGMD, {NDB_MGMD, Resource::Type::Exe, true, {"", ""}}},
-      {NDBD, {NDBD, Resource::Type::Exe, true, {"", ""}}},
       {NDBMTD, {NDBMTD, Resource::Type::Exe, false, {"", ""}}},
       {MYSQLD, {MYSQLD, Resource::Type::Exe, false, {"", ""}}},
       {MYSQL_INSTALL_DB,

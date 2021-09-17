@@ -68,6 +68,8 @@ public:
   void init(const Record_info& ri, const Pool_context& pc);
   bool seize(Ptr64<T>&);
   void release(Ptr64<T>);
+  bool checkMagic(void*) const;
+  void * getUncheckedPtr(Uint64 i) const;
   void * getPtr(Uint64 i) const;
   void * getPtr(const Record_info&ri, Uint64 i) const;
   
@@ -77,6 +79,20 @@ private:
   [[noreturn]] void handle_invalid_release(Ptr64<T>);
   [[noreturn]] void handle_invalid_get_ptr(Uint64 i) const;
 };
+
+template<typename T>
+inline
+bool
+RWPool64<T>::checkMagic(void *record) const
+{
+  Uint32 * record32 = (Uint32*)record;
+  Uint32 magic_val = * (record32 + m_record_info.m_offset_magic);
+  if (likely(magic_val == ~(Uint32)m_record_info.m_type_id))
+  {
+    return true;
+  }
+  return false;
+}
 
 template<typename T>
 inline
@@ -94,6 +110,18 @@ RWPool64<T>::getPtr(Uint64 i) const
   }
   handle_invalid_get_ptr(i);
   return 0;                                     /* purify: deadcode */
+}
+
+template<typename T>
+inline
+void*
+RWPool64<T>::getUncheckedPtr(Uint64 i) const
+{
+  Uint32 page_no = i >> POOL_RECORD_BITS;
+  Uint32 page_idx = i & POOL_RECORD_MASK;
+  RWPage64 * page = m_memroot + page_no;
+  Uint32 * record = page->m_data + page_idx;
+  return record;
 }
 
 template<typename T>

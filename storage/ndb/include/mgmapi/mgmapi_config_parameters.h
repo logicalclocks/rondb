@@ -267,6 +267,7 @@
 #define CFG_DB_NUM_CPUS               676
 #define CFG_DB_AUTO_THREAD_CONFIG     677
 
+#define CFG_DB_BACKUP_SCHEMA_MEM      694
 #define CFG_DB_SCHEMA_MEM             695
 #define CFG_DB_REPLICATION_MEM        696
 #define CFG_DB_UNDO_BUFFER            697

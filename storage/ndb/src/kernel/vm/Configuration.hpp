@@ -77,6 +77,7 @@ public:
                            NodeId allocated_nodeid,
                            int connect_retries, int connect_delay);
   void setupConfiguration();
+  void setupMemoryConfiguration(Uint64);
   void closeConfiguration(bool end_session= true);
 
   Uint32 lockPagesInMainMemory() const;
@@ -201,15 +202,20 @@ private:
   void calcSizeAlt(class ConfigValues * );
   const char *get_type_string(enum ThreadTypes type);
   bool calculate_automatic_memory(
-         ndb_mgm_configuration_iterator *p);
-  void assign_default_memory_sizes(const ndb_mgm_configuration_iterator *p);
+         ndb_mgm_configuration_iterator *p,
+         Uint64 min_transaction_memory);
+  void assign_default_memory_sizes(const ndb_mgm_configuration_iterator *p,
+                                   Uint64 min_transaction_memory);
   static Uint32 get_num_threads();
   static Uint64 get_total_memory(
                   const ndb_mgm_configuration_iterator *p,
                   bool & total_memory_set);
   Uint64 get_schema_memory(ndb_mgm_configuration_iterator *p);
+  Uint64 get_backup_schema_memory(ndb_mgm_configuration_iterator *p);
+  Uint64 get_replication_memory(ndb_mgm_configuration_iterator *p);
   static Uint64 get_and_set_transaction_memory(
-           const ndb_mgm_configuration_iterator *p);
+           const ndb_mgm_configuration_iterator *p,
+           Uint64 min_transaction_memory);
   static Uint64 get_and_set_redo_buffer(
            const ndb_mgm_configuration_iterator *p);
   static Uint64 get_and_set_undo_buffer(
