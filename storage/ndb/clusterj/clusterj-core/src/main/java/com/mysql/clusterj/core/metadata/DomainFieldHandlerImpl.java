@@ -393,6 +393,10 @@ public class DomainFieldHandlerImpl extends AbstractDomainFieldHandlerImpl {
                     this.objectOperationHandlerDelegate = objectOperationHandlerKeyByte;
                     this.type = byte.class;
                     break;
+                case Date:
+                    this.objectOperationHandlerDelegate = objectOperationHandlerJavaSqlDate;
+                    this.type = java.sql.Date.class;
+                    break;
                 default:
                     error(local.message("ERR_Primary_Column_Type", domainTypeHandler.getName(), name, this.storeColumnType));
                 }

@@ -152,6 +152,7 @@ NDB_ADD_EXECUTABLE(ndb_restore
   ${LINK_NDBCLIENT}
   COMPONENT ClusterTools
   ENABLE_EXPORTS
+  LINK_LIBRARIES ndbgeneral ndbportlib
   )
 NDB_ADD_EXECUTABLE(ndb_import
   ndb_import.cpp
@@ -203,9 +204,9 @@ NDB_ADD_EXECUTABLE(ndb_move_data
 
 NDB_ADD_EXECUTABLE(ndbxfrm
   ndbxfrm.cpp
-  ${LINK_NDBCLIENT}
   COMPONENT ClusterTools
   ENABLE_EXPORTS
+  LINK_LIBRARIES ndbgeneral ndbportlib
   )
 
 IF(NOT WIN32 AND NOT SOLARIS)

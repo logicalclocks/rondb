@@ -6025,6 +6025,7 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
     m_rows_deleted++;
 
     if (!(primary_key_update || m_delete_cannot_batch)) {
+      thd_ndb->m_unsent_blob_ops |= ndb_table_has_blobs(m_table);
       // If deleting from cursor, NoCommit will be handled in next_result
       return 0;
     }
@@ -13289,10 +13290,15 @@ static bool read_multi_needs_scan(NDB_INDEX_TYPE cur_index_type,
                                   const KEY *key_info, const KEY_MULTI_RANGE *r,
                                   bool is_pushed) {
   if (cur_index_type == ORDERED_INDEX || is_pushed) return true;
-  if (cur_index_type == PRIMARY_KEY_INDEX || cur_index_type == UNIQUE_INDEX)
+  if (cur_index_type == PRIMARY_KEY_INDEX) return false;
+  if (cur_index_type == UNIQUE_INDEX) {  // a 'UNIQUE ... USING HASH' index
+    // UNIQUE_INDEX is used iff optimizer set HA_MRR_NO_NULL_ENDPOINTS.
+    // Assert that there are no NULL values in key as promissed.
+    assert(!check_null_in_key(key_info, r->start_key.key, r->start_key.length));
     return false;
-  DBUG_ASSERT(cur_index_type == PRIMARY_KEY_ORDERED_INDEX ||
-              cur_index_type == UNIQUE_ORDERED_INDEX);
+  }
+  assert(cur_index_type == PRIMARY_KEY_ORDERED_INDEX ||
+         cur_index_type == UNIQUE_ORDERED_INDEX);
   if (r->start_key.length != key_info->key_length ||
       r->start_key.flag != HA_READ_KEY_EXACT)
     return true;  // Not exact match, need scan
