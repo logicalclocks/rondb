@@ -394,7 +394,7 @@ public class DomainFieldHandlerImpl extends AbstractDomainFieldHandlerImpl {
                     this.type = byte.class;
                     break;
                 case Date:
-                    this.objectOperationHandlerDelegate = objectOperationHandlerJavaSqlDate;
+                    this.objectOperationHandlerDelegate = objectOperationHandlerKeyJavaSqlDate;
                     this.type = java.sql.Date.class;
                     break;
                 default:
