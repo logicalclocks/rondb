@@ -4869,7 +4869,7 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
     else
     {
       jamDebug();
-      ndbrequire(refToMain(TBRef) == DBLQH);
+      ndbrequire(refToMain(TBRef) == DBLQH || refToMain(TBRef) == DBSPJ);
       sendSignal(TBRef, GSN_LQHKEYREQ, signal,
                  nextPos + LqhKeyReq::FixedSignalLength, JBB,
                  &handle);
