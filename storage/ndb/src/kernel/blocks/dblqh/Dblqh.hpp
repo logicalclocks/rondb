@@ -4848,6 +4848,10 @@ private:
   void init_frags_to_execute_sr();
   Uint32 get_frags_to_execute_sr();
 public:
+  void set_error_value(Uint32 val)
+  {
+    SET_ERROR_INSERT_VALUE(val);
+  }
   void increment_usage_count_for_table(Uint32 tableId);
   void decrement_usage_count_for_table(Uint32 tableId);
   void reset_old_fragment_lock_status();
