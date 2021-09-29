@@ -9231,7 +9231,6 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
     LQHKEY_abort(signal, 6, tcConnectptr);
     return;
   }//if
-
   regTcPtr->tableref = tabptr.i;
   regTcPtr->m_disk_table = tabptr.p->m_disk_table;
   Uint32 senderBlockNo = refToMain(signal->senderBlockRef());
@@ -20001,13 +20000,14 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
              0,
              (DBLQH << 20) + (cownNodeid << 8),
              fragId,
-             copyFragReq->nodeId,
+             nodeId,
              0,
              tcConnectptr);
   /**
    * Copy fragment always performed on primary table fragment,
    * never applied on an ordered index.
    */
+  fragptr.p->copyNode = nodeId;
   prim_tab_fragptr = fragptr;
   c_tup->prepare_tab_pointers(prim_tab_fragptr.p->tupFragptr);
   c_acc->prepare_tab_pointers(prim_tab_fragptr.p->accFragptr);
@@ -20775,6 +20775,7 @@ void Dblqh::closeCopyLab(Signal* signal,
    * Stop sending ROWID for all operations from now on
    */
   fragptr.p->m_copy_started_state = Fragrecord::AC_NORMAL;
+  fragptr.p->copyNode = ZNIL;
   if (ERROR_INSERTED(5714))
   {
     g_eventLogger->info("Copy of tab(%u,%u) complete", fragptr.p->tabRef,
@@ -33578,6 +33579,7 @@ void Dblqh::initFragrec(Signal* signal,
   fragptr.p->m_copy_complete_flag = 0;
   fragptr.p->m_local_lcp_instance_started = 0;
   fragptr.p->m_activeScans = 0;
+  fragptr.p->copyNode = ZNIL;
   NdbMutex_Init(&fragptr.p->frag_mutex);
   NdbCondition_Init(&fragptr.p->frag_write_cond);
   NdbCondition_Init(&fragptr.p->frag_read_cond);

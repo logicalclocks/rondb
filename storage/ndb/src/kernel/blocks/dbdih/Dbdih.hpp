@@ -274,31 +274,32 @@ public:
    */
   struct Fragmentstore {
     Uint32 m_magic;
+    Uint32 tableId;
     Uint16 activeNodes[MAX_REPLICAS];
-    Uint32 preferredPrimary;
 
     Uint64 nextPool;
     Uint64 oldStoredReplicas;    /* "DEAD" STORED REPLICAS */
     Uint64 storedReplicas;       /* "ALIVE" STORED REPLICAS */
     
-    Uint32 m_log_part_id;
-
     /**
      * Used by Fully replicated tables to find the main fragment and to
      * find local fragments.
      */
-    Uint32 fragId;
     Uint32 partition_id;
     Uint32 nextCopyFragmentId;
+    Uint32 fragId;
     
+    Uint16 preferredPrimary;
+    Uint16 primaryNode;
+
+    Uint16 m_log_part_id;
     Uint8 m_inc_used_log_parts;
     Uint8 distributionKey;
+
     Uint8 fragReplicas;
     Uint8 noOldStoredReplicas;  /* NUMBER OF "DEAD" STORED REPLICAS */
     Uint8 noStoredReplicas;     /* NUMBER OF "ALIVE" STORED REPLICAS*/
     Uint8 noLcpReplicas;        ///< No of replicas remaining to be LCP:ed
-    Uint8 primaryNode;
-    Uint8 calc_primaryNode;
   };
   typedef Ptr64<Fragmentstore> FragmentstorePtr;
   typedef RecordPool64<RWPool64<Fragmentstore>> Fragmentstore_pool;
@@ -747,6 +748,7 @@ public:
 
     Uint8 noOfBackups;
     Uint8 kvalue;
+    bool m_calc_primary_replicas;
 
     Uint16 noPages;
     Uint16 tableType;
@@ -770,8 +772,6 @@ public:
     Uint32 noOfWords;
     Uint32 tabRemoveNode;
     Uint32 tabActiveLcpFragments;
-
-    bool m_calc_primary_replicas;
 
     struct {
       Uint32 tabUserRef;
@@ -1416,6 +1416,7 @@ private:
   bool make_old_table_non_writeable(TabRecordPtr, ConnectRecordPtr);
   void make_table_use_new_replica(TabRecordPtr,
                                   FragmentstorePtr fragPtr,
+                                  Uint32 primaryNode,
                                   ReplicaRecordPtr,
                                   Uint32 replicaType,
                                   Uint32 destNodeId);
@@ -1534,7 +1535,7 @@ private:
   void readTabfile(Signal *, TabRecord* tab, FileRecordPtr regFilePtr);
   void writeFragment(RWFragment* wf, FragmentstorePtr regFragptr);
   void writePageWord(RWFragment* wf, Uint32 dataWord);
-  void writeReplicas(RWFragment* wf, Uint64 replicaStartIndex);
+  void writeReplicas(RWFragment* wf, Uint16 primary, Uint64 replicaStartIndex);
   void writeRestorableGci(Signal *, FileRecordPtr regFilePtr);
   void writeTabfile(Signal *, TabRecord* tab, FileRecordPtr regFilePtr);
   void copyTabReq_complete(Signal* signal, TabRecordPtr tabPtr);
@@ -1713,7 +1714,9 @@ private:
                     FragmentstorePtr regFragptr,
                     Uint32 startGci,
                     Uint32 stopGci);
-  void initFragstore(FragmentstorePtr regFragptr, Uint32 fragId);
+  void initFragstore(FragmentstorePtr regFragptr,
+                     Uint32 fragId,
+                     Uint32 tableId);
   void insertfraginfo(FragmentstorePtr regFragptr,
                       Uint32 noOfBackups,
                       Uint32* nodeArray);
@@ -2853,8 +2856,6 @@ private:
   void calc_primary_replicas(TabRecord *tabPtrP,
                              Uint32 first_fid,
                              Uint32 limit_fid,
-                             Uint32 remove_node,
-                             bool use_new_replica,
                              Uint32 line);
 public:
   bool is_master() { return isMaster(); }
@@ -2882,6 +2883,7 @@ public:
   {
     return sizeof(struct PageRecord);
   }
+  bool is_dynamic_primary_replicas_supported();
 };
 
 #if (DIH_CDATA_SIZE < _SYSFILE_SIZE32_v2)

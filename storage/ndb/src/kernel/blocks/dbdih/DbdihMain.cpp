@@ -5320,16 +5320,9 @@ void Dbdih::execUPDATE_FRAG_STATEREQ(Signal* signal)
     jam();
     primaryNode = 0;
   }
-
   FragmentstorePtr fragPtr;
   getFragstore(tabPtr.p, fragId, fragPtr);
   RETURN_IF_NODE_NOT_ALIVE(tdestNodeid);
-  fragPtr.p->primaryNode = 0;
-  if (replicaType == UpdateFragStateReq::COMMIT_STORED)
-  {
-    jam();
-    fragPtr.p->primaryNode = primaryNode;
-  }
   ReplicaRecordPtr frReplicaPtr;
   findReplica(frReplicaPtr, fragPtr.p, tFailedNodeId,
               replicaType == UpdateFragStateReq::START_LOGGING ? false : true);
@@ -5341,6 +5334,7 @@ void Dbdih::execUPDATE_FRAG_STATEREQ(Signal* signal)
 
   make_table_use_new_replica(tabPtr,
                              fragPtr,
+                             primaryNode,
                              frReplicaPtr,
                              replicaType,
                              tdestNodeid);
@@ -8480,18 +8474,6 @@ Dbdih::execSTART_TOCONF(Signal* signal)
   c_activeThreadTakeOverPtr.i = RNIL;
   check_take_over_completed_correctly();
 
-  /**
-   * While we perform the takeover processing we will also calculate
-   * the new distribution of fragments. The idea is that the first
-   * takeover thread will call calc_primary_replicas that calculates
-   * the new distribution to be used after finishing the copying of
-   * the table fragments.
-   *
-   * The flag set here will be seen by the first takeover thread which
-   * will call calc_primary_replica and reset the flag. The result of
-   * calc_primary_replicas will in this case be spread in the
-   * UPDATE_FRAG_STATEREQ signal in the state COMMIT_STORED.
-   */
   for (Uint32 tableId = 0; tableId < ctabFileSize; tableId++)
   {
     TabRecordPtr tabPtr;
@@ -8597,17 +8579,15 @@ void Dbdih::startNextCopyFragment(Signal* signal, Uint32 takeOverPtrI)
     {
       jam();
       /**
-       * Prepare new distribution of primary replicas that
-       * includes the starting node. This will be effective
-       * when the signal UPDATE_FRAG_STATEREQ is called with
-       * the state COMMIT_STORED.
+       * Prepare calculation of new primary after new node
+       * have been added. This will take effect in the
+       * execution of UPDATE_FRAG_STATEREQ on all nodes
+       * in the cluster.
        */
       tabPtr.p->m_calc_primary_replicas = false;
       calc_primary_replicas(tabPtr.p,
                             0,
                             tabPtr.p->totalfragments,
-                            0,
-                            true,
                             __LINE__);
     }
     Uint32 fragId = takeOverPtr.p->toCurrentFragid;
@@ -9015,16 +8995,18 @@ void Dbdih::sendUpdateFragStateReq(Signal* signal,
   tabPtr.i = req->tableId;
   ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
   getFragstore(tabPtr.p, req->fragId, fragPtr);
-  req->primaryNode = fragPtr.p->calc_primaryNode;
-  fragPtr.p->calc_primaryNode = 0;
+  Uint32 len = is_dynamic_primary_replicas_supported() ?
+               UpdateFragStateReq::SignalLength :
+               UpdateFragStateReq::OldSignalLength;
+  req->primaryNode = fragPtr.p->primaryNode;
+  fragPtr.p->primaryNode = 0;
 
   NodeRecordPtr nodePtr;
   nodePtr.i = cfirstAliveNode;
   do {
     ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
     BlockReference ref = calcDihBlockRef(nodePtr.i);
-    sendSignal(ref, GSN_UPDATE_FRAG_STATEREQ, signal, 
-	       UpdateFragStateReq::SignalLength, JBB);
+    sendSignal(ref, GSN_UPDATE_FRAG_STATEREQ, signal, len, JBB);
     nodePtr.i = nodePtr.p->nextNode;
   } while (nodePtr.i != RNIL);
 }//Dbdih::sendUpdateFragStateReq()
@@ -11673,15 +11655,13 @@ void Dbdih::removeNodeFromTable(Signal* signal,
    * we will redistribute the primary replicas to ensure that the load on
    * LDM threads is more evenly spread.
    *
-   * The change of primary replica can lead to a possibility of deadlocks
-   * for a very short time.
+   * The change of primary replica can lead to a increased possibility of
+   * deadlocks for a short time.
    */
   FragmentstorePtr fragPtr;
   calc_primary_replicas(tabPtr.p,
                         0,
                         tabPtr.p->totalfragments,
-                        0,
-                        false,
                         __LINE__);
   DIH_TAB_WRITE_LOCK(tabPtr.p);
   for(Uint32 fragNo = 0; fragNo < tabPtr.p->totalfragments; fragNo++){
@@ -11747,6 +11727,7 @@ void Dbdih::removeNodeFromTable(Signal* signal,
     /**
      * Run updateNodeInfo to remove any dead nodes from list of activeNodes
      *  see bug#15587
+     *
      */
     updateNodeInfo(fragPtr);
     noOfRemainingLcpReplicas += fragPtr.p->noLcpReplicas;
@@ -13085,12 +13066,73 @@ Dbdih::find_next_log_part(TabRecord *primTabPtrP, Uint32 & next_log_part)
   return can_use_new_fragmentation;
 }
 
+bool
+Dbdih::is_dynamic_primary_replicas_supported()
+{
+  NodeRecordPtr nodePtr;
+  nodePtr.i = cfirstAliveNode;
+  do
+  {
+    ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+    if (!ndbd_support_dynamic_primary_replicas(
+          getNodeInfo(nodePtr.i).m_version))
+    {
+      jam();
+      jamLine(Uint16(nodePtr.i));
+      return false;
+    }
+    nodePtr.i = nodePtr.p->nextNode;
+  } while (nodePtr.i != RNIL);
+  return true;
+}
+
+/**
+ * This method is called in the following situations:
+ * 1) Create table
+ * 2) Reorganize table with added partitions
+ * 3) Node restart
+ * 4) System restart
+ * 5) Switch replicas
+ * 6) Remove node from table
+ *
+ * In the case of 1), 2), 4) and 5) this method is called by
+ * the master node, thus there is no risk of inconsistencies
+ * in these cases.
+ *
+ * In the case of 3) we simply retain the old primary during
+ * the node restart to avoid weird things happening during
+ * the restart. This is accomplished by that the writeReplicas
+ * method will always put the current primary as the first
+ * stored replica in the list and this will be choosen by the
+ * starting node.
+ *
+ * This means that except for 6) we should have no upgrade
+ * issues with changes of primary replica.
+ *
+ * Remove node from table happens immediately after a node
+ * failure. It is a process that happens ASAP in all nodes
+ * in parallel. There is no special synchronisation during
+ * this removal process. Thus during this process the nodes
+ * in the cluster can have slightly differing opinion on
+ * who is the primary replica for the moment. At worst this
+ * could lead to some aborted transactions due to deadlocks.
+ *
+ * The remove node from table process will call this method
+ * in all nodes and thus it is necessary to ensure that the
+ * algorithm executed in all nodes is the same. Thus if ever
+ * this algorithm is changed, there needs to be upgrade code
+ * handling this case.
+ *
+ * One potential issue with consistency could be multiple
+ * nodes in the same node group failing close to each other.
+ * This could obviously lead to inconsistency between the
+ * nodes in distribution information. Again at worst it
+ * could lead to aborted transactions.
+ */
 void
 Dbdih::calc_primary_replicas(TabRecord *tabPtrP,
                              Uint32 first_fid,
                              Uint32 limit_fid,
-                             Uint32 remove_node,
-                             bool use_new_replica,
                              Uint32 line)
 {
   /**
@@ -13138,27 +13180,18 @@ Dbdih::calc_primary_replicas(TabRecord *tabPtrP,
    * the next 4 log parts will use the next 4 log part id's. This is
    * likely to create a fairly balanced use of LDM resources.
    */
-  bool use_calc_primary_replica = true;
+  NodeRecordPtr nodePtr;
   bool more_than_one_replica = false;
   /**
    * Check that all nodes support calculating new primary replicas.
    * If they don't we must use the old way of calculating the
    * primary replicas.
    */
-  NodeRecordPtr nodePtr;
-  nodePtr.i = cfirstAliveNode;
-  do
+  if (!is_dynamic_primary_replicas_supported())
   {
-    ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
-    if (!ndbd_support_dynamic_primary_replicas(
-          getNodeInfo(nodePtr.i).m_version))
-    {
-      jam();
-      jamLine(Uint16(nodePtr.i));
-      use_calc_primary_replica = false;
-    }
-    nodePtr.i = nodePtr.p->nextNode;
-  } while (nodePtr.i != RNIL);
+    jam();
+    return;
+  }
 
   /**
    * Initialise node group temporary variables.
@@ -13197,18 +13230,12 @@ Dbdih::calc_primary_replicas(TabRecord *tabPtrP,
     FragmentstorePtr fragPtr;
     getFragstore(tabPtrP, fragId, fragPtr);
     fragPtr.p->primaryNode = 0;
-    fragPtr.p->calc_primaryNode = 0;
     nodePtr.i = fragPtr.p->activeNodes[0];
     ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
     NGPtr.i = nodePtr.p->nodeGroup;
     ndbrequire(NGPtr.i != NO_NODE_GROUP_ID);
     ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
     NGPtr.p->m_temp_num_fragments++;
-  }
-  if (!use_calc_primary_replica)
-  {
-    jam();
-    return;
   }
   if (!more_than_one_replica)
   {
@@ -13237,41 +13264,28 @@ Dbdih::calc_primary_replicas(TabRecord *tabPtrP,
     ndbrequire(NGPtr.i != NO_NODE_GROUP_ID);
     ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
     ndbrequire(NGPtr.p->m_temp_batch_index < NGPtr.p->m_temp_nodes_alive);
-    if (true || ((NGPtr.p->m_temp_nodes_alive > 1) &&
-                 (NGPtr.p->m_temp_nodes_alive < NGPtr.p->nodeCount)))
+    /**
+     * We will reorganize all node groups that have more than one
+     * replica (1 replica node groups will have 1 primary replica
+     * and there is no special handling required).
+     *
+     * We will ignore reorganizing node groups with all replicas
+     * existing. Those should have a balanced setup as defined by
+     * the table and thus using the preferredPrimary to select
+     * the primary node will be good enough.
+     */
+    ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
+    Uint32 primaryNode =
+      NGPtr.p->m_temp_alive_nodes[NGPtr.p->m_temp_batch_index];
+    ndbrequire(fragPtr.p->primaryNode == 0);
+    fragPtr.p->primaryNode = primaryNode;
+    NGPtr.p->m_temp_fragment_count_in_batch++;
+    if (NGPtr.p->m_temp_fragment_count_in_batch >=
+        NGPtr.p->m_temp_fragments_per_batch)
     {
       jamDebug();
-      /**
-       * We will reorganize all node groups that have more than one
-       * replica (1 replica node groups will have 1 primary replica
-       * and there is no special handling required).
-       *
-       * We will ignore reorganizing node groups with all replicas
-       * existing. Those should have a balanced setup as defined by
-       * the table and thus using the preferredPrimary to select
-       * the primary node will be good enough.
-       */
-      ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
-      Uint32 primaryNode =
-        NGPtr.p->m_temp_alive_nodes[NGPtr.p->m_temp_batch_index];
-      if (use_new_replica)
-      {
-        jamDebug();
-        fragPtr.p->calc_primaryNode = primaryNode;
-      }
-      else
-      {
-        jamDebug();
-        fragPtr.p->primaryNode = primaryNode;
-      }
-      NGPtr.p->m_temp_fragment_count_in_batch++;
-      if (NGPtr.p->m_temp_fragment_count_in_batch >=
-          NGPtr.p->m_temp_fragments_per_batch)
-      {
-        jamDebug();
-        NGPtr.p->m_temp_batch_index++;
-        NGPtr.p->m_temp_fragment_count_in_batch = 0;
-      }
+      NGPtr.p->m_temp_batch_index++;
+      NGPtr.p->m_temp_fragment_count_in_batch = 0;
     }
   }
 }
@@ -14735,8 +14749,6 @@ void Dbdih::execDIADDTABREQ(Signal* signal)
   calc_primary_replicas(tabPtr.p,
                         0,
                         noFragments,
-                        0,
-                        false,
                         __LINE__);
   for (Uint32 fragId = 0; fragId < noFragments; fragId++)
   {
@@ -15673,8 +15685,6 @@ Dbdih::add_fragments_to_table(Ptr<TabRecord> tabPtr, const Uint16 buf[])
   calc_primary_replicas(tabPtr.p,
                         current,
                         current + cnt,
-                        0,
-                        false,
                         __LINE__);
   for (i = 0; i < cnt; i++)
   {
@@ -15769,7 +15779,7 @@ Dbdih::add_fragment_to_table(Ptr<TabRecord> tabPtr,
   }
   callocated_frags++;
   tabPtr.p->startFid[fragId] = fragPtr.i;
-  initFragstore(fragPtr, fragId);
+  initFragstore(fragPtr, fragId, tabPtr.i);
   tabPtr.p->totalfragments++;
   return 0;
 }
@@ -17308,6 +17318,7 @@ Dbdih::make_old_table_non_writeable(TabRecordPtr tabPtr,
 void
 Dbdih::make_table_use_new_replica(TabRecordPtr tabPtr,
                                   FragmentstorePtr fragPtr,
+                                  Uint32 primaryNode,
                                   ReplicaRecordPtr replicaPtr,
                                   Uint32 replicaType,
                                   Uint32 destNodeId)
@@ -17335,14 +17346,19 @@ Dbdih::make_table_use_new_replica(TabRecordPtr tabPtr,
   case UpdateFragStateReq::COMMIT_STORED:
     jam();
     CRASH_INSERTION(7139);
-    /* ----------------------------------------------------------------------*/
-    /*  HERE WE ARE MOVING THE REPLICA TO THE STORED SECTION SINCE IT IS NOW */
-    /*  FULLY LOADED WITH ALL DATA NEEDED.                                   */
-    // We also update the order of the replicas here so that if the new 
-    // replica is the desired primary we insert it as primary.
-    /* ----------------------------------------------------------------------*/
+    /**
+     * The node restart of a fragment is completed, now change to use
+     * the preferred new distribution of primary replicas. The primary
+     * replica isn't required to be durable at this change.
+     * 
+     * We also update the order of the replicas here so that we use the
+     * specified primary node as primary.
+     * If any node is using preferredPrimary as primary node this is
+     * preferred if the node is alive.
+     */
     removeOldStoredReplica(fragPtr, replicaPtr);
     linkStoredReplica(fragPtr, replicaPtr);
+    fragPtr.p->primaryNode = primaryNode;
     updateNodeInfo(fragPtr);
     break;
   case UpdateFragStateReq::START_LOGGING:
@@ -17487,7 +17503,7 @@ bool Dbdih::allocFragments(Uint32 noOfFragments, TabRecordPtr tabPtr)
       return false;
     }
     startFid[i] = fragPtr.i;
-    initFragstore(fragPtr, i);
+    initFragstore(fragPtr, i, tabPtr.i);
   }
   callocated_frags += noOfFragments;
   mb();
@@ -20194,14 +20210,10 @@ Dbdih::resetReplicaSr(TabRecordPtr tabPtr){
   }
   /**
    * Calculate the new primary replicas during a System restart.
-   * This is likely to be recomputed again when starting the
-   * fragments.
    */
   calc_primary_replicas(tabPtr.p,
                         0,
                         tabPtr.p->totalfragments,
-                        0,
-                        false,
                         __LINE__);
   for(Uint32 i = 0; i<tabPtr.p->totalfragments; i++)
   {
@@ -20432,22 +20444,26 @@ Dbdih::copyTabReq_complete(Signal* signal, TabRecordPtr tabPtr){
      * and DBTC hasn't started using these tables yet.
      */
     tabPtr.p->tabStatus = TabRecord::TS_ACTIVE;
-    /**
-     * Calculate the new primary replicas after copying the meta data of
-     * the table. Happens while performing a node restart, likely
-     * recomputed later on when copying the table fragments from the live
-     * node(s).
-     */
-    calc_primary_replicas(tabPtr.p,
-                          0,
-                          tabPtr.p->totalfragments,
-                          0,
-                          false,
-                          __LINE__);
     for (Uint32 fragId = 0; fragId < tabPtr.p->totalfragments; fragId++) {
       jam();
       FragmentstorePtr fragPtr;
       getFragstore(tabPtr.p, fragId, fragPtr);
+      /**
+       * Here we will simply install the order as proposed by the master
+       * node. The primary might not be the preferred primary node even
+       * if it is up in newer versions to ensure a a balanced use of
+       * LDM threads.
+       *
+       * This code happens in the starting node and needs to ensure that
+       * it has the same view on primary node as the living nodes in the
+       * cluster. Otherwise we get a crash since transactions and copy
+       * fragment uses different primary node.
+       *
+       * In upgrade situations we need to still use the preferredPrimary
+       * as the new primary node independent of the order to ensure that
+       * we stay in synch with older versions view on who is the primary
+       * node.
+       */
       updateNodeInfo(fragPtr);
     }//for
   }//if
@@ -20617,8 +20633,14 @@ void Dbdih::packFragIntoPagesLab(Signal* signal, RWFragment* wf)
   FragmentstorePtr fragPtr;
   getFragstore(wf->rwfTabPtr.p, wf->fragId, fragPtr);
   writeFragment(wf, fragPtr);
-  writeReplicas(wf, fragPtr.p->storedReplicas);
-  writeReplicas(wf, fragPtr.p->oldStoredReplicas);
+  {
+    Uint32 nodeOrder[MAX_REPLICAS];
+    extractNodeInfo(jamBuffer(),
+                    fragPtr.p,
+                    nodeOrder);
+    writeReplicas(wf, nodeOrder[0], fragPtr.p->storedReplicas);
+  }
+  writeReplicas(wf, 0, fragPtr.p->oldStoredReplicas);
   wf->fragId++;
   if (wf->fragId == wf->totalfragments) {
     jam();
@@ -20830,21 +20852,6 @@ void Dbdih::startFragment(Signal* signal, Uint32 tableId, Uint32 fragId)
     break;
   }//while
 
-  if (fragId == 0)
-  {
-    jam();
-    /**
-     * Calculate the new set of primary replicas to be used when the
-     * node is up and running and performing the actions of a live
-     * node again.
-     */
-    calc_primary_replicas(tabPtr.p,
-                          0,
-                          tabPtr.p->totalfragments,
-                          0,
-                          false,
-                          __LINE__);
-  }
   FragmentstorePtr fragPtr;
   getFragstore(tabPtr.p, fragId, fragPtr);
   /* ----------------------------------------------------------------------- */
@@ -20883,28 +20890,11 @@ void Dbdih::startFragment(Signal* signal, Uint32 tableId, Uint32 fragId)
     progError(__LINE__, NDBD_EXIT_NO_RESTORABLE_REPLICA, buf);
     return;
   }//if
-  
-  /* ----------------------------------------------------------------------- */
-  /*     WE HAVE CHANGED THE NODE TO BE PRIMARY REPLICA AND THE NODES TO BE  */
-  /*     BACKUP NODES. WE MUST UPDATE THIS NODES DATA STRUCTURE SINCE WE     */
-  /*     WILL NOT COPY THE TABLE DATA TO OURSELF.                            */
-  /* ----------------------------------------------------------------------- */
-  updateNodeInfo(fragPtr);
-  /* ----------------------------------------------------------------------- */
-  /*     NOW WE HAVE COLLECTED ALL THE REPLICAS WE COULD GET. WE WILL NOW    */
-  /*     RESTART THE FRAGMENT REPLICAS WE HAVE FOUND IRRESPECTIVE OF IF THERE*/
-  /*     ARE ENOUGH ACCORDING TO THE DESIRED REPLICATION.                    */
-  /* ----------------------------------------------------------------------- */
-  /*     WE START BY SENDING ADD_FRAGREQ FOR THOSE REPLICAS THAT NEED IT.    */
-  /* ----------------------------------------------------------------------- */
-  CreateReplicaRecordPtr createReplicaPtr;
-  for (createReplicaPtr.i = 0; 
-       createReplicaPtr.i < cnoOfCreateReplicas; 
-       createReplicaPtr.i++) {
-    jam();
-    ptrCheckGuard(createReplicaPtr, 4, createReplicaRecord);
-  }//for
 
+  /**
+   * The setup of the node information will have been performed in
+   * resetReplicaSr, nothing should have changed since this setup.
+   */
   sendStartFragreq(signal, tabPtr, fragId);
 
   /**
@@ -25288,14 +25278,17 @@ void Dbdih::initCommonData()
   }
 }//Dbdih::initCommonData()
 
-void Dbdih::initFragstore(FragmentstorePtr fragPtr, Uint32 fragId)
+void Dbdih::initFragstore(FragmentstorePtr fragPtr,
+                          Uint32 fragId,
+                          Uint32 tableId)
 {
   fragPtr.p->nextPool = RNIL64;
   fragPtr.p->fragId = fragId;
+  fragPtr.p->tableId = tableId;
   fragPtr.p->nextCopyFragmentId = RNIL;
   fragPtr.p->storedReplicas = RNIL64;
   fragPtr.p->oldStoredReplicas = RNIL64;
-  fragPtr.p->m_log_part_id = RNIL; /* To ensure not used uninited */
+  fragPtr.p->m_log_part_id = ZNIL; /* To ensure not used uninited */
   fragPtr.p->m_inc_used_log_parts = true;
   fragPtr.p->partition_id = ~Uint32(0); /* To ensure not used uninited */
   
@@ -25304,7 +25297,6 @@ void Dbdih::initFragstore(FragmentstorePtr fragPtr, Uint32 fragId)
   fragPtr.p->fragReplicas = 0;
   fragPtr.p->preferredPrimary = 0;
   fragPtr.p->primaryNode = 0;
-  fragPtr.p->calc_primaryNode = 0;
 
   for (Uint32 i = 0; i < MAX_REPLICAS; i++)
     fragPtr.p->activeNodes[i] = 0;
@@ -25474,7 +25466,6 @@ void Dbdih::initTable(TabRecordPtr tabPtr)
   tabPtr.p->tableType = DictTabInfo::UndefTableType;
   tabPtr.p->schemaTransId = 0;
   tabPtr.p->tabActiveLcpFragments = 0;
-  tabPtr.p->m_calc_primary_replicas = false;
 }//Dbdih::initTable()
 
 /*************************************************************************/
@@ -25707,7 +25698,8 @@ void Dbdih::insertBackup(FragmentstorePtr fragPtr, Uint32 nodeId)
   for (Uint32 i = fragPtr.p->fragReplicas; i > 1; i--) {
     jam();
     ndbrequire(i < MAX_REPLICAS && i > 0);
-    fragPtr.p->activeNodes[i] = fragPtr.p->activeNodes[i - 1];
+    Uint16 newNode = fragPtr.p->activeNodes[i - 1];
+    fragPtr.p->activeNodes[i] = newNode;
   }//for
   fragPtr.p->activeNodes[1] = nodeId;
   fragPtr.p->fragReplicas++;
@@ -26996,6 +26988,11 @@ void Dbdih::searchStoredReplicas(FragmentstorePtr fragPtr)
       }
       default:
         jam();
+        /**
+         * The list of stored replicas was set up in resetReplicaSr, nothing
+         * should have changed since then.
+         */
+        ndbabort();
         /*empty*/;
         break;
       }//switch
@@ -27471,9 +27468,15 @@ Dbdih::startGcpMonitor(Signal* signal)
  * This changes the table distribution and this can be seen by
  * DIGETNODES, so if this is called when we are not in recovery
  * we need to hold the table RCU lock.
- */
+ *
+ * If any node in the list of surviving nodes is part of 21.04 or older
+ * version we will ensure that the primary node is equal to
+ * preferredPrimary if this node is alive. The node is for sure not
+ * starting when this happens.
+*/
 void Dbdih::updateNodeInfo(FragmentstorePtr fragPtr)
 {
+  bool use_pref_primary = !is_dynamic_primary_replicas_supported();
   ReplicaRecordPtr replicatePtr;
   Uint32 index = 0;
   Uint32 primaryNode = fragPtr.p->primaryNode;
@@ -27498,7 +27501,7 @@ void Dbdih::updateNodeInfo(FragmentstorePtr fragPtr)
   // in the list.
   /* ----------------------------------------------------------------------- */
   Uint32 prefPrim = fragPtr.p->preferredPrimary;
-  if (found)
+  if (found || !use_pref_primary)
   {
     jam();
     /**
@@ -27546,31 +27549,51 @@ void Dbdih::writePageWord(RWFragment* wf, Uint32 dataWord)
   wf->wordIndex++;
 }//Dbdih::writePageWord()
 
-void Dbdih::writeReplicas(RWFragment* wf, Uint64 replicaStartIndex) 
+void Dbdih::writeReplicas(RWFragment* wf,
+                          Uint16 primaryNode,
+                          Uint64 replicaStartIndex)
 {
   ReplicaRecordPtr wfReplicaPtr;
-  wfReplicaPtr.i = replicaStartIndex;
-  while (wfReplicaPtr.i != RNIL64) {
-    jam();
-    c_replicaRecordPool.getPtr(wfReplicaPtr);
-    writePageWord(wf, wfReplicaPtr.p->procNode);
-    writePageWord(wf, wfReplicaPtr.p->initialGci);
-    writePageWord(wf, wfReplicaPtr.p->noCrashedReplicas);
-    writePageWord(wf, wfReplicaPtr.p->nextLcp);
-    Uint32 i;
-    for (i = 0; i < MAX_LCP_STORED; i++) {
-      writePageWord(wf, wfReplicaPtr.p->maxGciCompleted[i]);
-      writePageWord(wf, wfReplicaPtr.p->maxGciStarted[i]);
-      writePageWord(wf, wfReplicaPtr.p->lcpId[i]);
-      writePageWord(wf, wfReplicaPtr.p->lcpStatus[i]);
-    }//if
-    for (i = 0; i < MAX_CRASHED_REPLICAS; i++) {
-      writePageWord(wf, wfReplicaPtr.p->createGci[i]);
-      writePageWord(wf, wfReplicaPtr.p->replicaLastGci[i]);
-    }//if
-
-    wfReplicaPtr.i = wfReplicaPtr.p->nextPool;
-  }//while
+  /**
+   * We always write the current primary as the first node in the
+   * replica list. This ensures that a restarting node will be in
+   * synch with who is the current primary.
+   *
+   * At system restart the primary will be decided by the node
+   * being the master at the time of the restart and its metadata.
+   *
+   * When we write old stored replicas the primary node will be 0
+   * and thus all nodes in the old stored replica list will be
+   * written in the second loop.
+   */
+  for (Uint32 i = 0; i < 2; i++)
+  {
+    wfReplicaPtr.i = replicaStartIndex;
+    while (wfReplicaPtr.i != RNIL64) {
+      jam();
+      c_replicaRecordPool.getPtr(wfReplicaPtr);
+      if ((primaryNode == wfReplicaPtr.p->procNode && i == 0) ||
+          (primaryNode != wfReplicaPtr.p->procNode && i == 1))
+      {
+        writePageWord(wf, wfReplicaPtr.p->procNode);
+        writePageWord(wf, wfReplicaPtr.p->initialGci);
+        writePageWord(wf, wfReplicaPtr.p->noCrashedReplicas);
+        writePageWord(wf, wfReplicaPtr.p->nextLcp);
+        Uint32 i;
+        for (i = 0; i < MAX_LCP_STORED; i++) {
+          writePageWord(wf, wfReplicaPtr.p->maxGciCompleted[i]);
+          writePageWord(wf, wfReplicaPtr.p->maxGciStarted[i]);
+          writePageWord(wf, wfReplicaPtr.p->lcpId[i]);
+          writePageWord(wf, wfReplicaPtr.p->lcpStatus[i]);
+        }//if
+        for (i = 0; i < MAX_CRASHED_REPLICAS; i++) {
+          writePageWord(wf, wfReplicaPtr.p->createGci[i]);
+          writePageWord(wf, wfReplicaPtr.p->replicaLastGci[i]);
+        }//if
+      }
+      wfReplicaPtr.i = wfReplicaPtr.p->nextPool;
+    }
+  }
 }//Dbdih::writeReplicas()
 
 void Dbdih::writeRestorableGci(Signal* signal, FileRecordPtr filePtr)
@@ -28976,11 +28999,16 @@ Dbdih::switchReplica(Signal* signal,
     if (fragNo == 0)
     {
       jam();
+      /**
+       * Calculate the new primary after switch replica is
+       * performed.
+       *
+       * This is used to recalculate the primary node distribution
+       * after a controlled stop of a node.
+       */
       calc_primary_replicas(tabPtr.p,
                             0,
                             tabPtr.p->totalfragments,
-                            nodeId,
-                            false,
                             __LINE__);
     }
     FragmentstorePtr fragPtr;
@@ -29026,7 +29054,6 @@ Dbdih::switchReplica(Signal* signal,
     {
       jam();
       primaryNode = oldOrder[0];
-      fragPtr.p->primaryNode = 0;
     }
     else
     {
@@ -29044,6 +29071,7 @@ Dbdih::switchReplica(Signal* signal,
       ndbrequire(found == true);
       ndbrequire(fragPtr.p->primaryNode != nodeId);
     }
+    fragPtr.p->primaryNode = 0;
     req->tableId = tableId;
     req->fragNo = fragNo;
     req->noOfReplicas = noOfReplicas;
