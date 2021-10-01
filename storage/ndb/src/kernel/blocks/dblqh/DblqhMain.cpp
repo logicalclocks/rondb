@@ -4965,10 +4965,10 @@ Dblqh::commit_reorg(TablerecPtr tablePtr)
      * This update of distribution key only happens in LDM threads, so there
      * can never be a concurrency conflict in its update. Multiple query
      * threads can read this value, but they ignore it since they are always
-     * dirty read operations. Distribution keys are there to ensure that
+     * read operations. Distribution keys are there to ensure that
      * we abort updates that do not take all replicas into account. Thus it
      * is not an issue for query threads as long as they only perform
-     * dirty read operations.
+     * read operations.
      */
     FragrecordPtr fragPtr;
     if ((fragPtr.i = tablePtr.p->fragrec[i]) != RNIL64)
@@ -9364,27 +9364,158 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
   regTcPtr->m_log_part_ptr_p = logPart;
   Uint8 TdistKey = LqhKeyReq::getDistributionKey(attrLenFlags);
   if (unlikely((tfragDistKey != TdistKey) &&
+               (regTcPtr->operation != ZREAD) &&
+               (regTcPtr->operation != ZREAD_EX) &&
+               (regTcPtr->operation != ZUNLOCK) &&
                (regTcPtr->seqNoReplica == 0) &&
                (regTcPtr->dirtyOp == ZFALSE)))
   {
-    /* ----------------------------------------------------------------------
-     * WE HAVE DIFFERENT OPINION THAN THE DIH THAT STARTED THE TRANSACTION. 
-     * THE REASON COULD BE THAT THIS IS AN OLD DISTRIBUTION WHICH IS NO LONGER
-     * VALID TO USE. THIS MUST BE CHECKED.
-     * ONE IS ADDED TO THE DISTRIBUTION KEY EVERY TIME WE ADD A NEW REPLICA.
-     * FAILED REPLICAS DO NOT AFFECT THE DISTRIBUTION KEY. THIS MEANS THAT THE 
-     * MAXIMUM DEVIATION CAN BE 3 BETWEEN THOSE TWO VALUES SINCE WITH 4 REPLICAS
-     * WE CAN ADD 3 REPLICAS IN ONE GO.
-     * --------------------------------------------------------------------- */
-    Int8 tmp = (TdistKey - tfragDistKey);
-    tmp = (tmp < 0 ? - tmp : tmp);
-    if (unlikely((tmp <= (MAX_REPLICAS - 1)) || (tfragDistKey == 0)))
+    /**
+     * When a new replica is added, we need to ensure that transactions at
+     * at some point starts using the new replica. Let's look at an example
+     * of what we need to achieve.
+     *
+     * We are starting a new node and table t1 need to add the new node to
+     * fragment 1. This fragment currently has a replica in node 1 and node 3.
+     * Now node 2 is added as well. In DBDIH each fragment has a distribution
+     * key. Assume that this distribution key was 2 before the change, this
+     * means that distribution key 2 used the following update order of the
+     * replicas: it started updating the primary replica in node 1 followed
+     * by the backup replica in node 3.
+     *
+     * After updating the distribution key the order is changed such that we
+     * will first update the primary replica in node 1, followed by the
+     * backup replica in node 2 and finally the backup replica in node 3.
+     *
+     * The consistency of the replicas in node 1 and node 3 is not at risk
+     * here. They are part of the write transactions in both distribution key
+     * 2 and 3. Thus we only need to care about the new replica in node 2.
+     *
+     * The new replica is brought up by synchronising the data in node 2 with
+     * the data in the primary replica in node 1. This uses a copy scan that
+     * starts with the arrival of the signal COPY_FRAGREQ in DBLQH in the
+     * primary replica.
+     *
+     * This copy scan will lock a row, check if the row needs to be copied
+     * to the new replica and if so the row data is sent over to the new
+     * replica in node 2. We rely on signal order between LDMs in node 1
+     * and node 2 to be retained such that we don't need to lock the row
+     * in node 1 during the copy of the row, we only retain the lock while
+     * copying the data, before sending the signal.
+     *
+     * Now once we locked a row and sent it over to the new replica we rely
+     * on that all writes after this will also write to the new replica.
+     * Thus at the point when the copy scan starts we can no longer allow
+     * any write transactions using distribution key 2. After the copy scan
+     * has started all transactions using distribution key 2 must fail.
+     *
+     * It is sufficient to check this condition in the primary replica.
+     * Let's assume that a transaction has passed in the primary replica
+     * and gets delayed for a long time in the other backup replica nodes.
+     * The important thing here is that the row was locked in the primary
+     * replica, thus the copy scan cannot read the row until this
+     * transaction has completed. If the write transaction using distribution
+     * key 2 started before the copy scan started, then there is no concern
+     * about the transaction. It will become part of the new replica
+     * eventually. If it started after the copy scan started we will have
+     * checked the distribution key before the transaction started and would
+     * have failed the transaction should an old distribution key be found.
+     *
+     * Thus two conditions need apply for a transaction to be aborted, first
+     * the fragment distribution key must be old and second a copy scan must
+     * have started.
+     *
+     * This means that we only need to start checking the distribution key
+     * after receiving COPY_FRAGREQ. This is the time when the distribution
+     * key is updated in DBLQH. In DBDIH it is updated at the very time
+     * when the distribution is changed. But the old distribution and the
+     * new distribution can coexist for a short time before the
+     * reception of COPY_FRAGREQ in the primary replica.
+     *
+     * The distribution key is updated in DBDIH when the signal
+     * UPDATE_FRAG_STATEREQ arrives. When all nodes have sent a response
+     * UPDATE_FRAG_STATECONF on this signal to the starting node, the
+     * COPY_FRAGREQ signal will be sent from the starting node to the
+     * primary replica. Thus old distribution key operations have a
+     * fair bit of time to handle things before their distribution key
+     * is no longer valid. Thus the occurrence of aborted transactions
+     * due to an old distribution key should be very rare and mostly
+     * occur in networks with highly variable latencies on messages
+     * between different nodes.
+     *
+     * Actually between receiving all UPDATE_FRAG_STATECONF we also
+     * send an update to the DIH master using the signal
+     * UPDATE_TOREQ. Only after this signal has been sent and
+     * UPDATE_TOCONF received from the master node will we proceed
+     * with sending the COPY_FRAGREQ.
+     *
+     * The update of the distribution key is sent to nodes using
+     * COPY_FRAGREQ, the starting node gets the update in the
+     * COPY_ACTIVEREQ signal and the remainder of the nodes gets
+     * the signal sent in UPDATE_FRAG_DIST_KEY_ORD.
+     *
+     * From this description it is clear that we can allow the
+     * distribution key that is stored in DBLQH to be smaller
+     * than the one received, but we cannot a transaction where
+     * the stored distribution key is higher than the distribution key
+     * received in LQHKEYREQ. The distance between the received
+     * distribution key and the stored distribution key should never
+     * be larger than one. If so we have a serious issue. The reason
+     * is that we can only add one replica per fragment at a time.
+     * The only possibility is if the signal UPDATE_FRAG_DIST_KEY_ORD
+     * to the 3rd and 4th replica is delayed for so long that we have
+     * added a new replica and started a new replica change where
+     * the node hasn't yet received the previous UPDATE_FRAG_DIST_KEY_ORD
+     * and receives an LQHKEYREQ with a new signal key which is 2 higher
+     * then its stored value before it has received the COPY_FRAGREQ.
+     * We can ignore even this case since once COPY_FRAGREQ will arrive
+     * we will be safe that we have the correct distribution key.
+     *
+     * The distribution key is also used when reorganizing a table.
+     * We cannot add a new replica while a meta data operation is ongoing.
+     * This means that we cannot increment the distribution key for both
+     * those events in parallel, only one at a time is allowed to happen
+     * concurrently.
+     *
+     * In this case we increment the distribution key after changing
+     * such that the new fragments are both readable and writeable.
+     * This means that only old scans are allowed to complete on the
+     * old fragments, thus updates on them can continue.
+     *
+     * This part on handling reorganizing a table requires a bit more
+     * description. The distribution key is incremented in DBDIH when
+     * the ALTER TABLE is commited in DBDIH, when all DIH have committed
+     * it will be committed in DBLQH and with that the distribution key
+     * in DBLQH will also be updated.
+     *
+     * Dropping replicas is not an issue, the only reason for dropping
+     * a replica is if the node goes down and if we attempt to write
+     * or read a fragment which is no longer accessible we will get
+     * an error.
+     *
+     * Similarly distribution keys are not important for reads, at worst
+     * we might read using the wrong replica, but since replicas are
+     * always up to date, this isn't an issue. At worst we could get some
+     * deadlock situations.
+     */
+    Int8 tmp = Int8(TdistKey) - Int8(tfragDistKey);
+    if (tmp < 0)
     {
-      LQHKEY_abort(signal, 0, tcConnectptr);
+      tmp = -tmp;
+      if (unlikely((tmp <= (MAX_REPLICAS - 1)) || (tfragDistKey == 0)))
+      {
+        LQHKEY_abort(signal, 0, tcConnectptr);
+        return;
+      }//if
+      LQHKEY_error(signal, 1, tcConnectptr);
       return;
-    }//if
-    LQHKEY_error(signal, 1, tcConnectptr);
-    return;
+    }
+    /**
+     * tmp > 0 means that the distribution key received is larger than the
+     * stored key which is ok for short periods of time. It should never be
+     * possible that the difference is bigger than MAX_REPLICAS - 1.
+     */
+    ndbrequire(tmp <= (MAX_REPLICAS - 1));
   }//if
 
   /*
@@ -19875,7 +20006,7 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
     ord->tableId = tabptr.i;
     ord->fragId = fragId;
     ord->fragDistributionKey = key;
-    i = 1;
+    i = 0;
     while ((i = nodemask.find(i+1)) != NdbNodeBitmask::NotFound)
     {
       Uint32 instanceNo = getInstanceNo(i,
