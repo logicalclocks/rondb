@@ -19330,7 +19330,7 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
     ord->tableId = tabptr.i;
     ord->fragId = fragId;
     ord->fragDistributionKey = key;
-    i = 1;
+    i = 0;
     while ((i = nodemask.find(i+1)) != NdbNodeBitmask::NotFound)
     {
       Uint32 instanceNo = getInstanceNo(i,
