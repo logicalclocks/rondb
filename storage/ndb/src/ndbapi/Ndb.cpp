@@ -780,18 +780,41 @@ Ndb::startTransaction(const NdbDictionary::Table *table,
 Uint32
 NdbImpl::select_node(NdbTableImpl *table_impl,
                      const Uint16 *nodes,
-                     Uint32 cnt)
+                     Uint32 cnt,
+                     Uint32 primary_node)
 {
+  /**
+   * The selection of node to execute the transaction follows the
+   * following priority order.
+   *
+   * At first we select a node within the same node group as decided
+   * by the hint.
+   *
+   * The highest priority is to select the node in the same location
+   * domain.
+   *
+   * Next we will select the node with the highest proximity. This
+   * essentially means that we will select a node that is connected
+   * through shared memory or that is residing on the same host.
+   *
+   * If all those things are equal and we still have all nodes
+   * except the nodes that are not available. In this case we want
+   * to select the primary node.
+   *
+   * We implement this by adding a higher group value for the primary
+   * node. This addition is large enough to select it over other
+   * nodes with the same proximity, but small enough to not prioritize
+   * it over other nodes with higher proximity.
+   */
   if (table_impl == NULL)
   {
     return m_ndb_cluster_connection.select_any(this);
   }
 
   Uint32 nodeId;
-  bool readBackup = table_impl->m_read_backup;
   bool fullyReplicated = table_impl->m_fully_replicated;
 
-  if (cnt && !readBackup && !fullyReplicated)
+  if (cnt && !fullyReplicated)
   {
     /**
      * We select the primary replica node normally. If the user
@@ -809,12 +832,13 @@ NdbImpl::select_node(NdbTableImpl *table_impl,
     {
       nodeId = m_ndb_cluster_connection.select_location_based(this,
                                                               nodes,
-                                                              cnt);
+                                                              cnt,
+                                                              primary_node);
     }
     else
     {
       /* Backwards compatible setting */
-      nodeId = nodes[0];
+      nodeId = primary_node;
     }
   }
   else if (fullyReplicated)
@@ -825,24 +849,15 @@ NdbImpl::select_node(NdbTableImpl *table_impl,
      */
     cnt = table_impl->m_fragments.size();
     nodes = table_impl->m_fragments.getBase();
-    nodeId = m_ndb_cluster_connection.select_node(this, nodes, cnt);
+    nodeId = m_ndb_cluster_connection.select_node(this, nodes, cnt, 0);
   }
-  else if (cnt == 0)
+  else
   {
     /**
      * For unhinted select, let caller select node.
      * Except for fully replicated tables, see above.
      */
     nodeId = m_ndb_cluster_connection.select_any(this);
-  }
-  else
-  {
-    /**
-     * Read backup tables.
-     * Consider one fragment and any replica for readBackup
-     */
-    require(readBackup);
-    nodeId = m_ndb_cluster_connection.select_node(this, nodes, cnt);
   }
   return nodeId;
 }
@@ -862,9 +877,12 @@ Ndb::startTransaction(const NdbDictionary::Table* table,
     Uint32 nodeId;
     const Uint16 *nodes;
     NdbTableImpl *impl =  & NdbTableImpl::getImpl(*table);
-    Uint32 cnt = impl->get_nodes(partitionId,
-                                 &nodes);
-    nodeId = theImpl->select_node(impl, nodes, cnt);
+    Uint32 primary_node = 0;
+    Uint32 cnt = impl->get_nodes(theImpl,
+                                 partitionId,
+                                 &nodes,
+                                 primary_node);
+    nodeId = theImpl->select_node(impl, nodes, cnt, primary_node);
     theImpl->incClientStat(TransStartCount, 1);
 
     NdbTransaction *trans= startTransactionLocal(0, nodeId, 0);
@@ -946,8 +964,12 @@ Ndb::startTransaction(const NdbDictionary::Table *table,
       }
       
       const Uint16 *nodes;
-      Uint32 cnt= impl->get_nodes(table->getPartitionId(hashValue),  &nodes);
-      nodeId = theImpl->select_node(impl, nodes, cnt);
+      Uint32 primary_node = 0;
+      Uint32 cnt= impl->get_nodes(theImpl,
+                                  table->getPartitionId(hashValue),
+                                  &nodes,
+                                  primary_node);
+      nodeId = theImpl->select_node(impl, nodes, cnt, primary_node);
     }
     else
     {
@@ -957,7 +979,7 @@ Ndb::startTransaction(const NdbDictionary::Table *table,
       {
         impl = &NdbTableImpl::getImpl(*table);
       }
-      nodeId = theImpl->select_node(impl, NULL, 0);
+      nodeId = theImpl->select_node(impl, NULL, 0, 0);
     }
 
     /* TODO : Should call method above rather than duplicate call to

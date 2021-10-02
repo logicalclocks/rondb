@@ -1678,7 +1678,10 @@ Ndb_cluster_connection_impl::select_any(NdbImpl *impl_ndb)
   }
   else
   {
-    return select_node(impl_ndb, prospective_node_ids, num_prospective_nodes);
+    return select_node(impl_ndb,
+                       prospective_node_ids,
+                       num_prospective_nodes,
+                       0);
   }
 }
 
@@ -1690,7 +1693,8 @@ Ndb_cluster_connection_impl::select_any(NdbImpl *impl_ndb)
 Uint32
 Ndb_cluster_connection_impl::select_location_based(NdbImpl *impl_ndb,
                                                    const Uint16 * nodes,
-                                                   Uint32 cnt)
+                                                   Uint32 cnt,
+                                                   Uint32 primary_node)
 {
   Uint16 prospective_node_ids[MAX_NDB_NODES];
   Uint32 num_prospective_nodes = 0;
@@ -1698,23 +1702,19 @@ Ndb_cluster_connection_impl::select_location_based(NdbImpl *impl_ndb,
 
   if (my_location_domain_id == 0)
   {
-    return nodes[0];
+    return select_node(impl_ndb, nodes, cnt, primary_node);
   }
   for (Uint32 i = 0; i < cnt; i++)
   {
     if (my_location_domain_id == m_location_domain_id[nodes[i]] &&
         impl_ndb->get_node_available(nodes[i]))
     {
-      if (i == 0)
-      {
-        return nodes[0];
-      }
       prospective_node_ids[num_prospective_nodes++] = nodes[i];
     }
   }
   if (num_prospective_nodes == 0)
   {
-    return nodes[0];
+    return select_node(impl_ndb, nodes, cnt, primary_node);
   }
   else if (num_prospective_nodes == 1)
   {
@@ -1722,14 +1722,18 @@ Ndb_cluster_connection_impl::select_location_based(NdbImpl *impl_ndb,
   }
   else
   {
-    return select_node(impl_ndb, prospective_node_ids, num_prospective_nodes);
+    return select_node(impl_ndb,
+                       prospective_node_ids,
+                       num_prospective_nodes,
+                       primary_node);
   }
 }
 
 Uint32
 Ndb_cluster_connection_impl::select_node(NdbImpl *impl_ndb,
                                          const Uint16 * nodes,
-                                         Uint32 cnt)
+                                         Uint32 cnt,
+                                         Uint32 primary_node)
 {
   if (cnt == 1)
   {
@@ -1826,16 +1830,26 @@ Ndb_cluster_connection_impl::select_node(NdbImpl *impl_ndb,
           else if (nodes_arr[i].adjusted_group == best_score)
           {
             Uint32 usage = nodes_arr[i].hint_count;
-            if (best_usage - usage < HINT_COUNT_HALF)
+            if (candidate_node == primary_node)
             {
-              /**
-               * hint_count may wrap, for this calculation it is assummed that
-               * the two counts should be near each other, and so if the
-               * difference is small above, best_usage is greater than usage.
-               */
               best_idx = i;
               best_node = candidate_node;
               best_usage = usage;
+            }
+            else
+            {
+              if (best_usage - usage < HINT_COUNT_HALF &&
+                  best_node != primary_node)
+              {
+                /**
+                 * hint_count may wrap, for this calculation it is assummed that
+                 * the two counts should be near each other, and so if the
+                 * difference is small above, best_usage is greater than usage.
+                 */
+                best_idx = i;
+                best_node = candidate_node;
+                best_usage = usage;
+              }
             }
           }
           break;

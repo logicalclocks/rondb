@@ -3464,7 +3464,8 @@ Dbtup::execDROP_FRAG_REQ(Signal* signal)
   DropFragReq* req= (DropFragReq*)signal->getDataPtr();
 
   TablerecPtr tabPtr;
-  tabPtr.i= req->tableId;
+  tabPtr.i = req->tableId;
+  Uint32 fragId = req->fragId;
   ptrCheckGuard(tabPtr, cnoOfTablerec, tablerec);
 
   tabPtr.p->m_dropTable.tabUserRef = req->senderRef;
@@ -3472,7 +3473,7 @@ Dbtup::execDROP_FRAG_REQ(Signal* signal)
 
   FragrecordPtr fragPtr;
 
-  if (get_fragment_record(tabPtr, fragPtr, req->tableId, req->fragId))
+  if (get_fragment_record(tabPtr, fragPtr, tabPtr.i, fragId))
   {
     jam();
 

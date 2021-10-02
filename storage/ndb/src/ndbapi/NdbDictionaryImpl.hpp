@@ -327,6 +327,8 @@ public:
   Uint8 m_noOfDiskColumns;
   Uint8 m_replicaCount;
 
+  Uint16 m_numNodeGroups;
+
   /**
    * Default NdbRecord for this table or index
    * Currently used by old-Api scans to use NdbRecord API internally.
@@ -352,8 +354,16 @@ public:
   /**
    * Return count
    */
-  Uint32 get_nodes(Uint32 partitionId, const Uint16** nodes) const ;
-  
+  Uint32 get_nodes(NdbImpl *impl_ndb,
+                   Uint32 partitionId,
+                   const Uint16** nodes,
+                   Uint32 & primary_node) const ;
+
+  /**
+   * Calculate number of node groups
+   */
+  void calculate_node_groups();
+
   /**
    * Disk stuff
    */

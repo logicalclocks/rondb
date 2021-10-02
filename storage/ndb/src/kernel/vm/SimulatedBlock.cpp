@@ -3405,7 +3405,7 @@ SimulatedBlock::sendFirstFragment(FragmentSendInfo & info,
     totalSize += ptr[0].sz;
   }
 
-  if (totalSize + messageSize <= MAX_SIZE_SINGLE_SIGNAL)
+  if (totalSize + length <= MAX_SIZE_SINGLE_SIGNAL)
   {
     /**
      * Send signal directly
@@ -3766,7 +3766,7 @@ SimulatedBlock::sendFirstFragment(FragmentSendInfo & info,
     totalSize += ptr[0].sz;
   }
 
-  if (totalSize + messageSize <= MAX_SIZE_SINGLE_SIGNAL)
+  if (totalSize + length <= MAX_SIZE_SINGLE_SIGNAL)
   {
     /**
      * Send signal directly
@@ -3776,7 +3776,7 @@ SimulatedBlock::sendFirstFragment(FragmentSendInfo & info,
     
     /**
      * Indicate to sendLinearSignalFragment
-     *   that we'r already done
+     *   that we're already done
      */
     return true;
   }

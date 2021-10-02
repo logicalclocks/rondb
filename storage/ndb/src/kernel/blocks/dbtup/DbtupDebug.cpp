@@ -446,6 +446,7 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
       RSS_OP_SNAPSHOT_SAVE(defaultValueWordsHi);
       RSS_OP_SNAPSHOT_SAVE(defaultValueWordsLo);
     }
+    g_eventLogger->info("(%u)SAVE TUP: cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
     RSS_OP_SNAPSHOT_SAVE(cnoOfFreeFragoprec);
     RSS_OP_SNAPSHOT_SAVE(cnoOfAllocatedFragrec);
     RSS_OP_SNAPSHOT_SAVE(cnoOfFreeTabDescrRec);
@@ -465,6 +466,7 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
       RSS_OP_SNAPSHOT_CHECK(defaultValueWordsHi);
       RSS_OP_SNAPSHOT_CHECK(defaultValueWordsLo);
     }
+    g_eventLogger->info("(%u)CHECK TUP: cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
     RSS_OP_SNAPSHOT_CHECK(cnoOfFreeFragoprec);
     RSS_OP_SNAPSHOT_CHECK(cnoOfAllocatedFragrec);
     RSS_OP_SNAPSHOT_CHECK(cnoOfFreeTabDescrRec);

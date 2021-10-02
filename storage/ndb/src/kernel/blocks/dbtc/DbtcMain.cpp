@@ -4428,7 +4428,11 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
      (regTcPtr->m_special_op_flags & TcConnectRecord::SOF_INDEX_TABLE_READ) &&
      regTcPtr->tcNodedata[0] != getOwnNodeId())
   {
-    ndbassert(false);
+    /**
+     * If we crash here it is because we have failed in a test of
+     * transaction hinting.
+     */
+    ndbabort();
     signal->theData[1] = 626;
     execDIGETNODESREF(signal, apiConnectptr);
     return;
@@ -4439,7 +4443,11 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
      regTcPtr->m_special_op_flags == 0 &&
      (regTcPtr->tcNodedata[0] != getOwnNodeId()))
   {
-    ndbassert(false);
+    /**
+     * If we crash here it is because we have failed in a test of
+     * transaction hinting.
+     */
+    ndbabort();
     signal->theData[1] = 626;
     execDIGETNODESREF(signal, apiConnectptr);
     return;
@@ -14329,6 +14337,8 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
        * TC - transaction hinting / scan partition pruning has failed
        * Used by testPartitioning.cpp
        */
+      jamLineDebug((Uint16)nodeId);
+      jamLineDebug((Uint16)lqhScanFragId);
       CRASH_INSERTION(8050);
     }
   }

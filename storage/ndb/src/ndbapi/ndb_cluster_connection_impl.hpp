@@ -144,14 +144,18 @@ private:
   /**
    * Select the "closest" node
    */
-  Uint32 select_node(NdbImpl *impl_ndb, const Uint16* nodes, Uint32 cnt);
+  Uint32 select_node(NdbImpl *impl_ndb,
+                     const Uint16* nodes,
+                     Uint32 cnt,
+                     Uint32 primary);
   /**
    * Select primary or if primary in other location domain
    * choose a node in the same location domain
    */
   Uint32 select_location_based(NdbImpl *impl_ndb,
                                const Uint16* nodes,
-                               Uint32 cnt);
+                               Uint32 cnt,
+                               Uint32 primary_node);
   /**
    * Choose node in same location domain if one exists, otherwise
    * make no choice.

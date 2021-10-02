@@ -3890,8 +3890,6 @@ Dblqh::execDROP_FRAG_REQ(Signal* signal)
   tabptr.i = req->tableId;
   ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
 
-  deleteFragrec(req->fragId);
-
   ndbassert(!m_is_query_block);
   Uint32 ref = calcInstanceBlockRef(DBACC);
   if (DictTabInfo::isOrderedIndex(tabptr.p->tableType))
@@ -3952,6 +3950,14 @@ Dblqh::execDROP_FRAG_CONF(Signal* signal)
                JBB);
     return;
   }
+  /**
+   * We must wait until all parts of the fragment have been removed in
+   * DBACC and DBTUP and DBTUX before removing it from DBLQH since DBLQH
+   * have the mapping from fragId to fragment record for all blocks.
+   */
+  tabptr.i = addfragptr.p->m_dropFragReq.tableId;
+  ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
+  deleteFragrec(addfragptr.p->m_dropFragReq.fragId);
 
   conf->senderRef = reference();
   conf->senderData = addfragptr.p->m_dropFragReq.senderData;
@@ -36691,11 +36697,13 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
   if (arg == DumpStateOrd::SchemaResourceSnapshot)
   {
     RSS_OP_SNAPSHOT_SAVE(cnoOfAllocatedFragrec);
+    g_eventLogger->info("(%u) SAVE:cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
     return;
   }
 
   if (arg == DumpStateOrd::SchemaResourceCheckLeak)
   {
+    g_eventLogger->info("(%u) Check:cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
     RSS_OP_SNAPSHOT_CHECK(cnoOfAllocatedFragrec);
     return;
   }

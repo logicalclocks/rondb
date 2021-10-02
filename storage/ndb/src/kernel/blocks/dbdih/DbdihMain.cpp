@@ -8998,8 +8998,13 @@ void Dbdih::sendUpdateFragStateReq(Signal* signal,
   Uint32 len = is_dynamic_primary_replicas_supported() ?
                UpdateFragStateReq::SignalLength :
                UpdateFragStateReq::OldSignalLength;
-  req->primaryNode = fragPtr.p->primaryNode;
-  fragPtr.p->primaryNode = 0;
+  req->primaryNode = 0;
+  if (replicaType == UpdateFragStateReq::COMMIT_STORED)
+  {
+    jam();
+    req->primaryNode = fragPtr.p->primaryNode;
+    fragPtr.p->primaryNode = 0;
+  }
 
   NodeRecordPtr nodePtr;
   nodePtr.i = cfirstAliveNode;
@@ -13181,18 +13186,6 @@ Dbdih::calc_primary_replicas(TabRecord *tabPtrP,
    * likely to create a fairly balanced use of LDM resources.
    */
   NodeRecordPtr nodePtr;
-  bool more_than_one_replica = false;
-  /**
-   * Check that all nodes support calculating new primary replicas.
-   * If they don't we must use the old way of calculating the
-   * primary replicas.
-   */
-  if (!is_dynamic_primary_replicas_supported())
-  {
-    jam();
-    return;
-  }
-
   /**
    * Initialise node group temporary variables.
    */
@@ -13218,11 +13211,6 @@ Dbdih::calc_primary_replicas(TabRecord *tabPtrP,
       }
     }
     ndbrequire(NGPtr.p->m_temp_nodes_alive > 0);
-    if (NGPtr.p->m_temp_nodes_alive > 1)
-    {
-      jam();
-      more_than_one_replica = true;
-    }
   }
   for (Uint32 fragId = first_fid; fragId < limit_fid; fragId++)
   {
@@ -13237,11 +13225,29 @@ Dbdih::calc_primary_replicas(TabRecord *tabPtrP,
     ptrCheckGuard(NGPtr, MAX_NDB_NODES, nodeGroupRecord);
     NGPtr.p->m_temp_num_fragments++;
   }
-  if (!more_than_one_replica)
+  /**
+   * Check that all nodes support calculating new primary replicas.
+   * If they don't we must use the old way of calculating the
+   * primary replicas.
+   */
+
+  if (!is_dynamic_primary_replicas_supported())
   {
     jam();
     return;
   }
+
+  /**
+   * Check that it is a modern table, old table types we will ignore this
+   * rebalancing effort.
+   */
+  if (tabPtrP->method != TabRecord::HASH_MAP &&
+      tabPtrP->method != TabRecord::USER_DEFINED)
+  {
+    jam();
+    return;
+  }
+
   for (Uint32 ng_i = 0; ng_i < cnoOfNodeGroups; ng_i++)
   {
     NodeGroupRecordPtr NGPtr;

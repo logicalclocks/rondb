@@ -1591,7 +1591,11 @@ NdbTableImpl::getFragmentNodes(Uint32 fragmentId,
                                Uint32 arraySize) const
 {
   const Uint16 *shortNodeIds;
-  Uint32 nodeCount = get_nodes(fragmentId, &shortNodeIds);
+  Uint32 primary_node = 0;
+  Uint32 nodeCount = get_nodes(nullptr,
+                               fragmentId,
+                               &shortNodeIds,
+                               primary_node);
 
   for(Uint32 i = 0; 
       ((i < nodeCount) &&
@@ -1930,13 +1934,161 @@ NdbTableImpl::checkColumnHash() const
   return ok;
 }
 
-Uint32
-NdbTableImpl::get_nodes(Uint32 fragmentId, const Uint16 ** nodes) const
+//#define DEBUG_PRIMARY_KEY_DISTRIBUTION
+void
+NdbTableImpl::calculate_node_groups()
 {
+  m_numNodeGroups = 0;
+  Uint16 *nodes = m_fragments.getBase();
+  Uint16 first_node = nodes[0];
+  Uint16 first_i = 0;
+  Uint16 numNodeGroups = 0;
+#ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
+  fprintf(stderr, "Table: %s", getMysqlName());
+  fprintf(stderr, " FragmentType: %u", (Uint32)m_fragmentType);
+  fprintf(stderr, " PartitionBalance: %d\n", (Int32)m_partitionBalance);
+#endif
+  if (m_fragmentType != NdbDictionary::Object::HashMapPartition &&
+      m_fragmentType != NdbDictionary::Object::UserDefined)
+  {
+    m_numNodeGroups = 0;
+    return;
+  }
+  for (Uint32 i = 0; i < m_fragmentCount; i++)
+  {
+#ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
+    fprintf(stderr, "Fragment[%u]: ", i);
+#endif
+    Uint16 *frag_nodes = &nodes[m_replicaCount * i];
+    for (Uint32 j = 0; j < m_replicaCount; j++)
+    {
+#ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
+      fprintf(stderr, "%u ", frag_nodes[j]);
+#endif
+      if (frag_nodes[j] == first_node && i != 0)
+      {
+        if ((i - first_i) != numNodeGroups &&
+            numNodeGroups != 0)
+        {
+          assert(false);
+          /**
+           * A pattern not recognized was found, cannot calculate
+           * primary node.
+           */
+          return;
+        }
+        numNodeGroups = i - first_i;
+        first_i = i;
+      }
+    }
+#ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
+    fprintf(stderr, "\n");
+#endif
+  }
+  /**
+   * If numNodeGroups is still 0 this means that we have PartitionsPerNode
+   * equal to 1. Thus only 1 partition where first node is part of the table.
+   * Set m_numNodeGroups to number of fragments, this will lead to always
+   * choosing the first node in the node group which is a good guess of which
+   * is the primary node.
+   */
+  if (numNodeGroups == 0)
+  {
+    m_numNodeGroups = m_fragmentCount;
+  }
+  else
+  {
+    m_numNodeGroups = numNodeGroups;
+  }
+#ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
+  fprintf(stderr, "m_numNodeGroups: %u\n", m_numNodeGroups);
+#endif
+}
+
+Uint32
+NdbTableImpl::get_nodes(NdbImpl *impl_ndb,
+                        Uint32 fragmentId,
+                        const Uint16 ** nodes,
+                        Uint32 & primary_node) const
+{
+  Uint32 num_fragments = m_fragmentCount;
   Uint32 pos = fragmentId * m_replicaCount;
+  primary_node = 0;
+  Uint32 alive_nodes[MAX_REPLICAS];
   if (pos + m_replicaCount <= m_fragments.size())
   {
     *nodes = m_fragments.getBase()+pos;
+    if (impl_ndb == nullptr)
+    {
+      ;
+    }
+    else if (!ndbd_support_dynamic_primary_replicas(
+          impl_ndb->m_transporter_facade->getMinDbNodeVersion()))
+    {
+      primary_node = (*nodes)[0];
+    }
+    else if (m_numNodeGroups == 0)
+    {
+      if (m_fragmentType != NdbDictionary::Object::HashMapPartition &&
+          m_fragmentType != NdbDictionary::Object::UserDefined)
+      {
+        primary_node = (*nodes)[0];
+      }
+    }
+    else if (m_replicaCount == 1)
+    {
+      primary_node = (*nodes)[0];
+    }
+    else
+    {
+      Uint32 num_alive_nodes = 0;
+      for (Uint32 i = 0; i < m_replicaCount; i++)
+      {
+        Uint32 node = (*nodes)[i];
+        if (impl_ndb->get_node_available(node))
+        {
+          /* Sort nodes in node id order */
+          for (Uint32 j = 0; j < num_alive_nodes; j++)
+          {
+            if (alive_nodes[j] > node)
+            {
+              Uint32 save_node = alive_nodes[j];
+              alive_nodes[j] = node;
+              node = save_node;
+            }
+            assert(node != alive_nodes[j]);
+          }
+          alive_nodes[num_alive_nodes] = node;
+          num_alive_nodes++;
+        }
+      }
+      if (num_alive_nodes < 1)
+      {
+        ;
+      }
+      else
+      {
+        Uint32 num_local_fragments = num_fragments / m_numNodeGroups;
+        Uint32 num_per_node = num_local_fragments / num_alive_nodes;
+        num_per_node = MAX(num_per_node, 1);
+        Uint32 local_fid = fragmentId / m_numNodeGroups;
+        Uint32 inx = local_fid / num_per_node;
+        assert(inx < m_replicaCount);
+        assert(inx < num_alive_nodes);
+        primary_node = alive_nodes[inx];
+#ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
+        fprintf(stderr, "(%u,%u,%u) inx: %u num_per_node: %u, num_local_fragments: %u, local_fid: %u\n", alive_nodes[0], alive_nodes[1], alive_nodes[2], inx, num_per_node, num_local_fragments, local_fid);
+        fprintf(stderr, "primary_node: %u, fragmentId: %u, num_frags: %u, table: %s"
+                        ", num_replicas: %u, num_alive_nodes: %u\n",
+                primary_node,
+                fragmentId,
+                m_fragmentCount,
+                getMysqlName(),
+                m_replicaCount,
+                num_alive_nodes);
+#endif
+      }
+    }
     return m_replicaCount;
   }
   return 0;
@@ -3817,6 +3969,7 @@ NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
       }
     }
 
+    impl->calculate_node_groups();
     Uint32 topBit = (1 << 31);
     for(; topBit && !(fragCount & topBit); ){
       topBit >>= 1;

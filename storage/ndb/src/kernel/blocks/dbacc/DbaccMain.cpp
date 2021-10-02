@@ -675,30 +675,27 @@ Dbacc::execDROP_TAB_REQ(Signal* signal){
 }
 
 void
-Dbacc::execDROP_FRAG_REQ(Signal* signal){
+Dbacc::execDROP_FRAG_REQ(Signal* signal)
+{
   jamEntry();
   DropFragReq* req = (DropFragReq*)signal->getDataPtr();
 
   TabrecPtr tabPtr;
   tabPtr.i = req->tableId;
+  Uint32 fragId = req->fragId;
   ptrCheckGuard(tabPtr, ctablesize, tabrec);
 
   tabPtr.p->tabUserRef = req->senderRef;
   tabPtr.p->tabUserPtr = req->senderData;
   tabPtr.p->tabUserGsn = GSN_DROP_FRAG_REQ;
 
-  for (Uint32 i = 0; i < MAX_FRAG_PER_LQH; i++)
+  Uint64 fragPtrI = c_lqh->getAccFragPtrI(tabPtr.i, fragId);
+  if (fragPtrI != RNIL64)
   {
     jam();
-    Uint32 fragId = c_lqh->getNextAccFragid(tabPtr.i, i);
-    if (fragId != RNIL)
-    {
-      jam();
-      releaseFragResources(signal, tabPtr.i, fragId);
-      return;
-    }//if
-  }//for
-  
+    releaseFragResources(signal, tabPtr.i, fragId);
+    return;
+  }
   releaseRootFragResources(signal, req->tableId);
 }
 
@@ -10464,11 +10461,13 @@ Dbacc::execDUMP_STATE_ORD(Signal* signal)
   if (signal->theData[0] == DumpStateOrd::SchemaResourceSnapshot)
   {
     RSS_OP_SNAPSHOT_SAVE(cnoOfAllocatedFragrec);
+    g_eventLogger->info("(%u) SAVE:cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
     return;
   }
 
   if (signal->theData[0] == DumpStateOrd::SchemaResourceCheckLeak)
   {
+    g_eventLogger->info("(%u) CHECK:cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
     RSS_OP_SNAPSHOT_CHECK(cnoOfAllocatedFragrec);
     return;
   }
