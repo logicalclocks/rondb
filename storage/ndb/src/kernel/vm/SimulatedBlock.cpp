@@ -3428,7 +3428,7 @@ SimulatedBlock::sendFirstFragment(FragmentSendInfo & info,
     totalSize += ptr[0].sz;
   }
 
-  if (totalSize + messageSize <= MAX_SIZE_SINGLE_SIGNAL)
+  if (totalSize + length <= MAX_SIZE_SINGLE_SIGNAL)
   {
     /**
      * Send signal directly
@@ -3788,7 +3788,7 @@ ndbrequire(signal->header.m_noOfSections == 0);
     totalSize += ptr[0].sz;
   }
 
-  if (totalSize + messageSize <= MAX_SIZE_SINGLE_SIGNAL)
+  if (totalSize + length <= MAX_SIZE_SINGLE_SIGNAL)
   {
     /**
      * Send signal directly
