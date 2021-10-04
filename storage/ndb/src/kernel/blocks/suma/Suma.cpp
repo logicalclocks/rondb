@@ -2641,6 +2641,7 @@ Suma::execSUB_CREATE_REQ(Signal* signal)
       return;
     }
 
+    g_eventLogger->info("Seize subPtr.i : %u at line: %u", subPtr.i, __LINE__);
     new (subPtr.p) Subscription();
     subPtr.p->m_seq_no           = c_current_seq;
     subPtr.p->m_subscriptionId   = subId;
@@ -2671,6 +2672,7 @@ Suma::execSUB_CREATE_REQ(Signal* signal)
       {
         CLEAR_ERROR_INSERT_VALUE;
       }
+      g_eventLogger->info("Release subPtr.i: %u at line: %u", subPtr.i, __LINE__);
       c_subscriptionPool.release(subPtr); // not yet in hash
       checkPoolShrinkNeed(SUMA_SUBSCRIPTION_RECORD_TRANSIENT_POOL_INDEX,
                           c_subscriptionPool);
@@ -2714,6 +2716,7 @@ Suma::execSUB_CREATE_REQ(Signal* signal)
       }
 
       subOpList.release(subOpPtr);
+      g_eventLogger->info("Release subPtr.i: %u at line: %u", subPtr.i, __LINE__);
       c_subscriptionPool.release(subPtr); // not yet in hash
       sendSubCreateRef(signal, senderRef, senderData,
                        SubCreateRef::OutOfTableRecords);
@@ -2807,6 +2810,7 @@ Suma::execSUB_CREATE_REQ(Signal* signal)
                                    tabPtr.p->m_subscriptions);
       list.remove(subPtr);
     }
+    g_eventLogger->info("Release subPtr.i: %u at line: %u", subPtr.i, __LINE__);
     c_subscriptions.release(subPtr);
     sendSubCreateRef(signal, senderRef, senderData,
                      SubCreateRef::TableDropped);
@@ -3243,6 +3247,7 @@ Suma::get_tabinfo_ref_release(Signal* signal, Ptr<Table> tabPtr)
     }
     Ptr<Subscription> tmp1 = subPtr;
     subList.next(subPtr);
+    g_eventLogger->info("Remove subPtr.i: %u at line: %u", subPtr.i, __LINE__);
     c_subscriptions.remove(tmp1);
     subList.release(tmp1);
   }
@@ -6558,6 +6563,7 @@ do_release:
                           c_tablePool);
     };
   }
+  g_eventLogger->info("Release subPtr.i: %u at line: %u", subPtr.i, __LINE__);
   c_subscriptions.release(subPtr);
   checkPoolShrinkNeed(SUMA_SUBSCRIPTION_RECORD_TRANSIENT_POOL_INDEX,
                       c_subscriptionPool);
@@ -8300,6 +8306,7 @@ Suma::resend_bucket(Signal* signal, Uint32 buck, Uint64 min_gci,
        */
       Ptr<Subscription> subPtr;
       subPtr.i = subPtrI;
+      g_eventLogger->info("subPtrI: %u at line: %u", subPtrI, __LINE__);
       ndbrequire(c_subscriptionPool.getValidPtr(subPtr));
       Ptr<Table> tabPtr;
       tabPtr.i = subPtr.p->m_table_ptrI;

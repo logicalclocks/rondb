@@ -7909,7 +7909,9 @@ TESTCASE("Bug37158",
 }
 TESTCASE("SimpleReadAbortOnError",
          "Test behaviour of Simple reads with Abort On Error"){
+  INITIALIZER(runLoadTable);
   INITIALIZER(simpleReadAbortOnError);
+  FINALIZER(runClearTable);
 }
 TESTCASE("NdbRecordPKAmbiguity",
          "Test behaviour of NdbRecord insert with ambig. pk values"){
