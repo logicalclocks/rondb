@@ -694,7 +694,6 @@ Dblqh::Dblqh(Block_context& ctx,
     addRecSignal(GSN_FSWRITEREF, &Dblqh::execFSWRITEREF, true);
     addRecSignal(GSN_FSREADCONF, &Dblqh::execFSREADCONF);
     addRecSignal(GSN_FSREADREF, &Dblqh::execFSREADREF, true);
-    addRecSignal(GSN_ACC_ABORTCONF, &Dblqh::execACC_ABORTCONF);
     addRecSignal(GSN_TIME_SIGNAL,  &Dblqh::execTIME_SIGNAL);
     addRecSignal(GSN_FSSYNCCONF,  &Dblqh::execFSSYNCCONF);
     addRecSignal(GSN_REMOVE_MARKER_ORD, &Dblqh::execREMOVE_MARKER_ORD);

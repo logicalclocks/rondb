@@ -3093,7 +3093,7 @@ void Dbtc::initApiConnectRec(Signal* signal,
 
   regApiPtr->m_outstanding_fire_trig_req = 0;
   regApiPtr->m_write_count = 0;
-  regApiPtr->m_exec_write_count = 0;
+  regApiPtr->m_exec_count = 0;
   regApiPtr->m_firstTcConnectPtrI_FT = RNIL;
   regApiPtr->m_lastTcConnectPtrI_FT = RNIL;
 }//Dbtc::initApiConnectRec()
@@ -3311,10 +3311,10 @@ void Dbtc::execTCKEYREQ(Signal* signal)
      * execution batch are always scheduled towards the LDM thread and will
      * not be scheduled towards a query thread.
      */
-    DEB_EXEC_WRITE_COUNT(("(%u) write_count = %u, zero exec write_count",
+    DEB_EXEC_WRITE_COUNT(("(%u) write_count = %u, zero exec_count",
                           instance(),
                           regApiPtr->m_write_count));
-    regApiPtr->m_exec_write_count = 0;
+    regApiPtr->m_exec_count = 0;
   }
   switch (regApiPtr->apiConnectstate) {
   case CS_CONNECTED:{
@@ -3928,7 +3928,6 @@ void Dbtc::execTCKEYREQ(Signal* signal)
     case ZREFRESH:
       jamDebug();
       regApiPtr->m_write_count++;
-      regApiPtr->m_exec_write_count++;
       if (unlikely(regApiPtr->m_flags &
                    ApiConnectRecord::TF_DEFERRED_CONSTRAINTS))
       {
@@ -4913,6 +4912,7 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
        * Currently writes cannot be executed by Query threads, so this will
        * require a solution when this is implemented.
        */
+      Uint32 outstanding = regApiPtr->lqhkeyreqrec - regApiPtr->lqhkeyconfrec;
       Uint32 blockNo = refToMain(TBRef);
       Uint32 operation_type = LqhKeyReq::getOperation(lqhKeyReq->requestInfo);
       bool support_locked_reads = ndbd_support_locked_reads_in_query_threads(version);
@@ -4927,19 +4927,63 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
             (!LqhKeyReq::getUtilFlag(lqhKeyReq->requestInfo)) &&
             (LqhKeyReq::getDirtyFlag(lqhKeyReq->requestInfo) ||
              ((tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG)) &&
-              (regApiPtr->m_exec_write_count == 0) &&
+              (regApiPtr->m_exec_count == 0) &&
+              (outstanding <= 1) &&
               support_locked_reads)))
         {
           /**
            * We allow the use of Query threads when
            * 1) The operation is a read operation
            * 2) The operation is not reading from disk
-           * 3) The transaction hasn't performed any writes yet
-           *    in the current execution batch. The m_exec_write_count
-           *    check ensures that we can perform dirty reads of our
-           *    own writes in the same execution batch, this will not
-           *    work if the write and the dirty read can be scheduled
-           *    onto different threads.
+           * 3) The operation is a Committed Read operation
+           * 4) The operation has the exec flag set and it is the only
+           *    operation in this batch.
+           * 5) All previous batches have completed their operations.
+           *
+           * We have to be careful with reads from query threads in the
+           * context of batched operations.
+           * Even batches of read operations can cause problems. When
+           * the first operation in the batch has completed it will
+           * send the response back to the API. Thus the API can
+           * immediately start a new batch and this batch can contain
+           * write operations. Thus it is possible in this scenario
+           * that a write operation might execute in a different order
+           * compared to the order in the batch.
+           *
+           * The order in the batch is defined by the API to not a have
+           * well-defined execution order. However there are several,
+           * even internal use cases like in global replication that
+           * makes assumption of this order. So we need to ensure that
+           * the order within a batch is the order they are applied
+           * if they occur on the same transaction.
+           *
+           * Check that previous batches have completed is checked using
+           * the variables lqhkeyreqrec and lqhkeyconfrec. When we arrive
+           * here we have already incremented lqhkeyreqrec, thus one
+           * outstanding signal (this one) is expected, but no more
+           * outstanding signals are allowed.
+           *
+           * Future solution
+           * ---------------
+           * To solve this we have to ensure that whenever we enter into
+           * batch operation mode that we always use a well-defined
+           * thread for each row in the transaction. Thus essentially
+           * we have to select either the LDM thread or the Query thread
+           * with the same instance.
+           *
+           * Once the batch have completed and no more actions are
+           * outstanding we can choose any thread again.
+           *
+           * For this to work we have to enable the query thread to handle
+           * all operations including writes and operations involving the
+           * disk columns.
+           *
+           * One method to increase the usage of query threads is to use an
+           * array of outstanding operations and which query thread they were
+           * using. This could be stored on the transaction object. We could
+           * use a small hash table for this. To avoid storing this for every
+           * transaction we could make use of the new malloc infrastructure
+           * for this.
            */
 #ifdef DEBUG_QUERY_THREAD_USAGE
           if (LqhKeyReq::getDirtyFlag(lqhKeyReq->requestInfo))
@@ -5009,9 +5053,9 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
           {
             c_no_qt_no_exec_flag++;
           }
-          else if (regApiPtr->m_exec_write_count > 0)
+          else if (regApiPtr->m_exec_count > 0)
           {
-            c_no_qt_exec_write_count++;
+            c_no_qt_exec_count++;
           }
           else
           {
@@ -5022,6 +5066,7 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
           TBRef = numberToRef(DBLQH, refToInstance(TBRef), nodeId);
         }
       }
+      regTcPtr->lqhkeyreq_ref = TBRef;
       sendBatchedFragmentedSignal(TBRef,
                                   GSN_LQHKEYREQ,
                                   signal,
@@ -5034,10 +5079,12 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
     {
       jamDebug();
       ndbrequire(refToMain(TBRef) == DBLQH);
+      regTcPtr->lqhkeyreq_ref = TBRef;
       sendSignal(TBRef, GSN_LQHKEYREQ, signal,
                  nextPos + LqhKeyReq::FixedSignalLength, JBB,
                  &handle);
     }
+    regApiPtr->m_exec_count++;
 
     /* Long sections were freed as part of sendSignal */
     ndbassert( handle.m_cnt == 0 );
@@ -6452,7 +6499,7 @@ Dbtc::ApiConnectRecord::ApiConnectRecord()
   commitAckMarker(RNIL),
   num_commit_ack_markers(0),
   m_write_count(0),
-  m_exec_write_count(0),
+  m_exec_count(0),
   m_flags(0),
   takeOverRec((Uint8)Z8NIL),
   tckeyrec(0),
@@ -9246,13 +9293,18 @@ int Dbtc::releaseAndAbort(Signal* signal, ApiConnectRecord* const regApiPtr)
       /*    ABORT    < */
       /* ************< */
       Uint32 instanceKey = tcConnectptr.p->lqhInstanceKey;
-      Uint32 instanceNo = getInstanceNo(localHostptr.i, instanceKey);
-      tblockref = numberToRef(DBLQH, instanceNo, localHostptr.i);
+      BlockReference blockRef = tcConnectptr.p->lqhkeyreq_ref;
       signal->theData[0] = tcConnectptr.i;
       signal->theData[1] = cownref;
       signal->theData[2] = regApiPtr->transid[0];
       signal->theData[3] = regApiPtr->transid[1];
-      sendSignal(tblockref, GSN_ABORT, signal, 4, JBB);
+      Uint32 len = 4;
+      if (refToMain(blockRef) != DBLQH)
+      {
+        len = 5;
+        signal->theData[4] = instanceKey;
+      }
+      sendSignal(blockRef, GSN_ABORT, signal, len, JBB);
       prevAlive = true;
     } else {
       jam();
@@ -9992,12 +10044,17 @@ void Dbtc::sendAbortedAfterTimeout(Signal* signal, int Tcheck, ApiConnectRecordP
 	     * too early.
 	     *--------------------------------------------------------------*/
             Uint32 instanceKey = tcConnectptr.p->lqhInstanceKey;
-            Uint32 instanceNo = getInstanceNo(hostptr.i, instanceKey);
-            BlockReference TBRef = numberToRef(DBLQH, instanceNo, hostptr.i);
+            BlockReference TBRef = tcConnectptr.p->lqhkeyreq_ref;
             signal->theData[0] = tcConnectptr.i;
             signal->theData[1] = cownref;
             signal->theData[2] = apiConnectptr.p->transid[0];
             signal->theData[3] = apiConnectptr.p->transid[1];
+            Uint32 len = 4;
+            if (refToMain(TBRef) != DBLQH)
+            {
+              len = 5;
+              signal->theData[4] = instanceKey;
+            }
             sendSignal(TBRef, GSN_ABORT, signal, 4, JBB);
             setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
             break;
@@ -12217,7 +12274,7 @@ void Dbtc::toAbortHandlingLab(Signal* signal,
           jam();
           Uint32 instanceKey = tcConnectptr.p->lqhInstanceKey;
           Uint32 instanceNo = getInstanceNo(hostptr.i, instanceKey);
-          tblockref = numberToRef(DBLQH, instanceNo, hostptr.i);
+          BlockReference blockRef = numberToRef(DBLQH, instanceNo, hostptr.i);
           setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
           tcConnectptr.p->tcConnectstate = OS_WAIT_ABORT_CONF;
           apiConnectptr.p->apiConnectstate = CS_WAIT_ABORT_CONF;
@@ -12228,7 +12285,7 @@ void Dbtc::toAbortHandlingLab(Signal* signal,
           signal->theData[3] = apiConnectptr.p->transid[1];
           signal->theData[4] = apiConnectptr.p->tcBlockref;
           signal->theData[5] = tcConnectptr.p->tcOprec;
-          sendSignal(tblockref, GSN_ABORTREQ, signal, 6, JBB);
+          sendSignal(blockRef, GSN_ABORTREQ, signal, 6, JBB);
           return;
         }//if
         break;
@@ -23388,14 +23445,14 @@ Dbtc::query_thread_usage(Signal *signal)
   Uint64 disk_flag = c_no_qt_disk_flag - c_last_no_qt_disk_flag;
   Uint64 util_flag = c_no_qt_util_flag - c_last_no_qt_util_flag;
   Uint64 no_exec_flag = c_no_qt_no_exec_flag - c_last_no_qt_no_exec_flag;
-  Uint64 exec_write_count = c_no_qt_exec_write_count - c_last_no_qt_exec_write_count;
+  Uint64 exec_count = c_no_qt_exec_count - c_last_no_qt_exec_count;
   Uint64 wrong_version = c_no_qt_wrong_version - c_last_no_qt_wrong_version;
 
   g_eventLogger->info("(%u): QT used_dirty_flag: %llu, QT used_locked_read: %llu"
                       ", QT used_locked_read_take_over: %llu\n"
                       " noQT: no_read_flag: %llu, noQT: disk_flag: %llu\n"
                       " noQT: util_flag: %llu, noQT: no_exec_flag: %llu\n"
-                      " noQT: exec_write_count: %llu, noQT: wrong_version: %llu",
+                      " noQT: exec_count: %llu, noQT: wrong_version: %llu",
                       instance(),
                       used_dirty_flag,
                       used_locked_read,
@@ -23404,7 +23461,7 @@ Dbtc::query_thread_usage(Signal *signal)
                       disk_flag,
                       util_flag,
                       no_exec_flag,
-                      exec_write_count,
+                      exec_count,
                       wrong_version);
 
   c_last_qt_used_dirty_flag = c_qt_used_dirty_flag;
@@ -23415,7 +23472,7 @@ Dbtc::query_thread_usage(Signal *signal)
   c_last_no_qt_disk_flag = c_no_qt_disk_flag;
   c_last_no_qt_util_flag = c_no_qt_util_flag;
   c_last_no_qt_no_exec_flag = c_no_qt_no_exec_flag;
-  c_last_no_qt_exec_write_count = c_no_qt_exec_write_count;
+  c_last_no_qt_exec_count = c_no_qt_exec_count;
   c_last_no_qt_wrong_version = c_no_qt_wrong_version;
 
   signal->theData[0] = TcContinueB::ZQUERY_THREAD_USAGE;

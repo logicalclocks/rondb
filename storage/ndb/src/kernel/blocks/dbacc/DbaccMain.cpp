@@ -1305,6 +1305,75 @@ void Dbacc::sendAcckeyconf(Signal* signal) const
  * 1) ACCKEYREQ (T1)
  * 2) COMMIT (T2)
  * 3) ACCKEY_ORD (T1)
+ *
+ * Another problem to handle when we allow for LQHKEYREQ to be handle locking
+ * reads from query threads is that we can receive an ABORT signal in the
+ * middle of executing the LQHKEYREQ. This signal is received in the LDM
+ * thread and can thus appear at any time.
+ *
+ * Interestingly if we allow the ABORT signal to be sent to any thread it
+ * can even arrive before the LQHKEYREQ signal. This would lead to serious
+ * repercussions. It would mean that the LQHKEYREQ will not know about the
+ * abortion. This means that the LQHKEYREQ will proceed and grab a lock
+ * and send LQHKEYCONF to DBTC. However knows nothing about the transaction
+ * since it is already been aborted. Thus there is no way to release the
+ * lock again.
+ *
+ * This means that ABORT signals must always be sent to the same block
+ * as the LQHKEYREQ signal is sent to. Otherwise we will get serious
+ * issues.
+ *
+ * To simplify handling of this we will simply pass the ABORT signal
+ * to the owning LDM thread. This ensures that there will be no
+ * concurrent execution on the same operation record from multiple
+ * threads. This would create a lot of extra things to consider.
+ *
+ * Following LQHKEYREQ we can execute a signal when receiving a lock
+ * or a refusal to lock the key (when row is deleted). These are
+ * execACCKEYCONF/execACCKEYREF. These signals are all executed as a
+ * result of the originating LQHKEYREQ signal. In the prepare phase
+ * we can also receive ABORT/ABORTREQ signals from DBTC. During
+ * execution of ABORT we can receive ACC_ABORTCONF as a way of
+ * delaying execution of abort until we are ready to handle it.
+ *
+ * We can also have a real-time break going to PGMAN to ensure that
+ * the disk column page is in memory. Currently disk column accesses
+ * cannot use query threads. All other real-time breaks occur in the
+ * commit handling, commit cannot start in parallel with the prepare
+ * phase except for dirty write operations. Dirty write operations
+ * cannot use the query thread either.
+ *
+ * This leads to the following conclusion. We have two options:
+ * 1) Execute all signals in the prepare phase in the selected query
+ *    thread.
+ * 2) Execute LQHKEYREQ in the query thread, all other parts executes
+ *    in the LDM thread owning the data part.
+ *
+ * Both methods works well as long as we route the ABORT signals through
+ * the query thread that executes the LQHKEYREQ signal.
+ *
+ * Now the LQHKEYREQ will be executed by the query thread, all
+ * subsequent signals will be handled by the LDM thread. Thus we can
+ * focus on handling concurrent access from different operation records.
+ *
+ * To be able to find the operation record we must know the LQH block
+ * reference, thus this has to be passed along in the ABORT signal
+ * and ABORTREQ signals from DBTC when a query thread was used by the
+ * LQHKEYREQ signal.
+ *
+ * One more problem to handle is when we send ACCKEYCONF from the query
+ * thread. Due to the discussion above we know that when we enter the
+ * method abortStateHandlerLab to check state on an operation to handle
+ * abort on. In this case we know that no other operation is active on
+ * the operation while we are at it. Thus we can rely on the state to
+ * not change in the middle.
+ *
+ * In this situation we could however enter abortStateHandlerLab while
+ * the ACCKEYCONF signal have been sent, but not yet executed. This means
+ * that the row is exclusive to the outstanding signal. In this case we
+ * need to ensure that we don't complete the abort. One manner to handle
+ * this situation is to simply resend the ACC_ABORTCONF if the ACCKEYCONF
+ * from the query thread hasn't arrived yet.
  */
 /* ******************------------------------------------------------------- */
 /* ACCKEYREQ                                 REQUEST FOR INSERT, DELETE,     */
@@ -1566,18 +1635,24 @@ Dbacc::execACCKEY_ORD(Signal* signal,
    * STATE: Row unlocked
    * ==>  Lock row
    *      Set exclusive access to row
+   *
    * STATE: Row locked by same transaction, no exclusive access
    * ==>  Lock row
    *      Set exclusive access to row
+   *
    * STATE: Row locked by same transaction, exclusive access set
    * ==>  Lock row
    *      Wait in Parallel Lock Queue until row is free to use again
+   *
    * STATE: Row locked by other transaction in Read mode, no exclusive
    * Read Operation:
    * ==>  Lock row
    *      Set exclusive access to row
+   *
+   * STATE: Row locked by other transaction in Read mode, no exclusive
    * Exclusive Operation:
    * ==>  Wait in Serial Lock Queue until it's our turn
+   *
    * STATE: Row locked by other transaction in Exclusive mode
    * ==>  Wait in Serial Lock Queue until it's our turn
    *
@@ -1684,7 +1759,7 @@ Dbacc::startNext(Signal* signal, OperationrecPtr lastOp)
   nextOp.i = lastOp.p->nextParallelQue;
   loPtr.i = lastOp.p->m_lock_owner_ptr_i;
   const Uint32 opbits = lastOp.p->m_op_bits;
-  
+ 
   if ((opbits & Operationrec::OP_STATE_MASK)!= Operationrec::OP_STATE_EXECUTED)
   {
     jam();
@@ -1944,7 +2019,7 @@ conf:
     jam();
     fragrecptr.i = nextOp.p->fragptr;
     c_fragment_pool.getPtr(fragrecptr);
-    
+
     sendAcckeyconf(signal);
     sendSignal(nextOp.p->userblockref, GSN_ACCKEYCONF, 
 	       signal, 6, JBB);
@@ -2711,7 +2786,6 @@ checkop:
     operationRecPtr.p->localdata = lastOpPtr.p->localdata;
     retValue = ZPARALLEL_QUEUE;
   }
-  
   opbits |= Operationrec::OP_RUN_QUEUE;
   operationRecPtr.p->m_op_bits = opbits;
   operationRecPtr.p->prevParallelQue = lastOpPtr.i;
@@ -3075,37 +3149,62 @@ void Dbacc::execACC_ABORTREQ(Signal* signal,
   {
     jam();
     operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
+    signal->theData[1] = 0;
+    return;
   }
-  else if (opstate == Operationrec::OP_STATE_EXECUTED ||
-	   opstate == Operationrec::OP_STATE_WAITING ||
-	   opstate == Operationrec::OP_STATE_RUNNING)
+  jam();
+  c_fragment_pool.getPtr(fragrecptr);
+  acquire_frag_mutex_hash(fragrecptr.p, operationRecPtr);
+  opbits = operationRecPtr.p->m_op_bits;
+  if (opstate == Operationrec::OP_STATE_EXECUTED ||
+      opstate == Operationrec::OP_STATE_WAITING ||
+      (opstate == Operationrec::OP_STATE_RUNNING &&
+       sendConf != 2))
   {
     jam();
-    c_fragment_pool.getPtr(fragrecptr);
     abortOperation(signal);
     operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
-  }
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
-  ndbrequire(m_acc_mutex_locked == RNIL);
+    ndbrequire(m_acc_mutex_locked == RNIL);
 #endif
-
-  signal->theData[0] = operationRecPtr.p->userptr;
-  signal->theData[1] = 0;
-  switch(sendConf){
-  case 0:
-    return;
-  case 2:
-    if (opstate != Operationrec::OP_STATE_RUNNING)
-    {
-      return;
-    }
-    // Fall through
-  case 1:
-    sendSignal(operationRecPtr.p->userblockref, GSN_ACC_ABORTCONF, 
-	       signal, 1, JBB);
   }
-  
-  signal->theData[1] = RNIL;
+  else if (opstate == Operationrec::OP_STATE_RUNNING &&
+           sendConf == 2)
+  {
+    jam();
+    /**
+     * We need to abort the operation, but we have acquired an exclusive
+     * access to the row. Since this is still retained it means that we
+     * got sent an ACCKEYCONF from a query thread. We need to wait until
+     * this ACCKEYCONF arrives until we continue the abort operation.
+     */
+    release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
+    signal->theData[1] = RNIL;
+    return;
+  }
+  else
+  {
+    jam();
+    release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
+  }
+  if (sendConf == 1)
+  {
+    jam();
+    /**
+     * This is only sent for scan operations, thus can only be
+     * sent to DBTUP and DBTUX.
+     */
+    signal->theData[0] = operationRecPtr.p->userptr;
+    signal->theData[2] = sendConf;
+    sendSignal(operationRecPtr.p->userblockref,
+               GSN_ACC_ABORTCONF, 
+               signal,
+               1,
+               JBB);
+    signal->theData[1] = RNIL;
+    return;
+  }
+  signal->theData[1] = 0;
 }
 
 /*
@@ -3238,6 +3337,7 @@ void Dbacc::execACC_LOCKREQ(Signal* signal)
                      operationRecPtr.i,
                      operationRecPtr.p,
                      0);
+    ndbrequire(signal->theData[1] == 0);
     releaseOpRec();
     req->returnCode = AccLockReq::Success;
     *sig = *req;
@@ -3250,6 +3350,7 @@ void Dbacc::execACC_LOCKREQ(Signal* signal)
                      operationRecPtr.i,
                      operationRecPtr.p,
                      1);
+    ndbrequire(signal->theData[1] == RNIL);
     releaseOpRec();
     req->returnCode = AccLockReq::Success;
     *sig = *req;
@@ -5564,9 +5665,9 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
 }
 
 
+/* ACC Fragment mutex must be acquired before call */
 void Dbacc::abortOperation(Signal* signal)
 {
-  acquire_frag_mutex_hash(fragrecptr.p, operationRecPtr);
   Uint32 opbits = operationRecPtr.p->m_op_bits;
   validate_lock_queue(operationRecPtr);
   if (opbits & Operationrec::OP_LOCK_OWNER) 
@@ -8522,6 +8623,7 @@ void Dbacc::releaseAndCommitActiveOps(Signal* signal)
       }
       else
       {
+        acquire_frag_mutex_hash(fragrecptr.p, operationRecPtr);
 	abortOperation(signal);
       }
     }//if
@@ -8554,6 +8656,7 @@ void Dbacc::releaseAndCommitQueuedOps(Signal* signal)
       }
       else
       {
+        acquire_frag_mutex_hash(fragrecptr.p, operationRecPtr);
 	abortOperation(signal);
       }
     }//if
@@ -8577,6 +8680,7 @@ void Dbacc::releaseAndAbortLockedOps(Signal* signal) {
     c_fragment_pool.getPtr(fragrecptr);
     if (!scanPtr.p->scanReadCommittedFlag) {
       jam();
+      acquire_frag_mutex_hash(fragrecptr.p, operationRecPtr);
       abortOperation(signal);
     }//if
     takeOutScanLockQueue(scanPtr.i);
@@ -8640,6 +8744,7 @@ void Dbacc::execACC_CHECK_SCAN(Signal* signal)
        * As a 'QueuedOp', we are in the parallel queue of the element, so 
        * at the abort below we don't double-count abort as a failure.
        */
+      acquire_frag_mutex_hash(fragrecptr.p, operationRecPtr);
       abortOperation(signal);
       operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
       releaseOpRec();

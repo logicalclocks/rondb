@@ -5406,11 +5406,6 @@ void Dblqh::LQHKEY_abort(Signal* signal,
     jam();
     terrorCode = signal->theData[1];
     break;
-  case 3:
-    jam();
-    ndbrequire(tcConnectptr.p->transactionState ==
-                  TcConnectionrec::WAIT_ACC_ABORT);
-    return;
   case 4:
     jam();
     terrorCode = get_table_state_error(tabptr);
@@ -6068,6 +6063,7 @@ void Dblqh::execTUPKEYREF(Signal* signal)
   case TcConnectionrec::WAIT_ACC_ABORT:
   {
     jam();
+    ndbassert(false);
 /* ------------------------------------------------------------------------- */
 /*       IGNORE SINCE ABORT OF THIS OPERATION IS ONGOING ALREADY.            */
 /* ------------------------------------------------------------------------- */
@@ -9971,6 +9967,7 @@ Dblqh::exec_acckeyreq(Signal* signal, TcConnectionrecPtr regTcPtr)
   }
   else if (signal->theData[0] == RNIL)
   {
+    jamDebug();
     return;
   }
   else
@@ -9979,12 +9976,16 @@ Dblqh::exec_acckeyreq(Signal* signal, TcConnectionrecPtr regTcPtr)
     /* Dbacc scan take over error */
     if (signal->theData[1] == ZTO_OP_STATE_ERROR)
     {
+      jam();
       ndbassert(!m_is_query_block);
       execACC_TO_REF(signal, regTcPtr);
     }
     else
     {
+      jam();
       terrorCode = signal->theData[1];
+      fragptr.i = regTcPtr.p->fragmentptr;
+      c_fragment_pool.getPtr(fragptr);
       continueACCKEYREF(signal, regTcPtr);
     }
   }//if
@@ -10448,12 +10449,21 @@ Dblqh::nr_copy_delete_row(Signal* signal,
                             regTcPtr.p->accConnectrec,
                             regTcPtr.p->accConnectPtrP,
                             0);
+    ndbrequire(signal->theData[1] == 0);
     jamEntry();
     return;
   }
 
   /**
    * We found row (and have it locked in ACC)
+   * This code is only executed during Node restart during the
+   * Copy fragment phase. In this phase we will only execute
+   * in the LDM thread for this fragment. This means that it
+   * is ok to release ACC lock before deleting the tuple in
+   * DBTUP.
+   *
+   * If we allow for query thread to execute row operations also
+   * in this phase we need to handle ACC after DBTUP.
    */
   ndbrequire(regTcPtr.p->m_dealloc_state == TcConnectionrec::DA_IDLE);
   ndbrequire(regTcPtr.p->m_dealloc_data.m_dealloc_ref_count == RNIL);
@@ -10762,13 +10772,20 @@ void Dblqh::handleUserUnlockRequest(Signal* signal,
     return;
   }
   
-  /* Ok, now we're ready to start 'aborting' this operation, to get the 
+  /**
+   * Ok, now we're ready to start 'aborting' this operation, to get the 
    * effect of unlocking it
+   *
+   * At this point our operation cannot have exclusive access, thus it
+   * is safe to handle the abort immediately in DBACC. There is no risk
+   * that we are still waiting for the row lock since we already have
+   * it.
    */
   c_acc->execACC_ABORTREQ(signal,
                           regLockTcPtr->accConnectrec,
                           regLockTcPtr->accConnectPtrP,
                           0);
+  ndbrequire(signal->theData[1] == 0);
   jamEntry();
   
   /* Would be nice to handle non-success case somehow */
@@ -11101,6 +11118,26 @@ void Dblqh::execTUP_DEALLOCREQ(Signal* signal)
   }
 }//Dblqh::execTUP_DEALLOCREQ()
 
+void
+Dblqh::handlePendingAbort(Signal *signal, TcConnectionrec *regTcPtr)
+{
+  /**
+   * We need to free the row of the OP_STATE_RUNNING in DBACC.
+   * This makes it possible to continue the abort process.
+   */
+  c_acc->execACC_ABORTREQ(signal,
+                          regTcPtr->accConnectrec,
+                          regTcPtr->accConnectPtrP,
+                          0);
+  /**
+   * Now we are ready to continue the abortion process from where
+   * we were interrupted.
+   */
+  ndbrequire(signal->theData[1] == 0);
+  cont_tup_abort(signal, m_tc_connect_ptr);
+  release_frag_access(fragptr.p);
+}
+
 /* ************>> */
 /*  ACCKEYCONF  > */
 /* ************>> */
@@ -11141,18 +11178,67 @@ void Dblqh::execACCKEYCONF(Signal* signal)
   Uint32 localKey2 = signal->theData[4];
   TcConnectionrec * const regTcPtr = m_tc_connect_ptr.p;
 
+  /**
+   * When we arrive here we have acquired exclusive access to the row.
+   * Only Committed Reads can be handled during this exclusive access
+   * in addition to this operation. During this real-time break and
+   * potential other real-time breaks retrieving the disk parts of
+   * the row, we retain the exclusiveness. However as soon as we
+   * are done with the use of the row we need to release this
+   * exclusive access.
+   *
+   * Release of the exclusive access for normal access happens
+   * through execACCKEY_ORD that is executed after receiving
+   * TUPKEYCONF. In case the operation for some reason is aborted
+   * we call instead execACC_ABORTREQ. If the abort happens while
+   * we have the exclusive access we set abortState to ABORT_FROM_LQH
+   * to ensure that DBACC knows that it can release the exclusive
+   * access immediately.
+   *
+   * We cannot release the exclusive access when the request comes
+   * execABORT since we could have outstanding signals waiting to
+   * be executed.
+   */
   if (regTcPtr->transactionState != TcConnectionrec::WAIT_ACC)
   {
     jam();
-    LQHKEY_abort(signal, 3, m_tc_connect_ptr);
+    /**
+     * The only possible state to be here is in the state
+     * WAIT_ACC_ABORT. This cannot happen due to interactions from
+     * within DBLQH. It must be due to an external interaction where
+     * a DBTC requested the operation to be aborted.
+     *
+     * Given that the operation hasn't been aborted yet, this means
+     * that the ABORT arrived while we held exclusive access. Thus
+     * we are now ready to continue the abort process where we were
+     * blocked previously.
+     */
+    ndbrequire(regTcPtr->transactionState ==
+                 TcConnectionrec::WAIT_ACC_ABORT);
+    handlePendingAbort(signal, regTcPtr);
+    return;
   }
   else if (unlikely(c_acc->checkOpPendingAbort(regTcPtr->accConnectrec)))
   {
     jam();
-    /* Wait for Abort */
+    /**
+     * We got the lock on the row and when we got the lock everything was
+     * fine, since then a change has occurred that means that this operation
+     * is to be aborted instead. This happens due to the changes done by
+     * another operation. Thus not due to receiving an ABORT signal from
+     * DBTC.
+     */
+    ndbrequire(regTcPtr->abortState == TcConnectionrec::ABORT_IDLE);
+    regTcPtr->abortState = TcConnectionrec::ABORT_FROM_LQH;
+    handlePendingAbort(signal, regTcPtr);
+    return;
   }
   else
   {
+    /**
+     * The normal path in the code, we got the lock and can now proceed
+     * with the operation.
+     */
     c_tup->prepareTUPKEYREQ(localKey1, localKey2, fragptr.p->tupFragptr);
     continueACCKEYCONF(signal, localKey1, localKey2, m_tc_connect_ptr);
   }
@@ -14118,6 +14204,27 @@ Dblqh::remove_commit_marker(TcConnectionrec * const regTcPtr)
 void Dblqh::execABORT(Signal* signal) 
 {
   jamEntry();
+
+  if (m_is_query_block)
+  {
+    /**
+     * We are aborting an operation that was sent to this block which is
+     * a query thread. We need to do this to avoid that the abortion
+     * can race the LQHKEYREQ signal. However the actual abort will be
+     * handled by the LDM thread to avoid concurrrency issues in handling
+     * the operation state. The only purpose of sending the signal here
+     * was to enforce the correct order of execution.
+     */
+    Uint32 instanceKey = signal->theData[4];
+    Uint32 instanceNo = getInstanceFromKey(instanceKey);
+    BlockReference ref = numberToRef(DBLQH, instanceNo, getOwnNodeId());
+    sendSignal(ref,
+               GSN_ABORT,
+               signal,
+               4,
+               JBB);
+    return;
+  }
   if (ERROR_INSERTED(5096))
   {
     jam();
@@ -14237,6 +14344,7 @@ void Dblqh::execABORTREQ(Signal* signal)
   Uint32 transid2 = signal->theData[3];
   BlockReference old_blockref = signal->theData[4];
   Uint32 tcOprec = signal->theData[5];
+
   if (ERROR_INSERTED(5006)) {
     systemErrorLab(signal, __LINE__);
   }
@@ -14314,21 +14422,35 @@ void Dblqh::execACCKEYREF(Signal* signal)
 void Dblqh::continueACCKEYREF(Signal *signal,
                               TcConnectionrecPtr tcConnectptr)
 {
+  /**
+   * Arriving here we have exclusive access to the row if it still
+   * exists. But operation is in the OP_STATE_RUNNING mode, thus we
+   * need to call execACC_ABORTREQ to abort the process, coming
+   * from here we can always make this call without risk of being
+   * blocked.
+   */
   TcConnectionrec * const tcPtr = tcConnectptr.p;
   switch (tcPtr->transactionState) {
   case TcConnectionrec::WAIT_ACC:
     jam();
+    /**
+     * Normal failed operation, most likely no such row, error code
+     * indicates the error. We will proceed aborting the operation.
+     */
     if (!m_is_in_query_thread)
     {
-      c_fragment_pool.getPtr(tcPtr->fragmentptr)->m_useStat.m_keyRefCount++;
+      fragptr.p->m_useStat.m_keyRefCount++;
     }
     break;
   case TcConnectionrec::WAIT_ACC_ABORT:
     jam();
+    /**
+     * We have already started the abort process instigated from
+     * DBTC. We had to wait for the ACCKEYREF signal, now that it
+     * arrived we can continue with the abort process.
+     */
     ndbassert(!m_is_in_query_thread);
-/* ------------------------------------------------------------------------- */
-/*IGNORE SINCE ABORT OF THIS OPERATION IS ONGOING ALREADY.                   */
-/* ------------------------------------------------------------------------- */
+    handlePendingAbort(signal, tcPtr);
     return;
   default:
     ndbabort();
@@ -14384,20 +14506,6 @@ void Dblqh::continueACCKEYREF(Signal *signal,
   tcPtr->abortState = TcConnectionrec::ABORT_FROM_LQH;
   abortCommonLab(signal, tcConnectptr);
 }//Dblqh::execACCKEYREF()
-
-void Dblqh::localAbortStateHandlerLab(Signal* signal,
-                                      const TcConnectionrecPtr tcConnectptr)
-{
-  TcConnectionrec * const regTcPtr = tcConnectptr.p;
-  if (regTcPtr->abortState != TcConnectionrec::ABORT_IDLE) {
-    jam();
-    return;
-  }//if
-  regTcPtr->abortState = TcConnectionrec::ABORT_FROM_LQH;
-  regTcPtr->errorCode = terrorCode;
-  abortStateHandlerLab(signal, tcConnectptr);
-  return;
-}//Dblqh::localAbortStateHandlerLab()
 
 void Dblqh::abortStateHandlerLab(Signal* signal,
                                  const TcConnectionrecPtr tcConnectptr)
@@ -14537,7 +14645,7 @@ void Dblqh::abortStateHandlerLab(Signal* signal,
 /* ------------------------------------------------------------------------- */
   }//switch
   abortCommonLab(signal, tcConnectptr);
-}//Dblqh::abortStateHandlerLab()
+}
 
 void Dblqh::abortErrorLab(Signal* signal, TcConnectionrecPtr tcConnectptr)
 {
@@ -14625,21 +14733,73 @@ void Dblqh::abortContinueAfterBlockedLab(Signal* signal,
    *       WE MUST ABORT TUP BEFORE ACC TO ENSURE THAT NO ONE RACES IN 
    *       AND SEES A STATE IN TUP.
    * ----------------------------------------------------------------------- */
+
+   /**
+    * We only come here as part of handling ABORT of a LQHKEYREQ interaction.
+    * The abort can either be started from executing the LQHKEYREQ
+    * (ABORT_FROM_LQH) or it can be started from a DBTC either as a normal
+    * abort of a transaction or as part of a node failure handling when the
+    * original DBTC failed.
+    */
   TRACE_OP(regTcPtr.p, "ACC ABORT");
   Uint32 canBlock = 2; // 2, block if needed
   switch(regTcPtr.p->transactionState)
   {
   case TcConnectionrec::WAIT_TUP:
+  case TcConnectionrec::WAIT_TUP_TO_ABORT:
     jam();
     /**
      * This is when getting from execTUPKEYREF
      *   in which case we *do* have ACC lock
      *   and should not (need to) block
+     *
+     * Aborts from DBTC are blocked from proceeding
+     * in those states. Thus we can only arrive here from
+     * execTUPKEYREF.
      */
     canBlock = 0;
     break;
-  default:
+  case TcConnectionrec::WAIT_ACC_ABORT:
+    ndbabort();
     break;
+  case TcConnectionrec::WAIT_ACC:
+  {
+    if (regTcPtr.p->abortState == TcConnectionrec::ABORT_FROM_LQH)
+    {
+      jam();
+      /**
+       * We are aborting due to receiving ACCKEYREF or other internal
+       * problem in DBLQH, we cannot be waiting for ACCKEYCONF or
+       * ACCKEYREF from other thread.
+       */
+      canBlock = 0;
+    }
+    else
+    {
+      canBlock = 2;
+      /**
+       * If we come here with the state being WAIT_ACC and the
+       * abort state NOT being ABORT_FROM_LQH it means that we received
+       * an ABORT message from DBTC and we could potentially still be
+       * waiting for a ACCKEYCONF or ACCKEYREF signal. Thus we can
+       * block in this case.
+       *
+       * The ABORT message can come in any state essentially, but it
+       * is only in the WAIT_ACC state and in the WAIT_ACC_ABORT
+       * state we could have a potential block.
+       */
+    }
+    break;
+  }
+  default:
+  {
+    /**
+     * Cannot block in any other state since we already have the ACC row
+     * lock in these cases.
+     */
+    canBlock = 0;
+    break;
+  }
   }
 
   regTcPtr.p->transactionState = TcConnectionrec::WAIT_ACC_ABORT;
@@ -14647,7 +14807,6 @@ void Dblqh::abortContinueAfterBlockedLab(Signal* signal,
                           regTcPtr.p->accConnectrec,
                           regTcPtr.p->accConnectPtrP,
                           canBlock);
-
   if (signal->theData[1] == RNIL)
   {
     jam();
@@ -14658,40 +14817,21 @@ void Dblqh::abortContinueAfterBlockedLab(Signal* signal,
      * everything without that would race and create a state error when they 
      * are executed.
      * --------------------------------------------------------------------- */
+    ndbrequire(canBlock == 2);
     return;
   }
+  ndbrequire(signal->theData[1] == 0);
+  cont_tup_abort(signal, regTcPtr);
+}
+
+void
+Dblqh::cont_tup_abort(Signal *signal, TcConnectionrecPtr regTcPtr)
+{
   signal->theData[0] = regTcPtr.p->tupConnectrec;
   c_tup->do_tup_abortreq(signal, 0);
   jamEntryDebug();
   continueAbortLab(signal, regTcPtr);
-}//Dblqh::abortContinueAfterBlockedLab()
-
-/* ******************>> */
-/*  ACC_ABORTCONF     > */
-/* ******************>> */
-void Dblqh::execACC_ABORTCONF(Signal* signal) 
-{
-  jamEntry();
-  /**
-   * This is sent from DBACC as a way to ensure a real-time break
-   * happens before we receive this and thus we are sure that no
-   * signals are in job buffer waiting for this operation to be
-   * continued.
-   */
-  setup_key_pointers(signal->theData[0], false);
-  TcConnectionrec * const regTcPtr = m_tc_connect_ptr.p;
-  ndbrequire(regTcPtr->transactionState == TcConnectionrec::WAIT_ACC_ABORT);
-  ndbassert(!m_is_query_block);
-
-  TRACE_OP(regTcPtr, "ACC_ABORTCONF");
-  Uint32 connect_ptr = regTcPtr->tupConnectrec;
-  acquire_frag_abort_access(fragptr.p, regTcPtr);
-  signal->theData[0] = connect_ptr;
-  c_tup->do_tup_abortreq(signal, 0);
-  jamEntryDebug();
-  release_frag_access(fragptr.p);
-  continueAbortLab(signal, m_tc_connect_ptr);
-}//Dblqh::execACC_ABORTCONF()
+}
 
 void Dblqh::continueAbortLab(Signal* signal,
                              const TcConnectionrecPtr tcConnectptr)

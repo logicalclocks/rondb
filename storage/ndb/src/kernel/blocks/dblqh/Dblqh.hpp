@@ -3064,7 +3064,6 @@ private:
 
   void execDBINFO_SCANREQ(Signal* signal); 
   void execDUMP_STATE_ORD(Signal* signal);
-  void execACC_ABORTCONF(Signal* signal);
   void execNODE_FAILREP(Signal* signal);
   void execSEND_PACKED(Signal* signal);
   void execREAD_CONFIG_REQ(Signal* signal);
@@ -3391,6 +3390,7 @@ private:
   bool remove_from_prepare_log_queue(Signal *signal,
                                      TcConnectionrecPtr tcPtr);
   bool getFragmentrec(Uint32 fragId);
+  void handlePendingAbort(Signal*, TcConnectionrec*);
 public:
   void getIndexTupFragPtrI(Uint32 tableId,
                            Uint32 fragId,
@@ -3611,8 +3611,10 @@ private:
   void srGciLimits(Signal* signal, Uint32, Uint32);
   void srPhase3Start(Signal* signal);
   void checkStartCompletedLab(Signal* signal);
+  void cont_tup_abort(Signal* signal, TcConnectionrecPtr);
   void continueAbortLab(Signal* signal, TcConnectionrecPtr);
-  void abortContinueAfterBlockedLab(Signal* signal, TcConnectionrecPtr);
+  void abortContinueAfterBlockedLab(Signal* signal,
+                                    TcConnectionrecPtr);
   void abortCommonLab(Signal* signal, TcConnectionrecPtr);
   void localCommitLab(Signal* signal, TcConnectionrecPtr);
   void abortErrorLab(Signal* signal, TcConnectionrecPtr);
@@ -3636,7 +3638,6 @@ private:
                   Uint32 scan_ptr_i,
                   Uint32 errcode,
                   TcConnectionrecPtr);
-  void localAbortStateHandlerLab(Signal* signal, TcConnectionrecPtr);
   void writePrepareLog(Signal* signal, TcConnectionrecPtr, bool, bool);
   void writePrepareLog_problems(Signal* signal,
                                 const TcConnectionrecPtr,

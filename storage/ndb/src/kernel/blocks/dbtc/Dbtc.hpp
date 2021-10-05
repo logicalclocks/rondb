@@ -921,6 +921,8 @@ public:
      */
     Uint16 recBlockNo;
 
+    BlockReference lqhkeyreq_ref;
+
     // Trigger data
     UintR numFiredTriggers;      // As reported by lqhKeyConf
     UintR numReceivedTriggers;   // FIRE_TRIG_ORD
@@ -1107,7 +1109,7 @@ public:
      */
     Uint32 num_commit_ack_markers;
     Uint32 m_write_count;
-    Uint32 m_exec_write_count;
+    Uint32 m_exec_count;
     ReturnSignal returnsignal;
     AbortState abortState;
 
@@ -3002,7 +3004,7 @@ private:
   Uint64 c_no_qt_disk_flag;
   Uint64 c_no_qt_util_flag;
   Uint64 c_no_qt_no_exec_flag;
-  Uint64 c_no_qt_exec_write_count;
+  Uint64 c_no_qt_exec_count;
   Uint64 c_no_qt_wrong_version;
 
   Uint64 c_last_qt_used_dirty_flag;
@@ -3013,7 +3015,7 @@ private:
   Uint64 c_last_no_qt_disk_flag;
   Uint64 c_last_no_qt_util_flag;
   Uint64 c_last_no_qt_no_exec_flag;
-  Uint64 c_last_no_qt_exec_write_count;
+  Uint64 c_last_no_qt_exec_count;
   Uint64 c_last_no_qt_wrong_version;
   void query_thread_usage(Signal*);
 #endif
