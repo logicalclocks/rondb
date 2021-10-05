@@ -152,6 +152,7 @@ Suma::Suma(Block_context& ctx) :
   c_restart.m_ref = 0;
   c_startup.m_restart_server_node_id = RNIL; // Server for my NR
   c_shutdown.m_wait_handover = false;
+  m_next_subAutoIncrement = 0;
 
 #ifdef VM_TRACE
   m_gcp_monitor = 0;
