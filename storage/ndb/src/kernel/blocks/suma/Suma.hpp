@@ -291,6 +291,7 @@ public:
     Uint32 m_seq_no;
     Uint32 m_subscriptionId;
     Uint32 m_subscriptionKey;
+    Uint32 m_subAutoIncrement;
     Uint32 m_subscriptionType;
     Uint32 m_schemaTransId;
     Uint16 m_options;
@@ -349,6 +350,7 @@ public:
     Uint32 m_tableId;
     Uint32 m_table_ptrI;
   };
+  Uint32 m_next_subAutoIncrement;
   typedef Ptr<Subscription> SubscriptionPtr;
   typedef ArrayPool<Subscription> Subscription_pool;
   typedef DLList<Subscription_pool> Subscription_list;

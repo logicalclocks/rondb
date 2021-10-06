@@ -36,6 +36,7 @@
 #include <NdbSleep.h>
 #include <NdbOut.hpp>
 #include <NdbTick.h>
+#include <Logger.hpp>
 #include <ProcessInfo.hpp>
 #include <OwnProcessInfo.hpp>
 #include "ndb_internal.hpp"
@@ -63,6 +64,24 @@ int global_flag_skip_invalidate_cache = 0;
 int global_flag_skip_waiting_for_clean_cache = 0;
 //#define DEBUG_REG
 
+extern "C"
+void
+error_printer(const char * fmt, ...)
+{
+  va_list ap;
+  char buf[400];
+
+  char timestamp[64];
+  time_t now = ::time((time_t*)nullptr);
+  Logger::format_timestamp(now, timestamp, sizeof(timestamp));
+  va_start(ap, fmt);
+  size_t len = BaseString::vsnprintf(buf, sizeof(buf)-1, fmt, ap);
+  if (len > sizeof(buf) - 2) len = sizeof(buf) - 2;
+  memcpy(&buf[len], "\n", 2);
+  fprintf(stderr, "%s:[RonDB] %s", timestamp, buf);
+  va_end(ap);
+}
+
 // Just a C wrapper for threadMain
 extern "C" 
 void*
@@ -88,10 +107,14 @@ ClusterMgr::ClusterMgr(TransporterFacade & _facade):
   theClusterMgrThread(NULL),
   m_process_info(NULL),
   m_cluster_state(CS_waiting_for_clean_cache),
-  m_hbFrequency(0)
+  m_hbFrequency(0),
+  m_error_print(false),
+  m_state_changed(true),
+  m_ever_connected(false)
 {
   DBUG_ENTER("ClusterMgr::ClusterMgr");
   clusterMgrThreadMutex = NdbMutex_Create();
+  m_node_state_mutex = NdbMutex_Create();
   waitForHBCond= NdbCondition_Create();
   m_auto_reconnect = -1;
 
@@ -115,6 +138,7 @@ ClusterMgr::~ClusterMgr()
   }
   NdbCondition_Destroy(waitForHBCond);
   NdbMutex_Destroy(clusterMgrThreadMutex);
+  NdbMutex_Destroy(m_node_state_mutex);
   ProcessInfo::release(m_process_info);
   DBUG_VOID_RETURN;
 }
@@ -853,7 +877,7 @@ ClusterMgr::execAPI_REGCONF(const NdbApiSignal * signal,
   const ApiRegConf * apiRegConf = CAST_CONSTPTR(ApiRegConf,
                                                 signal->getDataPtr());
   const NodeId nodeId = refToNode(apiRegConf->qmgrRef);
-  
+
 #ifdef DEBUG_REG
   ndbout_c("ClusterMgr: Recd API_REGCONF from node %d", nodeId);
 #endif
@@ -862,6 +886,7 @@ ClusterMgr::execAPI_REGCONF(const NdbApiSignal * signal,
   
   Node & cm_node = theNodes[nodeId];
   trp_node & node = cm_node;
+  bool prev_compatible = node.compatible;
   assert(node.defined == true);
   assert(node.is_connected() == true);
 
@@ -894,6 +919,7 @@ ClusterMgr::execAPI_REGCONF(const NdbApiSignal * signal,
     recalcMinApiVersion();
   }
 
+  
   node.m_state = apiRegConf->nodeState;
   
   if (node.m_info.m_type == NodeInfo::DB)
@@ -904,10 +930,90 @@ ClusterMgr::execAPI_REGCONF(const NdbApiSignal * signal,
     if (node.compatible && (node.m_state.startLevel == NodeState::SL_STARTED ||
                             node.m_state.getSingleUserMode()))
     {
+      if (!get_node_alive(node))
+      {
+        NdbMutex_Lock(m_node_state_mutex);
+        m_state_changed = true;
+        if (m_error_print)
+        {
+          char our_buf[128];
+          char node_buf[128];
+          const char *started_ptr =
+            (node.m_state.startLevel == NodeState::SL_STARTED) ?
+              "started" : "in single user mode";
+          const char *our_version_ptr =
+            ndbGetVersionString(NDB_VERSION,
+                                0,
+                                nullptr,
+                                our_buf,
+                                sizeof(our_buf));
+          const char *node_version_ptr =
+            ndbGetVersionString(node.m_info.m_version,
+                                0,
+                                nullptr,
+                                node_buf,
+                                sizeof(node_buf));
+          error_printer("(N%u) Node %u is now alive, Our version: %s is compatible"
+                        " with node version: %s, node is %s",
+                        getOwnNodeId(),
+                        nodeId,
+                        our_version_ptr,
+                        node_version_ptr,
+                        started_ptr);
+        }
+        NdbMutex_Unlock(m_node_state_mutex);
+      }
       set_node_alive(node, true);
     }
     else
     {
+      if (get_node_alive(node))
+      {
+        m_state_changed = true;
+        if (m_error_print)
+        {
+          char our_buf[128];
+          char node_buf[128];
+          Uint32 startLevel = node.m_state.startLevel;
+          const char *compatible_ptr =
+            (prev_compatible) ?
+              "compatible" : "incompatible";
+          const char *our_version_ptr =
+            ndbGetVersionString(NDB_VERSION,
+                                0,
+                                nullptr,
+                                our_buf,
+                                sizeof(our_buf));
+          const char *node_version_ptr =
+            ndbGetVersionString(node.m_info.m_version,
+                                0,
+                                nullptr,
+                                node_buf,
+                                sizeof(node_buf));
+          const char *start_level_ptr =
+            (startLevel == NodeState::SL_NOTHING) ? "NOTHING" :
+            (startLevel == NodeState::SL_CMVMI) ? "CMVMI started" :
+            (startLevel == NodeState::SL_STARTING) ? "STARTING" :
+            (startLevel == NodeState::SL_STARTED) ? "STARTED" :
+            (startLevel == NodeState::SL_SINGLEUSER) ? "SINGLE USER" :
+            (startLevel == NodeState::SL_STOPPING_1) ? "STOPPING_1" :
+            (startLevel == NodeState::SL_STOPPING_2) ? "STOPPING_2" :
+            (startLevel == NodeState::SL_STOPPING_3) ? "STOPPING_3" :
+            (startLevel == NodeState::SL_STOPPING_4) ? "STOPPING_4" :
+              "unknown";
+
+          error_printer("(N%u) Node %u is now dead, but connected,"
+                        " our version: %s, Node version: %s, "
+                        "previously node had a %s version, "
+                        "startLevel: %s",
+                        getOwnNodeId(),
+                        nodeId,
+                        our_version_ptr,
+                        node_version_ptr,
+                        compatible_ptr,
+                        start_level_ptr);
+        }
+      }
       set_node_alive(node, false);
     }
   }
@@ -984,10 +1090,29 @@ ClusterMgr::execAPI_REGREF(const Uint32 * theData){
   /* Only DB nodes will send API_REGREF */
   assert(node.m_info.getType() == NodeInfo::DB);
 
+  NdbMutex_Lock(m_node_state_mutex);
+  if (node.compatible || get_node_alive(node))
+  {
+    char buf[128];
+    const char *version_ptr = ndbGetVersionString(ref->version,
+                                                  0,
+                                                  nullptr,
+                                                  buf,
+                                                  sizeof(buf));
+    m_state_changed = true;
+    if (m_error_print)
+    {
+      error_printer("(N%u) API_REGREF from node %u version %s",
+                    getOwnNodeId(),
+                    nodeId,
+                    version_ptr);
+    }
+  }
   node.compatible = false;
   set_node_alive(node, false);
   node.m_state = NodeState::SL_NOTHING;
   node.m_info.m_version = ref->version;
+  NdbMutex_Unlock(m_node_state_mutex);
 
   switch(ref->errorCode){
   case ApiRegRef::WrongType:
@@ -1214,6 +1339,14 @@ ClusterMgr::reportConnected(NodeId nodeId)
       // Data node connected, use ConnectBackoffMaxTime
       theFacade.get_registry()->set_connect_backoff_max_time_in_ms(connect_backoff_max_time);
     }
+    NdbMutex_Lock(m_node_state_mutex);
+    m_state_changed = true;
+    if (m_error_print)
+    {
+      error_printer("(N%u) Node %d Connected", getOwnNodeId(), nodeId);
+    }
+    m_ever_connected = true;
+    NdbMutex_Unlock(m_node_state_mutex);
   }
 
   /**
@@ -1322,8 +1455,16 @@ ClusterMgr::reportDisconnected(NodeId nodeId)
     if (noOfConnectedDBNodes == 0)
     {
       // No data nodes connected, use StartConnectBackoffMaxTime
-      theFacade.get_registry()->set_connect_backoff_max_time_in_ms(start_connect_backoff_max_time);
+      theFacade.get_registry()->set_connect_backoff_max_time_in_ms(
+        start_connect_backoff_max_time);
     }
+    NdbMutex_Lock(m_node_state_mutex);
+    m_state_changed = true;
+    if (m_error_print)
+    {
+      error_printer("(N%u) Node %d Disconnected", getOwnNodeId(), nodeId);
+    }
+    NdbMutex_Unlock(m_node_state_mutex);
   }
 
   /**
@@ -1404,6 +1545,18 @@ ClusterMgr::execNODE_FAILREP(const NdbApiSignal* sig,
 
     bool node_failrep = theNode.m_node_fail_rep;
     bool connected = theNode.is_connected();
+    if (get_node_alive(theNode))
+    {
+      NdbMutex_Lock(m_node_state_mutex);
+      m_state_changed = true;
+      if (m_error_print)
+      {
+        error_printer("(N%u) Node %u is dead due to missed heartbeats",
+                      getOwnNodeId(),
+                      i);
+      }
+      NdbMutex_Unlock(m_node_state_mutex);
+    }
     set_node_dead(theNode);
 
     if (node_failrep == false)
@@ -1466,11 +1619,17 @@ ClusterMgr::set_node_dead(trp_node& theNode)
   theNode.nfCompleteRep = false;
 }
 
-bool
-ClusterMgr::is_cluster_completely_unavailable()
+void
+ClusterMgr::is_cluster_completely_unavailable(Int32 &error,
+                                              Uint32 line)
 {
-  bool ret_code = true;
-
+  Uint32 num_defined_nodes = 0;
+  Uint32 num_single_user_nodes = 0;
+  Uint32 num_stopping_nodes = 0;
+  Uint32 num_incompatible_nodes = 0;
+  Uint32 num_alive_nodes = 0;
+  Uint32 num_starting_nodes = 0;
+  Uint32 num_started_nodes = 0;
   /**
    * This method (and several other 'node state getters') allow
    * reading of theNodes[] from multiple block threads while 
@@ -1478,6 +1637,7 @@ ClusterMgr::is_cluster_completely_unavailable()
    * have been expected here. See bug#20391191, and addendum patches
    * to bug#19524096, to understand what prevents us from locking (yet)
    */
+  NdbMutex_Lock(m_node_state_mutex);
   for (NodeId n = 1; n < MAX_NDB_NODES ; n++)
   {
     const trp_node& node = theNodes[n];
@@ -1488,12 +1648,26 @@ ClusterMgr::is_cluster_completely_unavailable()
        */
       continue;
     }
-    if (node.m_state.startLevel > NodeState::SL_STARTED)
+    if (node.m_info.m_type != NodeInfo::DB)
+    {
+      /**
+       * Ignore API and MGM nodes
+       */
+      continue;
+    }
+    num_defined_nodes++;
+    if (node.m_state.startLevel == NodeState::SL_SINGLEUSER)
+    {
+      num_single_user_nodes++;
+      continue;
+    }
+    if (node.m_state.startLevel > NodeState::SL_SINGLEUSER)
     {
       /**
        * Node is stopping, so isn't available for any transactions,
        * so not available for us to use.
        */
+      num_stopping_nodes++;
       continue;
     }
     if (!node.compatible)
@@ -1501,32 +1675,106 @@ ClusterMgr::is_cluster_completely_unavailable()
       /**
        * The node isn't compatible with ours, so we can't use it
        */
+      num_incompatible_nodes++;
       continue;
     }
-    if (node.m_alive ||
-        node.m_state.startLevel == NodeState::SL_STARTING ||
-        node.m_state.startLevel == NodeState::SL_STARTED)
+    if (node.m_alive)
     {
-      /**
-       * We found a node that is either alive (less likely since we call this
-       * method), or it is in state SL_STARTING which means that we were
-       * allowed to connect, this means that we will very shortly be able to
-       * use this connection. So this means that we know that the current
-       * connection problem is a temporary issue and we can report a temporary
-       * error instead of reporting 4009.
-       *
-       * We can deduce that the cluster isn't ready to be declared down
-       * yet, we have a link to a starting node. We either very soon have
-       * a working cluster, or we already have a working cluster but we
-       * haven't yet the most up-to-date information about the cluster state.
-       * So the cluster will soon be available again very likely, so
-       * we can report a temporary error rather than an unknown error.
-       */
-      ret_code = false;
-      break;
+      num_alive_nodes++;
+      continue;
+    }
+    if (node.m_state.startLevel == NodeState::SL_STARTING)
+    {
+      num_starting_nodes++;
+      continue;
+    }
+    if (node.m_state.startLevel == NodeState::SL_STARTED)
+    {
+      num_started_nodes++;
+      continue;
     }
   }
-  return ret_code;
+  if (num_alive_nodes > 0)
+  {
+    /**
+     * We have alive nodes, but could not find any connection records
+     */
+    error = 4036;
+  }
+  else if (num_started_nodes > 0)
+  {
+    /**
+     * We have no alive nodes, but we have started nodes, weird state
+     */
+    error = 4035;
+  }
+  else if (num_starting_nodes > 0)
+  {
+    /**
+     * We have nodes that are starting up
+     */
+    error = 4037;
+  }
+  else if (num_incompatible_nodes > 0)
+  {
+    /**
+     * We have alive nodes that are using an incompatible version
+     */
+    error = 4038;
+  }
+  else if (num_single_user_nodes > 0)
+  {
+    /**
+     * We have alive nodes that are in single user mode.
+     */
+    error = 4041;
+  }
+  else if (num_stopping_nodes > 0)
+  {
+    /**
+     * Accessible nodes are shutting down
+     */
+    error = 4039;
+  }
+  else if (m_ever_connected)
+  {
+    /**
+     * No data nodes are available, but we have connected at least one
+     * node in this cluster. Most likely cluster is down.
+     */
+    error = 4009;
+  }
+  else
+  {
+    /**
+     * No data nodes are available and neither have any ever connected.
+     * Most likely a firewall problem.
+     */
+    error = 4040;
+  }
+  if (m_error_print && m_state_changed)
+  {
+    m_state_changed = false;
+    const char *ever_connected_ptr =
+      (m_ever_connected) ?
+      "nodes have been connected" : "no node ever connected";
+    error_printer("(N%u) Reported %d, line: %u error with %u defined nodes, "
+                  " %u alive nodes, %u started"
+                  " nodes, %u starting nodes, %u incompatible nodes, "
+                  "%u stopping nodes, %u nodes in single user mode, %s",
+                  getOwnNodeId(),
+                  error,
+                  line,
+                  num_defined_nodes,
+                  num_alive_nodes,
+                  num_started_nodes,
+                  num_starting_nodes,
+                  num_incompatible_nodes,
+                  num_stopping_nodes,
+                  num_single_user_nodes,
+                  ever_connected_ptr);
+  }
+  NdbMutex_Unlock(m_node_state_mutex);
 }
 
 void

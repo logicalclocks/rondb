@@ -190,6 +190,20 @@ private:
   Uint32	connect_backoff_max_time;
 
   /**
+   * Should we print error messages to stderr
+   *
+   * Has a state change occurred that makes it worthwhile to
+   * print a new error message.
+   *
+   * A mutex to ensure that we change the state of nodes in a
+   * controlled fashion.
+   */
+  bool m_error_print;
+  bool m_state_changed;
+  bool m_ever_connected;
+  NdbMutex *m_node_state_mutex;
+
+  /**
    * Signals received
    */
   void execAPI_REGREQ    (const Uint32 * theData);
@@ -201,7 +215,11 @@ private:
 
   void check_wait_for_hb(NodeId nodeId);
 
-  bool is_cluster_completely_unavailable();
+  void is_cluster_completely_unavailable(Int32 & error, Uint32 line);
+  bool get_node_alive(trp_node& node)
+  {
+    return node.m_alive;
+  }
   inline void set_node_alive(trp_node& node, bool alive){
 
     // Only DB nodes can be "alive"
@@ -228,6 +246,10 @@ private:
   void sendProcessInfoReport(NodeId nodeId);
 
 public:
+  void set_error_print(bool val)
+  {
+    m_error_print = val;
+  }
   /**
    * trp_client interface
    *

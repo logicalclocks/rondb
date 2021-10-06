@@ -2481,6 +2481,7 @@ Suma::execSUB_CREATE_REQ(Signal* signal)
     subPtr.p->m_seq_no           = c_current_seq;
     subPtr.p->m_subscriptionId   = subId;
     subPtr.p->m_subscriptionKey  = subKey;
+    subPtr.p->m_subAutoIncrement = m_next_subAutoIncrement++;
     subPtr.p->m_subscriptionType = type;
     subPtr.p->m_tableId          = tableId;
     subPtr.p->m_table_ptrI       = RNIL;
@@ -5163,7 +5164,7 @@ Suma::doFIRE_TRIG_ORD(Signal* signal, LinearSectionPtr lsptr[3])
   else 
   {
     jam();
-    constexpr uint buffer_header_sz = 6;
+    constexpr uint buffer_header_sz = 7;
     Uint32* dst1 = nullptr;
     Uint32* dst2 = nullptr;
     Uint32 sz1 = f_trigBufferSize + buffer_header_sz;
@@ -5182,6 +5183,7 @@ Suma::doFIRE_TRIG_ORD(Signal* signal, LinearSectionPtr lsptr[3])
       dst1[3] = any_value;
       dst1[4] = transId1;
       dst1[5] = transId2;
+      dst1[6] = subPtr.p->m_subAutoIncrement;
       dst1 += buffer_header_sz;
       memcpy(dst1, lsptr[0].p, lsptr[0].sz << 2);
       dst1 += lsptr[0].sz;
@@ -7481,13 +7483,13 @@ Suma::resend_bucket(Signal* signal, Uint32 buck, Uint64 min_gci,
       
       NodeReceiverGroup rg(API_CLUSTERMGR, c_subscriber_nodes);
       sendSignal(rg, GSN_SUB_GCP_COMPLETE_REP, signal, siglen, JBB);
-    } 
+    }
     else
     {
       jam();
       ndbrequire(part == 1);
 
-      const uint buffer_header_sz = 6;
+      const uint buffer_header_sz = 7;
       g_cnt++;
       Uint32 subPtrI = src[0];
       Uint32 schemaVersion = src[1];
@@ -7496,6 +7498,7 @@ Suma::resend_bucket(Signal* signal, Uint32 buck, Uint64 min_gci,
       Uint32 any_value = src[3];
       Uint32 transId1 = src[4];
       Uint32 transId2 = src[5];
+      Uint32 subAutoIncrement = src[6];
       src += buffer_header_sz;
 
       ndbassert(sz - buffer_header_sz >= sz_1);
@@ -7552,7 +7555,7 @@ Suma::resend_bucket(Signal* signal, Uint32 buck, Uint64 min_gci,
         }
       }
       
-      LinearSectionPtr ptr[3];
+      LinearSectionPtr dest_ptr[3];
       LinearSectionPtr lsptr[3];
       lsptr[0].p = src;
       lsptr[0].sz = sz_1;
@@ -7560,13 +7563,13 @@ Suma::resend_bucket(Signal* signal, Uint32 buck, Uint64 min_gci,
       lsptr[1].sz = sz2;
       lsptr[2].p = src + sz_1;
       lsptr[2].sz = sz - buffer_header_sz - sz_1;
-      const Uint32 nptr = reformat(signal, ptr, lsptr);
+      const Uint32 nptr = reformat(signal, dest_ptr, lsptr);
 
       Uint32 ptrLen= 0;
       for(Uint32 i =0; i < nptr; i++)
       {
         jam();
-        ptrLen+= ptr[i].sz;
+        ptrLen+= dest_ptr[i].sz;
       }
 
       /**
@@ -7574,26 +7577,33 @@ Suma::resend_bucket(Signal* signal, Uint32 buck, Uint64 min_gci,
        */
       Ptr<Subscription> subPtr;
       c_subscriptionPool.getPtr(subPtr, subPtrI);
-      Ptr<Table> tabPtr;
-      c_tablePool.getPtr(tabPtr, subPtr.p->m_table_ptrI);
-      Uint32 table = subPtr.p->m_tableId;
-      if (table_version_major(tabPtr.p->m_schemaVersion) ==
-          table_version_major(schemaVersion))
+      if (subPtr.p->m_subAutoIncrement == subAutoIncrement)
       {
         jam();
-	SubTableData * data = (SubTableData*)signal->getDataPtrSend();//trg;
-	data->gci_hi         = (Uint32)(last_gci >> 32);
-	data->gci_lo         = (Uint32)(last_gci & 0xFFFFFFFF);
-	data->tableId        = table;
-	data->requestInfo    = 0;
-	SubTableData::setOperation(data->requestInfo, event);
-	data->flags          = 0;
-	data->anyValue       = any_value;
-	data->totalLen       = ptrLen;
-        data->transId1       = transId1;
-        data->transId2       = transId2;
+        Ptr<Table> tabPtr;
+        c_tablePool.getPtr(tabPtr, subPtr.p->m_table_ptrI);
+        Uint32 table = subPtr.p->m_tableId;
+        if (table_version_major(tabPtr.p->m_schemaVersion) ==
+            table_version_major(schemaVersion))
+        {
+          jam();
+	  SubTableData * data = (SubTableData*)signal->getDataPtrSend();//trg;
+	  data->gci_hi         = (Uint32)(last_gci >> 32);
+	  data->gci_lo         = (Uint32)(last_gci & 0xFFFFFFFF);
+	  data->tableId        = table;
+	  data->requestInfo    = 0;
+	  SubTableData::setOperation(data->requestInfo, event);
+	  data->flags          = 0;
+	  data->anyValue       = any_value;
+	  data->totalLen       = ptrLen;
+          data->transId1       = transId1;
+          data->transId2       = transId2;
 	
-        sendBatchedSUB_TABLE_DATA(signal, subPtr.p->m_subscribers, ptr, nptr);
+          sendBatchedSUB_TABLE_DATA(signal,
+                                    subPtr.p->m_subscribers,
+                                    dest_ptr,
+                                    nptr);
+        }
       }
     }
   }

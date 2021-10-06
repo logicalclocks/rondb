@@ -1970,7 +1970,7 @@ int Ndb_index_stat_thread::check_or_create_systables(Ndb_index_stat_proc &pr) {
   }
 
   if (is->getNdbError().code == 721 || is->getNdbError().code == 4244 ||
-      is->getNdbError().code == 4009)  // no connection
+      is_cluster_failure_code(is->getNdbError().code))  // no connection
   {
     // probably race between mysqlds
     DBUG_PRINT("index_stat",

@@ -12597,6 +12597,7 @@ static int ndbcluster_end(handlerton *, ha_panic_function) {
   // Stop threads started by ndbcluster_init() except the
   // ndb_metadata_change_monitor_thread. This is stopped and deinited in the
   // ndbcluster_pre_dd_shutdown() function
+  ndbcluster_stop_error_print();
   ndb_index_stat_thread.stop();
   ndbcluster_binlog_end();
 
@@ -17234,6 +17235,17 @@ bool ha_ndbcluster::upgrade_table(THD *thd,
     return true;
   }
 
+  return false;
+}
+
+bool
+is_cluster_failure_code(int err_code)
+{
+  if (err_code == 4009 ||
+      (err_code >= 4035 && err_code <= 4041))
+  {
+    return true;
+  }
   return false;
 }
 

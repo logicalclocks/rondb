@@ -767,6 +767,8 @@ class ha_ndbcluster : public handler, public Partition_handler {
   int add_handler_to_open_tables(THD *, Thd_ndb *, ha_ndbcluster *handler);
 };
 
+bool is_cluster_failure_code(int error);
+
 // Global handler synchronization
 extern mysql_cond_t ndbcluster_cond;
 

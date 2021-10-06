@@ -129,20 +129,18 @@ NdbTransaction* Ndb::doConnect(Uint32 tConNode, Uint32 instance)
 // We were unable to find a free connection. If no node alive we will report
 // error code for cluster failure otherwise connection failure.
 //****************************************************************************
-  if (tAnyAlive == 1) {
+  if (tAnyAlive == 1)
+  {
 #ifdef VM_TRACE
     ndbout << "TretCode = " << TretCode << endl;
 #endif
     theError.code = 4006;
-  } else {
-    if (theImpl->m_transporter_facade->is_cluster_completely_unavailable())
-    {
-      theError.code = 4009;
-    }
-    else
-    {
-      theError.code = 4035;
-    }
+  }
+  else
+  {
+    theImpl->m_transporter_facade->is_cluster_completely_unavailable(
+      theError.code,
+      __LINE__);
   }//if
   DBUG_RETURN(NULL);
 }
@@ -395,14 +393,9 @@ Ndb::waitUntilReady(int timeout)
   if (theImpl->m_ndb_cluster_connection.wait_until_ready
       (timeout-secondsCounter,30) < 0)
   {
-    if (theImpl->m_transporter_facade->is_cluster_completely_unavailable())
-    {
-      theError.code = 4009;
-    }
-    else
-    {
-      theError.code = 4035;
-    }
+    theImpl->m_transporter_facade->is_cluster_completely_unavailable(
+      theError.code,
+      __LINE__);
     DBUG_RETURN(-1);
   }
 

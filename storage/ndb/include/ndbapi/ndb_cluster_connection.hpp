@@ -246,6 +246,11 @@ public:
    */
   Uint32 collect_client_stats(Uint64* statsArr, Uint32 sz);
 
+  /**
+   * Activate/Deactivate error printing to stderr for node state changes.
+   */
+  void set_error_print(bool val);
+
  /**
   * Get/set the minimum time in milliseconds that can lapse until the adaptive 
   * send mechanism forces all pending signals to be sent. 
