@@ -32,6 +32,8 @@
 #include "storage/ndb/plugin/ndb_sleep.h"
 #include "storage/ndb/plugin/ndb_table_guard.h"
 
+extern bool is_cluster_failure_code(int error);
+
 Ndb_rep_tab_key::Ndb_rep_tab_key(const char *_db, const char *_table_name,
                                  uint _server_id) {
   uint db_len = (uint)strlen(_db);
@@ -353,7 +355,7 @@ int Ndb_rep_tab_reader::lookup(Ndb *ndb,
   do {
     if (reptab == NULL) {
       if (dict->getNdbError().classification == NdbError::SchemaError ||
-          dict->getNdbError().code == 4009) {
+          is_cluster_failure_code(dict->getNdbError().code)) {
         DBUG_PRINT("info",
                    ("No %s.%s table", ndb_rep_db, ndb_replication_table));
         return 0;

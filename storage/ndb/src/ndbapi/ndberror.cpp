@@ -152,7 +152,6 @@ ErrorBundle ErrorCodes[] = {
   { 4029, DMEC, NR, "Node failure caused abort of transaction" },
   { 4031, DMEC, NR, "Node failure caused abort of transaction" },
   { 4033, DMEC, NR, "Send to NDB failed" },
-  { 4035, DMEC, NR, "Cluster temporary unavailable" },
   { 4115, DMEC, NR, 
     "Transaction was committed but all read information was not "
     "received due to node crash" },
@@ -257,7 +256,14 @@ ErrorBundle ErrorCodes[] = {
    *    link to it at present.
    */
   { 4008, DMEC, UR, "Receive from NDB failed" },
-  { 4009, HA_ERR_NO_CONNECTION, UR, "Cluster Failure" },
+  { 4009, HA_ERR_NO_CONNECTION, UR, "No data node(s) available, check Cluster state" },
+  { 4035, HA_ERR_NO_CONNECTION, UR, "Data node(s) started, no connection record available" },
+  { 4036, HA_ERR_NO_CONNECTION, UR, "Data node(s) alive, no connection record available" },
+  { 4037, HA_ERR_NO_CONNECTION, UR, "Data node(s) are starting, cluster not yet ready" },
+  { 4038, HA_ERR_NO_CONNECTION, UR, "Data node(s) are using incompatible version, cluster not ready" },
+  { 4039, HA_ERR_NO_CONNECTION, UR, "Data node(s) are shutting down, cluster not ready" },
+  { 4040, HA_ERR_NO_CONNECTION, UR, "No data node(s) ever connected, check firewall and cluster state" },
+  { 4041, HA_ERR_NO_CONNECTION, UR, "Data node(s) are in single user mode, cluster not ready" },
   { 4012, DMEC, UR, 
     "Request ndbd time-out, maybe due to high load or communication problems"}, 
   

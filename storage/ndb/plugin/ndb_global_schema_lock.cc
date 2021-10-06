@@ -36,6 +36,8 @@
 #include "storage/ndb/plugin/ndb_sleep.h"
 #include "storage/ndb/plugin/ndb_table_guard.h"
 
+extern int is_cluster_failure_code(int error);
+
 /**
  * There is a potential for deadlocks between MDL and GSL locks:
  *
@@ -399,7 +401,7 @@ static int ndbcluster_global_schema_lock(THD *thd,
    * If GSL request failed due to no cluster connection (4009),
    * we consider the lock granted, else GSL request failed.
    */
-  if (ndb_error.code != 4009)  // No cluster connection
+  if (!is_cluster_failure_code(ndb_error.code))  // No cluster connection
   {
     DBUG_ASSERT(thd_ndb->global_schema_lock_count == 1);
     // This reset triggers the special case in ndbcluster_global_schema_unlock()
@@ -411,7 +413,8 @@ static int ndbcluster_global_schema_lock(THD *thd,
     ndb_log_info(
         "Failed to acquire global schema lock due to deadlock resolution");
     *victimized = true;
-  } else if (ndb_error.code != 4009 || report_cluster_disconnected) {
+  } else if (!is_cluster_failure_code(ndb_error.code) ||
+             report_cluster_disconnected) {
     if (ndb_thd_is_background_thread(thd)) {
       // Don't push any warning when background thread fail to acquire GSL
     } else {
@@ -434,7 +437,7 @@ static int ndbcluster_global_schema_unlock(THD *thd, bool record_gsl) {
     return 0;
   }
 
-  if (thd_ndb->global_schema_lock_error != 4009 &&
+  if (!is_cluster_failure_code(thd_ndb->global_schema_lock_error) &&
       thd_ndb->global_schema_lock_count == 0) {
     // Special case to handle unlock after failure to acquire GSL due to
     // any error other than 4009.
