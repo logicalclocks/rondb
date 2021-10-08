@@ -38,6 +38,8 @@
 extern "C" {
 #endif
 
+  int ndbCompatible_ndb_backup(Uint32 ownVersion, Uint32 otherVersion);
+  int ndbCompatible_ndb_schema(Uint32 ownVersion, Uint32 otherVersion);
   int ndbCompatible_mgmt_ndb(Uint32 ownVersion, Uint32 otherVersion);
   int ndbCompatible_ndb_mgmt(Uint32 ownVersion, Uint32 otherVersion);
   int ndbCompatible_mgmt_api(Uint32 ownVersion, Uint32 otherVersion);

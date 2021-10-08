@@ -161,6 +161,20 @@ struct NdbUpGradeCompatible {
   UG_MatchType matchType;
 };
 
+struct NdbUpGradeCompatible ndbCompatibleTable_schema_table[] = {
+  { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(21,10,2), UG_Range },
+  { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(21,4,2), UG_Range },
+  { MAKE_VERSION(21,4,NDB_VERSION_BUILD),MAKE_VERSION(21,4,2), UG_Range },
+  { 0, 0, UG_Null }
+};
+
+struct NdbUpGradeCompatible ndbCompatibleTable_backup_table[] = {
+  { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(21,10,2), UG_Range },
+  { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(21,4,2), UG_Range },
+  { MAKE_VERSION(21,4,NDB_VERSION_BUILD),MAKE_VERSION(21,4,2), UG_Range },
+  { 0, 0, UG_Null }
+};
+
 struct NdbUpGradeCompatible ndbCompatibleTable_full[] = {
   { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(21,10,2), UG_Range },
   { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(21,4,0), UG_Range },
@@ -284,6 +298,24 @@ ndbCompatible(Uint32 ownVersion, Uint32 otherVersion, struct NdbUpGradeCompatibl
 
 static
 int
+ndbCompatible_dict(Uint32 ownVersion, Uint32 otherVersion)
+{
+  return ndbCompatible(ownVersion,
+                       otherVersion,
+                       ndbCompatibleTable_schema_table);
+}
+
+static
+int
+ndbCompatible_backup(Uint32 ownVersion, Uint32 otherVersion)
+{
+  return ndbCompatible(ownVersion,
+                       otherVersion,
+                       ndbCompatibleTable_backup_table);
+}
+
+static
+int
 ndbCompatible_full(Uint32 ownVersion, Uint32 otherVersion)
 {
   return ndbCompatible(ownVersion, otherVersion, ndbCompatibleTable_full);
@@ -296,6 +328,20 @@ ndbCompatible_upgrade(Uint32 ownVersion, Uint32 otherVersion)
   if (ndbCompatible_full(ownVersion, otherVersion))
     return 1;
   return ndbCompatible(ownVersion, otherVersion, ndbCompatibleTable_upgrade);
+}
+
+extern "C"
+int
+ndbCompatible_ndb_backup(Uint32 ownVersion, Uint32 otherVersion)
+{
+  return ndbCompatible_backup(ownVersion, otherVersion);
+}
+
+extern "C"
+int
+ndbCompatible_ndb_schema(Uint32 ownVersion, Uint32 otherVersion)
+{
+  return ndbCompatible_dict(ownVersion, otherVersion);
 }
 
 extern "C"

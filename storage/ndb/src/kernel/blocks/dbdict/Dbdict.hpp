@@ -1065,8 +1065,6 @@ private:
   void execALTER_TABLE_REF(Signal* signal);
   void execALTER_TABLE_CONF(Signal* signal);
   bool check_ndb_versions() const;
-  int check_sender_version(const Signal* signal, Uint32 version) const;
-
 
   void execCREATE_FILE_REQ(Signal* signal);
   void execCREATE_FILEGROUP_REQ(Signal* signal);

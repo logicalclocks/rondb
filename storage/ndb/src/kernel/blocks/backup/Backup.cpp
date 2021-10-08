@@ -4123,7 +4123,8 @@ Backup::verifyNodesAlive(BackupRecordPtr ptr,
 	ptr.p->setErrorCode(AbortBackupOrd::BackupFailureDueToNodeFail);
         return false;
       }//if
-      if(getNodeInfo(i).m_version != version)
+      Uint32 node_version = getNodeInfo(i).m_version;
+      if (!ndbCompatible_ndb_backup(version, node_version))
       {
         jam();
         jamLine(i);
@@ -4552,7 +4553,8 @@ Backup::execBACKUP_REQ(Signal* signal)
       m_cfg_mt_backup = 0;
       g_eventLogger->info("Running single-threaded backup since node %u has only one LDM", node);
     }
-    if (getNodeInfo(node).m_version != version)
+    Uint32 node_version = getNodeInfo(node).m_version;
+    if (!ndbCompatible_ndb_backup(version, node_version))
     {
       jam();
       g_eventLogger->info("Detected incompatible versions, aborting backup");

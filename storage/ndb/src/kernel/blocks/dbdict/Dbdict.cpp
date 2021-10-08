@@ -6985,17 +6985,6 @@ Dbdict::execCREATE_TABLE_REQ(Signal* signal)
     return;
   }
 
-
-  if (check_sender_version(signal, MAKE_VERSION(6,4,0)) < 0)
-  {
-    jam();
-    /**
-     * Pekka has for some obscure reason switched places of
-     *   senderRef/senderData
-     */
-    CreateTableReq* tmp = (CreateTableReq*)signal->getDataPtr();
-    do_swap(tmp->senderRef, tmp->senderData);
-  }
   D("execCREATE_TABLE_REQ");
 
   const CreateTableReq req_copy =
@@ -8965,16 +8954,6 @@ Dbdict::execDROP_TABLE_REQ(Signal* signal)
     return;
   }
 
-  if (check_sender_version(signal, MAKE_VERSION(6,4,0)) < 0)
-  {
-    jam();
-    /**
-     * Pekka has for some obscure reason switched places of
-     *   senderRef/senderData
-     */
-    DropTableReq * tmp = (DropTableReq*)signal->getDataPtr();
-    do_swap(tmp->senderRef, tmp->senderData);
-  }
   D("execDROP_TABLE_REQ");
 
   const DropTableReq req_copy =
@@ -9724,23 +9703,13 @@ Dbdict::check_ndb_versions() const
   Uint32 version = getNodeInfo(getOwnNodeId()).m_version;
   while((node = c_aliveNodes.find(node + 1)) != BitmaskImpl::NotFound)
   {
-    if(getNodeInfo(node).m_version != version)
+    Uint32 node_version = getNodeInfo(node).m_version;
+    if (!ndbCompatible_ndb_schema(version, node_version))
     {
       return false;
     }
   }
   return true;
-}
-
-int
-Dbdict::check_sender_version(const Signal* signal, Uint32 version) const
-{
-  Uint32 ver = getNodeInfo(refToNode(signal->getSendersBlockRef())).m_version;
-  if (ver < version)
-    return -1;
-  else if (ver > version)
-    return 1;
-  return 0;
 }
 
 void
@@ -9762,17 +9731,6 @@ Dbdict::execALTER_TABLE_REQ(Signal* signal)
                        &handle);
     return;
   }
-  if (check_sender_version(signal, MAKE_VERSION(6,4,0)) < 0)
-  {
-    jam();
-    /**
-     * Pekka has for some obscure reason switched places of
-     *   senderRef/senderData
-     */
-    AlterTableReq * tmp = (AlterTableReq*)signal->getDataPtr();
-    do_swap(tmp->clientRef, tmp->clientData);
-  }
-
   D("execALTER_TABLE_REQ");
   const AlterTableReq req_copy =
     *(const AlterTableReq*)signal->getDataPtr();
@@ -13322,17 +13280,6 @@ Dbdict::execCREATE_INDX_REQ(Signal* signal)
     return;
   }
 
-
-  if (check_sender_version(signal, MAKE_VERSION(6,4,0)) < 0)
-  {
-    jam();
-    /**
-     * Pekka has for some obscure reason switched places of
-     *   senderRef/senderData
-     */
-    CreateIndxReq * tmp = (CreateIndxReq*)signal->getDataPtr();
-    do_swap(tmp->clientRef, tmp->clientData);
-  }
   D("execCREATE_INDX_REQ");
 
   const CreateIndxReq req_copy =
@@ -14129,16 +14076,6 @@ Dbdict::execDROP_INDX_REQ(Signal* signal)
                        signal->length(),
                        &handle);
     return;
-  }
-  if (check_sender_version(signal, MAKE_VERSION(6,4,0)) < 0)
-  {
-    jam();
-    /**
-     * Pekka has for some obscure reason switched places of
-     *   senderRef/senderData
-     */
-    DropIndxReq * tmp = (DropIndxReq*)signal->getDataPtr();
-    do_swap(tmp->clientRef, tmp->clientData);
   }
   D("execDROP_INDX_REQ");
 

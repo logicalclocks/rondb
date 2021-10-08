@@ -165,9 +165,10 @@ my $ctest_report;           # Unit test report stored here for delayed printing
 my $current_config_name;    # The currently running config file template
 my $exe_ndb_mgm;
 my $exe_ndb_mgmd;
+my $exe_ndb_mgmd_v2;
 my $exe_ndb_waiter;
-my $exe_ndbd;
 my $exe_ndbmtd;
+my $exe_ndbmtd_v2;
 my $initial_bootstrap_cmd;
 my $mysql_base_version;
 my $mysqlx_baseport;
@@ -179,6 +180,7 @@ my $build_thread       = 0;
 my $daemonize_mysqld   = 0;
 my $debug_d            = "d";
 my $exe_ndbmtd_counter = 0;
+my $exe_ndb_mgmd_counter = 0;
 my $ports_per_thread   = 30;
 my $source_dist        = 0;
 my $shutdown_report    = 0;
@@ -2621,23 +2623,21 @@ sub executable_setup () {
     $exe_ndbmtd =
       my_find_bin($bindir,
                   [ "runtime_output_directory", "libexec", "sbin", "bin" ],
-                  "ndbmtd", NOT_REQUIRED);
-
-    if ($exe_ndbmtd) {
-      my $mtr_ndbmtd = $ENV{MTR_NDBMTD};
-      if ($mtr_ndbmtd) {
-        mtr_report(" - multi threaded ndbd found, will be used always");
-        $exe_ndbd = $exe_ndbmtd;
-      } else {
-        mtr_report(
-             " - multi threaded ndbd found, will be " . "used \"round robin\"");
-      }
-    }
+                  "ndbmtd");
+    $exe_ndbmtd_v2 =
+      my_find_bin($bindir,
+                  [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+                  "ndbmtd_v2", NOT_REQUIRED);
 
     $exe_ndb_mgmd =
       my_find_bin($bindir,
                   [ "runtime_output_directory", "libexec", "sbin", "bin" ],
                   "ndb_mgmd");
+
+    $exe_ndb_mgmd_v2 =
+      my_find_bin($bindir,
+                  [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+                  "ndb_mgmd_v2", NOT_REQUIRED);
 
     $exe_ndb_mgm =
       my_find_bin($bindir, [ "runtime_output_directory", "bin" ], "ndb_mgm");
@@ -3733,11 +3733,23 @@ sub ndb_mgmd_start ($$) {
   mtr_add_arg($args, "--nodaemon");
   mtr_add_arg($args, "--configdir=%s",             "$dir");
 
+  my $exe = $exe_ndb_mgmd;
+  if ($exe_ndb_mgmd_v2) {
+    if ($ENV{MTR_RONDB_V2}) {
+      # Use two versions for ndbmtd to test upgrade/downgrade
+      $exe = $exe_ndb_mgmd_v2;
+    }
+    if (($exe_ndb_mgmd_counter++ % 2) == 0) {
+      # Use ndb_mgmd every other time
+      $exe = $exe_ndb_mgmd;
+    }
+  }
+
   my $path_ndb_mgmd_log = "$dir/ndb_mgmd.log";
 
   $ndb_mgmd->{'proc'} =
     My::SafeProcess->new(name     => $ndb_mgmd->after('cluster_config.'),
-                         path     => $exe_ndb_mgmd,
+                         path     => $exe,
                          args     => \$args,
                          output   => $path_ndb_mgmd_log,
                          error    => $path_ndb_mgmd_log,
@@ -3779,11 +3791,11 @@ sub ndbd_start {
 
   # > 5.0 { 'character-sets-dir' => \&fix_charset_dir },
 
-  my $exe = $exe_ndbd;
-  if ($exe_ndbmtd) {
-    if ($ENV{MTR_NDBMTD}) {
-      # ndbmtd forced by env var MTR_NDBMTD
-      $exe = $exe_ndbmtd;
+  my $exe = $exe_ndbmtd;
+  if ($exe_ndbmtd_v2) {
+    if ($ENV{MTR_RONDB_V2}) {
+      # Use two versions for ndbmtd to test upgrade/downgrade
+      $exe = $exe_ndbmtd_v2;
     }
     if (($exe_ndbmtd_counter++ % 2) == 0) {
       # Use ndbmtd every other time
