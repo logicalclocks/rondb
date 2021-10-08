@@ -126,10 +126,13 @@ struct SignalHeader {
   Uint32 theLength;
   Uint32 theSendersSignalId;
   Uint32 theSignalId;
+  Uint32 theThreadSenderSignalId;
   Uint16 theTrace;
+  Uint16 theSenderThreadId;
+  Uint16  m_unused;
   Uint8  m_noOfSections;
   Uint8  m_fragmentInfo;
-}; /** 7x4 = 28 Bytes */
+}; /** 7x4 = 36 Bytes */
 
 class NdbOut & operator <<(class NdbOut & out, SignalHeader & sh);
 

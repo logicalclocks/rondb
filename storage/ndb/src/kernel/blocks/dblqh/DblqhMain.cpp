@@ -72,6 +72,7 @@
 #include <signaldata/AlterTable.hpp>
 #include <signaldata/DictTabInfo.hpp>
 
+#include <signaldata/Abort.hpp>
 #include <signaldata/LCP.hpp>
 #include <DebuggerNames.hpp>
 #include <signaldata/BackupImpl.hpp>
@@ -1504,6 +1505,7 @@ void Dblqh::execSTTOR(Signal* signal)
     return;
   case 2:
     jam();
+    set_up_qt_our_rr_group();
     startphase2Lab(signal, /* dummy */ ~0);
     return;
   case 3:
@@ -14197,6 +14199,156 @@ Dblqh::remove_commit_marker(TcConnectionrec * const regTcPtr)
   }
 }
 
+void
+Dblqh::execPUSH_ABORT_TRAIN_ORD(Signal *signal)
+{
+  PushAbortTrainOrd * const ord = 
+    (PushAbortTrainOrd *)signal->getDataPtr();
+  Uint32 thread_id = ord->threadId;
+  Uint32 send_thread_signal_id = ord->sendThreadSignalId;
+  if ((ERROR_INSERTED(5107) &&
+       (ord->indexQueryThread + 1) < m_num_qt_our_rr_group) ||
+      !check_abort_signal_executed(thread_id,
+                                   send_thread_signal_id))
+  {
+    Uint32 index = ord->indexQueryThread;
+    index++;
+    ndbrequire(index < m_num_qt_our_rr_group);
+    ord->indexQueryThread = index;
+
+    ndbrequire(thread_id >= getFirstReceiveThreadId());
+    Uint32 trp_instance_no = thread_id - getFirstReceiveThreadId();
+    BlockReference trp_ref = numberToRef(TRPMAN,
+                                         trp_instance_no + 1, //Skip proxy
+                                         getOwnNodeId());
+
+    Uint32 qt_instance_no = m_qt_thr_no_our_rr_group[index] -
+                            getFirstQueryThreadId();
+    Uint32 dst[1];
+    dst[0] = numberToRef(DBQLQH,
+                         qt_instance_no + 1, //Skip proxy
+                         getOwnNodeId());
+    RoutePath path[1];
+    path[0].ref = trp_ref;
+    path[0].prio = JBB;
+
+    sendRoutedSignal(path,
+                     1,
+                     dst,
+                     1,
+                     GSN_PUSH_ABORT_TRAIN_ORD,
+                     signal,
+                     PushAbortTrainOrd::SignalLength,
+                     JBB,
+                     nullptr);
+    return;
+  }
+  Uint32 tcOprec = ord->tcOprec;
+  Uint32 tcBlockref = ord->tcBlockref;
+  Uint32 transid1 = ord->transid1;
+  Uint32 transid2 = ord->transid2;
+
+  /**
+   * We now have ensured that the LQHKEYREQ signal have been
+   * executed and thus we can continue with the abort process
+   * as normal.
+   */
+  BlockReference ref = ord->abortRef;
+  Abort* abo = CAST_PTR(Abort, signal->getDataPtrSend());
+  abo->tcOprec = tcOprec;
+  abo->tcBlockref = tcBlockref;
+  abo->transid1 = transid1;
+  abo->transid2 = transid2;
+  sendSignal(ref,
+             GSN_ABORT,
+             signal,
+             Abort::SignalLength, JBB);
+}
+
+void
+Dblqh::execSEND_PUSH_ABORTCONF(Signal *signal)
+{
+  SendPushAbortConf * const conf = 
+    (SendPushAbortConf *)signal->getDataPtr();
+  Uint32 thread_id = conf->threadId;
+  Uint32 send_thread_signal_id = conf->sendThreadSignalId;
+
+  Uint32 tcOprec = conf->tcOprec;
+  Uint32 tcBlockref = conf->tcBlockref;
+  Uint32 transid1 = conf->transid1;
+  Uint32 transid2 = conf->transid2;
+  if (ERROR_INSERTED(5107) ||
+      !check_abort_signal_executed(thread_id,
+                                   send_thread_signal_id))
+  {
+    /**
+     * At this point we should have secured that the LQHKEYREQ
+     * signal have been executed. However to ensure that we have
+     * an algorithm that is certain to complete we will ensure
+     * that we have sent signals along the path
+     * TRPMAN (receive thread) -> DBQLQH (query thread in RR group).
+     *
+     * We will accomplish by sending a set of signals going from
+     * DBLQH/DBQLQH to the next DBQLQH routed via TRPMAN. Each time
+     * we come to DBQLQH we will make another check if we are ready
+     * to execute the ABORT signal yet.
+     *
+     * If we come to the last DBQLQH and find that the signal still
+     * haven't been executed, then we know that we must have a bug
+     * and can thus crash since we have then ensured that the
+     * algorithm should have finished.
+     */
+    PushAbortTrainOrd * const ord =
+      (PushAbortTrainOrd*) signal->getDataPtr();
+
+    ord->tcOprec = tcOprec;
+    ord->tcBlockref = tcBlockref;
+    ord->transid1 = transid1;
+    ord->transid2 = transid2;
+
+    ord->threadId = thread_id;
+    ord->sendThreadSignalId = send_thread_signal_id;
+    ord->indexQueryThread = 0;
+    ord->abortRef = reference();
+
+    Uint32 qt_instance_no = m_qt_thr_no_our_rr_group[0] -
+                            getFirstQueryThreadId();
+    Uint32 dst[1];
+    dst[0] = numberToRef(DBQLQH,
+                         qt_instance_no + 1, //Skip proxy
+                         getOwnNodeId());
+    RoutePath path[1];
+    path[0].ref = numberToRef(TRPMAN,
+                              thread_id,
+                              getOwnNodeId());
+    path[0].prio = JBB;
+    sendRoutedSignal(path,
+                     1,
+                     dst,
+                     1,
+                     GSN_PUSH_ABORT_TRAIN_ORD,
+                     signal,
+                     PushAbortTrainOrd::SignalLength,
+                     JBB,
+                     nullptr);
+    return;
+  }
+  /**
+   * We now have ensured that the LQHKEYREQ signal have been
+   * executed and thus we can continue with the abort process
+   * as normal.
+   */
+  Abort* abo = CAST_PTR(Abort, signal->getDataPtrSend());
+  abo->tcOprec = tcOprec;
+  abo->tcBlockref = tcBlockref;
+  abo->transid1 = transid1;
+  abo->transid2 = transid2;
+  sendSignal(reference(),
+             GSN_ABORT,
+             signal,
+             Abort::SignalLength, JBB);
+}
+
 /* ***************************************************>> */
 /*  ABORT: Abort transaction in connection. Sender TC.   */
 /*  This is the normal protocol (See COMMIT)             */
@@ -14205,6 +14357,8 @@ void Dblqh::execABORT(Signal* signal)
 {
   jamEntry();
 
+  const Abort * const req = (Abort *)signal->getDataPtr();
+  Uint32 sig_len = signal->length();
   if (m_is_query_block)
   {
     /**
@@ -14215,13 +14369,14 @@ void Dblqh::execABORT(Signal* signal)
      * the operation state. The only purpose of sending the signal here
      * was to enforce the correct order of execution.
      */
-    Uint32 instanceKey = signal->theData[4];
+    ndbrequire(sig_len >= Abort::SignalLengthKey);
+    Uint32 instanceKey = req->instanceKey;
     Uint32 instanceNo = getInstanceFromKey(instanceKey);
     BlockReference ref = numberToRef(DBLQH, instanceNo, getOwnNodeId());
     sendSignal(ref,
                GSN_ABORT,
                signal,
-               4,
+               Abort::SignalLength,
                JBB);
     return;
   }
@@ -14230,7 +14385,7 @@ void Dblqh::execABORT(Signal* signal)
     jam();
     g_eventLogger->info("LQH %u : ERRINS 5096 Stalling ABORT",
                         instance());
-    sendSignalWithDelay(reference(), GSN_ABORT, signal, 10, 4);
+    sendSignalWithDelay(reference(), GSN_ABORT, signal, 10, signal->length());
     return;
   }
   if (ERROR_INSERTED(5095))
@@ -14241,19 +14396,21 @@ void Dblqh::execABORT(Signal* signal)
     SET_ERROR_INSERT_VALUE(5096);
   }
 
-  Uint32 tcOprec = signal->theData[0];
-  BlockReference tcBlockref = signal->theData[1];
-  Uint32 transid1 = signal->theData[2];
-  Uint32 transid2 = signal->theData[3];
+  Uint32 tcOprec = req->tcOprec;
+  BlockReference tcBlockref = req->tcBlockref;
+  Uint32 transid1 = req->transid1;
+  Uint32 transid2 = req->transid2;
   CRASH_INSERTION(5003);
   if (ERROR_INSERTED(5015)) {
     CLEAR_ERROR_INSERT_VALUE;
-    sendSignalWithDelay(cownref, GSN_ABORT, signal, 2000, 4);
+    sendSignalWithDelay(cownref, GSN_ABORT, signal, 2000, signal->length());
     return;
   }//if
   ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
   TcConnectionrecPtr tcConnectptr;
-  if (findTransaction(transid1,
+  if ((ERROR_INSERTED(5107) &&
+       sig_len >= Abort::SignalLengthDistr) ||
+      findTransaction(transid1,
                       transid2,
                       tcOprec,
                       tcBlockref,
@@ -14262,6 +14419,78 @@ void Dblqh::execABORT(Signal* signal)
                       tcConnectptr) != ZOK)
   {
     jam();
+    if (sig_len >= Abort::SignalLengthDistr)
+    {
+      /**
+       * In this case the LQHKEYREQ was sent to the virtual V_QUERY
+       * block. Thus it could have been sent to any query thread
+       * in the same Round Robin Group as this LDM thread. It cannot
+       * be sent to other LDM threads in the same Round Robin group.
+       *
+       * The danger here is if we decide to send ABORTED before the
+       * signal LQHKEYREQ has been executed. This would lead to an
+       * operation that is no longer controlled from DBTC. This means
+       * that it could lock a row more or less forever and the operation
+       * has no way of being aborted or committed. Thus we really need
+       * to ensure that the LQHKEYREQ signal have been executed before
+       * we report back ABORTED.
+       *
+       * Normal ABORT signals that are sent directly to the LDM thread
+       * are either sent via the query thread or directly to the LDM
+       * thread, in both cases we are certain that the LQHKEYREQ signal
+       * have been executed when we arrive here.
+       *
+       * Thus in this case we can assume that the operation was aborted
+       * without being stored locally, most likely got an early error
+       * such as not getting an operation record.
+       */
+      Uint32 thread_id = req->threadId;
+      Uint32 send_thread_signal_id = req->senderThreadSignalId;
+      if (ERROR_INSERTED(5107) ||
+          !check_abort_signal_executed(thread_id,
+                                       send_thread_signal_id))
+      {
+        SendPushAbortReq *push_req = 
+          CAST_PTR(SendPushAbortReq, signal->getDataPtrSend());
+        /**
+         * We cannot be certain that the LQHKEYREQ signal have been executed.
+         * Return to the receive thread and send signals to the query thread
+         * to ensure that we can acquire this certainty before we handle the
+         * aborted signal.
+         */
+        push_req->tcOprec = tcOprec;
+        push_req->tcBlockref = tcBlockref;
+        push_req->transid1 = transid1;
+        push_req->transid2 = transid2;
+
+        push_req->senderRef = reference();
+        push_req->sendThreadSignalId = send_thread_signal_id;
+        push_req->numThreads = m_num_qt_our_rr_group;
+        push_req->threadId = thread_id;
+        ndbrequire(m_num_qt_our_rr_group <= MAX_QUERY_INSTANCES_PER_RR_GROUP);
+        for (Uint32 i = 0; i < m_num_qt_our_rr_group; i++)
+        {
+          push_req->threadIds[i] =
+            m_qt_thr_no_our_rr_group[i];
+        }
+        ndbrequire(thread_id >= getFirstReceiveThreadId());
+        Uint32 trp_instance_no = thread_id - getFirstReceiveThreadId();
+        BlockReference ref = numberToRef(TRPMAN,
+                                         trp_instance_no + 1, //Skip proxy
+                                         getOwnNodeId());
+        sendSignal(ref,
+                   GSN_SEND_PUSH_ABORTREQ,
+                   signal,
+                   SendPushAbortReq::StaticSignalLength +
+                     m_num_qt_our_rr_group,
+                   JBB);
+        return;
+      }
+      /**
+       * LQHKEYREQ signal have been executed and haven't left any traces,
+       * we can safely send ABORTED.
+       */
+    }
     if(ERROR_INSERTED(5039) && 
        refToNode(signal->getSendersBlockRef()) != getOwnNodeId()){
       jam();
@@ -14280,12 +14509,13 @@ void Dblqh::execABORT(Signal* signal)
 // SEND ABORTED EVEN IF NOT FOUND.
 //THE TRANSACTION MIGHT NEVER HAVE ARRIVED HERE.
 /* ------------------------------------------------------------------------- */
-    signal->theData[0] = tcOprec;
-    signal->theData[1] = transid1;
-    signal->theData[2] = transid2;
-    signal->theData[3] = cownNodeid;
-    signal->theData[4] = ZTRUE;
-    sendSignal(tcBlockref, GSN_ABORTED, signal, 5, JBB);
+    Aborted* conf = CAST_PTR(Aborted, signal->getDataPtrSend());
+    conf->senderData = tcOprec;
+    conf->transid1 = transid1;
+    conf->transid2 = transid2;
+    conf->nodeId = cownNodeid;
+    conf->lastLqhIndicator = ZTRUE;
+    sendSignal(tcBlockref, GSN_ABORTED, signal, Aborted::SignalLength, JBB);
     warningReport(signal, 8);
     return;
   }//if
@@ -14315,11 +14545,12 @@ void Dblqh::execABORT(Signal* signal)
     Uint32 instanceKey = Tfragptr.p->lqhInstanceKey;
     Uint32 instanceNo = getInstanceNo(Tnode, instanceKey);
     BlockReference TLqhRef = numberToRef(DBLQH, instanceNo, Tnode);
-    signal->theData[0] = regTcPtr->tcOprec;
-    signal->theData[1] = regTcPtr->tcBlockref;
-    signal->theData[2] = regTcPtr->transid[0];
-    signal->theData[3] = regTcPtr->transid[1];
-    sendSignal(TLqhRef, GSN_ABORT, signal, 4, JBB);
+    Abort* abo = CAST_PTR(Abort, signal->getDataPtrSend());
+    abo->tcOprec = regTcPtr->tcOprec;
+    abo->tcBlockref = regTcPtr->tcBlockref;
+    abo->transid1 = regTcPtr->transid[0];
+    abo->transid2 = regTcPtr->transid[1];
+    sendSignal(TLqhRef, GSN_ABORT, signal, Abort::SignalLength, JBB);
   }//if
   regTcPtr->abortState = TcConnectionrec::ABORT_FROM_TC;
 
@@ -14327,8 +14558,6 @@ void Dblqh::execABORT(Signal* signal)
   TRACE_OP(regTcPtr, "ABORT");
 
   abortStateHandlerLab(signal, tcConnectptr);
-
-  return;
 }//Dblqh::execABORT()
 
 /* ************************************************************************>> 
@@ -35088,13 +35317,17 @@ void Dblqh::sendAborted(Signal* signal,
   } else {
     TlastInd = ZFALSE;
   }//if
-  signal->theData[0] = tcConnectptr.p->tcOprec;
-  signal->theData[1] = tcConnectptr.p->transid[0];
-  signal->theData[2] = tcConnectptr.p->transid[1];
-  signal->theData[3] = cownNodeid;
-  signal->theData[4] = TlastInd;
-  sendSignal(tcConnectptr.p->tcBlockref, GSN_ABORTED, signal, 5, JBB);
-  return;
+  Aborted* conf = CAST_PTR(Aborted, signal->getDataPtrSend());
+  conf->senderData = tcConnectptr.p->tcOprec;
+  conf->transid1 = tcConnectptr.p->transid[0];
+  conf->transid2 = tcConnectptr.p->transid[1];
+  conf->nodeId = cownNodeid;
+  conf->lastLqhIndicator = TlastInd;
+  sendSignal(tcConnectptr.p->tcBlockref,
+             GSN_ABORTED,
+             signal,
+             Aborted::SignalLength,
+             JBB);
 }//Dblqh::sendAborted()
 
 /* --------------------------------------------------------------------------
@@ -39261,4 +39494,62 @@ Dblqh::decrement_usage_count_for_table(Uint32 tableId)
   tabPtr.i = tableId;
   ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
   tabPtr.p->usageCountR--;
+}
+
+bool
+Dblqh::check_abort_signal_executed(Uint32 recv_thr_no,
+                                   Uint32 thread_signal_id)
+{
+  ndbrequire(globalData.ndbMtQueryThreads > 0);
+  for (Uint32 i = 0; i < m_num_qt_our_rr_group; i++)
+  {
+    jam();
+    Uint32 qt_thr_no = m_qt_thr_no_our_rr_group[i];
+    Uint32 exec_thread_signal_id =
+      getExecThreadSignalId(qt_thr_no, recv_thr_no);
+    Int32 diff = get_diff_signal_id(thread_signal_id,
+                                    exec_thread_signal_id);
+    if (diff > 0)
+    {
+      /**
+       * No signal from the ABORT signal and onwards have been
+       * executed in the query thread yet from what we can see.
+       */
+      jam();
+      jamLine(Uint16(i));
+      return false;
+    }
+  }
+  /**
+   * All query threads in the round robin group have executed at least
+   * one signal starting from the ABORT signal that started this process.
+   * Thus we are certain that also the LQHKEYREQ signal have been sent.
+   */
+  return true;
+}
+
+void
+Dblqh::set_up_qt_our_rr_group()
+{
+  if (globalData.ndbMtQueryThreads == 0)
+  {
+    /* Not used in this case. */
+    return;
+  }
+  /* Round Robin group information is static variables in SimulatedBlock */
+  Uint32 first_qt_thr_no = globalData.ndbMtMainThreads +
+                           globalData.ndbMtLqhThreads;
+  Uint32 num_ldm_instances = globalData.ndbMtLqhThreads;
+  m_num_qt_our_rr_group = 0;
+  Uint32 rr_group = m_rr_group[instance() - 1];
+  for (Uint32 i = 0; i < globalData.ndbMtQueryThreads; i++)
+  {
+    Uint32 qt_rr_group = m_rr_group[num_ldm_instances + i];
+    if (rr_group == qt_rr_group)
+    {
+      Uint32 instance_no = i + first_qt_thr_no;
+      m_qt_thr_no_our_rr_group[m_num_qt_our_rr_group] = instance_no;
+      m_num_qt_our_rr_group++;
+    }
+  }
 }

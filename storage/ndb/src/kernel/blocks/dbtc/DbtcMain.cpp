@@ -9304,6 +9304,19 @@ int Dbtc::releaseAndAbort(Signal* signal, ApiConnectRecord* const regApiPtr)
         len = 5;
         signal->theData[4] = instanceKey;
       }
+      if (ERROR_INSERTED(8120))
+      {
+        Uint32 nodeId = refToNode(blockRef);
+        if (getNodeInfo(nodeId).m_query_threads > 0)
+        {
+          if (refToNode(blockRef) != getOwnNodeId())
+          {
+            Uint32 instance_no = refToInstance(blockRef);
+            Uint32 nodeId = refToNode(blockRef);
+            blockRef = numberToRef(V_QUERY, instance_no, nodeId);
+          }
+        }
+      }
       sendSignal(blockRef, GSN_ABORT, signal, len, JBB);
       prevAlive = true;
     } else {

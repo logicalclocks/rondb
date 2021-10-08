@@ -51,6 +51,7 @@ public:
   void execROUTE_ORD(Signal* signal);
   void execACTIVATE_TRP_REQ(Signal*);
   void execUPD_QUERY_DIST_ORD(Signal*);
+  void execSEND_PUSH_ABORTREQ(Signal*);
 
   void sendSYNC_THREAD_VIA_CONF(Signal*, Uint32, Uint32);
   void execSYNC_THREAD_VIA_REQ(Signal*);
@@ -61,7 +62,9 @@ public:
   void execDUMP_STATE_ORD(Signal*);
 public:
   Uint32 distribute_signal(SignalHeader * const header,
-                           const Uint32 instance);
+                           const Uint32 instance,
+                           Uint32 **out_data,
+                           Uint32 *buf_ptr);
   DistributionHandler m_distribution_handle;
   bool m_distribution_handler_inited;
 
@@ -72,6 +75,7 @@ private:
   void close_com_failed_node(Signal*, Uint32);
   void enable_com_node(Signal*, Uint32);
 
+  Uint32 m_exec_thread_signal_id[NDB_MAX_BLOCK_THREADS];
 };
 
 class TrpmanProxy : public LocalProxy

@@ -3061,6 +3061,8 @@ private:
   void execEXEC_SRREQ(Signal* signal);
   void execEXEC_SRCONF(Signal* signal);
   void execSIGNAL_DROPPED_REP(Signal* signal);
+  void execSEND_PUSH_ABORTCONF(Signal* signal);
+  void execPUSH_ABORT_TRAIN_ORD(Signal* signal);
 
   void execDBINFO_SCANREQ(Signal* signal); 
   void execDUMP_STATE_ORD(Signal* signal);
@@ -5108,6 +5110,11 @@ public:
       NdbMutex_Unlock(&c_scanTakeOverMutex);
     }
   }
+  Uint32 m_first_qt_thr_no;
+  Uint32 m_num_qt_our_rr_group;
+  Uint32 m_qt_thr_no_our_rr_group[MAX_QUERY_INSTANCES_PER_RR_GROUP];
+  void set_up_qt_our_rr_group();
+  bool check_abort_signal_executed(Uint32, Uint32);
 #endif
 };
 

@@ -6085,6 +6085,7 @@ int main(int argc, char** argv)
   ndb_init();
   // log the invocation
   char cmdline[512];
+  NdbRestarter restarter;
   {
     const char* progname =
       strchr(argv[0], '/') ? strrchr(argv[0], '/') + 1 : argv[0];
@@ -6324,11 +6325,15 @@ int main(int argc, char** argv)
     }
   }
   ndbout << cmdline << endl;
+  restarter.insertErrorInAllNodes(5107);
+  restarter.insertErrorInAllNodes(8120);
   g_ncc = new Ndb_cluster_connection();
   if (g_ncc->connect(30) != 0 || testmain() == -1 || testperf() == -1) {
     ndbout << "line " << __LINE__ << " FAIL loop=" << g_loop << endl;
+    restarter.insertErrorInAllNodes(0);
     return NDBT_ProgramExit(NDBT_FAILED);
   }
+  restarter.insertErrorInAllNodes(0);
   delete g_ncc;
   g_ncc = 0;
 success:

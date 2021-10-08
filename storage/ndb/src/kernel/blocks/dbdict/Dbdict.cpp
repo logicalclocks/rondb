@@ -170,15 +170,6 @@ create_obj_inc_schema_version(Uint32 old)
   return (old + 0x00000001) & 0x00FFFFFF;
 }
 
-static
-void
-do_swap(Uint32 & v0, Uint32 & v1)
-{
-  Uint32 save = v0;
-  v0 = v1;
-  v1 = save;
-}
-
 static const Uint32 SuspectGETTABINFOREQMillis = 5000;
 
 /* **************************************************************** */

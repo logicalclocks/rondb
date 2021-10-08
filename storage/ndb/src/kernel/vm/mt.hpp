@@ -78,7 +78,7 @@ void prefetch_load_indicators(Uint32 *rr_groups, Uint32 rr_group);
 Uint32 get_load_indicator(Uint32 dst);
 
 void sendlocal(Uint32 self,
-               const struct SignalHeader *s,
+               struct SignalHeader *s,
                const Uint32 *data,
                const Uint32 secPtr[3]);
 void sendprioa(Uint32 self, const struct SignalHeader *s,
@@ -89,6 +89,8 @@ void mt_execSTOP_FOR_CRASH();
 /**
  * Interface methods to SimulatedBlock for ndbtmd.
  */
+Uint32 mt_get_thread_signal_id(Uint32 thr_no);
+Uint32 mt_get_exec_thread_signal_id(Uint32 thr_no, Uint32 sender_thr_no);
 Uint32 mt_map_api_node_to_recv_instance(NodeId);
 void mt_getSendBufferLevel(Uint32 self, NodeId node, SB_LevelType &level);
 Uint32 mt_getEstimatedJobBufferLevel(Uint32 self);

@@ -175,8 +175,10 @@ alignas (NDB_CL) static Uint32 glob_unused[NDB_CL/4];
 
 #define NO_SEND_THREAD (MAX_BLOCK_THREADS + MAX_NDBMT_SEND_THREADS + 1)
 
-/* max signal is 32 words, 7 for signal header and 25 datawords */
-#define MAX_SIGNAL_SIZE 32
+/* max signal is 32 words, 9 for signal header and 25 datawords */
+#define MAX_SIGNAL_SIZE 34
+NDB_STATIC_ASSERT(((sizeof(SignalHeader) / 4) + 25) == MAX_SIGNAL_SIZE);
+
 #define MIN_SIGNALS_PER_PAGE ((thr_job_buffer::SIZE / MAX_SIGNAL_SIZE) - \
                                MAX_SIGNALS_BEFORE_FLUSH_OTHER)
 
@@ -1608,6 +1610,21 @@ struct alignas(NDB_CL) thr_data
    */
   NDB_TICKS m_scan_real_ticks;
   struct ndb_rusage m_scan_time_queue_rusage;
+
+  /**
+   * Our signal id that is incremented each time we send a signal at JBB
+   * priority.
+   */
+  Uint32 m_thread_signal_id;
+
+  /**
+   * The thread signal id we have executed sent from all the other threads
+   * in the data node. This variable and the above one makes it possible
+   * for us to know if a signal has been executed in its destination
+   * thread yet. This is particularly interesting when the signal can have
+   * been executed by multiple other threads.
+   */
+  Uint32 m_exec_thread_signal_id[NDB_MAX_BLOCK_THREADS];
 
   /**
    * Keep track of signals stored in local buffer before being copied to real
@@ -6591,6 +6608,14 @@ copy_signal(Uint32 *dst,
             const Uint32 secPtr[3])
 {
   const Uint32 datalen = sh->theLength;
+#ifdef VM_TRACE
+  assert(sh->theReceiversBlockNumber < (1 << 16));
+  assert(sh->theLength <= 25);
+  Uint32 bno = blockToMain(sh->theReceiversBlockNumber);
+  Uint32 ino = blockToInstance(sh->theReceiversBlockNumber);
+  SimulatedBlock* block = globalData.mt_getBlock(bno, ino);
+  assert(block != 0);
+#endif
   memcpy(dst, sh, sizeof(*sh));
   Uint32 siglen = (sizeof(*sh) >> 2);
   memcpy(dst + siglen, data, 4*datalen);
@@ -6894,7 +6919,9 @@ Uint32
 execute_signals(thr_data *selfptr,
                 thr_job_queue *q,
                 thr_jb_read_state *r,
-                Signal *sig, Uint32 max_signals)
+                Signal *sig,
+                Uint32 max_signals,
+                bool priob_signal)
 {
   Uint32 num_signals;
   Uint32 extra_signals = 0;
@@ -6943,7 +6970,6 @@ execute_signals(thr_data *selfptr,
      * the hardware prefetcher is already doing a fairly good job).
      */
     NDB_PREFETCH_READ (read_buffer->m_data + read_pos + 16);
-    NDB_PREFETCH_WRITE ((Uint32 *)&sig->header + 16);
 
 #ifdef VM_TRACE
     /* Find reading / propagation of junk */
@@ -6954,10 +6980,11 @@ execute_signals(thr_data *selfptr,
       reinterpret_cast<SignalHeader*>(read_buffer->m_data + read_pos);
     Uint32 seccnt = s->m_noOfSections;
     Uint32 siglen = (sizeof(*s)>>2) + s->theLength;
-    if(siglen>16)
-    {
-      NDB_PREFETCH_READ (read_buffer->m_data + read_pos + 32);
-    }
+
+    assert(s->theReceiversBlockNumber < (1 << 16));
+    assert((s->theLength + seccnt) <= 25);
+    assert(seccnt <= 3);
+
     Uint32 bno = blockToMain(s->theReceiversBlockNumber);
     Uint32 ino = blockToInstance(s->theReceiversBlockNumber);
     SimulatedBlock* block = globalData.mt_getBlock(bno, ino);
@@ -7020,8 +7047,16 @@ execute_signals(thr_data *selfptr,
 #if defined(USE_INIT_GLOBAL_VARIABLES)
     mt_clear_global_variables(selfptr);
 #endif
+    Uint32 sender_thr_no = s->theSenderThreadId;
+    Uint32 thread_signal_id = s->theThreadSenderSignalId;
     block->executeFunction_async(gsn, sig);
     extra_signals += sig->m_extra_signals;
+    if (likely(priob_signal))
+    {
+      wmb();
+      assert(sender_thr_no < NDB_MAX_BLOCK_THREADS);
+      selfptr->m_exec_thread_signal_id[sender_thr_no] = thread_signal_id;
+    }
   }
   /**
    * Only count signals causing real-time break and not the one used to
@@ -7073,8 +7108,10 @@ run_job_buffers(thr_data *selfptr,
       static Uint32 max_prioA = thr_job_queue::SIZE * thr_job_buffer::SIZE;
       Uint32 num_signals = execute_signals(selfptr,
                                            &(selfptr->m_jba),
-                                           &(selfptr->m_jba_read_state), sig,
-                                           max_prioA);
+                                           &(selfptr->m_jba_read_state),
+                                           sig,
+                                           max_prioA,
+                                           false);
       signal_count += num_signals;
       send_sum += num_signals;
       flush_sum += num_signals;
@@ -7151,8 +7188,12 @@ run_job_buffers(thr_data *selfptr,
 #endif
 
     /* Now execute prio B signals from one thread. */
-    Uint32 num_signals = execute_signals(selfptr, queue, read_state,
-                                         sig, perjb+extra);
+    Uint32 num_signals = execute_signals(selfptr,
+                                         queue,
+                                         read_state,
+                                         sig,
+                                         perjb+extra,
+                                         true);
 
     if (num_signals > 0)
     {
@@ -9398,7 +9439,7 @@ static
 inline
 void
 insert_local_signal(struct thr_data *selfptr,
-                    const SignalHeader *sh,
+                    SignalHeader *sh,
                     const Uint32 *data,
                     const Uint32 secPtr[3],
                     const Uint32 dst)
@@ -9407,6 +9448,7 @@ insert_local_signal(struct thr_data *selfptr,
   Uint32 last_signal = selfptr->m_first_local[dst].m_last_signal;
   Uint32 first_signal = selfptr->m_first_local[dst].m_first_signal;
   Uint32 num_signals = selfptr->m_first_local[dst].m_num_signals;
+  Uint32 thread_signal_id = selfptr->m_thread_signal_id;
   Uint32 write_pos = local_buffer->m_len;
   Uint32 *buffer_data = &local_buffer->m_data[write_pos];
   buffer_data[0] = SIGNAL_RNIL;
@@ -9420,6 +9462,9 @@ insert_local_signal(struct thr_data *selfptr,
   {
     local_buffer->m_data[last_signal] = write_pos;
   }
+  sh->theThreadSenderSignalId = thread_signal_id;
+  sh->theSenderThreadId = selfptr->m_thr_no;
+  selfptr->m_thread_signal_id = thread_signal_id + 1;
   Uint32 siglen = copy_signal(buffer_data+2, sh, data, secPtr);
   selfptr->m_stat.m_priob_count++;
   selfptr->m_stat.m_priob_size += siglen;
@@ -9467,7 +9512,7 @@ mt_getMainThrmanInstance()
 
 void
 sendlocal(Uint32 self,
-          const SignalHeader *s,
+          SignalHeader *s,
           const Uint32 *data,
           const Uint32 secPtr[3])
 {
@@ -9709,6 +9754,8 @@ sendprioa_STOP_FOR_CRASH(const struct thr_data *selfptr, Uint32 dst)
   signalT.header.theSendersSignalId      = 0;
   signalT.header.theSignalId             = 0;
   signalT.header.theLength               = StopForCrash::SignalLength;
+  signalT.header.theSenderThreadId       = 0;
+  signalT.header.theThreadSenderSignalId = 0;
   StopForCrash * stopForCrash = CAST_PTR(StopForCrash, &signalT.theData[0]);
   stopForCrash->flags = 0;
 
@@ -9830,7 +9877,9 @@ thr_init(struct thr_repository* rep, struct thr_data *selfptr, unsigned int cnt,
       selfptr->m_first_local[i].m_num_signals = 0;
       selfptr->m_first_local[i].m_first_signal = SIGNAL_RNIL;
       selfptr->m_first_local[i].m_last_signal = SIGNAL_RNIL;
+      selfptr->m_exec_thread_signal_id[i] = 0;
     }
+    selfptr->m_thread_signal_id = 0;
     selfptr->m_local_buffer = seize_buffer(rep, thr_no, false);
     selfptr->m_next_buffer = seize_buffer(rep, thr_no, false);
     selfptr->m_send_buffer_pool.set_pool(&rep->m_sb_pool);
@@ -10258,6 +10307,26 @@ mt_map_api_node_to_recv_instance(NodeId node_id)
   return g_api_node_to_recv_instance_map[node_id];
 }
 
+Uint32
+mt_get_thread_signal_id(Uint32 thr_no)
+{
+  struct thr_repository* rep = g_thr_repository;
+  require(thr_no < glob_num_threads);
+  struct thr_data* thr_ptr = &rep->m_thread[thr_no];
+  return thr_ptr->m_thread_signal_id;
+}
+
+Uint32
+mt_get_exec_thread_signal_id(Uint32 thr_no, Uint32 sender_thr_no)
+{
+  struct thr_repository* rep = g_thr_repository;
+  require(thr_no < glob_num_threads);
+  require(sender_thr_no < glob_num_threads);
+  struct thr_data* thr_ptr = &rep->m_thread[thr_no];
+  rmb();
+  return thr_ptr->m_exec_thread_signal_id[sender_thr_no];
+}
+
 static
 void
 assign_receiver_threads(void)
@@ -10554,6 +10623,8 @@ ThreadConfig::doStart(NodeState::StartLevel startLevel)
   signalT.header.theTrace                = 0;
   signalT.header.theSignalId             = 0;
   signalT.header.theLength               = StartOrd::SignalLength;
+  signalT.header.theSenderThreadId       = 0;
+  signalT.header.theThreadSenderSignalId = 0;
   
   StartOrd * startOrd = CAST_PTR(StartOrd, &signalT.theData[0]);
   startOrd->restartInfo = 0;

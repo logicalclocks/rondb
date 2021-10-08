@@ -358,6 +358,7 @@ private:
                     const char *errorInfo = 0);
   void dump_and_report_bad_message(const char file[], unsigned line,
                     TransporterReceiveHandle & recvHandle,
+                    SignalHeader & sig_header,
                     Uint32 * readPtr,
                     size_t sizeOfData,
                     NodeId remoteNodeId,

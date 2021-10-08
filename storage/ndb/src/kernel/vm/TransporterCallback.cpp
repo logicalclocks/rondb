@@ -409,13 +409,19 @@ TransporterReceiveHandleKernel::deliver_signal(SignalHeader * const header,
        * and to query threads.
        */
       require(prio == JBB);
+      Uint32 data[25];
+      Uint32 *out_data = theData;
+      Uint32 *buf_ptr = &data[0];
       const Uint32 instance_no =
         blockToInstance(header->theReceiversBlockNumber);
-      Uint32 ref = ((Trpman*)m_trpman)->distribute_signal(header, instance_no);
+      Uint32 ref = ((Trpman*)m_trpman)->distribute_signal(header,
+                                                          instance_no,
+                                                          &out_data,
+                                                          buf_ptr);
       if (likely(ref != 0))
       {
         header->theReceiversBlockNumber = refToBlock(ref);
-        sendlocal(m_thr_no, header, theData, secPtrI);
+        sendlocal(m_thr_no, header, out_data, secPtrI);
         return false;
       }
       error_code = TE_INVALID_SIGNAL;

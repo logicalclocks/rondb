@@ -29,6 +29,7 @@
 #include <signaldata/EnableCom.hpp>
 #include <signaldata/RouteOrd.hpp>
 #include <signaldata/DumpStateOrd.hpp>
+#include <signaldata/Abort.hpp>
 
 #include <mt.hpp>
 #include <EventLogger.hpp>
@@ -60,11 +61,16 @@ Trpman::Trpman(Block_context & ctx, Uint32 instanceno) :
   addRecSignal(GSN_SYNC_THREAD_VIA_REQ, &Trpman::execSYNC_THREAD_VIA_REQ);
   addRecSignal(GSN_ACTIVATE_TRP_REQ, &Trpman::execACTIVATE_TRP_REQ);
   addRecSignal(GSN_UPD_QUERY_DIST_ORD, &Trpman::execUPD_QUERY_DIST_ORD);
+  addRecSignal(GSN_SEND_PUSH_ABORTREQ, &Trpman::execSEND_PUSH_ABORTREQ);
 
   addRecSignal(GSN_NDB_TAMPER, &Trpman::execNDB_TAMPER, true);
   addRecSignal(GSN_DUMP_STATE_ORD, &Trpman::execDUMP_STATE_ORD);
   addRecSignal(GSN_DBINFO_SCANREQ, &Trpman::execDBINFO_SCANREQ);
   m_distribution_handler_inited = false;
+  for (Uint32 i = 0; i < NDB_MAX_BLOCK_THREADS; i++)
+  {
+    m_exec_thread_signal_id[i] = 0;
+  }
 }
 
 BLOCK_FUNCTIONS(Trpman)
@@ -896,9 +902,54 @@ Trpman::execACTIVATE_TRP_REQ(Signal *signal)
   }
 }
 
+void
+Trpman::execSEND_PUSH_ABORTREQ(Signal *signal)
+{
+  const SendPushAbortReq * const req = 
+    (SendPushAbortReq *)signal->getDataPtr();
+  Uint32 tcOprec = req->tcOprec;
+  Uint32 tcBlockref = req->tcBlockref;
+  Uint32 transid1 = req->transid1;
+  Uint32 transid2 = req->transid2;
+
+  Uint32 sender_ref = req->senderRef;
+  Uint32 send_signal_id = req->sendThreadSignalId;
+  Uint32 num_threads = req->numThreads;
+  Uint32 thread_id = req->threadId;
+  ndbrequire(num_threads <= getNumThreads());
+  for (Uint32 i = 0; i < num_threads; i++)
+  {
+    Uint32 thr_no = req->threadIds[i];
+    ndbrequire(num_threads < getNumThreads());
+    Uint32 exec_thread_signal_id = m_exec_thread_signal_id[thr_no];
+    Int32 diff = get_diff_signal_id(send_signal_id, exec_thread_signal_id);
+    if (diff > 0)
+    {
+      m_exec_thread_signal_id[thr_no] = getThreadSignalId();
+      Uint32 ref = numberToRef(THRMAN, thr_no + 1, getOwnNodeId());
+      sendSignal(ref, GSN_SEND_PUSH_ORD, signal, 1, JBB);
+    }
+  }
+  SendPushAbortConf* conf =
+    CAST_PTR(SendPushAbortConf, signal->getDataPtrSend());
+  conf->tcOprec = tcOprec;
+  conf->tcBlockref = tcBlockref;
+  conf->transid1 = transid1;
+  conf->transid2 = transid2;
+  conf->sendThreadSignalId = send_signal_id;
+  conf->threadId = thread_id;
+  sendSignal(sender_ref,
+             GSN_SEND_PUSH_ABORTCONF,
+             signal,
+             SendPushAbortConf::SignalLength,
+             JBB);
+}
+
 Uint32
 Trpman::distribute_signal(SignalHeader * const header,
-                          const Uint32 instance_no)
+                          const Uint32 instance_no,
+                          Uint32 ** theData,
+                          Uint32 *buf_ptr)
 {
   DistributionHandler *handle = &m_distribution_handle;
   Uint32 gsn = header->theVerId_signalNumber;
@@ -913,6 +964,15 @@ Trpman::distribute_signal(SignalHeader * const header,
     {
       return get_scan_fragreq_ref(handle, instance_no);
     }
+    else if (gsn == GSN_ABORT)
+    {
+      memcpy(buf_ptr, *theData, 4 * 4);
+      *theData = buf_ptr;
+      buf_ptr[4] = getThreadId();
+      buf_ptr[5] = getThreadSignalId();
+      header->theLength = 6;
+      return numberToRef(DBLQH, instance_no, getOwnNodeId());
+    }
     else
     {
       return 0;
@@ -921,7 +981,16 @@ Trpman::distribute_signal(SignalHeader * const header,
   else
   {
     ndbrequire(globalData.ndbMtQueryWorkers > 0);
-    return numberToRef(DBQLQH, instance(), getOwnNodeId());
+    if (gsn == GSN_LQHKEYREQ ||
+        gsn == GSN_SCAN_FRAGREQ ||
+        gsn == GSN_ABORT)
+    {
+      return numberToRef(DBQLQH, instance(), getOwnNodeId());
+    }
+    else
+    {
+      return 0;
+    }
   }
 }
 

@@ -551,7 +551,33 @@ public:
   /* Setup state of a block object for executing in a particular thread. */
   void assignToThread(ThreadContext ctx);
   /* For multithreaded ndbd, get the id of owning thread. */
-  uint32 getThreadId() const { return m_threadId; }
+  Uint32 getThreadId() const { return m_threadId; }
+  Uint32 getThreadSignalId();
+  Uint32 getExecThreadSignalId(Uint32 thr_no, Uint32 sender_thread_no);
+  Uint32 getFirstQueryThreadId()
+  {
+    return globalData.ndbMtLqhThreads +
+           globalData.ndbMtMainThreads;
+  }
+
+  Uint32 getFirstReceiveThreadId()
+  {
+    return globalData.ndbMtLqhThreads +
+           globalData.ndbMtTcThreads +
+           globalData.ndbMtMainThreads +
+           globalData.ndbMtQueryThreads +
+           globalData.ndbMtRecoverThreads;
+  }
+
+  static
+  Int32
+  get_diff_signal_id(Uint32 signal_id1,
+                     Uint32 signal_id2)
+  {
+    Int32 diff = signal_id1 - signal_id2;
+    return diff;
+  }
+
   /**
    * To call EXECUTE_DIRECT on THRMAN we need to get its instance number.
    * Its instance number is always 1 higher than the thread id since 0

@@ -678,6 +678,7 @@ static const char* const jamFileNames[] =
    "SetHostname.hpp",                    // 542
    "IntrusiveList64.cpp",                // 543
    "Intrusive64List.hpp",                // 544
+   "Abort.hpp",                          // 545
    };
 
 bool 

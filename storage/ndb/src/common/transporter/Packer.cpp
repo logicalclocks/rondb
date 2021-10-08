@@ -42,6 +42,7 @@ Uint32 MAX_RECEIVED_SIGNALS = 1024;
 void
 TransporterRegistry::dump_and_report_bad_message(const char file[], unsigned line,
                           TransporterReceiveHandle & recvHandle,
+                          SignalHeader & sig_header,
                           Uint32 * readPtr,
                           size_t sizeInWords,
                           NodeId remoteNodeId,
@@ -49,6 +50,21 @@ TransporterRegistry::dump_and_report_bad_message(const char file[], unsigned lin
                           TransporterError errorCode)
 {
   report_error(remoteNodeId, errorCode);
+
+  g_eventLogger->error("Last signal: GSN: %u, RecBlock: %u, "
+                       "SendBlockRef: %x, Length: %u, "
+                       "SenderSignalId: %u, SignalId: %u"
+                       ", trace: %u, num_sections: %u"
+                       ", fragInfo: %u",
+                       sig_header.theVerId_signalNumber,
+                       sig_header.theReceiversBlockNumber,
+                       sig_header.theSendersBlockRef,
+                       sig_header.theLength,
+                       sig_header.theSendersSignalId,
+                       sig_header.theSignalId,
+                       sig_header.theTrace,
+                       sig_header.m_noOfSections,
+                       sig_header.m_fragmentInfo);
 
   char msg[MAX_LOG_MESSAGE_SIZE];
   const size_t sz = sizeof(msg);
@@ -338,8 +354,15 @@ TransporterRegistry::unpack(TransporterReceiveHandle & recvHandle,
 
   if (errorCode != TE_NO_ERROR)
   {
-    dump_and_report_bad_message(__FILE__, __LINE__,
-            recvHandle, readPtr, eodPtr - readPtr, remoteNodeId, state,
+    dump_and_report_bad_message(
+            __FILE__,
+            __LINE__,
+            recvHandle,
+            signalHeader,
+            readPtr,
+            eodPtr - readPtr,
+            remoteNodeId,
+            state,
             errorCode);
     g_eventLogger->info("Loop count:%u", loop_count);
   }
@@ -445,9 +468,16 @@ TransporterRegistry::unpack(TransporterReceiveHandle & recvHandle,
 
   if (errorCode != TE_NO_ERROR)
   {
-    dump_and_report_bad_message(__FILE__, __LINE__,
-            recvHandle, readPtr, eodPtr - readPtr, remoteNodeId, state,
-            errorCode);
+    dump_and_report_bad_message(
+      __FILE__,
+      __LINE__,
+      recvHandle,
+      signalHeader,
+      readPtr,
+      eodPtr - readPtr,
+      remoteNodeId,
+      state,
+      errorCode);
   }
 
   stopReceiving = doStopReceiving;

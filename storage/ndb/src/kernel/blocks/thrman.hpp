@@ -62,6 +62,7 @@ public:
   void execMEASURE_WAKEUP_TIME_ORD(Signal*);
   void execDUMP_STATE_ORD(Signal*);
   void execUPD_THR_LOAD_ORD(Signal*);
+  void execSEND_PUSH_ORD(Signal*);
 
 public:
   /* Normally called locally, but can be called from mt.cpp as well. */

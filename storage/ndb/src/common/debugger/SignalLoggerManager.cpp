@@ -566,6 +566,8 @@ SignalLoggerManager::printSignalHeader(FILE * output,
   Uint32 trace = sh.theTrace;
   Uint32 rSigId = sh.theSignalId;
   Uint32 sSigId = sh.theSendersSignalId;
+  Uint32 send_thread_id = sh.theSenderThreadId;
+  Uint32 send_thread_signal_id = sh.theThreadSenderSignalId;
 
   const char * signalName = getSignalName(gsn);
   const char * rBlockName =
@@ -601,6 +603,10 @@ SignalLoggerManager::printSignalHeader(FILE * output,
 	  "#sec: %d fragInf: %d\n",
 	  senderBlockNo, sInstanceText, sBlockName, senderProcessor,
           sSigId, length, trace, sh.m_noOfSections, sh.m_fragmentInfo);
+  fprintf(output,
+          "s.threadId: %u, s.threadSenderSignalId: %u\n",
+          send_thread_id,
+          send_thread_signal_id);
 
   //assert(strcmp(rBlockName, dummy_block_name) != 0);
   //assert(strcmp(sBlockName, dummy_block_name) != 0);

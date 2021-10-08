@@ -611,6 +611,8 @@ Dblqh::Dblqh(Block_context& ctx,
     addRecSignal(GSN_EXEC_SRCONF, &Dblqh::execEXEC_SRCONF);
 
     addRecSignal(GSN_ALTER_TAB_REQ, &Dblqh::execALTER_TAB_REQ);
+    addRecSignal(GSN_SEND_PUSH_ABORTCONF, &Dblqh::execSEND_PUSH_ABORTCONF);
+    addRecSignal(GSN_PUSH_ABORT_TRAIN_ORD, &Dblqh::execPUSH_ABORT_TRAIN_ORD);
 
     addRecSignal(GSN_SIGNAL_DROPPED_REP, &Dblqh::execSIGNAL_DROPPED_REP, true);
 
@@ -827,6 +829,7 @@ Dblqh::Dblqh(Block_context& ctx,
     addRecSignal(GSN_INCL_NODEREQ, &Dblqh::execINCL_NODEREQ);
     addRecSignal(GSN_TIME_SIGNAL,  &Dblqh::execTIME_SIGNAL);
     addRecSignal(GSN_DBINFO_SCANREQ, &Dblqh::execDBINFO_SCANREQ);
+    addRecSignal(GSN_PUSH_ABORT_TRAIN_ORD, &Dblqh::execPUSH_ABORT_TRAIN_ORD);
   }
   m_is_recover_block = false;
   initData();

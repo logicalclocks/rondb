@@ -102,6 +102,7 @@ Thrman::Thrman(Block_context & ctx, Uint32 instanceno) :
   addRecSignal(GSN_MEASURE_WAKEUP_TIME_ORD, &Thrman::execMEASURE_WAKEUP_TIME_ORD);
   addRecSignal(GSN_DUMP_STATE_ORD, &Thrman::execDUMP_STATE_ORD);
   addRecSignal(GSN_UPD_THR_LOAD_ORD, &Thrman::execUPD_THR_LOAD_ORD);
+  addRecSignal(GSN_SEND_PUSH_ORD, &Thrman::execSEND_PUSH_ORD);
 
   m_enable_adaptive_spinning = false;
   m_allowed_spin_overhead = 130;
@@ -2240,6 +2241,18 @@ void Thrman::measure_cpu_data(Signal *signal)
       }
     }
   }
+}
+
+void
+Thrman::execSEND_PUSH_ORD(Signal *signal)
+{
+  (void)signal;
+  /**
+   * No need to do anything, this signal is only about updating the
+   * m_exec_thread_signal_id entry to discover if a certain signal
+   * has been executed yet. This happens in mt.cpp before executing
+   * the signal.
+   */
 }
 
 void

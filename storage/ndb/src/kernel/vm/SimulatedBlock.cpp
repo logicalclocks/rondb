@@ -615,6 +615,30 @@ SimulatedBlock::map_api_node_to_recv_instance(NodeId node)
 #endif
 }
 
+Uint32
+SimulatedBlock::getThreadSignalId()
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_get_thread_signal_id(m_threadId);
+#else
+   ndbabort();
+   return 0;
+#endif
+  
+}
+
+Uint32
+SimulatedBlock::getExecThreadSignalId(Uint32 thr_no, Uint32 sender_thr_no)
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_get_exec_thread_signal_id(thr_no, sender_thr_no);
+#else
+   ndbabort();
+   return 0;
+#endif
+  
+}
+
 void
 SimulatedBlock::getSendBufferLevel(NodeId node, SB_LevelType &level)
 {
