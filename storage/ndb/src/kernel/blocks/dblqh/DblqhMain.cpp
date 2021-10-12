@@ -36463,8 +36463,9 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
     }
     jam();
 
-    g_eventLogger->info("Dblqh::ScanRecord[%d]: state=%d, type=%d, "
+    g_eventLogger->info("(%u)Dblqh::ScanRecord[%u]: state=%d, type=%d, "
 	      "complStatus=%d, scanNodeId=%d",
+              instance(),
 	      sp.i,
 	      sp.p->scanState,
 	      sp.p->scanType,
@@ -38979,9 +38980,9 @@ Dblqh::handle_check_system_scans(Signal *signal)
                               time_stalled,
                               c_check_scanptr_save_line[i],
                               loc_scanptr.p->scan_check_lcp_stop);
-          signal->theData[0] = DumpStateOrd::AccDumpOneScanRec;
+          signal->theData[0] = DumpStateOrd::TupDumpOneScanRec;
           signal->theData[1] = loc_scanptr.p->scanAccPtr;
-          EXECUTE_DIRECT(getDBACC(), GSN_DUMP_STATE_ORD, signal, 2);
+          EXECUTE_DIRECT(getDBTUP(), GSN_DUMP_STATE_ORD, signal, 2);
           signal->theData[0] = DumpStateOrd::LqhDumpOneCopyTcRec;
           signal->theData[1] = loc_tcConnectptr.i;
           EXECUTE_DIRECT(getDBLQH(), GSN_DUMP_STATE_ORD, signal, 2);

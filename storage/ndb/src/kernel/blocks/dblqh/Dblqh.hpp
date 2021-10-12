@@ -2909,7 +2909,7 @@ public:
   alignas(NDB_CL) TcConnectionrecPtr m_tc_connect_ptr;
   UintR cfirstfreeTcConrec;
   Uint32 ctcNumFree;
-#define CONNECT_DEBUG 1
+//#define CONNECT_DEBUG 1
 #ifdef CONNECT_DEBUG
   Uint64 ctcNumUseLocal;
   Uint64 ctcNumUseShared;

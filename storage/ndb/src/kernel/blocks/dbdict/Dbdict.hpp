@@ -107,8 +107,6 @@
 
 #define JAM_FILE_ID 464
 
-#define DO_TRANSIENT_POOL_STAT 1
-
 #ifdef DBDICT_C
 
 /*--------------------------------------------------------------*/

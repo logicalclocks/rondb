@@ -118,11 +118,14 @@
 #define ZRESTART_OPS_PER_TRANS 25
 #define ZRESTART_NO_WRITE_AFTER_READ 1
 
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define EVENT_PH2_DEBUG
 //#define EVENT_PH3_DEBUG
 //#define EVENT_DEBUG
 //#define DEBUG_API_FAIL
 //#define DEBUG_STRING_MEMORY 1
+//#define DO_TRANSIENT_POOL_STAT 1
+#endif
 
 #ifdef DEBUG_API_FAIL
 #define DEB_API_FAIL(arglist) do { g_eventLogger->info arglist ; } while (0)
@@ -665,7 +668,7 @@ void Dbdict::execCONTINUEB(Signal* signal)
          pool_index++)
     {
       g_eventLogger->info(
-        "SUMA %u: Transient slot pool %u %p: Entry size %u:"
+        "DBDICT %u: Transient slot pool %u %p: Entry size %u:"
        " Free %u: Used %u: Used high %u: Size %u: For shrink %u",
        instance(),
        pool_index,

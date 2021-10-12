@@ -158,6 +158,8 @@ public:
     LqhSetTransientPoolMaxSize = 2356,
     LqhResetTransientPoolMaxSize = 2357,
 
+    TupDumpOneScanRec = 2380,
+
     AccDumpOneScanRec = 2400,
     AccDumpAllScanRec = 2401,
     AccDumpAllActiveScanRec = 2402,

@@ -245,6 +245,7 @@ static Uint32 fc_left = 0, fc_right = 0, fc_remove = 0;
 void
 Dbtup::execDUMP_STATE_ORD(Signal* signal)
 {
+  DumpStateOrd * const dumpState = (DumpStateOrd *)&signal->theData[0];
   Uint32 type = signal->theData[0];
 
   (void)type;
@@ -310,6 +311,48 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
     return;
   }//if
 #endif
+  if (dumpState->args[0] == DumpStateOrd::TupDumpOneScanRec)
+  {
+    Uint32 recordNo = RNIL;
+    if (signal->length() == 2)
+    {
+      jam();
+      recordNo = dumpState->args[1];
+    }
+    else
+    {
+      jam();
+      return;
+    }
+    ScanOpPtr scanPtr;
+    scanPtr.i = recordNo;
+    if (!c_scanOpPool.getValidPtr(scanPtr))
+    {
+      jam();
+      return;
+    }
+    jam();
+    g_eventLogger->info("(%u)Dbtup::ScanRecord[%u]: state: %u, bits: %x",
+                        instance(),
+                        scanPtr.i,
+                        scanPtr.p->m_state,
+                        scanPtr.p->m_bits);
+    g_eventLogger->info("tab(%u,%u), last_seen: %u, transid(%u,%u)",
+                        scanPtr.p->m_tableId,
+                        scanPtr.p->m_fragId,
+                        scanPtr.p->m_last_seen,
+                        scanPtr.p->m_transId1,
+                        scanPtr.p->m_transId2);
+    g_eventLogger->info("endPage: %u, scanGCI: %u, lock op: %u",
+                        scanPtr.p->m_endPage,
+                        scanPtr.p->m_scanGCI,
+                        scanPtr.p->m_accLockOp);
+    g_eventLogger->info("scanPos.m_get: %u, scanPos.m_key(%u,%u,%u)",
+                        scanPtr.p->m_scanPos.m_get,
+                        scanPtr.p->m_scanPos.m_key.m_page_no,
+                        scanPtr.p->m_scanPos.m_key.m_page_idx,
+                        scanPtr.p->m_scanPos.m_key.m_file_no);
+  }
 #ifdef ERROR_INSERT
   if (type == DumpStateOrd::EnableUndoDelayDataWrite) {
     DumpStateOrd * const dumpState = (DumpStateOrd *)&signal->theData[0];
