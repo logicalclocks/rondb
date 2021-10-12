@@ -62,15 +62,17 @@
 #define dump_lock_queue(x)
 #endif
 
-#ifdef VM_TRACE
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DO_TRANSIENT_POOL_STAT 1
+//#define DEBUG_LOCK_TRANS 1
 #endif
 
-#if defined(VM_TRACE) || defined(ERROR_INSERT)
-#define DEBUG_LOCK_STATS true
+#ifdef DEBUG_LOCK_TRANS
+#define DEB_LOCK_TRANS(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
-#define DEBUG_LOCK_STATS false
+#define DEB_LOCK_TRANS(arglist) do { } while (0)
 #endif
+
 // primary key is stored in TUP
 #include "../dbtup/Dbtup.hpp"
 #include "../dblqh/Dblqh.hpp"
@@ -1530,8 +1532,31 @@ void Dbacc::execACCKEYREQ(Signal* signal,
            * using query threads.
            */
           elemPageptr.p->word32[elemptr] = eh;
+#ifdef DEB_LOCK_TRANS
+          Uint32 tcOprec;
+          Uint32 tcBlockref;
+          m_ldm_instance_used->c_lqh->get_tc_ref(
+            operationRecPtr.p->userptr,
+            tcOprec,
+            tcBlockref);
+#endif
+          DEB_LOCK_TRANS(("(%u) Got lock on row(%u,%u) in tab(%u,%u), "
+                          " trans(%u,%u) opPtrI: %u, op: %u, tcRef(%u,%x)",
+                          instance(),
+                          operationRecPtr.p->localdata.m_page_no,
+                          operationRecPtr.p->localdata.m_page_idx,
+                          fragrecptr.p->myTableId,
+                          fragrecptr.p->fragmentid,
+                          operationRecPtr.p->transId1,
+                          operationRecPtr.p->transId2,
+                          operationRecPtr.i,
+                          opbits & Operationrec::OP_MASK,
+                          tcOprec,
+                          tcBlockref));
+
           release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
-          if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
+
+          if (!m_is_in_query_thread)
           {
             fragrecptr.p->
               m_lockStats.req_start_imm_ok((opbits & 
@@ -1725,6 +1750,18 @@ Dbacc::execACCKEY_ORD(Signal* signal,
     fragrecptr.i = lastOp.p->fragptr;
     c_fragment_pool.getPtr(fragrecptr);
     acquire_frag_mutex_hash(fragrecptr.p, lastOp);
+    DEB_LOCK_TRANS(("(%u) ACCKEY_ORD on row(%u,%u) in tab(%u,%u), "
+                    " trans(%u,%u) opPtrI: %u, opbits: %x",
+                    instance(),
+                    lastOp.p->localdata.m_page_no,
+                    lastOp.p->localdata.m_page_idx,
+                    fragrecptr.p->myTableId,
+                    fragrecptr.p->fragmentid,
+                    lastOp.p->transId1,
+                    lastOp.p->transId2,
+                    lastOp.i,
+                    lastOp.p->m_op_bits));
+
     /**
      * The m_op_bits are protected by the mutex when the operation
      * is in the Lock Queue, thus we cannot base any updates of
@@ -1940,7 +1977,7 @@ upgrade:
   /**
    * Track end-of-wait
    */
-  if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
+  if (!m_is_in_query_thread)
   {
     FragmentrecPtr frp;
     frp.i = nextOp.p->fragptr;
@@ -2074,7 +2111,38 @@ Dbacc::accIsLockedLab(Signal* signal, OperationrecPtr lockOwnerPtr)
       jam();
       return_result = placeWriteInLockQueue(lockOwnerPtr);
     }//if
+#ifdef DEBUG_LOCK_TRANS
+    const char *queue_str =
+      return_result == ZPARALLEL_QUEUE ?  "parallel" :
+      return_result == ZSERIAL_QUEUE ? "serial" : "failure";
+
+#endif
+#ifdef DEB_LOCK_TRANS
+    Uint32 tcOprec;
+    Uint32 tcBlockref;
+    m_ldm_instance_used->c_lqh->get_tc_ref(
+      operationRecPtr.p->userptr,
+      tcOprec,
+      tcBlockref);
+#endif
+    DEB_LOCK_TRANS(("(%u) Lock queue on row(%u,%u) in tab(%u,%u), "
+                    " trans(%u,%u) opPtrI: %u, queue: %s"
+                    ", op: %u tcRef(%u,%x)",
+                    instance(),
+                    operationRecPtr.p->localdata.m_page_no,
+                    operationRecPtr.p->localdata.m_page_idx,
+                    fragrecptr.p->myTableId,
+                    fragrecptr.p->fragmentid,
+                    operationRecPtr.p->transId1,
+                    operationRecPtr.p->transId2,
+                    operationRecPtr.i,
+                    queue_str,
+                    bits & Operationrec::OP_MASK,
+                    tcOprec,
+                    tcBlockref));
+
     release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
+
     if (return_result == ZPARALLEL_QUEUE)
     {
       jamDebug();
@@ -2082,7 +2150,7 @@ Dbacc::accIsLockedLab(Signal* signal, OperationrecPtr lockOwnerPtr)
                               operationRecPtr.p->localdata.m_page_idx,
                               fragrecptr.p->tupFragptr);
 
-      if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
+      if (!m_is_in_query_thread)
       {
         fragrecptr.p->m_lockStats.req_start_imm_ok((bits & 
                                               Operationrec::OP_LOCK_MODE) 
@@ -2100,7 +2168,7 @@ Dbacc::accIsLockedLab(Signal* signal, OperationrecPtr lockOwnerPtr)
     else if (return_result == ZSERIAL_QUEUE)
     {
       jam();
-      if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
+      if (!m_is_in_query_thread)
       {
         fragrecptr.p->m_lockStats.req_start((bits & 
                                              Operationrec::OP_LOCK_MODE) 
@@ -2233,8 +2301,30 @@ void Dbacc::insertelementLab(Signal* signal,
                 conptr,
                 Operationrec::ANY_SCANBITS,
                 false);
+
+#ifdef DEB_LOCK_TRANS
+  Uint32 tcOprec;
+  Uint32 tcBlockref;
+  m_ldm_instance_used->c_lqh->get_tc_ref(
+    operationRecPtr.p->userptr,
+    tcOprec,
+    tcBlockref);
+#endif
+  DEB_LOCK_TRANS(("(%u) Insert Lock on row(%u,%u) in tab(%u,%u), "
+                   " trans(%u,%u) opPtrI: %u, tcRef(%u,%x)",
+                   instance(),
+                   localKey.m_page_no,
+                   localKey.m_page_idx,
+                   fragrecptr.p->myTableId,
+                   fragrecptr.p->fragmentid,
+                   operationRecPtr.p->transId1,
+                   operationRecPtr.p->transId2,
+                   operationRecPtr.i,
+                   tcOprec,
+                   tcBlockref));
+
   release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
-  if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
+  if (!m_is_in_query_thread)
   {
     fragrecptr.p->m_lockStats.req_start_imm_ok(true /* Exclusive */,
                                                operationRecPtr.p->m_lockTime,
@@ -2244,6 +2334,7 @@ void Dbacc::insertelementLab(Signal* signal,
   {
     operationRecPtr.p->m_lockTime = getHighResTimer();
   }
+
   c_tup->prepareTUPKEYREQ(localKey.m_page_no,
                           localKey.m_page_idx,
                           fragrecptr.p->tupFragptr);
@@ -3053,6 +3144,18 @@ void Dbacc::execACC_COMMITREQ(Signal* signal,
   Toperation = opbits & Operationrec::OP_MASK;
   c_fragment_pool.getPtr(fragrecptr);
   ndbrequire(Magic::check_ptr(operationRecPtr.p));
+  DEB_LOCK_TRANS(("(%u) Commit lock on row(%u,%u) in tab(%u,%u), "
+                  " trans(%u,%u) opPtrI: %u, opbits: %x",
+                  instance(),
+                  operationRecPtr.p->localdata.m_page_no,
+                  operationRecPtr.p->localdata.m_page_idx,
+                  fragrecptr.p->myTableId,
+                  fragrecptr.p->fragmentid,
+                  operationRecPtr.p->transId1,
+                  operationRecPtr.p->transId2,
+                  operationRecPtr.i,
+                  opbits));
+
   commitOperation(signal);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   ndbrequire(m_acc_mutex_locked == RNIL);
@@ -3162,6 +3265,18 @@ void Dbacc::execACC_ABORTREQ(Signal* signal,
        sendConf != 2))
   {
     jam();
+    DEB_LOCK_TRANS(("(%u) Abort lock on row(%u,%u) in tab(%u,%u), "
+                    " trans(%u,%u) opPtrI: %u, opbits: %x",
+                    instance(),
+                    operationRecPtr.p->localdata.m_page_no,
+                    operationRecPtr.p->localdata.m_page_idx,
+                    fragrecptr.p->myTableId,
+                    fragrecptr.p->fragmentid,
+                    operationRecPtr.p->transId1,
+                    operationRecPtr.p->transId2,
+                    operationRecPtr.i,
+                    opbits));
+
     abortOperation(signal);
     operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
@@ -3178,6 +3293,18 @@ void Dbacc::execACC_ABORTREQ(Signal* signal,
      * got sent an ACCKEYCONF from a query thread. We need to wait until
      * this ACCKEYCONF arrives until we continue the abort operation.
      */
+    DEB_LOCK_TRANS(("(%u) Not ready to Abort lock on row(%u,%u) in"
+                    " tab(%u,%u), trans(%u,%u) opPtrI: %u, opbits: %x",
+                    instance(),
+                    operationRecPtr.p->localdata.m_page_no,
+                    operationRecPtr.p->localdata.m_page_idx,
+                    fragrecptr.p->myTableId,
+                    fragrecptr.p->fragmentid,
+                    operationRecPtr.p->transId1,
+                    operationRecPtr.p->transId2,
+                    operationRecPtr.i,
+                    opbits));
+
     release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
     signal->theData[1] = RNIL;
     return;
@@ -5497,7 +5624,7 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
   ndbassert((opbits & Operationrec::OP_LOCK_OWNER) == 0);
   ndbassert((opbits & Operationrec::OP_RUN_QUEUE) == 0);
 
-  if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
+  if (!m_is_in_query_thread)
   {
     FragmentrecPtr frp;
     frp.i = opPtr.p->fragptr;
@@ -6310,7 +6437,7 @@ Dbacc::startNew(Signal* signal, OperationrecPtr newOwner)
     goto scan;
 
   /* Waiting op now runnable... */
-  if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
+  if (!m_is_in_query_thread)
   {
     FragmentrecPtr frp;
     frp.i = newOwner.p->fragptr;
@@ -8367,7 +8494,7 @@ void Dbacc::checkNextBucketLab(Signal* signal)
     if (!scanPtr.p->scanReadCommittedFlag) {
       jam();
       /* Immediate lock grant as element unlocked */
-      if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
+      if (!m_is_in_query_thread)
       {
         fragrecptr.p->m_lockStats.
           req_start_imm_ok(scanPtr.p->scanLockMode != ZREADLOCK,
@@ -8425,7 +8552,7 @@ void Dbacc::checkNextBucketLab(Signal* signal)
 	 * WE PLACED THE OPERATION INTO A SERIAL QUEUE AND THUS WE HAVE TO 
 	 * WAIT FOR THE LOCK TO BE RELEASED. WE CONTINUE WITH THE NEXT ELEMENT
 	 * ----------------------------------------------------------------- */
-        if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
+        if (!m_is_in_query_thread)
         {
           fragrecptr.p->
             m_lockStats.req_start(scanPtr.p->scanLockMode != ZREADLOCK,
@@ -8464,7 +8591,7 @@ void Dbacc::checkNextBucketLab(Signal* signal)
       }//if
       ndbassert(return_result == ZPARALLEL_QUEUE);
       /* We got into the parallel queue - immediate grant */
-      if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
+      if (!m_is_in_query_thread)
       {
         fragrecptr.p->m_lockStats.
           req_start_imm_ok(scanPtr.p->scanLockMode != ZREADLOCK,
@@ -8725,7 +8852,7 @@ void Dbacc::execACC_CHECK_SCAN(Signal* signal)
     c_fragment_pool.getPtr(fragrecptr);
 
     /* Scan op that had to wait for a lock is now runnable */
-    if (!m_is_in_query_thread || DEBUG_LOCK_STATS)
+    if (!m_is_in_query_thread)
     {
       fragrecptr.p->m_lockStats.wait_ok(scanPtr.p->scanLockMode != ZREADLOCK,
                                         operationRecPtr.p->m_lockTime,

@@ -3504,6 +3504,7 @@ private:
   void seizeFragmentrec(Signal* signal);
   void seizePageRef(PageRefRecordPtr & pageRefPtr);
   void seizeTcrec(TcConnectionrecPtr& tcConnectptr,
+                  Uint32 tcRef,
                   Uint32 & tcNumFree,
                   Uint32 & tcFirstFree);
   void sendAborted(Signal* signal, TcConnectionrecPtr);
@@ -4845,6 +4846,7 @@ public:
 private:
   bool seize_op_rec(TcConnectionrecPtr &tcConnectptr,
                     bool use_lock,
+                    BlockReference tcRef,
                     EmulatedJamBuffer *jamBuf);
   void release_op_rec(TcConnectionrecPtr tcConnectptr);
   void send_scan_fragref(Signal*, Uint32, Uint32, Uint32, Uint32, Uint32);
@@ -5115,6 +5117,9 @@ public:
   Uint32 m_qt_thr_no_our_rr_group[MAX_QUERY_INSTANCES_PER_RR_GROUP];
   void set_up_qt_our_rr_group();
   bool check_abort_signal_executed(Uint32, Uint32);
+  void get_tc_ref(Uint32 tcPtrI,
+                  Uint32 & tcOprec,
+                  Uint32 & tcRef);
 #endif
 };
 
@@ -5698,6 +5703,17 @@ inline void Dblqh::unlock_log_part(LogPartRecord *logPartPtrP)
     jamDebug();
     NdbMutex_Unlock(&logPartPtrP->m_log_part_mutex);
   }
+}
+
+inline void Dblqh::get_tc_ref(Uint32 tcPtrI,
+                              Uint32 & tcOprec,
+                              Uint32 & tcRef)
+{
+  TcConnectionrecPtr tcConnectptr;
+  tcConnectptr.i = tcPtrI;
+  ndbrequire(tcConnect_pool.getValidPtr(tcConnectptr));
+  tcOprec = tcConnectptr.p->tcOprec;
+  tcRef = tcConnectptr.p->tcBlockref;
 }
 #endif
 

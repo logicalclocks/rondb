@@ -116,14 +116,14 @@
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
 //#define DO_TRANSIENT_POOL_STAT
 //#define ABORT_TRACE 1
+//#define DEBUG_ABORT_TRANS 1
+//#define DEBUG_NODE_STATUS 1
 //#define DEBUG_NODE_FAILURE 1
 //#define DEBUG_RR_INIT 1
 //#define DEBUG_EXEC_WRITE_COUNT 1
 #endif
 
-
 #define TC_TIME_SIGNAL_DELAY 50
-
 
 // Use DEBUG to print messages that should be
 // seen only when we debug the product
@@ -134,6 +134,17 @@
 #define DEBUG(x)
 #endif
 
+#ifdef DEBUG_ABORT_TRANS
+#define DEB_ABORT_TRANS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_ABORT_TRANS(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_NODE_STATUS
+#define DEB_NODE_STATUS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_NODE_STATUS(arglist) do { } while (0)
+#endif
 
 #ifdef DEBUG_NODE_FAILURE
 #define DEB_NODE_FAILURE(arglist) do { g_eventLogger->info arglist ; } while (0)
@@ -636,6 +647,9 @@ void Dbtc::execINCL_NODEREQ(Signal* signal)
   hostptr.i = signal->theData[1];
   ptrCheckGuard(hostptr, chostFilesize, hostRecord);
   hostptr.p->hostStatus = HS_ALIVE;
+  DEB_NODE_STATUS(("(%u) Node: %u now alive",
+                   instance(),
+                   hostptr.i));
   c_alive_nodes.set(hostptr.i);
 
   signal->theData[0] = hostptr.i;
@@ -1394,10 +1408,16 @@ void Dbtc::execREAD_NODESCONF(Signal* signal)
       if (readNodes->inactiveNodes.get(i))
       {
         jam();
+        DEB_NODE_STATUS(("(%u) Node: %u now dead",
+                         instance(),
+                         hostptr.i));
         hostptr.p->hostStatus = HS_DEAD;
       } else {
         jam();
         con_lineNodes++;
+        DEB_NODE_STATUS(("(%u) Node: %u now alive",
+                         instance(),
+                         hostptr.i));
         hostptr.p->hostStatus = HS_ALIVE;
         c_alive_nodes.set(i);
       }//if
@@ -9293,7 +9313,18 @@ int Dbtc::releaseAndAbort(Signal* signal, ApiConnectRecord* const regApiPtr)
       /*    ABORT    < */
       /* ************< */
       Uint32 instanceKey = tcConnectptr.p->lqhInstanceKey;
-      BlockReference blockRef = tcConnectptr.p->lqhkeyreq_ref;
+      BlockReference blockRef;
+      if (Ti == 0 && TnoLoops == 1)
+      {
+        blockRef = tcConnectptr.p->lqhkeyreq_ref;
+      }
+      else
+      {
+        Uint32 instanceNo = getInstanceNo(localHostptr.i, instanceKey);
+        blockRef = numberToRef(DBLQH,
+                               instanceNo,
+                               localHostptr.i);
+      }
       signal->theData[0] = tcConnectptr.i;
       signal->theData[1] = cownref;
       signal->theData[2] = regApiPtr->transid[0];
@@ -9317,10 +9348,27 @@ int Dbtc::releaseAndAbort(Signal* signal, ApiConnectRecord* const regApiPtr)
           }
         }
       }
+      DEB_ABORT_TRANS(("Send ABORT tcRef(%u,%x) transid(%u,%u)"
+                       " to ref: %x, host: %u",
+                       tcConnectptr.i,
+                       reference(),
+                       regApiPtr->transid[0],
+                       regApiPtr->transid[1],
+                       blockRef,
+                       hostptr.i));
+
       sendSignal(blockRef, GSN_ABORT, signal, len, JBB);
       prevAlive = true;
     } else {
       jam();
+      DEB_ABORT_TRANS(("Send ABORTED(dead) tcRef(%u,%x) transid(%u,%u)"
+                       ", node: %u",
+                       tcConnectptr.i,
+                       reference(),
+                       regApiPtr->transid[0],
+                       regApiPtr->transid[1],
+                       hostptr.i));
+
       signal->theData[0] = tcConnectptr.i;
       signal->theData[1] = regApiPtr->transid[0];
       signal->theData[2] = regApiPtr->transid[1];
@@ -10057,7 +10105,18 @@ void Dbtc::sendAbortedAfterTimeout(Signal* signal, int Tcheck, ApiConnectRecordP
 	     * too early.
 	     *--------------------------------------------------------------*/
             Uint32 instanceKey = tcConnectptr.p->lqhInstanceKey;
-            BlockReference TBRef = tcConnectptr.p->lqhkeyreq_ref;
+            BlockReference TBRef;
+            if (Ti == 0 && tcConnectptr.p->noOfNodes == 1)
+            {
+              TBRef = tcConnectptr.p->lqhkeyreq_ref;
+            }
+            else
+            {
+              Uint32 instanceNo = getInstanceNo(hostptr.i, instanceKey);
+              TBRef = numberToRef(DBLQH,
+                                  instanceNo,
+                                  hostptr.i);
+            }
             signal->theData[0] = tcConnectptr.i;
             signal->theData[1] = cownref;
             signal->theData[2] = apiConnectptr.p->transid[0];
@@ -10068,6 +10127,16 @@ void Dbtc::sendAbortedAfterTimeout(Signal* signal, int Tcheck, ApiConnectRecordP
               len = 5;
               signal->theData[4] = instanceKey;
             }
+            DEB_ABORT_TRANS(("Send ABORT tcRef(%u,%x) transid(%u,%u)"
+                             " to ref: %x, node: %u, line: %u",
+                            tcConnectptr.i,
+                            reference(),
+                            apiConnectptr.p->transid[0],
+                            apiConnectptr.p->transid[1],
+                            TBRef,
+                            hostptr.i,
+                            __LINE__));
+
             sendSignal(TBRef, GSN_ABORT, signal, 4, JBB);
             setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
             break;
@@ -10078,6 +10147,15 @@ void Dbtc::sendAbortedAfterTimeout(Signal* signal, int Tcheck, ApiConnectRecordP
 	     * ourselves vicarious for the failed node.
 	     *--------------------------------------------------------------*/
             setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+            DEB_ABORT_TRANS(("2:Send ABORTED(dead) tcRef(%u,%x) transid(%u,%u)"
+                             " node: %u, line: %u",
+                             tcConnectptr.i,
+                             reference(),
+                             apiConnectptr.p->transid[0],
+                             apiConnectptr.p->transid[1],
+                             hostptr.i,
+                             __LINE__));
+
             signal->theData[0] = tcConnectptr.i;
             signal->theData[1] = apiConnectptr.p->transid[0];
             signal->theData[2] = apiConnectptr.p->transid[1];
@@ -10669,6 +10747,9 @@ void Dbtc::execNODE_FAILREP(Signal* signal)
     /*       FAILED.                                              */
     /*------------------------------------------------------------*/
     myHostPtr.p->hostStatus = HS_DEAD;
+    DEB_NODE_STATUS(("(%u) Node: %u now dead",
+                     instance(),
+                     myHostPtr.i));
     myHostPtr.p->m_nf_bits = HostRecord::NF_NODE_FAIL_BITS;
     c_ongoing_take_over_cnt++;
     c_alive_nodes.clear(myHostPtr.i);
@@ -16128,6 +16209,9 @@ void Dbtc::inithost(Signal* signal)
     jam();
     ptrAss(hostptr, hostRecord);
     hostptr.p->hostStatus = HS_DEAD;
+    DEB_NODE_STATUS(("(%u) Node: %u now dead",
+                     instance(),
+                     hostptr.i));
     hostptr.p->inPackedList = false;
     hostptr.p->lqhTransStatus = LTS_IDLE;
     struct PackedWordsContainer * containerTCKEYCONF =

@@ -39,12 +39,12 @@
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_LCP 1
 //#define DEBUG_LCP_DEL2 1
-//#define DEBUG_LCP_DEL_EXTRA 1
+#define DEBUG_LCP_DEL_EXTRA 1
 //#define DEBUG_LCP_SKIP_EXTRA 1
 //#define DEBUG_LCP_KEEP 1
 //#define DEBUG_LCP_REL 1
-//#define DEBUG_NR_SCAN 1
-//#define DEBUG_NR_SCAN_EXTRA 1
+#define DEBUG_NR_SCAN 1
+#define DEBUG_NR_SCAN_EXTRA 1
 //#define DEBUG_LCP_SCANNED_BIT 1
 //#define DEBUG_LCP_FILTER 1
 //#define DEBUG_LCP_DEL 1
@@ -230,9 +230,9 @@ Dbtup::execACC_SCANREQ(Signal* signal)
       scanPtr.p->m_endPage = req->maxPage;
       if (req->maxPage != RNIL && req->maxPage > frag.m_max_page_cnt)
       {
-        DEB_NR_SCAN(("%u %u endPage: %u (noOfPages: %u maxPage: %u)", 
+        DEB_NR_SCAN(("tab(%u,%u) endPage: %u (noOfPages: %u maxPage: %u)", 
                      tablePtr.i,
-                     fragId,
+                     fragPtr.p->fragmentId,
                      req->maxPage,
                      fragPtr.p->noOfPages,
                      fragPtr.p->m_max_page_cnt));
@@ -858,13 +858,15 @@ Dbtup::execACCKEYREF(Signal* signal)
          */
 	scan.m_state = ScanOp::Next;
 	scan.m_scanPos.m_get = ScanPos::Get_tuple;
-	DEB_NR_SCAN(("Ignoring scan.m_state == ScanOp::Blocked, refetch"));
+	DEB_NR_SCAN(("(%u)Ignoring scan.m_state == ScanOp::Blocked, refetch",
+                     instance()));
       }
       else
       {
 	jam();
 	scan.m_state = ScanOp::Next;
-	DEB_NR_SCAN(("Ignoring scan.m_state == ScanOp::Blocked"));
+	DEB_NR_SCAN(("(%u)Ignoring scan.m_state == ScanOp::Blocked",
+                     instance()));
       }
     }
     // LQH has the ball
@@ -1961,13 +1963,14 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
             if (key.m_page_no < scan.m_endPage)
             {
               jam();
-              DEB_NR_SCAN(("scanning page %u", key.m_page_no));
+              DEB_NR_SCAN(("(%u)scanning page %u", instance(), key.m_page_no));
               goto cont;
             }
             jam();
             // no more pages, scan ends
             pos.m_get = ScanPos::Get_undef;
             scan.m_state = ScanOp::Last;
+            scan.m_last_seen = __LINE__;
             return true;
           }
           else if (bits & ScanOp::SCAN_LCP &&
@@ -2220,6 +2223,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
             jam();
             pos.m_get = ScanPos::Get_undef;
             scan.m_state = ScanOp::Last;
+            scan.m_last_seen = __LINE__;
             return true;
           } else {
             // move to next extent
@@ -2340,6 +2344,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
           jam();
           // request queued
           pos.m_get = ScanPos::Get_tuple;
+          scan.m_last_seen = __LINE__;
           return false;
         }
         else if (res < 0)
@@ -2358,6 +2363,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
           }
           /* Flag to reply code that we have an error */
           scan.m_state = ScanOp::Invalid;
+          scan.m_last_seen = __LINE__;
           return true;
         }
         ndbrequire(res > 0);
@@ -2731,6 +2737,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
             pos.m_realpid_mm = getRealpid(fragPtr.p, key_mm.m_page_no);
           }
           // TUPKEYREQ handles savepoint stuff
+          scan.m_last_seen = __LINE__;
           scan.m_state = ScanOp::Current;
           return true;
         }
@@ -2922,6 +2929,7 @@ Dbtup::record_delete_by_rowid(Signal *signal,
   conf->gci = foundGCI;
   if (set_scan_state)
     scan.m_state = ScanOp::Next;
+  scan.m_last_seen = __LINE__;
   signal->setLength(NextScanConf::SignalLengthNoKeyInfo);
   c_lqh->exec_next_scan_conf(signal);
   return;
