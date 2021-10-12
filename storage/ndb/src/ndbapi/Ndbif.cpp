@@ -1129,7 +1129,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
     else
     {
 #ifdef VM_TRACE
-      g_eventLogger->info("Recevied TCKEY_FAILCONF wo/ operation");
+      g_eventLogger->info("Received TCKEY_FAILCONF wo/ operation");
 #endif
     }
     if(tFirstData & 1)
@@ -1172,7 +1172,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
       }
     }
 #ifdef VM_TRACE
-    g_eventLogger->info("Recevied TCKEY_FAILREF wo/ operation");
+    g_eventLogger->info("Received TCKEY_FAILREF wo/ operation");
 #endif
     return;
   }
