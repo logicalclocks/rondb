@@ -114,8 +114,8 @@ Dbtux::execCREATE_TAB_REQ(Signal* signal)
     }
 
     // error inserts
-    if ((ERROR_INSERTED(12001) && fragOpPtr.p->m_fragNo == 0) ||
-        (ERROR_INSERTED(12002) && fragOpPtr.p->m_fragNo == 1)) {
+    if (ERROR_INSERTED(12001) && fragOpPtr.p->m_fragNo == 0)
+    {
       jam();
       errorCode = (TuxFragRef::ErrorCode)1;
       CLEAR_ERROR_INSERT_VALUE;
@@ -358,8 +358,8 @@ Dbtux::execTUXFRAGREQ(Signal* signal)
     }
 #endif
     // error inserts
-    if ((ERROR_INSERTED(12001) && fragNo == 0) ||
-        (ERROR_INSERTED(12002) && fragNo == 1)) {
+    if (ERROR_INSERTED(12001) && fragNo == 0)
+    {
       jam();
       errorCode = (TuxFragRef::ErrorCode)1;
       CLEAR_ERROR_INSERT_VALUE;

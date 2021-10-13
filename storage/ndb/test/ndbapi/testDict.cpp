@@ -2881,7 +2881,7 @@ int getColumnMaxLength(const NdbDictionary::Column* c)
 int runFailAddFragment(NDBT_Context* ctx, NDBT_Step* step){
   static int acclst[] = { 3001, 6200, 6202 };
   static int tuplst[] = { 4007, 4008, 4009, 4010, 4032, 4033, 4034 };
-  static int tuxlst[] = { 12001, 12002, 12003, 12004, 
+  static int tuxlst[] = { 12001, 12003, 12004, 
                           6201, 6203 };
   static unsigned acccnt = sizeof(acclst)/sizeof(acclst[0]);
   static unsigned tupcnt = sizeof(tuplst)/sizeof(tuplst[0]);
