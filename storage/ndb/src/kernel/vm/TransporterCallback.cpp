@@ -131,8 +131,8 @@ public:
   /**
    * Implements TransporterCallback interface:
    */
-  void enable_send_buffer(NodeId, TrpId) override;
-  void disable_send_buffer(NodeId, TrpId) override;
+  void enable_send_buffer(NodeId, TrpId, bool) override;
+  void disable_send_buffer(NodeId, TrpId, bool) override;
 
   Uint32 get_bytes_to_send_iovec(NodeId node_id,
                                  TrpId trp_id,
@@ -773,9 +773,12 @@ TransporterCallbackKernelNonMT::bytes_sent(NodeId nodeId,
 }
 
 void
-TransporterCallbackKernelNonMT::enable_send_buffer(NodeId nodeId, TrpId trp_id)
+TransporterCallbackKernelNonMT::enable_send_buffer(NodeId nodeId,
+                                                   TrpId trp_id,
+                                                   bool locked)
 {
   (void)nodeId;
+  (void)locked;
   SendBuffer *b = m_send_buffers + trp_id;
   assert(b->m_enabled == false);
   assert(b->m_first_page == NULL);  //Disabled buffer is empty
@@ -784,7 +787,8 @@ TransporterCallbackKernelNonMT::enable_send_buffer(NodeId nodeId, TrpId trp_id)
 
 void
 TransporterCallbackKernelNonMT::disable_send_buffer(NodeId nodeId,
-                                                    TrpId trp_id)
+                                                    TrpId trp_id,
+                                                    bool locked)
 {
   (void)nodeId;
   SendBuffer *b = m_send_buffers + trp_id;

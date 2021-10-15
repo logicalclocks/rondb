@@ -1021,6 +1021,7 @@ SimulatedBlock::sendSignal(BlockReference ref,
   
   if (unlikely((length == 0) || length > 25 || (recBlock == 0)))
   {
+    g_eventLogger->info("GSN: %u signal error", gsn);
     signal_error(gsn, length, recBlock, __FILE__, __LINE__);
     return;
   }//if
@@ -1037,6 +1038,10 @@ SimulatedBlock::sendSignal(BlockReference ref,
 #endif
   
   if(recNode == ourProcessor || recNode == 0) {
+    if (globalData.thePrintFlag)
+    {
+      g_eventLogger->info("GSN: %u sent locally", gsn);
+    }
     signal->header.theSendersSignalId = tSignalId;
     signal->header.theSendersBlockRef = sendBRef;
 #ifdef NDBD_MULTITHREADED
@@ -1062,7 +1067,11 @@ SimulatedBlock::sendSignal(BlockReference ref,
     sh.theSignalId             = tSignalId;
     sh.m_noOfSections          = 0;
     sh.m_fragmentInfo          = 0;
-    
+    if (globalData.thePrintFlag)
+    {
+    g_eventLogger->info("send: %s(%d) to (%s, %d)", getSignalName(gsn), gsn,
+                        getBlockName(recBlock), recNode);
+    }
 #ifdef TRACE_DISTRIBUTED
     g_eventLogger->info("send: %s(%d) to (%s, %d)", getSignalName(gsn), gsn,
                         getBlockName(recBlock), recNode);
@@ -2361,7 +2370,10 @@ SimulatedBlock::update_watch_dog_timer(Uint32 interval)
 
 void
 SimulatedBlock::progError(int line, int err_code, const char* extra,
-                          const char* check) const {
+                          const char* check) const
+{
+  globalData.theStopFlag = true;
+  mb();
   jamNoBlock();
 
   const char *aBlockName = getBlockName(number(), "VM Kernel");

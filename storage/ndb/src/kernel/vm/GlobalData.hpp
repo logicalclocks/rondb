@@ -82,6 +82,7 @@ struct GlobalData {
   
   Uint32     theStartLevel;
   restartStates theRestartFlag;
+  bool       theStopFlag;
   Uint32     theSignalId;
   
   Uint32     sendPackedActivated;
@@ -89,6 +90,7 @@ struct GlobalData {
 
   bool       isNdbMt;    // ndbd multithreaded, no workers
   bool       isNdbMtLqh; // ndbd multithreaded, LQH workers
+  bool       thePrintFlag;
   Uint32     ndbMtLqhWorkers;
   Uint32     ndbMtLqhThreads;
   Uint32     ndbMtTcWorkers;
@@ -134,8 +136,10 @@ struct GlobalData {
     theSignalId = 0; 
     theStartLevel = NodeState::SL_NOTHING;
     theRestartFlag = perform_start;
+    theStopFlag = false;
     isNdbMt = false;
     isNdbMtLqh = false;
+    thePrintFlag = false;
     ndbMtLqhWorkers = 0;
     ndbMtLqhThreads = 0;
     ndbMtTcWorkers = 0;

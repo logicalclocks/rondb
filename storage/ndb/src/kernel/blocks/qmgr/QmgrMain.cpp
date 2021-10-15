@@ -78,6 +78,7 @@ extern EventLogger * g_eventLogger;
 extern NodeBitmask g_not_active_nodes;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
+#define DEBUG_MULTI_SETUP 1
 //#define DEBUG_MULTI_TRP 1
 //#define DEBUG_STARTUP 1
 //#define DEBUG_ARBIT 1
@@ -87,6 +88,12 @@ extern NodeBitmask g_not_active_nodes;
 #define DEB_ARBIT(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_ARBIT(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_MULTI_SETUP
+#define DEB_MULTI_SETUP(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_MULTI_SETUP(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_MULTI_TRP
@@ -3672,6 +3679,9 @@ void Qmgr::checkHeartbeat(Signal* signal)
     signal->theData[1] = nodePtr.i;
     signal->theData[2] = get_hb_count(nodePtr.i) - 1;
     sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 3, JBB);
+    g_eventLogger->info("Node %u has heartbeat issues, now at %u",
+                        nodePtr.i,
+                        get_hb_count(nodePtr.i) - 1);
   }
 
   if (get_hb_count(nodePtr.i) > 4)
@@ -3694,6 +3704,9 @@ void Qmgr::checkHeartbeat(Signal* signal)
       signal->theData[1] = nodePtr.i;
       sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 2, JBB);
 
+      g_eventLogger->info("Kill Node %u due to heartbeat issues, now at %u",
+                          nodePtr.i,
+                          get_hb_count(nodePtr.i) - 1);
       failReportLab(signal, nodePtr.i, FailRep::ZHEARTBEAT_FAILURE, getOwnNodeId());
       return;
     }
@@ -5110,16 +5123,18 @@ void Qmgr::failReportLab(Signal* signal, Uint16 aFailedNode,
     jam();
     CRASH_INSERTION(932);
     CRASH_INSERTION(938);
+    CRASH_INSERTION(956);
     char buf[100];
     switch(aFailCause)
     {
       case FailRep::ZHEARTBEAT_FAILURE:
-        BaseString::snprintf(buf, 100 ,"Node %d heartbeat failure",
+        BaseString::snprintf(buf, 100 ,"Our node fails since Node %d had"
+                             " heartbeat failure",
                              failedNodePtr.i);
         CRASH_INSERTION(947);
         break;
       default:
-        BaseString::snprintf(buf, 100 , "Node %d failed",
+        BaseString::snprintf(buf, 100 , "Our node failed since Node %d failed",
                              failedNodePtr.i);
     }
     progError(__LINE__, NDBD_EXIT_SR_OTHERNODEFAILED, buf);
@@ -7825,6 +7840,7 @@ Qmgr::execNODE_FAILREP(Signal * signal)
     nodePtr.p->m_used_num_multi_trps = 0;
     nodePtr.p->m_check_multi_trp_connect_loop_count = 0;
     nodePtr.p->m_num_activated_trps = 0;
+    nodePtr.p->m_count_multi_trp_ref = 0;
     if (nodePtr.p->m_is_in_same_nodegroup)
     {
       jam();
@@ -7848,7 +7864,7 @@ Qmgr::execNODE_FAILREP(Signal * signal)
          * disconnect code. This is why it is required to lock the
          * multi transporter mutex while performing this action.
          */
-        switch_required = true;
+        //switch_required = true;
         DEB_MULTI_TRP(("switch_active_trp for node %u's transporter",
                        nodePtr.i));
         globalTransporterRegistry.switch_active_trp(multi_trp);
@@ -9329,8 +9345,19 @@ Qmgr::handleStateChange(Signal* signal, Uint32 nodeToNotify)
  *     SWITCH_MULTI_TRP_REQ
  *   <---------------------------------------------------------
  *     SWITCH_MULTI_TRP_CONF
- *   <-------------------------------------------------------->
+ *   <---------------------------------------------------------
+ *     SWITCH_MULTI_TRP_CONF (in response to REQ)
+ *   --------------------------------------------------------->
  *     Now both nodes are ready to perform the actual switch over
+ *
+ *  The node with higher node id will always start the switch over and
+ *  this node will always connect all nodes to completion before starting
+ *  any switch over. The other node is allowed to start the switch over
+ *  if the node is connected and the other requests a switch over.
+ *
+ * When we start the switch over we will always get a printout of this
+ * in the node log.
+ *
  *
  *  QMGR               THRMAN Proxy                 THRMAN
  *    FREEZE_THREAD_REQ
@@ -9833,13 +9860,13 @@ Qmgr::connect_multi_transporter(Signal *signal, NodeId node_id)
     t->set_s_port(trp_port);
     globalTransporterRegistry.insert_allTransporters(t);
     assign_recv_thread_new_trp(t->getTransporterIndex());
-    DEB_MULTI_TRP(("Insert trp id %u for node %u, mti = %u, server: %u"
-                   ", port: %d",
-                   t->getTransporterIndex(),
-                   node_id,
-                   t->get_multi_transporter_instance(),
-                   t->isServer,
-                   trp_port));
+    DEB_MULTI_SETUP(("Insert trp id %u for node %u, mti = %u, server: %u"
+                     ", port: %d",
+                     t->getTransporterIndex(),
+                     node_id,
+                     t->get_multi_transporter_instance(),
+                     t->isServer,
+                     trp_port));
   }
   globalTransporterRegistry.unlockMultiTransporters();
   signal->theData[0] = ZCHECK_MULTI_TRP_CONNECT;
@@ -9941,7 +9968,7 @@ Qmgr::check_connect_multi_transporter(Signal *signal, NodeId node_id)
     }
     nodePtr.p->m_is_preparing_switch_trp = false;
     globalTransporterRegistry.unlockMultiTransporters();
-    check_more_trp_switch_nodes(signal);
+    check_more_trp_switch_nodes(signal, true);
   }
   return;
 }
@@ -9992,7 +10019,7 @@ Qmgr::send_switch_multi_transporter(Signal *signal,
   }
   m_current_switch_multi_trp_node = node_id;
   nodePtr.p->m_is_ready_to_switch_trp = true;
-  DEB_MULTI_TRP(("Send SWITCH_MULTI_TRP_REQ to node %u", node_id));
+  g_eventLogger->info("Send SWITCH_MULTI_TRP_REQ to node %u", node_id);
   SwitchMultiTrpReq* req = (SwitchMultiTrpReq*)signal->getDataPtrSend();
   req->nodeId = getOwnNodeId();
   req->senderRef = reference();
@@ -10020,26 +10047,18 @@ Qmgr::execSWITCH_MULTI_TRP_REQ(Signal *signal)
   CRASH_INSERTION(954);
   if (!check_all_multi_trp_nodes_connected())
   {
-    if (nodePtr.p->m_is_multi_trp_setup &&
-        m_current_switch_multi_trp_node == 0)
-    {
-      ndbrequire(nodePtr.p->phase == ZRUNNING);
-      ndbrequire(nodePtr.p->m_is_in_same_nodegroup);
-      ndbrequire(nodePtr.p->m_is_preparing_switch_trp);
-      /* Fall through to send SWITCH_MULTI_TRP_CONF */ 
-    }
-    else
-    {
-      jam();
-      ndbrequire(m_current_switch_multi_trp_node != node_id);
-      DEB_MULTI_TRP(("Send SWITCH_MULTI_TRP_REF node %u", node_id));
-      SwitchMultiTrpRef *ref = (SwitchMultiTrpRef*)signal->getDataPtrSend();
-      ref->nodeId = getOwnNodeId();
-      ref->errorCode = SwitchMultiTrpRef::SMTR_NOT_READY_FOR_SWITCH;
-      sendSignal(block_ref, GSN_SWITCH_MULTI_TRP_REF, signal,
-                 SwitchMultiTrpRef::SignalLength, JBB);
-      return;
-    }
+    jam();
+    ndbrequire(m_current_switch_multi_trp_node != node_id);
+    g_eventLogger->info("Send SWITCH_MULTI_TRP_REF node %u, not all"
+                        " connected yet", node_id);
+    SwitchMultiTrpRef *ref = (SwitchMultiTrpRef*)signal->getDataPtrSend();
+    ref->nodeId = getOwnNodeId();
+    ref->errorCode = SwitchMultiTrpRef::SMTR_NOT_READY_FOR_SWITCH;
+    globalData.thePrintFlag = true;
+    sendSignal(block_ref, GSN_SWITCH_MULTI_TRP_REF, signal,
+               SwitchMultiTrpRef::SignalLength, JBB);
+    globalData.thePrintFlag = false;
+    return;
   }
   else if (m_current_switch_multi_trp_node != 0 &&
            m_current_switch_multi_trp_node != node_id)
@@ -10050,22 +10069,28 @@ Qmgr::execSWITCH_MULTI_TRP_REQ(Signal *signal)
      * on to the next node.
      */
     jam();
-    DEB_MULTI_TRP(("2:Send SWITCH_MULTI_TRP_REF node %u", node_id));
+    g_eventLogger->info("Send SWITCH_MULTI_TRP_REF node %u, switch ongoing",
+                        node_id);
     SwitchMultiTrpRef *ref = (SwitchMultiTrpRef*)signal->getDataPtrSend();
     ref->nodeId = getOwnNodeId();
     ref->errorCode = SwitchMultiTrpRef::SMTR_NOT_READY_FOR_SWITCH;
+    globalData.thePrintFlag = true;
     sendSignal(block_ref, GSN_SWITCH_MULTI_TRP_REF, signal,
                SwitchMultiTrpRef::SignalLength, JBB);
+    globalData.thePrintFlag = false;
     return;
   }
-  /**
-   * We haven't selected any node to connect multi sockets to yet.
-   * In that case it is safe to answer positively since we know
-   * that this cannot cause any deadlock.
-   */
   if (m_current_switch_multi_trp_node == 0)
   {
     jam();
+    /**
+     * We haven't selected any node to connect multi sockets to yet.
+     * In that case it is safe to answer positively since we know
+     * that this cannot cause any deadlock.
+     *
+     * We will send both SWITCH_MULTI_TRP_REQ and SWITCH_MULTI_TRP_CONF
+     * in this case.
+     */
     ndbrequire(!nodePtr.p->m_is_ready_to_switch_trp);
     SwitchMultiTrpReq* req = (SwitchMultiTrpReq*)signal->getDataPtrSend();
     req->nodeId = getOwnNodeId();
@@ -10138,10 +10163,10 @@ Qmgr::execSWITCH_MULTI_TRP_REF(Signal *signal)
   ndbrequire(nodePtr.p->m_is_ready_to_switch_trp);
   m_current_switch_multi_trp_node = 0;
   nodePtr.p->m_is_ready_to_switch_trp = false;
-  DEB_MULTI_TRP(("Recvd SWITCH_MULTI_TRP_REF from node %u", node_id));
+  g_eventLogger->info("Recvd SWITCH_MULTI_TRP_REF from node %u", node_id);
   signal->theData[0] = ZSWITCH_MULTI_TRP;
   signal->theData[1] = node_id;
-  sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 2);
+  sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 1000, 2);
 }
 
 void
@@ -10151,7 +10176,7 @@ Qmgr::switch_multi_transporter(Signal *signal, NodeId node_id)
   NodeRecPtr nodePtr;
   nodePtr.i = node_id;
   ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRec);
-  g_eventLogger->info("Switch to %u multi trp for node %u",
+  g_eventLogger->info("Switch to %u multi trp(s) for node %u",
                       nodePtr.p->m_used_num_multi_trps,
                       node_id);
   nodePtr.p->m_is_preparing_switch_trp = false;
@@ -10258,6 +10283,7 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
 
     Transporter *current_trp = multi_trp->get_active_transporter(0);
     TrpId current_trp_id = current_trp->getTransporterIndex();
+    ndbrequire(multi_trp->get_num_active_transporters() == 1);
     multi_trp->get_callback_obj()->lock_send_transporter(node_id,
                                                          current_trp_id);
 
@@ -10314,14 +10340,15 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
     startChangeNeighbourNode();
     flush_send_buffers();
     insert_activate_trp(current_trp_id);
-    multi_trp->get_callback_obj()->unlock_send_transporter(node_id,
-                                                           current_trp_id);
 
     if (ERROR_INSERTED(982))
     {
       NdbSleep_MilliSleep(2500);
     }
     multi_trp->switch_active_trp();
+    globalTransporterRegistry.insert_node_transporter(node_id, multi_trp);
+    multi_trp->get_callback_obj()->unlock_send_transporter(node_id,
+                                                           current_trp_id);
 
     Uint32 num_active_transporters =
       multi_trp->get_num_active_transporters();
@@ -10330,10 +10357,9 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
       jam();
       Transporter *tmp_trp = multi_trp->get_active_transporter(i);
       TrpId id = tmp_trp->getTransporterIndex();
+      multi_trp->get_callback_obj()->enable_send_buffer(node_id, id, true);
       multi_trp->get_callback_obj()->unlock_send_transporter(node_id, id);
-      multi_trp->get_callback_obj()->enable_send_buffer(node_id, id);
     }
-    globalTransporterRegistry.insert_node_transporter(node_id, multi_trp);
     globalTransporterRegistry.unlockMultiTransporters();
 
     if (ERROR_INSERTED(983))
@@ -10470,6 +10496,7 @@ Qmgr::handle_activate_trp_req(Signal *signal, Uint32 node_id)
   {
     jam();
     Transporter *t;
+    ndbrequire(num_trps > 1);
     for (Uint32 i = 0; i < num_trps; i++)
     {
       if (multi_trp->get_num_inactive_transporters() == num_trps)
@@ -10481,7 +10508,7 @@ Qmgr::handle_activate_trp_req(Signal *signal, Uint32 node_id)
       {
         jam();
         t = multi_trp->get_active_transporter(i);
-        ndbrequire(multi_trp->get_num_active_transporters());
+        ndbrequire(multi_trp->get_num_active_transporters() == num_trps);
       }
       Uint32 trp_id = t->getTransporterIndex();
       ActivateTrpReq *act_trp_req =
@@ -10606,8 +10633,8 @@ Qmgr::check_switch_completed(Signal *signal, NodeId node_id)
     TrpId trp_id = tmp_trp->getTransporterIndex();
     tmp_trp->get_callback_obj()->lock_transporter(node_id, trp_id);
     tmp_trp->shutdown();
+    multi_trp->get_callback_obj()->disable_send_buffer(node_id, trp_id, true);
     tmp_trp->get_callback_obj()->unlock_transporter(node_id, trp_id);
-    multi_trp->get_callback_obj()->disable_send_buffer(node_id, trp_id);
   }
   /**
    * We have now completed the switch to new set of transporters, the
@@ -10625,19 +10652,20 @@ Qmgr::check_switch_completed(Signal *signal, NodeId node_id)
   nodePtr.p->m_is_activate_trp_ready_for_other = false;
   nodePtr.p->m_is_freeze_thread_completed = false;
   nodePtr.p->m_set_up_multi_trp_started = false;
-  DEB_MULTI_TRP(("Completed switch to multi trp for node %u", node_id));
+  g_eventLogger->info("Completed switch to multi trp for node %u", node_id);
   CRASH_INSERTION(953);
-  check_more_trp_switch_nodes(signal);
+  check_more_trp_switch_nodes(signal, false);
 }
 
 void
-Qmgr::check_more_trp_switch_nodes(Signal* signal)
+Qmgr::check_more_trp_switch_nodes(Signal* signal, bool node_fail)
 {
   if (!check_all_multi_trp_nodes_connected())
   {
     jam();
     /* Still waiting for nodes to complete connect */
-    DEB_MULTI_TRP(("Still waiting for nodes to complete connect"));
+    g_eventLogger->info("Still waiting for nodes to complete connect after %s",
+                        node_fail ? "node failure" : "completed switch over");
     return;
   }
   NodeId node_id = 0;
@@ -10650,13 +10678,13 @@ Qmgr::check_more_trp_switch_nodes(Signal* signal)
   if (m_initial_set_up_multi_trp_done)
   {
     jam();
-    DEB_MULTI_TRP(("Initial setup already done"));
+    g_eventLogger->info("Initial setup already done");
     return;
   }
   if (m_get_num_multi_trps_sent != 0)
   {
     jam();
-    DEB_MULTI_TRP(("Still waiting for GET_NUM_MULTI_TRP_REQ"));
+    g_eventLogger->info("Still waiting for GET_NUM_MULTI_TRP_REQ");
     return;
   }
   bool done = true;
@@ -10679,7 +10707,7 @@ Qmgr::check_more_trp_switch_nodes(Signal* signal)
   if (done)
   {
     jam();
-    DEB_MULTI_TRP(("Initial setup of multi trp now done"));
+    g_eventLogger->info("Initial setup of multi trp now done");
     m_initial_set_up_multi_trp_done = true;
     sendSignal(m_ref_set_up_multi_trp_req,
                GSN_SET_UP_MULTI_TRP_CONF,
@@ -10689,7 +10717,7 @@ Qmgr::check_more_trp_switch_nodes(Signal* signal)
   }
   else
   {
-    DEB_MULTI_TRP(("Not done with setup of multi trp yet"));
+    g_eventLogger->info("Not done with setup of multi trp yet");
     jam();
   }
 }
@@ -10710,7 +10738,7 @@ Qmgr::check_no_multi_trp(Signal *signal, NodeId node_id)
   {
     jam();
     m_current_switch_multi_trp_node = 0;
-    check_more_trp_switch_nodes(signal);
+    check_more_trp_switch_nodes(signal, true);
   }
 }
 

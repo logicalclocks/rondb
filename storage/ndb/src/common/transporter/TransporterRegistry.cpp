@@ -1103,6 +1103,7 @@ TransporterRegistry::prepareSendTemplate(
   t = node_trp->get_send_transporter(signalHeader->theReceiversBlockNumber,
                                      signalHeader->theSendersBlockRef);
   assert(!t->isMultiTransporter());
+  require(t->get_transporter_active());
   trp_id = t->getTransporterIndex();
   if (unlikely(trp_id == 0))
   {
@@ -2664,7 +2665,7 @@ TransporterRegistry::report_connect(TransporterReceiveHandle& recvdata,
 
   if (recvdata.epoll_add(t))
   {
-    callbackObj->enable_send_buffer(node_id, id);
+    callbackObj->enable_send_buffer(node_id, id, false);
     DEBUG_FPRINTF((stderr, "(%u)performStates[%u] = CONNECTED\n",
                    localNodeId, node_id));
     performStates[node_id] = CONNECTED;
@@ -2752,7 +2753,7 @@ TransporterRegistry::report_disconnect(TransporterReceiveHandle& recvdata,
        * thereby ensuring that after the disable_send_buffer method is
        * called no more signals are sent.
        */
-      callbackObj->disable_send_buffer(node_id, trp_id);
+      callbackObj->disable_send_buffer(node_id, trp_id, false);
       recvdata.m_recv_transporters.clear(trp_id);
       recvdata.m_has_data_transporters.clear(trp_id);
     }
@@ -2818,7 +2819,7 @@ TransporterRegistry::report_disconnect(TransporterReceiveHandle& recvdata,
             {
               NodeId remove_node_id = remove_trp->getRemoteNodeId();
               require(node_id == remove_node_id);
-              callbackObj->disable_send_buffer(node_id, remove_trp_id);
+              callbackObj->disable_send_buffer(node_id, remove_trp_id, false);
               remove_trp->doDisconnect();
               remove_allTransporters(remove_trp);
             }
@@ -2853,7 +2854,7 @@ TransporterRegistry::report_disconnect(TransporterReceiveHandle& recvdata,
         NodeId base_node_id = base_trp->getRemoteNodeId();
         TrpId base_trp_id = base_trp->getTransporterIndex();
         require(base_node_id == node_id);
-        callbackObj->disable_send_buffer(node_id, base_trp_id);
+        callbackObj->disable_send_buffer(node_id, base_trp_id, false);
         base_trp->doDisconnect();
       }
     }

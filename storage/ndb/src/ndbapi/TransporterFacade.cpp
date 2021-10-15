@@ -4086,9 +4086,10 @@ TransporterFacade::bytes_sent(NodeId node,
  * Also see comments for these methods in TransporterCallback.hpp,
  * and how ::open_clnt() synchronize its set of enabled nodes. */
 void
-TransporterFacade::enable_send_buffer(NodeId node, TrpId trp_id)
+TransporterFacade::enable_send_buffer(NodeId node, TrpId trp_id, bool locked)
 {
   (void)trp_id;
+  (void)locked;
   assert(is_poll_owner_thread());
 
   //Always set the 'outcome' first
@@ -4131,9 +4132,10 @@ TransporterFacade::enable_send_buffer(NodeId node, TrpId trp_id)
 }
 
 void
-TransporterFacade::disable_send_buffer(NodeId node, TrpId trp_id)
+TransporterFacade::disable_send_buffer(NodeId node, TrpId trp_id, bool locked)
 {
   (void)trp_id;
+  (void)locked;
   assert(is_poll_owner_thread());
 
   //Always set the 'outcome' first.

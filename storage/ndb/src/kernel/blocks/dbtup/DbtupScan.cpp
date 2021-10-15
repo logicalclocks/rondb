@@ -39,12 +39,12 @@
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_LCP 1
 //#define DEBUG_LCP_DEL2 1
-#define DEBUG_LCP_DEL_EXTRA 1
+//#define DEBUG_LCP_DEL_EXTRA 1
 //#define DEBUG_LCP_SKIP_EXTRA 1
 //#define DEBUG_LCP_KEEP 1
 //#define DEBUG_LCP_REL 1
-#define DEBUG_NR_SCAN 1
-#define DEBUG_NR_SCAN_EXTRA 1
+//#define DEBUG_NR_SCAN 1
+//#define DEBUG_NR_SCAN_EXTRA 1
 //#define DEBUG_LCP_SCANNED_BIT 1
 //#define DEBUG_LCP_FILTER 1
 //#define DEBUG_LCP_DEL 1
