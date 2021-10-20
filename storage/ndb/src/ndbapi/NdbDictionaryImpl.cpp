@@ -2069,7 +2069,8 @@ NdbTableImpl::get_nodes(NdbImpl *impl_ndb,
       }
       else
       {
-        Uint32 num_local_fragments = num_fragments / m_numNodeGroups;
+        Uint32 num_local_fragments =
+          (num_fragments * m_replicaCount) / m_numNodeGroups;
         Uint32 num_per_node = num_local_fragments / num_alive_nodes;
         num_per_node = MAX(num_per_node, 1);
         Uint32 local_fid = fragmentId / m_numNodeGroups;
