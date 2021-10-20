@@ -1941,9 +1941,8 @@ NdbTableImpl::calculate_node_groups()
 {
   m_numNodeGroups = 0;
   Uint16 *nodes = m_fragments.getBase();
-  Uint16 first_node = nodes[0];
-  Uint16 first_i = 0;
-  Uint16 numNodeGroups = 0;
+  bool node_array[MAX_NDB_NODES + 1];
+
 #ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
   fprintf(stderr, "Table: %s", getMysqlName());
   fprintf(stderr, " FragmentType: %u", (Uint32)m_fragmentType);
@@ -1952,55 +1951,32 @@ NdbTableImpl::calculate_node_groups()
   if (m_fragmentType != NdbDictionary::Object::HashMapPartition &&
       m_fragmentType != NdbDictionary::Object::UserDefined)
   {
-    m_numNodeGroups = 0;
     return;
   }
-  for (Uint32 i = 0; i < m_fragmentCount; i++)
+  for (Uint32 i = 1; i <= MAX_NDB_NODES; i++)
+    node_array[i] = false;
+  Uint32 num_fragments = m_fragmentCount;
+  Uint32 fragment_array_size = num_fragments * m_replicaCount;
+  for (Uint32 i = 0; i < fragment_array_size; i++)
   {
+    Uint32 node = nodes[i];
 #ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
-    fprintf(stderr, "Fragment[%u]: ", i);
+    fprintf(stderr, "Fragment[%u]: %u", i, node);
 #endif
-    Uint16 *frag_nodes = &nodes[m_replicaCount * i];
-    for (Uint32 j = 0; j < m_replicaCount; j++)
-    {
-#ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
-      fprintf(stderr, "%u ", frag_nodes[j]);
-#endif
-      if (frag_nodes[j] == first_node && i != 0)
-      {
-        if ((i - first_i) != numNodeGroups &&
-            numNodeGroups != 0)
-        {
-          assert(false);
-          /**
-           * A pattern not recognized was found, cannot calculate
-           * primary node.
-           */
-          return;
-        }
-        numNodeGroups = i - first_i;
-        first_i = i;
-      }
-    }
-#ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
-    fprintf(stderr, "\n");
-#endif
+    node_array[node] = true;
   }
-  /**
-   * If numNodeGroups is still 0 this means that we have PartitionsPerNode
-   * equal to 1. Thus only 1 partition where first node is part of the table.
-   * Set m_numNodeGroups to number of fragments, this will lead to always
-   * choosing the first node in the node group which is a good guess of which
-   * is the primary node.
-   */
-  if (numNodeGroups == 0)
+#ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
+  fprintf(stderr, "\n");
+#endif
+  Uint32 num_nodes = 0;
+  for (Uint32 i = 1; i <= MAX_NDB_NODES; i++)
   {
-    m_numNodeGroups = m_fragmentCount;
+    if (node_array[i])
+      num_nodes++;
   }
-  else
-  {
-    m_numNodeGroups = numNodeGroups;
-  }
+  Uint32 numNodeGroups = num_nodes / m_replicaCount;
+  assert(numNodeGroups * m_replicaCount == num_nodes);
+  m_numNodeGroups = numNodeGroups;
 #ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
   fprintf(stderr, "m_numNodeGroups: %u\n", m_numNodeGroups);
 #endif
