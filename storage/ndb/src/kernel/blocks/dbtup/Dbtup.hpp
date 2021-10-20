@@ -1929,14 +1929,14 @@ struct KeyReqStruct {
   PagePtr m_disk_page_ptr;       //
   Local_key m_row_id;
   Uint32 optimize_options;
+  Uint32 m_prio_a_flag;
+  Uint32 m_reorg;
   
   bool            dirty_op;
   bool            interpreted_exec;
   bool            last_row;
   bool            m_use_rowid;
   bool            m_nr_copy_or_redo;
-  Uint8           m_reorg;
-  Uint8           m_prio_a_flag;
   bool            m_deferred_constraints;
   bool            m_disable_fk_checks;
 

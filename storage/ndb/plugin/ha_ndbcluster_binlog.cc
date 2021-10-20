@@ -1857,7 +1857,8 @@ class Ndb_schema_event_handler {
     if (!schema_dist_table.open()) {
       // NOTE! Legacy crash unless this was cluster connection failure, there
       // are simply no other of way sending error back to coordinator
-      ndbcluster::ndbrequire(ndb->getDictionary()->getNdbError().code == 4009);
+      ndbcluster::ndbrequire(is_cluster_failure_code(
+        ndb->getDictionary()->getNdbError().code));
       return 1;
     }
     const NdbDictionary::Table *ndbtab = schema_dist_table.get_table();
@@ -2008,7 +2009,8 @@ class Ndb_schema_event_handler {
     if (!schema_dist_table.open()) {
       // NOTE! Legacy crash unless this was cluster connection failure, there
       // are simply no other of way sending error back to coordinator
-      ndbcluster::ndbrequire(ndb->getDictionary()->getNdbError().code == 4009);
+      ndbcluster::ndbrequire(is_cluster_failure_code(
+        ndb->getDictionary()->getNdbError().code));
       return 1;
     }
     const NdbDictionary::Table *ndbtab = schema_dist_table.get_table();
@@ -2099,7 +2101,8 @@ class Ndb_schema_event_handler {
     if (!schema_result_table.open()) {
       // NOTE! Legacy crash unless this was cluster connection failure, there
       // are simply no other of way sending error back to coordinator
-      ndbcluster::ndbrequire(ndb->getDictionary()->getNdbError().code == 4009);
+      ndbcluster::ndbrequire(is_cluster_failure_code(
+        ndb->getDictionary()->getNdbError().code));
       return false;
     }
 
@@ -2170,7 +2173,8 @@ class Ndb_schema_event_handler {
     if (!schema_result_table.open()) {
       // NOTE! Legacy crash unless this was cluster connection failure, there
       // are simply no other of way sending error back to coordinator
-      ndbcluster::ndbrequire(ndb->getDictionary()->getNdbError().code == 4009);
+      ndbcluster::ndbrequire(is_cluster_failure_code(
+        ndb->getDictionary()->getNdbError().code));
       return;
     }
 

@@ -317,11 +317,11 @@ insert into t1 values(1,1), (2,2), (3,3), (4,4), (5,5);
 set @save_debug = @@session.debug;
 SET SESSION debug="+d,ndb_start_transaction_fail";
 update t1 set val = 11111 where id > 0;
-ERROR HY000: Got error 4009 'Cluster Failure' from NDBCLUSTER
+ERROR HY000: Got error 4009 'No data node(s) available, check Cluster state' from NDBCLUSTER
 show warnings;
 Level	Code	Message
-Warning	1296	Got error 4009 'Cluster Failure' from NDB
-Error	1296	Got error 4009 'Cluster Failure' from NDBCLUSTER
-Warning	1296	Got error 4009 'Cluster Failure' from NDB
+Warning	1296	Got error 4009 'No data node(s) available, check Cluster state' from NDB
+Error	1296	Got error 4009 'No data node(s) available, check Cluster state' from NDBCLUSTER
+Warning	1296	Got error 4009 'No data node(s) available, check Cluster state' from NDB
 SET SESSION debug=@save_debug;
 drop table t1;

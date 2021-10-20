@@ -3236,15 +3236,10 @@ NdbDictInterface::dictSignal(NdbApiSignal* sig,
       node = node_specification;
     }
     DBUG_PRINT("info", ("node %d", node));
-    if(node == 0){
-      if (getTransporter()->is_cluster_completely_unavailable())
-      {
-        m_error.code= 4009;
-      }
-      else
-      {
-        m_error.code = 4035;
-      }
+    if (node == 0)
+    {
+      getTransporter()->is_cluster_completely_unavailable(m_error.code,
+                                                          __LINE__);
       DBUG_RETURN(-1);
     }
     int res = (ptr ? 
@@ -7490,15 +7485,10 @@ NdbDictInterface::listObjects(NdbApiSignal* signal,
     */
     PollGuard poll_guard(* m_impl);
     Uint16 aNodeId = getTransporter()->get_an_alive_node();
-    if (aNodeId == 0) {
-      if (getTransporter()->is_cluster_completely_unavailable())
-      {
-        m_error.code= 4009;
-      }
-      else
-      {
-        m_error.code = 4035;
-      }
+    if (aNodeId == 0)
+    {
+      getTransporter()->is_cluster_completely_unavailable(m_error.code,
+                                                          __LINE__);
       return -1;
     }
     /*
@@ -7636,15 +7626,10 @@ NdbDictInterface::forceGCPWait(int type)
     {
       PollGuard pg(* m_impl);
       Uint16 aNodeId = getTransporter()->get_an_alive_node();
-      if (aNodeId == 0) {
-        if (getTransporter()->is_cluster_completely_unavailable())
-        {
-          m_error.code= 4009;
-        }
-        else
-        {
-          m_error.code = 4035;
-        }
+      if (aNodeId == 0)
+      {
+        getTransporter()->is_cluster_completely_unavailable(m_error.code,
+                                                            __LINE__);
         return -1;
       }
       if (m_impl->sendSignal(&tSignal, aNodeId) != 0)
@@ -7693,15 +7678,10 @@ NdbDictInterface::forceGCPWait(int type)
     {
       m_impl->lock();
       Uint16 aNodeId = getTransporter()->get_an_alive_node();
-      if (aNodeId == 0) {
-        if (getTransporter()->is_cluster_completely_unavailable())
-        {
-          m_error.code= 4009;
-        }
-        else
-        {
-          m_error.code = 4035;
-        }
+      if (aNodeId == 0)
+      {
+        getTransporter()->is_cluster_completely_unavailable(m_error.code,
+                                                            __LINE__);
         m_impl->unlock();
         return -1;
       }

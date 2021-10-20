@@ -2088,7 +2088,8 @@ int Ndb_index_stat_thread::check_or_create_systables(
     return 0;
   }
 
-  if (is->getNdbError().code == 4009) {
+  if (is_cluster_failure_code(is->getNdbError().code))
+  {
     // No connection
     DBUG_PRINT("index_stat",
                ("create index stats tables failed: error %d line %d",

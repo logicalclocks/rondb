@@ -175,6 +175,9 @@ private:
 
   int m_optimized_node_selection;
   int m_run_connect_thread;
+
+  int m_error_printer_active;
+
   NdbMutex *m_event_add_drop_mutex;
   Uint64 m_latest_trans_gci;
 

@@ -764,6 +764,8 @@ class ha_ndbcluster : public handler, public Partition_handler {
   int update_stats(THD *thd, bool do_read_stat);
 };
 
+bool is_cluster_failure_code(int error);
+
 // Global handler synchronization
 extern mysql_cond_t ndbcluster_cond;
 

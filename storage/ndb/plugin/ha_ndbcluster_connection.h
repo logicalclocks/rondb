@@ -36,6 +36,7 @@ int ndbcluster_connect(int (*connect_callback)(void), ulong wait_connected,
 
 bool ndbcluster_is_connected(uint max_wait_sec);
 void ndbcluster_disconnect(void);
+void ndbcluster_stop_error_print(void);
 
 Ndb_cluster_connection *ndb_get_cluster_connection();
 ulonglong ndb_get_latest_trans_gci();

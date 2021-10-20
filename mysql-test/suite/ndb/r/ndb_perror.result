@@ -6,7 +6,7 @@ NDB error code 4008: Receive from NDB failed: Unknown result: Unknown result err
 # 1b) Should print error number and description for more
 #     than one error codes
 NDB error code 4008: Receive from NDB failed: Unknown result: Unknown result error
-NDB error code 4009: Cluster Failure: Unknown result: Unknown result error
+NDB error code 4009: No data node(s) available, check Cluster state: Unknown result: Unknown result error
 #
 # 1c) Should print error description _only_ for 
 #     NDB error codes like 4008 when in silent mode

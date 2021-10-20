@@ -138,6 +138,8 @@ public:
   // My own processor id
   NodeId ownId() const;
 
+  void set_error_print(bool val);
+
   void connected();
 
   void doConnect(int NodeId);
@@ -148,7 +150,7 @@ public:
   NodeId get_an_alive_node();
   void trp_node_status(NodeId, Uint32 event);
 
-  bool is_cluster_completely_unavailable();
+  void is_cluster_completely_unavailable(Int32 &error, Uint32 line);
 
   /**
    * Send signal to each registered object
@@ -558,6 +560,8 @@ private:
     void unlock_send();
   } m_send_buffers[MAX_NODES];
 
+  bool m_error_print;
+
   /**
    * The set of nodes having a 'm_send_buffer[]::m_node_active '== true'
    * This is the set of all nodes we have been configured to send to.
@@ -635,10 +639,11 @@ TransporterFacade::TFSendBuffer::unlock_send()
 #include "ndb_cluster_connection_impl.hpp"
 
 inline
-bool
-TransporterFacade::is_cluster_completely_unavailable()
+void
+TransporterFacade::is_cluster_completely_unavailable(Int32 & error,
+                                                     Uint32 line)
 {
-  return theClusterMgr->is_cluster_completely_unavailable();
+  theClusterMgr->is_cluster_completely_unavailable(error, line);
 }
 
 inline

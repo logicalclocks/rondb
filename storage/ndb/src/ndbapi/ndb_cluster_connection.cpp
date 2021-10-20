@@ -114,6 +114,15 @@ Uint32 Ndb_cluster_connection::get_config_generation() const
   return m_impl.m_config_generation;
 }
 
+void
+Ndb_cluster_connection::set_error_print(bool val)
+{
+  if (m_impl.m_transporter_facade)
+  {
+    m_impl.m_transporter_facade->set_error_print(val);
+  }
+}
+
 int
 Ndb_cluster_connection::unset_recv_thread_cpu(Uint32 recv_thread_id)
 {
@@ -551,6 +560,10 @@ Ndb_cluster_connection_impl::~Ndb_cluster_connection_impl()
 
   // Wait until all Ndb instances belonging to this Ndb_cluster_connection
   // have been released(they have references to the TransporterFacade)
+  if (m_transporter_facade)
+  {
+    m_transporter_facade->set_error_print(false);
+  }
   NdbMutex_Lock(m_new_delete_ndb_mutex);
   if (m_first_ndb_object)
   {

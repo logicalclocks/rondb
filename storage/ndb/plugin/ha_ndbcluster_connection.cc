@@ -249,6 +249,7 @@ int ndbcluster_connect(int (*connect_callback)(void),
     g_ndb_cluster_connection->set_service_uri("mysql", processinfo_host,
                                               processinfo_port, buf);
   }
+  g_ndb_cluster_connection->set_error_print(true);
   g_ndb_cluster_connection->set_optimized_node_selection(optimized_node_select);
   g_ndb_cluster_connection->set_recv_thread_activation_threshold(
       recv_thread_activation_threshold);
@@ -312,6 +313,7 @@ int ndbcluster_connect(int (*connect_callback)(void),
         g_pool[i]->set_service_uri("mysql", processinfo_host, processinfo_port,
                                    buf);
       }
+      g_pool[i]->set_error_print(true);
       g_pool[i]->set_optimized_node_selection(optimized_node_select);
       g_pool[i]->set_recv_thread_activation_threshold(
           recv_thread_activation_threshold);
@@ -380,6 +382,17 @@ int ndbcluster_connect(int (*connect_callback)(void),
     return -1;
   }
   return 0;
+}
+
+void ndbcluster_stop_error_print(void)
+{
+  for (uint i = 0; i < g_pool_alloc; i++)
+  {
+    if (g_pool[i])
+    {
+      g_pool[i]->set_error_print(false);
+    }
+  }
 }
 
 void ndbcluster_disconnect(void) {

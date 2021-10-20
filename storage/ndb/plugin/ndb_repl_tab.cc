@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2012, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -31,6 +32,8 @@
 #include "storage/ndb/plugin/ndb_share.h"
 #include "storage/ndb/plugin/ndb_sleep.h"
 #include "storage/ndb/plugin/ndb_table_guard.h"
+
+extern bool is_cluster_failure_code(int error);
 
 Ndb_rep_tab_key::Ndb_rep_tab_key(const char *_db, const char *_table_name,
                                  uint _server_id) {
@@ -346,11 +349,14 @@ int Ndb_rep_tab_reader::lookup(Ndb *ndb,
   do {
     if (reptab == NULL) {
       if (ndbtab_g.getNdbError().classification == NdbError::SchemaError ||
-          ndbtab_g.getNdbError().code == 4009) {
+          is_cluster_failure_code(ndbtab_g.getNdbError().code))
+      {
         DBUG_PRINT("info",
                    ("No %s.%s table", ndb_rep_db, ndb_replication_table));
         return 0;
-      } else {
+      }
+      else
+      {
         error = 0;
         ndberror = ndbtab_g.getNdbError();
         break;

@@ -488,6 +488,16 @@ copy(Uint32 * & insertPtr,
   abort();
 }
 
+void
+TransporterFacade::set_error_print(bool val)
+{
+  m_error_print = val;
+  if (theClusterMgr != nullptr)
+  {
+    theClusterMgr->set_error_print(val);
+  }
+}
+
 /**
  * Note that this function needs no locking since it is
  * only called from the constructor of Ndb (the NdbObject)
@@ -529,6 +539,8 @@ TransporterFacade::start_instance(NodeId nodeId,
   {
     DBUG_RETURN(-1);
   }
+
+  theClusterMgr->set_error_print(m_error_print);
 
   if (!configure(nodeId, conf))
   {
