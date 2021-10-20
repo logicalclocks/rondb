@@ -603,6 +603,16 @@ angel_run(const char* progname,
                            retriever.get_mgmd_port());
   g_eventLogger->info("Angel connected to '%s'", sockaddr_string);
 
+  /**
+   * Gives information to users before allocating nodeid if invalid
+   * configuration is fetched or configuration is not yet committed.
+   */
+  if (!retriever.getConfig(retriever.get_mgmHandle())) {
+    g_eventLogger->info("Could not fetch configuration/invalid "
+                        "configuration, message: '%s'",
+                        retriever.getErrorString());
+  }
+
   const int alloc_retries = 10;
   const int alloc_delay = 3;
   const Uint32 nodeid = retriever.allocNodeId(alloc_retries, alloc_delay);
@@ -614,7 +624,7 @@ angel_run(const char* progname,
   }
   g_eventLogger->info("Angel allocated nodeid: %u", nodeid);
 
-  ndb_mgm_config_unique_ptr config(retriever.getConfig(nodeid));
+  const ndb_mgm::config_ptr config(retriever.getConfig(nodeid));
   if (!config)
   {
     g_eventLogger->error("Could not fetch configuration/invalid "
@@ -787,7 +797,7 @@ angel_run(const char* progname,
                          child_error, child_signal, child_sphase);
           angel_exit(0);
         }
-        // Fall-through
+        [[fallthrough]];
       case NRT_DoStart_Restart:
         initial = false;
         no_start = false;

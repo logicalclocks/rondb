@@ -461,9 +461,13 @@ private:
                          Uint8 prio,
                          const Uint32 *signalData,
                          NodeId nodeId,
-                         TrpId &trp_id,
+                         Transporter* t,
                          AnySectionArg section);
 
+  Transporter* prepareSend_getTransporter(const SignalHeader *signalHeader,
+                                          NodeId nodeId,
+                                          TrpId &trp_id,
+                                          SendStatus& status);
 
 public:
   SendStatus prepareSend(TransporterSendBufferHandle *sendHandle,
@@ -489,7 +493,15 @@ public:
                          const Uint32 *signalData,
                          NodeId nodeId,
                          const GenericSectionPtr ptr[3]);
-  
+
+  SendStatus prepareSendOverAllLinks(
+                         TransporterSendBufferHandle *sendHandle,
+                         const SignalHeader *signalHeader,
+                         Uint8 prio,
+                         const Uint32 *signalData,
+                         NodeId nodeId,
+                         TrpBitmask &trp_mask);
+
   /* Send on a specific transporter */
   bool performSend(TrpId id, bool need_wakeup = true);
   /* performSendNode is only used from NDB API */

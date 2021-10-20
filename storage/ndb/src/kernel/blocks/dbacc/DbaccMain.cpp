@@ -1608,7 +1608,7 @@ void Dbacc::execACCKEYREQ(Signal* signal,
       jamDebug();
       opbits &= ~(Uint32)Operationrec::OP_MASK;
       opbits |= (op = ZINSERT);
-      // Fall through
+      [[fallthrough]];
     case ZINSERT:
       jam();
       ndbassert(!m_is_in_query_thread);

@@ -45,7 +45,6 @@
 #include <SignalCounter.hpp>
 #include <Bitmask.hpp>
 #include <AttributeList.hpp>
-#include <signaldata/GetTableId.hpp>
 #include <signaldata/GetTabInfo.hpp>
 #include <signaldata/DictTabInfo.hpp>
 #include <signaldata/CreateTable.hpp>
@@ -909,7 +908,6 @@ private:
   void execDICTSTARTREQ(Signal* signal);
 
   void execGET_TABINFOREQ(Signal* signal);
-  void execGET_TABLEDID_REQ(Signal* signal);
   void execGET_TABINFOREF(Signal* signal);
   void execGET_TABINFO_CONF(Signal* signal);
   void execCONTINUEB(Signal* signal);
@@ -4565,10 +4563,6 @@ private:
 			  GetTabInfoReq*,
 			  GetTabInfoRef::ErrorCode errorCode,
                           Uint32 errorLine);
-
-  void sendGET_TABLEID_REF(Signal* signal,
-			   GetTableIdReq * req,
-			   GetTableIdRef::ErrorCode errorCode);
 
   void sendGetTabResponse(Signal* signal);
 

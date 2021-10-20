@@ -2299,7 +2299,6 @@ THRConfigRebinder::~THRConfigRebinder()
                           rc);
       return;
     }
-    /* Fall through */
     break;
   }
   case 1:    /* Unbound */

@@ -51,6 +51,12 @@ ADD_LIBRARY(ndbkernel STATIC
   ndbd_malloc_impl.cpp
 )
 
+# 'sbrk' is deprecated [-Wdeprecated-declarations]
+IF(APPLE)
+  ADD_COMPILE_FLAGS(ndbd_malloc_impl.cpp COMPILE_FLAGS
+    " -Wno-error=deprecated-declarations")
+ENDIF()
+
 ADD_LIBRARY(ndbsched STATIC
   FastScheduler.cpp
   LongSignal_nonmt.cpp

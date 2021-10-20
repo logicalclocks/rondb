@@ -1601,7 +1601,7 @@ out:
       trigAttrInfo->setTriggerId(triggerId);
     }
   }
-  // Fall through
+  [[fallthrough]];
   case (TriggerType::REORG_TRIGGER):
   case (TriggerType::FK_PARENT):
   case (TriggerType::FK_CHILD):
@@ -1734,13 +1734,13 @@ out:
       switch(regOperPtr->m_copy_tuple_location.m_file_no){
       case Operationrec::RF_SINGLE_NOT_EXIST:
         jam();
-        // Fall through
+        [[fallthrough]];
       case Operationrec::RF_MULTI_NOT_EXIST:
         jam();
         goto is_delete;
       case Operationrec::RF_SINGLE_EXIST:
         jam();
-        // Fall through
+        [[fallthrough]];
       case Operationrec::RF_MULTI_EXIST:
         jam();
         goto is_insert;
@@ -1780,14 +1780,14 @@ out:
     switch(regOperPtr->m_copy_tuple_location.m_file_no){
     case Operationrec::RF_SINGLE_NOT_EXIST:
       jam();
-      // Fall through
+      [[fallthrough]];
     case Operationrec::RF_MULTI_NOT_EXIST:
       jam();
       fireTrigOrd->m_triggerEvent = TriggerEvent::TE_DELETE;
       break;
     case Operationrec::RF_SINGLE_EXIST:
       jam();
-      // Fall through
+      [[fallthrough]];
     case Operationrec::RF_MULTI_EXIST:
       jam();
       fireTrigOrd->m_triggerEvent = TriggerEvent::TE_INSERT;

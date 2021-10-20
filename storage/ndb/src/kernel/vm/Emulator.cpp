@@ -143,7 +143,7 @@ static const char* const jamFileNames[] =
    "ConfigChange.hpp",                   // 7
    "CreateIndx.hpp",                     // 8
    "StartInfo.hpp",                      // 9
-   "GetTableId.hpp",                     // 10
+   "GetTableId.hpp",                     // 10 DELETED FILE
    "NextScan.hpp",                       // 11
    "DihFragCount.hpp",                   // 12
    "CmInit.hpp",                         // 13 DELETED FILE
@@ -679,6 +679,8 @@ static const char* const jamFileNames[] =
    "IntrusiveList64.cpp",                // 543
    "Intrusive64List.hpp",                // 544
    "Abort.hpp",                          // 545
+   "TrpKeepAlive.hpp",                   // 546
+   "TrpKeepAlive.cpp",                   // 547
    };
 
 bool 

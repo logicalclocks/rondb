@@ -62,12 +62,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
                                  const char * status,
                                  char *buf, unsigned sz)
 {
-  char tmp[NDB_VERSION_STRING_BUF_SZ];
-  if (status && status[0] != 0)
-    snprintf(tmp, sizeof(tmp), "%s", status);
-  else
-    tmp[0] = 0;
-
+  const char * tmp = (status == nullptr) ? "" : status;
   if (false && mysql_version)
   {
     bool add_mysql_zero = getMinor(mysql_version) != 0 &&

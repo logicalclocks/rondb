@@ -1919,7 +1919,7 @@ void Dbtc::execTCSEIZEREQ(Signal* signal)
 	    case NodeState::SL_STOPPING_2:
               if (getNodeState().getSingleUserMode())
                 break;
-              // Fall through
+              [[fallthrough]];
             case NodeState::SL_STOPPING_3:
             case NodeState::SL_STOPPING_4:
               if(getNodeState().stopping.systemShutdown)
@@ -2482,7 +2482,7 @@ start_failure:
         terrorCode  = ZCLUSTER_IN_SINGLEUSER_MODE;
         break;
       }
-      // Fall through
+      [[fallthrough]];
     case NodeState::SL_STOPPING_3:
     case NodeState::SL_STOPPING_4:
       if(getNodeState().stopping.systemShutdown)
@@ -2499,7 +2499,7 @@ start_failure:
         terrorCode  = ZCLUSTER_IN_SINGLEUSER_MODE;
         break;
       }
-      // Fall through
+      [[fallthrough]];
     default:
       terrorCode = ZWRONG_STATE;
       break;
@@ -2577,6 +2577,13 @@ start_failure:
   {
     jam();
     terrorCode = ZNO_FREE_TC_MARKER_DATABUFFER;
+    abortErrorLab(signal, apiConnectptr);
+    return;
+  }
+  case 68:
+  {
+    jam();
+    terrorCode = ZHIT_TC_CONNECTION_LIMIT;
     abortErrorLab(signal, apiConnectptr);
     return;
   }
@@ -3473,7 +3480,7 @@ void Dbtc::execTCKEYREQ(Signal* signal)
       break;
     }
     jam();
-    // Fall through
+    [[fallthrough]];
   default:
     jam();
     jamLine(regApiPtr->apiConnectstate);
@@ -3871,7 +3878,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
                    m_take_over_operations))
       {
         jam();
-        TCKEY_abort(signal, 65, apiConnectptr);
+        /* Not allowed any more stateful operations */
+        TCKEY_abort(signal, 68, apiConnectptr);
         return;
       }
       regTcPtr->m_overtakeable_operation = 1;
@@ -3957,6 +3965,7 @@ void Dbtc::execTCKEYREQ(Signal* signal)
         if (unlikely(regApiPtr->m_write_count > m_take_over_operations))
         {
           jam();
+          /* This transaction is too big */
           TCKEY_abort(signal, 65, apiConnectptr);
           return;
         }
@@ -3964,6 +3973,7 @@ void Dbtc::execTCKEYREQ(Signal* signal)
       else if (unlikely(regApiPtr->m_write_count > m_max_writes_per_trans))
       {
         jam();
+        /* This transaction is too big */
         TCKEY_abort(signal, 65, apiConnectptr);
         return;
       }
@@ -3971,7 +3981,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
                    m_take_over_operations))
       {
         jam();
-        TCKEY_abort(signal, 65, apiConnectptr);
+        /* Not allowed any more stateful operations */
+        TCKEY_abort(signal, 68, apiConnectptr);
         return;
       }
       regTcPtr->m_overtakeable_operation = 1;
@@ -5098,6 +5109,22 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
     else
     {
       jamDebug();
+      /*
+       * LQHKEYREQ signals to query threads should use virtual block V_QUERY
+       * not address DBQLQH directly.
+       *
+       * The receiver will select an appropriate DBLQH or DBQLQH instance.
+       *
+       * All node versions (>=8.0.23) supporting virtual query blocks also
+       * support fragmented LQHKEYREQ and should not end up in this else
+       * branch.
+       *
+       * Only DBSPJ and DBLQH are intended receivers for LQHKEYREQ signals to
+       * old nodes (<8.0.18) not supporting fragmented LQHKEYREQ.
+       *
+       * RonDB only support upgrades from 8.0.21 and later, so can only come
+       * from DBLQH here.
+       */
       ndbrequire(refToMain(TBRef) == DBLQH);
       regTcPtr->lqhkeyreq_ref = TBRef;
       sendSignal(TBRef, GSN_LQHKEYREQ, signal,
@@ -5396,7 +5423,7 @@ void Dbtc::execSIGNAL_DROPPED_REP(Signal* signal)
   switch(originalGSN) {
   case GSN_TCKEYREQ:
     jam(); 
-    /* Fall through */
+    [[fallthrough]];
   case GSN_TCINDXREQ:
   {
     jam();
@@ -5524,7 +5551,7 @@ void Dbtc::execSIGNAL_DROPPED_REP(Signal* signal)
   }
   case GSN_TRANSID_AI_R:  //TODO
     jam();
-    // Fall through
+    [[fallthrough]];
   default:
     jam();
     /* Don't expect dropped signals for other GSNs,
@@ -9206,10 +9233,10 @@ ABORT020:
     break;
   case OS_PREPARED:
     jam();
-    // Fall through
+    [[fallthrough]];
   case OS_OPERATING:
     jam();
-    // Fall through
+    [[fallthrough]];
   case OS_FIRE_TRIG_REQ:
     jam();
     /*----------------------------------------------------------------------
@@ -9771,14 +9798,14 @@ void Dbtc::timeOutFoundLab(Signal* signal, Uint32 TapiConPtr, Uint32 errCode)
     // We are simply waiting for a signal in the job buffer. Only extreme
     // conditions should get us here. We ignore it.
     /*------------------------------------------------------------------*/
-    // Fall through
+    [[fallthrough]];
   case CS_COMPLETING:
     jam();
     /*------------------------------------------------------------------*/
     // We are simply waiting for a signal in the job buffer. Only extreme
     // conditions should get us here. We ignore it.
     /*------------------------------------------------------------------*/
-    // Fall through
+    [[fallthrough]];
   case CS_PREPARE_TO_COMMIT:
   {
     jam();
@@ -10447,10 +10474,10 @@ void Dbtc::timeOutFoundFragLab(Signal* signal, UintR TscanConPtr)
   }
   case ScanFragRec::DELIVERED:
     jam();
-    // Fall through
+    [[fallthrough]];
   case ScanFragRec::IDLE:
     jam();
-    // Fall through
+    [[fallthrough]];
   case ScanFragRec::QUEUED_FOR_DELIVERY:
     jam();
     /*-----------------------------------------------------------------------
@@ -19684,7 +19711,8 @@ Uint32 Dbtc::saveTRANSID_AI(Signal* signal,
         indexOp->transIdAIState= ITAS_WAIT_KEY_FAIL;
       }
     }
-      // Fall through to ITAS_WAIT_KEY_FAIL state handling
+    // Fall through to ITAS_WAIT_KEY_FAIL state handling
+    [[fallthrough]];
 
     case ITAS_WAIT_KEY_FAIL:
     {
@@ -19712,7 +19740,7 @@ Uint32 Dbtc::saveTRANSID_AI(Signal* signal,
 
     case ITAS_ALL_RECEIVED:
       jam();
-      // Fall through
+      [[fallthrough]];
     default:
       jam();
       /* Bad state, or bad state to receive TransId_Ai in */

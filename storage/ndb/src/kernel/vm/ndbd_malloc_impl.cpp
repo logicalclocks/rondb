@@ -2266,7 +2266,7 @@ void perf_test(int sz, int run_time)
       { // Seize(n) - fail
         alloc += sz;
       }
-      // Fall through
+      [[fallthrough]];
       case 1:
       { // Seize(n) (success)
         Chunk chunk;
