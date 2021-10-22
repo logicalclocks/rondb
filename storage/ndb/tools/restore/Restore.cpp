@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -899,7 +900,7 @@ RestoreMetaData::parseTableDescriptor(const Uint32 * data, Uint32 len)
 {
   NdbTableImpl* tableImpl = 0;
   int ret = NdbDictInterface::parseTableInfo
-    (&tableImpl, data, len, false,
+    (&tableImpl, data, len, false, nullptr,
      ndbd_drop6(m_fileHeader.NdbVersion) ? MAKE_VERSION(5,1,2) :
      m_fileHeader.NdbVersion);
   

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2010, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -111,6 +112,9 @@ public:
   int safe_noflush_sendSignal(const NdbApiSignal*, Uint32 nodeId,
                               const LinearSectionPtr ptr[3], Uint32 secs);
 
+  Uint32 get_node_change_count();
+  void lock_node_state();
+  void unlock_node_state();
 private:
   /**
    * TransporterSendBufferHandle interface

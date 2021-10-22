@@ -225,7 +225,7 @@ public:
 
   Uint32 getFragmentNodes(Uint32 fragmentId, 
                           Uint32* nodeIdArrayPtr,
-                          Uint32 arraySize) const;
+                          Uint32 arraySize);
 
   const char * getMysqlName() const;
   int updateMysqlName();
@@ -275,6 +275,32 @@ public:
   Uint32 m_hashpointerValue;
   Vector<Uint16> m_fragments;
   Vector<Uint16> m_hash_map;
+  /**
+   * To find the primary node of a fragment use the fragment id as index
+   * into this array.
+   *
+   * Each entry in the m_primary nodes consists of 2 items.
+   * The upper bits is the number of live nodes in the node group
+   * for the fragment. The lower bits is the node id of the primary node.
+   *
+   * If we find that the primary node is no longer alive or that the
+   * number of live nodes is no longer correct, in this case we will
+   * recalculate the primary nodes of all fragments in the table.
+   *
+   * The recalculation will be done with mutex protection to ensure that
+   * only one thread can update the array. During this update we will
+   * always update 32 bits at a time, thus we can be certain that any
+   * reader will see either the correct value or an old value. Seeing
+   * an old value will in the worst case mean that we select a transaction
+   * coordinator which isn't optimal.
+   *
+   * The variable m_node_change_count indicates the node change count
+   * that we based the calculation of m_primary_nodes on. Each change in
+   * node change count requires a new recalculation of primary nodes.
+   */
+  Vector<Uint32> m_primary_nodes;
+  NdbMutex m_primary_node_mutex;
+  Uint32 m_node_change_count;
 
   Uint64 m_max_rows;
   Uint64 m_min_rows;
@@ -358,13 +384,18 @@ public:
   Uint32 get_nodes(NdbImpl *impl_ndb,
                    Uint32 partitionId,
                    const Uint16** nodes,
-                   Uint32 & primary_node) const ;
+                   Uint32 & primary_node);
 
   /**
    * Calculate number of node groups
    */
   void calculate_node_groups();
 
+  /**
+   * Calculate primary replicas of the table.
+   */
+  void calculate_primary_replicas(bool initial,
+                                  class NdbImpl*);
   /**
    * Disk stuff
    */
@@ -807,6 +838,7 @@ public:
   static int parseTableInfo(NdbTableImpl ** dst, 
 			    const Uint32 * data, Uint32 len,
 			    bool fullyQualifiedNames,
+                            class NdbImpl*,
                             Uint32 version= 0xFFFFFFFF);
 
   static int parseFileInfo(NdbFileImpl &dst,

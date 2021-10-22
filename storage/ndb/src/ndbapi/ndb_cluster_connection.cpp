@@ -243,7 +243,7 @@ Uint32
 Ndb_cluster_connection_impl::get_next_node(Ndb_cluster_connection_node_iter &iter)
 {
   /**
-   * Note that iter may be out dated by changes to m_nodes_proximity.
+   * Note that iter may be outdated by changes to m_nodes_proximity.
    * m_nodes_proximity can be changed by application calling
    * set_data_node_neighbour() which in turn calls adjust_node_proximity that
    * can rearrange the nodes.  This can even happen concurrently by another

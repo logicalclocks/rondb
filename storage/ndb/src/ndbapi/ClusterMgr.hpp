@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -197,10 +198,14 @@ private:
    *
    * A mutex to ensure that we change the state of nodes in a
    * controlled fashion.
+   *
+   * The node state counter is used to know when to recalculate
+   * the primary replicas in the table objects.
    */
   bool m_error_print;
   bool m_state_changed;
   bool m_ever_connected;
+  Uint32 m_node_change_count;
   NdbMutex *m_node_state_mutex;
 
   /**
@@ -259,6 +264,9 @@ public:
    */
   void trp_deliver_signal(const NdbApiSignal*,
                           const LinearSectionPtr p[3]) override;
+  Uint32 get_node_change_count();
+  void lock_node_state();
+  void unlock_node_state();
 };
 
 inline
@@ -267,6 +275,27 @@ ClusterMgr::getNodeInfo(NodeId nodeId) const {
   // Check array bounds
   assert(nodeId < MAX_NODES);
   return theNodes[nodeId];
+}
+
+inline
+Uint32
+ClusterMgr::get_node_change_count()
+{
+  return m_node_change_count;
+}
+
+inline
+void
+ClusterMgr::lock_node_state()
+{
+  NdbMutex_Lock(m_node_state_mutex);
+}
+
+inline
+void
+ClusterMgr::unlock_node_state()
+{
+  NdbMutex_Unlock(m_node_state_mutex);
 }
 
 inline

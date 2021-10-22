@@ -709,6 +709,27 @@ trp_client::getNodeInfo(Uint32 nodeId) const
   return m_facade->theClusterMgr->getNodeInfo(nodeId);
 }
 
+inline
+Uint32
+trp_client::get_node_change_count()
+{
+  return m_facade->theClusterMgr->get_node_change_count();
+}
+
+inline
+void
+trp_client::lock_node_state()
+{
+  return m_facade->theClusterMgr->lock_node_state();
+}
+
+inline
+void
+trp_client::unlock_node_state()
+{
+  return m_facade->theClusterMgr->unlock_node_state();
+}
+
 /** 
  * LinearSectionIterator
  *

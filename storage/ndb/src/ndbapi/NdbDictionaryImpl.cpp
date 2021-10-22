@@ -677,6 +677,7 @@ NdbTableImpl::~NdbTableImpl()
     free(const_cast<unsigned char *>(m_pkMask));
     m_pkMask= 0;
   }
+  NdbMutex_Deinit(&m_primary_node_mutex);
 }
 
 void
@@ -734,6 +735,7 @@ NdbTableImpl::init(){
   m_read_backup = 0;
   m_fully_replicated = false;
 
+  NdbMutex_Init(&m_primary_node_mutex);
 #ifdef VM_TRACE
   {
     char buf[100];
@@ -1589,7 +1591,7 @@ NdbTableImpl::getRangeListDataLen() const
 Uint32
 NdbTableImpl::getFragmentNodes(Uint32 fragmentId, 
                                Uint32* nodeIdArrayPtr,
-                               Uint32 arraySize) const
+                               Uint32 arraySize)
 {
   const Uint16 *shortNodeIds;
   Uint32 primary_node = 0;
@@ -1598,7 +1600,7 @@ NdbTableImpl::getFragmentNodes(Uint32 fragmentId,
                                &shortNodeIds,
                                primary_node);
 
-  for(Uint32 i = 0; 
+  for(Uint32 i = 0;
       ((i < nodeCount) &&
        (i < arraySize)); 
       i++)
@@ -1936,12 +1938,230 @@ NdbTableImpl::checkColumnHash() const
 }
 
 //#define DEBUG_PRIMARY_KEY_DISTRIBUTION
+#define ZNIL 0xFFFF
+struct TmpNodeGroup
+{
+  Uint16 num_fragments;
+  Uint16 num_nodes_alive;
+  Uint16 fragment_count_in_batch;
+  Uint16 fragment_per_batch;
+  Uint16 batch_index;
+  Uint16 alive_nodes[MAX_REPLICAS];
+};
+
+static
+int
+compare_node_ids(const void* left_ptr,
+                 const void* right_ptr)
+{
+  Uint16 left = *(Uint16*)left_ptr;
+  Uint16 right = *(Uint16*)right_ptr;
+  if (left < right)
+    return -1;
+  else if (left > right)
+    return +1;
+  return 0;
+}
+
+void
+NdbTableImpl::calculate_primary_replicas(bool initial,
+                                         NdbImpl *impl_ndb)
+{
+  /**
+   * The mutex ensure that only one thread at a time will
+   * change the settings of primary nodes. However readers
+   * can execute concurrently. To ensure consistency we check
+   * that the numbers of alive nodes is consistent with what
+   * the reader sees and we also check that we have seen the
+   * correct number of changes to node status (up/down).
+   *
+   * At worst we could read an old value or a new value before
+   * all fragments have completed. The worst that could occur
+   * here is that we use the wrong data node as transaction
+   * coordinator. We always update the primary node as a 32-bit
+   * variable which is an atomic update on all modern processors.
+   */
+  if (initial)
+  {
+    for (Uint32 i = 0; i < m_fragmentCount; i++)
+    {
+      m_primary_nodes.push_back(Uint32(0));
+    }
+  }
+  if (impl_ndb == nullptr)
+  {
+    /**
+     * Restore uses this object to read data from disk, no need to
+     * create map of primary replicas since it won't be used for
+     * communication with the data nodes. Even if it did, this will
+     * simply mean that no hints will work with this object.
+     */
+    return;
+  }
+  if (m_replicaCount == 1)
+  {
+    /**
+     * No need to do complex calculations for 1 replica case.
+     */
+    for (Uint32 i = 0; m_fragmentCount; i++)
+    {
+      Uint32 node = m_fragments[i];
+      Uint32 node_var = (1 << 16) + node;
+      m_primary_nodes[i] = node_var;
+    }
+    return;
+  }
+  impl_ndb->lock_node_state();
+  NdbMutex_Lock(&m_primary_node_mutex);
+  Uint32 node_change_count = impl_ndb->get_node_change_count();
+  if (node_change_count == m_node_change_count && !initial)
+  {
+    /**
+     * Already updated with this node change count, thus would
+     * simply recalculate the same values.
+     */
+    impl_ndb->unlock_node_state();
+    NdbMutex_Unlock(&m_primary_node_mutex);
+    return;
+  }
+  /**
+   * Prepare local data structures for this function
+   */
+  TmpNodeGroup ng_data[MAX_NDB_NODES];
+  bool node_found[MAX_NDB_NODES];
+  NodeId node_ng_map[MAX_NDB_NODES];
+  Uint32 *primary_nodes = m_primary_nodes.getBase();
+  for (Uint32 i = 0; i < MAX_NDB_NODES; i++)
+  {
+    node_found[i] = false;
+    node_ng_map[i] = ZNIL;
+    ng_data[i].num_fragments = 0;
+    ng_data[i].num_nodes_alive = 0;
+    ng_data[i].fragment_count_in_batch = 0;
+    ng_data[i].fragment_per_batch = 0;
+    ng_data[i].batch_index = 0;
+    memset(&ng_data[i].alive_nodes[0], 0, sizeof(Uint16) * MAX_REPLICAS);
+  }
+  Uint32 next_ng = 0;
+  for (Uint32 i = 0; i < m_fragmentCount; i++)
+  {
+    Uint32 pos = i * m_replicaCount;
+    Uint16 *nodes = m_fragments.getBase() + pos;
+    Uint32 ng = 0;
+    Uint32 first_node = nodes[0];
+    bool first = true;
+    if (node_found[first_node])
+    {
+      ng = node_ng_map[first_node];
+      first = false;
+    }
+    else
+    {
+      ng = next_ng;
+      next_ng++;
+    }
+    for (Uint32 j = 0; j < m_replicaCount; j++)
+    {
+      Uint32 node = nodes[j];
+      require(node < MAX_NDB_NODES);
+      if (first)
+      {
+        require(node_found[node] == false);
+        node_ng_map[node] = ng;
+        if (impl_ndb->get_node_available(node))
+        {
+          Uint32 curr_alive_inx = ng_data[ng].num_nodes_alive;
+          ng_data[ng].alive_nodes[curr_alive_inx] = node;
+          ng_data[ng].num_nodes_alive = curr_alive_inx + 1;
+        }
+      }
+      else
+      {
+        require(ng == node_ng_map[node]);
+      }
+      node_found[node] = true;
+    }
+    ng_data[ng].num_fragments++;
+  }
+
+  for (Uint32 ng_i = 0; ng_i < next_ng; ng_i++)
+  {
+    Uint32 num_alive = ng_data[ng_i].num_nodes_alive;
+    Uint32 num_fragments = ng_data[ng_i].num_fragments;
+    if (num_alive > 0)
+    {
+      ng_data[ng_i].fragment_per_batch =
+        (num_fragments + (num_alive - 1)) / num_alive;
+      qsort(&ng_data[ng_i].alive_nodes[0],
+            num_alive,
+            sizeof(Uint16),
+            compare_node_ids);
+#ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
+      fprintf(stderr, "NG%u num_frags: %u, f_p_b: %u nodes: ",
+              ng_i,
+              ng_data[ng_i].num_fragments,
+              ng_data[ng_i].fragment_per_batch);
+      for (Uint32 j = 0; j < num_alive; j++)
+      {
+        fprintf(stderr, "%u ", ng_data[ng_i].alive_nodes[j]);
+      }
+      fprintf(stderr, "\n");
+#endif
+    }
+  }
+  m_node_change_count = node_change_count;
+  impl_ndb->unlock_node_state();
+  for (Uint32 i = 0; i < m_fragmentCount; i++)
+  {
+    Uint32 pos = i * m_replicaCount;
+    Uint16 *nodes = m_fragments.getBase() + pos;
+    require(nodes[0] < MAX_NDB_NODES);
+    Uint32 ng_i = node_ng_map[nodes[0]];
+    require(ng_i < MAX_NDB_NODES);
+    require(ng_i < next_ng);
+    if (ng_data[ng_i].num_nodes_alive == 0)
+    {
+      primary_nodes[i] = 0;
+    }
+    else if (ng_data[ng_i].num_nodes_alive == 1)
+    {
+      primary_nodes[i] = (1 << 16) + ng_data[ng_i].alive_nodes[0];
+    }
+    else /* At least 2 replicas alive */
+    {
+      Uint32 num_alive = ng_data[ng_i].num_nodes_alive;
+      Uint32 inx = ng_data[ng_i].batch_index;
+      require(inx < num_alive);
+      Uint32 node = ng_data[ng_i].alive_nodes[inx];
+      Uint32 node_var = (num_alive << 16) + node;
+      primary_nodes[i] = node_var;
+      ng_data[ng_i].fragment_count_in_batch++;
+      if (ng_data[ng_i].fragment_count_in_batch >=
+          ng_data[ng_i].fragment_per_batch)
+      {
+        ng_data[ng_i].batch_index++;
+        ng_data[ng_i].fragment_count_in_batch = 0;
+      }
+    }
+  }
+#ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
+  fprintf(stderr, "node_change_count: %u\n", node_change_count);
+  for (Uint32 i = 0; i < m_fragmentCount; i++)
+  {
+    fprintf(stderr, "Fragment[%u].primary_node = %x ", i, primary_nodes[i]);
+    if (i % 8 == 7) fprintf(stderr, "\n");
+  }
+  fprintf(stderr, "\n");
+#endif
+  NdbMutex_Unlock(&m_primary_node_mutex);
+}
+
 void
 NdbTableImpl::calculate_node_groups()
 {
   m_numNodeGroups = 0;
   Uint16 *nodes = m_fragments.getBase();
-  bool node_array[MAX_NDB_NODES + 1];
+  bool node_array[MAX_NDB_NODES];
 
 #ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
   fprintf(stderr, "Table: %s", getMysqlName());
@@ -1953,7 +2173,7 @@ NdbTableImpl::calculate_node_groups()
   {
     return;
   }
-  for (Uint32 i = 1; i <= MAX_NDB_NODES; i++)
+  for (Uint32 i = 0; i < MAX_NDB_NODES; i++)
     node_array[i] = false;
   Uint32 num_fragments = m_fragmentCount;
   Uint32 fragment_array_size = num_fragments * m_replicaCount;
@@ -1961,7 +2181,20 @@ NdbTableImpl::calculate_node_groups()
   {
     Uint32 node = nodes[i];
 #ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
-    fprintf(stderr, "Fragment[%u]: %u", i, node);
+    Uint32 frag = i / m_replicaCount;
+    if (i % m_replicaCount == 0)
+    {
+      fprintf(stderr, "Fragment[%u]: %u ",
+              frag,
+              node);
+    }
+    else
+    {
+      fprintf(stderr, "%u ", node);
+    }
+    if (frag % 4 == 3 &&
+        (i % m_replicaCount == (m_replicaCount - 1)))
+      fprintf(stderr, "\n");
 #endif
     node_array[node] = true;
   }
@@ -1969,7 +2202,7 @@ NdbTableImpl::calculate_node_groups()
   fprintf(stderr, "\n");
 #endif
   Uint32 num_nodes = 0;
-  for (Uint32 i = 1; i <= MAX_NDB_NODES; i++)
+  for (Uint32 i = 1; i < MAX_NDB_NODES; i++)
   {
     if (node_array[i])
       num_nodes++;
@@ -1986,12 +2219,11 @@ Uint32
 NdbTableImpl::get_nodes(NdbImpl *impl_ndb,
                         Uint32 fragmentId,
                         const Uint16 ** nodes,
-                        Uint32 & primary_node) const
+                        Uint32 & primary_node)
 {
-  Uint32 num_fragments = m_fragmentCount;
   Uint32 pos = fragmentId * m_replicaCount;
+  Uint32 num_alive_nodes = 0;
   primary_node = 0;
-  Uint32 alive_nodes[MAX_REPLICAS];
   if (pos + m_replicaCount <= m_fragments.size())
   {
     *nodes = m_fragments.getBase()+pos;
@@ -2018,54 +2250,49 @@ NdbTableImpl::get_nodes(NdbImpl *impl_ndb,
     }
     else
     {
-      Uint32 num_alive_nodes = 0;
+      Uint32 live_node = 0;
       for (Uint32 i = 0; i < m_replicaCount; i++)
       {
         Uint32 node = (*nodes)[i];
         if (impl_ndb->get_node_available(node))
         {
-          /* Sort nodes in node id order */
-          for (Uint32 j = 0; j < num_alive_nodes; j++)
-          {
-            if (alive_nodes[j] > node)
-            {
-              Uint32 save_node = alive_nodes[j];
-              alive_nodes[j] = node;
-              node = save_node;
-            }
-            assert(node != alive_nodes[j]);
-          }
-          alive_nodes[num_alive_nodes] = node;
           num_alive_nodes++;
+          live_node = node;
         }
       }
       if (num_alive_nodes < 1)
       {
         ;
       }
+      else if (num_alive_nodes == 1)
+      {
+        primary_node = live_node;
+      }
       else
       {
-        Uint32 num_local_fragments =
-          (num_fragments * m_replicaCount) / m_numNodeGroups;
-        Uint32 num_per_node = num_local_fragments / num_alive_nodes;
-        num_per_node = MAX(num_per_node, 1);
-        Uint32 local_fid = fragmentId / m_numNodeGroups;
-        Uint32 inx = local_fid / num_per_node;
-        assert(inx < m_replicaCount);
-        assert(inx < num_alive_nodes);
-        primary_node = alive_nodes[inx];
-#ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
-        fprintf(stderr, "(%u,%u,%u) inx: %u num_per_node: %u, num_local_fragments: %u, local_fid: %u\n", alive_nodes[0], alive_nodes[1], alive_nodes[2], inx, num_per_node, num_local_fragments, local_fid);
-        fprintf(stderr, "primary_node: %u, fragmentId: %u, num_frags: %u, table: %s"
-                        ", num_replicas: %u, num_alive_nodes: %u\n",
-                primary_node,
-                fragmentId,
-                m_fragmentCount,
-                getMysqlName(),
-                m_replicaCount,
-                num_alive_nodes);
-#endif
+        Uint32 primary_node_var = m_primary_nodes[fragmentId];
+        Uint32 num_alive = primary_node_var >> 16;
+        primary_node = primary_node_var & 0xFFFF;
+        if (!impl_ndb->get_node_available(primary_node) ||
+            num_alive_nodes != num_alive ||
+            impl_ndb->get_node_change_count() != m_node_change_count)
+        {
+          calculate_primary_replicas(false, impl_ndb);
+          primary_node_var = m_primary_nodes[fragmentId];
+          primary_node = primary_node_var & 0xFFFF;
+        }
       }
+#ifdef DEBUG_PRIMARY_KEY_DISTRIBUTION
+      fprintf(stderr,
+              "Primary_node: %u, FragmentId: %u, num_frags: %u, table: %s"
+              ", num_replicas: %u, num_alive_nodes: %u\n",
+              primary_node,
+              fragmentId,
+              m_fragmentCount,
+              getMysqlName(),
+              m_replicaCount,
+              num_alive_nodes);
+#endif
     }
     return m_replicaCount;
   }
@@ -3423,7 +3650,8 @@ NdbDictInterface::getTable(class NdbApiSignal * signal,
   m_error.code = parseTableInfo(&rt, 
 				(Uint32*)m_buffer.get_data(), 
                                 m_buffer.length() / 4,
-                                true /* fully qualified */);
+                                true /* fully qualified */,
+                                m_impl);
   if(rt)
   {
     if (rt->m_fragmentType == NdbDictionary::Object::HashMapPartition)
@@ -3640,6 +3868,7 @@ int
 NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
 				 const Uint32 * data, Uint32 len,
 				 bool fullyQualifiedNames,
+                                 class NdbImpl *impl_ndb,
                                  Uint32 version)
 {
   SimplePropertiesLinearReader it(data, len);
@@ -3949,6 +4178,7 @@ NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
     }
     impl->m_hashValueMask = topBit - 1;
     impl->m_hashpointerValue = fragCount - (impl->m_hashValueMask + 1);
+    impl->calculate_primary_replicas(true, impl_ndb);
   }
   else
   {

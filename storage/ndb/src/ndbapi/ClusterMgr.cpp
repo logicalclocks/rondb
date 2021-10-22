@@ -115,7 +115,8 @@ ClusterMgr::ClusterMgr(TransporterFacade & _facade):
   m_hbFrequency(0),
   m_error_print(false),
   m_state_changed(true),
-  m_ever_connected(false)
+  m_ever_connected(false),
+  m_node_change_count(0)
 {
   DBUG_ENTER("ClusterMgr::ClusterMgr");
   clusterMgrThreadMutex = NdbMutex_Create();
@@ -938,10 +939,11 @@ ClusterMgr::execAPI_REGCONF(const NdbApiSignal * signal,
     if (node.compatible && (node.m_state.startLevel == NodeState::SL_STARTED ||
                             node.m_state.getSingleUserMode()))
     {
+      NdbMutex_Lock(m_node_state_mutex);
       if (!get_node_alive(node))
       {
-        NdbMutex_Lock(m_node_state_mutex);
         m_state_changed = true;
+        m_node_change_count++;
         if (m_error_print)
         {
           char our_buf[128];
@@ -969,15 +971,17 @@ ClusterMgr::execAPI_REGCONF(const NdbApiSignal * signal,
                         node_version_ptr,
                         started_ptr);
         }
-        NdbMutex_Unlock(m_node_state_mutex);
       }
       set_node_alive(node, true);
+      NdbMutex_Unlock(m_node_state_mutex);
     }
     else
     {
+      NdbMutex_Lock(m_node_state_mutex);
       if (get_node_alive(node))
       {
         m_state_changed = true;
+        m_node_change_count++;
         if (m_error_print)
         {
           char our_buf[128];
@@ -1023,6 +1027,7 @@ ClusterMgr::execAPI_REGCONF(const NdbApiSignal * signal,
         }
       }
       set_node_alive(node, false);
+      NdbMutex_Unlock(m_node_state_mutex);
     }
   }
 
@@ -1108,6 +1113,7 @@ ClusterMgr::execAPI_REGREF(const Uint32 * theData){
                                                   buf,
                                                   sizeof(buf));
     m_state_changed = true;
+    m_node_change_count++;
     if (m_error_print)
     {
       error_printer("(N%u) API_REGREF from node %u version %s",
@@ -1346,7 +1352,8 @@ ClusterMgr::reportConnected(NodeId nodeId)
     if (noOfConnectedDBNodes == 1)
     {
       // Data node connected, use ConnectBackoffMaxTime
-      theFacade.get_registry()->set_connect_backoff_max_time_in_ms(connect_backoff_max_time);
+      theFacade.get_registry()->set_connect_backoff_max_time_in_ms(
+        connect_backoff_max_time);
     }
     NdbMutex_Lock(m_node_state_mutex);
     m_state_changed = true;
@@ -1420,7 +1427,6 @@ ClusterMgr::reportDisconnected(NodeId nodeId)
 
   const bool node_failrep = theNode.m_node_fail_rep;
   const bool node_connected = theNode.is_connected();
-  set_node_dead(theNode);
   DEBUG_FPRINTF((stderr, "(%u)theNode.set_connected(false) for node: %u\n",
                          getOwnNodeId(), nodeId));
   theNode.set_connected(false);
@@ -1431,6 +1437,7 @@ ClusterMgr::reportDisconnected(NodeId nodeId)
    */
   if (unlikely(!node_connected))
   {
+    set_node_dead(theNode);
     if (theFacade.m_poll_owner != this)
       unlock();
     return;
@@ -1468,12 +1475,21 @@ ClusterMgr::reportDisconnected(NodeId nodeId)
         start_connect_backoff_max_time);
     }
     NdbMutex_Lock(m_node_state_mutex);
-    m_state_changed = true;
+    if (get_node_alive(theNode))
+    {
+      m_state_changed = true;
+      m_node_change_count++;
+    }
+    set_node_dead(theNode);
     if (m_error_print)
     {
       error_printer("(N%u) Node %d Disconnected", getOwnNodeId(), nodeId);
     }
     NdbMutex_Unlock(m_node_state_mutex);
+  }
+  else
+  {
+    set_node_dead(theNode);
   }
 
   /**
@@ -1554,19 +1570,20 @@ ClusterMgr::execNODE_FAILREP(const NdbApiSignal* sig,
 
     bool node_failrep = theNode.m_node_fail_rep;
     bool connected = theNode.is_connected();
+    NdbMutex_Lock(m_node_state_mutex);
     if (get_node_alive(theNode))
     {
-      NdbMutex_Lock(m_node_state_mutex);
       m_state_changed = true;
+      m_node_change_count++;
       if (m_error_print)
       {
         error_printer("(N%u) Node %u is dead due to missed heartbeats",
                       getOwnNodeId(),
                       i);
       }
-      NdbMutex_Unlock(m_node_state_mutex);
     }
     set_node_dead(theNode);
+    NdbMutex_Unlock(m_node_state_mutex);
 
     if (node_failrep == false)
     {

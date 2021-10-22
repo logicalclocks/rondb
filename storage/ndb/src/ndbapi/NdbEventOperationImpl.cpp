@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -997,7 +998,8 @@ NdbEventOperationImpl::receive_event()
       error.code = dif.parseTableInfo(&at,
                                       (Uint32*)m_buffer.get_data(), 
                                       m_buffer.length() / 4, 
-                                      true);
+                                      true,
+                                      m_ndb->theImpl);
       m_buffer.clear();
       if (unlikely(error.code))
       {
