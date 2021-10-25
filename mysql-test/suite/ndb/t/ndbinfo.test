@@ -606,6 +606,8 @@ if ($DUMP_INFO)
 # Now update some var-sized fields and check memory usage again.
 update t1 set vc1=repeat('x', a%300), tx1=repeat('y', a*2);
 
+--sleep 3
+
 select used_bytes - hash_index_alloc_bytes from pool_sum, frag_sum 
 where pool_name='Index memory';
 

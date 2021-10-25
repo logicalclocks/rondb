@@ -147,6 +147,12 @@ public:
 
   WakeupHandler* wakeHandler;
 
+  /**
+   * Timer used by transaction handling and scan handling. The timer
+   * can be reset from the data nodes by sending TC_HBREP signal.
+   */
+  NDB_TICKS m_start_time;
+
   AssembleBatchedFragments m_suma_fragmented_signals[MAX_NDB_NODES];
   NdbEventOperationImpl *m_ev_op;
 

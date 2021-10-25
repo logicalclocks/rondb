@@ -1357,6 +1357,7 @@ runTransError(NDBT_Context* ctx, NDBT_Step* step)
     printf("testing errcode: %d\n", terrorCodes[i]);
     runTransSnapshot(ctx, step);
     runLongSignalMemorySnapshotStart(ctx, step);
+    sleep(2);
     runRSSsnapshot(ctx, step);
 
     res.insertErrorInAllNodes(terrorCodes[i]);
@@ -1375,6 +1376,7 @@ runTransError(NDBT_Context* ctx, NDBT_Step* step)
      */
     runRSSsnapshotCheck(ctx, step);
     runTransSnapshotCheck(ctx, step);
+    sleep(2);
     runLongSignalMemorySnapshotCheck(ctx, step);
   }
 

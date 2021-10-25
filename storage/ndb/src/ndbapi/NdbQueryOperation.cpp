@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2011, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2809,7 +2810,8 @@ NdbQueryImpl::awaitMoreResults(bool forceSend)
         const FetchResult waitResult = static_cast<FetchResult>
           (poll_guard.wait_scan(3*timeout, 
                                 nodeId, 
-                                forceSend));
+                                forceSend,
+                                &ndb->m_start_time));
 
         if (ndb->getNodeSequence(nodeId) != seq)
           setFetchTerminated(Err_NodeFailCausedAbort,false);
@@ -3843,7 +3845,10 @@ NdbQueryImpl::closeTcCursor(bool forceSend)
   while (m_pendingWorkers > 0)
   {
     const FetchResult result = static_cast<FetchResult>
-        (poll_guard.wait_scan(3*timeout, nodeId, forceSend));
+        (poll_guard.wait_scan(3*timeout,
+                              nodeId,
+                              forceSend,
+                              &ndb->m_start_time));
 
     if (unlikely(ndb->getNodeSequence(nodeId) != seq))
       setFetchTerminated(Err_NodeFailCausedAbort,false);
@@ -3878,7 +3883,10 @@ NdbQueryImpl::closeTcCursor(bool forceSend)
     while (m_pendingWorkers > 0)
     {
       const FetchResult result = static_cast<FetchResult>
-          (poll_guard.wait_scan(3*timeout, nodeId, forceSend));
+          (poll_guard.wait_scan(3*timeout,
+                                nodeId,
+                                forceSend,
+                                &ndb->m_start_time));
 
       if (unlikely(ndb->getNodeSequence(nodeId) != seq))
         setFetchTerminated(Err_NodeFailCausedAbort,false);

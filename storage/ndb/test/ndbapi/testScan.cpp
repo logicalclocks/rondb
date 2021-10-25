@@ -488,7 +488,7 @@ int runScanReadExhaust(NDBT_Context* ctx, NDBT_Step* step)
   int savesnapshot= DumpStateOrd::TcResourceSnapshot;
   Uint32 checksnapshot= DumpStateOrd::TcResourceCheckLeak;
 
-  sleep(2);
+  sleep(3);
   restarter.dumpStateAllNodes(&savesnapshot, 1);
   Ndb_internal::set_TC_COMMIT_ACK_immediate(pNdb, true);
 
@@ -1445,6 +1445,7 @@ int takeResourceSnapshot(NDBT_Context* ctx, NDBT_Step* step)
   NdbRestarter restarter;
 
   int checksnapshot = DumpStateOrd::TcResourceSnapshot;
+  sleep(3);
   restarter.dumpStateAllNodes(&checksnapshot, 1);
   Ndb_internal::set_TC_COMMIT_ACK_immediate(pNdb, true);
 
@@ -1649,7 +1650,7 @@ int checkResourceSnapshot(NDBT_Context* ctx, NDBT_Step* step)
   Ndb *pNdb = GETNDB(step);
   NdbDictionary::Dictionary *pDict = pNdb->getDictionary();
 
-  sleep(2);
+  sleep(3);
   Uint32 checksnapshot = DumpStateOrd::TcResourceCheckLeak;
   pDict->forceGCPWait(1);
   if (Ndb_internal::send_dump_state_all(pNdb, &checksnapshot, 1) != 0)

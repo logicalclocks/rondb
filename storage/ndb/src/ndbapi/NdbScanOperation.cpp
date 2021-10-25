@@ -1929,7 +1929,10 @@ NdbScanOperation::nextResultNdbRecord(const char * & out_row,
         /* No completed... */
         theImpl->incClientStat(Ndb::WaitScanResultCount, 1);
         
-        int ret_code= poll_guard.wait_scan(3*timeout, nodeId, forceSend);
+        int ret_code= poll_guard.wait_scan(3*timeout,
+                                           nodeId,
+                                           forceSend,
+                                           &theImpl->m_start_time);
         if (ret_code == 0 && seq == theImpl->getNodeSequence(nodeId)) {
           continue;
         } else if(ret_code == -1){
@@ -3883,7 +3886,10 @@ NdbIndexScanOperation::ordered_send_scan_wait_for_all(bool forceSend)
     impl->incClientStat(Ndb::WaitScanResultCount, 1);
     while (m_sent_receivers_count > 0 && !theError.code)
     {      
-      int ret_code= poll_guard.wait_scan(3*timeout, nodeId, forceSend);
+      int ret_code= poll_guard.wait_scan(3*timeout,
+                                         nodeId,
+                                         forceSend,
+                                         &impl->m_start_time);
       if (ret_code == 0 && seq == impl->getNodeSequence(nodeId))
         continue;
       if(ret_code == -1){
@@ -4007,7 +4013,10 @@ NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard)
   impl->incClientStat(Ndb::WaitScanResultCount, 1);
   while(theError.code == 0 && m_sent_receivers_count)
   {    
-    int return_code= poll_guard->wait_scan(3*timeout, nodeId, forceSend);
+    int return_code= poll_guard->wait_scan(3*timeout,
+                                           nodeId,
+                                           forceSend,
+                                           &impl->m_start_time);
     switch(return_code){
     case 0:
       break;
@@ -4078,7 +4087,10 @@ NdbScanOperation::close_impl(bool forceSend, PollGuard *poll_guard)
   impl->incClientStat(Ndb::WaitScanResultCount, 1);
   while(m_sent_receivers_count+m_api_receivers_count+m_conf_receivers_count)
   {
-    int return_code= poll_guard->wait_scan(3*timeout, nodeId, forceSend);
+    int return_code= poll_guard->wait_scan(3*timeout,
+                                           nodeId,
+                                           forceSend,
+                                           &impl->m_start_time);
     switch(return_code){
     case 0:
       break;

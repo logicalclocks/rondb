@@ -215,10 +215,15 @@ public:
   int wait_n_unlock(int wait_time, Uint32 nodeId, Uint32 state,
                     bool forceSend= false);
   void wait_for_input(int wait_time);
-  int wait_scan(int wait_time, Uint32 nodeId, bool forceSend);
+  int wait_scan(int wait_time,
+                Uint32 nodeId,
+                bool forceSend,
+                NDB_TICKS *start_time);
   void unlock_and_signal();
 private:
-  int wait_for_input_in_loop(int wait_time, bool forceSend);
+  int wait_for_input_in_loop(int wait_time,
+                             bool forceSend,
+                             NDB_TICKS *start_time);
   class trp_client* m_clnt;
   class NdbWaiter *m_waiter;
   bool  m_complete_poll_called;

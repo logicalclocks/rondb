@@ -8,6 +8,7 @@ mysqld=,
 ndbapi=,,,,,,,,,,,
 DefaultOperationRedoProblemAction=queue
 NoOfReplicas=3
+LowLatency=1
 
 [cluster_config.mysqld.1.1]
 NodeId=49
