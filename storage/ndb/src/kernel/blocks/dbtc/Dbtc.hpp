@@ -1926,9 +1926,6 @@ public:
   /*       THIS RECORD IS USED TO STORE THE GLOBALCHECKPOINT NUMBER AND A 
    *       COUNTER DURING THE COMPLETION PHASE OF THE TRANSACTION            */
   /*************************************************************************>*/
-  /*                                                                         */
-  /*       GCP RECORD ALIGNED TO BE 32 BYTES                                 */
-  /*************************************************************************>*/
   struct GcpRecord
   {
     STATIC_CONST( TYPE_ID = RT_DBTC_GCP_RECORD );
@@ -1941,9 +1938,9 @@ public:
     Uint16 gcpNomoretransRec;
     LocalApiConnectRecord_gcp_list::Head apiConnectList;
     UintR nextList;
+    Uint32 line_written;
     Uint64 gcpId;
-  }; /* p2c: size = 32 bytes */
-  
+  };
   typedef Ptr<GcpRecord> GcpRecordPtr;
   typedef TransientPool<GcpRecord> GcpRecord_pool;
   STATIC_CONST(DBTC_GCP_RECORD_TRANSIENT_POOL_INDEX = 11);
@@ -2229,7 +2226,10 @@ private:
   void close_scan_req_send_conf(Signal*, ScanRecordPtr, ApiConnectRecordPtr apiConnectptr);
   
   void checkGcp(Signal* signal);
-  void commitGciHandling(Signal* signal, Uint64 Tgci, ApiConnectRecordPtr apiConnectptr);
+  void commitGciHandling(Signal* signal,
+                         Uint64 Tgci,
+                         ApiConnectRecordPtr apiConnectptr,
+                         Uint32 line);
   void copyApi(Signal *signal,
                Ptr<ApiConnectRecord> dst,
                Ptr<ApiConnectRecord> src);
@@ -2271,7 +2271,7 @@ private:
   bool seizeApiConnectCopy(Signal* signal, ApiConnectRecord* regApiPtr);
   bool seizeApiConnectFail(Signal* signal, ApiConnectRecordPtr& apiConnectptr);
   [[noreturn]] void crash_gcp(Uint32 line, const char msg[]);
-  void seizeGcp(Ptr<GcpRecord> & dst, Uint64 gci);
+  void seizeGcp(Ptr<GcpRecord> & dst, Uint64 gci, Uint32 line);
   void seizeTcConnectFail(Signal* signal);
   Ptr<ApiConnectRecord> sendApiCommitAndCopy(Signal* signal,
                                              ApiConnectRecordPtr apiConnectptr);

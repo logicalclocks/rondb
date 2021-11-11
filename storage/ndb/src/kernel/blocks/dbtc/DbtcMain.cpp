@@ -6671,7 +6671,7 @@ void Dbtc::execDIVERIFYCONF(Signal* signal)
     DIVER_node_fail_handling(signal, Tgci, apiConnectptr);
     return;
   }//if
-  commitGciHandling(signal, Tgci, apiConnectptr);
+  commitGciHandling(signal, Tgci, apiConnectptr, __LINE__);
 
   /**************************************************************************
    *                                 C O M M I T                      
@@ -6726,7 +6726,8 @@ void Dbtc::execDIVERIFYCONF(Signal* signal)
 /*--------------------------------------------------------------------------*/
 void Dbtc::commitGciHandling(Signal* signal,
                              Uint64 Tgci,
-                             ApiConnectRecordPtr const apiConnectptr)
+                             ApiConnectRecordPtr const apiConnectptr,
+                             Uint32 line)
 {
   GcpRecordPtr localGcpPointer;
 
@@ -6738,27 +6739,29 @@ void Dbtc::commitGciHandling(Signal* signal,
   {
     /* IF THIS GLOBAL CHECKPOINT ALREADY EXISTS */
     do {
-      if (regApiPtr.p->globalcheckpointid == localGcpPointer.p->gcpId) {
+      jam();
+      if (regApiPtr.p->globalcheckpointid == localGcpPointer.p->gcpId)
+      {
         jam();
         linkApiToGcp(localGcpPointer, regApiPtr);
         return;
       }
-      if (unlikely(! (regApiPtr.p->globalcheckpointid > localGcpPointer.p->gcpId)))
+      if (unlikely(regApiPtr.p->globalcheckpointid < localGcpPointer.p->gcpId &&
+                   localGcpPointer.p->gcpNomoretransRec == ZTRUE))
       {
-        ndbout_c("%u/%u %u/%u",
+        g_eventLogger->info("%u/%u %u/%u",
                  Uint32(regApiPtr.p->globalcheckpointid >> 32),
                  Uint32(regApiPtr.p->globalcheckpointid),
                  Uint32(localGcpPointer.p->gcpId >> 32),
                  Uint32(localGcpPointer.p->gcpId));
         crash_gcp(__LINE__, "Can not find global checkpoint record for commit.");
       }
-      jam();
     } while (gcp_list.next(localGcpPointer));
   }
 
-  seizeGcp(localGcpPointer, Tgci);
+  seizeGcp(localGcpPointer, Tgci, line);
   linkApiToGcp(localGcpPointer, regApiPtr);
-}//Dbtc::commitGciHandling()
+}
 
 /* --------------------------------------------------------------------------*/
 /* -LINK AN API CONNECT RECORD IN STATE PREPARED INTO THE LIST WITH GLOBAL - */
@@ -6784,21 +6787,24 @@ Dbtc::crash_gcp(Uint32 line, const char msg[])
   {
     do
     {
-      ndbout_c("%u : %u/%u nomoretrans: %u api %u %u next: %u",
+      jam();
+      g_eventLogger->info("%u : %u/%u nomoretrans: %u api %u %u next: %u"
+                          ", line_written: %u",
                localGcpPointer.i,
                Uint32(localGcpPointer.p->gcpId >> 32),
                Uint32(localGcpPointer.p->gcpId),
                localGcpPointer.p->gcpNomoretransRec,
                localGcpPointer.p->apiConnectList.getFirst(),
                localGcpPointer.p->apiConnectList.getLast(),
-               localGcpPointer.p->nextList);
+               localGcpPointer.p->nextList,
+               localGcpPointer.p->line_written);
     } while (gcp_list.next(localGcpPointer));
   }
   progError(line, NDBD_EXIT_NDBREQUIRE, msg);
   ndbabort();
 }
 
-void Dbtc::seizeGcp(Ptr<GcpRecord> & dst, Uint64 Tgci)
+void Dbtc::seizeGcp(Ptr<GcpRecord> & dst, Uint64 Tgci, Uint32 line)
 {
   GcpRecordPtr localGcpPointer;
 
@@ -6808,6 +6814,7 @@ void Dbtc::seizeGcp(Ptr<GcpRecord> & dst, Uint64 Tgci)
     crash_gcp(__LINE__, "Too many active global checkpoints.");
   }
   localGcpPointer.p->gcpId = Tgci;
+  localGcpPointer.p->line_written = line;
   localGcpPointer.p->apiConnectList.init();
   localGcpPointer.p->gcpNomoretransRec = ZFALSE;
 
@@ -10679,7 +10686,7 @@ void Dbtc::execGCP_NOMORETRANS(Signal* signal)
                         c_ongoing_take_over_cnt);
 seize:
     jam();
-    seizeGcp(gcpPtr, tcheckGcpId);
+    seizeGcp(gcpPtr, tcheckGcpId, __LINE__);
     gcpPtr.p->gcpNomoretransRec = ZTRUE;
   }
   return;
@@ -12188,7 +12195,8 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
     ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
     commitGciHandling(signal,
                       apiConnectptr.p->globalcheckpointid,
-                      apiConnectptr);
+                      apiConnectptr,
+                      __LINE__);
     DEB_NODE_FAILURE(("apiConnectptr.i: %u: toCompleteHandling",
                      apiConnectptr.i));
     init_finish_processing(apiConnectptr.p);
@@ -12205,7 +12213,8 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
     ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
     commitGciHandling(signal,
                       apiConnectptr.p->globalcheckpointid,
-                      apiConnectptr);
+                      apiConnectptr,
+                      __LINE__);
     DEB_NODE_FAILURE(("apiConnectptr.i: %u: toCommitHandling",
                      apiConnectptr.i));
     init_finish_processing(apiConnectptr.p);
