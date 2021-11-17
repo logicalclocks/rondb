@@ -6067,8 +6067,11 @@ void Dbdih::setNodeRecoveryStatus(Uint32 nodeId,
                       get_status_str(nodePtr.p->nodeRecoveryStatus),
                       get_status_str(new_status));
 
+  NodeRecord::NodeRecoveryStatus old_status =
+    nodePtr.p->nodeRecoveryStatus;
+  (void)old_status;
   nodePtr.p->nodeRecoveryStatus = new_status;
-  ndbassert(check_node_recovery_timers(nodePtr.i));
+  ndbassert(check_node_recovery_timers(nodePtr.i, old_status));
 }
 
 void Dbdih::setNodeRecoveryStatusInitial(NodeRecordPtr nodePtr)
@@ -6268,7 +6271,8 @@ void Dbdih::check_all_node_recovery_timers(void)
 }
 #endif
 
-bool Dbdih::check_node_recovery_timers(Uint32 nodeId)
+bool Dbdih::check_node_recovery_timers(Uint32 nodeId,
+                       NodeRecord::NodeRecoveryStatus old_status)
 {
   NodeRecordPtr nodePtr;
   nodePtr.i = nodeId;
@@ -6321,6 +6325,10 @@ bool Dbdih::check_node_recovery_timers(Uint32 nodeId)
     // Fallthrough
   case NodeRecord::INCLUDED_IN_HB_PROTOCOL:
     ndbrequire(NdbTick_IsValid(nodePtr.p->includedInHBProtocolTime));
+    if (old_status == NodeRecord::NODE_NOT_RESTARTED_YET)
+    {
+      break;
+    }
     // Fallthrough
   case NodeRecord::ALLOCATED_NODE_ID:
     ndbrequire(NdbTick_IsValid(nodePtr.p->allocatedNodeIdTime));
