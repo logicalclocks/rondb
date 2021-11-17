@@ -2268,7 +2268,7 @@ void Dbtc::signalErrorRefuseLab(Signal* signal, ApiConnectRecordPtr const apiCon
 
 void Dbtc::sendSignalErrorRefuseLab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
 {
-  ndbassert(false);
+  //ndbassert(false);
   ptrGuard(apiConnectptr);
   if (apiConnectptr.p->apiConnectstate != CS_DISCONNECTED) {
     jam();
