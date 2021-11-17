@@ -19255,7 +19255,8 @@ Dblqh::send_prepare_copy_frag_conf(Signal *signal,
 void Dblqh::execCOPY_FRAGREQ(Signal* signal) 
 {
   jamEntry();
-  const CopyFragReq * const copyFragReq = (CopyFragReq *)&signal->theData[0];
+  const CopyFragReq copy = *(CopyFragReq *)&signal->theData[0];
+  const CopyFragReq* copyFragReq = &copy;
   tabptr.i = copyFragReq->tableId;
   ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
   Uint32 i;
@@ -19531,7 +19532,7 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
   jamEntry();
   accScanConfCopyLab(signal);
   return;
-}//Dblqh::execCOPY_FRAGREQ()
+}
 
 void
 Dblqh::execUPDATE_FRAG_DIST_KEY_ORD(Signal * signal)
@@ -20462,7 +20463,8 @@ void Dblqh::execCOPY_ACTIVEREQ(Signal* signal)
    */
   CRASH_INSERTION(5026);
 
-  const CopyActiveReq * const req = (CopyActiveReq *)&signal->theData[0];
+  const CopyActiveReq copy = *(CopyActiveReq *)&signal->theData[0];
+  const CopyActiveReq * const req = &copy;
   jamEntry();
   Uint32 masterPtr = req->userPtr;
   BlockReference masterRef = req->userRef;
