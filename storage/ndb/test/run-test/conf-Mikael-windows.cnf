@@ -58,11 +58,12 @@ Checksum=1
 AutomaticThreadConfig=1
 AutomaticMemoryConfig=1
 NumCPUs=6
-TotalMemoryConfig=4G
+TotalMemoryConfig=8G
 MaxNoOfTables=200
 MaxNoOfOrderedIndexes=200
 MaxNoOfUniqueHashIndexes=200
 MaxNoOfTriggers=3000
+TransactionDeadlockDetectionTimeout=5000
 
 SharedGlobalMemory=350M
 DiskPageBufferMemory=256M
