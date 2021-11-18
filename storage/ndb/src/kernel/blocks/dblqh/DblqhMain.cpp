@@ -12442,6 +12442,11 @@ void Dblqh::execCOMMITREQ(Signal* signal)
                       partial_fit_ok,
                       tcConnectptr) != ZOK)
   {
+    /**
+     * We are committing and can't find any record, this should
+     * not be a possible event.
+     */
+    ndbabort();
     warningReport(signal, 5);
     return;
   }//if
