@@ -2389,6 +2389,11 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
     ndbabort();
     sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKREP, 
 	       signal, 4, JBB);
+    /**
+     * Abort already in progress
+     * TODO: Receive a startFlag in this state seems to be a protocol
+     * error. Handle it properly by shutting down sender.
+     */
     return;
   }
   case 3:
@@ -2703,8 +2708,11 @@ start_failure:
 
   case 59:{
     jam();
-    terrorCode = ZABORTINPROGRESS;
-    abortErrorLab(signal, apiConnectptr);
+    /**
+     * Abort already in progress, ignore
+     * TODO: Receive an execFlag in this state seems to be a protocol
+     * error. Handle it properly by shutting down sender.
+     */
     return;
   }
     
@@ -3664,6 +3672,22 @@ void Dbtc::execTCKEYREQ(Signal* signal)
       return;
     }//if
     break;
+  case CS_RELEASE:
+  {
+    releaseSections(handle);
+    if (TstartFlag == 1)
+    {
+      TCKEY_abort(signal, 2, apiConnectptr);
+      return;
+    }
+    else if (TexecFlag)
+    {
+      TCKEY_abort(signal, 59, apiConnectptr);
+      return;
+    }
+    DEBUG("Drop TCKEYREQ - apiConnectState=CS_RELEASE");
+    return;
+  }
   case CS_START_COMMITTING:
   case CS_SEND_FIRE_TRIG_REQ:
   case CS_WAIT_FIRE_TRIG_REQ:
@@ -12581,7 +12605,7 @@ void Dbtc::execABORTCONF(Signal* signal)
       return;
     }
     if (apiConnectptr.p->finish_trans_counter <
-        ZMAX_OUTSTANDING_COMMIT_OPS_RESTART &&
+        ZMAX_OUTSTANDING_ABORT_OPS_RESTART &&
         apiConnectptr.p->nextTcOperation != RNIL)
     {
       jam();
@@ -17427,13 +17451,6 @@ void Dbtc::releaseAbortResources(Signal* signal,
   apiConnectptr.p->m_transaction_nodes.clear();
   apiConnectptr.p->singleUserMode = 0;
 
-  // MASV let state be CS_ABORTING until all 
-  // signals in the "air" have been received. Reset to CS_CONNECTED
-  // will be done when a TCKEYREQ with start flag is received
-  // or releaseApiCon is called
-  // apiConnectptr.p->apiConnectstate = CS_CONNECTED;
-  apiConnectptr.p->apiConnectstate = CS_ABORTING;
-  apiConnectptr.p->abortState = AS_IDLE;
   jamDebug();
   releaseAllSeizedIndexOperations(signal,
                                   &apiConnectptr.p->theSeizedIndexOperations,
@@ -17471,6 +17488,14 @@ void Dbtc::releaseAbortResources(Signal* signal,
     return;
   }
   jamDebug();
+
+  // MASV let state be CS_ABORTING until all 
+  // signals in the "air" have been received. Reset to CS_CONNECTED
+  // will be done when a TCKEYREQ with start flag is received
+  // or releaseApiCon is called
+  // apiConnectptr.p->apiConnectstate = CS_CONNECTED;
+  apiConnectptr.p->apiConnectstate = CS_ABORTING;
+  apiConnectptr.p->abortState = AS_IDLE;
 
   if (tc_testbit(apiConnectptr.p->m_flags, ApiConnectRecord::TF_EXEC_FLAG) ||
       apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK)
