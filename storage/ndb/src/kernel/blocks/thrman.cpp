@@ -5481,7 +5481,7 @@ Thrman::wait_freeze(bool ret)
     jam();
     return;
   }
-  while (true)
+  while (!globalData.theStopFlag)
   {
     NdbCondition_WaitTimeout(g_freeze_condition,
                              g_freeze_mutex,
@@ -5498,6 +5498,7 @@ Thrman::wait_freeze(bool ret)
       jam();
       return;
     }
+    mb();
   }
   return;
 }

@@ -2128,7 +2128,8 @@ void Dbdih::execNDB_STTOR(Signal* signal)
       ndbassert(c_lcpState.lcpStatus == LCP_STATUS_IDLE);
       c_lcpState.setLcpStatus(LCP_STATUS_IDLE, __LINE__);
       g_eventLogger->info("Request copying of distribution and dictionary"
-                          " information from master Starting");
+                          " information from master(%u) Starting",
+                          refToNode(cmasterdihref));
 
       StartMeReq * req = (StartMeReq*)&signal->theData[0];
       req->startingRef = reference();
@@ -4290,9 +4291,13 @@ void Dbdih::lcpBlockedLab(Signal* signal, Uint32 nodeId, Uint32 retVal)
 
 void Dbdih::nodeDictStartConfLab(Signal* signal, Uint32 nodeId)
 {
-  /*-----------------------------------------------------------------*/
-  // Report that node restart has completed copy of dictionary.
-  /*-----------------------------------------------------------------*/
+  /**
+   * Report that node restart has completed copy of dictionary.
+   *
+   * Check heartbeat count, only through assert since otherwise we override
+   * the watchdog mechanism.
+   */
+  ndbassert(globalData.get_hb_count(nodeId) < 2);
   signal->theData[0] = NDB_LE_NR_CopyDict;
   signal->theData[1] = nodeId;
   sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 2, JBB);

@@ -201,6 +201,10 @@ public:
   {
     m_is_active = active;
   }
+  bool get_transporter_active()
+  {
+    return m_is_active;
+  }
   Uint32 get_recv_thread_idx() { return m_recv_thread_idx; }
 
   TransporterType getTransporterType() const;
