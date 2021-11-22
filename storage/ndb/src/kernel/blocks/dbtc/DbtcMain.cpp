@@ -499,6 +499,15 @@ void Dbtc::execCONTINUEB(Signal* signal)
     releaseAbortResources(signal, apiConnectptr, false);
     return;
   }
+  case TcContinueB::ZRELEASE_TAKE_OVER:
+  {
+    jam();
+    ApiConnectRecordPtr apiConnectptr;
+    apiConnectptr.i = signal->theData[1];
+    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+    releaseTakeOver(signal, apiConnectptr);
+    return;
+  }
   case TcContinueB::ZSCAN_FOR_READ_BACKUP:
     jam();
     scan_for_read_backup(signal, Tdata0, Tdata1, Tdata2);
@@ -13746,15 +13755,27 @@ void Dbtc::initTcFail(Signal* signal)
 /*----------------------------------------------------------*/
 void Dbtc::releaseTakeOver(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
 {
-/**
-  TODO RONM:
-  Implement CONTINUEB processing also for releaseTakeOver.
-  */
+  Uint32 loop_count = 0;
   LocalTcConnectRecord_fifo tcConList(tcConnectRecord, apiConnectptr.p->tcConnect);
   while (tcConList.removeFirst(tcConnectptr))
   {
     jam();
     releaseTcConnectFail(signal);
+    if (++loop_count > ZMAX_RELEASE_PER_RT_BREAK)
+    {
+      jam();
+      setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+      signal->theData[0] = TcContinueB::ZRELEASE_TAKE_OVER;
+      signal->theData[1] = apiConnectptr.i;
+      sendSignal(reference(),
+                 GSN_CONTINUEB,
+                 signal,
+                 2,
+                 JBB);
+      checkPoolShrinkNeed(DBTC_CONNECT_RECORD_TRANSIENT_POOL_INDEX,
+                          tcConnectRecord);
+      return;
+    }
   }
   checkPoolShrinkNeed(DBTC_CONNECT_RECORD_TRANSIENT_POOL_INDEX,
                       tcConnectRecord);

@@ -75,6 +75,7 @@ private:
     ,ZCHECK_TO_ABORT_HANDLING              = 35
     ,ZCHECK_TO_COMMIT_HANDLING             = 36
     ,ZCHECK_TO_COMPLETE_HANDLING           = 37
+    ,ZRELEASE_TAKE_OVER                    = 38
   };
 };
 
