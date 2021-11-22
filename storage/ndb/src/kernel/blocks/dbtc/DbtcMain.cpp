@@ -10009,6 +10009,29 @@ void Dbtc::printCrashApiConnectrec(ApiConnectRecordPtr apiConnectptr)
                       apiConnectptr.p->failureNr,
                       apiConnectptr.p->clientData,
                       apiConnectptr.i);
+
+  LocalTcConnectRecord_fifo tcConList(tcConnectRecord,
+                                      apiConnectptr.p->tcConnect);
+  tcConList.first(tcConnectptr);
+  while (tcConnectptr.i != RNIL)
+  {
+    g_eventLogger->info("tcConnectptr.i: %u, state: %u, tcOprec: %u",
+                        tcConnectptr.i,
+                        tcConnectptr.p->tcConnectstate,
+                        tcConnectptr.p->tcOprec);
+    g_eventLogger->info("lastReplicaNo: %u, operation: %u",
+                        tcConnectptr.p->lastReplicaNo,
+                        tcConnectptr.p->operation);
+    for (Uint32 i = 0; i < tcConnectptr.p->lastReplicaNo; i++)
+    {
+      g_eventLogger->info("i: %u, node: %u, failData: %u",
+                          i,
+                          tcConnectptr.p->tcNodedata[i],
+                          tcConnectptr.p->failData[i]);
+
+    }
+    tcConList.next(tcConnectptr);
+  }
   ndbabort();
 }
 
