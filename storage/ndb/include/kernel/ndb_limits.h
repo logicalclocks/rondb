@@ -244,8 +244,9 @@
 #define NDB_SECTION_SEGMENT_SZ 60
 
 /*
- * The maximum size of signal before we split it into a bunch of
- * smaller signals. In words.
+ * The maximum size of a signal sent to a query thread. In words.
+ * This limit is necessary since otherwise the signal could be fragmented and
+ * sent via a load balancing receive thread to different blocks.
  */
 #define MAX_SIZE_SINGLE_SIGNAL 7400
 
