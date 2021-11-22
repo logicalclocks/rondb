@@ -12794,6 +12794,7 @@ Dbtc::checkFailData_abort(Signal *signal,
       hostptr.i = tcConnectptr.p->tcNodedata[replicaNo];
       ptrCheckGuard(hostptr, chostFilesize, hostRecord);
       bool node_dead = (hostptr.p->hostStatus != HS_ALIVE);
+      const Uint32 nodeVersion = getNodeInfo(hostptr.i).m_version;
       if (node_dead)
       {
         jam();
@@ -12801,6 +12802,34 @@ Dbtc::checkFailData_abort(Signal *signal,
         tcConnectptr.p->failData[replicaNo] = LqhTransConf::InvalidStatus;
         ndbrequire(apiConnectptr.p->finish_trans_counter > 0);
         apiConnectptr.p->finish_trans_counter--;
+      }
+      else if (!ndbd_support_abortreq_full(nodeVersion))
+      {
+        jam();
+        /**
+         * We are running against an old data node. In this case we need to
+         * resend the ABORTREQ signal since these nodes have a path through
+         * the code where the signal is dropped. This is not 100% safe, but
+         * is the best we can do under the circumstances.
+         *
+         * In newer versions of RonDB we have ensured that ABORTREQ will
+         * always send an ABORTCONF signal in response independent of the
+         * state it is in when receiving the signal. Thus no need to resend
+         * the signal and risk confusion on the counting of
+         * finish_trans_counter.
+         */
+        loop_count += 128;
+        Uint32 instanceKey = tcConnectptr.p->lqhInstanceKey;
+        Uint32 instanceNo = getInstanceNo(hostptr.i, instanceKey);
+        BlockReference blockRef = numberToRef(DBLQH, instanceNo, hostptr.i);
+        tcConnectptr.p->tcConnectstate = OS_WAIT_ABORT_CONF;
+        signal->theData[0] = tcConnectptr.i;
+        signal->theData[1] = cownref;
+        signal->theData[2] = apiConnectptr.p->transid[0];
+        signal->theData[3] = apiConnectptr.p->transid[1];
+        signal->theData[4] = apiConnectptr.p->tcBlockref;
+        signal->theData[5] = tcConnectptr.p->tcOprec;
+        sendSignal(blockRef, GSN_ABORTREQ, signal, 6, JBB);
       }
       break;
     }

@@ -675,4 +675,14 @@ ndbd_support_activate(Uint32 x)
 {
   return x >= NDBD_SUPPORT_ACTIVATE;
 }
+
+#define NDBD_SUPPORT_ABORTREQ_FULL NDB_MAKE_VERSION(21,04,2)
+
+static
+inline
+bool
+ndbd_support_abortreq_full(Uint32 x)
+{
+  return x >= NDBD_SUPPORT_ABORTREQ_FULL;
+}
 #endif

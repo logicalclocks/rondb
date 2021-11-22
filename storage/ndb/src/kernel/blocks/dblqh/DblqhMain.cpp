@@ -12461,7 +12461,7 @@ void Dblqh::execCOMMITREQ(Signal* signal)
 /*-------------------------------------------------------*/
     regTcPtr->reqBlockref = reqBlockref;
     regTcPtr->reqRef = reqPtr;
-    regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC;
+    regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC_COMMIT;
     commitReqLab(signal, gci_hi, gci_lo, tcConnectptr);
     return;
   case TcConnectionrec::COMMITTED:
@@ -12473,7 +12473,7 @@ void Dblqh::execCOMMITREQ(Signal* signal)
 /*---------------------------------------------------------*/
     regTcPtr->reqBlockref = reqBlockref;
     regTcPtr->reqRef = reqPtr;
-    regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC;
+    regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC_COMMIT;
     signal->theData[0] = regTcPtr->reqRef;
     signal->theData[1] = cownNodeid;
     signal->theData[2] = regTcPtr->transid[0];
@@ -12484,7 +12484,7 @@ void Dblqh::execCOMMITREQ(Signal* signal)
     jam();
     regTcPtr->reqBlockref = reqBlockref;
     regTcPtr->reqRef = reqPtr;
-    regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC;
+    regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC_COMMIT;
     /*empty*/;
     return;
   default:
@@ -12656,7 +12656,7 @@ void Dblqh::execCOMPLETEREQ(Signal* signal)
     jam();
     regTcPtr->reqBlockref = reqBlockref;
     regTcPtr->reqRef = reqPtr;
-    regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC;
+    regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC_COMMIT;
     /*empty*/;
     break;
 /*---------------------------------------------------------*/
@@ -12672,7 +12672,7 @@ void Dblqh::execCOMPLETEREQ(Signal* signal)
 /*---------------------------------------------------------*/
     regTcPtr->reqBlockref = reqBlockref;
     regTcPtr->reqRef = reqPtr;
-    regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC;
+    regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC_COMMIT;
     return;
   default:
     jam();
@@ -13240,7 +13240,7 @@ void Dblqh::commitReplyLab(Signal* signal,
       return;
     }//if
   }
-  else if (regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC)
+  else if (regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC_COMMIT)
   {
     jam();
     signal->theData[0] = regTcPtr->reqRef;
@@ -13315,7 +13315,7 @@ void Dblqh::completeUnusualLab(Signal* signal,
   }
   else
   {
-    ndbrequire(regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC);
+    ndbrequire(regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC_COMMIT);
     jam();
     signal->theData[0] = regTcPtr->reqRef;
     signal->theData[1] = cownNodeid;
@@ -13589,7 +13589,6 @@ void Dblqh::execABORT(Signal* signal)
   TRACE_OP(regTcPtr, "ABORT");
 
   abortStateHandlerLab(signal, tcConnectptr);
-
   return;
 }//Dblqh::execABORT()
 
@@ -13644,17 +13643,11 @@ void Dblqh::execABORTREQ(Signal* signal)
     return;
   }//if
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
-  if (unlikely(regTcPtr->transactionState != TcConnectionrec::PREPARED))
-  {
-    jam();
-    warningReport(signal, 10);
-    return;
-  }//if
   regTcPtr->reqBlockref = reqBlockref;
   regTcPtr->reqRef = reqPtr;
-  regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC;
+  regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC_ABORT;
 
-  abortCommonLab(signal, tcConnectptr);
+  abortStateHandlerLab(signal, tcConnectptr);
   return;
 }//Dblqh::execABORTREQ()
 
@@ -13795,6 +13788,9 @@ void Dblqh::abortStateHandlerLab(Signal* signal,
 // transaction.
 // We know that at least one of those has received the COMMIT signal, thus we
 // declare us only prepared since we then receive the expected COMMIT signal.
+//
+// We cannot arrive here for calls from execABORTREQ or execABORT since the
+// dirty writes are not REDO logged.
 /* ------------------------------------------------------------------------- */
     ndbrequire(regTcPtr->abortState == TcConnectionrec::NEW_FROM_TC);
     sendLqhTransconf(signal, LqhTransConf::Prepared, tcConnectptr);
@@ -13852,7 +13848,7 @@ void Dblqh::abortStateHandlerLab(Signal* signal,
 /* ------------------------------------------------------------------------- */
 /*ABORT IS ALREADY ONGOING DUE TO SOME ERROR. WE HAVE ALREADY SET THE STATE  */
 /*OF THE ABORT SO THAT WE KNOW THAT TC EXPECTS A REPORT. WE CAN THUS SIMPLY  */
-/*EXIT.                                                                      */
+/*EXIT AND WAIT FOR THE ABORT TO COMPLETE.                                   */
 /* ------------------------------------------------------------------------- */
     return;
   case TcConnectionrec::WAIT_TUP_COMMIT:
@@ -14215,7 +14211,7 @@ void Dblqh::continueAfterLogAbortWriteLab(
   else
   {
     ndbassert(!m_is_query_block);
-    ndbrequire(regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC);
+    ndbrequire(regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC_ABORT);
     jam();
     signal->theData[0] = regTcPtr->reqRef;
     signal->theData[1] = tcConnectptr.i;
