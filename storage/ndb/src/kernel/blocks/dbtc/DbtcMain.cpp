@@ -6856,12 +6856,12 @@ void Dbtc::seizeGcp(Ptr<GcpRecord> & dst, Uint64 Tgci, Uint32 line)
 void Dbtc::commit020Lab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
 {
   TcConnectRecordPtr localTcConnectptr;
-  ApiConnectRecord * const regApiPtr = apiConnectptr.p;
 
   localTcConnectptr.p = tcConnectptr.p;
   setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
   UintR Tcount = 0;
-  LocalTcConnectRecord_fifo tcConList(tcConnectRecord, regApiPtr->tcConnect);
+  LocalTcConnectRecord_fifo tcConList(tcConnectRecord,
+                                      apiConnectptr.p->tcConnect);
   do {
     /*-----------------------------------------------------------------------
      * WE ARE NOW READY TO RELEASE ALL OPERATIONS ON THE LQH                  
@@ -6872,8 +6872,8 @@ void Dbtc::commit020Lab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
     /* Clear per-operation record CommitAckMarker ref if necessary */
     if (localTcConnectptr.p->commitAckMarker != RNIL)
     {
-      ndbassert(regApiPtr->commitAckMarker != RNIL);
-      ndbrequire(regApiPtr->num_commit_ack_markers--);
+      ndbassert(apiConnectptr.p->commitAckMarker != RNIL);
+      ndbrequire(apiConnectptr.p->num_commit_ack_markers--);
       localTcConnectptr.p->commitAckMarker = RNIL;
     }
     localTcConnectptr.p->tcConnectstate = OS_COMMITTING;
@@ -6931,8 +6931,8 @@ void Dbtc::commit020Lab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
       if (ERROR_INSERTED(8089))
         CLEAR_ERROR_INSERT_VALUE;
 
-      regApiPtr->apiConnectstate = CS_COMMIT_SENT;
-      ndbrequire(regApiPtr->num_commit_ack_markers == 0);
+      apiConnectptr.p->apiConnectstate = CS_COMMIT_SENT;
+      ndbrequire(apiConnectptr.p->num_commit_ack_markers == 0);
       setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
     }
     return;
@@ -7392,15 +7392,13 @@ void Dbtc::unlinkApiConnect(Ptr<GcpRecord> gcpPtr,
 void Dbtc::complete010Lab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
 {
   TcConnectRecordPtr localTcConnectptr;
-  ApiConnectRecord * const regApiPtr = apiConnectptr.p;
-
   localTcConnectptr.p = tcConnectptr.p;
   setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
-  UintR TapiConnectptrIndex = apiConnectptr.i;
   UintR Tcount = 0;
-  LocalTcConnectRecord_fifo tcConList(tcConnectRecord, regApiPtr->tcConnect);
+  LocalTcConnectRecord_fifo tcConList(tcConnectRecord,
+                                      apiConnectptr.p->tcConnect);
   do {
-    localTcConnectptr.p->apiConnect = TapiConnectptrIndex;
+    localTcConnectptr.p->apiConnect = apiConnectptr.i;
     localTcConnectptr.p->tcConnectstate = OS_COMPLETING;
 
     /* ************ */
@@ -7444,8 +7442,8 @@ void Dbtc::complete010Lab(Signal* signal, ApiConnectRecordPtr const apiConnectpt
     else
     {
       jam();
-      regApiPtr->apiConnectstate = CS_COMPLETE_SENT;
       setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+      apiConnectptr.p->apiConnectstate = CS_COMPLETE_SENT;
       
       if (ERROR_INSERTED(8112))
       {
@@ -10564,7 +10562,11 @@ void Dbtc::timeOutFoundFragLab(Signal* signal, UintR TscanConPtr)
     {
       break;
     }
-    if(connectCount != ptr.p->m_connectCount){
+    ApiConnectRecordPtr TlocalApiConnectptr;
+    TlocalApiConnectptr.i = scanptr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(TlocalApiConnectptr);
+    if(connectCount != ptr.p->m_connectCount)
+    {
       jam();
       /**
        * The node has died
@@ -13539,6 +13541,7 @@ Dbtc::checkFailData_complete(Signal *signal,
       if (tcConnectptr.i == RNIL)
       {
         jam();
+        setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
         apiConnectptr.p->check_fail_data_process_ongoing = false;
         return;
       }
@@ -13743,7 +13746,10 @@ void Dbtc::initTcFail(Signal* signal)
 /*----------------------------------------------------------*/
 void Dbtc::releaseTakeOver(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
 {
-
+/**
+  TODO RONM:
+  Implement CONTINUEB processing also for releaseTakeOver.
+  */
   LocalTcConnectRecord_fifo tcConList(tcConnectRecord, apiConnectptr.p->tcConnect);
   while (tcConList.removeFirst(tcConnectptr))
   {

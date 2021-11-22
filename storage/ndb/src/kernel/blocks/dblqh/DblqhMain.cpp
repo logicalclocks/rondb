@@ -111,7 +111,7 @@ extern EventLogger * g_eventLogger;
 //#define DEBUG_EMPTY_LCP 1
 //#define DEBUG_LAST_LCP 1
 //#define DEBUG_NEWEST_GCI 1
-//#define ABORT_TRACE 1
+#define ABORT_TRACE 1
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_EXTRA_LCP 1
 //#define DEBUG_LCP 1
@@ -12112,7 +12112,7 @@ void Dblqh::warningReport(Signal* signal, int place)
     jam();
 #ifdef ABORT_TRACE
     ndbout << "W: Received LQHKEYREF with wrong transid in" <<
-           << " COPY_CONNECTED state" << endl;
+           " COPY_CONNECTED state" << endl;
 #endif
     break;
   default:
