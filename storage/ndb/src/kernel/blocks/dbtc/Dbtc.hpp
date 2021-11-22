@@ -1043,7 +1043,7 @@ public:
     UintR currSavePointId;
     UintR counter;
     Uint32 finish_trans_counter;
-    
+
     //---------------------------------------------------
     // Third 16 byte cache line. First and second cache
     // line plus this will be enough for copy API records.
