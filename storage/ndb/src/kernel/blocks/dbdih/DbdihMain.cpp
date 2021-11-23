@@ -5810,8 +5810,13 @@ void Dbdih::setNodeRecoveryStatus(Uint32 nodeId,
     /* State generated in QMGR */
       jam();
       /**
-       * We can come here from ALLOCATED_NODE_ID obviously,
-       * but it seems that we should also be able to get
+       * We can come here from ALLOCATED_NODE_ID obviously.
+       *
+       * It can also come here directly from NODE_NOT_RESTARTED_YET
+       * when this node had not participated in the allocation of
+       * node id since it wasn't allowed to join the start yet.
+       *
+       * It also seems that we should also be able to get
        * here from a state where the node has been able to
        * allocate a node id with an old master, now it is
        * using this old allocated node id to be included in
@@ -5830,6 +5835,18 @@ void Dbdih::setNodeRecoveryStatus(Uint32 nodeId,
       {
         jam();
         nodePtr.p->allocatedNodeIdTime = current_time;
+      }
+      else if (nodePtr.p->nodeRecoveryStatus ==
+               NodeRecord::NODE_NOT_RESTARTED_YET)
+      {
+        jam();
+        /**
+         * Set up timers for node failure for consistency although they
+         * haven't yet occured.
+         */
+        nodePtr.p->allocatedNodeIdTime = current_time;
+        nodePtr.p->nodeFailTime = current_time;
+        nodePtr.p->nodeFailCompletedTime = current_time;
       }
       nodePtr.p->includedInHBProtocolTime = current_time;
       break;
