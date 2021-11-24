@@ -81,7 +81,7 @@
 #define ZMAX_SETUP_PER_RT_BREAK 1
 #define ZMAX_COMMIT_PER_RT_BREAK 1
 #define ZMAX_ABORT_PER_RT_BREAK 128
-#define ZMAX_TIMEOUT_COUNTER 2
+#define ZMAX_TIMEOUT_COUNTER 6
 #else
 #define ZMAX_OUTSTANDING_ABORT_OPS 1024
 #define ZMAX_OUTSTANDING_ABORT_OPS_RESTART 512
@@ -1096,6 +1096,7 @@ public:
     Uint32 num_commit_ack_markers;
     Uint32 m_write_count;
     Uint32 m_exec_write_count;
+    Uint32 m_tc_hbrep_timer;
     ReturnSignal returnsignal;
     AbortState abortState;
 
@@ -2077,12 +2078,20 @@ private:
                        UintR TLastLqhIndicator,
                        UintR Tstart);
   void errorReport(Signal* signal, int place);
-  void warningReport(Signal* signal, int place);
-  void printState(Signal* signal, int place, ApiConnectRecordPtr apiConnectptr, bool force_trace = false);
+  void warningReport(Signal* signal, int place, Uint32 oprec);
+  void printState(Signal* signal,
+                  int place,
+                  ApiConnectRecordPtr apiConnectptr,
+                  bool force_trace = false);
   int seizeTcRecord(Signal* signal, ApiConnectRecordPtr apiConnectptr);
-  int seizeCacheRecord(Signal* signal, CacheRecordPtr& cachePtr, ApiConnectRecord* regApiPtr);
+  int seizeCacheRecord(Signal* signal,
+                       CacheRecordPtr& cachePtr,
+                       ApiConnectRecord* regApiPtr);
   void releaseCacheRecord(ApiConnectRecordPtr transPtr, CacheRecord*);
-  void TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr apiConnectptr);
+  void TCKEY_abort(Signal* signal,
+                   int place,
+                   ApiConnectRecordPtr apiConnectptr);
+  void check_tc_hbrep(Signal *signal, ApiConnectRecordPtr const apiConnectptr);
   void copyFromToLen(UintR* sourceBuffer, UintR* destBuffer, UintR copyLen);
   void sendPackedTCKEYCONF(Signal* signal,
                            HostRecord * ahostptr,
@@ -2108,8 +2117,8 @@ private:
 /**
  * These use modulo 2 hashing, so these need to be a number which is 2^n.
  */
-#define TC_FAIL_HASH_SIZE 4096
-#define TRANSID_FAIL_HASH_SIZE 1024
+#define TC_FAIL_HASH_SIZE 8192
+#define TRANSID_FAIL_HASH_SIZE 2048
 
   void sendTCKEY_FAILREF(Signal* signal, ApiConnectRecord *);
   void sendTCKEY_FAILCONF(Signal* signal, ApiConnectRecord *);
