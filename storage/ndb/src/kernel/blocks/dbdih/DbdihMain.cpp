@@ -15029,6 +15029,9 @@ void Dbdih::releaseTable(TabRecordPtr tabPtr)
     releaseFile(tabPtr.p->tabFile[1]);
     tabPtr.p->tabFile[0] = tabPtr.p->tabFile[1] = RNIL;
   }//if
+  tabPtr.p->schemaVersion = Uint32(~0);
+  tabPtr.p->m_scan_count[0] = 0;
+  tabPtr.p->m_scan_count[1] = 0;
 }//Dbdih::releaseTable()
 
 void Dbdih::releaseReplicas(Uint32 * replicaPtrI) 
@@ -17333,7 +17336,10 @@ Dbdih::execDIH_SCAN_TAB_COMPLETE_REP(Signal* signal)
   tabPtr.i = rep->tableId;
   ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
 
-  complete_scan_on_table(tabPtr, rep->scanCookie, jambuf);
+  if (tabPtr.p->schemaVersion == rep->schemaVersion)
+  {
+    complete_scan_on_table(tabPtr, rep->scanCookie, jambuf);
+  }
 }
 
 
