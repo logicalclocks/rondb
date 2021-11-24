@@ -5906,14 +5906,18 @@ void Dblqh::sendCommitLqh(Signal* signal,
   Uint32 instanceKey = refToInstance(alqhBlockref);
   ndbassert(refToMain(alqhBlockref) == getDBLQH());
 
-  if (instanceKey > MAX_NDBMT_LQH_THREADS)
+#ifndef UNPACKED_COMMIT_SIGNALS
+  if (unlikely(instanceKey > MAX_NDBMT_LQH_THREADS))
+#endif
   {
     /* No send packed support in these cases */
     jam();
     signal->theData[0] = regTcPtr->clientConnectrec;
-    signal->theData[1] = regTcPtr->transid[0];
-    signal->theData[2] = regTcPtr->transid[1];
-    sendSignal(alqhBlockref, GSN_COMMIT, signal, 3, JBB);
+    signal->theData[1] = regTcPtr->gci_hi;
+    signal->theData[2] = regTcPtr->transid[0];
+    signal->theData[3] = regTcPtr->transid[1];
+    signal->theData[4] = regTcPtr->gci_lo;
+    sendSignal(alqhBlockref, GSN_COMMIT, signal, 5, JBB);
     return;
   }
 
@@ -5952,7 +5956,9 @@ void Dblqh::sendCompleteLqh(Signal* signal,
   Uint32 instanceKey = refToInstance(alqhBlockref);
   ndbassert(refToMain(alqhBlockref) == getDBLQH());
 
-  if (instanceKey > MAX_NDBMT_LQH_THREADS)
+#ifndef UNPACKED_COMMIT_SIGNALS
+  if (unlikely(instanceKey > MAX_NDBMT_LQH_THREADS))
+#endif
   {
     /* No send packed support in these cases */
     jam();

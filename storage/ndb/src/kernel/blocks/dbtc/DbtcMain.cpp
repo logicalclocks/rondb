@@ -6978,7 +6978,9 @@ Dbtc::sendCommitLqh(Signal* signal,
   Tdata[4] = Uint32(regApiPtr->globalcheckpointid);
   Uint32 len = 5;
   Uint32 instanceNo = getInstanceNo(Tnode, instanceKey);
-  if (instanceNo > MAX_NDBMT_LQH_THREADS)
+#ifndef UNPACKED_COMMIT_SIGNALS
+  if (unlikely(instanceNo > MAX_NDBMT_LQH_THREADS))
+#endif
   {
     memcpy(&signal->theData[0], &Tdata[0], len << 2);
     BlockReference lqhRef = numberToRef(DBLQH, instanceNo, Tnode);
@@ -7493,7 +7495,10 @@ Dbtc::sendCompleteLqh(Signal* signal,
   Uint32 len = 3;
 
   Uint32 instanceNo = getInstanceNo(Tnode, instanceKey);
-  if (instanceNo > MAX_NDBMT_LQH_THREADS) {
+#ifndef UNPACKED_COMMIT_SIGNALS
+  if (unlikely(instanceNo > MAX_NDBMT_LQH_THREADS))
+#endif
+  {
     memcpy(&signal->theData[0], &Tdata[0], len << 2);
     BlockReference lqhRef = numberToRef(DBLQH, instanceNo, Tnode);
     sendSignal(lqhRef, GSN_COMPLETE, signal, 3, JBB);
