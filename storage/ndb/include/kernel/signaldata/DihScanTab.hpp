@@ -82,9 +82,10 @@ struct DihScanTabRef
 
 struct DihScanTabCompleteRep
 {
-  STATIC_CONST( SignalLength = 4 );
+  STATIC_CONST( SignalLength = 5 );
 
   Uint32 tableId;
+  Uint32 schemaVersion;
   Uint32 scanCookie;
   union {
     void * jamBufferPtr;
