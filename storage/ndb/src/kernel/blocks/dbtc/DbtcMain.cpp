@@ -2395,13 +2395,13 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
     signal->theData[1] = t1;
     signal->theData[2] = t2;
     signal->theData[3] = ZABORT_ERROR;
-    ndbabort();
+    ndbassert(false);
     sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKREP, 
 	       signal, 4, JBB);
     /**
      * Abort already in progress
-     * TODO: Receive a startFlag in this state seems to be a protocol
-     * error. Handle it properly by shutting down sender.
+     * Receiving a startFlag in this state is a protocol
+     * error. We crash in development builds.
      */
     return;
   }
@@ -2717,11 +2717,8 @@ start_failure:
 
   case 59:{
     jam();
-    /**
-     * Abort already in progress, ignore
-     * TODO: Receive an execFlag in this state seems to be a protocol
-     * error. Handle it properly by shutting down sender.
-     */
+    terrorCode = ZABORTINPROGRESS;
+    abortErrorLab(signal, apiConnectptr);
     return;
   }
     
@@ -3626,10 +3623,44 @@ void Dbtc::execTCKEYREQ(Signal* signal)
     }
     break;
   case CS_ABORTING:
-    if (regApiPtr->abortState == AS_IDLE) {
-      if (TstartFlag == 1) {
-        if(getAllowStartTransaction(refToNode(sendersBlockRef),
-                                    localTabptr.p->singleUserMode) == false)
+  {
+    /**
+     * In this state it is normal to receive signals in the combined
+     * state CS_ABORTING and abortState == AS_IDLE. This means that the
+     * previous abort was completed and we are now starting up a new
+     * transaction.
+     *
+     * However if we receive a signal that hasn't got a start flag and
+     * also not an exec flag, then we simply drop the signal since these
+     * signals can only be received when a transaction has been started.
+     *
+     * When a signal arrives that haven't got a start flag but has an
+     * exec flag we need to take action. A signal that has the exec flag
+     * set expects a response of some kind. If such a signal is not
+     * responded to the NDB API will hang. Thus it is very important
+     * to respond with an aborted signal when an exec flag arrives.
+     *
+     * The reason to wait until we have received the exec flag until we
+     * respond is to ensure that all communication with aborted transaction
+     * is completed when we abort the transaction completely and respond
+     * to the sender such that the other end can start new transactions
+     * again.
+     *
+     * These exec flags can arrive in several states, both states with
+     * CS_ABORTING, but also in the state CS_RELEASE which is the final
+     * state of releasing the transaction resources, thus no wait for
+     * signals from other threads and nodes. This state ensures that
+     * we can avoid handling timeouts before completing the abort.
+     *
+     * Receiving a start flag when the previous transaction isn't
+     * completed is a protocol error.
+     */
+    if (likely(regApiPtr->abortState == AS_IDLE))
+    {
+      if (likely(TstartFlag == 1))
+      {
+        if (unlikely(getAllowStartTransaction(refToNode(sendersBlockRef),
+                          localTabptr.p->singleUserMode) == false))
         {
           releaseSections(handle);
           TCKEY_abort(signal, TexecFlag ? 60 : 57, apiConnectptr);
@@ -3642,11 +3673,15 @@ void Dbtc::execTCKEYREQ(Signal* signal)
         jam();
         initApiConnectRec(signal, regApiPtr);
 	regApiPtr->m_flags |= TexecFlag;
-      } else if(TexecFlag) {
+      }
+      else if (TexecFlag)
+      {
         releaseSections(handle);
         TCKEY_abort(signal, 59, apiConnectptr);
 	return;
-      } else { 
+      }
+      else
+      { 
 	//--------------------------------------------------------------------
 	// The current transaction was aborted successfully. 
 	// We will not do anything before we receive an operation 
@@ -3657,20 +3692,26 @@ void Dbtc::execTCKEYREQ(Signal* signal)
         releaseSections(handle);
         return;
       }//if
-    } else {
+    }
+    else
+    {
       //----------------------------------------------------------------------
       // Previous transaction is still aborting
       //----------------------------------------------------------------------
       jam();
       releaseSections(handle);
-      if (TstartFlag == 1) {
+      if (TstartFlag == 1)
+      {
 	//--------------------------------------------------------------------
 	// If a new transaction tries to start while the old is 
-	// still aborting, we will report this to the starting API.
+	// still aborting, we will report this protocol error to the
+        // starting API.
 	//--------------------------------------------------------------------
         TCKEY_abort(signal, 2, apiConnectptr);
         return;
-      } else if(TexecFlag) {
+      }
+      else if(TexecFlag)
+      {
         TCKEY_abort(signal, 59, apiConnectptr);
         return;
       }
@@ -3679,8 +3720,9 @@ void Dbtc::execTCKEYREQ(Signal* signal)
       //----------------------------------------------------------------------
       DEBUG("Drop TCKEYREQ - apiConnectState=CS_ABORTING, !=AS_IDLE");
       return;
-    }//if
+    }
     break;
+  }
   case CS_RELEASE:
   {
     releaseSections(handle);
@@ -9416,7 +9458,8 @@ void Dbtc::abortErrorLab(Signal* signal, ApiConnectRecordPtr const apiConnectptr
     return;
   }
   transP->returnsignal = RS_TCROLLBACKREP;
-  if(transP->returncode == 0){
+  if(transP->returncode == 0)
+  {
     jam();
     transP->returncode = terrorCode;
   }
