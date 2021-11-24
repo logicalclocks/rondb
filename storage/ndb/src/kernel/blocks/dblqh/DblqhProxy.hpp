@@ -1,4 +1,5 @@
 /* Copyright (c) 2008, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -322,7 +323,7 @@ protected:
   void sendSTART_RECCONF_2(Signal*, Uint32 ssId, SectionHandle*);
 
   // GSN_LQH_TRANSREQ
-  struct Ss_LQH_TRANSREQ : SsParallel {
+  struct Ss_LQH_TRANSREQ : SsSequential {
     static const char* name() { return "LQH_TRANSREQ"; }
     /**
      * Is this entry valid, or has it been made obsolete by

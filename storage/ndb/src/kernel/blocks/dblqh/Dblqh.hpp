@@ -3491,7 +3491,7 @@ private:
                     LogFileRecordPtr & logFilePtr,
                     LogPartRecord *logPartPtrP);
   void errorReport(Signal* signal, int place);
-  void warningReport(Signal* signal, int place);
+  void warningReport(Signal* signal, int place, Uint32 oprec);
   void invalidateLogAfterLastGCI(Signal *signal,
                                  LogFileOperationRecordPtr lfoPtr,
                                  LogPageRecordPtr logPagePtr,

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -76,6 +77,7 @@ private:
     ,ZCHECK_TO_COMMIT_HANDLING             = 36
     ,ZCHECK_TO_COMPLETE_HANDLING           = 37
     ,ZRELEASE_TAKE_OVER                    = 38
+    ,ZRELEASE_TAKE_OVER_TRANS              = 39
   };
 };
 

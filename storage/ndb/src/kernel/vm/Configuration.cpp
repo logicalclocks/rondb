@@ -2190,7 +2190,6 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
     /**
      * Tc Size Alt values
      */
-    const Uint32 takeOverOperations = noOfOperations;
     if (maxOpsPerTrans == ~(Uint32)0)
     {
       maxOpsPerTrans = noOfOperations;
@@ -2224,6 +2223,8 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
     cfg.put(CFG_TC_MAX_CONNECT_RECORD, UINT32_MAX);
     cfg.put(CFG_TC_RESERVED_CONNECT_RECORD, reservedOperations / tcInstances);
 
+    const Uint32 takeOverOperations = noOfOperations +
+                                      EXTRA_OPERATIONS_FOR_FIRST_TRANSACTION;
     cfg.put(CFG_TC_TARGET_TO_CONNECT_RECORD, takeOverOperations);
     cfg.put(CFG_TC_MAX_TO_CONNECT_RECORD, takeOverOperations);
     cfg.put(CFG_TC_RESERVED_TO_CONNECT_RECORD, takeOverOperations);

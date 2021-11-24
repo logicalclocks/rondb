@@ -5279,7 +5279,7 @@ void Dblqh::execLQHKEYREF(Signal* signal)
   if (!tcConnect_pool.getValidPtr(tcConnectptr))
   {
     jam();
-    warningReport(signal, 13);
+    warningReport(signal, 13, tcOprec);
     return;
   }//if
   m_tc_connect_ptr = tcConnectptr;
@@ -5311,7 +5311,7 @@ void Dblqh::execLQHKEYREF(Signal* signal)
                         tcConnectptr) != ZOK)
     {
       jam();
-      warningReport(signal, 14);
+      warningReport(signal, 14, tcOprec);
       return;
     }
   }
@@ -5331,7 +5331,7 @@ void Dblqh::execLQHKEYREF(Signal* signal)
        * in use by another operation. So this signal should be
        * ignored.
        */
-      warningReport(signal, 17);
+      warningReport(signal, 17, tcOprec);
       return;
     }
   }
@@ -5345,7 +5345,7 @@ void Dblqh::execLQHKEYREF(Signal* signal)
   case TcConnectionrec::CONNECTED:
     jam();
     if (regTcPtr->abortState != TcConnectionrec::ABORT_IDLE) {
-      warningReport(signal, 15);
+      warningReport(signal, 15, tcOprec);
       return;
     }//if
     abortErrorLab(signal, tcConnectptr);
@@ -5361,7 +5361,7 @@ void Dblqh::execLQHKEYREF(Signal* signal)
     release_frag_access(prim_tab_fragptr.p);
     return;
   default:
-    warningReport(signal, 16);
+    warningReport(signal, 16, tcOprec);
     return;
   }//switch
 }//Dblqh::execLQHKEYREF()
@@ -5906,14 +5906,18 @@ void Dblqh::sendCommitLqh(Signal* signal,
   Uint32 instanceKey = refToInstance(alqhBlockref);
   ndbassert(refToMain(alqhBlockref) == getDBLQH());
 
-  if (instanceKey > MAX_NDBMT_LQH_THREADS)
+#ifndef UNPACKED_COMMIT_SIGNALS
+  if (unlikely(instanceKey > MAX_NDBMT_LQH_THREADS))
+#endif
   {
     /* No send packed support in these cases */
     jam();
     signal->theData[0] = regTcPtr->clientConnectrec;
-    signal->theData[1] = regTcPtr->transid[0];
-    signal->theData[2] = regTcPtr->transid[1];
-    sendSignal(alqhBlockref, GSN_COMMIT, signal, 3, JBB);
+    signal->theData[1] = regTcPtr->gci_hi;
+    signal->theData[2] = regTcPtr->transid[0];
+    signal->theData[3] = regTcPtr->transid[1];
+    signal->theData[4] = regTcPtr->gci_lo;
+    sendSignal(alqhBlockref, GSN_COMMIT, signal, 5, JBB);
     return;
   }
 
@@ -5952,7 +5956,9 @@ void Dblqh::sendCompleteLqh(Signal* signal,
   Uint32 instanceKey = refToInstance(alqhBlockref);
   ndbassert(refToMain(alqhBlockref) == getDBLQH());
 
-  if (instanceKey > MAX_NDBMT_LQH_THREADS)
+#ifndef UNPACKED_COMMIT_SIGNALS
+  if (unlikely(instanceKey > MAX_NDBMT_LQH_THREADS))
+#endif
   {
     /* No send packed support in these cases */
     jam();
@@ -12002,123 +12008,141 @@ void Dblqh::deleteTransidHash(Signal* signal, TcConnectionrecPtr& tcConnectptr)
 /* #######                   TRANSACTION MODULE                      ####### */
 /*      THIS MODULE HANDLES THE COMMIT AND THE COMPLETE PHASE.               */
 /* ######################################################################### */
-void Dblqh::warningReport(Signal* signal, int place)
+void Dblqh::warningReport(Signal* signal, int place, Uint32 oprec)
 {
   switch (place) {
   case 0:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received COMMIT in wrong state in Dblqh" << endl;
+    ndbout << "W: Received COMMIT in wrong state in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 1:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received COMMIT with wrong transid in Dblqh" << endl;
+    ndbout << "W: Received COMMIT with wrong transid in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 2:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received COMPLETE in wrong state in Dblqh" << endl;
+    ndbout << "W: Received COMPLETE in wrong state in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 3:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received COMPLETE with wrong transid in Dblqh" << endl;
+    ndbout << "W: Received COMPLETE with wrong transid in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 4:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received COMMITREQ in wrong state in Dblqh" << endl;
+    ndbout << "W: Received COMMITREQ in wrong state in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 5:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received COMMITREQ with wrong transid in Dblqh" << endl;
+    ndbout << "W: Received COMMITREQ with wrong transid in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 6:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received COMPLETEREQ in wrong state in Dblqh" << endl;
+    ndbout << "W: Received COMPLETEREQ in wrong state in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 7:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received COMPLETEREQ with wrong transid in Dblqh" << endl;
+    ndbout << "W: Received COMPLETEREQ with wrong transid in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 8:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received ABORT with non-existing transid in Dblqh" << endl;
+    ndbout << "W: Received ABORT with non-existing transid in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 9:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received ABORTREQ with non-existing transid in Dblqh" << endl;
+    ndbout << "W: Received ABORTREQ with non-exist transid in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 10:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received ABORTREQ in wrong state in Dblqh" << endl;
+    ndbout << "W: Received ABORTREQ in wrong state in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 11:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received COMMIT when tc-rec released in Dblqh" << endl;
+    ndbout << "W: Received COMMIT when tc-rec released in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 12:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received COMPLETE when tc-rec released in Dblqh" << endl;
+    ndbout << "W: Received COMPLETE when tc-rec released in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 13:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received LQHKEYREF when tc-rec released in Dblqh" << endl;
+    ndbout << "W: Received LQHKEYREF when tc-rec released in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 14:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received LQHKEYREF with wrong transid in Dblqh" << endl;
+    ndbout << "W: Received LQHKEYREF with wrong transid in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 15:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "W: Received LQHKEYREF when already aborting in Dblqh" << endl;
+    ndbout << "W: Received LQHKEYREF when already aborting in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 16:
     jam();
     ndbrequire(cstartPhase == ZNIL);
 #ifdef ABORT_TRACE
-    ndbout << "W: Received LQHKEYREF in wrong state in Dblqh" << endl;
+    ndbout << "W: Received LQHKEYREF in wrong state in Dblqh, oprec: "
+           << oprec << endl;
 #endif
     break;
   case 17:
     jam();
 #ifdef ABORT_TRACE
     ndbout << "W: Received LQHKEYREF with wrong transid in" <<
-           " COPY_CONNECTED state" << endl;
+           " COPY_CONNECTED state, oprec: "
+           << oprec << endl;
 #endif
     break;
   default:
     jam();
 #ifdef ABORT_TRACE
-    ndbout << "LQH WarningReport: " << place << endl;
+    ndbout << "LQH WarningReport: " << place << " oprec: " << oprec << endl;
 #endif
     break;
   }//switch
@@ -12331,7 +12355,7 @@ void Dblqh::execCOMMIT(Signal* signal)
   if (unlikely(!tcConnect_pool.getValidPtr(tcConnectptr)))
   {
     jam();
-    warningReport(signal, 0);
+    warningReport(signal, 0, 0);
     return;
   }//if
   if (ERROR_INSERTED(5011)) {
@@ -12388,7 +12412,7 @@ void Dblqh::execCOMMIT(Signal* signal)
     commitReqLab(signal, gci_hi, gci_lo, tcConnectptr);
     return;
   }//if
-  warningReport(signal, 1);
+  warningReport(signal, 1, 0);
   return;
 }//Dblqh::execCOMMIT()
 
@@ -12447,7 +12471,7 @@ void Dblqh::execCOMMITREQ(Signal* signal)
      * not be a possible event.
      */
     ndbabort();
-    warningReport(signal, 5);
+    warningReport(signal, 5, tcOprec);
     return;
   }//if
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
@@ -12510,7 +12534,7 @@ void Dblqh::execCOMPLETE(Signal* signal)
   if (unlikely(!tcConnect_pool.getValidPtr(tcConnectptr)))
   {
     jam();
-    warningReport(signal, 2);
+    warningReport(signal, 2, 0);
     return;
   }//if
   CRASH_INSERTION(5042);
@@ -12585,12 +12609,12 @@ void Dblqh::execCOMPLETE(Signal* signal)
   if (tcConnectptr.p->transactionState != TcConnectionrec::COMMITTED)
   {
     jam();
-    warningReport(signal, 2);
+    warningReport(signal, 2, tcConnectptr.p->tcOprec);
   }
   else
   {
     jam();
-    warningReport(signal, 3);
+    warningReport(signal, 3, tcConnectptr.p->tcOprec);
   }//if
 }//Dblqh::execCOMPLETE()
 
@@ -12647,7 +12671,7 @@ void Dblqh::execCOMPLETEREQ(Signal* signal)
     signal->theData[2] = transid1;
     signal->theData[3] = transid2;
     sendSignal(reqBlockref, GSN_COMPLETECONF, signal, 4, JBB);
-    warningReport(signal, 7);
+    warningReport(signal, 7, tcOprec);
     return;
   }//if
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
@@ -12831,7 +12855,7 @@ void Dblqh::commitReqLab(Signal* signal,
   }
   else
   {
-    warningReport(signal, 0);
+    warningReport(signal, 0, regTcPtr->tcOprec);
     return;
   }//if
   if (unlikely(regTcPtr->seqNoReplica == 0 ||
@@ -13548,7 +13572,7 @@ void Dblqh::execABORT(Signal* signal)
     signal->theData[3] = cownNodeid;
     signal->theData[4] = ZTRUE;
     sendSignal(tcBlockref, GSN_ABORTED, signal, 5, JBB);
-    warningReport(signal, 8);
+    warningReport(signal, 8, tcOprec);
     return;
   }//if
   
@@ -13639,7 +13663,7 @@ void Dblqh::execABORTREQ(Signal* signal)
     signal->theData[3] = transid1;
     signal->theData[4] = transid2;
     sendSignal(reqBlockref, GSN_ABORTCONF, signal, 5, JBB);
-    warningReport(signal, 9);
+    warningReport(signal, 9, tcOprec);
     return;
   }//if
   TcConnectionrec * const regTcPtr = tcConnectptr.p;

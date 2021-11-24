@@ -685,4 +685,13 @@ ndbd_support_abortreq_full(Uint32 x)
 {
   return x >= NDBD_SUPPORT_ABORTREQ_FULL;
 }
+
+#define NDBD_SUPPORT_TC_HBREP_API NDB_MAKE_VERSION(21,04,2)
+static
+inline
+bool
+ndbd_support_tc_hbrep_api(Uint32 x)
+{
+  return x >= NDBD_SUPPORT_TC_HBREP_API;
+}
 #endif
