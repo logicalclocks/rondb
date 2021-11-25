@@ -1,4 +1,5 @@
 /* Copyright (c) 2014, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -1322,15 +1323,15 @@ stack when the second lock was acquired:
 
   First, notice how the read write lock class "rwlock/sql/B"
   is represented by four nodes, named:
-  - "rwlock/sql/B:+R", incomming read lock
+  - "rwlock/sql/B:+R", incoming read lock
   - "rwlock/sql/B:-R", outgoing read lock
-  - "rwlock/sql/B:+W", incomming write lock
+  - "rwlock/sql/B:+W", incoming write lock
   - "rwlock/sql/B:-W", outgoing write lock
 
   A practical way to represent this graphically is to draw a box
   for the lock, that contains four ports.
   Internal connections between ports represent the logic table
-  for the lock: an arc from "+R" to "-W" means that an incomming request
+  for the lock: an arc from "+R" to "-W" means that an incoming request
   for a read lock ("+R") is blocked by a write lock request already given ("-W").
 
   Micro arcs represent the wired logic of the lock itself, these can not be changed.
