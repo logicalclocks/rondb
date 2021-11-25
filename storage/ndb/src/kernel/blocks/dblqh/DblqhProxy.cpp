@@ -1660,9 +1660,8 @@ DblqhProxy::sendLQH_TRANSCONF(Signal* signal, Uint32 ssId)
     conf->tcRef = ss.m_req.senderData;
     sendSignal(ss.m_req.senderRef, GSN_LQH_TRANSCONF,
                signal, LqhTransConf::SignalLength, JBB);
-
     // more replies from this worker
-    skipConf(ss);
+    return;
   }
 
   if (!lastReply(ss))
