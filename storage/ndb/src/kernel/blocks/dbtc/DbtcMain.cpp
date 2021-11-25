@@ -518,6 +518,15 @@ void Dbtc::execCONTINUEB(Signal* signal)
     releaseTakeOver(signal, apiConnectptr);
     return;
   }
+  case TcContinueB::ZRELEASE_TAKE_OVER_TRANS:
+  {
+    jam();
+    ApiConnectRecordPtr apiConnectptr;
+    apiConnectptr.i = signal->theData[1];
+    ndbrequire(c_apiConnectRecordPool.getValidPtr(apiConnectptr));
+    remove_takeover_transaction(signal, apiConnectptr);
+    return;
+  }
   case TcContinueB::ZSCAN_FOR_READ_BACKUP:
     jam();
     scan_for_read_backup(signal, Tdata0, Tdata1, Tdata2);
@@ -11636,9 +11645,24 @@ void Dbtc::startTakeOverLab(Signal* signal,
   {
     ctransidFailHash[i] = RNIL;
   }
-  for (Uint32 i = 0; i < TC_FAIL_HASH_SIZE; i++)
+  for (Uint32 i = 0; i < TC_FAIL_HASH_SIZE; i += 16)
   {
     ctcConnectFailHash[i] = RNIL;
+    ctcConnectFailHash[i+1] = RNIL;
+    ctcConnectFailHash[i+2] = RNIL;
+    ctcConnectFailHash[i+3] = RNIL;
+    ctcConnectFailHash[i+4] = RNIL;
+    ctcConnectFailHash[i+5] = RNIL;
+    ctcConnectFailHash[i+6] = RNIL;
+    ctcConnectFailHash[i+7] = RNIL;
+    ctcConnectFailHash[i+8] = RNIL;
+    ctcConnectFailHash[i+9] = RNIL;
+    ctcConnectFailHash[i+10] = RNIL;
+    ctcConnectFailHash[i+11] = RNIL;
+    ctcConnectFailHash[i+12] = RNIL;
+    ctcConnectFailHash[i+13] = RNIL;
+    ctcConnectFailHash[i+14] = RNIL;
+    ctcConnectFailHash[i+15] = RNIL;
   }
   tcNodeFailptr.p->failStatus = FS_LISTENING;
   tcNodeFailptr.p->takeOverNode = failedNodeId;
@@ -11646,6 +11670,7 @@ void Dbtc::startTakeOverLab(Signal* signal,
   tcNodeFailptr.p->takeOverFailed = false;
   tcNodeFailptr.p->maxInstanceId = 0;
   tcNodeFailptr.p->handledOneTransaction = false;
+  tcNodeFailptr.p->first_apiConnectPtrI = RNIL;
   for (hostptr.i = 1; hostptr.i < MAX_NDB_NODES; hostptr.i++)
   {
     jam();
@@ -11743,8 +11768,7 @@ void Dbtc::releaseMarker(ApiConnectRecord * const regApiPtr)
   }
 }
 
-void Dbtc::remove_from_transid_fail_hash(Signal *signal,
-                                         Uint32 transid1,
+void Dbtc::remove_from_transid_fail_hash(Uint32 transid1,
                                          ApiConnectRecordPtr const apiConnectptr)
 {
   ApiConnectRecordPtr locApiConnectptr;
@@ -11832,20 +11856,22 @@ Dbtc::findTcConnectFail(Signal* signal,
   return false;
 }
 
-void Dbtc::remove_transaction_from_tc_fail_hash(Signal *signal,
-                                     ApiConnectRecord* const regApiPtr)
+void Dbtc::remove_takeover_transaction(Signal *signal,
+                                       ApiConnectRecordPtr const regApiPtr)
 {
   TcConnectRecordPtr remTcConnectptr;
-
-  remTcConnectptr.i = regApiPtr->tcConnect.getFirst();
-  while (remTcConnectptr.i != RNIL)
+  LocalTcConnectRecord_fifo tcConList(tcConnectRecord,
+                                      regApiPtr.p->tcConnect);
+  Uint32 loop_count = 0;
+  while (++loop_count <= ZMAX_TAKEOVER_RELEASE_PER_RT_BREAK &&
+         tcConList.removeFirst(remTcConnectptr))
   {
-    jam();
+    jamDebug();
     TcConnectRecordPtr loopTcConnectptr;
     TcConnectRecordPtr prevListptr;
     tcConnectRecord.getPtr(remTcConnectptr);
     bool found = false;
-    Uint32 bucket = get_tc_fail_bucket(regApiPtr->transid[0],
+    Uint32 bucket = get_tc_fail_bucket(regApiPtr.p->transid[0],
                                        remTcConnectptr.p->tcOprec);
     prevListptr.i = RNIL;
     loopTcConnectptr.i = ctcConnectFailHash[bucket];
@@ -11856,7 +11882,7 @@ void Dbtc::remove_transaction_from_tc_fail_hash(Signal *signal,
         found = true;
         if (prevListptr.i == RNIL)
         {
-          jam();
+          jamDebug();
           /* We were first in the hash linked list */
           ndbassert(ctcConnectFailHash[bucket] == remTcConnectptr.i);
           ctcConnectFailHash[bucket] = remTcConnectptr.p->nextTcFailHash;
@@ -11864,7 +11890,7 @@ void Dbtc::remove_transaction_from_tc_fail_hash(Signal *signal,
         else
         {
           /* Link past our record in the hash list */
-          jam();
+          jamDebug();
           tcConnectRecord.getPtr(prevListptr);
           prevListptr.p->nextTcFailHash =
             remTcConnectptr.p->nextTcFailHash;
@@ -11874,15 +11900,30 @@ void Dbtc::remove_transaction_from_tc_fail_hash(Signal *signal,
       }
       else
       {
-        jam();
+        jamDebug();
         tcConnectRecord.getPtr(loopTcConnectptr);
         prevListptr.i = loopTcConnectptr.i;
         loopTcConnectptr.i = loopTcConnectptr.p->nextTcFailHash;
       }
     }
     ndbrequire(found);
-    remTcConnectptr.i = remTcConnectptr.p->nextList;
+    releaseTcConnectFail(remTcConnectptr);
   }
+  if (loop_count > ZMAX_RELEASE_PER_RT_BREAK)
+  {
+    jam();
+    setApiConTimer(regApiPtr, ctcTimer, __LINE__);
+    signal->theData[0] = TcContinueB::ZRELEASE_TAKE_OVER_TRANS;
+    signal->theData[1] = regApiPtr.i;
+    sendSignal(reference(),
+               GSN_CONTINUEB,
+               signal,
+               2,
+               JBB);
+    return;
+  }
+  releaseApiConnectFail(regApiPtr);
+  return;
 }
 
 /*------------------------------------------------------------*/
@@ -12026,6 +12067,11 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
       tcNodeFailptr.p->takeOverFailed = true;
       return;
     }
+    if (tcNodeFailptr.p->first_apiConnectPtrI == RNIL)
+    {
+      jam();
+      tcNodeFailptr.p->first_apiConnectPtrI = apiConnectptr.i;
+    }
     /**
      * A new transaction was found, allocate a record for it and fill
      * it with info as received in LQH_TRANSCONF message. Also insert
@@ -12077,7 +12123,22 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
     }
     else
     {
-      if (cfreeTcConnectFail.isEmpty())
+      /**
+       * Ensure there is always a transaction that is the prioritised
+       * transaction if for some reason this transaction cannot be handled.
+       */
+      if (tcNodeFailptr.p->first_apiConnectPtrI == RNIL)
+      {
+        jam();
+        tcNodeFailptr.p->first_apiConnectPtrI = apiConnectptr.i;
+      }
+      Uint32 min_free_count = EXTRA_OPERATIONS_FOR_FIRST_TRANSACTION;
+      if (apiConnectptr.i == tcNodeFailptr.p->first_apiConnectPtrI)
+      {
+        jam();
+        min_free_count = 0;
+      }
+      if (cfreeTcConnectFail.getCount() <= min_free_count)
       {
         /**
          * We failed to allocate a TC record, given that we can no longer
@@ -12104,10 +12165,18 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
                             "this node has MaxNoOfConcurrentOperations = %u",
                             ctcConnectFailCount);
         tcNodeFailptr.p->takeOverFailed = true;
-        remove_transaction_from_tc_fail_hash(signal, apiConnectptr.p);
+        if (apiConnectptr.i == tcNodeFailptr.p->first_apiConnectPtrI)
+        {
+          jam();
+          tcNodeFailptr.p->first_apiConnectPtrI = RNIL;
+        }
         releaseMarker(apiConnectptr.p);
-        remove_from_transid_fail_hash(signal, transid1, apiConnectptr);
-        releaseTakeOver(signal, apiConnectptr);
+        remove_from_transid_fail_hash(transid1, apiConnectptr);
+        /**
+         * Removing the takeover transaction can be divided into several
+         * CONTINUEB signals, this is handled by remove_takeover_transaction.
+         */
+        remove_takeover_transaction(signal, apiConnectptr);
       }
       else
       {
@@ -12467,7 +12536,7 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
     signal->theData[1] = apiConnectptr.p->takeOverRec;
     signal->theData[2] = apiConnectptr.p->takeOverInd;
     sendSignal(cownref, GSN_CONTINUEB, signal, 3, JBB);
-    releaseApiConnectFail(signal, apiConnectptr);
+    releaseApiConnectFail(apiConnectptr);
     break;
   default:
     jam();
@@ -13882,7 +13951,7 @@ void Dbtc::initApiConnectFail(Signal* signal,
              *   i.e both transaction + marker lingering...
              *   treat this as an updateApiStateFail and release already seize trans
              */
-            releaseApiConnectFail(signal, apiConnectptr);
+            releaseApiConnectFail(apiConnectptr);
             updateApiStateFail(signal,
                                transid1,
                                transid2,
@@ -13965,7 +14034,7 @@ void Dbtc::releaseTakeOver(Signal* signal, ApiConnectRecordPtr const apiConnectp
   while (tcConList.removeFirst(tcConnectptr))
   {
     jam();
-    releaseTcConnectFail(signal);
+    releaseTcConnectFail(tcConnectptr);
     if (++loop_count > ZMAX_RELEASE_PER_RT_BREAK)
     {
       jam();
@@ -13977,14 +14046,10 @@ void Dbtc::releaseTakeOver(Signal* signal, ApiConnectRecordPtr const apiConnectp
                  signal,
                  2,
                  JBB);
-      checkPoolShrinkNeed(DBTC_CONNECT_RECORD_TRANSIENT_POOL_INDEX,
-                          tcConnectRecord);
       return;
     }
   }
-  checkPoolShrinkNeed(DBTC_CONNECT_RECORD_TRANSIENT_POOL_INDEX,
-                      tcConnectRecord);
-  releaseApiConnectFail(signal, apiConnectptr);
+  releaseApiConnectFail(apiConnectptr);
 }
 
 void
@@ -17851,7 +17916,7 @@ void Dbtc::releaseApiCon(Signal* signal, UintR TapiConnectPtr)
                       c_apiConnectRecordPool);
 }//Dbtc::releaseApiCon()
 
-void Dbtc::releaseApiConnectFail(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
+void Dbtc::releaseApiConnectFail(ApiConnectRecordPtr const apiConnectptr)
 {
   apiConnectptr.p->apiConnectstate = CS_RESTART;
   apiConnectptr.p->takeOverRec = RNIL;
@@ -17862,7 +17927,7 @@ void Dbtc::releaseApiConnectFail(Signal* signal, ApiConnectRecordPtr const apiCo
   apiConnectptr.p->apiConnectkind = ApiConnectRecord::CK_FREE;
   apiConList.addFirst(apiConnectptr);
   ndbrequire(apiConnectptr.p->commitAckMarker == RNIL);
-}//Dbtc::releaseApiConnectFail()
+}
 
 void Dbtc::releaseKeys(CacheRecord* regCachePtr)
 {
@@ -17874,11 +17939,11 @@ void Dbtc::releaseKeys(CacheRecord* regCachePtr)
 
 }//Dbtc::releaseKeys()
 
-void Dbtc::releaseTcConnectFail(Signal* signal) 
+void Dbtc::releaseTcConnectFail(TcConnectRecordPtr tcPtr)
 {
   LocalTcConnectRecord_fifo tcConList(tcConnectRecord, cfreeTcConnectFail);
-  tcConList.addFirst(tcConnectptr);
-}//Dbtc::releaseTcConnectFail()
+  tcConList.addFirst(tcPtr);
+}
 
 bool Dbtc::seizeApiConnect(Signal* signal, ApiConnectRecordPtr& apiConnectptr)
 {

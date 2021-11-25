@@ -70,27 +70,64 @@
  * Max number of outstanding Aborts, Commits, Completes.
  * This ensures that we don't overload the send buffers and
  * job buffers during abort/commit of a large transaction.
+ *
+ * In debug mode we always use very low setting to stress the
+ * code that uses real-time breaks.
+ *
+ * In ERROR_INSERT mode (autotest) we can select either
+ * production settings or debug settings dependent on what we
+ * want to test.
  */
-#if defined(VM_TRACE) || defined(ERROR_INSERT)
+#if defined(VM_TRACE)
+
 #define ZMAX_OUTSTANDING_ABORT_OPS 2
 #define ZMAX_OUTSTANDING_ABORT_OPS_RESTART 1
 #define ZMAX_OUTSTANDING_COMMIT_OPS 2
 #define ZMAX_OUTSTANDING_COMMIT_OPS_RESTART 1
+#define ZMAX_TAKEOVER_RELEASE_PER_RT_BREAK 1
 #define ZMAX_RELEASE_PER_RT_BREAK 1
 #define ZMAX_OP_PER_RT_BREAK 1
 #define ZMAX_SETUP_PER_RT_BREAK 1
 #define ZMAX_COMMIT_PER_RT_BREAK 1
 #define ZMAX_ABORT_PER_RT_BREAK 128
 #define ZMAX_TIMEOUT_COUNTER 6
-#else
+
+#elif defined(ERROR_INSERT)
+
+#define ZMAX_OUTSTANDING_ABORT_OPS 2
+#define ZMAX_OUTSTANDING_ABORT_OPS_RESTART 1
+#define ZMAX_OUTSTANDING_COMMIT_OPS 2
+#define ZMAX_OUTSTANDING_COMMIT_OPS_RESTART 1
+#define ZMAX_TAKEOVER_RELEASE_PER_RT_BREAK 1
+#define ZMAX_RELEASE_PER_RT_BREAK 1
+#define ZMAX_OP_PER_RT_BREAK 1
+#define ZMAX_SETUP_PER_RT_BREAK 1
+#define ZMAX_COMMIT_PER_RT_BREAK 1
+#define ZMAX_ABORT_PER_RT_BREAK 128
+#define ZMAX_TIMEOUT_COUNTER 6
+/*
 #define ZMAX_OUTSTANDING_ABORT_OPS 1024
 #define ZMAX_OUTSTANDING_ABORT_OPS_RESTART 512
 #define ZMAX_OUTSTANDING_COMMIT_OPS 2048
 #define ZMAX_OUTSTANDING_COMMIT_OPS_RESTART 1024
 #define ZMAX_RELEASE_PER_RT_BREAK 256
+#define ZMAX_TAKEOVER_RELEASE_PER_RT_BREAK 2048
 #define ZMAX_OP_PER_RT_BREAK 64
 #define ZMAX_SETUP_PER_RT_BREAK 256
-#define ZMAX_OUTSTANDING_OPS_RESTART 128
+#define ZMAX_COMMIT_PER_RT_BREAK 16
+#define ZMAX_ABORT_PER_RT_BREAK 1024
+#define ZMAX_TIMEOUT_COUNTER 500
+*/
+
+#else
+#define ZMAX_OUTSTANDING_ABORT_OPS 1024
+#define ZMAX_OUTSTANDING_ABORT_OPS_RESTART 512
+#define ZMAX_OUTSTANDING_COMMIT_OPS 2048
+#define ZMAX_OUTSTANDING_COMMIT_OPS_RESTART 1024
+#define ZMAX_TAKEOVER_RELEASE_PER_RT_BREAK 2048
+#define ZMAX_RELEASE_PER_RT_BREAK 256
+#define ZMAX_OP_PER_RT_BREAK 64
+#define ZMAX_SETUP_PER_RT_BREAK 256
 #define ZMAX_COMMIT_PER_RT_BREAK 16
 #define ZMAX_ABORT_PER_RT_BREAK 1024
 #define ZMAX_TIMEOUT_COUNTER 500
@@ -928,7 +965,7 @@ public:
   typedef Ptr<TcConnectRecord> TcConnectRecordPtr;
   typedef TransientPool<TcConnectRecord> TcConnectRecord_pool;
   STATIC_CONST(DBTC_CONNECT_RECORD_TRANSIENT_POOL_INDEX = 4);
-  typedef LocalDLFifoList<TcConnectRecord_pool> LocalTcConnectRecord_fifo;
+  typedef LocalDLCFifoList<TcConnectRecord_pool> LocalTcConnectRecord_fifo;
 
   /************************** API CONNECT RECORD ***********************
    * The API connect record contains the connection record to which the
@@ -1958,6 +1995,7 @@ public:
     UintR completedTakeOver;
     UintR currentHashIndexTakeOver;
     Uint32 maxInstanceId;
+    Uint32 first_apiConnectPtrI;
     bool   takeOverFailed;
     bool   handledOneTransaction;
     Uint32 takeOverInstanceId;
@@ -2116,8 +2154,9 @@ private:
 
 /**
  * These use modulo 2 hashing, so these need to be a number which is 2^n.
+ * TC_FAIL_HASH_SIZE must be divisible by 16.
  */
-#define TC_FAIL_HASH_SIZE 8192
+#define TC_FAIL_HASH_SIZE 524288
 #define TRANSID_FAIL_HASH_SIZE 2048
 
   void sendTCKEY_FAILREF(Signal* signal, ApiConnectRecord *);
@@ -2137,16 +2176,20 @@ private:
 
   Uint32 get_transid_fail_bucket(Uint32 transid1);
   void insert_transid_fail_hash(Uint32 transid1, ApiConnectRecordPtr apiConnectptr);
-  void remove_from_transid_fail_hash(Signal *signal, Uint32 transid1, ApiConnectRecordPtr apiConnectptr);
+  void remove_from_transid_fail_hash(Uint32 transid1,
+                                     ApiConnectRecordPtr apiConnectptr);
   Uint32 get_tc_fail_bucket(Uint32 transid1, Uint32 tcOprec);
   void insert_tc_fail_hash(Uint32 transid1, Uint32 tcOprec);
-  void remove_transaction_from_tc_fail_hash(Signal *signal, ApiConnectRecord* regApiPtr);
+  void remove_takeover_transaction(Signal *signal, ApiConnectRecordPtr);
 
   void initTcFail(Signal* signal);
   void releaseTakeOver(Signal* signal, ApiConnectRecordPtr apiConnectptr);
   void setFailData(Uint16 data);
   bool setupFailData(Signal* signal, ApiConnectRecordPtr regApiPtr, Uint32 type);
-  bool findApiConnectFail(Signal* signal, Uint32 transid1, Uint32 transid2, ApiConnectRecordPtr& apiConnectptr);
+  bool findApiConnectFail(Signal* signal,
+                          Uint32 transid1,
+                          Uint32 transid2,
+                          ApiConnectRecordPtr& apiConnectptr);
   void initApiConnectFail(Signal* signal,
                           Uint32 transid1,
                           Uint32 transid2,
@@ -2266,13 +2309,13 @@ private:
                              bool first = true);
   void releaseApiCon(Signal* signal, UintR aApiConnectPtr);
   void releaseApiConCopy(Signal* signal, ApiConnectRecordPtr apiConnectptr);
-  void releaseApiConnectFail(Signal* signal, ApiConnectRecordPtr apiConnectptr);
+  void releaseApiConnectFail(ApiConnectRecordPtr apiConnectptr);
   void releaseAttrinfo(CacheRecordPtr cachePtr, ApiConnectRecord* regApiPtr);
   void releaseKeys(CacheRecord* regCachePtr);
   void releaseDirtyRead(Signal*, ApiConnectRecordPtr, TcConnectRecord*);
   void releaseDirtyWrite(Signal* signal, ApiConnectRecordPtr apiConnectptr);
   bool releaseTcCon(Signal *signal, Uint32 & loop_count, bool detach);
-  void releaseTcConnectFail(Signal* signal);
+  void releaseTcConnectFail(TcConnectRecordPtr);
   void releaseTransResources(Signal* signal, ApiConnectRecordPtr apiConnectptr);
   void checkPoolShrinkNeed(Uint32 pool_index, const TransientFastSlotPool& pool);
   void sendPoolShrink(Uint32 pool_index);
@@ -2781,8 +2824,8 @@ private:
   BlockReference tusersblkref;
   UintR tuserpointer;
 
-  UintR ctransidFailHash[TRANSID_FAIL_HASH_SIZE];
-  UintR ctcConnectFailHash[TC_FAIL_HASH_SIZE];
+  Uint32 ctransidFailHash[TRANSID_FAIL_HASH_SIZE];
+  Uint32 *ctcConnectFailHash;
 
   /**
    * Commit Ack handling
