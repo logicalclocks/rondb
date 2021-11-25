@@ -333,7 +333,8 @@ public:
 
   enum LqhTransState {
     LTS_IDLE = 0,
-    LTS_ACTIVE = 1
+    LTS_ACTIVE = 1,
+    LTS_WAIT = 2
   };
 
   enum FailState {
@@ -3085,6 +3086,7 @@ private:
   void check_finished_complete_handling(Signal *signal,
                                         ApiConnectRecordPtr apiConnectptr);
   void init_finish_processing(ApiConnectRecord *apiConnectPtrP);
+  void sendLQH_TRANSREQ(Signal*, Uint32 failedNodeId);
   void send_setupFailData(Signal *signal,
                           Uint32 apiConnectPtrI,
                           Uint32 tcConnectPtrI,

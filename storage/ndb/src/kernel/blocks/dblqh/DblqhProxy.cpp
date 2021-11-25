@@ -1,4 +1,5 @@
 /* Copyright (c) 2008, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1598,13 +1599,7 @@ DblqhProxy::execLQH_TRANSCONF(Signal* signal)
     if (ss.m_conf.operationStatus == LqhTransConf::LastTransConf)
     {
       jam();
-      ndbrequire(ss.m_workerMask.get(worker));
-      ss.m_workerMask.clear(worker);
-      if (ss.m_workerMask.isclear())
-      {
-        jam();
-        ssRelease<Ss_LQH_TRANSREQ>(ssId);
-      }
+      ssRelease<Ss_LQH_TRANSREQ>(ssId);
     }
     return;
   }
@@ -1627,16 +1622,7 @@ DblqhProxy::execLQH_TRANSCONF(Signal* signal)
           c_ss_LQH_TRANSREQ.m_pool[i].m_valid == false)
       {
         jam();
-        if (c_ss_LQH_TRANSREQ.m_pool[i].m_workerMask.get(worker))
-        {
-          jam();
-          c_ss_LQH_TRANSREQ.m_pool[i].m_workerMask.clear(worker);
-          if (c_ss_LQH_TRANSREQ.m_pool[i].m_workerMask.isclear())
-          {
-            jam();
-            ssRelease<Ss_LQH_TRANSREQ>(c_ss_LQH_TRANSREQ.m_pool[i].m_ssId);
-          }
-        }
+        ssRelease<Ss_LQH_TRANSREQ>(c_ss_LQH_TRANSREQ.m_pool[i].m_ssId);
       }
     }
   }

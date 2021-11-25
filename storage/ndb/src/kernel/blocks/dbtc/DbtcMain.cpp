@@ -11084,6 +11084,11 @@ void Dbtc::execNODE_FAILREP(Signal* signal)
 	signal->theData[1] = myHostPtr.i;
 	sendSignal(cownref, GSN_CONTINUEB, signal, 2, JBB);
       }
+      else if (myHostPtr.p->lqhTransStatus == LTS_WAIT)
+      {
+        jam();
+        myHostPtr.p->lqhTransStatus = LTS_IDLE;
+      }
     }
     
     jam();
@@ -11637,6 +11642,30 @@ void Dbtc::insert_take_over_failed_node(Signal* signal, Uint32 failedNodeId)
 /*       INITIALISE THE HASH TABLES FOR STORING TRANSACTIONS  */
 /*       AND OPERATIONS DURING TC TAKE OVER.                  */
 /*------------------------------------------------------------*/
+void
+Dbtc::sendLQH_TRANSREQ(Signal *signal, Uint32 failedNodeId)
+{
+  LqhTransReq * const lqhTransReq  = (LqhTransReq *)&signal->theData[0];
+  Uint32 sig_len;
+  BlockReference blockRef = calcLqhBlockRef(hostptr.i);
+  hostptr.p->lqhTransStatus = LTS_ACTIVE;
+  lqhTransReq->senderData = tcNodeFailptr.i;
+  lqhTransReq->senderRef = cownref;
+  lqhTransReq->failedNodeId = failedNodeId;
+  lqhTransReq->instanceId = tcNodeFailptr.p->takeOverInstanceId;
+  sig_len = LqhTransReq::SignalLength;
+  if (ERROR_INSERTED(8064) && hostptr.i == getOwnNodeId())
+  {
+    ndbout_c("sending delayed GSN_LQH_TRANSREQ to self");
+    sendSignalWithDelay(tblockref, GSN_LQH_TRANSREQ, signal, 100, sig_len);
+    CLEAR_ERROR_INSERT_VALUE;
+  }
+  else
+  {
+    sendSignal(blockRef, GSN_LQH_TRANSREQ, signal, sig_len, JBB);
+  }
+}
+
 void Dbtc::startTakeOverLab(Signal* signal,
                             Uint32 instanceId,
                             Uint32 failedNodeId)
@@ -11671,32 +11700,26 @@ void Dbtc::startTakeOverLab(Signal* signal,
   tcNodeFailptr.p->maxInstanceId = 0;
   tcNodeFailptr.p->handledOneTransaction = false;
   tcNodeFailptr.p->first_apiConnectPtrI = RNIL;
+  Uint32 sent_count = 0;
+  /**
+   * We let 2 nodes execute LQH_TRANSREQ in 1 thread at a time
+   * to minimise risk that LDM threads overload the takeover
+   * TC thread.
+   */
   for (hostptr.i = 1; hostptr.i < MAX_NDB_NODES; hostptr.i++)
   {
     jam();
     ptrAss(hostptr, hostRecord);
     if (hostptr.p->hostStatus == HS_ALIVE)
     {
-      LqhTransReq * const lqhTransReq  = (LqhTransReq *)&signal->theData[0];
-      Uint32 sig_len;
-      jam();
-      tblockref = calcLqhBlockRef(hostptr.i);
-      hostptr.p->lqhTransStatus = LTS_ACTIVE;
-      lqhTransReq->senderData = tcNodeFailptr.i;
-      lqhTransReq->senderRef = cownref;
-      lqhTransReq->failedNodeId = failedNodeId;
-      lqhTransReq->instanceId = instanceId;
-      sig_len = LqhTransReq::SignalLength;
-      if (ERROR_INSERTED(8064) && hostptr.i == getOwnNodeId())
+      if (sent_count >= 2)
       {
-        ndbout_c("sending delayed GSN_LQH_TRANSREQ to self");
-        sendSignalWithDelay(tblockref, GSN_LQH_TRANSREQ, signal, 100, sig_len);
-        CLEAR_ERROR_INSERT_VALUE;
+        jam();
+        hostptr.p->lqhTransStatus = LTS_WAIT;
+        continue;
       }
-      else
-      {
-        sendSignal(tblockref, GSN_LQH_TRANSREQ, signal, sig_len, JBB);
-      }
+      sent_count++;
+      sendLQH_TRANSREQ(signal, failedNodeId);
     }
   }
 }
@@ -12223,6 +12246,7 @@ void Dbtc::nodeTakeOverCompletedLab(Signal* signal,
   hostptr.i = nodeId;
   ptrCheckGuard(hostptr, chostFilesize, hostRecord);
   hostptr.p->lqhTransStatus = LTS_IDLE;
+  bool found_active = false;
   for (hostptr.i = 1; hostptr.i < MAX_NDB_NODES; hostptr.i++) {
     jam();
     ptrAss(hostptr, hostRecord);
@@ -12234,10 +12258,25 @@ void Dbtc::nodeTakeOverCompletedLab(Signal* signal,
         /*       TAKE OVER.                                           */
         /*------------------------------------------------------------*/
         DEB_NODE_FAILURE(("Not all nodes completed take over"));
-        return;
-      }//if
-    }//if
-  }//for
+        found_active = true;
+      }
+      else if (hostptr.p->lqhTransStatus == LTS_WAIT)
+      {
+        jam();
+        DEB_NODE_FAILURE(("Send LQH_TRANSREQ to %u for failed node: %u",
+                          hostptr.i,
+                          nodeId));
+        found_active = true;
+        hostptr.p->lqhTransStatus = LTS_ACTIVE;
+        sendLQH_TRANSREQ(signal, nodeId);
+      }
+    }
+  }
+  if (found_active)
+  {
+    jam();
+    return;
+  }
   /*------------------------------------------------------------*/
   /*       ALL NODES HAVE REPORTED ON THE STATUS OF THE VARIOUS */
   /*       OPERATIONS THAT WAS CONTROLLED BY THE FAILED TC. WE  */
