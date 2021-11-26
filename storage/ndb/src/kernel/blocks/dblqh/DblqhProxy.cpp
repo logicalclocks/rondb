@@ -1577,10 +1577,10 @@ void
 DblqhProxy::execLQH_TRANSCONF(Signal* signal)
 {
   jam();
-  const LqhTransConf* conf = (const LqhTransConf*)signal->getDataPtr();
-  Uint32 ssId = conf->tcRef;
+  const LqhTransConf* rec_conf = (const LqhTransConf*)signal->getDataPtr();
+  Uint32 ssId = rec_conf->tcRef;
   Ss_LQH_TRANSREQ& ss = ssFind<Ss_LQH_TRANSREQ>(ssId);
-  ss.m_conf = *conf;
+  ss.m_conf = *rec_conf;
 
   BlockReference ref = signal->getSendersBlockRef();
   ndbrequire(refToMain(ref) == number());
@@ -1626,6 +1626,18 @@ DblqhProxy::execLQH_TRANSCONF(Signal* signal)
       }
     }
   }
+  else
+  {
+    jam();
+    /* Forward conf to the requesting TC, and wait for more */
+    LqhTransConf* send_conf = (LqhTransConf*)signal->getDataPtrSend();
+    *send_conf = ss.m_conf;
+    send_conf->tcRef = ss.m_req.senderData;
+    sendSignal(ss.m_req.senderRef, GSN_LQH_TRANSCONF,
+               signal, LqhTransConf::SignalLength, JBB);
+    // more replies from this worker expected
+    return;
+  }
 
   recvCONF(signal, ss);
 }
@@ -1636,7 +1648,7 @@ DblqhProxy::sendLQH_TRANSCONF(Signal* signal, Uint32 ssId)
   jam();
   Ss_LQH_TRANSREQ& ss = ssFind<Ss_LQH_TRANSREQ>(ssId);
 
-  if (ss.m_conf.operationStatus == LqhTransConf::LastTransConf) 
+  ndbrequire(ss.m_conf.operationStatus == LqhTransConf::LastTransConf);
   {
     jam();
 
@@ -1651,18 +1663,6 @@ DblqhProxy::sendLQH_TRANSCONF(Signal* signal, Uint32 ssId)
       ss.m_maxInstanceId = ss.m_conf.maxInstanceId;
     }
   }
-  else
-  {
-    jam();
-    /* Forward conf to the requesting TC, and wait for more */
-    LqhTransConf* conf = (LqhTransConf*)signal->getDataPtrSend();
-    *conf = ss.m_conf;
-    conf->tcRef = ss.m_req.senderData;
-    sendSignal(ss.m_req.senderRef, GSN_LQH_TRANSCONF,
-               signal, LqhTransConf::SignalLength, JBB);
-    // more replies from this worker
-    return;
-  }
 
   if (!lastReply(ss))
   {
@@ -1670,7 +1670,8 @@ DblqhProxy::sendLQH_TRANSCONF(Signal* signal, Uint32 ssId)
     return;
   }
 
-  if (ss.m_error == 0) {
+  if (ss.m_error == 0)
+  {
     jam();
     LqhTransConf* conf = (LqhTransConf*)signal->getDataPtrSend();
     conf->tcRef = ss.m_req.senderData;
@@ -1679,10 +1680,11 @@ DblqhProxy::sendLQH_TRANSCONF(Signal* signal, Uint32 ssId)
     conf->maxInstanceId = ss.m_maxInstanceId;
     sendSignal(ss.m_req.senderRef, GSN_LQH_TRANSCONF,
                signal, LqhTransConf::SignalLength, JBB);
-  } else {
+  }
+  else
+  {
     ndbabort();
   }
-
   ssRelease<Ss_LQH_TRANSREQ>(ssId);
 }
 
