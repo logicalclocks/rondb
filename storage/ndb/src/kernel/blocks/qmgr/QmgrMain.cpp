@@ -7884,7 +7884,6 @@ Qmgr::execNODE_FAILREP(Signal * signal)
       jam();
       check_no_multi_trp(signal, nodePtr.i);
       globalTransporterRegistry.lockMultiTransporters();
-      bool switch_required = false;
       Multi_Transporter *multi_trp =
         globalTransporterRegistry.get_node_multi_transporter(nodePtr.i);
       if (multi_trp && 
@@ -7902,7 +7901,6 @@ Qmgr::execNODE_FAILREP(Signal * signal)
          * disconnect code. This is why it is required to lock the
          * multi transporter mutex while performing this action.
          */
-        //switch_required = true;
         DEB_MULTI_TRP(("switch_active_trp for node %u's transporter",
                        nodePtr.i));
         globalTransporterRegistry.switch_active_trp(multi_trp);
@@ -7913,12 +7911,6 @@ Qmgr::execNODE_FAILREP(Signal * signal)
       startChangeNeighbourNode();
       setNeighbourNode(nodePtr.i);
       endChangeNeighbourNode();
-      if (switch_required)
-      {
-        globalTransporterRegistry.switch_active_trp(multi_trp);
-        DEB_MULTI_TRP(("switch_active_trp for node %u's transporter",
-                       nodePtr.i));
-      }
       globalTransporterRegistry.unlockMultiTransporters();
     }
   }

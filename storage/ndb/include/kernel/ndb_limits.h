@@ -438,6 +438,8 @@
 // Max. 256 bytes for encryption password given via mgmapi
 #define MAX_BACKUP_ENCRYPTION_PASSWORD_LENGTH 256
 
+#define EXTRA_OPERATIONS_FOR_FIRST_TRANSACTION 32768
+
 #ifdef NDB_STATIC_ASSERT
 
 static inline void ndb_limits_constraints()

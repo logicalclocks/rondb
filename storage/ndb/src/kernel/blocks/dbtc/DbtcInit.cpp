@@ -266,6 +266,8 @@ void Dbtc::initRecords(const ndb_mgm_configuration_iterator * mgm_cfg)
                                         &maxCommitAckMarkerBuffer));
   if (does_take_over)
   {
+    ctcConnectFailHash = (Uint32*)ndbd_malloc(TC_FAIL_HASH_SIZE * 4);
+    ndbrequire(ctcConnectFailHash != nullptr);
     ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg,
                                           CFG_TC_MAX_TO_CONNECT_RECORD,
                                           &maxFailConnectRecord));

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2010, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -517,24 +518,34 @@ int PollGuard::wait_n_unlock(int wait_time, Uint32 nodeId, Uint32 state,
   int ret_val;
   m_waiter->set_node(nodeId);
   m_waiter->set_state(state);
-  ret_val= wait_for_input_in_loop(wait_time, forceSend);
+  NDB_TICKS start_time;
+  ret_val= wait_for_input_in_loop(wait_time,
+                                  forceSend,
+                                  &start_time);
   unlock_and_signal();
   return ret_val;
 }
 
-int PollGuard::wait_scan(int wait_time, Uint32 nodeId, bool forceSend)
+int PollGuard::wait_scan(int wait_time,
+                         Uint32 nodeId,
+                         bool forceSend,
+                         NDB_TICKS *start_time)
 {
   m_waiter->set_node(nodeId);
   m_waiter->set_state(WAIT_SCAN);
-  return wait_for_input_in_loop(wait_time, forceSend);
+  return wait_for_input_in_loop(wait_time,
+                                forceSend,
+                                start_time);
 }
 
-int PollGuard::wait_for_input_in_loop(int max_wait_ms, bool forceSend)
+int PollGuard::wait_for_input_in_loop(int max_wait_ms,
+                                      bool forceSend,
+                                      NDB_TICKS *start_time)
 {
   int ret_val;
   m_clnt->do_forceSend(forceSend);
 
-  const NDB_TICKS start = NdbTick_getCurrentTicks();
+  *start_time = NdbTick_getCurrentTicks();
   int remain_wait_ms = max_wait_ms;
 #ifdef VM_TRACE
   const bool verbose = (m_waiter->get_state() != WAIT_EVENT);
@@ -549,7 +560,7 @@ int PollGuard::wait_for_input_in_loop(int max_wait_ms, bool forceSend)
     wait_for_input(maxsleep);
 
     const NDB_TICKS now = NdbTick_getCurrentTicks();
-    m_clnt->recordWaitTimeNanos(NdbTick_Elapsed(start,now).nanoSec());
+    m_clnt->recordWaitTimeNanos(NdbTick_Elapsed(*start_time,now).nanoSec());
     Uint32 state= m_waiter->get_state();
 
     DBUG_EXECUTE_IF("ndb_simulate_nodefail", {
@@ -575,7 +586,7 @@ int PollGuard::wait_for_input_in_loop(int max_wait_ms, bool forceSend)
       continue;
     }
     remain_wait_ms = max_wait_ms -
-      (int)NdbTick_Elapsed(start,now).milliSec();
+      (int)NdbTick_Elapsed(*start_time,now).milliSec();
 
     if (remain_wait_ms <= 0)
     {

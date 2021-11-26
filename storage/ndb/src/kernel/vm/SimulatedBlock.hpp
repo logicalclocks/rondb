@@ -77,6 +77,11 @@ struct CHARSET_INFO;
 
 #define JAM_FILE_ID 248
 
+/**
+ * If one needs to test with unpacked COMMIT and COMPLETE
+ * signals then define UNPACKED_COMMIT_SIGNALS.
+ */
+//#define UNPACKED_COMMIT_SIGNALS 1
 
 #ifdef VM_TRACE
 #define D(x) \

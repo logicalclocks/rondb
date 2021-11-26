@@ -1,4 +1,5 @@
 /* Copyright (c) 2008, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -82,9 +83,10 @@ struct DihScanTabRef
 
 struct DihScanTabCompleteRep
 {
-  static constexpr Uint32 SignalLength = 4;
+  static constexpr Uint32 SignalLength = 5;
 
   Uint32 tableId;
+  Uint32 schemaVersion;
   Uint32 scanCookie;
   union {
     void * jamBufferPtr;

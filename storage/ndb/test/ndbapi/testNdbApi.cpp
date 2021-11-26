@@ -35,6 +35,7 @@
 #include <NdbSleep.h>
 #include <NdbTick.h>
 #include <my_sys.h>
+#include "../../src/ndbapi/NdbImpl.hpp"
 #include "../../src/ndbapi/SignalSender.hpp"
 #include <GlobalSignalNumbers.h>
 
@@ -424,7 +425,8 @@ int runTestMaxOperations(NDBT_Context* ctx, NDBT_Step* step){
    * It is a pass criteria that cool down periode
    * reduced the number of free NdbOperations kept.
    */
-  if (freeOperations >= hiFreeOperations)
+  if (freeOperations >= hiFreeOperations &&
+      freeOperations > MAX_NDB_FREE_LIST_SIZE)
   {
     ndbout << "Cool down periode didn't shrink NdbOperation free-list" << endl;
     result = NDBT_FAILED;

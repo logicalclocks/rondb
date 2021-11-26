@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2013, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1358,6 +1359,7 @@ runTransError(NDBT_Context* ctx, NDBT_Step* step)
     printf("testing errcode: %d\n", terrorCodes[i]);
     runTransSnapshot(ctx, step);
     runLongSignalMemorySnapshotStart(ctx, step);
+    sleep(2);
     runRSSsnapshot(ctx, step);
 
     res.insertErrorInAllNodes(terrorCodes[i]);
@@ -1376,6 +1378,7 @@ runTransError(NDBT_Context* ctx, NDBT_Step* step)
      */
     runRSSsnapshotCheck(ctx, step);
     runTransSnapshotCheck(ctx, step);
+    sleep(2);
     runLongSignalMemorySnapshotCheck(ctx, step);
   }
 

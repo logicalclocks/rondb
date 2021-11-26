@@ -1891,6 +1891,7 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
        * If memory decreased more than once...
        *   it must also increase atleast once
        */
+      fflush(stdout);
       ndbrequire(cnt_inc > 0);
     }
 
@@ -1910,6 +1911,7 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
       return;
     }
 
+    fflush(stdout);
     ndbabort();
 #endif
   }

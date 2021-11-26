@@ -1094,6 +1094,29 @@ TransporterRegistry::prepareSendTemplate(
 {
   assert(t != nullptr);
 
+  Transporter *node_trp = theNodeIdTransporters[nodeId];
+  if (unlikely(node_trp == NULL))
+  {
+    DEBUG("Discarding message to unknown node: " << nodeId);
+    return SEND_UNKNOWN_NODE;
+  }
+  assert(!node_trp->isPartOfMultiTransporter());
+  Transporter *t;
+  t = node_trp->get_send_transporter(signalHeader->theReceiversBlockNumber,
+                                     signalHeader->theSendersBlockRef);
+  assert(!t->isMultiTransporter());
+  require(t->get_transporter_active());
+  trp_id = t->getTransporterIndex();
+  if (unlikely(trp_id == 0))
+  {
+    /**
+     * Can happen in disconnect situations, node is disconnected, so send
+     * to it is successful since the node won't be there to receive the
+     * message.
+     */
+    DEBUG("Discarding message due to trp_id = 0");
+    return SEND_OK;
+  }
   if(
     likely((ioStates[nodeId] != HaltOutput) && (ioStates[nodeId] != HaltIO)) || 
            (signalHeader->theReceiversBlockNumber == QMGR) ||

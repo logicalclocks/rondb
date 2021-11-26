@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -490,7 +491,7 @@ int runScanReadExhaust(NDBT_Context* ctx, NDBT_Step* step)
   int savesnapshot= DumpStateOrd::TcResourceSnapshot;
   Uint32 checksnapshot= DumpStateOrd::TcResourceCheckLeak;
 
-  NdbSleep_SecSleep(2);
+  NdbSleep_SecSleep(3);
   restarter.dumpStateAllNodes(&savesnapshot, 1);
   Ndb_internal::set_TC_COMMIT_ACK_immediate(pNdb, true);
 
@@ -1447,6 +1448,7 @@ int takeResourceSnapshot(NDBT_Context* ctx, NDBT_Step* step)
   NdbRestarter restarter;
 
   int checksnapshot = DumpStateOrd::TcResourceSnapshot;
+  sleep(3);
   restarter.dumpStateAllNodes(&checksnapshot, 1);
   Ndb_internal::set_TC_COMMIT_ACK_immediate(pNdb, true);
 
@@ -1651,7 +1653,7 @@ int checkResourceSnapshot(NDBT_Context* ctx, NDBT_Step* step)
   Ndb *pNdb = GETNDB(step);
   NdbDictionary::Dictionary *pDict = pNdb->getDictionary();
 
-  NdbSleep_SecSleep(2);
+  NdbSleep_SecSleep(3);
   Uint32 checksnapshot = DumpStateOrd::TcResourceCheckLeak;
   pDict->forceGCPWait(1);
   if (Ndb_internal::send_dump_state_all(pNdb, &checksnapshot, 1) != 0)

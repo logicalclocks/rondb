@@ -5810,8 +5810,13 @@ void Dbdih::setNodeRecoveryStatus(Uint32 nodeId,
     /* State generated in QMGR */
       jam();
       /**
-       * We can come here from ALLOCATED_NODE_ID obviously,
-       * but it seems that we should also be able to get
+       * We can come here from ALLOCATED_NODE_ID obviously.
+       *
+       * It can also come here directly from NODE_NOT_RESTARTED_YET
+       * when this node had not participated in the allocation of
+       * node id since it wasn't allowed to join the start yet.
+       *
+       * It also seems that we should also be able to get
        * here from a state where the node has been able to
        * allocate a node id with an old master, now it is
        * using this old allocated node id to be included in
@@ -5831,6 +5836,18 @@ void Dbdih::setNodeRecoveryStatus(Uint32 nodeId,
       {
         jam();
         nodePtr.p->allocatedNodeIdTime = current_time;
+      }
+      else if (nodePtr.p->nodeRecoveryStatus ==
+               NodeRecord::NODE_NOT_RESTARTED_YET)
+      {
+        jam();
+        /**
+         * Set up timers for node failure for consistency although they
+         * haven't yet occured.
+         */
+        nodePtr.p->allocatedNodeIdTime = current_time;
+        nodePtr.p->nodeFailTime = current_time;
+        nodePtr.p->nodeFailCompletedTime = current_time;
       }
       nodePtr.p->includedInHBProtocolTime = current_time;
       break;
@@ -6073,8 +6090,11 @@ void Dbdih::setNodeRecoveryStatus(Uint32 nodeId,
                       get_status_str(nodePtr.p->nodeRecoveryStatus),
                       get_status_str(new_status));
 
+  NodeRecord::NodeRecoveryStatus old_status =
+    nodePtr.p->nodeRecoveryStatus;
+  (void)old_status;
   nodePtr.p->nodeRecoveryStatus = new_status;
-  ndbassert(check_node_recovery_timers(nodePtr.i));
+  ndbassert(check_node_recovery_timers(nodePtr.i, old_status));
 }
 
 void Dbdih::setNodeRecoveryStatusInitial(NodeRecordPtr nodePtr)
@@ -6274,7 +6294,8 @@ void Dbdih::check_all_node_recovery_timers(void)
 }
 #endif
 
-bool Dbdih::check_node_recovery_timers(Uint32 nodeId)
+bool Dbdih::check_node_recovery_timers(Uint32 nodeId,
+                       NodeRecord::NodeRecoveryStatus old_status)
 {
   NodeRecordPtr nodePtr;
   nodePtr.i = nodeId;
@@ -6327,6 +6348,10 @@ bool Dbdih::check_node_recovery_timers(Uint32 nodeId)
     [[fallthrough]];
   case NodeRecord::INCLUDED_IN_HB_PROTOCOL:
     ndbrequire(NdbTick_IsValid(nodePtr.p->includedInHBProtocolTime));
+    if (old_status == NodeRecord::NODE_NOT_RESTARTED_YET)
+    {
+      break;
+    }
     [[fallthrough]];
   case NodeRecord::ALLOCATED_NODE_ID:
     ndbrequire(NdbTick_IsValid(nodePtr.p->allocatedNodeIdTime));
@@ -15390,6 +15415,9 @@ void Dbdih::releaseTable(TabRecordPtr tabPtr)
     tabPtr.p->tabFile[0] = tabPtr.p->tabFile[1] = RNIL;
   }//if
   tabPtr.p->totalfragments = 0;
+  tabPtr.p->schemaVersion = Uint32(~0);
+  tabPtr.p->m_scan_count[0] = 0;
+  tabPtr.p->m_scan_count[1] = 0;
 }//Dbdih::releaseTable()
 
 void Dbdih::releaseReplicas(Uint64 * replicaPtrI) 
@@ -17674,7 +17702,10 @@ Dbdih::execDIH_SCAN_TAB_COMPLETE_REP(Signal* signal)
   tabPtr.i = rep->tableId;
   ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
 
-  complete_scan_on_table(tabPtr, rep->scanCookie, jambuf);
+  if (tabPtr.p->schemaVersion == rep->schemaVersion)
+  {
+    complete_scan_on_table(tabPtr, rep->scanCookie, jambuf);
+  }
 }
 
 

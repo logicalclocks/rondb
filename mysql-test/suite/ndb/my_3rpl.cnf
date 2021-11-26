@@ -10,6 +10,7 @@ DefaultOperationRedoProblemAction=queue
 NoOfReplicas=3
 SchemaMemory=100M
 DataMemory=250M
+LowLatency=1
 
 [cluster_config.mysqld.1.1]
 NodeId=49

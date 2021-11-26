@@ -1,4 +1,5 @@
 /* Copyright (c) 2008, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1576,10 +1577,10 @@ void
 DblqhProxy::execLQH_TRANSCONF(Signal* signal)
 {
   jam();
-  const LqhTransConf* conf = (const LqhTransConf*)signal->getDataPtr();
-  Uint32 ssId = conf->tcRef;
+  const LqhTransConf* rec_conf = (const LqhTransConf*)signal->getDataPtr();
+  Uint32 ssId = rec_conf->tcRef;
   Ss_LQH_TRANSREQ& ss = ssFind<Ss_LQH_TRANSREQ>(ssId);
-  ss.m_conf = *conf;
+  ss.m_conf = *rec_conf;
 
   BlockReference ref = signal->getSendersBlockRef();
   ndbrequire(refToMain(ref) == number());
@@ -1598,13 +1599,7 @@ DblqhProxy::execLQH_TRANSCONF(Signal* signal)
     if (ss.m_conf.operationStatus == LqhTransConf::LastTransConf)
     {
       jam();
-      ndbrequire(ss.m_workerMask.get(worker));
-      ss.m_workerMask.clear(worker);
-      if (ss.m_workerMask.isclear())
-      {
-        jam();
-        ssRelease<Ss_LQH_TRANSREQ>(ssId);
-      }
+      ssRelease<Ss_LQH_TRANSREQ>(ssId);
     }
     return;
   }
@@ -1627,18 +1622,21 @@ DblqhProxy::execLQH_TRANSCONF(Signal* signal)
           c_ss_LQH_TRANSREQ.m_pool[i].m_valid == false)
       {
         jam();
-        if (c_ss_LQH_TRANSREQ.m_pool[i].m_workerMask.get(worker))
-        {
-          jam();
-          c_ss_LQH_TRANSREQ.m_pool[i].m_workerMask.clear(worker);
-          if (c_ss_LQH_TRANSREQ.m_pool[i].m_workerMask.isclear())
-          {
-            jam();
-            ssRelease<Ss_LQH_TRANSREQ>(c_ss_LQH_TRANSREQ.m_pool[i].m_ssId);
-          }
-        }
+        ssRelease<Ss_LQH_TRANSREQ>(c_ss_LQH_TRANSREQ.m_pool[i].m_ssId);
       }
     }
+  }
+  else
+  {
+    jam();
+    /* Forward conf to the requesting TC, and wait for more */
+    LqhTransConf* send_conf = (LqhTransConf*)signal->getDataPtrSend();
+    *send_conf = ss.m_conf;
+    send_conf->tcRef = ss.m_req.senderData;
+    sendSignal(ss.m_req.senderRef, GSN_LQH_TRANSCONF,
+               signal, LqhTransConf::SignalLength, JBB);
+    // more replies from this worker expected
+    return;
   }
 
   recvCONF(signal, ss);
@@ -1650,7 +1648,7 @@ DblqhProxy::sendLQH_TRANSCONF(Signal* signal, Uint32 ssId)
   jam();
   Ss_LQH_TRANSREQ& ss = ssFind<Ss_LQH_TRANSREQ>(ssId);
 
-  if (ss.m_conf.operationStatus == LqhTransConf::LastTransConf) 
+  ndbrequire(ss.m_conf.operationStatus == LqhTransConf::LastTransConf);
   {
     jam();
 
@@ -1665,19 +1663,6 @@ DblqhProxy::sendLQH_TRANSCONF(Signal* signal, Uint32 ssId)
       ss.m_maxInstanceId = ss.m_conf.maxInstanceId;
     }
   }
-  else
-  {
-    jam();
-    /* Forward conf to the requesting TC, and wait for more */
-    LqhTransConf* conf = (LqhTransConf*)signal->getDataPtrSend();
-    *conf = ss.m_conf;
-    conf->tcRef = ss.m_req.senderData;
-    sendSignal(ss.m_req.senderRef, GSN_LQH_TRANSCONF,
-               signal, LqhTransConf::SignalLength, JBB);
-
-    // more replies from this worker
-    skipConf(ss);
-  }
 
   if (!lastReply(ss))
   {
@@ -1685,7 +1670,8 @@ DblqhProxy::sendLQH_TRANSCONF(Signal* signal, Uint32 ssId)
     return;
   }
 
-  if (ss.m_error == 0) {
+  if (ss.m_error == 0)
+  {
     jam();
     LqhTransConf* conf = (LqhTransConf*)signal->getDataPtrSend();
     conf->tcRef = ss.m_req.senderData;
@@ -1694,10 +1680,11 @@ DblqhProxy::sendLQH_TRANSCONF(Signal* signal, Uint32 ssId)
     conf->maxInstanceId = ss.m_maxInstanceId;
     sendSignal(ss.m_req.senderRef, GSN_LQH_TRANSCONF,
                signal, LqhTransConf::SignalLength, JBB);
-  } else {
+  }
+  else
+  {
     ndbabort();
   }
-
   ssRelease<Ss_LQH_TRANSREQ>(ssId);
 }
 

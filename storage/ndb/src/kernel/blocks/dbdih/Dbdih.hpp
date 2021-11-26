@@ -991,7 +991,8 @@ private:
                                Uint64 &lcp_stall_time,
                                NDB_TICKS now);
   void check_all_node_recovery_timers(void);
-  bool check_node_recovery_timers(Uint32 nodeId);
+  bool check_node_recovery_timers(Uint32 nodeId,
+                                  NodeRecord::NodeRecoveryStatus);
   void calculate_time_remaining(Uint32 nodeId,
                                 NDB_TICKS state_start_time,
                                 NDB_TICKS now,
