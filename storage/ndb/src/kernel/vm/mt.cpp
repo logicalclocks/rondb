@@ -6897,6 +6897,22 @@ execute_signals(thr_data *selfptr,
     /* Find reading / propagation of junk */
     sig->garbage_register();
 #endif
+
+    /**
+     * We have read the control data, the writer ensured that the
+     * data is visible before we can see the control data. But the
+     * CPU and the compiler can still reorganise loads to see the
+     * stores in wrong order. Issue a read memory barrier and a
+     * read_barrier_depends (this causes compiler to not move load
+     * instructions over this barrier.
+     *
+     * On x86 this isn't necessary, but on ARM64 it is very important
+     * to ensure that the data is visible to this thread, otherwise
+     * we can rarely read garbage.
+     */
+    rmb();
+    read_barrier_depends();
+
     /* Now execute the signal. */
     SignalHeader* s =
       reinterpret_cast<SignalHeader*>(read_buffer->m_data + read_pos);
