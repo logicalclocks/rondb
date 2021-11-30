@@ -15354,17 +15354,17 @@ Dbdih::wait_old_scan(Signal* signal)
               tabPtr.p->m_scan_count[1],
               tabPtr.i);
 
+    /* Report after 3 seconds, 10 seconds and every 10 seconds after this */
     if (wait == 3)
     {
       signal->theData[7] = 3 + 7;
     }
     else
     {
-      signal->theData[7] = 2 * wait;
+      signal->theData[7] = wait + 10;
     }
   }
-
-  sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 7);
+  sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 8);
 }
 
 Uint32
@@ -16606,7 +16606,7 @@ Dbdih::start_scan_on_table(TabRecordPtr tabPtr,
     conf->fragmentCount = tabPtr.p->partitionCount;
 
     conf->noOfBackups = tabPtr.p->noOfBackups;
-    conf->scanCookie = tabPtr.p->m_map_ptr_i;
+    conf->scanCookie = tabPtr.p->m_scan_reorg_flag;
     conf->reorgFlag = tabPtr.p->m_scan_reorg_flag;
     NdbMutex_Unlock(&tabPtr.p->theMutex);
     return;
@@ -16625,7 +16625,7 @@ error:
 
 void
 Dbdih::complete_scan_on_table(TabRecordPtr tabPtr,
-                              Uint32 map_ptr_i,
+                              Uint32 scan_cookie,
                               EmulatedJamBuffer *jambuf)
 {
   /**
@@ -16638,7 +16638,7 @@ Dbdih::complete_scan_on_table(TabRecordPtr tabPtr,
 
   Uint32 line;
   NdbMutex_Lock(&tabPtr.p->theMutex);
-  if (map_ptr_i == tabPtr.p->m_map_ptr_i)
+  if (scan_cookie == tabPtr.p->m_scan_reorg_flag)
   {
     line = __LINE__;
     ndbassert(tabPtr.p->m_scan_count[0]);
