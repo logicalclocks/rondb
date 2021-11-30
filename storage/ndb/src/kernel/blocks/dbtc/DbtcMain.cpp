@@ -5757,6 +5757,7 @@ void Dbtc::execPACKED_SIGNAL(Signal* signal)
                                     TC_RECEIVE_TYPES,
                                     0)); /* Irrelevant */
   }
+  Uint32 packedIndex = 0;
   while (Tlength > Tstep) {
 
     TpackDataPtr = &TpackedData[Tstep];
@@ -5771,14 +5772,18 @@ void Dbtc::execPACKED_SIGNAL(Signal* signal)
     switch (Tdata1 >> 28) {
     case ZCOMMITTED:
       signal->header.theLength = 3;
-      jamBuffer()->markEndOfSigExec();
+      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
+                                            packedIndex);
       execCOMMITTED(signal);
+      packedIndex++;
       Tstep += 3;
       break;
     case ZCOMPLETED:
       signal->header.theLength = 3;
-      jamBuffer()->markEndOfSigExec();
+      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
+                                            packedIndex);
       execCOMPLETED(signal);
+      packedIndex++;
       Tstep += 3;
       break;
     case ZLQHKEYCONF:
@@ -5793,16 +5798,20 @@ void Dbtc::execPACKED_SIGNAL(Signal* signal)
       lqhKeyConf->transId2 = Tdata3;
       lqhKeyConf->numFiredTriggers = Tdata4;
       signal->header.theLength = LqhKeyConf::SignalLength;
-      jamBuffer()->markEndOfSigExec();
+      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
+                                            packedIndex);
       execLQHKEYCONF(signal);
+      packedIndex++;
       Tstep += LqhKeyConf::SignalLength;
       break;
     case ZFIRE_TRIG_CONF:
       jamDebug();
       signal->header.theLength = 4;
       signal->theData[3] = TpackDataPtr[3];
-      jamBuffer()->markEndOfSigExec();
+      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
+                                            packedIndex);
       execFIRE_TRIG_CONF(signal);
+      packedIndex++;
       Tstep += 4;
       break;
     default:

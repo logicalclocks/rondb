@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -52,15 +52,6 @@
  */
 #define MESSAGE_LENGTH 999
 #define OLD_MESSAGE_LENGTH 499
-
-static int WriteMessage(int thrdMessageID,
-			const char* thrdProblemData, 
-			const char* thrdObjRef,
-                        NdbShutdownType & nst);
-
-static void dumpJam(FILE* jamStream, 
-		    Uint32 thrdTheEmulatedJamIndex, 
-		    const JamEvent thrdTheEmulatedJam[]);
 
 const char * ndb_basename(const char *path);
 
@@ -293,17 +284,20 @@ ErrorReporter::handleError(int messageID,
   exit(1); // kill warning
 }
 
+bool ErrorReporter::dumpJam_ok = false;
+Uint32 ErrorReporter::dumpJam_oldest = 0;
+const JamEvent *ErrorReporter::dumpJam_buffer = 0;
+Uint32 ErrorReporter::dumpJam_cursor = 0;
+
 int 
-WriteMessage(int thrdMessageID,
-	     const char* thrdProblemData, 
-             const char* thrdObjRef,
-             NdbShutdownType & nst){
+ErrorReporter::WriteMessage(int thrdMessageID,
+                            const char* thrdProblemData,
+                            const char* thrdObjRef,
+                            NdbShutdownType & nst){
   FILE *stream;
   unsigned offset;
   unsigned long maxOffset;  // Maximum size of file.
   char theMessage[MESSAGE_LENGTH];
-  Uint32 thrdTheEmulatedJamIndex;
-  const JamEvent *thrdTheEmulatedJam;
 
   /**
    * In the multithreaded case we need to lock a mutex before starting
@@ -317,7 +311,7 @@ WriteMessage(int thrdMessageID,
    * Otherwise we will return, write the error log and never return
    * from the second call to prepare_to_crash below.
    */
-  ErrorReporter::prepare_to_crash(true, (nst == NST_ErrorInsert));
+  prepare_to_crash(true, (nst == NST_ErrorInsert));
 
   Uint32 threadCount = globalScheduler.traceDumpGetNumThreads();
   int thr_no = globalScheduler.traceDumpGetCurrentThread();
@@ -328,7 +322,7 @@ WriteMessage(int thrdMessageID,
   char *theTraceFileName= 0;
   if (globalData.ownId > 0)
     theTraceFileName= NdbConfig_TraceFileName(globalData.ownId,
-					      ErrorReporter::get_trace_no());
+					      get_trace_no());
   NdbAutoPtr<char> tmp_aptr1(theTraceFileName);
   
   // The first 69 bytes is info about the current offset
@@ -355,10 +349,10 @@ WriteMessage(int thrdMessageID,
 	    "                        \n\n\n");   
     
     // ...and write the error-message...
-    ErrorReporter::formatMessage(thr_no,
-                                 threadCount, thrdMessageID,
-				 thrdProblemData, thrdObjRef,
-				 theTraceFileName, theMessage);
+    formatMessage(thr_no,
+                  threadCount, thrdMessageID,
+                  thrdProblemData, thrdObjRef,
+                  theTraceFileName, theMessage);
     fprintf(stream, "%s", theMessage);
     fflush(stream);
     
@@ -409,10 +403,10 @@ WriteMessage(int thrdMessageID,
     fseek(stream, offset, SEEK_SET);
     
     // ...and write the error-message there...
-    ErrorReporter::formatMessage(thr_no,
-                                 threadCount, thrdMessageID,
-				 thrdProblemData, thrdObjRef,
-				 theTraceFileName, theMessage);
+    formatMessage(thr_no,
+                  threadCount, thrdMessageID,
+                  thrdProblemData, thrdObjRef,
+                  theTraceFileName, theMessage);
     fprintf(stream, "%s", theMessage);
     fflush(stream);
     
@@ -435,7 +429,7 @@ WriteMessage(int thrdMessageID,
   fflush(stream);
   fclose(stream);
 
-  ErrorReporter::prepare_to_crash(false, (nst == NST_ErrorInsert));
+  prepare_to_crash(false, (nst == NST_ErrorInsert));
 
   if (theTraceFileName) {
     /* Attempt to stop all processing to be able to dump a consistent state. */
@@ -444,22 +438,71 @@ WriteMessage(int thrdMessageID,
     char *traceFileEnd = theTraceFileName + strlen(theTraceFileName);
     for (Uint32 i = 0; i < threadCount; i++)
     {
-      // Open the tracefile...
+      // Open the tracefile
       if (i > 0)
         sprintf(traceFileEnd, "_t%u", i);
       FILE *jamStream = fopen(theTraceFileName, "w");
 
-      //  ...and "dump the jam" there.
-      bool ok = globalScheduler.traceDumpGetJam(i, thrdTheEmulatedJam,
-                                                thrdTheEmulatedJamIndex);
-      if(ok && thrdTheEmulatedJam != 0)
-      {
-        dumpJam(jamStream, thrdTheEmulatedJamIndex,
-                thrdTheEmulatedJam);
-      }
+      // Get jam status, buffer and index for current thread.
+      dumpJam_ok = globalScheduler.traceDumpGetJam(i, dumpJam_buffer,
+                                                   dumpJam_oldest);
+      /**
+       * dumpJam_cursor is the last jam event of the next signal to be printed.
+       * For ease of use it's kept in the range
+       * dumpJam_oldest <= dumpJam_cursor < dumpJam_oldest + EMULATED_JAM_SIZE
+       * so JAM_MASK must be applied whenever it's used.
+       */
+      dumpJam_cursor = dumpJam_oldest + EMULATED_JAM_SIZE - 1;
+      // Ensure that the above won't overflow.
+      NDB_STATIC_ASSERT(((Uint32) (EMULATED_JAM_SIZE << 1)) > EMULATED_JAM_SIZE);
+      fprintf(jamStream,
+              "Dump of signal and jam information, NEWEST signal first.\n"
+              "See legend at end of file.\n"
+              );
+      /**
+       * Dump all known signals together with their respective jams. Note that
+       * for ndbmtd, this uses FastScheduler::dumpSignalMemoryAndJam in
+       * ../vm/mt.cpp, *not* in ../vm/FastScheduler.cpp.
+       */
+      globalScheduler.dumpSignalMemoryAndJam(i, jamStream);
 
-      globalScheduler.dumpSignalMemory(i, jamStream);
-
+      fprintf(jamStream,
+              "\n"
+              "Legend:\n"
+              "r.*: Receiver*\n"
+              "s.*: Sender*\n"
+              ".bn: BlockNumber/BlockInstance \"BlockName\"\n"
+              " - BlockNumber is the type of block.\n"
+              " - BlockInstance is the instance Id for the block. Together with"
+              " nodeId and\n   BlockNumber it will uniquely identify a block."
+              " Will not be printed for packed\n   signals.\n"
+              " - BlockName describes the type of block. It's a function of"
+              " BlockNumber.\n"
+              ".nodeId: Node ID.\n"
+              ".sigId: Sequence number for signal, applied at the receiving"
+              " side.\n"
+              ".gsn: GlobalSignalNumber, the type of signal.\n"
+              ".sn: \"SignalName\"\n"
+              "  SignalName describes the type of signal. For non-packed"
+              " signals it's a\n  function of GlobalSignalNumber. Packed"
+              " signals don't have a\n  GlobalSignalNumber.\n"
+              ".threadId: The thread Id.\n"
+              "  Will only be printed for local (same-node) signals.\n"
+              ".threadSigId: Sequence number for local (same-node) signals."
+              " Will only be\n  incremented for JBB priority signals. Will only"
+              " be printed for local\n  (same-node) signals.\n"
+              "prio: Priority for signal.\n"
+              "  JBA = High priority\n"
+              "  JBB = Normal priority\n"
+              "length: Number of Uint32 words in signal payload\n"
+              "trace: Trace number between 0-63\n"
+              "#sec: Number of sections in signal\n"
+              "fragInfo: Details about signal fragmentation.\n"
+              "  0 = Not fragmented\n"
+              "  1 = First fragment\n"
+              "  2 = Fragment other than first or last\n"
+              "  3 = Last fragment\n"
+              );
       fclose(jamStream);
     }
   }
@@ -467,47 +510,176 @@ WriteMessage(int thrdMessageID,
   return 0;
 }
 
-void 
-dumpJam(FILE *jamStream, 
-	Uint32 thrdTheEmulatedJamIndex, 
-	const JamEvent thrdTheEmulatedJam[]) {
-#ifndef NO_EMULATED_JAM   
+constexpr bool less_bits(Uint32 x, Uint32 y, int b)
+{
+  // Our best guess for (x < y) while accounting for wraparound and that x
+  // and/or y only has the b lowest bits set correctly.
+  return ((x - y) & (1 << (b - 1)));
+}
+NDB_STATIC_ASSERT(!less_bits(0x3fffffff, 0xffffffff, 30));
+NDB_STATIC_ASSERT(!less_bits(0x3fffffff, 0x3fffffff, 30));
+NDB_STATIC_ASSERT(!less_bits(0x3fffffff, 0x7fffffff, 30));
+NDB_STATIC_ASSERT(!less_bits(0x3fffffff, 0xbfffffff, 30));
+NDB_STATIC_ASSERT( less_bits(0x3fffffff, 0x00000000, 30));
+NDB_STATIC_ASSERT( less_bits(0x3fffffff, 0x40000000, 30));
+NDB_STATIC_ASSERT( less_bits(0x3fffffff, 0x80000000, 30));
+NDB_STATIC_ASSERT( less_bits(0x3fffffff, 0xc0000000, 30));
+NDB_STATIC_ASSERT(!less_bits(0x00000000, 0x00000000, 30));
+NDB_STATIC_ASSERT(!less_bits(0x00000000, 0x40000000, 30));
+NDB_STATIC_ASSERT(!less_bits(0x00000000, 0x80000000, 30));
+NDB_STATIC_ASSERT(!less_bits(0x00000000, 0xc0000000, 30));
+NDB_STATIC_ASSERT(!less_bits(0x00000001, 0x00000000, 30));
+NDB_STATIC_ASSERT(!less_bits(0x00000001, 0x40000000, 30));
+NDB_STATIC_ASSERT(!less_bits(0x00000001, 0x80000000, 30));
+NDB_STATIC_ASSERT(!less_bits(0x00000001, 0xc0000000, 30));
+NDB_STATIC_ASSERT( less_bits(0x00000001, 0x00000002, 30));
+NDB_STATIC_ASSERT( less_bits(0x00000001, 0x40000002, 30));
+NDB_STATIC_ASSERT( less_bits(0x00000001, 0x80000002, 30));
+NDB_STATIC_ASSERT( less_bits(0x00000001, 0xc0000002, 30));
+NDB_STATIC_ASSERT( less_bits(0x12345678, 0x9abcdef0, 25));
+NDB_STATIC_ASSERT(!less_bits(0x13345678, 0x9abcdef0, 25));
+NDB_STATIC_ASSERT(!less_bits(0x12345678, 0x9bbcdef0, 25));
+NDB_STATIC_ASSERT( less_bits(0x13345678, 0x9bbcdef0, 25));
+NDB_STATIC_ASSERT(!less_bits(0x13345678, 0x9bbcdef0,  5));
+NDB_STATIC_ASSERT( less_bits(0x13345678, 0x9bbcdee0,  5));
+NDB_STATIC_ASSERT(!less_bits(0x13345668, 0x9bbcdee0,  5));
+
+/**
+ * Given the index for the last jam event for a signal, return the index for
+ * the first. Both the argument and the return value is in the range
+ * dumpJam_oldest <= X < dumpJam_oldest + EMULATED_JAM_SIZE
+ */
+Uint32
+ErrorReporter::startOfJamSignal(Uint32 endIndex)
+{
+  for(Uint32 idx = endIndex; dumpJam_oldest <= idx; idx--)
+  {
+    JamEvent::JamEventType type = dumpJam_buffer[idx & JAM_MASK].getType();
+    if(type == JamEvent::STARTOFSIG || type == JamEvent::STARTOFPACKEDSIG)
+    {
+      return idx;
+    }
+  }
+  return dumpJam_oldest;
+}
+
+/**
+ * Maybe dump a jam log table for one signal, then return whether a dump was
+ * made. Dumping happens if there is still available jam data and one of:
+ * - syncMethod==0.
+ * - syncMethod==1 and the Signal Id for the next signal in the jam log is
+     either unavailable or not less than syncValue.
+ * - syncMethod==2 and the pack index for the next signal in the jam log is
+     available and is not less than syncValue.
+ */
+bool
+ErrorReporter::dumpOneJam(FILE *jamStream, int syncMethod, Uint32 syncValue,
+                          const char* prefix) {
+#ifndef NO_EMULATED_JAM
+  if (!dumpJam_ok)
+  {
+    return false;
+  }
+  /**
+   * Variables used as indices to the jam buffer are kept in the range
+   * dumpJam_oldest <= X < dumpJam_oldest + EMULATED_JAM_SIZE
+   * so JAM_MASK must be applied whenever they are used. This applies to
+   * - dumpJam_cursor
+   * - lastIndex
+   * - firstIndex
+   * - idx
+   */
+  const JamEvent nextJamMarker =
+    dumpJam_buffer[startOfJamSignal(dumpJam_cursor) & JAM_MASK];
+  JamEvent::JamEventType nextJamMarkerType = nextJamMarker.getType();
+  const Uint32 nextId = nextJamMarker.getSignalId();
+  const Uint32 nextIdx = nextJamMarker.getPackedIndex();
+  if (!(syncMethod == 0
+        || (syncMethod == 1
+            && (nextJamMarkerType != JamEvent::STARTOFSIG
+                || !less_bits(nextId, syncValue, 30))
+            &&  (nextJamMarkerType != JamEvent::STARTOFPACKEDSIG
+                 || !less_bits(nextId, syncValue, 25)))
+        || (syncMethod == 2
+            && nextJamMarkerType == JamEvent::STARTOFPACKEDSIG
+            && !less_bits(nextIdx, syncValue, 5))))
+  {
+    return false;
+  }
+
+  Uint32 lastIndex = dumpJam_cursor;
+  Uint32 firstIndex = startOfJamSignal(lastIndex);
+  bool atOldestSignalInJam = firstIndex == dumpJam_oldest ||
+    dumpJam_buffer[(firstIndex - 1) & JAM_MASK].getType() == JamEvent::EMPTY;
+  bool hasLineOrDataEntries = false;
+  if (atOldestSignalInJam)
+  {
+    dumpJam_ok = false;
+  }
+  dumpJam_cursor = firstIndex - 1;
+  for (Uint32 idx = firstIndex; idx <= lastIndex; idx++)
+  {
+    const JamEvent thisJamEvent = dumpJam_buffer[idx & JAM_MASK];
+    if(thisJamEvent.getType() == JamEvent::LINE ||
+       thisJamEvent.getType() == JamEvent::DATA)
+    {
+      hasLineOrDataEntries = true;
+      break;
+    }
+  }
+
+  fprintf(jamStream, "%s", prefix);
+
   // print header
-  const Uint32 maxCols = 9;
-  fprintf(jamStream, "JAM CONTENTS up->down left->right\n");
-  fprintf(jamStream, "%-20s ", "SOURCE FILE");
-  for (Uint32 i = 0; i < maxCols; i++)
-    fprintf(jamStream, "LINE  ");
-  fprintf(jamStream, "\n");
+  const Uint32 maxCols = 6;
+  const JamEvent firstJamEvent = dumpJam_buffer[firstIndex & JAM_MASK];
+  if (firstJamEvent.getType() == JamEvent::STARTOFSIG)
+  {
+    Uint32 firstJamSignalId = firstJamEvent.getSignalId();
+    fprintf(jamStream, "    ---- Signal H\'%.8x: Jam content, OLDEST first ----\n",
+            firstJamSignalId);
+  }
+  else if (firstJamEvent.getType() == JamEvent::STARTOFPACKEDSIG)
+  {
+    Uint32 firstJamSignalId = firstJamEvent.getSignalId();
+    Uint32 firstJamPackedIdx = firstJamEvent.getPackedIndex();
+    fprintf(jamStream, "    ---- Signal H\'%.8x, Packed signal %d: Jam content, OLDEST first ----\n",
+            firstJamSignalId, firstJamPackedIdx);
+  }
+  else
+  {
+    fprintf(jamStream, "    ---- Unknown signal:"
+            " Jam content, OLDEST first ----\n"
+            "         WARNING: Oldest jams might be lost. No start of signal marker found.\n");
+  }
+  if (hasLineOrDataEntries)
+  {
+    fprintf(jamStream, "    %-33s %s", "SOURCE FILE",
+            "LINE NUMBERS ##### OR DATA d#####");
+  }
+  else
+  {
+    fprintf(jamStream, "         No jam entries other than start of signal");
+  }
 
-  const Uint32 first = thrdTheEmulatedJamIndex;	// oldest
-
-  // loop over all entries
+  // loop over all entries of the current signal
   Uint32 col = 0;
   Uint32 fileId = ~0;
-  bool newSig = false;
-  for (Uint32 cnt = 0; cnt < EMULATED_JAM_SIZE; cnt++)
+
+  for (Uint32 idx = firstIndex; idx <= lastIndex; idx++)
   {
     globalData.incrementWatchDogCounter(4);	// watchdog not to kill us ?
-    const JamEvent aJamEvent =
-      thrdTheEmulatedJam[(cnt+first)%EMULATED_JAM_SIZE];
-    
-    if (!aJamEvent.isEmpty())
+    const JamEvent aJamEvent = dumpJam_buffer[idx & JAM_MASK];
+    if (aJamEvent.getType() == JamEvent::LINE ||
+        aJamEvent.getType() == JamEvent::DATA)
     {
-      // Mark starting point of execution of a new signal.
-      if (newSig)
-      {
-        fprintf(jamStream, "\n---> signal");
-        col = 0;
-        fileId = ~0;
-      }
       if (aJamEvent.getFileId() != fileId)
       {
         fileId = aJamEvent.getFileId();
         const char* const fileName = aJamEvent.getFileName();
         if (fileName != NULL)
         {
-          fprintf(jamStream, "\n%-20s ", fileName);
+          fprintf(jamStream, "\n    %-33s", fileName);
         }
         else
         {
@@ -515,20 +687,30 @@ dumpJam(FILE *jamStream,
            * Getting here indicates that there is a JAM_FILE_ID without a
            * corresponding entry in jamFileNames.
            */
-          fprintf(jamStream, "\nunknown_file_%05u   ", fileId);
+          fprintf(jamStream, "\n    unknown_file_%05u               ", fileId);
         }
         col = 0;
       }
       else if (col==0)
       {
-        fprintf(jamStream, "\n%-20s ", "");
+        fprintf(jamStream, "\n    %-33s", "");
       }
-      fprintf(jamStream, "%05u ", aJamEvent.getLineNo());
+      fprintf(jamStream, (aJamEvent.getType() == JamEvent::LINE) ? "  %05u" : " d%05u",
+              aJamEvent.getLineNoOrData());
       col = (col+1) % maxCols;
-      newSig = aJamEvent.isEndOfSig();
     }
+  }
+  if (atOldestSignalInJam)
+  {
+    fprintf(jamStream,
+            "\n\n-------------- "
+            "END OF JAM CONTENT. If there are more signals to"
+            "   --------------\n-------------- "
+            "print, the corresponding jam information is lost."
+            "  --------------");
   }
   fprintf(jamStream, "\n");
   fflush(jamStream);
+  return true;
 #endif // ifndef NO_EMULATED_JAM
 }

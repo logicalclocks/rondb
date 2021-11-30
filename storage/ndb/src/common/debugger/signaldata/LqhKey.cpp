@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -193,9 +194,9 @@ printLQHKEYREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receive
   }
   
   if(!LqhKeyReq::getInterpretedFlag(reqInfo)){
-    fprintf(output, " AttrInfo: ");
+    fprintf(output, " AttrInfo:");
     for(int i = 0; i<LqhKeyReq::getAIInLqhKeyReq(reqInfo); i++, nextPos++)
-      fprintf(output, "H\'%.8x ", sig->variableData[nextPos]);
+      fprintf(output, " H\'%.8x", sig->variableData[nextPos]);
     fprintf(output, "\n");
   } else {
     /* Only have section sizes if it's a short LQHKEYREQ */
@@ -216,12 +217,14 @@ bool
 printLQHKEYCONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
 //  const LqhKeyConf * const sig = (LqhKeyConf *) theData;
 
-  fprintf(output, "Signal data: ");
+  fprintf(output, "Signal data:");
   Uint32 i = 0;
   while (i < len)
-    fprintf(output, "H\'%.8x ", theData[i++]);
+    fprintf(output, " H\'%.8x", theData[i++]);
   fprintf(output,"\n");
   
+  // If you change this function, be sure to update printPACKED_SIGNAL as well
+  // so that ZLQHKEYCONF is printed correctly.
   return true;
 }
 
@@ -229,10 +232,10 @@ bool
 printLQHKEYREF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
 //  const LqhKeyRef * const sig = (LqhKeyRef *) theData;
 
-  fprintf(output, "Signal data: ");
+  fprintf(output, "Signal data:");
   Uint32 i = 0;
   while (i < len)
-    fprintf(output, "H\'%.8x ", theData[i++]);
+    fprintf(output, " H\'%.8x", theData[i++]);
   fprintf(output,"\n");
   
   return true;

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -108,6 +109,8 @@ void getRestartAction(Uint32 action, BaseString &str)
   if (action & 4)
     str.appfmt(", initial");
 }
+bool globalIsInCrashlog = false;
+bool (* globalDumpOneJam)(FILE *, int, Uint32, const char*) = 0;
 void getTextNDBStopCompleted(QQQQ) {
   BaseString action_str("");
   BaseString signum_str("");

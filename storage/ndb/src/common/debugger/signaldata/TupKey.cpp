@@ -1,6 +1,7 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
     Use is subject to license terms.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,10 +28,10 @@
 
 bool
 printTUPKEYREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
-  fprintf(output, "Signal data: ");
+  fprintf(output, "Signal data:");
   Uint32 i = 0;
   while (i < len)
-    fprintf(output, "H\'%.8x ", theData[i++]);
+    fprintf(output, " H\'%.8x", theData[i++]);
   fprintf(output,"\n");
   
   return true;
@@ -38,10 +39,10 @@ printTUPKEYREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receive
 
 bool
 printTUPKEYCONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
-  fprintf(output, "Signal data: ");
+  fprintf(output, "Signal data:");
   Uint32 i = 0;
   while (i < len)
-    fprintf(output, "H\'%.8x ", theData[i++]);
+    fprintf(output, " H\'%.8x", theData[i++]);
   fprintf(output,"\n");
   
   return true;
@@ -49,10 +50,10 @@ printTUPKEYCONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiv
 
 bool
 printTUPKEYREF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
-  fprintf(output, "Signal data: ");
+  fprintf(output, "Signal data:");
   Uint32 i = 0;
   while (i < len)
-    fprintf(output, "H\'%.8x ", theData[i++]);
+    fprintf(output, " H\'%.8x", theData[i++]);
   fprintf(output,"\n");
   
   return true;

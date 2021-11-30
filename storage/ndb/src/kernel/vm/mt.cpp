@@ -7065,7 +7065,7 @@ execute_signals(thr_data *selfptr,
      * This variable is incremented every time we decide to execute more
      * signals without real-time breaks in scans in DBLQH.
      */
-    block->jamBuffer()->markEndOfSigExec();
+    block->jamBuffer()->markStartOfSigExec(sig->header.theSignalId);
     sig->m_extra_signals = 0;
 #if defined(USE_INIT_GLOBAL_VARIABLES)
     mt_clear_global_variables(selfptr);
@@ -10734,7 +10734,7 @@ FastScheduler::traceDumpGetJam(Uint32 thr_no,
   thrdTheEmulatedJam = jamBuffer->theEmulatedJam;
   thrdTheEmulatedJamIndex = jamBuffer->theEmulatedJamIndex;
 #endif
-  return true;
+  return thrdTheEmulatedJam != 0;
 }
 
 void
@@ -10905,7 +10905,7 @@ void mt_execSTOP_FOR_CRASH()
 }
 
 void
-FastScheduler::dumpSignalMemory(Uint32 thr_no, FILE* out)
+FastScheduler::dumpSignalMemoryAndJam(Uint32 thr_no, FILE* out)
 {
   thr_data *selfptr = NDB_THREAD_TLS_THREAD;
   const thr_repository *rep = g_thr_repository;
@@ -11107,17 +11107,34 @@ FastScheduler::dumpSignalMemory(Uint32 thr_no, FILE* out)
     first_one = false;
     lastSignalId = s->theSignalId;
 
-    fprintf(out, "--------------- Signal ----------------\n");
-    Uint32 prio = (prioa ? JBA : JBB);
+    while (ErrorReporter::dumpOneJam
+           (out, 1, signal.header.theSignalId + 1,
+            "\n----------- Unknown Signal ------------\n"));
+
+    fprintf(out, "\n--------------- Signal ----------------\n");
+    Uint8 prio = (prioa ? JBA : JBB);
     SignalLoggerManager::printSignalHeader(out, 
                                            signal.header,
                                            prio,
                                            globalData.ownId, 
                                            true);
+    // Variables globalIsInCrashlog and globalDumpOneJam are used to communicate
+    // with printPACKED_SIGNAL in PackedSignal.cpp
+    globalIsInCrashlog = true;
+    globalDumpOneJam = ErrorReporter::dumpOneJam;
     SignalLoggerManager::printSignalData  (out, 
                                            signal.header,
                                            &signal.theData[0]);
+    globalIsInCrashlog = false;
+    globalDumpOneJam = 0;
+    ErrorReporter::dumpOneJam(out, 1, signal.header.theSignalId, "");
   }
+
+  // After dumping all signals together with their respective jams, there might
+  // still be jams left to dump
+  while (ErrorReporter::dumpOneJam
+         (out, 0, 0, "\n----------- Unknown Signal ------------\n"));
+
   fflush(out);
 }
 

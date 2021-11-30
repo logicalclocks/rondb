@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -133,7 +133,7 @@ struct SignalHeader {
   Uint16  m_unused;
   Uint8  m_noOfSections;
   Uint8  m_fragmentInfo;
-}; /** 7x4 = 36 Bytes */
+}; /** 7x4 + 3x2 + 2x1 = 36 Bytes */
 
 class NdbOut & operator <<(class NdbOut & out, SignalHeader & sh);
 

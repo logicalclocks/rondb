@@ -5684,6 +5684,7 @@ void Dblqh::execPACKED_SIGNAL(Signal* signal)
                                     TcommitLen));
   }
 
+  Uint32 packedIndex = 0;
   while (Tlength > Tstep) {
     switch (TpackedData[Tstep] >> 28) {
     case ZCOMMIT:
@@ -5699,8 +5700,10 @@ void Dblqh::execPACKED_SIGNAL(Signal* signal)
       signal->theData[3] = sig3;
       signal->theData[4] = sig4 & Tgci_lo_mask;
       signal->header.theLength = TcommitLen;
-      jamBuffer()->markEndOfSigExec();
+      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
+                                            packedIndex);
       execCOMMIT(signal);
+      packedIndex++;
       Tstep += TcommitLen;
       break;
     case ZCOMPLETE:
@@ -5712,8 +5715,10 @@ void Dblqh::execPACKED_SIGNAL(Signal* signal)
       signal->theData[1] = sig1;
       signal->theData[2] = sig2;
       signal->header.theLength = 3;
-      jamBuffer()->markEndOfSigExec();
+      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
+                                            packedIndex);
       execCOMPLETE(signal);
+      packedIndex++;
       Tstep += 3;
       break;
     case ZLQHKEYCONF: {
@@ -5733,8 +5738,10 @@ void Dblqh::execPACKED_SIGNAL(Signal* signal)
       lqhKeyConf->transId1 = sig4;
       lqhKeyConf->transId2 = sig5;
       lqhKeyConf->numFiredTriggers = sig6;
-      jamBuffer()->markEndOfSigExec();
+      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
+                                            packedIndex);
       execLQHKEYCONF(signal);
+      packedIndex++;
       Tstep += LqhKeyConf::SignalLength;
       break;
     }
@@ -5768,8 +5775,10 @@ void Dblqh::execPACKED_SIGNAL(Signal* signal)
          */
         signal->header.theLength = 3;
       }
-      jamBuffer()->markEndOfSigExec();
+      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
+                                            packedIndex);
       execREMOVE_MARKER_ORD(signal);
+      packedIndex++;
       Tstep += 3;
       break;
     case ZFIRE_TRIG_REQ:
@@ -5785,8 +5794,10 @@ void Dblqh::execPACKED_SIGNAL(Signal* signal)
       signal->theData[3] = sig3;
       signal->header.theLength = FireTrigReq::SignalLength;
       signal->header.theSendersBlockRef = TsenderRef;
-      jamBuffer()->markEndOfSigExec();
+      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
+                                            packedIndex);
       execFIRE_TRIG_REQ(signal);
+      packedIndex++;
       Tstep += FireTrigReq::SignalLength;
       break;
     default:
