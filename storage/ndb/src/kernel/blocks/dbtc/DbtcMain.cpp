@@ -15120,6 +15120,7 @@ Dbtc::initScanrec(ScanRecordPtr scanptr,
   scanptr.p->m_queued_count = 0;
   scanptr.p->m_booked_fragments_count = 0;
   scanptr.p->m_scan_cookie = DihScanTabConf::InvalidCookie;
+  scanptr.p->m_schema_version_scan_cookie = DihScanTabConf::InvalidCookie;
   scanptr.p->m_close_scan_req = false;
   scanptr.p->m_pass_all_confs =  ScanTabReq::getPassAllConfsFlag(ri);
   scanptr.p->m_extended_conf = ScanTabReq::getExtendedConf(ri);
@@ -15358,6 +15359,7 @@ void Dbtc::execDIH_SCAN_TAB_CONF(Signal* signal,
   Uint32 tfragCount = conf->fragmentCount;
   ApiConnectRecord * const regApiPtr = apiConnectptr.p;
   scanptr.p->m_scan_cookie = conf->scanCookie;
+  scanptr.p->m_schema_version_scan_cookie = conf->scanSchemaVersionCookie;
   ndbrequire(scanptr.p->m_scan_cookie != DihScanTabConf::InvalidCookie);
 
   if (unlikely(conf->reorgFlag))
@@ -15706,6 +15708,7 @@ void Dbtc::releaseScanResources(Signal* signal,
     /* Cookie was requested, 'return' it */
     DihScanTabCompleteRep* rep = (DihScanTabCompleteRep*)signal->getDataPtrSend();
     rep->tableId = scanPtr.p->scanTableref;
+    rep->schemaVersionCookie = scanPtr.p->m_schema_version_scan_cookie;
     rep->scanCookie = scanPtr.p->m_scan_cookie;
     rep->jamBufferPtr = jamBuffer();
 
@@ -15714,6 +15717,7 @@ void Dbtc::releaseScanResources(Signal* signal,
     jamEntryDebug();
     /* No return code, it will always succeed. */
     scanPtr.p->m_scan_cookie = DihScanTabConf::InvalidCookie;
+    scanPtr.p->m_schema_version_scan_cookie = DihScanTabConf::InvalidCookie;
   }
     
   // link into free list

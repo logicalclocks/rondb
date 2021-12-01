@@ -7692,6 +7692,7 @@ Backup::execDIH_SCAN_TAB_CONF(Signal* signal)
   const Uint32 tableId = conf->tableId;
   const Uint32 senderData = conf->senderData;
   const Uint32 scanCookie = conf->scanCookie;
+  const Uint32 schema_version_scanCookie = conf->scanSchemaVersionCookie;
   ndbrequire(conf->reorgFlag == 0); // no backup during table reorg
 
   BackupRecordPtr ptr;
@@ -7701,6 +7702,7 @@ Backup::execDIH_SCAN_TAB_CONF(Signal* signal)
   ndbrequire(findTable(ptr, tabPtr, tableId));
   
   tabPtr.p->m_scan_cookie = scanCookie;
+  tabPtr.p->m_schema_version_scan_cookie = schema_version_scanCookie;
   ndbrequire(tabPtr.p->fragments.seize(fragCount) != false);
   for(Uint32 i = 0; i<fragCount; i++) {
     jam();
@@ -7799,6 +7801,7 @@ Backup::getFragmentInfo(Signal* signal,
     DihScanTabCompleteRep*rep= (DihScanTabCompleteRep*)signal->getDataPtrSend();
     rep->tableId = tabPtr.p->tableId;
     rep->scanCookie = tabPtr.p->m_scan_cookie;
+    rep->schemaVersionCookie = tabPtr.p->m_schema_version_scan_cookie;
     rep->jamBufferPtr = jamBuffer();
     EXECUTE_DIRECT_MT(DBDIH, GSN_DIH_SCAN_TAB_COMPLETE_REP, signal,
                       DihScanTabCompleteRep::SignalLength, 0);

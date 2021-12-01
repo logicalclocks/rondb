@@ -208,6 +208,7 @@ public:
      * Fragments
      */
     Uint32 m_scan_cookie;
+    Uint32 m_schema_version_scan_cookie;
     SyncRecordBuffer::Head m_fragments;  // Fragment descriptors
 
     /**

@@ -344,6 +344,7 @@ public:
     Uint32 schemaVersion;
     Uint32 tableType;
     Uint32 m_scan_cookie;
+    Uint32 m_schema_version_scan_cookie;
     Uint32 triggerIds[3];
     bool   triggerAllocated[3];
     Uint32 maxRecordSize;

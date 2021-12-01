@@ -1919,6 +1919,7 @@ public:
     // The index of table that is scanned
     Uint32 scanTableref;
     Uint32 m_scan_cookie;
+    Uint32 m_schema_version_scan_cookie;
 
     // Number of operation records per scanned fragment
     // Number of operations in first batch

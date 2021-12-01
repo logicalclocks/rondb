@@ -15030,8 +15030,6 @@ void Dbdih::releaseTable(TabRecordPtr tabPtr)
     tabPtr.p->tabFile[0] = tabPtr.p->tabFile[1] = RNIL;
   }//if
   tabPtr.p->schemaVersion = Uint32(~0);
-  tabPtr.p->m_scan_count[0] = 0;
-  tabPtr.p->m_scan_count[1] = 0;
 }//Dbdih::releaseTable()
 
 void Dbdih::releaseReplicas(Uint32 * replicaPtrI) 
@@ -15139,7 +15137,8 @@ void Dbdih::execALTER_TAB_REQ(Signal * signal)
     break;
   case AlterTabReq::AlterTableRevert:
     jam();
-    D("AlterTabReq::AlterTableRevert: tableId: " << tabPtr.i);
+    D("AlterTabReq::AlterTableRevert: tableId: " << tabPtr.i
+      << " schemaVersion: 0x" << hex << tableVersion);
     tabPtr.p->schemaVersion = tableVersion;
 
     connectPtr.i = req->connectPtr;
@@ -15176,7 +15175,8 @@ void Dbdih::execALTER_TAB_REQ(Signal * signal)
   case AlterTabReq::AlterTableCommit:
   {
     jam();
-    D("AlterTabReq::AlterTableCommit: tableId: " << tabPtr.i);
+    D("AlterTabReq::AlterTableCommit: tableId: " << tabPtr.i
+      << " schemaVersion: 0x" << hex << newTableVersion);
     tabPtr.p->schemaVersion = newTableVersion;
 
     connectPtr.i = req->connectPtr;
@@ -16607,8 +16607,14 @@ Dbdih::start_scan_on_table(TabRecordPtr tabPtr,
 
     conf->noOfBackups = tabPtr.p->noOfBackups;
     conf->scanCookie = tabPtr.p->m_scan_reorg_flag;
+    conf->scanSchemaVersionCookie = tabPtr.p->schemaVersion;
     conf->reorgFlag = tabPtr.p->m_scan_reorg_flag;
     NdbMutex_Unlock(&tabPtr.p->theMutex);
+    D("start_scan_on_table: " << tabPtr.i << " reorg_flag: "
+      << tabPtr.p->m_scan_reorg_flag << " map_ptr_i: "
+      << tabPtr.p->m_map_ptr_i << " m_scan_count[0]: "
+      << tabPtr.p->m_scan_count[0]
+      << " schemaVersion: 0x" << hex << tabPtr.p->schemaVersion);
     return;
   }
 
@@ -16661,7 +16667,7 @@ Dbdih::prepare_add_table(TabRecordPtr tabPtr,
 {
   DiAddTabReq * const req = (DiAddTabReq*)signal->getDataPtr();
   D("prepare_add_table tableId = " << tabPtr.i << " primaryTableId: " <<
-    req->primaryTableId);
+    req->primaryTableId << " schemaVersion: 0x" << hex << req->schemaVersion);
 
   NdbMutex_Lock(&tabPtr.p->theMutex);
   tabPtr.p->connectrec = connectPtr.i;
@@ -16913,6 +16919,9 @@ Dbdih::make_new_table_read_and_writeable(TabRecordPtr tabPtr,
     tabPtr.p->m_scan_count[0] = 0;
     tabPtr.p->m_scan_reorg_flag = 1;
     NdbMutex_Unlock(&tabPtr.p->theMutex);
+    D("tableId: " << tabPtr.i << " m_scan_count[] = "
+      << tabPtr.p->m_scan_count[0] << "," << tabPtr.p->m_scan_count[1]
+      << " m_scan_reorg_flag = 1");
 
     send_alter_tab_conf(signal, connectPtr);
     return;
@@ -16958,6 +16967,9 @@ Dbdih::make_old_table_non_writeable(TabRecordPtr tabPtr,
     ndbassert(tabPtr.p->m_scan_count[1] == 0);
     tabPtr.p->m_scan_count[1] = tabPtr.p->m_scan_count[0];
     tabPtr.p->m_scan_count[0] = 0;
+    D("tableId: " << tabPtr.i << " m_scan_count[] = "
+      << tabPtr.p->m_scan_count[0] << "," << tabPtr.p->m_scan_count[1]
+      << " m_scan_reorg_flag = 0");
     wait_flag = true;
   }
   DIH_TAB_WRITE_UNLOCK(tabPtr.p);
@@ -17336,9 +17348,40 @@ Dbdih::execDIH_SCAN_TAB_COMPLETE_REP(Signal* signal)
   tabPtr.i = rep->tableId;
   ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
 
-  if (tabPtr.p->schemaVersion == rep->schemaVersion)
+  D("complete_scan_on_table: " << tabPtr.i << " reorg_flag: "
+    << tabPtr.p->m_scan_reorg_flag << " map_ptr_i: "
+    << tabPtr.p->m_map_ptr_i << " scanCookie: " << rep->scanCookie
+    << " m_scan_count[] = " << tabPtr.p->m_scan_count[0] << ","
+    << tabPtr.p->m_scan_count[1]
+    << " schemaVersion: 0x" << hex << tabPtr.p->schemaVersion
+    << " schemaVersionCookie: 0x" << hex << rep->schemaVersionCookie);
+
+  /**
+   * When we drop a table we could potentially have scans that haven't
+   * completed even after the timeout waiting for scans to complete.
+   * To ensure that we don't call complete_scan_on_table from a scan
+   * that used a dropped table we check the schema version.
+   *
+   * The schema version is incremented in the 24 least significant bits
+   * when new tables/indexes are created. The 8 most significant bits
+   * are used for ALTER TABLE of a table. It is ok that the table has
+   * had an ALTER TABLE, but it isn't ok that the table is a new table.
+   * Thus those complete of scans on old table should not call
+   * complete_scan_on_table.
+   */
+  Uint32 current_schema_version = tabPtr.p->schemaVersion & 0x00FFFFFF;
+  Uint32 cookie_schema_version = rep->schemaVersionCookie & 0x00FFFFFF;
+  if (current_schema_version == cookie_schema_version)
   {
+    thrjam(jambuf);
     complete_scan_on_table(tabPtr, rep->scanCookie, jambuf);
+  }
+  else
+  {
+    thrjam(jambuf);
+    D("Missed complete_scan_on_table tab(" << tabPtr.i << ",0x"
+      << hex << tabPtr.p->schemaVersion << ") prev: 0x"
+      << hex << rep->schemaVersionCookie);
   }
 }
 
@@ -20030,6 +20073,8 @@ void Dbdih::execCOPY_TABREQ(Signal* signal)
   {
     jam();
     tabPtr.p->schemaVersion = schemaVersion;
+    D("COPY_TABREQ: tableId: " << tabPtr.i << " schemaVersion: 0x"
+      << hex << schemaVersion);
     initTableFile(tabPtr);
 
     /**
