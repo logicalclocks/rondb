@@ -567,6 +567,7 @@ void Dbtc::execCONTINUEB(Signal* signal)
       setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
       return;
     }
+    check_tc_hbrep(signal, apiConnectptr);
     tcConnectptr.i = Tdata1;
     ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
     ndbrequire(apiConnectptr.p->counter > 0);
@@ -586,6 +587,7 @@ void Dbtc::execCONTINUEB(Signal* signal)
       setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
       return;
     }
+    check_tc_hbrep(signal, apiConnectptr);
     tcConnectptr.i = Tdata1;
     ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
     ndbrequire(apiConnectptr.p->counter > 0);
@@ -628,6 +630,7 @@ void Dbtc::execCONTINUEB(Signal* signal)
       setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
       return;
     }
+    check_tc_hbrep(signal, apiConnectptr);
     apiConnectptr.p->counter--;
     tcConnectptr.i = Tdata1;
     abort015Lab(signal, apiConnectptr);
@@ -2403,13 +2406,13 @@ Dbtc::check_tc_hbrep(Signal *signal,
    * longer any API node waiting for the COMPLETE phase to finish.
    * This is indicated with the RS_NO_RETURN return signal.
    */
-  if ((apiConnectptr.p->m_tc_hbrep_timer + 30000) < TtcTimer)
+  if ((apiConnectptr.p->m_tc_hbrep_timer + 3000) < TtcTimer)
   {
     Uint32 nodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
     Uint32 version = getNodeInfo(nodeId).m_version;
     apiConnectptr.p->m_tc_hbrep_timer = TtcTimer;
     if (getNodeInfo(nodeId).getType() == NodeInfo::API &&
-        apiConnectptr.p->returnsignal == RS_NO_RETURN &&
+        apiConnectptr.p->returnsignal != RS_NO_RETURN &&
         ndbd_support_tc_hbrep_api(version))
     {
       jam();
