@@ -2288,7 +2288,7 @@ private:
                Ptr<ApiConnectRecord> dst,
                Ptr<ApiConnectRecord> src);
   void DIVER_node_fail_handling(Signal* signal, Uint64 Tgci, ApiConnectRecordPtr apiConnectptr);
-  void gcpTcfinished(Signal* signal, Uint64 gci);
+  void gcpTcfinished(Signal* signal, Uint64 gci, Uint32 line);
   void handleGcp(Signal* signal, ApiConnectRecordPtr);
   void hash(Signal* signal, CacheRecord * regCachePtr);
   bool handle_special_hash(Uint32 dstHash[4], 
@@ -3029,6 +3029,9 @@ private:
   Uint32 m_load_balancer_location;
 
   Uint32 m_low_latency_trans;
+
+  Uint64 m_gcp_finished;
+  Uint64 m_gcp_finished_prev;
 
 #ifdef ERROR_INSERT
   // Used with ERROR_INSERT 8078 + 8079 to check API_FAILREQ handling

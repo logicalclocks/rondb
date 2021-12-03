@@ -6914,6 +6914,7 @@ void Dbtc::linkApiToGcp(Ptr<GcpRecord> regGcpPtr,
                                             regGcpPtr.p->apiConnectList);
   apiConList.addLast(regApiPtr);
   regApiPtr.p->gcpPointer = regGcpPtr.i;
+  ndbrequire(regGcpPtr.p->gcpId > m_gcp_finished);
 }
 
 void
@@ -6957,8 +6958,32 @@ void Dbtc::seizeGcp(Ptr<GcpRecord> & dst, Uint64 Tgci, Uint32 line)
   localGcpPointer.p->apiConnectList.init();
   localGcpPointer.p->gcpNomoretransRec = ZFALSE;
 
+  /**
+   * Make sure GCP records are in increasing order with lowest id first.
+   * This makes it easier to handle node failure situations.
+   */
   LocalGcpRecord_list gcp_list(c_gcpRecordPool, c_gcpRecordList);
-  gcp_list.addLast(localGcpPointer);
+  Uint32 prev = RNIL;
+  GcpRecordPtr gcpPtr;
+  gcp_list.first(gcpPtr);
+  while (gcpPtr.i != RNIL)
+  {
+    if (gcpPtr.p->gcpId > Tgci)
+    {
+      jam();
+      break;
+    }
+    prev = gcpPtr.i;
+    gcp_list.next(gcpPtr);
+  }
+  if (gcpPtr.i == RNIL)
+  {
+    gcp_list.addLast(localGcpPointer);
+  }
+  else
+  {
+    gcp_list.insertAfter(localGcpPointer, gcpPtr);
+  }
   dst = localGcpPointer;
 }//Dbtc::seizeGcp()
 
@@ -7422,6 +7447,7 @@ void Dbtc::copyApi(Signal *signal,
   NdbNodeBitmask Tnodes = regApiPtr.p->m_transaction_nodes;
 
   copyPtr.p->ndbapiBlockref = regApiPtr.p->ndbapiBlockref;
+  copyPtr.p->globalcheckpointid = regApiPtr.p->globalcheckpointid;
   copyPtr.p->ndbapiConnect = TndbapiConnect;
   copyPtr.p->tcConnect = regApiPtr.p->tcConnect;
   copyPtr.p->nextTcOperation = RNIL;
@@ -7499,6 +7525,7 @@ void Dbtc::copyApi(Signal *signal,
 void Dbtc::unlinkApiConnect(Ptr<GcpRecord> gcpPtr,
                             Ptr<ApiConnectRecord> regApiPtr)
 {
+  ndbrequire(gcpPtr.p->gcpId > m_gcp_finished);
   LocalApiConnectRecord_gcp_list apiConList(c_apiConnectRecordPool,
                                             gcpPtr.p->apiConnectList);
   apiConList.remove(regApiPtr);
@@ -8416,7 +8443,7 @@ void Dbtc::handleGcp(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
       if (c_ongoing_take_over_cnt == 0)
       {
         jam();
-        gcpTcfinished(signal, localGcpPtr.p->gcpId);
+        gcpTcfinished(signal, localGcpPtr.p->gcpId, __LINE__);
         unlinkAndReleaseGcp(localGcpPtr);
       }
     }//if
@@ -10824,6 +10851,27 @@ void Dbtc::execGCP_NOMORETRANS(Signal* signal)
 
   LocalGcpRecord_list gcp_list(c_gcpRecordPool, c_gcpRecordList);
   GcpRecordPtr gcpPtr;
+  if (!nfhandling)
+  {
+    /**
+     * Preprocess list to remove any GCP record that are no longer of interest
+     * since node failure processing is done but there could still be lingering
+     * GCP records created in the node failure processing. No such record should
+     * be found during normal processing.
+     */
+    jam();
+    while (gcp_list.first(gcpPtr) &&
+           gcpPtr.p->gcpId < tcheckGcpId)
+    {
+      jam();
+      ndbrequire(gcpPtr.p->apiConnectList.isEmpty());
+      /**
+       * We have already sent GCP_NOMORETRANS and handled this GCP
+       * and it is empty, thus we are at liberty to release it.
+       */
+      unlinkAndReleaseGcp(gcpPtr);
+    }
+  }
   if (gcp_list.first(gcpPtr))
   {
     jam();
@@ -10860,20 +10908,20 @@ void Dbtc::execGCP_NOMORETRANS(Signal* signal)
         {
           jam();
           /* All transactions completed, no nfhandling, complete it now */
-          gcpTcfinished(signal, tcheckGcpId);
+          gcpTcfinished(signal, tcheckGcpId, __LINE__);
           unlinkAndReleaseGcp(gcpPtr);
         }
       }
     }
     else if (!nfhandling)
     {
-      jam();
       /*------------------------------------------------------------*/
       /*       IF IT IS NOT THE FIRST THEN THERE SHOULD BE NO       */
       /*       RECORD FOR THIS GLOBAL CHECKPOINT. WE ALWAYS REMOVE  */
       /*       THE GLOBAL CHECKPOINTS IN ORDER.                     */
       /*------------------------------------------------------------*/
-      gcpTcfinished(signal, tcheckGcpId);
+      jam();
+      gcpTcfinished(signal, tcheckGcpId, __LINE__);
     }
     else
     {
@@ -10884,7 +10932,7 @@ void Dbtc::execGCP_NOMORETRANS(Signal* signal)
   else if (!nfhandling)
   {
     jam();
-    gcpTcfinished(signal, tcheckGcpId);
+    gcpTcfinished(signal, tcheckGcpId, __LINE__);
   }
   else
   {
@@ -11101,6 +11149,7 @@ void Dbtc::execNODE_FAILREP(Signal* signal)
      * race conditions. Proceed with take over if our task and
      * we are ready to do so.
      */
+    m_gcp_finished = m_gcp_finished_prev;
     insert_take_over_failed_node(signal, myHostPtr.i);
     
     checkScanActiveInFailedLqh(signal, 0, myHostPtr.i);
@@ -11520,7 +11569,7 @@ void Dbtc::execTAKE_OVERTCCONF(Signal* signal)
                             instance(),
                             Uint32(tmpGcpPointer.p->gcpId >> 32),
                             Uint32(tmpGcpPointer.p->gcpId));
-        gcpTcfinished(signal, tmpGcpPointer.p->gcpId);
+        gcpTcfinished(signal, tmpGcpPointer.p->gcpId, __LINE__);
         unlinkAndReleaseGcp(tmpGcpPointer);
       }
       else
@@ -11657,7 +11706,7 @@ Dbtc::sendLQH_TRANSREQ(Signal *signal, Uint32 failedNodeId)
   if (ERROR_INSERTED(8064) && hostptr.i == getOwnNodeId())
   {
     ndbout_c("sending delayed GSN_LQH_TRANSREQ to self");
-    sendSignalWithDelay(tblockref, GSN_LQH_TRANSREQ, signal, 100, sig_len);
+    sendSignalWithDelay(blockRef, GSN_LQH_TRANSREQ, signal, 100, sig_len);
     CLEAR_ERROR_INSERT_VALUE;
   }
   else
@@ -17380,7 +17429,7 @@ void Dbtc::sendScanTabConf(Signal* signal,
 }//Dbtc::sendScanTabConf()
 
 
-void Dbtc::gcpTcfinished(Signal* signal, Uint64 gci)
+void Dbtc::gcpTcfinished(Signal* signal, Uint64 gci, Uint32 line)
 {
   if (ERROR_INSERTED(8098))
   {
@@ -17429,11 +17478,16 @@ void Dbtc::gcpTcfinished(Signal* signal, Uint64 gci)
     SET_ERROR_INSERT_VALUE(8099);
   }
 
+  ndbrequire(gci > m_gcp_finished);
+  m_gcp_finished_prev = m_gcp_finished;
+  m_gcp_finished = gci;
+
   GCPTCFinished* conf = (GCPTCFinished*)signal->getDataPtrSend();
   conf->senderData = c_gcp_data;
   conf->gci_hi = Uint32(gci >> 32);
   conf->gci_lo = Uint32(gci);
   conf->tcFailNo = cfailure_nr; /* Indicate highest handled failno in GCP */
+  conf->line = line;
 
   if (ERROR_INSERTED(8099))
   {

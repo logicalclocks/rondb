@@ -191,6 +191,8 @@ Uint64 Dbtc::getTransactionMemoryNeed(
 
 void Dbtc::initData() 
 {
+  m_gcp_finished = 0;
+  m_gcp_finished_prev = 0;
   chostFilesize = MAX_NODES;
   cscanrecFileSize = ZSCANREC_FILE_SIZE;
   ctabrecFilesize = ZTABREC_FILESIZE;
