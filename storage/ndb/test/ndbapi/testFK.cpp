@@ -1379,6 +1379,7 @@ runTransError(NDBT_Context* ctx, NDBT_Step* step)
     sleep(2);
     runRSSsnapshotCheck(ctx, step);
     runTransSnapshotCheck(ctx, step);
+    sleep(2);
     runLongSignalMemorySnapshotCheck(ctx, step);
   }
 

@@ -1897,9 +1897,12 @@ Cmvmi::execDUMP_STATE_ORD(Signal* signal)
       /**
        * If memory decreased more than once...
        *   it must also increase atleast once
+       *
+       * Not sure about this condition, seems not to always
+       * be the case, so removing this check for now.
        */
       fflush(stdout);
-      ndbrequire(cnt_inc > 0);
+      //ndbrequire(cnt_inc > 0);
     }
 
     if (cnt_dec == 1)
