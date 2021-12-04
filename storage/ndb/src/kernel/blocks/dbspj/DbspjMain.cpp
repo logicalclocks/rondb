@@ -6666,6 +6666,7 @@ Dbspj::execDIH_SCAN_TAB_CONF(Signal* signal)
 
   Uint32 cookie = conf->scanCookie;
   Uint32 fragCount = conf->fragmentCount;
+  Uint32 schema_version_cookie = conf->scanSchemaVersionCookie;
 
   if (conf->reorgFlag)
   {
@@ -6680,6 +6681,7 @@ Dbspj::execDIH_SCAN_TAB_CONF(Signal* signal)
   }
   data.m_fragCount = fragCount;
   data.m_scanCookie = cookie;
+  data.m_schema_version_scanCookie = schema_version_cookie;
 
   const Uint32 prunemask = TreeNode::T_PRUNE_PATTERN | TreeNode::T_CONST_PRUNE;
   bool pruned = (treeNodePtr.p->m_bits & prunemask) != 0;
@@ -8537,6 +8539,7 @@ Dbspj::scanFrag_complete(Signal* signal,
     DihScanTabCompleteRep* rep=(DihScanTabCompleteRep*)signal->getDataPtrSend();
     rep->tableId = treeNodePtr.p->m_tableOrIndexId;
     rep->scanCookie = data.m_scanCookie;
+    rep->schemaVersionCookie = data.m_schema_version_scanCookie;
     rep->jamBufferPtr = jamBuffer();
 
     EXECUTE_DIRECT_MT(DBDIH, GSN_DIH_SCAN_TAB_COMPLETE_REP,

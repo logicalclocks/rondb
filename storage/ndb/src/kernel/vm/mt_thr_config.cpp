@@ -1038,6 +1038,10 @@ THRConfig::compute_automatic_thread_config(
   {
     recover_threads = 1;
   }
+  else if (cpu_cnt == 3)
+  {
+    recover_threads = 2;
+  }
 
   Uint32 tot_threads = main_threads;
   tot_threads += rep_threads;

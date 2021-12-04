@@ -1357,6 +1357,7 @@ runTransError(NDBT_Context* ctx, NDBT_Step* step)
     }
 #endif
     printf("testing errcode: %d\n", terrorCodes[i]);
+    sleep(2);
     runTransSnapshot(ctx, step);
     runLongSignalMemorySnapshotStart(ctx, step);
     sleep(2);
@@ -1376,6 +1377,7 @@ runTransError(NDBT_Context* ctx, NDBT_Step* step)
      * commit is in progress, give the commit a chance to complete
      * before checking the memory allocation snapshots.
      */
+    sleep(2);
     runRSSsnapshotCheck(ctx, step);
     runTransSnapshotCheck(ctx, step);
     sleep(2);

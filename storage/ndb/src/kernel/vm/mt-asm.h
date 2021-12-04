@@ -151,16 +151,15 @@ xcng(volatile unsigned * addr, int val)
 }
 
 #elif defined(__aarch64__)
-#include <atomic>
 #define NDB_HAVE_MB
 #define NDB_HAVE_RMB
 #define NDB_HAVE_WMB
 #define NDB_HAVE_READ_BARRIER_DEPENDS
 //#define NDB_HAVE_XCNG
 
-#define mb() std::atomic_thread_fence(std::memory_order_seq_cst)
-#define rmb() std::atomic_thread_fence(std::memory_order_seq_cst)
-#define wmb() std::atomic_thread_fence(std::memory_order_seq_cst)
+#define mb() asm volatile("dsb sy" ::: "memory")
+#define rmb() asm volatile("dsb ld" ::: "memory")
+#define wmb() asm volatile("dsb st" ::: "memory")
 #define read_barrier_depends() do {} while(0)
 
 #define cpu_pause()  __asm__ __volatile__ ("yield")

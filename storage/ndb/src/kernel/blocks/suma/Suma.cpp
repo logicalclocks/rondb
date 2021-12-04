@@ -3030,6 +3030,7 @@ Suma::execDIH_SCAN_TAB_CONF(Signal* signal)
   const Uint32 tableId = conf->tableId;
   const Uint32 fragCount = conf->fragmentCount;
   const Uint32 scanCookie = conf->scanCookie;
+  const Uint32 schema_version_scanCookie = conf->scanSchemaVersionCookie;
 
   Ptr<SyncRecord> ptr;
   c_syncPool.getPtr(ptr, conf->senderData);
@@ -3046,6 +3047,7 @@ Suma::execDIH_SCAN_TAB_CONF(Signal* signal)
     ptr.p->m_frag_cnt = fragCount;
   }
   ptr.p->m_scan_cookie = scanCookie;
+  ptr.p->m_schema_version_scan_cookie = schema_version_scanCookie;
   sendDIGETNODESREQ(signal, ptr.i, tableId, 0);
   return;
 }
@@ -3635,6 +3637,7 @@ Suma::SyncRecord::completeScan(Signal* signal, int error)
   DihScanTabCompleteRep* rep = (DihScanTabCompleteRep*)signal->getDataPtr();
   rep->tableId = subPtr.p->m_tableId;
   rep->scanCookie = m_scan_cookie;
+  rep->schemaVersionCookie = m_schema_version_scan_cookie;
   rep->jamBufferPtr = jamBuffer();
   suma.EXECUTE_DIRECT_MT(DBDIH, GSN_DIH_SCAN_TAB_COMPLETE_REP, signal,
                          DihScanTabCompleteRep::SignalLength, 0);

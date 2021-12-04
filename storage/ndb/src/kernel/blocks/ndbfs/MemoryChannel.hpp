@@ -102,6 +102,7 @@ public:
   };
 
 private:
+  void writeChannelNoSignal(T *t, bool signal);
   Uint32 m_occupancy;
   T* m_head; // First element in list (e.g will be read by readChannel)
   T* m_tail;
@@ -137,11 +138,15 @@ template <class T> MemoryChannel<T>::~MemoryChannel( )
 
 template <class T> void MemoryChannel<T>::writeChannel( T *t)
 {
-  writeChannelNoSignal(t);
-  NdbCondition_Signal(theConditionPtr);
+  writeChannelNoSignal(t, true);
 }
 
-template <class T> void MemoryChannel<T>::writeChannelNoSignal( T *t)
+template <class T> void MemoryChannel<T>::writeChannelNoSignal(T *t)
+{
+  writeChannelNoSignal(t, false);
+}
+
+template <class T> void MemoryChannel<T>::writeChannelNoSignal(T *t, bool signal)
 {
   NdbMutex_Lock(theMutexPtr);
   if (m_head == 0)
@@ -157,6 +162,10 @@ template <class T> void MemoryChannel<T>::writeChannelNoSignal( T *t)
   }
   t->m_mem_channel.m_next = 0;
   m_occupancy++;
+  if (signal)
+  {
+    NdbCondition_Signal(theConditionPtr);
+  }
   NdbMutex_Unlock(theMutexPtr);
 }
 

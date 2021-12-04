@@ -250,6 +250,7 @@ int runTestMaxOperations(NDBT_Context* ctx, NDBT_Step* step){
 
     endTest = false;
 
+    NdbSleep_MilliSleep(2000);
     if (hugoOps.startTransaction(pNdb) != NDBT_OK){
       delete pNdb;
       ndbout << "startTransaction failed, line: " << __LINE__ << endl;
@@ -378,6 +379,7 @@ int runTestMaxOperations(NDBT_Context* ctx, NDBT_Step* step){
     int errors = 0;
     const int maxErrors = 5;
 
+    NdbSleep_MilliSleep(2000);
     if (hugoOps.startTransaction(pNdb) != NDBT_OK){
       delete pNdb;
       ndbout << "startTransaction failed, line: " << __LINE__ << endl;

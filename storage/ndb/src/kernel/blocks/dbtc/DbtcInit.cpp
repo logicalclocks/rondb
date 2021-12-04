@@ -163,6 +163,8 @@ void Dbtc::initData()
   c_last_no_qt_exec_write_count = 0;
   c_last_no_qt_wrong_version = 0;
 #endif
+  m_gcp_finished = 0;
+  m_gcp_finished_prev = 0;
   chostFilesize = MAX_NODES;
   cscanrecFileSize = ZSCANREC_FILE_SIZE;
   ctabrecFilesize = ZTABREC_FILESIZE;

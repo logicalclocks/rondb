@@ -52,7 +52,7 @@ struct DihScanTabReq
  */
 struct DihScanTabConf
 {
-  static constexpr Uint32 SignalLength = 6;
+  static constexpr Uint32 SignalLength = 7;
   static constexpr Uint32 InvalidCookie = RNIL;
 
   Uint32 tableId;
@@ -60,6 +60,7 @@ struct DihScanTabConf
   Uint32 fragmentCount;
   Uint32 noOfBackups;
   Uint32 scanCookie;
+  Uint32 scanSchemaVersionCookie;
   Uint32 reorgFlag;
 };
 
@@ -86,7 +87,7 @@ struct DihScanTabCompleteRep
   static constexpr Uint32 SignalLength = 5;
 
   Uint32 tableId;
-  Uint32 schemaVersion;
+  Uint32 schemaVersionCookie;
   Uint32 scanCookie;
   union {
     void * jamBufferPtr;

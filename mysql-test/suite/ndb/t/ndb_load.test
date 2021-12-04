@@ -43,10 +43,10 @@ end %
 DELIMITER ;%
 
 
---echo Insert 15000 rows which should exceed default number
+--echo Insert 45000 rows which should exceed default number
 --echo of concurrent operations (include/default_ndbd.cnf)
 --echo when trying to move over to ndb.
-CALL bulkinsert(15000);
+CALL bulkinsert(45000);
 
 show tables;
 
