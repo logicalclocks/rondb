@@ -10502,10 +10502,13 @@ void Dbtc::timeOutFoundLab(Signal* signal, Uint32 TapiConPtr, Uint32 errCode)
         << " executing_trigger_operations: "
         << apiConnectptr.p->m_executing_trigger_ops
         );
-  switch (apiConnectptr.p->apiConnectstate) {
+  switch (apiConnectptr.p->apiConnectstate)
+  {
   case CS_STARTED:
-    if(apiConnectptr.p->lqhkeyreqrec == apiConnectptr.p->lqhkeyconfrec &&
-       errCode != ZCLUSTER_IN_SINGLEUSER_MODE){
+  {
+    if (apiConnectptr.p->lqhkeyreqrec == apiConnectptr.p->lqhkeyconfrec &&
+        errCode != ZCLUSTER_IN_SINGLEUSER_MODE)
+    {
       jam();
       /*
       We are waiting for application to continue the transaction. In this
@@ -10522,12 +10525,14 @@ void Dbtc::timeOutFoundLab(Signal* signal, Uint32 TapiConPtr, Uint32 errCode)
     apiConnectptr.p->returnsignal = RS_TCROLLBACKREP;      
     apiConnectptr.p->returncode = errCode;
     abort010Lab(signal, apiConnectptr);
-    return;
+    break;
+  }
   case CS_RECEIVING:
   case CS_REC_COMMITTING:
   case CS_START_COMMITTING:
   case CS_WAIT_FIRE_TRIG_REQ:
   case CS_SEND_FIRE_TRIG_REQ:
+  {
     jam();
     /*------------------------------------------------------------------*/
     /*       WE ARE STILL IN THE PREPARE PHASE AND THE TRANSACTION HAS  */
@@ -10537,7 +10542,8 @@ void Dbtc::timeOutFoundLab(Signal* signal, Uint32 TapiConPtr, Uint32 errCode)
     /*------------------------------------------------------------------*/
     terrorCode = errCode;
     abortErrorLab(signal, apiConnectptr);
-    return;
+    break;
+  }
   case CS_PREPARE_TO_COMMIT:
   {
     jam();
@@ -10587,7 +10593,7 @@ void Dbtc::timeOutFoundLab(Signal* signal, Uint32 TapiConPtr, Uint32 errCode)
     init_setupFailData(signal,
                        apiConnectptr,
                        ZCOMMIT_SETUP);
-    return;
+    break;
   }
   case CS_COMPLETING:
   case CS_COMPLETE_SENT:
@@ -10609,7 +10615,7 @@ void Dbtc::timeOutFoundLab(Signal* signal, Uint32 TapiConPtr, Uint32 errCode)
     init_setupFailData(signal,
                        apiConnectptr,
                        ZCOMPLETE_SETUP);
-    return;
+    break;
   }
   case CS_ABORTING:
   {
@@ -10689,7 +10695,7 @@ void Dbtc::timeOutFoundLab(Signal* signal, Uint32 TapiConPtr, Uint32 errCode)
     ndbrequire(tcConList.first(tcConnectptr));
     checkFailData_abort(signal,
                         apiConnectptr);
-    return;
+    break;
   }
   case CS_WAIT_COMMIT_CONF:
   {
@@ -10721,7 +10727,7 @@ void Dbtc::timeOutFoundLab(Signal* signal, Uint32 TapiConPtr, Uint32 errCode)
     ndbrequire(tcConList.first(tcConnectptr));
     checkFailData_commit(signal,
                          apiConnectptr);
-    return;
+    break;
   }
   case CS_WAIT_COMPLETE_CONF:
   {
@@ -10752,7 +10758,7 @@ void Dbtc::timeOutFoundLab(Signal* signal, Uint32 TapiConPtr, Uint32 errCode)
     ndbrequire(tcConList.first(tcConnectptr));
     checkFailData_complete(signal,
                            apiConnectptr);
-    return;
+    break;
   }
   case CS_RELEASE:
   {
@@ -10760,7 +10766,7 @@ void Dbtc::timeOutFoundLab(Signal* signal, Uint32 TapiConPtr, Uint32 errCode)
     jamLine(apiConnectptr.p->apiConnectstate);
     check_tc_hbrep(signal, apiConnectptr);
     /* We are releasing transaction, do nothing */
-    return;
+    break;
   }
   case CS_FAIL_PREPARED:
   case CS_FAIL_COMMITTING:
@@ -10768,6 +10774,12 @@ void Dbtc::timeOutFoundLab(Signal* signal, Uint32 TapiConPtr, Uint32 errCode)
   case CS_RESTART:
   case CS_FAIL_ABORTED:
   case CS_DISCONNECTED:
+  {
+    jam();
+    jamLine(apiConnectptr.p->apiConnectstate);
+    ndbabort();
+    break;
+  }
   default:
   {
     jam();
@@ -10776,8 +10788,10 @@ void Dbtc::timeOutFoundLab(Signal* signal, Uint32 TapiConPtr, Uint32 errCode)
     /*       AN IMPOSSIBLE STATE IS SET. CRASH THE SYSTEM.              */
     /*------------------------------------------------------------------*/
     DEBUG("State = " << apiConnectptr.p->apiConnectstate);
+    ndbabort();
+    break;
   }
-  return;
+  }
 }
 
 /*-------------------------------------------------*/
