@@ -7372,7 +7372,8 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
     require(num_tc_threads == 0);
     require(globalData.ndbMtQueryThreads == 0);
     require(globalData.ndbMtRecoverThreads == 0 ||
-            globalData.ndbMtRecoverThreads == 1);
+            globalData.ndbMtRecoverThreads == 1 ||
+            globalData.ndbMtRecoverThreads == 2);
     require(globalData.ndbMtMainThreads == 1);
     require(globalData.ndbMtReceiveThreads == 1);
     num_lqh_threads = 1;
