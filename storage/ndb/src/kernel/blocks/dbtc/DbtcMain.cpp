@@ -114,8 +114,8 @@
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
 //#define DO_TRANSIENT_POOL_STAT
-#define ABORT_TRACE 1
-#define DEBUG_NODE_FAILURE 1
+//#define ABORT_TRACE 1
+//#define DEBUG_NODE_FAILURE 1
 //#define DEBUG_RR_INIT 1
 //#define DEBUG_EXEC_WRITE_COUNT 1
 #endif

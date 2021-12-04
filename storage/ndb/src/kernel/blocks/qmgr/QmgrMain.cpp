@@ -77,7 +77,7 @@ extern NodeBitmask g_not_active_nodes;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 #define DEBUG_MULTI_SETUP 1
-//#define DEBUG_MULTI_TRP 1
+#define DEBUG_MULTI_TRP 1
 //#define DEBUG_STARTUP 1
 //#define DEBUG_ARBIT 1
 #endif
@@ -488,7 +488,7 @@ Qmgr::execREAD_CONFIG_REQ(Signal* signal)
        * transporter to the send thread the LDM thread assists as
        * well.
        */
-      m_num_multi_trps = globalData.ndbMtLqhThreads;
+      m_num_multi_trps = globalData.ndbMtLqhWorkers;
     }
     else
     {
@@ -504,8 +504,8 @@ Qmgr::execREAD_CONFIG_REQ(Signal* signal)
        * LDM and/or TC threads is smaller than this number.
        */
       m_num_multi_trps = MIN(m_num_multi_trps,
-                         MAX(globalData.ndbMtLqhThreads,
-                             globalData.ndbMtTcThreads));
+                         MAX(globalData.ndbMtLqhWorkers,
+                             globalData.ndbMtTcWorkers));
     }
     /**
      * Whatever value this node has choosen, we will never be able to use
@@ -519,6 +519,7 @@ Qmgr::execREAD_CONFIG_REQ(Signal* signal)
     m_num_multi_trps = 1;
   }
   m_num_multi_trps = MIN(m_num_multi_trps, MAX_NODE_GROUP_TRANSPORTERS);
+  g_eventLogger->info("NodeGroupTransporters set to: %u", m_num_multi_trps);
   ReadConfigConf * conf = (ReadConfigConf*)signal->getDataPtrSend();
   conf->senderRef = reference();
   conf->senderData = senderData;
@@ -10677,11 +10678,14 @@ Qmgr::check_more_trp_switch_nodes(Signal* signal, bool node_fail)
     ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRec);
     if (nodePtr.p->m_is_in_same_nodegroup &&
         nodePtr.p->phase == ZRUNNING &&
-        nodePtr.p->m_set_up_multi_trp_started)
+        nodePtr.p->m_set_up_multi_trp_started &&
+        nodePtr.p->m_used_num_multi_trps > 1)
     {
       if (!nodePtr.p->m_is_using_multi_trp)
       {
         jam();
+        g_eventLogger->info("Node %u isn't done with multi trp setup yet",
+                            nodePtr.i);
         done = false;
       }
     }
