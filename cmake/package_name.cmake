@@ -1,4 +1,5 @@
 # Copyright (c) 2010, 2019, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -148,7 +149,7 @@ IF(NOT CPACK_SOURCE_PACKAGE_FILE_NAME)
   ELSE()
   ENDIF()
 ENDIF()
-SET(CPACK_PACKAGE_CONTACT "Logical Clocks AB <mikael@logicalclocks.com>")
+SET(CPACK_PACKAGE_CONTACT "Logical Clocks <mikael@logicalclocks.com>")
 SET(CPACK_PACKAGE_VENDOR "Logical Clocks")
 SET(CPACK_SOURCE_GENERATOR "TGZ")
 INCLUDE(cpack_source_ignore_files)
