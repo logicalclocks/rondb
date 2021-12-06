@@ -1,0 +1,69 @@
+#!/bin/bash
+# Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+
+set -e
+
+[ `git rev-parse --show-toplevel` == `pwd` ] || {
+    echo This script must be executed from the git repository root
+    exit 1
+}
+
+[ -d .git ] || {
+    echo This script must be executed from the main worktree of a repository
+    exit 1
+}
+
+mkscript() {
+    cat > "$1"
+    chmod 755 "$1"
+    echo "$2 was successfully installed into $1"
+    echo
+}
+
+mkscript .git/hooks/pre-commit "A hook to check copyright for Logical Clocks" <<"EOF"
+#!/bin/bash
+set -e
+year=`date +%Y`
+# List all files with changes about to be committed
+git diff --cached --name-only |
+    {
+        exitcode=0
+        # Iterate through them
+        while IFS="" read filename; do {
+            # Get the file content from the git index, i.e. what's about to be committed
+            git cat-file blob :"$filename" |
+                # Discard everything from the first empty line
+                sed '/^$/q';
+            # Get the file content again
+            git cat-file blob :"$filename" |
+                # Discard everything until the last empty line
+                tac |
+                sed '/^$/q' |
+                tac;
+        } |
+            # Check that a correct copyright notice is present
+            grep -Eq '^[ #*-]*Copyright (\(c\)|\\\(co) ('"$(seq -s '|' 2020 $year)), $year, "'Logical Clocks and\/or its affiliates\.$' ||
+            # If not, fail with instructions
+            {
+                echo "$filename:";
+                echo "  Can't find a correct copyright notice for Logical Clocks.";
+                echo "  If one exists, correct it, otherwise add the following to the header comment:";
+                echo "   Copyright (c) $year, $year, Logical Clocks and/or its affiliates.";
+                exitcode=1;
+            }
+        done
+        exit $exitcode
+    }
+EOF
+
+git config merge.conflictstyle diff3
+echo This repository is now configured to use the diff3 merge conflictstyle
+echo ""
+
+git config user.email | grep -Eq "@logicalclocks\.com$" || {
+    echo Warning: Git is not configured to identify you as an employee of Logical Clocks.
+    echo You can do so by running:
+    echo "    git config --global user.name 'Firstname Lastname'"
+    echo "    git config --global user.email yourname@logicalclocks.com"
+    echo
+}
