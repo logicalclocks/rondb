@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1213,7 +1213,7 @@ private:
   enum CounterId
   {
     /**
-     * This is the number of incomming LQHKEYREQ messages (i.e queries with a
+     * This is the number of incoming LQHKEYREQ messages (i.e queries with a
      * lookup as root).
      */
     CI_READS_RECEIVED = 0,
@@ -1238,7 +1238,7 @@ private:
     CI_READS_NOT_FOUND = 3,
 
     /**
-     * This is the number of incomming queries where the root operation is a
+     * This is the number of incoming queries where the root operation is a
      * fragment scan and this is a "direct scan" that does not go via an index.
      */
     CI_TABLE_SCANS_RECEIVED = 4,
@@ -1250,7 +1250,7 @@ private:
     CI_LOCAL_TABLE_SCANS_SENT = 5,
 
     /**
-     * This is the number of incomming queries where the root operation is a
+     * This is the number of incoming queries where the root operation is a
      * fragment scan which scans the fragment via an ordered index..
      */
     CI_RANGE_SCANS_RECEIVED = 6,

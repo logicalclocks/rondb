@@ -704,7 +704,7 @@ JamEvent::verifyId(Uint32 fileId, const char* pathName)
     }
     /** 
      * Check if pathName ends with jamFileNames[fileId]. Observe that the
-     * basename() libc function is neither thread safe nor univeraslly 
+     * basename() libc function is neither thread safe nor universally
      * portable, therefore it is not used here.
      */
     const size_t pathLen = strlen(pathName);

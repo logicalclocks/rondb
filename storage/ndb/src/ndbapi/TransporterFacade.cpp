@@ -3484,7 +3484,7 @@ TransporterFacade::finish_poll(trp_client* arr[])
 }
 
 /**
- * Poll the Transporters for incomming messages.
+ * Poll the Transporters for incoming messages.
  * Also 'update_connections' status in regular intervals
  * controlled by the flag 'm_check_connections'.
  * (::threadMainReceive() is responsible for requesting
