@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -73,7 +74,6 @@ public:
 private:
   /* Page map methods */
   Uint32 get_next_index(Uint32 index) const;
-  //Uint32 get_next_indexes(Uint32 index, Uint32 indexes[], Uint32 n) const;
   bool set(Uint32 index, Uint32 value);
   bool clear(Uint32 index);
   Uint32 get(Uint32 index) const;

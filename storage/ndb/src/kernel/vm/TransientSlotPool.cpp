@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,12 +33,8 @@
 TransientSlotPool::TransientSlotPool()
 : m_page_pool(NULL),
   m_type_id(0),
-//  m_slot_size(0),
   m_use_count(0),
-//  m_use_high(0),
-  m_may_shrink(false)//,
-//  m_shrink_level(0),
-//  m_static_initialized_slots(0)
+  m_may_shrink(false)
 {
   m_free_list.init();
 }
@@ -48,15 +45,11 @@ void TransientSlotPool::init(Uint32 type_id,
                              Uint32* min_recs,
                              const Pool_context& pool_ctx)
 {
-//  const Uint32 slots_per_page = Page::DATA_WORDS_PER_PAGE / slot_size;
 
   m_page_pool = new TransientPagePool(type_id,
                                       pool_ctx.get_mem_manager());
   m_type_id = type_id;
-*min_recs = 0;
-  // m_slot_size = slot_size;
-  // m_shrink_level = m_static.getSize() + (slots_per_page + 1) / 2;
-  // require(expand());
+  *min_recs = 0;
 }
 
 
@@ -103,7 +96,8 @@ Uint64 TransientSlotPool::getMemoryNeed(Uint32 slot_size, Uint32 entry_count)
   const Uint64 entries_per_page = (Page::DATA_WORDS_PER_PAGE / slot_size);
   const Uint64 data_pages =
       ((entry_count + entries_per_page - 1) / entries_per_page);
-  return data_pages * sizeof(Page) + TransientPagePool::getMemoryNeed(data_pages);
+  return data_pages * sizeof(Page) +
+         TransientPagePool::getMemoryNeed(data_pages);
 }
 
 Uint32 TransientSlotPool::getUncheckedPtrs(Uint32* from,
@@ -167,7 +161,8 @@ Uint32 TransientSlotPool::getUncheckedPtrs(Uint32* from,
   return ptrs_cnt;
 }
 
-bool TransientSlotPool::rearrange_free_list_and_shrink(Uint32* max_shrinks, Uint32 slot_size)
+bool TransientSlotPool::rearrange_free_list_and_shrink(Uint32* max_shrinks,
+                                                       Uint32 slot_size)
 {
   Uint32 free = getNoOfFree();
   if (free > 8)
@@ -196,7 +191,7 @@ bool TransientSlotPool::rearrange_free_list_and_shrink(Uint32* max_shrinks, Uint
   {
     if (!shrink(slot_size))
     {
-*max_shrinks = shrink_count;
+      *max_shrinks = shrink_count;
       return false;
     }
   }
