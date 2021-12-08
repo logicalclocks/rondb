@@ -165,9 +165,9 @@ bool TransientSlotPool::rearrange_free_list_and_shrink(Uint32* max_shrinks,
                                                        Uint32 slot_size)
 {
   Uint32 free = getNoOfFree();
-  if (free > 8)
+  if (free > 16)
   {
-    free = 8;
+    free = 16;
   }
   if (free > 0)
   {

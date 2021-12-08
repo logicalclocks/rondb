@@ -10195,7 +10195,7 @@ Dbacc::shrinkTransientPools(Uint32 pool_index)
 {
   ndbrequire(pool_index < c_transient_pool_count);
   ndbrequire(c_transient_pools_shrinking.get(pool_index));
-  if (c_transient_pools[pool_index]->rearrange_free_list_and_shrink(1))
+  if (c_transient_pools[pool_index]->rearrange_free_list_and_shrink())
   {
     sendPoolShrink(pool_index);
   }

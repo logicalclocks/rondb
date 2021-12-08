@@ -830,7 +830,6 @@ void Dbtc::execCONTINUEB(Signal* signal)
     }
 
     const Uint32 pool_index = Tdata0;
-    const Uint32 MAX_SHRINKS = 1;
 #ifdef VM_TRACE
     g_eventLogger->info("SHRINK_TRANSIENT_POOLS: pool %u\n", pool_index);
 #endif
@@ -843,7 +842,7 @@ void Dbtc::execCONTINUEB(Signal* signal)
 #endif
       break;
     }
-    if (!c_transient_pools[pool_index]->rearrange_free_list_and_shrink(MAX_SHRINKS))
+    if (!c_transient_pools[pool_index]->rearrange_free_list_and_shrink())
     {
       c_transient_pools_shrinking.clear(pool_index);
     }
@@ -9681,7 +9680,7 @@ ABORT020:
      *----------------------------------------------------------------------*/
     releaseAndAbort(signal, apiConnectptr.p);
     tcConnectptr.p->tcConnectstate = OS_ABORT_SENT;
-    TloopCount += 127;
+    TloopCount += 125;
     break;
   }
   case OS_ABORTING:
@@ -13014,7 +13013,7 @@ void Dbtc::toAbortHandlingLab(Signal* signal,
       else
       {
         jam();
-        loop_count += 128;
+        loop_count += 60;
         apiConnectptr.p->finish_trans_counter++;
         Uint32 instanceKey = tcConnectptr.p->lqhInstanceKey;
         Uint32 instanceNo = getInstanceNo(hostptr.i, instanceKey);
@@ -13416,7 +13415,7 @@ void Dbtc::toCommitHandlingLab(Signal* signal,
       else
       {
         jam();
-        loop_count += 128;
+        loop_count += 60;
         apiConnectptr.p->finish_trans_counter++;
         Uint32 instanceKey = tcConnectptr.p->lqhInstanceKey;
         Uint32 instanceNo = getInstanceNo(hostptr.i, instanceKey);
@@ -13772,7 +13771,7 @@ void Dbtc::toCompleteHandlingLab(Signal* signal,
       else
       {
         jam();
-        loop_count += 128;
+        loop_count += 60;
         apiConnectptr.p->finish_trans_counter++;
         Uint32 instanceKey = tcConnectptr.p->lqhInstanceKey;
         Uint32 instanceNo = getInstanceNo(hostptr.i, instanceKey);
