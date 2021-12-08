@@ -161,17 +161,18 @@ Uint32 TransientSlotPool::getUncheckedPtrs(Uint32* from,
   return ptrs_cnt;
 }
 
+#define MAX_FREE_CALLS 16
 bool TransientSlotPool::rearrange_free_list_and_shrink(Uint32* max_shrinks,
                                                        Uint32 slot_size)
 {
   Uint32 free = getNoOfFree();
-  if (free > 16)
+  if (free > MAX_FREE_CALLS)
   {
-    free = 16;
+    free = MAX_FREE_CALLS;
   }
   if (free > 0)
   {
-    Ptr<Type> ptr[8];
+    Ptr<Type> ptr[MAX_FREE_CALLS];
     Uint32 j = 0;
     for (Uint32 i = 0; i < free; i++)
     {
