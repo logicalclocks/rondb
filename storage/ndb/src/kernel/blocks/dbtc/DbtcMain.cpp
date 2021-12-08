@@ -7823,7 +7823,7 @@ Dbtc::sendFireTrigReq(Signal* signal,
 
     if (ERROR_INSERTED_CLEAR(8090))
     {
-      sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 5000, 4);
+      sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 8000, 4);
     }
     else
     {
@@ -12025,7 +12025,7 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
       sendSignalWithDelay(reference(),
                           GSN_LQH_TRANSCONF,
                           signal,
-                          5000,
+                          8000,
                           signal->getLength());
       return;
     }

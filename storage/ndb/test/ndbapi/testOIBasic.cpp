@@ -3557,7 +3557,7 @@ pkupdate(Par par)
       set.calc(par, i, ~tab.m_pkmask);
       CHK(set.updrow(par, i) == 0);
       set.unlock();
-      LL4("pkupdate key=" << i << " " << set.getrow(i));
+      LL3("pkupdate key=" << i << " " << set.getrow(i));
       batch++;
     }
     bool lastbatch = (batch != 0 && j + 1 == par.m_rows);
@@ -3570,7 +3570,7 @@ pkupdate(Par par)
       set.unlock();
       if (et == Commit)
       {
-        LL4("pkupdate key committed = " << i << " " << set.getrow(i));
+        LL3("pkupdate key committed = " << i << " " << set.getrow(i));
       }
       if (err) {
         LL1("pkupdate key=" << i << ": stop on " << con.errname(err));
@@ -5531,8 +5531,10 @@ tpkopsread(Par par)
     RUNSTEP(par, pkupdatescanread, MT);
     RUNSTEP(par, readverifyfull, MT);
   }
+/*
   RUNSTEP(par, pkdelete, MT);
   RUNSTEP(par, readverifyfull, MT);
+*/
   return 0;
 }
 
