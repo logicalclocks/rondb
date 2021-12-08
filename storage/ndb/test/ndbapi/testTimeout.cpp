@@ -30,7 +30,7 @@
 #include <NdbConfig.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 
-#define TIMEOUT (Uint32)3000
+#define TIMEOUT (Uint32)5000
 Uint32 g_org_timeout = 3000;
 Uint32 g_org_deadlock = 3000;
 

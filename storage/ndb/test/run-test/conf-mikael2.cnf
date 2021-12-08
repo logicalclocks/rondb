@@ -65,6 +65,7 @@ MaxNoOfTables=200
 MaxNoOfOrderedIndexes=200
 MaxNoOfUniqueHashIndexes=200
 NumCPUs=4
+TransactionDeadlockDetectionTimeout=5000
 
 SharedGlobalMemory=350M
 DiskPageBufferMemory=256M

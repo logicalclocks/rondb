@@ -5531,10 +5531,8 @@ tpkopsread(Par par)
     RUNSTEP(par, pkupdatescanread, MT);
     RUNSTEP(par, readverifyfull, MT);
   }
-/*
   RUNSTEP(par, pkdelete, MT);
   RUNSTEP(par, readverifyfull, MT);
-*/
   return 0;
 }
 

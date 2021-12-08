@@ -29,7 +29,3 @@ cmd: testIndex
 args: -n NF_Mixed T1 T6 T13
 max-time: 2000
 
-cmd: testTimeout
-args: T1
-max-time: 600
-
