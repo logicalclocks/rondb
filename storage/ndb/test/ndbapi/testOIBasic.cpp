@@ -3815,6 +3815,7 @@ hashindexread(const Par& par, const ITab& itab)
     CHK(set2.selrow(par, itab, *set1.m_row[i]) == 0);
     CHK(con.execute(Commit) == 0);
     uint i2 = (uint)-1;
+    LL4("row " << set2.count() << " " << *set2.m_row[i] << " i: " << i);
     CHK(set2.getkey(par, &i2) == 0 && i == i2);
     CHK(set2.putval(i, false) == 0);
     LL4("row " << set2.count() << " " << *set2.m_row[i]);
@@ -4716,6 +4717,7 @@ pkupdatescanread(Par par)
   par.m_dups = true;
   par.m_catcherr |= Con::ErrDeadlock;
   uint sel = urandom(10);
+  LL1("pkupdatescanread, sel: " << sel);
   if (sel < 5) {
     CHK(pkupdate(par) == 0);
   } else if (sel < 6) {
