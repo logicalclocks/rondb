@@ -97,7 +97,7 @@ public:
 
   bool isEmpty() const
   {
-    return m_jamVal == 0x7fffffff;
+    return (m_jamVal & 0x7fffffff) == 0x7fffffff;
   }
 
   /*
