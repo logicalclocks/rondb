@@ -18044,13 +18044,16 @@ void Dbtc::initApiConnect(Signal* signal)
   capiConnectPREPARE_TO_COMMITList.init();
 
   ApiConnectRecordPtr apiConnectptr;
+  Uint32 removeLoopCount = 0;
   while (fast_record_list.removeFirst(apiConnectptr))
   {
     refresh_watch_dog();
-    jam();
+    removeLoopCount++;
     releaseApiConTimer(apiConnectptr);
     c_apiConnectRecordPool.release(apiConnectptr);
   }
+  jam();
+  jamData(removeLoopCount);
   c_apiConnectRecordPool.resetUsedHi();
   c_apiConTimersPool.resetUsedHi();
 }//Dbtc::initApiConnect()
@@ -18059,8 +18062,9 @@ void Dbtc::inithost(Signal* signal)
 {
   cpackedListIndex = 0;
   ndbrequire(chostFilesize > 0);
+  jam();
+  jamData(chostFilesize);
   for (hostptr.i = 0; hostptr.i < chostFilesize; hostptr.i++) {
-    jam();
     ptrAss(hostptr, hostRecord);
     hostptr.p->hostStatus = HS_DEAD;
     DEB_NODE_STATUS(("(%u) Node: %u now dead",
@@ -18217,21 +18221,22 @@ void Dbtc::initialiseTcConnect(Signal* signal)
   for (Uint32 i = 0; i < reserveConnectRecord; i++)
   {
     refresh_watch_dog();
-    jam();
     TcConnectRecordPtr tcConptr;
     ndbrequire(tcConnectRecord.seize(tcConptr));
     fast_record_list.addFirst(tcConptr);
   }
+  jam();
 
   LocalTcConnectRecord_fifo tcConList(tcConnectRecord, cfreeTcConnectFail);
   Uint32 tcConnectFailCount = 0;
 #ifdef VM_TRACE
   Uint32 prevptr = 0;
 #endif
+  Uint32 connectLoopCount = 0;
   while (tcConnectFailCount < ctcConnectFailCount)
   {
     refresh_watch_dog();
-    jam();
+    connectLoopCount++;
     TcConnectRecordPtr tcConptr;
     ndbrequire(tcConnectRecord.seize(tcConptr));
     tcConnectFailCount++;
@@ -18241,16 +18246,21 @@ void Dbtc::initialiseTcConnect(Signal* signal)
 #endif
     tcConList.addLast(tcConptr);
   }
+  jam();
+  jamData(connectLoopCount);
   c_counters.cconcurrentOp = 0;
   m_concurrent_overtakeable_operations = 0;
 
   TcConnectRecordPtr tcConptr;
+  Uint32 removeLoopCount = 0;
   while (fast_record_list.removeFirst(tcConptr))
   {
     refresh_watch_dog();
-    jam();
+    removeLoopCount++;
     tcConnectRecord.release(tcConptr);
   }
+  jam();
+  jamData(removeLoopCount);
   tcConnectRecord.resetUsedHi();
 }//Dbtc::initialiseTcConnect()
 
