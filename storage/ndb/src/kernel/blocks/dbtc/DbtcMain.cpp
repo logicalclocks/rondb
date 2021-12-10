@@ -849,7 +849,6 @@ void Dbtc::execCONTINUEB(Signal* signal)
     }
 
     const Uint32 pool_index = Tdata0;
-    const Uint32 MAX_SHRINKS = 1;
 #ifdef VM_TRACE
     g_eventLogger->info("SHRINK_TRANSIENT_POOLS: pool %u", pool_index);
 #endif
@@ -862,7 +861,7 @@ void Dbtc::execCONTINUEB(Signal* signal)
 #endif
       break;
     }
-    if (!c_transient_pools[pool_index]->rearrange_free_list_and_shrink(MAX_SHRINKS))
+    if (!c_transient_pools[pool_index]->rearrange_free_list_and_shrink())
     {
       c_transient_pools_shrinking.clear(pool_index);
     }
@@ -8072,7 +8071,7 @@ Dbtc::sendFireTrigReq(Signal* signal,
 
     if (ERROR_INSERTED_CLEAR(8090))
     {
-      sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 5000, 4);
+      sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 8000, 4);
     }
     else
     {
@@ -9931,7 +9930,7 @@ ABORT020:
      *----------------------------------------------------------------------*/
     releaseAndAbort(signal, apiConnectptr.p);
     tcConnectptr.p->tcConnectstate = OS_ABORT_SENT;
-    TloopCount += 127;
+    TloopCount += 125;
     break;
   }
   case OS_ABORTING:
@@ -12336,7 +12335,7 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
       sendSignalWithDelay(reference(),
                           GSN_LQH_TRANSCONF,
                           signal,
-                          5000,
+                          8000,
                           signal->getLength());
       return;
     }
@@ -13324,7 +13323,7 @@ void Dbtc::toAbortHandlingLab(Signal* signal,
       else
       {
         jam();
-        loop_count += 128;
+        loop_count += 60;
         apiConnectptr.p->finish_trans_counter++;
         Uint32 instanceKey = tcConnectptr.p->lqhInstanceKey;
         Uint32 instanceNo = getInstanceNo(hostptr.i, instanceKey);
@@ -13726,7 +13725,7 @@ void Dbtc::toCommitHandlingLab(Signal* signal,
       else
       {
         jam();
-        loop_count += 128;
+        loop_count += 60;
         apiConnectptr.p->finish_trans_counter++;
         Uint32 instanceKey = tcConnectptr.p->lqhInstanceKey;
         Uint32 instanceNo = getInstanceNo(hostptr.i, instanceKey);
@@ -14082,7 +14081,7 @@ void Dbtc::toCompleteHandlingLab(Signal* signal,
       else
       {
         jam();
-        loop_count += 128;
+        loop_count += 60;
         apiConnectptr.p->finish_trans_counter++;
         Uint32 instanceKey = tcConnectptr.p->lqhInstanceKey;
         Uint32 instanceNo = getInstanceNo(hostptr.i, instanceKey);
@@ -17802,9 +17801,17 @@ void Dbtc::gcpTcfinished(Signal* signal, Uint64 gci, Uint32 line)
     SET_ERROR_INSERT_VALUE(8099);
   }
 
-  ndbrequire(gci > m_gcp_finished);
-  m_gcp_finished_prev = m_gcp_finished;
-  m_gcp_finished = gci;
+  /**
+   * At Master takeover the GCP_TCFINISHED might require resending since
+   * DBDIH decided to resend GCP_NOMORETRANS.
+   */
+  ndbrequire(gci >= m_gcp_finished);
+  if (gci > m_gcp_finished)
+  {
+    jam();
+    m_gcp_finished_prev = m_gcp_finished;
+    m_gcp_finished = gci;
+  }
 
   GCPTCFinished* conf = (GCPTCFinished*)signal->getDataPtrSend();
   conf->senderData = c_gcp_data;
