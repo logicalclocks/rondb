@@ -17480,9 +17480,17 @@ void Dbtc::gcpTcfinished(Signal* signal, Uint64 gci, Uint32 line)
     SET_ERROR_INSERT_VALUE(8099);
   }
 
-  ndbrequire(gci > m_gcp_finished);
-  m_gcp_finished_prev = m_gcp_finished;
-  m_gcp_finished = gci;
+  /**
+   * At Master takeover the GCP_TCFINISHED might require resending since
+   * DBDIH decided to resend GCP_NOMORETRANS.
+   */
+  ndbrequire(gci >= m_gcp_finished);
+  if (gci > m_gcp_finished)
+  {
+    jam();
+    m_gcp_finished_prev = m_gcp_finished;
+    m_gcp_finished = gci;
+  }
 
   GCPTCFinished* conf = (GCPTCFinished*)signal->getDataPtrSend();
   conf->senderData = c_gcp_data;
