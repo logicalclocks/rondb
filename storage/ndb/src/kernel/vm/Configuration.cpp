@@ -1163,7 +1163,7 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p)
                       shared_global_memory / MBYTE64);
   g_eventLogger->info("Total memory is %llu MBytes", total_memory / MBYTE64);
   g_eventLogger->info("Used memory is %llu MBytes", used_memory / MBYTE64);
-  if (used_memory + (Uint64(1024) * MBYTE64) >= total_memory)
+  if (used_memory + (Uint64(512) * MBYTE64) >= total_memory)
   {
     /**
      * We require at least 512 MByte for DataMemory and DiskPageBufferMemory
@@ -1173,8 +1173,8 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p)
                         " 512 MByte of space for DataMemory and"
                         " DiskPageBufferMemory");
     g_eventLogger->alert("Not enough memory using automatic memory config,"
-                         " exiting, required %llu MBytes",
-                         (used_memory / MBYTE64) + 512);
+                         " exiting, required %u MBytes",
+                         Uint32((used_memory / MBYTE64) + 512));
     return false;
   }
   Uint64 remaining_memory = total_memory - used_memory;
