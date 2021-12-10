@@ -10693,13 +10693,17 @@ Dbacc::execDUMP_STATE_ORD(Signal* signal)
   if (signal->theData[0] == DumpStateOrd::SchemaResourceSnapshot)
   {
     RSS_OP_SNAPSHOT_SAVE(cnoOfAllocatedFragrec);
+#ifdef ERROR_INSERT
     g_eventLogger->info("(%u) SAVE:cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
+#endif
     return;
   }
 
   if (signal->theData[0] == DumpStateOrd::SchemaResourceCheckLeak)
   {
+#ifdef ERROR_INSERT
     g_eventLogger->info("(%u) CHECK:cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
+#endif
     RSS_OP_SNAPSHOT_CHECK(cnoOfAllocatedFragrec);
     return;
   }
