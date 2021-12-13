@@ -459,6 +459,7 @@ void Dbtc::initRecords(const ndb_mgm_configuration_iterator * mgm_cfg)
   tcConnectRecord.init(
       TcConnectRecord::TYPE_ID,
       pc,
+      // See comment in Dbtc::initialiseTcConnect
       reserveConnectRecord + reserveFailConnectRecord,
       UINT28_MAX);
   while(tcConnectRecord.startup())
