@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2010, 2017, Oracle and/or its affiliates.
-   Copyright (c) 2020, LogicalClocks AB and/or its affiliates.
+   Copyright (c) 2020, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -194,7 +194,7 @@ public interface Session  extends AutoCloseable {
      *  The closeCache call can cache the session for later reuse in the SessionFactory.
      *  close will never do this.
      *
-     * closeCache is an add-on by LogicalClocks AB
+     * closeCache is an add-on by Logical Clocks
      *
      * If dropCache is set to true, the cached instances will
      * be droppped as part of the close call, otherwise they
@@ -268,7 +268,7 @@ public interface Session  extends AutoCloseable {
      * session.newInstance(T.class), find(T.class), or query; or Iterable<T>, or array T[].
      * Resources released can include direct buffers used to hold instance data.
      * Released resources may be returned to a pool if releaseCache is used.
-     * releaseCache is an add-on by LogicalClocks AB
+     * releaseCache is an add-on by Logical Clocks
      * @param obj a domain object of type T, an Iterable<T>, or array T[]
      * @return the input parameter
      * @throws ClusterJUserException if the instance is not a domain object T, Iterable<T>, or array T[],
@@ -278,7 +278,7 @@ public interface Session  extends AutoCloseable {
     <T> T releaseCache(T obj, Class<?> cls);
 
     /** Release all cached instances of a certain type or all types.
-     *  Added by LogicalClocks AB.
+     *  Added by Logical Clocks.
      */
     <T> void dropInstanceCache(Class<?> type);
     void dropInstanceCache();

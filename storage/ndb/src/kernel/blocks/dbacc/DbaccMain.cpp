@@ -1,4 +1,5 @@
 /* Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -118,12 +119,6 @@
  *    same interface. This service is mainly used by blocks performing
  *    various types of scan services where the scan requires a lock to be
  *    taken on the row.
- *    The ACC_LOCKREQ interface is an interface built on top of the
- *    ACCKEYREQ service.
- *
- * 3) Scan service
- *    ACC can handle up to 12 concurrent full partition scans. The partition
- *    is scanned in hash table order.
  *    The ACC_LOCKREQ interface is an interface built on top of the
  *    ACCKEYREQ service.
  *

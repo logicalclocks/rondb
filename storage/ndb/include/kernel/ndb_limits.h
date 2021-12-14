@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -244,8 +244,9 @@
 #define NDB_SECTION_SEGMENT_SZ 60
 
 /*
- * The maximum size of signal before we split it into a bunch of
- * smaller signals. In words.
+ * The maximum size of a signal sent to a query thread. In words.
+ * This limit is necessary since otherwise the signal could be fragmented and
+ * sent via a load balancing receive thread to different blocks.
  */
 #define MAX_SIZE_SINGLE_SIGNAL 7400
 

@@ -1,8 +1,8 @@
 /*
    Copyright 2010 Sun Microsystems, Inc.
    Use is subject to license terms.
-
-   Copyright (c) 2020, LogicalClocks AB and/or its affiliates.
+   
+   Copyright (c) 2020, 2021, Logical Clocks and/or its affiliates.
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2010, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2020, LogicalClocks AB and/or its affiliates.
+   Copyright (c) 2020, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -541,6 +541,7 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
             Db db = null;
             synchronized(this) {
                 if (!(State.Open.equals(state)) && !internal) {
+                    reconnect();  // start reconnection thread if it is not already running
                     throw new ClusterJUserException(local.message("ERR_SessionFactory_not_open"));
                 }
                 if (!internal) {
@@ -955,7 +956,13 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
             factory.proxyInterfacesToDomainClassMap.clear();
 
             logger.warn(local.message("WARN_Reconnect_creating"));
-            factory.createClusterConnectionPool();
+            try {
+                factory.createClusterConnectionPool();
+            } catch(Exception e){ // unable to connect to cluster.
+                factory.state = State.Closed;
+                throw e;
+            }
+
             factory.verifyConnectionPool();
             logger.warn(local.message("WARN_Reconnect_reopening"));
             synchronized(factory) {

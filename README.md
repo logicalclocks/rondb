@@ -31,7 +31,7 @@ License information can be found [here](https://github.com/logicalclocks/rondb/b
 
 ## Who is behind RondDB?
 
-RonDB is brought to you by the RonDB team at [Logical Clocks AB](https://www.logicalclocks.com/) and the development team at iClaustron AB.
+RonDB is brought to you by the RonDB team at [Logical Clocks](https://www.logicalclocks.com/) and the development team at iClaustron AB.
 
 ## More information
 
@@ -53,4 +53,4 @@ There are no existing managed databases available today with these attributes. W
 ---
 
 Copyright (c) 2000, 2021, Oracle and/or its affiliates.   
-Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
+Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
