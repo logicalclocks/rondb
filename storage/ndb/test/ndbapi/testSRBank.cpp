@@ -95,7 +95,10 @@ int runBankTransactions(NDBT_Context* ctx, NDBT_Step* step){
         if (ctx->getProperty(NMR_SR) == NdbMixRestarter::SR_RUNNING)
           return NDBT_FAILED;
         else
+        {
+          ndbout << "performTransactions retry" << endl;
           break;  // Possibly retry
+        }
       }
     }
     ndbout_c("runBankTransactions is stopped");
