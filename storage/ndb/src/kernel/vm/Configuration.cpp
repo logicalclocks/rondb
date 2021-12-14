@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -82,6 +82,8 @@ NodeBitmask g_not_active_nodes;
 #else
 #define DEB_AUTOMATIC_MEMORY(arglist) do { } while (0)
 #endif
+
+#define DEFAULT_TC_RESERVED_CONNECT_RECORD 8192
 
 bool
 Configuration::init(int _no_start, int _initial,
@@ -1775,6 +1777,12 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   const char * msg = "Invalid configuration fetched";
   char buf[255];
 
+  /**
+   * These initializations are only used for variables that are not present in
+   * the configuration we receive from the management server. That will only
+   * happen for older management servers that lacks definitions for some
+   * variables.
+   */
   unsigned int noOfTables = 0;
   unsigned int noOfUniqueHashIndexes = 0;
   unsigned int noOfOrderedIndexes = 0;
@@ -1795,7 +1803,7 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   unsigned int noOfTriggerOperations = 4000;
   unsigned int reservedScanRecords = 256 / 4;
   unsigned int reservedLocalScanRecords = 32 / 4;
-  unsigned int reservedOperations = 32768 / 4;
+  unsigned int reservedOperations = DEFAULT_TC_RESERVED_CONNECT_RECORD;
   unsigned int reservedTransactions = 4096 / 4;
   unsigned int reservedIndexOperations = 8192 / 4;
   unsigned int reservedTriggerOperations = 4000 / 4;
@@ -2042,7 +2050,7 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   }
   if (reservedOperations == 0)
   {
-    reservedOperations = noOfOperations / 4;
+    reservedOperations = DEFAULT_TC_RESERVED_CONNECT_RECORD;
   }
   if (reservedTransactions == 0)
   {
@@ -2225,7 +2233,7 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
 
     cfg.put(CFG_TC_TARGET_CONNECT_RECORD, noOfOperations + 16 + noOfTransactions);
     cfg.put(CFG_TC_MAX_CONNECT_RECORD, UINT32_MAX);
-    cfg.put(CFG_TC_RESERVED_CONNECT_RECORD, reservedOperations / tcInstances);
+    cfg.put(CFG_TC_RESERVED_CONNECT_RECORD, reservedOperations);
 
     const Uint32 takeOverOperations = noOfOperations +
                                       EXTRA_OPERATIONS_FOR_FIRST_TRANSACTION;
