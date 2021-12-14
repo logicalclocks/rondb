@@ -24,7 +24,7 @@
 [atrt]
 basedir = CHOOSE_dir
 baseport = 14000
-clusters = .3node
+clusters = .2node
 fix-nodeid=1
 mt = 2
 
@@ -39,15 +39,13 @@ mt = 2
 [client]
 protocol=tcp
 
-[cluster_config.3node]
+[cluster_config.2node]
 ndb_mgmd = CHOOSE_host1
-#ndbd = CHOOSE_host2,CHOOSE_host3,CHOOSE_host4,CHOOSE_host5
-ndbd = CHOOSE_host2,CHOOSE_host3,CHOOSE_host4
+ndbd = CHOOSE_host2,CHOOSE_host3
 ndbapi= CHOOSE_host1,CHOOSE_host1,CHOOSE_host1
-#mysqld = CHOOSE_host1,CHOOSE_host6
 #mysqld = CHOOSE_host1,CHOOSE_host4
 
-NoOfReplicas = 3
+NoOfReplicas = 2
 DataMemory = 500M
 BackupMemory = 64M
 MaxNoOfConcurrentScans = 100
@@ -56,15 +54,15 @@ NoOfFragmentLogFiles = 8
 FragmentLogFileSize = 64M
 ODirect=1
 MaxNoOfAttributes=2000
-MaxNoOfTriggers=4000
 Checksum=1
 AutomaticThreadConfig=1
 AutomaticMemoryConfig=1
-TotalMemoryConfig=3700M
+NumCPUs=6
+TotalMemoryConfig=5G
 MaxNoOfTables=200
 MaxNoOfOrderedIndexes=200
 MaxNoOfUniqueHashIndexes=200
-NumCPUs=6
+MaxNoOfTriggers=3000
 TransactionDeadlockDetectionTimeout=5000
 
 SharedGlobalMemory=350M

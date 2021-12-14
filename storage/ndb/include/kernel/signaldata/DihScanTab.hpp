@@ -1,4 +1,5 @@
 /* Copyright (c) 2008, 2016, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -51,7 +52,7 @@ struct DihScanTabReq
  */
 struct DihScanTabConf
 {
-  STATIC_CONST( SignalLength = 6 );
+  STATIC_CONST( SignalLength = 7 );
   STATIC_CONST( InvalidCookie = RNIL );
 
   Uint32 tableId;
@@ -59,6 +60,7 @@ struct DihScanTabConf
   Uint32 fragmentCount;
   Uint32 noOfBackups;
   Uint32 scanCookie;
+  Uint32 scanSchemaVersionCookie;
   Uint32 reorgFlag;
 };
 
@@ -82,9 +84,10 @@ struct DihScanTabRef
 
 struct DihScanTabCompleteRep
 {
-  STATIC_CONST( SignalLength = 4 );
+  STATIC_CONST( SignalLength = 5 );
 
   Uint32 tableId;
+  Uint32 schemaVersionCookie;
   Uint32 scanCookie;
   union {
     void * jamBufferPtr;

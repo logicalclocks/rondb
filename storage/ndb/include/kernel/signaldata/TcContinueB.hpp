@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,7 +48,7 @@ private:
     ZHANDLE_FAILED_API_NODE                = 8,
     ZTRANS_EVENT_REP                       = 9,
     ZABORT_BREAK                           = 10,
-    ZABORT_TIMEOUT_BREAK                   = 11,
+    ZSEND_SETUP_FAIL_DATA                  = 11,
     ZCONTINUE_TIME_OUT_FRAG_CONTROL        = 12,
     ZHANDLE_FAILED_API_NODE_REMOVE_MARKERS = 13,
     ZWAIT_ABORT_ALL                        = 14,
@@ -65,6 +66,18 @@ private:
     ,ZSCAN_FOR_READ_BACKUP                 = 25
     ,ZTRANSIENT_POOL_STAT                  = 26
     ,ZSHRINK_TRANSIENT_POOLS               = 27
+    ,ZRELEASE_ABORT_RESOURCES              = 28
+    ,ZRELEASE_TRANS_RESOURCES              = 29
+    ,ZRELEASE_FIRED_TRIGGER_DATA           = 30
+    ,ZRELEASE_SEIZED_INDEX_OPS             = 31
+    ,ZSEND_TO_ABORT_HANDLING               = 32
+    ,ZSEND_TO_COMMIT_HANDLING              = 33
+    ,ZSEND_TO_COMPLETE_HANDLING            = 34
+    ,ZCHECK_TO_ABORT_HANDLING              = 35
+    ,ZCHECK_TO_COMMIT_HANDLING             = 36
+    ,ZCHECK_TO_COMPLETE_HANDLING           = 37
+    ,ZRELEASE_TAKE_OVER                    = 38
+    ,ZRELEASE_TAKE_OVER_TRANS              = 39
   };
 };
 

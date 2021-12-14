@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -175,8 +176,8 @@ public:
    * failures, e.g. a couple of direct transitions from CONNECTING
    * to DISCONNECTING in the TransporterRegistry.
    */
-  virtual void enable_send_buffer(NodeId, TrpId) = 0;
-  virtual void disable_send_buffer(NodeId, TrpId) = 0;
+  virtual void enable_send_buffer(NodeId, TrpId, bool) = 0;
+  virtual void disable_send_buffer(NodeId, TrpId, bool) = 0;
 
   /**
    * The transporter periodically calls this method, indicating the number

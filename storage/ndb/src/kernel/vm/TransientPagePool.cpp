@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -211,35 +212,16 @@ Uint32 TransientPagePool::get_next_index(Uint32 index) const
   {
     require(low == MapPage::PAGE_WORDS - 1);
   }
-  low = 0;
-  Uint32 high = (index >> MapPage::VALUE_INDEX_BITS) & MapPage::VALUE_INDEX_MASK;
+  Uint32 high = (index >> MapPage::VALUE_INDEX_BITS) &
+                 MapPage::VALUE_INDEX_MASK;
+
   if (likely(high < MapPage::PAGE_WORDS - 1))
   {
-    return index + (1 << MapPage::VALUE_INDEX_BITS);
-  }
-  else
-  {
-    require(low == MapPage::PAGE_WORDS - 1);
+    return (high + 1) << MapPage::VALUE_INDEX_BITS;
   }
   return RNIL;
 }
-/*
-Uint32 TransientPagePool::get_next_indexes(Uint32 index, Uint32 indexes[], Uint32 n) const
-{
-  Uint32 i;
-  for (i = 0; i < n; i++)
-  {
-    Uint32 next = get_next_index(index);
-    if (unlikely(next == RNIL))
-    {
-      break;
-    }
-    indexes[i] = next;
-    index = next;
-  }
-  return i;
-}
-*/
+
 inline
 bool TransientPagePool::set(Uint32 index, Uint32 value)
 {
@@ -248,7 +230,8 @@ bool TransientPagePool::set(Uint32 index, Uint32 value)
   assert(index <= get_next_index(m_top));
   require(m_root_page != NULL);
 
-  Uint32 high = (index >> MapPage::VALUE_INDEX_BITS) & MapPage::VALUE_INDEX_MASK;
+  Uint32 high = (index >> MapPage::VALUE_INDEX_BITS) &
+                MapPage::VALUE_INDEX_MASK;
   require(high < MapPage::PAGE_WORDS);
 
   Uint32 low = index & MapPage::VALUE_INDEX_MASK;
@@ -258,7 +241,9 @@ bool TransientPagePool::set(Uint32 index, Uint32 value)
   MapPage* leaf_page;
   if (unlikely(leaf_page_id == MapPage::NO_VALUE))
   {
-    void* p = m_mem_manager->alloc_page(m_type_id, &leaf_page_id, Ndbd_mem_manager::NDB_ZONE_LE_32);
+    void* p = m_mem_manager->alloc_page(m_type_id,
+                                        &leaf_page_id,
+                                        Ndbd_mem_manager::NDB_ZONE_LE_32);
     if (unlikely(p == NULL))
     {
       return false;

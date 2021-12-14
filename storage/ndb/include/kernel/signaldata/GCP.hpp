@@ -73,12 +73,13 @@ struct GCPNoMoreTrans // Local DIH/TC
 
 struct GCPTCFinished // Local TC-DIH
 {
-  STATIC_CONST( SignalLength = 4 );
+  STATIC_CONST( SignalLength = 5 );
 
   Uint32 senderData;
   Uint32 gci_hi;
   Uint32 gci_lo;
   Uint32 tcFailNo;
+  Uint32 line;
 };
 
 struct GCPNodeFinished // Distr. DIH-DIH

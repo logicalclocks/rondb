@@ -1107,7 +1107,19 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "0",
     "0",
     "65536G" }, // 32k pages * 32-bit i value
-  
+
+  {
+    CFG_DB_LOW_LATENCY,
+    "LowLatency",
+    DB_TOKEN,
+    "Optimise transactions for low latency",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "false",
+    "false",
+    "true" },
+ 
   {
     CFG_DB_START_PARTIAL_TIMEOUT,
     "StartPartialTimeout",

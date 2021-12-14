@@ -1299,6 +1299,7 @@ NdbShutdown(int error_code,
             NdbShutdownType type,
 	    NdbRestartType restartType)
 {
+  globalData.theStopFlag = true;
   if(type == NST_ErrorInsert)
   {
     type = NST_Restart;

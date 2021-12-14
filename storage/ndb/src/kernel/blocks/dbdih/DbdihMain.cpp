@@ -2128,7 +2128,8 @@ void Dbdih::execNDB_STTOR(Signal* signal)
       ndbassert(c_lcpState.lcpStatus == LCP_STATUS_IDLE);
       c_lcpState.setLcpStatus(LCP_STATUS_IDLE, __LINE__);
       g_eventLogger->info("Request copying of distribution and dictionary"
-                          " information from master Starting");
+                          " information from master(%u) Starting",
+                          refToNode(cmasterdihref));
 
       StartMeReq * req = (StartMeReq*)&signal->theData[0];
       req->startingRef = reference();
@@ -4290,9 +4291,13 @@ void Dbdih::lcpBlockedLab(Signal* signal, Uint32 nodeId, Uint32 retVal)
 
 void Dbdih::nodeDictStartConfLab(Signal* signal, Uint32 nodeId)
 {
-  /*-----------------------------------------------------------------*/
-  // Report that node restart has completed copy of dictionary.
-  /*-----------------------------------------------------------------*/
+  /**
+   * Report that node restart has completed copy of dictionary.
+   *
+   * Check heartbeat count, only through assert since otherwise we override
+   * the watchdog mechanism.
+   */
+  ndbassert(globalData.get_hb_count(nodeId) < 2);
   signal->theData[0] = NDB_LE_NR_CopyDict;
   signal->theData[1] = nodeId;
   sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 2, JBB);
@@ -5805,8 +5810,13 @@ void Dbdih::setNodeRecoveryStatus(Uint32 nodeId,
     /* State generated in QMGR */
       jam();
       /**
-       * We can come here from ALLOCATED_NODE_ID obviously,
-       * but it seems that we should also be able to get
+       * We can come here from ALLOCATED_NODE_ID obviously.
+       *
+       * It can also come here directly from NODE_NOT_RESTARTED_YET
+       * when this node had not participated in the allocation of
+       * node id since it wasn't allowed to join the start yet.
+       *
+       * It also seems that we should also be able to get
        * here from a state where the node has been able to
        * allocate a node id with an old master, now it is
        * using this old allocated node id to be included in
@@ -5825,6 +5835,18 @@ void Dbdih::setNodeRecoveryStatus(Uint32 nodeId,
       {
         jam();
         nodePtr.p->allocatedNodeIdTime = current_time;
+      }
+      else if (nodePtr.p->nodeRecoveryStatus ==
+               NodeRecord::NODE_NOT_RESTARTED_YET)
+      {
+        jam();
+        /**
+         * Set up timers for node failure for consistency although they
+         * haven't yet occured.
+         */
+        nodePtr.p->allocatedNodeIdTime = current_time;
+        nodePtr.p->nodeFailTime = current_time;
+        nodePtr.p->nodeFailCompletedTime = current_time;
       }
       nodePtr.p->includedInHBProtocolTime = current_time;
       break;
@@ -6067,8 +6089,11 @@ void Dbdih::setNodeRecoveryStatus(Uint32 nodeId,
                       get_status_str(nodePtr.p->nodeRecoveryStatus),
                       get_status_str(new_status));
 
+  NodeRecord::NodeRecoveryStatus old_status =
+    nodePtr.p->nodeRecoveryStatus;
+  (void)old_status;
   nodePtr.p->nodeRecoveryStatus = new_status;
-  ndbassert(check_node_recovery_timers(nodePtr.i));
+  ndbassert(check_node_recovery_timers(nodePtr.i, old_status));
 }
 
 void Dbdih::setNodeRecoveryStatusInitial(NodeRecordPtr nodePtr)
@@ -6268,7 +6293,8 @@ void Dbdih::check_all_node_recovery_timers(void)
 }
 #endif
 
-bool Dbdih::check_node_recovery_timers(Uint32 nodeId)
+bool Dbdih::check_node_recovery_timers(Uint32 nodeId,
+                       NodeRecord::NodeRecoveryStatus old_status)
 {
   NodeRecordPtr nodePtr;
   nodePtr.i = nodeId;
@@ -6321,6 +6347,10 @@ bool Dbdih::check_node_recovery_timers(Uint32 nodeId)
     // Fallthrough
   case NodeRecord::INCLUDED_IN_HB_PROTOCOL:
     ndbrequire(NdbTick_IsValid(nodePtr.p->includedInHBProtocolTime));
+    if (old_status == NodeRecord::NODE_NOT_RESTARTED_YET)
+    {
+      break;
+    }
     // Fallthrough
   case NodeRecord::ALLOCATED_NODE_ID:
     ndbrequire(NdbTick_IsValid(nodePtr.p->allocatedNodeIdTime));
@@ -14999,6 +15029,7 @@ void Dbdih::releaseTable(TabRecordPtr tabPtr)
     releaseFile(tabPtr.p->tabFile[1]);
     tabPtr.p->tabFile[0] = tabPtr.p->tabFile[1] = RNIL;
   }//if
+  tabPtr.p->schemaVersion = Uint32(~0);
 }//Dbdih::releaseTable()
 
 void Dbdih::releaseReplicas(Uint32 * replicaPtrI) 
@@ -15106,7 +15137,8 @@ void Dbdih::execALTER_TAB_REQ(Signal * signal)
     break;
   case AlterTabReq::AlterTableRevert:
     jam();
-    D("AlterTabReq::AlterTableRevert: tableId: " << tabPtr.i);
+    D("AlterTabReq::AlterTableRevert: tableId: " << tabPtr.i
+      << " schemaVersion: 0x" << hex << tableVersion);
     tabPtr.p->schemaVersion = tableVersion;
 
     connectPtr.i = req->connectPtr;
@@ -15143,7 +15175,8 @@ void Dbdih::execALTER_TAB_REQ(Signal * signal)
   case AlterTabReq::AlterTableCommit:
   {
     jam();
-    D("AlterTabReq::AlterTableCommit: tableId: " << tabPtr.i);
+    D("AlterTabReq::AlterTableCommit: tableId: " << tabPtr.i
+      << " schemaVersion: 0x" << hex << newTableVersion);
     tabPtr.p->schemaVersion = newTableVersion;
 
     connectPtr.i = req->connectPtr;
@@ -15321,17 +15354,17 @@ Dbdih::wait_old_scan(Signal* signal)
               tabPtr.p->m_scan_count[1],
               tabPtr.i);
 
+    /* Report after 3 seconds, 10 seconds and every 10 seconds after this */
     if (wait == 3)
     {
       signal->theData[7] = 3 + 7;
     }
     else
     {
-      signal->theData[7] = 2 * wait;
+      signal->theData[7] = wait + 10;
     }
   }
-
-  sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 7);
+  sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100, 8);
 }
 
 Uint32
@@ -16573,9 +16606,15 @@ Dbdih::start_scan_on_table(TabRecordPtr tabPtr,
     conf->fragmentCount = tabPtr.p->partitionCount;
 
     conf->noOfBackups = tabPtr.p->noOfBackups;
-    conf->scanCookie = tabPtr.p->m_map_ptr_i;
+    conf->scanCookie = tabPtr.p->m_scan_reorg_flag;
+    conf->scanSchemaVersionCookie = tabPtr.p->schemaVersion;
     conf->reorgFlag = tabPtr.p->m_scan_reorg_flag;
     NdbMutex_Unlock(&tabPtr.p->theMutex);
+    D("start_scan_on_table: " << tabPtr.i << " reorg_flag: "
+      << tabPtr.p->m_scan_reorg_flag << " map_ptr_i: "
+      << tabPtr.p->m_map_ptr_i << " m_scan_count[0]: "
+      << tabPtr.p->m_scan_count[0]
+      << " schemaVersion: 0x" << hex << tabPtr.p->schemaVersion);
     return;
   }
 
@@ -16592,7 +16631,7 @@ error:
 
 void
 Dbdih::complete_scan_on_table(TabRecordPtr tabPtr,
-                              Uint32 map_ptr_i,
+                              Uint32 scan_cookie,
                               EmulatedJamBuffer *jambuf)
 {
   /**
@@ -16605,7 +16644,7 @@ Dbdih::complete_scan_on_table(TabRecordPtr tabPtr,
 
   Uint32 line;
   NdbMutex_Lock(&tabPtr.p->theMutex);
-  if (map_ptr_i == tabPtr.p->m_map_ptr_i)
+  if (scan_cookie == tabPtr.p->m_scan_reorg_flag)
   {
     line = __LINE__;
     ndbassert(tabPtr.p->m_scan_count[0]);
@@ -16628,7 +16667,7 @@ Dbdih::prepare_add_table(TabRecordPtr tabPtr,
 {
   DiAddTabReq * const req = (DiAddTabReq*)signal->getDataPtr();
   D("prepare_add_table tableId = " << tabPtr.i << " primaryTableId: " <<
-    req->primaryTableId);
+    req->primaryTableId << " schemaVersion: 0x" << hex << req->schemaVersion);
 
   NdbMutex_Lock(&tabPtr.p->theMutex);
   tabPtr.p->connectrec = connectPtr.i;
@@ -16880,6 +16919,9 @@ Dbdih::make_new_table_read_and_writeable(TabRecordPtr tabPtr,
     tabPtr.p->m_scan_count[0] = 0;
     tabPtr.p->m_scan_reorg_flag = 1;
     NdbMutex_Unlock(&tabPtr.p->theMutex);
+    D("tableId: " << tabPtr.i << " m_scan_count[] = "
+      << tabPtr.p->m_scan_count[0] << "," << tabPtr.p->m_scan_count[1]
+      << " m_scan_reorg_flag = 1");
 
     send_alter_tab_conf(signal, connectPtr);
     return;
@@ -16925,6 +16967,9 @@ Dbdih::make_old_table_non_writeable(TabRecordPtr tabPtr,
     ndbassert(tabPtr.p->m_scan_count[1] == 0);
     tabPtr.p->m_scan_count[1] = tabPtr.p->m_scan_count[0];
     tabPtr.p->m_scan_count[0] = 0;
+    D("tableId: " << tabPtr.i << " m_scan_count[] = "
+      << tabPtr.p->m_scan_count[0] << "," << tabPtr.p->m_scan_count[1]
+      << " m_scan_reorg_flag = 0");
     wait_flag = true;
   }
   DIH_TAB_WRITE_UNLOCK(tabPtr.p);
@@ -17303,7 +17348,41 @@ Dbdih::execDIH_SCAN_TAB_COMPLETE_REP(Signal* signal)
   tabPtr.i = rep->tableId;
   ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
 
-  complete_scan_on_table(tabPtr, rep->scanCookie, jambuf);
+  D("complete_scan_on_table: " << tabPtr.i << " reorg_flag: "
+    << tabPtr.p->m_scan_reorg_flag << " map_ptr_i: "
+    << tabPtr.p->m_map_ptr_i << " scanCookie: " << rep->scanCookie
+    << " m_scan_count[] = " << tabPtr.p->m_scan_count[0] << ","
+    << tabPtr.p->m_scan_count[1]
+    << " schemaVersion: 0x" << hex << tabPtr.p->schemaVersion
+    << " schemaVersionCookie: 0x" << hex << rep->schemaVersionCookie);
+
+  /**
+   * When we drop a table we could potentially have scans that haven't
+   * completed even after the timeout waiting for scans to complete.
+   * To ensure that we don't call complete_scan_on_table from a scan
+   * that used a dropped table we check the schema version.
+   *
+   * The schema version is incremented in the 24 least significant bits
+   * when new tables/indexes are created. The 8 most significant bits
+   * are used for ALTER TABLE of a table. It is ok that the table has
+   * had an ALTER TABLE, but it isn't ok that the table is a new table.
+   * Thus those complete of scans on old table should not call
+   * complete_scan_on_table.
+   */
+  Uint32 current_schema_version = tabPtr.p->schemaVersion & 0x00FFFFFF;
+  Uint32 cookie_schema_version = rep->schemaVersionCookie & 0x00FFFFFF;
+  if (current_schema_version == cookie_schema_version)
+  {
+    thrjam(jambuf);
+    complete_scan_on_table(tabPtr, rep->scanCookie, jambuf);
+  }
+  else
+  {
+    thrjam(jambuf);
+    D("Missed complete_scan_on_table tab(" << tabPtr.i << ",0x"
+      << hex << tabPtr.p->schemaVersion << ") prev: 0x"
+      << hex << rep->schemaVersionCookie);
+  }
 }
 
 
@@ -19994,6 +20073,8 @@ void Dbdih::execCOPY_TABREQ(Signal* signal)
   {
     jam();
     tabPtr.p->schemaVersion = schemaVersion;
+    D("COPY_TABREQ: tableId: " << tabPtr.i << " schemaVersion: 0x"
+      << hex << schemaVersion);
     initTableFile(tabPtr);
 
     /**

@@ -1673,8 +1673,8 @@ struct trp_callback : public TransporterCallback
   trp_callback() {}
 
   /* Callback interface. */
-  void enable_send_buffer(NodeId, TrpId) override;
-  void disable_send_buffer(NodeId, TrpId) override;
+  void enable_send_buffer(NodeId, TrpId, bool) override;
+  void disable_send_buffer(NodeId, TrpId, bool) override;
 
   void reportSendLen(NodeId nodeId, Uint32 count, Uint64 bytes) override;
   void lock_transporter(NodeId, TrpId) override;
@@ -2434,6 +2434,10 @@ mt_assign_multi_trps_to_send_threads()
  * Ideally the number of LDM threads should be a multiple of the number
  * of send threads to get the best assignment of transporters to send
  * threads.
+ *
+ * At this point we haven't started using the transporters yet, so no
+ * need to protect the changes. Once a multi transporter has been added
+ * it retain its send instance even after node restarts.
  */
 void
 thr_send_threads::assign_multi_trps_to_send_threads()
@@ -5527,11 +5531,12 @@ trp_callback::bytes_sent(NodeId node, TrpId trp_id, Uint32 bytes)
 }
 
 void
-trp_callback::enable_send_buffer(NodeId node, TrpId trp_id)
+trp_callback::enable_send_buffer(NodeId node, TrpId trp_id, bool locked)
 {
   (void)node;
   thr_repository::send_buffer *sb = g_thr_repository->m_send_buffers+trp_id;
-  lock(&sb->m_send_lock);
+  if (!locked)
+    lock(&sb->m_send_lock);
   assert(sb->m_sending_size == 0);
   {
     /**
@@ -5558,15 +5563,17 @@ trp_callback::enable_send_buffer(NodeId node, TrpId trp_id)
   }
   assert(sb->m_enabled == false);
   sb->m_enabled = true;
-  unlock(&sb->m_send_lock);
+  if (!locked)
+    unlock(&sb->m_send_lock);
 }
 
 void
-trp_callback::disable_send_buffer(NodeId node, TrpId trp_id)
+trp_callback::disable_send_buffer(NodeId node, TrpId trp_id, bool locked)
 {
   (void)node;
   thr_repository::send_buffer *sb = g_thr_repository->m_send_buffers+trp_id;
-  lock(&sb->m_send_lock);
+  if (!locked)
+    lock(&sb->m_send_lock);
   sb->m_enabled = false;
 
   /**
@@ -5590,8 +5597,8 @@ trp_callback::disable_send_buffer(NodeId node, TrpId trp_id)
     sb->m_sending.m_last_page = NULL;
     sb->m_sending_size = 0;
   }
-
-  unlock(&sb->m_send_lock);
+  if (!locked)
+    unlock(&sb->m_send_lock);
 }
 
 static inline
@@ -6890,6 +6897,22 @@ execute_signals(thr_data *selfptr,
     /* Find reading / propagation of junk */
     sig->garbage_register();
 #endif
+
+    /**
+     * We have read the control data, the writer ensured that the
+     * data is visible before we can see the control data. But the
+     * CPU and the compiler can still reorganise loads to see the
+     * stores in wrong order. Issue a read memory barrier and a
+     * read_barrier_depends (this causes compiler to not move load
+     * instructions over this barrier.
+     *
+     * On x86 this isn't necessary, but on ARM64 it is very important
+     * to ensure that the data is visible to this thread, otherwise
+     * we can rarely read garbage.
+     */
+    rmb();
+    read_barrier_depends();
+
     /* Now execute the signal. */
     SignalHeader* s =
       reinterpret_cast<SignalHeader*>(read_buffer->m_data + read_pos);
@@ -7349,7 +7372,8 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
     require(num_tc_threads == 0);
     require(globalData.ndbMtQueryThreads == 0);
     require(globalData.ndbMtRecoverThreads == 0 ||
-            globalData.ndbMtRecoverThreads == 1);
+            globalData.ndbMtRecoverThreads == 1 ||
+            globalData.ndbMtRecoverThreads == 2);
     require(globalData.ndbMtMainThreads == 1);
     require(globalData.ndbMtReceiveThreads == 1);
     num_lqh_threads = 1;
@@ -9483,7 +9507,22 @@ mt_send_remote(Uint32 self, const SignalHeader *sh, Uint8 prio,
                                              ptr);
   if (likely(ss == SEND_OK))
   {
+    if (globalData.thePrintFlag)
+    {
+      g_eventLogger->info("Send GSN: %u to node: %u using trp: %u",
+                          sh->theVerId_signalNumber,
+                          nodeId,
+                          trp_id);
+    }
     register_pending_send(selfptr, trp_id);
+  }
+  else
+  {
+    g_eventLogger->info("Send GSN: %u to node: %u using trp: %u with error: %u",
+                        sh->theVerId_signalNumber,
+                        nodeId,
+                        trp_id,
+                        Uint32(ss));
   }
   return ss;
 }

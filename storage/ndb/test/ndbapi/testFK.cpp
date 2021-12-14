@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2013, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1355,8 +1356,10 @@ runTransError(NDBT_Context* ctx, NDBT_Step* step)
     }
 #endif
     printf("testing errcode: %d\n", terrorCodes[i]);
+    sleep(2);
     runTransSnapshot(ctx, step);
     runLongSignalMemorySnapshotStart(ctx, step);
+    sleep(2);
     runRSSsnapshot(ctx, step);
 
     res.insertErrorInAllNodes(terrorCodes[i]);
@@ -1373,8 +1376,10 @@ runTransError(NDBT_Context* ctx, NDBT_Step* step)
      * commit is in progress, give the commit a chance to complete
      * before checking the memory allocation snapshots.
      */
+    sleep(2);
     runRSSsnapshotCheck(ctx, step);
     runTransSnapshotCheck(ctx, step);
+    sleep(2);
     runLongSignalMemorySnapshotCheck(ctx, step);
   }
 

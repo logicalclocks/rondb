@@ -79,5 +79,5 @@ NDBT_ProgramExit: 0 - OK
 set @save_debug = @@global.debug;
 set global debug='+d,ndb_schema_dist_not_ready_early';
 ALTER TABLE t1 ADD INDEX idx(a), ALGORITHM = INPLACE;
-ERROR HY000: Got error 4009 'Cluster Failure' from NDBCLUSTER
+ERROR HY000: Got error 4009 'No data node(s) available, check Cluster state' from NDBCLUSTER
 set global debug=@save_debug;

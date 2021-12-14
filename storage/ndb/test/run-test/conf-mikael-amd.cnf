@@ -60,11 +60,11 @@ MaxNoOfTriggers=4000
 Checksum=1
 AutomaticThreadConfig=1
 AutomaticMemoryConfig=1
-TotalMemoryConfig=3700M
+TotalMemoryConfig=8G
 MaxNoOfTables=200
 MaxNoOfOrderedIndexes=200
 MaxNoOfUniqueHashIndexes=200
-NumCPUs=6
+NumCPUs=18
 TransactionDeadlockDetectionTimeout=5000
 
 SharedGlobalMemory=350M

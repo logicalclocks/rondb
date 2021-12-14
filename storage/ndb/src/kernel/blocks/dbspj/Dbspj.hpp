@@ -714,6 +714,7 @@ public:
     Uint32 m_rows_expecting; // Sum(ScanFragConf)
     Uint32 m_batch_chunks;   // #SCAN_FRAGREQ + #SCAN_NEXTREQ to retrieve batch
     Uint32 m_scanCookie;
+    Uint32 m_schema_version_scanCookie;
     Uint32 m_fragCount;
     // The number of fragments that we scan in parallel.
     Uint32 m_parallelism;

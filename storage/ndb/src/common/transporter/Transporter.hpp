@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -200,6 +201,10 @@ public:
   void set_transporter_active(bool active)
   {
     m_is_active = active;
+  }
+  bool get_transporter_active()
+  {
+    return m_is_active;
   }
   Uint32 get_recv_thread_idx() { return m_recv_thread_idx; }
 

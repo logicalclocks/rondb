@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2852,6 +2852,7 @@ Suma::execDIH_SCAN_TAB_CONF(Signal* signal)
   const Uint32 tableId = conf->tableId;
   const Uint32 fragCount = conf->fragmentCount;
   const Uint32 scanCookie = conf->scanCookie;
+  const Uint32 schema_version_scanCookie = conf->scanSchemaVersionCookie;
 
   Ptr<SyncRecord> ptr;
   c_syncPool.getPtr(ptr, conf->senderData);
@@ -2868,6 +2869,7 @@ Suma::execDIH_SCAN_TAB_CONF(Signal* signal)
     ptr.p->m_frag_cnt = fragCount;
   }
   ptr.p->m_scan_cookie = scanCookie;
+  ptr.p->m_schema_version_scan_cookie = schema_version_scanCookie;
   sendDIGETNODESREQ(signal, ptr.i, tableId, 0);
   return;
 }
@@ -3448,6 +3450,7 @@ Suma::SyncRecord::completeScan(Signal* signal, int error)
   DihScanTabCompleteRep* rep = (DihScanTabCompleteRep*)signal->getDataPtr();
   rep->tableId = subPtr.p->m_tableId;
   rep->scanCookie = m_scan_cookie;
+  rep->schemaVersionCookie = m_schema_version_scan_cookie;
   rep->jamBufferPtr = jamBuffer();
   suma.EXECUTE_DIRECT_MT(DBDIH, GSN_DIH_SCAN_TAB_COMPLETE_REP, signal,
                          DihScanTabCompleteRep::SignalLength, 0);
@@ -4807,7 +4810,8 @@ Suma::get_responsible_node(Uint32 bucket) const
 
   jam();
   Uint32 node;
-  const Bucket* ptr= c_buckets + bucket;
+  ndbrequire(bucket < NO_OF_BUCKETS);
+  const Bucket* ptr = c_buckets + bucket;
   for(Uint32 i = 0; i<MAX_REPLICAS; i++)
   {
     node= ptr->m_nodes[i];
@@ -4830,7 +4834,8 @@ Suma::get_responsible_node(Uint32 bucket, const NdbNodeBitmask& mask) const
 {
   jam();
   Uint32 node;
-  const Bucket* ptr= c_buckets + bucket;
+  ndbrequire(bucket < NO_OF_BUCKETS);
+  const Bucket* ptr = c_buckets + bucket;
   for(Uint32 i = 0; i<MAX_REPLICAS; i++)
   {
     node= ptr->m_nodes[i];
@@ -6953,7 +6958,8 @@ Suma::get_buffer_ptr(Signal* signal, Uint32 buck, Uint64 gci, Uint32 sz, Uint32 
 {
   jam();
   sz += 1; // len
-  Bucket* bucket= c_buckets+buck;
+  ndbrequire(buck < NO_OF_BUCKETS);
+  Bucket* bucket = c_buckets + buck;
   Page_pos pos= bucket->m_buffer_head;
 
   Buffer_page* page = 0;
@@ -7074,7 +7080,8 @@ Suma::out_of_buffer(Signal* signal)
 void
 Suma::out_of_buffer_release(Signal* signal, Uint32 buck)
 {
-  Bucket* bucket= c_buckets+buck;
+  ndbrequire(buck < NO_OF_BUCKETS);
+  Bucket* bucket = c_buckets + buck;
   Uint32 tail= bucket->m_buffer_tail;
   
   if(tail != RNIL)
@@ -7188,7 +7195,8 @@ Suma::free_page(Uint32 page_id, Buffer_page* page)
 void
 Suma::release_gci(Signal* signal, Uint32 buck, Uint64 gci)
 {
-  Bucket* bucket= c_buckets+buck;
+  ndbrequire(buck < NO_OF_BUCKETS);
+  Bucket* bucket = c_buckets + buck;
   Uint32 tail= bucket->m_buffer_tail;
   Page_pos head= bucket->m_buffer_head;
   Uint64 max_acked = bucket->m_max_acked_gci;
@@ -7274,7 +7282,8 @@ Suma::start_resend(Signal* signal, Uint32 buck)
   /**
    * Resend from m_max_acked_gci + 1 until max_gci + 1
    */
-  Bucket* bucket= c_buckets + buck;
+  ndbrequire(buck < NO_OF_BUCKETS);
+  Bucket* bucket = c_buckets + buck;
   Page_pos pos= bucket->m_buffer_head;
 
   if(m_out_of_buffer_gci)
@@ -7346,7 +7355,8 @@ void
 Suma::resend_bucket(Signal* signal, Uint32 buck, Uint64 min_gci,
 		    Uint32 pos, Uint64 last_gci)
 {
-  Bucket* bucket= c_buckets+buck;
+  ndbrequire(buck < NO_OF_BUCKETS);
+  Bucket* bucket = c_buckets + buck;
   Uint32 tail= bucket->m_buffer_tail;
 
   Buffer_page* page= c_page_pool.getPtr(tail);

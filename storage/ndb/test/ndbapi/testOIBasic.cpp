@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -118,26 +119,37 @@ printhelp()
   ndbout
     << "usage: testOIbasic [options]" << endl
     << "  -batch N      pk operations in batch [" << d.m_batch << "]" << endl
-    << "  -bound xyz    use only these bound types 0-4 [" << d.m_bound << "]" << endl
+    << "  -bound xyz    use only these bound types 0-4 [" << d.m_bound
+    << "]" << endl
     << "  -case abc     only given test cases (letters a-z)" << endl
-    << "  -cont         on error continue to next test case [" << d.m_cont << "]" << endl
+    << "  -cont         on error continue to next test case [" << d.m_cont
+    << "]" << endl
     << "  -core         core dump on error [" << d.m_core << "]" << endl
     << "  -csname S     charset or collation [" << d.m_csname << "]" << endl
     << "  -die nnn      exit immediately on NDB error code nnn" << endl
-    << "  -dups         allow duplicate tuples from index scan [" << d.m_dups << "]" << endl
+    << "  -dups         allow duplicate tuples from index scan [" << d.m_dups
+    << "]" << endl
     << "  -fragtype T   fragment type single/small/medium/large" << endl
     << "  -index xyz    only given index numbers (digits 0-9)" << endl
-    << "  -loop N       loop count full suite 0=forever [" << d.m_loop << "]" << endl
-    << "  -mrrmaxrng N  max ranges to supply for MRR scan [" << d.m_mrrmaxrng << "]" << endl
+    << "  -loop N       loop count full suite 0=forever [" << d.m_loop
+    << "]" << endl
+    << "  -mrrmaxrng N  max ranges to supply for MRR scan [" << d.m_mrrmaxrng
+    << "]" << endl
     << "  -nologging    create tables in no-logging mode" << endl
     << "  -noverify     skip index verifications" << endl
-    << "  -pctmrr N     pct of index scans to use MRR [" << d.m_pctmrr << "]" << endl
-    << "  -pctnull N    pct NULL values in nullable column [" << d.m_pctnull << "]" << endl
+    << "  -pctmrr N     pct of index scans to use MRR [" << d.m_pctmrr
+    << "]" << endl
+    << "  -pctnull N    pct NULL values in nullable column [" << d.m_pctnull
+    << "]" << endl
     << "  -rows N       rows per thread [" << d.m_rows << "]" << endl
-    << "  -samples N    samples for some timings (0=all) [" << d.m_samples << "]" << endl
-    << "  -scanbatch N  scan batch 0=default [" << d.m_scanbatch << "]" << endl
-    << "  -scanpar N    scan parallel 0=default [" << d.m_scanpar << "]" << endl
-    << "  -seed N       srandom seed 0=loop number -1=random [" << d.m_seed << "]" << endl
+    << "  -samples N    samples for some timings (0=all) [" << d.m_samples
+    << "]" << endl
+    << "  -scanbatch N  scan batch 0=default [" << d.m_scanbatch << "]"
+    << endl
+    << "  -scanpar N    scan parallel 0=default [" << d.m_scanpar << "]"
+    << endl
+    << "  -seed N       srandom seed 0=loop number -1=random [" << d.m_seed
+    << "]" << endl
     << "  -skip abc     skip given test cases (letters a-z)" << endl
     << "  -sloop N      level 2 (sub)loop count [" << d.m_sloop << "]" << endl
     << "  -ssloop N     level 3 (sub)loop count [" << d.m_ssloop << "]" << endl
@@ -436,7 +448,8 @@ Tmr::time()
   if (m_cnt == 0) {
     sprintf(m_time, "%u ms", (unsigned)m_ms);
   } else {
-    sprintf(m_time, "%u ms per %u ( %u ms per 1000 )", (unsigned)m_ms, m_cnt, (unsigned)((1000 * m_ms) / m_cnt));
+    sprintf(m_time, "%u ms per %u ( %u ms per 1000 )",
+            (unsigned)m_ms, m_cnt, (unsigned)((1000 * m_ms) / m_cnt));
   }
   return m_time;
 }
@@ -457,9 +470,11 @@ Tmr::over(const Tmr& t1)
 {
   if (0 < t1.m_ms) {
     if (t1.m_ms <= m_ms)
-      sprintf(m_text, "%u pct", (unsigned)((100 * (m_ms - t1.m_ms)) / t1.m_ms));
+      sprintf(m_text, "%u pct",
+              (unsigned)((100 * (m_ms - t1.m_ms)) / t1.m_ms));
     else
-      sprintf(m_text, "-%u pct", (unsigned)((100 * (t1.m_ms - m_ms)) / t1.m_ms));
+      sprintf(m_text, "-%u pct",
+              (unsigned)((100 * (t1.m_ms - m_ms)) / t1.m_ms));
   } else {
     sprintf(m_text, "[cannot measure]");
   }
@@ -530,7 +545,11 @@ Chs::Chs(CHARSET_INFO* cs) :
     // check for duplicate
     for (uint j = 0; j < i; j++) {
       const Chr& chr = m_chr[j];
-      if ((*cs->coll->strnncollsp)(cs, chr.m_bytes, chr.m_size, bytes, size) == 0) {
+      if ((*cs->coll->strnncollsp)(cs,
+                                   chr.m_bytes,
+                                   chr.m_size,
+                                   bytes,
+                                   size) == 0) {
         ok = false;
         break;
       }
@@ -558,7 +577,8 @@ Chs::Chs(CHARSET_INFO* cs) :
       }
     }
   }
-  LL3("inited charset " << *this << " miss=" << miss1 << "," << miss4 << " bubbles=" << bubbles);
+  LL3("inited charset " << *this << " miss=" << miss1 << "," << miss4
+       << " bubbles=" << bubbles);
 }
 
 Chs::~Chs()
@@ -651,13 +671,27 @@ struct Col {
   uint m_bytesize;          // full value size
   bool m_nullable;
   const Chs* m_chs;
-  Col(const struct Tab& tab, uint num, const char* name, bool pk, Type type, uint length, bool nullable, const Chs* chs);
+  Col(const struct Tab& tab,
+      uint num,
+      const char* name,
+      bool pk,
+      Type type,
+      uint length,
+      bool nullable,
+      const Chs* chs);
   ~Col();
   bool equal(const Col& col2) const;
   void wellformed(const void* addr) const;
 };
 
-Col::Col(const struct Tab& tab, uint num, const char* name, bool pk, Type type, uint length, bool nullable, const Chs* chs) :
+Col::Col(const struct Tab& tab,
+         uint num,
+         const char* name,
+         bool pk,
+         Type type,
+         uint length,
+         bool nullable,
+         const Chs* chs) :
   m_tab(tab),
   m_num(num),
   m_name(strcpy(new char [strlen(name) + 1], name)),
@@ -695,7 +729,9 @@ Col::~Col()
 bool
 Col::equal(const Col& col2) const
 {
-  return m_type == col2.m_type && m_length == col2.m_length && m_chs == col2.m_chs;
+  return m_type == col2.m_type &&
+         m_length == col2.m_length &&
+         m_chs == col2.m_chs;
 }
 
 void
@@ -710,7 +746,11 @@ Col::wellformed(const void* addr) const
       const char* src = (const char*)addr;
       uint len = m_bytelength;
       int not_used;
-      require((*cs->cset->well_formed_len)(cs, src, src + len, 0xffff, &not_used) == len);
+      require((*cs->cset->well_formed_len)(cs,
+                                           src,
+                                           src + len,
+                                           0xffff,
+                                           &not_used) == len);
     }
     break;
   case Col::Varchar:
@@ -721,7 +761,11 @@ Col::wellformed(const void* addr) const
       uint len = src[0];
       int not_used;
       require(len <= m_bytelength);
-      require((*cs->cset->well_formed_len)(cs, ssrc + 1, ssrc + 1 + len, 0xffff, &not_used) == len);
+      require((*cs->cset->well_formed_len)(cs,
+                                           ssrc + 1,
+                                           ssrc + 1 + len,
+                                           0xffff,
+                                           &not_used) == len);
     }
     break;
   case Col::Longvarchar:
@@ -732,7 +776,11 @@ Col::wellformed(const void* addr) const
       uint len = src[0] + (src[1] << 8);
       int not_used;
       require(len <= m_bytelength);
-      require((*cs->cset->well_formed_len)(cs, ssrc + 2, ssrc + 2 + len, 0xffff, &not_used) == len);
+      require((*cs->cset->well_formed_len)(cs,
+                                           ssrc + 2,
+                                           ssrc + 2 + len,
+                                           0xffff,
+                                           &not_used) == len);
     }
     break;
   default:
@@ -752,19 +800,22 @@ operator<<(NdbOut& out, const Col& col)
   case Col::Char:
     {
       CHARSET_INFO* cs = col.m_chs->m_cs;
-      out << " char(" << col.m_length << "*" << cs->mbmaxlen << ";" << cs->name << ")";
+      out << " char(" << col.m_length << "*" << cs->mbmaxlen << ";"
+          << cs->name << ")";
     }
     break;
   case Col::Varchar:
     {
       CHARSET_INFO* cs = col.m_chs->m_cs;
-      out << " varchar(" << col.m_length << "*" << cs->mbmaxlen << ";" << cs->name << ")";
+      out << " varchar(" << col.m_length << "*" << cs->mbmaxlen
+          << ";" << cs->name << ")";
     }
     break;
   case Col::Longvarchar:
     {
       CHARSET_INFO* cs = col.m_chs->m_cs;
-      out << " longvarchar(" << col.m_length << "*" << cs->mbmaxlen << ";" << cs->name << ")";
+      out << " longvarchar(" << col.m_length << "*" << cs->mbmaxlen
+          << ";" << cs->name << ")";
     }
     break;
   default:
@@ -1288,7 +1339,8 @@ int
 Con::getNdbIndexOperation1(const ITab& itab, const Tab& tab)
 {
   require(m_tx != 0);
-  CHKCON((m_op = m_indexop = m_tx->getNdbIndexOperation(itab.m_name, tab.m_name)) != 0, *this);
+  CHKCON((m_op = m_indexop =
+    m_tx->getNdbIndexOperation(itab.m_name, tab.m_name)) != 0, *this);
   return 0;
 }
 
@@ -1310,7 +1362,8 @@ int
 Con::getNdbScanOperation(const Tab& tab)
 {
   require(m_tx != 0);
-  CHKCON((m_op = m_scanop = m_tx->getNdbScanOperation(tab.m_name)) != 0, *this);
+  CHKCON((m_op = m_scanop =
+          m_tx->getNdbScanOperation(tab.m_name)) != 0, *this);
   return 0;
 }
 
@@ -1318,7 +1371,10 @@ int
 Con::getNdbIndexScanOperation1(const ITab& itab, const Tab& tab)
 {
   require(m_tx != 0);
-  CHKCON((m_op = m_scanop = m_indexscanop = m_tx->getNdbIndexScanOperation(itab.m_name, tab.m_name)) != 0, *this);
+  CHKCON((m_op = m_scanop =
+          m_indexscanop =
+          m_tx->getNdbIndexScanOperation(itab.m_name,
+                                         tab.m_name)) != 0, *this);
   return 0;
 }
 
@@ -1397,7 +1453,10 @@ int
 Con::setFilter(int num, int cond, const void* value, uint len)
 {
   require(m_tx != 0 && m_scanfilter != 0);
-  CHKCON(m_scanfilter->cmp((NdbScanFilter::BinaryCondition)cond, num, value, len) == 0, *this);
+  CHKCON(m_scanfilter->cmp((NdbScanFilter::BinaryCondition)cond,
+                            num,
+                            value,
+                            len) == 0, *this);
   return 0;
 }
 
@@ -1409,6 +1468,15 @@ Con::execute(ExecType et)
   return 0;
 }
 
+/**
+ * Execute the prepared transaction towards RonDB.
+ * If it isn't successful we use err as the errors
+ * we are allowed to receive.
+ *
+ * The execute can use ExecType NoCommit to prepare the
+ * transaction, Commit to commit the transaction and
+ * Rollback to roll it back.
+ */
 int
 Con::execute(ExecType et, uint& err)
 {
@@ -1453,7 +1521,10 @@ Con::readTuples(const Par& par)
   int scan_flags = 0;
   if (par.m_tupscan)
     scan_flags |= NdbScanOperation::SF_TupScan;
-  CHKCON(m_scanop->readTuples(par.m_lockmode, scan_flags, par.m_scanpar, par.m_scanbatch) == 0, *this);
+  CHKCON(m_scanop->readTuples(par.m_lockmode,
+                              scan_flags,
+                              par.m_scanpar,
+                              par.m_scanbatch) == 0, *this);
   return 0;
 }
 
@@ -1471,7 +1542,10 @@ Con::readIndexTuples(const Par& par)
     scan_flags |= NdbScanOperation::SF_MultiRange;
     scan_flags |= NdbScanOperation::SF_ReadRangeNo;
   }
-  CHKCON(m_indexscanop->readTuples(par.m_lockmode, scan_flags, par.m_scanpar, par.m_scanbatch) == 0, *this);
+  CHKCON(m_indexscanop->readTuples(par.m_lockmode,
+                                   scan_flags,
+                                   par.m_scanpar,
+                                   par.m_scanbatch) == 0, *this);
   return 0;
 }
 
@@ -1580,12 +1654,25 @@ Con::printerror(NdbOut& out)
         LL0(++any << " con: error " << m_tx->getNdbError());
         die += (code == g_opt.m_die);
         // 631 is new, occurs only on 4 db nodes, needs to be checked out
-        if (code == 266 || code == 274 || code == 296 || code == 297 || code == 499 || code == 631)
+        if (code == 266 ||
+            code == 274 ||
+            code == 296 ||
+            code == 297 ||
+            code == 499 ||
+            code == 631)
           m_errtype = ErrDeadlock;
-        if (code == 625 || code == 826 || code == 827 || code == 902 || code == 921)
+        if (code == 625 ||
+            code == 826 ||
+            code == 827 ||
+            code == 902 ||
+            code == 921)
           m_errtype = ErrNospace;
-        if (code == 1234 || code == 1220 || code == 410 || code == 1221 || // Redo
-            code == 923 || code == 1501) // Undo
+        if (code == 1234 ||
+            code == 1220 ||
+            code == 410 ||
+            code == 1221 || // Redo
+            code == 923 ||
+            code == 1501) // Undo
           m_errtype = ErrLogspace;
       }
       if (m_op && m_op->getNdbError().code != 0) {
@@ -1782,7 +1869,11 @@ struct Val {
   int setval(const Par& par, const ICol& icol) const;
   // compare
   int cmp(const Par& par, const Val& val2) const;
-  int cmpchars(const Par& par, const uchar* buf1, uint len1, const uchar* buf2, uint len2) const;
+  int cmpchars(const Par& par,
+               const uchar* buf1,
+               uint len1,
+               const uchar* buf2,
+               uint len2) const;
   int verify(const Par& par, const Val& val2) const;
 private:
   Val& operator=(const Val& val2);
@@ -2138,7 +2229,11 @@ Val::cmp(const Par& par, const Val& val2) const
     {
       uint len1 = m_longvarchar[0] + (m_longvarchar[1] << 8);
       uint len2 = val2.m_longvarchar[0] + (val2.m_longvarchar[1] << 8);
-      return cmpchars(par, m_longvarchar + 2, len1, val2.m_longvarchar + 2, len2);
+      return cmpchars(par,
+                      m_longvarchar + 2,
+                      len1,
+                      val2.m_longvarchar + 2,
+                      len2);
     }
     break;
   default:
@@ -2149,7 +2244,11 @@ Val::cmp(const Par& par, const Val& val2) const
 }
 
 int
-Val::cmpchars(const Par& par, const uchar* buf1, uint len1, const uchar* buf2, uint len2) const
+Val::cmpchars(const Par& par,
+              const uchar* buf1,
+              uint len1,
+              const uchar* buf2,
+              uint len2) const
 {
   const Col& col = m_col;
   const Chs* chs = col.m_chs;
@@ -2243,7 +2342,8 @@ struct Row {
     StUndef = 0,
     StDefine = 1,
     StPrepare = 2,
-    StCommit = 3
+    StRead = 3,
+    StCommit = 4,
   };
   enum Op {
     OpNone = 0,
@@ -2258,6 +2358,7 @@ struct Row {
   };
   St m_st;
   Op m_op;
+  Uint32 m_read_ref_count;
   Uint64 m_txid;
   Row* m_bi;
   // construct
@@ -2305,6 +2406,7 @@ Row::Row(const Tab& tab) :
   m_op = OpNone;
   m_txid = 0;
   m_bi = 0;
+  m_read_ref_count = 0;
 }
 
 Row::~Row()
@@ -2389,6 +2491,12 @@ Row::setval(const Par& par, const ITab& itab)
   return 0;
 }
 
+/**
+ * Perform the prepare phase where the operations are prepared for
+ * execution. Set the state variable indicating that the row is
+ * now prepared for insert and set its transaction id.
+ * Prepared for insert on primary table.
+ */
 int
 Row::insrow(const Par& par)
 {
@@ -2405,6 +2513,7 @@ Row::insrow(const Par& par)
   return 0;
 }
 
+/* Prepare for Update on primary table */
 int
 Row::updrow(const Par& par)
 {
@@ -2421,6 +2530,7 @@ Row::updrow(const Par& par)
   return 0;
 }
 
+/* Prepare for Update using Unique Hash Index table */
 int
 Row::updrow(const Par& par, const ITab& itab)
 {
@@ -2438,6 +2548,7 @@ Row::updrow(const Par& par, const ITab& itab)
   return 0;
 }
 
+/* Prepare for Delete on primary table */
 int
 Row::delrow(const Par& par)
 {
@@ -2453,6 +2564,7 @@ Row::delrow(const Par& par)
   return 0;
 }
 
+/* Prepare for Delete using Unique Hash Index table */
 int
 Row::delrow(const Par& par, const ITab& itab)
 {
@@ -2469,6 +2581,7 @@ Row::delrow(const Par& par, const ITab& itab)
   return 0;
 }
 
+/* Prepare for Read on primary table */
 int
 Row::selrow(const Par& par)
 {
@@ -2477,10 +2590,10 @@ Row::selrow(const Par& par)
   CHK(con.getNdbOperation(m_tab) == 0);
   CHKCON(con.readTuple(par) == 0, con);
   CHK(setval(par, tab.m_pkmask) == 0);
-  // TODO state
   return 0;
 }
 
+/* Prepare for Read using Unique Hash Index table */
 int
 Row::selrow(const Par& par, const ITab& itab)
 {
@@ -2490,7 +2603,6 @@ Row::selrow(const Par& par, const ITab& itab)
   CHK(con.getNdbIndexOperation(itab, tab) == 0);
   CHKCON(con.readTuple(par) == 0, con);
   CHK(setval(par, itab) == 0);
-  // TODO state
   return 0;
 }
 
@@ -2649,6 +2761,7 @@ struct Set {
   const Row* getrow(uint i, bool dirty = false) const;
   int setrow(uint i, const Row* src, bool force=false);
   // transaction
+  void post_read(uint i);
   void post(const Par& par, ExecType et);
   // operations
   int insrow(const Par& par, uint i);
@@ -2657,7 +2770,10 @@ struct Set {
   int delrow(const Par& par, uint i);
   int delrow(const Par& par, const ITab& itab, uint i);
   int selrow(const Par& par, const Row& keyrow);
-  int selrow(const Par& par, const ITab& itab, const Row& keyrow);
+  int selrow(const Par& par,
+             const ITab& itab,
+             Row* keyrow,
+             bool set_state = false);
   int setrow(const Par& par, uint i);
   int getval(const Par& par);
   int getkey(const Par& par, uint* i);
@@ -2722,7 +2838,10 @@ Set::reset()
   }
 }
 
-// this sucks
+/**
+ * Check if our change is compatible with the current ongoing
+ * transaction on the row.
+ */
 bool
 Set::compat(const Par& par, uint i, const Row::Op op) const
 {
@@ -2730,15 +2849,24 @@ Set::compat(const Par& par, uint i, const Row::Op op) const
   int ret = -1;
   int place = 0;
   do {
+    /* Get latest committed row version */
     const Row* rowp = getrow(i);
     if (rowp == 0) {
+      /* Row is deleted, only Insert is compatible */
       ret = op == Row::OpIns;
       place = 1;
       break;
     }
     const Row& row = *rowp;
     if (!(op & Row::OpREAD)) {
+      /**
+       * We are preparing a Write operation (Insert, Update, Delete)
+       */
       if (row.m_st == Row::StDefine || row.m_st == Row::StPrepare) {
+        /**
+         * If row is defined or prepared we only allow the same transaction
+         * to perform more operations on the row.
+         */
         require(row.m_op & Row::OpDML);
         require(row.m_txid != 0);
         if (con.m_txid != row.m_txid) {
@@ -2747,34 +2875,69 @@ Set::compat(const Par& par, uint i, const Row::Op op) const
           break;
         }
         if (row.m_op != Row::OpDel) {
+          /**
+           * Previous operation wasn't a delete, row is existing,
+           * thus Inserts are not allowed, only Update and Delete.
+           */
           ret = op == Row::OpUpd || op == Row::OpDel;
           place = 3;
           break;
         }
+        /**
+         * Previous operation was Delete, only a new Insert is allowed.
+         */
         ret = op == Row::OpIns;
         place = 4;
         break;
       }
       if (row.m_st == Row::StCommit) {
+        /**
+         * Row exists and is committed, thus Update and Delete is ok,
+         * not Inserts.
+         */
         require(row.m_op == Row::OpNone);
         require(row.m_txid == 0);
         ret = op == Row::OpUpd || op == Row::OpDel;
         place = 5;
         break;
       }
-    }
-    if (op & Row::OpREAD) {
-      bool dirty =
-        con.m_txid != row.m_txid &&
-        par.m_lockmode == NdbOperation::LM_CommittedRead;
-      const Row* rowp2 = getrow(i, dirty);
-      if (rowp2 == 0 || rowp2->m_op == Row::OpDel) {
+      if (row.m_st == Row::StRead) {
+        /**
+         * Someone else is busy writing the row, only allow
+         * operation if we are in the same transaction.
+         */
+        require(con.m_txid != row.m_txid);
         ret = false;
         place = 6;
         break;
       }
+    }
+    if (op & Row::OpREAD) {
+      /**
+       * We are reading, in this case we will check with old row if
+       * we are reading using Read Committed and the current ongoing
+       * transaction isn't ours.
+       *
+       * If we are reading using locks we will check with the
+       */
+      if (row.m_st == Row::StDefine || row.m_st == Row::StPrepare) {
+        /**
+         * Someone is already performing an update towards the row.
+         * We cannot guarantee the results of this read operation,
+         * thus we will skip it unless we are part of the same
+         * transaction.
+         */
+        require(con.m_txid != row.m_txid);
+        ret = false;
+        place = 7;
+        break;
+      }
+      /**
+       * No one else is writing this row now, it is ok to read the
+       * row. It is ok for multiple readers of the row in parallel.
+       */
       ret = true;
-      place = 7;
+      place = 8;
       break;
     }
   } while (0);
@@ -2783,6 +2946,13 @@ Set::compat(const Par& par, uint i, const Row::Op op) const
   return ret;
 }
 
+/**
+ * Save old row in the variable m_bi (have no idea what the
+ * name means). Create the new row as a copy of the old row.
+ * After this method we will always call either calc or
+ * copyval to set the new row according the test case we are
+ * running.
+ */
 void
 Set::push(uint i)
 {
@@ -2796,6 +2966,10 @@ Set::push(uint i)
     row.copyval(*bi);
 }
 
+/**
+ * colmask contains a bitmask of all columns to copy from the
+ * old row contained in m_bi.
+ */
 void
 Set::copyval(uint i, uint colmask)
 {
@@ -2805,6 +2979,10 @@ Set::copyval(uint i, uint colmask)
   row.copyval(*row.m_bi, colmask);
 }
 
+/**
+ * colmask contains the bitmask of the columns to perform the
+ * changes according to the calculation patterns.
+ */
 void
 Set::calc(const Par& par, uint i, uint colmask)
 {
@@ -2830,14 +3008,24 @@ Set::getrow(uint i, bool dirty) const
   require(i < m_rows);
   const Row* rowp = m_row[i];
   if (dirty) {
+    /**
+     * Read the old (same as Read Committed), thus
+     * ignore ongoing changes if dirty is set.
+     */
     while (rowp != 0) {
       bool b1 = rowp->m_op == Row::OpNone;
       bool b2 = rowp->m_st == Row::StCommit;
       require(b1 == b2);
       if (b1) {
+        /**
+         * No transaction is ongoing, thus return the row
+         */
         require(rowp->m_bi == 0);
         break;
       }
+      /**
+       * Transaction is ongoing, return old row.
+       */
       rowp = rowp->m_bi;
     }
   }
@@ -2863,8 +3051,27 @@ Set::setrow(uint i, const Row* src, bool force)
 }
 
 
-// transaction
+void
+Set::post_read(uint i)
+{
+  Row* rowp = m_row[i];
+  require(rowp->m_st == Row::StRead);
+  require(rowp->m_op == Row::OpRead);
+  require(rowp->m_read_ref_count > 0);
+  require(rowp->m_bi == 0);
+  rowp->m_read_ref_count--;
+  if (rowp->m_read_ref_count == 0) {
+    rowp->m_op = Row::OpNone;
+    rowp->m_st = Row::StCommit;
+  }
+}
 
+/**
+ * Transaction has been completed, now time to set the state of
+ * the row according to the outcome of the transaction.
+ * This ensures that internal state is the same as the external
+ * state.
+ */
 void
 Set::post(const Par& par, ExecType et)
 {
@@ -2875,19 +3082,41 @@ Set::post(const Par& par, ExecType et)
   for (i = 0; i < m_rows; i++) {
     Row* rowp = m_row[i];
     if (rowp == 0) {
+      /**
+       * There was no such row, obviously not part of transaction.
+       * Row deleted previously.
+       */
       LL5("skip " << i << " " << rowp);
       continue;
     }
     if (rowp->m_st == Row::StCommit) {
+      /**
+       * The row is in committed state, this indicates that the row
+       * wasn't part of the transaction, thus it should not have any
+       * states indicating a transaction is ongoing.
+       */
       require(rowp->m_op == Row::OpNone);
       require(rowp->m_txid == 0);
       require(rowp->m_bi == 0);
       LL5("skip committed " << i << " " << rowp);
       continue;
     }
+    if (rowp->m_st == Row::StRead) {
+      /**
+       * Row is currently read in another thread.
+       */
+      require(con.m_txid != rowp->m_txid);
+      continue;
+    }
+    /**
+     * Row was part of a transaction.
+     */
     require(rowp->m_st == Row::StDefine || rowp->m_st == Row::StPrepare);
     require(rowp->m_txid != 0);
     if (con.m_txid != rowp->m_txid) {
+      /**
+       * Row was part of a transaction in a different thread
+       */
       LL5("skip txid " << i << " " << HEX(con.m_txid) << " " << rowp);
       continue;
     }
@@ -2895,6 +3124,11 @@ Set::post(const Par& par, ExecType et)
     require(rowp->m_op & Row::OpDML);
     LL4("post BEFORE " << rowp);
     if (et == NoCommit) {
+      /**
+       * No Commit was executed, thus transaction is still ongoing,
+       * only update the state to StPrepare. Perform this state change
+       * for all old rows.
+       */
       if (rowp->m_st == Row::StDefine) {
         rowp->m_st = Row::StPrepare;
         Row* bi = rowp->m_bi;
@@ -2904,18 +3138,37 @@ Set::post(const Par& par, ExecType et)
         }
       }
     } else if (et == Commit) {
+      /**
+       * The row change was committed, now change the internal state to
+       * reflect this.
+       */
       if (rowp->m_op != Row::OpDel) {
+        /**
+         * Insert and Update
+         * Set state to committed and drop old row.
+         */
         rowp->m_st = Row::StCommit;
         rowp->m_op = Row::OpNone;
         rowp->m_txid = 0;
         delete rowp->m_bi;
         rowp->m_bi = 0;
       } else {
+        /**
+         * Deleted the row, now also delete the internal representation
+         * of the row to synchronize the internal and external state.
+         */
         delete rowp;
         rowp = 0;
       }
     } else if (et == Rollback) {
+      /**
+       * Transaction was rolled back, we need to restore the old values.
+       */
       while (rowp != 0 && rowp->m_st != Row::StCommit) {
+        /**
+         * There could be several old rows, ensure that we restore the
+         * oldest row and drop all other row versions.
+         */
         Row* tmp = rowp;
         rowp = rowp->m_bi;
         tmp->m_bi = 0;
@@ -2988,12 +3241,20 @@ Set::selrow(const Par& par, const Row& keyrow)
 }
 
 int
-Set::selrow(const Par& par, const ITab& itab, const Row& keyrow)
+Set::selrow(const Par& par,
+            const ITab& itab,
+            Row* keyrow,
+            bool set_state)
 {
-  LL5("selrow " << itab.m_name << " keyrow " << keyrow);
-  m_keyrow->copyval(keyrow, itab.m_keymask);
+  LL5("selrow " << itab.m_name << " keyrow " << *keyrow);
+  m_keyrow->copyval(*keyrow, itab.m_keymask);
   CHK(m_keyrow->selrow(par, itab) == 0);
   CHK(getval(par) == 0);
+  if (set_state) {
+    keyrow->m_st = Row::StRead;
+    keyrow->m_op = Row::OpRead;
+    keyrow->m_read_ref_count++;
+  }
   return 0;
 }
 
@@ -3542,6 +3803,11 @@ pkupdate(Par par)
   const Tab& tab = par.tab();
   Set& set = par.set();
   LL3("pkupdate " << tab.m_name);
+  /**
+   * Perform updates on all rows in the table. Use batch size set by test
+   * case. We will skip rows that are currently being written by some other
+   * thread.
+   */
   CHK(con.startTransaction() == 0);
   uint batch = 0;
   for (uint j = 0; j < par.m_rows; j++) {
@@ -3557,7 +3823,7 @@ pkupdate(Par par)
       set.calc(par, i, ~tab.m_pkmask);
       CHK(set.updrow(par, i) == 0);
       set.unlock();
-      LL4("pkupdate key=" << i << " " << set.getrow(i));
+      LL3("pkupdate key=" << i << " " << set.getrow(i));
       batch++;
     }
     bool lastbatch = (batch != 0 && j + 1 == par.m_rows);
@@ -3570,9 +3836,14 @@ pkupdate(Par par)
       set.unlock();
       if (et == Commit)
       {
-        LL4("pkupdate key committed = " << i << " " << set.getrow(i));
+        LL3("pkupdate key committed = " << i << " " << set.getrow(i));
       }
-      if (err) {
+      else
+      {
+        LL3("pkupdate key aborted = " << i << " " << set.getrow(i));
+      }
+      if (err)
+      {
         LL1("pkupdate key=" << i << ": stop on " << con.errname(err));
         break;
       }
@@ -3802,23 +4073,33 @@ hashindexread(const Par& par, const ITab& itab)
   // expected
   const Set& set1 = set;
   Set set2(tab, set.m_rows);
+  /**
+   * Perform reads using Unqiue Hash Index, first looks up in the UI
+   * table using the UK as primary key and from there it fetches the
+   * primary key to the primary table and reads this table.
+   * Does this in a loop for all rows that aren't currently being
+   * updated or inserted or deleted.
+   */
   for (uint i = 0; i < set.m_rows; i++) {
     set.lock();
-    // TODO lock mode
     if (!set.compat(par, i, Row::OpREAD)) {
       LL3("hashindexread SKIP " << i << " " << set.getrow(i));
       set.unlock();
       continue;
     }
+    CHKTRY(con.startTransaction() == 0, set.unlock());
+    CHKTRY(set2.selrow(par, itab, set1.m_row[i], true) == 0, set.unlock());
     set.unlock();
-    CHK(con.startTransaction() == 0);
-    CHK(set2.selrow(par, itab, *set1.m_row[i]) == 0);
-    CHK(con.execute(Commit) == 0);
+    uint err = par.m_catcherr;
+    CHK(con.execute(Commit, err) == 0);
     uint i2 = (uint)-1;
-    CHK(set2.getkey(par, &i2) == 0 && i == i2);
+    CHK(set2.getkey(par, &i2) == 0 && (i == i2));
     CHK(set2.putval(i, false) == 0);
-    LL4("row " << set2.count() << " " << *set2.m_row[i]);
     con.closeTransaction();
+    LL3("row " << set2.count() << " " << *set2.m_row[i] << " i: " << i);
+    set.lock();
+    set.post_read(i);
+    set.unlock();
   }
   if (par.m_verify)
     CHK(set1.verify(par, set2, false) == 0);
@@ -3835,7 +4116,9 @@ scanreadtable(const Par& par)
   const Set& set = par.set();
   // expected
   const Set& set1 = set;
-  LL3("scanreadtable " << tab.m_name << " lockmode=" << par.m_lockmode << " tupscan=" << par.m_tupscan << " expect=" << set1.count() << " verify=" << par.m_verify);
+  LL3("scanreadtable " << tab.m_name << " lockmode=" << par.m_lockmode
+      << " tupscan=" << par.m_tupscan << " expect=" << set1.count()
+      << " verify=" << par.m_verify);
   Set set2(tab, set.m_rows);
   CHK(con.startTransaction() == 0);
   CHK(con.getNdbScanOperation(tab) == 0);
@@ -3894,7 +4177,11 @@ scanreadtablefast(const Par& par, uint countcheck)
 
 // try to get interesting bounds
 static void
-calcscanbounds(const Par& par, const ITab& itab, BSet& bset, const Set& set, Set& set1)
+calcscanbounds(const Par& par,
+               const ITab& itab,
+               BSet& bset,
+               const Set& set,
+               Set& set1)
 {
   while (true) {
     bset.calc(par);
@@ -3921,7 +4208,10 @@ scanreadindex(const Par& par, const ITab& itab, BSet& bset, bool calc)
   } else {
     bset.filter(par, set, set1);
   }
-  LL3("scanreadindex " << itab.m_name << " " << bset << " lockmode=" << par.m_lockmode << " expect=" << set1.count() << " ordered=" << par.m_ordered << " descending=" << par.m_descending << " verify=" << par.m_verify);
+  LL3("scanreadindex " << itab.m_name << " " << bset << " lockmode="
+      << par.m_lockmode << " expect=" << set1.count() << " ordered="
+      << par.m_ordered << " descending=" << par.m_descending << " verify="
+      << par.m_verify);
   Set set2(tab, set.m_rows);
   CHK(con.startTransaction() == 0);
   CHK(con.getNdbIndexScanOperation(itab, tab) == 0);
@@ -3962,10 +4252,14 @@ scanreadindex(const Par& par, const ITab& itab, BSet& bset, bool calc)
         val.m_null = false;
       }
 
-      LL0("scanreadindex " << itab.m_name << " " << bset << " lockmode=" << par.m_lockmode << " expect=" << set1.count() << " ordered=" << par.m_ordered << " descending=" << par.m_descending << " verify=" << par.m_verify);
+      LL0("scanreadindex " << itab.m_name << " " << bset << " lockmode="
+          << par.m_lockmode << " expect=" << set1.count() << " ordered="
+          << par.m_ordered << " descending=" << par.m_descending
+          << " verify=" << par.m_verify);
       LL0("Table : " << itab.m_tab);
       LL0("Index : " << itab);
-      LL0("scanreadindex read duplicate, total rows expected in set: " << set1.count());
+      LL0("scanreadindex read duplicate, total rows expected in set: "
+          << set1.count());
       LL0("  read so far: " << set2.count());
       LL0("  nextScanResult returned: " << ret << ", err: " << err);
       LL0("");
@@ -3998,7 +4292,8 @@ scanreadindex(const Par& par, const ITab& itab, BSet& bset, bool calc)
       }
       LL0("-------------------------------------");
 
-      LL0("scanreadindex read duplicate, total rows expected in set: " << set1.count());
+      LL0("scanreadindex read duplicate, total rows expected in set: "
+          << set1.count());
       LL0("  read so far: " << set2.count());
       LL0("  nextScanResult returned: " << ret << ", err: " << err);
       LL0("");
@@ -4068,7 +4363,9 @@ scanreadindexmrr(Par par, const ITab& itab, int numBsets)
   } 
 
   /* Define scan with bounds */
-  LL3("scanreadindexmrr " << itab.m_name << " ranges= " << numBsets << " lockmode=" << par.m_lockmode << " ordered=" << par.m_ordered << " descending=" << par.m_descending << " verify=" << par.m_verify);
+  LL3("scanreadindexmrr " << itab.m_name << " ranges= " << numBsets
+      << " lockmode=" << par.m_lockmode << " ordered=" << par.m_ordered
+      << " descending=" << par.m_descending << " verify=" << par.m_verify);
   Set set2(tab, set.m_rows);
   /* Multirange + Read range number for this scan */
   par.m_multiRange= true;
@@ -4112,11 +4409,14 @@ scanreadindexmrr(Par par, const ITab& itab, int numBsets)
     {
       /* Debug info */
       LL0("scanreadindexmrr failure");
-      LL0("scanreadindexmrr " << itab.m_name << " ranges= " << numBsets << " lockmode=" << par.m_lockmode << " ordered=" << par.m_ordered << " descending=" << par.m_descending << " verify=" << par.m_verify);
+      LL0("scanreadindexmrr " << itab.m_name << " ranges= " << numBsets
+          << " lockmode=" << par.m_lockmode << " ordered=" << par.m_ordered
+          << " descending=" << par.m_descending << " verify=" << par.m_verify);
       LL0("Table : " << itab.m_tab);
       LL0("Index : " << itab);
       LL0("rows_received " << rows_received << " i " << i);
-      LL0("rangeNum " << rangeNum << " setSizes[rangeNum] " << setSizes[rangeNum]
+      LL0("rangeNum " << rangeNum << " setSizes[rangeNum] "
+          << setSizes[rangeNum]
           << " actualResults[rangeNum]->count() "
           << actualResults[rangeNum]->count());
       LL0("Row : " << set2.m_row[i]);
@@ -4164,7 +4464,8 @@ scanreadindexmrr(Par par, const ITab& itab, int numBsets)
     CHK((uint) rowNum < set2.m_rows);
     actualResults[rangeNum]->m_row[i]= set2.m_row[i];
     actualResults[rangeNum]->m_rowkey[rowNum]= i;
-    LL4("range " << rangeNum << " key " << i << " row " << rowNum << " " << *set2.m_row[i]);
+    LL4("range " << rangeNum << " key " << i << " row " << rowNum
+         << " " << *set2.m_row[i]);
     set2.m_row[i]= 0;
     rows_received++;
   }
@@ -4206,7 +4507,10 @@ scanreadindexmrr(Par par, const ITab& itab, int numBsets)
 }
 
 static int
-scanreadindexfast(const Par& par, const ITab& itab, const BSet& bset, uint countcheck)
+scanreadindexfast(const Par& par,
+                  const ITab& itab,
+                  const BSet& bset,
+                  uint countcheck)
 {
   Con& con = par.con();
   const Tab& tab = par.tab();
@@ -4245,7 +4549,9 @@ scanreadfilter(const Par& par, const ITab& itab, BSet& bset, bool calc)
   } else {
     bset.filter(par, set, set1);
   }
-  LL3("scanfilter " << itab.m_name << " " << bset << " lockmode=" << par.m_lockmode << " expect=" << set1.count() << " verify=" << par.m_verify);
+  LL3("scanfilter " << itab.m_name << " " << bset << " lockmode="
+      << par.m_lockmode << " expect=" << set1.count() << " verify="
+      << par.m_verify);
   Set set2(tab, set.m_rows);
   CHK(con.startTransaction() == 0);
   CHK(con.getNdbScanOperation(tab) == 0);
@@ -4476,7 +4782,9 @@ scanupdateindex(Par par, const ITab& itab, BSet& bset, bool calc)
   } else {
     bset.filter(par, set, set1);
   }
-  LL3("scanupdateindex " << itab.m_name << " " << bset << " expect=" << set1.count() << " ordered=" << par.m_ordered << " descending=" << par.m_descending << " verify=" << par.m_verify);
+  LL3("scanupdateindex " << itab.m_name << " " << bset << " expect="
+      << set1.count() << " ordered=" << par.m_ordered << " descending="
+      << par.m_descending << " verify=" << par.m_verify);
   Set set2(tab, set.m_rows);
   par.m_lockmode = NdbOperation::LM_Exclusive;
   CHK(con.startTransaction() == 0);
@@ -4716,6 +5024,7 @@ pkupdatescanread(Par par)
   par.m_dups = true;
   par.m_catcherr |= Con::ErrDeadlock;
   uint sel = urandom(10);
+  LL1("pkupdatescanread, sel: " << sel);
   if (sel < 5) {
     CHK(pkupdate(par) == 0);
   } else if (sel < 6) {
@@ -4882,7 +5191,7 @@ savepointreadhashindex(const Par& par, Spt spt)
       continue;
     }
     set.unlock();
-    CHK(set2.selrow(par, itab, *set1.m_row[i]) == 0);
+    CHK(set2.selrow(par, itab, set1.m_row[i]) == 0);
     uint err = par.m_catcherr | Con::ErrDeadlock;
     ExecType et = NoCommit;
     CHK(con.execute(et, err) == 0);
@@ -5275,7 +5584,11 @@ Thr::Thr(const Par& par, uint n) :
   // run
   const uint stacksize = 256 * 1024;
   const NDB_THREAD_PRIO prio = NDB_THREAD_PRIO_LOW;
-  m_thread = NdbThread_Create(runthread, (void**)this, stacksize, m_name, prio);
+  m_thread = NdbThread_Create(runthread,
+                              (void**)this,
+                              stacksize,
+                              m_name,
+                              prio);
 }
 
 Thr::~Thr()

@@ -226,21 +226,143 @@ public:
     Uint32 hbOrder;
     Phase phase;
 
+    /**
+     * Is the initial multi transporters setup yet. Set to false when
+     * SET_UP_MULTI_TRP_REQ is sent. Set to true when setup to all
+     * nodes during restart.
+     *
+     * Multi transporters can still be setup later when a node restarts
+     * even if this variable is set to true.
+     *
+     * This variable is set for each node in SET_UP_MULTI_TRP_REQ.
+     */
     bool m_initial_set_up_multi_trp_done;
+
+    /**
+     * Set before starting setup of multi transporters. True if the
+     * node is part of the same node group as our node.
+     */
     bool m_is_in_same_nodegroup;
+
+    /**
+     * Set to true when the multi transporters are connected.
+     * Set to false again when we start switching to the new
+     * multi transporter setup.
+     */
     bool m_is_multi_trp_setup;
+
+    /**
+     * The node is using multi sockets in its communication.
+     * Set when the setup starts and reset when node fails.
+     *
+     * Normally reset when GET_NUM_MULTI_TRP_CONF/REF is received.
+     */
     bool m_is_get_num_multi_trp_active;
+
+    /**
+     * Is set to true after receiving ACTIVATE_TRP_REQ from the other
+     * node whereby we switch over the receiving to the multi
+     * transporter.
+     *
+     * Set to false when switch is fully completed.
+     */
     bool m_is_activate_trp_ready_for_me;
+
+    /**
+     * This is set to true when we receive ACTIVATE_TRP_CONF from
+     * the other node indicating that the activation signal have
+     * been received on the other side.
+     *
+     * Set to false when switch is fully completed.
+     */
     bool m_is_activate_trp_ready_for_other;
+
+    /**
+     * When the switch over is completed this variable will be set to
+     * true. It will be reset again we have received ACTIVATE_TRP_REQ
+     * from the other node and ACTIVATE_TRP_CONF from the other node
+     * indicating that our ACTIVATE_TRP_REQ have been handled on the
+     * other side. When this is cleared the switch is fully completed.
+     */
     bool m_is_freeze_thread_completed;
+
+    /**
+     * This variable is set when we start up the switch by either
+     * sending SWITCH_MULTI_TRP_REQ or receiving this signal. It is
+     * received by the node with the lower node id of the two nodes
+     * connecting.
+     *
+     * In response to this signal we will either get
+     * SWITCH_MULTI_TRP_REF or SWITCH_MULTI_TRP_REQ followed by
+     * SWITCH_MULTI_TRP_CONF. This ensures that both sides execute
+     * both the REQ and CONF code.
+     *
+     * If we receive SWITCH_MULTI_TRP_REF we will continue retrying
+     * every 100ms until we are allowed to switch over to the
+     * multi transporters.
+     *
+     * This variable is reset when the switch over starts.
+     */
     bool m_is_ready_to_switch_trp;
+
+    /**
+     * This variable is set to true when we start connecting the multi
+     * transporters.
+     * Set to false when we start switching to new multi transporters that
+     * have been connected.
+     */
     bool m_is_preparing_switch_trp;
+
+    /**
+     * Set after completing all parts of the switch over, reset after node
+     * failure.
+     */
     bool m_is_using_multi_trp;
+
+    /**
+     * This variable is set when we send GET_NUM_MULTI_REQ to the other
+     * node asking for the number of multi sockets to use for this node
+     * communication. Set in the node starting up the setup of multi
+     * sockets.
+     *
+     * Reset when the entire multi socket setup is completed for the node.
+     */
     bool m_set_up_multi_trp_started;
-    Uint8 m_used_num_multi_trps;
+
+    /**
+     * The number of multi sockets used to communicate with this node.
+     * Negotiated in the setup phase in the GET_NUM_MULTI_TRP messages.
+     */
+    Uint16 m_used_num_multi_trps;
+
+    /**
+     * Received in ACTIVATE_TRP_REQ from other node and recalled to
+     * use in ACTIVATE_TRP_REQ to TRPMANs.
+     */
     Uint32 m_num_activated_trps;
+
+    /**
+     * Remember the senders reference of ACTIVATE_TRP_REQ to use in
+     * sending ACTIVATE_TRP_CONF.
+     */
     BlockReference m_multi_trp_blockref;
+
+    /**
+     * Loop counter to check that we have connected at least within 30
+     * minutes to the node, if not something must be wrong and we
+     * fail the node.
+     */
     Uint32 m_check_multi_trp_connect_loop_count;
+
+    /**
+     * Count the number of GET_NUM_MULTI_TRP_REFs, if we receive more than
+     * 60 we will stop sending GET_NUM_MULTI_TRP_REQ and rely on that other
+     * node will send GET_NUM_MULTI_TRP_REQ when it is ready.
+     *
+     * We will resend each 500ms, thus we will resend for 30 seconds.
+     * Reset when we receive GET_NUM_MULTI_TRP_CONF and when we receive
+     * the 61th response with refuse.
+     */
     Uint32 m_count_multi_trp_ref;
 
     QmgrState sendPrepFailReqStatus;
@@ -658,7 +780,7 @@ private:
   void switch_multi_transporter(Signal*, NodeId);
   void check_switch_completed(Signal*, NodeId);
   void check_no_multi_trp(Signal*, NodeId);
-  void check_more_trp_switch_nodes(Signal*);
+  void check_more_trp_switch_nodes(Signal*, bool);
   void handle_activate_trp_req(Signal*, Uint32);
   bool check_all_multi_trp_nodes_connected();
   bool select_node_id_for_switch(NodeId&, bool);
@@ -677,9 +799,32 @@ private:
 
   struct ndb_rusage m_timer_handling_rusage;
   Uint32 m_num_multi_trps;
+
+  /**
+   * Number of GET_NUM_MULTI_TRP_REQ sent, at the moment can
+   * only be sent to nodes in the same node group.
+   */
   Uint32 m_get_num_multi_trps_sent;
+
+  /**
+   * Indicates that we have finished multi transporter setup
+   * during restart.
+   */
   bool m_initial_set_up_multi_trp_done;
+
+  /**
+   * Set to node id of the node we are currently switching over to
+   * multi transporter. 0 if no switch is ongoing.
+   */
   Uint32 m_current_switch_multi_trp_node;
+
+  /**
+   * This variable is set with the senders reference of the signal
+   * SET_UP_MULTI_TRP_REQ. For node restarts this is sent from
+   * DBDIH, otherwise it is sent from QMGR. This signal is the start of
+   * the setup of multi transporters. Before this signal is received
+   * we should not perform any action to set up multi transporters.
+   */
   BlockReference m_ref_set_up_multi_trp_req;
   Ndbcntr* c_ndbcntr;
 

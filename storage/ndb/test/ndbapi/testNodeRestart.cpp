@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2605,6 +2606,7 @@ run_test_multi_socket(NDBT_Context* ctx, NDBT_Step* step)
   int start_index = 1;
   while (errnos[pos] != 0)
   {
+    int err = errnos[pos];
     for (Uint32 i = start_index; i < index; i++)
     {
       int restart_node = nodegroup_nodes[i];
@@ -2614,8 +2616,8 @@ run_test_multi_socket(NDBT_Context* ctx, NDBT_Step* step)
       ndbout_c("Wait node %u no start", restart_node);
       if (res.waitNodesNoStart(&restart_node, 1))
         return NDBT_FAILED;
-      ndbout_c("Insert error %u into node %u", errnos[pos], restart_node);
-      if (res.insertErrorInNode(restart_node, errnos[pos]))
+      ndbout_c("Insert error %u into node %u", err, restart_node);
+      if (res.insertErrorInNode(restart_node, err))
         return NDBT_FAILED;
       if (res.insertErrorInNode(restart_node, 1006))
         return NDBT_FAILED;
@@ -2631,6 +2633,7 @@ run_test_multi_socket(NDBT_Context* ctx, NDBT_Step* step)
   pos = 0;
   while (delay_nos[pos] != 0)
   {
+    int err = delay_nos[pos];
     for (Uint32 i = start_index; i < index; i++)
     {
       int restart_node = nodegroup_nodes[i];
@@ -2640,8 +2643,8 @@ run_test_multi_socket(NDBT_Context* ctx, NDBT_Step* step)
       ndbout_c("Wait node %u no start", restart_node);
       if (res.waitNodesNoStart(&restart_node, 1))
         return NDBT_FAILED;
-      ndbout_c("Insert error %u into node %u", delay_nos[pos], restart_node);
-      if (res.insertErrorInNode(restart_node, delay_nos[pos]))
+      ndbout_c("Insert error %u into node %u", err, restart_node);
+      if (res.insertErrorInNode(restart_node, err))
         return NDBT_FAILED;
     }
     g_err << "Start nodes" << endl;

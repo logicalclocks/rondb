@@ -1,4 +1,5 @@
 /* Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1422,6 +1423,16 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
     myNdb->connected(numberToRef(myNdb->theNdbBlockNumber, nodeId));
     break;
   }
+  case GSN_TC_HBREP:
+  {
+    /**
+     * This signal only has one application which is to ensure that the
+     * NDB API continues waiting since there is progress in the data
+     * nodes.
+     */
+    m_start_time = NdbTick_getCurrentTicks();
+    break;
+  }
   default:
   {
     tFirstDataPtr = NULL;
@@ -1785,7 +1796,7 @@ Ndb::waitCompletedTransactions(int aMilliSecondsToWait,
    * (see ReportFailure)
    */
   int waitTime = aMilliSecondsToWait;
-  const NDB_TICKS start = NdbTick_getCurrentTicks();
+  theImpl->m_start_time = NdbTick_getCurrentTicks();
   theMinNoOfEventsToWakeUp = noOfEventsToWaitFor;
   theImpl->incClientStat(Ndb::WaitExecCompleteCount, 1);
   do {
@@ -1803,7 +1814,7 @@ Ndb::waitCompletedTransactions(int aMilliSecondsToWait,
     theMinNoOfEventsToWakeUp = noOfEventsToWaitFor;
     const NDB_TICKS now = NdbTick_getCurrentTicks();
     waitTime = aMilliSecondsToWait - 
-      (int)NdbTick_Elapsed(start,now).milliSec();
+      (int)NdbTick_Elapsed(theImpl->m_start_time,now).milliSec();
 #ifndef DBUG_OFF
     if(DBUG_EVALUATE_IF("early_trans_timeout", true, false))
     {

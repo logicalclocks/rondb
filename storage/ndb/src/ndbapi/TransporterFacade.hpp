@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -479,8 +480,8 @@ public:
    * methods on all clients known by TF to handle theirs thread local
    * send buffers.
    */
-  void enable_send_buffer(NodeId nodeId, TrpId trp_id) override;
-  void disable_send_buffer(NodeId nodeId, TrpId trp_id) override;
+  void enable_send_buffer(NodeId nodeId, TrpId trp_id, bool) override;
+  void disable_send_buffer(NodeId nodeId, TrpId trp_id, bool) override;
 
   Uint32 get_bytes_to_send_iovec(NodeId nodeId,
                                  TrpId trp_id,

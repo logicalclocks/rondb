@@ -2539,9 +2539,10 @@ public:
       ABORT_IDLE = 0,
       ABORT_ACTIVE = 1,
       NEW_FROM_TC = 2,
-      REQ_FROM_TC = 3,
-      ABORT_FROM_TC = 4,
-      ABORT_FROM_LQH = 5
+      REQ_FROM_TC_COMMIT = 3,
+      REQ_FROM_TC_ABORT = 4,
+      ABORT_FROM_TC = 5,
+      ABORT_FROM_LQH = 6
     };
     enum TransactionState {
       IDLE = 0,
@@ -3490,7 +3491,7 @@ private:
                     LogFileRecordPtr & logFilePtr,
                     LogPartRecord *logPartPtrP);
   void errorReport(Signal* signal, int place);
-  void warningReport(Signal* signal, int place);
+  void warningReport(Signal* signal, int place, Uint32 oprec);
   void invalidateLogAfterLastGCI(Signal *signal,
                                  LogFileOperationRecordPtr lfoPtr,
                                  LogPageRecordPtr logPagePtr,

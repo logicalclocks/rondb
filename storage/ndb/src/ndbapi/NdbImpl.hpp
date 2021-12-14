@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -146,6 +147,12 @@ public:
   NdbWaiter             theWaiter;
 
   WakeupHandler* wakeHandler;
+
+  /**
+   * Timer used by transaction handling and scan handling. The timer
+   * can be reset from the data nodes by sending TC_HBREP signal.
+   */
+  NDB_TICKS m_start_time;
 
   AssembleBatchedFragments m_suma_fragmented_signals[MAX_NDB_NODES];
   NdbEventOperationImpl *m_ev_op;

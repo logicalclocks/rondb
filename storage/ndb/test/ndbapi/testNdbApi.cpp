@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,6 +33,7 @@
 #include <random.h>
 #include <NdbTick.h>
 #include <my_sys.h>
+#include "../../src/ndbapi/NdbImpl.hpp"
 #include "../../src/ndbapi/SignalSender.hpp"
 #include <GlobalSignalNumbers.h>
 
@@ -246,6 +248,7 @@ int runTestMaxOperations(NDBT_Context* ctx, NDBT_Step* step){
 
     endTest = false;
 
+    NdbSleep_MilliSleep(2000);
     if (hugoOps.startTransaction(pNdb) != NDBT_OK){
       delete pNdb;
       ndbout << "startTransaction failed, line: " << __LINE__ << endl;
@@ -279,16 +282,29 @@ int runTestMaxOperations(NDBT_Context* ctx, NDBT_Step* step){
         continue;
       }
 
+      const NdbError err = hugoOps.getNdbError();
+      require(execResult == 0 ||
+              execResult == err.code);
+
       switch(execResult){
       case NDBT_OK:
         break;
 
       default:
         result = NDBT_FAILED;
+        // 261: //Increased beyond MaxDMLOperationsPerTransaction or MaxNoOfConcurrentOperations
+        ndbout_c("Got unexpected error %u %s for non DML transaction", err.code, err.message);
         // Fall through - to '233' which also terminate test, but not 'FAILED'
-      case 233:  // Out of operation records in transaction coordinator  
+      case 233:  // Out of operation records in transaction coordinator - SharedGlobalMemory
+      case 234:  // Out of operation records in transaction coordinator - MaxNoOfConcurrentOperations
       case 1217:  // Out of operation records in local data manager (increase MaxNoOfLocalOperations)
-      case 261: //Increased beyond MaxDMLOperationsPerTransaction or MaxNoOfConcurrentOperations
+
+        /* Ok, check that error is temporary */
+        if (err.status != NdbError::TemporaryError)
+        {
+          ndbout_c("Error : non temporary error %u %s returned", err.code, err.message);
+          result = NDBT_FAILED;
+        }
         // OK - end test
         endTest = true;
         break;
@@ -361,6 +377,7 @@ int runTestMaxOperations(NDBT_Context* ctx, NDBT_Step* step){
     int errors = 0;
     const int maxErrors = 5;
 
+    NdbSleep_MilliSleep(2000);
     if (hugoOps.startTransaction(pNdb) != NDBT_OK){
       delete pNdb;
       ndbout << "startTransaction failed, line: " << __LINE__ << endl;
@@ -408,7 +425,8 @@ int runTestMaxOperations(NDBT_Context* ctx, NDBT_Step* step){
    * It is a pass criteria that cool down periode
    * reduced the number of free NdbOperations kept.
    */
-  if (freeOperations >= hiFreeOperations)
+  if (freeOperations >= hiFreeOperations &&
+      freeOperations > MAX_NDB_FREE_LIST_SIZE)
   {
     ndbout << "Cool down periode didn't shrink NdbOperation free-list" << endl;
     result = NDBT_FAILED;

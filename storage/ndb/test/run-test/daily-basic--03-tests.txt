@@ -104,7 +104,7 @@ max-time: 360
 
 cmd: testDict
 args: -n TableAddAttrsDuringError
-max-time: 540
+max-time: 900
 
 cmd: testNdbinfo
 args:

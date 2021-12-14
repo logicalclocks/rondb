@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -244,6 +245,7 @@ ErrorReporter::handleAssert(const char* message, const char* file, int line, int
 {
   char refMessage[200];
 
+  globalData.theStopFlag = true;
 #ifdef NO_EMULATED_JAM
   BaseString::snprintf(refMessage, 200, "file: %s lineNo: %d",
 	   file, line);
@@ -264,6 +266,7 @@ ErrorReporter::handleError(int messageID,
 			   const char* objRef,
 			   NdbShutdownType nst)
 {
+  globalData.theStopFlag = true;
   ndb_print_stacktrace();
 
   if(messageID == NDBD_EXIT_ERROR_INSERT)
