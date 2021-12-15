@@ -491,7 +491,7 @@ public:
   { return m_receiver.getCurrentRow(); }
 
   /**
-   * Process an incomming tuple for this stream. Extract parent and own tuple 
+   * Process an incoming tuple for this stream. Extract parent and own tuple
    * ids and pass it on to m_receiver.
    *
    * @param ptr buffer holding tuple.
@@ -5613,7 +5613,7 @@ NdbQueryOperationImpl::execTCKEYREF(const NdbApiSignal* aSignal)
    * 'Soft error' are regarded 'informational', and we are
    * allowed to continue execution of the query. A 'hard error'
    * will terminate query, close comminication, and further
-   * incomming signals to this NdbReceiver will be discarded.
+   * incoming signals to this NdbReceiver will be discarded.
    */
   switch (ref->errorCode)
   {

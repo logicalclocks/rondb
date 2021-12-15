@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2017, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -85,7 +86,10 @@ public:
   bool getUncheckedPtrRO(Ptr<Type> &p, Uint32 slot_size) const;
   bool getUncheckedPtrRW(Ptr<Type> &p, Uint32 slot_size) const;
 
-  Uint32 getUncheckedPtrs(Uint32* from, Ptr<Type> ptrs[], Uint32 cnt, Uint32 slot_size) const;
+  Uint32 getUncheckedPtrs(Uint32* from,
+                          Ptr<Type> ptrs[],
+                          Uint32 cnt,
+                          Uint32 slot_size) const;
   bool checkPtr(Type* p) const;
 
   static Uint64 getMemoryNeed(Uint32 slot_size, Uint32 entry_count);
@@ -101,8 +105,10 @@ private:
 
   TransientPagePool* m_page_pool;
   Slot_list::Head m_free_list;
-  Uint32 m_type_id; // Needed for page type when allocating new pages (in seize/expand)
-  Uint32 m_use_count; // Needed to release into right end of free list (approx).
+  // Needed for page type when allocating new pages (in seize/expand)
+  Uint32 m_type_id;
+  // Needed to release into right end of free list (approx).
+  Uint32 m_use_count;
   /**
    * m_may_shrink - set when top page is unused.
    * Cleared by seize() when first slot on top page is seized.
@@ -123,8 +129,10 @@ private:
   static constexpr Uint32 DATA_BYTE_OFFSET = HEADER_WORDS * sizeof(Uint32);
   Uint32 m_magic;
   Uint32 m_page_id;
-  Uint32 m_use_count; // use count for dynamic page, to know when it is empty
-  Uint32 m_first_in_free_array; // for lazy initialization of dynamic page
+  // use count for dynamic page, to know when it is empty
+  Uint32 m_use_count;
+  // for lazy initialization of dynamic page
+  Uint32 m_first_in_free_array;
   Uint32 m_reserved[4];
   Uint32 m_data[DATA_WORDS_PER_PAGE];
 

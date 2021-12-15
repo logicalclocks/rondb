@@ -35,6 +35,7 @@
 
 #define COMPOSED_SLOT_POOL_NO_MAX_COUNT
 
+#define MAX_SHRINKS 2
 template <typename Pool1, typename Pool2>
 class ComposedSlotPool
 {
@@ -73,7 +74,7 @@ class ComposedSlotPool
   bool getUncheckedPtrRW(Ptr<Slot>& p, Uint32 slot_size) const;
   bool getUncheckedPtrRW_pool2(Ptr<Slot>& p, Uint32 slot_size) const;
   bool may_shrink() const;
-  bool rearrange_free_list_and_shrink(Uint32 max_shrinks);
+  bool rearrange_free_list_and_shrink(Uint32 max_shrinks = MAX_SHRINKS);
 
  private:
   bool inPool1(Uint32 i) const;

@@ -9429,7 +9429,7 @@ flush_all_local_signals(struct thr_data *selfptr)
  *
  * The same wakeup mechanism is also used for efficiency reason
  * when certain other 'milestones' have been reached - Like
- * completed processing of a larger chunk of incomming signals.
+ * completed processing of a larger chunk of incoming signals.
  *
  * Note that we do not clear the shared m_pending_signals at this point.
  * That would have been preferable in order to avoid later redundant

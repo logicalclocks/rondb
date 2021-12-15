@@ -83,6 +83,8 @@ NodeBitmask g_not_active_nodes;
 #define DEB_AUTOMATIC_MEMORY(arglist) do { } while (0)
 #endif
 
+#define DEFAULT_TC_RESERVED_CONNECT_RECORD 8192
+
 bool
 Configuration::init(int _no_start, int _initial,
                     int _initialstart)
@@ -1366,17 +1368,21 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p,
                       shared_global_memory / MBYTE64);
   g_eventLogger->info("Total memory is %llu MBytes", total_memory / MBYTE64);
   g_eventLogger->info("Used memory is %llu MBytes", used_memory / MBYTE64);
-  if (used_memory + (Uint64(1024) * MBYTE64) >= total_memory)
+  if (used_memory + (Uint64(512) * MBYTE64) >= total_memory)
   {
     /**
-     * We require at least 1 GByte for DataMemory and DiskPageBufferMemory
+     * We require at least 512 MByte for DataMemory and DiskPageBufferMemory
      * to even start in AutomaticMemoryConfig mode.
      */
+    g_eventLogger->info("AutomaticMemoryConfig mode requires at least"
+                        " 512 MByte of space for DataMemory and"
+                        " DiskPageBufferMemory");
     g_eventLogger->alert("Not enough memory using automatic memory config,"
                          " exiting, used memory is %u MBytes, total memory"
-                         " is %u MBytes",
+                         " is %u MBytes, required memory is %u MBytes",
                          Uint32(used_memory / MBYTE64),
-                         Uint32(total_memory / MBYTE64));
+                         Uint32(total_memory / MBYTE64),
+                         Uint32((used_memory / MBYTE64) + 512));
     return false;
   }
   Uint64 remaining_memory = total_memory - used_memory;
@@ -2037,6 +2043,12 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   const char * msg = "Invalid configuration fetched";
   char buf[255];
 
+  /**
+   * These initializations are only used for variables that are not present in
+   * the configuration we receive from the management server. That will only
+   * happen for older management servers that lacks definitions for some
+   * variables.
+   */
   unsigned int noOfTables = 0;
   unsigned int noOfUniqueHashIndexes = 0;
   unsigned int noOfOrderedIndexes = 0;
@@ -2057,7 +2069,7 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   unsigned int noOfTriggerOperations = 4000;
   unsigned int reservedScanRecords = 256 / 4;
   unsigned int reservedLocalScanRecords = 32 / 4;
-  unsigned int reservedOperations = 32768 / 4;
+  unsigned int reservedOperations = DEFAULT_TC_RESERVED_CONNECT_RECORD;
   unsigned int reservedTransactions = 4096 / 4;
   unsigned int reservedIndexOperations = 8192 / 4;
   unsigned int reservedTriggerOperations = 4000 / 4;
@@ -2490,7 +2502,7 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
 
     cfg.put(CFG_TC_TARGET_CONNECT_RECORD, noOfOperations + 16 + noOfTransactions);
     cfg.put(CFG_TC_MAX_CONNECT_RECORD, UINT32_MAX);
-    cfg.put(CFG_TC_RESERVED_CONNECT_RECORD, reservedOperations / tcInstances);
+    cfg.put(CFG_TC_RESERVED_CONNECT_RECORD, reservedOperations);
 
     const Uint32 takeOverOperations = noOfOperations +
                                       EXTRA_OPERATIONS_FOR_FIRST_TRANSACTION;

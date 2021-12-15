@@ -133,12 +133,6 @@
  * 3) Scan service
  *    ACC can handle up to 12 concurrent full partition scans. The partition
  *    is scanned in hash table order.
- *    The ACC_LOCKREQ interface is an interface built on top of the
- *    ACCKEYREQ service.
- *
- * 3) Scan service
- *    ACC can handle up to 12 concurrent full partition scans. The partition
- *    is scanned in hash table order.
  *
  *    A scan is started up through the ACC_SCANREQ signal.
  *    After that the NEXT_SCANREQ provides a service to get the next row,
@@ -10935,7 +10929,7 @@ Dbacc::shrinkTransientPools(Uint32 pool_index)
 {
   ndbrequire(pool_index < c_transient_pool_count);
   ndbrequire(c_transient_pools_shrinking.get(pool_index));
-  if (c_transient_pools[pool_index]->rearrange_free_list_and_shrink(1))
+  if (c_transient_pools[pool_index]->rearrange_free_list_and_shrink())
   {
     sendPoolShrink(pool_index);
   }

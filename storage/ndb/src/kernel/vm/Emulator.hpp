@@ -97,11 +97,11 @@ public:
 
   bool isEmpty() const
   {
-    return m_jamVal == 0x7fffffff;
+    return (m_jamVal & 0x7fffffff) == 0x7fffffff;
   }
 
   /*
-    True if the next JamEvent is the first in the execution of an incomming 
+    True if the next JamEvent is the first in the execution of an incoming
     signal.
   */
   bool isEndOfSig() const
@@ -110,7 +110,7 @@ public:
   }
 
   /*
-    Mark this event as the last one before the execution of the next incomming 
+    Mark this event as the last one before the execution of the next incoming
     signal. (We mark the last event before a signal instead of the fist event
     in a signal since this makes jam() more efficient, by eliminating the need
     to preserve bit 31 in the event that it accesses.) 
@@ -124,7 +124,7 @@ private:
   /*
     Bit 0-15:  line number.
     Bit 16-30: JAM_FILE_ID.
-    Bit 31:    True if next JamEvent is the beginning of an incomming signal.
+    Bit 31:    True if next JamEvent is the beginning of an incoming signal.
   */
   Uint32 m_jamVal;
 };
