@@ -133,12 +133,6 @@
  * 3) Scan service
  *    ACC can handle up to 12 concurrent full partition scans. The partition
  *    is scanned in hash table order.
- *    The ACC_LOCKREQ interface is an interface built on top of the
- *    ACCKEYREQ service.
- *
- * 3) Scan service
- *    ACC can handle up to 12 concurrent full partition scans. The partition
- *    is scanned in hash table order.
  *
  *    A scan is started up through the ACC_SCANREQ signal.
  *    After that the NEXT_SCANREQ provides a service to get the next row,

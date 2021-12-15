@@ -2724,7 +2724,7 @@ checkCanStopAllButOneNodeInGroup(NDBT_Context * ctx, NDBT_Step *step)
   if(restarter.getMaxConcurrentNodeFailures() <= replicas - 1)
   {
     printf("SKIPPING - Cluster configuration not supported for this test.\n");
-    return NDBT_SKIPPED;
+    return NDBT_OK;
   }
   return NDBT_OK;
 }
