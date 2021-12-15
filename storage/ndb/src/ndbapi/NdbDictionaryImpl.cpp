@@ -2003,7 +2003,7 @@ NdbTableImpl::calculate_primary_replicas(bool initial,
     /**
      * No need to do complex calculations for 1 replica case.
      */
-    for (Uint32 i = 0; m_fragmentCount; i++)
+    for (Uint32 i = 0; i < m_fragmentCount; i++)
     {
       Uint32 node = m_fragments[i];
       Uint32 node_var = (1 << 16) + node;
