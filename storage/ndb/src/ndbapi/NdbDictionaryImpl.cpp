@@ -2273,8 +2273,9 @@ NdbTableImpl::get_nodes(NdbImpl *impl_ndb,
         Uint32 primary_node_var = m_primary_nodes[fragmentId];
         Uint32 num_alive = primary_node_var >> 16;
         primary_node = primary_node_var & 0xFFFF;
-        if (!impl_ndb->get_node_available(primary_node) ||
+        if (primary_node == 0 ||
             num_alive_nodes != num_alive ||
+            !impl_ndb->get_node_available(primary_node) ||
             impl_ndb->get_node_change_count() != m_node_change_count)
         {
           calculate_primary_replicas(false, impl_ndb);
