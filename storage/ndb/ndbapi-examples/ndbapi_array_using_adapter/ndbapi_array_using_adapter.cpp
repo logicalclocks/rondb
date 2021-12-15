@@ -274,11 +274,12 @@ static void do_read(Ndb& ndb)
         size_t data_length;
         attr_adapter.get_byte_array(attr[i], data_ptr,
                                     data_length, error);
+       const signed char* signed_data_ptr = (const signed char*)data_ptr;
         if(error == ReadOnlyArrayAdapter::Success)
         {
           int sum = 0;
           for (size_t j = 0; j < data_length; j++)
-            sum += (int)(data_ptr[j]);
+            sum += (int)(signed_data_ptr[j]);
           cout << ", stored bytes length: " << data_length
                << ", sum of byte array: " << sum << endl;
         }

@@ -325,10 +325,11 @@ static void do_read(Ndb& ndb)
           const char* first;
           size_t count;
           get_byte_array(attr[i], first, count);
+         const signed char* signed_first = (const signed char*)first;
           int sum = 0;
-          for (const char* byte = first; byte < first + count; byte++)
+          for (const signed char* byte = signed_first; byte < signed_first + count; byte++)
           {
-            sum += (int)(*byte);
+            sum += (*byte);
           }
           cout << ", stored bytes length: " << count
                << ", sum of byte array: " << sum << endl;
