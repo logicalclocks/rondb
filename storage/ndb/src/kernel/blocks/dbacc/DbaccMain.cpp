@@ -133,12 +133,6 @@
  * 3) Scan service
  *    ACC can handle up to 12 concurrent full partition scans. The partition
  *    is scanned in hash table order.
- *    The ACC_LOCKREQ interface is an interface built on top of the
- *    ACCKEYREQ service.
- *
- * 3) Scan service
- *    ACC can handle up to 12 concurrent full partition scans. The partition
- *    is scanned in hash table order.
  *
  *    A scan is started up through the ACC_SCANREQ signal.
  *    After that the NEXT_SCANREQ provides a service to get the next row,
@@ -10694,7 +10688,9 @@ Dbacc::execDUMP_STATE_ORD(Signal* signal)
   {
     RSS_OP_SNAPSHOT_SAVE(cnoOfAllocatedFragrec);
 #ifdef ERROR_INSERT
-    g_eventLogger->info("(%u) SAVE:cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
+    g_eventLogger->info("(%u) SAVE:cnoOfAllocatedFragrec: %u",
+		        instance(),
+			cnoOfAllocatedFragrec);
 #endif
     return;
   }
@@ -10702,7 +10698,9 @@ Dbacc::execDUMP_STATE_ORD(Signal* signal)
   if (signal->theData[0] == DumpStateOrd::SchemaResourceCheckLeak)
   {
 #ifdef ERROR_INSERT
-    g_eventLogger->info("(%u) CHECK:cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
+    g_eventLogger->info("(%u) CHECK:cnoOfAllocatedFragrec: %u",
+		        instance(),
+			cnoOfAllocatedFragrec);
 #endif
     RSS_OP_SNAPSHOT_CHECK(cnoOfAllocatedFragrec);
     return;

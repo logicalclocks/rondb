@@ -1030,17 +1030,12 @@ THRConfig::compute_automatic_thread_config(
   recv_threads = table[used_map_id].recv_threads;
 
   recover_threads = cpu_cnt - (ldm_threads + query_threads);
-  if (cpu_cnt == 1)
+  if (cpu_cnt < 5)
   {
+    main_threads = 0;
     recover_threads = 0;
-  }
-  else if (cpu_cnt == 2)
-  {
-    recover_threads = 1;
-  }
-  else if (cpu_cnt == 3)
-  {
-    recover_threads = 2;
+    ldm_threads = 0;
+    recv_threads = cpu_cnt;
   }
 
   Uint32 tot_threads = main_threads;

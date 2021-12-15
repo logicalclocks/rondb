@@ -155,7 +155,7 @@ public interface SessionFactory {
 
     /**
      * Drop the session cache.
-     * Added by LogicalClocks AB.
+     * Added by Logical Clocks.
      */
     public void dropSessionCache();
 }

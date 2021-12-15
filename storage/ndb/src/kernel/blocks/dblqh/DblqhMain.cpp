@@ -37252,7 +37252,9 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
   {
     RSS_OP_SNAPSHOT_SAVE(cnoOfAllocatedFragrec);
 #ifdef ERROR_INSERT
-    g_eventLogger->info("(%u) SAVE:cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
+    g_eventLogger->info("(%u) SAVE:cnoOfAllocatedFragrec: %u",
+		        instance(),
+			cnoOfAllocatedFragrec);
 #endif
     return;
   }
@@ -37260,7 +37262,9 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
   if (arg == DumpStateOrd::SchemaResourceCheckLeak)
   {
 #ifdef ERROR_INSERT
-    g_eventLogger->info("(%u) Check:cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
+    g_eventLogger->info("(%u) Check:cnoOfAllocatedFragrec: %u",
+		        instance(),
+			cnoOfAllocatedFragrec);
 #endif
     RSS_OP_SNAPSHOT_CHECK(cnoOfAllocatedFragrec);
     return;

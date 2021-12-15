@@ -7486,7 +7486,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
            globalData.ndbMtReceiveThreads > 1)
   {
     require(num_tc_threads == 0);
-    require(globalData.ndbMtRecoverThreads <= globalData.ndbMtMainThreads);
+    require(globalData.ndbMtQueryThreads == 0);
     receive_threads_only = true;
     num_lqh_threads = globalData.ndbMtReceiveThreads;
     require(num_lqh_threads == globalData.ndbMtLqhWorkers);

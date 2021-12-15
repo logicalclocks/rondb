@@ -18012,9 +18012,33 @@ void Dbtc::initTable(Signal* signal)
 
 void Dbtc::initialiseTcConnect(Signal* signal) 
 {
+  /**
+   * 1) Allocate reserved records, to make sure they are not allocated as fail
+   *    records.
+   * 2) Allocate fail records. These are allocated in order to always be
+   *    available in case of node failure.
+   * 3) Free reserved records.
+   *
+   * tcConnectRecord is a ComposedSlotPool, which means that records with lower
+   * .i value can be accessed faster than those with high .i value. We want to
+   * make sure we have a good number of fast-access records for regular use,
+   * hence the "reserved records". We protect reserved records (in step 1 and 3)
+   * from becoming allocated to the fail record list.
+   *
+   * Note that DbtcInit.cpp initializes tcConnectRecord with
+   * (reserveConnectRecord + reserveFailConnectRecord) fast-access records.
+   * Either one of these two measures would be enough to protect reserved
+   * records.
+   */
   jam();
+  const ndb_mgm_configuration_iterator * mgm_cfg =
+    m_ctx.m_config.getOwnConfigIterator();
+  Uint32 reserveConnectRecord;
+  ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg,
+                                        CFG_TC_RESERVED_CONNECT_RECORD,
+                                        &reserveConnectRecord));
   SLList<TcConnectRecord_pool> fast_record_list(tcConnectRecord);
-  for (Uint32 i = 0; i < 10000; i++)
+  for (Uint32 i = 0; i < reserveConnectRecord; i++)
   {
     refresh_watch_dog();
     jam();
