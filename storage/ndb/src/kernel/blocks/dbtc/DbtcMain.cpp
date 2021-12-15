@@ -4760,7 +4760,7 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
     if (regTcPtr->tcNodedata[0] == getOwnNodeId())
       c_counters.clocalReadCount++;
 #ifdef ERROR_INSERT
-    else if (ERROR_INSERTED(8083))
+    else if (ERROR_INSERTED(8083) && regTcPtr->m_util_flag == false)
     {
       ndbabort();  // Only node-local reads
     }
