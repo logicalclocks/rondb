@@ -37251,13 +37251,21 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
   if (arg == DumpStateOrd::SchemaResourceSnapshot)
   {
     RSS_OP_SNAPSHOT_SAVE(cnoOfAllocatedFragrec);
-    g_eventLogger->info("(%u) SAVE:cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
+#ifdef ERROR_INSERT
+    g_eventLogger->info("(%u) SAVE:cnoOfAllocatedFragrec: %u",
+		        instance(),
+			cnoOfAllocatedFragrec);
+#endif
     return;
   }
 
   if (arg == DumpStateOrd::SchemaResourceCheckLeak)
   {
-    g_eventLogger->info("(%u) Check:cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
+#ifdef ERROR_INSERT
+    g_eventLogger->info("(%u) Check:cnoOfAllocatedFragrec: %u",
+		        instance(),
+			cnoOfAllocatedFragrec);
+#endif
     RSS_OP_SNAPSHOT_CHECK(cnoOfAllocatedFragrec);
     return;
   }
