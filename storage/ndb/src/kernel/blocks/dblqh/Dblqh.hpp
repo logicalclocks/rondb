@@ -2625,7 +2625,7 @@ public:
       //readlenAi must be set before used
       //reqinfo must be set before used
       //schemaVersion must be set before used
-      //tableref must be set before used
+      tableref(RNIL),
       tcOprec(RNIL),
       hashIndex(RNIL),
       //tcHashKeyHi must be set before used
@@ -2636,12 +2636,12 @@ public:
       savePointId(0),
       transactionState(TC_NOT_CONNECTED),
       applRef(Uint32(~0)),
-      clientBlockref(Uint32(~0)),
+      clientBlockref(RNIL),
       //tcBlockref must be set before used
       commitAckMarker(RNIL),
       numFiredTriggers(0),
       lqhKeyReqId(0),
-      //errCode must be set before used
+      errorCode(0),
       //nextReplica must be set before used
       primKeyLen(0),
       //nodeAfterNext must be set before used
@@ -2661,7 +2661,7 @@ public:
       //tcNodeFailrec only set when abortState is set to NEW_FROM_TC
       //m_disk_table set before used
       //m_use_rowid used for key operations, set before used
-      //m_dealloc must be set before used
+      m_dealloc_state(TcConnectionrec::DA_IDLE),
       //m_fire_trig_pass must be set before used
       m_committed_log_space(0),
       m_flags(0),
@@ -2681,6 +2681,7 @@ public:
       //scanKeyInfoPos only used when m_flags has OP_SCANKEYINFOPOSSAVED set
       //m_nr_delete only used in Copy fragment, set before used
     {
+      m_dealloc_data.m_unused = RNIL;
     }
 
     ~TcConnectionrec()

@@ -4042,6 +4042,7 @@ Dblqh::dropTab_wait_usage(Signal* signal){
   if (tabPtr.p->usageCountR > 0 || tabPtr.p->usageCountW > 0)
   {
     jam();
+    D(tabPtr.i << "usageCountR = " << tabPtr.p->usageCountR);
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 4);
     return;
   }
@@ -4192,6 +4193,7 @@ Dblqh::dropTab_wait_usage(Signal* signal){
     conf->tableId = tabPtr.i;
     conf->senderRef = reference();
     conf->senderData = senderData;
+    D("DROP_TAB_CONF");
     sendSignal(senderRef, GSN_DROP_TAB_CONF, signal,
 	       DropTabConf::SignalLength, JBB);
   }
@@ -4201,6 +4203,7 @@ Dblqh::dropTab_wait_usage(Signal* signal){
     Ptr<AddFragRecord> addFragPtr;
     addFragPtr.i = senderData;
     ptrCheckGuard(addFragPtr, caddfragrecFileSize, addFragRecord);
+    D("dropTable_nextStep");
     dropTable_nextStep(signal, addFragPtr);
   }
 }
@@ -4208,6 +4211,7 @@ Dblqh::dropTab_wait_usage(Signal* signal){
 void
 Dblqh::execDROP_TAB_REQ(Signal* signal){
   jamEntry();
+  D("DROP_TAB_REQ");
   if (ERROR_INSERTED(5076))
   {
     /**
@@ -4316,6 +4320,7 @@ Dblqh::execDROP_TAB_REQ(Signal* signal){
   if (errCode)
   {
     jam();
+    D("DROP_TAB_REF");
     DropTabRef * ref = (DropTabRef*)signal->getDataPtrSend();
     ref->tableId = tabPtr.i;
     ref->senderRef = reference();
@@ -4329,6 +4334,7 @@ Dblqh::execDROP_TAB_REQ(Signal* signal){
   ndbrequire(tabPtr.p->usageCountR == 0 && tabPtr.p->usageCountW == 0);
   seizeAddfragrec(signal);
   addfragptr.p->m_dropTabReq = * req;
+  D("dropTable_nextStep");
   dropTable_nextStep(signal, addfragptr);
 }
 
@@ -4471,6 +4477,7 @@ Dblqh::dropTable_nextStep(Signal* signal, Ptr<AddFragRecord> addFragPtr)
   conf->senderRef = reference();
   conf->senderData = addFragPtr.p->m_dropTabReq.senderData;
   conf->tableId = tabPtr.i;
+  D("DROP_TAB_CONF");
   sendSignal(addFragPtr.p->m_dropTabReq.senderRef, GSN_DROP_TAB_CONF, signal,
              DropTabConf::SignalLength, JBB);
 
@@ -8899,6 +8906,8 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
   if (op == ZREAD || op == ZREAD_EX || op == ZUNLOCK)
   {
     tabptr.p->usageCountR++;
+    D(tabptr.i << ":usageCountR = " << tabptr.p->usageCountR
+      << " PtrI = " << tcConnectptr.i);
   }
   else
   {
@@ -13389,6 +13398,8 @@ void Dblqh::releaseTcrec(Signal* signal, TcConnectionrecPtr locTcConnectptr)
     {
       Uint32 pre_usageCountR = tabPtr.p->usageCountR--;
       ndbrequire(pre_usageCountR > 0);
+      D(tabPtr.i << ":usageCountR = " << tabPtr.p->usageCountR
+        << "PtrI = " << locTcConnectptr.i);
     }
     else
     {
@@ -18432,7 +18443,8 @@ void Dblqh::initScanTc(const ScanFragReq* req,
   regTcPtr->m_disk_table = tTablePtr.p->m_disk_table &&
     (!req || !ScanFragReq::getNoDiskFlag(req->requestInfo));  
   tabptr.p->usageCountR++;
-
+  D(tabptr.i << ":usageCountR = " << tabptr.p->usageCountR
+    << "PtrI = " << tcConnectptr.i);
   regTcPtr->dirtyOp = 0; //dirtyOp-flag not used in scans
   regTcPtr->indTakeOver = ZFALSE; // not used in scan
   regTcPtr->lastReplicaNo = 0; // not used in scan
@@ -35578,9 +35590,16 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
     {
       if (ctransidHash[i] != RNIL)
       {
-        jam();
-        ops = true;
-        break;
+        TcConnectionrecPtr tcRec;
+        tcRec.i = ctransidHash[i];
+        ndbrequire(tcConnect_pool.getValidPtr(tcRec));
+        if (tcRec.p->tcScanRec != RNIL &&
+            refToNode(tcRec.p->applRef) != getOwnNodeId())
+        {
+          jam();
+          ops = true;
+          break;
+        }
       }
     }
 
@@ -37969,6 +37988,7 @@ Dblqh::increment_usage_count_for_table(Uint32 tableId)
   tabPtr.i = tableId;
   ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
   tabPtr.p->usageCountR++;
+  D(tabPtr.i << ":usageCountR++ = " << tabPtr.p->usageCountR);
 }
 
 void
@@ -37978,4 +37998,5 @@ Dblqh::decrement_usage_count_for_table(Uint32 tableId)
   tabPtr.i = tableId;
   ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
   tabPtr.p->usageCountR--;
+  D(tabPtr.i << ":usageCountR-- = " << tabPtr.p->usageCountR);
 }
