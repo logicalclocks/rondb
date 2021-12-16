@@ -49,6 +49,7 @@ ndbapi= CHOOSE_host1,CHOOSE_host1,CHOOSE_host1
 
 NoOfReplicas = 3
 DataMemory = 500M
+TransactionMemory=350M
 BackupMemory = 64M
 MaxNoOfConcurrentScans = 100
 MaxNoOfSavedMessages= 5
