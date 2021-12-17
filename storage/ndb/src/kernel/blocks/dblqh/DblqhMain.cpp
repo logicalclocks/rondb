@@ -3689,7 +3689,14 @@ void Dblqh::execTAB_COMMITREQ(Signal* signal)
     jam();
     insert_new_fragments_into_lcp(signal);
   }
+#ifdef DEBUG_USAGE_COUNT
+  NdbMutex_Lock(&tabptr.p->m_usage_count);
+  ndbrequire(tabptr.p->m_first_usage == RNIL);
+  ndbrequire(tabptr.p->m_first_usage_block == nullptr);
+  NdbMutex_Unlock(&tabptr.p->m_usage_count);
+#endif
   tabptr.p->usageCountR = 0;
+  D(tabptr.i << "Init2 usageCountR = 0");
   tabptr.p->usageCountW = 0;
   tabptr.p->tableStatus = Tablerec::TABLE_DEFINED;
   DEB_SCHEMA_VERSION(("(%u)tab: %u tableStatus = TABLE_DEFINED",
@@ -4043,9 +4050,37 @@ Dblqh::dropTab_wait_usage(Signal* signal){
   {
     jam();
     D(tabPtr.i << "usageCountR = " << tabPtr.p->usageCountR);
+#ifdef DEBUG_USAGE_COUNT
+    NdbMutex_Lock(&tabPtr.p->m_usage_count);
+    TcConnectionrecPtr tcPtr;
+    tcPtr.i = tabPtr.p->m_first_usage;
+    if (tcPtr.i != RNIL)
+    {
+      Dblqh *loc_lqh = tabPtr.p->m_first_usage_block;
+      ndbrequire(loc_lqh->tcConnect_pool.getValidPtr(tcPtr));
+      if (tcPtr.p->tcScanRec != RNIL)
+      {
+        ScanRecordPtr scanPtr;
+        scanPtr.i = tcPtr.p->tcScanRec;
+        ndbrequire(loc_lqh->c_scanRecordPool.getValidPtr(scanPtr));
+      }
+    }
+    else
+    {
+      g_eventLogger->info("usageCountR > 0 and list is empty");
+    }
+    NdbMutex_Unlock(&tabPtr.p->m_usage_count);
+    ndbabort();
+#endif
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 4);
     return;
   }
+#ifdef DEBUG_USAGE_COUNT
+  NdbMutex_Lock(&tabPtr.p->m_usage_count);
+  ndbrequire(tabPtr.p->m_first_usage == RNIL);
+  ndbrequire(tabPtr.p->m_first_usage_block == nullptr);
+  NdbMutex_Unlock(&tabPtr.p->m_usage_count);
+#endif
 
   bool lcpDone = true;
   lcpPtr.i = 0;
@@ -4864,6 +4899,35 @@ void Dblqh::execTIME_SIGNAL(Signal* signal)
     c_elapsed_time_millis -= Uint64(10);
     timer_handling(signal);
   }
+#ifdef DEBUG_USAGE_COUNT
+  if (!m_is_query_block)
+  {
+    for (tabptr.i = 0; tabptr.i < ctabrecFileSize; tabptr.i++)
+    {
+      ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
+      if (tabptr.p->tableStatus == Tablerec::TABLE_DEFINED)
+      {
+        NdbMutex_Lock(&tabptr.p->m_usage_count);
+        TcConnectionrecPtr tcPtr;
+        tcPtr.i = tabptr.p->m_first_usage;
+        Dblqh *loc_lqh = tabptr.p->m_first_usage_block;
+        while(tcPtr.i != RNIL)
+        {
+          ndbrequire(loc_lqh->tcConnect_pool.getValidPtr(tcPtr));
+          if (tcPtr.p->tcScanRec != RNIL)
+          {
+            ScanRecordPtr scanPtr;
+            scanPtr.i = tcPtr.p->tcScanRec;
+            ndbrequire(loc_lqh->c_scanRecordPool.getValidPtr(scanPtr));
+          }
+          loc_lqh = tcPtr.p->m_next_block;
+          tcPtr.i = tcPtr.p->m_next_usage;
+        }
+        NdbMutex_Unlock(&tabptr.p->m_usage_count);
+      }
+    }
+  }
+#endif
 }
 
 bool
@@ -8908,6 +8972,9 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
     tabptr.p->usageCountR++;
     D(tabptr.i << ":usageCountR = " << tabptr.p->usageCountR
       << " PtrI = " << tcConnectptr.i);
+#ifdef DEBUG_USAGE_COUNT
+    insert_usage_count(tabptr.p, tcConnectptr);
+#endif
   }
   else
   {
@@ -13400,6 +13467,9 @@ void Dblqh::releaseTcrec(Signal* signal, TcConnectionrecPtr locTcConnectptr)
       ndbrequire(pre_usageCountR > 0);
       D(tabPtr.i << ":usageCountR = " << tabPtr.p->usageCountR
         << "PtrI = " << locTcConnectptr.i);
+#ifdef DEBUG_USAGE_COUNT
+      remove_usage_count(tabPtr.p, locTcConnectptr);
+#endif
     }
     else
     {
@@ -18068,6 +18138,8 @@ void Dblqh::handle_finish_scan(Signal* signal,
   bool restart_flag = finishScanrec(signal, restart, tcConnectptr);
   if (likely(scanptr.p->scanState != ScanRecord::WAIT_START_QUEUED_SCAN))
   {
+    scanptr.p->scan_lastSeen = __LINE__;
+    scanptr.p->scan_startLine = tcConnectptr.i;
     releaseScanrec(signal);
   }
   else
@@ -18079,14 +18151,19 @@ void Dblqh::handle_finish_scan(Signal* signal,
     jam();
     ndbassert(!m_is_query_block);
     scanptr.p->scanState = ScanRecord::QUIT_START_QUEUE_SCAN;
+    scanptr.p->scanTcrec = RNIL;
+    scanptr.p->scan_lastSeen = __LINE__;
+    scanptr.p->scan_startLine = tcConnectptr.i;
   }
-  deleteTransidHash(signal, tcConnectptr);
+  TcConnectionrecPtr tcPtr = tcConnectptr;
+  deleteTransidHash(signal, tcPtr);
   tcConnectptr.p->tcScanRec = RNIL;
   releaseOprec(signal, tcConnectptr);
   releaseTcrec(signal, tcConnectptr);
   if (restart_flag)
   {
     jam();
+    ndbassert(!m_is_query_block);
     restart.p->scanState = ScanRecord::WAIT_START_QUEUED_SCAN;
     signal->theData[0] = ZSTART_QUEUED_SCAN;
     signal->theData[1] = restart.i;
@@ -18104,6 +18181,7 @@ void Dblqh::restart_queued_scan(Signal* signal, Uint32 scanPtrI)
   {
     jam();
     scanptr = loc_scanptr;
+    ndbrequire(scanptr.p->scanTcrec == RNIL);
     releaseScanrec(signal);
     return;
   }
@@ -18378,6 +18456,7 @@ Uint32 Dblqh::initScanrec(const ScanFragReq* scanFragReq,
       /**
        * Put on queue
        */
+      ndbrequire(!m_is_query_block);
       scanPtr->scanState = ScanRecord::IN_QUEUE;
       Local_ScanRecord_fifo queue(c_scanRecordPool,
                                   rangeScan != 0 ?
@@ -18441,10 +18520,13 @@ void Dblqh::initScanTc(const ScanFragReq* req,
   tTablePtr.i = tabptr.p->primaryTableId;
   ptrCheckGuard(tTablePtr, ctabrecFileSize, tablerec);
   regTcPtr->m_disk_table = tTablePtr.p->m_disk_table &&
-    (!req || !ScanFragReq::getNoDiskFlag(req->requestInfo));  
+    (!req || !ScanFragReq::getNoDiskFlag(req->requestInfo));
   tabptr.p->usageCountR++;
   D(tabptr.i << ":usageCountR = " << tabptr.p->usageCountR
     << "PtrI = " << tcConnectptr.i);
+#ifdef DEBUG_USAGE_COUNT
+  insert_usage_count(tabptr.p, tcConnectptr);
+#endif
   regTcPtr->dirtyOp = 0; //dirtyOp-flag not used in scans
   regTcPtr->indTakeOver = ZFALSE; // not used in scan
   regTcPtr->lastReplicaNo = 0; // not used in scan
@@ -32594,7 +32676,13 @@ void Dblqh::initialiseTabrec(Signal* signal)
       tabptr.p->m_restore_started = false;
       tabptr.p->tableStatus = Tablerec::NOT_DEFINED;
       tabptr.p->usageCountR = 0;
+      D(tabptr.i << "Init usageCountR = 0");
       tabptr.p->usageCountW = 0;
+#ifdef DEBUG_USAGE_COUNT
+      NdbMutex_Init(&tabptr.p->m_usage_count);
+      tabptr.p->m_first_usage = RNIL;
+      tabptr.p->m_first_usage_block = nullptr;
+#endif
       tabptr.p->m_addfragptr_i = RNIL;
       for (Uint32 i = 0; i < NDB_ARRAY_SIZE(tabptr.p->fragid); i++) {
         tabptr.p->fragid[i] = ZNIL;

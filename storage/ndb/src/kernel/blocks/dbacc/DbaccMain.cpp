@@ -9235,20 +9235,7 @@ void Dbacc::releaseOpRec()
   }
   else
   {
-    /**
-     * We initialise object by releasing it and seizing it again.
-     * This will call both the destructor code and the constructor code
-     * to ensure the operation object is properly initialised before used
-     * again.
-     * Since this is the very first object seized it will get the first
-     * reserved slot and since no one has a chance to come in between AND
-     * we only have this single free reserved slot since all others are
-     * allocated and managed by LQH. Therefore we can be sure to get back
-     * to the same record again.
-     */
-    oprec_pool.release(operationRecPtr);
-    ndbrequire(oprec_pool.seize(operationRecPtr));
-    ndbrequire(operationRecPtr.i == c_copy_frag_oprec);
+    operationRecPtr.p = new (operationRecPtr.p) Operationrec;
   }
 }
 
