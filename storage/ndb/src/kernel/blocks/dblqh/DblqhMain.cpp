@@ -16607,6 +16607,7 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
   }
 
   ScanFragReq * const scanFragReq = (ScanFragReq *)&signal->theData[0];
+  bool release_scan = false;
   Uint32 errorCode= 0;
   Uint32 hashIndex;
   TcConnectionrecPtr nextHashptr;
@@ -16881,9 +16882,7 @@ error_handler2:
   if (scanptr.p->m_reserved == 0)
   {
     jam();
-    c_scanRecordPool.release(scanptr);
-    checkPoolShrinkNeed(DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX,
-                        c_scanRecordPool);
+    release_scan = true;
   }
   else
   {
@@ -16896,13 +16895,23 @@ error_handler:
   regTcPtr->tcScanRec = RNIL;
   releaseOprec(signal, tcConnectptr);
   releaseTcrec(signal, tcConnectptr);
+  if (release_scan)
+  {
+    /**
+     * For debugging purposes we want to release the scan record
+     * after we release the TC connection record.
+     */
+    c_scanRecordPool.release(scanptr);
+    checkPoolShrinkNeed(DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX,
+                        c_scanRecordPool);
+  }
   send_scan_fragref(signal,
                     transid1,
                     transid2,
                     senderData,
                     senderBlockRef,
                     errorCode);
-}//Dblqh::execSCAN_FRAGREQ()
+}
 
 void Dblqh::continueAfterReceivingAllAiLab(
                 Signal* signal,
@@ -18230,11 +18239,11 @@ void Dblqh::handle_finish_scan(Signal* signal,
 {
   ScanRecordPtr restart;
   bool restart_flag = finishScanrec(signal, restart, tcConnectptr);
+  bool release_scan = true;
   if (likely(scanptr.p->scanState != ScanRecord::WAIT_START_QUEUED_SCAN))
   {
     scanptr.p->scan_lastSeen = __LINE__;
     scanptr.p->scan_startLine = tcConnectptr.i;
-    releaseScanrec(signal);
   }
   else
   {
@@ -18244,6 +18253,7 @@ void Dblqh::handle_finish_scan(Signal* signal,
      */
     jam();
     ndbassert(!m_is_query_block);
+    release_scan = false;
     scanptr.p->scanState = ScanRecord::QUIT_START_QUEUE_SCAN;
     scanptr.p->scanTcrec = RNIL;
     scanptr.p->scan_lastSeen = __LINE__;
@@ -18254,6 +18264,14 @@ void Dblqh::handle_finish_scan(Signal* signal,
   tcConnectptr.p->tcScanRec = RNIL;
   releaseOprec(signal, tcConnectptr);
   releaseTcrec(signal, tcConnectptr);
+  if (likely(release_scan))
+  {
+    /**
+     * release scan record after TC connection record to support
+     * DEBUG_USAGE_COUNT.
+     */
+    releaseScanrec(signal);
+  }
   if (restart_flag)
   {
     jam();
