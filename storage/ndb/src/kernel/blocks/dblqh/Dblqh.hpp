@@ -290,6 +290,7 @@ class Lgman;
 #define ZCONTINUE_WRITE_LOG 38
 #define ZSTART_SEND_EXEC_CONF 39
 #define ZPRINT_MUTEX_STATS 40
+#define ZHANDLE_TC_FAILED_SCANS 41
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -4870,6 +4871,13 @@ private:
   void unlock_table_exclusive(Tablerec *tablePtrP);
   void init_frags_to_execute_sr();
   Uint32 get_frags_to_execute_sr();
+  void handle_tc_failed_scans(Signal *signal,
+                              NodeId nodeId,
+                              Uint32 startPtrI);
+  void send_handle_tc_failed_scans(Signal *signal,
+                                   NodeId nodeId,
+                                   Uint32 startPtrI);
+
 public:
   void set_error_value(Uint32 val)
   {

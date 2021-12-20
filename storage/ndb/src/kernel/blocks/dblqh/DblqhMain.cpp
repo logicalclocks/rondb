@@ -873,6 +873,13 @@ void Dblqh::execCONTINUEB(Signal* signal)
   Uint32 data2 = signal->theData[3];
   TcConnectionrecPtr tcConnectptr;
   switch (tcase) {
+  case ZHANDLE_TC_FAILED_SCANS:
+  {
+    jam();
+    ndbrequire(m_is_query_block);
+    handle_tc_failed_scans(signal, data0, data1);
+    return;
+  }
   case ZPRINT_MUTEX_STATS:
   {
     jam();
@@ -14396,7 +14403,7 @@ void Dblqh::execNODE_FAILREP(Signal* signal)
   UintR Tdata[MAX_NDB_NODES];
   Uint32 i;
 
-  NodeFailRep * const nodeFail = (NodeFailRep *)&signal->theData[0];
+  NodeFailRep const nodeFail = *(NodeFailRep *)&signal->theData[0];
 
   if(signal->getLength() == NodeFailRep::SignalLength)
   {
@@ -14406,20 +14413,20 @@ void Dblqh::execNODE_FAILREP(Signal* signal)
     SegmentedSectionPtr ptr;
     SectionHandle handle(this, signal);
     handle.getSection(ptr, 0);
-    memset(nodeFail->theNodes, 0, sizeof(nodeFail->theNodes));
-    copy(nodeFail->theNodes, ptr);
+    memset((void*)&nodeFail.theNodes, 0, sizeof(nodeFail.theNodes));
+    copy((Uint32*)&nodeFail.theNodes, ptr);
     releaseSections(handle);
   }
   else
   {
-    memset(nodeFail->theNodes + NdbNodeBitmask48::Size, 0,
+    memset((char*)&nodeFail.theNodes + NdbNodeBitmask48::Size, 0,
            _NDB_NBM_DIFF_BYTES);
   }
-  TnoOfNodes = nodeFail->noOfNodes;
+  TnoOfNodes = nodeFail.noOfNodes;
   UintR index = 0;
   for (i = 1; i < MAX_NDB_NODES; i++) {
     jam();
-    if(NdbNodeBitmask::get(nodeFail->theNodes, i)){
+    if(NdbNodeBitmask::get(nodeFail.theNodes, i)){
       jam();
       Tdata[index] = i;
       index++;
@@ -14427,9 +14434,9 @@ void Dblqh::execNODE_FAILREP(Signal* signal)
   }//for
 
 #ifdef ERROR_INSERT
-  c_master_node_id = nodeFail->masterNodeId;
+  c_master_node_id = nodeFail.masterNodeId;
 #endif
-  
+
   ndbrequire(index == TnoOfNodes);
   ndbrequire(cnoOfNodes - 1 < MAX_NDB_NODES);
   for (i = 0; i < TnoOfNodes; i++) {
@@ -14440,6 +14447,10 @@ void Dblqh::execNODE_FAILREP(Signal* signal)
       Thostptr.i = nodeId;
       ptrCheckGuard(Thostptr, chostFileSize, hostRecord);
       Thostptr.p->nodestatus = ZNODE_DOWN;
+      if (m_is_query_block)
+      {
+        send_handle_tc_failed_scans(signal, nodeId, 0);
+      }
       DEB_NODE_STATUS(("(%u,%u) Node %u DOWN",
                        instance(),
                        m_is_query_block,
@@ -14455,15 +14466,93 @@ void Dblqh::execNODE_FAILREP(Signal* signal)
         TfoundNodes++;
       }//if
     }//for
-
-    /* Perform block-level ndbd failure handling */
-    Callback cb = { safe_cast(&Dblqh::ndbdFailBlockCleanupCallback),
-                    Tdata[i] };
-    simBlockNodeFailure(signal, Tdata[i], cb);
-  }//for
+    if (!m_is_query_block)
+    {
+      /* Perform block-level ndbd failure handling */
+      Callback cb = { safe_cast(&Dblqh::ndbdFailBlockCleanupCallback),
+                      Tdata[i] };
+      simBlockNodeFailure(signal, Tdata[i], cb);
+    }
+  }
   ndbrequire(TnoOfNodes == TfoundNodes);
-}//Dblqh::execNODE_FAILREP()
+}
 
+void
+Dblqh::send_handle_tc_failed_scans(Signal *signal,
+                                   NodeId nodeId,
+                                   Uint32 startPtrI)
+{
+  signal->theData[0] = ZHANDLE_TC_FAILED_SCANS;
+  signal->theData[1] = nodeId;
+  signal->theData[2] = startPtrI;
+  sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
+}
+
+void
+Dblqh::handle_tc_failed_scans(Signal *signal,
+                              NodeId nodeId,
+                              Uint32 startPtrI)
+{
+  TcConnectionrecPtr tcPtr;
+  for (Uint32 i = 0; i < 100; i++)
+  {
+    bool found = getNextTcConRec(startPtrI,
+                                 tcPtr,
+                                 10);
+    if (startPtrI != RNIL && !found)
+    {
+      jam();
+      i += 10;
+      continue;
+    }
+    else if (startPtrI == RNIL)
+    {
+      /**
+       * Finished with scanning operations used by scans in
+       * query threads.
+       */
+      /* Perform block-level ndbd failure handling */
+      Callback cb = { safe_cast(&Dblqh::ndbdFailBlockCleanupCallback),
+                      nodeId };
+      simBlockNodeFailure(signal, nodeId, cb);
+      return;
+    }
+    else
+    {
+      /* startPtrI != RNIL && found */
+      if (tcPtr.p->transactionState != TcConnectionrec::IDLE &&
+          tcPtr.p->tcScanRec != RNIL)
+      {
+        ScanRecordPtr scanPtr;
+        scanPtr.i = tcPtr.p->tcScanRec;
+        ndbrequire(c_scanRecordPool.getValidPtr(scanPtr));
+        ndbrequire(scanPtr.p->scanType == ScanRecord::SCAN);
+        if (refToNode(tcPtr.p->tcBlockref) == nodeId)
+        {
+          /**
+           * Close scan by using SCAN_NEXTREQ, we need to send the
+           * block reference as well since the receiver previously assumed it
+           * was always sent from the TC coordinator.
+           */
+          ScanFragNextReq *nextReq = (ScanFragNextReq*)signal->getDataPtrSend();
+          nextReq->senderData = tcPtr.p->tcOprec;
+          nextReq->transId1 = tcPtr.p->transid[0];
+          nextReq->transId2 = tcPtr.p->transid[1];
+          nextReq->variableData[0] = tcPtr.p->tcBlockref;
+          nextReq->batch_size_rows = 0;
+          nextReq->batch_size_bytes = 0;
+          nextReq->requestInfo = 0;
+          ScanFragNextReq::setCloseFlag(nextReq->requestInfo, 1);
+          sendSignal(reference(), GSN_SCAN_NEXTREQ, signal,
+                     ScanFragNextReq::SignalLength + 1, JBB);
+          send_handle_tc_failed_scans(signal, nodeId, startPtrI + 1);
+          return;
+        }
+      }
+    }
+  }
+  send_handle_tc_failed_scans(signal, nodeId, startPtrI);
+}
 
 void
 Dblqh::ndbdFailBlockCleanupCallback(Signal* signal,
@@ -15587,6 +15676,11 @@ void Dblqh::execSCAN_NEXTREQ(Signal* signal)
   const Uint32 transid2 = nextReq->transId2;
   const Uint32 senderData = nextReq->senderData;
   Uint32 senderBlockRef = signal->getSendersBlockRef();
+  if (unlikely(refToMain(senderBlockRef) == DBQLQH))
+  {
+    jam();
+    senderBlockRef = nextReq->variableData[0];
+  }
   // bug#13834481 hashHi!=0 caused timeout (tx not found)
 
   TcConnectionrecPtr tcConnectptr;

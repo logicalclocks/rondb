@@ -10195,10 +10195,18 @@ void Dbtc::printCrashApiConnectrec(ApiConnectRecordPtr apiConnectptr)
                         tcConnectptr.p->operation);
     for (Uint32 i = 0; i <= tcConnectptr.p->lastReplicaNo; i++)
     {
-      g_eventLogger->info("i: %u, node: %u, failData: %u",
+      hostptr.i = tcConnectptr.p->tcNodedata[i];
+      Uint32 nodeStatus = 0;
+      if (hostptr.i != 0)
+      {
+        ptrCheckGuard(hostptr, MAX_NDB_NODES, hostRecord);
+        nodeStatus = (hostptr.p->hostStatus == HS_ALIVE);
+      }
+      g_eventLogger->info("i: %u, node: %u, failData: %u, nodeStatus: %u",
                           i,
                           tcConnectptr.p->tcNodedata[i],
-                          tcConnectptr.p->failData[i]);
+                          tcConnectptr.p->failData[i],
+                          nodeStatus);
 
     }
     tcConList.next(tcConnectptr);
