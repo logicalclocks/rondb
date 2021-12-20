@@ -115,7 +115,7 @@
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
 //#define DO_TRANSIENT_POOL_STAT
 //#define ABORT_TRACE 1
-//#define DEBUG_NODE_FAILURE 1
+#define DEBUG_NODE_FAILURE 1
 //#define DEBUG_RR_INIT 1
 //#define DEBUG_EXEC_WRITE_COUNT 1
 #endif
@@ -10195,10 +10195,18 @@ void Dbtc::printCrashApiConnectrec(ApiConnectRecordPtr apiConnectptr)
                         tcConnectptr.p->operation);
     for (Uint32 i = 0; i <= tcConnectptr.p->lastReplicaNo; i++)
     {
-      g_eventLogger->info("i: %u, node: %u, failData: %u",
+      hostptr.i = tcConnectptr.p->tcNodedata[i];
+      Uint32 nodeStatus = 0;
+      if (hostptr.i != 0)
+      {
+        ptrCheckGuard(hostptr, MAX_NDB_NODES, hostRecord);
+        nodeStatus = (hostptr.p->hostStatus == HS_ALIVE);
+      }
+      g_eventLogger->info("i: %u, node: %u, failData: %u, nodeStatus: %u",
                           i,
                           tcConnectptr.p->tcNodedata[i],
-                          tcConnectptr.p->failData[i]);
+                          tcConnectptr.p->failData[i],
+                          nodeStatus);
 
     }
     tcConList.next(tcConnectptr);

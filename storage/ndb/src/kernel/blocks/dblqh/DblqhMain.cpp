@@ -873,6 +873,13 @@ void Dblqh::execCONTINUEB(Signal* signal)
   Uint32 data2 = signal->theData[3];
   TcConnectionrecPtr tcConnectptr;
   switch (tcase) {
+  case ZHANDLE_TC_FAILED_SCANS:
+  {
+    jam();
+    ndbrequire(m_is_query_block);
+    handle_tc_failed_scans(signal, data0, data1);
+    return;
+  }
   case ZPRINT_MUTEX_STATS:
   {
     jam();
@@ -3689,7 +3696,14 @@ void Dblqh::execTAB_COMMITREQ(Signal* signal)
     jam();
     insert_new_fragments_into_lcp(signal);
   }
+#ifdef DEBUG_USAGE_COUNT
+  NdbMutex_Lock(&tabptr.p->m_usage_count);
+  ndbrequire(tabptr.p->m_first_usage == RNIL);
+  ndbrequire(tabptr.p->m_first_usage_block == nullptr);
+  NdbMutex_Unlock(&tabptr.p->m_usage_count);
+#endif
   tabptr.p->usageCountR = 0;
+  D(tabptr.i << "Init2 usageCountR = 0");
   tabptr.p->usageCountW = 0;
   tabptr.p->tableStatus = Tablerec::TABLE_DEFINED;
   DEB_SCHEMA_VERSION(("(%u)tab: %u tableStatus = TABLE_DEFINED",
@@ -4042,9 +4056,38 @@ Dblqh::dropTab_wait_usage(Signal* signal){
   if (tabPtr.p->usageCountR > 0 || tabPtr.p->usageCountW > 0)
   {
     jam();
+    D(tabPtr.i << "usageCountR = " << tabPtr.p->usageCountR);
+#ifdef DEBUG_USAGE_COUNT
+    NdbMutex_Lock(&tabPtr.p->m_usage_count);
+    TcConnectionrecPtr tcPtr;
+    tcPtr.i = tabPtr.p->m_first_usage;
+    if (tcPtr.i != RNIL)
+    {
+      Dblqh *loc_lqh = tabPtr.p->m_first_usage_block;
+      ndbrequire(loc_lqh->tcConnect_pool.getValidPtr(tcPtr));
+      if (tcPtr.p->tcScanRec != RNIL)
+      {
+        ScanRecordPtr scanPtr;
+        scanPtr.i = tcPtr.p->tcScanRec;
+        ndbrequire(loc_lqh->c_scanRecordPool.getValidPtr(scanPtr));
+      }
+    }
+    else
+    {
+      g_eventLogger->info("usageCountR > 0 and list is empty");
+    }
+    NdbMutex_Unlock(&tabPtr.p->m_usage_count);
+    //ndbabort();
+#endif
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 4);
     return;
   }
+#ifdef DEBUG_USAGE_COUNT
+  NdbMutex_Lock(&tabPtr.p->m_usage_count);
+  ndbrequire(tabPtr.p->m_first_usage == RNIL);
+  ndbrequire(tabPtr.p->m_first_usage_block == nullptr);
+  NdbMutex_Unlock(&tabPtr.p->m_usage_count);
+#endif
 
   bool lcpDone = true;
   lcpPtr.i = 0;
@@ -4192,6 +4235,7 @@ Dblqh::dropTab_wait_usage(Signal* signal){
     conf->tableId = tabPtr.i;
     conf->senderRef = reference();
     conf->senderData = senderData;
+    D("DROP_TAB_CONF");
     sendSignal(senderRef, GSN_DROP_TAB_CONF, signal,
 	       DropTabConf::SignalLength, JBB);
   }
@@ -4201,6 +4245,7 @@ Dblqh::dropTab_wait_usage(Signal* signal){
     Ptr<AddFragRecord> addFragPtr;
     addFragPtr.i = senderData;
     ptrCheckGuard(addFragPtr, caddfragrecFileSize, addFragRecord);
+    D("dropTable_nextStep");
     dropTable_nextStep(signal, addFragPtr);
   }
 }
@@ -4208,6 +4253,7 @@ Dblqh::dropTab_wait_usage(Signal* signal){
 void
 Dblqh::execDROP_TAB_REQ(Signal* signal){
   jamEntry();
+  D("DROP_TAB_REQ");
   if (ERROR_INSERTED(5076))
   {
     /**
@@ -4316,6 +4362,7 @@ Dblqh::execDROP_TAB_REQ(Signal* signal){
   if (errCode)
   {
     jam();
+    D("DROP_TAB_REF");
     DropTabRef * ref = (DropTabRef*)signal->getDataPtrSend();
     ref->tableId = tabPtr.i;
     ref->senderRef = reference();
@@ -4329,6 +4376,7 @@ Dblqh::execDROP_TAB_REQ(Signal* signal){
   ndbrequire(tabPtr.p->usageCountR == 0 && tabPtr.p->usageCountW == 0);
   seizeAddfragrec(signal);
   addfragptr.p->m_dropTabReq = * req;
+  D("dropTable_nextStep");
   dropTable_nextStep(signal, addfragptr);
 }
 
@@ -4471,6 +4519,7 @@ Dblqh::dropTable_nextStep(Signal* signal, Ptr<AddFragRecord> addFragPtr)
   conf->senderRef = reference();
   conf->senderData = addFragPtr.p->m_dropTabReq.senderData;
   conf->tableId = tabPtr.i;
+  D("DROP_TAB_CONF");
   sendSignal(addFragPtr.p->m_dropTabReq.senderRef, GSN_DROP_TAB_CONF, signal,
              DropTabConf::SignalLength, JBB);
 
@@ -4857,6 +4906,35 @@ void Dblqh::execTIME_SIGNAL(Signal* signal)
     c_elapsed_time_millis -= Uint64(10);
     timer_handling(signal);
   }
+#ifdef DEBUG_USAGE_COUNT
+  if (!m_is_query_block)
+  {
+    for (tabptr.i = 0; tabptr.i < ctabrecFileSize; tabptr.i++)
+    {
+      ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
+      if (tabptr.p->tableStatus == Tablerec::TABLE_DEFINED)
+      {
+        NdbMutex_Lock(&tabptr.p->m_usage_count);
+        TcConnectionrecPtr tcPtr;
+        tcPtr.i = tabptr.p->m_first_usage;
+        Dblqh *loc_lqh = tabptr.p->m_first_usage_block;
+        while(tcPtr.i != RNIL)
+        {
+          ndbrequire(loc_lqh->tcConnect_pool.getValidPtr(tcPtr));
+          if (tcPtr.p->tcScanRec != RNIL)
+          {
+            ScanRecordPtr scanPtr;
+            scanPtr.i = tcPtr.p->tcScanRec;
+            ndbrequire(loc_lqh->c_scanRecordPool.getValidPtr(scanPtr));
+          }
+          loc_lqh = tcPtr.p->m_next_block;
+          tcPtr.i = tcPtr.p->m_next_usage;
+        }
+        NdbMutex_Unlock(&tabptr.p->m_usage_count);
+      }
+    }
+  }
+#endif
 }
 
 bool
@@ -8899,6 +8977,11 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
   if (op == ZREAD || op == ZREAD_EX || op == ZUNLOCK)
   {
     tabptr.p->usageCountR++;
+    D(tabptr.i << ":usageCountR = " << tabptr.p->usageCountR
+      << " PtrI = " << tcConnectptr.i);
+#ifdef DEBUG_USAGE_COUNT
+    insert_usage_count(tabptr.p, tcConnectptr);
+#endif
   }
   else
   {
@@ -13389,6 +13472,11 @@ void Dblqh::releaseTcrec(Signal* signal, TcConnectionrecPtr locTcConnectptr)
     {
       Uint32 pre_usageCountR = tabPtr.p->usageCountR--;
       ndbrequire(pre_usageCountR > 0);
+      D(tabPtr.i << ":usageCountR = " << tabPtr.p->usageCountR
+        << "PtrI = " << locTcConnectptr.i);
+#ifdef DEBUG_USAGE_COUNT
+      remove_usage_count(tabPtr.p, locTcConnectptr);
+#endif
     }
     else
     {
@@ -14315,7 +14403,7 @@ void Dblqh::execNODE_FAILREP(Signal* signal)
   UintR Tdata[MAX_NDB_NODES];
   Uint32 i;
 
-  NodeFailRep * const nodeFail = (NodeFailRep *)&signal->theData[0];
+  NodeFailRep const nodeFail = *(NodeFailRep *)&signal->theData[0];
 
   if(signal->getLength() == NodeFailRep::SignalLength)
   {
@@ -14325,20 +14413,20 @@ void Dblqh::execNODE_FAILREP(Signal* signal)
     SegmentedSectionPtr ptr;
     SectionHandle handle(this, signal);
     handle.getSection(ptr, 0);
-    memset(nodeFail->theNodes, 0, sizeof(nodeFail->theNodes));
-    copy(nodeFail->theNodes, ptr);
+    memset((void*)&nodeFail.theNodes, 0, sizeof(nodeFail.theNodes));
+    copy((Uint32*)&nodeFail.theNodes, ptr);
     releaseSections(handle);
   }
   else
   {
-    memset(nodeFail->theNodes + NdbNodeBitmask48::Size, 0,
+    memset((char*)&nodeFail.theNodes + NdbNodeBitmask48::Size, 0,
            _NDB_NBM_DIFF_BYTES);
   }
-  TnoOfNodes = nodeFail->noOfNodes;
+  TnoOfNodes = nodeFail.noOfNodes;
   UintR index = 0;
   for (i = 1; i < MAX_NDB_NODES; i++) {
     jam();
-    if(NdbNodeBitmask::get(nodeFail->theNodes, i)){
+    if(NdbNodeBitmask::get(nodeFail.theNodes, i)){
       jam();
       Tdata[index] = i;
       index++;
@@ -14346,9 +14434,9 @@ void Dblqh::execNODE_FAILREP(Signal* signal)
   }//for
 
 #ifdef ERROR_INSERT
-  c_master_node_id = nodeFail->masterNodeId;
+  c_master_node_id = nodeFail.masterNodeId;
 #endif
-  
+
   ndbrequire(index == TnoOfNodes);
   ndbrequire(cnoOfNodes - 1 < MAX_NDB_NODES);
   for (i = 0; i < TnoOfNodes; i++) {
@@ -14359,6 +14447,10 @@ void Dblqh::execNODE_FAILREP(Signal* signal)
       Thostptr.i = nodeId;
       ptrCheckGuard(Thostptr, chostFileSize, hostRecord);
       Thostptr.p->nodestatus = ZNODE_DOWN;
+      if (m_is_query_block)
+      {
+        send_handle_tc_failed_scans(signal, nodeId, 0);
+      }
       DEB_NODE_STATUS(("(%u,%u) Node %u DOWN",
                        instance(),
                        m_is_query_block,
@@ -14374,15 +14466,93 @@ void Dblqh::execNODE_FAILREP(Signal* signal)
         TfoundNodes++;
       }//if
     }//for
-
-    /* Perform block-level ndbd failure handling */
-    Callback cb = { safe_cast(&Dblqh::ndbdFailBlockCleanupCallback),
-                    Tdata[i] };
-    simBlockNodeFailure(signal, Tdata[i], cb);
-  }//for
+    if (!m_is_query_block)
+    {
+      /* Perform block-level ndbd failure handling */
+      Callback cb = { safe_cast(&Dblqh::ndbdFailBlockCleanupCallback),
+                      Tdata[i] };
+      simBlockNodeFailure(signal, Tdata[i], cb);
+    }
+  }
   ndbrequire(TnoOfNodes == TfoundNodes);
-}//Dblqh::execNODE_FAILREP()
+}
 
+void
+Dblqh::send_handle_tc_failed_scans(Signal *signal,
+                                   NodeId nodeId,
+                                   Uint32 startPtrI)
+{
+  signal->theData[0] = ZHANDLE_TC_FAILED_SCANS;
+  signal->theData[1] = nodeId;
+  signal->theData[2] = startPtrI;
+  sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
+}
+
+void
+Dblqh::handle_tc_failed_scans(Signal *signal,
+                              NodeId nodeId,
+                              Uint32 startPtrI)
+{
+  TcConnectionrecPtr tcPtr;
+  for (Uint32 i = 0; i < 100; i++)
+  {
+    bool found = getNextTcConRec(startPtrI,
+                                 tcPtr,
+                                 10);
+    if (startPtrI != RNIL && !found)
+    {
+      jam();
+      i += 10;
+      continue;
+    }
+    else if (startPtrI == RNIL)
+    {
+      /**
+       * Finished with scanning operations used by scans in
+       * query threads.
+       */
+      /* Perform block-level ndbd failure handling */
+      Callback cb = { safe_cast(&Dblqh::ndbdFailBlockCleanupCallback),
+                      nodeId };
+      simBlockNodeFailure(signal, nodeId, cb);
+      return;
+    }
+    else
+    {
+      /* startPtrI != RNIL && found */
+      if (tcPtr.p->transactionState != TcConnectionrec::IDLE &&
+          tcPtr.p->tcScanRec != RNIL)
+      {
+        ScanRecordPtr scanPtr;
+        scanPtr.i = tcPtr.p->tcScanRec;
+        ndbrequire(c_scanRecordPool.getValidPtr(scanPtr));
+        ndbrequire(scanPtr.p->scanType == ScanRecord::SCAN);
+        if (refToNode(tcPtr.p->tcBlockref) == nodeId)
+        {
+          /**
+           * Close scan by using SCAN_NEXTREQ, we need to send the
+           * block reference as well since the receiver previously assumed it
+           * was always sent from the TC coordinator.
+           */
+          ScanFragNextReq *nextReq = (ScanFragNextReq*)signal->getDataPtrSend();
+          nextReq->senderData = tcPtr.p->tcOprec;
+          nextReq->transId1 = tcPtr.p->transid[0];
+          nextReq->transId2 = tcPtr.p->transid[1];
+          nextReq->variableData[0] = tcPtr.p->tcBlockref;
+          nextReq->batch_size_rows = 0;
+          nextReq->batch_size_bytes = 0;
+          nextReq->requestInfo = 0;
+          ScanFragNextReq::setCloseFlag(nextReq->requestInfo, 1);
+          sendSignal(reference(), GSN_SCAN_NEXTREQ, signal,
+                     ScanFragNextReq::SignalLength + 1, JBB);
+          send_handle_tc_failed_scans(signal, nodeId, startPtrI + 1);
+          return;
+        }
+      }
+    }
+  }
+  send_handle_tc_failed_scans(signal, nodeId, startPtrI);
+}
 
 void
 Dblqh::ndbdFailBlockCleanupCallback(Signal* signal,
@@ -15506,6 +15676,11 @@ void Dblqh::execSCAN_NEXTREQ(Signal* signal)
   const Uint32 transid2 = nextReq->transId2;
   const Uint32 senderData = nextReq->senderData;
   Uint32 senderBlockRef = signal->getSendersBlockRef();
+  if (unlikely(refToMain(senderBlockRef) == DBQLQH))
+  {
+    jam();
+    senderBlockRef = nextReq->variableData[0];
+  }
   // bug#13834481 hashHi!=0 caused timeout (tx not found)
 
   TcConnectionrecPtr tcConnectptr;
@@ -16432,6 +16607,7 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
   }
 
   ScanFragReq * const scanFragReq = (ScanFragReq *)&signal->theData[0];
+  bool release_scan = false;
   Uint32 errorCode= 0;
   Uint32 hashIndex;
   TcConnectionrecPtr nextHashptr;
@@ -16706,9 +16882,7 @@ error_handler2:
   if (scanptr.p->m_reserved == 0)
   {
     jam();
-    c_scanRecordPool.release(scanptr);
-    checkPoolShrinkNeed(DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX,
-                        c_scanRecordPool);
+    release_scan = true;
   }
   else
   {
@@ -16721,13 +16895,23 @@ error_handler:
   regTcPtr->tcScanRec = RNIL;
   releaseOprec(signal, tcConnectptr);
   releaseTcrec(signal, tcConnectptr);
+  if (release_scan)
+  {
+    /**
+     * For debugging purposes we want to release the scan record
+     * after we release the TC connection record.
+     */
+    c_scanRecordPool.release(scanptr);
+    checkPoolShrinkNeed(DBLQH_SCAN_RECORD_TRANSIENT_POOL_INDEX,
+                        c_scanRecordPool);
+  }
   send_scan_fragref(signal,
                     transid1,
                     transid2,
                     senderData,
                     senderBlockRef,
                     errorCode);
-}//Dblqh::execSCAN_FRAGREQ()
+}
 
 void Dblqh::continueAfterReceivingAllAiLab(
                 Signal* signal,
@@ -18055,9 +18239,11 @@ void Dblqh::handle_finish_scan(Signal* signal,
 {
   ScanRecordPtr restart;
   bool restart_flag = finishScanrec(signal, restart, tcConnectptr);
+  bool release_scan = true;
   if (likely(scanptr.p->scanState != ScanRecord::WAIT_START_QUEUED_SCAN))
   {
-    releaseScanrec(signal);
+    scanptr.p->scan_lastSeen = __LINE__;
+    scanptr.p->scan_startLine = tcConnectptr.i;
   }
   else
   {
@@ -18067,15 +18253,29 @@ void Dblqh::handle_finish_scan(Signal* signal,
      */
     jam();
     ndbassert(!m_is_query_block);
+    release_scan = false;
     scanptr.p->scanState = ScanRecord::QUIT_START_QUEUE_SCAN;
+    scanptr.p->scanTcrec = RNIL;
+    scanptr.p->scan_lastSeen = __LINE__;
+    scanptr.p->scan_startLine = tcConnectptr.i;
   }
-  deleteTransidHash(signal, tcConnectptr);
+  TcConnectionrecPtr tcPtr = tcConnectptr;
+  deleteTransidHash(signal, tcPtr);
   tcConnectptr.p->tcScanRec = RNIL;
   releaseOprec(signal, tcConnectptr);
   releaseTcrec(signal, tcConnectptr);
+  if (likely(release_scan))
+  {
+    /**
+     * release scan record after TC connection record to support
+     * DEBUG_USAGE_COUNT.
+     */
+    releaseScanrec(signal);
+  }
   if (restart_flag)
   {
     jam();
+    ndbassert(!m_is_query_block);
     restart.p->scanState = ScanRecord::WAIT_START_QUEUED_SCAN;
     signal->theData[0] = ZSTART_QUEUED_SCAN;
     signal->theData[1] = restart.i;
@@ -18093,6 +18293,7 @@ void Dblqh::restart_queued_scan(Signal* signal, Uint32 scanPtrI)
   {
     jam();
     scanptr = loc_scanptr;
+    ndbrequire(scanptr.p->scanTcrec == RNIL);
     releaseScanrec(signal);
     return;
   }
@@ -18367,6 +18568,7 @@ Uint32 Dblqh::initScanrec(const ScanFragReq* scanFragReq,
       /**
        * Put on queue
        */
+      ndbrequire(!m_is_query_block);
       scanPtr->scanState = ScanRecord::IN_QUEUE;
       Local_ScanRecord_fifo queue(c_scanRecordPool,
                                   rangeScan != 0 ?
@@ -18430,9 +18632,13 @@ void Dblqh::initScanTc(const ScanFragReq* req,
   tTablePtr.i = tabptr.p->primaryTableId;
   ptrCheckGuard(tTablePtr, ctabrecFileSize, tablerec);
   regTcPtr->m_disk_table = tTablePtr.p->m_disk_table &&
-    (!req || !ScanFragReq::getNoDiskFlag(req->requestInfo));  
+    (!req || !ScanFragReq::getNoDiskFlag(req->requestInfo));
   tabptr.p->usageCountR++;
-
+  D(tabptr.i << ":usageCountR = " << tabptr.p->usageCountR
+    << "PtrI = " << tcConnectptr.i);
+#ifdef DEBUG_USAGE_COUNT
+  insert_usage_count(tabptr.p, tcConnectptr);
+#endif
   regTcPtr->dirtyOp = 0; //dirtyOp-flag not used in scans
   regTcPtr->indTakeOver = ZFALSE; // not used in scan
   regTcPtr->lastReplicaNo = 0; // not used in scan
@@ -32582,7 +32788,13 @@ void Dblqh::initialiseTabrec(Signal* signal)
       tabptr.p->m_restore_started = false;
       tabptr.p->tableStatus = Tablerec::NOT_DEFINED;
       tabptr.p->usageCountR = 0;
+      D(tabptr.i << "Init usageCountR = 0");
       tabptr.p->usageCountW = 0;
+#ifdef DEBUG_USAGE_COUNT
+      NdbMutex_Init(&tabptr.p->m_usage_count);
+      tabptr.p->m_first_usage = RNIL;
+      tabptr.p->m_first_usage_block = nullptr;
+#endif
       tabptr.p->m_addfragptr_i = RNIL;
       for (Uint32 i = 0; i < NDB_ARRAY_SIZE(tabptr.p->fragid); i++) {
         tabptr.p->fragid[i] = ZNIL;
@@ -35578,9 +35790,16 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
     {
       if (ctransidHash[i] != RNIL)
       {
-        jam();
-        ops = true;
-        break;
+        TcConnectionrecPtr tcRec;
+        tcRec.i = ctransidHash[i];
+        ndbrequire(tcConnect_pool.getValidPtr(tcRec));
+        if (tcRec.p->tcScanRec != RNIL &&
+            refToNode(tcRec.p->applRef) != getOwnNodeId())
+        {
+          jam();
+          ops = true;
+          break;
+        }
       }
     }
 
@@ -37969,6 +38188,7 @@ Dblqh::increment_usage_count_for_table(Uint32 tableId)
   tabPtr.i = tableId;
   ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
   tabPtr.p->usageCountR++;
+  D(tabPtr.i << ":usageCountR++ = " << tabPtr.p->usageCountR);
 }
 
 void
@@ -37978,4 +38198,5 @@ Dblqh::decrement_usage_count_for_table(Uint32 tableId)
   tabPtr.i = tableId;
   ptrCheckGuard(tabPtr, ctabrecFileSize, tablerec);
   tabPtr.p->usageCountR--;
+  D(tabPtr.i << ":usageCountR-- = " << tabPtr.p->usageCountR);
 }

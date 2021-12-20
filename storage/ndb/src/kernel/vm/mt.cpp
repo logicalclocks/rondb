@@ -9518,11 +9518,13 @@ mt_send_remote(Uint32 self, const SignalHeader *sh, Uint8 prio,
   }
   else
   {
+#if 0
     g_eventLogger->info("Send GSN: %u to node: %u using trp: %u with error: %u",
                         sh->theVerId_signalNumber,
                         nodeId,
                         trp_id,
                         Uint32(ss));
+#endif
   }
   return ss;
 }

@@ -3773,7 +3773,7 @@ int testFragmentedApiFailImpl(NDBT_Context* ctx, NDBT_Step* step)
   ctx->setProperty(ApiFailTestRun, (Uint32)0);
 
   /* Wait a little */
-  sleep(1);
+  sleep(4);
 
   /* Now cause our connection to disconnect
    * This results in NDBD running API failure
@@ -3782,7 +3782,7 @@ int testFragmentedApiFailImpl(NDBT_Context* ctx, NDBT_Step* step)
    */
   int otherNodeId = otherConnection->node_id();
   
-  g_info.println("FragApiFail : Forcing disconnect of node %u", otherNodeId);
+  g_err.println("FragApiFail : Forcing disconnect of node %u", otherNodeId);
   
   /* All dump 900 <nodeId> */
   int args[2]= {900, otherNodeId};

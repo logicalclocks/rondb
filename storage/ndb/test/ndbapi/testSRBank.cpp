@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2005, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2005, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -57,6 +58,7 @@ runBankTimer(NDBT_Context* ctx, NDBT_Step* step){
   {
     Bank bank(ctx->m_cluster_connection);
     ctx->incProperty(NMR_SR_THREADS_ACTIVE);
+    ndbout_c("runBankTimer is started");
     while(!ctx->isTestStopped() && 
           ctx->getProperty(NMR_SR) <= NdbMixRestarter::SR_STOPPING)
     {
@@ -86,6 +88,7 @@ int runBankTransactions(NDBT_Context* ctx, NDBT_Step* step){
   {
     Bank bank(ctx->m_cluster_connection);
     ctx->incProperty(NMR_SR_THREADS_ACTIVE);
+    ndbout_c("runBankTransactions is started");
     while(!ctx->isTestStopped() && 
           ctx->getProperty(NMR_SR) <= NdbMixRestarter::SR_STOPPING)
     {
@@ -95,7 +98,10 @@ int runBankTransactions(NDBT_Context* ctx, NDBT_Step* step){
         if (ctx->getProperty(NMR_SR) == NdbMixRestarter::SR_RUNNING)
           return NDBT_FAILED;
         else
+        {
+          ndbout << "performTransactions retry" << endl;
           break;  // Possibly retry
+        }
       }
     }
     ndbout_c("runBankTransactions is stopped");
@@ -113,6 +119,7 @@ int runBankGL(NDBT_Context* ctx, NDBT_Step* step){
   {
     Bank bank(ctx->m_cluster_connection);
     ctx->incProperty(NMR_SR_THREADS_ACTIVE);
+    ndbout_c("runBankGL is started");
     while(!ctx->isTestStopped() && 
           ctx->getProperty(NMR_SR) <= NdbMixRestarter::SR_STOPPING)
     {
@@ -143,18 +150,20 @@ runBankSrValidator(NDBT_Context* ctx, NDBT_Step* step)
     if (ctx->getPropertyWait(NMR_SR, NdbMixRestarter::SR_VALIDATING))
       break;
     
+    ndbout_c("runBankSrValidator is started");
     int wait = 0;
     int yield = 1;
     Bank bank(ctx->m_cluster_connection);
     if (bank.performSumAccounts(wait, yield) != 0)
     {
-      ndbout << "bank.performSumAccounts FAILED" << endl;
+      ndbout << "runBankSrValidator: bank.performSumAccounts FAILED" << endl;
       return NDBT_FAILED;
     }
     
     if (bank.performValidateAllGLs() != 0)
     {
-      ndbout << "bank.performValidateAllGLs FAILED" << endl;
+      ndbout << "runBankSrValidator: bank.performValidateAllGLs FAILED"
+             << endl;
       return NDBT_FAILED;
     }
     
@@ -178,19 +187,20 @@ int runBankSum(NDBT_Context* ctx, NDBT_Step* step)
   {
     Bank bank(ctx->m_cluster_connection);
     ctx->incProperty(NMR_SR_THREADS_ACTIVE);
+    ndbout_c("runBankSum: performSumAccounts is started");
     while(!ctx->isTestStopped() && 
           ctx->getProperty(NMR_SR) <= NdbMixRestarter::SR_STOPPING)
     {
       if (bank.performSumAccounts(wait, yield) == NDBT_FAILED)
       {
-        ndbout << "bank.performSumAccounts FAILED" << endl;
+        ndbout << "runBankSum: bank.performSumAccounts FAILED" << endl;
         if (ctx->getProperty(NMR_SR) == NdbMixRestarter::SR_RUNNING)
           return NDBT_FAILED;
         else
           break;  // Possibly retry
       }
     }
-    ndbout_c("performSumAccounts is stopped");
+    ndbout_c("runBankSum: performSumAccounts is stopped");
     ctx->decProperty(NMR_SR_THREADS_ACTIVE);
     if(ctx->getPropertyWait(NMR_SR, NdbMixRestarter::SR_RUNNING))
       break;
@@ -235,7 +245,8 @@ runVerifyAndDropBank(NDBT_Context* ctx, NDBT_Step* step)
   }
   if (bank.performValidateAllGLs() == NDBT_FAILED)
   {
-    ndbout << "runVerifyAndDropBank: bank.performValidateAllGLs FAILED" << endl;
+    ndbout << "runVerifyAndDropBank: bank.performValidateAllGLs FAILED"
+           << endl;
     result = NDBT_FAILED;
   }
 
