@@ -4077,7 +4077,7 @@ Dblqh::dropTab_wait_usage(Signal* signal){
       g_eventLogger->info("usageCountR > 0 and list is empty");
     }
     NdbMutex_Unlock(&tabPtr.p->m_usage_count);
-    ndbabort();
+    //ndbabort();
 #endif
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 4);
     return;

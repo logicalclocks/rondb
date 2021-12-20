@@ -66,7 +66,8 @@ class Lgman;
 
 #define JAM_FILE_ID 450
 
-#define DEBUG_USAGE_COUNT 1
+#undef DEBUG_USAGE_COUNT
+//#define DEBUG_USAGE_COUNT 1
 
 #ifdef DBLQH_C
 // Constants
