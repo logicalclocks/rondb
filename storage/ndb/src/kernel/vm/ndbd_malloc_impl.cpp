@@ -90,7 +90,8 @@ const Uint32 Ndbd_mem_manager::zone_bound[ZONE_COUNT] =
  * storing not all required bits of page numbers.
  */
 
-#ifdef VM_TRACE
+//#ifdef VM_TRACE
+#if 0
 #if defined(_WIN32) || \
     (defined(MADV_DONTDUMP) && \
      defined(MAP_NORESERVE)) || \
