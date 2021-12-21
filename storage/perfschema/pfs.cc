@@ -3327,8 +3327,8 @@ int get_thread_attributes(PFS_thread *pfs, bool current_thread,
 
 {
   int result = 0;
-  pfs_optimistic_state lock;
-  pfs_optimistic_state session_lock;
+  pfs_optimistic_state lock = pfs_optimistic_state();
+  pfs_optimistic_state session_lock = pfs_optimistic_state();
 
   DBUG_ASSERT(thread_attrs != nullptr);
 
