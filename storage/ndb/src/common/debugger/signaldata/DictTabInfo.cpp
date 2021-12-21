@@ -134,12 +134,7 @@ bool printDICTTABINFO(FILE * output, const Uint32 * theData,
 		      Uint32 len, Uint16 receiverBlockNo)
 {
 //  const DictTabInfo * const sig = (DictTabInfo *) theData;
-
-  fprintf(output, "Signal data:");
-  Uint32 i = 0;
-  while (i < len)
-    fprintf(output, " H\'%.8x", theData[i++]);
-  fprintf(output,"\n");
+  printHex(output, theData, len, "Signal data:");
   return true;
 }
 

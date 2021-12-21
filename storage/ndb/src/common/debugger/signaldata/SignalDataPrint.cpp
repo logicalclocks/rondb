@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,6 +28,29 @@
 #include <GlobalSignalNumbers.h>
 #include <signaldata/SignalData.hpp>
 #include <signaldata/SignalDataPrint.hpp>
+
+void printHex(FILE * output, const Uint32 * theData, Uint32 len,
+              const char * prefix)
+{
+  int prefixLen = strlen(prefix);
+  fprintf(output, "%s", prefix);
+  int pos = prefixLen;
+  for (Uint32 i = 0; i < len; i++)
+  {
+    if (80 < (pos + 11))
+    {
+      fprintf(output, "\n");
+      for (int j = 0; j < prefixLen; j++)
+      {
+        fprintf(output, " ");
+      }
+      pos = prefixLen;
+    }
+    fprintf(output, " H\'%.8x", theData[i]);
+    pos += 11;
+  }
+  fprintf(output,"\n");
+}
 
 /** 
  * This is the register

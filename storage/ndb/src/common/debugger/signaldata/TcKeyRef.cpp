@@ -28,11 +28,6 @@
 
 bool
 printTCKEYREF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
-  fprintf(output, "Signal data:");
-  Uint32 i = 0;
-  while (i < len)
-    fprintf(output, " H\'%.8x", theData[i++]);
-  fprintf(output,"\n");
-  
+  printHex(output, theData, len, "Signal data:");
   return true;
 }

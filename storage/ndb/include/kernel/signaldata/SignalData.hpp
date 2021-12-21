@@ -83,6 +83,9 @@ cast_constptr(const Uint32 * ptr)
   Uint32 getTCErrorCode() { return TCErrorCode; } \
   void setTCErrorCode(Uint32 _s) { TCErrorCode = _s; }
 
+void printHex(FILE * output, const Uint32 * theData, Uint32 len,
+              const char * prefix);
+
 #define GSN_PRINT_SIGNATURE(f) bool f(FILE *, const Uint32 *, Uint32, Uint16)
 
 GSN_PRINT_SIGNATURE(printTCKEYREQ);

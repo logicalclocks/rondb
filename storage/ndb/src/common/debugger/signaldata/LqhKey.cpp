@@ -194,10 +194,9 @@ printLQHKEYREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receive
   }
   
   if(!LqhKeyReq::getInterpretedFlag(reqInfo)){
-    fprintf(output, " AttrInfo:");
-    for(int i = 0; i<LqhKeyReq::getAIInLqhKeyReq(reqInfo); i++, nextPos++)
-      fprintf(output, " H\'%.8x", sig->variableData[nextPos]);
-    fprintf(output, "\n");
+    printHex(output, &sig->variableData[nextPos],
+             LqhKeyReq::getAIInLqhKeyReq(reqInfo), " AttrInfo:");
+    nextPos += LqhKeyReq::getAIInLqhKeyReq(reqInfo);
   } else {
     /* Only have section sizes if it's a short LQHKEYREQ */
     if (LqhKeyReq::getAIInLqhKeyReq(reqInfo) == LqhKeyReq::MaxAttrInfo)
@@ -216,13 +215,7 @@ printLQHKEYREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receive
 bool
 printLQHKEYCONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
 //  const LqhKeyConf * const sig = (LqhKeyConf *) theData;
-
-  fprintf(output, "Signal data:");
-  Uint32 i = 0;
-  while (i < len)
-    fprintf(output, " H\'%.8x", theData[i++]);
-  fprintf(output,"\n");
-  
+  printHex(output, theData, len, "Signal data:");
   // If you change this function, be sure to update printPACKED_SIGNAL as well
   // so that ZLQHKEYCONF is printed correctly.
   return true;
@@ -231,12 +224,6 @@ printLQHKEYCONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiv
 bool
 printLQHKEYREF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
 //  const LqhKeyRef * const sig = (LqhKeyRef *) theData;
-
-  fprintf(output, "Signal data:");
-  Uint32 i = 0;
-  while (i < len)
-    fprintf(output, " H\'%.8x", theData[i++]);
-  fprintf(output,"\n");
-  
+  printHex(output, theData, len, "Signal data:");
   return true;
 }

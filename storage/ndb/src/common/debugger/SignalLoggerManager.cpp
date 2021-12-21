@@ -629,19 +629,7 @@ SignalLoggerManager::printSignalData(FILE * output,
                            : blockToMain(sh.theReceiversBlockNumber));
   }
   if(!ok){
-    while(len >= 7){
-      fprintf(output, 
-              " H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x\n",
-              signalData[0], signalData[1], signalData[2], signalData[3], 
-              signalData[4], signalData[5], signalData[6]);
-      len -= 7;
-      signalData += 7;
-    }
-    if(len > 0){
-      for(Uint32 i = 0; i<len; i++)
-        fprintf(output, " H\'%.8x", signalData[i]);
-      fprintf(output, "\n");
-    }
+    printHex(output, signalData, len, "");
   }
 }
 

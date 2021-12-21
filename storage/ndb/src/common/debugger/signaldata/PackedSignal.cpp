@@ -160,12 +160,7 @@ printPACKED_SIGNAL(FILE * output, const Uint32 * theData, Uint32 len, Uint16 rec
      */
     if (idx == -1) // Print the main signal
     {
-      fprintf(output, "Signal data:");
-      for (Uint32 j=0; j < len; j++)
-      {
-        fprintf(output, " H\'%.8x", theData[j]);
-      }
-      fprintf(output,"\n");
+      printHex(output, theData, len, "Signal data:");
     }
     if (idx == (globalIsInCrashlog ? numberOfSignals - 1 : 0))
     {
@@ -190,19 +185,14 @@ printPACKED_SIGNAL(FILE * output, const Uint32 * theData, Uint32 len, Uint16 rec
       case ZCOMPLETED:
       case ZLQHKEYCONF:
       {
-        fprintf(output, "  Signal data:");
-        for (Uint32 j = 0; j < signalLength; j++)
-          fprintf(output, " H\'%.8x", theData[offset + j]);
-        fprintf(output,"\n");
+        printHex(output, &theData[offset], signalLength, "  Signal data:");
         break;
       }
       case ZREMOVE_MARKER:
       {
-        fprintf(output, "  Signal data:");
-        for (Uint32 j = 1; // Skip first word!
-             j < signalLength; j++)
-          fprintf(output, " H\'%.8x", theData[offset+j]);
-        fprintf(output,"\n");
+        // Skip first word!
+        printHex(output, &theData[offset + 1], signalLength - 1,
+                 "  Signal data:");
         break;
       }
       case ZFIRE_TRIG_REQ:

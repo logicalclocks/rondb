@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -120,19 +121,7 @@ printTCKEYREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiver
   if (len >= TcKeyReq::StaticLength) {
     Uint32 restLen = (len - TcKeyReq::StaticLength);
     const Uint32 * rest = &sig->scanInfo;
-    while(restLen >= 7){
-      fprintf(output, 
-              " H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x\n",
-              rest[0], rest[1], rest[2], rest[3], 
-              rest[4], rest[5], rest[6]);
-      restLen -= 7;
-      rest += 7;
-    }
-    if(restLen > 0){
-      for(Uint32 i = 0; i<restLen; i++)
-        fprintf(output, " H\'%.8x", rest[i]);
-      fprintf(output, "\n");
-    }
+    printHex(output, rest, restLen, "");
   } else {
     fprintf(output, "*** invalid len %u ***\n", len);
   }

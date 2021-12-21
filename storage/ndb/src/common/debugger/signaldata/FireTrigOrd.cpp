@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -96,22 +97,7 @@ printFIRE_TRIG_ORD(FILE * output, const Uint32 * theData, Uint32 len,
       
       Uint32 remain = len - 8;
       const Uint32* data = &theData[8];
-      while (remain >= 7)
-      {
-        fprintf(output, 
-                " H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x\n",
-                data[0], data[1], data[2], data[3], 
-                data[4], data[5], data[6]);
-        remain -= 7;
-        data += 7;
-      }
-      if(remain > 0){
-        for(Uint32 i = 0; i<remain; i++)
-        {
-          fprintf(output, " H\'%.8x", data[i]);
-        }
-        fprintf(output, "\n");
-      }
+      printHex(output, data, remain, "");
     }
   }   
     
