@@ -42,6 +42,7 @@
 #include "TransientSlotPool.hpp"
 #include <Intrusive64List.hpp>
 #include <RWPool64.hpp>
+#include <atomic>
 
 #include <EventLogger.hpp>
 
