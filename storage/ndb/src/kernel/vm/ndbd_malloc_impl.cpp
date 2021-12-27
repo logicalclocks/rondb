@@ -116,7 +116,7 @@ const Uint32 Ndbd_mem_manager::zone_bound[ZONE_COUNT] =
    Disable on Solaris:
    Bug #32575486 NDBMTD CONSUMES ALL AVAILABLE MEMORY IN DEBUG ON SOLARIS
 */
-#if defined(VM_TRACE) && !defined(__sun)
+#if defined(VM_TRACE) && !defined(__sun) && !defined(__aarch64__)
 #if defined(_WIN32) || \
     (defined(MADV_DONTDUMP) && \
      defined(MAP_NORESERVE)) || \

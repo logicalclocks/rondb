@@ -293,7 +293,13 @@ IF(CMAKE_HOST_UNIX AND NOT FORCE_UNSUPPORTED_COMPILER
       IF(LINUX_RHEL6)
         SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-8")
       ELSEIF(LINUX_RHEL7)
-        SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-8")
+        # ARM requires GCC 10, but we still build releases for
+        # x86_64 on GCC 8.
+        IF(MY_HOST_MACHINE_NAME MATCHES "aarch64")
+          SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-10")
+        ELSE()
+          SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-8")
+        ENDIF()
       ELSEIF(LINUX_RHEL8)
         SET(ALTERNATIVE_PATHS "/opt/rh/gcc-toolset-10")
       ENDIF()

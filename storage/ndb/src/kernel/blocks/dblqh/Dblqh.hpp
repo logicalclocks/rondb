@@ -69,6 +69,9 @@ class FsReadWriteReq;
 
 #define JAM_FILE_ID 450
 
+#undef DEBUG_USAGE_COUNT
+//#define DEBUG_USAGE_COUNT 1
+
 #ifdef DBLQH_C
 // Constants
 /* ------------------------------------------------------------------------- */
@@ -287,6 +290,7 @@ class FsReadWriteReq;
 #define ZSTART_SEND_EXEC_CONF 39
 #define ZPRINT_MUTEX_STATS 40
 #define ZPRINT_CONNECT_DEBUG 41
+#define ZHANDLE_TC_FAILED_SCANS 42
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -2559,6 +2563,13 @@ public:
 
     std::atomic<unsigned int> usageCountR; // readers
     std::atomic<unsigned int> usageCountW; // writers
+
+#ifdef DEBUG_USAGE_COUNT
+    NdbMutex m_usage_count;
+    Uint32 m_first_usage;
+    Dblqh *m_first_usage_block;
+#endif
+
     Uint32 m_addfragptr_i;
     Uint32 m_senderData;
     Uint32 m_senderRef;
@@ -2670,7 +2681,7 @@ public:
       //readlenAi must be set before used
       //reqinfo must be set before used
       //schemaVersion must be set before used
-      //tableref must be set before used
+      tableref(RNIL),
       tcOprec(RNIL),
       hashIndex(RNIL),
       //tcHashKeyHi must be set before used
@@ -2681,12 +2692,12 @@ public:
       savePointId(0),
       transactionState(TC_NOT_CONNECTED),
       applRef(Uint32(~0)),
-      clientBlockref(Uint32(~0)),
+      clientBlockref(RNIL),
       //tcBlockref must be set before used
       commitAckMarker(RNIL),
       numFiredTriggers(0),
       lqhKeyReqId(0),
-      //errCode must be set before used
+      errorCode(0),
       //nextReplica must be set before used
       primKeyLen(0),
       //nodeAfterNext must be set before used
@@ -2706,7 +2717,7 @@ public:
       //tcNodeFailrec only set when abortState is set to NEW_FROM_TC
       //m_disk_table set before used
       //m_use_rowid used for key operations, set before used
-      //m_dealloc must be set before used
+      m_dealloc_state(TcConnectionrec::DA_IDLE),
       //m_fire_trig_pass must be set before used
       m_committed_log_space(0),
       m_flags(0),
@@ -2726,12 +2737,25 @@ public:
       //scanKeyInfoPos only used when m_flags has OP_SCANKEYINFOPOSSAVED set
       //m_nr_delete only used in Copy fragment, set before used
     {
+      m_dealloc_data.m_unused = RNIL;
+#ifdef DEBUG_USAGE_COUNT
+      m_prev_usage = RNIL;
+      m_next_usage = RNIL;
+      m_prev_block = nullptr;
+      m_next_block = nullptr;
+#endif
     }
 
     ~TcConnectionrec()
     {
     }
     Uint64 fragmentptr;
+#ifdef DEBUG_USAGE_COUNT
+    Dblqh *m_prev_block;
+    Dblqh *m_next_block;
+    Uint32 m_prev_usage;
+    Uint32 m_next_usage;
+#endif
     UintR accConnectrec;
     UintR tupConnectrec;
     Uint32 nextTcConnectrec;
@@ -3254,7 +3278,7 @@ private:
   void sendTCKEYREF(Signal*, Uint32 dst, Uint32 route, Uint32 cnt);
   void sendScanFragConf(Signal* signal,
                         Uint32 scanCompleted,
-                        const TcConnectionrec*);
+                        const TcConnectionrec* const tcPtrP);
 
   void send_next_NEXT_SCANREQ(Signal* signal,
                               SimulatedBlock* block,
@@ -4935,6 +4959,13 @@ private:
   void unlock_table_exclusive(Tablerec *tablePtrP);
   void init_frags_to_execute_sr();
   Uint32 get_frags_to_execute_sr();
+  void handle_tc_failed_scans(Signal *signal,
+                              NodeId nodeId,
+                              Uint32 startPtrI);
+  void send_handle_tc_failed_scans(Signal *signal,
+                                   NodeId nodeId,
+                                   Uint32 startPtrI);
+
 public:
   void set_error_value(Uint32 val)
   {
@@ -5121,6 +5152,72 @@ public:
   void get_tc_ref(Uint32 tcPtrI,
                   Uint32 & tcOprec,
                   Uint32 & tcRef);
+#ifdef DEBUG_USAGE_COUNT
+  void insert_usage_count(Tablerec *tabPtrP,
+                          TcConnectionrecPtr tcPtr)
+  {
+    jam();
+    jamLine((Uint16)tcPtr.i);
+    NdbMutex_Lock(&tabPtrP->m_usage_count);
+    tcPtr.p->m_next_usage = tabPtrP->m_first_usage;
+    tcPtr.p->m_next_block = tabPtrP->m_first_usage_block;
+    tcPtr.p->m_prev_usage = RNIL;
+    tcPtr.p->m_prev_block = nullptr;
+    TcConnectionrecPtr firstTcPtr;
+    firstTcPtr.i = tabPtrP->m_first_usage;
+    if (firstTcPtr.i != RNIL)
+    {
+      jam();
+      jamLine((Uint16)firstTcPtr.i);
+      ndbrequire(tabPtrP->m_first_usage_block->tcConnect_pool.getValidPtr(firstTcPtr));
+      firstTcPtr.p->m_prev_usage = tcPtr.i;
+      firstTcPtr.p->m_prev_block = this;
+    }
+    tabPtrP->m_first_usage = tcPtr.i;
+    tabPtrP->m_first_usage_block = this;
+    NdbMutex_Unlock(&tabPtrP->m_usage_count);
+  }
+  void remove_usage_count(Tablerec *tabPtrP,
+                          TcConnectionrecPtr tcPtr)
+  {
+    jam();
+    jamLine((Uint16)tcPtr.i);
+    NdbMutex_Lock(&tabPtrP->m_usage_count);
+    if (tcPtr.i == tabPtrP->m_first_usage &&
+        this == tabPtrP->m_first_usage_block)
+    {
+      jam();
+      tabPtrP->m_first_usage = tcPtr.p->m_next_usage;
+      tabPtrP->m_first_usage_block = tcPtr.p->m_next_block;
+    }
+    else
+    {
+      jam();
+      TcConnectionrecPtr prevTcPtr;
+      prevTcPtr.i = tcPtr.p->m_prev_usage;
+      ndbrequire(prevTcPtr.i != RNIL);
+      jamLine((Uint16)prevTcPtr.i);
+      ndbrequire(tcPtr.p->m_prev_block->tcConnect_pool.getValidPtr(prevTcPtr));
+      prevTcPtr.p->m_next_usage = tcPtr.p->m_next_usage;
+      prevTcPtr.p->m_next_block = tcPtr.p->m_next_block;
+    }
+    if (tcPtr.p->m_next_usage != RNIL)
+    {
+      jam();
+      TcConnectionrecPtr lastTcPtr;
+      lastTcPtr.i = tcPtr.p->m_next_usage;
+      jamLine((Uint16)lastTcPtr.i);
+      ndbrequire(tcPtr.p->m_next_block->tcConnect_pool.getValidPtr(lastTcPtr));
+      lastTcPtr.p->m_prev_usage = tcPtr.p->m_prev_usage;
+      lastTcPtr.p->m_prev_block = tcPtr.p->m_prev_block;
+    }
+    tcPtr.p->m_prev_usage = RNIL;
+    tcPtr.p->m_prev_usage = RNIL;
+    tcPtr.p->m_next_block = nullptr;
+    tcPtr.p->m_next_block = nullptr;
+    NdbMutex_Unlock(&tabPtrP->m_usage_count);
+  }
+#endif
 #endif
 };
 

@@ -8202,8 +8202,14 @@ Backup::init_file_for_lcp(Signal *signal,
   ndbrequire(filePtr.p->backupPtr == ptrI);
 
   /**
-   * Init operation
+   * Init operation, first get most recent max record size.
+   * Could have been updated after preparing the LCP.
    */
+
+  Dbtup* tup = (Dbtup*)globalData.getBlock(DBTUP, instance());
+  tabPtr.p->maxRecordSize =
+    1 + tup->get_max_lcp_record_size(tabPtr.p->tableId);
+
   DEB_EXTRA_LCP(("(%u)Init new tab(%u): maxRecordSize: %u",
                  instance(),
                  tabPtr.p->tableId,

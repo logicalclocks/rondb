@@ -28,9 +28,9 @@
 
 #include <algorithm>
 #ifdef VM_TRACE
-#ifndef NDBD_RANDOM_START_PAGE
-#define NDBD_RANDOM_START_PAGE
-#endif
+//#ifndef NDBD_RANDOM_START_PAGE
+//#define NDBD_RANDOM_START_PAGE
+//#endif
 #endif
 
 #include <cstdint>
@@ -83,13 +83,6 @@ extern Uint32 g_random_start_page_id;
 #define BPP_2LOG (BMW_2LOG + 5)
 #define PAGE_REGION_MASK ((1 << BPP_2LOG) - 1)
 #define SPACE_PER_BMP_2LOG ((2 + BMW_2LOG) + BPP_2LOG)
-
-#ifdef VM_TRACE
-#ifndef NDBD_RANDOM_START_PAGE
-#define NDBD_RANDOM_START_PAGE
-#endif
-#endif
-
 
 struct Alloc_page 
 {

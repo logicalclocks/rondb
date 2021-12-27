@@ -48,7 +48,7 @@ ndbapi= CHOOSE_host1,CHOOSE_host1,CHOOSE_host1
 #mysqld = CHOOSE_host1,CHOOSE_host4
 
 NoOfReplicas = 3
-DataMemory = 500M
+DataMemory = 350M
 MaxNoOfConcurrentScans = 100
 MaxNoOfSavedMessages= 5
 NoOfFragmentLogFiles = 8
