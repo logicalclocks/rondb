@@ -1550,19 +1550,12 @@ void Dbacc::execACCKEYREQ(Signal* signal,
 
           release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
 
-          if (!m_is_in_query_thread)
-          {
-            fragrecptr.p->
-              m_lockStats.req_start_imm_ok((opbits & 
-                                            Operationrec::OP_LOCK_MODE) 
-                                           != ZREADLOCK,
-                                           operationRecPtr.p->m_lockTime,
-                                           getHighResTimer());
-          }
-          else
-          {
-            operationRecPtr.p->m_lockTime = getHighResTimer();
-          }
+          fragrecptr.p->
+            m_lockStats.req_start_imm_ok((opbits & 
+                                          Operationrec::OP_LOCK_MODE) 
+                                         != ZREADLOCK,
+                                         operationRecPtr.p->m_lockTime,
+                                          getHighResTimer());
         }
         else
         {
@@ -1971,23 +1964,17 @@ upgrade:
   /**
    * Track end-of-wait
    */
-  if (!m_is_in_query_thread)
   {
     FragmentrecPtr frp;
     frp.i = nextOp.p->fragptr;
     c_fragment_pool.getPtr(frp);
-    
+   
     frp.p->m_lockStats.wait_ok(((nextbits & 
                                  Operationrec::OP_LOCK_MODE) 
                                 != ZREADLOCK),
                                nextOp.p->m_lockTime,
                                getHighResTimer());
   }
-  else
-  {
-    operationRecPtr.p->m_lockTime = getHighResTimer();
-  }
-  
 checkop:
   Uint32 errCode = 0;
   OperationrecPtr save = operationRecPtr;
@@ -2144,36 +2131,22 @@ Dbacc::accIsLockedLab(Signal* signal, OperationrecPtr lockOwnerPtr)
                               operationRecPtr.p->localdata.m_page_idx,
                               fragrecptr.p->tupFragptr);
 
-      if (!m_is_in_query_thread)
-      {
-        fragrecptr.p->m_lockStats.req_start_imm_ok((bits & 
-                                              Operationrec::OP_LOCK_MODE) 
-                                              != ZREADLOCK,
-                                              operationRecPtr.p->m_lockTime,
-                                              getHighResTimer());
-      }
-      else
-      {
-        operationRecPtr.p->m_lockTime = getHighResTimer();
-      }
+      fragrecptr.p->m_lockStats.req_start_imm_ok((bits & 
+                                            Operationrec::OP_LOCK_MODE) 
+                                            != ZREADLOCK,
+                                            operationRecPtr.p->m_lockTime,
+                                            getHighResTimer());
       sendAcckeyconf(signal);
       return;
     }
     else if (return_result == ZSERIAL_QUEUE)
     {
       jam();
-      if (!m_is_in_query_thread)
-      {
-        fragrecptr.p->m_lockStats.req_start((bits & 
-                                             Operationrec::OP_LOCK_MODE) 
-                                            != ZREADLOCK,
-                                            operationRecPtr.p->m_lockTime,
-                                            getHighResTimer());
-      }
-      else
-      {
-        operationRecPtr.p->m_lockTime = getHighResTimer();
-      }
+      fragrecptr.p->m_lockStats.req_start((bits & 
+                                           Operationrec::OP_LOCK_MODE) 
+                                          != ZREADLOCK,
+                                          operationRecPtr.p->m_lockTime,
+                                          getHighResTimer());
       signal->theData[0] = RNIL;
       return;
     }
@@ -2318,17 +2291,9 @@ void Dbacc::insertelementLab(Signal* signal,
                    tcBlockref));
 
   release_frag_mutex_hash(fragrecptr.p, operationRecPtr);
-  if (!m_is_in_query_thread)
-  {
-    fragrecptr.p->m_lockStats.req_start_imm_ok(true /* Exclusive */,
-                                               operationRecPtr.p->m_lockTime,
-                                               getHighResTimer());
-  }
-  else
-  {
-    operationRecPtr.p->m_lockTime = getHighResTimer();
-  }
-
+  fragrecptr.p->m_lockStats.req_start_imm_ok(true /* Exclusive */,
+                                             operationRecPtr.p->m_lockTime,
+                                             getHighResTimer());
   c_tup->prepareTUPKEYREQ(localKey.m_page_no,
                           localKey.m_page_idx,
                           fragrecptr.p->tupFragptr);
@@ -5618,7 +5583,6 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
   ndbassert((opbits & Operationrec::OP_LOCK_OWNER) == 0);
   ndbassert((opbits & Operationrec::OP_RUN_QUEUE) == 0);
 
-  if (!m_is_in_query_thread)
   {
     FragmentrecPtr frp;
     frp.i = opPtr.p->fragptr;
@@ -5629,10 +5593,6 @@ Dbacc::abortSerieQueueOperation(Signal* signal, OperationrecPtr opPtr)
                                  != ZREADLOCK,
                                  opPtr.p->m_lockTime,
                                  getHighResTimer());
-  }
-  else
-  {
-    opPtr.p->m_lockTime = getHighResTimer();
   }
   
   if (prevP.i != RNIL)
@@ -6431,7 +6391,6 @@ Dbacc::startNew(Signal* signal, OperationrecPtr newOwner)
     goto scan;
 
   /* Waiting op now runnable... */
-  if (!m_is_in_query_thread)
   {
     FragmentrecPtr frp;
     frp.i = newOwner.p->fragptr;
@@ -6440,10 +6399,6 @@ Dbacc::startNew(Signal* signal, OperationrecPtr newOwner)
                                != ZREADLOCK,
                                operationRecPtr.p->m_lockTime,
                                getHighResTimer());
-  }
-  else
-  {
-    operationRecPtr.p->m_lockTime = getHighResTimer();
   }
 
   if (deleted)
@@ -8488,17 +8443,10 @@ void Dbacc::checkNextBucketLab(Signal* signal)
     if (!scanPtr.p->scanReadCommittedFlag) {
       jam();
       /* Immediate lock grant as element unlocked */
-      if (!m_is_in_query_thread)
-      {
-        fragrecptr.p->m_lockStats.
-          req_start_imm_ok(scanPtr.p->scanLockMode != ZREADLOCK,
-                           operationRecPtr.p->m_lockTime,
-                           getHighResTimer());
-      }
-      else
-      {
-        operationRecPtr.p->m_lockTime = getHighResTimer();
-      }
+      fragrecptr.p->m_lockStats.
+        req_start_imm_ok(scanPtr.p->scanLockMode != ZREADLOCK,
+                         operationRecPtr.p->m_lockTime,
+                         getHighResTimer());
       setlock(nsPageptr, tnsElementptr);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
       insertLockOwnersList(operationRecPtr);
@@ -8546,17 +8494,10 @@ void Dbacc::checkNextBucketLab(Signal* signal)
 	 * WE PLACED THE OPERATION INTO A SERIAL QUEUE AND THUS WE HAVE TO 
 	 * WAIT FOR THE LOCK TO BE RELEASED. WE CONTINUE WITH THE NEXT ELEMENT
 	 * ----------------------------------------------------------------- */
-        if (!m_is_in_query_thread)
-        {
-          fragrecptr.p->
-            m_lockStats.req_start(scanPtr.p->scanLockMode != ZREADLOCK,
-                                  operationRecPtr.p->m_lockTime,
-                                  getHighResTimer());
-        }
-        else
-        {
-          operationRecPtr.p->m_lockTime = getHighResTimer();
-        }
+        fragrecptr.p->
+          m_lockStats.req_start(scanPtr.p->scanLockMode != ZREADLOCK,
+                                operationRecPtr.p->m_lockTime,
+                                getHighResTimer());
         putOpScanLockQue();	/* PUT THE OP IN A QUE IN THE SCAN REC */
         scanPtr.p->scan_lastSeen = __LINE__;
         BlockReference ref = scanPtr.p->scanUserblockref;
@@ -8585,17 +8526,10 @@ void Dbacc::checkNextBucketLab(Signal* signal)
       }//if
       ndbassert(return_result == ZPARALLEL_QUEUE);
       /* We got into the parallel queue - immediate grant */
-      if (!m_is_in_query_thread)
-      {
-        fragrecptr.p->m_lockStats.
-          req_start_imm_ok(scanPtr.p->scanLockMode != ZREADLOCK,
-                           operationRecPtr.p->m_lockTime,
-                           getHighResTimer());
-      }
-      else
-      {
-        operationRecPtr.p->m_lockTime = getHighResTimer();
-      }
+      fragrecptr.p->m_lockStats.
+        req_start_imm_ok(scanPtr.p->scanLockMode != ZREADLOCK,
+                         operationRecPtr.p->m_lockTime,
+                         getHighResTimer());
     }//if
   }//if
   /* ----------------------------------------------------------------------- */
@@ -8846,16 +8780,9 @@ void Dbacc::execACC_CHECK_SCAN(Signal* signal)
     c_fragment_pool.getPtr(fragrecptr);
 
     /* Scan op that had to wait for a lock is now runnable */
-    if (!m_is_in_query_thread)
-    {
-      fragrecptr.p->m_lockStats.wait_ok(scanPtr.p->scanLockMode != ZREADLOCK,
-                                        operationRecPtr.p->m_lockTime,
-                                        getHighResTimer());
-    }
-    else
-    {
-      operationRecPtr.p->m_lockTime = getHighResTimer();
-    }
+    fragrecptr.p->m_lockStats.wait_ok(scanPtr.p->scanLockMode != ZREADLOCK,
+                                      operationRecPtr.p->m_lockTime,
+                                      getHighResTimer());
     if (operationRecPtr.p->m_op_bits & Operationrec::OP_ELEMENT_DISAPPEARED) 
     {
       jam();

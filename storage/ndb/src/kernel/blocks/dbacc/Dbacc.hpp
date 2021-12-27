@@ -537,31 +537,31 @@ struct Fragmentrec {
     /* Exclusive row lock counts */
 
     /*   Total requests received */
-    Uint64 m_ex_req_count;
+    std::atomic<Uint64> m_ex_req_count;
 
     /*   Total requests immediately granted */
-    Uint64 m_ex_imm_ok_count;
+    std::atomic<Uint64> m_ex_imm_ok_count;
 
     /*   Total requests granted after a wait */
-    Uint64 m_ex_wait_ok_count;
+    std::atomic<Uint64> m_ex_wait_ok_count;
 
     /*   Total requests failed after a wait */
-    Uint64 m_ex_wait_fail_count;
+    std::atomic<Uint64> m_ex_wait_fail_count;
     
 
     /* Shared row lock counts */
 
     /*   Total requests received */
-    Uint64 m_sh_req_count;
+    std::atomic<Uint64> m_sh_req_count;
 
     /*   Total requests immediately granted */
-    Uint64 m_sh_imm_ok_count;
+    std::atomic<Uint64> m_sh_imm_ok_count;
 
     /*   Total requests granted after a wait */
-    Uint64 m_sh_wait_ok_count;
+    std::atomic<Uint64> m_sh_wait_ok_count;
 
     /*   Total requests failed after a wait */
-    Uint64 m_sh_wait_fail_count;
+    std::atomic<Uint64> m_sh_wait_fail_count;
 
     /* Wait times */
 
@@ -569,12 +569,12 @@ struct Fragmentrec {
     /*   Total time spent waiting for a lock
      *   which was eventually granted
      */
-    Uint64 m_wait_ok_millis;
+    std::atomic<Uint64> m_wait_ok_millis;
 
     /*   Total time spent waiting for a lock
      *   which was not eventually granted
      */
-    Uint64 m_wait_fail_millis;
+    std::atomic<Uint64> m_wait_fail_millis;
     
     void init()
     {
