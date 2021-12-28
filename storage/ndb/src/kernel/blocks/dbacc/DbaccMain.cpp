@@ -3207,7 +3207,8 @@ void Dbacc::execACC_ABORTREQ(Signal* signal,
   Uint32 opstate = opbits & Operationrec::OP_STATE_MASK;
   ndbrequire(Magic::check_ptr(operationRecPtr.p));
 
-  if (opbits == Operationrec::OP_EXECUTED_DIRTY_READ)
+  if (opbits == Operationrec::OP_EXECUTED_DIRTY_READ ||
+      opbits == Operationrec::OP_INITIAL)
   {
     jam();
     operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
@@ -3280,6 +3281,7 @@ void Dbacc::execACC_ABORTREQ(Signal* signal,
      * This is only sent for scan operations, thus can only be
      * sent to DBTUP and DBTUX.
      */
+    operationRecPtr.p->m_op_bits = Operationrec::OP_INITIAL;
     signal->theData[0] = operationRecPtr.p->userptr;
     signal->theData[2] = sendConf;
     sendSignal(operationRecPtr.p->userblockref,
