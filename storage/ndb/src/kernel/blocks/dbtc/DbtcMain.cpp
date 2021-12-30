@@ -10044,11 +10044,6 @@ int Dbtc::releaseAndAbort(Signal* signal, ApiConnectRecord* const regApiPtr)
       signal->theData[2] = regApiPtr->transid[0];
       signal->theData[3] = regApiPtr->transid[1];
       Uint32 len = 4;
-      if (refToMain(blockRef) != DBLQH)
-      {
-        len = 5;
-        signal->theData[4] = instanceKey;
-      }
       if (ERROR_INSERTED(8120))
       {
         Uint32 nodeId = refToNode(blockRef);
@@ -10061,6 +10056,11 @@ int Dbtc::releaseAndAbort(Signal* signal, ApiConnectRecord* const regApiPtr)
             blockRef = numberToRef(V_QUERY, instance_no, nodeId);
           }
         }
+      }
+      if (refToMain(blockRef) != DBLQH)
+      {
+        len = 5;
+        signal->theData[4] = instanceKey;
       }
       DEB_ABORT_TRANS(("Send ABORT tcRef(%u,%x) transid(%u,%u)"
                        " to ref: %x, host: %u",
