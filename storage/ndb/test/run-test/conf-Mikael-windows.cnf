@@ -64,6 +64,7 @@ MaxNoOfOrderedIndexes=200
 MaxNoOfUniqueHashIndexes=200
 MaxNoOfTriggers=3000
 TransactionDeadlockDetectionTimeout=5000
+MaxNoOfConcurrentOperations=32000
 
 SharedGlobalMemory=350M
 DiskPageBufferMemory=256M

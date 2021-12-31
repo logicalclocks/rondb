@@ -374,12 +374,12 @@ int runTestMaxOperations(NDBT_Context* ctx, NDBT_Step* step){
   }
 
   maxOpsLimit = 100;
-  Uint32 coolDownLoops = 250;
+  Uint32 coolDownLoops = 50;
   while (coolDownLoops-- > 0){
     int errors = 0;
     const int maxErrors = 5;
 
-    NdbSleep_MilliSleep(2000);
+    NdbSleep_MilliSleep(200);
     if (hugoOps.startTransaction(pNdb) != NDBT_OK){
       delete pNdb;
       ndbout << "startTransaction failed, line: " << __LINE__ << endl;
