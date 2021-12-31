@@ -2695,6 +2695,8 @@ runBug56829(NDBT_Context* ctx, NDBT_Step* step)
   char* rowmask = new char [rows];
   std::memset(rowmask, 0, rows);
   int loop = 0;
+  /* Wait to ensure that the initial pages have stabilised */
+  NdbSleep_SecSleep(10);
   while (loop < loops)
   {
     CHECK2(rows > 0, "rows must be != 0");
@@ -2847,7 +2849,7 @@ runBug56829(NDBT_Context* ctx, NDBT_Step* step)
      */
     CHECK2(pages[1] == pages[0], "pages after create table " << pages[1]
                                   << " not == initial pages " << pages[0]);
-    CHECK2(pages[2] > pages[0], "pages after create index " << pages[2]
+    CHECK2(pages[2] >= pages[0], "pages after create index " << pages[2]
                                   << " not > initial pages " << pages[0]);
     CHECK2(pages[3] >  pages[0], "pages after load " << pages[3]
                                   << " not >  initial pages " << pages[0]);
