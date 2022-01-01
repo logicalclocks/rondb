@@ -113,14 +113,6 @@ Dbtux::execCREATE_TAB_REQ(Signal* signal)
       break;
     }
 
-    // error inserts
-    if (ERROR_INSERTED(12001) && fragOpPtr.p->m_fragNo == 0)
-    {
-      jam();
-      errorCode = (TuxFragRef::ErrorCode)1;
-      CLEAR_ERROR_INSERT_VALUE;
-      break;
-    }
     // success
     CreateTabConf* conf = (CreateTabConf*)signal->getDataPtrSend();
     conf->senderRef = reference();
@@ -342,6 +334,7 @@ Dbtux::execTUXFRAGREQ(Signal* signal)
     if (debugFlags & DebugMeta) {
       tuxDebugOut << "Add frag " << fragPtr.i << " " << *fragPtr.p << endl;
     }
+#ifdef ERROR_INSERT
     /**
      * This code is setting up fragNo to ensure the error insert below still
      * works as it should.
@@ -356,7 +349,6 @@ Dbtux::execTUXFRAGREQ(Signal* signal)
         fragNo = MAX_FRAG_PER_LQH;
       }
     }
-#endif
     // error inserts
     if (ERROR_INSERTED(12001) && fragNo == 0)
     {
@@ -365,7 +357,8 @@ Dbtux::execTUXFRAGREQ(Signal* signal)
       CLEAR_ERROR_INSERT_VALUE;
       break;
     }
-
+#endif
+#endif
     // initialize tree header
     TreeHead& tree = fragPtr.p->m_tree;
     new (&tree) TreeHead();
