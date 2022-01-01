@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -138,7 +138,7 @@ SimpleProperties::Reader::getKey() const{
   return m_key;
 }
 
-Uint16
+Uint32
 SimpleProperties::Reader::getValueLen() const {
   switch(m_type){
   case Uint32Value:
@@ -194,6 +194,7 @@ SimpleProperties::Reader::getBuffered(char * buf, Uint32 buf_size) {
       m_strLen -= buf_size;
       return buf_size;
     }
+    assert(m_strLen <= buf_size);
     return m_strLen;
   }
   return 0;

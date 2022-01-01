@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -146,7 +146,7 @@ public:
      * Get value length in bytes - (including terminating 0 for strings)
      *  Note only valid is valid() == true
      */
-    Uint16 getValueLen() const;
+    Uint32 getValueLen() const;
 
     /**
      * Get value length including any padding that may be returned
@@ -200,7 +200,7 @@ public:
 
     bool m_error;
     Uint16 m_key;
-    Uint16 m_itemLen;
+    Uint32 m_itemLen;
     union {
       Uint32 m_ui32_value;
       Uint32 m_strLen; // Including 0-byte in words
