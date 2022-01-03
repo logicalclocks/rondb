@@ -276,7 +276,7 @@ static atrt_host* find(const char* hostname, Vector<atrt_host*>& hosts) {
 
   atrt_host* host = new atrt_host;
   host->m_index = hosts.size();
-  host->m_cpcd = new SimpleCpcClient(hostname, 1234);
+  host->m_cpcd = new SimpleCpcClient(hostname, 1235);
   host->m_basedir = g_basedir;
   host->m_user = g_user;
   host->m_hostname = hostname;
