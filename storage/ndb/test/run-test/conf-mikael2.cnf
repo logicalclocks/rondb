@@ -23,7 +23,7 @@
 
 [atrt]
 basedir = CHOOSE_dir
-baseport = 14000
+baseport = 15000
 clusters = .3node
 fix-nodeid=1
 mt = 2
