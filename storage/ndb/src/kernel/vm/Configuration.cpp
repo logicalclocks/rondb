@@ -915,7 +915,7 @@ Configuration::get_and_set_transaction_memory(
   {
     Uint32 num_threads = get_num_threads();
     transaction_memory = Uint64(300) * MBYTE64;
-    transaction_memory += (Uint64(num_threads) * Uint64(70) * MBYTE64);
+    transaction_memory += (Uint64(num_threads) * Uint64(45) * MBYTE64);
   }
   transaction_memory = MAX(transaction_memory,
                            min_transaction_memory);
