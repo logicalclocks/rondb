@@ -7159,25 +7159,25 @@ runChangeNumLDMsNR(NDBT_Context* ctx, NDBT_Step* step)
       case 3:
       {
         values[0] = 1;
-        values[1] = 16;
+        values[1] = 12;
         break;
       }
       case 4:
       {
         values[0] = 1;
-        values[1] = 24;
+        values[1] = 16;
         break;
       }
       case 5:
       {
         values[0] = 1;
-        values[1] = 30;
+        values[1] = 20;
         break;
       }
       case 6:
       {
         values[0] = 1;
-        values[1] = 20;
+        values[1] = 16;
         break;
       }
       case 7:
