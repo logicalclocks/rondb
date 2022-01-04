@@ -59,8 +59,8 @@ args: -n Bug28717 T1
 max-time: 360
 
 cmd: testDict
-args: -n CreateMaxTables T6
-max-time: 180
+args: -r 10 -n CreateMaxTables T6
+max-time: 900
 
 cmd: testBasic
 args: -n MassiveRollback3 T1 T6 D1 D2
