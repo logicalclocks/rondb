@@ -1657,16 +1657,17 @@ Suma::api_fail_subscription(Signal* signal)
     return;
   }
 
+  // Continue iterating through subscriptions after release
+  Subscription_hash::Iterator iter;
+  iter.bucket = subOpPtr.p->m_senderData;
+  iter.curr = subPtr;
+  bool next_subscription = c_subscriptions.next(iter);
+
   // Start potential waiter(s)
   check_remove_queue(signal, subPtr, subOpPtr, true, false);
   check_release_subscription(signal, subPtr);
 
-  // Continue iterating through subscriptions
-  Subscription_hash::Iterator iter;
-  iter.bucket = subOpPtr.p->m_senderData;
-  iter.curr = subPtr;
-
-  if (c_subscriptions.next(iter))
+  if (next_subscription)
   {
     jam();
     c_failedApiNodesState[nodeId] = __LINE__;
