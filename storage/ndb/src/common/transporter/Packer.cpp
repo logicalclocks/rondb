@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -450,7 +450,7 @@ TransporterRegistry::unpack(TransporterReceiveHandle & recvHandle,
 
       Uint32 rBlockNum = signalHeader.theReceiversBlockNumber;
 
-      if(rBlockNum == 252){
+      if(rBlockNum == QMGR){
 	Uint32 sBlockNum = signalHeader.theSendersBlockRef;
 	sBlockNum = numberToRef(sBlockNum, remoteNodeId);
 	signalHeader.theSendersBlockRef = sBlockNum;
