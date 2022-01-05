@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -615,7 +616,10 @@ SignalLoggerManager::printSignalData(FILE * output,
   
   bool ok = false;      // done with printing
   if(printFunction != 0){
-    ok = (* printFunction)(output, signalData, len, sh.theReceiversBlockNumber);
+    ok = (* printFunction)(output, signalData, len,
+                           isApiBlock(sh.theReceiversBlockNumber)
+                           ? sh.theReceiversBlockNumber
+                           : blockToMain(sh.theReceiversBlockNumber));
   }
   if(!ok){
     while(len >= 7){
