@@ -1,5 +1,6 @@
 /*
-  Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -76,38 +77,38 @@ printFSREADWRITEREQ(FILE * output, const Uint32 * theData,
           sig->getPartialReadFlag(sig->operationFlag));
   if (sig->getFormatFlag(sig->operationFlag) !=
       FsReadWriteReq::fsFormatMemAddress)
-    fprintf(output, " pageData: ");
+    fprintf(output, " pageData:");
 
   switch(sig->getFormatFlag(sig->operationFlag))
   {
   case FsReadWriteReq::fsFormatListOfPairs:
     for (unsigned i = 0; i < sig->numberOfPages; i ++)
     {
-      fprintf(output, " H\'%.8x, H\'%.8x\n",
+      fprintf(output, "\n  H\'%.8x, H\'%.8x",
               sig->data.listOfPair[i].varIndex,
               sig->data.listOfPair[i].fileOffset);
     }
     break;
   case FsReadWriteReq::fsFormatArrayOfPages:
-    fprintf(output, " H\'%.8x, H\'%.8x\n", sig->data.arrayOfPages.varIndex,
-                                           sig->data.arrayOfPages.fileOffset);
+    fprintf(output, " H\'%.8x, H\'%.8x", sig->data.arrayOfPages.varIndex,
+                                         sig->data.arrayOfPages.fileOffset);
     break;
   case FsReadWriteReq::fsFormatListOfMemPages:
     // Format changed in v8.0.25
-    fprintf(output, " H\'%.8x, ", sig->data.listOfMemPages.fileOffset);
+    fprintf(output, " H\'%.8x", sig->data.listOfMemPages.fileOffset);
     for (unsigned i = 0; i < sig->numberOfPages; i++)
     {
-      fprintf(output, " H\'%.8x, ", sig->data.listOfMemPages.varIndex[i]);
+      fprintf(output, ", H\'%.8x", sig->data.listOfMemPages.varIndex[i]);
     }
     break;
   case FsReadWriteReq::fsFormatGlobalPage:
-    fprintf(output, " H\'%.8x, ", sig->data.globalPage.pageNumber);
+    fprintf(output, " H\'%.8x", sig->data.globalPage.pageNumber);
     break;
   case FsReadWriteReq::fsFormatSharedPage:
-    fprintf(output, " H\'%.8x, ", sig->data.sharedPage.pageNumber);
+    fprintf(output, " H\'%.8x", sig->data.sharedPage.pageNumber);
     break;
   case FsReadWriteReq::fsFormatMemAddress:
-    fprintf(output, "memoryOffset: H\'%.8x, ",
+    fprintf(output, " memoryOffset: H\'%.8x, ",
             sig->data.memoryAddress.memoryOffset);
     fprintf(output, "fileOffset: H\'%.8x, ",
             sig->data.memoryAddress.fileOffset);
@@ -115,7 +116,7 @@ printFSREADWRITEREQ(FILE * output, const Uint32 * theData,
             sig->data.memoryAddress.size);
     break;
   default:
-    fprintf(output, "Impossible event\n");
+    fprintf(output, " Impossible event");
   }
 
   fprintf(output, "\n");

@@ -1,4 +1,5 @@
 /* Copyright (c) 2009, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -419,7 +420,7 @@ void ndb_service_print_options(const char* name)
   puts("The following Windows specific options may be given as "
        "the first argument:");
   printf("  --install[=name]\tInstall %s as service with given "
-         "name(default: %s), \n"
+         "name(default: %s),\n"
          "\t\t\tusing the arguments currently given on command line.\n",
          name, name);
   printf("  --remove[=name]\tRemove service with name(default: %s)\n",

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -301,7 +302,7 @@ int main(int argc, char** argv)
    ************************************/
    
   std::cout << "Ready to insert rows.  You will see notices for temporary "
-    "errors, permenant errors, and retries. \n";
+    "errors, permenant errors, and retries.\n";
   for (int i = 10000; i < 20000; i++) {
     executeInsertTransaction(i, myNdb, myTable);
   }

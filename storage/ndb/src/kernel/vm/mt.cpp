@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -4104,11 +4104,11 @@ thr_send_threads::run_send_thread(Uint32 instance_no)
     BaseString tmp;
     bool fail = false;
     THRConfigApplier & conf = globalEmulatorData.theConfiguration->m_thr_config;
-    tmp.appfmt("thr: %u ", thr_no);
+    tmp.appfmt("thr: %u", thr_no);
     int tid = NdbThread_GetTid(this_send_thread->m_thread);
     if (tid != -1)
     {
-      tmp.appfmt("tid: %u ", tid);
+      tmp.appfmt(" tid: %u", tid);
     }
     conf.appendInfoSendThread(tmp, instance_no);
     int res = conf.do_bind_send(this_send_thread->m_thread,
@@ -4116,11 +4116,11 @@ thr_send_threads::run_send_thread(Uint32 instance_no)
     if (res < 0)
     {
       fail = true;
-      tmp.appfmt("err: %d ", -res);
+      tmp.appfmt(" err: %d", -res);
     }
     else if (res > 0)
     {
-      tmp.appfmt("OK ");
+      tmp.appfmt(" OK");
     }
 
     unsigned thread_prio;
@@ -4131,7 +4131,7 @@ thr_send_threads::run_send_thread(Uint32 instance_no)
     {
       fail = true;
       res = -res;
-      tmp.appfmt("Failed to set thread prio to %u, ", thread_prio);
+      tmp.appfmt(" Failed to set thread prio to %u, ", thread_prio);
       if (res == SET_THREAD_PRIO_NOT_SUPPORTED_ERROR)
       {
         tmp.appfmt("not supported on this OS");
@@ -4143,7 +4143,7 @@ thr_send_threads::run_send_thread(Uint32 instance_no)
     }
     else if (res > 0)
     {
-      tmp.appfmt("Successfully set thread prio to %u ", thread_prio);
+      tmp.appfmt(" Successfully set thread prio to %u", thread_prio);
     }
 
     g_eventLogger->info("%s", tmp.c_str());

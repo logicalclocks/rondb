@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2276,7 +2277,7 @@ DbUtil::execUTIL_EXECUTE_REQ(Signal* signal)
       if(prepOpPtr.p->pkBitmask.get(header.getAttributeId()))
 	printf("PrimaryKey\n");
     }
-    printf("AttrId %u Hdrsz %d Datasz %u \n",
+    printf("AttrId %u Hdrsz %d Datasz %u\n",
 	   header.getAttributeId(),
 	   header.getHeaderSize(),
 	   header.getDataSize());

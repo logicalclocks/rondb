@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2007, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -525,7 +526,7 @@ void get_rand_op_str_compound(char *str)
   //check the random string
   if(!check_random_str(str))
   {
-    fprintf(stderr, "Error random string! \n");
+    fprintf(stderr, "Error random string!\n");
     exit(-1);
   }
 }
@@ -1404,7 +1405,7 @@ int verifyBitData(Ndb* pNdb)
           if (expectClear != isClear)
           {
             printf("Mismatch at result %d row %d, column %d, bit %d"
-                   " expected %d \n",
+                   " expected %d\n",
                    row, rowId, col, bitNum, (expectClear)?0:1);
             myTrans->close();
             return NDBT_FAILED;

@@ -1,5 +1,6 @@
  /*
    Copyright (c) 2004, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -362,7 +363,7 @@ int checkNoTramplingGetSetField(const Uint32 totalTests)
     Uint32 length= (rand() % ((maxBitsToCopy -1) - srcStart)) + 1;
 
     if (BITMASK_DEBUG)
-      ndbout << "Testing start %u, length %u \n"
+      ndbout << "Testing start %u, length %u\n"
              << srcStart
              << length;
     // Set target to all ones.

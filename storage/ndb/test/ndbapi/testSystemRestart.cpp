@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -4308,19 +4309,19 @@ runCheckLaggardShutdown(NDBT_Context* ctx, NDBT_Step* step)
 NDBT_TESTSUITE(testSystemRestart);
 TESTCASE("SR1", 
 	 "Basic system restart test. Focus on testing restart from REDO log.\n"
-	 "NOTE! Time between lcp's and gcp's should be left at default, \n"
+	 "NOTE! Time between lcp's and gcp's should be left at default,\n"
 	 "so that Ndb  uses the Redo log when restarting\n" 
 	 "1. Load records\n"
-	 "2. Restart cluster and verify records \n"
+	 "2. Restart cluster and verify records\n"
 	 "3. Update records\n"
-	 "4. Restart cluster and verify records \n"
-	 "5. Delete half of the records \n"
-	 "6. Restart cluster and verify records \n"
-	 "7. Delete all records \n"
-	 "8. Restart cluster and verify records \n"
-	 "9. Insert, update, delete records \n"
+	 "4. Restart cluster and verify records\n"
+	 "5. Delete half of the records\n"
+	 "6. Restart cluster and verify records\n"
+	 "7. Delete all records\n"
+	 "8. Restart cluster and verify records\n"
+	 "9. Insert, update, delete records\n"
 	 "10. Restart cluster and verify records\n"
-	 "11. Insert, update, delete records \n"
+	 "11. Insert, update, delete records\n"
 	 "12. Restart cluster with error insert 5020 and verify records\n"){ 
   INITIALIZER(runWaitStarted);
   STEP(runSystemRestart1);
@@ -4330,14 +4331,14 @@ TESTCASE("SR2",
 	 "NOTE! Time between lcp's is automatically set to it's  min value\n"
 	 "so that Ndb  uses LCP's when restarting.\n" 
 	 "1. Load records\n"
-	 "2. Restart cluster and verify records \n"
+	 "2. Restart cluster and verify records\n"
 	 "3. Update records\n"
-	 "4. Restart cluster and verify records \n"
-	 "5. Delete half of the records \n"
-	 "6. Restart cluster and verify records \n"
-	 "7. Delete all records \n"
-	 "8. Restart cluster and verify records \n"
-	 "9. Insert, update, delete records \n"
+	 "4. Restart cluster and verify records\n"
+	 "5. Delete half of the records\n"
+	 "6. Restart cluster and verify records\n"
+	 "7. Delete all records\n"
+	 "8. Restart cluster and verify records\n"
+	 "9. Insert, update, delete records\n"
 	 "10. Restart cluster and verify records\n"){
   INITIALIZER(runWaitStarted);
   STEP(runSystemRestart2);
@@ -4345,7 +4346,7 @@ TESTCASE("SR2",
 TESTCASE("SR_UNDO", 
 	 "System restart test. Focus on testing of undologging\n"
 	 "in DBACC and DBTUP.\n"
-	 "This is done by starting a LCP, turn on undologging \n"
+	 "This is done by starting a LCP, turn on undologging\n"
 	 "but don't start writing the datapages. This will force all\n"
 	 "operations to be written into the undolog.\n"
 	 "Then write datapages and complete LCP.\n"

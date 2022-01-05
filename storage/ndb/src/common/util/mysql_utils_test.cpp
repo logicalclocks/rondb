@@ -1,5 +1,6 @@
 /*
  Copyright (c) 2010, 2021, Oracle and/or its affiliates.
+ Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
@@ -218,12 +219,12 @@ int test_charset_map()
 
     /* latin1 must be available to run the recode test */
     int latin1_num = csmap.getCharsetNumber("latin1");
-    printf("latin1 charset number: %d  standard name: \"%s\" \n",
+    printf("latin1 charset number: %d  standard name: \"%s\"\n",
            latin1_num, csmap.getName(latin1_num));
     CHECK(latin1_num != 0);
     CHECK(! strcmp(csmap.getName(latin1_num), "windows-1252"));
 
-    printf("Latin1: \"%s\"                       UTF8:  \"%s\" \n",
+    printf("Latin1: \"%s\"                       UTF8:  \"%s\"\n",
            my_word_latin1, my_word_utf8);
 
     /* RECODE TEST 1: recode from UTF-8 to Latin 1 */
@@ -231,7 +232,7 @@ int test_charset_map()
     lengths[1] = 32;
     CharsetMap::RecodeStatus rr1 = csmap.recode(lengths, utf8_num, latin1_num,
                                                 my_word_utf8, result_buff_1);
-    printf("Recode Test 1 - UTF-8 to Latin-1: %d %d %d \"%s\" => \"%s\" \n",
+    printf("Recode Test 1 - UTF-8 to Latin-1: %d %d %d \"%s\" => \"%s\"\n",
            rr1, lengths[0], lengths[1], my_word_utf8, result_buff_1);
     CHECK(rr1 == CharsetMap::RECODE_OK);
     CHECK(lengths[0] == 7);
@@ -243,7 +244,7 @@ int test_charset_map()
     lengths[1] = 32;
     CharsetMap::RecodeStatus rr2 = csmap.recode(lengths, latin1_num, utf8_num,
                                                 my_word_latin1, result_buff_2);
-    printf("Recode Test 2 - Latin-1 to UTF-8: %d %d %d \"%s\" => \"%s\" \n",
+    printf("Recode Test 2 - Latin-1 to UTF-8: %d %d %d \"%s\" => \"%s\"\n",
            rr2, lengths[0], lengths[1], my_word_latin1, result_buff_2);
     CHECK(rr2 == CharsetMap::RECODE_OK);
     CHECK(lengths[0] == 6);
@@ -255,7 +256,7 @@ int test_charset_map()
     lengths[1] = 4;
     CharsetMap::RecodeStatus rr3 = csmap.recode(lengths, latin1_num, utf8_num,
                                                 my_word_latin1, result_buff_too_small);
-    printf("Recode Test 3 - too-small buffer: %d %d %d \"%s\" => \"%.4s\" \n",
+    printf("Recode Test 3 - too-small buffer: %d %d %d \"%s\" => \"%.4s\"\n",
            rr3, lengths[0], lengths[1], my_word_latin1, result_buff_too_small);
     CHECK(rr3 == CharsetMap::RECODE_BUFF_TOO_SMALL);
     CHECK(lengths[0] == 3);
@@ -265,7 +266,7 @@ int test_charset_map()
 
     /* RECODE TEST 4: recode with an invalid character set */
     CharsetMap::RecodeStatus rr4 = csmap.recode(lengths, 0, 999, my_word_latin1, result_buff_2);
-    printf("Recode Test 4 - invalid charset: %d \n", rr4);
+    printf("Recode Test 4 - invalid charset: %d\n", rr4);
     CHECK(rr4 == CharsetMap::RECODE_BAD_CHARSET);
 
     /* RECODE TEST 5: source string is ill-formed UTF-8 */
@@ -273,7 +274,7 @@ int test_charset_map()
     lengths[1] = 32;
     int rr5 = csmap.recode(lengths, utf8_num, latin1_num,
                            my_bad_utf8, result_buff_2);
-    printf("Recode Test 5 - ill-formed source string: %d \n", rr5);
+    printf("Recode Test 5 - ill-formed source string: %d\n", rr5);
     CHECK(rr5 == CharsetMap::RECODE_BAD_SRC);
 
 

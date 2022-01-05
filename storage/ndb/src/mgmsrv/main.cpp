@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -514,7 +514,7 @@ static int mgmd_main(int argc, char** argv)
       {
         g_eventLogger->error("Couldn't start as daemon, error: '%s'",
                              ndb_daemon_error);
-        fprintf(stderr, "Couldn't start as daemon, error: '%s' \n",
+        fprintf(stderr, "Couldn't start as daemon, error: '%s'\n",
                 ndb_daemon_error);
         mgmd_exit(1);
       }

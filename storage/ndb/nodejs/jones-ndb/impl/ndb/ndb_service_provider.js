@@ -1,5 +1,6 @@
 /*
  Copyright (c) 2014, 2021, Oracle and/or its affiliates.
+ Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
  
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
@@ -63,8 +64,8 @@ exports.loadRequiredModules = function() {
       "  The ndb adapter cannot load the compiled module ndb_adapter.node.\n";
     if(existsSync(conf.binary)) {
       msg +=
-      "  This module has been built, but was not succesfully loaded.  Perhaps \n" +
-      "  setting " + ldp + " to the mysql lib directory (containing \n" +
+      "  This module has been built, but was not succesfully loaded.  Perhaps\n" +
+      "  setting " + ldp + " to the mysql lib directory (containing\n" +
       "  libndbclient) will resolve the problem.\n\n";
       if(existsSync(gypConfigFile)) {
         try {
@@ -81,7 +82,7 @@ exports.loadRequiredModules = function() {
       msg +=
       "  For help building jones-ndb, run \"node configure\" \n\n";
     }
-    msg += "Original error: \n--------------- \n" + e.message;
+    msg += "Original error: \n---------------\n" + e.message;
     err = new Error(msg);
     err.cause = e;
     throw err;

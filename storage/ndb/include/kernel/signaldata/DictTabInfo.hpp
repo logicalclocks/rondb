@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -665,7 +666,7 @@ public:
       fprintf(out, "AttributeExtLength = %d\n", AttributeExtLength);
       fprintf(out, "AttributeDefaultValueLen = %d\n",
               AttributeDefaultValueLen);
-      fprintf(out, "AttributeDefaultValue: \n");
+      fprintf(out, "AttributeDefaultValue:\n");
       for (unsigned int i = 0; i < AttributeDefaultValueLen; i++)
         fprintf(out, "0x%x", AttributeDefaultValue[i]);
     }

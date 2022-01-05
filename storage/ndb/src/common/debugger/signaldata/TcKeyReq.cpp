@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -36,7 +36,7 @@ printTCKEYREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiver
 
   fprintf(output, " apiConnectPtr: H\'%.8x, apiOperationPtr: H\'%.8x\n", 
 	  sig->apiConnectPtr, sig->apiOperationPtr);
-  fprintf(output, " Operation: %s, Flags: ", 
+  fprintf(output, " Operation: %s, Flags:",
 	  sig->getOperationType(requestInfo) == ZREAD    ? "Read" :
 	  sig->getOperationType(requestInfo) == ZREAD_EX ? "Read-Ex" :
 	  sig->getOperationType(requestInfo) == ZUPDATE  ? "Update" :
@@ -48,60 +48,60 @@ printTCKEYREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiver
 	  "Unknown");
   {
     if(sig->getDirtyFlag(requestInfo)){
-      fprintf(output, "Dirty ");
+      fprintf(output, " Dirty");
     }    
     if(sig->getStartFlag(requestInfo)){
-      fprintf(output, "Start ");
+      fprintf(output, " Start");
     }    
     if(sig->getExecuteFlag(requestInfo)){
-      fprintf(output, "Execute ");
+      fprintf(output, " Execute");
     }
     if(sig->getCommitFlag(requestInfo)){
-      fprintf(output, "Commit ");
+      fprintf(output, " Commit");
     }
     if (sig->getNoDiskFlag(requestInfo)) {
-      fprintf(output, "NoDisk ");
+      fprintf(output, " NoDisk");
     }
     
     UintR TcommitType = sig->getAbortOption(requestInfo);
     if (TcommitType == TcKeyReq::AbortOnError) {
-      fprintf(output, "AbortOnError ");
+      fprintf(output, " AbortOnError");
     } else if (TcommitType == TcKeyReq::IgnoreError) {
-      fprintf(output, "IgnoreError ");
+      fprintf(output, " IgnoreError");
     }//if
 
     if(sig->getSimpleFlag(requestInfo)){
-      fprintf(output, "Simple ");
+      fprintf(output, " Simple");
     }   
     if(sig->getScanIndFlag(requestInfo)){
-      fprintf(output, "ScanInd ");
+      fprintf(output, " ScanInd");
     }   
     if(sig->getInterpretedFlag(requestInfo)){
-      fprintf(output, "Interpreted ");
+      fprintf(output, " Interpreted");
     }
     if(sig->getDistributionKeyFlag(sig->requestInfo)){
-      fprintf(output, "d-key ");
+      fprintf(output, " d-key");
     }
     if(sig->getViaSPJFlag(sig->requestInfo)){
       fprintf(output, " spj");
     }
     if(sig->getQueueOnRedoProblemFlag(sig->requestInfo))
-      fprintf(output, "Queue ");
+      fprintf(output, " Queue");
 
     if(sig->getDeferredConstraints(sig->requestInfo))
-      fprintf(output, "Deferred-constraints ");
+      fprintf(output, " Deferred-constraints");
 
     if(sig->getDisableFkConstraints(sig->requestInfo))
-      fprintf(output, "Disable-FK-constraints ");
+      fprintf(output, " Disable-FK-constraints");
 
     if(sig->getReorgFlag(sig->requestInfo))
-      fprintf(output, "reorg ");
+      fprintf(output, " reorg");
 
     if(sig->getReadCommittedBaseFlag(sig->requestInfo))
-      fprintf(output, "rc_base ");
+      fprintf(output, " rc_base");
 
     if (sig->getNoWaitFlag(sig->requestInfo))
-      fprintf(output, "nowait");
+      fprintf(output, " nowait");
 
     fprintf(output, "\n");
   }

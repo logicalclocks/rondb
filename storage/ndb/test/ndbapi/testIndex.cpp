@@ -3358,13 +3358,13 @@ TESTCASE("InsertDelete_O",
 
 }
 TESTCASE("CreateLoadDropGentle", 
-	 "Try to create, drop and load various indexes \n"
+	 "Try to create, drop and load various indexes\n"
 	 "on table loop number of times.Usa batch size 1.\n"){
   TC_PROPERTY("BatchSize", 1);
   INITIALIZER(runCreateLoadDropIndex);
 }
 TESTCASE("CreateLoadDropGentle_O", 
-	 "Try to create, drop and load various indexes \n"
+	 "Try to create, drop and load various indexes\n"
 	 "on table loop number of times.Usa batch size 1.\n"){
   TC_PROPERTY("OrderedIndex", 1);
   TC_PROPERTY("LoggedIndexes", (unsigned)0);
@@ -3372,13 +3372,13 @@ TESTCASE("CreateLoadDropGentle_O",
   INITIALIZER(runCreateLoadDropIndex);
 }
 TESTCASE("CreateLoadDrop", 
-	 "Try to create, drop and load various indexes \n"
+	 "Try to create, drop and load various indexes\n"
 	 "on table loop number of times. Use batchsize 512 to stress db more\n"){
   TC_PROPERTY("BatchSize", 512);
   INITIALIZER(runCreateLoadDropIndex);
 }
 TESTCASE("CreateLoadDrop_O", 
-	 "Try to create, drop and load various indexes \n"
+	 "Try to create, drop and load various indexes\n"
 	 "on table loop number of times. Use batchsize 512 to stress db more\n"){
   TC_PROPERTY("OrderedIndex", 1);
   TC_PROPERTY("LoggedIndexes", (unsigned)0);

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1032,8 +1033,8 @@ UtilTransactions::readRowFromTableAndIndex(Ndb* pNdb,
       }
       if (!(tabRow.c_str() == indexRow.c_str())){
 	ndbout << "Error when comapring records" << endl;
-	ndbout << " tabRow: \n" << tabRow.c_str().c_str() << endl;
-	ndbout << " indexRow: \n" << indexRow.c_str().c_str() << endl;
+	ndbout << " tabRow:\n" << tabRow.c_str().c_str() << endl;
+	ndbout << " indexRow:\n" << indexRow.c_str().c_str() << endl;
 	goto close_all;
       }
       if (pScanOp) {
@@ -1178,8 +1179,8 @@ UtilTransactions::verifyOrderedIndex(Ndb* pNdb,
 
       if(scanRow.c_str() != pkRow.c_str()){
 	g_err << "Error when comapring records" << endl;
-	g_err << " scanRow: \n" << scanRow.c_str().c_str() << endl;
-	g_err << " pkRow: \n" << pkRow.c_str().c_str() << endl;
+	g_err << " scanRow:\n" << scanRow.c_str().c_str() << endl;
+	g_err << " pkRow:\n" << pkRow.c_str().c_str() << endl;
 	closeTransaction(pNdb);
 	return NDBT_FAILED;
       }
@@ -1195,15 +1196,15 @@ UtilTransactions::verifyOrderedIndex(Ndb* pNdb,
 	
 	if(scanRow.c_str() != indexRow.c_str()){
 	  g_err << "Error when comapring records" << endl;
-	  g_err << " scanRow: \n" << scanRow.c_str().c_str() << endl;
-	  g_err << " indexRow: \n" << indexRow.c_str().c_str() << endl;
+	  g_err << " scanRow:\n" << scanRow.c_str().c_str() << endl;
+	  g_err << " indexRow:\n" << indexRow.c_str().c_str() << endl;
 	  closeTransaction(pNdb);
 	  return NDBT_FAILED;
 	}
 	
 	if(iop->nextResult() == 0){
 	  g_err << "Found extra row!!" << endl;
-	  g_err << " indexRow: \n" << indexRow.c_str().c_str() << endl;
+	  g_err << " indexRow:\n" << indexRow.c_str().c_str() << endl;
 	  closeTransaction(pNdb);
 	  return NDBT_FAILED;
 	}
