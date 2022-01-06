@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -467,7 +468,6 @@ private:
 
     Uint32 currentBlockIndex;
     Uint32 currentStartPhase;
-    Uint32 nextStartPhase[NO_OF_BLOCKS];
 
     void execSTART_ORD(Signal* signal);
     void execSTTORRY(Signal* signal);
