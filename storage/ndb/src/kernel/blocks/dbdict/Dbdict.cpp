@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -3062,6 +3062,7 @@ void Dbdict::execSTTOR(Signal* signal)
      * loop always anyway because the cost is minimal
      */
     c_indexStatBgId = 0;
+    m_currentBgTxHandle = RNIL;
     indexStatBg_sendContinueB(signal);
     break;
   }
@@ -3143,9 +3144,9 @@ void Dbdict::execREAD_CONFIG_REQ(Signal* signal)
 
   c_schemaOpHash.setSize(MAX_SCHEMA_OPERATIONS);
   c_schemaTransPool.arena_pool_init(&c_arenaAllocator, RT_DBDICT_SCHEMA_TRANSACTION, pc);
-  c_schemaTransHash.setSize(2);
-  c_txHandlePool.setSize(2);
-  c_txHandleHash.setSize(2);
+  c_schemaTransHash.setSize(4);
+  c_txHandlePool.setSize(4);
+  c_txHandleHash.setSize(4);
 
   c_obj_pool.setSize(c_noOfMetaTables+c_maxNoOfTriggers);
   c_obj_name_hash.setSize((c_noOfMetaTables+c_maxNoOfTriggers+1)/2);
@@ -3496,7 +3497,7 @@ Dbdict::activateIndexes(Signal* signal, Uint32 id)
     D("activateIndexes id=" << id);
 
     TxHandlePtr tx_ptr;
-    seizeTxHandle(tx_ptr);
+    seizeTxHandle(tx_ptr, false);
     ndbrequire(!tx_ptr.isNull());
 
     tx_ptr.p->m_requestInfo = 0;
@@ -3667,7 +3668,7 @@ Dbdict::rebuildIndexes(Signal* signal, Uint32 id)
     D("rebuildIndexes id=" << id);
 
     TxHandlePtr tx_ptr;
-    seizeTxHandle(tx_ptr);
+    seizeTxHandle(tx_ptr, false);
     ndbrequire(!tx_ptr.isNull());
 
     Uint32 requestInfo = 0;
@@ -4035,7 +4036,7 @@ Dbdict::enableFKs(Signal* signal, Uint32 id)
     D("enableFKs id=" << id);
 
     TxHandlePtr tx_ptr;
-    seizeTxHandle(tx_ptr);
+    seizeTxHandle(tx_ptr, false);
     ndbrequire(!tx_ptr.isNull());
 
     tx_ptr.p->m_requestInfo = 0;
@@ -4774,7 +4775,7 @@ Dbdict::startRestoreSchema(Signal* signal, Callback cb)
   c_schemaRecord.m_callback = cb;
 
   TxHandlePtr tx_ptr;
-  seizeTxHandle(tx_ptr);
+  seizeTxHandle(tx_ptr, false);
   ndbrequire(!tx_ptr.isNull());
 
   c_restartRecord.m_tx_ptr_i = tx_ptr.i;
@@ -4880,7 +4881,7 @@ Dbdict::restart_fromEndTrans(Signal* signal, Uint32 tx_key, Uint32 ret)
   ndbrequire(c_restartRecord.m_op_cnt == 0);
   c_restartRecord.activeTable++;
 
-  seizeTxHandle(tx_ptr);
+  seizeTxHandle(tx_ptr, false);
   ndbrequire(!tx_ptr.isNull());
   c_restartRecord.m_tx_ptr_i = tx_ptr.i;
   tx_ptr.p->m_requestInfo = DictSignal::RF_LOCAL_TRANS;
@@ -4936,7 +4937,7 @@ Dbdict::restartNextPass(Signal* signal)
     if (c_restartRecord.m_tx_ptr_i == RNIL)
     {
       jam();
-      seizeTxHandle(tx_ptr);
+      seizeTxHandle(tx_ptr, false);
       ndbrequire(!tx_ptr.isNull());
       c_restartRecord.m_tx_ptr_i  = tx_ptr.i;
       tx_ptr.p->m_requestInfo = DictSignal::RF_LOCAL_TRANS;
@@ -17167,7 +17168,9 @@ Dbdict::indexStatBg_process(Signal* signal)
 {
   if (!c_indexStatAutoUpdate ||
       c_masterNodeId != getOwnNodeId() ||
-      getNodeState().startLevel != NodeState::SL_STARTED) {
+      getNodeState().startLevel != NodeState::SL_STARTED ||
+      m_currentBgTxHandle != RNIL)
+  {
     jam();
     indexStatBg_sendContinueB(signal);
     return;
@@ -17176,7 +17179,8 @@ Dbdict::indexStatBg_process(Signal* signal)
   D("indexStatBg_process" << V(c_indexStatBgId));
   const uint maxloop = 32;
   uint loop;
-  for (loop = 0; loop < maxloop; loop++, c_indexStatBgId++) {
+  for (loop = 0; loop < maxloop; loop++, c_indexStatBgId++)
+  {
     jam();
     c_indexStatBgId %= c_noOfMetaTables;
 
@@ -17184,26 +17188,31 @@ Dbdict::indexStatBg_process(Signal* signal)
     TableRecordPtr indexPtr;
     XSchemaFile* xsf = &c_schemaFile[SchemaRecord::NEW_SCHEMA_FILE];
     const SchemaFile::TableEntry* te = getTableEntry(xsf, c_indexStatBgId);
-    if (te->m_tableState != SchemaFile::SF_IN_USE) {
+    if (te->m_tableState != SchemaFile::SF_IN_USE)
+    {
       jam();
       continue;
     }
     bool ok = find_object(indexPtr, c_indexStatBgId);
-    if (!ok || !indexPtr.p->isOrderedIndex()) {
+    if (!ok || !indexPtr.p->isOrderedIndex())
+    {
       jam();
       continue;
     }
-    if (indexPtr.p->indexStatBgRequest == 0) {
+    if (indexPtr.p->indexStatBgRequest == 0)
+    {
       jam();
       continue;
     }
     ndbrequire(indexPtr.p->indexStatBgRequest == IndexStatRep::RT_UPDATE_REQ);
 
     TxHandlePtr tx_ptr;
-    if (!seizeTxHandle(tx_ptr)) {
+    if (!seizeTxHandle(tx_ptr, true))
+    {
       jam();
       return; // wait for one
     }
+    m_currentBgTxHandle = tx_ptr.i;
     Callback c = {
       safe_cast(&Dbdict::indexStatBg_fromBeginTrans),
       tx_ptr.p->tx_key
@@ -17212,7 +17221,6 @@ Dbdict::indexStatBg_process(Signal* signal)
     beginSchemaTrans(signal, tx_ptr);
     return;
   }
-
   indexStatBg_sendContinueB(signal);
 }
 
@@ -17225,8 +17233,12 @@ Dbdict::indexStatBg_fromBeginTrans(Signal* signal, Uint32 tx_key, Uint32 ret)
   findTxHandle(tx_ptr, tx_key);
   ndbrequire(!tx_ptr.isNull());
 
-  if (ret != 0) {
+  if (ret != 0)
+  {
     jam();
+    m_currentBgTxHandle = RNIL;
+    releaseTxHandle(tx_ptr);
+    c_indexStatBgId++;
     indexStatBg_sendContinueB(signal);
     return;
   }
@@ -17306,6 +17318,7 @@ Dbdict::indexStatBg_fromEndTrans(Signal* signal, Uint32 tx_key, Uint32 ret)
     infoEvent("DICT: index %u stats auto-update done", c_indexStatBgId);
   }
 
+  m_currentBgTxHandle = RNIL;
   releaseTxHandle(tx_ptr);
   c_indexStatBgId++;
   indexStatBg_sendContinueB(signal);
@@ -33164,9 +33177,15 @@ send_node_fail_rep:
 // DICT as schema trans client
 
 bool
-Dbdict::seizeTxHandle(TxHandlePtr& tx_ptr)
+Dbdict::seizeTxHandle(TxHandlePtr& tx_ptr, bool allow_fail)
 {
   Uint32 tx_key = c_opRecordSequence + 1;
+  if (c_txHandlePool.getNoOfFree() <= 2 && allow_fail)
+  {
+    jam();
+    tx_ptr.setNull();
+    return false;
+  }
   if (c_txHandleHash.seize(tx_ptr)) {
     jam();
     new (tx_ptr.p) TxHandle();
@@ -33421,7 +33440,7 @@ Dbdict::takeOverTransClient(Signal* signal, SchemaTransPtr trans_ptr)
   D("takeOverTransClient" << *trans_ptr.p);
 
   TxHandlePtr tx_ptr;
-  bool ok = seizeTxHandle(tx_ptr);
+  bool ok = seizeTxHandle(tx_ptr, false);
   ndbrequire(ok);
 
   ndbrequire(!(trans_ptr.p->m_clientFlags & TransClient::TakeOver));
