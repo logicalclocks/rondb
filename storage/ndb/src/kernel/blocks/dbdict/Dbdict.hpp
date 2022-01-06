@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -482,6 +482,12 @@ public:
   TableRecord_pool& get_pool(TableRecordPtr) { return c_tableRecordPool_; }
 
   Uint32 cnoReplicas;
+
+  /**
+   * Indication that a background index stat update is already in
+   * progressive.
+   */
+  Uint32 m_currentBgTxHandle;
 
   /**  Node Group and Tablespace id+version + range or list data.
     *  This is only stored temporarily in DBDICT during an ongoing
@@ -2769,7 +2775,7 @@ private:
   TxHandle_pool c_txHandlePool;
   TxHandle_hash c_txHandleHash;
 
-  bool seizeTxHandle(TxHandlePtr&);
+  bool seizeTxHandle(TxHandlePtr&, bool allow_fail);
   bool findTxHandle(TxHandlePtr&, Uint32 tx_key);
   void releaseTxHandle(TxHandlePtr&);
 

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2020, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -894,6 +894,11 @@ Suma::fix_nodegroup()
     for (i = 0; i<tot; i++)
     {
       Bucket* ptr= c_buckets + cnt;
+      /* Initialise all entries first */
+      for (Uint32 k = 0; k < MAX_REPLICAS; k++)
+      {
+        ptr->m_nodes[k] = 0;
+      }
       if (valid_seq(i, replicas, ptr->m_nodes))
       {
         jam();
