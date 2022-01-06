@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -171,12 +171,15 @@ SimBlockList::load(EmulatorData& data){
   theList[26] = NEW_BLOCK(DbqtuxProxy)(ctx);
   theList[27] = NEW_BLOCK(QBackupProxy)(ctx);
   theList[28] = NEW_BLOCK(QRestoreProxy)(ctx);
-  assert(NO_OF_BLOCKS == 29);
+  theList[29] = 0; // V_QUERY is a virtual block.
+  assert(NO_OF_BLOCKS == 30);
 
   // Check that all blocks could be created
   for (int i = 0; i < noOfBlocks; i++)
   {
-    if (!theList[i])
+    if (!theList[i]
+        && i!=29 // V_QUERY is a virtual block.
+        )
     {
       ERROR_SET(fatal, NDBD_EXIT_MEMALLOC,
                 "Failed to create block", "");
