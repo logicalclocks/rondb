@@ -114,7 +114,7 @@
 //#define DEBUG_EMPTY_LCP 1
 //#define DEBUG_LAST_LCP 1
 //#define DEBUG_NEWEST_GCI 1
-#define ABORT_TRACE 1
+//#define ABORT_TRACE 1
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define DEBUG_EXTRA_LCP 1
 //#define DEBUG_LCP 1
@@ -742,7 +742,7 @@ void Dblqh::queued_log_write(Signal *signal, LogPartRecord *logPartPtrP)
      * REDO log entries to give the REDO log file system a chance to catch
      * up with the REDO log write speed.
      */
-    DEB_LOG_QUEUE(("(%u) Buffer in Log Part %u is full",
+    DEB_LOG_QUEUE(("(%u) Buffer in LogPart %u is full",
                    instance(),
                    logPartPtrP->logPartNo));
     signal->theData[0] = ZLOG_LQHKEYREQ;
@@ -759,7 +759,7 @@ void Dblqh::queued_log_write(Signal *signal, LogPartRecord *logPartPtrP)
     {
       jam();
       unlock_log_part(logPartPtrP);
-      DEB_LOG_QUEUE(("(%u) Buffer in Log Part %u waiting for GCI write",
+      DEB_LOG_QUEUE(("(%u) Buffer in LogPart %u waiting for GCI write",
                      instance(),
                      logPartPtrP->logPartNo));
       /**
@@ -804,7 +804,7 @@ void Dblqh::queued_log_write(Signal *signal, LogPartRecord *logPartPtrP)
          */
         jam();
         unlock_log_part(logPartPtrP);
-        DEB_LOG_QUEUE(("(%u) Log Part %u waiting for problem %u",
+        DEB_LOG_QUEUE(("(%u) LogPart %u waiting for problem %u",
                        instance(),
                        logPartPtrP->logPartNo,
                        logPartPtrP->m_log_problems));
@@ -11949,7 +11949,7 @@ void Dblqh::writePrepareLog(Signal* signal,
                   regLogPartPtr->m_log_prepare_queue,
                   tcConnectptr.p);
       regTcPtr->transactionState = TcConnectionrec::LOG_QUEUED;
-      DEB_LOG_QUEUE(("(%u) LOG_QUEUED logPart(%u), tcPtr(%u),"
+      DEB_LOG_QUEUE(("(%u) LOG_QUEUED LogPart(%u), tcPtr(%u),"
                      " from_log_queue: %u",
                      instance(),
                      regLogPartPtr->logPartNo,
@@ -11977,7 +11977,7 @@ void Dblqh::writePrepareLog(Signal* signal,
                   tcConnectptr.p);
       regTcPtr->transactionState = TcConnectionrec::LOG_QUEUED;
       unlock_log_part(regLogPartPtr);
-      DEB_LOG_QUEUE(("(%u) LOG_QUEUED logPart(%u), TcPtr(%u)",
+      DEB_LOG_QUEUE(("(%u) LOG_QUEUED LogPart(%u), TcPtr(%u)",
                      instance(),
                      regLogPartPtr->logPartNo,
                      regTcPtr->ptrI));

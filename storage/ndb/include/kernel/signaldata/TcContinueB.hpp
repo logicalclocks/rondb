@@ -79,6 +79,7 @@ private:
     ,ZRELEASE_TAKE_OVER                    = 38
     ,ZRELEASE_TAKE_OVER_TRANS              = 39
     ,ZQUERY_THREAD_USAGE                   = 40
+    ,ZCHECK_GCP_FINISHED                   = 41
   };
 };
 

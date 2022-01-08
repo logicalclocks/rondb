@@ -1695,13 +1695,15 @@ Suma::api_fail_subscription(Signal* signal)
 }
 
 void
-Suma::execNODE_FAILREP(Signal* signal){
+Suma::execNODE_FAILREP(Signal* signal)
+{
   jamEntry();
   DBUG_ENTER("Suma::execNODE_FAILREP");
   NodeFailRep * rep = (NodeFailRep*)signal->getDataPtr();
 
   if(signal->getNoOfSections() >= 1)
   {
+    jam();
     ndbrequire(ndbd_send_node_bitmask_in_section(
         getNodeInfo(refToNode(signal->getSendersBlockRef())).m_version));
     SegmentedSectionPtr ptr;
@@ -1713,6 +1715,7 @@ Suma::execNODE_FAILREP(Signal* signal){
   }
   else
   {
+    jam();
     memset(rep->theNodes + NdbNodeBitmask48::Size,
            0,
            _NDB_NBM_DIFF_BYTES);
@@ -1757,23 +1760,33 @@ Suma::execNODE_FAILREP(Signal* signal){
 
   if(c_nodes_in_nodegroup_mask.overlaps(failed))
   {
+    jam();
     for( Uint32 i = 0; i < c_no_of_buckets; i++) 
     {
       if(m_active_buckets.get(i))
+      {
 	continue;
-      else if(m_switchover_buckets.get(i))
+      }
+      jam();
+      jamLine(Uint16(i));
+      if(m_switchover_buckets.get(i))
       {
 	Uint32 state= c_buckets[i].m_state;
 	if((state & Bucket::BUCKET_HANDOVER) && 
 	   failed.get(get_responsible_node(i)))
 	{
+          jam();
 	  m_active_buckets.set(i);
 	  m_switchover_buckets.clear(i);
           g_eventLogger->info("aborting handover");
-        } else if (state & Bucket::BUCKET_STARTING) {
+        }
+        else if (state & Bucket::BUCKET_STARTING)
+        {
           progError(__LINE__, NDBD_EXIT_SYSTEM_ERROR,
                     "Nodefailure during SUMA takeover");
-        } else if (state & Bucket::BUCKET_SHUTDOWN_TO) {
+        }
+        else if (state & Bucket::BUCKET_SHUTDOWN_TO)
+        {
           jam();
           // I am taking over from a shutdown node, but another node from
           // the same nodegroup failed before takeover could complete
@@ -1784,27 +1797,29 @@ Suma::execNODE_FAILREP(Signal* signal){
                      rsp_node == c_buckets[i].m_switchover_node);
           start_resend(signal, i);
         }
+        jam();
       }
-      else if(get_responsible_node(i, tmp) == getOwnNodeId())
+      else if (get_responsible_node(i, tmp) == getOwnNodeId())
       {
+        jam();
 	start_resend(signal, i);
       }
     }
   }
 
   /* Block level cleanup */
-  for(unsigned i = 1; i < MAX_NDB_NODES; i++) {
+  for(unsigned i = 1; i < MAX_NDB_NODES; i++)
+  {
     jam();
-    if(failed.get(i)) {
+    if(failed.get(i))
+    {
       jam();
       Uint32 elementsCleaned = simBlockNodeFailure(signal, i); // No callback
       ndbassert(elementsCleaned == 0); // As Suma has no remote fragmented signals
       (void) elementsCleaned; // Avoid compiler error
-    }//if
-  }//for
-  
+    }
+  }
   c_alive_nodes.assign(tmp);
-  
   DBUG_VOID_RETURN;
 }
 
@@ -5063,7 +5078,9 @@ Suma::get_responsible_node(Uint32 bucket, const NdbNodeBitmask& mask) const
   const Bucket* ptr = c_buckets + bucket;
   for(Uint32 i = 0; i<MAX_REPLICAS; i++)
   {
+    jam();
     node= ptr->m_nodes[i];
+    jamLine(Uint16(node));
     if(mask.get(node))
     {
       return node;
@@ -8018,22 +8035,29 @@ Suma::start_resend(Signal* signal, Uint32 buck)
    */
   ndbrequire(buck < NO_OF_BUCKETS);
   Bucket* bucket = c_buckets + buck;
+  jam();
   Page_pos pos= bucket->m_buffer_head;
 
   if(m_out_of_buffer_gci)
   {
+    jam();
     Ptr<Gcp_record> gcp;
-    c_gcp_list.last(gcp);
+    Uint32 gci_hi = 0;
+    if (c_gcp_list.last(gcp))
+    {
+      gci_hi = (Uint32) (gcp.p->m_gci >> 32);
+    }
     signal->theData[0] = NDB_LE_SubscriptionStatus;
     signal->theData[1] = 2; // INCONSISTENT;
     signal->theData[2] = 0; // Not used
     signal->theData[3] = (Uint32) pos.m_max_gci;
-    signal->theData[4] = (Uint32) (gcp.p->m_gci >> 32);
+    signal->theData[4] = gci_hi;
     sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 5, JBB);
     m_missing_data = true;
     return;
   }
 
+  jam();
   if(pos.m_page_id == RNIL)
   {
     jam();
@@ -8046,6 +8070,7 @@ Suma::start_resend(Signal* signal, Uint32 buck)
     return;
   }
 
+  jam();
   Uint64 min= bucket->m_max_acked_gci + 1;
   Uint64 max = m_max_seen_gci;
 
@@ -8053,6 +8078,7 @@ Suma::start_resend(Signal* signal, Uint32 buck)
 
   if(min > max)
   {
+    jam();
     ndbrequire(pos.m_page_id == bucket->m_buffer_tail);
     m_active_buckets.set(buck);
     m_gcp_complete_rep_count ++;
@@ -8062,6 +8088,7 @@ Suma::start_resend(Signal* signal, Uint32 buck)
     return;
   }
 
+  jam();
   g_cnt = 0;
   bucket->m_state |= (Bucket::BUCKET_TAKEOVER | Bucket::BUCKET_RESEND);
   bucket->m_switchover_node = get_responsible_node(buck);

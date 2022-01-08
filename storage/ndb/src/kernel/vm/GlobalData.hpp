@@ -130,6 +130,7 @@ struct GlobalData {
 
   bool       theGracefulShutdownFlag;
 
+
   NdbMutex   *theIO_lag_mutex;
 
   GlobalData(){ 

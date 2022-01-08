@@ -2,7 +2,3 @@
 
 [cluster_config.1]
 TransactionInactiveTimeout=120000
-
-[mysqld]
-
-ndb-wait-setup=60

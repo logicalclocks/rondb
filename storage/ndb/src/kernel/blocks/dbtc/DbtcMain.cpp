@@ -116,6 +116,10 @@
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
 //#define DO_TRANSIENT_POOL_STAT
 //#define ABORT_TRACE 1
+#define COMMIT_TRACE 1
+#define COMPLETE_TRACE 1
+//#define LQHKEY_TRACE 1
+//#define DEBUG_GCP 1
 //#define DEBUG_ABORT_TRANS 1
 //#define DEBUG_NODE_STATUS 1
 //#define DEBUG_NODE_FAILURE 1
@@ -132,6 +136,12 @@
 #define DEBUG(x) ndbout << "DBTC: "<< x << endl;
 #else
 #define DEBUG(x)
+#endif
+
+#ifdef DEBUG_GCP
+#define DEB_GCP(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_GCP(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_ABORT_TRANS
@@ -315,6 +325,12 @@ void Dbtc::execCONTINUEB(Signal* signal)
     return;
   }
 #endif
+  case TcContinueB::ZCHECK_GCP_FINISHED:
+  {
+    jam();
+    checkGcpFinished(signal);
+    return;
+  }
   case TcContinueB::ZCHECK_TO_ABORT_HANDLING:
   {
     jam();
@@ -1463,6 +1479,14 @@ void Dbtc::execSTTOR(Signal* signal)
     startphase1x010Lab(signal);
     return;
   }
+  case 7:
+  {
+    jam();
+    signal->theData[0] = TcContinueB::ZCHECK_GCP_FINISHED;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10000, 1);
+    sttorryLab(signal);
+    return;
+  }
   default:
   {
     jam();
@@ -1478,7 +1502,8 @@ void Dbtc::sttorryLab(Signal* signal)
   signal->theData[1] = 3;    /* BLOCK CATEGORY */
   signal->theData[2] = 2;    /* SIGNAL VERSION NUMBER */
   signal->theData[3] = ZSPH1;
-  signal->theData[4] = 255;
+  signal->theData[4] = 7;
+  signal->theData[5] = 255;
   sendSignal(c_sttor_ref, GSN_STTORRY, signal, 6, JBB);
 }//Dbtc::sttorryLab()
 
@@ -7207,6 +7232,7 @@ void Dbtc::seizeGcp(Ptr<GcpRecord> & dst, Uint64 Tgci, Uint32 line)
   localGcpPointer.p->line_written = line;
   localGcpPointer.p->apiConnectList.init();
   localGcpPointer.p->gcpNomoretransRec = ZFALSE;
+  NdbTick_Invalidate(&localGcpPointer.p->m_received_ticks);
 
   /**
    * Make sure GCP records are in increasing order with lowest id first.
@@ -8545,6 +8571,14 @@ void Dbtc::execCOMPLETED(Signal* signal)
   if (TcheckCondition)
   {
     jam();
+    tcConnectptr = localTcConnectptr;
+    {
+      LocalTcConnectRecord_fifo tcConList(tcConnectRecord,
+                                          localApiConnectptr.p->tcConnect);
+      tcConList.remove(tcConnectptr);
+    }
+    Uint32 dummy = 0;
+    releaseTcCon(signal, dummy, true);
     Uint32 finish_trans_counter = localApiConnectptr.p->finish_trans_counter;
     ndbrequire(finish_trans_counter > 0);
     finish_trans_counter--;
@@ -8689,15 +8723,110 @@ void Dbtc::handleGcp(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
   unlinkApiConnect(localGcpPtr, apiConnectptr);
   if (localGcpPtr.p->apiConnectList.isEmpty())
   {
-    if (localGcpPtr.p->gcpNomoretransRec == ZTRUE) {
+    if (localGcpPtr.p->gcpNomoretransRec == ZTRUE)
+    {
       if (c_ongoing_take_over_cnt == 0)
       {
         jam();
         gcpTcfinished(signal, localGcpPtr.p->gcpId, __LINE__);
         unlinkAndReleaseGcp(localGcpPtr);
       }
-    }//if
+      else
+      {
+        DEB_GCP(("gcpId(%u,%u) finished, but c_ongoing_take_over_cnt: %u",
+                 Uint32(localGcpPtr.p->gcpId >> 32),
+                 Uint32(localGcpPtr.p->gcpId & 0xFFFFFFFF),
+                 c_ongoing_take_over_cnt));
+      }
+    }
   }
+}
+
+void
+Dbtc::checkGcpFinished(Signal *signal)
+{
+  LocalGcpRecord_list gcp_list(c_gcpRecordPool, c_gcpRecordList);
+  GcpRecordPtr gcpPtr;
+  if (gcp_list.first(gcpPtr) &&
+      gcpPtr.p->gcpNomoretransRec == ZTRUE)
+  {
+    jam();
+    NDB_TICKS currTime = NdbTick_getCurrentTicks();
+    Uint32 secs_wait =
+      NdbTick_Elapsed(gcpPtr.p->m_received_ticks, currTime).seconds();
+    if (secs_wait > 20)
+    {
+      Uint32 gci_lo = Uint32(gcpPtr.p->gcpId & 0xFFFFFFFF);
+      Uint32 gci_hi = Uint32(gcpPtr.p->gcpId >> 32);
+      g_eventLogger->info("Waited %u seconds for gcpId(%u,%u) to finish",
+                          secs_wait,
+                          gci_hi,
+                          gci_lo);
+      ApiConnectRecordPtr apiConnectptr;
+      LocalApiConnectRecord_gcp_list
+        apiConList(c_apiConnectRecordPool,
+                   gcpPtr.p->apiConnectList);
+      apiConList.first(apiConnectptr);
+      if (apiConnectptr.p != nullptr)
+      {
+        jam();
+        DumpStateOrd * const dumpState =
+          (DumpStateOrd *)signal->getDataPtrSend();
+        dumpState->args[0] = DumpStateOrd::TcDumpOneApiConnectRec;
+        dumpState->args[1] = apiConnectptr.i;
+        dumpState->args[2] = instance();
+        signal->setLength(3);
+        execDUMP_STATE_ORD(signal);
+        Uint32 tcPtrI = apiConnectptr.p->tcConnect.getFirst();
+        while (tcPtrI != RNIL)
+        {
+          jam();
+          TcConnectRecordPtr tcPtr;
+          tcPtr.i = tcPtrI;
+          ndbrequire(tcConnectRecord.getValidPtr(tcPtr));
+          bool print_flag = false;
+          if (apiConnectptr.p->apiConnectstate == CS_WAIT_COMMIT_CONF)
+          {
+            for (Uint32 i = 0; i <= tcPtr.p->lastReplicaNo; i++)
+            {
+              if (tcPtr.p->failData[i] != LqhTransConf::Committed)
+                print_flag = true;
+            }
+          }
+          else if (apiConnectptr.p->apiConnectstate == CS_WAIT_COMPLETE_CONF)
+          {
+            for (Uint32 i = 0; i <= tcPtr.p->lastReplicaNo; i++)
+            {
+              if (tcPtr.p->failData[i] != LqhTransConf::InvalidStatus)
+                print_flag = true;
+            }
+          }
+          else
+          {
+            print_flag = true;
+          }
+          if (print_flag)
+          {
+            dumpState->args[0] = DumpStateOrd::TcDumpOneTcConnectRec;
+            dumpState->args[1] = tcPtrI;
+            dumpState->args[2] = instance();
+            signal->setLength(3);
+            execDUMP_STATE_ORD(signal);
+          }
+          tcPtrI = tcPtr.p->nextList;
+        }
+        ndbabort();
+      }
+      else
+      {
+        jam();
+        g_eventLogger->info("List of API connect records empty crashing!");
+        ndbabort();
+      }
+    }
+  }
+  signal->theData[0] = TcContinueB::ZCHECK_GCP_FINISHED;
+  sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10000, 1);
 }
 
 void Dbtc::releaseApiConCopy(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
@@ -9436,84 +9565,84 @@ void Dbtc::warningReport(Signal* signal, int place, Uint32 oprec)
     break;
   case 4:
     jam();
-#ifdef ABORT_TRACE
+#ifdef COMMIT_TRACE
     ndbout << "Received COMMITTED in wrong state in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 5:
     jam();
-#ifdef ABORT_TRACE
+#ifdef COMMIT_TRACE
     ndbout << "Received COMMITTED with wrong transid in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 6:
     jam();
-#ifdef ABORT_TRACE
+#ifdef COMPLETE_TRACE
     ndbout << "Received COMPLETED in wrong state in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 7:
     jam();
-#ifdef ABORT_TRACE
+#ifdef COMPLETE_TRACE
     ndbout << "Received COMPLETED with wrong transid in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 8:
     jam();
-#ifdef ABORT_TRACE
+#ifdef COMMIT_TRACE
     ndbout << "Received COMMITCONF with tc-rec in wrong state in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 9:
     jam();
-#ifdef ABORT_TRACE
+#ifdef COMMIT_TRACE
     ndbout << "Received COMMITCONF with api-rec in wrong state in"
            << " Dbtc, oprec: " << oprec << endl;
 #endif
     break;
   case 10:
     jam();
-#ifdef ABORT_TRACE
+#ifdef COMMIT_TRACE
     ndbout << "Received COMMITCONF with wrong transid in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 11:
     jam();
-#ifdef ABORT_TRACE
+#ifdef COMMIT_TRACE
     ndbout << "Received COMMITCONF from wrong nodeid in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 12:
     jam();
-#ifdef ABORT_TRACE
+#ifdef COMPLETE_TRACE
     ndbout << "Received COMPLETECONF, tc-rec in wrong state in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 13:
     jam();
-#ifdef ABORT_TRACE
+#ifdef COMPLETE_TRACE
     ndbout << "Received COMPLETECONF, api-rec in wrong state in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 14:
     jam();
-#ifdef ABORT_TRACE
+#ifdef COMPLETE_TRACE
     ndbout << "Received COMPLETECONF with wrong transid in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 15:
     jam();
-#ifdef ABORT_TRACE
+#ifdef COMPLETE_TRACE
     ndbout << "Received COMPLETECONF from wrong nodeid in Dbtc, oprec: "
            << oprec << endl;
 #endif
@@ -9555,42 +9684,42 @@ void Dbtc::warningReport(Signal* signal, int place, Uint32 oprec)
     break;
   case 21:
     jam();
-#ifdef ABORT_TRACE
+#ifdef COMMIT_TRACE
     ndbout << "Time-out waiting for COMMITCONF in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 22:
     jam();
-#ifdef ABORT_TRACE
+#ifdef COMPLETE_TRACE
     ndbout << "Time-out waiting for COMPLETECONF in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 23:
     jam();
-#ifdef ABORT_TRACE
+#ifdef LQHKEY_TRACE
     ndbout << "Received LQHKEYCONF in wrong tc-state in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 24:
     jam();
-#ifdef ABORT_TRACE
+#ifdef LQHKEY_TRACE
     ndbout << "Received LQHKEYREF to wrong transid in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 25:
     jam();
-#ifdef ABORT_TRACE
+#ifdef LQHKEY_TRACE
     ndbout << "Received LQHKEYREF in wrong state in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 26:
     jam();
-#ifdef ABORT_TRACE
+#ifdef LQHKEY_TRACE
     ndbout << "Received LQHKEYCONF to wrong transid in Dbtc, oprec: "
            << oprec << endl;
 #endif
@@ -9598,21 +9727,21 @@ void Dbtc::warningReport(Signal* signal, int place, Uint32 oprec)
   case 27:
     jam();
     // printState(signal, 27, apiConnectptr);
-#ifdef ABORT_TRACE
+#ifdef LQHKEY_TRACE
     ndbout << "Received LQHKEYCONF in wrong api-state in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 28:
     jam();
-#ifdef ABORT_TRACE
+#ifdef LQHKEY_TRACE
     ndbout << "Discarding FIRE_TRIG_REF/CONF in Dbtc, oprec: "
            << oprec << endl;
 #endif
     break;
   case 29:
     jam();
-#ifdef ABORT_TRACE
+#ifdef LQHKEY_TRACE
     ndbout << "Discarding TcContinueB::ZSEND_FIRE_TRIG_REQ in Dbtc" << endl;
 #endif
     break;
@@ -11189,6 +11318,7 @@ void Dbtc::execGCP_NOMORETRANS(Signal* signal)
       unlinkAndReleaseGcp(gcpPtr);
     }
   }
+  const NDB_TICKS currentTime = NdbTick_getCurrentTicks();
   if (gcp_list.first(gcpPtr))
   {
     jam();
@@ -11212,6 +11342,7 @@ void Dbtc::execGCP_NOMORETRANS(Signal* signal)
                             empty);
 
         gcpPtr.p->gcpNomoretransRec = ZTRUE;
+        gcpPtr.p->m_received_ticks = currentTime;
       }
       else
       {
@@ -11219,7 +11350,12 @@ void Dbtc::execGCP_NOMORETRANS(Signal* signal)
         {
           jam();
           /* Wait for transactions in GCP to commit + complete */
+          DEB_GCP(("(%u)gcpId(%u,%u) still waiting",
+                   instance(),
+                   gci_hi,
+                   gci_lo));
           gcpPtr.p->gcpNomoretransRec = ZTRUE;
+          gcpPtr.p->m_received_ticks = currentTime;
         }
         else
         {
@@ -11264,6 +11400,7 @@ seize:
     jam();
     seizeGcp(gcpPtr, tcheckGcpId, __LINE__);
     gcpPtr.p->gcpNomoretransRec = ZTRUE;
+    gcpPtr.p->m_received_ticks = currentTime;
   }
   return;
   
@@ -11287,6 +11424,7 @@ outoforder:
     tmp.p->gcpId = tcheckGcpId;
     tmp.p->apiConnectList.init();
     tmp.p->gcpNomoretransRec = ZTRUE;
+    tmp.p->m_received_ticks = currentTime;
 
     LocalGcpRecord_list gcp_list(c_gcpRecordPool, c_gcpRecordList);
     gcp_list.addFirst(tmp);
@@ -11320,6 +11458,7 @@ outoforder:
     {
       jam();
       gcpPtr.p->gcpNomoretransRec = ZTRUE;
+      gcpPtr.p->m_received_ticks = currentTime;
       g_eventLogger->info("DBTC %u: Out of order GCP %u/%u already linked",
                           instance(),
                           gci_hi,
@@ -11336,6 +11475,7 @@ outoforder:
     tmp.p->gcpId = tcheckGcpId;
     tmp.p->apiConnectList.init();
     tmp.p->gcpNomoretransRec = ZTRUE;
+    tmp.p->m_received_ticks = currentTime;
     gcp_list.insertAfter(tmp, prev);
     ndbassert(tmp.p->nextList == gcpPtr.i);
     g_eventLogger->info("DBTC %u: Out of order Gcp %u/%u linked mid-list. "
@@ -11425,13 +11565,16 @@ void Dbtc::execNODE_FAILREP(Signal* signal)
     /*       SET STATUS OF THE FAILED NODE TO DEAD SINCE IT HAS   */
     /*       FAILED.                                              */
     /*------------------------------------------------------------*/
-    g_eventLogger->info("NODE_FAILREP(DBTC) for node %u", myHostPtr.i);
     myHostPtr.p->hostStatus = HS_DEAD;
     DEB_NODE_STATUS(("(%u) Node: %u now dead",
                      instance(),
                      myHostPtr.i));
     myHostPtr.p->m_nf_bits = HostRecord::NF_NODE_FAIL_BITS;
     c_ongoing_take_over_cnt++;
+    g_eventLogger->info("NODE_FAILREP(DBTC) for node %u"
+                        ", c_ongoing_take_over_cnt: %u",
+                        myHostPtr.i,
+                        c_ongoing_take_over_cnt);
     c_alive_nodes.clear(myHostPtr.i);
 
     if (tcNodeFailptr.p->failStatus == FS_LISTENING) 
@@ -11870,6 +12013,8 @@ void Dbtc::execTAKE_OVERTCCONF(Signal* signal)
   Uint32 cnt = c_ongoing_take_over_cnt;
   ndbrequire(cnt);
   c_ongoing_take_over_cnt = cnt - 1;
+  g_eventLogger->info("c_ongoing_take_over_cnt decreased to %u",
+                      c_ongoing_take_over_cnt);
   checkNodeFailComplete(signal, hostptr.i, HostRecord::NF_TAKEOVER);
 
   GcpRecordPtr tmpGcpPointer;
@@ -13969,6 +14114,7 @@ void Dbtc::execCOMPLETECONF(Signal* signal)
     return;
   }
   bool found = false;
+  bool release_tc_ok = true;
   for (Uint32 i = 0; i <= tcConnectptr.p->lastReplicaNo; i++)
   {
     if (nodeId == tcConnectptr.p->tcNodedata[i])
@@ -13978,7 +14124,10 @@ void Dbtc::execCOMPLETECONF(Signal* signal)
       ndbrequire(tcConnectptr.p->failData[i] != LqhTransConf::InvalidStatus);
       tcConnectptr.p->failData[i] = LqhTransConf::InvalidStatus;
       found = true;
-      break;
+    }
+    else if (tcConnectptr.p->failData[i] != LqhTransConf::InvalidStatus)
+    {
+      release_tc_ok = false;
     }
   }
   if (!found)
@@ -13997,6 +14146,16 @@ void Dbtc::execCOMPLETECONF(Signal* signal)
   if (!(apiConnectptr.p->send_fail_data_process_ongoing ||
         apiConnectptr.p->check_fail_data_process_ongoing))
   {
+    if (release_tc_ok)
+    {
+      {
+        LocalTcConnectRecord_fifo tcConList(tcConnectRecord,
+                                            apiConnectptr.p->tcConnect);
+        tcConList.remove(tcConnectptr);
+      }
+      Uint32 dummy = 0;
+      releaseTcCon(signal, dummy, true);
+    }
     if (apiConnectptr.p->finish_trans_counter == 0 &&
         apiConnectptr.p->nextTcOperation == RNIL)
     {
@@ -18902,24 +19061,30 @@ Dbtc::execDUMP_STATE_ORD(Signal* signal)
     {
       return;
     }
-    infoEvent("Dbtc::TcConnectRecord[%d]: state=%d, apiCon=%d, "
+    g_eventLogger->info("Dbtc::TcConnectRecord[%d]: state=%d, apiCon=%d, "
 	      "commitAckMarker=%d",
 	      tc.i,
 	      tc.p->tcConnectstate,
 	      tc.p->apiConnect,
 	      tc.p->commitAckMarker);
-    infoEvent(" special flags=%x, noOfNodes=%d, operation=%d",
+    g_eventLogger->info(" special flags=%x, noOfNodes=%d, operation=%d",
 	      tc.p->m_special_op_flags,
 	      tc.p->noOfNodes,
 	      tc.p->operation);
-    infoEvent(" clientData=%d, savePointId=%d, nodes(%d,%d,%d,%d), ",
+    g_eventLogger->info(" clientData=%d, savePointId=%d, nodes(%d,%d,%d,%d), ",
 	      tc.p->clientData,
 	      tc.p->savePointId,
               tc.p->tcNodedata[0],
               tc.p->tcNodedata[1],
               tc.p->tcNodedata[2],
               tc.p->tcNodedata[3]);
-    infoEvent(" next=%d, instance=%u ",
+    g_eventLogger->info("failData(%u,%u,%u,%u) lastReplicaNo: %u",
+                        tc.p->failData[0],
+                        tc.p->failData[1],
+                        tc.p->failData[2],
+                        tc.p->failData[3],
+                        tc.p->lastReplicaNo);
+    g_eventLogger->info(" next=%d, instance=%u ",
               tc.p->nextList,
               instance());
     return;
@@ -19037,29 +19202,40 @@ Dbtc::execDUMP_STATE_ORD(Signal* signal)
       return;
     }
 
-    infoEvent("Dbtc::c_apiConnectRecordPool.getPtr(%d): state=%d, abortState=%d, "
+    g_eventLogger->info(
+              "Dbtc::c_apiConnectRecordPool.getPtr(%d): state=%d,"
+              " abortState=%d, "
 	      "apiFailState=%d",
 	      ap.i,
 	      ap.p->apiConnectstate,
 	      ap.p->abortState,
 	      ap.p->apiFailState);
-    infoEvent(" transid(0x%x, 0x%x), apiBref=0x%x, scanRec=%d",
+    g_eventLogger->info(" transid(0x%x, 0x%x), apiBref=0x%x, scanRec=%d",
 	      ap.p->transid[0],
 	      ap.p->transid[1],
 	      ap.p->ndbapiBlockref,
 	      ap.p->apiScanRec);
-    infoEvent(" ctcTimer=%d, apiTimer=%d, counter=%d, retcode=%d, "
+    g_eventLogger->info(" ctcTimer=%d, apiTimer=%d, apiTimer:line: %u, "
+              "counter=%d, retcode=%d, "
 	      "retsig=%d",
               ctcTimer, getApiConTimer(ap),
+              ap.p->m_apiConTimer_line,
 	      ap.p->counter,
 	      ap.p->returncode,
 	      ap.p->returnsignal);
-    infoEvent(" lqhkeyconfrec=%d, lqhkeyreqrec=%d, "
+    g_eventLogger->info(" lqhkeyconfrec=%d, lqhkeyreqrec=%d, "
 	      "tckeyrec=%d",
 	      ap.p->lqhkeyconfrec,
 	      ap.p->lqhkeyreqrec,
 	      ap.p->tckeyrec);
-    infoEvent(" next=%d, instance=%u, firstTc=%d ",
+    g_eventLogger->info("send_fail_data_processing: %u,"
+                        " check_fail_data_process_ongoing: %u",
+                        ap.p->send_fail_data_process_ongoing,
+                        ap.p->check_fail_data_process_ongoing);
+    g_eventLogger->info("finish_trans_counter: %u, nextTcOperation: %u",
+                        ap.p->finish_trans_counter,
+                        ap.p->nextTcOperation);
+    g_eventLogger->info(" next=%d, instance=%u, firstTc=%d ",
 	      ap.p->nextApiConnect,
               instance(),
               ap.p->tcConnect.getFirst());

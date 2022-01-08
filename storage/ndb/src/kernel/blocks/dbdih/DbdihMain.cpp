@@ -25132,7 +25132,12 @@ void Dbdih::setGCPStopTimeouts(Signal *signal,
 
   const Uint32 old_micro_GCP_max_lag = m_gcp_monitor.m_micro_gcp.m_max_lag_ms;
   const Uint32 old_GCP_save_max_lag = m_gcp_monitor.m_gcp_save.m_max_lag_ms;
-    
+
+  if (micro_GCP_timeout == 0)
+  {
+    jam();
+    micro_GCP_timeout = gcp_timeout;
+  }
   if (micro_GCP_timeout != 0)
   {
     jam();
