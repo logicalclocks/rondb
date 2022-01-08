@@ -8035,23 +8035,29 @@ Suma::start_resend(Signal* signal, Uint32 buck)
    */
   ndbrequire(buck < NO_OF_BUCKETS);
   Bucket* bucket = c_buckets + buck;
+  jam();
   Page_pos pos= bucket->m_buffer_head;
 
   if(m_out_of_buffer_gci)
   {
     jam();
     Ptr<Gcp_record> gcp;
-    c_gcp_list.last(gcp);
+    Uint32 gci_hi = 0;
+    if (c_gcp_list.last(gcp))
+    {
+      gci_hi = (Uint32) (gcp.p->m_gci >> 32);
+    }
     signal->theData[0] = NDB_LE_SubscriptionStatus;
     signal->theData[1] = 2; // INCONSISTENT;
     signal->theData[2] = 0; // Not used
     signal->theData[3] = (Uint32) pos.m_max_gci;
-    signal->theData[4] = (Uint32) (gcp.p->m_gci >> 32);
+    signal->theData[4] = gci_hi;
     sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 5, JBB);
     m_missing_data = true;
     return;
   }
 
+  jam();
   if(pos.m_page_id == RNIL)
   {
     jam();
@@ -8064,6 +8070,7 @@ Suma::start_resend(Signal* signal, Uint32 buck)
     return;
   }
 
+  jam();
   Uint64 min= bucket->m_max_acked_gci + 1;
   Uint64 max = m_max_seen_gci;
 
@@ -8081,6 +8088,7 @@ Suma::start_resend(Signal* signal, Uint32 buck)
     return;
   }
 
+  jam();
   g_cnt = 0;
   bucket->m_state |= (Bucket::BUCKET_TAKEOVER | Bucket::BUCKET_RESEND);
   bucket->m_switchover_node = get_responsible_node(buck);
