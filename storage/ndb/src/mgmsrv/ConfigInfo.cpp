@@ -1306,7 +1306,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     0,
     ConfigInfo::CI_INT,
     "120000",
-    "10",
+    "3000",
     STR_VALUE(MAX_INT_RNIL) },
 
   {
@@ -1482,7 +1482,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     0,
     ConfigInfo::CI_INT,
-    STR_VALUE(MAX_INT_RNIL),
+    "10000",
     "0",
     STR_VALUE(MAX_INT_RNIL) },
 

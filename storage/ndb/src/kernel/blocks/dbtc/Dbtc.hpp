@@ -2038,6 +2038,7 @@ public:
     UintR nextList;
     Uint32 line_written;
     Uint64 gcpId;
+    NDB_TICKS m_received_ticks;
   };
   typedef Ptr<GcpRecord> GcpRecordPtr;
   typedef TransientPool<GcpRecord> GcpRecord_pool;
@@ -2337,7 +2338,7 @@ private:
   void close_scan_req(Signal*, ScanRecordPtr, bool received_req, ApiConnectRecordPtr apiConnectptr);
   void close_scan_req_send_conf(Signal*, ScanRecordPtr, ApiConnectRecordPtr apiConnectptr);
   
-  void checkGcp(Signal* signal);
+  void checkGcpFinished(Signal* signal);
   void commitGciHandling(Signal* signal,
                          Uint64 Tgci,
                          ApiConnectRecordPtr apiConnectptr,
