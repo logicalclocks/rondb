@@ -19078,7 +19078,7 @@ Dbtc::execDUMP_STATE_ORD(Signal* signal)
               tc.p->tcNodedata[1],
               tc.p->tcNodedata[2],
               tc.p->tcNodedata[3]);
-    g_eventLogger->info("failData(%u,%u,%u,%u) lastReplicaNo",
+    g_eventLogger->info("failData(%u,%u,%u,%u) lastReplicaNo: %u",
                         tc.p->failData[0],
                         tc.p->failData[1],
                         tc.p->failData[2],
