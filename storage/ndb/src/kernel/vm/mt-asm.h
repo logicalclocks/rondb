@@ -37,6 +37,31 @@
  */
 //#define NDB_USE_SPINLOCK
 
+/**
+ * Use mutex for internal signal communication except in the case of x86
+ * CPUs. These have been verified to work without mutexes. But e.g. on ARM
+ * more work would be needed to support signal sending without mutexes.
+ * Using a mutex has an overhead of around 1.5%.
+ */
+#undef DONT_USE_MUTEX_FOR_SIGNALS
+#if defined(__GNUC__)
+#if defined(__x86_64__) || defined (__i386__)
+#define DONT_USE_MUTEX_FOR_SIGNALS 1
+#endif
+#elif defined(__sun)
+#if defined(__x86_64) || defined (__i386)
+#define DONT_USE_MUTEX_FOR_SIGNALS 1
+#endif
+#endif
+
+#if defined(DONT_USE_MUTEX_FOR_SIGNALS)
+#define x86_likely likely
+#define x86_unlikely unlikely
+#else
+#define x86_likely unlikely
+#define x86_unlikely likely
+#endif
+
 #if defined(__GNUC__)
 /********************
  * GCC

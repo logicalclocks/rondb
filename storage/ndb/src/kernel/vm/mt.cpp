@@ -165,7 +165,7 @@ static Uint32 g_max_send_buffer_size_delay = MAX_SEND_BUFFER_SIZE_TO_DELAY;
 static Uint32 glob_ndbfs_thr_no = 0;
 static Uint32 glob_wakeup_latency = 25;
 static Uint32 glob_num_job_buffers_per_thread = 0;
-static bool glob_use_write_lock_mutex = false;
+static bool glob_use_write_lock_mutex = true;
 /**
  * Ensure that the above variables that are read-only after startup are
  * not sharing CPU cache line with anything else that is updated.
@@ -9199,13 +9199,13 @@ check_congestion(thr_data *selfptr)
     {
       continue;
     }
-    if (unlikely(glob_use_write_lock_mutex))
+    if (x86_unlikely(glob_use_write_lock_mutex))
     {
       lock(&jbb->m_write_lock);
     }
     Uint32 congestion_level = get_free_level(jbb->m_read_index,
                                              jbb->m_write_index);
-    if (unlikely(glob_use_write_lock_mutex))
+    if (x86_unlikely(glob_use_write_lock_mutex))
     {
       unlock(&jbb->m_write_lock);
     }
@@ -9276,7 +9276,7 @@ flush_local_signals(struct thr_data *selfptr,
   thr_job_buffer *write_buffer;
   Uint32 write_pos;
   Uint32 num_signals = 0;
-  if (likely(!glob_use_write_lock_mutex))
+  if (x86_likely(!glob_use_write_lock_mutex))
   {
     /**
      * No locking used, thus no need to perform extra copying step to
@@ -9375,7 +9375,7 @@ flush_local_signals(struct thr_data *selfptr,
       need_wakeup = true;
     }
   }
-  if (unlikely(glob_use_write_lock_mutex))
+  if (x86_unlikely(glob_use_write_lock_mutex))
   {
     unlock(&q->m_write_lock);
   }
@@ -10341,6 +10341,8 @@ ThreadConfig::init()
   require(glob_num_threads <= MAX_BLOCK_THREADS);
   glob_num_job_buffers_per_thread =
     MIN(glob_num_threads, NUM_JOB_BUFFERS_PER_THREAD);
+
+#if defined(DONT_USE_MUTEX_FOR_SIGNALS)
   if (glob_num_job_buffers_per_thread < glob_num_threads)
   {
     glob_use_write_lock_mutex = true;
@@ -10349,6 +10351,9 @@ ThreadConfig::init()
   {
     glob_use_write_lock_mutex = false;
   }
+#else
+  glob_use_write_lock_mutex = true;
+#endif
 
   glob_num_tc_threads = num_tc_threads;
   if (glob_num_tc_threads == 0)
