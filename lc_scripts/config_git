@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+# Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
 set -e
 
@@ -32,13 +32,13 @@ git diff --cached --name-only |
         while IFS="" read filename; do {
             # Get the file content from the git index, i.e. what's about to be committed
             git cat-file blob :"$filename" |
-                # Discard everything from the first empty line
-                sed '/^$/q';
+                # Discard everything from the first empty line after line 10
+                awk '/^$/ && (NR>10) {exit} {print}'
             # Get the file content again
             git cat-file blob :"$filename" |
-                # Discard everything until the last empty line
+                # Discard everything until the last empty line before the last 10 lines
                 tac |
-                sed '/^$/q' |
+                awk '/^$/ && (NR>10) {exit} {print}' |
                 tac;
         } |
             # Check that a correct copyright notice is present
