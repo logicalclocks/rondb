@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -931,7 +931,7 @@ o verify nodegroup mapping
     map_ng[i] = i;
   map_nodegroups(&map_ng[0], (Uint32)4);
   for (i = 0; i < 4 ; i++)
-    printf("NG %u mapped to %u \n", i, map_ng[i]);
+    printf("NG %u mapped to %u\n", i, map_ng[i]);
   }
   for (j = 0; j < 4; j++)
   {
@@ -939,7 +939,7 @@ o verify nodegroup mapping
     map_ng[i] = i >> 1;
   map_nodegroups(&map_ng[0], (Uint32)8);
   for (i = 0; i < 8 ; i++)
-    printf("NG %u mapped to %u \n", i >> 1, map_ng[i]);
+    printf("NG %u mapped to %u\n", i >> 1, map_ng[i]);
   }
   exit(NdbToolsProgramExitCode::WRONG_ARGS);
 #endif

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2013, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -800,7 +800,7 @@ create_min_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
   for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
   {
     DEBUG_HW((stderr,
-              "Group[%u]: %u \n", i, g_num_virt_l3_cpus[i]));
+              "Group[%u]: %u\n", i, g_num_virt_l3_cpus[i]));
     if (g_num_virt_l3_cpus[i] < group_size &&
         g_num_virt_l3_cpus[i] > largest_group_size)
     {

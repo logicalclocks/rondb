@@ -5757,6 +5757,7 @@ void Dbtc::execPACKED_SIGNAL(Signal* signal)
                                     TC_RECEIVE_TYPES,
                                     0)); /* Irrelevant */
   }
+  Uint32 packedIndex = 0;
   while (Tlength > Tstep) {
 
     TpackDataPtr = &TpackedData[Tstep];
@@ -5771,14 +5772,18 @@ void Dbtc::execPACKED_SIGNAL(Signal* signal)
     switch (Tdata1 >> 28) {
     case ZCOMMITTED:
       signal->header.theLength = 3;
-      jamBuffer()->markEndOfSigExec();
+      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
+                                            packedIndex);
       execCOMMITTED(signal);
+      packedIndex++;
       Tstep += 3;
       break;
     case ZCOMPLETED:
       signal->header.theLength = 3;
-      jamBuffer()->markEndOfSigExec();
+      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
+                                            packedIndex);
       execCOMPLETED(signal);
+      packedIndex++;
       Tstep += 3;
       break;
     case ZLQHKEYCONF:
@@ -5793,16 +5798,20 @@ void Dbtc::execPACKED_SIGNAL(Signal* signal)
       lqhKeyConf->transId2 = Tdata3;
       lqhKeyConf->numFiredTriggers = Tdata4;
       signal->header.theLength = LqhKeyConf::SignalLength;
-      jamBuffer()->markEndOfSigExec();
+      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
+                                            packedIndex);
       execLQHKEYCONF(signal);
+      packedIndex++;
       Tstep += LqhKeyConf::SignalLength;
       break;
     case ZFIRE_TRIG_CONF:
       jamDebug();
       signal->header.theLength = 4;
       signal->theData[3] = TpackDataPtr[3];
-      jamBuffer()->markEndOfSigExec();
+      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
+                                            packedIndex);
       execFIRE_TRIG_CONF(signal);
+      packedIndex++;
       Tstep += 4;
       break;
     default:
@@ -18035,13 +18044,16 @@ void Dbtc::initApiConnect(Signal* signal)
   capiConnectPREPARE_TO_COMMITList.init();
 
   ApiConnectRecordPtr apiConnectptr;
+  Uint32 removeLoopCount = 0;
   while (fast_record_list.removeFirst(apiConnectptr))
   {
     refresh_watch_dog();
-    jam();
+    removeLoopCount++;
     releaseApiConTimer(apiConnectptr);
     c_apiConnectRecordPool.release(apiConnectptr);
   }
+  jam();
+  jamData(removeLoopCount);
   c_apiConnectRecordPool.resetUsedHi();
   c_apiConTimersPool.resetUsedHi();
 }//Dbtc::initApiConnect()
@@ -18050,8 +18062,9 @@ void Dbtc::inithost(Signal* signal)
 {
   cpackedListIndex = 0;
   ndbrequire(chostFilesize > 0);
+  jam();
+  jamData(chostFilesize);
   for (hostptr.i = 0; hostptr.i < chostFilesize; hostptr.i++) {
-    jam();
     ptrAss(hostptr, hostRecord);
     hostptr.p->hostStatus = HS_DEAD;
     DEB_NODE_STATUS(("(%u) Node: %u now dead",
@@ -18208,21 +18221,22 @@ void Dbtc::initialiseTcConnect(Signal* signal)
   for (Uint32 i = 0; i < reserveConnectRecord; i++)
   {
     refresh_watch_dog();
-    jam();
     TcConnectRecordPtr tcConptr;
     ndbrequire(tcConnectRecord.seize(tcConptr));
     fast_record_list.addFirst(tcConptr);
   }
+  jam();
 
   LocalTcConnectRecord_fifo tcConList(tcConnectRecord, cfreeTcConnectFail);
   Uint32 tcConnectFailCount = 0;
 #ifdef VM_TRACE
   Uint32 prevptr = 0;
 #endif
+  Uint32 connectLoopCount = 0;
   while (tcConnectFailCount < ctcConnectFailCount)
   {
     refresh_watch_dog();
-    jam();
+    connectLoopCount++;
     TcConnectRecordPtr tcConptr;
     ndbrequire(tcConnectRecord.seize(tcConptr));
     tcConnectFailCount++;
@@ -18232,16 +18246,21 @@ void Dbtc::initialiseTcConnect(Signal* signal)
 #endif
     tcConList.addLast(tcConptr);
   }
+  jam();
+  jamData(connectLoopCount);
   c_counters.cconcurrentOp = 0;
   m_concurrent_overtakeable_operations = 0;
 
   TcConnectRecordPtr tcConptr;
+  Uint32 removeLoopCount = 0;
   while (fast_record_list.removeFirst(tcConptr))
   {
     refresh_watch_dog();
-    jam();
+    removeLoopCount++;
     tcConnectRecord.release(tcConptr);
   }
+  jam();
+  jamData(removeLoopCount);
   tcConnectRecord.resetUsedHi();
 }//Dbtc::initialiseTcConnect()
 

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -288,31 +288,31 @@ int main(int argc, char ** argv) {
   assert(! cr1.compare(a_string));
   Uint32 offset = 0;
   int nread = 0;
-  printf(" --> START readBuffered TEST <-- \n");
-  printf("LcConstRope cr1 nread: %d offset: %d \n", nread, offset);
+  printf(" --> START readBuffered TEST <--\n");
+  printf("LcConstRope cr1 nread: %d offset: %d\n", nread, offset);
   nread = cr1.readBuffered(buffer_sml, 32, offset);
-  printf("LcConstRope cr1 nread: %d offset: %d \n", nread, offset);
+  printf("LcConstRope cr1 nread: %d offset: %d\n", nread, offset);
   assert(! strncmp(a_string, buffer_sml, nread));
   nread = cr1.readBuffered(buffer_sml, 32, offset);
-  printf("LcConstRope cr1 nread: %d offset: %d \n", nread, offset);
+  printf("LcConstRope cr1 nread: %d offset: %d\n", nread, offset);
   assert(! strncmp(a_string + offset - nread, buffer_sml, nread));
   /* All done: */
   assert(offset == cr1.size());
   /* Read once more; should return 0: */
   nread = cr1.readBuffered(buffer_sml, 32, offset);
   assert(nread == 0);
-  printf(" --> END readBuffered TEST <-- \n");
+  printf(" --> END readBuffered TEST <--\n");
 
   /* Test buffered-style writing to LocalRope
   */
-  printf(" --> START appendBuffer TEST <-- \n");
+  printf(" --> START appendBuffer TEST <--\n");
   {
     LcLocalRope lr2(h2);
     lr2.appendBuffer(a_string, 40);
-    printf("lr2 size: %d \n", lr2.size());
+    printf("lr2 size: %d\n", lr2.size());
     assert(lr2.size() == 40);
     lr2.appendBuffer(a_string, 40);
-    printf("lr2 size: %d \n", lr2.size());
+    printf("lr2 size: %d\n", lr2.size());
     assert(lr2.size() == 80);
   }
   printf("h2.hashValue() = 0x%x, h3.hashValue() = 0x%x\n",
@@ -332,9 +332,9 @@ int main(int argc, char ** argv) {
     LcLocalRope lr4(h4);
     lr4.assign(a_string, 32);
   }
-  printf("Hashes:  h3 = 0x%x, h4 = 0x%x \n", h3.hashValue(), h4.hashValue());
+  printf("Hashes:  h3 = 0x%x, h4 = 0x%x\n", h3.hashValue(), h4.hashValue());
   assert(h3.hashValue() == h4.hashValue());
-  printf(" --> END appendBuffer TEST <-- \n");
+  printf(" --> END appendBuffer TEST <--\n");
 
   /* Test ConstRope::copy(LocalRope &)
   */
@@ -343,12 +343,12 @@ int main(int argc, char ** argv) {
   printf("h2.hashValue() = 0x%x, h3.hashValue() = 0x%x\n",
          h2.hashValue(),
          h3.hashValue());
-  printf("cr2 size: %d \n", cr2.size());
+  printf("cr2 size: %d\n", cr2.size());
   assert(cr2.size() == 80);
   {
     LcLocalRope lr3(h3);
     cr2.copy(lr3);
-    printf("lr3 size: %d \n", lr3.size());
+    printf("lr3 size: %d\n", lr3.size());
     assert(lr3.size() == 80);
   }
   {

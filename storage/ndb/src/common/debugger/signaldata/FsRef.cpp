@@ -1,6 +1,7 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
     Use is subject to license terms.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -49,7 +50,7 @@ printFSREF(FILE * output, const Uint32 * theData,
     break;
   }
   fprintf(output, "\n");
-  fprintf(output, " OS ErrorCode: %d \n", sig->osErrorCode);
+  fprintf(output, " OS ErrorCode: %d\n", sig->osErrorCode);
 
   return ret;
 }

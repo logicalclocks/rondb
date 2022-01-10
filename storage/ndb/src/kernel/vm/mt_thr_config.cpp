@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1101,14 +1101,14 @@ THRConfig::do_parse(unsigned realtime,
                                   rep_threads,
                                   send_threads,
                                   recv_threads);
-  g_eventLogger->info("Auto thread config uses: \n"
-                      " %u LDM threads, \n"
-                      " %u Query threads, \n"
-                      " %u tc threads, \n"
-                      " %u Recover threads, \n"
-                      " %u main threads, \n"
-                      " %u rep threads, \n"
-                      " %u recv threads, \n"
+  g_eventLogger->info("Auto thread config uses:\n"
+                      " %u LDM threads,\n"
+                      " %u Query threads,\n"
+                      " %u tc threads,\n"
+                      " %u Recover threads,\n"
+                      " %u main threads,\n"
+                      " %u rep threads,\n"
+                      " %u recv threads,\n"
                       " %u send threads",
                       ldm_threads,
                       query_threads,
@@ -2185,22 +2185,22 @@ THRConfigApplier::appendInfo(BaseString& str,
                              const T_Thread* thr) const
 {
   assert(thr != 0);
-  str.appfmt("(%s) ", getEntryName(thr->m_type));
+  str.appfmt(" (%s)", getEntryName(thr->m_type));
   if (thr->m_bind_type == T_Thread::B_CPU_BIND)
   {
-    str.appfmt("cpubind: %u ", thr->m_bind_no);
+    str.appfmt(" cpubind: %u", thr->m_bind_no);
   }
   else if (thr->m_bind_type == T_Thread::B_CPU_BIND_EXCLUSIVE)
   {
-    str.appfmt("cpubind_exclusive: %u ", thr->m_bind_no);
+    str.appfmt(" cpubind_exclusive: %u", thr->m_bind_no);
   }
   else if (thr->m_bind_type == T_Thread::B_CPUSET_BIND)
   {
-    str.appfmt("cpuset: [ %s ] ", m_cpu_sets[thr->m_bind_no].str().c_str());
+    str.appfmt(" cpuset: [ %s ]", m_cpu_sets[thr->m_bind_no].str().c_str());
   }
   else if (thr->m_bind_type == T_Thread::B_CPUSET_EXCLUSIVE_BIND)
   {
-    str.appfmt("cpuset_exclusive: [ %s ] ",
+    str.appfmt(" cpuset_exclusive: [ %s ]",
       m_cpu_sets[thr->m_bind_no].str().c_str());
   }
 }

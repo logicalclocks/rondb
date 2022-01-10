@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -4319,7 +4320,7 @@ TESTCASE("Commit626",
   FINALIZER(runClearTable2);
 }
 TESTCASE("CommitTry626", 
-	 "Verify what happens when a Commit(TryCommit) \n"
+	 "Verify what happens when a Commit(TryCommit)\n"
 	 "transaction is aborted by "
 	 "NDB because the record does no exist" ){
   INITIALIZER(runClearTable2);
@@ -4327,7 +4328,7 @@ TESTCASE("CommitTry626",
   FINALIZER(runClearTable2);
 }
 TESTCASE("CommitAsMuch626", 
-	 "Verify what happens when a Commit(CommitAsMuchAsPossible) \n"
+	 "Verify what happens when a Commit(CommitAsMuchAsPossible)\n"
 	 "transaction is aborted by\n"
 	 "NDB because the record does no exist" ){
   INITIALIZER(runClearTable2);
@@ -4357,7 +4358,7 @@ TESTCASE("Commit630",
   FINALIZER(runClearTable2);
 }
 TESTCASE("CommitTry630", 
-	 "Verify what happens when a Commit(TryCommit) \n"
+	 "Verify what happens when a Commit(TryCommit)\n"
 	 "transaction is aborted by "
 	 "NDB because the record already exist" ){
   INITIALIZER(runLoadTable);
@@ -4365,7 +4366,7 @@ TESTCASE("CommitTry630",
   FINALIZER(runClearTable2);
 }
 TESTCASE("CommitAsMuch630", 
-	 "Verify what happens when a Commit(CommitAsMuchAsPossible) \n"
+	 "Verify what happens when a Commit(CommitAsMuchAsPossible)\n"
 	 "transaction is aborted by\n"
 	 "NDB because the record already exist" ){
   INITIALIZER(runLoadTable);

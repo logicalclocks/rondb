@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -133,12 +134,7 @@ bool printDICTTABINFO(FILE * output, const Uint32 * theData,
 		      Uint32 len, Uint16 receiverBlockNo)
 {
 //  const DictTabInfo * const sig = (DictTabInfo *) theData;
-
-  fprintf(output, "Signal data: ");
-  Uint32 i = 0;
-  while (i < len)
-    fprintf(output, "H\'%.8x ", theData[i++]);
-  fprintf(output,"\n");
+  printHex(output, theData, len, "Signal data:");
   return true;
 }
 

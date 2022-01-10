@@ -1,5 +1,6 @@
 /*
  Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+ Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
@@ -282,7 +283,7 @@ eventOperation(Ndb* pNdb, const NdbDictionary::Table &tab, void* pstats, int rec
   // set up the callbacks
   g_info << function << "execute\n";
   if (pOp->execute()) { // This starts changes to "start flowing"
-    g_err << function << "operation execution failed: \n";
+    g_err << function << "operation execution failed:\n";
     g_err << pOp->getNdbError().code << " "
 	  << pOp->getNdbError().message << endl;
     return NDBT_FAILED;
@@ -868,7 +869,7 @@ int runEventApplier(NDBT_Context* ctx, NDBT_Step* step)
   }
 
   if (pOp->execute()) { // This starts changes to "start flowing"
-    g_err << "execute operation execution failed: \n";
+    g_err << "execute operation execution failed:\n";
     g_err << pOp->getNdbError().code << " "
 	  << pOp->getNdbError().message << endl;
     result = NDBT_FAILED;
@@ -1148,7 +1149,7 @@ int runEventConsumer(NDBT_Context* ctx, NDBT_Step* step)
   }
 
   if (pOp->execute()) { // This starts changes to "start flowing"
-    g_err << "execute operation execution failed: \n";
+    g_err << "execute operation execution failed:\n";
     g_err << pOp->getNdbError().code << " "
 	  << pOp->getNdbError().message << endl;
     result = NDBT_FAILED;
@@ -1224,7 +1225,7 @@ int runEventListenerUntilStopped(NDBT_Context* ctx, NDBT_Step* step)
 
   if (pOp->execute()) 
   { // This starts changes to "start flowing"
-    g_err << "execute operation execution failed: \n";
+    g_err << "execute operation execution failed:\n";
     g_err << pOp->getNdbError().code << " "
 	  << pOp->getNdbError().message << endl;
     result = NDBT_FAILED;
@@ -2502,7 +2503,7 @@ errorInjectBufferOverflow(NDBT_Context* ctx, NDBT_Step* step)
 
   if (ndb->getNdbError().code != 0)
   {
-    g_err << "pollEvents failed: \n";
+    g_err << "pollEvents failed:\n";
     g_err << ndb->getNdbError().code << " "
           << ndb->getNdbError().message << endl;
     result = (ndb->getNdbError().code == 4720)?NDBT_OK:NDBT_FAILED;
@@ -2592,7 +2593,7 @@ errorInjectStalling(NDBT_Context* ctx, NDBT_Step* step)
 
     if (ndb->getNdbError().code != 0)
     {
-      g_err << "pollEvents failed: \n";
+      g_err << "pollEvents failed:\n";
       g_err << ndb->getNdbError().code << " "
             << ndb->getNdbError().message << endl;
       result = NDBT_FAILED;
@@ -2602,7 +2603,7 @@ errorInjectStalling(NDBT_Context* ctx, NDBT_Step* step)
 
   if (curr_gci != NDB_FAILURE_GCI)
   {
-    g_err << "pollEvents failed to detect cluster failure: \n";
+    g_err << "pollEvents failed to detect cluster failure:\n";
     result = NDBT_FAILED;
     goto cleanup;
   } 
@@ -2687,7 +2688,7 @@ errorInjectStalling(NDBT_Context* ctx, NDBT_Step* step)
 
     if (ndb->getNdbError().code != 0)
     {
-      g_err << "pollEvents failed: \n";
+      g_err << "pollEvents failed:\n";
       g_err << ndb->getNdbError().code << " "
             << ndb->getNdbError().message << endl;
       result = NDBT_FAILED;
@@ -2893,7 +2894,7 @@ runBug34853(NDBT_Context* ctx, NDBT_Step* step)
 
   if (pOp->execute())
   { // This starts changes to "start flowing"
-    g_err << "execute operation execution failed: \n";
+    g_err << "execute operation execution failed:\n";
     g_err << pOp->getNdbError().code << " "
 	  << pOp->getNdbError().message << endl;
     delete xndb;
@@ -2944,7 +2945,7 @@ runBug34853(NDBT_Context* ctx, NDBT_Step* step)
 
   if (pOp->execute())
   { // This starts changes to "start flowing"
-    g_err << "execute operation execution failed: \n";
+    g_err << "execute operation execution failed:\n";
     g_err << pOp->getNdbError().code << " "
 	  << pOp->getNdbError().message << endl;
     delete xndb;
@@ -3115,7 +3116,7 @@ runBug35208(NDBT_Context* ctx, NDBT_Step* step)
 
   if (pOp->execute())
   { // This starts changes to "start flowing"
-    g_err << "execute operation execution failed: \n";
+    g_err << "execute operation execution failed:\n";
     g_err << pOp->getNdbError().code << " "
 	  << pOp->getNdbError().message << endl;
     goto err;
@@ -3587,7 +3588,7 @@ checkAnyValueInEvent(Ndb* pNdb,
     {
 //       printf("Event is %p of type %u\n",
 //              event, event->getEventType());
-//       printf("Got event, prekey is %u predata is %u \n",
+//       printf("Got event, prekey is %u predata is %u\n",
 //              preKey->u_32_value(),
 //              preAttr->u_32_value());
 //       printf("           postkey is %u postdata is %u anyvalue is %u\n",

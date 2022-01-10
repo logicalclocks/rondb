@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks AB and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -8028,7 +8028,7 @@ static Uint32 g_cnt = 0;
 void
 Suma::start_resend(Signal* signal, Uint32 buck)
 {
-  g_eventLogger->info("start_resend(%d, ", buck);
+  g_eventLogger->info("start_resend(%d,", buck);
 
   /**
    * Resend from m_max_acked_gci + 1 until max_gci + 1
@@ -8064,6 +8064,7 @@ Suma::start_resend(Signal* signal, Uint32 buck)
     m_active_buckets.set(buck);
     m_gcp_complete_rep_count ++;
     g_eventLogger->info(
+        "             "
         "empty bucket(RNIL) -> active max_acked: %u/%u max_gci: %u/%u",
         Uint32(bucket->m_max_acked_gci >> 32), Uint32(bucket->m_max_acked_gci),
         Uint32(pos.m_max_gci >> 32), Uint32(pos.m_max_gci));
@@ -8082,7 +8083,8 @@ Suma::start_resend(Signal* signal, Uint32 buck)
     ndbrequire(pos.m_page_id == bucket->m_buffer_tail);
     m_active_buckets.set(buck);
     m_gcp_complete_rep_count ++;
-    g_eventLogger->info("empty bucket (%u/%u %u/%u) -> active",
+    g_eventLogger->info("             "
+                        "empty bucket (%u/%u %u/%u) -> active",
                         Uint32(min >> 32), Uint32(min), Uint32(max >> 32),
                         Uint32(max));
     return;
@@ -8105,7 +8107,8 @@ Suma::start_resend(Signal* signal, Uint32 buck)
   signal->theData[6] = 0;
   sendSignal(reference(), GSN_CONTINUEB, signal, 7, JBB);
 
-  g_eventLogger->info("min: %u/%u - max: %u/%u) page: %d", Uint32(min >> 32),
+  g_eventLogger->info("             "
+                      "min: %u/%u - max: %u/%u) page: %d", Uint32(min >> 32),
                       Uint32(min), Uint32(max >> 32), Uint32(max),
                       bucket->m_buffer_tail);
   ndbrequire(max >= min);

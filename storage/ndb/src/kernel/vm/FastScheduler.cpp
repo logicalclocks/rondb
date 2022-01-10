@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -158,7 +159,7 @@ FastScheduler::doJob(Uint32 loopStartCount)
           }//if
         }
 #endif
-        b->jamBuffer()->markEndOfSigExec();
+        b->jamBuffer()->markStartOfSigExec(signal->header.theSignalId);
         b->executeFunction_async(reg_gsn, signal);
 #ifdef VM_TRACE_TIME
 	const NDB_TICKS t2 = NdbTick_getCurrentTicks();
@@ -386,7 +387,9 @@ APZJobBuffer::clear()
  */
 void print_restart(FILE * output, Signal25* signal, Uint32 aLevel);
 
-void FastScheduler::dumpSignalMemory(Uint32 thr_no, FILE * output)
+/* Despite the name, this function actually does not dump Jam. Only mt.cpp does that. */
+void
+FastScheduler::dumpSignalMemoryAndJam(Uint32 thr_no, FILE * output)
 {
   Signal25 signal[1] = {};
   Uint32 ReadPtr[5];
@@ -508,7 +511,7 @@ FastScheduler::traceDumpGetJam(Uint32 thr_no,
   thrdTheEmulatedJam = jamBuffer->theEmulatedJam;
   thrdTheEmulatedJamIndex = jamBuffer->theEmulatedJamIndex;
 #endif
-  return true;
+  return thrdTheEmulatedJam != 0;
 }
 
 

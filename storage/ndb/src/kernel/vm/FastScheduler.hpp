@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -140,8 +141,8 @@ public:
   bool traceDumpGetJam(Uint32 thr_no,
                        const JamEvent * & thrdTheEmulatedJam,
                        Uint32 & thrdTheEmulatedJamIndex);
-  /* Produce a signal dump. */
-  void dumpSignalMemory(Uint32 thr_no, FILE * output);
+  /* Produce a signal dump that also includes interleaved Jam information. */
+  void dumpSignalMemoryAndJam(Uint32 thr_no, FILE * out);
 
   void reportThreadConfigLoop(Uint32 expired_time, Uint32 extra_constant,
                               Uint32 *no_exec_loops, Uint32 *tot_exec_time,

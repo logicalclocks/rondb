@@ -1002,8 +1002,9 @@ void Dbtup::initializeHostBuffer()
 void Dbtup::initializeTablerec() 
 {
   TablerecPtr regTabPtr;
+  jam();
+  jamData(cnoOfTablerec);
   for (regTabPtr.i = 0; regTabPtr.i < cnoOfTablerec; regTabPtr.i++) {
-    jam();
     refresh_watch_dog();
     ptrAss(regTabPtr, tablerec);
     initTab(regTabPtr.p);

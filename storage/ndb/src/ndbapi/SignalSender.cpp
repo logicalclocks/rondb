@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -104,20 +105,7 @@ SimpleSignal::print(FILE * out) const {
     Uint32 len = ptr[i].sz;
     fprintf(out, " --- Section %d size=%d ---\n", i, len);
     Uint32 * signalData = ptr[i].p;
-    while(len >= 7){
-      fprintf(out, 
-              " H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x\n",
-              signalData[0], signalData[1], signalData[2], signalData[3], 
-              signalData[4], signalData[5], signalData[6]);
-      len -= 7;
-      signalData += 7;
-    }
-    if(len > 0){
-      fprintf(out, " H\'%.8x", signalData[0]);
-      for(Uint32 i = 1; i<len; i++)
-        fprintf(out, " H\'%.8x", signalData[i]);
-      fprintf(out, "\n");
-    }
+    printHex(out, signalData, len, "");
   }
 }
 

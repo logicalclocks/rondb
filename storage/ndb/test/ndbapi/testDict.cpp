@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -12292,7 +12292,7 @@ TESTCASE("StoreFrm",
 }
 TESTCASE("GetPrimaryKey", 
 	 "Test the function NdbDictionary::Column::getPrimaryKey\n"
-	 "It should return true only if the column is part of \n"
+	 "It should return true only if the column is part of\n"
 	 "the primary key in the table"){
   INITIALIZER(runGetPrimaryKey);
 }

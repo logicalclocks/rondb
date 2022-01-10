@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -91,7 +92,7 @@ printSTART_FRAG_REQ(FILE * output,
   StartFragReq* sig = (StartFragReq*)theData;
 
   fprintf(output, " table: %d frag: %d lcpId: %d lcpNo: %d #nodes: %d"
-                  ", reqinfo: %x \n",
+                  ", reqinfo: %x\n",
 	  sig->tableId, sig->fragId, sig->lcpId, sig->lcpNo, 
 	  sig->noOfLogNodes,sig->requestInfo);
 

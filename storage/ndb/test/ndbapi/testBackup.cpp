@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2272,10 +2273,10 @@ runCheckPrintout(NDBT_Context* ctx, NDBT_Step* step)
 
 NDBT_TESTSUITE(testBackup);
 TESTCASE("BackupOne", 
-	 "Test that backup and restore works on one table \n"
+	 "Test that backup and restore works on one table\n"
 	 "1. Load table\n"
 	 "2. Backup\n"
-	 "3. Drop tables and restart \n"
+	 "3. Drop tables and restart\n"
 	 "4. Restore\n"
 	 "5. Verify count and content of table\n"){
   INITIALIZER(clearOldBackups);
@@ -2293,10 +2294,10 @@ TESTCASE("BackupWhenOutOfLDMRecords",
   FINALIZER(runClearTable);
 }
 TESTCASE("BackupRandom", 
-	 "Test that backup n and restore works on one table \n"
+	 "Test that backup n and restore works on one table\n"
 	 "1. Load table\n"
 	 "2. Backup\n"
-	 "3. Drop tables and restart \n"
+	 "3. Drop tables and restart\n"
 	 "4. Restore\n"
 	 "5. Verify count and content of table\n"){
   INITIALIZER(clearOldBackups);
@@ -2351,7 +2352,7 @@ TESTCASE("BackupUndoLog",
 	 "1. Load table\n"
 	 "2. Start backup with wait started\n"
 	 "3. Insert, delete, update data during backup\n"
-	 "4. Drop tables and restart \n"
+	 "4. Drop tables and restart\n"
 	 "5. Restore\n"
 	 "6. Verify records of table\n"
 	 "7. Clear tables\n"){

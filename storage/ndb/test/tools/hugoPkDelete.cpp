@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -73,7 +74,7 @@ int main(int argc, const char** argv){
   int optind = 0;
   char desc[] = 
     "tabname\n"\
-    "This program will delete all records in a table using PK \n";
+    "This program will delete all records in a table using PK\n";
   
   if(getarg(args, num_args, argc, argv, &optind) ||
      argv[optind] == NULL || _records == 0 || _help) {

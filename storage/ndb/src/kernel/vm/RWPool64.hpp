@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2006, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2020, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2020, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,7 +30,7 @@
 #include "NdbOut.hpp"
 #include "Pool.hpp"
 
-#define JAM_FILE_ID 541
+#define JAM_FILE_ID 32
 
 #define REC_NIL64 GLOBAL_PAGE_SIZE_WORDS
 
