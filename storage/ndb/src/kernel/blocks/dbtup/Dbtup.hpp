@@ -694,11 +694,23 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
     /**
      * Compute page free bits, given free space
      */
-    Uint32 calc_page_free_bits(Uint32 free) const {
-      for(Uint32 i = 0; i<EXTENT_SEARCH_MATRIX_COLS-1; i++)
+    Uint32 calc_page_free_bits(Uint32 free) const
+    {
+      /**
+       * EXTENT_SEARCH_MATRIX_COLS - 1 is always 0, thus no need of
+       * checking this. The result is given.
+       */
+      for (Uint32 i = EXTENT_SEARCH_MATRIX_COLS - 2; i > 0; i++)
+      {
 	if(free >= m_page_free_bits_map[i])
 	  return i;
-      return EXTENT_SEARCH_MATRIX_COLS - 1;
+      }
+      /**
+       * Entry 0 is a free page which will always fit the required
+       * size. Assert this as well.
+       */
+      assert(free < m_page_free_bits_map[0]);
+      return 0;
     }
 
     Fragment_extent_list::Head m_extent_list;

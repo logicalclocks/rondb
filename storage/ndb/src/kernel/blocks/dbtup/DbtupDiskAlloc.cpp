@@ -242,8 +242,8 @@ Dbtup::Disk_alloc_info::Disk_alloc_info(const Tablerec* tabPtrP,
     return;
   
   Uint32 min_size= 4*tabPtrP->m_offsets[DD].m_fix_header_size;
-  
-  if (tabPtrP->m_attributes[DD].m_no_of_varsize == 0)
+
+  if ((tabPtrP->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
   {
     Uint32 recs_per_page= (4*Tup_fixsize_page::DATA_WORDS)/min_size;
     m_page_free_bits_map[0] = recs_per_page; // 100% free
@@ -260,7 +260,33 @@ Dbtup::Disk_alloc_info::Disk_alloc_info(const Tablerec* tabPtrP,
   }
   else
   {
-    abort();
+    /**
+     * We set values according to the min_size.
+     * The value in 0 is a full page, the value in 3 is 0 since it
+     * represents an empty page.
+     *
+     * The value 1 represents half-full, this is set to half of a full
+     * page independent of the size of the maximum disk record size.
+     * The reason is that the bits in the extent are not affected by
+     * added or dropped columns. The variable sized structure makes
+     * it possible to add columns such that the original maximum record
+     * size is greatly enhanced. Thus we want the limits to be stable
+     * over time.
+     *
+     * The value 2 represents almost full, this is set to a third of
+     * the value 1.
+     */
+    m_page_free_bits_map[0] = 4 * Tup_fixsize_page::DATA_WORDS;
+    m_page_free_bits_map[1] = 4 * (Tup_fixsize_page / 2);
+    m_page_free_bits_map[2] = 4 * (Tup_fixsize_page / 6);
+    m_page_free_bits_map[3] = 0;
+
+    Uint32 max= 4 * Tup_fixsize_page::DATA_WORDS * extent_size;
+    for(Uint32 i = 0; i<EXTENT_SEARCH_MATRIX_ROWS; i++)
+    {
+      m_total_extent_free_space_thresholds[i] = 
+	(EXTENT_SEARCH_MATRIX_ROWS - i - 1)*max/EXTENT_SEARCH_MATRIX_ROWS;
+    }
   }
 }
 
@@ -302,7 +328,7 @@ Dbtup::Disk_alloc_info::calc_extent_pos(const Extent_info* extP) const
   /**
    * Find correct row based on total free space
    *   if zero (or very small free space) put 
-   *     absolutly last
+   *     absolutely last
    */
   {    
     const Uint32 *arr= m_total_extent_free_space_thresholds;

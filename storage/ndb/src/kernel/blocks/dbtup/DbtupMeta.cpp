@@ -1757,7 +1757,7 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
       dynamic_count[ind]++;
       Uint32 null_pos= AttributeOffset::getNullFlagPos(attrDes2);
       dyn_size[ind]+= (size_in_words<<2);
-      if(arr == NDB_ARRAYTYPE_FIXED)
+      if (arr == NDB_ARRAYTYPE_FIXED)
       {
         jam();
         //if (extType == NDB_TYPE_BLOB || extType == NDB_TYPE_TEXT)
@@ -1843,38 +1843,45 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
     dyn_size[DD];
 
   /* Room for data for all the attributes. */
-  Uint32 total_rec_size=
-    pos[MM] + fix_size[MM] + pos[DD] + fix_size[DD] +
-    ((var_size[MM] + 3) >> 2) + ((dyn_size[MM] + 3) >> 2) +
+  Uint32 total_rec_size[2];
+  total_rec_size[MM] =
+    pos[MM] + fix_size[MM] +
+    ((var_size[MM] + 3) >> 2) + ((dyn_size[MM] + 3) >> 2);
+  total_rec_size[DD] =
+    pos[DD] + fix_size[DD] +
     ((var_size[DD] + 3) >> 2) + ((dyn_size[DD] + 3) >> 2);
-
   /*
     Room for offset arrays and dynamic bitmaps. There is one extra 16-bit
     offset in each offset array (for easy computation of final length).
     Also one word for storing total length of varsize+dynamic part
   */
-  if(mm_vars + regTabPtr->m_attributes[MM].m_no_of_dynamic)
+  if (mm_vars + regTabPtr->m_attributes[MM].m_no_of_dynamic)
   {
     jam();
-    total_rec_size+= (mm_vars + 2) >> 1;
-    total_rec_size+= regTabPtr->m_offsets[MM].m_dyn_null_words;
-    total_rec_size+= (mm_dyns + 2) >> 1;
-    total_rec_size+= 1;
+    total_rec_size[MM] += (mm_vars + 2) >> 1;
+    total_rec_size[MM] += regTabPtr->m_offsets[MM].m_dyn_null_words;
+    total_rec_size[MM] += (mm_dyns + 2) >> 1;
+    total_rec_size[MM] += 1;
   }
-  /* Disk data varsize offset array (not currently used). */
-  if (dd_vars)
-    total_rec_size+= (dd_vars + 2) >> 1;
+  if (dd_vars + regTabPtr->m_attributes[DD].m_no_of_dynamic)
+  {
+    jam();
+    total_rec_size[DD] += (dd_vars + 2) >> 1;
+    total_rec_size[DD] += regTabPtr->m_offsets[DD].m_dyn_null_words;
+    total_rec_size[DD] += (dd_dyns + 2) >> 1;
+    total_rec_size[DD] += 1;
+  }
   /* Room for the header. */
-  total_rec_size+= Tuple_header::HeaderSize;
+  total_rec_size[MM] += Tuple_header::HeaderSize;
   if (regTabPtr->m_no_of_disk_attributes)
-    total_rec_size+= Tuple_header::HeaderSize;
+    total_rec_size[DD] += Tuple_header::HeaderSize;
 
   /* Room for changemask */
-  total_rec_size += 1 + ((regTabPtr->m_no_of_attributes + 31) >> 5);
+  total_rec_size[MM] += 1 + ((regTabPtr->m_no_of_attributes + 31) >> 5);
 
-  total_rec_size += COPY_TUPLE_HEADER32;
+  total_rec_size[MM] += COPY_TUPLE_HEADER32;
 
-  regTabPtr->total_rec_size= total_rec_size;
+  regTabPtr->total_rec_size= total_rec_size[MM] + total_rec_size[DD];
 
   DEB_TUP_META(("New total_rec_size set to %u", total_rec_size));
 
