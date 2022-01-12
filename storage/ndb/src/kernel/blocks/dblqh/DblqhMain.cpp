@@ -2657,6 +2657,7 @@ Dblqh::execCREATE_TAB_REQ(Signal* signal)
 
   seizeAddfragrec(signal);
   addfragptr.p->m_createTabReq = *req;
+  addfragptr.p->m_createTabReq_len = signal->length();
   req = &addfragptr.p->m_createTabReq;
 
   DEB_SCHEMA_VERSION(("(%u)tab: %u tableStatus = ADD_TABLE_ONGOING",
@@ -2715,7 +2716,7 @@ Dblqh::sendCreateTabReq(Signal* signal, AddFragRecordPtr addfragptr)
   }
 
   sendSignal(ref, GSN_CREATE_TAB_REQ, signal,
-             CreateTabReq::SignalLengthLDM, JBB);
+             addfragptr.p->m_createTabReq_len, JBB);
 }
 
 void

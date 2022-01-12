@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -329,7 +329,6 @@ Dbtux::execTUXFRAGREQ(Signal* signal)
     ndbrequire(c_lqh->setTuxFragPtrI(req->tableId,
                                      req->fragId,
                                      fragPtr.i));
-    Uint32 fragNo = MAX_FRAG_PER_LQH;
 #ifdef VM_TRACE
     if (debugFlags & DebugMeta) {
       tuxDebugOut << "Add frag " << fragPtr.i << " " << *fragPtr.p << endl;
@@ -339,7 +338,7 @@ Dbtux::execTUXFRAGREQ(Signal* signal)
      * This code is setting up fragNo to ensure the error insert below still
      * works as it should.
      */
-    fragNo = 0;
+    Uint32 fragNo = 0;
     Uint32 fragId = c_lqh->getNextTuxFragid(req->tableId, fragNo);
     if (fragId != req->fragId)
     {

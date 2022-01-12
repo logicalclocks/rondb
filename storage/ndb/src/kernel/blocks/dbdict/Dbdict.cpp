@@ -996,6 +996,8 @@ Dbdict::packTableIntoPages(SimpleProperties::Writer & w,
 	!!(tablePtr.p->m_bits & TableRecord::TR_ReadBackup));
   w.add(DictTabInfo::FullyReplicatedFlag,
         !!(tablePtr.p->m_bits & TableRecord::TR_FullyReplicated));
+  w.add(DictTabInfo::UseVarSizedDiskDataFlag,
+        !!(tablePtr.p->m_bits & TableRecord::TR_UseVarSizedDiskData));
 
   D("packTableIntoPages: tableId: " << tablePtr.p->tableId
     << " tablePtr.i = " << tablePtr.i << " tableVersion = "
@@ -5932,6 +5934,26 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
   case DictTabInfo::CreateTableFromAPI:
   {
     jam();
+    bool support = true;
+    for (Uint32 node = 1; node < MAX_NDB_NODES; node++)
+    {
+      if (getNodeInfo(node).getType() == NodeInfo::DB)
+      {
+        jam();
+        jamData(Uint16(node));
+        if (!ndbd_support_varsized_diskdata(getNodeInfo(node).m_version))
+        {
+          jam();
+          support = false;
+          break;
+        }
+      }
+    }
+    if (support)
+    {
+      jam();
+      c_tableDesc.UseVarSizedDiskDataFlag = ZTRUE;
+    }
   }
   [[fallthrough]];
   case DictTabInfo::AlterTableFromAPI:{
@@ -6098,6 +6120,9 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
     (c_tableDesc.ReadBackupFlag ? TableRecord::TR_ReadBackup : 0);
   tablePtr.p->m_bits |=
     (c_tableDesc.FullyReplicatedFlag ? TableRecord::TR_FullyReplicated : 0);
+  tablePtr.p->m_bits |=
+    (c_tableDesc.UseVarSizedDiskDataFlag ?
+      TableRecord::TR_UseVarSizedDiskData : 0);
 
   D("handleTabInfoInit: tableId = " << tablePtr.p->tableId
     << " tabPtr.i = " << tablePtr.i << " tableVersion = "
@@ -7714,7 +7739,7 @@ Dbdict::createTab_local(Signal* signal,
   ndbrequire(ok);
 
   /**
-   * Start by createing table in LQH
+   * Start by creating table in LQH
    */
   CreateTabReq* req = (CreateTabReq*)signal->getDataPtrSend();
   req->senderRef = reference();
@@ -7734,6 +7759,8 @@ Dbdict::createTab_local(Signal* signal,
   req->GCPIndicator = 1 + tabPtr.p->m_extra_row_gci_bits;
   req->noOfAttributes = tabPtr.p->noOfAttributes;
   req->extraRowAuthorBits = tabPtr.p->m_extra_row_author_bits;
+  req->useVarSizedDiskData =
+    ((tabPtr.p->m_bits & TableRecord::TR_UseVarSizedDiskData) == 0) ? 0 : 1;
   sendSignal(DBLQH_REF, GSN_CREATE_TAB_REQ, signal,
              CreateTabReq::SignalLengthLDM, JBB);
 

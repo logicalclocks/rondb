@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -129,17 +129,34 @@ Dbtup::execCREATE_TAB_REQ(Signal* signal)
     req->GCPIndicator > 1 ? req->GCPIndicator - 1 : 0;
   fragOperPtr.p->m_extra_row_author_bits = req->extraRowAuthorBits;
 
+  if (signal->length() < CreateTabReq::SignalLengthLDM)
+  {
+    jam();
+    req->useVarSizedDiskData = 0;
+  }
   regTabPtr.p->m_createTable.m_fragOpPtrI = fragOperPtr.i;
   regTabPtr.p->m_createTable.defValSectionI = RNIL;
   regTabPtr.p->tableStatus= DEFINING;
   regTabPtr.p->m_bits = 0;
-  regTabPtr.p->m_bits |= (req->checksumIndicator ? Tablerec::TR_Checksum : 0);
-  regTabPtr.p->m_bits |= (req->GCPIndicator ? Tablerec::TR_RowGCI : 0);
-  regTabPtr.p->m_bits |= (req->forceVarPartFlag? Tablerec::TR_ForceVarPart : 0);
+  regTabPtr.p->m_bits |=
+    (req->checksumIndicator ? Tablerec::TR_Checksum : 0);
+  regTabPtr.p->m_bits |=
+    (req->GCPIndicator ? Tablerec::TR_RowGCI : 0);
+  regTabPtr.p->m_bits |=
+    (req->forceVarPartFlag? Tablerec::TR_ForceVarPart : 0);
   regTabPtr.p->m_bits |=
     (req->GCPIndicator > 1 ? Tablerec::TR_ExtraRowGCIBits : 0);
-  regTabPtr.p->m_bits |= (req->extraRowAuthorBits ? Tablerec::TR_ExtraRowAuthorBits : 0);
+  regTabPtr.p->m_bits |=
+    (req->extraRowAuthorBits ? Tablerec::TR_ExtraRowAuthorBits : 0);
+  regTabPtr.p->m_bits |=
+    (req->useVarSizedDiskData ? Tablerec::TR_UseVarSizedDiskData : 0);
 
+  if ((regTabPtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
+  {
+    g_eventLogger->info("(%u)Creating table %u with use of varsize diskdata",
+                        instance(),
+                        regTabPtr.i);
+  }
   regTabPtr.p->m_offsets[MM].m_disk_ref_offset= 0;
   regTabPtr.p->m_offsets[MM].m_null_words= 0;
   regTabPtr.p->m_offsets[MM].m_fix_header_size= 0;
@@ -159,6 +176,7 @@ Dbtup::execCREATE_TAB_REQ(Signal* signal)
   regTabPtr.p->m_attributes[MM].m_no_of_dynamic= 0;
   regTabPtr.p->m_attributes[MM].m_no_of_dyn_fix= 0;
   regTabPtr.p->m_attributes[MM].m_no_of_dyn_var= 0;
+
   regTabPtr.p->m_attributes[DD].m_no_of_fixsize= 0;
   regTabPtr.p->m_attributes[DD].m_no_of_varsize= 0;
   regTabPtr.p->m_attributes[DD].m_no_of_dynamic= 0;
@@ -267,14 +285,16 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal* signal)
     {
       jam();
       fragOperPtr.p->m_null_bits[ind]++;
-    } 
+    }
 
-    if (AttributeDescriptor::getArrayType(attrDescriptor)==NDB_ARRAYTYPE_FIXED
-        || ind==DD)
+    Uint32 arrayType = AttributeDescriptor::getArrayType(attrDescriptor);
+    if (arrayType == NDB_ARRAYTYPE_FIXED ||
+        ((ind == DD) &&
+         ((regTabPtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)))
     {
       jam();
       regTabPtr.p->m_attributes[ind].m_no_of_fixsize++;
-      if(attrLen == 0)
+      if (attrLen == 0)
       {
         /* Static bit type. */
 	jam();
@@ -299,7 +319,6 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal* signal)
   {
     jam();
     /* A dynamic attribute. */
-    ndbrequire(ind==MM);
     regTabPtr.p->m_attributes[ind].m_no_of_dynamic++;
     /*
      * The dynamic attribute format always require a 'null' bit. So
@@ -314,7 +333,6 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal* signal)
     if (AttributeDescriptor::getArrayType(attrDescriptor)==NDB_ARRAYTYPE_FIXED)
     {
       /* A fixed-size dynamic attribute. */
-      jam();
       if (AttributeDescriptor::getSize(attrDescriptor)==0)
       {
         jam();
@@ -1644,6 +1662,12 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
     pos[MM] += Var_part_ref::SZ32;
   }
 
+  /**
+   * We don't store a Var part reference in the disk rows even if we
+   * use variable sized disk rows. The variable sized part and the fixed
+   * size part will both be in the same row part.
+   */
+
   regTabPtr->m_offsets[MM].m_null_offset= pos[MM];
   regTabPtr->m_offsets[DD].m_null_offset= pos[DD];
   pos[MM]+= regTabPtr->m_offsets[MM].m_null_words;
@@ -1661,14 +1685,18 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
   Uint32 fix_size[2]= {0, 0};
   Uint32 var_size[2]= {0, 0};
   Uint32 dyn_size[2]= {0, 0};
-  Uint32 statvar_count= 0;
-  Uint32 dynfix_count= 0;
-  Uint32 dynvar_count= 0;
-  Uint32 dynamic_count= 0;
+  Uint32 statvar_count[2];
+  Uint32 dynfix_count[2];
+  Uint32 dynvar_count[2];
+  Uint32 dynamic_count[2];
   regTabPtr->blobAttributeMask.clear();
   regTabPtr->notNullAttributeMask.clear();
   for (Uint32 i = 0; i < NO_DYNAMICS; ++i)
   {
+    statvar_count[i] = 0;
+    dynfix_count[i] = 0;
+    dynvar_count[i] = 0;
+    dynamic_count[i] = 0;
     std::memset(regTabPtr->dynVarSizeMask[i], 0, dyn_null_words[i]<<2);
     std::memset(regTabPtr->dynFixSizeMask[i], 0, dyn_null_words[i]<<2);
   }
@@ -1698,12 +1726,14 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
     }
     if (!AttributeDescriptor::getDynamic(attrDescriptor))
     {
-      if(arr == NDB_ARRAYTYPE_FIXED || ind==DD)
+      if (arr == NDB_ARRAYTYPE_FIXED ||
+          ((ind == DD) &&
+           ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)))
       {
         if (attrLen!=0)
         {
           jam();
-          off= fix_size[ind] + pos[ind];
+          off = fix_size[ind] + pos[ind];
           fix_size[ind]+= size_in_words;
         }
         else
@@ -1716,8 +1746,7 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
       {
         jam();
         /* Static varsize. */
-        ndbassert(ind==MM);
-        off= statvar_count++;
+        off = statvar_count[ind]++;
         var_size[ind]+= size_in_bytes;
       }
     }
@@ -1725,8 +1754,7 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
     {
       jam();
       /* Dynamic attribute. */
-      dynamic_count++;
-      ndbrequire(ind==MM);
+      dynamic_count[ind]++;
       Uint32 null_pos= AttributeOffset::getNullFlagPos(attrDes2);
       dyn_size[ind]+= (size_in_words<<2);
       if(arr == NDB_ARRAYTYPE_FIXED)
@@ -1742,7 +1770,8 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
           if(size_in_words>InternalMaxDynFix)
             goto treat_as_varsize;
 
-          off= dynfix_count++ + regTabPtr->m_attributes[ind].m_no_of_dyn_var;
+          off = (dynfix_count[ind]++) +
+                regTabPtr->m_attributes[ind].m_no_of_dyn_var;
           while(size_in_words-- > 0)
           {
             BitmaskImpl::set(dyn_null_words[ind],
@@ -1759,8 +1788,10 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
       {
       treat_as_varsize:
         jam();
-        off= dynvar_count++;
-        BitmaskImpl::set(dyn_null_words[ind], regTabPtr->dynVarSizeMask[ind], null_pos);
+        off = dynvar_count[ind]++;
+        BitmaskImpl::set(dyn_null_words[ind],
+                         regTabPtr->dynVarSizeMask[ind],
+                         null_pos);
       }
     }
     if (off > AttributeOffset::getMaxOffset())
@@ -1771,10 +1802,15 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
     AttributeOffset::setOffset(attrDes2, off);
     *tabDesc++= attrDes2;
   }
-  ndbassert(dynvar_count==regTabPtr->m_attributes[MM].m_no_of_dyn_var);
-  ndbassert(dynfix_count==regTabPtr->m_attributes[MM].m_no_of_dyn_fix);
-  ndbassert(dynamic_count==regTabPtr->m_attributes[MM].m_no_of_dynamic);
-  ndbassert(statvar_count==regTabPtr->m_attributes[MM].m_no_of_varsize);
+  ndbassert(dynvar_count[MM] ==regTabPtr->m_attributes[MM].m_no_of_dyn_var);
+  ndbassert(dynfix_count[MM] ==regTabPtr->m_attributes[MM].m_no_of_dyn_fix);
+  ndbassert(dynamic_count[MM] ==regTabPtr->m_attributes[MM].m_no_of_dynamic);
+  ndbassert(statvar_count[MM] ==regTabPtr->m_attributes[MM].m_no_of_varsize);
+
+  ndbassert(dynvar_count[DD] ==regTabPtr->m_attributes[DD].m_no_of_dyn_var);
+  ndbassert(dynfix_count[DD] ==regTabPtr->m_attributes[DD].m_no_of_dyn_fix);
+  ndbassert(dynamic_count[DD] ==regTabPtr->m_attributes[DD].m_no_of_dynamic);
+  ndbassert(statvar_count[DD] ==regTabPtr->m_attributes[DD].m_no_of_varsize);
 
   regTabPtr->m_offsets[MM].m_fix_header_size= 
     Tuple_header::HeaderSize + fix_size[MM] + pos[MM];
@@ -1788,8 +1824,9 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
   Uint32 mm_vars= regTabPtr->m_attributes[MM].m_no_of_varsize;
   Uint32 mm_dyns= regTabPtr->m_attributes[MM].m_no_of_dyn_fix +
                   regTabPtr->m_attributes[MM].m_no_of_dyn_var;
-  Uint32 dd_vars= regTabPtr->m_attributes[MM].m_no_of_varsize;
-  Uint32 dd_dyns= regTabPtr->m_attributes[DD].m_no_of_dynamic;
+  Uint32 dd_vars= regTabPtr->m_attributes[DD].m_no_of_varsize;
+  Uint32 dd_dyns= regTabPtr->m_attributes[DD].m_no_of_dyn_fix +
+                  regTabPtr->m_attributes[DD].m_no_of_dyn_var;
 
   regTabPtr->m_offsets[MM].m_max_var_offset= var_size[MM];
   /*
@@ -1810,6 +1847,7 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
     pos[MM] + fix_size[MM] + pos[DD] + fix_size[DD] +
     ((var_size[MM] + 3) >> 2) + ((dyn_size[MM] + 3) >> 2) +
     ((var_size[DD] + 3) >> 2) + ((dyn_size[DD] + 3) >> 2);
+
   /*
     Room for offset arrays and dynamic bitmaps. There is one extra 16-bit
     offset in each offset array (for easy computation of final length).
@@ -1824,11 +1862,11 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
     total_rec_size+= 1;
   }
   /* Disk data varsize offset array (not currently used). */
-  if(dd_vars)
+  if (dd_vars)
     total_rec_size+= (dd_vars + 2) >> 1;
   /* Room for the header. */
   total_rec_size+= Tuple_header::HeaderSize;
-  if(regTabPtr->m_no_of_disk_attributes)
+  if (regTabPtr->m_no_of_disk_attributes)
     total_rec_size+= Tuple_header::HeaderSize;
 
   /* Room for changemask */

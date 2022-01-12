@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -33,7 +34,8 @@
 struct CreateTabReq
 {
   static constexpr Uint32 SignalLength = 6;
-  static constexpr Uint32 SignalLengthLDM = 6 + 11;
+  static constexpr Uint32 OldSignalLengthLDM = 6 + 11;
+  static constexpr Uint32 SignalLengthLDM = 6 + 12;
 
   enum RequestType {
   };
@@ -59,6 +61,7 @@ struct CreateTabReq
   Uint32 checksumIndicator;
   Uint32 GCPIndicator;
   Uint32 extraRowAuthorBits;
+  Uint32 useVarSizedDiskData;
 
   SECTION( DICT_TAB_INFO = 0 );
   SECTION( FRAGMENTATION = 1 );

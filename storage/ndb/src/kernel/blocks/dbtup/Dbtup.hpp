@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2020, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2020, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1260,7 +1260,8 @@ TupTriggerData_pool c_triggerPool;
       TR_ForceVarPart = 0x4,
       TR_DiskPart  = 0x8,
       TR_ExtraRowGCIBits = 0x10,
-      TR_ExtraRowAuthorBits = 0x20
+      TR_ExtraRowAuthorBits = 0x20,
+      TR_UseVarSizedDiskData = 0x40
     };
     Uint16 m_bits;
     Uint16 total_rec_size; // Max total size for entire tuple in words
