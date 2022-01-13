@@ -1305,7 +1305,7 @@ TupTriggerData_pool c_triggerPool;
       return 
 	m_attributes[MM].m_no_of_varsize > 0 ||
         m_attributes[MM].m_no_of_dynamic > 0 ||
-	m_attributes[DD].m_no_of_varsize > 0;
+        m_no_of_disk_attributes > 0;
     }
     
     bool need_shrink(bool disk) const {
@@ -4059,7 +4059,6 @@ private:
   Uint64 disk_page_undo_alloc(Signal *signal,
                               Page*,
                               const Local_key*,
-			      Uint32 sz,
                               Uint32 gci,
                               Uint32 logfile_group_id,
                               Uint32 alloc_size);

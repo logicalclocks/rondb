@@ -2454,7 +2454,8 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
   }
 
   req_struct->m_disk_ptr= (Tuple_header*)ptr;
-  
+
+  /* TODO HOPSWORKS-2922 */
   ndbrequire(dd_vars == 0);
   
   req_struct->m_tuple_ptr->m_header_bits= bits;
@@ -2816,8 +2817,9 @@ int Dbtup::handleInsertReq(Signal* signal,
     {
       jamDebug();
       Local_key tmp;
-      Uint32 size= regTabPtr->m_attributes[DD].m_no_of_varsize == 0 ? 
-        1 : sizes[2+DD];
+      Uint32 size =
+        ((regTabPtr->m_bits & Tablerec::UseVarSizedDiskData) == 0) ?
+          1 : sizes[2+DD];
  
       if (ERROR_INSERTED(4021))
       {
@@ -4933,6 +4935,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       ndbrequire(req_struct->m_disk_ptr->m_base_record_page_idx <
                  Tup_page::DATA_WORDS);
     }
+    /* TODO HOPSWORKS-2922 */
     ndbrequire(dd_vars == 0);
   }
   
@@ -5166,6 +5169,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       ndbrequire(req_struct->m_disk_ptr->m_base_record_page_idx <
                  Tup_page::DATA_WORDS);
     }
+    /* TODO HOPSWORKS-2922 */
     ndbrequire(dd_vars == 0);
   }
 
@@ -5269,6 +5273,7 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
   
   if(disk && dd_tot)
   {
+    /* TODO HOPSWORKS-2922 */
     jamDebug();
     Uint32 * src_ptr = (Uint32*)req_struct->m_disk_ptr;
     req_struct->m_disk_ptr = (Tuple_header*)dst_ptr;

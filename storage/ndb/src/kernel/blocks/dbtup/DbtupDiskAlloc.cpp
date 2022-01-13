@@ -331,17 +331,22 @@ Dbtup::Disk_alloc_info::calc_extent_pos(const Extent_info* extP) const
    *     absolutely last
    */
   {    
-    const Uint32 *arr= m_total_extent_free_space_thresholds;
-    for(; free < * arr++; row++)
-      assert(row < EXTENT_SEARCH_MATRIX_ROWS);
+    while (free < m_total_extent_free_space_thresholds[row])
+    {
+      row++;
+    }
+    assert(row < EXTENT_SEARCH_MATRIX_ROWS);
   }
 
   /**
    * Find correct col based on largest available chunk
    */
   {
-    const Uint16 *arr= extP->m_free_page_count;
-    for(; col < EXTENT_SEARCH_MATRIX_COLS && * arr++ == 0; col++);
+    while (col < EXTENT_SEARCH_MATRIX_COLS &&
+           extP->m_free_page_count[col] == 0)
+    {
+      col++;
+    }
   }
 
   /**
@@ -598,7 +603,7 @@ Dbtup::disk_page_prealloc(Signal* signal,
   Ptr<Page_request> req;
   Fragrecord* fragPtrP = fragPtr.p; 
   Disk_alloc_info& alloc= fragPtrP->m_disk_alloc_info;
-  Uint32 idx= alloc.calc_page_free_bits(sz);
+  Uint32 idx = alloc.calc_page_free_bits(sz);
   D("Tablespace_client - disk_page_prealloc");
   
   /**
@@ -664,7 +669,7 @@ Dbtup::disk_page_prealloc(Signal* signal,
   
   int pageBits = 0; // received
   Ptr<Extent_info> ext;
-  const Uint32 bits = alloc.calc_page_free_bits(sz); // required
+  const Uint32 bits = idx;
   bool found= false;
 
   /**
@@ -835,15 +840,15 @@ Dbtup::disk_page_prealloc(Signal* signal,
   update_extent_pos(jamBuffer(), alloc, ext, -Int32(sz));
 
   // And put page request in correct free list
-  idx= alloc.calc_page_free_bits(new_size);
-  jamLine(idx);
+  Uint32 new_idx = alloc.calc_page_free_bits(new_size);
+  jamLine(new_idx);
   {
     Local_page_request_list list(c_page_request_pool, 
-				 alloc.m_page_requests[idx]);
+				 alloc.m_page_requests[new_idx]);
     
     list.addLast(req);
   }
-  req.p->m_list_index= idx;
+  req.p->m_list_index= new_idx;
   req.p->m_extent_info_ptr= ext.i;
 
   Page_cache_client::Request preq;
@@ -1192,6 +1197,7 @@ Dbtup::disk_page_prealloc_initial_callback(Signal*signal,
   Ptr<Extent_info> extentPtr;
   c_extent_pool.getPtr(extentPtr, req.p->m_extent_info_ptr);
 
+  /* TODO HOPSWORKS-2922 */
   ndbrequire(tabPtr.p->m_attributes[DD].m_no_of_varsize == 0);
 
   /**
@@ -1528,7 +1534,7 @@ Dbtup::disk_page_alloc(Signal* signal,
   Disk_alloc_info& alloc= fragPtrP->m_disk_alloc_info;
 
   Uint64 lsn;
-  if (tabPtrP->m_attributes[DD].m_no_of_varsize == 0)
+  if ((tabPtrP->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
   {
     jam();
     ddrequire(pagePtr.p->uncommitted_used_space > 0);
@@ -1538,25 +1544,9 @@ Dbtup::disk_page_alloc(Signal* signal,
     lsn= disk_page_undo_alloc(signal,
                               pagePtr.p,
                               key,
-                              1,
                               gci,
                               logfile_group_id,
                               alloc_size);
-    DEB_PGMAN((
-      "(%u)disk_page_alloc: tab(%u,%u):%u,page(%u,%u).%u.%u,gci: %u,"
-      "row_id(%u,%u), lsn=%llu",
-                instance(),
-                pagePtr.p->m_table_id,
-                pagePtr.p->m_fragment_id,
-                pagePtr.p->m_create_table_version,
-                key->m_file_no,
-                key->m_page_no,
-                key->m_page_idx,
-                pagePtr.i,
-                gci,
-                row_id->m_page_no,
-                row_id->m_page_idx,
-                lsn));
   }
   else
   {
@@ -1570,11 +1560,26 @@ Dbtup::disk_page_alloc(Signal* signal,
     lsn= disk_page_undo_alloc(signal,
                               pagePtr.p,
                               key,
-                              sz,
                               gci,
                               logfile_group_id,
                               alloc_size);
   }
+  DEB_PGMAN((
+    "(%u)disk_page_alloc: tab(%u,%u):%u,page(%u,%u).%u.%u,gci: %u,"
+    "row_id(%u,%u), lsn=%llu, alloc_size: %u",
+              instance(),
+              pagePtr.p->m_table_id,
+              pagePtr.p->m_fragment_id,
+              pagePtr.p->m_create_table_version,
+              key->m_file_no,
+              key->m_page_no,
+              key->m_page_idx,
+              pagePtr.i,
+              gci,
+              row_id->m_page_no,
+              row_id->m_page_idx,
+              lsn,
+              alloc_size));
 }
 
 void
@@ -1599,7 +1604,7 @@ Dbtup::disk_page_free(Signal *signal,
 
   Uint32 sz;
   Uint64 lsn;
-  if (tabPtrP->m_attributes[DD].m_no_of_varsize == 0)
+  if ((tabPtrP->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
   {
     sz = 1;
     const Uint32 *src= ((Fix_page*)pagePtr.p)->get_ptr(page_idx, 0);
@@ -1804,7 +1809,6 @@ Uint64
 Dbtup::disk_page_undo_alloc(Signal *signal,
                             Page* page,
                             const Local_key* key,
-			    Uint32 sz,
                             Uint32 gci,
                             Uint32 logfile_group_id,
                             Uint32 alloc_size)
@@ -2872,7 +2876,7 @@ Dbtup::disk_restart_undo_alloc(Apply_undo* undo)
 #endif
   ndbassert(undo->m_page_ptr.p->m_file_no == undo->m_key.m_file_no);
   ndbassert(undo->m_page_ptr.p->m_page_no == undo->m_key.m_page_no);
-  if (undo->m_table_ptr.p->m_attributes[DD].m_no_of_varsize == 0)
+  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
   {
     ((Fix_page*)undo->m_page_ptr.p)->free_record(undo->m_key.m_page_idx);
   }
@@ -2907,7 +2911,7 @@ Dbtup::disk_restart_undo_update(Apply_undo* undo)
             src[1]));
   }
 #endif
-  if (undo->m_table_ptr.p->m_attributes[DD].m_no_of_varsize == 0)
+  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
   {
     ptr= ((Fix_page*)undo->m_page_ptr.p)->get_ptr(undo->m_key.m_page_idx, len);
     ndbrequire(len == undo->m_table_ptr.p->m_offsets[DD].m_fix_header_size);
@@ -2915,7 +2919,7 @@ Dbtup::disk_restart_undo_update(Apply_undo* undo)
   else
   {
     ptr= ((Var_page*)undo->m_page_ptr.p)->get_ptr(undo->m_key.m_page_idx);
-    abort();
+    /* TODO HOPSWORKS-2922 */
   }
 
   const Disk_undo::Update *update = (const Disk_undo::Update*)undo->m_ptr;
@@ -2947,7 +2951,7 @@ Dbtup::disk_restart_undo_update_first_part(Apply_undo* undo)
 #endif
   }
 
-  if (undo->m_table_ptr.p->m_attributes[DD].m_no_of_varsize == 0)
+  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
   {
     ptr= ((Fix_page*)undo->m_page_ptr.p)->get_ptr(undo->m_key.m_page_idx, len);
     ndbrequire(len < undo->m_table_ptr.p->m_offsets[DD].m_fix_header_size);
@@ -2955,7 +2959,7 @@ Dbtup::disk_restart_undo_update_first_part(Apply_undo* undo)
   else
   {
     ptr= ((Var_page*)undo->m_page_ptr.p)->get_ptr(undo->m_key.m_page_idx);
-    abort();
+    /* TODO HOPSWORKS-2922 */
   }
 
   const Disk_undo::Update *update = (const Disk_undo::Update*)undo->m_ptr;
@@ -2978,7 +2982,7 @@ Dbtup::disk_restart_undo_update_part(Apply_undo* undo)
             undo->m_key.m_page_idx,
             undo->m_offset));
 
-  if (undo->m_table_ptr.p->m_attributes[DD].m_no_of_varsize == 0)
+  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
   {
     Uint32 fix_header_size = undo->m_table_ptr.p->m_offsets[DD].m_fix_header_size;
     ptr= ((Fix_page*)undo->m_page_ptr.p)->get_ptr(undo->m_key.m_page_idx, len);
@@ -2989,7 +2993,7 @@ Dbtup::disk_restart_undo_update_part(Apply_undo* undo)
   else
   {
     ptr= ((Var_page*)undo->m_page_ptr.p)->get_ptr(undo->m_key.m_page_idx);
-    abort();
+    /* TODO HOPSWORKS-2922 */
   }
 
   const Disk_undo::UpdatePart *update = (const Disk_undo::UpdatePart*)undo->m_ptr;
@@ -3034,7 +3038,7 @@ Dbtup::disk_restart_undo_free(Apply_undo* undo, bool full_free)
                     src));
   }
 #endif
-  if (undo->m_table_ptr.p->m_attributes[DD].m_no_of_varsize == 0)
+  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
   {
     idx= ((Fix_page*)undo->m_page_ptr.p)->alloc_record(idx);
     Uint32 fix_header_size = undo->m_table_ptr.p->m_offsets[DD].m_fix_header_size;
@@ -3050,7 +3054,7 @@ Dbtup::disk_restart_undo_free(Apply_undo* undo, bool full_free)
   }
   else
   {
-    abort();
+    /* TODO HOPSWORKS-2922 */
   }
 
   if (idx != undo->m_key.m_page_idx)

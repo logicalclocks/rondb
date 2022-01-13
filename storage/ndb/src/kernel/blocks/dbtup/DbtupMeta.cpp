@@ -1869,12 +1869,14 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
     total_rec_size[DD] += (dd_vars + 2) >> 1;
     total_rec_size[DD] += regTabPtr->m_offsets[DD].m_dyn_null_words;
     total_rec_size[DD] += (dd_dyns + 2) >> 1;
-    total_rec_size[DD] += 1;
   }
   /* Room for the header. */
   total_rec_size[MM] += Tuple_header::HeaderSize;
   if (regTabPtr->m_no_of_disk_attributes)
+  {
     total_rec_size[DD] += Tuple_header::HeaderSize;
+    total_rec_size[DD] += 1;
+  }
 
   /* Room for changemask */
   total_rec_size[MM] += 1 + ((regTabPtr->m_no_of_attributes + 31) >> 5);
