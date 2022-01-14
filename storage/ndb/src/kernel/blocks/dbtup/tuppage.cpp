@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -292,14 +293,17 @@ Tup_varsize_page::alloc_record(Uint32 alloc_size,
   assert(largest_size > alloc_size);
 
   Uint32 page_idx;
-  if (next_free_index == END_OF_FREE_LIST) {
+  if (next_free_index == END_OF_FREE_LIST)
+  {
     /*
       We are out of free index slots. We will extend the array of free
       slots
     */
     page_idx= high_index++;
     free_space--;
-  } else {
+  }
+  else
+  {
     // Pick an empty slot among the index entries
     page_idx= next_free_index;
     assert((get_index_word(page_idx) & FREE) == FREE);
@@ -321,7 +325,6 @@ Tup_varsize_page::alloc_record(Uint32 alloc_size,
   
   insert_pos += alloc_size;
   free_space -= alloc_size;
-  //g_eventLogger->info("%p->alloc_record(%d%s) -> %d", this,alloc_size, (chain ? " CHAIN" : ""),page_idx);
   return page_idx;
 }
   

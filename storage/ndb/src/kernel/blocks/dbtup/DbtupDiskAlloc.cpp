@@ -277,8 +277,8 @@ Dbtup::Disk_alloc_info::Disk_alloc_info(const Tablerec* tabPtrP,
      * the value 1.
      */
     m_page_free_bits_map[0] = 4 * Tup_fixsize_page::DATA_WORDS;
-    m_page_free_bits_map[1] = 4 * (Tup_fixsize_page / 2);
-    m_page_free_bits_map[2] = 4 * (Tup_fixsize_page / 6);
+    m_page_free_bits_map[1] = 4 * (Tup_fixsize_page::DATA_WORDS / 2);
+    m_page_free_bits_map[2] = 4 * (Tup_fixsize_page::DATA_WORDS / 6);
     m_page_free_bits_map[3] = 0;
 
     Uint32 max= 4 * Tup_fixsize_page::DATA_WORDS * extent_size;
@@ -1534,7 +1534,7 @@ Dbtup::disk_page_alloc(Signal* signal,
   Disk_alloc_info& alloc= fragPtrP->m_disk_alloc_info;
 
   Uint64 lsn;
-  if ((tabPtrP->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
+  if ((tabPtrP->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
   {
     jam();
     ddrequire(pagePtr.p->uncommitted_used_space > 0);
@@ -1604,7 +1604,7 @@ Dbtup::disk_page_free(Signal *signal,
 
   Uint32 sz;
   Uint64 lsn;
-  if ((tabPtrP->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
+  if ((tabPtrP->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
   {
     sz = 1;
     const Uint32 *src= ((Fix_page*)pagePtr.p)->get_ptr(page_idx, 0);
@@ -2876,7 +2876,7 @@ Dbtup::disk_restart_undo_alloc(Apply_undo* undo)
 #endif
   ndbassert(undo->m_page_ptr.p->m_file_no == undo->m_key.m_file_no);
   ndbassert(undo->m_page_ptr.p->m_page_no == undo->m_key.m_page_no);
-  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
+  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
   {
     ((Fix_page*)undo->m_page_ptr.p)->free_record(undo->m_key.m_page_idx);
   }
@@ -2911,7 +2911,7 @@ Dbtup::disk_restart_undo_update(Apply_undo* undo)
             src[1]));
   }
 #endif
-  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
+  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
   {
     ptr= ((Fix_page*)undo->m_page_ptr.p)->get_ptr(undo->m_key.m_page_idx, len);
     ndbrequire(len == undo->m_table_ptr.p->m_offsets[DD].m_fix_header_size);
@@ -2951,7 +2951,7 @@ Dbtup::disk_restart_undo_update_first_part(Apply_undo* undo)
 #endif
   }
 
-  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
+  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
   {
     ptr= ((Fix_page*)undo->m_page_ptr.p)->get_ptr(undo->m_key.m_page_idx, len);
     ndbrequire(len < undo->m_table_ptr.p->m_offsets[DD].m_fix_header_size);
@@ -2982,7 +2982,7 @@ Dbtup::disk_restart_undo_update_part(Apply_undo* undo)
             undo->m_key.m_page_idx,
             undo->m_offset));
 
-  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
+  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
   {
     Uint32 fix_header_size = undo->m_table_ptr.p->m_offsets[DD].m_fix_header_size;
     ptr= ((Fix_page*)undo->m_page_ptr.p)->get_ptr(undo->m_key.m_page_idx, len);
@@ -3038,7 +3038,7 @@ Dbtup::disk_restart_undo_free(Apply_undo* undo, bool full_free)
                     src));
   }
 #endif
-  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
+  if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
   {
     idx= ((Fix_page*)undo->m_page_ptr.p)->alloc_record(idx);
     Uint32 fix_header_size = undo->m_table_ptr.p->m_offsets[DD].m_fix_header_size;
@@ -3054,6 +3054,7 @@ Dbtup::disk_restart_undo_free(Apply_undo* undo, bool full_free)
   }
   else
   {
+    ptr = nullptr;
     /* TODO HOPSWORKS-2922 */
   }
 

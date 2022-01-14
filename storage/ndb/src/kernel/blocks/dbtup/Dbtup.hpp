@@ -2010,7 +2010,7 @@ struct KeyReqStruct {
    * was updating this record.
    */
   Bitmask<MAXNROFATTRIBUTESINWORDS> changeMask;
-  Uint16 var_pos_array[2*MAX_ATTRIBUTES_IN_TABLE + 1];
+  Uint16 var_pos_array[2][2*MAX_ATTRIBUTES_IN_TABLE + 1];
   OperationrecPtr prevOpPtr;
 };
 
@@ -3969,7 +3969,7 @@ private:
     Uint32 * dst = c_undo_buffer.alloc_copy_tuple(ptr,
                                                   tabPtrP->total_rec_size);
     if (unlikely(dst == 0))
-      return 0;
+      return nullptr;
 #ifdef HAVE_VALGRIND
     std::memset(dst, 0, tabPtrP->total_rec_size);
 #endif

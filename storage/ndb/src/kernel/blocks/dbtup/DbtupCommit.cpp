@@ -913,7 +913,7 @@ Dbtup::commit_operation(Signal* signal,
                  key.m_page_idx));
     }
 
-    if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDataDisk) == 0)
+    if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
     {
       jam();
       sz= regTabPtr->m_offsets[DD].m_fix_header_size;

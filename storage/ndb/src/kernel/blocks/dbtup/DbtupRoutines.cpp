@@ -2238,8 +2238,11 @@ Dbtup::updateVarSizeNotNULL(Uint32* in_buffer,
   Uint16 *vpos_array= req_struct->m_var_data[ind].m_offset_array_ptr;
   Uint16 offset= vpos_array[var_index];
   Uint16 *len_offset_ptr= &(vpos_array[var_index+idx]);
-  return varsize_updater(in_buffer, req_struct, var_data_start,
-                         offset, len_offset_ptr,
+  return varsize_updater(in_buffer,
+                         req_struct,
+                         var_data_start,
+                         offset,
+                         len_offset_ptr,
                          req_struct->m_var_data[ind].m_max_var_offset,
                          attrDes);
 }
@@ -2338,12 +2341,12 @@ Dbtup::updateVarSizeNULLable(Uint32* inBuffer,
   {
     Uint32 newIndex= req_struct->in_buf_index + 1;
     Uint32 var_index= AttributeOffset::getOffset(attrDes2);
-    Uint32 var_pos= req_struct->var_pos_array[var_index];
+    Uint32 var_pos= req_struct->var_pos_array[ind][var_index];
     if (likely(newIndex <= req_struct->in_buf_len))
     {
       thrjamDebug(req_struct->jamBuffer);
       BitmaskImpl::set(regTabPtr->m_offsets[ind].m_null_words, bits, pos);
-      req_struct->var_pos_array[var_index+idx]= var_pos;
+      req_struct->var_pos_array[ind][var_index+idx]= var_pos;
       req_struct->in_buf_index= newIndex;
       return true;
     }

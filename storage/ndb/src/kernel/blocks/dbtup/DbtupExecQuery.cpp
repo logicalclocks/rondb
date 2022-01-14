@@ -604,19 +604,6 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
       jamDebug();
       prepare_read(req_struct, regTabPtr, disk);
     }
-    
-#if 0
-    g_eventLogger->info("reading copy");
-    Uint32 *var_ptr = fixed_ptr+regTabPtr->var_offset;
-    req_struct->m_tuple_ptr= fixed_ptr;
-    req_struct->fix_var_together= true;  
-    req_struct->var_len_array= (Uint16*)var_ptr;
-    req_struct->var_data_start= var_ptr+regTabPtr->var_array_wsize;
-    Uint32 var_sz32= init_var_pos_array((Uint16*)var_ptr,
-					req_struct->var_pos_array,
-					regTabPtr->no_var_attr);
-    req_struct->var_data_end= var_ptr+regTabPtr->var_array_wsize + var_sz32;
-#endif
     return true;
   } while(0);
   
@@ -2144,7 +2131,7 @@ expand_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
     std::memset(dst_bm_ptr + bm_len, 0, 4 * (max_bmlen - bm_len));
 
   /**
-   * Store max_bmlen for homogen code in DbtupRoutines
+   * Store max_bmlen for homogenous code in DbtupRoutines
    */
   Uint32 tmp = (* dst_bm_ptr);
   * dst_bm_ptr = (tmp & ~(Uint32)Dbtup::DYN_BM_LEN_MASK) | max_bmlen;
@@ -2381,16 +2368,11 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
   Uint16* order = regTabPtr->m_real_order_descriptor;
   Uint32 *tab_descr = regTabPtr->tabDescriptor;
   req_struct->attr_descr = tab_descr; 
-  order += regTabPtr->m_attributes[MM].m_no_of_fixsize;
 
   Uint32 bits = Tuple_header::COPY_TUPLE;
   bits |= disk_undo ? (Tuple_header::DISK_ALLOC|Tuple_header::DISK_INLINE) : 0;
+  req_struct->m_tuple_ptr->m_header_bits= bits;
 
-  const Uint32 mm_vars= regTabPtr->m_attributes[MM].m_no_of_varsize;
-  const Uint32 mm_dyns= regTabPtr->m_attributes[MM].m_no_of_dynamic;
-  const Uint32 mm_dynvar= regTabPtr->m_attributes[MM].m_no_of_dyn_var;
-  const Uint32 mm_dynfix= regTabPtr->m_attributes[MM].m_no_of_dyn_fix;
-  const Uint32 dd_vars= regTabPtr->m_attributes[DD].m_no_of_varsize;
   Uint32 *ptr= req_struct->m_tuple_ptr->get_end_of_fix_part_ptr(regTabPtr);
   Var_part_ref* ref = req_struct->m_tuple_ptr->get_var_part_ref_ptr(regTabPtr);
 
@@ -2400,65 +2382,78 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
     ref->m_page_idx = Tup_varsize_page::END_OF_FREE_LIST;
   }
 
-  if(mm_vars || mm_dyns)
+  for (Uint32 ind = 0; ind < 2; ind++)
   {
-    jam();
-    /* Init Varpart_copy struct */
-    Varpart_copy * cp = (Varpart_copy*)ptr;
-    cp->m_len = 0;
-    ptr += Varpart_copy::SZ32;
+    const Uint32 num_fix = regTabPtr->m_attributes[ind].m_no_of_fixsize;
+    const Uint32 num_vars= regTabPtr->m_attributes[ind].m_no_of_varsize;
+    const Uint32 num_dyns= regTabPtr->m_attributes[ind].m_no_of_dynamic;
 
-    /* Prepare empty varsize part. */
-    KeyReqStruct::Var_data* dst= &req_struct->m_var_data[MM];
-    
-    if (mm_vars)
+    if (ind == DD)
     {
-      dst->m_data_ptr= (char*)(((Uint16*)ptr)+mm_vars+1);
-      dst->m_offset_array_ptr= req_struct->var_pos_array;
-      dst->m_var_len_offset= mm_vars;
-      dst->m_max_var_offset= regTabPtr->m_offsets[MM].m_max_var_offset;
-      
-      Uint32 pos= 0;
-      Uint16 *pos_ptr = req_struct->var_pos_array;
-      Uint16 *len_ptr = pos_ptr + mm_vars;
-      for(Uint32 i= 0; i<mm_vars; i++)
-      {
-        * pos_ptr++ = pos;
-        * len_ptr++ = pos;
-        pos += AttributeDescriptor::getSizeInBytes(
-          tab_descr[*order++]);
-      }
-      
-      // Disk/dynamic part is 32-bit aligned
-      ptr = ALIGN_WORD(dst->m_data_ptr+pos);
-      ndbassert(ptr == ALIGN_WORD(dst->m_data_ptr + 
-                                  regTabPtr->m_offsets[MM].m_max_var_offset));
+      req_struct->m_disk_ptr= (Tuple_header*)ptr;
     }
+    order += num_fix;
 
-    if (mm_dyns)
+    if (num_vars || num_dyns)
     {
       jam();
-      /* Prepare empty dynamic part. */
-      dst->m_dyn_data_ptr= (char *)ptr;
-      dst->m_dyn_offset_arr_ptr= req_struct->var_pos_array+2*mm_vars;
-      dst->m_dyn_len_offset= mm_dynvar+mm_dynfix;
-      dst->m_max_dyn_offset= regTabPtr->m_offsets[MM].m_max_dyn_offset;
-      
-      ptr = expand_dyn_part(dst, 0, 0,
-                            (Uint32*)tab_descr, order,
-                            mm_dynvar, mm_dynfix,
-                            regTabPtr->m_offsets[MM].m_dyn_null_words);
+      /* Init Varpart_copy struct */
+      Varpart_copy * cp = (Varpart_copy*)ptr;
+      cp->m_len = 0;
+      ptr += Varpart_copy::SZ32;
+
+      /* Prepare empty varsize part. */
+      KeyReqStruct::Var_data* dst= &req_struct->m_var_data[ind];
+ 
+      if (num_vars)
+      {
+        dst->m_data_ptr= (char*)(((Uint16*)ptr)+num_vars+1);
+        dst->m_offset_array_ptr= req_struct->var_pos_array[ind];
+        dst->m_var_len_offset= num_vars;
+        dst->m_max_var_offset= regTabPtr->m_offsets[ind].m_max_var_offset;
+
+        Uint32 pos= 0;
+        Uint16 *pos_ptr = req_struct->var_pos_array[ind];
+        Uint16 *len_ptr = pos_ptr + num_vars;
+        for (Uint32 i = 0; i < num_vars; i++)
+        {
+          * pos_ptr++ = pos;
+          * len_ptr++ = pos;
+          pos += AttributeDescriptor::getSizeInBytes(
+            tab_descr[*order++]);
+        }
+
+        // Disk/dynamic part is 32-bit aligned
+        ptr = ALIGN_WORD(dst->m_data_ptr+pos);
+        ndbassert(ptr == ALIGN_WORD(dst->m_data_ptr + 
+                         regTabPtr->m_offsets[ind].m_max_var_offset));
+      }
+
+      if (num_dyns)
+      {
+        const Uint32 num_dynvar= regTabPtr->m_attributes[ind].m_no_of_dyn_var;
+        const Uint32 num_dynfix= regTabPtr->m_attributes[ind].m_no_of_dyn_fix;
+        jam();
+        /* Prepare empty dynamic part. */
+        dst->m_dyn_data_ptr= (char *)ptr;
+        dst->m_dyn_offset_arr_ptr= req_struct->var_pos_array[ind]+2*num_vars;
+        dst->m_dyn_len_offset= num_dynvar+num_dynfix;
+        dst->m_max_dyn_offset= regTabPtr->m_offsets[ind].m_max_dyn_offset;
+
+        ptr = expand_dyn_part(dst,
+                              0,
+                              0,
+                              (Uint32*)tab_descr,
+                              order,
+                              num_dynvar,
+                              num_dynfix,
+                              regTabPtr->m_offsets[ind].m_dyn_null_words);
+        order += (num_dynvar + num_dynfix);
+      }
+
+      ndbassert((UintPtr(ptr)&3) == 0);
     }
-    
-    ndbassert((UintPtr(ptr)&3) == 0);
   }
-
-  req_struct->m_disk_ptr= (Tuple_header*)ptr;
-
-  /* TODO HOPSWORKS-2922 */
-  ndbrequire(dd_vars == 0);
-  
-  req_struct->m_tuple_ptr->m_header_bits= bits;
   /**
    * The copy tuple will be copied directly into the rowid position of
    * the tuple. Since we use the GCI in this position to see if a row
@@ -2486,9 +2481,10 @@ int Dbtup::handleInsertReq(Signal* signal,
 {
   Uint32 tup_version = 1;
   Fragrecord* regFragPtr = fragPtr.p;
-  Uint32 *ptr= 0;
+  Uint32 *ptr = nullptr;
   Tuple_header *dst;
-  Tuple_header *base= req_struct->m_tuple_ptr, *org= base;
+  Tuple_header *base = req_struct->m_tuple_ptr;
+  Tuple_header *org = base;
   Tuple_header *tuple_ptr;
     
   bool disk = regTabPtr->m_no_of_disk_attributes > 0 && !is_refresh;
@@ -2514,16 +2510,16 @@ int Dbtup::handleInsertReq(Signal* signal,
     goto trans_mem_error;
   }
 
-  dst= alloc_copy_tuple(regTabPtr, &regOperPtr.p->m_copy_tuple_location);
+  dst = alloc_copy_tuple(regTabPtr, &regOperPtr.p->m_copy_tuple_location);
 
-  if (unlikely(dst == 0))
+  if (unlikely(dst == nullptr))
   {
     goto trans_mem_error;
   }
-  tuple_ptr= req_struct->m_tuple_ptr= dst;
+  tuple_ptr= req_struct->m_tuple_ptr = dst;
   set_change_mask_info(regTabPtr, get_change_mask_ptr(regTabPtr, dst));
 
-  if(mem_insert)
+  if (mem_insert)
   {
     jamDebug();
     prepare_initial_insert(req_struct, regOperPtr.p, regTabPtr, is_refresh);
@@ -2692,7 +2688,7 @@ int Dbtup::handleInsertReq(Signal* signal,
     CLEAR_ERROR_INSERT_VALUE;
     goto mem_error;
   }
-  
+ 
   /**
    * Alloc memory
    */
@@ -2818,7 +2814,7 @@ int Dbtup::handleInsertReq(Signal* signal,
       jamDebug();
       Local_key tmp;
       Uint32 size =
-        ((regTabPtr->m_bits & Tablerec::UseVarSizedDiskData) == 0) ?
+        ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0) ?
           1 : sizes[2+DD];
  
       if (ERROR_INSERTED(4021))
@@ -4823,7 +4819,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
         jamDebug();
         ndbrequire(bits == src->m_header_bits);
         dst->m_data_ptr= (char*)(((Uint16*)dst_ptr)+mm_vars+1);
-        dst->m_offset_array_ptr= req_struct->var_pos_array;
+        dst->m_offset_array_ptr= req_struct->var_pos_array[MM];
         dst->m_var_len_offset= mm_vars;
         dst->m_max_var_offset= tabPtrP->m_offsets[MM].m_max_var_offset;
         
@@ -4858,7 +4854,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       /**
        * dynattr needs to be expanded even if no varpart existed before
        */
-      dst->m_dyn_offset_arr_ptr= req_struct->var_pos_array+2*mm_vars;
+      dst->m_dyn_offset_arr_ptr= req_struct->var_pos_array[MM]+2*mm_vars;
       dst->m_dyn_len_offset= mm_dynvar+mm_dynfix;
       dst->m_max_dyn_offset= tabPtrP->m_offsets[MM].m_max_dyn_offset;
       dst->m_dyn_data_ptr= (char*)dst_ptr;
@@ -5184,106 +5180,145 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
   Tuple_header* ptr= req_struct->m_tuple_ptr;
   ndbassert(ptr->m_header_bits & Tuple_header::COPY_TUPLE);
   
-  KeyReqStruct::Var_data* dst= &req_struct->m_var_data[MM];
   const Uint16* order= tabPtrP->m_real_order_descriptor;
   const Uint32 * tabDesc = req_struct->attr_descr;
-  Uint16 dd_tot= tabPtrP->m_no_of_disk_attributes;
-  Uint16 mm_fix= tabPtrP->m_attributes[MM].m_no_of_fixsize;
-  Uint16 mm_vars= tabPtrP->m_attributes[MM].m_no_of_varsize;
-  Uint16 mm_dyns= tabPtrP->m_attributes[MM].m_no_of_dynamic;
-  Uint16 mm_dynvar= tabPtrP->m_attributes[MM].m_no_of_dyn_var;
-  Uint16 mm_dynfix= tabPtrP->m_attributes[MM].m_no_of_dyn_fix;
-  Uint16 dd_vars= tabPtrP->m_attributes[DD].m_no_of_varsize;
   
   Uint32 *dst_ptr= ptr->get_end_of_fix_part_ptr(tabPtrP);
-  Uint16* src_off_ptr= req_struct->var_pos_array;
-  order += mm_fix;
 
   sizes[MM] = 1;
   sizes[DD] = 0;
-  if(mm_vars || mm_dyns)
-  {
-    jamDebug();
-    Varpart_copy* vp = (Varpart_copy*)dst_ptr;
-    Uint32* varstart = dst_ptr = vp->m_data;
 
-    if (mm_vars)
+  /**
+   * No need to copy the fixed size memory parts, those are
+   * already in the correct position.
+   */
+  for (Uint32 ind = 0; ind < 2; ind++)
+  {
+    Uint16 num_fix= tabPtrP->m_attributes[ind].m_no_of_fixsize;
+    Uint16 num_vars= tabPtrP->m_attributes[ind].m_no_of_varsize;
+    Uint16 num_dyns= tabPtrP->m_attributes[ind].m_no_of_dynamic;
+    if (ind == DD)
     {
-      jamDebug();
-      Uint16* dst_off_ptr= (Uint16*)dst_ptr;
-      char*  dst_data_ptr= (char*)(dst_off_ptr + mm_vars + 1);
-      char*  src_data_ptr= dst_data_ptr;
-      Uint32 off= 0;
-      for(Uint32 i= 0; i<mm_vars; i++)
+      Uint16 dd_tot = tabPtrP->m_no_of_disk_attributes;
+      if (!(disk && dd_tot))
       {
-        const char* data_ptr= src_data_ptr + *src_off_ptr;
-        Uint32 len= src_off_ptr[mm_vars] - *src_off_ptr;
-        * dst_off_ptr++= off;
-        memmove(dst_data_ptr, data_ptr, len);
-        off += len;
-        src_off_ptr++;
-        dst_data_ptr += len;
+        jamDebug();
+        break;
       }
-      *dst_off_ptr= off;
-      dst_ptr = ALIGN_WORD(dst_data_ptr);
-      order += mm_vars; // Point to first dynfix entry
+      Uint32 * src_ptr = (Uint32*)req_struct->m_disk_ptr;
+      req_struct->m_disk_ptr = (Tuple_header*)dst_ptr;
+      Uint32 fix_header_size = tabPtrP->m_offsets[DD].m_fix_header_size;
+      sizes[DD] = fix_header_size;
+      memmove(dst_ptr, src_ptr, 4*fix_header_size);
+      dst_ptr += fix_header_size;
     }
-    
-    if (mm_dyns)
+    order += num_fix;
+    if (num_vars || num_dyns)
     {
       jamDebug();
-      dst_ptr = shrink_dyn_part(dst, dst_ptr, tabPtrP, tabDesc,
-                                order, mm_dynvar, mm_dynfix, MM);
-      ndbassert((Uint32*)dst_ptr <=
-                 ((Uint32*)ptr) + MAX_EXPANDED_TUPLE_SIZE_IN_WORDS);
-      order += mm_dynfix + mm_dynvar;
-    }
-    
-    Uint32 varpart_len= Uint32(dst_ptr - varstart);
-    vp->m_len = varpart_len;
-    sizes[MM] = varpart_len;
-    if (varpart_len != 0)
-    {
-      jamDebug();
-      ptr->m_header_bits |= Tuple_header::VAR_PART;
-    }
-    else if ((ptr->m_header_bits & Tuple_header::VAR_PART) == 0)
-    {
-      jamDebug();
-      /*
-       * No varpart present.
-       * And this is not an update where the dynamic column is set to null.
-       * So skip storing the var part altogether.
-       */
-      ndbassert(((Uint32*) vp) == ptr->get_end_of_fix_part_ptr(tabPtrP));
-      dst_ptr= (Uint32*)vp;
-    }
-    else
-    {
-      jamDebug();
-      /*
-       * varpart_len is now 0, but tuple already had a varpart.
-       * It will be released at commit time.
-       */
-    }
-    
-    ndbassert((UintPtr(ptr) & 3) == 0);
-    ndbassert(varpart_len < 0x10000);
-  }
-  
-  if(disk && dd_tot)
-  {
-    /* TODO HOPSWORKS-2922 */
-    jamDebug();
-    Uint32 * src_ptr = (Uint32*)req_struct->m_disk_ptr;
-    req_struct->m_disk_ptr = (Tuple_header*)dst_ptr;
-    ndbrequire(dd_vars == 0);
-    sizes[DD] = tabPtrP->m_offsets[DD].m_fix_header_size;
-    memmove(dst_ptr, src_ptr, 4*tabPtrP->m_offsets[DD].m_fix_header_size);
-  }
+      Varpart_copy* vp = (Varpart_copy*)dst_ptr;
+      Uint32* varstart = dst_ptr = vp->m_data;
 
+      if (num_vars)
+      {
+        jamDebug();
+        Uint16* src_off_ptr= req_struct->var_pos_array[ind];
+        Uint16* dst_off_ptr= (Uint16*)dst_ptr;
+        char*  dst_data_ptr= (char*)(dst_off_ptr + num_vars + 1);
+        char*  src_data_ptr= dst_data_ptr;
+        Uint32 off= 0;
+        for (Uint32 i = 0; i < num_vars; i++)
+        {
+          /**
+           * var_pos_array has 2 parts, the first is index by the
+           * index of the varsize column, the second is the index
+           * plus the number of varsize columns. These were initialised
+           * to the position of the start of the column (both of them),
+           * starting at position 0.
+           *
+           * When updating the varsize column we set the index plus
+           * mm_vars to instead be position of the end of the varsize
+           * column. Thus var_pos_array[mm_vars + i] - var_pos_array[i]
+           * is the length of the column. For NULL values both are set
+           * to the position of the column and thus length is 0.
+           *
+           * Seems a bit complicated manner to calculate length, but it
+           * means that we retain the position of the column.
+           *
+           * In the stored row we store the offset of each varsize column,
+           * starting at 0, in addition we store the total length of all
+           * varsize column as an extra length information.
+           */
+          const char* data_ptr= src_data_ptr + *src_off_ptr;
+          Uint32 len= src_off_ptr[num_vars] - *src_off_ptr;
+          * dst_off_ptr++= off;
+          memmove(dst_data_ptr, data_ptr, len);
+          off += len;
+          src_off_ptr++;
+          dst_data_ptr += len;
+        }
+        *dst_off_ptr= off;
+        dst_ptr = ALIGN_WORD(dst_data_ptr);
+        order += num_vars; // Point to first dynfix entry
+      }
+
+      if (num_dyns)
+      {
+        jamDebug();
+        Uint16 num_dynvar= tabPtrP->m_attributes[ind].m_no_of_dyn_var;
+        Uint16 num_dynfix= tabPtrP->m_attributes[ind].m_no_of_dyn_fix;
+        KeyReqStruct::Var_data* dst = &req_struct->m_var_data[ind];
+        dst_ptr = shrink_dyn_part(dst,
+                                  dst_ptr,
+                                  tabPtrP,
+                                  tabDesc,
+                                  order,
+                                  num_dynvar,
+                                  num_dynfix,
+                                  ind);
+        ndbassert((Uint32*)dst_ptr <=
+                   ((Uint32*)ptr) + MAX_EXPANDED_TUPLE_SIZE_IN_WORDS);
+        order += num_dynfix + num_dynvar;
+      }
+      Uint32 varpart_len= Uint32(dst_ptr - varstart);
+      vp->m_len = varpart_len;
+      if (ind == MM)
+      {
+        sizes[MM] = varpart_len;
+        if (varpart_len != 0)
+        {
+          jamDebug();
+          ptr->m_header_bits |= Tuple_header::VAR_PART;
+        }
+        else if ((ptr->m_header_bits & Tuple_header::VAR_PART) == 0)
+        {
+          jamDebug();
+          /*
+           * No varpart present.
+           * And this is not an update where the dynamic column is set to null.
+           * So skip storing the var part altogether.
+           */
+          ndbassert(((Uint32*) vp) == ptr->get_end_of_fix_part_ptr(tabPtrP));
+          dst_ptr= (Uint32*)vp;
+        }
+        else
+        {
+          jamDebug();
+          /*
+           * varpart_len is now 0, but tuple already had a varpart.
+           * It will be released at commit time.
+           */
+        }
+      }
+      else
+      {
+        sizes[DD] += varpart_len;
+      }
+      ndbassert((UintPtr(ptr) & 3) == 0);
+      ndbassert(varpart_len < 0x10000);
+    }
+  }
   req_struct->is_expanded= false;
-
 }
 
 void
