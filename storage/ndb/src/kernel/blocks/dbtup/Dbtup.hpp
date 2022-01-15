@@ -172,6 +172,7 @@ inline const Uint32* ALIGN_WORD(const void* ptr)
 #define ZCALL_ERROR 890
 #define ZTEMPORARY_RESOURCE_FAILURE 891
 #define ZUNSUPPORTED_BRANCH 892
+#define ZREAD_DISK_WITH_FLAG_NOT_SET 893
 
 #define ZSTORED_TOO_MUCH_ATTRINFO_ERROR 874
 
@@ -1720,6 +1721,7 @@ typedef Ptr<HostBuffer> HostBufferPtr;
     static constexpr Uint32 REORG_MOVE = 0x08000000; // Tuple will be moved in reorg
     static constexpr Uint32 LCP_DELETE = 0x10000000; // Tuple deleted at LCP start
     static constexpr Uint32 DELETE_WAIT = 0x20000000; // Waiting for delete tuple page
+    static constexpr Uint32 DISK_VAR_PART = 0x40000000; // Is there a disk varpart
 
     Tuple_header() {}
     Uint32 get_tuple_version() const { 
@@ -3959,7 +3961,10 @@ private:
   Uint32* get_ptr(Var_part_ref);
   Uint32* get_ptr(PagePtr*, Var_part_ref);
   Uint32* get_ptr(PagePtr*, const Local_key*, const Tablerec*);
-  Uint32* get_dd_ptr(PagePtr*, const Local_key*, const Tablerec*);
+  Uint32* get_dd_info(PagePtr*,
+                      const Local_key*,
+                      const Tablerec*,
+                      Uint32 &len);
   Uint32* get_default_ptr(const Tablerec*, Uint32&);
   Uint32 get_len(Ptr<Page>* pagePtr, Var_part_ref ref);
 
@@ -4603,20 +4608,26 @@ Dbtup::get_default_ptr(const Tablerec* regTabPtr, Uint32& default_len)
 
 inline
 Uint32*
-Dbtup::get_dd_ptr(PagePtr* pagePtr, 
-		  const Local_key* key, const Tablerec* regTabPtr)
+Dbtup::get_dd_info(PagePtr* pagePtr, 
+		  const Local_key* key,
+                  const Tablerec* regTabPtr,
+                  Uint32 &len)
 {
   PagePtr tmp;
   tmp.i= key->m_page_no;
   tmp.p= (Page*)m_global_page_pool.getPtr(tmp.i);
   memcpy(pagePtr, &tmp, sizeof(tmp));
-  
-  if(regTabPtr->m_attributes[DD].m_no_of_varsize ||
-     regTabPtr->m_attributes[DD].m_no_of_dynamic)
+
+  if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
+  {
+    len = ((Var_page*)tmp.p)->get_entry_len(key->m_page_idx);
     return ((Var_page*)tmp.p)->get_ptr(key->m_page_idx);
+  }
   else
-    return ((Fix_page*)tmp.p)->
-      get_ptr(key->m_page_idx, regTabPtr->m_offsets[DD].m_fix_header_size);
+  {
+    len = regTabPtr->m_offsets[DD].m_fix_header_size;
+    return ((Fix_page*)tmp.p)->get_ptr(key->m_page_idx, len);
+  }
 }
 
 /*

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1557,6 +1557,12 @@ Dbtup::readDiskFixedSizeNotNULL(Uint8* outBuffer,
 {
   assert(req_struct->out_buf_bits == 0);
 
+  if (unlikely(req_struct->m_disk_ptr != nullptr))
+  {
+    thrjam(req_struct->jamBuffer);
+    req_struct->errorCode = ZREAD_DISK_WITH_FLAG_NOT_SET;
+    return false;
+  }
   Uint32 attrDescriptor = Uint32((attrDes << 32) >> 32);
   Uint32 attrDes2 = Uint32(attrDes >> 32);
   Uint32 *tuple_header= req_struct->m_disk_ptr->m_data;
@@ -1599,6 +1605,12 @@ Dbtup::readDiskFixedSizeNULLable(Uint8* outBuffer,
 				 AttributeHeader* ahOut,
 				 Uint64 attrDes)
 {
+  if (unlikely(req_struct->m_disk_ptr != nullptr))
+  {
+    thrjam(req_struct->jamBuffer);
+    req_struct->errorCode = ZREAD_DISK_WITH_FLAG_NOT_SET;
+    return false;
+  }
   if (!disk_nullFlagCheck(req_struct, attrDes))
   {
     thrjamDebug(req_struct->jamBuffer);
@@ -1623,6 +1635,12 @@ Dbtup::readDiskVarAsFixedSizeNotNULL(Uint8* outBuffer,
 {
   assert(req_struct->out_buf_bits == 0);
 
+  if (unlikely(req_struct->m_disk_ptr != nullptr))
+  {
+    thrjam(req_struct->jamBuffer);
+    req_struct->errorCode = ZREAD_DISK_WITH_FLAG_NOT_SET;
+    return false;
+  }
   Uint32 attrDescriptor = Uint32((attrDes << 32) >> 32);
   Uint32 attrDes2 = Uint32(attrDes >> 32);
   Uint32 *tuple_header= req_struct->m_disk_ptr->m_data;
@@ -1677,6 +1695,12 @@ Dbtup::readDiskVarAsFixedSizeNULLable(Uint8* outBuffer,
 				 AttributeHeader* ahOut,
 				 Uint64 attrDes)
 {
+  if (unlikely(req_struct->m_disk_ptr != nullptr))
+  {
+    thrjam(req_struct->jamBuffer);
+    req_struct->errorCode = ZREAD_DISK_WITH_FLAG_NOT_SET;
+    return false;
+  }
   if (!disk_nullFlagCheck(req_struct, attrDes))
   {
     thrjamDebug(req_struct->jamBuffer);
@@ -1699,6 +1723,12 @@ Dbtup::readDiskBitsNotNULL(Uint8* outBuffer,
 			   AttributeHeader* ahOut,
 			   Uint64 attrDes)
 {
+  if (unlikely(req_struct->m_disk_ptr != nullptr))
+  {
+    thrjam(req_struct->jamBuffer);
+    req_struct->errorCode = ZREAD_DISK_WITH_FLAG_NOT_SET;
+    return false;
+  }
   Uint32 attrDescriptor = Uint32((attrDes << 32) >> 32);
   Uint32 attrDes2 = Uint32(attrDes >> 32);
   Tablerec * const regTabPtr = req_struct->tablePtrP;
@@ -1719,6 +1749,12 @@ Dbtup::readDiskBitsNULLable(Uint8* outBuffer,
 			    AttributeHeader* ahOut,
 			    Uint64 attrDes)
 {
+  if (unlikely(req_struct->m_disk_ptr != nullptr))
+  {
+    thrjam(req_struct->jamBuffer);
+    req_struct->errorCode = ZREAD_DISK_WITH_FLAG_NOT_SET;
+    return false;
+  }
   Uint32 attrDescriptor = Uint32((attrDes << 32) >> 32);
   Uint32 attrDes2 = Uint32(attrDes >> 32);
   Tablerec * const regTabPtr = req_struct->tablePtrP;

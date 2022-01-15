@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -412,6 +412,7 @@ ErrorBundle ErrorCodes[] = {
   { 887,  DMEC, IE, "887" },
   { 888,  DMEC, IE, "888" },
   { 890,  DMEC, IE, "890" },
+  { 893,  DMEC, IE, "Flag set to not use disk columns, but still done" },
   { 4000, DMEC, IE, "MEMORY ALLOCATION ERROR" },
   { 4001, DMEC, IE, "Signal Definition Error" },
   { 4005, DMEC, IE, "Internal Error in NdbApi" },

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2808,6 +2808,7 @@ int Dbtup::handleInsertReq(Signal* signal,
        (Tuple_header::LCP_SKIP | Tuple_header::LCP_DELETE);
     base->m_header_bits= Tuple_header::ALLOC |
       (sizes[2+MM] > 0 ? Tuple_header::VAR_PART : 0) |
+      (sizes[2+DD] > 0 ? Tuple_header::DISK_VAR_PART : 0) |
       old_header_keep;
     if (disk_insert)
     {
@@ -4881,23 +4882,25 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
    * made available to the readers. Thus we need to ensure that this
    * write is protected.
    *
-   * TODO RONM, this updateChecksum seems to always be a NULL op.
+   * This updateChecksum seems to always be a NULL op.
    * Verified with ndbrequire
+   * updateChecksum(src, tabPtrP, bits, src->m_header_bits);
    */
   ndbrequire(bits == src->m_header_bits);
-  //updateChecksum(src, tabPtrP, bits, src->m_header_bits);
 
   sizes[DD]= 0;
   if(disk && dd_tot)
   {
     jamDebug();
     const Uint16 dd_vars= tabPtrP->m_attributes[DD].m_no_of_varsize;
-    
+
+    Uint32 src_len;
     if(bits & Tuple_header::DISK_INLINE)
     {
       // Only on copy tuple
       jamDebug();
       ndbassert(bits & Tuple_header::COPY_TUPLE);
+      ndbabort(); // TODO HOPSWORKS-2922, need to set src_len
     }
     else
     {
@@ -4906,14 +4909,17 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       memcpy(&key, disk_ref, sizeof(key));
       key.m_page_no= req_struct->m_disk_page_ptr.i;
       ndbrequire(key.m_page_idx < Tup_page::DATA_WORDS);
-      src_ptr= get_dd_ptr(&req_struct->m_disk_page_ptr, &key, tabPtrP);
+      src_ptr= get_dd_info(&req_struct->m_disk_page_ptr,
+                           &key,
+                           tabPtrP,
+                           src_len);
     }
     extra_bits |= Tuple_header::DISK_INLINE;
 
     // Fix diskpart
     req_struct->m_disk_ptr= (Tuple_header*)dst_ptr;
     memcpy(dst_ptr, src_ptr, 4*tabPtrP->m_offsets[DD].m_fix_header_size);
-    sizes[DD] = tabPtrP->m_offsets[DD].m_fix_header_size;
+    sizes[DD] = src_len;
     if (unlikely(req_struct->m_disk_ptr->m_base_record_page_idx >=
                  Tup_page::DATA_WORDS))
     {
@@ -4990,8 +4996,10 @@ Dbtup::dump_tuple(const KeyReqStruct* req_struct, const Tablerec* tabPtrP)
       Local_key key;
       memcpy(&key, ptr->get_disk_ref_ptr(tabPtrP), sizeof(key));
       key.m_page_no= req_struct->m_disk_page_ptr.i;
-      disk_p= get_dd_ptr(&req_struct->m_disk_page_ptr, &key, tabPtrP);
-      disk_len= tabPtrP->m_offsets[DD].m_fix_header_size;
+      disk_p= get_dd_len(&req_struct->m_disk_page_ptr,
+                         &key,
+                         tabPtrP,
+                         &disk_len);
     }
     else
     {
@@ -5032,144 +5040,193 @@ void
 Dbtup::prepare_read(KeyReqStruct* req_struct, 
 		    Tablerec* tabPtrP, bool disk)
 {
-  Tuple_header* ptr= req_struct->m_tuple_ptr;
-  
-  Uint32 bits= ptr->m_header_bits;
-  Uint16 dd_tot= tabPtrP->m_no_of_disk_attributes;
-  Uint16 mm_vars= tabPtrP->m_attributes[MM].m_no_of_varsize;
-  Uint16 mm_dyns= tabPtrP->m_attributes[MM].m_no_of_dynamic;
-  
-  const Uint32 *src_ptr= ptr->get_end_of_fix_part_ptr(tabPtrP);
-  const Uint32 *disk_ref= ptr->get_disk_ref_ptr(tabPtrP);
-  const Var_part_ref* var_ref = ptr->get_var_part_ref_ptr(tabPtrP);
-  if(mm_vars || mm_dyns)
+  Tuple_header* ptr = req_struct->m_tuple_ptr;
+  Uint32 bits = ptr->m_header_bits;
+  const Uint32 *src_ptr = ptr->get_end_of_fix_part_ptr(tabPtrP);
+  req_struct->is_expanded= false;
+
+  /**
+   * We can have 0 varsized columns and a number of dynamic columns
+   * that are all set to NULL values. In this case we can arrive
+   * here and still have no var part. The flag VAR_PART indicates
+   * there is an in-memory var part and DISK_VAR_PART indicates there
+   * is a var part in the disk part.
+   *
+   * We also make use of the fact that if VAR_PART is set on a tuple
+   * then definitely there is either a varsized or dynamic in-memory
+   * column and similarly for the disk part.
+   */
+  for (Uint32 ind = 0; ind < 2; ind++)
   {
-    const Uint32 *src_data= src_ptr;
-    Uint32 src_len;
-    KeyReqStruct::Var_data* dst= &req_struct->m_var_data[MM];
-    if (bits & Tuple_header::VAR_PART)
+    KeyReqStruct::Var_data* dst= &req_struct->m_var_data[ind];
+    Uint16 num_vars= tabPtrP->m_attributes[ind].m_no_of_varsize;
+    Uint16 num_dyns= tabPtrP->m_attributes[ind].m_no_of_dynamic;
+    /**
+     * Pointer to and length of the dynamic part of the row, this
+     * consists of the variable sized columns with fixed length
+     * parts and the dynamic parts. We call the variable flex*
+     * since they are the flexible part of the row.
+     */
+    Uint32 flex_len = 0;
+    const Uint32 *flex_data = nullptr;
+
+    if (ind == DD)
     {
-      if(! (bits & Tuple_header::COPY_TUPLE))
+      if ((disk == false) || (tabPtrP->m_no_of_disk_attributes == 0))
+      {
+        req_struct->m_disk_ptr = nullptr;
+        return;
+      }
+      Uint32 fix_header_size = tabPtrP->m_offsets[DD].m_fix_header_size;
+      if (! (bits & Tuple_header::COPY_TUPLE))
+      {
+        Local_key key;
+        const Uint32 *disk_ref = ptr->get_disk_ref_ptr(tabPtrP);
+        memcpy(&key, disk_ref, sizeof(key));
+        key.m_page_no = req_struct->m_disk_page_ptr.i;
+        ndbrequire(key.m_page_idx < Tup_page::DATA_WORDS);
+        Uint32 disk_len = 0;
+        src_ptr = get_dd_info(&req_struct->m_disk_page_ptr,
+                              &key,
+                              tabPtrP,
+                              disk_len);
+        req_struct->m_disk_ptr= (Tuple_header*)src_ptr;
+        flex_data = src_ptr + fix_header_size;
+        /**
+         * Move past the fixed size columns to set src_ptr to point to
+         * where the varsized columns start.
+         */
+        ndbrequire(disk_len > fix_header_size);
+        flex_len = disk_len - fix_header_size;
+      }
+      else
+      {
+        /**
+         * On COPY tuples the disk data columns comes immediately after
+         * the in-memory columns. The address was calculated in the first
+         * loop and thus src_ptr already points to the first set of disk
+         * data columns.
+         */
+        ndbrequire(bits & Tuple_header::DISK_INLINE);
+        req_struct->m_disk_ptr= (Tuple_header*)src_ptr;
+        src_ptr += fix_header_size;
+        if ((bits & Tuple_header::DISK_VAR_PART) != 0)
+        {
+          Varpart_copy* vp = (Varpart_copy*)src_ptr;
+          flex_len = vp->m_len;
+          flex_data = vp->m_data;
+          src_ptr++;
+        }
+      }
+      if (unlikely(req_struct->m_disk_ptr->m_base_record_page_idx >=
+                   Tup_page::DATA_WORDS))
+      {
+        Local_key key;
+        const Uint32 *disk_ref = ptr->get_disk_ref_ptr(tabPtrP);
+        memcpy(&key, disk_ref, sizeof(key));
+        g_eventLogger->info(
+          "Crash: page(%u,%u,%u,%u).%u, DISK_INLINE= %u, tab(%x,%x,%x)"
+                       ", frag_page_id:%u, rowid_ref(%u,%u)",
+                       instance(),
+                       req_struct->m_disk_page_ptr.i,
+                       req_struct->m_disk_page_ptr.p->m_file_no,
+                       req_struct->m_disk_page_ptr.p->m_page_no,
+                       key.m_page_idx,
+                       bits & Tuple_header::DISK_INLINE ? 1 : 0,
+                       req_struct->m_disk_page_ptr.p->m_table_id,
+                       req_struct->m_disk_page_ptr.p->m_fragment_id,
+                       req_struct->m_disk_page_ptr.p->m_create_table_version,
+                       req_struct->frag_page_id,
+                       req_struct->m_disk_ptr->m_base_record_page_no,
+                       req_struct->m_disk_ptr->m_base_record_page_idx);
+        ndbrequire(req_struct->m_disk_ptr->m_base_record_page_idx <
+                   Tup_page::DATA_WORDS);
+      }
+      if (unlikely((bits & Tuple_header::DISK_VAR_PART) == 0))
+      {
+        jamDebug();
+        dst->m_max_var_offset = 0;
+        dst->m_dyn_part_len = 0;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+        std::memset(dst, 0, sizeof(* dst));
+#endif
+        return;
+      }
+    }
+    else
+    {
+      /* ind == MM */
+      if (num_vars == 0 && num_dyns == 0)
+      {
+        jamDebug();
+        continue;
+      }
+      if (unlikely((bits & Tuple_header::VAR_PART) == 0))
+      {
+        jamDebug();
+        dst->m_max_var_offset = 0;
+        dst->m_dyn_part_len = 0;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+        std::memset(dst, 0, sizeof(* dst));
+#endif
+        continue;
+      }
+      if (! (bits & Tuple_header::COPY_TUPLE))
       {
         Ptr<Page> tmp;
-        src_data= get_ptr(&tmp, * var_ref);
-        src_len= get_len(&tmp, * var_ref);
+        Var_part_ref* var_ref = ptr->get_var_part_ref_ptr(tabPtrP);
+        flex_data= get_ptr(&tmp, * var_ref);
+        flex_len= get_len(&tmp, * var_ref);
 
         /* If the original tuple was grown,
          * the old size is stored at the end. */
-        if(bits & Tuple_header::MM_GROWN)
+        if (bits & Tuple_header::MM_GROWN)
         {
           /**
            * This is when triggers read before value of update
            *   when original has been reallocated due to grow
            */
-          ndbassert(src_len>0);
-          src_len= src_data[src_len-1];
+          ndbassert(flex_len>0);
+          flex_len= flex_data[flex_len-1];
         }
       }
       else
       {
         Varpart_copy* vp = (Varpart_copy*)src_ptr;
-        src_len = vp->m_len;
-        src_data = vp->m_data;
+        flex_len = vp->m_len;
+        flex_data = vp->m_data;
         src_ptr++;
       }
-
-      char* varstart;
-      Uint32 varlen;
-      const Uint32* dynstart;
-      if (mm_vars)
-      {
-        varstart = (char*)(((Uint16*)src_data)+mm_vars+1);
-        varlen = ((Uint16*)src_data)[mm_vars];
-        dynstart = ALIGN_WORD(varstart + varlen);
-      }
-      else
-      {
-        varstart = 0;
-        varlen = 0;
-        dynstart = src_data;
-      }
-
-      dst->m_data_ptr= varstart;
-      dst->m_offset_array_ptr= (Uint16*)src_data;
-      dst->m_var_len_offset= 1;
-      dst->m_max_var_offset= varlen;
-
-      Uint32 dynlen = Uint32(src_len - (dynstart - src_data));
-      ndbassert((ptrdiff_t)src_len >= (dynstart - src_data));
-      dst->m_dyn_data_ptr= (char*)dynstart;
-      dst->m_dyn_part_len= dynlen;
-      // Do or not to to do
-      // dst->m_dyn_offset_arr_ptr = dynlen ? (Uint16*)(dynstart + *(Uint8*)dynstart) : 0;
-
-      /*
-        dst->m_dyn_offset_arr_ptr and dst->m_dyn_len_offset are not used for
-        reading the stored/shrunken format.
-      */
+      /* Set up src_ptr for DD loop */
+      src_ptr += flex_len;
+    }
+    ndbrequire(flex_len > 0);
+    char* varstart;
+    Uint32 varlen;
+    const Uint32* dynstart;
+    if (num_vars)
+    {
+      varstart = (char*)(((Uint16*)flex_data)+ num_vars + 1);
+      varlen = ((Uint16*)flex_data)[num_vars];
+      dynstart = ALIGN_WORD(varstart + varlen);
     }
     else
     {
-      src_len = 0;
-      dst->m_max_var_offset = 0;
-      dst->m_dyn_part_len = 0;
-#if defined(VM_TRACE) || defined(ERROR_INSERT)
-      std::memset(dst, 0, sizeof(* dst));
-#endif
+      varstart = 0;
+      varlen = 0;
+      dynstart = flex_data;
     }
-    
-    // disk part start after dynamic part.
-    src_ptr+= src_len;
-  }
-  
-  if(disk && dd_tot)
-  {
-    const Uint16 dd_vars= tabPtrP->m_attributes[DD].m_no_of_varsize;
-    
-    if(bits & Tuple_header::DISK_INLINE)
-    {
-      // Only on copy tuple
-      ndbassert(bits & Tuple_header::COPY_TUPLE);
-    }
-    else
-    {
-      // XXX
-      Local_key key;
-      memcpy(&key, disk_ref, sizeof(key));
-      key.m_page_no= req_struct->m_disk_page_ptr.i;
-      ndbrequire(key.m_page_idx < Tup_page::DATA_WORDS);
-      src_ptr= get_dd_ptr(&req_struct->m_disk_page_ptr, &key, tabPtrP);
-    }
-    // Fix diskpart
-    req_struct->m_disk_ptr= (Tuple_header*)src_ptr;
-    if (unlikely(req_struct->m_disk_ptr->m_base_record_page_idx >=
-                  Tup_page::DATA_WORDS))
-    {
-      Local_key key;
-      memcpy(&key, disk_ref, sizeof(key));
-      g_eventLogger->info(
-        "Crash: page(%u,%u,%u,%u).%u, DISK_INLINE= %u, tab(%x,%x,%x)"
-                     ", frag_page_id:%u, rowid_ref(%u,%u)",
-                          instance(),
-                          req_struct->m_disk_page_ptr.i,
-                          req_struct->m_disk_page_ptr.p->m_file_no,
-                          req_struct->m_disk_page_ptr.p->m_page_no,
-                          key.m_page_idx,
-                          bits & Tuple_header::DISK_INLINE ? 1 : 0,
-                          req_struct->m_disk_page_ptr.p->m_table_id,
-                          req_struct->m_disk_page_ptr.p->m_fragment_id,
-                          req_struct->m_disk_page_ptr.p->m_create_table_version,
-                          req_struct->frag_page_id,
-                          req_struct->m_disk_ptr->m_base_record_page_no,
-                          req_struct->m_disk_ptr->m_base_record_page_idx);
-      ndbrequire(req_struct->m_disk_ptr->m_base_record_page_idx <
-                 Tup_page::DATA_WORDS);
-    }
-    /* TODO HOPSWORKS-2922 */
-    ndbrequire(dd_vars == 0);
-  }
 
-  req_struct->is_expanded= false;
+    dst->m_data_ptr= varstart;
+    dst->m_offset_array_ptr = (Uint16*)flex_data;
+    dst->m_var_len_offset = 1;
+    dst->m_max_var_offset = varlen;
+
+    Uint32 dynlen = Uint32(flex_len - (dynstart - flex_data));
+    ndbassert((ptrdiff_t)flex_len >= (dynstart - flex_data));
+    dst->m_dyn_data_ptr= (char*)dynstart;
+    dst->m_dyn_part_len= dynlen;
+  }
 }
 
 void
@@ -5313,6 +5370,11 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
       else
       {
         sizes[DD] += varpart_len;
+        if (varpart_len != 0)
+        {
+          jamDebug();
+          ptr->m_header_bits |= Tuple_header::DISK_VAR_PART;
+        }
       }
       ndbassert((UintPtr(ptr) & 3) == 0);
       ndbassert(varpart_len < 0x10000);
