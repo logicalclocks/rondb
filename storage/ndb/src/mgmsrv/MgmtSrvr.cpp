@@ -3272,9 +3272,11 @@ MgmtSrvr::insertError(int nodeId, int errorNo, Uint32 * extra)
   {
     /**
      * In order to make NDB_TAMPER (almost) syncronous,
-     *   make a syncronous request *after* the NDB_TAMPER
+     *   make a synchronous request *after* the NDB_TAMPER
+     * Add a small sleep as well to raise probability a bit more
      */
     make_sync_req(ss, Uint32(nodeId));
+    NdbSleep_MilliSleep(20);
   }
 
   return res;

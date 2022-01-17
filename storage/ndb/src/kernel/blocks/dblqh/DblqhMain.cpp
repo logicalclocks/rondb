@@ -8929,6 +8929,10 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
       (unlikely((op == ZREAD || op == ZREAD_EX) && !getAllowRead())))
   {
     jam();
+    if (ERROR_INSERTED(5080))
+    {
+      g_eventLogger->info("Error due to ERROR_INSERT 5080");
+    }
     releaseSections(handle);
     earlyKeyReqAbort(signal,
                      lqhKeyReq,
@@ -8941,6 +8945,10 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
       unlikely(get_node_status(refToNode(tcRef)) != ZNODE_UP))
   {
     jam();
+    if (ERROR_INSERTED(5081))
+    {
+      g_eventLogger->info("Error due to ERROR_INSERT 5081");
+    }
     releaseSections(handle);
     earlyKeyReqAbort(signal,
                      lqhKeyReq,
