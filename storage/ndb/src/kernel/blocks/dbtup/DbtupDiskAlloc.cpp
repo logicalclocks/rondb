@@ -340,12 +340,15 @@ Dbtup::update_extent_pos(EmulatedJamBuffer* jamBuf,
     Uint32 sub = Uint32(- delta);
     ddrequire(extentPtr.p->m_free_space >= sub);
     extentPtr.p->m_free_space -= sub;
+    ddrequire(alloc.m_tot_free_space >= sub);
+    alloc.m_tot_free_space -= sub;
   }
   else
   {
     thrjam(jamBuf);
     extentPtr.p->m_free_space += delta;
     ndbassert(Uint32(delta) <= alloc.calc_page_free_space(0));
+    alloc.m_tot_free_space += delta;
   }
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
@@ -723,7 +726,8 @@ Dbtup::disk_page_prealloc(Signal* signal,
 #endif
       ext.p->m_first_page_no = ext.p->m_key.m_page_no;
       memset(ext.p->m_free_page_count, 0, sizeof(ext.p->m_free_page_count));
-      ext.p->m_free_space= alloc.m_page_free_bits_map[0] * pages; 
+      ext.p->m_free_space= alloc.m_page_free_bits_map[0] * pages;
+      alloc.m_tot_free_space += ext.p->m_free_space;
       ext.p->m_free_page_count[0]= pages; // All pages are "free"-est
       ext.p->m_empty_page_no = 0;
 
@@ -3493,14 +3497,10 @@ Dbtup::disk_page_get_allocated(const Tablerec* tabPtrP,
     {
       Disk_alloc_info& tmp = const_cast<Disk_alloc_info&>(alloc);
       Local_fragment_extent_list list(c_extent_pool, tmp.m_extent_list);
-      Ptr<Extent_info> extentPtr;
-      for (list.first(extentPtr); !extentPtr.isNull(); list.next(extentPtr))
-      {
-        cnt++;
-        free += extentPtr.p->m_free_space;
-      }
+      free = alloc.m_tot_free_space;
+      cnt = list.getCount();
     }
     res[0] = cnt * alloc.m_extent_size * File_formats::NDB_PAGE_SIZE;
-    res[1] = free * 4 * tabPtrP->m_offsets[DD].m_fix_header_size;
+    res[1] = free * 4;
   }
 }

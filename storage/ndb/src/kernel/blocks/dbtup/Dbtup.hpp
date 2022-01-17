@@ -646,15 +646,29 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
   typedef DLList<Extent_info_pool> Extent_info_list;
   typedef LocalDLList<Extent_info_pool> Local_extent_info_list;
   typedef DLHashTable<Extent_info_pool> Extent_info_hash;
-  typedef SLList<Extent_info_pool, IA_Fragment> Fragment_extent_list;
-  typedef LocalSLList<Extent_info_pool, IA_Fragment> Local_fragment_extent_list;
+  typedef SLCList<Extent_info_pool, IA_Fragment> Fragment_extent_list;
+  typedef LocalSLCList<Extent_info_pool, IA_Fragment> Local_fragment_extent_list;
   struct Tablerec;
   struct Disk_alloc_info 
   {
     Disk_alloc_info() {}
     Disk_alloc_info(const Tablerec* tabPtrP, 
 		    Uint32 extent_size_in_pages);
+
+    /**
+     * To avoid looping over potentially millions of extents
+     * we track the total free space in the fragment to enable
+     * quick replies to ndbinfo requests. Otherwise we can
+     * easily destroy performance by constant million-times
+     * loops over the extents.
+     */
+    Uint64 m_tot_free_space;
+
     Uint32 m_extent_size;
+    /**
+     * Current extent
+     */
+    Uint32 m_curr_extent_info_ptr_i;
     
     /**
      * Disk allocation
@@ -685,11 +699,6 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
 
     Page_list::Head m_unmap_pages;
 
-    /**
-     * Current extent
-     */
-    Uint32 m_curr_extent_info_ptr_i;
-    
     /**
      * 
      */
