@@ -602,6 +602,7 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
     Uint32 m_magic;
     Uint32 m_first_page_no;
     Uint32 m_empty_page_no;
+    Uint32 m_extent_no;
     Local_key m_key;
     Uint32 m_free_space;
     Uint32 m_free_matrix_pos;
@@ -615,13 +616,13 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
     Uint32 nextFragment;
 
     Uint32 hashValue() const {
-      return (m_key.m_file_no << 16) ^ m_key.m_page_idx;
+      return (m_key.m_file_no << 16) ^ m_extent_no;
     }
 
     Extent_info() {}
     bool equal(const Extent_info & rec) const {
       return m_key.m_file_no == rec.m_key.m_file_no &&
-	m_key.m_page_idx == rec.m_key.m_page_idx;
+        m_extent_no == rec.m_extent_no;
     }
   }; // 40 bytes
 
@@ -629,15 +630,29 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
   typedef DLList<Extent_info_pool> Extent_info_list;
   typedef LocalDLList<Extent_info_pool> Local_extent_info_list;
   typedef DLHashTable<Extent_info_pool> Extent_info_hash;
-  typedef SLList<Extent_info_pool, IA_Fragment> Fragment_extent_list;
-  typedef LocalSLList<Extent_info_pool, IA_Fragment> Local_fragment_extent_list;
+  typedef SLCList<Extent_info_pool, IA_Fragment> Fragment_extent_list;
+  typedef LocalSLCList<Extent_info_pool, IA_Fragment> Local_fragment_extent_list;
   struct Tablerec;
   struct Disk_alloc_info 
   {
     Disk_alloc_info() {}
     Disk_alloc_info(const Tablerec* tabPtrP, 
 		    Uint32 extent_size_in_pages);
+
+    /**
+     * To avoid looping over potentially millions of extents
+     * we track the total free space in the fragment to enable
+     * quick replies to ndbinfo requests. Otherwise we can
+     * easily destroy performance by constant million-times
+     * loops over the extents.
+     */
+    Uint64 m_tot_free_space;
+
     Uint32 m_extent_size;
+    /**
+     * Current extent
+     */
+    Uint32 m_curr_extent_info_ptr_i;
     
     /**
      * Disk allocation
@@ -668,11 +683,6 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
 
     Page_list::Head m_unmap_pages;
 
-    /**
-     * Current extent
-     */
-    Uint32 m_curr_extent_info_ptr_i;
-    
     /**
      * 
      */
@@ -4112,6 +4122,7 @@ public:
                                 Uint32 fragId,
                                 Uint32 create_table_version,
 				const Local_key* key,
+                                Uint32 extent_no,
                                 Uint32 pages);
   void disk_restart_page_bits(EmulatedJamBuffer* jamBuf,
                               Uint32 tableId,
@@ -4774,6 +4785,7 @@ public:
                                 Uint32 fragId,
                                 Uint32 create_table_version,
 				const Local_key* key,
+                                Uint32 extent_no,
                                 Uint32 pages);
 
   void disk_restart_page_bits(Uint32 tableId,
