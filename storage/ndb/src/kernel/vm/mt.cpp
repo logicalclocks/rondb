@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -9721,7 +9721,7 @@ thr_init(struct thr_repository* rep, struct thr_data *selfptr, unsigned int cnt,
     BaseString::snprintf(buf, sizeof(buf), "jbblock(%u)", i);
     register_lock(&selfptr->m_jbb[i].m_write_lock, buf);
 
-    thr_job_buffer *buffer = seize_buffer(rep, thr_no, true);
+    thr_job_buffer *buffer = seize_buffer(rep, thr_no, false);
     selfptr->m_congestion_level[i] = thr_job_queue::NO_CONGESTION;
     selfptr->m_jbb[i].m_read_index = 0;
     selfptr->m_jbb[i].m_write_index = 0;
