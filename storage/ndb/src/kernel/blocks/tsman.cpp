@@ -1769,17 +1769,17 @@ Tsman::scan_extent_headers(Signal* signal, Ptr<Datafile> ptr)
     for(Uint32 j = 0; j<extents; j++)
     {
       jam();
-      Uint32 extent_no = extents - j - 1;
+      Uint32 page_extent_no = extents - j - 1;
       
       File_formats::Datafile::Extent_data *ext_data =
-        page->get_extent_data(extent_no, size, v2);
-      Uint32 *ext_table_id = page->get_table_id(extent_no, size, v2);
+        page->get_extent_data(page_extent_no, size, v2);
+      Uint32 *ext_table_id = page->get_table_id(page_extent_no, size, v2);
       Uint32 *ext_next_free_extent =
-        page->get_next_free_extent(extent_no, size, v2);
+        page->get_next_free_extent(page_extent_no, size, v2);
       Uint32 *ext_fragment_id =
-        page->get_fragment_id(extent_no, size, v2);
+        page->get_fragment_id(page_extent_no, size, v2);
       Uint32 *ext_create_table_version =
-        page->get_create_table_version(extent_no, size, v2);
+        page->get_create_table_version(page_extent_no, size, v2);
 
       if ((*ext_table_id) == RNIL)
       {
@@ -1787,10 +1787,10 @@ Tsman::scan_extent_headers(Signal* signal, Ptr<Datafile> ptr)
         /* This extent was free still, so no need to do anything. */
         D("extent free" << V(j));
         DEB_TSMAN_RESTART(("extent(%u,%u) free", ptr.p->m_file_no,
-                            ((page_no * per_page) + extent_no)));
+                            ((page_no * per_page) + page_extent_no)));
         (*ext_table_id) = RNIL;
         (*ext_next_free_extent) = firstFree;
-        firstFree = page_no * per_page + extent_no;
+        firstFree = page_no * per_page + page_extent_no;
       }
       else
       {
@@ -1820,14 +1820,16 @@ Tsman::scan_extent_headers(Signal* signal, Ptr<Datafile> ptr)
         Local_key key;
         key.m_file_no = ptr.p->m_file_no;
         key.m_page_no = 
-          pages + 1 + size * (page_no * per_page + extent_no - per_page);
-        key.m_page_idx = page_no * per_page + extent_no;
+          pages + 1 + size * (page_no * per_page + page_extent_no - per_page);
+        key.m_page_idx = 0;
+        Uint32 extent_no = page_no * per_page + page_extent_no;
         int res = tup.disk_restart_alloc_extent((*ext_table_id),
                                                 (*ext_fragment_id),
                                                 v2 ?
                                                   (*ext_create_table_version) :
                                                   0,
                                                 &key,
+                                                extent_no,
                                                 size);
         if (res == 0)
         {
@@ -1874,7 +1876,7 @@ Tsman::scan_extent_headers(Signal* signal, Ptr<Datafile> ptr)
                              (*ext_create_table_version)));
           (*ext_table_id) = RNIL;
           (*ext_next_free_extent) = firstFree;
-          firstFree = page_no * per_page + extent_no;
+          firstFree = page_no * per_page + page_extent_no;
           D("extent free" << V(j) << V((*ext_table_id))
                           << V((*ext_fragment_id)) << V(key));
         }
@@ -2207,12 +2209,13 @@ Tsman::execALLOC_EXTENT_REQ(Signal* signal)
        */
       ndbassert(extent >= per_page);
       preq.m_page.m_page_no = data_off + size * (extent - /* zero */ per_page);
-      preq.m_page.m_page_idx = extent; // extent_no
+      preq.m_page.m_page_idx = 0;
       
       AllocExtentReq* rep = (AllocExtentReq*)signal->getDataPtr();
       rep->reply.errorCode = 0;
       rep->reply.page_id = preq.m_page;
       rep->reply.page_count = size;
+      rep->reply.extent_no = extent; // extent_no
     }
     unlock_extent_page(file_ptr.p, page_no);
   }
