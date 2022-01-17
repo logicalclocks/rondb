@@ -673,6 +673,7 @@ DbtupProxy::disk_restart_alloc_extent(EmulatedJamBuffer *jamBuf,
                                       Uint32 fragId,
                                       Uint32 create_table_version,
                                       const Local_key* key,
+                                      Uint32 extent_no,
                                       Uint32 pages)
 {
   if (tableId >= c_tableRecSize || c_tableRec[tableId] == 0)
@@ -719,7 +720,8 @@ DbtupProxy::disk_restart_alloc_extent(EmulatedJamBuffer *jamBuf,
                                           tableId,
                                           fragId,
                                           create_table_version,
-                                          key, 
+                                          key,
+                                          extent_no,
                                           pages);
 }
 

@@ -61,6 +61,7 @@ struct AllocExtentReq {
       Uint32 errorCode;
       Local_key page_id;
       Uint32 page_count;
+      Uint32 extent_no;
     } reply;
   };
 };

@@ -141,8 +141,8 @@ operator<<(NdbOut& out, const Ptr<Dbtup::Extent_info> & ptr)
       << " m_key: ["
       << " m_file_no=" << ptr.p->m_key.m_file_no
       << " m_page_no=" << ptr.p->m_key.m_page_no
-      << " m_page_idx=" << ptr.p->m_key.m_page_idx
       << " ]"
+      << " m_extent_no: " << ptr.p->m_extent_no
       << " m_free_space: " << ptr.p->m_free_space
       << " m_free_matrix_pos: " << ptr.p->m_free_matrix_pos
       << " m_free_page_count: [";
@@ -403,7 +403,7 @@ Dbtup::restart_setup_page(Ptr<Fragrecord> fragPtr,
   
   Extent_info key;
   key.m_key.m_file_no = pagePtr.p->m_file_no;
-  key.m_key.m_page_idx = pagePtr.p->m_extent_no;
+  key.m_extent_no = pagePtr.p->m_extent_no;
   Ptr<Extent_info> extentPtr;
   if (!c_extent_hash.find(extentPtr, key))
   {
@@ -704,7 +704,7 @@ Dbtup::disk_page_prealloc(Signal* signal,
                       fragPtrP->fragmentId,
                       c_lqh->getCreateSchemaVersion(fragPtrP->fragTableId),
                       fragPtrP->m_tablespace_id);
-        err= tsman.alloc_extent(&ext.p->m_key);
+        err= tsman.alloc_extent(&ext.p->m_key, &ext.p->m_extent_no);
       }
       if (err < 0)
       {
@@ -791,7 +791,7 @@ Dbtup::disk_page_prealloc(Signal* signal,
     DEB_EXTENT_BITS(("(%u)alloc page, extent(%u), pageBits: %u,"
                      " newPageBits: %u, free_page_count(%u,%u)",
                      instance(),
-                     ext.p->m_key.m_page_idx,
+                     ext.p->m_extent_no,
                      pageBits,
                      newPageBits,
                      ext.p->m_free_page_count[pageBits],
@@ -835,7 +835,7 @@ Dbtup::disk_page_prealloc(Signal* signal,
       DEB_EXTENT_BITS(("(%u)extent(%u) new page in tab(%u,%u), first_page(%u,%u)"
                        " empty_page: %u",
                 instance(),
-                ext.p->m_key.m_page_idx,
+                ext.p->m_extent_no,
                 fragPtr.p->fragTableId,
                 fragPtr.p->fragmentId,
                 key->m_file_no,
@@ -846,7 +846,7 @@ Dbtup::disk_page_prealloc(Signal* signal,
     {
       DEB_EXTENT_BITS(("(%u)extent(%u) new page in tab(%u,%u), page(%u,%u)",
                 instance(),
-                ext.p->m_key.m_page_idx,
+                ext.p->m_extent_no,
                 fragPtr.p->fragTableId,
                 fragPtr.p->fragmentId,
                 key->m_file_no,
@@ -1020,7 +1020,7 @@ Dbtup::disk_page_prealloc_callback(Signal* signal,
       "(%u)extent(%u) page(%u,%u):%u u_u_s: %u, free:%u idx:%u, new_idx:%u"
       ", free_page_count(%u,%u)",
       instance(),
-      extentPtr.p->m_key.m_page_idx,
+      extentPtr.p->m_extent_no,
       pagePtr.p->m_file_no,
       pagePtr.p->m_page_no,
       pagePtr.i,
@@ -1067,7 +1067,7 @@ Dbtup::disk_page_move_dirty_page(Disk_alloc_info& alloc,
   DEB_EXTENT_BITS(("(%u)dpmdp:extent(%u) page(%u,%u):%u, old_idx: %u,"
                    " new_idx: %u, free_page_count(%u,%u)",
                    instance(),
-                   extentPtr.p->m_key.m_page_idx,
+                   extentPtr.p->m_extent_no,
                    pagePtr.p->m_file_no,
                    pagePtr.p->m_page_no,
                    pagePtr.i,
@@ -1106,7 +1106,7 @@ Dbtup::disk_page_move_page_request(Disk_alloc_info& alloc,
   DEB_EXTENT_BITS(("(%u)dpmpqr:extent(%u) page(%u,%u), old_idx: %u new_idx: %u"
                    ", free_page_count(%u,%u)",
                    instance(),
-                   extentPtr.p->m_key.m_page_idx,
+                   extentPtr.p->m_extent_no,
                    req.p->m_key.m_file_no,
                    req.p->m_key.m_page_no,
                    old_idx,
@@ -1217,7 +1217,7 @@ Dbtup::disk_page_prealloc_initial_callback(Signal*signal,
   pagePtr.p->m_create_table_version =
     c_lqh->getCreateSchemaVersion(fragPtr.p->fragTableId);
   pagePtr.p->m_fragment_id = fragPtr.p->fragmentId;
-  pagePtr.p->m_extent_no = extentPtr.p->m_key.m_page_idx; // logical extent no
+  pagePtr.p->m_extent_no = extentPtr.p->m_extent_no; // logical extent no
   pagePtr.p->m_extent_info_ptr= req.p->m_extent_info_ptr;
   pagePtr.p->m_restart_seq = globalData.m_restart_seq;
   pagePtr.p->nextList = pagePtr.p->prevList = RNIL;
@@ -3151,8 +3151,11 @@ Dbtup::disk_restart_undo_page_bits(Signal* signal, Apply_undo* undo)
  * This represents the information about the extent page and extent number.
  * m_key.m_file_no is the file number of the extent
  * m_key.m_page_no is the page number of the first page in the extent
- * m_key.m_page_idx is the extent number, can be used to find the exact place
- *   of the extent information on the page
+ *
+ * m_extent_no
+ * -----------
+ * m_extent_no is the extent number, can be used to find the exact place
+ * of the extent information on the extent pages
  *
  * nextHash, prevHash
  * ------------------
@@ -3323,6 +3326,7 @@ Dbtup::disk_restart_alloc_extent(EmulatedJamBuffer* jamBuf,
                                  Uint32 fragId,
                                  Uint32 create_table_version,
 				 const Local_key* key,
+                                 Uint32 extent_no,
                                  Uint32 pages)
 {
   /**
@@ -3363,6 +3367,7 @@ Dbtup::disk_restart_alloc_extent(EmulatedJamBuffer* jamBuf,
 	     << " table: " << tabPtr.i << " fragment: " << fragId << endl;
 #endif      
       ext.p->m_key = *key;
+      ext.p->m_extent_no = extent_no;
       ext.p->m_first_page_no = ext.p->m_key.m_page_no;
       ext.p->m_free_space= 0;
       ext.p->m_empty_page_no = (1 << 16); // We don't know, so assume none
@@ -3370,7 +3375,7 @@ Dbtup::disk_restart_alloc_extent(EmulatedJamBuffer* jamBuf,
                 "(%u)restart:extent(%u).%u in tab(%u,%u),"
                 " first_page(%u,%u)",
                 instance(),
-                ext.p->m_key.m_page_idx,
+                ext.p->m_extent_no,
                 ext.i,
                 fragPtr.p->fragTableId,
                 fragPtr.p->fragmentId,
@@ -3446,7 +3451,7 @@ Dbtup::disk_restart_page_bits(EmulatedJamBuffer* jamBuf,
     DEB_EXTENT_BITS(("(%u)disk_restart_page_bits:extent(%u), tab(%u,%u),"
                      " page(%u,%u), bits: %u, new_count: %u",
                      instance(),
-                     ext.p->m_key.m_page_idx,
+                     ext.p->m_extent_no,
                      tableId,
                      fragId,
                      key->m_file_no,
@@ -3468,7 +3473,7 @@ Dbtup::disk_restart_page_bits(EmulatedJamBuffer* jamBuf,
                      key->m_page_no,
                      bits,
                      ext.i,
-                     key->m_page_idx));
+                     ext.p->m_extent_no));
   }
 }
 

@@ -618,6 +618,7 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
     Uint32 m_magic;
     Uint32 m_first_page_no;
     Uint32 m_empty_page_no;
+    Uint32 m_extent_no;
     Local_key m_key;
     Uint32 m_free_space;
     Uint32 m_free_matrix_pos;
@@ -631,13 +632,13 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
     Uint32 nextFragment;
 
     Uint32 hashValue() const {
-      return (m_key.m_file_no << 16) ^ m_key.m_page_idx;
+      return (m_key.m_file_no << 16) ^ m_extent_no;
     }
 
     Extent_info() {}
     bool equal(const Extent_info & rec) const {
       return m_key.m_file_no == rec.m_key.m_file_no &&
-	m_key.m_page_idx == rec.m_key.m_page_idx;
+        m_extent_no == rec.m_extent_no;
     }
   }; // 40 bytes
 
@@ -4122,6 +4123,7 @@ public:
                                 Uint32 fragId,
                                 Uint32 create_table_version,
 				const Local_key* key,
+                                Uint32 extent_no,
                                 Uint32 pages);
   void disk_restart_page_bits(EmulatedJamBuffer* jamBuf,
                               Uint32 tableId,
@@ -4776,6 +4778,7 @@ public:
                                 Uint32 fragId,
                                 Uint32 create_table_version,
 				const Local_key* key,
+                                Uint32 extent_no,
                                 Uint32 pages);
 
   void disk_restart_page_bits(Uint32 tableId,
