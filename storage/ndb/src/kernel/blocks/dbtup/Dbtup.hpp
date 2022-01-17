@@ -630,15 +630,29 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
   typedef DLList<Extent_info_pool> Extent_info_list;
   typedef LocalDLList<Extent_info_pool> Local_extent_info_list;
   typedef DLHashTable<Extent_info_pool> Extent_info_hash;
-  typedef SLList<Extent_info_pool, IA_Fragment> Fragment_extent_list;
-  typedef LocalSLList<Extent_info_pool, IA_Fragment> Local_fragment_extent_list;
+  typedef SLCList<Extent_info_pool, IA_Fragment> Fragment_extent_list;
+  typedef LocalSLCList<Extent_info_pool, IA_Fragment> Local_fragment_extent_list;
   struct Tablerec;
   struct Disk_alloc_info 
   {
     Disk_alloc_info() {}
     Disk_alloc_info(const Tablerec* tabPtrP, 
 		    Uint32 extent_size_in_pages);
+
+    /**
+     * To avoid looping over potentially millions of extents
+     * we track the total free space in the fragment to enable
+     * quick replies to ndbinfo requests. Otherwise we can
+     * easily destroy performance by constant million-times
+     * loops over the extents.
+     */
+    Uint64 m_tot_free_space;
+
     Uint32 m_extent_size;
+    /**
+     * Current extent
+     */
+    Uint32 m_curr_extent_info_ptr_i;
     
     /**
      * Disk allocation
@@ -669,11 +683,6 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
 
     Page_list::Head m_unmap_pages;
 
-    /**
-     * Current extent
-     */
-    Uint32 m_curr_extent_info_ptr_i;
-    
     /**
      * 
      */
@@ -3962,7 +3971,7 @@ private:
   Uint32* get_ptr(PagePtr*, Var_part_ref);
   Uint32* get_ptr(PagePtr*, const Local_key*, const Tablerec*);
   Uint32* get_dd_info(PagePtr*,
-                      const Local_key*,
+                      const Local_key,
                       const Tablerec*,
                       Uint32 &len);
   Uint32* get_default_ptr(const Tablerec*, Uint32&);
@@ -4609,24 +4618,24 @@ Dbtup::get_default_ptr(const Tablerec* regTabPtr, Uint32& default_len)
 inline
 Uint32*
 Dbtup::get_dd_info(PagePtr* pagePtr, 
-		  const Local_key* key,
+		  const Local_key key,
                   const Tablerec* regTabPtr,
                   Uint32 &len)
 {
   PagePtr tmp;
-  tmp.i= key->m_page_no;
+  tmp.i= key.m_page_no;
   tmp.p= (Page*)m_global_page_pool.getPtr(tmp.i);
   memcpy(pagePtr, &tmp, sizeof(tmp));
 
   if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
   {
-    len = ((Var_page*)tmp.p)->get_entry_len(key->m_page_idx);
-    return ((Var_page*)tmp.p)->get_ptr(key->m_page_idx);
+    len = ((Var_page*)tmp.p)->get_entry_len(key.m_page_idx);
+    return ((Var_page*)tmp.p)->get_ptr(key.m_page_idx);
   }
   else
   {
     len = regTabPtr->m_offsets[DD].m_fix_header_size;
-    return ((Fix_page*)tmp.p)->get_ptr(key->m_page_idx, len);
+    return ((Fix_page*)tmp.p)->get_ptr(key.m_page_idx, len);
   }
 }
 

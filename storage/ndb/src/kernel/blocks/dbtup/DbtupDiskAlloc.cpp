@@ -376,12 +376,15 @@ Dbtup::update_extent_pos(EmulatedJamBuffer* jamBuf,
     Uint32 sub = Uint32(- delta);
     ddrequire(extentPtr.p->m_free_space >= sub);
     extentPtr.p->m_free_space -= sub;
+    ddrequire(alloc.m_tot_free_space >= sub);
+    alloc.m_tot_free_space -= sub;
   }
   else
   {
     thrjam(jamBuf);
     extentPtr.p->m_free_space += delta;
     ndbassert(Uint32(delta) <= alloc.calc_page_free_space(0));
+    alloc.m_tot_free_space += delta;
   }
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
@@ -759,7 +762,8 @@ Dbtup::disk_page_prealloc(Signal* signal,
 #endif
       ext.p->m_first_page_no = ext.p->m_key.m_page_no;
       memset(ext.p->m_free_page_count, 0, sizeof(ext.p->m_free_page_count));
-      ext.p->m_free_space= alloc.m_page_free_bits_map[0] * pages; 
+      ext.p->m_free_space= alloc.m_page_free_bits_map[0] * pages;
+      alloc.m_tot_free_space += ext.p->m_free_space;
       ext.p->m_free_page_count[0]= pages; // All pages are "free"-est
       ext.p->m_empty_page_no = 0;
 
@@ -2918,8 +2922,31 @@ Dbtup::disk_restart_undo_update(Apply_undo* undo)
   }
   else
   {
-    ptr= ((Var_page*)undo->m_page_ptr.p)->get_ptr(undo->m_key.m_page_idx);
-    /* TODO HOPSWORKS-2922 */
+    Uint32 idx = undo->m_key.m_page_idx;
+    Var_page *page_ptr = (Var_page*)undo->m_page_ptr.p;
+    Uint32 entry_len = page_ptr->get_entry_len(idx);
+    if (entry_len > len)
+    {
+      /**
+       * The entry_len is larger than the new length, thus it is ok to simply
+       * decrease the size of the entry length and then simply copy the
+       * data and be done with it.
+       */
+      page_ptr->shrink_entry(idx, len);
+    }
+    else if (entry_len < len)
+    {
+      /**
+       * The new entry is larger than what is available in the current entry.
+       * We will release the record and immediately allocate a new one with
+       * the same index. This ensures that we can perform any reorg of the
+       * page if it is needed.
+       */
+      page_ptr->free_record(idx, 0);
+      Uint32 new_idx = page_ptr->alloc_record(idx, len, (Var_page*)ctemp_page);
+      ndbrequire(new_idx == idx);
+    }
+    ptr = page_ptr->get_ptr(idx);
   }
 
   const Disk_undo::Update *update = (const Disk_undo::Update*)undo->m_ptr;
@@ -2958,10 +2985,8 @@ Dbtup::disk_restart_undo_update_first_part(Apply_undo* undo)
   }
   else
   {
-    ptr= ((Var_page*)undo->m_page_ptr.p)->get_ptr(undo->m_key.m_page_idx);
-    /* TODO HOPSWORKS-2922 */
+    ndbabort(); /* Not supported yet */
   }
-
   const Disk_undo::Update *update = (const Disk_undo::Update*)undo->m_ptr;
   const Uint32* src= update->m_data;
   ndbrequire(len < 2 || src[1] < Tup_page::DATA_WORDS);
@@ -2992,8 +3017,7 @@ Dbtup::disk_restart_undo_update_part(Apply_undo* undo)
   }
   else
   {
-    ptr= ((Var_page*)undo->m_page_ptr.p)->get_ptr(undo->m_key.m_page_idx);
-    /* TODO HOPSWORKS-2922 */
+    ndbabort(); /* Not yet supported */
   }
 
   const Disk_undo::UpdatePart *update = (const Disk_undo::UpdatePart*)undo->m_ptr;
@@ -3054,8 +3078,12 @@ Dbtup::disk_restart_undo_free(Apply_undo* undo, bool full_free)
   }
   else
   {
-    ptr = nullptr;
-    /* TODO HOPSWORKS-2922 */
+    Var_page *page_ptr = (Var_page*)undo->m_page_ptr.p;
+    Uint32 new_idx= page_ptr->alloc_record(idx,
+                                           len,
+                                           (Var_page*)ctemp_page);
+    ndbrequire(new_idx == idx);
+    ptr = page_ptr->get_ptr(idx);
   }
 
   if (idx != undo->m_key.m_page_idx)
@@ -3516,14 +3544,10 @@ Dbtup::disk_page_get_allocated(const Tablerec* tabPtrP,
     {
       Disk_alloc_info& tmp = const_cast<Disk_alloc_info&>(alloc);
       Local_fragment_extent_list list(c_extent_pool, tmp.m_extent_list);
-      Ptr<Extent_info> extentPtr;
-      for (list.first(extentPtr); !extentPtr.isNull(); list.next(extentPtr))
-      {
-        cnt++;
-        free += extentPtr.p->m_free_space;
-      }
+      free = alloc.m_tot_free_space;
+      cnt = list.getCount();
     }
     res[0] = cnt * alloc.m_extent_size * File_formats::NDB_PAGE_SIZE;
-    res[1] = free * 4 * tabPtrP->m_offsets[DD].m_fix_header_size;
+    res[1] = free * 4;
   }
 }

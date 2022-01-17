@@ -1762,7 +1762,9 @@ Tsman::scan_extent_headers(Signal* signal, Ptr<Datafile> ptr)
        * set correct no of extent headers on this page.
        */
       Uint32 total_extents = datapages / size;
-      extents= total_extents - (pages - 1)*per_page;
+      Uint32 new_extents = total_extents - (pages - 1)*per_page;
+      ndbrequire(extents >= new_extents);
+      extents = new_extents;
     }
     for(Uint32 j = 0; j<extents; j++)
     {

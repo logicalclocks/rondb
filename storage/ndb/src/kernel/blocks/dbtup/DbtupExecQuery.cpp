@@ -3048,9 +3048,33 @@ int Dbtup::handleDeleteReq(Signal* signal,
     jam();
     regOperPtr->op_struct.bit_field.m_wait_log_buffer = 1;
     regOperPtr->op_struct.bit_field.m_load_diskpage_on_commit = 1;
+    /**
+     * The length of the disk part is retrieved in get_dd_info,
+     * this method retrieves a few other things that we are not
+     * interested in here, so use dummy variables for those.
+     *
+     * Even if we do multiple insert-delete pairs and even updates
+     * in between if this DELETE becomes the final delete, it will
+     * always use the UNDO information from the stored row, thus
+     * even for multi-row operations we retrieve the size of the
+     * UNDO log information from the stored row.
+     *
+     * We calculate the space to write into the UNDO log here. We
+     * allocate space in the UNDO log files here to ensure that
+     * there is space for the UNDO log in the files. At commit time
+     * we need to allocate space in the log buffer before actually
+     * writing the UNDO log. The actual write to the UNDO log happens
+     * as a background task that writes from the UNDO log buffer.
+     */
+    Uint32 disk_len = 0;
+    PagePtr dummyPagePtr;
+    Local_key key;
+    const Uint32 *disk_ref =
+      req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr);
+    memcpy((void*)&key, disk_ref, sizeof(key));
+    (void)get_dd_info(&dummyPagePtr, key, regTabPtr, disk_len);
     regOperPtr->m_undo_buffer_space= 
-      (sizeof(Dbtup::Disk_undo::Free) >> 2) + 
-      regTabPtr->m_offsets[DD].m_fix_header_size - 1;
+      (sizeof(Dbtup::Disk_undo::Free) >> 2) + (disk_len - 1);
 
     {
       D("Logfile_client - handleDeleteReq");
@@ -3064,7 +3088,7 @@ int Dbtup::handleDeleteReq(Signal* signal,
                                         !req_struct->m_nr_copy_or_redo,
                                         jamBuffer());
     }
-    if(unlikely(terrorCode))
+    if (unlikely(terrorCode))
     {
       jam();
       regOperPtr->m_undo_buffer_space= 0;
@@ -4910,7 +4934,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       key.m_page_no= req_struct->m_disk_page_ptr.i;
       ndbrequire(key.m_page_idx < Tup_page::DATA_WORDS);
       src_ptr= get_dd_info(&req_struct->m_disk_page_ptr,
-                           &key,
+                           key,
                            tabPtrP,
                            src_len);
     }
@@ -5087,7 +5111,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
         ndbrequire(key.m_page_idx < Tup_page::DATA_WORDS);
         Uint32 disk_len = 0;
         src_ptr = get_dd_info(&req_struct->m_disk_page_ptr,
-                              &key,
+                              key,
                               tabPtrP,
                               disk_len);
         req_struct->m_disk_ptr= (Tuple_header*)src_ptr;
