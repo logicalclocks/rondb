@@ -1006,7 +1006,7 @@ private:
  */
 struct thr_job_buffer // 32k
 {
-  static const unsigned SIZE = 8190;
+  static const unsigned SIZE = 8188;
 
   /*
    * Amount of signal data currently in m_data buffer.
@@ -1018,12 +1018,13 @@ struct thr_job_buffer // 32k
    * signals from released buffers.
    */
   Uint32 m_prioa;
-  union {
-    Uint32 m_data[SIZE];
 
-    thr_job_buffer * m_next; // For free-list
-  };
-};  
+  Uint32 m_data[SIZE];
+
+  thr_job_buffer * m_next; // For free-list
+};
+// Make sure that the size assumption holds.
+NDB_STATIC_ASSERT((sizeof(thr_job_buffer) == sizeof(Alloc_page)));
 
 static
 inline
