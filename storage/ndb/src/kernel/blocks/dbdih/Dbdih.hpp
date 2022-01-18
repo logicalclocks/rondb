@@ -1409,6 +1409,7 @@ private:
   void start_add_fragments_in_new_table(TabRecordPtr,
                                         ConnectRecordPtr,
                                         const Uint16 buf[],
+                                        const Uint32 bufLen,
                                         Signal *signal);
   void make_new_table_writeable(TabRecordPtr, ConnectRecordPtr, bool);
   void make_new_table_read_and_writeable(TabRecordPtr,
@@ -1751,8 +1752,10 @@ private:
                            FragmentstorePtr & ptr);
 
   void wait_old_scan(Signal*);
-  Uint32 add_fragments_to_table(Ptr<TabRecord>, const Uint16 buf[]);
-  Uint32 add_fragment_to_table(Ptr<TabRecord>, Uint32, FragmentstorePtr&);
+  Uint32 add_fragments_to_table(Ptr<TabRecord>,
+                                const Uint16 buf[],
+                                const Uint32 bufLen);
+  Uint32 add_fragment_to_table(Ptr<TabRecord>, Uint32, Ptr<Fragmentstore>&);
 
   void drop_fragments(Signal*, ConnectRecordPtr, Uint32 last);
   void release_fragment_from_table(Ptr<TabRecord>, Uint32 fragId);

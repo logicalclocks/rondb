@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -267,6 +267,7 @@
 #define CFG_DB_NUM_CPUS               676
 #define CFG_DB_AUTO_THREAD_CONFIG     677
 #define CFG_DB_TRP_KEEP_ALIVE_SEND_INTERVAL 678
+#define CFG_DB_TRANS_ERROR_LOGLEVEL 679
 
 #define CFG_DB_BACKUP_SCHEMA_MEM      693
 #define CFG_DB_SCHEMA_MEM             694

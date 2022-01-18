@@ -3666,10 +3666,12 @@ private:
                   Uint32 scan_ptr_i,
                   Uint32 errcode,
                   TcConnectionrecPtr);
-  void writePrepareLog(Signal* signal, TcConnectionrecPtr, bool, bool);
+  void localAbortStateHandlerLab(Signal* signal, TcConnectionrecPtr);
+  void writePrepareLog(Signal* signal, TcConnectionrecPtr);
   void writePrepareLog_problems(Signal* signal,
                                 const TcConnectionrecPtr,
                                 LogPartRecord *logPartPtrP);
+  void doWritePrepareLog(Signal* signal, TcConnectionrecPtr);
   void update_log_problem(Signal*, LogPartRecord*, Uint32 problem, bool);
   void takeOverErrorLab(Signal* signal, TcConnectionrecPtr);
   bool checkTransporterOverloaded(Signal* signal,

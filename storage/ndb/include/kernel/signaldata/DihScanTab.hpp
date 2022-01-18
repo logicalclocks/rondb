@@ -60,7 +60,6 @@ struct DihScanTabConf
   Uint32 fragmentCount;
   Uint32 noOfBackups;
   Uint32 scanCookie;
-  Uint32 scanSchemaVersionCookie;
   Uint32 reorgFlag;
 };
 

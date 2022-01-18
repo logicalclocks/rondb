@@ -2064,6 +2064,7 @@ void
 Ndbcntr::execCM_ADD_REP(Signal* signal)
 {
   jamEntry();
+  ndbrequire(signal->theData[0] < MAX_NDB_NODES);
   c_clusterNodes.set(signal->theData[0]);
 }
 
@@ -3556,6 +3557,7 @@ Ndbcntr::wait_sp_rep(Signal* signal)
     return;
   }
 
+  ndbrequire(rep.nodeId < NDB_ARRAY_SIZE(c_start.m_wait_sp));
   c_start.m_wait_sp[rep.nodeId] = rep.sp;
 
   /**
@@ -3629,6 +3631,7 @@ void Ndbcntr::execCNTR_WAITREP(Signal* signal)
       SectionHandle handle(this, signal);
       SegmentedSectionPtr ptr;
       handle.getSection(ptr, 0);
+      ndbrequire(ptr.sz <= c_start.m_starting.Size);
       copy(c_start.m_starting.rep.data, ptr);
       releaseSections(handle);
     }

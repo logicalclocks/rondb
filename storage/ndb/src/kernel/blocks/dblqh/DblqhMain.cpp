@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -614,7 +614,7 @@ Dblqh::handle_queued_log_write(Signal *signal,
                      instance(),
                      logPartPtrP->logPartNo,
                      tcConnectptr.i));
-      writePrepareLog(signal, tcConnectptr, true, true);
+      doWritePrepareLog(signal, tcConnectptr);
     }
     return;
   }
@@ -11808,7 +11808,7 @@ void Dblqh::rwConcludedLab(Signal* signal,
        * A NORMAL WRITE OPERATION THAT NEEDS LOGGING AND WILL NOT BE 
        * PREMATURELY COMMITTED.                                   
        * ------------------------------------------------------------------ */
-      writePrepareLog(signal, tcConnectptr, false, false);
+      writePrepareLog(signal, tcConnectptr);
     }//if
   }//if
 }//Dblqh::rwConcludedLab()
@@ -11898,26 +11898,19 @@ Dblqh::set_use_mutex_for_log_parts()
 }
 
 /**
- * This method is called both from normal LQHKEYREQ code to write REDO log.
- * It is also called when executing the REDO log from the REDO log queue.
+ * writePrepareLog
+ *
+ * Attempt to write a prepare log entry, may result in operation
+ * being queued or aborted depending on redo log part state
  */
 void Dblqh::writePrepareLog(Signal* signal,
-                            const TcConnectionrecPtr tcConnectptr,
-                            bool is_log_part_locked,
-                            bool is_called_from_log_queue)
+                            const TcConnectionrecPtr tcConnectptr)
 {
-  LogPageRecordPtr logPagePtr;
-  LogFileRecordPtr logFilePtr;
-  UintR tcurrentFilepage;
-
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
   LogPartRecord * const regLogPartPtr = regTcPtr->m_log_part_ptr_p;
 
-  if (likely(!is_log_part_locked))
-  {
-    jam();
-    lock_log_part(regLogPartPtr);
-  }
+  lock_log_part(regLogPartPtr);
+
   Uint32 noOfFreeLogPages = count_free_log_pages(regLogPartPtr);
   const bool out_of_log_buffer = noOfFreeLogPages < ZMIN_LOG_PAGES_OPERATION;
   bool abort_on_redo_problems =
@@ -12018,6 +12011,29 @@ void Dblqh::writePrepareLog(Signal* signal,
       }
     }
   }
+
+  /* Proceed with writing the log */
+  doWritePrepareLog(signal, tcConnectptr);
+
+}//Dblqh::writePrepareLog()
+
+/**
+ * doWritePrepareLog
+ *
+ * Do the redo log write - log part lock must be held,
+ * and all checks must have been done before calling
+ */
+void Dblqh::doWritePrepareLog(Signal* signal,
+                              const TcConnectionrecPtr tcConnectptr)
+{
+  LogPageRecordPtr logPagePtr;
+  LogFileRecordPtr logFilePtr;
+  UintR tcurrentFilepage;
+
+  TcConnectionrec * const regTcPtr = tcConnectptr.p;
+  LogPartRecord * const regLogPartPtr = regTcPtr->m_log_part_ptr_p;
+
+  // Require that log part pointer is locked
 
   increment_committed_mbytes(regLogPartPtr,
                              regTcPtr);
@@ -12155,7 +12171,7 @@ void Dblqh::writePrepareLog(Signal* signal,
      * -------------------------------------------------------------------- */
     localCommitLab(signal, tcConnectptr);
   }//if
-}//Dblqh::writePrepareLog()
+}
 
 void
 Dblqh::writePrepareLog_problems(Signal * signal,
@@ -20701,7 +20717,6 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
   const CopyFragReq* copyFragReq = &copy;
   tabptr.i = copyFragReq->tableId;
   ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
-  Uint32 i;
   const Uint32 fragId = copyFragReq->fragId;
   const Uint32 copyPtr = copyFragReq->userPtr;
   const Uint32 userRef = copyFragReq->userRef;
@@ -20716,7 +20731,7 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
   NdbNodeBitmask nodemask;
   {
     ndbrequire(nodeCount <= MAX_REPLICAS);
-    for (i = 0; i<nodeCount; i++)
+    for (Uint32 i = 0; i < nodeCount; i++)
       nodemask.set(copyFragReq->nodeList[i]);
   }
   Uint32 maxPage = copyFragReq->nodeList[nodeCount];
@@ -20765,8 +20780,8 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
     ord->tableId = tabptr.i;
     ord->fragId = fragId;
     ord->fragDistributionKey = key;
-    i = 0;
-    while ((i = nodemask.find(i+1)) != NdbNodeBitmask::NotFound)
+    Uint32 i = 0;
+    while ((i = nodemask.find(i + 1)) != NdbNodeBitmask::NotFound)
     {
       Uint32 instanceNo = getInstanceNo(i,
                                         fragptr.p->lqhInstanceKey);
@@ -24748,6 +24763,15 @@ Dblqh::execWAIT_LCP_IDLE_CONF(Signal *signal)
  * ------------------------------------------------------------------------- */
 void Dblqh::completeLcpRoundLab(Signal* signal, Uint32 lcpId)
 {
+  if (!isNdbMtLqh() && c_fragments_in_lcp == 0)
+  {
+    jam();
+    lcpPtr.i = 0;
+    ptrAss(lcpPtr, lcpRecord);
+    sendLCP_COMPLETE_REP(signal,
+                         lcpPtr.p->currentPrepareFragment.lcpFragOrd.lcpId);
+    return;
+  }
   startLcpFragWatchdog(signal);
   DEB_EMPTY_LCP(("(%u)Start complete LCP %u", instance(), lcpId));
   clcpCompletedState = LCP_CLOSE_STARTED;
@@ -37323,6 +37347,8 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
     Uint32 record = signal->theData[2];
     Uint32 len = signal->getLength();
     TcConnectionrecPtr tcRec;
+    ndbrequire(bucket < NDB_ARRAY_SIZE(ctransidHash));
+
     if (record != RNIL)
     {
       jam();
@@ -37500,6 +37526,68 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
     RSS_OP_SNAPSHOT_CHECK(cnoOfAllocatedFragrec);
     return;
   }
+
+  if (arg == DumpStateOrd::LqhDumpOpRecLookup)
+  {
+    if (signal->getLength() < 5)
+    {
+      g_eventLogger->info("LQH %u : LqhDumpOpRecLookup bad length %u.", instance(), signal->getLength());
+      return;
+    }
+
+    TcConnectionrecPtr tcConnectptr = m_tc_connect_ptr;
+
+    if (findTransaction(signal->theData[1],
+                        signal->theData[2],
+                        signal->theData[3],
+                        signal->theData[4],
+                        true,
+                        false,
+                        tcConnectptr) != ZOK)
+    {
+      jam();
+      g_eventLogger->info("LQH %u : LqhDumpOpRecLookup failed for [0x%08x 0x%08x] %u %u",
+                          instance(),
+                          signal->theData[1],
+                          signal->theData[2],
+                          signal->theData[3],
+                          signal->theData[4]);
+      return;
+    }
+    g_eventLogger->info("LQH %u : DumpOpRecLookup [0x%08x 0x%08x] op %u %u type %u table %u frag %u "
+                        "state %u as %u lws %u err %u lockType %u scanRec %u accRec %u "
+                        "log part %u state %u problems %u",
+                        instance(),
+                        signal->theData[1],
+                        signal->theData[2],
+                        signal->theData[3],
+                        signal->theData[4],
+                        tcConnectptr.p->operation,
+                        tcConnectptr.p->tableref,
+                        tcConnectptr.p->fragmentid,
+                        tcConnectptr.p->transactionState,
+                        tcConnectptr.p->abortState,
+                        tcConnectptr.p->logWriteState,
+                        tcConnectptr.p->errorCode,
+                        tcConnectptr.p->lockType,
+                        tcConnectptr.p->tcScanRec,
+                        tcConnectptr.p->accConnectrec,
+                        tcConnectptr.p->m_log_part_ptr_p->logPartNo,
+                        tcConnectptr.p->m_log_part_ptr_p->logPartState,
+                        tcConnectptr.p->m_log_part_ptr_p->m_log_problems);
+
+    if (tcConnectptr.p->transactionState == TcConnectionrec::WAIT_ACC)
+    {
+      /* We are waiting for something from ACC - let's ask it what */
+      ndbrequire(tcConnectptr.p->accConnectrec != RNIL);
+      signal->theData[0] = DumpStateOrd::AccDumpOpPrecedingLocks;
+      signal->theData[1] = tcConnectptr.p->accConnectrec;
+
+      EXECUTE_DIRECT(DBACC, GSN_DUMP_STATE_ORD, signal, 2);
+    }
+    return;
+  }
+
 
   if (arg == 4002)
   {
