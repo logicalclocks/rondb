@@ -1204,6 +1204,7 @@ THRConfig::do_parse(unsigned realtime,
         query_instance++;
       }
     }
+    Uint32 tc_count = 0;
     Uint32 main_count = 0;
     Uint32 send_count = 0;
     Uint32 rep_count = 0;

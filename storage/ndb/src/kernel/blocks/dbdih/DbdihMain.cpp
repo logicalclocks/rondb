@@ -16998,6 +16998,7 @@ Dbdih::start_scan_on_table(TabRecordPtr tabPtr,
 
     conf->noOfBackups = tabPtr.p->noOfBackups;
     conf->scanCookie = tabPtr.p->m_scan_reorg_flag;
+    conf->scanSchemaVersionCookie = tabPtr.p->schemaVersion;
     conf->reorgFlag = tabPtr.p->m_scan_reorg_flag;
     NdbMutex_Unlock(&tabPtr.p->theMutex);
     D("start_scan_on_table: " << tabPtr.i << " reorg_flag: "

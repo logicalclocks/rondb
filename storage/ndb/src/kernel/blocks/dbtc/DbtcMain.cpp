@@ -10660,7 +10660,6 @@ void Dbtc::printCrashApiConnectrec(ApiConnectRecordPtr apiConnectptr)
   ndbabort();
 }
 
-=======
 void Dbtc::logAbortingOperation(Signal* signal,
                                 ApiConnectRecordPtr apiPtr,
                                 TcConnectRecordPtr tcPtr,
@@ -10726,7 +10725,7 @@ void Dbtc::logAbortingOperation(Signal* signal,
     tcConnectRecord.getPtr(triggeringOpPtr);
 
     Ptr<TcDefinedTriggerData> trigPtr;
-    c_theDefinedTriggers.getPtr(trigPtr, tcPtr.p->currentTriggerId);
+    ndbrequire(getDefinedTriggerData(trigPtr, tcPtr.p->currentTriggerId));
 
     g_eventLogger->info("TC %u :           [0x%08x 0x%08x] caused by triggered operation.  "
                         "Trig type %u objid %u Triggering op type %u.",

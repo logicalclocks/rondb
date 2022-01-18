@@ -11972,44 +11972,26 @@ void Dblqh::writePrepareLog(Signal* signal,
     return;
   }
 
-  if (likely(!is_called_from_log_queue))
+  if (unlikely(regLogPartPtr->logPartState != LogPartRecord::IDLE))
   {
-    if (unlikely(regLogPartPtr->logPartState != LogPartRecord::IDLE))
-    {
-      jam();
-      /**
-       * We are in a state where the REDO log is only writing Prepare REDO
-       * log entries through the REDO log queue. Thus we need to insert the
-       * entry into the REDO log queue.
-       */
-      ndbrequire(regLogPartPtr->logPartState == LogPartRecord::ACTIVE);
-      linkWaitLog(signal,
-                  regLogPartPtr,
-                  regLogPartPtr->m_log_prepare_queue,
-                  tcConnectptr.p);
-      regTcPtr->transactionState = TcConnectionrec::LOG_QUEUED;
-      unlock_log_part(regLogPartPtr);
-      DEB_LOG_QUEUE(("(%u) LOG_QUEUED LogPart(%u), TcPtr(%u)",
-                     instance(),
-                     regLogPartPtr->logPartNo,
-                     regTcPtr->ptrI));
-      return;
-    }
-  }
-  else
-  {
-    if (regLogPartPtr->logPartState != LogPartRecord::ACTIVE)
-    {
-      if ((regLogPartPtr->logPartState != LogPartRecord::IDLE) ||
-          (!regLogPartPtr->m_log_prepare_queue.isEmpty()) ||
-          (!regLogPartPtr->m_log_complete_queue.isEmpty()) ||
-          (regLogPartPtr->waitWriteGciLog == LogPartRecord::WWGL_TRUE) ||
-          (regLogPartPtr->m_booked_redo_log_space != 0))
-      {
-        jam();
-        ndbabort();
-      }
-    }
+    jam();
+    /**
+     * We are in a state where the REDO log is only writing Prepare REDO
+     * log entries through the REDO log queue. Thus we need to insert the
+     * entry into the REDO log queue.
+     */
+    ndbrequire(regLogPartPtr->logPartState == LogPartRecord::ACTIVE);
+    linkWaitLog(signal,
+                regLogPartPtr,
+                regLogPartPtr->m_log_prepare_queue,
+                tcConnectptr.p);
+    regTcPtr->transactionState = TcConnectionrec::LOG_QUEUED;
+    unlock_log_part(regLogPartPtr);
+    DEB_LOG_QUEUE(("(%u) LOG_QUEUED LogPart(%u), TcPtr(%u)",
+                   instance(),
+                   regLogPartPtr->logPartNo,
+                   regTcPtr->ptrI));
+    return;
   }
 
   /* Proceed with writing the log */
