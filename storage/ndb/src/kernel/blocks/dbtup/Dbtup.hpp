@@ -1950,7 +1950,7 @@ struct KeyReqStruct {
 
   Tuple_header *m_disk_ptr;
   PagePtr m_page_ptr;
-  PagePtr m_varpart_page_ptr;    // could be same as m_page_ptr_p
+  PagePtr m_varpart_page_ptr[2];    // could be same as m_page_ptr_p
   PagePtr m_disk_page_ptr;       //
   Local_key m_row_id;
   Uint32 optimize_options;
