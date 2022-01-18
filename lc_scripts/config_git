@@ -25,7 +25,7 @@ mkscript .git/hooks/pre-commit "A hook to check copyright for Logical Clocks" <<
 set -e
 year=`date +%Y`
 # List all files with changes about to be committed
-git diff --cached --name-only |
+git diff --cached --name-only --diff-filter=d |
     {
         exitcode=0
         # Iterate through them
