@@ -17507,9 +17507,9 @@ Dbdih::getFragstore(const TabRecord * tab,      //In parameter
                     Uint32 fragNo,              //In parameter
                     FragmentstorePtr & fragPtr) //Out parameter
 {
+  ndbrequire(fragNo < tab->startFidSize);
   fragPtr.i = tab->startFid[fragNo];
-  ndbrequire(fragNo < tab->startFidSize &&
-             fragPtr.i != RNIL64);
+  ndbrequire(fragPtr.i != RNIL64);
   c_fragmentRecordPool.getPtr(fragPtr);
 }//Dbdih::getFragstore()
 
@@ -17518,18 +17518,21 @@ Dbdih::getFragstoreCanFail(const TabRecord * tab,      //In parameter
                            Uint32 fragNo,              //In parameter
                            FragmentstorePtr & fragPtr) //Out parameter
 {
-  fragPtr.i = tab->startFid[fragNo];
-  if (fragNo < tab->startFidSize && fragPtr.i != RNIL64)
+  if (fragNo < tab->startFidSize)
   {
-    c_fragmentRecordPool.getPtr(fragPtr);
-    if (fragPtr.p != nullptr)
+    fragPtr.i = tab->startFid[fragNo];
+    if (fragPtr.i != RNIL64)
     {
-      return;
+      c_fragmentRecordPool.getPtr(fragPtr);
+      if (fragPtr.p != nullptr)
+      {
+        return;
+      }
     }
   }
   fragPtr.i = RNIL64;
   fragPtr.p = nullptr;
-}//Dbdih::getFragstoreCanFail()
+}
 
 /**
  * End of TRANSACTION MODULE
