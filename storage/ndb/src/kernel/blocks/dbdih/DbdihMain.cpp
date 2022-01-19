@@ -15234,8 +15234,8 @@ void Dbdih::execALTER_TAB_REQ(Signal * signal)
     SectionHandle handle(this, signal);
     handle.getSection(ptr, 0);
     union {
-      Uint16 buf[2+2*MAX_NDB_PARTITIONS];
-      Uint32 _align[1];
+      Uint16 buf[MAX_FRAGMENT_DATA_ENTRIES];
+      Uint32 _align[MAX_FRAGMENT_DATA_WORDS];
     };
     copy(_align, ptr);
     releaseSections(handle);
