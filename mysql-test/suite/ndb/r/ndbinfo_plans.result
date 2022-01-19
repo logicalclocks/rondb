@@ -54,25 +54,25 @@ SELECT table_name, table_rows, avg_row_length
 TABLE_NAME	TABLE_ROWS	AVG_ROW_LENGTH
 ndb$acc_operations	15	64
 ndb$backup_id	1	20
-ndb$blocks	29	20
+ndb$blocks	30	20
 ndb$columns	530	44
 ndb$config_nodes	34	28
-ndb$config_params	166	120
-ndb$config_values	328	24
+ndb$config_params	174	120
+ndb$config_values	344	24
 ndb$counters	200	24
 ndb$dblqh_tcconnect_state	19	52
 ndb$dbtc_apiconnect_state	25	52
-ndb$dict_obj_info	43	40
+ndb$dict_obj_info	100	40
 ndb$dict_obj_types	20	20
 ndb$disk_write_speed_aggregate	8	120
 ndb$disk_write_speed_base	488	48
 ndb$diskpagebuffer	10	64
 ndb$diskstat	10	48
 ndb$diskstats_1sec	200	52
-ndb$error_messages	787	52
-ndb$frag_locks	344	96
-ndb$frag_mem_use	344	100
-ndb$frag_operations	344	192
+ndb$error_messages	800	52
+ndb$frag_locks	400	96
+ndb$frag_mem_use	400	100
+ndb$frag_operations	400	192
 ndb$hwinfo	2	44
 ndb$index_stats	64	12
 ndb$logbuffers	8	40
@@ -83,21 +83,21 @@ ndb$operations	10	48
 ndb$pgman_time_track_stats	200	48
 ndb$pools	376	84
 ndb$processes	34	68
-ndb$resources	18	28
+ndb$resources	26	28
 ndb$restart_info	2	100
-ndb$stored_tables	43	80
-ndb$table_distribution_status	43	52
-ndb$table_distribution_status_all	86	52
-ndb$table_fragments	344	60
-ndb$table_fragments_all	344	60
-ndb$table_replicas	344	64
-ndb$table_replicas_all	344	64
+ndb$stored_tables	100	80
+ndb$table_distribution_status	100	52
+ndb$table_distribution_status_all	200	52
+ndb$table_fragments	400	60
+ndb$table_fragments_all	400	60
+ndb$table_replicas	800	64
+ndb$table_replicas_all	400	64
 ndb$tables	49	40
 ndb$tc_time_track_stats	384	104
 ndb$test	8000	24
-ndb$threadblocks	124	16
-ndb$threads	26	40
-ndb$threadstat	22	144
+ndb$threadblocks	126	16
+ndb$threads	38	40
+ndb$threadstat	34	144
 ndb$transactions	5	44
 ndb$transporters	32	64
 
@@ -158,6 +158,7 @@ ndb$dict_obj_types	PRIMARY	type_id	1
 
 SELECT * FROM blocks ORDER BY block_number DESC;
 block_number	block_name
+273	V_QUERY
 272	QRESTORE
 271	QBACKUP
 270	DBQTUX
@@ -206,7 +207,7 @@ EXPLAIN	-> Filter: (ndb$blocks.block_number in (250,251))  (cost=1.41 rows=2)
     -> Index range scan on ndb$blocks using PRIMARY over (block_number = 250) OR (block_number = 251)  (cost=1.41 rows=2)
 
 explain format=tree select * from blocks order by block_number;
-EXPLAIN	-> Index scan on ndb$blocks using PRIMARY  (cost=3.40 rows=29)
+EXPLAIN	-> Index scan on ndb$blocks using PRIMARY  (cost=3.50 rows=30)
 
 explain format=tree select * from blocks where block_number < 250;
 EXPLAIN	-> Filter: (ndb$blocks.block_number < 250)  (cost=4.76 rows=10)
@@ -258,16 +259,16 @@ EXPLAIN	-> Nested loop left join  (cost=92.00 rows=200)
 
 ## The plan for memory_per_fragment
 explain format=tree select * from memory_per_fragment;
-EXPLAIN	-> Left hash join (parent_name.`type` = `name`.parent_obj_type), (parent_name.id = `name`.parent_obj_id)  (cost=2126.24 rows=21200)
-    -> Inner hash join (space.table_id = `name`.id)  (cost=506.45 rows=493)
-        -> Table scan on space  (cost=0.39 rows=344)
+EXPLAIN	-> Left hash join (parent_name.`type` = `name`.parent_obj_type), (parent_name.id = `name`.parent_obj_id)  (cost=13345.49 rows=133320)
+    -> Inner hash join (space.table_id = `name`.id)  (cost=1359.13 rows=1333)
+        -> Table scan on space  (cost=0.19 rows=400)
         -> Hash
-            -> Nested loop inner join  (cost=11.32 rows=14)
-                -> Filter: ((`name`.`type` <= 6) and (`name`.`type` is not null))  (cost=6.30 rows=14)
-                    -> Table scan on name  (cost=6.30 rows=43)
-                -> Single-row index lookup on types using PRIMARY (type_id=`name`.`type`)  (cost=0.26 rows=1)
+            -> Nested loop inner join  (cost=23.67 rows=33)
+                -> Filter: ((`name`.`type` <= 6) and (`name`.`type` is not null))  (cost=12.00 rows=33)
+                    -> Table scan on name  (cost=12.00 rows=100)
+                -> Single-row index lookup on types using PRIMARY (type_id=`name`.`type`)  (cost=0.25 rows=1)
     -> Hash
-        -> Table scan on parent_name  (cost=0.02 rows=43)
+        -> Table scan on parent_name  (cost=0.02 rows=100)
 
 
 ## Create an all-MyISAM version of memory_per_fragment for comparison

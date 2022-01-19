@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2009, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -174,7 +174,7 @@ DECLARE_NDBINFO_TABLE(LOGBUFFERS, 7) =
 
 DECLARE_NDBINFO_TABLE(RESOURCES,7) =
 { { "resources", 7, 0,
-    [] (const Ndbinfo::Counts &c) { return c.data_nodes * 9 /*MM_RG_COUNT*/; },
+    [] (const Ndbinfo::Counts &c) { return c.data_nodes * 13 /*MM_RG_COUNT + 1*/; },
     "resources usage (a.k.a superpool)" },
   {
     {"node_id",            Ndbinfo::Number, ""},
@@ -249,7 +249,7 @@ DECLARE_NDBINFO_TABLE(THREADBLOCKS, 4) =
       // In this estimate, 18 is the number of single-instance blocks,
       // and 11 is the number of multi-instance blocks.
       // The result is not exact.
-      return c.data_nodes * (18 + (c.instances.lqh * 11));
+      return c.data_nodes * (19 + (c.instances.lqh * 11));
   },
   "which blocks are run in which threads"
   },
@@ -376,8 +376,8 @@ DECLARE_NDBINFO_TABLE(DICT_OBJ_INFO, 7) =
 
 DECLARE_NDBINFO_TABLE(FRAG_MEM_USE, 15) =
 { { "frag_mem_use", 15, 0,
-    [] (const Ndbinfo::Counts &c) { // nodes * LDMs * fragments * tables
-      return c.data_nodes * c.threads.ldm * c.est_tables;
+    [] (const Ndbinfo::Counts &c) { // nodes * 2 * tables
+      return c.data_nodes * 2 * c.est_tables;
     },
     "Per fragment space information" },
   {
@@ -481,7 +481,7 @@ DECLARE_NDBINFO_TABLE(DISK_WRITE_SPEED_AGGREGATE, 16) =
 DECLARE_NDBINFO_TABLE(FRAG_OPERATIONS, 28) =
 { { "frag_operations", 28, 0,
     [] (const Ndbinfo::Counts &c) {
-        return c.data_nodes * c.instances.lqh * c.est_tables; },
+        return c.data_nodes * 2 * c.est_tables; },
     "Per fragment operational information"
   },
   {
@@ -636,7 +636,7 @@ DECLARE_NDBINFO_TABLE(TC_TIME_TRACK_STATS, 15) =
 DECLARE_NDBINFO_TABLE(CONFIG_VALUES,3) =
 { { "config_values", 3, 0,
     [] (const Ndbinfo::Counts &c) {
-      return c.data_nodes * 164;  // 164 = current number of config parameters
+      return c.data_nodes * 172;  // 172 = current number of config parameters
     },
     "Configuration parameter values" },
   {
@@ -792,7 +792,7 @@ DECLARE_NDBINFO_TABLE(CPUSTAT, 11) =
 DECLARE_NDBINFO_TABLE(FRAG_LOCKS, 14) =
 { { "frag_locks", 14, 0,
     [] (const Ndbinfo::Counts &c) {
-      return c.data_nodes * c.instances.lqh * c.est_tables;
+      return c.data_nodes * 2 * c.est_tables;
     },
     "Per fragment lock information" },
   {
@@ -876,7 +876,7 @@ DECLARE_NDBINFO_TABLE(TABLE_DIST_STATUS, 13) =
 DECLARE_NDBINFO_TABLE(TABLE_FRAGMENTS, 15) =
 { { "table_fragments", 15, 0,
     [] (const Ndbinfo::Counts &c) {
-      return c.data_nodes * c.instances.lqh * c.est_tables;
+      return c.data_nodes * 2 * c.est_tables;
     },
     "Partitions of the tables"
   },
@@ -902,7 +902,7 @@ DECLARE_NDBINFO_TABLE(TABLE_FRAGMENTS, 15) =
 DECLARE_NDBINFO_TABLE(TABLE_REPLICAS, 16) =
 { { "table_replicas", 16, 0,
     [] (const Ndbinfo::Counts &c) {
-      return c.data_nodes * c.instances.lqh * c.est_tables;
+      return c.data_nodes * 4 * c.est_tables;
     },
     "Fragment replicas of the tables"
   },
@@ -951,7 +951,7 @@ DECLARE_NDBINFO_TABLE(TABLE_DIST_STATUS_ALL, 13) =
 DECLARE_NDBINFO_TABLE(TABLE_FRAGMENTS_ALL, 15) =
 { { "table_fragments_all", 15, 0,
     [] (const Ndbinfo::Counts &c) {
-      return c.data_nodes * c.est_tables * c.instances.lqh;
+      return c.data_nodes * c.est_tables * 2;
     },
     "Partitions of the tables"
   },
@@ -977,7 +977,7 @@ DECLARE_NDBINFO_TABLE(TABLE_FRAGMENTS_ALL, 15) =
 DECLARE_NDBINFO_TABLE(TABLE_REPLICAS_ALL, 16) =
 { { "table_replicas_all", 16, 0,
     [] (const Ndbinfo::Counts &c) {
-      return c.instances.lqh * c.est_tables * c.data_nodes;
+      return 2 * c.est_tables * c.data_nodes;
     },
     "Fragment replicas of the tables"
   },

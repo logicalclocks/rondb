@@ -1,4 +1,5 @@
 /* Copyright (c) 2008, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -80,18 +81,12 @@ void Dbinfo::execREAD_CONFIG_REQ(Signal *signal)
   const ReadConfigReq * req = (ReadConfigReq*)signal->getDataPtr();
   Uint32 ref = req->senderRef;
   Uint32 senderData = req->senderData;
-  Uint32 ntable;
-
-  const ndb_mgm_configuration_iterator * p =
-     m_ctx.m_config.getOwnConfigIterator();
-  ndbrequire(p != 0);
-  ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_NO_TABLES, &ntable));
 
   // Estimated number of tables. Without actually counting the tables in dict,
   // this estimate could be far off. Take the configured maximum and divide
   // by 3; then any actual value in the range from 11% to 100% will be off by
   // a factor of 3 at most.
-  counts.est_tables = ntable / 3;
+  counts.est_tables = 100;
 
   // Count nodes
   for(int i = 1 ; i < MAX_NODES ; i++) {
@@ -107,7 +102,7 @@ void Dbinfo::execREAD_CONFIG_REQ(Signal *signal)
   const THRConfigApplier & thr_cf =
     globalEmulatorData.theConfiguration->m_thr_config;
   counts.threads.send = globalData.ndbMtSendThreads;
-  counts.threads.db = thr_cf.getThreadCount();
+  counts.threads.db = thr_cf.getThreadCount() + globalData.ndbMtRecoverThreads;
   counts.threads.ldm = thr_cf.getThreadCount(THRConfig::T_LDM);
   counts.cpus = Ndb_GetHWInfo(false)->cpu_cnt;
 
