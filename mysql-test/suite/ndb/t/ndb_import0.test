@@ -820,7 +820,7 @@ drop table tauto_inc3;
 
 drop table tpersons;
 
-drop table t1, t1ver, t2, t2ver, t3, t3ver, t4, t5a, t5b, t5c,
+drop table t1, t1ver, t2, t2ver, t3, t3ver, t4,
            t6, t6ver, t7, t7ver, t8, t8ver, t9, t9ver, t10, t10ver;
 --source suite/ndb/include/backup_restore_cleanup.inc
 --remove_files_wildcard $MYSQLTEST_VARDIR/tmp t*.csv

@@ -8774,7 +8774,7 @@ Dbtc::checkGcpFinished(Signal *signal)
     NDB_TICKS currTime = NdbTick_getCurrentTicks();
     Uint32 secs_wait =
       NdbTick_Elapsed(gcpPtr.p->m_received_ticks, currTime).seconds();
-    if (secs_wait > 20)
+    if (secs_wait > 60)
     {
       Uint32 gci_lo = Uint32(gcpPtr.p->gcpId & 0xFFFFFFFF);
       Uint32 gci_hi = Uint32(gcpPtr.p->gcpId >> 32);

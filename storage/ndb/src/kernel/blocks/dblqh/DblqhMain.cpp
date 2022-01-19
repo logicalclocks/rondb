@@ -38278,7 +38278,8 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal)
              fragNo++)
         {
           FragrecordPtr myFragPtr;
-          if ((myFragPtr.i = tabPtr.p->fragrec[fragNo]) != RNIL64)
+          myFragPtr.i = tabPtr.p->fragrec[fragNo];
+          if (myFragPtr.i != RNIL64)
           {
             jam();
             c_fragment_pool.getPtr(myFragPtr);
