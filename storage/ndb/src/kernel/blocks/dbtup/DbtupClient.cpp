@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2017, Oracle and/or its affiliates. All rights reserved.
-
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
@@ -66,6 +66,7 @@ Dbtup_client::disk_restart_alloc_extent(Uint32 tableId,
                                         Uint32 fragId,
                                         Uint32 create_table_version,
                                         const Local_key* key,
+                                        Uint32 extent_no,
                                         Uint32 pages)
 {
   if (m_dbtup_proxy != 0)
@@ -77,6 +78,7 @@ Dbtup_client::disk_restart_alloc_extent(Uint32 tableId,
                                                fragId,
                                                create_table_version,
                                                key,
+                                               extent_no,
                                                pages);
   }
   thrjam(m_jamBuf);
@@ -85,6 +87,7 @@ Dbtup_client::disk_restart_alloc_extent(Uint32 tableId,
                                             fragId,
                                             create_table_version,
                                             key,
+                                            extent_no,
                                             pages);
 }
 
