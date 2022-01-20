@@ -15234,8 +15234,8 @@ void Dbdih::execALTER_TAB_REQ(Signal * signal)
     SectionHandle handle(this, signal);
     handle.getSection(ptr, 0);
     union {
-      Uint16 buf[2+2*MAX_NDB_PARTITIONS];
-      Uint32 _align[1];
+      Uint16 buf[MAX_FRAGMENT_DATA_ENTRIES];
+      Uint32 _align[MAX_FRAGMENT_DATA_WORDS];
     };
     copy(_align, ptr);
     releaseSections(handle);
@@ -17131,9 +17131,9 @@ Dbdih::getFragstoreCanFail(const TabRecord * tab,      //In parameter
   Fragmentstore* TfragStore = fragmentstore;
   Uint32 chunkNo = fragNo >> LOG_NO_OF_FRAGS_PER_CHUNK;
   Uint32 chunkIndex = fragNo & (NO_OF_FRAGS_PER_CHUNK - 1);
-  fragPtr.i = tab->startFid[chunkNo] + chunkIndex;
   if (likely(chunkNo < NDB_ARRAY_SIZE(tab->startFid)))
   {
+    fragPtr.i = tab->startFid[chunkNo] + chunkIndex;
     if (fragPtr.i < TfragstoreFileSize)
     {
       ptrAss(fragPtr, TfragStore);
