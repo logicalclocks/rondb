@@ -3977,7 +3977,13 @@ Dbdict::execLIST_TABLES_CONF(Signal* signal)
     ndbrequire(data.getWords((Uint32*) &ltd, ltdWords));
     ndbrequire(names.getWord(&nameByteLen));
     Uint32 nameWordLen = (nameByteLen + 3) / 4;
+    Uint32 realByteLen = nameWordLen * 4;
+    // Ensure string will fit
+    ndbrequire(realByteLen <= NDB_ARRAY_SIZE(nameBuff));
     ndbrequire(names.getWords((Uint32*) nameBuff, nameWordLen));
+    // Ensure we have string termination
+    ndbrequire(nameByteLen > 0);
+    ndbrequire(nameBuff[nameByteLen - 1] == '\0');
 
     /* Process object */
     switch(ltd.getTableType())
@@ -9730,6 +9736,7 @@ Dbdict::execALTER_TABLE_REQ(Signal* signal)
   const AlterTableReq* req = &req_copy;
 
   D("ALTER_TABLE_REQ: changeMask: " << hex << req->changeMask);
+  D("ALTER_TABLE_REQ: tableId: " << req->tableId);
   ErrorInfo error;
   do {
     SchemaOpPtr op_ptr;
@@ -9782,21 +9789,6 @@ Dbdict::alterTable_parse(Signal* signal, bool master,
   AlterTabReq* impl_req = &alterTabPtr.p->m_request;
   Uint32 err;
 
-  if (AlterTableReq::getReorgSubOp(impl_req->changeMask))
-  {
-    /**
-     * This should only be a sub-op to AddFragFrag
-     */
-    if (master && op_ptr.p->m_base_op_ptr_i == RNIL)
-    {
-      jam();
-      setError(error, AlterTableRef::Inconsistency, __LINE__);
-      return;
-    }
-
-    return;
-  }
-
   // get table definition
   TableRecordPtr tablePtr;
   if (!(impl_req->tableId < c_noOfMetaTables)) {
@@ -9810,6 +9802,22 @@ Dbdict::alterTable_parse(Signal* signal, bool master,
   {
     jam();
     setError(error, GetTabInfoRef::TableNotDefined, __LINE__);
+    return;
+  }
+
+  if (AlterTableReq::getReorgSubOp(impl_req->changeMask))
+  {
+    /**
+     * This should only be a sub-op to AddFragFrag
+     */
+    if (master && op_ptr.p->m_base_op_ptr_i == RNIL)
+    {
+      jam();
+      setError(error, AlterTableRef::Inconsistency, __LINE__);
+      return;
+    }
+
+    impl_req->newTableVersion = tablePtr.p->tableVersion;
     return;
   }
 
@@ -9914,6 +9922,7 @@ Dbdict::alterTable_parse(Signal* signal, bool master,
   impl_req->newTableVersion =
     newTablePtr.p->tableVersion =
     alter_obj_inc_schema_version(tablePtr.p->tableVersion);
+  D("alterTable_parse: newTableVersion = " << hex << impl_req->newTableVersion);
 
   // rename stuff
   {
@@ -12452,6 +12461,7 @@ Dbdict::doGET_TABINFOREQ(Signal* signal)
     Uint32 tableName[(PATH_MAX + 3) / 4];
     SegmentedSectionPtr ssPtr;
     handle.getSection(ssPtr,GetTabInfoReq::TABLE_NAME);
+    ndbrequire(ssPtr.sz <= NDB_ARRAY_SIZE(tableName));
     copy(tableName, ssPtr);
 
     DictObject * old_ptr_p = get_object((char*)tableName, len);

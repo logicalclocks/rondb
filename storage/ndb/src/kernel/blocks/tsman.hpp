@@ -266,7 +266,6 @@ private:
   int restart_undo_page_free_bits(Signal*,Uint32,Uint32,Uint32,Local_key*, 
 				  unsigned committed_bits);
   
-  int alloc_extent(Signal* signal, Uint32 tablespace, Local_key* key);
   int alloc_page_from_extent(Signal*, Uint32, Local_key*, Uint32 bits);
   
   void scan_tablespace(Signal*, Uint32 ptrI);
@@ -373,7 +372,7 @@ public:
    * Return >0 if success, no of pages in extent, sets key
    *        <0 if failure, -error code
    */
-  int alloc_extent(Local_key* key);
+  int alloc_extent(Local_key* key, Uint32 *extent_no);
  
   /**
    * Allocated a page from an extent
@@ -481,7 +480,7 @@ public:
 
 inline
 int
-Tablespace_client::alloc_extent(Local_key* key)
+Tablespace_client::alloc_extent(Local_key* key, Uint32 *extent_no)
 {
   AllocExtentReq* req = (AllocExtentReq*)m_signal->theData;
   req->request.table_id = m_table_id;
@@ -492,6 +491,7 @@ Tablespace_client::alloc_extent(Local_key* key)
   
   if(req->reply.errorCode == 0){
     * key = req->reply.page_id;
+    *extent_no = req->reply.extent_no;
     D("alloc_extent" << V(*key) << V(req->reply.page_count));
     return req->reply.page_count;
   } else {

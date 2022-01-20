@@ -1198,24 +1198,34 @@ THRConfig::do_parse(unsigned realtime,
       {
         require(next_cpu_id != Uint32(RNIL));
         m_threads[T_QUERY][query_instance].m_bind_no = next_cpu_id;
-        m_threads[T_QUERY][query_instance].m_bind_type =
-          T_Thread::B_CPU_BIND;
+        m_threads[T_QUERY][query_instance].m_bind_type = T_Thread::B_CPU_BIND;
         m_threads[T_QUERY][query_instance].m_core_bind = true;
         next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
         query_instance++;
       }
     }
+    Uint32 tc_count = 0;
     Uint32 main_count = 0;
     Uint32 send_count = 0;
     Uint32 rep_count = 0;
     Uint32 recv_count = 0;
-    for (Uint32 i = 0; i < tc_threads; i++)
+
+    Uint32 max_threads = 0;
+    max_threads = MAX(max_threads, tc_threads);
+    max_threads = MAX(max_threads, main_threads);
+    max_threads = MAX(max_threads, send_threads);
+    max_threads = MAX(max_threads, rep_threads);
+    max_threads = MAX(max_threads, recv_threads);
+    for (Uint32 i = 0; i < max_threads; i++)
     {
       require(next_cpu_id != Uint32(RNIL));
-      m_threads[T_TC][i].m_bind_no = next_cpu_id;
-      m_threads[T_TC][i].m_bind_type = T_Thread::B_CPU_BIND;
-      m_threads[T_TC][i].m_core_bind = true;
-      next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
+      if (tc_count < tc_threads)
+      {
+        m_threads[T_TC][i].m_bind_no = next_cpu_id;
+        m_threads[T_TC][i].m_bind_type = T_Thread::B_CPU_BIND;
+        m_threads[T_TC][i].m_core_bind = true;
+        next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
+      }
       if (main_count < main_threads)
       {
         main_count++;

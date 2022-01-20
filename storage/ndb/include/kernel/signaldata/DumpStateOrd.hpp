@@ -158,6 +158,7 @@ public:
     LqhKillAndSendToDead = 2355,
     LqhSetTransientPoolMaxSize = 2356,
     LqhResetTransientPoolMaxSize = 2357,
+    LqhDumpOpRecLookup = 2358,
 
     TupDumpOneScanRec = 2380,
 
@@ -170,6 +171,9 @@ public:
     AccDumpNotFreeOpRecs = 2406,
     AccSetTransientPoolMaxSize = 2407,
     AccResetTransientPoolMaxSize = 2408,
+    AccDumpOneOpRecLocal = 2409,
+    AccDumpOpPrecedingLocks = 2410,
+
     DumpPageMemory = 1000, // Acc & TUP
     DumpPageMemoryOnFail = 1001,
     TcDumpSetOfScanFragRec = 2500,
@@ -188,6 +192,7 @@ public:
     TcDumpPoolLevels = 2555,
     TcSetTransientPoolMaxSize = 2556,
     TcResetTransientPoolMaxSize = 2557,
+    TcSetTransErrorLogLevel = 2558,
     CmvmiDumpConnections = 2600,
     CmvmiDumpLongSignalMemory = 2601,
     /**

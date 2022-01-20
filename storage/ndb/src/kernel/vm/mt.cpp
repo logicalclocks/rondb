@@ -114,6 +114,7 @@ inline
 SimulatedBlock*
 GlobalData::mt_getBlock(BlockNumber blockNo, Uint32 instanceNo)
 {
+  require(blockNo >= MIN_BLOCK_NO && blockNo <= MAX_BLOCK_NO);
   SimulatedBlock* b = getBlock(blockNo);
   if (b != 0 && instanceNo != 0)
     b = b->getInstance(instanceNo);
@@ -9963,7 +9964,7 @@ thr_init(struct thr_repository* rep, struct thr_data *selfptr, unsigned int cnt,
     BaseString::snprintf(buf, sizeof(buf), "jbblock(%u)", i);
     register_lock(&selfptr->m_jbb[i].m_write_lock, buf);
 
-    thr_job_buffer *buffer = seize_buffer(rep, thr_no, true);
+    thr_job_buffer *buffer = seize_buffer(rep, thr_no, false);
     selfptr->m_congestion_level[i] = thr_job_queue::NO_CONGESTION;
     selfptr->m_jbb[i].m_read_index = 0;
     selfptr->m_jbb[i].m_write_index = 0;

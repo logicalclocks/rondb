@@ -188,6 +188,7 @@ Dbtux::execTUX_ADD_ATTRREQ(Signal* signal)
 #endif
     if (csNumber != 0) {
       unsigned err;
+      ndbrequire(csNumber <= NDB_ARRAY_SIZE(all_charsets));
       CHARSET_INFO *cs = all_charsets[csNumber];
       ndbrequire(cs != 0);
       if ((err = NdbSqlUtil::check_column_for_ordered_index(typeId, cs))) {
@@ -334,6 +335,7 @@ Dbtux::execTUXFRAGREQ(Signal* signal)
     if (debugFlags & DebugMeta) {
       tuxDebugOut << "Add frag " << fragPtr.i << " " << *fragPtr.p << endl;
     }
+#endif
 #ifdef ERROR_INSERT
     /**
      * This code is setting up fragNo to ensure the error insert below still
@@ -350,14 +352,13 @@ Dbtux::execTUXFRAGREQ(Signal* signal)
       }
     }
     // error inserts
-    if (ERROR_INSERTED(12001) && fragNo == 0)
+    if (ERROR_INSERTED(12001))
     {
       jam();
       errorCode = (TuxFragRef::ErrorCode)1;
       CLEAR_ERROR_INSERT_VALUE;
       break;
     }
-#endif
 #endif
     // initialize tree header
     TreeHead& tree = fragPtr.p->m_tree;
