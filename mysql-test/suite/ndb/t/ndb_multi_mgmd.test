@@ -12,6 +12,6 @@
 ##
 
 --echo Bug32339789
---replace_regex /MySQL Cluster Management Server.*/MySQL Cluster Management Server/ /.*\[MgmtSrvr\]//
+--replace_regex /RonDB-[0-9][0-9]\.[0-9][0-9]\.[0-9]+/RonDB-VERSION/ /MySQL Cluster Management Server.*/MySQL Cluster Management Server/ /.*\[MgmtSrvr\]//
 --exec $NDB_MGMD_EXE --defaults-group-suffix=.bug32339789 --defaults-file=$MYSQL_TEST_DIR/suite/ndb/ndb_config_mycnf1.cnf --configdir=$MYSQLTEST_VARDIR --ndb-nodeid=1 --mycnf 2>&1
 --exec $NDB_MGM -c localhost:6000 -e "shutdown" >/dev/null
