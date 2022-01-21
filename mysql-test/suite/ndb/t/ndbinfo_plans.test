@@ -10,31 +10,38 @@ use ndbinfo;
 
 ## ndb$tables
 select count(*) from ndb$tables;
+--replace_regex /cost=[0-9]+\.[0-9]+/cost=#/
 explain select count(*) from ndb$tables;
 
 ## dict_obj_types
 select count(*) from dict_obj_types;
 let $extra= query_get_value(explain select count(*) from dict_obj_types, Extra, 1);
+--replace_regex /cost=[0-9]+\.[0-9]+/cost=#/
 echo $extra;
 
 ## error_messages
 let $extra= query_get_value(explain select count(*) from error_messages, Extra, 1);
+--replace_regex /cost=[0-9]+\.[0-9]+/cost=#/
 echo $extra;
 
 ## config_params
 let $extra= query_get_value(explain select count(*) from config_params, Extra, 1);
+--replace_regex /cost=[0-9]+\.[0-9]+/cost=#/
 echo $extra;
 
 ## blocks
 let $extra= query_get_value(explain select count(*) from blocks, Extra, 1);
+--replace_regex /cost=[0-9]+\.[0-9]+/cost=#/
 echo $extra;
 
 ## backup_id
 let $extra= query_get_value(explain select count(*) from backup_id, Extra, 1);
+--replace_regex /cost=[0-9]+\.[0-9]+/cost=#/
 echo $extra;
 
 ## `EXPLAIN SELECT COUNT(*)'' from a normal ndbinfo table. Extra will be NULL.
 let $extra= query_get_value(explain select count(*) from counters, Extra, 1);
+--replace_regex /cost=[0-9]+\.[0-9]+/cost=#/
 echo $extra;
 
 ## Information schema reveals row counts as seen by optimizer
@@ -107,15 +114,20 @@ SELECT * FROM blocks ORDER BY block_number DESC;
 ## and plans show use of the index
 select * from blocks where block_number=245;
 let $key= query_get_value(explain select * from blocks where block_number=245,key,1);
+--replace_regex /cost=[0-9]+\.[0-9]+/cost=#/
 echo $key;
 assert($key == "PRIMARY");
 
 select * from blocks where block_number in (250,251);
 
+--replace_regex /cost=[0-9]+\.[0-9]+/cost=#/
 explain format=tree select * from blocks where block_number in (250,251);
+--replace_regex /cost=[0-9]+\.[0-9]+/cost=#/
 explain format=tree select * from blocks order by block_number;
+--replace_regex /cost=[0-9]+.[0-9]+/cost=#/
 explain format=tree select * from blocks where block_number < 250;
 ## Can scan backwards:
+--replace_regex /cost=[0-9]+.[0-9]+/cost=#/
 explain format=tree select * from blocks where block_number > 250
   order by block_number desc;
 
@@ -145,6 +157,7 @@ select param_name from ndb$config_params where param_number = 40000;
 explain format=tree select * from counters;
 
 ## The plan for memory_per_fragment
+--replace_regex /cost=[0-9]+\.[0-9]+/cost=#/
 explain format=tree select * from memory_per_fragment;
 
 
@@ -181,9 +194,8 @@ CREATE VIEW memory_per_fragment AS
 --enable_query_log
 --enable_result_log
 
+--replace_regex /cost=[0-9]+\.[0-9]+/cost=#/
 explain format=tree select * from memory_per_fragment;
-
-
 
 ## CLEANUP
 --disable_query_log
