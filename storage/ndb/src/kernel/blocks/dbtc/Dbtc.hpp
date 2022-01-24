@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -916,8 +916,10 @@ public:
       SOF_DEFERRED_UK_TRIGGER = 128,  // Op has deferred trigger
       SOF_DEFERRED_FK_TRIGGER = 256,
       SOF_FK_READ_COMMITTED = 512,    // reply to TC even for dirty read
-      SOF_FULLY_REPLICATED_TRIGGER = 1024,
-      SOF_UTIL_FLAG = 2048            // Sender to TC is DBUTIL (higher prio)
+      SOF_FULLY_REPLICATED_TRIGGER = 1024
+      ,SOF_UTIL_FLAG = 2048            // Sender to TC is DBUTIL (higher prio)
+      ,SOF_BATCH_SAFE = 4096           // Batching is safe for this operation
+      ,SOF_BATCH_UNSAFE = 8192         // Batching is unsafe for this operation
     };
 
     static inline bool isIndexOp(Uint16 flags) {
@@ -1135,6 +1137,7 @@ public:
     Uint32 num_commit_ack_markers;
     Uint32 m_write_count;
     Uint32 m_exec_write_count;
+    Uint32 m_simple_read_count;
     Uint32 m_tc_hbrep_timer;
     ReturnSignal returnsignal;
     AbortState abortState;
