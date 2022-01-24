@@ -218,6 +218,10 @@ private:
   static void setQueueOnRedoProblemFlag(UintR & requestInfo, UintR val);
   static UintR getQueueOnRedoProblemFlag(const UintR & requestInfo);
 
+  static void setBatchSafeFlag(Uint32 & requestInfo, Uint32 val);
+  static UintR getBatchSafeFlag(const Uint32 & requestInfo);
+  static void setBatchUnsafeFlag(Uint32 & requestInfo, Uint32 val);
+  static UintR getBatchUnsafeFlag(const Uint32 & requestInfo);
   /**
    * Check constraints deferred
    */
@@ -280,10 +284,83 @@ private:
  R = Read Committed base   - 1  Bit 20
  w = NoWait read           - 1  Bit 21
 
+ * ----------------------------------------------------------------------
+ * When performing batches of operations we attempt to guarantee
+ * serial order execution of the various operations. Thus if we
+ * first issue a Read of a row and then immediately after that
+ * send an Update of the same row, we want to ensure that the
+ * Read doesn't see the result of the Update, but rather see
+ * the before value of the Update.
+ *
+ * In case the application knows that this batch is a read-only batch
+ * and we won't start any write operations until all of those have
+ * completed, then the application can set the BatchReadSafe flag
+ * in TCKEYREQ. This indicates to DBTC that it can safely use any
+ * node and any thread to perform the actual read operation.
+ *
+ * It is ok to set this flag also if the application knows that the
+ * read row set and the write row set is disjoint for any operation
+ * issued while the reads are performed.
+ *
+ * BatchReadSafe should never be set in a batch that ends with the
+ * commit flag set if there is any write operations in the set.
+ * This could lead to races where the Commit message could arrive
+ * before the Dirty read operations and immediately after that a
+ * transaction could arrive to change the row once more and commit
+ * and thus lead to the Dirty Read reading the wrong version of
+ * the row. This responsibility lies on the NDB API to ensure this
+ * behaviour.
+ *
+ * In general using Committed Read as part of a transaction means
+ * that we can have successful read operations while the transaction
+ * is aborted. It is up to the application to handle this in a proper
+ * manner. In principle one can argue that a Committed Read is always
+ * its own transaction even if it is executed in the context of an
+ * updating transaction.
+ *
+ * The following reasons could be reasons why the applications decide
+ * to set this flag.
+ * 1: All operations in the batch are read operations
+ * 2: There are no read operations that read previously written rows.
+ *    There is also no write operations that write previously written
+ *    rows.
+ *
+ * If either of those conditions are true then we can guarantee that
+ * we can always read our own updates, both from this batch and from
+ * other batches (when using READ_BACKUP).
+ *
+ * The application can also set the flag when it has specific knowledge
+ * that the potential writes and reads conflict doesn't matter for the
+ * consistency of the application.
+ *
+ * RonDB can use this flag to schedule reads and writes more freely
+ * compared to how it otherwise would have to schedule it.
+ *
+ * This flag should not be set in a batch where the last operation sets
+ * Commit flag. Setting it in such a case combined with using Simple
+ * Reads or Committed Reads would lead to that write operations could
+ * committed and even another transaction might arrive and update
+ * the rows before the reads arrive to read the data. To avoid this we
+ * should never set this flag in the last batch unless we commit after
+ * this batch using TC_COMMITREQ. The only exception to this is
+ * Read-Only Transactions.
+ * ----------------------------------------------------------------------
+ B = BatchSafe             - 1  Bit 22
+
+ * ----------------------------------------------------------------------
+ * The opposite problem is that the data node will assume a batch of only
+ * reads can be scheduled freely. However if the application will use
+ * the asynchronous NDB API and schedule new write operations even before
+ * all the read operations of the previous batch have completed, then we
+ * can set the BatchUnsafe flag to indicate that all scheduling should be
+ * done safely, assuming the worst can happen.
+ * ----------------------------------------------------------------------
+ U = BatchUnsafe           - 1  Bit 23
+
            1111111111222222222233
  01234567890123456789012345678901
  dnb cooop lsyyeiaaarkkkkkkkkkkkk  (Short TCKEYREQ)
- dnbvcooopqlsyyeixDfrRw            (Long TCKEYREQ)
+ dnbvcooopqlsyyeixDfrRwBU          (Long TCKEYREQ)
 */
 
 #define TCKEY_NODISK_SHIFT (1)
@@ -318,6 +395,9 @@ private:
 #define TC_DISABLE_FK_SHIFT (18)
 #define TC_READ_COMMITTED_BASE_SHIFT (20)
 #define TC_NOWAIT_SHIFT (21)
+
+#define TC_BATCH_SAFE_SHIFT (22)
+#define TC_BATCH_UNSAFE_SHIFT (23)
 
 /**
  * Scan Info
@@ -660,6 +740,34 @@ void
 TcKeyReq::setReorgFlag(UintR & requestInfo, Uint32 flag){
   ASSERT_BOOL(flag, "TcKeyReq::setReorgFlag");
   requestInfo |= (flag << TC_REORG_SHIFT);
+}
+
+inline
+Uint32
+TcKeyReq::getBatchSafeFlag(const Uint32 & requestInfo)
+{
+  return (requestInfo >> TC_BATCH_SAFE_SHIFT) & 1;
+}
+
+inline
+void
+TcKeyReq::setBatchSafeFlag(Uint32 & requestInfo, Uint32 flag){
+  ASSERT_BOOL(flag, "TcKeyReq::setBatchSafeFlag");
+  requestInfo |= (flag << TC_BATCH_SAFE_SHIFT);
+}
+
+inline
+Uint32
+TcKeyReq::getBatchUnsafeFlag(const Uint32 & requestInfo)
+{
+  return (requestInfo >> TC_BATCH_UNSAFE_SHIFT) & 1;
+}
+
+inline
+void
+TcKeyReq::setBatchUnsafeFlag(Uint32 & requestInfo, Uint32 flag){
+  ASSERT_BOOL(flag, "TcKeyReq::setBatchUnsafeFlag");
+  requestInfo |= (flag << TC_BATCH_UNSAFE_SHIFT);
 }
 
 inline
