@@ -1210,9 +1210,10 @@ public:
       TF_DEFERRED_UK_TRIGGERS = 32, // trans has deferred UK triggers
       TF_DEFERRED_FK_TRIGGERS = 64, // trans has deferred FK triggers
       TF_DISABLE_FK_CONSTRAINTS = 128,
-      TF_LATE_COMMIT = 256, // Wait sending apiCommit until complete phase done
+      TF_LATE_COMMIT = 256 // Wait sending apiCommit until complete phase done
+      ,TF_SINGLE_EXEC_FLAG = 512
 
-      TF_END = 0
+      ,TF_END = 0
     };
     Uint32 m_flags;
 
