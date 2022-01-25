@@ -3311,7 +3311,7 @@ void Dbtc::initApiConnectRec(Signal* signal,
   UintR Ttransid0 = tcKeyReq->transId1;
   UintR Ttransid1 = tcKeyReq->transId2;
 
-  tc_clearbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG);
+  regApiPtr->m_flags = 0;
   regApiPtr->returncode = 0;
   regApiPtr->returnsignal = RS_TCKEYCONF;
   ndbassert(regApiPtr->tcConnect.isEmpty());
@@ -3323,8 +3323,6 @@ void Dbtc::initApiConnectRec(Signal* signal,
   regApiPtr->lqhkeyreqrec = 0;
   regApiPtr->tckeyrec = 0;
   regApiPtr->tcindxrec = 0;
-  tc_clearbit(regApiPtr->m_flags,
-              ApiConnectRecord::TF_COMMIT_ACK_MARKER_RECEIVED);
   regApiPtr->failureNr = TfailureNr;
   regApiPtr->transid[0] = Ttransid0;
   regApiPtr->transid[1] = Ttransid1;
@@ -3350,8 +3348,6 @@ void Dbtc::initApiConnectRec(Signal* signal,
   // FiredTriggers should have been released when previous transaction ended. 
   ndbrequire(regApiPtr->theFiredTriggers.isEmpty());
   // Index data
-  tc_clearbit(regApiPtr->m_flags,
-              ApiConnectRecord::TF_INDEX_OP_RETURN);
   regApiPtr->noIndexOp = 0;
   if(releaseIndexOperations)
   {
@@ -3367,10 +3363,6 @@ void Dbtc::initApiConnectRec(Signal* signal,
   }
   regApiPtr->immediateTriggerId = RNIL;
 
-  tc_clearbit(regApiPtr->m_flags,
-              ApiConnectRecord::TF_DEFERRED_CONSTRAINTS);
-  tc_clearbit(regApiPtr->m_flags,
-              ApiConnectRecord::TF_DISABLE_FK_CONSTRAINTS);
   c_counters.ctransCount++;
 
 #ifdef ERROR_INSERT
@@ -3619,12 +3611,15 @@ void Dbtc::execTCKEYREQ(Signal* signal)
   bool isExecutingTrigger = Tspecial_op_flags & TcConnectRecord::SOF_TRIGGER;
   regApiPtr->m_special_op_flags = 0; // Reset marker
   Uint32 prevExecFlag = regApiPtr->m_flags & ApiConnectRecord::TF_EXEC_FLAG;
-  regApiPtr->m_flags |= TexecFlag;
-  TableRecordPtr localTabptr;
-  localTabptr.i = TtabIndex;
-  localTabptr.p = &tableRecord[TtabIndex];
-  if (prevExecFlag)
+  if ((!(isExecutingTrigger || isIndexOpReturn)) && prevExecFlag)
   {
+    /**
+     * Only operations originating from NDB API with exec flag not
+     * set will clear the Execute flag. This is the first signal
+     * in a batch. If TexecFlag is also set it is the one and the
+     * only signal in this batch.
+     */
+    jamDebug();
     /**
      * Count the number of writes in the same execution batch. Given that
      * the previous operation had the last flag set, this operation is the
@@ -3640,7 +3635,25 @@ void Dbtc::execTCKEYREQ(Signal* signal)
                           regApiPtr->m_write_count));
     regApiPtr->m_exec_write_count = 0;
     regApiPtr->m_simple_read_count = 0;
+    Uint32 flags = regApiPtr->m_flags;
+    flags &= ~ApiConnectRecord::TF_EXEC_FLAG;
+    flags &= ~ApiConnectRecord::TF_SINGLE_EXEC_FLAG;
+    if (TexecFlag)
+    {
+      jamDebug();
+      flags |= TexecFlag;
+      flags |= ApiConnectRecord::TF_SINGLE_EXEC_FLAG;
+    }
+    regApiPtr->m_flags = flags;
   }
+  else
+  {
+    jamDebug();
+    regApiPtr->m_flags |= TexecFlag;
+  }
+  TableRecordPtr localTabptr;
+  localTabptr.i = TtabIndex;
+  localTabptr.p = &tableRecord[TtabIndex];
   switch (regApiPtr->apiConnectstate) {
   case CS_CONNECTED:{
     if (likely(TstartFlag == 1 &&
@@ -4696,11 +4709,15 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
     Uint8 TopSimple = regTcPtr->opSimple;
     Uint8 TopDirty = regTcPtr->dirtyOp;
     bool checkingFKConstraint = Tspecial_op_flags & TcConnectRecord::SOF_TRIGGER;
+    Uint32 single_exec_flag = regApiPtr->m_flags &
+                               ApiConnectRecord::TF_SINGLE_EXEC_FLAG;
 
     bool batchUnsafe = false;
-    if (likely(((regTcPtr->m_special_op_flags &
-         TcConnectRecord::SOF_BATCH_SAFE) == 0) &&
-         Tdata3 != 0))
+    if ((((regTcPtr->m_special_op_flags &
+           TcConnectRecord::SOF_BATCH_SAFE) == 0) &&
+           (!regApiPtr->isExecutingDeferredTriggers()) &&
+           (single_exec_flag != 0) &&
+            Tdata3 != 0))
     {
       /**
        * Simple/CommittedReads that are part of batch operations must use
@@ -4766,7 +4783,6 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
           regApiPtr->m_exec_write_count > 0 ||
           ((regTcPtr->m_special_op_flags &
             TcConnectRecord::SOF_BATCH_UNSAFE) != 0))
-
       {
         jamDebug();
         /**
@@ -6763,6 +6779,12 @@ void Dbtc::diverify010Lab(Signal* signal, ApiConnectRecordPtr const apiConnectpt
     /**
      * If trans has deferred triggers, let them fire just before
      *   transaction starts to commit
+     *
+     * During this phase we can perform a bunch of reads where
+     * we check the consistency of the transaction. These
+     * operations are safe to execute in backup replicas and in
+     * query threads. There should be no specific ordering
+     * required at this point in a transaction.
      */
     startSendFireTrigReq(signal, apiConnectptr);
     return;
@@ -8953,7 +8975,8 @@ void Dbtc::execLQHKEYREF(Signal* signal)
 	  return;
 	}
         else if (regApiPtr->tckeyrec > 0 ||
-                 tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG))
+                 tc_testbit(regApiPtr->m_flags,
+                            ApiConnectRecord::TF_EXEC_FLAG))
         {
 	  jam();
           sendtckeyconf(signal, 2, apiConnectptr);
@@ -21957,6 +21980,9 @@ void Dbtc::executeIndexOperation(Signal* signal,
     regApiPtr->m_executing_trigger_ops++;
   }
   releaseIndexOperation(regApiPtr, indexOp);
+
+  ndbassert(tc_testbit(regApiPtr->m_flags,
+                       ApiConnectRecord::TF_INDEX_OP_RETURN));
 
   /* Execute TCKEYREQ now - it is now responsible for freeing
    * the KeyInfo and AttrInfo sections 

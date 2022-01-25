@@ -168,7 +168,7 @@ where s1.counter_name = s2.counter_name
 and ( s1.counter_name = 'LOCAL_READS' or s1.counter_name = 'READS' )
 order by 1;
 counter_name	diff
-LOCAL_READS	111
+LOCAL_READS	131
 READS	131
 drop table counters_at_startup;
 output_line
@@ -412,7 +412,7 @@ where s1.counter_name = s2.counter_name
 and ( s1.counter_name = 'LOCAL_READS' or s1.counter_name = 'READS' )
 order by 1;
 counter_name	diff
-LOCAL_READS	108
+LOCAL_READS	129
 READS	129
 drop table counters_at_startup;
 select mpf.node_id, mpf.fragment_num, mpf.fixed_elem_count, tfs.fragment_num, tfs.fixed_elem_count
