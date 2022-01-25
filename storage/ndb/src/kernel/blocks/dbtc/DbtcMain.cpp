@@ -5641,6 +5641,7 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
           TBRef = numberToRef(DBLQH, refToInstance(TBRef), nodeId);
         }
       }
+      break;
     }
 #ifdef DEBUG_QUERY_THREAD_USAGE
     {
