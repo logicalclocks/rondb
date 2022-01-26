@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2138,6 +2138,12 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
   {
     bool hasdata = false;
     Transporter * t = (Transporter*)allTransporters[trp_id];
+    if (unlikely(t == nullptr))
+    {
+      recvdata.m_recv_transporters.clear(trp_id);
+      recvdata.m_has_data_transporters.clear(trp_id);
+      continue;
+    }
     NodeId node_id = t->getRemoteNodeId();
 
     assert(recvdata.m_transporters.get(trp_id));
