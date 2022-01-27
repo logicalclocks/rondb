@@ -2435,22 +2435,53 @@ public:
     for (Uint32 index = 0; index < num_ids; index++)
     {
       Uint32 this_id = id[index];
-      Uint32 send_instance = get_send_instance(this_id);
+      Uint32 send_instance_id = get_send_instance(this_id);
+      struct thr_send_thread_instance *send_instance =
+        &m_send_threads[send_instance_id];
       m_trp_state[this_id].m_neighbour_trp = true;
-      m_trp_state[this_id].m_in_list_no_neighbour = false;
+      if (m_trp_state[this_id].m_in_list_no_neighbour != false)
+      {
+        /**
+         * The new neighbour transporter is in linked list of non-neighbour
+         * transporters, it must be removed from there to avoid having
+         * transporters with m_data_available == 0 and m_in_list_no_neighbour
+         * in list which could cause weird issues.
+         */
+        Uint32 next_trp_id = send_instance->m_first_trp;
+        Uint32 prev_trp_id = 0;
+        bool found = false;
+        while (next_trp_id != 0)
+        {
+          if (next_trp_id == this_id)
+          {
+            found = true;
+            if (prev_trp_id == 0)
+            {
+              send_instance->m_first_trp = m_trp_state[this_id].m_next;
+            }
+            else
+            {
+              m_trp_state[prev_trp_id].m_next = m_trp_state[this_id].m_next;
+            }
+          }
+        }
+        require(found);
+        require(m_trp_state[this_id].m_data_available > 0);
+        m_trp_state[this_id].m_in_list_no_neighbour = false;
+      }
       for (Uint32 i = 0; i < MAX_NEIGHBOURS; i++)
       {
-        require(m_send_threads[send_instance].m_neighbour_trps[i] != this_id);
-        if (m_send_threads[send_instance].m_neighbour_trps[i] == 0)
+        require(send_instance->m_neighbour_trps[i] != this_id);
+        if (send_instance->m_neighbour_trps[i] == 0)
         {
           DEB_MULTI_TRP(("Neighbour(%u) of node %u is trp %u",
                          i,
                          nodeId,
                          this_id));
-          assert(m_send_threads[send_instance].m_num_neighbour_trps == i);
-          m_send_threads[send_instance].m_neighbour_trps[i] = this_id;
-          m_send_threads[send_instance].m_num_neighbour_trps++;
-          assert(m_send_threads[send_instance].m_num_neighbour_trps <=
+          assert(send_instance->m_num_neighbour_trps == i);
+          send_instance->m_neighbour_trps[i] = this_id;
+          send_instance->m_num_neighbour_trps++;
+          assert(send_instance->m_num_neighbour_trps <=
                  MAX_NEIGHBOURS);
 
           break;
@@ -2815,8 +2846,8 @@ thr_send_threads::insert_trp(TrpId trp_id,
   struct thr_send_trps &last_trp_state =
     m_trp_state[send_instance->m_last_trp];
   trp_state.m_next = 0;
-  assert(trp_state.m_data_available > 0);
-  assert(trp_state.m_in_list_no_neighbour == false);
+  require(trp_state.m_data_available > 0);
+  require(trp_state.m_in_list_no_neighbour == false);
   trp_state.m_in_list_no_neighbour = true;
   send_instance->m_last_trp = trp_id;
 
@@ -2910,7 +2941,7 @@ void
 thr_send_threads::set_max_delay(TrpId trp_id, NDB_TICKS now, Uint32 delay_usec)
 {
   struct thr_send_trps &trp_state = m_trp_state[trp_id];
-  assert(trp_state.m_data_available > 0);
+  require(trp_state.m_data_available > 0);
   assert(!trp_state.m_send_overload);
 
   if (delay_usec == 0 || trp_state.m_micros_delayed < delay_usec)
@@ -2998,7 +3029,7 @@ thr_send_threads::set_overload_delay(TrpId trp_id,
                                      Uint32 delay_usec)
 {
   struct thr_send_trps &trp_state = m_trp_state[trp_id];
-  assert(trp_state.m_data_available > 0);
+  require(trp_state.m_data_available > 0);
   trp_state.m_send_overload = true;
   trp_state.m_micros_delayed = delay_usec;
   trp_state.m_inserted_time = now;
@@ -3021,7 +3052,7 @@ Uint32
 thr_send_threads::check_delay_expired(TrpId trp_id, NDB_TICKS now)
 {
   struct thr_send_trps &trp_state = m_trp_state[trp_id];
-  assert(trp_state.m_data_available > 0);
+  require(trp_state.m_data_available > 0);
   Uint64 micros_delayed = Uint64(trp_state.m_micros_delayed);
 
   if (micros_delayed == 0)
@@ -3305,6 +3336,7 @@ found_non_neighbour:
   if (trp_id == send_instance->m_last_trp)
     send_instance->m_last_trp = prev;
 
+  require(m_trp_state[trp_id].m_in_list_no_neighbour == true);
   m_trp_state[trp_id].m_in_list_no_neighbour = false;
 
   /**
@@ -3324,7 +3356,7 @@ found_neighbour:
    */
   struct thr_send_trps &trp_state = m_trp_state[trp_id];
 
-  assert(trp_state.m_data_available > 0);
+  require(trp_state.m_data_available > 0);
   assert(trp_state.m_thr_no_sender == NO_OWNER_THREAD);
   trp_state.m_next = 0;
   trp_state.m_data_available = 1;
@@ -3336,7 +3368,7 @@ bool
 thr_send_threads::check_done_trp(TrpId trp_id)
 {
   struct thr_send_trps &trp_state = m_trp_state[trp_id];
-  assert(trp_state.m_data_available > 0);
+  require(trp_state.m_data_available > 0);
   trp_state.m_data_available--;
   return (trp_state.m_data_available == 0);
 }
@@ -3875,8 +3907,8 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
 #endif
   assert(m_trp_state[trp_id].m_thr_no_sender == NO_OWNER_THREAD);
   m_trp_state[trp_id].m_thr_no_sender = thr_no;
-  assert(m_trp_state[trp_id].m_neighbour_trp ||
-         m_trp_state[trp_id].m_in_list_no_neighbour == false);
+  require(m_trp_state[trp_id].m_neighbour_trp ||
+          m_trp_state[trp_id].m_in_list_no_neighbour == false);
   NdbMutex_Unlock(send_instance->send_thread_mutex);
 
   watchdog_counter = 6;
@@ -3946,8 +3978,8 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
   now = NdbTick_getCurrentTicks();
 
   NdbMutex_Lock(send_instance->send_thread_mutex);
-  assert(m_trp_state[trp_id].m_neighbour_trp ||
-         m_trp_state[trp_id].m_in_list_no_neighbour == false);
+  require(m_trp_state[trp_id].m_neighbour_trp ||
+          m_trp_state[trp_id].m_in_list_no_neighbour == false);
 #ifdef VM_TRACE
   my_thread_yield();
 #endif
