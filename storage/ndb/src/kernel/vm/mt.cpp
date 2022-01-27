@@ -2279,7 +2279,9 @@ public:
             {
               m_trp_state[prev_trp_id].m_next = m_trp_state[this_id].m_next;
             }
+            break;
           }
+          next_trp_id = m_trp_state[next_trp_id].m_next;
         }
         require(found);
         require(m_trp_state[this_id].m_data_available > 0);
