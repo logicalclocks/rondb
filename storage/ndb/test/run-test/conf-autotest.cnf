@@ -153,8 +153,8 @@ ndbd = CHOOSE_host2,CHOOSE_host3,CHOOSE_host4,CHOOSE_host5
 ndbapi= CHOOSE_host1,CHOOSE_host1,CHOOSE_host1
 
 NoOfReplicas = 4
-DataMemory = 500M
-TransactionMemory=350M
+DataMemory = 400M
+TransactionMemory=250M
 MaxNoOfConcurrentScans = 100
 MaxNoOfSavedMessages= 5
 NoOfFragmentLogFiles = 8
@@ -164,7 +164,7 @@ MaxNoOfAttributes=2000
 Checksum=1
 AutomaticThreadConfig=1
 AutomaticMemoryConfig=1
-NumCPUs=18
+NumCPUs=4
 TotalMemoryConfig=4000M
 MaxNoOfTables=200
 MaxNoOfOrderedIndexes=200
@@ -172,7 +172,7 @@ MaxNoOfUniqueHashIndexes=200
 MaxNoOfTriggers=3000
 TransactionDeadlockDetectionTimeout=5000
 
-SharedGlobalMemory=350M
+SharedGlobalMemory=250M
 DiskPageBufferMemory=256M
 InitialLogfileGroup=undo_buffer_size=64M;undofile01.dat:512M;undofile02.dat:512M
 InitialTablespace=datafile01.dat:256M;datafile02.dat:256M
