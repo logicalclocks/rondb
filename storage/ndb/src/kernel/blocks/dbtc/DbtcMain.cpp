@@ -184,6 +184,7 @@ operator<<(NdbOut& out, Dbtc::ConnectionState state){
   case Dbtc::CS_RECEIVING: out << "CS_RECEIVING"; break;
   case Dbtc::CS_RESTART: out << "CS_RESTART"; break;
   case Dbtc::CS_ABORTING: out << "CS_ABORTING"; break;
+  case Dbtc::CS_RELEASE: out << "CS_RELEASE"; break;
   case Dbtc::CS_COMPLETING: out << "CS_COMPLETING"; break;
   case Dbtc::CS_COMPLETE_SENT: out << "CS_COMPLETE_SENT"; break;
   case Dbtc::CS_PREPARE_TO_COMMIT: out << "CS_PREPARE_TO_COMMIT"; break;
@@ -1872,14 +1873,23 @@ bool Dbtc::handleFailedApiConnection(Signal *signal,
   // The connected node is the failed node.
   /**********************************************************************/
   switch(apiConnectptr.p->apiConnectstate) {
+  case CS_RELEASE:
+  {
+    jam();
+    set_api_fail_state(TapiFailedNode, apiNodeFailed, apiConnectptr.p);
+    break;
+  }
   case CS_DISCONNECTED:
+  {
     /*********************************************************************/
     // These states do not need any special handling. 
     // Simply continue with the next.
     /*********************************************************************/
     jam();
     break;
+  }
   case CS_ABORTING:
+  {
     /*********************************************************************/
     // This could actually mean that the API connection is already 
     // ready to release if the abortState is IDLE.
@@ -1892,6 +1902,7 @@ bool Dbtc::handleFailedApiConnection(Signal *signal,
       set_api_fail_state(TapiFailedNode, apiNodeFailed, apiConnectptr.p);
     }//if
     break;
+  }
   case CS_WAIT_ABORT_CONF:
   case CS_WAIT_COMMIT_CONF:
   case CS_START_COMMITTING:
@@ -2358,7 +2369,8 @@ void Dbtc::execTCRELEASEREQ(Signal* signal)
 void Dbtc::signalErrorRefuseLab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
 {
   ptrGuard(apiConnectptr);
-  if (apiConnectptr.p->apiConnectstate != CS_DISCONNECTED)
+  if (apiConnectptr.p->apiConnectstate != CS_DISCONNECTED &&
+      apiConnectptr.p->apiConnectstate != CS_RELEASE)
   {
     jam();
     apiConnectptr.p->abortState = AS_IDLE;
@@ -2965,6 +2977,7 @@ void Dbtc::execKEYINFO(Signal* signal)
     /*empty*/;
     break;
   case CS_ABORTING:
+  case CS_RELEASE:
     jam();
     return;     /* IGNORE */
   case CS_CONNECTED:
@@ -3091,6 +3104,11 @@ void Dbtc::execATTRINFO(Signal* signal)
 
   ApiConnectRecord * const regApiPtr = apiConnectptr.p;
 
+  if (regApiPtr->apiConnectstate == CS_RELEASE)
+  {
+    jam();
+    return;
+  }
   if (unlikely(compare_transid(regApiPtr->transid,
                                signal->theData+1) == false))
   {
@@ -3200,6 +3218,7 @@ void Dbtc::execATTRINFO(Signal* signal)
     switch (regApiPtr->apiConnectstate)
     {
     case CS_ABORTING:
+    case CS_RELEASE:
       jam();
       /* JUST IGNORE THE SIGNAL*/
       // DEBUG("Drop ATTRINFO, CS_ABORTING");
@@ -6349,7 +6368,8 @@ void Dbtc::execLQHKEYCONF(Signal* signal)
   Uint32 Toperation = regTcPtr->operation;
   ConnectionState TapiConnectstate = regApiPtr.p->apiConnectstate;
 
-  if (unlikely(TapiConnectstate == CS_ABORTING))
+  if (unlikely(TapiConnectstate == CS_ABORTING ||
+               TapiConnectstate == CS_RELEASE))
   {
     jam();
     warningReport(signal, 27, tcConnectptr.i);
@@ -9140,6 +9160,12 @@ void Dbtc::execLQHKEYREF(Signal* signal)
         jam();
         goto do_abort;
       }
+      if (unlikely(TapiConnectstate == CS_RELEASE))
+      {
+        jam();
+	warningReport(signal, 25, tcConnectptr.i);
+        return;
+      }
 
       if (triggeringOp != RNIL) {
         jam();
@@ -9531,9 +9557,10 @@ void Dbtc::execTC_COMMITREQ(Signal* signal)
       // yet.
       /***********************************************************************/
       errorCode = ZCOMMITINPROGRESS;
+      jam();
       break;
     case CS_ABORTING:
-      jam();
+    case CS_RELEASE:
       errorCode = regApiPtr->returncode ? 
 	regApiPtr->returncode : ZABORTINPROGRESS;
       break;
@@ -10150,7 +10177,14 @@ void Dbtc::abortErrorLab(Signal* signal, ApiConnectRecordPtr const apiConnectptr
 {
   ptrGuard(apiConnectptr);
   ApiConnectRecord * transP = apiConnectptr.p;
-  if (transP->apiConnectstate == CS_ABORTING && transP->abortState != AS_IDLE){
+  if (unlikely((transP->apiConnectstate == CS_ABORTING &&
+                transP->abortState != AS_IDLE)))
+  {
+    jam();
+    return;
+  }
+  if (unlikely(transP->apiConnectstate == CS_RELEASE))
+  {
     jam();
     return;
   }
@@ -10168,6 +10202,11 @@ void Dbtc::abort010Lab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
   ApiConnectRecord * transP = apiConnectptr.p;
   if (unlikely(transP->apiConnectstate == CS_ABORTING &&
                transP->abortState != AS_IDLE))
+  {
+    jam();
+    return;
+  }
+  if (unlikely(transP->apiConnectstate == CS_RELEASE))
   {
     jam();
     return;
@@ -15858,7 +15897,8 @@ void Dbtc::execSCAN_TABREQ(Signal* signal)
     {
       jamDebug();
       
-      if (unlikely(buddyApiPtr.p->apiConnectstate == CS_ABORTING))
+      if (unlikely(buddyApiPtr.p->apiConnectstate == CS_ABORTING ||
+                   buddyApiPtr.p->apiConnectstate == CS_RELEASE))
       {
 	// transaction has been aborted
 	jam();
@@ -20524,6 +20564,7 @@ Dbtc::ndbinfo_write_trans(Ndbinfo::Row & row, ApiConnectRecordPtr transPtr)
   case CS_COMMIT_SENT:
   case CS_COMPLETE_SENT:
   case CS_ABORTING:
+  case CS_RESTART:
     outstanding = transPtr.p->counter;
     break;
   case CS_PREPARE_TO_COMMIT:
@@ -20546,8 +20587,6 @@ Dbtc::ndbinfo_write_trans(Ndbinfo::Row & row, ApiConnectRecordPtr transPtr)
   case CS_FAIL_ABORTING:
   case CS_FAIL_COMPLETED:
     // not easily computed :_(
-    break;
-  case CS_RESTART:
     break;
   }
 
@@ -20693,6 +20732,7 @@ Dbtc::match_and_print(Signal* signal, ApiConnectRecordPtr apiPtr)
   case CS_RESTART:
   case CS_FAIL_ABORTED:
   case CS_DISCONNECTED:
+  case CS_RELEASE:
   default:
     BaseString::snprintf(state, sizeof(state), 
 			 "%u", apiPtr.p->apiConnectstate);
@@ -21598,6 +21638,12 @@ void Dbtc::execTCINDXREQ(Signal* signal)
     return;
   }//if
   ApiConnectRecord * const regApiPtr = transPtr.p;  
+  if (unlikely(regApiPtr->apiConnectstate == CS_RELEASE))
+  {
+    warningHandlerLab(signal, __LINE__);
+    releaseSections(handle);
+    return;
+  }
   // Seize index operation
   TcIndexOperationPtr indexOpPtr;
 
@@ -21673,7 +21719,8 @@ void Dbtc::execTCINDXREQ(Signal* signal)
     initApiConnectRec(signal, regApiPtr, true);
     regApiPtr->apiConnectstate = CS_STARTED;
   }//if (startFlag == 1 && ...
-  else if (regApiPtr->apiConnectstate == CS_ABORTING)
+  else if (regApiPtr->apiConnectstate == CS_ABORTING ||
+           regApiPtr->apiConnectstate == CS_RELEASE)
   {
     jam();
     /*
@@ -21683,7 +21730,7 @@ void Dbtc::execTCINDXREQ(Signal* signal)
       handling. Any received TCKEYREF will be forwarded
       to the original sender as a TCINDXREF.
      */
-  }//if (regApiPtr->apiConnectstate == CS_ABORTING)
+  }
 
   if (getNodeState().startLevel == NodeState::SL_SINGLEUSER &&
       getNodeState().getSingleUserApi() !=
@@ -21856,7 +21903,8 @@ void Dbtc::execINDXKEYINFO(Signal* signal)
     return;
   }
 
-  if (regApiPtr->apiConnectstate == CS_ABORTING)
+  if (regApiPtr->apiConnectstate == CS_ABORTING ||
+      regApiPtr->apiConnectstate == CS_RELEASE)
   {
     jam();
     return;
@@ -21904,7 +21952,8 @@ void Dbtc::execINDXATTRINFO(Signal* signal)
     return;
   }
 
-  if (regApiPtr->apiConnectstate == CS_ABORTING)
+  if (regApiPtr->apiConnectstate == CS_ABORTING ||
+      regApiPtr->apiConnectstate == CS_RELEASE)
   {
     jam();
     return;
@@ -22645,7 +22694,8 @@ void Dbtc::readIndexTable(Signal* signal,
   EXECUTE_DIRECT(DBTC, GSN_TCKEYREQ, signal, TcKeyReq::StaticLength);
   jamEntry();
 
-  if (unlikely(regApiPtr->apiConnectstate == CS_ABORTING))
+  if (unlikely(regApiPtr->apiConnectstate == CS_ABORTING ||
+               regApiPtr->apiConnectstate == CS_RELEASE))
   {
     jam();
   }
@@ -22822,7 +22872,8 @@ void Dbtc::executeIndexOperation(Signal* signal,
   }
 #endif
 
-  if (unlikely(regApiPtr->apiConnectstate == CS_ABORTING))
+  if (unlikely(regApiPtr->apiConnectstate == CS_ABORTING ||
+               regApiPtr->apiConnectstate == CS_RELEASE))
   {
     // TODO : Presumably the abort cleans up the operation
     jam();
@@ -23221,7 +23272,8 @@ void Dbtc::executeTriggers(Signal* signal, ApiConnectRecordPtr const* transPtr)
         /* Transaction has started aborting.  
          * Forget about unprocessed triggers
          */
-        ndbrequire(regApiPtr->apiConnectstate == CS_ABORTING);
+        ndbrequire(regApiPtr->apiConnectstate == CS_ABORTING ||
+                   regApiPtr->apiConnectstate == CS_RELEASE);
       }
     }
   }
@@ -23742,7 +23794,8 @@ Dbtc::fk_execTCINDXREQ(Signal* signal,
   readIndexTable(signal, transPtr, indexOpPtr.p,
                  transPtr.p->m_special_op_flags);
 
-  if (unlikely(transPtr.p->apiConnectstate == CS_ABORTING))
+  if (unlikely(transPtr.p->apiConnectstate == CS_ABORTING ||
+               transPtr.p->apiConnectstate == CS_RELEASE))
   {
     jam();
   }
@@ -24002,7 +24055,8 @@ Dbtc::fk_scanFromChildTable(Signal* signal,
 
   signal->header.theSendersBlockRef = reference();
   execSCAN_TABREQ(signal);
-  if (scanApiConnectPtr.p->apiConnectstate == CS_ABORTING)
+  if (scanApiConnectPtr.p->apiConnectstate == CS_ABORTING ||
+      scanApiConnectPtr.p->apiConnectstate == CS_RELEASE)
   {
     goto abort_trans;
   }
@@ -24098,7 +24152,8 @@ Dbtc::execKEYINFO20(Signal* signal)
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(transPtr)) ||
       unlikely(! (transId[0] == transPtr.p->transid[0] &&
                   transId[1] == transPtr.p->transid[1] &&
-                  transPtr.p->apiConnectstate != CS_ABORTING)))
+                  transPtr.p->apiConnectstate != CS_ABORTING &&
+                  transPtr.p->apiConnectstate != CS_RELEASE)))
   {
     jam();
 
@@ -24288,7 +24343,8 @@ Dbtc::execSCAN_TABCONF(Signal* signal)
   if (unlikely(!c_apiConnectRecordPool.getUncheckedPtrRW(orgApiConnectPtr)) ||
       unlikely(! (transId[0] == orgApiConnectPtr.p->transid[0] &&
                   transId[1] == orgApiConnectPtr.p->transid[1] &&
-                  orgApiConnectPtr.p->apiConnectstate != CS_ABORTING)))
+                  orgApiConnectPtr.p->apiConnectstate != CS_ABORTING &&
+                  orgApiConnectPtr.p->apiConnectstate != CS_RELEASE)))
   {
     jam();
 
@@ -24497,7 +24553,8 @@ Dbtc::fk_scanFromChildTable_done(Signal* signal,
   if (!c_apiConnectRecordPool.getValidPtr(orgApiConnectPtr) ||
       ! (transId[0] == orgApiConnectPtr.p->transid[0] &&
          transId[1] == orgApiConnectPtr.p->transid[1] &&
-         orgApiConnectPtr.p->apiConnectstate != CS_ABORTING))
+         orgApiConnectPtr.p->apiConnectstate != CS_ABORTING &&
+         orgApiConnectPtr.p->apiConnectstate != CS_RELEASE))
   {
     jam();
     /**
