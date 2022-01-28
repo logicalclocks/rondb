@@ -1902,6 +1902,12 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
       trp_id = recvdata.m_recv_transporters.find_next(trp_id + 1))
   {
     Transporter *transp = allTransporters[trp_id];
+    if (unlikely(transp == nullptr))
+    {
+      recvdata.m_recv_transporters.clear(trp_id);
+      recvdata.m_has_data_transporters.clear(trp_id);
+      continue;
+    }
     NodeId node_id = transp->getRemoteNodeId();
     if (transp->getTransporterType() == tt_TCP_TRANSPORTER)
     {
@@ -1986,6 +1992,11 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
   {
     bool hasdata = false;
     Transporter * t = (Transporter*)allTransporters[trp_id];
+    if (unlikely(t == nullptr))
+    {
+      recvdata.m_has_data_transporters.clear(trp_id);
+      continue;
+    }
     NodeId node_id = t->getRemoteNodeId();
 
     assert(recvdata.m_transporters.get(trp_id));

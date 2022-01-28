@@ -994,10 +994,13 @@ struct Operationrec {
    * functionality for multi-updates of the same record in one
    * transaction.
    */
-  union {
-    Uint32 savepointId;
-    Uint32 m_commit_disk_callback_page;
-  };
+  Uint32 savepointId;
+
+  /**
+   * Used during commit to point to disk page used by the committed
+   * operation. RNIL if no disk page is used.
+   */
+  Uint32 m_commit_disk_callback_page;
 
   Uint32 op_type;
   Uint32 trans_state;

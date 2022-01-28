@@ -163,6 +163,7 @@ operator<<(NdbOut& out, Dbtc::ConnectionState state){
   case Dbtc::CS_RECEIVING: out << "CS_RECEIVING"; break;
   case Dbtc::CS_RESTART: out << "CS_RESTART"; break;
   case Dbtc::CS_ABORTING: out << "CS_ABORTING"; break;
+  case Dbtc::CS_RELEASE: out << "CS_RELEASE"; break;
   case Dbtc::CS_COMPLETING: out << "CS_COMPLETING"; break;
   case Dbtc::CS_COMPLETE_SENT: out << "CS_COMPLETE_SENT"; break;
   case Dbtc::CS_PREPARE_TO_COMMIT: out << "CS_PREPARE_TO_COMMIT"; break;
@@ -1805,14 +1806,23 @@ bool Dbtc::handleFailedApiConnection(Signal *signal,
   // The connected node is the failed node.
   /**********************************************************************/
   switch(apiConnectptr.p->apiConnectstate) {
+  case CS_RELEASE:
+  {
+    jam();
+    set_api_fail_state(TapiFailedNode, apiNodeFailed, apiConnectptr.p);
+    break;
+  }
   case CS_DISCONNECTED:
+  {
     /*********************************************************************/
     // These states do not need any special handling. 
     // Simply continue with the next.
     /*********************************************************************/
     jam();
     break;
+  }
   case CS_ABORTING:
+  {
     /*********************************************************************/
     // This could actually mean that the API connection is already 
     // ready to release if the abortState is IDLE.
@@ -1825,6 +1835,7 @@ bool Dbtc::handleFailedApiConnection(Signal *signal,
       set_api_fail_state(TapiFailedNode, apiNodeFailed, apiConnectptr.p);
     }//if
     break;
+  }
   case CS_WAIT_ABORT_CONF:
   case CS_WAIT_COMMIT_CONF:
   case CS_START_COMMITTING:
@@ -2291,7 +2302,8 @@ void Dbtc::execTCRELEASEREQ(Signal* signal)
 void Dbtc::signalErrorRefuseLab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
 {
   ptrGuard(apiConnectptr);
-  if (apiConnectptr.p->apiConnectstate != CS_DISCONNECTED)
+  if (apiConnectptr.p->apiConnectstate != CS_DISCONNECTED &&
+      apiConnectptr.p->apiConnectstate != CS_RELEASE)
   {
     jam();
     apiConnectptr.p->abortState = AS_IDLE;
@@ -2886,6 +2898,7 @@ void Dbtc::execKEYINFO(Signal* signal)
     /*empty*/;
     break;
   case CS_ABORTING:
+  case CS_RELEASE:
     jam();
     return;     /* IGNORE */
   case CS_CONNECTED:
@@ -3012,6 +3025,11 @@ void Dbtc::execATTRINFO(Signal* signal)
 
   ApiConnectRecord * const regApiPtr = apiConnectptr.p;
 
+  if (regApiPtr->apiConnectstate == CS_RELEASE)
+  {
+    jam();
+    return;
+  }
   if (unlikely(compare_transid(regApiPtr->transid,
                                signal->theData+1) == false))
   {
@@ -3121,6 +3139,7 @@ void Dbtc::execATTRINFO(Signal* signal)
     switch (regApiPtr->apiConnectstate)
     {
     case CS_ABORTING:
+    case CS_RELEASE:
       jam();
       /* JUST IGNORE THE SIGNAL*/
       // DEBUG("Drop ATTRINFO, CS_ABORTING");
@@ -3311,7 +3330,7 @@ void Dbtc::initApiConnectRec(Signal* signal,
   UintR Ttransid0 = tcKeyReq->transId1;
   UintR Ttransid1 = tcKeyReq->transId2;
 
-  tc_clearbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG);
+  regApiPtr->m_flags = 0;
   regApiPtr->returncode = 0;
   regApiPtr->returnsignal = RS_TCKEYCONF;
   ndbassert(regApiPtr->tcConnect.isEmpty());
@@ -3323,8 +3342,6 @@ void Dbtc::initApiConnectRec(Signal* signal,
   regApiPtr->lqhkeyreqrec = 0;
   regApiPtr->tckeyrec = 0;
   regApiPtr->tcindxrec = 0;
-  tc_clearbit(regApiPtr->m_flags,
-              ApiConnectRecord::TF_COMMIT_ACK_MARKER_RECEIVED);
   regApiPtr->failureNr = TfailureNr;
   regApiPtr->transid[0] = Ttransid0;
   regApiPtr->transid[1] = Ttransid1;
@@ -3350,8 +3367,6 @@ void Dbtc::initApiConnectRec(Signal* signal,
   // FiredTriggers should have been released when previous transaction ended. 
   ndbrequire(regApiPtr->theFiredTriggers.isEmpty());
   // Index data
-  tc_clearbit(regApiPtr->m_flags,
-              ApiConnectRecord::TF_INDEX_OP_RETURN);
   regApiPtr->noIndexOp = 0;
   if(releaseIndexOperations)
   {
@@ -3367,10 +3382,6 @@ void Dbtc::initApiConnectRec(Signal* signal,
   }
   regApiPtr->immediateTriggerId = RNIL;
 
-  tc_clearbit(regApiPtr->m_flags,
-              ApiConnectRecord::TF_DEFERRED_CONSTRAINTS);
-  tc_clearbit(regApiPtr->m_flags,
-              ApiConnectRecord::TF_DISABLE_FK_CONSTRAINTS);
   c_counters.ctransCount++;
 
 #ifdef ERROR_INSERT
@@ -3380,6 +3391,7 @@ void Dbtc::initApiConnectRec(Signal* signal,
   regApiPtr->m_outstanding_fire_trig_req = 0;
   regApiPtr->m_write_count = 0;
   regApiPtr->m_exec_write_count = 0;
+  regApiPtr->m_simple_read_count = 0;
   regApiPtr->m_firstTcConnectPtrI_FT = RNIL;
   regApiPtr->m_lastTcConnectPtrI_FT = RNIL;
 }//Dbtc::initApiConnectRec()
@@ -3576,18 +3588,57 @@ void Dbtc::execTCKEYREQ(Signal* signal)
   Uint32 TexecFlag =
     TcKeyReq::getExecuteFlag(Treqinfo) ? ApiConnectRecord::TF_EXEC_FLAG : 0;
 
+  /**
+   * regApiPtr->m_special_op_flags is != 0 if TCKEYREQ is operated on behalf
+   * of index operation, trigger operation, that is the sender of TCKEYREQ
+   * is a direct signal from DBTC. This flag is read and immediately reset,
+   * the flags will be moved to regTcPtr->m_special_op_flags.
+   *
+   * The flags that DBTC can set are:
+   * SOF_INDEX_TABLE_READ: we are issuing a read of a unique index table.
+   * SOF_TRIGGER: We are executing a trigger operation (also set when reorg
+   *              trigger is set or fully replicated trigger).
+   * SOF_REORG_TRIGGER: We are executing a reorg trigger operation
+   * SOF_FULLY_REPLICATED_TRIGGER: We are executing a trigger for a fully
+   *                               replicated table maintenance operation.
+   *
+   * SOF_DEFERRED_UK_TRIGGER and SOF_DEFERRED_FK_TRIGGER is set in
+   * regTcPtr->m_special_op_flags when LQHKEYCONF signals that a trigger was
+   * fired when executing the LQHKEYREQ request. It also sets those flags
+   * in regApiPtr->m_flags at the same time in this case.
+   * The same thing happens when we execute FIRE_TRIG_CONF we can get an
+   * indication that FIRE_TRIG_REQ in DBLQH fired another trigger in the
+   * same flags.
+   *
+   * These deferred trigger flags are handled in the deferred trigger
+   * execution phase at the end of the transaction.
+   *
+   * SOF_FK_READ_COMMITTED is never set and is thus no longer in use.
+   *
+   * The SOF_REORG_COPY flag, SOF_REORG_DELETE flag are only set when
+   * operation originates from DBUTIL. SOF_UTIL_FLAG is set by DBTC when the
+   * TCKEYREQ originates from DBUTIL.
+   *
+   * SOF_REORG_MOVING is set dependent on response from DBDIH during a reorg.
+   *
+   * SOF_BATCH_SAFE is set from the BatchSafe flag in TCKEYREQ.
+   * SOF_BATCH_UNSAFE is set from the BatchUnsafe flag in TCKEYREQ.
+   */
   Uint16 Tspecial_op_flags = regApiPtr->m_special_op_flags;
   bool isIndexOpReturn = tc_testbit(regApiPtr->m_flags,
                                     ApiConnectRecord::TF_INDEX_OP_RETURN);
   bool isExecutingTrigger = Tspecial_op_flags & TcConnectRecord::SOF_TRIGGER;
   regApiPtr->m_special_op_flags = 0; // Reset marker
   Uint32 prevExecFlag = regApiPtr->m_flags & ApiConnectRecord::TF_EXEC_FLAG;
-  regApiPtr->m_flags |= TexecFlag;
-  TableRecordPtr localTabptr;
-  localTabptr.i = TtabIndex;
-  localTabptr.p = &tableRecord[TtabIndex];
-  if (prevExecFlag)
+  if ((!(isExecutingTrigger || isIndexOpReturn)) && prevExecFlag)
   {
+    /**
+     * Only operations originating from NDB API with exec flag not
+     * set will clear the Execute flag. This is the first signal
+     * in a batch. If TexecFlag is also set it is the one and the
+     * only signal in this batch.
+     */
+    jamDebug();
     /**
      * Count the number of writes in the same execution batch. Given that
      * the previous operation had the last flag set, this operation is the
@@ -3602,7 +3653,26 @@ void Dbtc::execTCKEYREQ(Signal* signal)
                           instance(),
                           regApiPtr->m_write_count));
     regApiPtr->m_exec_write_count = 0;
+    regApiPtr->m_simple_read_count = 0;
+    Uint32 flags = regApiPtr->m_flags;
+    flags &= ~ApiConnectRecord::TF_EXEC_FLAG;
+    flags &= ~ApiConnectRecord::TF_SINGLE_EXEC_FLAG;
+    if (TexecFlag)
+    {
+      jamDebug();
+      flags |= TexecFlag;
+      flags |= ApiConnectRecord::TF_SINGLE_EXEC_FLAG;
+    }
+    regApiPtr->m_flags = flags;
   }
+  else
+  {
+    jamDebug();
+    regApiPtr->m_flags |= TexecFlag;
+  }
+  TableRecordPtr localTabptr;
+  localTabptr.i = TtabIndex;
+  localTabptr.p = &tableRecord[TtabIndex];
   switch (regApiPtr->apiConnectstate) {
   case CS_CONNECTED:{
     if (likely(TstartFlag == 1 &&
@@ -4045,18 +4115,30 @@ void Dbtc::execTCKEYREQ(Signal* signal)
 
   Uint8 TexecuteFlag        = TexecFlag;
   Uint8 Treorg              = TcKeyReq::getReorgFlag(Treqinfo);
+  Uint8 batchSafe           = TcKeyReq::getBatchSafeFlag(Treqinfo);
+  Uint8 batchUnsafe         = TcKeyReq::getBatchUnsafeFlag(Treqinfo);
   if (unlikely(Treorg))
   {
+    /* Make sure to not lose the SOF_UTIL_FLAG here */
     if (TOperationType == ZWRITE)
-      regTcPtr->m_special_op_flags = TcConnectRecord::SOF_REORG_COPY;
+      regTcPtr->m_special_op_flags |= TcConnectRecord::SOF_REORG_COPY;
     else if (TOperationType == ZDELETE)
-      regTcPtr->m_special_op_flags = TcConnectRecord::SOF_REORG_DELETE;
+      regTcPtr->m_special_op_flags |= TcConnectRecord::SOF_REORG_DELETE;
     else
     {
       ndbassert(false);
     }
   }
-  
+  /* Not logical to set both of those flags. */
+  if (unlikely(batchSafe))
+  {
+    regTcPtr->m_special_op_flags |= TcConnectRecord::SOF_BATCH_SAFE;
+  }
+  else if (unlikely(batchUnsafe))
+  {
+    regTcPtr->m_special_op_flags |= TcConnectRecord::SOF_BATCH_UNSAFE;
+  }
+ 
   const Uint8 TViaSPJFlag   = TcKeyReq::getViaSPJFlag(Treqinfo);
   const Uint8 Tqueue        = TcKeyReq::getQueueOnRedoProblemFlag(Treqinfo);
 
@@ -4203,6 +4285,11 @@ void Dbtc::execTCKEYREQ(Signal* signal)
       }
       regTcPtr->m_overtakeable_operation = 1;
       m_concurrent_overtakeable_operations++;
+    }
+    else
+    {
+      jamDebug();
+      regApiPtr->m_simple_read_count++;
     }
   }
   else
@@ -4641,7 +4728,90 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
     Uint8 TopSimple = regTcPtr->opSimple;
     Uint8 TopDirty = regTcPtr->dirtyOp;
     bool checkingFKConstraint = Tspecial_op_flags & TcConnectRecord::SOF_TRIGGER;
+    Uint32 single_exec_flag = regApiPtr->m_flags &
+                               ApiConnectRecord::TF_SINGLE_EXEC_FLAG;
 
+    bool batchUnsafe = false;
+    if ((((regTcPtr->m_special_op_flags &
+           TcConnectRecord::SOF_BATCH_SAFE) == 0) &&
+           (!regApiPtr->isExecutingDeferredTriggers()) &&
+           (single_exec_flag != 0) &&
+            Tdata3 != 0))
+    {
+      /**
+       * Simple/CommittedReads that are part of batch operations must use
+       * DBLQH to read and must use the primary node. All other operations
+       * will always use the primary node for first update or for the read
+       * to ensure that we always lock the Primary Replica first. We check
+       * here for all read operations since these operations will anyways
+       * later set the receiving block to DBLQH.
+       *
+       * If a read operation is part of a batch and it is not the last
+       * operation in the batch it means that writes to the same row could
+       * have preceded it in the batch or could follow later in the batch.
+       *
+       * In this case we can only guarantee order of execution if the
+       * reads and the writes on one row is sent to the same thread from
+       * DBTC. The natural choice here is to ensure that we send it to
+       * the owning LDM thread in the primary node. This is where writes
+       * are sent, thus also reads should be sent there.
+       *
+       * Some time in the future we could decide on a different scheme if
+       * also writes can be sent to query threads. But that problem will be
+       * solved when and if that happens.
+       *
+       * Thus unless the BatchSafe flag is set and no Exec flag is set we
+       * set the block number to DBLQH to avoid scheduling it on a query
+       * thread and we will avoid using any backup replica for the read.
+       *
+       * If the Exec flag is set then we know how many other operations of
+       * various types that exist in the batch. If all other operations in
+       * the batch are read operations then we are fairly safe that it is
+       * safe to run those read operations using any node and any thread.
+       * The only risk is that the NDB API uses the asynchronous NDB API
+       * and starts new operations before this batch is completed. This
+       * is a highly unusual manner of operating and there is no known
+       * such implementations, if any use this manner of operating one can
+       * hope that they take into account the fact that this could lead to
+       * operations not being executed in the order they were issued to
+       * RonDB. Thus we will allow use of query threads and backup replicas
+       * in this case.
+       *
+       * We add another flag in the TCKEYREQ protocol to handle this special
+       * situation if the user for some reason want to use this programming
+       * method without ensuring that the operations can execute in parallel.
+       * He can set the flag BatchUnsafe to indicate this manner of executing.
+       *
+       * There is yet one more issue to handle with batch operations. This is
+       * when the last operation in the batch has set the Commit flag and
+       * the batch contains Simple Reads or Committed Reads. In this case we
+       * need to ensure that also Commit operations are sent to the primary
+       * directly from DBTC. This means using the Low Latency Commit Protocol
+       * where the Commits are sent in parallel to all replicas.
+       *
+       * Dependent operations such as reads after Unique Index lookups,
+       * triggers of various kinds will always set batchUnsafe flag since
+       * these operations will never set the Execute flag. It would be
+       * very hard to control interactions using those operations using
+       * backup replicas and query threads since these can rearrange order
+       * of executions in unexpected ways.
+       */
+      Uint32 exec_flag =
+        tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG);
+      if (exec_flag == 0 ||
+          regApiPtr->m_exec_write_count > 0 ||
+          ((regTcPtr->m_special_op_flags &
+            TcConnectRecord::SOF_BATCH_UNSAFE) != 0))
+      {
+        jamDebug();
+        /**
+         * Since batching isn't safe, use primary replica to read and don't
+         * use the query thread to execute the read.
+         */
+        batchUnsafe = true;
+        regTcPtr->recBlockNo = DBLQH;
+      }
+    }
     regTcPtr->m_special_op_flags &= ~TcConnectRecord::SOF_REORG_MOVING;
     /**
      * As an optimization, we may read from a local backup replica
@@ -4662,6 +4832,7 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
      */
     if (regTcPtr->tcNodedata[0] != cownNodeid &&  // Primary replica is remote, and
         !checkingFKConstraint &&                  // Not verifying a FK-constraint.
+        !batchUnsafe &&                           // Not an unsafe batched read
         ((TopSimple != 0 && TopDirty == 0) ||                        // 1)
          (TreadBackup != 0 && (TopSimple != 0 || TopDirty != 0)) ||  // 2)
          (TreadBackup != 0 && regCachePtr->m_read_committed_base)))  // 3)
@@ -4717,7 +4888,7 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
     if (regTcPtr->tcNodedata[0] == getOwnNodeId())
       c_counters.clocalReadCount++;
 #ifdef ERROR_INSERT
-    else if (ERROR_INSERTED(8083))
+    else if (ERROR_INSERTED(8083) && !batchUnsafe)
     {
       ndbabort();  // Only node-local reads
     }
@@ -4986,7 +5157,6 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
   UintR tslrAttrLen;
   UintR Tdata10;
   TcConnectRecord * const regTcPtr = tcConnectptr.p;
-  Uint32 version = getNodeInfo(refToNode(TBRef)).m_version;
   UintR sig0, sig1, sig2, sig3, sig4, sig5, sig6;
 #ifdef ERROR_INSERT
   if (ERROR_INSERTED(8002)) {
@@ -5185,78 +5355,95 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
       handle.m_ptr[ LqhKeyReq::AttrInfoSectionNum ]= attrInfoSection;
       handle.m_cnt= 2;
     }
-    if (ndbd_frag_lqhkeyreq(version))
+    Uint32 blockNo = refToMain(TBRef);
+    Uint32 nodeId = refToNode(TBRef);
+    /**
+     * We don't support versions without support for Query threads, we
+     * only support version 8.0.21 and upwards.
+     */
+    while (qt_likely(blockNo == V_QUERY))
     {
-      jamDebug();
-      Uint32 blockNo = refToMain(TBRef);
-      if (qt_likely(blockNo == V_QUERY))
+      if ((LqhKeyReq::getOperation(lqhKeyReq->requestInfo) != ZREAD) ||
+          (!LqhKeyReq::getDirtyFlag(lqhKeyReq->requestInfo)) ||
+          (!LqhKeyReq::getNoDiskFlag(lqhKeyReq->requestInfo)))
       {
-        Uint32 nodeId = refToNode(TBRef);
-        if (LqhKeyReq::getDirtyFlag(lqhKeyReq->requestInfo) &&
-            LqhKeyReq::getNoDiskFlag(lqhKeyReq->requestInfo) &&
-            (LqhKeyReq::getOperation(lqhKeyReq->requestInfo) == ZREAD) &&
-            (regApiPtr->m_exec_write_count == 0))
+        jamDebug();
+        /* Either 1) or 2) below is false */
+        TBRef = numberToRef(DBLQH, refToInstance(TBRef), nodeId);
+        break;
+      }
+      /**
+       * We allow the use of Query threads when
+       * 1) The operation is a dirty read operation
+       * 2) The operation is not reading from disk
+       * 3) The transaction hasn't started the Commit processing with at
+       *    least one write operation. The problem here is that even if
+       *    the read is the only operation in the batch, the Commit will
+       *    be sent in parallel to the Dirty Read operation. To ensure
+       *    that the read is performed we need to ensure that the read
+       *    isn't using the query thread, actually we even need to ensure
+       *    that it reads from the last Lqh node to ensure that it gets
+       *    there before the Commit message arrives at this node. If we
+       *    send to any other node we might have the Commit messages
+       *    race the Dirty read message since we use Linear Commit
+       *    processing.
+       * 4) The application has verified that Batched operations are safe
+       *    to use. This means that it is safe to use the query thread and
+       *    any node to perform the read since the appplication has declared
+       *    that the batch is a read only batch or the read set and the
+       *    write set of rows are disjoint.
+       * 5) The exec flag is set and no writes have been performed in
+       *    this batch of operations.
+       *    The transaction hasn't performed any writes yet
+       *    in the current execution batch. The m_exec_write_count
+       *    check ensures that we can perform dirty reads of our
+       *    own writes in the same execution batch, this will not
+       *    work if the write and the dirty read can be scheduled
+       *    onto different threads.
+       *
+       * Condition 4) and 5) is checked in the code previously before checking
+       * if we should use Query threads and allow read from backup replicas.
+       * Thus if 4) or 5) is true we will have blockNo set to DBLQH when we
+       * arrive here.
+       */
+      jamDebug();
+
+      if (nodeId == getOwnNodeId())
+      {
+        Uint32 instance_no = refToInstance(TBRef);
+        ndbrequire(isNdbMtLqh());
+        jam();
+        TBRef = get_lqhkeyreq_ref(&m_distribution_handle, instance_no);
+      }
+      else
+      {
+        jam();
+        Uint32 signal_size = 0;
+        for (Uint32 i = 0; i < handle.m_cnt; i++)
         {
-          /**
-           * We allow the use of Query threads when
-           * 1) The operation is a dirty read operation
-           * 2) The operation is not reading from disk
-           * 3) The transaction hasn't performed any writes yet
-           *    in the current execution batch. The m_exec_write_count
-           *    check ensures that we can perform dirty reads of our
-           *    own writes in the same execution batch, this will not
-           *    work if the write and the dirty read can be scheduled
-           *    onto different threads.
-           */
-          if (nodeId == getOwnNodeId())
-          {
-            Uint32 instance_no = refToInstance(TBRef);
-            ndbrequire(isNdbMtLqh());
-            jam();
-            TBRef = get_lqhkeyreq_ref(&m_distribution_handle, instance_no);
-          }
-          else
-          {
-            jam();
-            Uint32 signal_size = 0;
-            for (Uint32 i = 0; i < handle.m_cnt; i++)
-            {
-              signal_size += handle.m_ptr[i].sz;
-            }
-            signal_size += (LqhKeyReq::FixedSignalLength + nextPos);
-            if (signal_size > MAX_SIZE_SINGLE_SIGNAL)
-            {
-              jam();
-              /**
-               * The signal will be sent as a fragmented signals, these signals
-               * cannot be handled using virtual blocks. We pick the LDM
-               * thread instance in the LDM group we are targeting.
-               */
-              TBRef = numberToRef(DBLQH, refToInstance(TBRef), nodeId);
-            }
-          }
+          signal_size += handle.m_ptr[i].sz;
         }
-        else
+        signal_size += (LqhKeyReq::FixedSignalLength + nextPos);
+        if (signal_size > MAX_SIZE_SINGLE_SIGNAL)
         {
+          jam();
+          /**
+           * The signal will be sent as a fragmented signals, these signals
+           * cannot be handled using virtual blocks. We pick the LDM
+           * thread instance in the LDM group we are targeting.
+           */
           TBRef = numberToRef(DBLQH, refToInstance(TBRef), nodeId);
         }
       }
-      sendBatchedFragmentedSignal(TBRef,
-                                  GSN_LQHKEYREQ,
-                                  signal,
-                                  LqhKeyReq::FixedSignalLength + nextPos,
-                                  JBB,
-                                  &handle,
-                                  false);
+      break;
     }
-    else
-    {
-      jamDebug();
-      ndbrequire(refToMain(TBRef) == DBLQH || refToMain(TBRef) == DBSPJ);
-      sendSignal(TBRef, GSN_LQHKEYREQ, signal,
-                 nextPos + LqhKeyReq::FixedSignalLength, JBB,
-                 &handle);
-    }
+    sendBatchedFragmentedSignal(TBRef,
+                                GSN_LQHKEYREQ,
+                                signal,
+                                LqhKeyReq::FixedSignalLength + nextPos,
+                                JBB,
+                                &handle,
+                                false);
 
     /* Long sections were freed as part of sendSignal */
     ndbassert( handle.m_cnt == 0 );
@@ -5898,7 +6085,8 @@ void Dbtc::execLQHKEYCONF(Signal* signal)
   Uint32 Toperation = regTcPtr->operation;
   ConnectionState TapiConnectstate = regApiPtr.p->apiConnectstate;
 
-  if (unlikely(TapiConnectstate == CS_ABORTING))
+  if (unlikely(TapiConnectstate == CS_ABORTING ||
+               TapiConnectstate == CS_RELEASE))
   {
     jam();
     warningReport(signal, 27, tcConnectptr.i);
@@ -6611,6 +6799,12 @@ void Dbtc::diverify010Lab(Signal* signal, ApiConnectRecordPtr const apiConnectpt
     /**
      * If trans has deferred triggers, let them fire just before
      *   transaction starts to commit
+     *
+     * During this phase we can perform a bunch of reads where
+     * we check the consistency of the transaction. These
+     * operations are safe to execute in backup replicas and in
+     * query threads. There should be no specific ordering
+     * required at this point in a transaction.
      */
     startSendFireTrigReq(signal, apiConnectptr);
     return;
@@ -6843,7 +7037,7 @@ void Dbtc::execDIVERIFYCONF(Signal* signal)
     return;
   }
 
-  if (!m_low_latency_trans)
+  if (!m_low_latency_trans && regApiPtr->m_simple_read_count == 0)
   {
     LocalTcConnectRecord_fifo tcConList(tcConnectRecord, regApiPtr->tcConnect);
     tcConList.first(tcConnectptr);
@@ -6854,6 +7048,12 @@ void Dbtc::execDIVERIFYCONF(Signal* signal)
   }
   else
   {
+    /**
+     * Use this when configured for low latency and to provide proper read your
+     * own properties even for Simple Reads used within a transaction and issued
+     * during the batch when the last operation set the Commit bit in
+     * TCKEYREQ.
+     */
     jam();
     init_setupFailData(signal,
                        apiConnectptr,
@@ -8572,6 +8772,12 @@ void Dbtc::execLQHKEYREF(Signal* signal)
         jam();
         goto do_abort;
       }
+      if (unlikely(TapiConnectstate == CS_RELEASE))
+      {
+        jam();
+	warningReport(signal, 25, tcConnectptr.i);
+        return;
+      }
 
       if (triggeringOp != RNIL) {
         jam();
@@ -8795,7 +9001,8 @@ void Dbtc::execLQHKEYREF(Signal* signal)
 	  return;
 	}
         else if (regApiPtr->tckeyrec > 0 ||
-                 tc_testbit(regApiPtr->m_flags, ApiConnectRecord::TF_EXEC_FLAG))
+                 tc_testbit(regApiPtr->m_flags,
+                            ApiConnectRecord::TF_EXEC_FLAG))
         {
 	  jam();
           sendtckeyconf(signal, 2, apiConnectptr);
@@ -8884,6 +9091,8 @@ void Dbtc::execTC_COMMITREQ(Signal* signal)
     Uint32 errorCode           = 0;
 
     regApiPtr->m_flags |= ApiConnectRecord::TF_EXEC_FLAG;
+    regApiPtr->m_simple_read_count = 0;
+    regApiPtr->m_exec_write_count = 0;
     regApiPtr->m_tc_hbrep_timer = ctcTimer;
     switch (regApiPtr->apiConnectstate) {
     case CS_STARTED:
@@ -8957,9 +9166,10 @@ void Dbtc::execTC_COMMITREQ(Signal* signal)
       // yet.
       /***********************************************************************/
       errorCode = ZCOMMITINPROGRESS;
+      jam();
       break;
     case CS_ABORTING:
-      jam();
+    case CS_RELEASE:
       errorCode = regApiPtr->returncode ? 
 	regApiPtr->returncode : ZABORTINPROGRESS;
       break;
@@ -9576,7 +9786,14 @@ void Dbtc::abortErrorLab(Signal* signal, ApiConnectRecordPtr const apiConnectptr
 {
   ptrGuard(apiConnectptr);
   ApiConnectRecord * transP = apiConnectptr.p;
-  if (transP->apiConnectstate == CS_ABORTING && transP->abortState != AS_IDLE){
+  if (unlikely((transP->apiConnectstate == CS_ABORTING &&
+                transP->abortState != AS_IDLE)))
+  {
+    jam();
+    return;
+  }
+  if (unlikely(transP->apiConnectstate == CS_RELEASE))
+  {
     jam();
     return;
   }
@@ -9594,6 +9811,11 @@ void Dbtc::abort010Lab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
   ApiConnectRecord * transP = apiConnectptr.p;
   if (unlikely(transP->apiConnectstate == CS_ABORTING &&
                transP->abortState != AS_IDLE))
+  {
+    jam();
+    return;
+  }
+  if (unlikely(transP->apiConnectstate == CS_RELEASE))
   {
     jam();
     return;
@@ -14929,7 +15151,8 @@ void Dbtc::execSCAN_TABREQ(Signal* signal)
     {
       jamDebug();
       
-      if (unlikely(buddyApiPtr.p->apiConnectstate == CS_ABORTING))
+      if (unlikely(buddyApiPtr.p->apiConnectstate == CS_ABORTING ||
+                   buddyApiPtr.p->apiConnectstate == CS_RELEASE))
       {
 	// transaction has been aborted
 	jam();
@@ -18868,8 +19091,13 @@ Dbtc::execDUMP_STATE_ORD(Signal* signal)
       /* Finished with this apiNode, output info, if any */
 //      if (seized_count > 0)
       {
-        ndbout_c("  Api node %u connect records seized : %u stateless : %u stateful : %u scan : %u",
-                 apiNode, seized_count, stateless_count, stateful_count, scan_count);
+        ndbout_c("  Api node %u connect records seized : %u stateless :"
+                 " %u stateful : %u scan : %u",
+                 apiNode,
+                 seized_count,
+                 stateless_count,
+                 stateful_count,
+                 scan_count);
         seized_count = 0;
         stateless_count = 0;
         stateful_count = 0;
@@ -19532,6 +19760,7 @@ Dbtc::ndbinfo_write_trans(Ndbinfo::Row & row, ApiConnectRecordPtr transPtr)
   case CS_COMMIT_SENT:
   case CS_COMPLETE_SENT:
   case CS_ABORTING:
+  case CS_RESTART:
     outstanding = transPtr.p->counter;
     break;
   case CS_PREPARE_TO_COMMIT:
@@ -19554,8 +19783,6 @@ Dbtc::ndbinfo_write_trans(Ndbinfo::Row & row, ApiConnectRecordPtr transPtr)
   case CS_FAIL_ABORTING:
   case CS_FAIL_COMPLETED:
     // not easily computed :_(
-    break;
-  case CS_RESTART:
     break;
   }
 
@@ -19701,6 +19928,7 @@ Dbtc::match_and_print(Signal* signal, ApiConnectRecordPtr apiPtr)
   case CS_RESTART:
   case CS_FAIL_ABORTED:
   case CS_DISCONNECTED:
+  case CS_RELEASE:
   default:
     BaseString::snprintf(state, sizeof(state), 
 			 "%u", apiPtr.p->apiConnectstate);
@@ -20596,6 +20824,12 @@ void Dbtc::execTCINDXREQ(Signal* signal)
     return;
   }//if
   ApiConnectRecord * const regApiPtr = transPtr.p;  
+  if (unlikely(regApiPtr->apiConnectstate == CS_RELEASE))
+  {
+    warningHandlerLab(signal, __LINE__);
+    releaseSections(handle);
+    return;
+  }
   // Seize index operation
   TcIndexOperationPtr indexOpPtr;
 
@@ -20671,7 +20905,8 @@ void Dbtc::execTCINDXREQ(Signal* signal)
     initApiConnectRec(signal, regApiPtr, true);
     regApiPtr->apiConnectstate = CS_STARTED;
   }//if (startFlag == 1 && ...
-  else if (regApiPtr->apiConnectstate == CS_ABORTING)
+  else if (regApiPtr->apiConnectstate == CS_ABORTING ||
+           regApiPtr->apiConnectstate == CS_RELEASE)
   {
     jam();
     /*
@@ -20681,7 +20916,7 @@ void Dbtc::execTCINDXREQ(Signal* signal)
       handling. Any received TCKEYREF will be forwarded
       to the original sender as a TCINDXREF.
      */
-  }//if (regApiPtr->apiConnectstate == CS_ABORTING)
+  }
 
   if (getNodeState().startLevel == NodeState::SL_SINGLEUSER &&
       getNodeState().getSingleUserApi() !=
@@ -20854,7 +21089,8 @@ void Dbtc::execINDXKEYINFO(Signal* signal)
     return;
   }
 
-  if (regApiPtr->apiConnectstate == CS_ABORTING)
+  if (regApiPtr->apiConnectstate == CS_ABORTING ||
+      regApiPtr->apiConnectstate == CS_RELEASE)
   {
     jam();
     return;
@@ -20902,7 +21138,8 @@ void Dbtc::execINDXATTRINFO(Signal* signal)
     return;
   }
 
-  if (regApiPtr->apiConnectstate == CS_ABORTING)
+  if (regApiPtr->apiConnectstate == CS_ABORTING ||
+      regApiPtr->apiConnectstate == CS_RELEASE)
   {
     jam();
     return;
@@ -21640,7 +21877,8 @@ void Dbtc::readIndexTable(Signal* signal,
   EXECUTE_DIRECT(DBTC, GSN_TCKEYREQ, signal, TcKeyReq::StaticLength);
   jamEntry();
 
-  if (unlikely(regApiPtr->apiConnectstate == CS_ABORTING))
+  if (unlikely(regApiPtr->apiConnectstate == CS_ABORTING ||
+               regApiPtr->apiConnectstate == CS_RELEASE))
   {
     jam();
   }
@@ -21798,6 +22036,9 @@ void Dbtc::executeIndexOperation(Signal* signal,
   }
   releaseIndexOperation(regApiPtr, indexOp);
 
+  ndbassert(tc_testbit(regApiPtr->m_flags,
+                       ApiConnectRecord::TF_INDEX_OP_RETURN));
+
   /* Execute TCKEYREQ now - it is now responsible for freeing
    * the KeyInfo and AttrInfo sections 
    */
@@ -21811,7 +22052,8 @@ void Dbtc::executeIndexOperation(Signal* signal,
   }
 #endif
 
-  if (unlikely(regApiPtr->apiConnectstate == CS_ABORTING))
+  if (unlikely(regApiPtr->apiConnectstate == CS_ABORTING ||
+               regApiPtr->apiConnectstate == CS_RELEASE))
   {
     // TODO : Presumably the abort cleans up the operation
     jam();
@@ -22211,7 +22453,8 @@ void Dbtc::executeTriggers(Signal* signal, ApiConnectRecordPtr const* transPtr)
         /* Transaction has started aborting.  
          * Forget about unprocessed triggers
          */
-        ndbrequire(regApiPtr->apiConnectstate == CS_ABORTING);
+        ndbrequire(regApiPtr->apiConnectstate == CS_ABORTING ||
+                   regApiPtr->apiConnectstate == CS_RELEASE);
       }
     }
   }
@@ -22730,7 +22973,8 @@ Dbtc::fk_execTCINDXREQ(Signal* signal,
   readIndexTable(signal, transPtr, indexOpPtr.p,
                  transPtr.p->m_special_op_flags);
 
-  if (unlikely(transPtr.p->apiConnectstate == CS_ABORTING))
+  if (unlikely(transPtr.p->apiConnectstate == CS_ABORTING ||
+               transPtr.p->apiConnectstate == CS_RELEASE))
   {
     jam();
   }
@@ -22990,7 +23234,8 @@ Dbtc::fk_scanFromChildTable(Signal* signal,
 
   signal->header.theSendersBlockRef = reference();
   execSCAN_TABREQ(signal);
-  if (scanApiConnectPtr.p->apiConnectstate == CS_ABORTING)
+  if (scanApiConnectPtr.p->apiConnectstate == CS_ABORTING ||
+      scanApiConnectPtr.p->apiConnectstate == CS_RELEASE)
   {
     goto abort_trans;
   }
@@ -23086,7 +23331,8 @@ Dbtc::execKEYINFO20(Signal* signal)
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(transPtr)) ||
       unlikely(! (transId[0] == transPtr.p->transid[0] &&
                   transId[1] == transPtr.p->transid[1] &&
-                  transPtr.p->apiConnectstate != CS_ABORTING)))
+                  transPtr.p->apiConnectstate != CS_ABORTING &&
+                  transPtr.p->apiConnectstate != CS_RELEASE)))
   {
     jam();
 
@@ -23276,7 +23522,8 @@ Dbtc::execSCAN_TABCONF(Signal* signal)
   if (unlikely(!c_apiConnectRecordPool.getUncheckedPtrRW(orgApiConnectPtr)) ||
       unlikely(! (transId[0] == orgApiConnectPtr.p->transid[0] &&
                   transId[1] == orgApiConnectPtr.p->transid[1] &&
-                  orgApiConnectPtr.p->apiConnectstate != CS_ABORTING)))
+                  orgApiConnectPtr.p->apiConnectstate != CS_ABORTING &&
+                  orgApiConnectPtr.p->apiConnectstate != CS_RELEASE)))
   {
     jam();
 
@@ -23485,7 +23732,8 @@ Dbtc::fk_scanFromChildTable_done(Signal* signal,
   if (!c_apiConnectRecordPool.getValidPtr(orgApiConnectPtr) ||
       ! (transId[0] == orgApiConnectPtr.p->transid[0] &&
          transId[1] == orgApiConnectPtr.p->transid[1] &&
-         orgApiConnectPtr.p->apiConnectstate != CS_ABORTING))
+         orgApiConnectPtr.p->apiConnectstate != CS_ABORTING &&
+         orgApiConnectPtr.p->apiConnectstate != CS_RELEASE))
   {
     jam();
     /**
