@@ -1374,9 +1374,14 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
   Uint32 list = ndb_log2(cnt - 1);
   Uint32 min_list = ndb_log2(min - 1);
 
+  /**
+   * We cannot start at 16, this would stop the search
+   * immediately which is not correct.
+   */
+  list = MIN(list, 15);
+  min_list = MIN(min_list, 15);
   assert(cnt);
-  assert(list <= 16);
-  assert(list >= min_list);
+  require(list >= min_list);
   i = list;
   bool first_up = true;
   bool first_down = false;
@@ -1396,9 +1401,8 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
 /* ---------------------------------------------------------------- */
       Uint32 sz = remove_free_list(zone, start, i);
       Uint32 extra = sz - cnt;
-      if (first_up || second_up || sz >= cnt)
+      if (sz >= cnt)
       {
-        assert(sz >= cnt);
         * pages = cnt;
       }
       else
@@ -1435,8 +1439,16 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
     }
     if (first_up)
     {
-      if ((i == (TWO_MBYTE_LOG - 1) && list > min_list) ||
-          (i == 15 && list != min_list && list >= TWO_MBYTE_LOG))
+      if (list == min_list)
+      {
+        /**
+         * When list is equal to min_list there is no option to go for smaller
+         * allocations since the minimum is the same as the requested.
+         */
+        i++;
+      }
+      else if ((i == (TWO_MBYTE_LOG - 1)) ||
+          (i == 15 && list >= TWO_MBYTE_LOG))
       {
         /**
          * We have searched and failed to find the number of pages
@@ -1472,6 +1484,7 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
          */
         first_up = false;
         first_down = true;
+        require(list > 0); // Since list > min_list
         i = list - 1;
       }
       else
@@ -1485,12 +1498,24 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
       {
         i--;
       }
-      else if (list >= TWO_MBYTE_LOG && list != min_list)
+      else if (list >= TWO_MBYTE_LOG)
       {
+        /**
+         * We have reached the min_list level and still haven't found
+         * any empty area. Since we started at list and went to 15
+         * already, we have already checked all places and thus we
+         * won't find any memory areas by rechecking. So break and
+         * report no memory found.
+         */
         break;
       }
       else
       {
+        /**
+         * We have reached min_list and found no small memory areas.
+         * We still haven't looked in the large memory areas, so time
+         * to do this now.
+         */
         i = TWO_MBYTE_LOG;
         first_down = false;
         second_up = true;
@@ -1805,7 +1830,6 @@ Ndbd_mem_manager::alloc_pages(Uint32 type,
     mt_mem_manager_lock();
 
   Uint32 req = *cnt;
-  Uint32 orig_req = req;
   const Uint32 free_res =
     m_resource_limits.get_resource_free_reserved(idx, false);
   if (free_res < req)
@@ -1846,7 +1870,6 @@ Ndbd_mem_manager::alloc_pages(Uint32 type,
     req = 0;
   }
   * cnt = req;
-  require(req <= orig_req && req > 0);
   m_resource_limits.check();
   if (req == 0 && unlikely(m_dump_on_alloc_fail))
   {
