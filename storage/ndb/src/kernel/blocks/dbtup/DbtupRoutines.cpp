@@ -403,6 +403,7 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct,
     AttributeHeader::init((Uint32 *)&outBuffer[tmpAttrBufIndex],
 			  attributeId, 0);
     ahOut= (AttributeHeader*)&outBuffer[tmpAttrBufIndex];
+    thrjamDataDebug(req_struct->jamBuffer, tmpAttrBufIndex);
     req_struct->out_buf_index= tmpAttrBufIndex + 4;
     req_struct->out_buf_bits = 0;
     attr_descr= req_struct->attr_descr;
@@ -732,6 +733,7 @@ Dbtup::varsize_reader(Uint8* outBuffer,
     if (likely(newIndexBuf <= max_read))
     {
       thrjamDebug(req_struct->jamBuffer);
+      thrjamDataDebug(req_struct->jamBuffer, srcBytes);
       ah_out->setByteSize(srcBytes);
       memcpy(dst, srcPtr, srcBytes);
       zero32(dst, srcBytes);
@@ -1805,9 +1807,9 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
   req_struct->in_buf_index= 0;
   req_struct->in_buf_len= inBufLen;
 
-  thrjamDebug(req_struct->jamBuffer);
   while (inBufIndex < inBufLen)
   {
+    thrjamDebug(req_struct->jamBuffer);
     AttributeHeader ahIn(inBuffer[inBufIndex]);
     Uint32 attributeId= ahIn.getAttributeId();
     Uint32 attrDescriptorIndex= attributeId * ZAD_SIZE;
@@ -2266,13 +2268,12 @@ Dbtup::updateVarSizeNotNULL(Uint32* in_buffer,
                             KeyReqStruct *req_struct,
                             Uint64 attrDes)
 {
-  Uint32 var_index;
   Uint32 attrDescriptor = Uint32((attrDes << 32) >> 32);
   Uint32 ind = (AttributeDescriptor::getDiskBased(attrDescriptor)) ?
                 Uint32(DD) : Uint32(MM);
   Uint32 attrDes2 = Uint32(attrDes >>32);
   char *var_data_start= req_struct->m_var_data[ind].m_data_ptr;
-  var_index= AttributeOffset::getOffset(attrDes2);
+  Uint32 var_index= AttributeOffset::getOffset(attrDes2);
   Uint32 idx= req_struct->m_var_data[ind].m_var_len_offset;
   Uint16 *vpos_array= req_struct->m_var_data[ind].m_offset_array_ptr;
   Uint16 offset= vpos_array[var_index];
@@ -2315,16 +2316,22 @@ Dbtup::varsize_updater(Uint32* in_buffer,
   {
     if (!null_ind)
     {
-      thrjamDebug(req_struct->jamBuffer);
 
       if (arrayType == NDB_ARRAYTYPE_SHORT_VAR)
       {
+        thrjamDebug(req_struct->jamBuffer);
         dataLen = 1 + src[0];
       }
       else if (arrayType == NDB_ARRAYTYPE_MEDIUM_VAR)
       {
+        thrjamDebug(req_struct->jamBuffer);
         dataLen = 2 + src[0] + 256 * Uint32(src[1]);
       }
+      else
+      {
+        thrjamDebug(req_struct->jamBuffer);
+      }
+      thrjamDataDebug(req_struct->jamBuffer, dataLen);
             
       if (likely(dataLen == size_in_bytes))
       {

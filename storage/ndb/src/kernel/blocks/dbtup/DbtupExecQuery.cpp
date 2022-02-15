@@ -4702,7 +4702,8 @@ int Dbtup::interpreterNextLab(Signal* signal,
  * dst_off_ptr where to write attribute offsets
  * src         pointer to packed attributes
  * tabDesc     array of attribute descriptors (used for getting max size)
- * no_of_attr  no of atributes to expand
+ * order       Pointer to variable indicating which attributeId this is
+ * num_vars    no of atributes to expand
  */
 static
 Uint32*
@@ -4712,14 +4713,14 @@ expand_var_part(Dbtup::KeyReqStruct::Var_data *dst,
 		const Uint16* order)
 {
   char* dst_ptr= dst->m_data_ptr;
-  Uint32 no_attr= dst->m_var_len_offset;
+  Uint32 num_vars = dst->m_var_len_offset;
   Uint16* dst_off_ptr= dst->m_offset_array_ptr;
-  Uint16* dst_len_ptr= dst_off_ptr + no_attr;
+  Uint16* dst_len_ptr= dst_off_ptr + num_vars;
   const Uint16* src_off_ptr= (const Uint16*)src;
-  const char* src_ptr= (const char*)(src_off_ptr + no_attr + 1);
+  const char* src_ptr= (const char*)(src_off_ptr + num_vars + 1);
   
   Uint16 tmp= *src_off_ptr++, next_pos, len, max_len, dst_off= 0;
-  for(Uint32 i = 0; i<no_attr; i++)
+  for(Uint32 i = 0; i < num_vars; i++)
   {
     next_pos= *src_off_ptr++;
     len= next_pos - tmp;
@@ -4735,7 +4736,6 @@ expand_var_part(Dbtup::KeyReqStruct::Var_data *dst,
     
     tmp= next_pos;
   }
-  
   return ALIGN_WORD(dst_ptr);
 }
 
@@ -4771,7 +4771,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
 
   req_struct->is_expanded= true;
   order += tabPtrP->m_attributes[MM].m_no_of_fixsize;
-  const Uint32 *src_ptr = dst_ptr;
+  const Uint32 *src_ptr= src->get_end_of_fix_part_ptr(tabPtrP);
 
   // Copy in-memory fixed part
   memcpy(ptr, src, 4*fix_size);
@@ -4876,6 +4876,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
         jamDebug();
         if (! (bits & Tuple_header::COPY_TUPLE))
         {
+          jamDebug();
           /* This is for the initial expansion of a stored row. */
           const Var_part_ref* var_ref = src->get_var_part_ref_ptr(tabPtrP);
           Ptr<Page> var_page;
@@ -4911,7 +4912,6 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
         }
         else
         {
-          jamDebug();
           /* This is for the re-expansion of a shrunken row (update2 ...) */
           Varpart_copy* vp = (Varpart_copy*)src_ptr;
           flex_len = vp->m_len;
@@ -4919,6 +4919,8 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
           step= (Varpart_copy::SZ32 + flex_len); // 1+ is for extra word
           req_struct->m_varpart_page_ptr[MM] = req_struct->m_page_ptr;
           sizes[MM]= flex_len;
+          jamDebug();
+          jamDataDebug(flex_len);
         }
       }
     }
@@ -5204,6 +5206,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       }
       if (! (bits & Tuple_header::COPY_TUPLE))
       {
+        jamDebug();
         Ptr<Page> tmp;
         Var_part_ref* var_ref = ptr->get_var_part_ref_ptr(tabPtrP);
         flex_data= get_ptr(&tmp, * var_ref);
@@ -5223,6 +5226,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       }
       else
       {
+        jamDebug();
         Varpart_copy* vp = (Varpart_copy*)src_ptr;
         flex_len = vp->m_len;
         flex_data = vp->m_data;
@@ -5328,8 +5332,8 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
            * starting at position 0.
            *
            * When updating the varsize column we set the index plus
-           * mm_vars to instead be position of the end of the varsize
-           * column. Thus var_pos_array[mm_vars + i] - var_pos_array[i]
+           * num_vars to instead be position of the end of the varsize
+           * column. Thus var_pos_array[num_vars + i] - var_pos_array[i]
            * is the length of the column. For NULL values both are set
            * to the position of the column and thus length is 0.
            *
@@ -5347,6 +5351,8 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
           off += len;
           src_off_ptr++;
           dst_data_ptr += len;
+          jamDebug();
+          jamDataDebug(len);
         }
         *dst_off_ptr= off;
         dst_ptr = ALIGN_WORD(dst_data_ptr);
@@ -5367,11 +5373,10 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
                                   num_dynvar,
                                   num_dynfix,
                                   ind);
-        ndbassert((Uint32*)dst_ptr <=
-                   ((Uint32*)ptr) + MAX_EXPANDED_TUPLE_SIZE_IN_WORDS);
         order += num_dynfix + num_dynvar;
       }
       Uint32 varpart_len= Uint32(dst_ptr - varstart);
+      ndbassert(varpart_len <= MAX_EXPANDED_TUPLE_SIZE_IN_WORDS);
       vp->m_len = varpart_len;
       if (ind == MM)
       {
@@ -5379,6 +5384,7 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
         if (varpart_len != 0)
         {
           jamDebug();
+          jamDataDebug(varpart_len);
           ptr->m_header_bits |= Tuple_header::VAR_PART;
         }
         else if ((ptr->m_header_bits & Tuple_header::VAR_PART) == 0)
@@ -5407,6 +5413,7 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
         if (varpart_len != 0)
         {
           jamDebug();
+          jamDataDebug(varpart_len);
           ptr->m_header_bits |= Tuple_header::DISK_VAR_PART;
         }
       }
