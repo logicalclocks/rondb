@@ -328,7 +328,7 @@ insert
 into City (Name,CountryCode,District,Population)
 values ('BeiJing','CN','Beijing',2000);
 
---echo # Dropping tablsepace before dropping table should fail
+--echo # Dropping tablespace before dropping table should fail
 --error ER_TABLESPACE_IS_NOT_EMPTY
 drop tablespace ts2;
 

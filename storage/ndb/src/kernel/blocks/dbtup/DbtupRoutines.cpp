@@ -731,6 +731,7 @@ Dbtup::varsize_reader(Uint8* outBuffer,
   {
     if (likely(newIndexBuf <= max_read))
     {
+      thrjamDebug(req_struct->jamBuffer);
       ah_out->setByteSize(srcBytes);
       memcpy(dst, srcPtr, srcBytes);
       zero32(dst, srcBytes);
@@ -760,6 +761,7 @@ Dbtup::varsize_reader(Uint8* outBuffer,
   }
   else
   {
+    thrjamDebug(req_struct->jamBuffer);
     return xfrm_reader(dst, req_struct, ah_out, attrDes, srcPtr, srcBytes);
   }
   
@@ -888,6 +890,7 @@ Dbtup::readVarSizeNotNULL(Uint8* out_buffer,
   const char* src_ptr= req_struct->m_var_data[ind].m_data_ptr+var_attr_pos;
 
   thrjamDebug(req_struct->jamBuffer);
+  thrjamDataDebug(req_struct->jamBuffer, ind);
   return varsize_reader(out_buffer, req_struct, ah_out, attrDes,
                         src_ptr, srcBytes);
 }

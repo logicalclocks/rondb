@@ -5128,7 +5128,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
          * Move past the fixed size columns to set src_ptr to point to
          * where the varsized columns start.
          */
-        ndbrequire(disk_len > fix_header_size);
+        ndbrequire(disk_len >= fix_header_size);
         flex_len = disk_len - fix_header_size;
       }
       else
@@ -5318,7 +5318,10 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
         for (Uint32 i = 0; i < num_vars; i++)
         {
           /**
-           * var_pos_array has 2 parts, the first is index by the
+           * var_pos_array has one index for main memory part and
+           * the second is the disk columns part.
+           *
+           * Each var_pos_array has 2 parts, the first is index by the
            * index of the varsize column, the second is the index
            * plus the number of varsize columns. These were initialised
            * to the position of the start of the column (both of them),
