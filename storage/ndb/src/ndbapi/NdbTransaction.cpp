@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -598,6 +598,10 @@ class OpList
   NdbOperation* m_savedFirst;
   NdbOperation* m_savedLast;
 
+  // Restore saved list items after or
+  // before main list items
+  bool m_savedAfter;
+
 public:
 #ifdef VM_TRACE
   void checkOpInList(const NdbOperation* op)
@@ -625,7 +629,8 @@ public:
     m_listFirst(listFirst),
     m_listLast(listLast),
     m_savedFirst(NULL),
-    m_savedLast(NULL)
+    m_savedLast(NULL),
+    m_savedAfter(true)
   {
 #ifdef VM_TRACE
     checkOpInList(m_listLast);
@@ -647,10 +652,19 @@ public:
 
       if (m_listFirst != NULL)
       {
-        /* Add to end of list */
         assert(m_listLast != NULL);
-        m_listLast->next(m_savedFirst);
-        m_listLast = m_savedLast;
+        if (m_savedAfter)
+        {
+          /* Add saved to end of list */
+          m_listLast->next(m_savedFirst);
+          m_listLast = m_savedLast;
+        }
+        else
+        {
+          /* Add saved to start of list */
+          m_savedLast->next(m_listFirst);
+          m_listFirst = m_savedFirst;
+        }
       }
       else
       {
@@ -688,6 +702,28 @@ public:
 
     op->next(NULL);
     m_listLast = op;
+    m_savedAfter = true;
+  }
+
+  /**
+   * Save everything up to and including
+   * passed op.
+   * Will be restored to start of list
+   * on going out of scope
+   */
+  void saveBeforeAndIncluding(NdbOperation* op)
+  {
+    assert(m_savedFirst == NULL);
+    assert(m_savedLast == NULL);
+#ifdef VM_TRACE
+    checkOpInList(op);
+#endif
+    m_savedFirst = m_listFirst;
+    m_savedLast = op;
+
+    m_listFirst = op->next();
+    op->next(NULL);
+    m_savedAfter = false;
   }
 
   /**
@@ -710,6 +746,7 @@ public:
       m_savedLast = m_listLast;
     }
     m_listFirst = m_listLast = NULL;
+    m_savedAfter = true;
   }
 
   /**
@@ -856,6 +893,16 @@ NdbTransaction::execute(ExecType aTypeOfExec,
 
           /* Prepare this operation + blob ops now */
           {
+            /* Remove already defined ops from consideration for now
+             * for more efficient operation reordering in
+             * Blob preExecute
+             */
+            OpList precedingOps(theFirstOpInList,
+                                theLastOpInList);
+            if (prevOp)
+            {
+              precedingOps.saveBeforeAndIncluding(prevOp);
+            }
             /**
              * Hide following user defined ops for now so that
              * internal blob operations are logically placed
@@ -887,8 +934,8 @@ NdbTransaction::execute(ExecType aTypeOfExec,
                 assert(ba == NdbBlob::BA_DONE);
               }
               tBlob = tBlob->theNext;
-            }
-          }
+            } // while tBlob
+          } // ops lists
         }
       }
 
