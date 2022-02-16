@@ -990,6 +990,15 @@ struct Operationrec {
   Local_key m_tuple_location;
   Local_key m_copy_tuple_location;
 
+  /**
+   * In case we need to allocate a new disk row part we store the new
+   * part in this local key.
+   * The page id is the memory representation of this page, more specifically
+   * its i-value.
+   */
+  Local_key m_new_disk_location;
+  Uint32 m_new_disk_page_id;
+
   /*
    * We keep the record linked to the operation record in LQH.
    * This is needed due to writing of REDO log must be performed
@@ -1095,6 +1104,28 @@ struct Operationrec {
   {
     return opPtrP->op_type;
   }
+
+  Uint32 *get_disk_reference(Tablerec *regTabPtr,
+                             PagePtr diskPagePtr,
+                             Local_key key,
+                             Uint32 & sz)
+  {
+    Uint32 *dst;
+    if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
+    {
+      jam();
+      sz= regTabPtr->m_offsets[DD].m_fix_header_size;
+      dst= ((Fix_page*)diskPagePtr.p)->get_ptr(key.m_page_idx, sz);
+    }
+    else
+    {
+      jam();
+      dst= ((Var_page*)diskPagePtr.p)->get_ptr(key.m_page_idx);
+      sz= ((Var_page*)diskPagePtr.p)->get_entry_len(key.m_page_idx);
+    }
+    return dst;
+  }
+                             
   static constexpr Uint32 DBTUP_OPERATION_RECORD_TRANSIENT_POOL_INDEX = 0;
   typedef Ptr<Operationrec> OperationrecPtr;
   typedef TransientPool<Operationrec> Operationrec_pool;
@@ -1723,7 +1754,7 @@ typedef Ptr<HostBuffer> HostBufferPtr;
     static constexpr Uint32 DISK_ALLOC = 0x00040000; // Is disk part allocated
     static constexpr Uint32 DISK_INLINE = 0x00080000; // Is disk inline
     static constexpr Uint32 ALLOC = 0x00100000; // Is record allocated now
-    static constexpr Uint32 NOT_USED_BIT = 0x00200000; //
+    static constexpr Uint32 DISK_REORG = 0x00200000; //Has disk part been moved
     static constexpr Uint32 MM_GROWN = 0x00400000; // Has MM part grown
     static constexpr Uint32 FREE = 0x00800000; // Is free
     static constexpr Uint32 LCP_SKIP = 0x01000000; // Should not be returned in LCP

@@ -1641,21 +1641,6 @@ Dbtup::disk_page_free(Signal *signal,
                              logfile_group_id,
                              alloc_size);
     
-    DEB_PGMAN((
-      "(%u)disk_page_free:tab(%u,%u):%u,page(%u,%u).%u.%u,gci:%u,row(%u,%u)"
-      ", lsn=%llu",
-               instance(),
-               fragPtrP->fragTableId,
-               fragPtrP->fragmentId,
-               pagePtr.p->m_create_table_version,
-               pagePtr.p->m_file_no,
-               pagePtr.p->m_page_no,
-               page_idx,
-               pagePtr.i,
-               gci,
-               row_id->m_page_no,
-               row_id->m_page_idx,
-               lsn));
 
     ((Fix_page*)pagePtr.p)->free_record(page_idx);
   }
@@ -1676,6 +1661,23 @@ Dbtup::disk_page_free(Signal *signal,
     ((Var_page*)pagePtr.p)->free_record(page_idx, 0);
   }
   
+  DEB_PGMAN((
+    "(%u)disk_page_free:tab(%u,%u):%u,page(%u,%u).%u.%u,gci:%u,row(%u,%u)"
+    ", lsn=%llu, alloc_size: %u",
+             instance(),
+             fragPtrP->fragTableId,
+             fragPtrP->fragmentId,
+             pagePtr.p->m_create_table_version,
+             pagePtr.p->m_file_no,
+             pagePtr.p->m_page_no,
+             page_idx,
+             pagePtr.i,
+             gci,
+             row_id->m_page_no,
+             row_id->m_page_idx,
+             lsn,
+             alloc_size));
+
   Uint32 new_free = pagePtr.p->free_space;
   
   Uint32 ext = pagePtr.p->m_extent_info_ptr;

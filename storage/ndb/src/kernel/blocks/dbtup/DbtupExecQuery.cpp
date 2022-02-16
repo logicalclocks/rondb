@@ -4769,9 +4769,9 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
   Tuple_header* ptr = req_struct->m_tuple_ptr;
   Uint32 *dst_ptr = ptr->get_end_of_fix_part_ptr(tabPtrP);
 
-  req_struct->is_expanded= true;
   order += tabPtrP->m_attributes[MM].m_no_of_fixsize;
   const Uint32 *src_ptr= src->get_end_of_fix_part_ptr(tabPtrP);
+  req_struct->is_expanded= true;
 
   // Copy in-memory fixed part
   memcpy(ptr, src, 4*fix_size);
@@ -4829,6 +4829,8 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       req_struct->m_disk_ptr= (Tuple_header*)dst_ptr;
       memcpy(dst_ptr, src_ptr, 4*disk_fix_header_size);
       sizes[DD] = src_len;
+      src_ptr += disk_fix_header_size;
+      dst_ptr += disk_fix_header_size;
       if (bits & Tuple_header::DISK_VAR_PART)
       {
         jamDebug();
@@ -4837,7 +4839,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
           jamDebug();
           PagePtr pagePtr;
           flex_len = src_len - disk_fix_header_size;
-          flex_data = src_ptr + disk_fix_header_size;
+          flex_data = src_ptr;
           req_struct->m_varpart_page_ptr[DD] = req_struct->m_disk_page_ptr;
         }
         else
@@ -4929,6 +4931,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
     if (num_vars)
     {
       jamDebug();
+      ndbrequire(flex_data != nullptr);
       const Uint32 *desc = req_struct->attr_descr;
       dst->m_data_ptr= (char*)(((Uint16*)dst_ptr)+num_vars+1);
       dst->m_offset_array_ptr= req_struct->var_pos_array[ind];
@@ -5299,10 +5302,10 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
       }
       Uint32 * src_ptr = (Uint32*)req_struct->m_disk_ptr;
       req_struct->m_disk_ptr = (Tuple_header*)dst_ptr;
-      Uint32 fix_header_size = tabPtrP->m_offsets[DD].m_fix_header_size;
-      sizes[DD] = fix_header_size;
-      memmove(dst_ptr, src_ptr, 4*fix_header_size);
-      dst_ptr += fix_header_size;
+      Uint32 disk_fix_header_size = tabPtrP->m_offsets[DD].m_fix_header_size;
+      sizes[DD] = disk_fix_header_size;
+      memmove(dst_ptr, src_ptr, 4 * disk_fix_header_size);
+      dst_ptr += disk_fix_header_size;
     }
     order += num_fix;
     if (num_vars || num_dyns)
@@ -5416,6 +5419,10 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
           jamDataDebug(varpart_len);
           ptr->m_header_bits |= Tuple_header::DISK_VAR_PART;
         }
+        else
+        {
+          jamDebug();
+        }
       }
       ndbassert((UintPtr(ptr) & 3) == 0);
       ndbassert(varpart_len < 0x10000);
@@ -5517,14 +5524,6 @@ Dbtup::handle_size_change_after_update(KeyReqStruct* req_struct,
 				       Tablerec* regTabPtr,
 				       Uint32 sizes[4])
 {
-  ndbrequire(sizes[1] == sizes[3]);
-  // g_eventLogger->info("%d %d %d %d", sizes[0], sizes[1], sizes[2], sizes[3]);
-  if(0)
-    printf("%p %d %d - handle_size_change_after_update ",
-	   req_struct->m_tuple_ptr,
-	   regOperPtr->m_tuple_location.m_page_no,
-	   regOperPtr->m_tuple_location.m_page_idx);
-
   Uint32 bits = m_base_header_bits;
   Uint32 copy_bits= req_struct->m_tuple_ptr->m_header_bits;
   
@@ -5535,17 +5534,25 @@ Dbtup::handle_size_change_after_update(KeyReqStruct* req_struct,
           regOperPtr->m_tuple_location.m_page_idx,
           sizes[2+MM],
           sizes[MM]));
-  if(sizes[2+MM] == sizes[MM])
-    jam();
-  else if(sizes[2+MM] < sizes[MM])
+  for (Uint32 ind = 0; ind < 2; ind++)
   {
-    if (0) g_eventLogger->info("shrink");
+    if(sizes[2+ind] == sizes[ind])
+    {
+      jam();
+      continue;
+    }
+    else if(sizes[2+ind] < sizes[ind])
+    {
+      jam();
+      continue;
+    }
     jam();
-  }
-  else
-  {
-    jam();
-    if(0) printf("grow - ");
+    if (ind == DD)
+    {
+      /* TODO HOPSWORKS-2922 */
+      ndbabort();
+      break;
+    }
     Ptr<Page> pagePtr = req_struct->m_varpart_page_ptr[MM];
     Var_page* pageP= (Var_page*)pagePtr.p;
     Var_part_ref *refptr= org->get_var_part_ref_ptr(regTabPtr);

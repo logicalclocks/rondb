@@ -890,8 +890,95 @@ Dbtup::commit_operation(Signal* signal,
     PagePtr diskPagePtr((Tup_page*)globDiskPagePtr.p, globDiskPagePtr.i);
     ndbassert(diskPagePtr.p->m_page_no == key.m_page_no);
     ndbassert(diskPagePtr.p->m_file_no == key.m_file_no);
+
     Uint32 sz, *dst;
-    if(copy_bits & Tuple_header::DISK_ALLOC)
+    if (copy_bits & Tuple_header::DISK_REORG)
+    {
+      /**
+       * This variable is set when the page is referring to a new page.
+       * The old page could not fit the new updated row. Thus we have
+       * to perform a move to a new row. This means we need to add
+       * UNDO records for a free of the old disk row part and an
+       * allocation of the new part.
+       *
+       * The call to disk_page_free will both take care of UNDO and
+       * freeing the record.
+       */
+      Local_key rowid = regOperPtr->m_tuple_location;
+      rowid.m_page_no = pagePtr.p->frag_page_id;
+      if (copy_bits & Tuple_header::DISK_ALLOC)
+      {
+        /**
+         * The row was allocated and has thus not yet been written
+         * to disk. Thus it is sufficient to release the row.
+         * We reuse the code for aborting an INSERT operation.
+         */
+        jamDebug();
+        disk_page_abort_prealloc(signal,
+                                 regFragPtr,
+                                 &key,
+                                 key.m_page_idx);
+        DEB_DISK(("(%u) Free disk part for row(%u,%u) disk_row(%u,%u).%u",
+                   instance(),
+                   rowid.m_page_no,
+                   rowid.m_page_idx,
+                   key.m_file_no,
+                   key.m_page_no,
+                   key.m_page_idx));
+
+      }
+      else
+      {
+        jamDebug();
+        PagePtr tmpptr;
+        tmpptr.i = diskPagePtr.i;
+        tmpptr.p = reinterpret_cast<Page*>(diskPagePtr.p);
+        disk_page_free(signal,
+                       regTabPtr,
+                       regFragPtr, 
+		       &key,
+                       tmpptr,
+                       gci_hi,
+                       &rowid,
+                       regOperPtr->m_undo_buffer_space);
+        DEB_DISK(("(%u) Commit free old disk part for row(%u,%u)"
+                  " disk_row(%u,%u).%u",
+                   instance(),
+                   rowid.m_page_no,
+                   rowid.m_page_idx,
+                   key.m_file_no,
+                   key.m_page_no,
+                   key.m_page_idx));
+
+      }
+      jam();
+      key = regOperPtr->m_new_disk_location;
+      Uint32 alloc_size = sizeof(Dbtup::Disk_undo::Alloc) >> 2;
+      Ptr<GlobalPage> pagePtr;
+      m_global_page_pool.getPtr(pagePtr, regOperPtr->m_new_disk_page_id);
+      diskPagePtr.i = pagePtr.i;
+      diskPagePtr.p = (Tup_page*)pagePtr.p;
+      disk_page_alloc(signal,
+                      regTabPtr,
+                      regFragPtr,
+                      &key,
+                      diskPagePtr,
+                      gci_hi,
+                      &rowid,
+                      alloc_size);
+      DEB_DISK(("(%u) Commit new disk part for row(%u,%u) disk_row(%u,%u).%u",
+                 instance(),
+                 rowid.m_page_no,
+                 rowid.m_page_idx,
+                 key.m_file_no,
+                 key.m_page_no,
+                 key.m_page_idx));
+      dst = get_disk_reference(regTabPtr,
+                               diskPagePtr,
+                               key,
+                               sz);
+    }
+    else if (copy_bits & Tuple_header::DISK_ALLOC)
     {
       jam();
       Local_key rowid = regOperPtr->m_tuple_location;
@@ -911,24 +998,18 @@ Dbtup::commit_operation(Signal* signal,
                  key.m_file_no,
                  key.m_page_no,
                  key.m_page_idx));
-    }
-
-    if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
-    {
-      jam();
-      sz= regTabPtr->m_offsets[DD].m_fix_header_size;
-      dst= ((Fix_page*)diskPagePtr.p)->get_ptr(key.m_page_idx, sz);
+      dst = get_disk_reference(regTabPtr,
+                               diskPagePtr,
+                               key,
+                               sz);
     }
     else
     {
       jam();
-      dst= ((Var_page*)diskPagePtr.p)->get_ptr(key.m_page_idx);
-      sz= ((Var_page*)diskPagePtr.p)->get_entry_len(key.m_page_idx);
-    }
-    
-    if(! (copy_bits & Tuple_header::DISK_ALLOC))
-    {
-      jam();
+      dst = get_disk_reference(regTabPtr,
+                               diskPagePtr,
+                               key,
+                               sz);
 #ifdef DEBUG_PGMAN
       Uint64 lsn =
 #endif
@@ -949,11 +1030,70 @@ Dbtup::commit_operation(Signal* signal,
                 Uint32(Uint64(lsn & 0xFFFFFFFF)),
                 gci_hi));
     }
-    
-    memcpy(dst, disk_ptr, 4*sz);
+    Uint32 disk_fix_header_size = regTabPtr->m_offsets[DD].m_fix_header_size;
+
+    /**
+     * We are done with the UNDO logging, now it is time to copy the disk part
+     * of the row to the disk page. We start by copying the fixed part first.
+     * We also set the disk reference in the tuple header (even if it hasn't
+     * moved) and set a flag indicating that there is a disk part in the row.
+     */
     memcpy(tuple_ptr->get_disk_ref_ptr(regTabPtr), &key, sizeof(Local_key));
-    ndbrequire(disk_ptr->m_base_record_page_idx < Tup_page::DATA_WORDS);
     copy_bits |= Tuple_header::DISK_PART;
+    ndbrequire(disk_ptr->m_base_record_page_idx < Tup_page::DATA_WORDS);
+
+    if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
+    {
+      jam();
+      Varpart_copy *vp = (Varpart_copy*)(disk_ptr + disk_fix_header_size);
+      Uint32 disk_varlen = vp->m_len;
+      Uint32 new_sz = disk_fix_header_size + disk_varlen;
+      Var_page* vpagePtrP = (Var_page*)diskPagePtr.p;
+      if (new_sz < sz)
+      {
+        vpagePtrP->shrink_entry(key.m_page_idx, new_sz);
+      }
+      else if (new_sz > sz)
+      {
+        Uint32 add = new_sz - sz;
+        if (!vpagePtrP->is_space_behind_entry(key.m_page_idx, add))
+        {
+          /**
+           * We reorganise the disk page to ensure that we can copy the
+           * new row into the page. We have already ensured that the
+           * page has preallocated the necessary space, so we need not
+           * consider here the case that the page won't fit the new row.
+           *
+           * We perform the reorg of the disk page by first setting the
+           * entry length to 0 (no need to keep the old data since it is
+           * about to be overwritten). Next we reorganise and we let the
+           * entry set its position to be at the end of the insert position.
+           */
+          vpagePtrP->set_entry_len(key.m_page_idx, 0);
+          vpagePtrP->free_space += sz;
+          vpagePtrP->reorg((Var_page*)ctemp_page);
+          dst = vpagePtrP->get_free_space_ptr();
+          vpagePtrP->set_entry_offset(key.m_page_idx, vpagePtrP->insert_pos);
+          vpagePtrP->grow_entry(key.m_page_idx, new_sz);
+        }
+        else
+        {
+          vpagePtrP->grow_entry(key.m_page_idx, add);
+        }
+      }
+      memcpy(dst, disk_ptr, 4 * disk_fix_header_size);
+      if (copy_bits & Tuple_header::DISK_VAR_PART)
+      {
+        jamDebug();
+        dst += disk_fix_header_size;
+        memcpy(dst, vp->m_data, 4 * disk_varlen);
+      }
+    }
+    else
+    {
+      ndbassert(!(copy_bits & Tuple_header::DISK_VAR_PART));
+      memcpy(dst, disk_ptr, 4 * disk_fix_header_size);
+    }
   }
 
 #ifdef DEBUG_INSERT_EXTRA
@@ -1053,9 +1193,9 @@ Dbtup::commit_operation(Signal* signal,
 
   Uint32 clear= 
     Tuple_header::ALLOC | Tuple_header::FREE | Tuple_header::COPY_TUPLE |
-    Tuple_header::DISK_ALLOC | Tuple_header::DISK_INLINE | 
-    Tuple_header::MM_GROWN | Tuple_header::LCP_SKIP |
-    Tuple_header::LCP_DELETE;
+    Tuple_header::DISK_ALLOC | Tuple_header::DISK_INLINE |
+    Tuple_header::DISK_REORG | Tuple_header::MM_GROWN |
+    Tuple_header::LCP_SKIP | Tuple_header::LCP_DELETE;
   copy_bits &= ~(Uint32)clear;
   lcp_bits |= (bits & (Tuple_header::LCP_SKIP | Tuple_header::LCP_DELETE));
 
