@@ -996,8 +996,7 @@ struct Operationrec {
    * The page id is the memory representation of this page, more specifically
    * its i-value.
    */
-  Local_key m_new_disk_location;
-  Uint32 m_new_disk_page_id;
+  Uint32 m_uncommitted_used_space;
 
   /*
    * We keep the record linked to the operation record in LQH.
@@ -1013,10 +1012,14 @@ struct Operationrec {
    * functionality for multi-updates of the same record in one
    * transaction.
    */
-  union {
-    Uint32 savepointId;
-    Uint32 m_commit_disk_callback_page;
-  };
+  Uint32 savepointId;
+
+  /**
+   * References to the disk page and the potential extra disk page
+   * during commit processing.
+   */
+  Uint32 m_disk_callback_page;
+  Uint32 m_disk_extra_callback_page;
 
   Uint32 op_type;
   Uint32 trans_state;
@@ -1046,6 +1049,7 @@ struct Operationrec {
     unsigned int delete_insert_flag : 1;
     unsigned int m_disk_preallocated : 1;
     unsigned int m_load_diskpage_on_commit : 1;
+    unsigned int m_load_extra_diskpage_on_commit : 1;
     unsigned int m_wait_log_buffer : 1;
     unsigned int m_gci_written : 1;
 
@@ -2215,6 +2219,8 @@ public:
                     Uint32 lkey2,
                     Uint32 flags);
 
+  int load_extra_diskpage(Signal*);
+
   int load_diskpage_scan(Signal*,
                          Uint32 opRec,
 			 Uint32 lkey1,
@@ -2619,6 +2625,7 @@ public:
                         Uint32& tuxFixHeaderSize);
   Uint32 get_current_frag_page_id();
 private:
+  void disk_page_load_extra_callback(Signal*, Uint32 op, Uint32 page);
   void disk_page_load_callback(Signal*, Uint32 op, Uint32 page);
   void disk_page_load_scan_callback(Signal*, Uint32 op, Uint32 page);
 

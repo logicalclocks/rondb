@@ -11432,8 +11432,7 @@ Dblqh::continueACCKEYCONF(Signal * signal,
                          regTcPtr,
                          regFragptr,
                          localKey1,
-                         localKey2,
-                         RNIL);
+                         localKey2);
   }
   else
   {
@@ -11451,8 +11450,7 @@ void
 Dblqh::acckeyconf_tupkeyreq(Signal* signal, TcConnectionrec* regTcPtr,
 			    Fragrecord* regFragptrP,
 			    Uint32 page_no,
-                            Uint32 page_idx,
-			    Uint32 disk_page)
+                            Uint32 page_idx)
 {
 
   /* ------------------------------------------------------------------------
@@ -11538,7 +11536,7 @@ Dblqh::acckeyconf_load_diskpage(Signal* signal,
 				 disk_flag)) > 0)
   {
     jamDebug();
-    acckeyconf_tupkeyreq(signal, regTcPtr.p, regFragptrP, lkey1, lkey2, res);
+    acckeyconf_tupkeyreq(signal, regTcPtr.p, regFragptrP, lkey1, lkey2);
   }
   else if (res == 0)
   {
@@ -11575,8 +11573,7 @@ Dblqh::acckeyconf_load_diskpage(Signal* signal,
 
 void
 Dblqh::acckeyconf_load_diskpage_callback(Signal* signal, 
-					 Uint32 callbackData,
-					 Uint32 disk_page)
+					 Uint32 callbackData)
 {
   jamEntry();
   ndbassert(!m_is_query_block);
@@ -11598,22 +11595,21 @@ Dblqh::acckeyconf_load_diskpage_callback(Signal* signal,
                             fragPtr.p->tupFragptr);
     acckeyconf_tupkeyreq(signal, regTcPtr, fragPtr.p,
 			 regTcPtr->m_row_id.m_page_no,
-			 regTcPtr->m_row_id.m_page_idx,
-			 disk_page);
+			 regTcPtr->m_row_id.m_page_idx);
   }
   else if (state != TcConnectionrec::WAIT_TUP)
   {
     ndbrequire(state == TcConnectionrec::WAIT_TUP_TO_ABORT);
     TupKeyRef * ref = (TupKeyRef *)signal->getDataPtr();
     ref->userRef= callbackData;
-    ref->errorCode= disk_page;
+    ref->errorCode= 1; //TODO RONM
     execTUPKEYREF(signal);
   }
   else
   {
     TupKeyRef * ref = (TupKeyRef *)signal->getDataPtr();
     ref->userRef= callbackData;
-    ref->errorCode= disk_page;
+    ref->errorCode= 1; //TODO RONM
     execTUPKEYREF(signal);
   }
   release_frag_access(fragptr.p);

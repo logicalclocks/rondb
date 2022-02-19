@@ -4019,7 +4019,7 @@ public:
 private:
 
   void acckeyconf_tupkeyreq(Signal*, TcConnectionrec*, Fragrecord*,
-                            Uint32, Uint32, Uint32);
+                            Uint32, Uint32);
   void acckeyconf_load_diskpage(Signal*,TcConnectionrecPtr,Fragrecord*,
                                 Uint32, Uint32);
 
@@ -4059,7 +4059,7 @@ public:
   }
   
 public:
-  void acckeyconf_load_diskpage_callback(Signal*, Uint32, Uint32);
+  void acckeyconf_load_diskpage_callback(Signal*, Uint32);
   
 private:
   void next_scanconf_load_diskpage(Signal* signal, 

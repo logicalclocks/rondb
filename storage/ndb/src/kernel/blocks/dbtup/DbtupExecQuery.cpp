@@ -399,6 +399,8 @@ Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
       prevOpPtr.p->op_struct.bit_field.m_wait_log_buffer;
     regOperPtr.p->op_struct.bit_field.m_load_diskpage_on_commit= 
       prevOpPtr.p->op_struct.bit_field.m_load_diskpage_on_commit;
+    regOperPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit= 
+      prevOpPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit;
     regOperPtr.p->op_struct.bit_field.m_gci_written=
       prevOpPtr.p->op_struct.bit_field.m_gci_written;
     regOperPtr.p->op_struct.bit_field.m_tuple_existed_at_start=
@@ -410,6 +412,7 @@ Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
 
     prevOpPtr.p->op_struct.bit_field.m_wait_log_buffer= 0;
     prevOpPtr.p->op_struct.bit_field.m_load_diskpage_on_commit= 0;
+    prevOpPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit= 0;
 
     if(prevOpPtr.p->tuple_state == TUPLE_PREPARED)
     {
@@ -715,6 +718,48 @@ Dbtup::load_diskpage(Signal* signal,
     regOperPtr->op_struct.bit_field.m_wait_log_buffer= 1;
     regOperPtr->op_struct.bit_field.m_load_diskpage_on_commit= 1;
   }
+  if (res > 0 &&
+      regOperPtr->op_struct.bit_field.m_load_extra_diskpage_on_commit)
+  {
+    jam();
+    regOperPtr->m_disk_callback_page = res;
+    res = load_extra_diskpage(signal);
+  }
+  return res;
+}
+
+int
+Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec)
+{
+  Fragrecord * regFragPtr = prepare_fragptr.p;
+  Tablerec* regTabPtr = prepare_tabptr.p;
+  Ptr<Operationrec> operPtr;
+  operPtr.i = opRec;
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
+  Uint32* tmp = get_ptr(&page_ptr,
+                        &operPtr.p->m_tuple_location,
+                        regTabPtr);
+  Tuple_header* ptr= (Tuple_header*)tmp;
+  jamEntry();
+  ndbrequire(ptr->m_header_bits & Tuple_header::DISK_PART);
+  Page_cache_client::Request req;
+  memcpy(&req.m_page,
+         ptr->get_disk_ref_ptr(regTabPtr),
+         sizeof(Local_key));
+  req.m_table_id = regFragPtr->fragTableId;
+  req.m_fragment_id = regFragPtr->fragmentId;
+  req.m_callback.m_callbackData= opRec;
+  req.m_callback.m_callbackFunction= 
+    safe_cast(&Dbtup::disk_page_load_extra_callback);
+    
+  Page_cache_client pgman(this, c_pgman);
+  int res = pgman.get_page(signal, req, flags);
+  ndbrequire(res < 0);
+  if (res > 0)
+  {
+    jam();
+    operPtr.p->m_disk_extra_callback_page = res;
+  }
   return res;
 }
 
@@ -724,8 +769,32 @@ Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
+  operPtr.p->m_disk_callback_page = page_id;
+  if (operPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit)
+  {
+    jam();
+    c_lqh->setup_key_pointers(operPtr.p->userpointer);
+    res = load_extra_diskpage(signal, opRec);
+    if (res == 0)
+    {
+      return;
+    }
+  }
   c_lqh->acckeyconf_load_diskpage_callback(signal, 
-					   operPtr.p->userpointer, page_id);
+					   operPtr.p->userpointer);
+}
+
+void
+Dbtup::disk_page_load_extra_callback(Signal* signal,
+                                     Uint32 opRec,
+                                     Uint32 page_id)
+{
+  Ptr<Operationrec> operPtr;
+  operPtr.i = opRec;
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
+  operPtr.p->m_disk_extra_callback_page = page_id;
+  c_lqh->acckeyconf_load_diskpage_callback(signal, 
+					   operPtr.p->userpointer);
 }
 
 int
@@ -1195,7 +1264,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
      req_struct.TC_ref = coordinatorTC;
    }
 
-   const Uint32 disk_page = tupKeyReq->disk_page;
+   const Uint32 disk_page = regOperPtr->m_disk_callback_page;
    const Uint32 keyRef1 = tupKeyReq->keyRef1;
    const Uint32 keyRef2 = tupKeyReq->keyRef2;
 
@@ -2062,12 +2131,14 @@ int Dbtup::handleUpdateReq(Signal* signal,
   {
     jamDebug();
     shrink_tuple(req_struct, sizes+2, regTabPtr, disk);
-    if (cmp[0] != cmp[1] && handle_size_change_after_update(req_struct,
-							    base,
-							    operPtrP,
-							    regFragPtr,
-							    regTabPtr,
-							    sizes)) {
+    if (cmp[0] != cmp[1] &&
+        ((handle_size_change_after_update(req_struct,
+                                          base,
+                                          operPtrP,
+                                          regFragPtr,
+                                          regTabPtr,
+                                          sizes)) != 0))
+    {
       goto error;
     }
   }
@@ -5549,9 +5620,153 @@ Dbtup::handle_size_change_after_update(KeyReqStruct* req_struct,
     jam();
     if (ind == DD)
     {
-      /* TODO HOPSWORKS-2922 */
-      ndbabort();
-      break;
+      /**
+       * We have updated the disk part row such that it has grown, this
+       * means that we need to ensure that more space is allocated before
+       * can proceed, we will attempt to use the current disk page. But if
+       * this lacks space for the new size we will allocate space in
+       * another page.
+       *
+       * We use the No Steal approach which means that we are not allow
+       * to write dirty information to a page, thus we cannot touch the
+       * disk page until we commit it. Thus we cannot follow the same
+       * approach as for variable sized memory pages. We have to allocate
+       * a new area for the row and ensure that there is space for the new
+       * disk part row should the transaction finally commit.
+       */
+      if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
+      {
+        Local_key key;
+        const Uint32 *disk_ref= org->get_disk_ref_ptr(tabPtrP);
+        memcpy(&key, disk_ref, sizeof(key));
+        PagePtr diskPagePtr = req_struct->m_disk_page_ptr;
+        Uint32 free = diskPagePtr.p->free_space;
+        Uint32 used = diskPagePtr.p->uncommitted_free_space;
+        Uint32 curr_size =
+          ((Var_page*)diskPagePtr.p)->get_entry_len(key.m_page_index);
+        Uint32 new_size = sizes[2+DD];
+        if (new_size > curr_size)
+        {
+          /* Disk part row grows from original size */
+          Uint32 add = new_size - curr_size;
+          if ((user + add) <= free)
+          {
+            /**
+             * Size of new row fits in the current disk page, no need
+             * to move the row to another page.
+             */
+            Uint32 idx = diskPagePtr.p->list_index;
+            bool is_page_in_dirty_list = ((idx & 0x8000) == 0);
+            if (is_page_in_dirty_list)
+            {
+              /**
+               * The page is in the dirty list and thus can be used by
+               * other operations to find room for new rows and extended
+               * rows. Using this method we ensure that the page is kept
+               * in the correct free list and update the extent position
+               * as well.
+               */
+              jam();
+              disk_page_prealloc_dirty_page(regFragPtr->m_disk_alloc,
+                                            diskPagePtr,
+                                            diskPagePtr.p->list_index,
+                                            add,
+                                            regFragPtr);
+            }
+            else
+            {
+              jam();
+              /**
+               * Simply add to uncommitted_used_space, the page is not
+               * yet maintained in the dirty list. It gets inserted into
+               * this list when the page is committed after a write and
+               * thus gets to be dirty.
+               *
+               * The page changes will not be written to disk and even if
+               * it does the uncommitted_used_space is set to 0 at restore
+               * of page from disk at recovery, so doesn't matter what is
+               * written in this variable for recovery purposes.
+               *
+               * We update the extent position.
+               */
+              Uint32 ext = diskPagePtr.p->m_extent_info_ptr;
+              diskPagePtr.p->uncommitted_used_space += add;
+              Ptr<Extent_info> extentPtr;
+              c_extent_pool.getPtr(extentPtr, ext);
+              update_extent_pos(jamBuffer(),
+                                regFragPtr->m_disk_alloc,
+                                extentPtr,
+                                -Int32(add));
+            }
+            regOperPtr->m_uncommitted_used_space += add;
+          }
+          else
+          {
+            jam();
+            /**
+             * The new row size doesn't fit in the current disk page. We
+             * need to allocate a new row in a new page to accomodate
+             * this.
+             */
+            Local_key new_key;
+            int ret = disk_page_prealloc(signal,
+                                         prepare_fragptr,
+                                         &new_key,
+                                         new_size);
+            if (unlikely(ret < 0))
+            {
+              jam();
+              terrorCode = -ret;
+              return ret;
+            }
+
+            if (copy_bits & Tuple_header::DISK_ALLOC)
+            {
+              /**
+               * The disk page was allocated previously in this multi-row
+               * operation. We can simply discard this disk page and
+               * allocate a new one.
+               */
+            }
+            else if (copy_bits & Tuple_header::DISK_REORG)
+            {
+              /**
+               * We have already a new disk page, we need to replace this
+               * new disk page with another one, yet bigger than the
+               * previous one.
+               */
+            }
+            else
+            {
+              /**
+               * The tuple existed with a disk part previously, but it will
+               * now grow beyond the size of the current disk page, thus
+               * we need to allocate another one and release the previously
+               * allocated one.
+               */
+            }
+          }
+        }
+        else if (new_size < curr_size)
+        {
+          jam();
+          /**
+           * The size has shrunk, if we have previously moved to a new page,
+           * we might be able to drop this new page if the new row size fits
+           * in the old page.
+           */
+        }
+        else
+        {
+          jamDebug();
+          /**
+           * The size hasn't changed, thus whatever worked in the previous
+           * row version will work here as well independent if we have
+           * moved the row to a new page or not.
+           */
+        }
+      }
+      return 0;
     }
     Ptr<Page> pagePtr = req_struct->m_varpart_page_ptr[MM];
     Var_page* pageP= (Var_page*)pagePtr.p;
@@ -5602,8 +5817,6 @@ Dbtup::handle_size_change_after_update(KeyReqStruct* req_struct,
 
     if(needed <= alloc)
     {
-      //ndbassert(!regOperPtr->is_first_operation());
-      if (0) g_eventLogger->info(" no grow");
       jam();
       return 0;
     }
@@ -5623,6 +5836,43 @@ Dbtup::handle_size_change_after_update(KeyReqStruct* req_struct,
      * enough such that we can simply upgrade ourselves to use an
      * exclusive fragment access during the time we perform this
      * reallocation of the variable sized part.
+     *
+     * An alternative approach is to never touch the varsized pages until
+     * we commit the operation. This would have the advantage that we need
+     * no exclusive access, it would be sufficient to lock the fragment with
+     * mutexes to increase the uncommitted used space or the allocation of a
+     * new variable sized part.
+     *
+     * There is a slight advantage in such an approach in somewhat less
+     * impact on concurrency. Thus if concurrency is deemed to be something
+     * required to increase one could change the approach taken here.
+     *
+     * However the current approach has a more efficient use of memory.
+     * The other approach using uncommitted used space requires holding on
+     * to the old row plus allocating space for the new row in a new page.
+     * Thus we could end up holding much more memory allocated during the
+     * transaction compared to the approach of instantly moving the row
+     * data to a new row. The current approach has more likelihood of
+     * succeeding transactions in a memory constrained environment.
+     *
+     * The current approach will never have more memory space allocated
+     * than will be required when the transaction commits. The other
+     * approach if postponing the reorganisation until Commit time could
+     * lead to extra memory being held during the transaction for all
+     * rows that need to move to another page.
+     *
+     * A potential improvement here is to avoid reorganising the page
+     * here and postpone this to the Commit phase. It should be sufficient
+     * to remove space from the free space in the page and this should be
+     * safe to do here without extra mutexes since only reads can execute
+     * in parallel with this operation.
+     *
+     * The extra complexity required here is to track free space allocation
+     * per operation. This is required to ensure that we can return the
+     * free space if the operation aborts. As usual multi-operation
+     * complicates matters a bit in this case since it is only the last
+     * operation that worked on the row that should track the free space
+     * usage.
      */
     Uint32 add = needed - alloc;
     Local_key oldref;
@@ -5654,7 +5904,9 @@ Dbtup::handle_size_change_after_update(KeyReqStruct* req_struct,
               req_struct->fragPtrP->fragmentId,
               regOperPtr->m_tuple_location.m_page_no,
               regOperPtr->m_tuple_location.m_page_idx));
-      org->m_header_bits= bits | Tuple_header::MM_GROWN | Tuple_header::VAR_PART;
+      org->m_header_bits= bits |
+                          Tuple_header::MM_GROWN |
+                          Tuple_header::VAR_PART;
       m_base_header_bits = org->m_header_bits;
       new_var_part[needed-1]= orig_size;
 
@@ -5676,11 +5928,24 @@ Dbtup::handle_size_change_after_update(KeyReqStruct* req_struct,
     else
     {
       jamDebug();
+      /**
+       * Growing the entry in the page requires not exclusive access.
+       * Only LDM threads are allowed to perform Updates that will
+       * change the size of pages and the free area. Thus only one
+       * thread can be active on the fragment for updates. Readers can
+       * can execute in parallel with this on the fragment since
+       * they will only read the pointer to the varsized row part and
+       * it will be ok to see both the before value and the after
+       * value of the write of the index value. The index value is
+       * a 32-bit value which is atomic in that the CPU will see
+       * either the before value or the after value.
+       */
       Uint32 *new_var_part = pageP->get_ptr(oldref.m_page_idx);
       regFragPtr->m_varWordsFree -= pageP->free_space;
       pageP->grow_entry(oldref.m_page_idx, add);
       update_free_page_list(regFragPtr, pagePtr);
-      m_base_header_bits= bits | Tuple_header::MM_GROWN |
+      m_base_header_bits= bits |
+                          Tuple_header::MM_GROWN |
                           Tuple_header::VAR_PART;
       new_var_part[needed-1]= orig_size;
     }
