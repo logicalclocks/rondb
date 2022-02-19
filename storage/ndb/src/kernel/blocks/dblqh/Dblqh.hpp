@@ -47,6 +47,7 @@
 #include <signaldata/DropTab.hpp>
 #include <signaldata/CopyFrag.hpp>
 #include <signaldata/CopyActive.hpp>
+#include <signaldata/LqhKey.hpp>
 
 // primary key is stored in TUP
 #include "../dbtup/Dbtup.hpp"
@@ -3029,6 +3030,11 @@ public:
   void continue_next_scan_conf(Signal *signal,
                                ScanRecord::ScanState scanState,
                                ScanRecord * const scanPtr);
+  Uint32 get_pgman_flags()
+  {
+    return LqhKeyReq::getNrCopyFlag(m_tc_connect_ptr.p->reqinfo) |
+           c_executing_redo_log;
+  }
 private:
 
   BLOCK_DEFINES(Dblqh);
@@ -4059,7 +4065,7 @@ public:
   }
   
 public:
-  void acckeyconf_load_diskpage_callback(Signal*, Uint32);
+  void acckeyconf_load_diskpage_callback(Signal*, Uint32, Uint32);
   
 private:
   void next_scanconf_load_diskpage(Signal* signal, 
@@ -4070,8 +4076,7 @@ private:
   void next_scanconf_tupkeyreq(Signal* signal,
                                ScanRecord * const scanPtr,
 			       TcConnectionrec * regTcPtr,
-			       Fragrecord* fragPtrP,
-			       Uint32 disk_page);
+			       Fragrecord* fragPtrP);
 
 public:  
   void next_scanconf_load_diskpage_callback(Signal* signal, Uint32, Uint32);

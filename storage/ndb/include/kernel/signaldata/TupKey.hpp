@@ -47,7 +47,7 @@ class TupKeyReq {
   friend bool printTUPKEYREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo);
 
 public:
-  static constexpr Uint32 SignalLength = 10;
+  static constexpr Uint32 SignalLength = 9;
 
   enum
   {
@@ -67,7 +67,6 @@ private:
   Uint32 keyRef2;
   Uint32 storedProcedure;
   Uint32 fragPtr;
-  Uint32 disk_page;
   Uint32 m_row_id_page_no;
   Uint32 m_row_id_page_idx;
   Uint32 attrInfoIVal;

@@ -723,19 +723,20 @@ Dbtup::load_diskpage(Signal* signal,
   {
     jam();
     regOperPtr->m_disk_callback_page = res;
-    res = load_extra_diskpage(signal);
+    res = load_extra_diskpage(signal, opRec, flags);
   }
   return res;
 }
 
 int
-Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec)
+Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec, Uint32 flags)
 {
   Fragrecord * regFragPtr = prepare_fragptr.p;
   Tablerec* regTabPtr = prepare_tabptr.p;
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
+  PagePtr page_ptr;
   Uint32* tmp = get_ptr(&page_ptr,
                         &operPtr.p->m_tuple_location,
                         regTabPtr);
@@ -758,7 +759,7 @@ Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec)
   if (res > 0)
   {
     jam();
-    operPtr.p->m_disk_extra_callback_page = res;
+    operPtr.p->m_disk_extra_callback_page = Uint32(res);
   }
   return res;
 }
@@ -774,14 +775,16 @@ Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
   {
     jam();
     c_lqh->setup_key_pointers(operPtr.p->userpointer);
-    res = load_extra_diskpage(signal, opRec);
-    if (res == 0)
+    Uint32 flags = c_lqh->get_pgman_flags();
+    page_id = (Uint32)load_extra_diskpage(signal, opRec, flags);
+    if (page_id == 0)
     {
       return;
     }
   }
   c_lqh->acckeyconf_load_diskpage_callback(signal, 
-					   operPtr.p->userpointer);
+                                           operPtr.p->userpointer,
+                                           page_id);
 }
 
 void
@@ -794,7 +797,8 @@ Dbtup::disk_page_load_extra_callback(Signal* signal,
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
   operPtr.p->m_disk_extra_callback_page = page_id;
   c_lqh->acckeyconf_load_diskpage_callback(signal, 
-					   operPtr.p->userpointer);
+					   operPtr.p->userpointer,
+                                           page_id);
 }
 
 int
@@ -859,6 +863,14 @@ Dbtup::load_diskpage_scan(Signal* signal,
     
     Page_cache_client pgman(this, c_pgman);
     res= pgman.get_page(signal, req, disk_flag);
+    if (res > 0)
+    {
+      regOperPtr->m_disk_callback_page = res;
+    }
+  }
+  else
+  {
+    regOperPtr->m_disk_callback_page = RNIL;
   }
   return res;
 }
@@ -870,6 +882,7 @@ Dbtup::disk_page_load_scan_callback(Signal* signal,
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
+  operPtr.p->m_disk_callback_page = page_id;
   c_lqh->next_scanconf_load_diskpage_callback(signal, 
 					      operPtr.p->userpointer, page_id);
 }
@@ -2132,7 +2145,8 @@ int Dbtup::handleUpdateReq(Signal* signal,
     jamDebug();
     shrink_tuple(req_struct, sizes+2, regTabPtr, disk);
     if (cmp[0] != cmp[1] &&
-        ((handle_size_change_after_update(req_struct,
+        ((handle_size_change_after_update(signal,
+                                          req_struct,
                                           base,
                                           operPtrP,
                                           regFragPtr,
@@ -2947,7 +2961,8 @@ int Dbtup::handleInsertReq(Signal* signal,
     }
 
     if (regTabPtr->need_shrink() && cmp[0] != cmp[1] &&
-	unlikely(handle_size_change_after_update(req_struct,
+	unlikely(handle_size_change_after_update(signal,
+                                                 req_struct,
                                                  base,
                                                  regOperPtr.p,
                                                  regFragPtr,
@@ -5588,7 +5603,8 @@ Dbtup::validate_page(TablerecPtr regTabPtr, Var_page* p)
 }
 
 int
-Dbtup::handle_size_change_after_update(KeyReqStruct* req_struct,
+Dbtup::handle_size_change_after_update(Signal *signal,
+                                       KeyReqStruct* req_struct,
 				       Tuple_header* org,
 				       Operationrec* regOperPtr,
 				       Fragrecord* regFragPtr,
@@ -5637,19 +5653,19 @@ Dbtup::handle_size_change_after_update(KeyReqStruct* req_struct,
       if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
       {
         Local_key key;
-        const Uint32 *disk_ref= org->get_disk_ref_ptr(tabPtrP);
+        const Uint32 *disk_ref= org->get_disk_ref_ptr(regTabPtr);
         memcpy(&key, disk_ref, sizeof(key));
         PagePtr diskPagePtr = req_struct->m_disk_page_ptr;
         Uint32 free = diskPagePtr.p->free_space;
-        Uint32 used = diskPagePtr.p->uncommitted_free_space;
+        Uint32 used = diskPagePtr.p->uncommitted_used_space;
         Uint32 curr_size =
-          ((Var_page*)diskPagePtr.p)->get_entry_len(key.m_page_index);
+          ((Var_page*)diskPagePtr.p)->get_entry_len(key.m_page_idx);
         Uint32 new_size = sizes[2+DD];
         if (new_size > curr_size)
         {
           /* Disk part row grows from original size */
           Uint32 add = new_size - curr_size;
-          if ((user + add) <= free)
+          if ((used + add) <= free)
           {
             /**
              * Size of new row fits in the current disk page, no need
@@ -5667,7 +5683,7 @@ Dbtup::handle_size_change_after_update(KeyReqStruct* req_struct,
                * as well.
                */
               jam();
-              disk_page_prealloc_dirty_page(regFragPtr->m_disk_alloc,
+              disk_page_prealloc_dirty_page(regFragPtr->m_disk_alloc_info,
                                             diskPagePtr,
                                             diskPagePtr.p->list_index,
                                             add,
@@ -5694,7 +5710,7 @@ Dbtup::handle_size_change_after_update(KeyReqStruct* req_struct,
               Ptr<Extent_info> extentPtr;
               c_extent_pool.getPtr(extentPtr, ext);
               update_extent_pos(jamBuffer(),
-                                regFragPtr->m_disk_alloc,
+                                regFragPtr->m_disk_alloc_info,
                                 extentPtr,
                                 -Int32(add));
             }
@@ -5719,14 +5735,21 @@ Dbtup::handle_size_change_after_update(KeyReqStruct* req_struct,
               terrorCode = -ret;
               return ret;
             }
-
+            memcpy(org->get_disk_ref_ptr(regTabPtr),
+                   &new_key,
+                   sizeof(new_key));
             if (copy_bits & Tuple_header::DISK_ALLOC)
             {
               /**
                * The disk page was allocated previously in this multi-row
-               * operation. We can simply discard this disk page and
-               * allocate a new one.
+               * operation. We can simply discard the previously allocated
+               * disk page and allocate a new one.
                */
+              jam();
+              disk_page_abort_prealloc(signal,
+                                       regFragPtr,
+                                       &key,
+                                       key.m_page_idx);
             }
             else if (copy_bits & Tuple_header::DISK_REORG)
             {
@@ -5735,15 +5758,22 @@ Dbtup::handle_size_change_after_update(KeyReqStruct* req_struct,
                * new disk page with another one, yet bigger than the
                * previous one.
                */
+              jam();
+              disk_page_abort_prealloc(signal,
+                                       regFragPtr,
+                                       &key,
+                                       key.m_page_idx);
             }
             else
             {
               /**
                * The tuple existed with a disk part previously, but it will
                * now grow beyond the size of the current disk page, thus
-               * we need to allocate another one and release the previously
-               * allocated one.
+               * we need to allocate another one. We cannot release the
+               * disk page in this case since it is the original disk page
+               * and might still be needed if this transaction aborts.
                */
+              jam();
             }
           }
         }

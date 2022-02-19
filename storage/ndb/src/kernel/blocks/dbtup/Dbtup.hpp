@@ -2219,7 +2219,7 @@ public:
                     Uint32 lkey2,
                     Uint32 flags);
 
-  int load_extra_diskpage(Signal*);
+  int load_extra_diskpage(Signal*, Uint32, Uint32);
 
   int load_diskpage_scan(Signal*,
                          Uint32 opRec,
@@ -4346,7 +4346,8 @@ private:
   void read_extra_row_bits(Uint32, const Tablerec*, Tuple_header*, Uint32 *,
                            bool);
 
-  int handle_size_change_after_update(KeyReqStruct* req_struct,
+  int handle_size_change_after_update(Signal *signal,
+                                      KeyReqStruct* req_struct,
 				      Tuple_header* org,
 				      Operationrec*,
 				      Fragrecord* regFragPtr,

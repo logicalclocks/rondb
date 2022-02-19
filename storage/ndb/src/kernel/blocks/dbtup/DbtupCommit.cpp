@@ -1073,11 +1073,11 @@ Dbtup::commit_operation(Signal* signal,
           jam();
           vpagePtrP->set_entry_len(key.m_page_idx, 0);
           vpagePtrP->free_space += sz;
-          ndbrequire(vPagePtrP->m_uncommitted_used_space >=
-                     regOperPtr->m_uncommitted_used_space);¨
-          vPagePtrP->m_uncommitted_used_space -=
+          ndbrequire(vpagePtrP->uncommitted_used_space >=
+                     regOperPtr->m_uncommitted_used_space);
+          vpagePtrP->uncommitted_used_space -=
             regOperPtr->m_uncommitted_used_space;
-          ndbrequire(vPagePtrP->free_space >= new_sz);
+          ndbrequire(vpagePtrP->free_space >= new_sz);
           vpagePtrP->reorg((Var_page*)ctemp_page);
           dst = vpagePtrP->get_free_space_ptr();
           vpagePtrP->set_entry_offset(key.m_page_idx, vpagePtrP->insert_pos);
@@ -1422,7 +1422,7 @@ int Dbtup::retrieve_data_page(Signal *signal,
       regOperPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit;
     ndbrequire(extra_data_disk_page == 1);
     regOperPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit = 0;
-    regOperPtr.p->m_disk_extra_callback_page= page_id;
+    regOperPtr.p->m_disk_extra_callback_page= res;
   }
 
   return res;
@@ -1493,9 +1493,9 @@ Dbtup::prepare_disk_page_for_commit(Signal *signal,
   Tablerec *regTabPtrP = prepare_tabptr.p;
   FragrecordPtr regFragPtr = prepare_fragptr;
   bool data_disk_page =
-    leaderOperPtr.p->op_struct.bit_field.m_load_disk_page_on_commit;
+    leaderOperPtr.p->op_struct.bit_field.m_load_diskpage_on_commit;
   bool extra_data_disk_page =
-    leaderOperPtr.p->op_struct.bit_field.m_load_extra_disk_page_on_commit;
+    leaderOperPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit;
   while (data_disk_page || extra_data_disk_page)
   {
     jam();

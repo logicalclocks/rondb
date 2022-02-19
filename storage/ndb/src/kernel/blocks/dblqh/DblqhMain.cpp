@@ -11470,7 +11470,6 @@ Dblqh::acckeyconf_tupkeyreq(Signal* signal, TcConnectionrec* regTcPtr,
 
   tupKeyReq->keyRef1 = page_no;
   tupKeyReq->keyRef2 = page_idx;
-  tupKeyReq->disk_page= disk_page;
   tupKeyReq->m_row_id_page_no = row_page_no;
   tupKeyReq->m_row_id_page_idx = row_page_idx;
   TupKeyReq::setRowidFlag(Ttupreq, use_rowid);
@@ -11573,7 +11572,8 @@ Dblqh::acckeyconf_load_diskpage(Signal* signal,
 
 void
 Dblqh::acckeyconf_load_diskpage_callback(Signal* signal, 
-					 Uint32 callbackData)
+					 Uint32 callbackData,
+                                         Uint32 res)
 {
   jamEntry();
   ndbassert(!m_is_query_block);
@@ -11582,7 +11582,7 @@ Dblqh::acckeyconf_load_diskpage_callback(Signal* signal,
   FragrecordPtr fragPtr = fragptr;
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
   TcConnectionrec::TransactionState state = regTcPtr->transactionState;
-  if (likely(disk_page > 0 && state == TcConnectionrec::WAIT_TUP))
+  if (likely(res > 0 && state == TcConnectionrec::WAIT_TUP))
   {
 
     /**
@@ -11602,14 +11602,14 @@ Dblqh::acckeyconf_load_diskpage_callback(Signal* signal,
     ndbrequire(state == TcConnectionrec::WAIT_TUP_TO_ABORT);
     TupKeyRef * ref = (TupKeyRef *)signal->getDataPtr();
     ref->userRef= callbackData;
-    ref->errorCode= 1; //TODO RONM
+    ref->errorCode= res;
     execTUPKEYREF(signal);
   }
   else
   {
     TupKeyRef * ref = (TupKeyRef *)signal->getDataPtr();
     ref->userRef= callbackData;
-    ref->errorCode= 1; //TODO RONM
+    ref->errorCode= res;
     execTUPKEYREF(signal);
   }
   release_frag_access(fragptr.p);
@@ -18811,7 +18811,7 @@ void Dblqh::nextScanConfScanLab(Signal* signal,
     if (likely(!disk_table))
     {
       jamDebug();
-      next_scanconf_tupkeyreq(signal, scanPtr, regTcPtr, fragPtrP, RNIL);
+      next_scanconf_tupkeyreq(signal, scanPtr, regTcPtr, fragPtrP);
       return;
     }
     else
@@ -18895,8 +18895,7 @@ void
 Dblqh::next_scanconf_tupkeyreq(Signal* signal, 
 			       ScanRecord * scanPtr,
 			       TcConnectionrec * regTcPtr,
-			       Fragrecord * fragPtrP,
-			       Uint32 disk_page)
+			       Fragrecord * fragPtrP)
 {
   jamDebug();
   /* No AttrInfo sent to TUP, it uses a stored procedure */
@@ -18910,7 +18909,6 @@ Dblqh::next_scanconf_tupkeyreq(Signal* signal,
      */
     const Uint32 keyRef1 = scanPtr->m_row_id.m_page_no;
     const Uint32 keyRef2 = scanPtr->m_row_id.m_page_idx;
-    tupKeyReq->disk_page = disk_page;
     tupKeyReq->keyRef1 = keyRef1;
     tupKeyReq->keyRef2 = keyRef2;
   }
@@ -18944,7 +18942,7 @@ Dblqh::next_scanconf_load_diskpage(Signal* signal,
                                        scanPtr->rangeScan,
                                        disk_flag)) > 0)
   {
-    next_scanconf_tupkeyreq(signal, scanPtr, regTcPtr.p, fragPtrP, res);
+    next_scanconf_tupkeyreq(signal, scanPtr, regTcPtr.p, fragPtrP);
     return;
   }
   else if(unlikely(res != 0))
@@ -19011,7 +19009,7 @@ Dblqh::next_scanconf_load_diskpage_callback(Signal* signal,
       c_tup->prepare_scanTUPKEYREQ(scanPtr->m_row_id.m_page_no,
                                    scanPtr->m_row_id.m_page_idx);
     }
-    next_scanconf_tupkeyreq(signal, scanPtr, regTcPtr.p, fragPtrP, disk_page);
+    next_scanconf_tupkeyreq(signal, scanPtr, regTcPtr.p, fragPtrP);
   }
   else
   {
@@ -21244,7 +21242,7 @@ void Dblqh::nextScanConfCopyLab(Signal* signal,
     }
     else
     {
-      next_scanconf_tupkeyreq(signal, scanptr.p, tcConP, fragPtrP, RNIL);
+      next_scanconf_tupkeyreq(signal, scanptr.p, tcConP, fragPtrP);
       return;
     }
   }
