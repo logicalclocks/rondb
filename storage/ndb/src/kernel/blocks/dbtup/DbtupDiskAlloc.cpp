@@ -1251,6 +1251,9 @@ Dbtup::disk_page_prealloc_initial_callback(Signal*signal,
                 req.p->m_key.m_page_no,
                 lsn));
 
+  jamDebug();
+  jamDataDebug(req.p->m_uncommitted_used_space);
+
   pagePtr.p->m_page_no= req.p->m_key.m_page_no;
   pagePtr.p->m_file_no= req.p->m_key.m_file_no;
   pagePtr.p->m_table_id= fragPtr.p->fragTableId;
@@ -1531,7 +1534,7 @@ Dbtup::disk_page_alloc(Signal* signal,
                        PagePtr pagePtr,
                        Uint32 gci,
                        const Local_key *row_id,
-                       Uint32 alloc_size)
+                       Uint32 undo_size)
 {
   jam();
   Uint32 logfile_group_id= fragPtrP->m_logfile_group_id;
@@ -1550,12 +1553,12 @@ Dbtup::disk_page_alloc(Signal* signal,
                               key,
                               gci,
                               logfile_group_id,
-                              alloc_size);
+                              undo_size);
   }
   else
   {
     jam();
-    Uint32 sz= key->m_page_idx;
+    Uint32 sz = key->m_page_idx;
     ddrequire(pagePtr.p->uncommitted_used_space >= sz);
     pagePtr.p->uncommitted_used_space -= sz;
     key->m_page_idx= ((Var_page*)pagePtr.p)->
@@ -1566,7 +1569,7 @@ Dbtup::disk_page_alloc(Signal* signal,
                               key,
                               gci,
                               logfile_group_id,
-                              alloc_size);
+                              undo_size);
   }
   DEB_PGMAN((
     "(%u)disk_page_alloc: tab(%u,%u):%u,page(%u,%u).%u.%u,gci: %u,"
@@ -1583,7 +1586,7 @@ Dbtup::disk_page_alloc(Signal* signal,
               row_id->m_page_no,
               row_id->m_page_idx,
               lsn,
-              alloc_size));
+              undo_size));
 }
 
 void

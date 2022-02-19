@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -231,6 +231,7 @@ void Dbtup::initOpConnection(Operationrec* regOperPtr)
   regOperPtr->op_struct.bit_field.in_active_list = false;
   regOperPtr->m_undo_buffer_space= 0;
   regOperPtr->m_disk_callback_page = RNIL;
+  regOperPtr->m_uncommitted_used_space = 0;
 }
 
 bool
@@ -1042,60 +1043,72 @@ Dbtup::commit_operation(Signal* signal,
     copy_bits |= Tuple_header::DISK_PART;
     ndbrequire(disk_ptr->m_base_record_page_idx < Tup_page::DATA_WORDS);
 
-    if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
+    if (((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0) &&
+        (copy_bits & Tuple_header::DISK_VAR_PART))
     {
       jam();
       Varpart_copy *vp = (Varpart_copy*)(disk_ptr + disk_fix_header_size);
       Uint32 disk_varlen = vp->m_len;
-      Uint32 new_sz = disk_fix_header_size + disk_varlen;
-      Var_page* vpagePtrP = (Var_page*)diskPagePtr.p;
-      if (new_sz < sz)
+      if (!((copy_bits & Tuple_header::DISK_ALLOC) ||
+           (copy_bits & Tuple_header::DISK_REORG)))
       {
-        jam();
-        vpagePtrP->shrink_entry(key.m_page_idx, new_sz);
-      }
-      else if (new_sz > sz)
-      {
-        Uint32 add = new_sz - sz;
-        if (!vpagePtrP->is_space_behind_entry(key.m_page_idx, add))
+        /**
+         * Only UPDATE operations that will not cause a move to a new page has
+         * any work to do here to reorganise the page.
+         */
+        Uint32 new_sz = disk_fix_header_size + disk_varlen;
+        Var_page* vpagePtrP = (Var_page*)diskPagePtr.p;
+        if (new_sz < sz)
         {
-          /**
-           * We reorganise the disk page to ensure that we can copy the
-           * new row into the page. We have already ensured that the
-           * page has preallocated the necessary space, so we need not
-           * consider here the case that the page won't fit the new row.
-           *
-           * We perform the reorg of the disk page by first setting the
-           * entry length to 0 (no need to keep the old data since it is
-           * about to be overwritten). Next we reorganise and we let the
-           * entry set its position to be at the end of the insert position.
-           */
           jam();
-          vpagePtrP->set_entry_len(key.m_page_idx, 0);
-          vpagePtrP->free_space += sz;
+          vpagePtrP->shrink_entry(key.m_page_idx, new_sz);
+        }
+        else if (new_sz > sz)
+        {
+          Uint32 add = new_sz - sz;
+          if (!vpagePtrP->is_space_behind_entry(key.m_page_idx, add))
+          {
+            /**
+             * We reorganise the disk page to ensure that we can copy the
+             * new row into the page. We have already ensured that the
+             * page has preallocated the necessary space, so we need not
+             * consider here the case that the page won't fit the new row.
+             *
+             * We perform the reorg of the disk page by first setting the
+             * entry length to 0 (no need to keep the old data since it is
+             * about to be overwritten). Next we reorganise and we let the
+             * entry set its position to be at the end of the insert position.
+             */
+            jam();
+            vpagePtrP->set_entry_len(key.m_page_idx, 0);
+            vpagePtrP->free_space += sz;
+            /**
+             * Only updates of an existing row need to update free space
+             * fields and uncommitted_used_space fields. DISK_REORG and
+             * DISK_ALLOC handled this already in disk_page_alloc call
+             * above.
+             */
+            ndbrequire(vpagePtrP->free_space >= new_sz);
+            vpagePtrP->reorg((Var_page*)ctemp_page);
+            dst = vpagePtrP->get_free_space_ptr();
+            vpagePtrP->set_entry_offset(key.m_page_idx, vpagePtrP->insert_pos);
+            vpagePtrP->grow_entry(key.m_page_idx, new_sz);
+          }
+          else
+          {
+            jam();
+            vpagePtrP->grow_entry(key.m_page_idx, add);
+          }
           ndbrequire(vpagePtrP->uncommitted_used_space >=
                      regOperPtr->m_uncommitted_used_space);
           vpagePtrP->uncommitted_used_space -=
             regOperPtr->m_uncommitted_used_space;
-          ndbrequire(vpagePtrP->free_space >= new_sz);
-          vpagePtrP->reorg((Var_page*)ctemp_page);
-          dst = vpagePtrP->get_free_space_ptr();
-          vpagePtrP->set_entry_offset(key.m_page_idx, vpagePtrP->insert_pos);
-          vpagePtrP->grow_entry(key.m_page_idx, new_sz);
-        }
-        else
-        {
-          jam();
-          vpagePtrP->grow_entry(key.m_page_idx, add);
+          regOperPtr->m_uncommitted_used_space = 0;
         }
       }
       memcpy(dst, disk_ptr, 4 * disk_fix_header_size);
-      if (copy_bits & Tuple_header::DISK_VAR_PART)
-      {
-        jamDebug();
-        dst += disk_fix_header_size;
-        memcpy(dst, vp->m_data, 4 * disk_varlen);
-      }
+      dst += disk_fix_header_size;
+      memcpy(dst, vp->m_data, 4 * disk_varlen);
     }
     else
     {

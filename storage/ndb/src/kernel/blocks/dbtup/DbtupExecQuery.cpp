@@ -2897,11 +2897,13 @@ int Dbtup::handleInsertReq(Signal* signal,
       old_header_keep;
     if (disk_insert)
     {
-      jamDebug();
       Local_key tmp;
       Uint32 size =
         ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0) ?
           1 : sizes[2+DD];
+
+      jamDebug();
+      jamDataDebug(size);
  
       if (ERROR_INSERTED(4021))
       {
@@ -5203,6 +5205,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       Uint32 fix_header_size = tabPtrP->m_offsets[DD].m_fix_header_size;
       if (! (bits & Tuple_header::COPY_TUPLE))
       {
+        jam();
         Local_key key;
         const Uint32 *disk_ref = ptr->get_disk_ref_ptr(tabPtrP);
         memcpy(&key, disk_ref, sizeof(key));
@@ -5224,6 +5227,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       }
       else
       {
+        jam();
         /**
          * On COPY tuples the disk data columns comes immediately after
          * the in-memory columns. The address was calculated in the first
@@ -5234,6 +5238,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
         src_ptr += fix_header_size;
         if ((bits & Tuple_header::DISK_VAR_PART) != 0)
         {
+          jam();
           Varpart_copy* vp = (Varpart_copy*)src_ptr;
           flex_len = vp->m_len;
           flex_data = vp->m_data;
@@ -5735,6 +5740,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
               terrorCode = -ret;
               return ret;
             }
+            regOperPtr->m_uncommitted_used_space = 0;
             memcpy(org->get_disk_ref_ptr(regTabPtr),
                    &new_key,
                    sizeof(new_key));
@@ -5774,6 +5780,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                * and might still be needed if this transaction aborts.
                */
               jam();
+              m_base_header_bits |= Tuple_header::DISK_REORG;
             }
           }
         }
