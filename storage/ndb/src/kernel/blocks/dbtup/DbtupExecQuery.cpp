@@ -5464,16 +5464,16 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
                                   ind);
         order += num_dynfix + num_dynvar;
       }
-      Uint32 varpart_len= Uint32(dst_ptr - varstart);
-      ndbassert(varpart_len <= MAX_EXPANDED_TUPLE_SIZE_IN_WORDS);
-      vp->m_len = varpart_len;
+      Uint32 varpart_len_words = Uint32(dst_ptr - varstart);
+      ndbassert(varpart_len_words <= MAX_EXPANDED_TUPLE_SIZE_IN_WORDS);
+      vp->m_len = varpart_len_words;
       if (ind == MM)
       {
-        sizes[MM] = varpart_len;
-        if (varpart_len != 0)
+        sizes[MM] = varpart_len_words;
+        if (varpart_len_words != 0)
         {
           jamDebug();
-          jamDataDebug(varpart_len);
+          jamDataDebug(varpart_len_words);
           ptr->m_header_bits |= Tuple_header::VAR_PART;
         }
         else if ((ptr->m_header_bits & Tuple_header::VAR_PART) == 0)
@@ -5498,11 +5498,11 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
       }
       else
       {
-        sizes[DD] += varpart_len;
-        if (varpart_len != 0)
+        sizes[DD] += varpart_len_words;
+        if (varpart_len_words != 0)
         {
           jamDebug();
-          jamDataDebug(varpart_len);
+          jamDataDebug(varpart_len_words);
           ptr->m_header_bits |= Tuple_header::DISK_VAR_PART;
         }
         else
@@ -5511,7 +5511,7 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
         }
       }
       ndbassert((UintPtr(ptr) & 3) == 0);
-      ndbassert(varpart_len < 0x10000);
+      ndbassert(varpart_len_words < 0x2000);
     }
   }
   req_struct->is_expanded= false;

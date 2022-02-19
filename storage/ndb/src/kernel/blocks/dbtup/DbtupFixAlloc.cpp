@@ -167,21 +167,31 @@ void Dbtup::convertThPage(Fix_page* regPagePtr,
     gci_pos = Uint32(ptr->get_mm_gci(regTabPtr) - (Uint32*)ptr);
     gci_val = 0;
   }
-  while (pos + nextTuple <= Fix_page::DATA_WORDS)
+  if ((mm == MM) ||
+      ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0))
   {
-    regPagePtr->m_data[pos] = (prev << 16) | (pos + nextTuple);
-    regPagePtr->m_data[pos + 1] = Fix_page::FREE_RECORD;
-    regPagePtr->m_data[pos + gci_pos] = gci_val;
-    prev = pos;
-    pos += nextTuple;
-    cnt ++;
-  }
+    while (pos + nextTuple <= Fix_page::DATA_WORDS)
+    {
+      regPagePtr->m_data[pos] = (prev << 16) | (pos + nextTuple);
+      regPagePtr->m_data[pos + 1] = Fix_page::FREE_RECORD;
+      regPagePtr->m_data[pos + gci_pos] = gci_val;
+      prev = pos;
+      pos += nextTuple;
+      cnt ++;
+    }
   
-  regPagePtr->m_data[prev] |= 0xFFFF;
-  regPagePtr->next_free_index= 0;
-  regPagePtr->free_space= cnt;
-  regPagePtr->m_page_header.m_page_type = File_formats::PT_Tup_fixsize_page;
-}//Dbtup::convertThPage()
+    regPagePtr->m_data[prev] |= 0xFFFF;
+    regPagePtr->next_free_index= 0;
+    regPagePtr->free_space= cnt;
+    regPagePtr->m_page_header.m_page_type = File_formats::PT_Tup_fixsize_page;
+  }
+  else
+  {
+    jam();
+    Tup_varsize_page *var_page = (Tup_varsize_page*)regPagePtr;
+    var_page->init();
+  }
+}
 
 Uint32
 Dbtup::alloc_tuple_from_page(Fragrecord* const regFragPtr,

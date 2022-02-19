@@ -1548,9 +1548,22 @@ Dbtup::prepare_disk_page_for_commit(Signal *signal,
       }
       if (data_disk_page)
       {
-        jam();
-        memcpy(&req.m_page,
-	       tuple_ptr->get_disk_ref_ptr(regTabPtrP), sizeof(Local_key));
+        if (tmp->m_header_bits & Tuple_header::DISK_ALLOC)
+        {
+          jam();
+          /**
+           * The first operation was an INSERT, thus the disk row reference
+           * is found in the Copy row.
+           */
+          memcpy(&req.m_page, 
+                 tmp->get_disk_ref_ptr(regTabPtrP), sizeof(Local_key));
+        }
+        else
+        {
+          jam();
+          memcpy(&req.m_page,
+	         tuple_ptr->get_disk_ref_ptr(regTabPtrP), sizeof(Local_key));
+        }
         data_disk_page = false;
       }
       else

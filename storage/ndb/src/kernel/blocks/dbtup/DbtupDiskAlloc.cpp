@@ -241,11 +241,12 @@ Dbtup::Disk_alloc_info::Disk_alloc_info(const Tablerec* tabPtrP,
   if (tabPtrP->m_no_of_disk_attributes == 0)
     return;
   
-  Uint32 min_size= 4*tabPtrP->m_offsets[DD].m_fix_header_size;
 
   if ((tabPtrP->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
   {
-    Uint32 recs_per_page= (4*Tup_fixsize_page::DATA_WORDS)/min_size;
+    /* We set values according to the min_size. */
+    Uint32 min_size = tabPtrP->m_offsets[DD].m_fix_header_size;
+    Uint32 recs_per_page= Tup_fixsize_page::DATA_WORDS / min_size;
     m_page_free_bits_map[0] = recs_per_page; // 100% free
     m_page_free_bits_map[1] = 1;
     m_page_free_bits_map[2] = 0;
@@ -261,7 +262,6 @@ Dbtup::Disk_alloc_info::Disk_alloc_info(const Tablerec* tabPtrP,
   else
   {
     /**
-     * We set values according to the min_size.
      * The value in 0 is a full page, the value in 3 is 0 since it
      * represents an empty page.
      *
@@ -276,12 +276,12 @@ Dbtup::Disk_alloc_info::Disk_alloc_info(const Tablerec* tabPtrP,
      * The value 2 represents almost full, this is set to a third of
      * the value 1.
      */
-    m_page_free_bits_map[0] = 4 * Tup_fixsize_page::DATA_WORDS;
-    m_page_free_bits_map[1] = 4 * (Tup_fixsize_page::DATA_WORDS / 2);
-    m_page_free_bits_map[2] = 4 * (Tup_fixsize_page::DATA_WORDS / 6);
+    m_page_free_bits_map[0] = Tup_fixsize_page::DATA_WORDS - 1;
+    m_page_free_bits_map[1] = Tup_fixsize_page::DATA_WORDS / 2;
+    m_page_free_bits_map[2] = Tup_fixsize_page::DATA_WORDS / 6;
     m_page_free_bits_map[3] = 0;
 
-    Uint32 max= 4 * Tup_fixsize_page::DATA_WORDS * extent_size;
+    Uint32 max = (Tup_fixsize_page::DATA_WORDS - 1) * extent_size;
     for(Uint32 i = 0; i<EXTENT_SEARCH_MATRIX_ROWS; i++)
     {
       m_total_extent_free_space_thresholds[i] = 
