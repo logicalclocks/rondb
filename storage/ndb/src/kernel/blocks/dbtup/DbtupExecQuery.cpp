@@ -2917,7 +2917,11 @@ int Dbtup::handleInsertReq(Signal* signal,
         goto disk_prealloc_error;
       }
 
-      int ret= disk_page_prealloc(signal, fragPtr, &tmp, size);
+      int ret= disk_page_prealloc(signal,
+                                  fragPtr,
+                                  regTabPtr,
+                                  &tmp,
+                                  size);
       if (unlikely(ret < 0))
       {
         jam();
@@ -5756,6 +5760,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             Local_key new_key;
             int ret = disk_page_prealloc(signal,
                                          prepare_fragptr,
+                                         regTabPtr,
                                          &new_key,
                                          new_size);
             if (unlikely(ret < 0))

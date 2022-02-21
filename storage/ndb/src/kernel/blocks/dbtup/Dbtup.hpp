@@ -711,17 +711,12 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
        * EXTENT_SEARCH_MATRIX_COLS - 1 is always 0, thus no need of
        * checking this. The result is given.
        */
-      for (Uint32 i = EXTENT_SEARCH_MATRIX_COLS - 2; i > 0; i++)
+      for (Uint32 i = 0; i < EXTENT_SEARCH_MATRIX_COLS - 2; i++)
       {
 	if(free >= m_page_free_bits_map[i])
 	  return i;
       }
-      /**
-       * Entry 0 is a free page which will always fit the required
-       * size. Assert this as well.
-       */
-      assert(free < m_page_free_bits_map[0]);
-      return 0;
+      return EXTENT_SEARCH_MATRIX_COLS - 1;
     }
 
     Fragment_extent_list::Head m_extent_list;
@@ -4057,7 +4052,11 @@ private:
    *   key.m_page_no  contains disk page
    *   key.m_page_idx contains byte preallocated
    */
-  int disk_page_prealloc(Signal*, FragrecordPtr, Local_key*, Uint32);
+  int disk_page_prealloc(Signal*,
+                         FragrecordPtr,
+                         Tablerec*,
+                         Local_key*,
+                         Uint32);
   void disk_page_prealloc_dirty_page(Disk_alloc_info&, 
 				     Ptr<Page>,
                                      Uint32,

@@ -241,7 +241,6 @@ Dbtup::Disk_alloc_info::Disk_alloc_info(const Tablerec* tabPtrP,
   if (tabPtrP->m_no_of_disk_attributes == 0)
     return;
   
-
   if ((tabPtrP->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
   {
     /* We set values according to the min_size. */
@@ -599,14 +598,46 @@ Dbtup::restart_setup_page(Fragrecord *fragPtrP,
 int
 Dbtup::disk_page_prealloc(Signal* signal, 
                           FragrecordPtr fragPtr,
-			  Local_key* key, Uint32 sz)
+                          Tablerec *regTabPtr,
+			  Local_key* key,
+                          Uint32 sz)
 {
   int err;
   Uint32 i, ptrI;
   Ptr<Page_request> req;
   Fragrecord* fragPtrP = fragPtr.p; 
   Disk_alloc_info& alloc= fragPtrP->m_disk_alloc_info;
-  Uint32 idx = alloc.calc_page_free_bits(sz);
+  Uint32 idx;
+  if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
+  {
+    jam();
+    /**
+     * For fixed size rows the sz == 1 and thus we will always end up in
+     * slot 1.
+     */
+    idx = alloc.calc_page_free_bits(sz);
+  }
+  else
+  {
+    /**
+     * The calc_page_free_bits returns the slot where a page with this
+     * free space would end up. However we need the slot that makes
+     * it certain that we find the required size. For example a slot of
+     * size 100 would end up in slot 3. However a page in this slot
+     * guarantees no size at all. Thus we have to move to slot 2 which
+     * do definitely guarantee that size 100 will be found.
+     *
+     * If we come here with a size which is exactly the size of the
+     * limit of a slot, it will return an index that is ok, but we
+     * will increase it one level which isn't necessary. Thus we
+     * decrease the value by 1 to ensure that we end up in the right
+     * slot also when equal to the slot limits.
+     */
+    jam();
+    idx = alloc.calc_page_free_bits(sz - 1);
+    ndbrequire(idx > 0);
+    idx--;
+  }
   D("Tablespace_client - disk_page_prealloc");
   
   /**
@@ -1200,9 +1231,6 @@ Dbtup::disk_page_prealloc_initial_callback(Signal*signal,
 
   Ptr<Extent_info> extentPtr;
   c_extent_pool.getPtr(extentPtr, req.p->m_extent_info_ptr);
-
-  /* TODO HOPSWORKS-2922 */
-  ndbrequire(tabPtr.p->m_attributes[DD].m_no_of_varsize == 0);
 
   /**
    * We can come here even when the page have been already initialised.
