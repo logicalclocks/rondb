@@ -3263,7 +3263,13 @@ void Dblqh::execLQHFRAGREQ(Signal* signal)
         break;
       }
     }
-    ndbrequire(tFragPtr.i != RNIL64);
+    if (tFragPtr.i == RNIL64)
+    {
+      jam();
+      terrorCode = ZNO_FREE_FRAGMENTREC;
+      fragrefLab(signal, terrorCode, req);
+      return;
+    }
     // store it
     fragptr.p->tableFragptr = tFragPtr.i;
   }
@@ -8891,7 +8897,10 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
     reset_curr_ldm();
     return;
   }
-  
+
+  jamDebug();
+  jamDataDebug(tcConnectptr.i);
+
   Uint32 tot_lqh_key_req_count = cTotalLqhKeyReqCount;
   Uint32 num_operations = c_Counters.operations;
 
@@ -13171,6 +13180,7 @@ void Dblqh::execCOMMIT(Signal* signal)
   Uint32 transid2 = signal->theData[3];
   Uint32 gci_lo = signal->theData[4];
   jamEntryDebug();
+  jamDataDebug(tcConnectptr.i);
   if (unlikely(!tcConnect_pool.getValidPtr(tcConnectptr)))
   {
     jam();
@@ -13292,7 +13302,8 @@ void Dblqh::execCOMMITREQ(Signal* signal)
     ndbabort();
     warningReport(signal, 5, tcOprec);
     return;
-  }//if
+  }
+  jamDataDebug(tcConnectptr.i);
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
   switch (regTcPtr->transactionState) {
   case TcConnectionrec::PREPARED:
@@ -13350,6 +13361,7 @@ void Dblqh::execCOMPLETE(Signal* signal)
   tcConnectptr.i = signal->theData[0];
   Uint32 transid1 = signal->theData[1];
   Uint32 transid2 = signal->theData[2];
+  jamDataDebug(tcConnectptr.i);
   if (unlikely(!tcConnect_pool.getValidPtr(tcConnectptr)))
   {
     jam();
@@ -13492,7 +13504,8 @@ void Dblqh::execCOMPLETEREQ(Signal* signal)
     sendSignal(reqBlockref, GSN_COMPLETECONF, signal, 4, JBB);
     warningReport(signal, 7, tcOprec);
     return;
-  }//if
+  }
+  jamDataDebug(tcConnectptr.i);
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
   switch (regTcPtr->transactionState) {
   case TcConnectionrec::COMMITTED:

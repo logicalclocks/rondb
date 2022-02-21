@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2020, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2020, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1546,6 +1546,9 @@ Pgman::process_callback(Signal* signal,
     
     // callback may re-enter PGMAN and change page state
     set_page_state(jamBuf, ptr, state);
+    thrjamDebug(jamBuf);
+    thrjamDataDebug(jamBuf, ptr.p->m_file_no);
+    thrjamDataDebug(jamBuf, ptr.p->m_page_no);
     b->execute(signal, callback, ptr.p->m_real_page_i);
   }
   return true;
@@ -5694,6 +5697,8 @@ Page_cache_client::get_page(Signal* signal, Request& req, Uint32 flags)
   Uint32 page_no = req.m_page.m_page_no;
 
   thrjam(m_jamBuf);
+  thrjamDataDebug(m_jamBuf, file_no);
+  thrjamDataDebug(m_jamBuf, page_no);
   D("get_page" << V(file_no) << V(page_no) << hex << V(flags));
 
   // make sure TUP does not peek at obsolete data

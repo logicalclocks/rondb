@@ -1713,6 +1713,7 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
     Uint32 size_in_bytes= AttributeDescriptor::getSizeInBytes(attrDescriptor);
     Uint32 extType = AttributeDescriptor::getType(attrDescriptor);
     Uint32 off;
+    jamDataDebug(ind);
 
     if (extType == NDB_TYPE_BLOB || extType == NDB_TYPE_TEXT)
     {
@@ -1735,6 +1736,7 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
           jam();
           off = fix_size[ind] + pos[ind];
           fix_size[ind]+= size_in_words;
+          jamDataDebug(off);
         }
         else
         {
@@ -1748,6 +1750,7 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
         /* Static varsize. */
         off = statvar_count[ind]++;
         var_size[ind]+= size_in_bytes;
+        jamDataDebug(off);
       }
     }
     else
@@ -1772,6 +1775,7 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
 
           off = (dynfix_count[ind]++) +
                 regTabPtr->m_attributes[ind].m_no_of_dyn_var;
+          jamDataDebug(off);
           while(size_in_words-- > 0)
           {
             BitmaskImpl::set(dyn_null_words[ind],
@@ -1789,6 +1793,7 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
       treat_as_varsize:
         jam();
         off = dynvar_count[ind]++;
+        jamDataDebug(off);
         BitmaskImpl::set(dyn_null_words[ind],
                          regTabPtr->dynVarSizeMask[ind],
                          null_pos);
@@ -1797,6 +1802,7 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
     if (off > AttributeOffset::getMaxOffset())
     {
       jam();
+      jamDataDebug(off);
       return ZTOO_LARGE_TUPLE_ERROR;
     }
     AttributeOffset::setOffset(attrDes2, off);

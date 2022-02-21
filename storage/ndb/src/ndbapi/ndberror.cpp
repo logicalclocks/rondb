@@ -412,7 +412,7 @@ ErrorBundle ErrorCodes[] = {
   { 887,  DMEC, IE, "887" },
   { 888,  DMEC, IE, "888" },
   { 890,  DMEC, IE, "890" },
-  { 893,  DMEC, IE, "Flag set to not use disk columns, but still done" },
+  { 927,  DMEC, IE, "Flag set to not use disk columns, but still done" },
   { 4000, DMEC, IE, "MEMORY ALLOCATION ERROR" },
   { 4001, DMEC, IE, "Signal Definition Error" },
   { 4005, DMEC, IE, "Internal Error in NdbApi" },

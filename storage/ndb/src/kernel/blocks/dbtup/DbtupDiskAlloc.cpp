@@ -1214,6 +1214,8 @@ Dbtup::disk_page_prealloc_initial_callback(Signal*signal,
    */
   Ptr<Page_request> req;
   c_page_request_pool.getPtr(req, page_request);
+  jamDataDebug(req.p->m_key.m_file_no);
+  jamDataDebug(req.p->m_key.m_page_no);
 
   Ptr<GlobalPage> gpage;
   m_global_page_pool.getPtr(gpage, page_id);
