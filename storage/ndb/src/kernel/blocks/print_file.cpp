@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -446,7 +447,8 @@ print_undo_page(int count, void* ptr, Uint32 sz)
 	case File_formats::Undofile::UNDO_TUP_UPDATE:
 	  if(g_verbosity > 3)
 	  {
-	    Dbtup::Disk_undo::Update *req= (Dbtup::Disk_undo::Update*)src;
+	    Dbtup::Disk_undo::Update_Free *req =
+              (Dbtup::Disk_undo::Update_Free*)src;
 	    printf("[ %lld U %d %d %d gci: %d ]",
 		   lsn,
 		   req->m_file_no_page_idx >> 16,
@@ -458,7 +460,8 @@ print_undo_page(int count, void* ptr, Uint32 sz)
 	case File_formats::Undofile::UNDO_TUP_FREE:
 	  if(g_verbosity > 3)
 	  {
-	    Dbtup::Disk_undo::Free *req= (Dbtup::Disk_undo::Free*)src;
+	    Dbtup::Disk_undo::Update_Free *req =
+              (Dbtup::Disk_undo::Update_Free*)src;
 	    printf("[ %lld F %d %d %d gci: %d, row(%u,%u) ]",
 		   lsn,
 		   req->m_file_no_page_idx >> 16,

@@ -318,8 +318,8 @@ DbtupProxy::disk_restart_undo(Signal* signal, Uint64 lsn,
   case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_PART:
   {
     jam();
-    const Dbtup::Disk_undo::Update* rec =
-      (const Dbtup::Disk_undo::Update*)ptr;
+    const Dbtup::Disk_undo::Update_Free* rec =
+      (const Dbtup::Disk_undo::Update_Free*)ptr;
     undo.m_key.m_file_no = rec->m_file_no_page_idx >> 16;
     undo.m_key.m_page_no = rec->m_page_no;
     undo.m_key.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
@@ -345,8 +345,8 @@ DbtupProxy::disk_restart_undo(Signal* signal, Uint64 lsn,
   case File_formats::Undofile::UNDO_TUP_FREE_PART:
   {
     jam();
-    const Dbtup::Disk_undo::Free* rec =
-      (const Dbtup::Disk_undo::Free*)ptr;
+    const Dbtup::Disk_undo::Update_Free* rec =
+      (const Dbtup::Disk_undo::Update_Free*)ptr;
     undo.m_key.m_file_no = rec->m_file_no_page_idx >> 16;
     undo.m_key.m_page_no = rec->m_page_no;
     undo.m_key.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;

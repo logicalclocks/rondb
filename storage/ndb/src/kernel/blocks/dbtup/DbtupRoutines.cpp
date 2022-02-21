@@ -1562,7 +1562,7 @@ Dbtup::readDiskFixedSizeNotNULL(Uint8* outBuffer,
 {
   assert(req_struct->out_buf_bits == 0);
 
-  if (unlikely(req_struct->m_disk_ptr != nullptr))
+  if (unlikely(req_struct->m_disk_ptr == nullptr))
   {
     thrjam(req_struct->jamBuffer);
     req_struct->errorCode = ZREAD_DISK_WITH_FLAG_NOT_SET;
@@ -1610,7 +1610,7 @@ Dbtup::readDiskFixedSizeNULLable(Uint8* outBuffer,
 				 AttributeHeader* ahOut,
 				 Uint64 attrDes)
 {
-  if (unlikely(req_struct->m_disk_ptr != nullptr))
+  if (unlikely(req_struct->m_disk_ptr == nullptr))
   {
     thrjam(req_struct->jamBuffer);
     req_struct->errorCode = ZREAD_DISK_WITH_FLAG_NOT_SET;

@@ -1323,6 +1323,7 @@ TupTriggerData_pool c_triggerPool;
     };
     Uint16 m_bits;
     Uint16 total_rec_size; // Max total size for entire tuple in words
+    Uint16 m_max_disk_part_size;
     
     /**
      * Aggregates
@@ -1468,7 +1469,7 @@ TupTriggerData_pool c_triggerPool;
       Uint32 m_type_length; // 16 bit type, 16 bit length
     };
     
-    struct Update
+    struct Update_Free
     {
       Uint32 m_file_no_page_idx; // 16 bit file_no, 16 bit page_idx
       Uint32 m_page_no;
@@ -1483,15 +1484,6 @@ TupTriggerData_pool c_triggerPool;
       Uint32 m_page_no;
       Uint32 m_gci;
       Uint32 m_offset;
-      Uint32 m_data[1];
-      Uint32 m_type_length; // 16 bit type, 16 bit length
-    };
-
-    struct Free
-    {
-      Uint32 m_file_no_page_idx; // 16 bit file_no, 16 bit page_idx
-      Uint32 m_page_no;
-      Uint32 m_gci;
       Uint32 m_data[1];
       Uint32 m_type_length; // 16 bit type, 16 bit length
     };
@@ -2411,7 +2403,8 @@ private:
   Uint32 prepare_disk_page_for_commit(Signal *signal,
                                       OperationrecPtr regOperPtr,
                                       Tuple_header *tuple_ptr,
-                                      Ptr<GlobalPage> & diskPagePtr);
+                                      Ptr<GlobalPage> & diskPagePtr,
+                                      Tablerec *regTabPtr);
 
   void execute_real_commit(Signal *signal,
                            KeyReqStruct &req_struct,
@@ -4328,7 +4321,13 @@ private:
                          OperationrecPtr,
                          Ptr<GlobalPage> &diskPagePtr,
                          Fragrecord *fragPtrP);
-  int retrieve_log_page(Signal*, FragrecordPtr, OperationrecPtr);
+  int retrieve_log_page(Signal*,
+                        FragrecordPtr,
+                        OperationrecPtr,
+                        Ptr<GlobalPage>,
+                        Uint32,
+                        Tuple_header*,
+                        Tablerec*);
 
   void dealloc_tuple(Signal* signal,
                      Uint32,
@@ -4512,6 +4511,7 @@ Dbtup::prepare_op_pointer(Uint32 opPtrI,
   NDB_PREFETCH_WRITE(op_ptr + 16);
   prepare_oper_ptr.i = opPtrI;
   prepare_oper_ptr.p = opPtrP;
+  opPtrP->m_disk_callback_page = RNIL;
 }
 
 

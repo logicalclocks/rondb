@@ -230,7 +230,6 @@ void Dbtup::initOpConnection(Operationrec* regOperPtr)
   regOperPtr->op_struct.bit_field.m_wait_log_buffer= 0;
   regOperPtr->op_struct.bit_field.in_active_list = false;
   regOperPtr->m_undo_buffer_space= 0;
-  regOperPtr->m_disk_callback_page = RNIL;
   regOperPtr->m_uncommitted_used_space = 0;
 }
 
@@ -1314,7 +1313,7 @@ Dbtup::disk_page_commit_callback(Signal* signal,
   {
     jam();
     regOperPtr.p->op_struct.bit_field.m_load_diskpage_on_commit = 0;
-    regOperPtr.p->m_disk_callback_page= page_id;
+    regOperPtr.p->m_disk_callback_page = page_id;
   }
   else
   {
@@ -1359,7 +1358,7 @@ Dbtup::disk_page_log_buffer_callback(Signal* signal,
                      &gci_lo,
                      &transId1,
                      &transId2);
-  Uint32 page= regOperPtr.p->m_disk_callback_page;
+  Uint32 page = regOperPtr.p->m_disk_callback_page;
   prepare_oper_ptr = regOperPtr;
 
   TupCommitReq * const tupCommitReq= (TupCommitReq *)signal->getDataPtr();
@@ -1443,7 +1442,11 @@ int Dbtup::retrieve_data_page(Signal *signal,
 
 int Dbtup::retrieve_log_page(Signal *signal,
                              FragrecordPtr regFragPtr,
-                             OperationrecPtr regOperPtr)
+                             OperationrecPtr regOperPtr,
+                             Ptr<GlobalPage> diskPagePtr,
+                             Uint32 header_bits,
+                             Tuple_header *tuple_header,
+                             Tablerec *regTabPtr)
 {
   jam();
   /**
@@ -1452,10 +1455,75 @@ int Dbtup::retrieve_log_page(Signal *signal,
    */
 
   CallbackPtr cb;
-  cb.m_callbackData= regOperPtr.i;
+  cb.m_callbackData = regOperPtr.i;
   cb.m_callbackIndex = DISK_PAGE_LOG_BUFFER_CALLBACK;
-  Uint32 sz= regOperPtr.p->m_undo_buffer_space;
+  Uint32 sz = regOperPtr.p->m_undo_buffer_space;
 
+  /**
+   * We need to allocate space for both DELETE disk row part and
+   * INSERT disk row part when the flag DISK_REORG is set. We also
+   * need to modify m_undo_buffer_space if it originated from a
+   * DELETE operation, we will perform this as a check that it isn't
+   * originating from an INSERT operation. For UPDATE operations it
+   * will simply discover that the UNDO length is set correctly.
+   *
+   * We need to allocate the proper amount of UNDO log buffer for
+   * those operations.
+   */
+  if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
+  {
+    if (header_bits & Tuple_header::DISK_ALLOC)
+    {
+      jamDebug();
+      /**
+       * No need to do anything, the end result is an INSERT and this has no
+       * issues in handling the UNDO buffer space.
+       */
+    }
+    else
+    {
+      /**
+       * Either an UPDATE or a DELETE operation is the end result. If it is a
+       * DELETE operation we could have added more log space than required
+       * since during DELETE operations we don't retrieve the disk page and
+       * thus we allocate the maximum size of the disk part.
+       *
+       * UPDATE operations can lead to an INSERT into a new page plus removing
+       * the old disk part. Both these operations are added in the log space
+       * required and need to be allocated for the UNDO log buffer. However
+       * the UNDO log handling of the UNDO of the INSERT part will use the
+       * fixed size of this log record and thus the m_undo_buffer_space should
+       * only reflect the DELETE disk part.
+     */
+      if (header_bits & Tuple_header::DISK_REORG)
+      {
+        jam();
+        Uint32 undo_insert_len = sizeof(Dbtup::Disk_undo::Alloc) >> 2;
+        ndbrequire(regOperPtr.p->m_undo_buffer_space > undo_insert_len);
+        regOperPtr.p->m_undo_buffer_space -= undo_insert_len;
+      }
+      Local_key key;
+      memcpy(&key,
+             tuple_header->get_disk_ref_ptr(regTabPtr),
+             sizeof(Local_key));
+      Uint32 old_len = ((Var_page*)diskPagePtr.p)->get_entry_len(key.m_page_idx);
+      Uint32 real_undo_len = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) +
+                             (old_len - 1);
+      if (real_undo_len < regOperPtr.p->m_undo_buffer_space)
+      {
+        jam();
+        Uint32 decrement_size =
+          regOperPtr.p->m_undo_buffer_space - real_undo_len;
+        ndbrequire(sz > decrement_size);
+        sz -= decrement_size; // Need less log buffer space
+        regOperPtr.p->m_undo_buffer_space = real_undo_len;
+        {
+          Logfile_client lgman(this, c_lgman, regFragPtr.p->m_logfile_group_id);
+          lgman.free_log_space(decrement_size, jamBuffer());
+        }
+      }
+    }
+  }
   int res;
   {
     D("Logfile_client - execTUP_COMMITREQ");
@@ -1500,7 +1568,8 @@ Uint32
 Dbtup::prepare_disk_page_for_commit(Signal *signal,
                                     OperationrecPtr leaderOperPtr,
                                     Tuple_header *tuple_ptr,
-                                    Ptr<GlobalPage> &diskPagePtr)
+                                    Ptr<GlobalPage> &diskPagePtr,
+                                    Tablerec *regTabPtr)
 {
   bool initial_delete = false;
   Tablerec *regTabPtrP = prepare_tabptr.p;
@@ -1633,8 +1702,17 @@ Dbtup::prepare_disk_page_for_commit(Signal *signal,
      *   hence only this one should have m_wait_log_buffer
      */
     ndbassert(tuple_ptr->m_operation_ptr_i == leaderOperPtr.i);
+
+    Tuple_header* tmp =
+      get_copy_tuple(&leaderOperPtr.p->m_copy_tuple_location);
     
-    if (retrieve_log_page(signal, regFragPtr, leaderOperPtr) == 0)
+    if (retrieve_log_page(signal,
+                          regFragPtr,
+                          leaderOperPtr,
+                          diskPagePtr,
+                          tmp->m_header_bits,
+                          tuple_ptr,
+                          regTabPtr) == 0)
     {
       if (!initial_delete)
       {
@@ -2057,7 +2135,8 @@ Dbtup::exec_tup_commit(Signal *signal)
     if (prepare_disk_page_for_commit(signal,
                                      leaderOperPtr,
                                      tuple_ptr,
-                                     diskPagePtr) !=
+                                     diskPagePtr,
+                                     regTabPtr.p) !=
         ZDISK_PAGE_READY_FOR_COMMIT)
     {
       jam();

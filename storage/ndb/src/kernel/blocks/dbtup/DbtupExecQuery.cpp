@@ -718,12 +718,16 @@ Dbtup::load_diskpage(Signal* signal,
     regOperPtr->op_struct.bit_field.m_wait_log_buffer= 1;
     regOperPtr->op_struct.bit_field.m_load_diskpage_on_commit= 1;
   }
-  if (res > 0 &&
-      regOperPtr->op_struct.bit_field.m_load_extra_diskpage_on_commit)
+  if (res > 0)
   {
     jam();
     regOperPtr->m_disk_callback_page = res;
-    res = load_extra_diskpage(signal, opRec, flags);
+    regOperPtr->m_disk_extra_callback_page = RNIL;
+    if (regOperPtr->op_struct.bit_field.m_load_extra_diskpage_on_commit)
+    {
+      jam();
+      res = load_extra_diskpage(signal, opRec, flags);
+    }
   }
   return res;
 }
@@ -770,17 +774,21 @@ Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
-  operPtr.p->m_disk_callback_page = page_id;
   if (operPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit)
   {
     jam();
     c_lqh->setup_key_pointers(operPtr.p->userpointer);
+    operPtr.p->m_disk_callback_page = page_id;
     Uint32 flags = c_lqh->get_pgman_flags();
     page_id = (Uint32)load_extra_diskpage(signal, opRec, flags);
     if (page_id == 0)
     {
       return;
     }
+  }
+  else
+  {
+    operPtr.p->m_disk_callback_page = page_id;
   }
   c_lqh->acckeyconf_load_diskpage_callback(signal, 
                                            operPtr.p->userpointer,
@@ -868,10 +876,7 @@ Dbtup::load_diskpage_scan(Signal* signal,
       regOperPtr->m_disk_callback_page = res;
     }
   }
-  else
-  {
-    regOperPtr->m_disk_callback_page = RNIL;
-  }
+  regOperPtr->m_disk_extra_callback_page = RNIL;
   return res;
 }
 
@@ -2056,7 +2061,7 @@ int Dbtup::handleUpdateReq(Signal* signal,
       operPtrP->op_struct.bit_field.m_wait_log_buffer = 1;
       operPtrP->op_struct.bit_field.m_load_diskpage_on_commit = 1;
       operPtrP->m_undo_buffer_space= 
-	(sizeof(Dbtup::Disk_undo::Update) >> 2) + sizes[DD] - 1;
+	(sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + sizes[DD] - 1;
 
       {
         D("Logfile_client - handleUpdateReq");
@@ -2475,6 +2480,7 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
 
     if (ind == DD)
     {
+      jamDebug();
       req_struct->m_disk_ptr= (Tuple_header*)ptr;
     }
     order += num_fix;
@@ -3153,17 +3159,27 @@ int Dbtup::handleDeleteReq(Signal* signal,
      * we need to allocate space in the log buffer before actually
      * writing the UNDO log. The actual write to the UNDO log happens
      * as a background task that writes from the UNDO log buffer.
+     *
+     * In the case of supporting variable sized disk data rows we will
+     * not at this point know what the original size of the row is.
+     * The reason is that during Prepare Delete processing we don't
+     * require the disk part to be read in from disk. To handle this
+     * we allocate space in the UNDO log for the maximum size of the
+     * disk part row. We will return this at commit time without
+     * using more than required.
      */
-    Uint32 disk_len = 0;
-    PagePtr dummyPagePtr;
-    Local_key key;
-    const Uint32 *disk_ref =
-      req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr);
-    memcpy((void*)&key, disk_ref, sizeof(key));
-    (void)get_dd_info(&dummyPagePtr, key, regTabPtr, disk_len);
-    regOperPtr->m_undo_buffer_space= 
-      (sizeof(Dbtup::Disk_undo::Free) >> 2) + (disk_len - 1);
-
+    Uint32 undo_len;
+    if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
+    {
+      undo_len = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) +
+        (regTabPtr->m_offsets[DD].m_fix_header_size - 1);
+    }
+    else
+    {
+      undo_len = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) +
+        (regTabPtr->m_max_disk_part_size - 1);
+    }
+    regOperPtr->m_undo_buffer_space = undo_len;
     {
       D("Logfile_client - handleDeleteReq");
       Logfile_client lgman(this, c_lgman, regFragPtr->m_logfile_group_id);
@@ -4914,7 +4930,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       }
 
       // Fix diskpart
-      req_struct->m_disk_ptr= (Tuple_header*)dst_ptr;
+      req_struct->m_disk_ptr = (Tuple_header*)dst_ptr;
       memcpy(dst_ptr, src_ptr, 4*disk_fix_header_size);
       sizes[DD] = src_len;
       src_ptr += disk_fix_header_size;
@@ -5196,16 +5212,24 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
 
     if (ind == DD)
     {
-      req_struct->m_disk_ptr = (Tuple_header*)src_ptr;
+      req_struct->m_disk_ptr = nullptr;
       if ((disk == false) || (tabPtrP->m_no_of_disk_attributes == 0))
       {
         jamDebug();
         return;
       }
+      req_struct->m_disk_ptr = (Tuple_header*)src_ptr;
       Uint32 fix_header_size = tabPtrP->m_offsets[DD].m_fix_header_size;
-      if (! (bits & Tuple_header::COPY_TUPLE))
+      if (! (bits & Tuple_header::DISK_INLINE))
       {
         jam();
+        /**
+         * We will read the disk part row from the disk page, no previous
+         * updates of the disk columns have occurred in this transaction
+         * so far. This means that for these reads we could fetch the
+         * in-memory parts from the Copy row and the disk parts from
+         * the disk page.
+         */
         Local_key key;
         const Uint32 *disk_ref = ptr->get_disk_ref_ptr(tabPtrP);
         memcpy(&key, disk_ref, sizeof(key));
@@ -5234,7 +5258,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
          * loop and thus src_ptr already points to the first set of disk
          * data columns.
          */
-        ndbrequire(bits & Tuple_header::DISK_INLINE);
+        ndbrequire(bits & Tuple_header::COPY_TUPLE);
         src_ptr += fix_header_size;
         if ((bits & Tuple_header::DISK_VAR_PART) != 0)
         {
@@ -5778,9 +5802,35 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                * we need to allocate another one. We cannot release the
                * disk page in this case since it is the original disk page
                * and might still be needed if this transaction aborts.
+               *
+               * We need to allocate log space for the UNDO of the INSERT
+               * operation that this constitutes. Record it in
+               * m_undo_buffer_space variable. Resolve the different parts
+               * of UNDO logging in retrieve_log_page before allocating
+               * the UNDO log buffer.
                */
               jam();
               m_base_header_bits |= Tuple_header::DISK_REORG;
+              {
+                Uint32 undo_len = sizeof(Dbtup::Disk_undo::Alloc) >> 2;
+                Logfile_client lgman(this,
+                                     c_lgman,
+                                     regFragPtr->m_logfile_group_id);
+                DEB_LCP_LGMAN(("(%u)alloc_log_space(%u): %u",
+                               instance(),
+                               __LINE__,
+                               undo_len));
+                terrorCode= lgman.alloc_log_space(undo_len,
+                                                  true,
+                                                  !req_struct->m_nr_copy_or_redo,
+                                                  jamBuffer());
+                if (unlikely(terrorCode))
+                {
+                  jam();
+                  return -1;
+                }
+                regOperPtr->m_undo_buffer_space += undo_len;
+              }
             }
           }
         }
@@ -6351,7 +6401,7 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
   {
     jam();
 
-    Uint32 sz = (sizeof(Dbtup::Disk_undo::Free) >> 2) + 
+    Uint32 sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + 
       tablePtr.p->m_offsets[DD].m_fix_header_size - 1;
 
     Ptr<GlobalPage> diskPagePtr;
@@ -6479,7 +6529,7 @@ Dbtup::nr_delete_page_callback(Signal* signal,
   tablePtr.i = fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
   
-  Uint32 sz = (sizeof(Dbtup::Disk_undo::Free) >> 2) + 
+  Uint32 sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + 
     tablePtr.p->m_offsets[DD].m_fix_header_size - 1;
   
   CallbackPtr cb;
@@ -6529,7 +6579,7 @@ Dbtup::nr_delete_log_buffer_callback(Signal* signal,
   tablePtr.i = fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
 
-  Uint32 sz = (sizeof(Dbtup::Disk_undo::Free) >> 2) + 
+  Uint32 sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + 
     tablePtr.p->m_offsets[DD].m_fix_header_size - 1;
   
   Ptr<GlobalPage> gpage;

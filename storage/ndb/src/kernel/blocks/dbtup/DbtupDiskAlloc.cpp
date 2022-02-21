@@ -1597,7 +1597,7 @@ Dbtup::disk_page_free(Signal *signal,
                       PagePtr pagePtr,
                       Uint32 gci,
                       const Local_key *row_id,
-                      Uint32 alloc_size)
+                      Uint32 undo_len)
 {
   jam();
   if (DBG_DISK)
@@ -1642,31 +1642,32 @@ Dbtup::disk_page_free(Signal *signal,
                              tabPtrP->m_offsets[DD].m_fix_header_size,
 			     gci,
                              logfile_group_id,
-                             alloc_size);
-    
-
+                             undo_len);
     ((Fix_page*)pagePtr.p)->free_record(page_idx);
   }
   else
   {
     jam();
-    const Uint32 *src= ((Var_page*)pagePtr.p)->get_ptr(page_idx);
-    sz= ((Var_page*)pagePtr.p)->get_entry_len(page_idx);
-    lsn= disk_page_undo_free(signal,
-                             pagePtr.p,
-                             key,
-			     src,
-                             sz,
-			     gci,
-                             logfile_group_id,
-                             alloc_size);
+    const Uint32 *src = ((Var_page*)pagePtr.p)->get_ptr(page_idx);
+    sz = ((Var_page*)pagePtr.p)->get_entry_len(page_idx);
+    Uint32 new_undo_len = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) +
+                          (sz - 1);
+    ndbrequire(new_undo_len == undo_len);
+    lsn = disk_page_undo_free(signal,
+                              pagePtr.p,
+                              key,
+			      src,
+                              sz,
+			      gci,
+                              logfile_group_id,
+                              undo_len);
     
     ((Var_page*)pagePtr.p)->free_record(page_idx, 0);
   }
   
   DEB_PGMAN((
     "(%u)disk_page_free:tab(%u,%u):%u,page(%u,%u).%u.%u,gci:%u,row(%u,%u)"
-    ", lsn=%llu, alloc_size: %u",
+    ", lsn=%llu, undo_len: %u",
              instance(),
              fragPtrP->fragTableId,
              fragPtrP->fragmentId,
@@ -1679,7 +1680,7 @@ Dbtup::disk_page_free(Signal *signal,
              row_id->m_page_no,
              row_id->m_page_idx,
              lsn,
-             alloc_size));
+             undo_len));
 
   Uint32 new_free = pagePtr.p->free_space;
   
@@ -1858,7 +1859,7 @@ Dbtup::disk_page_undo_update(Signal *signal,
 {
   jam();
 
-  Disk_undo::Update update;
+  Disk_undo::Update_Free update;
   update.m_page_no = key->m_page_no;
   update.m_file_no_page_idx= key->m_file_no << 16 | key->m_page_idx;
   update.m_gci= gci;
@@ -1902,7 +1903,7 @@ Dbtup::disk_page_undo_free(Signal *signal,
 {
   jam();
 
-  Disk_undo::Free free;
+  Disk_undo::Update_Free free;
   free.m_page_no = key->m_page_no;
   free.m_file_no_page_idx= key->m_file_no << 16 | key->m_page_idx;
   free.m_gci= gci;
@@ -2063,7 +2064,7 @@ Dbtup::disk_restart_undo(Signal* signal,
   case File_formats::Undofile::UNDO_TUP_UPDATE:
   {
     jam();
-    Disk_undo::Update* rec= (Disk_undo::Update*)ptr;
+    Disk_undo::Update_Free* rec= (Disk_undo::Update_Free*)ptr;
     preq.m_page.m_page_no = rec->m_page_no;
     preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
     preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
@@ -2083,7 +2084,7 @@ Dbtup::disk_restart_undo(Signal* signal,
   case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_PART:
   {
     jam();
-    Disk_undo::Update* rec= (Disk_undo::Update*)ptr;
+    Disk_undo::Update_Free* rec= (Disk_undo::Update_Free*)ptr;
     preq.m_page.m_page_no = rec->m_page_no;
     preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
     preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
@@ -2093,7 +2094,7 @@ Dbtup::disk_restart_undo(Signal* signal,
   case File_formats::Undofile::UNDO_TUP_FREE:
   {
     jam();
-    Disk_undo::Free* rec= (Disk_undo::Free*)ptr;
+    Disk_undo::Update_Free* rec= (Disk_undo::Update_Free*)ptr;
     preq.m_page.m_page_no = rec->m_page_no;
     preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
     preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
@@ -2103,7 +2104,7 @@ Dbtup::disk_restart_undo(Signal* signal,
   case File_formats::Undofile::UNDO_TUP_FREE_PART:
   {
     jam();
-    Disk_undo::Free* rec= (Disk_undo::Free*)ptr;
+    Disk_undo::Update_Free* rec= (Disk_undo::Update_Free*)ptr;
     preq.m_page.m_page_no = rec->m_page_no;
     preq.m_page.m_file_no  = rec->m_file_no_page_idx >> 16;
     preq.m_page.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
@@ -2902,7 +2903,8 @@ Dbtup::disk_restart_undo_update(Apply_undo* undo)
   Uint32 len= undo->m_len - 4;
 #ifdef DEBUG_UNDO
   {
-  const Disk_undo::Update *update = (const Disk_undo::Update*)undo->m_ptr;
+  const Disk_undo::Update_Free *update =
+    (const Disk_undo::Update_Free*)undo->m_ptr;
   const Uint32* src= update->m_data;
   Uint64 lsn = 0;
   lsn += undo->m_page_ptr.p->m_page_header.m_page_lsn_hi;
@@ -2954,7 +2956,8 @@ Dbtup::disk_restart_undo_update(Apply_undo* undo)
     ptr = page_ptr->get_ptr(idx);
   }
 
-  const Disk_undo::Update *update = (const Disk_undo::Update*)undo->m_ptr;
+  const Disk_undo::Update_Free *update =
+    (const Disk_undo::Update_Free*)undo->m_ptr;
   const Uint32* src= update->m_data;
   ndbrequire(src[1] < Tup_page::DATA_WORDS);
   memcpy(ptr, src, 4 * len);
@@ -2968,7 +2971,8 @@ Dbtup::disk_restart_undo_update_first_part(Apply_undo* undo)
 
   {
 #ifdef DEBUG_UNDO
-    const Disk_undo::Update *update = (const Disk_undo::Update*)undo->m_ptr;
+    const Disk_undo::Update_Free *update =
+      (const Disk_undo::Update_Free*)undo->m_ptr;
     const Uint32* src= update->m_data;
     DEB_UNDO(("(%u)applying %lld UNDO_TUP_FIRST_UPDATE_PART"
               " on page(%u,%u).%u[%u], data[%u,%u]",
@@ -2992,7 +2996,8 @@ Dbtup::disk_restart_undo_update_first_part(Apply_undo* undo)
   {
     ndbabort(); /* Not supported yet */
   }
-  const Disk_undo::Update *update = (const Disk_undo::Update*)undo->m_ptr;
+  const Disk_undo::Update_Free *update =
+    (const Disk_undo::Update_Free*)undo->m_ptr;
   const Uint32* src= update->m_data;
   ndbrequire(len < 2 || src[1] < Tup_page::DATA_WORDS);
   memcpy(ptr, src, 4 * len);
@@ -3045,7 +3050,8 @@ Dbtup::disk_restart_undo_free(Apply_undo* undo, bool full_free)
     lsn += undo->m_page_ptr.p->m_page_header.m_page_lsn_lo;
     const char *free_str = (const char*)"UNDO_TUP_FREE";
     const char *free_part_str = (const char*)"UNDO_TUP_FREE_PART";
-    const Disk_undo::Free *free = (const Disk_undo::Free*)undo->m_ptr;
+    const Disk_undo::Update_Free *free =
+      (const Disk_undo::Update_Free*)undo->m_ptr;
     const Uint32* src= free->m_data;
     DEB_UNDO_ALLOC(("(%u)applying %lld %s on page(%u,%u).%u, page_lsn:"
                     " %llu idx:%u, tab(%u,%u), flag: %u,"
@@ -3101,7 +3107,8 @@ Dbtup::disk_restart_undo_free(Apply_undo* undo, bool full_free)
     jamLine((lsn >> 48) & 0xFFFF);
     ndbabort();
   }
-  const Disk_undo::Free *free = (const Disk_undo::Free*)undo->m_ptr;
+  const Disk_undo::Update_Free *free =
+    (const Disk_undo::Update_Free*)undo->m_ptr;
   const Uint32* src= free->m_data;
   ndbrequire(src[1] < Tup_page::DATA_WORDS);
   memcpy(ptr, src, 4 * len);
