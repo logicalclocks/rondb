@@ -36,6 +36,26 @@ printCREATE_TAB_REQ(FILE* output, const Uint32* theData, Uint32 len, Uint16)
   fprintf(output, " tableVersion: 0x%x", sig->tableVersion);
   fprintf(output, " gci: %u", sig->gci);
   fprintf(output, "\n");
+  if (len > 6)
+  {
+    fprintf(output, " noOfCharsets: %u", sig->noOfCharsets);
+    fprintf(output, " tableType: %u", sig->tableType);
+    fprintf(output, " primaryTableId: %u", sig->primaryTableId);
+    fprintf(output, " tablespace_id: %u", sig->tablespace_id);
+    fprintf(output, " forceVarPartFlag: %u", sig->forceVarPartFlag);
+    fprintf(output, " noOfAttributes: %u", sig->noOfAttributes);
+    fprintf(output, "\n");
+    fprintf(output, " noOfNullAttributes: %u", sig->noOfNullAttributes);
+    fprintf(output, " noOfKeyAttr: %u", sig->noOfKeyAttr);
+    fprintf(output, " checksumIndicator: %u", sig->checksumIndicator);
+    fprintf(output, " GCPIndicator: %u", sig->GCPIndicator);
+    fprintf(output, " extraRowAuthorBits: %u", sig->extraRowAuthorBits);
+  }
+  if (len > 17)
+  {
+    fprintf(output, " useVarSizedDiskData: %u", sig->useVarSizedDiskData);
+  }
+  fprintf(output, "\n");
   return true;
 }
 
@@ -45,6 +65,7 @@ printCREATE_TAB_CONF(FILE* output, const Uint32* theData, Uint32 len, Uint16)
   const CreateTabConf* sig = (const CreateTabConf*)theData;
   fprintf(output, " senderRef: 0x%x", sig->senderRef);
   fprintf(output, " senderData: %u", sig->senderData);
+  fprintf(output, " connectPtr: %u", sig->lqhConnectPtr);
   fprintf(output, "\n");
   return true;
 }

@@ -327,7 +327,6 @@ public:
       TR_ReadBackup   = 0x20,
       TR_FullyReplicated = 0x40,
       TR_UseVarSizedDiskData = 0x80
-
     };
     Uint8 m_extra_row_gci_bits;
     Uint8 m_extra_row_author_bits;
