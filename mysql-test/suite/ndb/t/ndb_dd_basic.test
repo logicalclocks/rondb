@@ -263,9 +263,8 @@ DROP TABLE t1;
 create table t1(
   col1 int unsigned not null primary key,
   col2 int unsigned not null,
-  col3 varchar(8172),
-  col4 varchar(4),
-  col5 int)
+  col3 char(8192),
+  col4 int)
   tablespace ts1 storage disk
   charset = latin1 engine=ndbcluster;
 show warnings;
@@ -273,7 +272,8 @@ show warnings;
 create table t1(
   col1 int unsigned not null primary key,
   col2 int unsigned not null,
-  col3 varchar(8172))
+  col3 varchar(8192))
+  col4 varchar(8192))
   tablespace ts1 storage disk
   charset = latin1 engine=ndbcluster;
 show warnings;
