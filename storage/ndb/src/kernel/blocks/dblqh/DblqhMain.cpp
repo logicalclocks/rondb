@@ -21249,6 +21249,7 @@ void Dblqh::nextScanConfCopyLab(Signal* signal,
     tcConP->transactionState = TcConnectionrec::COPY_TUPKEY;
     if(tcConP->m_disk_table)
     {
+      jamDebug();
       scanptr.p->scan_lastSeen = __LINE__;
       next_scanconf_load_diskpage(signal, scanptr.p, tcConnectptr,fragPtrP);
       return;

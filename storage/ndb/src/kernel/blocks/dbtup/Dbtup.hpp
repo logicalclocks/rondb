@@ -4062,8 +4062,10 @@ private:
                                      Uint32,
                                      Uint32,
                                      Fragrecord*);
-  void disk_page_prealloc_transit_page(Disk_alloc_info&,
-				       Ptr<Page_request>, Uint32, Uint32);
+  void disk_page_prealloc_transit_page(Fragrecord *fragPtrP,
+				       Ptr<Page_request>,
+                                       Uint32,
+                                       Uint32);
   
   void disk_page_abort_prealloc(Signal*, Fragrecord*,Local_key*, Uint32);
   void disk_page_abort_prealloc_callback(Signal*, Uint32, Uint32);
@@ -4136,8 +4138,10 @@ private:
                           Disk_alloc_info&,
                           Ptr<Page>,
                           Int32 estimate);
-  void update_extent_pos(EmulatedJamBuffer* jamBuf, Disk_alloc_info&, 
-                         Ptr<Extent_info>, Int32 delta);
+  void update_extent_pos(EmulatedJamBuffer* jamBuf,
+                         Fragrecord *fragPtrP,
+                         Ptr<Extent_info>,
+                         Int32 delta);
 
   void disk_page_move_page_request(Disk_alloc_info& alloc,
                                    Ptr<Extent_info>,

@@ -59,6 +59,8 @@ printSCAN_FRAGREQ(FILE * output, const Uint32 * theData,
     fprintf(output, "q");
   if (ScanFragReq::getNoDiskFlag(sig->requestInfo))
     fprintf(output, "(nodisk)");
+  else
+    fprintf(output, "(disk)");
   fprintf(output, " attrLen: %u",
           ScanFragReq::getAttrLen(sig->requestInfo));
   fprintf(output, " reorg: %u",

@@ -858,7 +858,7 @@ Dbtup::load_diskpage_scan(Signal* signal,
   }
 
   int res= 1;
-  if(ptr->m_header_bits & Tuple_header::DISK_PART)
+  if (ptr->m_header_bits & Tuple_header::DISK_PART)
   {
     jam();
     Page_cache_client::Request req;
@@ -875,6 +875,18 @@ Dbtup::load_diskpage_scan(Signal* signal,
     {
       regOperPtr->m_disk_callback_page = res;
     }
+  }
+  else
+  {
+    jam();
+    /**
+     * We need to set m_disk_callback_page to something different
+     * than RNIL to indicate that we should be ready to read the
+     * disk columns. At the same time there is no disk page, so
+     * we set it to something that should crash if attempted to
+     * be used as a page id.
+     */
+    regOperPtr->m_disk_callback_page = Uint32(~0);
   }
   regOperPtr->m_disk_extra_callback_page = RNIL;
   return res;
@@ -4907,6 +4919,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
     {
       if (disk == false || tabPtrP->m_no_of_disk_attributes == 0)
       {
+        jamDebug();
         ptr->m_header_bits= (bits | Tuple_header::COPY_TUPLE);
         return;
       }
@@ -5743,7 +5756,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
               Ptr<Extent_info> extentPtr;
               c_extent_pool.getPtr(extentPtr, ext);
               update_extent_pos(jamBuffer(),
-                                regFragPtr->m_disk_alloc_info,
+                                regFragPtr,
                                 extentPtr,
                                 -Int32(add));
             }
