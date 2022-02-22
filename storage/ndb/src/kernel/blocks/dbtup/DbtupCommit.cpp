@@ -752,7 +752,7 @@ Dbtup::commit_operation(Signal* signal,
   Uint32 save= tuple_ptr->m_operation_ptr_i;
   Uint32 bits= tuple_ptr->m_header_bits;
 
-  Tuple_header *disk_ptr= 0;
+  Uint32 *disk_ptr= 0;
   Tuple_header *copy= get_copy_tuple(&regOperPtr->m_copy_tuple_location);
   
   Uint32 copy_bits= copy->m_header_bits;
@@ -765,7 +765,7 @@ Dbtup::commit_operation(Signal* signal,
   {
     jam();
     memcpy(tuple_ptr, copy, 4*fixsize);
-    disk_ptr= (Tuple_header*)(((Uint32*)copy)+fixsize);
+    disk_ptr = (((Uint32*)copy)+fixsize);
   }
   else
   {
@@ -871,13 +871,13 @@ Dbtup::commit_operation(Signal* signal,
        * Find disk part after
        * header + fixed MM part + length word + varsize part.
        */
-      disk_ptr = (Tuple_header*)(vp->m_data + len);
+      disk_ptr = (vp->m_data + len);
     }
     else
     {
       jam();
       ndbassert(tmp.m_page_no == RNIL);
-      disk_ptr = (Tuple_header*)copy->get_end_of_fix_part_ptr(regTabPtr);
+      disk_ptr = copy->get_end_of_fix_part_ptr(regTabPtr);
     }
   }
 
@@ -1040,7 +1040,8 @@ Dbtup::commit_operation(Signal* signal,
      */
     memcpy(tuple_ptr->get_disk_ref_ptr(regTabPtr), &key, sizeof(Local_key));
     copy_bits |= Tuple_header::DISK_PART;
-    ndbrequire(disk_ptr->m_base_record_page_idx < Tup_page::DATA_WORDS);
+    Tuple_header *disk_tuple_ptr = (Tuple_header*)disk_ptr;
+    ndbrequire(disk_tuple_ptr->m_base_record_page_idx < Tup_page::DATA_WORDS);
 
     if (((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0) &&
         (copy_bits & Tuple_header::DISK_VAR_PART))
@@ -1048,6 +1049,7 @@ Dbtup::commit_operation(Signal* signal,
       jam();
       Varpart_copy *vp = (Varpart_copy*)(disk_ptr + disk_fix_header_size);
       Uint32 disk_varlen = vp->m_len;
+      ndbrequire(disk_varlen < 32768); //TODO RONM remove this one after debugging
       if (!((copy_bits & Tuple_header::DISK_ALLOC) ||
            (copy_bits & Tuple_header::DISK_REORG)))
       {
