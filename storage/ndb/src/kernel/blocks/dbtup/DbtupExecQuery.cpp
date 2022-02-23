@@ -2493,7 +2493,10 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
     if (ind == DD)
     {
       jamDebug();
+      Uint32 disk_fix_header_size =
+        regTabPtr->m_offsets[DD].m_fix_header_size;
       req_struct->m_disk_ptr= (Tuple_header*)ptr;
+      ptr += disk_fix_header_size;
     }
     order += num_fix;
 
@@ -5236,7 +5239,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
         return;
       }
       req_struct->m_disk_ptr = (Tuple_header*)src_ptr;
-      Uint32 fix_header_size = tabPtrP->m_offsets[DD].m_fix_header_size;
+      Uint32 disk_fix_header_size = tabPtrP->m_offsets[DD].m_fix_header_size;
       if (! (bits & Tuple_header::DISK_INLINE))
       {
         jam();
@@ -5258,13 +5261,13 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
                               tabPtrP,
                               disk_len);
         req_struct->m_disk_ptr = (Tuple_header*)src_ptr;
-        flex_data = src_ptr + fix_header_size;
+        flex_data = src_ptr + disk_fix_header_size;
         /**
          * Move past the fixed size columns to set src_ptr to point to
          * where the varsized columns start.
          */
-        ndbrequire(disk_len >= fix_header_size);
-        flex_len = disk_len - fix_header_size;
+        ndbrequire(disk_len >= disk_fix_header_size);
+        flex_len = disk_len - disk_fix_header_size;
       }
       else
       {
@@ -5276,7 +5279,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
          * data columns.
          */
         ndbrequire(bits & Tuple_header::COPY_TUPLE);
-        src_ptr += fix_header_size;
+        src_ptr += disk_fix_header_size;
         if ((bits & Tuple_header::DISK_VAR_PART) != 0)
         {
           jam();

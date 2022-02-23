@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2375,7 +2375,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
       // move to next tuple
     case ScanPos::Get_next_tuple:
       // move to next fixed size tuple
-      jam();
+      jamDebug();
       {
         key.m_page_idx += size;
         pos.m_get = ScanPos::Get_tuple;
@@ -2383,7 +2383,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
       [[fallthrough]];
     case ScanPos::Get_tuple:
       // get fixed size tuple
-      jam();
+      jamDebug();
       if ((bits & ScanOp::SCAN_VS) == 0)
       {
         Fix_page* page = (Fix_page*)pos.m_page;
@@ -2431,7 +2431,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
                      ((bits & ScanOp::SCAN_LCP) &&
                       !pos.m_lcp_scan_changed_rows_page)))
           {
-            jam();
+            jamDebug();
             /**
              * We come here for normal full table scans and also for LCP
              * scans where we scan ALL ROWS pages.

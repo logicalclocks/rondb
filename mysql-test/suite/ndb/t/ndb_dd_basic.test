@@ -593,6 +593,8 @@ commit;
 delete from t1;
 begin;
 insert into t1 values (1, 'x');
+select * from t1 where a = 1;
+update t1 set b = 'y' where a = 1;
 select * from t1;
 rollback;
 
