@@ -3538,21 +3538,22 @@ Pgman::fsreadconf(Signal* signal, Ptr<Page_entry> ptr)
     lsn <<= 32;
     lsn += page->m_page_header.m_page_lsn_lo;
     ptr.p->m_lsn = lsn;
-    Tup_fixsize_page *fix_page = (Tup_fixsize_page*)page;
-    (void)fix_page;
-    DEB_PGMAN_IO(("(%u)pagein completed: page(%u,%u):%x, "
-                  "on_page(%u,%u), tab(%u,%u) lsn(%u,%u)",
-                  instance(),
-                  ptr.p->m_file_no,
-                  ptr.p->m_page_no,
-                  (unsigned int)state,
-                  fix_page->m_page_no,
-                  fix_page->m_file_no,
-                  fix_page->m_table_id,
-                  fix_page->m_fragment_id,
-                  page->m_page_header.m_page_lsn_hi,
-                  page->m_page_header.m_page_lsn_lo));
-
+    {
+      Tup_fixsize_page *fix_page = (Tup_fixsize_page*)page;
+      (void)fix_page;
+      DEB_PGMAN_IO(("(%u)pagein completed: page(%u,%u):%x, "
+                    "on_page(%u,%u), tab(%u,%u) lsn(%u,%u)",
+                    instance(),
+                    ptr.p->m_file_no,
+                    ptr.p->m_page_no,
+                    (unsigned int)state,
+                    fix_page->m_page_no,
+                    fix_page->m_file_no,
+                    fix_page->m_table_id,
+                    fix_page->m_fragment_id,
+                    page->m_page_header.m_page_lsn_hi,
+                    page->m_page_header.m_page_lsn_lo));
+    }
   }
   ndbrequire(m_stats.m_current_io_waits > 0);
   m_stats.m_current_io_waits--;
@@ -3588,17 +3589,19 @@ Pgman::pageout(Signal* signal, Ptr<Page_entry> ptr, bool check_sync_lsn)
     (File_formats::Datafile::Data_page*)pagePtr.p;
   page->m_page_header.m_page_lsn_hi = (Uint32)(ptr.p->m_lsn >> 32);
   page->m_page_header.m_page_lsn_lo = (Uint32)(ptr.p->m_lsn & 0xFFFFFFFF);
-  Tup_fixsize_page *fix_page = (Tup_fixsize_page*)page;
-  (void)fix_page;
-  DEB_PGMAN_WRITE(("(%u)pageout(),page(%u,%u),tab(%u,%u),lsn(%u,%u),state:%x",
-                   instance(),
-                   ptr.p->m_file_no,
-                   ptr.p->m_page_no,
-                   fix_page->m_table_id,
-                   fix_page->m_fragment_id,
-                   page->m_page_header.m_page_lsn_hi,
-                   page->m_page_header.m_page_lsn_lo,
-                   (unsigned int)state));
+  {
+    Tup_fixsize_page *fix_page = (Tup_fixsize_page*)page;
+    (void)fix_page;
+    DEB_PGMAN_WRITE(("(%u)pageout(),page(%u,%u),tab(%u,%u),lsn(%u,%u),state:%x",
+                     instance(),
+                     ptr.p->m_file_no,
+                     ptr.p->m_page_no,
+                     fix_page->m_table_id,
+                     fix_page->m_fragment_id,
+                     page->m_page_header.m_page_lsn_hi,
+                     page->m_page_header.m_page_lsn_lo,
+                     (unsigned int)state));
+  }
   int ret = 1;
   if (check_sync_lsn)
   {
@@ -3922,7 +3925,8 @@ Pgman::fswritereq(Signal* signal, Ptr<Page_entry> ptr)
     m_global_page_pool.getPtr(gptr);
     File_formats::Page_header *page_header =
       (File_formats::Page_header*)gptr.p;
-    if (page_header->m_page_type == File_formats::PT_Tup_fixsize_page)
+    if ((page_header->m_page_type == File_formats::PT_Tup_fixsize_page) ||
+        (page_header->m_page_type == File_formats::PT_Tup_varsize_page))
     {
       Tup_page* tup_page_v2 = (Tup_page*)gptr.p;
       tup_page_v2->m_ndb_version = NDB_DISK_V2;
