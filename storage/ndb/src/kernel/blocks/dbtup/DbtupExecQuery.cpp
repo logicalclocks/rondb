@@ -5212,7 +5212,8 @@ Dbtup::dump_tuple(const KeyReqStruct* req_struct, const Tablerec* tabPtrP)
 
 void
 Dbtup::prepare_read(KeyReqStruct* req_struct, 
-		    Tablerec* tabPtrP, bool disk)
+		    Tablerec* tabPtrP,
+                    bool disk)
 {
   Tuple_header* ptr = req_struct->m_tuple_ptr;
   Uint32 bits = ptr->m_header_bits;
@@ -5249,14 +5250,14 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       req_struct->m_disk_ptr = nullptr;
       if ((disk == false) || (tabPtrP->m_no_of_disk_attributes == 0))
       {
-        jamDebug();
+        thrjamDebug(req_struct->jamBuffer);
         return;
       }
       req_struct->m_disk_ptr = (Tuple_header*)src_ptr;
       Uint32 disk_fix_header_size = tabPtrP->m_offsets[DD].m_fix_header_size;
       if (! (bits & Tuple_header::DISK_INLINE))
       {
-        jam();
+        thrjam(req_struct->jamBuffer);
         /**
          * We will read the disk part row from the disk page, no previous
          * updates of the disk columns have occurred in this transaction
@@ -5285,7 +5286,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       }
       else
       {
-        jam();
+        thrjam(req_struct->jamBuffer);
         /**
          * On COPY tuples the disk data columns comes immediately after
          * the in-memory columns. The address was calculated in the first
@@ -5296,7 +5297,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
         src_ptr += disk_fix_header_size;
         if ((bits & Tuple_header::DISK_VAR_PART) != 0)
         {
-          jam();
+          thrjam(req_struct->jamBuffer);
           Varpart_copy* vp = (Varpart_copy*)src_ptr;
           flex_len = vp->m_len;
           flex_data = vp->m_data;
@@ -5329,7 +5330,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       }
       if (unlikely((bits & Tuple_header::DISK_VAR_PART) == 0))
       {
-        jamDebug();
+        thrjamDebug(req_struct->jamBuffer);
         dst->m_max_var_offset = 0;
         dst->m_dyn_part_len = 0;
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
@@ -5343,12 +5344,12 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       /* ind == MM */
       if (num_vars == 0 && num_dyns == 0)
       {
-        jamDebug();
+        thrjamDebug(req_struct->jamBuffer);
         continue;
       }
       if (unlikely((bits & Tuple_header::VAR_PART) == 0))
       {
-        jamDebug();
+        thrjamDebug(req_struct->jamBuffer);
         dst->m_max_var_offset = 0;
         dst->m_dyn_part_len = 0;
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
@@ -5358,7 +5359,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       }
       if (! (bits & Tuple_header::COPY_TUPLE))
       {
-        jamDebug();
+        thrjamDebug(req_struct->jamBuffer);
         Ptr<Page> tmp;
         Var_part_ref* var_ref = ptr->get_var_part_ref_ptr(tabPtrP);
         flex_data= get_ptr(&tmp, * var_ref);
@@ -5378,7 +5379,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       }
       else
       {
-        jamDebug();
+        thrjamDebug(req_struct->jamBuffer);
         Varpart_copy* vp = (Varpart_copy*)src_ptr;
         flex_len = vp->m_len;
         flex_data = vp->m_data;
