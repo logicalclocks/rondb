@@ -569,6 +569,15 @@ USE LOGFILE GROUP lg1
 INITIAL_SIZE 8M
 ENGINE NDB;
 
+#
+# Test that variable sized rows can be seen during
+# transaction, after transaction, after inserts and
+# after updates using both key lookup and scans.
+#
+# Test with table consisting of mixes of fixed size parts,
+# variable sized parts and dynamic parts.
+#
+
 CREATE TABLE t1 (
   a int NOT NULL,
   b varchar(4000) charset latin1,  -- must use 2 pages undo
@@ -599,9 +608,133 @@ select * from t1;
 rollback;
 
 set autocommit = 1;
+insert into t1 values (1, 'x');
+select * from t1 where a = 1;
+update t1 set b = 'y' where a = 1;
+select * from t1;
+
+drop table t1;
+
+CREATE TABLE t1 (
+  a int NOT NULL,
+  b int,
+  PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+
+set autocommit = 0;
+begin;
+insert into t1 values (1, 1);
+select * from t1 where a = 1;
+update t1 set b = 2 where a = 1;
+select * from t1;
+rollback;
+
+set autocommit = 1;
+insert into t1 values (1, 1);
+select * from t1 where a = 1;
+update t1 set b = 2 where a = 1;
+select * from t1;
+
+drop table t1;
+
+CREATE TABLE t1 (
+  a int NOT NULL,
+  b int,
+  c varchar(128) charset latin1,
+  PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+
+set autocommit = 0;
+begin;
+insert into t1 values (1, 1, 'x');
+select * from t1 where a = 1;
+update t1 set c = 'y' where a = 1;
+select * from t1;
+rollback;
+
+set autocommit = 1;
+insert into t1 values (1, 1, 'x');
+select * from t1 where a = 1;
+update t1 set c = 'y' where a = 1;
+select * from t1;
+
+drop table t1;
+
+CREATE TABLE t1 (
+  a int NOT NULL,
+  b int,
+  c varchar(128),
+  d int column_format dynamic,
+  PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+
+set autocommit = 0;
+begin;
+insert into t1 values (1, 2, 'x', 3);
+select * from t1 where a = 1;
+update t1 set c = 'y' where a = 1;
+select * from t1;
+rollback;
+
+set autocommit = 1;
+insert into t1 values (1, 2, 'x', 3);
+select * from t1 where a = 1;
+update t1 set c = 'y' where a = 1;
+select * from t1;
+
+drop table t1;
+
+CREATE TABLE t1 (
+  a int NOT NULL,
+  b int column_format dynamic,
+  PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+
+set autocommit = 0;
+begin;
+insert into t1 values (1, 1);
+select * from t1 where a = 1;
+update t1 set b = NULL where a = 1;
+select * from t1;
+rollback;
+
+set autocommit = 1;
+insert into t1 values (1, 1);
+select * from t1 where a = 1;
+update t1 set b = NULL where a = 1;
+select * from t1;
+
+drop table t1;
+
+CREATE TABLE t1 (
+  a int NOT NULL,
+  b int column_format dynamic,
+  c varchar(128) column_format dynamic,
+  PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+
+set autocommit = 0;
+begin;
+insert into t1 values (1, 2, 'z');
+select * from t1 where a = 1;
+update t1 set b = NULL, c = NULL where a = 1;
+select * from t1;
+rollback;
+
+set autocommit = 1;
+insert into t1 values (1, 2, 'z');
+select * from t1 where a = 1;
+update t1 set b = NULL, c = NULL where a = 1;
+select * from t1;
+
+drop table t1;
 
 --echo # Cleanup
-drop table t1;
 alter tablespace ts1
 drop datafile 'datafile.dat';
 drop tablespace ts1;

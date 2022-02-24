@@ -447,6 +447,7 @@ ErrorBundle ErrorCodes[] = {
   { 261,  DMEC, AE,
     "DML count in transaction exceeds config parameter MaxDMLOperationsPerTransaction/MaxNoOfConcurrentOperations" },
   { 763,  DMEC, AE, "DDL is not supported with mixed data-node versions" },
+  { 801,  DMEC, AE, "Dynamic fields in storage disk not supported by cluster" },
   { 823,  DMEC, AE, "Too much attrinfo from application in tuple manager" },
   { 829,  DMEC, AE, "Corrupt data received for insert/update" },
   { 831,  DMEC, AE, "Too many nullable/bitfields in table definition" },

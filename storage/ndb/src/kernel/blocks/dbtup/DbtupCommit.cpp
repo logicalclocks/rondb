@@ -1049,7 +1049,6 @@ Dbtup::commit_operation(Signal* signal,
       jam();
       Varpart_copy *vp = (Varpart_copy*)(disk_ptr + disk_fix_header_size);
       Uint32 disk_varlen = vp->m_len;
-      ndbrequire(disk_varlen < 32768); //TODO RONM remove this one after debugging
       if (!((copy_bits & Tuple_header::DISK_ALLOC) ||
            (copy_bits & Tuple_header::DISK_REORG)))
       {

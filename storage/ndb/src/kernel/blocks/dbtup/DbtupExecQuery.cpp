@@ -2499,7 +2499,8 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
       ptr += disk_fix_header_size;
     }
     order += num_fix;
-
+    jamDebug();
+    jamDataDebug(num_fix);
     if (num_vars || num_dyns)
     {
       jam();
@@ -2513,6 +2514,7 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
  
       if (num_vars)
       {
+        jamDebug();
         dst->m_data_ptr= (char*)(((Uint16*)ptr)+num_vars+1);
         dst->m_offset_array_ptr= req_struct->var_pos_array[ind];
         dst->m_var_len_offset= num_vars;
@@ -2527,6 +2529,8 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
           * len_ptr++ = pos;
           pos += AttributeDescriptor::getSizeInBytes(
             tab_descr[*order++]);
+          jamDebug();
+          jamDataDebug(pos);
         }
 
         // Disk/dynamic part is 32-bit aligned
@@ -4833,7 +4837,8 @@ Uint32*
 expand_var_part(Dbtup::KeyReqStruct::Var_data *dst, 
 		const Uint32* src, 
 		const Uint32 * tabDesc, 
-		const Uint16* order)
+		const Uint16* order,
+                EmulatedJamBuffer *jamBuf)
 {
   char* dst_ptr= dst->m_data_ptr;
   Uint32 num_vars = dst->m_var_len_offset;
@@ -4854,6 +4859,8 @@ expand_var_part(Dbtup::KeyReqStruct::Var_data *dst,
     src_ptr += len;
     
     max_len= AttributeDescriptor::getSizeInBytes(tabDesc[* order++]);
+    thrjamDebug(jamBuf);
+    thrjamDataDebug(jamBuf, max_len);
     dst_ptr += max_len; // Max size
     dst_off += max_len;
     
@@ -4893,6 +4900,8 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
   Uint32 *dst_ptr = ptr->get_end_of_fix_part_ptr(tabPtrP);
 
   order += tabPtrP->m_attributes[MM].m_no_of_fixsize;
+  jamDebug();
+  jamDataDebug(tabPtrP->m_attributes[MM].m_no_of_fixsize);
   const Uint32 *src_ptr= src->get_end_of_fix_part_ptr(tabPtrP);
   req_struct->is_expanded= true;
 
@@ -4928,6 +4937,9 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       }
       jamDebug();
       Uint32 disk_fix_header_size = tabPtrP->m_offsets[DD].m_fix_header_size;
+      jamDataDebug(disk_fix_header_size);
+      jamDataDebug(tabPtrP->m_attributes[DD].m_no_of_fixsize);
+      order += tabPtrP->m_attributes[DD].m_no_of_fixsize;
       Uint32 src_len = disk_fix_header_size;
       if (bits & Tuple_header::DISK_INLINE)
       {
@@ -5062,7 +5074,8 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       dst->m_var_len_offset= num_vars;
       dst->m_max_var_offset= tabPtrP->m_offsets[ind].m_max_var_offset;
 
-      dst_ptr= expand_var_part(dst, flex_data, desc, order);
+      dst_ptr= expand_var_part(dst, flex_data, desc, order, jamBuffer());
+      order += num_vars;
       ndbassert(dst_ptr == ALIGN_WORD(dst->m_data_ptr + dst->m_max_var_offset));
       /**
        * Move to end of fix varpart
@@ -5092,9 +5105,10 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
                                dyn_data,
                                dyn_len,
                                desc,
-                               order + num_vars,
+                               order,
                                num_dynvar, num_dynfix,
                                tabPtrP->m_offsets[ind].m_dyn_null_words);
+      order += num_dyns;
     }
     
     ndbassert((UintPtr(src_ptr) & 3) == 0);
@@ -5373,7 +5387,6 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       /* Set up src_ptr for DD loop */
       src_ptr += flex_len;
     }
-    ndbrequire(flex_len > 0);
     char* varstart;
     Uint32 varlen;
     const Uint32* dynstart;

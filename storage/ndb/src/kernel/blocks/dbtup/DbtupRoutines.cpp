@@ -1615,6 +1615,7 @@ Dbtup::readDiskFixedSizeNotNULL(Uint8* outBuffer,
     if (likely(newIndexBuf <= maxRead))
     {
       thrjamDebug(req_struct->jamBuffer);
+      thrjamDataDebug(req_struct->jamBuffer, (src[0] + (src[1] << 8)));
       ahOut->setByteSize(srcBytes);
       memcpy(dst, src, srcBytes);
       zero32(dst, srcBytes);

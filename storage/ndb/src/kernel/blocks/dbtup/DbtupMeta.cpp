@@ -318,6 +318,14 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal* signal)
   else
   {
     jam();
+    if ((ind == DD) &&
+        ((regTabPtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0))
+    {
+      jam();
+      terrorCode = ZDYNAMIC_STORED_DISK_ERROR;
+      goto error;
+    }      
+
     /* A dynamic attribute. */
     regTabPtr.p->m_attributes[ind].m_no_of_dynamic++;
     /*
@@ -340,14 +348,18 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal* signal)
          * Bit type. These are stored directly in the bitmap.
          * This means that we will still use some space for a dynamic NULL
          * bittype if a following dynamic attribute is non-NULL.
+         * We ignore disk based flag for Bit type, always stored in memory.
          */
         Uint32 bits= AttributeDescriptor::getArraySize(attrDescriptor);
         /**
          * The NULL bit is stored after the data bits, so that we automatically
          * ensure that the full size bitmap is stored when non-NULL.
          */
+        null_pos= regTabPtr.p->m_dyn_null_bits[MM];
         null_pos+= bits;
-        regTabPtr.p->m_dyn_null_bits[ind]+= bits+1;
+        regTabPtr.p->m_dyn_null_bits[MM]+= bits+1;
+        regTabPtr.p->m_attributes[ind].m_no_of_dynamic--;
+        regTabPtr.p->m_attributes[MM].m_no_of_dynamic++;
       }
       else
       {
@@ -1626,7 +1638,9 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
 
   regTabPtr->m_no_of_disk_attributes= 
     regTabPtr->m_attributes[DD].m_no_of_fixsize +
-    regTabPtr->m_attributes[DD].m_no_of_varsize;
+    regTabPtr->m_attributes[DD].m_no_of_varsize +
+    regTabPtr->m_attributes[DD].m_no_of_dynamic;
+
 
   regTabPtr->m_no_of_real_disk_attributes = regTabPtr->m_no_of_disk_attributes;
 
@@ -1785,6 +1799,8 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
         else
         {
           jam();
+          dynamic_count[ind]--;
+          dynamic_count[MM]++;
           off= 0;                               // Bit type
         }
       }
@@ -1823,9 +1839,13 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
   regTabPtr->m_offsets[DD].m_fix_header_size= 
     fix_size[DD] + pos[DD];
 
-  if(regTabPtr->m_attributes[DD].m_no_of_varsize == 0 &&
-     regTabPtr->m_attributes[DD].m_no_of_fixsize > 0)
+  if(regTabPtr->m_attributes[DD].m_no_of_varsize > 0 ||
+     regTabPtr->m_attributes[DD].m_no_of_fixsize > 0 ||
+     regTabPtr->m_attributes[DD].m_no_of_dynamic > 0)
+  {
+    jam();
     regTabPtr->m_offsets[DD].m_fix_header_size += Tuple_header::HeaderSize;
+  }
 
   Uint32 mm_vars= regTabPtr->m_attributes[MM].m_no_of_varsize;
   Uint32 mm_dyns= regTabPtr->m_attributes[MM].m_no_of_dyn_fix +
@@ -1966,11 +1986,15 @@ void Dbtup::setUpKeyArray(Tablerec* const regTabPtr)
   /**
    * Setup real order array (16 bit per column)
    *
-   * Sequence is [mm_fix mm_var mm_dynfix mm_dynvar dd_fix]
+   * Sequence is
+   * [mm_fix mm_var mm_dynfix mm_dynvar
+   *  dd_fix dd_var dd_dynfix dd_dynvar]
+   *
+   * Dynamic bit fields are never stored in disk part.
    */
   Uint32 cnt = 0;
   Uint16* order = regTabPtr->m_real_order_descriptor;
-  for (Uint32 type = 0; type < 5; type++)
+  for (Uint32 type = 0; type < 8; type++)
   {
     for (Uint32 i= 0; i < regTabPtr->m_no_of_attributes; i++) 
     {
@@ -1993,8 +2017,7 @@ void Dbtup::setUpKeyArray(Tablerec* const regTabPtr)
         continue;
       }
 
-      if ((AttributeDescriptor::getArrayType(desc) != NDB_ARRAYTYPE_FIXED 
-           && !AttributeDescriptor::getDiskBased(desc)) ||
+      if ((AttributeDescriptor::getArrayType(desc) != NDB_ARRAYTYPE_FIXED) ||
           (AttributeDescriptor::getDynamic(desc) &&
            AttributeDescriptor::getArrayType(desc) == NDB_ARRAYTYPE_FIXED &&
            AttributeDescriptor::getSizeInWords(desc) > InternalMaxDynFix))
@@ -2009,7 +2032,6 @@ void Dbtup::setUpKeyArray(Tablerec* const regTabPtr)
       {
 	t += 4;
       }
-      ndbrequire(t < 5);              // Disk data currently only static/fixed
       if(t == type)
       {
 	* order++ = (i * ZAD_SIZE);

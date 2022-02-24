@@ -1,4 +1,5 @@
 /* Copyright (c) 2004, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -7902,6 +7903,7 @@ static bool ndb_column_is_dynamic(THD *thd, Field *field,
                                   bool use_dynamic_as_default,
                                   NDBCOL::StorageType type) {
   DBUG_TRACE;
+  (void)type; //No longer used
   /*
     Check if COLUMN_FORMAT is declared FIXED or DYNAMIC.
 
@@ -7943,22 +7945,6 @@ static bool ndb_column_is_dynamic(THD *thd, Field *field,
         dynamic = (create_info->row_type == ROW_TYPE_DYNAMIC);
       break;
   }
-  if (type == NDBCOL::StorageTypeDisk) {
-    if (dynamic) {
-      DBUG_PRINT("info", ("Dynamic disk stored column %s changed to static",
-                          field->field_name));
-      dynamic = false;
-    }
-    if (thd && field->column_format() == COLUMN_FORMAT_TYPE_DYNAMIC) {
-      push_warning_printf(thd, Sql_condition::SL_WARNING,
-                          ER_ILLEGAL_HA_CREATE_OPTION,
-                          "DYNAMIC column %s with "
-                          "STORAGE DISK is not supported, "
-                          "column will become FIXED",
-                          field->field_name);
-    }
-  }
-
   switch (create_info->row_type) {
     case ROW_TYPE_FIXED:
       if (thd && (dynamic || field_type_forces_var_part(field->type()))) {

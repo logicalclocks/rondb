@@ -6720,7 +6720,8 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader & it,
     AttributeDescriptor::setNullable(desc, attrDesc.AttributeNullableFlag);
     AttributeDescriptor::setDKey(desc, attrDesc.AttributeDKey);
     AttributeDescriptor::setPrimaryKey(desc, attrDesc.AttributeKeyFlag);
-    AttributeDescriptor::setDiskBased(desc, attrDesc.AttributeStorageType == NDB_STORAGETYPE_DISK);
+    AttributeDescriptor::setDiskBased(desc,
+      attrDesc.AttributeStorageType == NDB_STORAGETYPE_DISK);
     AttributeDescriptor::setDynamic(desc, attrDesc.AttributeDynamic);
     attrPtr.p->attributeDescriptor = desc;
     attrPtr.p->autoIncrement = attrDesc.AttributeAutoIncrement;
