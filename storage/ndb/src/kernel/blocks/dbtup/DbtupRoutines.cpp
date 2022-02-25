@@ -2413,7 +2413,8 @@ Dbtup::updateVarSizeNULLable(Uint32* inBuffer,
   AttributeHeader ahIn(inBuffer[req_struct->in_buf_index]);
   Uint32 nullIndicator= ahIn.isNULL();
   Uint32 pos= AttributeOffset::getNullFlagPos(attrDes2);
-  Uint32 *bits= req_struct->m_tuple_ptr->get_null_bits(regTabPtr);
+  Uint32 *bits= (ind) ? req_struct->m_disk_ptr->get_null_bits(regTabPtr, DD) :
+                        req_struct->m_tuple_ptr->get_null_bits(regTabPtr);
   Uint32 idx= req_struct->m_var_data[ind].m_var_len_offset;
   
   if (!nullIndicator)

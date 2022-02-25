@@ -1,5 +1,5 @@
 /* Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -4499,6 +4499,8 @@ Dbacc::getElement(const AccKeyReq* signal,
   ndbrequire(TelemLen == ZELEM_HEAD_SIZE + localkeylen);
   tgeNextptrtype = ZLEFT;
 
+  jamDebug();
+  jamDataDebug(Tkeydata[0]);
   do {
     if (tgeNextptrtype == ZLEFT)
     {
@@ -4524,10 +4526,12 @@ Dbacc::getElement(const AccKeyReq* signal,
     }
     else
     {
+      jamDebug();
       ndbrequire((tgeNextptrtype == ZLEFT) || (tgeNextptrtype == ZRIGHT));
     }//if
     if (tgeRemLen >= Container::HEADER_SIZE + TelemLen)
     {
+      jamDebug();
       ndbrequire(tgeRemLen <= ZBUF_SIZE);
       /* ------------------------------------------------------------------- */
       // There is at least one element in this container. 
@@ -4623,11 +4627,12 @@ Dbacc::getElement(const AccKeyReq* signal,
         }
         if (tgeRemLen <= Container::HEADER_SIZE)
         {
+          jamDebug();
           break;
         }
         elemptr = elemptr + tgeElemStep;
       } while (true);
-    }//if
+    }
     ndbrequire(tgeRemLen == Container::HEADER_SIZE);
     ContainerHeader containerhead = elemPageptr.p->word32[elemConptr];
     tgeNextptrtype = containerhead.getNextEnd();
