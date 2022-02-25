@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -169,7 +169,8 @@ Dbtup::setUpQueryRoutines(Tablerec *regTabPtr)
               &Dbtup::updateFixedSizeTHManyWordNULLable;
           }
         }
-      } else 
+      }
+      else 
       {
         if (!nullable)
         {
@@ -204,11 +205,11 @@ Dbtup::setUpQueryRoutines(Tablerec *regTabPtr)
           }
           else
           {
-	    r[4] = &Dbtup::readVarSizeNULLable;
-	    r[5] = &Dbtup::readVarSizeNotNULL;
+	    r[4] = &Dbtup::readVarSizeNotNULL;
+	    r[5] = &Dbtup::readVarSizeNULLable;
           }
         }
-       UpdateFunction u[6];
+        UpdateFunction u[6];
         {
 	  u[0] = &Dbtup::updateDiskBitsNotNULL;
 	  u[1] = &Dbtup::updateDiskBitsNULLable;
@@ -221,8 +222,8 @@ Dbtup::setUpQueryRoutines(Tablerec *regTabPtr)
           }
           else
           {
-	    u[4] = &Dbtup::updateVarSizeNULLable;
-	    u[5] = &Dbtup::updateVarSizeNotNULL;
+	    u[4] = &Dbtup::updateVarSizeNotNULL;
+	    u[5] = &Dbtup::updateVarSizeNULLable;
           }
         }
 	Uint32 a= 
@@ -1774,7 +1775,7 @@ Dbtup::readDiskBitsNotNULL(Uint8* outBuffer,
   Uint32 bitCount = AttributeDescriptor::getArraySize(attrDescriptor);
   Uint32 bm_len = regTabPtr->m_offsets[DD].m_null_words;
   Uint32* bm_ptr = req_struct->m_disk_ptr->get_null_bits(regTabPtr, DD);
-  
+
   thrjamDebug(req_struct->jamBuffer);
   return bits_reader(outBuffer, req_struct, ahOut,
                      bm_ptr, bm_len,
@@ -2796,7 +2797,7 @@ Dbtup::read_pseudo(const Uint32 * inBuffer, Uint32 inPos,
   Uint32 attrId = (* (inBuffer + inPos - 1)) >> 16;
   Uint32 outPos = req_struct->out_buf_index;
   Uint32* outBuffer = outBuf + ((outPos - 1) >> 2);
-  
+
   Uint32 sz;
   switch(attrId){
   case AttributeHeader::READ_LCP:
