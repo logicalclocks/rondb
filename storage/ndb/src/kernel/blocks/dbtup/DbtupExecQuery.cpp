@@ -4995,14 +4995,17 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
         const Uint32 *disk_ref= src->get_disk_ref_ptr(tabPtrP);
         memcpy(&key, disk_ref, sizeof(key));
         g_eventLogger->info("(%u) Crash on error in disk ref on row(%u,%u)"
-                            ", disk_page(%u,%u).%u, disk_page_ptr.i = %u",
+                            ", disk_page(%u,%u).%u, disk_page_ptr.i = %u"
+                            ", size: %u, disk_ptr: %p",
                             instance(),
                             req_struct->frag_page_id,
                             req_struct->operPtrP->m_tuple_location.m_page_idx,
                             key.m_file_no,
                             key.m_page_no,
                             key.m_page_idx,
-                            req_struct->m_disk_page_ptr.i);
+                            req_struct->m_disk_page_ptr.i,
+                            req_struct->m_disk_ptr->m_base_record_page_idx,
+                            req_struct->m_disk_ptr);
         ndbrequire(req_struct->m_disk_ptr->m_base_record_page_idx <
                    Tup_page::DATA_WORDS);
       }
@@ -5054,7 +5057,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
           Varpart_copy* vp = (Varpart_copy*)src_ptr;
           flex_len = vp->m_len;
           flex_data= vp->m_data;
-          step= (Varpart_copy::SZ32 + flex_len); // 1+ is for extra word
+          step = (Varpart_copy::SZ32 + flex_len); // 1+ is for extra word
           req_struct->m_varpart_page_ptr[MM] = req_struct->m_page_ptr;
           sizes[MM]= flex_len;
           jamDebug();
@@ -5421,6 +5424,7 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
 		    const Tablerec* tabPtrP, bool disk)
 {
   ndbassert(tabPtrP->need_shrink());
+  ndbassert(req_struct->is_expanded);
   Tuple_header* ptr= req_struct->m_tuple_ptr;
   ndbassert(ptr->m_header_bits & Tuple_header::COPY_TUPLE);
   
@@ -5461,7 +5465,8 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
     {
       jamDebug();
       Varpart_copy* vp = (Varpart_copy*)dst_ptr;
-      Uint32* varstart = dst_ptr = vp->m_data;
+      Uint32* varstart = vp->m_data;
+      dst_ptr = vp->m_data;
 
       if (num_vars)
       {
@@ -5469,7 +5474,8 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
         Uint16* src_off_ptr= req_struct->var_pos_array[ind];
         Uint16* dst_off_ptr= (Uint16*)dst_ptr;
         char*  dst_data_ptr= (char*)(dst_off_ptr + num_vars + 1);
-        char*  src_data_ptr= dst_data_ptr;
+        char* src_data_ptr = (char*)req_struct->m_var_data[ind].m_data_ptr;
+        ndbassert((ind == DD) || (src_data_ptr == dst_data_ptr));
         Uint32 off= 0;
         for (Uint32 i = 0; i < num_vars; i++)
         {
