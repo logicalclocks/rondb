@@ -478,8 +478,6 @@ CREATE TABLE t1
 (pk1 INT NOT NULL PRIMARY KEY, b INT COLUMN_FORMAT DYNAMIC)
 TABLESPACE ts1 STORAGE DISK
 ENGINE=NDB;
-Warnings:
-Warning	1478	DYNAMIC column b with STORAGE DISK is not supported, column will become FIXED
 ALTER TABLE t1 algorithm=inplace, CHANGE b b INT COLUMN_FORMAT FIXED STORAGE MEMORY;
 ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Column storage media is changed. Try ALGORITHM=COPY.
 ALTER TABLE t1 algorithm=inplace, CHANGE b b_1 INT COLUMN_FORMAT DYNAMIC;
