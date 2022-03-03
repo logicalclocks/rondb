@@ -2602,6 +2602,7 @@ public:
   void prepare_scan_tux_TUPKEYREQ(Uint32 page_id, Uint32 page_idx);
   void prepare_op_pointer(Uint32 opPtrI,
                           Dbtup::Operationrec *opPtrP);
+  void set_disk_callback_page(Uint32 page_id);
   void prepare_tab_pointers(Uint64 fragPtrI);
   void prepare_tab_pointers_acc(Uint32 table_id, Uint32 frag_id);
   void get_all_tup_ptrs(Uint64 indexFragPtrI,
@@ -4518,6 +4519,11 @@ Dbtup::prepare_op_pointer(Uint32 opPtrI,
   opPtrP->m_disk_callback_page = RNIL;
 }
 
+inline void
+Dbtup::set_disk_callback_page(Uint32 page_id)
+{
+  prepare_oper_ptr.p->m_disk_callback_page = page_id;
+}
 
 inline void
 Dbtup::release_op_rec(Uint32 opPtrI,

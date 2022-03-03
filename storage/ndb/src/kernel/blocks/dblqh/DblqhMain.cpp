@@ -19022,6 +19022,7 @@ Dblqh::next_scanconf_load_diskpage_callback(Signal* signal,
       c_tup->prepare_scanTUPKEYREQ(scanPtr->m_row_id.m_page_no,
                                    scanPtr->m_row_id.m_page_idx);
     }
+    c_tup->set_disk_callback_page(disk_page);
     next_scanconf_tupkeyreq(signal, scanPtr, regTcPtr.p, fragPtrP);
   }
   else

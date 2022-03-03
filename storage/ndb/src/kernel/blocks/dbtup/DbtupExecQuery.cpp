@@ -899,9 +899,9 @@ Dbtup::disk_page_load_scan_callback(Signal* signal,
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
-  operPtr.p->m_disk_callback_page = page_id;
   c_lqh->next_scanconf_load_diskpage_callback(signal, 
-					      operPtr.p->userpointer, page_id);
+					      operPtr.p->userpointer,
+                                              page_id);
 }
 
 /**
