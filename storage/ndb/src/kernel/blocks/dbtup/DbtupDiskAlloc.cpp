@@ -35,12 +35,12 @@
 //#define DEBUG_LCP 1
 //#define DEBUG_PGMAN_IO 1
 //#define DEBUG_PGMAN 1
-#define DEBUG_EXTENT_BITS 1
+//#define DEBUG_EXTENT_BITS 1
 //#define DEBUG_EXTENT_BITS_HASH 1
 //#define DEBUG_UNDO 1
 //#define DEBUG_UNDO_LCP 1
 //#define DEBUG_UNDO_ALLOC 1
-#define DEBUG_FREE_SPACE 1
+//#define DEBUG_FREE_SPACE 1
 #endif
 
 #ifdef DEBUG_FREE_SPACE
@@ -1204,8 +1204,8 @@ Dbtup::disk_page_prealloc_callback(Signal* signal,
                     pagePtr.p->m_page_no));
     update_extent_pos(jamBuffer(),
                       fragPtr.p, extentPtr,
-                      0,
-                      0,
+                      idx,
+                      real_idx,
                       0);
   }
   {
