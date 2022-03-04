@@ -368,9 +368,25 @@ void
 Dbtup::update_extent_pos(EmulatedJamBuffer* jamBuf,
                          Fragrecord *fragPtrP,
                          Ptr<Extent_info> extentPtr,
+                         Uint32 before_bits,
+                         Uint32 after_bits,
                          Int32 delta)
 {
   Disk_alloc_info& alloc = fragPtrP->m_disk_alloc_info;
+  if (alloc.m_page_free_bits_map[1] == 1)
+  {
+    /* Old method with fixed size disk rows */
+  }
+  else
+  {
+    Uint32 before_size = alloc.calc_page_free_space(before_bits);
+    Uint32 after_size = alloc.calc_page_free_space(after_bits);
+    if (after_size == before_size && delta != 0)
+    {
+      return;
+    }
+    delta = after_size - before_size;
+  }
   if (delta < 0)
   {
     thrjam(jamBuf);
@@ -477,6 +493,8 @@ Dbtup::restart_setup_page(Fragrecord *fragPtrP,
   pagePtr.p->m_extent_info_ptr = extentPtr.i;
 
   Uint32 real_free = pagePtr.p->free_space;
+  Uint32 before_bits = alloc.calc_page_free_bits(real_free);
+  Uint32 after_bits = before_bits;
   const bool prealloc = estimate >= 0;
   Uint32 estimated;
   if (prealloc)
@@ -486,6 +504,7 @@ Dbtup::restart_setup_page(Fragrecord *fragPtrP,
      * If this is during prealloc, use estimate from there
      */
     estimated = (Uint32)estimate;
+    after_bits = alloc.calc_page_free_bits(estimated);
     Uint32 page_estimated =
       alloc.calc_page_free_space(alloc.calc_page_free_bits(real_free));
     if (page_estimated != estimated && real_free == 0)
@@ -521,7 +540,8 @@ Dbtup::restart_setup_page(Fragrecord *fragPtrP,
     /**
      * else use the estimate based on the actual free space
      */
-    estimated = alloc.calc_page_free_space(alloc.calc_page_free_bits(real_free));
+    estimated =
+      alloc.calc_page_free_space(alloc.calc_page_free_bits(real_free));
   }
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
@@ -579,7 +599,12 @@ Dbtup::restart_setup_page(Fragrecord *fragPtrP,
   {
     jam();
     Uint32 delta = (real_free-estimated);
-    update_extent_pos(jamBuffer(), fragPtrP, extentPtr, delta);
+    update_extent_pos(jamBuffer(),
+                      fragPtrP,
+                      extentPtr,
+                      before_bits,
+                      after_bits,
+                      delta);
   }
 }
 
@@ -874,7 +899,12 @@ Dbtup::disk_page_prealloc(Signal* signal,
     ext.p->m_free_page_count[newPageBits]++;
 
   }
-  update_extent_pos(jamBuffer(), fragPtr.p, ext, -Int32(sz));
+  update_extent_pos(jamBuffer(),
+                    fragPtr.p,
+                    ext,
+                    pageBits,
+                    newPageBits,
+                    -Int32(sz));
 
   // And put page request in correct free list
   Uint32 new_idx = alloc.calc_page_free_bits(new_size);
@@ -983,7 +1013,12 @@ Dbtup::disk_page_prealloc_dirty_page(Disk_alloc_info & alloc,
   }
 
   pagePtr.p->uncommitted_used_space = used;
-  update_extent_pos(jamBuffer(), fragPtrP, extentPtr, -Int32(sz));
+  update_extent_pos(jamBuffer(),
+                    fragPtrP,
+                    extentPtr,
+                    old_idx,
+                    new_idx,
+                    -Int32(sz));
 }
 
 
@@ -1014,7 +1049,12 @@ Dbtup::disk_page_prealloc_transit_page(Fragrecord *fragPtrP,
   }
 
   req.p->m_uncommitted_used_space = used;
-  update_extent_pos(jamBuffer(), fragPtrP, extentPtr, -Int32(sz));
+  update_extent_pos(jamBuffer(),
+                    fragPtrP,
+                    extentPtr,
+                    old_idx,
+                    new_idx,
+                    -Int32(sz));
 }
 
 void
@@ -1109,7 +1149,7 @@ Dbtup::disk_page_prealloc_callback(Signal* signal,
     ddrequire(extentPtr.p->m_free_page_count[idx] > 0);
     extentPtr.p->m_free_page_count[idx]--;
     extentPtr.p->m_free_page_count[real_idx]++;
-    update_extent_pos(jamBuffer(), fragPtr.p, extentPtr, 0);
+    update_extent_pos(jamBuffer(), fragPtr.p, extentPtr, 0, 0, 0);
   }
   {
     /**
@@ -1742,8 +1782,12 @@ Dbtup::disk_page_free(Signal *signal,
                               new_idx,
                               fragPtrP);
   }
-  
-  update_extent_pos(jamBuffer(), fragPtrP, extentPtr, sz);
+  update_extent_pos(jamBuffer(),
+                    fragPtrP,
+                    extentPtr,
+                    old_idx,
+                    new_idx,
+                    sz);
 }
 
 void
@@ -1846,7 +1890,12 @@ Dbtup::disk_page_abort_prealloc_callback_1(Signal* signal,
                               fragPtrP);
   }
   
-  update_extent_pos(jamBuffer(), fragPtrP, extentPtr, sz);
+  update_extent_pos(jamBuffer(),
+                    fragPtrP,
+                    extentPtr,
+                    idx,
+                    new_idx,
+                    sz);
 }
 
 Uint64
@@ -3562,7 +3611,7 @@ Dbtup::disk_restart_page_bits(EmulatedJamBuffer* jamBuf,
                      ext.p->m_free_page_count[bits]));
 
     // actually only to update free_space
-    update_extent_pos(jamBuf, fragPtr.p, ext, size);
+    update_extent_pos(jamBuf, fragPtr.p, ext, 0, bits, size);
     ndbassert(ext.p->m_free_matrix_pos == RNIL);
     DEB_EXTENT_BITS(("(%u)disk_restart_page_bits in tab(%u,%u):%u,"
                      " page(%u,%u), bits: %u, ext.i: %u,"

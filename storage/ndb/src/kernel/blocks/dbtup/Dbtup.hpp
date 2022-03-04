@@ -4143,6 +4143,8 @@ private:
   void update_extent_pos(EmulatedJamBuffer* jamBuf,
                          Fragrecord *fragPtrP,
                          Ptr<Extent_info>,
+                         Uint32 before_bits,
+                         Uint32 after_bits,
                          Int32 delta);
 
   void disk_page_move_page_request(Disk_alloc_info& alloc,

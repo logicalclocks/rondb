@@ -5774,13 +5774,18 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                *
                * We update the extent position.
                */
+              Disk_alloc_info& alloc = regFragPtr->m_disk_alloc_info;
               Uint32 ext = diskPagePtr.p->m_extent_info_ptr;
               diskPagePtr.p->uncommitted_used_space += add;
               Ptr<Extent_info> extentPtr;
               c_extent_pool.getPtr(extentPtr, ext);
+              Uint32 before_bits = alloc.calc_page_free_bits(curr_size);
+              Uint32 after_bits = alloc.calc_page_free_bits(new_size);
               update_extent_pos(jamBuffer(),
                                 regFragPtr,
                                 extentPtr,
+                                before_bits,
+                                after_bits,
                                 -Int32(add));
             }
             regOperPtr->m_uncommitted_used_space += add;
