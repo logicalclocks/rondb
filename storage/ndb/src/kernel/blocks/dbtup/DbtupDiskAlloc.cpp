@@ -35,12 +35,12 @@
 //#define DEBUG_LCP 1
 //#define DEBUG_PGMAN_IO 1
 //#define DEBUG_PGMAN 1
-//#define DEBUG_EXTENT_BITS 1
+#define DEBUG_EXTENT_BITS 1
 //#define DEBUG_EXTENT_BITS_HASH 1
 //#define DEBUG_UNDO 1
 //#define DEBUG_UNDO_LCP 1
 //#define DEBUG_UNDO_ALLOC 1
-//#define DEBUG_FREE_SPACE 1
+#define DEBUG_FREE_SPACE 1
 #endif
 
 #ifdef DEBUG_FREE_SPACE
@@ -401,7 +401,10 @@ Dbtup::update_extent_pos(EmulatedJamBuffer* jamBuf,
     ddrequire(extentPtr.p->m_free_space >= sub);
     extentPtr.p->m_free_space -= sub;
     DEB_FREE_SPACE(("(%u)1 Decrease %u m_free_space: %u, extP: %p",
-      instance(), sub, extentPtr.p->m_free_space, extentPtr.p));
+                    instance(),
+                    sub,
+                    extentPtr.p->m_free_space,
+                    extentPtr.p));
     ddrequire(alloc.m_tot_free_space >= sub);
     alloc.m_tot_free_space -= sub;
   }
@@ -410,7 +413,10 @@ Dbtup::update_extent_pos(EmulatedJamBuffer* jamBuf,
     thrjam(jamBuf);
     extentPtr.p->m_free_space += delta;
     DEB_FREE_SPACE(("(%u)2 Increase %u m_free_space: %u, extP: %p",
-      instance(), delta, extentPtr.p->m_free_space, extentPtr.p));
+                    instance(),
+                    delta,
+                    extentPtr.p->m_free_space,
+                    extentPtr.p));
     ndbassert(Uint32(delta) <= alloc.calc_page_free_space(0));
     alloc.m_tot_free_space += delta;
   }
@@ -423,6 +429,13 @@ Dbtup::update_extent_pos(EmulatedJamBuffer* jamBuf,
     cnt += extentPtr.p->m_free_page_count[i];
     sum += extentPtr.p->m_free_page_count[i] * alloc.calc_page_free_space(i);
   }
+
+  DEB_FREE_SPACE(("(%u) cnt: %u, sum: %u, extentPtrP: %p",
+                  instance(),
+                  cnt,
+                  sum,
+                  extentPtr.p));
+
   if (extentPtr.p->m_free_page_count[0] == cnt)
   {
     ddrequire(extentPtr.p->m_free_space == cnt*alloc.m_page_free_bits_map[0]);
@@ -610,6 +623,11 @@ Dbtup::restart_setup_page(Fragrecord *fragPtrP,
   {
     jam();
     Uint32 delta = (real_free-estimated);
+    DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)",
+                    instance(),
+                    __LINE__,
+                    pagePtr.p->m_file_no,
+                    pagePtr.p->m_page_no));
     update_extent_pos(jamBuffer(),
                       fragPtrP,
                       extentPtr,
@@ -833,7 +851,9 @@ Dbtup::disk_page_prealloc(Signal* signal,
       memset(ext.p->m_free_page_count, 0, sizeof(ext.p->m_free_page_count));
       ext.p->m_free_space= alloc.m_page_free_bits_map[0] * pages;
       DEB_FREE_SPACE(("(%u)3 Set m_free_space: %u, extP: %p",
-        instance(), ext.p->m_free_space, ext.p));
+                      instance(),
+                      ext.p->m_free_space,
+                      ext.p));
       alloc.m_tot_free_space += ext.p->m_free_space;
       ext.p->m_free_page_count[0]= pages; // All pages are "free"-est
       ext.p->m_empty_page_no = 0;
@@ -912,6 +932,11 @@ Dbtup::disk_page_prealloc(Signal* signal,
     ext.p->m_free_page_count[newPageBits]++;
 
   }
+  DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)",
+                  instance(),
+                  __LINE__,
+                  key->m_file_no,
+                  key->m_page_no));
   update_extent_pos(jamBuffer(),
                     fragPtr.p,
                     ext,
@@ -1026,6 +1051,11 @@ Dbtup::disk_page_prealloc_dirty_page(Disk_alloc_info & alloc,
   }
 
   pagePtr.p->uncommitted_used_space = used;
+  DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)",
+                  instance(),
+                  __LINE__,
+                  pagePtr.p->m_file_no,
+                  pagePtr.p->m_page_no));
   update_extent_pos(jamBuffer(),
                     fragPtrP,
                     extentPtr,
@@ -1062,6 +1092,11 @@ Dbtup::disk_page_prealloc_transit_page(Fragrecord *fragPtrP,
   }
 
   req.p->m_uncommitted_used_space = used;
+  DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)",
+                  instance(),
+                  __LINE__,
+                  req.p->m_key.m_file_no,
+                  req.p->m_key.m_page_no));
   update_extent_pos(jamBuffer(),
                     fragPtrP,
                     extentPtr,
@@ -1162,6 +1197,11 @@ Dbtup::disk_page_prealloc_callback(Signal* signal,
     ddrequire(extentPtr.p->m_free_page_count[idx] > 0);
     extentPtr.p->m_free_page_count[idx]--;
     extentPtr.p->m_free_page_count[real_idx]++;
+    DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)",
+                    instance(),
+                    __LINE__,
+                    pagePtr.p->m_file_no,
+                    pagePtr.p->m_page_no));
     update_extent_pos(jamBuffer(),
                       fragPtr.p, extentPtr,
                       0,
@@ -1799,6 +1839,11 @@ Dbtup::disk_page_free(Signal *signal,
                               new_idx,
                               fragPtrP);
   }
+  DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)",
+                  instance(),
+                  __LINE__,
+                  pagePtr.p->m_file_no,
+                  pagePtr.p->m_page_no));
   update_extent_pos(jamBuffer(),
                     fragPtrP,
                     extentPtr,
@@ -1907,6 +1952,11 @@ Dbtup::disk_page_abort_prealloc_callback_1(Signal* signal,
                               fragPtrP);
   }
   
+  DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)",
+                  instance(),
+                  __LINE__,
+                  pagePtr.p->m_file_no,
+                  pagePtr.p->m_page_no));
   update_extent_pos(jamBuffer(),
                     fragPtrP,
                     extentPtr,
@@ -3538,7 +3588,9 @@ Dbtup::disk_restart_alloc_extent(EmulatedJamBuffer* jamBuf,
       ext.p->m_first_page_no = ext.p->m_key.m_page_no;
       ext.p->m_free_space= 0;
       DEB_FREE_SPACE(("(%u)4 Set m_free_space: %u, extP: %p",
-        instance(), ext.p->m_free_space, ext.p));
+                      instance(),
+                      ext.p->m_free_space,
+                      ext.p));
       ext.p->m_empty_page_no = (1 << 16); // We don't know, so assume none
       DEB_EXTENT_BITS_HASH((
                 "(%u)restart:extent(%u).%u in tab(%u,%u),"
@@ -3630,6 +3682,11 @@ Dbtup::disk_restart_page_bits(EmulatedJamBuffer* jamBuf,
                      ext.p->m_free_page_count[bits]));
 
     // actually only to update free_space
+    DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)",
+                    instance(),
+                    __LINE__,
+                    key->m_file_no,
+                    key->m_page_no));
     update_extent_pos(jamBuf,
                       fragPtr.p,
                       ext,
