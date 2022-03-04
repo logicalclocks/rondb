@@ -33,6 +33,13 @@
 
 #ifdef VM_TRACE
 //#define DEBUG_899_ERROR 1
+#define DEBUG_ELEM_COUNT 1
+#endif
+
+#ifdef DEBUG_ELEM_COUNT
+#define DEB_ELEM_COUNT(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_ELEM_COUNT(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_899_ERROR
@@ -127,6 +134,13 @@ Dbtup::alloc_fix_rec(EmulatedJamBuffer* jamBuf,
   Uint32 page_offset= alloc_tuple_from_page(regFragPtr, (Fix_page*)pagePtr.p);
 
   regFragPtr->m_fixedElemCount++;
+  DEB_ELEM_COUNT(("(%u) Inc m_fixedElemCount: now %llu tab(%u,%u),"
+                  " line: %u",
+                  instance(),
+                  regFragPtr->m_fixedElemCount,
+                  regFragPtr->fragTableId,
+                  regFragPtr->fragmentId,
+                  __LINE__));
   key->m_page_no = pagePtr.i;
   key->m_page_idx = page_offset;
   return pagePtr.p->m_data + page_offset;
@@ -229,6 +243,13 @@ void Dbtup::free_fix_rec(Fragrecord* regFragPtr,
   PagePtr pagePtr((Page*)regPagePtr, key->m_page_no);
   ndbassert(regFragPtr->m_fixedElemCount > 0);
   regFragPtr->m_fixedElemCount--;
+  DEB_ELEM_COUNT(("(%u) Dec m_fixedElemCount: now %llu tab(%u,%u),"
+                  " line: %u",
+                  instance(),
+                  regFragPtr->m_fixedElemCount,
+                  regFragPtr->fragTableId,
+                  regFragPtr->fragmentId,
+                  __LINE__));
   
   if(free == 1)
   {
@@ -292,6 +313,13 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
     }
     
     regFragPtr->m_fixedElemCount++;
+    DEB_ELEM_COUNT(("(%u) Inc m_fixedElemCount: now %llu tab(%u,%u),"
+                    " line: %u",
+                    instance(),
+                    regFragPtr->m_fixedElemCount,
+                    regFragPtr->fragTableId,
+                    regFragPtr->fragmentId,
+                    __LINE__));
     *out_frag_page_id= page_no;
     key->m_page_no = pagePtr.i;
     key->m_page_idx = idx;

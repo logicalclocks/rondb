@@ -56,6 +56,13 @@
 //#define DEBUG_LCP_LGMAN 1
 //#define DEBUG_LCP_SKIP_DELETE 1
 //#define DEBUG_DISK 1
+#define DEBUG_ELEM_COUNT 1
+#endif
+
+#ifdef DEBUG_ELEM_COUNT
+#define DEB_ELEM_COUNT(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_ELEM_COUNT(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_DISK
@@ -6021,6 +6028,15 @@ Dbtup::handle_size_change_after_update(Signal *signal,
     if (require_exclusive_access)
     {
       jam();
+      DEB_ELEM_COUNT(("(%u) realloc_var_part tab(%u,%u), var_lkey: (%u,%u),"
+                      " alloc: %u, needed: %u",
+                      instance(),
+                      regFragPtr->fragTableId,
+                      regFragPtr->fragmentId,
+                      oldref.m_page_no,
+                      oldref.m_page_idx,
+                      alloc,
+                      needed));
       c_lqh->upgrade_to_exclusive_frag_access();
       Uint32 *new_var_part=realloc_var_part(&terrorCode,
                                             regFragPtr, regTabPtr, pagePtr,

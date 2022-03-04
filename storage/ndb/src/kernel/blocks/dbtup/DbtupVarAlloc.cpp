@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,6 +30,15 @@
 
 #define JAM_FILE_ID 405
 
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+#define DEBUG_ELEM_COUNT 1
+#endif
+
+#ifdef DEBUG_ELEM_COUNT
+#define DEB_ELEM_COUNT(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_ELEM_COUNT(arglist) do { } while (0)
+#endif
 
 void Dbtup::init_list_sizes(void)
 {
@@ -104,7 +113,12 @@ Uint32* Dbtup::alloc_var_rec(Uint32 * err,
   Var_part_ref* dst = tuple->get_var_part_ref_ptr(tabPtr);
   if (alloc_size)
   {
-    if (likely(alloc_var_part(err, fragPtr, tabPtr, alloc_size, &varref) != 0))
+    if (likely(alloc_var_part(err,
+                              fragPtr,
+                              tabPtr,
+                              alloc_size,
+                              &varref,
+                              __LINE__) != 0))
     {
       dst->assign(&varref);
       return ptr;
@@ -129,9 +143,11 @@ Dbtup::alloc_var_part(Uint32 * err,
                       Fragrecord* fragPtr,
 		      Tablerec* tabPtr,
 		      Uint32 alloc_size,
-		      Local_key* key)
+		      Local_key* key,
+                      Uint32 from_line)
 {
   PagePtr pagePtr;
+  (void)from_line;
   pagePtr.i= get_alloc_page(fragPtr, (alloc_size + 1));
   if (pagePtr.i == RNIL) { 
     jam();
@@ -163,6 +179,15 @@ Dbtup::alloc_var_part(Uint32 * err,
     ->alloc_record(alloc_size, (Var_page*)ctemp_page, Var_page::CHAIN);
 
   fragPtr->m_varElemCount++;
+  DEB_ELEM_COUNT(("(%u) Inc m_varElemCount: now %llu tab(%u,%u),"
+                  " line: %u, called from %u",
+                  instance(),
+                  fragPtr->m_varElemCount,
+                  fragPtr->fragTableId,
+                  fragPtr->fragmentId,
+                  __LINE__,
+                  from_line));
+  ndbrequire(fragPtr->fragTableId != 17);
   key->m_page_no = pagePtr.i;
   key->m_page_idx = idx;
   
@@ -189,6 +214,13 @@ void Dbtup::free_var_part(Fragrecord* fragPtr,
     ((Var_page*)pagePtr.p)->free_record(key->m_page_idx, Var_page::CHAIN);
     ndbassert(fragPtr->m_varElemCount > 0);
     fragPtr->m_varElemCount--;
+    DEB_ELEM_COUNT(("(%u) Dec m_varElemCount: now %llu tab(%u,%u),"
+                    " line: %u",
+                    instance(),
+                    fragPtr->m_varElemCount,
+                    fragPtr->fragTableId,
+                    fragPtr->fragmentId,
+                    __LINE__));
 
     ndbassert(pagePtr.p->free_space <= Var_page::DATA_WORDS);
     if (pagePtr.p->free_space == Var_page::DATA_WORDS - 1)
@@ -260,6 +292,13 @@ Dbtup::free_var_part(Fragrecord* fragPtr, PagePtr pagePtr, Uint32 page_idx)
   ndbassert(fragPtr->m_varElemCount > 0);
   fragPtr->m_varElemCount--;
 
+  DEB_ELEM_COUNT(("(%u) Dec m_varElemCount: now %llu tab(%u,%u),"
+                  " line: %u",
+                  instance(),
+                  fragPtr->m_varElemCount,
+                  fragPtr->fragTableId,
+                  fragPtr->fragmentId,
+                  __LINE__));
   ndbassert(pagePtr.p->free_space <= Var_page::DATA_WORDS);
   if (pagePtr.p->free_space == Var_page::DATA_WORDS - 1)
   {
@@ -329,7 +368,12 @@ Dbtup::realloc_var_part(Uint32 * err,
   {
     jam();
     Local_key newref;
-    new_var_ptr = alloc_var_part(err, fragPtr, tabPtr, newsz, &newref);
+    new_var_ptr = alloc_var_part(err,
+                                 fragPtr,
+                                 tabPtr,
+                                 newsz,
+                                 &newref,
+                                 __LINE__);
     if (unlikely(new_var_ptr == 0))
       return NULL;
 
@@ -431,6 +475,13 @@ Dbtup::move_var_part(Fragrecord* fragPtr,
    */
   c_lqh->upgrade_to_exclusive_frag_access();
   fragPtr->m_varElemCount++;
+  DEB_ELEM_COUNT(("(%u) Inc m_varElemCount: now %llu tab(%u,%u),"
+                  " line: %u",
+                  instance(),
+                  fragPtr->m_varElemCount,
+                  fragPtr->fragTableId,
+                  fragPtr->fragmentId,
+                  __LINE__));
   /**
    * remove old var part of tuple (and decrement m_varElemCount).
    */
@@ -642,7 +693,12 @@ Dbtup::alloc_var_rowid(Uint32 * err,
 
   if (alloc_size)
   {
-    if (likely(alloc_var_part(err, fragPtr, tabPtr, alloc_size, &varref) != 0))
+    if (likely(alloc_var_part(err,
+                              fragPtr,
+                              tabPtr,
+                              alloc_size,
+                              &varref,
+                              __LINE__) != 0))
     {
       dst->assign(&varref);
       return ptr;

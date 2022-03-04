@@ -3821,7 +3821,12 @@ private:
                         Fragrecord*, Tablerec*, Uint32, Local_key*, Uint32*);
   void free_var_rec(Fragrecord*, Tablerec*, Local_key*, Ptr<Page>);
   void free_var_part(Fragrecord*, Tablerec*, Local_key*);
-  Uint32* alloc_var_part(Uint32*err,Fragrecord*, Tablerec*, Uint32, Local_key*);
+  Uint32* alloc_var_part(Uint32 *err,
+                         Fragrecord*,
+                         Tablerec*,
+                         Uint32,
+                         Local_key*,
+                         Uint32);
   Uint32 *realloc_var_part(Uint32 * err, Fragrecord*, Tablerec*,
                            PagePtr, Var_part_ref*, Uint32, Uint32);
   
