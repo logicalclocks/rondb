@@ -40,6 +40,13 @@
 //#define DEBUG_UNDO 1
 //#define DEBUG_UNDO_LCP 1
 //#define DEBUG_UNDO_ALLOC 1
+//#define DEBUG_FREE_SPACE 1
+#endif
+
+#ifdef DEBUG_FREE_SPACE
+#define DEB_FREE_SPACE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_FREE_SPACE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_LCP
@@ -393,6 +400,8 @@ Dbtup::update_extent_pos(EmulatedJamBuffer* jamBuf,
     Uint32 sub = Uint32(- delta);
     ddrequire(extentPtr.p->m_free_space >= sub);
     extentPtr.p->m_free_space -= sub;
+    DEB_FREE_SPACE(("(%u)1 Decrease %u m_free_space: %u, extP: %p",
+      instance(), sub, extentPtr.p->m_free_space, extentPtr.p));
     ddrequire(alloc.m_tot_free_space >= sub);
     alloc.m_tot_free_space -= sub;
   }
@@ -400,6 +409,8 @@ Dbtup::update_extent_pos(EmulatedJamBuffer* jamBuf,
   {
     thrjam(jamBuf);
     extentPtr.p->m_free_space += delta;
+    DEB_FREE_SPACE(("(%u)2 Increase %u m_free_space: %u, extP: %p",
+      instance(), delta, extentPtr.p->m_free_space, extentPtr.p));
     ndbassert(Uint32(delta) <= alloc.calc_page_free_space(0));
     alloc.m_tot_free_space += delta;
   }
@@ -821,6 +832,8 @@ Dbtup::disk_page_prealloc(Signal* signal,
       ext.p->m_first_page_no = ext.p->m_key.m_page_no;
       memset(ext.p->m_free_page_count, 0, sizeof(ext.p->m_free_page_count));
       ext.p->m_free_space= alloc.m_page_free_bits_map[0] * pages;
+      DEB_FREE_SPACE(("(%u)3 Set m_free_space: %u, extP: %p",
+        instance(), ext.p->m_free_space, ext.p));
       alloc.m_tot_free_space += ext.p->m_free_space;
       ext.p->m_free_page_count[0]= pages; // All pages are "free"-est
       ext.p->m_empty_page_no = 0;
@@ -3520,6 +3533,8 @@ Dbtup::disk_restart_alloc_extent(EmulatedJamBuffer* jamBuf,
       ext.p->m_extent_no = extent_no;
       ext.p->m_first_page_no = ext.p->m_key.m_page_no;
       ext.p->m_free_space= 0;
+      DEB_FREE_SPACE(("(%u)4 Set m_free_space: %u, extP: %p",
+        instance(), ext.p->m_free_space, ext.p));
       ext.p->m_empty_page_no = (1 << 16); // We don't know, so assume none
       DEB_EXTENT_BITS_HASH((
                 "(%u)restart:extent(%u).%u in tab(%u,%u),"
