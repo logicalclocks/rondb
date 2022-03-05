@@ -187,7 +187,6 @@ Dbtup::alloc_var_part(Uint32 * err,
                   fragPtr->fragmentId,
                   __LINE__,
                   from_line));
-  ndbrequire(fragPtr->fragTableId != 17);
   key->m_page_no = pagePtr.i;
   key->m_page_idx = idx;
   

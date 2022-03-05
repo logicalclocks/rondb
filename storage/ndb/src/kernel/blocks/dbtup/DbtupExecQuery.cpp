@@ -5440,7 +5440,12 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
   
   Uint32 *dst_ptr= ptr->get_end_of_fix_part_ptr(tabPtrP);
 
-  sizes[MM] = 1;
+  /**
+   * shrink_tuple is called when there is disk attributes and/or
+   * when there is a variable sized in-memory part. Thus we could
+   * come here without a variable sized part.
+   */
+  sizes[MM] = 0;
   sizes[DD] = 0;
 
   /**
