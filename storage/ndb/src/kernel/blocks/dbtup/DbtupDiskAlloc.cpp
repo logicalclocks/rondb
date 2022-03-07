@@ -3728,7 +3728,10 @@ Dbtup::disk_page_get_allocated(const Tablerec* tabPtrP,
       free = alloc.m_tot_free_space;
       cnt = list.getCount();
     }
+    free *= Uint64(tabPtrP->m_offsets[DD].m_fix_header_size);
+    free *= Uint64(4);
+
     res[0] = cnt * alloc.m_extent_size * File_formats::NDB_PAGE_SIZE;
-    res[1] = free * 4;
+    res[1] = free;
   }
 }

@@ -10013,6 +10013,11 @@ runBug13416603(NDBT_Context* ctx, NDBT_Step* step)
     return NDBT_OK;
   }
 
+    if (res.getNumDbNodes() > 4)
+  {
+    g_info << "Cannot do this test with more than 4 datanodes." << endl;
+    return NDBT_OK;
+  }
   bool has_created_stat_tables = false;
   bool has_created_stat_events = false;
   pNdb->setDatabaseName("mysql");
@@ -10078,6 +10083,12 @@ runBug13416603(NDBT_Context* ctx, NDBT_Step* step)
         chk1(ret == 1);
         ndbout_c("%u - next_listener", __LINE__);
         chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
+        if (ret != 0)
+        {
+          
+          ndbout_c("Error = -1, or = 1 if events still exist: from"
+                   " next_listener: %u", ret);
+        }
         chk1(ret == 0);
       }
 
@@ -10118,32 +10129,50 @@ runBug13416603(NDBT_Context* ctx, NDBT_Step* step)
     }
 
     /**
-     * Wait for one of the nodes to have died...
+     * Wait until all nodes that will die have done so
+     * We wait for 50 seconds or until all nodes are
+     * down.
      */
     int count_started = 0;
     int count_not_started = 0;
     int count_nok = 0;
-    int down = 0;
+    int down[4];
+    int num_down_nodes = 0;
+    Uint32 loop_count = 0;
     do
     {
-      NdbSleep_MilliSleep(100);
+      loop_count++;
+      NdbSleep_MilliSleep(1000);
       count_started = count_not_started = count_nok = 0;
+      num_down_nodes = 0;
       for (int i = 0; i < res.getNumDbNodes(); i++)
       {
         int n = res.getDbNodeId(i);
         if (res.getNodeStatus(n) == NDB_MGM_NODE_STATUS_NOT_STARTED)
         {
           count_not_started++;
-          down = n;
+          down[num_down_nodes] = n;
+          num_down_nodes++;
         }
         else if (res.getNodeStatus(n) == NDB_MGM_NODE_STATUS_STARTED)
+        {
           count_started++;
+        }
         else
+        {
           count_nok ++;
+        }
       }
-    } while (count_not_started != 1);
+      ndbout_c("loop: %u count_started: %u, count_not_started: %u,"
+               " count_nok: %u",
+               loop_count,
+               count_started,
+               count_not_started,
+               count_nok);
+    } while ((loop_count < 30 && count_started > 0 && count_not_started > 0) ||
+             count_nok > 0);
 
-    res.startNodes(&down, 1);
+    res.startNodes(&down[0], num_down_nodes);
     res.waitClusterStarted();
     CHK_NDB_READY(pNdb);
     res.insertErrorInAllNodes(0);

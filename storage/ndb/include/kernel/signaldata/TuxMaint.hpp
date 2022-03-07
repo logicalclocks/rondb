@@ -48,7 +48,7 @@ public:
   enum ErrorCode {
     NoError = 0,        // must be zero
     SearchError = 901,  // add + found or remove + not found
-    NoMemError = 902,
+    NoMemError = 827,
     NoTransMemError = 922
   };
   static constexpr Uint32 SignalLength = 8;

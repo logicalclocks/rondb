@@ -1,5 +1,6 @@
 --source include/have_ndb.inc
 --source include/have_log_bin.inc
+--source include/have_nodebug.inc
 
 --disable_query_log
 reset master;

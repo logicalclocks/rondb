@@ -82,6 +82,9 @@ where mpf.fq_name = 'test/def/t1'
 and mpf.fixed_elem_count <> tfs.fixed_elem_count
 order by tfs.fragment_num, mpf.node_id, mpf.fragment_num;
 node_id	fragment_num	fixed_elem_count	fragment_num	fixed_elem_count
+select a,b,LENGTH(c) from t1 where a = '1' and e = REPEAT('1', 3000);
+a	b	LENGTH(c)
+1	1	3000
 create temporary table counters_at_startup
 select counter_name, sum(val) as val
 from ndbinfo.counters
@@ -168,8 +171,8 @@ where s1.counter_name = s2.counter_name
 and ( s1.counter_name = 'LOCAL_READS' or s1.counter_name = 'READS' )
 order by 1;
 counter_name	diff
-LOCAL_READS	131
-READS	131
+LOCAL_READS	129
+READS	129
 drop table counters_at_startup;
 output_line
 -- t1 --

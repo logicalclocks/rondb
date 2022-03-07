@@ -1,4 +1,5 @@
 --source include/have_ndb.inc
+--source include/have_nodebug.inc
 
 #
 # Test MDL on tablespaces. Locks on tablespaces are taken in the following

@@ -1012,7 +1012,7 @@ struct Operationrec {
 
   /**
    * References to the disk page and the potential extra disk page
-   * during commit processing.
+   * during commit processing. RNIL if no disk page is used.
    */
   Uint32 m_disk_callback_page;
   Uint32 m_disk_extra_callback_page;

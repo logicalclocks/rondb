@@ -3761,7 +3761,8 @@ runBug16834333(NDBT_Context* ctx, NDBT_Step* step)
       restarter.insertErrorInNode(nodeId, code);
     }
 
-    ndbout_c("running big trans");
+    NdbSleep_MilliSleep(300);
+    ndbout_c("run lookup that should fail with error code 1223");
     HugoOperations ops(* pTab);
     CHK2(ops.startTransaction(pNdb) == 0, ops.getNdbError());
     CHK2(ops.pkReadRecord(0, 16384) == 0, ops.getNdbError());

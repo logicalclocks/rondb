@@ -906,6 +906,8 @@ public:
 
   bool checkOpPendingAbort(Uint32 accConnectPtr) const;
 
+  bool getPrecedingOperation(OperationrecPtr& opPtr) const;
+
 private:
   BLOCK_DEFINES(Dbacc);
 

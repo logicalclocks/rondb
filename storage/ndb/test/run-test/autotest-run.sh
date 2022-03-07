@@ -133,7 +133,7 @@ fi
 # Validate that all interesting
 #   variables where set in conf
 ###############################
-vars="target base_dir install_dir0 hosts"
+vars="baseport clustername target base_dir install_dir0 hosts"
 if [ "$report" ]
 then
 	vars="$vars result_host result_path"
@@ -356,7 +356,9 @@ then
 fi
 
 choose $conf $hosts > d.tmp.$$
-sed -e s,CHOOSE_dir,"$run_dir/run",g < d.tmp.$$ > my.cnf
+sed -e s,CHOOSE_dir,"$run_dir/run",g < d.tmp.$$ > e.tmp.$$
+sed -e s,CHOOSE_baseport,"$baseport",g < e.tmp.$$ > f.tmp.$$ 
+sed -e s,CHOOSE_clusters,"$clustername",g < f.tmp.$$ > my.cnf
 
 clusters=`echo ${clusters_arg} | sed s/--clusters=//`
 for cluster_name in ${clusters//,/ }; do
@@ -372,6 +374,8 @@ for cluster_name in ${clusters//,/ }; do
 done
 
 rm -f d.tmp.$$
+rm -f e.tmp.$$
+rm -f f.tmp.$$
 
 copy_missing_ndbclient_test_programs() {
   if [ -f "${2}/bin/testDowngrade" ]

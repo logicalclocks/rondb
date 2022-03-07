@@ -261,6 +261,14 @@ IF(NOT LINUX_RHEL AND MY_HOST_SYSTEM_NAME MATCHES "Linux")
       ELSEIF(MY_OS_RELEASE MATCHES "18.04")
         SET(LINUX_UBUNTU_18_04 1)
       ENDIF()
+      # /etc/os-release contains a line like
+      # VERSION_ID="20.04"
+      # Match the numeric value, including the dot, ignore the rest:
+      STRING(REGEX MATCH
+        "VERSION_ID=\"([0-9\\.]+).*" UNUSED ${MY_OS_RELEASE})
+      IF(CMAKE_MATCH_1)
+        SET(LINUX_UBUNTU_VERSION_ID ${CMAKE_MATCH_1})
+      ENDIF()
     ENDIF()
   ENDIF()
 ENDIF()
@@ -739,6 +747,7 @@ ENDIF()
 INCLUDE(CMakePushCheckState)
 
 # Add macros
+INCLUDE(add_custom_target)
 INCLUDE(pkg-config)
 INCLUDE(character_sets)
 INCLUDE(cmake_parse_arguments)
@@ -1557,6 +1566,15 @@ SET(WITH_SYSTEM_LIBS_DEFAULT OFF)
 OPTION(WITH_SYSTEM_LIBS
   "Use -DWITH_XXX=system for ${SYSTEM_LIBRARIES}" ${WITH_SYSTEM_LIBS_DEFAULT})
 
+# undefined symbol: _Z15fido_assert_newv which is fido_assert_new()
+# /usr/include/fido.h is missing 'extern "C"'
+# but even if we fix that, tests will fail.
+IF(LINUX_UBUNTU)
+  IF(LINUX_UBUNTU_VERSION_ID VERSION_LESS "21.04")
+    LIST(REMOVE_ITEM SYSTEM_LIBRARIES FIDO)
+  ENDIF()
+ENDIF()
+
 GET_CMAKE_PROPERTY(CACHE_VARS CACHE_VARIABLES)
 UNSET(COMMAND_LINE_VARS)
 FOREACH(CACHE_VAR ${CACHE_VARS})
@@ -1759,6 +1777,11 @@ MACRO(MY_INCLUDE_SYSTEM_DIRECTORIES LIBRARY)
     SET(BEFORE_OR_AFTER "AFTER")
   ENDIF()
 
+  # ICU headers for WIN32 need extra info about their libs state
+  IF(WIN32 AND ${LIBRARY} STREQUAL "ICU")
+    ADD_DEFINITIONS(-DU_STATIC_IMPLEMENTATION)
+  ENDIF()
+
   IF(DEFINED ${LIBRARY}_INCLUDE_DIRS)
     INCLUDE_DIRECTORIES(${BEFORE_OR_AFTER} SYSTEM ${${LIBRARY}_INCLUDE_DIRS})
   ELSEIF(DEFINED ${LIBRARY}_INCLUDE_DIR)
@@ -1865,6 +1888,22 @@ ELSE()
   ENDIF()
 ENDIF()
 
+IF(WITH_ICU STREQUAL "bundled")
+  IF(IS_ABSOLUTE "${INSTALL_PRIV_LIBDIR}")
+    SET(MYSQL_ICU_DATADIR "${INSTALL_PRIV_LIBDIR}"
+      CACHE PATH "default MySQL ICU data directory")
+  ELSE()
+    SET(MYSQL_ICU_DATADIR "${DEFAULT_MYSQL_HOME}/${INSTALL_PRIV_LIBDIR}"
+      CACHE PATH "default MySQL ICU data directory")
+  ENDIF()
+
+  # Write an explicit symlink in CMAKE_BINARY_DIR, so we can find
+  # the ICU data directory when running in the build sandbox.
+  # See setting of mysql_home in calculate_mysql_home_from_my_progname().
+  FILE(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}/extra/icu" ICU_DATA_SOURCE_DIR)
+  FILE(WRITE "${CMAKE_BINARY_DIR}/${ICUDT_DIR}.lnk" "${ICU_DATA_SOURCE_DIR}")
+ENDIF()
+
 # The hypergraph optimizer is default on only for debug builds.
 IF(CMAKE_BUILD_TYPE_UPPER STREQUAL "DEBUG" OR WITH_DEBUG)
   SET(WITH_HYPERGRAPH_OPTIMIZER_DEFAULT ON)
@@ -1876,6 +1915,15 @@ OPTION(WITH_HYPERGRAPH_OPTIMIZER
   ${WITH_HYPERGRAPH_OPTIMIZER_DEFAULT}
   )
 
+# Utility target to build every executable tagged with ADD_TEST.
+ADD_CUSTOM_TARGET(unittest_all)
+
+# Utility target to build every target added with MYSQL_ADD_PLUGIN.
+ADD_CUSTOM_TARGET(plugin_all)
+
+# Utility target to build every target added with MYSQL_ADD_COMPONENT.
+ADD_CUSTOM_TARGET(component_all)
+
 ADD_SUBDIRECTORY(include)
 ADD_SUBDIRECTORY(strings)
 ADD_SUBDIRECTORY(vio)
@@ -1883,6 +1931,7 @@ ADD_SUBDIRECTORY(mysys)
 ADD_SUBDIRECTORY(libmysql)
 ADD_SUBDIRECTORY(libbinlogevents)
 ADD_SUBDIRECTORY(libbinlogstandalone)
+ADD_SUBDIRECTORY(libchangestreams)
 
 IF(NOT WITHOUT_SERVER)
   IF(WITH_UNIT_TESTS)
@@ -2041,12 +2090,13 @@ INCLUDE(${CMAKE_BINARY_DIR}/info_macros.cmake)
 # available, but should be repeated on each "make" just in case someone
 # does "cmake ; make ; git pull ; make".
 CREATE_INFO_SRC(${CMAKE_BINARY_DIR}/Docs)
-ADD_CUSTOM_TARGET(INFO_SRC ALL
+MY_ADD_CUSTOM_TARGET(INFO_SRC ALL
   COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/cmake/info_src.cmake
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
+
 # Build flags: This must be postponed to the make phase.
-ADD_CUSTOM_TARGET(INFO_BIN ALL
+MY_ADD_CUSTOM_TARGET(INFO_BIN ALL
   COMMAND ${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/cmake/info_bin.cmake
   WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )

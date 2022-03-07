@@ -972,6 +972,9 @@ public:
       SOF_DEFERRED_FK_TRIGGER = 256,
       SOF_FK_READ_COMMITTED = 512,    // reply to TC even for dirty read
       SOF_FULLY_REPLICATED_TRIGGER = 1024
+      ,SOF_UTIL_FLAG = 2048            // Sender to TC is DBUTIL (higher prio)
+      ,SOF_BATCH_SAFE = 4096           // Batching is safe for this operation
+      ,SOF_BATCH_UNSAFE = 8192         // Batching is unsafe for this operation
     };
 
     static inline bool isIndexOp(Uint16 flags) {
@@ -1192,6 +1195,7 @@ public:
     Uint32 m_write_count;
     Uint32 m_exec_count;
     Uint32 m_exec_write_count;
+    Uint32 m_simple_read_count;
     Uint32 m_tc_hbrep_timer;
     ReturnSignal returnsignal;
     AbortState abortState;
@@ -1206,9 +1210,10 @@ public:
       TF_DEFERRED_UK_TRIGGERS = 32, // trans has deferred UK triggers
       TF_DEFERRED_FK_TRIGGERS = 64, // trans has deferred FK triggers
       TF_DISABLE_FK_CONSTRAINTS = 128,
-      TF_LATE_COMMIT = 256, // Wait sending apiCommit until complete phase done
+      TF_LATE_COMMIT = 256 // Wait sending apiCommit until complete phase done
+      ,TF_SINGLE_EXEC_FLAG = 512
 
-      TF_END = 0
+      ,TF_END = 0
     };
     Uint32 m_flags;
 
@@ -2612,6 +2617,9 @@ private:
   void wrongSchemaVersionErrorLab(Signal* signal, ApiConnectRecordPtr apiConnectptr);
   void noFreeConnectionErrorLab(Signal* signal, ApiConnectRecordPtr apiConnectptr);
   void tckeyreq050Lab(Signal* signal, CacheRecordPtr cachePtr, ApiConnectRecordPtr apiConnectptr);
+  void logAbortingOperation(Signal* signal, ApiConnectRecordPtr apiPtr, TcConnectRecordPtr tcPtr, Uint32 error);
+  void logTransactionTimeout(Signal* signal, Uint32 apiConn, Uint32 errCode, bool force = false);
+  void logScanTimeout(Signal* signal, ScanFragRecPtr scanFragPtr, ScanRecordPtr scanPtr);
   void timeOutFoundLab(Signal* signal, UintR anAdd, Uint32 errCode);
   void completeTransAtTakeOverLab(Signal* signal, UintR TtakeOverInd);
   void completeTransAtTakeOverDoLast(Signal* signal, UintR TtakeOverInd);
@@ -3094,12 +3102,47 @@ private:
   Uint64 m_gcp_finished;
   Uint64 m_gcp_finished_prev;
 
+  enum TransErrorLogLevel
+  {
+    /* No logging */
+    TELL_NONE                       = 0x0000,
+
+    /* When to log */
+
+    /*   Always */
+    TELL_ALL                        = 0x0001,
+
+    /*   Only when there are deferred triggers in the transaction */
+    TELL_DEFERRED                   = 0x0002,
+
+    /* Space left for more 'filters' */
+    TELL_CONTROL_MASK               = 0x00FF,
+
+    /* What to log */
+    /*   Log details when one operation causes a transaction to abort */
+    TELL_TC_ABORTS                  = 0x0100,
+
+    /*   Log details when a transaction times out at TC */
+    /*     Log timed out transaction details at TC incl ops */
+    TELL_TC_TIMEOUTS_TRANS_OPS      = 0x0200,
+    /*     Also log timed out transaction operation details @ LDM */
+    TELL_TC_TIMEOUTS_TRANS_OPS_LDM  = 0x0400,
+
+    /* All timeout logging options */
+    TELL_TC_TIMEOUTS_MASK           = 0x0600,
+
+
+    /* 'Full logging' value */
+    TELL_FULL                       = 0x0701
+  };
+
 #ifdef ERROR_INSERT
   // Used with ERROR_INSERT 8078 + 8079 to check API_FAILREQ handling
   Uint32 c_lastFailedApi;
 #endif
   Uint32 m_deferred_enabled;
   Uint32 m_max_writes_per_trans;
+  Uint32 c_trans_error_loglevel;
   Uint32 m_take_over_operations;
 #endif
 

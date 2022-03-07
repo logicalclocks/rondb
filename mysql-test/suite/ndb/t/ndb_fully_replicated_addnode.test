@@ -51,6 +51,8 @@ where mpf.fq_name = 'test/def/t1'
 and mpf.fixed_elem_count <> tfs.fixed_elem_count
 order by tfs.fragment_num, mpf.node_id, mpf.fragment_num;
 
+select a,b,LENGTH(c) from t1 where a = '1' and e = REPEAT('1', 3000);
+
 create temporary table counters_at_startup
 select counter_name, sum(val) as val
 from ndbinfo.counters

@@ -2297,6 +2297,7 @@ NdbTableImpl::get_nodes(NdbImpl *impl_ndb,
     }
     return m_replicaCount;
   }
+  *nodes = nullptr;
   return 0;
 }
 

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2006, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1374,9 +1374,14 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
   Uint32 list = ndb_log2(cnt - 1);
   Uint32 min_list = ndb_log2(min - 1);
 
+  /**
+   * We cannot start at 16, this would stop the search
+   * immediately which is not correct.
+   */
+  list = MIN(list, 15);
+  min_list = MIN(min_list, 15);
   assert(cnt);
-  assert(list <= 16);
-  assert(list >= min_list);
+  require(list >= min_list);
   i = list;
   bool first_up = true;
   bool first_down = false;
@@ -1396,9 +1401,8 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
 /* ---------------------------------------------------------------- */
       Uint32 sz = remove_free_list(zone, start, i);
       Uint32 extra = sz - cnt;
-      if (first_up || second_up || sz >= cnt)
+      if (sz >= cnt)
       {
-        assert(sz >= cnt);
         * pages = cnt;
       }
       else
@@ -1435,8 +1439,16 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
     }
     if (first_up)
     {
-      if ((i == (TWO_MBYTE_LOG - 1) && list > min_list) ||
-          (i == 15 && list != min_list && list >= TWO_MBYTE_LOG))
+      if (list == min_list)
+      {
+        /**
+         * When list is equal to min_list there is no option to go for smaller
+         * allocations since the minimum is the same as the requested.
+         */
+        i++;
+      }
+      else if ((i == (TWO_MBYTE_LOG - 1)) ||
+          (i == 15 && list >= TWO_MBYTE_LOG))
       {
         /**
          * We have searched and failed to find the number of pages
@@ -1472,6 +1484,7 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
          */
         first_up = false;
         first_down = true;
+        require(list > 0); // Since list > min_list
         i = list - 1;
       }
       else
@@ -1485,12 +1498,24 @@ Ndbd_mem_manager::alloc_impl(Uint32 zone,
       {
         i--;
       }
-      else if (list >= TWO_MBYTE_LOG && list != min_list)
+      else if (list >= TWO_MBYTE_LOG)
       {
+        /**
+         * We have reached the min_list level and still haven't found
+         * any empty area. Since we started at list and went to 15
+         * already, we have already checked all places and thus we
+         * won't find any memory areas by rechecking. So break and
+         * report no memory found.
+         */
         break;
       }
       else
       {
+        /**
+         * We have reached min_list and found no small memory areas.
+         * We still haven't looked in the large memory areas, so time
+         * to do this now.
+         */
         i = TWO_MBYTE_LOG;
         first_down = false;
         second_up = true;
@@ -1805,7 +1830,6 @@ Ndbd_mem_manager::alloc_pages(Uint32 type,
     mt_mem_manager_lock();
 
   Uint32 req = *cnt;
-  Uint32 orig_req = req;
   const Uint32 free_res =
     m_resource_limits.get_resource_free_reserved(idx, false);
   if (free_res < req)
@@ -1846,7 +1870,6 @@ Ndbd_mem_manager::alloc_pages(Uint32 type,
     req = 0;
   }
   * cnt = req;
-  require(req <= orig_req && req > 0);
   m_resource_limits.check();
   if (req == 0 && unlikely(m_dump_on_alloc_fail))
   {
@@ -2708,27 +2731,40 @@ get_min_size_given_array_pos(lc_uint32 pos)
 static int
 Ndb_fls(Uint32 val)
 {
-  if (val == 0) return 0;
-#if defined(__GNUC__) || defined(__clang__)
-  int num_zeros = __builtin_clz(val);
-  return 31 - num_zeros;
-#else
-  /* Binary search for highest bit set */
-  Uint32 pos  = 16;
-  Uint32 step = pos;
-  do
-  {
-    /* Will always run in 4 loops */
-    step >>= 1; //Divide by 2
-    if (val >> pos)
-     pos += step;
-   else
-     pos -= step;
-  } while (step > 1);
-  if (val >> pos)
-    pos++;
-  return (pos - 1);
-#endif
+  // Despite what it may seem, this runs faster than both
+  // (31 - __builtin_clz(val)) and binary search.
+  if(val & 0x80000000) return 31;
+  if(val & 0x40000000) return 30;
+  if(val & 0x20000000) return 29;
+  if(val & 0x10000000) return 28;
+  if(val & 0x08000000) return 27;
+  if(val & 0x04000000) return 26;
+  if(val & 0x02000000) return 25;
+  if(val & 0x01000000) return 24;
+  if(val & 0x00800000) return 23;
+  if(val & 0x00400000) return 22;
+  if(val & 0x00200000) return 21;
+  if(val & 0x00100000) return 20;
+  if(val & 0x00080000) return 19;
+  if(val & 0x00040000) return 18;
+  if(val & 0x00020000) return 17;
+  if(val & 0x00010000) return 16;
+  if(val & 0x00008000) return 15;
+  if(val & 0x00004000) return 14;
+  if(val & 0x00002000) return 13;
+  if(val & 0x00001000) return 12;
+  if(val & 0x00000800) return 11;
+  if(val & 0x00000400) return 10;
+  if(val & 0x00000200) return  9;
+  if(val & 0x00000100) return  8;
+  if(val & 0x00000080) return  7;
+  if(val & 0x00000040) return  6;
+  if(val & 0x00000020) return  5;
+  if(val & 0x00000010) return  4;
+  if(val & 0x00000008) return  3;
+  if(val & 0x00000004) return  2;
+  if(val & 0x00000002) return  1;
+  return  0;
 }
 
 static lc_uint32

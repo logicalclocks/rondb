@@ -915,5 +915,6 @@ const GsnName SignalNames [] = {
   ,{ GSN_SEND_PUSH_ABORTREQ, "SEND_PUSH_ABORTREQ" }
   ,{ GSN_SEND_PUSH_ABORTCONF, "SEND_PUSH_ABORTCONF" }
   ,{ GSN_PUSH_ABORT_TRAIN_ORD, "PUSH_ABORT_TRAIN_ORD" }
+  ,{ GSN_API_BROADCAST_REP, "API_BROADCAST_REP" }
 };
 const unsigned short NO_OF_SIGNAL_NAMES = sizeof(SignalNames)/sizeof(GsnName);
