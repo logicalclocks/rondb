@@ -251,7 +251,7 @@ require(request->error==0);
   {
     require(m_file_format == FF_UNKNOWN);
     m_file_format = FF_RAW; // TODO also allow NDBXFRM1 for encrypted
-    m_file.set_autosync(1024 * 1024);
+    m_file.set_autosync(16 * 1024 * 1024);
 
     // Extend file size
     require(request->par.open.file_size <= ndb_file::OFF_T_MAX);
@@ -326,6 +326,12 @@ require(!"m_file.extend");
         }
         size -= n;
         buf += n;
+        /**
+         * Ensure that we call sync at regular intervals set by
+         * autosync frequency. Don't care if done or not, it will
+         * be handled by the m_file object.
+         */
+        (void)m_file.sync_on_write();
       }
       if (size != 0)
       {
