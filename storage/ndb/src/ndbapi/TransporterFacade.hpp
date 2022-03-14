@@ -271,6 +271,11 @@ public:
   void requestWakeup();
   void reportWakeup() override;
 
+  void set_hostname(Uint32 nodeId, const char *new_hostname)
+  {
+    theTransporterRegistry->set_hostname(nodeId, new_hostname);
+  }
+
 private:
 
   friend class trp_client;
