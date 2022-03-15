@@ -548,6 +548,28 @@ TransporterFacade::start_instance(NodeId nodeId,
     DBUG_RETURN(-1);
   }
 
+  /**
+   * There are quite a few threads used in an API transporter for one node.
+   * At first there is a send thread. The send thread is used to send data
+   * when the normal send meets a congested socket.
+   *
+   * As part of the startup of the send thread we also start up the thread
+   * that is used to start clients.
+   *
+   * As part of the startup of the send thread we also start up the Socket
+   * Server thread. This thread accepts connections from clients. This is
+   * mainly used by management servers and data nodes.
+   *
+   * The receive thread is used to handle receive when there are a lot of
+   * concurrrent threads using the transporter.
+   *
+   * There is a wakeup thread which is used to wake up threads of the
+   * poll owner. This makes it possible for the poll owner to continue
+   * receiving and offloading work of waking up other threads when a lot
+   * of threads need to be awaken.
+   *
+   * The Cluster manager starts a thread 
+   */
   theReceiveThread = NdbThread_Create(runReceiveResponse_C,
                                       (void**)this,
                                       0, // Use default stack size
@@ -3526,7 +3548,9 @@ TransporterFacade::do_poll(trp_client* clnt,
        * So we can just return here.
        */
       if (!try_become_poll_owner(clnt, rem_wait_time))
+      {
         return;
+      }
     }
     assert(clnt->m_poll.m_poll_owner == true);
 

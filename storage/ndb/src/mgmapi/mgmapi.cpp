@@ -102,6 +102,7 @@ struct ndb_mgm_handle {
   int last_error_line;
   char last_error_desc[NDB_MGM_MAX_ERR_DESC_SIZE];
   unsigned int timeout;
+  unsigned int connect_timeout;
 
   NDB_SOCKET_TYPE socket;
 
@@ -249,6 +250,7 @@ ndb_mgm_create_handle()
   h->last_error_line = 0;
   ndb_socket_invalidate(&(h->socket));
   h->timeout         = 60000;
+  h->connect_timeout = 3000;
   h->cfg_i           = -1;
   h->errstream       = stdout;
   h->m_name          = NULL;
@@ -683,7 +685,8 @@ int ndb_mgm_is_connected(NdbMgmHandle handle)
 extern "C"
 int ndb_mgm_set_connect_timeout(NdbMgmHandle handle, unsigned int seconds)
 {
-  return ndb_mgm_set_timeout(handle, seconds*1000);
+  handle->connect_timeout= seconds*1000;
+  return 0;
 }
 
 extern "C"
@@ -826,7 +829,7 @@ ndb_mgm_connect(NdbMgmHandle handle, int no_retries,
       SocketClient s;
       const char *bind_address= NULL;
       unsigned short bind_address_port= 0;
-      s.set_connect_timeout(handle->timeout);
+      s.set_connect_timeout(handle->connect_timeout);
       if (!s.init())
       {
         fprintf(handle->errstream, 
