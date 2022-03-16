@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -478,6 +478,7 @@ void
 TransporterRegistry::set_hostname(Uint32 nodeId,
                                   const char *new_hostname)
 {
+  DEBUG_FPRINTF((stderr, "set_hostname(%u) = %s\n", nodeId, new_hostname));
   for (Uint32 i = 0; i < nTCPTransporters; i++)
   {
     if (theTCPTransporters[i]->remoteNodeId == nodeId)
@@ -3367,13 +3368,15 @@ TransporterRegistry::start_clients_thread()
 	break;
       }
       case DISCONNECTING:
-	if(t->isConnected())
+      {
+        if (t->isConnected())
         {
           DEBUG_FPRINTF((stderr, "(%u)doDisconnect(%u), line: %u\n",
                          localNodeId, t->getRemoteNodeId(), __LINE__));
-	  t->doDisconnect();
+          t->doDisconnect();
         }
-	break;
+        break;
+      }
       case DISCONNECTED:
       {
         if (t->isConnected())
@@ -3405,9 +3408,12 @@ TransporterRegistry::start_clients_thread()
                         t->isConnected()));
           lockMultiTransporters();
         }
+        break;
       }
       default:
+      {
 	break;
+      }
       }
     }
     unlockMultiTransporters();

@@ -35,3 +35,15 @@ test result and the result stored in the tree. If the result of
 the execution was correct and differs from the stored result one
 updates the test_activate.res file through the command:
 cp test.res test_activate.res
+
+The config.ini sets up active nodes to use the IP address 192.168.0.102.
+This IP address should be replaced with an IP address of the machine
+where the test is executed. The inactive nodes are set to use hostname
+192.168.0.104, this IP address should be a correct IP address that should
+not have any RonDB installation or even not even a computer.
+
+So before testing the IP addresses in config.ini and the HOSTNAME_SERVER
+in test_execute.sh to reflect the environment where the test is performed.
+
+The diff will show differences in IP addresses and the RonDB version, but
+no more differences should be seen.

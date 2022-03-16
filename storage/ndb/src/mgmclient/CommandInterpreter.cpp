@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2577,6 +2577,32 @@ CommandInterpreter::executeHostname(int processId,
   iter.set(CFG_NODE_HOST, new_hostname);
   iter.closeSection();
 
+  /* We need to change the communication sections as well */
+  bool more_comm_sections = false;
+  Uint32 i = 0;
+  Uint32 check_node_id;
+  do
+  {
+    more_comm_sections = iter.openSection(CFG_SECTION_CONNECTION, i);
+    if (!more_comm_sections)
+      break;
+    ret = iter.get(CFG_CONNECTION_NODE_1, &check_node_id);
+    assert(ret);
+    if (check_node_id == (Uint32)processId)
+    {
+      iter.set(CFG_CONNECTION_HOSTNAME_1, new_hostname);
+    }
+    else
+    {
+      ret = iter.get(CFG_CONNECTION_NODE_2, &check_node_id);
+      assert(ret);
+      if (check_node_id == (Uint32)processId)
+      {
+        iter.set(CFG_CONNECTION_HOSTNAME_2, new_hostname);
+      }
+    }
+    i++;
+  } while (true);
   int ret_code = ndb_mgm_set_configuration(m_mgmsrv, conf);
   if (ret_code != 0)
   {

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -278,6 +278,9 @@ Transporter::connect_client(bool multi_connection)
     require(!isPartOfMultiTransporter());
     sockfd= m_transporter_registry.connect_ndb_mgmd(remoteHostName,
                                                     port);
+    DEBUG_FPRINTF((stderr, "connect_ndb_mgmd to host: %s on port: %d\n",
+                   remoteHostName,
+                   port));
   }
   else
   {
@@ -304,7 +307,8 @@ Transporter::connect_client(bool multi_connection)
         DBUG_RETURN(false);
       }
     }
-
+    DEBUG_FPRINTF((stderr, "m_socket_client->connect to %s\n",
+                   remoteHostName));
     sockfd= m_socket_client->connect(remoteHostName,
                                      port);
   }

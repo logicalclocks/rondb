@@ -1,5 +1,5 @@
 /* Copyright (c) 2009, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1211,23 +1211,28 @@ ndbd_run(bool foreground, int report_fd,
     this can be changed by the configuration. This is implemented by the
     management server in the function fixPortNumber.
   */
-  g_eventLogger->info("Starting Sending and Receiving services");
+  g_eventLogger->info("Starting Sending services");
   globalTransporterRegistry.startSending();
+  g_eventLogger->info("Starting Receiving services");
   globalTransporterRegistry.startReceiving();
-  if (!globalTransporterRegistry.start_service(*globalEmulatorData.m_socket_server)){
-    ndbout_c("globalTransporterRegistry.start_service() failed");
+  g_eventLogger->info("Starting Transporter services");
+  if (!globalTransporterRegistry.start_service(*globalEmulatorData.m_socket_server))
+  {
+    g_eventLogger->info("globalTransporterRegistry.start_service() failed");
     ndbd_exit(-1);
   }
   // Re-use the mgm handle as a transporter
+  g_eventLogger->info("Reuse connection to NDB management server");
   if(!globalTransporterRegistry.connect_client(
 		 theConfig->get_config_retriever()->get_mgmHandlePtr()))
       ERROR_SET(fatal, NDBD_EXIT_CONNECTION_SETUP_FAILED,
                 "Failed to convert mgm connection to a transporter",
                 __FILE__);
+  g_eventLogger->info("Start transporter clients");
   NdbThread* pTrp = globalTransporterRegistry.start_clients();
   if (pTrp == 0)
   {
-    ndbout_c("globalTransporterRegistry.start_clients() failed");
+    g_eventLogger->info("Start transporter clients failed");
     ndbd_exit(-1);
   }
   NdbThread* pSockServ = globalEmulatorData.m_socket_server->startServer();

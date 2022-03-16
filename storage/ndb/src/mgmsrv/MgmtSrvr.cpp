@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1383,6 +1383,7 @@ MgmtSrvr::set_hostname_request(int nodeId, const char *new_hostname)
   {
     DBUG_RETURN(FAILED_SET_HOSTNAME_REQUEST);
   }
+  theFacade->set_hostname(nodeId, &hostname_buf[0]);
   // send the signals
   int failed = 0;
   NodeBitmask nodes;
