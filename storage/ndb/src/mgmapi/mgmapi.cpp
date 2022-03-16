@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2345,7 +2345,7 @@ ndb_mgm_listen_event_internal(NdbMgmHandle handle, const int filter[],
   int port= ndb_mgm_get_connected_port(handle);
   const char *bind_address= ndb_mgm_get_connected_bind_address(handle);
   SocketClient s;
-  s.set_connect_timeout(handle->timeout);
+  s.set_connect_timeout(handle->connect_timeout);
   if (!s.init())
   {
     fprintf(handle->errstream, "Unable to create socket");

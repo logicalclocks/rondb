@@ -3368,13 +3368,15 @@ TransporterRegistry::start_clients_thread()
 	break;
       }
       case DISCONNECTING:
-	if(t->isConnected())
+      {
+        if (t->isConnected())
         {
           DEBUG_FPRINTF((stderr, "(%u)doDisconnect(%u), line: %u\n",
                          localNodeId, t->getRemoteNodeId(), __LINE__));
-	  t->doDisconnect();
+          t->doDisconnect();
         }
-	break;
+        break;
+      }
       case DISCONNECTED:
       {
         if (t->isConnected())
@@ -3406,9 +3408,12 @@ TransporterRegistry::start_clients_thread()
                         t->isConnected()));
           lockMultiTransporters();
         }
+        break;
       }
       default:
+      {
 	break;
+      }
       }
     }
     unlockMultiTransporters();
