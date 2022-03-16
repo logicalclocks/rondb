@@ -1,4 +1,4 @@
-xSHOW GLOBAL STATUS LIKE 'ndb\_%';
+SHOW GLOBAL STATUS LIKE 'ndb\_%';
 Variable_name	Value
 Ndb_api_adaptive_send_deferred_count	#
 Ndb_api_adaptive_send_deferred_count_replica	#
