@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -3815,50 +3815,15 @@ void Cmvmi::execGET_CONFIG_REQ(Signal *signal)
 void Cmvmi::execSET_HOSTNAME_REQ(Signal *signal)
 {
   jamEntry();
-  const SetHostnameReq* const req =
-    (const SetHostnameReq *)signal->getDataPtr();
-  BlockReference senderRef = req->senderRef;
-  Uint32 nodeId = req->changeNodeId;
-
+  /* Just route it to Qmgr that has more state to handle it. */
   ndbrequire(signal->getNoOfSections() == 1);
   SectionHandle handle(this, signal);
-  SegmentedSectionPtr ptr;
-  handle.getSection(ptr, 0);
-
-  if (!g_not_active_nodes.get(nodeId))
-  {
-    SetHostnameRef* const ref = (SetHostnameRef*)signal->getDataPtrSend();
-    ref->changeNodeId = nodeId;
-    ref->senderNodeId = getOwnNodeId();
-    ref->senderRef = reference();
-    sendSignal(senderRef,
-               GSN_SET_HOSTNAME_REF,
-               signal,
-               SetHostnameRef::SignalLength,
-               JBB);
-    return;
-  }
-
-  union
-  {
-    char hostname_buf[256];
-    Uint32 hostname_buf32[64];
-  };
-  memset(&hostname_buf[0], 0, 256);
-  copy(&hostname_buf32[0], ptr);
-  releaseSections(handle);
-
-  globalTransporterRegistry.set_hostname(nodeId, &hostname_buf[0]);
-
-  SetHostnameConf* const conf = (SetHostnameConf*)signal->getDataPtrSend();
-  conf->changeNodeId = nodeId;
-  conf->senderNodeId = getOwnNodeId();
-  conf->senderRef = reference();
-  sendSignal(senderRef,
-             GSN_SET_HOSTNAME_CONF,
-             signal,
-             SetHostnameConf::SignalLength,
-             JBB);
+  sendSignalNoRelease(QMGR_REF,
+                      GSN_SET_HOSTNAME_REQ,
+                      signal,
+                      SetHostnameReq::SignalLength,
+                      JBB,
+                      &handle);
 }
 /**
  * A node that was part of the configuration is activated such that
@@ -3868,27 +3833,7 @@ void Cmvmi::execSET_HOSTNAME_REQ(Signal *signal)
 void Cmvmi::execACTIVATE_REQ(Signal *signal)
 {
   jamEntry();
-  const ActivateReq* const req = (const ActivateReq *)signal->getDataPtr();
-  BlockReference senderRef = req->senderRef;
-  Uint32 nodeId = req->activateNodeId;
-
-  g_not_active_nodes.clear(nodeId);
-  globalTransporterRegistry.set_active_node(nodeId, 1);
-
-  ActivateConf* const conf = (ActivateConf*)signal->getDataPtrSend();
-  conf->activateNodeId = nodeId;
-  conf->senderNodeId = getOwnNodeId();
-  conf->senderRef = reference();
-  sendSignal(senderRef,
-             GSN_ACTIVATE_CONF,
-             signal,
-             ActivateConf::SignalLength,
-             JBB);
-
-  /* Ensure that QMGR opens up communication in a proper manner */
-  ActivateReq* const send_req = (ActivateReq*)signal->getDataPtrSend();
-  send_req->senderRef = reference();
-  send_req->activateNodeId = nodeId;
+  /* Just route it to Qmgr that has more state to handle it. */
   sendSignal(QMGR_REF,
              GSN_ACTIVATE_REQ,
              signal,
@@ -3904,20 +3849,10 @@ void Cmvmi::execACTIVATE_REQ(Signal *signal)
 void Cmvmi::execDEACTIVATE_REQ(Signal *signal)
 {
   jamEntry();
-  const DeactivateReq* const req = (const DeactivateReq *)signal->getDataPtr();
-  BlockReference senderRef = req->senderRef;
-  Uint32 nodeId = req->deactivateNodeId;
-
-  g_not_active_nodes.set(nodeId);
-  globalTransporterRegistry.set_active_node(nodeId, 0);
-
-  DeactivateConf* const conf = (DeactivateConf*)signal->getDataPtrSend();
-  conf->deactivateNodeId = nodeId;
-  conf->senderNodeId = getOwnNodeId();
-  conf->senderRef = reference();
-  sendSignal(senderRef,
-             GSN_DEACTIVATE_CONF,
+  /* Just route it to Qmgr that has more state to handle it. */
+  sendSignal(QMGR_REF,
+             GSN_DEACTIVATE_REQ,
              signal,
-             DeactivateConf::SignalLength,
+             DeactivateReq::SignalLength,
              JBB);
 }

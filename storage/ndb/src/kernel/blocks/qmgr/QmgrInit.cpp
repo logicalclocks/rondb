@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -42,11 +42,17 @@ void Qmgr::initData()
   m_get_num_multi_trps_sent = 0;
   m_initial_set_up_multi_trp_done = false;
   m_ref_set_up_multi_trp_req = 0;
+  m_activate_state = ActivateState::IDLE;
+  m_activate_outstanding = 0;
+  m_activate_node_id = 0;
+  m_activate_ref = 0;
+  m_activate_success = false;
 
   // Records with constant sizes
   nodeRec = new NodeRec[MAX_NODES];
   for (Uint32 i = 0; i<MAX_NODES; i++)
   {
+    nodeRec[i].m_activate_ongoing = false;
     nodeRec[i].m_secret = 0;
     nodeRec[i].m_count_multi_trp_ref = 0;
     nodeRec[i].m_initial_set_up_multi_trp_done = false;
@@ -249,7 +255,18 @@ Qmgr::Qmgr(Block_context& ctx)
   addRecSignal(GSN_ENABLE_COMCONF,  &Qmgr::execENABLE_COMCONF);
   addRecSignal(GSN_PROCESSINFO_REP, &Qmgr::execPROCESSINFO_REP);
   addRecSignal(GSN_SYNC_THREAD_VIA_CONF, &Qmgr::execSYNC_THREAD_VIA_CONF);
+
   addRecSignal(GSN_ACTIVATE_REQ, &Qmgr::execACTIVATE_REQ);
+  addRecSignal(GSN_ACTIVATE_CONF, &Qmgr::execACTIVATE_CONF);
+  addRecSignal(GSN_ACTIVATE_REF, &Qmgr::execACTIVATE_REF);
+
+  addRecSignal(GSN_DEACTIVATE_REQ, &Qmgr::execDEACTIVATE_REQ);
+  addRecSignal(GSN_DEACTIVATE_CONF, &Qmgr::execDEACTIVATE_CONF);
+  addRecSignal(GSN_DEACTIVATE_REF, &Qmgr::execDEACTIVATE_REF);
+
+  addRecSignal(GSN_SET_HOSTNAME_REQ, &Qmgr::execSET_HOSTNAME_REQ);
+  addRecSignal(GSN_SET_HOSTNAME_CONF, &Qmgr::execSET_HOSTNAME_CONF);
+  addRecSignal(GSN_SET_HOSTNAME_REF, &Qmgr::execSET_HOSTNAME_REF);
 
   // Arbitration signals
   addRecSignal(GSN_ARBIT_PREPREQ, &Qmgr::execARBIT_PREPREQ);

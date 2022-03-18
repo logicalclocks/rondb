@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -330,6 +330,13 @@ public:
     bool m_set_up_multi_trp_started;
 
     /**
+     * We have sent an activate request (either of ACTIVATE_REQ,
+     * DEACTIVATE_REQ or SET_HOSTNAME_REQ) and are still waiting
+     * for the response to this request.
+     */
+    bool m_activate_ongoing;
+
+    /**
      * The number of multi sockets used to communicate with this node.
      * Negotiated in the setup phase in the GET_NUM_MULTI_TRP messages.
      */
@@ -527,6 +534,66 @@ private:
   void execSYNC_THREAD_VIA_CONF(Signal*);
 
   void execACTIVATE_REQ(Signal*);
+  void execACTIVATE_CONF(Signal*);
+  void execACTIVATE_REF(Signal*);
+
+  void execDEACTIVATE_REQ(Signal*);
+  void execDEACTIVATE_CONF(Signal*);
+  void execDEACTIVATE_REF(Signal*);
+
+  void execSET_HOSTNAME_REQ(Signal*);
+  void execSET_HOSTNAME_CONF(Signal*);
+  void execSET_HOSTNAME_REF(Signal*);
+
+  void sendACTIVATE_REQ(Signal*, Uint32, NodeId);
+  void sendACTIVATE_CONF(Signal*, Uint32, NodeId);
+  void sendACTIVATE_REF(Signal*, Uint32, NodeId);
+
+  void sendDEACTIVATE_REQ(Signal*, Uint32, NodeId);
+  void sendDEACTIVATE_CONF(Signal*, Uint32, NodeId);
+  void sendDEACTIVATE_REF(Signal*, Uint32, NodeId);
+
+  void sendSET_HOSTNAME_REQ(Signal*, Uint32, NodeId, SectionHandle*);
+  void sendSET_HOSTNAME_CONF(Signal*, Uint32, NodeId);
+  void sendSET_HOSTNAME_REF(Signal*, Uint32, NodeId);
+
+  void handle_activate_failed_node(Signal*, NodeRecPtr);
+  bool send_activate_node(NodeRecPtr nodePtr);
+  void handle_activate_receive(Uint32, Uint32);
+
+  void check_activate_finished(Signal*);
+  void check_deactivate_finished(Signal*);
+  void check_set_hostname_finished(Signal*);
+
+  enum ActivateState
+  {
+    IDLE = 0,
+    HANDLE_ACTIVATE = 1,
+    HANDLE_DEACTIVATE = 2,
+    HANDLE_SET_HOSTNAME = 3
+  };
+  ActivateState m_activate_state;
+
+  /**
+   * Number of outstanding activate requests at this time.
+   */
+  Uint32 m_activate_outstanding;
+
+  /**
+   * The block number of the MGM server sending the activate
+   * request.
+   */
+  BlockReference m_activate_ref;
+
+  /**
+   * The node id being activated, deactivated or changing hostname.
+   */
+  NodeId m_activate_node_id;
+
+  /**
+   * Did we fully succeed with the operation.
+   */
+  bool m_activate_success;
 
   // Arbitration signals
   void execARBIT_CFG(Signal* signal);

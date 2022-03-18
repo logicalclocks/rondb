@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -206,6 +207,9 @@ private:
   /**
    * Signals received
    */
+  void execSET_HOSTNAME_REQ(const NdbApiSignal*, const LinearSectionPtr ptr[]);
+  void execACTIVATE_REQ  (const Uint32 * theData);
+  void execDEACTIVATE_REQ  (const Uint32 * theData);
   void execAPI_REGREQ    (const Uint32 * theData);
   void execAPI_REGCONF   (const NdbApiSignal*, const LinearSectionPtr ptr[]);
   void execAPI_REGREF    (const Uint32 * theData);

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -49,12 +49,14 @@
 #include "kernel/signaldata/TestOrd.hpp"
 #include <signaldata/SumaImpl.hpp>
 #include <signaldata/ProcessInfoRep.hpp>
+#include <signaldata/Activate.hpp>
+#include <signaldata/SetHostname.hpp>
 
 #include <mgmapi.h>
 #include <mgmapi_configuration.hpp>
 #include <mgmapi_config_parameters.h>
 
-#if 0
+#if 1
 #define DEBUG_FPRINTF(arglist) do { fprintf arglist ; } while (0)
 #else
 #define DEBUG_FPRINTF(a)
@@ -532,6 +534,18 @@ ClusterMgr::trp_deliver_signal(const NdbApiSignal* sig,
   const Uint32 * theData = sig->getDataPtr();
 
   switch (gsn){
+  case GSN_ACTIVATE_REQ:
+    execACTIVATE_REQ(theData);
+    break;
+
+  case GSN_DEACTIVATE_REQ:
+    execDEACTIVATE_REQ(theData);
+    break;
+
+  case GSN_SET_HOSTNAME_REQ:
+    execSET_HOSTNAME_REQ(sig, ptr);
+    break;
+
   case GSN_API_REGREQ:
     execAPI_REGREQ(theData);
     break;
@@ -763,6 +777,164 @@ ClusterMgr::recalcMinApiVersion()
                      newMinApiVersion;
 
   minApiVersion = newMinApiVersion;
+}
+
+void
+ClusterMgr::execACTIVATE_REQ(const Uint32 *theData)
+{
+  const ActivateReq * const activateReq = (ActivateReq *)&theData[0];
+  TransporterRegistry *tr = theFacade.get_registry();
+  Uint32 senderRef = activateReq->senderRef;
+  Uint32 activateNodeId = activateReq->activateNodeId;
+  Uint32 ref = numberToRef(API_CLUSTERMGR, theFacade.ownId());
+  NdbApiSignal signal(ref);
+  if (activateNodeId > MAX_NODES)
+  {
+    ActivateRef * const ref_sig =
+      CAST_PTR(ActivateRef, signal.getDataPtrSend());
+    signal.theVerId_signalNumber   = GSN_ACTIVATE_REF;
+    signal.theReceiversBlockNumber = refToMain(senderRef);
+    signal.theTrace                = 0;
+    signal.theLength               = ActivateRef::SignalLength;
+    ref_sig->senderRef = ref;
+    ref_sig->senderNodeId = theFacade.ownId();
+    ref_sig->activateNodeId = activateNodeId;
+    safe_sendSignal(&signal, refToNode(senderRef));
+    DEBUG_FPRINTF((stderr, "Send ACTIVATE_REF to %u about node %u",
+                   refToNode(senderRef),
+                   activateNodeId));
+    return;
+  }
+  /* Perform the actual activation of the node in the transporter setup */
+  tr->set_active_node(activateNodeId, 1);
+  ActivateConf * const conf = CAST_PTR(ActivateConf, signal.getDataPtrSend());
+  signal.theVerId_signalNumber   = GSN_ACTIVATE_CONF;
+  signal.theReceiversBlockNumber = refToMain(senderRef);
+  signal.theTrace                = 0;
+  signal.theLength               = ActivateConf::SignalLength;
+  conf->senderRef = ref;
+  conf->senderNodeId = theFacade.ownId();
+  conf->activateNodeId = activateNodeId;
+  safe_sendSignal(&signal, refToNode(senderRef));
+  DEBUG_FPRINTF((stderr, "Send ACTIVATE_CONF to %u about node %u",
+                 refToNode(senderRef),
+                 activateNodeId));
+}
+
+void
+ClusterMgr::execDEACTIVATE_REQ(const Uint32 *theData)
+{
+  const DeactivateReq * const deactivateReq = (DeactivateReq *)&theData[0];
+  TransporterRegistry *tr = theFacade.get_registry();
+  Uint32 senderRef = deactivateReq->senderRef;
+  Uint32 deactivateNodeId = deactivateReq->deactivateNodeId;
+  Uint32 ref = numberToRef(API_CLUSTERMGR, theFacade.ownId());
+  NdbApiSignal signal(ref);
+  if (deactivateNodeId > MAX_NODES)
+  {
+    DeactivateRef * const ref_sig =
+      CAST_PTR(DeactivateRef, signal.getDataPtrSend());
+    signal.theVerId_signalNumber   = GSN_DEACTIVATE_REF;
+    signal.theReceiversBlockNumber = refToMain(senderRef);
+    signal.theTrace                = 0;
+    signal.theLength               = DeactivateRef::SignalLength;
+    ref_sig->senderRef = ref;
+    ref_sig->senderNodeId = theFacade.ownId();
+    ref_sig->deactivateNodeId = deactivateNodeId;
+    safe_sendSignal(&signal, refToNode(senderRef));
+    DEBUG_FPRINTF((stderr, "Send DEACTIVATE_REF to %u about node %u",
+                   refToNode(senderRef),
+                   deactivateNodeId));
+    return;
+  }
+  /* Perform the actual deactivation of the node in the transporter setup */
+  tr->set_active_node(deactivateNodeId, 0);
+  DeactivateConf * const conf = CAST_PTR(DeactivateConf, signal.getDataPtrSend());
+  signal.theVerId_signalNumber   = GSN_DEACTIVATE_CONF;
+  signal.theReceiversBlockNumber = refToMain(senderRef);
+  signal.theTrace                = 0;
+  signal.theLength               = DeactivateConf::SignalLength;
+  conf->senderRef = ref;
+  conf->senderNodeId = theFacade.ownId();
+  conf->deactivateNodeId = deactivateNodeId;
+  safe_sendSignal(&signal, refToNode(senderRef));
+  DEBUG_FPRINTF((stderr, "Send DEACTIVATE_CONF to %u about node %u",
+                 refToNode(senderRef),
+                 deactivateNodeId));
+}
+
+void
+ClusterMgr::execSET_HOSTNAME_REQ(const NdbApiSignal* sig,
+                                 const LinearSectionPtr ptr[])
+{
+  TransporterRegistry *tr = theFacade.get_registry();
+  const Uint32 * theData = sig->getDataPtr();
+  const SetHostnameReq * const setHostnameReq =
+    (SetHostnameReq *)&theData[0];
+  Uint32 senderRef = setHostnameReq->senderRef;
+  Uint32 changeNodeId = setHostnameReq->changeNodeId;
+  bool ok = true;
+  if (changeNodeId > MAX_NODES)
+  {
+    ok = false;
+  }
+  else
+  {
+    Uint32 activeFlag = tr->get_active_node(changeNodeId);
+    if (activeFlag)
+    {
+      ok = false;
+    }
+    else if (ptr[0].sz > 64)
+    {
+      ok = false;
+    }
+  }
+  Uint32 ref = numberToRef(API_CLUSTERMGR, theFacade.ownId());
+  NdbApiSignal signal(ref);
+  if (!ok)
+  {
+    SetHostnameRef * const ref_sig =
+      CAST_PTR(SetHostnameRef, signal.getDataPtrSend());
+    signal.theVerId_signalNumber   = GSN_SET_HOSTNAME_REF;
+    signal.theReceiversBlockNumber = refToMain(senderRef);
+    signal.theTrace                = 0;
+    signal.theLength               = SetHostnameRef::SignalLength;
+    ref_sig->senderRef = ref;
+    ref_sig->senderNodeId = theFacade.ownId();
+    ref_sig->changeNodeId = changeNodeId;
+    safe_sendSignal(&signal, refToNode(senderRef));
+    DEBUG_FPRINTF((stderr, "Send SET_HOSTNAME_REF to %u about node %u",
+                   refToNode(senderRef),
+                   changeNodeId));
+    return;
+  }
+  union
+  {
+    char hostname_buf[256];
+    Uint32 hostname_buf32[64];
+  };
+  memset(&hostname_buf[0], 0, 256);
+  memcpy(&hostname_buf[0], ptr[0].p, 4 * ptr[0].sz);
+
+  /* Perform the actual change of hostname in the transporter setup */
+  tr->set_hostname(changeNodeId, &hostname_buf[0]);
+
+  SetHostnameConf * const conf =
+    CAST_PTR(SetHostnameConf, signal.getDataPtrSend());
+  signal.theVerId_signalNumber   = GSN_SET_HOSTNAME_CONF;
+  signal.theReceiversBlockNumber = refToMain(senderRef);
+  signal.theTrace                = 0;
+  signal.theLength               = SetHostnameConf::SignalLength;
+  conf->senderRef = ref;
+  conf->senderNodeId = theFacade.ownId();
+  conf->changeNodeId = changeNodeId;
+  safe_sendSignal(&signal, refToNode(senderRef));
+  DEBUG_FPRINTF((stderr, "Send SET_HOSTNAME_CONF to %u about node %u"
+                         ", new hostname: %s",
+                 refToNode(senderRef),
+                 changeNodeId,
+                 hostname_buf));
 }
 
 /******************************************************************************

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -57,6 +57,7 @@
 #include <signaldata/TakeOverTcConf.hpp>
 #include <signaldata/GetNumMultiTrp.hpp>
 #include <signaldata/Activate.hpp>
+#include <signaldata/SetHostname.hpp>
 #include <signaldata/Sync.hpp>
 #include <ndb_version.h>
 #include <OwnProcessInfo.hpp>
@@ -3772,9 +3773,22 @@ void Qmgr::execACTIVATE_REQ(Signal *signal)
   jamEntry();
   NodeRecPtr nodePtr;
   const ActivateReq* const req = (const ActivateReq *)signal->getDataPtr();
-  Uint32 nodeId = req->activateNodeId;
-  nodePtr.i = nodeId;
-  ptrCheckGuard(nodePtr, MAX_NODES, nodeRec);
+  Uint32 activateNodeId = req->activateNodeId;
+  Uint32 senderRef = req->senderRef;
+
+  if (m_activate_state != ActivateState::IDLE ||
+      activateNodeId == 0 ||
+      activateNodeId > MAX_NODES)
+  {
+    jam();
+    g_eventLogger->info("ACTIVATE_REQ failed, state: %u on node: %u",
+                        m_activate_state,
+                        activateNodeId);
+    sendACTIVATE_REF(signal, senderRef, activateNodeId);
+    return;
+  }
+  nodePtr.i = activateNodeId;
+  ptrAss(nodePtr, nodeRec);
   if (nodePtr.p->phase == ZFAIL_CLOSING)
   {
     /**
@@ -3784,6 +3798,7 @@ void Qmgr::execACTIVATE_REQ(Signal *signal)
     jam();
     g_eventLogger->debug("ZFAIL_CLOSING state of node %u after activation",
                          nodePtr.i);
+    sendACTIVATE_REF(signal, senderRef, activateNodeId);
     return;
   }
   else if (nodePtr.p->phase == ZINIT || nodePtr.p->phase == ZAPI_INACTIVE)
@@ -3794,10 +3809,472 @@ void Qmgr::execACTIVATE_REQ(Signal *signal)
     signal->theData[0] = 0;
     signal->theData[1] = nodePtr.i;
     sendSignal(TRPMAN_REF, GSN_OPEN_COMORD, signal, 2, JBB);
+  }
+  else
+  {
+    jam();
+    g_eventLogger->warning("Activated a node in phase %u",
+                           nodePtr.p->phase);
+    sendACTIVATE_REF(signal, senderRef, activateNodeId);
     return;
   }
-  g_eventLogger->warning("Activated a node in phase %u",
-                         nodePtr.p->phase);
+
+  m_activate_node_id = activateNodeId;
+  m_activate_ref = senderRef;
+  m_activate_state = ActivateState::HANDLE_ACTIVATE;
+  m_activate_success = true;
+
+  for (NodeId nodeId = 1; nodeId < MAX_NODES; nodeId++)
+  {
+    NodeRecPtr nodePtr;
+    nodePtr.i = Uint32(nodeId);
+    ptrAss(nodePtr, nodeRec);
+    if (send_activate_node(nodePtr))
+    {
+      Uint32 ref = numberToRef(nodePtr.i, API_CLUSTERMGR);
+      sendACTIVATE_REQ(signal, ref, nodeId);
+      m_activate_outstanding++;
+      nodePtr.p->m_activate_ongoing = true;
+    }
+  }
+  check_activate_finished(signal);
+}
+
+void Qmgr::check_activate_finished(Signal *signal)
+{
+  if (m_activate_outstanding == 0)
+  {
+    jam();
+    if (m_activate_success)
+    {
+      jam();
+      sendACTIVATE_CONF(signal, m_activate_ref, m_activate_node_id);
+    }
+    else
+    {
+      jam();
+      sendACTIVATE_REF(signal, m_activate_ref, m_activate_node_id);
+    }
+    m_activate_state = ActivateState::IDLE;
+    m_activate_node_id = 0;
+    m_activate_ref = 0;
+    m_activate_success = false;
+  }
+}
+
+void Qmgr::handle_activate_failed_node(Signal *signal, NodeRecPtr nodePtr)
+{
+  handle_activate_receive(nodePtr.i, m_activate_node_id);
+  switch (m_activate_state)
+  {
+    case ActivateState::IDLE:
+    {
+      ndbabort();
+      break;
+    }
+    case ActivateState::HANDLE_ACTIVATE:
+    {
+      check_activate_finished(signal);
+      break;
+    }
+    case ActivateState::HANDLE_DEACTIVATE:
+    {
+      check_deactivate_finished(signal);
+      break;
+    }
+    case ActivateState::HANDLE_SET_HOSTNAME:
+    {
+      check_set_hostname_finished(signal);
+      break;
+    }
+    default:
+    {
+      ndbabort();
+      break;
+    }
+  }
+}
+
+bool Qmgr::send_activate_node(NodeRecPtr nodePtr)
+{
+  bool data_node = (getNodeInfo(nodePtr.i).getType() == NodeInfo::DB);
+  bool supported = ndbd_api_support_activate(getNodeInfo(nodePtr.i).m_version);
+  bool api_active = (nodePtr.p->phase == ZAPI_ACTIVE);
+  bool normal_fail_state = (nodePtr.p->failState == NORMAL);
+  if (!data_node && supported && api_active && normal_fail_state)
+  {
+    return true;
+  }
+  return false;
+}
+
+void Qmgr::handle_activate_receive(Uint32 nodeId, Uint32 handleNodeId)
+{
+  NodeRecPtr nodePtr;
+  ndbrequire(m_activate_node_id == handleNodeId);
+  nodePtr.i = nodeId;
+  ptrCheckGuard(nodePtr, MAX_NODES, nodeRec);
+  ndbrequire(nodePtr.p->m_activate_ongoing);
+  ndbrequire(m_activate_outstanding > 0);
+  nodePtr.p->m_activate_ongoing = false;
+  m_activate_outstanding--;
+}
+
+void Qmgr::execACTIVATE_CONF(Signal *signal)
+{
+  jamEntry();
+  const ActivateConf* const conf =
+    (const ActivateConf *)signal->getDataPtr();
+  Uint32 senderNodeId = conf->senderNodeId;
+  Uint32 activateNodeId = conf->activateNodeId;
+  handle_activate_receive(senderNodeId, activateNodeId);
+  ndbrequire(m_activate_state == ActivateState::HANDLE_ACTIVATE);
+  check_activate_finished(signal);
+}
+
+void Qmgr::execACTIVATE_REF(Signal *signal)
+{
+  jamEntry();
+  const ActivateRef* const ref =
+    (const ActivateRef *)signal->getDataPtr();
+  Uint32 senderNodeId = ref->senderNodeId;
+  Uint32 activateNodeId = ref->activateNodeId;
+  handle_activate_receive(senderNodeId, activateNodeId);
+  ndbrequire(m_activate_state == ActivateState::HANDLE_ACTIVATE);
+  m_activate_success = false;
+  check_activate_finished(signal);
+}
+
+void Qmgr::execDEACTIVATE_REQ(Signal *signal)
+{
+  jamEntry();
+  const DeactivateReq* const req = (const DeactivateReq *)signal->getDataPtr();
+  BlockReference senderRef = req->senderRef;
+  Uint32 deactivateNodeId = req->deactivateNodeId;
+
+  if (m_activate_state != ActivateState::IDLE ||
+      deactivateNodeId == 0 ||
+      deactivateNodeId > MAX_NODES)
+  {
+    jam();
+    g_eventLogger->info("DEACTIVATE_REQ failed, state: %u on node: %u",
+                        m_activate_state,
+                        deactivateNodeId);
+    sendDEACTIVATE_REF(signal, senderRef, deactivateNodeId);
+    return;
+  }
+  g_not_active_nodes.set(deactivateNodeId);
+  globalTransporterRegistry.set_active_node(deactivateNodeId, 0);
+
+  m_activate_node_id = deactivateNodeId;
+  m_activate_ref = senderRef;
+  m_activate_state = ActivateState::HANDLE_DEACTIVATE;
+  m_activate_success = true;
+
+  for (NodeId nodeId = 1; nodeId < MAX_NODES; nodeId++)
+  {
+    NodeRecPtr nodePtr;
+    nodePtr.i = Uint32(nodeId);
+    ptrAss(nodePtr, nodeRec);
+    if (send_activate_node(nodePtr))
+    {
+      Uint32 ref = numberToRef(nodePtr.i, API_CLUSTERMGR);
+      sendDEACTIVATE_REQ(signal, ref, nodeId);
+      m_activate_outstanding++;
+      nodePtr.p->m_activate_ongoing = true;
+    }
+  }
+  check_deactivate_finished(signal);
+}
+
+void Qmgr::check_deactivate_finished(Signal *signal)
+{
+  if (m_activate_outstanding == 0)
+  {
+    jam();
+    if (m_activate_success)
+    {
+      jam();
+      sendDEACTIVATE_CONF(signal, m_activate_ref, m_activate_node_id);
+    }
+    else
+    {
+      jam();
+      sendDEACTIVATE_REF(signal, m_activate_ref, m_activate_node_id);
+    }
+    m_activate_state = ActivateState::IDLE;
+    m_activate_node_id = 0;
+    m_activate_ref = 0;
+    m_activate_success = false;
+  }
+}
+
+void Qmgr::execDEACTIVATE_CONF(Signal *signal)
+{
+  jamEntry();
+  const DeactivateConf* const conf =
+    (const DeactivateConf *)signal->getDataPtr();
+  Uint32 senderNodeId = conf->senderNodeId;
+  Uint32 deactivateNodeId = conf->deactivateNodeId;
+  handle_activate_receive(senderNodeId, deactivateNodeId);
+  ndbrequire(m_activate_state == ActivateState::HANDLE_DEACTIVATE);
+  check_deactivate_finished(signal);
+}
+
+void Qmgr::execDEACTIVATE_REF(Signal *signal)
+{
+  jamEntry();
+  const DeactivateRef* const ref =
+    (const DeactivateRef *)signal->getDataPtr();
+  Uint32 senderNodeId = ref->senderNodeId;
+  Uint32 deactivateNodeId = ref->deactivateNodeId;
+  handle_activate_receive(senderNodeId, deactivateNodeId);
+  ndbrequire(m_activate_state == ActivateState::HANDLE_DEACTIVATE);
+  m_activate_success = false;
+  check_deactivate_finished(signal);
+}
+
+void Qmgr::execSET_HOSTNAME_REQ(Signal *signal)
+{
+  jamEntry();
+  const SetHostnameReq* const req =
+    (const SetHostnameReq *)signal->getDataPtr();
+  BlockReference senderRef = req->senderRef;
+  Uint32 changeNodeId = req->changeNodeId;
+
+  ndbrequire(signal->getNoOfSections() == 1);
+  SectionHandle handle(this, signal);
+  SegmentedSectionPtr ptr;
+  handle.getSection(ptr, 0);
+
+  if (changeNodeId > MAX_NODES || 
+      changeNodeId == 0 ||
+      m_activate_state != ActivateState::IDLE)
+  {
+    g_eventLogger->info("SET_HOSTNAME_REQ failed, state: %u on node: %u",
+                        m_activate_state,
+                        changeNodeId);
+    sendSET_HOSTNAME_REF(signal, senderRef, changeNodeId);
+    return;
+  }
+  if (!g_not_active_nodes.get(changeNodeId))
+  {
+    g_eventLogger->info("SET_HOSTNAME_REQ failed, node active, on node: %u",
+                        changeNodeId);
+    sendSET_HOSTNAME_REF(signal, senderRef, changeNodeId);
+    return;
+  }
+  union
+  {
+    char hostname_buf[256];
+    Uint32 hostname_buf32[64];
+  };
+  memset(&hostname_buf[0], 0, 256);
+  copy(&hostname_buf32[0], ptr);
+  globalTransporterRegistry.set_hostname(changeNodeId, &hostname_buf[0]);
+
+  m_activate_node_id = changeNodeId;
+  m_activate_ref = senderRef;
+  m_activate_state = ActivateState::HANDLE_SET_HOSTNAME;
+  m_activate_success = true;
+
+  for (NodeId nodeId = 1; nodeId < MAX_NODES; nodeId++)
+  {
+    NodeRecPtr nodePtr;
+    nodePtr.i = Uint32(nodeId);
+    ptrAss(nodePtr, nodeRec);
+    if (send_activate_node(nodePtr))
+    {
+      Uint32 ref = numberToRef(nodePtr.i, API_CLUSTERMGR);
+      sendSET_HOSTNAME_REQ(signal, ref, nodeId, &handle);
+      m_activate_outstanding++;
+      nodePtr.p->m_activate_ongoing = true;
+    }
+  }
+  releaseSections(handle);
+  check_set_hostname_finished(signal);
+}
+
+void Qmgr::execSET_HOSTNAME_CONF(Signal *signal)
+{
+  jamEntry();
+  const SetHostnameConf* const conf =
+    (const SetHostnameConf *)signal->getDataPtr();
+  Uint32 senderNodeId = conf->senderNodeId;
+  Uint32 changeNodeId = conf->changeNodeId;
+  ndbrequire(m_activate_state == ActivateState::HANDLE_SET_HOSTNAME);
+  handle_activate_receive(senderNodeId, changeNodeId);
+  check_set_hostname_finished(signal);
+}
+
+void Qmgr::execSET_HOSTNAME_REF(Signal *signal)
+{
+  jamEntry();
+  NodeRecPtr nodePtr;
+  const SetHostnameRef* const ref =
+    (const SetHostnameRef *)signal->getDataPtr();
+  Uint32 senderNodeId = ref->senderNodeId;
+  Uint32 changeNodeId = ref->changeNodeId;
+  ndbrequire(m_activate_state == ActivateState::HANDLE_SET_HOSTNAME);
+  handle_activate_receive(senderNodeId, changeNodeId);
+  m_activate_success = false;
+  check_set_hostname_finished(signal);
+}
+
+void Qmgr::check_set_hostname_finished(Signal *signal)
+{
+  if (m_activate_outstanding == 0)
+  {
+    jam();
+    if (m_activate_success)
+    {
+      jam();
+      sendSET_HOSTNAME_CONF(signal, m_activate_ref, m_activate_node_id);
+    }
+    else
+    {
+      jam();
+      sendSET_HOSTNAME_REF(signal, m_activate_ref, m_activate_node_id);
+    }
+    m_activate_state = ActivateState::IDLE;
+    m_activate_node_id = 0;
+    m_activate_ref = 0;
+    m_activate_success = false;
+  }
+}
+
+void Qmgr::sendACTIVATE_REQ(Signal *signal,
+                            Uint32 senderRef,
+                            NodeId nodeId)
+{
+  ActivateReq* const req = (ActivateReq*)signal->getDataPtrSend();
+  req->activateNodeId = Uint32(nodeId);
+  req->senderRef = reference();
+  sendSignal(senderRef,
+             GSN_ACTIVATE_REQ,
+             signal,
+             ActivateReq::SignalLength,
+             JBB);
+}
+
+void Qmgr::sendACTIVATE_CONF(Signal *signal,
+                             Uint32 senderRef,
+                             NodeId nodeId)
+{
+  ActivateConf* const conf = (ActivateConf*)signal->getDataPtrSend();
+  conf->activateNodeId = Uint32(nodeId);
+  conf->senderNodeId = getOwnNodeId();
+  conf->senderRef = reference();
+  sendSignal(senderRef,
+             GSN_ACTIVATE_CONF,
+             signal,
+             ActivateConf::SignalLength,
+             JBB);
+}
+
+void Qmgr::sendACTIVATE_REF(Signal *signal,
+                            Uint32 senderRef,
+                            NodeId nodeId)
+{
+  ActivateRef* const ref = (ActivateRef*)signal->getDataPtrSend();
+  ref->activateNodeId = Uint32(nodeId);
+  ref->senderNodeId = getOwnNodeId();
+  ref->senderRef = reference();
+  sendSignal(senderRef,
+             GSN_ACTIVATE_REF,
+             signal,
+             ActivateRef::SignalLength,
+             JBB);
+}
+
+void Qmgr::sendDEACTIVATE_REQ(Signal *signal,
+                              Uint32 senderRef,
+                              NodeId nodeId)
+{
+  DeactivateReq* const req = (DeactivateReq*)signal->getDataPtrSend();
+  req->deactivateNodeId = Uint32(nodeId);
+  req->senderRef = reference();
+  sendSignal(senderRef,
+             GSN_DEACTIVATE_REQ,
+             signal,
+             DeactivateReq::SignalLength,
+             JBB);
+}
+
+void Qmgr::sendDEACTIVATE_CONF(Signal *signal,
+                               Uint32 senderRef,
+                               NodeId nodeId)
+{
+  DeactivateConf* const conf = (DeactivateConf*)signal->getDataPtrSend();
+  conf->deactivateNodeId = Uint32(nodeId);
+  conf->senderNodeId = getOwnNodeId();
+  conf->senderRef = reference();
+  sendSignal(senderRef,
+             GSN_DEACTIVATE_CONF,
+             signal,
+             DeactivateConf::SignalLength,
+             JBB);
+}
+
+void Qmgr::sendDEACTIVATE_REF(Signal *signal,
+                              Uint32 senderRef,
+                              NodeId nodeId)
+{
+  DeactivateRef* const ref = (DeactivateRef*)signal->getDataPtrSend();
+  ref->deactivateNodeId = Uint32(nodeId);
+  ref->senderNodeId = getOwnNodeId();
+  ref->senderRef = reference();
+  sendSignal(senderRef,
+             GSN_DEACTIVATE_REF,
+             signal,
+             ActivateRef::SignalLength,
+             JBB);
+}
+
+void Qmgr::sendSET_HOSTNAME_REQ(Signal *signal,
+                                Uint32 senderRef,
+                                NodeId nodeId,
+                                SectionHandle *handle)
+{
+  SetHostnameReq* const req = (SetHostnameReq*)signal->getDataPtrSend();
+  req->changeNodeId = Uint32(nodeId);
+  req->senderRef = reference();
+  sendSignal(senderRef,
+             GSN_SET_HOSTNAME_REQ,
+             signal,
+             SetHostnameReq::SignalLength,
+             JBB,
+             handle);
+}
+
+void Qmgr::sendSET_HOSTNAME_CONF(Signal *signal,
+                                 Uint32 senderRef,
+                                 NodeId nodeId)
+{
+  SetHostnameConf* const conf = (SetHostnameConf*)signal->getDataPtrSend();
+  conf->changeNodeId = Uint32(nodeId);
+  conf->senderNodeId = getOwnNodeId();
+  conf->senderRef = reference();
+  sendSignal(senderRef,
+             GSN_SET_HOSTNAME_CONF,
+             signal,
+             SetHostnameConf::SignalLength,
+             JBB);
+}
+
+void Qmgr::sendSET_HOSTNAME_REF(Signal *signal,
+                                Uint32 senderRef,
+                                NodeId nodeId)
+{
+  SetHostnameRef* const ref = (SetHostnameRef*)signal->getDataPtrSend();
+  ref->changeNodeId = Uint32(nodeId);
+  ref->senderNodeId = getOwnNodeId();
+  ref->senderRef = reference();
+  sendSignal(senderRef,
+             GSN_SET_HOSTNAME_REF,
+             signal,
+             SetHostnameRef::SignalLength,
+             JBB);
 }
 
 void Qmgr::checkStartInterface(Signal* signal, NDB_TICKS now) 
@@ -4481,6 +4958,11 @@ Qmgr::api_failed(Signal* signal, Uint32 nodeId)
   ptrCheckGuard(failedNodePtr, MAX_NODES, nodeRec);
   failedNodePtr.p->m_secret = 0; // Not yet Uint64(rand()) << 32 + rand();
 
+  if (failedNodePtr.p->m_activate_ongoing)
+  {
+    jam();
+    handle_activate_failed_node(signal, failedNodePtr);
+  }
   if (failedNodePtr.p->phase == ZFAIL_CLOSING)
   {
     /**
