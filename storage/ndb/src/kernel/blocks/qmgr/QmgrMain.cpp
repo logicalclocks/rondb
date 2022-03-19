@@ -77,10 +77,17 @@ extern EventLogger * g_eventLogger;
 extern NodeBitmask g_not_active_nodes;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_MULTI_SETUP 1
-#define DEBUG_MULTI_TRP 1
+//#define DEBUG_MULTI_SETUP 1
+//#define DEBUG_MULTI_TRP 1
 //#define DEBUG_STARTUP 1
 //#define DEBUG_ARBIT 1
+#define DEBUG_ACTIVATE 1
+#endif
+
+#ifdef DEBUG_ACTIVATE
+#define DEB_ACTIVATE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_ACTIVATE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_ARBIT
@@ -3776,6 +3783,7 @@ void Qmgr::execACTIVATE_REQ(Signal *signal)
   Uint32 activateNodeId = req->activateNodeId;
   Uint32 senderRef = req->senderRef;
 
+  DEB_ACTIVATE(("ACTIVATE_REQ from %x node: %u", senderRef, activateNodeId));
   if (m_activate_state != ActivateState::IDLE ||
       activateNodeId == 0 ||
       activateNodeId > MAX_NODES)
@@ -3837,6 +3845,7 @@ void Qmgr::execACTIVATE_REQ(Signal *signal)
       nodePtr.p->m_activate_ongoing = true;
     }
   }
+  DEB_ACTIVATE(("Sent ACTIVATE_REQ to %u nodes", m_activate_outstanding));
   check_activate_finished(signal);
 }
 
@@ -3927,6 +3936,9 @@ void Qmgr::execACTIVATE_CONF(Signal *signal)
     (const ActivateConf *)signal->getDataPtr();
   Uint32 senderNodeId = conf->senderNodeId;
   Uint32 activateNodeId = conf->activateNodeId;
+  DEB_ACTIVATE(("ACTIVATE_CONF from %u node: %u",
+                senderNodeId,
+                activateNodeId));
   handle_activate_receive(senderNodeId, activateNodeId);
   ndbrequire(m_activate_state == ActivateState::HANDLE_ACTIVATE);
   check_activate_finished(signal);
@@ -3939,6 +3951,9 @@ void Qmgr::execACTIVATE_REF(Signal *signal)
     (const ActivateRef *)signal->getDataPtr();
   Uint32 senderNodeId = ref->senderNodeId;
   Uint32 activateNodeId = ref->activateNodeId;
+  DEB_ACTIVATE(("ACTIVATE_REF from %u node: %u",
+                senderNodeId,
+                activateNodeId));
   handle_activate_receive(senderNodeId, activateNodeId);
   ndbrequire(m_activate_state == ActivateState::HANDLE_ACTIVATE);
   m_activate_success = false;
@@ -3952,6 +3967,9 @@ void Qmgr::execDEACTIVATE_REQ(Signal *signal)
   BlockReference senderRef = req->senderRef;
   Uint32 deactivateNodeId = req->deactivateNodeId;
 
+  DEB_ACTIVATE(("DEACTIVATE_REQ from %x node: %u",
+                senderRef,
+                deactivateNodeId));
   if (m_activate_state != ActivateState::IDLE ||
       deactivateNodeId == 0 ||
       deactivateNodeId > MAX_NODES)
@@ -3984,6 +4002,7 @@ void Qmgr::execDEACTIVATE_REQ(Signal *signal)
       nodePtr.p->m_activate_ongoing = true;
     }
   }
+  DEB_ACTIVATE(("Sent DEACTIVATE_REQ to %u nodes", m_activate_outstanding));
   check_deactivate_finished(signal);
 }
 
@@ -4016,6 +4035,9 @@ void Qmgr::execDEACTIVATE_CONF(Signal *signal)
     (const DeactivateConf *)signal->getDataPtr();
   Uint32 senderNodeId = conf->senderNodeId;
   Uint32 deactivateNodeId = conf->deactivateNodeId;
+  DEB_ACTIVATE(("DEACTIVATE_CONF from %u node: %u",
+                senderNodeId,
+                deactivateNodeId));
   handle_activate_receive(senderNodeId, deactivateNodeId);
   ndbrequire(m_activate_state == ActivateState::HANDLE_DEACTIVATE);
   check_deactivate_finished(signal);
@@ -4028,6 +4050,9 @@ void Qmgr::execDEACTIVATE_REF(Signal *signal)
     (const DeactivateRef *)signal->getDataPtr();
   Uint32 senderNodeId = ref->senderNodeId;
   Uint32 deactivateNodeId = ref->deactivateNodeId;
+  DEB_ACTIVATE(("DEACTIVATE_REF from %u node: %u",
+                senderNodeId,
+                deactivateNodeId));
   handle_activate_receive(senderNodeId, deactivateNodeId);
   ndbrequire(m_activate_state == ActivateState::HANDLE_DEACTIVATE);
   m_activate_success = false;
@@ -4046,6 +4071,10 @@ void Qmgr::execSET_HOSTNAME_REQ(Signal *signal)
   SectionHandle handle(this, signal);
   SegmentedSectionPtr ptr;
   handle.getSection(ptr, 0);
+
+  DEB_ACTIVATE(("SET_HOSTNAME_REQ from %x node: %u",
+                senderRef,
+                changeNodeId));
 
   if (changeNodeId > MAX_NODES || 
       changeNodeId == 0 ||
@@ -4091,6 +4120,7 @@ void Qmgr::execSET_HOSTNAME_REQ(Signal *signal)
       nodePtr.p->m_activate_ongoing = true;
     }
   }
+  DEB_ACTIVATE(("Sent SET_HOSTNAME_REQ to %u nodes", m_activate_outstanding));
   releaseSections(handle);
   check_set_hostname_finished(signal);
 }
@@ -4103,6 +4133,9 @@ void Qmgr::execSET_HOSTNAME_CONF(Signal *signal)
   Uint32 senderNodeId = conf->senderNodeId;
   Uint32 changeNodeId = conf->changeNodeId;
   ndbrequire(m_activate_state == ActivateState::HANDLE_SET_HOSTNAME);
+  DEB_ACTIVATE(("SET_HOSTNAME_CONF from %u node: %u",
+                senderNodeId,
+                changeNodeId));
   handle_activate_receive(senderNodeId, changeNodeId);
   check_set_hostname_finished(signal);
 }
@@ -4115,6 +4148,9 @@ void Qmgr::execSET_HOSTNAME_REF(Signal *signal)
     (const SetHostnameRef *)signal->getDataPtr();
   Uint32 senderNodeId = ref->senderNodeId;
   Uint32 changeNodeId = ref->changeNodeId;
+  DEB_ACTIVATE(("SET_HOSTNAME_REF from %u node: %u",
+                senderNodeId,
+                changeNodeId));
   ndbrequire(m_activate_state == ActivateState::HANDLE_SET_HOSTNAME);
   handle_activate_receive(senderNodeId, changeNodeId);
   m_activate_success = false;
