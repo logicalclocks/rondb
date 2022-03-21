@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -35,6 +35,7 @@ class ActivateReq
    * Reciver(s)
    */
   friend class Cmvmi;
+  friend class ClusterMgr;
 
   /**
    * Sender
@@ -55,6 +56,29 @@ class ActivateConf
    * Sender(s)
    */
   friend class Cmvmi;
+  friend class ClusterMgr;
+
+  /**
+   * Receiver
+   */
+  friend class MgmtSrvr;
+
+public:
+  STATIC_CONST (SignalLength = 3);
+  
+public:
+  Uint32 senderRef;
+  Uint32 senderNodeId;
+  Uint32 activateNodeId;
+};
+
+class ActivateRef
+{
+  /**
+   * Sender(s)
+   */
+  friend class Cmvmi;
+  friend class ClusterMgr;
 
   /**
    * Receiver
@@ -76,6 +100,7 @@ class DeactivateReq
    * Reciver(s)
    */
   friend class Cmvmi;
+  friend class ClusterMgr;
 
   /**
    * Sender
@@ -96,6 +121,29 @@ class DeactivateConf
    * Sender(s)
    */
   friend class Cmvmi;
+  friend class ClusterMgr;
+
+  /**
+   * Receiver
+   */
+  friend class MgmtSrvr;
+
+public:
+  STATIC_CONST (SignalLength = 3);
+  
+public:
+  Uint32 senderRef;
+  Uint32 senderNodeId;
+  Uint32 deactivateNodeId;
+};
+
+class DeactivateRef
+{
+  /**
+   * Sender(s)
+   */
+  friend class Cmvmi;
+  friend class ClusterMgr;
 
   /**
    * Receiver
