@@ -1,12 +1,13 @@
 SLEEP_TIME="3"
-SLEEP_START_TIME="30"
+SLEEP_START_TIME="60"
 SLEEP_STOP_TIME="20"
+HOSTNAME_SERVER="192.168.0.102"
 rm -rf $HOME/test_activate/ndb
 mkdir -p $HOME/test_activate
 mkdir -p $HOME/test_activate/ndb
 mkdir -p $HOME/test_activate/mgm_65
 mkdir -p $HOME/test_activate/mgm_66
-export NDB_CONNECTSTRING="127.0.0.1:1186"
+export NDB_CONNECTSTRING="$HOSTNAME_SERVER:1186"
 echo "## Kill all MGM servers and RonDB data nodes"
 killall ndb_mgmd ndbmtd
 sleep ${SLEEP_TIME}
@@ -23,21 +24,21 @@ sleep ${SLEEP_TIME}
 #
 echo "## Start MGM Server, nodeid 66, expect it to fail since deactivated"
 ndb_mgmd --configdir=$HOME/test_activate/mgm_66 --ndb-nodeid=66 --initial --verbose >> tmp_file
-export NDB_CONNECTSTRING="127.0.0.1:1187"
+export NDB_CONNECTSTRING="$HOSTNAME_SERVER:1187"
 echo "## Connect to MGM server 66 to verify that it failed to start"
 ndb_mgm --connect-retries=2 -e "66 activate"
 #
 echo "## Activate 66, expect it to succeed"
-export NDB_CONNECTSTRING="127.0.0.1:1186"
-ndb_mgm -e "66 hostname 127.0.0.1"
+export NDB_CONNECTSTRING="$HOSTNAME_SERVER:1186"
+ndb_mgm -e "66 hostname $HOSTNAME_SERVER"
 ndb_mgm -e "66 activate"
 echo "## Start MGM Server, nodeid 66, expect success"
 ndb_mgmd --configdir=$HOME/test_activate/mgm_66 --ndb-nodeid=66 --initial --verbose >> tmp_file
 sleep ${SLEEP_TIME}
 ndb_mgm -e "show"
 #
-echo "## Connect to MGM server at 127.0.0.1:1187, node 66, deactivate node 65, expect success"
-export NDB_CONNECTSTRING="127.0.0.1:1187"
+echo "## Connect to MGM server at $HOSTNAME_SERVER:1187, node 66, deactivate node 65, expect success"
+export NDB_CONNECTSTRING="$HOSTNAME_SERVER:1187"
 ndb_mgm -e "65 deactivate"
 sleep ${SLEEP_STOP_TIME}
 ndb_mgm -e "show"
@@ -62,7 +63,7 @@ ndb_desc --ndb-nodeid=67
 ndb_mgm -e "show"
 #
 echo "## Start data node 2, expect failure"
-ndb_mgm -e "2 hostname 127.0.0.1"
+ndb_mgm -e "2 hostname $HOSTNAME_SERVER"
 ndbmtd --ndb-nodeid=2 --initial >> tmp_file
 sleep ${SLEEP_TIME}
 ndb_mgm -e "show"
@@ -96,14 +97,14 @@ ndb_mgmd --configdir=$HOME/test_activate/mgm_65 --ndb-nodeid=65 --verbose --init
 sleep ${SLEEP_TIME}
 ndb_mgm -e "show"
 #
-export NDB_CONNECTSTRING="127.0.0.1:1186"
+export NDB_CONNECTSTRING="$HOSTNAME_SERVER:1186"
 echo "## Activate node 3, expect success"
-ndb_mgm -e "3 hostname 127.0.0.1"
+ndb_mgm -e "3 hostname $HOSTNAME_SERVER"
 ndb_mgm -e "3 activate"
 ndb_mgm -e "show"
 #
 echo "## Activate API node 68, expect success"
-ndb_mgm -e "68 hostname 127.0.0.1"
+ndb_mgm -e "68 hostname $HOSTNAME_SERVER"
 ndb_mgm -e "68 activate"
 ndb_mgm -e "show"
 #

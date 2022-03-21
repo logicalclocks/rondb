@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -270,6 +270,11 @@ public:
   bool unregisterForWakeup(trp_client* dozer);
   void requestWakeup();
   void reportWakeup() override;
+
+  void set_hostname(Uint32 nodeId, const char *new_hostname)
+  {
+    theTransporterRegistry->set_hostname(nodeId, new_hostname);
+  }
 
 private:
 
