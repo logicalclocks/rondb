@@ -4826,6 +4826,16 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
         dst->m_max_var_offset= tabPtrP->m_offsets[MM].m_max_var_offset;
         
         dst_ptr= expand_var_part(dst, src_data, desc, order);
+        g_eventLogger->info("(%u)After expand_var_part: offset(%u,%u,%u,%u,%u,%u), num_vars: %u",
+                          instance(),
+                          dst->m_offset_array_ptr[0],
+                          dst->m_offset_array_ptr[1],
+                          dst->m_offset_array_ptr[2],
+                          dst->m_offset_array_ptr[3],
+                          dst->m_offset_array_ptr[4],
+                          dst->m_offset_array_ptr[5],
+                          mm_vars);
+
         ndbassert(dst_ptr == ALIGN_WORD(dst->m_data_ptr + dst->m_max_var_offset));
         /**
          * Move to end of fix varpart
@@ -5221,6 +5231,15 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
         dst_data_ptr += len;
       }
       *dst_off_ptr= off;
+      Uint16 *dst_ptr16 = (Uint16*)dst_ptr;
+      g_eventLogger->info("(%u)After shrink_tuple: offset(%u,%u,%u,%u) num_vars: %u",
+                          instance(),
+                          dst_ptr16[0],
+                          dst_ptr16[1],
+                          dst_ptr16[2],
+                          dst_ptr16[3],
+                          mm_vars);
+
       dst_ptr = ALIGN_WORD(dst_data_ptr);
       order += mm_vars; // Point to first dynfix entry
     }
