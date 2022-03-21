@@ -3818,12 +3818,12 @@ void Cmvmi::execSET_HOSTNAME_REQ(Signal *signal)
   /* Just route it to Qmgr that has more state to handle it. */
   ndbrequire(signal->getNoOfSections() == 1);
   SectionHandle handle(this, signal);
-  sendSignalNoRelease(QMGR_REF,
-                      GSN_SET_HOSTNAME_REQ,
-                      signal,
-                      SetHostnameReq::SignalLength,
-                      JBB,
-                      &handle);
+  sendSignal(QMGR_REF,
+             GSN_SET_HOSTNAME_REQ,
+             signal,
+             SetHostnameReq::SignalLength,
+             JBB,
+             &handle);
 }
 /**
  * A node that was part of the configuration is activated such that

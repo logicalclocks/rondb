@@ -3827,6 +3827,9 @@ void Qmgr::execACTIVATE_REQ(Signal *signal)
     return;
   }
 
+  g_not_active_nodes.clear(activateNodeId);
+  globalTransporterRegistry.set_active_node(activateNodeId, 1);
+
   m_activate_node_id = activateNodeId;
   m_activate_ref = senderRef;
   m_activate_state = ActivateState::HANDLE_ACTIVATE;
@@ -3839,8 +3842,10 @@ void Qmgr::execACTIVATE_REQ(Signal *signal)
     ptrAss(nodePtr, nodeRec);
     if (send_activate_node(nodePtr))
     {
-      Uint32 ref = numberToRef(nodePtr.i, API_CLUSTERMGR);
-      sendACTIVATE_REQ(signal, ref, nodeId);
+      jam();
+      jamLine(nodePtr.i);
+      Uint32 ref = numberToRef(API_CLUSTERMGR, nodePtr.i);
+      sendACTIVATE_REQ(signal, ref, activateNodeId);
       m_activate_outstanding++;
       nodePtr.p->m_activate_ongoing = true;
     }
@@ -3996,8 +4001,10 @@ void Qmgr::execDEACTIVATE_REQ(Signal *signal)
     ptrAss(nodePtr, nodeRec);
     if (send_activate_node(nodePtr))
     {
-      Uint32 ref = numberToRef(nodePtr.i, API_CLUSTERMGR);
-      sendDEACTIVATE_REQ(signal, ref, nodeId);
+      jam();
+      jamLine(nodePtr.i);
+      Uint32 ref = numberToRef(API_CLUSTERMGR, nodePtr.i);
+      sendDEACTIVATE_REQ(signal, ref, deactivateNodeId);
       m_activate_outstanding++;
       nodePtr.p->m_activate_ongoing = true;
     }
@@ -4114,8 +4121,10 @@ void Qmgr::execSET_HOSTNAME_REQ(Signal *signal)
     ptrAss(nodePtr, nodeRec);
     if (send_activate_node(nodePtr))
     {
-      Uint32 ref = numberToRef(nodePtr.i, API_CLUSTERMGR);
-      sendSET_HOSTNAME_REQ(signal, ref, nodeId, &handle);
+      jam();
+      jamLine(nodePtr.i);
+      Uint32 ref = numberToRef(API_CLUSTERMGR, nodePtr.i);
+      sendSET_HOSTNAME_REQ(signal, ref, changeNodeId, &handle);
       m_activate_outstanding++;
       nodePtr.p->m_activate_ongoing = true;
     }
@@ -4275,12 +4284,12 @@ void Qmgr::sendSET_HOSTNAME_REQ(Signal *signal,
   SetHostnameReq* const req = (SetHostnameReq*)signal->getDataPtrSend();
   req->changeNodeId = Uint32(nodeId);
   req->senderRef = reference();
-  sendSignal(senderRef,
-             GSN_SET_HOSTNAME_REQ,
-             signal,
-             SetHostnameReq::SignalLength,
-             JBB,
-             handle);
+  sendSignalNoRelease(senderRef,
+                      GSN_SET_HOSTNAME_REQ,
+                      signal,
+                      SetHostnameReq::SignalLength,
+                      JBB,
+                      handle);
 }
 
 void Qmgr::sendSET_HOSTNAME_CONF(Signal *signal,
