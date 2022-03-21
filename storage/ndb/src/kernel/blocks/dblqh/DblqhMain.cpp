@@ -8906,6 +8906,7 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
   regTcPtr->m_flags= 0;
   regTcPtr->m_flags|= TcConnectionrec::OP_ISLONGREQ;
 
+  g_eventLogger->info("(%u)LQHKEYREQ(%u)", instance(), lqhKeyReq->hashValue);
   UintR attrLenFlags = lqhKeyReq->attrLen;
   sig1 = lqhKeyReq->savePointId;
   sig2 = lqhKeyReq->hashValue;
