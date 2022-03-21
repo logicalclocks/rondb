@@ -37,12 +37,12 @@
 
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-//#define DEBUG_DISK 1
+#define DEBUG_DISK 1
 //#define DEBUG_LCP 1
 //#define DEBUG_LCP_SKIP_DELETE_EXTRA 1
 //#define DEBUG_INSERT_EXTRA 1
 //#define DEBUG_LCP_SCANNED_BIT 1
-//#define DEBUG_PGMAN 1
+#define DEBUG_PGMAN 1
 //#define DEBUG_ROW_COUNT_DEL 1
 //#define DEBUG_ROW_COUNT_INS 1
 //#define DEBUG_DELETE 1
@@ -1043,10 +1043,10 @@ Dbtup::commit_operation(Signal* signal,
     Tuple_header *disk_tuple_ptr = (Tuple_header*)disk_ptr;
     ndbrequire(disk_tuple_ptr->m_base_record_page_idx < Tup_page::DATA_WORDS);
 
-    if (((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0) &&
-        (copy_bits & Tuple_header::DISK_VAR_PART))
+    if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
     {
       jam();
+      ndbrequire(copy_bits & Tuple_header::DISK_VAR_PART);
       Varpart_copy *vp = (Varpart_copy*)(disk_ptr + disk_fix_header_size);
       Uint32 disk_varlen = vp->m_len;
       if (!((copy_bits & Tuple_header::DISK_ALLOC) ||
@@ -1062,6 +1062,13 @@ Dbtup::commit_operation(Signal* signal,
         {
           jam();
           vpagePtrP->shrink_entry(key.m_page_idx, new_sz);
+          DEB_DISK(("(%u) shrink_entry page(%u,%u).%u used: %u, free: %u",
+                    instance(),
+                    vpagePtrP->m_file_no,
+                    vpagePtrP->m_page_no,
+                    key.m_page_idx,
+                    vpagePtrP->uncommitted_used_space,
+                    vpagePtrP->free_space));
         }
         else if (new_sz > sz)
         {
@@ -1104,7 +1111,21 @@ Dbtup::commit_operation(Signal* signal,
           vpagePtrP->uncommitted_used_space -=
             regOperPtr->m_uncommitted_used_space;
           regOperPtr->m_uncommitted_used_space = 0;
+          DEB_DISK(("(%u) grow_entry page(%u,%u).%u used: %u, free: %u",
+                    instance(),
+                    vpagePtrP->m_file_no,
+                    vpagePtrP->m_page_no,
+                    key.m_page_idx,
+                    vpagePtrP->uncommitted_used_space,
+                    vpagePtrP->free_space));
         }
+        /**
+         * Update the list which the page is located in
+         */
+        disk_page_abort_prealloc_callback_1(signal,
+                                            regFragPtr,
+                                            diskPagePtr,
+                                            0);
       }
       memcpy(dst, disk_ptr, 4 * disk_fix_header_size);
       dst += disk_fix_header_size;

@@ -33,14 +33,14 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_LCP 1
-//#define DEBUG_PGMAN_IO 1
-//#define DEBUG_PGMAN 1
-//#define DEBUG_EXTENT_BITS 1
-//#define DEBUG_EXTENT_BITS_HASH 1
-//#define DEBUG_UNDO 1
-//#define DEBUG_UNDO_LCP 1
-//#define DEBUG_UNDO_ALLOC 1
-//#define DEBUG_FREE_SPACE 1
+#define DEBUG_PGMAN_IO 1
+#define DEBUG_PGMAN 1
+#define DEBUG_EXTENT_BITS 1
+#define DEBUG_EXTENT_BITS_HASH 1
+#define DEBUG_UNDO 1
+#define DEBUG_UNDO_LCP 1
+#define DEBUG_UNDO_ALLOC 1
+#define DEBUG_FREE_SPACE 1
 #endif
 
 #ifdef DEBUG_FREE_SPACE
@@ -1051,11 +1051,14 @@ Dbtup::disk_page_prealloc_dirty_page(Disk_alloc_info & alloc,
   }
 
   pagePtr.p->uncommitted_used_space = used;
-  DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)",
+  DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)"
+                  ", free: %u, used: %u",
                   instance(),
                   __LINE__,
                   pagePtr.p->m_file_no,
-                  pagePtr.p->m_page_no));
+                  pagePtr.p->m_page_no,
+                  free,
+                  used));
   update_extent_pos(jamBuffer(),
                     fragPtrP,
                     extentPtr,
@@ -1092,11 +1095,14 @@ Dbtup::disk_page_prealloc_transit_page(Fragrecord *fragPtrP,
   }
 
   req.p->m_uncommitted_used_space = used;
-  DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)",
+  DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)"
+                  ", free: %u, used: %u",
                   instance(),
                   __LINE__,
                   req.p->m_key.m_file_no,
-                  req.p->m_key.m_page_no));
+                  req.p->m_key.m_page_no,
+                  free,
+                  used));
   update_extent_pos(jamBuffer(),
                     fragPtrP,
                     extentPtr,
@@ -1180,19 +1186,20 @@ Dbtup::disk_page_prealloc_callback(Signal* signal,
     jam();
 
     DEB_EXTENT_BITS((
-      "(%u)extent(%u) page(%u,%u):%u u_u_s: %u, free:%u idx:%u, new_idx:%u"
-      ", free_page_count(%u,%u)",
+      "(%u)extent(%u) page(%u,%u):%u u_u_s: %u, idx:%u, new_idx:%u"
+      ", free_page_count(%u,%u), free: %u, used: %u",
       instance(),
       extentPtr.p->m_extent_no,
       pagePtr.p->m_file_no,
       pagePtr.p->m_page_no,
       pagePtr.i,
-      pagePtr.p->uncommitted_used_space,
       free,
       idx,
       real_idx,
       extentPtr.p->m_free_page_count[idx],
-      extentPtr.p->m_free_page_count[real_idx]));
+      extentPtr.p->m_free_page_count[real_idx],
+      pagePtr.p->uncommitted_used_space,
+      free));
 
     ddrequire(extentPtr.p->m_free_page_count[idx] > 0);
     extentPtr.p->m_free_page_count[idx]--;
@@ -1376,11 +1383,14 @@ Dbtup::disk_page_prealloc_initial_callback(Signal*signal,
   Uint64 lsn = lgman.get_latest_lsn();
   Page_cache_client pgman(this, c_pgman);
   pgman.set_lsn(req.p->m_key, lsn);
-  DEB_PGMAN_IO(("(%u) Get empty page (%u,%u) set LSN: %llu",
+  DEB_PGMAN_IO(("(%u) Get empty page (%u,%u) set LSN: %llu"
+                ", used: %u, free: %u",
                 instance(),
                 req.p->m_key.m_file_no,
                 req.p->m_key.m_page_no,
-                lsn));
+                lsn,
+                req.p->m_uncommitted_used_space,
+                pagePtr.p->free_space));
 
   jamDebug();
   jamDataDebug(req.p->m_uncommitted_used_space);
@@ -1469,18 +1479,29 @@ Dbtup::disk_page_set_dirty(PagePtr pagePtr, Fragrecord *fragPtrP)
     free = pagePtr.p->free_space;
     idx = alloc.calc_page_free_bits(free);
     used = 0;
+    DEB_EXTENT_BITS(("((%u)restart_setup_page on page(%u,%u):%u"
+                     ", idx = %u, free: %u, used: %u",
+                     instance(),
+                     pagePtr.p->m_file_no,
+                     pagePtr.p->m_page_no,
+                     pagePtr.i,
+                     idx,
+                     free,
+                     used));
   }
   else
   {
     jam();
     idx &= ~0x8000;
     DEB_EXTENT_BITS(("((%u)Reset list_index bit 0x8000 on page(%u,%u):%u"
-                     ", idx = %u",
+                     ", idx = %u, free: %u, used: %u",
                      instance(),
                      pagePtr.p->m_file_no,
                      pagePtr.p->m_page_no,
                      pagePtr.i,
-                     idx));
+                     idx,
+                     free,
+                     used));
     ddrequire(idx == alloc.calc_page_free_bits(free - used));
   }
   
@@ -1579,18 +1600,21 @@ Dbtup::disk_page_unmap_callback(Uint32 when,
     {
       jam();
       pagePtr.p->list_index = idx | 0x8000;      
-      DEB_EXTENT_BITS(("(%u)Set list_index bit 0x8000 on page(%u,%u)"
-                       " when unmap",
-                       instance(),
-                       pagePtr.p->m_file_no,
-                       pagePtr.p->m_page_no));
-      
       Local_key key;
       key.m_page_no = pagePtr.p->m_page_no;
       key.m_file_no = pagePtr.p->m_file_no;
       
       Uint32 free = pagePtr.p->free_space;
       Uint32 used = pagePtr.p->uncommitted_used_space;
+
+      DEB_EXTENT_BITS(("(%u)Set list_index bit 0x8000 on page(%u,%u)"
+                       " when unmap, used: %u, free: %u",
+                       instance(),
+                       pagePtr.p->m_file_no,
+                       pagePtr.p->m_page_no,
+                       used,
+                       free));
+      
       ddrequire(free >= used);
       ddrequire(alloc.calc_page_free_bits(free - used) == idx);
       
@@ -1704,7 +1728,7 @@ Dbtup::disk_page_alloc(Signal* signal,
   }
   DEB_PGMAN((
     "(%u)disk_page_alloc: tab(%u,%u):%u,page(%u,%u).%u.%u,gci: %u,"
-    "row_id(%u,%u), lsn=%llu, alloc_size: %u",
+    "row_id(%u,%u), lsn=%llu, alloc_size: %u, free: %u, used: %u",
               instance(),
               pagePtr.p->m_table_id,
               pagePtr.p->m_fragment_id,
@@ -1717,7 +1741,9 @@ Dbtup::disk_page_alloc(Signal* signal,
               row_id->m_page_no,
               row_id->m_page_idx,
               lsn,
-              undo_size));
+              undo_size,
+              pagePtr.p->free_space,
+              pagePtr.p->uncommitted_used_space));
 }
 
 void
@@ -1839,11 +1865,15 @@ Dbtup::disk_page_free(Signal *signal,
                               new_idx,
                               fragPtrP);
   }
-  DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)",
+  DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)"
+                  ", used: %u, old_free: %u, new_free: %u",
                   instance(),
                   __LINE__,
                   pagePtr.p->m_file_no,
-                  pagePtr.p->m_page_no));
+                  pagePtr.p->m_page_no,
+                  used,
+                  old_free,
+                  new_free));
   update_extent_pos(jamBuffer(),
                     fragPtrP,
                     extentPtr,
@@ -1935,7 +1965,10 @@ Dbtup::disk_page_abort_prealloc_callback_1(Signal* signal,
 
   ddrequire(free >= used);
   ddrequire(used >= sz);
-  ddrequire(alloc.calc_page_free_bits(free - used) == idx);
+  if (sz > 0)
+  {
+    ddrequire(alloc.calc_page_free_bits(free - used) == idx);
+  }
 
   pagePtr.p->uncommitted_used_space = used - sz;
 
@@ -1952,11 +1985,14 @@ Dbtup::disk_page_abort_prealloc_callback_1(Signal* signal,
                               fragPtrP);
   }
   
-  DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)",
+  DEB_FREE_SPACE(("(%u) update_extent_pos from %u page(%u,%u)"
+                  ", free: %u, used: %u",
                   instance(),
                   __LINE__,
                   pagePtr.p->m_file_no,
-                  pagePtr.p->m_page_no));
+                  pagePtr.p->m_page_no,
+                  free,
+                  pagePtr.p->uncommitted_used_space));
   update_extent_pos(jamBuffer(),
                     fragPtrP,
                     extentPtr,
