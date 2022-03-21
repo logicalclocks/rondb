@@ -64,7 +64,7 @@ class ActivateConf
   friend class MgmtSrvr;
 
 public:
-  STATIC_CONST (SignalLength = 3);
+  static constexpr Uint32 SignalLength = 3;
   
 public:
   Uint32 senderRef;
@@ -129,7 +129,7 @@ class DeactivateConf
   friend class MgmtSrvr;
 
 public:
-  STATIC_CONST (SignalLength = 3);
+  static constexpr Uint32 SignalLength = 3;
   
 public:
   Uint32 senderRef;
