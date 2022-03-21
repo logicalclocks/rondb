@@ -1,5 +1,6 @@
 /* 
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -35,6 +36,7 @@
 #include <NdbSpin.h>
 
 #include <EventLogger.hpp>
+extern EventLogger * g_eventLogger;
 
 /* Return true if node with "nodeId" is a MGM node */
 static bool is_mgmd(Uint32 nodeId, const ndb_mgm_configuration * config)
@@ -104,6 +106,28 @@ IPCConfig::configureTransporters(Uint32 nodeId,
       g_eventLogger->info(
           "The connection to node %d could not be removed at this time", i);
       result= false; // Need restart
+    }
+  }
+  /**
+   * Set active node status on all nodes according to the received
+   * configuration. This will ensure that we don't attempt to connect
+   * or allow connections from these nodes until we have received
+   * word that they are being activated. Also non-existing nodes
+   * are set to non-active just in case.
+   */
+  for (int i= 1; i < MAX_NODES; i++)
+  {
+    ndb_mgm_configuration_iterator iter(config, CFG_SECTION_NODE);
+    if (!iter.find(CFG_NODE_ID, i))
+    {
+      Uint32 is_active = 1;
+      iter.get(CFG_NODE_ACTIVE, &is_active);
+      tr.set_active_node(i, is_active);
+    }
+    else
+    {
+      /* Nodes not existing will be set as not active nodes. */
+      tr.set_active_node(i, 0);
     }
   }
 

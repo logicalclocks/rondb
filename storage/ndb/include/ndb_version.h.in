@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -707,29 +707,106 @@ ndbd_support_sql_compare_semantics(Uint32 x)
   return x >= NDBD_SUPPORT_SQL_COMPARE_SEMANTICS;
 }
 
+#define NDBD_SUPPORT_TRP_KEEP_ALIVE NDB_MAKE_VERSION(8,0,27)
+#define NDBD_SUPPORT_PARAM_CMP NDB_MAKE_VERSION(8,0,27)
+static
+inline bool
+support_8027(Uint32 x)
+{
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  const Uint32 rel = x & 0xFF;
+  if (major < 22)
+  {
+    if (major < 21)
+    {
+      /* NDB version */
+      return x >= NDBD_SUPPORT_PARAM_CMP;
+    }
+    /* Not supported in RonDB 21.04 versions */
+    return false;
+  }
+  else if (major == 22)
+  {
+    if (minor > 1)
+    {
+      return true;
+    }
+    else if (minor == 0)
+    {
+      return false;
+    }
+    else
+    {
+      if (rel > 0)
+      {
+        return true;
+      }
+      else
+      {
+        return false;
+      }
+    }
+  }
+  else
+  {
+    return true;
+  }
+}
+
 /*
  * Only send GSN_TRP_KEEP_ALIVE to data nodes from 8.0.27 and newer.
  */
-#define NDBD_SUPPORT_TRP_KEEP_ALIVE NDB_MAKE_VERSION(8,0,27)
 static
 inline
 bool
 ndbd_support_trp_keep_alive(Uint32 x)
 {
-  return x >= NDBD_SUPPORT_TRP_KEEP_ALIVE;
+  return support_8027(x);
 }
+
+#define NDBD_API_SUPPORT_ACTIVATE NDB_MAKE_VERSION(21,04,5)
+static
+inline
+bool
+ndbd_api_support_activate(Uint32 x)
+{
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  const Uint32 rel = x & 0xFF;
+  if (major < 22)
+  {
+    return x >= NDBD_API_SUPPORT_ACTIVATE;
+  }
+  else if (major > 22)
+  {
+    return true;
+  }
+  else if (minor > 1)
+  {
+    return true;
+  }
+  else if (rel > 1)
+  {
+    return true;
+  }
+  else
+  {
+    return false;
+  }
+}
+
 
 /*
  * SPJ implemented support for creating parameters to be sent in attrInfo
  * section to LDMs, together with the Interpreter code. (WL#14388)
  */
-#define NDBD_SUPPORT_PARAM_CMP NDB_MAKE_VERSION(8,0,27)
 static
 inline
 int
 ndbd_support_param_cmp(Uint32 x)
 {
-  return x >= NDBD_SUPPORT_PARAM_CMP;
+  return support_8027(x);
 }
 
 #define NDBD_SUPPORT_ABORTREQ_FULL NDB_MAKE_VERSION(21,04,2)
