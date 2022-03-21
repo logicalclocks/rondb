@@ -81,7 +81,7 @@ extern NodeBitmask g_not_active_nodes;
 //#define DEBUG_MULTI_TRP 1
 //#define DEBUG_STARTUP 1
 //#define DEBUG_ARBIT 1
-#define DEBUG_ACTIVATE 1
+//#define DEBUG_ACTIVATE 1
 #endif
 
 #ifdef DEBUG_ACTIVATE

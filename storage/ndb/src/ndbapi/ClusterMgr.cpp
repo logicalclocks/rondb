@@ -56,7 +56,7 @@
 #include <mgmapi_configuration.hpp>
 #include <mgmapi_config_parameters.h>
 
-#if 1
+#if 0
 #define DEBUG_FPRINTF(arglist) do { fprintf arglist ; } while (0)
 #else
 #define DEBUG_FPRINTF(a)
