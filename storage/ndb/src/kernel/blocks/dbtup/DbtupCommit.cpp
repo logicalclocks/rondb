@@ -1046,9 +1046,21 @@ Dbtup::commit_operation(Signal* signal,
     if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
     {
       jam();
+      Uint16 num_vars = regTabPtr->m_attributes[DD].m_no_of_varsize;
+      Uint16 num_dyns = regTabPtr->m_attributes[DD].m_no_of_dynamic;
       ndbrequire(copy_bits & Tuple_header::DISK_VAR_PART);
       Varpart_copy *vp = (Varpart_copy*)(disk_ptr + disk_fix_header_size);
-      Uint32 disk_varlen = vp->m_len;
+      Uint32 disk_varlen;
+      if (num_vars || num_dyns)
+      {
+        jam();
+        disk_varlen = vp->m_len;
+      }
+      else
+      {
+        jam();
+        disk_varlen = 0;
+      }
       if (!((copy_bits & Tuple_header::DISK_ALLOC) ||
            (copy_bits & Tuple_header::DISK_REORG)))
       {
