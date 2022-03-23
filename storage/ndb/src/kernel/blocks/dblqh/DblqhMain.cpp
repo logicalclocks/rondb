@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -92,6 +92,7 @@
 #include <signaldata/IsolateOrd.hpp>
 #include <signaldata/LocalSysfile.hpp>
 #include <signaldata/UndoLogLevel.hpp>
+#include <signaldata/CommitReq.hpp>
 #include <NdbEnv.h>
 #include <NdbSpin.h>
 #include <Checksum.hpp>
@@ -13181,11 +13182,12 @@ Dblqh::check_fire_trig_pass(Uint32 opId, Uint32 pass)
 void Dblqh::execCOMMIT(Signal* signal) 
 {
   TcConnectionrecPtr tcConnectptr;
-  tcConnectptr.i = signal->theData[0];
-  Uint32 gci_hi = signal->theData[1];
-  Uint32 transid1 = signal->theData[2];
-  Uint32 transid2 = signal->theData[3];
-  Uint32 gci_lo = signal->theData[4];
+  Commit * const req = (Commit *)signal->getDataPtr();
+  tcConnectptr.i = req->tcConnectPtr;
+  Uint32 gci_hi = req->gci_hi;
+  Uint32 transid1 = req->transid1;
+  Uint32 transid2 = req->transid2;
+  Uint32 gci_lo = req->gci_lo;
   jamEntryDebug();
   jamDataDebug(tcConnectptr.i);
   if (unlikely(!tcConnect_pool.getValidPtr(tcConnectptr)))
@@ -13261,16 +13263,17 @@ void Dblqh::execCOMMIT(Signal* signal)
 void Dblqh::execCOMMITREQ(Signal* signal)
 {
   jamEntryDebug();
-  Uint32 reqPtr = signal->theData[0];
-  BlockReference reqBlockref = signal->theData[1];
-  Uint32 gci_hi = signal->theData[2];
-  Uint32 transid1 = signal->theData[3];
-  Uint32 transid2 = signal->theData[4];
-  BlockReference old_blockref = signal->theData[5];
-  Uint32 tcOprec = signal->theData[6];
-  Uint32 gci_lo = signal->theData[7];
+  CommitReq * const req = (CommitReq *)signal->getDataPtr();
+  Uint32 reqPtr = req->reqPtr;
+  BlockReference reqBlockref = req->reqBlockref;
+  Uint32 gci_hi = req->gci_hi;
+  Uint32 transid1 = req->transid1;
+  Uint32 transid2 = req->transid2;
+  BlockReference old_blockref = req->old_blockref;
+  Uint32 tcOprec = req->tcOprec;
+  Uint32 gci_lo = req->gci_lo;
 
-  ndbrequire(signal->getLength() >= 8);
+  ndbrequire(signal->getLength() >= CommitReq::SignalLength);
 
   if (ERROR_INSERTED(5004)) {
     systemErrorLab(signal, __LINE__);
@@ -13326,6 +13329,7 @@ void Dblqh::execCOMMITREQ(Signal* signal)
     commitReqLab(signal, gci_hi, gci_lo, tcConnectptr);
     return;
   case TcConnectionrec::COMMITTED:
+  {
     jam();
 /*---------------------------------------------------------*/
 /*       FOR SOME REASON THE COMMIT PHASE HAVE BEEN        */
@@ -13335,12 +13339,18 @@ void Dblqh::execCOMMITREQ(Signal* signal)
     regTcPtr->reqBlockref = reqBlockref;
     regTcPtr->reqRef = reqPtr;
     regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC_COMMIT;
-    signal->theData[0] = regTcPtr->reqRef;
-    signal->theData[1] = cownNodeid;
-    signal->theData[2] = regTcPtr->transid[0];
-    signal->theData[3] = regTcPtr->transid[1];
-    sendSignal(regTcPtr->reqBlockref, GSN_COMMITCONF, signal, 4, JBB);
+    CommitConf* conf = (CommitConf*)signal->theData;
+    conf->tcConnectPtr = regTcPtr->reqRef;
+    conf->senderNodeId = cownNodeid;
+    conf->transid1 = regTcPtr->transid[0];
+    conf->transid2 = regTcPtr->transid[1];
+    sendSignal(regTcPtr->reqBlockref,
+               GSN_COMMITCONF,
+               signal,
+               CommitConf::SignalLength,
+               JBB);
     break;
+  }
   case TcConnectionrec::WAIT_TUP_COMMIT:
     jam();
     regTcPtr->reqBlockref = reqBlockref;
@@ -13364,10 +13374,11 @@ void Dblqh::execCOMMITREQ(Signal* signal)
 void Dblqh::execCOMPLETE(Signal* signal) 
 {
   jamEntryDebug();
+  Complete * const req = (Complete *)signal->getDataPtr();
   TcConnectionrecPtr tcConnectptr;
-  tcConnectptr.i = signal->theData[0];
-  Uint32 transid1 = signal->theData[1];
-  Uint32 transid2 = signal->theData[2];
+  tcConnectptr.i = req->tcConnectPtr;
+  Uint32 transid1 = req->transid1;
+  Uint32 transid2 = req->transid2;
   jamDataDebug(tcConnectptr.i);
   if (unlikely(!tcConnect_pool.getValidPtr(tcConnectptr)))
   {
@@ -13463,12 +13474,13 @@ void Dblqh::execCOMPLETE(Signal* signal)
 void Dblqh::execCOMPLETEREQ(Signal* signal) 
 {
   jamEntryDebug();
-  Uint32 reqPtr = signal->theData[0];
-  BlockReference reqBlockref = signal->theData[1];
-  Uint32 transid1 = signal->theData[2];
-  Uint32 transid2 = signal->theData[3];
-  BlockReference old_blockref = signal->theData[4];
-  Uint32 tcOprec = signal->theData[5];
+  CompleteReq * const req = (CompleteReq *)signal->getDataPtr();
+  Uint32 reqPtr = req->reqPtr;
+  BlockReference reqBlockref = req->reqBlockref;
+  Uint32 transid1 = req->transid1;
+  Uint32 transid2 = req->transid2;
+  BlockReference old_blockref = req->old_blockref;
+  Uint32 tcOprec = req->tcOprec;
   if (ERROR_INSERTED(5005)) {
     systemErrorLab(signal, __LINE__);
   }
@@ -13504,11 +13516,16 @@ void Dblqh::execCOMPLETEREQ(Signal* signal)
 /*       A TIME OUT. THE TRANSACTION IS GONE. WE NEED TO   */
 /*       REPORT COMPLETION ANYWAY.                         */
 /*---------------------------------------------------------*/
-    signal->theData[0] = reqPtr;
-    signal->theData[1] = cownNodeid;
-    signal->theData[2] = transid1;
-    signal->theData[3] = transid2;
-    sendSignal(reqBlockref, GSN_COMPLETECONF, signal, 4, JBB);
+    CompleteConf* conf = (CompleteConf*)signal->theData;
+    conf->tcConnectPtr = reqPtr;
+    conf->senderNodeId = cownNodeid;
+    conf->transid1 = transid1;
+    conf->transid2 = transid2;
+    sendSignal(reqBlockref,
+               GSN_COMPLETECONF,
+               signal,
+               CompleteConf::SignalLength,
+               JBB);
     warningReport(signal, 7, tcOprec);
     return;
   }
@@ -14106,10 +14123,11 @@ void Dblqh::commitReplyLab(Signal* signal,
   else if (regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC_COMMIT)
   {
     jam();
-    signal->theData[0] = regTcPtr->reqRef;
-    signal->theData[1] = cownNodeid;
-    signal->theData[2] = regTcPtr->transid[0];
-    signal->theData[3] = regTcPtr->transid[1];
+    CommitConf* conf = (CommitConf*)signal->theData;
+    conf->tcConnectPtr = regTcPtr->reqRef;
+    conf->senderNodeId = cownNodeid;
+    conf->transid1 = regTcPtr->transid[0];
+    conf->transid2 = regTcPtr->transid[1];
     sendSignal(regTcPtr->reqBlockref, GSN_COMMITCONF, signal, 4, JBB);
   }
   else
@@ -14180,12 +14198,16 @@ void Dblqh::completeUnusualLab(Signal* signal,
   {
     ndbrequire(regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC_COMMIT);
     jam();
-    signal->theData[0] = regTcPtr->reqRef;
-    signal->theData[1] = cownNodeid;
-    signal->theData[2] = regTcPtr->transid[0];
-    signal->theData[3] = regTcPtr->transid[1];
+    CompleteConf* conf = (CompleteConf*)signal->theData;
+    conf->tcConnectPtr = regTcPtr->reqRef;
+    conf->senderNodeId = cownNodeid;
+    conf->transid1 = regTcPtr->transid[0];
+    conf->transid2 = regTcPtr->transid[1];
     sendSignal(regTcPtr->reqBlockref,
-               GSN_COMPLETECONF, signal, 4, JBB);
+               GSN_COMPLETECONF,
+               signal,
+               CompleteConf::SignalLength,
+               JBB);
   }//if
   cleanUp(signal, tcConnectptr);
 }//Dblqh::completeUnusualLab()

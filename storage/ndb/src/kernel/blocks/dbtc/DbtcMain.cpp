@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -107,6 +107,7 @@
 
 #include <signaldata/CreateFKImpl.hpp>
 #include <signaldata/DropFKImpl.hpp>
+#include <signaldata/CommitReq.hpp>
 #include <kernel/Interpreter.hpp>
 #include <signaldata/TuxBound.hpp>
 #include "../dbdih/Dbdih.hpp"
@@ -7655,6 +7656,7 @@ void Dbtc::execCOMMITTED(Signal* signal)
   ApiConnectRecordPtr localApiConnectptr;
   ApiConnectRecordPtr localCopyPtr;
 
+  Committed * const conf = (Committed *)signal->getDataPtr();
 #ifdef ERROR_INSERT
   if (ERROR_INSERTED(8018))
   {
@@ -7680,7 +7682,7 @@ void Dbtc::execCOMMITTED(Signal* signal)
     return;
   }
 #endif
-  localTcConnectptr.i = signal->theData[0];
+  localTcConnectptr.i = conf->tcConnectPtr;
   jamEntry();
   if (unlikely(!tcConnectRecord.getValidPtr(localTcConnectptr)))
   {
@@ -7713,8 +7715,8 @@ void Dbtc::execCOMMITTED(Signal* signal)
   }
   UintR Tcounter = localApiConnectptr.p->counter - 1;
   ConnectionState TapiConnectstate = localApiConnectptr.p->apiConnectstate;
-  UintR Tdata1 = localApiConnectptr.p->transid[0] - signal->theData[1];
-  UintR Tdata2 = localApiConnectptr.p->transid[1] - signal->theData[2];
+  UintR Tdata1 = localApiConnectptr.p->transid[0] - conf->transid1;
+  UintR Tdata2 = localApiConnectptr.p->transid[1] - conf->transid2;
   Tdata1 = Tdata1 | Tdata2;
   bool TcheckCondition = 
     (TapiConnectstate != CS_COMMIT_SENT) || (Tcounter != 0);
@@ -8729,7 +8731,8 @@ void Dbtc::execCOMPLETED(Signal* signal)
     return;
   }
 #endif
-  localTcConnectptr.i = signal->theData[0];
+  Completed * const conf = (Completed *)signal->getDataPtr();
+  localTcConnectptr.i = conf->tcConnectPtr;
   jamEntry();
   bool valid_tc_ptr = tcConnectRecord.getValidPtr(localTcConnectptr);
   if (!valid_tc_ptr)
@@ -8748,8 +8751,8 @@ void Dbtc::execCOMPLETED(Signal* signal)
   }
   ndbrequire(c_apiConnectRecordPool.getUncheckedPtrRW(localApiConnectptr));
   PrefetchApiConTimer apiConTimer(c_apiConTimersPool, localApiConnectptr, true);
-  UintR Tdata1 = localApiConnectptr.p->transid[0] - signal->theData[1];
-  UintR Tdata2 = localApiConnectptr.p->transid[1] - signal->theData[2];
+  UintR Tdata1 = localApiConnectptr.p->transid[0] - conf->transid1;
+  UintR Tdata2 = localApiConnectptr.p->transid[1] - conf->transid2;
   UintR Tcounter = localApiConnectptr.p->counter - 1;
   ConnectionState TapiConnectstate = localApiConnectptr.p->apiConnectstate;
   Tdata1 = Tdata1 | Tdata2;
@@ -14384,15 +14387,20 @@ void Dbtc::toCommitHandlingLab(Signal* signal,
         BlockReference blockRef = numberToRef(DBLQH, instanceNo, hostptr.i);
         tcConnectptr.p->tcConnectstate = OS_WAIT_COMMIT_CONF;
         Uint64 gci = apiConnectptr.p->globalcheckpointid;
-        signal->theData[0] = tcConnectptr.i;
-        signal->theData[1] = cownref;
-        signal->theData[2] = Uint32(gci >> 32);
-        signal->theData[3] = apiConnectptr.p->transid[0];
-        signal->theData[4] = apiConnectptr.p->transid[1];
-        signal->theData[5] = apiConnectptr.p->tcBlockref;
-        signal->theData[6] = tcConnectptr.p->tcOprec;
-        signal->theData[7] = Uint32(gci);
-        sendSignal(blockRef, GSN_COMMITREQ, signal, 8, JBB);
+        CommitReq* req = (CommitReq*)signal->theData;
+        req->reqPtr = tcConnectptr.i;
+        req->reqBlockref = cownref;
+        req->gci_hi = Uint32(gci >> 32);
+        req->transid1 = apiConnectptr.p->transid[0];
+        req->transid2 = apiConnectptr.p->transid[1];
+        req->old_blockref = apiConnectptr.p->tcBlockref;
+        req->tcOprec = tcConnectptr.p->tcOprec;
+        req->gci_lo = Uint32(gci);
+        sendSignal(blockRef,
+                   GSN_COMMITREQ,
+                   signal,
+                   CommitReq::SignalLength,
+                   JBB);
       }
       break;
     }
@@ -14579,9 +14587,10 @@ void Dbtc::execCOMPLETECONF(Signal* signal)
 {
   UintR compare_transid1, compare_transid2;
 
+  CompleteConf * const conf = (CompleteConf *)signal->getDataPtr();
   jamEntry();
-  tcConnectptr.i = signal->theData[0];
-  NodeId nodeId = signal->theData[1];
+  tcConnectptr.i = conf->tcConnectPtr;
+  NodeId nodeId = conf->senderNodeId;
   if (ERROR_INSERTED(8047))
   {
     CLEAR_ERROR_INSERT_VALUE;
@@ -14604,8 +14613,8 @@ void Dbtc::execCOMPLETECONF(Signal* signal)
     warningReport(signal, 13, tcConnectptr.i);
     return;
   }
-  compare_transid1 = apiConnectptr.p->transid[0] ^ signal->theData[2];
-  compare_transid2 = apiConnectptr.p->transid[1] ^ signal->theData[3];
+  compare_transid1 = apiConnectptr.p->transid[0] ^ conf->transid1;
+  compare_transid2 = apiConnectptr.p->transid[1] ^ conf->transid2;
   if (unlikely(compare_transid1 != 0 || compare_transid2 != 0))
   {
     jam();
@@ -14754,13 +14763,18 @@ void Dbtc::toCompleteHandlingLab(Signal* signal,
         BlockReference blockRef = numberToRef(DBLQH, instanceNo, hostptr.i);
         tcConnectptr.p->tcConnectstate = OS_WAIT_COMPLETE_CONF;
         tcConnectptr.p->apiConnect = apiConnectptr.i;
-        signal->theData[0] = tcConnectptr.i;
-        signal->theData[1] = cownref;
-        signal->theData[2] = apiConnectptr.p->transid[0];
-        signal->theData[3] = apiConnectptr.p->transid[1];
-        signal->theData[4] = apiConnectptr.p->tcBlockref;
-        signal->theData[5] = tcConnectptr.p->tcOprec;
-        sendSignal(blockRef, GSN_COMPLETEREQ, signal, 6, JBB);
+        CompleteReq* req = (CompleteReq*)signal->theData;
+        req->reqPtr = tcConnectptr.i;
+        req->reqBlockref = cownref;
+        req->transid1 = apiConnectptr.p->transid[0];
+        req->transid2 = apiConnectptr.p->transid[1];
+        req->old_blockref = apiConnectptr.p->tcBlockref;
+        req->tcOprec = tcConnectptr.p->tcOprec;
+        sendSignal(blockRef,
+                   GSN_COMPLETEREQ,
+                   signal,
+                   CompleteReq::SignalLength,
+                   JBB);
       }
       break;
     }

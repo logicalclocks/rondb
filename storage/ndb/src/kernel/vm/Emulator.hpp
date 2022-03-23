@@ -680,6 +680,8 @@ static constexpr const char* const jamFileNames[] =
   "Abort.hpp",                          // 545
   "TrpKeepAlive.hpp",                   // 546
   "TrpKeepAlive.cpp",                   // 547
+  "CommitReq.hpp",                      // 548
+  "CommitReq.cpp",                      // 549
   // END jamFileNames (This marker is used by ./test_jamFileNames.sh)
 };
 
