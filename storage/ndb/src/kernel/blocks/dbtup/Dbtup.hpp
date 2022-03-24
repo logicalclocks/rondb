@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2020, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1453,9 +1453,13 @@ TupTriggerData_pool c_triggerPool;
       ,UNDO_FREE = File_formats::Undofile::UNDO_TUP_FREE
       ,UNDO_DROP = File_formats::Undofile::UNDO_TUP_DROP
       ,UNDO_UPDATE_PART = File_formats::Undofile::UNDO_TUP_UPDATE_PART
+      ,UNDO_UPDATE_VAR_PART = File_formats::Undofile::UNDO_TUP_UPDATE_VAR_PART
       ,UNDO_FIRST_UPDATE_PART =
         File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_PART
+      ,UNDO_FIRST_UPDATE_VAR_PART =
+        File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_VAR_PART
       ,UNDO_FREE_PART = File_formats::Undofile::UNDO_TUP_FREE_PART
+      ,UNDO_FREE_VAR_PART = File_formats::Undofile::UNDO_TUP_FREE_VAR_PART
     };
     
     struct Alloc 
@@ -1470,6 +1474,16 @@ TupTriggerData_pool c_triggerPool;
       Uint32 m_file_no_page_idx; // 16 bit file_no, 16 bit page_idx
       Uint32 m_page_no;
       Uint32 m_gci;
+      Uint32 m_data[1];
+      Uint32 m_type_length; // 16 bit type, 16 bit length
+    };
+
+    struct Update_Free_FirstVarPart
+    {
+      Uint32 m_file_no_page_idx; // 16 bit file_no, 16 bit page_idx
+      Uint32 m_page_no;
+      Uint32 m_gci;
+      Uint32 m_tot_len;
       Uint32 m_data[1];
       Uint32 m_type_length; // 16 bit type, 16 bit length
     };
@@ -4124,7 +4138,8 @@ private:
                                Uint32 sz,
 			       Uint32 gci,
                                Uint32 logfile_group_id,
-                               Uint32 alloc_size);
+                               Uint32 alloc_size,
+                               bool var_disk);
   
   Uint64 disk_page_undo_free(Signal *signal,
                              Page*,
@@ -4133,7 +4148,8 @@ private:
                              Uint32 sz,
 			     Uint32 gci,
                              Uint32 logfile_group_id,
-                             Uint32 alloc_size);
+                             Uint32 alloc_size,
+                             bool var_disk);
 
   void undo_createtable_logsync_callback(Signal* signal, Uint32, Uint32);
 
@@ -4203,6 +4219,7 @@ public:
     Uint32 m_type;
     Uint32 m_len;
     Uint32 m_offset;
+    Uint32 m_tot_len;
     const Uint32* m_ptr;
     Uint32 m_data[MAX_UNDO_DATA];
     Uint64 m_lsn;
@@ -4285,6 +4302,8 @@ private:
                              Uint32 localLcpId,
                              Uint32 lsn);
   void release_undo_record(Ptr<Apply_undo>&, bool);
+
+  Uint32* prepare_undo_varpage(Var_page*, Uint32, Uint32);
 
   void disk_restart_undo_callback(Signal* signal, Uint32, Uint32);
   void disk_restart_undo_alloc(Apply_undo*);

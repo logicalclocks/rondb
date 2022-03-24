@@ -1,5 +1,5 @@
 /* Copyright (c) 2005, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -3863,7 +3863,8 @@ Uint64
 Logfile_client::add_entry_complex(const Change* src,
                                   Uint32 cnt,
                                   bool is_update,
-                                  Uint32 alloc_size)
+                                  Uint32 alloc_size,
+                                  bool var_disk)
 {
   Uint32 tot = 0;
   require(cnt == 3);
@@ -3922,30 +3923,99 @@ Logfile_client::add_entry_complex(const Change* src,
                lg_ptr.p->m_free_log_words,
                diff));
   }
-  Uint32 type_length;
+
+  /**
+   * Given that this is an UNDO log, it means that the first item we
+   * write will be the last item executed. It worked to do it in the
+   * wrong order with fixed size rows since the rows are in fixed places.
+   * Thus it made no matter that we executed UNDO record handling areas
+   * currently not allocated by any.
+   *
+   * With variable sized rows we have to be more careful and write UNDO
+   * log records in the opposite order. Thus we start by writing the UNDO
+   * update part, this will always execute after the FREE_PART or
+   * FIRST_FREE_PART, thus we can rely on that the entry is allocated
+   * when this entry is executed.
+   *
+   * We still write the first part of the row in the first thing written
+   * to the UNDO log, this has no real meaning, we could have done it the
+   * opposite way as well.
+   *
+   * We won't reverse the order of writing log records for fixed size rows.
+   * This would cause downgrade issues that we can avoid by not changing
+   * the order.
+   */
+  if (var_disk)
   {
+    Uint32 *offset_ptr = (Uint32*)src[1].ptr;
+    const void *first_part_ptr = (const void *)&offset_ptr[sz_first_part];
+    Dbtup::Disk_undo::UpdatePart update_part;
+    memcpy(&update_part, src[0].ptr, 3*4);
+    Uint32 offset = sz_first_part;
+    Uint32 sz_last_part = 5 + src[1].len - sz_first_part;
+    update_part.m_offset = offset;
+    update_part.m_type_length =
+      ((Dbtup::Disk_undo::UNDO_UPDATE_VAR_PART << 16) | sz_last_part);
+    {
+      Logfile_client::Change c[3] =
+      {
+        { &update_part, 4},
+        { first_part_ptr, src[1].len - sz_first_part},
+        { &update_part.m_type_length, 1}
+      };
+      jamBlock(m_client_block);
+      return add_entry_simple(c, 3, sz_last_part, false);
+    }
+    Uint32 type_length;
+    Dbtup::Disk_undo::Update_Free_FirstVarPart update_var_part;
+    memcpy(&update_var_part, src[0].ptr, 3*4);
+    update_var_part.m_tot_len = src[1].len;
     if (is_update)
     {
       type_length =
-        (Dbtup::Disk_undo::UNDO_FIRST_UPDATE_PART << 16 | remaining_page_space);
+        (Dbtup::Disk_undo::UNDO_FIRST_UPDATE_VAR_PART << 16 |
+         remaining_page_space);
     }
     else
     {
       type_length =
-        (Dbtup::Disk_undo::UNDO_FREE_PART << 16 | remaining_page_space);
+        (Dbtup::Disk_undo::UNDO_FREE_VAR_PART << 16 | remaining_page_space);
     }
     Logfile_client::Change c[3] =
     {
-      { src[0].ptr, src[0].len},
+      { &update_var_part, 4},
       { src[1].ptr, sz_first_part},
       { &type_length, 1}
     };
     jamBlock(m_client_block);
-    add_entry_simple(c,
-                     3,
-                     (remaining_page_space + over_allocated_size),
-                     false);
+    return add_entry_simple(c,
+                            3,
+                            (remaining_page_space + over_allocated_size),
+                            false);
   }
+  // !var_disk
+  Uint32 type_length;
+  if (is_update)
+  {
+    type_length =
+      (Dbtup::Disk_undo::UNDO_FIRST_UPDATE_PART << 16 | remaining_page_space);
+  }
+  else
+  {
+    type_length =
+      (Dbtup::Disk_undo::UNDO_FREE_PART << 16 | remaining_page_space);
+  }
+  Logfile_client::Change c[3] =
+  {
+    { src[0].ptr, src[0].len},
+    { src[1].ptr, sz_first_part},
+    { &type_length, 1}
+  };
+  jamBlock(m_client_block);
+  add_entry_simple(c,
+                   3,
+                   (remaining_page_space + over_allocated_size),
+                   false);
   Uint32 *offset_ptr = (Uint32*)src[1].ptr;
   const void *first_part_ptr = (const void *)&offset_ptr[sz_first_part];
   Dbtup::Disk_undo::UpdatePart update_part;
@@ -3965,6 +4035,7 @@ Logfile_client::add_entry_complex(const Change* src,
     jamBlock(m_client_block);
     return add_entry_simple(c, 3, sz_last_part, false);
   }
+
 }
 
 Uint64

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1009,6 +1009,8 @@ Dbtup::commit_operation(Signal* signal,
                                diskPagePtr,
                                key,
                                sz);
+      bool var_disk =
+        (!((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0));
 #ifdef DEBUG_PGMAN
       Uint64 lsn =
 #endif
@@ -1019,7 +1021,8 @@ Dbtup::commit_operation(Signal* signal,
                             sz,
                             gci_hi,
                             logfile_group_id,
-                            regOperPtr->m_undo_buffer_space);
+                            regOperPtr->m_undo_buffer_space,
+                            var_disk);
       DEB_PGMAN(("disk_page_undo_update: page(%u,%u,%u).%u, LSN(%u,%u),"
                  " gci: %u",
                  instance(),

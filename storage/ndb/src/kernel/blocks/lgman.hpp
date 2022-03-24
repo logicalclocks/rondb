@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -539,7 +539,11 @@ public:
                           Uint32 cnt,
                           Uint32 alloc_size,
                           bool update_callback_buffer_words = true);
-  Uint64 add_entry_complex(const Change*, Uint32 cnt, bool, Uint32 alloc_size);
+  Uint64 add_entry_complex(const Change*,
+                           Uint32 cnt,
+                           bool,
+                           Uint32 alloc_size,
+                           bool var_disk);
 
   /**
    * Check for space in log buffer

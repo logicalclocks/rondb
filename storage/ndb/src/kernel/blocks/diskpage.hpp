@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -269,6 +270,9 @@ struct File_formats
       ,UNDO_TUP_FIRST_UPDATE_PART = 12
       ,UNDO_TUP_UPDATE_PART = 13
       ,UNDO_TUP_FREE_PART = 14
+      ,UNDO_TUP_FREE_VAR_PART = 15
+      ,UNDO_TUP_UPDATE_VAR_PART = 16
+      ,UNDO_TUP_FIRST_UPDATE_VAR_PART = 17
       
       ,UNDO_END        = 0x7FFF 
       ,UNDO_NEXT_LSN   = 0x8000

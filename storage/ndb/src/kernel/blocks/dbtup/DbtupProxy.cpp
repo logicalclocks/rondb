@@ -1,4 +1,5 @@
 /* Copyright (c) 2008, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -329,6 +330,7 @@ DbtupProxy::disk_restart_undo(Signal* signal, Uint64 lsn,
     break;
   }
   case File_formats::Undofile::UNDO_TUP_UPDATE_PART:
+  case File_formats::Undofile::UNDO_TUP_UPDATE_VAR_PART:
   {
     jam();
     const Dbtup::Disk_undo::UpdatePart* rec =
@@ -347,6 +349,20 @@ DbtupProxy::disk_restart_undo(Signal* signal, Uint64 lsn,
     jam();
     const Dbtup::Disk_undo::Update_Free* rec =
       (const Dbtup::Disk_undo::Update_Free*)ptr;
+    undo.m_key.m_file_no = rec->m_file_no_page_idx >> 16;
+    undo.m_key.m_page_no = rec->m_page_no;
+    undo.m_key.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
+    undo.m_actions |= Proxy_undo::ReadTupPage;
+    undo.m_actions |= Proxy_undo::GetInstance;
+    undo.m_actions |= Proxy_undo::SendUndoNext; // Don't wait for LDM
+    break;
+  }
+  case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_VAR_PART:
+  case File_formats::Undofile::UNDO_TUP_FREE_VAR_PART:
+  {
+    jam();
+    const Dbtup::Disk_undo::Update_Free_FirstVarPart* rec =
+      (const Dbtup::Disk_undo::Update_Free_FirstVarPart*)ptr;
     undo.m_key.m_file_no = rec->m_file_no_page_idx >> 16;
     undo.m_key.m_page_no = rec->m_page_no;
     undo.m_key.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
