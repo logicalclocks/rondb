@@ -4959,6 +4959,14 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
         // Only on copy tuple
         jamDebug();
         ndbassert(bits & Tuple_header::COPY_TUPLE);
+        /**
+         * Need to set pointer to disk page as preparation for size
+         * changes that might occur. In this case we need to check
+         * free and used of the disk page to see if we need to select
+         * a new disk page.
+         */
+        req_struct->m_disk_page_ptr.p =
+          (Page*)m_global_page_pool.getPtr(req_struct->m_disk_page_ptr.i);
       }
       else
       {
