@@ -102,6 +102,12 @@ TransporterRegistry::get_connect_address(NodeId node_id) const
   return theNodeIdTransporters[node_id]->m_connect_address;
 }
 
+struct in_addr
+TransporterRegistry::get_connect_address4(NodeId node_id) const
+{
+  return theNodeIdTransporters[node_id]->m_connect_address4;
+}
+
 Uint64
 TransporterRegistry::get_bytes_sent(NodeId node_id) const
 {
@@ -3240,6 +3246,11 @@ TransporterRegistry::start_clients_thread()
       if (!t)
 	continue;
 
+      if (!t->is_mgm_connection())
+      {
+        t->set_use_only_ipv4(m_use_only_ipv4);
+      }
+
       const NodeId nodeId = t->getRemoteNodeId();
       switch(performStates[nodeId]){
       case CONNECTING:
@@ -3484,7 +3495,8 @@ TransporterRegistry::add_transporter_interface(NodeId remoteNodeId,
 }
 
 bool
-TransporterRegistry::start_service(SocketServer& socket_server)
+TransporterRegistry::start_service(SocketServer& socket_server,
+                                   bool use_only_ipv4)
 {
   DBUG_ENTER("TransporterRegistry::start_service");
   if (m_transporter_interface.size() > 0 &&
@@ -3493,6 +3505,10 @@ TransporterRegistry::start_service(SocketServer& socket_server)
     g_eventLogger->error("INTERNAL ERROR: not initialized");
     DBUG_RETURN(false);
   }
+
+  m_use_only_ipv4 = use_only_ipv4;
+
+  socket_server.set_use_only_ipv4(use_only_ipv4);
 
   for (unsigned i= 0; i < m_transporter_interface.size(); i++)
   {

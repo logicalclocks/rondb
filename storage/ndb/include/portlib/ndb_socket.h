@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2008, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -24,6 +25,10 @@
 
 #ifndef NDB_SOCKET_H
 #define NDB_SOCKET_H
+
+#ifndef IN_IS_ADDR_UNSPECIFIED
+#define IN_IS_ADDR_UNSPECIFIED(a) (((long int) (a)->s_addr) == 0x00000000)
+#endif /* IN_IS_ADDR_UNSPECIFIED */
 
 #ifdef _WIN32
 #include "ndb_socket_win32.h"

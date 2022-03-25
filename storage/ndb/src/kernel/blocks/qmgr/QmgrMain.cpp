@@ -5353,11 +5353,22 @@ Qmgr::execAPI_VERSION_REQ(Signal * signal) {
   {
     conf->version = nodeInfo.m_version;
     conf->mysql_version = nodeInfo.m_mysql_version;
-    struct in6_addr in= globalTransporterRegistry.get_connect_address(nodeId);
-    memcpy(conf->m_inet6_addr, in.s6_addr, sizeof(conf->m_inet6_addr));
-    if (IN6_IS_ADDR_V4MAPPED(&in))
+    if (globalTransporterRegistry.use_only_ipv4(nodeId))
     {
-      memcpy(&conf->m_inet_addr, &conf->m_inet6_addr[12], sizeof(in_addr));
+      struct in_addr in =
+        globalTransporterRegistry.get_connect_address4(nodeId);
+      conf->m_inet_addr = in.s_addr;
+
+    }
+    else
+    {
+      struct in6_addr in =
+        globalTransporterRegistry.get_connect_address(nodeId);
+      memcpy(conf->m_inet6_addr, in.s6_addr, sizeof(conf->m_inet6_addr));
+      if (IN6_IS_ADDR_V4MAPPED(&in))
+      {
+        memcpy(&conf->m_inet_addr, &conf->m_inet6_addr[12], sizeof(in_addr));
+      }
     }
   }
   else
@@ -9511,10 +9522,21 @@ Qmgr::execDBINFO_SCANREQ(Signal *signal)
           /* MGM/API node is too old to send ProcessInfoRep, so create a
              fallback-style report */
 
-          struct in6_addr addr= globalTransporterRegistry.get_connect_address(i);
           char service_uri[INET6_ADDRSTRLEN + 6];
-          strcpy(service_uri, "ndb://");
-          Ndb_inet_ntop(AF_INET6, & addr, service_uri + 6, 46);
+          if (nodeInfo.m_type == NodeInfo::API &&
+              globalTransporterRegistry.use_only_ipv4(i))
+          {
+            struct in_addr addr =
+              globalTransporterRegistry.get_connect_address4(i);
+            Ndb_inet_ntop(AF_INET, & addr, service_uri + 6, 46);
+          }
+          else
+          {
+            struct in6_addr addr =
+              globalTransporterRegistry.get_connect_address(i);
+            strcpy(service_uri, "ndb://");
+            Ndb_inet_ntop(AF_INET6, & addr, service_uri + 6, 46);
+          }
 
           Ndbinfo::Row row(signal, req);
           row.write_uint32(getOwnNodeId());                 // reporting_node_id
@@ -9571,9 +9593,20 @@ Qmgr::execPROCESSINFO_REP(Signal *signal)
          of ProcessInfo::setHostAddress() is also available, which
          takes a struct sockaddr * and length.
       */
-      struct in6_addr addr=
-        globalTransporterRegistry.get_connect_address(report->node_id);
-      processInfo->setHostAddress(& addr);
+      NodeInfo nodeInfo = getNodeInfo(report->node_id);
+      if (nodeInfo.m_type != NodeInfo::MGM &&
+          globalTransporterRegistry.use_only_ipv4(report->node_id))
+      {
+        struct in_addr addr=
+          globalTransporterRegistry.get_connect_address4(report->node_id);
+        processInfo->setHostAddress4(& addr);
+      }
+      else
+      {
+        struct in6_addr addr=
+          globalTransporterRegistry.get_connect_address(report->node_id);
+        processInfo->setHostAddress(& addr);
+      }
     }
   }
   releaseSections(handle);

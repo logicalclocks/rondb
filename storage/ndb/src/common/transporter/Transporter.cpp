@@ -92,6 +92,7 @@ Transporter::Transporter(TransporterRegistry &t_reg,
   DBUG_ENTER("Transporter::Transporter");
 
   // Initialize member variables
+  m_connect_address4.s_addr = 0;
   ndb_socket_invalidate(&theSocket);
   m_multi_transporter_instance = 0;
   m_recv_thread_idx = 0;
@@ -220,7 +221,14 @@ Transporter::connect_server(NDB_SOCKET_TYPE sockfd,
   }
 
   // Cache the connect address
-  ndb_socket_connect_address(sockfd, &m_connect_address);
+  if (m_use_only_ipv4)
+  {
+    ndb_socket_connect_address4(sockfd, &m_connect_address4);
+  }
+  else
+  {
+    ndb_socket_connect_address(sockfd, &m_connect_address);
+  }
 
   if (!connect_server_impl(sockfd))
   {
@@ -284,7 +292,7 @@ Transporter::connect_client(bool multi_connection)
   }
   else
   {
-    if (!m_socket_client->init())
+    if (!m_socket_client->init(m_use_only_ipv4))
     {
       DEBUG_FPRINTF((stderr, "m_socket_client->init failed, node: %u\n",
                              getRemoteNodeId()));

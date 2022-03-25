@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2004, 2010, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -33,10 +34,11 @@ class SocketClient
   unsigned int m_connect_timeout_millisec;
   unsigned short m_last_used_port;
   SocketAuthenticator *m_auth;
+  bool m_use_only_ipv4;
 public:
   SocketClient(SocketAuthenticator *sa = 0);
   ~SocketClient();
-  bool init();
+  bool init(bool use_only_ipv4);
   void set_connect_timeout(unsigned int timeout_millisec) {
     m_connect_timeout_millisec = timeout_millisec;
   }

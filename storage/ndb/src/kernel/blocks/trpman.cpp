@@ -1,5 +1,6 @@
 /*
   Copyright (c) 2011, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -524,21 +525,46 @@ Trpman::execDBINFO_SCANREQ(Signal *signal)
         row.write_uint32(rnode); // Remote node id
         row.write_uint32(globalTransporterRegistry.getPerformState(rnode)); // State
 
-        struct in6_addr conn_addr = globalTransporterRegistry.get_connect_address(rnode);
-        /* Connect address */
-        if (!IN6_IS_ADDR_UNSPECIFIED(&conn_addr))
+        if (getNodeInfo(rnode).m_type != NodeInfo::MGM &&
+            globalData.theUseOnlyIPv4Flag)
         {
-          jam();
-          char *addr_str = Ndb_inet_ntop(AF_INET6,
-                                         static_cast<void*>(&conn_addr),
-                                         addr_buf,
-                                         sizeof(addr_buf));
-          row.write_string(addr_str);
+          struct in_addr conn_addr =
+            globalTransporterRegistry.get_connect_address4(rnode);
+          /* Connect address */
+          if (!IN_IS_ADDR_UNSPECIFIED(&conn_addr))
+          {
+            jam();
+            char *addr_str = Ndb_inet_ntop(AF_INET,
+                                           static_cast<void*>(&conn_addr),
+                                           addr_buf,
+                                           sizeof(addr_buf));
+            row.write_string(addr_str);
+          }
+          else
+          {
+            jam();
+            row.write_string("-");
+          }
         }
         else
         {
-          jam();
-          row.write_string("-");
+          struct in6_addr conn_addr =
+            globalTransporterRegistry.get_connect_address(rnode);
+          /* Connect address */
+          if (!IN6_IS_ADDR_UNSPECIFIED(&conn_addr))
+          {
+            jam();
+            char *addr_str = Ndb_inet_ntop(AF_INET6,
+                                           static_cast<void*>(&conn_addr),
+                                           addr_buf,
+                                           sizeof(addr_buf));
+            row.write_string(addr_str);
+          }
+          else
+          {
+            jam();
+            row.write_string("-");
+          }
         }
 
         /* Bytes sent/received */

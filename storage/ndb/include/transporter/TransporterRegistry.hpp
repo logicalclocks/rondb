@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -316,7 +316,7 @@ public:
    */
   virtual ~TransporterRegistry();
 
-  bool start_service(SocketServer& server);
+  bool start_service(SocketServer& server, bool use_only_ipv4);
   struct NdbThread* start_clients();
   bool stop_clients();
   void start_clients_thread();
@@ -520,7 +520,13 @@ public:
   Transporter* get_transporter(TrpId id) const;
   Transporter* get_node_transporter(NodeId nodeId) const;
   bool is_shm_transporter(NodeId nodeId);
+  bool use_only_ipv4(NodeId nodeId)
+  {
+    (void)nodeId;
+    return m_use_only_ipv4;
+  }
   struct in6_addr get_connect_address(NodeId node_id) const;
+  struct in_addr get_connect_address4(NodeId node_id) const;
 
   Uint64 get_bytes_sent(NodeId nodeId) const;
   Uint64 get_bytes_received(NodeId nodeId) const;
@@ -528,6 +534,8 @@ public:
   Uint32 get_num_multi_transporters();
   Multi_Transporter* get_multi_transporter(Uint32 index);
   Multi_Transporter* get_node_multi_transporter(NodeId node_id);
+
+  bool m_use_only_ipv4;
 
 private:
   TransporterCallback *const callbackObj;
