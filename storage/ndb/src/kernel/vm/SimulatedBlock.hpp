@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1680,6 +1680,8 @@ public:
   void lock_global_ssp();
   void unlock_global_ssp();
 #endif
+
+  bool use_ipv4_socket(Uint32 node_id);
 
 /* Needs to be defined in mt.hpp as well to work */
 //#define DEBUG_SCHED_STATS 1

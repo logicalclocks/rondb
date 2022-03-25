@@ -524,9 +524,7 @@ Trpman::execDBINFO_SCANREQ(Signal *signal)
         row.write_uint32(getOwnNodeId()); // Node id
         row.write_uint32(rnode); // Remote node id
         row.write_uint32(globalTransporterRegistry.getPerformState(rnode)); // State
-
-        if (getNodeInfo(rnode).m_type != NodeInfo::MGM &&
-            globalData.theUseOnlyIPv4Flag)
+        if (use_ipv4_socket(rnode))
         {
           struct in_addr conn_addr =
             globalTransporterRegistry.get_connect_address4(rnode);

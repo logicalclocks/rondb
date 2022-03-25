@@ -527,6 +527,7 @@ public:
   }
   struct in6_addr get_connect_address(NodeId node_id) const;
   struct in_addr get_connect_address4(NodeId node_id) const;
+  bool is_server(NodeId) const;
 
   Uint64 get_bytes_sent(NodeId nodeId) const;
   Uint64 get_bytes_received(NodeId nodeId) const;

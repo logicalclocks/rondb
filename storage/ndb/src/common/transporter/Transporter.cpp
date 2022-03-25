@@ -97,6 +97,7 @@ Transporter::Transporter(TransporterRegistry &t_reg,
   m_multi_transporter_instance = 0;
   m_recv_thread_idx = 0;
   m_is_active = true;
+  isServerCurr = isServer;
 
   DBUG_ASSERT(rHostName);
   if (rHostName && strlen(rHostName) > 0){
@@ -249,6 +250,7 @@ Transporter::connect_server(NDB_SOCKET_TYPE sockfd,
   resetCounters();
 
   update_connect_state(true);
+  isServerCurr = true;
   DBUG_RETURN(true);
 }
 
@@ -458,7 +460,14 @@ Transporter::connect_client(NDB_SOCKET_TYPE sockfd)
     DBUG_RETURN(false);
   }
   // Cache the connect address
-  ndb_socket_connect_address(sockfd, &m_connect_address);
+  if (m_use_only_ipv4)
+  {
+    ndb_socket_connect_address4(sockfd, &m_connect_address4);
+  }
+  else
+  {
+    ndb_socket_connect_address(sockfd, &m_connect_address);
+  }
 
   if (!connect_client_impl(sockfd))
   {
@@ -477,6 +486,7 @@ Transporter::connect_client(NDB_SOCKET_TYPE sockfd)
 #endif
   m_transporter_registry.lockMultiTransporters();
   update_connect_state(true);
+  isServerCurr = false;
   m_transporter_registry.unlockMultiTransporters();
   DBUG_RETURN(true);
 }
@@ -489,6 +499,7 @@ Transporter::doDisconnect()
     return;
   }
   update_connect_state(false);
+  isServerCurr = isServer;
   disconnectImpl();
 }
 

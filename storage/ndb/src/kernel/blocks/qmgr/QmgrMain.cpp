@@ -5349,16 +5349,17 @@ Qmgr::execAPI_VERSION_REQ(Signal * signal) {
                 "Cannot fit in6_inaddr into ApiVersionConf:m_inet6_addr");
   NodeInfo nodeInfo = getNodeInfo(nodeId);
   conf->m_inet_addr = 0;
+  Uint32 len;
   if(nodeInfo.m_connected)
   {
     conf->version = nodeInfo.m_version;
     conf->mysql_version = nodeInfo.m_mysql_version;
-    if (globalTransporterRegistry.use_only_ipv4(nodeId))
+    if (use_ipv4_socket(nodeId))
     {
       struct in_addr in =
         globalTransporterRegistry.get_connect_address4(nodeId);
       conf->m_inet_addr = in.s_addr;
-
+      len = ApiVersionConf::SignalLengthIPv4;
     }
     else
     {
@@ -5369,6 +5370,7 @@ Qmgr::execAPI_VERSION_REQ(Signal * signal) {
       {
         memcpy(&conf->m_inet_addr, &conf->m_inet6_addr[12], sizeof(in_addr));
       }
+      len = ApiVersionConf::SignalLength;
     }
   }
   else
@@ -5376,13 +5378,15 @@ Qmgr::execAPI_VERSION_REQ(Signal * signal) {
     conf->version =  0;
     conf->mysql_version =  0;
     memset(conf->m_inet6_addr, 0, sizeof(conf->m_inet6_addr));
+    len = ApiVersionConf::SignalLength;
   }
   conf->nodeId = nodeId;
   conf->isSingleUser = (nodeId == getNodeState().getSingleUserApi());
   sendSignal(senderRef,
 	     GSN_API_VERSION_CONF,
 	     signal,
-	     ApiVersionConf::SignalLength, JBB);
+	     len,
+             JBB);
 }
 
 void
@@ -9523,8 +9527,7 @@ Qmgr::execDBINFO_SCANREQ(Signal *signal)
              fallback-style report */
 
           char service_uri[INET6_ADDRSTRLEN + 6];
-          if (nodeInfo.m_type == NodeInfo::API &&
-              globalTransporterRegistry.use_only_ipv4(i))
+          if (use_ipv4_socket(i))
           {
             struct in_addr addr =
               globalTransporterRegistry.get_connect_address4(i);
@@ -9593,9 +9596,7 @@ Qmgr::execPROCESSINFO_REP(Signal *signal)
          of ProcessInfo::setHostAddress() is also available, which
          takes a struct sockaddr * and length.
       */
-      NodeInfo nodeInfo = getNodeInfo(report->node_id);
-      if (nodeInfo.m_type != NodeInfo::MGM &&
-          globalTransporterRegistry.use_only_ipv4(report->node_id))
+      if (use_ipv4_socket(report->node_id))
       {
         struct in_addr addr=
           globalTransporterRegistry.get_connect_address4(report->node_id);

@@ -222,6 +222,7 @@ public:
   {
     memcpy(&remoteHostName, new_hostname, 256);
   }
+  bool is_server() { return isServerCurr;}
 protected:
   Transporter(TransporterRegistry &,
               TrpId transporter_index,
@@ -275,6 +276,7 @@ protected:
 
   TrpId m_transporter_index;
   const bool isServer;
+  bool isServerCurr;
 
   bool m_use_only_ipv4;
   void set_use_only_ipv4(bool use_only_ipv4)
@@ -307,8 +309,11 @@ protected:
   NDB_SOCKET_TYPE theSocket;
 private:
   SocketClient *m_socket_client;
-  struct in6_addr m_connect_address;
-  struct in_addr m_connect_address4;
+  union
+  {
+    struct in6_addr m_connect_address;
+    struct in_addr m_connect_address4;
+  };
 
   virtual bool send_is_possible(int timeout_millisec) const = 0;
   virtual bool send_limit_reached(int bufsize) = 0;
