@@ -2795,18 +2795,6 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
    * API
    ***************************************************************************/
   {
-    CFG_TCP_ONLY_IPV4,
-    "UseOnlyIPv4",
-    API_TOKEN,
-    "Use only IPv4 sockets if true",
-    ConfigInfo::CI_USED,
-    false,
-    ConfigInfo::CI_BOOL,
-    "false",
-    "false",
-    "true"},
-
-  {
     CFG_SECTION_NODE,
     API_TOKEN,
     API_TOKEN,
@@ -3135,6 +3123,18 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "0",
     "100"
   },
+
+  {
+    CFG_TCP_ONLY_IPV4,
+    "UseOnlyIPv4",
+    API_TOKEN,
+    "Use only IPv4 sockets if true",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "false",
+    "false",
+    "true"},
 
   /****************************************************************************
    * MGM
