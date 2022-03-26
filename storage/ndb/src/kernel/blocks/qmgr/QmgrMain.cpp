@@ -5369,8 +5369,12 @@ Qmgr::execAPI_VERSION_REQ(Signal * signal) {
       if (IN6_IS_ADDR_V4MAPPED(&in))
       {
         memcpy(&conf->m_inet_addr, &conf->m_inet6_addr[12], sizeof(in_addr));
+        len = ApiVersionConf::SignalLengthIPv4;
       }
-      len = ApiVersionConf::SignalLength;
+      else
+      {
+        len = ApiVersionConf::SignalLength;
+      }
     }
   }
   else

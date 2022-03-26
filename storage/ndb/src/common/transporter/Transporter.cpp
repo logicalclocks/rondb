@@ -98,6 +98,7 @@ Transporter::Transporter(TransporterRegistry &t_reg,
   m_recv_thread_idx = 0;
   m_is_active = true;
   isServerCurr = isServer;
+  m_use_only_ipv4 = false;
 
   DBUG_ASSERT(rHostName);
   if (rHostName && strlen(rHostName) > 0){
@@ -396,7 +397,7 @@ Transporter::connect_client(NDB_SOCKET_TYPE sockfd)
   }
 
   DBUG_PRINT("info", ("Sending hello : %s", helloBuf));
-  DEBUG_FPRINTF((stderr, "Sending hello : %s\n"));
+  DEBUG_FPRINTF((stderr, "Sending hello : %s\n", helloBuf));
 
   SocketOutputStream s_output(sockfd);
   if (s_output.println("%s", helloBuf) < 0)
