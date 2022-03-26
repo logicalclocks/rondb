@@ -1216,7 +1216,8 @@ ndbd_run(bool foreground, int report_fd,
   g_eventLogger->info("Starting Receiving services");
   globalTransporterRegistry.startReceiving();
   g_eventLogger->info("Starting Transporter services");
-  if (!globalTransporterRegistry.start_service(*globalEmulatorData.m_socket_server))
+  if (!globalTransporterRegistry.start_service(*globalEmulatorData.m_socket_server,
+                                               globalData.theUseOnlyIPv4Flag))
   {
     g_eventLogger->info("globalTransporterRegistry.start_service() failed");
     ndbd_exit(-1);

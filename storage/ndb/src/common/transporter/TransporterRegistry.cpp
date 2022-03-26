@@ -95,11 +95,53 @@ private:
 #endif
 };
 
+bool
+TransporterRegistry::is_server(NodeId node_id) const
+{
+  if (theNodeIdTransporters[node_id]->isMultiTransporter())
+  {
+    Multi_Transporter *multi_trp =
+      (Multi_Transporter*)theNodeIdTransporters[node_id];
+    if (multi_trp->get_num_active_transporters() > 0)
+    {
+      Transporter *trp = multi_trp->get_active_transporter(0);
+      return trp->is_server();
+    }
+  }
+  return theNodeIdTransporters[node_id]->is_server();
+}
+
 
 struct in6_addr
 TransporterRegistry::get_connect_address(NodeId node_id) const
 {
+  if (theNodeIdTransporters[node_id]->isMultiTransporter())
+  {
+    Multi_Transporter *multi_trp =
+      (Multi_Transporter*)theNodeIdTransporters[node_id];
+    if (multi_trp->get_num_active_transporters() > 0)
+    {
+      Transporter *trp = multi_trp->get_active_transporter(0);
+      return trp->m_connect_address;
+    }
+  }
   return theNodeIdTransporters[node_id]->m_connect_address;
+}
+
+struct in_addr
+TransporterRegistry::get_connect_address4(NodeId node_id) const
+{
+  if (theNodeIdTransporters[node_id]->isMultiTransporter())
+  {
+    Multi_Transporter *multi_trp =
+      (Multi_Transporter*)theNodeIdTransporters[node_id];
+    if (multi_trp->get_num_active_transporters() > 0)
+    {
+      Transporter *trp = multi_trp->get_active_transporter(0);
+      return trp->m_connect_address4;
+    }
+  }
+  return theNodeIdTransporters[node_id]->m_connect_address4;
 }
 
 Uint64
@@ -3240,6 +3282,11 @@ TransporterRegistry::start_clients_thread()
       if (!t)
 	continue;
 
+      if (!t->is_mgm_connection())
+      {
+        t->set_use_only_ipv4(m_use_only_ipv4);
+      }
+
       const NodeId nodeId = t->getRemoteNodeId();
       switch(performStates[nodeId]){
       case CONNECTING:
@@ -3484,7 +3531,8 @@ TransporterRegistry::add_transporter_interface(NodeId remoteNodeId,
 }
 
 bool
-TransporterRegistry::start_service(SocketServer& socket_server)
+TransporterRegistry::start_service(SocketServer& socket_server,
+                                   bool use_only_ipv4)
 {
   DBUG_ENTER("TransporterRegistry::start_service");
   if (m_transporter_interface.size() > 0 &&
@@ -3493,6 +3541,10 @@ TransporterRegistry::start_service(SocketServer& socket_server)
     g_eventLogger->error("INTERNAL ERROR: not initialized");
     DBUG_RETURN(false);
   }
+
+  m_use_only_ipv4 = use_only_ipv4;
+
+  socket_server.set_use_only_ipv4(use_only_ipv4);
 
   for (unsigned i= 0; i < m_transporter_interface.size(); i++)
   {

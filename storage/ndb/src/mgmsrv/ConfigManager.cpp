@@ -119,7 +119,7 @@ alone_on_host(Config* conf,
       continue;
     }
 
-    if (SocketServer::tryBind(0,hostname))
+    if (SocketServer::tryBind(0, false, hostname))
     {
       // Another MGM node was also setup on this host
       g_eventLogger->debug("Not alone on host %s, node %d "     \
@@ -238,7 +238,7 @@ find_own_nodeid(Config* conf)
       continue;
     }
 
-    if (SocketServer::tryBind(0,hostname))
+    if (SocketServer::tryBind(0, false, hostname))
     {
       // This node is setup to run on this host
       if (found_nodeid == 0)

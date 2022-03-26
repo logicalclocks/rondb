@@ -515,7 +515,7 @@ MgmtSrvr::start_mgm_service(const Config* config)
                                                    port);
   {
     int count= 5; // no of retries for tryBind
-    while(!m_socket_server.tryBind(port, m_opts.bind_address))
+    while(!m_socket_server.tryBind(port, false, m_opts.bind_address))
     {
       if (--count > 0)
       {
@@ -4410,7 +4410,7 @@ match_hostname(const struct sockaddr *clnt_addr,
   const struct in6_addr *clnt_in6_addr = get_in6_addr(clnt_addr);
 
   if ((clnt_addr == nullptr) || is_loopback(clnt_in6_addr)) {
-    if (SocketServer::tryBind(0, config_hostname))
+    if (SocketServer::tryBind(0, false, config_hostname))
       return HostnameMatch::ok_exact_match;
     return HostnameMatch::no_match;
   }

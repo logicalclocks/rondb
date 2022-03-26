@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -45,6 +46,7 @@ SocketServer::SocketServer(unsigned maxSessions) :
   m_sessions(10),
   m_services(5),
   m_maxSessions(maxSessions),
+  m_use_only_ipv4(false),
   m_stopThread(false),
   m_thread(0)
 {
@@ -66,38 +68,79 @@ SocketServer::~SocketServer() {
 
 
 bool
-SocketServer::tryBind(unsigned short port, const char * intface) {
-  struct sockaddr_in6 servaddr;
-  memset(&servaddr, 0, sizeof(servaddr));
-  servaddr.sin6_family = AF_INET6;
-  servaddr.sin6_addr = in6addr_any;
-  servaddr.sin6_port = htons(port);
-
-  if(intface != 0){
-    if(Ndb_getInAddr6(&servaddr.sin6_addr, intface))
-      return false;
-  }
-
-  const NDB_SOCKET_TYPE sock =
-      ndb_socket_create_dual_stack(SOCK_STREAM, 0);
-  if (!ndb_socket_valid(sock))
-    return false;
-
-  DBUG_PRINT("info",("NDB_SOCKET: " MY_SOCKET_FORMAT,
-                     MY_SOCKET_FORMAT_VALUE(sock)));
-
-  if (ndb_socket_reuseaddr(sock, true) == -1)
+SocketServer::tryBind(unsigned short port,
+                      bool use_only_ipv4,
+                      const char * intface)
+{
+  if (!use_only_ipv4)
   {
+    struct sockaddr_in6 servaddr;
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin6_family = AF_INET6;
+    servaddr.sin6_addr = in6addr_any;
+    servaddr.sin6_port = htons(port);
+
+    if (intface != 0)
+    {
+      if(Ndb_getInAddr6(&servaddr.sin6_addr, intface))
+        return false;
+    }
+
+    const NDB_SOCKET_TYPE sock =
+        ndb_socket_create_dual_stack(SOCK_STREAM, 0);
+    if (!ndb_socket_valid(sock))
+      return false;
+
+    DBUG_PRINT("info",("NDB_SOCKET: " MY_SOCKET_FORMAT,
+                       MY_SOCKET_FORMAT_VALUE(sock)));
+
+    if (ndb_socket_reuseaddr(sock, true) == -1)
+    {
+      ndb_socket_close(sock);
+      return false;
+    }
+
+    if (ndb_bind_inet(sock, &servaddr) == -1) {
+      ndb_socket_close(sock);
+      return false;
+    }
     ndb_socket_close(sock);
-    return false;
+  }
+  else
+  {
+    struct sockaddr_in servaddr;
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    servaddr.sin_port = htons(port);
+
+    if (intface != 0)
+    {
+      if(Ndb_getInAddr(&servaddr.sin_addr, intface))
+        return false;
+    }
+
+    const NDB_SOCKET_TYPE sock =
+        ndb_socket_create(AF_INET, SOCK_STREAM, 0);
+    if (!ndb_socket_valid(sock))
+      return false;
+
+    DBUG_PRINT("info",("NDB_SOCKET: " MY_SOCKET_FORMAT,
+                       MY_SOCKET_FORMAT_VALUE(sock)));
+
+    if (ndb_socket_reuseaddr(sock, true) == -1)
+    {
+      ndb_socket_close(sock);
+      return false;
+    }
+
+    if (ndb_bind_inet4(sock, &servaddr) == -1) {
+      ndb_socket_close(sock);
+      return false;
+    }
+    ndb_socket_close(sock);
   }
 
-  if (ndb_bind_inet(sock, &servaddr) == -1) {
-    ndb_socket_close(sock);
-    return false;
-  }
-
-  ndb_socket_close(sock);
   return true;
 }
 
@@ -108,58 +151,116 @@ SocketServer::setup(SocketServer::Service * service,
         const char * intface){
   DBUG_ENTER("SocketServer::setup");
   DBUG_PRINT("enter",("interface=%s, port=%u", intface, *port));
-  struct sockaddr_in6 servaddr;
-  memset(&servaddr, 0, sizeof(servaddr));
-  servaddr.sin6_family = AF_INET6;
-  servaddr.sin6_addr = in6addr_any;
-  servaddr.sin6_port = htons(*port);
+  NDB_SOCKET_TYPE sock;
+  if (!m_use_only_ipv4)
+  {
+    struct sockaddr_in6 servaddr;
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin6_family = AF_INET6;
+    servaddr.sin6_addr = in6addr_any;
+    servaddr.sin6_port = htons(*port);
 
-  if(intface != 0){
-    if(Ndb_getInAddr6(&servaddr.sin6_addr, intface))
+    if(intface != 0)
+    {
+      if (Ndb_getInAddr6(&servaddr.sin6_addr, intface))
+        DBUG_RETURN(false);
+    }
+
+    sock = ndb_socket_create_dual_stack(SOCK_STREAM, 0);
+    if (!ndb_socket_valid(sock))
+    {
+      DBUG_PRINT("error",("socket() - %d - %s",
+        socket_errno, strerror(socket_errno)));
       DBUG_RETURN(false);
-  }
+    }
 
-  const NDB_SOCKET_TYPE sock =
-      ndb_socket_create_dual_stack(SOCK_STREAM, 0);
-  if (!ndb_socket_valid(sock))
+    DBUG_PRINT("info",("NDB_SOCKET: " MY_SOCKET_FORMAT,
+                       MY_SOCKET_FORMAT_VALUE(sock)));
+
+    if (ndb_socket_reuseaddr(sock, true) == -1)
+    {
+      DBUG_PRINT("error",("setsockopt() - %d - %s",
+        errno, strerror(errno)));
+      ndb_socket_close(sock);
+      DBUG_RETURN(false);
+    }
+
+    if (ndb_bind_inet(sock, &servaddr) == -1) {
+      DBUG_PRINT("error",("bind() - %d - %s",
+        socket_errno, strerror(socket_errno)));
+      ndb_socket_close(sock);
+      DBUG_RETURN(false);
+    }
+
+    /* Get the address and port we bound to */
+    struct sockaddr_in6 serv_addr;
+    ndb_socket_len_t addr_len = sizeof(serv_addr);
+    if(ndb_getsockname(sock, (struct sockaddr *) &serv_addr, &addr_len))
+    {
+      ndbout_c("An error occurred while trying to find out what"
+         " port we bound to. Error: %d - %s",
+               ndb_socket_errno(), strerror(ndb_socket_errno()));
+      ndb_socket_close(sock);
+      DBUG_RETURN(false);
+    }
+    *port = ntohs(serv_addr.sin6_port);
+    setOwnProcessInfoServerAddress((sockaddr*)& serv_addr);
+
+  }
+  else
   {
-    DBUG_PRINT("error",("socket() - %d - %s",
-      socket_errno, strerror(socket_errno)));
-    DBUG_RETURN(false);
+    struct sockaddr_in servaddr;
+    memset(&servaddr, 0, sizeof(servaddr));
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    servaddr.sin_port = htons(*port);
+
+    if(intface != 0)
+    {
+      if (Ndb_getInAddr(&servaddr.sin_addr, intface))
+        DBUG_RETURN(false);
+    }
+
+    sock = ndb_socket_create(AF_INET, SOCK_STREAM, 0);
+    if (!ndb_socket_valid(sock))
+    {
+      DBUG_PRINT("error",("socket() - %d - %s",
+        socket_errno, strerror(socket_errno)));
+      DBUG_RETURN(false);
+    }
+
+    DBUG_PRINT("info",("NDB_SOCKET: " MY_SOCKET_FORMAT,
+                       MY_SOCKET_FORMAT_VALUE(sock)));
+
+    if (ndb_socket_reuseaddr(sock, true) == -1)
+    {
+      DBUG_PRINT("error",("setsockopt() - %d - %s",
+        errno, strerror(errno)));
+      ndb_socket_close(sock);
+      DBUG_RETURN(false);
+    }
+
+    if (ndb_bind_inet4(sock, &servaddr) == -1) {
+      DBUG_PRINT("error",("bind() - %d - %s",
+        socket_errno, strerror(socket_errno)));
+      ndb_socket_close(sock);
+      DBUG_RETURN(false);
+    }
+
+    /* Get the address and port we bound to */
+    struct sockaddr_in serv_addr;
+    ndb_socket_len_t addr_len = sizeof(serv_addr);
+    if(ndb_getsockname(sock, (struct sockaddr *) &serv_addr, &addr_len))
+    {
+      ndbout_c("An error occurred while trying to find out what"
+         " port we bound to. Error: %d - %s",
+               ndb_socket_errno(), strerror(ndb_socket_errno()));
+      ndb_socket_close(sock);
+      DBUG_RETURN(false);
+    }
+    *port = ntohs(serv_addr.sin_port);
+    setOwnProcessInfoServerAddress4((sockaddr*)& serv_addr);
   }
-
-  DBUG_PRINT("info",("NDB_SOCKET: " MY_SOCKET_FORMAT,
-                     MY_SOCKET_FORMAT_VALUE(sock)));
-
-  if (ndb_socket_reuseaddr(sock, true) == -1)
-  {
-    DBUG_PRINT("error",("setsockopt() - %d - %s",
-      errno, strerror(errno)));
-    ndb_socket_close(sock);
-    DBUG_RETURN(false);
-  }
-
-  if (ndb_bind_inet(sock, &servaddr) == -1) {
-    DBUG_PRINT("error",("bind() - %d - %s",
-      socket_errno, strerror(socket_errno)));
-    ndb_socket_close(sock);
-    DBUG_RETURN(false);
-  }
-
-  /* Get the address and port we bound to */
-  struct sockaddr_in6 serv_addr;
-  ndb_socket_len_t addr_len = sizeof(serv_addr);
-  if(ndb_getsockname(sock, (struct sockaddr *) &serv_addr, &addr_len))
-  {
-    ndbout_c("An error occurred while trying to find out what"
-       " port we bound to. Error: %d - %s",
-             ndb_socket_errno(), strerror(ndb_socket_errno()));
-    ndb_socket_close(sock);
-    DBUG_RETURN(false);
-  }
-  *port = ntohs(serv_addr.sin6_port);
-  setOwnProcessInfoServerAddress((sockaddr*)& serv_addr);
-
   DBUG_PRINT("info",("bound to %u", *port));
 
   if (ndb_listen(sock, m_maxSessions > MAX_SOCKET_SERVER_TCP_BACKLOG ?

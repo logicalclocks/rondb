@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -124,6 +124,7 @@ struct GlobalData {
   Uint32     theMaxNoOfUniqueHashIndexes;
 
   bool       theGracefulShutdownFlag;
+  bool       theUseOnlyIPv4Flag;
 
   NdbMutex   *theIO_lag_mutex;
 
@@ -169,6 +170,7 @@ struct GlobalData {
     theMaxNoOfOrderedIndexes = 0;
     theMaxNoOfUniqueHashIndexes = 0;
     theGracefulShutdownFlag = false;
+    theUseOnlyIPv4Flag = false;
     theIO_lag_mutex = NdbMutex_Create();
   }
 

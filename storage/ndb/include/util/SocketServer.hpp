@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -95,7 +96,9 @@ public:
    *  then  close the socket
    * Returns true if succeding in binding
    */
-  static bool tryBind(unsigned short port, const char * intface = 0);
+  static bool tryBind(unsigned short port,
+                      bool use_only_ipv4,
+                      const char * intface = 0);
 
   /**
    * Setup socket
@@ -127,7 +130,12 @@ public:
   
   void foreachSession(void (*f)(Session*, void*), void *data);
   void checkSessions();
-  
+
+  void set_use_only_ipv4(bool use_only_ipv4)
+  {
+    m_use_only_ipv4 = use_only_ipv4;
+  }
+
 private:
   struct SessionInstance {
     Service * m_service;
@@ -152,6 +160,7 @@ private:
    * Note, this thread is only used when running interactive
    * 
    */
+  bool m_use_only_ipv4;
   bool m_stopThread;
   struct NdbThread * m_thread;
   NdbLockable m_threadLock;

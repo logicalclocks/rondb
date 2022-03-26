@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2008, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -181,6 +182,12 @@ int ndb_bind_inet(ndb_socket_t s, const struct sockaddr_in6 *addr)
 }
 
 static inline
+int ndb_bind_inet4(ndb_socket_t s, const struct sockaddr_in *addr)
+{
+  return bind(s.fd, (const struct sockaddr*)addr, sizeof(struct sockaddr_in));
+}
+
+static inline
 int ndb_socket_get_port(ndb_socket_t s, unsigned short *port)
 {
   struct sockaddr_in6 servaddr;
@@ -190,6 +197,19 @@ int ndb_socket_get_port(ndb_socket_t s, unsigned short *port)
   }
 
   *port= ntohs(servaddr.sin6_port);
+  return 0;
+}
+
+static inline
+int ndb_socket_get_port4(ndb_socket_t s, unsigned short *port)
+{
+  struct sockaddr_in servaddr;
+  ndb_socket_len_t sock_len = sizeof(servaddr);
+  if(getsockname(s.fd, (struct sockaddr*)&servaddr, &sock_len) < 0) {
+    return 1;
+  }
+
+  *port= ntohs(servaddr.sin_port);
   return 0;
 }
 
@@ -231,6 +251,18 @@ int ndb_socket_connect_address(ndb_socket_t s, struct in6_addr *a)
     return ndb_socket_errno();
 
   *a= addr.sin6_addr;
+  return 0;
+}
+
+static inline
+int ndb_socket_connect_address4(ndb_socket_t s, struct in_addr *a)
+{
+  struct sockaddr_in addr;
+  ndb_socket_len_t addrlen= sizeof(addr);
+  if(getpeername(s.fd, (struct sockaddr*)&addr, &addrlen))
+    return ndb_socket_errno();
+
+  *a= addr.sin_addr;
   return 0;
 }
 

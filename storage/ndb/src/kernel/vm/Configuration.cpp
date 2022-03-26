@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -274,6 +274,10 @@ Configuration::fetch_configuration(const char* _connect_string,
     ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG, "Invalid configuration fetched", 
 	      "StopOnError missing");
   }
+
+  Uint32 use_only_ipv4 = 0;
+  iter.get(CFG_TCP_ONLY_IPV4, &use_only_ipv4);
+  globalData.theUseOnlyIPv4Flag = use_only_ipv4;
 
   const char * pidfile_dir;
   if(iter.get(CFG_NODE_PIDFILE_DIR, &pidfile_dir) == 0)

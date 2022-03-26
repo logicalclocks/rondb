@@ -543,7 +543,8 @@ TransporterFacade::start_instance(NodeId nodeId,
     DBUG_RETURN(-1);
   }
 
-  if (!theTransporterRegistry->start_service(m_socket_server))
+  if (!theTransporterRegistry->start_service(m_socket_server,
+                                             m_use_only_ipv4))
   {
     DBUG_RETURN(-1);
   }
@@ -1716,6 +1717,8 @@ TransporterFacade::TransporterFacade(GlobalDictCache *cache) :
   for (int i = 0; i < NO_API_FIXED_BLOCKS; i++)
     m_fixed2dynamic[i]= RNIL;
 
+  m_use_only_ipv4 = false;
+
 #ifdef API_TRACE
   apiSignalLog = 0;
 #endif
@@ -1807,6 +1810,14 @@ TransporterFacade::configure(NodeId nodeId,
   assert(theTransporterRegistry);
   assert(theClusterMgr);
 
+  ndb_mgm_configuration_iterator iter(* conf, CFG_SECTION_NODE);
+  if(iter.find(CFG_NODE_ID, nodeId))
+    DBUG_RETURN(false);
+
+  Uint32 use_only_ipv4 = 0;
+  iter.get(CFG_TCP_ONLY_IPV4, &use_only_ipv4);
+  m_use_only_ipv4 = use_only_ipv4;
+
   /* Set up active communication with all configured nodes */
   set_up_node_active_in_send_buffers(nodeId, *conf);
 
@@ -1819,10 +1830,6 @@ TransporterFacade::configure(NodeId nodeId,
 
   // Configure cluster manager
   theClusterMgr->configure(nodeId, conf);
-
-  ndb_mgm_configuration_iterator iter(* conf, CFG_SECTION_NODE);
-  if(iter.find(CFG_NODE_ID, nodeId))
-    DBUG_RETURN(false);
 
   // Configure send buffers
   if (!m_send_buffer.inited())

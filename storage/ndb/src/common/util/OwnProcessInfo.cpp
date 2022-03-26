@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -53,6 +54,15 @@ void setOwnProcessInfoServerAddress(struct sockaddr * addr)
   singletonInfo.setHostAddress(&addr_in6->sin6_addr);
   theApiMutex.unlock();
 }
+
+void setOwnProcessInfoServerAddress4(struct sockaddr * addr)
+{
+  theApiMutex.lock();
+  sockaddr_in *addr_in = (sockaddr_in *)addr;
+  singletonInfo.setHostAddress4(&addr_in->sin_addr);
+  theApiMutex.unlock();
+}
+
 
 void setOwnProcessInfoPort(Uint16 port)
 {

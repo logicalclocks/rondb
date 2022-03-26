@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -296,7 +297,7 @@ ConfigRetriever::verifyConfig(const struct ndb_mgm_configuration * conf,
   }
 
   if (hostname && hostname[0] != 0 &&
-      !SocketServer::tryBind(0,hostname)) {
+      !SocketServer::tryBind(0 ,false, hostname)) {
     BaseString::snprintf(buf, 255,
                          "The hostname this node should have according "
                          "to the configuration does not match a local "

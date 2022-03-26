@@ -92,10 +92,13 @@ Transporter::Transporter(TransporterRegistry &t_reg,
   DBUG_ENTER("Transporter::Transporter");
 
   // Initialize member variables
+  m_connect_address4.s_addr = 0;
   ndb_socket_invalidate(&theSocket);
   m_multi_transporter_instance = 0;
   m_recv_thread_idx = 0;
   m_is_active = true;
+  isServerCurr = isServer;
+  m_use_only_ipv4 = false;
 
   DBUG_ASSERT(rHostName);
   if (rHostName && strlen(rHostName) > 0){
@@ -220,7 +223,14 @@ Transporter::connect_server(NDB_SOCKET_TYPE sockfd,
   }
 
   // Cache the connect address
-  ndb_socket_connect_address(sockfd, &m_connect_address);
+  if (m_use_only_ipv4)
+  {
+    ndb_socket_connect_address4(sockfd, &m_connect_address4);
+  }
+  else
+  {
+    ndb_socket_connect_address(sockfd, &m_connect_address);
+  }
 
   if (!connect_server_impl(sockfd))
   {
@@ -241,6 +251,7 @@ Transporter::connect_server(NDB_SOCKET_TYPE sockfd,
   resetCounters();
 
   update_connect_state(true);
+  isServerCurr = true;
   DBUG_RETURN(true);
 }
 
@@ -284,7 +295,7 @@ Transporter::connect_client(bool multi_connection)
   }
   else
   {
-    if (!m_socket_client->init())
+    if (!m_socket_client->init(m_use_only_ipv4))
     {
       DEBUG_FPRINTF((stderr, "m_socket_client->init failed, node: %u\n",
                              getRemoteNodeId()));
@@ -386,7 +397,7 @@ Transporter::connect_client(NDB_SOCKET_TYPE sockfd)
   }
 
   DBUG_PRINT("info", ("Sending hello : %s", helloBuf));
-  DEBUG_FPRINTF((stderr, "Sending hello : %s\n"));
+  DEBUG_FPRINTF((stderr, "Sending hello : %s\n", helloBuf));
 
   SocketOutputStream s_output(sockfd);
   if (s_output.println("%s", helloBuf) < 0)
@@ -450,7 +461,14 @@ Transporter::connect_client(NDB_SOCKET_TYPE sockfd)
     DBUG_RETURN(false);
   }
   // Cache the connect address
-  ndb_socket_connect_address(sockfd, &m_connect_address);
+  if (m_use_only_ipv4)
+  {
+    ndb_socket_connect_address4(sockfd, &m_connect_address4);
+  }
+  else
+  {
+    ndb_socket_connect_address(sockfd, &m_connect_address);
+  }
 
   if (!connect_client_impl(sockfd))
   {
@@ -469,6 +487,7 @@ Transporter::connect_client(NDB_SOCKET_TYPE sockfd)
 #endif
   m_transporter_registry.lockMultiTransporters();
   update_connect_state(true);
+  isServerCurr = false;
   m_transporter_registry.unlockMultiTransporters();
   DBUG_RETURN(true);
 }
@@ -481,6 +500,7 @@ Transporter::doDisconnect()
     return;
   }
   update_connect_state(false);
+  isServerCurr = isServer;
   disconnectImpl();
 }
 
