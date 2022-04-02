@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -36142,39 +36142,29 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
   }
 }//Dblqh::execDUMP_STATE_ORD()
 
-void Dblqh::get_redo_stats(Uint64 &usage_in_mbytes,
-                           Uint64 &size_in_mbytes,
-                           Uint64 &written_since_last_in_bytes,
-                           Uint64& update_size,
-                           Uint64& insert_size,
-                           Uint64& delete_size)
+void
+Dblqh::read_redo_log_data(EmulatedJamBuffer *jamBuf,
+                          Uint64 &usage_in_mbytes,
+                          Uint64 &size_in_mbytes,
+                          Uint64 &written_since_last_in_bytes,
+                          Uint64 &total_written_bytes,
+                          bool use_only_this_ldm)
 {
-  /**
-   * This method assumes that all log parts have the same size.
-   * It reports the size of one part and it reports the usage
-   * level on the part with most Mbytes used.
-   * It reports the total written bytes in the part with the
-   * most bytes written.
-   * These parts may not be the same part.
-   */
-  size_in_mbytes = 0;
+  ndbrequire(clogPartFileSize > 0);
   usage_in_mbytes = 0;
-  written_since_last_in_bytes = 0;
-  update_size = m_update_size;
-  insert_size = m_insert_size;
-  delete_size = m_delete_size;
   for (Uint32 logpart = 0;
        logpart < clogPartFileSize;
        logpart++)
   {
-    jam();
+    thrjam(jamBuf);
     LogPartRecordPtr logPartPtr;
     logPartPtr.i = logpart;
     ptrCheckGuard(logPartPtr, clogPartFileSize, logPartRecord);
+    lock_log_part(logPartPtr.p, jamBuf);
 
     Uint64 total_mbyte = Uint64(logPartPtr.p->noLogFiles) *
                            Uint64(clogFileSize);
-    jamLine(Uint16(total_mbyte));
+    thrjamLine(jamBuf, Uint16(total_mbyte));
     size_in_mbytes = total_mbyte;
 
     LogFileRecordPtr logFilePtr;
@@ -36190,20 +36180,162 @@ void Dblqh::get_redo_stats(Uint64 &usage_in_mbytes,
                                  clogFileSize);
     ndbrequire(total_mbyte >= mbyte_free);
     Uint64 mbyte_used = total_mbyte - mbyte_free;
-    Uint64 last_written = logPartPtr.p->m_last_total_written_words;
-    Uint64 current_written = logPartPtr.p->m_total_written_words;
-    logPartPtr.p->m_last_total_written_words = current_written;
-    Uint64 written_in_bytes = 4 * (current_written - last_written);
     if (mbyte_used > usage_in_mbytes)
     {
-      jam();
+      thrjam(jamBuf);
       usage_in_mbytes = mbyte_used;
     }
-    if (written_in_bytes > written_since_last_in_bytes)
+    Uint64 current_written = logPartPtr.p->m_total_written_words;
+    total_written_bytes = 4 * current_written;
+    if (use_only_this_ldm)
     {
-      jam();
-      written_since_last_in_bytes = written_in_bytes;
+      Uint64 last_written = logPartPtr.p->m_last_total_written_words;
+      logPartPtr.p->m_last_total_written_words = current_written;
+      Uint64 written_in_bytes = 4 * (current_written - last_written);
+      if (written_in_bytes > written_since_last_in_bytes)
+      {
+        thrjam(jamBuf);
+        written_since_last_in_bytes = written_in_bytes;
+      }
     }
+    unlock_log_part(logPartPtr.p, jamBuf);
+  }
+}
+
+void
+Dblqh::get_redo_log_data(EmulatedJamBuffer *jamBuf,
+                         Uint64 &usage_in_mbytes,
+                         Uint64 &size_in_mbytes,
+                         Uint64 &written_since_last_call_in_bytes,
+                         Uint64 &total_written_words)
+{
+  NdbMutex_Lock(&m_read_redo_log_data_mutex);
+  read_redo_log_data(jamBuf,
+                     usage_in_mbytes,
+                     size_in_mbytes,
+                     written_since_last_call_in_bytes,
+                     total_written_words,
+                     false);
+  NdbMutex_Unlock(&m_read_redo_log_data_mutex);
+}
+
+static void
+set_max_redo_percentage(Uint64 usage_in_mbytes,
+                        Uint64 size_in_mbytes,
+                        Uint64 &max_redo_percentage)
+{
+  Uint64 tmp = Uint64(100) * usage_in_mbytes;
+  Uint64 redo_percentage = tmp / size_in_mbytes;
+  if (redo_percentage > 100)
+    redo_percentage = 100;
+  if (redo_percentage > max_redo_percentage)
+  {
+    max_redo_percentage = redo_percentage;
+  }
+}
+
+void Dblqh::get_redo_stats(Uint64 &usage_in_mbytes,
+                           Uint64 &size_in_mbytes,
+                           Uint64 &written_since_last_in_bytes,
+                           Uint64& update_size,
+                           Uint64& insert_size,
+                           Uint64& delete_size,
+                           Uint64& max_redo_percentage)
+{
+  /**
+   * This method assumes that all log parts have the same size.
+   * It reports the size of one part and it reports the usage
+   * level on the part with most Mbytes used.
+   * It reports the total written bytes in the part with the
+   * most bytes written.
+   * These parts may not be the same part.
+   */
+  size_in_mbytes = 0;
+  usage_in_mbytes = 0;
+  written_since_last_in_bytes = 0;
+  update_size = m_update_size;
+  insert_size = m_insert_size;
+  delete_size = m_delete_size;
+  max_redo_percentage = 0;
+  if (m_use_mutex_for_log_parts)
+  {
+    Uint32 multiple = globalData.ndbMtLqhWorkers / globalData.ndbLogParts;
+    if ((multiple * globalData.ndbLogParts) == globalData.ndbMtLqhWorkers)
+    {
+      /**
+       * We only use one log part, take the measurement from the LDM thread
+       * owning this log part and divide it by the number of LDMs sharing
+       * this log part.
+       */
+      Uint32 ldm_of_log_part = ((instance()-1) % globalData.ndbLogParts)+1;
+      Uint64 tot_written_bytes = 0;
+      Dblqh *lqh_log_part =
+        (Dblqh*)globalData.getBlock(DBLQH, ldm_of_log_part);
+      Uint64 dummy = 0;
+      lqh_log_part->get_redo_log_data(jamBuffer(),
+                                      usage_in_mbytes,
+                                      size_in_mbytes,
+                                      dummy,
+                                      tot_written_bytes);
+      usage_in_mbytes /= multiple;
+      size_in_mbytes /= multiple;
+      set_max_redo_percentage(usage_in_mbytes,
+                              size_in_mbytes,
+                              max_redo_percentage);
+      tot_written_bytes /= multiple;
+      written_since_last_in_bytes = tot_written_bytes - m_tot_written_bytes;
+      m_tot_written_bytes = tot_written_bytes;
+    }
+    else
+    {
+      /**
+       * No multiples means that all LDM thread will use all log parts.
+       * We collect the total usage of all log parts in all LDM threads
+       * and divide this number by the number of LDM threads. Thus every
+       * thread will see the same REDO usage.
+       */
+      usage_in_mbytes = 0;
+      size_in_mbytes = 0;
+      Uint64 tot_written_bytes = 0;
+      for (Uint32 i = 1; i <= globalData.ndbLogParts; i++)
+      {
+        Dblqh *lqh_log_part = (Dblqh*)globalData.getBlock(DBLQH, i);
+        Uint64 loc_usage_in_mbytes = 0;
+        Uint64 loc_size_in_mbytes = 0;
+        Uint64 loc_written_since_last_in_bytes = 0;
+        Uint64 loc_tot_written_bytes = 0;
+        lqh_log_part->get_redo_log_data(jamBuffer(),
+                                        loc_usage_in_mbytes,
+                                        loc_size_in_mbytes,
+                                        loc_written_since_last_in_bytes,
+                                        loc_tot_written_bytes);
+        set_max_redo_percentage(loc_usage_in_mbytes,
+                                loc_size_in_mbytes,
+                                max_redo_percentage);
+        usage_in_mbytes += loc_usage_in_mbytes;
+        size_in_mbytes += loc_size_in_mbytes;
+        tot_written_bytes += loc_tot_written_bytes;
+      }
+      usage_in_mbytes /= globalData.ndbMtLqhWorkers;
+      size_in_mbytes /= globalData.ndbMtLqhWorkers;
+      tot_written_bytes /= globalData.ndbMtLqhWorkers;
+      written_since_last_in_bytes =
+        tot_written_bytes - m_tot_written_bytes;
+      m_tot_written_bytes = tot_written_bytes;
+    }
+  }
+  else
+  {
+    Uint64 dummy;
+    read_redo_log_data(jamBuffer(),
+                       usage_in_mbytes,
+                       size_in_mbytes,
+                       written_since_last_in_bytes,
+                       dummy,
+                       true);
+    set_max_redo_percentage(usage_in_mbytes,
+                            size_in_mbytes,
+                            max_redo_percentage);
   }
 }
 

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -79,6 +79,8 @@ void Dblqh::initData()
 #ifdef ERROR_INSERT
   c_master_node_id = RNIL;
 #endif
+  m_tot_written_bytes = 0;
+  NdbMutex_Init(&m_read_redo_log_data_mutex);
 
   c_num_fragments_created_since_restart = 0;
   c_fragments_in_lcp = 0;
@@ -815,6 +817,7 @@ Dblqh::Dblqh(Block_context& ctx,
 
 Dblqh::~Dblqh()
 {
+  NdbMutex_Destroy(&m_read_redo_log_data_mutex);
   deinit_restart_synch();
   if (!m_is_query_block)
   {

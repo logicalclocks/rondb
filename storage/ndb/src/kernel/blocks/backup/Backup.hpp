@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1058,7 +1058,6 @@ public:
                                  Uint64 redo_size,
                                  Uint64 redo_written_since_last_call,
                                  Uint64 millis_since_last_call,
-                                 Uint64& redo_percentage,
                                  Uint64& max_redo_used_before_cut,
                                  Uint64& mean_redo_used_before_cut,
                                  Uint64& mean_redo_speed_per_sec,
