@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -31,7 +31,7 @@
 #define JAM_FILE_ID 405
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_ELEM_COUNT 1
+//#define DEBUG_ELEM_COUNT 1
 #endif
 
 #ifdef DEBUG_ELEM_COUNT

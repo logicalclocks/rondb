@@ -5011,7 +5011,8 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       }
       else
       {
-        ndbrequire(!(tabPtrP->m_bits & Tablerec::TR_UseVarSizedDiskData));
+        bool var_part = (tabPtrP->m_bits & Tablerec::TR_UseVarSizedDiskData);
+        ndbrequire(!(var_part == 0));
       }
       if (unlikely(req_struct->m_disk_ptr->m_base_record_page_idx >=
                    Tup_page::DATA_WORDS))
@@ -5358,6 +5359,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       if (unlikely((bits & Tuple_header::DISK_VAR_PART) == 0))
       {
         thrjamDebug(req_struct->jamBuffer);
+        ndbrequire((tabPtrP->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0);
         dst->m_max_var_offset = 0;
         dst->m_dyn_part_len = 0;
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
