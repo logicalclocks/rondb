@@ -507,7 +507,7 @@ MgmtSrvr::start_mgm_service(const Config* config)
                                                    port);
   {
     int count= 5; // no of retries for tryBind
-    while(!m_socket_server.tryBind(port, m_opts.bind_address))
+    while(!m_socket_server.tryBind(port, false, m_opts.bind_address))
     {
       if (--count > 0)
       {
@@ -4427,7 +4427,7 @@ match_hostname(const in6_addr *client_in6_addr,
   // can use this hostname by trying to bind the configured hostname. If this
   // process can bind it also means the client can use it (is on same machine).
   if (is_loopback(client_in6_addr)) {
-    if (SocketServer::tryBind(0, config_hostname)) {
+    if (SocketServer::tryBind(0, false, config_hostname)) {
       // Match clients connecting on loopback address by trying to bind the
       // configured hostname, if it binds the client could use it as well.
       return HostnameMatch::ok_exact_match;

@@ -6262,6 +6262,22 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
   return 0;
 }
 
+bool
+SimulatedBlock::use_ipv4_socket(Uint32 node_id)
+{
+  bool is_server = globalTransporterRegistry.is_server(node_id);
+  const NodeInfo nodeInfo = getNodeInfo(node_id);
+  if ((nodeInfo.m_type != NodeInfo::MGM &&
+       globalData.theUseOnlyIPv4Flag) ||
+      (nodeInfo.m_type == NodeInfo::MGM &&
+       globalData.theUseOnlyIPv4Flag &&
+       is_server))
+  {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Need to create the static variables in the SimulatedBlock class.
  */
