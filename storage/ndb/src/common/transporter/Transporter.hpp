@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -224,6 +224,7 @@ public:
   {
     memcpy(&remoteHostName, new_hostname, 256);
   }
+  bool is_server() { return isServerCurr;}
 protected:
   Transporter(TransporterRegistry &,
               TrpId transporter_index,
@@ -277,6 +278,17 @@ protected:
 
   TrpId m_transporter_index;
   const bool isServer;
+  bool isServerCurr;
+
+  bool m_use_only_ipv4;
+  void set_use_only_ipv4(bool use_only_ipv4)
+  {
+    m_use_only_ipv4 = use_only_ipv4;
+  }
+  bool get_use_only_ipv4()
+  {
+    return m_use_only_ipv4;
+  }
 
   int byteOrder;
   bool compressionUsed;
@@ -299,12 +311,19 @@ protected:
   NDB_SOCKET_TYPE theSocket;
 private:
   SocketClient *m_socket_client;
-  struct in6_addr m_connect_address;
+  union
+  {
+    struct in6_addr m_connect_address;
+    struct in_addr m_connect_address4;
+  };
 
   virtual bool send_is_possible(int timeout_millisec) const = 0;
   virtual bool send_limit_reached(int bufsize) = 0;
 
   void update_connect_state(bool connected);
+
+public:
+  bool is_mgm_connection() { return isMgmConnection;}
 
 protected:
   /**

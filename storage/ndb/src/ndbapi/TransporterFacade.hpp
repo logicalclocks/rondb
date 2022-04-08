@@ -318,6 +318,8 @@ private:
   Uint32 m_num_active_clients;
   volatile bool m_check_connections;
 
+  bool m_use_only_ipv4;
+
   TransporterRegistry* theTransporterRegistry;
   SocketServer m_socket_server;
   int sendPerformedLastInterval;

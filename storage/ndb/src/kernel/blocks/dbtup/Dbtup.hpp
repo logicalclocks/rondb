@@ -3726,6 +3726,10 @@ private:
   Uint32 m_pages_allocated;
   Uint32 m_pages_allocated_max;
 
+public:
+  Uint32 get_pages_allocated() { return m_pages_allocated; }
+private:
+
 //------------------------------------------------------------------------------------------------------
 // Page Mapper, convert logical page id's to physical page id's
 // The page mapper also handles the pages allocated to the fragment.

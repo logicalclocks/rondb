@@ -55,6 +55,7 @@ void NdbTCP_set_preferred_IP_version(int version);
     Returns 0 on success, -1 on failure
  */
 int Ndb_getInAddr6(struct in6_addr * dst, const char *address);
+int Ndb_getInAddr(struct in_addr * dst, const char *address);
 
 /* src is an address of family af, either AF_INET or AF_INET6.
    dst is a character buffer that will hold address in presentation format.

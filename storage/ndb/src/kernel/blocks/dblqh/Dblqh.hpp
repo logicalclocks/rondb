@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -3922,7 +3922,8 @@ public:
                       Uint64 &written_since_last_in_mbytes,
                       Uint64 &updates,
                       Uint64 &inserts,
-                      Uint64 &deletes);
+                      Uint64 &deletes,
+                      Uint64& max_redo_percentage);
 
 private:
   bool validate_filter(Signal*);
@@ -4037,6 +4038,14 @@ private:
   void nr_copy_delete_row(Signal*, Ptr<TcConnectionrec>, Local_key*, Uint32);
   Uint32 getKeyInfoWordOrZero(const TcConnectionrec* regTcPtr, 
                               Uint32 offset);
+
+  NdbMutex m_read_redo_log_data_mutex;
+  Uint64 m_tot_written_bytes;
+
+  void get_redo_log_data(EmulatedJamBuffer*,
+                         Uint64&, Uint64&, Uint64&, Uint64&);
+  void read_redo_log_data(EmulatedJamBuffer*,
+                          Uint64&, Uint64&, Uint64&, Uint64&, bool);
 public:
   struct Nr_op_info
   {
@@ -4924,6 +4933,8 @@ private:
 
   void lock_log_part(LogPartRecord *logPartPtrP);
   void unlock_log_part(LogPartRecord *logPartPtrP);
+  void lock_log_part(LogPartRecord *logPartPtrP, EmulatedJamBuffer*);
+  void unlock_log_part(LogPartRecord *logPartPtrP, EmulatedJamBuffer*);
 
   void print_fragment_mutex_stats(Signal*);
   void send_print_mutex_stats(Signal*);
@@ -5820,6 +5831,27 @@ inline void Dblqh::get_tc_ref(Uint32 tcPtrI,
   ndbrequire(tcConnect_pool.getValidPtr(tcConnectptr));
   tcOprec = tcConnectptr.p->tcOprec;
   tcRef = tcConnectptr.p->tcBlockref;
+}
+
+inline void
+Dblqh::lock_log_part(LogPartRecord *logPartPtrP,
+                     EmulatedJamBuffer *jamBuf)
+{
+  if (qt_likely(m_use_mutex_for_log_parts))
+  {
+    thrjamDebug(jamBuf);
+    NdbMutex_Lock(&logPartPtrP->m_log_part_mutex);
+  }
+}
+
+inline void Dblqh::unlock_log_part(LogPartRecord *logPartPtrP,
+                                   EmulatedJamBuffer *jamBuf)
+{
+  if (qt_likely(m_use_mutex_for_log_parts))
+  {
+    thrjamDebug(jamBuf);
+    NdbMutex_Unlock(&logPartPtrP->m_log_part_mutex);
+  }
 }
 #endif
 
