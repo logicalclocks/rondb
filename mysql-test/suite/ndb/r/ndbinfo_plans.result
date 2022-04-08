@@ -57,7 +57,7 @@ ndb$backup_id	1	20
 ndb$blocks	30	20
 ndb$columns	530	44
 ndb$config_nodes	34	28
-ndb$config_params	174	120
+ndb$config_params	175	120
 ndb$config_values	344	24
 ndb$counters	200	24
 ndb$dblqh_tcconnect_state	19	52
@@ -105,7 +105,7 @@ ndb$transporters	32	64
 CALL populate_sizes();
 SELECT count(*) from rowcounts WHERE est_rows = actual_rows;
 count(*)
-29
+28
 SELECT table_name from rowcounts WHERE est_rows = actual_rows;
 table_name
 ndb$backup_id
@@ -113,7 +113,6 @@ ndb$blocks
 ndb$columns
 ndb$config_nodes
 ndb$config_params
-ndb$config_values
 ndb$counters
 ndb$dblqh_tcconnect_state
 ndb$dbtc_apiconnect_state
