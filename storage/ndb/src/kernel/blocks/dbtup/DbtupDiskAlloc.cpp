@@ -37,6 +37,7 @@
 //#define DEBUG_PGMAN 1
 //#define DEBUG_EXTENT_BITS 1
 //#define DEBUG_EXTENT_BITS_HASH 1
+//#define DEBUG_FREE_EXTENT 1
 //#define DEBUG_UNDO 1
 //#define DEBUG_UNDO_LCP 1
 //#define DEBUG_UNDO_ALLOC 1
@@ -77,6 +78,12 @@
 #define DEB_EXTENT_BITS_HASH(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_EXTENT_BITS_HASH(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_FREE_EXTENT
+#define DEB_FREE_EXTENT(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_FREE_EXTENT(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_UNDO
@@ -307,6 +314,20 @@ Dbtup::Disk_alloc_info::find_extent(Uint32 sz) const
    */
   Uint32 col = calc_page_free_bits(sz);
   Uint32 mask= EXTENT_SEARCH_MATRIX_COLS - 1;
+  if (m_page_free_bits_map[2] > 0)
+  {
+    /**
+     * The column returned from calc_page_free_bits can't promise
+     * what is required, we need to step back one step
+     * returning this as an extent that can find any
+     * free space suitable.
+     */
+    require(col > 0);
+    col--;
+  }
+  if (col == mask)
+  {
+  }
   for(Uint32 i= 0; i<EXTENT_SEARCH_MATRIX_SIZE; i++)
   {
     // Check that it can cater for request
@@ -343,6 +364,10 @@ Dbtup::Disk_alloc_info::calc_extent_pos(const Extent_info* extP) const
       row++;
     }
     assert(row < EXTENT_SEARCH_MATRIX_ROWS);
+    DEB_FREE_EXTENT(("(%p) free: %u, row: %u",
+                     this,
+                     free,
+                     row));
   }
 
   /**
@@ -366,6 +391,7 @@ Dbtup::Disk_alloc_info::calc_extent_pos(const Extent_info* extP) const
    *   (as fixed by + 1 in declaration)
    */
   Uint32 pos= (row * (mask + 1)) + (col & mask);
+  DEB_FREE_EXTENT(("(%p) col: %u, pos: %u", this, col, pos));
   
   assert(pos < EXTENT_SEARCH_MATRIX_SIZE);
   return pos;
@@ -460,6 +486,8 @@ Dbtup::update_extent_pos(EmulatedJamBuffer* jamBuf,
       Local_extent_info_list new_list(c_extent_pool, alloc.m_free_extents[pos]);
       old_list.remove(extentPtr);
       new_list.addFirst(extentPtr);
+      DEB_FREE_EXTENT(("(%p) 2:Add/Remove ext.p: %p from old pos: %u to pos: %u",
+                       &alloc, extentPtr.p, old, pos));
       extentPtr.p->m_free_matrix_pos= pos;
     }
   }
@@ -798,6 +826,8 @@ Dbtup::disk_page_prealloc(Signal* signal,
       ext.p->m_free_matrix_pos = pos;
       Local_extent_info_list list(c_extent_pool, alloc.m_free_extents[pos]);
       list.addFirst(ext);
+      DEB_FREE_EXTENT(("(%p) Add ext.p: %p to pos: %u",
+                       &alloc, ext.p, pos));
     }
   }
   
@@ -810,6 +840,8 @@ Dbtup::disk_page_prealloc(Signal* signal,
       Local_extent_info_list list(c_extent_pool, alloc.m_free_extents[pos]);
       list.first(ext);
       list.remove(ext);
+      DEB_FREE_EXTENT(("(%p) Remove ext.p: %p from pos: %u",
+                       &alloc, ext.p, pos));
     }
     else 
     {
@@ -3708,6 +3740,8 @@ Dbtup::disk_restart_alloc_extent(EmulatedJamBuffer* jamBuf,
         Uint32 pos= alloc.calc_extent_pos(old.p);
         Local_extent_info_list new_list(c_extent_pool, alloc.m_free_extents[pos]);
         new_list.addFirst(old);
+        DEB_FREE_EXTENT(("(%p) 2:Add ext.p: %p from pos: %u",
+                       &alloc, old.p, pos));
         old.p->m_free_matrix_pos= pos;
       }
       
