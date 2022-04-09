@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -56,7 +56,7 @@
 //#define DEBUG_LCP_LGMAN 1
 //#define DEBUG_LCP_SKIP_DELETE 1
 //#define DEBUG_DISK 1
-#define DEBUG_ELEM_COUNT 1
+//#define DEBUG_ELEM_COUNT 1
 #endif
 
 #ifdef DEBUG_ELEM_COUNT
@@ -4979,6 +4979,12 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
                              key,
                              tabPtrP,
                              src_len);
+        DEB_DISK(("(%u) disk_row(%u,%u), src_ptr: %p, src_len: %u",
+                  instance(),
+                  key.m_page_no,
+                  key.m_page_idx,
+                  src_ptr,
+                  src_len));
       }
 
       // Fix diskpart
@@ -4991,23 +4997,26 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       {
         jamDebug();
         ndbrequire(tabPtrP->m_bits & Tablerec::TR_UseVarSizedDiskData);
-        if (! (bits & Tuple_header::COPY_TUPLE))
+        if ((num_vars + num_dyns) > 0)
         {
-          jamDebug();
-          PagePtr pagePtr;
-          flex_len = src_len - disk_fix_header_size;
-          flex_data = src_ptr;
-          req_struct->m_varpart_page_ptr[DD] = req_struct->m_disk_page_ptr;
+          if (! (bits & Tuple_header::COPY_TUPLE))
+          {
+            jamDebug();
+            PagePtr pagePtr;
+            flex_len = src_len - disk_fix_header_size;
+            flex_data = src_ptr;
+            req_struct->m_varpart_page_ptr[DD] = req_struct->m_disk_page_ptr;
+          }
+          else
+          {
+            jamDebug();
+            Varpart_copy* vp = (Varpart_copy*)src_ptr;
+            flex_len = vp->m_len;
+            flex_data = vp->m_data;
+            req_struct->m_varpart_page_ptr[DD] = req_struct->m_page_ptr;
+          }
+          sizes[DD] += flex_len;
         }
-        else
-        {
-          jamDebug();
-          Varpart_copy* vp = (Varpart_copy*)src_ptr;
-          flex_len = vp->m_len;
-          flex_data = vp->m_data;
-          req_struct->m_varpart_page_ptr[DD] = req_struct->m_page_ptr;
-        }
-        sizes[DD] += flex_len;
       }
       else
       {

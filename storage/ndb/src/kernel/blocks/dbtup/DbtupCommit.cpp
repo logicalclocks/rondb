@@ -986,17 +986,20 @@ Dbtup::commit_operation(Signal* signal,
                       gci_hi,
                       &rowid,
                       regOperPtr->m_undo_buffer_space);
-      DEB_DISK(("(%u) Commit disk insert for row(%u,%u) disk_row(%u,%u).%u",
+      dst = get_disk_reference(regTabPtr,
+                               diskPagePtr,
+                               key,
+                               sz);
+      DEB_DISK(("(%u) Commit disk insert for row(%u,%u) disk_row(%u,%u).%u,"
+                " dst: %p, sz: %u",
                  instance(),
                  rowid.m_page_no,
                  rowid.m_page_idx,
                  key.m_file_no,
                  key.m_page_no,
-                 key.m_page_idx));
-      dst = get_disk_reference(regTabPtr,
-                               diskPagePtr,
-                               key,
-                               sz);
+                 key.m_page_idx,
+                 dst,
+                 sz));
     }
     else
     {
