@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -425,6 +425,18 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "256",
     "0",
     STR_VALUE(MAX_INT_RNIL) },
+
+  {
+    CFG_TCP_ONLY_IPV4,
+    "UseOnlyIPv4",
+    DB_TOKEN,
+    "Use only IPv4 sockets if true",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "false",
+    "false",
+    "true"},
 
   {
     CFG_DB_TCPBIND_INADDR_ANY,
@@ -3194,6 +3206,18 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     "0",
     "100"
   },
+
+  {
+    CFG_TCP_ONLY_IPV4,
+    "UseOnlyIPv4",
+    API_TOKEN,
+    "Use only IPv4 sockets if true",
+    ConfigInfo::CI_USED,
+    false,
+    ConfigInfo::CI_BOOL,
+    "false",
+    "false",
+    "true"},
 
   /****************************************************************************
    * MGM

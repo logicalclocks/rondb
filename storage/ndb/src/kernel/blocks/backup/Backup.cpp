@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -256,6 +256,9 @@ Backup::execSTTOR(Signal* signal)
     c_initial_start_lcp_not_done_yet = false;
     m_redo_alert_factor = 1;
     m_redo_alert_state = RedoStateRep::NO_REDO_ALERT;
+  }
+  if (startphase == 2)
+  {
     if (!m_is_query_block)
     {
       jam();
@@ -287,7 +290,7 @@ Backup::execSTTOR(Signal* signal)
     signal->theData[0] = reference();
     sendSignal(NDBCNTR_REF, GSN_READ_NODESREQ, signal, 1, JBB);
     return;
-  }//if
+  }
 
   if (startphase == 7)
   {
@@ -375,10 +378,11 @@ Backup::sendSTTORRY(Signal* signal)
     jam();
     signal->theData[0] = 0;
     signal->theData[3] = 1;
-    signal->theData[4] = 3;
-    signal->theData[5] = 7;
-    signal->theData[6] = 255; // No more start phases from missra
-    sig_len = 7;
+    signal->theData[4] = 2;
+    signal->theData[5] = 3;
+    signal->theData[6] = 7;
+    signal->theData[7] = 255; // No more start phases from missra
+    sig_len = 8;
   }
   BlockReference cntrRef = !isNdbMtLqh() ? NDBCNTR_REF :
                            m_is_query_block ? QBACKUP_REF : BACKUP_REF;
@@ -996,7 +1000,6 @@ Backup::calculate_redo_parameters(Uint64 redo_usage,
                                   Uint64 redo_size,
                                   Uint64 redo_written_since_last_call,
                                   Uint64 millis_since_last_call,
-                                  Uint64& redo_percentage,
                                   Uint64& max_redo_used_before_cut,
                                   Uint64& mean_redo_used_before_cut,
                                   Uint64& mean_redo_speed_per_sec,
@@ -1007,8 +1010,6 @@ Backup::calculate_redo_parameters(Uint64 redo_usage,
   redo_size *= (Uint64(1024) * Uint64(1024));
   redo_usage *= (Uint64(1024) * Uint64(1024));
   redo_available = redo_size - redo_usage;
-  redo_percentage = redo_usage * Uint64(100);
-  redo_percentage /= redo_size;
   current_redo_speed_per_sec = redo_written_since_last_call * Uint64(1000);
   current_redo_speed_per_sec /= millis_since_last_call;
   if (current_redo_speed_per_sec > m_max_redo_speed_per_sec)
@@ -1204,8 +1205,9 @@ Backup::set_lcp_timing_factors(Uint64 seconds_since_lcp_cut)
    */
   Uint64 low_threshold = Uint64(2) * lcp_time_in_secs;
   low_threshold += Uint64(6);
-  Uint64 high_threshold = Uint64(3) * lcp_time_in_secs;
-  high_threshold += Uint64(6);
+
+  Uint64 high_threshold = Uint64(2) * lcp_time_in_secs;
+  high_threshold += Uint64(16);
   if (seconds_since_lcp_cut + Uint64(3) < lcp_time_in_secs)
   {
     jam();
@@ -1305,13 +1307,41 @@ Backup::set_proposed_disk_write_speed(Uint64 current_redo_speed_per_sec,
    * next LCP. This is controlled by the m_lcp_timing_factor variable. This
    * variable is set to 100 when no such issues are at hand.
    */
+
   m_proposed_disk_write_speed *= m_lcp_timing_factor;
   m_proposed_disk_write_speed /= Uint64(100);
 
   /**
+   * On top of increasing checkpoint times we want to cut checkpoint times
+   * when they increase too much. Thus we increase a bit more stepwise when
+   * checkpoint times grows into minutes. Can increase up to 15% in this
+   * manner.
+   */
+  Uint64 lcp_time_in_secs = m_last_lcp_exec_time_in_ms / 1000;
+  if (lcp_time_in_secs < 60)
+  {
+  }
+  else if (lcp_time_in_secs < 120)
+  {
+    m_proposed_disk_write_speed *= Uint64(105);
+    m_proposed_disk_write_speed /= Uint64(100);
+  }
+  else if (lcp_time_in_secs < 180)
+  {
+    m_proposed_disk_write_speed *= Uint64(110);
+    m_proposed_disk_write_speed /= Uint64(100);
+  }
+  else
+  {
+    m_proposed_disk_write_speed *= Uint64(115);
+    m_proposed_disk_write_speed /= Uint64(100);
+  }
+
+  /**
    * We save the proposed disk write speed with multiplication of LCP timing
    * factor as the m_lcp_change_rate, this is the calculated change rate with
-   * some long-term factors derived from m_lcp_timing_factor.
+   * some long-term factors derived from m_lcp_timing_factor and from noting
+   * that LCP times are getting a bit too long.
    *
    * The short-term proposed disk write speed in addition will contain
    * additional components to ensure that we actually deliver the calculated
@@ -1397,10 +1427,10 @@ Backup::set_proposed_disk_write_speed(Uint64 current_redo_speed_per_sec,
       m_redo_alert_state < RedoStateRep::REDO_ALERT_HIGH)
   {
     /**
-     * There is high REDO Alert level and we are running faster than
+     * There is no high REDO Alert level and we are running faster than
      * necessary, we will slow down based on the calculated lag per
      * second (which when negative means that we are ahead). We will
-     * never slow down more than 20%.
+     * never slow down more than 8%.
      */
     lag_per_sec = Int64(-1) * lag_per_sec; /* Make number positive */
     Uint64 percentage_decrease = Uint64(lag_per_sec) * Uint64(100);
@@ -1408,8 +1438,8 @@ Backup::set_proposed_disk_write_speed(Uint64 current_redo_speed_per_sec,
     if (percentage_decrease > Uint64(20))
     {
       jam();
-      m_proposed_disk_write_speed *= Uint64(80);
-      m_proposed_disk_write_speed /= Uint64(100);
+      m_proposed_disk_write_speed *= Uint64(100);
+      m_proposed_disk_write_speed /= Uint64(120);
     }
     else
     {
@@ -1602,18 +1632,16 @@ Backup::measure_change_speed(Signal *signal, Uint64 millis_since_last_call)
   Uint64 insert_size;
   Uint64 delete_size;
   Uint64 update_size;
+  Uint64 redo_percentage;
   c_lqh->get_redo_stats(redo_usage,
                         redo_size,
                         redo_written_since_last_call,
                         update_size,
                         insert_size,
-                        delete_size);
+                        delete_size,
+                        redo_percentage);
 
-  if (redo_size == 0)
-  {
-    jam();
-    return;
-  }
+  ndbrequire(redo_size != 0)
   init_lcp_timers(redo_written_since_last_call);
 
   Uint64 total_memory = get_total_memory();
@@ -1647,7 +1675,6 @@ Backup::measure_change_speed(Signal *signal, Uint64 millis_since_last_call)
   m_insert_size_lcp_last = insert_size;
   m_delete_size_lcp_last = delete_size;
 
-  Uint64 redo_percentage;
   Uint64 max_redo_used_before_cut;
   Uint64 mean_redo_used_before_cut;
   Uint64 mean_redo_speed_per_sec;
@@ -1657,7 +1684,6 @@ Backup::measure_change_speed(Signal *signal, Uint64 millis_since_last_call)
                             redo_size,
                             redo_written_since_last_call,
                             millis_since_last_call,
-                            redo_percentage,
                             max_redo_used_before_cut,
                             mean_redo_used_before_cut,
                             mean_redo_speed_per_sec,
@@ -2066,6 +2092,7 @@ Backup::calculate_disk_write_speed(Signal *signal)
     max_disk_write_speed - min_disk_write_speed;
 
   int adjust_speed_up = diff_disk_write_speed / 6;
+  int adjust_speed_up_low = diff_disk_write_speed / 12;
   int adjust_speed_up_high = diff_disk_write_speed / 3;
   int adjust_speed_down_high = diff_disk_write_speed / 5;
   int adjust_speed_down_medium = diff_disk_write_speed / 8;
@@ -2154,10 +2181,19 @@ Backup::calculate_disk_write_speed(Signal *signal)
      * sleep and waking up. So being at 95% load still means that we have
      * a bit more than 5% capacity left and even being at 90% means we
      * might have as much as 20% more capacity to use.
+     *
+     * If the lag goes beyond 1 GByte we start slowly increasing checkpoint
+     * speed to avoid having too much catch up to do when we reach 25% fill
+     * level in the REDO log. This case usually happens when we execute at
+     * almost 100% CPU for an extended period of time.
      */
     jam();
     bool adjust_disk_speed = true;
     bool adjust_backup_disk_speed = true;
+
+    Int64 lag = m_lcp_lag[0] + m_lcp_lag[1];
+    Int64 lag_limit = Int64(1024) * Int64(1024) * Int64(1024);
+
     if (m_redo_alert_state >= RedoStateRep::REDO_ALERT_LOW)
     {
       /**
@@ -2212,6 +2248,13 @@ Backup::calculate_disk_write_speed(Signal *signal)
                                      min_disk_write_speed,
                                      adjust_speed_down_medium);
       }
+    }
+    else if (lag > lag_limit)
+    {
+      adjust_disk_speed = false;
+      adjust_disk_write_speed_up(m_curr_disk_write_speed,
+                                 max_disk_write_speed,
+                                 adjust_speed_up_low);
     }
     if (cpu_usage < 90)
     {
@@ -9633,7 +9676,8 @@ bool
 Backup::OperationRecord::newScan()
 {
   Uint32 * tmp;
-  ndbrequire(ZRESERVED_SCAN_BATCH_SIZE * maxRecordSize < dataBuffer.getMaxWrite());
+  ndbrequire(ZRESERVED_SCAN_BATCH_SIZE * maxRecordSize <
+             dataBuffer.getMaxWrite());
   if(dataBuffer.getWritePtr(&tmp, ZRESERVED_SCAN_BATCH_SIZE * maxRecordSize))
   {
     jam();
@@ -10210,7 +10254,7 @@ Backup::check_pause_lcp_backup(BackupRecordPtr ptr,
    * since the last time we had a real-time break.
    *
    * If we are lagging for some reason the desired write speed since
-  * the start of the scan, we write a bit more on each real-time
+   * the start of the scan, we write a bit more on each real-time
    * break until we have catched up. There could be many reasons why
    * this is necessary, one could be that we had a real-time break
    * that overslept a bit.
@@ -15107,14 +15151,8 @@ Backup::calculate_row_change_count(BackupRecordPtr ptr)
 Uint64
 Backup::get_total_memory()
 {
-  Resource_limit res_limit;
-  m_ctx.m_mm.get_resource_limit(RG_DATAMEM, res_limit);
-  const Uint32 pages_used = res_limit.m_curr;
-  const Uint64 dm_used = Uint64(pages_used) * Uint64(sizeof(GlobalPage));
-  const Uint64 num_ldms = getLqhWorkers() != 0 ?
-                         (Uint64)getLqhWorkers() : (Uint64)1;
-  const Uint64 total_memory = dm_used / num_ldms;
-  return total_memory;
+  Uint64 pages_used = (Uint64)c_tup->get_pages_allocated();
+  return (pages_used * Uint64(sizeof(GlobalPage)));
 }
 
 void
@@ -15661,7 +15699,7 @@ Backup::start_execute_lcp(Signal *signal,
            instance(),
            tabPtr.p->tableId,
            fragPtrP->fragmentId,
-           c_lqh->getCreateSchemaVersion(ttabPtr.p->tableId),
+           c_lqh->getCreateSchemaVersion(tabPtr.p->tableId),
            ptr.p->m_row_count,
            ptr.p->m_row_change_count,
            ptr.p->m_prev_row_count,

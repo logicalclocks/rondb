@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -150,6 +151,30 @@ Ndb_getInAddr6(struct in6_addr * dst, const char *address)
   freeaddrinfo(ai_list);
 
   return ret;
+}
+
+int
+Ndb_getInAddr(struct in_addr * dst, const char *address)
+{
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_INET; // Only IPv4 address
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_protocol = IPPROTO_TCP;
+
+  struct addrinfo* ai_list;
+  if (getaddrinfo(address, NULL, &hints, &ai_list) != 0)
+  {
+    dst->s_addr = INADDR_NONE;
+    return -1;
+  }
+
+  /* Return sin_addr for the first address returned */
+  struct sockaddr_in* sin = (struct sockaddr_in*)ai_list->ai_addr;
+  memcpy(dst, &sin->sin_addr, sizeof(struct in_addr));
+
+  freeaddrinfo(ai_list);
+  return 0;
 }
 
 char*
