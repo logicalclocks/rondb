@@ -897,7 +897,7 @@ Config *
 InitConfigFileParser::parse_mycnf(const char* cluster_config_suffix)
 {
   Config * res = 0;
-  bool release_current_section = true;
+  bool release_current_section = false;
   Vector<struct my_option> options;
   for(int i = 0 ; i < ConfigInfo::m_NoOfParams ; ++ i)
   {
@@ -1061,6 +1061,7 @@ InitConfigFileParser::parse_mycnf(const char* cluster_config_suffix)
 	    defaults_groups[1] = 0;
 	  
 	  ctx.m_currentSection = new Properties(true);
+          release_current_section = true;
 	  ctx.m_userDefaults = getSection(ctx.fname, ctx.m_defaults);
 	  require((ctx.m_currentInfo = m_info->getInfo(ctx.fname)) != 0);
 	  require((ctx.m_systemDefaults = m_info->getDefaults(ctx.fname))!= 0);

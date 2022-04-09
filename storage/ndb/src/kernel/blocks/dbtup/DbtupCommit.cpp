@@ -42,7 +42,7 @@
 //#define DEBUG_LCP_SKIP_DELETE_EXTRA 1
 //#define DEBUG_INSERT_EXTRA 1
 //#define DEBUG_LCP_SCANNED_BIT 1
-#define DEBUG_PGMAN 1
+//#define DEBUG_PGMAN 1
 //#define DEBUG_ROW_COUNT_DEL 1
 //#define DEBUG_ROW_COUNT_INS 1
 //#define DEBUG_DELETE 1
@@ -1054,6 +1054,7 @@ Dbtup::commit_operation(Signal* signal,
       ndbrequire(copy_bits & Tuple_header::DISK_VAR_PART);
       Varpart_copy *vp = (Varpart_copy*)(disk_ptr + disk_fix_header_size);
       Uint32 disk_varlen;
+      copy_bits |= Tuple_header::DISK_VAR_PART;
       if (num_vars || num_dyns)
       {
         jam();
@@ -1316,6 +1317,21 @@ Dbtup::commit_operation(Signal* signal,
   else
   {
     c_lqh->add_update_size(average_row_size);
+#ifdef DEBUG_ROW_COUNT_INS
+    Local_key rowid = regOperPtr->m_tuple_location;
+    rowid.m_page_no = pagePtr.p->frag_page_id;
+    g_eventLogger->info("(%u) tab(%u,%u) Updated row(%u,%u)"
+                        ", bits: %x, row_count = %llu, tuple_ptr: %p, gci: %u",
+                        instance(),
+                        regFragPtr->fragTableId,
+                        regFragPtr->fragmentId,
+                        rowid.m_page_no,
+                        rowid.m_page_idx,
+                        tuple_ptr->m_header_bits,
+                        regFragPtr->m_row_count,
+                        tuple_ptr,
+                        gci_hi);
+#endif
   }
 }
 

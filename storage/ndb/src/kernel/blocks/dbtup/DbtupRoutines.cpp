@@ -3870,8 +3870,15 @@ Dbtup::update_lcp(KeyReqStruct* req_struct, const Uint32 * src, Uint32 len)
     memcpy(vp->m_data, src + fixsz32, 4*varlen32);
   }
   req_struct->m_lcp_varpart_len = varlen32;
-  ptr->m_header_bits |= (tabPtrP->m_bits & Tablerec::TR_DiskPart) ? 
-    Tuple_header::DISK_PART : 0;
+
+  if ((tabPtrP->m_bits & Tablerec::TR_DiskPart) != 0)
+  {
+    ptr->m_header_bits |= Tuple_header::DISK_PART;
+    if ((tabPtrP->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
+    {
+      ptr->m_header_bits |= Tuple_header::DISK_VAR_PART;
+    }
+  }
   ptr->m_header_bits |= (varlen32) ? Tuple_header::VAR_PART : 0;
 
 #ifdef VM_TRACE
