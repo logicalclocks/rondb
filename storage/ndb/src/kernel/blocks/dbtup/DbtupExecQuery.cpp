@@ -2063,7 +2063,6 @@ int Dbtup::handleUpdateReq(Signal* signal,
   }
 
   req_struct->m_tuple_ptr= dst;
-
   union {
     Uint32 sizes[4];
     Uint64 cmp[2];
@@ -6551,22 +6550,17 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
   if (tablePtr.p->m_no_of_disk_attributes)
   {
     jam();
-
-    Uint32 sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + 
-      tablePtr.p->m_offsets[DD].m_fix_header_size - 1;
-
     Ptr<GlobalPage> diskPagePtr;
     int res;
+    Uint32 sz;
+    Uint32 page_idx;
+    Uint32 entry_len;
+    Uint32 size_len;
 
     {
-    D("Logfile_client - nr_delete");
-    Logfile_client lgman(this, c_lgman, fragPtr.p->m_logfile_group_id);
-    res = lgman.alloc_log_space(sz, false, false, jamBuffer());
-    ndbrequire(res == 0);
-    
     /**
-     * 1) alloc log buffer
-     * 2) get page
+     * 1) get page
+     * 2) alloc log buffer
      * 3) get log buffer
      * 4) delete tuple
      */
@@ -6621,6 +6615,26 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
        */
       ndbrequire(res > 0);
 
+      if ((tablePtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
+      {
+        jam();
+        sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + 
+          tablePtr.p->m_offsets[DD].m_fix_header_size - 1;
+      }
+      else
+      {
+        jam();
+        page_idx = disk.m_page_idx;
+        entry_len = ((Var_page*)diskPagePtr.p)->get_entry_len(page_idx);
+        size_len = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2);
+        sz = size_len + (entry_len - 1);
+
+      }
+      D("Logfile_client - nr_delete");
+      Logfile_client lgman(this, c_lgman, fragPtr.p->m_logfile_group_id);
+      res = lgman.alloc_log_space(sz, false, false, jamBuffer());
+      ndbrequire(res == 0);
+    
       /* Complete work on LGMAN before setting page to dirty */
       CallbackPtr cptr;
       cptr.m_callbackIndex = NR_DELETE_LOG_BUFFER_CALLBACK;
@@ -6680,13 +6694,27 @@ Dbtup::nr_delete_page_callback(Signal* signal,
   tablePtr.i = fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
   
-  Uint32 sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + 
-    tablePtr.p->m_offsets[DD].m_fix_header_size - 1;
-  
+  Uint32 sz;
+  if ((tablePtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
+  {
+    sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + 
+      tablePtr.p->m_offsets[DD].m_fix_header_size - 1;
+  }
+  else
+  {
+    Uint32 page_idx = op.m_disk_ref.m_page_idx;
+    Uint32 entry_len = ((Var_page*)pagePtr.p)->get_entry_len(page_idx);
+    sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) +
+           (entry_len - 1);
+  }
+
+  Logfile_client lgman(this, c_lgman, fragPtr.p->m_logfile_group_id);
+  int res = lgman.alloc_log_space(sz, false, false, jamBuffer());
+  ndbrequire(res == 0);
+
   CallbackPtr cb;
   cb.m_callbackData = userpointer;
   cb.m_callbackIndex = NR_DELETE_LOG_BUFFER_CALLBACK;
-  int res;
   {
     D("Logfile_client - nr_delete_page_callback");
     Logfile_client lgman(this, c_lgman, fragPtr.p->m_logfile_group_id);
@@ -6730,17 +6758,29 @@ Dbtup::nr_delete_log_buffer_callback(Signal* signal,
   tablePtr.i = fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
 
-  Uint32 sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + 
-    tablePtr.p->m_offsets[DD].m_fix_header_size - 1;
-  
   Ptr<GlobalPage> gpage;
   m_global_page_pool.getPtr(gpage, op.m_page_id);
   PagePtr pagePtr((Tup_page*)gpage.p, gpage.i);
 
+  Uint32 sz;
+  if ((tablePtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
+  {
+    jam();
+    sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + 
+      tablePtr.p->m_offsets[DD].m_fix_header_size - 1;
+  }
+  else
+  {
+    jam();
+    Uint32 page_idx = op.m_disk_ref.m_page_idx;
+    Uint32 entry_len = ((Var_page*)pagePtr.p)->get_entry_len(page_idx);
+    sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) +
+           (entry_len - 1);
+  }
+
   /**
    * reset page no
    */
-  jam();
   disk_page_free(signal,
                  tablePtr.p,
                  fragPtr.p,

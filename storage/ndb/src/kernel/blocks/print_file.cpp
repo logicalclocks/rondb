@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -457,6 +457,35 @@ print_undo_page(int count, void* ptr, Uint32 sz)
 		   req->m_gci);
 	  }
 	  break;
+	case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_VAR_PART:
+	  if(g_verbosity > 3)
+	  {
+	    Dbtup::Disk_undo::Update_Free_FirstVarPart *req =
+              (Dbtup::Disk_undo::Update_Free_FirstVarPart*)src;
+	    printf("[ %lld UFP %d %d %d gci: %d, tot_len: %u ]",
+		   lsn,
+		   req->m_file_no_page_idx >> 16,
+		   req->m_file_no_page_idx & 0xFFFF,
+		   req->m_page_no,
+		   req->m_gci,
+                   req->m_tot_len);
+	  }
+	  break;
+	case File_formats::Undofile::UNDO_TUP_UPDATE_PART:
+	case File_formats::Undofile::UNDO_TUP_UPDATE_VAR_PART:
+	  if(g_verbosity > 3)
+	  {
+	    Dbtup::Disk_undo::UpdatePart *req =
+              (Dbtup::Disk_undo::UpdatePart*)src;
+	    printf("[ %lld UP %d %d %d gci: %d, offset: %u ]",
+		   lsn,
+		   req->m_file_no_page_idx >> 16,
+		   req->m_file_no_page_idx & 0xFFFF,
+		   req->m_page_no,
+		   req->m_gci,
+                   req->m_offset);
+	  }
+	  break;
 	case File_formats::Undofile::UNDO_TUP_FREE:
 	  if(g_verbosity > 3)
 	  {
@@ -472,6 +501,37 @@ print_undo_page(int count, void* ptr, Uint32 sz)
                    src[4]);
 	  }
 	  break;
+	case File_formats::Undofile::UNDO_TUP_FREE_PART:
+	  if(g_verbosity > 3)
+	  {
+	    Dbtup::Disk_undo::Update_Free *req =
+              (Dbtup::Disk_undo::Update_Free*)src;
+	    printf("[ %lld FP %d %d %d gci: %d, row(%u,%u) ]",
+		   lsn,
+		   req->m_file_no_page_idx >> 16,
+		   req->m_file_no_page_idx & 0xFFFF,
+		   req->m_page_no,
+		   req->m_gci,
+                   src[3],
+                   src[4]);
+	  }
+	  break;
+	case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_PART:
+	  if(g_verbosity > 3)
+	  {
+	    Dbtup::Disk_undo::Update_Free *req =
+              (Dbtup::Disk_undo::Update_Free*)src;
+	    printf("[ %lld UFP %d %d %d gci: %d, row(%u,%u) ]",
+		   lsn,
+		   req->m_file_no_page_idx >> 16,
+		   req->m_file_no_page_idx & 0xFFFF,
+		   req->m_page_no,
+		   req->m_gci,
+                   src[3],
+                   src[4]);
+	  }
+	  break;
+
 	case File_formats::Undofile::UNDO_TUP_DROP:
 	{
 	  Dbtup::Disk_undo::Drop *req = (Dbtup::Disk_undo::Drop*)src;

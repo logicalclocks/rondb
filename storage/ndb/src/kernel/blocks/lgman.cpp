@@ -3789,16 +3789,24 @@ Lgman::alloc_log_space(Uint32 ref,
 {
   ndbrequire(words);
   Uint64 words_64 = Uint64(words);
+  /**
+   * We always add at least one extra word per alloc_log_space call. The reason
+   * is that we use a bit more space at page endings, up to 6 words extra. To
+   * protect for this we add one word per log entry and one word per 4 kByte
+   * of words written.
+   *
+   * We return this space at the time when we commit the transaction and write
+   * into the UNDO log buffer.
+   *
+   * We don't add any extra words for Copy fragment when it is performing deletes.
+   * This avoids some complexity around handling the actual UNDO size.
+   */
   if (add_extra_words)
   {
     thrjamEntry(jamBuf);
-    Uint64 extra_words = ((words_64 + Uint64(511)) / Uint64(512));
+    Uint64 extra_words = ((words_64 + Uint64(1023)) / Uint64(1024));
     words_64 += extra_words;
     words = Uint32(words_64);
-  }
-  else
-  {
-    thrjamEntry(jamBuf);
   }
   Logfile_group key;
   key.m_logfile_group_id= ref;
@@ -3815,9 +3823,10 @@ Lgman::alloc_log_space(Uint32 ref,
     {
       thrjam(jamBuf);
       lg_ptr.p->m_free_log_words -= words_64;
-      DEB_LGMAN(("Line(%u): free_log_words: %llu",
+      DEB_LGMAN(("Line(%u): free_log_words: %llu, remove: %llu words",
                  __LINE__,
-                 lg_ptr.p->m_free_log_words));
+                 lg_ptr.p->m_free_log_words,
+                 words_64));
       validate_logfile_group(lg_ptr, "alloc_log_space", jamBuf);
       return 0;
     }
@@ -3849,9 +3858,10 @@ Lgman::free_log_space(Uint32 ref,
   {
     thrjam(jamBuf);
     lg_ptr.p->m_free_log_words += words_64;
-    DEB_LGMAN(("Line(%u): free_log_words: %llu",
+    DEB_LGMAN(("Line(%u): free_log_words: %llu, add: %llu words",
                __LINE__,
-               lg_ptr.p->m_free_log_words));
+               lg_ptr.p->m_free_log_words,
+               words_64));
     validate_logfile_group(lg_ptr, "free_log_space", jamBuf);
     return 0;
   }
@@ -3900,13 +3910,27 @@ Logfile_client::add_entry_complex(const Change* src,
   Ptr<Lgman::Logfile_group> lg_ptr;
   require(m_lgman->m_logfile_group_hash.find(lg_ptr, key));
   Uint32 callback_buffer = lg_ptr.p->m_callback_buffer_words;
-  Uint32 over_allocated_size = (alloc_size - tot);
-  Uint32 sz_first_part = remaining_page_space - 4;
+  Uint32 in_page_header_size = var_disk ? 5 : 4;
+  Uint32 sz_first_part = remaining_page_space - in_page_header_size;
   lg_ptr.p->m_callback_buffer_words = callback_buffer - alloc_size;
-  if ((alloc_size - tot) >= 5)
+  /**
+   * This record is split into two records, thus we use a bit more header
+   * space. For fixed size records we use an extra 5 byte header plus the
+   * original 4 byte header. For variable sized disk rows we use two 5
+   * word headers and thus we add 6 words extra in this case.
+   *
+   * We need to update the free log words accordingly and remove the
+   * extra overhead at the same time. Thus the calls to add_entry_simple
+   * below need not handle free log words any more.
+   *
+   * We ensure that we use the full page both for fixed size and variable
+   * sized rows.
+   */
+  Uint32 extra_overhead = var_disk ? 6 : 5;
+  if ((alloc_size - tot) >= extra_overhead)
   {
     jamBlock(m_client_block);
-    Uint64 diff = Uint64(alloc_size - tot) - Uint64(5);
+    Uint64 diff = Uint64(alloc_size - tot) - Uint64(extra_overhead);
     lg_ptr.p->m_free_log_words += diff;
     DEB_LGMAN(("Line(%u): free_log_words: %llu, change: +%llu",
                __LINE__,
@@ -3916,7 +3940,7 @@ Logfile_client::add_entry_complex(const Change* src,
   else
   {
     jamBlock(m_client_block);
-    Uint64 diff = Uint64(5) - Uint64(alloc_size - tot);
+    Uint64 diff = Uint64(extra_overhead) - Uint64(alloc_size - tot);
     lg_ptr.p->m_free_log_words -= diff;
     DEB_LGMAN(("Line(%u): free_log_words: %llu, change: -%llu",
                __LINE__,
@@ -3964,7 +3988,7 @@ Logfile_client::add_entry_complex(const Change* src,
         { &update_part.m_type_length, 1}
       };
       jamBlock(m_client_block);
-      return add_entry_simple(c, 3, sz_last_part, false);
+      add_entry_simple(c, 3, sz_last_part, false);
     }
     Uint32 type_length;
     Dbtup::Disk_undo::Update_Free_FirstVarPart update_var_part;
@@ -3990,7 +4014,7 @@ Logfile_client::add_entry_complex(const Change* src,
     jamBlock(m_client_block);
     return add_entry_simple(c,
                             3,
-                            (remaining_page_space + over_allocated_size),
+                            remaining_page_space,
                             false);
   }
   // !var_disk
@@ -4014,7 +4038,7 @@ Logfile_client::add_entry_complex(const Change* src,
   jamBlock(m_client_block);
   add_entry_simple(c,
                    3,
-                   (remaining_page_space + over_allocated_size),
+                   remaining_page_space,
                    false);
   Uint32 *offset_ptr = (Uint32*)src[1].ptr;
   const void *first_part_ptr = (const void *)&offset_ptr[sz_first_part];
@@ -4035,7 +4059,6 @@ Logfile_client::add_entry_complex(const Change* src,
     jamBlock(m_client_block);
     return add_entry_simple(c, 3, sz_last_part, false);
   }
-
 }
 
 Uint64
@@ -4096,6 +4119,10 @@ Logfile_client::add_entry_simple(const Change* src,
         abort();
       }
       jamBlock(m_client_block);
+      /**
+       * Return overallocated space now that we know that we no longer need
+       * the extra space.
+       */
       lg_ptr.p->m_callback_buffer_words = callback_buffer - alloc_size;
       lg_ptr.p->m_free_log_words += (alloc_size - tot);
       DEB_LGMAN(("Line(%u): free_log_words: %llu, change: %d",
@@ -5307,6 +5334,9 @@ Lgman::execute_undo_record(Signal* signal)
     case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_PART:
     case File_formats::Undofile::UNDO_TUP_UPDATE_PART:
     case File_formats::Undofile::UNDO_TUP_FREE_PART:
+    case File_formats::Undofile::UNDO_TUP_FREE_VAR_PART:
+    case File_formats::Undofile::UNDO_TUP_UPDATE_VAR_PART:
+    case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_VAR_PART:
       break;
     default:
       ndbabort();

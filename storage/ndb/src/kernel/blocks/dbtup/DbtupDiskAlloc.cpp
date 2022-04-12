@@ -1840,8 +1840,8 @@ Dbtup::disk_page_free(Signal *signal,
     jam();
     const Uint32 *src = ((Var_page*)pagePtr.p)->get_ptr(page_idx);
     sz = ((Var_page*)pagePtr.p)->get_entry_len(page_idx);
-    Uint32 new_undo_len = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) +
-                          (sz - 1);
+    Uint32 size_len = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2);
+    Uint32 new_undo_len = size_len + (sz - 1);
     ndbrequire(new_undo_len == undo_len);
     lsn = disk_page_undo_free(signal,
                               pagePtr.p,
@@ -3238,7 +3238,7 @@ Dbtup::disk_restart_undo_update_first_part(Apply_undo* undo)
       (const Disk_undo::Update_Free*)undo->m_ptr;
     const Uint32* src= update->m_data;
     DEB_UNDO(("(%u)applying %lld UNDO_TUP_FIRST_UPDATE_PART"
-              " on page(%u,%u).%u[%u], data[%u,%u]",
+              " on page(%u,%u).%u[%u], data[%u,%u], tot_len: %u",
               instance(),
               undo->m_lsn,
               undo->m_key.m_file_no,
@@ -3246,7 +3246,8 @@ Dbtup::disk_restart_undo_update_first_part(Apply_undo* undo)
               undo->m_key.m_page_idx,
               undo->m_offset,
               src[0],
-              src[1]));
+              src[1],
+              undo->m_tot_len));
 #endif
   }
 
@@ -3276,13 +3277,15 @@ Dbtup::disk_restart_undo_update_part(Apply_undo* undo)
   Uint32* ptr;
   Uint32 len= undo->m_len - 5;
 
-  DEB_UNDO(("(%u)applying %lld UNDO_TUP_UPDATE_PART on page(%u,%u).%u[%u]",
+  DEB_UNDO(("(%u)applying %lld UNDO_TUP_UPDATE_PART on page(%u,%u).%u[%u]"
+            ", len: %u",
             instance(),
             undo->m_lsn,
             undo->m_key.m_file_no,
             undo->m_key.m_page_no,
             undo->m_key.m_page_idx,
-            undo->m_offset));
+            undo->m_offset,
+            len));
 
   Uint32 offset = undo->m_offset;
   if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
