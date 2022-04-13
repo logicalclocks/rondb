@@ -2086,6 +2086,7 @@ int Dbtup::handleUpdateReq(Signal* signal,
       operPtrP->op_struct.bit_field.m_load_diskpage_on_commit = 1;
       operPtrP->m_undo_buffer_space= 
 	(sizeof(Dbtup::Disk_undo::Update_Free) >> 2) + sizes[DD] - 1;
+      jamDataDebug(operPtrP->m_undo_buffer_space);
 
       {
         D("Logfile_client - handleUpdateReq");
@@ -2474,7 +2475,9 @@ Dbtup::prepare_initial_insert(KeyReqStruct *req_struct,
   Uint32 disk_undo = ((regTabPtr->m_no_of_disk_attributes > 0) &&
                        !is_refresh) ? 
     sizeof(Dbtup::Disk_undo::Alloc) >> 2 : 0;
-  regOperPtr->m_undo_buffer_space= disk_undo; 
+  regOperPtr->m_undo_buffer_space= disk_undo;
+  jamDebug();
+  jamDataDebug(regOperPtr->m_undo_buffer_space);
   
   req_struct->check_offset[MM]= regTabPtr->get_check_offset(MM);
   req_struct->check_offset[DD]= regTabPtr->get_check_offset(DD);
@@ -2710,6 +2713,8 @@ int Dbtup::handleInsertReq(Signal* signal,
                                  true,
                                  !req_struct->m_nr_copy_or_redo,
                                  jamBuffer());
+      jamDebug();
+      jamDataDebug(regOperPtr->m_undo_buffer_space);
     }
     if (unlikely(res))
     {
@@ -3220,6 +3225,8 @@ int Dbtup::handleDeleteReq(Signal* signal,
         (regTabPtr->m_max_disk_part_size - 1);
     }
     regOperPtr->m_undo_buffer_space = undo_len;
+    jamDebug();
+    jamDataDebug(regOperPtr->m_undo_buffer_space);
     {
       D("Logfile_client - handleDeleteReq");
       Logfile_client lgman(this, c_lgman, regFragPtr->m_logfile_group_id);
@@ -3232,6 +3239,7 @@ int Dbtup::handleDeleteReq(Signal* signal,
                                         !req_struct->m_nr_copy_or_redo,
                                         jamBuffer());
     }
+    jamDataDebug(regOperPtr->m_undo_buffer_space);
     if (unlikely(terrorCode))
     {
       jam();
@@ -5918,7 +5926,11 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                   jam();
                   return -1;
                 }
+                jamDebug();
+                jamDataDebug(regOperPtr->m_undo_buffer_space);
+                jamDataDebug(undo_len)
                 regOperPtr->m_undo_buffer_space += undo_len;
+                jamDataDebug(regOperPtr->m_undo_buffer_space);
                 if (regOperPtr->m_uncommitted_used_space > 0)
                 {
                   /**
@@ -5927,13 +5939,13 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                    * The memory used by the original row will be released
                    * at commit time if the operation is committed.
                    */
+                  jam();
                   disk_page_abort_prealloc(
                     signal,
                     regFragPtr,
                     &key,
                     regOperPtr->m_uncommitted_used_space);
                   regOperPtr->m_uncommitted_used_space = 0;
-
                 }
               }
             }
