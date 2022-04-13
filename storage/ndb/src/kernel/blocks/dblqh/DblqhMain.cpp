@@ -11591,7 +11591,7 @@ Dblqh::acckeyconf_load_diskpage(Signal* signal,
 void
 Dblqh::acckeyconf_load_diskpage_callback(Signal* signal, 
 					 Uint32 callbackData,
-                                         Uint32 res)
+                                         Uint32 page_id)
 {
   jamEntry();
   ndbassert(!m_is_query_block);
@@ -11608,6 +11608,7 @@ Dblqh::acckeyconf_load_diskpage_callback(Signal* signal,
      * up the proper pointers for a key execution.
      */
     jam();
+    c_tup->set_disk_callback_page(page_id);
     c_tup->prepareTUPKEYREQ(regTcPtr->m_row_id.m_page_no,
                             regTcPtr->m_row_id.m_page_idx,
                             fragPtr.p->tupFragptr);

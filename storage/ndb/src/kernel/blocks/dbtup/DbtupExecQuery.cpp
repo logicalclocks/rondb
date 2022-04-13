@@ -785,17 +785,23 @@ Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
   {
     jam();
     c_lqh->setup_key_pointers(operPtr.p->userpointer);
-    operPtr.p->m_disk_callback_page = page_id;
     Uint32 flags = c_lqh->get_pgman_flags();
-    page_id = (Uint32)load_extra_diskpage(signal, opRec, flags);
-    if (page_id == 0)
+    Uint32 extra_page_id = (Uint32)load_extra_diskpage(signal, opRec, flags);
+    if (extra_page_id == 0)
     {
+      /* Save the disk callback page during real-time break. */
+      operPtr.p->m_disk_callback_page = page_id;
       return;
     }
   }
   else
   {
-    operPtr.p->m_disk_callback_page = page_id;
+    /**
+     * The m_disk_callback_page will be overwritten, thus we pass it
+     * to DBLQH so that DBLQH can set it up.
+     */
+    ;
+    jam();
   }
   c_lqh->acckeyconf_load_diskpage_callback(signal, 
                                            operPtr.p->userpointer,
@@ -813,7 +819,7 @@ Dbtup::disk_page_load_extra_callback(Signal* signal,
   operPtr.p->m_disk_extra_callback_page = page_id;
   c_lqh->acckeyconf_load_diskpage_callback(signal, 
 					   operPtr.p->userpointer,
-                                           page_id);
+                                           operPtr.p->m_disk_callback_page);
 }
 
 int
