@@ -2714,7 +2714,7 @@ int Dbtup::handleInsertReq(Signal* signal,
                                  !req_struct->m_nr_copy_or_redo,
                                  jamBuffer());
       jamDebug();
-      jamDataDebug(regOperPtr->m_undo_buffer_space);
+      jamDataDebug(regOperPtr.p->m_undo_buffer_space);
     }
     if (unlikely(res))
     {
