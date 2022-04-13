@@ -4877,6 +4877,7 @@ expand_var_part(Dbtup::KeyReqStruct::Var_data *dst,
   {
     next_pos= *src_off_ptr++;
     len= next_pos - tmp;
+    require(next_pos >= tmp);
     
     *dst_off_ptr++ = dst_off; 
     *dst_len_ptr++ = dst_off + len;
@@ -4966,7 +4967,6 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       jamDataDebug(tabPtrP->m_attributes[DD].m_no_of_fixsize);
       order += tabPtrP->m_attributes[DD].m_no_of_fixsize;
       Uint32 src_len = disk_fix_header_size;
-      Local_key key;
       if (bits & Tuple_header::DISK_INLINE)
       {
         // Only on copy tuple
@@ -4983,6 +4983,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       }
       else
       {
+        Local_key key;
         jamDebug();
         const Uint32 *disk_ref= src->get_disk_ref_ptr(tabPtrP);
         memcpy(&key, disk_ref, sizeof(key));
@@ -4992,6 +4993,8 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
                              key,
                              tabPtrP,
                              src_len);
+        jamDataDebug(key.m_page_idx);
+        jamDataDebug(src_len);
         DEB_DISK(("(%u) disk_row(%u,%u), src_ptr: %p, src_len: %u",
                   instance(),
                   key.m_page_no,
@@ -5039,6 +5042,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       if (unlikely(req_struct->m_disk_ptr->m_base_record_page_idx >=
                    Tup_page::DATA_WORDS))
       {
+        Local_key key;
         const Uint32 *disk_ref= src->get_disk_ref_ptr(tabPtrP);
         memcpy(&key, disk_ref, sizeof(key));
         g_eventLogger->info("(%u) Crash on error in disk ref on row(%u,%u)"

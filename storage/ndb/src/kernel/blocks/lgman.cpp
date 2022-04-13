@@ -50,6 +50,7 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_LGMAN 1
+//#define DEBUG_LGMAN_EXTRA 1
 //#define DEBUG_DROP_LG 1
 //#define DEBUG_LGMAN_LCP 1
 //#define DEBUG_UNDO_SPACE 1
@@ -60,6 +61,12 @@
 #define DEB_LGMAN(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_LGMAN(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_LGMAN_EXTRA
+#define DEB_LGMAN_EXTRA(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_LGMAN_EXTRA(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_LGMAN_LCP
@@ -2741,6 +2748,7 @@ next:
     ptr.p->m_pos[PRODUCER].m_current_pos.m_idx = pos + sz;
     Uint32* record = get_undo_data_ptr((Uint32*)page, ptr, jamBuf) + pos;
     ndbrequire(record < &((Uint32*)page)[GLOBAL_PAGE_SIZE_WORDS]);
+    DEB_LGMAN_EXTRA(("UNDO Page pos moved to: %u", (pos + sz)));
     return record;
   }
   thrjam(jamBuf);
@@ -2749,6 +2757,7 @@ next:
    * It didn't fit page...fill page with a NOOP log entry
    */
   Uint64 lsn= ptr.p->m_next_lsn - 1;
+  DEB_LGMAN_EXTRA(("New UNDO page lsn: %llu", lsn));
   File_formats::Undofile::Undo_page* undo= 
     (File_formats::Undofile::Undo_page*)page;
   undo->m_page_header.m_page_lsn_lo = (Uint32)(lsn & 0xFFFFFFFF);
@@ -3912,6 +3921,9 @@ Logfile_client::add_entry_complex(const Change* src,
   Uint32 callback_buffer = lg_ptr.p->m_callback_buffer_words;
   Uint32 in_page_header_size = var_disk ? 5 : 4;
   Uint32 sz_first_part = remaining_page_space - in_page_header_size;
+  DEB_LGMAN_EXTRA(("Write split UNDO, sz_first_part: %u, remaining_space: %u",
+                   sz_first_part,
+                   remaining_page_space));
   lg_ptr.p->m_callback_buffer_words = callback_buffer - alloc_size;
   /**
    * This record is split into two records, thus we use a bit more header
@@ -3972,49 +3984,50 @@ Logfile_client::add_entry_complex(const Change* src,
   if (var_disk)
   {
     Uint32 *offset_ptr = (Uint32*)src[1].ptr;
-    const void *first_part_ptr = (const void *)&offset_ptr[sz_first_part];
+    const Uint32 offset_first_part = src[1].len - sz_first_part;
+    const void *first_part_ptr = (const void *)&offset_ptr[offset_first_part];
     Dbtup::Disk_undo::UpdatePart update_part;
     memcpy(&update_part, src[0].ptr, 3*4);
-    Uint32 offset = sz_first_part;
-    Uint32 sz_last_part = 5 + src[1].len - sz_first_part;
-    update_part.m_offset = offset;
+    Uint32 sz_last_part = src[1].len - sz_first_part;
+    update_part.m_offset = offset_first_part;
     update_part.m_type_length =
-      ((Dbtup::Disk_undo::UNDO_UPDATE_VAR_PART << 16) | sz_last_part);
+      ((Dbtup::Disk_undo::UNDO_UPDATE_VAR_PART << 16) |
+        remaining_page_space);
     {
       Logfile_client::Change c[3] =
       {
         { &update_part, 4},
-        { first_part_ptr, src[1].len - sz_first_part},
+        { first_part_ptr, sz_first_part},
         { &update_part.m_type_length, 1}
       };
       jamBlock(m_client_block);
-      add_entry_simple(c, 3, sz_last_part, false);
+      add_entry_simple(c, 3, remaining_page_space, false);
     }
     Uint32 type_length;
     Dbtup::Disk_undo::Update_Free_FirstVarPart update_var_part;
     memcpy(&update_var_part, src[0].ptr, 3*4);
     update_var_part.m_tot_len = src[1].len;
+    Uint32 tot_part_len = sz_last_part + in_page_header_size;
     if (is_update)
     {
       type_length =
-        (Dbtup::Disk_undo::UNDO_FIRST_UPDATE_VAR_PART << 16 |
-         remaining_page_space);
+        (Dbtup::Disk_undo::UNDO_FIRST_UPDATE_VAR_PART << 16 | tot_part_len);
     }
     else
     {
       type_length =
-        (Dbtup::Disk_undo::UNDO_FREE_VAR_PART << 16 | remaining_page_space);
+        (Dbtup::Disk_undo::UNDO_FREE_VAR_PART << 16 | tot_part_len);
     }
     Logfile_client::Change c[3] =
     {
       { &update_var_part, 4},
-      { src[1].ptr, sz_first_part},
+      { src[1].ptr, sz_last_part},
       { &type_length, 1}
     };
     jamBlock(m_client_block);
     return add_entry_simple(c,
                             3,
-                            remaining_page_space,
+                            tot_part_len,
                             false);
   }
   // !var_disk

@@ -33,9 +33,9 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_LCP 1
-#define DEBUG_PGMAN_IO 1
+//#define DEBUG_PGMAN_IO 1
 //#define DEBUG_PGMAN 1
-#define DEBUG_EXTENT_BITS 1
+//#define DEBUG_EXTENT_BITS 1
 //#define DEBUG_EXTENT_BITS_HASH 1
 //#define DEBUG_FREE_EXTENT 1
 //#define DEBUG_UNDO 1
@@ -3239,7 +3239,13 @@ void
 Dbtup::disk_restart_undo_update_first_part(Apply_undo* undo)
 {
   Uint32* ptr;
-  Uint32 len= undo->m_len - 4;
+  Uint32 header_len = 5;
+  if (!undo->m_in_intermediate_log_record)
+  {
+    /* UNDO_TUP_FIRST_UPDATE_PART, old uses only 4 words in header */
+    header_len = 4;
+  }
+  Uint32 len = undo->m_len - header_len;
 
   {
 #ifdef DEBUG_UNDO
@@ -3247,16 +3253,18 @@ Dbtup::disk_restart_undo_update_first_part(Apply_undo* undo)
       (const Disk_undo::Update_Free*)undo->m_ptr;
     const Uint32* src= update->m_data;
     DEB_UNDO(("(%u)applying %lld UNDO_TUP_FIRST_UPDATE_PART"
-              " on page(%u,%u).%u[%u], data[%u,%u], tot_len: %u",
+              " on page(%u,%u).%u[%u], data[%x,%x], tot_len: %u"
+              ", len: %u",
               instance(),
               undo->m_lsn,
               undo->m_key.m_file_no,
               undo->m_key.m_page_no,
               undo->m_key.m_page_idx,
               undo->m_offset,
-              src[0],
-              src[1],
-              undo->m_tot_len));
+              undo->m_in_intermediate_log_record ? src[1] : src[0],
+              undo->m_in_intermediate_log_record ? src[2] : src[1],
+              undo->m_tot_len,
+              len));
 #endif
   }
 
