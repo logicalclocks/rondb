@@ -11600,7 +11600,7 @@ Dblqh::acckeyconf_load_diskpage_callback(Signal* signal,
   FragrecordPtr fragPtr = fragptr;
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
   TcConnectionrec::TransactionState state = regTcPtr->transactionState;
-  if (likely(res > 0 && state == TcConnectionrec::WAIT_TUP))
+  if (likely(page_id > 0 && state == TcConnectionrec::WAIT_TUP))
   {
 
     /**
@@ -11621,14 +11621,14 @@ Dblqh::acckeyconf_load_diskpage_callback(Signal* signal,
     ndbrequire(state == TcConnectionrec::WAIT_TUP_TO_ABORT);
     TupKeyRef * ref = (TupKeyRef *)signal->getDataPtr();
     ref->userRef= callbackData;
-    ref->errorCode= res;
+    ref->errorCode= page_id;
     execTUPKEYREF(signal);
   }
   else
   {
     TupKeyRef * ref = (TupKeyRef *)signal->getDataPtr();
     ref->userRef= callbackData;
-    ref->errorCode= res;
+    ref->errorCode= page_id;
     execTUPKEYREF(signal);
   }
   release_frag_access(fragptr.p);
