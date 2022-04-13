@@ -5928,7 +5928,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                 }
                 jamDebug();
                 jamDataDebug(regOperPtr->m_undo_buffer_space);
-                jamDataDebug(undo_len)
+                jamDataDebug(undo_len);
                 regOperPtr->m_undo_buffer_space += undo_len;
                 jamDataDebug(regOperPtr->m_undo_buffer_space);
                 if (regOperPtr->m_uncommitted_used_space > 0)
