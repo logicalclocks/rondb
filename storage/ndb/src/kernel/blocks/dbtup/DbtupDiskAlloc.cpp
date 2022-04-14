@@ -32,6 +32,7 @@
 #define JAM_FILE_ID 426
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
+#define DEBUG_UNDO_SPLIT 1
 //#define DEBUG_LCP 1
 //#define DEBUG_PGMAN_IO 1
 //#define DEBUG_PGMAN 1
@@ -102,6 +103,50 @@
 #define DEB_UNDO_ALLOC(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_UNDO_ALLOC(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_UNDO_SPLIT
+static void
+log_buf_print(const Uint32 *ptr, Uint32 len)
+{
+  while (len >= 8)
+  {
+    g_eventLogger->info("%x %x %x %x %x %x %x %x",
+                        ptr[0],
+                        ptr[1],
+                        ptr[2],
+                        ptr[3],
+                        ptr[4],
+                        ptr[5],
+                        ptr[6],
+                        ptr[7]);
+    ptr+= 8;
+    len -= 8;
+  }
+  if (len >= 4)
+  {
+    g_eventLogger->info("%x %x %x %x",
+                        ptr[0],
+                        ptr[1],
+                        ptr[2],
+                        ptr[3]);
+    ptr+= 4;
+    len -= 4;
+  }
+  if (len >= 2)
+  {
+    g_eventLogger->info("%x %x",
+                        ptr[0],
+                        ptr[1]);
+    ptr+= 2;
+    len -= 2;
+  }
+  if (len > 0)
+  {
+    g_eventLogger->info("%x",
+                        ptr[0]);
+  }
+}
 #endif
 
 void
@@ -3285,6 +3330,9 @@ Dbtup::disk_restart_undo_update_first_part(Apply_undo* undo)
     (const Disk_undo::Update_Free*)undo->m_ptr;
   const Uint32* src= update->m_data;
   ndbrequire(len < 2 || src[1] < Tup_page::DATA_WORDS);
+#ifdef DEBUG_UNDO_SPLIT
+  log_buf_print(src, len);
+#endif
   memcpy(ptr, src, 4 * len);
 }
 
@@ -3325,6 +3373,9 @@ Dbtup::disk_restart_undo_update_part(Apply_undo* undo)
   const Uint32* src= update->m_data;
   ndbrequire(undo->m_offset != 0 ||
              src[1] < Tup_page::DATA_WORDS);
+#ifdef DEBUG_UNDO_SPLIT
+  log_buf_print(src, len);
+#endif
   memcpy(ptr, src, 4 * len);
 }
 

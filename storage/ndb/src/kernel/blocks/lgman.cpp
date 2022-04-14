@@ -51,6 +51,7 @@
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_LGMAN 1
 //#define DEBUG_LGMAN_EXTRA 1
+#define DEBUG_LGMAN_SPLIT 1
 //#define DEBUG_DROP_LG 1
 //#define DEBUG_LGMAN_LCP 1
 //#define DEBUG_UNDO_SPACE 1
@@ -91,6 +92,50 @@
 #define DEB_DROP_LG(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_DROP_LG(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_LGMAN_SPLIT
+static void
+log_buf_print(const Uint32 *ptr, Uint32 len)
+{
+  while (len >= 8)
+  {
+    g_eventLogger->info("%x %x %x %x %x %x %x %x",
+                        ptr[0],
+                        ptr[1],
+                        ptr[2],
+                        ptr[3],
+                        ptr[4],
+                        ptr[5],
+                        ptr[6],
+                        ptr[7]);
+    ptr+= 8;
+    len -= 8;
+  }
+  if (len >= 4)
+  {
+    g_eventLogger->info("%x %x %x %x",
+                        ptr[0],
+                        ptr[1],
+                        ptr[2],
+                        ptr[3]);
+    ptr+= 4;
+    len -= 4;
+  }
+  if (len >= 2)
+  {
+    g_eventLogger->info("%x %x",
+                        ptr[0],
+                        ptr[1]);
+    ptr+= 2;
+    len -= 2;
+  }
+  if (len > 0)
+  {
+    g_eventLogger->info("%x",
+                        ptr[0]);
+  }
+}
 #endif
 
 /**
@@ -3914,6 +3959,9 @@ Logfile_client::add_entry_complex(const Change* src,
     jamBlock(m_client_block);
     return add_entry_simple(src, cnt, alloc_size, true);
   }
+#ifdef DEBUG_LGMAN_SPLIT
+  log_buf_print((const Uint32*)src[1].ptr, src[1].len);
+#endif
   Lgman::Logfile_group key;
   key.m_logfile_group_id= m_logfile_group_id;
   Ptr<Lgman::Logfile_group> lg_ptr;
