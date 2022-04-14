@@ -3313,22 +3313,31 @@ Dbtup::disk_restart_undo_update_first_part(Apply_undo* undo)
 #endif
   }
 
+  /**
+   * Variable sized disk data uses a different struct to write data and
+   * thus must also calculate the pointer to the data differently to
+   * the fixed size row handling.
+   */
+  Uint32 *src;
   if ((undo->m_table_ptr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
   {
+    Disk_undo::Update_Free *update =
+      (Disk_undo::Update_Free*)undo->m_ptr;
+    src = update->m_data;
     ptr= ((Fix_page*)undo->m_page_ptr.p)->get_ptr(undo->m_key.m_page_idx, len);
     ndbrequire(len < undo->m_table_ptr.p->m_offsets[DD].m_fix_header_size);
   }
   else
   {
+    Disk_undo::Update_Free_FirstVarPart *update =
+      (Disk_undo::Update_Free_FirstVarPart*)undo->m_ptr;
+    src = update->m_data;
     Uint32 idx = undo->m_key.m_page_idx;
     Var_page *page_ptr = (Var_page*)undo->m_page_ptr.p;
     ptr = prepare_undo_varpage(page_ptr,
                                idx,
                                undo->m_tot_len);
   }
-  const Disk_undo::Update_Free *update =
-    (const Disk_undo::Update_Free*)undo->m_ptr;
-  const Uint32* src= update->m_data;
   ndbrequire(len < 2 || src[1] < Tup_page::DATA_WORDS);
 #ifdef DEBUG_UNDO_SPLIT
   log_buf_print(src, len);
