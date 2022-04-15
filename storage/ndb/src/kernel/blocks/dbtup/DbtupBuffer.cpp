@@ -259,6 +259,7 @@ void Dbtup::sendReadAttrinfo(Signal* signal,
     return;
   
   const BlockReference recBlockref= req_struct->rec_blockref;
+  ndbassert(refToMain(recBlockref) != 32770);
   const Uint32 nodeId= refToNode(recBlockref);
 
   bool connectedToNode= getNodeInfo(nodeId).m_connected;
