@@ -779,7 +779,9 @@ void
 Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
 {
   Ptr<Operationrec> operPtr;
+  jam();
   operPtr.i = opRec;
+  jamData(opRec);
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
   if (operPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit)
   {
@@ -815,6 +817,8 @@ Dbtup::disk_page_load_extra_callback(Signal* signal,
 {
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
+  jam();
+  jamData(opRec);
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
   operPtr.p->m_disk_extra_callback_page = page_id;
   c_lqh->acckeyconf_load_diskpage_callback(signal, 
@@ -911,6 +915,8 @@ Dbtup::disk_page_load_scan_callback(Signal* signal,
 {
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
+  jam();
+  jamData(opRec);
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
   c_lqh->next_scanconf_load_diskpage_callback(signal, 
 					      operPtr.p->userpointer,
@@ -6703,6 +6709,8 @@ Dbtup::nr_delete_page_callback(Signal* signal,
   PagePtr pagePtr((Tup_page*)gpage.p, gpage.i);
   Dblqh::Nr_op_info op;
   op.m_ptr_i = userpointer;
+  jam();
+  jamData(userpointer);
   op.m_disk_ref.m_page_no = pagePtr.p->m_page_no;
   op.m_disk_ref.m_file_no = pagePtr.p->m_file_no;
   c_lqh->get_nr_op_info(&op, page_id);
@@ -6770,6 +6778,8 @@ Dbtup::nr_delete_log_buffer_callback(Signal* signal,
 {
   Dblqh::Nr_op_info op;
   op.m_ptr_i = userpointer;
+  jam();
+  jamData(userpointer);
   c_lqh->get_nr_op_info(&op, RNIL);
   
   FragrecordPtr fragPtr;

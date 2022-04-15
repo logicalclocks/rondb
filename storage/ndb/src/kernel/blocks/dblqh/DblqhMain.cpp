@@ -10659,6 +10659,8 @@ Dblqh::get_nr_op_info(Nr_op_info* op, Uint32 page_id)
 {
   Ptr<TcConnectionrec> tcPtr;
   tcPtr.i = op->m_ptr_i;
+  jam();
+  jamData(tcPtr.i);
   
   ndbrequire(m_curr_lqh->tcConnect_pool.getValidPtr(tcPtr));
   FragrecordPtr fragPtr;
@@ -10675,6 +10677,7 @@ Dblqh::get_nr_op_info(Nr_op_info* op, Uint32 page_id)
   
   if (page_id == RNIL)
   {
+    jam();
     // get log buffer callback
     for (Uint32 i = 0; i<2; i++)
     {
@@ -10688,6 +10691,8 @@ Dblqh::get_nr_op_info(Nr_op_info* op, Uint32 page_id)
   }
   else
   {
+    jam();
+    jamData(page_id);
     // get page callback
     for (Uint32 i = 0; i<2; i++)
     {

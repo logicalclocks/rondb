@@ -3444,6 +3444,7 @@ Dbtup::disk_restart_undo_free(Apply_undo* undo,
   {
     idx= ((Fix_page*)undo->m_page_ptr.p)->alloc_record(idx);
     Uint32 fix_header_size = undo->m_table_ptr.p->m_offsets[DD].m_fix_header_size;
+    ndbrequire(!varsized_part);
     if (full_free)
     {
       ndbrequire(len == fix_header_size);
