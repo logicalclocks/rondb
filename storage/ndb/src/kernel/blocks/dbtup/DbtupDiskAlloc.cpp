@@ -3424,8 +3424,8 @@ Dbtup::disk_restart_undo_free(Apply_undo* undo,
                     instance(),
                     undo->m_lsn,
                     full_free ?
-                      (free_str : varsized_part ?
-                        (free_var_part_str : free_part_str)),
+                      free_str : varsized_part ?
+                        free_var_part_str : free_part_str,
                     undo->m_key.m_file_no,
                     undo->m_key.m_page_no,
                     undo->m_key.m_page_idx,
