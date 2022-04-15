@@ -3074,21 +3074,21 @@ Dbtup::disk_restart_undo_callback(Signal* signal,
       case File_formats::Undofile::UNDO_TUP_FREE:
       {
         jam();
-        disk_restart_undo_free(undo, true);
+        disk_restart_undo_free(undo, true, false);
         break;
       }
       case File_formats::Undofile::UNDO_TUP_FREE_PART:
       {
         jam();
         undo->m_in_intermediate_log_record = false;
-        disk_restart_undo_free(undo, false);
+        disk_restart_undo_free(undo, false, false);
         break;
       }
       case File_formats::Undofile::UNDO_TUP_FREE_VAR_PART:
       {
         jam();
         undo->m_in_intermediate_log_record = true;
-        disk_restart_undo_free(undo, false);
+        disk_restart_undo_free(undo, false, true);
         break;
       }
       default:
@@ -3389,10 +3389,13 @@ Dbtup::disk_restart_undo_update_part(Apply_undo* undo)
 }
 
 void
-Dbtup::disk_restart_undo_free(Apply_undo* undo, bool full_free)
+Dbtup::disk_restart_undo_free(Apply_undo* undo,
+                              bool full_free,
+                              bool varsized_part)
 {
   Uint32* ptr, idx = undo->m_key.m_page_idx;
-  Uint32 len= undo->m_len - 4;
+  Uint32 header_len = varsized_part ? 5 : 4;
+  Uint32 len= undo->m_len - header_len;
 #ifdef DEBUG_UNDO_ALLOC
   {
     Uint64 lsn = 0;
@@ -3401,15 +3404,28 @@ Dbtup::disk_restart_undo_free(Apply_undo* undo, bool full_free)
     lsn += undo->m_page_ptr.p->m_page_header.m_page_lsn_lo;
     const char *free_str = (const char*)"UNDO_TUP_FREE";
     const char *free_part_str = (const char*)"UNDO_TUP_FREE_PART";
-    const Disk_undo::Update_Free *free =
-      (const Disk_undo::Update_Free*)undo->m_ptr;
-    const Uint32* src= free->m_data;
+    const char *free_var_part_str = (const char*)"UNDO_TUP_FREE_VAR_PART";
+    Uint32 *src;
+    if (!varsized_part)
+    {
+      Disk_undo::Update_Free *free =
+        (Disk_undo::Update_Free*)undo->m_ptr;
+      src= free->m_data;
+    }
+    else
+    {
+      Disk_undo::Update_Free_FirstVarPart *free =
+        (Disk_undo::Update_Free_FirstVarPart*)undo->m_ptr;
+      src= free->m_data;
+    }
     DEB_UNDO_ALLOC(("(%u)applying %lld %s on page(%u,%u).%u, page_lsn:"
                     " %llu idx:%u, tab(%u,%u), flag: %u,"
                     " data[%u,%u], len: %u, ptr: %p",
                     instance(),
                     undo->m_lsn,
-                    full_free ? free_str : free_part_str,
+                    full_free ?
+                      (free_str : varsized_part ?
+                        (free_var_part_str : free_part_str)),
                     undo->m_key.m_file_no,
                     undo->m_key.m_page_no,
                     undo->m_key.m_page_idx,
@@ -3442,7 +3458,7 @@ Dbtup::disk_restart_undo_free(Apply_undo* undo, bool full_free)
   {
     Var_page *page_ptr = (Var_page*)undo->m_page_ptr.p;
     Uint32 alloc_len = len;
-    if (!full_free)
+    if (varsized_part)
     {
       jam();
       alloc_len = undo->m_tot_len;
@@ -3464,9 +3480,19 @@ Dbtup::disk_restart_undo_free(Apply_undo* undo, bool full_free)
     jamLine((lsn >> 48) & 0xFFFF);
     ndbabort();
   }
-  const Disk_undo::Update_Free *free =
-    (const Disk_undo::Update_Free*)undo->m_ptr;
-  const Uint32* src= free->m_data;
+  Uint32 *src;
+  if (!varsized_part)
+  {
+    Disk_undo::Update_Free *free =
+      (Disk_undo::Update_Free*)undo->m_ptr;
+    src= free->m_data;
+  }
+  else
+  {
+    Disk_undo::Update_Free_FirstVarPart *free =
+      (Disk_undo::Update_Free_FirstVarPart*)undo->m_ptr;
+    src= free->m_data;
+  }
   ndbrequire(src[1] < Tup_page::DATA_WORDS);
   memcpy(ptr, src, 4 * len);
 }

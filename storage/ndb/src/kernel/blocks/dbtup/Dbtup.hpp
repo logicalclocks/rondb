@@ -4314,7 +4314,7 @@ private:
   void disk_restart_undo_update(Apply_undo*);
   void disk_restart_undo_update_first_part(Apply_undo*);
   void disk_restart_undo_update_part(Apply_undo*);
-  void disk_restart_undo_free(Apply_undo*, bool);
+  void disk_restart_undo_free(Apply_undo*, bool, bool);
   void disk_restart_undo_page_bits(Signal*, Apply_undo*);
 
 #ifdef VM_TRACE
