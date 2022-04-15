@@ -2497,7 +2497,7 @@ Logfile_client::Logfile_client(SimulatedBlock* block,
   m_lock = lock;
   m_logfile_group_id= logfile_group_id;
   D("client ctor " << bno << "/" << ino);
-  if (m_lock)
+  require(m_lock);
   {
     jamBlock(block);
     m_lgman->client_lock(m_block, 0, block);
@@ -2511,8 +2511,8 @@ Logfile_client::~Logfile_client()
   Uint32 ino = blockToInstance(m_block);
 #endif
   D("client dtor " << bno << "/" << ino);
-  if (m_lock)
-    m_lgman->client_unlock(m_block, 0, m_client_block);
+  require(m_lock);
+  m_lgman->client_unlock(m_block, 0, m_client_block);
 }
 
 bool

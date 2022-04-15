@@ -3228,9 +3228,11 @@ Tablespace_client::get_tablespace_info(CreateFilegroupImplReq* rep)
     Uint32 logfile_group_id = ts_ptr.p->m_logfile_group_id;
     // ctor is used here only for logging
     D("Logfile_client - get_tablespace_info");
-    Logfile_client lgman(m_tsman, m_tsman->m_lgman, logfile_group_id, false);
-    rep->tablespace.extent_size = ts_ptr.p->m_extent_size;
-    rep->tablespace.logfile_group_id = lgman.m_logfile_group_id;
+    {
+      Logfile_client lgman(m_tsman, m_tsman->m_lgman, logfile_group_id);
+      rep->tablespace.extent_size = ts_ptr.p->m_extent_size;
+      rep->tablespace.logfile_group_id = lgman.m_logfile_group_id;
+    }
     return 0;
   }
   return -1;

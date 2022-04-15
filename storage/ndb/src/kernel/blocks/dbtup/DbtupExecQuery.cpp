@@ -5917,8 +5917,8 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                */
               jam();
               m_base_header_bits |= Tuple_header::DISK_REORG;
+              Uint32 undo_len = sizeof(Dbtup::Disk_undo::Alloc) >> 2;
               {
-                Uint32 undo_len = sizeof(Dbtup::Disk_undo::Alloc) >> 2;
                 Logfile_client lgman(this,
                                      c_lgman,
                                      regFragPtr->m_logfile_group_id);
@@ -5931,32 +5931,32 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                   true,
                   !req_struct->m_nr_copy_or_redo,
                   jamBuffer());
-                if (unlikely(terrorCode))
-                {
-                  jam();
-                  return -1;
-                }
-                jamDebug();
-                jamDataDebug(regOperPtr->m_undo_buffer_space);
-                jamDataDebug(undo_len);
-                regOperPtr->m_undo_buffer_space += undo_len;
-                jamDataDebug(regOperPtr->m_undo_buffer_space);
-                if (regOperPtr->m_uncommitted_used_space > 0)
-                {
-                  /**
-                   * We have allocated space on the original row page.
-                   * We need to release this extra memory already now.
-                   * The memory used by the original row will be released
-                   * at commit time if the operation is committed.
-                   */
-                  jam();
-                  disk_page_abort_prealloc(
-                    signal,
-                    regFragPtr,
-                    &key,
-                    regOperPtr->m_uncommitted_used_space);
-                  regOperPtr->m_uncommitted_used_space = 0;
-                }
+              }
+              if (unlikely(terrorCode))
+              {
+                jam();
+                return -1;
+              }
+              jamDebug();
+              jamDataDebug(regOperPtr->m_undo_buffer_space);
+              jamDataDebug(undo_len);
+              regOperPtr->m_undo_buffer_space += undo_len;
+              jamDataDebug(regOperPtr->m_undo_buffer_space);
+              if (regOperPtr->m_uncommitted_used_space > 0)
+              {
+                /**
+                 * We have allocated space on the original row page.
+                 * We need to release this extra memory already now.
+                 * The memory used by the original row will be released
+                 * at commit time if the operation is committed.
+                 */
+                jam();
+                disk_page_abort_prealloc(
+                  signal,
+                  regFragPtr,
+                  &key,
+                  regOperPtr->m_uncommitted_used_space);
+                regOperPtr->m_uncommitted_used_space = 0;
               }
             }
             Local_key new_key;
@@ -6585,7 +6585,6 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
     Uint32 entry_len;
     Uint32 size_len;
 
-    {
     /**
      * 1) get page
      * 2) alloc log buffer
@@ -6659,16 +6658,16 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
 
       }
       D("Logfile_client - nr_delete");
-      Logfile_client lgman(this, c_lgman, fragPtr.p->m_logfile_group_id);
-      res = lgman.alloc_log_space(sz, false, false, jamBuffer());
-      ndbrequire(res == 0);
-    
-      /* Complete work on LGMAN before setting page to dirty */
-      CallbackPtr cptr;
-      cptr.m_callbackIndex = NR_DELETE_LOG_BUFFER_CALLBACK;
-      cptr.m_callbackData = senderData;
-      res= lgman.get_log_buffer(signal, sz, &cptr);
-    }
+      {
+        Logfile_client lgman(this, c_lgman, fragPtr.p->m_logfile_group_id);
+        res = lgman.alloc_log_space(sz, false, false, jamBuffer());
+        ndbrequire(res == 0);
+        /* Complete work on LGMAN before setting page to dirty */
+        CallbackPtr cptr;
+        cptr.m_callbackIndex = NR_DELETE_LOG_BUFFER_CALLBACK;
+        cptr.m_callbackData = senderData;
+        res= lgman.get_log_buffer(signal, sz, &cptr);
+      }
     } // Unlock the LGMAN lock
 
     PagePtr disk_page((Tup_page*)diskPagePtr.p, diskPagePtr.i);
@@ -6737,17 +6736,16 @@ Dbtup::nr_delete_page_callback(Signal* signal,
     sz = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) +
            (entry_len - 1);
   }
-
-  Logfile_client lgman(this, c_lgman, fragPtr.p->m_logfile_group_id);
-  int res = lgman.alloc_log_space(sz, false, false, jamBuffer());
-  ndbrequire(res == 0);
-
-  CallbackPtr cb;
-  cb.m_callbackData = userpointer;
-  cb.m_callbackIndex = NR_DELETE_LOG_BUFFER_CALLBACK;
+  int res;
   {
-    D("Logfile_client - nr_delete_page_callback");
     Logfile_client lgman(this, c_lgman, fragPtr.p->m_logfile_group_id);
+    res = lgman.alloc_log_space(sz, false, false, jamBuffer());
+    ndbrequire(res == 0);
+
+    CallbackPtr cb;
+    cb.m_callbackData = userpointer;
+    cb.m_callbackIndex = NR_DELETE_LOG_BUFFER_CALLBACK;
+    D("Logfile_client - nr_delete_page_callback");
     res= lgman.get_log_buffer(signal, sz, &cb);
   }
   switch(res){

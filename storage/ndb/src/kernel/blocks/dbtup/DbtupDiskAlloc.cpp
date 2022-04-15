@@ -1461,8 +1461,11 @@ Dbtup::disk_page_prealloc_initial_callback(Signal*signal,
    * LSN 0 which isn't ok if the page was previously used.
    */
   Uint32 logfile_group_id= fragPtr.p->m_logfile_group_id;
-  Logfile_client lgman(this, c_lgman, logfile_group_id);
-  Uint64 lsn = lgman.get_latest_lsn();
+  Uint64 lsn;
+  {
+    Logfile_client lgman(this, c_lgman, logfile_group_id);
+    lsn = lgman.get_latest_lsn();
+  }
   Page_cache_client pgman(this, c_pgman);
   pgman.set_lsn(req.p->m_key, lsn);
   DEB_PGMAN_IO(("(%u) Get empty page (%u,%u) set LSN: %llu"

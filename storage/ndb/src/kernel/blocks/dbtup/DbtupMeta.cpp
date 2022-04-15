@@ -2169,8 +2169,11 @@ void Dbtup::releaseFragment(Signal* signal, Uint32 tableId,
     cb.m_callbackIndex = DROP_TABLE_LOG_BUFFER_CALLBACK;
     Uint32 sz= sizeof(Disk_undo::Drop) >> 2;
     D("Logfile_client - releaseFragment");
-    Logfile_client lgman(this, c_lgman, logfile_group_id);
-    int r0 = lgman.alloc_log_space(sz, false, false, jamBuffer());
+    int r0;
+    {
+      Logfile_client lgman(this, c_lgman, logfile_group_id);
+      r0 = lgman.alloc_log_space(sz, false, false, jamBuffer());
+    }
     jamEntry();
     if (r0)
     {
@@ -2179,8 +2182,11 @@ void Dbtup::releaseFragment(Signal* signal, Uint32 tableId,
  		   tabPtr.i);
       goto done;
     }
-
-    int res= lgman.get_log_buffer(signal, sz, &cb);
+    int res;
+    {
+      Logfile_client lgman(this, c_lgman, logfile_group_id);
+      res= lgman.get_log_buffer(signal, sz, &cb);
+    }
     jamEntry();
     switch(res){
     case 0:
@@ -2188,7 +2194,10 @@ void Dbtup::releaseFragment(Signal* signal, Uint32 tableId,
       return;
     case -1:
       jam();
-      lgman.free_log_space(sz, jamBuffer());
+      {
+        Logfile_client lgman(this, c_lgman, logfile_group_id);
+        lgman.free_log_space(sz, jamBuffer());
+      }
       g_eventLogger->warning("Out of space in RG_TRANSACTION_MEMORY resource,"
                              " increase config parameter GlobalSharedMemory");
       warningEvent("Failed to get log buffer for drop table: %u",
