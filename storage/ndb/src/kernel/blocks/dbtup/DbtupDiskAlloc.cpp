@@ -1805,7 +1805,32 @@ Dbtup::disk_page_alloc(Signal* signal,
     pagePtr.p->uncommitted_used_space -= sz;
     key->m_page_idx= ((Var_page*)pagePtr.p)->
       alloc_record(sz, (Var_page*)ctemp_page, 0);
-    
+
+    /**
+     * We have allocated space on the page, this might include increasing
+     * the directory space or not. Normally we take height for increasing
+     * the directory, thus we could have used less space than we
+     * requested as uncommitted used space and this might move the page
+     * to a new extent index although improbable.
+     */
+    Uint32 old_idx = pagePtr.p->list_index;
+    Uint32 new_free = pagePtr.p->free_space;
+    Uint32 used = pagePtr.p->uncommitted_used_space;
+    ndbrequire(new_free >= used);
+    Uint32 new_idx = alloc.calc_page_free_bits(new_free - used);
+    if (new_idx != old_idx)
+    {
+      jam();
+      Uint32 ext = pagePtr.p->m_extent_info_ptr;
+      Ptr<Extent_info> extentPtr;
+      c_extent_pool.getPtr(extentPtr, ext);
+      disk_page_move_dirty_page(alloc,
+                                extentPtr,
+                                pagePtr,
+                                old_idx,
+                                new_idx,
+                                fragPtrP);
+    }
     lsn= disk_page_undo_alloc(signal,
                               pagePtr.p,
                               key,
@@ -1911,7 +1936,6 @@ Dbtup::disk_page_free(Signal *signal,
     
     ((Var_page*)pagePtr.p)->free_record(page_idx, 0);
   }
-  
   DEB_PGMAN((
     "(%u)disk_page_free:tab(%u,%u):%u,page(%u,%u).%u.%u,gci:%u,row(%u,%u)"
     ", lsn=%llu, undo_len: %u",
@@ -1929,8 +1953,14 @@ Dbtup::disk_page_free(Signal *signal,
              lsn,
              undo_len));
 
+
+  /**
+   * We have free'd space on the page, this might include free'ing some
+   * directory space, thus it is important to here check that the page
+   * is still in the correct extent index (0-3). If not move it to the
+   * new extent index.
+   */
   Uint32 new_free = pagePtr.p->free_space;
-  
   Uint32 ext = pagePtr.p->m_extent_info_ptr;
   Uint32 used = pagePtr.p->uncommitted_used_space;
   Uint32 old_idx = pagePtr.p->list_index;

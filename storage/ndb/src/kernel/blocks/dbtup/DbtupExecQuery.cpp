@@ -2953,7 +2953,7 @@ int Dbtup::handleInsertReq(Signal* signal,
       Local_key tmp;
       Uint32 size =
         ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0) ?
-          1 : sizes[2+DD];
+          1 : (sizes[2+DD] + 1);
 
       jamDebug();
       jamDataDebug(size);
@@ -5859,7 +5859,6 @@ Dbtup::handle_size_change_after_update(Signal *signal,
           }
           else
           {
-            jam();
             /**
              * The new row size doesn't fit in the current disk page. We
              * need to allocate a new row in a new page to accomodate
@@ -5960,6 +5959,11 @@ Dbtup::handle_size_change_after_update(Signal *signal,
               }
             }
             Local_key new_key;
+            if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
+            {
+              /* Add extra word to handle possible directory size increase.*/
+              new_size++;
+            }
             int ret = disk_page_prealloc(signal,
                                          prepare_fragptr,
                                          regTabPtr,
@@ -5971,6 +5975,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
               terrorCode = -ret;
               return ret;
             }
+            new_key.m_page_idx = new_size;
             regOperPtr->m_uncommitted_used_space = 0;
             memcpy(org->get_disk_ref_ptr(regTabPtr),
                    &new_key,
