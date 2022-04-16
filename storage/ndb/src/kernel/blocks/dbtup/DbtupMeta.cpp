@@ -897,7 +897,7 @@ void Dbtup::execTUPFRAGREQ(Signal* signal)
       D("Tablespace_client - execTUPFRAGREQ");
       Tablespace_client tsman(0, this, c_tsman, 0, 0, 0,
                               regFragPtr.p->m_tablespace_id);
-      ndbrequire(tsman.get_tablespace_info(&rep) == 0);
+      ndbrequire(tsman.get_tablespace_info(this, &rep) == 0);
       regFragPtr.p->m_logfile_group_id= rep.tablespace.logfile_group_id;
     }
     {

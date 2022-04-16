@@ -440,7 +440,7 @@ public:
    * Return  0 - on sucess
    *        <0 - on error
    */
-  int get_tablespace_info(CreateFilegroupImplReq* rep);
+  int get_tablespace_info(SimulatedBlock*, CreateFilegroupImplReq* rep);
 
   /**
    * Update lsn of page corresponing to key

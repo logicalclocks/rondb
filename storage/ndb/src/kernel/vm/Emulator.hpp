@@ -49,7 +49,7 @@ extern class SignalLoggerManager globalSignalLoggers;
 #endif
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
-#define EMULATED_JAM_SIZE 32768
+#define EMULATED_JAM_SIZE 65536
 #else
 // Keep jam buffer small for optimized build to improve locality of reference.
 #define EMULATED_JAM_SIZE 1024
