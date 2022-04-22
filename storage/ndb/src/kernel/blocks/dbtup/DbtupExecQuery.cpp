@@ -413,6 +413,8 @@ Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
     regOperPtr.p->op_struct.bit_field.m_tuple_existed_at_start=
       prevOpPtr.p->op_struct.bit_field.m_tuple_existed_at_start;
     regOperPtr.p->m_undo_buffer_space= prevOpPtr.p->m_undo_buffer_space;
+    regOperPtr.p->m_uncommitted_used_space =
+      prevOpPtr.p->m_uncommitted_used_space;
     // start with prev mask (matters only for UPD o UPD)
 
     regOperPtr.p->m_any_value = prevOpPtr.p->m_any_value;
@@ -421,7 +423,7 @@ Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
     prevOpPtr.p->op_struct.bit_field.m_load_diskpage_on_commit= 0;
     prevOpPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit= 0;
 
-    if(prevOpPtr.p->tuple_state == TUPLE_PREPARED)
+    if (prevOpPtr.p->tuple_state == TUPLE_PREPARED)
     {
       Uint32 op= regOperPtr.p->op_type;
       Uint32 prevOp= prevOpPtr.p->op_type;

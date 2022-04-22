@@ -1230,11 +1230,10 @@ Dbtup::commit_operation(Signal* signal,
             vpagePtrP->grow_entry(key.m_page_idx, add);
           }
           ndbrequire(regOperPtr->m_uncommitted_used_space >= add);
-          regOperPtr->m_uncommitted_used_space -= add;
         }
         /**
-         * Update the list which the page is located in and return any
-         * overflow uncommitted used space.
+         * Update the list which the page is located in and return the
+         * uncommitted used space to the page.
          */
         ndbrequire(vpagePtrP->uncommitted_used_space >=
                    regOperPtr->m_uncommitted_used_space);
