@@ -1913,7 +1913,6 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
   total_rec_size[MM] += COPY_TUPLE_HEADER32;
 
   regTabPtr->total_rec_size= total_rec_size[MM] + total_rec_size[DD];
-  regTabPtr->m_max_disk_part_size = total_rec_size[DD];
 
   DEB_TUP_META(("New total_rec_size set to %u", total_rec_size));
 

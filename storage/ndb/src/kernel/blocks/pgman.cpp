@@ -1329,6 +1329,7 @@ Pgman::process_bind(Signal* signal,
     // under unusual circumstances it could still be paging in
     if (! (clean_state & Page_entry::MAPPED) ||
         clean_state & Page_entry::DIRTY ||
+        clean_state & Page_entry::BUSY ||
         clean_state & Page_entry::REQUEST)
     {
       thrjam(jamBuf);
@@ -1584,13 +1585,8 @@ Pgman::process_cleanup(Signal* signal)
   {
     Page_state state = ptr.p->m_state;
     ndbrequire(! (state & Page_entry::LOCKED));
-    if (state & Page_entry::BUSY)
-    {
-      D("process_cleanup: break on busy page");
-      D(ptr);
-      break;
-    }
     if (state & Page_entry::DIRTY &&
+        ! (state & Page_entry::BUSY) &&
         ! (state & Page_entry::PAGEIN) &&
         ! (state & Page_entry::PAGEOUT))
     {
@@ -4103,6 +4099,39 @@ Pgman::get_page_no_lirs(EmulatedJamBuffer* jamBuf, Signal* signal,
   m_get_page_calls_issued++;
   Uint32 req_flags = page_req.m_flags;
 
+  if (req_flags & Page_request::DEREF_REQ)
+  {
+    /**
+     * Call only to decrease reference count, should always be
+     * success. Cannot be combined with any other flag.
+     */
+    thrjam(jamBuf);
+    ndbrequire(req_flags == Page_request::DEREF_REQ);
+    ndbrequire(ptr.p->m_busy_count > 0);
+    ptr.p->m_busy_count--;
+    if (ptr.p->m_busy_count == 0)
+    {
+      thrjam(jamBuf);
+      Page_state state = ptr.p->m_state;
+      state &= ~ Page_entry::BUSY;
+      bool busy_lcp = false;
+      if (state & Page_entry::WAIT_LCP)
+      {
+        thrjam(jamBuf);
+        state &= ~ Page_entry::WAIT_LCP;
+        busy_lcp = true;
+      }
+      set_page_state(jamBuf, ptr, state);
+      if (busy_lcp)
+      {
+        thrjam(jamBuf);
+        ndbrequire((state & Page_entry::LOCKED) == 0);
+        ndbrequire(ptr.p->m_table_id != RNIL);
+        start_lcp_loop(signal);
+      }
+    }
+    return 1;
+  }
   if (req_flags & Page_request::EMPTY_PAGE)
   {
     thrjam(jamBuf);
@@ -4124,7 +4153,12 @@ Pgman::get_page_no_lirs(EmulatedJamBuffer* jamBuf, Signal* signal,
     thrjam(jamBuf);
     state |= Page_entry::LOCKED;
   }
-  
+  if (req_flags & Page_request::REF_REQ)
+  {
+    thrjam(jamBuf);
+    ptr.p->m_busy_count++;
+    state |= Page_entry::BUSY;
+  }
   if (req_flags & Page_request::ALLOC_REQ)
   {
     /**
@@ -4782,6 +4816,7 @@ Pgman::drop_page(Ptr<Page_entry> ptr, EmulatedJamBuffer *jamBuf)
     if (state & Page_entry::BUSY)
     {
       thrjam(jamBuf);
+      ptr.p->m_busy_count = 0;
       state &= ~ Page_entry::BUSY;
     }
 

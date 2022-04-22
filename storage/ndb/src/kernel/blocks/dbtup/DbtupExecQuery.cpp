@@ -706,7 +706,15 @@ Dbtup::load_diskpage(Signal* signal,
       req.m_delay_until_time = NdbTick_AddMilliseconds(now,delay);
     }
 #endif
-    
+
+    if (regOperPtr->op_struct.bit_field.m_load_extra_diskpage_on_commit)
+    {
+      /**
+       * We will request 2 pages and need to ensure that the first page
+       * isn't paged out while we are paging in the second page.
+       */
+      flags |= Page_cache_client::REF_REQ;
+    }
     Page_cache_client pgman(this, c_pgman);
     res= pgman.get_page(signal, req, flags);
   }
@@ -748,11 +756,13 @@ Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec, Uint32 flags)
   operPtr.i = opRec;
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
   PagePtr page_ptr;
-  Uint32* tmp = get_ptr(&page_ptr,
-                        &operPtr.p->m_tuple_location,
-                        regTabPtr);
-  Tuple_header* ptr= (Tuple_header*)tmp;
+  ndbassert(!operPtr.p->m_copy_tuple_location.isNull());
+  Tuple_header *ptr = get_copy_tuple(&operPtr.p->m_copy_tuple_location);
   jamEntry();
+  /**
+   * We will never need an extra disk page if the first operation was an
+   * INSERT operation. This means that DISK_PART must be set on the row.
+   */
   ndbrequire(ptr->m_header_bits & Tuple_header::DISK_PART);
   Page_cache_client::Request req;
   memcpy(&req.m_page,
@@ -771,8 +781,45 @@ Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec, Uint32 flags)
   {
     jam();
     operPtr.p->m_disk_extra_callback_page = Uint32(res);
+    deref_disk_page(signal,
+                    operPtr,
+                    regFragPtr,
+                    regTabPtr);
   }
   return res;
+}
+
+void
+Dbtup::deref_disk_page(Signal *signal,
+                       OperationrecPtr operPtr,
+                       Fragrecord *regFragPtr,
+                       Tablerec *regTabPtr)
+{
+  PagePtr page_ptr;
+  Tuple_header* ptr;
+  jamDebug();
+  Uint32* tmp= get_ptr(&page_ptr, &operPtr.p->m_tuple_location, regTabPtr);
+  ptr = (Tuple_header*)tmp;
+  Page_cache_client::Request req;
+  memcpy(&req.m_page, ptr->get_disk_ref_ptr(regTabPtr), sizeof(Local_key));
+  req.m_table_id = regFragPtr->fragTableId;
+  req.m_fragment_id = regFragPtr->fragmentId;
+  req.m_callback.m_callbackData = operPtr.i;
+  req.m_callback.m_callbackFunction= 
+    safe_cast(&Dbtup::deref_disk_page_callback);
+  Page_cache_client pgman(this, c_pgman);
+  Uint32 flags = Page_cache_client::DEREF_REQ;
+  int res = pgman.get_page(signal, req, flags);
+  ndbrequire(res > 0);
+}
+
+void
+Dbtup::deref_disk_page_callback(Signal *signal, Uint32 opRec, Uint32 page_id)
+{
+  (void)signal;
+  (void)opRec;
+  (void)page_id;
+  ndbabort();
 }
 
 void
@@ -804,6 +851,8 @@ Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
      */
     ;
     jam();
+    c_lqh->setup_key_pointers(operPtr.p->userpointer);
+    operPtr.p->m_disk_callback_page = page_id;
   }
   c_lqh->acckeyconf_load_diskpage_callback(signal, 
                                            operPtr.p->userpointer,
@@ -813,14 +862,23 @@ Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
 void
 Dbtup::disk_page_load_extra_callback(Signal* signal,
                                      Uint32 opRec,
-                                     Uint32 page_id)
+                                     Uint32 extra_page_id)
 {
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
   jam();
   jamData(opRec);
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(operPtr));
-  operPtr.p->m_disk_extra_callback_page = page_id;
+  operPtr.p->m_disk_extra_callback_page = extra_page_id;
+  Uint32 page_id = operPtr.p->m_disk_callback_page;
+  c_lqh->setup_key_pointers(operPtr.p->userpointer);
+  operPtr.p->m_disk_callback_page = page_id;
+  Fragrecord * regFragPtr = prepare_fragptr.p;
+  Tablerec* regTabPtr = prepare_tabptr.p;
+  deref_disk_page(signal,
+                  operPtr,
+                  regFragPtr,
+                  regTabPtr);
   c_lqh->acckeyconf_load_diskpage_callback(signal, 
 					   operPtr.p->userpointer,
                                            operPtr.p->m_disk_callback_page);
@@ -1317,7 +1375,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
    const Uint32 keyRef1 = tupKeyReq->keyRef1;
    const Uint32 keyRef2 = tupKeyReq->keyRef2;
 
-   req_struct.m_disk_page_ptr.i= disk_page;
+   req_struct.m_disk_page_ptr.i = disk_page;
    /**
     * The pageid here is a page id of a row id except when we are
     * reading from an ordered index scan, in this case it is a
@@ -1661,6 +1719,23 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
        {
          return false;
        }
+       /**
+        * The lock on the TUP fragment is required to update header info on
+        * the base row, thus we use the variable m_base_header_bits in
+        * handleUpdateReq and postpone updating the checksum under mutex
+        * protection until after completing the call to handleUpdateReq.
+        * This shortens the time we hold the mutex on the fragment part this
+        * row belongs to.
+        *
+        * We can execute other key reads from the query thread concurrently,
+        * thus we need to acquire a mutex while inserting the operation
+        * into the linked list of operations on the row.
+        *
+        * Scans will not run in parallel with parallel updates. So the lock
+        * on triggers is since we need to set the operation record in the
+        * row header before executing the triggers. There is no need for the
+        * lock though during execution of the immediate triggers.
+        */
        jamDebug();
        acquire_frag_mutex(regFragPtr, pageid);
        if (tuple_ptr->m_header_bits != m_base_header_bits)
@@ -1673,19 +1748,6 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
                         old_header,
                         tuple_ptr->m_header_bits);
        }
-       /**
-        * We can execute other key reads from the query thread concurrently,
-        * thus we need to acquire a mutex while inserting the operation
-        * into the linked list of operations on the row.
-        *
-        * Scans will not run in parallel with parallel updates. So the lock
-        * on triggers is since we need to set the operation record in the
-        * row header before executing the triggers.
-        *
-        * The lock on the TUP fragment is required to update header info on
-        * the base row, thus we acquire the mutex even before calling
-        * handleUpdateReq.
-        */
        insertActiveOpList(operPtr, &req_struct, tuple_ptr);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
        /* Verify that we didn't mess up the checksum */
@@ -2941,7 +3003,6 @@ int Dbtup::handleInsertReq(Signal* signal,
        (Tuple_header::LCP_SKIP | Tuple_header::LCP_DELETE);
     base->m_header_bits= Tuple_header::ALLOC |
       (sizes[2+MM] > 0 ? Tuple_header::VAR_PART : 0) |
-      (sizes[2+DD] > 0 ? Tuple_header::DISK_VAR_PART : 0) |
       old_header_keep;
     if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
     {
@@ -3149,6 +3210,7 @@ int Dbtup::handleDeleteReq(Signal* signal,
                            KeyReqStruct *req_struct,
 			   bool disk)
 {
+  Uint32 copy_bits = 0;
   Tuple_header* dst = alloc_copy_tuple(regTabPtr,
                                        &regOperPtr->m_copy_tuple_location);
   if (unlikely(dst == 0))
@@ -3172,14 +3234,24 @@ int Dbtup::handleDeleteReq(Signal* signal,
              get_copy_tuple_raw(&regOperPtr->m_copy_tuple_location));
     memcpy(dst, org, 4 * len);
     req_struct->m_tuple_ptr = dst;
+    copy_bits = org->m_header_bits;
+    if (regTabPtr->m_no_of_disk_attributes)
+    {
+      ndbrequire(disk);
+      memcpy(dst->get_disk_ref_ptr(regTabPtr),
+	     req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr),
+             sizeof(Local_key));
+    }
   }
   else
   {
     regOperPtr->op_struct.bit_field.tupVersion=
       req_struct->m_tuple_ptr->get_tuple_version();
+    dst->m_header_bits = req_struct->m_tuple_ptr->m_header_bits;
+    copy_bits = dst->m_header_bits;
     if (regTabPtr->m_no_of_disk_attributes)
     {
-      dst->m_header_bits = req_struct->m_tuple_ptr->m_header_bits;
+      ndbrequire(disk);
       memcpy(dst->get_disk_ref_ptr(regTabPtr),
 	     req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr),
              sizeof(Local_key));
@@ -3191,9 +3263,13 @@ int Dbtup::handleDeleteReq(Signal* signal,
   if (disk && regOperPtr->m_undo_buffer_space == 0)
   {
     jam();
+    ndbrequire(!(copy_bits & Tuple_header::DISK_ALLOC));
     regOperPtr->op_struct.bit_field.m_wait_log_buffer = 1;
     regOperPtr->op_struct.bit_field.m_load_diskpage_on_commit = 1;
     /**
+     * Arriving here we cannot have the flag DISK_ALLOC set since
+     * this would require m_undo_buffer_space to be set > 0.
+     *
      * The length of the disk part is retrieved in get_dd_info,
      * this method retrieves a few other things that we are not
      * interested in here, so use dummy variables for those.
@@ -3210,25 +3286,30 @@ int Dbtup::handleDeleteReq(Signal* signal,
      * we need to allocate space in the log buffer before actually
      * writing the UNDO log. The actual write to the UNDO log happens
      * as a background task that writes from the UNDO log buffer.
-     *
-     * In the case of supporting variable sized disk data rows we will
-     * not at this point know what the original size of the row is.
-     * The reason is that during Prepare Delete processing we don't
-     * require the disk part to be read in from disk. To handle this
-     * we allocate space in the UNDO log for the maximum size of the
-     * disk part row. We will return this at commit time without
-     * using more than required.
      */
     Uint32 undo_len;
     if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)
     {
+      jamDebug();
       undo_len = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) +
         (regTabPtr->m_offsets[DD].m_fix_header_size - 1);
     }
     else
     {
+      jamDebug();
+      Local_key key;
+      const Uint32 *disk_ref = dst->get_disk_ref_ptr(regTabPtr);
+      memcpy(&key, disk_ref, sizeof(key));
+      key.m_page_no= req_struct->m_disk_page_ptr.i;
+      ndbrequire(key.m_page_idx < Tup_page::DATA_WORDS);
+      Uint32 disk_len = 0;
+      Uint32 *src_ptr = get_dd_info(&req_struct->m_disk_page_ptr,
+                                    key,
+                                    regTabPtr,
+                                    disk_len);
+      (void)src_ptr;
       undo_len = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2) +
-        (regTabPtr->m_max_disk_part_size - 1);
+        (disk_len - 1);
     }
     regOperPtr->m_undo_buffer_space = undo_len;
     jamDebug();
@@ -5036,8 +5117,8 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
             flex_len = vp->m_len;
             flex_data = vp->m_data;
             req_struct->m_varpart_page_ptr[DD] = req_struct->m_page_ptr;
+            sizes[DD] += flex_len;
           }
-          sizes[DD] += flex_len;
         }
       }
       else
@@ -5355,7 +5436,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
          */
         ndbrequire(bits & Tuple_header::COPY_TUPLE);
         src_ptr += disk_fix_header_size;
-        if ((bits & Tuple_header::DISK_VAR_PART) != 0)
+        if (bits & Tuple_header::DISK_VAR_PART)
         {
           thrjam(req_struct->jamBuffer);
           Varpart_copy* vp = (Varpart_copy*)src_ptr;
@@ -5785,185 +5866,103 @@ Dbtup::handle_size_change_after_update(Signal *signal,
        */
       if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
       {
-        Local_key key;
-        const Uint32 *disk_ref= org->get_disk_ref_ptr(regTabPtr);
-        memcpy(&key, disk_ref, sizeof(key));
         PagePtr diskPagePtr = req_struct->m_disk_page_ptr;
         Uint32 free = diskPagePtr.p->free_space;
         Uint32 used = diskPagePtr.p->uncommitted_used_space;
-        Uint32 curr_size;
-        if (copy_bits & Tuple_header::DISK_ALLOC)
-        {
-          jam();
-          /**
-           * Size is found in disk page reference when the first operation
-           * was an INSERT.
-           *
-           * The disk page hasn't been touched yet, so know nothing about
-           * the size of the new row yet.
-           */
-          curr_size = key.m_page_idx;
-        }
-        else
-        {
-          jam();
-          curr_size =
-            ((Var_page*)diskPagePtr.p)->get_entry_len(key.m_page_idx);
-        }
         Uint32 new_size = sizes[2+DD];
         bool disk_alloc_flag = copy_bits & Tuple_header::DISK_ALLOC;
-        bool disk_reorg_flag = copy_bits & Tuple_header::DISK_REORG;
-        bool disk_move_flag = disk_alloc_flag || disk_reorg_flag;
-        bool not_disk_move_flag = !disk_move_flag;
-        if (new_size > curr_size)
+        bool disk_reorg_flag = bits & Tuple_header::DISK_REORG;
+        if (unlikely(disk_alloc_flag || disk_reorg_flag))
         {
-          /* Disk part row grows from original size */
-          Int32 add = new_size - curr_size;
-          if ((used + add) <= free && not_disk_move_flag)
+          jamDebug();
+          ndbrequire(regOperPtr->m_uncommitted_used_space == 0);
+          /**
+           * disk_alloc_flag true:
+           * We started the transaction without a row in this position.
+           * Thus this must be a multi-row operation that either
+           * re-inserts the row or updates the row with a new size.
+           *
+           * In this case we have allocated the row in a page which we
+           * have access to, thus we can either change the size used by
+           * this page or move the row to a new page.
+           *
+           * disk_reorg_flag true:
+           * We have already previously moved to a new disk page.
+           * Thus we need to check if the new page is large enough
+           * handle also the new size of the row. This is very
+           * similar to the handling of a row operation that starts
+           * with an initial insert operation.
+           *
+           * One difference is that the size of the new page is found
+           * in the copy row. Another difference is that diskPagePtr
+           * refers to the original page and thus using
+           * disk_page_abort_prealloc_callback_1 directly is replaced
+           * by using disk_page_abort_prealloc. We still know that
+           * the page is retrieved before reaching here, so we are
+           * safe that no real-time break will happen here.
+           */
+          Local_key key;
+          PagePtr used_pagePtr;
+          Uint32 *disk_ref;
+          if (disk_reorg_flag)
           {
+            jamDebug();
+            disk_ref = req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr);
+            used_pagePtr.i = regOperPtr->m_disk_extra_callback_page;
+            used_pagePtr.p =
+              (Page*)m_global_page_pool.getPtr(used_pagePtr.i);
+          }
+          else
+          {
+            jamDebug();
+            disk_ref= org->get_disk_ref_ptr(regTabPtr);
+            used_pagePtr = diskPagePtr;
+          }
+          memcpy(&key, disk_ref, sizeof(key));
+          Uint32 curr_size = key.m_page_idx;
+          Int32 add = new_size - curr_size;
+          if ((used + add) <= free)
+          {
+            jamDebug();
             /**
-             * Size of new row fits in the current disk page, no need
-             * to move the row to another page.
+             * The row fits in the page already used. We will either
+             * add more to the uncommitted_used_space of the page or
+             * decrease it.
              */
-            disk_page_set_dirty(diskPagePtr, regFragPtr);
-            add -= regOperPtr->m_uncommitted_used_space;
             if (add > 0)
             {
-              /**
-               * The page is in the dirty list and thus can be used by
-               * other operations to find room for new rows and extended
-               * rows. Using this method we ensure that the page is kept
-               * in the correct free list and update the extent position
-               * as well.
-               */
-              jam();
+              jamDebug();
+              disk_page_set_dirty(used_pagePtr, regFragPtr);
               disk_page_prealloc_dirty_page(regFragPtr->m_disk_alloc_info,
-                                            diskPagePtr,
-                                            diskPagePtr.p->list_index,
+                                            used_pagePtr,
+                                            used_pagePtr.p->list_index,
                                             (Uint32)add,
                                             regFragPtr);
-              regOperPtr->m_uncommitted_used_space += add;
             }
-            else if (add < 0)
+            else
             {
-              jam();
-              Uint32 decrement = (Uint32)(-add);
-              disk_page_abort_prealloc(signal,
-                                       regFragPtr,
-                                       &key,
-                                       decrement);
-              ndbrequire(regOperPtr->m_uncommitted_used_space >=
-                         decrement);
-              regOperPtr->m_uncommitted_used_space -= decrement;
+              jamDebug();
+              /**
+               * We follow the principle that we never return any preallocated
+               * storage. This would create problems if we roll back one or
+               * more operations. We cannot safely allocate storage later in
+               * the process and we cannot abort already prepared operations.
+               * Thus we avoid returning memory here.
+               */
             }
           }
           else
           {
+            ndbrequire(add > 0);
             /**
-             * The new row size doesn't fit in the current disk page. We
-             * need to allocate a new row in a new page to accomodate
-             * this. We also use this path when the original operation
-             * was an INSERT. This is mainly intended to simplify the
-             * code. We also use this path when we have already decided
-             * to move the row to a new page.
-             *
-             * We start by decreasing the uncommitted_used_space in the
-             * page before we allocate the new space. This means that
-             * we could potentially reuse the same page again.
+             * We grew out of the current page, we need to allocate a new page
+             * and deallocate the current page.
+             * We deallocate after allocating from a new page. Finally
+             * we also need to update the disk reference in the copy row.
              */
-            if (disk_alloc_flag)
-            {
-              /**
-               * The disk page was allocated previously in this multi-row
-               * operation. We can simply discard the previously allocated
-               * disk page and allocate a new one.
-               */
-              jam();
-              ndbrequire(regOperPtr->m_uncommitted_used_space == 0);
-              disk_page_abort_prealloc(signal,
-                                       regFragPtr,
-                                       &key,
-                                       key.m_page_idx);
-            }
-            else if (disk_reorg_flag)
-            {
-              /**
-               * We have already a new disk page, we need to replace this
-               * new disk page with another one, yet bigger than the
-               * previous one.
-               */
-              jam();
-              ndbrequire(regOperPtr->m_uncommitted_used_space == 0);
-              disk_page_abort_prealloc(signal,
-                                       regFragPtr,
-                                       &key,
-                                       key.m_page_idx);
-            }
-            else
-            {
-              /**
-               * The tuple existed with a disk part previously, but it will
-               * now grow beyond the size of the current disk page, thus
-               * we need to allocate another one. We cannot release the
-               * disk page in this case since it is the original disk page
-               * and might still be needed if this transaction aborts.
-               *
-               * We need to allocate log space for the UNDO of the INSERT
-               * operation that this constitutes. Record it in
-               * m_undo_buffer_space variable. Resolve the different parts
-               * of UNDO logging in retrieve_log_page before allocating
-               * the UNDO log buffer.
-               */
-              jam();
-              m_base_header_bits |= Tuple_header::DISK_REORG;
-              Uint32 undo_len = sizeof(Dbtup::Disk_undo::Alloc) >> 2;
-              {
-                Logfile_client lgman(this,
-                                     c_lgman,
-                                     regFragPtr->m_logfile_group_id);
-                DEB_LCP_LGMAN(("(%u)alloc_log_space(%u): %u",
-                               instance(),
-                               __LINE__,
-                               undo_len));
-                terrorCode = lgman.alloc_log_space(
-                  undo_len,
-                  true,
-                  !req_struct->m_nr_copy_or_redo,
-                  jamBuffer());
-              }
-              if (unlikely(terrorCode))
-              {
-                jam();
-                return -1;
-              }
-              jamDebug();
-              jamDataDebug(regOperPtr->m_undo_buffer_space);
-              jamDataDebug(undo_len);
-              regOperPtr->m_undo_buffer_space += undo_len;
-              jamDataDebug(regOperPtr->m_undo_buffer_space);
-              if (regOperPtr->m_uncommitted_used_space > 0)
-              {
-                /**
-                 * We have allocated space on the original row page.
-                 * We need to release this extra memory already now.
-                 * The memory used by the original row will be released
-                 * at commit time if the operation is committed.
-                 */
-                jam();
-                disk_page_abort_prealloc(
-                  signal,
-                  regFragPtr,
-                  &key,
-                  regOperPtr->m_uncommitted_used_space);
-                regOperPtr->m_uncommitted_used_space = 0;
-              }
-            }
+            /* Add extra word to handle possible directory size increase.*/
+            new_size++;
             Local_key new_key;
-            if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
-            {
-              /* Add extra word to handle possible directory size increase.*/
-              new_size++;
-            }
             int ret = disk_page_prealloc(signal,
                                          prepare_fragptr,
                                          regTabPtr,
@@ -5976,55 +5975,190 @@ Dbtup::handle_size_change_after_update(Signal *signal,
               return ret;
             }
             new_key.m_page_idx = new_size;
-            regOperPtr->m_uncommitted_used_space = 0;
-            memcpy(org->get_disk_ref_ptr(regTabPtr),
+            memcpy(req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr),
                    &new_key,
                    sizeof(new_key));
+            disk_page_abort_prealloc_callback_1(signal,
+                                                regFragPtr,
+                                                used_pagePtr,
+                                                curr_size,
+                                                0);
           }
-        }
-        else if (new_size < curr_size)
-        {
-          if (disk_move_flag)
-          {
-            /**
-             * We have performed an UPDATE after an initial insert, the
-             * size of the row has decreased since the initial INSERT.
-             * This means that we are able to decrease the amount of
-             * uncommitted_used_space on the page we are inserting into.
-             * We do this by calling disk_page_abort_prealloc which will
-             * decrease the uncommitted_used_space by the size provided
-             * and ensure that the page is in the correct list.
-             */
-            jam();
-            Uint32 sz_change = curr_size - new_size;
-            disk_page_abort_prealloc(signal,
-                                     regFragPtr,
-                                     &key,
-                                     sz_change);
-            key.m_page_idx = new_size;
-            memcpy(org->get_disk_ref_ptr(regTabPtr),
-                   &key,
-                   sizeof(key));
-          }
-          else
-          {
-            /**
-             * The size has shrunk, if we have previously moved to a new page,
-             * we might be able to drop this new page if the new row size fits
-             * in the old page. We don't do this however, we keep the new
-             * page and will discard the old page even in this case.
-             */
-            jam();
-          }
+          return 0;
         }
         else
         {
           jamDebug();
+          Local_key key;
+          const Uint32 *disk_ref= org->get_disk_ref_ptr(regTabPtr);
+          memcpy(&key, disk_ref, sizeof(key));
+          Uint32 curr_size =
+            ((Var_page*)diskPagePtr.p)->get_entry_len(key.m_page_idx);
+          Int32 add = new_size - curr_size;
+          add -= regOperPtr->m_uncommitted_used_space;
           /**
-           * The size hasn't changed, thus whatever worked in the previous
-           * row version will work here as well independent if we have
-           * moved the row to a new page or not.
+           * curr_size is the size of the row before the transaction
+           * started. new_size is the size after this operation is
+           * completed. regOperPtr->m_uncommitted_used_space is the
+           * size we already seized in the page, thus add will here
+           * only be positive if we need to increase our allocation.
            */
+          if (Int32(Int32(used) + add) <= Int32(free))
+          {
+            /**
+             * Size of new row fits in the current disk page, no need
+             * to move the row to another page.
+             */
+            if (add > 0)
+            {
+              jamDebug();
+              /* Size has grown, but we still fit in the original disk page. */
+              disk_page_prealloc_dirty_page(regFragPtr->m_disk_alloc_info,
+                                            diskPagePtr,
+                                            diskPagePtr.p->list_index,
+                                            (Uint32)add,
+                                            regFragPtr);
+              regOperPtr->m_uncommitted_used_space += add;
+            }
+            else
+            {
+              jamDebug();
+              /**
+               * The row has either shrunk or is of the same size, so no need
+               * to do anything since we cannot shrink the original row until
+               * commit time.
+               *
+               * We will never decrease m_uncommitted_used_space to allow for
+               * various abort variants. Otherwise we might have to allocate
+               * space in abort or commit which is not safe.
+               */
+            }
+          }
+          else
+          {
+            jamDebug();
+            /**
+             * The row will no longer fit in the original page. Thus we have
+             * to move the row to a new page. We set the DISK_REORG flag, this
+             * flag is only set in the Copy rows, it is never set in the
+             * actual stored tuple row.
+             */
+            jam();
+            ndbrequire(add > 0);
+            Uint32 undo_len = sizeof(Dbtup::Disk_undo::Alloc) >> 2;
+            {
+              Logfile_client lgman(this,
+                                   c_lgman,
+                                   regFragPtr->m_logfile_group_id);
+              DEB_LCP_LGMAN(("(%u)alloc_log_space(%u): %u",
+                             instance(),
+                             __LINE__,
+                             undo_len));
+              terrorCode = lgman.alloc_log_space(
+                undo_len,
+                true,
+                !req_struct->m_nr_copy_or_redo,
+                jamBuffer());
+            }
+            if (unlikely(terrorCode))
+            {
+              jam();
+              return -1;
+            }
+            jamDebug();
+            /**
+             * There are two ways to get here. The first is by starting with
+             * a UPDATE that includes updating the disk part of the row. It
+             * could be this operation or a previous operation. In both cases
+             * we allocated log space for an UNDO of the UPDATE operation
+             * as part of expand_tuple which happens before coming to this
+             * part of the code which happens after completing the updates
+             * on the row.
+             *
+             * The second variant is to get here starting with a DELETE
+             * operation on the row followed by an INSERT of the row
+             * again. This INSERT could also have been followed up with
+             * an UPDATE operation. In all cases we will arrive here
+             * with log space allocated in the DELETE operation that is
+             * calculated based on the size of the row.
+             *
+             * Thus in both cases we have allocated log space for the UNDO
+             * of the free of this disk row. The size of this UNDO will be
+             * based on the size of the row at start of the transaction.
+             * This is the size set at in initial UPDATE operation in
+             * expand_tuple which is thus large enough. The size of the
+             * allocated log space after an initial DELETE operation is
+             * larger than required. We could free this space up here, but
+             * it will only be of any help in extreme overload situations.
+             *
+             * The extra log space required for adding a new disk row is
+             * always the same size and the state DISK_REORG will always
+             * have an additional log space allocated for this purpose.
+             * If we follow up this operation with a subsequent DELETE
+             * operation we will free this extra log space and free the
+             * new disk row and remove the DISK_REORG flag.
+             */
+            ndbrequire(regOperPtr->m_undo_buffer_space > 0);
+            jamDataDebug(regOperPtr->m_undo_buffer_space);
+            if (regOperPtr->m_uncommitted_used_space > 0)
+            {
+              /**
+               * We have allocated space on the original row page.
+               * We need to release this extra memory already now.
+               * The memory used by the original row will be released
+               * at commit time if the operation is committed.
+               *
+               * Normally we would keep the memory allocated extra on
+               * the disk page until either a full abort or a commit
+               * of the transaction. This is to avoid complex abort
+               * handling. However changing to DISK_REORG is a
+               * persistent operation lasting the rest of the transaction
+               * and it is thus safe to deallocate the extra space used
+               * by the old row since we have committed to using a new
+               * row if we commit whatever type of operations happens
+               * after this.
+               */
+              jam();
+              Uint32 overflow_space = regOperPtr->m_uncommitted_used_space;
+              disk_page_abort_prealloc_callback_1(signal,
+                                                  regFragPtr,
+                                                  diskPagePtr,
+                                                  overflow_space,
+                                                  0);
+              regOperPtr->m_uncommitted_used_space = 0;
+            }
+            Local_key new_key;
+            /* Add extra word to handle possible directory size increase.*/
+            new_size++;
+            int ret = disk_page_prealloc(signal,
+                                         prepare_fragptr,
+                                         regTabPtr,
+                                         &new_key,
+                                         new_size);
+            if (unlikely(ret < 0))
+            {
+              jam();
+              terrorCode = -ret;
+              /**
+               * Need to release log space since only recalled through
+               * setting DISK_REORG bit. This bit is only set in a
+               * successful prepare operation. Thus we need only abort
+               * when the entire transaction is aborted.
+               */
+              Uint32 undo_insert_len = sizeof(Dbtup::Disk_undo::Alloc) >> 2;
+              Logfile_client lgman(this,
+                                   c_lgman,
+                                   regFragPtr->m_logfile_group_id);
+              lgman.free_log_space(undo_insert_len, jamBuffer());
+              return ret;
+            }
+            bits |= Tuple_header::DISK_REORG;
+            m_base_header_bits = bits;
+            new_key.m_page_idx = new_size;
+            memcpy(org->get_disk_ref_ptr(regTabPtr),
+                   &new_key,
+                   sizeof(new_key));
+          }
         }
       }
       return 0;

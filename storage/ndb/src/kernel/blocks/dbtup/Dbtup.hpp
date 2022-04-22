@@ -1319,7 +1319,6 @@ TupTriggerData_pool c_triggerPool;
     };
     Uint16 m_bits;
     Uint16 total_rec_size; // Max total size for entire tuple in words
-    Uint16 m_max_disk_part_size;
     
     /**
      * Aggregates
@@ -3443,10 +3442,14 @@ private:
 //------------------------------------------------------------------
 //------------------------------------------------------------------
   void tupkeyErrorLab(KeyReqStruct*);
-  void do_tup_abort_operation(Signal*, Tuple_header *,
+  void do_tup_abort_operation(Signal*,
+                              Tuple_header *,
                               Operationrec*,
                               Fragrecord*,
-                              Tablerec*);
+                              Tablerec*,
+                              bool);
+  void handle_disk_reorg_flag(OperationrecPtr, Tablerec*);
+  void handle_disk_row_resize(OperationrecPtr, Tablerec*);
 
 //------------------------------------------------------------------
 //------------------------------------------------------------------
@@ -4071,6 +4074,8 @@ private:
     return mask;
   }
 
+  void deref_disk_page(Signal*, OperationrecPtr, Fragrecord*, Tablerec*);
+  void deref_disk_page_callback(Signal*, Uint32, Uint32);
   /**
    * prealloc space from disk
    *   key.m_file_no  contains file no
@@ -4095,7 +4100,7 @@ private:
   void disk_page_abort_prealloc(Signal*, Fragrecord*,Local_key*, Uint32);
   void disk_page_abort_prealloc_callback(Signal*, Uint32, Uint32);
   void disk_page_abort_prealloc_callback_1(Signal*, Fragrecord*,
-					   PagePtr, Uint32);
+					   PagePtr, Uint32, Int32);
   
   void disk_page_prealloc_callback(Signal*, Uint32, Uint32);
   void disk_page_prealloc_initial_callback(Signal*, Uint32, Uint32);
@@ -4111,7 +4116,8 @@ private:
                        PagePtr,
                        Uint32,
                        const Local_key*,
-                       Uint32 alloc_size);
+                       Uint32 alloc_size,
+                       Uint32 extra_alloc);
   void disk_page_free(Signal*,
 		      Tablerec*,
                       Fragrecord*,
@@ -4324,6 +4330,7 @@ private:
 #endif
   
   void findFirstOp(OperationrecPtr&);
+  void findLastOp(OperationrecPtr&);
   bool is_rowid_in_remaining_lcp_set(const Page* page,
 		                     Fragrecord* regFragPtr, 
                                      const Local_key& key1,

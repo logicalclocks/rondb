@@ -527,11 +527,14 @@ Dbtup::update_extent_pos(EmulatedJamBuffer* jamBuf,
     if (old != pos)
     {
       thrjam(jamBuf);
-      Local_extent_info_list old_list(c_extent_pool, alloc.m_free_extents[old]);
-      Local_extent_info_list new_list(c_extent_pool, alloc.m_free_extents[pos]);
+      Local_extent_info_list old_list(c_extent_pool,
+                                      alloc.m_free_extents[old]);
+      Local_extent_info_list new_list(c_extent_pool,
+                                      alloc.m_free_extents[pos]);
       old_list.remove(extentPtr);
       new_list.addFirst(extentPtr);
-      DEB_FREE_EXTENT(("(%p) 2:Add/Remove ext.p: %p from old pos: %u to pos: %u",
+      DEB_FREE_EXTENT(("(%p) 2:Add/Remove ext.p: %p from old pos: %u"
+                       " to pos: %u",
                        &alloc, extentPtr.p, old, pos));
       extentPtr.p->m_free_matrix_pos= pos;
     }
@@ -1776,7 +1779,8 @@ Dbtup::disk_page_alloc(Signal* signal,
                        PagePtr pagePtr,
                        Uint32 gci,
                        const Local_key *row_id,
-                       Uint32 undo_size)
+                       Uint32 undo_size,
+                       Uint32 extra_alloc)
 {
   jam();
   Uint32 logfile_group_id= fragPtrP->m_logfile_group_id;
@@ -1801,8 +1805,11 @@ Dbtup::disk_page_alloc(Signal* signal,
   {
     jam();
     Uint32 sz = key->m_page_idx;
-    ddrequire(pagePtr.p->uncommitted_used_space >= sz);
-    pagePtr.p->uncommitted_used_space -= sz;
+    Uint32 old_free = pagePtr.p->free_space;
+    Uint32 old_used = pagePtr.p->uncommitted_used_space;
+    ddrequire(old_free >= old_used);
+    ddrequire(pagePtr.p->uncommitted_used_space >= (sz + extra_alloc));
+    pagePtr.p->uncommitted_used_space -= (sz + extra_alloc);
     key->m_page_idx= ((Var_page*)pagePtr.p)->
       alloc_record(sz, (Var_page*)ctemp_page, 0);
 
@@ -1812,6 +1819,9 @@ Dbtup::disk_page_alloc(Signal* signal,
      * the directory, thus we could have used less space than we
      * requested as uncommitted used space and this might move the page
      * to a new extent index although improbable.
+     *
+     * TODO RONM: Need to investigate how this should affect the method
+     * update_extent_pos.
      */
     Uint32 old_idx = pagePtr.p->list_index;
     Uint32 new_free = pagePtr.p->free_space;
@@ -1830,6 +1840,13 @@ Dbtup::disk_page_alloc(Signal* signal,
                                 old_idx,
                                 new_idx,
                                 fragPtrP);
+      Int32 sz = (new_free - used) - (old_free - old_used);
+      update_extent_pos(jamBuffer(),
+                        fragPtrP,
+                        extentPtr,
+                        old_idx,
+                        new_idx,
+                        sz);
     }
     lsn= disk_page_undo_alloc(signal,
                               pagePtr.p,
@@ -1994,12 +2011,13 @@ Dbtup::disk_page_free(Signal *signal,
                   used,
                   old_free,
                   new_free));
+  Int32 change = new_free - used;
   update_extent_pos(jamBuffer(),
                     fragPtrP,
                     extentPtr,
                     old_idx,
                     new_idx,
-                    sz);
+                    change);
 }
 
 void
@@ -2038,7 +2056,7 @@ Dbtup::disk_page_abort_prealloc(Signal *signal, Fragrecord* fragPtrP,
     pagePtr.i = gpage.i;
     pagePtr.p = reinterpret_cast<Page*>(gpage.p);
 
-    disk_page_abort_prealloc_callback_1(signal, fragPtrP, pagePtr, sz);
+    disk_page_abort_prealloc_callback_1(signal, fragPtrP, pagePtr, sz, 0);
   }
 }
 
@@ -2062,14 +2080,15 @@ Dbtup::disk_page_abort_prealloc_callback(Signal* signal,
   getFragmentrec(fragPtr, pagePtr.p->m_fragment_id, tableId);
   ndbrequire(fragPtr.i != RNIL64);
 
-  disk_page_abort_prealloc_callback_1(signal, fragPtr.p, pagePtr, sz);
+  disk_page_abort_prealloc_callback_1(signal, fragPtr.p, pagePtr, sz, 0);
 }
 
 void
 Dbtup::disk_page_abort_prealloc_callback_1(Signal* signal, 
 					   Fragrecord* fragPtrP,
 					   PagePtr pagePtr,
-					   Uint32 sz)
+					   Uint32 sz,
+                                           Int32 change)
 {
   jam();
   disk_page_set_dirty(pagePtr, fragPtrP);
@@ -2114,12 +2133,13 @@ Dbtup::disk_page_abort_prealloc_callback_1(Signal* signal,
                   free,
                   pagePtr.p->uncommitted_used_space,
                   new_idx));
+  change += sz;
   update_extent_pos(jamBuffer(),
                     fragPtrP,
                     extentPtr,
                     idx,
                     new_idx,
-                    sz);
+                    change);
 }
 
 Uint64

@@ -313,6 +313,10 @@ private:
       ,DISK_SCAN    = 0x4000 // Request from Disk scan
       ,ABORT_REQ    = 0x8000 // Part of ABORT will not update LSN
       ,COPY_FRAG    = 0x10000// Request part of BACKUP/COPY_FRAG processing
+      ,REF_REQ      = 0x20000// Request the page to stay by incrementing the
+                             // reference count
+      ,DEREF_REQ    = 0x40000// Dereference the page to allow it to be paged
+                             // out again when reference count goes to 0.
     };
     
     Uint32 m_block; // includes instance
@@ -942,6 +946,8 @@ public:
     ,ABORT_REQ = Pgman::Page_request::ABORT_REQ
     ,UNDO_GET_REQ = Pgman::Page_request::UNDO_GET_REQ
     ,COPY_FRAG = Pgman::Page_request::COPY_FRAG
+    ,REF_REQ = Pgman::Page_request::REF_REQ
+    ,DEREF_REQ = Pgman::Page_request::DEREF_REQ
   };
   
   /**

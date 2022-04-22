@@ -11599,8 +11599,8 @@ Dblqh::acckeyconf_load_diskpage_callback(Signal* signal,
                                          Uint32 page_id)
 {
   jamEntry();
+  (void)callbackData;
   ndbassert(!m_is_query_block);
-  setup_key_pointers(callbackData);
   TcConnectionrecPtr tcConnectptr = m_tc_connect_ptr;
   FragrecordPtr fragPtr = fragptr;
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
@@ -11613,7 +11613,6 @@ Dblqh::acckeyconf_load_diskpage_callback(Signal* signal,
      * up the proper pointers for a key execution.
      */
     jam();
-    c_tup->set_disk_callback_page(page_id);
     c_tup->prepareTUPKEYREQ(regTcPtr->m_row_id.m_page_no,
                             regTcPtr->m_row_id.m_page_idx,
                             fragPtr.p->tupFragptr);
