@@ -6015,6 +6015,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             {
               jamDebug();
               /* Size has grown, but we still fit in the original disk page. */
+              disk_page_set_dirty(diskPagePtr, regFragPtr);
               disk_page_prealloc_dirty_page(regFragPtr->m_disk_alloc_info,
                                             diskPagePtr,
                                             diskPagePtr.p->list_index,
