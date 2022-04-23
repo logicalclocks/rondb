@@ -484,6 +484,7 @@ Dbtup::insertActiveOpList(OperationrecPtr regOperPtr,
    * related to the operation.
    */
   jamDebug();
+  jamDataDebug(regOperPtr.i);
   regOperPtr.p->op_struct.bit_field.in_active_list = true;
   tuple_ptr->m_operation_ptr_i = regOperPtr.i;
   if (unlikely(req_struct->prevOpPtr.i != RNIL))
@@ -5839,6 +5840,8 @@ Dbtup::handle_size_change_after_update(Signal *signal,
           sizes[MM]));
   for (Uint32 ind = 0; ind < 2; ind++)
   {
+    jamDebug();
+    jamDataDebug(ind);
     if(sizes[2+ind] == sizes[ind])
     {
       jam();
@@ -5852,6 +5855,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
     jam();
     if (ind == DD)
     {
+      jamDebug();
       /**
        * We have updated the disk part row such that it has grown, this
        * means that we need to ensure that more space is allocated before
@@ -5998,6 +6002,9 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             ((Var_page*)diskPagePtr.p)->get_entry_len(key.m_page_idx);
           Int32 add = new_size - curr_size;
           add -= regOperPtr->m_uncommitted_used_space;
+          jamDataDebug(new_size);
+          jamDataDebug(curr_size);
+          jamDataDebug(regOperPtr->m_uncommitted_used_space);
           /**
            * curr_size is the size of the row before the transaction
            * started. new_size is the size after this operation is
@@ -6014,6 +6021,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             if (add > 0)
             {
               jamDebug();
+              jamDataDebug(Uint16(add));
               /* Size has grown, but we still fit in the original disk page. */
               disk_page_set_dirty(diskPagePtr, regFragPtr);
               disk_page_prealloc_dirty_page(regFragPtr->m_disk_alloc_info,
@@ -6022,6 +6030,8 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                                             (Uint32)add,
                                             regFragPtr);
               regOperPtr->m_uncommitted_used_space += add;
+              jamDebug();
+              jamDataDebug(Uint16(regOperPtr->m_uncommitted_used_space));
             }
             else
             {
@@ -6216,7 +6226,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
     if(needed <= alloc)
     {
       jam();
-      return 0;
+      continue;
     }
     /**
      * Reallocation of the variable sized part of the row is intruding

@@ -220,6 +220,7 @@ void Dbtup::execTUP_WRITELOG_REQ(Signal* signal)
 void Dbtup::initOpConnection(Operationrec* regOperPtr)
 {
   /* Cannot use jam here, called from other thread */
+  jamDebug();
   set_tuple_state(regOperPtr, TUPLE_ALREADY_ABORTED);
   set_trans_state(regOperPtr, TRANS_IDLE);
   regOperPtr->m_commit_state = Operationrec::CommitNotStarted;
@@ -1181,6 +1182,9 @@ Dbtup::commit_operation(Signal* signal,
         Var_page* vpagePtrP = (Var_page*)diskPagePtr.p;
         Uint32 old_free = diskPagePtr.p->free_space;
         Uint32 old_used = diskPagePtr.p->uncommitted_used_space;
+        jamDebug();
+        jamDataDebug(new_sz);
+        jamDataDebug(sz);
         if (new_sz < sz)
         {
           jam();
@@ -1235,6 +1239,7 @@ Dbtup::commit_operation(Signal* signal,
          * Update the list which the page is located in and return the
          * uncommitted used space to the page.
          */
+        jamDebug();
         ndbrequire(vpagePtrP->uncommitted_used_space >=
                    regOperPtr->m_uncommitted_used_space);
         vpagePtrP->uncommitted_used_space -=
@@ -2305,6 +2310,7 @@ Dbtup::exec_tup_commit(Signal *signal)
   prepare_tabptr = regTabPtr;
 
   leaderOperPtr.i = tuple_ptr->m_operation_ptr_i;
+  jamDataDebug(leaderOperPtr.i);
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(leaderOperPtr));
   if (leaderOperPtr.p->op_struct.bit_field.m_load_diskpage_on_commit ||
       leaderOperPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit ||
@@ -2351,6 +2357,8 @@ Dbtup::exec_tup_commit(Signal *signal)
     }
   }
 #endif
+  jamDebug();
+  jamDataDebug(prepare_oper_ptr.i);
   prepare_oper_ptr = leaderOperPtr;
   execute_real_commit(signal,
                       req_struct,
@@ -2396,6 +2404,8 @@ Dbtup::execute_real_commit(Signal *signal,
     findFirstOp(firstOperPtr);
   }
   executeOperPtr = firstOperPtr;
+  jamDebug();
+  jamDataDebug(executeOperPtr.i);
   get_execute_commit_operation(executeOperPtr);
   Tuple_header *tuple_ptr = req_struct.m_tuple_ptr;
   /**
