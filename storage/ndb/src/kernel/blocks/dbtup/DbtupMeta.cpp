@@ -58,12 +58,18 @@
 
 #define JAM_FILE_ID 424
 
-
-#ifdef VM_TRACE
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_DISK 1
 //#define DEBUG_TUP_META 1
 //#define DEBUG_TUP_META_EXTRA 1
 //#define DEBUG_DROP_TAB 1
+//#define DEBUG_DYN_META 1
+#endif
+
+#ifdef DEBUG_DYN_META
+#define DEB_DYN_META(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_DYN_META(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_DROP_TAB
@@ -279,6 +285,11 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal* signal)
   if (!AttributeDescriptor::getDynamic(attrDescriptor))
   {
     jam();
+    DEB_DYN_META(("(%u) tab(%u) attrId %u is NOT dynamic %s column",
+                  instance(),
+                  regTabPtr.i,
+                  attrId,
+                  ind == 0 ? "MM" : "DD"));
     Uint32 null_pos;
     ndbrequire(ind <= 1);
     null_pos= fragOperPtr.p->m_null_bits[ind];
@@ -320,16 +331,27 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal* signal)
   else
   {
     jam();
+    DEB_DYN_META(("(%u) tab(%u) attrId %u is dynamic %s column",
+                  instance(),
+                  regTabPtr.i,
+                  attrId,
+                  ind == 0 ? "MM" : "DD"));
+
     if ((ind == DD) &&
         ((regTabPtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0))
     {
       jam();
       terrorCode = ZDYNAMIC_STORED_DISK_ERROR;
       goto error;
-    }      
+    }
 
     /* A dynamic attribute. */
     regTabPtr.p->m_attributes[ind].m_no_of_dynamic++;
+    DEB_DYN_META(("(%u) tab(%u) attrId %u is dynamic %s column",
+                  instance(),
+                  regTabPtr.i,
+                  attrId,
+                  ind == 0 ? "MM" : "DD"));
     /*
      * The dynamic attribute format always require a 'null' bit. So
      * storing NOT NULL attributes as dynamic is not all that useful
@@ -362,6 +384,12 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal* signal)
         regTabPtr.p->m_dyn_null_bits[MM]+= bits+1;
         regTabPtr.p->m_attributes[ind].m_no_of_dynamic--;
         regTabPtr.p->m_attributes[MM].m_no_of_dynamic++;
+        DEB_DYN_META(("(%u) tab(%u) attrId %u is moved from dynamic %s column"
+                      " to MM",
+                      instance(),
+                      regTabPtr.i,
+                      attrId,
+                      ind == 0 ? "MM" : "DD"));
       }
       else
       {
@@ -526,6 +554,9 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal* signal)
   }
 
   /* Compute table aggregate metadata. */
+  DEB_DYN_META(("(%u) tab(%u) computeTableMetaData: CREATE",
+                instance(),
+                regTabPtr.i));
   terrorCode = computeTableMetaData(regTabPtr, __LINE__);
   if (terrorCode)
   {
@@ -1437,6 +1468,9 @@ Dbtup::handleAlterTableCommit(Signal *signal,
     regTabPtr->m_attributes[MM].m_no_of_dyn_var= regAlterTabOpPtr.p->noOfDynVar;
     regTabPtr->m_attributes[MM].m_no_of_dynamic= regAlterTabOpPtr.p->noOfDynamic;
     regTabPtr->m_dyn_null_bits[MM]= regAlterTabOpPtr.p->noOfDynNullBits;
+    DEB_DYN_META(("(%u) set m_no_of_dynamic[MM] = %u",
+                  instance(),
+                  regTabPtr->m_attributes[MM].m_no_of_dynamic));
 
     /* Install the new (larger) table descriptors. */
     setUpDescriptorReferences(regAlterTabOpPtr.p->tableDescriptor,
@@ -1449,6 +1483,9 @@ Dbtup::handleAlterTableCommit(Signal *signal,
     releaseAlterTabOpRec(regAlterTabOpPtr);
 
     /* Recompute aggregate table meta data. */
+    DEB_DYN_META(("(%u) tab(%u) computeTableMetaData: ALTER",
+                  instance(),
+                  tabPtr.i));
     computeTableMetaData(tabPtr, __LINE__);
   }
 
@@ -1732,6 +1769,11 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
     Uint32 off;
     jamDataDebug(ind);
 
+    DEB_DYN_META(("(%u) tab(%u), attrId: %u %s column",
+                  instance(),
+                  tabPtr.i,
+                  i,
+                  ind == 0 ? "MM" : "DD"));
     if (extType == NDB_TYPE_BLOB || extType == NDB_TYPE_TEXT)
     {
       jam();
@@ -1741,9 +1783,17 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
     {
       jam();
       regTabPtr->notNullAttributeMask.set(i);
+      DEB_DYN_META(("(%u) tab(%u), attrId: %u, NOT NULL",
+                  instance(),
+                  tabPtr.i,
+                  i));
     }
     if (!AttributeDescriptor::getDynamic(attrDescriptor))
     {
+      DEB_DYN_META(("(%u) tab(%u), attrId: %u, NOT Dynamic",
+                  instance(),
+                  tabPtr.i,
+                  i));
       if (arr == NDB_ARRAYTYPE_FIXED ||
           ((ind == DD) &&
            ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0)))
@@ -1758,12 +1808,20 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
         else
         {
           jam();
+          DEB_DYN_META(("(%u) tab(%u), attrId: %u, Bit type",
+                        instance(),
+                        tabPtr.i,
+                        i));
           off= 0;                               // Bit type
         }
       }
       else
       {
         jam();
+        DEB_DYN_META(("(%u) tab(%u), attrId: %u, Variable sized",
+                      instance(),
+                      tabPtr.i,
+                      i));
         /* Static varsize. */
         off = statvar_count[ind]++;
         var_size[ind]+= size_in_bytes;
@@ -1773,6 +1831,10 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
     else
     {
       jam();
+      DEB_DYN_META(("(%u) tab(%u), attrId: %u, Dynamic",
+                  instance(),
+                  tabPtr.i,
+                  i));
       /* Dynamic attribute. */
       dynamic_count[ind]++;
       Uint32 null_pos= AttributeOffset::getNullFlagPos(attrDes2);
@@ -1784,6 +1846,10 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
           //regTabPtr->blobAttributeMask.set(i);
         // ToDo: I wonder what else is needed to handle BLOB/TEXT, if anything?
 
+        DEB_DYN_META(("(%u) tab(%u), attrId: %u, Fixed size",
+                      instance(),
+                      tabPtr.i,
+                      i));
         if (attrLen!=0)
         {
           jam();
@@ -1804,6 +1870,10 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
           jam();
           dynamic_count[ind]--;
           dynamic_count[MM]++;
+          DEB_DYN_META(("(%u) tab(%u), attrId: %u, Bit type",
+                        instance(),
+                        tabPtr.i,
+                        i));
           off= 0;                               // Bit type
         }
       }
@@ -1811,6 +1881,10 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
       {
       treat_as_varsize:
         jam();
+        DEB_DYN_META(("(%u) tab(%u), attrId: %u, Variable size",
+                      instance(),
+                      tabPtr.i,
+                      i));
         off = dynvar_count[ind]++;
         jamDataDebug(off);
         BitmaskImpl::set(dyn_null_words[ind],
@@ -2037,6 +2111,10 @@ void Dbtup::setUpKeyArray(Tablerec* const regTabPtr)
       if(t == type)
       {
 	* order++ = (i * ZAD_SIZE);
+        DEB_DYN_META(("(%u) Attribute %u is listed in order %u",
+                      instance(),
+                      i,
+                      cnt));
 	cnt++;
       }
     }

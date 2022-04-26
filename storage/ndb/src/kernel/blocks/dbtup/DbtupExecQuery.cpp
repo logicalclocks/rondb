@@ -5252,7 +5252,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
                                order,
                                num_dynvar, num_dynfix,
                                tabPtrP->m_offsets[ind].m_dyn_null_words);
-      order += num_dyns;
+      order += (num_dynvar + num_dynfix);
     }
     
     ndbassert((UintPtr(src_ptr) & 3) == 0);
@@ -5687,7 +5687,7 @@ Dbtup::shrink_tuple(KeyReqStruct* req_struct, Uint32 sizes[2],
                                   num_dynvar,
                                   num_dynfix,
                                   ind);
-        order += num_dynfix + num_dynvar;
+        order += (num_dynfix + num_dynvar);
       }
       Uint32 varpart_len_words = Uint32(dst_ptr - varstart);
       ndbassert(varpart_len_words <= MAX_EXPANDED_TUPLE_SIZE_IN_WORDS);
