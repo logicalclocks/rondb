@@ -2862,7 +2862,7 @@ int Dbtup::handleInsertReq(Signal* signal,
   else if (regTabPtr->need_shrink())
   {
     jamDebug();
-    shrink_tuple(req_struct, sizes+2, regTabPtr, !is_refresh);
+    shrink_tuple(req_struct, sizes+2, regTabPtr, true);
   }
 
   if (ERROR_INSERTED(4025))
