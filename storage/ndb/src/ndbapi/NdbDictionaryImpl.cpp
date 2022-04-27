@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -734,6 +734,7 @@ NdbTableImpl::init(){
   m_extra_row_author_bits = 0;
   m_read_backup = 0;
   m_fully_replicated = false;
+  m_use_varsized_disk_data = false;
 
   NdbMutex_Init(&m_primary_node_mutex);
 #ifdef VM_TRACE
@@ -985,6 +986,10 @@ NdbTableImpl::equal(const NdbTableImpl& obj) const
   {
     DBUG_RETURN(false);
   }
+  if (m_use_varsized_disk_data != obj.m_use_varsized_disk_data)
+  {
+    DBUG_RETURN(false);
+  }
 
   DBUG_RETURN(true);
 }
@@ -1066,6 +1071,7 @@ NdbTableImpl::assign(const NdbTableImpl& org)
   m_extra_row_author_bits = org.m_extra_row_author_bits;
   m_read_backup = org.m_read_backup;
   m_fully_replicated = org.m_fully_replicated;
+  m_use_varsized_disk_data = org.m_use_varsized_disk_data;
 
   if (m_index != 0)
     delete m_index;
@@ -3993,6 +3999,8 @@ NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
   impl->m_partitionCount = tableDesc->PartitionCount;
   impl->m_fully_replicated =
     tableDesc->FullyReplicatedFlag == 0 ? false : true;
+  impl->m_use_varsized_disk_data =
+    tableDesc->UseVarSizedDiskDataFlag == 0 ? false : true;
 
 
   DBUG_PRINT("info", ("m_logging: %u, partitionBalance: %d"
@@ -4709,7 +4717,8 @@ NdbDictInterface::compChangeMask(const NdbTableImpl &old_impl,
      sz < old_sz ||
      impl.m_extra_row_gci_bits != old_impl.m_extra_row_gci_bits ||
      impl.m_extra_row_author_bits != old_impl.m_extra_row_author_bits ||
-     impl.m_fully_replicated != old_impl.m_fully_replicated)
+     impl.m_fully_replicated != old_impl.m_fully_replicated ||
+     impl.m_use_varsized_disk_data != old_impl.m_use_varsized_disk_data)
 
   {
     DBUG_PRINT("info", ("Old and new table not compatible"));
@@ -4999,6 +5008,7 @@ NdbDictInterface::serializeTableDesc(NdbTableImpl & impl,
   tmpTab->ExtraRowAuthorBits = impl.m_extra_row_author_bits;
   tmpTab->FullyReplicatedFlag = !!impl.m_fully_replicated;
   tmpTab->ReadBackupFlag = !!impl.m_read_backup;
+  tmpTab->UseVarSizedDiskDataFlag = !!impl.m_use_varsized_disk_data;
   tmpTab->FragmentType = getKernelConstant(impl.m_fragmentType,
  					   fragmentTypeMapping,
 					   DictTabInfo::AllNodesSmallTable);

@@ -1151,6 +1151,7 @@ Dbtup::commit_operation(Signal* signal,
     copy_bits |= Tuple_header::DISK_PART;
     Tuple_header *disk_tuple_ptr = (Tuple_header*)disk_ptr;
     ndbrequire(disk_tuple_ptr->m_base_record_page_idx < Tup_page::DATA_WORDS);
+    jamDebug();
 
     if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
     {
@@ -1268,6 +1269,7 @@ Dbtup::commit_operation(Signal* signal,
     }
     else
     {
+      jamDebug();
       ndbassert(!(copy_bits & Tuple_header::DISK_VAR_PART));
       memcpy(dst, disk_ptr, 4 * disk_fix_header_size);
     }

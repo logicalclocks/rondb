@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -5947,9 +5947,11 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
       {
         jam();
         jamData(Uint16(node));
-        if (!ndbd_support_varsized_diskdata(getNodeInfo(node).m_version))
+        if ((!ndbd_support_varsized_diskdata(getNodeInfo(node).m_version)) &&
+            getNodeInfo(node).m_version != 0)
         {
           jam();
+          jamDataDebug(getNodeInfo(node).m_version);
           support = false;
           break;
         }
@@ -5959,6 +5961,11 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
     {
       jam();
       c_tableDesc.UseVarSizedDiskDataFlag = ZTRUE;
+    }
+    else
+    {
+      jam();
+      c_tableDesc.UseVarSizedDiskDataFlag = ZFALSE;
     }
   }
   [[fallthrough]];
@@ -9811,6 +9818,7 @@ Dbdict::alterTable_parse(Signal* signal, bool master,
 {
   D("alterTable_parse");
 
+  jam();
   SchemaTransPtr trans_ptr = op_ptr.p->m_trans_ptr;
   AlterTableRecPtr alterTabPtr;
   getOpRec(op_ptr, alterTabPtr);
@@ -9838,6 +9846,7 @@ Dbdict::alterTable_parse(Signal* signal, bool master,
     /**
      * This should only be a sub-op to AddFragFrag
      */
+    jam();
     if (master && op_ptr.p->m_base_op_ptr_i == RNIL)
     {
       jam();
@@ -9881,6 +9890,7 @@ Dbdict::alterTable_parse(Signal* signal, bool master,
   // parse new table definition into new table record
   TableRecordPtr newTablePtr;
   {
+    jam();
     ParseDictTabInfoRecord parseRecord;
     parseRecord.requestType = DictTabInfo::AlterTableFromAPI;
     parseRecord.errorCode = 0;
@@ -9916,6 +9926,7 @@ Dbdict::alterTable_parse(Signal* signal, bool master,
     }
 
     // the new temporary table record seized from pool
+    jam();
     newTablePtr = parseRecord.tablePtr;
     alterTabPtr.p->m_newTablePtrI = newTablePtr.i;
     alterTabPtr.p->m_newTable_realObjectId = newTablePtr.p->tableId;
@@ -9926,6 +9937,7 @@ Dbdict::alterTable_parse(Signal* signal, bool master,
   // API does not pass fullyReplicatedTriggerId, copy it here
   if ((tablePtr.p->m_bits & TableRecord::TR_FullyReplicated) != 0)
   {
+    jam();
     Uint32 fullyReplicatedTriggerId = tablePtr.p->fullyReplicatedTriggerId;
     ndbrequire(fullyReplicatedTriggerId != RNIL);
     newTablePtr.p->fullyReplicatedTriggerId = fullyReplicatedTriggerId;
@@ -10813,6 +10825,10 @@ Dbdict::alterTable_toReadBackup(Signal* signal,
     bool flag = indexPtr.p->m_bits & TableRecord::TR_Temporary;
     w.add(DictTabInfo::TableTemporaryFlag, (Uint32)flag);
   }
+  {
+    bool flag = indexPtr.p->m_bits & TableRecord::TR_UseVarSizedDiskData;
+    w.add(DictTabInfo::UseVarSizedDiskDataFlag, (Uint32)flag);
+  }
   /* Toggle read backup flag since this is changed */
   {
     bool flag = ((indexPtr.p->m_bits & TableRecord::TR_ReadBackup) == 0);
@@ -10952,6 +10968,10 @@ Dbdict::alterTable_toAlterUniqueIndex(Signal* signal,
   {
     bool flag = indexPtr.p->m_bits & TableRecord::TR_Temporary;
     w.add(DictTabInfo::TableTemporaryFlag, (Uint32)flag);
+  }
+  {
+    bool flag = indexPtr.p->m_bits & TableRecord::TR_UseVarSizedDiskData;
+    w.add(DictTabInfo::UseVarSizedDiskDataFlag, (Uint32)flag);
   }
   {
     bool flag = indexPtr.p->m_bits & TableRecord::TR_ReadBackup;
@@ -13360,6 +13380,11 @@ Dbdict::createIndex_parse(Signal* signal, bool master,
       jam();
       bits |= TableRecord::TR_Temporary;
     }
+    if (tableDesc.UseVarSizedDiskDataFlag)
+    {
+      jam();
+      bits |= TableRecord::TR_UseVarSizedDiskData;
+    }
     if (tableDesc.ReadBackupFlag)
     {
       jam();
@@ -13620,6 +13645,10 @@ Dbdict::createIndex_toCreateTable(Signal* signal, SchemaOpPtr op_ptr)
   { bool flag = createIndexPtr.p->m_bits & TableRecord::TR_ReadBackup;
     w.add(DictTabInfo::ReadBackupFlag, (Uint32)flag);
     D("ReadBackupFlag: " << flag);
+  }
+  { bool flag = createIndexPtr.p->m_bits & TableRecord::TR_UseVarSizedDiskData;
+    w.add(DictTabInfo::UseVarSizedDiskDataFlag, (Uint32)flag);
+    D("UseVarSizedDiskDataFlag: " << flag);
   }
   { bool flag = createIndexPtr.p->m_bits & TableRecord::TR_FullyReplicated;
     w.add(DictTabInfo::FullyReplicatedFlag, (Uint32)flag);

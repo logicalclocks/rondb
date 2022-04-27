@@ -314,6 +314,7 @@ public:
   bool m_has_default_values; 
   bool m_read_backup;
   bool m_fully_replicated;
+  bool m_use_varsized_disk_data;
   int m_kvalue;
   int m_minLoadFactor;
   int m_maxLoadFactor;
