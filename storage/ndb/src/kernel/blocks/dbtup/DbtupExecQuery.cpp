@@ -682,9 +682,21 @@ Dbtup::load_diskpage(Signal* signal,
     return -(TUP_NO_TUPLE_FOUND);
   }
   int res= 1;
-  if(ptr->m_header_bits & Tuple_header::DISK_PART)
+  if (ptr->m_header_bits & Tuple_header::DISK_PART ||
+      ptr->m_header_bits & Tuple_header::DISK_VAR_PART)
   {
     jam();
+    /**
+     * We retrieve the original disk row page when the transaction
+     * started with an existing disk row (DISK_PART flag is set).
+     * When we arrive here and DISK_PART isn't set, but DISK_VAR_PART
+     * is set, this means that this is an operation that started with
+     * an initial insert of a row. Any updates or re-inserts of this
+     * row in the same transaction requires the page where the row is
+     * allocated to be read before the operation is started. This is
+     * necessary on variable sized disk rows since we need to check
+     * if the row still fits on the page after performing this operation.
+     */
     Page_cache_client::Request req;
     memcpy(&req.m_page, ptr->get_disk_ref_ptr(regTabPtr), sizeof(Local_key));
     req.m_table_id = regFragPtr->fragTableId;
@@ -3028,6 +3040,7 @@ int Dbtup::handleInsertReq(Signal* signal,
         goto disk_prealloc_error;
       }
 
+
       int ret= disk_page_prealloc(signal,
                                   fragPtr,
                                   regTabPtr,
@@ -3040,9 +3053,19 @@ int Dbtup::handleInsertReq(Signal* signal,
         goto disk_prealloc_error;
       }
     
+      jamDebug();
+      jamDataDebug(tmp.m_file_no);
+      jamDataDebug(tmp.m_page_no);
       regOperPtr.p->op_struct.bit_field.m_disk_preallocated= 1;
       tmp.m_page_idx= size;
+      /**
+       * We update the disk row reference both in the allocated row and
+       * in the allocated copy row. The allocated row reference is used
+       * in load_diskpage if we do any further operations on the
+       * row in the same transaction.
+       */
       memcpy(tuple_ptr->get_disk_ref_ptr(regTabPtr), &tmp, sizeof(tmp));
+      memcpy(base->get_disk_ref_ptr(regTabPtr), &tmp, sizeof(tmp));
 
       /**
        * Set ref from disk to mm
@@ -5909,11 +5932,14 @@ Dbtup::handle_size_change_after_update(Signal *signal,
            */
           Local_key key;
           PagePtr used_pagePtr;
-          Uint32 *disk_ref;
+          const Uint32 *disk_ref =
+            req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr);
+          memcpy(&key, disk_ref, sizeof(key));
+          jamDataDebug(key.m_file_no);
+          jamDataDebug(key.m_page_no);
           if (disk_reorg_flag)
           {
             jamDebug();
-            disk_ref = req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr);
             used_pagePtr.i = regOperPtr->m_disk_extra_callback_page;
             used_pagePtr.p =
               (Page*)m_global_page_pool.getPtr(used_pagePtr.i);
@@ -5921,12 +5947,12 @@ Dbtup::handle_size_change_after_update(Signal *signal,
           else
           {
             jamDebug();
-            disk_ref= org->get_disk_ref_ptr(regTabPtr);
             used_pagePtr = diskPagePtr;
           }
-          memcpy(&key, disk_ref, sizeof(key));
           Uint32 curr_size = key.m_page_idx;
           Int32 add = new_size - curr_size;
+          jamDataDebug(new_size);
+          jamDataDebug(curr_size);
           if ((used + add) <= free)
           {
             jamDebug();
@@ -5938,12 +5964,31 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             if (add > 0)
             {
               jamDebug();
+              /**
+               * We also need to update the size allocated that is stored
+               * in the local key of the disk row reference. When DISK_ALLOC
+               * is set (an initial insert is the first operation on the row).
+               * There is no need to set it in the disk row reference stored
+               * in the in-memory row that will become the row. We set it
+               * anyways for consistency.
+              */
               disk_page_set_dirty(used_pagePtr, regFragPtr);
               disk_page_prealloc_dirty_page(regFragPtr->m_disk_alloc_info,
                                             used_pagePtr,
                                             used_pagePtr.p->list_index,
                                             (Uint32)add,
                                             regFragPtr);
+              key.m_page_idx = new_size;
+              memcpy(req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr),
+                     &key,
+                     sizeof(key));
+              if (disk_alloc_flag)
+              {
+                jam();
+                memcpy(org->get_disk_ref_ptr(regTabPtr),
+                       &key,
+                       sizeof(key));
+              }
             }
             else
             {
@@ -5959,6 +6004,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
           }
           else
           {
+            jamDebug();
             ndbrequire(add > 0);
             /**
              * We grew out of the current page, we need to allocate a new page
@@ -5969,6 +6015,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             /* Add extra word to handle possible directory size increase.*/
             new_size++;
             Local_key new_key;
+            jamDebug();
             int ret = disk_page_prealloc(signal,
                                          prepare_fragptr,
                                          regTabPtr,
@@ -5980,10 +6027,26 @@ Dbtup::handle_size_change_after_update(Signal *signal,
               terrorCode = -ret;
               return ret;
             }
+            jamDebug();
+            jamDataDebug(new_key.m_file_no);
+            jamDataDebug(new_key.m_page_no);
             new_key.m_page_idx = new_size;
             memcpy(req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr),
                    &new_key,
                    sizeof(new_key));
+            if (disk_alloc_flag)
+            {
+              jam();
+              /**
+               * Update the disk row reference also in the row to be
+               * committed to ensure that we handle any further row
+               * operation on the same row in the same transaction
+               * in a proper manner.
+               */
+              memcpy(org->get_disk_ref_ptr(regTabPtr),
+                     &new_key,
+                     sizeof(new_key));
+            }
             disk_page_abort_prealloc_callback_1(signal,
                                                 regFragPtr,
                                                 used_pagePtr,
@@ -6165,6 +6228,9 @@ Dbtup::handle_size_change_after_update(Signal *signal,
               lgman.free_log_space(undo_insert_len, jamBuffer());
               return ret;
             }
+            jamDebug();
+            jamDataDebug(new_key.m_file_no);
+            jamDataDebug(new_key.m_page_no);
             bits |= Tuple_header::DISK_REORG;
             m_base_header_bits = bits;
             new_key.m_page_idx = new_size;
