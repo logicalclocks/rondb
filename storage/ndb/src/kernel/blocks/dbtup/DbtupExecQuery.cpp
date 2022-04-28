@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1040,7 +1040,7 @@ void Dbtup::prepareTUPKEYREQ(Uint32 page_id,
   TablerecPtr tabptr;
 
   fragptr.i = fragPtrI;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   const Uint32 RnoOfTablerec= cnoOfTablerec;
   Tablerec * Rtablerec = tablerec;
 
@@ -1157,7 +1157,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
      ndbassert(prepare_orig_local_key.m_page_no == key.m_page_no);
      ndbassert(prepare_orig_local_key.m_page_idx == key.m_page_idx);
      FragrecordPtr fragPtr = prepare_fragptr;
-     c_fragment_pool.getPtr(fragPtr);
+     ndbrequire(c_fragment_pool.getPtr(fragPtr));
      ndbassert(prepare_fragptr.p == fragPtr.p);
    }
 #endif
@@ -5776,7 +5776,7 @@ Dbtup::validate_page(TablerecPtr regTabPtr, Var_page* p)
     if (fragPtr.i == RNIL64)
       continue;
 
-    c_fragment_pool.getPtr(fragPtr);
+    ndbrequire(c_fragment_pool.getPtr(fragPtr));
     for(Uint32 P= 0; P<fragPtr.p->noOfPages; P++)
     {
       Uint32 real= getRealpid(fragPtr.p, P);
@@ -6257,7 +6257,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
       if (copy_bits & Tuple_header::COPY_TUPLE)
       {
         jamDebug();
-        c_page_pool.getPtr(pagePtr, ref.m_page_no);
+        ndbrequire(c_page_pool.getPtr(pagePtr, ref.m_page_no));
         pageP = (Var_page*)pagePtr.p;
       }
       alloc = pageP->get_entry_len(idx);
@@ -6451,7 +6451,7 @@ Dbtup::optimize_var_part(KeyReqStruct* req_struct,
   Uint32 idx = ref.m_page_idx;
 
   Ptr<Page> pagePtr;
-  c_page_pool.getPtr(pagePtr, ref.m_page_no);
+  ndbrequire(c_page_pool.getPtr(pagePtr, ref.m_page_no));
 
   Var_page* pageP = (Var_page*)pagePtr.p;
   Uint32 var_part_size = pageP->get_entry_len(idx);
@@ -6486,7 +6486,7 @@ Dbtup::nr_update_gci(Uint64 fragPtrI,
 {
   FragrecordPtr fragPtr;
   fragPtr.i= fragPtrI;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   TablerecPtr tablePtr;
   tablePtr.i= fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
@@ -6547,7 +6547,7 @@ Dbtup::nr_read_pk(Uint64 fragPtrI,
   
   FragrecordPtr fragPtr;
   fragPtr.i= fragPtrI;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   TablerecPtr tablePtr;
   tablePtr.i= fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
@@ -6648,7 +6648,7 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
 {
   FragrecordPtr fragPtr;
   fragPtr.i= fragPtrI;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   TablerecPtr tablePtr;
   tablePtr.i= fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
@@ -6922,7 +6922,7 @@ Dbtup::nr_delete_page_callback(Signal* signal,
 			       Uint32 userpointer, Uint32 page_id)//unused
 {
   Ptr<GlobalPage> gpage;
-  m_global_page_pool.getPtr(gpage, page_id);
+  ndbrequire(m_global_page_pool.getPtr(gpage, page_id));
   PagePtr pagePtr((Tup_page*)gpage.p, gpage.i);
   Dblqh::Nr_op_info op;
   op.m_ptr_i = userpointer;
@@ -6934,7 +6934,7 @@ Dbtup::nr_delete_page_callback(Signal* signal,
 
   FragrecordPtr fragPtr;
   fragPtr.i= op.m_tup_frag_ptr_i;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   disk_page_set_dirty(pagePtr, fragPtr.p);
 
   Ptr<Tablerec> tablePtr;
@@ -7000,14 +7000,14 @@ Dbtup::nr_delete_log_buffer_callback(Signal* signal,
   
   FragrecordPtr fragPtr;
   fragPtr.i= op.m_tup_frag_ptr_i;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
 
   Ptr<Tablerec> tablePtr;
   tablePtr.i = fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
 
   Ptr<GlobalPage> gpage;
-  m_global_page_pool.getPtr(gpage, op.m_page_id);
+  ndbrequire(m_global_page_pool.getPtr(gpage, op.m_page_id));
   PagePtr pagePtr((Tup_page*)gpage.p, gpage.i);
 
   Uint32 sz;

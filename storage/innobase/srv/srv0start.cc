@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2021, Oracle and/or its affiliates.
+Copyright (c) 1996, 2022, Oracle and/or its affiliates.
 Copyright (c) 2008, Google Inc.
 Copyright (c) 2009, Percona Inc.
 
@@ -129,8 +129,8 @@ extern uint32_t predefined_flags;
 /** Recovered persistent metadata */
 static MetadataRecover *srv_dict_metadata;
 
-/** TRUE if a raw partition is in use */
-ibool srv_start_raw_disk_in_use = FALSE;
+/** true if a raw partition is in use */
+bool srv_start_raw_disk_in_use = false;
 
 /** Number of IO threads to use */
 ulint srv_n_file_io_threads = 0;
@@ -149,15 +149,14 @@ static bool srv_start_has_been_called = false;
 determine which threads need to be stopped if we need to abort during
 the initialisation step. */
 enum srv_start_state_t {
-  SRV_START_STATE_NONE = 0,     /*!< No thread started */
-  SRV_START_STATE_LOCK_SYS = 1, /*!< Started lock-timeout
-                                thread. */
-  SRV_START_STATE_IO = 2,       /*!< Started IO threads */
-  SRV_START_STATE_MONITOR = 4,  /*!< Started montior thread */
-  SRV_START_STATE_MASTER = 8,   /*!< Started master threadd. */
-  SRV_START_STATE_PURGE = 16,   /*!< Started purge thread(s) */
-  SRV_START_STATE_STAT = 32     /*!< Started bufdump + dict stat
-                                and FTS optimize thread. */
+  /** No thread started */
+  SRV_START_STATE_NONE = 0,
+  /** Started IO threads */
+  SRV_START_STATE_IO = 1,
+  /** Started purge thread(s) */
+  SRV_START_STATE_PURGE = 2,
+  /** Started bufdump + dict stat and FTS optimize thread. */
+  SRV_START_STATE_STAT = 4
 };
 
 /** Track server thrd starting phases */
@@ -273,7 +272,7 @@ static bool srv_file_check_mode(const char *name) /*!< in: filename to check */
 }
 
 /** I/o-handler thread function.
-@param[in]	segment		The AIO segment the thread will work on */
+@param[in]      segment         The AIO segment the thread will work on */
 static void io_handler_thread(ulint segment) {
   while (srv_shutdown_state.load() != SRV_SHUTDOWN_EXIT_THREADS ||
          buf_flush_page_cleaner_is_active() || !os_aio_all_slots_free()) {
@@ -312,7 +311,7 @@ static void io_handler_thread(ulint segment) {
 #endif /* UNIV_DEBUG_DEDICATED */
 
   ret = os_file_set_size_fast(name, *file, 0, (os_offset_t)srv_log_file_size,
-                              srv_read_only_mode, true);
+                              true);
 
   if (!ret) {
     ib::error(ER_IB_MSG_1063, name, size);
@@ -337,11 +336,11 @@ static void io_handler_thread(ulint segment) {
 #define INIT_LOG_FILE0 (SRV_N_LOG_FILES_MAX + 1)
 
 /** Creates all log files.
-@param[in,out]  logfilename	    buffer for log file name
+@param[in,out]  logfilename         buffer for log file name
 @param[in]      dirnamelen      length of the directory path
 @param[in]      lsn             FIL_PAGE_FILE_FLUSH_LSN value
 @param[in]      num_old_files   number of old redo log files to remove
-@param[out]     logfile0	      name of the first log file
+@param[out]     logfile0              name of the first log file
 @param[out]     checkpoint_lsn  lsn of the first created checkpoint
 @return DB_SUCCESS or error code */
 static dberr_t create_log_files(char *logfilename, size_t dirnamelen, lsn_t lsn,
@@ -466,8 +465,8 @@ static dberr_t create_log_files(char *logfilename, size_t dirnamelen, lsn_t lsn,
   /* Write encryption information into the first log file header
   if redo log is set with encryption. */
   if (FSP_FLAGS_GET_ENCRYPTION(log_space->flags) &&
-      !log_write_encryption(log_space->encryption_key, log_space->encryption_iv,
-                            true)) {
+      !log_write_encryption(log_space->encryption_key,
+                            log_space->encryption_iv)) {
     return (DB_ERROR);
   }
 
@@ -580,7 +579,7 @@ static dberr_t srv_undo_tablespace_create(undo::Tablespace &undo_space) {
                           OS_FILE_ON_ERROR_NO_EXIT,
                       OS_FILE_NORMAL, OS_DATA_FILE, srv_read_only_mode, &ret);
 
-  if (ret == FALSE) {
+  if (ret == false) {
     std::ostringstream stmt;
 
     if (os_file_get_last_error(false) == OS_FILE_ALREADY_EXISTS) {
@@ -606,8 +605,7 @@ static dberr_t srv_undo_tablespace_create(undo::Tablespace &undo_space) {
 
     ib::info(ER_IB_MSG_1073);
 
-    ret = os_file_set_size(file_name, fh, 0, UNDO_INITIAL_SIZE,
-                           srv_read_only_mode, true);
+    ret = os_file_set_size(file_name, fh, 0, UNDO_INITIAL_SIZE, true);
 
     DBUG_EXECUTE_IF("ib_undo_tablespace_create_fail", ret = false;);
 
@@ -631,7 +629,7 @@ static dberr_t srv_undo_tablespace_create(undo::Tablespace &undo_space) {
 }
 
 /** Try to enable encryption of an undo log tablespace.
-@param[in]	space_id	undo tablespace id
+@param[in]      space_id        undo tablespace id
 @return DB_SUCCESS if success */
 static dberr_t srv_undo_tablespace_enable_encryption(space_id_t space_id) {
   dberr_t err;
@@ -654,9 +652,9 @@ static dberr_t srv_undo_tablespace_enable_encryption(space_id_t space_id) {
 }
 
 /** Try to read encryption metadata from an undo tablespace.
-@param[in]	fh		file handle of undo log file
-@param[in]	file_name	file name
-@param[in]	space		undo tablespace
+@param[in]      fh              file handle of undo log file
+@param[in]      file_name       file name
+@param[in]      space           undo tablespace
 @return DB_SUCCESS if success */
 static dberr_t srv_undo_tablespace_read_encryption(pfs_os_file_t fh,
                                                    const char *file_name,
@@ -970,7 +968,7 @@ dberr_t srv_undo_tablespace_open(undo::Tablespace &undo_space) {
 }
 
 /** Open an undo tablespace with a specified space_id.
-@param[in]	space_id	tablespace ID
+@param[in]      space_id        tablespace ID
 @return DB_SUCCESS or error code */
 static dberr_t srv_undo_tablespace_open_by_id(space_id_t space_id) {
   undo::Tablespace undo_space(space_id);
@@ -1244,9 +1242,8 @@ static dberr_t srv_undo_tablespaces_create() {
 
 /** Finish building an undo tablespace. So far these tablespace files in
 the construction list should be created and filled with zeros.
-@param[in]	create_new_db	whether to create a new database
 @return DB_SUCCESS or error code */
-static dberr_t srv_undo_tablespaces_construct(bool create_new_db) {
+static dberr_t srv_undo_tablespaces_construct() {
   mtr_t mtr;
 
   if (undo::s_under_construction.empty()) {
@@ -1277,10 +1274,9 @@ static dberr_t srv_undo_tablespaces_construct(bool create_new_db) {
 
     mtr_start(&mtr);
 
-    mtr_x_lock(fil_space_get_latch(space_id), &mtr);
+    mtr_x_lock(fil_space_get_latch(space_id), &mtr, UT_LOCATION_HERE);
 
-    if (!fsp_header_init(space_id, UNDO_INITIAL_SIZE_IN_PAGES, &mtr,
-                         create_new_db)) {
+    if (!fsp_header_init(space_id, UNDO_INITIAL_SIZE_IN_PAGES, &mtr)) {
       ib::error(ER_IB_MSG_1093, ulong{undo::id2num(space_id)});
 
       mtr_commit(&mtr);
@@ -1297,7 +1293,7 @@ static dberr_t srv_undo_tablespaces_construct(bool create_new_db) {
   }
 
   if (srv_undo_log_encrypt) {
-    ut_d(bool ret =) srv_enable_undo_encryption(false);
+    ut_d(bool ret =) srv_enable_undo_encryption();
     ut_ad(!ret);
   }
 
@@ -1441,7 +1437,7 @@ dberr_t srv_undo_tablespace_create(const char *space_name,
   undo::spaces->x_unlock();
 
   /* Write header and RSEG_ARRAY pages to this undo tablespace. */
-  err = srv_undo_tablespaces_construct(false);
+  err = srv_undo_tablespaces_construct();
   if (err != DB_SUCCESS) {
     goto cleanup_and_exit;
   }
@@ -1507,7 +1503,7 @@ void undo_spaces_deinit() {
 }
 
 /** Open the configured number of implicit undo tablespaces.
-@param[in]	create_new_db	true if new db being created
+@param[in]      create_new_db   true if new db being created
 @return DB_SUCCESS or error code */
 static dberr_t srv_undo_tablespaces_init(bool create_new_db) {
   dberr_t err = DB_SUCCESS;
@@ -1534,7 +1530,7 @@ static dberr_t srv_undo_tablespaces_init(bool create_new_db) {
   header pages, rseg_array pages, and rollback segments. Then delete
   any undo truncation log files and clear the construction list.
   This list includes any tablespace newly created or fixed-up. */
-  err = srv_undo_tablespaces_construct(create_new_db);
+  err = srv_undo_tablespaces_construct();
   if (err != DB_SUCCESS) {
     mutex_exit(&undo::ddl_mutex);
     return (err);
@@ -1575,8 +1571,8 @@ static void srv_start_wait_for_purge_to_start() {
 }
 
 /** Create the temporary file tablespace.
-@param[in]	create_new_db	whether we are creating a new database
-@param[in,out]	tmp_space	Shared Temporary SysTablespace
+@param[in]      create_new_db   whether we are creating a new database
+@param[in,out]  tmp_space       Shared Temporary SysTablespace
 @return DB_SUCCESS or error code. */
 static dberr_t srv_open_tmp_tablespace(bool create_new_db,
                                        SysTablespace *tmp_space) {
@@ -1623,7 +1619,7 @@ static dberr_t srv_open_tmp_tablespace(bool create_new_db,
       mtr_start(&mtr);
       mtr_set_log_mode(&mtr, MTR_LOG_NO_REDO);
 
-      fsp_header_init(tmp_space->space_id(), size, &mtr, false);
+      fsp_header_init(tmp_space->space_id(), size, &mtr);
 
       mtr_commit(&mtr);
     } else {
@@ -1658,6 +1654,43 @@ static inline bool srv_start_state_is_set(
   return (srv_start_state & state);
 }
 
+struct Thread_to_stop {
+  /** Name of the thread, printed to the error log if we waited too
+  long (after 60 seconds and then every 60 seconds). */
+  const char *m_name;
+
+  /** Future which allows to check if given task is completed. */
+  const IB_thread &m_thread;
+
+  /** Function which can be called any number of times to wake
+  the possibly waiting thread, so it could exit. */
+  std::function<void()> m_notify;
+
+  /** Shutdown state in which we are waiting until thread is exited
+  (earlier we keep notifying but we don't require it to exit before
+  we may switch to the next state). */
+  srv_shutdown_t m_wait_on_state;
+};
+
+static const Thread_to_stop threads_to_stop[]{
+    {"lock_wait_timeout", srv_threads.m_lock_wait_timeout,
+     lock_set_timeout_event, SRV_SHUTDOWN_CLEANUP},
+
+    {"error_monitor", srv_threads.m_error_monitor,
+     []() { os_event_set(srv_error_event); }, SRV_SHUTDOWN_CLEANUP},
+
+    {"monitor", srv_threads.m_monitor,
+     []() { os_event_set(srv_monitor_event); }, SRV_SHUTDOWN_CLEANUP},
+
+    {"buf_dump", srv_threads.m_buf_dump,
+     []() { os_event_set(srv_buf_dump_event); }, SRV_SHUTDOWN_CLEANUP},
+
+    {"buf_resize", srv_threads.m_buf_resize,
+     []() { os_event_set(srv_buf_resize_event); }, SRV_SHUTDOWN_CLEANUP},
+
+    {"master", srv_threads.m_master, srv_wake_master_thread,
+     SRV_SHUTDOWN_MASTER_STOP}};
+
 void srv_shutdown_exit_threads() {
   srv_shutdown_state.store(SRV_SHUTDOWN_EXIT_THREADS);
 
@@ -1674,29 +1707,23 @@ void srv_shutdown_exit_threads() {
     /* NOTE: IF YOU CREATE THREADS IN INNODB, YOU MUST EXIT THEM
     HERE OR EARLIER */
 
+    /* These threads normally finish when reaching SRV_SHUTDOWN_CLEANUP or
+    SRV_SHUTDOWN_MASTER_STOP state, which we might have jumped over. */
+    for (const auto &thread_info : threads_to_stop) {
+      if (srv_thread_is_active(thread_info.m_thread)) {
+        thread_info.m_notify();
+      }
+    }
+
     if (!srv_read_only_mode) {
-      if (srv_start_state_is_set(SRV_START_STATE_LOCK_SYS)) {
-        /* a. Let the lock timeout thread exit */
-        os_event_set(lock_sys->timeout_event);
-      }
-
-      /* b. srv error monitor thread exits automatically,
-      no need to do anything here */
-
-      if (srv_start_state_is_set(SRV_START_STATE_MASTER)) {
-        /* c. We wake the master thread so that
-        it exits */
-        srv_wake_master_thread();
-      }
-
       if (srv_start_state_is_set(SRV_START_STATE_PURGE)) {
-        /* d. Wakeup purge threads. */
+        /* Wakeup purge threads. */
         srv_purge_wakeup();
       }
     }
 
     if (srv_start_state_is_set(SRV_START_STATE_IO)) {
-      /* e. Exit the i/o threads */
+      /* Exit the i/o threads */
       if (!srv_read_only_mode) {
         if (recv_sys->flush_start != nullptr) {
           os_event_set(recv_sys->flush_start);
@@ -1753,7 +1780,7 @@ void srv_shutdown_exit_threads() {
 
 #ifdef UNIV_DEBUG
     os_aio_print_pending_io(stderr);
-    ut_ad(0);
+    ut_d(ut_error);
 #endif /* UNIV_DEBUG */
   } else {
     /* Reset the start state. */
@@ -1769,20 +1796,14 @@ void srv_shutdown_exit_threads() {
 #endif /* UNIV_DEBUG */
 
 /** Innobase start-up aborted. Perform cleanup actions.
-@param[in]	create_new_db	TRUE if new db is  being created */
-#ifdef UNIV_DEBUG
-/**
-@param[in]	file		File name
-@param[in]	line		Line number */
-#endif /* UNIV_DEBUG */
-/**
-@param[in]	err		Reason for aborting InnoDB startup
+@param[in]      create_new_db   true if new db is  being created
+@param[in]      file            File name
+@param[in]      line            Line number
+@param[in]      err             Reason for aborting InnoDB startup
 @return DB_SUCCESS or error code. */
 static dberr_t srv_init_abort_low(bool create_new_db,
-#ifdef UNIV_DEBUG
-                                  const char *file, ulint line,
-#endif /* UNIV_DEBUG */
-                                  dberr_t err) {
+                                  IF_DEBUG(const char *file, ulint line, )
+                                      dberr_t err) {
   std::ostringstream msg;
 
 #ifdef UNIV_DEBUG
@@ -1803,7 +1824,7 @@ static dberr_t srv_init_abort_low(bool create_new_db,
 
 /** Prepare to delete the redo log files. Flush the dirty pages from all the
 buffer pools.  Flush the redo log buffer to the redo log file.
-@param[in]	n_files		number of old redo log files
+@param[in]      n_files         number of old redo log files
 @return lsn upto which data pages have been flushed. */
 static lsn_t srv_prepare_to_delete_redo_log_files(ulint n_files) {
   lsn_t flushed_lsn;
@@ -1896,9 +1917,10 @@ dberr_t srv_start(bool create_new_db) {
 #endif /* HAVE_FALLOC_PUNCH_HOLE_AND_KEEP_SIZE */
 #endif /* UNIV_LINUX */
 
-  if (sizeof(ulint) != sizeof(void *)) {
-    ib::error(ER_IB_MSG_1109, sizeof(ulint), sizeof(void *));
-  }
+  static_assert(sizeof(ulint) == sizeof(void *),
+                "Size of InnoDB's ulint is not the same as size of void*. The "
+                "sizes should be the same so that on a 64-bit platforms you "
+                "can allocate more than 4 GB of memory.");
 
   if (srv_is_upgrade_mode) {
     if (srv_read_only_mode) {
@@ -2090,8 +2112,7 @@ dberr_t srv_start(bool create_new_db) {
 
   ut_a(srv_n_file_io_threads <= SRV_MAX_N_IO_THREADS);
 
-  if (!os_aio_init(srv_n_read_io_threads, srv_n_write_io_threads,
-                   SRV_MAX_N_PENDING_SYNC_IOS)) {
+  if (!os_aio_init(srv_n_read_io_threads, srv_n_write_io_threads)) {
     ib::error(ER_IB_MSG_1129);
 
     return (srv_init_abort(DB_ERROR));
@@ -2144,10 +2165,9 @@ dberr_t srv_start(bool create_new_db) {
   fsp_init();
   pars_init();
   recv_sys_create();
-  recv_sys_init(buf_pool_get_curr_size());
+  recv_sys_init();
   trx_sys_create();
   lock_sys_create(srv_lock_table_size);
-  srv_start_state_set(SRV_START_STATE_LOCK_SYS);
 
   /* Create i/o-handler threads: */
 
@@ -2188,7 +2208,7 @@ dberr_t srv_start(bool create_new_db) {
 
   /* Even in read-only mode there could be flush job generated by
   intrinsic table operations. */
-  buf_flush_page_cleaner_init(srv_n_page_cleaners);
+  buf_flush_page_cleaner_init();
 
   srv_start_state_set(SRV_START_STATE_IO);
 
@@ -2375,7 +2395,7 @@ dberr_t srv_start(bool create_new_db) {
 
 files_checked:
 
-  if (dblwr::enabled && ((err = dblwr::open(create_new_db)) != DB_SUCCESS)) {
+  if (dblwr::enabled && ((err = dblwr::open()) != DB_SUCCESS)) {
     return (srv_init_abort(err));
   }
 
@@ -2403,7 +2423,7 @@ files_checked:
 
     mtr_start(&mtr);
 
-    bool ret = fsp_header_init(0, sum_of_new_sizes, &mtr, false);
+    bool ret = fsp_header_init(0, sum_of_new_sizes, &mtr);
 
     mtr_commit(&mtr);
 
@@ -2554,7 +2574,7 @@ files_checked:
       ib::error(ER_IB_MSG_1139);
 
       /* Set the abort flag to true. */
-      auto p = recv_recovery_from_checkpoint_finish(*log_sys, true);
+      auto p = recv_recovery_from_checkpoint_finish(true);
 
       ut_a(p == nullptr);
 
@@ -2572,7 +2592,7 @@ files_checked:
       buf_flush_sync_all_buf_pools();
     }
 
-    srv_dict_metadata = recv_recovery_from_checkpoint_finish(*log_sys, false);
+    srv_dict_metadata = recv_recovery_from_checkpoint_finish(false);
 
     if (recv_sys->is_cloned_db && srv_dict_metadata != nullptr) {
       ut::delete_(srv_dict_metadata);
@@ -2814,7 +2834,7 @@ files_checked:
 
   if (!srv_read_only_mode) {
     if (create_new_db) {
-      srv_buffer_pool_load_at_startup = FALSE;
+      srv_buffer_pool_load_at_startup = false;
     }
 
     /* Create the thread which watches the timeouts
@@ -2835,8 +2855,6 @@ files_checked:
         os_thread_create(srv_monitor_thread_key, 0, srv_monitor_thread);
 
     srv_threads.m_monitor.start();
-
-    srv_start_state_set(SRV_START_STATE_MONITOR);
   }
 
   srv_sys_tablespaces_open = true;
@@ -2913,7 +2931,7 @@ struct metadata_applier {
   @param[in]      table   table to visit */
   void operator()(dict_table_t *table) const {
     ut_ad(dict_sys->dynamic_metadata != nullptr);
-    ib_uint64_t autoinc = table->autoinc;
+    uint64_t autoinc = table->autoinc;
     dict_table_load_dynamic_metadata(table);
     /* For those tables which were not opened by
     ha_innobase::open() and not initialized by
@@ -2949,7 +2967,7 @@ void srv_dict_recover_on_restart() {
   The data dictionary latch should guarantee that there is at
   most one data dictionary transaction active at a time. */
   if (srv_force_recovery < SRV_FORCE_NO_TRX_UNDO && trx_sys_need_rollback()) {
-    trx_rollback_or_clean_recovered(FALSE);
+    trx_rollback_or_clean_recovered(false);
   }
 
   /* Resurrect locks for non-dictionary transactions only after rolling back all
@@ -3026,7 +3044,7 @@ void srv_start_purge_threads() {
 }
 
 /** Start up the InnoDB service threads which are independent of DDL recovery
-@param[in]	bootstrap	True if this is in bootstrap */
+@param[in]      bootstrap       True if this is in bootstrap */
 void srv_start_threads(bool bootstrap) {
   if (!srv_read_only_mode) {
     /* Before 8.0, it was master thread that was doing periodical
@@ -3074,8 +3092,6 @@ void srv_start_threads(bool bootstrap) {
   operations */
   srv_threads.m_master =
       os_thread_create(srv_master_thread_key, 0, srv_master_thread);
-
-  srv_start_state_set(SRV_START_STATE_MASTER);
 
   srv_threads.m_master.start();
 
@@ -3294,7 +3310,7 @@ void srv_pre_dd_shutdown() {
       break;
     case PURGE_STATE_RUN:
     case PURGE_STATE_STOP:
-      ut_ad(0);
+      ut_d(ut_error);
   }
 
   /* After this phase plugins are asked to be shut down, in which case they
@@ -3326,44 +3342,6 @@ static void srv_shutdown_cleanup_and_master_stop() {
   ut_a(srv_shutdown_state.load() == SRV_SHUTDOWN_DD);
 
   srv_shutdown_set_state(SRV_SHUTDOWN_CLEANUP);
-
-  struct Thread_to_stop {
-    /** Name of the thread, printed to the error log if we waited too
-    long (after 60 seconds and then every 60 seconds). */
-    const char *m_name;
-
-    /** Future which allows to check if given task is completed. */
-    const IB_thread &m_thread;
-
-    /** Function which can be called any number of times to wake
-    the possibly waiting thread, so it could exit. */
-    std::function<void()> m_notify;
-
-    /** Shutdown state in which we are waiting until thread is exited
-    (earlier we keep notifying but we don't require it to exit before
-    we may switch to the next state). */
-    srv_shutdown_t m_wait_on_state;
-  };
-
-  const Thread_to_stop threads_to_stop[]{
-
-      {"lock_wait_timeout", srv_threads.m_lock_wait_timeout,
-       lock_set_timeout_event, SRV_SHUTDOWN_CLEANUP},
-
-      {"error_monitor", srv_threads.m_error_monitor,
-       std::bind(os_event_set, srv_error_event), SRV_SHUTDOWN_CLEANUP},
-
-      {"monitor", srv_threads.m_monitor,
-       std::bind(os_event_set, srv_monitor_event), SRV_SHUTDOWN_CLEANUP},
-
-      {"buf_dump", srv_threads.m_buf_dump,
-       std::bind(os_event_set, srv_buf_dump_event), SRV_SHUTDOWN_CLEANUP},
-
-      {"buf_resize", srv_threads.m_buf_resize,
-       std::bind(os_event_set, srv_buf_resize_event), SRV_SHUTDOWN_CLEANUP},
-
-      {"master", srv_threads.m_master, srv_wake_master_thread,
-       SRV_SHUTDOWN_MASTER_STOP}};
 
   const srv_shutdown_t max_wait_on_state{SRV_SHUTDOWN_MASTER_STOP};
 
@@ -3477,7 +3455,7 @@ static lsn_t srv_shutdown_log() {
     }
 
     /* No redo log might be generated since now. */
-    log_background_threads_inactive_validate(*log_sys);
+    log_background_threads_inactive_validate();
 
     srv_shutdown_set_state(SRV_SHUTDOWN_LAST_PHASE);
 
@@ -3499,7 +3477,7 @@ static lsn_t srv_shutdown_log() {
   }
 
   /* No redo log might be generated since now. */
-  log_background_threads_inactive_validate(*log_sys);
+  log_background_threads_inactive_validate();
   buf_must_be_all_freed();
 
   const lsn_t lsn = log_get_lsn(*log_sys);

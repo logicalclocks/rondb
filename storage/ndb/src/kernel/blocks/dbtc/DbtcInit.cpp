@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -24,6 +24,7 @@
 */
 
 #define DBTC_C
+#include "util/require.h"
 #include "Dbtc.hpp"
 #include "ndb_global.h"
 #include <pc.hpp>
@@ -707,7 +708,7 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
     &c_theIndexPool;
   c_transient_pools[DBTC_DEFINED_TRIGGER_RECORD_TRANSIENT_POOL_INDEX] =
     &c_theDefinedTriggerPool;
-  NDB_STATIC_ASSERT(c_transient_pool_count == 15);
+  static_assert(c_transient_pool_count == 15);
   c_transient_pools_shrinking.clear();
 }//Dbtc::Dbtc()
 

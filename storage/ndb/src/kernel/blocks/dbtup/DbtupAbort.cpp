@@ -263,7 +263,7 @@ void Dbtup::do_tup_abortreq(Signal* signal, Uint32 flags)
   }//if
 
   regFragPtr.i = regOperPtr.p->fragmentPtr;
-  c_fragment_pool.getPtr(regFragPtr);
+  ndbrequire(c_fragment_pool.getPtr(regFragPtr));
 
   regTabPtr.i = regFragPtr.p->fragTableId;
   ptrCheckGuard(regTabPtr, cnoOfTablerec, tablerec);

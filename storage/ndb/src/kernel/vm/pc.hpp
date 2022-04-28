@@ -89,11 +89,11 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
     constexpr Uint32 constJamFileId = (JAM_FILE_ID); \
     constexpr Uint32 constLineNumber = (lineNumber); \
     /* Statically check that file id fits in 14 bits. */ \
-    NDB_STATIC_ASSERT((constJamFileId & 0x3fff) == constJamFileId); \
+    static_assert((constJamFileId & 0x3fff) == constJamFileId); \
     /* Statically check that file id does not collide with Empty jam type. */ \
-    NDB_STATIC_ASSERT(constJamFileId != 0x3fff); \
+    static_assert(constJamFileId != 0x3fff); \
     /* Statically check that line number fits in 16 bits. */ \
-    NDB_STATIC_ASSERT((constLineNumber & 0xffff) == constLineNumber); \
+    static_assert((constLineNumber & 0xffff) == constLineNumber); \
     /* Make sure the whole jam event is known at compile-time. */ \
     constexpr JamEvent newJamEvent = JamEvent(constJamFileId, constLineNumber, \
                                               true); \
@@ -106,7 +106,7 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
     assert((jamBuffer->theEmulatedJamIndex & 3) != 0 || \
            jamBuffer == NDB_THREAD_TLS_JAM); \
     /* Statically check that jamFileNames[JAM_FILE_ID] matches __FILE__.*/ \
-    NDB_STATIC_ASSERT(JamEvent::verifyId((JAM_FILE_ID), __FILE__)); \
+    static_assert(JamEvent::verifyId((JAM_FILE_ID), __FILE__)); \
   } while (0)
 
 /**
@@ -119,9 +119,9 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
     /* Make sure file number is known at compile-time. */ \
     constexpr Uint32 constJamFileId = (JAM_FILE_ID); \
     /* Statically check that file id fits in 14 bits */ \
-    NDB_STATIC_ASSERT((constJamFileId & 0x3fff) == constJamFileId); \
+    static_assert((constJamFileId & 0x3fff) == constJamFileId); \
     /* Statically check that file id does not collide with Empty jam type */ \
-    NDB_STATIC_ASSERT(constJamFileId != 0x3fff); \
+    static_assert(constJamFileId != 0x3fff); \
     jamBuffer->insertJamEvent(JamEvent(constJamFileId, (data), false)); \
     /**
      * Occasionally, check at run-time that the jam buffer belongs to this
@@ -130,7 +130,7 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
     assert((jamBuffer->theEmulatedJamIndex & 3) != 0 || \
            jamBuffer == NDB_THREAD_TLS_JAM); \
     /* Statically check that jamFileNames[JAM_FILE_ID] matches __FILE__.*/ \
-    NDB_STATIC_ASSERT(JamEvent::verifyId((JAM_FILE_ID), __FILE__)); \
+    static_assert(JamEvent::verifyId((JAM_FILE_ID), __FILE__)); \
   } while (0)
 #endif
 

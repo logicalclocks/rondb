@@ -454,7 +454,7 @@ ErrorReporter::WriteMessage(int thrdMessageID,
        */
       dumpJam_cursor = dumpJam_oldest + EMULATED_JAM_SIZE - 1;
       // Ensure that the above won't overflow.
-      NDB_STATIC_ASSERT(((Uint32) (EMULATED_JAM_SIZE << 1)) > EMULATED_JAM_SIZE);
+      static_assert(((Uint32) (EMULATED_JAM_SIZE << 1)) > EMULATED_JAM_SIZE);
       fprintf(jamStream,
               "Dump of signal and jam information, NEWEST signal first.\n"
               "See legend at end of file.\n"
@@ -516,33 +516,33 @@ constexpr bool less_bits(Uint32 x, Uint32 y, int b)
   // and/or y only has the b lowest bits set correctly.
   return ((x - y) & (1 << (b - 1)));
 }
-NDB_STATIC_ASSERT(!less_bits(0x3fffffff, 0xffffffff, 30));
-NDB_STATIC_ASSERT(!less_bits(0x3fffffff, 0x3fffffff, 30));
-NDB_STATIC_ASSERT(!less_bits(0x3fffffff, 0x7fffffff, 30));
-NDB_STATIC_ASSERT(!less_bits(0x3fffffff, 0xbfffffff, 30));
-NDB_STATIC_ASSERT( less_bits(0x3fffffff, 0x00000000, 30));
-NDB_STATIC_ASSERT( less_bits(0x3fffffff, 0x40000000, 30));
-NDB_STATIC_ASSERT( less_bits(0x3fffffff, 0x80000000, 30));
-NDB_STATIC_ASSERT( less_bits(0x3fffffff, 0xc0000000, 30));
-NDB_STATIC_ASSERT(!less_bits(0x00000000, 0x00000000, 30));
-NDB_STATIC_ASSERT(!less_bits(0x00000000, 0x40000000, 30));
-NDB_STATIC_ASSERT(!less_bits(0x00000000, 0x80000000, 30));
-NDB_STATIC_ASSERT(!less_bits(0x00000000, 0xc0000000, 30));
-NDB_STATIC_ASSERT(!less_bits(0x00000001, 0x00000000, 30));
-NDB_STATIC_ASSERT(!less_bits(0x00000001, 0x40000000, 30));
-NDB_STATIC_ASSERT(!less_bits(0x00000001, 0x80000000, 30));
-NDB_STATIC_ASSERT(!less_bits(0x00000001, 0xc0000000, 30));
-NDB_STATIC_ASSERT( less_bits(0x00000001, 0x00000002, 30));
-NDB_STATIC_ASSERT( less_bits(0x00000001, 0x40000002, 30));
-NDB_STATIC_ASSERT( less_bits(0x00000001, 0x80000002, 30));
-NDB_STATIC_ASSERT( less_bits(0x00000001, 0xc0000002, 30));
-NDB_STATIC_ASSERT( less_bits(0x12345678, 0x9abcdef0, 25));
-NDB_STATIC_ASSERT(!less_bits(0x13345678, 0x9abcdef0, 25));
-NDB_STATIC_ASSERT(!less_bits(0x12345678, 0x9bbcdef0, 25));
-NDB_STATIC_ASSERT( less_bits(0x13345678, 0x9bbcdef0, 25));
-NDB_STATIC_ASSERT(!less_bits(0x13345678, 0x9bbcdef0,  5));
-NDB_STATIC_ASSERT( less_bits(0x13345678, 0x9bbcdee0,  5));
-NDB_STATIC_ASSERT(!less_bits(0x13345668, 0x9bbcdee0,  5));
+static_assert(!less_bits(0x3fffffff, 0xffffffff, 30));
+static_assert(!less_bits(0x3fffffff, 0x3fffffff, 30));
+static_assert(!less_bits(0x3fffffff, 0x7fffffff, 30));
+static_assert(!less_bits(0x3fffffff, 0xbfffffff, 30));
+static_assert( less_bits(0x3fffffff, 0x00000000, 30));
+static_assert( less_bits(0x3fffffff, 0x40000000, 30));
+static_assert( less_bits(0x3fffffff, 0x80000000, 30));
+static_assert( less_bits(0x3fffffff, 0xc0000000, 30));
+static_assert(!less_bits(0x00000000, 0x00000000, 30));
+static_assert(!less_bits(0x00000000, 0x40000000, 30));
+static_assert(!less_bits(0x00000000, 0x80000000, 30));
+static_assert(!less_bits(0x00000000, 0xc0000000, 30));
+static_assert(!less_bits(0x00000001, 0x00000000, 30));
+static_assert(!less_bits(0x00000001, 0x40000000, 30));
+static_assert(!less_bits(0x00000001, 0x80000000, 30));
+static_assert(!less_bits(0x00000001, 0xc0000000, 30));
+static_assert( less_bits(0x00000001, 0x00000002, 30));
+static_assert( less_bits(0x00000001, 0x40000002, 30));
+static_assert( less_bits(0x00000001, 0x80000002, 30));
+static_assert( less_bits(0x00000001, 0xc0000002, 30));
+static_assert( less_bits(0x12345678, 0x9abcdef0, 25));
+static_assert(!less_bits(0x13345678, 0x9abcdef0, 25));
+static_assert(!less_bits(0x12345678, 0x9bbcdef0, 25));
+static_assert( less_bits(0x13345678, 0x9bbcdef0, 25));
+static_assert(!less_bits(0x13345678, 0x9bbcdef0,  5));
+static_assert( less_bits(0x13345678, 0x9bbcdee0,  5));
+static_assert(!less_bits(0x13345668, 0x9bbcdee0,  5));
 
 /**
  * Given the index for the last jam event for a signal, return the index for

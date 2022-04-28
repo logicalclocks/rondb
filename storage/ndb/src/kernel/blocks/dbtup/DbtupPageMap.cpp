@@ -1357,7 +1357,7 @@ Dbtup::rebuild_page_free_list(Signal* signal)
   
   FragrecordPtr fragPtr;
   fragPtr.i= fragOpPtr.p->fragPointer;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   
   if (pageId == fragPtr.p->m_max_page_cnt)
   {

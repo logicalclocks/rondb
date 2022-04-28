@@ -82,7 +82,7 @@ static unsigned scale = 100;
   if (list.first(p)) { c_walked ++; while (list.next(p)) c_walked ++; } \
   ok(c_seized == c_walked, "walk next %llu of %llu items", c_walked, c_seized); \
  \
-  list.first(q); \
+  ok(list.first(q), "list.first(q) failed"); \
   while (q.p->key != c_half && list.hasNext(q)) list.next(q); \
   ok(q.p->key == c_half, "find half %llu (%llu)", q.p->key, c_half); \
  \
@@ -95,24 +95,22 @@ static unsigned scale = 100;
   pool.release(p); \
   c_released ++; \
  \
-  list.first(p); \
+  ok(list.first(p), "list.first(p) failed"); \
   ok(p.p->key == c_half + 1, "rearrange: first item %llu (%llu)", p.p->key, c_half + 1); \
  \
-  ok(p.p == list.getPtr(p.i), "list.getPtr(%llu) = %p (%p)", p.i, p.p, list.getPtr(p.i)); \
-  ok(p.p == pool.getPtr(p.i), "pool.getPtr(%llu) = %p (%p)", p.i, p.p, list.getPtr(p.i)); \
+  ok(list.getPtr(p.i) == p.p, "list.getPtr(%llu) = %p (%p)", p.i, p.p, list.getPtr(p.i)); \
+  ok(pool.getPtr(p.i) == p.p, "pool.getPtr(%llu) = %p (%p)", p.i, p.p, pool.getPtr(p.i)); \
  \
   q.i = p.i; \
   q.p = NULL; \
-  list.getPtr(q); \
-  ok(q.p == p.p, "list.getPtr(q)"); \
+  ok(list.getPtr(q), "list.getPtr(q)"); \
  \
   q.i = RNIL64; \
   q.p = NULL; \
-  list.getPtr(q, p.i); \
-  ok(q.p == p.p, "list.getPtr(q, p.i)")
+  ok(list.getPtr(q, p.i), "list.getPtr(q, p.i)")
 
 #define LIST_PREV_TEST(pool, list, head) \
-  list.first(q); \
+  ok(list.first(q), "list.first(q) failed"); \
   while (q.p->key != c_half - 1 && list.hasNext(q)) list.next(q); \
   ok(q.p->key == c_half - 1, "find %llu (%llu)", q.p->key, c_half - 1); \
   /* list before: key= c_half + 1, c_half + 2, ..., c_seized - 1, c_seized, c_half - 1, c_half - 2, ..., 2, 1 */ \
@@ -124,7 +122,7 @@ static unsigned scale = 100;
   pool.release(p); \
   c_released ++; \
  \
-  list.first(p); \
+  ok(list.first(p), "list.first(p) failed"); \
   ok(p.p->key == c_seized - 1, "rearrange: first item %llu (%llu)", p.p->key, c_seized - 1); \
  \
   while (p.p->key != c_half -1 && list.next(p)); \
@@ -396,7 +394,7 @@ void testConcat(Pool& pool)
   ok(dlchead.getCount() == 0, "dlc.count %llu (0)", dlchead.getCount());
   {
     LocalSLFifo64List<Pool> list(pool, slhead);
-    list.first(p);
+    (void)list.first(p);
     ok(p.p->key == 2 * scale, "sl#1: %llu (%u)", p.p->key, 2 * scale);
     for (unsigned i = 0; i < 1 * scale; i++) list.next(p);
     ok(p.p->key == 5 * scale, "sl#1: %llu (%u)", p.p->key, 5 * scale);

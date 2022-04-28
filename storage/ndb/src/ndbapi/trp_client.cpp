@@ -23,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
 #include "trp_client.hpp"
 #include "TransporterFacade.hpp"
 #include <EventLogger.hpp>

@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -264,6 +264,11 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
   ndb_mgm_get_int_parameter(p, CFG_DB_O_DIRECT,
                             &c_defaults.m_o_direct);
 
+  Uint32 encrypted_filesystem = 0;
+  ndb_mgm_get_int_parameter(
+      p, CFG_DB_ENCRYPTED_FILE_SYSTEM, &encrypted_filesystem);
+  c_encrypted_filesystem = encrypted_filesystem;
+
   ndb_mgm_get_int64_parameter(p, CFG_DB_MIN_DISK_WRITE_SPEED,
 			      &c_defaults.m_disk_write_speed_min);
   ndb_mgm_get_int64_parameter(p, CFG_DB_MAX_DISK_WRITE_SPEED,
@@ -364,7 +369,7 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
 
   c_transient_pools[BACKUP_TRIGGER_RECORD_TRANSIENT_POOL_INDEX] =
     &c_triggerPool;
-  NDB_STATIC_ASSERT(c_transient_pool_count == 1);
+  static_assert(c_transient_pool_count == 1);
   c_transient_pools_shrinking.clear();
 
   Pool_context pc;

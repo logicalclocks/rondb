@@ -1,5 +1,5 @@
-/* Copyright (c) 2008, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
+/* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,7 +47,7 @@ Dbinfo::Dbinfo(Block_context& ctx) :
 {
   BLOCK_CONSTRUCTOR(Dbinfo);
 
-  STATIC_ASSERT(sizeof(DbinfoScanCursor) == sizeof(Ndbinfo::ScanCursor));
+  static_assert(sizeof(DbinfoScanCursor) == sizeof(Ndbinfo::ScanCursor));
 
   /* Add Received Signals */
   addRecSignal(GSN_STTOR, &Dbinfo::execSTTOR);
@@ -493,7 +493,7 @@ void Dbinfo::execNODE_FAILREP(Signal* signal)
     ndbrequire(getNodeInfo(refToNode(signal->getSendersBlockRef())).m_version);
     SegmentedSectionPtr ptr;
     SectionHandle handle(this, signal);
-    handle.getSection(ptr, 0);
+    ndbrequire(handle.getSection(ptr, 0));
     memset(rep->theNodes, 0, sizeof(rep->theNodes));
     copy(rep->theNodes, ptr);
     releaseSections(handle);

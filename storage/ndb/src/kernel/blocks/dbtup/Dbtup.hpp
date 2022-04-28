@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -26,6 +26,7 @@
 #ifndef DBTUP_H
 #define DBTUP_H
 
+#include "util/require.h"
 #include <cstring>
 #include <pc.hpp>
 #include <SimulatedBlock.hpp>
@@ -3982,11 +3983,11 @@ private:
    *   - clogMemBuffer also used for before values
    */
   static_assert(sizeof(clogMemBuffer) >=
-      sizeof(Uint32) * (MAX_TUPLE_SIZE_IN_WORDS + MAX_ATTRIBUTES_IN_TABLE), "");
+      sizeof(Uint32) * (MAX_TUPLE_SIZE_IN_WORDS + MAX_ATTRIBUTES_IN_TABLE));
   static_assert(sizeof(coutBuffer) >=
-      sizeof(Uint32) * (MAX_TUPLE_SIZE_IN_WORDS + MAX_ATTRIBUTES_IN_TABLE), "");
+      sizeof(Uint32) * (MAX_TUPLE_SIZE_IN_WORDS + MAX_ATTRIBUTES_IN_TABLE));
   static_assert(sizeof(cinBuffer) >=
-      sizeof(Uint32) * (MAX_KEY_SIZE_IN_WORDS + MAX_ATTRIBUTES_IN_INDEX), "");
+      sizeof(Uint32) * (MAX_KEY_SIZE_IN_WORDS + MAX_ATTRIBUTES_IN_INDEX));
 
   Uint32 ctemp_page[ZWORDS_ON_PAGE];
   Uint32 ctemp_var_record[ZWORDS_ON_PAGE];
@@ -4848,7 +4849,7 @@ Dbtup::get_all_tup_ptrs(Uint64 indexFragPtrI,
 {
   FragrecordPtr indexFragPtr;
   indexFragPtr.i= indexFragPtrI;
-  c_fragment_pool.getPtr(indexFragPtr);
+  ndbrequire(c_fragment_pool.getPtr(indexFragPtr));
   TablerecPtr indexTablePtr;
   indexTablePtr.i= indexFragPtr.p->fragTableId;
   ptrCheckGuard(indexTablePtr, cnoOfTablerec, tablerec);
@@ -4862,7 +4863,7 @@ Dbtup::get_all_tup_ptrs(Uint64 indexFragPtrI,
   FragrecordPtr realFragPtr;
   TablerecPtr realTablePtr;
   realFragPtr.i = tableFragPtrI;
-  c_fragment_pool.getPtr(realFragPtr);
+  ndbrequire(c_fragment_pool.getPtr(realFragPtr));
   realTablePtr.i= realFragPtr.p->fragTableId;
   ptrCheckGuard(realTablePtr, cnoOfTablerec, tablerec);
   *real_fragptr = (Uint32*)realFragPtr.p;
@@ -4916,7 +4917,7 @@ Dbtup::tuxGetNode(Uint32 attrDataOffset,
                   Uint32*& node)
 {
   PagePtr pagePtr;
-  c_page_pool.getPtr(pagePtr, pageId);
+  ndbrequire(c_page_pool.getPtr(pagePtr, pageId));
   node= ((Fix_page*)pagePtr.p)->
     get_ptr(pageOffset, tuxFixHeaderSize) + attrDataOffset;
   NDB_PREFETCH_READ((void*)node);
@@ -4946,7 +4947,7 @@ Dbtup::prepare_tab_pointers(Uint64 frag_id)
   TablerecPtr tabptr;
 
   fragptr.i = frag_id;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   const Uint32 RnoOfTablerec= cnoOfTablerec;
   Tablerec * Rtablerec = tablerec;
   tabptr.i = fragptr.p->fragTableId;

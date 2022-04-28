@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -623,7 +623,7 @@ bool Dbtup::receive_defvalue(Signal* signal, const TablerecPtr& regTabPtr)
   jam();
   SectionHandle handle(this, signal);
   SegmentedSectionPtr ptr;
-  handle.getSection(ptr, TupAddAttrReq::DEFAULT_VALUE_SECTION_NUM);
+  ndbrequire(handle.getSection(ptr, TupAddAttrReq::DEFAULT_VALUE_SECTION_NUM));
 
   SimplePropertiesSectionReader r(ptr, getSectionSegmentPool());
   r.reset();
@@ -1065,7 +1065,7 @@ bool Dbtup::get_fragment_record(TablerecPtr & tabPtr,
   if (fragPtr.i != RNIL64)
   {
     jam();
-    c_fragment_pool.getPtr(fragPtr);
+    ndbrequire(c_fragment_pool.getPtr(fragPtr));
     return true;
   }
   else
@@ -1088,7 +1088,7 @@ void Dbtup::getFragmentrec(FragrecordPtr& regFragPtr,
   if (regFragPtr.i != RNIL64)
   {
     thrjamDebug(jamBuf);
-    c_fragment_pool.getPtr(regFragPtr);
+    ndbrequire(c_fragment_pool.getPtr(regFragPtr));
     return;
   }
   thrjamDebug(jamBuf);
@@ -1180,7 +1180,7 @@ Dbtup::execALTER_TAB_REQ(Signal *signal)
       if ((regFragPtr.i = c_lqh->getNextTupFragrec(regTabPtr.i, i)) != RNIL64)
       {
         jam();
-        c_fragment_pool.getPtr(regFragPtr);
+        ndbrequire(c_fragment_pool.getPtr(regFragPtr));
         switch(regFragPtr.p->fragStatus){
         case Fragrecord::FS_REORG_COMMIT_NEW:
           jam();
@@ -1210,7 +1210,7 @@ Dbtup::execALTER_TAB_REQ(Signal *signal)
       if ((regFragPtr.i = c_lqh->getNextTupFragrec(regTabPtr.i, i)) != RNIL64)
       {
         jam();
-        c_fragment_pool.getPtr(regFragPtr);
+        ndbrequire(c_fragment_pool.getPtr(regFragPtr));
         switch(regFragPtr.p->fragStatus){
         case Fragrecord::FS_REORG_COMMIT:
           jam();
@@ -1498,7 +1498,7 @@ Dbtup::handleAlterTableCommit(Signal *signal,
       if ((regFragPtr.i = c_lqh->getNextTupFragrec(tabPtr.i, i)) != RNIL64)
       {
         jam();
-        c_fragment_pool.getPtr(regFragPtr);
+        ndbrequire(c_fragment_pool.getPtr(regFragPtr));
         switch(regFragPtr.p->fragStatus){
         case Fragrecord::FS_ONLINE:
           jam();
@@ -1543,7 +1543,7 @@ Dbtup::handleAlterTableComplete(Signal *signal,
       if ((regFragPtr.i = c_lqh->getNextTupFragrec(tableId, i)) != RNIL64)
       {
         jam();
-        c_fragment_pool.getPtr(regFragPtr);
+        ndbrequire(c_fragment_pool.getPtr(regFragPtr));
         switch(regFragPtr.p->fragStatus){
         case Fragrecord::FS_REORG_COMPLETE:
           jam();
@@ -2329,7 +2329,7 @@ Dbtup::drop_fragment_unmap_pages(Signal *signal,
 	Local_extent_info_list
 	  list(c_extent_pool, alloc_info.m_free_extents[0]);
 	Ptr<Extent_info> ext_ptr;
-	c_extent_pool.getPtr(ext_ptr, alloc_info.m_curr_extent_info_ptr_i);
+        ndbrequire(c_extent_pool.getPtr(ext_ptr, alloc_info.m_curr_extent_info_ptr_i));
         list.addFirst(ext_ptr);
 	alloc_info.m_curr_extent_info_ptr_i= RNIL;
       }
@@ -2385,7 +2385,7 @@ Dbtup::drop_fragment_unmap_page_callback(Signal* signal,
 {
   jam();
   Ptr<GlobalPage> page;
-  m_global_page_pool.getPtr(page, page_id);
+  ndbrequire(m_global_page_pool.getPtr(page, page_id));
   
   Local_key key;
   key.m_page_no = ((Page*)page.p)->m_page_no;
@@ -2772,8 +2772,11 @@ Dbtup::lcp_open_ctl_file(Signal *signal,
   FsOpenReq::v5_setLcpNo(req->fileNumber, ctl_file);
   FsOpenReq::v5_setTableId(req->fileNumber, tableId);
   FsOpenReq::v5_setFragmentId(req->fileNumber, fragmentId);
-  sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal,
-             FsOpenReq::SignalLength, JBA);
+  req->page_size = 0;
+  req->file_size_hi = UINT32_MAX;
+  req->file_size_lo = UINT32_MAX;
+  req->auto_sync_size = 0;
+  sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength, JBA);
 }
 
 void
@@ -2787,7 +2790,7 @@ Dbtup::execFSOPENREF(Signal *signal)
   tabPtr.i = ref->userPointer;
   ptrCheckGuard(tabPtr, cnoOfTablerec, tablerec);
   fragPtr.i = tabPtr.p->m_dropTable.m_fragPtrI;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
 
   if (tabPtr.p->m_dropTable.m_lcpno == 0)
   {
@@ -2814,7 +2817,7 @@ Dbtup::execFSOPENCONF(Signal *signal)
   tabPtr.i = conf->userPointer;
   ptrCheckGuard(tabPtr, cnoOfTablerec, tablerec);
   fragPtr.i = tabPtr.p->m_dropTable.m_fragPtrI;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   tabPtr.p->m_dropTable.m_filePointer = conf->filePointer;
 
   lcp_read_ctl_file(signal,
@@ -2868,7 +2871,7 @@ Dbtup::execFSREADCONF(Signal *signal)
   tabPtr.i = conf->userPointer;
   ptrCheckGuard(tabPtr, cnoOfTablerec, tablerec);
   fragPtr.i = tabPtr.p->m_dropTable.m_fragPtrI;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
 
   const Uint32 bytesRead = conf->bytes_read;
   if (bytesRead != 0)
@@ -2938,7 +2941,7 @@ Dbtup::execFSCLOSECONF(Signal *signal)
   tabPtr.i = conf->userPointer;
   ptrCheckGuard(tabPtr, cnoOfTablerec, tablerec);
   fragPtr.i = tabPtr.p->m_dropTable.m_fragPtrI;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
 
   if (tabPtr.p->m_dropTable.m_lcpno == 0)
   {
@@ -3231,7 +3234,7 @@ Dbtup::execFSREMOVECONF(Signal* signal)
   ptrCheckGuard(tabPtr, cnoOfTablerec, tablerec);
 
   fragPtr.i = tabPtr.p->m_dropTable.m_fragPtrI;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
 
   ndbrequire(tabPtr.p->m_dropTable.m_outstanding_ops > 0);
   tabPtr.p->m_dropTable.m_outstanding_ops--;
@@ -3444,7 +3447,7 @@ Dbtup::get_frag_stats(Uint64 fragPtrI) const
   FragrecordPtr fragptr;
   jam();
   fragptr.i = fragPtrI;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   TablerecPtr tabPtr;
   tabPtr.i = fragptr.p->fragTableId;
   ptrCheckGuard(tabPtr, cnoOfTablerec, tablerec);
@@ -3563,7 +3566,7 @@ Dbtup::get_lcp_frag_stats(Uint64 fragPtrI,
    */
   FragrecordPtr fragptr;
   fragptr.i = fragPtrI;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   row_count = fragptr.p->m_row_count;
   prev_row_count = fragptr.p->m_prev_row_count;
   row_change_count = fragptr.p->m_lcp_changed_rows;

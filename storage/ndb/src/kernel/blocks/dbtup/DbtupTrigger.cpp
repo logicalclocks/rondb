@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -191,7 +191,7 @@ Dbtup::execCREATE_TRIG_IMPL_REQ(Signal* signal)
   else
   {
     SegmentedSectionPtr ptr;
-    handle.getSection(ptr, CreateTrigImplReq::ATTRIBUTE_MASK_SECTION);
+    ndbrequire(handle.getSection(ptr, CreateTrigImplReq::ATTRIBUTE_MASK_SECTION));
     ndbrequire(ptr.sz == mask.getSizeInWords());
     ::copy(mask.rep.data, ptr);
   }
@@ -563,7 +563,10 @@ Dbtup::dropTrigger(Tablerec* table,
 
     TriggerPtr ptr;
     tmp[i].ptr.setNull();
-    for (tmp[i].list->first(ptr); !ptr.isNull(); tmp[i].list->next(ptr))
+    bool ret;
+    for (ret = tmp[i].list->first(ptr);
+         ret;
+         ret = tmp[i].list->next(ptr))
     {
       jam();
       if (ptr.p->triggerId == triggerId)
@@ -624,7 +627,7 @@ Dbtup::execFIRE_TRIG_REQ(Signal* signal)
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(regOperPtr));
 
   regFragPtr.i = regOperPtr.p->fragmentPtr;
-  c_fragment_pool.getPtr(regFragPtr);
+  ndbrequire(c_fragment_pool.getPtr(regFragPtr));
 
   TransState trans_state = get_trans_state(regOperPtr.p);
   ndbrequire(trans_state == TRANS_STARTED);
@@ -816,8 +819,8 @@ Dbtup::checkDeferredTriggersDuringPrepare(KeyReqStruct *req_struct,
 {
   jam();
   TriggerPtr trigPtr;
-  triggerList.first(trigPtr);
-  while (trigPtr.i != RNIL64)
+  bool ret = triggerList.first(trigPtr);
+  while (ret)
   {
     jam();
     if (trigPtr.p->monitorAllAttributes ||
@@ -844,7 +847,7 @@ Dbtup::checkDeferredTriggersDuringPrepare(KeyReqStruct *req_struct,
         return;
       }
     }
-    triggerList.next(trigPtr);
+    ret = triggerList.next(trigPtr);
   }
 }
 
@@ -1113,8 +1116,8 @@ Dbtup::fireImmediateTriggers(KeyReqStruct *req_struct,
                              bool disk)
 {
   TriggerPtr trigPtr;
-  triggerList.first(trigPtr);
-  while (trigPtr.i != RNIL64) {
+  bool ret = triggerList.first(trigPtr);
+  while (ret) {
     jam();
     if (trigPtr.p->monitorAllAttributes ||
         trigPtr.p->attributeMask.overlaps(req_struct->changeMask)) {
@@ -1144,7 +1147,7 @@ Dbtup::fireImmediateTriggers(KeyReqStruct *req_struct,
                        disk);
       }
     }
-    triggerList.next(trigPtr);
+    ret = triggerList.next(trigPtr);
   }//while
 }//Dbtup::fireImmediateTriggers()
 
@@ -1155,8 +1158,8 @@ Dbtup::fireDeferredConstraints(KeyReqStruct *req_struct,
                                bool disk)
 {
   TriggerPtr trigPtr;
-  triggerList.first(trigPtr);
-  while (trigPtr.i != RNIL64) {
+  bool ret = triggerList.first(trigPtr);
+  while (ret) {
     jam();
 
     if (trigPtr.p->monitorAllAttributes ||
@@ -1192,7 +1195,7 @@ Dbtup::fireDeferredConstraints(KeyReqStruct *req_struct,
         ndbabort();
       }
     }//if
-    triggerList.next(trigPtr);
+    ret = triggerList.next(trigPtr);
   }//while
 }//Dbtup::fireDeferredConstraints()
 
@@ -1203,8 +1206,8 @@ Dbtup::fireDeferredTriggers(KeyReqStruct *req_struct,
                             bool disk)
 {
   TriggerPtr trigPtr;
-  triggerList.first(trigPtr);
-  while (trigPtr.i != RNIL64) {
+  bool ret = triggerList.first(trigPtr);
+  while (ret) {
     jam();
     if (trigPtr.p->monitorAllAttributes ||
         trigPtr.p->attributeMask.overlaps(req_struct->changeMask)) {
@@ -1214,7 +1217,7 @@ Dbtup::fireDeferredTriggers(KeyReqStruct *req_struct,
                      regOperPtr,
                      disk);
     }//if
-    triggerList.next(trigPtr);
+    ret = triggerList.next(trigPtr);
   }//while
 }//Dbtup::fireDeferredTriggers()
 
@@ -1234,8 +1237,8 @@ Dbtup::fireDetachedTriggers(KeyReqStruct *req_struct,
   req_struct->m_disk_page_ptr.i = diskPagePtrI;
   
   ndbrequire(regOperPtr->is_first_operation());
-  triggerList.first(trigPtr);
-  while (trigPtr.i != RNIL64) {
+  bool ret = triggerList.first(trigPtr);
+  while (ret) {
     jam();
     if ((trigPtr.p->monitorReplicas ||
          regOperPtr->op_struct.bit_field.m_triggers ==
@@ -1248,7 +1251,7 @@ Dbtup::fireDetachedTriggers(KeyReqStruct *req_struct,
                      regOperPtr,
                      disk);
     }
-    triggerList.next(trigPtr);
+    ret = triggerList.next(trigPtr);
   }
 }
 
@@ -1488,7 +1491,7 @@ void Dbtup::executeTrigger(KeyReqStruct *req_struct,
 
   FragrecordPtr regFragPtr;
   regFragPtr.i= regOperPtr->fragmentPtr;
-  c_fragment_pool.getPtr(regFragPtr);
+  ndbrequire(c_fragment_pool.getPtr(regFragPtr));
   Fragrecord::FragState fragstatus = regFragPtr.p->fragStatus;
 
   if (refToMain(ref) == getBACKUP())
@@ -2224,8 +2227,8 @@ Dbtup::addTuxEntries(Signal* signal,
   const TupTriggerData_list& triggerList = regTabPtr->tuxCustomTriggers;
   TriggerPtr triggerPtr;
   Uint64 failPtrI;
-  triggerList.first(triggerPtr);
-  while (triggerPtr.i != RNIL64) {
+  bool ret = triggerList.first(triggerPtr);
+  while (ret) {
     jamDebug();
     req->indexId = triggerPtr.p->indexId;
     req->errorCode = RNIL;
@@ -2246,12 +2249,12 @@ Dbtup::addTuxEntries(Signal* signal,
       failPtrI = triggerPtr.i;
       goto fail;
     }
-    triggerList.next(triggerPtr);
+    ret = triggerList.next(triggerPtr);
   }
   return 0;
 fail:
   req->opInfo = TuxMaintReq::OpRemove;
-  triggerList.first(triggerPtr);
+  ret = triggerList.first(triggerPtr);
   while (triggerPtr.i != failPtrI) {
     jamDebug();
     req->indexId = triggerPtr.p->indexId;
@@ -2259,7 +2262,7 @@ fail:
     c_tux->execTUX_MAINT_REQ(signal);
     jamEntryDebug();
     ndbrequire(req->errorCode == 0);
-    triggerList.next(triggerPtr);
+    ret = triggerList.next(triggerPtr);
   }
 #ifdef VM_TRACE
   ndbout << "aborted partial tux update: op " << hex << regOperPtr << endl;
@@ -2358,8 +2361,8 @@ Dbtup::removeTuxEntries(Signal* signal,
   TuxMaintReq* const req = (TuxMaintReq*)signal->getDataPtrSend();
   const TupTriggerData_list& triggerList = regTabPtr->tuxCustomTriggers;
   TriggerPtr triggerPtr;
-  triggerList.first(triggerPtr);
-  while (triggerPtr.i != RNIL64)
+  bool ret = triggerList.first(triggerPtr);
+  while (ret)
   {
     jamDebug();
     req->indexId = triggerPtr.p->indexId;
@@ -2368,7 +2371,7 @@ Dbtup::removeTuxEntries(Signal* signal,
     jamEntryDebug();
     // must succeed
     ndbrequire(req->errorCode == 0);
-    triggerList.next(triggerPtr);
+    ret = triggerList.next(triggerPtr);
   }
 }
 

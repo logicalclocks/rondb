@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1273,6 +1273,8 @@ public:
   typedef Ptr<GcpRecord> GcpRecordPtr;
 
   struct HostRecord {
+    Bitmask<(MAX_NDBMT_LQH_THREADS+1+31)/32> lqh_pack_mask;
+    Bitmask<(MAX_NDBMT_TC_THREADS+1+31)/32> tc_pack_mask;
     struct PackedWordsContainer lqh_pack[MAX_NDBMT_LQH_THREADS+1];
     struct PackedWordsContainer tc_pack[MAX_NDBMT_TC_THREADS+1];
     Uint8 inPackedList;
@@ -3411,6 +3413,14 @@ private:
                         Uint32 tcHashKeyHi,
                         TcConnectionrec *regTcPtr,
                         bool is_key_operation);
+  Uint32 getHashKey(UintR Transid1,
+                    UintR Transid2,
+                    UintR TcOprec);
+  Uint32 getHashIndex(UintR Transid1,
+                      UintR Transid2,
+                      UintR TcOprec);
+  Uint32 getHashIndex(TcConnectionrec *regTcPtr);
+
   int  findTransaction(UintR Transid1,
                        UintR Transid2,
                        UintR TcOprec,
@@ -4396,9 +4406,11 @@ private:
 /* ACTUALLY USED FOR ALL ABORTS COMMANDED BY TC.                             */
 /* ------------------------------------------------------------------------- */
   UintR preComputedRequestInfoMask;
+
 #define TRANSID_HASH_SIZE 131072
-  UintR ctransidHash[TRANSID_HASH_SIZE];
-  
+  Uint32 *ctransidHash;
+  Uint32 ctransidHashSize;
+
   Uint32 c_diskless;
   Uint32 c_o_direct;
   Uint32 c_o_direct_sync_flag;
@@ -4615,6 +4627,8 @@ public:
   void execSET_LOCAL_LCP_ID_CONF(Signal*);
   void execCOPY_FRAG_NOT_IN_PROGRESS_REP(Signal*);
   void execCUT_REDO_LOG_TAIL_REQ(Signal*);
+
+  bool c_encrypted_filesystem;
 
   /**
    * Variable keeping track of which GCI to keep in REDO log
@@ -5348,7 +5362,7 @@ Dblqh::get_op_info(Uint32 opId, Uint32 *hash, Uint32* gci_hi, Uint32* gci_lo,
 
   FragrecordPtr regFragptr;
   regFragptr.i = regTcPtr.p->fragmentptr;
-  c_fragment_pool.getPtr(regFragptr);
+  ndbrequire(c_fragment_pool.getPtr(regFragptr));
   fragptr = regFragptr;
   m_tc_connect_ptr = regTcPtr;
 }
@@ -5370,7 +5384,7 @@ Dblqh::accminupdate(Signal* signal, Uint32 opId, const Local_key* key)
   {
     FragrecordPtr regFragptr;
     regFragptr.i = regTcPtr.p->fragmentptr;
-    c_fragment_pool.getPtr(regFragptr);
+    ndbrequire(c_fragment_pool.getPtr(regFragptr));
     if (regFragptr.p->m_copy_started_state == Fragrecord::AC_NR_COPY) {
       char buf[MAX_LOG_MESSAGE_SIZE];
       g_eventLogger->info(" LK: %s",
@@ -5404,7 +5418,7 @@ Dblqh::TRACE_OP_CHECK(const TcConnectionrec* regTcPtr)
   {
     FragrecordPtr regFragptr;
     regFragptr.i = regTcPtr->fragmentptr;
-    c_fragment_pool.getPtr(regFragptr);
+    ndbrequire(c_fragment_pool.getPtr(regFragptr));
     return regFragptr.p->m_copy_started_state == Fragrecord::AC_NR_COPY;
   }
 

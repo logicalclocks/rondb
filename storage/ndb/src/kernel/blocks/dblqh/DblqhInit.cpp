@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -24,6 +24,7 @@
 */
 
 
+#include "util/require.h"
 #include <pc.hpp>
 #define DBLQH_C
 #include "Dblqh.hpp"
@@ -175,9 +176,9 @@ void Dblqh::initData()
   m_startup_report_frequency = 0;
 
   c_active_add_frag_ptr_i = RNIL;
-  for (Uint32 i = 0; i < TRANSID_HASH_SIZE; i++) {
-    ctransidHash[i] = RNIL;
-  }//for
+
+  ctransidHash = NULL;
+  ctransidHashSize = 0;
 
   for (Uint32 i = 0; i < NUM_TRANSACTION_HASH_MUTEXES; i++)
   {
@@ -326,7 +327,7 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
                                           clogPageFileSize / clogPartFileSize,
                                           CFG_DB_REDO_BUFFER);
       Ptr<GlobalPage> pagePtr;
-      m_shared_page_pool.getPtr(pagePtr, chunks[0].ptrI);
+      ndbrequire(m_shared_page_pool.getPtr(pagePtr, chunks[0].ptrI));
       logPartPtr.p->logPageRecord = (LogPageRecord*)pagePtr.p;
       logPartPtr.p->logPageFileSize = clogPageFileSize / clogPartFileSize;
       logPartPtr.p->firstFreeLogPage = RNIL;
@@ -348,7 +349,7 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
         ndbrequire(cnt != 0);
 
         Ptr<GlobalPage> pagePtr;
-        m_shared_page_pool.getPtr(pagePtr, chunks[i].ptrI);
+        ndbrequire(m_shared_page_pool.getPtr(pagePtr, chunks[i].ptrI));
         LogPageRecord * base = (LogPageRecord*)pagePtr.p;
         ndbrequire(base >= logPartPtr.p->logPageRecord);
         const Uint32 ptrI = Uint32(base - logPartPtr.p->logPageRecord);
@@ -543,6 +544,18 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
       bat[i].bits.q = ZTWOLOG_PAGE_SIZE;
       bat[i].bits.v = 5;
     }
+  }
+
+  ctransidHashSize = tcConnect_pool.getSize();
+  if (ctransidHashSize < TRANSID_HASH_SIZE) {
+    ctransidHashSize = TRANSID_HASH_SIZE;
+  }
+  ctransidHash = (Uint32*)allocRecord("TransIdHash",
+                                       sizeof(Uint32),
+                                       ctransidHashSize);
+
+  for (Uint32 i = 0; i < ctransidHashSize; i++) {
+    ctransidHash[i] = RNIL;
   }
 }//Dblqh::initRecords()
 
@@ -858,7 +871,7 @@ Dblqh::Dblqh(Block_context& ctx,
     &m_commitAckMarkerPool;
   c_transient_pools[DBLQH_MAP_FRAGMENT_RECORD_TRANSIENT_POOL_INDEX] =
     &c_map_fragment_pool;
-  NDB_STATIC_ASSERT(c_transient_pool_count == 4);
+  static_assert(c_transient_pool_count == 4);
   c_transient_pools_shrinking.clear();
 }//Dblqh::Dblqh()
 
@@ -951,6 +964,11 @@ Dblqh::~Dblqh()
                 "TcNodeFailRecord",
                 sizeof(TcNodeFailRecord),
                 ctcNodeFailrecFileSize);
+
+  deallocRecord((void**)&ctransidHash,
+                "TransIdHash",
+                sizeof(Uint32),
+                ctransidHashSize);
 }//Dblqh::~Dblqh()
 
 BLOCK_FUNCTIONS(Dblqh)

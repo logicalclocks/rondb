@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -588,7 +588,7 @@ Dblqh::handle_queued_log_write(Signal *signal,
                 logPartPtrP->logPageRecord);
 
   fragptr.i = tcConnectptr.p->fragmentptr;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
 
   // so that operation can continue...
   switch (tcConnectptr.p->transactionState) {
@@ -1161,7 +1161,7 @@ void Dblqh::execCONTINUEB(Signal* signal)
                         fragptr);
     if (fragptr.i != RNIL64)
     {
-      c_lcp_complete_fragments.getPtr(fragptr);
+      ndbrequire(c_lcp_complete_fragments.getPtr(fragptr));
       FragrecordPtr save = fragptr;
 
       c_lcp_complete_fragments.next(fragptr);
@@ -1407,7 +1407,7 @@ Dblqh::sttor_startphase1(Signal *signal)
       globalData.ndbMtLqhWorkers);
     m_num_restore_threads = num_restore_threads;
   }
-    
+
 #ifdef NDBD_TRACENR
 #ifdef VM_TRACE
   out = globalSignalLoggers.getOutputStream();
@@ -1477,6 +1477,8 @@ Dblqh::sttor_startphase1(Signal *signal)
      * In general full instance key of fragment must be used.
      */
     ThostPtr.p->inPackedList = false;
+    ThostPtr.p->lqh_pack_mask.clear();
+    ThostPtr.p->tc_pack_mask.clear();
     for (Tj = 0; Tj < NDB_ARRAY_SIZE(ThostPtr.p->lqh_pack); Tj++)
     {
       ThostPtr.p->lqh_pack[Tj].noOfPackedWords = 0;
@@ -2075,7 +2077,7 @@ void Dblqh::execREAD_NODESCONF(Signal* signal)
     ndbrequire(signal->getNoOfSections() == 1);
     SegmentedSectionPtr ptr;
     SectionHandle handle(this, signal);
-    handle.getSection(ptr, 0);
+    ndbrequire(handle.getSection(ptr, 0));
     ndbrequire(ptr.sz == 5 * NdbNodeBitmask::Size);
     copy((Uint32*)&readNodes->definedNodes.rep.data, ptr);
     releaseSections(handle);
@@ -2324,6 +2326,11 @@ void Dblqh::execREAD_CONFIG_REQ(Signal* signal)
   ndbrequire(!ndb_mgm_get_int_parameter(p, CFG_DB_DISCLESS, &c_diskless));
   c_o_direct = true;
   ndb_mgm_get_int_parameter(p, CFG_DB_O_DIRECT, &c_o_direct);
+
+  Uint32 encrypted_filesystem = 0;
+  ndb_mgm_get_int_parameter(
+      p, CFG_DB_ENCRYPTED_FILE_SYSTEM, &encrypted_filesystem);
+  c_encrypted_filesystem = encrypted_filesystem;
 
   m_use_om_init = 0;
   {
@@ -2805,7 +2812,8 @@ void Dblqh::execLQHADDATTREQ(Signal* signal)
   {
     SectionHandle handle(this, signal);
     SegmentedSectionPtr defValSection;
-    handle.getSection(defValSection, LqhAddAttrReq::DEFAULT_VALUE_SECTION_NUM);
+    ndbrequire(handle.getSection(defValSection,
+                                 LqhAddAttrReq::DEFAULT_VALUE_SECTION_NUM));
     addfragptr.p->defValSectionI = defValSection.i;
     addfragptr.p->defValNextPos = 0;
     //Don't free Section here. Section is freed after default values are trasfered to TUP
@@ -3414,7 +3422,7 @@ void Dblqh::execACCFRAGCONF(Signal* signal)
 
   addfragptr.p->accConnectptr = taccConnectptr;
   fragptr.i = addfragptr.p->fragmentPtr;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   addfragptr.p->addfragStatus = AddFragRecord::WAIT_TUP;
   sendAddFragReq(signal);
 }//Dblqh::execACCFRAGCONF()
@@ -3429,7 +3437,7 @@ void Dblqh::execTUPFRAGCONF(Signal* signal)
   Uint32 tupConnectptr = signal->theData[1];
   ptrCheckGuard(addfragptr, caddfragrecFileSize, addFragRecord);
   fragptr.i = addfragptr.p->fragmentPtr;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   tabptr.i = fragptr.p->tabRef;
   ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
   switch (addfragptr.p->addfragStatus) {
@@ -3490,7 +3498,7 @@ void
 Dblqh::sendAddFragReq(Signal* signal)
 {
   fragptr.i = addfragptr.p->fragmentPtr;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   tabptr.i = fragptr.p->tabRef;
   ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
   if (addfragptr.p->addfragStatus == AddFragRecord::WAIT_TUP)
@@ -3721,7 +3729,7 @@ void Dblqh::insert_new_fragments_into_lcp(Signal *signal)
     if (curr_fragptr.i != RNIL64)
     {
       jam();
-      c_fragment_pool.getPtr(curr_fragptr);
+      ndbrequire(c_fragment_pool.getPtr(curr_fragptr));
       jamLine(Uint16(curr_fragptr.p->fragId));
       ndbrequire(curr_fragptr.p->lcp_frag_ord_state ==
                  Fragrecord::LCP_EXECUTED);
@@ -3886,7 +3894,7 @@ void Dblqh::execTUPFRAGREF(Signal* signal)
   ptrCheckGuard(addfragptr, caddfragrecFileSize, addFragRecord);
   Uint32 errorCode = terrorCode = signal->theData[1];
   fragptr.i = addfragptr.p->fragmentPtr;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
 
   // no operation to release, just add some jams
   switch (addfragptr.p->addfragStatus) {
@@ -4211,7 +4219,7 @@ Dblqh::dropTab_wait_usage(Signal* signal){
       if (loc_fragptr.i != RNIL64)
       {
         jam();
-        c_fragment_pool.getPtr(loc_fragptr);
+        ndbrequire(c_fragment_pool.getPtr(loc_fragptr));
         if ((loc_fragptr.p->lcp_frag_ord_state == Fragrecord::LCP_QUEUED) &&
             (!ERROR_INSERTED(5089)))
         {
@@ -4282,7 +4290,7 @@ Dblqh::dropTab_wait_usage(Signal* signal){
       loc_fragptr.i = tabPtr.p->fragrec[i];
       if (loc_fragptr.i != RNIL64)
       {
-        c_fragment_pool.getPtr(loc_fragptr);
+        ndbrequire(c_fragment_pool.getPtr(loc_fragptr));
         if (loc_fragptr.p->lcp_frag_ord_state == Fragrecord::LCP_QUEUED)
         {
           jam();
@@ -4534,7 +4542,7 @@ Dblqh::check_no_active_scans_at_drop_table(TablerecPtr tabPtr)
     {
       jam();
       jamLine(Uint16(tabPtr.p->fragid[i]));
-      c_fragment_pool.getPtr(curr_fragptr);
+      ndbrequire(c_fragment_pool.getPtr(curr_fragptr));
       ndbrequire(curr_fragptr.p->m_activeScans == 0);
       ndbrequire(Local_ScanRecord_fifo
         (c_scanRecordPool, curr_fragptr.p->m_queuedScans).getCount() == 0);
@@ -5046,7 +5054,7 @@ Dblqh::commit_reorg(TablerecPtr tablePtr)
     if ((fragPtr.i = tablePtr.p->fragrec[i]) != RNIL64)
     {
       jam();
-      c_fragment_pool.getPtr(fragPtr);
+      ndbrequire(c_fragment_pool.getPtr(fragPtr));
       fragPtr.p->fragDistributionKey = (fragPtr.p->fragDistributionKey+1)&0xFF;
     }
   }
@@ -5830,8 +5838,7 @@ Dblqh::execREMOVE_MARKER_ORD(Signal* signal)
   jamEntry();
   
   CommitAckMarkerPtr removedPtr;
-  m_commitAckMarkerHash.remove(removedPtr, key);
-  if (removedPtr.i != RNIL)
+  if (m_commitAckMarkerHash.remove(removedPtr, key))
   {
     jam();
     ndbrequire(removedPtr.p->in_hash);
@@ -5903,31 +5910,37 @@ Dblqh::execREMOVE_MARKER_ORD(Signal* signal)
 void Dblqh::execSEND_PACKED(Signal* signal) 
 {
   HostRecordPtr Thostptr;
-  UintR i;
-  UintR j;
   UintR TpackedListIndex = cpackedListIndex;
   jamEntry();
-  for (i = 0; i < TpackedListIndex; i++) {
+  for (Uint32 i = 0; i < TpackedListIndex; i++) {
     Thostptr.i = cpackedList[i];
     ptrAss(Thostptr, hostRecord);
     jam();
     ndbrequire(Thostptr.i - 1 < MAX_NDB_NODES - 1);
-    for (j = 0; j < NDB_ARRAY_SIZE(Thostptr.p->lqh_pack); j++)
+
+    // LQH pack and send
+    for (Uint32 j = Thostptr.p->lqh_pack_mask.find_first();
+         j != BitmaskImpl::NotFound;
+         j = Thostptr.p->lqh_pack_mask.find_next(j+1))
     {
+      jamDebug();
       struct PackedWordsContainer * container = &Thostptr.p->lqh_pack[j];
-      if (container->noOfPackedWords > 0) {
-        jamDebug();
-        sendPackedSignal(signal, container);
-      }
+      ndbassert(container->noOfPackedWords > 0);
+      sendPackedSignal(signal, container);
     }
-    for (j = 0; j < NDB_ARRAY_SIZE(Thostptr.p->tc_pack); j++)
+    // TC pack and send
+    for (Uint32 j = Thostptr.p->tc_pack_mask.find_first();
+         j != BitmaskImpl::NotFound;
+         j = Thostptr.p->tc_pack_mask.find_next(j+1))
     {
+      jamDebug();
       struct PackedWordsContainer * container = &Thostptr.p->tc_pack[j];
-      if (container->noOfPackedWords > 0) {
-        jamDebug();
-        sendPackedSignal(signal, container);
-      }
+      ndbassert(container->noOfPackedWords > 0);
+      sendPackedSignal(signal, container);
     }
+
+    Thostptr.p->lqh_pack_mask.clear();
+    Thostptr.p->tc_pack_mask.clear();
     Thostptr.p->inPackedList = false;
   }//for
   cpackedListIndex = 0;
@@ -5941,6 +5954,8 @@ Dblqh::updatePackedList(Signal* signal, HostRecord * ahostptr, Uint16 hostId)
   if (ahostptr->inPackedList == false) {
     jamDebug();
     ahostptr->inPackedList = true;
+    ahostptr->lqh_pack_mask.clear();
+    ahostptr->tc_pack_mask.clear();
     cpackedList[TpackedListIndex] = hostId;
     cpackedListIndex = TpackedListIndex + 1;
   }//if
@@ -6252,6 +6267,7 @@ void Dblqh::sendCommitLqh(Signal* signal,
   Tdata[0] |= (ZCOMMIT << 28);
   Uint32 pos = container->noOfPackedWords;
   container->noOfPackedWords = pos + len;
+  Thostptr.p->lqh_pack_mask.set(instanceKey);
   memcpy(&container->packedWords[pos], &Tdata[0], len << 2);
 }
 
@@ -6298,6 +6314,7 @@ void Dblqh::sendCompleteLqh(Signal* signal,
   Tdata[0] |= (ZCOMPLETE << 28);
   Uint32 pos = container->noOfPackedWords;
   container->noOfPackedWords = pos + len;
+  Thostptr.p->lqh_pack_mask.set(instanceKey);
   memcpy(&container->packedWords[pos], &Tdata[0], len << 2);
 }
 
@@ -6341,6 +6358,7 @@ void Dblqh::sendCommittedTc(Signal* signal,
   Tdata[0] |= (ZCOMMITTED << 28);
   Uint32 pos = container->noOfPackedWords;
   container->noOfPackedWords = pos + len;
+  Thostptr.p->tc_pack_mask.set(instanceKey);
   memcpy(&container->packedWords[pos], &Tdata[0], len << 2);
 }
 
@@ -6384,6 +6402,7 @@ void Dblqh::sendCompletedTc(Signal* signal,
   Tdata[0] |= (ZCOMPLETED << 28);
   Uint32 pos = container->noOfPackedWords;
   container->noOfPackedWords = pos + len;
+  Thostptr.p->tc_pack_mask.set(instanceKey);
   memcpy(&container->packedWords[pos], &Tdata[0], len << 2);
 }
 
@@ -6449,6 +6468,17 @@ void Dblqh::sendLqhkeyconfTc(Signal* signal,
     lqhKeyConf = (LqhKeyConf *)
       &container->packedWords[container->noOfPackedWords];
     container->noOfPackedWords += LqhKeyConf::SignalLength;
+
+    if (block == getDBLQH())
+    {
+      if (instanceKey <= MAX_NDBMT_LQH_THREADS)
+        Thostptr.p->lqh_pack_mask.set(instanceKey);
+    }
+    else if (block == DBTC)
+    {
+      if (instanceKey <= MAX_NDBMT_TC_THREADS)
+        Thostptr.p->tc_pack_mask.set(instanceKey);
+    }
   }
   else
   {
@@ -6607,7 +6637,7 @@ int Dblqh::findTransaction(UintR Transid1,
   TcConnectionrecPtr locTcConnectptr;
 
   ndbassert(partial_fit_ok == false || is_key_operation == true);
-  Uint32 ThashIndex = (Transid1 ^ TcOprec) & (TRANSID_HASH_SIZE - 1);
+  const Uint32 ThashIndex = getHashIndex(Transid1, Transid2, TcOprec);
   NDB_PREFETCH_READ(&m_curr_lqh->ctransidHash[ThashIndex]);
   Uint32 mutexIndex = ThashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
   jamDebug();
@@ -6681,6 +6711,31 @@ Dblqh::checkTransaction(TcConnectionrecPtr nextPtr,
 }
 
 inline
+Uint32 Dblqh::getHashKey(UintR Transid1,
+                         UintR Transid2[[maybe_unused]],
+                         UintR TcOprec)
+{
+  return (Transid1 ^ TcOprec);
+}
+
+inline
+Uint32 Dblqh::getHashIndex(UintR Transid1,
+                           UintR Transid2[[maybe_unused]],
+                           UintR TcOprec)
+{
+  return getHashKey(Transid1, Transid2, TcOprec) % ctransidHashSize;
+}
+
+inline
+Uint32 Dblqh::getHashIndex(TcConnectionrec *regTcPtr)
+{
+  return getHashIndex(regTcPtr->transid[0],
+                      regTcPtr->transid[1],
+                      regTcPtr->tcOprec);
+}
+
+
+inline
 static void
 prefetch_op_record_3(Uint32 *op_ptr)
 {
@@ -6707,6 +6762,11 @@ Dblqh::seize_op_rec(TcConnectionrecPtr& tcConnectptr,
                     EmulatedJamBuffer *jamBuf)
 {
   /* Cannot use jam here, called from other thread */
+  if (ERROR_INSERTED(5031))
+  {
+    thrjam(jamBuf);
+    return false;
+  }
   TcConnectionrecPtr opPtr;
   if (use_lock)
   {
@@ -7800,7 +7860,7 @@ Dblqh::lock_table_exclusive(Tablerec *tablePtrP)
     {
       FragrecordPtr fragPtr;
       fragPtr.i = tabPtr.p->fragrec[i];
-      c_fragment_pool.getPtr(fragPtr);
+      ndbrequire(c_fragment_pool.getPtr(fragPtr));
       handle_acquire_exclusive_frag_access(fragPtr.p, false);
     }
   }
@@ -7828,7 +7888,7 @@ Dblqh::unlock_table_exclusive(Tablerec *tablePtrP)
     {
       FragrecordPtr fragPtr;
       fragPtr.i = tabPtr.p->fragrec[i];
-      c_fragment_pool.getPtr(fragPtr);
+      ndbrequire(c_fragment_pool.getPtr(fragPtr));
       handle_release_exclusive_frag_access(fragPtr.p);
     }
   }
@@ -9161,8 +9221,8 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
      */
     SegmentedSectionPtr keyInfoSection, attrInfoSection;
     
-    handle.getSection(keyInfoSection,
-                      LqhKeyReq::KeyInfoSectionNum);
+    ndbrequire(handle.getSection(keyInfoSection,
+                                 LqhKeyReq::KeyInfoSectionNum));
 
     ndbassert(keyInfoSection.i != RNIL);
 
@@ -9295,13 +9355,13 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
    */
   if (regTcPtr->dirtyOp == ZFALSE) //Transactional operation
   {
+    jamDebug();
     TcConnectionrecPtr localNextTcConnectptr;
-    Uint32 hashIndex = (regTcPtr->transid[0] ^ regTcPtr->tcOprec) &
-                       (TRANSID_HASH_SIZE - 1);
+    const Uint32 hashIndex = getHashIndex(regTcPtr);
     NDB_PREFETCH_WRITE(&m_curr_lqh->ctransidHash[hashIndex]);
     jamDebug();
-    jamLineDebug(Uint16(hashIndex));
-    jamLineDebug(Uint16(m_curr_lqh->instance()));
+    jamDataDebug(Uint16(hashIndex));
+    jamDataDebug(Uint16(m_curr_lqh->instance()));
     Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
     regTcPtr->prevHashRec = RNIL;
     regTcPtr->hashIndex = hashIndex;
@@ -9766,7 +9826,7 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
   default:
     ndbabort();
   }//switch
-}//Dblqh::endgettupkeyLab()
+}//Dblqh::execLQHKEYREQ()
 
 void Dblqh::prepareContinueAfterBlockedLab(
                 Signal* signal,
@@ -10087,7 +10147,7 @@ Dblqh::exec_acckeyreq(Signal* signal, TcConnectionrecPtr regTcPtr)
 
     /* Copy KeyInfo to end of ACCKEYREQ signal, starting at offset 7 */
     copy(req->keyInfo, regTcPtr.p->keyInfoIVal);
-    NDB_STATIC_ASSERT(AccKeyReq::SignalLength_keyInfo == 8);
+    static_assert(AccKeyReq::SignalLength_keyInfo == 8);
   }
   TRACE_OP(regTcPtr.p, "ACC");
 
@@ -10132,7 +10192,7 @@ Dblqh::exec_acckeyreq(Signal* signal, TcConnectionrecPtr regTcPtr)
       jam();
       terrorCode = signal->theData[1];
       fragptr.i = regTcPtr.p->fragmentptr;
-      c_fragment_pool.getPtr(fragptr);
+      ndbrequire(c_fragment_pool.getPtr(fragptr));
       continueACCKEYREF(signal, regTcPtr);
     }
   }//if
@@ -10560,7 +10620,7 @@ Dblqh::nr_copy_delete_row(Signal* signal,
     req->localKey[0] = rowid->m_page_no;
     req->localKey[1] = rowid->m_page_idx;
     siglen = AccKeyReq::SignalLength_localKey;
-    NDB_STATIC_ASSERT(AccKeyReq::SignalLength_localKey == 10);
+    static_assert(AccKeyReq::SignalLength_localKey == 10);
   }
   else
   {
@@ -10574,7 +10634,7 @@ Dblqh::nr_copy_delete_row(Signal* signal,
      */
     copy(req->keyInfo, regTcPtr.p->keyInfoIVal);
     siglen = AccKeyReq::SignalLength_keyInfo + keylen;
-    NDB_STATIC_ASSERT(AccKeyReq::SignalLength_keyInfo == 8);
+    static_assert(AccKeyReq::SignalLength_keyInfo == 8);
   }
   signal->setLength(siglen);
   c_acc->execACCKEYREQ(signal,
@@ -10664,7 +10724,7 @@ Dblqh::get_nr_op_info(Nr_op_info* op, Uint32 page_id)
   
   ndbrequire(m_curr_lqh->tcConnect_pool.getValidPtr(tcPtr));
   FragrecordPtr fragPtr;
-  c_fragment_pool.getPtr(fragPtr, tcPtr.p->fragmentptr);  
+  ndbrequire(c_fragment_pool.getPtr(fragPtr, tcPtr.p->fragmentptr));
 
   ndbassert(!m_is_in_query_thread);
   op->m_gci_hi = tcPtr.p->gci_hi;
@@ -10726,7 +10786,7 @@ Dblqh::nr_delete_complete(Signal* signal, Nr_op_info* op)
   {
     jam();
     const TcConnectionrecPtr tcConnectptr = tcPtr;
-    c_fragment_pool.getPtr(fragptr, tcPtr.p->fragmentptr);
+    ndbrequire(c_fragment_pool.getPtr(fragptr, tcPtr.p->fragmentptr));
     
     if (tcPtr.p->abortState != TcConnectionrec::ABORT_IDLE) 
     {
@@ -11094,7 +11154,7 @@ Uint32 Dblqh::decrDeallocRefCount(Signal* signal,
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
     /* Verify that fragment used is a primary table fragment */
     FragrecordPtr fragPtr;
-    c_fragment_pool.getPtr(fragPtr, countOpPtr.p->fragmentptr);
+    ndbrequire(c_fragment_pool.getPtr(fragPtr, countOpPtr.p->fragmentptr));
     ndbrequire(fragPtr.p->tableFragptr == fragPtr.i);
 #endif
     /**
@@ -12809,8 +12869,7 @@ void Dblqh::deleteTransidHash(Signal* signal, TcConnectionrecPtr& tcConnectptr)
   jamLineDebug(Uint16(m_curr_lqh->trans_hash_mutex_counter[mutexIndex]));
   m_curr_lqh->trans_hash_mutex_counter[mutexIndex]++;
 #endif
-  ndbassert(hashIndex == ((regTcPtr->transid[0] ^ regTcPtr->tcOprec) & 
-                           (TRANSID_HASH_SIZE - 1)));
+  ndbassert(hashIndex == getHashIndex(regTcPtr));
   if (likely(prevHashptr.i == RNIL))
   {
     jamDebug();
@@ -13152,6 +13211,7 @@ Dblqh::sendFireTrigConfTc(Signal* signal,
   ndbassert(FireTrigConf::SignalLength == 4);
   Uint32 * dst = &container->packedWords[container->noOfPackedWords];
   container->noOfPackedWords += len;
+  Thostptr.p->tc_pack_mask.set(instanceKey);
   dst[0] = Tdata[0] | (ZFIRE_TRIG_CONF << 28);
   dst[1] = Tdata[1];
   dst[2] = Tdata[2];
@@ -13827,7 +13887,7 @@ void Dblqh::localCommitLab(Signal* signal,
 {
   FragrecordPtr regFragptr;
   regFragptr.i = tcConnectptr.p->fragmentptr;
-  c_fragment_pool.getPtr(regFragptr);
+  ndbrequire(c_fragment_pool.getPtr(regFragptr));
   Fragrecord::FragStatus status = regFragptr.p->fragStatus;
   fragptr = regFragptr;
   m_tc_connect_ptr = tcConnectptr;
@@ -14386,8 +14446,7 @@ Dblqh::remove_commit_marker(TcConnectionrec * const regTcPtr)
     key.transid1 = regTcPtr->transid[0];
     key.transid2 = regTcPtr->transid[1];
     CommitAckMarkerPtr removedPtr;
-    m_commitAckMarkerHash.remove(removedPtr, key);
-    ndbrequire(removedPtr.i != RNIL);
+    ndbrequire(m_commitAckMarkerHash.remove(removedPtr, key));
     ndbrequire(removedPtr.i == tmp.i);
     removedPtr.p->in_hash = false;
     m_commitAckMarkerPool.release(removedPtr);
@@ -14751,7 +14810,7 @@ void Dblqh::execABORT(Signal* signal)
 /* ------------------------------------------------------------------------- */
     FragrecordPtr Tfragptr;
     Tfragptr.i = regTcPtr->fragmentptr;
-    c_fragment_pool.getPtr(Tfragptr);
+    ndbrequire(c_fragment_pool.getPtr(Tfragptr));
     Uint32 Tnode = regTcPtr->nextReplica;
     Uint32 instanceKey = Tfragptr.p->lqhInstanceKey;
     Uint32 instanceNo = getInstanceNo(Tnode, instanceKey);
@@ -15016,7 +15075,7 @@ void Dblqh::abortStateHandlerLab(Signal* signal,
     {
       ndbassert(!m_is_in_query_thread);
       fragptr.i = regTcPtr->fragmentptr;
-      c_fragment_pool.getPtr(fragptr);
+      ndbrequire(c_fragment_pool.getPtr(fragptr));
       acquire_frag_abort_access(fragptr.p, regTcPtr);
       abortContinueAfterBlockedLab(signal, tcConnectptr);
       release_frag_access(fragptr.p);
@@ -15155,7 +15214,7 @@ void Dblqh::abortCommonLab(Signal* signal,
   fragptr.i = regTcPtr->fragmentptr;
   if (fragptr.i != RNIL64) {
     jam();
-    c_fragment_pool.getPtr(fragptr);
+    ndbrequire(c_fragment_pool.getPtr(fragptr));
     switch (fragptr.p->fragStatus) {
     case Fragrecord::FSACTIVE:
     case Fragrecord::CRASH_RECOVERING:
@@ -15571,7 +15630,7 @@ void Dblqh::execNODE_FAILREP(Signal* signal)
     ndbrequire(getNodeInfo(refToNode(signal->getSendersBlockRef())).m_version);
     SegmentedSectionPtr ptr;
     SectionHandle handle(this, signal);
-    handle.getSection(ptr, 0);
+    ndbrequire(handle.getSection(ptr, 0));
     memset((void*)&nodeFail.theNodes, 0, sizeof(nodeFail.theNodes));
     copy((Uint32*)&nodeFail.theNodes, ptr);
     releaseSections(handle);
@@ -17821,8 +17880,6 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
   ScanFragReq * const scanFragReq = (ScanFragReq *)&signal->theData[0];
   bool release_scan = false;
   Uint32 errorCode= 0;
-  Uint32 hashIndex;
-  TcConnectionrecPtr nextHashptr;
   TcConnectionrec * regTcPtr;
   // bug#13834481 hashHi!=0 caused timeout (tx not found)
 
@@ -17844,12 +17901,12 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
   ndbassert(numSections != 0);
   {
     /* Long request, get Attr + Key len from section sizes */
-    handle.getSection(attrInfoPtr, ScanFragReq::AttrInfoSectionNum);
+    ndbrequire(handle.getSection(attrInfoPtr, ScanFragReq::AttrInfoSectionNum));
     aiLen= attrInfoPtr.sz;
     
     if (numSections == 2)
     {
-      handle.getSection(keyInfoPtr, ScanFragReq::KeyInfoSectionNum);
+      ndbrequire(handle.getSection(keyInfoPtr, ScanFragReq::KeyInfoSectionNum));
       keyLen= keyInfoPtr.sz;
     }
   }
@@ -17860,8 +17917,9 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
   const Uint32 senderBlockNo = refToMain(senderBlockRef);
   TcConnectionrecPtr tcConnectptr;
   if (likely(ctcNumFree > ZNUM_RESERVED_UTIL_CONNECT_RECORDS &&
-             (!ERROR_INSERTED(5099)) &&
-             (!ERROR_INSERTED(5055))) ||
+             ((!ERROR_INSERTED(5099)) &&
+              (!ERROR_INSERTED(5055)) &&
+              (!ERROR_INSERTED(5031)))) ||
       (ScanFragReq::getLcpScanFlag(scanFragReq->requestInfo)) ||
       (senderBlockNo == getBACKUP()) ||
       (senderBlockNo == DBUTIL &&
@@ -18073,8 +18131,7 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
       goto error_handler2;
     }//if
 
-    hashIndex = (regTcPtr->transid[0] ^ regTcPtr->tcOprec) &
-                 (TRANSID_HASH_SIZE - 1);
+    const Uint32 hashIndex = getHashIndex(regTcPtr);
     NDB_PREFETCH_WRITE(&m_curr_lqh->ctransidHash[hashIndex]);
     Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
     regTcPtr->prevHashRec = RNIL;
@@ -18087,6 +18144,7 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
     jamLineDebug(Uint16(m_curr_lqh->trans_hash_mutex_counter[mutexIndex]));
     m_curr_lqh->trans_hash_mutex_counter[mutexIndex]++;
 #endif
+    TcConnectionrecPtr nextHashptr;
     nextHashptr.i = m_curr_lqh->ctransidHash[hashIndex];
     m_curr_lqh->ctransidHash[hashIndex] = tcConnectptr.i;
     if (unlikely(nextHashptr.i != RNIL))
@@ -19678,7 +19736,7 @@ Uint32 Dblqh::initScanrec(const ScanFragReq* scanFragReq,
    */
   FragrecordPtr tFragPtr;
   tFragPtr.i = fragptr.p->tableFragptr;
-  c_fragment_pool.getPtr(tFragPtr);
+  ndbrequire(c_fragment_pool.getPtr(tFragPtr));
   scanPtr->fragPtrI = fragptr.p->tableFragptr;
   prim_tab_fragptr = tFragPtr;
   c_tup->prepare_tab_pointers(prim_tab_fragptr.p->tupFragptr);
@@ -19946,7 +20004,7 @@ bool Dblqh::finishScanrec(Signal* signal,
                         scanPtr->fragPtrI);
 #endif
     lock_take_over_hash();
-    c_scanTakeOverHash.remove(tmp, * scanPtr);
+    ndbrequire(c_scanTakeOverHash.remove(tmp, * scanPtr));
     unlock_take_over_hash();
     ndbrequire(tmp.p == scanPtr);
   }
@@ -20823,7 +20881,7 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
      * distribution key again when restarted.
      */
     CopyFragRecordPtr copy_fragptr;
-    c_copy_fragment_pool.seize(copy_fragptr);
+    ndbrequire(c_copy_fragment_pool.seize(copy_fragptr));
     copy_fragptr.p->m_copy_fragreq = *copyFragReq;
     Uint32 nodeCount = copyFragReq->nodeCount;
     copy_fragptr.p->m_copy_fragreq.nodeCount = 0;
@@ -21084,7 +21142,7 @@ void Dblqh::accScanConfCopyLab(Signal* signal)
     return;
   }//if
   fragptr.i = regTcPtr->fragmentptr;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   prim_tab_fragptr = fragptr;
   scanPtr->scanState = ScanRecord::WAIT_NEXT_SCAN_COPY;
   ndbrequire(fragptr.p->fragStatus == Fragrecord::FSACTIVE);
@@ -21591,7 +21649,7 @@ void Dblqh::nextRecordCopy(Signal* signal,
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
 
   fragptr.i = regTcPtr->fragmentptr;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   prim_tab_fragptr = fragptr;
   scanptr.i = regTcPtr->tcScanRec;
   ndbrequire(c_scanRecordPool.getValidPtr(scanptr));
@@ -21694,7 +21752,7 @@ void Dblqh::closeCopyLab(Signal* signal,
   fragptr.i = regTcPtr->fragmentptr;
   regTcPtr->transid[0] = 0;
   regTcPtr->transid[1] = 0;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   prim_tab_fragptr = fragptr;
 
   /**
@@ -21969,7 +22027,7 @@ void Dblqh::execCOPY_ACTIVEREQ(Signal* signal)
   {
     jam();
     CopyActiveRecordPtr copy_activeptr;
-    c_copy_active_pool.seize(copy_activeptr);
+    ndbrequire(c_copy_active_pool.seize(copy_activeptr));
     copy_activeptr.p->m_copy_activereq = *req;
     copy_activeptr.p->m_copy_activereq.flags =
       flags | CopyActiveReq::CAR_LOCAL_SEND;
@@ -22226,7 +22284,7 @@ void Dblqh::execCOPY_FRAG_NOT_IN_PROGRESS_REP(Signal *signal)
     }
     fragptr.i = m_second_activate_fragment_ptr_i;
     m_second_activate_fragment_ptr_i = RNIL64;
-    c_fragment_pool.getPtr(fragptr);
+    ndbrequire(c_fragment_pool.getPtr(fragptr));
     DEB_COPY_ACTIVE(("(%u)COPY_FRAG_NOT_IN_PROGRESS_REP activate tab(%u,%u)",
                      instance(),
                      fragptr.p->tabRef,
@@ -22374,7 +22432,7 @@ void Dblqh::start_local_lcp(Signal *signal,
     jam();
     fragptr.i = m_first_activate_fragment_ptr_i;
     m_first_activate_fragment_ptr_i = RNIL64;
-    c_fragment_pool.getPtr(fragptr);
+    ndbrequire(c_fragment_pool.getPtr(fragptr));
     Uint32 save = fragptr.p->startGci;
     fragptr.p->startGci = 0;
     sendCopyActiveConf(signal, fragptr.p->tabRef);
@@ -22549,7 +22607,7 @@ Dblqh::sendLCP_FRAG_ORD(Signal *signal, Uint64 fragPtrI)
   /* Send LCP_FRAG_ORD for the fragment. */
   LcpFragOrd *lcpFragOrd = (LcpFragOrd *)signal->getDataPtrSend();
   fragptr.i = fragPtrI;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   fragptr.p->m_local_lcp_instance_started++;
   fragptr.p->m_local_lcp_instance_started &= 1;
   ndbrequire(c_current_local_lcp_instance ==
@@ -22732,7 +22790,7 @@ void Dblqh::execWAIT_ALL_COMPLETE_LCP_CONF(Signal *signal)
   }
   fragptr.i = m_second_activate_fragment_ptr_i;
   m_second_activate_fragment_ptr_i = RNIL64;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   activate_redo_log(signal, fragptr.p->tabRef, fragptr.p->fragId);
 }
 
@@ -22757,7 +22815,7 @@ Dblqh::start_lcp_on_table(Signal *signal)
         {
           jam();
           fragptr.i = tabptr.p->fragrec[i];
-          c_fragment_pool.getPtr(fragptr);
+          ndbrequire(c_fragment_pool.getPtr(fragptr));
           bool ret = handle_lcp_fragment_first_phase(signal);
           ndbrequire(!ret);
         }
@@ -23990,7 +24048,7 @@ void Dblqh::execLCP_PREPARE_REF(Signal* signal)
   ndbrequire(lcpPtr.p->lcpPrepareState == LcpRecord::LCP_PREPARING);
   
   fragptr.i = lcpPtr.p->currentPrepareFragment.fragPtrI;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   
   ndbrequire(ref->tableId == fragptr.p->tabRef);
   ndbrequire(ref->fragmentId == fragptr.p->fragId);
@@ -24052,7 +24110,7 @@ void Dblqh::execLCP_PREPARE_CONF(Signal* signal)
   ndbrequire(lcpPtr.p->lcpPrepareState == LcpRecord::LCP_PREPARING);
   
   fragptr.i = lcpPtr.p->currentPrepareFragment.fragPtrI;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
 
   ndbrequire(conf->tableId == fragptr.p->tabRef);
   ndbrequire(conf->fragmentId == fragptr.p->fragId);
@@ -24101,7 +24159,7 @@ void Dblqh::perform_fragment_checkpoint(Signal *signal)
   lcpPtr.p->lcpRunState = LcpRecord::LCP_CHECKPOINTING;
 
   fragptr.i = lcpPtr.p->currentRunFragment.fragPtrI;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
 
   /* ----------------------------------------------------------------------
    *    UPDATE THE MAX_GCI_IN_LCP AND MAX_GCI_COMPLETED_IN_LCP NOW BEFORE
@@ -24216,7 +24274,7 @@ Dblqh::get_lcp_frag_stats(Uint64 & row_count,
   ptrCheckGuard(lcpPtr, clcpFileSize, lcpRecord);
   ndbrequire(lcpPtr.p->lcpRunState == LcpRecord::LCP_CHECKPOINTING);
   fragptr.i = lcpPtr.p->currentRunFragment.fragPtrI;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   fragptr.p->maxGciInLcp = fragptr.p->newestGci;
   /**
    * Calculating MaxGciCompleted is straightforward when we are
@@ -24297,7 +24355,7 @@ Dblqh::get_lcp_newest_gci(void)
   ptrCheckGuard(lcpPtr, clcpFileSize, lcpRecord);
   ndbrequire(lcpPtr.p->lcpRunState == LcpRecord::LCP_CHECKPOINTING);
   fragptr.i = lcpPtr.p->currentRunFragment.fragPtrI;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   return fragptr.p->newestGci;
 }
 
@@ -24308,7 +24366,7 @@ Dblqh::lcp_complete_scan(Uint32 & newestGci)
   ptrCheckGuard(lcpPtr, clcpFileSize, lcpRecord);
   ndbrequire(lcpPtr.p->lcpRunState == LcpRecord::LCP_CHECKPOINTING);
   fragptr.i = lcpPtr.p->currentRunFragment.fragPtrI;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   /**
    * Update maxGciInLcp after scan has been performed
    */
@@ -24347,7 +24405,7 @@ Dblqh::lcp_max_completed_gci(Uint32 & completedGci,
   ptrCheckGuard(lcpPtr, clcpFileSize, lcpRecord);
   ndbrequire(lcpPtr.p->lcpRunState == LcpRecord::LCP_CHECKPOINTING);
   fragptr.i = lcpPtr.p->currentRunFragment.fragPtrI;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
 
   if (max_gci_written <= restorable_gci &&
       fragptr.p->maxGciCompletedInLcp > restorable_gci)
@@ -24520,7 +24578,7 @@ Dblqh::completed_fragment_checkpoint(Signal *signal,
    */
   FragrecordPtr curr_fragptr;
   curr_fragptr.i = fragOrd.fragPtrI;
-  c_fragment_pool.getPtr(curr_fragptr);
+  ndbrequire(c_fragment_pool.getPtr(curr_fragptr));
   if (curr_fragptr.p->m_create_table_flag_lcp_frag_ord)
   {
     /**
@@ -24591,7 +24649,7 @@ void Dblqh::prepare_next_fragment_checkpoint(Signal* signal,
      *  Remove first queued fragment from queue.
      *  Transfer the state from the queued to the active LCP.
      * --------------------------------------------------------------------- */
-    c_queued_lcp_frag_ord.first(curr_fragptr);
+    ndbrequire(c_queued_lcp_frag_ord.first(curr_fragptr));
     c_queued_lcp_frag_ord.removeFirst(curr_fragptr);
     curr_fragptr.p->lcp_frag_ord_state = Fragrecord::LCP_EXECUTING;
     if (exec_prepare_next_fragment_checkpoint(signal, curr_fragptr))
@@ -24763,7 +24821,7 @@ Dblqh::execWAIT_LCP_IDLE_CONF(Signal *signal)
    * however when we restart it again.
    */
   curr_fragptr.i = lcpPtr.p->currentPrepareFragment.fragPtrI;
-  c_fragment_pool.getPtr(curr_fragptr);
+  ndbrequire(c_fragment_pool.getPtr(curr_fragptr));
   ndbrequire(curr_fragptr.p->lcp_frag_ord_state == Fragrecord::LCP_EXECUTING);
   c_queued_lcp_frag_ord.addFirst(curr_fragptr);
   curr_fragptr.p->lcp_frag_ord_state = Fragrecord::LCP_QUEUED;
@@ -27290,28 +27348,32 @@ void Dblqh::openFileRw(Signal* signal,
                        bool writeBuffer)
 {
   FsOpenReq* req = (FsOpenReq*)signal->getDataPtrSend();
-  signal->theData[0] = cownref;
-  signal->theData[1] = olfLogFilePtr.i;
-  signal->theData[2] = olfLogFilePtr.p->fileName[0];
-  signal->theData[3] = olfLogFilePtr.p->fileName[1];
-  signal->theData[4] = olfLogFilePtr.p->fileName[2];
-  signal->theData[5] = olfLogFilePtr.p->fileName[3];
-  signal->theData[6] = FsOpenReq::OM_READWRITE |
-                       FsOpenReq::OM_AUTOSYNC |
-                       FsOpenReq::OM_CHECK_SIZE;
+  req->userReference = cownref;
+  req->userPointer = olfLogFilePtr.i;
+  req->fileNumber[0] = olfLogFilePtr.p->fileName[0];
+  req->fileNumber[1] = olfLogFilePtr.p->fileName[1];
+  req->fileNumber[2] = olfLogFilePtr.p->fileName[2];
+  req->fileNumber[3] = olfLogFilePtr.p->fileName[3];
+  req->fileFlags = FsOpenReq::OM_READWRITE | FsOpenReq::OM_AUTOSYNC |
+                   FsOpenReq::OM_CHECK_SIZE | FsOpenReq::OM_ZEROS_ARE_SPARSE;
   if (c_o_direct)
   {
     jam();
-    signal->theData[6] |= FsOpenReq::OM_DIRECT;
+    req->fileFlags |= FsOpenReq::OM_DIRECT;
     if (c_o_direct_sync_flag)
     {
       jam();
-      signal->theData[6] |= FsOpenReq::OM_DIRECT_SYNC;
+      req->fileFlags |= FsOpenReq::OM_DIRECT_SYNC;
     }
   }
   if (writeBuffer)
   {
-    signal->theData[6] |= FsOpenReq::OM_WRITE_BUFFER;
+    req->fileFlags |= FsOpenReq::OM_WRITE_BUFFER;
+  }
+  if (c_encrypted_filesystem)
+  {
+    jam();
+    req->fileFlags |= FsOpenReq::OM_ENCRYPT_XTS;
   }
 
   req->auto_sync_size = MAX_REDO_PAGES_WITHOUT_SYNCH * sizeof(LogPageRecord);
@@ -27319,7 +27381,28 @@ void Dblqh::openFileRw(Signal* signal,
   sz *= 1024; sz *= 1024;
   req->file_size_hi = (Uint32)(sz >> 32);
   req->file_size_lo = (Uint32)(sz & 0xFFFFFFFF);
-  sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength, JBA);
+  req->page_size = File_formats::NDB_PAGE_SIZE;
+  if (req->fileFlags & FsOpenReq::OM_ENCRYPT_CIPHER_MASK)
+  {
+    LinearSectionPtr lsptr[3];
+
+    // Use a dummy file name
+    ndbrequire(FsOpenReq::getVersion(req->fileNumber) != 4);
+    lsptr[FsOpenReq::FILENAME].p = nullptr;
+    lsptr[FsOpenReq::FILENAME].sz = 0;
+
+    req->fileFlags |= FsOpenReq::OM_ENCRYPT_KEY;
+    lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].p = (Uint32*)&FsOpenReq::DUMMY_KEY;
+    lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].sz =
+        FsOpenReq::DUMMY_KEY.get_needed_words();
+
+    sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength, JBA,
+               lsptr, 2);
+  }
+  else
+  {
+    sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength, JBA);
+  }
 }//Dblqh::openFileRw()
 
 /* ------------------------------------------------------------------------- */
@@ -27331,25 +27414,23 @@ void Dblqh::openLogfileInit(Signal* signal, LogFileRecordPtr logFilePtr)
 {
   logFilePtr.p->logFileStatus = LogFileRecord::OPENING_INIT;
   FsOpenReq* req = (FsOpenReq*)signal->getDataPtrSend();
-  signal->theData[0] = cownref;
-  signal->theData[1] = logFilePtr.i;
-  signal->theData[2] = logFilePtr.p->fileName[0];
-  signal->theData[3] = logFilePtr.p->fileName[1];
-  signal->theData[4] = logFilePtr.p->fileName[2];
-  signal->theData[5] = logFilePtr.p->fileName[3];
-  signal->theData[6] = FsOpenReq::OM_READWRITE |
-                       FsOpenReq::OM_TRUNCATE |
-                       FsOpenReq::OM_CREATE |
-                       FsOpenReq::OM_AUTOSYNC |
-                       FsOpenReq::OM_WRITE_BUFFER;
+  req->userReference = cownref;
+  req->userPointer = logFilePtr.i;
+  req->fileNumber[0] = logFilePtr.p->fileName[0];
+  req->fileNumber[1] = logFilePtr.p->fileName[1];
+  req->fileNumber[2] = logFilePtr.p->fileName[2];
+  req->fileNumber[3] = logFilePtr.p->fileName[3];
+  req->fileFlags = FsOpenReq::OM_READWRITE | FsOpenReq::OM_TRUNCATE |
+                   FsOpenReq::OM_CREATE | FsOpenReq::OM_AUTOSYNC |
+                   FsOpenReq::OM_WRITE_BUFFER | FsOpenReq::OM_ZEROS_ARE_SPARSE;
   if (c_o_direct)
   {
     jam();
-    signal->theData[6] |= FsOpenReq::OM_DIRECT;
+    req->fileFlags |= FsOpenReq::OM_DIRECT;
     if (c_o_direct_sync_flag)
     {
       jam();
-      signal->theData[6] |= FsOpenReq::OM_DIRECT_SYNC;
+      req->fileFlags |= FsOpenReq::OM_DIRECT_SYNC;
     }
   }
   Uint64 sz = Uint64(clogFileSize) * 1024 * 1024;
@@ -27359,11 +27440,41 @@ void Dblqh::openLogfileInit(Signal* signal, LogFileRecordPtr logFilePtr)
   if (m_use_om_init)
   {
     jam();
-    signal->theData[6] |= FsOpenReq::OM_INIT;
+    req->fileFlags |= FsOpenReq::OM_INIT;
+  }
+  else
+  {
+    jam();
+    req->fileFlags |= FsOpenReq::OM_SPARSE_INIT;
+  }
+  if (c_encrypted_filesystem)
+  {
+    jam();
+    req->fileFlags |= FsOpenReq::OM_ENCRYPT_XTS;
   }
 
   req->auto_sync_size = MAX_REDO_PAGES_WITHOUT_SYNCH * sizeof(LogPageRecord);
-  sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength, JBA);
+  if (req->fileFlags & FsOpenReq::OM_ENCRYPT_CIPHER_MASK)
+  {
+    LinearSectionPtr lsptr[3];
+
+    // Use a dummy file name
+    ndbrequire(FsOpenReq::getVersion(req->fileNumber) != 4);
+    lsptr[FsOpenReq::FILENAME].p = nullptr;
+    lsptr[FsOpenReq::FILENAME].sz = 0;
+
+    req->fileFlags |= FsOpenReq::OM_ENCRYPT_KEY;
+    lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].p = (Uint32*)&FsOpenReq::DUMMY_KEY;
+    lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].sz =
+        FsOpenReq::DUMMY_KEY.get_needed_words();
+
+    sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength, JBA,
+               lsptr, 2);
+  }
+  else
+  {
+    sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength, JBA);
+  }
 }//Dblqh::openLogfileInit()
 
 void
@@ -27382,7 +27493,8 @@ Dblqh::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
   Ptr<GlobalPage> page_ptr;
   ndbrequire(req->getFormatFlag(req->operationFlag) ==
                req->fsFormatSharedPage);
-  m_shared_page_pool.getPtr(page_ptr, req->data.sharedPage.pageNumber);
+  ndbrequire(m_shared_page_pool.getPtr(page_ptr,
+                                       req->data.sharedPage.pageNumber));
 
   LogFileRecordPtr currLogFilePtr;
   currLogFilePtr.i = req->userPointer;
@@ -27474,32 +27586,58 @@ void Dblqh::openNextLogfile(Signal *signal,
     }//if
     onlLogFilePtr.p->logFileStatus = LogFileRecord::OPENING_WRITE_LOG;
     FsOpenReq* req = (FsOpenReq*)signal->getDataPtrSend();
-    signal->theData[0] = logPartPtrP->myRef;
-    signal->theData[1] = onlLogFilePtr.i;
-    signal->theData[2] = onlLogFilePtr.p->fileName[0];
-    signal->theData[3] = onlLogFilePtr.p->fileName[1];
-    signal->theData[4] = onlLogFilePtr.p->fileName[2];
-    signal->theData[5] = onlLogFilePtr.p->fileName[3];
-    signal->theData[6] = FsOpenReq::OM_READWRITE |
-                         FsOpenReq::OM_AUTOSYNC |
-                         FsOpenReq::OM_CHECK_SIZE |
-                         FsOpenReq::OM_WRITE_BUFFER;
+    req->userReference = logPartPtrP->myRef;
+    req->userPointer = onlLogFilePtr.i;
+    req->fileNumber[0] = onlLogFilePtr.p->fileName[0];
+    req->fileNumber[1] = onlLogFilePtr.p->fileName[1];
+    req->fileNumber[2] = onlLogFilePtr.p->fileName[2];
+    req->fileNumber[3] = onlLogFilePtr.p->fileName[3];
+    req->fileFlags = FsOpenReq::OM_READWRITE | FsOpenReq::OM_AUTOSYNC |
+                     FsOpenReq::OM_CHECK_SIZE | FsOpenReq::OM_WRITE_BUFFER |
+                     FsOpenReq::OM_ZEROS_ARE_SPARSE;
     if (c_o_direct)
     {
       jam();
-      signal->theData[6] |= FsOpenReq::OM_DIRECT;
+      req->fileFlags |= FsOpenReq::OM_DIRECT;
       if (c_o_direct_sync_flag)
       {
         jam();
-        signal->theData[6] |= FsOpenReq::OM_DIRECT_SYNC;
+        req->fileFlags |= FsOpenReq::OM_DIRECT_SYNC;
       }
+    }
+    if (c_encrypted_filesystem)
+    {
+      jam();
+      req->fileFlags |= FsOpenReq::OM_ENCRYPT_XTS;
     }
     req->auto_sync_size = MAX_REDO_PAGES_WITHOUT_SYNCH * sizeof(LogPageRecord);
     Uint64 sz = logPartPtrP->my_block->clogFileSize;
     sz *= 1024; sz *= 1024;
     req->file_size_hi = (Uint32)(sz >> 32);
     req->file_size_lo = (Uint32)(sz & 0xFFFFFFFF);
-    sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength, JBA);
+    req->page_size = File_formats::NDB_PAGE_SIZE;
+    if (req->fileFlags & FsOpenReq::OM_ENCRYPT_CIPHER_MASK)
+    {
+      LinearSectionPtr lsptr[3];
+
+      // Use a dummy file name
+      ndbrequire(FsOpenReq::getVersion(req->fileNumber) != 4);
+      lsptr[FsOpenReq::FILENAME].p = nullptr;
+      lsptr[FsOpenReq::FILENAME].sz = 0;
+
+      req->fileFlags |= FsOpenReq::OM_ENCRYPT_KEY;
+      lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].p = (Uint32*)&FsOpenReq::DUMMY_KEY;
+      lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].sz =
+          FsOpenReq::DUMMY_KEY.get_needed_words();
+
+      sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength, JBA,
+                 lsptr, 2);
+    }
+    else
+    {
+      sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength,
+                 JBA);
+    }
   }//if
 }//Dblqh::openNextLogfile()
 
@@ -29435,7 +29573,7 @@ void Dblqh::execSTART_RECREQ(Signal* signal)
     ndbrequire(ndbd_send_node_bitmask_in_section(senderVersion));
     SegmentedSectionPtr ptr;
     SectionHandle handle(this,signal);
-    handle.getSection(ptr, 0);
+    ndbrequire(handle.getSection(ptr, 0));
     ndbrequire(ptr.sz <= NdbNodeBitmask::Size);
     memset(req->sr_nodes, 0 , sizeof(req->sr_nodes));
     copy(req->sr_nodes, ptr);
@@ -29875,7 +30013,7 @@ void Dblqh::execSTART_EXEC_SR(Signal* signal)
                                  fragptr));
   {
     jam();
-    c_lcp_complete_fragments.getPtr(fragptr);
+    ndbrequire(c_lcp_complete_fragments.getPtr(fragptr));
     next = fragptr.p->nextList;
 
     if (fragptr.p->srNoLognodes > csrPhasesCompleted) 
@@ -29930,7 +30068,7 @@ void Dblqh::execSTART_EXEC_SR(Signal* signal)
     if (next != RNIL64)
     {
       fragptr.i = next;
-      c_fragment_pool.getPtr(fragptr);
+      ndbrequire(c_fragment_pool.getPtr(fragptr));
       signal->theData[0] = fragptr.p->tabRef;
       signal->theData[1] = fragptr.p->fragId;
       sendSignal(cownref, GSN_START_EXEC_SR, signal, 2, JBB);
@@ -30017,7 +30155,7 @@ void Dblqh::execEXEC_FRAGCONF(Signal* signal)
   mapFragPtr.i = signal->theData[0];
   c_map_fragment_pool.getPtr(mapFragPtr);
   fragptr.i = mapFragPtr.p->fragPtrI;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
 
   fragptr.p->srStatus = Fragrecord::SS_COMPLETED;
 
@@ -30321,10 +30459,10 @@ void Dblqh::continue_srPhase3Start(Signal *signal)
 {
   jam();
   fragptr.i = RNIL64;
-  c_lcp_complete_fragments.first(fragptr);
+  ndbrequire(c_lcp_complete_fragments.first(fragptr));
   if (fragptr.i != RNIL64)
   {
-    c_fragment_pool.getPtr(fragptr);
+    ndbrequire(c_fragment_pool.getPtr(fragptr));
     signal->theData[0] = ZSR_GCI_LIMITS;
     signal->theData[1] = fragptr.p->tabRef;
     signal->theData[2] = fragptr.p->fragId;
@@ -30353,7 +30491,7 @@ void Dblqh::srGciLimits(Signal* signal, Uint32 tableId, Uint32 fragId)
   while (fragptr.i != RNIL64)
   {
     jam();
-    c_lcp_complete_fragments.getPtr(fragptr);
+    ndbrequire(c_lcp_complete_fragments.getPtr(fragptr));
     ndbrequire(fragptr.p->execSrNoReplicas - 1 < MAX_REPLICAS);
     Uint32 instanceKey = getInstanceKey(fragptr.p->tabRef,
                                         fragptr.p->fragId);
@@ -30384,7 +30522,7 @@ void Dblqh::srGciLimits(Signal* signal, Uint32 tableId, Uint32 fragId)
     if (loopCount > 20 && fragptr.i != RNIL64)
     {
       jam();
-      c_fragment_pool.getPtr(fragptr);
+      ndbrequire(c_fragment_pool.getPtr(fragptr));
       signal->theData[0] = ZSR_GCI_LIMITS;
       signal->theData[1] = fragptr.p->tabRef;
       signal->theData[2] = fragptr.p->fragId;
@@ -32406,7 +32544,7 @@ void
 Dblqh::start_send_exec_conf(Signal *signal)
 {
   fragptr.i = RNIL64;
-  c_lcp_complete_fragments.first(fragptr);
+  ndbrequire(c_lcp_complete_fragments.first(fragptr));
   if (fragptr.i != RNIL64)
   {
     signal->theData[0] = ZSEND_EXEC_CONF;
@@ -32434,7 +32572,7 @@ void Dblqh::sendExecConf(Signal *signal, Uint32 tableId, Uint32 fragId)
   Uint32 loopCount = 0;
   while (fragptr.i != RNIL64)
   {
-    c_lcp_complete_fragments.getPtr(fragptr);
+    ndbrequire(c_lcp_complete_fragments.getPtr(fragptr));
     Uint64 next = fragptr.p->nextList;
     if (fragptr.p->execSrStatus != Fragrecord::IDLE)
     {
@@ -32474,7 +32612,7 @@ void Dblqh::sendExecConf(Signal *signal, Uint32 tableId, Uint32 fragId)
     if (loopCount > 20 && next != RNIL64)
     {
       jam();
-      c_fragment_pool.getPtr(fragptr);
+      ndbrequire(c_fragment_pool.getPtr(fragptr));
       signal->theData[0] = ZSEND_EXEC_CONF;
       signal->theData[1] = fragptr.p->tabRef;
       signal->theData[2] = fragptr.p->fragId;
@@ -33173,7 +33311,7 @@ void Dblqh::checkScanTcCompleted(Signal* signal,
 {
   tcConnectptr.p->logWriteState = TcConnectionrec::NOT_STARTED;
   fragptr.i = tcConnectptr.p->fragmentptr;
-  c_fragment_pool.getPtr(fragptr);
+  ndbrequire(c_fragment_pool.getPtr(fragptr));
   fragptr.p->activeTcCounter = fragptr.p->activeTcCounter - 1;
   if (fragptr.p->activeTcCounter == 0) {
     jam();
@@ -33375,7 +33513,7 @@ void Dblqh::deleteFragrec(Uint32 fragId)
   }//for
   if (fragptr.i != RNIL64) {
     jam();
-    c_fragment_pool.getPtr(fragptr);
+    ndbrequire(c_fragment_pool.getPtr(fragptr));
     if (fragptr.p->lcp_frag_ord_state == Fragrecord::LCP_QUEUED)
     {
       jam();
@@ -33689,7 +33827,7 @@ bool Dblqh::getTableFragmentrec(Uint32 tableId,
     if (tabPtr.p->fragid[i] == fragId)
     {
       fragPtr.i = tabPtr.p->fragrec[i];
-      c_fragment_pool.getPtr(fragPtr);
+      ndbrequire(c_fragment_pool.getPtr(fragPtr));
       return true;
     }
   }
@@ -33704,7 +33842,7 @@ bool Dblqh::getFragmentrec(Uint32 fragId)
     if (tabptr.p->fragid[i] == fragId)
     {
       fragptr.i = tabptr.p->fragrec[i];
-      c_fragment_pool.getPtr(fragptr);
+      ndbrequire(c_fragment_pool.getPtr(fragptr));
       return true;
     }
   }
@@ -33722,7 +33860,7 @@ void Dblqh::getIndexTupFragPtrI(Uint32 tableId,
   tupIndexFragPtrI = fragptr.p->tupFragptr;
   FragrecordPtr tFragPtr;
   tFragPtr.i = fragptr.p->tableFragptr;
-  c_fragment_pool.getPtr(tFragPtr);
+  ndbrequire(c_fragment_pool.getPtr(tFragPtr));
   tupTableFragPtrI = tFragPtr.p->tupFragptr;
 }
 
@@ -33744,7 +33882,7 @@ Dblqh::getNextTuxFragrec(Uint32 tableId,
     if (fragPtr.i != RNIL64)
     {
       thrjamDebug(jamBuf);
-      c_fragment_pool.getPtr(fragPtr);
+      ndbrequire(c_fragment_pool.getPtr(fragPtr));
       index = j;
       return fragPtr.p->tuxFragptr;
     }
@@ -33772,7 +33910,7 @@ Dblqh::getNextTupFragrec(Uint32 tableId,
     if (fragPtr.i != RNIL64)
     {
       thrjamDebug(jamBuf);
-      c_fragment_pool.getPtr(fragPtr);
+      ndbrequire(c_fragment_pool.getPtr(fragPtr));
       index = j;
       return fragPtr.p->tupFragptr;
     }
@@ -33800,7 +33938,7 @@ Dblqh::getNextAccFragrec(Uint32 tableId,
     if (fragPtr.i != RNIL64)
     {
       thrjamDebug(jamBuf);
-      c_fragment_pool.getPtr(fragPtr);
+      ndbrequire(c_fragment_pool.getPtr(fragPtr));
       index = j;
       return fragPtr.p->accFragptr;
     }
@@ -33828,7 +33966,7 @@ Dblqh::getNextTuxFragid(Uint32 tableId,
     if (fragid != ZNIL)
     {
       fragPtr.i = tabPtr.p->fragrec[j];
-      c_fragment_pool.getPtr(fragPtr);
+      ndbrequire(c_fragment_pool.getPtr(fragPtr));
       if (fragPtr.p->tuxFragptr != RNIL64)
       {
         thrjamDebug(jamBuf);
@@ -33860,7 +33998,7 @@ Dblqh::getNextTupFragid(Uint32 tableId,
     if (fragid != ZNIL)
     {
       fragPtr.i = tabPtr.p->fragrec[j];
-      c_fragment_pool.getPtr(fragPtr);
+      ndbrequire(c_fragment_pool.getPtr(fragPtr));
       if (fragPtr.p->tupFragptr != RNIL64)
       {
         thrjamDebug(jamBuf);
@@ -33892,7 +34030,7 @@ Dblqh::getNextAccFragid(Uint32 tableId,
     if (fragid != ZNIL)
     {
       fragPtr.i = tabPtr.p->fragrec[j];
-      c_fragment_pool.getPtr(fragPtr);
+      ndbrequire(c_fragment_pool.getPtr(fragPtr));
       if (fragPtr.p->accFragptr != RNIL64)
       {
         thrjamDebug(jamBuf);
@@ -35148,7 +35286,7 @@ void Dblqh::readExecLog(Signal* signal,
   req->numberOfPages = lfoPtr.p->noPagesRw;
   req->data.listOfMemPages.fileOffset = logPartPtrP->execSrStartPageNo;
   static_assert(LogFileOperationRecord::LOG_PAGE_ARRAY_SIZE <=
-                  NDB_ARRAY_SIZE(req->data.listOfMemPages.varIndex), "");
+                  NDB_ARRAY_SIZE(req->data.listOfMemPages.varIndex));
   for (unsigned i = 0; i < lfoPtr.p->noPagesRw; i++)
   {
     req->data.listOfMemPages.varIndex[i] = lfoPtr.p->logPageArray[i];
@@ -35858,10 +35996,10 @@ void Dblqh::sendLqhTransconf(Signal* signal,
 void Dblqh::startExecSr(Signal* signal) 
 {
   fragptr.i = RNIL64;
-  c_lcp_complete_fragments.first(fragptr);
+  ndbrequire(c_lcp_complete_fragments.first(fragptr));
   if (fragptr.i != RNIL64)
   {
-    c_fragment_pool.getPtr(fragptr);
+    ndbrequire(c_fragment_pool.getPtr(fragptr));
     signal->theData[0] = fragptr.p->tabRef;
     signal->theData[1] = fragptr.p->fragId;
     sendSignal(cownref, GSN_START_EXEC_SR, signal, 2, JBB);
@@ -36838,7 +36976,7 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
 	  FragrecordPtr fragPtr;
 	  if ((fragPtr.i = tabPtr.p->fragrec[j]) != RNIL64)
 	  {
-	    c_fragment_pool.getPtr(fragPtr);
+	    ndbrequire(c_fragment_pool.getPtr(fragPtr));
 	    infoEvent("  frag: %d distKey: %u", 
 		      tabPtr.p->fragid[j],
 		      fragPtr.p->fragDistributionKey);
@@ -37127,32 +37265,28 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
 
   if(arg == DumpStateOrd::LqhDumpAllTcRec)
   {
-    Uint32 bucketLen[TRANSID_HASH_SIZE];
-    for(Uint32 i = 0; i<TRANSID_HASH_SIZE; i++)
+    g_eventLogger->info("LQH transid hash bucket lengths : ");
+    for(Uint32 i = 0; i<ctransidHashSize; i++)
     {
       TcConnectionrecPtr tcRec;
       Uint32 mutexIndex = i & (NUM_TRANSACTION_HASH_MUTEXES - 1);
       NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
       tcRec.i = ctransidHash[i];
-      bucketLen[i] = 0;
+      Uint32 bucketLen = 0;
       while(tcRec.i != RNIL)
       {
         ndbrequire(tcConnect_pool.getValidPtr(tcRec));
         g_eventLogger->info("TcConnectionrec %u", tcRec.i);
         signal->theData[0] = DumpStateOrd::LqhDumpOneTcRec;
-	signal->theData[1] = tcRec.i;
-	execDUMP_STATE_ORD(signal);
-	tcRec.i = tcRec.p->nextHashRec;
-        bucketLen[i]++;
+        signal->theData[1] = tcRec.i;
+        execDUMP_STATE_ORD(signal);
+        tcRec.i = tcRec.p->nextHashRec;
+        bucketLen++;
       }
       NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
-    }
-    g_eventLogger->info("LQH transid hash bucket lengths : ");
-    for (Uint32 i = 0; i < TRANSID_HASH_SIZE; i++)
-    {
-      if (bucketLen[i] > 0)
+      if (bucketLen > 0)
       {
-        g_eventLogger->info("bucket %u len %u", i, bucketLen[i]);
+        g_eventLogger->info("bucket %u len %u", i, bucketLen);
       }
     }
     g_eventLogger->info("Done.");
@@ -37366,7 +37500,7 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
     Uint32 record = signal->theData[2];
     Uint32 len = signal->getLength();
     TcConnectionrecPtr tcRec;
-    ndbrequire(bucket < NDB_ARRAY_SIZE(ctransidHash));
+    ndbrequire(bucket < ctransidHashSize);
 
     if (record != RNIL)
     {
@@ -37382,8 +37516,7 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
       }
       else
       {
-        Uint32 hashIndex = (tcRec.p->transid[0] ^ tcRec.p->tcOprec) &
-                            (TRANSID_HASH_SIZE - 1);
+        const Uint32 hashIndex = getHashIndex(tcRec.p);
         Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
         NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
         if (hashIndex != bucket)
@@ -37423,7 +37556,7 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
         jam();
         bucket++;
         NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
-        if (bucket < TRANSID_HASH_SIZE)
+        if (bucket < ctransidHashSize)
         {
 	  jam();
 	  signal->theData[1] = bucket;
@@ -37466,7 +37599,7 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
       {
         jam();
         bucket++;
-        if (bucket < TRANSID_HASH_SIZE)
+        if (bucket < ctransidHashSize)
         {
 	  jam();
 	  signal->theData[1] = bucket;
@@ -37611,7 +37744,7 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
   if (arg == 4002)
   {
     bool ops = false;
-    for (Uint32 i = 0; i<TRANSID_HASH_SIZE; i++)
+    for (Uint32 i = 0; i<ctransidHashSize; i++)
     {
       Uint32 mutexIndex = i & (NUM_TRANSACTION_HASH_MUTEXES - 1);
       NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
@@ -38294,6 +38427,8 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal)
     break;
   }
   case Ndbinfo::OPERATIONS_TABLEID:{
+    static constexpr Uint32 max_buckets_to_check = 4096;
+    Uint32 buckets_checked = 0;
     Uint32 bucket = cursor->data[0];
 
     while (true)
@@ -38305,8 +38440,15 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal)
         return;
       }
       Uint32 mutexIndex = 0;
-      for (; bucket < NDB_ARRAY_SIZE(ctransidHash); bucket++)
+      for (; bucket < ctransidHashSize; bucket++)
       {
+        buckets_checked++;
+        if (buckets_checked > max_buckets_to_check)
+        {
+          jam();
+          ndbinfo_send_scan_break(signal, req, rl, bucket);
+          return;
+        }
         mutexIndex = bucket & (NUM_TRANSACTION_HASH_MUTEXES - 1);
         NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
         if (ctransidHash[bucket] != RNIL)
@@ -38314,7 +38456,7 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal)
         NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
       }
 
-      if (bucket == NDB_ARRAY_SIZE(ctransidHash))
+      if (bucket == ctransidHashSize)
       {
         break;
       }
@@ -38451,7 +38593,7 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal)
           if (myFragPtr.i != RNIL64)
           {
             jam();
-            c_fragment_pool.getPtr(myFragPtr);
+            ndbrequire(c_fragment_pool.getPtr(myFragPtr));
             
             /* Get fragment's stats from TUP */
             const Dbtup::FragStats fs
@@ -38552,7 +38694,9 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal)
 
     const size_t num_config_params =
       sizeof(pools[0].config_params) / sizeof(pools[0].config_params[0]);
+    const Uint32 numPools = NDB_ARRAY_SIZE(pools);
     Uint32 pool = cursor->data[0];
+    ndbrequire(pool < numPools);
     BlockNumber bn = blockToMain(number());
     while(pools[pool].poolname)
     {

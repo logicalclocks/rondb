@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2015,7 +2015,7 @@ void Ndbcntr::execREAD_NODESCONF(Signal* signal)
     ndbrequire(signal->getNoOfSections() == 1);
     SegmentedSectionPtr ptr;
     SectionHandle handle(this, signal);
-    handle.getSection(ptr, 0);
+    ndbrequire(handle.getSection(ptr, 0));
     ndbrequire(ptr.sz == 5 * NdbNodeBitmask::Size);
     copy((Uint32*)&readNodes->definedNodes.rep.data, ptr);
     releaseSections(handle);
@@ -2160,7 +2160,7 @@ Ndbcntr::execCNTR_START_CONF(Signal * signal)
     SegmentedSectionPtr ptr;
     SectionHandle handle(this, signal);
 
-    handle.getSection(ptr, 0);
+    ndbrequire(handle.getSection(ptr, 0));
     memset(&signal->theData[CntrStartConf::SignalLength],
            0,
            NdbNodeBitmask::Size * sizeof(Uint32));
@@ -2168,7 +2168,7 @@ Ndbcntr::execCNTR_START_CONF(Signal * signal)
     c_start.m_starting.assign(NdbNodeBitmask::Size,
                               &signal->theData[CntrStartConf::SignalLength]);
 
-    handle.getSection(ptr, 1);
+    ndbrequire(handle.getSection(ptr, 1));
     memset(&signal->theData[CntrStartConf::SignalLength],
            0,
            NdbNodeBitmask::Size * sizeof(Uint32));
@@ -2183,7 +2183,7 @@ Ndbcntr::execCNTR_START_CONF(Signal * signal)
       NdbNodeBitmask tmp2;
       jam();
       ndbrequire(num_sections == 3);
-      handle.getSection(ptr, 2);
+      ndbrequire(handle.getSection(ptr, 2));
       memset(&signal->theData[CntrStartConf::SignalLength],
              0,
              NdbNodeBitmask::Size * sizeof(Uint32));
@@ -2585,7 +2585,7 @@ Ndbcntr::startWaitingNodes(Signal * signal){
     const Uint32 version = getNodeInfo(refToNode(Tref)).m_version;
     if (ndbd_send_node_bitmask_in_section(version))
     {
-      STATIC_ASSERT(CntrStartConf::SignalLength + NdbNodeBitmask::Size <=
+      static_assert(CntrStartConf::SignalLength + NdbNodeBitmask::Size <=
                     NDB_ARRAY_SIZE(signal->theData));
       LinearSectionPtr lsptr[3];
       Uint32 num_sections;
@@ -3150,7 +3150,7 @@ void Ndbcntr::execNDB_STARTCONF(Signal* signal)
           getNodeInfo(refToNode(signal->getSendersBlockRef())).m_version));
       SegmentedSectionPtr ptr;
       SectionHandle handle(this,signal);
-      handle.getSection(ptr, 0);
+      ndbrequire(handle.getSection(ptr, 0));
       ndbrequire(ptr.sz <= NdbNodeBitmask::Size);
       copy(tmp.rep.data, ptr);
       releaseSections(handle);
@@ -3630,7 +3630,7 @@ void Ndbcntr::execCNTR_WAITREP(Signal* signal)
     {
       SectionHandle handle(this, signal);
       SegmentedSectionPtr ptr;
-      handle.getSection(ptr, 0);
+      ndbrequire(handle.getSection(ptr, 0));
       ndbrequire(ptr.sz <= c_start.m_starting.Size);
       copy(c_start.m_starting.rep.data, ptr);
       releaseSections(handle);
@@ -3708,7 +3708,7 @@ void Ndbcntr::execNODE_FAILREP(Signal* signal)
     ndbrequire(ndbd_send_node_bitmask_in_section(senderVersion));
     SectionHandle handle(this, signal);
     SegmentedSectionPtr ptr;
-    handle.getSection(ptr, 0);
+    ndbrequire(handle.getSection(ptr, 0));
 
     if (ERROR_INSERTED(1001))
     {
@@ -4573,7 +4573,7 @@ Ndbcntr::execSTOP_REQ(Signal* signal)
         getNodeInfo(req->senderRef).m_version));
     SegmentedSectionPtr ptr;
     SectionHandle handle(this, signal);
-    handle.getSection(ptr, 0);
+    ndbrequire(handle.getSection(ptr, 0));
     NdbNodeBitmask::clear(req->nodes);
     copy(req->nodes, ptr);
     releaseSections(handle);
@@ -6082,7 +6082,11 @@ Ndbcntr::open_local_sysfile(Signal *signal,
       FsOpenReq::OM_CREATE |
       FsOpenReq::OM_TRUNCATE;
   }
-  sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, 7, JBA);
+  req->page_size = 0;
+  req->file_size_hi = UINT32_MAX;
+  req->file_size_lo = UINT32_MAX;
+  req->auto_sync_size = 0;
+  sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength, JBA);
 }
 
 void

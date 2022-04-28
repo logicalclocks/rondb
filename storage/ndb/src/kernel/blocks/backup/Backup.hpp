@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -212,10 +212,9 @@ private:
   void defineBackupMutex_locked(Signal* signal, Uint32 ptrI,Uint32 retVal);
   void dictCommitTableMutex_locked(Signal* signal, Uint32 ptrI,Uint32 retVal);
   void startDropTrig_synced(Signal* signal, Uint32 ptrI, Uint32 retVal);
-  Uint32 validateEncryptionPassword(const EncryptionPasswordData* epd);
+  Uint32 validateEncryptionPassword(const EncryptionKeyMaterial* epd);
 
-
-public:
+ public:
   struct Node {
     Uint32 nodeId;
     Uint32 alive;
@@ -932,7 +931,7 @@ public:
     }
 
     bool m_encrypted_file;
-    EncryptionPasswordData m_encryption_password_data;
+    EncryptionKeyMaterial m_encryption_password_data;
   };
   friend struct BackupRecord;
   typedef Ptr<BackupRecord> BackupRecordPtr;
@@ -991,6 +990,8 @@ public:
   NdbNodeBitmask c_aliveNodes;
   BackupRecord_dllist c_backups;
   Config c_defaults;
+
+  bool c_encrypted_filesystem;
 
   /*
     Variables that control checkpoint to disk speed

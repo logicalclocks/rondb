@@ -57,7 +57,7 @@ extern class SignalLoggerManager globalSignalLoggers;
 #define JAM_MASK (EMULATED_JAM_SIZE - 1)
 
 /* EMULATED_JAM_SIZE must be a power of two, so JAM_MASK will work. */
-#define TEST_EMULATED_JAM_SIZE(x) NDB_STATIC_ASSERT \
+#define TEST_EMULATED_JAM_SIZE(x) static_assert \
   ((((Uint32)(x)) % EMULATED_JAM_SIZE) == (((Uint32)(x)) & JAM_MASK))
 TEST_EMULATED_JAM_SIZE(-123456);
 TEST_EMULATED_JAM_SIZE(-1);
@@ -742,13 +742,13 @@ constexpr bool staticPathEndsWithFileIgnoreCase(const char* path,
 }
 
 /* Tests */
-NDB_STATIC_ASSERT(staticPathEndsWithFileIgnoreCase("file.ext", "file.ext"));
-NDB_STATIC_ASSERT(staticPathEndsWithFileIgnoreCase("d1/d2/File.Ext", "File.Ext"));
-NDB_STATIC_ASSERT(staticPathEndsWithFileIgnoreCase("d1/d2/file.ext", "File.Ext"));
-NDB_STATIC_ASSERT(staticPathEndsWithFileIgnoreCase("d1/d2/FILE.EXT", "File.Ext"));
-NDB_STATIC_ASSERT(!staticPathEndsWithFileIgnoreCase("d1/d2/afile.ext", "file.ext"));
-NDB_STATIC_ASSERT(!staticPathEndsWithFileIgnoreCase("file.ext", "d1/d2/file.ext"));
-NDB_STATIC_ASSERT(!staticPathEndsWithFileIgnoreCase("d1/file.ext", "d1/file.ext"));
+static_assert(staticPathEndsWithFileIgnoreCase("file.ext", "file.ext"));
+static_assert(staticPathEndsWithFileIgnoreCase("d1/d2/File.Ext", "File.Ext"));
+static_assert(staticPathEndsWithFileIgnoreCase("d1/d2/file.ext", "File.Ext"));
+static_assert(staticPathEndsWithFileIgnoreCase("d1/d2/FILE.EXT", "File.Ext"));
+static_assert(!staticPathEndsWithFileIgnoreCase("d1/d2/afile.ext", "file.ext"));
+static_assert(!staticPathEndsWithFileIgnoreCase("file.ext", "d1/d2/file.ext"));
+static_assert(!staticPathEndsWithFileIgnoreCase("d1/file.ext", "d1/file.ext"));
 
 /**
  * JamEvents are used for recording that control passes a given point in the

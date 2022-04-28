@@ -1,4 +1,4 @@
-/* Copyright (c) 2005, 2021, Oracle and/or its affiliates.
+/* Copyright (c) 2005, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,10 +47,10 @@
 #include "my_sys.h"
 #include "my_thread_local.h"
 #include "mysql/components/services/bits/psi_bits.h"
+#include "mysql/components/services/bits/psi_memory_bits.h"
+#include "mysql/components/services/bits/psi_mutex_bits.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/components/services/log_shared.h"
-#include "mysql/components/services/psi_memory_bits.h"
-#include "mysql/components/services/psi_mutex_bits.h"
 #include "mysql/components/services/system_variable_source_type.h"
 #include "mysql/plugin_audit.h"
 #include "mysql/plugin_auth.h"
@@ -442,7 +442,7 @@ mysql_mutex_t LOCK_plugin_delete;
   plugin_dl_array, plugin_array and plugin_hash.
   We are always manipulating ref count, so a rwlock here is unneccessary.
   If it must be taken together with the LOCK_system_variables_hash then
-  LOCK_plugin must be taken before LOCK_system_variables_hash.
+  LOCK_plugin must be taken after LOCK_system_variables_hash.
 */
 mysql_mutex_t LOCK_plugin;
 /**
@@ -483,8 +483,6 @@ static void plugin_var_memalloc_free(struct System_variables *vars);
 static void restore_pluginvar_names(sys_var *first);
 #define my_intern_plugin_lock(A, B) intern_plugin_lock(A, B)
 #define my_intern_plugin_lock_ci(A, B) intern_plugin_lock(A, B)
-static plugin_ref intern_plugin_lock(LEX *lex, plugin_ref plugin);
-static void intern_plugin_unlock(LEX *lex, plugin_ref plugin);
 static void reap_plugins(void);
 
 // mysql.plugin table definition.
@@ -665,8 +663,8 @@ static st_plugin_dl *plugin_dl_add(const LEX_STRING *dl, int report,
       check_string_char_length(dl_cstr, "", NAME_CHAR_LEN, system_charset_info,
                                true) ||
       plugin_dir_len + dl->length + 1 >= FN_REFLEN) {
-    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     mysql_mutex_unlock(&LOCK_plugin);
+    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     report_error(report, ER_UDF_NO_PATHS);
     return nullptr;
   }
@@ -700,8 +698,8 @@ static st_plugin_dl *plugin_dl_add(const LEX_STRING *dl, int report,
       if (*errmsg == ':') errmsg++;
       if (*errmsg == ' ') errmsg++;
     }
-    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     mysql_mutex_unlock(&LOCK_plugin);
+    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     report_error(report, ER_CANT_OPEN_LIBRARY, dlpath, error_number, errmsg);
 
     /*
@@ -721,8 +719,8 @@ static st_plugin_dl *plugin_dl_add(const LEX_STRING *dl, int report,
   /* Determine interface version */
   if (!(sym = dlsym(plugin_dl.handle, plugin_interface_version_sym))) {
     free_plugin_mem(&plugin_dl);
-    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     mysql_mutex_unlock(&LOCK_plugin);
+    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     report_error(report, ER_CANT_FIND_DL_ENTRY, plugin_interface_version_sym);
     return nullptr;
   }
@@ -731,8 +729,8 @@ static st_plugin_dl *plugin_dl_add(const LEX_STRING *dl, int report,
   if (plugin_dl.version < min_plugin_interface_version ||
       (plugin_dl.version >> 8) > (MYSQL_PLUGIN_INTERFACE_VERSION >> 8)) {
     free_plugin_mem(&plugin_dl);
-    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     mysql_mutex_unlock(&LOCK_plugin);
+    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     report_error(report, ER_CANT_OPEN_LIBRARY, dlpath, 0,
                  "plugin interface version mismatch");
     return nullptr;
@@ -749,8 +747,8 @@ static st_plugin_dl *plugin_dl_add(const LEX_STRING *dl, int report,
         char buf[MYSQL_ERRMSG_SIZE];
         snprintf(buf, sizeof(buf), "service '%s' interface version mismatch",
                  list_of_services[i].name);
-        mysql_rwlock_unlock(&LOCK_system_variables_hash);
         mysql_mutex_unlock(&LOCK_plugin);
+        mysql_rwlock_unlock(&LOCK_system_variables_hash);
         report_error(report, ER_CANT_OPEN_LIBRARY, dlpath, 0, buf);
         return nullptr;
       }
@@ -761,8 +759,8 @@ static st_plugin_dl *plugin_dl_add(const LEX_STRING *dl, int report,
   /* Find plugin declarations */
   if (!(sym = dlsym(plugin_dl.handle, plugin_declarations_sym))) {
     free_plugin_mem(&plugin_dl);
-    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     mysql_mutex_unlock(&LOCK_plugin);
+    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     report_error(report, ER_CANT_FIND_DL_ENTRY, plugin_declarations_sym);
     return nullptr;
   }
@@ -796,8 +794,8 @@ static st_plugin_dl *plugin_dl_add(const LEX_STRING *dl, int report,
                                        MYF(MY_ZEROFILL | MY_WME));
     if (!cur) {
       free_plugin_mem(&plugin_dl);
-      mysql_rwlock_unlock(&LOCK_system_variables_hash);
       mysql_mutex_unlock(&LOCK_plugin);
+      mysql_rwlock_unlock(&LOCK_system_variables_hash);
       report_error(report, ER_OUTOFMEMORY,
                    static_cast<int>(plugin_dl.dl.length));
       return nullptr;
@@ -824,8 +822,8 @@ static st_plugin_dl *plugin_dl_add(const LEX_STRING *dl, int report,
     st_mysql_plugin *plugin = plugin_dl.plugins;
     for (; plugin->info; ++plugin)
       if (plugin->flags & PLUGIN_OPT_NO_INSTALL) {
-        mysql_rwlock_unlock(&LOCK_system_variables_hash);
         mysql_mutex_unlock(&LOCK_plugin);
+        mysql_rwlock_unlock(&LOCK_system_variables_hash);
         report_error(report, ER_PLUGIN_NO_INSTALL, plugin->name);
         free_plugin_mem(&plugin_dl);
         return nullptr;
@@ -836,8 +834,8 @@ static st_plugin_dl *plugin_dl_add(const LEX_STRING *dl, int report,
     st_mysql_plugin *plugin = plugin_dl.plugins;
     for (; plugin->info; ++plugin)
       if (!(plugin->flags & PLUGIN_OPT_ALLOW_EARLY)) {
-        mysql_rwlock_unlock(&LOCK_system_variables_hash);
         mysql_mutex_unlock(&LOCK_plugin);
+        mysql_rwlock_unlock(&LOCK_system_variables_hash);
         report_error(report, ER_PLUGIN_NOT_EARLY, plugin->name);
         free_plugin_mem(&plugin_dl);
         return nullptr;
@@ -848,8 +846,8 @@ static st_plugin_dl *plugin_dl_add(const LEX_STRING *dl, int report,
   plugin_dl.dl.length = dl->length * files_charset_info->mbmaxlen + 1;
   if (!(plugin_dl.dl.str = (char *)my_malloc(key_memory_mysql_plugin_dl,
                                              plugin_dl.dl.length, MYF(0)))) {
-    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     mysql_mutex_unlock(&LOCK_plugin);
+    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     free_plugin_mem(&plugin_dl);
     report_error(report, ER_OUTOFMEMORY, static_cast<int>(plugin_dl.dl.length));
     return nullptr;
@@ -860,8 +858,8 @@ static st_plugin_dl *plugin_dl_add(const LEX_STRING *dl, int report,
   plugin_dl.dl.str[plugin_dl.dl.length] = 0;
   /* Add this dll to array */
   if (!(tmp = plugin_dl_insert_or_reuse(&plugin_dl))) {
-    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     mysql_mutex_unlock(&LOCK_plugin);
+    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     free_plugin_mem(&plugin_dl);
     report_error(report, ER_OUTOFMEMORY,
                  static_cast<int>(sizeof(st_plugin_dl)));
@@ -933,11 +931,16 @@ SHOW_COMP_OPTION plugin_status(const char *name, size_t len, int type) {
   return plugin_status(plugin_name, type);
 }
 
-static plugin_ref intern_plugin_lock(LEX *lex, plugin_ref rc) {
+plugin_ref intern_plugin_lock(LEX *lex, plugin_ref rc) {
   st_plugin_int *pi = plugin_ref_to_int(rc);
   DBUG_TRACE;
 
-  mysql_mutex_assert_owner(&LOCK_plugin);
+#ifndef NDEBUG
+  // See force_plugin_lock, in System_variable_tracker::visit_plugin_variable.
+  if (current_thd != nullptr) {
+    mysql_mutex_assert_owner(&LOCK_plugin);
+  }
+#endif
 
   if (pi->state & (PLUGIN_IS_READY | PLUGIN_IS_UNINITIALIZED)) {
     plugin_ref plugin;
@@ -1020,10 +1023,10 @@ static st_plugin_int *plugin_insert_or_reuse(st_plugin_int *plugin) {
   Adds a plugin to the global plugin list.
 
   Also installs the plugin variables.
-  In case of error releases ::LOCK_system_variables_hash and ::LOCK_plugin
+  In case of error releases ::LOCK_plugin and ::LOCK_system_variables_hash
   and reports the error.
-  @note Requires that a write-lock is held on ::LOCK_plugin and
-  ::LOCK_system_variables_hash
+  @note Requires that a write-lock is held on ::LOCK_system_variables_hash
+        and ::LOCK_plugin
 */
 static bool plugin_add(MEM_ROOT *tmp_root, LEX_CSTRING name,
                        const LEX_STRING *dl, int *argc, char **argv, int report,
@@ -1034,8 +1037,8 @@ static bool plugin_add(MEM_ROOT *tmp_root, LEX_CSTRING name,
 
   mysql_mutex_assert_owner(&LOCK_plugin);
   if (plugin_find_internal(name, MYSQL_ANY_PLUGIN)) {
-    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     mysql_mutex_unlock(&LOCK_plugin);
+    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     report_error(report, ER_UDF_EXISTS, name.str);
     return true;
   }
@@ -1060,8 +1063,8 @@ static bool plugin_add(MEM_ROOT *tmp_root, LEX_CSTRING name,
         strncpy(dl_name, dl->str, sizeof(dl_name) - 1);
         dl_name[sizeof(dl_name) - 1] = 0;
         plugin_dl_del(dl);
-        mysql_rwlock_unlock(&LOCK_system_variables_hash);
         mysql_mutex_unlock(&LOCK_plugin);
+        mysql_rwlock_unlock(&LOCK_system_variables_hash);
         report_error(report, ER_CANT_OPEN_LIBRARY, dl_name, 0, buf);
         return true;
       }
@@ -1085,17 +1088,17 @@ static bool plugin_add(MEM_ROOT *tmp_root, LEX_CSTRING name,
         }
         tmp_plugin_ptr->state = PLUGIN_IS_FREED;
       }
-      mysql_del_sys_var_chain(tmp.system_vars);
+      delete_dynamic_system_variable_chain(tmp.system_vars);
       restore_pluginvar_names(tmp.system_vars);
       plugin_dl_del(dl);
-      mysql_rwlock_unlock(&LOCK_system_variables_hash);
       mysql_mutex_unlock(&LOCK_plugin);
+      mysql_rwlock_unlock(&LOCK_system_variables_hash);
       return true;
     }
   }
   plugin_dl_del(dl);
-  mysql_rwlock_unlock(&LOCK_system_variables_hash);
   mysql_mutex_unlock(&LOCK_plugin);
+  mysql_rwlock_unlock(&LOCK_system_variables_hash);
   report_error(report, ER_CANT_FIND_DL_ENTRY, name.str);
   return true;
 }
@@ -1147,9 +1150,7 @@ static void plugin_del(st_plugin_int *plugin) {
   mysql_mutex_assert_owner(&LOCK_plugin);
   mysql_mutex_assert_owner(&LOCK_plugin_delete);
   /* Free allocated strings before deleting the plugin. */
-  mysql_rwlock_wrlock(&LOCK_system_variables_hash);
-  mysql_del_sys_var_chain(plugin->system_vars);
-  mysql_rwlock_unlock(&LOCK_system_variables_hash);
+  delete_dynamic_system_variable_chain(plugin->system_vars);
   restore_pluginvar_names(plugin->system_vars);
   plugin_vars_free_values(plugin->system_vars);
   plugin_hash[plugin->plugin->type]->erase(to_string(plugin->name));
@@ -1192,18 +1193,25 @@ static void reap_plugins(void) {
   }
 
   mysql_mutex_lock(&LOCK_plugin_delete);
+  mysql_rwlock_wrlock(&LOCK_system_variables_hash);
   mysql_mutex_lock(&LOCK_plugin);
 
   while ((plugin = *(--reap))) plugin_del(plugin);
 
+  mysql_rwlock_unlock(&LOCK_system_variables_hash);
   mysql_mutex_unlock(&LOCK_plugin_delete);
 }
 
-static void intern_plugin_unlock(LEX *lex, plugin_ref plugin) {
+void intern_plugin_unlock(LEX *lex, plugin_ref plugin) {
   st_plugin_int *pi;
   DBUG_TRACE;
 
-  mysql_mutex_assert_owner(&LOCK_plugin);
+#ifndef NDEBUG
+  // See force_plugin_lock, in System_variable_tracker::visit_plugin_variable.
+  if (current_thd != nullptr) {
+    mysql_mutex_assert_owner(&LOCK_plugin);
+  }
+#endif
 
   if (!plugin) return;
 
@@ -1281,6 +1289,7 @@ static int plugin_initialize(st_plugin_int *plugin) {
   assert(state == PLUGIN_IS_UNINITIALIZED);
 
   mysql_mutex_unlock(&LOCK_plugin);
+  mysql_rwlock_unlock(&LOCK_system_variables_hash);
 
   DEBUG_SYNC(current_thd, "in_plugin_initialize");
 
@@ -1328,6 +1337,7 @@ static int plugin_initialize(st_plugin_int *plugin) {
   ret = 0;
 
 err:
+  mysql_rwlock_wrlock(&LOCK_system_variables_hash);
   mysql_mutex_lock(&LOCK_plugin);
   plugin->state = state;
 
@@ -1432,6 +1442,7 @@ static bool plugin_init_initialize_and_reap() {
   struct st_plugin_int **reap;
 
   /* Now we initialize all plugins that are not already initialized */
+  mysql_rwlock_wrlock(&LOCK_system_variables_hash);
   mysql_mutex_lock(&LOCK_plugin);
   reap =
       (st_plugin_int **)my_alloca((plugin_array->size() + 1) * sizeof(void *));
@@ -1452,17 +1463,24 @@ static bool plugin_init_initialize_and_reap() {
   bool reaped_mandatory_plugin = false;
   while ((plugin_ptr = *(--reap))) {
     mysql_mutex_unlock(&LOCK_plugin);
+    mysql_rwlock_unlock(&LOCK_system_variables_hash);
+
     if (plugin_ptr->load_option == PLUGIN_FORCE ||
         plugin_ptr->load_option == PLUGIN_FORCE_PLUS_PERMANENT)
       reaped_mandatory_plugin = true;
     plugin_deinitialize(plugin_ptr, true);
+
     mysql_mutex_lock(&LOCK_plugin_delete);
+    mysql_rwlock_wrlock(&LOCK_system_variables_hash);
     mysql_mutex_lock(&LOCK_plugin);
+
     plugin_del(plugin_ptr);
+
     mysql_mutex_unlock(&LOCK_plugin_delete);
   }
 
   mysql_mutex_unlock(&LOCK_plugin);
+  mysql_rwlock_unlock(&LOCK_system_variables_hash);
   if (reaped_mandatory_plugin) return true;
 
   return false;
@@ -1506,6 +1524,26 @@ bool plugin_register_early_plugins(int *argc, char **argv, int flags) {
 }
 
 /**
+  Update read-write persisted plugin system variables.
+
+  @param name plugin name
+  @return Operation outcome, false means no errors
+ */
+bool update_persisted_plugin_sysvars(const char *name) {
+  if (mysqld_server_started) {
+    Persisted_variables_cache *pv = Persisted_variables_cache::get_instance();
+
+    const bool error = (pv && pv->set_persisted_options(true));
+
+    if (error) {
+      LogErr(ERROR_LEVEL, ER_PLUGIN_CANT_SET_PERSISTENT_OPTIONS, name);
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
   Register the builtin plugins. Some of the plugins (MyISAM, CSV and InnoDB)
   are also initialized.
 
@@ -1523,6 +1561,7 @@ bool plugin_register_builtin_and_init_core_se(int *argc, char **argv) {
   /* Allocate the temporary mem root, will be freed before returning */
   MEM_ROOT tmp_root(key_memory_plugin_init_tmp, 4096);
 
+  mysql_rwlock_wrlock(&LOCK_system_variables_hash);
   mysql_mutex_lock(&LOCK_plugin);
   initialized = true;
 
@@ -1596,6 +1635,12 @@ bool plugin_register_builtin_and_init_core_se(int *argc, char **argv) {
         goto err_unlock;
 
       /*
+        Once server is started and plugin initialized and if there are persisted
+        read-write plugin variables which need to be handled, we do it here.
+      */
+      if (update_persisted_plugin_sysvars(plugin->name)) goto err_unlock;
+
+      /*
         Initialize the global default storage engine so that it may
         not be null in any child thread.
       */
@@ -1616,12 +1661,14 @@ bool plugin_register_builtin_and_init_core_se(int *argc, char **argv) {
   assert(global_system_variables.temp_table_plugin);
 
   mysql_mutex_unlock(&LOCK_plugin);
+  mysql_rwlock_unlock(&LOCK_system_variables_hash);
 
   tmp_root.Clear();
   return false;
 
 err_unlock:
   mysql_mutex_unlock(&LOCK_plugin);
+  mysql_rwlock_unlock(&LOCK_system_variables_hash);
   tmp_root.Clear();
   return true;
 }
@@ -1790,8 +1837,6 @@ static bool register_builtin(st_mysql_plugin *plugin, st_plugin_int *tmp,
   @arg tmp_root  memory root to use for plugin_add()
   @arg argc      number of command line arguments to process
   @arg argv      array of command line argument to read values from
-  @retval true   failure
-  @retval false  success
 */
 static void plugin_load(MEM_ROOT *tmp_root, int *argc, char **argv) {
   THD thd;
@@ -1848,14 +1893,14 @@ static void plugin_load(MEM_ROOT *tmp_root, int *argc, char **argv) {
       So to ensure the right sequence of lock and unlock we need to take and
       release both the wlock and the mutex.
     */
-    mysql_mutex_lock(&LOCK_plugin);
     mysql_rwlock_wrlock(&LOCK_system_variables_hash);
+    mysql_mutex_lock(&LOCK_plugin);
     if (plugin_add(tmp_root, name, &dl, argc, argv, REPORT_TO_LOG, false)) {
       LogErr(WARNING_LEVEL, ER_PLUGIN_CANT_LOAD, str_name.c_ptr(),
              str_dl.c_ptr());
     } else {
-      mysql_rwlock_unlock(&LOCK_system_variables_hash);
       mysql_mutex_unlock(&LOCK_plugin);
+      mysql_rwlock_unlock(&LOCK_system_variables_hash);
     }
     tmp_root->ClearForReuse();
   }
@@ -1920,8 +1965,8 @@ static bool plugin_load_list(MEM_ROOT *tmp_root, int *argc, char **argv,
             this is a function that's executed only during server bootstrap, but
             we do it properly for uniformity of the environment for plugin_add.
           */
-          mysql_mutex_lock(&LOCK_plugin);
           mysql_rwlock_wrlock(&LOCK_system_variables_hash);
+          mysql_mutex_lock(&LOCK_plugin);
           if ((plugin_dl = plugin_dl_add(&dl, REPORT_TO_LOG, load_early))) {
             for (plugin = plugin_dl->plugins; plugin->info; plugin++) {
               name.str = const_cast<char *>(plugin->name);
@@ -1942,14 +1987,14 @@ static bool plugin_load_list(MEM_ROOT *tmp_root, int *argc, char **argv,
             this is a function that's executed only during server bootstrap, but
             we do it properly for uniformity of the environment for plugin_add.
           */
-          mysql_mutex_lock(&LOCK_plugin);
           mysql_rwlock_wrlock(&LOCK_system_variables_hash);
+          mysql_mutex_lock(&LOCK_plugin);
           if (plugin_add(tmp_root, to_lex_cstring(name), &dl, argc, argv,
                          REPORT_TO_LOG, load_early))
             goto error;
         }
-        mysql_rwlock_unlock(&LOCK_system_variables_hash);
         mysql_mutex_unlock(&LOCK_plugin);
+        mysql_rwlock_unlock(&LOCK_system_variables_hash);
         name.length = dl.length = 0;
         dl.str = nullptr;
         name.str = p = buffer;
@@ -1989,10 +2034,12 @@ void memcached_shutdown(void) {
         plugin_deinitialize(plugin, true);
 
         mysql_mutex_lock(&LOCK_plugin_delete);
+        mysql_rwlock_wrlock(&LOCK_system_variables_hash);
         mysql_mutex_lock(&LOCK_plugin);
         plugin->state = PLUGIN_IS_DYING;
         plugin_del(plugin);
         mysql_mutex_unlock(&LOCK_plugin);
+        mysql_rwlock_unlock(&LOCK_system_variables_hash);
         mysql_mutex_unlock(&LOCK_plugin_delete);
       }
     }
@@ -2082,6 +2129,7 @@ void plugin_shutdown(void) {
       here use mysql_mutex_assert_owner(), so we lock the mutex to satisfy it
     */
     mysql_mutex_lock(&LOCK_plugin_delete);
+    mysql_rwlock_wrlock(&LOCK_system_variables_hash);
     mysql_mutex_lock(&LOCK_plugin);
 
     /*
@@ -2102,6 +2150,7 @@ void plugin_shutdown(void) {
     cleanup_variables(nullptr, &global_system_variables);
     cleanup_variables(nullptr, &max_system_variables);
     mysql_mutex_unlock(&LOCK_plugin);
+    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     mysql_mutex_unlock(&LOCK_plugin_delete);
 
     initialized = false;
@@ -2262,17 +2311,17 @@ static bool mysql_install_plugin(THD *thd, LEX_CSTRING name,
                               MYSQL_AUDIT_GENERAL_ALL);
 
   mysql_mutex_lock(&LOCK_plugin_install);
+  mysql_rwlock_wrlock(&LOCK_system_variables_hash);
   mysql_mutex_lock(&LOCK_plugin);
   DEBUG_SYNC(thd, "acquired_LOCK_plugin");
-  mysql_rwlock_wrlock(&LOCK_system_variables_hash);
 
   {
     MEM_ROOT alloc{PSI_NOT_INSTRUMENTED, 512};
     my_getopt_use_args_separator = true;
     if (my_load_defaults(MYSQL_CONFIG_NAME, load_default_groups, &argc, &argv,
                          &alloc, nullptr)) {
-      mysql_rwlock_unlock(&LOCK_system_variables_hash);
       mysql_mutex_unlock(&LOCK_plugin);
+      mysql_rwlock_unlock(&LOCK_system_variables_hash);
       report_error(REPORT_TO_USER, ER_PLUGIN_IS_NOT_LOADED, name.str);
       goto err;
     }
@@ -2282,9 +2331,9 @@ static bool mysql_install_plugin(THD *thd, LEX_CSTRING name,
      newly installed plugin to process those options which are specific
      to this plugin.
     */
-    if (pv && pv->append_read_only_variables(&argc, &argv, true)) {
-      mysql_rwlock_unlock(&LOCK_system_variables_hash);
+    if (pv && pv->append_read_only_variables(&argc, &argv, false, true)) {
       mysql_mutex_unlock(&LOCK_plugin);
+      mysql_rwlock_unlock(&LOCK_system_variables_hash);
       report_error(REPORT_TO_USER, ER_PLUGIN_IS_NOT_LOADED, name.str);
       goto err;
     }
@@ -2296,9 +2345,9 @@ static bool mysql_install_plugin(THD *thd, LEX_CSTRING name,
      if error */
   if (error) goto err;
 
-  mysql_rwlock_unlock(&LOCK_system_variables_hash);
   if (!(tmp = plugin_find_internal(name, MYSQL_ANY_PLUGIN))) {
     mysql_mutex_unlock(&LOCK_plugin);
+    mysql_rwlock_unlock(&LOCK_system_variables_hash);
     goto err;
   }
 
@@ -2314,6 +2363,7 @@ static bool mysql_install_plugin(THD *thd, LEX_CSTRING name,
       (tmp->plugin->type == MYSQL_INFORMATION_SCHEMA_PLUGIN &&
        tmp->state != PLUGIN_IS_DISABLED);
   mysql_mutex_unlock(&LOCK_plugin);
+  mysql_rwlock_unlock(&LOCK_system_variables_hash);
 
   // Acquire MDL lock if we are storing metadata in DD.
   if (store_infoschema_metadata) {
@@ -2354,6 +2404,7 @@ static bool mysql_install_plugin(THD *thd, LEX_CSTRING name,
       snprintf(buf, sizeof(buf), msg, errbuf);
       report_error(REPORT_TO_USER, ER_DA_PLUGIN_INSTALL_ERROR, name.str, buf);
     } else {
+      mysql_rwlock_wrlock(&LOCK_system_variables_hash);
       mysql_mutex_lock(&LOCK_plugin);
 
       if (tmp->state != PLUGIN_IS_DISABLED && plugin_initialize(tmp)) {
@@ -2374,7 +2425,15 @@ static bool mysql_install_plugin(THD *thd, LEX_CSTRING name,
                        "error storing metadata");
         }
       }
+
+      /*
+        Once server is started and plugin initialized and if there are persisted
+        read-write plugin variables which need to be handled, we do it here.
+      */
+      if (!error && update_persisted_plugin_sysvars(name.str)) error = true;
+
       mysql_mutex_unlock(&LOCK_plugin);
+      mysql_rwlock_unlock(&LOCK_system_variables_hash);
 
       if (!error && store_infoschema_metadata) {
         Uncommitted_tables_guard uncommitted_tables(thd);
@@ -2707,46 +2766,6 @@ bool plugin_foreach_with_mask(THD *thd, plugin_foreach_func *func, int type,
 /****************************************************************************
   System Variables support
 ****************************************************************************/
-/*
-  This function is not thread safe as the pointer returned at the end of
-  the function is outside mutex.
-*/
-
-void lock_plugin_mutex() { mysql_mutex_lock(&LOCK_plugin); }
-
-void unlock_plugin_mutex() { mysql_mutex_unlock(&LOCK_plugin); }
-
-sys_var *find_sys_var_ex(THD *thd, const char *str, size_t length,
-                         bool throw_error, bool locked) {
-  sys_var *var;
-  sys_var_pluginvar *pi = nullptr;
-  plugin_ref plugin;
-  DBUG_TRACE;
-
-  if (!locked) mysql_mutex_lock(&LOCK_plugin);
-  mysql_rwlock_rdlock(&LOCK_system_variables_hash);
-  if ((var = intern_find_sys_var(str, length)) &&
-      (pi = var->cast_pluginvar()) && pi->is_plugin) {
-    mysql_rwlock_unlock(&LOCK_system_variables_hash);
-    LEX *lex = thd ? thd->lex : nullptr;
-    if (!(plugin = my_intern_plugin_lock(lex, plugin_int_to_ref(pi->plugin))))
-      var = nullptr; /* failed to lock it, it must be uninstalling */
-    else if (!(plugin_state(plugin) & PLUGIN_IS_READY)) {
-      /* initialization not completed */
-      var = nullptr;
-      intern_plugin_unlock(lex, plugin);
-    }
-  } else
-    mysql_rwlock_unlock(&LOCK_system_variables_hash);
-  if (!locked) mysql_mutex_unlock(&LOCK_plugin);
-
-  if (!throw_error && !var) my_error(ER_UNKNOWN_SYSTEM_VARIABLE, MYF(0), str);
-  return var;
-}
-
-sys_var *find_sys_var(THD *thd, const char *str, size_t length) {
-  return find_sys_var_ex(thd, str, length, false, false);
-}
 
 /*
   returns a bookmark for thd-local variables, creating if neccessary.
@@ -2877,6 +2896,7 @@ static void restore_pluginvar_names(sys_var *first) {
                           variables copy.
 */
 void alloc_and_copy_thd_dynamic_variables(THD *thd, bool global_lock) {
+  mysql_mutex_assert_not_owner(&LOCK_plugin);
   mysql_rwlock_rdlock(&LOCK_system_variables_hash);
 
   if (global_lock) mysql_mutex_lock(&LOCK_global_system_variables);
@@ -2921,6 +2941,7 @@ void alloc_and_copy_thd_dynamic_variables(THD *thd, bool global_lock) {
 
     if (v->version <= thd->variables.dynamic_variables_version ||
         !(var = intern_find_sys_var(v->key + 1, v->name_len)) ||
+        var->check_if_sensitive_in_context(thd) ||
         !(pi = var->cast_pluginvar()) ||
         v->key[0] != (pi->plugin_var->flags & PLUGIN_VAR_TYPEMASK))
       continue;
@@ -3591,7 +3612,7 @@ static int test_plugin_options(MEM_ROOT *tmp_root, st_plugin_int *tmp,
   } /* end for */
   if (chain.first) {
     chain.last->next = nullptr;
-    if (mysql_add_sys_var_chain(chain.first)) {
+    if (add_dynamic_system_variable_chain(chain.first)) {
       LogErr(ERROR_LEVEL, ER_PLUGIN_HAS_CONFLICTING_SYSTEM_VARIABLES,
              tmp->name.str);
       goto err;
@@ -3599,17 +3620,6 @@ static int test_plugin_options(MEM_ROOT *tmp_root, st_plugin_int *tmp,
     tmp->system_vars = chain.first;
   }
 
-  /*
-    Once server is started and if there are few persisted plugin variables
-    which needs to be handled, we do it here.
-  */
-  if (mysqld_server_started) {
-    Persisted_variables_cache *pv = Persisted_variables_cache::get_instance();
-    if (pv && pv->set_persist_options(true, false)) {
-      LogErr(ERROR_LEVEL, ER_PLUGIN_CANT_SET_PERSISTENT_OPTIONS, tmp->name.str);
-      goto err;
-    }
-  }
   return 0;
 
 err:
@@ -3651,24 +3661,6 @@ st_plugin_int *plugin_find_by_type(const LEX_CSTRING &plugin, int type) {
 
   ret = plugin_find_internal(plugin, type);
   return ret && ret->state == PLUGIN_IS_READY ? ret : nullptr;
-}
-
-/**
-  Locks the plugin strucutres so calls to plugin_find_inner can be issued.
-
-  Must be followed by unlock_plugin_data.
-*/
-int lock_plugin_data() {
-  DBUG_TRACE;
-  return mysql_mutex_lock(&LOCK_plugin);
-}
-
-/**
-  Unlocks the plugin strucutres as locked by lock_plugin_data()
-*/
-int unlock_plugin_data() {
-  DBUG_TRACE;
-  return mysql_mutex_unlock(&LOCK_plugin);
 }
 
 bool Sql_cmd_install_plugin::execute(THD *thd) {

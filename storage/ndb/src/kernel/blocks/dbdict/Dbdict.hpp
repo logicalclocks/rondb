@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -822,7 +822,8 @@ public:
       object.setNull();
       return false;
     }
-    get_pool(object).getPtr(object, obj.p->m_object_ptr_i);
+    object.i = obj.p->m_object_ptr_i;
+    get_pool(object).getPtr(object);
     return !object.isNull();
   }
 
@@ -839,7 +840,8 @@ public:
       object.setNull();
       return false;
     }
-    get_pool(object).getPtr(object, obj.p->m_object_ptr_i);
+    object.i = obj.p->m_object_ptr_i;
+    get_pool(object).getPtr(object);
     return !object.isNull();
   }
 
@@ -2154,16 +2156,20 @@ private:
 
   // seize / find / release, atomic on op rec + data rec
 
-  bool seizeSchemaOp(SchemaTransPtr trans_ptr, SchemaOpPtr& op_ptr, Uint32 op_key, const OpInfo& info, bool linked=false);
+  [[nodiscard]] bool seizeSchemaOp(SchemaTransPtr trans_ptr,
+                                   SchemaOpPtr& op_ptr,
+                                   Uint32 op_key,
+                                   const OpInfo& info,
+                                   bool linked = false);
 
   template <class T>
-  inline bool
+  [[nodiscard]] inline bool
   seizeSchemaOp(SchemaTransPtr trans_ptr, SchemaOpPtr& op_ptr, Uint32 op_key, bool linked) {
     return seizeSchemaOp(trans_ptr, op_ptr, op_key, T::g_opInfo, linked);
   }
 
   template <class T>
-  inline bool
+  [[nodiscard]] inline bool
   seizeSchemaOp(SchemaTransPtr trans_ptr, SchemaOpPtr& op_ptr, Ptr<T>& t_ptr, Uint32 op_key) {
     if (seizeSchemaOp<T>(trans_ptr, op_ptr, op_key)) {
       getOpRec<T>(op_ptr, t_ptr);
@@ -2173,7 +2179,7 @@ private:
   }
 
   template <class T>
-  inline bool
+  [[nodiscard]] inline bool
   seizeSchemaOp(SchemaTransPtr trans_ptr, SchemaOpPtr& op_ptr, bool linked) {
     /*
       Store node id in high 8 bits to make op_key globally unique
@@ -2189,7 +2195,7 @@ private:
   }
 
   template <class T>
-  inline bool
+  [[nodiscard]] inline bool
   seizeSchemaOp(SchemaTransPtr trans_ptr, SchemaOpPtr& op_ptr, Ptr<T>& t_ptr, bool linked=false) {
     if (seizeSchemaOp<T>(trans_ptr, op_ptr, linked)) {
       getOpRec<T>(op_ptr, t_ptr);
@@ -2199,7 +2205,7 @@ private:
   }
 
   template <class T>
-  inline bool
+  [[nodiscard]] inline bool
   seizeLinkedSchemaOp(SchemaOpPtr op_ptr, SchemaOpPtr& oplnk_ptr, Ptr<T>& t_ptr) {
     ndbrequire(op_ptr.p->m_oplnk_ptr.isNull());
     if (seizeSchemaOp<T>(op_ptr.p->m_trans_ptr, oplnk_ptr, true)) {
@@ -2212,10 +2218,10 @@ private:
     return false;
   }
 
-  bool findSchemaOp(SchemaOpPtr& op_ptr, Uint32 op_key);
+  [[nodiscard]] bool findSchemaOp(SchemaOpPtr& op_ptr, Uint32 op_key);
 
   template <class T>
-  inline bool
+  [[nodiscard]] inline bool
   findSchemaOp(SchemaOpPtr& op_ptr, Ptr<T>& t_ptr, Uint32 op_key) {
     if (findSchemaOp(op_ptr, op_key)) {
       getOpRec(op_ptr, t_ptr);

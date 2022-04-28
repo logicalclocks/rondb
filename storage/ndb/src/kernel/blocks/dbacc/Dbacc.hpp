@@ -30,6 +30,7 @@
 #define ACC_SAFE_QUEUE
 #endif
 
+#include "util/require.h"
 #include <pc.hpp>
 #include "Bitmask.hpp"
 #include <DynArr256.hpp>
@@ -183,7 +184,7 @@ Uint16
 ElementHeader::getPageIdx(Uint32 data)
 {
   /* Bits 1-13 is reserved for page index */
-  NDB_STATIC_ASSERT(MAX_TUPLES_BITS <= 13);
+  static_assert(MAX_TUPLES_BITS <= 13);
   return (data >> 1) & MAX_TUPLES_PER_PAGE;
 }
 
@@ -1367,7 +1368,7 @@ inline bool
 Dbacc::check_expand_shrink_ongoing(Uint64 fragPtrI)
 {
   fragrecptr.i = fragPtrI;
-  c_fragment_pool.getPtr(fragrecptr);
+  ndbrequire(c_fragment_pool.getPtr(fragrecptr));
   return fragrecptr.p->expandOrShrinkQueued;
 }
 
@@ -1573,7 +1574,7 @@ inline bool Dbacc::ScanRec::isScanned(Uint32 elemptr) const
    * number of available bits in elemScanned to get an unique bit index for
    * each element.
    */
-  NDB_STATIC_ASSERT(ZBUF_SIZE <= ELEM_SCANNED_BITS);
+  static_assert(ZBUF_SIZE <= ELEM_SCANNED_BITS);
   return (elemScanned >> (elemptr % ELEM_SCANNED_BITS)) & 1;
 }
 
@@ -1875,7 +1876,7 @@ void
 Dbacc::prepare_tab_pointers(Uint64 fragPtrI)
 {
   prepare_fragptr.i = fragPtrI;
-  c_fragment_pool.getPtr(prepare_fragptr);
+  ndbrequire(c_fragment_pool.getPtr(prepare_fragptr));
 }
 
 #endif

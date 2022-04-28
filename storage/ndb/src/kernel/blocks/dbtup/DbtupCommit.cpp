@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -411,8 +411,8 @@ Dbtup::dealloc_tuple(Signal* signal,
       memcpy(&key, copy->get_disk_ref_ptr(regTabPtr), sizeof(key));
       ndbrequire(regOperPtr->m_disk_extra_callback_page != RNIL);
       Ptr<GlobalPage> pagePtr;
-      m_global_page_pool.getPtr(pagePtr,
-                                regOperPtr->m_disk_extra_callback_page);
+      ndbrequire(m_global_page_pool.getPtr(pagePtr,
+                                regOperPtr->m_disk_extra_callback_page));
       PagePtr diskPagePtr((Tup_page*)pagePtr.p, pagePtr.i);
       disk_page_abort_prealloc_callback_1(signal,
                                           regFragPtr,
@@ -428,8 +428,8 @@ Dbtup::dealloc_tuple(Signal* signal,
       memcpy(&key, ptr->get_disk_ref_ptr(regTabPtr), sizeof(key));
       ndbrequire(regOperPtr->m_disk_callback_page != RNIL);
       Ptr<GlobalPage> pagePtr;
-      m_global_page_pool.getPtr(pagePtr,
-                                regOperPtr->m_disk_callback_page);
+      ndbrequire(m_global_page_pool.getPtr(pagePtr,
+                                regOperPtr->m_disk_callback_page));
       PagePtr diskPagePtr((Tup_page*)pagePtr.p, pagePtr.i);
       Uint32 decrement = regOperPtr->m_uncommitted_used_space;
       disk_page_abort_prealloc_callback_1(signal,
@@ -1036,8 +1036,8 @@ Dbtup::commit_operation(Signal* signal,
 
       Uint32 alloc_size = sizeof(Dbtup::Disk_undo::Alloc) >> 2;
       Ptr<GlobalPage> pagePtr;
-      m_global_page_pool.getPtr(pagePtr,
-                                regOperPtr->m_disk_extra_callback_page);
+      ndbrequire(m_global_page_pool.getPtr(pagePtr,
+                                regOperPtr->m_disk_extra_callback_page));
       diskPagePtr.i = pagePtr.i;
       diskPagePtr.p = (Tup_page*)pagePtr.p;
       disk_page_alloc(signal,
@@ -1498,12 +1498,12 @@ Dbtup::disk_page_commit_callback(Signal* signal,
     regOperPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit = 0;
     regOperPtr.p->m_disk_extra_callback_page = page_id;
   }
-  m_global_page_pool.getPtr(diskPagePtr, page_id);
+  ndbrequire(m_global_page_pool.getPtr(diskPagePtr, page_id));
   prepare_oper_ptr = regOperPtr;
   {
     FragrecordPtr fragPtr;
     fragPtr.i = regOperPtr.p->fragmentPtr;
-    c_fragment_pool.getPtr(fragPtr);
+    ndbrequire(c_fragment_pool.getPtr(fragPtr));
     PagePtr tmp;
     tmp.i = diskPagePtr.i;
     tmp.p = reinterpret_cast<Page*>(diskPagePtr.p);
@@ -1980,7 +1980,7 @@ Dbtup::exec_prepare_tup_commit(Uint32 regOperPtrI)
        */
       FragrecordPtr fragPtr;
       fragPtr.i = regOperPtr.p->fragmentPtr;
-      c_fragment_pool.getPtr(fragPtr);
+      ndbrequire(c_fragment_pool.getPtr(fragPtr));
       finalize_commit(regOperPtr.p, fragPtr.p);
       return ZTUP_COMMITTED;
     }
@@ -2065,7 +2065,7 @@ Dbtup::continue_report_commit_performed(Signal *signal, Uint32 firstOperPtrI)
   ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(firstOperPtr));
   c_lqh->setup_key_pointers(firstOperPtr.p->userpointer, false);
   regFragPtr.i = firstOperPtr.p->fragmentPtr;
-  c_fragment_pool.getPtr(regFragPtr);
+  ndbrequire(c_fragment_pool.getPtr(regFragPtr));
   report_commit_performed(signal, firstOperPtr, MAX_COMMITS, regFragPtr.p);
 }
 
@@ -2273,7 +2273,7 @@ Dbtup::exec_tup_commit(Signal *signal)
   trans_state= get_trans_state(regOperPtr.p);
 
   ndbrequire(trans_state == TRANS_STARTED);
-  c_fragment_pool.getPtr(regFragPtr);
+  ndbrequire(c_fragment_pool.getPtr(regFragPtr));
 
   regTabPtr.i= regFragPtr.p->fragTableId;
 
@@ -2303,7 +2303,7 @@ Dbtup::exec_tup_commit(Signal *signal)
   else
   {
     jamDebug();
-    m_global_page_pool.getPtr(diskPagePtr, diskPagePtr.i);
+    ndbrequire(m_global_page_pool.getPtr(diskPagePtr, diskPagePtr.i));
   }
   
   ptrCheckGuard(regTabPtr, no_of_tablerec, tablerec);

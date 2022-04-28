@@ -25,6 +25,7 @@
 #ifdef _WIN32
 #include <process.h>
 #endif
+#include "portlib/ndb_compiler.h"
 #include <BaseString.hpp>
 #include <ndb_daemon.h>
 #include <portlib/NdbHost.h>

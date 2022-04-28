@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,6 +25,7 @@
 
 #include <record_types.hpp>
 #include <ndbd_malloc.hpp>
+#include "util/require.h"
 #include "Rope.hpp"
 
 #define JAM_FILE_ID 330

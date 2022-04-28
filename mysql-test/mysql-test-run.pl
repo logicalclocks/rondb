@@ -1,8 +1,8 @@
 #!/usr/bin/perl
 # -*- cperl -*-
 
-# Copyright (c) 2004, 2021, Oracle and/or its affiliates.
-# Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+# Copyright (c) 2004, 2022, Oracle and/or its affiliates.
+# Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -1036,7 +1036,7 @@ sub run_test_server ($$$) {
                           mtr_report(" - found '$core_name' again, keeping it");
                           return;
                         }
-                        my $num_saved_cores = %saved_cores_paths;
+                        my $num_saved_cores = keys %saved_cores_paths;
                         mtr_report(" - found '$core_name'",
                                    "($num_saved_cores/$opt_max_save_core)");
 
@@ -1361,7 +1361,7 @@ sub run_worker ($) {
 
       my $valgrind_reports = 0;
       if ($opt_valgrind_mysqld or $opt_sanitize) {
-        $valgrind_reports = valgrind_exit_reports();
+        $valgrind_reports = valgrind_exit_reports() if not $shutdown_report;
         print $server "VALGREP\n" if $valgrind_reports;
       }
 
@@ -1413,7 +1413,7 @@ sub shutdown_exit_reports() {
 
       # Mysqld crash at shutdown
       $found_report = 1
-        if ($line =~ /.*Assertion.*/ or
+        if ($line =~ /.*Assertion.*/i or
             $line =~ /.*mysqld got signal.*/ or
             $line =~ /.*mysqld got exception.*/);
 
@@ -5495,14 +5495,30 @@ sub ndb_extract_ndbd_log_info($$) {
 sub get_log_from_proc ($$) {
   my ($proc, $name) = @_;
   my $srv_log = "";
-
+  my $found_error = 0;
   foreach my $mysqld (mysqlds()) {
     if ($mysqld->{proc} eq $proc) {
       my @srv_lines = extract_server_log($mysqld->value('#log-error'), $name);
       $srv_log =
         "\nServer log from this test:\n" .
-        "----------SERVER LOG START-----------\n" .
-        join("", @srv_lines) . "----------SERVER LOG END-------------\n";
+        "----------SERVER LOG START-----------\n" ;
+      if ($opt_valgrind) {
+	foreach my $line(@srv_lines) {
+	  $found_error = 1 if ($line =~ /.*Assertion.*/i
+            or $line =~ /.*mysqld got signal.*/
+	    or $line =~ /.*mysqld got exception.*/);
+          if ($found_error and $line =~ /.*HEAP SUMMARY.*/) {
+	    $srv_log = $srv_log . "Found server crash, skipping the memory usage report.\n";
+	    last;
+	  }
+	  $srv_log = $srv_log . $line;
+	}
+      }
+      else
+      {
+        $srv_log = $srv_log . join("",@srv_lines);
+      }
+      $srv_log = $srv_log . "----------SERVER LOG END-------------\n";
       last;
     }
   }

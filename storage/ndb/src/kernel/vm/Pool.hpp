@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2006, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2006, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -416,7 +416,7 @@ public:
   /**
    * Update p & i value for ptr according to <b>i</b> value 
    */
-  void getPtr(Ptr<T> &, Uint32 i) const;
+  [[nodiscard]] bool getPtr(Ptr<T> &, Uint32 i) const;
   void getPtr(ConstPtr<T> &, Uint32 i) const;
 
   /**
@@ -530,11 +530,17 @@ RecordPool<P, T>::getPtr(ConstPtr<T> & ptr) const
 
 template <typename P, typename T>
 inline
-void
+bool
 RecordPool<P, T>::getPtr(Ptr<T> & ptr, Uint32 i) const
 {
+  if (unlikely(i >= RNIL))
+  {
+    assert(i == RNIL);
+    return false;
+  }
   ptr.i = i;
   ptr.p = static_cast<T*>(m_pool.getPtr(ptr.i));  
+  return true;
 }
 
 template <typename P, typename T>
@@ -628,8 +634,8 @@ public:
    * Update p value for ptr according to i value 
    */
   void getUncheckedPtr(Ptr64<T> &) const;
-  void getPtr(Ptr64<T> &) const;
-  void getPtr(ConstPtr64<T> &) const;
+  [[nodiscard]] bool getPtr(Ptr64<T> &) const;
+  [[nodiscard]] bool getPtr(ConstPtr64<T> &) const;
   
   /**
    * Get pointer for i value
@@ -640,8 +646,8 @@ public:
   /**
    * Update p & i value for ptr according to <b>i</b> value 
    */
-  void getPtr(Ptr64<T> &, Uint64 i) const;
-  void getPtr(ConstPtr64<T> &, Uint64 i) const;
+  [[nodiscard]] bool getPtr(Ptr64<T> &, Uint64 i) const;
+  [[nodiscard]] bool getPtr(ConstPtr64<T> &, Uint64 i) const;
 
   /**
    * Allocate an object from pool - update Ptr
@@ -711,36 +717,40 @@ RecordPool64<P, T>::getUncheckedPtr(Ptr64<T> & ptr) const
 
 template <typename P, typename T>
 inline
-void
+bool
 RecordPool64<P, T>::getPtr(Ptr64<T> & ptr) const
 {
   ptr.p = static_cast<T*>(m_pool.getPtr(ptr.i));
+  return ptr.p != nullptr;
 }
 
 template <typename P, typename T>
 inline
-void
+bool
 RecordPool64<P, T>::getPtr(ConstPtr64<T> & ptr) const 
 {
   ptr.p = static_cast<const T*>(m_pool.getPtr(ptr.i));
+  return ptr.p != nullptr;
 }
 
 template <typename P, typename T>
 inline
-void
+bool
 RecordPool64<P, T>::getPtr(Ptr64<T> & ptr, Uint64 i) const
 {
   ptr.i = i;
   ptr.p = static_cast<T*>(m_pool.getPtr(ptr.i));  
+  return ptr.p != nullptr;
 }
 
 template <typename P, typename T>
 inline
-void
+bool
 RecordPool64<P, T>::getPtr(ConstPtr64<T> & ptr, Uint64 i) const 
 {
   ptr.i = i;
   ptr.p = static_cast<const T*>(m_pool.getPtr(ptr.i));  
+  return ptr.p != nullptr;
 }
   
 template <typename P, typename T>

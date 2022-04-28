@@ -24,6 +24,7 @@
 */
 
 #define OPTEXPORT
+#include "util/require.h"
 #include <ndb_opts.h>
 
 #include <errno.h>

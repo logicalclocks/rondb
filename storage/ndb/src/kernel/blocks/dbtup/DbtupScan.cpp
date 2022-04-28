@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2005, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2005, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -388,7 +388,7 @@ Dbtup::execACC_CHECK_SCAN(Signal* signal)
   // fragment
   FragrecordPtr fragPtr;
   fragPtr.i = scan.m_fragPtrI;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   Fragrecord& frag = *fragPtr.p;
   bool wait_for_scan_lock_record = false;
   if (scan.m_bits & ScanOp::SCAN_LOCK &&
@@ -525,7 +525,7 @@ Dbtup::scanReply(Signal* signal, ScanOpPtr scanPtr)
   ScanOp& scan = *scanPtr.p;
   FragrecordPtr fragPtr;
   fragPtr.i = scan.m_fragPtrI;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   Fragrecord& frag = *fragPtr.p;
   // for reading tuple key in Current state
   Uint32* pkData = (Uint32*)c_dataBuffer;
@@ -911,7 +911,7 @@ Dbtup::scanFirst(Signal*, ScanOpPtr scanPtr)
   // fragment
   FragrecordPtr fragPtr;
   fragPtr.i = scan.m_fragPtrI;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   Fragrecord& frag = *fragPtr.p;
 
   if (bits & ScanOp::SCAN_NR)
@@ -1859,7 +1859,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
   // fragment
   FragrecordPtr fragPtr;
   fragPtr.i = scan.m_fragPtrI;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   Fragrecord& frag = *fragPtr.p;
   m_curr_fragptr = fragPtr;
   // tuple found
@@ -2113,7 +2113,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
         {
           jam();
         }
-	c_page_pool.getPtr(pagePtr, pos.m_realpid_mm);
+        ndbrequire(c_page_pool.getPtr(pagePtr, pos.m_realpid_mm));
         /**
          * We are in the process of performing a Full table scan, this can be
          * either due to a user requesting a full table scan, it can also be
@@ -2212,7 +2212,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
         Disk_alloc_info& alloc = frag.m_disk_alloc_info;
         Local_fragment_extent_list list(c_extent_pool, alloc.m_extent_list);
         Ptr<Extent_info> ext_ptr;
-        c_extent_pool.getPtr(ext_ptr, pos.m_extent_info_ptr_i);
+        ndbrequire(c_extent_pool.getPtr(ext_ptr, pos.m_extent_info_ptr_i));
         Extent_info* ext = ext_ptr.p;
         key.m_page_no++;
         if (key.m_page_no >= ext->m_first_page_no + alloc.m_extent_size) {
@@ -3421,7 +3421,7 @@ Dbtup::disk_page_tup_scan_callback(Signal* signal, Uint32 scanPtrI, Uint32 page_
   ScanPos& pos = scan.m_scanPos;
   // get cache page
   Ptr<GlobalPage> gptr;
-  m_global_page_pool.getPtr(gptr, page_i);
+  ndbrequire(m_global_page_pool.getPtr(gptr, page_i));
   pos.m_page = (Page*)gptr.p;
   // continue
   ndbrequire((scan.m_bits & ScanOp::SCAN_LOCK) == 0);
@@ -3572,7 +3572,7 @@ Dbtup::releaseScanOp(ScanOpPtr& scanPtr)
 {
   FragrecordPtr fragPtr;
   fragPtr.i = scanPtr.p->m_fragPtrI;
-  c_fragment_pool.getPtr(fragPtr);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
 
   if (scanPtr.p->m_bits & ScanOp::SCAN_LCP)
   {

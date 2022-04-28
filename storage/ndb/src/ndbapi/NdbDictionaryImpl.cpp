@@ -34,6 +34,7 @@
 #include <util/version.h>
 #include <NdbSleep.h>
 #include "m_ctype.h"
+#include <util/require.h>
 #include <signaldata/IndexStatSignal.hpp>
 #include <signaldata/GetTabInfo.hpp>
 #include <signaldata/DictTabInfo.hpp>
@@ -3006,15 +3007,13 @@ NdbDictionaryImpl::NdbDictionaryImpl(Ndb &ndb)
 {
   m_globalHash = 0;
   m_local_table_data_size= 0;
-#ifdef VM_TRACE
-  STATIC_ASSERT(
+  static_assert(
     (int)WarnUndobufferRoundUp == (int)CreateFilegroupConf::WarnUndobufferRoundUp &&
     (int)WarnUndofileRoundDown == (int)CreateFileConf::WarnUndofileRoundDown &&
     (int)WarnExtentRoundUp == (int)CreateFilegroupConf::WarnExtentRoundUp &&
     (int)WarnDatafileRoundDown == (int)CreateFileConf::WarnDatafileRoundDown &&
     (int)WarnDatafileRoundUp == (int)CreateFileConf::WarnDatafileRoundUp
   );
-#endif
 }
 
 NdbDictionaryImpl::NdbDictionaryImpl(Ndb &ndb,
@@ -7310,6 +7309,7 @@ error:
 int
 NdbDictionaryImpl::listEvents(List& list)
 {
+  assert(list.count == 0);  // user must clear list before reusing it
   int error_code;
 
   BaseString currentDb(m_ndb.getDatabaseName());
@@ -7370,6 +7370,7 @@ NdbDictionaryImpl::listObjects(List& list,
   ret = m_receiver.listObjects(list1, req, fullyQualified);
   if (ret)
     return ret;
+  assert(list.count == 0);  // user must clear list before reusing it
   list.count = list1.count + list2.count;
   list.elements = new NdbDictionary::Dictionary::List::Element[list.count];
   unsigned i;
@@ -7464,6 +7465,7 @@ NdbDictInterface::unpackListTables(NdbDictionary::Dictionary::List& list,
   Uint32* tableData = (Uint32*)m_tableData.get_data();
   Uint32* tableNames = (Uint32*)m_tableNames.get_data();
   const Uint32 listTablesDataSizeInWords = (sizeof(ListTablesData) + 3) / 4;
+  assert(list.count == 0);  // user must clear list before reusing it
   list.count = m_noOfTables;
   list.elements = new NdbDictionary::Dictionary::List::Element[m_noOfTables];
 

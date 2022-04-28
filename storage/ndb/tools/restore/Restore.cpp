@@ -23,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
 #include <algorithm>
 
 #include "Restore.hpp"
@@ -46,8 +47,6 @@
 #include "portlib/ndb_file.h"
 #include "portlib/NdbMem.h"
 #include "util/ndb_opts.h"
-
-//#define DUMMY_PASSWORD
 
 using byte = unsigned char;
 
@@ -1642,7 +1641,7 @@ BackupFile::~BackupFile()
   int r = 0;
   if (m_xfile.is_open())
   {
-    r = m_xfile.close();
+    r = m_xfile.close(false);
   }
 
   if (m_file.close() == -1)
@@ -1688,14 +1687,10 @@ BackupFile::openFile(){
     m_file_size = 0;
   }
 
-#if !defined(DUMMY_PASSWORD)
   r = m_xfile.open(m_file,
                    reinterpret_cast<const byte*>(
                        g_backup_password_state.get_password()),
                    g_backup_password_state.get_password_length());
-#else
-  r = m_xfile.open(m_file, reinterpret_cast<const byte*>("DUMMY"), 5);
-#endif
   bool fail = (r == -1);
   if (g_backup_password_state.get_password() != nullptr)
   {
@@ -1714,11 +1709,9 @@ BackupFile::openFile(){
   {
     if (m_xfile.is_encrypted())
     {
-#if !defined(DUMMY_PASSWORD)
-        restoreLogger.log_error("File is encrypted but no decryption "
-                                "requested.");
-        fail = true;
-#endif
+      restoreLogger.log_error("File is encrypted but no decryption "
+                              "requested.");
+      fail = true;
     }
     else if (r == -1)
     {
@@ -1733,7 +1726,7 @@ BackupFile::openFile(){
 
   if (r != -1)
   {
-    m_xfile.close();
+    m_xfile.close(false);
   }
   m_file.close();
   return false;

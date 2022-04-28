@@ -24,6 +24,7 @@
 */
 
 
+#include "util/require.h"
 #include <TransporterRegistry.hpp>
 #include <TransporterCallback.hpp>
 #include "Transporter.hpp"
@@ -32,6 +33,7 @@
 #include <SocketAuthenticator.hpp>
 #include <InputStream.hpp>
 #include <OutputStream.hpp>
+#include "util/cstrbuf.h"
 
 #include <EventLogger.hpp>
 
@@ -100,8 +102,15 @@ Transporter::Transporter(TransporterRegistry &t_reg,
   m_use_only_ipv4 = false;
 
   assert(rHostName);
-  if (rHostName && strlen(rHostName) > 0){
-    snprintf(remoteHostName, sizeof(remoteHostName), "%s", rHostName);
+  if (rHostName && strlen(rHostName) > 0)
+  {
+    if (cstrbuf_copy(remoteHostName, rHostName) == 1)
+    {
+      ndbout << "Unable to setup transporter. Node " << rNodeId
+             << " had a too long hostname '" << rHostName
+             << "'. Update configuration." << endl;
+      exit(-1);
+    }
   }
   else
   {
@@ -114,7 +123,13 @@ Transporter::Transporter(TransporterRegistry &t_reg,
     }
     remoteHostName[0]= 0;
   }
-  snprintf(localHostName, sizeof(localHostName), "%s", lHostName);
+  if (cstrbuf_copy(localHostName, lHostName) == 1)
+  {
+    ndbout << "Unable to setup transporter. Node " << lNodeId
+           << " had a too long hostname '" << lHostName
+           << "'. Update configuration." << endl;
+    exit(-1);
+  }
 
   DBUG_PRINT("info",("rId=%d lId=%d isServer=%d rHost=%s lHost=%s s_port=%d",
 		     remoteNodeId, localNodeId, isServer,

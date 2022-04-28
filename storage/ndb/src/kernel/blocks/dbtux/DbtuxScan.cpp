@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -127,7 +127,7 @@ Dbtux::prepare_scan_ctx(Uint32 scanPtrI)
   prefetch_scan_record_3((Uint32*)scanPtr.p);
   c_ctx.scanPtr = scanPtr;
   fragPtr.i = scanPtr.p->m_fragPtrI;
-  c_fragPool.getPtr(fragPtr);
+  ndbrequire(c_fragPool.getPtr(fragPtr));
   indexPtr.i = fragPtr.p->m_indexId;
   c_ctx.fragPtr = fragPtr;
   c_indexPool.getPtr(indexPtr);
@@ -310,7 +310,7 @@ Dbtux::execACC_SCANREQ(Signal* signal)
   do {
     // get the index
     IndexPtr indexPtr;
-    c_indexPool.getPtr(indexPtr, req->tableId);
+    ndbrequire(c_indexPool.getPtr(indexPtr, req->tableId));
     // get the fragment
     FragPtr fragPtr;
     findFrag(jamBuffer(), indexPtr.i, req->fragmentNo, fragPtr);

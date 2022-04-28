@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2013, 2019, Oracle and/or its affiliates.
-   Copyright (c) 2020, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -327,27 +327,33 @@ public:
   template<class OtherList>  void appendList(OtherList& other);
   bool isEmpty() const;
   Uint64 getCount() const;
-  bool first(Ptr64<T>& p) const;
-  bool last(Ptr64<T>& p) const;
+  [[nodiscard]] bool first(Ptr64<T>& p) const;
+  [[nodiscard]] bool last(Ptr64<T>& p) const;
 public:
   Pool& getPool() const;
-  void getPtr(Ptr64<T>& p) const
+  [[nodiscard]] bool getPtr(Ptr64<T>& p) const
   {
     if (p.i == RNIL64)
+    {
       p.p = NULL;
+      return false;
+    }
     else
-      m_pool.getPtr(p);
+    {
+      return m_pool.getPtr(p);
+    }
+    return true;
   }
-  void getPtr(Ptr64<T>& p, Uint64 i) const
+  [[nodiscard]] bool getPtr(Ptr64<T>& p, Uint64 i) const
   {
     p.i=i;
-    getPtr(p);
+    return getPtr(p);
   }
   T* getPtr(Uint64 i) const
   {
     Ptr64<T> p;
     p.i = i;
-    getPtr(p);
+    (void)getPtr(p);
     return p.p;
   }
   bool seizeFirst(Ptr64<T>& p);
@@ -574,8 +580,7 @@ inline bool Intrusive64List<Pool, THead, LM>::next(Ptr64<T>& p) const
   p.i = LM::getNext(*p.p);
   if (p.i == RNIL64)
     return false;
-  getPtr(p);
-  return true;
+  return getPtr(p);
 }
 
 template<class Pool, typename THead, class LM>
@@ -590,8 +595,7 @@ inline bool Intrusive64List<Pool, THead, LM>::prev(Ptr64<T>& p) const
   p.i = LM::getPrev(*p.p);
   if (p.i == RNIL64)
     return false;
-  getPtr(p);
-  return true;
+  return getPtr(p);
 }
 
 template<class Pool, typename THead, class LM>
@@ -610,11 +614,11 @@ inline void Intrusive64List<Pool, THead, LM>::prependList(OtherHead& other)
     return;
 
   Ptr64<T> firstItem;
-  first(firstItem);
+  (void)first(firstItem);
 
   Ptr64<T> otherLastItem;
   otherLastItem.i = other.getLast();
-  getPtr(otherLastItem);
+  (void)getPtr(otherLastItem);
 
   if (firstItem.i != RNIL64)
   {
@@ -639,11 +643,11 @@ inline void Intrusive64List<Pool, THead, LM>::appendList(OtherHead& other)
     return;
 
   Ptr64<T> lastItem;
-  last(lastItem);
+  (void)last(lastItem);
 
   Ptr64<T> otherFirstItem;
   otherFirstItem.i = other.getFirst();
-  getPtr(otherFirstItem);
+  (void)getPtr(otherFirstItem);
 
   if (lastItem.i != RNIL64)
   {
@@ -676,16 +680,14 @@ template<class Pool, typename THead, class LM>
 inline bool Intrusive64List<Pool, THead, LM>::first(Ptr64<T>& p) const
 {
   p.i = m_head.getFirst();
-  getPtr(p);
-  return !p.isNull();
+  return getPtr(p);
 }
 
 template<class Pool, typename THead, class LM>
 inline bool Intrusive64List<Pool, THead, LM>::last(Ptr64<T>& p) const
 {
   p.i = m_head.getLast();
-  getPtr(p);
-  return !p.isNull();
+  return getPtr(p);
 }
 
 template<class Pool, typename THead, class LM>

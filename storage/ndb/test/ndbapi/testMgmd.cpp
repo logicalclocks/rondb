@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2009, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2009, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
 
    This program is free software; you can redistribute it and/or modify
@@ -24,6 +24,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
+#include "util/require.h"
 #include <NDBT.hpp>
 #include <NDBT_Test.hpp>
 #include <portlib/NdbDir.hpp>
@@ -1643,7 +1644,7 @@ runTestMgmdwithoutnodeid(NDBT_Context* ctx, NDBT_Step* step)
   ndb3.put("HostName", "190.10.10.1");
   ndb3.put("NoOfReplicas", 1);
   for (int i = 1; i < 80; i++) {
-    Properties p1 = new Properties;
+    Properties p1;
     std::string host_generated = "190.100.100." + std::to_string(i);
     p1.put("HostName", host_generated.c_str());
     config3.put("ndb_mgmd", i, &p1);

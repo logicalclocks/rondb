@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2011, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2011, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -484,7 +484,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
       {
         jam();
         CPURecordPtr cpuPtr;
-        c_CPURecordPool.seizeId(cpuPtr, cpu_no);
+        ndbrequire(c_CPURecordPool.seizeId(cpuPtr, cpu_no));
         jam();
         cpuPtr.p = new (cpuPtr.p) CPURecord();
         ndbrequire(cpuPtr.i == cpu_no);
@@ -497,7 +497,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
               list(c_CPUMeasurementRecordPool,
                    cpuPtr.p->m_next_50ms_measure);
             CPUMeasurementRecordPtr cpuMeasurePtr;
-            c_CPUMeasurementRecordPool.seize(cpuMeasurePtr);
+            ndbrequire(c_CPUMeasurementRecordPool.seize(cpuMeasurePtr));
             jam();
             cpuMeasurePtr.p = new (cpuMeasurePtr.p) CPUMeasurementRecord();
             list.addFirst(cpuMeasurePtr);
@@ -508,7 +508,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
               list(c_CPUMeasurementRecordPool,
                    cpuPtr.p->m_next_1sec_measure);
             CPUMeasurementRecordPtr cpuMeasurePtr;
-            c_CPUMeasurementRecordPool.seize(cpuMeasurePtr);
+            ndbrequire(c_CPUMeasurementRecordPool.seize(cpuMeasurePtr));
             cpuMeasurePtr.p = new (cpuMeasurePtr.p) CPUMeasurementRecord();
             list.addFirst(cpuMeasurePtr);
 	  }
@@ -517,7 +517,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
               list(c_CPUMeasurementRecordPool,
                    cpuPtr.p->m_next_20sec_measure);
             CPUMeasurementRecordPtr cpuMeasurePtr;
-            c_CPUMeasurementRecordPool.seize(cpuMeasurePtr);
+            ndbrequire(c_CPUMeasurementRecordPool.seize(cpuMeasurePtr));
             cpuMeasurePtr.p = new (cpuMeasurePtr.p) CPUMeasurementRecord();
             list.addFirst(cpuMeasurePtr);
 	  }
@@ -541,13 +541,13 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
   for (Uint32 i = 0; i < NUM_MEASUREMENTS; i++)
   {
     jam();
-    c_measurementRecordPool.seize(measurePtr);
+    ndbrequire(c_measurementRecordPool.seize(measurePtr));
     measurePtr.p = new (measurePtr.p) MeasurementRecord();
     c_next_50ms_measure.addFirst(measurePtr);
-    c_measurementRecordPool.seize(measurePtr);
+    ndbrequire(c_measurementRecordPool.seize(measurePtr));
     measurePtr.p = new (measurePtr.p) MeasurementRecord();
     c_next_1sec_measure.addFirst(measurePtr);
-    c_measurementRecordPool.seize(measurePtr);
+    ndbrequire(c_measurementRecordPool.seize(measurePtr));
     measurePtr.p = new (measurePtr.p) MeasurementRecord();
     c_next_20sec_measure.addFirst(measurePtr);
   }
@@ -560,7 +560,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
     {
       jam();
       SendThreadPtr sendThreadPtr;
-      c_sendThreadRecordPool.seizeId(sendThreadPtr, send_instance);
+      ndbrequire(c_sendThreadRecordPool.seizeId(sendThreadPtr, send_instance));
       sendThreadPtr.p = new (sendThreadPtr.p) SendThreadRecord();
       sendThreadPtr.p->m_send_thread_50ms_measurements.init();
       sendThreadPtr.p->m_send_thread_1sec_measurements.init();
@@ -571,7 +571,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
         jam();
         SendThreadMeasurementPtr sendThreadMeasurementPtr;
 
-        c_sendThreadMeasurementPool.seize(sendThreadMeasurementPtr);
+        ndbrequire(c_sendThreadMeasurementPool.seize(sendThreadMeasurementPtr));
         sendThreadMeasurementPtr.p =
             new (sendThreadMeasurementPtr.p) SendThreadMeasurement();
         {
@@ -582,7 +582,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
           list_50ms.addFirst(sendThreadMeasurementPtr);
         }
 
-        c_sendThreadMeasurementPool.seize(sendThreadMeasurementPtr);
+        ndbrequire(c_sendThreadMeasurementPool.seize(sendThreadMeasurementPtr));
         sendThreadMeasurementPtr.p =
             new (sendThreadMeasurementPtr.p) SendThreadMeasurement();
         {
@@ -593,7 +593,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
           list_1sec.addFirst(sendThreadMeasurementPtr);
         }
 
-        c_sendThreadMeasurementPool.seize(sendThreadMeasurementPtr);
+        ndbrequire(c_sendThreadMeasurementPool.seize(sendThreadMeasurementPtr));
         sendThreadMeasurementPtr.p =
             new (sendThreadMeasurementPtr.p) SendThreadMeasurement();
         {
@@ -689,7 +689,7 @@ Thrman::execSTTOR(Signal *signal)
       {
         jam();
         SendThreadPtr sendThreadPtr;
-        c_sendThreadRecordPool.getPtr(sendThreadPtr, send_instance);
+        ndbrequire(c_sendThreadRecordPool.getPtr(sendThreadPtr, send_instance));
         Uint64 send_exec_time;
         Uint64 send_sleep_time;
         Uint64 send_spin_time;
@@ -3098,7 +3098,7 @@ Thrman::measure_cpu_usage(Signal *signal)
                        curr_send_thread_measure.m_kernel_time_os,
                        curr_send_thread_measure.m_elapsed_time_os);
 
-      c_sendThreadRecordPool.getPtr(sendThreadPtr, send_instance);
+      ndbrequire(c_sendThreadRecordPool.getPtr(sendThreadPtr, send_instance));
       {
         jam();
         Local_SendThreadMeasurement_fifo list_50ms(c_sendThreadMeasurementPool,
@@ -3392,7 +3392,7 @@ Thrman::calculate_cpu_load_last_second(MeasurementRecord *measure)
     } while (measurePtr.i != RNIL &&
              measure->m_elapsed_time <
              Uint64(NUM_MEASUREMENTS * 50 * 1000));
-    STATIC_ASSERT(NUM_MEASUREMENTS * 50 * 1000 == 1000 * 1000);
+    static_assert(NUM_MEASUREMENTS * 50 * 1000 == 1000 * 1000);
     return true;
   }
   jam();
@@ -3417,7 +3417,7 @@ Thrman::calculate_cpu_load_last_20seconds(MeasurementRecord *measure)
     } while (measurePtr.i != RNIL &&
              measure->m_elapsed_time <
              Uint64(NUM_MEASUREMENTS * NUM_MEASUREMENTS * 50 * 1000));
-    STATIC_ASSERT(NUM_MEASUREMENTS *
+    static_assert(NUM_MEASUREMENTS *
                   NUM_MEASUREMENTS *
                   50 * 1000 == 20 * 1000 * 1000);
     return true;
@@ -3446,7 +3446,7 @@ Thrman::calculate_cpu_load_last_400seconds(MeasurementRecord *measure)
              Uint64(NUM_MEASUREMENTS *
                     NUM_MEASUREMENTS *
                     NUM_MEASUREMENTS * 50 * 1000));
-    STATIC_ASSERT(NUM_MEASUREMENTS *
+    static_assert(NUM_MEASUREMENTS *
                   NUM_MEASUREMENTS *
                   NUM_MEASUREMENTS *
                   50 * 1000 == 400 * 1000 * 1000);
@@ -3669,7 +3669,7 @@ Thrman::calculate_stats_last_second(MeasureStats *stats)
     c_next_50ms_measure.next(measurePtr);
   } while (measurePtr.i != RNIL &&
            elapsed_time < Uint64(NUM_MEASUREMENTS * 50 * 1000));
-  STATIC_ASSERT(NUM_MEASUREMENTS * 50 * 1000 == 1000 * 1000);
+  static_assert(NUM_MEASUREMENTS * 50 * 1000 == 1000 * 1000);
   calc_avgs(stats, num_stats);
   return true;
 }
@@ -3698,7 +3698,7 @@ Thrman::calculate_stats_last_20seconds(MeasureStats *stats)
   } while (measurePtr.i != RNIL &&
            elapsed_time <
            Uint64(NUM_MEASUREMENTS * NUM_MEASUREMENTS * 50 * 1000));
-  STATIC_ASSERT(NUM_MEASUREMENTS *
+  static_assert(NUM_MEASUREMENTS *
                 NUM_MEASUREMENTS *
                 50 * 1000 == 20 * 1000 * 1000);
   calc_avgs(stats, num_stats);
@@ -3731,7 +3731,7 @@ Thrman::calculate_stats_last_400seconds(MeasureStats *stats)
            Uint64(NUM_MEASUREMENTS *
                   NUM_MEASUREMENTS *
                   NUM_MEASUREMENTS * 50 * 1000));
-  STATIC_ASSERT(NUM_MEASUREMENTS *
+  static_assert(NUM_MEASUREMENTS *
                 NUM_MEASUREMENTS *
                 NUM_MEASUREMENTS *
                 50 * 1000 == 400 * 1000 * 1000);
@@ -3749,7 +3749,7 @@ Thrman::calculate_send_thread_load_last_ms(Uint32 send_instance,
 
   memset(measure, 0, sizeof(SendThreadMeasurement));
 
-  c_sendThreadRecordPool.getPtr(sendThreadPtr, send_instance);
+  ndbrequire(c_sendThreadRecordPool.getPtr(sendThreadPtr, send_instance));
 
   Local_SendThreadMeasurement_fifo list_50ms(c_sendThreadMeasurementPool,
                          sendThreadPtr.p->m_send_thread_50ms_measurements);
@@ -4916,12 +4916,13 @@ Thrman::execDBINFO_SCANREQ(Signal* signal)
           ndbinfo_send_scan_conf(signal, req, rl);
           return;
         }
-        c_sendThreadMeasurementPool.getPtr(sendThreadMeasurementPtr, pos_ptrI);
+        ndbrequire(c_sendThreadMeasurementPool.getPtr(sendThreadMeasurementPtr,
+                                                      pos_ptrI));
       }
       else
       {
         jam();
-        c_measurementRecordPool.getPtr(measurePtr, pos_ptrI);
+        ndbrequire(c_measurementRecordPool.getPtr(measurePtr, pos_ptrI));
       }
 
       Ndbinfo::Row row(signal, req);
@@ -5015,7 +5016,8 @@ Thrman::execDBINFO_SCANREQ(Signal* signal)
         jam();
         pos_thread_id++;
         SendThreadPtr sendThreadPtr;
-        c_sendThreadRecordPool.getPtr(sendThreadPtr, pos_thread_id - 1);
+        ndbrequire(c_sendThreadRecordPool.getPtr(sendThreadPtr,
+                                                 pos_thread_id - 1));
 
         if (req.tableId == Ndbinfo::CPUSTAT_50MS_TABLEID)
         {
@@ -5103,7 +5105,7 @@ Thrman::execDBINFO_SCANREQ(Signal* signal)
       else
       {
         SendThreadPtr sendThreadPtr;
-        c_sendThreadRecordPool.getPtr(sendThreadPtr, pos_thread_id - 1);
+        ndbrequire(c_sendThreadRecordPool.getPtr(sendThreadPtr, pos_thread_id - 1));
 
         ndbrequire(sendThreadMeasurementPtr.i != RNIL);
         if (req.tableId == Ndbinfo::CPUSTAT_50MS_TABLEID)
