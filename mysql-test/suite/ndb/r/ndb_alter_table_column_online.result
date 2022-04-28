@@ -140,8 +140,13 @@ PRIMARY KEY(a) - UniqueHashIndex
 e(e) - OrderedIndex
 e$unique(e) - UniqueHashIndex
 PRIMARY(a) - OrderedIndex
-e(e) - OrderedIndex
 
+-- t1/e --
+Attributes: e
+Index Type: Ordered index
+Index Status: retrieved
+Partitions: 8
+Fragments: 8
 -- t1/e$unique --
 Attributes: e
 Index Type: Unique hash index
@@ -150,12 +155,6 @@ Partitions: 8
 Fragments: 8
 -- t1/PRIMARY --
 Attributes: a
-Index Type: Ordered index
-Index Status: retrieved
-Partitions: 8
-Fragments: 8
--- t1/e --
-Attributes: e
 Index Type: Ordered index
 Index Status: retrieved
 Partitions: 8
