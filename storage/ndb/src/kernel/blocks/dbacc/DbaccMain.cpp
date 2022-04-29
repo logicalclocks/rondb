@@ -2301,7 +2301,6 @@ void Dbacc::insertelementLab(Signal* signal,
   c_tup->prepareTUPKEYREQ(localKey.m_page_no,
                           localKey.m_page_idx,
                           fragrecptr.p->tupFragptr);
-  sendAcckeyconf(signal);
 
   fragrecptr.p->slack -= fragrecptr.p->elementLength;
   // EXPAND the structures if required:
@@ -2332,6 +2331,7 @@ void Dbacc::insertelementLab(Signal* signal,
       sendSignal(reference(), GSN_EXPANDCHECK2, signal, 2, JBB);
     }//if
   }//if
+  sendAcckeyconf(signal);
   return;
 }//Dbacc::insertelementLab()
 
