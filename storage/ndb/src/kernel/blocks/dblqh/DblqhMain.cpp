@@ -30459,8 +30459,7 @@ void Dblqh::continue_srPhase3Start(Signal *signal)
 {
   jam();
   fragptr.i = RNIL64;
-  ndbrequire(c_lcp_complete_fragments.first(fragptr));
-  if (fragptr.i != RNIL64)
+  if (c_lcp_complete_fragments.first(fragptr))
   {
     ndbrequire(c_fragment_pool.getPtr(fragptr));
     signal->theData[0] = ZSR_GCI_LIMITS;
@@ -32544,8 +32543,7 @@ void
 Dblqh::start_send_exec_conf(Signal *signal)
 {
   fragptr.i = RNIL64;
-  ndbrequire(c_lcp_complete_fragments.first(fragptr));
-  if (fragptr.i != RNIL64)
+  if (c_lcp_complete_fragments.first(fragptr))
   {
     signal->theData[0] = ZSEND_EXEC_CONF;
     signal->theData[1] = fragptr.p->tabRef;
@@ -35996,8 +35994,7 @@ void Dblqh::sendLqhTransconf(Signal* signal,
 void Dblqh::startExecSr(Signal* signal) 
 {
   fragptr.i = RNIL64;
-  ndbrequire(c_lcp_complete_fragments.first(fragptr));
-  if (fragptr.i != RNIL64)
+  if (c_lcp_complete_fragments.first(fragptr))
   {
     ndbrequire(c_fragment_pool.getPtr(fragptr));
     signal->theData[0] = fragptr.p->tabRef;
