@@ -4924,9 +4924,10 @@ void Dbacc::commitdelete(Signal* signal)
       fragrecptr.p->level.getSize() != ERROR_INSERT_EXTRA)
   {
     jam();
-    signal->theData[0] = fragrecptr.i;
+    signal->theData[0] = fragrecptr.p->fragmentid;
+    signal->theData[1] = fragrecptr.p->myTableId;
     fragrecptr.p->expandOrShrinkQueued = true;
-    sendSignal(reference(), GSN_SHRINKCHECK2, signal, 1, JBB);
+    sendSignal(reference(), GSN_SHRINKCHECK2, signal, 2, JBB);
   }
 #endif
   if (fragrecptr.p->slack > fragrecptr.p->slackCheck)
@@ -4936,9 +4937,10 @@ void Dbacc::commitdelete(Signal* signal)
       if (!fragrecptr.p->expandOrShrinkQueued)
       {
         jam();
-        signal->theData[0] = fragrecptr.i;
+        signal->theData[0] = fragrecptr.p->fragmentid;
+        signal->theData[1] = fragrecptr.p->myTableId;
         fragrecptr.p->expandOrShrinkQueued = true;
-        sendSignal(reference(), GSN_SHRINKCHECK2, signal, 1, JBB);
+        sendSignal(reference(), GSN_SHRINKCHECK2, signal, 2, JBB);
       }//if
     }//if
   }//if
@@ -6806,6 +6808,7 @@ void Dbacc::execEXPANDCHECK2(Signal* signal)
   {
     if (fragrecptr.p->level.getSize() > ERROR_INSERT_EXTRA)
     {
+      jam();
       execSHRINKCHECK2(signal);
       return;
     }
@@ -7585,6 +7588,7 @@ void Dbacc::execSHRINKCHECK2(Signal* signal)
   {
     if (fragrecptr.p->level.getSize() < ERROR_INSERT_EXTRA)
     {
+      jam();
       execEXPANDCHECK2(signal);
       return;
     }
