@@ -64,7 +64,7 @@ ndb$backup_id	1	20
 ndb$blocks	30	20
 ndb$columns	530	44
 ndb$config_nodes	34	28
-ndb$config_params	175	120
+ndb$config_params	176	120
 ndb$config_values	344	24
 ndb$counters	200	24
 ndb$dblqh_tcconnect_state	19	52
@@ -112,7 +112,7 @@ ndb$transporters	32	64
 CALL populate_sizes();
 SELECT count(*) from rowcounts WHERE est_rows = actual_rows;
 count(*)
-29
+28
 SELECT table_name from rowcounts WHERE est_rows = actual_rows
   ORDER BY table_name;
 table_name
@@ -217,8 +217,10 @@ explain format=tree select * from blocks where block_number in (250,251);
 EXPLAIN	-> Filter: (ndb$blocks.block_number in (250,251))  (cost=# rows=2)
     -> Index range scan on ndb$blocks using PRIMARY over (block_number = 250) OR (block_number = 251)  (cost=# rows=2)
 
+
 explain format=tree select * from blocks order by block_number;
 EXPLAIN	-> Index scan on ndb$blocks using PRIMARY  (cost=# rows=30)
+
 
 explain format=tree select * from blocks where block_number < 250;
 EXPLAIN	-> Filter: (ndb$blocks.block_number < 250)  (cost=# rows=10)
@@ -271,16 +273,16 @@ EXPLAIN	-> Nested loop left join  (cost=# rows=200)
 
 ## The plan for memory_per_fragment
 explain format=tree select * from memory_per_fragment;
-EXPLAIN	-> Left hash join (parent_name.`type` = `name`.parent_obj_type), (parent_name.id = `name`.parent_obj_id)  (cost=# rows=21200)
-    -> Inner hash join (space.table_id = `name`.id)  (cost=# rows=493)
-        -> Table scan on space  (cost=# rows=344)
+EXPLAIN	-> Left hash join (parent_name.`type` = `name`.parent_obj_type), (parent_name.id = `name`.parent_obj_id)  (cost=# rows=133320)
+    -> Inner hash join (space.table_id = `name`.id)  (cost=# rows=1333)
+        -> Table scan on space  (cost=# rows=400)
         -> Hash
-            -> Nested loop inner join  (cost=# rows=14)
-                -> Filter: ((`name`.`type` <= 6) and (`name`.`type` is not null))  (cost=# rows=14)
-                    -> Table scan on name  (cost=# rows=43)
+            -> Nested loop inner join  (cost=# rows=33)
+                -> Filter: ((`name`.`type` <= 6) and (`name`.`type` is not null))  (cost=# rows=33)
+                    -> Table scan on name  (cost=# rows=100)
                 -> Single-row index lookup on types using PRIMARY (type_id=`name`.`type`)  (cost=# rows=1)
     -> Hash
-        -> Table scan on parent_name  (cost=# rows=43)
+        -> Table scan on parent_name  (cost=# rows=100)
 
 
 ## WL#11968 tables and views
