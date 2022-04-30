@@ -5981,6 +5981,9 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                * There is no need to set it in the disk row reference stored
                * in the in-memory row that will become the row. We set it
                * anyways for consistency.
+               *
+               * Need to set the checksum using the entire row, this happens
+               * with exclusive access, so it is safe to set a new checksum.
               */
               disk_page_set_dirty(used_pagePtr, regFragPtr);
               disk_page_prealloc_dirty_page(regFragPtr->m_disk_alloc_info,
@@ -5998,6 +6001,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                 memcpy(org->get_disk_ref_ptr(regTabPtr),
                        &key,
                        sizeof(key));
+                setChecksum(org, regTabPtr);
               }
             }
             else
@@ -6052,10 +6056,14 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                * committed to ensure that we handle any further row
                * operation on the same row in the same transaction
                * in a proper manner.
+               *
+               * Ensure that checksum is updated as well, we have exclusive
+               * access, so no worries with that.
                */
               memcpy(org->get_disk_ref_ptr(regTabPtr),
                      &new_key,
                      sizeof(new_key));
+              setChecksum(org, regTabPtr);
             }
             disk_page_abort_prealloc_callback_1(signal,
                                                 regFragPtr,
@@ -6244,7 +6252,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             bits |= Tuple_header::DISK_REORG;
             m_base_header_bits = bits;
             new_key.m_page_idx = new_size;
-            memcpy(org->get_disk_ref_ptr(regTabPtr),
+            memcpy(req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr),
                    &new_key,
                    sizeof(new_key));
           }
