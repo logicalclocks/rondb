@@ -3022,7 +3022,17 @@ int Dbtup::handleInsertReq(Signal* signal,
     if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
     {
       jam();
-      base->m_header_bits |= Tuple_header::DISK_VAR_PART;
+      if (disk_insert)
+      {
+        jam();
+        /**
+         * If mem_insert is true and disk_insert isn't true, this means
+         * that this a Refresh operation, in this case we will not create
+         * any disk part. Thus we can avoid setting DISK_VAR_PART to
+         * ensure we don't attempt to retrieve the disk page.
+         */
+        base->m_header_bits |= Tuple_header::DISK_VAR_PART;
+      }
     }
     if (disk_insert)
     {
