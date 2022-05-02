@@ -2604,15 +2604,16 @@ void perf_test(int sz, int run_time)
  * Second it contains an array of lists of free memory segments.
  *
  * In this area we have the following memory segments:
- * [0]: Contains memory segments at least 16 bytes and not 64 bytes.
- * [1]: From 64 bytes to smaller than 256 bytes.
- * [2]: From 256 bytes to smaller than 1024 bytes.
- * [3]: From 1024 bytes to smaller than 4096 bytes.
- * [4]: From 4096 bytes to smaller than 16384 bytes.
- * [5]: From 16384 bytes to smaller than 65536 bytes.
- * [6]: From 65536 bytes to smaller than 262144 bytes.
- * [7]: From 262144 bytes to smaller than 1 MByte
- * [8]: From 1 MByte and up
+ * [0]: Contains memory segments 16 bytes in size.
+ * [1]: From 17 bytes to 64 bytes.
+ * [2]: From 65 bytes to 256 bytes.
+ * [3]: From 257 bytes to 1024 bytes.
+ * [4]: From 1025 bytes to 4096 bytes.
+ * [5]: From 4097 bytes to 16384 bytes.
+ * [6]: From 16385 bytes to 65536 bytes.
+ * [7]: From 65537 bytes to 262144 bytes.
+ * [8]: From 262145 bytes to 1048576 (1MB) bytes.
+ * [9]: From 1048577 bytes and upwards
  *
  * When we have found a memory segment that is large enough we
  * call lc_memseg_malloc to retrieve a memory area from the
@@ -2635,18 +2636,39 @@ void perf_test(int sz, int run_time)
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_POOL_MALLOC 1
 //#define DEBUG_SPLIT_MALLOC 1
+//#define DEBUG_MEM_AREA 1
+//#define DEBUG_BASE_AREA 1
+//#define DEBUG_REM_AREA 1
 #endif
 
 #ifdef DEBUG_POOL_MALLOC
-#define DEB_POOL_MALLOC(arglist) do { printf arglist ; } while (0)
+#define DEB_POOL_MALLOC(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_POOL_MALLOC(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_SPLIT_MALLOC
-#define DEB_SPLIT_MALLOC(arglist) do { printf arglist ; } while (0)
+#define DEB_SPLIT_MALLOC(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_SPLIT_MALLOC(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_BASE_AREA
+#define DEB_BASE_AREA(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_BASE_AREA(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_REM_AREA
+#define DEB_REM_AREA(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_REM_AREA(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_MEM_AREA
+#define DEB_MEM_AREA(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_MEM_AREA(arglist) do { } while (0)
 #endif
 
 typedef unsigned int lc_uint32;
@@ -2720,7 +2742,15 @@ typedef struct lc_long_lived_memory_base LC_LONG_LIVED_MEMORY_BASE;
  * both to the left and to the right.
  */
 
-
+/**
+ * By aligning it to 16 bytes we ensure that it is aligned
+ * to memory allocation which are always a multiple of
+ * 16 bytes. If it isn't aligned we might get into weird
+ * situations after first filling the memory area and then
+ * freeing memory and starting over again. The last element
+ * could be of a size that isn't a multiple of 16 bytes
+ * and this could cause complexity which is undesirable.
+ */
 struct lc_long_lived_memory_area
 {
   union {
@@ -2733,7 +2763,8 @@ struct lc_long_lived_memory_area
   lc_uint32 m_mem_area_size;
   lc_uint32 m_current_pos;
   lc_uint32 m_i_val;
-  lc_uint32 *m_unused_mem_area[8];
+  lc_uint32 m_unused_var;
+  lc_uint32 *m_unused_mem_area[1];
 };
 
 #define MAX_FREE_MEMORY_SIZE_IN_WORDS \
@@ -2970,8 +3001,16 @@ lc_mempool_long_lived_pool_malloc(size_t size_in_words,
    * size_in_words - 1 will return a smaller position than size_in_words.
    */
   assert(size_in_words > 0);
-  lc_uint32 start_pos = get_array_pos(size_in_words - 1) + 1;
+  lc_uint32 start_pos = 0;
+  if (size_in_words > MIN_LONG_AREA_SIZE_IN_WORDS)
+  {
+    start_pos = get_array_pos(size_in_words - 1) + 1;
+  }
   lc_uint32 start_min_size_in_words = get_min_size_given_array_pos(start_pos);
+  DEB_REM_AREA(("(words)size: %zu, start_pos: %u, start_min_size: %u",
+                size_in_words,
+                start_pos,
+                start_min_size_in_words));
   NdbMutex_Lock(&base_ptr->m_mutex);
   do
   {
@@ -3153,6 +3192,10 @@ insert_into_base_area(LC_LONG_LIVED_MEMORY_BASE *mem_base_ptr,
     first_free_ptr->m_prev_ptr = mem_ins_ptr;
   }
   mem_base_ptr->m_first_free[pos] = mem_ins_ptr;
+  DEB_BASE_AREA(("INS_BASE mem_base_ptr: %p, pos: %u, ins_ptr: %p, first",
+                mem_base_ptr,
+                pos,
+                mem_ins_ptr));
 }
 
 static void
@@ -3169,6 +3212,10 @@ insert_into_memory_area(LC_LONG_LIVED_MEMORY_AREA *mem_area_ptr,
     first_free_ptr->m_prev_ptr = mem_ins_ptr;
   }
   mem_area_ptr->m_first_free[pos] = mem_ins_ptr;
+  DEB_MEM_AREA(("INS_MEM mem_area_ptr: %p, pos: %u, ins_ptr: %p, first",
+                mem_area_ptr,
+                pos,
+                mem_ins_ptr));
 }
 
 static void
@@ -3184,6 +3231,10 @@ remove_from_base_area(LC_LONG_LIVED_MEMORY_BASE *mem_base_ptr,
       first_free_ptr->m_next_ptr->m_prev_ptr = nullptr;
     }
     mem_base_ptr->m_first_free[pos] = mem_free_ptr->m_next_ptr;
+    DEB_BASE_AREA(("REM_BASE mem_base_ptr: %p, pos: %u, free_ptr: %p, first",
+                  mem_base_ptr,
+                  pos,
+                  mem_free_ptr));
   }
   else
   {
@@ -3192,6 +3243,10 @@ remove_from_base_area(LC_LONG_LIVED_MEMORY_BASE *mem_base_ptr,
       mem_free_ptr->m_next_ptr->m_prev_ptr = mem_free_ptr->m_prev_ptr;
     }
     mem_free_ptr->m_prev_ptr->m_next_ptr = mem_free_ptr->m_next_ptr;
+    DEB_BASE_AREA(("REM_BASE mem_base_ptr: %p, pos: %u, free_ptr: %p, middle",
+                  mem_base_ptr,
+                  pos,
+                  mem_free_ptr));
   }
   mem_free_ptr->m_next_ptr = nullptr;
   mem_free_ptr->m_prev_ptr = nullptr;
@@ -3211,6 +3266,10 @@ remove_from_memory_area(LC_LONG_LIVED_MEMORY_AREA *mem_area_ptr,
       first_free_ptr->m_next_ptr->m_prev_ptr = nullptr;
     }
     mem_area_ptr->m_first_free[pos] = mem_free_ptr->m_next_ptr;
+    DEB_MEM_AREA(("REM_MEM mem_area_ptr: %p, pos: %u, free_ptr: %p, first",
+                  mem_area_ptr,
+                  pos,
+                  mem_free_ptr));
   }
   else
   {
@@ -3219,6 +3278,10 @@ remove_from_memory_area(LC_LONG_LIVED_MEMORY_AREA *mem_area_ptr,
       mem_free_ptr->m_next_ptr->m_prev_ptr = mem_free_ptr->m_prev_ptr;
     }
     mem_free_ptr->m_prev_ptr->m_next_ptr = mem_free_ptr->m_next_ptr;
+    DEB_MEM_AREA(("REM_MEM mem_area_ptr: %p, pos: %u, free_ptr: %p, middle",
+                  mem_area_ptr,
+                  pos,
+                  mem_free_ptr));
   }
   mem_free_ptr->m_next_ptr = nullptr;
   mem_free_ptr->m_prev_ptr = nullptr;
@@ -3379,7 +3442,8 @@ lc_memseg_malloc(size_t size_in_words,
                                        MIN_LONG_AREA_SIZE_IN_WORDS,
                                        true);
   require(ret_mem != nullptr);
-  if (likely(remaining_area > MALLOC_OVERHEAD_IN_WORDS))
+  DEB_REM_AREA(("remaining_area is %u words", remaining_area));
+  if (likely(remaining_area >= MALLOC_OVERHEAD_IN_WORDS))
   {
     lc_uint32 new_pos = get_array_pos(remaining_area);
     if (new_pos != pos)
@@ -4284,6 +4348,35 @@ simple_single_thread_long_test()
   }
 }
 
+/**
+ * Test case for bug when filling a page and then freeing and
+ * reusing it again. ic_split_malloc_spec assumed that the
+ * memory area was placed in list, but this didn't happen
+ * which caused a crash later when trying to remove it from
+ * memory area it should have been assigned to.
+ */
+static void
+simple_single_thread_long_small_test()
+{
+  void **ptrs;
+  const uint32 loops = 250000;
+  printf("Simple Single-threaded long malloc small test\n");
+  ptrs = (void**) malloc(sizeof(void*) * loops);
+  for (Uint32 j = 0; j < 3; j++)
+  {
+    for (lc_uint32 i = 0; i < loops; i++)
+    {
+      size_t size = 16;
+      ptrs[i] = lc_ndbd_pool_malloc(size, 0, 0, 1);
+    }
+    for (lc_uint32 i = 0; i < loops ; i++)
+    {
+      lc_ndbd_pool_free(ptrs[i]);
+    }
+  }
+  free(ptrs);
+}
+
 static void
 many_single_thread_short_test(void **mem_area)
 {
@@ -4845,6 +4938,7 @@ lc_ndbd_malloc_test()
   num_mallocs = 0;
   test_get_array_pos();
   simple_single_thread_long_test();
+  simple_single_thread_long_small_test();
   printf("num_mallocs: %d\n", num_mallocs.load());
   many_malloc_single_thread_long_test();
   printf("num_mallocs: %d\n", num_mallocs.load());

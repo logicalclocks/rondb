@@ -62,6 +62,10 @@ cmd: testDict
 args: -r 10 -n CreateMaxTables T6
 max-time: 900
 
+cmd: testDict
+args: -r 10 -n CreateMaxTables T6
+max-time: 900
+
 cmd: testBasic
 args: -n MassiveRollback3 T1 T6 D1 D2
 max-time: 180

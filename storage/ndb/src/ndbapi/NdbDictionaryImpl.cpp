@@ -735,7 +735,7 @@ NdbTableImpl::init(){
   m_extra_row_author_bits = 0;
   m_read_backup = 0;
   m_fully_replicated = false;
-  m_use_varsized_disk_data = false;
+  m_use_varsized_disk_data = true;
 
   NdbMutex_Init(&m_primary_node_mutex);
 #ifdef VM_TRACE
@@ -984,10 +984,6 @@ NdbTableImpl::equal(const NdbTableImpl& obj) const
   }
 
   if (m_fully_replicated != obj.m_fully_replicated)
-  {
-    DBUG_RETURN(false);
-  }
-  if (m_use_varsized_disk_data != obj.m_use_varsized_disk_data)
   {
     DBUG_RETURN(false);
   }
@@ -4716,8 +4712,7 @@ NdbDictInterface::compChangeMask(const NdbTableImpl &old_impl,
      sz < old_sz ||
      impl.m_extra_row_gci_bits != old_impl.m_extra_row_gci_bits ||
      impl.m_extra_row_author_bits != old_impl.m_extra_row_author_bits ||
-     impl.m_fully_replicated != old_impl.m_fully_replicated ||
-     impl.m_use_varsized_disk_data != old_impl.m_use_varsized_disk_data)
+     impl.m_fully_replicated != old_impl.m_fully_replicated)
 
   {
     DBUG_PRINT("info", ("Old and new table not compatible"));
