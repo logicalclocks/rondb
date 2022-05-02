@@ -1,6 +1,6 @@
 /*
  *  Copyright (c) 2010, 2021, Oracle and/or its affiliates.
- *  Copyright (c) 2020, 2021 LogicalClocks, and/or its affiliates.
+ *  Copyright (c) 2020, 2022, Hopsworks AB and/or its affiliates.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License, version 2.0,
@@ -155,7 +155,7 @@ public interface SessionFactory {
 
     /**
      * Drop the session cache.
-     * Added by Logical Clocks.
+     * Added by Hopsworks AB.
      */
     public void dropSessionCache();
 }

@@ -3,8 +3,8 @@
 <p align="center">
     <a href="https://rondb.com" alt="rondb.com">
         <img src="https://img.shields.io/badge/rondb-com-green" /></a>
-    <a href="https://logicalclocks.com" alt="logicalclocks.com">
-        <img src="https://img.shields.io/static/v1?label=logicalclocks&message=com&color=blueviolet" /></a>
+    <a href="https://hopsworks.ai" alt="hopsworks.ai">
+        <img src="https://img.shields.io/static/v1?label=hopsworks&message=ai&color=blueviolet" /></a>
     <a href="https://dev.mysql.com/doc/" alt="dev.mysql.com/doc">
         <img src="https://img.shields.io/static/v1?label=mysql&message=doc&color=blue" /></a>
     <a href="https://dev.mysql.com/downloads/" alt="dev.mysql.com/downloads">
@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  Give a star and make a developer happy <img src="https://content.logicalclocks.com/hubfs/1f49a.png">
+  Give a star and make a developer happy <img src="https://content.hopsworks.ai/hubfs/1f49a.png">
 </p>
 
 ---
@@ -31,7 +31,7 @@ License information can be found [here](https://github.com/logicalclocks/rondb/b
 
 ## Who is behind RondDB?
 
-RonDB is brought to you by the RonDB team at [Logical Clocks AB](https://www.logicalclocks.com/).
+RonDB is brought to you by the RonDB team at [Hopsworks AB](https://www.hopsworks.ai/).
 
 ## More information
 
@@ -53,4 +53,4 @@ There are no existing managed databases available today with these attributes. W
 ---
 
 Copyright (c) 2000, 2021, Oracle and/or its affiliates.   
-Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+Copyright (c) 2021, 2022, Hopsworks AB and/or its affiliates.

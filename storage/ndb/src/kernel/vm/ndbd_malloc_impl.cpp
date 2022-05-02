@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2006, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2367,7 +2367,7 @@ void perf_test(int sz, int run_time)
 }
 #endif
 /**
- * Logical Clocks memory pool
+ * Hopsworks AB memory pool
  * --------------------------
  * This module implements a malloc/free API that can use the global memory
  * pools where most of the memory in the NDB data node resides. This makes it
@@ -3697,7 +3697,7 @@ void lc_init_long_lived_memory_pool(LC_MAP_POOL_ID map_pool_id_func,
 }
 
 /**
- * Logical Clocks short lived memory handler
+ * Hopsworks AB short lived memory handler
  *
  * This malloc/free implementation is based on the use case where the memory
  * is used to handle short-lived messages that pass through in a matter of
@@ -4659,7 +4659,7 @@ bench_short_test()
 static void
 test_get_array_pos()
 {
-  printf("Test Logical Clocks get_array_pos\n");
+  printf("Test Hopsworks AB get_array_pos\n");
   size_t size_array[31];
   lc_uint32 pos_array[31];
   lc_uint32 i = 0;
@@ -4744,8 +4744,8 @@ test_get_array_pos()
 static void
 lc_ndbd_malloc_test()
 {
-  /* Testing Logical Clocks memory pool for ndbmtd */
-  printf("Test Logical Clocks memory pool for ndbmtd\n");
+  /* Testing Hopsworks AB memory pool for ndbmtd */
+  printf("Test Hopsworks AB memory pool for ndbmtd\n");
   init_lc_ndbd_memory_pool(12,
                            NUM_THREADS,
                            NUM_THREADS/2,
@@ -4782,7 +4782,7 @@ lc_ndbd_malloc_test()
   printf("num_mallocs: %d\n", num_mallocs.load());
   bench_short_test();
   bench_long_test();
-  printf("Successful Test of Logical Clocks memory pool for ndbmtd\n");
+  printf("Successful Test of Hopsworks AB memory pool for ndbmtd\n");
   return;
 }
 

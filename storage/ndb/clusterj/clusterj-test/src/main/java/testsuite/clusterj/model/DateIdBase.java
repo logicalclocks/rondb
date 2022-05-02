@@ -1,6 +1,6 @@
 /*
    Copyright 2010 Sun Microsystems, Inc.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks AB and/or its affiliates.
    Use is subject to license terms.
 
    This program is free software; you can redistribute it and/or modify

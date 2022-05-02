@@ -2,7 +2,7 @@
  *
  * This depends on the schema defined in create_tweet_tables.sql
  *
- * Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
+ * Copyright (c) 2022, 2022, Hopsworks AB and/or its affiliates.
  */
 
 'use strict';
