@@ -664,11 +664,11 @@ SimulatedBlock::getEstimatedJobBufferLevel()
 }
 
 void
-SimulatedBlock::startChangeNeighbourNode()
+SimulatedBlock::startChangeNeighbourNode(NodeId nodeId)
 {
   /* We only treat neighbour nodes in a special manner in ndbmtd. */
 #ifdef NDBD_MULTITHREADED
-  mt_startChangeNeighbourNode();
+  mt_startChangeNeighbourNode(nodeId);
 #endif
 }
 

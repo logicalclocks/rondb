@@ -4867,7 +4867,7 @@ void Qmgr::execDISCONNECT_REP(Signal* signal)
       DEB_MULTI_TRP(("Change neighbour node setup for node %u",
                      disc_nodePtr.i));
       check_no_multi_trp(signal, disc_nodePtr.i);
-      startChangeNeighbourNode();
+      startChangeNeighbourNode(disc_nodePtr.i);
       setNeighbourNode(disc_nodePtr.i);
       endChangeNeighbourNode();
     }
@@ -8457,7 +8457,7 @@ Qmgr::execNODE_FAILREP(Signal * signal)
         
       DEB_MULTI_TRP(("Change neighbour node setup for node %u",
                      nodePtr.i));
-      startChangeNeighbourNode();
+      startChangeNeighbourNode(nodePtr.i);
       setNeighbourNode(nodePtr.i);
       endChangeNeighbourNode();
       globalTransporterRegistry.unlockMultiTransporters();
@@ -11005,7 +11005,7 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
     DEB_MULTI_TRP(("Change neighbour node setup for node %u, curr_trp: %u",
                    node_id,
                    current_trp_id));
-    startChangeNeighbourNode();
+    startChangeNeighbourNode(node_id);
     flush_send_buffers();
     insert_activate_trp(current_trp_id);
 

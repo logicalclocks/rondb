@@ -2404,34 +2404,91 @@ public:
     elapsed_time_os = m_send_threads[send_instance].m_elapsed_time_os;
     NdbMutex_Unlock(m_send_threads[send_instance].send_thread_mutex);
   }
-  void startChangeNeighbourNode()
+
+  static inline
+  bool is_trp_for_node(Uint32 trp_id_checked,
+                       Uint32 num_trps,
+                       NodeId *trp_ids)
   {
+    for (Uint32 i = 0; i < num_trps; i++)
+    {
+      if (trp_id_checked == (Uint32)trp_ids[i])
+        return true;
+    }
+    return false;
+  }
+
+  void startChangeNeighbourNode(NodeId nodeId)
+  {
+    if (globalData.ndbMtSendThreads == 0)
+    {
+      return;
+    }
+    NodeId id[MAX_NODE_GROUP_TRANSPORTERS + 1];
+    Uint32 num_ids;
+    globalTransporterRegistry.get_all_trps_for_node(
+                                     nodeId,
+                                     &id[0],
+                                     num_ids,
+                                     MAX_NODE_GROUP_TRANSPORTERS+1);
     for (Uint32 i = 0; i < globalData.ndbMtSendThreads; i++)
     {
       NdbMutex_Lock(m_send_threads[i].send_thread_mutex);
-      for (Uint32 j = 0; j < MAX_NEIGHBOURS; j++)
+      /**
+       * We need to remove the node from the neighbour list.
+       *
+       * If this is a node failure it will simply remove the node
+       * from the list. We must take care however to not remove
+       * transporters of other neighbour nodes from the
+       * neighbours. Thus we remove only transporters from
+       * the choosen node. We remove both active and inactive
+       * transporters. The correct transporters will be put back
+       * to the neighbour list in the setNeighbourNode call.
+       */
+      Uint32 num_neighbour_trps = m_send_threads[i].m_num_neighbour_trps;
+      Uint32 curr_index = 0;
+      for (Uint32 j = 0; j < num_neighbour_trps; j++)
       {
-        m_send_threads[i].m_neighbour_trps[j] = 0;
+        Uint32 trp_id = m_send_threads[i].m_neighbour_trps[j];
+        if (is_trp_for_node(trp_id, num_ids, &id[0]))
+        {
+          m_send_threads[i].m_neighbour_trps[curr_index++] = trp_id;
+        }
+        else
+        {
+          require(m_send_threads[i].m_num_neighbour_trps > 0);
+          m_send_threads[i].m_num_neighbour_trps--;
+        }
       }
-      m_send_threads[i].m_num_neighbour_trps = 0;
     }
     for (Uint32 i = 0; i < MAX_NTRANSPORTERS; i++)
     {
-      if (m_trp_state[i].m_neighbour_trp == true)
+      /**
+       * Disable all transporters of the selected node as
+       * neighbour transporters.
+       * Initialise the m_in_list_no_neighbour variable. The
+       * method insert_activate_trp is handling any left overs
+       * for the single transporter that might miss being
+       * inserted into the list of transporters ready to send.
+       */
+      if (is_trp_for_node(i, num_ids, &id[0]))
       {
-        m_trp_state[i].m_neighbour_trp = false;
-        m_trp_state[i].m_in_list_no_neighbour = false;
+        if (m_trp_state[i].m_neighbour_trp == true)
+        {
+          m_trp_state[i].m_neighbour_trp = false;
+          m_trp_state[i].m_in_list_no_neighbour = false;
+        }
       }
     }
   }
   void setNeighbourNode(NodeId nodeId)
   {
-    NodeId id[MAX_NODE_GROUP_TRANSPORTERS];
-    Uint32 num_ids;
     if (globalData.ndbMtSendThreads == 0)
     {
       return;
     }
+    NodeId id[MAX_NODE_GROUP_TRANSPORTERS];
+    Uint32 num_ids;
     globalTransporterRegistry.get_trps_for_node(nodeId,
                                                 &id[0],
                                                 num_ids,
@@ -2475,6 +2532,7 @@ public:
         require(m_trp_state[this_id].m_data_available > 0);
         m_trp_state[this_id].m_in_list_no_neighbour = false;
       }
+      bool found = false;
       for (Uint32 i = 0; i < MAX_NEIGHBOURS; i++)
       {
         require(send_instance->m_neighbour_trps[i] != this_id);
@@ -2489,14 +2547,19 @@ public:
           send_instance->m_num_neighbour_trps++;
           assert(send_instance->m_num_neighbour_trps <=
                  MAX_NEIGHBOURS);
-
+          found = true;
           break;
         }
       }
+      require(found);
     }
   }
   void endChangeNeighbourNode()
   {
+    if (globalData.ndbMtSendThreads == 0)
+    {
+      return;
+    }
     /**
      * If a transporter was in the transporter list before (don't think it
      * should be possible) it doesn't represent an issue since it will simply
@@ -8861,11 +8924,11 @@ mt_getNoSend(Uint32 self)
 }
 
 void
-mt_startChangeNeighbourNode()
+mt_startChangeNeighbourNode(NodeId nodeId)
 {
   if (g_send_threads)
   {
-    g_send_threads->startChangeNeighbourNode();
+    g_send_threads->startChangeNeighbourNode(nodeId);
   }
 }
 
