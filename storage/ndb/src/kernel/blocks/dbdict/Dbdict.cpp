@@ -12830,6 +12830,7 @@ bool Dbdict::buildListTablesData(const DictObject& dictObject,
   if(DictTabInfo::isTrigger(type)){
     jam();
     TriggerRecordPtr triggerPtr;
+    triggerPtr.setNull();
     const bool ok = find_object(triggerPtr, dictObject.m_id);
 
     if (parentTableId != RNIL &&

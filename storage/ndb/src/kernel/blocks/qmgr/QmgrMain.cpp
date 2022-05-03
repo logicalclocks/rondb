@@ -10961,7 +10961,9 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
       TrpId trp_id = tmp_trp->getTransporterIndex();
       multi_trp->get_callback_obj()->lock_send_transporter(node_id, trp_id);
     }
-
+    DEB_MULTI_TRP(("Send ACTIVATE_TRP_REQ to node %u, num_inactive: %u",
+                   node_id,
+                   num_inactive_transporters));
     ActivateTrpReq* act_trp_req = CAST_PTR(ActivateTrpReq,
                                            signal->getDataPtrSend());
     act_trp_req->nodeId = getOwnNodeId();
@@ -11000,8 +11002,9 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
      * isn't currently sending. In this case we increment the
      * m_data_available AND call insert_trp.
      */
-    DEB_MULTI_TRP(("Change neighbour node setup for node %u",
-                   node_id));
+    DEB_MULTI_TRP(("Change neighbour node setup for node %u, curr_trp: %u",
+                   node_id,
+                   current_trp_id));
     startChangeNeighbourNode();
     flush_send_buffers();
     insert_activate_trp(current_trp_id);
@@ -11024,6 +11027,7 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
       TrpId id = tmp_trp->getTransporterIndex();
       multi_trp->get_callback_obj()->enable_send_buffer(node_id, id, true);
       multi_trp->get_callback_obj()->unlock_send_transporter(node_id, id);
+      DEB_MULTI_TRP(("Enable trp %u for node %u", id, node_id));
     }
     globalTransporterRegistry.unlockMultiTransporters();
 
