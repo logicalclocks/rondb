@@ -499,11 +499,11 @@ void Dbdih::sendTC_CLOPSIZEREQ(Signal* signal, Uint32 nodeId, Uint32 extra)
 
 void Dbdih::sendTCGETOPSIZEREQ(Signal* signal, Uint32 nodeId, Uint32 extra)
 {
-  DEB_TCGETOPSIZE(("Send TCGETOPSIZEREQ to node %u", nodeId));
   BlockReference ref = calcTcBlockRef(nodeId);
   signal->theData[0] = nodeId;
   signal->theData[1] = reference();
   sendSignal(ref, GSN_TCGETOPSIZEREQ, signal, 2, JBB);
+  DEB_TCGETOPSIZE(("Send TCGETOPSIZEREQ to node %u, to ref: %x", nodeId, ref));
 }//Dbdih::sendTCGETOPSIZEREQ()
 
 void Dbdih::sendUPDATE_TOREQ(Signal* signal, Uint32 nodeId, Uint32 extra)
@@ -21626,8 +21626,9 @@ void Dbdih::execCHECK_LCP_IDLE_ORD(Signal *signal)
     jam();
     BlockReference ref = signal->theData[2];
     sendSignal(ref, GSN_TCGETOPSIZECONF, signal, 2, JBB);
-    DEB_TCGETOPSIZE(("Send TCGETOPSIZECONF from node %u",
-                     getOwnNodeId()));
+    DEB_TCGETOPSIZE(("Send TCGETOPSIZECONF from node %u, to ref: %x",
+                     getOwnNodeId(),
+                     ref));
     return;
   }
   jam();
@@ -24904,6 +24905,7 @@ Dbdih::findBestLogNode(CreateReplicaRecord* createReplica,
     fblReplicaPtr.i = fblReplicaPtr.p->nextPool;
   }//while
   fblReplicaPtr.i = fragPtr.p->oldStoredReplicas;
+  fblFoundReplicaPtr.setNull();
   while (fblReplicaPtr.i != RNIL64) {
     jam();
     ndbrequire(c_replicaRecordPool.getPtr(fblReplicaPtr));

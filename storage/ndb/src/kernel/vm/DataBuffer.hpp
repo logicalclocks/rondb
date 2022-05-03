@@ -572,8 +572,10 @@ inline
 bool
 DataBuffer<sz, Pool, Type_id>::first(ConstDataBufferIterator & it) const
 {
+  it.curr.setNull();
   it.curr.i = head.firstItem;
-  if(it.curr.i == RNIL){
+  if(it.curr.i == RNIL)
+  {
     it.setNull();
     return false;
   }

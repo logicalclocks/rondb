@@ -15541,8 +15541,9 @@ void Dbtc::execTCGETOPSIZEREQ(Signal* signal)
      * DBDIH.
      */
     sendSignal(Tusersblkref, GSN_TCGETOPSIZECONF, signal, 2, JBB);
-    DEB_TCGETOPSIZE(("Send TCGETOPSIZECONF from own node %u",
-                     getOwnNodeId()));
+    DEB_TCGETOPSIZE(("Send TCGETOPSIZECONF from own node %u, using ref: %x",
+                     getOwnNodeId(),
+                     Tusersblkref));
   }
   else
   {
