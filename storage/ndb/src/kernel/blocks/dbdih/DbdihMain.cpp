@@ -110,10 +110,10 @@ static const Uint32 WaitTableStateChangeMillis = 10;
 //#define DEBUG_MULTI_TRP 1
 //#define DEBUG_NODE_STOP 1
 //#define DEBUG_REDO_CONTROL 1
-#define DEBUG_LCP 1
+//#define DEBUG_LCP 1
 //#define DEBUG_LCP_COMP 1
 //#define DEBUG_COPY_ACTIVE 1
-#define DEBUG_TCGETOPSIZE
+//#define DEBUG_TCGETOPSIZE
 #endif
 
 #ifdef DEBUG_TCGETOPSIZE
