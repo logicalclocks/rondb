@@ -125,6 +125,13 @@
 //#define DEBUG_AUTOMATIC_MEMORY 1
 //#define DEBUG_REP_MEM 1
 //#define DO_TRANSIENT_POOL_STAT 1
+#define DEBUG_FREE_PAGE 1
+#endif
+
+#ifdef DEBUG_FREE_PAGE
+#define DEB_FREE_PAGE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_FREE_PAGE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_AUTOMATIC_MEMORY
@@ -414,7 +421,7 @@ Suma::init_page_chunks()
   for (Uint32 i = 0; i < 128; i++)
   {
     Buffer_page* page= c_page_pool.getPtr(page_id[i]);
-    free_page(page_id[i], page);
+    free_page(page_id[i], page, __LINE__);
   }
 }
 
@@ -5484,7 +5491,7 @@ Suma::doFIRE_TRIG_ORD(Signal* signal, LinearSectionPtr lsptr[3])
         jam();
         Buffer_page* page = c_page_pool.getPtr(page_id);
         Uint32 next = page->m_next_page;
-        free_page(page_id, page);
+        free_page(page_id, page, __LINE__);
         page_id = next;
       }
       c_buckets[bucket].m_buffer_head = save_pos;
@@ -7375,7 +7382,7 @@ Suma::out_of_buffer_release(Signal* signal, Uint32 buck)
   {
     Buffer_page* page= c_page_pool.getPtr(tail);
     bucket->m_buffer_tail = page->m_next_page;
-    free_page(tail, page);
+    free_page(tail, page, __LINE__);
     signal->theData[0] = SumaContinueB::OUT_OF_BUFFER_RELEASE;
     signal->theData[1] = buck;
     sendSignal(SUMA_REF, GSN_CONTINUEB, signal, 2, JBB);
@@ -7476,6 +7483,12 @@ loop:
       jam();
       c_free_page_chunks.remove(ptr);
     }
+    DEB_FREE_PAGE(("Seize page from ptr.i: %u, now free: %u, page_id: %u"
+                   " total free: %u",
+                   ptr.i,
+                   ptr.p->m_free,
+                   ref,
+                   m_total_pages_free));
     return ref;
   }
 
@@ -7505,6 +7518,9 @@ loop:
     ptr.p->m_free = count;
     ptr.p->m_page_id = ref;
     c_free_page_chunks.addFirst(ptr);
+    DEB_FREE_PAGE(("ptr.i = %u, ptr.p->m_size = ptr.p->m_free = %u",
+                   ptr.i,
+                   count));
   }
   else
   {
@@ -7517,6 +7533,10 @@ loop:
   {
     m_total_pages_allocated += ptr.p->m_free;
     m_total_pages_free += ptr.p->m_free;
+    DEB_FREE_PAGE(("ptr.i = %u, total alloc: %u, total free: %u",
+                   ptr.i,
+                   m_total_pages_allocated,
+                   m_total_pages_free));
   }
   goto loop;
 }
@@ -7595,6 +7615,11 @@ Suma::release_chunk()
   ndbrequire(m_total_pages_allocated >= ptr.p->m_free);
   m_total_pages_allocated -= ptr.p->m_free;
 
+  DEB_FREE_PAGE(("release chunk, ptr.i: %u, free: %u, total alloc: %u",
+                 ptr.i,
+                 ptr.p->m_free,
+                 m_total_pages_allocated));
+
   m_ctx.m_mm.release_pages(RG_REPLICATION_MEMORY,
                            ptr.p->m_page_id,
                            ptr.p->m_free);
@@ -7603,7 +7628,7 @@ Suma::release_chunk()
 }
 
 void
-Suma::free_page(Uint32 page_id, Buffer_page* page)
+Suma::free_page(Uint32 page_id, Buffer_page* page, Uint32 line)
 {
   Ptr<Page_chunk> ptr;
   ndbrequire(page->m_page_state == SUMA_SEQUENCE);
@@ -7613,12 +7638,25 @@ Suma::free_page(Uint32 page_id, Buffer_page* page)
   ndbrequire(c_page_chunk_pool.getPtr(ptr, chunk));
   
   ptr.p->m_free++;
+  DEB_FREE_PAGE(("Free page in ptr.i = %u, page_id: %u, now free = %u, size: %u"
+                 " total alloc: %u, total free: %u, from line %u",
+                 ptr.i,
+                 page_id,
+                 ptr.p->m_free,
+                 ptr.p->m_size,
+                 m_total_pages_allocated,
+                 m_total_pages_free + 1,
+                 line));
+
   page->m_next_page = m_first_free_page;
   page->m_prev_page = RNIL;
+  jam();
+  jamData(line);
   ndbrequire(ptr.p->m_free <= ptr.p->m_size);
 
   if (m_first_free_page != RNIL)
   {
+    jam();
     Buffer_page *first_page;
     first_page = c_page_pool.getPtr(m_first_free_page);
     first_page->m_prev_page = page_id;
@@ -8021,7 +8059,7 @@ Suma::release_gci(Signal* signal, Uint32 buck, Uint64 gci)
     if(gci >= max_gci)
     {
       jam();
-      free_page(tail, page);
+      free_page(tail, page, __LINE__);
       
       bucket->m_buffer_tail = next_page;
       signal->theData[0] = SumaContinueB::RELEASE_GCI;
@@ -8157,7 +8195,7 @@ Suma::resend_bucket(Signal* signal, Uint32 buck, Uint64 min_gci,
   }
   else if(pos == 0 && min_gci > max_gci)
   {
-    free_page(tail, page);
+    free_page(tail, page, __LINE__);
     tail = bucket->m_buffer_tail = next_page;
     goto next;
   }
@@ -8415,7 +8453,7 @@ Suma::resend_bucket(Signal* signal, Uint32 buck, Uint64 min_gci,
      * release...
      */
     ndbassert(tail != bucket->m_buffer_head.m_page_id);
-    free_page(tail, page);
+    free_page(tail, page, __LINE__);
     tail = bucket->m_buffer_tail = next_page;
     pos = next_pos;
     if (pos == 0)

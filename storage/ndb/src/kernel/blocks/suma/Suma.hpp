@@ -761,7 +761,7 @@ private:
                          Uint32 sz,
                          Uint32 part);
   Uint32 seize_page();
-  void free_page(Uint32 page_id, Buffer_page* page);
+  void free_page(Uint32 page_id, Buffer_page* page, Uint32 line);
   void out_of_buffer(Signal*);
   void out_of_buffer_release(Signal* signal, Uint32 buck);
 
