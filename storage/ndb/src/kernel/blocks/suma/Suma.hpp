@@ -740,6 +740,7 @@ private:
   Uint64 m_max_sent_gci;      // FIRE_TRIG_ORD -> send
   Uint64 m_last_complete_gci; // SUB_GCP_COMPLETE_REP
   Uint64 m_out_of_buffer_gci;
+  bool m_out_of_buffer_release_ongoing;
   Uint32 m_gcp_complete_rep_count;
   bool m_missing_data;
 
