@@ -125,7 +125,7 @@
 //#define DEBUG_AUTOMATIC_MEMORY 1
 //#define DEBUG_REP_MEM 1
 //#define DO_TRANSIENT_POOL_STAT 1
-#define DEBUG_FREE_PAGE 1
+//#define DEBUG_FREE_PAGE 1
 #endif
 
 #ifdef DEBUG_FREE_PAGE
