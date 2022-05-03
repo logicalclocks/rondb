@@ -5498,6 +5498,12 @@ Suma::doFIRE_TRIG_ORD(Signal* signal, LinearSectionPtr lsptr[3])
       }
       c_buckets[bucket].m_buffer_head = save_pos;
     }
+    else if (dst1 != nullptr &&
+             m_out_of_buffer_release_ongoing)
+    {
+      DEB_FREE_PAGE(("Skipped releasing pages in FIRE_TRIG_ORD"
+                     " due to out of buffer release ongoing"));
+    }
   }
   
   DBUG_VOID_RETURN;
@@ -7371,6 +7377,7 @@ Suma::out_of_buffer(Signal* signal)
   }
   m_missing_data = false;
   m_out_of_buffer_release_ongoing = true;
+  DEB_FREE_PAGE(("Out of buffer release started"));
   out_of_buffer_release(signal, 0);
 }
 
@@ -7415,6 +7422,7 @@ Suma::out_of_buffer_release(Signal* signal, Uint32 buck)
     ? m_max_seen_gci : m_last_complete_gci;
   m_out_of_buffer_release_ongoing = false;
   m_missing_data = false;
+  DEB_FREE_PAGE(("Out of buffer release completed"));
 }
 
 /**
