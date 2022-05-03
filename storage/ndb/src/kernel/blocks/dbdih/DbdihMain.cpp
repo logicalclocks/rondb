@@ -110,9 +110,16 @@ static const Uint32 WaitTableStateChangeMillis = 10;
 //#define DEBUG_MULTI_TRP 1
 //#define DEBUG_NODE_STOP 1
 //#define DEBUG_REDO_CONTROL 1
-//#define DEBUG_LCP 1
+#define DEBUG_LCP 1
 //#define DEBUG_LCP_COMP 1
 //#define DEBUG_COPY_ACTIVE 1
+#define DEBUG_TCGETOPSIZE
+#endif
+
+#ifdef DEBUG_TCGETOPSIZE
+#define DEB_TCGETOPSIZE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_TCGETOPSIZE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_COPY_ACTIVE
@@ -492,6 +499,7 @@ void Dbdih::sendTC_CLOPSIZEREQ(Signal* signal, Uint32 nodeId, Uint32 extra)
 
 void Dbdih::sendTCGETOPSIZEREQ(Signal* signal, Uint32 nodeId, Uint32 extra)
 {
+  DEB_TCGETOPSIZE(("Send TCGETOPSIZEREQ to node %u", nodeId));
   BlockReference ref = calcTcBlockRef(nodeId);
   signal->theData[0] = nodeId;
   signal->theData[1] = reference();
@@ -10620,6 +10628,8 @@ void Dbdih::failedNodeLcpHandling(Signal* signal,
   if (c_TCGETOPSIZEREQ_Counter.isWaitingFor(failedNodePtr.i)) {
     jam();
     signal->theData[0] = failedNodePtr.i;
+    DEB_TCGETOPSIZE(("Send TCGETOPSIZECONF from nodeFail for node %u",
+                     failedNodePtr.i));
     signal->theData[1] = 0;
     sendSignal(reference(), GSN_TCGETOPSIZECONF, signal, 2, JBB);
   }//if
@@ -21616,6 +21626,8 @@ void Dbdih::execCHECK_LCP_IDLE_ORD(Signal *signal)
     jam();
     BlockReference ref = signal->theData[2];
     sendSignal(ref, GSN_TCGETOPSIZECONF, signal, 2, JBB);
+    DEB_TCGETOPSIZE(("Send TCGETOPSIZECONF from node %u",
+                     getOwnNodeId()));
     return;
   }
   jam();
@@ -21632,8 +21644,11 @@ void Dbdih::execTCGETOPSIZECONF(Signal* signal)
   Uint32 senderNodeId = signal->theData[0];
   add_lcp_counter(&c_lcpState.ctcCounter, signal->theData[1]);
   
+  DEB_TCGETOPSIZE(("Receive TCGETOPSIZECONF from node %u",
+                   senderNodeId));
   receiveLoopMacro(TCGETOPSIZEREQ, senderNodeId);
 
+  DEB_TCGETOPSIZE(("Receive TCGETOPSIZECONF from all nodes"));
   ndbrequire(c_lcpState.lcpStatus == LCP_TCGET);
   ndbrequire(c_lcpState.lcpStart == ZACTIVE);
   /* ----------------------------------------------------------------------- */

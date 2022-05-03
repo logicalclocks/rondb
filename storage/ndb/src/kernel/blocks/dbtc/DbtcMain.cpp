@@ -117,8 +117,8 @@
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
 //#define DO_TRANSIENT_POOL_STAT
 //#define ABORT_TRACE 1
-#define COMMIT_TRACE 1
-#define COMPLETE_TRACE 1
+//#define COMMIT_TRACE 1
+//#define COMPLETE_TRACE 1
 //#define LQHKEY_TRACE 1
 //#define DEBUG_GCP 1
 //#define DEBUG_ABORT_TRANS 1
@@ -126,6 +126,7 @@
 //#define DEBUG_NODE_FAILURE 1
 //#define DEBUG_RR_INIT 1
 //#define DEBUG_EXEC_WRITE_COUNT 1
+#define DEBUG_TCGETOPSIZE 1
 #endif
 
 #define TC_TIME_SIGNAL_DELAY 50
@@ -143,6 +144,12 @@
 #define DEB_GCP(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_GCP(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_TCGETOPSIZE
+#define DEB_TCGETOPSIZE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_TCGETOPSIZE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_ABORT_TRANS
@@ -15534,6 +15541,8 @@ void Dbtc::execTCGETOPSIZEREQ(Signal* signal)
      * DBDIH.
      */
     sendSignal(Tusersblkref, GSN_TCGETOPSIZECONF, signal, 2, JBB);
+    DEB_TCGETOPSIZE(("Send TCGETOPSIZECONF from own node %u",
+                     getOwnNodeId()));
   }
   else
   {
