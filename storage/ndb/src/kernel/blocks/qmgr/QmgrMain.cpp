@@ -4867,7 +4867,7 @@ void Qmgr::execDISCONNECT_REP(Signal* signal)
       DEB_MULTI_TRP(("Change neighbour node setup for node %u",
                      disc_nodePtr.i));
       check_no_multi_trp(signal, disc_nodePtr.i);
-      startChangeNeighbourNode(disc_nodePtr.i);
+      startChangeNeighbourNode();
       setNeighbourNode(disc_nodePtr.i);
       endChangeNeighbourNode();
     }
@@ -8457,7 +8457,7 @@ Qmgr::execNODE_FAILREP(Signal * signal)
         
       DEB_MULTI_TRP(("Change neighbour node setup for node %u",
                      nodePtr.i));
-      startChangeNeighbourNode(nodePtr.i);
+      startChangeNeighbourNode();
       setNeighbourNode(nodePtr.i);
       endChangeNeighbourNode();
       globalTransporterRegistry.unlockMultiTransporters();
@@ -10984,6 +10984,10 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
      * neighbour flag, this means that we will insert the transporter
      * into the list and we will call perform_send eventually.
      *
+     * This is handled by startChangeNeighbourNode to ensure this also
+     * happens with nodes that are neighbours and are no longer after
+     * this call is performed.
+     *
      * If the m_data_available > 0 then we will be removed from list
      * by calling setNeighbourNode. In this case we have two cases,
      * either the send thread is currently preparing to write,
@@ -11005,10 +11009,7 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
     DEB_MULTI_TRP(("Change neighbour node setup for node %u, curr_trp: %u",
                    node_id,
                    current_trp_id));
-    startChangeNeighbourNode(node_id);
-    flush_send_buffers();
-    insert_activate_trp(current_trp_id);
-
+    startChangeNeighbourNode();
     if (ERROR_INSERTED(982))
     {
       NdbSleep_MilliSleep(2500);

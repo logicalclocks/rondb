@@ -27461,6 +27461,25 @@ void Dbdih::setNodeGroups()
     return;
   }
   ndbrequire(NGPtr.p->nodeCount <= MAX_REPLICAS);
+  /**
+   * Inform scheduler of our neighbour node to ensure the best
+   * possible communication with this node. If more than two
+   * replicas we will still only have one neighbour, so we will
+   * have most communication with this neighbour node.
+   */
+  startChangeNeighbourNode();
+  for (Uint32 i = 0; i < NGPtr.p->nodeCount; i++)
+  {
+    jam();
+    Uint32 nodeId = NGPtr.p->nodesInGroup[i];
+    if (nodeId != getOwnNodeId())
+    {
+      jam();
+      ndbrequire(nodeId != 0 && nodeId < MAX_NODES);
+      setNeighbourNode(nodeId);
+    }
+  }
+  endChangeNeighbourNode();
 }//Dbdih::setNodeGroups()
 
 /*************************************************************************/

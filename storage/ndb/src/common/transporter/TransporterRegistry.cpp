@@ -4211,49 +4211,6 @@ TransporterRegistry::get_trps_for_node(Uint32 nodeId,
   require(max_size >= 1);
 }
 
-void
-TransporterRegistry::get_all_trps_for_node(Uint32 nodeId,
-                                       TrpId *trp_ids,
-                                       Uint32 &num_ids,
-                                       Uint32 max_size)
-{
-  Transporter *t = theNodeIdTransporters[nodeId];
-  if (!t)
-  {
-    num_ids = 0;
-  }
-  else if (t->isMultiTransporter())
-  {
-    Multi_Transporter *multi_trp = (Multi_Transporter*)t;
-    Uint32 num_active = multi_trp->get_num_active_transporters();
-    Uint32 inx = 0;
-    for (Uint32 i = 0; i < num_active; i++)
-    {
-      Transporter* tmp_trp = multi_trp->get_active_transporter(i);
-      trp_ids[inx] = tmp_trp->getTransporterIndex();
-      require(trp_ids[inx] != 0);
-      inx++;
-    }
-    Uint32 num_inactive = multi_trp->get_num_inactive_transporters();
-    for (Uint32 i = 0; i < num_inactive; i++)
-    {
-      Transporter* tmp_trp = multi_trp->get_inactive_transporter(i);
-      trp_ids[inx] = tmp_trp->getTransporterIndex();
-      require(trp_ids[inx] != 0);
-      inx++;
-    }
-    require(inx <= max_size);
-    num_ids = inx;
-  }
-  else
-  {
-    num_ids = 1;
-    trp_ids[0] = t->getTransporterIndex();
-    require(trp_ids[0] != 0);
-  }
-  require(max_size >= 1);
-}
-
 TrpId
 TransporterRegistry::getTransporterIndex(Transporter* t)
 {

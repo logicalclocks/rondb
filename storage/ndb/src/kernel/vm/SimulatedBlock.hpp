@@ -740,7 +740,7 @@ protected:
   void setWakeupThread(Uint32 wakeup_instance);
   void setNodeOverloadStatus(OverloadStatus new_status);
   void setSendNodeOverloadStatus(OverloadStatus new_status);
-  void startChangeNeighbourNode(NodeId node);
+  void startChangeNeighbourNode();
   void setNeighbourNode(NodeId node);
   void setNoSend(Uint32 val);
   void setNoSendTmp(Uint32 val);

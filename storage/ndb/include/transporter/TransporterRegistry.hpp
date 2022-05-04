@@ -702,10 +702,6 @@ public:
                          TrpId *trp_ids,
                          Uint32 &num_trp_ids,
                          Uint32 max_trp_ids);
-  void get_all_trps_for_node(Uint32 nodeId,
-                             TrpId *trp_ids,
-                             Uint32 &num_trp_ids,
-                             Uint32 max_trp_ids);
 
   Uint32 get_num_trps();
 private:
