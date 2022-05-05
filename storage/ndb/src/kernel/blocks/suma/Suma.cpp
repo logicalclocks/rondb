@@ -292,6 +292,7 @@ Suma::execREAD_CONFIG_REQ(Signal* signal)
   m_last_complete_gci = 0; // SUB_GCP_COMPLETE_REP
   m_gcp_complete_rep_count = 0;
   m_out_of_buffer_gci = 0;
+  m_out_of_buffer_release_ongoing = false;
   m_missing_data = false;
 
   c_startup.m_wait_handover= false;
@@ -5202,7 +5203,8 @@ Suma::doFIRE_TRIG_ORD(Signal* signal, LinearSectionPtr lsptr[3])
       memcpy(dst2, lsptr[1].p, lsptr[1].sz << 2);
       ndbrequire(b_trigBufferSize == lsptr[1].sz);
     }
-    else if (dst1 != nullptr)
+    else if (dst1 != nullptr &&
+             !m_out_of_buffer_release_ongoing)
     {
       jam();
       // Revert first buffer allocation
@@ -7079,6 +7081,7 @@ Suma::out_of_buffer(Signal* signal)
     }
   }
   m_missing_data = false;
+  m_out_of_buffer_release_ongoing = true;
   out_of_buffer_release(signal, 0);
 }
 
@@ -7121,6 +7124,7 @@ Suma::out_of_buffer_release(Signal* signal, Uint32 buck)
    */
   m_out_of_buffer_gci = m_max_seen_gci > m_last_complete_gci 
     ? m_max_seen_gci : m_last_complete_gci;
+  m_out_of_buffer_release_ongoing = false;
   m_missing_data = false;
 }
 

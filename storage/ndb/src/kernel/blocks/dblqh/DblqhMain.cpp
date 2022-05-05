@@ -1455,6 +1455,8 @@ Dblqh::sttor_startphase1(Signal *signal)
      * In general full instance key of fragment must be used.
      */
     ThostPtr.p->inPackedList = false;
+    ThostPtr.p->lqh_pack_mask.clear();
+    ThostPtr.p->tc_pack_mask.clear();
     for (Tj = 0; Tj < NDB_ARRAY_SIZE(ThostPtr.p->lqh_pack); Tj++)
     {
       ThostPtr.p->lqh_pack[Tj].noOfPackedWords = 0;
@@ -5677,31 +5679,37 @@ Dblqh::execREMOVE_MARKER_ORD(Signal* signal)
 void Dblqh::execSEND_PACKED(Signal* signal) 
 {
   HostRecordPtr Thostptr;
-  UintR i;
-  UintR j;
   UintR TpackedListIndex = cpackedListIndex;
   jamEntry();
-  for (i = 0; i < TpackedListIndex; i++) {
+  for (Uint32 i = 0; i < TpackedListIndex; i++) {
     Thostptr.i = cpackedList[i];
     ptrAss(Thostptr, hostRecord);
     jam();
     ndbrequire(Thostptr.i - 1 < MAX_NDB_NODES - 1);
-    for (j = 0; j < NDB_ARRAY_SIZE(Thostptr.p->lqh_pack); j++)
+
+    // LQH pack and send
+    for (Uint32 j = Thostptr.p->lqh_pack_mask.find_first();
+         j != BitmaskImpl::NotFound;
+         j = Thostptr.p->lqh_pack_mask.find_next(j+1))
     {
+      jamDebug();
       struct PackedWordsContainer * container = &Thostptr.p->lqh_pack[j];
-      if (container->noOfPackedWords > 0) {
-        jamDebug();
-        sendPackedSignal(signal, container);
-      }
+      ndbassert(container->noOfPackedWords > 0);
+      sendPackedSignal(signal, container);
     }
-    for (j = 0; j < NDB_ARRAY_SIZE(Thostptr.p->tc_pack); j++)
+    // TC pack and send
+    for (Uint32 j = Thostptr.p->tc_pack_mask.find_first();
+         j != BitmaskImpl::NotFound;
+         j = Thostptr.p->tc_pack_mask.find_next(j+1))
     {
+      jamDebug();
       struct PackedWordsContainer * container = &Thostptr.p->tc_pack[j];
-      if (container->noOfPackedWords > 0) {
-        jamDebug();
-        sendPackedSignal(signal, container);
-      }
+      ndbassert(container->noOfPackedWords > 0);
+      sendPackedSignal(signal, container);
     }
+
+    Thostptr.p->lqh_pack_mask.clear();
+    Thostptr.p->tc_pack_mask.clear();
     Thostptr.p->inPackedList = false;
   }//for
   cpackedListIndex = 0;
@@ -5715,6 +5723,8 @@ Dblqh::updatePackedList(Signal* signal, HostRecord * ahostptr, Uint16 hostId)
   if (ahostptr->inPackedList == false) {
     jamDebug();
     ahostptr->inPackedList = true;
+    ahostptr->lqh_pack_mask.clear();
+    ahostptr->tc_pack_mask.clear();
     cpackedList[TpackedListIndex] = hostId;
     cpackedListIndex = TpackedListIndex + 1;
   }//if
@@ -6024,6 +6034,7 @@ void Dblqh::sendCommitLqh(Signal* signal,
   Tdata[0] |= (ZCOMMIT << 28);
   Uint32 pos = container->noOfPackedWords;
   container->noOfPackedWords = pos + len;
+  Thostptr.p->lqh_pack_mask.set(instanceKey);
   memcpy(&container->packedWords[pos], &Tdata[0], len << 2);
 }
 
@@ -6070,6 +6081,7 @@ void Dblqh::sendCompleteLqh(Signal* signal,
   Tdata[0] |= (ZCOMPLETE << 28);
   Uint32 pos = container->noOfPackedWords;
   container->noOfPackedWords = pos + len;
+  Thostptr.p->lqh_pack_mask.set(instanceKey);
   memcpy(&container->packedWords[pos], &Tdata[0], len << 2);
 }
 
@@ -6113,6 +6125,7 @@ void Dblqh::sendCommittedTc(Signal* signal,
   Tdata[0] |= (ZCOMMITTED << 28);
   Uint32 pos = container->noOfPackedWords;
   container->noOfPackedWords = pos + len;
+  Thostptr.p->tc_pack_mask.set(instanceKey);
   memcpy(&container->packedWords[pos], &Tdata[0], len << 2);
 }
 
@@ -6156,6 +6169,7 @@ void Dblqh::sendCompletedTc(Signal* signal,
   Tdata[0] |= (ZCOMPLETED << 28);
   Uint32 pos = container->noOfPackedWords;
   container->noOfPackedWords = pos + len;
+  Thostptr.p->tc_pack_mask.set(instanceKey);
   memcpy(&container->packedWords[pos], &Tdata[0], len << 2);
 }
 
@@ -6221,6 +6235,17 @@ void Dblqh::sendLqhkeyconfTc(Signal* signal,
     lqhKeyConf = (LqhKeyConf *)
       &container->packedWords[container->noOfPackedWords];
     container->noOfPackedWords += LqhKeyConf::SignalLength;
+
+    if (block == getDBLQH())
+    {
+      if (instanceKey <= MAX_NDBMT_LQH_THREADS)
+        Thostptr.p->lqh_pack_mask.set(instanceKey);
+    }
+    else if (block == DBTC)
+    {
+      if (instanceKey <= MAX_NDBMT_TC_THREADS)
+        Thostptr.p->tc_pack_mask.set(instanceKey);
+    }
   }
   else
   {
@@ -12395,6 +12420,7 @@ Dblqh::sendFireTrigConfTc(Signal* signal,
   ndbassert(FireTrigConf::SignalLength == 4);
   Uint32 * dst = &container->packedWords[container->noOfPackedWords];
   container->noOfPackedWords += len;
+  Thostptr.p->tc_pack_mask.set(instanceKey);
   dst[0] = Tdata[0] | (ZFIRE_TRIG_CONF << 28);
   dst[1] = Tdata[1];
   dst[2] = Tdata[2];
