@@ -10784,7 +10784,7 @@ Qmgr::setNeighbourNodes()
         nodePtr.i != getOwnNodeId())
     {
       jam();
-      jamData(nodePtr.i);
+      jamLine(nodePtr.i);
       setNeighbourNode(nodePtr.i);
     }
   }
