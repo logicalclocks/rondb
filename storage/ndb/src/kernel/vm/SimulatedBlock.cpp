@@ -643,7 +643,7 @@ SimulatedBlock::startChangeNeighbourNode()
 {
   /* We only treat neighbour nodes in a special manner in ndbmtd. */
 #ifdef NDBD_MULTITHREADED
-  mt_startChangeNeighbourNode();
+  mt_startChangeNeighbourNode(m_threadId);
 #endif
 }
 
