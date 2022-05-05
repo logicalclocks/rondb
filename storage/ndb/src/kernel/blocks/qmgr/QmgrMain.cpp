@@ -11030,6 +11030,7 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
                    node_id,
                    current_trp_id));
     startChangeNeighbourNode();
+
     if (ERROR_INSERTED(982))
     {
       NdbSleep_MilliSleep(2500);

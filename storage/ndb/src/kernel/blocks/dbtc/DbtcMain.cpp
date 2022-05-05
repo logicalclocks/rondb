@@ -6954,6 +6954,7 @@ void Dbtc::execSEND_PACKED(Signal* signal)
   for (i = 0; i < TpackedListIndex; i++)
   {
     jamDebug();
+    jamLineDebug(Uint16(i));
     Thostptr.i = cpackedList[i];
     ptrAss(Thostptr, localHostRecord);
     arrGuard(Thostptr.i - 1, MAX_NODES - 1);
