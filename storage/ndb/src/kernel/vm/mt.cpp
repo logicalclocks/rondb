@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2400,8 +2400,9 @@ public:
     elapsed_time_os = m_send_threads[send_instance].m_elapsed_time_os;
     NdbMutex_Unlock(m_send_threads[send_instance].send_thread_mutex);
   }
-  void startChangeNeighbourNode()
+  void startChangeNeighbourNode(Uint32 self)
   {
+    mt_flush_send_buffers(self);
     for (Uint32 i = 0; i < globalData.ndbMtSendThreads; i++)
     {
       NdbMutex_Lock(m_send_threads[i].send_thread_mutex);
@@ -2417,6 +2418,7 @@ public:
       {
         m_trp_state[i].m_neighbour_trp = false;
         m_trp_state[i].m_in_list_no_neighbour = false;
+        insert_activate_trp(i);
       }
     }
   }
@@ -2432,6 +2434,9 @@ public:
                                                 &id[0],
                                                 num_ids,
                                                 MAX_NODE_GROUP_TRANSPORTERS);
+    DEB_MULTI_TRP(("setNeighbourNode: node: %u, num_ids: %u",
+                   nodeId,
+                   num_ids));
     for (Uint32 index = 0; index < num_ids; index++)
     {
       Uint32 this_id = id[index];
@@ -2476,7 +2481,8 @@ public:
         require(send_instance->m_neighbour_trps[i] != this_id);
         if (send_instance->m_neighbour_trps[i] == 0)
         {
-          DEB_MULTI_TRP(("Neighbour(%u) of node %u is trp %u",
+          DEB_MULTI_TRP(("Neighbour(%u,%u) of node %u is trp %u",
+                         send_instance_id,
                          i,
                          nodeId,
                          this_id));
@@ -8271,22 +8277,6 @@ loop:
   Uint32 avail = compute_max_signals_to_execute(minfree - reserved);
   Uint32 perjb = (avail + glob_num_job_buffers_per_thread - 1) /
                   glob_num_job_buffers_per_thread;
-  if (selfptr->m_thr_no == 0)
-  {
-    /**
-     * The main thread has some signals that execute for a bit longer than
-     * other threads. We only allow the main thread thus to execute at most
-     * 5 signals per round of signal execution. We handle this here and
-     * also only handle signals from one queue at a time with the main
-     * thread.
-     *
-     * LCP_FRAG_REP is one such signal that can execute now for about
-     * 1 millisecond, so 5 signals can become 5 milliseconds which should
-     * fairly safe to ensure we always come back for the 10ms TIME_SIGNAL
-     * that is handled by the main thread.
-     */
-    perjb = MAX(perjb, 5);
-  }
   if (perjb > MAX_SIGNALS_PER_JB)
     perjb = MAX_SIGNALS_PER_JB;
 
@@ -8866,11 +8856,11 @@ mt_getNoSend(Uint32 self)
 }
 
 void
-mt_startChangeNeighbourNode()
+mt_startChangeNeighbourNode(Uint32 self)
 {
   if (g_send_threads)
   {
-    g_send_threads->startChangeNeighbourNode();
+    g_send_threads->startChangeNeighbourNode(self);
   }
 }
 
