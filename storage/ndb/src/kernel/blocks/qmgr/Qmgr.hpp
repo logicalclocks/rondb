@@ -912,6 +912,7 @@ private:
   void dec_get_num_multi_trps_sent(NodeId);
   void inc_get_num_multi_trps_sent(NodeId);
   void handle_graceful_shutdown(Signal*);
+  void setNeighbourNodes();
 };
 #undef JAM_FILE_ID
 

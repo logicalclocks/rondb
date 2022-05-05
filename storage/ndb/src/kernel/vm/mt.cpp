@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2250,6 +2250,9 @@ public:
                                                 &id[0],
                                                 num_ids,
                                                 MAX_NODE_GROUP_TRANSPORTERS);
+    DEB_MULTI_TRP(("setNeighbourNode: node: %u, num_ids: %u",
+                   nodeId,
+                   num_ids));
     for (Uint32 index = 0; index < num_ids; index++)
     {
       Uint32 this_id = id[index];
@@ -2294,7 +2297,8 @@ public:
         require(send_instance->m_neighbour_trps[i] != this_id);
         if (send_instance->m_neighbour_trps[i] == 0)
         {
-          DEB_MULTI_TRP(("Neighbour(%u) of node %u is trp %u",
+          DEB_MULTI_TRP(("Neighbour(%u,%u) of node %u is trp %u",
+                         send_instance_id,
                          i,
                          nodeId,
                          this_id));
