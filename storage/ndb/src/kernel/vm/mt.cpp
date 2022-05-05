@@ -2438,6 +2438,9 @@ public:
                                                 &id[0],
                                                 num_ids,
                                                 MAX_NODE_GROUP_TRANSPORTERS);
+    DEB_MULTI_TRP(("setNeighbourNode: node: %u, num_ids: %u",
+                   nodeId,
+                   num_ids));
     for (Uint32 index = 0; index < num_ids; index++)
     {
       Uint32 this_id = id[index];
@@ -2445,6 +2448,12 @@ public:
       struct thr_send_thread_instance *send_instance =
         &m_send_threads[send_instance_id];
       m_trp_state[this_id].m_neighbour_trp = true;
+      DEB_MULTI_TRP(("SNN: node: %u, trp: %u, send_instance: %u"
+                     ", num_trps: %u",
+                     nodeId,
+                     this_id,
+                     send_instance_id,
+                     send_instance->m_num_neighbour_trps));
       if (m_trp_state[this_id].m_in_list_no_neighbour != false)
       {
         /**
@@ -2482,7 +2491,8 @@ public:
         require(send_instance->m_neighbour_trps[i] != this_id);
         if (send_instance->m_neighbour_trps[i] == 0)
         {
-          DEB_MULTI_TRP(("Neighbour(%u) of node %u is trp %u",
+          DEB_MULTI_TRP(("Neighbour(%u,%u) of node %u is trp %u",
+                         send_instance_id,
                          i,
                          nodeId,
                          this_id));
