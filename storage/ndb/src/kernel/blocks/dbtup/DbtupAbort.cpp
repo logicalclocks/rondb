@@ -59,6 +59,9 @@ void Dbtup::handle_disk_reorg_flag(OperationrecPtr operPtr,
   Local_key key;
   memcpy(&key, copy_last->get_disk_ref_ptr(regTabPtr), sizeof(key));
   memcpy(copy_prev->get_disk_ref_ptr(regTabPtr), &key, sizeof(key));
+  ndbrequire(
+    lastOperPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit == 1);
+  prevOperPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit = 1;
 }
 
 void Dbtup::handle_disk_row_resize(OperationrecPtr operPtr,
@@ -145,7 +148,8 @@ Dbtup::do_tup_abort_operation(Signal* signal,
         memcpy(&key, copy->get_disk_ref_ptr(tablePtrP), sizeof(key));
         Uint32 row_size = key.m_page_idx;
         disk_page_abort_prealloc(signal, fragPtrP, &key, row_size);
-        tuple_ptr->m_header_bits= bits & ~Tuple_header::DISK_REORG;
+        bits = bits & (~Tuple_header::DISK_REORG);
+        tuple_ptr->m_header_bits= bits;
       }
       else if (opPtrP->m_uncommitted_used_space > 0)
       {

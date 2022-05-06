@@ -948,8 +948,6 @@ Dbtup::commit_operation(Signal* signal,
     Uint32 logfile_group_id= regFragPtr->m_logfile_group_id;
 
     PagePtr diskPagePtr((Tup_page*)globDiskPagePtr.p, globDiskPagePtr.i);
-    ndbassert(diskPagePtr.p->m_page_no == key.m_page_no);
-    ndbassert(diskPagePtr.p->m_file_no == key.m_file_no);
 
     Uint32 sz, *dst;
     Uint16 num_vars = regTabPtr->m_attributes[DD].m_no_of_varsize;
@@ -969,7 +967,7 @@ Dbtup::commit_operation(Signal* signal,
     }
     Uint32 disk_len = disk_fix_header_size + disk_varlen;
 
-    if (copy_bits & Tuple_header::DISK_REORG)
+    if (bits & Tuple_header::DISK_REORG)
     {
       /**
        * This variable is set when the page is referring to a new page.
@@ -1065,6 +1063,8 @@ Dbtup::commit_operation(Signal* signal,
     {
       jam();
       Uint32 decrement = 0;
+      ndbassert(diskPagePtr.p->m_page_no == key.m_page_no);
+      ndbassert(diskPagePtr.p->m_file_no == key.m_file_no);
       if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
       {
         ndbrequire(key.m_page_idx >= disk_len);
@@ -1112,6 +1112,8 @@ Dbtup::commit_operation(Signal* signal,
        * A normal UPDATE without introducing new page and the row
        * previously existed.
        */
+      ndbassert(diskPagePtr.p->m_page_no == key.m_page_no);
+      ndbassert(diskPagePtr.p->m_file_no == key.m_file_no);
       dst = get_disk_reference(regTabPtr,
                                diskPagePtr,
                                key,
@@ -1173,7 +1175,7 @@ Dbtup::commit_operation(Signal* signal,
         disk_varlen = 0;
       }
       if (!((copy_bits & Tuple_header::DISK_ALLOC) ||
-           (copy_bits & Tuple_header::DISK_REORG)))
+           (bits & Tuple_header::DISK_REORG)))
       {
         /**
          * Only UPDATE operations that will not cause a move to a new page has
@@ -1668,8 +1670,8 @@ int Dbtup::retrieve_log_page(Signal *signal,
        * the UNDO log handling of the UNDO of the INSERT part will use the
        * fixed size of this log record and thus the m_undo_buffer_space should
        * only reflect the DELETE disk part.
-     */
-      if (header_bits & Tuple_header::DISK_REORG)
+       */
+      if (tuple_header->m_header_bits & Tuple_header::DISK_REORG)
       {
         jam();
         Uint32 undo_insert_len = sizeof(Dbtup::Disk_undo::Alloc) >> 2;
