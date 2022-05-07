@@ -996,7 +996,7 @@ NdbImportUtil::add_table(NdbDictionary::Dictionary* dic,
     }
     attrs.reserve(attrcnt);
     bool ok = true;
-    Uint32 recAttrId;
+    Uint32 recAttrId = Uint32(~0);
     for (uint i = 0; i < attrcnt && ok; i++)
     {
       if (i == 0)

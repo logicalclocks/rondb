@@ -1817,11 +1817,11 @@ typedef Ptr<HostBuffer> HostBufferPtr;
     }
     
     Uint32* get_disk_ref_ptr(const Tablerec* tabPtrP) {
-      return m_first_words + tabPtrP->m_offsets[MM].m_disk_ref_offset;
+      return (Uint32*)(&m_first_words[0]) + tabPtrP->m_offsets[MM].m_disk_ref_offset;
     }
 
     const Uint32* get_disk_ref_ptr(const Tablerec* tabPtrP) const {
-      return m_first_words + tabPtrP->m_offsets[MM].m_disk_ref_offset;
+      return (Uint32*)(&m_first_words[0]) + tabPtrP->m_offsets[MM].m_disk_ref_offset;
     }
 
     Uint32 *get_mm_gci(const Tablerec* tabPtrP){

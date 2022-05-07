@@ -4051,7 +4051,7 @@ Dbtup::read_extra_row_bits(Uint32 extra_no,
   Uint32 maxVal = (1 << bitCount) - 1;
   Uint32 *bits= ptr->get_null_bits(regTabPtr);
 
-  Uint32 tmp;
+  Uint32 tmp = 0;
   Uint32 check = regTabPtr->m_offsets[MM].m_null_words;
   BitmaskImpl::getField(check, bits, pos, bitCount, &tmp);
 

@@ -2506,6 +2506,7 @@ Dbtup::disk_restart_undo(Signal* signal,
 
   Ptr<Pending_undo_page> cur_undo_record_page;
   cur_undo_record_page.i = RNIL;
+  cur_undo_record_page.p = nullptr;
 
   if (isNdbMtLqh())
   {

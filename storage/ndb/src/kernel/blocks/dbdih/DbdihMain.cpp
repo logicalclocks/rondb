@@ -24887,6 +24887,8 @@ Dbdih::findBestLogNode(CreateReplicaRecord* createReplica,
   /*       BETTER.                                                         */
   /* --------------------------------------------------------------------- */
   fblStopGci = 0;
+  fblReplicaPtr.p = nullptr;
+  fblFoundReplicaPtr.p = nullptr;
   fblReplicaPtr.i = fragPtr.p->storedReplicas;
   while (fblReplicaPtr.i != RNIL64) {
     jam();
@@ -24905,7 +24907,6 @@ Dbdih::findBestLogNode(CreateReplicaRecord* createReplica,
     fblReplicaPtr.i = fblReplicaPtr.p->nextPool;
   }//while
   fblReplicaPtr.i = fragPtr.p->oldStoredReplicas;
-  fblFoundReplicaPtr.setNull();
   while (fblReplicaPtr.i != RNIL64) {
     jam();
     ndbrequire(c_replicaRecordPool.getPtr(fblReplicaPtr));
@@ -30450,10 +30451,15 @@ Dbdih::execCREATE_NODEGROUP_IMPL_REQ(Signal* signal)
        * setup multi socket transporter to communicate with other nodes in
        * the new node group.
        */
-      DEB_MULTI_TRP(("Set up multi transporter after Create nodegroup"));
+      g_eventLogger->info("Set up multi transporter after Create nodegroup");
       m_set_up_multi_trp_in_node_restart = false;
       signal->theData[0] = reference();
       sendSignal(QMGR_REF, GSN_SET_UP_MULTI_TRP_REQ, signal, 1, JBB);
+    }
+    else
+    {
+      jam();
+      g_eventLogger->info("Our node not part of new node group");
     }
     break;
   }

@@ -1794,6 +1794,9 @@ void Dblqh::startphase1Lab(Signal* signal, Uint32 _dummy, Uint32 ownNodeId)
   LogFileRecordPtr prevLogFilePtr;
   LogFileRecordPtr zeroLogFilePtr;
 
+  zeroLogFilePtr.i = RNIL;
+  zeroLogFilePtr.p = nullptr;
+
   if (do_init)
   {
     g_eventLogger->info("LDM(%u): Starting REDO log initialisation",
@@ -1801,6 +1804,8 @@ void Dblqh::startphase1Lab(Signal* signal, Uint32 _dummy, Uint32 ownNodeId)
   }
   LogFileRecordPtr logFilePtr;
   LogPartRecordPtr logPartPtr;
+  logFilePtr.i = RNIL;
+  logFilePtr.p = nullptr;
   ndbrequire(cnoLogFiles != 0);
   for (logPartPtr.i = 0; logPartPtr.i < clogPartFileSize; logPartPtr.i++)
   {
@@ -17898,7 +17903,9 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
   Uint32 aiLen= 0;
   Uint32 keyLen= 0;
 
-  ndbassert(numSections != 0);
+  keyInfoPtr.i = RNIL;
+  attrInfoPtr.i = RNIL;
+  ndbrequire(numSections != 0);
   {
     /* Long request, get Attr + Key len from section sizes */
     ndbrequire(handle.getSection(attrInfoPtr, ScanFragReq::AttrInfoSectionNum));

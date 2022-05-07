@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2008, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -66,7 +67,7 @@ AtrtClient::writeCommand(AtrtCommandType _type,
   {
     Properties::Iterator iter(&args);
     while((name= iter.next())){
-      PropertiesType t;
+      PropertiesType t = PropertiesType(0);
       Uint32 val_i;
       BaseString val_s;
       args.getTypeOf(name, &t);

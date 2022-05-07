@@ -1533,7 +1533,8 @@ Dbspj::build(Build_context& ctx,
              SectionReader & tree,
              SectionReader & param)
 {
-  Uint32 tmp0, tmp1;
+  Uint32 tmp0 = 0;
+  Uint32 tmp1 = 0;
   Uint32 err = DbspjErr::ZeroLengthQueryTree;
   ctx.m_cnt = 0;
   ctx.m_scan_cnt = 0;

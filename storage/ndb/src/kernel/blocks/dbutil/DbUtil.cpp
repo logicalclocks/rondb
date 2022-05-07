@@ -1476,6 +1476,8 @@ DbUtil::prepareOperation(Signal* signal,
   ndbrequire(prepPtr.p->prepOpPtr.p->attrMapping.first(attrMappingIt));
 
   ResultSetBuffer::DataBufferIterator rsInfoIt;
+  rsInfoIt.data = nullptr;
+  rsInfoIt.curr.p = nullptr;
   if (operationType == UtilPrepareReq::Read) {
     ndbrequire(prepPtr.p->prepOpPtr.p->rsInfo.first(rsInfoIt));
   }
@@ -2587,6 +2589,7 @@ DbUtil::execTRANSID_AI(Signal* signal){
   else
   {
     dataLen = signal->length() - 3;
+    dataPtr.p = nullptr;
   }
 
   bool validSignal = false;

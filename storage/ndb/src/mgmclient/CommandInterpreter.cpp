@@ -2502,9 +2502,9 @@ CommandInterpreter::count_active_nodes(ndb_mgm_configuration *conf,
   {
     if (!iter.openSection(CFG_SECTION_NODE, i))
       continue;
-    Uint32 check_type;
+    Uint32 check_type = Uint32(~0);
     Uint32 is_active = 1;
-    iter.get(CFG_TYPE_OF_SECTION, &check_type);
+    require(iter.get(CFG_TYPE_OF_SECTION, &check_type));
     iter.get(CFG_NODE_ACTIVE, &is_active);
     if ((ndb_mgm_node_type)check_type == node_type &&
         is_active)
@@ -2612,7 +2612,7 @@ CommandInterpreter::executeHostname(int processId,
   /* We need to change the communication sections as well */
   bool more_comm_sections = false;
   Uint32 i = 0;
-  Uint32 check_node_id;
+  Uint32 check_node_id = 0;
   do
   {
     more_comm_sections = iter.openSection(CFG_SECTION_CONNECTION, i);

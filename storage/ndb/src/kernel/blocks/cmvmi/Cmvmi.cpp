@@ -2759,7 +2759,7 @@ void Cmvmi::execDBINFO_SCANREQ(Signal *signal)
       if(row_num > sent_row_num)
       {
         Uint32 row_node_id, row_node_type;
-        const char * hostname;
+        const char * hostname = nullptr;
         Ndbinfo::Row row(signal, req);
         row.write_uint32(getOwnNodeId());
         ndb_mgm_get_int_parameter(iter, CFG_NODE_ID, & row_node_id);

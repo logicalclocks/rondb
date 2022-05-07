@@ -21355,7 +21355,7 @@ void Dbtc::execFIRE_TRIG_ORD(Signal* signal)
   else
   {
     transPtr.i = RNIL;
-    opPtr.setNull();
+    opPtr.p = nullptr;
   }
 
   if (unlikely(transPtr.i == RNIL) ||
