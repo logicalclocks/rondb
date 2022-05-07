@@ -2284,8 +2284,13 @@ public:
             {
               m_trp_state[prev_trp_id].m_next = m_trp_state[this_id].m_next;
             }
+            if (this_id == send_instance->m_last_trp)
+            {
+              send_instance->m_last_trp = prev_trp_id;
+            }
             break;
           }
+          prev_trp_id = next_trp_id;
           next_trp_id = m_trp_state[next_trp_id].m_next;
         }
         require(found);
