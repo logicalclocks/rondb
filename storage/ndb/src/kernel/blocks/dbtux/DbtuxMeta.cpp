@@ -308,6 +308,7 @@ Dbtux::execTUXFRAGREQ(Signal* signal)
     }
 
     FragPtr fragPtr;
+    fragPtr.i = RNIL64;
     c_fragPool.seize(fragPtr);
     if (fragPtr.i == RNIL64) {
       jam();

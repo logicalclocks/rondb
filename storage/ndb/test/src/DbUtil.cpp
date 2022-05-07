@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2007, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -244,7 +245,7 @@ DbUtil::runQuery(const char* sql,
       g_err << "param " << i << " missing" << endl;
       require(false);
     }
-    PropertiesType t;
+    PropertiesType t = PropertiesType(0);
     Uint32 val_i;
     const char* val_s;
     args.getTypeOf(name.c_str(), &t);

@@ -10143,7 +10143,6 @@ Qmgr::get_num_multi_trps(Signal *signal, bool &done)
   m_get_num_multi_trps_sent--;
   return (m_get_num_multi_trps_sent == 0);
 }
-
 void
 Qmgr::execGET_NUM_MULTI_TRP_REQ(Signal* signal)
 {

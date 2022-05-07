@@ -4818,6 +4818,7 @@ void Dbacc::commitdelete(Signal* signal)
      * In that case header is still valid to read but it will
      * not be in use, but free.
      */
+#if MAX_PARALLEL_SCANS_PER_FRAG > 0
     if (conhead.isInUse() && conhead.isScanInProgress())
     {
       /**
@@ -4845,6 +4846,7 @@ void Dbacc::commitdelete(Signal* signal)
         }
       }
     }
+#endif
   }
   else
   {
@@ -4863,6 +4865,7 @@ void Dbacc::commitdelete(Signal* signal)
 #else
     ContainerHeader conhead(delPageptr.p->word32[delConptr]);
 #endif
+#if MAX_PARALLEL_SCANS_PER_FRAG > 0
     if (conhead.isScanInProgress())
     {
       /**
@@ -4886,6 +4889,7 @@ void Dbacc::commitdelete(Signal* signal)
         }
       }
     }
+#endif
   }
   if (operationRecPtr.p->elementPage == lastPageptr.i &&
       operationRecPtr.p->elementPointer == tlastElementptr) {
@@ -5162,6 +5166,7 @@ void Dbacc::getLastAndRemove(Page8Ptr lastPrevpageptr,
        * container since it is about to be deleted.  Scans will look for next
        * unscanned container at next call to getScanElement.
        */
+#if MAX_PARALLEL_SCANS_PER_FRAG > 0
       if (containerhead.isScanInProgress())
       {
         Uint16 scansInProgress =
@@ -5188,6 +5193,7 @@ void Dbacc::getLastAndRemove(Page8Ptr lastPrevpageptr,
          * container is about to be released anyway.
          */
       }
+#endif
       if (lastIsforward)
       {
         jam();
@@ -8213,7 +8219,9 @@ void Dbacc::execACC_SCANREQ(Signal* signal) //Direct Executed
     return;
   }
 
+#if MAX_PARALLEL_SCANS_PER_FRAG > 0
   fragrecptr.p->scan[i] = scanPtr.i;
+#endif
   scanPtr.p->scanBucketState =  ScanRec::FIRST_LAP;
   scanPtr.p->scanLockMode = AccScanReq::getLockMode(scanFlag);
   scanPtr.p->scanReadCommittedFlag = AccScanReq::getReadCommittedFlag(scanFlag);

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -504,7 +505,7 @@ int SimpleCpcClient::cpc_send(const char *cmd, const Properties &args) {
   Properties::Iterator iter(&args);
   const char *name;
   while ((name = iter.next()) != NULL) {
-    PropertiesType t;
+    PropertiesType t = PropertiesType(0);
     Uint32 val_i;
     BaseString val_s;
     const size_t namelen = strlen(name);

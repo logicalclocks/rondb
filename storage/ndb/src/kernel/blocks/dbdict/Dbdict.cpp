@@ -7037,7 +7037,7 @@ Dbdict::execCREATE_TABLE_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     CreateTableRecPtr createTabPtr;
-    CreateTabReq* impl_req;
+    CreateTabReq* impl_req = nullptr;
 
     startClientReq(op_ptr, createTabPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -8988,7 +8988,7 @@ Dbdict::execDROP_TABLE_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     DropTableRecPtr dropTabPtr;
-    DropTabReq* impl_req;
+    DropTabReq* impl_req = nullptr;
 
     startClientReq(op_ptr, dropTabPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -9761,7 +9761,7 @@ Dbdict::execALTER_TABLE_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     AlterTableRecPtr alterTabPtr;
-    AlterTabReq* impl_req;
+    AlterTabReq* impl_req = nullptr;
 
     startClientReq(op_ptr, alterTabPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -13262,7 +13262,7 @@ Dbdict::execCREATE_INDX_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     CreateIndexRecPtr createIndexPtr;
-    CreateIndxImplReq* impl_req;
+    CreateIndxImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, createIndexPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -14067,7 +14067,7 @@ Dbdict::execDROP_INDX_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     DropIndexRecPtr dropIndexPtr;
-    DropIndxImplReq* impl_req;
+    DropIndxImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, dropIndexPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -14511,7 +14511,7 @@ Dbdict::execALTER_INDX_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     AlterIndexRecPtr alterIndexPtr;
-    AlterIndxImplReq* impl_req;
+    AlterIndxImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, alterIndexPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -15870,7 +15870,7 @@ Dbdict::execBUILDINDXREQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     BuildIndexRecPtr buildIndexPtr;
-    BuildIndxImplReq* impl_req;
+    BuildIndxImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, buildIndexPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -16663,7 +16663,7 @@ Dbdict::execINDEX_STAT_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     IndexStatRecPtr indexStatPtr;
-    IndexStatImplReq* impl_req;
+    IndexStatImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, indexStatPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -17465,7 +17465,7 @@ Dbdict::execCOPY_DATA_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     CopyDataRecPtr copyDataPtr;
-    CopyDataImplReq* impl_req;
+    CopyDataImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, copyDataPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -20425,7 +20425,7 @@ Dbdict::execCREATE_TRIG_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     CreateTriggerRecPtr createTriggerPtr;
-    CreateTrigImplReq* impl_req;
+    CreateTrigImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, createTriggerPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -21481,7 +21481,7 @@ Dbdict::execDROP_TRIG_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     DropTriggerRecPtr dropTriggerPtr;
-    DropTrigImplReq* impl_req;
+    DropTrigImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, dropTriggerPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -23843,7 +23843,7 @@ Dbdict::execCREATE_FILE_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     CreateFileRecPtr createFilePtr;
-    CreateFileImplReq* impl_req;
+    CreateFileImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, createFilePtr, req, impl_req, error);
     if (hasError(error)) {
@@ -24581,7 +24581,7 @@ Dbdict::execCREATE_FILEGROUP_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     CreateFilegroupRecPtr createFilegroupPtr;
-    CreateFilegroupImplReq* impl_req;
+    CreateFilegroupImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, createFilegroupPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -25196,7 +25196,7 @@ Dbdict::execDROP_FILE_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     DropFileRecPtr dropFilePtr;
-    DropFileImplReq* impl_req;
+    DropFileImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, dropFilePtr, req, impl_req, error);
     if (hasError(error)) {
@@ -25563,7 +25563,7 @@ Dbdict::execDROP_FILEGROUP_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     DropFilegroupRecPtr dropFilegroupPtr;
-    DropFilegroupImplReq* impl_req;
+    DropFilegroupImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, dropFilegroupPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -25994,7 +25994,7 @@ Dbdict::execCREATE_NODEGROUP_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     CreateNodegroupRecPtr createNodegroupRecPtr;
-    CreateNodegroupImplReq* impl_req;
+    CreateNodegroupImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, createNodegroupRecPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -26623,7 +26623,7 @@ Dbdict::execDROP_NODEGROUP_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     DropNodegroupRecPtr dropNodegroupRecPtr;
-    DropNodegroupImplReq* impl_req;
+    DropNodegroupImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, dropNodegroupRecPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -27118,7 +27118,7 @@ Dbdict::execCREATE_FK_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     CreateFKRecPtr createFKRecPtr;
-    CreateFKImplReq* impl_req;
+    CreateFKImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, createFKRecPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -28363,7 +28363,7 @@ Dbdict::execBUILD_FK_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     BuildFKRecPtr buildFKRecPtr;
-    BuildFKImplReq* impl_req;
+    BuildFKImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, buildFKRecPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -28702,7 +28702,7 @@ Dbdict::execDROP_FK_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     DropFKRecPtr dropFKRecPtr;
-    DropFKImplReq* impl_req;
+    DropFKImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, dropFKRecPtr, req, impl_req, error);
     if (hasError(error)) {
@@ -33906,7 +33906,7 @@ Dbdict::execCREATE_HASH_MAP_REQ(Signal* signal)
   do {
     SchemaOpPtr op_ptr;
     CreateHashMapRecPtr createHashMapRecordPtr;
-    CreateHashMapImplReq* impl_req;
+    CreateHashMapImplReq* impl_req = nullptr;
 
     startClientReq(op_ptr, createHashMapRecordPtr, req, impl_req, error);
     if (hasError(error)) {

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -6932,9 +6932,9 @@ setConfigValueAndRestartNode(NdbMgmd *mgmd,
   {
     if (!iter.openSection(CFG_SECTION_NODE, i))
       continue;
-    Uint32 nodeid;
-    Uint32 node_type;
-    iter.get(CFG_TYPE_OF_SECTION, &node_type);
+    Uint32 nodeid = 0;
+    Uint32 node_type = Uint32(~0);
+    require(iter.get(CFG_TYPE_OF_SECTION, &node_type));
     if (node_type != NODE_TYPE_DB)
       continue;
     iter.get(CFG_NODE_ID, &nodeid);

@@ -16849,7 +16849,8 @@ static int ndbcluster_alter_tablespace(handlerton *, THD *thd,
         return HA_ERR_NO_CONNECTION;
       }
 
-      int object_id, object_version;
+      int object_id = -1;
+      int object_version = -1;
       if (!create_tablespace_in_NDB(alter_info, dict, thd_ndb, object_id,
                                     object_version)) {
         return 1;
@@ -16985,7 +16986,8 @@ static int ndbcluster_alter_tablespace(handlerton *, THD *thd,
         return HA_ERR_NO_CONNECTION;
       }
 
-      int object_id, object_version;
+      int object_id = -1;
+      int object_version = -1;
       if (!create_logfile_group_in_NDB(alter_info, dict, thd_ndb, object_id,
                                        object_version)) {
         return 1;

@@ -6253,9 +6253,8 @@ Dbtup::handle_size_change_after_update(Signal *signal,
             regOperPtr->op_struct.bit_field.m_load_extra_diskpage_on_commit= 1;
             m_base_header_bits = bits;
             new_key.m_page_idx = new_size;
-            memcpy(req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr),
-                   &new_key,
-                   sizeof(new_key));
+	    void *ptr = (void*)req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr);
+            memcpy(ptr, &new_key, sizeof(new_key));
           }
         }
       }

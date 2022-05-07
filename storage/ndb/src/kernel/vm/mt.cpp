@@ -2449,11 +2449,12 @@ public:
         &m_send_threads[send_instance_id];
       m_trp_state[this_id].m_neighbour_trp = true;
       DEB_MULTI_TRP(("SNN: node: %u, trp: %u, send_instance: %u"
-                     ", num_trps: %u",
+                     ", num_trps: %u, in_list: %u",
                      nodeId,
                      this_id,
                      send_instance_id,
-                     send_instance->m_num_neighbour_trps));
+                     send_instance->m_num_neighbour_trps,
+		     m_trp_state[this_id].m_in_list_no_neighbour));
       if (m_trp_state[this_id].m_in_list_no_neighbour != false)
       {
         /**
@@ -2467,6 +2468,7 @@ public:
         bool found = false;
         while (next_trp_id != 0)
         {
+          DEB_MULTI_TRP(("Found trp_id: %u in trp list, prev: %u", next_trp_id, prev_trp_id));
           if (next_trp_id == this_id)
           {
             found = true;

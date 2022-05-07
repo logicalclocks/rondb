@@ -755,6 +755,7 @@ Dbtup::execACCKEYCONF(Signal* signal)
   Local_key tmp;
   tmp.m_page_no = localKey1;
   tmp.m_page_idx = localKey2;
+  tmp.m_file_no = 0;
 
   ndbassert(!m_is_query_block);
   ndbrequire(c_scanOpPool.getValidPtr(scanPtr));

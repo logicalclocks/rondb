@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -287,7 +288,7 @@ void CPCDAPISession::stopProcess(Parser_t::Context & /* unused */,
 static const char *propToString(Properties *prop, const char *key) {
   static char buf[32];
   const char *retval = NULL;
-  PropertiesType pt;
+  PropertiesType pt = PropertiesType(0);
 
   prop->getTypeOf(key, &pt);
   switch (pt) {
