@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -379,6 +379,8 @@ void Dbtup::execTUP_ADD_ATTRREQ(Signal* signal)
          * The NULL bit is stored after the data bits, so that we automatically
          * ensure that the full size bitmap is stored when non-NULL.
          */
+        AttributeDescriptor::setDiskBased(attrDescriptor, 0);
+        regTabPtr.p->tabDescriptor[(attrId * ZAD_SIZE)] = attrDescriptor;
         null_pos= regTabPtr.p->m_dyn_null_bits[MM];
         null_pos+= bits;
         regTabPtr.p->m_dyn_null_bits[MM]+= bits+1;
@@ -1122,7 +1124,11 @@ void Dbtup::seizeAlterTabOperation(AlterTabOperationPtr& alterTabOpPtr)
   alterTabOpPtr.i= cfirstfreeAlterTabOp;
   ptrCheckGuard(alterTabOpPtr, cnoOfAlterTabOps, alterTabOperRec);
   cfirstfreeAlterTabOp= alterTabOpPtr.p->nextAlterTabOp;
+  memset(alterTabOpPtr.p, 0, sizeof(AlterTabOperation));
   alterTabOpPtr.p->nextAlterTabOp= RNIL;
+  alterTabOpPtr.p->dynTableDescriptor[MM] = nullptr;
+  alterTabOpPtr.p->dynTableDescriptor[DD] = nullptr; 
+  alterTabOpPtr.p->tableDescriptor = nullptr;
 }
 
 void
@@ -1261,13 +1267,35 @@ Dbtup::handleAlterTablePrepare(Signal *signal,
     Uint32 newNoOfAttr= oldNoOfAttr+noOfNewAttr;
 
     /* Can only add attributes if varpart already present. */
+    bool mm_varpart_exists = true;
+    bool disk_varpart_exists = true;
     if((regTabPtr.p->m_attributes[MM].m_no_of_varsize +
         regTabPtr.p->m_attributes[MM].m_no_of_dynamic +
         (regTabPtr.p->m_bits & Tablerec::TR_ForceVarPart)) == 0)
     {
       jam();
-      sendAlterTabRef(signal, ZINVALID_ALTER_TAB);
-      return;
+      mm_varpart_exists = false;
+    }
+    if (regTabPtr.p->m_no_of_disk_attributes == 0)
+    {
+      jam();
+      disk_varpart_exists = false;
+    }
+    {
+      Uint32 *check_attrInfo= signal->theData+25;
+      for (Uint32 i= 0; i<noOfNewAttr; i++)
+      {
+        Uint32 attrDescriptor= *check_attrInfo++;
+        check_attrInfo++;
+        bool is_disk_based = AttributeDescriptor::getDiskBased(attrDescriptor);
+        if ((is_disk_based && !disk_varpart_exists) ||
+            (!is_disk_based && !mm_varpart_exists))
+        {
+          jam();
+          sendAlterTabRef(signal, ZINVALID_ALTER_TAB);
+          return;
+        }
+      }
     }
 
     AlterTabOperationPtr regAlterTabOpPtr;
@@ -1330,32 +1358,50 @@ Dbtup::handleAlterTablePrepare(Signal *signal,
       in ALTER_TAB_REQ[commit];
     */
     Uint32 charsetIndex= regTabPtr.p->noOfCharsets;
-    Uint32 dyn_nullbits= regTabPtr.p->m_dyn_null_bits[MM];
-    if (dyn_nullbits == 0)
+    Uint32 dyn_nullbits[2];
+    dyn_nullbits[MM] = regTabPtr.p->m_dyn_null_bits[MM];
+    if (dyn_nullbits[MM] == 0)
     {
       jam();
-      dyn_nullbits = DYN_BM_LEN_BITS;
+      dyn_nullbits[MM] = DYN_BM_LEN_BITS;
+    }
+    dyn_nullbits[DD] = regTabPtr.p->m_dyn_null_bits[DD];
+    if (dyn_nullbits[DD] == 0)
+    {
+      jam();
+      dyn_nullbits[DD] = DYN_BM_LEN_BITS;
     }
 
-    Uint32 noDynFix= regTabPtr.p->m_attributes[MM].m_no_of_dyn_fix;
-    Uint32 noDynVar= regTabPtr.p->m_attributes[MM].m_no_of_dyn_var;
-    Uint32 noDynamic= regTabPtr.p->m_attributes[MM].m_no_of_dynamic;
+    Uint32 noDynFix[2];
+    Uint32 noDynVar[2];
+    Uint32 noDynamic[2];
+    noDynFix[MM] = regTabPtr.p->m_attributes[MM].m_no_of_dyn_fix;
+    noDynVar[MM] = regTabPtr.p->m_attributes[MM].m_no_of_dyn_var;
+    noDynamic[MM] = regTabPtr.p->m_attributes[MM].m_no_of_dynamic;
+    noDynFix[DD] = regTabPtr.p->m_attributes[DD].m_no_of_dyn_fix;
+    noDynVar[DD] = regTabPtr.p->m_attributes[DD].m_no_of_dyn_var;
+    noDynamic[DD] = regTabPtr.p->m_attributes[DD].m_no_of_dynamic;
+
     for (Uint32 i= 0; i<noOfNewAttr; i++)
     {
       Uint32 attrDescriptor= *attrInfo++;
       Uint32 csNumber= (*attrInfo++ >> 16);
       Uint32 attrDes2= 0;
+      Uint32 ind = MM;
+      if (AttributeDescriptor::getDiskBased(attrDescriptor))
+      {
+        ind = DD;
+      }
 
       /* Only dynamic attributes possible for add attr */
       ndbrequire(AttributeDescriptor::getDynamic(attrDescriptor));
-      ndbrequire(!AttributeDescriptor::getDiskBased(attrDescriptor));
 
       handleCharsetPos(csNumber, CharsetArray, newNoOfCharsets,
                        charsetIndex, attrDes2);
 
-      Uint32 null_pos= dyn_nullbits;
+      Uint32 null_pos = dyn_nullbits[ind];
       Uint32 arrType= AttributeDescriptor::getArrayType(attrDescriptor);
-      noDynamic++;
+      noDynamic[ind]++;
       if (arrType==NDB_ARRAYTYPE_FIXED)
       {
         jam();
@@ -1366,24 +1412,26 @@ Dbtup::handleAlterTablePrepare(Signal *signal,
           jam();
           if(words > InternalMaxDynFix)
             goto treat_as_varsize;
-          noDynFix++;
-          dyn_nullbits+= words;
+          noDynFix[ind]++;
+          dyn_nullbits[ind]+= words;
         }
         else
         {
-          /* Bit type. */
+          /* Bit type. Always MM based */
           jam();
+          AttributeDescriptor::setDiskBased(attrDescriptor, 0);
           Uint32 bits= AttributeDescriptor::getArraySize(attrDescriptor);
-          null_pos+= bits;
-          dyn_nullbits+= bits+1;
+          null_pos = dyn_nullbits[MM];
+          null_pos += bits;
+          dyn_nullbits[MM] += bits+1;
         }
       }
       else
       {
         jam();
     treat_as_varsize:
-        noDynVar++;
-        dyn_nullbits++;
+        noDynVar[ind]++;
+        dyn_nullbits[ind]++;
       }
       AttributeOffset::setNullFlagPos(attrDes2, null_pos);
 
@@ -1393,37 +1441,52 @@ Dbtup::handleAlterTablePrepare(Signal *signal,
     ndbassert(newNoOfCharsets==charsetIndex);
     ndbrequire(attrDesPtr == attrDesPtrStart + (ZAD_SIZE * newNoOfAttr));
 
-    regAlterTabOpPtr.p->noOfDynNullBits= dyn_nullbits;
-    ndbassert(noDynamic ==
-              regTabPtr.p->m_attributes[MM].m_no_of_dynamic + noOfNewAttr);
-    regAlterTabOpPtr.p->noOfDynFix= noDynFix;
-    regAlterTabOpPtr.p->noOfDynVar= noDynVar;
-    regAlterTabOpPtr.p->noOfDynamic= noDynamic;
+    regAlterTabOpPtr.p->noOfDynNullBits[MM] = dyn_nullbits[MM];
+    regAlterTabOpPtr.p->noOfDynNullBits[DD] = dyn_nullbits[DD];
+    ndbassert((noDynamic[MM] + noDynamic[DD]) ==
+              (regTabPtr.p->m_attributes[MM].m_no_of_dynamic +
+               regTabPtr.p->m_attributes[DD].m_no_of_dynamic +
+               noOfNewAttr));
+    regAlterTabOpPtr.p->noOfDynFix[MM]= noDynFix[MM];
+    regAlterTabOpPtr.p->noOfDynFix[DD]= noDynFix[DD];
+    regAlterTabOpPtr.p->noOfDynVar[MM]= noDynVar[MM];
+    regAlterTabOpPtr.p->noOfDynVar[DD]= noDynVar[DD];
+    regAlterTabOpPtr.p->noOfDynamic[MM]= noDynamic[MM];
+    regAlterTabOpPtr.p->noOfDynamic[DD]= noDynamic[DD];
 
-    /* Allocate the new (possibly larger) dynamic descriptor. */
-    allocSize = getDynTabDescrOffsets((dyn_nullbits+31)>>5,
-                                      regAlterTabOpPtr.p->dynTabDesOffset);
-    Uint32* dynTableDescriptorRef = nullptr;
-    if (ERROR_INSERTED(4029))
+    for (Uint32 inx = 0; inx < 2; inx++)
     {
-      jam();
-      terrorCode = ZMEM_NOTABDESCR_ERROR;
-      CLEAR_ERROR_INSERT_VALUE;
+      /* Allocate the new (possibly larger) dynamic descriptor. */
+      allocSize = getDynTabDescrOffsets((dyn_nullbits[inx]+31)>>5,
+                                regAlterTabOpPtr.p->dynTabDesOffset[inx]);
+      Uint32* dynTableDescriptorRef = nullptr;
+      if ((ERROR_INSERTED(4029) && (inx == 0)) ||
+          (ERROR_INSERTED(4039) && (inx == 1)))
+      {
+        jam();
+        terrorCode = ZMEM_NOTABDESCR_ERROR;
+        CLEAR_ERROR_INSERT_VALUE;
+      }
+      else
+      {
+        jam();
+        dynTableDescriptorRef = allocTabDescr(allocSize, regTabPtr.i);
+      }
+      if (dynTableDescriptorRef == nullptr)
+      {
+        jam();
+        releaseTabDescr(tableDescriptorRef);
+        if (inx == DD)
+        {
+          jam();
+          releaseTabDescr(regAlterTabOpPtr.p->dynTableDescriptor[MM]);
+        }
+        releaseAlterTabOpRec(regAlterTabOpPtr);
+        sendAlterTabRef(signal, terrorCode);
+        return;
+      }
+      regAlterTabOpPtr.p->dynTableDescriptor[inx] = dynTableDescriptorRef;
     }
-    else
-    {
-      jam();
-      dynTableDescriptorRef = allocTabDescr(allocSize, regTabPtr.i);
-    }
-    if (dynTableDescriptorRef == nullptr)
-    {
-      jam();
-      releaseTabDescr(tableDescriptorRef);
-      releaseAlterTabOpRec(regAlterTabOpPtr);
-      sendAlterTabRef(signal, terrorCode);
-      return;
-    }
-    regAlterTabOpPtr.p->dynTableDescriptor= dynTableDescriptorRef;
     connectPtr = regAlterTabOpPtr.i;
   }
 
@@ -1464,21 +1527,42 @@ Dbtup::handleAlterTableCommit(Signal *signal,
     regTabPtr->m_no_of_attributes= regAlterTabOpPtr.p->newNoOfAttrs;
     regTabPtr->noOfCharsets= regAlterTabOpPtr.p->newNoOfCharsets;
     regTabPtr->noOfKeyAttr= regAlterTabOpPtr.p->newNoOfKeyAttrs;
-    regTabPtr->m_attributes[MM].m_no_of_dyn_fix= regAlterTabOpPtr.p->noOfDynFix;
-    regTabPtr->m_attributes[MM].m_no_of_dyn_var= regAlterTabOpPtr.p->noOfDynVar;
-    regTabPtr->m_attributes[MM].m_no_of_dynamic= regAlterTabOpPtr.p->noOfDynamic;
-    regTabPtr->m_dyn_null_bits[MM]= regAlterTabOpPtr.p->noOfDynNullBits;
-    DEB_DYN_META(("(%u) set m_no_of_dynamic[MM] = %u",
+
+    regTabPtr->m_attributes[MM].m_no_of_dyn_fix=
+      regAlterTabOpPtr.p->noOfDynFix[MM];
+    regTabPtr->m_attributes[DD].m_no_of_dyn_fix=
+      regAlterTabOpPtr.p->noOfDynFix[DD];
+
+    regTabPtr->m_attributes[MM].m_no_of_dyn_var=
+      regAlterTabOpPtr.p->noOfDynVar[MM];
+    regTabPtr->m_attributes[DD].m_no_of_dyn_var=
+      regAlterTabOpPtr.p->noOfDynVar[DD];
+
+    regTabPtr->m_attributes[MM].m_no_of_dynamic=
+      regAlterTabOpPtr.p->noOfDynamic[MM];
+    regTabPtr->m_attributes[DD].m_no_of_dynamic=
+      regAlterTabOpPtr.p->noOfDynamic[DD];
+
+    regTabPtr->m_dyn_null_bits[MM]= regAlterTabOpPtr.p->noOfDynNullBits[MM];
+    regTabPtr->m_dyn_null_bits[DD]= regAlterTabOpPtr.p->noOfDynNullBits[DD];
+    DEB_DYN_META(("(%u) set m_no_of_dynamic[MM] = %u, m_no_of_dynamic[DD]",
                   instance(),
-                  regTabPtr->m_attributes[MM].m_no_of_dynamic));
+                  regTabPtr->m_attributes[MM].m_no_of_dynamic,
+                  regTabPtr->m_attributes[DD].m_no_of_dynamic));
 
     /* Install the new (larger) table descriptors. */
     setUpDescriptorReferences(regAlterTabOpPtr.p->tableDescriptor,
                               regTabPtr,
                               regAlterTabOpPtr.p->tabDesOffset);
-    setupDynDescriptorReferences(regAlterTabOpPtr.p->dynTableDescriptor,
+
+    setupDynDescriptorReferences(regAlterTabOpPtr.p->dynTableDescriptor[MM],
                                  regTabPtr,
-                                 regAlterTabOpPtr.p->dynTabDesOffset);
+                                 regAlterTabOpPtr.p->dynTabDesOffset[MM],
+                                 MM);
+    setupDynDescriptorReferences(regAlterTabOpPtr.p->dynTableDescriptor[DD],
+                                 regTabPtr,
+                                 regAlterTabOpPtr.p->dynTabDesOffset[DD],
+                                 DD);
 
     releaseAlterTabOpRec(regAlterTabOpPtr);
 
@@ -1590,7 +1674,8 @@ Dbtup::handleAlterTableAbort(Signal *signal,
       ptrCheckGuard(regAlterTabOpPtr, cnoOfAlterTabOps, alterTabOperRec);
 
       releaseTabDescr(regAlterTabOpPtr.p->tableDescriptor);
-      releaseTabDescr(regAlterTabOpPtr.p->dynTableDescriptor);
+      releaseTabDescr(regAlterTabOpPtr.p->dynTableDescriptor[MM]);
+      releaseTabDescr(regAlterTabOpPtr.p->dynTableDescriptor[DD]);
       releaseAlterTabOpRec(regAlterTabOpPtr);
     }
   }
@@ -1868,6 +1953,7 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
         else
         {
           jam();
+          ndbrequire(ind == MM);
           dynamic_count[ind]--;
           dynamic_count[MM]++;
           DEB_DYN_META(("(%u) tab(%u), attrId: %u, Bit type",

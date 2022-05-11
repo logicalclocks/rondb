@@ -1,0 +1,729 @@
+CREATE LOGFILE GROUP lg1
+ADD UNDOFILE 'undofile.dat'
+INITIAL_SIZE 16M
+UNDO_BUFFER_SIZE = 8M
+ENGINE=NDB;
+CREATE TABLESPACE ts1
+ADD DATAFILE 'datafile.dat'
+USE LOGFILE GROUP lg1
+INITIAL_SIZE 64M
+ENGINE NDB;
+*******************************
+* basic online alter tests
+*******************************
+CREATE TABLE t1 (a INT UNSIGNED KEY, b INT UNSIGNED) ROW_FORMAT=DYNAMIC STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,1);
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+*******************************
+* Alter Table online add column
+*******************************
+* Add column c as CHAR
+*******************************
+ALTER TABLE t1 ADD column c CHAR(19) STORAGE DISK;
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+INSERT INTO t1 values (2,1,"a");
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	NULL
+2	1	a
+UPDATE t1 SET c='b' where a = 2;
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	NULL
+2	1	b
+DROP TABLE t1;
+*******************************
+* Alter Table online add column
+*******************************
+* Add column c as nullable INT
+*******************************
+CREATE TABLE t1 (a INT UNSIGNED KEY, b VARCHAR(19)) STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,"a");
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+ALTER TABLE t1 ADD column c INT STORAGE DISK;
+Warnings:
+Warning	1478	Converted FIXED field 'c' to DYNAMIC to enable online ADD COLUMN
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+INSERT INTO t1 values (2,"a",1);
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	a	NULL
+2	a	1
+UPDATE t1 SET c = 2 where a = 2;
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	a	NULL
+2	a	2
+DROP TABLE t1;
+*******************************
+* Alter Table online add column
+*******************************
+* Add column c as nullable INT
+*******************************
+CREATE TABLE t1 (a INT UNSIGNED KEY, b INT COLUMN_FORMAT DYNAMIC) STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,1);
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+ALTER TABLE t1 ADD column c INT STORAGE DISK;
+Warnings:
+Warning	1478	Converted FIXED field 'c' to DYNAMIC to enable online ADD COLUMN
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+INSERT INTO t1 values (2,1,1);
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	NULL
+2	1	1
+UPDATE t1 SET c = 2 where a = 2;
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	NULL
+2	1	2
+DROP TABLE t1;
+*******************************
+* Add column c as NULLABLE TIMESTAMP online
+*******************************
+CREATE TABLE t1 (a INT UNSIGNED KEY, b INT UNSIGNED) ROW_FORMAT=DYNAMIC STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,1);
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+ALTER TABLE t1 algorithm=inplace, ADD column c TIMESTAMP;
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+INSERT INTO t1 values (2,2,'2007-09-19 18:46:02');
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	NULL
+2	2	2007-09-19 18:46:02
+UPDATE t1 SET c = '2007-10-22 16:35:06' where a = 2;
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	NULL
+2	2	2007-10-22 16:35:06
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `a` int unsigned NOT NULL,
+  `b` int unsigned DEFAULT NULL,
+  `c` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`a`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci ROW_FORMAT=DYNAMIC
+DROP TABLE t1;
+*******************************
+* The following ALTER operations are not supported on-line
+*******************************
+* Not supported Test#1
+*******************************
+CREATE TABLE t1 (a INT UNSIGNED KEY, b INT UNSIGNED) ROW_FORMAT=FIXED STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,1);
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+ALTER TABLE t1 algorithm=inplace, ADD column c CHAR(19) STORAGE DISK;
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+ALTER TABLE t1 algorithm=inplace, ADD column c CHAR(19) STORAGE DISK COLUMN_FORMAT DYNAMIC;
+Warnings:
+Warning	1478	Row format FIXED incompatible with dynamic attribute c
+Warning	1478	Row format FIXED incompatible with dynamic attribute c
+INSERT INTO t1 values (2,1,"a");
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	NULL
+2	1	a
+UPDATE t1 SET c = 'b' where a = 2;
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	NULL
+2	1	b
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `a` int unsigned NOT NULL,
+  `b` int unsigned DEFAULT NULL,
+  `c` char(19) /*!50606 STORAGE DISK */ /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  PRIMARY KEY (`a`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci ROW_FORMAT=FIXED
+DROP TABLE t1;
+*******************************
+* Not supported Test#2
+*******************************
+CREATE TABLE t1 (a INT UNSIGNED KEY, b INT UNSIGNED) ROW_FORMAT=DYNAMIC STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,1);
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+ALTER TABLE t1 algorithm=inplace, ADD column c CHAR(19) DEFAULT 17;
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column with non-null default value is not supported online. Try ALGORITHM=COPY.
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+ALTER TABLE t1 ADD column c CHAR(19) DEFAULT 17;
+INSERT INTO t1 values (2,1,"a");
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	17
+2	1	a
+UPDATE t1 SET c = 'b' where a = 2;
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	17
+2	1	b
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `a` int unsigned NOT NULL,
+  `b` int unsigned DEFAULT NULL,
+  `c` char(19) DEFAULT '17',
+  PRIMARY KEY (`a`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci ROW_FORMAT=DYNAMIC
+*******************************
+* Not supported Test#3
+*******************************
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+ALTER TABLE t1 algorithm=inplace, ADD column d INT STORAGE DISK AFTER b;
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Altering column order. Try ALGORITHM=COPY.
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+ALTER TABLE t1 ADD column d INT STORAGE DISK AFTER b;
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+INSERT INTO t1 VALUES(3,1,1,'b');
+SELECT * FROM t1 ORDER BY a;
+a	b	d	c
+1	1	NULL	17
+2	1	NULL	b
+3	1	1	b
+UPDATE t1 SET d = 2 where a = 3;
+SELECT * FROM t1 ORDER BY a;
+a	b	d	c
+1	1	NULL	17
+2	1	NULL	b
+3	1	2	b
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `a` int unsigned NOT NULL,
+  `b` int unsigned DEFAULT NULL,
+  `d` int /*!50606 STORAGE DISK */ DEFAULT NULL,
+  `c` char(19) DEFAULT '17',
+  PRIMARY KEY (`a`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci ROW_FORMAT=DYNAMIC
+*******************************
+* Not supported Test#4
+*******************************
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+ALTER TABLE t1 algorithm=inplace, ENGINE MYISAM STORAGE DISK;
+ERROR 0A000: ALGORITHM=INPLACE is not supported for this operation. Try ALGORITHM=COPY.
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+DROP TABLE t1;
+*******************************
+* Not supported Test#5
+*******************************
+CREATE TABLE t1 (a INT UNSIGNED KEY, b INT UNSIGNED) ROW_FORMAT=DYNAMIC STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,1);
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+ALTER TABLE t1 algorithm=inplace, ADD column c CHAR(19) NOT NULL STORAGE DISK;
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+ALTER TABLE t1 ADD column c CHAR(19) NOT NULL STORAGE DISK;
+INSERT INTO t1 values (2,1,"a");
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	
+2	1	a
+UPDATE t1 SET c = 'b' where a = 2;
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	
+2	1	b
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `a` int unsigned NOT NULL,
+  `b` int unsigned DEFAULT NULL,
+  `c` char(19) NOT NULL /*!50606 STORAGE DISK */,
+  PRIMARY KEY (`a`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci ROW_FORMAT=DYNAMIC
+DROP TABLE t1;
+*******************************
+* Not supported Test#6
+*******************************
+CREATE TABLE t1 (a INT UNSIGNED KEY, b INT UNSIGNED) ROW_FORMAT=DYNAMIC STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,1);
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+ALTER TABLE t1 algorithm=inplace, ADD column c CHAR(19) COLUMN_FORMAT FIXED STORAGE DISK;
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+ALTER TABLE t1 ADD column c CHAR(19) COLUMN_FORMAT FIXED STORAGE DISK;
+INSERT INTO t1 values (2,1,"a");
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	NULL
+2	1	a
+UPDATE t1 SET c = 'b' WHERE a = 2;
+SELECT * FROM t1 ORDER BY a;
+a	b	c
+1	1	NULL
+2	1	b
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `a` int unsigned NOT NULL,
+  `b` int unsigned DEFAULT NULL,
+  `c` char(19) /*!50606 STORAGE DISK */ /*!50606 COLUMN_FORMAT FIXED */ DEFAULT NULL,
+  PRIMARY KEY (`a`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci ROW_FORMAT=DYNAMIC
+DROP TABLE t1;
+*******************************
+* Not supported Test#7
+* Ndb doesn't support renaming attributes on-line
+*******************************
+CREATE TABLE t1 (
+auto int(5) unsigned NOT NULL auto_increment,
+string char(10),
+vstring varchar(10),
+bin binary(2),
+vbin varbinary(7),
+tiny tinyint(4) DEFAULT '0' NOT NULL ,
+short smallint(6) DEFAULT '1' NOT NULL ,
+medium mediumint(8) DEFAULT '0' NOT NULL,
+long_int int(11) DEFAULT '0' NOT NULL,
+longlong bigint(13) DEFAULT '0' NOT NULL,
+real_float float(13,1) DEFAULT 0.0 NOT NULL,
+real_double double(16,4),
+real_decimal decimal(16,4),
+utiny tinyint(3) unsigned DEFAULT '0' NOT NULL,
+ushort smallint(5) unsigned zerofill DEFAULT '00000' NOT NULL,
+umedium mediumint(8) unsigned DEFAULT '0' NOT NULL,
+ulong int(11) unsigned DEFAULT '0' NOT NULL,
+ulonglong bigint(13) unsigned DEFAULT '0' NOT NULL,
+bits bit(3),
+options enum('zero','one','two','three','four') not null,
+flags set('zero','one','two','three','four') not null,
+date_field date,
+year_field year,
+time_field time,
+date_time datetime,
+time_stamp timestamp,
+PRIMARY KEY (auto)
+) STORAGE DISK TABLESPACE ts1 engine=ndb;
+Warnings:
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+Warning	1681	Specifying number of digits for floating point data types is deprecated and will be removed in a future release.
+Warning	1681	Specifying number of digits for floating point data types is deprecated and will be removed in a future release.
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+Warning	1681	The ZEROFILL attribute is deprecated and will be removed in a future release. Use the LPAD function to zero-pad numbers, or store the formatted numbers in a CHAR column.
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+alter table t1 algorithm=inplace, change tiny new_tiny tinyint(4) DEFAULT '0';
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Altering if field is nullable is not supported. Try ALGORITHM=COPY.
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+alter table t1 change tiny tiny2 tinyint(4) DEFAULT '0' NOT NULL;
+Warnings:
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `auto` int unsigned NOT NULL AUTO_INCREMENT,
+  `string` char(10) DEFAULT NULL,
+  `vstring` varchar(10) DEFAULT NULL,
+  `bin` binary(2) DEFAULT NULL,
+  `vbin` varbinary(7) DEFAULT NULL,
+  `tiny2` tinyint NOT NULL DEFAULT '0',
+  `short` smallint NOT NULL DEFAULT '1',
+  `medium` mediumint NOT NULL DEFAULT '0',
+  `long_int` int NOT NULL DEFAULT '0',
+  `longlong` bigint NOT NULL DEFAULT '0',
+  `real_float` float(13,1) NOT NULL DEFAULT '0.0',
+  `real_double` double(16,4) DEFAULT NULL,
+  `real_decimal` decimal(16,4) DEFAULT NULL,
+  `utiny` tinyint unsigned NOT NULL DEFAULT '0',
+  `ushort` smallint(5) unsigned zerofill NOT NULL DEFAULT '00000',
+  `umedium` mediumint unsigned NOT NULL DEFAULT '0',
+  `ulong` int unsigned NOT NULL DEFAULT '0',
+  `ulonglong` bigint unsigned NOT NULL DEFAULT '0',
+  `bits` bit(3) DEFAULT NULL,
+  `options` enum('zero','one','two','three','four') NOT NULL,
+  `flags` set('zero','one','two','three','four') NOT NULL,
+  `date_field` date DEFAULT NULL,
+  `year_field` year DEFAULT NULL,
+  `time_field` time DEFAULT NULL,
+  `date_time` datetime DEFAULT NULL,
+  `time_stamp` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`auto`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+alter table t1 algorithm=inplace, change tiny2 new_tiny tinyint(4) DEFAULT '0' NOT NULL;
+Warnings:
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `auto` int unsigned NOT NULL AUTO_INCREMENT,
+  `string` char(10) DEFAULT NULL,
+  `vstring` varchar(10) DEFAULT NULL,
+  `bin` binary(2) DEFAULT NULL,
+  `vbin` varbinary(7) DEFAULT NULL,
+  `new_tiny` tinyint NOT NULL DEFAULT '0',
+  `short` smallint NOT NULL DEFAULT '1',
+  `medium` mediumint NOT NULL DEFAULT '0',
+  `long_int` int NOT NULL DEFAULT '0',
+  `longlong` bigint NOT NULL DEFAULT '0',
+  `real_float` float(13,1) NOT NULL DEFAULT '0.0',
+  `real_double` double(16,4) DEFAULT NULL,
+  `real_decimal` decimal(16,4) DEFAULT NULL,
+  `utiny` tinyint unsigned NOT NULL DEFAULT '0',
+  `ushort` smallint(5) unsigned zerofill NOT NULL DEFAULT '00000',
+  `umedium` mediumint unsigned NOT NULL DEFAULT '0',
+  `ulong` int unsigned NOT NULL DEFAULT '0',
+  `ulonglong` bigint unsigned NOT NULL DEFAULT '0',
+  `bits` bit(3) DEFAULT NULL,
+  `options` enum('zero','one','two','three','four') NOT NULL,
+  `flags` set('zero','one','two','three','four') NOT NULL,
+  `date_field` date DEFAULT NULL,
+  `year_field` year DEFAULT NULL,
+  `time_field` time DEFAULT NULL,
+  `date_time` datetime DEFAULT NULL,
+  `time_stamp` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`auto`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+alter table t1 algorithm=inplace, change new_tiny new_tiny tinyint(4) DEFAULT '1' NOT NULL;
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Altering default value is not supported. Try ALGORITHM=COPY.
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+alter table t1 change new_tiny new_tiny tinyint(4) DEFAULT '1' NOT NULL;
+Warnings:
+Warning	1681	Integer display width is deprecated and will be removed in a future release.
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `auto` int unsigned NOT NULL AUTO_INCREMENT,
+  `string` char(10) DEFAULT NULL,
+  `vstring` varchar(10) DEFAULT NULL,
+  `bin` binary(2) DEFAULT NULL,
+  `vbin` varbinary(7) DEFAULT NULL,
+  `new_tiny` tinyint NOT NULL DEFAULT '1',
+  `short` smallint NOT NULL DEFAULT '1',
+  `medium` mediumint NOT NULL DEFAULT '0',
+  `long_int` int NOT NULL DEFAULT '0',
+  `longlong` bigint NOT NULL DEFAULT '0',
+  `real_float` float(13,1) NOT NULL DEFAULT '0.0',
+  `real_double` double(16,4) DEFAULT NULL,
+  `real_decimal` decimal(16,4) DEFAULT NULL,
+  `utiny` tinyint unsigned NOT NULL DEFAULT '0',
+  `ushort` smallint(5) unsigned zerofill NOT NULL DEFAULT '00000',
+  `umedium` mediumint unsigned NOT NULL DEFAULT '0',
+  `ulong` int unsigned NOT NULL DEFAULT '0',
+  `ulonglong` bigint unsigned NOT NULL DEFAULT '0',
+  `bits` bit(3) DEFAULT NULL,
+  `options` enum('zero','one','two','three','four') NOT NULL,
+  `flags` set('zero','one','two','three','four') NOT NULL,
+  `date_field` date DEFAULT NULL,
+  `year_field` year DEFAULT NULL,
+  `time_field` time DEFAULT NULL,
+  `date_time` datetime DEFAULT NULL,
+  `time_stamp` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`auto`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+create index i1 on t1(medium);
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `auto` int unsigned NOT NULL AUTO_INCREMENT,
+  `string` char(10) DEFAULT NULL,
+  `vstring` varchar(10) DEFAULT NULL,
+  `bin` binary(2) DEFAULT NULL,
+  `vbin` varbinary(7) DEFAULT NULL,
+  `new_tiny` tinyint NOT NULL DEFAULT '1',
+  `short` smallint NOT NULL DEFAULT '1',
+  `medium` mediumint NOT NULL DEFAULT '0',
+  `long_int` int NOT NULL DEFAULT '0',
+  `longlong` bigint NOT NULL DEFAULT '0',
+  `real_float` float(13,1) NOT NULL DEFAULT '0.0',
+  `real_double` double(16,4) DEFAULT NULL,
+  `real_decimal` decimal(16,4) DEFAULT NULL,
+  `utiny` tinyint unsigned NOT NULL DEFAULT '0',
+  `ushort` smallint(5) unsigned zerofill NOT NULL DEFAULT '00000',
+  `umedium` mediumint unsigned NOT NULL DEFAULT '0',
+  `ulong` int unsigned NOT NULL DEFAULT '0',
+  `ulonglong` bigint unsigned NOT NULL DEFAULT '0',
+  `bits` bit(3) DEFAULT NULL,
+  `options` enum('zero','one','two','three','four') NOT NULL,
+  `flags` set('zero','one','two','three','four') NOT NULL,
+  `date_field` date DEFAULT NULL,
+  `year_field` year DEFAULT NULL,
+  `time_field` time DEFAULT NULL,
+  `date_time` datetime DEFAULT NULL,
+  `time_stamp` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`auto`),
+  KEY `i1` (`medium`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+alter table t1 add index i2(new_tiny);
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `auto` int unsigned NOT NULL AUTO_INCREMENT,
+  `string` char(10) DEFAULT NULL,
+  `vstring` varchar(10) DEFAULT NULL,
+  `bin` binary(2) DEFAULT NULL,
+  `vbin` varbinary(7) DEFAULT NULL,
+  `new_tiny` tinyint NOT NULL DEFAULT '1',
+  `short` smallint NOT NULL DEFAULT '1',
+  `medium` mediumint NOT NULL DEFAULT '0',
+  `long_int` int NOT NULL DEFAULT '0',
+  `longlong` bigint NOT NULL DEFAULT '0',
+  `real_float` float(13,1) NOT NULL DEFAULT '0.0',
+  `real_double` double(16,4) DEFAULT NULL,
+  `real_decimal` decimal(16,4) DEFAULT NULL,
+  `utiny` tinyint unsigned NOT NULL DEFAULT '0',
+  `ushort` smallint(5) unsigned zerofill NOT NULL DEFAULT '00000',
+  `umedium` mediumint unsigned NOT NULL DEFAULT '0',
+  `ulong` int unsigned NOT NULL DEFAULT '0',
+  `ulonglong` bigint unsigned NOT NULL DEFAULT '0',
+  `bits` bit(3) DEFAULT NULL,
+  `options` enum('zero','one','two','three','four') NOT NULL,
+  `flags` set('zero','one','two','three','four') NOT NULL,
+  `date_field` date DEFAULT NULL,
+  `year_field` year DEFAULT NULL,
+  `time_field` time DEFAULT NULL,
+  `date_time` datetime DEFAULT NULL,
+  `time_stamp` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`auto`),
+  KEY `i1` (`medium`),
+  KEY `i2` (`new_tiny`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+drop index i1 on t1;
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `auto` int unsigned NOT NULL AUTO_INCREMENT,
+  `string` char(10) DEFAULT NULL,
+  `vstring` varchar(10) DEFAULT NULL,
+  `bin` binary(2) DEFAULT NULL,
+  `vbin` varbinary(7) DEFAULT NULL,
+  `new_tiny` tinyint NOT NULL DEFAULT '1',
+  `short` smallint NOT NULL DEFAULT '1',
+  `medium` mediumint NOT NULL DEFAULT '0',
+  `long_int` int NOT NULL DEFAULT '0',
+  `longlong` bigint NOT NULL DEFAULT '0',
+  `real_float` float(13,1) NOT NULL DEFAULT '0.0',
+  `real_double` double(16,4) DEFAULT NULL,
+  `real_decimal` decimal(16,4) DEFAULT NULL,
+  `utiny` tinyint unsigned NOT NULL DEFAULT '0',
+  `ushort` smallint(5) unsigned zerofill NOT NULL DEFAULT '00000',
+  `umedium` mediumint unsigned NOT NULL DEFAULT '0',
+  `ulong` int unsigned NOT NULL DEFAULT '0',
+  `ulonglong` bigint unsigned NOT NULL DEFAULT '0',
+  `bits` bit(3) DEFAULT NULL,
+  `options` enum('zero','one','two','three','four') NOT NULL,
+  `flags` set('zero','one','two','three','four') NOT NULL,
+  `date_field` date DEFAULT NULL,
+  `year_field` year DEFAULT NULL,
+  `time_field` time DEFAULT NULL,
+  `date_time` datetime DEFAULT NULL,
+  `time_stamp` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`auto`),
+  KEY `i2` (`new_tiny`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+DROP TABLE t1;
+****************************************
+* Add column c as nullable TEXT and BLOB
+****************************************
+CREATE TABLE t1 (a INT UNSIGNED  AUTO_INCREMENT KEY, b INT DEFAULT 2 COLUMN_FORMAT DYNAMIC) STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+ALTER TABLE t1 algorithm=inplace, ADD column c TEXT STORAGE DISK;
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+ALTER TABLE t1 algorithm=inplace, ADD column d BLOB STORAGE DISK;
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+DROP TABLE t1;
+CREATE TABLE t1 (a INT UNSIGNED AUTO_INCREMENT KEY, b INT COLUMN_FORMAT DYNAMIC) STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+*******************************
+* Add column c as nullable FLOAT
+*******************************
+ALTER TABLE t1 algorithm=inplace, ADD column c FLOAT STORAGE DISK;
+Warnings:
+Warning	1478	Converted FIXED field 'c' to DYNAMIC to enable online ADD COLUMN
+*******************************
+* Add column d as nullable DOUBLE
+*******************************
+ALTER TABLE t1 algorithm=inplace, ADD column d DOUBLE UNSIGNED STORAGE DISK;
+Warnings:
+Warning	1681	UNSIGNED for decimal and floating point data types is deprecated and support for it will be removed in a future release.
+Warning	1478	Converted FIXED field 'd' to DYNAMIC to enable online ADD COLUMN
+*******************************
+* Add column e as nullable DECIMAL
+*******************************
+ALTER TABLE t1 algorithm=inplace, ADD column e DECIMAL(5,2) STORAGE DISK;
+Warnings:
+Warning	1478	Converted FIXED field 'e' to DYNAMIC to enable online ADD COLUMN
+*******************************
+* Add column f as nullable DATETIME
+*******************************
+ALTER TABLE t1 algorithm=inplace, ADD column f DATETIME STORAGE DISK;
+Warnings:
+Warning	1478	Converted FIXED field 'f' to DYNAMIC to enable online ADD COLUMN
+*******************************
+* Add column g as nullable BINARY
+*******************************
+ALTER TABLE t1 ADD column g BINARY(4) STORAGE DISK;
+Warnings:
+Warning	1478	Converted FIXED field 'g' to DYNAMIC to enable online ADD COLUMN
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+name
+'t1'
+SELECT COUNT(*) FROM t1 WHERE c IS NULL;
+COUNT(*)
+5
+SELECT COUNT(*) FROM t1 WHERE d IS NULL;
+COUNT(*)
+10
+SELECT COUNT(*) FROM t1 WHERE e IS NULL;
+COUNT(*)
+15
+SELECT COUNT(*) FROM t1 WHERE f IS NULL;
+COUNT(*)
+20
+SELECT COUNT(*) FROM t1 WHERE g IS NULL;
+COUNT(*)
+25
+UPDATE t1 SET c = 3.402823466E+38, d = 1.2686868689898E+308, e = 666.66, f = '2007-10-23 23:23:23', g = '1111' WHERE a = 1;
+SELECT * FROM t1 WHERE a = 1 or a = 10 or a = 20 or a = 30 ORDER BY a;
+a	b	c	d	e	f	g
+1	5	3.40282e38	1.2686868689898e308	666.66	2007-10-23 23:23:23	1111
+10	1	-3.40282e38	NULL	NULL	NULL	NULL
+20	1	-3.40282e38	1.7976931348623e308	345.21	NULL	NULL
+30	1	-3.40282e38	1.7976931348623e308	345.21	1000-01-01 00:00:00	0101
+*********************************
+* Backup and restore tables w/ new column
+*********************************
+DROP TABLE t1;
+ALTER TABLESPACE ts1
+DROP DATAFILE 'datafile.dat';
+DROP TABLESPACE ts1;
+DROP LOGFILE GROUP lg1
+ENGINE =NDB;
+SET @old_ndb_metadata_check_interval = @@global.ndb_metadata_check_interval;
+SET GLOBAL ndb_metadata_check_interval = 0;
+SET GLOBAL ndb_metadata_check_interval = @old_ndb_metadata_check_interval;
+SET @old_ndb_metadata_check_interval = @@global.ndb_metadata_check_interval;
+SET GLOBAL ndb_metadata_check_interval = 0;
+SET GLOBAL ndb_metadata_check_interval = @old_ndb_metadata_check_interval;
+ForceVarPart: 1
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `a` int unsigned NOT NULL AUTO_INCREMENT,
+  `b` int /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  `c` float /*!50606 STORAGE DISK */ DEFAULT NULL,
+  `d` double unsigned /*!50606 STORAGE DISK */ DEFAULT NULL,
+  `e` decimal(5,2) /*!50606 STORAGE DISK */ DEFAULT NULL,
+  `f` datetime /*!50606 STORAGE DISK */ DEFAULT NULL,
+  `g` binary(4) /*!50606 STORAGE DISK */ DEFAULT NULL,
+  PRIMARY KEY (`a`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster AUTO_INCREMENT=513 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+DROP TABLE t1;
+*********************************
+* Disk Data error testing
+*********************************
+set default_storage_engine=ndb;
+CREATE TABLE t1
+(pk1 INT NOT NULL PRIMARY KEY, b INT COLUMN_FORMAT DYNAMIC)
+TABLESPACE ts1 STORAGE DISK
+ENGINE=NDB;
+ALTER TABLE t1 algorithm=inplace, CHANGE b b INT COLUMN_FORMAT FIXED STORAGE MEMORY;
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Column storage media is changed. Try ALGORITHM=COPY.
+ALTER TABLE t1 algorithm=inplace, CHANGE b b_1 INT COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, CHANGE b_1 b_2 INT COLUMN_FORMAT DYNAMIC STORAGE DISK;
+ALTER TABLE t1 algorithm=inplace, RENAME COLUMN b_2 TO b;
+ALTER TABLE t1 algorithm=inplace, CHANGE b pk1 INT COLUMN_FORMAT DYNAMIC;
+ERROR 42S21: Duplicate column name 'pk1'
+ALTER TABLE t1 algorithm=inplace, CHANGE b b INT COLUMN_FORMAT DYNAMIC STORAGE DISK;
+ALTER TABLE t1 algorithm=inplace, CHANGE b b INT COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, CHANGE b b INT;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN c INT COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN d FLOAT COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN  e DOUBLE COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN f DATETIME COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN g DECIMAL(5,2) COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN h CHAR(20) COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN i VARCHAR(20) COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN j BINARY(20) COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN k VARBINARY(20) COLUMN_FORMAT DYNAMIC;
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `pk1` int NOT NULL,
+  `b` int DEFAULT NULL,
+  `c` int /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  `d` float /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  `e` double /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  `f` datetime /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  `g` decimal(5,2) /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  `h` char(20) /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  `i` varchar(20) /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  `j` binary(20) /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  `k` varbinary(20) /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  PRIMARY KEY (`pk1`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+DROP TABLE t1;
+create table t1 (a int primary key, b int) storage disk tablespace ts1 engine = ndb;
+alter table t1 algorithm=inplace, add column c0 int null column_format DYNAMIC;
+alter table t1 algorithm=inplace, add column c1 int null column_format DYNAMIC storage memory;
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `a` int NOT NULL,
+  `b` int DEFAULT NULL,
+  `c0` int /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  `c1` int /*!50606 STORAGE MEMORY */ /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  PRIMARY KEY (`a`)
+) /*!50100 TABLESPACE `ts1` STORAGE DISK */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+drop table t1;
+create table t1 (a int primary key, b int storage disk) tablespace ts1 engine = ndb;
+alter table t1 algorithm=inplace, add column c0 int null column_format DYNAMIC;
+alter table t1 algorithm=inplace, add column c1 int null column_format DYNAMIC storage memory;
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TABLE `t1` (
+  `a` int NOT NULL,
+  `b` int /*!50606 STORAGE DISK */ DEFAULT NULL,
+  `c0` int /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  `c1` int /*!50606 STORAGE MEMORY */ /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL,
+  PRIMARY KEY (`a`)
+) /*!50100 TABLESPACE `ts1` */ ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+drop table t1;
+ALTER TABLESPACE ts1
+DROP DATAFILE 'datafile.dat';
+DROP TABLESPACE ts1;
+DROP LOGFILE GROUP lg1
+ENGINE =NDB;

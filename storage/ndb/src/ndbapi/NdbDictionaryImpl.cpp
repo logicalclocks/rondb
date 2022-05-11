@@ -4856,7 +4856,18 @@ NdbDictInterface::compChangeMask(const NdbTableImpl &old_impl,
     }
     if(col->m_storageType == NDB_STORAGETYPE_MEMORY &&
        (col->m_dynamic || col->m_arrayType != NDB_ARRAYTYPE_FIXED))
+    {
       found_varpart= true;
+    }
+    if (col->m_storageType == NDB_STORAGETYPE_DISK &&
+        impl.m_tablespace_id != RNIL)
+    {
+      /**
+       * There is a disk row, this means there is also a dynamic part for
+       * disk columns.
+       */
+      found_varpart = true;
+    }
   }
 
   if(sz > old_sz)
@@ -4872,8 +4883,9 @@ NdbDictInterface::compChangeMask(const NdbTableImpl &old_impl,
       const NdbColumnImpl *col= impl.m_columns[i];
       if(!col->m_dynamic || !col->m_nullable ||
          !col->m_defaultValue.empty() ||
-         col->m_storageType == NDB_STORAGETYPE_DISK ||
          col->m_pk ||
+         (col->m_storageType == NDB_STORAGETYPE_DISK &&
+          impl.m_tablespace_id == RNIL) ||
          col->m_distributionKey ||
          col->m_autoIncrement ||                   // ToDo: allow this?
 	 (col->getBlobType() && col->getPartSize())
@@ -4884,7 +4896,6 @@ NdbDictInterface::compChangeMask(const NdbTableImpl &old_impl,
     }
     AlterTableReq::setAddAttrFlag(change_mask, true);
   }
-
   DBUG_RETURN(0);
 
  invalid_alter_table:
