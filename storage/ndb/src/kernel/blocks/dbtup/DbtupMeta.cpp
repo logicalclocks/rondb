@@ -1424,6 +1424,8 @@ Dbtup::handleAlterTablePrepare(Signal *signal,
           null_pos = dyn_nullbits[MM];
           null_pos += bits;
           dyn_nullbits[MM] += bits+1;
+          noDynamic[ind]--;
+          noDynamic[MM]++;
         }
       }
       else

@@ -66,6 +66,10 @@ cmd: testDict
 args: -r 10000 -n TableAddAttrsDuring T1 T6
 max-time: 2400
 
+cmd: testDict
+args: -r 10000 -n TableAddAttrsDuring_Disk D1 D2
+max-time: 2400
+
 cmd: testScan
 args: -n ScanRead240
 max-time: 180

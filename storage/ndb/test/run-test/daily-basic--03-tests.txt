@@ -106,6 +106,10 @@ cmd: testDict
 args: -n TableAddAttrsDuringError
 max-time: 900
 
+cmd: testDict
+args: -n TableAddAttrsDuringError_Disk
+max-time: 1200
+
 cmd: testNdbinfo
 args:
 max-time: 900
