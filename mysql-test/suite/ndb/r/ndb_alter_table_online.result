@@ -460,67 +460,6 @@ a	b	c	d	e	f	g
 DROP TABLE t1;
 ForceVarPart: 1
 DROP TABLE t1;
-*********************************
-* Disk Data error testing
-*********************************
-set default_storage_engine=ndb;
-CREATE LOGFILE GROUP lg1
-ADD UNDOFILE 'undofile.dat'
-INITIAL_SIZE 16M
-UNDO_BUFFER_SIZE = 1M;
-CREATE TABLESPACE ts1
-ADD DATAFILE 'datafile.dat'
-USE LOGFILE GROUP lg1
-INITIAL_SIZE 12M
-ENGINE NDB;
-DISK stored column b will become fixed
-CREATE TABLE t1
-(pk1 INT NOT NULL PRIMARY KEY, b INT COLUMN_FORMAT DYNAMIC)
-TABLESPACE ts1 STORAGE DISK
-ENGINE=NDB;
-ALTER TABLE t1 algorithm=inplace, CHANGE b b INT COLUMN_FORMAT FIXED STORAGE MEMORY;
-ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Column storage media is changed. Try ALGORITHM=COPY.
-ALTER TABLE t1 algorithm=inplace, CHANGE b b_1 INT COLUMN_FORMAT DYNAMIC;
-ALTER TABLE t1 algorithm=inplace, CHANGE b_1 b_2 INT COLUMN_FORMAT DYNAMIC STORAGE DISK;
-ALTER TABLE t1 algorithm=inplace, RENAME COLUMN b_2 TO b;
-ALTER TABLE t1 algorithm=inplace, CHANGE b pk1 INT COLUMN_FORMAT DYNAMIC;
-ERROR 42S21: Duplicate column name 'pk1'
-ALTER TABLE t1 algorithm=inplace, CHANGE b b INT COLUMN_FORMAT DYNAMIC STORAGE DISK;
-ALTER TABLE t1 algorithm=inplace, CHANGE b b INT COLUMN_FORMAT DYNAMIC;
-ALTER TABLE t1 algorithm=inplace, CHANGE b b INT;
-ALTER TABLE t1 algorithm=inplace, ADD COLUMN c INT COLUMN_FORMAT DYNAMIC;
-ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
-ALTER TABLE t1 algorithm=inplace, ADD COLUMN d FLOAT COLUMN_FORMAT DYNAMIC;
-ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
-ALTER TABLE t1 algorithm=inplace, ADD COLUMN  e DOUBLE COLUMN_FORMAT DYNAMIC;
-ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
-ALTER TABLE t1 algorithm=inplace, ADD COLUMN f DATETIME COLUMN_FORMAT DYNAMIC;
-ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
-ALTER TABLE t1 algorithm=inplace, ADD COLUMN g DECIMAL(5,2) COLUMN_FORMAT DYNAMIC;
-ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
-ALTER TABLE t1 algorithm=inplace, ADD COLUMN h CHAR(20) COLUMN_FORMAT DYNAMIC;
-ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
-ALTER TABLE t1 algorithm=inplace, ADD COLUMN h VARCHAR(20) COLUMN_FORMAT DYNAMIC;
-ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
-ALTER TABLE t1 algorithm=inplace, ADD COLUMN h BINARY(20) COLUMN_FORMAT DYNAMIC;
-ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
-ALTER TABLE t1 algorithm=inplace, ADD COLUMN h VARBINARY(20) COLUMN_FORMAT DYNAMIC;
-ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
-DROP TABLE t1;
-create table t1 (a int primary key, b int) storage disk tablespace ts1 engine = ndb;
-alter table t1 algorithm=inplace, add column c0 int null column_format DYNAMIC;
-ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Adding column(s) or add/reorganize partition not supported online. Try ALGORITHM=COPY.
-alter table t1 algorithm=inplace, add column c1 int null column_format DYNAMIC storage memory;
-drop table t1;
-create table t1 (a int primary key, b int storage disk) tablespace ts1 engine = ndb;
-alter table t1 algorithm=inplace, add column c0 int null column_format DYNAMIC;
-alter table t1 algorithm=inplace, add column c1 int null column_format DYNAMIC storage memory;
-drop table t1;
-ALTER TABLESPACE ts1
-DROP DATAFILE 'datafile.dat';
-DROP TABLESPACE ts1;
-DROP LOGFILE GROUP lg1
-ENGINE =NDB;
 ********************
 * ROW_FORMAT testing
 ********************

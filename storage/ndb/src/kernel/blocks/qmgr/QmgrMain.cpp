@@ -10177,6 +10177,7 @@ Qmgr::execGET_NUM_MULTI_TRP_REQ(Signal* signal)
     DEB_MULTI_TRP(("Node %u starting, prepare switch trp using %u trps",
                    sender_node_id,
                    nodePtr.p->m_used_num_multi_trps));
+    CRASH_INSERTION(951);
     connect_multi_transporter(signal, sender_node_id);
     if (ERROR_INSERTED(972))
     {

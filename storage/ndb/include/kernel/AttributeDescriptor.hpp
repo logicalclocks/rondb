@@ -180,6 +180,7 @@ void
 AttributeDescriptor::setDiskBased(Uint32 & desc, Uint32 val)
 {
   assert(val <= 1);
+  desc &= (~(1 << AD_DISK_SHIFT));
   desc |= (val << AD_DISK_SHIFT);
 }
 

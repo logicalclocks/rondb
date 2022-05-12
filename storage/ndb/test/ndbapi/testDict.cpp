@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2396,6 +2396,7 @@ runTableAddAttrs(NDBT_Context* ctx, NDBT_Step* step){
   NdbDictionary::Dictionary* dict = pNdb->getDictionary();
   int records = ctx->getNumRecords();
   const int loops = ctx->getNumLoops();
+  int useDisk = ctx->getProperty("UseDisk", Uint32(0));
 
   ndbout << "|- " << ctx->getTab()->getName() << endl;  
 
@@ -2421,21 +2422,32 @@ runTableAddAttrs(NDBT_Context* ctx, NDBT_Step* step){
       Check that table already has a varpart, otherwise add attr is
       not possible.
     */
-    if (pTab2->getForceVarPart() == false)
+    const NdbDictionary::Column *col = nullptr;
+    if (useDisk)
     {
-      const NdbDictionary::Column *col;
       for (Uint32 i= 0; (col= pTab2->getColumn(i)) != 0; i++)
       {
-        if (col->getStorageType() == NDB_STORAGETYPE_MEMORY &&
-            (col->getDynamic() || col->getArrayType() != NDB_ARRAYTYPE_FIXED))
+        if (col->getStorageType() == NDB_STORAGETYPE_DISK)
           break;
       }
-      if (col == 0)
+    }
+    else
+    {
+      if (pTab2->getForceVarPart() == false)
       {
-        /* Alter table add attribute not applicable, just mark success. */
-        dict->dropTable(pTab2->getName());
-        break;
+        for (Uint32 i= 0; (col= pTab2->getColumn(i)) != 0; i++)
+        {
+          if (col->getStorageType() == NDB_STORAGETYPE_MEMORY &&
+              (col->getDynamic() || col->getArrayType() != NDB_ARRAYTYPE_FIXED))
+            break;
+        }
       }
+    }
+    if (col == 0)
+    {
+      /* Alter table add attribute not applicable, just mark success. */
+      dict->dropTable(pTab2->getName());
+      break;
     }
 
     ndbout << "Load table" << endl;
@@ -2453,22 +2465,44 @@ runTableAddAttrs(NDBT_Context* ctx, NDBT_Step* step){
     if (oldTable) {
       NdbDictionary::Table newTable= *oldTable;
 
-      NDBT_Attribute newcol1("NEWKOL1", NdbDictionary::Column::Unsigned, 1,
-                            false, true, 0,
-                            NdbDictionary::Column::StorageTypeMemory, true);
-      newTable.addColumn(newcol1);
-      NDBT_Attribute newcol2("NEWKOL2", NdbDictionary::Column::Char, 14,
-                            false, true, 0,
-                            NdbDictionary::Column::StorageTypeMemory, true);
-      newTable.addColumn(newcol2);
-      NDBT_Attribute newcol3("NEWKOL3", NdbDictionary::Column::Bit, 20,
-                            false, true, 0,
-                            NdbDictionary::Column::StorageTypeMemory, true);
-      newTable.addColumn(newcol3);
-      NDBT_Attribute newcol4("NEWKOL4", NdbDictionary::Column::Varbinary, 42,
-                            false, true, 0,
-                            NdbDictionary::Column::StorageTypeMemory, true);
-      newTable.addColumn(newcol4);
+      if (useDisk)
+      {
+        NDBT_Attribute newcol1("NEWKOL1", NdbDictionary::Column::Unsigned, 1,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeDisk, true);
+        newTable.addColumn(newcol1);
+        NDBT_Attribute newcol2("NEWKOL2", NdbDictionary::Column::Char, 14,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeDisk, true);
+        newTable.addColumn(newcol2);
+        NDBT_Attribute newcol3("NEWKOL3", NdbDictionary::Column::Bit, 20,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeDisk, true);
+        newTable.addColumn(newcol3);
+        NDBT_Attribute newcol4("NEWKOL4", NdbDictionary::Column::Varbinary, 42,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeDisk, true);
+        newTable.addColumn(newcol4);
+      }
+      else
+      {
+        NDBT_Attribute newcol1("NEWKOL1", NdbDictionary::Column::Unsigned, 1,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeMemory, true);
+        newTable.addColumn(newcol1);
+        NDBT_Attribute newcol2("NEWKOL2", NdbDictionary::Column::Char, 14,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeMemory, true);
+        newTable.addColumn(newcol2);
+        NDBT_Attribute newcol3("NEWKOL3", NdbDictionary::Column::Bit, 20,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeMemory, true);
+        newTable.addColumn(newcol3);
+        NDBT_Attribute newcol4("NEWKOL4", NdbDictionary::Column::Varbinary, 42,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeMemory, true);
+        newTable.addColumn(newcol4);
+      }
 
       CHECK2(dict->alterTable(*oldTable, newTable) == 0,
 	     "TableAddAttrs failed");
@@ -2530,6 +2564,7 @@ runTableAddAttrsDuring(NDBT_Context* ctx, NDBT_Step* step){
 
   int result = NDBT_OK;
   int abortAlter = ctx->getProperty("AbortAlter", Uint32(0));
+  int useDisk = ctx->getProperty("UseDisk", Uint32(0));
 
   int records = ctx->getNumRecords();
   const int loops = ctx->getNumLoops();
@@ -2539,24 +2574,32 @@ runTableAddAttrsDuring(NDBT_Context* ctx, NDBT_Step* step){
 
   NdbDictionary::Table myTab= *(ctx->getTab());
 
-  if (myTab.getForceVarPart() == false)
+  NdbDictionary::Column *col = nullptr;
+  if (useDisk)
   {
-    const NdbDictionary::Column *col;
     for (Uint32 i= 0; (col= myTab.getColumn(i)) != 0; i++)
     {
-      if (col->getStorageType() == NDB_STORAGETYPE_MEMORY &&
-          (col->getDynamic() || col->getArrayType() != NDB_ARRAYTYPE_FIXED))
+      if (col->getStorageType() == NDB_STORAGETYPE_DISK)
         break;
     }
-    if (col == 0)
+  }
+  else
+  {
+    if (myTab.getForceVarPart() == false)
     {
-      ctx->stopTest();
-      return NDBT_OK;
+      for (Uint32 i= 0; (col= myTab.getColumn(i)) != 0; i++)
+      {
+        if (col->getStorageType() == NDB_STORAGETYPE_MEMORY &&
+            (col->getDynamic() || col->getArrayType() != NDB_ARRAYTYPE_FIXED))
+          break;
+      }
     }
   }
-
-  //if 
-
+  if (col == 0)
+  {
+    ctx->stopTest();
+    return NDBT_OK;
+  }
   for (int l = 0; l < loops && result == NDBT_OK ; l++){
     ndbout << l << ": " << endl;    
 
@@ -2577,10 +2620,20 @@ runTableAddAttrsDuring(NDBT_Context* ctx, NDBT_Step* step){
       
       char name[256];
       BaseString::snprintf(name, sizeof(name), "NEWCOL%d", l);
-      NDBT_Attribute newcol1(name, NdbDictionary::Column::Unsigned, 1,
-                             false, true, 0,
-                             NdbDictionary::Column::StorageTypeMemory, true);
-      newTable.addColumn(newcol1);
+      if (useDisk)
+      {
+        NDBT_Attribute newcol1(name, NdbDictionary::Column::Unsigned, 1,
+                               false, true, 0,
+                               NdbDictionary::Column::StorageTypeMemory, true);
+        newTable.addColumn(newcol1);
+      }
+      else
+      {
+        NDBT_Attribute newcol1(name, NdbDictionary::Column::Unsigned, 1,
+                               false, true, 0,
+                               NdbDictionary::Column::StorageTypeDisk, true);
+        newTable.addColumn(newcol1);
+      }
       //ToDo: check #loops, how many columns l
 
       if (abortAlter == 0)
@@ -2591,7 +2644,10 @@ runTableAddAttrsDuring(NDBT_Context* ctx, NDBT_Step* step){
       else
       {
         int nodeId = res.getNode(NdbRestarter::NS_RANDOM);
-        res.insertErrorInNode(nodeId, 4029);
+        if (l % 2 == 0)
+          res.insertErrorInNode(nodeId, 4029);
+        else
+          res.insertErrorInNode(nodeId, 4039);
         CHECK2(dict->alterTable(*oldTable, newTable) != 0,
                "TableAddAttrsDuring failed");
       }
@@ -12414,6 +12470,11 @@ TESTCASE("TableAddAttrs",
 	 "Add attributes to an existing table using alterTable()"){
   INITIALIZER(runTableAddAttrs);
 }
+TESTCASE("TableAddAttrs_Disk",
+	 "Add attributes to an existing table using alterTable()"){
+  TC_PROPERTY("UseDisk", 1);
+  INITIALIZER(runTableAddAttrs);
+}
 TESTCASE("TableAddAttrsDuring",
 	 "Try to add attributes to the table when other thread is using it\n"
 	 "do this loop number of times\n"){
@@ -12427,6 +12488,27 @@ TESTCASE("TableAddAttrsDuringError",
 	 "Try to add attributes to the table when other thread is using it\n"
 	 "do this loop number of times\n"){
   TC_PROPERTY("AbortAlter", 1);
+  INITIALIZER(runCreateTheTable);
+  STEP(runTableAddAttrsDuring);
+  STEP(runUseTableUntilStopped2);
+  STEP(runUseTableUntilStopped3);
+  FINALIZER(runDropTheTable);
+}
+TESTCASE("TableAddAttrsDuring_Disk",
+	 "Try to add attributes to the table when other thread is using it\n"
+	 "do this loop number of times\n"){
+  TC_PROPERTY("UseDisk", 1);
+  INITIALIZER(runCreateTheTable);
+  STEP(runTableAddAttrsDuring);
+  STEP(runUseTableUntilStopped2);
+  STEP(runUseTableUntilStopped3);
+  FINALIZER(runDropTheTable);
+}
+TESTCASE("TableAddAttrsDuringError_Disk",
+	 "Try to add attributes to the table when other thread is using it\n"
+	 "do this loop number of times\n"){
+  TC_PROPERTY("AbortAlter", 1);
+  TC_PROPERTY("UseDisk", 1);
   INITIALIZER(runCreateTheTable);
   STEP(runTableAddAttrsDuring);
   STEP(runUseTableUntilStopped2);
