@@ -5556,15 +5556,19 @@ Suma::checkMaxBufferedEpochs(Signal *signal)
   }
   else if (c_gcp_list.getCount() < c_maxBufferedEpochs)
   {
+    jam();
     return;
   }
   NodeBitmask subs = gcp.p->m_subscribers;
   jam();
   if (!subs.isclear())
   {
-   char buf[NodeBitmask::TextLength + 1];
-   subs.getText(buf);
-   infoEvent("Disconnecting lagging nodes '%s', epoch %llu", buf, gcp.p->m_gci);
+    jam();
+    char buf[NodeBitmask::TextLength + 1];
+    subs.getText(buf);
+    infoEvent("Disconnecting lagging nodes '%s', epoch %llu",
+              buf,
+              gcp.p->m_gci);
   }
   // Disconnect lagging subscribers waiting for oldest epoch
   for(Uint32 nodeId = 0; nodeId < MAX_NODES; nodeId++)
@@ -5572,6 +5576,7 @@ Suma::checkMaxBufferedEpochs(Signal *signal)
     if (subs.get(nodeId))
     {
       jam();
+      jamData(nodeId);
       subs.clear(nodeId);
       // Disconnecting node
       signal->theData[0] = NDB_LE_SubscriptionStatus;
@@ -5619,17 +5624,21 @@ Suma::execSUB_GCP_COMPLETE_REP(Signal* signal)
   Uint32 i = m_min_gcp_rep_counter_index;
   while (i != m_max_gcp_rep_counter_index)
   {
+    jam();
     if (gci < m_gcp_rep_counter[i].m_gci)
     {
+      jam();
       break;
     }
     else if (gci == m_gcp_rep_counter[i].m_gci)
     {
+      jam();
       found = true;
       break;
     }
     i = (i + 1) % sz;
   }
+  jamData(i);
 
   /**
     If ndbrequire fails, epoch already completed.  This should not be possible.
@@ -5642,6 +5651,7 @@ Suma::execSUB_GCP_COMPLETE_REP(Signal* signal)
 
   if (!found)
   {
+    jam();
     ndbrequire(i == m_max_gcp_rep_counter_index);
     m_gcp_rep_counter[i].m_gci = gci;
     m_gcp_rep_counter[i].m_cnt = 0;
@@ -5653,23 +5663,27 @@ Suma::execSUB_GCP_COMPLETE_REP(Signal* signal)
 
     if (gci > m_max_seen_gci)
     {
+      jam();
       m_max_seen_gci = gci;
     }
   }
 
   if (likely(m_gcp_rep_cnt > 0))
   {
+    jam();
     ndbrequire(m_gcp_rep_counter[i].m_cnt < m_gcp_rep_cnt);
     m_gcp_rep_counter[i].m_cnt++;
   }
   else
   {
+    jam();
     ndbrequire(m_gcp_rep_counter[i].m_cnt == 0);
   }
   ndbrequire(m_gcp_rep_counter[i].m_flags == rep->flags);
 
   if (m_gcp_rep_counter[i].m_cnt < m_gcp_rep_cnt)
   {
+    jam();
     return;
   }
 
@@ -5681,6 +5695,7 @@ Suma::execSUB_GCP_COMPLETE_REP(Signal* signal)
   m_min_gcp_rep_counter_index = (m_min_gcp_rep_counter_index + 1) % sz;
   if (i != m_snd_gcp_rep_counter_index)
   {
+    jam();
     return;
   }
   checkMaxBufferedEpochs(signal);
@@ -5693,6 +5708,7 @@ Suma::sendSUB_GCP_COMPLETE_REP(Signal* signal)
   if (m_snd_gcp_rep_counter_index == m_min_gcp_rep_counter_index)
   {
     // No complete epoch yet.
+    jam();
     return;
   }
 
@@ -5701,15 +5717,18 @@ Suma::sendSUB_GCP_COMPLETE_REP(Signal* signal)
   const Uint32 gci_lo = Uint32(gci);
   ndbrequire(((Uint64(gci_hi) << 32) | gci_lo) == gci);
 
-  const bool no_inflight_gci = (m_oldest_gcp_inflight_index == m_newest_gcp_inflight_index);
+  const bool no_inflight_gci =
+    (m_oldest_gcp_inflight_index == m_newest_gcp_inflight_index);
 
   if (!no_inflight_gci)
   {
     if (gci == m_gcp_inflight[m_oldest_gcp_inflight_index].m_gci)
     {
       // Do not send yet, epoch have undelivered data.
+      jam();
       return;
     }
+    jam();
     ndbrequire(gci < m_gcp_inflight[m_oldest_gcp_inflight_index].m_gci);
   }
 
@@ -5731,13 +5750,16 @@ Suma::sendSUB_GCP_COMPLETE_REP(Signal* signal)
 #ifdef VM_TRACE
   if (m_gcp_monitor == 0)
   {
+    jam();
   }
   else if (gci_hi == Uint32(m_gcp_monitor >> 32))
   {
+    jam();
     ndbrequire(gci_lo == Uint32(m_gcp_monitor) + 1);
   }
   else
   {
+    jam();
     ndbrequire(gci_hi == Uint32(m_gcp_monitor >> 32) + 1);
     ndbrequire(gci_lo == 0);
   }
@@ -5750,6 +5772,7 @@ Suma::sendSUB_GCP_COMPLETE_REP(Signal* signal)
   Bucket_mask dropped_buckets;
   if(!m_switchover_buckets.isclear())
   {
+    jam();
     bool starting_unlock = false;
     Uint32 i = m_switchover_buckets.find(0);
     for(; i != Bucket_mask::NotFound; i = m_switchover_buckets.find(i + 1))
@@ -5868,6 +5891,10 @@ Suma::sendSUB_GCP_COMPLETE_REP(Signal* signal)
           c_buckets[i].m_state &= ~(Uint32)Bucket::BUCKET_SHUTDOWN_TO;
           g_eventLogger->info("shutdown handover takeover");
         }
+        else
+        {
+          jam();
+        }
       }
     } // for (m_switchover_buckets...)
 
@@ -5921,6 +5948,7 @@ Suma::sendSUB_GCP_COMPLETE_REP(Signal* signal)
           if (c_buckets[i].m_state & Bucket::BUCKET_STARTING)
           {
             jam();
+            jamData(i);
             /* Some other bucket still to handover, don't unlock yet */
             starting_unlock = false;
             break;
@@ -5971,12 +5999,15 @@ Suma::sendSUB_GCP_COMPLETE_REP(Signal* signal)
       Uint32 sub_data_stream = get_sub_data_stream(bucket);
       if ((stream_count & 1) == 0)
       {
+        jam();
         rep->sub_data_streams[stream_count/2] = sub_data_stream;
       }
       else
       {
+        jam();
         rep->sub_data_streams[stream_count/2] |= sub_data_stream << 16;
       }
+      jamData(bucket);
       stream_count++;
     }
   }
@@ -5989,11 +6020,13 @@ Suma::sendSUB_GCP_COMPLETE_REP(Signal* signal)
    */
   if (stream_count == m_gcp_complete_rep_count)
   {
+    jam();
     rep->flags |= SubGcpCompleteRep::SUB_DATA_STREAMS_IN_SIGNAL;
     siglen += (stream_count + 1)/2;
   }
   else
   {
+    jam();
     g_eventLogger->error("Suma gcp complete rep count (%u) does "
                          "not match number of buckets that should "
                          "be reported complete (%u).",
@@ -6012,11 +6045,13 @@ Suma::sendSUB_GCP_COMPLETE_REP(Signal* signal)
     Ptr<Gcp_record> gcp;
     if (c_gcp_list.seizeLast(gcp))
     {
+      jam();
       gcp.p->m_gci = gci;
       gcp.p->m_subscribers = c_subscriber_nodes;
     }
     else
     {
+      jam();
       char buf[NodeBitmask::TextLength + 1];
       c_subscriber_nodes.getText(buf);
       g_eventLogger->error("c_gcp_list.seize() failed: gci: %llu nodes: %s",
@@ -6031,11 +6066,15 @@ Suma::sendSUB_GCP_COMPLETE_REP(Signal* signal)
   for(Uint32 i = 0; i<c_no_of_buckets; i++)
   {
     if(m_active_buckets.get(i))
+    {
       continue;
+    }
 
     if (subscribers || (c_buckets[i].m_state & Bucket::BUCKET_RESEND))
     {
       //Uint32* dst;
+      jam();
+      jamData(i);
       get_buffer_ptr(signal, i, gci, 0, 0);
     }
   }
@@ -6060,9 +6099,11 @@ Suma::sendSUB_GCP_COMPLETE_REP(Signal* signal)
   m_gcp_rep_counter[m_snd_gcp_rep_counter_index].m_gci = 0;
   m_gcp_rep_counter[m_snd_gcp_rep_counter_index].m_cnt = 0;
   m_gcp_rep_counter[m_snd_gcp_rep_counter_index].m_flags = 0;
-  m_snd_gcp_rep_counter_index = (m_snd_gcp_rep_counter_index + 1) % NDB_ARRAY_SIZE(m_gcp_rep_counter);
+  m_snd_gcp_rep_counter_index =
+    (m_snd_gcp_rep_counter_index + 1) % NDB_ARRAY_SIZE(m_gcp_rep_counter);
   if (m_snd_gcp_rep_counter_index != m_min_gcp_rep_counter_index)
   {
+    jam();
     signal->theData[0] = SumaContinueB::SEND_SUB_GCP_COMPLETE_REP;
     sendSignal(SUMA_REF, GSN_CONTINUEB, signal, 1, JBB);
   }
@@ -6074,18 +6115,22 @@ Suma::mark_epoch_inflight(Uint64 gci)
   const Uint32 sz = NDB_ARRAY_SIZE(m_gcp_inflight);
   bool found = false;
   Uint32 i = m_oldest_gcp_inflight_index;
+  jam();
   while (i != m_newest_gcp_inflight_index)
   {
     if (m_gcp_inflight[i].m_gci == gci)
     {
       found = true;
+      jam();
       break;
     }
     ndbrequire(gci > m_gcp_inflight[i].m_gci);
     i = (i + 1) % sz;
   }
+  jamData(i);
   if (!found)
   {
+    jam();
     m_gcp_inflight[i].m_gci = gci;
     m_gcp_inflight[i].m_cnt = 0;
     m_newest_gcp_inflight_index = (m_newest_gcp_inflight_index + 1) % sz;
@@ -6103,11 +6148,13 @@ Suma::unmark_epoch_inflight(Signal* signal, Uint32 inflight_index)
 
   if (m_gcp_inflight[inflight_index].m_cnt > 0)
   {
+    jam();
     return;
   }
 
   if (inflight_index != m_oldest_gcp_inflight_index)
   {
+    jam();
     return;
   }
 
@@ -6115,6 +6162,7 @@ Suma::unmark_epoch_inflight(Signal* signal, Uint32 inflight_index)
   while (m_oldest_gcp_inflight_index != m_newest_gcp_inflight_index &&
          m_gcp_inflight[m_oldest_gcp_inflight_index].m_cnt == 0)
   {
+    jam();
     m_gcp_inflight[m_oldest_gcp_inflight_index].m_gci = 0;
     m_oldest_gcp_inflight_index = (m_oldest_gcp_inflight_index + 1) % sz;
   }
