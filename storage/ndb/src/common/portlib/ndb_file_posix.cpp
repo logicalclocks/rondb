@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2019, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -472,8 +473,8 @@ int ndb_file::set_direct_io(bool assume_implicit_datasync)
   return 0;
 }
 
-alignas(2 * NDB_O_DIRECT_WRITE_ALIGNMENT)
-static char detect_directio_buffer[2 * NDB_O_DIRECT_WRITE_ALIGNMENT];
+alignas(2 * NDB_O_DIRECT_WRITE_BLOCKSIZE)
+static char detect_directio_buffer[2 * NDB_O_DIRECT_WRITE_BLOCKSIZE];
 
 int ndb_file::detect_direct_io_block_size_and_alignment()
 {
@@ -500,7 +501,10 @@ int ndb_file::detect_direct_io_block_size_and_alignment()
    * memory buffer and file offset.
    * And also a valid block size.
    */
-  ret = ::pread(m_handle, end - align, align, NDB_O_DIRECT_WRITE_ALIGNMENT);
+  ret = ::pread(m_handle,
+                end - (block_size + align),
+                block_size,
+                NDB_O_DIRECT_WRITE_BLOCKSIZE);
   if (ret == -1 && errno == EBADF)
   {
     // TODO YYY: assume EBADF means file is not open for read, for debugging assume direct io is ok

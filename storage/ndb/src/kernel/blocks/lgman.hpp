@@ -334,6 +334,8 @@ private:
   bool m_node_restart_ongoing;
   bool m_dropped_undo_log;
   bool c_encrypted_filesystem;
+  bool c_o_direct;
+  bool c_o_direct_sync_flag;
 
   Uint64 m_records_applied; // Track number of records applied
   Uint64 m_pages_applied; // Track number of pages applied
