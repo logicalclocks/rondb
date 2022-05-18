@@ -500,9 +500,13 @@ int ndb_file::detect_direct_io_block_size_and_alignment()
    * Verify that NDB_O_DIRECT_WRITE_ALIGNMENT is a valid alignment both for
    * memory buffer and file offset.
    * And also a valid block size.
+   *
+   * Empty files cannot be trusted to handle O_DIRECT since it isn't
+   * possible to test those files. Thus empty files and new files will
+   * never use O_DIRECT.
    */
   ret = ::pread(m_handle, end - align, align, NDB_O_DIRECT_WRITE_ALIGNMENT);
-  if (ret == -1)
+  if (ret == -1 || ret != NDB_O_DIRECT_WRITE_ALIGNMENT)
   {
     return -1;
   }
