@@ -547,6 +547,8 @@ AsyncFile::openReq(Request * request)
                             theFileName.c_str(),
                             get_last_os_error());
       }
+      request->par.open.use_o_direct = false;
+      m_open_flags &= Uint32(~FsOpenReq::OM_DIRECT);
     }
     else
     {
@@ -555,12 +557,17 @@ AsyncFile::openReq(Request * request)
        * And also checked in ndb_file
        * append/write/read/set_pos/truncate/extend.
      */
+      request->par.open.use_o_direct = true;
       m_file.set_block_size_and_alignment(NDB_O_DIRECT_WRITE_BLOCKSIZE,
                                           NDB_O_DIRECT_WRITE_ALIGNMENT);
 #ifdef DEBUG_ODIRECT
       g_eventLogger->info("%s ODirect is set.", theFileName.c_str());
 #endif
     }
+  }
+  else
+  {
+    request->par.open.use_o_direct = false;
   }
 
   // Turn on synchronous mode (OM_SYNC)

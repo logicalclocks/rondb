@@ -5880,7 +5880,7 @@ Backup::sendDropTrig(Signal* signal, BackupRecordPtr ptr)
        * If we are using O_DIRECT, may need to align file
        * size to a boundary
        */
-      if (c_defaults.m_o_direct)
+      if (filePtr.p->m_use_o_direct)
       {
         jam();
         Uint32 fillerWords = 0;
@@ -7282,7 +7282,16 @@ Backup::execFSOPENCONF(Signal* signal)
   
   BackupFilePtr filePtr;
   ndbrequire(c_backupFilePool.getPtr(filePtr, userPtr));
-  filePtr.p->filePointer = filePointer; 
+  filePtr.p->filePointer = filePointer;
+  Uint32 fileInfo = conf->fileInfo;
+  if (fileInfo & FsConf::USE_O_DIRECT)
+  {
+    filePtr.p->m_use_o_direct = true;
+  }
+  else
+  {
+    filePtr.p->m_use_o_direct = false;
+  }
   
   BackupRecordPtr ptr;
   ndbrequire(c_backupPool.getPtr(ptr, filePtr.p->backupPtr));
@@ -9778,7 +9787,7 @@ Backup::check_frag_complete(BackupRecordPtr ptr, BackupFilePtr filePtr)
             Uint32(BackupFile::BF_SCAN_THREAD)) == 0) ||
             op.fragComplete(filePtr.p->tableId,
                             filePtr.p->fragmentNo,
-                            c_defaults.m_o_direct))
+                            filePtr.p->m_use_o_direct))
       {
         jam();
         loopFilePtr.p->m_flags &= ~(Uint32)BackupFile::BF_SCAN_THREAD;
@@ -9796,7 +9805,7 @@ Backup::check_frag_complete(BackupRecordPtr ptr, BackupFilePtr filePtr)
     OperationRecord & op = filePtr.p->operation;
     if (op.fragComplete(filePtr.p->tableId,
                         filePtr.p->fragmentNo,
-                        c_defaults.m_o_direct))
+                        filePtr.p->m_use_o_direct))
     {
       jam();
       filePtr.p->m_flags &= ~(Uint32)BackupFile::BF_SCAN_THREAD;
@@ -10836,7 +10845,7 @@ Backup::checkFile(Signal* signal, BackupFilePtr filePtr)
      * LOG files never use O_DIRECT. Also no need to avoid write if we don't
      * use O_DIRECT at all.
      */
-    const bool skip_write = (c_defaults.m_o_direct &&  // O_DIRECT write
+    const bool skip_write = (filePtr.p->m_use_o_direct &&  // O_DIRECT write
                        write_to_datafile &&   // to datafile
                        !ptr.p->is_lcp() &&    // during backup
                        eof &&    // last chunk of data to write to file

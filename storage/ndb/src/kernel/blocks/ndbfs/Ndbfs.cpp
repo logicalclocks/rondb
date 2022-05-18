@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1570,8 +1571,13 @@ Ndbfs::report(Request * request, Signal* signal)
       if (theOpenFiles.size() > m_maxOpenedFiles)
 	m_maxOpenedFiles = theOpenFiles.size();
 
+      Uint32 fileInfo = 0;
+      if (request->par.open.use_o_direct)
+      {
+        fileInfo = FsConf::USE_O_DIRECT;
+      }
       fsConf->filePointer = request->theFilePointer;
-      fsConf->fileInfo = 0;
+      fsConf->fileInfo = fileInfo;
       fsConf->file_size_hi = request->m_file_size_hi;
       fsConf->file_size_lo = request->m_file_size_lo;
       sendSignal(ref, GSN_FSOPENCONF, signal, 5, JBA);
