@@ -357,17 +357,6 @@ AsyncFile::openReq(Request * request)
     }
   }
 
-  // Turn on direct io (OM_DIRECT, OM_DIRECT_SYNC)
-  if (flags & FsOpenReq::OM_DIRECT)
-  {
-    /* TODO:
-     * Size and alignment should be passed in request.
-     * And also checked in ndb_file append/write/read/set_pos/truncate/extend.
-     */
-    m_file.set_block_size_and_alignment(NDB_O_DIRECT_WRITE_BLOCKSIZE,
-                                        NDB_O_DIRECT_WRITE_ALIGNMENT);
-  }
-
   /*
    * Initialise file sparsely if OM_SPARSE_INIT.
    * Set size and make sure unwritten block are read as zero.
@@ -559,12 +548,19 @@ AsyncFile::openReq(Request * request)
                             get_last_os_error());
       }
     }
-#ifdef DEBUG_ODIRECT
     else
     {
+      /* TODO:
+       * Size and alignment should be passed in request.
+       * And also checked in ndb_file
+       * append/write/read/set_pos/truncate/extend.
+     */
+      m_file.set_block_size_and_alignment(NDB_O_DIRECT_WRITE_BLOCKSIZE,
+                                          NDB_O_DIRECT_WRITE_ALIGNMENT);
+#ifdef DEBUG_ODIRECT
       g_eventLogger->info("%s ODirect is set.", theFileName.c_str());
-    }
 #endif
+    }
   }
 
   // Turn on synchronous mode (OM_SYNC)
