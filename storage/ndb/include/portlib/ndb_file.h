@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2019, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -171,7 +172,9 @@ public:
    * of files there one writes a lot of pages in sequence.
    */
   bool avoid_direct_io_on_append() const;
-  int set_direct_io(bool assume_implicit_datasync);
+  int set_direct_io(bool assume_implicit_datasync,
+                    bool tablespace_file,
+                    const char name[]);
   int set_autosync(size_t size);
 
   /*

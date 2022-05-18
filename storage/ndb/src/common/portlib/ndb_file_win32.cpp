@@ -450,7 +450,9 @@ bool ndb_file::avoid_direct_io_on_append() const
   return false;
 }
 
-int ndb_file::set_direct_io(bool /* assume_implicit_datasync */)
+int ndb_file::set_direct_io(bool /* assume_implicit_datasync */,
+                            unsigned int,
+                            const char [])
 {
   // Not implemented.
   return -1;

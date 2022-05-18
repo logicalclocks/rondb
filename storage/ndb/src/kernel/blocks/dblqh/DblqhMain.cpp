@@ -2372,13 +2372,13 @@ void Dblqh::execREAD_CONFIG_REQ(Signal* signal)
                            " ignored");
     c_o_direct_sync_flag = false;
   }
-  else if (c_o_direct_sync_flag && m_use_om_init == 0)
+#endif
+  if (c_o_direct_sync_flag && m_use_om_init == 0)
   {
     g_eventLogger->warning("ODirectSyncFlag not supported"
                            "without setting InitFragmentLogFiles=full");
     c_o_direct_sync_flag = false;
   }
-#endif
 
   {
     /**

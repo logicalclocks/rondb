@@ -379,11 +379,14 @@ bool ndb_file::avoid_direct_io_on_append() const
 #endif
 }
 
-int ndb_file::set_direct_io(bool assume_implicit_datasync)
+int ndb_file::set_direct_io(bool assume_implicit_datasync,
+                            bool tablespace_file,
+                            const char name[])
 {
+  int ret = 0;
 #if defined(O_DIRECT)
   int flags = 0;
-  int ret = ::fcntl(m_handle, F_GETFL);
+  ret = ::fcntl(m_handle, F_GETFL);
   if (ret != -1)
   {
     flags = ret;
@@ -392,35 +395,14 @@ int ndb_file::set_direct_io(bool assume_implicit_datasync)
 #elif defined(HAVE_DIRECTIO) && defined(DIRECTIO_ON)
   int ret = ::directio(m_handle, DIRECTIO_ON);
 #else
-  int ret = -1;
+  ret = -1;
 #endif
-  if (ret == -1)
-  {
-    return -1;
-  }
 
-  ret = detect_direct_io_block_size_and_alignment();
-  if ((ret == -1) ||
-#ifdef BUG32198728
-      /*
-       * Disabled check, see Bug#32198728.
-       *
-       * The i/o block size from fstat() gives a "preferred" block size.
-       * Reading or writing smaller blocks may be suboptimal and may cause
-       * notable worse performance.
-       * Still the i/o should not fail due to too small block size is used.
-       * For NFS mounted devices block size 1MiB have been seen in test there
-       * this check made that visible by stopping node.
-       *
-       * Until the check is configurable in some way we disable it such that it
-       * does not cause node failure in production.
-       * The check was added recently in 8.0.22.
-       */
-      (m_block_size < m_direct_io_block_size) ||
-      (m_block_size % m_direct_io_block_size != 0) ||
-#endif
-      (m_block_alignment < m_direct_io_block_alignment) ||
-      (m_block_alignment % m_direct_io_block_alignment != 0))
+  if (ret != -1)
+  {
+    ret = detect_direct_io_block_size_and_alignment();
+  }
+  if (ret == -1)
   {
 #if defined(O_DIRECT)
     do {
@@ -431,14 +413,32 @@ int ndb_file::set_direct_io(bool assume_implicit_datasync)
       ret = ::directio(m_handle, DIRECTIO_OFF);
     } while (ret == -1 && errno == EINTR);
 #else
-    abort();
+    /**
+     * Mac OS X doesn't support O_DIRECT, need to set O_SYNC
+     * on tablespace files.
+     */
+    ret = 0;
 #endif
     // If O_DIRECT could not be reverted fail process.
     require(ret == 0);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
     // If we manage to set direct io it should not fail due to bad alignment
-    abort();
+    // abort();
 #endif
+    if (tablespace_file)
+    {
+      /**
+       * Tablespace files must sync on each write. Since we never extend
+       * the tablespace file and perform the initial write before setting
+       * O_DIRECT, this means that setting O_DIRECT will ensure that each
+       * write is sync:ed as well. However if for some reason we fail to
+       * set O_DIRECT (e.g. on Mac OS X there is no such feature or if
+       * O_DIRECT doesn't support 512 byte alignment) then we need to
+       * ensure that each write on the file is still sync:ed using the
+       * O_SYNC flag or by actually calling fsync on each write.
+       */
+      reopen_with_sync(name); 
+    }
     return -1;
   }
 
@@ -473,8 +473,8 @@ int ndb_file::set_direct_io(bool assume_implicit_datasync)
   return 0;
 }
 
-alignas(2 * NDB_O_DIRECT_WRITE_BLOCKSIZE)
-static char detect_directio_buffer[2 * NDB_O_DIRECT_WRITE_BLOCKSIZE];
+alignas(2 * NDB_O_DIRECT_WRITE_ALIGNMENT)
+static char detect_directio_buffer[2 * NDB_O_DIRECT_WRITE_ALIGNMENT];
 
 int ndb_file::detect_direct_io_block_size_and_alignment()
 {
@@ -501,17 +501,7 @@ int ndb_file::detect_direct_io_block_size_and_alignment()
    * memory buffer and file offset.
    * And also a valid block size.
    */
-  ret = ::pread(m_handle,
-                end - (block_size + align),
-                block_size,
-                NDB_O_DIRECT_WRITE_BLOCKSIZE);
-  if (ret == -1 && errno == EBADF)
-  {
-    // TODO YYY: assume EBADF means file is not open for read, for debugging assume direct io is ok
-    m_direct_io_block_size = block_size;
-    m_direct_io_block_alignment = align;
-    return 0;
-  }
+  ret = ::pread(m_handle, end - align, align, NDB_O_DIRECT_WRITE_ALIGNMENT);
   if (ret == -1)
   {
     return -1;
@@ -519,7 +509,6 @@ int ndb_file::detect_direct_io_block_size_and_alignment()
 
   m_direct_io_block_size = block_size;
   m_direct_io_block_alignment = align;
-
   return 0;
 }
 

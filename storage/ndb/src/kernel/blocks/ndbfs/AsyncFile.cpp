@@ -366,28 +366,6 @@ AsyncFile::openReq(Request * request)
      */
     m_file.set_block_size_and_alignment(NDB_O_DIRECT_WRITE_BLOCKSIZE,
                                         NDB_O_DIRECT_WRITE_ALIGNMENT);
-
-    /*
-     * Initializing file may write lots of pages sequentially.  Some
-     * implementation of direct io should be avoided in that case and
-     * direct io should be turned on after initialization.
-     */
-    if (m_file.have_direct_io_support() && !m_file.avoid_direct_io_on_append())
-    {
-      const bool direct_sync = flags & FsOpenReq::OM_DIRECT_SYNC;
-      if (m_file.set_direct_io(direct_sync) == -1)
-      {
-        ndbout_c("%s Failed to set ODirect errno: %u",
-                 theFileName.c_str(),
-                 get_last_os_error());
-      }
-#ifdef DEBUG_ODIRECT
-      else
-      {
-        ndbout_c("%s ODirect is set.", theFileName.c_str());
-      }
-#endif
-    }
   }
 
   /*
@@ -562,22 +540,31 @@ AsyncFile::openReq(Request * request)
   // Turn on direct io (OM_DIRECT, OM_DIRECT_SYNC) after init
   if (flags & FsOpenReq::OM_DIRECT)
   {
-    if (m_file.have_direct_io_support() && m_file.avoid_direct_io_on_append())
+    const bool direct_sync = flags & FsOpenReq::OM_DIRECT_SYNC;
+    const bool tablespace_file = flags & FsOpenReq::OM_THREAD_POOL;
+    if (m_file.set_direct_io(direct_sync,
+                             tablespace_file,
+                             theFileName.c_str()) == -1)
     {
-      const bool direct_sync = flags & FsOpenReq::OM_DIRECT_SYNC;
-      if (m_file.set_direct_io(direct_sync) == -1)
+      if (tablespace_file)
+      {
+        g_eventLogger->info("%s Failed to set ODirect on tablespace, "
+                            "will sync on each write instead",
+                            theFileName.c_str());
+      }
+      else
       {
         g_eventLogger->info("%s Failed to set ODirect errno: %u",
                             theFileName.c_str(),
                             get_last_os_error());
       }
-#ifdef DEBUG_ODIRECT
-      else
-      {
-        g_eventLogger->info("%s ODirect is set.", theFileName.c_str());
-      }
-#endif
     }
+#ifdef DEBUG_ODIRECT
+    else
+    {
+      g_eventLogger->info("%s ODirect is set.", theFileName.c_str());
+    }
+#endif
   }
 
   // Turn on synchronous mode (OM_SYNC)
