@@ -13083,7 +13083,7 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
   hostPtr.i = nodeId;
   ptrCheckGuard(hostPtr, chostFilesize, hostRecord);
 
-  DEB_LQH_TRANS(("trans(%x,%x), status: %u, tcOprec: %u, blockref: %x,"
+  DEB_LQH_TRANS(("trans(H'%.8x,H'%.8x), status: %u, tcOprec: %u, blockref: %x,"
                  " nodes(%u,%u,%u,%u) from node %u",
                  transid1,
                  transid2,
@@ -15056,7 +15056,7 @@ void Dbtc::initApiConnectFail(Signal* signal,
   apiConnectptr.p->currSavePointId = 0;
   BlockReference blockRef = calcTcBlockRef(tcNodeFailptr.p->takeOverNode);
 
-  DEB_START_TRANS(("Start failover transaction(H'%.8xH'%.8x)",
+  DEB_START_TRANS(("Start failover transaction(H'%.8x,H'%.8x)",
                    transid1,
                    transid2));
 
