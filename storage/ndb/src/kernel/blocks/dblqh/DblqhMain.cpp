@@ -37617,7 +37617,7 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
     signal->theData[0] = 2351;
     signal->theData[1] = bucket;
     signal->theData[2] = record;
-    sendSignal(reference(), GSN_DUMP_STATE_ORD, signal, len + 3, JBB);
+    sendSignal(reference(), GSN_DUMP_STATE_ORD, signal, len, JBB);
   }
 
   if (arg == 2352 && signal->getLength() == 2)
