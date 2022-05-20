@@ -3431,7 +3431,7 @@ void Dbtc::initApiConnectRec(Signal* signal,
   UintR Ttransid0 = tcKeyReq->transId1;
   UintR Ttransid1 = tcKeyReq->transId2;
 
-  DEB_START_TRANS(("(%u) Start normal transaction(%x,%x)",
+  DEB_START_TRANS(("(%u) Start normal transaction(H'%.8x,H'%.8x)",
                    instance(),
                    Ttransid0,
                    Ttransid1));
@@ -13570,7 +13570,7 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
                       apiConnectptr.p->globalcheckpointid,
                       apiConnectptr,
                       __LINE__);
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(%x,%x):"
+    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
                       " toCompleteHandling",
                      apiConnectptr.i,
                      apiConnectptr.p->transid[0],
@@ -13591,7 +13591,7 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
                       apiConnectptr.p->globalcheckpointid,
                       apiConnectptr,
                       __LINE__);
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(%x,%x):"
+    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
                       " toCommitHandling",
                      apiConnectptr.i,
                      apiConnectptr.p->transid[0],
@@ -13615,7 +13615,7 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
     /*------------------------------------------------------------*/
     tcConnectptr.i = apiConnectptr.p->tcConnect.getFirst();
     ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(%x,%x):"
+    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
                       " toAbortHandling",
                      apiConnectptr.i,
                      apiConnectptr.p->transid[0],
@@ -13627,7 +13627,7 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
     jam();
     sendTCKEY_FAILREF(signal, apiConnectptr.p);
     
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(%x,%x):"
+    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
                       " sendTCKEY_FAILREF",
                       apiConnectptr.i,
                       apiConnectptr.p->transid[0],
@@ -13642,7 +13642,7 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
     jam();
     sendTCKEY_FAILCONF(signal, apiConnectptr.p);
     
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(%x,%x):"
+    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(H'%.8x,H'%.8x):"
                       " sendTCKEY_FAILCONF",
                       apiConnectptr.i,
                       apiConnectptr.p->transid[0],
@@ -15016,7 +15016,7 @@ void Dbtc::initApiConnectFail(Signal* signal,
   apiConnectptr.p->currSavePointId = 0;
   BlockReference blockRef = calcTcBlockRef(tcNodeFailptr.p->takeOverNode);
 
-  DEB_START_TRANS(("Start failover transaction(%x%x)",
+  DEB_START_TRANS(("Start failover transaction(H'%.8xH'%.8x)",
                    transid1,
                    transid2));
 

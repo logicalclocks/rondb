@@ -14741,7 +14741,8 @@ void Dblqh::execABORT(Signal* signal)
         BlockReference ref = numberToRef(TRPMAN,
                                          trp_instance_no + 1, //Skip proxy
                                          getOwnNodeId());
-        DEB_ABORT_TRANS(("(%u)SEND_PUSH_ABORTREQ: trans(%u,%u), tcOprec: %u"
+        DEB_ABORT_TRANS(("(%u)SEND_PUSH_ABORTREQ: trans(H'%.8x,H'%.8x),"
+                         " tcOprec: %u"
                          ", tcRef: %x",
                          instance(),
                          transid1,
@@ -14779,7 +14780,7 @@ void Dblqh::execABORT(Signal* signal)
 // SEND ABORTED EVEN IF NOT FOUND.
 //THE TRANSACTION MIGHT NEVER HAVE ARRIVED HERE.
 /* ------------------------------------------------------------------------- */
-    DEB_ABORT_TRANS(("(%u)ABORTED not here: trans(%u,%u), tcOprec: %u"
+    DEB_ABORT_TRANS(("(%u)ABORTED not here: trans(H'%.8x,H'%.8x), tcOprec: %u"
                      ", tcRef: %x",
                      instance(),
                      transid1,
@@ -14834,8 +14835,8 @@ void Dblqh::execABORT(Signal* signal)
   remove_commit_marker(regTcPtr);
   TRACE_OP(regTcPtr, "ABORT");
 
-  DEB_ABORT_TRANS(("(%u)Start ABORT handling: trans(%u,%u), tcOprec: %u"
-                   ", tcRef: %x, tcPtrIAcc: %u",
+  DEB_ABORT_TRANS(("(%u)Start ABORT handling: trans(H'%x.8x',H'%x.8x),"
+                   " tcOprec: %u, tcRef: %x, tcPtrIAcc: %u",
                    instance(),
                    transid1,
                    transid2,
@@ -14888,7 +14889,8 @@ void Dblqh::execABORTREQ(Signal* signal)
                       partial_fit_ok,
                       tcConnectptr) != ZOK)
   {
-    DEB_ABORT_TRANS(("(%u)ABORTCONF not here: trans(%u,%u), tcRef(%u,%x)",
+    DEB_ABORT_TRANS(("(%u)ABORTCONF not here: trans(H'%.8x,H'%.8x),"
+                     " tcRef(%u,%x)",
                      instance(),
                      transid1,
                      transid2,
@@ -14903,8 +14905,8 @@ void Dblqh::execABORTREQ(Signal* signal)
     return;
   }//if
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
-  DEB_ABORT_TRANS(("(%u)2:Start ABORT handling: trans(%u,%u), tcOprec: %u"
-                   ", tcRef: %x, tcPtrIAcc: %u",
+  DEB_ABORT_TRANS(("(%u)2:Start ABORT handling: trans(H'%.8x,H'%.8x),"
+                   " tcOprec: %u, tcRef: %x, tcPtrIAcc: %u",
                    instance(),
                    transid1,
                    transid2,
@@ -15474,7 +15476,7 @@ void Dblqh::continueAfterLogAbortWriteLab(
     jam();
     TcKeyRef * const tcKeyRef = (TcKeyRef *) signal->getDataPtrSend();
     
-    DEB_ABORT_TRANS(("(%u)TCKEYREF: trans(%u,%u), tcOprec: %u"
+    DEB_ABORT_TRANS(("(%u)TCKEYREF: trans(H'%.8x,H'%.8x), tcOprec: %u"
                      ", tcRef: %x, tcPtrIAcc: %u",
                      instance(),
                      regTcPtr->transid[0],
@@ -15502,7 +15504,7 @@ void Dblqh::continueAfterLogAbortWriteLab(
     lqhKeyRef->transId1 = regTcPtr->transid[0];
     lqhKeyRef->transId2 = regTcPtr->transid[1];
     Uint32 block = refToMain(regTcPtr->clientBlockref);
-    DEB_ABORT_TRANS(("(%u)LQHKEYREF: trans(%u,%u), tcOprec: %u"
+    DEB_ABORT_TRANS(("(%u)LQHKEYREF: trans(H'%.8x,H'%.8x), tcOprec: %u"
                      ", tcRef: %x, tcPtrIAcc: %u",
                      instance(),
                      regTcPtr->transid[0],
@@ -15541,7 +15543,7 @@ void Dblqh::continueAfterLogAbortWriteLab(
     ndbassert(!m_is_query_block);
     ndbrequire(regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC_ABORT);
     jam();
-    DEB_ABORT_TRANS(("(%u)ABORTCONF: trans(%u,%u), tcOprec: %u"
+    DEB_ABORT_TRANS(("(%u)ABORTCONF: trans(H'%.8x,H'%.8x), tcOprec: %u"
                      ", tcRef: %x, tcPtrIAcc: %u",
                      instance(),
                      regTcPtr->transid[0],
@@ -16032,7 +16034,7 @@ void Dblqh::lqhTransNextLab(Signal* signal,
               tcConnectptr.p->tcNodeFailrec = tcNodeFailPtr.i;
               tcConnectptr.p->abortState = TcConnectionrec::NEW_FROM_TC;
               DEB_ABORT_TRANS(("(%u)LQH_TRANSREQ found tcAccPtrI: %u"
-                               "trans(%u,%u), tcRef(%u,%x), "
+                               "trans(H'%.8x,H'%.8x), tcRef(%u,%x), "
                                "state: %u",
                                instance(),
                                tcConnectptr.p->accConnectrec,
@@ -35904,7 +35906,7 @@ void Dblqh::sendAborted(Signal* signal,
   conf->transid2 = tcConnectptr.p->transid[1];
   conf->nodeId = cownNodeid;
   conf->lastLqhIndicator = TlastInd;
-  DEB_ABORT_TRANS(("(%u)ABORTED: trans(%u,%u), tcOprec: %u"
+  DEB_ABORT_TRANS(("(%u)ABORTED: trans(H'%.8x,H'%.8x), tcOprec: %u"
                    ", tcRef: %x, tcPtrIAcc: %u",
                    instance(),
                    tcConnectptr.p->transid[0],
@@ -35941,7 +35943,7 @@ void Dblqh::sendLqhTransconf(Signal* signal,
   LqhTransConf::setDirtyFlag(reqInfo, tcConnectptr.p->dirtyOp);
   LqhTransConf::setOperation(reqInfo, tcConnectptr.p->operation);
   
-  DEB_ABORT_TRANS(("(%u)LQH_TRANSCONF: trans(%u,%u), tcOprec: %u"
+  DEB_ABORT_TRANS(("(%u)LQH_TRANSCONF: trans(H'%.8x,H'%.8x), tcOprec: %u"
                    ", tcRef: %x, tcPtrILQH: %u",
                    instance(),
                    tcConnectptr.p->transid[0],
