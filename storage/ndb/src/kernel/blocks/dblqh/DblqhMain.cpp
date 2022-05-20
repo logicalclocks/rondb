@@ -13265,6 +13265,7 @@ void Dblqh::execCOMMIT(Signal* signal)
     warningReport(signal, 0, 0);
     return;
   }//if
+  jamDataDebug(tcConnectptr.p->tcOprec);
   if (ERROR_INSERTED(5011)) {
     CLEAR_ERROR_INSERT_VALUE;
     sendSignalWithDelay(cownref, GSN_COMMIT, signal, 2000,signal->getLength());
@@ -13455,6 +13456,7 @@ void Dblqh::execCOMPLETE(Signal* signal)
     warningReport(signal, 2, 0);
     return;
   }//if
+  jamDataDebug(tcConnectptr.p->tcOprec);
   CRASH_INSERTION(5042);
 
   if (ERROR_INSERTED(5013)) {
@@ -37502,133 +37504,120 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
     jam();
     Uint32 bucket = signal->theData[1];
     Uint32 record = signal->theData[2];
+    Uint32 loop_count = 0;
     Uint32 len = signal->getLength();
     TcConnectionrecPtr tcRec;
     ndbrequire(bucket < ctransidHashSize);
 
-    if (record != RNIL)
+    while (loop_count < 1024)
     {
-      jam();
-      /**
-       * Check that record is still in use...
-       */
-      tcRec.i = record;
-      if (!tcConnect_pool.getValidPtr(tcRec))
+      loop_count++;
+      if (record != RNIL)
       {
-        jam();
-        record = RNIL;
-      }
-      else
-      {
-        const Uint32 hashIndex = getHashIndex(tcRec.p);
-        Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
-        NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
-        if (hashIndex != bucket)
+        /**
+         * Check that record is still in use...
+         */
+        tcRec.i = record;
+        if (!tcConnect_pool.getValidPtr(tcRec))
         {
-	  jam();
-	  record = RNIL;
+          jam();
+          record = RNIL;
         }
         else
         {
-	  jam();
-	  if (tcRec.p->nextHashRec == RNIL && 
-	      tcRec.p->prevHashRec == RNIL &&
-	      ctransidHash[hashIndex] != record)
-	  {
+          const Uint32 hashIndex = getHashIndex(tcRec.p);
+          Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
+          NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
+          if (hashIndex != bucket)
+          {
 	    jam();
 	    record = RNIL;
-	  }
-        }
-        NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
-      }
-      
-      if (record == RNIL)
-      {
-	jam();
-	signal->theData[2] = RNIL;
-	sendSignal(reference(), GSN_DUMP_STATE_ORD, signal, 
-		   signal->getLength(), JBB);	
-	return;
-      }
-    }
-    else
-    {
-      Uint32 mutexIndex = bucket & (NUM_TRANSACTION_HASH_MUTEXES - 1);
-      NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
-      if ((record = ctransidHash[bucket]) == RNIL)
-      {
-        jam();
-        bucket++;
-        NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
-        if (bucket < ctransidHashSize)
-        {
-	  jam();
-	  signal->theData[1] = bucket;
-	  signal->theData[2] = RNIL;
-	  sendSignal(reference(), GSN_DUMP_STATE_ORD, signal, 
-		     signal->getLength(), JBB);	
-        }
-        else
-        {
-	  jam();
-          infoEvent("End of operation dump");
-          if (ERROR_INSERTED(4002))
-          {
-            ndbabort();
           }
+          else
+          {
+	    jam();
+	    if (tcRec.p->nextHashRec == RNIL && 
+	        tcRec.p->prevHashRec == RNIL &&
+	        ctransidHash[hashIndex] != record)
+	    {
+	      jam();
+	      record = RNIL;
+	    }
+          }
+          NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
         }
-        return;
+        if (record == RNIL)
+        {
+          continue;
+        }
       }
       else
       {
-        jam();
-        tcRec.i = record;
-        ndbrequire(tcConnect_pool.getValidPtr(tcRec));
-      }
-      for (Uint32 i = 0; i<32; i++)
-      {
-        jam();
-        bool print = match_and_print(signal, tcRec);
-      
-        tcRec.i = tcRec.p->nextHashRec;
-        if (tcRec.i == RNIL || print)
+        Uint32 mutexIndex = bucket & (NUM_TRANSACTION_HASH_MUTEXES - 1);
+        NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
+        if ((record = ctransidHash[bucket]) == RNIL)
         {
-	  jam();
-	  break;
-        }
-        ndbrequire(tcConnect_pool.getValidPtr(tcRec));
-      }
-      NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
-      if (tcRec.i == RNIL)
-      {
-        jam();
-        bucket++;
-        if (bucket < ctransidHashSize)
-        {
-	  jam();
-	  signal->theData[1] = bucket;
-	  signal->theData[2] = RNIL;
-	  sendSignal(reference(), GSN_DUMP_STATE_ORD, signal, len, JBB);
+          bucket++;
+          NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
+          if (bucket < ctransidHashSize)
+          {
+            continue;
+          }
+          else
+          {
+            infoEvent("End of operation dump");
+            if (ERROR_INSERTED(4002))
+            {
+              ndbabort();
+            }
+          }
+          return;
         }
         else
         {
-	  jam();
-          infoEvent("End of operation dump");
-          if (ERROR_INSERTED(4002))
-          {
-            ndbabort();
-          }
+          tcRec.i = record;
+          ndbrequire(tcConnect_pool.getValidPtr(tcRec));
         }
-        return;
-      }
-      else
-      {
-        jam();
-        signal->theData[2] = tcRec.i;
-        sendSignalWithDelay(reference(), GSN_DUMP_STATE_ORD, signal, 200, len);
-        return;
+        for (Uint32 i = 0; i<32; i++)
+        {
+          bool print = match_and_print(signal, tcRec);
+          tcRec.i = tcRec.p->nextHashRec;
+          if (tcRec.i == RNIL || print)
+          {
+            loop_count += 32;
+	    break;
+          }
+          ndbrequire(tcConnect_pool.getValidPtr(tcRec));
+        }
+        NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
+        if (tcRec.i == RNIL)
+        {
+          bucket++;
+          record = RNIL;
+          if (bucket < ctransidHashSize)
+          {
+            continue;
+          }
+          else
+          {
+            infoEvent("End of operation dump");
+            if (ERROR_INSERTED(4002))
+            {
+              ndbabort();
+            }
+          }
+          return;
+        }
+        else
+        {
+          record = tcRec.i;
+        }
       }
     }
+    signal->theData[0] = 2351;
+    signal->theData[1] = bucket;
+    signal->theData[2] = record;
+    sendSignal(reference(), GSN_DUMP_STATE_ORD, signal, len + 3, JBB);
   }
 
   if (arg == 2352 && signal->getLength() == 2)
