@@ -13079,8 +13079,12 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
   Uint32 gci_lo = lqhTransConf->gci_lo;
   Uint32 fragId = lqhTransConf->fragId;
 
+  HostRecordPtr hostPtr;
+  hostPtr.i = nodeId;
+  ptrCheckGuard(hostPtr, chostFilesize, hostRecord);
+
   DEB_LQH_TRANS(("trans(%x,%x), status: %u, tcOprec: %u, blockref: %x,"
-                 " nodes(%u,%u,%u,%u)",
+                 " nodes(%u,%u,%u,%u) from node %u",
                  transid1,
                  transid2,
                  transStatus,
@@ -13089,8 +13093,10 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
                  nodeId,
                  cnodes[0],
                  cnodes[1],
-                 cnodes[2]));
+                 cnodes[2],
+                 nodeId));
 
+  ndbrequire(hostPtr.p->lqhTransStatus == LTS_ACTIVE);
   ndbrequire(transStatus != LqhTransConf::Committed ||
              (signal->getLength() >= LqhTransConf::SignalLength_GCI_LO));
   gci |= gci_lo;

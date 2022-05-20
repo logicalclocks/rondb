@@ -110,6 +110,7 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 #define DEBUG_ABORT_TRANS 1
+#define DEBUG_LQH_TRANS 1
 //#define DEBUG_LOCAL_LCP 1
 //#define DEBUG_COPY_ACTIVE 1
 //#define DEBUG_EMPTY_LCP 1
@@ -143,6 +144,12 @@
 #define DEB_ABORT_TRANS(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_ABORT_TRANS(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_LQH_TRANS
+#define DEB_LQH_TRANS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_LQH_TRANS(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_LOG_QUEUE
@@ -6506,7 +6513,7 @@ void Dblqh::sendLqhkeyconfTc(Signal* signal,
   lqhKeyConf->transId2 = transid2;
   lqhKeyConf->numFiredTriggers = numFiredTriggers;
 
-  DEB_ABORT_TRANS(("(%u)LQHKEYCONF tcAccPtrI: %u, transid(%u,%u),"
+  DEB_ABORT_TRANS(("(%u)LQHKEYCONF tcAccPtrI: %u, transid(H'%.8x,H'%.8x),"
                    " tcRef(%u,%x)",
                    instance(),
                    tcConnectptr.p->accConnectrec,
@@ -14835,7 +14842,7 @@ void Dblqh::execABORT(Signal* signal)
   remove_commit_marker(regTcPtr);
   TRACE_OP(regTcPtr, "ABORT");
 
-  DEB_ABORT_TRANS(("(%u)Start ABORT handling: trans(H'%x.8x',H'%x.8x),"
+  DEB_ABORT_TRANS(("(%u)Start ABORT handling: trans(H'%.8x',H'%.8x),"
                    " tcOprec: %u, tcRef: %x, tcPtrIAcc: %u",
                    instance(),
                    transid1,
@@ -15855,8 +15862,22 @@ void Dblqh::execLQH_TRANSREQ(Signal* signal)
     tcNodeFailPtr.p->lastNewTcRef = newTcPtr;
     tcNodeFailPtr.p->lastTakeOverInstanceId = instanceId;
     tcNodeFailPtr.p->tcFailStatus = TcNodeFailRecord::TC_STATE_BREAK;
+    DEB_LQH_TRANS(("(%u) LQH_TRANSREQ failed node: %u, new TCref: (%x,%u), "
+                   "instance: %u",
+                   instance(),
+                   oldNodeId,
+                   newTcBlockref,
+                   newTcPtr,
+                   instanceId));
     return;
   }//if
+  DEB_LQH_TRANS(("(%u) LQH_TRANSREQ failed node: %u, TCref: (%x,%u) "
+                 "instance: %u",
+                 instance(),
+                 oldNodeId,
+                 newTcBlockref,
+                 newTcPtr,
+                 instanceId));
   tcNodeFailPtr.p->oldNodeId = oldNodeId;
   tcNodeFailPtr.p->newTcBlockref = newTcBlockref;
   tcNodeFailPtr.p->newTcRef = newTcPtr;
@@ -16034,7 +16055,7 @@ void Dblqh::lqhTransNextLab(Signal* signal,
               tcConnectptr.p->tcNodeFailrec = tcNodeFailPtr.i;
               tcConnectptr.p->abortState = TcConnectionrec::NEW_FROM_TC;
               DEB_ABORT_TRANS(("(%u)LQH_TRANSREQ found tcAccPtrI: %u"
-                               "trans(H'%.8x,H'%.8x), tcRef(%u,%x), "
+                               " trans(H'%.8x,H'%.8x), tcRef(%u,%x), "
                                "state: %u",
                                instance(),
                                tcConnectptr.p->accConnectrec,
@@ -35944,13 +35965,14 @@ void Dblqh::sendLqhTransconf(Signal* signal,
   LqhTransConf::setOperation(reqInfo, tcConnectptr.p->operation);
   
   DEB_ABORT_TRANS(("(%u)LQH_TRANSCONF: trans(H'%.8x,H'%.8x), tcOprec: %u"
-                   ", tcRef: %x, tcPtrILQH: %u",
+                   ", tcRef: %x, tcPtrILQH: %u, old_node: %u",
                    instance(),
                    tcConnectptr.p->transid[0],
                    tcConnectptr.p->transid[1],
                    tcConnectptr.p->tcOprec,
                    tcConnectptr.p->tcBlockref,
-                   tcConnectptr.i));
+                   tcConnectptr.i,
+                   tcNodeFailPtr.i));
 
   LqhTransConf * const lqhTransConf = (LqhTransConf *)&signal->theData[0];
   lqhTransConf->tcRef           = tcNodeFailPtr.p->newTcRef;
@@ -35970,6 +35992,11 @@ void Dblqh::sendLqhTransconf(Signal* signal,
   lqhTransConf->tableId         = tcConnectptr.p->tableref;
   lqhTransConf->gci_lo          = tcConnectptr.p->gci_lo;
   lqhTransConf->fragId          = tcConnectptr.p->fragmentid;
+
+  TcNodeFailRecord::TcFailStatus failStatus = tcNodeFailPtr.p->tcFailStatus;
+  ndbrequire(failStatus == TcNodeFailRecord::TC_STATE_TRUE ||
+             failStatus == TcNodeFailRecord::TC_STATE_BREAK);
+
   /**
     maxInstanceId is ignored for all LQH_TRANSCONF except the last one sent with
     LqhTransConf::LastTransConf as the state. This state is never called in this
