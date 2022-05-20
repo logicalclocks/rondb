@@ -117,6 +117,7 @@
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
 #define DEBUG_START_TRANS 1
 #define DEBUG_LQH_TRANS 1
+#define DEBUG_LQH_TRANS_CMA 1
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define ABORT_TRACE 1
 //#define COMMIT_TRACE 1
@@ -140,6 +141,12 @@
 #define DEBUG(x) ndbout << "DBTC: "<< x << endl;
 #else
 #define DEBUG(x)
+#endif
+
+#ifdef DEBUG_LQH_TRANS_CMA
+#define DEB_LQH_TRANS_CMA(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_LQH_TRANS_CMA(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_LQH_TRANS
@@ -2159,6 +2166,10 @@ Dbtc::removeMarkerForFailedAPI(Signal* signal,
        * the commit ack marker in LQH.
        */
       sendRemoveMarkers(signal, iter.curr.p, 1);
+      DEB_LQH_TRANS_CMA(("Remove trans(H'%.8x,H'%.8x) from "
+                     "CommitAckMarker::ApiFail",
+                     iter.curr.p->transid1,
+                     iter.curr.p->transid2));
       m_commitAckMarkerHash.remove(iter.curr);
       m_commitAckMarkerPool.release(iter.curr);
       break;
@@ -4445,6 +4456,11 @@ void Dbtc::execTCKEYREQ(Signal* signal)
 	    ndbrequire(!m_commitAckMarkerHash.find(check, *tmp.p));
           }
 #endif
+          DEB_LQH_TRANS_CMA(("(%u) Insert trans(H'%.8x,H'%.8x) into "
+                         "CommitAckMarker::TCKEYREQ",
+                         instance(),
+                         tcKeyReq->transId1,
+                         tcKeyReq->transId2));
           m_commitAckMarkerHash.add(tmp);
         }
       }
@@ -8581,6 +8597,11 @@ Dbtc::execTC_COMMIT_ACK(Signal* signal)
   key.transid2 = signal->theData[1];
 
   CommitAckMarkerPtr removedMarker;
+  DEB_LQH_TRANS_CMA(("(%u) Remove trans(H'%.8x,H'%.8x) from "
+                 "CommitAckMarker::TC_COMMIT_ACK",
+                 instance(),
+                 key.transid1,
+                 key.transid2));
   if (!m_commitAckMarkerHash.remove(removedMarker, key))
   {
     jam();
@@ -12832,6 +12853,11 @@ void Dbtc::releaseMarker(ApiConnectRecord * const regApiPtr)
       LocalCommitAckMarkerBuffer commitAckMarkers(pool, marker.p->theDataBuffer);
       commitAckMarkers.release();
     }
+    DEB_LQH_TRANS_CMA(("(%u) Remove trans(H'%.8x,H'%.8x) from "
+                   "CommitAckMarker::releaseMarker",
+                   instance(),
+                   marker.p->transid1,
+                   marker.p->transid2));
     m_commitAckMarkerHash.remove(marker);
     m_commitAckMarkerPool.release(marker);
 
@@ -13053,9 +13079,11 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
   Uint32 gci_lo = lqhTransConf->gci_lo;
   Uint32 fragId = lqhTransConf->fragId;
 
-  DEB_LQH_TRANS(("trans(%x,%x), tcOprec: %u, blockref: %x, nodes(%u,%u,%u,%u)",
+  DEB_LQH_TRANS(("trans(%x,%x), status: %u, tcOprec: %u, blockref: %x,"
+                 " nodes(%u,%u,%u,%u)",
                  transid1,
                  transid2,
+                 transStatus,
                  tcOprec,
                  ref,
                  nodeId,
@@ -13067,7 +13095,8 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
              (signal->getLength() >= LqhTransConf::SignalLength_GCI_LO));
   gci |= gci_lo;
 
-  if (transStatus == LqhTransConf::LastTransConf){
+  if (transStatus == LqhTransConf::LastTransConf)
+  {
     jam();
     Uint32 maxInstanceId = lqhTransConf->maxInstanceId;
     if (unlikely(signal->getLength() < LqhTransConf::SignalLength_INST_ID))
@@ -13082,11 +13111,14 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
     nodeTakeOverCompletedLab(signal, nodeId, maxInstanceId);
     return;
   }//if
-  if (transStatus == LqhTransConf::Marker){
+  if (transStatus == LqhTransConf::Marker)
+  {
     jam();
     reqinfo = 0;
     LqhTransConf::setMarkerFlag(reqinfo, 1);
-  } else {
+  }
+  else
+  {
     TableRecordPtr tabPtr;
     tabPtr.i = tableId;
     ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
@@ -13107,6 +13139,7 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
      * Found a transaction record, record the added info about this
      * transaction as received in this message
      */
+    jam();
     updateApiStateFail(signal,
                        transid1,
                        transid2,
@@ -13161,6 +13194,7 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
      * it with info as received in LQH_TRANSCONF message. Also insert
      * it in hash table for transaction records in TC take over.
      */
+    jam();
     insert_transid_fail_hash(transid1, apiConnectptr);
     initApiConnectFail(signal,
                        transid1,
@@ -15051,7 +15085,8 @@ void Dbtc::initApiConnectFail(Signal* signal,
     systemErrorLab(signal, __LINE__);
   }//if
   apiConnectptr.p->commitAckMarker = RNIL;
-  if(LqhTransConf::getMarkerFlag(reqinfo)){
+  if (LqhTransConf::getMarkerFlag(reqinfo))
+  {
     jam();
     CommitAckMarkerPtr tmp;
 
@@ -15115,6 +15150,10 @@ void Dbtc::initApiConnectFail(Signal* signal,
         ndbrequire(m_commitAckMarkerPool.seize(tmp));
         tmp.p->transid1      = transid1;
         tmp.p->transid2      = transid2;
+        DEB_LQH_TRANS_CMA(("Insert trans(H'%.8x,H'%.8x) into "
+                       "CommitAckMarker::initApiConnectFail",
+                       transid1,
+                       transid2));
         m_commitAckMarkerHash.add(tmp);
       }
     }
@@ -15446,6 +15485,10 @@ void Dbtc::updateApiStateFail(Signal* signal,
 	ndbrequire(!m_commitAckMarkerHash.find(check, *tmp.p));
       }
 #endif
+      DEB_LQH_TRANS_CMA(("Insert trans(H'%.8x,H'%.8x) into "
+                     "CommitAckMarker::UpdateApiStateFail",
+                     transid1,
+                     transid2));
       m_commitAckMarkerHash.add(tmp);
     }
     else
