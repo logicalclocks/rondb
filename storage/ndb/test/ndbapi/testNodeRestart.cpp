@@ -4773,7 +4773,7 @@ runBug41295(NDBT_Context* ctx, NDBT_Step* step)
     ctx->setProperty("Pause", 1);
     ctx->sync_up_and_wait("WaitThreads", ctx->getProperty("Threads", 1));
     ndbout_c("all threads paused");
-    NdbSleep_MilliSleep(5000);
+    NdbSleep_MilliSleep(7000);
     res.dumpStateAllNodes(&leak, 1);
     NdbSleep_MilliSleep(1000);
     if (res.checkClusterAlive(&next, 1))
