@@ -115,7 +115,9 @@
 #define JAM_FILE_ID 353
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
-//#define DO_TRANSIENT_POOL_STAT
+#define DEBUG_START_TRANS 1
+#define DEBUG_LQH_TRANS 1
+//#define DO_TRANSIENT_POOL_STAT 1
 //#define ABORT_TRACE 1
 //#define COMMIT_TRACE 1
 //#define COMPLETE_TRACE 1
@@ -123,7 +125,7 @@
 //#define DEBUG_GCP 1
 //#define DEBUG_ABORT_TRANS 1
 //#define DEBUG_NODE_STATUS 1
-//#define DEBUG_NODE_FAILURE 1
+#define DEBUG_NODE_FAILURE 1
 //#define DEBUG_RR_INIT 1
 //#define DEBUG_EXEC_WRITE_COUNT 1
 //#define DEBUG_TCGETOPSIZE 1
@@ -138,6 +140,18 @@
 #define DEBUG(x) ndbout << "DBTC: "<< x << endl;
 #else
 #define DEBUG(x)
+#endif
+
+#ifdef DEBUG_LQH_TRANS
+#define DEB_LQH_TRANS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_LQH_TRANS(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_START_TRANS
+#define DEB_START_TRANS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_START_TRANS(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_GCP
@@ -3416,6 +3430,11 @@ void Dbtc::initApiConnectRec(Signal* signal,
   UintR TfailureNr = cfailure_nr;
   UintR Ttransid0 = tcKeyReq->transId1;
   UintR Ttransid1 = tcKeyReq->transId2;
+
+  DEB_START_TRANS(("(%u) Start normal transaction(%x,%x)",
+                   instance(),
+                   Ttransid0,
+                   Ttransid1));
 
   regApiPtr->m_flags = 0;
   regApiPtr->returncode = 0;
@@ -13034,6 +13053,16 @@ void Dbtc::execLQH_TRANSCONF(Signal* signal)
   Uint32 gci_lo = lqhTransConf->gci_lo;
   Uint32 fragId = lqhTransConf->fragId;
 
+  DEB_LQH_TRANS(("trans(%x,%x), tcOprec: %u, blockref: %x, nodes(%u,%u,%u,%u)",
+                 transid1,
+                 transid2,
+                 tcOprec,
+                 ref,
+                 nodeId,
+                 cnodes[0],
+                 cnodes[1],
+                 cnodes[2]));
+
   ndbrequire(transStatus != LqhTransConf::Committed ||
              (signal->getLength() >= LqhTransConf::SignalLength_GCI_LO));
   gci |= gci_lo;
@@ -13541,8 +13570,11 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
                       apiConnectptr.p->globalcheckpointid,
                       apiConnectptr,
                       __LINE__);
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u: toCompleteHandling",
-                     apiConnectptr.i));
+    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(%x,%x):"
+                      " toCompleteHandling",
+                     apiConnectptr.i,
+                     apiConnectptr.p->transid[0],
+                     apiConnectptr.p->transid[1]));
     init_finish_processing(apiConnectptr.p);
     toCompleteHandlingLab(signal, apiConnectptr);
     return;
@@ -13559,8 +13591,11 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
                       apiConnectptr.p->globalcheckpointid,
                       apiConnectptr,
                       __LINE__);
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u: toCommitHandling",
-                     apiConnectptr.i));
+    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(%x,%x):"
+                      " toCommitHandling",
+                     apiConnectptr.i,
+                     apiConnectptr.p->transid[0],
+                     apiConnectptr.p->transid[1]));
     init_finish_processing(apiConnectptr.p);
     toCommitHandlingLab(signal, apiConnectptr);
     return;
@@ -13580,8 +13615,11 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
     /*------------------------------------------------------------*/
     tcConnectptr.i = apiConnectptr.p->tcConnect.getFirst();
     ndbrequire(tcConnectRecord.getValidPtr(tcConnectptr));
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u: toAbortHandling",
-                      apiConnectptr.i));
+    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(%x,%x):"
+                      " toAbortHandling",
+                     apiConnectptr.i,
+                     apiConnectptr.p->transid[0],
+                     apiConnectptr.p->transid[1]));
     init_finish_processing(apiConnectptr.p);
     toAbortHandlingLab(signal, apiConnectptr);
     return;
@@ -13589,8 +13627,11 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
     jam();
     sendTCKEY_FAILREF(signal, apiConnectptr.p);
     
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u: sendTCKEY_FAILREF",
-                      apiConnectptr.i));
+    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(%x,%x):"
+                      " sendTCKEY_FAILREF",
+                      apiConnectptr.i,
+                      apiConnectptr.p->transid[0],
+                      apiConnectptr.p->transid[1]));
     signal->theData[0] = TcContinueB::ZCOMPLETE_TRANS_AT_TAKE_OVER;
     signal->theData[1] = apiConnectptr.p->takeOverRec;
     signal->theData[2] = apiConnectptr.p->takeOverInd;
@@ -13601,8 +13642,11 @@ void Dbtc::completeTransAtTakeOverDoOne(Signal* signal,
     jam();
     sendTCKEY_FAILCONF(signal, apiConnectptr.p);
     
-    DEB_NODE_FAILURE(("apiConnectptr.i: %u: sendTCKEY_FAILCONF",
-                      apiConnectptr.i));
+    DEB_NODE_FAILURE(("apiConnectptr.i: %u, trans(%x,%x):"
+                      " sendTCKEY_FAILCONF",
+                      apiConnectptr.i,
+                      apiConnectptr.p->transid[0],
+                      apiConnectptr.p->transid[1]));
     signal->theData[0] = TcContinueB::ZCOMPLETE_TRANS_AT_TAKE_OVER;
     signal->theData[1] = apiConnectptr.p->takeOverRec;
     signal->theData[2] = apiConnectptr.p->takeOverInd;
@@ -14971,6 +15015,10 @@ void Dbtc::initApiConnectFail(Signal* signal,
   apiConnectptr.p->tcConnect.init();
   apiConnectptr.p->currSavePointId = 0;
   BlockReference blockRef = calcTcBlockRef(tcNodeFailptr.p->takeOverNode);
+
+  DEB_START_TRANS(("Start failover transaction(%x%x)",
+                   transid1,
+                   transid2));
 
   apiConnectptr.p->tcBlockref = blockRef;
   apiConnectptr.p->ndbapiBlockref = 0;
