@@ -2400,16 +2400,19 @@ main(int argc, char** argv)
   {
     ndbout << "Failed options" << endl;
     ndbout << "ret = " << ret << " argc == " << argc << endl;
+    ndbout << "Return NDBT_FAILED" << endl;
     return NDBT_ProgramExit(NDBT_WRONGARGS);
   }
   if (doconnect() == 0 && runtest() == 0) {
     delete g_ndb;
     delete g_ncc;
+    ndbout << "Return NDBT_OK" << endl;
     return NDBT_ProgramExit(NDBT_OK);
   }
   dropeventops(true);
   dropevents(true);
   delete g_ndb;
   delete g_ncc;
+  ndbout << "Return NDBT_FAILED" << endl;
   return NDBT_ProgramExit(NDBT_FAILED);
 }
