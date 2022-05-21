@@ -3612,7 +3612,7 @@ Dbdict::activateIndexes(Signal* signal, Uint32 id)
   }
 
   D("activateIndexes done");
-#if defined VM_TRACE || defined MARTIN
+#if defined VM_TRACE
   check_consistency();
 #endif
 out:
@@ -29957,7 +29957,7 @@ Dbdict::releaseSchemaTrans(SchemaTransPtr& trans_ptr)
     Resource_limit rl;
     m_ctx.m_mm.get_resource_limit(RG_SCHEMA_TRANS_MEMORY, rl);
     ndbrequire(rl.m_curr <= 1); // ArenaAllocator can keep one page for empty pool
-#if defined VM_TRACE || defined MARTIN
+#if defined VM_TRACE
     if (getNodeState().startLevel == NodeState::SL_STARTED)
       check_consistency();
 #endif
@@ -34629,7 +34629,7 @@ Dbdict::ErrorInfo::print(EventLogger *logger) const
       errorObjectName);
 }
 
-#if defined VM_TRACE || defined MARTIN
+#if defined VM_TRACE
 
 // DictObject
 
