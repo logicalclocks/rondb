@@ -2351,11 +2351,24 @@ checkopts()
   if (g_opts.no_nulls) {
     g_opts.no_implicit_nulls = true;
   }
-  if (g_opts.maxpk > g_maxpk ||
-      g_opts.maxtab > (int)g_maxtab) {
+  if (g_opts.maxpk > g_maxpk)
+  {
+    ll0("maxpk too big");
     return -1;
   }
-  if (g_opts.blob_version < 1 || g_opts.blob_version > 2) {
+  if (g_opts.maxtab > (int)g_maxtab)
+  {
+    ll0("maxtab too big");
+    return -1;
+  }
+  if (g_opts.blob_version < 1)
+  {
+    ll0("Too small blob version");
+    return -1;
+  }
+  if (g_opts.blob_version > 2)
+  {
+    ll0("Too large blob version");
     return -1;
   }
   return 0;
@@ -2384,7 +2397,11 @@ main(int argc, char** argv)
   int ret;
   ret = handle_options(&argc, &argv, my_long_options, ndb_std_get_one_option);
   if (ret != 0 || argc != 0 || checkopts() != 0)
+  {
+    ndbout << "Failed options" << endl;
+    ndbout << "ret = " << ret << " argc == " << argc << endl;
     return NDBT_ProgramExit(NDBT_WRONGARGS);
+  }
   if (doconnect() == 0 && runtest() == 0) {
     delete g_ndb;
     delete g_ncc;
