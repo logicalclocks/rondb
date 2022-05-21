@@ -109,8 +109,8 @@
 #include <EventLogger.hpp>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_ABORT_TRANS 1
-#define DEBUG_LQH_TRANS 1
+//#define DEBUG_ABORT_TRANS 1
+//#define DEBUG_LQH_TRANS 1
 //#define DEBUG_LOCAL_LCP 1
 //#define DEBUG_COPY_ACTIVE 1
 //#define DEBUG_EMPTY_LCP 1

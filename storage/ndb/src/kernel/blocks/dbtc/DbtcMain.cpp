@@ -115,9 +115,9 @@
 #define JAM_FILE_ID 353
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
-#define DEBUG_START_TRANS 1
-#define DEBUG_LQH_TRANS 1
-#define DEBUG_LQH_TRANS_CMA 1
+//#define DEBUG_START_TRANS 1
+//#define DEBUG_LQH_TRANS 1
+//#define DEBUG_LQH_TRANS_CMA 1
 //#define DO_TRANSIENT_POOL_STAT 1
 //#define ABORT_TRACE 1
 //#define COMMIT_TRACE 1
@@ -126,7 +126,7 @@
 //#define DEBUG_GCP 1
 //#define DEBUG_ABORT_TRANS 1
 //#define DEBUG_NODE_STATUS 1
-#define DEBUG_NODE_FAILURE 1
+//#define DEBUG_NODE_FAILURE 1
 //#define DEBUG_RR_INIT 1
 //#define DEBUG_EXEC_WRITE_COUNT 1
 //#define DEBUG_TCGETOPSIZE 1
