@@ -108,6 +108,9 @@
 
 #ifdef DBDICT_C
 
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+#define MARTIN 1
+#endif
 /*--------------------------------------------------------------*/
 // Constants for CONTINUEB
 /*--------------------------------------------------------------*/
@@ -794,7 +797,7 @@ public:
       return false;
     }
 
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
     void print(NdbOut&) const;
 #endif
   };
@@ -1735,7 +1738,7 @@ private:
     return ok;
   }
 
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
   template <Uint32 sz>
   inline const char*
   copyRope(const LcRopeHandle& rh)
