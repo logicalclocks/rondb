@@ -14393,10 +14393,10 @@ Dblqh::execPUSH_ABORT_TRAIN_ORD(Signal *signal)
     (PushAbortTrainOrd *)signal->getDataPtr();
   Uint32 thread_id = ord->threadId;
   Uint32 send_thread_signal_id = ord->sendThreadSignalId;
-  if ((ERROR_INSERTED(5107) &&
-       (ord->indexQueryThread + 1) < m_num_qt_our_rr_group) ||
-      !check_abort_signal_executed(thread_id,
-                                   send_thread_signal_id))
+  if (((ord->indexQueryThread + 1) < m_num_qt_our_rr_group) &&
+      ((ERROR_INSERTED(5107) ||
+        !check_abort_signal_executed(thread_id,
+                                     send_thread_signal_id))))
   {
     Uint32 index = ord->indexQueryThread;
     index++;
@@ -14429,6 +14429,11 @@ Dblqh::execPUSH_ABORT_TRAIN_ORD(Signal *signal)
                      JBB,
                      nullptr);
     return;
+  }
+  if ((ord->indexQueryThread + 1) == m_num_qt_our_rr_group)
+  {
+    ndbrequire(check_abort_signal_executed(thread_id,
+                                           send_thread_signal_id));
   }
   Uint32 tcOprec = ord->tcOprec;
   Uint32 tcBlockref = ord->tcBlockref;
@@ -14505,8 +14510,9 @@ Dblqh::execSEND_PUSH_ABORTCONF(Signal *signal)
                          qt_instance_no + 1, //Skip proxy
                          getOwnNodeId());
     RoutePath path[1];
+    Uint32 trp_instance_no = thread_id - getFirstReceiveThreadId();
     path[0].ref = numberToRef(TRPMAN,
-                              thread_id,
+                              trp_instance_no + 1, //Skip proxy
                               getOwnNodeId());
     path[0].prio = JBB;
     sendRoutedSignal(path,
@@ -14644,6 +14650,10 @@ void Dblqh::execABORT(Signal* signal)
          * Return to the receive thread and send signals to the query thread
          * to ensure that we can acquire this certainty before we handle the
          * aborted signal.
+         *
+         * ERROR_INSERT 5107 means that we will send to all query threads
+         * even if the signals have been executed. At the last query thread
+         * we will check the transaction hash and act accordingly.
          */
         push_req->tcOprec = tcOprec;
         push_req->tcBlockref = tcBlockref;
@@ -40174,6 +40184,22 @@ bool
 Dblqh::check_abort_signal_executed(Uint32 recv_thr_no,
                                    Uint32 thread_signal_id)
 {
+  /**
+   * When this method is used we have sent the ABORT signal from DBTC
+   * to V_QUERY, in this case it is redirected to DBLQH. If it isn't
+   * found in transaction hash in this case we check if all signals
+   * before the ABORT signal have been executed by the LDM thread
+   * and all query threads. If all signals before the ABORT have been
+   * executed it means specifically that the LQHKEYREQ signal have
+   * been executed. If the LQHKEYREQ have been executed and it isn't
+   * found in the transaction hash we can assume the operation is
+   * aborted before it was put into the transaction hash.
+   *
+   * There is no need to check the LDM threads signal id here since if
+   * LQHKEYREQ was executed by the LDM thread it would use the same
+   * path as the first ABORT signal. Thus we only check the query threads
+   * here.
+   */
   ndbrequire(globalData.ndbMtQueryThreads > 0);
   for (Uint32 i = 0; i < m_num_qt_our_rr_group; i++)
   {
