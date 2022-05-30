@@ -2069,6 +2069,7 @@ public:
     FailState failStatus;
     Uint16 queueIndex;
     Uint16 takeOverNode;
+    Uint16 sent_count;
   };
   typedef Ptr<TcFailRecord> TcFailRecordPtr;
 

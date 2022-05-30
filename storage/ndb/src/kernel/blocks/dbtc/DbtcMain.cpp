@@ -12744,6 +12744,7 @@ void Dbtc::startTakeOverLab(Signal* signal,
       sendLQH_TRANSREQ(signal, failedNodeId);
     }
   }
+  tcNodeFailptr.p->sent_count = sent_count;
 }
 
 Uint32
@@ -13267,7 +13268,11 @@ void Dbtc::nodeTakeOverCompletedLab(Signal* signal,
   }
   hostptr.i = nodeId;
   ptrCheckGuard(hostptr, chostFilesize, hostRecord);
+  ndbrequire(hostptr.p->lqhTransStatus == LTS_ACTIVE);
   hostptr.p->lqhTransStatus = LTS_IDLE;
+  Uint32 failedNodeId = tcNodeFailptr.p->takeOverNode;
+  ndbrequire(tcNodeFailptr.p->sent_count > 0);
+  tcNodeFailptr.p->sent_count--;
   bool found_active = false;
   for (hostptr.i = 1; hostptr.i < MAX_NDB_NODES; hostptr.i++) {
     jam();
@@ -13290,7 +13295,14 @@ void Dbtc::nodeTakeOverCompletedLab(Signal* signal,
                           nodeId));
         found_active = true;
         hostptr.p->lqhTransStatus = LTS_ACTIVE;
-        sendLQH_TRANSREQ(signal, nodeId);
+        sendLQH_TRANSREQ(signal, failedNodeId);
+        tcNodeFailptr.p->sent_count++;
+        if (tcNodeFailptr.p->sent_count >= 2)
+        {
+          jam();
+          DEB_NODE_FAILURE(("Only 2 nodes at a time allowed"));
+          break;
+        }
       }
     }
   }
