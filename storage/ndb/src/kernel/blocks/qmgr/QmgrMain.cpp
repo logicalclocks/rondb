@@ -3828,7 +3828,7 @@ void Qmgr::execACTIVATE_REQ(Signal *signal)
   }
 
   g_not_active_nodes.clear(activateNodeId);
-  globalTransporterRegistry.set_active_node(activateNodeId, 1);
+  globalTransporterRegistry.set_active_node(activateNodeId, 1, true);
 
   m_activate_node_id = activateNodeId;
   m_activate_ref = senderRef;
@@ -3987,7 +3987,7 @@ void Qmgr::execDEACTIVATE_REQ(Signal *signal)
     return;
   }
   g_not_active_nodes.set(deactivateNodeId);
-  globalTransporterRegistry.set_active_node(deactivateNodeId, 0);
+  globalTransporterRegistry.set_active_node(deactivateNodeId, 0, true);
 
   m_activate_node_id = deactivateNodeId;
   m_activate_ref = senderRef;
