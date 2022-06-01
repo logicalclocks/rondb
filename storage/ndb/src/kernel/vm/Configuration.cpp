@@ -1884,7 +1884,7 @@ Configuration::setupConfiguration()
   } while (0);
 
   calcSizeAlt(cf);
-
+  set_not_active_nodes();
   DBUG_VOID_RETURN;
 }
 
@@ -1912,7 +1912,6 @@ Configuration::setupMemoryConfiguration(Uint64 min_transaction_memory)
   {
     assign_default_memory_sizes(it_p, min_transaction_memory);
   }
-  set_not_active_nodes();
   DBUG_VOID_RETURN;
 }
 
