@@ -529,6 +529,11 @@ TransporterRegistry::set_hostname(Uint32 nodeId,
   {
     if (theTCPTransporters[i]->remoteNodeId == nodeId)
     {
+      DEBUG_FPRINTF((stderr, "set_hostname(%u) = %s on TCP trp: %u, trp: %u\n",
+                    nodeId,
+                    new_hostname,
+                    i,
+                    theTCPTransporters[i]->getTransporterIndex()));
       theTCPTransporters[i]->set_hostname(new_hostname);
     }
   }
@@ -537,6 +542,11 @@ TransporterRegistry::set_hostname(Uint32 nodeId,
   {
     if (theSHMTransporters[i]->remoteNodeId == nodeId)
     {
+      DEBUG_FPRINTF((stderr, "set_hostname(%u) = %s on SHM trp: %u, trp: %u\n",
+                    nodeId,
+                    new_hostname,
+                    i,
+                    theSHMTransporters[i]->getTransporterIndex()));
       theSHMTransporters[i]->set_hostname(new_hostname);
     }
   }

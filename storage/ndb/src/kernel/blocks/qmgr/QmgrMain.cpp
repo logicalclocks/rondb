@@ -4108,6 +4108,9 @@ void Qmgr::execSET_HOSTNAME_REQ(Signal *signal)
   memset(&hostname_buf[0], 0, 256);
   copy(&hostname_buf32[0], ptr);
   globalTransporterRegistry.set_hostname(changeNodeId, &hostname_buf[0]);
+  g_eventLogger->info("SET HOSTNAME of Node %u to %s",
+                      changeNodeId,
+                      &hostname_buf[0]);
 
   m_activate_node_id = changeNodeId;
   m_activate_ref = senderRef;
