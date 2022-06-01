@@ -3819,7 +3819,15 @@ void Cmvmi::execSET_HOSTNAME_REQ(Signal *signal)
   jamEntry();
   /* Just route it to Qmgr that has more state to handle it. */
   ndbrequire(signal->getNoOfSections() == 1);
-  SectionHandle handle(this, signal);
+  SegmentedSectionPtr hostnameSection;
+  {
+    SectionHandle handle(this, signal);
+    handle.getSection(hostnameSection, 0);
+    handle.clear();
+  }
+  SectionHandle handle(this);
+  handle.m_ptr[0]= hostnameSection;
+  handle.m_cnt = 1;
   sendSignal(QMGR_REF,
              GSN_SET_HOSTNAME_REQ,
              signal,

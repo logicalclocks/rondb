@@ -282,6 +282,9 @@ Transporter::connect_client(bool multi_connection)
   if (!m_transporter_registry.get_active_node(getRemoteNodeId()) &&
       !multi_connection)
   {
+    DEBUG_FPRINTF((stderr, "connect_client failed, node %u active = %u\n",
+                  getRemoteNodeId(),
+                  m_transporter_registry.get_active_node(getRemoteNodeId())));
     DBUG_RETURN(false);
   }
 
@@ -415,6 +418,7 @@ Transporter::connect_client(NDB_SOCKET_TYPE sockfd)
   if (s_input.gets(buf, 256) == 0)
   {
     DBUG_PRINT("error", ("Failed to read reply"));
+    DEBUG_FPRINTF((stderr, "Failed to read reply\n"));
     ndb_socket_close(sockfd);
     DBUG_RETURN(false);
   }
@@ -427,6 +431,7 @@ Transporter::connect_client(NDB_SOCKET_TYPE sockfd)
     break;
   default:
     DBUG_PRINT("error", ("Failed to parse reply"));
+    DEBUG_FPRINTF((stderr, "Failed to parse reply\n"));
     ndb_socket_close(sockfd);
     DBUG_RETURN(false);
   }
@@ -473,6 +478,7 @@ Transporter::connect_client(NDB_SOCKET_TYPE sockfd)
 
   if (!connect_client_impl(sockfd))
   {
+    DEBUG_FPRINTF((stderr, "connect_client_impl failed\n"));
     DBUG_RETURN(false);
   }
 

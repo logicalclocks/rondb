@@ -1361,8 +1361,8 @@ MgmtSrvr::set_hostname_request(int nodeId, const char *new_hostname)
     Uint32 hostname_buf32[64];
   };
   memset(&hostname_buf[0], 0, 256);
+  strncpy(hostname_buf, new_hostname, 255);
   Uint32 hostname_len = strlen(&hostname_buf[0]);
-  strcpy(hostname_buf, new_hostname);
 
   ssig.ptr[0].p = &hostname_buf32[0];
   ssig.ptr[0].sz = (hostname_len + 3) / 4;
@@ -1376,6 +1376,9 @@ MgmtSrvr::set_hostname_request(int nodeId, const char *new_hostname)
     DBUG_RETURN(FAILED_SET_HOSTNAME_REQUEST);
   }
   theFacade->set_hostname(nodeId, &hostname_buf[0]);
+  g_eventLogger->info("SET HOSTNAME of Node %u to %s",
+                      nodeId,
+                      &hostname_buf[0]);
   // send the signals
   int failed = 0;
   NodeBitmask nodes;
