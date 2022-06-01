@@ -1384,6 +1384,9 @@ MgmtSrvr::set_hostname_request(int nodeId, const char *new_hostname)
     DBUG_RETURN(FAILED_SET_HOSTNAME_REQUEST);
   }
   theFacade->set_hostname(nodeId, &hostname_buf[0]);
+  g_eventLogger->info("SET HOSTNAME of Node %u to %s",
+                      nodeId,
+                      &hostname_buf[0]);
   // send the signals
   int failed = 0;
   NodeBitmask nodes;
