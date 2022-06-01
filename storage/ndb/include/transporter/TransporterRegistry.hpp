@@ -748,7 +748,7 @@ public:
   TrpId getTransporterIndex(Transporter* t);
   void set_recv_thread_idx(Transporter* t, Uint32 recv_thread_idx);
 
-  void set_active_node(Uint32 nodeId, Uint32 active);
+  void set_active_node(Uint32 nodeId, Uint32 active, bool log);
   bool get_active_node(Uint32 nodeId);
 #ifdef ERROR_INSERT
   /* Utils for testing latency issues */

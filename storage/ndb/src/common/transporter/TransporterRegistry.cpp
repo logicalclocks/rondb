@@ -180,6 +180,10 @@ SocketServer::Session * TransporterService::newSession(NDB_SOCKET_TYPE sockfd)
     {
       g_eventLogger->warning("TR : %s", msg.c_str());
     }
+    else
+    {
+      g_eventLogger->debug("DEBUG : %s", msg.c_str());
+    }
     DBUG_RETURN(0);
   }
 
@@ -4245,7 +4249,9 @@ TransporterRegistry::get_active_node(Uint32 node_id)
 }
 
 void
-TransporterRegistry::set_active_node(Uint32 node_id, Uint32 active)
+TransporterRegistry::set_active_node(Uint32 node_id,
+                                     Uint32 active,
+                                     bool log)
 {
   if (active == 0)
   {
@@ -4259,6 +4265,10 @@ TransporterRegistry::set_active_node(Uint32 node_id, Uint32 active)
      * reach the state DISCONNECTED.
      */
     nodeActiveStates[node_id] = false;
+    if (log)
+    {
+      g_eventLogger->info("Deactivating node %u", node_id);
+    }
   }
   else
   {
@@ -4267,6 +4277,10 @@ TransporterRegistry::set_active_node(Uint32 node_id, Uint32 active)
      * through an operation while the node is operational.
      */
     nodeActiveStates[node_id] = true;
+    if (log)
+    {
+      g_eventLogger->info("Activating node %u", node_id);
+    }
   }
 }
 

@@ -811,7 +811,7 @@ ClusterMgr::execACTIVATE_REQ(const Uint32 *theData)
     return;
   }
   /* Perform the actual activation of the node in the transporter setup */
-  tr->set_active_node(activateNodeId, 1);
+  tr->set_active_node(activateNodeId, 1, false);
   ActivateConf * const conf = CAST_PTR(ActivateConf, signal.getDataPtrSend());
   signal.theVerId_signalNumber   = GSN_ACTIVATE_CONF;
   signal.theReceiversBlockNumber = refToMain(senderRef);
@@ -853,7 +853,7 @@ ClusterMgr::execDEACTIVATE_REQ(const Uint32 *theData)
     return;
   }
   /* Perform the actual deactivation of the node in the transporter setup */
-  tr->set_active_node(deactivateNodeId, 0);
+  tr->set_active_node(deactivateNodeId, 0, false);
   DeactivateConf * const conf = CAST_PTR(DeactivateConf, signal.getDataPtrSend());
   signal.theVerId_signalNumber   = GSN_DEACTIVATE_CONF;
   signal.theReceiversBlockNumber = refToMain(senderRef);
