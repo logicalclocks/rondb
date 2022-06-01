@@ -36,7 +36,7 @@
 #include <EventLogger.hpp>
 extern EventLogger * g_eventLogger;
 
-#if 1
+#if 0
 #define DEBUG_FPRINTF(arglist) do { fprintf arglist ; } while (0)
 #else
 #define DEBUG_FPRINTF(a)
