@@ -474,7 +474,11 @@ private:
    */
   struct BackupFile {
     BackupFile(Backup & backup, Page32_pool& pp)
-      : operation(backup),  pages(pp) { m_retry_count = 0; }
+      : operation(backup),  pages(pp)
+  {
+    m_retry_count = 0;
+    m_use_o_direct = false;
+  }
     
     Uint32 backupPtr; // Pointer to backup record
     Uint32 tableId;
@@ -486,6 +490,7 @@ private:
     Uint32 errorCode;
     BackupFormat::FileType fileType;
     OperationRecord operation;
+    bool m_use_o_direct;
 
     Uint64 m_lcp_inserts;
     Uint64 m_lcp_writes;

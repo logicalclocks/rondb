@@ -944,6 +944,14 @@ Trpman::execSEND_PUSH_ABORTREQ(Signal *signal)
   ndbrequire(num_threads <= getNumThreads());
   for (Uint32 i = 0; i < num_threads; i++)
   {
+    /**
+     * Send a signal to all query threads that haven't yet executed
+     * any signals after the ABORT signal was sent. This ensures that
+     * we know that the signal LQHKEYREQ must have been pushed through.
+     * It is merely a safety mechanism to ensure that we see the sent
+     * signal earlier. No need to send it if signals already executed
+     * in query thread since ABORT was sent.
+     */
     Uint32 thr_no = req->threadIds[i];
     ndbrequire(num_threads < getNumThreads());
     Uint32 exec_thread_signal_id = m_exec_thread_signal_id[thr_no];

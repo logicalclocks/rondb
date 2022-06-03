@@ -22,6 +22,14 @@
 #
 # GENERATED FILE
 #
+cmd: testDict
+args: -n Bug21755 T1
+max-time: 180
+
+cmd: test_event_merge
+args: --no-implicit-nulls --no-multiops --loglevel 1
+max-time: 180
+
 cmd: testNdbApi
 args: -n Bug_WritePartialIgnoreError T1
 max-time: 180
@@ -72,14 +80,6 @@ max-time: 680
 
 cmd: test_event
 args: -n Multi
-max-time: 180
-
-cmd: testDict
-args: -n Bug21755 T1
-max-time: 180
-
-cmd: test_event_merge
-args: --no-implicit-nulls --no-multiops
 max-time: 180
 
 cmd: testDict

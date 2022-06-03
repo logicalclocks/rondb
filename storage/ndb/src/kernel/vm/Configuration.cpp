@@ -372,6 +372,7 @@ Configuration::set_not_active_nodes()
   char buf[255];
   ndb_mgm_configuration_iterator * p = m_clusterConfigIter;
 
+  g_eventLogger->info("Set not active nodes");
   Uint32 nodeNo = 0;
   NodeBitmask nodes;
   for(ndb_mgm_first(p); ndb_mgm_valid(p); ndb_mgm_next(p), nodeNo++)
@@ -428,7 +429,7 @@ Configuration::set_not_active_nodes()
       g_not_active_nodes.set(nodeId);
       if (nodeType == NODE_TYPE_DB)
         g_nowait_nodes.set(nodeId);
-      globalTransporterRegistry.set_active_node(nodeId, 0);
+      globalTransporterRegistry.set_active_node(nodeId, 0, true);
     }
   }
 }
@@ -1884,7 +1885,7 @@ Configuration::setupConfiguration()
   } while (0);
 
   calcSizeAlt(cf);
-
+  set_not_active_nodes();
   DBUG_VOID_RETURN;
 }
 
@@ -1912,7 +1913,6 @@ Configuration::setupMemoryConfiguration(Uint64 min_transaction_memory)
   {
     assign_default_memory_sizes(it_p, min_transaction_memory);
   }
-  set_not_active_nodes();
   DBUG_VOID_RETURN;
 }
 

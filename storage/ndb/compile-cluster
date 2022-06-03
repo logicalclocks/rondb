@@ -171,8 +171,6 @@ if(! -d "$opt_srcdir/libmysqld")
     # Hardcoded options removing an arbitrary set of slow to build
     # unrelated components
     push(@args, "-DWITH_ROUTER=0"); # No MySQL Router
-    push(@args, "-DWITH_MEB=0"); # No MEB
-    push(@args, "-DWITH_RAPID=0"); # No RAPID
     push(@args, "-DWITH_GROUP_REPLICATION=0"); # No GR
 
     # To speed up build it's possible to skip building the
@@ -185,7 +183,9 @@ if(! -d "$opt_srcdir/libmysqld")
   if ($opt_autotest)
   {
     print("compile-cluster: autotest build requested, extra everything\n");
-    push(@args, "-DWITH_NDB_CCFLAGS='-DERROR_INSERT'");
+    push(@args, "-DWITH_DEBUG=0");
+    push(@args, "-DWITH_ERROR_INSERT=1");
+    push(@args, "-DWITH_UNIT_TESTS=1");
   }
 
   if (defined $opt_embedded)

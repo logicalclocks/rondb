@@ -3612,7 +3612,7 @@ Dbdict::activateIndexes(Signal* signal, Uint32 id)
   }
 
   D("activateIndexes done");
-#ifdef VM_TRACE
+#if defined VM_TRACE
   check_consistency();
 #endif
 out:
@@ -5662,7 +5662,7 @@ void Dbdict::send_nf_complete_rep(Signal* signal, const NodeFailRep* nodeFail)
       jam();
       NodeRecordPtr nodePtr;
       c_nodes.getPtr(nodePtr, i);
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
       g_eventLogger->info("Sending NF_COMPLETEREP for node %u", i);
 #endif
       nodePtr.p->nodeState = NodeRecord::NDB_NODE_DEAD;
@@ -22525,7 +22525,7 @@ Dbdict::execDICT_TAKEOVER_REQ(Signal* signal)
    while (pending_trans)
    {
      trans_ptr.p->m_masterRef = masterRef;
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
      g_eventLogger->info(
          "Dbdict::execDICT_TAKEOVER_REQ:"
          " trans %u(0x%8x), state %u, op_list %s",
@@ -22560,7 +22560,7 @@ Dbdict::execDICT_TAKEOVER_REQ(Signal* signal)
        op_count++;
        ndbrequire(!op_ptr.isNull());
        ndbrequire(trans_ptr.i == op_ptr.p->m_trans_ptr.i);
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
        g_eventLogger->info("Dbdict::execDICT_TAKEOVER_REQ: op %u state %u",
                            op_ptr.p->op_key, op_ptr.p->m_state);
 #endif
@@ -22616,7 +22616,7 @@ Dbdict::execDICT_TAKEOVER_REQ(Signal* signal)
        {
          SchemaOpPtr last_op_ptr;
          jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
          g_eventLogger->info(
              "Op %u, state %u, rollforward %u/%u, rollback %u/%u",
              op_ptr.p->op_key, op_ptr.p->m_state, rollforward_op,
@@ -22657,7 +22657,7 @@ Dbdict::execDICT_TAKEOVER_REQ(Signal* signal)
                this might be needed by new master to create missing operation.
              */
              lowest_op_impl_req_gsn = getOpInfo(first_op_ptr).m_impl_req_gsn;
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
              g_eventLogger->info(
                  "execDICT_TAKEOVER_CONF: Transaction %u rolled forward,"
                  " resetting rollforward to first %u(%u), gsn %u",
@@ -22681,7 +22681,7 @@ Dbdict::execDICT_TAKEOVER_REQ(Signal* signal)
        }
        pending_op = list.next(op_ptr);
      }
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
      g_eventLogger->info(
          "Slave transaction %u has %u schema operations,"
          " rf %u/%u, rb %u/%u",
@@ -22732,7 +22732,7 @@ Dbdict::execDICT_TAKEOVER_REF(Signal* signal)
   NodeRecordPtr masterNodePtr;
   jamEntry();
   D("execDICT_TAKEOVER_REF");
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
   g_eventLogger->info("Dbdict::execDICT_TAKEOVER_REF: error %u, from %u",
                       ref->errorCode, nodeId);
 #endif
@@ -22784,7 +22784,7 @@ Dbdict::execDICT_TAKEOVER_CONF(Signal* signal)
 
   ndbassert(getOwnNodeId() == c_masterNodeId);
   c_nodes.getPtr(masterNodePtr, c_masterNodeId);
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
   g_eventLogger->info(
       "execDICT_TAKEOVER_CONF:"
       " Node %u, trans %u(%u), count %u, rollf %u/%u, rb %u/%u",
@@ -22843,7 +22843,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
     if (lockError != 0)
     {
       jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
       g_eventLogger->info("New master failed locking transaction %u, error %u",
                           trans_key, lockError);
 #endif
@@ -22852,7 +22852,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
     else
     {
       jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
       g_eventLogger->info("New master locked transaction %u", trans_key);
 #endif
     }
@@ -22900,7 +22900,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
             jam();
             ndbassert(false);
           }
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
           g_eventLogger->info("New master seized transaction %u", trans_key);
 #endif
           /*
@@ -22917,7 +22917,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
           if (lockError != 0)
           {
             jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
             g_eventLogger->info(
                 "New master failed locking transaction %u, error %u", trans_key,
                 lockError);
@@ -22927,7 +22927,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
           else
           {
             jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
             g_eventLogger->info("New master locked transaction %u", trans_key);
 #endif
           }
@@ -22946,7 +22946,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
         trans_ptr.p->m_masterRef = reference();
         trans_ptr.p->m_clientRef = clientRef;
         trans_ptr.p->m_nodes.set(i);
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
         g_eventLogger->info("Adding node %u to transaction %u", i,
                             trans_ptr.p->trans_key);
 #endif
@@ -23003,7 +23003,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
   while (pending_trans)
   {
     jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
     g_eventLogger->info(
         "Analyzing transaction progress, trans %u/%u, lowest/highest %u/%u",
         trans_ptr.p->trans_key, trans_ptr.p->m_state,
@@ -23043,7 +23043,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
       infoEvent("Pending schema transaction %u will be rolled forward", trans_ptr.p->trans_key);
       trans_ptr.p->check_partial_rollforward = true;
       trans_ptr.p->m_state = trans_ptr.p->m_lowest_trans_state;
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
       g_eventLogger->info("Setting transaction state to %u for rollforward",
                           trans_ptr.p->m_state);
 #endif
@@ -23057,12 +23057,12 @@ void Dbdict::check_takeover_replies(Signal* signal)
       jam();
       infoEvent("Pending schema transaction %u will be rolled back", trans_ptr.p->trans_key);
       trans_ptr.p->m_state = trans_ptr.p->m_highest_trans_state;
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
       g_eventLogger->info("Setting transaction state to %u for rollback",
                           trans_ptr.p->m_state);
 #endif
     }
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
     g_eventLogger->info("Setting start state for transaction %u to %u",
                         trans_ptr.p->trans_key, trans_ptr.p->m_state);
 #endif
@@ -23094,7 +23094,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
       {
         jam();
         c_nodes.getPtr(nodePtr, i);
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
         g_eventLogger->info("Node %u had %u operations, master has %u", i,
                             nodePtr.p->takeOverConf.op_count,
                             masterNodePtr.p->takeOverConf.op_count);
@@ -23115,7 +23115,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
               remove, skip it when aborting parse.
             */
             jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
             g_eventLogger->info(
                 "Node %u had no operations for  transaction %u, ignore it when "
                 "aborting",
@@ -23167,7 +23167,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
                                 info))
               {
                 jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
                 g_eventLogger->info(
                     "Created missing operation %u, on new master",
                     missing_op_ptr.p->op_key);
@@ -23184,7 +23184,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
                 ndbassert(false);
               }
               trans_ptr.p->m_nodes.set(c_masterNodeId);
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
               g_eventLogger->info("Adding master node %u to transaction %u",
                                   c_masterNodeId, trans_ptr.p->trans_key);
 #endif
@@ -23214,7 +23214,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
                               info))
             {
               jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
               g_eventLogger->info(
                   "Created ressurected operation %u, on new master", op_key);
 #endif
@@ -23250,7 +23250,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
               when aborting parse.
             */
             jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
             g_eventLogger->info(
                 "Node %u did not have all operations for transaction %u,"
                 " skip > %u",
@@ -23266,7 +23266,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
               Slave has already ended some operations
             */
             jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
             g_eventLogger->info(
                 "Node %u did not have all operations for transaction %u,"
                 " skip < %u",
@@ -23290,7 +23290,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
       {
         jam();
         c_nodes.getPtr(nodePtr, i);
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
         g_eventLogger->info(
             "Comparing node %u "
             "rollforward(%u(%u)<%u(%u))/rollback(%u(%u)<%u(%u))",
@@ -23313,7 +23313,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
              */
             jam();
             nodePtr.p->recoveryState = NodeRecord::RS_PARTIAL_ROLLFORWARD;
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
             g_eventLogger->info(
                 "Node %u will be partially rolled forward,"
                 " skipping RT_FLUSH_COMMIT",
@@ -23333,7 +23333,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
             nodePtr.p->recoveryState = NodeRecord::RS_PARTIAL_ROLLFORWARD;
             nodePtr.p->start_op = nodePtr.p->takeOverConf.rollforward_op;
             nodePtr.p->start_op_state = nodePtr.p->takeOverConf.rollforward_op_state;
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
             g_eventLogger->info(
                 "Node %u will be partially rolled forward to operation %u, "
                 "state %u",
@@ -23350,7 +23350,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
               SchemaOpPtr op_ptr;
               ndbrequire(findSchemaOp(op_ptr,
                                       trans_ptr.p->m_rollforward_op));
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
               g_eventLogger->info("Changed op %u from state %u to %u",
                                   trans_ptr.p->m_rollforward_op,
                                   op_ptr.p->m_state,
@@ -23368,7 +23368,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
             */
             jam();
             nodePtr.p->recoveryState = NodeRecord::RS_PARTIAL_ROLLFORWARD;
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
             g_eventLogger->info(
                 "Node %u will be partially rolled forward,"
                 " skipping RT_FLUSH_COMPLETE",
@@ -23393,7 +23393,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
             nodePtr.p->recoveryState = NodeRecord::RS_PARTIAL_ROLLBACK;
             nodePtr.p->start_op = nodePtr.p->takeOverConf.rollback_op;
             nodePtr.p->start_op_state = nodePtr.p->takeOverConf.rollback_op_state;
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
             g_eventLogger->info(
                 "Node %u will be partially rolled back from operation %u, "
                 "state %u",
@@ -23412,7 +23412,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
               SchemaOpPtr op_ptr;
               ndbrequire(findSchemaOp(op_ptr,
                                       trans_ptr.p->m_rollback_op));
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
               g_eventLogger->info("Changed op %u from state %u to %u",
                                   trans_ptr.p->m_rollback_op, op_ptr.p->m_state,
                                   trans_ptr.p->m_rollback_op_state);
@@ -23433,7 +23433,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
       SchemaOpPtr rollforward_op_ptr;
       ndbrequire(findSchemaOp(rollforward_op_ptr, trans_ptr.p->m_rollforward_op));
       trans_ptr.p->m_curr_op_ptr_i = rollforward_op_ptr.i;
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
       g_eventLogger->info(
           "execDICT_TAKEOVER_CONF:"
           " Transaction %u rolled forward starting at %u(%u)",
@@ -23453,7 +23453,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
         SchemaOpPtr rollback_op_ptr;
         ndbrequire(findSchemaOp(rollback_op_ptr, trans_ptr.p->m_rollback_op));
         trans_ptr.p->m_curr_op_ptr_i = rollback_op_ptr.i;
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
         g_eventLogger->info(
             "execDICT_TAKEOVER_CONF: Transaction %u rolled back"
             " starting at %u(%u)",
@@ -23546,6 +23546,7 @@ Dbdict::dict_lock_trylock(const DictLockReq* _req)
   }
 #ifdef MARTIN
   infoEvent("Busy with schema transaction");
+  g_eventLogger->info("Busy with schema transaction");
 #endif
   if (g_trace)
     m_dict_lock.dump_queue(m_dict_lock_pool, this);
@@ -29956,7 +29957,7 @@ Dbdict::releaseSchemaTrans(SchemaTransPtr& trans_ptr)
     Resource_limit rl;
     m_ctx.m_mm.get_resource_limit(RG_SCHEMA_TRANS_MEMORY, rl);
     ndbrequire(rl.m_curr <= 1); // ArenaAllocator can keep one page for empty pool
-#ifdef VM_TRACE
+#if defined VM_TRACE
     if (getNodeState().startLevel == NodeState::SL_STARTED)
       check_consistency();
 #endif
@@ -31078,7 +31079,7 @@ Dbdict::check_partial_trans_abort_parse_next(SchemaTransPtr trans_ptr,
       {
         jam();
         c_nodes.getPtr(nodePtr, i);
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
         g_eventLogger->info("Checking node %u(%u), %u(%u)<%u", nodePtr.i,
                             nodePtr.p->recoveryState, nodePtr.p->start_op,
                             nodePtr.p->start_op_state, op_ptr.p->op_key);
@@ -31088,7 +31089,7 @@ Dbdict::check_partial_trans_abort_parse_next(SchemaTransPtr trans_ptr,
             nodePtr.p->start_op < op_ptr.p->op_key)
         {
           jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
           g_eventLogger->info("Skip aborting operation %u on node %u",
                               op_ptr.p->op_key, i);
 #endif
@@ -31240,7 +31241,7 @@ Dbdict::check_partial_trans_abort_prepare_next(SchemaTransPtr trans_ptr,
       if (trans_ptr.p->m_nodes.get(i))
       {
         c_nodes.getPtr(nodePtr, i);
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
         g_eventLogger->info("Checking node %u(%u), %u(%u)<%u", nodePtr.i,
                             nodePtr.p->recoveryState, nodePtr.p->start_op,
                             nodePtr.p->start_op_state, op_ptr.p->op_key);
@@ -31253,7 +31254,7 @@ Dbdict::check_partial_trans_abort_prepare_next(SchemaTransPtr trans_ptr,
              (nodePtr.p->start_op_state == SchemaOp::OS_ABORTED_PREPARE &&
               nodePtr.p->start_op >= op_ptr.p->op_key)))
         {
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
           g_eventLogger->info("Skip aborting operation %u on node %u",
                               op_ptr.p->op_key, i);
 #endif
@@ -31300,7 +31301,7 @@ Dbdict::trans_abort_prepare_next(Signal* signal,
     //case SchemaOp::OS_ABORTED_PARSE:
   case SchemaOp::OS_COMMITTING:
   case SchemaOp::OS_COMMITTED:
-#ifndef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
   default:
 #endif
     jamLine(op_ptr.p->m_state);
@@ -31534,7 +31535,7 @@ void Dbdict::check_partial_trans_commit_start(SchemaTransPtr trans_ptr,
         if (nodePtr.p->recoveryState == NodeRecord::RS_PARTIAL_ROLLFORWARD)
         {
           jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
           g_eventLogger->info("Skip flushing commit on node %u", i);
 #endif
           nodes.clear(i);
@@ -31784,14 +31785,14 @@ void Dbdict::check_partial_trans_commit_next(SchemaTransPtr trans_ptr,
     for (unsigned i = 1; i < MAX_NDB_NODES; i++) {
       jam();
       NodeRecordPtr nodePtr;
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
       g_eventLogger->info("Node %u", i);
 #endif
       if (trans_ptr.p->m_nodes.get(i))
       {
         jam();
         c_nodes.getPtr(nodePtr, i);
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
         g_eventLogger->info("Checking node %u(%u), %u<%u", nodePtr.i,
                             nodePtr.p->recoveryState, nodePtr.p->start_op,
                             op_ptr.p->op_key);
@@ -31800,7 +31801,7 @@ void Dbdict::check_partial_trans_commit_next(SchemaTransPtr trans_ptr,
             (nodePtr.p->start_op > op_ptr.p->op_key ||
              nodePtr.p->start_op_state > op_ptr.p->m_state))
         {
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
           g_eventLogger->info("Skipping commit of operation %u on node %u",
                               op_ptr.p->op_key, i);
 #endif
@@ -31992,14 +31993,14 @@ Dbdict::check_partial_trans_complete_start(SchemaTransPtr trans_ptr,
     for (unsigned i = 1; i < MAX_NDB_NODES; i++) {
       jam();
       NodeRecordPtr nodePtr;
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
       g_eventLogger->info("Node %u", i);
 #endif
       if (trans_ptr.p->m_nodes.get(i))
       {
         jam();
         c_nodes.getPtr(nodePtr, i);
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
         g_eventLogger->info("Checking node %u(%u,%u)", nodePtr.i,
                             nodePtr.p->recoveryState,
                             nodePtr.p->takeOverConf.trans_state);
@@ -32007,7 +32008,7 @@ Dbdict::check_partial_trans_complete_start(SchemaTransPtr trans_ptr,
         if (nodePtr.p->takeOverConf.trans_state >= SchemaTrans::TS_FLUSH_COMPLETE)
         {
           jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
           g_eventLogger->info("Skipping TS_FLUSH_COMPLETE of node %u", i);
 #endif
           nodes.clear(i);
@@ -32292,7 +32293,7 @@ void Dbdict::trans_recover(Signal* signal, SchemaTransPtr trans_ptr)
   ErrorInfo error;
 
   jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
   g_eventLogger->info("Dbdict::trans_recover trans %u, state %u",
                       trans_ptr.p->trans_key, trans_ptr.p->m_state);
 #endif
@@ -32312,7 +32313,7 @@ void Dbdict::trans_recover(Signal* signal, SchemaTransPtr trans_ptr)
         No parsed operations found
        */
       jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
       g_eventLogger->info(
           "Dbdict::trans_recover: ENDING START, trans %u(0x%8x), state %u",
           trans_ptr.i, (uint)trans_ptr.p->trans_key, trans_ptr.p->m_state);
@@ -32330,7 +32331,7 @@ void Dbdict::trans_recover(Signal* signal, SchemaTransPtr trans_ptr)
   case SchemaTrans::TS_ABORTING_PARSE:
   {
     jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
     g_eventLogger->info(
         "Dbdict::trans_recover: ABORTING_PARSE, trans %u(0x%8x), state %u",
         trans_ptr.i, (uint)trans_ptr.p->trans_key, trans_ptr.p->m_state);
@@ -32355,7 +32356,7 @@ void Dbdict::trans_recover(Signal* signal, SchemaTransPtr trans_ptr)
   case SchemaTrans::TS_ABORTING_PREPARE:
   {
     jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
     g_eventLogger->info(
         "Dbdict::trans_recover: ABORTING PREPARE, trans %u(0x%8x), state %u",
         trans_ptr.i, (uint)trans_ptr.p->trans_key, trans_ptr.p->m_state);
@@ -32423,7 +32424,7 @@ void Dbdict::trans_recover(Signal* signal, SchemaTransPtr trans_ptr)
   }
   case SchemaTrans::TS_FLUSH_COMPLETE:
     jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
     g_eventLogger->info(
         "Dbdict::trans_recover: COMMITTING DONE, trans %u(0x%8x), state %u",
         trans_ptr.i, (uint)trans_ptr.p->trans_key, trans_ptr.p->m_state);
@@ -32436,7 +32437,7 @@ void Dbdict::trans_recover(Signal* signal, SchemaTransPtr trans_ptr)
       Complete any uncommited operations
     */
     jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
     g_eventLogger->info(
         "Dbdict::trans_recover: COMPLETING, trans %u(0x%8x), state %u",
         trans_ptr.i, (uint)trans_ptr.p->trans_key, trans_ptr.p->m_state);
@@ -32456,7 +32457,7 @@ void Dbdict::trans_recover(Signal* signal, SchemaTransPtr trans_ptr)
       End any pending slaves
      */
     jam();
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
     g_eventLogger->info(
         "Dbdict::trans_recover: ENDING, trans %u(0x%8x), state %u", trans_ptr.i,
         (uint)trans_ptr.p->trans_key, trans_ptr.p->m_state);
@@ -32547,6 +32548,7 @@ Dbdict::execSCHEMA_TRANS_IMPL_REQ(Signal* signal)
     break;
   }
   infoEvent("Dbdict::execSCHEMA_TRANS_IMPL_REQ: %s", buf);
+  g_eventLogger->info("Dbdict::execSCHEMA_TRANS_IMPL_REQ: %s", buf);
 #endif
 
   /**
@@ -33365,7 +33367,7 @@ Dbdict::sendTransClientReply(Signal* signal, SchemaTransPtr trans_ptr)
         rep->errorNodeId = 0;
       }
       rep->masterNodeId = c_masterNodeId;
-#ifdef VM_TRACE
+#if defined VM_TRACE || defined MARTIN
       g_eventLogger->info(
           "Dbdict::sendTransClientReply:"
           " sending GSN_SCHEMA_TRANS_END_REP to 0x%8x",
@@ -34627,7 +34629,7 @@ Dbdict::ErrorInfo::print(EventLogger *logger) const
       errorObjectName);
 }
 
-#ifdef VM_TRACE
+#if defined VM_TRACE
 
 // DictObject
 

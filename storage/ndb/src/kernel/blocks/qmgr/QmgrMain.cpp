@@ -3232,11 +3232,12 @@ void Qmgr::findNeighbours(Signal* signal, Uint32 from)
   tfnRightFound = (UintR)-1;
   fnOwnNodePtr.i = getOwnNodeId();
   ptrCheckGuard(fnOwnNodePtr, MAX_NDB_NODES, nodeRec);
+  jam();
   for (fnNodePtr.i = 1; fnNodePtr.i < MAX_NDB_NODES; fnNodePtr.i++) {
     ptrAss(fnNodePtr, nodeRec);
     if (fnNodePtr.i != fnOwnNodePtr.i) {
-      jamLine(fnNodePtr.i);
       if (fnNodePtr.p->phase == ZRUNNING) {
+        jamLine(fnNodePtr.i);
         if (tfnMinFound > fnNodePtr.p->ndynamicId) {
           jam();
           tfnMinFound = fnNodePtr.p->ndynamicId;
@@ -3710,6 +3711,7 @@ void Qmgr::checkHeartbeat(Signal* signal)
 
   if (get_hb_count(nodePtr.i) > 2)
   {
+    jam();
     signal->theData[0] = NDB_LE_MissedHeartbeat;
     signal->theData[1] = nodePtr.i;
     signal->theData[2] = get_hb_count(nodePtr.i) - 1;
@@ -3860,7 +3862,7 @@ void Qmgr::execACTIVATE_REQ(Signal *signal)
   }
 
   g_not_active_nodes.clear(activateNodeId);
-  globalTransporterRegistry.set_active_node(activateNodeId, 1);
+  globalTransporterRegistry.set_active_node(activateNodeId, 1, true);
 
   m_activate_node_id = activateNodeId;
   m_activate_ref = senderRef;
@@ -4019,7 +4021,7 @@ void Qmgr::execDEACTIVATE_REQ(Signal *signal)
     return;
   }
   g_not_active_nodes.set(deactivateNodeId);
-  globalTransporterRegistry.set_active_node(deactivateNodeId, 0);
+  globalTransporterRegistry.set_active_node(deactivateNodeId, 0, true);
 
   m_activate_node_id = deactivateNodeId;
   m_activate_ref = senderRef;
@@ -4140,6 +4142,9 @@ void Qmgr::execSET_HOSTNAME_REQ(Signal *signal)
   memset(&hostname_buf[0], 0, 256);
   copy(&hostname_buf32[0], ptr);
   globalTransporterRegistry.set_hostname(changeNodeId, &hostname_buf[0]);
+  g_eventLogger->info("SET HOSTNAME of Node %u to %s",
+                      changeNodeId,
+                      &hostname_buf[0]);
 
   m_activate_node_id = changeNodeId;
   m_activate_ref = senderRef;
@@ -5586,26 +5591,33 @@ void Qmgr::failReportLab(Signal* signal, Uint16 aFailedNode,
 
     switch(aFailCause){
     case FailRep::ZOWN_FAILURE: 
+      jam();
       msg = "Own failure"; 
       break;
     case FailRep::ZOTHER_NODE_WHEN_WE_START: 
     case FailRep::ZOTHERNODE_FAILED_DURING_START:
+      jam();
       msg = "Other node died during start"; 
       break;
     case FailRep::ZIN_PREP_FAIL_REQ:
+      jam();
       msg = "Prep fail";
       break;
     case FailRep::ZSTART_IN_REGREQ:
+      jam();
       msg = "Start timeout";
       break;
     case FailRep::ZHEARTBEAT_FAILURE:
+      jam();
       msg = "Heartbeat failure";
       break;
     case FailRep::ZLINK_FAILURE:
+      jam();
       msg = "Connection failure";
       break;
     case FailRep::ZPARTITIONED_CLUSTER:
     {
+      jam();
       code = NDBD_EXIT_PARTITIONED_SHUTDOWN;
       char buf1[bitmaskTextLen], buf2[bitmaskTextLen];
       c_clusterNodes.getText(buf1);
@@ -5648,12 +5660,15 @@ void Qmgr::failReportLab(Signal* signal, Uint16 aFailedNode,
       break;
     }
     case FailRep::ZMULTI_NODE_SHUTDOWN:
+      jam();
       msg = "Multi node shutdown";
       break;
     case FailRep::ZCONNECT_CHECK_FAILURE:
+      jam();
       msg = "Connectivity check failure";
       break;
     case FailRep::ZFORCED_ISOLATION:
+      jam();
       msg = "Forced isolation";
       if (ERROR_INSERTED(942))
       {
@@ -5664,6 +5679,7 @@ void Qmgr::failReportLab(Signal* signal, Uint16 aFailedNode,
       }
       break;
     default:
+      jam();
       msg = "<UNKNOWN>";
     }
     
@@ -5713,6 +5729,7 @@ void Qmgr::failReportLab(Signal* signal, Uint16 aFailedNode,
     progError(__LINE__, NDBD_EXIT_SR_OTHERNODEFAILED, buf);
   }
 
+  jam();
   const NdbNodeBitmask TfailedNodes(cfailedNodes);
   failReport(signal, failedNodePtr.i, (UintR)ZTRUE, aFailCause, sourceNode);
 

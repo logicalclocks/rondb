@@ -2624,20 +2624,21 @@ runTableAddAttrsDuring(NDBT_Context* ctx, NDBT_Step* step){
       {
         NDBT_Attribute newcol1(name, NdbDictionary::Column::Unsigned, 1,
                                false, true, 0,
-                               NdbDictionary::Column::StorageTypeMemory, true);
+                               NdbDictionary::Column::StorageTypeDisk, true);
         newTable.addColumn(newcol1);
       }
       else
       {
         NDBT_Attribute newcol1(name, NdbDictionary::Column::Unsigned, 1,
                                false, true, 0,
-                               NdbDictionary::Column::StorageTypeDisk, true);
+                               NdbDictionary::Column::StorageTypeMemory, true);
         newTable.addColumn(newcol1);
       }
       //ToDo: check #loops, how many columns l
 
       if (abortAlter == 0)
       {
+        ndbout << "Start alterTable no abortAlter" << endl;
         CHECK2(dict->alterTable(*oldTable, newTable) == 0,
                "TableAddAttrsDuring failed");
       }
@@ -2648,6 +2649,7 @@ runTableAddAttrsDuring(NDBT_Context* ctx, NDBT_Step* step){
           res.insertErrorInNode(nodeId, 4029);
         else
           res.insertErrorInNode(nodeId, 4039);
+        ndbout << "Start alterTable with abortAlter" << endl;
         CHECK2(dict->alterTable(*oldTable, newTable) != 0,
                "TableAddAttrsDuring failed");
       }
@@ -2659,6 +2661,7 @@ runTableAddAttrsDuring(NDBT_Context* ctx, NDBT_Step* step){
       hugoTrans.scanUpdateRecords(pNdb, records);
     }
     else {
+      ndbout << "Failed to get oldTable" << endl;
       result= NDBT_FAILED;
       break;
     }

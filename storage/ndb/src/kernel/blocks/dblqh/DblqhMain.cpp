@@ -110,6 +110,7 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_ABORT_TRANS 1
+//#define DEBUG_LQH_TRANS 1
 //#define DEBUG_LOCAL_LCP 1
 //#define DEBUG_COPY_ACTIVE 1
 //#define DEBUG_EMPTY_LCP 1
@@ -143,6 +144,12 @@
 #define DEB_ABORT_TRANS(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_ABORT_TRANS(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_LQH_TRANS
+#define DEB_LQH_TRANS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_LQH_TRANS(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_LOG_QUEUE
@@ -2372,13 +2379,13 @@ void Dblqh::execREAD_CONFIG_REQ(Signal* signal)
                            " ignored");
     c_o_direct_sync_flag = false;
   }
-  else if (c_o_direct_sync_flag && m_use_om_init == 0)
+#endif
+  if (c_o_direct_sync_flag && m_use_om_init == 0)
   {
     g_eventLogger->warning("ODirectSyncFlag not supported"
                            "without setting InitFragmentLogFiles=full");
     c_o_direct_sync_flag = false;
   }
-#endif
 
   {
     /**
@@ -6506,7 +6513,7 @@ void Dblqh::sendLqhkeyconfTc(Signal* signal,
   lqhKeyConf->transId2 = transid2;
   lqhKeyConf->numFiredTriggers = numFiredTriggers;
 
-  DEB_ABORT_TRANS(("(%u)LQHKEYCONF tcAccPtrI: %u, transid(%u,%u),"
+  DEB_ABORT_TRANS(("(%u)LQHKEYCONF tcAccPtrI: %u, transid(H'%.8x,H'%.8x),"
                    " tcRef(%u,%x)",
                    instance(),
                    tcConnectptr.p->accConnectrec,
@@ -13265,6 +13272,7 @@ void Dblqh::execCOMMIT(Signal* signal)
     warningReport(signal, 0, 0);
     return;
   }//if
+  jamDataDebug(tcConnectptr.p->tcOprec);
   if (ERROR_INSERTED(5011)) {
     CLEAR_ERROR_INSERT_VALUE;
     sendSignalWithDelay(cownref, GSN_COMMIT, signal, 2000,signal->getLength());
@@ -13455,6 +13463,7 @@ void Dblqh::execCOMPLETE(Signal* signal)
     warningReport(signal, 2, 0);
     return;
   }//if
+  jamDataDebug(tcConnectptr.p->tcOprec);
   CRASH_INSERTION(5042);
 
   if (ERROR_INSERTED(5013)) {
@@ -14467,10 +14476,10 @@ Dblqh::execPUSH_ABORT_TRAIN_ORD(Signal *signal)
     (PushAbortTrainOrd *)signal->getDataPtr();
   Uint32 thread_id = ord->threadId;
   Uint32 send_thread_signal_id = ord->sendThreadSignalId;
-  if ((ERROR_INSERTED(5107) &&
-       (ord->indexQueryThread + 1) < m_num_qt_our_rr_group) ||
-      !check_abort_signal_executed(thread_id,
-                                   send_thread_signal_id))
+  if (((ord->indexQueryThread + 1) < m_num_qt_our_rr_group) &&
+      ((ERROR_INSERTED(5107) ||
+        !check_abort_signal_executed(thread_id,
+                                     send_thread_signal_id))))
   {
     Uint32 index = ord->indexQueryThread;
     index++;
@@ -14503,6 +14512,11 @@ Dblqh::execPUSH_ABORT_TRAIN_ORD(Signal *signal)
                      JBB,
                      nullptr);
     return;
+  }
+  if ((ord->indexQueryThread + 1) == m_num_qt_our_rr_group)
+  {
+    ndbrequire(check_abort_signal_executed(thread_id,
+                                           send_thread_signal_id));
   }
   Uint32 tcOprec = ord->tcOprec;
   Uint32 tcBlockref = ord->tcBlockref;
@@ -14579,8 +14593,9 @@ Dblqh::execSEND_PUSH_ABORTCONF(Signal *signal)
                          qt_instance_no + 1, //Skip proxy
                          getOwnNodeId());
     RoutePath path[1];
+    Uint32 trp_instance_no = thread_id - getFirstReceiveThreadId();
     path[0].ref = numberToRef(TRPMAN,
-                              thread_id,
+                              trp_instance_no + 1, //Skip proxy
                               getOwnNodeId());
     path[0].prio = JBB;
     sendRoutedSignal(path,
@@ -14718,6 +14733,10 @@ void Dblqh::execABORT(Signal* signal)
          * Return to the receive thread and send signals to the query thread
          * to ensure that we can acquire this certainty before we handle the
          * aborted signal.
+         *
+         * ERROR_INSERT 5107 means that we will send to all query threads
+         * even if the signals have been executed. At the last query thread
+         * we will check the transaction hash and act accordingly.
          */
         push_req->tcOprec = tcOprec;
         push_req->tcBlockref = tcBlockref;
@@ -14739,7 +14758,8 @@ void Dblqh::execABORT(Signal* signal)
         BlockReference ref = numberToRef(TRPMAN,
                                          trp_instance_no + 1, //Skip proxy
                                          getOwnNodeId());
-        DEB_ABORT_TRANS(("(%u)SEND_PUSH_ABORTREQ: trans(%u,%u), tcOprec: %u"
+        DEB_ABORT_TRANS(("(%u)SEND_PUSH_ABORTREQ: trans(H'%.8x,H'%.8x),"
+                         " tcOprec: %u"
                          ", tcRef: %x",
                          instance(),
                          transid1,
@@ -14777,7 +14797,7 @@ void Dblqh::execABORT(Signal* signal)
 // SEND ABORTED EVEN IF NOT FOUND.
 //THE TRANSACTION MIGHT NEVER HAVE ARRIVED HERE.
 /* ------------------------------------------------------------------------- */
-    DEB_ABORT_TRANS(("(%u)ABORTED not here: trans(%u,%u), tcOprec: %u"
+    DEB_ABORT_TRANS(("(%u)ABORTED not here: trans(H'%.8x,H'%.8x), tcOprec: %u"
                      ", tcRef: %x",
                      instance(),
                      transid1,
@@ -14832,8 +14852,8 @@ void Dblqh::execABORT(Signal* signal)
   remove_commit_marker(regTcPtr);
   TRACE_OP(regTcPtr, "ABORT");
 
-  DEB_ABORT_TRANS(("(%u)Start ABORT handling: trans(%u,%u), tcOprec: %u"
-                   ", tcRef: %x, tcPtrIAcc: %u",
+  DEB_ABORT_TRANS(("(%u)Start ABORT handling: trans(H'%.8x',H'%.8x),"
+                   " tcOprec: %u, tcRef: %x, tcPtrIAcc: %u",
                    instance(),
                    transid1,
                    transid2,
@@ -14886,7 +14906,8 @@ void Dblqh::execABORTREQ(Signal* signal)
                       partial_fit_ok,
                       tcConnectptr) != ZOK)
   {
-    DEB_ABORT_TRANS(("(%u)ABORTCONF not here: trans(%u,%u), tcRef(%u,%x)",
+    DEB_ABORT_TRANS(("(%u)ABORTCONF not here: trans(H'%.8x,H'%.8x),"
+                     " tcRef(%u,%x)",
                      instance(),
                      transid1,
                      transid2,
@@ -14901,8 +14922,8 @@ void Dblqh::execABORTREQ(Signal* signal)
     return;
   }//if
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
-  DEB_ABORT_TRANS(("(%u)2:Start ABORT handling: trans(%u,%u), tcOprec: %u"
-                   ", tcRef: %x, tcPtrIAcc: %u",
+  DEB_ABORT_TRANS(("(%u)2:Start ABORT handling: trans(H'%.8x,H'%.8x),"
+                   " tcOprec: %u, tcRef: %x, tcPtrIAcc: %u",
                    instance(),
                    transid1,
                    transid2,
@@ -15472,7 +15493,7 @@ void Dblqh::continueAfterLogAbortWriteLab(
     jam();
     TcKeyRef * const tcKeyRef = (TcKeyRef *) signal->getDataPtrSend();
     
-    DEB_ABORT_TRANS(("(%u)TCKEYREF: trans(%u,%u), tcOprec: %u"
+    DEB_ABORT_TRANS(("(%u)TCKEYREF: trans(H'%.8x,H'%.8x), tcOprec: %u"
                      ", tcRef: %x, tcPtrIAcc: %u",
                      instance(),
                      regTcPtr->transid[0],
@@ -15500,7 +15521,7 @@ void Dblqh::continueAfterLogAbortWriteLab(
     lqhKeyRef->transId1 = regTcPtr->transid[0];
     lqhKeyRef->transId2 = regTcPtr->transid[1];
     Uint32 block = refToMain(regTcPtr->clientBlockref);
-    DEB_ABORT_TRANS(("(%u)LQHKEYREF: trans(%u,%u), tcOprec: %u"
+    DEB_ABORT_TRANS(("(%u)LQHKEYREF: trans(H'%.8x,H'%.8x), tcOprec: %u"
                      ", tcRef: %x, tcPtrIAcc: %u",
                      instance(),
                      regTcPtr->transid[0],
@@ -15539,7 +15560,7 @@ void Dblqh::continueAfterLogAbortWriteLab(
     ndbassert(!m_is_query_block);
     ndbrequire(regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC_ABORT);
     jam();
-    DEB_ABORT_TRANS(("(%u)ABORTCONF: trans(%u,%u), tcOprec: %u"
+    DEB_ABORT_TRANS(("(%u)ABORTCONF: trans(H'%.8x,H'%.8x), tcOprec: %u"
                      ", tcRef: %x, tcPtrIAcc: %u",
                      instance(),
                      regTcPtr->transid[0],
@@ -15851,8 +15872,22 @@ void Dblqh::execLQH_TRANSREQ(Signal* signal)
     tcNodeFailPtr.p->lastNewTcRef = newTcPtr;
     tcNodeFailPtr.p->lastTakeOverInstanceId = instanceId;
     tcNodeFailPtr.p->tcFailStatus = TcNodeFailRecord::TC_STATE_BREAK;
+    DEB_LQH_TRANS(("(%u) LQH_TRANSREQ failed node: %u, new TCref: (%x,%u), "
+                   "instance: %u",
+                   instance(),
+                   oldNodeId,
+                   newTcBlockref,
+                   newTcPtr,
+                   instanceId));
     return;
   }//if
+  DEB_LQH_TRANS(("(%u) LQH_TRANSREQ failed node: %u, TCref: (%x,%u) "
+                 "instance: %u",
+                 instance(),
+                 oldNodeId,
+                 newTcBlockref,
+                 newTcPtr,
+                 instanceId));
   tcNodeFailPtr.p->oldNodeId = oldNodeId;
   tcNodeFailPtr.p->newTcBlockref = newTcBlockref;
   tcNodeFailPtr.p->newTcRef = newTcPtr;
@@ -16030,7 +16065,7 @@ void Dblqh::lqhTransNextLab(Signal* signal,
               tcConnectptr.p->tcNodeFailrec = tcNodeFailPtr.i;
               tcConnectptr.p->abortState = TcConnectionrec::NEW_FROM_TC;
               DEB_ABORT_TRANS(("(%u)LQH_TRANSREQ found tcAccPtrI: %u"
-                               "trans(%u,%u), tcRef(%u,%x), "
+                               " trans(H'%.8x,H'%.8x), tcRef(%u,%x), "
                                "state: %u",
                                instance(),
                                tcConnectptr.p->accConnectrec,
@@ -35902,7 +35937,7 @@ void Dblqh::sendAborted(Signal* signal,
   conf->transid2 = tcConnectptr.p->transid[1];
   conf->nodeId = cownNodeid;
   conf->lastLqhIndicator = TlastInd;
-  DEB_ABORT_TRANS(("(%u)ABORTED: trans(%u,%u), tcOprec: %u"
+  DEB_ABORT_TRANS(("(%u)ABORTED: trans(H'%.8x,H'%.8x), tcOprec: %u"
                    ", tcRef: %x, tcPtrIAcc: %u",
                    instance(),
                    tcConnectptr.p->transid[0],
@@ -35939,14 +35974,15 @@ void Dblqh::sendLqhTransconf(Signal* signal,
   LqhTransConf::setDirtyFlag(reqInfo, tcConnectptr.p->dirtyOp);
   LqhTransConf::setOperation(reqInfo, tcConnectptr.p->operation);
   
-  DEB_ABORT_TRANS(("(%u)LQH_TRANSCONF: trans(%u,%u), tcOprec: %u"
-                   ", tcRef: %x, tcPtrILQH: %u",
+  DEB_ABORT_TRANS(("(%u)LQH_TRANSCONF: trans(H'%.8x,H'%.8x), tcOprec: %u"
+                   ", tcRef: %x, tcPtrILQH: %u, old_node: %u",
                    instance(),
                    tcConnectptr.p->transid[0],
                    tcConnectptr.p->transid[1],
                    tcConnectptr.p->tcOprec,
                    tcConnectptr.p->tcBlockref,
-                   tcConnectptr.i));
+                   tcConnectptr.i,
+                   tcNodeFailPtr.i));
 
   LqhTransConf * const lqhTransConf = (LqhTransConf *)&signal->theData[0];
   lqhTransConf->tcRef           = tcNodeFailPtr.p->newTcRef;
@@ -35966,6 +36002,11 @@ void Dblqh::sendLqhTransconf(Signal* signal,
   lqhTransConf->tableId         = tcConnectptr.p->tableref;
   lqhTransConf->gci_lo          = tcConnectptr.p->gci_lo;
   lqhTransConf->fragId          = tcConnectptr.p->fragmentid;
+
+  TcNodeFailRecord::TcFailStatus failStatus = tcNodeFailPtr.p->tcFailStatus;
+  ndbrequire(failStatus == TcNodeFailRecord::TC_STATE_TRUE ||
+             failStatus == TcNodeFailRecord::TC_STATE_BREAK);
+
   /**
     maxInstanceId is ignored for all LQH_TRANSCONF except the last one sent with
     LqhTransConf::LastTransConf as the state. This state is never called in this
@@ -37502,133 +37543,120 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
     jam();
     Uint32 bucket = signal->theData[1];
     Uint32 record = signal->theData[2];
+    Uint32 loop_count = 0;
     Uint32 len = signal->getLength();
     TcConnectionrecPtr tcRec;
     ndbrequire(bucket < ctransidHashSize);
 
-    if (record != RNIL)
+    while (loop_count < 1024)
     {
-      jam();
-      /**
-       * Check that record is still in use...
-       */
-      tcRec.i = record;
-      if (!tcConnect_pool.getValidPtr(tcRec))
+      loop_count++;
+      if (record != RNIL)
       {
-        jam();
-        record = RNIL;
-      }
-      else
-      {
-        const Uint32 hashIndex = getHashIndex(tcRec.p);
-        Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
-        NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
-        if (hashIndex != bucket)
+        /**
+         * Check that record is still in use...
+         */
+        tcRec.i = record;
+        if (!tcConnect_pool.getValidPtr(tcRec))
         {
-	  jam();
-	  record = RNIL;
+          jam();
+          record = RNIL;
         }
         else
         {
-	  jam();
-	  if (tcRec.p->nextHashRec == RNIL && 
-	      tcRec.p->prevHashRec == RNIL &&
-	      ctransidHash[hashIndex] != record)
-	  {
+          const Uint32 hashIndex = getHashIndex(tcRec.p);
+          Uint32 mutexIndex = hashIndex & (NUM_TRANSACTION_HASH_MUTEXES - 1);
+          NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
+          if (hashIndex != bucket)
+          {
 	    jam();
 	    record = RNIL;
-	  }
-        }
-        NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
-      }
-      
-      if (record == RNIL)
-      {
-	jam();
-	signal->theData[2] = RNIL;
-	sendSignal(reference(), GSN_DUMP_STATE_ORD, signal, 
-		   signal->getLength(), JBB);	
-	return;
-      }
-    }
-    else
-    {
-      Uint32 mutexIndex = bucket & (NUM_TRANSACTION_HASH_MUTEXES - 1);
-      NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
-      if ((record = ctransidHash[bucket]) == RNIL)
-      {
-        jam();
-        bucket++;
-        NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
-        if (bucket < ctransidHashSize)
-        {
-	  jam();
-	  signal->theData[1] = bucket;
-	  signal->theData[2] = RNIL;
-	  sendSignal(reference(), GSN_DUMP_STATE_ORD, signal, 
-		     signal->getLength(), JBB);	
-        }
-        else
-        {
-	  jam();
-          infoEvent("End of operation dump");
-          if (ERROR_INSERTED(4002))
-          {
-            ndbabort();
           }
+          else
+          {
+	    jam();
+	    if (tcRec.p->nextHashRec == RNIL && 
+	        tcRec.p->prevHashRec == RNIL &&
+	        ctransidHash[hashIndex] != record)
+	    {
+	      jam();
+	      record = RNIL;
+	    }
+          }
+          NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
         }
-        return;
+        if (record == RNIL)
+        {
+          continue;
+        }
       }
       else
       {
-        jam();
-        tcRec.i = record;
-        ndbrequire(tcConnect_pool.getValidPtr(tcRec));
-      }
-      for (Uint32 i = 0; i<32; i++)
-      {
-        jam();
-        bool print = match_and_print(signal, tcRec);
-      
-        tcRec.i = tcRec.p->nextHashRec;
-        if (tcRec.i == RNIL || print)
+        Uint32 mutexIndex = bucket & (NUM_TRANSACTION_HASH_MUTEXES - 1);
+        NdbMutex_Lock(&transaction_hash_mutex[mutexIndex]);
+        if ((record = ctransidHash[bucket]) == RNIL)
         {
-	  jam();
-	  break;
-        }
-        ndbrequire(tcConnect_pool.getValidPtr(tcRec));
-      }
-      NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
-      if (tcRec.i == RNIL)
-      {
-        jam();
-        bucket++;
-        if (bucket < ctransidHashSize)
-        {
-	  jam();
-	  signal->theData[1] = bucket;
-	  signal->theData[2] = RNIL;
-	  sendSignal(reference(), GSN_DUMP_STATE_ORD, signal, len, JBB);
+          bucket++;
+          NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
+          if (bucket < ctransidHashSize)
+          {
+            continue;
+          }
+          else
+          {
+            infoEvent("End of operation dump");
+            if (ERROR_INSERTED(4002))
+            {
+              ndbabort();
+            }
+          }
+          return;
         }
         else
         {
-	  jam();
-          infoEvent("End of operation dump");
-          if (ERROR_INSERTED(4002))
-          {
-            ndbabort();
-          }
+          tcRec.i = record;
+          ndbrequire(tcConnect_pool.getValidPtr(tcRec));
         }
-        return;
-      }
-      else
-      {
-        jam();
-        signal->theData[2] = tcRec.i;
-        sendSignalWithDelay(reference(), GSN_DUMP_STATE_ORD, signal, 200, len);
-        return;
+        for (Uint32 i = 0; i<32; i++)
+        {
+          bool print = match_and_print(signal, tcRec);
+          tcRec.i = tcRec.p->nextHashRec;
+          if (tcRec.i == RNIL || print)
+          {
+            loop_count += 32;
+	    break;
+          }
+          ndbrequire(tcConnect_pool.getValidPtr(tcRec));
+        }
+        NdbMutex_Unlock(&transaction_hash_mutex[mutexIndex]);
+        if (tcRec.i == RNIL)
+        {
+          bucket++;
+          record = RNIL;
+          if (bucket < ctransidHashSize)
+          {
+            continue;
+          }
+          else
+          {
+            infoEvent("End of operation dump");
+            if (ERROR_INSERTED(4002))
+            {
+              ndbabort();
+            }
+          }
+          return;
+        }
+        else
+        {
+          record = tcRec.i;
+        }
       }
     }
+    signal->theData[0] = 2351;
+    signal->theData[1] = bucket;
+    signal->theData[2] = record;
+    sendSignal(reference(), GSN_DUMP_STATE_ORD, signal, len, JBB);
   }
 
   if (arg == 2352 && signal->getLength() == 2)
@@ -40332,6 +40360,22 @@ bool
 Dblqh::check_abort_signal_executed(Uint32 recv_thr_no,
                                    Uint32 thread_signal_id)
 {
+  /**
+   * When this method is used we have sent the ABORT signal from DBTC
+   * to V_QUERY, in this case it is redirected to DBLQH. If it isn't
+   * found in transaction hash in this case we check if all signals
+   * before the ABORT signal have been executed by the LDM thread
+   * and all query threads. If all signals before the ABORT have been
+   * executed it means specifically that the LQHKEYREQ signal have
+   * been executed. If the LQHKEYREQ have been executed and it isn't
+   * found in the transaction hash we can assume the operation is
+   * aborted before it was put into the transaction hash.
+   *
+   * There is no need to check the LDM threads signal id here since if
+   * LQHKEYREQ was executed by the LDM thread it would use the same
+   * path as the first ABORT signal. Thus we only check the query threads
+   * here.
+   */
   ndbrequire(globalData.ndbMtQueryThreads > 0);
   for (Uint32 i = 0; i < m_num_qt_our_rr_group; i++)
   {

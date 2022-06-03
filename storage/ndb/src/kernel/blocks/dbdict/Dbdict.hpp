@@ -794,7 +794,7 @@ public:
       return false;
     }
 
-#ifdef VM_TRACE
+#if defined VM_TRACE
     void print(NdbOut&) const;
 #endif
   };
@@ -1735,7 +1735,7 @@ private:
     return ok;
   }
 
-#ifdef VM_TRACE
+#if defined VM_TRACE
   template <Uint32 sz>
   inline const char*
   copyRope(const LcRopeHandle& rh)
@@ -2089,7 +2089,7 @@ private:
       op_key = the_op_key;
     }
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -2454,7 +2454,7 @@ private:
       trans_key = the_trans_key;
     }
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -2770,7 +2770,7 @@ private:
     TxHandle(Uint32 the_tx_key) {
       tx_key = the_tx_key;
     }
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -2851,7 +2851,7 @@ private:
       m_modified_by_subOps = false;
     }
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -2927,7 +2927,7 @@ private:
       m_fully_replicated_trigger = false;
     }
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -3043,7 +3043,7 @@ private:
       m_sub_suma_enable = false;
       m_sub_suma_filter = false;
     }
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -3154,7 +3154,7 @@ private:
       m_sub_create_table = false;
       m_sub_alter_index = false;
     }
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -3210,7 +3210,7 @@ private:
       m_sub_alter_index = false;
       m_sub_drop_table = false;
     }
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -3297,7 +3297,7 @@ private:
       m_tc_index_done = false;
     }
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -4762,7 +4762,7 @@ public:
   int checkSingleUserMode(Uint32 senderRef);
 
   friend NdbOut& operator<<(NdbOut& out, const ErrorInfo&);
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
   friend NdbOut& operator<<(NdbOut& out, const DictObject&);
   friend NdbOut& operator<<(NdbOut& out, const SchemaOp&);
   friend NdbOut& operator<<(NdbOut& out, const SchemaTrans&);

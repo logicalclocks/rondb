@@ -85,7 +85,7 @@ struct CHARSET_INFO;
  */
 //#define UNPACKED_COMMIT_SIGNALS 1
 
-#ifdef VM_TRACE
+#if defined VM_TRACE
 #define D(x) \
   do { \
     char buf[200]; \
