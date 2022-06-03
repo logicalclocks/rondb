@@ -181,6 +181,10 @@ SocketServer::Session * TransporterService::newSession(NDB_SOCKET_TYPE sockfd)
     {
       g_eventLogger->warning("TR : %s", msg.c_str());
     }
+    else
+    {
+      g_eventLogger->debug("DEBUG : %s", msg.c_str());
+    }
     DBUG_RETURN(0);
   }
 
@@ -525,6 +529,11 @@ TransporterRegistry::set_hostname(Uint32 nodeId,
   {
     if (theTCPTransporters[i]->remoteNodeId == nodeId)
     {
+      DEBUG_FPRINTF((stderr, "set_hostname(%u) = %s on TCP trp: %u, trp: %u\n",
+                    nodeId,
+                    new_hostname,
+                    i,
+                    theTCPTransporters[i]->getTransporterIndex()));
       theTCPTransporters[i]->set_hostname(new_hostname);
     }
   }
@@ -533,6 +542,11 @@ TransporterRegistry::set_hostname(Uint32 nodeId,
   {
     if (theSHMTransporters[i]->remoteNodeId == nodeId)
     {
+      DEBUG_FPRINTF((stderr, "set_hostname(%u) = %s on SHM trp: %u, trp: %u\n",
+                    nodeId,
+                    new_hostname,
+                    i,
+                    theSHMTransporters[i]->getTransporterIndex()));
       theSHMTransporters[i]->set_hostname(new_hostname);
     }
   }
@@ -3293,11 +3307,15 @@ TransporterRegistry::start_clients_thread()
       {
         if (t->isPartOfMultiTransporter())
         {
+          DEBUG_FPRINTF((stderr, "Node %u part of MultiTrp\n",
+                         t->getRemoteNodeId()));
           break;
         }
         if (!get_active_node(nodeId))
         {
-          continue;
+          DEBUG_FPRINTF((stderr, "Node %u not active\n",
+                         t->getRemoteNodeId()));
+          break;
         }
         if (!t->isConnected() && !t->isServer)
         {
@@ -3325,6 +3343,8 @@ TransporterRegistry::start_clients_thread()
             unlockMultiTransporters();
             connected= t->connect_client(false);
             lockMultiTransporters();
+            DEBUG_FPRINTF((stderr, "connect_client to %u res: %u\n",
+                           t->getRemoteNodeId(), connected));
           }
 
 	  /**
@@ -3422,6 +3442,11 @@ TransporterRegistry::start_clients_thread()
                          localNodeId, t->getRemoteNodeId(), __LINE__));
           t->doDisconnect();
         }
+        else
+        {
+          DEBUG_FPRINTF((stderr, "Node %u DISCONNECTING\n",
+                         t->getRemoteNodeId()));
+        }
         break;
       }
       case DISCONNECTED:
@@ -3434,6 +3459,11 @@ TransporterRegistry::start_clients_thread()
           DEBUG_FPRINTF((stderr, "(%u)doDisconnect(%u), line: %u\n",
                          localNodeId, t->getRemoteNodeId(), __LINE__));
           t->doDisconnect();
+        }
+        else
+        {
+          DEBUG_FPRINTF((stderr, "Node %u DISCONNECTED\n",
+                         t->getRemoteNodeId()));
         }
         break;
       }
@@ -3454,6 +3484,11 @@ TransporterRegistry::start_clients_thread()
                         t->getTransporterIndex(),
                         t->isConnected()));
           lockMultiTransporters();
+        }
+        else
+        {
+          DEBUG_FPRINTF((stderr, "Node %u CONNECTED\n",
+                         t->getRemoteNodeId()));
         }
         break;
       }
@@ -4006,7 +4041,9 @@ TransporterRegistry::get_active_node(Uint32 node_id)
 }
 
 void
-TransporterRegistry::set_active_node(Uint32 node_id, Uint32 active)
+TransporterRegistry::set_active_node(Uint32 node_id,
+                                     Uint32 active,
+                                     bool log)
 {
   if (active == 0)
   {
@@ -4020,6 +4057,10 @@ TransporterRegistry::set_active_node(Uint32 node_id, Uint32 active)
      * reach the state DISCONNECTED.
      */
     nodeActiveStates[node_id] = false;
+    if (log)
+    {
+      g_eventLogger->info("Deactivating node %u", node_id);
+    }
   }
   else
   {
@@ -4028,6 +4069,10 @@ TransporterRegistry::set_active_node(Uint32 node_id, Uint32 active)
      * through an operation while the node is operational.
      */
     nodeActiveStates[node_id] = true;
+    if (log)
+    {
+      g_eventLogger->info("Activating node %u", node_id);
+    }
   }
 }
 

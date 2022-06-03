@@ -122,12 +122,12 @@ IPCConfig::configureTransporters(Uint32 nodeId,
     {
       Uint32 is_active = 1;
       iter.get(CFG_NODE_ACTIVE, &is_active);
-      tr.set_active_node(i, is_active);
+      tr.set_active_node(i, is_active, !transporter_to_self);
     }
     else
     {
       /* Nodes not existing will be set as not active nodes. */
-      tr.set_active_node(i, 0);
+      tr.set_active_node(i, 0, false);
     }
   }
 
