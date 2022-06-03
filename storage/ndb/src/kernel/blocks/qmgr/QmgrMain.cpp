@@ -3782,6 +3782,12 @@ void Qmgr::execACTIVATE_REQ(Signal *signal)
   const ActivateReq* const req = (const ActivateReq *)signal->getDataPtr();
   Uint32 activateNodeId = req->activateNodeId;
   Uint32 senderRef = req->senderRef;
+  Uint32 timeOutCount = 0;
+  if (signal->length() > ActivateReq::SignalLength)
+  {
+    jam();
+    timeOutCount = req->timerCount;
+  }
 
   DEB_ACTIVATE(("ACTIVATE_REQ from %x node: %u", senderRef, activateNodeId));
   if (m_activate_state != ActivateState::IDLE ||
@@ -3797,16 +3803,44 @@ void Qmgr::execACTIVATE_REQ(Signal *signal)
   }
   nodePtr.i = activateNodeId;
   ptrAss(nodePtr, nodeRec);
-  if (nodePtr.p->phase == ZFAIL_CLOSING)
+  if (nodePtr.p->phase == ZFAIL_CLOSING ||
+      nodePtr.p->phase == ZPREPARE_FAIL)
   {
     /**
      * QMGR will handle it in checkStartInterfaces as normal restart of
      * API node.
      */
     jam();
-    g_eventLogger->debug("ZFAIL_CLOSING state of node %u after activation",
-                         nodePtr.i);
-    sendACTIVATE_REF(signal, senderRef, activateNodeId);
+    g_eventLogger->info("ZFAIL_CLOSING/ZPREPARE_FAIL state %u of node %u at"
+                        " activate request, now waited %u seconds",
+                        nodePtr.p->phase,
+                        nodePtr.i,
+                        timeOutCount);
+    if (timeOutCount < 120)
+    {
+      jam();
+      timeOutCount++;
+      /**
+       * We are in a temporary state where we won't activate node, to avoid
+       * complex error handling we will wait for up to 2 minutes before
+       * reporting any error. This should avoid all normal cases where the
+       * node is still handling node failures.
+       */
+      ActivateReq* const send_req = (ActivateReq*)signal->getDataPtrSend();
+      send_req->activateNodeId = activateNodeId;
+      send_req->senderRef = senderRef;
+      send_req->timerCount = timeOutCount;
+      sendSignalWithDelay(reference(),
+                          GSN_ACTIVATE_REQ,
+                          signal,
+                          1000,
+                          ActivateReq::TimeOutSignalLength);
+    }
+    else
+    {
+      jam();
+      sendACTIVATE_REF(signal, senderRef, activateNodeId);
+    }
     return;
   }
   else if (nodePtr.p->phase == ZINIT || nodePtr.p->phase == ZAPI_INACTIVE)
@@ -3956,9 +3990,9 @@ void Qmgr::execACTIVATE_REF(Signal *signal)
     (const ActivateRef *)signal->getDataPtr();
   Uint32 senderNodeId = ref->senderNodeId;
   Uint32 activateNodeId = ref->activateNodeId;
-  DEB_ACTIVATE(("ACTIVATE_REF from %u node: %u",
-                senderNodeId,
-                activateNodeId));
+  g_eventLogger->info("ACTIVATE_REF from %u node: %u",
+                      senderNodeId,
+                      activateNodeId);
   handle_activate_receive(senderNodeId, activateNodeId);
   ndbrequire(m_activate_state == ActivateState::HANDLE_ACTIVATE);
   m_activate_success = false;
@@ -4057,9 +4091,9 @@ void Qmgr::execDEACTIVATE_REF(Signal *signal)
     (const DeactivateRef *)signal->getDataPtr();
   Uint32 senderNodeId = ref->senderNodeId;
   Uint32 deactivateNodeId = ref->deactivateNodeId;
-  DEB_ACTIVATE(("DEACTIVATE_REF from %u node: %u",
-                senderNodeId,
-                deactivateNodeId));
+  g_eventLogger->info("DEACTIVATE_REF from %u node: %u",
+                      senderNodeId,
+                      deactivateNodeId);
   handle_activate_receive(senderNodeId, deactivateNodeId);
   ndbrequire(m_activate_state == ActivateState::HANDLE_DEACTIVATE);
   m_activate_success = false;
@@ -4160,9 +4194,9 @@ void Qmgr::execSET_HOSTNAME_REF(Signal *signal)
     (const SetHostnameRef *)signal->getDataPtr();
   Uint32 senderNodeId = ref->senderNodeId;
   Uint32 changeNodeId = ref->changeNodeId;
-  DEB_ACTIVATE(("SET_HOSTNAME_REF from %u node: %u",
-                senderNodeId,
-                changeNodeId));
+  g_eventLogger->info("SET_HOSTNAME_REF from %u node: %u",
+                      senderNodeId,
+                      changeNodeId);
   ndbrequire(m_activate_state == ActivateState::HANDLE_SET_HOSTNAME);
   handle_activate_receive(senderNodeId, changeNodeId);
   m_activate_success = false;
@@ -4730,7 +4764,7 @@ void Qmgr::execNDB_FAILCONF(Signal* signal)
    * the failed node
    *
    * NOTE: This is sent from all nodes, as otherwise we would need
-   *       take-over if cpresident dies befor sending this
+   *       take-over if cpresident dies before sending this
    */
   NFCompleteRep * const nfComp = (NFCompleteRep *)&signal->theData[0];
   nfComp->blockNo = QMGR_REF;
