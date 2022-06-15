@@ -3855,7 +3855,7 @@ Dbacc::readTablePk(Uint32 localkey1,
   }
   if (ret == (-ZTUPLE_DELETED_ERROR))
   {
-    jamDebug();
+    jam();
     /**
      * We can come here in two cases:
      * 1) The local key hasn't been updated yet. In this case the Insert
@@ -3901,7 +3901,7 @@ Dbacc::readTablePk(Uint32 localkey1,
     Uint32 lqhOpPtr = find_key_operation(opPtr, invalid_local_key);
     if (lqhOpPtr == RNIL)
     {
-      jamDebug();
+      jam();
       dump_lock_queue(opPtr);
       ndbrequire(opPtr.p->m_op_bits & Operationrec::OP_ELEMENT_DISAPPEARED);
       if (unlikely((opPtr.p->m_op_bits & Operationrec::OP_MASK) == ZSCAN_OP))

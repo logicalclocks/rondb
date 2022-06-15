@@ -1119,6 +1119,36 @@ Dbtup::commit_operation(Signal* signal,
   {
     c_lqh->add_update_size(average_row_size);
   }
+#if 1
+  {
+    /**
+     * Function used to verify that we can still read the PK
+     * after the commit operation to find any bugs early.
+     * Could be code that is possible to activate using a
+     * configuration variable.
+     *
+     * Could be extended to cover all columns.
+     */
+    union {
+      Uint32 keys[2048];
+      Uint64 keys_align;
+    };
+    (void)keys_align;
+    Local_key rowid = regOperPtr->m_tuple_location;
+    g_eventLogger->info("(%u)Committing row(%u,%u)",
+                        instance(),
+                        rowid.m_page_no,
+                        rowid.m_page_idx);
+    int ret = tuxReadPk((Uint32*)regFragPtr,
+                        (Uint32*)regTabPtr,
+                        rowid.m_page_no,
+                        rowid.m_page_idx,
+                        &keys[0],
+                        false);
+    ndbrequire(ret >= 0);
+  }
+
+#endif
 }
 
 void

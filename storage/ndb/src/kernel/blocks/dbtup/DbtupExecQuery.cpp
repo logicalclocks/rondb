@@ -5006,12 +5006,14 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
            * This is when triggers read before value of update
            *   when original has been reallocated due to grow
            */
+          jam();
           ndbassert(src_len>0);
           src_len= src_data[src_len-1];
         }
       }
       else
       {
+        jam(); // Read Copy tuple
         Varpart_copy* vp = (Varpart_copy*)src_ptr;
         src_len = vp->m_len;
         src_data = vp->m_data;
@@ -5044,7 +5046,8 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       dst->m_dyn_data_ptr= (char*)dynstart;
       dst->m_dyn_part_len= dynlen;
       // Do or not to to do
-      // dst->m_dyn_offset_arr_ptr = dynlen ? (Uint16*)(dynstart + *(Uint8*)dynstart) : 0;
+      // dst->m_dyn_offset_arr_ptr = dynlen ?
+      //   (Uint16*)(dynstart + *(Uint8*)dynstart) : 0;
 
       /*
         dst->m_dyn_offset_arr_ptr and dst->m_dyn_len_offset are not used for
