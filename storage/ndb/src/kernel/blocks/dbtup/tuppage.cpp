@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -271,7 +272,12 @@ Tup_varsize_page::alloc_record(Uint32 page_idx, Uint32 alloc_size,
   
   free_space = free;
   insert_pos += alloc_size;
-  
+
+#ifdef TUP_DATA_VALIDATION
+  /* Ensure varsized part is zeroed before it is committed */
+  Uint32 *memset_ptr = get_ptr(page_idx);
+  memset(memset_ptr, 0, alloc_size * 4);
+#endif
   return page_idx;
 }
 
@@ -323,6 +329,11 @@ Tup_varsize_page::alloc_record(Uint32 alloc_size,
   insert_pos += alloc_size;
   free_space -= alloc_size;
   //ndbout_c("%p->alloc_record(%d%s) -> %d", this,alloc_size, (chain ? " CHAIN" : ""),page_idx);
+  /* Ensure varsized part is zeroed before it is committed */
+#ifdef TUP_DATA_VALIDATION
+  Uint32 *memset_ptr = get_ptr(page_idx);
+  memset(memset_ptr, 0, alloc_size * 4);
+#endif
   return page_idx;
 }
   
@@ -336,7 +347,7 @@ Tup_varsize_page::free_record(Uint32 page_idx, Uint32 chain)
   Uint32 entry_len= (index_word & LEN_MASK) >> LEN_SHIFT;
   assert(chain == 0 || chain == CHAIN);
   assert((index_word & CHAIN) == chain);
-#if defined(VM_TRACE) || defined(ERROR_INSERT)
+#if defined(VM_TRACE) || defined(ERROR_INSERT) || defined(TUP_DATA_VALIDATION)
   memset(m_data + entry_pos, 0xF2, 4*entry_len);
 #endif
   if (page_idx + 1 == high_index) {
@@ -444,6 +455,37 @@ Tup_varsize_page::reorg(Tup_varsize_page* copy_page)
     }
   }
   insert_pos= new_insert_pos;
+}
+
+void
+Tup_varsize_page::validate_page(Uint32 num_vars)
+{
+  if (is_empty() || num_vars == 0)
+    return;
+  Uint32 curr_used_size = high_index;
+  for (Uint32 i = 1; i < high_index; i++)
+  {
+    if (!is_free(i))
+    {
+      Uint32 len = get_entry_len(i);
+      Uint16 *ptr = (Uint16*)get_ptr(i);
+      /* Found a valid slot, now verify it */
+      Uint32 min_bytes = (num_vars + 1) * 2;
+      Uint32 min_words = (min_bytes + 3) / 4;
+      require(len >= min_words);
+      require(ptr[0] == 0);
+      Uint16 curr_pos = ptr[0];
+      for (Uint32 j = 1; j < num_vars + 1; j++)
+      {
+        Uint16 next_pos = ptr[j];
+        require(next_pos >= curr_pos);
+        curr_pos = next_pos;
+      }
+      curr_used_size += min_bytes;
+      curr_used_size += curr_pos;
+    }
+  }
+  require(curr_used_size <= (4*DATA_WORDS));
 }
 
 NdbOut&

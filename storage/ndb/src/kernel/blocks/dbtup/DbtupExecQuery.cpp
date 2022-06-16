@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -5028,6 +5029,12 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
         varstart = (char*)(((Uint16*)src_data)+mm_vars+1);
         varlen = ((Uint16*)src_data)[mm_vars];
         dynstart = ALIGN_WORD(varstart + varlen);
+#ifdef TUP_DATA_VALIDATION
+        jam();
+        jamLine(mm_vars);
+        jamLine(((Uint16*)src_data)[0]);
+        jamLine(((Uint16*)src_data)[1]);
+#endif
       }
       else
       {

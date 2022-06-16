@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -719,6 +720,7 @@ Dbtup::varsize_reader(Uint8* outBuffer,
   Uint32 newIndexBuf = indexBuf + srcBytes;
   Uint8* dst = (outBuffer + indexBuf);
 
+#ifdef TUP_DATA_VALIDATION
   if (unlikely(srcBytes > max_var_size))
   {
     Uint32 var_idx= AttributeOffset::getOffset(attrDes2);
@@ -729,16 +731,23 @@ Dbtup::varsize_reader(Uint8* outBuffer,
     g_eventLogger->info("srcBytes(%u) > max_var_size(%u)"
                         ", max_var_offset: %u, var_len_offset: %u"
                         ", var_idx: %u, var_attr_pos: %u"
-                        ", next_attr_pos: %u",
+                        ", next_attr_pos: %u"
+                        ", offset_ptr: %p, data_ptr: %p"
+                        ", next2: %u, next3: %u",
                         srcBytes,
                         max_var_size,
                         req_struct->m_var_data[MM].m_max_var_offset,
                         idx,
                         var_idx,
                         attr_pos,
-                        next_attr_pos);
-    require(srcBytes <= max_var_size);
+                        next_attr_pos,
+                        req_struct->m_var_data[MM].m_offset_array_ptr,
+                        req_struct->m_var_data[MM].m_data_ptr,
+                        req_struct->m_var_data[MM].m_offset_array_ptr[var_idx+idx+1],
+                        req_struct->m_var_data[MM].m_offset_array_ptr[var_idx+idx+2]);
   }
+#endif
+  require(srcBytes <= max_var_size);
   if (! charsetFlag || ! req_struct->xfrm_flag)
   {
     if (likely(newIndexBuf <= max_read))

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,6 +33,23 @@
 #include <portlib/ndb_prefetch.h>
 #define JAM_FILE_ID 419
 
+/**
+ * Setting this define ensures that we check a lot more consistency of
+ * the internal TUP data structures. In particular we check that variable
+ * sized rows in each page that is changed are consistent, in particular
+ * the array of offsets. This array can easily be overwritten if we for
+ * some reason overwrite the variable sized entry.
+ *
+ * It also ensures that we can read the primary key always after committing
+ * a row.
+ *
+ * The default behaviour is that this is activated in all tests. However it
+ * is easily possible to activate or deactivate this check by manipulating
+ * the lines below.
+ */
+//#if defined(VM_TRACE) || defined(ERROR_INSERT)
+#define TUP_DATA_VALIDATION 1
+//#endif
 
 struct Tup_page 
 {
@@ -557,6 +575,7 @@ struct Tup_varsize_page
   
   Tup_varsize_page() {}
   void init();
+  void validate_page(Uint32 num_vars);
   
   Uint32* get_free_space_ptr() { 
     return m_data+insert_pos; 

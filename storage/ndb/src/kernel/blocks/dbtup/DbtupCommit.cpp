@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -792,6 +793,7 @@ Dbtup::commit_operation(Signal* signal,
       Varpart_copy*vp =(Varpart_copy*)copy->get_end_of_fix_part_ptr(regTabPtr);
       /* The first word of shrunken tuple holds the length in words. */
       Uint32 len = vp->m_len;
+      Uint32 entry_len = vpagePtrP->get_entry_len(tmp.m_page_idx);
       memcpy(dst, vp->m_data, 4*len);
 
       /**
@@ -834,8 +836,8 @@ Dbtup::commit_operation(Signal* signal,
        * there might be multiple row operations both increasing and
        * shrinking the tuple.
        */
-      ndbassert(vpagePtrP->get_entry_len(tmp.m_page_idx) >= len);
-      if (vpagePtrP->get_entry_len(tmp.m_page_idx) > len)
+      ndbrequire(entry_len >= len);
+      if (entry_len > len)
       {
         /**
          * Page entry is now bigger than it needs to be, we are committing
@@ -864,6 +866,9 @@ Dbtup::commit_operation(Signal* signal,
           copy_bits &= ~(Uint32)Tuple_header::VAR_PART;
         }
       }
+#ifdef TUP_DATA_VALIDATION
+      vpagePtrP->validate_page(mm_vars);
+#endif
       /**
        * Find disk part after
        * header + fixed MM part + length word + varsize part.
@@ -1135,10 +1140,6 @@ Dbtup::commit_operation(Signal* signal,
     };
     (void)keys_align;
     Local_key rowid = regOperPtr->m_tuple_location;
-    g_eventLogger->info("(%u)Committing row(%u,%u)",
-                        instance(),
-                        rowid.m_page_no,
-                        rowid.m_page_idx);
     int ret = tuxReadPk((Uint32*)regFragPtr,
                         (Uint32*)regTabPtr,
                         rowid.m_page_no,
