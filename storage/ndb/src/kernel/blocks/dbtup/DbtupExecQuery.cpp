@@ -5007,14 +5007,14 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
            * This is when triggers read before value of update
            *   when original has been reallocated due to grow
            */
-          jam();
+          thrjam(req_struct->jamBuffer);
           ndbassert(src_len>0);
           src_len= src_data[src_len-1];
         }
       }
       else
       {
-        jam(); // Read Copy tuple
+        thrjam(req_struct->jamBuffer); // Read Copy tuple
         Varpart_copy* vp = (Varpart_copy*)src_ptr;
         src_len = vp->m_len;
         src_data = vp->m_data;
@@ -5030,10 +5030,10 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
         varlen = ((Uint16*)src_data)[mm_vars];
         dynstart = ALIGN_WORD(varstart + varlen);
 #ifdef TUP_DATA_VALIDATION
-        jam();
-        jamLine(mm_vars);
-        jamLine(((Uint16*)src_data)[0]);
-        jamLine(((Uint16*)src_data)[1]);
+        thrjam(req_struct->jamBuffer);
+        thrjamLine(req_struct->jamBuffer, mm_vars);
+        thrjamLine(req_struct->jamBuffer, ((Uint16*)src_data)[0]);
+        thrjamLine(req_struct->jamBuffer, ((Uint16*)src_data)[1]);
 #endif
       }
       else
