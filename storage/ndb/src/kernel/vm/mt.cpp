@@ -2597,7 +2597,7 @@ thr_send_threads::start_send_threads()
     m_send_threads[i].m_thread =
       NdbThread_Create(mt_send_thread_main,
                        (void **)&m_send_threads[i],
-                       1024*1024,
+                       2*1024*1024,
                        "send thread", //ToDo add number
                        NDB_THREAD_PRIO_MEAN);
     m_send_threads[i].m_thr_index =
@@ -10373,7 +10373,7 @@ ThreadConfig::ipControlLoop(NdbThread* pThis)
       struct NdbThread *thread_ptr =
         NdbThread_Create(mt_job_thread_main,
                          (void **)(rep->m_thread + thr_no),
-                         1024*1024,
+                         2*1024*1024,
                          "execute thread", //ToDo add number
                          NDB_THREAD_PRIO_MEAN);
       require(thread_ptr != NULL);
@@ -10388,7 +10388,7 @@ ThreadConfig::ipControlLoop(NdbThread* pThis)
       struct NdbThread *thread_ptr =
         NdbThread_Create(mt_receiver_thread_main,
                          (void **)(&rep->m_thread[thr_no]),
-                         1024*1024,
+                         2*1024*1024,
                          "receive thread", //ToDo add number
                          NDB_THREAD_PRIO_MEAN);
       require(thread_ptr != NULL);
