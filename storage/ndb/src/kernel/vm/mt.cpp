@@ -2216,9 +2216,8 @@ public:
     elapsed_time_os = m_send_threads[send_instance].m_elapsed_time_os;
     NdbMutex_Unlock(m_send_threads[send_instance].send_thread_mutex);
   }
-  void startChangeNeighbourNode(Uint32 self)
+  void startChangeNeighbourNode()
   {
-    mt_flush_send_buffers(self);
     for (Uint32 i = 0; i < globalData.ndbMtSendThreads; i++)
     {
       NdbMutex_Lock(m_send_threads[i].send_thread_mutex);
@@ -2234,7 +2233,6 @@ public:
       {
         m_trp_state[i].m_neighbour_trp = FALSE;
         m_trp_state[i].m_in_list_no_neighbour = FALSE;
-        insert_activate_trp(i);
       }
     }
   }
@@ -8648,11 +8646,11 @@ mt_getNoSend(Uint32 self)
 }
 
 void
-mt_startChangeNeighbourNode(Uint32 self)
+mt_startChangeNeighbourNode()
 {
   if (g_send_threads)
   {
-    g_send_threads->startChangeNeighbourNode(self);
+    g_send_threads->startChangeNeighbourNode();
   }
 }
 

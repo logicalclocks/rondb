@@ -97,7 +97,7 @@ NDB_TICKS mt_getHighResTimer(Uint32 self);
 void mt_setNoSend(Uint32 self, Uint32 val);
 void mt_setNoSendTmp(Uint32 self, Uint32 val);
 Uint32 mt_getNoSend(Uint32 self);
-void mt_startChangeNeighbourNode(Uint32 self);
+void mt_startChangeNeighbourNode();
 void mt_setNeighbourNode(NodeId node);
 void mt_endChangeNeighbourNode();
 void mt_setWakeupThread(Uint32 self, Uint32 wakeup_instance);
