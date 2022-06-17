@@ -4873,7 +4873,7 @@ void Qmgr::execDISCONNECT_REP(Signal* signal)
                      disc_nodePtr.i));
       check_no_multi_trp(signal, disc_nodePtr.i);
       startChangeNeighbourNode();
-      setNeighbourNodes();
+      setNeighbourNode(disc_nodePtr.i);
       endChangeNeighbourNode();
     }
   }
@@ -8425,7 +8425,6 @@ Qmgr::execNODE_FAILREP(Signal * signal)
       if (multi_trp && 
           globalTransporterRegistry.get_num_active_transporters(multi_trp) > 1)
       {
-        jam();
         /**
          * The timing of the NODE_FAILREP signal is such that the transporter
          * haven't had time to switch the active transporters yet, we know
@@ -8445,9 +8444,8 @@ Qmgr::execNODE_FAILREP(Signal * signal)
         
       DEB_MULTI_TRP(("Change neighbour node setup for node %u",
                      nodePtr.i));
-      jam();
       startChangeNeighbourNode();
-      setNeighbourNodes();
+      setNeighbourNode(nodePtr.i);
       endChangeNeighbourNode();
       globalTransporterRegistry.unlockMultiTransporters();
     }
@@ -10810,24 +10808,6 @@ Qmgr::switch_multi_transporter(Signal *signal, NodeId node_id)
 }
 
 void
-Qmgr::setNeighbourNodes()
-{
-  NodeRecPtr nodePtr;
-  jam();
-  for (nodePtr.i = 1; nodePtr.i < MAX_NDB_NODES; nodePtr.i++)
-  {
-    ptrAss(nodePtr, nodeRec);
-    if (nodePtr.p->m_is_in_same_nodegroup &&
-        nodePtr.i != getOwnNodeId())
-    {
-      jam();
-      jamData(nodePtr.i);
-      setNeighbourNode(nodePtr.i);
-    }
-  }
-}
-
-void
 Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
 {
   jamEntry();
@@ -10969,8 +10949,7 @@ Qmgr::execFREEZE_ACTION_REQ(Signal *signal)
     {
       NdbSleep_MilliSleep(2500);
     }
-    jam();
-    setNeighbourNodes();
+    setNeighbourNode(node_id);
     endChangeNeighbourNode();
 
     if (ERROR_INSERTED(984))
