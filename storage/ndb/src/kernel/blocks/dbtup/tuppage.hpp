@@ -47,9 +47,9 @@
  * is easily possible to activate or deactivate this check by manipulating
  * the lines below.
  */
-//#if defined(VM_TRACE) || defined(ERROR_INSERT)
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
 #define TUP_DATA_VALIDATION 1
-//#endif
+#endif
 
 struct Tup_page 
 {
