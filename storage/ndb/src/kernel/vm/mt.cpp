@@ -2240,7 +2240,7 @@ public:
   {
     NodeId id[MAX_NODE_GROUP_TRANSPORTERS];
     Uint32 num_ids;
-    if (globalData.ndbMtSendThreads == 0)
+    if (true || globalData.ndbMtSendThreads == 0)
     {
       return;
     }
