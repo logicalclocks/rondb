@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -5006,12 +5007,14 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
            * This is when triggers read before value of update
            *   when original has been reallocated due to grow
            */
+          thrjam(req_struct->jamBuffer);
           ndbassert(src_len>0);
           src_len= src_data[src_len-1];
         }
       }
       else
       {
+        thrjam(req_struct->jamBuffer); // Read Copy tuple
         Varpart_copy* vp = (Varpart_copy*)src_ptr;
         src_len = vp->m_len;
         src_data = vp->m_data;
@@ -5026,6 +5029,12 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
         varstart = (char*)(((Uint16*)src_data)+mm_vars+1);
         varlen = ((Uint16*)src_data)[mm_vars];
         dynstart = ALIGN_WORD(varstart + varlen);
+#ifdef TUP_DATA_VALIDATION
+        thrjam(req_struct->jamBuffer);
+        thrjamLine(req_struct->jamBuffer, mm_vars);
+        thrjamLine(req_struct->jamBuffer, ((Uint16*)src_data)[0]);
+        thrjamLine(req_struct->jamBuffer, ((Uint16*)src_data)[1]);
+#endif
       }
       else
       {
@@ -5044,7 +5053,8 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
       dst->m_dyn_data_ptr= (char*)dynstart;
       dst->m_dyn_part_len= dynlen;
       // Do or not to to do
-      // dst->m_dyn_offset_arr_ptr = dynlen ? (Uint16*)(dynstart + *(Uint8*)dynstart) : 0;
+      // dst->m_dyn_offset_arr_ptr = dynlen ?
+      //   (Uint16*)(dynstart + *(Uint8*)dynstart) : 0;
 
       /*
         dst->m_dyn_offset_arr_ptr and dst->m_dyn_len_offset are not used for

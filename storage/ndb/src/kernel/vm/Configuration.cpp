@@ -993,14 +993,14 @@ Configuration::compute_fs_memory()
    * 32 kB read buffer
    * 16 kB write buffer
    * 256 kB inflate/deflate buffer
-   * 64 kB stack memory
-   * Thus around 384 kB of memory per FS thread.
+   * 192 kB stack memory
+   * Thus around 512 kB of memory per FS thread.
    * The number of FS threads is a bit dynamic and increases with the
    * number of LDM threads. Around 4-8 threads are added per LDM thread.
-   * Thus we add 3 MByte of memory space here for each LDM thread.
+   * Thus we add 4 MByte of memory space here for each LDM thread.
    */
   Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
-  Uint64 size_fs_mem = Uint64(2) * MBYTE64 * Uint64(num_ldm_threads);
+  Uint64 size_fs_mem = Uint64(4) * MBYTE64 * Uint64(num_ldm_threads);
   size_fs_mem = MAX(size_fs_mem, Uint64(32) * MBYTE64);
   return size_fs_mem;
 }
@@ -1094,7 +1094,7 @@ Configuration::compute_static_overhead()
     ((num_threads + num_extra_threads) * MBYTE64);
   Uint32 num_send_threads = globalData.ndbMtSendThreads;
   Uint64 num_all_threads = num_threads + num_extra_threads + num_send_threads;
-  static_overhead += (num_all_threads * MBYTE64); // Stack memory
+  static_overhead += (num_all_threads * 2 * MBYTE64); // Stack memory
   return static_overhead;
 }
 
