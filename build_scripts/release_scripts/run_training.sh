@@ -1,3 +1,5 @@
+#!/bin/bash
+set -e
 ./mtr --suite=ndb ndb_basic ndb_dd_basic
 ./mtr --suite=ndb_opt
 ./mtr --suite=ndbcluster

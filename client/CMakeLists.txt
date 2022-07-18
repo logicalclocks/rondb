@@ -136,6 +136,12 @@ ADD_SHARED_LIBRARY(json_binlog
   NO_UNDEFINED
   )
 
+ADD_SHARED_LIBRARY(rdrs_string
+  ${CMAKE_SOURCE_DIR}/sql-common/sql_string.cc
+  ${CMAKE_SOURCE_DIR}/mysys/my_time.cc
+  ${CMAKE_SOURCE_DIR}/mysys/my_systime.cc
+  )
+
 ADD_CONVENIENCE_LIBRARY(json_client_library
   ${CMAKE_SOURCE_DIR}/sql/json_binary.cc
   ${CMAKE_SOURCE_DIR}/sql/json_dom.cc
