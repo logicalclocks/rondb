@@ -2404,9 +2404,8 @@ public:
     elapsed_time_os = m_send_threads[send_instance].m_elapsed_time_os;
     NdbMutex_Unlock(m_send_threads[send_instance].send_thread_mutex);
   }
-  void startChangeNeighbourNode(Uint32 self)
+  void startChangeNeighbourNode()
   {
-    mt_flush_send_buffers(self);
     for (Uint32 i = 0; i < globalData.ndbMtSendThreads; i++)
     {
       NdbMutex_Lock(m_send_threads[i].send_thread_mutex);
@@ -2422,7 +2421,6 @@ public:
       {
         m_trp_state[i].m_neighbour_trp = false;
         m_trp_state[i].m_in_list_no_neighbour = false;
-        insert_activate_trp(i);
       }
     }
   }
@@ -2430,7 +2428,7 @@ public:
   {
     NodeId id[MAX_NODE_GROUP_TRANSPORTERS];
     Uint32 num_ids;
-    if (globalData.ndbMtSendThreads == 0)
+    if (true || globalData.ndbMtSendThreads == 0)
     {
       return;
     }
@@ -2438,9 +2436,6 @@ public:
                                                 &id[0],
                                                 num_ids,
                                                 MAX_NODE_GROUP_TRANSPORTERS);
-    DEB_MULTI_TRP(("setNeighbourNode: node: %u, num_ids: %u",
-                   nodeId,
-                   num_ids));
     for (Uint32 index = 0; index < num_ids; index++)
     {
       Uint32 this_id = id[index];
@@ -2480,13 +2475,8 @@ public:
             {
               m_trp_state[prev_trp_id].m_next = m_trp_state[this_id].m_next;
             }
-            if (this_id == send_instance->m_last_trp)
-            {
-              send_instance->m_last_trp = prev_trp_id;
-            }
             break;
           }
-          prev_trp_id = next_trp_id;
           next_trp_id = m_trp_state[next_trp_id].m_next;
         }
         require(found);
@@ -2498,8 +2488,7 @@ public:
         require(send_instance->m_neighbour_trps[i] != this_id);
         if (send_instance->m_neighbour_trps[i] == 0)
         {
-          DEB_MULTI_TRP(("Neighbour(%u,%u) of node %u is trp %u",
-                         send_instance_id,
+          DEB_MULTI_TRP(("Neighbour(%u) of node %u is trp %u",
                          i,
                          nodeId,
                          this_id));
@@ -2793,7 +2782,7 @@ thr_send_threads::start_send_threads()
     m_send_threads[i].m_thread =
       NdbThread_Create(mt_send_thread_main,
                        (void **)&m_send_threads[i],
-                       1024*1024,
+                       2*1024*1024,
                        "send thread", //ToDo add number
                        NDB_THREAD_PRIO_MEAN);
     m_send_threads[i].m_thr_index =
@@ -8882,11 +8871,11 @@ mt_getNoSend(Uint32 self)
 }
 
 void
-mt_startChangeNeighbourNode(Uint32 self)
+mt_startChangeNeighbourNode()
 {
   if (g_send_threads)
   {
-    g_send_threads->startChangeNeighbourNode(self);
+    g_send_threads->startChangeNeighbourNode();
   }
 }
 
@@ -10687,7 +10676,7 @@ ThreadConfig::ipControlLoop(NdbThread* pThis)
       struct NdbThread *thread_ptr =
         NdbThread_Create(mt_job_thread_main,
                          (void **)(rep->m_thread + thr_no),
-                         1024*1024,
+                         2*1024*1024,
                          "execute thread", //ToDo add number
                          NDB_THREAD_PRIO_MEAN);
       require(thread_ptr != NULL);
@@ -10702,7 +10691,7 @@ ThreadConfig::ipControlLoop(NdbThread* pThis)
       struct NdbThread *thread_ptr =
         NdbThread_Create(mt_receiver_thread_main,
                          (void **)(&rep->m_thread[thr_no]),
-                         1024*1024,
+                         2*1024*1024,
                          "receive thread", //ToDo add number
                          NDB_THREAD_PRIO_MEAN);
       require(thread_ptr != NULL);

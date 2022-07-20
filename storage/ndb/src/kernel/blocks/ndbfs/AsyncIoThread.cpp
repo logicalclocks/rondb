@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2008, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -73,9 +74,9 @@ AsyncIoThread::doStart()
 {
   // Stacksize for filesystem threads
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
-  const NDB_THREAD_STACKSIZE stackSize = 4*128*1024;
+  const NDB_THREAD_STACKSIZE stackSize = 4 * 128 * 1024;
 #else
-  const NDB_THREAD_STACKSIZE stackSize = 128*1024;
+  const NDB_THREAD_STACKSIZE stackSize = 192*1024;
 #endif
 
   char buf[16];

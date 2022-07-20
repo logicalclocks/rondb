@@ -44,10 +44,12 @@ class ActivateReq
 
 public:
   static constexpr Uint32 SignalLength = 2;
+  static constexpr Uint32 TimeOutSignalLength = 3;
   
 public:
   Uint32 senderRef;
   Uint32 activateNodeId;
+  Uint32 timerCount;
 };
 
 class ActivateConf

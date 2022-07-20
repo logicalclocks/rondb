@@ -5552,12 +5552,13 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
            *   when original has been reallocated due to grow
            */
           ndbassert(flex_len>0);
+          thrjam(req_struct->jamBuffer);
           flex_len= flex_data[flex_len-1];
         }
       }
       else
       {
-        thrjamDebug(req_struct->jamBuffer);
+        thrjam(req_struct->jamBuffer); // Read Copy tuple
         Varpart_copy* vp = (Varpart_copy*)src_ptr;
         flex_len = vp->m_len;
         flex_data = vp->m_data;

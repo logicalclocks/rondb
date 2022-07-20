@@ -736,6 +736,33 @@ Dbtup::varsize_reader(Uint8* outBuffer,
   Uint32 newIndexBuf = indexBuf + srcBytes;
   Uint8* dst = (outBuffer + indexBuf);
 
+#ifdef TUP_DATA_VALIDATION
+  if (unlikely(srcBytes > max_var_size))
+  {
+    Uint32 var_idx= AttributeOffset::getOffset(attrDes2);
+    Uint32 idx = req_struct->m_var_data[MM].m_var_len_offset;
+    Uint32 attr_pos= req_struct->m_var_data[MM].m_offset_array_ptr[var_idx];
+    Uint32 next_attr_pos =
+      req_struct->m_var_data[MM].m_offset_array_ptr[var_idx+idx];
+    g_eventLogger->info("srcBytes(%u) > max_var_size(%u)"
+                        ", max_var_offset: %u, var_len_offset: %u"
+                        ", var_idx: %u, var_attr_pos: %u"
+                        ", next_attr_pos: %u"
+                        ", offset_ptr: %p, data_ptr: %p"
+                        ", next2: %u, next3: %u",
+                        srcBytes,
+                        max_var_size,
+                        req_struct->m_var_data[MM].m_max_var_offset,
+                        idx,
+                        var_idx,
+                        attr_pos,
+                        next_attr_pos,
+                        req_struct->m_var_data[MM].m_offset_array_ptr,
+                        req_struct->m_var_data[MM].m_data_ptr,
+                        req_struct->m_var_data[MM].m_offset_array_ptr[var_idx+idx+1],
+                        req_struct->m_var_data[MM].m_offset_array_ptr[var_idx+idx+2]);
+  }
+#endif
   require(srcBytes <= max_var_size);
   if (! charsetFlag || ! req_struct->xfrm_flag)
   {
