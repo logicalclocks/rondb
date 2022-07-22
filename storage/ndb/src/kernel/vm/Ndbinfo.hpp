@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2009, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -94,7 +95,9 @@ public:
     CPUDATA_TABLEID =            45,
     CPUDATA_50MS_TABLEID =       46,
     CPUDATA_1SEC_TABLEID =       47,
-    CPUDATA_20SEC_TABLEID =      48
+    CPUDATA_20SEC_TABLEID =      48,
+    TABLE_MEM_USE_TABLEID =      49,
+    TABLE_MAP_TABLEID =          50
   };
 
   enum BufferId {

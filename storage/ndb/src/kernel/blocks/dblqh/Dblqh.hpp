@@ -2537,9 +2537,14 @@ public:
     Uint32 m_addfragptr_i;
     Uint32 m_senderData;
     Uint32 m_senderRef;
+    Uint32 m_next_index_table;
     bool m_restore_started;
   }; // Size 100 bytes
   typedef Ptr<Tablerec> TablerecPtr;
+  void add_table_to_index_list(Uint32 primaryTableId,
+                               Uint32 indexTableId);
+  void remove_table_from_index_list(Uint32 primaryTableId,
+                                    Uint32 indexTableId);
 #endif // DBLQH_STATE_EXTRACT
   struct TcConnectionrec {
     enum LogWriteState {

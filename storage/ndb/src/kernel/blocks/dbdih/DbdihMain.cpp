@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1681,11 +1681,12 @@ void Dbdih::execREAD_CONFIG_REQ(Signal* signal)
    */
   {
     NodeRecordPtr nodePtr;
-    for (nodePtr.i = 0; nodePtr.i < MAX_NDB_NODES; nodePtr.i++)
+    for (nodePtr.i = 1; nodePtr.i < MAX_NDB_NODES; nodePtr.i++)
     {
       ptrAss(nodePtr, nodeRecord);
       initNodeRecord(nodePtr);
       nodePtr.p->nodeGroup = ZNIL;
+      set_node_group_id(nodePtr.i, ZNIL);
     }
     initNodeRecoveryStatus();
 
@@ -1712,11 +1713,13 @@ void Dbdih::execREAD_CONFIG_REQ(Signal* signal)
         {
           jam();
           nodePtr.p->nodeGroup = ng;
+          set_node_group_id(nodePtr.i, ng);
         }
         else
         {
           jam();
           nodePtr.p->nodeGroup = ZNIL;
+          set_node_group_id(nodePtr.i, ZNIL);
         }
       }
     }
@@ -25518,6 +25521,7 @@ void Dbdih::makeNodeGroups(Uint32 nodeArray[])
     {
       jam();
       mngNodeptr.p->nodeGroup = ZNIL;
+      set_node_group_id(mngNodeptr.i, ZNIL);
       g_eventLogger->info("setting nodeGroup = ZNIL for node %u",
                           mngNodeptr.i);
     }
@@ -25549,6 +25553,7 @@ void Dbdih::makeNodeGroups(Uint32 nodeArray[])
     if (mngNodeptr.p->nodeGroup == RNIL)
     {
       mngNodeptr.p->nodeGroup = NGPtr.i;
+      set_node_group_id(mngNodeptr.i, NGPtr.i);
       NGPtr.p->nodesInGroup[NGPtr.p->nodeCount++] = mngNodeptr.i;
 
       add_nodegroup(NGPtr);
@@ -26957,6 +26962,7 @@ void Dbdih::setNodeGroups()
     case Sysfile::NS_Configured:
       jam();
       sngNodeptr.p->nodeGroup = ZNIL;
+      set_node_group_id(sngNodeptr.i, ZNIL);
       break;
     default:
       ndbabort();
@@ -30052,4 +30058,8 @@ Dbdih::isolateNodes(Signal* signal,
              JBA,
              lsptr,
              1);
+}
+void Dbdih::set_node_group_id(NodeId nodeId, NodeId nodeGroupId)
+{
+  setNodeInfo(nodeId).m_node_group_id = nodeGroupId;
 }
