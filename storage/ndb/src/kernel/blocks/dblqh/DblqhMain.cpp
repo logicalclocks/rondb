@@ -4635,10 +4635,12 @@ void Dblqh::remove_table_from_index_list(Uint32 primaryTableId,
                         indexTabPtr.p->m_next_index_table));
         primaryTabPtr.p->m_next_index_table =
           indexTabPtr.p->m_next_index_table;
+        indexTabPtr.p->m_next_index_table = RNIL;
       }
       else
       {
         Uint32 new_next_index_table = indexTabPtr.p->m_next_index_table;
+        indexTabPtr.p->m_next_index_table = RNIL;
         indexTabPtr.i = prev_index_table;
         ptrCheckGuard(indexTabPtr, ctabrecFileSize, tablerec);
         indexTabPtr.p->m_next_index_table = new_next_index_table;
