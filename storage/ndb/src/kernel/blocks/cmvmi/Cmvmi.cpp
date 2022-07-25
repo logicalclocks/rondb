@@ -3829,7 +3829,7 @@ void Cmvmi::execSET_HOSTNAME_REQ(Signal *signal)
   SegmentedSectionPtr hostnameSection;
   {
     SectionHandle handle(this, signal);
-    handle.getSection(hostnameSection, 0);
+    ndbrequire(handle.getSection(hostnameSection, 0));
     handle.clear();
   }
   SectionHandle handle(this);

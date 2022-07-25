@@ -490,6 +490,7 @@ void Dbdict::execDBINFO_SCANREQ(Signal *signal)
   }
   case Ndbinfo::DICT_OBJ_INFO_TABLEID:
   case Ndbinfo::STORED_TABLES_TABLEID:
+  case Ndbinfo::TABLE_MAP_TABLEID:
   {
     jam();
     if (c_masterNodeId != getOwnNodeId())
@@ -560,7 +561,7 @@ void Dbdict::execDBINFO_SCANREQ(Signal *signal)
       }
       if (req.tableId == Ndbinfo::DICT_OBJ_INFO_TABLEID)
       {
-        jam(); 
+        jam();
         Ndbinfo::Row row(signal, req);
         /* Write values */
         row.write_uint32(ltd.getTableType());
@@ -571,6 +572,52 @@ void Dbdict::execDBINFO_SCANREQ(Signal *signal)
         row.write_uint32(parentObjId);
         row.write_string(nameBuff); /* FQ name */
         ndbinfo_send_row(signal, req, row, rl);
+      }
+      else if (req.tableId == Ndbinfo::TABLE_MAP_TABLEID)
+      {
+        if (ltd.getTableType() == DictTabInfo::TableType::SystemTable ||
+            ltd.getTableType() == DictTabInfo::TableType::UserTable ||
+            ltd.getTableType() == DictTabInfo::TableType::UniqueHashIndex ||
+            ltd.getTableType() == DictTabInfo::TableType::UniqueOrderedIndex ||
+            ltd.getTableType() == DictTabInfo::TableType::OrderedIndex)
+        {
+          Ndbinfo::Row row(signal, req);
+          row.write_uint32(ltd.getTableId());
+          char nameBuffer[PATH_MAX];
+          char copyBuffer[PATH_MAX];
+          if (parentObjId == 0)
+          {
+            strcpy(nameBuffer, nameBuff);
+          }
+          else
+          {
+            TableRecordPtr tabPtr;
+            bool ok = find_object(tabPtr, parentObjId);
+            ndbrequire(ok);
+            LcLocalRope name(tabPtr.p->tableName);
+            name.copy(nameBuffer, sizeof(nameBuffer));
+            ndbassert(strlen(nameBuffer) < PATH_MAX);
+          }
+          strcpy(copyBuffer, nameBuffer);
+          char *ptr = strstr(copyBuffer, "/");
+          if (ptr != nullptr)
+          {
+            ptr[0] = 0;
+            ptr++;
+            ptr = strstr(ptr, "/");
+            if (ptr != nullptr)
+            {
+              ptr++;
+              row.write_string(copyBuffer); /* Database name */
+              row.write_string(ptr); /* Table name */
+              ndbinfo_send_row(signal, req, row, rl);
+            }
+          }
+        }
+        else
+        {
+          ;/* Ignore any other table types */
+        }
       }
       else
       {

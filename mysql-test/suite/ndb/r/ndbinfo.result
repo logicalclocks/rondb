@@ -94,9 +94,11 @@ table_id	table_name	comment
 46	cpudata_50ms	Data about CPU usage per 50ms last second
 47	cpudata_1sec	Data about CPU usage per second last 20 seconds
 48	cpudata_20sec	Data about CPU usage per 20 sec last 400 seconds
+49	table_memory_usage	Per table memory usage
+50	table_map	Mapping table_id to table and database name
 SELECT COUNT(*) FROM ndb$tables;
 COUNT(*)
-49
+51
 SELECT * FROM ndb$tables WHERE table_id = 2;
 table_id	table_name	comment	rows_estimate
 2	test	for testing	8000
@@ -145,6 +147,8 @@ table_id	table_name	comment
 46	cpudata_50ms	Data about CPU usage per 50ms last second
 47	cpudata_1sec	Data about CPU usage per second last 20 seconds
 48	cpudata_20sec	Data about CPU usage per 20 sec last 400 seconds
+49	table_memory_usage	Per table memory usage
+50	table_map	Mapping table_id to table and database name
 SELECT * FROM ndb$tables WHERE table_name = 'LOGDESTINATION';
 table_id	table_name	comment	rows_estimate
 SELECT COUNT(*) FROM ndb$tables t, ndb$columns c
@@ -204,6 +208,8 @@ table_id	table_name
 34	table_distribution_status_all
 32	table_fragments
 35	table_fragments_all
+50	table_map
+49	table_memory_usage
 33	table_replicas
 36	table_replicas_all
 22	tc_time_track_stats
@@ -297,6 +303,8 @@ table_id
 46
 47
 48
+49
+50
 
 TRUNCATE ndb$tables;
 ERROR HY000: Table 'ndb$tables' is read only
@@ -1793,6 +1801,14 @@ cpu_system_time	int unsigned	YES		NULL
 cpu_interrupt_time	int unsigned	YES		NULL	
 cpu_exec_vm_time	int unsigned	YES		NULL	
 elapsed_time	int unsigned	YES		NULL	
+desc table_memory_usage;
+Field	Type	Null	Key	Default	Extra
+database_name	varchar(512)	YES		NULL	
+table_name	varchar(512)	YES		NULL	
+in_memory_bytes	decimal(42,0)	YES		NULL	
+free_in_memory_bytes	decimal(42,0)	YES		NULL	
+disk_memory_bytes	decimal(42,0)	YES		NULL	
+free_disk_memory_bytes	decimal(42,0)	YES		NULL	
 
 select * from hwinfo;
 select * from cpuinfo;
@@ -1801,6 +1817,7 @@ select * from cpudata_50ms;
 select * from cpudata_1sec;
 select * from cpudata_20sec;
 select * from logbuffers;
+select * from table_memory_usage;
 #
 # BUG#32073640 Add ndbinfo.backup_id
 #  - the table have one column and one row

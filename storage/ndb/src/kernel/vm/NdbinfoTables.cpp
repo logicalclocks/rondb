@@ -1284,6 +1284,36 @@ DECLARE_NDBINFO_TABLE(CPUDATA_20SEC, 10) =
   }
 };
 
+DECLARE_NDBINFO_TABLE(TABLE_MEM_USE, 7) =
+{ { "table_memory_usage", 7, 0,
+    [] (const Ndbinfo::Counts &c) { return c.est_tables; },
+    "Per table memory usage" },
+  {
+    {"table_id",                 Ndbinfo::Number,    "Table identity"},
+    {"fragment_num",             Ndbinfo::Number,    "Fragment number"},
+    {"nodegroup_id",             Ndbinfo::Number,    "Node group id"},
+    {"in_memory_bytes",          Ndbinfo::Number64,
+     "Number of bytes allocated in memory for table"},
+    {"free_in_memory_bytes",     Ndbinfo::Number64,
+     "Number of bytes free in allocated memory for table"},
+    {"disk_memory_bytes",        Ndbinfo::Number64,
+     "Number of bytes allocated on disk for table"},
+    {"free_disk_memory_bytes",   Ndbinfo::Number64,
+     "Number of bytes free in allocated disk memory for table"},
+  }
+};
+
+DECLARE_NDBINFO_TABLE(TABLE_MAP,3) =
+{ { "table_map", 3, 0,
+    [] (const Ndbinfo::Counts &c) { return c.est_tables; },
+    "Mapping table_id to table and database name" },
+  {
+    {"table_id",     Ndbinfo::Number, ""},
+    {"database_name",Ndbinfo::String, ""},
+    {"table_name",   Ndbinfo::String, ""},
+  }
+};
+
 #define DBINFOTBL(x) { Ndbinfo::x##_TABLEID, (const Ndbinfo::Table*)&ndbinfo_##x }
 
 static
@@ -1341,7 +1371,9 @@ struct ndbinfo_table_list_entry {
   DBINFOTBL(CPUDATA),
   DBINFOTBL(CPUDATA_50MS),
   DBINFOTBL(CPUDATA_1SEC),
-  DBINFOTBL(CPUDATA_20SEC)
+  DBINFOTBL(CPUDATA_20SEC),
+  DBINFOTBL(TABLE_MEM_USE),
+  DBINFOTBL(TABLE_MAP)
 };
 
 static int no_ndbinfo_tables =

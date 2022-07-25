@@ -1282,6 +1282,7 @@ public:
 protected:
   BlockReference reference() const;
   NodeId         getOwnNodeId() const;
+  NodeId         getOwnNodeGroupId() const;
 
   /**
    * Refresh Watch Dog in initialising code
@@ -2429,6 +2430,12 @@ inline
 NodeId
 SimulatedBlock::getOwnNodeId() const {
   return theNodeId;
+}
+
+inline
+NodeId
+SimulatedBlock::getOwnNodeGroupId() const {
+  return getNodeInfo(theNodeId).m_node_group_id;
 }
 
 inline

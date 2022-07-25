@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1510,7 +1510,6 @@ private:
   void setLcpActiveStatusStart(Signal *);
   void setNodeActiveStatus();
   void setNodeGroups();
-  void setNodeInfo(Signal *);
   void setNodeLcpActiveStatus();
   void setNodeRestartInfoBits(Signal*);
   void startGcp(Signal *);
@@ -2880,6 +2879,8 @@ public:
     return sizeof(struct PageRecord);
   }
   bool is_dynamic_primary_replicas_supported();
+  void set_node_group_id(NodeId nodeId,
+                         NodeId nodeGroupId);
 };
 
 #if (DIH_CDATA_SIZE < _SYSFILE_SIZE32_v2)
