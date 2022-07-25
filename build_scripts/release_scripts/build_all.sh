@@ -5,7 +5,7 @@ set -e
 export SYSBENCH_VERSION="sysbench-0.4.12.17"
 export DBT2_VERSION="dbt2-0.37.50.18"
 export DBT3_VERSION="dbt3-1.10"
-export RDRS_VERSION="0.1.0"
+export RDRS_VERSION="0.1.0-22.10" 
 
 
 if [[ -z "${OPENSSL_ROOT}" ]]; then
