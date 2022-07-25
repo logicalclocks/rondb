@@ -1036,6 +1036,7 @@ desc cpudata;
 desc cpudata_50ms;
 desc cpudata_1sec;
 desc cpudata_20sec;
+desc table_memory_usage;
 
 --disable_result_log
 select * from hwinfo;
@@ -1045,5 +1046,6 @@ select * from cpudata_50ms;
 select * from cpudata_1sec;
 select * from cpudata_20sec;
 select * from logbuffers;
+select * from table_memory_usage;
 --enable_result_log
 #--remove_file $NDB_TOOLS_OUTPUT

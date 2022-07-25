@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -42,7 +43,8 @@ public:
     m_log_parts(0),
     m_type(INVALID),
     m_connectCount(0),
-    m_connected(FALSE)
+    m_connected(FALSE),
+    m_node_group_id(65535)
   {}
 
   /**
@@ -64,6 +66,7 @@ public:
   Uint32 m_type;          ///< Node type
   Uint32 m_connectCount;  ///< No of times connected
   Uint32 m_connected;     ///< Node is connected
+  Uint16 m_node_group_id; ///< Node group id of node
 
   friend NdbOut & operator<<(NdbOut&, const NodeInfo&); 
 };

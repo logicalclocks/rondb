@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -3390,6 +3390,47 @@ Dbtup::get_restore_row_count(Uint32 tableId, Uint32 fragId)
   ptrCheckGuard(tabPtr, cnoOfTablerec, tablerec);
   getFragmentrec(fragPtr, fragId, tabPtr.p);
   return fragPtr.p->m_row_count;
+}
+
+void
+Dbtup::get_frag_memory(Uint32 fragId,
+                       Uint64 & mem_bytes,
+                       Uint64 & free_mem_bytes,
+                       Uint64 & disk_bytes,
+                       Uint64 & free_disk_bytes)
+{
+  Ptr<Fragrecord> fragPtr;
+  jam();
+  ndbrequire(fragId < cnoOfFragrec);
+  fragPtr.i = fragId;
+  ptrAss(fragPtr, fragrecord);
+  TablerecPtr tabPtr;
+  tabPtr.i = fragPtr.p->fragTableId;
+  ptrCheckGuard(tabPtr, cnoOfTablerec, tablerec);
+  const Fragrecord *fragPtrP = fragPtr.p;
+
+  Uint64 page_size = File_formats::NDB_PAGE_SIZE;
+  mem_bytes += Uint64(fragPtrP->noOfPages) * page_size;
+  mem_bytes += Uint64(fragPtrP->noOfVarPages) * page_size;
+  mem_bytes += fragPtrP->m_page_map.getByteSize();
+
+  free_mem_bytes += fragPtrP->m_varWordsFree * sizeof(Uint32);
+
+  if (tabPtr.p->m_no_of_disk_attributes > 0)
+  {
+    jam();
+    const Disk_alloc_info& alloc = fragPtrP->m_disk_alloc_info;
+    Uint64 extent_size = Uint64(alloc.m_extent_size);
+    extent_size *= page_size;
+    Uint64 num_extents;
+    {
+      Disk_alloc_info& tmp = const_cast<Disk_alloc_info&>(alloc);
+      Local_fragment_extent_list list1(c_extent_pool, tmp.m_extent_list);
+      num_extents = list1.getCount();
+    }
+    disk_bytes += (num_extents * extent_size);
+    free_disk_bytes += alloc.m_tot_free_space;
+  }
 }
 
 void

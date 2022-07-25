@@ -106,6 +106,7 @@
 extern EventLogger * g_eventLogger;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_TABLE_LIST 1
 //#define DEBUG_COPY_ACTIVE 1
 //#define DEBUG_LOCAL_LCP 1
 //#define DEBUG_EMPTY_LCP 1
@@ -133,6 +134,12 @@ extern EventLogger * g_eventLogger;
 //#define NDB_DEBUG_REDO_EXEC 1
 //#define NDB_DEBUG_REDO_REC 1
 //#define DEBUG_LOG_QUEUE 1
+#endif
+
+#ifdef DEBUG_TABLE_LIST
+#define DEB_TABLE_LIST(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_TABLE_LIST(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_LOG_QUEUE
@@ -2654,6 +2661,23 @@ Dblqh::execCREATE_TAB_REQ(Signal* signal)
   tabptr.p->m_disk_table= 0;
 
   addfragptr.p->addfragStatus = AddFragRecord::WAIT_TUP;
+  if (tabptr.i == tabptr.p->primaryTableId ||
+      !DictTabInfo::isOrderedIndex(tabptr.p->tableType))
+  {
+    /* Base table created */
+    jam();
+    ndbrequire(!DictTabInfo::isOrderedIndex(tabptr.p->tableType));
+    tabptr.p->m_next_index_table = RNIL;
+  }
+  else
+  {
+    /* Index table created */
+    jam();
+    ndbrequire(!DictTabInfo::isTable(tabptr.p->tableType));
+    ndbrequire(!DictTabInfo::isUniqueIndex(tabptr.p->tableType));
+    add_table_to_index_list(tabptr.p->primaryTableId,
+                            tabptr.i);
+  }
   sendCreateTabReq(signal, addfragptr);
 }
 
@@ -4509,7 +4533,17 @@ Dblqh::dropTable_nextStep(Signal* signal, Ptr<AddFragRecord> addFragPtr)
                DropTabReq::SignalLength, JBB);
     return;
   }
-
+  if (DictTabInfo::isOrderedIndex(tabPtr.p->tableType))
+  {
+    jam();
+    remove_table_from_index_list(tabPtr.p->primaryTableId,
+                                 tabPtr.i);
+  }
+  else
+  {
+    jam();
+    ndbrequire(tabPtr.p->m_next_index_table == RNIL);
+  }
   removeTable(tabPtr.i);
   tabPtr.p->m_addfragptr_i = RNIL;
   tabPtr.p->tableStatus = Tablerec::NOT_DEFINED;
@@ -4542,6 +4576,86 @@ void Dblqh::removeTable(Uint32 tableId)
     }//if
   }//for
 }//Dblqh::removeTable()
+
+void Dblqh::add_table_to_index_list(Uint32 primaryTableId,
+                                    Uint32 indexTableId)
+{
+  TablerecPtr primaryTabPtr;
+  TablerecPtr indexTabPtr;
+  DEB_TABLE_LIST(("(%u) Add index table %u to primary table %u",
+                  instance(),
+                  indexTableId,
+                  primaryTableId));
+  primaryTabPtr.i = primaryTableId;
+  ptrCheckGuard(primaryTabPtr, ctabrecFileSize, tablerec);
+  indexTabPtr.i = indexTableId;
+  ptrCheckGuard(indexTabPtr, ctabrecFileSize, tablerec);
+  Uint32 prev_next_table_index = primaryTabPtr.p->m_next_index_table;
+  primaryTabPtr.p->m_next_index_table = indexTableId;
+  indexTabPtr.p->m_next_index_table = prev_next_table_index;
+  DEB_TABLE_LIST(("(%u) Set next_index_table on P:%u to I:%u, "
+                  " and on index to I:%u",
+                  instance(),
+                  primaryTabPtr.i,
+                  indexTableId,
+                  prev_next_table_index));
+}
+
+void Dblqh::remove_table_from_index_list(Uint32 primaryTableId,
+                                         Uint32 indexTableId)
+{
+  TablerecPtr primaryTabPtr;
+  TablerecPtr indexTabPtr;
+  DEB_TABLE_LIST(("(%u) Remove index table %u from primary table %u",
+                  instance(),
+                  indexTableId,
+                  primaryTableId));
+  primaryTabPtr.i = primaryTableId;
+  ptrCheckGuard(primaryTabPtr, ctabrecFileSize, tablerec);
+  bool found = false;
+  Uint32 prev_index_table = RNIL;
+  Uint32 next_index_table = primaryTabPtr.p->m_next_index_table;
+  while (next_index_table != RNIL)
+  {
+    jam();
+    jamLine(next_index_table);
+    indexTabPtr.i = next_index_table;
+    ptrCheckGuard(indexTabPtr, ctabrecFileSize, tablerec);
+    ndbrequire(DictTabInfo::isOrderedIndex(indexTabPtr.p->tableType));
+    if (next_index_table == indexTableId)
+    {
+      jam();
+      found = true;
+      if (prev_index_table == RNIL)
+      {
+        jam();
+        DEB_TABLE_LIST(("(%u) Set next_index_table on P:%u to I:%u",
+                        instance(),
+                        primaryTabPtr.i,
+                        indexTabPtr.p->m_next_index_table));
+        primaryTabPtr.p->m_next_index_table =
+          indexTabPtr.p->m_next_index_table;
+        indexTabPtr.p->m_next_index_table = RNIL;
+      }
+      else
+      {
+        Uint32 new_next_index_table = indexTabPtr.p->m_next_index_table;
+        indexTabPtr.p->m_next_index_table = RNIL;
+        indexTabPtr.i = prev_index_table;
+        ptrCheckGuard(indexTabPtr, ctabrecFileSize, tablerec);
+        indexTabPtr.p->m_next_index_table = new_next_index_table;
+        DEB_TABLE_LIST(("(%u) Set next_index_table on I:%u to I:%u",
+                        instance(),
+                        indexTabPtr.i,
+                        new_next_index_table));
+      }
+      break;
+    }
+    prev_index_table = next_index_table;
+    next_index_table = indexTabPtr.p->m_next_index_table;
+  }
+  /* Drop table can be called twice on an ordered index. */
+}
 
 /**
  * When adding a set of new columns to a table the row size grows.
@@ -36610,6 +36724,105 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal)
     
     break;
   }
+  case Ndbinfo::TABLE_MEM_USE_TABLEID:
+  {
+    /*
+      Loop over all tables. cursor->data[0] shows where this batch should start.
+     */
+    jam();
+    for (Uint32 tableid = cursor->data[0];
+         tableid < ctabrecFileSize;
+         tableid++)
+    {
+      if (tableid < 4)
+      {
+        /* Ignore SYSTAB_0 and other internal tables */
+        continue;
+      }
+      TablerecPtr tabPtr;
+      tabPtr.i = tableid;
+      ptrAss(tabPtr, tablerec);
+      if ((tabPtr.p->tableStatus == Tablerec::TABLE_DEFINED ||
+           tabPtr.p->tableStatus == Tablerec::TABLE_READ_ONLY) &&
+          (DictTabInfo::isTable(tabPtr.p->tableType) ||
+           DictTabInfo::isHashIndex(tabPtr.p->tableType)))
+      {
+        jamLine(tableid);
+        // Loop over the fragments of this table.
+        for (Uint32 fragNo = 0;
+             fragNo<NDB_ARRAY_SIZE(tabPtr.p->fragrec); 
+             fragNo++)
+        {
+          FragrecordPtr myFragPtr;
+          myFragPtr.i = tabPtr.p->fragrec[fragNo];
+          if (myFragPtr.i != RNIL)
+          {
+            jam();
+            c_fragment_pool.getPtr(myFragPtr);
+            Uint32 fragId = myFragPtr.p->fragId;
+            Uint64 mem_bytes = 0;
+            Uint64 disk_bytes = 0;
+            Uint64 free_mem_bytes = 0;
+            Uint64 free_disk_bytes = 0;
+            c_tup->get_frag_memory(myFragPtr.p->tupFragptr,
+                                   mem_bytes,
+                                   free_mem_bytes,
+                                   disk_bytes,
+                                   free_disk_bytes);
+
+            Uint32 table_id_index = tabPtr.p->m_next_index_table;
+            while (table_id_index != RNIL)
+            {
+              TablerecPtr indexTabPtr;
+              FragrecordPtr indexFragPtr;
+              indexTabPtr.i = table_id_index;
+              ptrCheckGuard(indexTabPtr, ctabrecFileSize, tablerec);
+              indexFragPtr.p = nullptr;
+              if (indexTabPtr.p->tableStatus == Tablerec::TABLE_DEFINED ||
+                  indexTabPtr.p->tableStatus == Tablerec::TABLE_READ_ONLY)
+              {
+                for (Uint32 i = 0; i < NDB_ARRAY_SIZE(tabPtr.p->fragrec); i++)
+                {
+                  if (indexTabPtr.p->fragid[i] == fragId)
+                  {
+                    indexFragPtr.i = indexTabPtr.p->fragrec[i];
+                    c_fragment_pool.getPtr(indexFragPtr);
+                    break;
+                  }
+                }
+                ndbrequire(indexFragPtr.p != nullptr);
+                c_tup->get_frag_memory(indexFragPtr.p->tupFragptr,
+                                       mem_bytes,
+                                       free_mem_bytes,
+                                       disk_bytes,
+                                       free_disk_bytes);
+              }
+              table_id_index = indexTabPtr.p->m_next_index_table;
+            }
+            mem_bytes += c_acc->getL2PMapAllocBytes(myFragPtr.p->accFragptr);
+            mem_bytes += c_acc->getLinHashByteSize(myFragPtr.p->accFragptr);
+
+            Ndbinfo::Row row(signal, req);
+            row.write_uint32(tableid);
+            row.write_uint32(fragId);
+            row.write_uint32(getOwnNodeGroupId());
+            row.write_uint64(mem_bytes);
+            row.write_uint64(free_mem_bytes);
+            row.write_uint64(disk_bytes);
+            row.write_uint64(free_disk_bytes);
+            ndbinfo_send_row(signal, req, row, rl);
+          }
+        }
+      }
+      if (rl.need_break(req))
+      {
+        jam();
+        ndbinfo_send_scan_break(signal, req, rl, tableid + 1);
+        return;
+      }
+    }
+    break;
+  }
   case Ndbinfo::FRAG_MEM_USE_TABLEID:
   {
     /*
@@ -36698,7 +36911,6 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal)
         return;
       }
     }
-    
     break;
   }
   case Ndbinfo::POOLS_TABLEID:

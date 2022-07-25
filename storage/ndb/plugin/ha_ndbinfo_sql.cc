@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2009, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -259,6 +260,74 @@ struct view {
     {"ndbinfo", "cpustat_50ms",
      "SELECT * "
      "FROM `ndbinfo`.`ndb$cpustat_50ms`"},
+    /**
+     * database_memory_usage lists the in-memory usage and
+     * the disk usage by a certain database in RonDB.
+     * This is a new RonDB feature (RONDB-149) providing the
+     * managed RonDB to capability to know which databases that
+     * have used up all its quota.
+     * It is using 2 new base ndbinfo tables:
+     * ndb$table_memory_usage which lists memory usage for all
+     * table fragments in a certain LDM thread. It lists 4 entries,
+     * in-memory usage and disk memory usage and free space of
+     * both.
+     * ndb$table_map which given a table id provides the database
+     * name and table name of the table it is a part.
+     *
+     * There are a number of complications in the execution of these
+     * views.
+     * 1. When creating a table we get the following table types.
+     *    - The actual table consisting of the rows and the hash index
+     *    - Ordered indexes colocated with the actual table
+     *    - Unique indexes stored separate from the actual table
+     *    - BLOB tables stored separate from the actual table.
+     *
+     * 2. We get the memory usage in table fragment replicas so we need
+     *    to remove some rows and only use one row per table fragment.
+     *
+     * 3. Since we get more than one table id per table since not all
+     *    tables are colocated, we need to aggregate information per
+     *    user table.
+     *
+     * 4. We are not interested in internal table names used, we are only
+     *    interested in the table name created by the user and all the
+     *    resources attached to it. This is the reason for adding the new
+     *    ndb$table_map table.
+     *
+     * 5. The execution of this query consumes much resources in large
+     *    clusters with many tables which are particularly common in
+     *    managed RonDB cluster that are completely handled by Hopsworks.
+     *    Thus to make execution a bit more efficient and avoid sending
+     *    too much information over the network, we aggregate the ordered
+     *    index memory usage into the user table already in the execution
+     *    of the ndb$table_memory_usage table.
+     *
+     * 6. The execution of these queries can easily overload the network.
+     *    To avoid this becoming an issue we will only allow executing
+     *    1 instance of the ndb$table_memory_usage at a time and it will
+     *    even be limited in how fast it is allowed to execute.
+     *
+     * Thus the execution of the views in database_memory_usage and
+     * table_memory_usage is a combination of execution in the blocks in
+     * in the RonDB data nodes and even handling load control in the data
+     * nodes.
+     */
+    {"ndbinfo", "database_memory_usage",
+     "SELECT tm.database_name AS database_name,"
+     " SUM(u.in_memory_bytes) AS in_memory_bytes,"
+     " SUM(u.free_in_memory_bytes) AS free_in_memory_bytes,"
+     " SUM(u.disk_memory_bytes) AS disk_memory_bytes,"
+     " SUM(u.free_disk_memory_bytes) AS free_disk_memory_bytes"
+     " FROM"
+     " (SELECT table_id,"
+     " MAX(in_memory_bytes) AS in_memory_bytes,"
+     " MAX(free_in_memory_bytes) AS free_in_memory_bytes,"
+     " MAX(disk_memory_bytes) AS disk_memory_bytes,"
+     " MAX(free_disk_memory_bytes) AS free_disk_memory_bytes"
+     " FROM `ndbinfo`.`ndb$table_memory_usage`"
+     " GROUP BY table_id, fragment_num) AS u"
+     " JOIN `ndbinfo`.`ndb$table_map` AS tm ON tm.table_id = u.table_id"
+     " GROUP BY tm.database_name"},
     {"ndbinfo", "dict_obj_info",
      " SELECT * "
      "FROM `ndbinfo`.`ndb$dict_obj_info`"},
@@ -592,6 +661,23 @@ struct view {
      " END AS partition_balance,"
      " create_gci AS create_gci "
      "FROM `ndbinfo`.`ndb$stored_tables`"},
+      {"ndbinfo", "table_memory_usage",
+     "SELECT tm.database_name AS database_name,"
+     " tm.table_name AS table_name,"
+     " SUM(u.in_memory_bytes) AS in_memory_bytes,"
+     " SUM(u.free_in_memory_bytes) AS free_in_memory_bytes,"
+     " SUM(u.disk_memory_bytes) AS disk_memory_bytes,"
+     " SUM(u.free_disk_memory_bytes) AS free_disk_memory_bytes"
+     " FROM"
+     " (SELECT table_id,"
+     " MAX(in_memory_bytes) AS in_memory_bytes,"
+     " MAX(free_in_memory_bytes) AS free_in_memory_bytes,"
+     " MAX(disk_memory_bytes) AS disk_memory_bytes,"
+     " MAX(free_disk_memory_bytes) AS free_disk_memory_bytes"
+     " FROM `ndbinfo`.`ndb$table_memory_usage`"
+     " GROUP BY table_id, fragment_num) AS u"
+     " JOIN `ndbinfo`.`ndb$table_map` AS tm ON tm.table_id = u.table_id"
+     " GROUP BY tm.database_name, tm.table_name"},
     {"ndbinfo", "table_replicas",
      "SELECT * "
      "FROM `ndbinfo`.`ndb$table_replicas`"},
