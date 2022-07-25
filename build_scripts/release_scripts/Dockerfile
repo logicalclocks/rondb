@@ -4,7 +4,7 @@
 FROM oraclelinux:7-slim
 
 ARG cmake_version=3.23.2
-ARG boost_version=1.73.0
+ARG boost_version=1.77.0
 ARG lib_ssl_version=1.1.1o
 ARG user=mysql
 ARG userid=1000
