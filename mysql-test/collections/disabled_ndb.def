@@ -28,7 +28,6 @@ ndb.ndb_insert            : BUG#16021097 INSERT .. SELECT WITH KEY VIOLATION DOE
 ndb.ndb_row_count         : BUG#16021097 INSERT .. SELECT WITH KEY VIOLATION DOES NOT FAIL
 ndb.ndb_parallel_undo_log : BUG#28794807 FIX NDB.NDB_PARALLEL_UNDO_LOG TESTCASE FAILURE
 ndb.ndb_read_balance      : WL#12345678 Unstable results
-ndb.ndb_no_deprecated_config : WL#12345678 TransactionMemory not calculated by default any more
 ndb.ndb_basic_3rpl_2ng    : WL#12345678 Only intended for start-and-exit
 
 # Failure to acquire MDL lock properly during drop database with uppercase

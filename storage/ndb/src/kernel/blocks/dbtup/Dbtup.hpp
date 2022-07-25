@@ -2309,6 +2309,11 @@ public:
   };
 
   const FragStats get_frag_stats(Uint64 fragPtrI) const;
+  void get_frag_memory(Uint64 fragPtrI,
+                       Uint64 & mem_bytes,
+                       Uint64 & free_mem_bytes,
+                       Uint64 & disk_bytes,
+                       Uint64 & free_disk_bytes);
 
 private:
   BLOCK_DEFINES(Dbtup);
