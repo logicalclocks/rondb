@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -10103,12 +10103,17 @@ runBug13416603(NDBT_Context* ctx, NDBT_Step* step)
     ndbout_c("%u - poll_listener", __LINE__);
     chk2((ret = is.poll_listener(pNdb, 10000)) != -1, is.getNdbError());
     chk1(ret == 1);
-    // one event is expected
+    // At least one event is expected from the above update_stat()
     ndbout_c("%u - next_listener", __LINE__);
     chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
     chk1(ret == 1);
-    ndbout_c("%u - next_listener", __LINE__);
-    chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
+    // Clear event queue as there may be additional events created by auto
+    // updates
+    while (ret == 1)
+    {
+      ndbout_c("%u - next_listener", __LINE__);
+      chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
+    }
     chk1(ret == 0);
   }
 
@@ -10137,17 +10142,16 @@ runBug13416603(NDBT_Context* ctx, NDBT_Step* step)
         ndbout_c("%u - poll_listener", __LINE__);
         chk2((ret = is.poll_listener(pNdb, 10000)) != -1, is.getNdbError());
         chk1(ret == 1);
-        // one event is expected
+        // At least one event is expected from the above update_stat()
         ndbout_c("%u - next_listener", __LINE__);
         chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
         chk1(ret == 1);
-        ndbout_c("%u - next_listener", __LINE__);
-        chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
-        if (ret != 0)
+        // Clear event queue as there may be additional events created by auto
+        // updates
+        while (ret == 1)
         {
-          
-          ndbout_c("Error = -1, or = 1 if events still exist: from"
-                   " next_listener: %u", ret);
+          ndbout_c("%u - next_listener", __LINE__);
+          chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
         }
         chk1(ret == 0);
       }
@@ -10174,13 +10178,17 @@ runBug13416603(NDBT_Context* ctx, NDBT_Step* step)
       ndbout << is.getNdbError() << endl;
       ndbout_c("%u - poll_listener", __LINE__);
       chk2((ret = is.poll_listener(pNdb, 10000)) != -1, is.getNdbError());
-      if (ret == 1)
+      // Clear event queue
+      while (ret == 1)
       {
         /* After the new api is introduced, pollEvents() (old api version)
          * returns 1 when empty epoch is at the head of the event queue.
          * pollEvents2() (new api version) returns 1 when exceptional
          * epoch is at the head of the event queue.
          * So next_listener() must be called to handle them.
+         *
+         * In addition, there may be more events queued due to index
+         * stats auto updates.
          */
         chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
       }

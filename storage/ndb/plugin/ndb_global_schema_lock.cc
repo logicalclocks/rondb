@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2011, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2011, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -34,6 +34,7 @@
 #include "sql/sql_class.h"
 #include "sql/sql_thd_internal_api.h"  // thd_query_unsafe
 #include "storage/ndb/include/ndbapi/NdbApi.hpp"
+#include "storage/ndb/plugin/ndb_ndbapi_errors.h"
 #include "storage/ndb/plugin/ndb_sleep.h"
 #include "storage/ndb/plugin/ndb_table_guard.h"
 
@@ -399,7 +400,7 @@ static int ndbcluster_global_schema_lock(THD *thd,
   // Else, didn't get GSL: Deadlock or failure from NDB
 
   /**
-   * If GSL request failed due to no cluster connection (4009),
+   * If GSL request failed due to cluster failue,
    * we consider the lock granted, else GSL request failed.
    */
   if (!is_cluster_failure_code(ndb_error.code))  // No cluster connection
@@ -441,9 +442,9 @@ static int ndbcluster_global_schema_unlock(THD *thd, bool record_gsl) {
   if (!is_cluster_failure_code(thd_ndb->global_schema_lock_error) &&
       thd_ndb->global_schema_lock_count == 0) {
     // Special case to handle unlock after failure to acquire GSL due to
-    // any error other than 4009.
-    // - when error 4009 occurs the lock is granted anyway and the lock count is
-    // not reset, thus unlock() should be called.
+    // any error other than cluster failure.
+    // - when cluster failure occurs the lock is granted anyway and the lock
+    //   count is not reset, thus unlock() should be called.
     // - for other errors the lock is not granted, lock count is reset and
     // the exact same error code is returned. Thus it's impossible to know
     // that there is actually no need to call unlock. Fix by allowing unlock

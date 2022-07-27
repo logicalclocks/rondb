@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -432,10 +432,13 @@ struct Fragmentrec {
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
 //-----------------------------------------------------------------------------
-// List of lock owners currently used only for self-check
+// Number of locks held on fragment, only for self-check
 //-----------------------------------------------------------------------------
   Uint32 lockOwnersList[NUM_ACC_FRAGMENT_MUTEXES];
 #endif
+
+  Uint32 lockCount;
+
 //-----------------------------------------------------------------------------
 // References to Directory Ranges (which in turn references directories, which
 // in its turn references the pages) for the bucket pages and the overflow
@@ -1142,6 +1145,7 @@ private:
   void insertLockOwnersList(OperationrecPtr&);
   void takeOutLockOwnersList(OperationrecPtr&);
 #endif
+
   void initFsOpRec(Signal* signal) const;
   void initOverpage(Page8Ptr);
   void initPage(Page8Ptr, Uint32);

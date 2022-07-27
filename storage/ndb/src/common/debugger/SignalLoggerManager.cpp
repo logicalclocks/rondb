@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,7 +32,6 @@
 #include <NdbTick.h>
 #include <NdbEnv.h>
 #include <EventLogger.hpp>
-#include <Prio.hpp>
 
 #ifdef VM_TRACE_TIME
 static char* mytime()
@@ -605,7 +604,7 @@ SignalLoggerManager::printSignalHeader(FILE * output,
     fprintf(output, ", s.threadId: %u, s.threadSigId: H\'%.8x",
             send_thread_id, send_thread_signal_id);
   fprintf(output, "\nprio: %s, length: %d, trace: %d, #sec: %d, fragInfo: %d\n",
-          prio == JBB ? "JBB" : "JBA", length, trace, sh.m_noOfSections,
+          prio == 1 ? "JBB" : "JBA", length, trace, sh.m_noOfSections,
           sh.m_fragmentInfo);
 
   //assert(strcmp(rBlockName, dummy_block_name) != 0);
@@ -633,11 +632,10 @@ SignalLoggerManager::printSignalData(FILE * output,
   }
 }
 
-void
-SignalLoggerManager::printLinearSection(FILE * output,
-                                        const SignalHeader & sh,
-                                        const LinearSectionPtr ptr[3],
-                                        unsigned i)
+void SignalLoggerManager::printLinearSection(FILE* output,
+                                             const SignalHeader& /*sh*/,
+                                             const LinearSectionPtr ptr[3],
+                                             unsigned i)
 {
   fprintf(output, "SECTION %u type=linear", i);
   if (i >= 3) {
@@ -655,11 +653,10 @@ SignalLoggerManager::printLinearSection(FILE * output,
     putc('\n', output);
 }
 
-void
-SignalLoggerManager::printGenericSection(FILE * output,
-                                         const SignalHeader & sh,
-                                         const GenericSectionPtr ptr[3],
-                                         unsigned i)
+void SignalLoggerManager::printGenericSection(FILE* output,
+                                              const SignalHeader& /*sh*/,
+                                              const GenericSectionPtr ptr[3],
+                                              unsigned i)
 {
   fprintf(output, "SECTION %u type=generic", i);
   if (i >= 3) {

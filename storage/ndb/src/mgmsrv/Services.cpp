@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -666,25 +666,25 @@ MgmApiSession::getConfig(Parser_t::Context &,
     m_output->print("\n");
     return;
   }
+  const size_t len = pack64.length();
+  assert(strlen(pack64.c_str()) == len);
 
   m_output->println("result: Ok");
-  m_output->println("Content-Length: %u", pack64.length());
+  m_output->println("Content-Length: %zu", len);
   m_output->println("Content-Type: ndbconfig/octet-stream");
   SLEEP_ERROR_INSERTED(2);
   m_output->println("Content-Transfer-Encoding: base64");
   m_output->print("\n");
 
-  unsigned len = (unsigned)strlen(pack64.c_str());
   if(ERROR_INSERTED(3))
   {
     // Return only half the packed config
-    BaseString half64 = pack64.substr(0, pack64.length());
-    m_output->write(half64.c_str(), (unsigned)strlen(half64.c_str()));
+    m_output->write(pack64.c_str(), len / 2);
     m_output->write("\n", 1);
     return;
   }
   m_output->write(pack64.c_str(), len);
-  m_output->write("\n\n", 2);
+  m_output->write("\n", 1);
   return;
 }
 
@@ -1018,21 +1018,23 @@ MgmApiSession::restart(Properties const &args, int version) {
     nostart = 0,
     initialstart = 0,
     abort = 0, force = 0;
-  char *nodes_str;
+  const char *nodes_str;
   Vector<NodeId> nodes;
     
   args.get("initialstart", &initialstart);
   args.get("nostart", &nostart);
   args.get("abort", &abort);
-  args.get("node", (const char **)&nodes_str);
+  args.get("node", &nodes_str);
   args.get("force", &force);
 
   char *p, *last;
-  for((p = my_strtok_r(nodes_str, " ", &last));
-      p;
-      (p = my_strtok_r(NULL, " ", &last))) {
+  char *nodes_tmpstr = strdup(nodes_str);
+  for ((p = my_strtok_r(nodes_tmpstr, " ", &last)); p;
+       (p = my_strtok_r(nullptr, " ", &last)))
+  {
     nodes.push_back(atoi(p));
   }
+  free(nodes_tmpstr);
 
   int restarted = 0;
   int result= m_mgmsrv.restartNodes(nodes,
@@ -1253,10 +1255,10 @@ MgmApiSession::stop_v2(Parser<MgmApiSession>::Context &,
 void
 MgmApiSession::stop(Properties const &args, int version) {
   Uint32 abort, force = 0;
-  char *nodes_str;
+  const char *nodes_str;
   Vector<NodeId> nodes;
 
-  args.get("node", (const char **)&nodes_str);
+  args.get("node", &nodes_str);
   if(nodes_str == NULL)
   {
     m_output->println("stop reply");
@@ -1268,11 +1270,13 @@ MgmApiSession::stop(Properties const &args, int version) {
   args.get("force", &force);
 
   char *p, *last;
-  for((p = my_strtok_r(nodes_str, " ", &last));
-      p;
-      (p = my_strtok_r(NULL, " ", &last))) {
+  char *nodes_tmpstr = strdup(nodes_str);
+  for ((p = my_strtok_r(nodes_tmpstr, " ", &last)); p;
+       (p = my_strtok_r(nullptr, " ", &last)))
+  {
     nodes.push_back(atoi(p));
   }
+  free(nodes_tmpstr);
 
   int stopped= 0;
   int result= 0;
@@ -2340,11 +2344,15 @@ void MgmApiSession::setConfig(Parser_t::Context &ctx,
       }
       start += r;
     } while(start < len64);
-
+    if (buf64[len64 - 1] != '\n')
+    {
+      delete[] buf64;
+      result.assfmt("Failed to read config");
+      goto done;
+    }
     char* decoded = new char[base64_needed_decoded_length((size_t)len64 - 1)];
     int decoded_len= ndb_base64_decode(buf64, len64-1, decoded, NULL);
     delete[] buf64;
-
     if (decoded_len == -1)
     {
       result.assfmt("Failed to decode config");

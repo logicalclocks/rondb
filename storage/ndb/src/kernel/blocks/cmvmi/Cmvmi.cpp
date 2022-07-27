@@ -3327,9 +3327,10 @@ Cmvmi::execTESTSIG(Signal* signal){
     for(i = 0; i<secs; i++){
       SegmentedSectionPtr sptr(0,0,0);
       ndbrequire(handle.getSection(sptr, i));
+      Uint32* p = new Uint32[sptr.sz];
+      copy(p, sptr);
+      ptr[i].p = p;
       ptr[i].sz = sptr.sz;
-      ptr[i].p = new Uint32[sptr.sz];
-      copy(ptr[i].p, sptr);
     }
     
     if(testType == 3){
@@ -3386,9 +3387,10 @@ Cmvmi::execTESTSIG(Signal* signal){
     for(i = 0; i<secs; i++){
       SegmentedSectionPtr sptr(0,0,0);
       ndbrequire(handle.getSection(sptr, i));
+      Uint32* p = new Uint32[sptr.sz];
+      copy(p, sptr);
+      ptr[i].p = p;
       ptr[i].sz = sptr.sz;
-      ptr[i].p = new Uint32[sptr.sz];
-      copy(ptr[i].p, sptr);
     }
 
     NodeReceiverGroup tmp;
@@ -3461,9 +3463,10 @@ Cmvmi::execTESTSIG(Signal* signal){
     for(i = 0; i<secs; i++){
       SegmentedSectionPtr sptr(0,0,0);
       ndbrequire(handle.getSection(sptr, i));
+      Uint32* p = new Uint32[sptr.sz];
+      copy(p, sptr);
+      g_test[i].p = p;
       g_test[i].sz = sptr.sz;
-      g_test[i].p = new Uint32[sptr.sz];
-      copy(g_test[i].p, sptr);
     }
     
     releaseSections(handle);

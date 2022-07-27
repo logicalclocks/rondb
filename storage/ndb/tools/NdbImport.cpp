@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2017, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2017, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -112,6 +112,7 @@ NdbImport::Opt::Opt()
   m_checkloop = 1;
   m_alloc_chunk = 20;
   m_rejects = 0;
+  m_missing_ai_col = false;
   // character set
   m_charset_name = "binary";
   m_charset = 0;

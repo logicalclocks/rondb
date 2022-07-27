@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -396,7 +396,8 @@ void CPCDAPISession::listProcesses(Parser_t::Context & /* unused */,
 }
 
 void CPCDAPISession::showVersion(Parser_t::Context & /* unused */,
-                                 const class Properties &args) {
+                                 const class Properties & /*args*/)
+{
   CPCD::RequestStatus rs;
 
   m_output->println("show version");

@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2004, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2004, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,7 +27,6 @@
 #include <ndb_global.h>
 #include <ndberror.h>
 
-#include "../mgmsrv/ndb_mgmd_error.h"
 #include "NdbQueryBuilderImpl.hpp"
 #include "m_string.h"
 #include "my_base.h"
@@ -352,8 +351,6 @@ ErrorBundle ErrorCodes[] = {
   { 296,  HA_ERR_LOCK_WAIT_TIMEOUT, TO, "Time-out in NDB, probably caused by deadlock" }, /* Scan trans timeout */
   { 297,  HA_ERR_LOCK_WAIT_TIMEOUT, TO, "Time-out in NDB, probably caused by deadlock" }, /* Scan trans timeout, temporary!! */
   { 237,  HA_ERR_LOCK_WAIT_TIMEOUT, TO, "Transaction had timed out when trying to commit it" },
-  { 5024, DMEC, TO, "Time-out due to node shutdown not starting in time" },
-  { 5025, DMEC, TO, "Time-out due to node shutdown not completing in time" },
   { 635,  HA_ERR_LOCK_WAIT_TIMEOUT, TO, "Lock already taken, not waiting" }, // HA_ERR_NO_WAIT_LOCK
   
   /**
@@ -835,6 +832,7 @@ ErrorBundle ErrorCodes[] = {
   { 4556, DMEC, AE, "RecordSpecification has illegal value in column_flags" },
   { 4557, DMEC, AE, "Column types must be identical when comparing two columns" },
   { 4558, DMEC, AE, "Pending Blob operations must be executed before this call" },
+  { 4559, DMEC, AE, "Failed to transfer KeyInfo to AttrInfo for InterpretedWrite" },
 
   { 4200, DMEC, AE, "Status Error when defining an operation" },
   { 4201, DMEC, AE, "Variable Arrays not yet supported" },
@@ -997,42 +995,49 @@ ErrorBundle ErrorCodes[] = {
   { QRY_NEST_NOT_SUPPORTED, DMEC, AE,
     "FirstInner/Upper has to be an ancestor or a sibling" },
 
-  { FAILED_ACTIVATE_REQUEST, DMEC, AE,
-    "Data nodes failed Activate Request"},
-  { FAILED_DEACTIVATE_REQUEST, DMEC, AE,
-    "Data nodes failed Deactivate Request"},
-  { NODE_CURRENTLY_DEACTIVATED, DMEC, AE,
-    "Alloc node id failed since node is deactivated"},
-  { INCORRECT_MGM_COMMAND, DMEC, AE,
-    "MGM Server received incorrect command from client"},
-  { FAILED_SET_HOSTNAME_REQUEST, DMEC, AE,
-    "Data nodes failed to set new hostname"},
-  { NO_CONTACT_WITH_PROCESS, DMEC, AE,
+  /*
+   * Management server error codes
+   */
+  { 5000 /* NO_CONTACT_WITH_PROCESS */, DMEC, AE,
     "No contact with the process (dead ?)."},
-  { WRONG_PROCESS_TYPE, DMEC, AE,
+  { 5002 /* WRONG_PROCESS_TYPE */, DMEC, AE,
    "The process has wrong type. Expected a DB process."},
-  { SEND_OR_RECEIVE_FAILED, DMEC, AE,
+  { 5005 /* SEND_OR_RECEIVE_FAILED */, DMEC, AE,
     "Send to process or receive failed."},
-  { INVALID_ERROR_NUMBER, DMEC, AE,
+  { 5007 /* INVALID_ERROR_NUMBER */, DMEC, AE,
     "Invalid error number. Should be >= 0."},
-  { INVALID_TRACE_NUMBER, DMEC, AE,
+  { 5008 /* INVALID_TRACE_NUMBER */, DMEC, AE,
     "Invalid trace number."},
-  { INVALID_BLOCK_NAME, DMEC, AE,
+  { 5010 /* INVALID_BLOCK_NAME */, DMEC, AE,
     "Invalid block name"},
-  { NODE_SHUTDOWN_IN_PROGESS, DMEC, AE,
+  { 5024 /* WAIT_FOR_NDBD_SHUTDOWN_FAILED */, DMEC, TO,
+    "Time-out due to node shutdown not starting in time" },
+  { 5025 /* WAIT_FOR_NDBD_SHUTDOWN_FAILED */, DMEC, TO,
+    "Time-out due to node shutdown not completing in time" },
+  { 5026 /* NODE_SHUTDOWN_IN_PROGESS */, DMEC, AE,
     "Node shutdown in progress" },
-  { SYSTEM_SHUTDOWN_IN_PROGRESS, DMEC, AE,
+  { 5027 /* SYSTEM_SHUTDOWN_IN_PROGRESS */, DMEC, AE,
     "System shutdown in progress" },
-  { NODE_SHUTDOWN_WOULD_CAUSE_SYSTEM_CRASH, DMEC, AE,
+  { 5028 /* NODE_SHUTDOWN_WOULD_CAUSE_SYSTEM_CRASH */, DMEC, AE,
    "Node shutdown would cause system crash" },
-  { UNSUPPORTED_NODE_SHUTDOWN, DMEC, AE,
+  { 5030 /* NO_CONTACT_WITH_DB_NODES */, DMEC, AE,
+    "No contact with database nodes" },
+  { 5031 /* UNSUPPORTED_NODE_SHUTDOWN */, DMEC, AE,
    "Unsupported multi node shutdown. Abort option required." },
-  { NODE_NOT_API_NODE, DMEC, AE,
+  { 5062 /* NODE_NOT_API_NODE */, DMEC, AE,
     "The specified node is not an API node." },
-  { OPERATION_NOT_ALLOWED_START_STOP, DMEC, AE,
+  { 5063 /* OPERATION_NOT_ALLOWED_START_STOP */, DMEC, AE,
    "Operation not allowed while nodes are starting or stopping."},
-  { NO_CONTACT_WITH_DB_NODES, DMEC, AE,
-    "No contact with database nodes" }
+  { 5064 /* FAILED_ACTIVATE_REQUEST */, DMEC, AE,
+    "Data nodes failed Activate Request"},
+  { 5065 /* NODE_CURRENTLY_DEACTIVATED */, DMEC, AE,
+    "Alloc node id failed since node is deactivated"},
+  { 5066 /* INCORRECT_MGM_COMMAND */, DMEC, AE,
+    "MGM Server received incorrect command from client"},
+  { 5067 /* FAILED_SET_HOSTNAME_REQUEST */, DMEC, AE,
+    "Data nodes failed to set new hostname"},
+  { 5068 /* FAILED_DEACTIVATE_REQUEST */, DMEC, AE,
+    "Data nodes failed Deactivate Request"}
 };
 
 static

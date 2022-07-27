@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,15 +23,15 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
-
 #include <signaldata/TcKeyReq.hpp>
 
-bool
-printTCKEYREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
-  
-  const TcKeyReq * const sig = (TcKeyReq *) theData;
-  
+bool printTCKEYREQ(FILE *output,
+                   const Uint32 *theData,
+                   Uint32 len,
+                   Uint16 /*receiverBlockNo*/)
+{
+  const TcKeyReq *const sig = (const TcKeyReq *)theData;
+
   UintR requestInfo = sig->requestInfo;
 
   fprintf(output, " apiConnectPtr: H\'%.8x, apiOperationPtr: H\'%.8x\n", 
@@ -127,4 +127,3 @@ printTCKEYREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiver
   }
   return true;
 }
-

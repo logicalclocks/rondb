@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1854,8 +1854,7 @@ CommandInterpreter::executeHelp(char* parameters)
  * SHUTDOWN
  *****************************************************************************/
 
-int
-CommandInterpreter::executeShutdown(char* parameters) 
+int CommandInterpreter::executeShutdown(char* /*parameters*/)
 { 
   ndb_mgm_cluster_state *state = ndb_mgm_get_status(m_mgmsrv);
   if(state == NULL) {
@@ -2439,8 +2438,7 @@ CommandInterpreter::executeEnterSingleUser(char* parameters)
   return 0;
 }
 
-int
-CommandInterpreter::executeExitSingleUser(char* parameters) 
+int CommandInterpreter::executeExitSingleUser(char* /*parameters*/)
 {
   int result = ndb_mgm_exit_single_user(m_mgmsrv, 0);
   if (result != 0) {
@@ -2667,7 +2665,7 @@ CommandInterpreter::executeHostname(int processId,
 
 int
 CommandInterpreter::executeActivate(int processId,
-                                    const char* parameters,
+                                    const char* /*parameters*/,
 				    bool all) 
 {
   if (all)
@@ -2853,7 +2851,7 @@ CommandInterpreter::stop_node(int processId)
 
 int
 CommandInterpreter::executeDeactivate(int processId,
-                                      const char* parameters,
+                                      const char* /*parameters*/,
                                       bool all) 
 {
   if (all)
@@ -3020,9 +3018,8 @@ CommandInterpreter::executeDeactivate(int processId,
   return 0;
 }
 
-int
-CommandInterpreter::executeStart(int processId, const char* parameters,
-				 bool all) 
+int CommandInterpreter::executeStart(int processId, const char* /*parameters*/,
+                                     bool all)
 {
   int result;
   int retval = 0;
@@ -3048,10 +3045,9 @@ CommandInterpreter::executeStart(int processId, const char* parameters,
   return retval;
 }
 
-int
-CommandInterpreter::executeStart(Vector<BaseString> &command_list,
-                                 unsigned command_pos,
-                                 int *node_ids, int no_of_nodes)
+int CommandInterpreter::executeStart(Vector<BaseString>& /*command_list*/,
+                                     unsigned /*command_pos*/, int* node_ids,
+                                     int no_of_nodes)
 {
   int result;
   result= ndb_mgm_start(m_mgmsrv, no_of_nodes, node_ids);
@@ -3306,9 +3302,8 @@ CommandInterpreter::executeStatus(int processId,
   return 0;
 } //
 
-int
-CommandInterpreter::executeDumpState(int processId, const char* parameters,
-				     bool all) 
+int CommandInterpreter::executeDumpState(int processId, const char* parameters,
+                                         bool /*all*/)
 {
   if(emptyString(parameters))
   {
@@ -3574,11 +3569,9 @@ helpTextReportTypeOptionFn()
 //*****************************************************************************
 //*****************************************************************************
 
-int
-CommandInterpreter::executeLogLevel(int processId, const char* parameters, 
-				    bool all) 
+int CommandInterpreter::executeLogLevel(int processId, const char* parameters,
+                                        bool /*all*/)
 {
-  (void) all;
   if (emptyString(parameters)) {
     ndbout << "Expected argument" << endl;
     return -1;
@@ -3660,9 +3653,8 @@ int CommandInterpreter::executeError(int processId,
 //*****************************************************************************
 //*****************************************************************************
 
-int
-CommandInterpreter::executeLog(int processId,
-			       const char* parameters, bool all) 
+int CommandInterpreter::executeLog(int processId, const char* parameters,
+                                   bool /*all*/)
 {
   struct ndb_mgm_reply reply;
   Vector<BaseString> blocks;
@@ -3732,10 +3724,8 @@ CommandInterpreter::executeTestOff(int processId,
 //*****************************************************************************
 //*****************************************************************************
 
-int
-CommandInterpreter::executeNodeLog(int processId,
-                                   const char* parameters, 
-                                   bool all)
+int CommandInterpreter::executeNodeLog(int processId, const char* parameters,
+                                       bool /*all*/)
 {
   Vector<BaseString> command_list;
   if (parameters)
@@ -3786,10 +3776,9 @@ CommandInterpreter::executeNodeLog(int processId,
 //*****************************************************************************
 //*****************************************************************************
 
-int
-CommandInterpreter::executeEventReporting(int processId,
-					  const char* parameters, 
-					  bool all) 
+int CommandInterpreter::executeEventReporting(int processId,
+                                              const char* parameters,
+                                              bool /*all*/)
 {
   int retval = 0;
   if (emptyString(parameters)) {

@@ -99,6 +99,7 @@
 
 #include "../suma/Suma.hpp"
 #include "DblqhCommon.hpp"
+#include "portlib/mt-asm.h"
 
 /**
  * overload handling...
@@ -2309,23 +2310,22 @@ void Dblqh::execREAD_CONFIG_REQ(Signal* signal)
   /**
    * Always set page size in half MBytes
    */
-  Uint64 logPageFileSize= (log_page_size / sizeof(LogPageRecord));
-  clogPageFileSize = Uint32(logPageFileSize);
-
-  Uint32 mega_byte_part= clogPageFileSize & 15;
-  if (mega_byte_part != 0) {
+  Uint64 logPageFileSize = (log_page_size / sizeof(LogPageRecord));
+  Uint32 mega_byte_part = logPageFileSize & 15;
+  if (mega_byte_part != 0)
+  {
     jam();
-    clogPageFileSize+= (16 - mega_byte_part);
+    logPageFileSize += (16 - mega_byte_part);
   }
   /**
    * We use one REDO log buffer per log part, thus LDM instances
    * with no REDO log part need no buffer and instances with
    * multiple log parts need more REDO buffer.
    */
-  clogPageFileSize *= clogPartFileSize;
+  logPageFileSize *= clogPartFileSize;
 
   /* maximum number of log file operations */
-  clfoFileSize = clogPageFileSize;
+  clfoFileSize = logPageFileSize;
   if (clfoFileSize < ZLFO_MIN_FILE_SIZE &&
       clfoFileSize != 0)
   {
@@ -2339,7 +2339,7 @@ void Dblqh::execREAD_CONFIG_REQ(Signal* signal)
   if (m_is_query_block)
   {
     clfoFileSize = 0;
-    clogPageFileSize = 0;
+    logPageFileSize = 0;
     clogFileFileSize = 0;
   }
 
@@ -2504,8 +2504,8 @@ void Dblqh::execREAD_CONFIG_REQ(Signal* signal)
 
   ndb_mgm_get_int_parameter(p, CFG_DB_TRANSACTION_DEADLOCK_TIMEOUT, 
                             &cTransactionDeadlockDetectionTimeout);
-  
-  initRecords(p);
+
+  initRecords(p, logPageFileSize);
   initialiseRecordsLab(signal, 0, ref, senderData);
 
   c_max_redo_lag = 30;
@@ -20946,8 +20946,9 @@ Dblqh::send_prepare_copy_frag_conf(Signal *signal,
 void Dblqh::execCOPY_FRAGREQ(Signal* signal) 
 {
   jamEntry();
-  const CopyFragReq copy = *(CopyFragReq *)&signal->theData[0];
-  const CopyFragReq* copyFragReq = &copy;
+  ndbrequire(signal->getLength() >= CopyFragReq::SignalLength);
+  const CopyFragReq * const copyFragReq = (CopyFragReq *)&signal->theData[0];
+
   tabptr.i = copyFragReq->tableId;
   ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
   const Uint32 fragId = copyFragReq->fragId;
@@ -20955,26 +20956,25 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
   const Uint32 userRef = copyFragReq->userRef;
   const Uint32 nodeId = copyFragReq->nodeId;
   const Uint32 gci = copyFragReq->gci;
-  
+  const Uint32 schemaVersion = copyFragReq->schemaVersion;
+  const Uint32 distributionKey = copyFragReq->distributionKey;
+  const Uint32 tableId = copyFragReq->tableId;
+
   ndbrequire(cnoActiveCopy < 3);
   ndbrequire(getFragmentrec(fragId));
   ndbrequire(cfirstfreeTcConrec != RNIL);
 
   Uint32 nodeCount = copyFragReq->nodeCount;
+  ndbrequire(signal->getLength() >= CopyFragReq::SignalLength + nodeCount)
+
   NdbNodeBitmask nodemask;
   {
     ndbrequire(nodeCount <= MAX_REPLICAS);
     for (Uint32 i = 0; i < nodeCount; i++)
       nodemask.set(copyFragReq->nodeList[i]);
   }
-  Uint32 maxPage = copyFragReq->nodeList[nodeCount];
-  Uint32 requestInfo = copyFragReq->nodeList[nodeCount + 1];
-
-  if (signal->getLength() < CopyFragReq::SignalLength + nodeCount)
-  {
-    jam();
-    requestInfo = CopyFragReq::CFR_TRANSACTIONAL;
-  }
+  const Uint32 maxPage = copyFragReq->nodeList[nodeCount];
+  const Uint32 requestInfo = copyFragReq->nodeList[nodeCount + 1];
 
   if (requestInfo == CopyFragReq::CFR_NON_TRANSACTIONAL)
   {
@@ -20982,7 +20982,7 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
   }
   else
   {
-    fragptr.p->fragDistributionKey = copyFragReq->distributionKey;
+    fragptr.p->fragDistributionKey = distributionKey;
   }
   Uint32 key = fragptr.p->fragDistributionKey;
 
@@ -21025,7 +21025,7 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
                  UpdateFragDistKeyOrd::SignalLength, JBB);
     }
   }
-  if (c_copy_fragment_ongoing && copyFragReq->nodeCount > 0)
+  if (c_copy_fragment_ongoing && nodeCount > 0)
   {
     jam();
     /**
@@ -21039,13 +21039,17 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
      */
     CopyFragRecordPtr copy_fragptr;
     ndbrequire(c_copy_fragment_pool.seize(copy_fragptr));
-    copy_fragptr.p->m_copy_fragreq = *copyFragReq;
-    Uint32 nodeCount = copyFragReq->nodeCount;
+    copy_fragptr.p->m_copy_fragreq.userPtr = copyPtr;
+    copy_fragptr.p->m_copy_fragreq.userRef = userRef;
+    copy_fragptr.p->m_copy_fragreq.tableId = tableId;
+    copy_fragptr.p->m_copy_fragreq.fragId = fragId;
+    copy_fragptr.p->m_copy_fragreq.nodeId = nodeId;
+    copy_fragptr.p->m_copy_fragreq.schemaVersion = schemaVersion;
+    copy_fragptr.p->m_copy_fragreq.distributionKey = distributionKey;
+    copy_fragptr.p->m_copy_fragreq.gci = gci;
     copy_fragptr.p->m_copy_fragreq.nodeCount = 0;
-    copy_fragptr.p->m_copy_fragreq.nodeList[0] =
-      copy_fragptr.p->m_copy_fragreq.nodeList[nodeCount];
-    copy_fragptr.p->m_copy_fragreq.nodeList[1] =
-      copy_fragptr.p->m_copy_fragreq.nodeList[nodeCount + 1];
+    copy_fragptr.p->m_copy_fragreq.nodeList[0] = maxPage;
+    copy_fragptr.p->m_copy_fragreq.nodeList[1] = requestInfo;
     c_copy_fragment_queue.addLast(copy_fragptr);
     return;
   }
@@ -21097,9 +21101,8 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
    */
   //initCopyrec(signal);
   {
-    const Uint64 fragPtrI = fragptr.i;
     const Uint32 tcPtrI = tcConnectptr.i;
-    const Uint32 schemaVersion = copyFragReq->schemaVersion;
+    const Uint64 fragPtrI = fragptr.i;
     const BlockReference myRef = reference();
     const BlockReference tupRef = ctupBlockref;
 
@@ -37110,10 +37113,11 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
     for (logPartPtr.i = 0; logPartPtr.i < clogPartFileSize; logPartPtr.i++)
     {
       ptrAss(logPartPtr, logPartRecord);
-      infoEvent("LQH: REDO Log pages, part %u : %d Free: %d",
+      infoEvent("LQH: REDO Log pages, part %u : Free: %u of %u, range size %u",
                 logPartPtr.p->logPartNo,
-	        clogPageFileSize / clogPartFileSize,
-	        logPartPtr.p->noOfFreeLogPages);
+                logPartPtr.p->noOfFreeLogPages,
+                logPartPtr.p->logPageCount,
+                logPartPtr.p->logPageFileSize);
     }
   }
 

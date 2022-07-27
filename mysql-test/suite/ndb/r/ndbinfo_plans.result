@@ -68,7 +68,7 @@ ndb$config_params	176	120
 ndb$config_values	344	24
 ndb$counters	200	24
 ndb$dblqh_tcconnect_state	19	52
-ndb$dbtc_apiconnect_state	25	52
+ndb$dbtc_apiconnect_state	26	52
 ndb$dict_obj_info	100	40
 ndb$dict_obj_types	20	20
 ndb$disk_write_speed_aggregate	8	120
@@ -76,7 +76,7 @@ ndb$disk_write_speed_base	488	48
 ndb$diskpagebuffer	10	64
 ndb$diskstat	10	48
 ndb$diskstats_1sec	200	52
-ndb$error_messages	802	52
+ndb$error_messages	803	52
 ndb$frag_locks	400	96
 ndb$frag_mem_use	400	100
 ndb$frag_operations	400	192
