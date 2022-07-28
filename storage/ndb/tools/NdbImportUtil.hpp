@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2017, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2017, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -920,7 +920,6 @@ public:
 
   // convert milliseconds to hours,minutes,seconds string
   static void fmt_msec_to_hhmmss(char* str, uint64 msec);
-  int int_val_ok(NdbDictionary::Column::Type type, Uint64 val, Error& error);
 };
 
 NdbOut& operator<<(NdbOut& out, const NdbImportUtil& util);

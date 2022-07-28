@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -851,9 +851,6 @@ private:
                            Dbtux *tux_block);
   void prepare_move_scan_ctx(ScanOpPtr scanPtr, Dbtux *tux_block);
 
-  /*
-   * DbtuxCmp.cpp
-   */
   int cmpSearchKey(TuxCtx&, const KeyDataC& searchKey, const KeyDataC& entryKey, Uint32 cnt);
   int cmpSearchBound(TuxCtx&, const KeyBoundC& searchBound, const KeyDataC& entryKey, Uint32 cnt);
 
@@ -1748,8 +1745,6 @@ Dbtux::max(unsigned x, unsigned y)
 {
   return x > y ? x : y;
 }
-
-// DbtuxCmp.cpp
 
 /**
  * Can be called from MT-build of ordered indexes,

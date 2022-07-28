@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2008, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2008, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -455,7 +455,7 @@ ndb_password_option::ndb_password_option(ndb_password_state& password_state)
   m_password_source(ndb_password_state::PS_NONE)
 {}
 
-bool ndb_password_option::get_option(int optid,
+bool ndb_password_option::get_option(int /*optid*/,
                                      const my_option *opt,
                                      char *arg)
 {
@@ -533,7 +533,7 @@ ndb_password_from_stdin_option::ndb_password_from_stdin_option(
   m_password_source(ndb_password_state::PS_NONE)
 {}
 
-bool ndb_password_from_stdin_option::get_option(int optid,
+bool ndb_password_from_stdin_option::get_option(int /*optid*/,
                                                 const my_option *opt,
                                                 char *arg)
 {

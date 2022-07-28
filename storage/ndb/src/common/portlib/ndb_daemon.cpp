@@ -1,5 +1,5 @@
-/* Copyright (c) 2009, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
+/* Copyright (c) 2009, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -172,10 +172,12 @@ install_or_remove_service(int argc, char** argv,
 }
 #endif
 
-
-int ndb_daemon_init(int argc, char** argv,
-                   ndb_daemon_run_t run, ndb_daemon_stop_t stop,
-                   const char* name, const char* display_name)
+int ndb_daemon_init(int argc,
+                    char** argv,
+                    ndb_daemon_run_t run,
+                    ndb_daemon_stop_t stop [[maybe_unused]],
+                    const char* name [[maybe_unused]],
+                    const char* display_name [[maybe_unused]])
 {
 #ifdef _WIN32
   // Check for --install or --remove options
@@ -310,9 +312,10 @@ check_files(const char *pidfile_name,
   return 0;
 }
 
-
-static int
-do_files(const char *pidfile_name, const char* logfile_name, int pidfd, int logfd)
+static int do_files(const char* pidfile_name,
+                    const char* logfile_name [[maybe_unused]],
+                    int pidfd,
+                    int logfd)
 {
   /* Lock the lock file */
   if (lockf(pidfd, F_LOCK, 0) == -1)
@@ -414,7 +417,7 @@ void ndb_daemon_exit(int status)
 
 }
 
-void ndb_service_print_options(const char* name)
+void ndb_service_print_options(const char* name [[maybe_unused]])
 {
 #ifdef _WIN32
   puts("");
@@ -430,8 +433,7 @@ void ndb_service_print_options(const char* name)
 #endif
 }
 
-
-void ndb_service_wait_for_debugger(int timeout_sec)
+void ndb_service_wait_for_debugger(int timeout_sec [[maybe_unused]])
 {
 #ifdef _WIN32
    if(!IsDebuggerPresent())

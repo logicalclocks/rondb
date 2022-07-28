@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2004, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2004, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1003,7 +1003,7 @@ Ndb_cluster_connection_impl::init_nodes_vector(Uint32 nodeid,
   for(iter.first(); iter.valid(); iter.next())
   {
     Uint32 nodeid1, nodeid2, remoteNodeId, group= 5;
-    const char * remoteHostName= 0, * localHostName= 0;
+    const char *remoteHostName = nullptr;
     if(iter.get(CFG_CONNECTION_NODE_1, &nodeid1)) continue;
     if(iter.get(CFG_CONNECTION_NODE_2, &nodeid2)) continue;
 
@@ -1016,7 +1016,6 @@ Ndb_cluster_connection_impl::init_nodes_vector(Uint32 nodeid,
       const char * host1= 0, * host2= 0;
       iter.get(CFG_CONNECTION_HOSTNAME_1, &host1);
       iter.get(CFG_CONNECTION_HOSTNAME_2, &host2);
-      localHostName  = (nodeid == nodeid1 ? host1 : host2);
       remoteHostName = (nodeid == nodeid1 ? host2 : host1);
     }
 
@@ -1310,7 +1309,7 @@ Ndb_cluster_connection_impl::configure(Uint32 nodeId,
         Uint32 nodeId = 0;
         Uint32 location_domain_id = 0;
         Uint32 node_type;
-        char *host_str = nullptr;
+        const char *host_str = nullptr;
         iterall.get(CFG_NODE_ID, &nodeId);
         iterall.get(CFG_TYPE_OF_SECTION, &node_type);
         if (node_type == NODE_TYPE_API)
@@ -1323,7 +1322,7 @@ Ndb_cluster_connection_impl::configure(Uint32 nodeId,
         iterall.get(CFG_DB_TRANSACTION_CHECK_INTERVAL, &tmp1);
         iterall.get(CFG_DB_TRANSACTION_DEADLOCK_TIMEOUT, &tmp2);
         iterall.get(CFG_LOCATION_DOMAIN_ID, &location_domain_id);
-        iterall.get(CFG_NODE_HOST, (const char**)&host_str);
+        iterall.get(CFG_NODE_HOST, &host_str);
         require(nodeId != 0);
         if (host_str != NULL && location_domain_id != 0)
         {

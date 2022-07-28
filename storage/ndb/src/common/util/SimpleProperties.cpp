@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -63,14 +63,10 @@ bool
 SimpleProperties::Writer::add(const char * value, int len){
   const Uint32 valLen = (len + 3) / 4;
 
-  if ((len % 4) == 0)
-    return putWords((Uint32*)value, valLen);
+  if ((len % 4) == 0) return putWords((const Uint32 *)value, valLen);
 
   const Uint32 putLen= valLen - 1;
-  if (!putWords((Uint32*)value, putLen))
-  {
-    return false;
-  }
+  if (!putWords((const Uint32 *)value, putLen)) return false;
 
   // Special handling of last bytes
   union {
@@ -316,13 +312,13 @@ SimpleProperties::pack(Writer & it, const void * __src,
         ok = true;
         break;
       case SimpleProperties::Uint32Value:{
-        Uint32 val = * ((Uint32*)src);
+        Uint32 val = *((const Uint32 *)src);
         ok = it.add(key, val);
       }
         break;
       case SimpleProperties::BinaryValue:{
         const char * src_len = _src + _map[i].Length_Offset;
-        Uint32 len = *((Uint32*)src_len);
+        Uint32 len = *((const Uint32 *)src_len);
         if((!ignoreMinMax) && _map[i].maxLength && len > _map[i].maxLength)
           return ValueTooLong;
         ok = it.add(key, src, len);

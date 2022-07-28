@@ -750,6 +750,7 @@ void Dbacc::releaseFragResources(Signal* signal, Uint32 tableId, Uint32 fragId)
   FragmentrecPtr regFragPtr;
   getFragPtr(regFragPtr, tableId, fragId, false);
   verifyFragCorrect(regFragPtr);
+  ndbrequire(regFragPtr.p->lockCount == 0);
 
   if (regFragPtr.p->expandOrShrinkQueued)
   {
@@ -833,6 +834,7 @@ void Dbacc::releaseDirResources(Signal* signal)
   getFragPtr(regFragPtr, tableId, fragId, false);
   ndbrequire(c_fragment_pool.getPtr(regFragPtr));
   verifyFragCorrect(regFragPtr);
+  ndbrequire(regFragPtr.p->lockCount == 0);
 
   DynArr256::Head* directory;
   ndbrequire(signal->theData[0] == ZREL_DIR);
@@ -1522,6 +1524,7 @@ void Dbacc::execACCKEYREQ(Signal* signal,
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
 	  insertLockOwnersList(operationRecPtr);
 #endif
+	  fragrecptr.p->lockCount++;
 	  opbits |= Operationrec::OP_LOCK_OWNER;
           operationRecPtr.p->m_op_bits = opbits;
           /**
@@ -2249,6 +2252,8 @@ void Dbacc::insertelementLab(Signal* signal,
   insertLockOwnersList(operationRecPtr);
 #endif
   operationRecPtr.p->m_op_bits |= Operationrec::OP_LOCK_OWNER;
+  fragrecptr.p->lockCount++;
+
   operationRecPtr.p->reducedHashValue =
     fragrecptr.p->level.reduce(operationRecPtr.p->hashValue);
   const Uint32 tidrElemhead = ElementHeader::setLocked(operationRecPtr.i);
@@ -5787,6 +5792,7 @@ void Dbacc::abortOperation(Signal* signal)
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
     takeOutLockOwnersList(operationRecPtr);
 #endif
+    fragrecptr.p->lockCount--;
     opbits &= ~(Uint32)Operationrec::OP_LOCK_OWNER;
     if (unlikely(opbits & Operationrec::OP_INSERT_IS_DONE))
     { 
@@ -5987,6 +5993,7 @@ void Dbacc::commitOperation(Signal* signal)
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
     takeOutLockOwnersList(operationRecPtr);
 #endif
+    fragrecptr.p->lockCount--;
     opbits &= ~(Uint32)Operationrec::OP_LOCK_OWNER;
     operationRecPtr.p->m_op_bits = opbits;
     
@@ -6330,6 +6337,8 @@ Dbacc::release_lockowner(Signal* signal,
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   insertLockOwnersList(newOwner);
 #endif  
+  fragrecptr.p->lockCount++;
+  
   /**
    * Copy op info, and store op in element
    *
@@ -8176,6 +8185,7 @@ void Dbacc::initFragGeneral(FragmentrecPtr regFragPtr)const
     regFragPtr.p->lockOwnersList[i] = RNIL;
   }
 #endif
+  regFragPtr.p->lockCount = 0;
   regFragPtr.p->hasCharAttr = ZFALSE;
   regFragPtr.p->dirRangeFull = ZFALSE;
   regFragPtr.p->fragState = FREEFRAG;
@@ -8479,9 +8489,10 @@ void Dbacc::checkNextBucketLab(Signal* signal)
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
       insertLockOwnersList(operationRecPtr);
 #endif
-      operationRecPtr.p->m_op_bits |= Operationrec::OP_LOCK_OWNER;
-      operationRecPtr.p->m_op_bits |= 
-	Operationrec::OP_STATE_RUNNING | Operationrec::OP_RUN_QUEUE;
+      fragrecptr.p->lockCount++;
+      operationRecPtr.p->m_op_bits |=
+        Operationrec::OP_LOCK_OWNER |
+        Operationrec::OP_STATE_RUNNING | Operationrec::OP_RUN_QUEUE;
     }//if
   } else {
     arrGuard(tnsElementptr, 2048);
@@ -9245,26 +9256,6 @@ void Dbacc::putActiveScanOp() const
  */
 void Dbacc::putOpScanLockQue() const
 {
-
-#ifdef VM_TRACE
-  // DEBUG CODE
-  // Check that there are as many operations in the lockqueue as 
-  // scanLockHeld indicates
-  OperationrecPtr tmpOp;
-  int numLockedOpsBefore = 0;
-  tmpOp.i = scanPtr.p->scanFirstLockedOp;
-  while(tmpOp.i != RNIL){
-    numLockedOpsBefore++;
-    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tmpOp));
-    if (tmpOp.p->nextOp == RNIL)
-    {
-      ndbrequire(tmpOp.i == scanPtr.p->scanLastLockedOp);
-    }
-    tmpOp.i = tmpOp.p->nextOp;
-  } 
-  ndbrequire(numLockedOpsBefore==scanPtr.p->scanLockHeld);
-#endif
-
   OperationrecPtr pslOperationRecPtr;
   ScanRec theScanRec;
   theScanRec = *scanPtr.p;
@@ -9629,25 +9620,6 @@ void Dbacc::takeOutScanLockQueue(Uint32 scanRecIndex) const
     TscanPtr.p->scanLastLockedOp = operationRecPtr.p->prevOp;
   }//if
   TscanPtr.p->scanLockHeld--;
-
-#ifdef VM_TRACE
-  // DEBUG CODE
-  // Check that there are as many operations in the lockqueue as 
-  // scanLockHeld indicates
-  OperationrecPtr tmpOp;
-  int numLockedOps = 0;
-  tmpOp.i = TscanPtr.p->scanFirstLockedOp;
-  while(tmpOp.i != RNIL){
-    numLockedOps++;
-    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(tmpOp));
-    if (tmpOp.p->nextOp == RNIL)
-    {
-      ndbrequire(tmpOp.i == TscanPtr.p->scanLastLockedOp);
-    }
-    tmpOp.i = tmpOp.p->nextOp;
-  } 
-  ndbrequire(numLockedOps==TscanPtr.p->scanLockHeld);
-#endif
 }//Dbacc::takeOutScanLockQueue()
 
 /* --------------------------------------------------------------------------------- */

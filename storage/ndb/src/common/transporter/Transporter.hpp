@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -253,7 +253,7 @@ protected:
    */
   virtual bool connect_server_impl(NDB_SOCKET_TYPE sockfd) = 0;
   virtual bool connect_client_impl(NDB_SOCKET_TYPE sockfd) = 0;
-  virtual int pre_connect_options(NDB_SOCKET_TYPE sockfd) { return 0;}
+  virtual int pre_connect_options(NDB_SOCKET_TYPE /*sockfd*/) { return 0;}
   
   /**
    * Blocking

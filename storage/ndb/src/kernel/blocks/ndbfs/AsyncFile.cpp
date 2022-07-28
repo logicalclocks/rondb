@@ -259,8 +259,8 @@ AsyncFile::openReq(Request * request)
     if (created)
     {
       int key_count;
-      int key_data_unit_size;
-      int file_block_size;
+      size_t key_data_unit_size;
+      size_t file_block_size;
       if (page_size == 0 || use_gz)
       {
         size_t xts_data_unit_size = GLOBAL_PAGE_SIZE;
@@ -386,7 +386,7 @@ AsyncFile::openReq(Request * request)
     off_t data_size = request->par.open.file_size;
     require(file_data_size == data_size);
 
-    m_file.set_autosync(1024 * 1024);
+    m_file.set_autosync(16 * 1024 * 1024);
 
     // Reserve disk blocks for whole file
     if (m_file.allocate() == -1)
@@ -483,10 +483,8 @@ AsyncFile::openReq(Request * request)
         buf += n;
         /**
          * Ensure that we call sync at regular intervals set by
-         * autosync frequency. Don't care if done or not, it will
-         * be handled by the m_file object.
+         * autosync frequency, now handled by m_file object itself.
          */
-        (void)m_file.sync_on_write();
       }
       if (size != 0)
       {
@@ -948,10 +946,6 @@ AsyncFile::writeReq(Request * request)
         return;
       }
     }
-    if (m_file.sync_on_write() == -1)
-    {
-      NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
-    }
     return;
   }
 
@@ -1094,11 +1088,6 @@ AsyncFile::writeReq(Request * request)
     }
   }
   require(current_file_offset == current_data_offset);
-
-  if (m_file.sync_on_write() == -1)
-  {
-    NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
-  }
 }
 
 void AsyncFile::syncReq(Request *request)
@@ -1163,16 +1152,6 @@ void AsyncFile::appendReq(Request *request)
   int n = in.cbegin() - in_begin;
   size -= n;
   buf += n;
-
-  if (m_file.sync_on_write() == -1)
-  {
-    NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
-    if (request->error.code == 0)
-    {
-      NDBFS_SET_REQUEST_ERROR(request, FsRef::fsErrSync);
-    }
-    return;
-  }
   require(request->error.code == 0);
 }
 

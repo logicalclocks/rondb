@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -391,7 +391,7 @@ public:
   SocketServer *get_socket_server() { return &m_socket_server; }
 
   int createNodegroup(int *nodes, int count, int *ng);
-  int dropNodegroup(int ng);
+  int dropNodegroup(unsigned ng);
 
   int startSchemaTrans(SignalSender& ss, NodeId & out_nodeId,
                        Uint32 transId, Uint32 & out_transKey);

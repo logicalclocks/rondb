@@ -146,8 +146,13 @@ class BlobBatchChecker
   /**
    * Check whether the batch contains another blob
    * operation with the same table, index + key
+   *
+   * Returns:
+   * 0 - found
+   * 1 - not found
+   * -1 - error
    */
-  bool findKey(NdbBlob* blob) const
+  int findKey(NdbBlob* blob) const
   {
     DBUG_ENTER("BlobBatchChecker::findKey");
     const Uint32 hash = blob->getBlobKeyHash();
@@ -158,10 +163,11 @@ class BlobBatchChecker
     {
       if (candidate->getBlobKeyHash() == hash)
       {
-        if (candidate->getBlobKeysEqual(blob) == 0)
+        int ret = candidate->getBlobKeysEqual(blob);
+        if (ret <= 0)
         {
-          /* Found */
-          DBUG_RETURN(true);
+          /* Found or error */
+          DBUG_RETURN(ret);
         }
       }
 
@@ -169,7 +175,7 @@ class BlobBatchChecker
     }
 
     /* Not found */
-    DBUG_RETURN(false);
+    DBUG_RETURN(1);
   }
 
   /**
@@ -293,7 +299,7 @@ public:
           if (singleIndex)
           {
             /* Check whether key has been seen before */
-            include = !findKey(firstBlob);
+            include = (findKey(firstBlob) == 1);  // Not found, ok to include
             DBUG_PRINT("info", ("Checked key : include : %u", include));
           }
         }
@@ -508,8 +514,7 @@ setOperationErrorCodeAbort(int error);
 Remark:        Sets an error code on the connection object from an 
                operation object. 
 *****************************************************************************/
-void
-NdbTransaction::setOperationErrorCodeAbort(int error, int abortOption)
+void NdbTransaction::setOperationErrorCodeAbort(int error)
 {
   DBUG_ENTER("NdbTransaction::setOperationErrorCodeAbort");
   if (theTransactionIsStarted == false) {
@@ -2597,8 +2602,7 @@ Return Value:  Return 0 : receiveTCRELEASECONF was successful.
 Parameters:    aSignal: The signal object pointer.
 Remark:         DisConnect TC Connect pointer to NDBAPI. 
 *******************************************************************************/
-int			
-NdbTransaction::receiveTCRELEASECONF(const NdbApiSignal* aSignal)
+int NdbTransaction::receiveTCRELEASECONF(const NdbApiSignal* /*aSignal*/)
 {
   if (theStatus != DisConnecting)
   {
@@ -2814,7 +2818,7 @@ from other transactions.
     const Uint32 tNoOfOperations = TcKeyConf::getNoOfOperations(tTemp);
     const Uint32 tCommitFlag = TcKeyConf::getCommitFlag(tTemp);
 
-    const Uint32* tPtr = (Uint32 *)&keyConf->operations[0];
+    const Uint32* tPtr = (const Uint32*)&keyConf->operations[0];
     Uint32 tNoComp = theNoOfOpCompleted;
     for (Uint32 i = 0; i < tNoOfOperations ; i++) {
       NdbReceiver* const tReceiver = 
@@ -3591,6 +3595,8 @@ NdbTransaction::setMaxPendingBlobReadBytes(Uint32 bytes)
 void
 NdbTransaction::setMaxPendingBlobWriteBytes(Uint32 bytes)
 {
+  DBUG_PRINT("info", ("Setting Blob max pending bytes %d",
+                      bytes));
   /* 0 == max */
   maxPendingBlobWriteBytes = (bytes?bytes : (~ Uint32(0)));
 }
@@ -3714,7 +3720,7 @@ NdbTransaction::report_node_failure(Uint32 id){
 NdbQuery*
 NdbTransaction::createQuery(const NdbQueryDef* def,
                             const NdbQueryParamValue paramValues[],
-                            NdbOperation::LockMode lock_mode)
+                            NdbOperation::LockMode)
 {
   NdbQueryImpl* query = NdbQueryImpl::buildQuery(*this, def->getImpl());
   if (unlikely(query == NULL)) {
