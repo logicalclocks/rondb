@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2010, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2010, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -358,15 +358,11 @@ trp_client::isSendEnabled(NodeId node) const
   return m_enabled_nodes_mask.get(node);
 }
 
-Uint32 *
-trp_client::getWritePtr(NodeId node,
-                        TrpId trp_id,
-                        Uint32 lenBytes,
-                        Uint32 prio,
-                        Uint32 max_use,
-                        SendStatus *error)
+Uint32* trp_client::getWritePtr(NodeId node, TrpId /*trp_id*/, Uint32 lenBytes,
+                                Uint32 prio [[maybe_unused]],
+                                Uint32 /*max_use*/, SendStatus* error)
 {
-  (void)trp_id;
+  assert(prio == 1 /* JBB */);
   assert(isSendEnabled(node));
   
   TFBuffer* b = m_send_buffers+node;
@@ -432,13 +428,10 @@ trp_client::getWritePtr(NodeId node,
   return NULL;
 }
 
-Uint32
-trp_client::updateWritePtr(NodeId node,
-                           TrpId trp_id,
-                           Uint32 lenBytes,
-                           Uint32 prio)
+Uint32 trp_client::updateWritePtr(NodeId node, TrpId /*trp_id*/,
+                                  Uint32 lenBytes, Uint32 prio [[maybe_unused]])
 {
-  (void)trp_id;
+  assert(prio == 1 /* JBB */);
   TFBuffer* b = m_send_buffers+node;
   TFBufferGuard g0(* b);
   assert(m_send_nodes_mask.get(node));

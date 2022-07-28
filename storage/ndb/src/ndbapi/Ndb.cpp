@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,9 +22,6 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
-
-
-
 
 /*****************************************************************************
 Name:          Ndb.cpp
@@ -526,9 +523,13 @@ Ndb::computeHash(Uint32 *retval,
     if ((cs = partcols[i]->m_cs))
     {
       const Uint32 maxlen = (partcols[i]->m_attrSize * partcols[i]->m_arraySize) - lb;
-      int n = NdbSqlUtil::strnxfrm_hash(cs, partcols[i]->m_type,
-                                   pos, bufEnd-pos, 
-                                   ((uchar*)keyData[i].ptr)+lb, len, maxlen);
+      int n = NdbSqlUtil::strnxfrm_hash(cs,
+                                        partcols[i]->m_type,
+                                        pos,
+                                        bufEnd - pos,
+                                        ((const uchar*)keyData[i].ptr) + lb,
+                                        len,
+                                        maxlen);
 
       if (unlikely(n == -1))
 	goto emalformedstring;
@@ -648,7 +649,7 @@ Ndb::computeHash(Uint32 *retval,
 
     Uint32 len;
     Uint32 maxlen = keyAttr.maxSize;
-    unsigned char *src= (unsigned char*)keyData + keyAttr.offset;
+    const unsigned char* src = (const unsigned char*)keyData + keyAttr.offset;
 
     if (keyAttr.flags & NdbRecord::IsVar1ByteLen)
     {
@@ -2462,7 +2463,6 @@ Ndb::printState(const char* fmt, ...)
   vsprintf(buf, fmt, ap);
   va_end(ap);
   NdbMutex_Lock(ndb_print_state_mutex);
-  bool dups = false;
   unsigned i;
   ndbout << buf << " ndb=" << hex << (void*)this << endl;
   for (unsigned n = 0; n < MAX_NDB_NODES; n++) {
@@ -2478,21 +2478,18 @@ Ndb::printState(const char* fmt, ...)
   ndbout << "prepared: " << theNoOfPreparedTransactions<< endl;
   if (checkdups(thePreparedTransactionsArray, theNoOfPreparedTransactions)) {
     ndbout << "!! DUPS !!" << endl;
-    dups = true;
   }
   for (i = 0; i < theNoOfPreparedTransactions; i++)
     thePreparedTransactionsArray[i]->printState();
   ndbout << "sent: " << theNoOfSentTransactions<< endl;
   if (checkdups(theSentTransactionsArray, theNoOfSentTransactions)) {
     ndbout << "!! DUPS !!" << endl;
-    dups = true;
   }
   for (i = 0; i < theNoOfSentTransactions; i++)
     theSentTransactionsArray[i]->printState();
   ndbout << "completed: " << theNoOfCompletedTransactions<< endl;
   if (checkdups(theCompletedTransactionsArray, theNoOfCompletedTransactions)) {
     ndbout << "!! DUPS !!" << endl;
-    dups = true;
   }
   for (i = 0; i < theNoOfCompletedTransactions; i++)
     theCompletedTransactionsArray[i]->printState();

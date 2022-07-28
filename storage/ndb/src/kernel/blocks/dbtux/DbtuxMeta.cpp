@@ -53,8 +53,8 @@ void
 Dbtux::execCREATE_TAB_REQ(Signal* signal)
 {
   jamEntry();
-  CreateTabReq copy = *(CreateTabReq*)signal->getDataPtr();
-  CreateTabReq* req = &copy;
+  const CreateTabReq copy = *(CreateTabReq*)signal->getDataPtr();
+  const CreateTabReq* req = &copy;
 
   IndexPtr indexPtr;
   indexPtr.i = RNIL;

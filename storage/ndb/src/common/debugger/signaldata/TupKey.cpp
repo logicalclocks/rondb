@@ -1,7 +1,7 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
     Use is subject to license terms.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,20 +26,29 @@
 
 #include <signaldata/TupKey.hpp>
 
-bool
-printTUPKEYREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
+bool printTUPKEYREQ(FILE* output,
+                    const Uint32* theData,
+                    Uint32 len,
+                    Uint16 /*receiverBlockNo*/)
+{
   printHex(output, theData, len, "Signal data:");
   return true;
 }
 
-bool
-printTUPKEYCONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
+bool printTUPKEYCONF(FILE* output,
+                     const Uint32* theData,
+                     Uint32 len,
+                     Uint16 /*receiverBlockNo*/)
+{
   printHex(output, theData, len, "Signal data:");
   return true;
 }
 
-bool
-printTUPKEYREF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
+bool printTUPKEYREF(FILE* output,
+                    const Uint32* theData,
+                    Uint32 len,
+                    Uint16 /*receiverBlockNo*/)
+{
   printHex(output, theData, len, "Signal data:");
   return true;
 }

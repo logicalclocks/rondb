@@ -1,7 +1,7 @@
 /*
-   Copyright (c) 2003, 2021, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
     Use is subject to license terms.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,9 +26,10 @@
 
 #include <signaldata/IndxAttrInfo.hpp>
 
-bool 
-printINDXATTRINFO(FILE * output, const Uint32 * theData, Uint32 len, 
-                  Uint16 receiverBlockNo)
+bool printINDXATTRINFO(FILE* output,
+                       const Uint32* theData,
+                       Uint32 len,
+                       Uint16 /*receiverBlockNo*/)
 {
 //  const IndxAttrInfo * const sig = (IndxAttrInfo *) theData;
   printHex(output, theData, len, "");
