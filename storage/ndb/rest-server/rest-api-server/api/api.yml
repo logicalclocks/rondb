@@ -1,0 +1,270 @@
+#
+# This file is part of the RonDB REST API Server
+# Copyright (c) 2022 Hopsworks AB
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, version 3.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <http://www.gnu.org/licenses/>.
+#
+openapi: 3.0.0
+info:
+  description: |
+    RonDB Key-Value REST API
+    [http://rondb.com](http://rondb.com) 
+  version: "1.0.0"
+  title: RonDB KV API
+  license:
+    name: Apache 2.0
+    url: 'http://www.apache.org/licenses/LICENSE-2.0.html'
+servers:
+  # Added by API Auto Mocking Plugin
+  - description: SwaggerHub API Auto Mocking
+    url: https://virtserver.swaggerhub.com/rondb/RonDB2/1.0.0/
+tags:
+  - name: db-ops
+    description: Database operations
+    externalDocs:
+      description: Find out more
+      url: 'http://rondb.com'
+  - name: table-ops
+    description: Simple and batch operations for single table
+    externalDocs:
+      description: Find out more
+      url: 'http://rondb.com'
+  - name: multi-table-ops
+    description: Batch operation that span across multiple table
+    externalDocs:
+      description: Find out more
+      url: 'http://rondb.com'
+  - name: authentication
+    description: Operations for authenticating the user
+    externalDocs:
+      description: Find out more
+      url: 'http://rondb.com'
+
+paths:      
+#---------------------------------------------------------------------------------
+  /{db}/{table}/pk-read:
+    parameters:
+    - name: db
+      in: path
+      description: Database name
+      required: true
+      schema:
+        type: string
+      example: database_name
+    - name: table
+      in: path
+      description: Table name
+      required: true
+      schema:
+        type: string 
+      example: table_name
+    get:
+      tags:
+        - table-ops
+      parameters:
+        - name: filter
+          in: query
+          style: form
+          explode: false
+          description: >
+            An array of filter columns. If the table's primary key consists of one column
+            then add a filter object like **[{"column": "employee_id", "value": 1234 }]**, or if the primary 
+            key contain multiple columns then add all the primary key columns in the filter object, 
+            for example, **[{"column": "item_id", "value": 1234 }, {"column": "order_id", "value": 5678 }]**
+          required: true
+          schema:
+            $ref: '#/components/schemas/PKFilter' 
+        - name: read-column
+          in: query
+          description: An array containing the names of the cloumns that are read from the database and returned to the user. If this parameter is not supplied then the entire row, that is, all the table columns are read from the database. 
+          required: false
+          schema:
+            $ref: '#/components/schemas/ReadColumns' 
+        - name: transaction-id
+          in: query
+          description: Transaction id. This is an ID returned by the *POST /transaction* API
+          required: false
+          schema:
+            type: number
+          
+      responses:
+        '200':
+          description: Successful primary key operation(s)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Row'
+        '400':
+          description: Bad request. Invalid database or table name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+        '404':
+          description: Not Found. Database or the table does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status' 
+#---------------------------------------------------------------------------------
+  /batch:
+    post:
+      tags:
+        - table-ops
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchRequest'            
+      responses:
+        '200':
+          description: Successful batch operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchResponse'
+        '400':
+          description: Bad request. Invalid database or table name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Status'
+                
+#---------------------------------------------------------------------------------    
+components:
+  schemas:
+#---------------------------------------------------------------------------------        
+    Status:
+      type: object
+      required:
+        - ok
+      properties:
+        ok:
+          type: boolean
+        message:
+          type: string
+      example:    
+        { ok: false, message: "Something went wrong"}
+    PKFilter:
+      type: array
+      items:
+        type: object
+        required:
+          - column
+          - value
+      example: [
+        {
+          column: "pk_column_1_name", 
+          value: 1234
+        },
+        {
+          pk_column_2: "pk_column_2_name",
+          value: "some value"
+        }
+      ]
+    ReadColumns:
+      type: array
+      items:
+        type: string
+      example: [ "table_column_name_1", "table_column_name_2", "table_column_name_3"]      
+    Row:
+      type: object
+      required: 
+        - columns
+        - values
+      properties:
+        operation-id:
+          type: number
+        columns:
+          type: array
+          items:
+            type: string      
+        values:
+          type: array
+          items:
+            anyOf:
+              - type: string
+              - type: number
+              - type: integer
+              - type: boolean
+      example: { columns:["col1", "col2", "cold3"], values:["data1", 1234, false]}
+    BatchRequest:
+      type: array
+      items:
+        type: object
+        required:
+          - method
+          - relative-url
+#          - body   uncomment it later when we support batching post operations
+        properties:
+          method:
+            type: string
+            enum: [GET] # later add post put delete when these API are available
+          relative-url:
+            type: string
+        example: [
+          {
+            method: "GET",
+            relative-url: "/database-name-1/table-name-1/pk-read?filter[column]=pk_column_1_name&filter[value]=1234&filter[pk_column_2]=pk_column_2_name&filter[value]=some value&read-columns=table_column_name_1&read-columns=table_column_name_2&read-columns=table_column_name_3"
+          },
+           {
+            method: "GET",
+            relative-url: "/database-name-2/table-name-1/pk-read?filter[column]=pk_column_1_name&filter[value]=1234&filter[pk_column_2]=pk_column_2_name&filter[value]=some value&read-columns=table_column_name_1&read-columns=table_column_name_2&read-columns=table_column_name_3"
+          }
+        ]
+    BatchResponse:
+      type: array
+      items: 
+        type: object
+        required:
+          - code
+          - body
+        properties:
+          code:
+            type: number
+          body:
+            type: object
+            required: 
+              - columns
+              - values
+            properties:
+              operation-id:
+                type: number
+              columns:
+                type: array
+                items:
+                  type: string      
+              values:
+                type: array
+                items:
+                  anyOf:
+                    - type: string
+                    - type: number
+                    - type: integer
+                    - type: boolean
+            example: [
+              { columns:["col1", "col2", "cold3"], values:["data1", 1234, false]},
+              { columns:["col1", "col2", "cold3"], values:["data1", 1234, false]}
+              ]

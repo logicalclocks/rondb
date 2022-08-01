@@ -1,0 +1,18 @@
+project (rdrs)
+
+if(WITH_RDRS)
+  find_program(GO_EXECUTABLE NAMES go)
+  if (NOT GO_EXECUTABLE)
+    message(FATAL_ERROR "Install Golang")
+  endif()
+
+  add_custom_target(rdrs ALL 
+                     COMMAND ${CMAKE_MAKE_PROGRAM} RDRS_LIB_DIR=${RDRS_CLIENT_LIB_DIR}  OUTPUT_DIR=${RDRS_OUTPUT_DIR}
+                     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                     COMMENT "Building RonDB REST API Server"
+                     DEPENDS rdrclient)
+  
+  INSTALL(FILES ${RDRS_OUTPUT_DIR}/rdrs 
+       DESTINATION ${INSTALL_BINDIR} COMPONENT Development
+       PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+endif()

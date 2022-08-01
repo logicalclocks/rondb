@@ -1,0 +1,7 @@
+sudo systemctl enable apport.service
+sudo service apport start
+ulimit -c unlimited
+export GOTRACEBACK=crash
+sudo sysctl -w kernel.core_pattern=core.%u.%p.%t # to enable core generation
+dgb executable corefile
+then use where, bt commands
