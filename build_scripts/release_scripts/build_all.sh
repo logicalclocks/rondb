@@ -136,10 +136,6 @@ echo "_____________ BUILDING BENCHMARKS _____________"
 cd $TEMP_BUILD_DIR_ABS
 $SRC_DIR_ABS/build_scripts/release_scripts/build_bench.sh $TEMP_BUILD_DIR_ABS $TEMP_BUILD_DIR_ABS/rondb_bin_use $CORES
 
-echo "_____________ BUILDING REST SERVER _____________"
-cd $TEMP_BUILD_DIR_ABS
-$SRC_DIR_ABS/build_scripts/release_scripts/build_rdrs.sh $TEMP_BUILD_DIR_ABS/rondb_bin_use $CORES
-
 echo "_____________ Building Tarball _____________"
 cd $TEMP_BUILD_DIR_ABS
 $SRC_DIR_ABS/build_scripts/release_scripts/create_rondb_tarball.sh $RONDB_VERSION $TEMP_BUILD_DIR_ABS $OUTPUT_DIR_ABS
