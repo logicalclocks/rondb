@@ -73,16 +73,16 @@ void my_time_packed_to_binary(longlong nr, uchar *ptr, uint dec);
 
 
 // 22.01.X
-// struct my_timeval {
-// int64_t m_tv_sec;
-// int64_t m_tv_usec;
-// };
-// void my_timestamp_to_binary(const my_timeval *tm, unsigned char *ptr, unsigned int dec);
-// void my_timestamp_from_binary(my_timeval *tm, const unsigned char *ptr, unsigned int dec);
-//
+struct my_timeval {
+  int64_t m_tv_sec;
+  int64_t m_tv_usec;
+};
+void my_timestamp_to_binary(const my_timeval *tm, unsigned char *ptr, unsigned int dec);
+void my_timestamp_from_binary(my_timeval *tm, const unsigned char *ptr, unsigned int dec);
 
-void my_timestamp_to_binary(const timeval *tm, unsigned char *ptr, unsigned int dec);
-void my_timestamp_from_binary(timeval *tm, const unsigned char *ptr, unsigned int dec);
+// 21.04.X
+// void my_timestamp_to_binary(const timeval *tm, unsigned char *ptr, unsigned int dec);
+// void my_timestamp_from_binary(timeval *tm, const unsigned char *ptr, unsigned int dec);
 
 static inline uint32 uint3korr(const uchar *A) {
   return static_cast<uint32>((static_cast<uint32>(A[0])) + ((static_cast<uint32>(A[1])) << 8) +
