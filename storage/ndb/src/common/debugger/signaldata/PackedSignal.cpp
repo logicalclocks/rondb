@@ -117,7 +117,11 @@ const char* packedSignalName(Uint32 signalType, bool failApi)
 }
 
 bool
-printPACKED_SIGNAL(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
+printPACKED_SIGNAL(FILE * output,
+                   const Uint32 * theData,
+                   Uint32 len,
+                   Uint16 /*receiverBlockNo*/)
+{
   assert(len <= 25);
   Uint32 sigOffsets[25];
   int numberOfSignals = 0;

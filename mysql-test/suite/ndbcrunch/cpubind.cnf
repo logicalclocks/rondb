@@ -3,16 +3,16 @@
 # $> mtr --defaults-extra-file=suite/ndbcrunch/cpubind.cnf
 #
 [cluster_config.ndbd.1.crunch]
-cpubind=0-15,128-143
+cpubind=0-5,32-37
 
 [cluster_config.ndbd.2.crunch]
-cpubind=64-79,192-207
+cpubind=8-13,40-45
 
 [mysqld.1.crunch]
-cpubind=16-63,144-191
+cpubind=16-22,48-54
 
 [mysqld.2.crunch]
-cpubind=80-127,208-255
+cpubind=24-30,56-62
 
 # Sections below can be activated when running with more than two mysqlds
 #[mysqld.3.crunch]
@@ -37,4 +37,4 @@ cpubind=80-127,208-255
 #cpubind=16-63,144-191
 
 [mysqltest]
-cpubind=16-63,144-191,80-127,208-255
+cpubind=6,7,14,15,23,31,38,39,46,47,55,63
