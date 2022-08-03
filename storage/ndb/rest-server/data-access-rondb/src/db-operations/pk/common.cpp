@@ -21,13 +21,13 @@
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/beast/core/detail/base64.hpp>
 #include <decimal_utils.hpp>
+#include <my_time.h>
 #include <sql_string.h>
 #include <string>
 #include <algorithm>
 #include <utility>
 #include "src/error-strs.h"
 #include "src/status.hpp"
-#include "src/rondb-lib/rdrs_date.hpp"
 #include "src/mystring.hpp"
 #include "src/rdrs-const.h"
 
@@ -51,6 +51,26 @@ inline int getDecimalColumnSpace(int precision, int scale) {
   int howManyBytesNeededForFraction = howManyBytesNeeded[scale];
   int result                        = howManyBytesNeededForIntegral + howManyBytesNeededForFraction;
   return result;
+}
+
+typedef unsigned char uchar;
+typedef Uint32 uint32;
+static inline uint32 uint3korr(const uchar *A) {
+  return static_cast<uint32>((static_cast<uint32>(A[0])) + ((static_cast<uint32>(A[1])) << 8) +
+                             ((static_cast<uint32>(A[2])) << 16));
+}
+
+inline void my_unpack_date(MYSQL_TIME *l_time, const void *d) {
+  uchar b[4];
+  memcpy(b, d, 3);
+  b[3]        = 0;
+  uint w      = (uint)uint3korr(b);
+  l_time->day = (w & 31);
+  w >>= 5;
+  l_time->month = (w & 15);
+  w >>= 4;
+  l_time->year      = w;
+  l_time->time_type = MYSQL_TIMESTAMP_DATE;
 }
 
 
