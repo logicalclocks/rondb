@@ -20,6 +20,7 @@
 #include "src/db-operations/pk/common.hpp"
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/beast/core/detail/base64.hpp>
+#include <decimal_utils.hpp>
 #include <string>
 #include <algorithm>
 #include <utility>
@@ -27,9 +28,31 @@
 #include "src/status.hpp"
 #include "src/rondb-lib/rdrs_date.hpp"
 #include "src/rondb-lib/rdrs_string.hpp"
-#include "src/rondb-lib/decimal_utils.hpp"
 #include "src/mystring.hpp"
 #include "src/rdrs-const.h"
+
+static const int MaxMySQLDecimalPrecision = 65;
+static const int MaxDecimalStrLen         = MaxMySQLDecimalPrecision + 3;
+
+static int howManyBytesNeeded[] = {
+    0,  1,  1,  2,  2,  3,  3,  4,  4,  4,  5,  5,  6,  6,  7,  7,  8,  8,  8,  9,  9,  10,
+    10, 11, 11, 12, 12, 12, 13, 13, 14, 14, 15, 15, 16, 16, 16, 17, 17, 18, 18, 19, 19, 20,
+    20, 20, 21, 21, 22, 22, 23, 23, 24, 24, 24, 25, 25, 26, 26, 27, 27, 28, 28, 28, 29, 29};
+
+/** Get the number of bytes needed in memory to represent the decimal number.
+ *
+ * @param precision the precision of the number
+ * @param scale the scale
+ * @return the number of bytes needed for the binary representation of the number
+ */
+
+inline int getDecimalColumnSpace(int precision, int scale) {
+  int howManyBytesNeededForIntegral = howManyBytesNeeded[precision - scale];
+  int howManyBytesNeededForFraction = howManyBytesNeeded[scale];
+  int result                        = howManyBytesNeededForIntegral + howManyBytesNeededForFraction;
+  return result;
+}
+
 
 RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *operation,
                             PKRRequest *request, Uint32 colIdx) {
