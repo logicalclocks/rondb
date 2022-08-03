@@ -27,6 +27,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/handlers"
@@ -157,7 +158,8 @@ func (rc *RouterConext) StartRouter() error {
 		if err != nil {
 			log.Fatalf("GRPC server returned. Error: %v", err)
 		}
-		rc.GRPCServer = grpc.NewServer()
+		// rc.GRPCServer = grpc.NewServer()
+		rc.GRPCServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
 		GRPCServer := grpcsrv.GetGRPCServer()
 		api.RegisterRonDBRESTServer(rc.GRPCServer, GRPCServer)
 		rc.GRPCServer.Serve(lis)
@@ -174,15 +176,45 @@ func serverTLSConfig() (*tls.Config, error) {
 
 	if config.Configuration().Security.RequireAndVerifyClientCert {
 		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	} else {
+		tlsConfig.ClientAuth = tls.NoClientCert
 	}
 
 	if config.Configuration().Security.RootCACertFile != "" {
 		tlsConfig.ClientCAs = tlsutils.TrustedCAs(config.Configuration().Security.RootCACertFile)
 	}
 
-	tlsConfig.BuildNameToCertificate()
+	serverCert, err := tls.LoadX509KeyPair(config.Configuration().Security.CertificateFile,
+		config.Configuration().Security.PrivateKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	tlsConfig.Certificates = []tls.Certificate{serverCert}
+
+	// tlsConfig.BuildNameToCertificate()
 	return tlsConfig, nil
 }
+
+//func serverTLSConfigGRPC() (credentials.TransportCredentials, error) {
+//	serverCert, err := tls.LoadX509KeyPair(config.Configuration().Security.CertificateFile,
+//		config.Configuration().Security.PrivateKeyFile)
+//	if err != nil {
+//		return nil, err
+//	}
+//
+//	// Create the credentials and return it
+//	tlsConfig := &tls.Config{
+//		Certificates: []tls.Certificate{serverCert},
+//	}
+//
+//	if config.Configuration().Security.RequireAndVerifyClientCert {
+//		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+//	} else {
+//		tlsConfig.ClientAuth = tls.NoClientCert
+//	}
+//
+//	return credentials.NewTLS(tlsConfig), nil
+//}
 
 func (rc *RouterConext) StopRouter() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/handlers"
@@ -106,16 +107,16 @@ func getStatsHttp(t *testing.T, tc common.TestContext) *api.StatResponse {
 }
 
 func getStatsGRPC(t *testing.T, tc common.TestContext) *api.StatResponse {
-	stats := sendGRPCStatRequest(t)
+	stats := sendGRPCStatRequest(t, tc)
 	return stats
 }
 
-func sendGRPCStatRequest(t *testing.T) *api.StatResponse {
+func sendGRPCStatRequest(t *testing.T, tc common.TestContext) *api.StatResponse {
 	// Create gRPC client
 	conn, err := grpc.Dial(fmt.Sprintf("%s:%d",
 		config.Configuration().RestServer.GRPCServerIP,
 		config.Configuration().RestServer.GRPCServerPort),
-		grpc.WithInsecure())
+		grpc.WithTransportCredentials(credentials.NewTLS(tu.GetClientTLSConfig(t, tc))))
 	defer conn.Close()
 
 	if err != nil {
