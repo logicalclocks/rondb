@@ -29,7 +29,6 @@
 #include "src/logger.hpp"
 #include "src/rdrs-const.h"
 #include "src/status.hpp"
-#include "src/rondb-lib/rdrs_date.hpp"
 #include "src/mystring.hpp"
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/beast/core/detail/base64.hpp>
