@@ -17,8 +17,8 @@
  * USA.
  */
 
-#ifndef DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_COMMON_H_
-#define DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_COMMON_H_
+#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_COMMON_HPP_
+#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_COMMON_HPP_
 
 #include <NdbDictionary.hpp>
 #include "src/rdrs-dal.h"
@@ -42,10 +42,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
  */
 RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response);
 
-  /**
-   * return data for array columns
-   *
-   */
-  int GetByteArray(const NdbRecAttr *attr, const char **first_byte, Uint32 *bytes);
+/**
+ * return data for array columns
+ *
+ */
+int GetByteArray(const NdbRecAttr *attr, const char **first_byte, Uint32 *bytes);
 
-#endif  // DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_COMMON_H_
+#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_COMMON_HPP_

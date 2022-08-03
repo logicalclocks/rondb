@@ -17,8 +17,8 @@
  * USA.
  */
 
-#ifndef DATA_ACCESS_RONDB_SRC_STATUS_HPP_
-#define DATA_ACCESS_RONDB_SRC_STATUS_HPP_
+#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_STATUS_HPP_
+#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_STATUS_HPP_
 
 #include <cstring>
 #include <string>
@@ -80,4 +80,4 @@ inline RS_Status __RS_ERROR_RONDB(const struct NdbError &error, std::string msg,
 #define RS_RONDB_SERVER_ERROR(ndberror, msg)                                                       \
   __RS_ERROR_RONDB(ndberror, msg, __LINE__, __MYFILENAME__);
 
-#endif  // DATA_ACCESS_RONDB_SRC_STATUS_HPP_
+#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_STATUS_HPP_

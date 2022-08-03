@@ -17,8 +17,9 @@
  * USA.
  */
 
-#include "ndb_object_pool.hpp"
+#include "src/ndb_object_pool.hpp"
 #include <iostream>
+#include <string>
 #include "src/status.hpp"
 #include "src/error-strs.h"
 #include "src/logger.hpp"
@@ -34,10 +35,9 @@ void NdbObjectPool::InitPool() {
 }
 
 NdbObjectPool *NdbObjectPool::GetInstance() {
-
-    if ( __instance == nullptr ) {
-      ERROR("NDB object pool is not initialized");
-    }
+  if (__instance == nullptr) {
+    ERROR("NDB object pool is not initialized");
+  }
 
   return __instance;
 }
@@ -46,7 +46,6 @@ RS_Status NdbObjectPool::GetNdbObject(Ndb_cluster_connection *ndb_connection, Nd
   std::lock_guard<std::mutex> guard(__mutex);
   RS_Status ret_status = RS_OK;
   if (__ndb_objects.empty()) {
-
     *ndb_object = new Ndb(ndb_connection);
     int retCode = (*ndb_object)->init();
     if (retCode != 0) {

@@ -16,11 +16,12 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301,
  * USA.
  */
-#ifndef DATA_ACCESS_RONDB_SRC_LOGGER_HPP_
-#define DATA_ACCESS_RONDB_SRC_LOGGER_HPP_
+#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_LOGGER_HPP_
+#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_LOGGER_HPP_
 
-#include <iostream>
 #include <string.h>
+#include <iostream>
+#include <string>
 #include "src/rdrs-dal.h"
 
 #define PanicLevel 0
@@ -101,4 +102,4 @@ inline void TRACE(char *msg) {
   log(TraceLevel, msg);
 }
 
-#endif  // DATA_ACCESS_RONDB_SRC_LOGGER_HPP_
+#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_LOGGER_HPP_

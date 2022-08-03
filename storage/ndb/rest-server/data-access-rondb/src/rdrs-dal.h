@@ -21,8 +21,8 @@
 extern "C" {
 #endif
 
-#ifndef DATA_ACCESS_RONDB_SRC_RDRS_DAL_H_
-#define DATA_ACCESS_RONDB_SRC_RDRS_DAL_H_
+#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_DAL_H_
+#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_DAL_H_
 
 typedef enum HTTP_CODE {
   SUCCESS      = 200,
@@ -31,7 +31,7 @@ typedef enum HTTP_CODE {
   SERVER_ERROR = 500
 } HTTP_CODE;
 
-// Status 
+// Status
 #define RS_STATUS_MSG_LEN       256
 #define RS_STATUS_FILE_NAME_LEN 256
 typedef struct RS_Status {
@@ -45,11 +45,11 @@ typedef struct RS_Status {
   char err_file_name[RS_STATUS_FILE_NAME_LEN];  // error file name.
 } RS_Status;
 
-// Log Message 
-#define RS_LOG_MSG_LEN       256
+// Log Message
+#define RS_LOG_MSG_LEN 256
 typedef struct RS_LOG_MSG {
- int level;                  // log level 
- char message[RS_LOG_MSG_LEN]; 
+  int level;  // log level
+  char message[RS_LOG_MSG_LEN];
 } RS_LOG_MSG;
 
 // Data return type. You can change the return type for the column data
@@ -104,10 +104,9 @@ RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *re
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats);
 
-
 /**
-* Call back function for log messages
-*/
+ * Call back function for log messages
+ */
 typedef void (*LogCallBackFn)(RS_LOG_MSG msg);
 
 typedef struct {
@@ -115,13 +114,13 @@ typedef struct {
 } Callbacks;
 
 /**
-* Register call back function  
-*/
+ * Register call back function
+ */
 void register_callbacks(Callbacks cbs);
 
 #endif
 
 #ifdef __cplusplus
 }
-#endif  // DATA_ACCESS_RONDB_SRC_RDRS_DAL_H_
+#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_DAL_H_
 

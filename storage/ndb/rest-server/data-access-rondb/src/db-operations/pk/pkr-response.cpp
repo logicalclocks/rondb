@@ -96,7 +96,6 @@ RS_Status PKRResponse::Append_cstring(const char *str) {
 }
 
 RS_Status PKRResponse::SetNoOfColumns(Uint32 cols) {
-
   if (this->writeHeader % ADDRESS_SIZE != 0) {  // 4 bytes alignment
     this->writeHeader += ADDRESS_SIZE - this->writeHeader % ADDRESS_SIZE;
   }
@@ -260,7 +259,6 @@ RS_Status PKRResponse::Append_i64(const char *colName, Int64 num) {
 
 RS_Status PKRResponse::Append_char(const char *colName, const char *fromBuff, Uint32 fromBuffLen,
                                    CHARSET_INFO *fromCS) {
-
   Uint32 extraSpace     = 1;  // +1 for null terminator
   Uint32 estimatedBytes = fromBuffLen + extraSpace;
 
@@ -269,7 +267,6 @@ RS_Status PKRResponse::Append_char(const char *colName, const char *fromBuff, Ui
                            std::to_string(GetRemainingCapacity()) + std::string(" Required: ") +
                            std::to_string(estimatedBytes));
   }
-
   // from_buffer -> printable string  -> escaped string
   char tempBuff[estimatedBytes];
   const char *well_formed_error_pos;

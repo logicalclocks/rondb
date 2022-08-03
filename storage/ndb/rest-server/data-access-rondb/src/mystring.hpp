@@ -17,9 +17,8 @@
  * USA.
  */
 
-
-#ifndef DATA_ACCESS_RONDB_SRC_MY_STRING_H_
-#define DATA_ACCESS_RONDB_SRC_MY_STRING_H_
+#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_MYSTRING_HPP_
+#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_MYSTRING_HPP_
 
 #include <string>
 /*!
@@ -28,8 +27,8 @@
     @return the number of characters required to escape string @a s
     @complexity Linear in the length of string @a s.
     */
-std::size_t extra_space(const std::string &s)noexcept; 
+std::size_t extra_space(const std::string &s) noexcept;
 
 std::string escape_string(const std::string &s) noexcept;
 
-#endif // DATA_ACCESS_RONDB_SRC_MY_STRING_H_
+#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_MYSTRING_HPP_
