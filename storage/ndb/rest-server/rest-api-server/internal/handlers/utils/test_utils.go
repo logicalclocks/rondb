@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
@@ -48,7 +49,7 @@ func SendHttpRequest(t testing.TB, tc common.TestContext, httpVerb string,
 	url string, body string, expectedStatus int, expectedErrMsg string) (int, string) {
 	t.Helper()
 
-	client := setupClient(tc)
+	client := setupHttpClient(t, tc)
 	var req *http.Request
 	var resp *http.Response
 	var err error
@@ -95,28 +96,26 @@ func SendHttpRequest(t testing.TB, tc common.TestContext, httpVerb string,
 	return respCode, respBody
 }
 
-func setupClient(tc common.TestContext) *http.Client {
-
+func setupHttpClient(t testing.TB, tc common.TestContext) *http.Client {
 	c := &http.Client{}
+	c.Transport = &http.Transport{TLSClientConfig: GetClientTLSConfig(t, tc)}
+	return c
+}
 
+func GetClientTLSConfig(t testing.TB, tc common.TestContext) *tls.Config {
+	clientTLSConfig := tls.Config{}
 	if config.Configuration().Security.RootCACertFile != "" {
-		transport := &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs: tlsutils.TrustedCAs(tc.RootCACertFile),
-			},
-		}
-
-		if config.Configuration().Security.RequireAndVerifyClientCert {
-			clientCert, err := tls.LoadX509KeyPair(tc.ClientCertFile, tc.ClientKeyFile)
-			if err != nil {
-				log.Fatalf("%v\n", err)
-			}
-			transport.TLSClientConfig.Certificates = []tls.Certificate{clientCert}
-		}
-		c.Transport = transport
+		clientTLSConfig.RootCAs = tlsutils.TrustedCAs(tc.RootCACertFile)
 	}
 
-	return c
+	if config.Configuration().Security.RequireAndVerifyClientCert {
+		clientCert, err := tls.LoadX509KeyPair(tc.ClientCertFile, tc.ClientKeyFile)
+		if err != nil {
+			t.Fatalf("%v", err)
+		}
+		clientTLSConfig.Certificates = []tls.Certificate{clientCert}
+	}
+	return &clientTLSConfig
 }
 
 func ValidateResHttp(t testing.TB, testInfo api.PKTestInfo, resp string, isBinaryData bool) {
@@ -489,19 +488,20 @@ func PkTest(t *testing.T, tests map[string]api.PKTestInfo, isBinaryData bool, ha
 }
 
 func pkGRPCTest(t *testing.T, testInfo api.PKTestInfo, tc common.TestContext, isBinaryData bool) {
-	respCode, resp := sendGRPCPKReadRequest(t, testInfo)
+	respCode, resp := sendGRPCPKReadRequest(t, tc, testInfo)
 
 	if respCode == http.StatusOK {
 		ValidateResGRPC(t, testInfo, resp, isBinaryData)
 	}
 }
 
-func sendGRPCPKReadRequest(t *testing.T, testInfo api.PKTestInfo) (int, *api.PKReadResponseGRPC) {
+func sendGRPCPKReadRequest(t *testing.T, tc common.TestContext,
+	testInfo api.PKTestInfo) (int, *api.PKReadResponseGRPC) {
 	// Create gRPC client
 	conn, err := grpc.Dial(fmt.Sprintf("%s:%d",
 		config.Configuration().RestServer.GRPCServerIP,
 		config.Configuration().RestServer.GRPCServerPort),
-		grpc.WithInsecure())
+		grpc.WithTransportCredentials(credentials.NewTLS(GetClientTLSConfig(t, tc))))
 	defer conn.Close()
 
 	if err != nil {
@@ -605,18 +605,19 @@ func BatchTest(t *testing.T, tests map[string]api.BatchOperationTestInfo, isBina
 }
 
 func batchGRPCTest(t *testing.T, testInfo api.BatchOperationTestInfo, tc common.TestContext, isBinaryData bool) {
-	httpCode, res := sendGRPCBatchRequest(t, testInfo)
+	httpCode, res := sendGRPCBatchRequest(t, tc, testInfo)
 	if httpCode == http.StatusOK {
 		validateBatchResponseGRPC(t, testInfo, res, isBinaryData)
 	}
 }
 
-func sendGRPCBatchRequest(t *testing.T, testInfo api.BatchOperationTestInfo) (int, *api.BatchResponseGRPC) {
+func sendGRPCBatchRequest(t *testing.T, tc common.TestContext,
+	testInfo api.BatchOperationTestInfo) (int, *api.BatchResponseGRPC) {
 	// Create gRPC client
 	conn, err := grpc.Dial(fmt.Sprintf("%s:%d",
 		config.Configuration().RestServer.GRPCServerIP,
 		config.Configuration().RestServer.GRPCServerPort),
-		grpc.WithInsecure())
+		grpc.WithTransportCredentials(credentials.NewTLS(GetClientTLSConfig(t, tc))))
 	defer conn.Close()
 
 	if err != nil {

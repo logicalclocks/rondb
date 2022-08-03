@@ -21,7 +21,6 @@ package dal
 /*
 #cgo CFLAGS: -g -Wall
 #include <stdlib.h>
-#include <stdbool.h>
 #include "./../../../data-access-rondb/src/rdrs-dal.h"
 #include "./../../../data-access-rondb/src/rdrs-hopsworks-dal.h"
 #include "./../../../data-access-rondb/src/rdrs-const.h"
@@ -55,7 +54,7 @@ func InitRonDBConnection(connStr string, find_available_node_id bool) *DalError 
 
 	cs := C.CString(connStr)
 	defer C.free(unsafe.Pointer(cs))
-	ret := C.init(cs, C.bool(find_available_node_id))
+	ret := C.init(cs, C.uint(btoi(find_available_node_id)))
 
 	if ret.http_code != http.StatusOK {
 		return cToGoRet(&ret)
@@ -141,4 +140,11 @@ func GetRonDBStats() (*RonDBStats, *DalError) {
 	rstats.NdbObjectsFreeCount = int64(p.ndb_objects_available)
 
 	return &rstats, nil
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

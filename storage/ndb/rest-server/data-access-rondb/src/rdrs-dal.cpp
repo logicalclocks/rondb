@@ -44,7 +44,7 @@ Ndb_cluster_connection *ndb_connection;
  * connect to
  * @return status
  */
-RS_Status init(const char *connection_string, _Bool find_available_node_id) {
+RS_Status init(const char *connection_string, unsigned int find_available_node_id) {
 
   int retCode = 0;
   DEBUG(std::string("Connecting to ") + connection_string);
@@ -55,7 +55,7 @@ RS_Status init(const char *connection_string, _Bool find_available_node_id) {
   }
 
   int node_id = -1;
-  if (find_available_node_id == true) {
+  if (find_available_node_id != 0) {
     node_id = GetAvailableAPINode(connection_string);
     if (node_id == -1) {
       return RS_SERVER_ERROR(ERROR_024);
