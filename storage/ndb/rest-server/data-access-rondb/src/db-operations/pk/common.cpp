@@ -21,13 +21,13 @@
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/beast/core/detail/base64.hpp>
 #include <decimal_utils.hpp>
+#include <sql_string.h>
 #include <string>
 #include <algorithm>
 #include <utility>
 #include "src/error-strs.h"
 #include "src/status.hpp"
 #include "src/rondb-lib/rdrs_date.hpp"
-#include "src/rondb-lib/rdrs_string.hpp"
 #include "src/mystring.hpp"
 #include "src/rdrs-const.h"
 

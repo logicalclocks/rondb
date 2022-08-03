@@ -29,8 +29,6 @@
 typedef unsigned char uchar;
 typedef Uint32 uint32;
 typedef Int32 int32;
-typedef Int64 int64;
-typedef Uint64 uint64;
 typedef Uint64 ulonglong;
 typedef Int64 longlong;
 

@@ -20,10 +20,10 @@
 #include "src/db-operations/pk/pkr-response.hpp"
 
 #include <mysql.h>
+#include <sql_string.h>
 #include <iostream>
 #include <sstream>
 #include <cassert>
-#include "src/rondb-lib/rdrs_string.hpp"
 #include "src/mystring.hpp"
 #include "src/rdrs-const.h"
 
