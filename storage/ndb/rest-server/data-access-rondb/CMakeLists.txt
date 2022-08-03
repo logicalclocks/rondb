@@ -24,7 +24,8 @@ if(WITH_RDRS)
   
   INCLUDE_DIRECTORIES(
     ${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi
-    ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi)
+    ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
+    ${CMAKE_SOURCE_DIR}/storage/ndb/include/util)
   INCLUDE_DIRECTORIES(SYSTEM ${BOOST_PATCHES_DIR} ${BOOST_INCLUDE_DIR})
   
   link_directories(${RONDB_DIR}/lib)
