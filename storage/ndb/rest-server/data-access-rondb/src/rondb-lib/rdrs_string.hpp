@@ -17,8 +17,8 @@
  * USA.
  */
 
-#ifndef DATA_ACCESS_RONDB_SRC_RONDB_LIB_RDRS_STRING_HPP_
-#define DATA_ACCESS_RONDB_SRC_RONDB_LIB_RDRS_STRING_HPP_
+#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RONDB_LIB_RDRS_STRING_HPP_
+#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RONDB_LIB_RDRS_STRING_HPP_
 
 #include <stdint.h>
 #include <cstring>
@@ -33,4 +33,4 @@ size_t well_formed_copy_nchars(const CHARSET_INFO *to_cs, char *to, size_t to_le
                                const CHARSET_INFO *from_cs, const char *from, size_t from_length,
                                size_t nchars, const char **well_formed_error_pos,
                                const char **cannot_convert_error_pos, const char **from_end_pos);
-#endif  // DATA_ACCESS_RONDB_SRC_RONDB_LIB_RDRS_STRING_HPP_
+#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RONDB_LIB_RDRS_STRING_HPP_

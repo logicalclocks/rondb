@@ -17,7 +17,6 @@
  * USA.
  */
 
-//#include "src/rdrs-dal.h"
 #include "src/rdrs-hopsworks-dal.h"
 #include <cstring>
 #include <string>
@@ -61,7 +60,6 @@ RS_Status start_transaction(Ndb *ndb_object, NdbTransaction **tx) {
 RS_Status get_index_scan_op(Ndb *ndb_object, NdbTransaction *tx,
                             const NdbDictionary::Table *table_dict, const char *index_name,
                             NdbScanOperation **scanOp) {
-
   NdbError err;
   const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
   const NdbDictionary::Index *index     = dict->getIndex(index_name, table_dict->getName());
@@ -88,7 +86,6 @@ RS_Status read_tuples(Ndb *ndb_object, NdbScanOperation *scanOp) {
 }
 
 RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey *api_key) {
-
   NdbError err;
   const NdbDictionary::Table *table_dict;
   NdbTransaction *tx;
@@ -125,7 +122,7 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
 
   char cmp_str[col_size];
   memcpy(cmp_str + 1, prefix, col_size - 1);
-  cmp_str[0] = (char)strlen(prefix);
+  cmp_str[0] = static_cast<char>(strlen(prefix));
 
   NdbScanFilter filter(scanOp);
   if (filter.begin(NdbScanFilter::AND) < 0 ||
@@ -207,7 +204,6 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
 }
 
 RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key) {
-
   Ndb *ndb_object  = nullptr;
   RS_Status status = NdbObjectPool::GetInstance()->GetNdbObject(ndb_connection, &ndb_object);
   if (status.http_code != SUCCESS) {
@@ -225,7 +221,6 @@ RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key) {
 }
 
 RS_Status find_user_int(Ndb *ndb_object, Uint32 uid, HopsworksUsers *users) {
-
   // FIX ME: Use batch PK lookups instead of Index Scan Op
   //
 
@@ -280,7 +275,6 @@ RS_Status find_user_int(Ndb *ndb_object, Uint32 uid, HopsworksUsers *users) {
 
   while ((check = scanOp->nextResult(true)) == 0) {
     do {
-
       Uint32 email_attr_bytes;
       const char *email_data_start = nullptr;
       if (GetByteArray(email, &email_data_start, &email_attr_bytes) != 0) {
@@ -293,7 +287,6 @@ RS_Status find_user_int(Ndb *ndb_object, Uint32 uid, HopsworksUsers *users) {
 
       memcpy(users->email, email_data_start, email_attr_bytes);
       users->email[email_attr_bytes] = 0;
-
     } while ((check = scanOp->nextResult(false)) == 0);
   }
 
@@ -303,7 +296,6 @@ RS_Status find_user_int(Ndb *ndb_object, Uint32 uid, HopsworksUsers *users) {
 }
 
 RS_Status find_user(Uint32 uid, HopsworksUsers *users) {
-
   Ndb *ndb_object  = nullptr;
   RS_Status status = NdbObjectPool::GetInstance()->GetNdbObject(ndb_connection, &ndb_object);
   if (status.http_code != SUCCESS) {
@@ -322,7 +314,6 @@ RS_Status find_user(Uint32 uid, HopsworksUsers *users) {
 
 RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
                                 std::vector<HopsworksProjectTeam> *project_team_vec) {
-
   NdbError err;
   const NdbDictionary::Table *table_dict;
   NdbTransaction *tx;
@@ -359,7 +350,7 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
 
   char cmp_str[col_size];
   memcpy(cmp_str + 1, users->email, strlen(users->email));
-  cmp_str[0] = (char)strlen(users->email);
+  cmp_str[0] = static_cast<char>(strlen(users->email));
 
   NdbScanFilter filter(scanOp);
   if (filter.begin(NdbScanFilter::AND) < 0 ||
@@ -397,7 +388,6 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
 
 RS_Status find_project_team(HopsworksUsers *users,
                             std::vector<HopsworksProjectTeam> *project_team_vec) {
-
   Ndb *ndb_object  = nullptr;
   RS_Status status = NdbObjectPool::GetInstance()->GetNdbObject(ndb_connection, &ndb_object);
   if (status.http_code != SUCCESS) {
@@ -416,7 +406,6 @@ RS_Status find_project_team(HopsworksUsers *users,
 
 RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *project_team_vec,
                             std::vector<HopsworksProject> *project_vec) {
-
   // FIX ME: Use batch PK lookups instead of Index Scan Op
   //
   NdbError err;
@@ -527,7 +516,6 @@ RS_Status find_projects_vec(std::vector<HopsworksProjectTeam> *project_team_vec,
 }
 
 RS_Status find_all_projects(int uid, char ***projects, int *count) {
-
   HopsworksUsers user;
   RS_Status status = find_user((Uint32)uid, &user);
   if (status.http_code != SUCCESS) {
@@ -548,8 +536,6 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
 
   *count = project_vec.size();
   HopsworksProject dummy;
-  // void *p = malloc(*count * sizeof(char *));
-
   *projects = (char **)malloc(*count * sizeof(char *));
 
   char **ease = *projects;
@@ -564,7 +550,6 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
  * only for testing
  */
 int main(int argc, char **argv) {
-
   std::cout << "size of is " << sizeof(HopsworksAPIKey) << std::endl;
 
   char connection_string[] = "localhost:1186";

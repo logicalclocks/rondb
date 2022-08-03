@@ -21,12 +21,12 @@
 extern "C" {
 #endif
 
-#ifndef DATA_ACCESS_RONDB_SRC_RDRS_HOPSWORKS_DAL_H_
-#define DATA_ACCESS_RONDB_SRC_RDRS_HOPSWORKS_DAL_H_
+#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_HOPSWORKS_DAL_H_
+#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_HOPSWORKS_DAL_H_
 
 typedef struct RS_Status RS_Status;
 
-//API Key table
+// API Key table
 typedef struct HopsworksAPIKey {
   char secret[513];
   char salt[257];
@@ -34,17 +34,17 @@ typedef struct HopsworksAPIKey {
   int user_id;
 } HopsworksAPIKey;
 
-//User table
+// User table
 typedef struct HopsworksUsers {
   char email[151];
 } HopsworksUsers;
 
-//project_team table
+// project_team table
 typedef struct HopsworksProjectTeam {
   int project_id;
 } HopsworksProjectTeam;
 
-//project_team table
+// project_team table
 typedef struct HopsworksProject {
   char porjectname[101];
 } HopsworksProject;
@@ -52,8 +52,7 @@ typedef struct HopsworksProject {
 /**
  * Find api key row for given secret
  */
-RS_Status find_api_key(const char *prefix, HopsworksAPIKey* api_key);
-
+RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key);
 
 /*
  * Find all projects for the api key
@@ -64,5 +63,5 @@ RS_Status find_all_projects(int uid, char ***projects, int *count);
 
 #ifdef __cplusplus
 }
-#endif  // DATA_ACCESS_RONDB_SRC_RDRS_HOPSWORKS_DAL_H_
+#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_HOPSWORKS_DAL_H_
 

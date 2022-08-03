@@ -45,7 +45,6 @@ Ndb_cluster_connection *ndb_connection;
  * @return status
  */
 RS_Status init(const char *connection_string, unsigned int find_available_node_id) {
-
   int retCode = 0;
   DEBUG(std::string("Connecting to ") + connection_string);
 

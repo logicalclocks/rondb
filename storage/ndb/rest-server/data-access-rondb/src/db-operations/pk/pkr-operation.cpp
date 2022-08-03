@@ -44,7 +44,6 @@ PKROperation::PKROperation(RS_Buffer *req_buff, RS_Buffer *resp_buff, Ndb *ndb_o
 
 PKROperation::PKROperation(Uint32 no_ops, RS_Buffer *req_buffs, RS_Buffer *resp_buffs,
                            Ndb *ndb_object) {
-
   this->no_ops = no_ops;
   for (Uint32 i = 0; i < no_ops; i++) {
     this->requests.push_back(new PKRRequest(&req_buffs[i]));
@@ -183,7 +182,6 @@ RS_Status PKROperation::CreateResponse() {
 
 RS_Status PKROperation::AppendOpRecs(bool found, PKRRequest *req, PKRResponse *resp,
                                      std::vector<NdbRecAttr *> *recs) {
-
   for (Uint32 i = 0; i < recs->size(); i++) {
     RS_Status status = WriteColToRespBuff((*recs)[i], resp);
     if (status.http_code != SUCCESS) {
@@ -194,9 +192,7 @@ RS_Status PKROperation::AppendOpRecs(bool found, PKRRequest *req, PKRResponse *r
 }
 
 RS_Status PKROperation::Init() {
-
   for (size_t i = 0; i < no_ops; i++) {
-
     PKRRequest *req = requests[i];
     std::unordered_map<std::string, const NdbDictionary::Column *> pk_cols;
     std::unordered_map<std::string, const NdbDictionary::Column *> non_pk_cols;

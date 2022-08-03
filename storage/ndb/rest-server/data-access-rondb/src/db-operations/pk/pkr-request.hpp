@@ -16,8 +16,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301,
  * USA.
  */
-#ifndef DATA_ACCESS_RONDB_SRC_PK_READ_PKR_REQUEST_HPP_
-#define DATA_ACCESS_RONDB_SRC_PK_READ_PKR_REQUEST_HPP_
+#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_PKR_REQUEST_HPP_
+#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_PKR_REQUEST_HPP_
 
 #include <stdint.h>
 #include <NdbApi.hpp>
@@ -83,10 +83,10 @@ class PKRRequest {
   const char *PKName(Uint32 n);
 
   /**
-   * Get length of PK column value 
+   * Get length of PK column value
    *
    * @param n. index
-   * @return PK length of the string 
+   * @return PK length of the string
    */
   Uint16 PKValueLen(Uint32 n);
 
@@ -123,10 +123,10 @@ class PKRRequest {
   const char *ReadColumnName(const Uint32 n);
 
   /**
-   * Get read column data return type 
+   * Get read column data return type
    *
    * @param n. index
-   * @return return data type 
+   * @return return data type
    */
   DataReturnType ReadColumnReturnType(const Uint32 n);
 
@@ -138,4 +138,4 @@ class PKRRequest {
   const char *OperationId();
 };
 
-#endif  // DATA_ACCESS_RONDB_SRC_PK_READ_PKR_REQUEST_HPP_
+#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_PKR_REQUEST_HPP_

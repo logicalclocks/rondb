@@ -17,27 +17,27 @@
  * USA.
  */
 
-#ifndef DATA_ACCESS_RONDB_SRC_NDB_OBJECT_POOL_HPP_
-#define DATA_ACCESS_RONDB_SRC_NDB_OBJECT_POOL_HPP_
+#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_NDB_OBJECT_POOL_HPP_
+#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_NDB_OBJECT_POOL_HPP_
 
-#include <NdbApi.hpp>
 #include <list>
 #include <mutex>
-#include "rdrs-dal.h"
+#include <NdbApi.hpp>
+#include "src/rdrs-dal.h"
 
 class NdbObjectPool {
  private:
   std::list<Ndb *> __ndb_objects;
   std::mutex __mutex;
-  RonDB_Stats stats; 
+  RonDB_Stats stats;
 
-  static NdbObjectPool *__instance; 
+  static NdbObjectPool *__instance;
   NdbObjectPool() {
   }
 
  public:
   /**
-   * Static method for initializing instance pool 
+   * Static method for initializing instance pool
    *
    * @return ObjectPool instance.
    */
@@ -80,6 +80,5 @@ class NdbObjectPool {
    *
    */
   RS_Status Close();
-
 };
-#endif  // DATA_ACCESS_RONDB_SRC_NDB_OBJECT_POOL_HPP_
+#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_NDB_OBJECT_POOL_HPP_

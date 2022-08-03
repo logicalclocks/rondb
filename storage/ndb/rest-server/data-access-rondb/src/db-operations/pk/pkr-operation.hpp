@@ -16,8 +16,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301,
  * USA.
  */
-#ifndef DATA_ACCESS_RONDB_SRC_PK_READ_PKR_OPERATION_HPP_
-#define DATA_ACCESS_RONDB_SRC_PK_READ_PKR_OPERATION_HPP_
+#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_
+#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_
 
 #include <stdint.h>
 #include <string>
@@ -118,4 +118,4 @@ class PKROperation {
   RS_Status AppendOpRecs(bool found, PKRRequest *req, PKRResponse *resp,
                          std::vector<NdbRecAttr *> *recs);
 };
-#endif  // DATA_ACCESS_RONDB_SRC_PK_READ_PKR_OPERATION_HPP_
+#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_

@@ -20,6 +20,9 @@
 #include "src/db-operations/pk/common.hpp"
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/beast/core/detail/base64.hpp>
+#include <string>
+#include <algorithm>
+#include <utility>
 #include "src/error-strs.h"
 #include "src/status.hpp"
 #include "src/rondb-lib/rdrs_date.hpp"
