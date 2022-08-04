@@ -787,7 +787,7 @@ ClusterMgr::recalcMinApiVersion()
 void
 ClusterMgr::execACTIVATE_REQ(const Uint32 *theData)
 {
-  const ActivateReq * const activateReq = (ActivateReq *)&theData[0];
+  const ActivateReq * const activateReq = (const ActivateReq *)&theData[0];
   TransporterRegistry *tr = theFacade.get_registry();
   Uint32 senderRef = activateReq->senderRef;
   Uint32 activateNodeId = activateReq->activateNodeId;
@@ -829,7 +829,7 @@ ClusterMgr::execACTIVATE_REQ(const Uint32 *theData)
 void
 ClusterMgr::execDEACTIVATE_REQ(const Uint32 *theData)
 {
-  const DeactivateReq * const deactivateReq = (DeactivateReq *)&theData[0];
+  const DeactivateReq * const deactivateReq = (const DeactivateReq *)&theData[0];
   TransporterRegistry *tr = theFacade.get_registry();
   Uint32 senderRef = deactivateReq->senderRef;
   Uint32 deactivateNodeId = deactivateReq->deactivateNodeId;
@@ -875,7 +875,7 @@ ClusterMgr::execSET_HOSTNAME_REQ(const NdbApiSignal* sig,
   TransporterRegistry *tr = theFacade.get_registry();
   const Uint32 * theData = sig->getDataPtr();
   const SetHostnameReq * const setHostnameReq =
-    (SetHostnameReq *)&theData[0];
+    (const SetHostnameReq *)&theData[0];
   Uint32 senderRef = setHostnameReq->senderRef;
   Uint32 changeNodeId = setHostnameReq->changeNodeId;
   bool ok = true;

@@ -437,7 +437,7 @@ struct Fragmentrec {
   Uint32 lockOwnersList[NUM_ACC_FRAGMENT_MUTEXES];
 #endif
 
-  Uint32 lockCount;
+  Uint32 lockCount[NUM_ACC_FRAGMENT_MUTEXES];
 
 //-----------------------------------------------------------------------------
 // References to Directory Ranges (which in turn references directories, which
@@ -1009,14 +1009,18 @@ private:
   bool validatePageCount() const;
 #endif
 public:  
-  void startNext(Signal* signal, OperationrecPtr lastOp);
+  void startNext(Signal* signal, OperationrecPtr lastOp, Uint32 hash);
   
 private:
   Uint32 placeReadInLockQueue(OperationrecPtr lockOwnerPtr) const;
   Uint32 placeWriteInLockQueue(OperationrecPtr lockOwnerPtr) const;
   void placeSerialQueue(OperationrecPtr lockOwner, OperationrecPtr op) const;
-  void abortSerieQueueOperation(Signal* signal, OperationrecPtr op);  
-  void abortParallelQueueOperation(Signal* signal, OperationrecPtr op);
+  void abortSerieQueueOperation(Signal* signal,
+                                OperationrecPtr op,
+                                Uint32 hash);
+  void abortParallelQueueOperation(Signal* signal,
+                                   OperationrecPtr op,
+                                   Uint32 hash);
   void mark_pending_abort(OperationrecPtr abortingOp, Uint32 nextParallelOp);
   
   void expandcontainer(Page8Ptr pageptr, Uint32 conidx);
@@ -1121,7 +1125,7 @@ private:
   void releaseLeftlist(Page8Ptr rlPageptr, Uint32 conidx, Uint32 conptr);
   void releaseRightlist(Page8Ptr rlPageptr, Uint32 conidx, Uint32 conptr);
   void checkoverfreelist(Page8Ptr colPageptr);
-  void abortOperation(Signal* signal);
+  void abortOperation(Signal* signal, Uint32 hash);
   void commitOperation(Signal* signal);
   void copyOpInfo(OperationrecPtr dst, OperationrecPtr src) const;
   Uint32 executeNextOperation(Signal* signal) const;
@@ -1129,8 +1133,9 @@ private:
   void release_lockowner(Signal* signal,
                          OperationrecPtr,
                          bool commit,
-                         bool & trigger_dealloc_op);
-  void startNew(Signal* signal, OperationrecPtr newOwner);
+                         bool & trigger_dealloc_op,
+                         Uint32 hash);
+  void startNew(Signal* signal, OperationrecPtr newOwner, Uint32 hash);
   void abortWaitingOperation(Signal*, OperationrecPtr) const;
   void abortExecutedOperation(Signal*, OperationrecPtr) const;
   
@@ -1180,13 +1185,18 @@ private:
   void acckeyref1Lab(Signal* signal, Uint32 result_code) const;
   void insertelementLab(Signal* signal,
                         Page8Ptr bucketPageptr,
-                        Uint32 bucketConidx);
+                        Uint32 bucketConidx,
+                        Uint32 hash);
   void checkNextFragmentLab(Signal* signal);
   void endofexpLab(Signal* signal);
   void endofshrinkbucketLab(Signal* signal);
   void sendholdconfsignalLab(Signal* signal) const;
-  void accIsLockedLab(Signal* signal, OperationrecPtr lockOwnerPtr);
-  void insertExistElemLab(Signal* signal, OperationrecPtr lockOwnerPtr);
+  void accIsLockedLab(Signal* signal,
+                      OperationrecPtr lockOwnerPtr,
+                      Uint32 hash);
+  void insertExistElemLab(Signal* signal,
+                          OperationrecPtr lockOwnerPtr,
+                          Uint32 hash);
   void releaseScanLab(Signal* signal);
   void initialiseRecordsLab(Signal* signal, Uint32, Uint32, Uint32);
   void checkNextBucketLab(Signal* signal);
@@ -1308,12 +1318,14 @@ public:
   Operationrec* getOperationPtrP(Uint32 opPtrI);
 
   bool acquire_frag_mutex_hash(Fragmentrec *fragPtrP,
-                               OperationrecPtr opPtr)
+                               OperationrecPtr opPtr,
+                               Uint32 & inx)
   {
+    inx = 0;
     if (qt_likely(globalData.ndbMtQueryWorkers > 0))
     {
       LHBits32 hashVal = getElementHash(opPtr);
-      Uint32 inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
+      inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
       NdbMutex_Lock(&fragPtrP->acc_frag_mutex[inx]);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
       m_acc_mutex_locked = inx;
@@ -1327,12 +1339,10 @@ public:
     return false;
   }
   void release_frag_mutex_hash(Fragmentrec *fragPtrP,
-                               OperationrecPtr opPtr)
+                               Uint32 inx)
   {
     if (qt_likely(globalData.ndbMtQueryWorkers > 0))
     {
-      LHBits32 hashVal = getElementHash(opPtr);
-      Uint32 inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
       jam();
       jamLine(Uint16(inx));
@@ -1340,6 +1350,10 @@ public:
       m_acc_mutex_locked = RNIL;
 #endif
       NdbMutex_Unlock(&fragPtrP->acc_frag_mutex[inx]);
+    }
+    else
+    {
+      ndbassert(inx == 0);
     }
   }
   void acquire_frag_mutex_bucket(Fragmentrec *fragPtrP,

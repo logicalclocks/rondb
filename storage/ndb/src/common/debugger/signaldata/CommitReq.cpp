@@ -30,10 +30,10 @@
 bool
 printCOMMITREQ(FILE * output,
                const Uint32 * theData,
-               Uint32 len,
-               Uint16 receiverBlockNo)
+               Uint32 /*len*/,
+               Uint16 /*receiverBlockNo*/)
 {
-  const CommitReq * const sig = (CommitReq *) theData;
+  const CommitReq * const sig = (const CommitReq *) theData;
   fprintf(output,
     " ReqPtr = H\'%.8x reqBlockRef = H\'%.8x"
     " transId1 = H\'%.8x transId2 = H\'%.8x\n"
@@ -54,10 +54,10 @@ printCOMMITREQ(FILE * output,
 bool
 printCOMMIT(FILE * output,
             const Uint32 * theData,
-            Uint32 len,
-            Uint16 receiverBlockNo)
+            Uint32 /*len*/,
+            Uint16 /*receiverBlockNo*/)
 {
-  const Commit * const sig = (Commit *) theData;
+  const Commit * const sig = (const Commit *) theData;
   fprintf(output,
     " tcConnectPtr = H\'%.8x"
     " transId1 = H\'%.8x transId2 = H\'%.8x\n"
@@ -74,10 +74,10 @@ printCOMMIT(FILE * output,
 bool
 printCOMMITTED(FILE * output,
               const Uint32 * theData,
-              Uint32 len,
-              Uint16 receiverBlockNo)
+              Uint32 /*len*/,
+              Uint16 /*receiverBlockNo*/)
 {
-  const Committed * const sig = (Committed *) theData;
+  const Committed * const sig = (const Committed *) theData;
   fprintf(output,
     " tcConnectPtr = H\'%.8x"
     " transId1 = H\'%.8x transId2 = H\'%.8x\n",
@@ -91,10 +91,10 @@ printCOMMITTED(FILE * output,
 bool
 printCOMMITCONF(FILE * output,
                 const Uint32 * theData,
-                Uint32 len,
-                Uint16 receiverBlockNo)
+                Uint32 /*len*/,
+                Uint16 /*receiverBlockNo*/)
 {
-  const CommitConf * const sig = (CommitConf *) theData;
+  const CommitConf * const sig = (const CommitConf *) theData;
   fprintf(output,
     " tcConnectPtr = H\'%.8x senderNodeId = H\'%.8x"
     " transId1 = H\'%.8x transId2 = H\'%.8x\n",
@@ -109,10 +109,10 @@ printCOMMITCONF(FILE * output,
 bool
 printCOMPLETEREQ(FILE * output,
                const Uint32 * theData,
-               Uint32 len,
-               Uint16 receiverBlockNo)
+               Uint32 /*len*/,
+               Uint16 /*receiverBlockNo*/)
 {
-  const CompleteReq * const sig = (CompleteReq *) theData;
+  const CompleteReq * const sig = (const CompleteReq *) theData;
   fprintf(output,
     " ReqPtr = H\'%.8x reqBlockRef = H\'%.8x\n"
     " transId1 = H\'%.8x transId2 = H\'%.8x"
@@ -130,10 +130,10 @@ printCOMPLETEREQ(FILE * output,
 bool
 printCOMPLETE(FILE * output,
               const Uint32 * theData,
-              Uint32 len,
-              Uint16 receiverBlockNo)
+              Uint32 /*len*/,
+              Uint16 /*receiverBlockNo*/)
 {
-  const Complete * const sig = (Complete *) theData;
+  const Complete * const sig = (const Complete *) theData;
   fprintf(output,
     " tcConnectPtr = H\'%.8x"
     " transId1 = H\'%.8x transId2 = H\'%.8x\n",
@@ -147,10 +147,10 @@ printCOMPLETE(FILE * output,
 bool
 printCOMPLETED(FILE * output,
                const Uint32 * theData,
-               Uint32 len,
-               Uint16 receiverBlockNo)
+               Uint32 /*len*/,
+               Uint16 /*receiverBlockNo*/)
 {
-  const Completed * const sig = (Completed *) theData;
+  const Completed * const sig = (const Completed *) theData;
   fprintf(output,
     " tcConnectPtr = H\'%.8x"
     " transId1 = H\'%.8x transId2 = H\'%.8x\n",
@@ -164,10 +164,10 @@ printCOMPLETED(FILE * output,
 bool
 printCOMPLETECONF(FILE * output,
                   const Uint32 * theData,
-                  Uint32 len,
-                  Uint16 receiverBlockNo)
+                  Uint32 /*len*/,
+                  Uint16 /*receiverBlockNo*/)
 {
-  const CompleteConf * const sig = (CompleteConf *) theData;
+  const CompleteConf * const sig = (const CompleteConf *) theData;
   fprintf(output,
     " tcConnectPtr = H\'%.8x senderNodeId = H\'%.8x"
     " transId1 = H\'%.8x transId2 = H\'%.8x\n",
