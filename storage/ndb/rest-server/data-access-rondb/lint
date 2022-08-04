@@ -1,0 +1,5 @@
+if [[ -z "$1" ]]; then
+  cpplint --recursive --linelength=100 src
+else
+  cpplint --recursive --linelength=100 $1
+fi
