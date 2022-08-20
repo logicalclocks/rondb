@@ -623,7 +623,11 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     // TODO(salman) how to deal with time zone setting in mysql server
     //
 
+<<<<<<< HEAD
     my_timeval my_tv{epoch, (Int64)l_time.second_part};
+=======
+    timeval my_tv{epoch, (Int64)l_time.second_part};
+>>>>>>> c7acd7524734640d563330045cee879aab58c609
     my_timestamp_to_binary(&my_tv, packed, precision);
 
     if (operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), packed_len) !=
@@ -859,10 +863,17 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     ///< 4 bytes + 0-3 fraction
     uint precision = col->getPrecision();
 
+<<<<<<< HEAD
     my_timeval my_tv{};
     my_timestamp_from_binary(&my_tv, (const unsigned char *)attr->aRef(), precision);
 
     Int64 epoch_in = my_tv.m_tv_sec;
+=======
+    timeval my_tv{};
+    my_timestamp_from_binary(&my_tv, (const unsigned char *)attr->aRef(), precision);
+
+    Int64 epoch_in = my_tv.tv_sec;
+>>>>>>> c7acd7524734640d563330045cee879aab58c609
     std::time_t stdtime(epoch_in);
     boost::posix_time::ptime ts = boost::posix_time::from_time_t(stdtime);
 
@@ -873,7 +884,11 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     l_time.hour        = ts.time_of_day().hours();
     l_time.minute      = ts.time_of_day().minutes();
     l_time.second      = ts.time_of_day().seconds();
+<<<<<<< HEAD
     l_time.second_part = my_tv.m_tv_usec;
+=======
+    l_time.second_part = my_tv.tv_usec;
+>>>>>>> c7acd7524734640d563330045cee879aab58c609
     l_time.time_type   = MYSQL_TIMESTAMP_DATETIME;
 
     char to[MAX_DATE_STRING_REP_LENGTH];
