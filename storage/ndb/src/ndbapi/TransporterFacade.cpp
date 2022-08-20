@@ -1450,7 +1450,10 @@ TransporterFacade::get_recv_thread_activation_threshold() const
 bool
 TransporterFacade::raise_thread_prio()
 {
-  int ret_code = NdbThread_SetThreadPrio(theReceiveThread, 9);
+  int ret_code = NdbThread_SetScheduler(theReceiveThread, true, false);
+  if (ret_code == 0)
+    return true;
+  ret_code = NdbThread_SetThreadPrio(theReceiveThread, 9);
   return (ret_code == 0) ? true : false;
 }
 
