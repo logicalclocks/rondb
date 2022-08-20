@@ -1167,7 +1167,7 @@ void TransporterFacade::threadMainSend(void)
   }
 
   m_socket_server.startServer();
-  raise_thread_prio();
+  raise_thread_prio(theSendThread);
 
   NDB_TICKS lastActivityCheck = NdbTick_getCurrentTicks();
   while(!theStopSend)
@@ -1448,12 +1448,12 @@ TransporterFacade::get_recv_thread_activation_threshold() const
  * On Windows it sets the thread priority to THREAD_PRIORITY_HIGHEST.
  */
 bool
-TransporterFacade::raise_thread_prio()
+TransporterFacade::raise_thread_prio(NdbThread *thread)
 {
-  int ret_code = NdbThread_SetScheduler(theReceiveThread, true, false);
+  int ret_code = NdbThread_SetScheduler(thread, true, false);
   if (ret_code == 0)
     return true;
-  ret_code = NdbThread_SetThreadPrio(theReceiveThread, 9);
+  ret_code = NdbThread_SetThreadPrio(thread, 9);
   return (ret_code == 0) ? true : false;
 }
 
@@ -1491,7 +1491,7 @@ void TransporterFacade::threadMainReceive(void)
   theTransporterRegistry->startReceiving();
   recv_client = new ReceiveThreadClient(this);
   lock_recv_thread_cpu();
-  const bool raised_thread_prio = raise_thread_prio();
+  const bool raised_thread_prio = raise_thread_prio(theReceiveThread);
   while(!theStopReceive)
   {
     const NDB_TICKS currTime = NdbTick_getCurrentTicks();
