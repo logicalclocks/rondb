@@ -40,7 +40,7 @@ RS_Status select_table(Ndb *ndb_object, const char *database_str, const char *ta
   const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
   *table_dict                           = dict->getTable(table_str);
 
-  if (table_dict == nullptr) {
+  if (*table_dict == nullptr) {
     return RS_CLIENT_ERROR(ERROR_011 + std::string(" Database: ") + std::string(database_str) +
                            std::string(". Table: ") + std::string(table_str));
   }
@@ -50,7 +50,7 @@ RS_Status select_table(Ndb *ndb_object, const char *database_str, const char *ta
 RS_Status start_transaction(Ndb *ndb_object, NdbTransaction **tx) {
   NdbError err;
   *tx = ndb_object->startTransaction();
-  if (tx == nullptr) {
+  if (*tx == nullptr) {
     err = ndb_object->getNdbError();
     return RS_RONDB_SERVER_ERROR(err, ERROR_005);
   }

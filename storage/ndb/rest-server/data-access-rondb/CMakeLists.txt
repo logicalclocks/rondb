@@ -19,23 +19,25 @@
 project (rdrclient)
 
 if(WITH_RDRS) 
-  include_directories (${CMAKE_SOURCE_DIR}/include)
-  include_directories(${PROJECT_SOURCE_DIR})
-  
+
   INCLUDE_DIRECTORIES(
+    ${PROJECT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi
     ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
     ${CMAKE_SOURCE_DIR}/storage/ndb/include/util
     ${CMAKE_SOURCE_DIR}/include)
   INCLUDE_DIRECTORIES(SYSTEM ${BOOST_PATCHES_DIR} ${BOOST_INCLUDE_DIR})
   
-  link_directories(${RONDB_DIR}/lib)
-  
   file(GLOB_RECURSE RDRS_LIB_SOURCE ${PROJECT_SOURCE_DIR}/src/*)
   
-  add_library(rdrclient SHARED ${RDRS_LIB_SOURCE})
+  ADD_LIBRARY(rdrclient SHARED ${RDRS_LIB_SOURCE})
   
   TARGET_LINK_LIBRARIES(rdrclient ndbclient_so rdrs_string pthread)
+
+  SET_TARGET_PROPERTIES(rdrclient PROPERTIES
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/library_output_directory)
+
   INSTALL(TARGETS rdrclient
       DESTINATION ${INSTALL_LIBDIR} COMPONENT Development)
 endif()
