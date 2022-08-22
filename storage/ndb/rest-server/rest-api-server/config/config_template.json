@@ -21,7 +21,7 @@
         },
         "Security": {
                 "EnableTLS": true,
-                "RequireAndVerifyClientCert": true,
+                "RequireAndVerifyClientCert": false,
                 "CertificateFile": "",
                 "PrivateKeyFile": ""
         },
@@ -33,3 +33,4 @@
                 "MaxAge": 30
         }
 }
+

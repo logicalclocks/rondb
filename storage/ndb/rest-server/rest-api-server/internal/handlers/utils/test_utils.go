@@ -453,8 +453,6 @@ func WithDBs(t testing.TB, dbs []string, handlers *handlers.AllHandlers,
 	}
 	defer shutDownRouter(t, routerCtx)
 
-	time.Sleep(250 * time.Millisecond)
-
 	fn(tc)
 
 	stats := dal.GetNativeBuffersStats()

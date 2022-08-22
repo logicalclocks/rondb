@@ -65,7 +65,7 @@ func init() {
 			"CREATE DATABASE " + db,
 			"USE " + db,
 
-			"CREATE TABLE table_1(id0 VARCHAR(10), col_0 VARCHAR(100), col_1 VARCHAR(100), col_2 VARCHAR(100), PRIMARY KEY(id0))",
+			"CREATE TABLE table_1(id0 VARCHAR(10), col_0 VARCHAR(100), col_1 VARCHAR(100), col_2 VARCHAR(100), PRIMARY KEY(id0)) ENGINE=ndbcluster",
 			"INSERT INTO table_1 VALUES('id0_data', 'col_0_data', 'col_1_data', 'col_2_data')",
 		},
 
@@ -82,7 +82,7 @@ func init() {
 			"CREATE DATABASE " + db,
 			"USE " + db,
 
-			"CREATE TABLE table_1(id0 VARCHAR(10), id1 VARCHAR(10), col_0 VARCHAR(100), col_1 VARCHAR(100), col_2 VARCHAR(100), PRIMARY KEY(id0, id1))",
+			"CREATE TABLE table_1(id0 VARCHAR(10), id1 VARCHAR(10), col_0 VARCHAR(100), col_1 VARCHAR(100), col_2 VARCHAR(100), PRIMARY KEY(id0, id1)) ENGINE=ndbcluster",
 			"INSERT INTO table_1 VALUES('id0_data', 'id1_data', 'col_0_data', 'col_1_data', 'col_2_data')",
 		},
 
@@ -99,28 +99,28 @@ func init() {
 			"CREATE DATABASE " + db,
 			"USE " + db,
 
-			"CREATE TABLE `date_table` ( `id0` int NOT NULL, `col0` date DEFAULT NULL, `col1` time DEFAULT NULL, `col2` datetime DEFAULT NULL, `col3` timestamp NULL DEFAULT NULL, `col4` year DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `date_table` ( `id0` int NOT NULL, `col0` date DEFAULT NULL, `col1` time DEFAULT NULL, `col2` datetime DEFAULT NULL, `col3` timestamp NULL DEFAULT NULL, `col4` year DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into date_table values(1, \"1111-11-11\", \"11:11:11\", \"1111-11-11 11:11:11\", \"1970-11-11 11:11:11\", \"11\")",
 			"insert into date_table set id0=2",
 
-			"CREATE TABLE `arrays_table` ( `id0` int NOT NULL, `col0` char(100) DEFAULT NULL, `col2` varchar(100) DEFAULT NULL, `col3` binary(100) DEFAULT NULL, `col4` varbinary(100)      DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `arrays_table` ( `id0` int NOT NULL, `col0` char(100) DEFAULT NULL, `col2` varchar(100) DEFAULT NULL, `col3` binary(100) DEFAULT NULL, `col4` varbinary(100)      DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into arrays_table values (1, \"abcd\", \"abcd\", 0xFFFF, 0xFFFF)",
 			"insert into arrays_table set id0=2",
 
-			"CREATE TABLE `set_table` ( `id0` int NOT NULL, `col0` enum('a','b','c','d') DEFAULT NULL, `col1` set('a','b','c','d') DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `set_table` ( `id0` int NOT NULL, `col0` enum('a','b','c','d') DEFAULT NULL, `col1` set('a','b','c','d') DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"INSERT INTO `set_table` VALUES (1,'a','a')",
 			"INSERT INTO `set_table` VALUES (2,'b','a,b')",
 			"insert into set_table set id0=3",
 
-			"CREATE TABLE `special_table` ( `id0` int NOT NULL, `col0` geometry DEFAULT NULL, `col1` point DEFAULT NULL, `col2` linestring DEFAULT NULL, `col3` polygon DEFAULT NULL,       `col4` geomcollection DEFAULT NULL, `col5` multilinestring DEFAULT NULL, `col6` multipoint DEFAULT NULL, `col7` multipolygon DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `special_table` ( `id0` int NOT NULL, `col0` geometry DEFAULT NULL, `col1` point DEFAULT NULL, `col2` linestring DEFAULT NULL, `col3` polygon DEFAULT NULL,       `col4` geomcollection DEFAULT NULL, `col5` multilinestring DEFAULT NULL, `col6` multipoint DEFAULT NULL, `col7` multipolygon DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into special_table set id0=1, col0=ST_GeomFromText('POINT(1 1)'), col1=ST_GeomFromText('POINT(1 1)'), col2=ST_GeomFromText('LineString(1 1,2 2,3 3)'), col3=ST_GeomFromText('Polygon((0 0,0 3,3 0,0 0),(1 1,1 2,2 1,1 1))'), col7=ST_GeomFromText('MultiPolygon(((0 0,0 3,3 3,3 0,0 0),(1 1,1 2,2 2,2 1,1 1)))'),col4=ST_GeomFromText('GeometryCollection(Point(1 1),LineString(2 2, 3 3))'),col6=ST_MPointFromText('MULTIPOINT (1 1, 2 2, 3 3)'),col5=ST_GeomFromText('MultiLineString((1 1,2 2,3 3),(4 4,5 5))')",
 			"insert into special_table set id0=2",
 
-			"CREATE TABLE `number_table` ( `id0` int NOT NULL, `col0` tinyint DEFAULT NULL, `col1` smallint DEFAULT NULL, `col2` mediumint DEFAULT NULL, `col3` int DEFAULT NULL, `col4` bigint DEFAULT NULL, `col5` decimal(10, 0) DEFAULT NULL, `col6` float DEFAULT NULL, `col7` double DEFAULT NULL, `col8` bit(1) DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `number_table` ( `id0` int NOT NULL, `col0` tinyint DEFAULT NULL, `col1` smallint DEFAULT NULL, `col2` mediumint DEFAULT NULL, `col3` int DEFAULT NULL, `col4` bigint DEFAULT NULL, `col5` decimal(10, 0) DEFAULT NULL, `col6` float DEFAULT NULL, `col7` double DEFAULT NULL, `col8` bit(1) DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"INSERT INTO `number_table` VALUES (1,99,99,99,99,99,99,99.99,99.99,true)",
 			"insert into number_table set id0=2",
 
-			"CREATE TABLE `blob_table` ( `id0` int NOT NULL, `col0` tinyblob, `col1` blob, `col2` mediumblob, `col3` longblob, `col4` tinytext, `col5` mediumtext, `col6` longtext, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `blob_table` ( `id0` int NOT NULL, `col0` tinyblob, `col1` blob, `col2` mediumblob, `col3` longblob, `col4` tinytext, `col5` mediumtext, `col6` longtext, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into blob_table values(1, 0xFFFF, 0xFFFF, 0xFFFF,  0xFFFF, \"abcd\", \"abcd\", \"abcd\")",
 			"insert into blob_table set id0=2",
 		},
@@ -139,14 +139,14 @@ func init() {
 			"CREATE DATABASE " + db,
 			"USE " + db,
 
-			"CREATE TABLE int_table(id0 INT, id1 INT UNSIGNED, col0 INT, col1 INT UNSIGNED, PRIMARY KEY(id0, id1))",
+			"CREATE TABLE int_table(id0 INT, id1 INT UNSIGNED, col0 INT, col1 INT UNSIGNED, PRIMARY KEY(id0, id1)) ENGINE=ndbcluster",
 			"INSERT INTO  int_table VALUES(2147483647,4294967295,2147483647,4294967295)",
 			"INSERT INTO  int_table VALUES(-2147483648,0,-2147483648,0)",
 			"INSERT INTO  int_table VALUES(0,0,0,0)",
 			"INSERT INTO  int_table set id0=1, id1=1", // NULL values for non primary columns
 
 			// this table only has primary keys
-			"CREATE TABLE int_table1(id0 INT, id1 INT UNSIGNED, PRIMARY KEY(id0, id1))",
+			"CREATE TABLE int_table1(id0 INT, id1 INT UNSIGNED, PRIMARY KEY(id0, id1)) ENGINE=ndbcluster",
 			"INSERT INTO  int_table1 VALUES(0,0)",
 		},
 
@@ -163,7 +163,7 @@ func init() {
 			"CREATE DATABASE " + db,
 			"USE " + db,
 
-			"CREATE TABLE bigint_table(id0 BIGINT, id1 BIGINT UNSIGNED, col0 BIGINT, col1 BIGINT UNSIGNED, PRIMARY KEY(id0, id1))",
+			"CREATE TABLE bigint_table(id0 BIGINT, id1 BIGINT UNSIGNED, col0 BIGINT, col1 BIGINT UNSIGNED, PRIMARY KEY(id0, id1)) ENGINE=ndbcluster",
 			"INSERT INTO  bigint_table VALUES(9223372036854775807,18446744073709551615,9223372036854775807,18446744073709551615)",
 			"INSERT INTO  bigint_table VALUES(-9223372036854775808,0,-9223372036854775808,0)",
 			"INSERT INTO  bigint_table VALUES(0,0,0,0)",
@@ -183,7 +183,7 @@ func init() {
 			"CREATE DATABASE " + db,
 			"USE " + db,
 
-			"CREATE TABLE tinyint_table(id0 TINYINT, id1 TINYINT UNSIGNED, col0 TINYINT, col1 TINYINT UNSIGNED, PRIMARY KEY(id0, id1))",
+			"CREATE TABLE tinyint_table(id0 TINYINT, id1 TINYINT UNSIGNED, col0 TINYINT, col1 TINYINT UNSIGNED, PRIMARY KEY(id0, id1)) ENGINE=ndbcluster",
 			"INSERT INTO  tinyint_table VALUES(127,255,127,255)",
 			"INSERT INTO  tinyint_table VALUES(-128,0,-128,0)",
 			"INSERT INTO  tinyint_table VALUES(0,0,0,0)",
@@ -203,7 +203,7 @@ func init() {
 			"CREATE DATABASE " + db,
 			"USE " + db,
 
-			"CREATE TABLE smallint_table(id0 SMALLINT, id1 SMALLINT UNSIGNED, col0 SMALLINT, col1 SMALLINT UNSIGNED, PRIMARY KEY(id0, id1))",
+			"CREATE TABLE smallint_table(id0 SMALLINT, id1 SMALLINT UNSIGNED, col0 SMALLINT, col1 SMALLINT UNSIGNED, PRIMARY KEY(id0, id1)) ENGINE=ndbcluster",
 			"INSERT INTO  smallint_table VALUES(32767,65535,32767,65535)",
 			"INSERT INTO  smallint_table VALUES(-32768,0,-32768,0)",
 			"INSERT INTO  smallint_table VALUES(0,0,0,0)",
@@ -224,7 +224,7 @@ func init() {
 			"CREATE DATABASE " + db,
 			"USE " + db,
 
-			"CREATE TABLE mediumint_table(id0 MEDIUMINT, id1 MEDIUMINT UNSIGNED, col0 MEDIUMINT, col1 MEDIUMINT UNSIGNED, PRIMARY KEY(id0, id1))",
+			"CREATE TABLE mediumint_table(id0 MEDIUMINT, id1 MEDIUMINT UNSIGNED, col0 MEDIUMINT, col1 MEDIUMINT UNSIGNED, PRIMARY KEY(id0, id1)) ENGINE=ndbcluster",
 			"INSERT INTO  mediumint_table VALUES(8388607,16777215,8388607,16777215)",
 			"INSERT INTO  mediumint_table VALUES(-8388608,0,-8388608,0)",
 			"INSERT INTO  mediumint_table VALUES(0,0,0,0)",
@@ -245,12 +245,12 @@ func init() {
 			"CREATE DATABASE " + db,
 			"USE " + db,
 
-			"CREATE TABLE float_table1(id0 INT, col0 FLOAT, col1 FLOAT UNSIGNED, PRIMARY KEY(id0))",
+			"CREATE TABLE float_table1(id0 INT, col0 FLOAT, col1 FLOAT UNSIGNED, PRIMARY KEY(id0)) ENGINE=ndbcluster",
 			"INSERT INTO  float_table1 VALUES(1,-123.123,123.123)",
 			"INSERT INTO  float_table1 VALUES(0,0,0)",
 			"INSERT INTO  float_table1 set id0=2", // NULL values for non primary columns
 
-			"CREATE TABLE float_table2(id0 FLOAT, col0 FLOAT, col1 FLOAT UNSIGNED, PRIMARY KEY(id0))",
+			"CREATE TABLE float_table2(id0 FLOAT, col0 FLOAT, col1 FLOAT UNSIGNED, PRIMARY KEY(id0)) ENGINE=ndbcluster",
 		},
 
 		{ // clean up commands
@@ -266,12 +266,12 @@ func init() {
 			"CREATE DATABASE " + db,
 			"USE " + db,
 
-			"CREATE TABLE double_table1(id0 INT, col0 DOUBLE, col1 DOUBLE UNSIGNED, PRIMARY KEY(id0))",
+			"CREATE TABLE double_table1(id0 INT, col0 DOUBLE, col1 DOUBLE UNSIGNED, PRIMARY KEY(id0)) ENGINE=ndbcluster",
 			"INSERT INTO  double_table1 VALUES(1,-123.123,123.123)",
 			"INSERT INTO  double_table1 VALUES(0,0,0)",
 			"INSERT INTO  double_table1 set id0=2", // NULL values for non primary columns
 
-			"CREATE TABLE double_table2(id0 DOUBLE, col0 DOUBLE, col1 DOUBLE UNSIGNED, PRIMARY KEY(id0))",
+			"CREATE TABLE double_table2(id0 DOUBLE, col0 DOUBLE, col1 DOUBLE UNSIGNED, PRIMARY KEY(id0)) ENGINE=ndbcluster",
 		},
 
 		{ // clean up commands
@@ -287,7 +287,7 @@ func init() {
 			"CREATE DATABASE " + db,
 			"USE " + db,
 
-			"CREATE TABLE decimal_table(id0 DECIMAL(10,5), id1 DECIMAL(10,5) UNSIGNED, col0 DECIMAL(10,5), col1 DECIMAL(10,5) UNSIGNED, PRIMARY KEY(id0, id1))",
+			"CREATE TABLE decimal_table(id0 DECIMAL(10,5), id1 DECIMAL(10,5) UNSIGNED, col0 DECIMAL(10,5), col1 DECIMAL(10,5) UNSIGNED, PRIMARY KEY(id0, id1)) ENGINE=ndbcluster",
 			"INSERT INTO  decimal_table VALUES(-12345.12345,12345.12345,-12345.12345,12345.12345)",
 			"INSERT INTO  decimal_table set id0=-67890.12345, id1=67890.12345",
 		},
@@ -309,9 +309,9 @@ func init() {
 			"USE " + db,
 
 			// blobs in PK is not supported by RonDB
-			"CREATE TABLE blob_table(id0 int, col0 blob, col1 int,  PRIMARY KEY(id0))",
+			"CREATE TABLE blob_table(id0 int, col0 blob, col1 int,  PRIMARY KEY(id0)) ENGINE=ndbcluster",
 			"INSERT INTO  blob_table VALUES(1,0xFFFF, 1)",
-			"CREATE TABLE text_table(id0 int, col0 text, col1 int, PRIMARY KEY(id0))",
+			"CREATE TABLE text_table(id0 int, col0 text, col1 int, PRIMARY KEY(id0)) ENGINE=ndbcluster",
 			"INSERT INTO  text_table VALUES(1,\"FFFF\", 1)",
 		},
 
@@ -344,7 +344,7 @@ func init() {
 			"USE " + db,
 
 			// blobs in PK is not supported by RonDB
-			"CREATE TABLE `date_table` ( `id0`  date, `col0` date DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `date_table` ( `id0`  date, `col0` date DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into date_table values( \"1111-11-11\", \"1111:11:11\")",
 			"insert into date_table set id0= \"1111-11-12\" ",
 		},
@@ -363,15 +363,15 @@ func init() {
 			"USE " + db,
 
 			// blobs in PK is not supported by RonDB
-			"CREATE TABLE `date_table0` ( `id0`  datetime(0), `col0` datetime(0) DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `date_table0` ( `id0`  datetime(0), `col0` datetime(0) DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into date_table0 values( \"1111-11-11 11:11:11\", \"1111-11-11 11:11:11\")",
 			"insert into date_table0 set id0= \"1111-11-12 11:11:11\"",
 
-			"CREATE TABLE `date_table3` ( `id0`  datetime(3), `col0` datetime(3) DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `date_table3` ( `id0`  datetime(3), `col0` datetime(3) DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into date_table3 values( \"1111-11-11 11:11:11.123\", \"1111-11-11 11:11:11.123\")",
 			"insert into date_table3 set id0= \"1111-11-12 11:11:11.123\"",
 
-			"CREATE TABLE `date_table6` ( `id0`  datetime(6), `col0` datetime(6) DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `date_table6` ( `id0`  datetime(6), `col0` datetime(6) DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into date_table6 values( \"1111-11-11 11:11:11.123456\", \"1111-11-11 11:11:11.123456\")",
 			"insert into date_table6 set id0= \"1111-11-12 11:11:11.123456\"",
 		},
@@ -390,15 +390,15 @@ func init() {
 			"USE " + db,
 
 			// blobs in PK is not supported by RonDB
-			"CREATE TABLE `time_table0` ( `id0`  time(0), `col0` time(0) DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `time_table0` ( `id0`  time(0), `col0` time(0) DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into time_table0 values( \"11:11:11\", \"11:11:11\")",
 			"insert into time_table0 set id0= \"12:11:11\"",
 
-			"CREATE TABLE `time_table3` ( `id0`  time(3), `col0` time(3) DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `time_table3` ( `id0`  time(3), `col0` time(3) DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into time_table3 values( \"11:11:11.123\", \"11:11:11.123\")",
 			"insert into time_table3 set id0= \"12:11:11.123\"",
 
-			"CREATE TABLE `time_table6` ( `id0` time(6), `col0` time(6) DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `time_table6` ( `id0` time(6), `col0` time(6) DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into time_table6 values( \"11:11:11.123456\", \"11:11:11.123456\")",
 			"insert into time_table6 set id0= \"12:11:11.123456\"",
 		},
@@ -417,15 +417,15 @@ func init() {
 			"USE " + db,
 
 			// blobs in PK is not supported by RonDB
-			"CREATE TABLE `ts_table0` ( `id0`  timestamp(0), `col0` timestamp(0) DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `ts_table0` ( `id0`  timestamp(0), `col0` timestamp(0) DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into ts_table0 values( \"2022-11-11 11:11:11\", \"2022-11-11 11:11:11\")",
 			"insert into ts_table0 set id0= \"2022-11-12 11:11:11\"",
 
-			"CREATE TABLE `ts_table3` ( `id0`  timestamp(3), `col0` timestamp(3) DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `ts_table3` ( `id0`  timestamp(3), `col0` timestamp(3) DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into ts_table3 values( \"2022-11-11 11:11:11.123\", \"2022-11-11 11:11:11.123\")",
 			"insert into ts_table3 set id0= \"2022-11-12 11:11:11.123\"",
 
-			"CREATE TABLE `ts_table6` ( `id0`  timestamp(6), `col0` timestamp(6) DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `ts_table6` ( `id0`  timestamp(6), `col0` timestamp(6) DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into ts_table6 values( \"2022-11-11 11:11:11.123456\", \"2022-11-11 11:11:11.123456\")",
 			"insert into ts_table6 set id0= \"2022-11-12 11:11:11.123456\"",
 		},
@@ -444,7 +444,7 @@ func init() {
 			"USE " + db,
 
 			// blobs in PK is not supported by RonDB
-			"CREATE TABLE `year_table` ( `id0`  year, `col0` year DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `year_table` ( `id0`  year, `col0` year DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into year_table values( \"2022\", \"2022\")",
 			"insert into year_table set id0=\"2023\"",
 		},
@@ -463,7 +463,7 @@ func init() {
 			"USE " + db,
 
 			// blobs in PK is not supported by RonDB
-			"CREATE TABLE `bit_table` ( `id0`  binary(100), `col0` bit(1) DEFAULT NULL, `col1` bit(3) DEFAULT NULL, `col2` bit(25) DEFAULT NULL,`col3` bit(39) DEFAULT NULL, col4 bit(64) DEFAULT NULL, PRIMARY KEY (`id0`))",
+			"CREATE TABLE `bit_table` ( `id0`  binary(100), `col0` bit(1) DEFAULT NULL, `col1` bit(3) DEFAULT NULL, `col2` bit(25) DEFAULT NULL,`col3` bit(39) DEFAULT NULL, col4 bit(64) DEFAULT NULL, PRIMARY KEY (`id0`)) ENGINE=ndbcluster",
 			"insert into bit_table values(1,  b'1',  b'111', b'1111111111111111111111111', b'111111111111111111111111111111111111111', b'1111111111111111111111111111111111111111111111111111111111111111')",
 			"insert into bit_table values(2,  b'0',  b'000', b'0000000000000000000000000', b'000000000000000000000000000000000000000', b'0000000000000000000000000000000000000000000000000000000000000000')",
 			"insert into bit_table set id0=\"3\"",
@@ -511,7 +511,7 @@ func GenerateHWSchema(userProjects ...string) [][]string {
 			"`salt` varchar(128) CHARACTER SET latin1 COLLATE latin1_general_cs NOT NULL DEFAULT ''," +
 			"PRIMARY KEY (`uid`)," +
 			"UNIQUE KEY `username` (`username`)," +
-			"UNIQUE KEY `email` (`email`))",
+			"UNIQUE KEY `email` (`email`)) ENGINE=ndbcluster",
 
 		"CREATE TABLE `project` (" +
 			"`id` int NOT NULL AUTO_INCREMENT," +
@@ -536,7 +536,7 @@ func GenerateHWSchema(userProjects ...string) [][]string {
 			"UNIQUE KEY `inode_pid` (`inode_pid`,`inode_name`,`partition_id`)," +
 			"KEY `user_idx` (`username`)," +
 			// "CONSTRAINT `FK_149_289` FOREIGN KEY (`inode_pid`, `inode_name`, `partition_id`) REFERENCES `hops`.`hdfs_inodes` (`parent_id`, `name`, `partition_id`) ON DELETE CASCADE," +
-			"CONSTRAINT `FK_262_290` FOREIGN KEY (`username`) REFERENCES `users` (`email`))",
+			"CONSTRAINT `FK_262_290` FOREIGN KEY (`username`) REFERENCES `users` (`email`)) ENGINE=ndbcluster",
 
 		"CREATE TABLE `project_team` (" +
 			"`project_id` int NOT NULL," +
@@ -546,7 +546,7 @@ func GenerateHWSchema(userProjects ...string) [][]string {
 			"PRIMARY KEY (`project_id`,`team_member`)," +
 			"KEY `team_member` (`team_member`)," +
 			"CONSTRAINT `FK_262_304` FOREIGN KEY (`team_member`) REFERENCES `users` (`email`) ON DELETE CASCADE," +
-			"CONSTRAINT `FK_284_303` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE )",
+			"CONSTRAINT `FK_284_303` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE ) ENGINE=ndbcluster",
 
 		"CREATE TABLE `api_key` (" +
 			"`id` int NOT NULL AUTO_INCREMENT," +
@@ -562,7 +562,7 @@ func GenerateHWSchema(userProjects ...string) [][]string {
 			"UNIQUE KEY `prefix_UNIQUE` (`prefix`)," +
 			"UNIQUE KEY `index4` (`user_id`,`name`)," +
 			"KEY `fk_api_key_1_idx` (`user_id`)," +
-			"CONSTRAINT `fk_api_key_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`uid`) ON DELETE CASCADE)",
+			"CONSTRAINT `fk_api_key_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`uid`) ON DELETE CASCADE) ENGINE=ndbcluster",
 
 		"INSERT INTO `users` VALUES (999,'macho','12fa520ec8f65d3a6feacfa97a705e622e1fea95b80b521ec016e43874dfed5a','macho@hopsworks.ai','','macho','2015-05-15 10:22:36','Mr',0,2,1,'V3WBPS4G2WMQ53VA',NULL,NULL,NULL,0,'2015-04-28 15:18:42',NULL,30,2,1,0,3,'+9mTLmYSpnZROFEJEaednw8+GDH/s2J1QuRZy8okxW5myI/q8ek8Xu+ab5CyE9GzhWX6Sa4cr7KX8cAHi5IC4g==');",
 
@@ -607,7 +607,7 @@ func SchemaTextualColumns(colType string, db string, length int) [][]string {
 				"USE " + db,
 
 				// blobs in PK is not supported by RonDB
-				"CREATE TABLE table1(id0 " + colType + "(" + strconv.Itoa(length) + "), col0 " + colType + "(" + strconv.Itoa(length) + "),  PRIMARY KEY(id0))",
+				"CREATE TABLE table1(id0 " + colType + "(" + strconv.Itoa(length) + "), col0 " + colType + "(" + strconv.Itoa(length) + "),  PRIMARY KEY(id0)) ENGINE=ndbcluster",
 				`INSERT INTO  table1 VALUES("1","这是一个测验。 我不知道怎么读中文。")`,
 				`INSERT INTO  table1 VALUES("2",0x660066)`,
 				`INSERT INTO  table1 VALUES("3","a\nb")`,
@@ -639,7 +639,7 @@ func benchmarSchema(db string, count int) []string {
 		"DROP DATABASE IF EXISTS " + db,
 		"CREATE DATABASE " + db,
 		"USE " + db,
-		"CREATE TABLE table_1(id0 INT, col_0 VARCHAR(" + strconv.Itoa(colWidth) + "), PRIMARY KEY(id0))",
+		"CREATE TABLE table_1(id0 INT, col_0 VARCHAR(" + strconv.Itoa(colWidth) + "), PRIMARY KEY(id0)) ENGINE=ndbcluster",
 	}
 
 	for i := 0; i < count; i++ {
