@@ -35,10 +35,8 @@ BUILD_COMMAND=go build  -ldflags="-w \
      -X hopsworks.ai/rdrs/version.BRANCH=${BRANCH}" \
      -o ${OUTPUT_DIR}/rdrs ./cmd/server/main.go
 
-LINK_COMMAND=CGO_LDFLAGS="-g -O2 -L${RDRS_LIB_DIR} -lrdrclient"
-
 rdrs:
-	CGO_LDFLAGS="-g -O2 -L${RDRS_LIB_DIR} -lrdrclient" ${BUILD_COMMAND}
+	CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" ${BUILD_COMMAND}
 
 clean:
 	go clean -cache
@@ -49,6 +47,6 @@ build_proto:
 
 test:
 	go clean -testcache
-	CGO_LDFLAGS="-g -O2 -L${RDRS_LIB_DIR} -lrdrclient" go test -v -p 1 ./... -coverprofile coverage.out
+	CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" go test -v -p 1 ./... -coverprofile coverage.out
 	go tool cover -html=coverage.out -o coverage.html && xdg-open coverage.html
 

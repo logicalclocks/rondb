@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path/filepath"
 
 	"hopsworks.ai/rdrs/internal/log"
 )
@@ -125,10 +124,9 @@ func init() {
 		Log:         log,
 	}
 
-	dir, err := os.Getwd()
-	if err == nil {
-		configFile := filepath.Join(dir, CONFIG_FILE_NAME)
-		LoadConfig(configFile, false)
+	configFile := os.Getenv("RDRS_CONFIG_FILE")
+	if configFile != "" {
+		LoadConfig(configFile, true)
 	}
 }
 
