@@ -139,11 +139,20 @@ func (rc *RouterConext) StartRouter() error {
 		}
 	}
 
-	go func() { // Start REST Server
+	httpListener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", rc.RESTServerIP, rc.RESTServerPort))
+	if err != nil {
+		log.Fatalf("HTTP server returned. Error: %v", err)
+	}
 
+	grpcListener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", rc.GRPCServerIP, rc.GRPCServerPort))
+	if err != nil {
+		log.Fatalf("GRPC server returned. Error: %v", err)
+	}
+
+	go func() { // Start REST Server
 		if config.Configuration().Security.EnableTLS {
 			rc.HttpServer.TLSConfig = serverTLS
-			err = rc.HttpServer.ListenAndServeTLS(config.Configuration().Security.CertificateFile,
+			err = rc.HttpServer.ServeTLS(httpListener, config.Configuration().Security.CertificateFile,
 				config.Configuration().Security.PrivateKeyFile)
 		} else {
 			err = rc.HttpServer.ListenAndServe()
@@ -154,15 +163,11 @@ func (rc *RouterConext) StartRouter() error {
 	}()
 
 	go func() { // Start GRPC Server
-		lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", rc.GRPCServerIP, rc.GRPCServerPort))
-		if err != nil {
-			log.Fatalf("GRPC server returned. Error: %v", err)
-		}
 		// rc.GRPCServer = grpc.NewServer()
 		rc.GRPCServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
 		GRPCServer := grpcsrv.GetGRPCServer()
 		api.RegisterRonDBRESTServer(rc.GRPCServer, GRPCServer)
-		rc.GRPCServer.Serve(lis)
+		rc.GRPCServer.Serve(grpcListener)
 	}()
 
 	return nil
@@ -194,27 +199,6 @@ func serverTLSConfig() (*tls.Config, error) {
 	// tlsConfig.BuildNameToCertificate()
 	return tlsConfig, nil
 }
-
-//func serverTLSConfigGRPC() (credentials.TransportCredentials, error) {
-//	serverCert, err := tls.LoadX509KeyPair(config.Configuration().Security.CertificateFile,
-//		config.Configuration().Security.PrivateKeyFile)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	// Create the credentials and return it
-//	tlsConfig := &tls.Config{
-//		Certificates: []tls.Certificate{serverCert},
-//	}
-//
-//	if config.Configuration().Security.RequireAndVerifyClientCert {
-//		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
-//	} else {
-//		tlsConfig.ClientAuth = tls.NoClientCert
-//	}
-//
-//	return credentials.NewTLS(tlsConfig), nil
-//}
 
 func (rc *RouterConext) StopRouter() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

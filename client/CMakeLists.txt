@@ -148,7 +148,12 @@ if(WITH_RDRS)
     ${CMAKE_SOURCE_DIR}/mysys/my_time.cc
     ${CMAKE_SOURCE_DIR}/mysys/my_systime.cc
     )
+
   TARGET_LINK_LIBRARIES(rdrs_string mysys strings)
+
+  SET_TARGET_PROPERTIES(rdrs_string PROPERTIES
+    ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/library_output_directory)
+
   INSTALL(TARGETS rdrs_string
       DESTINATION ${INSTALL_LIBDIR} COMPONENT Development)
 endif()

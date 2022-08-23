@@ -213,7 +213,7 @@ func TestBatchSimple(t *testing.T) {
 func TestBatchDate(t *testing.T) {
 
 	tests := map[string]api.BatchOperationTestInfo{
-		"date": { //single operation batch
+		"date": {
 			HttpCode: http.StatusOK,
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "date_table", "DB019", "1111-11-11", http.StatusOK),
@@ -221,7 +221,7 @@ func TestBatchDate(t *testing.T) {
 				createSubOperation(t, "date_table", "DB019", "1111-11-12", http.StatusOK),
 			},
 		},
-		"wrong_sub_op": { //single operation batch
+		"wrong_sub_op": {
 			HttpCode: http.StatusBadRequest,
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "date_table", "DB019", "1111-11-11", http.StatusOK),
@@ -238,7 +238,7 @@ func TestBatchDate(t *testing.T) {
 func TestBatchDateTime(t *testing.T) {
 
 	tests := map[string]api.BatchOperationTestInfo{
-		"date": { //single operation batch
+		"date": {
 			HttpCode: http.StatusOK,
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "date_table0", "DB020", "1111-11-11 11:11:11", http.StatusOK),
@@ -253,7 +253,7 @@ func TestBatchDateTime(t *testing.T) {
 			},
 			ErrMsgContains: "",
 		},
-		"wrong_sub_op": { //single operation batch
+		"wrong_sub_op": {
 			HttpCode: http.StatusBadRequest,
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "date_table0", "DB020", "1111-11-11 11:11:11", http.StatusOK),
@@ -277,7 +277,7 @@ func TestBatchDateTime(t *testing.T) {
 func TestBatchTime(t *testing.T) {
 
 	tests := map[string]api.BatchOperationTestInfo{
-		"date": { //single operation batch
+		"date": {
 			HttpCode: http.StatusOK,
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "time_table0", "DB021", "11:11:11", http.StatusOK),
@@ -291,7 +291,7 @@ func TestBatchTime(t *testing.T) {
 			},
 			ErrMsgContains: "",
 		},
-		"wrong_sub_op": { //single operation batch
+		"wrong_sub_op": {
 			HttpCode: http.StatusBadRequest,
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "time_table0", "DB021", "11:11:11", http.StatusOK),
