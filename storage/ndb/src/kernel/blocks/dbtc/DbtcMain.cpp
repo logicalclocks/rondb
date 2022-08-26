@@ -5582,7 +5582,7 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
       bool read_flag = (operation_type == ZREAD || operation_type == ZREAD_EX);
       if ((!read_flag) ||
           (!LqhKeyReq::getNoDiskFlag(lqhKeyReq->requestInfo)) ||
-          (!LqhKeyReq::getUtilFlag(lqhKeyReq->requestInfo)))
+          (LqhKeyReq::getUtilFlag(lqhKeyReq->requestInfo)))
 
       {
         jamDebug();
