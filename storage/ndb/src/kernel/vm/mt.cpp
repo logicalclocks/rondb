@@ -2050,6 +2050,7 @@ struct thr_send_thread_instance
                m_kernel_time_os(0),
                m_elapsed_time_os(0),
                m_measured_spintime(0),
+               m_num_trps_ready(0),
                m_awake(false),
                m_first_trp(0),
                m_last_trp(0),
@@ -2116,6 +2117,7 @@ struct thr_send_thread_instance
   Uint64 m_elapsed_time_os;
   Uint64 m_measured_spintime;
 
+  Uint32 m_num_trps_ready;
   /**
    * Boolean indicating if send thread is awake or not.
    */
@@ -2855,6 +2857,7 @@ thr_send_threads::insert_trp(TrpId trp_id,
   /* Ensure the lock free ::data_available see 'm_more_trps == true' */
   wmb();
 
+  send_instance->m_num_trps_ready++;
   if (trp_state.m_neighbour_trp)
     return;
 
@@ -3376,6 +3379,8 @@ found_neighbour:
   assert(trp_state.m_thr_no_sender == NO_OWNER_THREAD);
   trp_state.m_next = 0;
   trp_state.m_data_available = 1;
+  require(send_instance->m_num_trps_ready > 0);
+  send_instance->m_num_trps_ready--;
   return (TrpId)trp_id;
 }
 
@@ -3451,6 +3456,7 @@ thr_send_threads::alert_send_thread(TrpId trp_id, NDB_TICKS now)
    * Check if the send thread especially responsible for this transporter
    * is awake, if not wake it up.
    */
+  Uint32 num_trps_ready = send_instance->m_num_trps_ready;
   struct thr_send_thread_instance *asleep_send_thread =
     (send_instance->m_awake) ? nullptr : send_instance;
 
@@ -3466,6 +3472,11 @@ thr_send_threads::alert_send_thread(TrpId trp_id, NDB_TICKS now)
      * it's not a problem.
      */
     wakeup(&(asleep_send_thread->m_waiter_struct));
+    return 0;
+  }
+  else if (num_trps_ready < 2)
+  {
+    return 0;
   }
   return 1;
 }
@@ -3811,6 +3822,17 @@ thr_send_threads::assist_send_thread(Uint32 max_num_trps,
 
   NdbMutex_Lock(send_instance->send_thread_mutex);
 
+  if (send_instance->m_num_trps_ready == 0)
+  {
+    NdbMutex_Unlock(send_instance->send_thread_mutex);
+    return false;
+  }
+  else if (!send_instance->m_awake)
+  {
+    wakeup(&(send_instance->m_waiter_struct));
+    NdbMutex_Unlock(send_instance->send_thread_mutex);
+    return false;
+  }
   while (globalData.theRestartFlag != perform_stop &&
          loop < max_num_trps &&
          (trp_id = get_trp(NO_SEND_THREAD, now, send_instance)) != 0)
