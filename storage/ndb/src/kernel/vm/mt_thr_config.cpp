@@ -77,14 +77,14 @@ THRConfigApplier::find_thread(const unsigned short instancelist[], unsigned cnt)
   }
   else if ((instanceNo = findBlock(DBQLQH, instancelist, cnt)) >= 0)
   {
-    int num_query_threads = (int)getThreadCount(T_QUERY);
-    if ((instanceNo - 1) < num_query_threads)
+    int num_ldm_threads = (int)getThreadCount(T_LDM);
+    if ((instanceNo - 1) < num_ldm_threads)
     {
-      return &m_threads[T_QUERY][instanceNo - 1]; // remove proxy...
+      abort();
     }
     else
     {
-      instanceNo -= num_query_threads;
+      instanceNo -= num_ldm_threads;
       return &m_threads[T_RECOVER][instanceNo - 1]; // remove proxy...
     }
   }

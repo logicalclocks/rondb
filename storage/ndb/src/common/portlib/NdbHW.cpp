@@ -185,6 +185,14 @@ Ndb_GetCoreCPUIds(Uint32 cpu_id, Uint32 *cpu_ids, Uint32 &num_cpus)
   /* Search backwards in the virtual L3 cache group this CPU belongs to */
   Uint32 first_cpu_id = cpu_id;
   Uint32 cpu_id_index = 0;
+  /**
+   * The CPUs in an L3 cache group are inserted in order of their CPU
+   * core. The num_cpus_per_group says how many CPUs per CPU core there
+   * are. We are searching for the first CPU in the CPU core. We start
+   * by going to start of the list, next we get the index of the first
+   * CPU in the CPU core with a little number magic. Finally we insert
+   * the CPUs in the same CPU core to the provided list.
+   */
   while (hwinfo->cpu_info[first_cpu_id].prev_virt_l3_cpu_map != RNIL)
   {
     first_cpu_id = hwinfo->cpu_info[first_cpu_id].prev_virt_l3_cpu_map;

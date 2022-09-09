@@ -1169,7 +1169,6 @@ is_main_thread(unsigned thr_no)
   if (globalData.ndbMtMainThreads > 0)
     return (thr_no < globalData.ndbMtMainThreads);
   unsigned first_recv_thread = globalData.ndbMtLqhThreads +
-                               globalData.ndbMtQueryThreads +
                                globalData.ndbMtRecoverThreads +
                                globalData.ndbMtTcThreads;
   return (thr_no == first_recv_thread);
@@ -1185,22 +1184,11 @@ is_ldm_thread(unsigned thr_no)
 }
 
 static bool
-is_query_thread(unsigned thr_no)
-{
-  Uint32 num_query_threads = globalData.ndbMtQueryThreads;
-  unsigned query_base = globalData.ndbMtMainThreads +
-                        globalData.ndbMtLqhThreads;
-  return thr_no >= query_base &&
-         thr_no <  query_base + num_query_threads;
-}
-
-static bool
 is_recover_thread(unsigned thr_no)
 {
   Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
   unsigned query_base = globalData.ndbMtMainThreads +
-                        globalData.ndbMtLqhThreads +
-                        globalData.ndbMtQueryThreads;
+                        globalData.ndbMtLqhThreads;
   return thr_no >= query_base &&
          thr_no <  query_base + num_recover_threads;
 }
@@ -1216,9 +1204,7 @@ is_tc_thread(unsigned thr_no)
 {
   if (globalData.ndbMtTcThreads == 0)
     return false;
-  Uint32 num_query_threads =
-    globalData.ndbMtQueryThreads +
-    globalData.ndbMtRecoverThreads;
+  Uint32 num_query_threads = globalData.ndbMtRecoverThreads;
   unsigned tc_base = globalData.ndbMtMainThreads +
                      num_query_threads +
                      globalData.ndbMtLqhThreads;
@@ -1229,9 +1215,7 @@ is_tc_thread(unsigned thr_no)
 static bool
 is_recv_thread(unsigned thr_no)
 {
-  Uint32 num_query_threads =
-    globalData.ndbMtQueryThreads +
-    globalData.ndbMtRecoverThreads;
+  Uint32 num_query_threads = globalData.ndbMtRecoverThreads;
   unsigned recv_base = globalData.ndbMtMainThreads +
                          globalData.ndbMtLqhThreads +
                          num_query_threads +
@@ -1593,8 +1577,9 @@ struct alignas(NDB_CL) thr_data
 
   alignas (NDB_CL) bool m_jbb_estimate_next_set;
 #ifdef DEBUG_SCHED_STATS
-  Uint64 m_jbb_estimated_queue_stats[10];
+  Uint64 m_jbb_estimated_queue_stats[16];
   Uint64 m_jbb_total_words;
+  Uint64 m_jbb_total_signals;
 #endif
   bool m_read_jbb_state_consumed;
   bool m_cpu_percentage_changed;
@@ -2726,7 +2711,10 @@ thr_send_threads::assign_threads_to_assist_send_threads()
   unsigned next_send_instance = 0;
   for (thr_no = 0; thr_no < glob_num_threads; thr_no++)
   {
+    g_eventLogger->info("thr_no = %u", thr_no);
     thr_data *selfptr = &rep->m_thread[thr_no];
+    g_eventLogger->info("instance_count: %u", selfptr->m_instance_count);
+    g_eventLogger->info("instance_list[0] = %u", selfptr->m_instance_list[0]);
     selfptr->m_nosend = conf.do_get_nosend(selfptr->m_instance_list,
                                            selfptr->m_instance_count);
     if (is_recover_thread(thr_no) ||
@@ -6884,9 +6872,9 @@ read_all_jbb_state(thr_data *selfptr, bool check_before_sleep)
 #ifdef DEBUG_SCHED_STATS
         Uint32 inx = selfptr->m_jbb_estimated_queue_size_in_words /
                      AVERAGE_SIGNAL_SIZE;
-        if (inx >= 10)
+        if (inx >= 16)
         {
-          inx = 9;
+          inx = 15;
         }
         selfptr->m_jbb_estimated_queue_stats[inx]++;
 #endif
@@ -7220,6 +7208,9 @@ run_job_buffers(thr_data *selfptr,
                                            sig,
                                            max_prioA,
                                            false);
+#ifdef DEBUG_SCHED_STATS
+      selfptr->m_jbb_total_signals+= num_signals;
+#endif
       signal_count += num_signals;
       send_sum += num_signals;
       flush_sum += num_signals;
@@ -7305,6 +7296,9 @@ run_job_buffers(thr_data *selfptr,
 
     if (num_signals > 0)
     {
+#ifdef DEBUG_SCHED_STATS
+      selfptr->m_jbb_total_signals+= num_signals;
+#endif
       signal_count += num_signals;
       send_sum += num_signals;
       flush_sum += num_signals;
@@ -7446,7 +7440,6 @@ mt_init_thr_map()
   else if (globalData.ndbMtMainThreads == 0)
   {
     Uint32 main_thread_no = globalData.ndbMtLqhThreads +
-                            globalData.ndbMtQueryThreads +
                             globalData.ndbMtRecoverThreads +
                             globalData.ndbMtTcThreads;
     thr_LOCAL = main_thread_no;
@@ -7533,9 +7526,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
   Uint32 num_lqh_threads = globalData.ndbMtLqhThreads;
   Uint32 num_tc_threads = globalData.ndbMtTcThreads;
   Uint32 thr_no = globalData.ndbMtMainThreads;
-  Uint32 num_query_threads =
-    globalData.ndbMtQueryThreads +
-    globalData.ndbMtRecoverThreads;
+  Uint32 num_restore_threads = globalData.ndbMtRecoverThreads;
   bool receive_threads_only = false;
 
   if (num_lqh_threads == 0 &&
@@ -7547,7 +7538,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
      */
     thr_no = 0;
     require(num_tc_threads == 0);
-    require(num_query_threads == 0);
+    require(num_restore_threads == 0);
     add_thr_map(block, instance, thr_no);
     return;
   }
@@ -7562,7 +7553,6 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
      */
     receive_threads_only = true;
     require(num_tc_threads == 0);
-    require(globalData.ndbMtQueryThreads == 0);
     require(globalData.ndbMtRecoverThreads == 0 ||
             globalData.ndbMtRecoverThreads == 1 ||
             globalData.ndbMtRecoverThreads == 2);
@@ -7572,7 +7562,6 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
            globalData.ndbMtReceiveThreads > 1)
   {
     require(num_tc_threads == 0);
-    require(globalData.ndbMtQueryThreads == 0);
     receive_threads_only = true;
     num_lqh_threads = globalData.ndbMtReceiveThreads;
     require(num_lqh_threads == globalData.ndbMtLqhWorkers);
@@ -7591,7 +7580,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
     }
     else
     {
-      thr_no += (instance - 1) % num_lqh_threads;
+      thr_no += (instance - 1);
     }
     break;
   case DBQLQH:
@@ -7606,7 +7595,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
     }
     else
     {
-      thr_no += num_lqh_threads + (instance - 1);
+      thr_no += (instance - 1);
     }
     break;
   case PGMAN:
@@ -7635,7 +7624,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
     else
     {
       thr_no += (num_lqh_threads +
-                 num_query_threads +
+                 num_restore_threads +
                  (instance - 1));
     }
     break;
@@ -7651,7 +7640,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
     else
     {
       thr_no += num_lqh_threads +
-                num_query_threads +
+                num_restore_threads +
                 num_tc_threads +
                 (instance - 1);
     }
@@ -8714,8 +8703,7 @@ mt_job_thread_main(void *thr_arg)
     now = NdbTick_getCurrentTicks();
     selfptr->m_curr_ticks = now;
 
-    if (is_ldm_thread(selfptr->m_thr_no) ||
-        is_query_thread(selfptr->m_thr_no))
+    if (is_ldm_thread(selfptr->m_thr_no))
     {
       /**
        * Queue sizes in LDM and Query threads is part of the load balancing
@@ -8808,14 +8796,16 @@ mt_getEstimatedJobBufferLevel(Uint32 self)
 void
 get_jbb_estimated_stats(Uint32 block,
                         Uint32 instance,
+                        Uint64 **total_signals,
                         Uint64 **total_words,
-                        Uint64 **est_stats)
+                        Uint64 **est_stat)
 {
   struct thr_repository* rep = g_thr_repository;
   Uint32 dst = block2ThreadId(block, instance);
   struct thr_data *dstptr = &rep->m_thread[dst];
+  (*total_signals) = &dstptr->m_jbb_total_signals;
   (*total_words) = &dstptr->m_jbb_total_words;
-  (*est_stats) = &dstptr->m_jbb_estimated_queue_stats[0];
+  (*est_stat) = &dstptr->m_jbb_estimated_queue_stats[0];
 }
 #endif
 
@@ -8825,8 +8815,7 @@ prefetch_load_indicators(Uint32 *rr_groups, Uint32 rr_group)
   struct thr_repository* rep = g_thr_repository;
   Uint32 num_ldm_threads = globalData.ndbMtLqhThreads;
   Uint32 first_ldm_instance = globalData.ndbMtMainThreads;
-  Uint32 num_query_threads = globalData.ndbMtQueryThreads;
-  Uint32 num_distr_threads = num_ldm_threads + num_query_threads;
+  Uint32 num_distr_threads = num_ldm_threads;
   for (Uint32 i = 0; i < num_ldm_threads; i++)
   {
     if (rr_groups[i] == rr_group)
@@ -9126,10 +9115,6 @@ mt_getThreadDescription(Uint32 self)
   {
     return "ldm thread, handling a set of data partitions";
   }
-  else if (is_query_thread(self))
-  {
-    return "query thread, handling queries and recovery";
-  }
   else if (is_recover_thread(self))
   {
     return "recover thread, handling restore of data";
@@ -9175,10 +9160,6 @@ mt_getThreadName(Uint32 self)
   else if (is_ldm_thread(self))
   {
     return "ldm";
-  }
-  else if (is_query_thread(self))
-  {
-    return "query";
   }
   else if (is_recover_thread(self))
   {
@@ -9598,7 +9579,6 @@ mt_getMainThrmanInstance()
   else if (globalData.ndbMtMainThreads == 0)
     return 1 +
            globalData.ndbMtLqhThreads +
-           globalData.ndbMtQueryThreads +
            globalData.ndbMtRecoverThreads +
            globalData.ndbMtTcThreads;
   else
@@ -9990,9 +9970,10 @@ thr_init(struct thr_repository* rep, struct thr_data *selfptr, unsigned int cnt,
   selfptr->m_jbb_estimate_next_set = true;
   selfptr->m_load_indicator = 1;
 #ifdef DEBUG_SCHED_STATS
-  for (Uint32 i = 0; i < 10; i++)
+  for (Uint32 i = 0; i < 16; i++)
     selfptr->m_jbb_estimated_queue_stats[i] = 0;
   selfptr->m_jbb_total_words = 0;
+  selfptr->m_jbb_total_signals = 0;
 #endif
   selfptr->m_read_jbb_state_consumed = true;
   selfptr->m_cpu_percentage_changed = true;
@@ -10103,6 +10084,14 @@ send_buffer_init(Uint32 id, thr_repository::send_buffer * sb)
 
 static
 void
+rep_init_crash_mutex(struct thr_repository* rep)
+{
+  NdbMutex_Init(&rep->stop_for_crash_mutex);
+  NdbCondition_Init(&rep->stop_for_crash_cond);
+}
+
+static
+void
 rep_init(struct thr_repository* rep, unsigned int cnt, Ndbd_mem_manager *mm)
 {
   rep->m_mm = mm;
@@ -10114,8 +10103,6 @@ rep_init(struct thr_repository* rep, unsigned int cnt, Ndbd_mem_manager *mm)
   }
 
   rep->stopped_threads = 0;
-  NdbMutex_Init(&rep->stop_for_crash_mutex);
-  NdbCondition_Init(&rep->stop_for_crash_cond);
 
   for (Uint32 i = 0; i < NDB_ARRAY_SIZE(rep->m_receive_lock); i++)
   {
@@ -10139,7 +10126,6 @@ get_total_number_of_block_threads(void)
 {
   return (globalData.ndbMtMainThreads +
           globalData.ndbMtLqhThreads +
-          globalData.ndbMtQueryThreads +
           globalData.ndbMtRecoverThreads +
           globalData.ndbMtTcThreads +
           globalData.ndbMtReceiveThreads);
@@ -10388,6 +10374,12 @@ ThreadConfig::~ThreadConfig()
   g_thr_repository_mem = NULL;
 }
 
+void
+ThreadConfig::init_crash_mutex()
+{
+  ::rep_init_crash_mutex(g_thr_repository);
+}
+
 /*
  * We must do the init here rather than in the constructor, since at
  * constructor time the global memory manager is not available.
@@ -10398,11 +10390,10 @@ ThreadConfig::init()
   Uint32 num_lqh_threads = globalData.ndbMtLqhThreads;
   Uint32 num_tc_threads = globalData.ndbMtTcThreads;
   Uint32 num_recv_threads = globalData.ndbMtReceiveThreads;
-  Uint32 num_query_threads = globalData.ndbMtQueryThreads;
   Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
 
   first_receiver_thread_no =
-      globalData.ndbMtMainThreads + num_lqh_threads + num_query_threads +
+      globalData.ndbMtMainThreads + num_lqh_threads +
       num_recover_threads + num_tc_threads;
   glob_num_threads = first_receiver_thread_no + num_recv_threads;
   glob_unused[0] = 0; //Silence compiler
@@ -11356,7 +11347,6 @@ may_communicate(unsigned from, unsigned to)
   {
     // TC threads can communicate with SPJ-, LQH-, main- and itself
     return is_ldm_thread(to)  ||
-           is_query_thread(to) ||
            is_tc_thread(to);      // Cover both SPJs and itself
   }
   else if (is_ldm_thread(from))
@@ -11364,14 +11354,7 @@ may_communicate(unsigned from, unsigned to)
     // All LDM threads can communicates with TC-, main- and ldm.
     return is_tc_thread(to)   ||
            is_ldm_thread(to) ||
-           is_query_thread(to) ||
            is_recover_thread(to) ||
-           (to == from);
-  }
-  else if (is_query_thread(from))
-  {
-    return is_tc_thread(to) ||
-           is_ldm_thread(to) ||
            (to == from);
   }
   else if (is_recover_thread(from))

@@ -5298,20 +5298,7 @@ Dbspj::lookup_send(Signal* signal,
       {
         if (Tnode == getOwnNodeId())
         {
-          if (globalData.ndbMtQueryThreads > 0)
-          {
-            jam();
-            ref = get_lqhkeyreq_ref(&c_tc->m_distribution_handle, instance_no);
-          }
-          else if (globalData.ndbMtQueryWorkers > 0)
-          {
-            /**
-             * We don't have any query threads, but we run with TC, LDM and Query
-             * thread workers in each receive thread. In this case we will always
-             * use the local query worker.
-             */
-            ref = numberToRef(DBQLQH, instance(), Tnode);
-          }
+          ref = get_lqhkeyreq_ref(&c_tc->m_distribution_handle, instance_no);
         }
       }
       else
@@ -7909,7 +7896,7 @@ Dbspj::scanFrag_send(Signal* signal,
       {
         if (nodeId == getOwnNodeId())
         {
-          if (globalData.ndbMtQueryThreads > 0)
+          if (globalData.ndbMtQueryWorkers > 0)
           {
             /**
              * ReadCommittedFlag is always set in DBSPJ when Query threads are
@@ -7945,20 +7932,6 @@ Dbspj::scanFrag_send(Signal* signal,
             jam();
             ref = get_scan_fragreq_ref(&c_tc->m_distribution_handle,
                                        instance_no);
-            fragPtr.p->m_next_ref = ref;
-          }
-          else if (globalData.ndbMtQueryWorkers > 0)
-          {
-            /**
-             * We are not using Query threads, but we have local query workers
-             * in each receive thread. Send the signal to the local DBQLQH
-             * block.
-             *
-             * We need not set the query thread flag since we already know
-             * the receiver of this signal.
-             */
-            ref = numberToRef(DBQLQH, instance(), nodeId);
-            fragPtr.p->m_ref = ref;
             fragPtr.p->m_next_ref = ref;
           }
           else

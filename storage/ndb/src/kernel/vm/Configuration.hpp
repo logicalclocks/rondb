@@ -83,6 +83,7 @@ public:
 
   Uint32 lockPagesInMainMemory() const;
 
+  Uint32 getSharedLdmInstance(Uint32 instance);
   int schedulerExecutionTimer() const;
   void schedulerExecutionTimer(int value);
 

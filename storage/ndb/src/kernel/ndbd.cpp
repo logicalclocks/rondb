@@ -986,6 +986,8 @@ ndbd_run(bool foreground, int report_fd,
 
   globalEmulatorData.create();
 
+  globalEmulatorData.theThreadConfig->init_crash_mutex();
+
   log_memusage("Emulator init");
 
   Configuration* theConfig = globalEmulatorData.theConfiguration;

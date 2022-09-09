@@ -72,7 +72,7 @@ void mt_init_thr_map();
 void mt_add_thr_map(Uint32 block, Uint32 instance);
 void mt_finalize_thr_map();
 #ifdef DEBUG_SCHED_STATS
-void get_jbb_estimated_stats(Uint32, Uint32, Uint64**, Uint64**);
+void get_jbb_estimated_stats(Uint32, Uint32, Uint64**, Uint64**, Uint64**);
 #endif
 void prefetch_load_indicators(Uint32 *rr_groups, Uint32 rr_group);
 Uint32 get_load_indicator(Uint32 dst);

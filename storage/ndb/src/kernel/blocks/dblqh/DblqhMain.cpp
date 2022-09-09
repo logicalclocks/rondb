@@ -1417,8 +1417,7 @@ Dblqh::sttor_startphase1(Signal *signal)
   {
     jam();
     Uint32 num_restore_threads = 1 + (
-      ((globalData.ndbMtRecoverThreads +
-        globalData.ndbMtQueryThreads) +
+      (globalData.ndbMtRecoverThreads +
        (globalData.ndbMtLqhWorkers - 1)) /
       globalData.ndbMtLqhWorkers);
     m_num_restore_threads = num_restore_threads;
@@ -28900,8 +28899,7 @@ Dblqh::get_recover_thread_instance()
    * we return 0, otherwise we return the instance number of the recover
    * thread we can use (instance number 0 is the proxy instance).
    */
-  Uint32 num_recover_threads = globalData.ndbMtQueryThreads +
-                               globalData.ndbMtRecoverThreads;
+  Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
   if (num_recover_threads == 0)
   {
     return 0;
@@ -28914,7 +28912,7 @@ Dblqh::get_recover_thread_instance()
     {
       num_recover_active[i] = 1;
       NdbMutex_Unlock(c_restore_mutex_lqh->m_restore_mutex);
-      return i;
+      return (i + globalData.ndbMtLqhWorkers);
     }
   }
   NdbMutex_Unlock(c_restore_mutex_lqh->m_restore_mutex);
@@ -28928,6 +28926,9 @@ Dblqh::completed_restore(Uint32 instance)
    * A restore of a fragment has completed, we release the recover thread
    * for someone else to use.
    */
+  ndbrequire(instance > globalData.ndbMtLqhWorkers);
+  instance -= globalData.ndbMtLqhWorkers;
+  ndbrequire(instance <= globalData.ndbMtRecoverThreads);
   Uint32 *num_recover_active = c_restore_mutex_lqh->m_num_recover_active;
   NdbMutex_Lock(c_restore_mutex_lqh->m_restore_mutex);
   ndbrequire(num_recover_active[instance] == 1);
@@ -28946,8 +28947,7 @@ Dblqh::instance_completed_restore(Uint32 instance)
    * false. This is used to send a signal to the recover threads to
    * log output about its restore operations.
    */
-  Uint32 num_recover_threads = globalData.ndbMtQueryThreads +
-                               globalData.ndbMtRecoverThreads;
+  Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
   if (num_recover_threads == 0)
   {
     jam();
@@ -40353,11 +40353,11 @@ Dblqh::mark_end_of_lcp_restore(Signal* signal)
      * All LDM threads are done. Now time to also report
      * restore rates performed by Recover threads.
      */
-    Uint32 num_recover_threads = globalData.ndbMtQueryThreads +
-                               globalData.ndbMtRecoverThreads;
+    Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
     for (Uint32 i = 1; i <= num_recover_threads; i++)
     {
-      BlockReference ref = numberToRef(QRESTORE, i, getOwnNodeId());
+      Uint32 instance = globalData.ndbMtLqhWorkers + i;
+      BlockReference ref = numberToRef(QRESTORE, instance, getOwnNodeId());
       signal->theData[0] = DumpStateOrd::RestoreRates;
       sendSignal(ref, GSN_DUMP_STATE_ORD, signal, 1, JBB);
     }

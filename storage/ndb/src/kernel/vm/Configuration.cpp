@@ -334,12 +334,10 @@ Configuration::get_num_threads()
 {
   Uint32 num_ldm_threads = globalData.ndbMtLqhThreads;
   Uint32 num_tc_threads = globalData.ndbMtTcThreads;
-  Uint32 num_query_threads = globalData.ndbMtQueryThreads;
   Uint32 num_main_threads = globalData.ndbMtMainThreads;
   Uint32 num_recv_threads = globalData.ndbMtReceiveThreads;
   return num_ldm_threads +
          num_tc_threads +
-         num_query_threads +
          num_main_threads +
          num_recv_threads;
 }
@@ -1470,6 +1468,15 @@ Configuration::calculate_automatic_memory(ndb_mgm_configuration_iterator *p,
   return true;
 }
 
+Uint32
+Configuration::getSharedLdmInstance(Uint32 instance)
+{
+  if (instance == 0 ||
+      instance > globalData.ndbMtLqhWorkers)
+    return 0;
+  return m_thr_config.get_shared_ldm_instance(instance);
+}
+
 void
 Configuration::setupConfiguration()
 {
@@ -1738,6 +1745,15 @@ Configuration::setupConfiguration()
       m_thr_config.getThreadCount(THRConfig::T_SEND);
     globalData.ndbMtQueryThreads =
       m_thr_config.getThreadCount(THRConfig::T_QUERY);
+    if (globalData.ndbMtQueryThreads > 0)
+    {
+      ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
+               "Invalid configuration fetched. ",
+               " Query threads are no longer supported"
+               ", instead Query blocks are part of LDM threads,"
+               " thus move the query thread instances to LDM threads"
+               " and also the CPU bindings should be moved");
+    }
     globalData.ndbMtRecoverThreads =
       m_thr_config.getThreadCount(THRConfig::T_RECOVER);
     globalData.ndbMtTcThreads = m_thr_config.getThreadCount(THRConfig::T_TC);
@@ -1780,7 +1796,9 @@ Configuration::setupConfiguration()
     {
       if (m_thr_config.getMtClassic())
       {
-        globalData.isNdbMtLqh = false;
+        ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
+                   "Invalid configuration fetched. ",
+                   "Multithreaded classic is no longer supported");
       }
     }
     require(globalData.isNdbMtLqh);
@@ -1798,6 +1816,7 @@ Configuration::setupConfiguration()
 
     globalData.ndbMtLqhWorkers = ldm_workers;
     globalData.ndbMtLqhThreads = ldm_threads;
+    globalData.ndbMtQueryWorkers = ldm_workers;
     if (ldm_threads == 0)
     {
       /**
@@ -1811,13 +1830,12 @@ Configuration::setupConfiguration()
        * thread.
        */
       if ((globalData.ndbMtTcThreads > 0) ||
-          (globalData.ndbMtQueryThreads > 0) ||
           (globalData.ndbMtRecoverThreads > 0))
       {
         ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
                   "Invalid configuration fetched. ",
                   "Setting number of ldm threads to 0 must be combined"
-                  " with 0 tc, query and recover threads");
+                  " with 0 tc and recover threads");
       }
       if (globalData.ndbMtReceiveThreads > 1)
       {
@@ -1844,25 +1862,8 @@ Configuration::setupConfiguration()
         }
       }
     }
-    else
-    {
-      globalData.ndbMtQueryWorkers = globalData.ndbMtQueryThreads;
-    }
-
     globalData.QueryThreadsPerLdm = 0;
-    if (globalData.ndbMtQueryThreads > 0)
-    {
-      Uint32 query_threads_per_ldm = globalData.ndbMtQueryThreads / ldm_workers;
-      if (ldm_workers * query_threads_per_ldm != globalData.ndbMtQueryThreads)
-      {
-        ERROR_SET(fatal, NDBD_EXIT_INVALID_CONFIG,
-                  "Invalid configuration fetched. ",
-                  "Number of query threads must be a multiple of the number"
-                  " of LDM threads.");
-      }
-      globalData.QueryThreadsPerLdm = query_threads_per_ldm;
-    }
-    else if (globalData.ndbMtQueryWorkers > 0)
+    if (globalData.ndbMtQueryWorkers > 0)
     {
       globalData.QueryThreadsPerLdm = 1;
     }
@@ -1874,9 +1875,8 @@ Configuration::setupConfiguration()
                 "Invalid configuration fetched. ",
                 "Sum of recover threads and query threads can be max 127");
     }
-    require(globalData.ndbMtQueryWorkers == globalData.ndbMtQueryThreads ||
-            (globalData.ndbMtQueryThreads == 0 &&
-             globalData.ndbMtQueryWorkers == globalData.ndbMtReceiveThreads));
+    require(globalData.ndbMtQueryWorkers == globalData.ndbMtLqhThreads ||
+            globalData.ndbMtQueryWorkers == globalData.ndbMtReceiveThreads);
   } while (0);
 
   calcSizeAlt(cf);

@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2022, Oracle and/or its affiliates.
+   Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -177,6 +178,8 @@ THRConfig::add(T_Type t, unsigned realtime, unsigned spintime)
   tmp.m_no = m_threads[t].size();
   tmp.m_realtime = realtime;
   tmp.m_thread_prio = NO_THREAD_PRIO_USED;
+  tmp.m_shared_cpu_id = Uint32(~0);
+  tmp.m_shared_instance = 0;
   tmp.m_nosend = 0;
   if (spintime > 9000)
     spintime = 9000;
@@ -654,7 +657,6 @@ THRConfig::compute_automatic_thread_config(
     { 83, 1, 1, 228, 228, 228, 112, 114 }, // 912-927 CPUs
   };
   Uint32 cpu_cnt;
-  Uint32 num_cpus_per_core;
   if (num_cpus == 0)
   {
     struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
@@ -719,34 +721,11 @@ THRConfig::compute_automatic_thread_config(
      * as recover thread, thus we can decrease the amount of recover
      * threads with the amount of LDM threads.
      */
-    num_cpus_per_core = hwinfo->num_cpu_per_core;
-    if (cpu_cnt >= 16 &&
-        cpu_cnt == hwinfo->cpu_cnt_max &&
-        num_cpus_per_core > 2)
-    {
-      if (num_cpus_per_core == 3)
-      {
-        cpu_cnt *= 2;
-        cpu_cnt /= 3;
-        g_num_query_threads_per_ldm = 2;
-      }
-      else
-      {
-        num_cpus_per_core = 4;
-        cpu_cnt /= 2;
-        g_num_query_threads_per_ldm = 3;
-      }
-    }
-    else
-    {
-      num_cpus_per_core = 2;
-      g_num_query_threads_per_ldm = 1;
-    }
+    g_num_query_threads_per_ldm = 1;
   }
   else
   {
     cpu_cnt = num_cpus;
-    num_cpus_per_core = 2;
   }
 
   require(cpu_cnt > 0);
@@ -769,8 +748,10 @@ THRConfig::compute_automatic_thread_config(
   tc_threads = table[used_map_id].tc_threads;
   send_threads = table[used_map_id].send_threads;
   recv_threads = table[used_map_id].recv_threads;
+  ldm_threads += query_threads;
+  query_threads = 0;
 
-  recover_threads = cpu_cnt - (ldm_threads + query_threads);
+  recover_threads = cpu_cnt - ldm_threads;
 
   if (cpu_cnt < 5)
   {
@@ -783,7 +764,6 @@ THRConfig::compute_automatic_thread_config(
   Uint32 tot_threads = main_threads;
   tot_threads += rep_threads;
   tot_threads += ldm_threads;
-  tot_threads += query_threads;
   tot_threads += tc_threads;
   tot_threads += recv_threads;
 
@@ -793,31 +773,12 @@ THRConfig::compute_automatic_thread_config(
     recover_threads -=
       (tot_threads - NDBMT_MAX_BLOCK_INSTANCES);
   }
-  /**
-   *
-   * Ignore this calculation for now
-  if (num_cpus_per_core == 3)
-  {
-    query_threads *= 2;
+}
 
-    tc_threads *= 3;
-    tc_threads /= 2;
-    send_threads *= 3;
-    send_threads /= 2;
-    recv_threads *= 3;
-    recv_threads /= 2;
-    recover_threads *= 3;
-    recover_threads /= 2;
-  }
-  else if (num_cpus_per_core == 4)
-  {
-    query_threads *= 3;
-    tc_threads *= 2;
-    send_threads *= 2;
-    recv_threads *= 2;
-    recover_threads *= 2;
-  }
-  */
+unsigned
+THRConfig::get_shared_ldm_instance(Uint32 instance)
+{
+  return m_threads[T_LDM][instance - 1].m_shared_instance;
 }
 
 int
@@ -844,8 +805,7 @@ THRConfig::do_parse(unsigned realtime,
                                   send_threads,
                                   recv_threads);
   g_eventLogger->info("Auto thread config uses:\n"
-                      " %u LDM threads,\n"
-                      " %u Query threads,\n"
+                      " %u LDM+Query threads,\n"
                       " %u tc threads,\n"
                       " %u Recover threads,\n"
                       " %u main threads,\n"
@@ -853,7 +813,6 @@ THRConfig::do_parse(unsigned realtime,
                       " %u recv threads,\n"
                       " %u send threads",
                       ldm_threads,
-                      query_threads,
                       tc_threads,
                       recover_threads,
                       main_threads,
@@ -894,10 +853,6 @@ THRConfig::do_parse(unsigned realtime,
   {
     add(T_TC, realtime, spintime);
   }
-  for (Uint32 i = 0; i < query_threads; i++)
-  {
-    add(T_QUERY, realtime, spintime);
-  }
   if (recover_threads > query_threads)
   {
     Uint32 num_recover_threads_only = recover_threads - query_threads;
@@ -928,7 +883,6 @@ THRConfig::do_parse(unsigned realtime,
       Ndb_CreateCPUMap(ldm_threads, num_query_threads_per_ldm);
     g_eventLogger->info("Number of RR Groups = %u", num_rr_groups);
     Uint32 next_cpu_id = Ndb_GetFirstCPUInMap();
-    Uint32 query_instance = 0;
     for (Uint32 i = 0; i < ldm_threads; i++)
     {
       require(next_cpu_id != Uint32(RNIL));
@@ -936,16 +890,36 @@ THRConfig::do_parse(unsigned realtime,
       m_threads[T_LDM][i].m_bind_type = T_Thread::B_CPU_BIND;
       next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
       m_threads[T_LDM][i].m_core_bind = true;
-      for (Uint32 j = 0; j < num_query_threads_per_ldm; j++)
+
+      Uint32 core_cpu_ids[MAX_NUM_CPUS];
+      Uint32 num_core_cpus = 0;
+      Ndb_GetCoreCPUIds(next_cpu_id,
+                        &core_cpu_ids[0],
+                        num_core_cpus);
+      if (num_core_cpus >= 2)
       {
-        require(next_cpu_id != Uint32(RNIL));
-        m_threads[T_QUERY][query_instance].m_bind_no = next_cpu_id;
-        m_threads[T_QUERY][query_instance].m_bind_type = T_Thread::B_CPU_BIND;
-        m_threads[T_QUERY][query_instance].m_core_bind = true;
-        next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
-        query_instance++;
+        Uint32 neighbour_cpu = core_cpu_ids[0];
+        if (neighbour_cpu == next_cpu_id)
+        {
+          neighbour_cpu = core_cpu_ids[1];
+        }
+        m_threads[T_LDM][i].m_shared_cpu_id = neighbour_cpu;
       }
     }
+    for (Uint32 i = 0; i < ldm_threads; i++)
+    {
+      Uint32 my_cpu_id = m_threads[T_LDM][i].m_bind_no;
+      for (Uint32 j = i; j < ldm_threads; j++)
+      {
+        if (m_threads[T_LDM][i].m_shared_cpu_id != Uint32(~0) &&
+            m_threads[T_LDM][i].m_shared_cpu_id == my_cpu_id)
+        {
+          m_threads[T_LDM][i].m_shared_instance = j + 1;
+          m_threads[T_LDM][j].m_shared_instance = i + 1;
+        }
+      }
+    }
+
     Uint32 tc_count = 0;
     Uint32 main_count = 0;
     Uint32 send_count = 0;
