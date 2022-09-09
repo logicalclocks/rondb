@@ -5034,7 +5034,7 @@ sub run_testcase ($) {
     return 1;
   }
 
-  my $test = start_mysqltest($tinfo);
+  my $test = start_mysqltest($tinfo, $config->group('mysqltest'));
 
   # Maintain a queue to keep track of server processes which have
   # died expectedly in order to wait for them to be restarted.
@@ -7047,8 +7047,9 @@ sub run_mysqltest ($$) {
   $proc->wait();
 }
 
-sub start_mysqltest ($) {
+sub start_mysqltest ($$) {
   my $tinfo = shift;
+  my $mysqltest = shift;
 
   my $exe = $exe_mysqltest;
   my $args;
