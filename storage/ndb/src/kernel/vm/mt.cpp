@@ -3488,6 +3488,7 @@ check_yield(thr_data *selfptr,
        * the receive thread sends a signal to the thread.
        */
       NdbSpin();
+      NdbSpin();
       if (!check_queues_empty(selfptr))
       {
         /* Found jobs to execute, successful spin */
@@ -3495,8 +3496,8 @@ check_yield(thr_data *selfptr,
         now = NdbTick_getCurrentTicks();
         break;
       }
-      /* Check if we have done enough spinning once per 3 us */
-      if ((i & 3) == 3)
+      /* Check if we have done enough spinning once per 5 us */
+      if ((i & 3) != 3)
         continue;
       now = NdbTick_getCurrentTicks();
       Uint64 spin_micros = NdbTick_Elapsed(start_spin_ticks, now).microSec();
@@ -3573,6 +3574,7 @@ check_recv_yield(thr_data *selfptr,
        * the receive thread sends a signal to the thread.
        */
       NdbSpin();
+      NdbSpin();
       if ((!check_queues_empty(selfptr)) ||
           ((num_events =
             globalTransporterRegistry.pollReceive(0, recvdata)) > 0))
@@ -3582,8 +3584,8 @@ check_recv_yield(thr_data *selfptr,
         now = NdbTick_getCurrentTicks();
         break;
       }
-      /* Check if we have done enough spinning once per 3 us */
-      if ((i & 3) == 3)
+      /* Check if we have done enough spinning once per 5 us */
+      if ((i & 3) != 3)
         continue;
       /* Check if we have done enough spinning */
       now = NdbTick_getCurrentTicks();

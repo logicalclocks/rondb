@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2018, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -39,9 +40,9 @@ void NdbSpin_Init()
 #ifdef NDB_HAVE_CPU_PAUSE
   Uint64 spin_nanos = glob_current_spin_nanos;
   Uint64 min_nanos_per_call = 0xFFFFFFFF;
-  for (Uint32 i = 0; i < 5; i++)
+  for (Uint32 i = 0; i < 200; i++)
   {
-    Uint32 loop_count = 100;
+    Uint32 loop_count = 1000;
     NDB_TICKS start = NdbTick_getCurrentTicks();
     for (Uint32 j = 0; j < loop_count; j++)
     {
@@ -56,12 +57,9 @@ void NdbSpin_Init()
     }
   }
 
-  loops = ((min_nanos_per_call - 1) + spin_nanos) / min_nanos_per_call;
+  Uint32 spin_instruction_time = (min_nanos_per_call / glob_num_spin_loops) + 1;
+  loops = (spin_nanos / spin_instruction_time) + 1;
 #endif
-  if (loops == 0)
-  {
-    loops = 1;
-  }
   glob_num_spin_loops = loops;
 }
 
