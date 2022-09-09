@@ -5745,6 +5745,10 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
       }
     }
 #endif
+    if (refToNode(TBRef) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
     regTcPtr->lqhkeyreq_ref = TBRef;
     sendBatchedFragmentedSignal(TBRef,
                                 GSN_LQHKEYREQ,
@@ -6896,6 +6900,7 @@ void Dbtc::sendtckeyconf(Signal* signal, UintR TcommitFlag, ApiConnectRecordPtr 
   }
   regApiPtr->m_tc_hbrep_timer = ctcTimer;
   TcKeyConf::setNoOfOperations(confInfo, (TopWords >> 1));
+  signal->m_send_wakeups++;
   if ((TpacketLen + 1 /** gci_lo */ > 25) ||!is_api){
     TcKeyConf * const tcKeyConf = (TcKeyConf *)signal->getDataPtrSend();
     
@@ -7625,7 +7630,16 @@ Dbtc::sendCommitLqh(Signal* signal,
 
   Uint32 Tnode = Thostptr.i;
   Uint32 self = getOwnNodeId();
-  Uint32 ret = (Tnode == self) ? 4 : 1;
+  Uint32 ret;
+  if (Tnode == self)
+  {
+    ret = 4;
+  }
+  else
+  {
+    ret = 1;
+    signal->m_send_wakeups++;
+  }
 
   Uint32 Tdata[5];
   Tdata[0] = regTcPtr->lastLqhCon;
@@ -7888,6 +7902,7 @@ Dbtc::sendApiCommitSignal(Signal *signal, ApiConnectRecordPtr const apiConnectpt
     commitConf->transId2 = apiConnectptr.p->transid[1];
     commitConf->gci_hi = Uint32(apiConnectptr.p->globalcheckpointid >> 32);
     commitConf->gci_lo = Uint32(apiConnectptr.p->globalcheckpointid);
+    signal->m_send_wakeups++;
 
     if (!ERROR_INSERTED(8054) && !ERROR_INSERTED(8108))
     {
@@ -8149,8 +8164,17 @@ Dbtc::sendCompleteLqh(Signal* signal,
 
   Uint32 Tnode = Thostptr.i;
   Uint32 self = getOwnNodeId();
-  Uint32 ret = (Tnode == self) ? 4 : 1;
+  Uint32 ret;
 
+  if (Tnode == self)
+  {
+    ret = 4;
+  }
+  else
+  {
+    ret = 1;
+    signal->m_send_wakeups++;
+  }
   Uint32 Tdata[3];
   Tdata[0] = regTcPtr->lastLqhCon;
   Tdata[1] = regApiPtr->transid[0];
@@ -9577,6 +9601,7 @@ void Dbtc::execTC_COMMITREQ(Signal* signal)
         commitConf->transId2 = transId2;
         commitConf->gci_hi = 0;
         commitConf->gci_lo = 0;
+        signal->m_send_wakeups++;
         sendSignal(apiBlockRef, GSN_TC_COMMITCONF, signal, 
 		   TcCommitConf::SignalLength, JBB);
         
@@ -9699,6 +9724,7 @@ void Dbtc::execTCROLLBACKREQ(Signal* signal)
     signal->theData[0] = apiConnectptr.p->ndbapiConnect;
     signal->theData[1] = apiConnectptr.p->transid[0];
     signal->theData[2] = apiConnectptr.p->transid[1];
+    signal->m_send_wakeups++;
     sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKCONF, 
 	       signal, 3, JBB);
     break;
@@ -9735,6 +9761,7 @@ void Dbtc::execTCROLLBACKREQ(Signal* signal)
       signal->theData[0] = apiConnectptr.p->ndbapiConnect;
       signal->theData[1] = apiConnectptr.p->transid[0];
       signal->theData[2] = apiConnectptr.p->transid[1];
+      signal->m_send_wakeups++;
       sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKCONF, 
 		 signal, 3, JBB);
     } else {
@@ -10485,7 +10512,10 @@ int Dbtc::releaseAndAbort(Signal* signal, ApiConnectRecord* const regApiPtr)
                        regApiPtr->transid[1],
                        blockRef,
                        hostptr.i));
-
+      if (refToNode(blockRef) != getOwnNodeId())
+      {
+        signal->m_send_wakeups++;
+      }
       sendSignal(blockRef, GSN_ABORT, signal, len, JBB);
       prevAlive = true;
     } else {
@@ -14089,6 +14119,10 @@ void Dbtc::toAbortHandlingLab(Signal* signal,
         Uint32 instanceNo = getInstanceNo(hostptr.i, instanceKey);
         BlockReference blockRef = numberToRef(DBLQH, instanceNo, hostptr.i);
         tcConnectptr.p->tcConnectstate = OS_WAIT_ABORT_CONF;
+        if (hostptr.i != getOwnNodeId())
+        {
+          signal->m_send_wakeups++;
+        }
         signal->theData[0] = tcConnectptr.i;
         signal->theData[1] = cownref;
         signal->theData[2] = apiConnectptr.p->transid[0];
@@ -14212,6 +14246,10 @@ Dbtc::checkFailData_abort(Signal *signal,
         Uint32 instanceNo = getInstanceNo(hostptr.i, instanceKey);
         BlockReference blockRef = numberToRef(DBLQH, instanceNo, hostptr.i);
         tcConnectptr.p->tcConnectstate = OS_WAIT_ABORT_CONF;
+        if (hostptr.i != getOwnNodeId())
+        {
+          signal->m_send_wakeups++;
+        }
         signal->theData[0] = tcConnectptr.i;
         signal->theData[1] = cownref;
         signal->theData[2] = apiConnectptr.p->transid[0];
@@ -14493,6 +14531,10 @@ void Dbtc::toCommitHandlingLab(Signal* signal,
         tcConnectptr.p->tcConnectstate = OS_WAIT_COMMIT_CONF;
         Uint64 gci = apiConnectptr.p->globalcheckpointid;
         CommitReq* req = (CommitReq*)signal->theData;
+        if (hostptr.i != getOwnNodeId())
+        {
+          signal->m_send_wakeups++;
+        }
         req->reqPtr = tcConnectptr.i;
         req->reqBlockref = cownref;
         req->gci_hi = Uint32(gci >> 32);
@@ -14869,6 +14911,10 @@ void Dbtc::toCompleteHandlingLab(Signal* signal,
         tcConnectptr.p->tcConnectstate = OS_WAIT_COMPLETE_CONF;
         tcConnectptr.p->apiConnect = apiConnectptr.i;
         CompleteReq* req = (CompleteReq*)signal->theData;
+        if (hostptr.i != getOwnNodeId())
+        {
+          signal->m_send_wakeups++;
+        }
         req->reqPtr = tcConnectptr.i;
         req->reqBlockref = cownref;
         req->transid1 = apiConnectptr.p->transid[0];
@@ -18026,6 +18072,10 @@ Dbtc::close_scan_req_send_conf(Signal* signal,
     conf->requestInfo = ScanTabConf::EndOfData;
     conf->transId1 = apiConnectptr.p->transid[0];
     conf->transId2 = apiConnectptr.p->transid[1];
+    if (refToNode(ref) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
     sendSignal(ref, GSN_SCAN_TABCONF, signal, ScanTabConf::SignalLength, JBB);
     time_track_complete_scan(scanPtr.p, refToNode(ref));
   }
@@ -18509,7 +18559,10 @@ void Dbtc::sendScanTabConf(Signal* signal,
       jam();
     }
   }
-  
+  if (refToNode(ref) != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   if (ScanTabConf::SignalLength + (words_per_op * op_count) > 25)
   {
     jamDebug();
@@ -19066,6 +19119,7 @@ void Dbtc::releaseAbortResources(Signal* signal,
       signal->theData[0] = apiConnectptr.p->ndbapiConnect;
       signal->theData[1] = apiConnectptr.p->transid[0];
       signal->theData[2] = apiConnectptr.p->transid[1];
+      signal->m_send_wakeups++;
       sendSignal(blockRef, GSN_TCROLLBACKCONF, signal, 3, JBB);
       break;
     case RS_TCROLLBACKREP:{

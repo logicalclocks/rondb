@@ -5539,6 +5539,10 @@ void Dblqh::earlyKeyReqAbort(Signal* signal,
     Uint32 block = refToMain(signal->senderBlockRef());
     if (block != getRESTORE())
     {
+      if (refToNode(signal->senderBlockRef()) != getOwnNodeId())
+      {
+        signal->m_send_wakeups++;
+      }
       sendSignal(signal->senderBlockRef(), GSN_LQHKEYREF, signal, 
 	         LqhKeyRef::SignalLength, JBB);
     }
@@ -6382,6 +6386,10 @@ void Dblqh::sendCommitLqh(Signal* signal,
   Tdata[4] = regTcPtr->gci_lo;
   Uint32 len = 5;
 
+  if (Thostptr.i != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   if (container->noOfPackedWords > 25 - len) {
     jam();
     sendPackedSignal(signal, container);
@@ -6429,6 +6437,10 @@ void Dblqh::sendCompleteLqh(Signal* signal,
   Tdata[2] = regTcPtr->transid[1];
   Uint32 len = 3;
 
+  if (Thostptr.i != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   if (container->noOfPackedWords > 22) {
     jam();
     sendPackedSignal(signal, container);
@@ -6473,6 +6485,10 @@ void Dblqh::sendCommittedTc(Signal* signal,
   Tdata[2] = regTcPtr->transid[1];
   Uint32 len = 3;
 
+  if (Thostptr.i != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   if (container->noOfPackedWords > 22) {
     jam();
     sendPackedSignal(signal, container);
@@ -6517,6 +6533,10 @@ void Dblqh::sendCompletedTc(Signal* signal,
   Tdata[2] = regTcPtr->transid[1];
   Uint32 len = 3;
 
+  if (Thostptr.i != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   if (container->noOfPackedWords > 22) {
     jam();
     sendPackedSignal(signal, container);
@@ -6545,6 +6565,10 @@ void Dblqh::sendLqhkeyconfTc(Signal* signal,
   ptrCheckGuard(Thostptr, chostFileSize, hostRecord);
   Uint32 block = refToMain(atcBlockref);
 
+  if (Thostptr.i != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   if (block == getDBLQH())
   {
     if (instanceKey <= MAX_NDBMT_LQH_THREADS)
@@ -7191,6 +7215,10 @@ void Dblqh::execSIGNAL_DROPPED_REP(Signal* signal)
     ref->errorCode= ZGET_ATTRINBUF_ERROR;
     ref->senderRef = reference();
     
+    if (refToNode(signal->senderBlockRef()) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
     sendSignal(signal->senderBlockRef(), GSN_SCAN_FRAGREF, signal,
                ScanFragRef::SignalLength, JBB);
     break;
@@ -9265,6 +9293,10 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
   if (regTcPtr->dirtyOp)
   {
     ndbrequire(regTcPtr->opSimple);
+    if (op == ZREAD)
+    {
+      signal->m_send_wakeups++;
+    }
   }
   
   CRASH_INSERTION2(5041, (op == ZREAD && 
@@ -11924,6 +11956,7 @@ void Dblqh::sendBatchedLqhkeyreq(Signal* signal,
 {
   jam();
   const Uint32 version = getNodeInfo(refToNode(lqhRef)).m_version;
+  signal->m_send_wakeups++;
   if (ndbd_frag_lqhkeyreq(version))
   {
     jam();
@@ -14918,6 +14951,10 @@ void Dblqh::execABORT(Signal* signal)
                      transid2,
                      tcOprec,
                      tcBlockref));
+    if (refToNode(tcBlockref) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
     Aborted* conf = CAST_PTR(Aborted, signal->getDataPtrSend());
     conf->senderData = tcOprec;
     conf->transid1 = transid1;
@@ -14959,6 +14996,7 @@ void Dblqh::execABORT(Signal* signal)
     abo->tcBlockref = regTcPtr->tcBlockref;
     abo->transid1 = regTcPtr->transid[0];
     abo->transid2 = regTcPtr->transid[1];
+    signal->m_send_wakeups++;
     sendSignal(TLqhRef, GSN_ABORT, signal, Abort::SignalLength, JBB);
   }//if
   regTcPtr->abortState = TcConnectionrec::ABORT_FROM_TC;
@@ -15031,6 +15069,10 @@ void Dblqh::execABORTREQ(Signal* signal)
     signal->theData[2] = cownNodeid;
     signal->theData[3] = transid1;
     signal->theData[4] = transid2;
+    if (refToNode(reqBlockref) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
     sendSignal(reqBlockref, GSN_ABORTCONF, signal, 5, JBB);
     warningReport(signal, 9, tcOprec);
     return;
@@ -15646,6 +15688,10 @@ void Dblqh::continueAfterLogAbortWriteLab(
 
     if (block != getRESTORE())
     {
+      if (refToNode(regTcPtr->clientBlockref) != getOwnNodeId())
+      {
+        signal->m_send_wakeups++;
+      }
       sendSignal(regTcPtr->clientBlockref, GSN_LQHKEYREF, signal, 
                  LqhKeyRef::SignalLength, JBB);
     }
@@ -15683,6 +15729,10 @@ void Dblqh::continueAfterLogAbortWriteLab(
                      regTcPtr->reqBlockref,
                      regTcPtr->accConnectrec));
 
+    if (refToNode(regTcPtr->reqBlockref) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
     signal->theData[0] = regTcPtr->reqRef;
     signal->theData[1] = tcConnectptr.i;
     signal->theData[2] = cownNodeid;
@@ -15707,6 +15757,10 @@ Dblqh::sendTCKEYREF(Signal* signal, Uint32 ref, Uint32 routeRef, Uint32 cnt)
              nodeId == getOwnNodeId() || 
              refToMain(routeRef) == DBTC); 
   
+  if (refToNode(ref) != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   if (likely(connectedToNode &&
              !ERROR_INSERTED_CLEAR(5079)))
   {
@@ -18012,6 +18066,10 @@ void Dblqh::send_scan_fragref(Signal* signal,
   ref->transId2 = transid2;
   ref->errorCode = errorCode;
   ref->senderRef = reference();
+  if (refToNode(senderBlockRef) != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   sendSignal(senderBlockRef, GSN_SCAN_FRAGREF, signal,
 	     ScanFragRef::SignalLength, JBB);
 }
@@ -19672,6 +19730,10 @@ void Dblqh::tupScanCloseConfLab(Signal* signal,
     ref->transId2 = regTcPtr->transid[1];
     ref->errorCode = regTcPtr->errorCode;
     ref->senderRef = reference();
+    if (refToNode(tcConnectptr.p->clientBlockref) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
     sendSignal(tcConnectptr.p->clientBlockref, GSN_SCAN_FRAGREF, signal, 
 	 ScanFragRef::SignalLength, JBB);
   } else {
@@ -20755,13 +20817,15 @@ void Dblqh::sendScanFragConf(Signal* signal,
   /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
   scanPtr->m_stop_batch = 0;
   ScanFragConf * conf = (ScanFragConf*)&signal->theData[0];
-#ifdef NOT_USED
-  NodeId tc_node_id= refToNode(regTcPtr->clientBlockref);
-#endif
   const Uint32 senderData = regTcPtr->clientConnectrec;
   const Uint32 trans_id1= regTcPtr->transid[0];
   const Uint32 trans_id2= regTcPtr->transid[1];
   const BlockReference blockRef = regTcPtr->clientBlockref;
+  const NodeId tc_node_id = refToNode(regTcPtr->clientBlockref);
+  if (tc_node_id != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
 
   conf->senderData = senderData;
   conf->completedOps = completed_ops;

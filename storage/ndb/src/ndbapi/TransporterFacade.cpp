@@ -825,34 +825,34 @@ void TransporterFacade::calc_recv_thread_wakeup()
   if (m_recv_thread_cpu_usage_in_percent < 80)
   {
     factor = 2;
-    min_number = 4;
+    min_number = 8;
   }
   else if (m_recv_thread_cpu_usage_in_percent <= 83)
   {
     factor = 4;
-    min_number = 4;
+    min_number = 7;
   }
   else if (m_recv_thread_cpu_usage_in_percent <= 85)
   {
     factor = 5;
-    min_number = 4;
+    min_number = 6;
   }
   else if (m_recv_thread_cpu_usage_in_percent <= 87)
   {
     factor = 6;
-    min_number = 2;
+    min_number = 5;
   }
   else if (m_recv_thread_cpu_usage_in_percent <= 89)
   {
     if (m_recv_thread_wakeup < 48)
     {
       factor = 8;
-      min_number = 0;
+      min_number = 4;
     }
     else
     {
       factor = 7;
-      min_number = 1;
+      min_number = 4;
     }
   }
   else if (m_recv_thread_cpu_usage_in_percent <= 94)
@@ -865,32 +865,32 @@ void TransporterFacade::calc_recv_thread_wakeup()
     {
       factor = 8;
     }
-    min_number = 0;
+    min_number = 4;
   }
   else if (m_recv_thread_cpu_usage_in_percent <= 95)
   {
     factor = 12;
-    min_number = 0;
+    min_number = 4;
   }
   else if (m_recv_thread_cpu_usage_in_percent <= 96)
   {
     factor = 16;
-    min_number = 0;
+    min_number = 4;
   }
   else if (m_recv_thread_cpu_usage_in_percent <= 97)
   {
     factor = 20;
-    min_number = 0;
+    min_number = 4;
   }
   else if (m_recv_thread_cpu_usage_in_percent <= 98)
   {
     factor = 24;
-    min_number = 0;
+    min_number = 4;
   }
   else
   {
     factor = 28;
-    min_number = 0;
+    min_number = 4;
   }
   Uint32 before = m_recv_thread_wakeup;
   m_recv_thread_wakeup = (m_recv_thread_wakeup * 8) / factor;

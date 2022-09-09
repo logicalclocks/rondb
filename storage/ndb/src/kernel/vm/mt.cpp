@@ -1581,6 +1581,8 @@ struct alignas(NDB_CL) thr_data
   Uint64 m_jbb_total_words;
   Uint64 m_jbb_total_signals;
 #endif
+  Uint32 m_outstanding_send_wakeups;
+  Uint32 m_outstanding_send_wakeups_assist;
   bool m_read_jbb_state_consumed;
   bool m_cpu_percentage_changed;
   /* Last read of current ticks */
@@ -1689,6 +1691,8 @@ struct alignas(NDB_CL) thr_data
     Uint64 m_prioa_size;
     Uint64 m_priob_count;
     Uint64 m_priob_size;
+    Uint64 m_send_wakeups;
+    Uint64 m_send_wakeups_assist;
   } m_stat;
 
   struct
@@ -1799,8 +1803,8 @@ struct alignas(NDB_CL) thr_data
   NdbThread* m_thread;
   Signal *m_signal;
   Uint32 m_sched_responsiveness;
-  Uint32 m_max_signals_before_send;
-  Uint32 m_max_signals_before_send_flush;
+  Uint32 m_max_send_wakeups_before_assist;
+  Uint32 m_max_send_wakeups;
 
 #ifdef ERROR_INSERT
   bool m_delayed_prepare;
@@ -2264,7 +2268,8 @@ public:
    * A block thread provides assistance to send thread by executing send
    * to one of the trps.
    */
-  bool assist_send_thread(Uint32 max_num_trps,
+  bool assist_send_thread(bool must_send,
+                          Uint32 max_num_trps,
                           Uint32 thr_no,
                           NDB_TICKS now,
                           Uint32 &watchdog_counter,
@@ -2943,6 +2948,7 @@ thr_send_threads::insert_trp(TrpId trp_id,
  * case still be in the transporter queue, this one will never call
  * set_max_delay while waiting for those 200 microseconds to arrive.
  */
+#define MAX_SEND_DELAY 200
 void
 thr_send_threads::set_max_delay(TrpId trp_id, NDB_TICKS now, Uint32 delay_usec)
 {
@@ -3668,6 +3674,13 @@ check_yield(thr_data *selfptr,
         selfptr->m_measured_spintime += spin_micros;
         return true;
       }
+      if ((i & 15) == 15)
+      {
+        /**
+         * Assist send thread once every 25 microseconds during spin.
+         */
+        do_send(selfptr, true, true);
+      }
     }
     if (!cont_flag)
       break;
@@ -3796,7 +3809,8 @@ check_recv_yield(thr_data *selfptr,
  * false and we leave no longer holding the mutex.
  */
 bool
-thr_send_threads::assist_send_thread(Uint32 max_num_trps,
+thr_send_threads::assist_send_thread(bool must_send,
+                                     Uint32 max_num_trps,
                                      Uint32 thr_no,
                                      NDB_TICKS now,
                                      Uint32 &watchdog_counter,
@@ -3818,8 +3832,11 @@ thr_send_threads::assist_send_thread(Uint32 max_num_trps,
   else if (!send_instance->m_awake)
   {
     wakeup(&(send_instance->m_waiter_struct));
-    NdbMutex_Unlock(send_instance->send_thread_mutex);
-    return false;
+    if (!must_send)
+    {
+      NdbMutex_Unlock(send_instance->send_thread_mutex);
+      return false;
+    }
   }
   while (globalData.theRestartFlag != perform_stop &&
          loop < max_num_trps &&
@@ -4042,7 +4059,7 @@ thr_send_threads::handle_send_trp(TrpId trp_id,
     }
     if (unlikely(more && bytes_sent == 0)) //Trp is overloaded
     {
-      set_overload_delay(trp_id, now, 200);//Delay send-retry by 200 us
+      set_overload_delay(trp_id, now, MAX_SEND_DELAY);//Delay send-retry by 200 us
     }
     else
     {
@@ -6140,7 +6157,6 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
   if (count == 0)
   {
     if (must_send && assist_send && g_send_threads &&
-        selfptr->m_overload_status <= (OverloadStatus)HIGH_LOAD_CONST &&
         (selfptr->m_nosend_tmp == 0))
     {
       /**
@@ -6182,6 +6198,7 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
        */
       Uint32 num_trps_to_send_to = 1;
       pending_send = g_send_threads->assist_send_thread(
+                                         must_send,
                                          num_trps_to_send_to,
                                          selfptr->m_thr_no,
                                          now,
@@ -6238,7 +6255,8 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
       num_trps_inserted += g_send_threads->alert_send_thread(trps[i], now);
     }
     if (selfptr->m_overload_status != (OverloadStatus)OVERLOAD_CONST &&
-        selfptr->m_nosend_tmp == 0)
+        selfptr->m_nosend_tmp == 0 &&
+        assist_send)
     {
       /**
        * While we are in an light load state we will always try to
@@ -6267,16 +6285,19 @@ do_send(struct thr_data* selfptr, bool must_send, bool assist_send)
        * do some send assistance. We check so that we don't perform
        * this wakeup function too often.
        */
-      OverloadStatus overload_status = selfptr->m_overload_status;
-      Uint32 num_trps_to_send_to = num_trps_inserted;
-      if (overload_status == (OverloadStatus)MEDIUM_LOAD_CONST)
+       OverloadStatus overload_status = selfptr->m_overload_status;
+       Uint32 num_trps_to_send_to = num_trps_inserted;
+      if (overload_status >= (OverloadStatus)MEDIUM_LOAD_CONST)
       {
         num_trps_to_send_to = num_trps_inserted != 0 ? 1 : 0;
       }
+
+      num_trps_to_send_to = num_trps_inserted != 0 ? 1 : 0;
       send_wakeup_thread_ord(selfptr, now);
       if (num_trps_to_send_to > 0)
       {
         pending_send = g_send_threads->assist_send_thread(
+                                           must_send,
                                            num_trps_to_send_to,
                                            selfptr->m_thr_no,
                                            now,
@@ -6976,25 +6997,19 @@ void handle_scheduling_decisions(thr_data *selfptr,
                                  Uint32 & flush_sum,
                                  bool & pending_send)
 {
-  if (send_sum >= selfptr->m_max_signals_before_send)
+  if (selfptr->m_outstanding_send_wakeups_assist >=
+      selfptr->m_max_send_wakeups_before_assist)
   {
     /* Try to send, but skip for now in case of lock contention. */
     sendpacked(selfptr, signal);
     selfptr->m_watchdog_counter = 6;
     flush_all_local_signals_and_wakeup(selfptr);
-    pending_send = do_send(selfptr, false, false);
+    pending_send = do_send(selfptr, false, true);
+    selfptr->m_stat.m_send_wakeups_assist++;
+    selfptr->m_outstanding_send_wakeups = 0;
+    selfptr->m_outstanding_send_wakeups_assist = 0;
     selfptr->m_watchdog_counter = 20;
     send_sum = 0;
-    flush_sum = 0;
-  }
-  else if (flush_sum >= selfptr->m_max_signals_before_send_flush)
-  {
-    /* Send buffers append to send queues to dst. trps. */
-    sendpacked(selfptr, signal);
-    selfptr->m_watchdog_counter = 6;
-    flush_all_local_signals_and_wakeup(selfptr);
-    do_flush(selfptr);
-    selfptr->m_watchdog_counter = 20;
     flush_sum = 0;
   }
 }
@@ -7015,7 +7030,9 @@ execute_signals(thr_data *selfptr,
                 thr_jb_read_state *r,
                 Signal *sig,
                 Uint32 max_signals,
-                bool priob_signal)
+                bool priob_signal,
+                Uint32 & send_sum,
+                Uint32 & flush_sum)
 {
   Uint32 num_signals;
   Uint32 extra_signals = 0;
@@ -7138,6 +7155,7 @@ execute_signals(thr_data *selfptr,
      */
     block->jamBuffer()->markStartOfSigExec(sig->header.theSignalId);
     sig->m_extra_signals = 0;
+    sig->m_send_wakeups = 0;
 #if defined(USE_INIT_GLOBAL_VARIABLES)
     mt_clear_global_variables(selfptr);
 #endif
@@ -7145,11 +7163,26 @@ execute_signals(thr_data *selfptr,
     Uint32 thread_signal_id = s->theThreadSenderSignalId;
     block->executeFunction_async(gsn, sig);
     extra_signals += sig->m_extra_signals;
+    selfptr->m_outstanding_send_wakeups += sig->m_send_wakeups;
+    selfptr->m_outstanding_send_wakeups_assist += sig->m_send_wakeups;
     if (likely(priob_signal))
     {
       wmb();
       assert(sender_thr_no < NDB_MAX_BLOCK_THREADS);
       selfptr->m_exec_thread_signal_id[sender_thr_no] = thread_signal_id;
+    }
+    if (unlikely((selfptr->m_outstanding_send_wakeups >=
+                  selfptr->m_max_send_wakeups)))
+    {
+      selfptr->m_stat.m_send_wakeups++;
+      sendpacked(selfptr, sig);
+      selfptr->m_watchdog_counter = 6;
+      flush_all_local_signals_and_wakeup(selfptr);
+      do_send(selfptr, false, false);
+      selfptr->m_outstanding_send_wakeups = 0;
+      selfptr->m_watchdog_counter = 20;
+      send_sum = 0;
+      flush_sum = 0;
     }
   }
   /**
@@ -7207,7 +7240,9 @@ run_job_buffers(thr_data *selfptr,
                                            &(selfptr->m_jba_read_state),
                                            sig,
                                            max_prioA,
-                                           false);
+                                           false,
+                                           send_sum,
+                                           flush_sum);
 #ifdef DEBUG_SCHED_STATS
       selfptr->m_jbb_total_signals+= num_signals;
 #endif
@@ -7292,7 +7327,9 @@ run_job_buffers(thr_data *selfptr,
                                          read_state,
                                          sig,
                                          perjb+extra,
-                                         true);
+                                         true,
+                                         send_sum,
+                                         flush_sum);
 
     if (num_signals > 0)
     {
@@ -7342,12 +7379,14 @@ run_job_buffers(thr_data *selfptr,
           jbb_instance = 0;
         }
         selfptr->m_next_jbb_no = jbb_instance;
+        selfptr->m_outstanding_send_wakeups = 0;
         return signal_count;
       }
     }
   }
   selfptr->m_read_jbb_state_consumed = true;
   selfptr->m_next_jbb_no = 0;
+  selfptr->m_outstanding_send_wakeups = 0;
   return signal_count;
 }
 
@@ -7708,48 +7747,48 @@ calculate_max_signals_parameters(thr_data *selfptr)
   switch (selfptr->m_sched_responsiveness)
   {
     case 0:
-      selfptr->m_max_signals_before_send = 1000;
-      selfptr->m_max_signals_before_send_flush = 340;
+      selfptr->m_max_send_wakeups = 4;
+      selfptr->m_max_send_wakeups_before_assist = 8;
       break;
     case 1:
-      selfptr->m_max_signals_before_send = 800;
-      selfptr->m_max_signals_before_send_flush = 270;
+      selfptr->m_max_send_wakeups = 3;
+      selfptr->m_max_send_wakeups_before_assist = 6;
       break;
     case 2:
-      selfptr->m_max_signals_before_send = 600;
-      selfptr->m_max_signals_before_send_flush = 200;
+      selfptr->m_max_send_wakeups = 3;
+      selfptr->m_max_send_wakeups_before_assist = 4;
       break;
     case 3:
-      selfptr->m_max_signals_before_send = 450;
-      selfptr->m_max_signals_before_send_flush = 155;
+      selfptr->m_max_send_wakeups = 2;
+      selfptr->m_max_send_wakeups_before_assist = 6;
       break;
     case 4:
-      selfptr->m_max_signals_before_send = 350;
-      selfptr->m_max_signals_before_send_flush = 130;
+      selfptr->m_max_send_wakeups = 2;
+      selfptr->m_max_send_wakeups_before_assist = 5;
       break;
     case 5:
-      selfptr->m_max_signals_before_send = 300;
-      selfptr->m_max_signals_before_send_flush = 110;
+      selfptr->m_max_send_wakeups = 2;
+      selfptr->m_max_send_wakeups_before_assist = 4;
       break;
     case 6:
-      selfptr->m_max_signals_before_send = 250;
-      selfptr->m_max_signals_before_send_flush = 90;
+      selfptr->m_max_send_wakeups = 2;
+      selfptr->m_max_send_wakeups_before_assist = 3;
       break;
     case 7:
-      selfptr->m_max_signals_before_send = 200;
-      selfptr->m_max_signals_before_send_flush = 70;
+      selfptr->m_max_send_wakeups = 1;
+      selfptr->m_max_send_wakeups_before_assist = 5;
       break;
     case 8:
-      selfptr->m_max_signals_before_send = 170;
-      selfptr->m_max_signals_before_send_flush = 50;
+      selfptr->m_max_send_wakeups = 1;
+      selfptr->m_max_send_wakeups_before_assist = 4;
       break;
     case 9:
-      selfptr->m_max_signals_before_send = 135;
-      selfptr->m_max_signals_before_send_flush = 30;
+      selfptr->m_max_send_wakeups = 1;
+      selfptr->m_max_send_wakeups_before_assist = 3;
       break;
     case 10:
-      selfptr->m_max_signals_before_send = 70;
-      selfptr->m_max_signals_before_send_flush = 10;
+      selfptr->m_max_send_wakeups = 1;
+      selfptr->m_max_send_wakeups_before_assist = 2;
       break;
     default:
       assert(false);
@@ -7864,12 +7903,12 @@ init_thread(thr_data *selfptr)
     tmp.appfmt("%s(%u) ", getBlockName(main), instance);
   }
   /* Report parameters used by thread to node log */
-  tmp.appfmt("realtime=%u, spintime=%u, max_signals_before_send=%u"
-             ", max_signals_before_send_flush=%u",
+  tmp.appfmt("realtime=%u, spintime=%u, max_send_wakeups=%u"
+             ", max_send_wakeups_before_assist=%u",
              selfptr->m_realtime,
              selfptr->m_conf_spintime,
-             selfptr->m_max_signals_before_send,
-             selfptr->m_max_signals_before_send_flush);
+             selfptr->m_max_send_wakeups,
+             selfptr->m_max_send_wakeups_before_assist);
 
   g_eventLogger->info("%s", tmp.c_str());
   if (fail)
@@ -8081,6 +8120,8 @@ mt_receiver_thread_main(void *thr_arg)
       watchDogCounter = 6;
       flush_all_local_signals_and_wakeup(selfptr);
       pending_send = do_send(selfptr, true, false);
+      selfptr->m_outstanding_send_wakeups = 0;
+      selfptr->m_outstanding_send_wakeups_assist = 0;
       send_sum = 0;
       flush_sum = 0;
     }
@@ -8296,7 +8337,6 @@ compute_min_free_out_buffers(Uint32 thr_no)
 static
 bool
 update_sched_config(struct thr_data* selfptr,
-                    bool pending_send,
                     Uint32 & send_sum,
                     Uint32 & flush_sum)
 {
@@ -8344,13 +8384,12 @@ loop:
       return sleeploop > 0;
     }
 
-    if (pending_send)
-    {
-      /* About to sleep, _must_ send now. */
-      pending_send = do_send(selfptr, true, true);
-      send_sum = 0;
-      flush_sum = 0;
-    }
+    /* About to sleep, _must_ send now. */
+    do_send(selfptr, true, true);
+    selfptr->m_outstanding_send_wakeups = 0;
+    selfptr->m_outstanding_send_wakeups_assist = 0;
+    send_sum = 0;
+    flush_sum = 0;
     const Uint32 nano_wait = 1000*1000;    /* -> 1 ms */
     NDB_TICKS before = NdbTick_getCurrentTicks();
     const bool waited = yield(&selfptr->m_congestion_waiter,
@@ -8554,12 +8593,14 @@ mt_job_thread_main(void *thr_arg)
       }
       check_congestion(selfptr);
     }
-    else if (send_sum > 0 || pending_send == true)
+    else
     {
       /* No signals processed, prepare to sleep to wait for more */
       /* About to sleep, _must_ send now. */
       flush_all_local_signals_and_wakeup(selfptr);
       pending_send = do_send(selfptr, true, true);
+      selfptr->m_outstanding_send_wakeups = 0;
+      selfptr->m_outstanding_send_wakeups_assist = 0;
       send_sum = 0;
       flush_sum = 0;
     }
@@ -8637,16 +8678,6 @@ mt_job_thread_main(void *thr_arg)
             init_jbb_estimate(selfptr, now);
             /* Always recalculate how many signals to execute after sleep */
             selfptr->m_max_exec_signals = 0;
-            if (selfptr->m_overload_status <=
-                (OverloadStatus)MEDIUM_LOAD_CONST)
-            {
-              /**
-               * To ensure that we at least check for trps to send to
-               * before we yield we set pending_send to true. We will
-               * quickly discover if nothing is pending.
-               */
-              pending_send = true;
-            }
             waits = loops = 0;
             if (selfptr->m_thr_no == glob_ndbfs_thr_no)
             {
@@ -8677,7 +8708,6 @@ mt_job_thread_main(void *thr_arg)
     if (sum >= selfptr->m_max_exec_signals)
     {
       if (update_sched_config(selfptr,
-                              send_sum + Uint32(pending_send),
                               send_sum,
                               flush_sum))
       {
@@ -9969,6 +9999,7 @@ thr_init(struct thr_repository* rep, struct thr_data *selfptr, unsigned int cnt,
   selfptr->m_ldm_multiplier = 1;
   selfptr->m_jbb_estimate_next_set = true;
   selfptr->m_load_indicator = 1;
+  selfptr->m_outstanding_send_wakeups = 0;
 #ifdef DEBUG_SCHED_STATS
   for (Uint32 i = 0; i < 16; i++)
     selfptr->m_jbb_estimated_queue_stats[i] = 0;
