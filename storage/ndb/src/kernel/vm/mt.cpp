@@ -74,7 +74,6 @@
 static constexpr Uint32 NUM_JOB_BUFFERS_PER_THREAD = 32;
 static constexpr Uint32 SIGNAL_RNIL = 0xFFFFFFFF;
 
-
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_MULTI_TRP 1
 #endif
@@ -8175,7 +8174,8 @@ mt_receiver_thread_main(void *thr_arg)
       lock(&rep->m_receive_lock[recv_thread_idx]);
       const bool buffersFull =
         (globalTransporterRegistry.performReceive(recvdata,
-                                                  recv_thread_idx) != 0);
+                                                  recv_thread_idx,
+                                                  true) != 0);
       unlock(&rep->m_receive_lock[recv_thread_idx]);
       has_received = true;
 

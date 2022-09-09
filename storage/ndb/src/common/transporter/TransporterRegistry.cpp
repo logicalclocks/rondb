@@ -192,10 +192,12 @@ SocketServer::Session * TransporterService::newSession(NDB_SOCKET_TYPE sockfd)
 
 TransporterReceiveData::TransporterReceiveData()
   : m_transporters(),
-    m_recv_transporters(),
+    m_recv_socket_transporters(),
+    m_read_transporters(),
     m_has_data_transporters(),
     m_bad_data_transporters(),
-    m_last_trp_id(0)
+    m_last_trp_id(0),
+    m_stop_trp_id(0)
 {
   /**
    * With multi receiver threads
@@ -203,6 +205,10 @@ TransporterReceiveData::TransporterReceiveData()
    */
   m_transporters.set();            // Handle all
   m_transporters.clear(Uint32(0)); // Except wakeup socket...
+  m_recv_socket_transporters.clear();
+  m_read_transporters.clear();
+  m_has_data_transporters.clear();
+  m_bad_data_transporters.clear();
 
 #if defined(HAVE_EPOLL_CREATE)
   m_epoll_fd = -1;
@@ -216,6 +222,7 @@ TransporterReceiveData::init(unsigned maxTransporters)
   maxTransporters += 1; /* wakeup socket */
   m_spintime = 0;
   m_total_spintime = 0;
+  assert(m_bad_data_transporters.isclear());
 #if defined(HAVE_EPOLL_CREATE)
   m_epoll_fd = epoll_create(maxTransporters);
   if (m_epoll_fd == -1)
@@ -1626,8 +1633,8 @@ TransporterRegistry::check_TCP(TransporterReceiveHandle& recvdata,
          * check that it's assigned to "us"
          */
         assert(recvdata.m_transporters.get(trpid));
-
-        recvdata.m_recv_transporters.set(trpid);
+        recvdata.m_read_transporters.set(trpid);
+        recvdata.m_recv_socket_transporters.set(trpid);
       }
     }
     else if (num_socket_events < 0)
@@ -1692,7 +1699,7 @@ TransporterRegistry::poll_SHM(TransporterReceiveHandle& recvdata,
       any_connected = true;
       if (t->hasDataToRead())
       {
-        recvdata.m_has_data_transporters.set(trp_id);
+        recvdata.m_read_transporters.set(trp_id);
         retVal = 1;
       }
     }
@@ -1750,14 +1757,117 @@ TransporterRegistry::pollReceive(Uint32 timeOutMillis,
   Uint32 retVal = 0;
 
   /**
-   * If any transporters have left-over data that was not fully executed in
-   * last loop, don't wait and return 'data available' even if nothing new
+   * It is important that we read data from transporters in a fair
+   * manner. Thus it is important that not one transporter gets more
+   * attention than others. To achieve this we decide which transporters
+   * that have data to read in the next iteration. Next we iterate on
+   * this set of transporters until we are done. Only when the iteration
+   * is done do we continue with the next iteration.
+   *
+   * This behaviour ensures that all transporters gets one chance to
+   * receive per iteration. To ensure that a large amount of signals
+   * on a transporters doesn't block other transporters, we have a
+   * limit on the amount of signals we will unpack from a transporter
+   * per iteration. If more data is present in the transporter it will
+   * have to wait until the next iteration. At this next iteration also
+   * other transporters gets a chance to receive.
+   * 
+   * To achieve this balanced effort on transporters we need 3
+   * bitmaps defined in pollReceive and performReceive.
+   *
+   * All transporters have a socket, even the shared memory transporter
+   * have one. This socket needs to be read when epoll_wait returns
+   * that there is data on the socket. The transporters that have data
+   * on socket is set in the bitmap m_recv_socket_transporters.
+   * Thus setting a bit in the m_recv_socket_transporters ensures that
+   * we will read the socket during performReceive.
+   *
+   * As input to pollReceive we have the bitmap m_has_data_transporters.
+   * This bitmap is cleared when we retrieve new information on which
+   * transporters have data ready to be retrieved. This bitmap has a
+   * bit set when the transporter had more data than could be
+   * retrieved in this phase. Normally this means that the transporter
+   * had more data buffered or read from socket than could be handled
+   * in one iteration of handling transporters.
+   *
+   * The third bitmap is m_read_transporters. This bitmap is all
+   * transporters that we know have data on the socket, or have
+   * data in the communication buffer. It is initialised to
+   * m_has_data_transporters, all transporters in
+   * m_recv_socket_transporters is then added and finally we also
+   * add any shared memory transporters that have data buffered
+   * and waiting to be retrieved.
+   *
+   * Thus when a bit in m_read_transporters is set we will unpack
+   * messages from the transporter buffers.
+   *
+   * performReceive will only read data from one transporter at a
+   * time. This is important to ensure that we can start working
+   * on the received data as soon as possible. This means that
+   * there can be many loops in pollReceive/performReceive before
+   * all transporters have been read. We won't poll any
+   * shared memory transporters or call epoll_wait until we have
+   * handled all transporters from the previous iteration started
+   * by a pollReceive.
+   *
+   * As long as m_read_transporters and m_recv_socket_transporters is not
+   * empty, pollReceive will return immediately.
+   *
+   * When starting a new iteration we will do the following:
+   * m_read_transporters = m_has_data_transporters
+   * clear m_has_data_transporters
+   * Retrieve new m_recv_socket_transporters by polling sockets
+   * using poll/epoll_wait.
+   * Check all shared memory transporters, any one that has data
+   * buffered will set a bit in m_read_transporters.
+   *
+   * When a new iteration is started, the normal situation is
+   * that m_last_trp_id is 0. However if we reached a situation
+   * where the job buffer was full we enter into a special state.
+   * In this state we will read the sockets from all transporters
+   * starting at the one where we found the job buffer full
+   * situation.
+   *
+   * In the job buffer full situation we continue reading the
+   * socket and place data into the receive buffer (by default
+   * 2 MByte). However it is important to ensure that when
+   * the job buffer full condition is no longer present, that
+   * we unpack from the transporter that first saw the job
+   * buffer full condition. Thus in this situation we will
+   * reset all bits in m_read_transporters up until the
+   * transporter to start reading from again. To ensure that
+   * we don't lose indications of data from those transporters
+   * we will set m_has_data_transporters on those.
+   */
+  if (!(recvdata.m_read_transporters.isclear() &&
+        recvdata.m_recv_socket_transporters.isclear()))
+  {
+    /**
+     * There is still transporters from previous pollReceive iteration
+     * to handle, no reason to grab more, handle those we received
+     * before moving to the next set of transporters.
+     */
+    return 1;
+  }
+  /**
+   * We have completed one iteration from pollReceive. All transporters
+   * found in previous iteration have been acted upon. It is now time
+   * to handle a new iteration and decide which transporters to check
+   * in the next iteration.
+   *
+   * This might entail a sleep waiting for transporters to receive on their
+   * socket (all transporters have a socket, even the SHM transporter).
    */
   if (!recvdata.m_has_data_transporters.isclear())
   {
+    /**
+     * Don't wait for sockets to receive data, we are already
+     * ready to receive, thus set timeOutMillis = 0.
+     */
     timeOutMillis = 0;
     retVal = 1;
   }
+  /* Ok, now is time to perform a new poll. */
 #ifdef NDB_SHM_TRANSPORTER_SUPPORTED
   if (recvdata.nSHMTransporters > 0)
   {
@@ -1838,6 +1948,32 @@ TransporterRegistry::pollReceive(Uint32 timeOutMillis,
     retVal |= res;
   }
 #endif
+  recvdata.m_read_transporters.bitOR(recvdata.m_has_data_transporters);
+  recvdata.m_has_data_transporters.clear();
+  Uint32 stop_trp_id = recvdata.m_stop_trp_id;
+  recvdata.m_last_trp_id = 0;
+  recvdata.m_stop_trp_id = 0;
+  if (likely(stop_trp_id == 0))
+  {
+    return retVal;
+  }
+  /**
+   * Job buffer full condition found in previous run. We will
+   * only receive on sockets previous to the transporter that
+   * first saw the job buffer full condition. This ensures
+   * that we maintain a balanced read of transporters even in
+   * buffer full conditions.
+   */
+  for (Uint32 i = 1; i < stop_trp_id; i++)
+  {
+    if (recvdata.m_read_transporters.get(i))
+    {
+      DEBUG_FPRINTF((stderr, "Only recv on socket for trp: %u\n", i));
+      assert(recvdata.m_transporters.get(i));
+      recvdata.m_read_transporters.clear(i);
+      recvdata.m_has_data_transporters.set(i);
+    }
+  }
   return retVal;
 }
 
@@ -2021,7 +2157,7 @@ TransporterRegistry::poll_TCP(Uint32 timeOutMillis,
       if (recvdata.m_socket_poller.has_read(0))
       {
         assert(recvdata.m_transporters.get(0));
-        recvdata.m_recv_transporters.set((Uint32)0);
+        recvdata.m_recv_socket_transporters.set((Uint32)0);
       }
     }
     i = 0;
@@ -2033,7 +2169,9 @@ TransporterRegistry::poll_TCP(Uint32 timeOutMillis,
         Uint32 trp_id = t->getTransporterIndex();
         if (recvdata.m_socket_poller.has_read(idx[i]))
         {
-          recvdata.m_recv_transporters.set(trp_id);
+          DEBUG_FPRINTF((stderr, "Data on socket for trp: %u\n", trp_id));
+          recvdata.m_recv_socket_transporters.set(trp_id);
+          recvdata.m_read_transporters.set(trp_id);
         }
       }
     }
@@ -2052,7 +2190,10 @@ TransporterRegistry::poll_TCP(Uint32 timeOutMillis,
       {
         Uint32 trp_id = t->getTransporterIndex();
         if (recvdata.m_socket_poller.has_read(idx[i]))
-          recvdata.m_recv_transporters.set(trp_id);
+        {
+          recvdata.m_recv_socket_transporters.set(trp_id);
+          recvdata.m_read_transporters.set(trp_id);
+        }
       }
       i++;
     }
@@ -2073,7 +2214,12 @@ TransporterRegistry::set_recv_thread_idx(Transporter *t,
  * Receive from the set of transporters in the bitmask
  * 'recvdata.m_transporters'. These has been polled by 
  * ::pollReceive() which recorded transporters with 
- * available data in the subset 'recvdata.m_recv_transporters'.
+ * available data in the subset
+ * recvdata.m_recv_socket_transporters,
+ * recvdata.m_read_transporters. performReceive will
+ * record transporters with more data in
+ * recvdata.m_has_data_transporters. See more details
+ * in comment in pollReceive.
  *
  * In multi-threaded datanodes, there might be multiple 
  * receiver threads, each serving a disjunct set of
@@ -2112,19 +2258,23 @@ TransporterRegistry::set_recv_thread_idx(Transporter *t,
  * Returns 0 when receive succeeded from all Transporters having data,
  * else 1.
  */
+#define MAX_RECEIVE_PERFORM_RECEIVE 2048
+#define MAX_PERFORM_RECEIVE_LOOPS 4
 Uint32
 TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
-                                    Uint32 recv_thread_idx)
+                                    Uint32 recv_thread_idx,
+                                    bool data_node)
 {
   (void)recv_thread_idx;
   TransporterReceiveWatchdog guard(recvdata);
   assert((receiveHandle == &recvdata) || (receiveHandle == 0));
   bool stopReceiving = false;
 
-  if (recvdata.m_recv_transporters.get(0))
+  if (recvdata.m_recv_socket_transporters.get(0))
   {
     assert(recvdata.m_transporters.get(0));
-    recvdata.m_recv_transporters.clear(Uint32(0));
+    recvdata.m_recv_socket_transporters.clear(Uint32(0));
+    recvdata.m_read_transporters.clear(Uint32(0));
     if (&recvdata != receiveHandle)
     {
       consume_extra_sockets(recvdata);
@@ -2139,10 +2289,11 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
   if (!m_blocked_trp.isclear())
   {
     /* Exclude receive from blocked sockets. */
-    recvdata.m_recv_transporters.bitANDC(m_blocked_trp);
+    recvdata.m_read_transporters.bitANDC(m_blocked_trp);
+    recvdata.m_recv_socket_transporters.bitANDC(m_blocked_trp);
 
-    if (recvdata.m_recv_transporters.isclear()  &&
-        recvdata.m_has_data_transporters.isclear())
+    if (recvdata.m_read_transporters.isclear() &&
+        recvdata.m_recv_socket_transporters.isclear())
     {
         /* poll sees data, but we want to ignore for now
          * sleep a little to avoid busy loop
@@ -2153,7 +2304,7 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
 #endif
 
   /**
-   * m_recv_transporters set indicates that there might be data
+   * m_recv_socket_transporters set indicates that there might be data
    * available on the socket used by the transporter. The
    * doReceive call will read the socket. For TCP transporters
    * the doReceive call will return an indication if there is
@@ -2185,19 +2336,21 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
    *  CLOSE_COMCONF was sent. For the moment the risk of taking
    *  advantage of this small optimization is not worth the risk.
    */
-  TrpBitmask handle_trps(recvdata.m_recv_transporters);
+  TrpBitmask handle_trps(recvdata.m_recv_socket_transporters);
   bool stop_unpacking = false;
-  handle_trps.bitOR(recvdata.m_has_data_transporters);
-  Uint32 last_trp_id = 0;
+  handle_trps.bitOR(recvdata.m_read_transporters);
   Uint32 trp_id = recvdata.m_last_trp_id;
+  Uint32 rec_bytes = 0;
+  Uint32 loop_count = 0;
   while ((trp_id = handle_trps.find_next(trp_id + 1)) !=
-	 BitmaskImpl::NotFound)
+            BitmaskImpl::NotFound)
   {
-    bool hasdata = false;
+    assert(recvdata.m_transporters.get(trp_id));
     Transporter * t = (Transporter*)allTransporters[trp_id];
     if (unlikely(t == nullptr))
     {
-      recvdata.m_recv_transporters.clear(trp_id);
+      recvdata.m_read_transporters.clear(trp_id);
+      recvdata.m_recv_socket_transporters.clear(trp_id);
       recvdata.m_has_data_transporters.clear(trp_id);
       continue;
     }
@@ -2218,11 +2371,13 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
      * and Transporter::isConnected() state is possible, and indicate 
      * that a change is underway. (Completed by update_connections())
      */
+    bool hasdata = false;
+    bool received_data = false;
     if (likely(is_connected(node_id) && t->isConnected()))
     {
       if (unlikely(stop_unpacking || recvdata.checkJobBuffer()))
       {
-        if (recvdata.m_recv_transporters.get(trp_id))
+        if (recvdata.m_recv_socket_transporters.get(trp_id))
         {
           if (t->getTransporterType() == tt_TCP_TRANSPORTER)
           {
@@ -2243,7 +2398,7 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
             recvdata.transporter_recv_from(node_id);
             recvdata.m_has_data_transporters.set(trp_id);
 #else
-              require(false);
+            require(false);
 #endif
           }
           /**
@@ -2264,43 +2419,54 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
              * stopped. This means we have to step back one transporter.
              */
             stop_unpacking = true;
-            last_trp_id = trp_id - 1;
+            recvdata.m_stop_trp_id = trp_id;
           }
         }
         continue;
       }
-      /**
-       * We will handle the read buffer, thus clear the m_recv_transporters
-       * bitmap for this transporter.
-       */
       if (t->getTransporterType() == tt_TCP_TRANSPORTER)
       {
         TCP_Transporter *t_tcp = (TCP_Transporter*)t;
-        int nBytes = 0;
-        if (likely(recvdata.m_recv_transporters.get(trp_id)))
+        if (likely(recvdata.m_recv_socket_transporters.get(trp_id)))
         {
-          nBytes = t_tcp->doReceive(recvdata);
+          Uint32 nBytes = t_tcp->doReceive(recvdata);
+          recvdata.transporter_recv_from(node_id);
+          (void)nBytes;
+          DEBUG_FPRINTF((stderr, "Received %u bytes from trp: %u\n", nBytes, trp_id));
         }
-        if (likely(nBytes > 0 ||
-                   recvdata.m_has_data_transporters.get(trp_id)))
+        if (likely(recvdata.m_read_transporters.get(trp_id)))
         {
           Uint32 * ptr;
-          recvdata.transporter_recv_from(node_id);
           Uint32 sz = t_tcp->getReceiveData(&ptr);
-          Uint32 szUsed = unpack(recvdata,
-                                 ptr,
-                                 sz,
-                                 node_id,
-                                 ioStates[node_id],
-                                 stopReceiving);
-          if (likely(szUsed))
+          if (likely(sz > 0))
           {
-            t_tcp->updateReceiveDataPtr(szUsed);
-            hasdata = t_tcp->hasReceiveData();
+            Uint32 szUsed = unpack(recvdata,
+                                   ptr,
+                                   sz,
+                                   node_id,
+                                   ioStates[node_id],
+                                   stopReceiving);
+            if (likely(szUsed))
+            {
+              DEBUG_FPRINTF((stderr, "Unpacked %u bytes from trp: %u\n", szUsed, trp_id));
+              t_tcp->updateReceiveDataPtr(szUsed);
+              hasdata = t_tcp->hasReceiveData();
+              received_data = true;
+              rec_bytes += szUsed;
+            }
           }
           // else, we didn't unpack anything:
           //   Avail ReceiveData to short to be useful, need to
           //   receive more before we can resume this transporter.
+        }
+        else if (recvdata.m_has_data_transporters.get(trp_id))
+        {
+          DEBUG_FPRINTF((stderr, "No unpack from trp: %u but has data\n",
+                         trp_id));
+        }
+        else
+        {
+          require(false);
         }
       }
       else
@@ -2308,9 +2474,10 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
 #ifdef NDB_SHM_TRANSPORTER_SUPPORTED
         require(t->getTransporterType() == tt_SHM_TRANSPORTER);
         SHM_Transporter *t_shm = (SHM_Transporter*)t;
-        if (likely(recvdata.m_recv_transporters.get(trp_id)))
+        if (likely(recvdata.m_recv_socket_transporters.get(trp_id)))
         {
           t_shm->doReceive();
+          recvdata.transporter_recv_from(node_id);
           /**
            * Ignore any data we read, the data wasn't collected by the
            * shared memory transporter, it was simply read and thrown
@@ -2318,23 +2485,30 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
            * for shared memory transporters.
            */
         }
-        Uint32 * readPtr, * eodPtr, * endPtr;
-        t_shm->getReceivePtr(&readPtr, &eodPtr, &endPtr);
-        recvdata.transporter_recv_from(node_id);
-        Uint32 *newPtr = unpack(recvdata,
-                                readPtr,
-                                eodPtr,
-                                endPtr,
-                                node_id,
-                                ioStates[node_id],
-                                stopReceiving);
-        t_shm->updateReceivePtr(recvdata, newPtr);
-        /**
-         * Set hasdata dependent on if data is still available in
-         * transporter to ensure we follow rules about setting
-         * m_has_data_transporters when returning from performReceive.
-         */
-        hasdata = t_shm->hasDataToRead();
+        if (likely(recvdata.m_recv_socket_transporters.get(trp_id)))
+        {
+          Uint32 * readPtr, * eodPtr, * endPtr;
+          t_shm->getReceivePtr(&readPtr, &eodPtr, &endPtr);
+          Uint32 *newPtr = unpack(recvdata,
+                                  readPtr,
+                                  eodPtr,
+                                  endPtr,
+                                  node_id,
+                                  ioStates[node_id],
+                                  stopReceiving);
+          if (likely(newPtr != readPtr))
+          {
+            Uint32 sz = t_shm->updateReceivePtr(recvdata, newPtr);
+            /**
+             * Set hasdata dependent on if data is still available in
+             * transporter to ensure we follow rules about setting
+             * m_has_data_transporters when returning from performReceive.
+             */
+            hasdata = t_shm->hasDataToRead();
+            received_data = true;
+            rec_bytes += sz;
+          }
+        }
 #else
         require(false);
 #endif
@@ -2342,15 +2516,33 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
     }
     // If transporter still have data, make sure that it's remember to next time
     recvdata.m_has_data_transporters.set(trp_id, hasdata);
-    recvdata.m_recv_transporters.clear(trp_id);
+    recvdata.m_recv_socket_transporters.clear(trp_id);
+    recvdata.m_read_transporters.clear(trp_id);
+    assert(recvdata.m_transporters.get(trp_id));
 
     if (unlikely(stopReceiving))
     {
-      last_trp_id = trp_id;
       stop_unpacking = true;
     }
+    else if (received_data)
+    {
+      /**
+       * We have received data on one transporter, let's take care of
+       * this immediately to ensure that we keep execution pipelines
+       * busy that might be waiting for any of these signals. We will
+       * ignore calling epoll_wait again as long as we haven't served
+       * all transporters seen in the previous epoll_wait call.
+       */
+      if (data_node ||
+          rec_bytes > MAX_RECEIVE_PERFORM_RECEIVE ||
+          loop_count++ < MAX_PERFORM_RECEIVE_LOOPS)
+      {
+        recvdata.m_last_trp_id = trp_id;
+        return 0;
+      }
+    }
   }
-  recvdata.m_last_trp_id = last_trp_id;
+  recvdata.m_last_trp_id = 0;
   return 0;
 }
 
@@ -2843,8 +3035,8 @@ TransporterRegistry::report_connect(TransporterReceiveHandle& recvdata,
   require(!t->isMultiTransporter());
   require(!t->isPartOfMultiTransporter());
   Uint32 id = t->getTransporterIndex();
-  DEBUG_FPRINTF((stderr, "(%u)REG:report_connect(%u)\n",
-                         localNodeId, node_id));
+  DEBUG_FPRINTF((stderr, "(%u)REG:report_connect(%u) on trp: %u\n",
+                         localNodeId, node_id, id));
   assert((receiveHandle == &recvdata) || (receiveHandle == 0));
   assert(recvdata.m_transporters.get(id));
 
@@ -2942,7 +3134,8 @@ TransporterRegistry::report_disconnect(TransporterReceiveHandle& recvdata,
        * called no more signals are sent.
        */
       callbackObj->disable_send_buffer(node_id, trp_id, false);
-      recvdata.m_recv_transporters.clear(trp_id);
+      recvdata.m_recv_socket_transporters.clear(trp_id);
+      recvdata.m_read_transporters.clear(trp_id);
       recvdata.m_has_data_transporters.clear(trp_id);
     }
     else
@@ -3056,6 +3249,7 @@ TransporterRegistry::report_disconnect(TransporterReceiveHandle& recvdata,
   }
   recvdata.m_bad_data_transporters.clear(node_id);
   recvdata.m_last_trp_id = 0;
+  recvdata.m_stop_trp_id = 0;
   if (ready_to_disconnect)
   {
     DEBUG_FPRINTF((stderr, "(%u)performStates[%u] = DISCONNECTED\n",
@@ -3717,8 +3911,10 @@ TransporterRegistry::start_clients_thread()
         }
         else
         {
+          /*
           DEBUG_FPRINTF((stderr, "Node %u CONNECTED\n",
                          t->getRemoteNodeId()));
+          */
         }
         break;
       }

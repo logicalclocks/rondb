@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -85,7 +86,7 @@ public:
     reader->getReadPtr(* ptr, * eod, * end);
   }
   
-  void updateReceivePtr(TransporterReceiveHandle&, Uint32 * ptr);
+  Uint32 updateReceivePtr(TransporterReceiveHandle&, Uint32 * ptr);
   
 protected:
   /**

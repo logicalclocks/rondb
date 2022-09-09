@@ -59,6 +59,7 @@
 
 //#define REPORT_TRANSPORTER
 //#define API_TRACE
+//#define DEBUG_TRANSPORTER
 
 static int numberToIndex(int number)
 {
