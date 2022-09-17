@@ -4983,6 +4983,7 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
         if (Tnode == TownNode) {
           jamDebug();
           regTcPtr->tcNodedata[0] = Tnode;
+          regTcPtr->recBlockNo = get_query_block_no(Tnode);
           foundOwnNode = true;
         }//if
       }//for
@@ -4994,6 +4995,7 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
                                               tnoOfBackup+1)) != 0)
         {
           regTcPtr->tcNodedata[0] = node;
+          regTcPtr->recBlockNo = get_query_block_no(node);
         }
       }
       if(ERROR_INSERTED(8048) || ERROR_INSERTED(8049))
@@ -5005,9 +5007,16 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
 	  if (Tnode != TownNode) {
 	    jam();
 	    regTcPtr->tcNodedata[0] = Tnode;
+<<<<<<< HEAD
             g_eventLogger->info("Choosing %d", Tnode);
           }// if
         }// for
+=======
+            regTcPtr->recBlockNo = get_query_block_no(Tnode);
+	    ndbout_c("Choosing %d", Tnode);
+	  }//if
+	}//for
+>>>>>>> 3fea2a6859b201625acda815d11435976073c15a
       }
     }//if
     jamDebug();
@@ -5687,6 +5696,7 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
       if (nodeId == getOwnNodeId())
       {
         Uint32 instance_no = refToInstance(TBRef);
+        ndbrequire(globalData.ndbMtQueryWorkers > 0);
         jam();
         TBRef = get_lqhkeyreq_ref(&m_distribution_handle, instance_no);
       }
@@ -18359,6 +18369,8 @@ bool Dbtc::sendScanFragReq(Signal* signal,
         ref = numberToRef(blockNo, instance_no, nodeId);
         if (nodeId == getOwnNodeId())
         {
+          jam();
+          ndbrequire(globalData.ndbMtQueryWorkers > 0);
           ref = get_scan_fragreq_ref(&m_distribution_handle, instance_no);
           check_blockref(ref);
           scanFragP.p->lqhBlockref = ref;
