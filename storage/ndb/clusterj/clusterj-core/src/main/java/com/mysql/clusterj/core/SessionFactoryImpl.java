@@ -39,7 +39,6 @@ import com.mysql.clusterj.core.spi.DomainTypeHandler;
 import com.mysql.clusterj.core.spi.DomainTypeHandlerFactory;
 import com.mysql.clusterj.core.spi.ValueHandlerFactory;
 import com.mysql.clusterj.core.metadata.DomainTypeHandlerFactoryImpl;
-import com.mysql.clusterj.core.SessionImpl;
 
 import com.mysql.clusterj.core.store.Db;
 import com.mysql.clusterj.core.store.ClusterConnection;
@@ -527,7 +526,7 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
     }
 
     public Session getSession(Map properties) {
-        return getSession(null, false);
+        return getSession(properties, false);
     }
 
     /** Get a session to use with the cluster, overriding some properties.
@@ -552,6 +551,10 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
                 }
                 ClusterConnection clusterConnection = getClusterConnectionFromPool();
                 checkConnection(clusterConnection);
+
+                CLUSTER_DATABASE = getStringProperty(props, PROPERTY_CLUSTER_DATABASE,
+                  Constants.DEFAULT_PROPERTY_CLUSTER_DATABASE);
+
                 db = clusterConnection.createDb(CLUSTER_DATABASE, CLUSTER_MAX_TRANSACTIONS);
             }
             Dictionary dictionary = db.getDictionary();

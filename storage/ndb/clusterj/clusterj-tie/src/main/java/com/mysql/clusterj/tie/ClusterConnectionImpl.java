@@ -159,7 +159,7 @@ public class ClusterConnectionImpl
         synchronized(this) {
             ndb = Ndb.create(clusterConnection, database, "def");
             handleError(ndb, clusterConnection, connectString, nodeId);
-            if (dictionaryForNdbRecord == null) {
+//            if (dictionaryForNdbRecord == null) {
                 // create a dictionary for NdbRecord
                 Ndb ndbForNdbRecord = Ndb.create(clusterConnection, database, "def");
                 handleError(ndbForNdbRecord, clusterConnection, connectString, nodeId);
@@ -167,9 +167,10 @@ public class ClusterConnectionImpl
                 // get an instance of stand-alone query objects to avoid synchronizing later
                 dbForNdbRecord.initializeQueryObjects();
                 dictionaryForNdbRecord = dbForNdbRecord.getNdbDictionary();
-            }
+//            } 
         }
         DbImpl result = new DbImpl(this, ndb, maxTransactions);
+        //result.setConfiguredDatabaseName(database);
         result.initializeAutoIncrement(autoIncrement);
         dbs.put(result, null);
         return result;
