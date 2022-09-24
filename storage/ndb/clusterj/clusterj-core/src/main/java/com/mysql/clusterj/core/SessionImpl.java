@@ -1660,7 +1660,7 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
         assertNotClosed();
         //drop all caches as they are invalid now due to change in schema ID
         dropInstanceCache();
-        return factory.unloadSchema(cls, dictionary);
+        return factory.unloadSchema(cls, dictionary, db.getName(), db.isDefaultDatabase());
     }
 
     /** Release resources associated with an instance. The instance must be a domain object obtained via

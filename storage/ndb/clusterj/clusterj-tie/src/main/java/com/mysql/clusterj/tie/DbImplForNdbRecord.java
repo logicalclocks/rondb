@@ -1,5 +1,6 @@
 /*
  *  Copyright (c) 2012, 2017, Oracle and/or its affiliates. All rights reserved.
+ *  Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License, version 2.0,
@@ -77,9 +78,27 @@ class DbImplForNdbRecord implements com.mysql.clusterj.core.store.Db {
     /** This db is closing */
     private boolean closing = false;
 
-    public DbImplForNdbRecord(ClusterConnectionImpl clusterConnection, Ndb ndb) {
+    /* The database name */
+    private String databaseName;
+
+    /* Are we using the default database */
+    private boolean defaultDatabase;
+
+    public String getName() {
+        return databaseName;
+    }
+
+    public boolean isDefaultDatabase() {
+        return defaultDatabase;
+    }
+    public DbImplForNdbRecord(ClusterConnectionImpl clusterConnection,
+                              Ndb ndb,
+                              String databaseName,
+                              boolean defaultDatabase) {
         this.clusterConnection = clusterConnection;
         this.ndb = ndb;
+        this.databaseName = databaseName;
+        this.defaultDatabase = defaultDatabase;
         this.errorBuffer = this.clusterConnection.byteBufferPoolForDBImplError.borrowBuffer();
         int returnCode = ndb.init(1);
         handleError(returnCode, ndb);
