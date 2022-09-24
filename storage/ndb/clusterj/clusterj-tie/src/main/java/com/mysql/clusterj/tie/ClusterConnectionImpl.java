@@ -171,6 +171,8 @@ public class ClusterConnectionImpl
          * Synchronize because create is not guaranteed thread-safe
          */
         synchronized(this) {
+            ndb = Ndb.create(clusterConnection, databaseName, "def");
+            handleError(ndb, clusterConnection, connectString, nodeId);
             if (defaultDatabase) {
                 if (dictionaryForNdbRecord == null) {
                     // create a dictionary for NdbRecord
