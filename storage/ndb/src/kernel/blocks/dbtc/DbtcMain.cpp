@@ -5007,16 +5007,10 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
 	  if (Tnode != TownNode) {
 	    jam();
 	    regTcPtr->tcNodedata[0] = Tnode;
-<<<<<<< HEAD
-            g_eventLogger->info("Choosing %d", Tnode);
-          }// if
-        }// for
-=======
             regTcPtr->recBlockNo = get_query_block_no(Tnode);
-	    ndbout_c("Choosing %d", Tnode);
+            g_eventLogger->info("Choosing %d", Tnode);
 	  }//if
 	}//for
->>>>>>> 3fea2a6859b201625acda815d11435976073c15a
       }
     }//if
     jamDebug();

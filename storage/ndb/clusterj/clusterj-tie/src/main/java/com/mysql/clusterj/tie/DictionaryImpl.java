@@ -1,5 +1,6 @@
 /*
  *  Copyright (c) 2010, 2022, Oracle and/or its affiliates.
+ *  Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License, version 2.0,
@@ -55,9 +56,18 @@ class DictionaryImpl implements com.mysql.clusterj.core.store.Dictionary {
 
     private ClusterConnectionImpl clusterConnection;
 
-    public DictionaryImpl(Dictionary ndbDictionary, ClusterConnectionImpl clusterConnection) {
+    private String databaseName;
+
+    private boolean defaultDatabase;
+
+    public DictionaryImpl(Dictionary ndbDictionary,
+                          ClusterConnectionImpl clusterConnection,
+                          String databaseName,
+                          boolean defaultDatabase) {
         this.ndbDictionary = ndbDictionary;
         this.clusterConnection = clusterConnection;
+        this.databaseName = databaseName;
+        this.defaultDatabase = defaultDatabase;
     }
 
     public Table getTable(String tableName) {
@@ -140,7 +150,7 @@ class DictionaryImpl implements com.mysql.clusterj.core.store.Dictionary {
         // remove the cached table from this dictionary
         ndbDictionary.removeCachedTable(tableName);
         // also remove the cached NdbRecord associated with this table
-        clusterConnection.unloadSchema(tableName);
+        clusterConnection.unloadSchema(databaseName, tableName, defaultDatabase);
     }
 
     public Dictionary getNdbDictionary() {
