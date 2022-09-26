@@ -85,6 +85,10 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
     int num_cached_sessions;
     int max_cached_sessions;
 
+    /* Variables to support LRU list of Session objects for caching */
+    SessionImpl first_lru_list;
+    SessionImpl last_lru_list;
+
     /** NdbCluster connect properties */
     String CLUSTER_CONNECTION_SERVICE;
     String CLUSTER_CONNECT_STRING;
@@ -469,6 +473,8 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         num_cached_sessions = 0;
         max_cached_sessions = CLUSTER_MAX_CACHED_SESSIONS;
         cached_sessions = new LinkedList();
+        first_lru_list = null;
+        last_lru_list = null;
     }
 
     private void warmupSessionCache() {
@@ -526,6 +532,7 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         Session cached_session = cached_sessions.poll();
         SessionImpl ses = (SessionImpl) cached_session;
         ses.setCached(false);
+        remove_lru_list(ses);
         return cached_session;
     }
 
@@ -535,6 +542,9 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         }
 
         Queue<Session> db_queue = db_cached_sessions.get(databaseName);
+        if (db_queue == null) {
+            return null;
+        }
         Session cached_session = db_queue.poll();
         if (cached_session == null) {
              return null;
@@ -542,16 +552,21 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         num_cached_sessions--;
         SessionImpl ses = (SessionImpl) cached_session;
         ses.setCached(false);
+        remove_lru_list(ses);
         return cached_session;
     }
 
     public void storeCachedSession(Session session) {
         SessionImpl ses = (SessionImpl) session;
         synchronized(this) {
-            if (num_cached_sessions < max_cached_sessions) {
-                num_cached_sessions++;
-                ses.setCached(true);
-                cached_sessions.add(session);
+            num_cached_sessions++;
+            ses.setCached(true);
+            cached_sessions.add(session);
+            add_first_lru_list(ses);
+            if (num_cached_sessions > max_cached_sessions) {
+                ses = remove_last_lru_list();
+                num_cached_sessions--;
+            } else {
                 return;
             }
         }
@@ -562,15 +577,19 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
     public void storeCachedSession(Session session, String databaseName) {
         SessionImpl ses = (SessionImpl) session;
         synchronized(this) {
-            if (num_cached_sessions < max_cached_sessions) {
-                num_cached_sessions++;
-                ses.setCached(true);
-                Queue<Session> db_queue = db_cached_sessions.get(databaseName);
-                if (db_queue == null) {
-                    db_queue = new LinkedList();
-                    db_cached_sessions.put(databaseName, db_queue);
-                }
-                db_queue.add(session);
+            num_cached_sessions++;
+            ses.setCached(true);
+            Queue<Session> db_queue = db_cached_sessions.get(databaseName);
+            if (db_queue == null) {
+                db_queue = new LinkedList();
+                db_cached_sessions.put(databaseName, db_queue);
+            }
+            db_queue.add(session);
+            add_first_lru_list(ses);
+            if (num_cached_sessions > max_cached_sessions) {
+                ses = remove_last_lru_list();
+                num_cached_sessions--;
+            } else {
                 return;
             }
         }
@@ -578,6 +597,44 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         ses.close();
     }
 
+    public void add_first_lru_list(SessionImpl session) {
+        session.setNextLruList(first_lru_list);
+        session.setPrevLruList(null);
+        if (first_lru_list == null) {
+            last_lru_list = session;
+        }
+        first_lru_list = session;
+    }
+
+    public void remove_lru_list(SessionImpl session) {
+        SessionImpl next = session.getNextLruList();
+        SessionImpl prev = session.getPrevLruList();
+        if (prev == null) {
+            first_lru_list = next;
+        } else {
+            prev.setNextLruList(next);
+        }
+        if (next == null) {
+            last_lru_list = prev;
+        } else {
+            next.setPrevLruList(prev);
+        }
+    }
+
+    public SessionImpl remove_last_lru_list() {
+        SessionImpl last = last_lru_list;
+        SessionImpl remove_ses = null;
+        assert(last != null);
+        boolean isDefaultDatabase = last.isDefaultDatabase();
+        if (isDefaultDatabase) {
+            remove_ses = (SessionImpl)getCachedSession();
+        } else {
+            String databaseName = last.getDatabaseName();
+            remove_ses = (SessionImpl)getCachedSession(databaseName);
+        }
+        assert(remove_ses != null);
+        return remove_ses;
+    }
     /** Get a session to use with the cluster.
      *
      * @return the session
