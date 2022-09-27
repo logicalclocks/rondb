@@ -81,6 +81,8 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/MultiplePKTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/MultithreadedFindTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/MultithreadedTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/MultiDBUpdateTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/MultiDBUpdate2Test.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/NegativeMetadataTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/NotPersistentTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/NullValuesTest.java
