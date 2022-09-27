@@ -531,6 +531,9 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         num_cached_sessions--;
         Session cached_session = cached_sessions.poll();
         SessionImpl ses = (SessionImpl) cached_session;
+        if (ses == null) {
+            return null;
+        }
         ses.setCached(false);
         remove_lru_list(ses);
         return cached_session;

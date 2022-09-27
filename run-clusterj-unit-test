@@ -8,7 +8,7 @@ MYSQL_CONNECTOR=/Users/mikael/mysql-connector-java-8.0.30/mysql-connector-java-8
 export LIBNDBCLIENT_PATH="/Volumes/ExtFileSystem/rondb_2104/err_build/lib"
 
 #if  SINGLE_TEST is set then TEST_JAR is ignored
-SINGLE_TEST="MultiDBUpdate2Test"
+SINGLE_TEST="MultiDBUpdateTest"
 TEST_JAR="$CLUSTERJ_BUILD_DIR/clusterj-test/clusterj-test-$VERSION.jar"
 
 if [ -n "$SINGLE_TEST" ]; then

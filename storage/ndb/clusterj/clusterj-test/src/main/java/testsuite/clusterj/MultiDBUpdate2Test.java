@@ -64,7 +64,7 @@ public class MultiDBUpdate2Test extends AbstractClusterJModelTest {
     runTest3();
   }
 
-  public void testSimpleWithtCache() {
+  public void testSimpleWithCache() {
     useCache = true;
     cleanUp();
     runTest1();
