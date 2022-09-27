@@ -1073,4 +1073,19 @@ create table t_basic2 (
   unique key idx_unique_hash_magic (magic) using hash,
   key idx_btree_age (age)
 ) ENGINE=ndbcluster;
+
+create database if not exists test3;
+use test3;
+drop table if exists t_basic3;
+create table t_basic3 (
+  id int not null,
+  name varchar(32),
+  age int,
+  magic int not null,
+  primary key(id),
+
+  unique key idx_unique_hash_magic (magic) using hash,
+  key idx_btree_age (age)
+) ENGINE=ndbcluster;
+
 use test;
