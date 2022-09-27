@@ -16815,6 +16815,10 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
       handle.getSection(keyInfoPtr, ScanFragReq::KeyInfoSectionNum);
       keyLen= keyInfoPtr.sz;
     }
+    else
+    {
+      keyInfoPtr.setNull();
+    }
   }
   const Uint32 senderBlockRef = signal->senderBlockRef();
   const Uint32 transid1 = scanFragReq->transId1;
@@ -16977,8 +16981,16 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
     {
       jamDebug();
       regTcPtr->attrInfoIVal= attrInfoPtr.i;
-      if (keyLen)
+      if (keyLen > 0)
+      {
         regTcPtr->keyInfoIVal= keyInfoPtr.i;
+      }
+      else if (unlikely(!keyInfoPtr.isNull()))
+      {
+        jam();
+        // Release empty and unneeded key info section.
+        releaseSection(keyInfoPtr.i);
+      }
       /* Scan state machine is now responsible for freeing 
        * these sections, usually via releaseOprec()
        */
