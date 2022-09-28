@@ -1060,6 +1060,13 @@ create table `hope` (
   PRIMARY KEY (partition_id, id)
   ) ENGINE=ndbcluster DEFAULT CHARSET=latin1 partition by key (partition_id);
 
+drop table if exists same_table;
+create table same_table (
+  id int not null,
+  name varchar(32),
+  primary key(id)
+) ENGINE=ndbcluster;
+
 create database if not exists test2;
 use test2;
 drop table if exists t_basic2;
@@ -1074,6 +1081,13 @@ create table t_basic2 (
   key idx_btree_age (age)
 ) ENGINE=ndbcluster;
 
+drop table if exists same_table;
+create table same_table (
+  id int not null,
+  name varchar(32),
+  primary key(id)
+) ENGINE=ndbcluster;
+
 create database if not exists test3;
 use test3;
 drop table if exists t_basic3;
@@ -1086,6 +1100,13 @@ create table t_basic3 (
 
   unique key idx_unique_hash_magic (magic) using hash,
   key idx_btree_age (age)
+) ENGINE=ndbcluster;
+
+drop table if exists same_table;
+create table same_table (
+  id int not null,
+  name varchar(32),
+  primary key(id)
 ) ENGINE=ndbcluster;
 
 use test;
