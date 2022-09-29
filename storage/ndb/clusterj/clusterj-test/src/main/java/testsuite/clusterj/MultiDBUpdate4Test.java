@@ -107,7 +107,7 @@ public class MultiDBUpdate4Test extends AbstractClusterJModelTest {
     for (int i = 0; i < NUMBER_TO_INSERT; i++) {
       Session s = getSession(db);
       EmpBasic e = s.newInstance(EmpBasic.class);
-      MultiDBHelper.verifyEmployeeFields(this, e, i);
+      MultiDBHelper.setEmployeeFields(this, e, i);
       s.savePersistent(e);
       closeDTO(s, e, EmpBasic.class);
       returnSession(s);
