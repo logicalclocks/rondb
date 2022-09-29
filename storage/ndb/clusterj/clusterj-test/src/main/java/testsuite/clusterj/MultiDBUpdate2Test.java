@@ -26,12 +26,14 @@
 package testsuite.clusterj;
 
 import com.mysql.clusterj.Constants;
-import com.mysql.clusterj.DynamicObject;
 import com.mysql.clusterj.Session;
 import testsuite.clusterj.model.Employee;
 import testsuite.clusterj.model.Employee2;
 import testsuite.clusterj.model.Employee3;
 
+/*
+Using table models
+ */
 public class MultiDBUpdate2Test extends AbstractClusterJModelTest {
 
   private static final int NUMBER_TO_INSERT = 1024;
