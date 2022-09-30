@@ -1,0 +1,125 @@
+#!/bin/bash
+#
+#  Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
+
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License, version 2.0,
+#  as published by the Free Software Foundation.
+
+#  This program is also distributed with certain software (including
+#  but not limited to OpenSSL) that is licensed under separate terms,
+#  as designated in a particular file or component or in included license
+#  documentation.  The authors of MySQL hereby grant you an additional
+#  permission to link the program and your derivative works with the
+#  separately licensed software that they have included with MySQL.
+
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License, version 2.0, for more details.
+
+#  You should have received a copy of the GNU General Public License
+#  along with this program; if not, write to the Free Software
+#  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
+#
+
+# run RonNDB  as 
+#./mtr --suite=ndb -start-and-exit
+
+# depending on your set if you get SSL excption then adding the following to storage/ndb/clusterj/clusterj-test/src/main/java/testsuite/clusterj/AbstractClusterJTest.java
+#        props.put("allowPublicKeyRetrieval", "true");
+
+source ../../../MYSQL_VERSION
+VERSION="$MYSQL_VERSION_MAJOR.$MYSQL_VERSION_MINOR.$MYSQL_VERSION_PATCH"
+
+help(){
+
+  echo "run-clusterj-unit-test {-b build_dir} [-t test_name] [-c mysql_connector ] "
+  echo "USAGE" 
+  echo "=====" 
+  echo "      run-clusterj-unit-test -t MultiDBUpdate2Test -b /tmp/build"
+  echo ""
+  echo "-t=test_name" 
+  echo "      name of the test to run. If this is omitted then all the tests are run "
+  echo "-b=path"
+  echo "       path build direcotry" 
+  echo "-c=path"
+  echo "       mysql connector jar path " 
+}
+
+# A POSIX variable
+OPTIND=1         # Reset in case getopts has been used previously in the shell.
+BUILD_DIR=""
+SINGLE_TEST=""
+MYSQL_CONNECTOR=$HOME/mysql-connector-java-8.0.30/mysql-connector-java-8.0.30.jar
+while getopts ":t:b:c:" opt; do
+    case "$opt" in
+    t)  SINGLE_TEST=$OPTARG
+        ;;
+    b)  BUILD_DIR=$OPTARG
+        ;;
+    c)  MYSQL_CONNECTOR=$OPTARG
+        ;;
+    *)
+        help
+        exit 1
+        ;;
+    esac
+done
+
+
+if [ -z $BUILD_DIR ]; then
+  echo "Build dir is not set"
+  help
+  exit 1
+fi
+
+if [ ! -d $BUILD_DIR ]; then
+  echo "Wrong Build Dir"
+  exit
+fi
+
+CLUSTERJ_BUILD_DIR=$BUILD_DIR/storage/ndb/clusterj
+export LIBNDBCLIENT_PATH="$CLUSTERJ_BUILD_DIR/../../../lib"
+
+#if  SINGLE_TEST is set then TEST_JAR is ignored
+TEST_JAR="$CLUSTERJ_BUILD_DIR/clusterj-test/clusterj-test-$VERSION.jar"
+
+if [ -n "$SINGLE_TEST" ]; then
+  cd $CLUSTERJ_BUILD_DIR
+  make
+  cd $CLUSTERJ_BUILD_DIR/clusterj-test/target/classes
+  jar cvf test.jar testsuite/clusterj/$SINGLE_TEST.class
+  TEST_JAR=$(readlink -f test.jar)
+fi
+
+cd $CLUSTERJ_BUILD_DIR
+
+ALL_JARS="$MYSQL_CONNECTOR"
+ALL_JARS="$ALL_JARS:$CLUSTERJ_BUILD_DIR/clusterj-$VERSION.jar"
+ALL_JARS="$ALL_JARS:$CLUSTERJ_BUILD_DIR/clusterj-test/clusterj-test-$VERSION.jar"
+ALL_JARS="$ALL_JARS:$CLUSTERJ_BUILD_DIR/clusterj-api/clusterj-api-$VERSION.jar"
+ALL_JARS="$ALL_JARS:$CLUSTERJ_BUILD_DIR/clusterj-tie/clusterj-tie-$VERSION.jar"
+ALL_JARS="$ALL_JARS:$CLUSTERJ_BUILD_DIR/clusterj-core/clusterj-core-$VERSION.jar" 
+
+if [ -f "$ALL_JARS:$CLUSTERJ_BUILD_DIR/../../../lib/libndbclient.dylib" ]; then
+  ALL_JARS="$ALL_JARS:$CLUSTERJ_BUILD_DIR/../../../lib/libndbclient.dylib" 
+fi
+
+echo "ALL_JARS = $ALL_JARS"
+
+rm clusterj.properties
+echo   "com.mysql.clusterj.connectstring=localhost:13000"               >>   clusterj.properties
+echo   "com.mysql.clusterj.connect.retries=4"                           >>   clusterj.properties
+echo   "com.mysql.clusterj.connect.delay=5"                             >>   clusterj.properties
+echo   "com.mysql.clusterj.connect.verbose=1"                           >>   clusterj.properties
+echo   "com.mysql.clusterj.connect.timeout.before=30"                   >>   clusterj.properties
+echo   "com.mysql.clusterj.connect.timeout.after=20"                    >>   clusterj.properties
+echo   "com.mysql.clusterj.jdbc.url=jdbc:mysql://localhost:13001/test"  >>   clusterj.properties
+echo   "com.mysql.clusterj.jdbc.driver=com.mysql.cj.jdbc.Driver"        >>   clusterj.properties
+echo   "com.mysql.clusterj.jdbc.username=root"                          >>   clusterj.properties
+echo   "com.mysql.clusterj.jdbc.password="                              >>   clusterj.properties
+echo   "com.mysql.clusterj.database=test"                               >>   clusterj.properties
+echo   "com.mysql.clusterj.max.transactions=1024"                       >>   clusterj.properties
+echo   "com.mysql.clusterj.connection.reconnect.timeout=3"              >>   clusterj.properties
+java -cp $ALL_JARS -Djava.library.path=$LIBNDBCLIENT_PATH -Dclusterj.properties=$CLUSTERJ_BUILD_DIR/clusterj.properties testsuite.clusterj.AllTests  $TEST_JAR

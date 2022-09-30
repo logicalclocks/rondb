@@ -28,27 +28,38 @@ package testsuite.clusterj;
 import com.mysql.clusterj.Constants;
 import com.mysql.clusterj.DynamicObject;
 import com.mysql.clusterj.Session;
-import testsuite.clusterj.model.Employee;
-import testsuite.clusterj.model.Employee2;
-import testsuite.clusterj.model.Employee3;
 
-public class MultiDBUpdateTest extends AbstractClusterJModelTest {
+import java.util.ArrayList;
 
-  private static final int NUMBER_TO_INSERT = 1024;
+
+/*
+Using DynamicObjects. Created separate class for each table
+ */
+public class MultiDBLoad1Test extends AbstractClusterJModelTest {
+
+  private static final int NUMBER_TO_INSERT = 128;
   private static String defaultDB;
 
   boolean useCache = false;
 
-  public static class EmpBasic extends DynamicObject {
-    private static String tabName;
-
+  public static class EmpBasic1 extends DynamicObject {
     @Override
     public String table() {
-      return tabName;
+      return "t_basic";
     }
+  }
 
-    public static void setTabName(String name) {
-      tabName = name;
+  public static class EmpBasic2 extends DynamicObject {
+    @Override
+    public String table() {
+      return "t_basic2";
+    }
+  }
+
+  public static class EmpBasic3 extends DynamicObject {
+    @Override
+    public String table() {
+      return "t_basic3";
     }
   }
 
@@ -59,110 +70,73 @@ public class MultiDBUpdateTest extends AbstractClusterJModelTest {
   }
 
   public void cleanUp() {
-    cleanUpInt(defaultDB, Employee.class);
-    cleanUpInt("test2", Employee2.class);
-    cleanUpInt("test3", Employee3.class);
+    cleanUpInt(defaultDB, EmpBasic1.class);
+    cleanUpInt("test2", EmpBasic2.class);
+    cleanUpInt("test3", EmpBasic3.class);
   }
 
   public void cleanUpInt(String db, Class c) {
     Session s = getSession(db);
     s.deletePersistentAll(c);
     returnSession(s);
-
   }
 
   public void testSimple() {
     useCache = false;
     cleanUp();
-    EmpBasic.setTabName("t_basic");
-    runTest(defaultDB);
-
-    EmpBasic.setTabName("t_basic2");
-    runTest("test2");
-
-    EmpBasic.setTabName("t_basic3");
-    runTest("test3");
+    runTest(defaultDB, EmpBasic1.class);
+    runTest("test2", EmpBasic2.class);
+    runTest("test3", EmpBasic3.class);
   }
 
   public void testSimpleWithCache() {
     useCache = true;
     cleanUp();
-    EmpBasic.setTabName("t_basic");
-    runTest(defaultDB);
-
-    EmpBasic.setTabName("t_basic2");
-    runTest("test2");
-
-    EmpBasic.setTabName("t_basic3");
-    runTest("test3");
+    runTest(defaultDB, EmpBasic1.class);
+    runTest("test2", EmpBasic2.class);
+    runTest("test3", EmpBasic3.class);
   }
 
-  public void runTest(String db) {
-    System.out.println("Added rows to DB: " + db + " table: " + EmpBasic.tabName);
+  public void runTest(String db, Class cls) {
+    System.out.println("Adding rows to DB: " + db + " table: " + cls);
     for (int i = 0; i < NUMBER_TO_INSERT; i++) {
       Session s = getSession(db);
-      EmpBasic e = s.newInstance(EmpBasic.class);
-      setFields(e, i);
+      DynamicObject e = (DynamicObject) s.newInstance(cls);
+      MultiDBHelper.setEmployeeFields(this, e, i);
       s.savePersistent(e);
-      closeDTO(s, e, EmpBasic.class);
+      closeDTO(s, e, cls);
       returnSession(s);
     }
 
     // now verify data
+    Session s = getSession(db);
+    s.currentTransaction().begin();
+    ArrayList<DynamicObject> list = new ArrayList<DynamicObject>(NUMBER_TO_INSERT);
     for (int i = 0; i < NUMBER_TO_INSERT; i++) {
-      Session s = getSession(db);
-      EmpBasic e = s.find(EmpBasic.class, i);
-      verifyFields(e, i);
-      closeDTO(s, e, EmpBasic.class);
-      returnSession(s);
+      DynamicObject e = (DynamicObject) s.newInstance(cls, i);
+      list.add(e);
+      s.load(e);
     }
+    s.flush();
+
+    for (int i = 0; i < NUMBER_TO_INSERT; i++) {
+      MultiDBHelper.verifyEmployeeFields(this, list.get(i), i);
+      closeDTO(s, list.get(i), cls);
+    }
+    list.clear();
+    s.currentTransaction().commit();
+    returnSession(s);
 
     // now delete data
     for (int i = 0; i < NUMBER_TO_INSERT; i++) {
-      Session s = getSession(db);
-      EmpBasic e = s.find(EmpBasic.class, i);
+      s = getSession(db);
+      DynamicObject e = (DynamicObject) s.find(cls, i);
       s.deletePersistent(e);
-      closeDTO(s, e, EmpBasic.class);
+      closeDTO(s, e, cls);
       returnSession(s);
     }
 
     failOnError();
-  }
-
-  public void setFields(DynamicObject e, int num) {
-    for (int i = 0; i < e.columnMetadata().length; i++) {
-      String fieldName = e.columnMetadata()[i].name();
-      if (fieldName.equals("id")) {
-        e.set(i, num);
-      } else if (fieldName.equals("age")) {
-        e.set(i, num);
-      } else if (fieldName.equals("name")) {
-        e.set(i, Integer.toString(num));
-      } else if (fieldName.equals("magic")) {
-        e.set(i, num);
-      } else {
-        error("Unexpected Column");
-      }
-    }
-  }
-
-  public void verifyFields(DynamicObject e, int num) {
-    for (int i = 0; i < e.columnMetadata().length; i++) {
-      String fieldName = e.columnMetadata()[i].name();
-      if (fieldName.equals("id")) {
-        Integer actual = (Integer) e.get(i);
-        if (actual != num) {
-          error("Failed update: for employee " + num
-            + " expected age " + num
-            + " actual age " + actual);
-        }
-      } else if (fieldName.equals("age")) {
-      } else if (fieldName.equals("name")) {
-      } else if (fieldName.equals("magic")) {
-      } else {
-        error("Unexpected Column");
-      }
-    }
   }
 
   Session getSession(String db) {

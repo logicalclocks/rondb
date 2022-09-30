@@ -25,6 +25,6 @@
 
 package testsuite.clusterj.tie;
 
-public class MultiDBUpdate2Test extends testsuite.clusterj.MultiDBUpdate2Test {
+public class MultiDBLoad1Test extends testsuite.clusterj.MultiDBLoad1Test {
 
 }

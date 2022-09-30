@@ -605,6 +605,8 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         session.setPrevLruList(null);
         if (first_lru_list == null) {
             last_lru_list = session;
+        } else {
+            first_lru_list.setPrevLruList(session);
         }
         first_lru_list = session;
     }

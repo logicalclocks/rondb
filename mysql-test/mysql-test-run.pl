@@ -183,6 +183,7 @@ my $daemonize_mysqld   = 0;
 my $debug_d            = "d";
 my $exe_ndbmtd_counter = 0;
 my $exe_ndb_mgmd_counter = 0;
+my $exe_mysqld_counter = 0;
 my $source_dist        = 0;
 my $shutdown_report    = 0;
 my $valgrind_reports   = 0;
@@ -2639,17 +2640,32 @@ sub find_mysqld {
   my ($mysqld_basedir) = $ENV{MTR_BINDIR} || @_;
 
   my @mysqld_names = ("mysqld");
-
   if ($opt_debug_server) {
     # Put mysqld-debug first in the list of binaries to look for
     mtr_verbose("Adding mysqld-debug first in list of binaries to look for");
     unshift(@mysqld_names, "mysqld-debug");
   }
-
-  return
-    my_find_bin($mysqld_basedir,
-                [ "runtime_output_directory", "libexec", "sbin", "bin" ],
-                [@mysqld_names]);
+  my $exec;
+  my $exec_v2;
+  $exec = my_find_bin($mysqld_basedir,
+            [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+            [@mysqld_names]);
+  if ($ENV{MTR_RONDB_V2}) {
+    if (($exe_mysqld_counter++ % 2) != 0) {
+      my @mysqld_names_v2 = ("mysqld_v2");
+      if ($opt_debug_server) {
+        mtr_verbose("Adding mysqld-debug first in list of binaries to look for");
+        unshift(@mysqld_names_v2, "mysqld-debug-v2");
+      }
+      $exec_v2 = my_find_bin($mysqld_basedir,
+                   [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+                   [@mysqld_names_v2]);
+    }
+  }
+  if ($exec_v2) {
+    return $exec_v2;
+  }
+  return $exec;
 }
 
 # Finds paths to various executables (other than mysqld) and sets
