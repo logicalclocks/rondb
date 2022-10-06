@@ -46,6 +46,7 @@ pipeline {
                 sed -i "s/___EE_PASS___/$HopsEECeds_PSW/g" deploy.sh
 
                 cat $RepoCeds > id_rsa
+                chmod 600 id_rsa
 
                 release=""
                 if [ "$RELEASE_BUILD" = true ]; then
