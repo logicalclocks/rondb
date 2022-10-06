@@ -152,6 +152,35 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
     private DTOCache dtoCache;
 
     boolean is_cached;
+
+    /**
+     * We need some support for O(1) handling of LRU list of Session objects
+     * also in the presence of multiple database Session objects.
+     */
+    SessionImpl next_lru_list;
+    SessionImpl prev_lru_list;
+
+    SessionImpl getNextLruList() {
+        return next_lru_list;
+    }
+    SessionImpl getPrevLruList() {
+        return prev_lru_list;
+    }
+    void setNextLruList(SessionImpl session) {
+        next_lru_list = session;
+    }
+    void setPrevLruList(SessionImpl session) {
+        prev_lru_list = session;
+    }
+
+    String getDatabaseName() {
+        return db.getName();
+    }
+
+    boolean isDefaultDatabase() {
+        return db.isDefaultDatabase();
+    }
+
     /** Create a SessionImpl with factory, properties, Db, and dictionary
      */
     SessionImpl(SessionFactoryImpl factory, Map properties, Db db, Dictionary dictionary,
@@ -876,7 +905,11 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
         if (dtoCache != null && dropCache) {
             dtoCache.drop();
         }
-        factory.storeCachedSession(this);
+        if (db.isDefaultDatabase()) {
+            factory.storeCachedSession(this);
+        } else {
+            factory.storeCachedSession(this, db.getName());
+        }
     }
 
     public void setCached(boolean is_cached_val) {
@@ -1660,7 +1693,7 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
         assertNotClosed();
         //drop all caches as they are invalid now due to change in schema ID
         dropInstanceCache();
-        return factory.unloadSchema(cls, dictionary);
+        return factory.unloadSchema(cls, dictionary, db.getName(), db.isDefaultDatabase());
     }
 
     /** Release resources associated with an instance. The instance must be a domain object obtained via

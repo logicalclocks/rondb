@@ -1,6 +1,6 @@
 /*
  *  Copyright (c) 2009, 2019, Oracle and/or its affiliates.
- *  Copyright (c) 2020, 2021, Logical Clocks and/or its affiliates.
+ *  Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License, version 2.0,
@@ -738,8 +738,8 @@ class ClusterTransactionImpl implements ClusterTransaction {
      * @param storeTable the table
      * @return
      */
-    protected NdbRecordImpl getCachedNdbRecordImpl(Table storeTable) {
-        return clusterConnectionImpl.getCachedNdbRecordImpl(storeTable);
+    protected NdbRecordImpl getCachedNdbRecordImpl(DbImpl db, Table storeTable) {
+        return clusterConnectionImpl.getCachedNdbRecordImpl(db, storeTable);
     }
 
     /** Get the cached NdbRecordImpl for this index and table. The NdbRecordImpl is cached in the
@@ -748,8 +748,8 @@ class ClusterTransactionImpl implements ClusterTransaction {
      * @param storeIndex the index
      * @return
      */
-    protected NdbRecordImpl getCachedNdbRecordImpl(Index storeIndex, Table storeTable) {
-        return clusterConnectionImpl.getCachedNdbRecordImpl(storeIndex, storeTable);
+    protected NdbRecordImpl getCachedNdbRecordImpl(DbImpl db, Index storeIndex, Table storeTable) {
+        return clusterConnectionImpl.getCachedNdbRecordImpl(db, storeIndex, storeTable);
     }
 
     /** 

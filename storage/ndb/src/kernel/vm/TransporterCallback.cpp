@@ -410,6 +410,18 @@ TransporterReceiveHandleKernel::deliver_signal(SignalHeader * const header,
        * and to query threads.
        */
       require(prio == JBB);
+      if (unlikely(globalData.ndbMtQueryThreads == 0))
+      {
+        /**
+         * Older versions of RonDB (before 21.04.9) could potentially
+         * send a request to V_QUERY even when we don't have any query
+         * threads. In this case we simply change to use the DBLQH
+         * block.
+         */
+        header->theReceiversBlockNumber = DBLQH;
+        sendlocal(m_thr_no, header, theData, secPtrI);
+        return false;
+      }
       const Uint32 instance_no =
         blockToInstance(header->theReceiversBlockNumber);
       Uint32 ref = ((Trpman*)m_trpman)->distribute_signal(header, instance_no);

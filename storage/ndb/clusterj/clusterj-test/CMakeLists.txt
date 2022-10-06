@@ -81,6 +81,13 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/MultiplePKTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/MultithreadedFindTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/MultithreadedTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/MultithreadedTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/MultiDBHelper.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/MultiDBLoad1Test.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/MultiDBScan1Test.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/MultiDBUpdate1Test.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/MultiDBUpdate2Test.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/MultiDBUpdate3Test.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/NegativeMetadataTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/NotPersistentTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/NullValuesTest.java
@@ -129,6 +136,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/ReconnectTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/RecvThreadCPUTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/ReleaseTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/ReleaseWithCacheTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/SaveTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/SchemaChangeTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/SerialTransactionsTest.java

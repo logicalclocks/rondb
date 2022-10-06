@@ -509,6 +509,7 @@ public abstract class AbstractClusterJTest extends TestCase {
         props.put("useSSL", "false");
         props.put("user", jdbcUsername);
         props.put("password",jdbcPassword);
+        props.put("allowPublicKeyRetrieval", "true");
     }
 
     /** Load the schema for tests */

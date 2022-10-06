@@ -120,6 +120,7 @@ my $opt_start_dirty;
 my $opt_start_exit;
 my $opt_strace_client;
 my $opt_strace_server;
+my @opt_perf_servers;
 my $opt_stress;
 my $opt_tmpdir;
 my $opt_tmpdir_pid;
@@ -163,9 +164,10 @@ my $ctest_report;           # Unit test report stored here for delayed printing
 my $current_config_name;    # The currently running config file template
 my $exe_ndb_mgm;
 my $exe_ndb_mgmd;
+my $exe_ndb_mgmd_v2;
 my $exe_ndb_waiter;
-my $exe_ndbd;
 my $exe_ndbmtd;
+my $exe_ndbmtd_v2;
 my $initial_bootstrap_cmd;
 my $mysql_base_version;
 my $mysqlx_baseport;
@@ -177,6 +179,8 @@ my $build_thread       = 0;
 my $daemonize_mysqld   = 0;
 my $debug_d            = "d";
 my $exe_ndbmtd_counter = 0;
+my $exe_ndb_mgmd_counter = 0;
+my $exe_mysqld_counter = 0;
 my $ports_per_thread   = 30;
 my $source_dist        = 0;
 my $shutdown_report    = 0;
@@ -1616,6 +1620,7 @@ sub command_line_setup {
     'max-test-fail=i'      => \$opt_max_test_fail,
     'strace-client'        => \$opt_strace_client,
     'strace-server'        => \$opt_strace_server,
+    'perf:s'               => \@opt_perf_servers,
 
     # Coverage, profiling etc
     'callgrind'                 => \$opt_callgrind,
@@ -2212,6 +2217,10 @@ sub command_line_setup {
     mtr_warning("Strace only supported in Linux ");
   }
 
+  if (@opt_perf_servers && $opt_shutdown_timeout == 0) {
+    mtr_error("Using perf with --shutdown-timeout=0 produces empty perf.data");
+  }
+
   mtr_report("Checking supported features");
 
   check_mysqlbackup_support();
@@ -2491,17 +2500,32 @@ sub find_mysqld {
   my ($mysqld_basedir) = $ENV{MTR_BINDIR} || @_;
 
   my @mysqld_names = ("mysqld");
-
   if ($opt_debug_server) {
     # Put mysqld-debug first in the list of binaries to look for
     mtr_verbose("Adding mysqld-debug first in list of binaries to look for");
     unshift(@mysqld_names, "mysqld-debug");
   }
-
-  return
-    my_find_bin($mysqld_basedir,
-                [ "runtime_output_directory", "libexec", "sbin", "bin" ],
-                [@mysqld_names]);
+  my $exec;
+  my $exec_v2;
+  $exec = my_find_bin($mysqld_basedir,
+            [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+            [@mysqld_names]);
+  if ($ENV{MTR_RONDB_V2}) {
+    if (($exe_mysqld_counter++ % 2) != 0) {
+      my @mysqld_names_v2 = ("mysqld_v2");
+      if ($opt_debug_server) {
+        mtr_verbose("Adding mysqld-debug first in list of binaries to look for");
+        unshift(@mysqld_names_v2, "mysqld-debug-v2");
+      }
+      $exec_v2 = my_find_bin($mysqld_basedir,
+                   [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+                   [@mysqld_names_v2]);
+    }
+  }
+  if ($exec_v2) {
+    return $exec_v2;
+  }
+  return $exec;
 }
 
 # Finds paths to various executables (other than mysqld) and sets
@@ -2525,33 +2549,25 @@ sub executable_setup () {
     mtr_exe_exists("$path_client_bindir/mysql_ssl_rsa_setup");
 
   if ($ndbcluster_enabled) {
-    # Look for single threaded NDB
-    $exe_ndbd =
-      my_find_bin($bindir,
-                  [ "runtime_output_directory", "libexec", "sbin", "bin" ],
-                  "ndbd");
-
     # Look for multi threaded NDB
     $exe_ndbmtd =
       my_find_bin($bindir,
                   [ "runtime_output_directory", "libexec", "sbin", "bin" ],
-                  "ndbmtd", NOT_REQUIRED);
-
-    if ($exe_ndbmtd) {
-      my $mtr_ndbmtd = $ENV{MTR_NDBMTD};
-      if ($mtr_ndbmtd) {
-        mtr_report(" - multi threaded ndbd found, will be used always");
-        $exe_ndbd = $exe_ndbmtd;
-      } else {
-        mtr_report(
-             " - multi threaded ndbd found, will be " . "used \"round robin\"");
-      }
-    }
+                  "ndbmtd");
+    $exe_ndbmtd_v2 =
+      my_find_bin($bindir,
+                  [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+                  "ndbmtd_v2", NOT_REQUIRED);
 
     $exe_ndb_mgmd =
       my_find_bin($bindir,
                   [ "runtime_output_directory", "libexec", "sbin", "bin" ],
                   "ndb_mgmd");
+
+    $exe_ndb_mgmd_v2 =
+      my_find_bin($bindir,
+                  [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+                  "ndb_mgmd_v2", NOT_REQUIRED);
 
     $exe_ndb_mgm =
       my_find_bin($bindir, [ "runtime_output_directory", "bin" ], "ndb_mgm");
@@ -3621,11 +3637,23 @@ sub ndb_mgmd_start ($$) {
   mtr_add_arg($args, "--nodaemon");
   mtr_add_arg($args, "--configdir=%s",             "$dir");
 
+  my $exe = $exe_ndb_mgmd;
+  if ($exe_ndb_mgmd_v2) {
+    if ($ENV{MTR_RONDB_V2}) {
+      # Use two versions for ndbmtd to test upgrade/downgrade
+      $exe = $exe_ndb_mgmd_v2;
+    }
+    if (($exe_ndb_mgmd_counter++ % 2) == 0) {
+      # Use ndb_mgmd every other time
+      $exe = $exe_ndb_mgmd;
+    }
+  }
+
   my $path_ndb_mgmd_log = "$dir/ndb_mgmd.log";
 
   $ndb_mgmd->{'proc'} =
     My::SafeProcess->new(name     => $ndb_mgmd->after('cluster_config.'),
-                         path     => $exe_ndb_mgmd,
+                         path     => $exe,
                          args     => \$args,
                          output   => $path_ndb_mgmd_log,
                          error    => $path_ndb_mgmd_log,
@@ -3650,6 +3678,23 @@ sub ndbd_stop {
   # by sending "shutdown" to ndb_mgmd
 }
 
+# Modify command line so that program is bound to given list of CPUs
+sub cpubind_arguments {
+  my $args          = shift;
+  my $exe           = shift;
+  my $cpu_list      = shift;
+
+  # Prefix args with 'taskset -c <cpulist> <exe> ...'
+  my $prefix_args;
+  mtr_init_args(\$prefix_args);
+  mtr_add_arg($prefix_args, "-c");
+  mtr_add_arg($prefix_args, $cpu_list);
+  mtr_add_arg($prefix_args, $$exe);
+  unshift(@$args, @$prefix_args);
+
+  $$exe = "taskset";
+}
+
 sub ndbd_start {
   my ($cluster, $ndbd) = @_;
 
@@ -3658,26 +3703,31 @@ sub ndbd_start {
   my $dir = $ndbd->value("DataDir");
   mkpath($dir) unless -d $dir;
 
-  my $args;
-  mtr_init_args(\$args);
-  mtr_add_arg($args, "--defaults-file=%s", $path_config_file);
-  mtr_add_arg($args, "--defaults-group-suffix=%s",
-              $ndbd->after('cluster_config.ndbd'));
-  mtr_add_arg($args, "--nodaemon");
-
-  # > 5.0 { 'character-sets-dir' => \&fix_charset_dir },
-
-  my $exe = $exe_ndbd;
-  if ($exe_ndbmtd) {
-    if ($ENV{MTR_NDBMTD}) {
-      # ndbmtd forced by env var MTR_NDBMTD
-      $exe = $exe_ndbmtd;
+  my $exe = $exe_ndbmtd;
+  if ($exe_ndbmtd_v2) {
+    if ($ENV{MTR_RONDB_V2}) {
+      # Use two versions for ndbmtd to test upgrade/downgrade
+      $exe = $exe_ndbmtd_v2;
     }
     if (($exe_ndbmtd_counter++ % 2) == 0) {
       # Use ndbmtd every other time
       $exe = $exe_ndbmtd;
     }
   }
+
+  my $args;
+  mtr_init_args(\$args);
+
+  my $cpu_list = $ndbd->if_exist('#cpubind');
+  if (defined $cpu_list) {
+    mtr_print("Applying cpu binding '$cpu_list' for: ", $ndbd->name());
+    cpubind_arguments($args, \$exe, $cpu_list);
+  }
+
+  mtr_add_arg($args, "--defaults-file=%s", $path_config_file);
+  mtr_add_arg($args, "--defaults-group-suffix=%s",
+              $ndbd->after('cluster_config.ndbd'));
+  mtr_add_arg($args, "--nodaemon");
 
   my $path_ndbd_log = "$dir/ndbd.log";
   my $proc = My::SafeProcess->new(name     => $ndbd->after('cluster_config.'),
@@ -4800,7 +4850,7 @@ sub run_testcase ($) {
     return 1;
   }
 
-  my $test = start_mysqltest($tinfo);
+  my $test = start_mysqltest($tinfo, $config->group('mysqltest'));
 
   # Maintain a queue to keep track of server processes which have
   # died expectedly in order to wait for them to be restarted.
@@ -6086,6 +6136,21 @@ sub mysqld_start ($$$$) {
     valgrind_arguments($args, \$exe, $mysqld->name());
   }
 
+  # Implementation for --perf[=<mysqld_name>]
+  if (@opt_perf_servers) {
+    my $name = $mysqld->name();
+    if (grep($_ eq "" || $name =~ /^$_/, @opt_perf_servers)) {
+      mtr_print("Using perf for: ", $name);
+      perf_arguments($args, \$exe, $name);
+    }
+  }
+
+  my $cpu_list = $mysqld->if_exist('#cpubind');
+  if (defined $cpu_list) {
+    mtr_print("Applying cpu binding '$cpu_list' for: ", $mysqld->name());
+    cpubind_arguments($args, \$exe, $cpu_list);
+  }
+
   mtr_add_arg($args, "--defaults-group-suffix=%s", $mysqld->after('mysqld'));
 
   # Add any additional options from an in-test restart
@@ -6769,19 +6834,29 @@ sub start_check_testcase ($$$) {
   return $proc;
 }
 
-sub run_mysqltest ($) {
+# Run mysqltest and wait for it to finish
+# - this function is currently unused
+sub run_mysqltest ($$) {
   my $proc = start_mysqltest(@_);
   $proc->wait();
 }
 
-sub start_mysqltest ($) {
-  my ($tinfo) = @_;
+sub start_mysqltest ($$) {
+  my $tinfo = shift;
+  my $mysqltest = shift;
+
   my $exe = $exe_mysqltest;
   my $args;
 
   mark_time_used('admin');
 
   mtr_init_args(\$args);
+
+  my $cpu_list = $mysqltest->if_exist('#cpubind');
+  if (defined $cpu_list) {
+    mtr_print("Applying cpu binding '$cpu_list' for mysqltest");
+    cpubind_arguments($args, \$exe, $cpu_list);
+  }
 
   if ($opt_strace_client) {
     $exe = "strace";
@@ -7141,6 +7216,21 @@ sub debugger_arguments {
   } else {
     mtr_error("Unknown argument \"$debugger\" passed to --debugger");
   }
+}
+
+# Modify the exe and args so that program is run with "perf record"
+#
+sub perf_arguments {
+  my $args = shift;
+  my $exe  = shift;
+  my $type = shift;
+
+  mtr_add_arg($args, "record");
+  mtr_add_arg($args, "-o");
+  mtr_add_arg($args, "%s/log/%s.perf.data", $opt_vardir, $type);
+  mtr_add_arg($args, "-g"); # --call-graph
+  mtr_add_arg($args, $$exe);
+  $$exe = "perf";
 }
 
 # Modify the exe and args so that program is run in strace
@@ -7586,6 +7676,14 @@ Options for debugging the product
                         0 for no limit. Set it's default with MTR_MAX_TEST_FAIL.
   strace-client         Create strace output for mysqltest client.
   strace-server         Create strace output for mysqltest server.
+  perf[=<mysqld_name>]  Run mysqld with "perf record" saving profile data
+                        as var/log/<mysqld_name>.perf.data, The option can be
+                        specified more than once and otionally specify
+                        the name of mysqld to profile. i.e like this:
+                          --perf                           # Profile all
+                          --perf=mysqld.1 --perf=mysqld.5  # Profile only named
+                        Analyze profile data with:
+                         `perf report -i var/log/<mysqld_name>.perf.data`
 
 Options for lock_order
 

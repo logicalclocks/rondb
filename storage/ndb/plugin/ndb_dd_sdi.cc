@@ -100,8 +100,13 @@ static bool check_sdi_compatibility(const dd::RJ_Document &doc) {
   DBUG_ASSERT(doc.HasMember("mysqld_version_id"));
   const dd::RJ_Value &mysqld_version_id = doc["mysqld_version_id"];
   DBUG_ASSERT(mysqld_version_id.IsUint64());
-  if (mysqld_version_id.GetUint64() > std::uint64_t(MYSQL_VERSION_ID)) {
+  if (mysqld_version_id.GetUint64() > std::uint64_t(MYSQL_VERSION_ID) &&
+      ((mysqld_version_id.GetUint64() < std::uint64_t(210409)) ||
+       (mysqld_version_id.GetUint64() >= std::uint64_t(210500)))) {
     // Cannot deserialize SDIs from newer versions
+    // RonDB 21.04.9 is assumed compatible with new versions of the
+    // 21.04 class, only bug fixes are supposed to happen in the
+    // 21.04 version after 21.04.9.
     my_error(ER_IMP_INCOMPATIBLE_MYSQLD_VERSION, MYF(0),
              mysqld_version_id.GetUint64(), std::uint64_t(MYSQL_VERSION_ID));
     return true;
