@@ -137,6 +137,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/ReconnectTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/RecvThreadCPUTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/ReleaseTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/ReleaseWithCacheTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/SaveTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/SchemaChangeTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/SerialTransactionsTest.java
