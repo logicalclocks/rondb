@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2009, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -165,10 +166,7 @@ public class QueryImpl<E> implements Query<E> {
      */
     public int deletePersistentAll() {
         try {
-            if (skip != 0 || limit != Long.MAX_VALUE) {
-                throw new ClusterJUserException(local.message("ERR_Invalid_Limits", skip, limit));
-            }
-            int result = dobj.deletePersistentAll(context);
+            int result = dobj.deletePersistentAll(context, skip, limit);
             return result;
         } catch (ClusterJDatastoreException cjde) {
             session.checkConnection(cjde);

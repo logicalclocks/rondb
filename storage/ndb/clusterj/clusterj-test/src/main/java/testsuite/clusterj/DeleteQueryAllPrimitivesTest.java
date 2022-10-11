@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2011, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2022, 2022 Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -102,6 +103,13 @@ create table allprimitives (
         failOnError();
     }
 
+    public void testDeleteEqualByBtreeIndexLimit() {
+        deleteEqualQuery("int_not_null_btree", "idx_int_not_null_btree", 8, 1);
+        deleteEqualQuery("int_not_null_btree", "idx_int_not_null_btree", 8, 0);
+        equalQuery("int_not_null_btree", "idx_int_not_null_btree", 8);
+        failOnError();
+    }
+
     public void testDeleteEqualByTableScan() {
         deleteEqualQuery("int_not_null_none", "none", 8, 1);
         deleteEqualQuery("int_not_null_none", "none", 8, 0);
@@ -116,9 +124,29 @@ create table allprimitives (
         failOnError();
     }
 
+    public void testDeleteRangeByBtreeIndexLimit() {
+        setLimit(1);
+        deleteGreaterThanAndLessThanQuery("int_not_null_btree", "idx_int_not_null_btree", 4, 7, 1);
+        deleteGreaterThanAndLessThanQuery("int_not_null_btree", "idx_int_not_null_btree", 4, 7, 1);
+        deleteGreaterThanAndLessThanQuery("int_not_null_btree", "idx_int_not_null_btree", 4, 7, 0);
+        setLimit(Long.MAX_VALUE);
+        betweenQuery("int_not_null_btree", "idx_int_not_null_btree", 3, 8, 3, 4, 7, 8);
+        failOnError();
+    }
+
     public void testDeleteRangeByTableScan() {
         deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 4, 7, 2);
         deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 4, 7, 0);
+        betweenQuery("int_not_null_btree", "idx_int_not_null_btree", 3, 8, 3, 4, 7, 8);
+        failOnError();
+    }
+
+    public void testDeleteRangeByTableScanLimit() {
+        setLimit(1);
+        deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 4, 7, 1);
+        deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 4, 7, 1);
+        deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 4, 7, 0);
+        setLimit(Long.MAX_VALUE);
         betweenQuery("int_not_null_btree", "idx_int_not_null_btree", 3, 8, 3, 4, 7, 8);
         failOnError();
     }
@@ -163,10 +191,32 @@ create table allprimitives (
         failOnError();
     }
 
+    public void testDeleteRangeByBtreeIndexAutotransactionLimit() {
+        setAutotransaction(true);
+        setLimit(1);
+        deleteGreaterThanAndLessThanQuery("int_not_null_btree", "idx_int_not_null_btree", 4, 7, 1);
+        deleteGreaterThanAndLessThanQuery("int_not_null_btree", "idx_int_not_null_btree", 4, 7, 1);
+        deleteGreaterThanAndLessThanQuery("int_not_null_btree", "idx_int_not_null_btree", 4, 7, 0);
+        setLimit(Long.MAX_VALUE);
+        betweenQuery("int_not_null_btree", "idx_int_not_null_btree", 3, 8, 3, 4, 7, 8);
+        failOnError();
+    }
+
     public void testDeleteRangeByTableScanAutotransaction() {
         setAutotransaction(true);
         deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 4, 7, 2);
         deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 4, 7, 0);
+        betweenQuery("int_not_null_btree", "idx_int_not_null_btree", 3, 8, 3, 4, 7, 8);
+        failOnError();
+    }
+
+    public void testDeleteRangeByTableScanAutotransactionLimit() {
+        setAutotransaction(true);
+        setLimit(1);
+        deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 4, 7, 1);
+        deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 4, 7, 1);
+        deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 4, 7, 0);
+        setLimit(Long.MAX_VALUE);
         betweenQuery("int_not_null_btree", "idx_int_not_null_btree", 3, 8, 3, 4, 7, 8);
         failOnError();
     }

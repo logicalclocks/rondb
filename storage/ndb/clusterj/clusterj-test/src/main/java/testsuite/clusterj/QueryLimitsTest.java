@@ -1,5 +1,6 @@
 /*
 Copyright (c) 2012, Oracle and/or its affiliates. All rights reserved.
+Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
@@ -149,25 +150,6 @@ public class QueryLimitsTest extends AbstractQueryTest {
         }
         if (session.currentTransaction().isActive()) {
             session.currentTransaction().rollback();
-        }
-        try {
-            // bad limit; cannot use limits for delete operations
-            setLimits(0, 1);
-            deleteEqualQuery("int_not_null_none", "none", 8, 1);
-            error("Bad limit for delete should fail.");
-        } catch (ClusterJUserException ex) {
-            // good catch
-        }
-        if (session.currentTransaction().isActive()) {
-            session.currentTransaction().rollback();
-        }
-        try {
-            // bad limit; cannot use limits for delete operations
-            setLimits(1, 1);
-            deleteEqualQuery("int_not_null_none", "none", 8, 1);
-            error("Bad limit for delete should fail.");
-        } catch (ClusterJUserException ex) {
-            // good catch
         }
         failOnError();        
     }

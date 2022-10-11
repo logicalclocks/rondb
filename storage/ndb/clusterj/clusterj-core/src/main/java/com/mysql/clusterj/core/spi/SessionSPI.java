@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2009, 2011, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -57,7 +58,7 @@ public interface SessionSPI extends Session {
 
     int deletePersistentAll(DomainTypeHandler<?> domainTypeHandler);
 
-    int deletePersistentAll(ScanOperation op, boolean abort);
+    int deletePersistentAll(ScanOperation op, boolean abort, long skip, long limit);
 
     void begin();
 
