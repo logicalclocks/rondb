@@ -76,10 +76,17 @@ ndb$disk_write_speed_base	488	48
 ndb$diskpagebuffer	10	64
 ndb$diskstat	10	48
 ndb$diskstats_1sec	200	52
+<<<<<<< HEAD
 ndb$error_messages	803	52
 ndb$frag_locks	400	96
 ndb$frag_mem_use	400	100
 ndb$frag_operations	400	192
+=======
+ndb$error_messages	792	52
+ndb$frag_locks	344	96
+ndb$frag_mem_use	344	100
+ndb$frag_operations	344	192
+>>>>>>> a246bad76b9271cb4333634e954040a970222e0a
 ndb$hwinfo	2	44
 ndb$index_stats	64	12
 ndb$logbuffers	8	40

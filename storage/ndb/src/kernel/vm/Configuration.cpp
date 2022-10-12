@@ -30,6 +30,7 @@
 #include "Configuration.hpp"
 #include <ErrorHandlingMacros.hpp>
 #include "GlobalData.hpp"
+#include "portlib/NdbTCP.h"
 
 #include <ConfigRetriever.hpp>
 #include <IPCConfig.hpp>

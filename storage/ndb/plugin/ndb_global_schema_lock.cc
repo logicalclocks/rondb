@@ -400,7 +400,7 @@ static int ndbcluster_global_schema_lock(THD *thd,
   // Else, didn't get GSL: Deadlock or failure from NDB
 
   /**
-   * If GSL request failed due to cluster failue,
+   * If GSL request failed due to cluster failure,
    * we consider the lock granted, else GSL request failed.
    */
   if (!is_cluster_failure_code(ndb_error.code))  // No cluster connection

@@ -23,9 +23,12 @@
 */
 
 #include <stddef.h>
+
 #include <string>
 
 extern bool is_cluster_failure_code(int error);
+
+constexpr int DEFAULT_ZSTD_COMPRESSION_LEVEL = 3;
 
 class THD;
 struct SHOW_VAR;

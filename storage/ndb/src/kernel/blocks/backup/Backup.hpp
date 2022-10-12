@@ -39,7 +39,6 @@
 #include <SignalCounter.hpp>
 #include <blocks/mutexes.hpp>
 
-#include <NdbTCP.h>
 #include <NdbTick.h>
 #include <Array.hpp>
 #include <Mutex.hpp>
@@ -1339,7 +1338,7 @@ private:
   */
   /* Init at start of backup, timers etc... */
   void initReportStatus(Signal* signal, BackupRecordPtr ptr);
-  /* Sheck timers for reporting at certain points */
+  /* Check timers for reporting at certain points */
   void checkReportStatus(Signal* signal, BackupRecordPtr ptr);
   /* Send backup status, invoked either periodically, or explicitly */
   void reportStatus(Signal* signal, BackupRecordPtr ptr,

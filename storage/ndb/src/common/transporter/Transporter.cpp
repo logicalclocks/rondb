@@ -94,7 +94,7 @@ Transporter::Transporter(TransporterRegistry &t_reg,
 
   // Initialize member variables
   m_connect_address4.s_addr = 0;
-  ndb_socket_invalidate(&theSocket);
+  ndb_socket_initialize(&theSocket);
   m_multi_transporter_instance = 0;
   m_recv_thread_idx = 0;
   m_is_active = true;
@@ -226,7 +226,7 @@ Transporter::update_connect_state(bool connected)
 }
 
 bool
-Transporter::connect_server(NDB_SOCKET_TYPE sockfd,
+Transporter::connect_server(ndb_socket_t sockfd,
                             BaseString& msg) {
   // all initial negotiation is done in TransporterRegistry::connect_server
   DBUG_ENTER("Transporter::connect_server");
@@ -275,7 +275,7 @@ Transporter::connect_server(NDB_SOCKET_TYPE sockfd,
 bool
 Transporter::connect_client(bool multi_connection)
 {
-  NDB_SOCKET_TYPE sockfd;
+  ndb_socket_t sockfd;
   DBUG_ENTER("Transporter::connect_client");
 
   require(!isMultiTransporter());
@@ -347,7 +347,7 @@ Transporter::connect_client(bool multi_connection)
 }
 
 bool
-Transporter::connect_client(NDB_SOCKET_TYPE sockfd)
+Transporter::connect_client(ndb_socket_t sockfd)
 {
   DBUG_ENTER("Transporter::connect_client(sockfd)");
 
@@ -360,8 +360,8 @@ Transporter::connect_client(NDB_SOCKET_TYPE sockfd)
 
   if (!ndb_socket_valid(sockfd))
   {
-    DBUG_PRINT("error", ("Socket " MY_SOCKET_FORMAT " is not valid",
-                         MY_SOCKET_FORMAT_VALUE(sockfd)));
+    DBUG_PRINT("error", ("Socket %s is not valid",
+                         ndb_socket_to_string(sockfd).c_str()));
     DEBUG_FPRINTF((stderr, "Socket not valid\n"));
     DBUG_RETURN(false);
   }
@@ -599,19 +599,17 @@ Transporter::checksum_state::dumpBadChecksumInfo(Uint32 inputSum,
 }
 
 void
-Transporter::set_get(NDB_SOCKET_TYPE fd,
+Transporter::set_get(ndb_socket_t fd,
                      int level,
                      int optval,
                      const char */*optname*/,
                      int val)
 {
   int actual = 0, defval = 0;
-  socket_len_t len = sizeof(actual);
 
-  ndb_getsockopt(fd, level, optval, (char*)&defval, &len);
+  ndb_getsockopt(fd, level, optval, &defval);
 
-  if (ndb_setsockopt(fd, level, optval,
-                    (char*)&val, sizeof(val)) < 0)
+  if (ndb_setsockopt(fd, level, optval, &val) < 0)
   {
 #ifdef DEBUG_TRANSPORTER
     g_eventLogger->error("setsockopt(%s, %d) errno: %d %s",
@@ -619,10 +617,7 @@ Transporter::set_get(NDB_SOCKET_TYPE fd,
 #endif
   }
   
-  len = sizeof(actual);
-  if ((ndb_getsockopt(fd, level, optval,
-                     (char*)&actual, &len) == 0) &&
-      actual != val)
+  if ((ndb_getsockopt(fd, level, optval, &actual) == 0) && actual != val)
   {
 #ifdef DEBUG_TRANSPORTER
     g_eventLogger->error("setsockopt(%s, %d) - actual %d default: %d",

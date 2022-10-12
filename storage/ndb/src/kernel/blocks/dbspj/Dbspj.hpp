@@ -112,7 +112,7 @@ private:
    *   - 'insert' the GuardedPtr to allow it to be referred.
    *   - 'remove' at end of lifecycle.
    *   - 'get' will fetch the 'real' pointer to the object.
-   * Crash if ptrI is unknow to us.
+   * Crash if ptrI is unknown to us.
    */
   void insertGuardedPtr(Ptr<Request>, Ptr<TreeNode>);
   void removeGuardedPtr(Ptr<TreeNode>);
@@ -247,10 +247,10 @@ public:
   struct RowBuffer;  // forward decl.
 
   /**
-   * Define overlayed 'base class' for SLFifoRowList and RowMap.
+   * Define overlaid 'base class' for SLFifoRowList and RowMap.
    * As we want these to be POD struct, we does not use 
    * inheritance, but have to take care that first part
-   * of these struct are correctly overlayed.
+   * of these struct are correctly overlaid.
    */
   struct RowCollectionBase
   {
@@ -260,7 +260,7 @@ public:
   struct SLFifoRowList //: public RowCollectionBase
   {
     /**
-     * BEWARE: Overlayed 'struct RowCollectionBase'
+     * BEWARE: Overlaid 'struct RowCollectionBase'
      */
     RowBuffer* m_rowBuffer;
 
@@ -283,7 +283,7 @@ public:
   struct RowMap //: public RowCollectionBase
   {
     /**
-     * BEWARE: Overlayed 'struct RowCollectionBase'
+     * BEWARE: Overlaid 'struct RowCollectionBase'
      */
     RowBuffer* m_rowBuffer;
 
@@ -345,11 +345,11 @@ public:
   };
 
   /**
-   * Define overlayed 'base class' for SLFifoRowListIterator
+   * Define overlaid 'base class' for SLFifoRowListIterator
    * and RowMapIterator.
    * As we want these to be POD struct, we does not use 
    * inheritance, but have to take care that first part
-   * of these struct are correctly overlayed.
+   * of these struct are correctly overlaid.
    */
   struct RowIteratorBase
   {
@@ -363,7 +363,7 @@ public:
   struct SLFifoRowListIterator //: public RowIteratorBase
   {
     /**
-     * BEWARE: Overlayed 'struct RowIteratorBase'
+     * BEWARE: Overlaid 'struct RowIteratorBase'
      */
     RowRef m_ref;
     Uint32 * m_row_ptr;
@@ -376,7 +376,7 @@ public:
   struct RowMapIterator //: public RowIteratorBase
   {
     /**
-     * BEWARE: Overlayed 'struct RowIteratorBase'
+     * BEWARE: Overlaid 'struct RowIteratorBase'
      */
     RowRef m_ref;
     Uint32 * m_row_ptr;
@@ -1070,7 +1070,7 @@ public:
     Dependency_map::Head m_next_nodes;
 
     /**
-     * We provide some TreeNodeBitMap's. Usefull to check how
+     * We provide some TreeNodeBitMap's. Useful to check how
      * a specific node relates to other TreeNodes:
      *
      * - 'ancestors' are the set of TreeNodes reachable through
@@ -1113,7 +1113,7 @@ public:
      * T_CHK_CONGESTION may cause execution of child operations to
      * be deferred.  These operations are queued in the 'struct DeferredParentOps'
      * The congestion check will always happen on a Scan TreeNode having
-     * some Lookup childrens, which are the operations which might be deferred.
+     * some Lookup children, which are the operations which might be deferred.
      */
     DeferredParentOps m_deferred;
 
@@ -1288,7 +1288,7 @@ private:
     /**
      * No of lookup operations which did not return a row (LQHKEYREF).
      * (Most likely due to non matching key, or predicate
-     * filter which evalueted  to 'false').
+     * filter which evaluated  to 'false').
      */
     CI_READS_NOT_FOUND = 3,
 
