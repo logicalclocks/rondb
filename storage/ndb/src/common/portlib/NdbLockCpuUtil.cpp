@@ -37,7 +37,7 @@ struct processor_set_handler
 {
   int ref_count;
   struct NdbCpuSet *ndb_cpu_set;
-  const Uint32 *cpu_ids;
+  Uint32 *cpu_ids;
   Uint32 num_cpu_ids;
   Uint32 index;
   int is_exclusive;
