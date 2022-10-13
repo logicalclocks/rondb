@@ -10060,14 +10060,9 @@ Uint32 Dbacc::seizePage(Page8Ptr& spPageptr,
     {
       thrjam(jamBuf);
       zpagesize_error("Dbacc::seizePage");
-      char buf[256];
-      BaseString::snprintf(buf, sizeof(buf),
-                           "Global memory manager is out of memory completely,"
-                           " no memory in shared global memory left and no"
-                           " memory in reserved memory either.");
-      progError(__LINE__,
-                NDBD_OUT_OF_MEMORY,
-                buf);
+      g_eventLogger->error("Global memory manager is out of memory completely,"
+                          " no memory in shared global memory left and no"
+                          " memory in reserved memory either.");
       return Uint32(ZPAGESIZE_ERROR);
     }
     ptr.p = static_cast<Page32*>(p);
