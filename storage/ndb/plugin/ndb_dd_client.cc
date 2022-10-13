@@ -508,12 +508,12 @@ bool Ndb_dd_client::remove_table(
     const dd::Table *table, const char *schema_name, const char *table_name,
     Ndb_referenced_tables_invalidator *invalidator) {
   DBUG_TRACE;
-  DBUG_PRINT("enter", ("table_name: '%s'", table->name().c_str()));
 
   if (table == nullptr) {
     // Table does not exist
     return true;
   }
+  DBUG_PRINT("enter", ("table_name: '%s'", table->name().c_str()));
 
   if (invalidator != nullptr &&
       !invalidator->fetch_referenced_tables_to_invalidate(
