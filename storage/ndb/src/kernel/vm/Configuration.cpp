@@ -1474,7 +1474,8 @@ Configuration::getSharedLdmInstance(Uint32 instance)
   if (instance == 0 ||
       instance > globalData.ndbMtLqhWorkers)
     return 0;
-  return m_thr_config.get_shared_ldm_instance(instance);
+  return m_thr_config.get_shared_ldm_instance(instance,
+                                              globalData.ndbMtLqhThreads);
 }
 
 void

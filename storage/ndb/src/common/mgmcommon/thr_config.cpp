@@ -776,9 +776,16 @@ THRConfig::compute_automatic_thread_config(
 }
 
 unsigned
-THRConfig::get_shared_ldm_instance(Uint32 instance)
+THRConfig::get_shared_ldm_instance(Uint32 instance, Uint32 num_ldm_threads)
 {
-  return m_threads[T_LDM][instance - 1].m_shared_instance;
+  if (num_ldm_threads > 0)
+  {
+    return m_threads[T_LDM][instance - 1].m_shared_instance;
+  }
+  else
+  {
+    return m_threads[T_RECV][instance - 1].m_shared_instance;
+  }
 }
 
 int
@@ -877,19 +884,29 @@ THRConfig::do_parse(unsigned realtime,
      * in an automated fashion. We have prepared the HW information such
      * that we can simply assign the CPUs from the CPU map.
      */
+    Uint32 thread_ldm_type = T_LDM;
+    if (ldm_threads == 0)
+    {
+      thread_ldm_type = T_RECV;
+    }
     Ndb_SetOnlineAsVirtL3CPU();
     Uint32 num_query_threads_per_ldm = g_num_query_threads_per_ldm;
     num_rr_groups =
       Ndb_CreateCPUMap(ldm_threads, num_query_threads_per_ldm);
     g_eventLogger->info("Number of RR Groups = %u", num_rr_groups);
     Uint32 next_cpu_id = Ndb_GetFirstCPUInMap();
-    for (Uint32 i = 0; i < ldm_threads; i++)
+    Uint32 num_database_threads = ldm_threads;
+    if (num_database_threads == 0)
+    {
+      num_database_threads = recv_threads;
+    }
+    for (Uint32 i = 0; i < num_database_threads; i++)
     {
       require(next_cpu_id != Uint32(RNIL));
-      m_threads[T_LDM][i].m_bind_no = next_cpu_id;
-      m_threads[T_LDM][i].m_bind_type = T_Thread::B_CPU_BIND;
+      m_threads[thread_ldm_type][i].m_bind_no = next_cpu_id;
+      m_threads[thread_ldm_type][i].m_bind_type = T_Thread::B_CPU_BIND;
       next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
-      m_threads[T_LDM][i].m_core_bind = true;
+      m_threads[thread_ldm_type][i].m_core_bind = true;
 
       Uint32 core_cpu_ids[MAX_NUM_CPUS];
       Uint32 num_core_cpus = 0;
@@ -903,19 +920,19 @@ THRConfig::do_parse(unsigned realtime,
         {
           neighbour_cpu = core_cpu_ids[1];
         }
-        m_threads[T_LDM][i].m_shared_cpu_id = neighbour_cpu;
+        m_threads[thread_ldm_type][i].m_shared_cpu_id = neighbour_cpu;
       }
     }
-    for (Uint32 i = 0; i < ldm_threads; i++)
+    for (Uint32 i = 0; i < num_database_threads; i++)
     {
-      Uint32 my_cpu_id = m_threads[T_LDM][i].m_bind_no;
+      Uint32 my_cpu_id = m_threads[thread_ldm_type][i].m_bind_no;
       for (Uint32 j = i; j < ldm_threads; j++)
       {
         if (m_threads[T_LDM][i].m_shared_cpu_id != Uint32(~0) &&
             m_threads[T_LDM][i].m_shared_cpu_id == my_cpu_id)
         {
-          m_threads[T_LDM][i].m_shared_instance = j + 1;
-          m_threads[T_LDM][j].m_shared_instance = i + 1;
+          m_threads[thread_ldm_type][i].m_shared_instance = j + 1;
+          m_threads[thread_ldm_type][j].m_shared_instance = i + 1;
         }
       }
     }

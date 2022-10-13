@@ -93,7 +93,7 @@ public:
   Uint32 getThreadCount(T_Type) const;
   Uint32 getMtClassic() const { return m_classic; }
   static bool isThreadPermanent(T_Type type);
-  unsigned get_shared_ldm_instance(Uint32 instance);
+  unsigned get_shared_ldm_instance(Uint32 instance, Uint32 num_ldm_threads);
 
 protected:
   struct T_Thread
