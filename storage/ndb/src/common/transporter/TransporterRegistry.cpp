@@ -677,7 +677,7 @@ TransporterRegistry::connect_server(ndb_socket_t sockfd,
     if (serverNodeId != t->getLocalNodeId())
     {
       unlockMultiTransporters();
-      /* Strange, log it */
+      log_failure = false;
       msg.assfmt("Ignored connection attempt as client "
                  "node %u attempting to connect to node %u, "
                  "but this is node %u.",
