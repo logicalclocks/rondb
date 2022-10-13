@@ -4858,10 +4858,30 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
     if ((((regTcPtr->m_special_op_flags &
            TcConnectRecord::SOF_BATCH_SAFE) == 0) &&
            (!regApiPtr->isExecutingDeferredTriggers()) &&
-           (single_exec_flag != 0) &&
+           (single_exec_flag == 0) &&
             Tdata3 != 0))
     {
       /**
+       * If BatchSafeFlag is set we can safely set receiving block to
+       * V_QUERY, there will be additional checks before actually
+       * sending the signal. BatchSafeFlag can only be set from the
+       * NDB API.
+       *
+       * Execution of Deferred Triggers are also safe to use Query Threads.
+       * It happens after the transaction is done writing and we are about
+       * to commit, only reads are performed, so it is perfectly safe to
+       * use Query threads.
+       *
+       * Tdata3 == 0 means that SOF_REORG_COPY is set, this means that
+       * we have set recBlockNo to special value and thus we are not using
+       * V_QUERY already is it is.
+       *
+       * If the single exec flag is set it means that we are executing a
+       * batch of size 1, and the only operation is a READ operation. This
+       * operation might trigger other read or write operations, but none
+       * of them will be triggered until the READ has completed. Thus it
+       * is always safe to use a Query thread in this case.
+       *
        * Simple/CommittedReads that are part of batch operations must use
        * DBLQH to read and must use the primary node. All other operations
        * will always use the primary node for first update or for the read
@@ -5614,9 +5634,11 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
        * 3) The operation is not initiated from DBUTIL.
        * 4) The operation is a locked read or a Simple Read towards a node
        *    that doesn't support Locked Reads in Query threads.
+       *    In this case we will not allow the use of a query thread.
        * 5) The operation is a take over operation towards a node
        *    that doesn't support Locked Reads in Query threads.
-       * 4) The transaction hasn't started the Commit processing with at
+       *    In this case we will not allow the use of a query thread.
+       * 6) The transaction hasn't started the Commit processing with at
        *    least one write operation. The problem here is that even if
        *    the read is the only operation in the batch, the Commit will
        *    be sent in parallel to the Dirty Read operation. To ensure
@@ -5627,12 +5649,12 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
        *    send to any other node we might have the Commit messages
        *    race the Dirty read message since we use Linear Commit
        *    processing.
-       * 5) The application has verified that Batched operations are safe
+       * 7) The application has verified that Batched operations are safe
        *    to use. This means that it is safe to use the query thread and
        *    any node to perform the read since the appplication has declared
        *    that the batch is a read only batch or the read set and the
        *    write set of rows are disjoint.
-       * 6) The exec flag is set and no writes have been performed in
+       * 8) The exec flag is set and no writes have been performed in
        *    this batch of operations.
        *    The transaction hasn't performed any writes yet
        *    in the current execution batch. The m_exec_count
