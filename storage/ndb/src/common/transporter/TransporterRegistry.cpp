@@ -1497,7 +1497,7 @@ TransporterRegistry::setup_recv_wakeup_socket(
 #if defined(HAVE_EPOLL_CREATE)
   if (recvdata.m_epoll_fd != -1)
   {
-    int sock = recvdata.m_extra_wakeup_sockets[0].fd;
+    int sock = recvdata.m_extra_wakeup_sockets[0].s;
     struct epoll_event event_poll;
     memset(&event_poll, 0, sizeof(event_poll));
     event_poll.data.u32 = 0;
