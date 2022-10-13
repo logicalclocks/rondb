@@ -535,13 +535,13 @@ AsyncFile::openReq(Request * request)
     {
       if (tablespace_file)
       {
-        g_eventLogger->info("%s Failed to set ODirect on tablespace, "
+        g_eventLogger->debug("%s Failed to set ODirect on tablespace, "
                             "will sync on each write instead",
                             theFileName.c_str());
       }
       else
       {
-        g_eventLogger->info("%s Failed to set ODirect errno: %u",
+        g_eventLogger->debug("%s Failed to set ODirect errno: %u",
                             theFileName.c_str(),
                             get_last_os_error());
       }
