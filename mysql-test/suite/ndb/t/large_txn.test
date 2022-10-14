@@ -8,7 +8,7 @@
 #
 ##################################################################
 --source include/have_ndb.inc
-
+--source include/have_nodebug.inc
 
 create table t1 (a int primary key) engine=ndb;
 create table t2 (a int primary key) engine=ndb;
