@@ -3539,7 +3539,9 @@ Pgman::fsreadconf(Signal* signal, Ptr<Page_entry> ptr)
       Tup_fixsize_page *fix_page = (Tup_fixsize_page*)page;
       (void)fix_page;
       DEB_PGMAN_IO(("(%u)pagein completed: page(%u,%u):%x, "
-                    "on_page(%u,%u), tab(%u,%u) lsn(%u,%u)",
+                    "on_page(%u,%u), tab(%u,%u) lsn(%u,%u)"
+                    ", uncommitted_used_space: %u, "
+                    "m_restart_seq: %u",
                     instance(),
                     ptr.p->m_file_no,
                     ptr.p->m_page_no,
@@ -3549,7 +3551,9 @@ Pgman::fsreadconf(Signal* signal, Ptr<Page_entry> ptr)
                     fix_page->m_table_id,
                     fix_page->m_fragment_id,
                     page->m_page_header.m_page_lsn_hi,
-                    page->m_page_header.m_page_lsn_lo));
+                    page->m_page_header.m_page_lsn_lo,
+                    fix_page->uncommitted_used_space,
+                    fix_page->m_restart_seq));
     }
   }
   ndbrequire(m_stats.m_current_io_waits > 0);

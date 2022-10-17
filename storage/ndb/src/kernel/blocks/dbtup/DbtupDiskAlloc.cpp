@@ -578,7 +578,8 @@ Dbtup::restart_setup_page(Fragrecord *fragPtrP,
   }
   DEB_EXTENT_BITS(("(%u)restart_setup_page(%u,%u) in tab(%u,%u),"
                    " extent page: %u.%u"
-                   " restart_seq(%u,%u), free_space: %u, idx: %u",
+                   " restart_seq(%u,%u), free_space: %u, idx: %u"
+                   ", pagePtr.i = %u",
                    instance(),
                    pagePtr.p->m_file_no,
                    pagePtr.p->m_page_no,
@@ -589,7 +590,8 @@ Dbtup::restart_setup_page(Fragrecord *fragPtrP,
                    pagePtr.p->m_restart_seq,
                    globalData.m_restart_seq,
                    pagePtr.p->free_space,
-                   pagePtr.p->list_index));
+                   pagePtr.p->list_index,
+                   pagePtr.i));
 
   pagePtr.p->m_restart_seq = globalData.m_restart_seq;
   pagePtr.p->m_extent_info_ptr = extentPtr.i;
@@ -1562,6 +1564,9 @@ Dbtup::disk_page_set_dirty(PagePtr pagePtr, Fragrecord *fragPtrP)
   if (unlikely(pagePtr.p->m_restart_seq != globalData.m_restart_seq))
   {
     jam();
+#ifdef DEBUG_EXTENT_BITS
+    Uint32 restart_seq = pagePtr.p->m_restart_seq;
+#endif
     D(V(pagePtr.p->m_restart_seq) << V(globalData.m_restart_seq));
     restart_setup_page(fragPtrP, alloc, pagePtr, -1);
     ndbrequire(free == pagePtr.p->free_space);
@@ -1569,14 +1574,16 @@ Dbtup::disk_page_set_dirty(PagePtr pagePtr, Fragrecord *fragPtrP)
     idx = alloc.calc_page_free_bits(free);
     used = 0;
     DEB_EXTENT_BITS(("((%u)restart_setup_page on page(%u,%u):%u"
-                     ", idx = %u, free: %u, used: %u",
+                     ", idx = %u, free: %u, used: %u, restart_seq(%u,%u)",
                      instance(),
                      pagePtr.p->m_file_no,
                      pagePtr.p->m_page_no,
                      pagePtr.i,
                      idx,
                      free,
-                     used));
+                     used,
+                     restart_seq,
+                     globalData.m_restart_seq));
   }
   else
   {

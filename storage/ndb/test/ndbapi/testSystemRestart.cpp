@@ -2500,7 +2500,7 @@ int runSR_DD_1(NDBT_Context* ctx, NDBT_Step* step)
        */ 
       const NDB_TICKS now = NdbTick_getCurrentTicks();
       const Uint64 elapsed_ms = NdbTick_Elapsed(start, now).milliSec();
-      if (elapsed_ms >= 4000)
+      if (elapsed_ms >= 6000)
         break;
 
       const Uint64 time_goal = (row-startFrom)/10;

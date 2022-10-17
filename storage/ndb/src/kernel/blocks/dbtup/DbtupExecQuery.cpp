@@ -6110,6 +6110,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                      sizeof(new_key));
               setChecksum(org, regTabPtr);
             }
+            ndbrequire(used_pagePtr.p->m_restart_seq == globalData.m_restart_seq);
             disk_page_abort_prealloc_callback_1(signal,
                                                 regFragPtr,
                                                 used_pagePtr,
@@ -6259,6 +6260,7 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                */
               jam();
               Uint32 overflow_space = regOperPtr->m_uncommitted_used_space;
+              ndbrequire(diskPagePtr.p->m_restart_seq == globalData.m_restart_seq);
               disk_page_abort_prealloc_callback_1(signal,
                                                   regFragPtr,
                                                   diskPagePtr,
