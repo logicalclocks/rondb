@@ -317,6 +317,7 @@ private:
                              // reference count
       ,DEREF_REQ    = 0x40000// Dereference the page to allow it to be paged
                              // out again when reference count goes to 0.
+      ,DIRTY_HEADER = 0x80000// Page header is updated
     };
     
     Uint32 m_block; // includes instance
@@ -369,8 +370,9 @@ private:
       ,HOT     = 0x2000 // page is hot
       ,ONSTACK = 0x4000 // page is on LIRS stack
       ,ONQUEUE = 0x8000 // page is on LIRS queue
-      ,WAIT_LCP= 0x10000 //BUSY page holding up LCP
-      ,PREP_LCP= 0x20000 //Page is flushed as part of prepare LCP
+      ,WAIT_LCP= 0x10000//BUSY page holding up LCP
+      ,PREP_LCP= 0x20000//Page is flushed as part of prepare LCP
+      ,D_HEADER= 0x40000//Page header is dirty
     };
     
     enum Sublist {
@@ -948,6 +950,7 @@ public:
     ,COPY_FRAG = Pgman::Page_request::COPY_FRAG
     ,REF_REQ = Pgman::Page_request::REF_REQ
     ,DEREF_REQ = Pgman::Page_request::DEREF_REQ
+    ,DIRTY_HEADER = Pgman::Page_request::DIRTY_HEADER
   };
   
   /**

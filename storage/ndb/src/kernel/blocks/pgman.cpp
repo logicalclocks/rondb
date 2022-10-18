@@ -1330,6 +1330,7 @@ Pgman::process_bind(Signal* signal,
     // under unusual circumstances it could still be paging in
     if (! (clean_state & Page_entry::MAPPED) ||
         clean_state & Page_entry::DIRTY ||
+        clean_state & Page_entry::D_HEADER ||
         clean_state & Page_entry::BUSY ||
         clean_state & Page_entry::REQUEST)
     {
@@ -1510,6 +1511,7 @@ Pgman::process_callback(Signal* signal,
          */
         ndbrequire(! (state & Page_entry::PAGEOUT));
         state |= Page_entry::DIRTY;
+        state &= ~ Page_entry::D_HEADER;
         insert_fragment_dirty_list(ptr, state, jamBuffer());
         ndbassert(ptr.p->m_dirty_count);
         ptr.p->m_dirty_count--;
@@ -1586,7 +1588,8 @@ Pgman::process_cleanup(Signal* signal)
   {
     Page_state state = ptr.p->m_state;
     ndbrequire(! (state & Page_entry::LOCKED));
-    if (state & Page_entry::DIRTY &&
+    if ( ((state & Page_entry::DIRTY) ||
+          (state & Page_entry::D_HEADER)) &&
         ! (state & Page_entry::BUSY) &&
         ! (state & Page_entry::PAGEIN) &&
         ! (state & Page_entry::PAGEOUT))
@@ -3740,6 +3743,7 @@ Pgman::fswriteconf(Signal* signal, Ptr<Page_entry> ptr)
   state &= ~ Page_entry::PAGEOUT;
   state &= ~ Page_entry::EMPTY;
   state &= ~ Page_entry::DIRTY;
+  state &= ~ Page_entry::D_HEADER;
 
   ndbrequire(m_stats.m_current_io_waits > 0);
   m_stats.m_current_io_waits--;
@@ -4137,6 +4141,37 @@ Pgman::get_page_no_lirs(EmulatedJamBuffer* jamBuf, Signal* signal,
     }
     return 1;
   }
+  if (req_flags & Page_request::DIRTY_HEADER)
+  {
+    /**
+     * The page has updated its header, but not necessarily any other
+     * parts. Ensure that it is written to disk before reusing the
+     * page for any new disk pages.
+     *
+     * This will only affect what to do when cleaning up pages at the
+     * end of the page list (indicating pages not used for a while).
+     * Without this flag the page could be thrown out without being
+     * written which would mean problem for the uncommitted_used_space
+     * variable and also the m_restart_seq variable.
+     *
+     * None of the handling in set_page_state is required for this
+     * particular state.
+     *
+     * The page will always be in the page cache when this call is made.
+     */
+    thrjam(jamBuf);
+    ndbrequire(req_flags == Page_request::DIRTY_HEADER);
+    Page_state state = ptr.p->m_state;
+    ndbrequire(state & Page_entry::BOUND);
+    ndbrequire(state & Page_entry::MAPPED);
+    ndbrequire((state & Page_entry::LOCKED) == 0);
+    if (!(state & Page_entry::DIRTY))
+    {
+      state |= Page_entry::D_HEADER;
+      ptr.p->m_state = state;
+    }
+    return 1;
+  }
   if (req_flags & Page_request::EMPTY_PAGE)
   {
     thrjam(jamBuf);
@@ -4376,6 +4411,8 @@ Pgman::get_page_no_lirs(EmulatedJamBuffer* jamBuf, Signal* signal,
       {
         thrjam(jamBuf);
 	state |= Page_entry::DIRTY;
+        /* No need for the D_HEADER if DIRTY is set */
+        state &= ~ Page_entry::D_HEADER;
         insert_fragment_dirty_list(ptr, state, jamBuf);
       }
       
@@ -4605,6 +4642,8 @@ Pgman::update_lsn(Signal *signal,
   if (! (state & Pgman::Page_entry::LOCKED))
   {
     jam();
+    /* No need for the D_HEADER if DIRTY is set */
+    state &= ~ Page_entry::D_HEADER;
     insert_fragment_dirty_list(ptr, state, jamBuf);
   }
   set_page_state(jamBuf, ptr, state);
@@ -4986,6 +5025,7 @@ Pgman::execRELEASE_PAGES_REQ(Signal* signal)
       ndbrequire(!(ptr.p->m_state & Page_entry::REQUEST));
       ndbrequire(!(ptr.p->m_state & Page_entry::EMPTY));
       ndbrequire(!(ptr.p->m_state & Page_entry::DIRTY));
+      ndbrequire(!(ptr.p->m_state & Page_entry::D_HEADER));
       ndbrequire(!(ptr.p->m_state & Page_entry::BUSY));
       ndbrequire(!(ptr.p->m_state & Page_entry::PAGEIN));
       ndbrequire(!(ptr.p->m_state & Page_entry::PAGEOUT));
@@ -6665,6 +6705,8 @@ operator<<(NdbOut& out, Ptr<Pgman::Page_request> ptr)
       out << ",undo_get_req";
     if (pr.m_flags & Pgman::Page_request::DIRTY_REQ)
       out << ",dirty_req";
+    if (pr.m_flags & Pgman::Page_request::DIRTY_HEADER)
+      out << ",dirty_header";
     if (pr.m_flags & Pgman::Page_request::CORR_REQ)
       out << ",corr_req";
     if (pr.m_flags & Pgman::Page_request::DISK_SCAN)
@@ -6706,6 +6748,8 @@ print(EventLogger *logger, Ptr<Pgman::Page_request> ptr)
       BaseString::snappend(logbuf, MAX_LOG_MESSAGE_SIZE, "undo_get_req");
     if (pr.m_flags & Pgman::Page_request::DIRTY_REQ)
       BaseString::snappend(logbuf, MAX_LOG_MESSAGE_SIZE, "dirty_req");
+    if (pr.m_flags & Pgman::Page_request::DIRTY_HEADER)
+      BaseString::snappend(logbuf, MAX_LOG_MESSAGE_SIZE, "dirty_header");
     if (pr.m_flags & Pgman::Page_request::CORR_REQ)
       BaseString::snappend(logbuf, MAX_LOG_MESSAGE_SIZE, "corr_req");
     if (pr.m_flags & Pgman::Page_request::DISK_SCAN)
@@ -6733,6 +6777,8 @@ operator<<(NdbOut& out, Ptr<Pgman::Page_entry> ptr)
       out << ",mapped";
     if (pe.m_state & Pgman::Page_entry::DIRTY)
       out << ",dirty";
+    if (pe.m_state & Pgman::Page_entry::D_HEADER)
+      out << ",dirty_header";
     if (pe.m_state & Pgman::Page_entry::USED)
       out << ",used";
     if (pe.m_state & Pgman::Page_entry::BUSY)
@@ -6829,6 +6875,8 @@ print(EventLogger *logger, Ptr<Pgman::Page_entry> ptr) {
       BaseString::snappend(logbuf, MAX_LOG_MESSAGE_SIZE, ",mapped");
     if (pe.m_state & Pgman::Page_entry::DIRTY)
       BaseString::snappend(logbuf, MAX_LOG_MESSAGE_SIZE, ",dirty");
+    if (pe.m_state & Pgman::Page_entry::D_HEADER)
+      BaseString::snappend(logbuf, MAX_LOG_MESSAGE_SIZE, ",dirty_header");
     if (pe.m_state & Pgman::Page_entry::USED)
       BaseString::snappend(logbuf, MAX_LOG_MESSAGE_SIZE, ",used");
     if (pe.m_state & Pgman::Page_entry::BUSY)

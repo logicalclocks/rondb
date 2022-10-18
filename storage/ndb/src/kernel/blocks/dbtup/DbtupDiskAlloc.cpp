@@ -3617,12 +3617,16 @@ Dbtup::disk_restart_undo_page_bits(Signal* signal, Apply_undo* undo)
  * At restarts we don't know the number so it is first set to
  * 0. Next it is set according to the page bits in the extent
  * information stored on disk by TSMAN.
+ *
  * The page bits on disk have the following meaning:
  * 0: The page is free, no records stored there
  * 1: The page is not free and not full, at least one record
  *    is stored in the page.
  * 2: The page is full
  * 3: The page is full
+ *
+ * The meaning is a bit different for variable sized pages, see
+ * m_dirty_pages below.
  *
  * For free pages we add number of records per page, for "half full"
  * pages we add to number of free pages in extent.
@@ -3757,10 +3761,21 @@ Dbtup::disk_restart_undo_page_bits(Signal* signal, Apply_undo* undo)
  *
  * m_dirty_pages
  * -------------
- * This is one list per state. When allocating a new page for insert we
+ * These list has two purposes, the main purpose is to enable quick
+ * finding of pages for new rows in disk_page_prealloc. The list is
+ * also used at drop of the table where we will call drop_page on
+ * each page in the lists.
+ * 
+ * There is one list per state. When allocating a new page for insert we
  * search for a page in the free (state 0) and "half full" (state 1)
  * lists. If any page is in these lists we're done with our search of
  * page to insert into. This happens in disk_page_prealloc.
+ *
+ * With variable sized pages we make use of all 4 lists, list 0 is
+ * free, list 1 is less than half full, list 2 has at least one
+ * sixth of the page free and list 3 means that less than one
+ * sixth of the page is free.
+ *
  * If a page is found in dirty pages we immediately update the
  * extent position of the page, we also move the page to another
  * list in m_dirty_pages if state changed due to insert, finally
