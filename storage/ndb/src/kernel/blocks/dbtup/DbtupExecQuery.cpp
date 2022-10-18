@@ -5947,6 +5947,31 @@ Dbtup::handle_size_change_after_update(Signal *signal,
        * approach as for variable sized memory pages. We have to allocate
        * a new area for the row and ensure that there is space for the new
        * disk part row should the transaction finally commit.
+       *
+       * We need however to write some temporary information to the page.
+       * This information doesn't affect any of the row data in the page.
+       * It only affects the page header information. The variables we
+       * can change here are:
+       * 1) uncommitted_used_space
+       *    We need this variable to preallocate area on the page.
+       *    This variable is changed only when we increase the row size
+       *    on the same page or dropping a row due to moving the row
+       *    to a new page.
+       * 2) m_restart_seq
+       *    The number of the restart that the page was last written.
+       *
+       * This variable is affected by calls to disk_page_prealloc, this call
+       * use the ALLOC_REQ flag to PGMAN, this will make the page dirty and
+       * thus no special handling of this flag is required.
+       *
+       * When we read the page before an UPDATE/DELETE/WRITE we haven't
+       * set anything that indicates that the page is dirty. If we update
+       * uncommitted_used_space we thus need to indicate to PGMAN that
+       * the page must be written to disk before cleaned out. We do this
+       * through a get_page call using the DIRTY_HEADER flag.
+       *
+       * The free_space variable is read, but this is only updated during
+       * commit of a transaction.
        */
       if ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
       {
@@ -6030,12 +6055,11 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                * Need to set the checksum using the entire row, this happens
                * with exclusive access, so it is safe to set a new checksum.
               */
-              disk_page_set_dirty(used_pagePtr, regFragPtr);
-              disk_page_prealloc_dirty_page(regFragPtr->m_disk_alloc_info,
-                                            used_pagePtr,
-                                            used_pagePtr.p->list_index,
-                                            (Uint32)add,
-                                            regFragPtr);
+              disk_page_dirty_header(signal,
+                                     regFragPtr,
+                                     key,
+                                     used_pagePtr,
+                                     add);
               key.m_page_idx = new_size;
               memcpy(req_struct->m_tuple_ptr->get_disk_ref_ptr(regTabPtr),
                      &key,
@@ -6150,12 +6174,11 @@ Dbtup::handle_size_change_after_update(Signal *signal,
               jamDebug();
               jamDataDebug(Uint16(add));
               /* Size has grown, but we still fit in the original disk page. */
-              disk_page_set_dirty(diskPagePtr, regFragPtr);
-              disk_page_prealloc_dirty_page(regFragPtr->m_disk_alloc_info,
-                                            diskPagePtr,
-                                            diskPagePtr.p->list_index,
-                                            (Uint32)add,
-                                            regFragPtr);
+              disk_page_dirty_header(signal,
+                                     regFragPtr,
+                                     key,
+                                     diskPagePtr,
+                                     add);
               regOperPtr->m_uncommitted_used_space += add;
               jamDebug();
               jamDataDebug(Uint16(regOperPtr->m_uncommitted_used_space));
@@ -6259,13 +6282,13 @@ Dbtup::handle_size_change_after_update(Signal *signal,
                * after this.
                */
               jam();
-              Uint32 overflow_space = regOperPtr->m_uncommitted_used_space;
+              Int32 overflow_space = -regOperPtr->m_uncommitted_used_space;
               ndbrequire(diskPagePtr.p->m_restart_seq == globalData.m_restart_seq);
-              disk_page_abort_prealloc_callback_1(signal,
-                                                  regFragPtr,
-                                                  diskPagePtr,
-                                                  overflow_space,
-                                                  0);
+              disk_page_dirty_header(signal,
+                                     regFragPtr,
+                                     key,
+                                     diskPagePtr,
+                                     overflow_space);
               regOperPtr->m_uncommitted_used_space = 0;
             }
             Local_key new_key;

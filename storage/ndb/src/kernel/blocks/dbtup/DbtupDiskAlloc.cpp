@@ -1621,6 +1621,84 @@ Dbtup::disk_page_set_dirty(PagePtr pagePtr, Fragrecord *fragPtrP)
 }
 
 void
+Dbtup::disk_page_dirty_header(Signal *signal,
+                              Fragrecord* regFragPtr,
+                              Local_key key,
+                              PagePtr pagePtr,
+                              Int32 add)
+{
+  /**
+   * We need to set uncommitted_used_space on the page and if so required
+   * also the m_restart_seq variable.
+   *
+   * It is possible that the page coming here isn't yet a dirty page.
+   * Since this is executed in the prepare phase we need not make it a
+   * normal dirty page. This would mean that the page is required to be
+   * checkpointed. However we only need to make sure that the page isn't
+   * released from page cache without being written to disk.
+   *
+   * We accomplish this by using the new interface DIRTY_HEADER that
+   * makes the page dirty without putting it into fragment dirty list.
+   * Thus avoiding being unnecessarily checkpointed.
+   *
+   * Since we are ensuring that the page will be written to disk before
+   * being released, it is a good idea to also put it into the dirty list.
+   * This ensures that the page is used for future allocations of new
+   * rows for as long as it stays in the page cache or get written to disk.
+   * To put it into the dirty list isn't required, but still makes sense.
+   *
+   * The actual update of the uncommitted_used_space happens in
+   * disk_page_prealloc_dirty_page, this method also ensures that the
+   * extent information about pages is kept up to date and that the
+   * list_index variable is properly set according to the remaining
+   * free space (when preallocated space is subtracted).
+   */
+  if (add < 0)
+  {
+    Uint32 overflow_space = Uint32(-add);
+    disk_page_abort_prealloc_callback_1(signal,
+                                        regFragPtr,
+                                        pagePtr,
+                                        overflow_space,
+                                        0);
+  }
+  else
+  {
+    disk_page_set_dirty(pagePtr, regFragPtr);
+    disk_page_prealloc_dirty_page(regFragPtr->m_disk_alloc_info,
+                                  pagePtr,
+                                  pagePtr.p->list_index,
+                                  Uint32(add),
+                                  regFragPtr);
+  }
+
+  Page_cache_client::Request preq;
+  preq.m_page = key;
+  preq.m_table_id = regFragPtr->fragTableId;
+  preq.m_fragment_id = regFragPtr->fragmentId;
+  preq.m_callback.m_callbackData= RNIL;
+  preq.m_callback.m_callbackFunction= 
+    safe_cast(&Dbtup::disk_page_dirty_header_callback);
+  Uint32 flags = Page_cache_client::DIRTY_HEADER;
+
+  Page_cache_client pgman(this, c_pgman);
+  int res= pgman.get_page(signal, preq, flags);
+  jamEntry();
+  ndbrequire(res == 1);
+}
+
+void
+Dbtup::disk_page_dirty_header_callback(Signal *signal,
+                                       Uint32 opRec,
+                                       Uint32 page_id)
+{
+  (void)signal;
+  (void)opRec;
+  (void)page_id;
+  ndbabort();
+}
+
+void
 Dbtup::disk_page_unmap_callback(Uint32 when,
 				Uint32 page_id,
                                 Uint32 dirty_count,
@@ -1684,18 +1762,35 @@ Dbtup::disk_page_unmap_callback(Uint32 when,
 	     << " cnt: " << dirty_count << " " << (idx & ~0x8000) << endl;
     }
 
-    ndbassert((idx & 0x8000) == 0);
+    /**
+     * Pages being written to disk are always in the dirty page list in
+     * DBTUP. This is true also for pages using the DIRTY_HEADER interface.
+     */
+    ndbrequire((idx & 0x8000) == 0);
 
+    /**
+     * Page is being written to disk, remove from dirty page list, we cannot
+     * use this page while it is being paged out.
+     *
+     * Insert into m_unmap_pages, this ensures that we handle those pages
+     * correctly during Drop Table execution.
+     */
     Page_pool *pool= (Page_pool*)&m_global_page_pool;
     Local_Page_list list(*pool, alloc.m_dirty_pages[idx]);
     Local_Page_list list2(*pool, alloc.m_unmap_pages);
     list.remove(pagePtr);
     list2.addFirst(pagePtr);
 
+    /**
+     * Ensure that we always set the bit indicating that we're not in any
+     * of the dirty lists. When a page arrives from the disk, it should never
+     * be in any of the dirty page lists in DBTUP.
+     */
+    pagePtr.p->list_index = idx | 0x8000;
+
     if (dirty_count == 0)
     {
       jam();
-      pagePtr.p->list_index = idx | 0x8000;      
       Local_key key;
       key.m_page_no = pagePtr.p->m_page_no;
       key.m_file_no = pagePtr.p->m_file_no;
