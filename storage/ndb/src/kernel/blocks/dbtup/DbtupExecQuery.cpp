@@ -5152,6 +5152,10 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
       {
         Local_key key;
         jamDebug();
+        /**
+         * Can still be a copy tuple if only updates so far without
+         * updates of disk columns.
+         */
         const Uint32 *disk_ref= src->get_disk_ref_ptr(tabPtrP);
         memcpy(&key, disk_ref, sizeof(key));
         key.m_page_no= req_struct->m_disk_page_ptr.i;
@@ -5182,7 +5186,7 @@ Dbtup::expand_tuple(KeyReqStruct* req_struct,
         ndbrequire(tabPtrP->m_bits & Tablerec::TR_UseVarSizedDiskData);
         if ((num_vars + num_dyns) > 0)
         {
-          if (! (bits & Tuple_header::COPY_TUPLE))
+          if (! (bits & Tuple_header::DISK_INLINE))
           {
             jamDebug();
             PagePtr pagePtr;
