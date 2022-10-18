@@ -4092,6 +4092,8 @@ private:
 
   void deref_disk_page(Signal*, OperationrecPtr, Fragrecord*, Tablerec*);
   void deref_disk_page_callback(Signal*, Uint32, Uint32);
+  void disk_page_dirty_header(Signal*,Fragrecord*,Local_key,PagePtr,Int32);
+  void disk_page_dirty_header_callback(Signal*, Uint32, Uint32);
   /**
    * prealloc space from disk
    *   key.m_file_no  contains file no

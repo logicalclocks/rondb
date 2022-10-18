@@ -414,6 +414,7 @@ Dbtup::dealloc_tuple(Signal* signal,
       ndbrequire(m_global_page_pool.getPtr(pagePtr,
                                 regOperPtr->m_disk_extra_callback_page));
       PagePtr diskPagePtr((Tup_page*)pagePtr.p, pagePtr.i);
+      ndbrequire(diskPagePtr.p->m_restart_seq == globalData.m_restart_seq);
       disk_page_abort_prealloc_callback_1(signal,
                                           regFragPtr,
                                           diskPagePtr,
@@ -432,6 +433,7 @@ Dbtup::dealloc_tuple(Signal* signal,
                                 regOperPtr->m_disk_callback_page));
       PagePtr diskPagePtr((Tup_page*)pagePtr.p, pagePtr.i);
       Uint32 decrement = regOperPtr->m_uncommitted_used_space;
+      ndbrequire(diskPagePtr.p->m_restart_seq == globalData.m_restart_seq);
       disk_page_abort_prealloc_callback_1(signal,
                                           regFragPtr,
                                           diskPagePtr,
@@ -1008,13 +1010,14 @@ Dbtup::commit_operation(Signal* signal,
                      &rowid,
                      regOperPtr->m_undo_buffer_space);
       DEB_DISK(("(%u) Commit free old disk part for row(%u,%u)"
-                " disk_row(%u,%u).%u",
+                " disk_row(%u,%u).%u, uncommitted_used_space: %u",
                  instance(),
                  rowid.m_page_no,
                  rowid.m_page_idx,
                  old_key.m_file_no,
                  old_key.m_page_no,
-                 old_key.m_page_idx));
+                 old_key.m_page_idx,
+                 diskPagePtr.p->uncommitted_used_space));
 
       /**
        * After freeing the row we now turn to the new row that should be
@@ -1051,13 +1054,15 @@ Dbtup::commit_operation(Signal* signal,
                       &rowid,
                       alloc_size,
                       decrement);
-      DEB_DISK(("(%u) Commit new disk part for row(%u,%u) disk_row(%u,%u).%u",
+      DEB_DISK(("(%u) Commit new disk part for row(%u,%u) disk_row(%u,%u).%u"
+                ", uncommitted_used_space: %u",
                  instance(),
                  rowid.m_page_no,
                  rowid.m_page_idx,
                  key.m_file_no,
                  key.m_page_no,
-                 key.m_page_idx));
+                 key.m_page_idx,
+                 diskPagePtr.p->uncommitted_used_space));
       dst = get_disk_reference(regTabPtr,
                                diskPagePtr,
                                key,
@@ -1099,7 +1104,7 @@ Dbtup::commit_operation(Signal* signal,
                                key,
                                sz);
       DEB_DISK(("(%u) Commit disk insert for row(%u,%u) disk_row(%u,%u).%u,"
-                " dst: %p, sz: %u",
+                " dst: %p, sz: %u, uncommitted_used_space: %u",
                  instance(),
                  rowid.m_page_no,
                  rowid.m_page_idx,
@@ -1107,7 +1112,8 @@ Dbtup::commit_operation(Signal* signal,
                  key.m_page_no,
                  key.m_page_idx,
                  dst,
-                 sz));
+                 sz,
+                 diskPagePtr.p->uncommitted_used_space));
     }
     else
     {
@@ -1124,7 +1130,7 @@ Dbtup::commit_operation(Signal* signal,
                                sz);
       bool var_disk =
         (!((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0));
-#ifdef DEBUG_PGMAN
+#ifdef DEBUG_DISK
       Uint64 lsn =
 #endif
       disk_page_undo_update(signal,
@@ -1136,15 +1142,16 @@ Dbtup::commit_operation(Signal* signal,
                             logfile_group_id,
                             regOperPtr->m_undo_buffer_space,
                             var_disk);
-      DEB_PGMAN(("disk_page_undo_update: page(%u,%u,%u).%u, LSN(%u,%u),"
-                 " gci: %u",
-                 instance(),
-                 key.m_file_no,
-                 key.m_page_no,
-                 key.m_page_idx,
-                 Uint32(Uint64(lsn >> 32)),
-                 Uint32(Uint64(lsn & 0xFFFFFFFF)),
-                 gci_hi));
+      DEB_DISK(("disk_page_undo_update: page(%u,%u,%u).%u, LSN(%u,%u),"
+                " gci: %u, uncommitted_used_space: %u",
+                instance(),
+                key.m_file_no,
+                key.m_page_no,
+                key.m_page_idx,
+                Uint32(Uint64(lsn >> 32)),
+                Uint32(Uint64(lsn & 0xFFFFFFFF)),
+                gci_hi,
+                diskPagePtr.p->uncommitted_used_space));
     }
 
     /**
@@ -1247,6 +1254,17 @@ Dbtup::commit_operation(Signal* signal,
          * uncommitted used space to the page.
          */
         jamDebug();
+        if (vpagePtrP->uncommitted_used_space <
+            regOperPtr->m_uncommitted_used_space)
+        {
+          g_eventLogger->info("(%u) page(%u,%u) page_uncommitted_used_space: %u"
+                              ", op_uncommitted_used_space: %u",
+                              instance(),
+                              vpagePtrP->m_file_no,
+                              vpagePtrP->m_page_no,
+                              vpagePtrP->uncommitted_used_space,
+                              regOperPtr->m_uncommitted_used_space);
+        }
         ndbrequire(vpagePtrP->uncommitted_used_space >=
                    regOperPtr->m_uncommitted_used_space);
         vpagePtrP->uncommitted_used_space -=
@@ -1255,6 +1273,7 @@ Dbtup::commit_operation(Signal* signal,
         Uint32 new_used = diskPagePtr.p->uncommitted_used_space;
         Int32 change = (old_free + old_used) -
                        (new_free + new_used);
+        ndbrequire(diskPagePtr.p->m_restart_seq == globalData.m_restart_seq);
         disk_page_abort_prealloc_callback_1(signal,
                                             regFragPtr,
                                             diskPagePtr,

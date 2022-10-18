@@ -578,7 +578,8 @@ Dbtup::restart_setup_page(Fragrecord *fragPtrP,
   }
   DEB_EXTENT_BITS(("(%u)restart_setup_page(%u,%u) in tab(%u,%u),"
                    " extent page: %u.%u"
-                   " restart_seq(%u,%u), free_space: %u, idx: %u",
+                   " restart_seq(%u,%u), free_space: %u, idx: %u"
+                   ", pagePtr.i = %u",
                    instance(),
                    pagePtr.p->m_file_no,
                    pagePtr.p->m_page_no,
@@ -589,7 +590,8 @@ Dbtup::restart_setup_page(Fragrecord *fragPtrP,
                    pagePtr.p->m_restart_seq,
                    globalData.m_restart_seq,
                    pagePtr.p->free_space,
-                   pagePtr.p->list_index));
+                   pagePtr.p->list_index,
+                   pagePtr.i));
 
   pagePtr.p->m_restart_seq = globalData.m_restart_seq;
   pagePtr.p->m_extent_info_ptr = extentPtr.i;
@@ -1562,6 +1564,9 @@ Dbtup::disk_page_set_dirty(PagePtr pagePtr, Fragrecord *fragPtrP)
   if (unlikely(pagePtr.p->m_restart_seq != globalData.m_restart_seq))
   {
     jam();
+#ifdef DEBUG_EXTENT_BITS
+    Uint32 restart_seq = pagePtr.p->m_restart_seq;
+#endif
     D(V(pagePtr.p->m_restart_seq) << V(globalData.m_restart_seq));
     restart_setup_page(fragPtrP, alloc, pagePtr, -1);
     ndbrequire(free == pagePtr.p->free_space);
@@ -1569,14 +1574,16 @@ Dbtup::disk_page_set_dirty(PagePtr pagePtr, Fragrecord *fragPtrP)
     idx = alloc.calc_page_free_bits(free);
     used = 0;
     DEB_EXTENT_BITS(("((%u)restart_setup_page on page(%u,%u):%u"
-                     ", idx = %u, free: %u, used: %u",
+                     ", idx = %u, free: %u, used: %u, restart_seq(%u,%u)",
                      instance(),
                      pagePtr.p->m_file_no,
                      pagePtr.p->m_page_no,
                      pagePtr.i,
                      idx,
                      free,
-                     used));
+                     used,
+                     restart_seq,
+                     globalData.m_restart_seq));
   }
   else
   {
@@ -1611,6 +1618,84 @@ Dbtup::disk_page_set_dirty(PagePtr pagePtr, Fragrecord *fragPtrP)
   // Make sure no one will allocate it...
   tsman.unmap_page(&key, EXTENT_SEARCH_MATRIX_COLS - 1);
   jamEntry();
+}
+
+void
+Dbtup::disk_page_dirty_header(Signal *signal,
+                              Fragrecord* regFragPtr,
+                              Local_key key,
+                              PagePtr pagePtr,
+                              Int32 add)
+{
+  /**
+   * We need to set uncommitted_used_space on the page and if so required
+   * also the m_restart_seq variable.
+   *
+   * It is possible that the page coming here isn't yet a dirty page.
+   * Since this is executed in the prepare phase we need not make it a
+   * normal dirty page. This would mean that the page is required to be
+   * checkpointed. However we only need to make sure that the page isn't
+   * released from page cache without being written to disk.
+   *
+   * We accomplish this by using the new interface DIRTY_HEADER that
+   * makes the page dirty without putting it into fragment dirty list.
+   * Thus avoiding being unnecessarily checkpointed.
+   *
+   * Since we are ensuring that the page will be written to disk before
+   * being released, it is a good idea to also put it into the dirty list.
+   * This ensures that the page is used for future allocations of new
+   * rows for as long as it stays in the page cache or get written to disk.
+   * To put it into the dirty list isn't required, but still makes sense.
+   *
+   * The actual update of the uncommitted_used_space happens in
+   * disk_page_prealloc_dirty_page, this method also ensures that the
+   * extent information about pages is kept up to date and that the
+   * list_index variable is properly set according to the remaining
+   * free space (when preallocated space is subtracted).
+   */
+  if (add < 0)
+  {
+    Uint32 overflow_space = Uint32(-add);
+    disk_page_abort_prealloc_callback_1(signal,
+                                        regFragPtr,
+                                        pagePtr,
+                                        overflow_space,
+                                        0);
+  }
+  else
+  {
+    disk_page_set_dirty(pagePtr, regFragPtr);
+    disk_page_prealloc_dirty_page(regFragPtr->m_disk_alloc_info,
+                                  pagePtr,
+                                  pagePtr.p->list_index,
+                                  Uint32(add),
+                                  regFragPtr);
+  }
+
+  Page_cache_client::Request preq;
+  preq.m_page = key;
+  preq.m_table_id = regFragPtr->fragTableId;
+  preq.m_fragment_id = regFragPtr->fragmentId;
+  preq.m_callback.m_callbackData= RNIL;
+  preq.m_callback.m_callbackFunction= 
+    safe_cast(&Dbtup::disk_page_dirty_header_callback);
+  Uint32 flags = Page_cache_client::DIRTY_HEADER;
+
+  Page_cache_client pgman(this, c_pgman);
+  int res= pgman.get_page(signal, preq, flags);
+  jamEntry();
+  ndbrequire(res == 1);
+}
+
+void
+Dbtup::disk_page_dirty_header_callback(Signal *signal,
+                                       Uint32 opRec,
+                                       Uint32 page_id)
+{
+  (void)signal;
+  (void)opRec;
+  (void)page_id;
+  ndbabort();
 }
 
 void
@@ -1677,18 +1762,35 @@ Dbtup::disk_page_unmap_callback(Uint32 when,
 	     << " cnt: " << dirty_count << " " << (idx & ~0x8000) << endl;
     }
 
-    ndbassert((idx & 0x8000) == 0);
+    /**
+     * Pages being written to disk are always in the dirty page list in
+     * DBTUP. This is true also for pages using the DIRTY_HEADER interface.
+     */
+    ndbrequire((idx & 0x8000) == 0);
 
+    /**
+     * Page is being written to disk, remove from dirty page list, we cannot
+     * use this page while it is being paged out.
+     *
+     * Insert into m_unmap_pages, this ensures that we handle those pages
+     * correctly during Drop Table execution.
+     */
     Page_pool *pool= (Page_pool*)&m_global_page_pool;
     Local_Page_list list(*pool, alloc.m_dirty_pages[idx]);
     Local_Page_list list2(*pool, alloc.m_unmap_pages);
     list.remove(pagePtr);
     list2.addFirst(pagePtr);
 
+    /**
+     * Ensure that we always set the bit indicating that we're not in any
+     * of the dirty lists. When a page arrives from the disk, it should never
+     * be in any of the dirty page lists in DBTUP.
+     */
+    pagePtr.p->list_index = idx | 0x8000;
+
     if (dirty_count == 0)
     {
       jam();
-      pagePtr.p->list_index = idx | 0x8000;      
       Local_key key;
       key.m_page_no = pagePtr.p->m_page_no;
       key.m_file_no = pagePtr.p->m_file_no;
@@ -3610,12 +3712,16 @@ Dbtup::disk_restart_undo_page_bits(Signal* signal, Apply_undo* undo)
  * At restarts we don't know the number so it is first set to
  * 0. Next it is set according to the page bits in the extent
  * information stored on disk by TSMAN.
+ *
  * The page bits on disk have the following meaning:
  * 0: The page is free, no records stored there
  * 1: The page is not free and not full, at least one record
  *    is stored in the page.
  * 2: The page is full
  * 3: The page is full
+ *
+ * The meaning is a bit different for variable sized pages, see
+ * m_dirty_pages below.
  *
  * For free pages we add number of records per page, for "half full"
  * pages we add to number of free pages in extent.
@@ -3750,10 +3856,21 @@ Dbtup::disk_restart_undo_page_bits(Signal* signal, Apply_undo* undo)
  *
  * m_dirty_pages
  * -------------
- * This is one list per state. When allocating a new page for insert we
+ * These list has two purposes, the main purpose is to enable quick
+ * finding of pages for new rows in disk_page_prealloc. The list is
+ * also used at drop of the table where we will call drop_page on
+ * each page in the lists.
+ * 
+ * There is one list per state. When allocating a new page for insert we
  * search for a page in the free (state 0) and "half full" (state 1)
  * lists. If any page is in these lists we're done with our search of
  * page to insert into. This happens in disk_page_prealloc.
+ *
+ * With variable sized pages we make use of all 4 lists, list 0 is
+ * free, list 1 is less than half full, list 2 has at least one
+ * sixth of the page free and list 3 means that less than one
+ * sixth of the page is free.
+ *
  * If a page is found in dirty pages we immediately update the
  * extent position of the page, we also move the page to another
  * list in m_dirty_pages if state changed due to insert, finally
