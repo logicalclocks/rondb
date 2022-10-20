@@ -564,8 +564,7 @@ public:
   Uint32 getExecThreadSignalId(Uint32 thr_no, Uint32 sender_thread_no);
   Uint32 getFirstQueryThreadId()
   {
-    return globalData.ndbMtLqhThreads +
-           globalData.ndbMtMainThreads;
+    return globalData.ndbMtMainThreads;
   }
 
   Uint32 getFirstReceiveThreadId()
@@ -581,8 +580,19 @@ public:
   get_diff_signal_id(Uint32 signal_id1,
                      Uint32 signal_id2)
   {
-    Int32 diff = signal_id1 - signal_id2;
-    return diff;
+    /**
+     * Handle roll around of signal ids, quite likely to happen
+     * every now and then.
+     */
+    Uint32 u_diff = signal_id1 - signal_id2;
+    if (u_diff > 0x80000000)
+    {
+      return -Int32(signal_id2 - signal_id1);
+    }
+    else
+    {
+      return Int32(u_diff);
+    }
   }
 
   /**

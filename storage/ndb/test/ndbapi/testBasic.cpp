@@ -3762,7 +3762,7 @@ runBug16834333(NDBT_Context* ctx, NDBT_Step* step)
       restarter.insertErrorInNode(nodeId, code);
     }
 
-    NdbSleep_MilliSleep(300);
+    NdbSleep_MilliSleep(100);
     ndbout_c("run lookup that should fail with error code 1223");
     HugoOperations ops(* pTab);
     CHK2(ops.startTransaction(pNdb) == 0, ops.getNdbError());
@@ -3770,7 +3770,8 @@ runBug16834333(NDBT_Context* ctx, NDBT_Step* step)
     if (ops.execute_Commit(pNdb, AO_IgnoreError) != 0)
     {
       // XXX should this occur if AO_IgnoreError ?
-      CHK2(ops.getNdbError().code == 1223, ops.getNdbError());
+      CHK2((ops.getNdbError().code == 1223 ||
+            ops.getNdbError().code == 626), ops.getNdbError());
       g_info << ops.getNdbError() << endl;
     }
     ops.closeTransaction(pNdb);

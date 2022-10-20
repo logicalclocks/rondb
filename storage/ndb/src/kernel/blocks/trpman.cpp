@@ -68,11 +68,9 @@ Trpman::Trpman(Block_context & ctx, Uint32 instanceno) :
   addRecSignal(GSN_NDB_TAMPER, &Trpman::execNDB_TAMPER, true);
   addRecSignal(GSN_DUMP_STATE_ORD, &Trpman::execDUMP_STATE_ORD);
   addRecSignal(GSN_DBINFO_SCANREQ, &Trpman::execDBINFO_SCANREQ);
+  addRecSignal(GSN_CONTINUEB, &Trpman::execCONTINUEB);
   m_distribution_handler_inited = false;
-  for (Uint32 i = 0; i < NDB_MAX_BLOCK_THREADS; i++)
-  {
-    m_exec_thread_signal_id[i] = 0;
-  }
+  m_init_continueb = false;
 }
 
 BLOCK_FUNCTIONS(Trpman)
@@ -81,6 +79,48 @@ BLOCK_FUNCTIONS(Trpman)
 static NodeBitmask c_error_9000_nodes_mask;
 extern Uint32 MAX_RECEIVED_SIGNALS;
 #endif
+
+void
+Trpman::startCONTINUEB(Signal *signal)
+{
+  jamEntry();
+  if (!m_init_continueb)
+  {
+    m_init_continueb = true;
+    execCONTINUEB(signal);
+    sendCONTINUEB(signal);
+  }
+}
+
+void
+Trpman::sendCONTINUEB(Signal *signal)
+{
+  signal->theData[0] = 0;
+  sendSignalWithDelay(reference(),
+                      GSN_CONTINUEB,
+                      signal,
+                      10000,
+                      1);
+}
+
+void
+Trpman::execCONTINUEB(Signal *signal)
+{
+  /**
+   * We rely on signal ids not wrapping without any signals sent to
+   * a specific query thread, by sending an empty signal every 10
+   * seconds we ensure that we regularly send to each query thread
+   * (colocated with LDM threads).
+   */
+  Uint32 qt_thr_no = getFirstQueryThreadId();
+  for (Uint32 i = 0; i < globalData.ndbMtQueryWorkers; i++)
+  {
+    Uint32 instance_no = qt_thr_no + i + 1;
+    Uint32 ref = numberToRef(THRMAN, instance_no, getOwnNodeId());
+    sendSignal(ref, GSN_SEND_PUSH_ORD, signal, 1, JBB);
+  }
+  sendCONTINUEB(signal);
+}
 
 bool
 Trpman::handles_this_node(Uint32 nodeId, bool all)
@@ -127,6 +167,8 @@ Trpman::execOPEN_COMORD(Signal* signal)
 {
   // Connect to the specified NDB node, only QMGR allowed communication
   // so far with the node
+
+  startCONTINUEB(signal); //Start CONTINUEB processing if required
 
   const BlockReference userRef = signal->theData[0];
   jamEntry();
@@ -942,7 +984,7 @@ Trpman::execSEND_PUSH_ABORTREQ(Signal *signal)
   Uint32 send_signal_id = req->sendThreadSignalId;
   Uint32 num_threads = req->numThreads;
   Uint32 thread_id = req->threadId;
-  ndbrequire(num_threads <= getNumThreads());
+  ndbrequire(num_threads <= globalData.ndbMtQueryWorkers);
   for (Uint32 i = 0; i < num_threads; i++)
   {
     /**
@@ -954,12 +996,13 @@ Trpman::execSEND_PUSH_ABORTREQ(Signal *signal)
      * in query thread since ABORT was sent.
      */
     Uint32 thr_no = req->threadIds[i];
-    ndbrequire(num_threads < getNumThreads());
-    Uint32 exec_thread_signal_id = m_exec_thread_signal_id[thr_no];
-    Int32 diff = get_diff_signal_id(send_signal_id, exec_thread_signal_id);
+    Uint32 our_thr_no = getFirstReceiveThreadId() + instance() - 1;
+    Uint32 exec_signal_id = getExecThreadSignalId(thr_no, our_thr_no);
+    Int32 diff = get_diff_signal_id(send_signal_id, exec_signal_id);
     if (diff > 0)
     {
-      m_exec_thread_signal_id[thr_no] = getThreadSignalId();
+      jam();
+      jamData(thr_no);
       Uint32 ref = numberToRef(THRMAN, thr_no + 1, getOwnNodeId());
       sendSignal(ref, GSN_SEND_PUSH_ORD, signal, 1, JBB);
     }
@@ -987,44 +1030,44 @@ Trpman::distribute_signal(SignalHeader * const header,
 {
   DistributionHandler *handle = &m_distribution_handle;
   Uint32 gsn = header->theVerId_signalNumber;
-  if (globalData.ndbMtQueryThreads > 0)
+  ndbrequire(globalData.ndbMtQueryWorkers > 0);
+  ndbrequire(m_distribution_handler_inited);
+  if (unlikely(gsn == GSN_ABORT))
   {
-    ndbrequire(m_distribution_handler_inited);
-    if (gsn == GSN_LQHKEYREQ)
-    {
-      return get_lqhkeyreq_ref(handle, instance_no);
-    }
-    else if (gsn == GSN_SCAN_FRAGREQ)
-    {
-      return get_scan_fragreq_ref(handle, instance_no);
-    }
-    else if (gsn == GSN_ABORT)
-    {
-      memcpy(buf_ptr, *theData, 4 * 4);
-      *theData = buf_ptr;
-      buf_ptr[4] = getThreadId();
-      buf_ptr[5] = getThreadSignalId();
-      header->theLength = 6;
-      return numberToRef(DBLQH, instance_no, getOwnNodeId());
-    }
-    else
-    {
-      return 0;
-    }
+    /**
+     * ABORT signals can have race conditions when the query was
+     * executed potentially in a query thread. The ABORT code
+     * has handling of this possibility when signal is sent
+     * with a bit more data about this threads id and the
+     * signal id used by this signal. This ensures that we can
+     * guarantee that all signals sent before ABORT was
+     * executed in DBLQH before we're done.
+     */
+    memcpy(buf_ptr,
+           *theData,
+           Abort::SignalLengthKey * 4);
+    Abort* abo = CAST_PTR(Abort, buf_ptr);
+    *theData = buf_ptr;
+    abo->threadId = getThreadId();
+    abo->senderThreadSignalId = getThreadSignalId();
+    header->theLength = Abort::SignalLengthDistr;
+#ifdef ERROR_INSERT
+    return numberToRef(DBQLQH, instance_no, getOwnNodeId());
+#else
+    return numberToRef(DBLQH, instance_no, getOwnNodeId());
+#endif
+  }
+  if (likely(gsn == GSN_LQHKEYREQ))
+  {
+    return get_lqhkeyreq_ref(handle, instance_no);
+  }
+  else if (gsn == GSN_SCAN_FRAGREQ)
+  {
+    return get_scan_fragreq_ref(handle, instance_no);
   }
   else
   {
-    ndbrequire(globalData.ndbMtQueryWorkers > 0);
-    if (gsn == GSN_LQHKEYREQ ||
-        gsn == GSN_SCAN_FRAGREQ ||
-        gsn == GSN_ABORT)
-    {
-      return numberToRef(DBQLQH, instance(), getOwnNodeId());
-    }
-    else
-    {
-      return 0;
-    }
+    return 0;
   }
 }
 

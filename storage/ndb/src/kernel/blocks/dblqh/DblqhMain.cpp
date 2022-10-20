@@ -14801,10 +14801,12 @@ void Dblqh::execABORT(Signal* signal)
     Uint32 instanceKey = req->instanceKey;
     Uint32 instanceNo = getInstanceFromKey(instanceKey);
     BlockReference ref = numberToRef(DBLQH, instanceNo, getOwnNodeId());
+    Uint32 len = sig_len == Abort::SignalLengthKey ?
+                 Abort::SignalLength : Abort::SignalLengthDistr;
     sendSignal(ref,
                GSN_ABORT,
                signal,
-               Abort::SignalLength,
+               len,
                JBB);
     return;
   }
@@ -40681,7 +40683,7 @@ Dblqh::check_abort_signal_executed(Uint32 recv_thr_no,
    * path as the first ABORT signal. Thus we only check the query threads
    * here.
    */
-  ndbrequire(globalData.ndbMtQueryThreads > 0);
+  ndbrequire(globalData.ndbMtQueryWorkers > 0);
   for (Uint32 i = 0; i < m_num_qt_our_rr_group; i++)
   {
     jam();
@@ -40712,21 +40714,21 @@ Dblqh::check_abort_signal_executed(Uint32 recv_thr_no,
 void
 Dblqh::set_up_qt_our_rr_group()
 {
-  if (globalData.ndbMtQueryThreads == 0)
+  if (globalData.ndbMtQueryWorkers == 0)
   {
     /* Not used in this case. */
     return;
   }
   /* Round Robin group information is static variables in SimulatedBlock */
-  Uint32 first_qt_thr_no = globalData.ndbMtMainThreads +
-                           globalData.ndbMtLqhThreads;
-  Uint32 num_ldm_instances = globalData.ndbMtLqhThreads;
+  ndbrequire(globalData.ndbMtQueryThreads == 0);
+  ndbrequire(globalData.ndbMtLqhWorkers == globalData.ndbMtQueryWorkers);
+  Uint32 first_qt_thr_no = getFirstQueryThreadId();
   m_num_qt_our_rr_group = 0;
-  Uint32 rr_group = m_rr_group[instance() - 1];
-  for (Uint32 i = 0; i < globalData.ndbMtQueryThreads; i++)
+  Uint32 our_rr_group = m_rr_group[instance() - 1];
+  for (Uint32 i = 0; i < globalData.ndbMtQueryWorkers; i++)
   {
-    Uint32 qt_rr_group = m_rr_group[num_ldm_instances + i];
-    if (rr_group == qt_rr_group)
+    Uint32 qt_rr_group = m_rr_group[i];
+    if (our_rr_group == qt_rr_group)
     {
       Uint32 instance_no = i + first_qt_thr_no;
       m_qt_thr_no_our_rr_group[m_num_qt_our_rr_group] = instance_no;
