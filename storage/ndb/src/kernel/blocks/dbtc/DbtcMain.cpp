@@ -75,6 +75,7 @@
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/DisconnectRep.hpp>
 #include <signaldata/TcHbRep.hpp>
+#include <signaldata/Abort.hpp>
 
 #include <signaldata/PrepDropTab.hpp>
 #include <signaldata/DropTab.hpp>
@@ -10494,6 +10495,7 @@ int Dbtc::releaseAndAbort(Signal* signal, ApiConnectRecord* const regApiPtr)
       /* ************< */
       /*    ABORT    < */
       /* ************< */
+      Abort* abo = CAST_PTR(Abort, signal->getDataPtrSend());
       Uint32 instanceKey = tcConnectptr.p->lqhInstanceKey;
       BlockReference blockRef;
       if (Ti == 0 && TnoLoops == 1)
@@ -10507,11 +10509,11 @@ int Dbtc::releaseAndAbort(Signal* signal, ApiConnectRecord* const regApiPtr)
                                instanceNo,
                                localHostptr.i);
       }
-      signal->theData[0] = tcConnectptr.i;
-      signal->theData[1] = cownref;
-      signal->theData[2] = regApiPtr->transid[0];
-      signal->theData[3] = regApiPtr->transid[1];
-      Uint32 len = 4;
+      abo->tcOprec = tcConnectptr.i;
+      abo->tcBlockref = cownref;
+      abo->transid1 = regApiPtr->transid[0];
+      abo->transid2 = regApiPtr->transid[1];
+      Uint32 len = Abort::SignalLength;
       if (ERROR_INSERTED(8120))
       {
         Uint32 nodeId = refToNode(blockRef);
@@ -10527,17 +10529,17 @@ int Dbtc::releaseAndAbort(Signal* signal, ApiConnectRecord* const regApiPtr)
       }
       if (refToMain(blockRef) != DBLQH)
       {
-        len = 5;
-        signal->theData[4] = instanceKey;
+        len = Abort::SignalLengthKey;
+        abo->instanceKey = instanceKey;
       }
-      DEB_ABORT_TRANS(("Send ABORT tcRef(%u,%x) transid(%u,%u)"
-                       " to ref: %x, host: %u",
+      DEB_ABORT_TRANS(("(%u)Send ABORT tcRef(%u,%x) transid(%u,%u)"
+                       " to ref: %x",
+                       instance(),
                        tcConnectptr.i,
                        reference(),
                        regApiPtr->transid[0],
                        regApiPtr->transid[1],
-                       blockRef,
-                       hostptr.i));
+                       blockRef));
       if (refToNode(blockRef) != getOwnNodeId())
       {
         signal->m_send_wakeups++;
@@ -10546,13 +10548,14 @@ int Dbtc::releaseAndAbort(Signal* signal, ApiConnectRecord* const regApiPtr)
       prevAlive = true;
     } else {
       jam();
-      DEB_ABORT_TRANS(("Send ABORTED(dead) tcRef(%u,%x) transid(%u,%u)"
+      DEB_ABORT_TRANS(("(%u)Send ABORTED(dead) tcRef(%u,%x) transid(%u,%u)"
                        ", node: %u",
+                       instance(),
                        tcConnectptr.i,
                        reference(),
                        regApiPtr->transid[0],
                        regApiPtr->transid[1],
-                       hostptr.i));
+                       localHostptr.i));
 
       signal->theData[0] = tcConnectptr.i;
       signal->theData[1] = regApiPtr->transid[0];

@@ -2121,7 +2121,7 @@ Dbacc::accIsLockedLab(Signal* signal,
 #endif
     DEB_LOCK_TRANS(("(%u) Lock queue on row(%u,%u) in tab(%u,%u), "
                     " trans(%u,%u) opPtrI: %u, queue: %s"
-                    ", op: %u tcRef(%u,%x)",
+                    ", op: %u tcRef(%u,%x), lockOwnerPtrI: %u",
                     instance(),
                     operationRecPtr.p->localdata.m_page_no,
                     operationRecPtr.p->localdata.m_page_idx,
@@ -2133,7 +2133,8 @@ Dbacc::accIsLockedLab(Signal* signal,
                     queue_str,
                     bits & Operationrec::OP_MASK,
                     tcOprec,
-                    tcBlockref));
+                    tcBlockref,
+                    lockOwnerPtr.i));
 
     release_frag_mutex_hash(fragrecptr.p, hash);
 
