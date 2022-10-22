@@ -70,6 +70,7 @@
 #include <ws2tcpip.h>
 #endif
 
+#include "portlib/NdbTCP.h"
 
 #include <TransporterRegistry.hpp> // Get connect address
 
@@ -529,7 +530,7 @@ Qmgr::execREAD_CONFIG_REQ(Signal* signal)
                              globalData.ndbMtTcWorkers));
     }
     /**
-     * Whatever value this node has choosen, we will never be able to use
+     * Whatever value this node has chosen, we will never be able to use
      * more transporters than the other node permits as well. This will be
      * established in the setup phase of multi transporters.
      */
@@ -758,7 +759,7 @@ Qmgr::execREAD_LOCAL_SYSFILE_CONF(Signal *signal)
      * We set gci = 1 and rely here on that gci here is simply used
      * as a tool to decide which nodes can be started up on their
      * own and which node to choose as master node. Only nodes
-     * where m_latest_gci is set to a real GCI can be choosen as
+     * where m_latest_gci is set to a real GCI can be chosen as
      * master nodes.
      */
     g_eventLogger->info("Node not restorable on its own, now starting the"
@@ -1048,7 +1049,7 @@ Qmgr::execREAD_NODESREF(Signal* signal)
  * 
  * The protocol starts by the new node sending CM_REGREQ to all nodes it is
  * connected to. Only the president will respond to this message. We could
- * have a situation where there currently isn't a president choosen. In this
+ * have a situation where there currently isn't a president chosen. In this
  * case an election is held whereby a new president is assigned. In the rest
  * of this comment we assume that a president already exists.
  *
@@ -1150,7 +1151,7 @@ Qmgr::execREAD_NODESREF(Signal* signal)
 void Qmgr::execCM_INFOCONF(Signal* signal) 
 {
   /**
-   * Open communcation to all DB nodes
+   * Open communication to all DB nodes
    */
   signal->theData[0] = 0; // no answer
   signal->theData[1] = 0; // no id
@@ -2883,7 +2884,7 @@ Qmgr::sendCmAckAdd(Signal * signal, Uint32 nodeId, CmAdd::RequestType type){
 4.4.11 CM_ADD */
 /**--------------------------------------------------------------------------
  * Prepare a running node to add a new node to the cluster. The running node 
- * will change phase of the new node fron ZINIT to ZWAITING. The running node 
+ * will change phase of the new node from ZINIT to ZWAITING. The running node 
  * will also mark that we have received a prepare. When the new node has sent 
  * us nodeinfo we can send an acknowledgement back to the president. When all 
  * running nodes has acknowledged the new node, the president will send a 
@@ -5330,7 +5331,7 @@ Qmgr::execNODE_STARTED_REP(Signal *signal)
     /**
      * We will send an unsolicited API_REGCONF to the API node, this makes the
      * API node aware of our existence much faster (without it can wait up to
-     * the lenght of a heartbeat DB-API period. For rolling restarts and other
+     * the length of a heartbeat DB-API period. For rolling restarts and other
      * similar actions this can easily cause the API to not have any usable
      * DB connections at all. This unsolicited response minimises this window
      * of unavailability to zero for all practical purposes.
@@ -9808,7 +9809,7 @@ Qmgr::execISOLATE_ORD(Signal* signal)
   case IsolateOrd::IS_BROADCAST:
   {
     jam();
-    /* Received reqest, delay */
+    /* Received request, delay */
     sig->isolateStep = IsolateOrd::IS_DELAY;
     
     if (sig->delayMillis > 0)

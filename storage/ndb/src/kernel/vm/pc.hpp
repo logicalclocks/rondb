@@ -286,7 +286,7 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
 #define MAX_FRAG_PER_LQH (4 * MAX_NDB_PARTITIONS + 16)
 
 /* ---------------------------------------------------------------- */
-// To avoid synching too big chunks at a time we synch after writing
+// To avoid syncing too big chunks at a time we synch after writing
 // a certain number of data/UNDO pages. (e.g. 2 MBytes).
 /* ---------------------------------------------------------------- */
 #define MAX_REDO_PAGES_WITHOUT_SYNCH 32

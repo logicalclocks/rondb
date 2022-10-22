@@ -1,5 +1,6 @@
 /*
  *  Copyright (c) 2010, 2022, Oracle and/or its affiliates.
+ *  Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License, version 2.0,
@@ -76,11 +77,14 @@ public class ClusterConnectionImpl
     /** The timeout value to connect to mgm */
     final int connectTimeoutMgm;
 
-    /** All regular dbs (not dbForNdbRecord) given out by this cluster connection */
+    /** All regular dbs (not defaultDbForNdbRecord) given out by this cluster connection */
     private Map<DbImpl, Object> dbs = Collections.synchronizedMap(new IdentityHashMap<DbImpl, Object>());
 
-    /** The DbImplForNdbRecord */
-    DbImplForNdbRecord dbForNdbRecord;
+    /** The DbImplForNdbRecord for default database */
+    DbImplForNdbRecord defaultDbForNdbRecord;
+
+    /** DbImpleForNdbRecord for specific database */
+    private ConcurrentMap<String, DbImplForNdbRecord> databaseForNdbRecord = new ConcurrentHashMap<String, DbImplForNdbRecord>();
 
     /** The map of table name to NdbRecordImpl */
     private ConcurrentMap<String, NdbRecordImpl> ndbRecordImplMap = new ConcurrentHashMap<String, NdbRecordImpl>();
@@ -111,6 +115,8 @@ public class ClusterConnectionImpl
 
     /** The dictionary used to create NdbRecords */
     Dictionary dictionaryForNdbRecord = null;
+
+    private ConcurrentMap<String, Dictionary> dbDictionaryForNdbRecord = new ConcurrentHashMap<String, Dictionary>();
 
     private boolean isClosing = false;
 
@@ -152,24 +158,56 @@ public class ClusterConnectionImpl
         handleError(returnCode, clusterConnection, connectString, nodeId);
     }
 
-    public Db createDb(String database, int maxTransactions) {
+    public Db createDb(String databaseName, boolean defaultDatabase, int maxTransactions) {
         checkConnection();
         Ndb ndb = null;
-        // synchronize because create is not guaranteed thread-safe
+        /**
+         * We create one NdbDictionary for each database we use in this cluster connection
+         * Using this NdbDictionary we will then create one NdbRecord for each
+         * table in that database. These NdbRecord objects will be stored in a separate
+         * map for each database. We handle the default database as a special case since
+         * most applications have only one database per cluster connection.
+         *
+         * Synchronize because create is not guaranteed thread-safe
+         */
         synchronized(this) {
-            ndb = Ndb.create(clusterConnection, database, "def");
+            ndb = Ndb.create(clusterConnection, databaseName, "def");
             handleError(ndb, clusterConnection, connectString, nodeId);
-            if (dictionaryForNdbRecord == null) {
-                // create a dictionary for NdbRecord
-                Ndb ndbForNdbRecord = Ndb.create(clusterConnection, database, "def");
-                handleError(ndbForNdbRecord, clusterConnection, connectString, nodeId);
-                dbForNdbRecord = new DbImplForNdbRecord(this, ndbForNdbRecord);
-                // get an instance of stand-alone query objects to avoid synchronizing later
-                dbForNdbRecord.initializeQueryObjects();
-                dictionaryForNdbRecord = dbForNdbRecord.getNdbDictionary();
+            if (defaultDatabase) {
+                if (dictionaryForNdbRecord == null) {
+                    // create a dictionary for NdbRecord
+                    Ndb ndbForNdbRecord = Ndb.create(clusterConnection, databaseName, "def");
+                    handleError(ndbForNdbRecord, clusterConnection, connectString, nodeId);
+                    defaultDbForNdbRecord = new DbImplForNdbRecord(this,
+                                                            ndbForNdbRecord,
+                                                            databaseName,
+                                                            defaultDatabase);
+                    // get an instance of stand-alone query objects to avoid synchronizing later
+                    defaultDbForNdbRecord.initializeQueryObjects();
+                    dictionaryForNdbRecord = defaultDbForNdbRecord.getNdbDictionary();
+                }
+            } else {
+                Dictionary dbDictionary = dbDictionaryForNdbRecord.get(databaseName);
+                if (dbDictionary == null) {
+                    // create a dictionary for NdbRecord for this database
+                    Ndb dbNdbForNdbRecord = Ndb.create(clusterConnection, databaseName, "def");
+                    handleError(dbNdbForNdbRecord, clusterConnection, connectString, nodeId);
+                    DbImplForNdbRecord dbForNdbRecord = new DbImplForNdbRecord(this,
+                                                                               dbNdbForNdbRecord,
+                                                                               databaseName,
+                                                                               defaultDatabase);
+                    dbForNdbRecord.initializeQueryObjects();
+                    dbDictionary = dbForNdbRecord.getNdbDictionary();
+                    dbDictionaryForNdbRecord.put(databaseName, dbDictionary);
+                    databaseForNdbRecord.put(databaseName, dbForNdbRecord);
+                }
             }
         }
-        DbImpl result = new DbImpl(this, ndb, maxTransactions);
+        DbImpl result = new DbImpl(this,
+                                   ndb,
+                                   maxTransactions,
+                                   databaseName,
+                                   defaultDatabase);
         result.initializeAutoIncrement(autoIncrement);
         dbs.put(result, null);
         return result;
@@ -244,7 +282,14 @@ public class ClusterConnectionImpl
                     db.closing();
                 }
             }
-            if (dbForNdbRecord != null) {
+            if (defaultDbForNdbRecord != null) {
+                defaultDbForNdbRecord.closing();
+            }
+            Iterator<Map.Entry<String, DbImplForNdbRecord>> iterator =
+                databaseForNdbRecord.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, DbImplForNdbRecord> entry = iterator.next();
+                DbImplForNdbRecord dbForNdbRecord = entry.getValue();
                 dbForNdbRecord.closing();
             }
         }
@@ -266,10 +311,19 @@ public class ClusterConnectionImpl
             for (NdbRecordImpl ndbRecord: ndbRecordImplMap.values()) {
                 ndbRecord.releaseNdbRecord();
             }
-            if (dbForNdbRecord != null) {
-                dbForNdbRecord.close();
-                dbForNdbRecord = null;
+            if (defaultDbForNdbRecord != null) {
+                defaultDbForNdbRecord.close();
+                defaultDbForNdbRecord = null;
             }
+            Iterator<Map.Entry<String, DbImplForNdbRecord>> iterator =
+                databaseForNdbRecord.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, DbImplForNdbRecord> entry = iterator.next();
+                DbImplForNdbRecord dbForNdbRecord = entry.getValue();
+                dbForNdbRecord.close();
+                iterator.remove();
+            }
+            databaseForNdbRecord.clear();
             ndbRecordImplMap.clear();
             Ndb_cluster_connection.delete(clusterConnection);
             clusterConnection = null;
@@ -289,7 +343,7 @@ public class ClusterConnectionImpl
     }
 
     public int dbCount() {
-        // dbForNdbRecord is not included in the dbs list
+        // defaultDbForNdbRecord is not included in the dbs list
         return dbs.size();
     }
 
@@ -303,41 +357,37 @@ public class ClusterConnectionImpl
      * </li><li>Case 2: return a new instance created by this method
      * </li><li>Case 3: return the winner of a race with another thread
      * </li></ul>
+     * @param db         The representation of the Ndb object, contains database name
      * @param storeTable the store table
      * @return the NdbRecordImpl for the table
      */
-    protected NdbRecordImpl getCachedNdbRecordImpl(Table storeTable) {
-        dbForNdbRecord.assertNotClosed("ClusterConnectionImpl.getCachedNdbRecordImpl for table");
+    protected NdbRecordImpl getCachedNdbRecordImpl(DbImpl db, Table storeTable) {
+        defaultDbForNdbRecord.assertNotClosed("ClusterConnectionImpl.getCachedNdbRecordImpl for table");
         // tableKey is table name plus projection indicator
-        String tableName = storeTable.getKey();
+        String tableName = db.getName() + "+" + storeTable.getKey();
         // find the NdbRecordImpl in the global cache
         NdbRecordImpl result = ndbRecordImplMap.get(tableName);
         if (result != null) {
-            // case 1
+            // case 1: The quick case, there is a NdbRecord ready to use
             if (logger.isDebugEnabled())logger.debug("NdbRecordImpl found for " + tableName);
             return result;
         } else {
             // dictionary is single thread
             NdbRecordImpl newNdbRecordImpl;
-            synchronized (dictionaryForNdbRecord) {
+            synchronized (this) {
                 // try again; another thread might have beat us
                 result = ndbRecordImplMap.get(tableName);
                 if (result != null) {
                     return result;
                 }
-                newNdbRecordImpl = new NdbRecordImpl(storeTable, dictionaryForNdbRecord);   
+                Dictionary dictionary = dictionaryForNdbRecord;
+                if (!db.isDefaultDatabase()) {
+                    dictionary = dbDictionaryForNdbRecord.get(db.getName());
+                }
+                newNdbRecordImpl = new NdbRecordImpl(storeTable, dictionary);   
+                ndbRecordImplMap.put(tableName, newNdbRecordImpl);
             }
-            NdbRecordImpl winner = ndbRecordImplMap.putIfAbsent(tableName, newNdbRecordImpl);
-            if (winner == null) {
-                // case 2: the previous value was null, so return the new (winning) value
-                if (logger.isDebugEnabled())logger.debug("NdbRecordImpl created for " + tableName);
-                return newNdbRecordImpl;
-            } else {
-                // case 3: another thread beat us, so return the winner and garbage collect ours
-                if (logger.isDebugEnabled())logger.debug("NdbRecordImpl lost race for " + tableName);
-                newNdbRecordImpl.releaseNdbRecord();
-                return winner;
-            }
+            return newNdbRecordImpl;
         }
     }
 
@@ -352,41 +402,39 @@ public class ClusterConnectionImpl
      * </li><li>Case 2: return a new instance created by this method
      * </li><li>Case 3: return the winner of a race with another thread
      * </li></ul>
+     * @param db         The representation of the Ndb object, contains database name
      * @param storeTable the store table
      * @param storeIndex the store index
      * @return the NdbRecordImpl for the index
      */
-    protected NdbRecordImpl getCachedNdbRecordImpl(Index storeIndex, Table storeTable) {
-        dbForNdbRecord.assertNotClosed("ClusterConnectionImpl.getCachedNdbRecordImpl for index");
-        String recordName = storeTable.getName() + "+" + storeIndex.getInternalName();
+    protected NdbRecordImpl getCachedNdbRecordImpl(DbImpl db, Index storeIndex, Table storeTable) {
+        defaultDbForNdbRecord.assertNotClosed("ClusterConnectionImpl.getCachedNdbRecordImpl for index");
+        String recordName = db.getName() + "+" +
+                            storeTable.getName() + "+" +
+                            storeIndex.getInternalName();
         // find the NdbRecordImpl in the global cache
         NdbRecordImpl result = ndbRecordImplMap.get(recordName);
         if (result != null) {
-            // case 1
+            // case 1: The quick case, there is a NdbRecord ready to use
             if (logger.isDebugEnabled())logger.debug("NdbRecordImpl found for " + recordName);
             return result;
         } else {
             // dictionary is single thread
             NdbRecordImpl newNdbRecordImpl;
-            synchronized (dictionaryForNdbRecord) {
+            synchronized (this) {
                 // try again; another thread might have beat us
                 result = ndbRecordImplMap.get(recordName);
                 if (result != null) {
                     return result;
                 }
-                newNdbRecordImpl = new NdbRecordImpl(storeIndex, storeTable, dictionaryForNdbRecord);   
+                Dictionary dictionary = dictionaryForNdbRecord;
+                if (!db.isDefaultDatabase()) {
+                    dictionary = dbDictionaryForNdbRecord.get(db.getName());
+                }
+                newNdbRecordImpl = new NdbRecordImpl(storeIndex, storeTable, dictionary);
+                ndbRecordImplMap.put(recordName, newNdbRecordImpl);
             }
-            NdbRecordImpl winner = ndbRecordImplMap.putIfAbsent(recordName, newNdbRecordImpl);
-            if (winner == null) {
-                // case 2: the previous value was null, so return the new (winning) value
-                if (logger.isDebugEnabled())logger.debug("NdbRecordImpl created for " + recordName);
-                return newNdbRecordImpl;
-            } else {
-                // case 3: another thread beat us, so return the winner and garbage collect ours
-                if (logger.isDebugEnabled())logger.debug("NdbRecordImpl lost race for " + recordName);
-                newNdbRecordImpl.releaseNdbRecord();
-                return winner;
-            }
+            return newNdbRecordImpl;
         }
     }
 
@@ -400,29 +448,37 @@ public class ClusterConnectionImpl
      * code 284 "Unknown table error in transaction coordinator".
      * @param tableName the name of the table
      */
-    public void unloadSchema(String tableName) {
+    public void unloadSchema(String databaseName, String tableName, boolean defaultDatabase) {
         // synchronize to avoid multiple threads unloading schema simultaneously
         // it is possible although unlikely that another thread is adding an entry while 
         // we are removing entries; if this occurs an error will be signaled here
         boolean haveCachedTable = false;
         synchronized(ndbRecordImplMap) {
-            Iterator<Map.Entry<String, NdbRecordImpl>> iterator = ndbRecordImplMap.entrySet().iterator();
+            Dictionary dictionary = dictionaryForNdbRecord;
+            if (!defaultDatabase) {
+                dictionary = dbDictionaryForNdbRecord.get(databaseName);
+                assert(dictionary != null);
+            }
+            Iterator<Map.Entry<String, NdbRecordImpl>> iterator =
+                ndbRecordImplMap.entrySet().iterator();
             while (iterator.hasNext()) {
                 Map.Entry<String, NdbRecordImpl> entry = iterator.next();
                 String key = entry.getKey();
-                if (key.startsWith(tableName)) {
+                String searchName = databaseName + "+" + tableName;
+                if (key.startsWith(searchName)) {
                     haveCachedTable = true;
                     // entries are of the form:
-                    //   tableName or
-                    //   tableName+indexName
+                    //   databaseName+tableName or
+                    //   databaseName+tableName+indexName
                     // split tableName[+indexName] into one or two parts
                     // the "\" character is escaped once for Java and again for regular expression to escape +
                     String[] tablePlusIndex = key.split("\\+");
-                    if (tablePlusIndex.length >1) {
-                        String indexName = tablePlusIndex[1];
-                        if (logger.isDebugEnabled())logger.debug("Removing dictionary entry for cached index " +
-                                tableName + " " + indexName);
-                        dictionaryForNdbRecord.invalidateIndex(indexName, tableName);
+                    if (tablePlusIndex.length > 2) {
+                        String indexName = tablePlusIndex[2];
+                        if (logger.isDebugEnabled())logger.debug(
+                            "Removing dictionary entry for cached index " +
+                            "db:" + databaseName + " " + tableName + " " + indexName);
+                        dictionary.invalidateIndex(indexName, tableName);
                     }
                     // remove all records whose key begins with the table name; this will remove index records also
                     if (logger.isDebugEnabled())logger.debug("Removing cached NdbRecord for " + key);
@@ -435,8 +491,10 @@ public class ClusterConnectionImpl
             }
             // invalidate cached dictionary table after invalidate cached indexes
             if (haveCachedTable) {
-                if (logger.isDebugEnabled())logger.debug("Removing dictionary entry for cached table " + tableName);
-                dictionaryForNdbRecord.invalidateTable(tableName);
+                if (logger.isDebugEnabled())logger.debug(
+                    "Removing dictionary entry for cached table " +
+                    "db:" + databaseName + " " + tableName);
+                dictionary.invalidateTable(tableName);
             }
         }
     }

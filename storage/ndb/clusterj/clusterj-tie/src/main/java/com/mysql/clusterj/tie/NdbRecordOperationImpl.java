@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2012, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -154,7 +155,7 @@ public class NdbRecordOperationImpl implements Operation {
         if (logger.isDetailEnabled())
             logger.detail("autoIncrement for " + storeTable.getName() + " is: " + autoIncrement);
         this.tableName = storeTable.getName();
-        this.ndbRecordValues = clusterConnection.getCachedNdbRecordImpl(storeTable);
+        this.ndbRecordValues = clusterConnection.getCachedNdbRecordImpl(this.db, storeTable);
         this.ndbRecordKeys = ndbRecordValues;
         this.valueBufferSize = ndbRecordValues.getBufferSize();
         this.keyBufferSize = ndbRecordKeys.getBufferSize();
@@ -185,7 +186,7 @@ public class NdbRecordOperationImpl implements Operation {
         if (logger.isDetailEnabled())
             logger.detail("autoIncrement for " + storeTable.getName() + " is: " + autoIncrement);
         this.tableName = storeTable.getName();
-        this.ndbRecordValues = clusterTransaction.getCachedNdbRecordImpl(storeTable);
+        this.ndbRecordValues = clusterTransaction.getCachedNdbRecordImpl(this.db, storeTable);
         this.valueBufferSize = ndbRecordValues.getBufferSize();
         this.storeColumns = ndbRecordValues.storeColumns;
         this.numberOfColumns = ndbRecordValues.getNumberOfColumns();

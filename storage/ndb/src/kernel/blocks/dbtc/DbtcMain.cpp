@@ -75,6 +75,7 @@
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/DisconnectRep.hpp>
 #include <signaldata/TcHbRep.hpp>
+#include <signaldata/Abort.hpp>
 
 #include <signaldata/PrepDropTab.hpp>
 #include <signaldata/DropTab.hpp>
@@ -3147,7 +3148,7 @@ void Dbtc::execATTRINFO(Signal* signal)
                                signal->theData+1) == false))
   {
     jam();
-    DEBUG("Drop ATTRINFO, wrong transid, lenght="<<Tlength
+    DEBUG("Drop ATTRINFO, wrong transid, length="<<Tlength
           << " transid("<<hex<<signal->theData[1]<<", "<<signal->theData[2]);
     return;
   }//if
@@ -4265,7 +4266,7 @@ void Dbtc::execTCKEYREQ(Signal* signal)
   regCachePtr->m_op_queue = Tqueue;
 
   //-------------------------------------------------------------
-  // The next step is to read the upto three conditional words.
+  // The next step is to read the up to three conditional words.
   //-------------------------------------------------------------
   Uint32 TkeyIndex;
   Uint32* TOptionalDataPtr = (Uint32*)&tcKeyReq->scanInfo;
@@ -4713,7 +4714,7 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
     if (regTcPtr->operation == ZREAD)
     {
       /**
-       * inform DIH if TreadAny is even relevent...so it does not have to loop
+       * inform DIH if TreadAny is even relevant...so it does not have to loop
        *   unless really needing to...
        */
       if (regTcPtr->dirtyOp || regTcPtr->opSimple ||
@@ -4858,10 +4859,30 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
     if ((((regTcPtr->m_special_op_flags &
            TcConnectRecord::SOF_BATCH_SAFE) == 0) &&
            (!regApiPtr->isExecutingDeferredTriggers()) &&
-           (single_exec_flag != 0) &&
+           (single_exec_flag == 0) &&
             Tdata3 != 0))
     {
       /**
+       * If BatchSafeFlag is set we can safely set receiving block to
+       * V_QUERY, there will be additional checks before actually
+       * sending the signal. BatchSafeFlag can only be set from the
+       * NDB API.
+       *
+       * Execution of Deferred Triggers are also safe to use Query Threads.
+       * It happens after the transaction is done writing and we are about
+       * to commit, only reads are performed, so it is perfectly safe to
+       * use Query threads.
+       *
+       * Tdata3 == 0 means that SOF_REORG_COPY is set, this means that
+       * we have set recBlockNo to special value and thus we are not using
+       * V_QUERY already is it is.
+       *
+       * If the single exec flag is set it means that we are executing a
+       * batch of size 1, and the only operation is a READ operation. This
+       * operation might trigger other read or write operations, but none
+       * of them will be triggered until the READ has completed. Thus it
+       * is always safe to use a Query thread in this case.
+       *
        * Simple/CommittedReads that are part of batch operations must use
        * DBLQH to read and must use the primary node. All other operations
        * will always use the primary node for first update or for the read
@@ -4983,6 +5004,7 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
         if (Tnode == TownNode) {
           jamDebug();
           regTcPtr->tcNodedata[0] = Tnode;
+          regTcPtr->recBlockNo = get_query_block_no(Tnode);
           foundOwnNode = true;
         }//if
       }//for
@@ -4994,6 +5016,7 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
                                               tnoOfBackup+1)) != 0)
         {
           regTcPtr->tcNodedata[0] = node;
+          regTcPtr->recBlockNo = get_query_block_no(node);
         }
       }
       if(ERROR_INSERTED(8048) || ERROR_INSERTED(8049))
@@ -5005,9 +5028,10 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
 	  if (Tnode != TownNode) {
 	    jam();
 	    regTcPtr->tcNodedata[0] = Tnode;
+            regTcPtr->recBlockNo = get_query_block_no(Tnode);
             g_eventLogger->info("Choosing %d", Tnode);
-          }// if
-        }// for
+	  }//if
+	}//for
       }
     }//if
     jamDebug();
@@ -5201,10 +5225,10 @@ void Dbtc::attrinfoDihReceivedLab(Signal* signal,
         /* Round robin the SPJ requests:
          *
          * Note that our protocol allows non existing block instances
-         * to be adressed, in which case the receiver will modulo fold
+         * to be addressed, in which case the receiver will modulo fold
          * among the existing SPJ instances.
          * Distribute among 120 'virtual' SPJ blocks as this is dividable
-         * by most commom number of SPJ blocks (1,2,3,4,5,6,8,10...)
+         * by most common number of SPJ blocks (1,2,3,4,5,6,8,10...)
          */
         const Uint32 blockInstance = (cspjInstanceRR++ % 120) + 1;
         lqhRef = numberToRef(DBSPJ, blockInstance, Tnode);
@@ -5611,9 +5635,11 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
        * 3) The operation is not initiated from DBUTIL.
        * 4) The operation is a locked read or a Simple Read towards a node
        *    that doesn't support Locked Reads in Query threads.
+       *    In this case we will not allow the use of a query thread.
        * 5) The operation is a take over operation towards a node
        *    that doesn't support Locked Reads in Query threads.
-       * 4) The transaction hasn't started the Commit processing with at
+       *    In this case we will not allow the use of a query thread.
+       * 6) The transaction hasn't started the Commit processing with at
        *    least one write operation. The problem here is that even if
        *    the read is the only operation in the batch, the Commit will
        *    be sent in parallel to the Dirty Read operation. To ensure
@@ -5624,12 +5650,12 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
        *    send to any other node we might have the Commit messages
        *    race the Dirty read message since we use Linear Commit
        *    processing.
-       * 5) The application has verified that Batched operations are safe
+       * 7) The application has verified that Batched operations are safe
        *    to use. This means that it is safe to use the query thread and
        *    any node to perform the read since the appplication has declared
        *    that the batch is a read only batch or the read set and the
        *    write set of rows are disjoint.
-       * 6) The exec flag is set and no writes have been performed in
+       * 8) The exec flag is set and no writes have been performed in
        *    this batch of operations.
        *    The transaction hasn't performed any writes yet
        *    in the current execution batch. The m_exec_count
@@ -5686,17 +5712,10 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
 #endif
       if (nodeId == getOwnNodeId())
       {
-        if (globalData.ndbMtQueryThreads > 0)
-        {
-          Uint32 instance_no = refToInstance(TBRef);
-          jam();
-          TBRef = get_lqhkeyreq_ref(&m_distribution_handle, instance_no);
-        }
-        else
-        {
-          jam();
-          TBRef = numberToRef(DBQLQH, instance(), nodeId);
-        }
+        Uint32 instance_no = refToInstance(TBRef);
+        ndbrequire(globalData.ndbMtQueryWorkers > 0);
+        jam();
+        TBRef = get_lqhkeyreq_ref(&m_distribution_handle, instance_no);
       }
       else
       {
@@ -5753,6 +5772,10 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
       }
     }
 #endif
+    if (refToNode(TBRef) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
     regTcPtr->lqhkeyreq_ref = TBRef;
     sendBatchedFragmentedSignal(TBRef,
                                 GSN_LQHKEYREQ,
@@ -5864,7 +5887,7 @@ void Dbtc::releaseDirtyRead(Signal* signal,
 
   /**
    * No LQHKEYCONF in Simple/Dirty read
-   * Therefore decrese no LQHKEYCONF(REF) we are waiting for
+   * Therefore decrease no LQHKEYCONF(REF) we are waiting for
    */
   c_counters.csimpleReadCount++;
   apiConnectptr.p->lqhkeyreqrec = --Tlqhkeyreqrec;
@@ -6284,7 +6307,7 @@ void Dbtc::execLQHKEYCONF(Signal* signal)
   /*------------------------------------------------------------------------
    * NUMBER OF EXTERNAL TRIGGERS FIRED IN DATA[6] 
    * OPERATION IS NOW COMPLETED. CHECK FOR CORRECT OPERATION POINTER  
-   * TO ENSURE NO CRASHES BECAUSE OF ERRONEUS NODES. CHECK STATE OF   
+   * TO ENSURE NO CRASHES BECAUSE OF ERRONEOUS NODES. CHECK STATE OF   
    * OPERATION. THEN SET OPERATION STATE AND RETRIEVE ALL POINTERS    
    * OF THIS OPERATION. PUT COMPLETED OPERATION IN LIST OF COMPLETED  
    * OPERATIONS ON THE LQH CONNECT RECORD.                          
@@ -6717,7 +6740,7 @@ void Dbtc::setupIndexOpReturn(ApiConnectRecord* regApiPtr,
  *
  * This functions checks state variables, and
  *   decides if it should wait for more LQHKEYCONF signals
- *   or if it should start commiting
+ *   or if it should start committing
  */
 void
 Dbtc::lqhKeyConf_checkTransactionState(Signal * signal,
@@ -6904,6 +6927,7 @@ void Dbtc::sendtckeyconf(Signal* signal, UintR TcommitFlag, ApiConnectRecordPtr 
   }
   regApiPtr->m_tc_hbrep_timer = ctcTimer;
   TcKeyConf::setNoOfOperations(confInfo, (TopWords >> 1));
+  signal->m_send_wakeups++;
   if ((TpacketLen + 1 /** gci_lo */ > 25) ||!is_api){
     TcKeyConf * const tcKeyConf = (TcKeyConf *)signal->getDataPtrSend();
     
@@ -7633,7 +7657,16 @@ Dbtc::sendCommitLqh(Signal* signal,
 
   Uint32 Tnode = Thostptr.i;
   Uint32 self = getOwnNodeId();
-  Uint32 ret = (Tnode == self) ? 4 : 1;
+  Uint32 ret;
+  if (Tnode == self)
+  {
+    ret = 4;
+  }
+  else
+  {
+    ret = 1;
+    signal->m_send_wakeups++;
+  }
 
   Uint32 Tdata[5];
   Tdata[0] = regTcPtr->lastLqhCon;
@@ -7816,7 +7849,7 @@ void Dbtc::execCOMMITTED(Signal* signal)
     ndbabort();
   }
   /*-------------------------------------------------------*/
-  /* THE ENTIRE TRANSACTION IS NOW COMMITED                */
+  /* THE ENTIRE TRANSACTION IS NOW COMMITTED               */
   /* NOW WE NEED TO SEND THE RESPONSE TO THE APPLICATION.  */
   /* THE APPLICATION CAN THEN REUSE THE API CONNECTION AND */
   /* THEREFORE WE NEED TO MOVE THE API CONNECTION TO A     */
@@ -7896,6 +7929,7 @@ Dbtc::sendApiCommitSignal(Signal *signal, ApiConnectRecordPtr const apiConnectpt
     commitConf->transId2 = apiConnectptr.p->transid[1];
     commitConf->gci_hi = Uint32(apiConnectptr.p->globalcheckpointid >> 32);
     commitConf->gci_lo = Uint32(apiConnectptr.p->globalcheckpointid);
+    signal->m_send_wakeups++;
 
     if (!ERROR_INSERTED(8054) && !ERROR_INSERTED(8108))
     {
@@ -8157,8 +8191,17 @@ Dbtc::sendCompleteLqh(Signal* signal,
 
   Uint32 Tnode = Thostptr.i;
   Uint32 self = getOwnNodeId();
-  Uint32 ret = (Tnode == self) ? 4 : 1;
+  Uint32 ret;
 
+  if (Tnode == self)
+  {
+    ret = 4;
+  }
+  else
+  {
+    ret = 1;
+    signal->m_send_wakeups++;
+  }
   Uint32 Tdata[3];
   Tdata[0] = regTcPtr->lastLqhCon;
   Tdata[1] = regApiPtr->transid[0];
@@ -9207,7 +9250,17 @@ void Dbtc::execLQHKEYREF(Signal* signal)
 	warningReport(signal, 25, tcConnectptr.i);
 	return;
       }//if
-
+      Uint32 flags = 0;
+      if (signal->getLength() >= LqhKeyRef::SignalLength)
+      {
+        jam();
+        flags = lqhKeyRef->flags;
+      }
+      /**
+       * If the error came from a backup replica rather than the primary
+       * then we will abort the transaction in all cases.
+       */
+      const bool needAbort = (LqhKeyRef::getReplicaErrorFlag(flags) != 0);
       const Uint32 triggeringOp = regTcPtr->triggeringOperation;
       ConnectionState TapiConnectstate = regApiPtr->apiConnectstate;
 
@@ -9215,7 +9268,8 @@ void Dbtc::execLQHKEYREF(Signal* signal)
                                     refToNode(regApiPtr->ndbapiBlockref),
                                     regTcPtr->tcNodedata[0]);
 
-      if (unlikely(TapiConnectstate == CS_ABORTING))
+      if (unlikely(TapiConnectstate == CS_ABORTING ||
+                   needAbort))
       {
         jam();
         goto do_abort;
@@ -9396,7 +9450,7 @@ void Dbtc::execLQHKEYREF(Signal* signal)
       }
       
       const Uint32 abort = regTcPtr->m_execAbortOption;
-      if (abort == TcKeyReq::AbortOnError || triggeringOp != RNIL) {
+      if (abort == TcKeyReq::AbortOnError || triggeringOp != RNIL || needAbort) {
 	/**
 	 * No error is allowed on this operation
 	 */
@@ -9585,6 +9639,7 @@ void Dbtc::execTC_COMMITREQ(Signal* signal)
         commitConf->transId2 = transId2;
         commitConf->gci_hi = 0;
         commitConf->gci_lo = 0;
+        signal->m_send_wakeups++;
         sendSignal(apiBlockRef, GSN_TC_COMMITCONF, signal, 
 		   TcCommitConf::SignalLength, JBB);
         
@@ -9707,6 +9762,7 @@ void Dbtc::execTCROLLBACKREQ(Signal* signal)
     signal->theData[0] = apiConnectptr.p->ndbapiConnect;
     signal->theData[1] = apiConnectptr.p->transid[0];
     signal->theData[2] = apiConnectptr.p->transid[1];
+    signal->m_send_wakeups++;
     sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKCONF, 
 	       signal, 3, JBB);
     break;
@@ -9743,6 +9799,7 @@ void Dbtc::execTCROLLBACKREQ(Signal* signal)
       signal->theData[0] = apiConnectptr.p->ndbapiConnect;
       signal->theData[1] = apiConnectptr.p->transid[0];
       signal->theData[2] = apiConnectptr.p->transid[1];
+      signal->m_send_wakeups++;
       sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_TCROLLBACKCONF, 
 		 signal, 3, JBB);
     } else {
@@ -10449,6 +10506,7 @@ int Dbtc::releaseAndAbort(Signal* signal, ApiConnectRecord* const regApiPtr)
       /* ************< */
       /*    ABORT    < */
       /* ************< */
+      Abort* abo = CAST_PTR(Abort, signal->getDataPtrSend());
       Uint32 instanceKey = tcConnectptr.p->lqhInstanceKey;
       BlockReference blockRef;
       if (Ti == 0 && TnoLoops == 1)
@@ -10462,11 +10520,11 @@ int Dbtc::releaseAndAbort(Signal* signal, ApiConnectRecord* const regApiPtr)
                                instanceNo,
                                localHostptr.i);
       }
-      signal->theData[0] = tcConnectptr.i;
-      signal->theData[1] = cownref;
-      signal->theData[2] = regApiPtr->transid[0];
-      signal->theData[3] = regApiPtr->transid[1];
-      Uint32 len = 4;
+      abo->tcOprec = tcConnectptr.i;
+      abo->tcBlockref = cownref;
+      abo->transid1 = regApiPtr->transid[0];
+      abo->transid2 = regApiPtr->transid[1];
+      Uint32 len = Abort::SignalLength;
       if (ERROR_INSERTED(8120))
       {
         Uint32 nodeId = refToNode(blockRef);
@@ -10482,29 +10540,33 @@ int Dbtc::releaseAndAbort(Signal* signal, ApiConnectRecord* const regApiPtr)
       }
       if (refToMain(blockRef) != DBLQH)
       {
-        len = 5;
-        signal->theData[4] = instanceKey;
+        len = Abort::SignalLengthKey;
+        abo->instanceKey = instanceKey;
       }
-      DEB_ABORT_TRANS(("Send ABORT tcRef(%u,%x) transid(%u,%u)"
-                       " to ref: %x, host: %u",
+      DEB_ABORT_TRANS(("(%u)Send ABORT tcRef(%u,%x) transid(%u,%u)"
+                       " to ref: %x",
+                       instance(),
                        tcConnectptr.i,
                        reference(),
                        regApiPtr->transid[0],
                        regApiPtr->transid[1],
-                       blockRef,
-                       hostptr.i));
-
+                       blockRef));
+      if (refToNode(blockRef) != getOwnNodeId())
+      {
+        signal->m_send_wakeups++;
+      }
       sendSignal(blockRef, GSN_ABORT, signal, len, JBB);
       prevAlive = true;
     } else {
       jam();
-      DEB_ABORT_TRANS(("Send ABORTED(dead) tcRef(%u,%x) transid(%u,%u)"
+      DEB_ABORT_TRANS(("(%u)Send ABORTED(dead) tcRef(%u,%x) transid(%u,%u)"
                        ", node: %u",
+                       instance(),
                        tcConnectptr.i,
                        reference(),
                        regApiPtr->transid[0],
                        regApiPtr->transid[1],
-                       hostptr.i));
+                       localHostptr.i));
 
       signal->theData[0] = tcConnectptr.i;
       signal->theData[1] = regApiPtr->transid[0];
@@ -10673,7 +10735,7 @@ void Dbtc::checkStartFragTimeout(Signal* signal)
 The algorithm used here is to check 1024 transactions at a time before
 doing a real-time break.
 To avoid aborting both transactions in a deadlock detected by time-out
-we insert a random extra time-out of upto 630 ms by using the lowest
+we insert a random extra time-out of up to 630 ms by using the lowest
 six bits of the api connect reference.
 We spread it out from 0 to 630 ms if base time-out is larger than 3 sec,
 we spread it out from 0 to 70 ms if base time-out is smaller than 300 msec,
@@ -14097,6 +14159,10 @@ void Dbtc::toAbortHandlingLab(Signal* signal,
         Uint32 instanceNo = getInstanceNo(hostptr.i, instanceKey);
         BlockReference blockRef = numberToRef(DBLQH, instanceNo, hostptr.i);
         tcConnectptr.p->tcConnectstate = OS_WAIT_ABORT_CONF;
+        if (hostptr.i != getOwnNodeId())
+        {
+          signal->m_send_wakeups++;
+        }
         signal->theData[0] = tcConnectptr.i;
         signal->theData[1] = cownref;
         signal->theData[2] = apiConnectptr.p->transid[0];
@@ -14220,6 +14286,10 @@ Dbtc::checkFailData_abort(Signal *signal,
         Uint32 instanceNo = getInstanceNo(hostptr.i, instanceKey);
         BlockReference blockRef = numberToRef(DBLQH, instanceNo, hostptr.i);
         tcConnectptr.p->tcConnectstate = OS_WAIT_ABORT_CONF;
+        if (hostptr.i != getOwnNodeId())
+        {
+          signal->m_send_wakeups++;
+        }
         signal->theData[0] = tcConnectptr.i;
         signal->theData[1] = cownref;
         signal->theData[2] = apiConnectptr.p->transid[0];
@@ -14501,6 +14571,10 @@ void Dbtc::toCommitHandlingLab(Signal* signal,
         tcConnectptr.p->tcConnectstate = OS_WAIT_COMMIT_CONF;
         Uint64 gci = apiConnectptr.p->globalcheckpointid;
         CommitReq* req = (CommitReq*)signal->theData;
+        if (hostptr.i != getOwnNodeId())
+        {
+          signal->m_send_wakeups++;
+        }
         req->reqPtr = tcConnectptr.i;
         req->reqBlockref = cownref;
         req->gci_hi = Uint32(gci >> 32);
@@ -14877,6 +14951,10 @@ void Dbtc::toCompleteHandlingLab(Signal* signal,
         tcConnectptr.p->tcConnectstate = OS_WAIT_COMPLETE_CONF;
         tcConnectptr.p->apiConnect = apiConnectptr.i;
         CompleteReq* req = (CompleteReq*)signal->theData;
+        if (hostptr.i != getOwnNodeId())
+        {
+          signal->m_send_wakeups++;
+        }
         req->reqPtr = tcConnectptr.i;
         req->reqBlockref = cownref;
         req->transid1 = apiConnectptr.p->transid[0];
@@ -15829,7 +15907,7 @@ bool Dbtc::testFragmentDrop(Signal* signal)
       scan.  Then it starts the scan as soon as the load on that node permits. 
    
   The LQH returns either when it retrieved the maximum number of tuples or 
-  when it has retrived at least one tuple and is hindered by a lock to
+  when it has retrieved at least one tuple and is hindered by a lock to
   retrieve the next tuple.  This is to ensure that a scan process never 
   can be involved in a deadlock situation.   
 
@@ -16636,7 +16714,7 @@ void Dbtc::sendDihGetNodesLab(Signal* signal,
   /**
    * Note that the above checkTable() and scanState checking is
    * sufficient for all sendDihGetNodeReq's below: As EXECUTE_DIRECT
-   * is used, there cant be any other signals processed inbetween
+   * is used, there can't be any other signals processed in between
    * which close the scan, or drop the table.
    */
   bool is_multi_spj_scan =
@@ -17041,7 +17119,7 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
     //SPJ instance is set together with qsort'ing of m_fragLocations
     blockInstance = 0;
   }
-  // Prefer own TC/SPJ intance if a single request to ownNodeId
+  // Prefer own TC/SPJ instance if a single request to ownNodeId
   else if (nodeId == ownNodeId &&        //Request to ownNodeId
            scanptr.p->scanNoFrag == 1)   //Pruned to single fragment
   {
@@ -17163,7 +17241,7 @@ void Dbtc::sendFragScansLab(Signal* signal,
   /**
    * Note that the above checkTable() and scanState checking is
    * sufficient for all the sendScanFragReq's below:
-   * Table or scanState can not change while we are in controll.
+   * Table or scanState can not change while we are in control.
    * sendScanFragReq() itself can fail, possibly closing the scan.
    * However, that is caught by checking its return value.
    */
@@ -17204,7 +17282,7 @@ void Dbtc::sendFragScansLab(Signal* signal,
           jamDebug();
           /**
            * A max fanout of 1::4 of consumed::produced signals are allowed.
-           * If we are about to produce more, we have to contine later.
+           * If we are about to produce more, we have to continue later.
            */
 	  if (cntLocSignals > 4)
           {
@@ -18034,6 +18112,10 @@ Dbtc::close_scan_req_send_conf(Signal* signal,
     conf->requestInfo = ScanTabConf::EndOfData;
     conf->transId1 = apiConnectptr.p->transid[0];
     conf->transId2 = apiConnectptr.p->transid[1];
+    if (refToNode(ref) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
     sendSignal(ref, GSN_SCAN_TABCONF, signal, ScanTabConf::SignalLength, JBB);
     time_track_complete_scan(scanPtr.p, refToNode(ref));
   }
@@ -18317,16 +18399,9 @@ bool Dbtc::sendScanFragReq(Signal* signal,
         ref = numberToRef(blockNo, instance_no, nodeId);
         if (nodeId == getOwnNodeId())
         {
-          if (globalData.ndbMtQueryThreads > 0)
-          {
-            jam();
-            ref = get_scan_fragreq_ref(&m_distribution_handle, instance_no);
-          }
-          else
-          {
-            jam();
-            ref = numberToRef(DBQLQH, instance(), getOwnNodeId());
-          }
+          jam();
+          ndbrequire(globalData.ndbMtQueryWorkers > 0);
+          ref = get_scan_fragreq_ref(&m_distribution_handle, instance_no);
           check_blockref(ref);
           scanFragP.p->lqhBlockref = ref;
         }
@@ -18526,7 +18601,10 @@ void Dbtc::sendScanTabConf(Signal* signal,
       jam();
     }
   }
-  
+  if (refToNode(ref) != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   if (ScanTabConf::SignalLength + (words_per_op * op_count) > 25)
   {
     jamDebug();
@@ -19083,6 +19161,7 @@ void Dbtc::releaseAbortResources(Signal* signal,
       signal->theData[0] = apiConnectptr.p->ndbapiConnect;
       signal->theData[1] = apiConnectptr.p->transid[0];
       signal->theData[2] = apiConnectptr.p->transid[1];
+      signal->m_send_wakeups++;
       sendSignal(blockRef, GSN_TCROLLBACKCONF, signal, 3, JBB);
       break;
     case RS_TCROLLBACKREP:{
@@ -22582,7 +22661,7 @@ void Dbtc::execTRANSID_AI(Signal* signal)
   c_apiConnectRecordPool.getPtr(transPtr);
   ApiConnectRecord * const regApiPtr = transPtr.p;
 
-  // Acccumulate attribute data
+  // Accumulate attribute data
   SectionHandle handle(this, signal);
   bool longSignal = (handle.m_cnt == 1);
   Uint32 errorCode = ZOK;
@@ -22840,7 +22919,7 @@ void Dbtc::readIndexTable(Signal* signal,
   {
     jam();
     /**
-     * "Fool" TC not to start commiting transaction since it always will
+     * "Fool" TC not to start committing transaction since it always will
      *   have one outstanding lqhkeyreq
      * This is later decreased when the index read is complete
      */ 
@@ -23695,7 +23774,7 @@ Dbtc::executeFKParentTrigger(Signal* signal,
    * Foreign key parent triggers can only exist with indexes.
    * If no bit is set then the index is a primary key, if
    * no primary index exists for the reference then a unique
-   * index is choosen in which case the bit FK_CHILD_UI is set.
+   * index is chosen in which case the bit FK_CHILD_UI is set.
    * If neither a primary index nor a unique index is present
    * then an ordered index is used in which case the
    * bit FK_CHILD_OI is set. If neither an ordered index is present
@@ -23820,7 +23899,7 @@ Dbtc::fk_readFromChildTable(Signal* signal,
     jam();
     /**
      * Let an update/delete triggers be made with same save point
-     *   as operation it orginated from.
+     *   as operation it originated from.
      */
     regApiPtr->currSavePointId = opRecord->savePointId;
     if (fkData->childTableId != fkData->childIndexId)
@@ -24621,7 +24700,7 @@ Dbtc::fk_scanFromChildTable_abort(Signal* signal,
   ndbrequire(scanApiConnectPtr.p->ndbapiConnect == tcPtr.i);
   /**
    * Check that the scan has not already completed
-   * - so we can abort aggresively
+   * - so we can abort aggressively
    */
   if (scanApiConnectPtr.p->apiConnectstate != CS_START_SCAN)
   {

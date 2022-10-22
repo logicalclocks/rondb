@@ -508,12 +508,12 @@ bool Ndb_dd_client::remove_table(
     const dd::Table *table, const char *schema_name, const char *table_name,
     Ndb_referenced_tables_invalidator *invalidator) {
   DBUG_TRACE;
-  DBUG_PRINT("enter", ("table_name: '%s'", table->name().c_str()));
 
   if (table == nullptr) {
     // Table does not exist
     return true;
   }
+  DBUG_PRINT("enter", ("table_name: '%s'", table->name().c_str()));
 
   if (invalidator != nullptr &&
       !invalidator->fetch_referenced_tables_to_invalidate(
@@ -687,7 +687,7 @@ bool Ndb_dd_client::install_table(
   // matches the table name to install
   assert(ndb_dd_fs_name_case(install_table->name()) == table_name);
 
-  // Verify that table defintion unpacked from NDB
+  // Verify that table definition unpacked from NDB
   // does not have any se_private fields set, those will be set
   // from the NDB table metadata
   assert(install_table->se_private_id() == dd::INVALID_OBJECT_ID);
@@ -755,7 +755,7 @@ bool Ndb_dd_client::install_table(
     // not to request "force_overwrite"
     if (old_handle == dd_handle) {
       // Table is already installed, with same id and version
-      // return sucess
+      // return success
       return true;
     }
 

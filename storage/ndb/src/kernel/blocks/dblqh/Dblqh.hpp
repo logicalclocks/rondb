@@ -1089,7 +1089,7 @@ public:
       // Number of keyinfo words in key operations.
       Uint64 m_keyReqKeyWords;
 
-      // Total size of interpeter programs for key operations.
+      // Total size of interpreter programs for key operations.
       Uint64 m_keyProgramWords;
 
       // Number of interpreter instructions executed for key operations.
@@ -1114,7 +1114,7 @@ public:
       // Number of words returned to client due to scans.
       Uint64 m_scanWordsReturned;
 
-      // Total size of interpeter programs for scans.
+      // Total size of interpreter programs for scans.
       Uint64 m_scanProgramWords;
 
       // Total size of scan bounds (for ordered index scans).
@@ -2161,7 +2161,7 @@ public:
     UintR filePosition;
     /**
      *       This contains the file pointer needed by the file system
-     *       when reading/writing/closing and synching.  
+     *       when reading/writing/closing and syncing.  
      */
     UintR fileRef;
     /**
@@ -2601,7 +2601,8 @@ public:
       REQ_FROM_TC_COMMIT = 3,
       REQ_FROM_TC_ABORT = 4,
       ABORT_FROM_TC = 5,
-      ABORT_FROM_LQH = 6
+      ABORT_FROM_LQH = 6,
+      ABORT_FROM_LQH_REPLICA = 7
     };
     /*
      * TransactionState is exposed in Ndbinfo::OPERATIONS_TABLEID, values must

@@ -1,5 +1,6 @@
 /*
  *  Copyright (c) 2010, 2022, Oracle and/or its affiliates.
+ *  Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License, version 2.0,
@@ -33,7 +34,7 @@ public interface ClusterConnection {
 
     public void connect(int connectRetries, int connectDelay, boolean verbose);
 
-    public Db createDb(String database, int maxTransactions);
+    public Db createDb(String database, boolean defaultDatabase, int maxTransactions);
 
     public void waitUntilReady(int connectTimeoutBefore, int connectTimeoutAfter);
 
@@ -45,7 +46,7 @@ public interface ClusterConnection {
 
     public void close(Db db);
 
-    public void unloadSchema(String tableName);
+    public void unloadSchema(String databaseName, String tableName, boolean defaultDatabase);
 
     public ValueHandlerFactory getSmartValueHandlerFactory();
 

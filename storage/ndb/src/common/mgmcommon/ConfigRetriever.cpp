@@ -38,6 +38,7 @@
 #include <ConfigValues.hpp>
 #include <DnsCache.hpp>
 #include <EventLogger.hpp>
+#include "portlib/NdbTCP.h"
 
 //****************************************************************************
 //****************************************************************************
@@ -466,7 +467,7 @@ ConfigRetriever::allocNodeId(int no_retries, int retry_delay_in_seconds,
         ndb_mgm_alloc_nodeid(m_handle, m_version, m_node_type,
                              no_retries == 0 /* only log last retry */);
       if (res >= 0)
-        return (Uint32)res; // Sucess!!
+        return (Uint32)res; // Success!!
     }
 
     error = ndb_mgm_get_latest_error(m_handle);

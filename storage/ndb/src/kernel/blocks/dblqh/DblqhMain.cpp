@@ -1417,8 +1417,7 @@ Dblqh::sttor_startphase1(Signal *signal)
   {
     jam();
     Uint32 num_restore_threads = 1 + (
-      ((globalData.ndbMtRecoverThreads +
-        globalData.ndbMtQueryThreads) +
+      (globalData.ndbMtRecoverThreads +
        (globalData.ndbMtLqhWorkers - 1)) /
       globalData.ndbMtLqhWorkers);
     m_num_restore_threads = num_restore_threads;
@@ -2435,7 +2434,7 @@ void Dblqh::execREAD_CONFIG_REQ(Signal* signal)
   /**
    * "Old" cmaxLogFilesInPageZero was 40
    * Each FD need 3 words per mb, require that they can fit into 1 page
-   *   (atleast 1 FD)
+   *   (at least 1 FD)
    * Is also checked in ConfigInfo.cpp (max FragmentLogFileSize = 1Gb)
    *   1Gb = 1024Mb => 3(ZFD_MBYTE_SIZE) * 1024 < 8192 (ZPAGE_SIZE)
    */
@@ -5537,9 +5536,14 @@ void Dblqh::earlyKeyReqAbort(Signal* signal,
     ref->errorCode = errCode;
     ref->transId1 = transid1;
     ref->transId2 = transid2;
+    ref->flags = 0;
     Uint32 block = refToMain(signal->senderBlockRef());
     if (block != getRESTORE())
     {
+      if (refToNode(signal->senderBlockRef()) != getOwnNodeId())
+      {
+        signal->m_send_wakeups++;
+      }
       sendSignal(signal->senderBlockRef(), GSN_LQHKEYREF, signal, 
 	         LqhKeyRef::SignalLength, JBB);
     }
@@ -5774,7 +5778,10 @@ void Dblqh::execLQHKEYREF(Signal* signal)
       warningReport(signal, 15, tcOprec);
       return;
     }//if
-    abortErrorLab(signal, tcConnectptr);
+    /* Mark abort due to replica issue */
+    regTcPtr->abortState = TcConnectionrec::ABORT_FROM_LQH_REPLICA;
+    regTcPtr->errorCode = terrorCode;
+    abortCommonLab(signal, tcConnectptr);
     return;
   case TcConnectionrec::LOG_CONNECTED:
     jam();
@@ -6383,6 +6390,10 @@ void Dblqh::sendCommitLqh(Signal* signal,
   Tdata[4] = regTcPtr->gci_lo;
   Uint32 len = 5;
 
+  if (Thostptr.i != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   if (container->noOfPackedWords > 25 - len) {
     jam();
     sendPackedSignal(signal, container);
@@ -6430,6 +6441,10 @@ void Dblqh::sendCompleteLqh(Signal* signal,
   Tdata[2] = regTcPtr->transid[1];
   Uint32 len = 3;
 
+  if (Thostptr.i != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   if (container->noOfPackedWords > 22) {
     jam();
     sendPackedSignal(signal, container);
@@ -6474,6 +6489,10 @@ void Dblqh::sendCommittedTc(Signal* signal,
   Tdata[2] = regTcPtr->transid[1];
   Uint32 len = 3;
 
+  if (Thostptr.i != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   if (container->noOfPackedWords > 22) {
     jam();
     sendPackedSignal(signal, container);
@@ -6518,6 +6537,10 @@ void Dblqh::sendCompletedTc(Signal* signal,
   Tdata[2] = regTcPtr->transid[1];
   Uint32 len = 3;
 
+  if (Thostptr.i != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   if (container->noOfPackedWords > 22) {
     jam();
     sendPackedSignal(signal, container);
@@ -6546,6 +6569,10 @@ void Dblqh::sendLqhkeyconfTc(Signal* signal,
   ptrCheckGuard(Thostptr, chostFileSize, hostRecord);
   Uint32 block = refToMain(atcBlockref);
 
+  if (Thostptr.i != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   if (block == getDBLQH())
   {
     if (instanceKey <= MAX_NDBMT_LQH_THREADS)
@@ -6708,7 +6735,7 @@ void Dblqh::execTUP_ATTRINFO(Signal* signal)
 /*  - A 'tcOpRec' id which uniquely(*below) identify this TcConnectionRec    */
 /*    within this specific transaction.                                      */
 /*  - An optional 'hashHi' id used for SCANREQs in cases where 'tcOpRec'     */
-/*    on its own cant provide uniqueness.                                    */
+/*    on its own can't provide uniqueness.                                    */
 /*    This is required in cases where there are multiple (internal) clients  */
 /*    producing REQs where the uniqueness is only guaranteed within          */
 /*    each client. Currently the only such client is the SPJ block.          */
@@ -7192,6 +7219,10 @@ void Dblqh::execSIGNAL_DROPPED_REP(Signal* signal)
     ref->errorCode= ZGET_ATTRINBUF_ERROR;
     ref->senderRef = reference();
     
+    if (refToNode(signal->senderBlockRef()) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
     sendSignal(signal->senderBlockRef(), GSN_SCAN_FRAGREF, signal,
                ScanFragRef::SignalLength, JBB);
     break;
@@ -7913,7 +7944,7 @@ Dblqh::send_print_mutex_stats(Signal *signal)
  * case. There are cases when we perform OPTIMISE TABLE and there are
  * cases when the variable sized part of the row has to grow where we
  * actually will change the row while running the Prepare operation.
- * To accomodate for this we have the ability to upgrade to exclusive
+ * To accommodate for this we have the ability to upgrade to exclusive
  * locks for a short time. This is not an expected situation normally
  * and thus we perform no special preparation for this event.
  *
@@ -8983,6 +9014,7 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
   }
 
   if (ERROR_INSERTED_CLEAR(5047) ||
+      ERROR_INSERTED_CLEAR(5108) ||
       ERROR_INSERTED(5079) ||
      (ERROR_INSERTED(5102) &&
       LqhKeyReq::getNoTriggersFlag(Treqinfo)) ||
@@ -9266,6 +9298,10 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
   if (regTcPtr->dirtyOp)
   {
     ndbrequire(regTcPtr->opSimple);
+    if (op == ZREAD)
+    {
+      signal->m_send_wakeups++;
+    }
   }
   
   CRASH_INSERTION2(5041, (op == ZREAD && 
@@ -10206,7 +10242,7 @@ void Dblqh::prepareContinueAfterBlockedLab(
      * This is always the code path taken after the first copy row has
      * arrived, both for copy rows and for normal transactions. We are
      * in the starting node and the fragment isn't yet up to date, so we
-     * need to be careful with all variants of how we deal with synching
+     * need to be careful with all variants of how we deal with syncing
      * this starting fragment with the live fragment.
      */
     jam();
@@ -10357,7 +10393,7 @@ Dblqh::handle_nr_copy(Signal* signal, Ptr<TcConnectionrec> regTcPtr)
                          ((regTcPtr.p->attrInfoIVal == RNIL)? 0 : 
                           getSectionSz(regTcPtr.p->attrInfoIVal))) << 2);
 
-  regTcPtr.p->m_nr_delete.m_cnt = 1; // Wait for real op aswell
+  regTcPtr.p->m_nr_delete.m_cnt = 1; // Wait for real op as well
   Uint32* dst = signal->theData+24;
   bool uncommitted;
   const int len = c_tup->nr_read_pk(fragPtr, &regTcPtr.p->m_row_id, dst, 
@@ -11925,6 +11961,7 @@ void Dblqh::sendBatchedLqhkeyreq(Signal* signal,
 {
   jam();
   const Uint32 version = getNodeInfo(refToNode(lqhRef)).m_version;
+  signal->m_send_wakeups++;
   if (ndbd_frag_lqhkeyreq(version))
   {
     jam();
@@ -14764,10 +14801,12 @@ void Dblqh::execABORT(Signal* signal)
     Uint32 instanceKey = req->instanceKey;
     Uint32 instanceNo = getInstanceFromKey(instanceKey);
     BlockReference ref = numberToRef(DBLQH, instanceNo, getOwnNodeId());
+    Uint32 len = sig_len == Abort::SignalLengthKey ?
+                 Abort::SignalLength : Abort::SignalLengthDistr;
     sendSignal(ref,
                GSN_ABORT,
                signal,
-               Abort::SignalLength,
+               len,
                JBB);
     return;
   }
@@ -14919,6 +14958,10 @@ void Dblqh::execABORT(Signal* signal)
                      transid2,
                      tcOprec,
                      tcBlockref));
+    if (refToNode(tcBlockref) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
     Aborted* conf = CAST_PTR(Aborted, signal->getDataPtrSend());
     conf->senderData = tcOprec;
     conf->transid1 = transid1;
@@ -14960,6 +15003,7 @@ void Dblqh::execABORT(Signal* signal)
     abo->tcBlockref = regTcPtr->tcBlockref;
     abo->transid1 = regTcPtr->transid[0];
     abo->transid2 = regTcPtr->transid[1];
+    signal->m_send_wakeups++;
     sendSignal(TLqhRef, GSN_ABORT, signal, Abort::SignalLength, JBB);
   }//if
   regTcPtr->abortState = TcConnectionrec::ABORT_FROM_TC;
@@ -15032,6 +15076,10 @@ void Dblqh::execABORTREQ(Signal* signal)
     signal->theData[2] = cownNodeid;
     signal->theData[3] = transid1;
     signal->theData[4] = transid2;
+    if (refToNode(reqBlockref) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
     sendSignal(reqBlockref, GSN_ABORTCONF, signal, 5, JBB);
     warningReport(signal, 9, tcOprec);
     return;
@@ -15508,7 +15556,7 @@ void Dblqh::continueAbortLab(Signal* signal,
 {
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
   /* ------------------------------------------------------------------------
-   *  AN ERROR OCCURED IN THE ACTIVE CREATION AFTER THE ABORT PHASE. 
+   *  AN ERROR OCCURRED IN THE ACTIVE CREATION AFTER THE ABORT PHASE. 
    *  WE NEED TO CONTINUE WITH A NORMAL ABORT.
    * ------------------------------------------------------------------------ 
    *       ALSO USED FOR NORMAL CLEAN UP AFTER A NORMAL ABORT.
@@ -15625,7 +15673,8 @@ void Dblqh::continueAfterLogAbortWriteLab(
     cleanUp(signal, tcConnectptr);
     return;
   }//if
-  if (regTcPtr->abortState == TcConnectionrec::ABORT_FROM_LQH)
+  if ((regTcPtr->abortState == TcConnectionrec::ABORT_FROM_LQH) ||
+      (regTcPtr->abortState == TcConnectionrec::ABORT_FROM_LQH_REPLICA))
   {
     LqhKeyRef * const lqhKeyRef = (LqhKeyRef *)signal->getDataPtrSend();
 
@@ -15635,6 +15684,12 @@ void Dblqh::continueAfterLogAbortWriteLab(
     lqhKeyRef->errorCode = regTcPtr->errorCode;
     lqhKeyRef->transId1 = regTcPtr->transid[0];
     lqhKeyRef->transId2 = regTcPtr->transid[1];
+    lqhKeyRef->flags = 0;
+    if (regTcPtr->abortState == TcConnectionrec::ABORT_FROM_LQH_REPLICA)
+    {
+      jam();
+      LqhKeyRef::setReplicaErrorFlag(lqhKeyRef->flags, 1);
+    }
     Uint32 block = refToMain(regTcPtr->clientBlockref);
     DEB_ABORT_TRANS(("(%u)LQHKEYREF: trans(H'%.8x,H'%.8x), tcOprec: %u"
                      ", tcRef: %x, tcPtrIAcc: %u",
@@ -15647,6 +15702,10 @@ void Dblqh::continueAfterLogAbortWriteLab(
 
     if (block != getRESTORE())
     {
+      if (refToNode(regTcPtr->clientBlockref) != getOwnNodeId())
+      {
+        signal->m_send_wakeups++;
+      }
       sendSignal(regTcPtr->clientBlockref, GSN_LQHKEYREF, signal, 
                  LqhKeyRef::SignalLength, JBB);
     }
@@ -15684,6 +15743,10 @@ void Dblqh::continueAfterLogAbortWriteLab(
                      regTcPtr->reqBlockref,
                      regTcPtr->accConnectrec));
 
+    if (refToNode(regTcPtr->reqBlockref) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
     signal->theData[0] = regTcPtr->reqRef;
     signal->theData[1] = tcConnectptr.i;
     signal->theData[2] = cownNodeid;
@@ -15708,6 +15771,10 @@ Dblqh::sendTCKEYREF(Signal* signal, Uint32 ref, Uint32 routeRef, Uint32 cnt)
              nodeId == getOwnNodeId() || 
              refToMain(routeRef) == DBTC); 
   
+  if (refToNode(ref) != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   if (likely(connectedToNode &&
              !ERROR_INSERTED_CLEAR(5079)))
   {
@@ -15958,7 +16025,7 @@ void Dblqh::execLQH_TRANSREQ(Signal* signal)
   if (signal->getLength() < LqhTransReq::SignalLength)
   {
     /**
-     * TC that performs take over doesn't suppport taking over one
+     * TC that performs take over doesn't support taking over one
      * TC instance at a time => we read an unitialised variable,
      * set it to RNIL to indicate we try take over all instances.
      * This code is really only needed in ndbd since ndbmtd handles
@@ -18013,6 +18080,10 @@ void Dblqh::send_scan_fragref(Signal* signal,
   ref->transId2 = transid2;
   ref->errorCode = errorCode;
   ref->senderRef = reference();
+  if (refToNode(senderBlockRef) != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
   sendSignal(senderBlockRef, GSN_SCAN_FRAGREF, signal,
 	     ScanFragRef::SignalLength, JBB);
 }
@@ -19164,7 +19235,7 @@ Dblqh::next_scanconf_tupkeyreq(Signal* signal,
   {
     /**
      * The row id here depends on if we are scanning in TUX
-     * or in TUP or ACC. TUX returns phyiscal row ids and
+     * or in TUP or ACC. TUX returns physical row ids and
      * TUP and ACC returns logical row ids. This is handled
      * by TUP.
      */
@@ -19388,7 +19459,7 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
   if (unlikely(scanPtr->scanKeyinfoFlag))
   {
     jam();
-    // Inform API about keyinfo len aswell
+    // Inform API about keyinfo len as well
     read_len += sendKeyinfo20(signal, scanPtr, regTcPtr);
   }//if
   ndbrequire(scanPtr->m_curr_batch_size_rows < MAX_PARALLEL_OP_PER_SCAN);
@@ -19550,8 +19621,8 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
      *  WE NEED TO ENSURE THAT WE DO NOT SEARCH FOR THE NEXT TUPLE FOR A
      *  LONG TIME WHILE WE KEEP A LOCK ON A FOUND TUPLE. WE RATHER REPORT
      *  THE FOUND TUPLE IF FOUND TUPLES ARE RARE. If more than 10 ms passed we
-     *  send the found tuples to the API. For requests comming from SPJ we allow
-     *  scans to go on for an extended periode of 100ms
+     *  send the found tuples to the API. For requests coming from SPJ we allow
+     *  scans to go on for an extended period of 100ms
      * ----------------------------------------------------------------------- */
     scanPtr->scanReleaseCounter = rows + 1;
     scanReleaseLocksLab(signal, tcConnectptr.p);
@@ -19673,6 +19744,10 @@ void Dblqh::tupScanCloseConfLab(Signal* signal,
     ref->transId2 = regTcPtr->transid[1];
     ref->errorCode = regTcPtr->errorCode;
     ref->senderRef = reference();
+    if (refToNode(tcConnectptr.p->clientBlockref) != getOwnNodeId())
+    {
+      signal->m_send_wakeups++;
+    }
     sendSignal(tcConnectptr.p->clientBlockref, GSN_SCAN_FRAGREF, signal, 
 	 ScanFragRef::SignalLength, JBB);
   } else {
@@ -20756,13 +20831,15 @@ void Dblqh::sendScanFragConf(Signal* signal,
   /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
   scanPtr->m_stop_batch = 0;
   ScanFragConf * conf = (ScanFragConf*)&signal->theData[0];
-#ifdef NOT_USED
-  NodeId tc_node_id= refToNode(regTcPtr->clientBlockref);
-#endif
   const Uint32 senderData = regTcPtr->clientConnectrec;
   const Uint32 trans_id1= regTcPtr->transid[0];
   const Uint32 trans_id2= regTcPtr->transid[1];
   const BlockReference blockRef = regTcPtr->clientBlockref;
+  const NodeId tc_node_id = refToNode(regTcPtr->clientBlockref);
+  if (tc_node_id != getOwnNodeId())
+  {
+    signal->m_send_wakeups++;
+  }
 
   conf->senderData = senderData;
   conf->completedOps = completed_ops;
@@ -21182,7 +21259,7 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
       jam();
       /**
        * An node-recovery scan, is shared lock
-       *   and may not perform disk-scan (as it then can miss uncomitted
+       *   and may not perform disk-scan (as it then can miss uncommitted
        *   inserts)
        */
       //AccScanReq::setLockMode(sig_request_info, 0);
@@ -21563,7 +21640,7 @@ void Dblqh::copyTupkeyRefLab(Signal* signal,
   if (scanP->readCommitted == 0)
   {
     jam();
-    ndbabort(); // Should not be possibe...we read with lock
+    ndbabort(); // Should not be possible...we read with lock
   }
   else
   {
@@ -27552,9 +27629,13 @@ void Dblqh::openFileRw(Signal* signal,
     lsptr[FsOpenReq::FILENAME].sz = 0;
 
     req->fileFlags |= FsOpenReq::OM_ENCRYPT_KEY;
-    lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].p = (Uint32*)&FsOpenReq::DUMMY_KEY;
+
+    EncryptionKeyMaterial nmk;
+    nmk.length = globalData.nodeMasterKeyLength;
+    memcpy(&nmk.data, globalData.nodeMasterKey, globalData.nodeMasterKeyLength);
+    lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].p = (const Uint32*)&nmk;
     lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].sz =
-        FsOpenReq::DUMMY_KEY.get_needed_words();
+        nmk.get_needed_words();
 
     sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength, JBA,
                lsptr, 2);
@@ -27624,9 +27705,12 @@ void Dblqh::openLogfileInit(Signal* signal, LogFileRecordPtr logFilePtr)
     lsptr[FsOpenReq::FILENAME].sz = 0;
 
     req->fileFlags |= FsOpenReq::OM_ENCRYPT_KEY;
-    lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].p = (Uint32*)&FsOpenReq::DUMMY_KEY;
+    EncryptionKeyMaterial nmk;
+    nmk.length = globalData.nodeMasterKeyLength;
+    memcpy(&nmk.data, globalData.nodeMasterKey, globalData.nodeMasterKeyLength);
+    lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].p = (const Uint32*)&nmk;
     lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].sz =
-        FsOpenReq::DUMMY_KEY.get_needed_words();
+        nmk.get_needed_words();
 
     sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength, JBA,
                lsptr, 2);
@@ -27786,9 +27870,12 @@ void Dblqh::openNextLogfile(Signal *signal,
       lsptr[FsOpenReq::FILENAME].sz = 0;
 
       req->fileFlags |= FsOpenReq::OM_ENCRYPT_KEY;
-      lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].p = (Uint32*)&FsOpenReq::DUMMY_KEY;
+      EncryptionKeyMaterial nmk;
+      nmk.length = globalData.nodeMasterKeyLength;
+      memcpy(&nmk.data, globalData.nodeMasterKey, globalData.nodeMasterKeyLength);
+      lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].p = (const Uint32*)&nmk;
       lsptr[FsOpenReq::ENCRYPT_KEY_MATERIAL].sz =
-          FsOpenReq::DUMMY_KEY.get_needed_words();
+          nmk.get_needed_words();
 
       sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength, JBA,
                  lsptr, 2);
@@ -28900,8 +28987,7 @@ Dblqh::get_recover_thread_instance()
    * we return 0, otherwise we return the instance number of the recover
    * thread we can use (instance number 0 is the proxy instance).
    */
-  Uint32 num_recover_threads = globalData.ndbMtQueryThreads +
-                               globalData.ndbMtRecoverThreads;
+  Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
   if (num_recover_threads == 0)
   {
     return 0;
@@ -28914,7 +29000,7 @@ Dblqh::get_recover_thread_instance()
     {
       num_recover_active[i] = 1;
       NdbMutex_Unlock(c_restore_mutex_lqh->m_restore_mutex);
-      return i;
+      return (i + globalData.ndbMtLqhWorkers);
     }
   }
   NdbMutex_Unlock(c_restore_mutex_lqh->m_restore_mutex);
@@ -28928,6 +29014,9 @@ Dblqh::completed_restore(Uint32 instance)
    * A restore of a fragment has completed, we release the recover thread
    * for someone else to use.
    */
+  ndbrequire(instance > globalData.ndbMtLqhWorkers);
+  instance -= globalData.ndbMtLqhWorkers;
+  ndbrequire(instance <= globalData.ndbMtRecoverThreads);
   Uint32 *num_recover_active = c_restore_mutex_lqh->m_num_recover_active;
   NdbMutex_Lock(c_restore_mutex_lqh->m_restore_mutex);
   ndbrequire(num_recover_active[instance] == 1);
@@ -28946,8 +29035,7 @@ Dblqh::instance_completed_restore(Uint32 instance)
    * false. This is used to send a signal to the recover threads to
    * log output about its restore operations.
    */
-  Uint32 num_recover_threads = globalData.ndbMtQueryThreads +
-                               globalData.ndbMtRecoverThreads;
+  Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
   if (num_recover_threads == 0)
   {
     jam();
@@ -29676,7 +29764,7 @@ Dblqh::execWRITE_LOCAL_SYSFILE_CONF(Signal *signal)
         /**
          * We have reached phase 9 during writing of local sysfile, proceed
          * to write local sysfile with the information that the restart is
-         * completed before synching the GCP.
+         * completed before syncing the GCP.
          */
         write_local_sysfile_restart_complete(signal);
       }
@@ -29699,7 +29787,7 @@ Dblqh::execWRITE_LOCAL_SYSFILE_CONF(Signal *signal)
       /**
        * Restart is complete, we have written this into the local sysfile
        * and we are ready to proceed with the last phases of restart and
-       * synching this GCP as requested.
+       * syncing this GCP as requested.
        */
       ndbrequire(cstartPhase != ZNIL);
       ndbrequire(c_start_phase_9_waiting);
@@ -33152,7 +33240,7 @@ void Dblqh::continue_srFourthComp(Signal *signal)
 
 /*---------------------------------------------------------------------------*/
 /* AN ERROR OCCURRED THAT WE WILL NOT TREAT AS SYSTEM ERROR. MOST OFTEN THIS */
-/* WAS CAUSED BY AN ERRONEUS SIGNAL SENT BY ANOTHER NODE. WE DO NOT WISH TO  */
+/* WAS CAUSED BY AN ERRONEOUS SIGNAL SENT BY ANOTHER NODE. WE DO NOT WISH TO */
 /* CRASH BECAUSE OF FAULTS IN OTHER NODES. THUS WE ONLY REPORT A WARNING.    */
 /* THIS IS CURRENTLY NOT IMPLEMENTED AND FOR THE MOMENT WE GENERATE A SYSTEM */
 /* ERROR SINCE WE WANT TO FIND FAULTS AS QUICKLY AS POSSIBLE IN A TEST PHASE.*/
@@ -38707,7 +38795,7 @@ void Dblqh::execDBINFO_SCANREQ(Signal *signal)
       }
 
       /*
-        If a break is needed, break on a table bondary, as we use the table id
+        If a break is needed, break on a table boundary, as we use the table id
         as a cursor.
       */
       if (rl.need_break(req))
@@ -39269,7 +39357,7 @@ Dblqh::checkLcpFragWatchdog(Signal* signal)
    *
    * - If we overslept 'PollingPeriodMillis', (CPU starved?) or 
    *   timer leapt forward for other reasons (Adjusted, or OS-bug)
-   *   we never calculate an elapsed periode of more than 
+   *   we never calculate an elapsed period of more than 
    *   the requested sleep 'PollingPeriodMillis'
    * - Else we add the real measured elapsed time to total.
    *   (Timers may fire prior to requested 'PollingPeriodMillis')
@@ -40353,11 +40441,11 @@ Dblqh::mark_end_of_lcp_restore(Signal* signal)
      * All LDM threads are done. Now time to also report
      * restore rates performed by Recover threads.
      */
-    Uint32 num_recover_threads = globalData.ndbMtQueryThreads +
-                               globalData.ndbMtRecoverThreads;
+    Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
     for (Uint32 i = 1; i <= num_recover_threads; i++)
     {
-      BlockReference ref = numberToRef(QRESTORE, i, getOwnNodeId());
+      Uint32 instance = globalData.ndbMtLqhWorkers + i;
+      BlockReference ref = numberToRef(QRESTORE, instance, getOwnNodeId());
       signal->theData[0] = DumpStateOrd::RestoreRates;
       sendSignal(ref, GSN_DUMP_STATE_ORD, signal, 1, JBB);
     }
@@ -40595,7 +40683,7 @@ Dblqh::check_abort_signal_executed(Uint32 recv_thr_no,
    * path as the first ABORT signal. Thus we only check the query threads
    * here.
    */
-  ndbrequire(globalData.ndbMtQueryThreads > 0);
+  ndbrequire(globalData.ndbMtQueryWorkers > 0);
   for (Uint32 i = 0; i < m_num_qt_our_rr_group; i++)
   {
     jam();
@@ -40626,21 +40714,21 @@ Dblqh::check_abort_signal_executed(Uint32 recv_thr_no,
 void
 Dblqh::set_up_qt_our_rr_group()
 {
-  if (globalData.ndbMtQueryThreads == 0)
+  if (globalData.ndbMtQueryWorkers == 0)
   {
     /* Not used in this case. */
     return;
   }
   /* Round Robin group information is static variables in SimulatedBlock */
-  Uint32 first_qt_thr_no = globalData.ndbMtMainThreads +
-                           globalData.ndbMtLqhThreads;
-  Uint32 num_ldm_instances = globalData.ndbMtLqhThreads;
+  ndbrequire(globalData.ndbMtQueryThreads == 0);
+  ndbrequire(globalData.ndbMtLqhWorkers == globalData.ndbMtQueryWorkers);
+  Uint32 first_qt_thr_no = getFirstQueryThreadId();
   m_num_qt_our_rr_group = 0;
-  Uint32 rr_group = m_rr_group[instance() - 1];
-  for (Uint32 i = 0; i < globalData.ndbMtQueryThreads; i++)
+  Uint32 our_rr_group = m_rr_group[instance() - 1];
+  for (Uint32 i = 0; i < globalData.ndbMtQueryWorkers; i++)
   {
-    Uint32 qt_rr_group = m_rr_group[num_ldm_instances + i];
-    if (rr_group == qt_rr_group)
+    Uint32 qt_rr_group = m_rr_group[i];
+    if (our_rr_group == qt_rr_group)
     {
       Uint32 instance_no = i + first_qt_thr_no;
       m_qt_thr_no_our_rr_group[m_num_qt_our_rr_group] = instance_no;

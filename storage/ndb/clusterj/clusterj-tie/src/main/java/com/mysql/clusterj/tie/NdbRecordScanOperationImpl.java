@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2012, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -71,9 +72,9 @@ public abstract class NdbRecordScanOperationImpl extends NdbRecordOperationImpl 
     public NdbRecordScanOperationImpl(ClusterTransactionImpl clusterTransaction, Table storeTable,
             int lockMode) {
         super(clusterTransaction, storeTable);
-        this.ndbRecordKeys = clusterTransaction.getCachedNdbRecordImpl(storeTable);
+        this.ndbRecordKeys = clusterTransaction.getCachedNdbRecordImpl(clusterTransaction.db, storeTable);
         this.keyBufferSize = ndbRecordKeys.getBufferSize();
-        this.ndbRecordValues = clusterTransaction.getCachedNdbRecordImpl(storeTable);
+        this.ndbRecordValues = clusterTransaction.getCachedNdbRecordImpl(clusterTransaction.db, storeTable);
         this.valueBufferSize = ndbRecordValues.getBufferSize();
         this.numberOfColumns = ndbRecordValues.getNumberOfColumns();
         this.blobs = new NdbRecordBlobImpl[this.numberOfColumns];

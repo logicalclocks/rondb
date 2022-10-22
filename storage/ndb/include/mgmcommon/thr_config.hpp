@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -92,6 +93,8 @@ public:
   Uint32 getThreadCount(T_Type) const;
   Uint32 getMtClassic() const { return m_classic; }
   static bool isThreadPermanent(T_Type type);
+  unsigned get_shared_ldm_instance(Uint32 instance, Uint32 num_ldm_threads);
+
 protected:
   struct T_Thread
   {
@@ -105,6 +108,8 @@ protected:
       B_CPUSET_BIND,
       B_CPUSET_EXCLUSIVE_BIND
     } m_bind_type;
+    unsigned m_shared_cpu_id;
+    unsigned m_shared_instance;
     unsigned m_bind_no; // cpu_no/cpuset_no
     unsigned m_thread_prio; // Between 0 and 10, 11 means not used
     unsigned m_realtime; //0 = no realtime, 1 = realtime
@@ -150,6 +155,7 @@ protected:
     Uint32 & recv_threads);
 
   static unsigned getMaxEntries(Uint32 type);
+  static unsigned getMinEntries(Uint32 type);
   static const char * getEntryName(Uint32 type);
 
 public:
@@ -160,7 +166,7 @@ public:
     unsigned m_max_cnt;
     bool     m_is_exec_thd; /* Is this a non-blocking execution thread type */
     bool     m_is_permanent;/* Is this a fixed thread type */
-    bool     m_mandatory; /* Is this a mandatory thread type in the ThreadConfig string */
+    unsigned m_default_count; /* Default count of threads created implicitly (ignored if thread type set in threadConfig string) */
   };
 };
 

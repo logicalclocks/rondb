@@ -58,6 +58,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.LinkedList;
+import java.util.IdentityHashMap;
+import java.util.Iterator;
 
 public class SessionFactoryImpl implements SessionFactory, Constants {
 
@@ -77,8 +79,15 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
     protected Map<?, ?> props;
 
     Queue<Session> cached_sessions;
+
+    private Map<String, Queue<Session>> db_cached_sessions = new IdentityHashMap<String, Queue<Session>>();
+
     int num_cached_sessions;
     int max_cached_sessions;
+
+    /* Variables to support LRU list of Session objects for caching */
+    SessionImpl first_lru_list;
+    SessionImpl last_lru_list;
 
     /** NdbCluster connect properties */
     String CLUSTER_CONNECTION_SERVICE;
@@ -366,7 +375,7 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         try {
             List<Session> sessions = new ArrayList<Session>(pooledConnections.size());
             for (int i = 0; i < pooledConnections.size(); ++i) {
-                sessions.add(getSession(null, true));
+                sessions.add(getSession(null, null, true));
             }
             sessionCounts = getConnectionPoolSessionCounts();
             for (Session session: sessions) {
@@ -464,11 +473,13 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         num_cached_sessions = 0;
         max_cached_sessions = CLUSTER_MAX_CACHED_SESSIONS;
         cached_sessions = new LinkedList();
+        first_lru_list = null;
+        last_lru_list = null;
     }
 
     private void warmupSessionCache() {
         for (int i = 0; i < CLUSTER_WARMUP_CACHED_SESSIONS; i++) {
-            Session session = getSession(null, true);
+            Session session = getSession(null, null, true);
             storeCachedSession(session);
         }
     }
@@ -478,10 +489,26 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
             while (true) {
                 Session session = getCachedSession();
                 if (session == null)
-                    return;
+                    break;
                 SessionImpl ses = (SessionImpl) session;
                 ses.setCached(false);
                 session.close();
+            }
+            Iterator<Map.Entry<String, Queue<Session>>> iterator =
+                db_cached_sessions.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, Queue<Session>> entry = iterator.next();
+                String databaseName = entry.getKey();
+                while (true) {
+                    Session db_session = getCachedSession(databaseName);
+                    if (db_session == null) {
+                        break;
+                    }
+                    SessionImpl db_ses = (SessionImpl) db_session;
+                    db_ses.setCached(false);
+                    db_session.close();
+                }
+                iterator.remove();
             }
         }
     }
@@ -492,6 +519,10 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
      * in applications that frequently create and close Session objects.
      *
      * This method is called with synchronized, so already protected.
+     *
+     * The getCachedSession without parameters use the default database. This is
+     * handled as a special case for performance reasons. However the number of
+     * objects in the cache is still global over all databases.
      */
     private Session getCachedSession() {
         if (num_cached_sessions == 0) {
@@ -500,17 +531,45 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         num_cached_sessions--;
         Session cached_session = cached_sessions.poll();
         SessionImpl ses = (SessionImpl) cached_session;
+        if (ses == null) {
+            return null;
+        }
         ses.setCached(false);
+        remove_lru_list(ses);
+        return cached_session;
+    }
+
+    private Session getCachedSession(String databaseName) {
+        if (num_cached_sessions == 0) {
+            return null;
+        }
+
+        Queue<Session> db_queue = db_cached_sessions.get(databaseName);
+        if (db_queue == null) {
+            return null;
+        }
+        Session cached_session = db_queue.poll();
+        if (cached_session == null) {
+             return null;
+        }
+        num_cached_sessions--;
+        SessionImpl ses = (SessionImpl) cached_session;
+        ses.setCached(false);
+        remove_lru_list(ses);
         return cached_session;
     }
 
     public void storeCachedSession(Session session) {
         SessionImpl ses = (SessionImpl) session;
         synchronized(this) {
-            if (num_cached_sessions < max_cached_sessions) {
-                num_cached_sessions++;
-                ses.setCached(true);
-                cached_sessions.add(session);
+            num_cached_sessions++;
+            ses.setCached(true);
+            cached_sessions.add(session);
+            add_first_lru_list(ses);
+            if (num_cached_sessions > max_cached_sessions) {
+                ses = remove_last_lru_list();
+                num_cached_sessions--;
+            } else {
                 return;
             }
         }
@@ -518,16 +577,83 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         ses.close();
     }
 
+    public void storeCachedSession(Session session, String databaseName) {
+        SessionImpl ses = (SessionImpl) session;
+        synchronized(this) {
+            num_cached_sessions++;
+            ses.setCached(true);
+            Queue<Session> db_queue = db_cached_sessions.get(databaseName);
+            if (db_queue == null) {
+                db_queue = new LinkedList();
+                db_cached_sessions.put(databaseName, db_queue);
+            }
+            db_queue.add(session);
+            add_first_lru_list(ses);
+            if (num_cached_sessions > max_cached_sessions) {
+                ses = remove_last_lru_list();
+                num_cached_sessions--;
+            } else {
+                return;
+            }
+        }
+        ses.setCached(false);
+        ses.close();
+    }
+
+    public void add_first_lru_list(SessionImpl session) {
+        session.setNextLruList(first_lru_list);
+        session.setPrevLruList(null);
+        if (first_lru_list == null) {
+            last_lru_list = session;
+        } else {
+            first_lru_list.setPrevLruList(session);
+        }
+        first_lru_list = session;
+    }
+
+    public void remove_lru_list(SessionImpl session) {
+        SessionImpl next = session.getNextLruList();
+        SessionImpl prev = session.getPrevLruList();
+        if (prev == null) {
+            first_lru_list = next;
+        } else {
+            prev.setNextLruList(next);
+        }
+        if (next == null) {
+            last_lru_list = prev;
+        } else {
+            next.setPrevLruList(prev);
+        }
+    }
+
+    public SessionImpl remove_last_lru_list() {
+        SessionImpl last = last_lru_list;
+        SessionImpl remove_ses = null;
+        assert(last != null);
+        boolean isDefaultDatabase = last.isDefaultDatabase();
+        if (isDefaultDatabase) {
+            remove_ses = (SessionImpl)getCachedSession();
+        } else {
+            String databaseName = last.getDatabaseName();
+            remove_ses = (SessionImpl)getCachedSession(databaseName);
+        }
+        assert(remove_ses != null);
+        return remove_ses;
+    }
     /** Get a session to use with the cluster.
      *
      * @return the session
      */
     public Session getSession() {
-        return getSession(null, false);
+        return getSession(null, null, false);
     }
 
     public Session getSession(Map properties) {
-        return getSession(null, false);
+        return getSession(null, null, false);
+    }
+
+    public Session getSession(String database) {
+        return getSession(database, null, false);
     }
 
     /** Get a session to use with the cluster, overriding some properties.
@@ -536,7 +662,7 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
      * @param properties overriding some properties for this session
      * @return the session
      */
-    public Session getSession(Map properties, boolean internal) {
+    public Session getSession(String databaseName, Map properties, boolean internal) {
         try {
             Db db = null;
             synchronized(this) {
@@ -545,14 +671,29 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
                     throw new ClusterJUserException(local.message("ERR_SessionFactory_not_open"));
                 }
                 if (!internal) {
-                    Session session = getCachedSession();
-                    if (session != null) {
-                        return session;
+                    if (databaseName == null) {
+                         Session session = getCachedSession();
+                         if (session != null) {
+                             return session;
+                         }
                     }
+                    else {
+                         Session session = getCachedSession(databaseName);
+                         if (session != null) {
+                             return session;
+                         }
+                    }
+                }
+                boolean default_database = false;
+                if (databaseName == null) {
+                    databaseName = CLUSTER_DATABASE;
+                    default_database = true;
                 }
                 ClusterConnection clusterConnection = getClusterConnectionFromPool();
                 checkConnection(clusterConnection);
-                db = clusterConnection.createDb(CLUSTER_DATABASE, CLUSTER_MAX_TRANSACTIONS);
+                db = clusterConnection.createDb(databaseName,
+                                                default_database,
+                                                CLUSTER_MAX_TRANSACTIONS);
             }
             Dictionary dictionary = db.getDictionary();
             return new SessionImpl(this, properties, db, dictionary, CLUSTER_MAX_CACHED_INSTANCES);
@@ -816,7 +957,10 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
         return result;
     }
 
-    public String unloadSchema(Class<?> cls, Dictionary dictionary) {
+    public String unloadSchema(Class<?> cls,
+                               Dictionary dictionary,
+                               String databaseName,
+                               boolean defaultDatabase) {
         synchronized(typeToHandlerMap) {
             String tableName = null;
             DomainTypeHandler<?> domainTypeHandler = typeToHandlerMap.remove(cls);
@@ -824,11 +968,12 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
                 // remove the ndb dictionary cached table definition
                 tableName = domainTypeHandler.getTableName();
                 if (tableName != null) {
-                    if (logger.isDebugEnabled())logger.debug("Removing dictionary entry for table " + tableName
+                    if (logger.isDebugEnabled())logger.debug("Removing dictionary entry for table "
+                            + "db:" + databaseName + " " + tableName
                             + " for class " + cls.getName());
                     dictionary.removeCachedTable(tableName);
                     for (ClusterConnection clusterConnection: pooledConnections) {
-                        clusterConnection.unloadSchema(tableName);
+                        clusterConnection.unloadSchema(databaseName, tableName, defaultDatabase);
                     }
                 }
             }

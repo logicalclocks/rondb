@@ -804,4 +804,39 @@ public abstract class AbstractClusterJModelTest extends AbstractClusterJTest {
         return result;
     }
 
+    public int getCount(String db, String table) {
+        String statement = "select count(*) from "+db+"."+table;
+        PreparedStatement preparedStatement = null;
+
+        int count = 0;
+        try {
+            preparedStatement = connection.prepareStatement(statement);
+            ResultSet rs = preparedStatement.executeQuery();
+            while (rs.next()) {
+                count= rs.getInt(1);
+            }
+            if (!connection.getAutoCommit()) {
+                connection.commit();
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to get count of " + db+"."+table, e);
+        }
+        return count;
+    }
+
+    public void emptyTable(String db, String table) {
+        String statement = "delete from "+db+"."+table;
+        PreparedStatement preparedStatement = null;
+
+        int count = 0;
+        try {
+            preparedStatement = connection.prepareStatement(statement);
+            preparedStatement.execute();
+            if (!connection.getAutoCommit()) {
+                connection.commit();
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to delete all rows for " + db+"."+table, e);
+        }
+    }
 }

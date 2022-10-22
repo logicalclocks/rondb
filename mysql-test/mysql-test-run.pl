@@ -183,6 +183,7 @@ my $daemonize_mysqld   = 0;
 my $debug_d            = "d";
 my $exe_ndbmtd_counter = 0;
 my $exe_ndb_mgmd_counter = 0;
+my $exe_mysqld_counter = 0;
 my $source_dist        = 0;
 my $shutdown_report    = 0;
 my $valgrind_reports   = 0;
@@ -644,6 +645,18 @@ sub main {
                               slave_opt     => [],
                               template_path => "include/default_my.cnf",);
     unshift(@$tests, $tinfo);
+  }
+  my $secondary_engine_suite = 0;
+  if (defined $::secondary_engine and $secondary_engine_support) {
+    foreach(@$tests) {
+      if ($_->{name} =~ /^$::secondary_engine/) {
+        $secondary_engine_suite = 1;
+        last;
+      }
+    }
+  }
+  if (!$secondary_engine_suite) {
+    $secondary_engine_support = 0;
   }
 
   my $num_tests = @$tests;
@@ -2639,17 +2652,32 @@ sub find_mysqld {
   my ($mysqld_basedir) = $ENV{MTR_BINDIR} || @_;
 
   my @mysqld_names = ("mysqld");
-
   if ($opt_debug_server) {
     # Put mysqld-debug first in the list of binaries to look for
     mtr_verbose("Adding mysqld-debug first in list of binaries to look for");
     unshift(@mysqld_names, "mysqld-debug");
   }
-
-  return
-    my_find_bin($mysqld_basedir,
-                [ "runtime_output_directory", "libexec", "sbin", "bin" ],
-                [@mysqld_names]);
+  my $exec;
+  my $exec_v2;
+  $exec = my_find_bin($mysqld_basedir,
+            [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+            [@mysqld_names]);
+  if ($ENV{MTR_RONDB_V2}) {
+    if (($exe_mysqld_counter++ % 2) != 0) {
+      my @mysqld_names_v2 = ("mysqld_v2");
+      if ($opt_debug_server) {
+        mtr_verbose("Adding mysqld-debug first in list of binaries to look for");
+        unshift(@mysqld_names_v2, "mysqld-debug-v2");
+      }
+      $exec_v2 = my_find_bin($mysqld_basedir,
+                   [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+                   [@mysqld_names_v2]);
+    }
+  }
+  if ($exec_v2) {
+    return $exec_v2;
+  }
+  return $exec;
 }
 
 # Finds paths to various executables (other than mysqld) and sets
@@ -2674,9 +2702,7 @@ sub executable_setup () {
   $exe_mysql_migrate_keyring =
     mtr_exe_exists("$path_client_bindir/mysql_migrate_keyring");
   $exe_mysql_keyring_encryption_test =
-    my_find_bin($bindir,
-                [ "runtime_output_directory", "libexec", "sbin", "bin" ],
-                "mysql_keyring_encryption_test");
+    mtr_exe_exists("$path_client_bindir/mysql_keyring_encryption_test");
 
   # For custom OpenSSL builds, look for the my_openssl executable.
   $exe_openssl =
@@ -3141,6 +3167,7 @@ sub environment_setup {
       ndb_show_tables
       ndb_waiter
       ndbxfrm
+      ndb_secretsfile_reader
     );
 
     foreach my $tool ( @ndb_tools)
@@ -3607,7 +3634,11 @@ sub check_ndbcluster_support ($) {
 
   my $ndbcluster_supported = 0;
   if ($mysqld_variables{'ndb-connectstring'}) {
-    $ndbcluster_supported = 1;
+    $exe_ndbmtd =
+      my_find_bin($bindir,
+                  [ "runtime_output_directory", "libexec", "sbin", "bin" ],
+                  "ndbmtd", NOT_REQUIRED);
+    $ndbcluster_supported = $exe_ndbmtd ? 1 : 0;
   }
 
   if ($opt_skip_ndbcluster && $opt_include_ndbcluster) {
@@ -5034,7 +5065,7 @@ sub run_testcase ($) {
     return 1;
   }
 
-  my $test = start_mysqltest($tinfo);
+  my $test = start_mysqltest($tinfo, $config->group('mysqltest'));
 
   # Maintain a queue to keep track of server processes which have
   # died expectedly in order to wait for them to be restarted.
@@ -7047,8 +7078,9 @@ sub run_mysqltest ($$) {
   $proc->wait();
 }
 
-sub start_mysqltest ($) {
+sub start_mysqltest ($$) {
   my $tinfo = shift;
+  my $mysqltest = shift;
 
   my $exe = $exe_mysqltest;
   my $args;

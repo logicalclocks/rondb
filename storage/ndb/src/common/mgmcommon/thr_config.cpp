@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2022, Oracle and/or its affiliates.
+   Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -69,19 +70,19 @@ static const struct ParseEntries m_parse_entries[] =
  * thread types.
  */
 static const struct THRConfig::Entries m_entries[] =
-{
-  //type               min max                        exec thread   permanent mandatory
-  { THRConfig::T_MAIN,  0, 1,                         true,         true,     true },
-  { THRConfig::T_LDM,   0, MAX_NDBMT_LQH_THREADS,     true,         true,     true },
-  { THRConfig::T_RECV,  1, MAX_NDBMT_RECEIVE_THREADS, true,         true,     true },
-  { THRConfig::T_REP,   0, 1,                         true,         true,     true },
-  { THRConfig::T_IO,    1, 1,                         false,        true,     false },
-  { THRConfig::T_WD,    1, 1,                         false,        true,     false },
-  { THRConfig::T_TC,    0, MAX_NDBMT_TC_THREADS,      true,         true,     false },
-  { THRConfig::T_SEND,  0, MAX_NDBMT_SEND_THREADS,    true,         true,     false },
-  { THRConfig::T_IXBLD, 0, 1,                         false,        false,    false },
-  { THRConfig::T_QUERY, 0, MAX_NDBMT_QUERY_THREADS,   true,         true,     false },
-  { THRConfig::T_RECOVER, 0, MAX_NDBMT_QUERY_THREADS, false,        false,    false }
+{ 
+  //type                min max                       exec thread   permanent default_count
+  { THRConfig::T_MAIN,  0, 1,                         true,         true,     1 },
+  { THRConfig::T_LDM,   0, MAX_NDBMT_LQH_THREADS,     true,         true,     1 },
+  { THRConfig::T_RECV,  1, MAX_NDBMT_RECEIVE_THREADS, true,         true,     1 },
+  { THRConfig::T_REP,   0, 1,                         true,         true,     1 },
+  { THRConfig::T_IO,    1, 1,                         false,        true,     1 },
+  { THRConfig::T_WD,    1, 1,                         false,        true,     1 },
+  { THRConfig::T_TC,    0, MAX_NDBMT_TC_THREADS,      true,         true,     0 },
+  { THRConfig::T_SEND,  0, MAX_NDBMT_SEND_THREADS,    true,         true,     0 },
+  { THRConfig::T_IXBLD, 0, 1,                         false,        false,    0 },
+  { THRConfig::T_QUERY, 0, MAX_NDBMT_QUERY_THREADS,   true,         true,     0 },
+  { THRConfig::T_RECOVER, 0, MAX_NDBMT_QUERY_THREADS, false,        false,    0 }
 };
 
 static const struct ParseParams m_params[] =
@@ -114,6 +115,17 @@ THRConfig::getMaxEntries(Uint32 type)
   {
     if (m_entries[i].m_type == type)
       return m_entries[i].m_max_cnt;
+  }
+  return 0;
+}
+
+unsigned
+THRConfig::getMinEntries(Uint32 type)
+{
+  for (Uint32 i = 0; i<NDB_ARRAY_SIZE(m_entries); i++)
+  {
+    if (m_entries[i].m_type == type)
+      return m_entries[i].m_min_cnt;
   }
   return 0;
 }
@@ -177,6 +189,8 @@ THRConfig::add(T_Type t, unsigned realtime, unsigned spintime)
   tmp.m_no = m_threads[t].size();
   tmp.m_realtime = realtime;
   tmp.m_thread_prio = NO_THREAD_PRIO_USED;
+  tmp.m_shared_cpu_id = Uint32(~0);
+  tmp.m_shared_instance = 0;
   tmp.m_nosend = 0;
   if (spintime > 9000)
     spintime = 9000;
@@ -654,7 +668,6 @@ THRConfig::compute_automatic_thread_config(
     { 83, 1, 1, 228, 228, 228, 112, 114 }, // 912-927 CPUs
   };
   Uint32 cpu_cnt;
-  Uint32 num_cpus_per_core;
   if (num_cpus == 0)
   {
     struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
@@ -719,34 +732,11 @@ THRConfig::compute_automatic_thread_config(
      * as recover thread, thus we can decrease the amount of recover
      * threads with the amount of LDM threads.
      */
-    num_cpus_per_core = hwinfo->num_cpu_per_core;
-    if (cpu_cnt >= 16 &&
-        cpu_cnt == hwinfo->cpu_cnt_max &&
-        num_cpus_per_core > 2)
-    {
-      if (num_cpus_per_core == 3)
-      {
-        cpu_cnt *= 2;
-        cpu_cnt /= 3;
-        g_num_query_threads_per_ldm = 2;
-      }
-      else
-      {
-        num_cpus_per_core = 4;
-        cpu_cnt /= 2;
-        g_num_query_threads_per_ldm = 3;
-      }
-    }
-    else
-    {
-      num_cpus_per_core = 2;
-      g_num_query_threads_per_ldm = 1;
-    }
+    g_num_query_threads_per_ldm = 1;
   }
   else
   {
     cpu_cnt = num_cpus;
-    num_cpus_per_core = 2;
   }
 
   require(cpu_cnt > 0);
@@ -769,8 +759,10 @@ THRConfig::compute_automatic_thread_config(
   tc_threads = table[used_map_id].tc_threads;
   send_threads = table[used_map_id].send_threads;
   recv_threads = table[used_map_id].recv_threads;
+  ldm_threads += query_threads;
+  query_threads = 0;
 
-  recover_threads = cpu_cnt - (ldm_threads + query_threads);
+  recover_threads = cpu_cnt - ldm_threads;
 
   if (cpu_cnt < 5)
   {
@@ -783,7 +775,6 @@ THRConfig::compute_automatic_thread_config(
   Uint32 tot_threads = main_threads;
   tot_threads += rep_threads;
   tot_threads += ldm_threads;
-  tot_threads += query_threads;
   tot_threads += tc_threads;
   tot_threads += recv_threads;
 
@@ -793,31 +784,19 @@ THRConfig::compute_automatic_thread_config(
     recover_threads -=
       (tot_threads - NDBMT_MAX_BLOCK_INSTANCES);
   }
-  /**
-   *
-   * Ignore this calculation for now
-  if (num_cpus_per_core == 3)
-  {
-    query_threads *= 2;
+}
 
-    tc_threads *= 3;
-    tc_threads /= 2;
-    send_threads *= 3;
-    send_threads /= 2;
-    recv_threads *= 3;
-    recv_threads /= 2;
-    recover_threads *= 3;
-    recover_threads /= 2;
-  }
-  else if (num_cpus_per_core == 4)
+unsigned
+THRConfig::get_shared_ldm_instance(Uint32 instance, Uint32 num_ldm_threads)
+{
+  if (num_ldm_threads > 0)
   {
-    query_threads *= 3;
-    tc_threads *= 2;
-    send_threads *= 2;
-    recv_threads *= 2;
-    recover_threads *= 2;
+    return m_threads[T_LDM][instance - 1].m_shared_instance;
   }
-  */
+  else
+  {
+    return m_threads[T_RECV][instance - 1].m_shared_instance;
+  }
 }
 
 int
@@ -844,8 +823,7 @@ THRConfig::do_parse(unsigned realtime,
                                   send_threads,
                                   recv_threads);
   g_eventLogger->info("Auto thread config uses:\n"
-                      " %u LDM threads,\n"
-                      " %u Query threads,\n"
+                      " %u LDM+Query threads,\n"
                       " %u tc threads,\n"
                       " %u Recover threads,\n"
                       " %u main threads,\n"
@@ -853,7 +831,6 @@ THRConfig::do_parse(unsigned realtime,
                       " %u recv threads,\n"
                       " %u send threads",
                       ldm_threads,
-                      query_threads,
                       tc_threads,
                       recover_threads,
                       main_threads,
@@ -894,10 +871,6 @@ THRConfig::do_parse(unsigned realtime,
   {
     add(T_TC, realtime, spintime);
   }
-  for (Uint32 i = 0; i < query_threads; i++)
-  {
-    add(T_QUERY, realtime, spintime);
-  }
   if (recover_threads > query_threads)
   {
     Uint32 num_recover_threads_only = recover_threads - query_threads;
@@ -922,30 +895,59 @@ THRConfig::do_parse(unsigned realtime,
      * in an automated fashion. We have prepared the HW information such
      * that we can simply assign the CPUs from the CPU map.
      */
+    Uint32 thread_ldm_type = T_LDM;
+    if (ldm_threads == 0)
+    {
+      thread_ldm_type = T_RECV;
+    }
     Ndb_SetOnlineAsVirtL3CPU();
     Uint32 num_query_threads_per_ldm = g_num_query_threads_per_ldm;
     num_rr_groups =
       Ndb_CreateCPUMap(ldm_threads, num_query_threads_per_ldm);
     g_eventLogger->info("Number of RR Groups = %u", num_rr_groups);
     Uint32 next_cpu_id = Ndb_GetFirstCPUInMap();
-    Uint32 query_instance = 0;
-    for (Uint32 i = 0; i < ldm_threads; i++)
+    Uint32 num_database_threads = ldm_threads;
+    if (num_database_threads == 0)
+    {
+      num_database_threads = recv_threads;
+    }
+    for (Uint32 i = 0; i < num_database_threads; i++)
     {
       require(next_cpu_id != Uint32(RNIL));
-      m_threads[T_LDM][i].m_bind_no = next_cpu_id;
-      m_threads[T_LDM][i].m_bind_type = T_Thread::B_CPU_BIND;
+      m_threads[thread_ldm_type][i].m_bind_no = next_cpu_id;
+      m_threads[thread_ldm_type][i].m_bind_type = T_Thread::B_CPU_BIND;
       next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
-      m_threads[T_LDM][i].m_core_bind = true;
-      for (Uint32 j = 0; j < num_query_threads_per_ldm; j++)
+      m_threads[thread_ldm_type][i].m_core_bind = true;
+
+      Uint32 core_cpu_ids[MAX_NUM_CPUS];
+      Uint32 num_core_cpus = 0;
+      Ndb_GetCoreCPUIds(next_cpu_id,
+                        &core_cpu_ids[0],
+                        num_core_cpus);
+      if (num_core_cpus >= 2)
       {
-        require(next_cpu_id != Uint32(RNIL));
-        m_threads[T_QUERY][query_instance].m_bind_no = next_cpu_id;
-        m_threads[T_QUERY][query_instance].m_bind_type = T_Thread::B_CPU_BIND;
-        m_threads[T_QUERY][query_instance].m_core_bind = true;
-        next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
-        query_instance++;
+        Uint32 neighbour_cpu = core_cpu_ids[0];
+        if (neighbour_cpu == next_cpu_id)
+        {
+          neighbour_cpu = core_cpu_ids[1];
+        }
+        m_threads[thread_ldm_type][i].m_shared_cpu_id = neighbour_cpu;
       }
     }
+    for (Uint32 i = 0; i < num_database_threads; i++)
+    {
+      Uint32 my_cpu_id = m_threads[thread_ldm_type][i].m_bind_no;
+      for (Uint32 j = i; j < ldm_threads; j++)
+      {
+        if (m_threads[T_LDM][i].m_shared_cpu_id != Uint32(~0) &&
+            m_threads[T_LDM][i].m_shared_cpu_id == my_cpu_id)
+        {
+          m_threads[thread_ldm_type][i].m_shared_instance = j + 1;
+          m_threads[thread_ldm_type][j].m_shared_instance = i + 1;
+        }
+      }
+    }
+
     Uint32 tc_count = 0;
     Uint32 main_count = 0;
     Uint32 send_count = 0;
@@ -1421,11 +1423,11 @@ THRConfig::bind_unbound(Vector<T_Thread>& vec, unsigned cpu)
 int
 THRConfig::do_validate()
 {
-  /**
-   * Check that there aren't too many of any thread type
-   */
   for (unsigned i = 0; i< NDB_ARRAY_SIZE(m_threads); i++)
   {
+    /**
+     * Check that there aren't too many or too few of any thread type
+     */
     if (m_threads[i].size() > getMaxEntries(i))
     {
       m_err_msg.assfmt("Too many instances(%u) of %s max supported: %u",
@@ -1433,10 +1435,24 @@ THRConfig::do_validate()
                        getEntryName(i),
                        getMaxEntries(i));
       return -1;
+    }    
+    if (m_threads[i].size() < getMinEntries(i))
+    {
+      m_err_msg.assfmt("Too few instances(%u) of %s min supported: %u",
+                       m_threads[i].size(),
+                       getEntryName(i),
+                       getMinEntries(i));
+      return -1;
     }
   }
 
-  /* No longer any special restrictions on the number of LDM threads */
+  if(m_threads[T_REP].size() > 0 && m_threads[T_MAIN].size() == 0)
+  {
+    m_err_msg.assfmt("Can't set a %s thread without a %s thread.",
+                     getEntryName(T_REP),
+                     getEntryName(T_MAIN));
+    return -1;
+  }
   return 0;
 }
 
@@ -1468,7 +1484,7 @@ THRConfig::getConfigString()
   for (unsigned i = 0; i < NDB_ARRAY_SIZE(m_threads); i++)
   {
     const char * name = getEntryName(i);
-    if(m_threads[i].size() == 0 && m_entries[i].m_mandatory)
+    if(m_threads[i].size() == 0 &&  m_setInThreadConfig.get(i))
     {
       sep = m_cfg_string.empty() ? "" : ",";
       m_cfg_string.appfmt("%s%s={count=0}", sep, name);
@@ -1772,43 +1788,33 @@ int THRConfig::handle_spec(const char* str,
 }
 
 int
-THRConfig::do_validate_thread_counts()
+THRConfig::do_validate_thread_counts() 
 {
-  /**
-   * Check that mandatory threads were configured in ThreadConfig string
-   */
-  for (Uint32 i = 0; i < T_END; i++)
-  {
-    if (m_entries[i].m_mandatory &&
-        !m_setInThreadConfig.get(i))
-    {
-      m_err_msg.assfmt("Missing mandatory thread %s in ThreadConfig.",
-                       getEntryName(i));
-      return -1;
-    }
-
+  for (Uint32 i = 0; i < T_END; i++) {
     /**
-     * Checks that the thread count of each thread set in threadConfig is >= m_min_cnt
+     * Checks that the thread count of each thread set in threadConfig 
+     * is >= m_min_cnt and  <= m_max_count
     */
 
     if (m_setInThreadConfig.get(i) &&
-        m_threads[i].size() < m_entries[i].m_min_cnt)
+        m_threads[i].size() < m_entries[i].m_min_cnt) 
     {
-      m_err_msg.assfmt("Thread count of thread type %s can't be < %u.",
+      m_err_msg.assfmt("Too few instances(%u) of %s min supported: %u",
+                       m_threads[i].size(),
                        getEntryName(i),
-                       m_entries[i].m_min_cnt);
+                       getMinEntries(i));
+      return -1;
+    }
+    if (m_setInThreadConfig.get(i) &&
+        m_threads[i].size() > m_entries[i].m_max_cnt) 
+    {
+        m_err_msg.assfmt("Too many instances(%u) of %s max supported: %u",
+                   m_threads[i].size(),
+                   getEntryName(i),
+                   getMaxEntries(i));
       return -1;
     }
   }
-
-  if(m_threads[T_REP].size() > 0 && m_threads[T_MAIN].size() == 0)
-  {
-    m_err_msg.assfmt("Can't set a %s thread without a %s thread.",
-                     getEntryName(T_REP),
-                     getEntryName(T_MAIN));
-    return -1;
-  }
-
   return 0;
 }
 
@@ -1821,20 +1827,18 @@ THRConfig::do_parse(const char * ThreadConfig,
   if (ret != 0)
     return ret;
 
+  ret = do_validate_thread_counts();
+  if (ret != 0)
+    return ret;
   for (Uint32 i = 0; i < T_END; i++)
   {
-    if (m_entries[i].m_mandatory || m_setInThreadConfig.get(i))
-      continue;
-    while (m_threads[i].size() < m_entries[i].m_min_cnt)
+    if (m_setInThreadConfig.get(i)) continue;
+    while (m_threads[i].size() < m_entries[i].m_default_count)
     {
       add((T_Type)i, realtime, spintime);
     }
   }
-
-  ret = do_validate_thread_counts();
-  if (ret != 0)
-    return ret;
-
+  
   const bool allow_too_few_cpus =
     m_threads[T_TC].size() == 0 &&
     m_threads[T_SEND].size() == 0 &&
@@ -1922,6 +1926,10 @@ TAPTEST(thr_config)
   {
     const char * ok[] =
       {
+        "main",
+        "ldm",
+        "recv",
+        "rep",
         "main,rep,recv,ldm,ldm",
         "main,rep,recv,ldm={count=3},ldm",
         "main,rep,recv,ldm={cpubind=1-2,5,count=3},ldm",
@@ -1941,7 +1949,7 @@ TAPTEST(thr_config)
         /* Overlap idxbld + others */
         "main, rep, recv, ldm={count=4, cpuset=1-4}, tc={count=4, cpuset=5,6,7},"
         "io={cpubind=8}, idxbld={cpuset=1-8}",
-        /* Overlap via cpubind */ 
+        /* Overlap via cpubind */
         "main, rep, recv, ldm={count=1, cpubind=1}, idxbld={count=1, cpubind=1}",
         /* Overlap via same cpuset, with temp defined first */
         "main, rep, recv, idxbld={cpuset=1-4}, ldm={count=4, cpuset=1-4}",
@@ -1949,10 +1957,10 @@ TAPTEST(thr_config)
         "main, rep, recv, ldm={count=4, cpuset=1-4}, tc={count=4, cpuset=5,6,7},"
         "io={cpubind=8}",
         "main,rep,recv,ldm,ldm,ldm", /* 3 LDM's allowed */
-        "main,ldm,recv,rep", /* Mandatory threads only */
+        "main,ldm,recv,rep", /* Execution threads with default count > 0 only */
         "main,rep={count=0},recv,ldm", /* 0 rep allowed */
         "main={count=0},rep={count=0},recv,ldm", /* 0 rep and 0 main allowed */
-        "main={count=0},rep={count=0},recv,ldm={count=0}", /* 0 rep and 0 main and 0 ldm allowed */
+        "main={count=0},rep={count=0},recv,ldm={count=0}", /* 0 rep, 0 main and 0 ldm allowed */
         0
       };
 
@@ -1988,8 +1996,9 @@ TAPTEST(thr_config)
         "ldm={cpubind=1-3,count=3,thread_prio=-1,spintime=1 },ldm",
           /* thread_prio out of range */
         "idxbld={ spintime=12 }",
-        "rep,recv,ldm", /* missing mandatory main */
         "rep={count=1},main={count=0},recv,ldm", /* rep count=1 requires main count=1 */
+        "main={count=2}", /* too many main threads*/
+        "recv={count=0}", /* too few recv threads*/
         0
       };
 
@@ -2144,6 +2153,32 @@ TAPTEST(thr_config)
       "main={count=0},rep={count=0},recv,ldm={count=4,cpubind=1,4,5,6},tc,tc",
       "FAIL",
       "Too few CPU's specifed with LockExecuteThreadToCPU. This is not supported when using multiple TC threads",
+
+      "1-5",
+      "tc",
+      "OK",
+      "main={cpubind=1},ldm={cpubind=2},recv={cpubind=3},rep={cpubind=4},tc={cpubind=5}",
+
+      /* order does not matter */
+      "1-4",
+      "main, ldm",
+      "OK",
+      "main={cpubind=1},ldm={cpubind=2},recv={cpubind=3},rep={cpubind=4}",
+
+      "1-4",
+      "ldm, main",
+      "OK",
+      "main={cpubind=1},ldm={cpubind=2},recv={cpubind=3},rep={cpubind=4}",
+
+      "1-5",
+      "main={count=0}",
+      "FAIL",
+      "Can't set a rep thread without a main thread.",
+
+      "1-2",
+      "main={count=0},rep={count=0}",
+      "OK",
+      "main={count=0},ldm={cpubind=1},recv={cpubind=2},rep={count=0}",
 
       // END
       0

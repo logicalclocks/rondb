@@ -441,7 +441,7 @@ SimulatedBlock::handle_send_failed(SendStatus ss,
                                "Out of SendBufferMemory in sendSignal", "");
     break;
   case SEND_MESSAGE_TOO_BIG:
-    /* If message is too big when sending CmvmiDummySignal log a convinient
+    /* If message is too big when sending CmvmiDummySignal log a convenient
      * message about it to.
      * Note that CmvmiDummySignal is not intended for production usage but for
      * use by test cases.
@@ -2016,7 +2016,7 @@ SimulatedBlock::sendSignalWithDelay(BlockReference ref,
   globalTimeQueue.insert(signal, delayInMilliSeconds);
 #endif
 
-  // befor 2nd parameter to globalTimeQueue.insert
+  // before 2nd parameter to globalTimeQueue.insert
   // (Priority)theSendSig[sigIndex].jobBuffer
 }
 
@@ -4731,7 +4731,7 @@ SimulatedBlock::cmp_attr(Uint32 attrDesc, const CHARSET_INFO* cs,
 {
   const Uint32 typeId = AttributeDescriptor::getType(attrDesc);
   NdbSqlUtil::Cmp *cmp = NdbSqlUtil::getType(typeId).m_cmp;
-  return (*cmp)(cs, s1, s1Len, s2, s1Len);
+  return (*cmp)(cs, s1, s1Len, s2, s2Len);
 }
 
 
@@ -5392,7 +5392,7 @@ SimulatedBlock::checkNodeFailSequence(Signal* signal)
   /**
    * Make sure that a signal being part of node-failure handling
    *   from a remote node, does not get to us before we got the NODE_FAILREP
-   *   (this to avoid tricky state handling to some extent when receving
+   *   (this to avoid tricky state handling to some extent when receiving
    *    signals from old nodes)
    *
    * To ensure this, we send the signal via the transporter for the remote
@@ -5770,12 +5770,8 @@ SimulatedBlock::print_static_distr_info(DistributionHandler * const handle)
   {
     g_eventLogger->info("LDM Group %u contains LDM thread %u",
                         ldm, ldm + 1);
-    Uint32 first_query_instance = (ldm + 1) * m_num_query_thread_per_ldm;
-    for (Uint32 qt = 0; qt < m_num_query_thread_per_ldm; qt++)
-    {
-      g_eventLogger->info("LDM Group %u contains Query thread %u",
-                          ldm, first_query_instance + qt);
-    }
+    g_eventLogger->info("LDM Thread %u contains Query Worker",
+                        ldm + 1);
   }
   /* Print the Round Robin groups */
   Uint32 found_ldm = 0;
@@ -5812,82 +5808,66 @@ SimulatedBlock::print_debug_sched_stats(DistributionHandler * const handle)
     return;
   }
   deb_count = 0;
-  g_eventLogger->info("LQHKEYREQ LDM: %llu, LQHKEYREQ LQ: %llu"
+  g_eventLogger->info("LQHKEYREQ LQH: %llu"
+                      ", LQHKEYREQ QT: %llu"
                       ", LQHKEYREQ RR: %llu",
-    handle->m_lqhkeyreq_ldm,
-    handle->m_lqhkeyreq_lq,
+    handle->m_lqhkeyreq_lqh,
+    handle->m_lqhkeyreq_qt,
     handle->m_lqhkeyreq_rr);
-  g_eventLogger->info("SCAN_FRAGREQ LDM %llu, SCAN_FRAGREQ LQ: %llu"
+  g_eventLogger->info("SCAN_FRAGREQ LQH: %llu"
+                      ", SCAN_FRAGREQ QT: %llu"
                       ", SCAN_FRAGREQ RR: %llu",
-    handle->m_scan_fragreq_ldm,
-    handle->m_scan_fragreq_lq,
+    handle->m_scan_fragreq_lqh,
+    handle->m_scan_fragreq_qt,
     handle->m_scan_fragreq_rr);
-  g_eventLogger->info("LQHKEYREQ LDM instances %u %u %u %u %u %u %u %u",
-    handle->m_lqhkeyreq_ldm_count[1], handle->m_lqhkeyreq_ldm_count[2],
-    handle->m_lqhkeyreq_ldm_count[3], handle->m_lqhkeyreq_ldm_count[4],
-    handle->m_lqhkeyreq_ldm_count[5], handle->m_lqhkeyreq_ldm_count[6],
-    handle->m_lqhkeyreq_ldm_count[7], handle->m_lqhkeyreq_ldm_count[8]);
   g_eventLogger->info("LQHKEYREQ QT instances %u %u %u %u %u %u %u %u",
     handle->m_lqhkeyreq_qt_count[1], handle->m_lqhkeyreq_qt_count[2],
     handle->m_lqhkeyreq_qt_count[3], handle->m_lqhkeyreq_qt_count[4],
     handle->m_lqhkeyreq_qt_count[5], handle->m_lqhkeyreq_qt_count[6],
     handle->m_lqhkeyreq_qt_count[7], handle->m_lqhkeyreq_qt_count[8]);
-  g_eventLogger->info("SCAN_FRAGREQ LDM instances %u %u %u %u %u %u %u %u",
-    handle->m_scan_fragreq_ldm_count[1], handle->m_scan_fragreq_ldm_count[2],
-    handle->m_scan_fragreq_ldm_count[3], handle->m_scan_fragreq_ldm_count[4],
-    handle->m_scan_fragreq_ldm_count[5], handle->m_scan_fragreq_ldm_count[6],
-    handle->m_scan_fragreq_ldm_count[7], handle->m_scan_fragreq_ldm_count[8]);
   g_eventLogger->info("SCAN_FRAGREQ QT instances %u %u %u %u %u %u %u %u",
     handle->m_scan_fragreq_qt_count[1], handle->m_scan_fragreq_qt_count[2],
     handle->m_scan_fragreq_qt_count[3], handle->m_scan_fragreq_qt_count[4],
     handle->m_scan_fragreq_qt_count[5], handle->m_scan_fragreq_qt_count[6],
     handle->m_scan_fragreq_qt_count[7], handle->m_scan_fragreq_qt_count[8]);
-  handle->m_lqhkeyreq_ldm = 0;
-  handle->m_lqhkeyreq_lq = 0;
+  handle->m_lqhkeyreq_lqh = 0;
+  handle->m_lqhkeyreq_qt = 0;
   handle->m_lqhkeyreq_rr = 0;
-  handle->m_scan_fragreq_ldm = 0;
-  handle->m_scan_fragreq_lq = 0;
+  handle->m_scan_fragreq_lqh = 0;
+  handle->m_scan_fragreq_qt = 0;
   handle->m_scan_fragreq_rr = 0;
-  for (Uint32 i = 0; i < MAX_NDBMT_LQH_THREADS; i++)
-  {
-    handle->m_lqhkeyreq_ldm_count[i] = 0;
-    handle->m_scan_fragreq_ldm_count[i] = 0;
-  }
-  for (Uint32 i = 0; i < MAX_NDBMT_QUERY_THREADS; i++)
+  for (Uint32 i = 0;
+       i < MAX_NDBMT_LQH_THREADS+MAX_NDBMT_QUERY_THREADS;
+       i++)
   {
     handle->m_lqhkeyreq_qt_count[i] = 0;
     handle->m_scan_fragreq_qt_count[i] = 0;
   }
+  Uint64 *total_signals;
   Uint64 *total_words;
-  Uint64 *est_stats;
+  Uint64 *est_stat;
   for (Uint32 j = 1; j <= 8; j++)
   {
-    get_jbb_estimated_stats(DBLQH, j, &total_words, &est_stats);
-    g_eventLogger->info("LDM(%u) total: %llu, %llu %llu %llu %llu %llu"
-                        " %llu %llu %llu %llu %llu",
-                        j, *total_words,
-                        est_stats[0], est_stats[1], est_stats[2], est_stats[3],
-                        est_stats[4], est_stats[5], est_stats[6], est_stats[7],
-                        est_stats[8], est_stats[9]);
+    get_jbb_estimated_stats(DBLQH,
+                            j,
+                            &total_signals,
+                            &total_words,
+                            &est_stat);
+    g_eventLogger->info("LDM(%u) total_signals: %llu, total_words: %llu, "
+                        "%llu %llu %llu %llu "
+                        "%llu %llu %llu %llu "
+                        "%llu %llu %llu %llu "
+                        "%llu %llu %llu %llu ",
+                        j, *total_signals, *total_words,
+                        est_stat[0], est_stat[1], est_stat[2], est_stat[3],
+                        est_stat[4], est_stat[5], est_stat[6], est_stat[7],
+                        est_stat[8], est_stat[9], est_stat[10],est_stat[11],
+                        est_stat[12],est_stat[13],est_stat[14],est_stat[15]);
     *total_words = 0;
-    for (Uint32 i = 0; i < 10; i++)
+    *total_signals = 0;
+    for (Uint32 i = 0; i < 16; i++)
     {
-      est_stats[i] = 0;
-    }
-  }
-  for (Uint32 j = 1; j <= 8; j++)
-  {
-    get_jbb_estimated_stats(DBQLQH, j, &total_words, &est_stats);
-    g_eventLogger->info("QT(%u) total: %llu, %llu %llu %llu %llu %llu"
-                        " %llu %llu %llu %llu %llu",
-                        j, *total_words,
-                        est_stats[0], est_stats[1], est_stats[2], est_stats[3],
-                        est_stats[4], est_stats[5], est_stats[6], est_stats[7],
-                        est_stats[8], est_stats[9]);
-    *total_words = 0;
-    for (Uint32 i = 0; i < 10; i++)
-    {
-      est_stats[i] = 0;
+      est_stat[i] = 0;
     }
   }
 #endif
@@ -5902,20 +5882,8 @@ SimulatedBlock::get_load_indicators(DistributionHandler * const handle,
   prefetch_load_indicators(&m_rr_group[0], rr_group);
   Uint32 num_ldm_threads = globalData.ndbMtLqhThreads;
   Uint32 first_ldm_instance = globalData.ndbMtMainThreads;
-  Uint32 num_query_threads = globalData.ndbMtQueryThreads;
-  Uint32 num_distr_threads = num_ldm_threads + num_query_threads;
   Uint32 min_load = 0xFF;
   for (Uint32 i = 0; i < num_ldm_threads; i++)
-  {
-    if (m_rr_group[i] == rr_group)
-    {
-      Uint32 thr_no = i + first_ldm_instance;
-      struct LdmThreadState *ldm_state = &handle->m_ldm_state[i];
-      ldm_state->m_load_indicator = get_load_indicator(thr_no);
-      min_load = MIN(min_load, ldm_state->m_load_indicator);
-    }
-  }
-  for (Uint32 i = num_ldm_threads; i < num_distr_threads; i++)
   {
     if (m_rr_group[i] == rr_group)
     {
@@ -5935,14 +5903,6 @@ SimulatedBlock::get_load_indicators(DistributionHandler * const handle,
     {
       if (m_rr_group[i] == rr_group)
       {
-        struct LdmThreadState *ldm_state = &handle->m_ldm_state[i];
-        ldm_state->m_load_indicator -= (min_load - 1);
-      }
-    }
-    for (Uint32 i = num_ldm_threads; i < num_distr_threads; i++)
-    {
-      if (m_rr_group[i] == rr_group)
-      {
         struct QueryThreadState *q_state = &handle->m_query_state[i];
         q_state->m_load_indicator -= (min_load - 1);
       }
@@ -5953,14 +5913,21 @@ SimulatedBlock::get_load_indicators(DistributionHandler * const handle,
 
 /**
  * We are sending an LQHKEYREQ signal using COMMITTED READ to either a
- * query thread or an LDM thread. This code makes the selection of
- * where to send it and returns a block reference where the signal
- * should be sent.
+ * query thread or an LDM thread. Since RonDB 21.10 and included in
+ * new LTS version RonDB 22.10 we also send LQHKEYREQ for locked reads
+ * to either an LDM or Query block.
+ * Previous to version RonDB 22.10 the query blocks
+ * executed in their own thread. In RonDB this changed such that each
+ * LDM thread contains both blocks for LDM execution and blocks for
+ * query execution.
+ *
+ * This code makes the selection of where to send it and returns a
+ * block reference where the signal should be sent.
  *
  * The selection is based on load levels. We use two levels of loads
  * to impact this decision. We use a long-term scheduling based on
  * the CPU load the last 100 milliseconds. Thus we change the
- * scheduling 10 times per second to accomodate the load of the various
+ * scheduling 10 times per second to accommodate the load of the various
  * threads. This means that e.g. if a certain LDM thread is very busy
  * with write actions and other things it will get a lower risk of being
  * selected here in the next scheduling decision.
@@ -5968,7 +5935,7 @@ SimulatedBlock::get_load_indicators(DistributionHandler * const handle,
  * The 100 ms scheduling takes into account long-term changes of the load.
  * However we need a mechanism to also react a bit quicker. If a complex
  * query starts up and starts consuming large amounts of CPU it could very
- * will spawn up and complete within one 100 ms interval. Thus it would
+ * well spawn up and complete within one 100 ms interval. Thus it would
  * not impact the scheduling at all. It could still in a very short time
  * consume a major portion of the CPU power.
  *
@@ -5994,56 +5961,37 @@ SimulatedBlock::get_load_indicators(DistributionHandler * const handle,
  *
  * 1. Scheduling
  * -------------
+ * The principle used is fairly simple. The THRMAN will decide the work
+ * balance to use for the next 100 ms. The work balance is sent with
+ * an array of weights. These weights range between 1 and 16. At the
+ * start of each such new interval each thread gets a new weight.
  *
- * 1.1. LDM Scheduling
- * -------------------
- * The scheduling to an LDM thread follows the following pattern.
- * We calculate a weight based on the load information once every 100 ms.
- * If no load is found we start at a weight of 33. The idea with this weight
- * is that 33% of the scheduled LQHKEYREQ/SCAN_FRAGREQ will be sent to the
- * LDM thread owning the data. A higher weight means that the LDM thread is
- * not so busy and can handle a larger portion of the load and a lower weight
- * means that it is busy and needs to take a smaller portion of the load.
+ * The execution starts with assigning each thread its weight in
+ * distribute_new_weights.
+ * If the weight is e.g. 10, it means that we can execute 10
+ * LQHKEYREQ signals at normal load. If load increases this will
+ * consume those 10 weights faster. We will first try to use the
+ * LDM thread where data resides, next the query block in the LDM
+ * thread executing on the same hyperthread. Finally if both of
+ * those has already "stolen" their weights we will follow a pattern
+ * that directs us to use the remaining LDM threads in a pattern
+ * that makes most use of LDM threads with higher weight.
  *
- * We increment
- * m_current_weight_lqhkeyreq_count/m_current_weight_scan_fragreq_count
- * by the weight (m_current_weight) each time we make a scheduling decision.
- * The 1 ms load gets into the picture by dividing the weight by the
- * load indicator (normally equal to 1). Now if the current weight count
- * is smaller than the current weight, then we will use the LDM thread.
- * Otherwise we will move to decide which Query thread that should handle
- * the signal instead.
- *
+ * We track the number of signals sent and each time the counter
+ * comes to 48 (a key requests adds 1 and a scan requests adds 5)
+ * we will check the load indicators of all other threads and set
+ * new load indicators. The load indicators are relative, so if
+ * all threads are overloaded, the least loaded will still have
+ * load 1.
+ * 
  * The same code for deciding to handle by LDM is also in
  * get_scan_fragreq_ref, but it has its own counters. Also the decision
  * is kept for a number of signals to get a bit of batching happening.
  * We do currently more batching of LQHKEYREQ and not so much for scans.
  * It is intended that this should be modelled and tested a bit more.
  *
- * 1.2. Query thread scheduling
- * ----------------------------
- * We have decided to use a query thread and not the LDM thread based on
- * the above discussion. The next step is to pick which query thread to
- * use. We will always use a query thread within the same Round Robin
- * group.
- *
- * The preference is the use a query thread in the same LDM group as the
- * LDM thread. Normally the decision would be a round robin decision based
- * on the weights of the query thread. However we can "steal" from the
- * round robin up to a certain point. This means that if we decide to
- * schedule it to the same LDM group we have to ensure that we skip this
- * query thread the next time it is selected by the round robin selection.
- *
- * We can "steal" up to a maximum level which is based on the weight. With
- * high weight we get scheduled often and thus we can handle many "steals".
- * The load indicator is used here by adding to the stolen signals each
- * time the thread is used. Thus we will skip a number of signals after
- * using the thread at high load.
- *
- * The weight count is slightly modified for scans to give LDM threads a
- * bit higher priority to run scans. The reason is that it is less
- * concurrency issues with running key lookups in query threads and thus
- * we want to give LDM threads a bit more space to run scan queries.
+ * Scans consume 4 weights instead, to handle this we multiply the
+ * weight we receive by 4.
  */
 Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
                                          Uint32 ldm_instance_no)
@@ -6052,89 +6000,87 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
   Uint32 rr_group = m_rr_group[ldm_instance_no - 1];
   struct RoundRobinInfo *rr_info = 
     (struct RoundRobinInfo*)&handle->m_rr_info[rr_group];
+  Uint32 block_num = DBLQH;
+  Uint32 load_counter = rr_info->m_load_indicator_counter;
+  ndbassert(ldm_instance_no > 0);
+  load_counter++;
+  if (likely(load_counter < m_rr_load_refresh_count))
   {
-    /**
-     * load_counter tracks when we need to gather load information
-     * from the threads in the Round Robin group.
-     *
-     */
-    Uint32 load_counter = rr_info->m_load_indicator_counter;
-    struct LdmThreadState *ldm_state =
-      &handle->m_ldm_state[ldm_instance_no - 1];
-    Uint32 counter = ldm_state->m_lqhkeyreq_counter;
-    Uint32 current_weight_count = ldm_state->m_current_weight_lqhkeyreq_count;
-    Uint32 load_indicator = ldm_state->m_load_indicator;
-    Uint32 curr_weight = ldm_state->m_current_weight / load_indicator;
-    counter++;
-    load_counter++;
-    if (counter >= m_num_lqhkeyreq_counts)
-    {
-      current_weight_count += curr_weight;
-      if (current_weight_count >= MAX_LDM_DISTRIBUTION_WEIGHT)
-      {
-        current_weight_count -= MAX_LDM_DISTRIBUTION_WEIGHT;
-      }
-      counter = 0;
-      ldm_state->m_current_weight_lqhkeyreq_count = current_weight_count;
-    }
-    ldm_state->m_lqhkeyreq_counter = counter + 1;
-    if (likely(load_counter < m_rr_load_refresh_count))
-    {
-      rr_info->m_load_indicator_counter = load_counter;
-    }
-    else
-    {
-      get_load_indicators(handle, rr_group);
-    }
-    if (current_weight_count < curr_weight)
-    {
-      /**
-       * We load balance between LDM thread and the query threads.
-       * In this case we have selected to use the LDM thread.
-       */
-      Uint32 ref = numberToRef(DBLQH,
-                               ldm_instance_no,
-                               getOwnNodeId());
-#ifdef DEBUG_SCHED_STATS
-      handle->m_lqhkeyreq_ldm++;
-      handle->m_lqhkeyreq_ldm_count[ldm_instance_no]++;
-#endif
-      return ref;
-    }
+    rr_info->m_load_indicator_counter = load_counter;
   }
-  /**
-   * We selected to choose a query thread for execution of this query.
-   * We will first attempt to use the query thread local to the LDM
-   * thread.
-   */
+  else
   {
-    struct QueryThreadState *q_state =
-      &handle->m_query_state[ldm_instance_no - 1];
-    Uint32 max_count = q_state->m_max_lqhkeyreq_count;
-    Uint32 load_indicator = q_state->m_load_indicator;
-    Uint32 current_stolen_count = q_state->m_current_stolen_lqhkeyreq;
-    if (current_stolen_count <= max_count)
-    {
-      /**
-       * There was sufficient room to steal a slot for sending to the
-       * query thread of the same instance as the LDM thread. So send
-       * to this query thread and increment the current stolen count.
-       */
-      assert(load_indicator > 0);
-      Uint32 ref = numberToRef(DBQLQH,
-                               ldm_instance_no,
-                               getOwnNodeId());
-      q_state->m_current_stolen_lqhkeyreq = current_stolen_count +
-                                            load_indicator;
-#ifdef DEBUG_SCHED_STATS
-      handle->m_lqhkeyreq_lq++;
-      handle->m_lqhkeyreq_qt_count[ldm_instance_no]++;
+    get_load_indicators(handle, rr_group);
+  }
+#ifdef VM_TRACE
+  Uint32 num_ldm_instances = getNumLDMInstances();
+  ndbassert(num_ldm_instances >= ldm_instance_no);
 #endif
-      return ref;
+  {
+    Uint32 query_instance_no = ldm_instance_no;
+    Uint32 block_instance_no = ldm_instance_no;
+    for (Uint32 i = 0; i < 2; i++)
+    {
+      struct QueryThreadState *q_state =
+        &handle->m_query_state[query_instance_no - 1];
+      Uint32 weight = q_state->m_weight;
+      Uint32 load_indicator = q_state->m_load_indicator;
+      Uint32 current_stolen = q_state->m_current_stolen;
+      jamDebug();
+      jamDataDebug(query_instance_no);
+      jamDataDebug(current_stolen);
+      jamDataDebug(weight);
+      if (current_stolen < weight)
+      {
+        /**
+         * There was sufficient room to steal a slot for sending to the
+         * query thread of the same instance as the LDM thread. So send
+         * to this query thread and increment the current stolen count.
+         */
+        jamDebug();
+        jamDataDebug(load_indicator);
+        assert(load_indicator > 0);
+        Uint32 ref = numberToRef(block_num,
+                                 block_instance_no,
+                                 getOwnNodeId());
+        Uint32 new_current_stolen = current_stolen +
+                                    load_indicator;
+        q_state->m_current_stolen = new_current_stolen;
+        Uint32 extra = (new_current_stolen <= weight) ?
+                        0 : (new_current_stolen - weight);
+        rr_info->m_used_weight += (load_indicator + extra);
+        jamDataDebug(rr_info->m_used_weight);
+        jamDataDebug(rr_info->m_total_weight);
+        if (unlikely(rr_info->m_used_weight >=
+                     rr_info->m_total_weight))
+        {
+          jamDebug();
+          distribute_new_weights(handle, rr_info);
+        }
+#ifdef DEBUG_SCHED_STATS
+        if (i == 0)
+          handle->m_lqhkeyreq_lqh++;
+        else
+          handle->m_lqhkeyreq_qt++;
+        handle->m_lqhkeyreq_qt_count[query_instance_no]++;
+#endif
+        return ref;
+      }
+      if (block_num == DBLQH)
+      {
+        query_instance_no = get_shared_ldm_instance(query_instance_no);
+        if (query_instance_no == 0)
+        {
+          break;
+        }
+      }
+      block_instance_no = query_instance_no;
+      block_num = DBQLQH;
     }
   }
   /* Have to select from the Round Robin group of query threads. */
   /* Pick next according to Round Robin distribution */
+  //Uint32 loop = 0;
   do
   {
     Uint32 count = rr_info->m_lqhkeyreq_to_same_thread;
@@ -6155,14 +6101,24 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
     }
     Uint32 ref = rr_info->m_distribution_signal[inx];
     rr_info->m_lqhkeyreq_to_same_thread = count + 1;
-    Uint32 instance_no = refToInstance(ref);
-    struct QueryThreadState *q_state = &handle->m_query_state[instance_no - 1];
+    Uint32 query_instance_no = refToInstance(ref);
+    struct QueryThreadState *q_state =
+      &handle->m_query_state[query_instance_no - 1];
+    Uint32 weight = q_state->m_weight;
     Uint32 load_indicator = q_state->m_load_indicator;
-    Uint32 current_stolen = q_state->m_current_stolen_lqhkeyreq;
-    if (current_stolen == 0)
+    Uint32 current_stolen = q_state->m_current_stolen;
+    jamDebug();
+    jamDataDebug(query_instance_no);
+    jamDataDebug(inx);
+    jamDataDebug(current_stolen);
+    jamDataDebug(weight);
+    //require(loop++ < 9);
+    if (current_stolen < weight)
     {
+      jamDebug();
+      jamDataDebug(load_indicator);
       /**
-       * This query thread haven't stolen anything yet, so simply use it to
+       * This query thread haven't stolen all weights yet, so use it to
        * send this signal. We add stolen signals to handle load indicator
        * here. With normal load (== 1) we don't add anything here. With
        * load indicator set to 2 we add 1 to stolen, this means that we will
@@ -6170,19 +6126,27 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
        * the thread by half.
        */
       assert(load_indicator > 0);
-      q_state->m_current_stolen_lqhkeyreq = load_indicator - 1;
+      Uint32 new_current_stolen = current_stolen +
+                                  load_indicator;
+      q_state->m_current_stolen = new_current_stolen;
+      Uint32 extra = (new_current_stolen <= weight) ?
+                      0 : (new_current_stolen - weight);
+      rr_info->m_used_weight += (load_indicator + extra);
+      jamDataDebug(rr_info->m_used_weight);
+      jamDataDebug(rr_info->m_total_weight);
+      if (unlikely(rr_info->m_used_weight >=
+                   rr_info->m_total_weight))
+      {
+        jamDebug();
+        distribute_new_weights(handle, rr_info);
+      }
 #ifdef DEBUG_SCHED_STATS
       handle->m_lqhkeyreq_rr++;
-      handle->m_lqhkeyreq_qt_count[instance_no]++;
+      handle->m_lqhkeyreq_qt_count[query_instance_no]++;
 #endif
       return ref;
     }
-    /**
-     * The query thread had already stolen a signal before, we need to
-     * decrement the stolen count and continue searching for the query
-     * thread to receive this signal.
-     */
-    q_state->m_current_stolen_lqhkeyreq = current_stolen - 1;
+    rr_info->m_lqhkeyreq_to_same_thread = m_num_lqhkeyreq_counts;
   } while (true);
 #endif
   return 0;
@@ -6195,77 +6159,82 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
   Uint32 rr_group = m_rr_group[ldm_instance_no - 1];
   struct RoundRobinInfo *rr_info = 
     (struct RoundRobinInfo*)&handle->m_rr_info[rr_group];
+  Uint32 block_num = DBLQH;
+  ndbassert(ldm_instance_no > 0);
+  Uint32 load_counter = rr_info->m_load_indicator_counter;
+  load_counter += LOAD_SCAN_FRAGREQ;
+  if (likely(load_counter < m_rr_load_refresh_count))
   {
-    Uint32 load_counter = rr_info->m_load_indicator_counter;
-    struct LdmThreadState *ldm_state =
-      &handle->m_ldm_state[ldm_instance_no - 1];
-    Uint32 counter = ldm_state->m_scan_fragreq_counter;
-    Uint32 current_weight_count = 
-      ldm_state->m_current_weight_scan_fragreq_count;
-    Uint32 load_indicator = ldm_state->m_load_indicator;
-    Uint32 curr_weight = ldm_state->m_current_weight / load_indicator;
-    counter++;
-    load_counter += LOAD_SCAN_FRAGREQ;
-    if (counter >= m_num_scan_fragreq_counts)
+    rr_info->m_load_indicator_counter = load_counter;
+  }
+  else
+  {
+    get_load_indicators(handle, rr_group);
+  }
+#ifdef VM_TRACE
+  Uint32 num_ldm_instances = getNumLDMInstances();
+  ndbassert(num_ldm_instances >= ldm_instance_no);
+#endif
+  {
+    Uint32 query_instance_no = ldm_instance_no;
+    Uint32 block_instance_no = ldm_instance_no;
+    for (Uint32 i = 0; i < 2; i++)
     {
-      current_weight_count += curr_weight;
-      if (current_weight_count >= MAX_LDM_DISTRIBUTION_WEIGHT)
+      struct QueryThreadState *q_state =
+        &handle->m_query_state[query_instance_no - 1];
+      Uint32 weight = q_state->m_weight;
+      Uint32 load_indicator = q_state->m_load_indicator * LOAD_SCAN_FRAGREQ;
+      Uint32 current_stolen = q_state->m_current_stolen;
+      jamDebug();
+      jamDataDebug(query_instance_no);
+      jamDataDebug(current_stolen);
+      jamDataDebug(weight);
+      if (current_stolen < weight)
       {
-        current_weight_count -= MAX_LDM_DISTRIBUTION_WEIGHT;
+        jamDebug();
+        jamDataDebug(load_indicator);
+        assert(load_indicator > 0);
+        Uint32 ref = numberToRef(block_num,
+                                 block_instance_no,
+                                 getOwnNodeId());
+        Uint32 new_current_stolen = current_stolen +
+                                    load_indicator;
+        q_state->m_current_stolen = new_current_stolen;
+        Uint32 extra = (new_current_stolen <= weight) ?
+                        0 : (new_current_stolen - weight);
+        rr_info->m_used_weight += (load_indicator + extra);
+        jamDataDebug(rr_info->m_used_weight);
+        jamDataDebug(rr_info->m_total_weight);
+        if (unlikely(rr_info->m_used_weight >=
+                     rr_info->m_total_weight))
+        {
+          jamDebug();
+          distribute_new_weights(handle, rr_info);
+        }
+#ifdef DEBUG_SCHED_STATS
+        if (i == 0)
+          handle->m_scan_fragreq_lqh++;
+        else
+          handle->m_scan_fragreq_qt++;
+        handle->m_scan_fragreq_qt_count[query_instance_no]++;
+#endif
+        return ref;
       }
-      counter = 0;
-      ldm_state->m_current_weight_scan_fragreq_count = current_weight_count;
-    }
-    ldm_state->m_scan_fragreq_counter = counter + 1;
-    if (likely(load_counter < m_rr_load_refresh_count))
-    {
-      rr_info->m_load_indicator_counter = load_counter;
-    }
-    else
-    {
-      get_load_indicators(handle, rr_group);
-    }
-    if (current_weight_count < curr_weight ||
-        (load_indicator == 1 && current_weight_count < (curr_weight + 3)))
-    {
-      /**
-       * We load balance between LDM thread and the query threads.
-       * In this case we have selected to use the LDM thread.
-       * We give scans a tad higher priority in the LDM threads since
-       * the scans have more lock conflicts with LDM thread when executed
-       * from the query threads.
-       */
-      Uint32 ref = numberToRef(DBLQH,
-                               ldm_instance_no,
-                               getOwnNodeId());
-#ifdef DEBUG_SCHED_STATS
-      handle->m_scan_fragreq_ldm++;
-      handle->m_scan_fragreq_ldm_count[ldm_instance_no]++;
-#endif
-      return ref;
+      if (block_num == DBLQH)
+      {
+        query_instance_no = get_shared_ldm_instance(query_instance_no);
+        if (query_instance_no == 0)
+        {
+          break;
+        }
+      }
+      block_instance_no = query_instance_no;
+      block_num = DBQLQH;
     }
   }
-  {
-    struct QueryThreadState *q_state =
-      &handle->m_query_state[ldm_instance_no - 1];
-    Uint32 max_count = q_state->m_max_scan_fragreq_count;
-    Uint32 load_indicator = q_state->m_load_indicator;
-    Uint32 current_stolen_count = q_state->m_current_stolen_scan_fragreq;
-    if (current_stolen_count <= max_count)
-    {
-      assert(load_indicator > 0);
-      Uint32 ref = numberToRef(DBQLQH,
-                               ldm_instance_no,
-                               getOwnNodeId());
-      q_state->m_current_stolen_scan_fragreq = current_stolen_count +
-                                               load_indicator;
-#ifdef DEBUG_SCHED_STATS
-      handle->m_scan_fragreq_lq++;
-      handle->m_scan_fragreq_qt_count[ldm_instance_no]++;
-#endif
-      return ref;
-    }
-  }
+  /* Have to select from the Round Robin group of query threads. */
+  /* Pick next according to Round Robin distribution */
+  //Uint32 loop = 0;
   do
   {
     Uint32 count = rr_info->m_scan_fragreq_to_same_thread;
@@ -6286,21 +6255,44 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
     }
     Uint32 ref = rr_info->m_distribution_signal[inx];
     rr_info->m_scan_fragreq_to_same_thread = count + 1;
-    Uint32 instance_no = refToInstance(ref);
-    struct QueryThreadState *q_state = &handle->m_query_state[instance_no - 1];
-    Uint32 current_stolen = q_state->m_current_stolen_scan_fragreq;
-    Uint32 load_indicator = q_state->m_load_indicator;
-    if (current_stolen == 0)
+    Uint32 query_instance_no = refToInstance(ref);
+    struct QueryThreadState *q_state =
+      &handle->m_query_state[query_instance_no - 1];
+    Uint32 current_stolen = q_state->m_current_stolen;
+    Uint32 weight = q_state->m_weight;
+    Uint32 load_indicator = q_state->m_load_indicator * LOAD_SCAN_FRAGREQ;
+    jamDebug();
+    jamDataDebug(query_instance_no);
+    jamDataDebug(inx);
+    jamDataDebug(current_stolen);
+    jamDataDebug(weight);
+    //require(loop++ < 9);
+    if (current_stolen < weight)
     {
+      jamDebug();
+      jamDataDebug(load_indicator);
       assert(load_indicator > 0);
-      q_state->m_current_stolen_scan_fragreq = load_indicator - 1;
+      Uint32 new_current_stolen = current_stolen +
+                                  load_indicator;
+      q_state->m_current_stolen = new_current_stolen;
+      Uint32 extra = (new_current_stolen <= weight) ?
+                      0 : (new_current_stolen - weight);
+      rr_info->m_used_weight += (load_indicator + extra);
+      jamDataDebug(rr_info->m_used_weight);
+      jamDataDebug(rr_info->m_total_weight);
+      if (unlikely(rr_info->m_used_weight >=
+                   rr_info->m_total_weight))
+      {
+        jamDebug();
+        distribute_new_weights(handle, rr_info);
+      }
 #ifdef DEBUG_SCHED_STATS
       handle->m_scan_fragreq_rr++;
-      handle->m_scan_fragreq_qt_count[instance_no]++;
+      handle->m_scan_fragreq_qt_count[query_instance_no]++;
 #endif
       return ref;
     }
-    q_state->m_current_stolen_scan_fragreq = current_stolen - 1;
+    rr_info->m_scan_fragreq_to_same_thread = m_num_scan_fragreq_counts;
   } while (true);
 #endif
   return 0;
@@ -6325,6 +6317,7 @@ SimulatedBlock::use_ipv4_socket(Uint32 node_id)
 /**
  * Need to create the static variables in the SimulatedBlock class.
  */
+Uint32 SimulatedBlock::m_shared_ldm_instance[MAX_DISTR_THREADS];
 Uint32 SimulatedBlock::m_rr_group[MAX_DISTR_THREADS];
 Uint32 SimulatedBlock::m_num_lqhkeyreq_counts = NUM_LQHKEYREQ_COUNTS;
 Uint32 SimulatedBlock::m_num_scan_fragreq_counts = NUM_SCAN_FRAGREQ_COUNTS;

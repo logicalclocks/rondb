@@ -1,5 +1,6 @@
 /*
  *  Copyright (c) 2010, 2022, Oracle and/or its affiliates.
+ *  Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License, version 2.0,
@@ -127,9 +128,29 @@ class DbImpl implements com.mysql.clusterj.core.store.Db {
     /** The autoincrement start */
     private long autoIncrementStart;
 
-    public DbImpl(ClusterConnectionImpl clusterConnection, Ndb ndb, int maxTransactions) {
+    /* The database name */
+    private String databaseName;
+
+    /* Are we using the default database */
+    private boolean defaultDatabase;
+
+    public String getName() {
+        return databaseName;
+    }
+
+    public boolean isDefaultDatabase() {
+        return defaultDatabase;
+    }
+
+    public DbImpl(ClusterConnectionImpl clusterConnection,
+                  Ndb ndb,
+                  int maxTransactions,
+                  String databaseName,
+                  boolean defaultDatabase) {
         this.clusterConnection = clusterConnection;
         this.ndb = ndb;
+        this.databaseName = databaseName;
+        this.defaultDatabase = defaultDatabase;
         this.errorBuffer =
                 this.clusterConnection.byteBufferPoolForDBImplError.borrowBuffer();
         this.partitionKeyScratchBuffer =
@@ -141,7 +162,10 @@ class DbImpl implements com.mysql.clusterj.core.store.Db {
         handleError(returnCode, ndb);
         ndbDictionary = ndb.getDictionary();
         handleError(ndbDictionary, ndb);
-        this.dictionary = new DictionaryImpl(ndbDictionary, clusterConnection);
+        this.dictionary = new DictionaryImpl(ndbDictionary,
+                                             clusterConnection,
+                                             databaseName,
+                                             defaultDatabase);
     }
 
     public void assertNotClosed(String where) {

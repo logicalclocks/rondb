@@ -217,13 +217,13 @@ create table charsetutf8 (
  mediumcolumn varchar(500),
  largecolumn text(10000)
 
-) ENGINE=ndbcluster DEFAULT CHARSET=utf8;
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb3;
 
 drop table if exists charsetswedishutf8;
 create table charsetswedishutf8 (
  id int not null primary key,
  swedishcolumn char(4) COLLATE latin1_swedish_ci,
- utfcolumn char(4) COLLATE utf8_general_ci
+ utfcolumn char(4) COLLATE utf8mb3_general_ci
  
 ) ENGINE=ndbcluster;
  
@@ -1060,6 +1060,13 @@ create table `hope` (
   PRIMARY KEY (partition_id, id)
   ) ENGINE=ndbcluster DEFAULT CHARSET=latin1 partition by key (partition_id);
 
+drop table if exists same_table;
+create table same_table (
+  id int not null,
+  name varchar(32),
+  primary key(id)
+) ENGINE=ndbcluster;
+
 create database if not exists test2;
 use test2;
 drop table if exists t_basic2;
@@ -1073,4 +1080,33 @@ create table t_basic2 (
   unique key idx_unique_hash_magic (magic) using hash,
   key idx_btree_age (age)
 ) ENGINE=ndbcluster;
+
+drop table if exists same_table;
+create table same_table (
+  id int not null,
+  name varchar(32),
+  primary key(id)
+) ENGINE=ndbcluster;
+
+create database if not exists test3;
+use test3;
+drop table if exists t_basic3;
+create table t_basic3 (
+  id int not null,
+  name varchar(32),
+  age int,
+  magic int not null,
+  primary key(id),
+
+  unique key idx_unique_hash_magic (magic) using hash,
+  key idx_btree_age (age)
+) ENGINE=ndbcluster;
+
+drop table if exists same_table;
+create table same_table (
+  id int not null,
+  name varchar(32),
+  primary key(id)
+) ENGINE=ndbcluster;
+
 use test;

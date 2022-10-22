@@ -406,7 +406,7 @@ NdbTransaction* computeHash()
 
 Return Value:   Returns 0 for success, NDBAPI error code otherwise
 Remark:         Computes the distribution hash value for a row with the
-                supplied distribtion key values.
+                supplied distribution key values.
                 Only relevant for natively partitioned tables.
 *****************************************************************************/ 
 int
@@ -821,7 +821,7 @@ NdbImpl::select_node(NdbTableImpl *table_impl,
      * The reason is that the transaction could be large and involve
      * many more operations not necessarily using the same partition
      * key. The jump to the primary is to a different location domain,
-     * so we keeping the TC local to this domain always seems preferrable
+     * so we keeping the TC local to this domain always seems preferable
      * to picking the perfect path for this operation.
      */
     if (m_optimized_node_selection)
@@ -930,7 +930,7 @@ Ndb::startTransaction(const NdbDictionary::Table *table,
     Uint32 nodeId = 0;
     
     /**
-     * Make this unlikely...assume new interface(s) are prefered
+     * Make this unlikely...assume new interface(s) are preferred
      */
     if(unlikely(table != 0 && keyData != 0))
     {
@@ -1309,7 +1309,7 @@ Parameters:     aTableName (IN) : The table name.
                 step       (IN) : Specifies the step between the 
                                   autoincrement values.
                 start      (IN) : Start value for first value
-Returns:        0 if succesful, -1 if error encountered
+Returns:        0 if successful, -1 if error encountered
 Remark:		Returns a new autoincrement value to the application.
                 The autoincrement values can be increased by steps
                 (default 1) and a number of values can be prefetched
@@ -1480,7 +1480,7 @@ int readAutoIncrementValue( const char* aTableName,
 
 Parameters:     aTableName (IN) : The table name.
                 autoValue  (OUT) : The current autoincrement value
-Returns:        0 if succesful, -1 if error encountered
+Returns:        0 if successful, -1 if error encountered
 Remark:         Returns the current autoincrement value to the application.
 ****************************************************************************/
 int
@@ -1583,7 +1583,7 @@ int setAutoIncrementValue( const char* aTableName,
 Parameters:     aTableName (IN) : The table name.
                 autoValue  (IN) : The new autoincrement value
                 modify     (IN) : Modify existing value (not initialization)
-Returns:        0 if succesful, -1 if error encountered
+Returns:        0 if successful, -1 if error encountered
 Remark:         Sets a new autoincrement value for the application.
 ****************************************************************************/
 int

@@ -61,6 +61,8 @@ public:
 
   void execNDB_TAMPER(Signal*);
   void execDUMP_STATE_ORD(Signal*);
+  void startCONTINUEB(Signal*);
+  void execCONTINUEB(Signal*);
 public:
   Uint32 distribute_signal(SignalHeader * const header,
                            const Uint32 instance,
@@ -72,11 +74,12 @@ public:
 protected:
   bool getParam(const char* name, Uint32* count) override;
 private:
+  void sendSTTORRY(Signal*);
+  void sendCONTINUEB(Signal*);
   bool handles_this_node(Uint32 nodeId, bool all = false);
   void close_com_failed_node(Signal*, Uint32);
   void enable_com_node(Signal*, Uint32);
-
-  Uint32 m_exec_thread_signal_id[NDB_MAX_BLOCK_THREADS];
+  bool m_init_continueb;
 };
 
 class TrpmanProxy : public LocalProxy

@@ -29,7 +29,7 @@
 //===========================================================================
 //
 // .DESCRIPTION
-//      This is the main fuction for the AXE VM emulator.
+//      This is the main function for the AXE VM emulator.
 //      It contains some global objects and a run method.
 //
 //===========================================================================

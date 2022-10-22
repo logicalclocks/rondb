@@ -34,10 +34,16 @@ import java.util.Map;
 public interface SessionFactory {
 
     /** Create a Session to use with the cluster, using all the
-     * properties of the SessionFactory.
+     * properties of the SessionFactory. The default database is used.
      * @return the session
      */
     Session getSession();
+
+    /** Create a Session to use with the cluster, using all the
+     * properties of the SessionFactory with a new database name.
+     * @return the session
+     */
+    Session getSession(String db);
 
     /** Create a session to use with the cluster, overriding some properties.
      * Properties PROPERTY_CLUSTER_CONNECTSTRING, PROPERTY_CLUSTER_DATABASE,

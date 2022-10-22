@@ -104,8 +104,6 @@ int g_errorInsert = 0;
 #define DEBUG_FPRINTF(a)
 #endif
 
-extern "C" bool opt_core;
-
 void *
 MgmtSrvr::logLevelThread_C(void* m)
 {
@@ -288,7 +286,7 @@ MgmtSrvr::MgmtSrvr(const MgmtOpts& opts) :
   /* Setup clusterlog as client[0] in m_event_listner */
   {
     Ndb_mgmd_event_service::Event_listener se;
-    ndb_socket_invalidate(&(se.m_socket));
+    ndb_socket_initialize(&(se.m_socket));
     for(size_t t = 0; t<LogLevel::LOGLEVEL_CATEGORIES; t++){
       se.m_logLevel.setLogLevel((LogLevel::EventCategory)t, 7);
     }
@@ -316,7 +314,7 @@ MgmtSrvr::check_configdir() const
   if (m_opts.configdir &&
       strcmp(m_opts.configdir, MYSQLCLUSTERDIR) != 0)
   {
-    // Specified on commmand line
+    // Specified on command line
     if (access(m_opts.configdir, F_OK))
     {
       g_eventLogger->error("Directory '%s' specified with --configdir " \
@@ -1911,7 +1909,7 @@ MgmtSrvr::guess_master_node(SignalSender& ss)
 }
 
 /*
- * Common method for handeling all STOP_REQ signalling that
+ * Common method for handling all STOP_REQ signalling that
  * is used by Stopping, Restarting and Single user commands
  *
  * In the event that we need to stop a mgmd, we create a mgm
@@ -3115,7 +3113,7 @@ MgmtSrvr::setEventReportingLevelImpl(int nodeId_arg,
           // node not connected we can safely skip this one
           continue;
         }
-        // api_reg_conf not recevied yet, need to retry
+        // api_reg_conf not received yet, need to retry
         return SEND_OR_RECEIVE_FAILED;
       }
     }
@@ -3277,9 +3275,14 @@ MgmtSrvr::insertError(int nodeId, int errorNo, Uint32 * extra)
   if (res == 0)
   {
     /**
+<<<<<<< HEAD
      * In order to make NDB_TAMPER (almost) syncronous,
      *   make a synchronous request *after* the NDB_TAMPER
      * Add a small sleep as well to raise probability a bit more
+=======
+     * In order to make NDB_TAMPER (almost) synchronous,
+     *   make a synchronous request *after* the NDB_TAMPER
+>>>>>>> a246bad76b9271cb4333634e954040a970222e0a
      */
     make_sync_req(ss, Uint32(nodeId));
     NdbSleep_MilliSleep(20);
@@ -3803,7 +3806,7 @@ MgmtSrvr::stopSignalTracing(int nodeId)
 int
 MgmtSrvr::dumpState(int nodeId, const char* args)
 {
-  // Convert the space separeted args 
+  // Convert the space separated args 
   // string to an int array
   Uint32 args_array[25];
   Uint32 numArgs = 0;
@@ -3864,8 +3867,8 @@ MgmtSrvr::dumpState(int nodeId, const Uint32 args[], Uint32 no)
   if (res == 0)
   {
     /**
-     * In order to make DUMP (almost) syncronous,
-     *   make a syncronous request *after* the NDB_TAMPER
+     * In order to make DUMP (almost) synchronous,
+     *   make a synchronous request *after* the NDB_TAMPER
      */
     make_sync_req(ss, Uint32(nodeId));
   }
@@ -4162,7 +4165,7 @@ MgmtSrvr::NodeIdReservations::set(NodeId n, unsigned timeout)
   check_array(n);
 
   Reservation& r = m_reservations[n];
-  // Dont't allow double set
+  // Don't allow double set
   assert(r.m_timeout == 0 && !NdbTick_IsValid(r.m_start));
 
   r.m_timeout = timeout;
@@ -4194,7 +4197,7 @@ MgmtSrvr::NodeIdReservations::clear(NodeId n)
   check_array(n);
 
   Reservation& r = m_reservations[n];
-  // Dont't allow double clear
+  // Don't allow double clear
   assert(r.m_timeout != 0 && NdbTick_IsValid(r.m_start));
 
   r.m_timeout = 0;
@@ -4700,7 +4703,7 @@ MgmtSrvr::try_alloc(NodeId id,
     int res = alloc_node_id_req(id, type, timeout_ms);
     if (res == 0)
     {
-      /* Node id allocation suceeded */
+      /* Node id allocation succeeded */
       g_eventLogger->debug("Allocated nodeid %u in cluster", id);
       assert(id > 0);
       return id;
@@ -5531,7 +5534,7 @@ MgmtSrvr::getConnectionDbParameter(int node1, int node2,
 
 
 bool
-MgmtSrvr::transporter_connect(NDB_SOCKET_TYPE sockfd,
+MgmtSrvr::transporter_connect(ndb_socket_t sockfd,
                               BaseString& msg,
                               bool& close_with_reset)
 {
@@ -5836,7 +5839,7 @@ MgmtSrvr::make_sync_req(SignalSender& ss, Uint32 nodeId)
 {
   /**
    * This subroutine is used to make a async request(error insert/dump)
-   *   "more" syncronous, i.e increasing the likelyhood that
+   *   "more" synchronous, i.e increasing the likelihood that
    *   the async request has really reached the destination
    *   before returning to the api
    *

@@ -46,17 +46,14 @@ class Abort {
 public:
   static constexpr Uint32 SignalLength = 4;
   static constexpr Uint32 SignalLengthKey = 5;
-  static constexpr Uint32 SignalLengthDistr = 6;
+  static constexpr Uint32 SignalLengthDistr = 7;
   
   Uint32 tcOprec;
   Uint32 tcBlockref;
   Uint32 transid1;
   Uint32 transid2;
-  union
-  {
-    Uint32 instanceKey;
-    Uint32 threadId;
-  };
+  Uint32 instanceKey;
+  Uint32 threadId;
   Uint32 senderThreadSignalId;
 };
 
