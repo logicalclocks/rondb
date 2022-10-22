@@ -162,8 +162,6 @@ void Dbtup::convertThPage(Fix_page* regPagePtr,
 #ifdef VM_TRACE
   memset(regPagePtr->m_data, 0xF1, 4*Fix_page::DATA_WORDS);
 #endif
-  Uint32 gci_pos;
-  Uint32 gci_val;
   /**
    * All tables must have GCI entry since it is mandatory for node
    * restart to work. It is however reset during restore temporarily
@@ -177,11 +175,8 @@ void Dbtup::convertThPage(Fix_page* regPagePtr,
    * Uint32 gci_val = 0xF1F1F1F1;
    * if (regTabPtr->m_bits & Tablerec::TR_RowGCI)
    */
-  {
-    Tuple_header* ptr = 0;
-    gci_pos = Uint32(ptr->get_mm_gci(regTabPtr) - (Uint32*)ptr);
-    gci_val = 0;
-  }
+  const Uint32 gci_pos = Tuple_header::get_mm_gci_pos(regTabPtr);
+  const Uint32 gci_val = 0;
   if ((mm == MM) ||
       ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0))
   {

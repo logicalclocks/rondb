@@ -833,7 +833,7 @@ void Dbdict::packTableIntoPages(Signal* signal)
       objEntry = getTableEntry(xsf, tableId);
     }
 
-    // The table seached for was not found
+    // The table searched for was not found
     if(objEntry == 0)
     {
       jam();
@@ -10495,13 +10495,13 @@ Dbdict::check_supported_add_fragment(Uint16* newdata, const Uint16* olddata)
   Uint32 oldFragments = olddata[1];
 #ifdef TODO_XXX
   /**
-   * This doesnt work after a add-nodegroup
-   *   dont't know why, so we instead just ignore what the API
+   * This doesn't work after a add-nodegroup
+   *   don't know why, so we instead just ignore what the API
    *   for the already existing partitions
    */
 
   // Check that all the old has the same properties...
-  // Only compare prefered primary, as replicas come in any order
+  // Only compare preferred primary, as replicas come in any order
   for (Uint32 i = 0; i<oldFragments; i++)
   {
     Uint32 idx = 2 + (1 + replicas) * i + 1;
@@ -12554,7 +12554,7 @@ Dbdict::doGET_TABINFOREQ(Signal* signal)
     objEntry = getTableEntry(xsf, obj_id);
   }
 
-  // The table seached for was not found
+  // The table searched for was not found
   if(objEntry == 0)
   {
     jam();
@@ -14811,7 +14811,7 @@ Dbdict::alterIndex_parse(Signal* signal, bool master,
        * Link operation to AlterTable
        *   either if prev op is AlterTable using baseop.i
        *       or if prev op is AlterIndex using baseop.p->m_base_op_ptr_i
-       *   (i.e recursivly, assuming that no operation can come inbetween)
+       *   (i.e recursively, assuming that no operation can come in between)
        */
       SchemaOpPtr baseop = op_ptr;
       LocalSchemaOp_list list(c_schemaOpPool, trans_ptr.p->m_op_list);
@@ -18101,7 +18101,7 @@ Dbdict::prepareUtilTransaction(Callback *pcallback,
  * createEvent_RT_USER_GET
  * createEvent_RT_DICT_AFTER_GET
  *
- * repectively
+ * respectively
  *
  */
 
@@ -23245,7 +23245,7 @@ void Dbdict::check_takeover_replies(Signal* signal)
               New master has already ended some operation,
               create it again so we can tell slaves to end it.
               Note: we don't add node to transaction since the
-              ressurected operation cannot be completed. Instead
+              resurrected operation cannot be completed. Instead
               we need to release it explicitly when transaction is
               ended.
             */
@@ -30089,7 +30089,7 @@ Dbdict::execSCHEMA_TRANS_BEGIN_REQ(Signal* signal)
        * TODO...use better mechanism...
        *
        * During restart...we need to check both old/new
-       *   schema file so that we don't accidently allocate
+       *   schema file so that we don't accidentally allocate
        *   an objectId that should be used to recreate an object
        */
       trans_ptr.p->m_obj_id = getFreeObjId(true);
@@ -31567,7 +31567,7 @@ void Dbdict::check_partial_trans_commit_start(SchemaTransPtr trans_ptr,
   if (ownNodePtr.p->nodeState == NodeRecord::NDB_MASTER_TAKEOVER)
   {
     /*
-      A new master is in the process of commiting a
+      A new master is in the process of committing a
       transaction taken over from the failed master.
       Check if some slave have already flushed the commit.
      */
@@ -31826,7 +31826,7 @@ void Dbdict::check_partial_trans_commit_next(SchemaTransPtr trans_ptr,
       A new master is in the process of committing a
       transaction taken over from the failed master.
       Check if any nodes should be skipped because they
-      have already commited the operation
+      have already committed the operation
     */
     jam();
     for (unsigned i = 1; i < MAX_NDB_NODES; i++) {
@@ -32430,7 +32430,7 @@ void Dbdict::trans_recover(Signal* signal, SchemaTransPtr trans_ptr)
     {
       jam();
       /*
-        Commit any uncommited operations
+        Commit any uncommitted operations
       */
       SchemaOpPtr op_ptr;
       ndbrequire(c_schemaOpPool.getPtr(op_ptr, trans_ptr.p->m_curr_op_ptr_i));
@@ -32481,7 +32481,7 @@ void Dbdict::trans_recover(Signal* signal, SchemaTransPtr trans_ptr)
   case SchemaTrans::TS_COMPLETING:
   {
     /*
-      Complete any uncommited operations
+      Complete any uncommitted operations
     */
     jam();
 #if defined VM_TRACE || defined MARTIN
@@ -32874,7 +32874,7 @@ Dbdict::slave_run_flush(Signal *signal,
   case SchemaTransImplReq::RT_END:
     /**
      * No state check here, cause we get here regardless if transaction
-     *   succeded or not...
+     *   succeeded or not...
      */
     jam();
     trans_ptr.p->m_state = SchemaTrans::TS_ENDING;
@@ -33130,7 +33130,7 @@ Dbdict::sendTransRef(Signal* signal, SchemaTransPtr trans_ptr)
   ref->transKey = trans_ptr.p->trans_key;
   getError(trans_ptr.p->m_error, ref);
 
-  // erro has been reported, clear it
+  // error has been reported, clear it
   resetError(trans_ptr.p->m_error);
 
   const Uint32 masterRef = trans_ptr.p->m_masterRef;

@@ -725,7 +725,7 @@ static void dump_buf_hex(unsigned char *p, Uint32 bytes)
  * The varpart entry header contains the actual length of the varpart
  * allocated from the page. This size might be equal or bigger than
  * the size of the varpart to be committed. We will always at COMMIT time
- * ensure that we shrink it to the minimum size. It migth even be
+ * ensure that we shrink it to the minimum size. It might even be
  * shrunk to 0 in which case we free the varpart entirely.
  *
  * Handling ABORT

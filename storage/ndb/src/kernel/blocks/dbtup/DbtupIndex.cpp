@@ -817,7 +817,7 @@ next_tuple:
       update. If an update aborts then the copy tuple is copied to
       the original tuple. The build will however have found that
       tuple as a copy tuple. The original tuple is stable and is thus
-      preferrable to store in TUX.
+      preferable to store in TUX.
       */
       jam();
 
@@ -826,7 +826,7 @@ next_tuple:
        *   we will here build all copies of the tuple
        *
        * Note only "real" tupVersion's should be added 
-       *      i.e delete's shouldnt be added 
+       *      i.e delete's shouldn't be added 
        *      (unless it's the first op, when "original" should be added)
        */
 

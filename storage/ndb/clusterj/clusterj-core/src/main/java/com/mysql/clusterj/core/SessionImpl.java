@@ -670,7 +670,7 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
         int count = 0;
         try {
             op = clusterTransaction.getTableScanOperationLockModeExclusiveScanFlagKeyInfo(storeTable);
-            count = deletePersistentAll(op, true);
+            count = deletePersistentAll(op, true, 0, Long.MAX_VALUE);
         } catch (ClusterJException ex) {
             failAutoTransaction();
             // TODO add table name to the error message
@@ -686,23 +686,40 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
      * @param op the scan operation
      * @return the number of instances deleted
      */
-    public int deletePersistentAll(ScanOperation op, boolean abort) {
+    public int deletePersistentAll(ScanOperation op,
+                                   boolean abort,
+                                   long skip,
+                                   long limit) {
         int cacheCount = 0;
         int count = 0;
+        int delete_count = 0;
         boolean done = false;
         boolean fetch = true;
         // cannot use early autocommit optimization here
         clusterTransaction.setAutocommit(false);
+        // check that limit is not zero, if so we're done
+        assert(limit > 0);
         // execute the operation
         clusterTransaction.executeNoCommit(true, true);
         while (!done ) {
             int result = op.nextResult(fetch);
             switch (result) {
                 case RESULT_READY:
-                    op.deleteCurrentTuple();
+                    if (skip <= 0 || count >= skip) {
+                        op.deleteCurrentTuple();
+                        ++cacheCount;
+                        ++delete_count;
+                        fetch = false;
+                        if (delete_count == limit) {
+                            done = true;
+                            if (cacheCount != 0) {
+                                clusterTransaction.executeNoCommit(abort, true);
+                            }
+                            cacheCount = 0;
+                            op.close();
+                        }
+                    }
                     ++count;
-                    ++cacheCount;
-                    fetch = false;
                     break;
                 case SCAN_FINISHED:
                     done = true;
@@ -712,7 +729,9 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
                     op.close();
                     break;
                 case CACHE_EMPTY:
-                    clusterTransaction.executeNoCommit(abort, true);
+                    if (cacheCount != 0) {
+                        clusterTransaction.executeNoCommit(abort, true);
+                    }
                     cacheCount = 0;
                     fetch = true;
                     break;
@@ -721,7 +740,7 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
                             local.message("ERR_Next_Result_Illegal", result));
             }
         }
-        return count;
+        return delete_count;
     }
 
     /** Select a single row from the database. Only the fields requested

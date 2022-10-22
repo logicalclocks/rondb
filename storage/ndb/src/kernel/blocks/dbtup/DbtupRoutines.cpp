@@ -1004,7 +1004,7 @@ Dbtup::readDynFixedSizeExpandedNotNULL(Uint8* outBuffer,
   thrjamDebug(req_struct->jamBuffer);
   /*
     In the expanded format, we share the read code with static varsized, just
-    using different data base pointer and offset/lenght arrays.
+    using different data base pointer and offset/length arrays.
   */
   Uint32 attrDescriptor = Uint32((attrDes << 32) >> 32);
   Uint32 attrDes2 = Uint32(attrDes >> 32);
@@ -1178,7 +1178,7 @@ Dbtup::readDynBigFixedSizeExpandedNotNULL(Uint8* outBuffer,
   thrjamDebug(req_struct->jamBuffer);
   /*
     In the expanded format, we share the read code with static varsized, just
-    using different data base pointer and offset/lenght arrays.
+    using different data base pointer and offset/length arrays.
   */
   Uint32 attrDescriptor = Uint32((attrDes << 32) >> 32);
   Uint32 attrDes2 = Uint32(attrDes >> 32);
@@ -1274,7 +1274,7 @@ Dbtup::readDynBigFixedSizeShrunkenNotNULL(Uint8* outBuffer,
   
   /*
     In the expanded format, we share the read code with static varsized, just
-    using different data base pointer and offset/lenght arrays.
+    using different data base pointer and offset/length arrays.
   */
   thrjamDebug(req_struct->jamBuffer);
   return varsize_reader(outBuffer, req_struct, ahOut, attrDes,
@@ -1484,7 +1484,7 @@ Dbtup::readDynVarSizeExpandedNotNULL(Uint8* outBuffer,
   thrjamDebug(req_struct->jamBuffer);
   /*
     In the expanded format, we share the read code with static varsized, just
-    using different data base pointer and offset/lenght arrays.
+    using different data base pointer and offset/length arrays.
   */
   Uint32 attrDescriptor = Uint32((attrDes << 32) >> 32);
   Uint32 attrDes2 = Uint32(attrDes >> 32);
@@ -1575,7 +1575,7 @@ Dbtup::readDynVarSizeShrunkenNotNULL(Uint8* outBuffer,
 
   /*
     In the expanded format, we share the read code with static varsized, just
-    using different data base pointer and offset/lenght arrays.
+    using different data base pointer and offset/length arrays.
   */
   thrjamDebug(req_struct->jamBuffer);
   return varsize_reader(outBuffer, req_struct, ahOut, attrDes,
@@ -2066,11 +2066,6 @@ Dbtup::checkUpdateOfPrimaryKey(KeyReqStruct* req_struct,
   req_struct->xfrm_flag = tmp;
   
   ndbrequire(req_struct->out_buf_index == attributeHeader.getByteSize());
-  if (unlikely(ahIn.getDataSize() != attributeHeader.getDataSize()))
-  {
-    thrjam(req_struct->jamBuffer);
-    return true;
-  }
 
   if (charsetFlag)
   {
@@ -2094,12 +2089,18 @@ Dbtup::checkUpdateOfPrimaryKey(KeyReqStruct* req_struct,
    * non-character column. (Little endian format would have required
    * 'cmp_attr' to correctly compare '>' or '<')
    */
-  else if (unlikely(memcmp(&keyReadBuffer[0], 
-                    &updateBuffer[1],
-                    req_struct->out_buf_index) != 0))
-  {
-    thrjam(req_struct->jamBuffer);
-    return true;
+  else {
+    /* Not charset, use binary comparison */
+    if (unlikely(ahIn.getDataSize() != attributeHeader.getDataSize())) {
+      thrjam(req_struct->jamBuffer);
+      return true;
+    }
+
+    if (unlikely(memcmp(&keyReadBuffer[0], &updateBuffer[1],
+                        req_struct->out_buf_index) != 0)) {
+      thrjam(req_struct->jamBuffer);
+      return true;
+    }
   }
   return false;
 }

@@ -87,13 +87,12 @@ bool SocketServer::tryBind(unsigned short port,
         return false;
     }
 
-    const NDB_SOCKET_TYPE sock =
+    const ndb_socket_t sock =
         ndb_socket_create_dual_stack(SOCK_STREAM, 0);
     if (!ndb_socket_valid(sock))
       return false;
 
-    DBUG_PRINT("info",("NDB_SOCKET: " MY_SOCKET_FORMAT,
-                       MY_SOCKET_FORMAT_VALUE(sock)));
+    DBUG_PRINT("info",("NDB_SOCKET: %s", ndb_socket_to_string(sock).c_str()));
 
     if (ndb_socket_configure_reuseaddr(sock, true) == -1)
     {
@@ -126,13 +125,12 @@ bool SocketServer::tryBind(unsigned short port,
         return false;
     }
 
-    const NDB_SOCKET_TYPE sock =
-        ndb_socket_create(AF_INET, SOCK_STREAM, 0);
+    const ndb_socket_t sock =
+        ndb_socket_create_ipv4(SOCK_STREAM, 0);
     if (!ndb_socket_valid(sock))
       return false;
 
-    DBUG_PRINT("info",("NDB_SOCKET: " MY_SOCKET_FORMAT,
-                       MY_SOCKET_FORMAT_VALUE(sock)));
+    DBUG_PRINT("info",("NDB_SOCKET: %s", ndb_socket_to_string(sock).c_str()));
 
     if (ndb_socket_configure_reuseaddr(sock, true) == -1)
     {
@@ -161,7 +159,7 @@ SocketServer::setup(SocketServer::Service * service,
         const char * intface){
   DBUG_ENTER("SocketServer::setup");
   DBUG_PRINT("enter",("interface=%s, port=%u", intface, *port));
-  NDB_SOCKET_TYPE sock;
+  ndb_socket_t sock;
   if (!m_use_only_ipv4)
   {
     struct sockaddr_in6 servaddr;
@@ -184,8 +182,7 @@ SocketServer::setup(SocketServer::Service * service,
       DBUG_RETURN(false);
     }
 
-    DBUG_PRINT("info",("NDB_SOCKET: " MY_SOCKET_FORMAT,
-                       MY_SOCKET_FORMAT_VALUE(sock)));
+    DBUG_PRINT("info",("NDB_SOCKET: %s", ndb_socket_to_string(sock).c_str()));
 
     if (ndb_socket_reuseaddr(sock, true) == -1)
     {
@@ -204,8 +201,7 @@ SocketServer::setup(SocketServer::Service * service,
 
     /* Get the address and port we bound to */
     struct sockaddr_in6 serv_addr;
-    ndb_socket_len_t addr_len = sizeof(serv_addr);
-    if(ndb_getsockname(sock, (struct sockaddr *) &serv_addr, &addr_len))
+    if(ndb_getsockname(sock, &serv_addr))
     {
       g_eventLogger->info(
           "An error occurred while trying to find out what port we bound to."
@@ -231,7 +227,7 @@ SocketServer::setup(SocketServer::Service * service,
         DBUG_RETURN(false);
     }
 
-    sock = ndb_socket_create(AF_INET, SOCK_STREAM, 0);
+    sock = ndb_socket_create_ipv4(SOCK_STREAM, 0);
     if (!ndb_socket_valid(sock))
     {
       DBUG_PRINT("error",("socket() - %d - %s",
@@ -239,8 +235,7 @@ SocketServer::setup(SocketServer::Service * service,
       DBUG_RETURN(false);
     }
 
-    DBUG_PRINT("info",("NDB_SOCKET: " MY_SOCKET_FORMAT,
-                       MY_SOCKET_FORMAT_VALUE(sock)));
+    DBUG_PRINT("info",("NDB_SOCKET: %s", ndb_socket_to_string(sock).c_str()));
 
     if (ndb_socket_reuseaddr(sock, true) == -1)
     {
@@ -259,8 +254,7 @@ SocketServer::setup(SocketServer::Service * service,
 
     /* Get the address and port we bound to */
     struct sockaddr_in serv_addr;
-    ndb_socket_len_t addr_len = sizeof(serv_addr);
-    if(ndb_getsockname(sock, (struct sockaddr *) &serv_addr, &addr_len))
+    if(ndb_getsockname4(sock, &serv_addr))
     {
       g_eventLogger->info(
         "An error occurred while trying to find out what port we bound to."
@@ -306,7 +300,7 @@ SocketServer::doAccept()
   m_services_poller.clear();
   for (unsigned i = 0; i < m_services.size(); i++)
   {
-    m_services_poller.add(m_services[i].m_socket, true, false, true);
+    m_services_poller.add_readable(m_services[i].m_socket); // Need error ??
   }
   assert(m_services.size() == m_services_poller.count());
 
@@ -337,7 +331,7 @@ SocketServer::doAccept()
     ServiceInstance & si = m_services[i];
     assert(m_services_poller.is_socket_equal(i, si.m_socket));
 
-    const NDB_SOCKET_TYPE childSock = ndb_accept(si.m_socket, 0, 0);
+    const ndb_socket_t childSock = ndb_accept(si.m_socket, 0, 0);
     if (!ndb_socket_valid(childSock))
     {
       // Could not 'accept' socket(maybe at max fds), indicate error

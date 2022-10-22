@@ -76,7 +76,7 @@ AsyncIoThread::doStart()
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   const NDB_THREAD_STACKSIZE stackSize = 4 * 128 * 1024;
 #else
-  const NDB_THREAD_STACKSIZE stackSize = 192*1024;
+  const NDB_THREAD_STACKSIZE stackSize = 256 * 1024;
 #endif
 
   char buf[16];
