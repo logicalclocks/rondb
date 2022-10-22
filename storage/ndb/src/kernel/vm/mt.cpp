@@ -2783,10 +2783,7 @@ thr_send_threads::assign_threads_to_assist_send_threads()
   unsigned next_send_instance = 0;
   for (thr_no = 0; thr_no < glob_num_threads; thr_no++)
   {
-    g_eventLogger->info("thr_no = %u", thr_no);
     thr_data *selfptr = &rep->m_thread[thr_no];
-    g_eventLogger->info("instance_count: %u", selfptr->m_instance_count);
-    g_eventLogger->info("instance_list[0] = %u", selfptr->m_instance_list[0]);
     selfptr->m_nosend = conf.do_get_nosend(selfptr->m_instance_list,
                                            selfptr->m_instance_count);
     if (is_recover_thread(thr_no) ||

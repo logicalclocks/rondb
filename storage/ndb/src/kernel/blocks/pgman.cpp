@@ -359,7 +359,6 @@ Pgman::execREAD_CONFIG_REQ(Signal* signal)
     // how many page entries per buffer page
     Uint32 entries = 0;
     ndb_mgm_get_int_parameter(p, CFG_DB_DISK_PAGE_BUFFER_ENTRIES, &entries);
-    g_eventLogger->info("pgman: page buffer entries = %u", entries);
     if (entries > 0) // should be
     {
       // param name refers to unbound entries ending up on stack
