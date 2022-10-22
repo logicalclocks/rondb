@@ -2603,10 +2603,6 @@ Configuration::addThread(struct NdbThread* pThread,
      * main threads are set in ThreadConfig::ipControlLoop
      * as it's handled differently with mt
      */
-    ndbout_c("Started thread, index = %u, id = %d, type = %s",
-             i,
-             NdbThread_GetTid(pThread),
-             type_str);
     setLockCPU(pThread, type);
   }
   /**

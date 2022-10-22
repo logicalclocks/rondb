@@ -115,8 +115,6 @@ int AsyncFile::init()
     nz_mempool.size = nz_mempool.mfree = zlib.MEMORY_NEED;
   }
 
-  ndbout_c("NDBFS/AsyncFile: Allocating %u for In/Deflate buffer",
-           (unsigned int)nz_mempool.size);
   nz_mempool.mem = (char*) ndbd_malloc(nz_mempool.size);
 
   nzf.stream.opaque= &nz_mempool;

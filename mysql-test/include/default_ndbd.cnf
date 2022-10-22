@@ -20,7 +20,6 @@ LongMessageBuffer=             8M
 RedoBuffer=                    4M
 BackupDataBufferSize=          2M
 BackupLogBufferSize=           2M
-BackupMemory=                  4M
 TwoPassInitialNodeRestartCopy=1
 TransactionDeadlockDetectionTimeout=3000
 Checksum=1
