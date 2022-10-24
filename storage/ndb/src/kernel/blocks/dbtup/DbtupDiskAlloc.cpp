@@ -1981,7 +1981,7 @@ void
 Dbtup::disk_page_free(Signal *signal, 
 		      Tablerec *tabPtrP,
                       Fragrecord * fragPtrP,
-		      Local_key* key,
+		      const Local_key* key,
                       PagePtr pagePtr,
                       Uint32 gci,
                       const Local_key *row_id,
