@@ -11,98 +11,98 @@ ARG userid=1000
 ARG groupid=1000
 
 RUN  mkdir /etc/yum/repos.d; \
-echo '[ol7_epel]' > /etc/yum/repos.d/epel-yum-ol7.repo; \
-echo 'name=Oracle Linux $releasever EPEL ($basearch)' >> /etc/yum/repos.d/epel-yum-ol7.repo; \
-echo 'baseurl=http://yum.oracle.com/repo/OracleLinux/OL7/developer_EPEL/$basearch/' >> /etc/yum/repos.d/epel-yum-ol7.repo; \
-echo 'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-oracle' >> /etc/yum/repos.d/epel-yum-ol7.repo; \
-echo 'gpgcheck=1' >> /etc/yum/repos.d/epel-yum-ol7.repo; \
-echo 'enabled=1' >> /etc/yum/repos.d/epel-yum-ol7.repo; \
-yum repolist; \
-yum -y update;
+    echo '[ol7_epel]' > /etc/yum/repos.d/epel-yum-ol7.repo; \
+    echo 'name=Oracle Linux $releasever EPEL ($basearch)' >> /etc/yum/repos.d/epel-yum-ol7.repo; \
+    echo 'baseurl=http://yum.oracle.com/repo/OracleLinux/OL7/developer_EPEL/$basearch/' >> /etc/yum/repos.d/epel-yum-ol7.repo; \
+    echo 'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-oracle' >> /etc/yum/repos.d/epel-yum-ol7.repo; \
+    echo 'gpgcheck=1' >> /etc/yum/repos.d/epel-yum-ol7.repo; \
+    echo 'enabled=1' >> /etc/yum/repos.d/epel-yum-ol7.repo; \
+    yum repolist; \
+    yum -y update;
 
 RUN yum -y install wget make git which perl-core openldap-devel
 
 RUN yum -y install bison krb5-server krb5-workstation krb5-devel
 
 RUN yum -y install numactl numactl-libs numactl-devel; \
-yum -y install patchelf ncurses-devel java-1.8.0-openjdk-devel automake; \
-yum -y install zlib-devel; \
-yum -y install scl-utils; \
-yum -y install oracle-softwarecollection-release-el7; \
-yum-config-manager -y --enable "ol7_optional_latest"; \
-yum -y install devtoolset-9;
+    yum -y install patchelf ncurses-devel java-1.8.0-openjdk-devel automake; \
+    yum -y install zlib-devel; \
+    yum -y install scl-utils; \
+    yum -y install oracle-softwarecollection-release-el7; \
+    yum-config-manager -y --enable "ol7_optional_latest"; \
+    yum -y install devtoolset-9;
 
 RUN source scl_source enable devtoolset-9; \
-wget --progress=bar:force https://www.openssl.org/source/openssl-${lib_ssl_version}.tar.gz; \
-tar xf openssl-${lib_ssl_version}.tar.gz; \
-cd openssl-${lib_ssl_version}; \
-./config --prefix=/usr/local/ssl --openssldir=/usr/local/ssl shared zlib; \
-make -j$(nproc); \
-make install; \
-echo "/usr/local/ssl/lib" >> /etc/ld.so.conf.d/openssl-${lib_ssl_version}.conf; \
-ldconfig -v; \
-cd ..; \
-rm -rf openssl-${lib_ssl_version}; 
+    wget --progress=bar:force https://www.openssl.org/source/openssl-${lib_ssl_version}.tar.gz; \
+    tar xf openssl-${lib_ssl_version}.tar.gz; \
+    cd openssl-${lib_ssl_version}; \
+    ./config --prefix=/usr/local/ssl --openssldir=/usr/local/ssl shared zlib; \
+    make -j$(nproc); \
+    make install; \
+    echo "/usr/local/ssl/lib" >> /etc/ld.so.conf.d/openssl-${lib_ssl_version}.conf; \
+    ldconfig -v; \
+    cd ..; \
+    rm -rf openssl-${lib_ssl_version}; 
 
 
 RUN echo Installing cmake; \
-source scl_source enable devtoolset-9; \
-wget --progress=bar:force https://github.com/Kitware/CMake/releases/download/v${cmake_version}/cmake-${cmake_version}.tar.gz; \
-tar xzf cmake-${cmake_version}.tar.gz; \
-cd cmake-${cmake_version}; \
-export OPENSSL_ROOT_DIR=/usr/local/ssl/; \
-./bootstrap --prefix=/usr/local; \
-make -j$(nproc); \
-make install; \
-cd ..; \
-rm -r cmake-${cmake_version}*; 
+    source scl_source enable devtoolset-9; \
+    wget --progress=bar:force https://github.com/Kitware/CMake/releases/download/v${cmake_version}/cmake-${cmake_version}.tar.gz; \
+    tar xzf cmake-${cmake_version}.tar.gz; \
+    cd cmake-${cmake_version}; \
+    export OPENSSL_ROOT_DIR=/usr/local/ssl/; \
+    ./bootstrap --prefix=/usr/local; \
+    make -j$(nproc); \
+    make install; \
+    cd ..; \
+    rm -r cmake-${cmake_version}*; 
 
 RUN echo Installing Boost; \
-BOOST_V=`echo ${boost_version} | sed s/'\.'/'_'/g`; \
-source scl_source enable devtoolset-9; \
-wget --progress=bar:force https://boostorg.jfrog.io/artifactory/main/release/${boost_version}/source/boost_${BOOST_V}.tar.gz ; \
-tar xzf boost_${BOOST_V}.tar.gz; \
-rm boost_${BOOST_V}.tar.gz;
+    BOOST_V=`echo ${boost_version} | sed s/'\.'/'_'/g`; \
+    source scl_source enable devtoolset-9; \
+    wget --progress=bar:force https://boostorg.jfrog.io/artifactory/main/release/${boost_version}/source/boost_${BOOST_V}.tar.gz ; \
+    tar xzf boost_${BOOST_V}.tar.gz; \
+    rm boost_${BOOST_V}.tar.gz;
 
 RUN yum -y install golang; \
-yum -y install maven; \
-yum -y install vim; \
-yum -y install pigz; 
+    yum -y install maven; \
+    yum -y install vim; \
+    yum -y install pigz; 
 
 RUN groupadd ${user} --gid ${groupid}; \
-useradd -ms /bin/bash ${user} --uid ${userid} --gid ${groupid}; 
+    useradd -ms /bin/bash ${user} --uid ${userid} --gid ${groupid}; 
 
 RUN echo "source scl_source enable devtoolset-9" >> "/home/${user}/.bashrc" 
 
 RUN BOOST_V=`echo ${boost_version} | sed s/'\.'/'_'/g`; \
-echo "export BOOST_ROOT=/boost_${BOOST_V}" >> "/home/${user}/.bashrc"; \
-echo "export BOOST_VERSION=73" >> "/home/${user}/.bashrc"; \
-echo "export OPENSSL_ROOT=/usr/local/ssl" >> "/home/${user}/.bashrc"
+    echo "export BOOST_ROOT=/boost_${BOOST_V}" >> "/home/${user}/.bashrc"; \
+    echo "export BOOST_VERSION=73" >> "/home/${user}/.bashrc"; \
+    echo "export OPENSSL_ROOT=/usr/local/ssl" >> "/home/${user}/.bashrc"
 
 RUN mkdir /src; \
-mkdir /output; \
-mkdir /build
+    mkdir /output; \
+    mkdir /build
 
 RUN chown ${user}:${user} /src;  \
-chown ${user}:${user} /output;  \
-chown ${user}:${user} /build
+    chown ${user}:${user} /output;  \
+    chown ${user}:${user} /build
 
 
 RUN mkdir -p /home/${user}/.m2; \
-touch /home/${user}/.m2/settings.xml; \
-chown -R ${user}:${user} /home/${user}/.m2; \
-echo "<settings xmlns=\"http://maven.apache.org/SETTINGS/1.0.0\"" >> /home/${user}/.m2/settings.xml; \
-echo "          xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"" >> /home/${user}/.m2/settings.xml; \
-echo "          xsi:schemaLocation=\"http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd\">" >> /home/${user}/.m2/settings.xml; \
-echo "<servers>" >> /home/${user}/.m2/settings.xml; \
-echo " <server>" >> /home/${user}/.m2/settings.xml; \
-echo "    <id>\${JenkinsHops.RepoID}</id>" >> /home/${user}/.m2/settings.xml; \
-echo "    <username>\${JenkinsHops.User}</username>" >> /home/${user}/.m2/settings.xml; \
-echo "    <filePermissions>664</filePermissions>" >> /home/${user}/.m2/settings.xml; \
-echo "    <directoryPermissions>775</directoryPermissions>" >> /home/${user}/.m2/settings.xml; \
-echo "    <password>\${JenkinsHops.Password}</password>" >> /home/${user}/.m2/settings.xml; \
-echo " </server>" >> /home/${user}/.m2/settings.xml; \
-echo "</servers>" >> /home/${user}/.m2/settings.xml; \
-echo "</settings>" >> /home/${user}/.m2/settings.xml;
+    touch /home/${user}/.m2/settings.xml; \
+    chown -R ${user}:${user} /home/${user}/.m2; \
+    echo "<settings xmlns=\"http://maven.apache.org/SETTINGS/1.0.0\"" >> /home/${user}/.m2/settings.xml; \
+    echo "          xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"" >> /home/${user}/.m2/settings.xml; \
+    echo "          xsi:schemaLocation=\"http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd\">" >> /home/${user}/.m2/settings.xml; \
+    echo "<servers>" >> /home/${user}/.m2/settings.xml; \
+    echo " <server>" >> /home/${user}/.m2/settings.xml; \
+    echo "    <id>\${JenkinsHops.RepoID}</id>" >> /home/${user}/.m2/settings.xml; \
+    echo "    <username>\${JenkinsHops.User}</username>" >> /home/${user}/.m2/settings.xml; \
+    echo "    <filePermissions>664</filePermissions>" >> /home/${user}/.m2/settings.xml; \
+    echo "    <directoryPermissions>775</directoryPermissions>" >> /home/${user}/.m2/settings.xml; \
+    echo "    <password>\${JenkinsHops.Password}</password>" >> /home/${user}/.m2/settings.xml; \
+    echo " </server>" >> /home/${user}/.m2/settings.xml; \
+    echo "</servers>" >> /home/${user}/.m2/settings.xml; \
+    echo "</settings>" >> /home/${user}/.m2/settings.xml;
 
 CMD ["/usr/bin/scl", "enable", "devtoolset-9", "bash"]
