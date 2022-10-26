@@ -157,12 +157,6 @@ Dbtup::execCREATE_TAB_REQ(Signal* signal)
   regTabPtr.p->m_bits |=
     (req->useVarSizedDiskData ? Tablerec::TR_UseVarSizedDiskData : 0);
 
-  if ((regTabPtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData) != 0)
-  {
-    g_eventLogger->info("(%u)Creating table %u with use of varsize diskdata",
-                        instance(),
-                        regTabPtr.i);
-  }
   regTabPtr.p->m_offsets[MM].m_disk_ref_offset= 0;
   regTabPtr.p->m_offsets[MM].m_null_words= 0;
   regTabPtr.p->m_offsets[MM].m_fix_header_size= 0;

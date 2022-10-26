@@ -7568,10 +7568,6 @@ loop:
       return RNIL;
     }
 
-    g_eventLogger->info("Allocate event buffering page chunk in SUMA, %u"
-                        " pages, first page ref = %u",
-                        count, ref);
-
     ptr.p->m_size = count;
     ptr.p->m_free = count;
     ptr.p->m_page_id = ref;

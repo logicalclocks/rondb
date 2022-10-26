@@ -5480,10 +5480,6 @@ void Ndbcntr::Missra::sendNextREAD_CONFIG_REQ(Signal* signal)
       }
     }
 #endif
-    g_eventLogger->info("Sending READ_CONFIG_REQ to index = %d, name = %s",
-                        currentBlockIndex,
-                        getBlockName(refToBlock(ref)));
-    
     /**
      * send delayed so that alloc gets "time-sliced"
      */

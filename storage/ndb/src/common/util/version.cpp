@@ -157,83 +157,22 @@ struct NdbUpGradeCompatible {
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_schema_table[] = {
-  { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(21,10,2), UG_Range },
-  { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(21,4,2), UG_Range },
-  { MAKE_VERSION(21,4,NDB_VERSION_BUILD),MAKE_VERSION(21,4,2), UG_Range },
+  { MAKE_VERSION(22,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,0), UG_Range },
   { 0, 0, UG_Null }
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_backup_table[] = {
-  { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(21,10,2), UG_Range },
-  { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(21,4,2), UG_Range },
-  { MAKE_VERSION(21,4,NDB_VERSION_BUILD),MAKE_VERSION(21,4,2), UG_Range },
+  { MAKE_VERSION(22,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,0), UG_Range },
   { 0, 0, UG_Null }
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_full[] = {
-  { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(21,10,2), UG_Range },
-  { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(21,4,0), UG_Range },
-  { MAKE_VERSION(21,4,NDB_VERSION_BUILD),MAKE_VERSION(21,4,0), UG_Range },
-  { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(8,0,23), UG_Exact },
-  { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(8,0,22), UG_Exact },
-  { MAKE_VERSION(21,10,NDB_VERSION_BUILD),MAKE_VERSION(8,0,21), UG_Exact },
-  { MAKE_VERSION(21,4,NDB_VERSION_BUILD),MAKE_VERSION(8,0,23), UG_Exact },
-  { MAKE_VERSION(21,4,NDB_VERSION_BUILD),MAKE_VERSION(8,0,22), UG_Exact },
-  { MAKE_VERSION(21,4,NDB_VERSION_BUILD),MAKE_VERSION(8,0,21), UG_Exact },
-  { MAKE_VERSION(8,0,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range }, /* 7.0 <-> 8.0 */
-  { MAKE_VERSION(7,6,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range }, /* 7.0 <-> 7.6 */
-  { MAKE_VERSION(7,5,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range }, /* 7.0 <-> 7.5 */
-  { MAKE_VERSION(7,4,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range }, /* 7.0 <-> 7.4 */
-
-  { MAKE_VERSION(7,3,NDB_VERSION_BUILD), MAKE_VERSION(7,3,0), UG_Range },
-  { MAKE_VERSION(7,3,NDB_VERSION_BUILD), MAKE_VERSION(7,2,0), UG_Range },
-  { MAKE_VERSION(7,3,NDB_VERSION_BUILD), MAKE_VERSION(7,1,0), UG_Range },
-  { MAKE_VERSION(7,3,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range },
-
-  { MAKE_VERSION(7,2,NDB_VERSION_BUILD), MAKE_VERSION(7,2,0), UG_Range },
-  { MAKE_VERSION(7,2,NDB_VERSION_BUILD), MAKE_VERSION(7,1,0), UG_Range },
-  { MAKE_VERSION(7,2,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range },
-
-  { MAKE_VERSION(7,1,NDB_VERSION_BUILD), MAKE_VERSION(7,1,0), UG_Range },        /* From 7.1+ */
-  { MAKE_VERSION(7,1,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range },        /* From 7.0+ */
-  { MAKE_VERSION(7,1,NDB_VERSION_BUILD), MAKE_VERSION(6,4,0), UG_Range },        /* From 6.4+ */
-  { MAKE_VERSION(7,1,NDB_VERSION_BUILD), NDBD_MAX_RECVBYTESIZE_32K, UG_Range },  /* From 6.3.X + */
-  { MAKE_VERSION(7,0,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range },
-  { MAKE_VERSION(7,0,NDB_VERSION_BUILD), MAKE_VERSION(6,4,0), UG_Range },
-  /* Can only upgrade to 6.4.X+ from versions >= 6.3.17 due to change
-   * in Transporter maximum sent message size
-   */
-  { MAKE_VERSION(7,0,NDB_VERSION_BUILD), NDBD_MAX_RECVBYTESIZE_32K, UG_Range },
-  { MAKE_VERSION(6,3,NDB_VERSION_BUILD), MAKE_VERSION(6,2,1), UG_Range },
-
-  { MAKE_VERSION(6,2,NDB_VERSION_BUILD), MAKE_VERSION(6,2,1), UG_Range },
-  { MAKE_VERSION(6,2,0), MAKE_VERSION(6,2,0), UG_Range},
-
-  { MAKE_VERSION(6,2,NDB_VERSION_BUILD), MAKE_VERSION(6,1,19), UG_Range },
-  { MAKE_VERSION(6,1,NDB_VERSION_BUILD), MAKE_VERSION(6,1,6), UG_Range},
-  /* var page reference 32bit->64bit making 6.1.6 not backwards compatible */
-  /* ndb_apply_status table changed, and no compatibility code written */
-  { MAKE_VERSION(6,1,4), MAKE_VERSION(6,1,2), UG_Range},
-  { MAKE_VERSION(5,1,NDB_VERSION_BUILD), MAKE_VERSION(5,1,0), UG_Range},
-
-  { MAKE_VERSION(5,1,NDB_VERSION_BUILD), MAKE_VERSION(5,1,18), UG_Range},
-  { MAKE_VERSION(5,1,17), MAKE_VERSION(5,1,0), UG_Range},
-
-  { MAKE_VERSION(5,0,NDB_VERSION_BUILD), MAKE_VERSION(5,0,12), UG_Range},
-  { MAKE_VERSION(5,0,11), MAKE_VERSION(5,0,2), UG_Range},
-  { MAKE_VERSION(4,1,NDB_VERSION_BUILD), MAKE_VERSION(4,1,15), UG_Range },
-  { MAKE_VERSION(4,1,14), MAKE_VERSION(4,1,10), UG_Range },
-  { MAKE_VERSION(4,1,10), MAKE_VERSION(4,1,9), UG_Exact },
-  { MAKE_VERSION(4,1,9), MAKE_VERSION(4,1,8), UG_Exact },
-  { MAKE_VERSION(3,5,2), MAKE_VERSION(3,5,1), UG_Exact },
+  { MAKE_VERSION(22,10,NDB_VERSION_BUILD),MAKE_VERSION(21,4,10), UG_Range },
   { 0, 0, UG_Null }
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_upgrade[] = {
-  { MAKE_VERSION(5,0,12), MAKE_VERSION(5,0,11), UG_Exact },
-  { MAKE_VERSION(5,0,2), MAKE_VERSION(4,1,8), UG_Exact },
-  { MAKE_VERSION(4,1,15), MAKE_VERSION(4,1,14), UG_Exact },
-  { MAKE_VERSION(3,5,4), MAKE_VERSION(3,5,3), UG_Exact },
+  { MAKE_VERSION(22,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,0), UG_Range },
   { 0, 0, UG_Null }
 };
 
@@ -357,7 +296,7 @@ extern "C"
 int
 ndbCompatible_ndb_mgmt(Uint32 ownVersion, Uint32 otherVersion)
 {
-  return ndbCompatible_full(ownVersion, otherVersion);
+  return ndbCompatible_upgrade(ownVersion, otherVersion);
 }
 
 extern "C"

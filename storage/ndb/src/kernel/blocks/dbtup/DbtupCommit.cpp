@@ -821,6 +821,17 @@ Dbtup::commit_operation(Signal* signal,
   Uint32 mm_vars= regTabPtr->m_attributes[MM].m_no_of_varsize;
   Uint32 mm_dyns= regTabPtr->m_attributes[MM].m_no_of_dynamic;
   bool update_gci_at_commit = ! regOperPtr->op_struct.bit_field.m_gci_written;
+  /**
+   * Reference to old disk reference must be kept since it is used to
+   * deallocate the disk row in case the state is DISK_REORG.
+   * If there is no disk reference, this will just copy part of the
+   * tuple header to a stack variable that isn't used.
+   */
+  Local_key old_disk_key;
+  memcpy(&old_disk_key,
+         tuple_ptr->get_disk_ref_ptr(regTabPtr),
+         sizeof(Local_key));
+
   if((mm_vars+mm_dyns) == 0)
   {
     jam();
@@ -990,10 +1001,6 @@ Dbtup::commit_operation(Signal* signal,
        * transaction and refer to the new page here instead in that case.
        */
       jam();
-      Local_key old_key;
-      memcpy(&old_key,
-             tuple_ptr->get_disk_ref_ptr(regTabPtr),
-             sizeof(Local_key));
       ndbrequire(!(copy_bits & Tuple_header::DISK_ALLOC));
       Local_key rowid = regOperPtr->m_tuple_location;
       rowid.m_page_no = pagePtr.p->frag_page_id;
@@ -1004,7 +1011,7 @@ Dbtup::commit_operation(Signal* signal,
       disk_page_free(signal,
                      regTabPtr,
                      regFragPtr, 
-                     &old_key,
+                     &old_disk_key,
                      tmpptr,
                      gci_hi,
                      &rowid,
@@ -1014,9 +1021,9 @@ Dbtup::commit_operation(Signal* signal,
                  instance(),
                  rowid.m_page_no,
                  rowid.m_page_idx,
-                 old_key.m_file_no,
-                 old_key.m_page_no,
-                 old_key.m_page_idx,
+                 old_disk_key.m_file_no,
+                 old_disk_key.m_page_no,
+                 old_disk_key.m_page_idx,
                  diskPagePtr.p->uncommitted_used_space));
 
       /**

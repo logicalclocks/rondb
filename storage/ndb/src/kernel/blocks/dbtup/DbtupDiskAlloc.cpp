@@ -1981,7 +1981,7 @@ void
 Dbtup::disk_page_free(Signal *signal, 
 		      Tablerec *tabPtrP,
                       Fragrecord * fragPtrP,
-		      Local_key* key,
+		      const Local_key* key,
                       PagePtr pagePtr,
                       Uint32 gci,
                       const Local_key *row_id,
@@ -2042,7 +2042,14 @@ Dbtup::disk_page_free(Signal *signal,
     Uint32 size_len = (sizeof(Dbtup::Disk_undo::Update_Free) >> 2);
     Uint32 new_undo_len = size_len + (sz - 1);
     jamDataDebug(new_undo_len);
-    ndbrequire(new_undo_len == undo_len);
+    jamDataDebug(undo_len);
+    /**
+     * We allocate 1 extra word per kByte, thus we should have at
+     * least new_undo_len words, but at most new_undo_len + 32
+     * words preallocated.
+     */
+    ndbrequire(undo_len >= new_undo_len);
+    ndbrequire((new_undo_len + 32) >= undo_len);
     lsn = disk_page_undo_free(signal,
                               pagePtr.p,
                               key,
@@ -2057,7 +2064,7 @@ Dbtup::disk_page_free(Signal *signal,
   }
   DEB_PGMAN((
     "(%u)disk_page_free:tab(%u,%u):%u,page(%u,%u).%u.%u,gci:%u,row(%u,%u)"
-    ", lsn=%llu, undo_len: %u",
+    ", lsn=%llu, new_undo_len: %u, undo_len: %u",
              instance(),
              fragPtrP->fragTableId,
              fragPtrP->fragmentId,
@@ -2070,6 +2077,7 @@ Dbtup::disk_page_free(Signal *signal,
              row_id->m_page_no,
              row_id->m_page_idx,
              lsn,
+             new_undo_len,
              undo_len));
 
 
