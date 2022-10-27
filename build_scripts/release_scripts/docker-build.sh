@@ -29,6 +29,8 @@ if [[ "${?}" -ne 0 ]]; then
 fi
 
 CORES=$(( $(nproc) / 2 + 1 ))
+USERID=`id -u`
+GROUPID=`id -g`
 RELEASE_BUILD=false
 DEPLOY=false
 # A POSIX variable
@@ -110,7 +112,7 @@ echo "Build Params. Src: $SRC_DIR_ABS, Build dir: $TEMP_BUILD_DIR_ABS, Output di
 
 echo "Creating docker image ${DOCKER_IMAGE}"
 
-docker build -t $DOCKER_IMAGE . 
+docker build --build-arg userid=${USERID} --build-arg groupid=${GROUPID}  -t $DOCKER_IMAGE . 
 
 echo "Building RonDB using $DOCKER_IMAGE"
 mount="-v $SRC_DIR_ABS:/src -v $OUTPUT_DIR_ABS:/output "

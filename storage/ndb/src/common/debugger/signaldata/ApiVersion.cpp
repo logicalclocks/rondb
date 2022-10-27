@@ -39,7 +39,7 @@ bool printAPI_VERSION_REQ(FILE *output,
 
   fprintf(output,
           " senderRef: (node: %d, block: %d), nodeId: %d\n" \
-          " version: %d, mysql_version: %d\n",
+          " version: %x, mysql_version: %x\n",
 	  refToNode(sig->senderRef), refToBlock(sig->senderRef),
 	  sig->nodeId, sig->version, sig->mysql_version);
   return true;
