@@ -1,5 +1,9 @@
 pipeline {
-    agent any 
+    agent {
+        node {
+            label 'Local'
+        }
+    }
     parameters{
       choice(name: 'BRANCH', choices: ['21.04', '22.10'], description: 'RonDB branch to build.')
       choice(name: 'BUILD_CORES', choices: ['8', '1', '16', '24', '32', '48'],  description: 'No of build threads. This is passed to make -j. Note jenkins machine is shared with other build process.')
