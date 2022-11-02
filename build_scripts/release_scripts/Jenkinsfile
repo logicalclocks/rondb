@@ -1,0 +1,78 @@
+pipeline {
+    agent {
+        node {
+            label 'Local'
+        }
+    }
+    parameters{
+      choice(name: 'BRANCH', choices: ['21.04', '21.04.7', '22.10'], description: 'RonDB branch to build.')
+      choice(name: 'BUILD_CORES', choices: ['8', '1', '16', '24', '32', '48'],  description: 'No of build threads. This is passed to make -j. Note jenkins machine is shared with other build process.')
+      booleanParam(name: 'RELEASE_BUILD', defaultValue: true, description: 'Enable this for release build. It uses PGO (profile guided optimization) and it take ~ 3 hrs to build')
+    }
+    environment {
+        HopsCECeds = credentials('HopsCE')
+        HopsEECeds = credentials('HopsEE')
+        RepoCeds = credentials('RepoHW')
+    }
+
+    stages {
+        stage("check docker") {
+            steps {
+
+              sh '''
+                echo "Checking docker "  
+                docker ps 
+              '''
+
+            }
+        }
+        stage("Checkout RonDB") {
+            steps {
+
+              sh '''
+                echo "Cloning RonDB Branch ${BRANCH}"  
+                cd ${WORKSPACE}
+                git clone --depth=1 --branch ${BRANCH} https://github.com/logicalclocks/rondb
+              '''
+            }
+        }
+        stage("build") {
+            steps {
+              sh '''
+                echo "Building RonDB"
+                cd ${WORKSPACE}/rondb/build_scripts/release_scripts/
+                mkdir output
+                chmod 777 output
+
+                sed -i "s/___CE_USER___/$HopsCECeds_USR/g" deploy.sh
+                sed -i "s/___CE_PASS___/$HopsCECeds_PSW/g" deploy.sh
+                sed -i "s/___EE_USER___/$HopsEECeds_USR/g" deploy.sh
+                sed -i "s/___EE_PASS___/$HopsEECeds_PSW/g" deploy.sh
+
+                cat $RepoCeds > id_rsa
+                chmod 600 id_rsa
+
+                release=""
+                if [ "$RELEASE_BUILD" = true ]; then
+                  release=" -r "
+                fi
+
+                ./docker-build.sh -s ../.. -o output -j ${BUILD_CORES} -d $release
+              '''
+            }
+        }
+    }   
+
+    post {
+        always {
+
+          sh '''
+            echo "Cleaning workspace"
+            rm -rf ${WORKSPACE}/rondb
+            docker kill $(docker ps | grep rondb_build | cut  -d ' ' -f 1) | true
+          '''
+
+        }
+    }
+}
+
