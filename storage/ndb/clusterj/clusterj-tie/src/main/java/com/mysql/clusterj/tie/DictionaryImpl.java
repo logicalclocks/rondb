@@ -38,6 +38,7 @@ import com.mysql.clusterj.core.store.Table;
 import com.mysql.clusterj.core.util.I18NHelper;
 import com.mysql.clusterj.core.util.Logger;
 import com.mysql.clusterj.core.util.LoggerFactoryService;
+import com.mysql.ndbjtie.ndbapi.NdbErrorConst;
 
 /**
  *
@@ -73,8 +74,17 @@ class DictionaryImpl implements com.mysql.clusterj.core.store.Dictionary {
     public Table getTable(String tableName) {
         TableConst ndbTable = ndbDictionary.getTable(tableName);
         if (ndbTable == null) {
+            NdbErrorConst error = ndbDictionary.getNdbError();
+            if (error.code() != 0) {
+                Utility.throwError(null, error, tableName);
+            }
+
             // try the lower case table name
             ndbTable = ndbDictionary.getTable(tableName.toLowerCase());
+            error = ndbDictionary.getNdbError();
+            if (error.code() != 0) {
+                Utility.throwError(null, error, tableName);
+            }
         }
         if (ndbTable == null) {
             return null;

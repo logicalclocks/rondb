@@ -342,15 +342,20 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
      * @return a new instance that can be used with makePersistent
      */
     public <T> T newInstance(Class<T> cls) {
-        assertNotClosed();
-        if (dtoCache != null) {
-            T instance = dtoCache.get(cls);
-            if (instance != null) {
-                return instance;
+        try {
+            assertNotClosed();
+            if (dtoCache != null) {
+                T instance = dtoCache.get(cls);
+                if (instance != null) {
+                    return instance;
+                }
             }
-        }
 
-        return factory.newInstance(cls, dictionary, db);
+            return factory.newInstance(cls, dictionary, db);
+        } catch (ClusterJDatastoreException cjde) {
+            checkConnection(cjde);
+            throw cjde;
+        }
     }
 
     /** Create an instance of a class to be persisted and set the primary key.
@@ -1610,27 +1615,32 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
     }
 
     public void setPartitionKey(Class<?> domainClass, Object key) {
-        assertNotClosed();
-        DomainTypeHandler<?> domainTypeHandler = getDomainTypeHandler(domainClass);
-        String tableName = domainTypeHandler.getTableName();
-        // if transaction is enlisted, throw a user exception
-        if (isEnlisted()) {
-            throw new ClusterJUserException(
-                    local.message("ERR_Set_Partition_Key_After_Enlistment", tableName));
-        }
-        // if a partition key has already been set, throw a user exception
-        if (this.partitionKey != null) {
-            throw new ClusterJUserException(
-                    local.message("ERR_Set_Partition_Key_Twice", tableName));
-        }
-        ValueHandler handler = domainTypeHandler.createKeyValueHandler(key, db);
-        this.partitionKey= domainTypeHandler.createPartitionKey(handler);
-        // if a transaction has already begun, tell the cluster transaction about the key
-        if (clusterTransaction != null) {
-            clusterTransaction.setPartitionKey(partitionKey);
-        }
-        // we are done with this handler; the partition key has all of its information
-        handler.release();
+         try{
+              assertNotClosed();
+              DomainTypeHandler<?> domainTypeHandler = getDomainTypeHandler(domainClass);
+              String tableName = domainTypeHandler.getTableName();
+              // if transaction is enlisted, throw a user exception
+              if (isEnlisted()) {
+                  throw new ClusterJUserException(
+                          local.message("ERR_Set_Partition_Key_After_Enlistment", tableName));
+              }
+              // if a partition key has already been set, throw a user exception
+              if (this.partitionKey != null) {
+                  throw new ClusterJUserException(
+                          local.message("ERR_Set_Partition_Key_Twice", tableName));
+              }
+              ValueHandler handler = domainTypeHandler.createKeyValueHandler(key, db);
+              this.partitionKey= domainTypeHandler.createPartitionKey(handler);
+              // if a transaction has already begun, tell the cluster transaction about the key
+              if (clusterTransaction != null) {
+                  clusterTransaction.setPartitionKey(partitionKey);
+              }
+              // we are done with this handler; the partition key has all of its information
+              handler.release();
+         } catch (ClusterJDatastoreException cjde) {
+             checkConnection(cjde);
+             throw cjde;
+         }
     }
 
     /** Mark the field in the instance as modified so it is flushed.
