@@ -4,24 +4,32 @@ set -e
 
 help() {
   cat <<EOF
-docker-build.sh {-n name} {-s path} [-b path] {-o path} {-j build_threads} {-r}
+docker-build.sh {-s path} {-o path} [-t tag] [-b path] [-j build_threads] [-r] [-d]
+
+This script builds RonDB using Docker and returns tarballs containing the binaries.
+
 USAGE
 =====
 Example: ./docker-build.sh -s ../.. -o /tmp/output/ -r -j 20
 
--n=name
-      Docker image name. Default is rondb_build
 -s=path
       Path to RonDB source code
--b=path
-      Optional path to temp build directory. If this is omitted then the build files reside in the container
 -o=path
-      Path to output directory where the build process will copy the final tar ball
+      Path to output directory where the build process will copy the final tarball
+-t=tag
+      Optional Docker image tag
+      Default is rondb_build:<rondb-version>
+      The RonDB version is extracted from the MYSQL_VERSION file
+-b=path
+      Optional path to temp build directory
+      If this is omitted then the build files reside in the container
 -j=build_thread
-      Number of build threads; this cannot be more than CPUs permitted to use by Docker; see $(docker info) for more information
+      Optional number of build threads
+      Defaults to max number of CPUs permitted to use by Docker
+      See $(docker info) for more information
 
--d    Deploy to remote repo. Hopsworks AB specific
--r    Make release tar balls. This takes longer
+-r    Create release builds. This takes longer
+-d    Deploy to remote repo.hops.works. Hopsworks AB specific
 EOF
 }
 
@@ -31,14 +39,16 @@ if [[ "${?}" -ne 0 ]]; then
   exit 1
 fi
 
+# Defaults
 RELEASE_BUILD=false
 DEPLOY=false
+
 # A POSIX variable
 OPTIND=1 # Reset in case getopts has been used previously in the shell.
-while getopts ":n:s:b:o:j:rd" opt; do
+while getopts ":t:s:b:o:j:rd" opt; do
   case "$opt" in
-  n)
-    PREFIX=$OPTARG
+  t)
+    DOCKER_IMAGE_TAG=$OPTARG
     ;;
   s)
     SRC_DIR=$OPTARG
@@ -117,28 +127,27 @@ fi
 source $SRC_DIR_ABS/MYSQL_VERSION
 RONDB_VERSION="$MYSQL_VERSION_MAJOR.$MYSQL_VERSION_MINOR.$MYSQL_VERSION_PATCH"
 
-DOCKER_IMAGE="rondb_build:${RONDB_VERSION}"
 PREFIX=$1
-if [ "$PREFIX" != "" ]; then
-  DOCKER_IMAGE="${PREFIX}:${RONDB_VERSION}"
+if [ -z $DOCKER_IMAGE_TAG ]; then
+  DOCKER_IMAGE_TAG="rondb_build:${RONDB_VERSION}"
 fi
 
 echo "Build Params:
   Src dir: $SRC_DIR_ABS
   Build dir: $TEMP_BUILD_DIR_ABS
   Output dir: $OUTPUT_DIR_ABS
-  Docker image name: $DOCKER_IMAGE
+  Docker image tag: $DOCKER_IMAGE_TAG
   No of build threads: $CORES
   Release: $RELEASE_BUILD
   Deploy: $DEPLOY"
 
-echo "Creating Docker image ${DOCKER_IMAGE}"
+echo "Creating Docker image ${DOCKER_IMAGE_TAG}"
 
-docker build -t $DOCKER_IMAGE .
+docker build -t $DOCKER_IMAGE_TAG .
 
-echo "Building RonDB using $DOCKER_IMAGE"
+echo "Building RonDB using $DOCKER_IMAGE_TAG"
 mount="-v $SRC_DIR_ABS:/src -v $OUTPUT_DIR_ABS:/output "
-if [[ -d $TEMP_BUILD_DIR_ABS ]]; then
+if [ -z $TEMP_BUILD_DIR_ABS ]; then
   mount="$mount -v $TEMP_BUILD_DIR_ABS:/build "
 fi
 
@@ -152,5 +161,5 @@ if [ "$DEPLOY" = true ]; then
   build_args="$build_args -d"
 fi
 
-docker run --rm $mount -w /src --user mysql "$DOCKER_IMAGE" /bin/bash -l ./build_scripts/release_scripts/build_all.sh $build_args
-#docker run --rm $mount -w /src --user mysql -it "$DOCKER_IMAGE" /bin/bash -l
+docker run --rm $mount -w /src --user mysql "$DOCKER_IMAGE_TAG" /bin/bash -l ./build_scripts/release_scripts/build_all.sh $build_args
+#docker run --rm $mount -w /src --user mysql -it "$DOCKER_IMAGE_TAG" /bin/bash -l
