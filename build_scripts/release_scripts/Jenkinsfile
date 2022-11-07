@@ -39,6 +39,9 @@ pipeline {
                 echo "Building RonDB"
                 cd ${WORKSPACE}/rondb
 
+                source ./MYSQL_VERSION
+                RONDB_VERSION="$MYSQL_VERSION_MAJOR.$MYSQL_VERSION_MINOR.$MYSQL_VERSION_PATCH"
+
                 sed -i "s/___CE_USER___/$HopsCECeds_USR/g" deploy.sh
                 sed -i "s/___CE_PASS___/$HopsCECeds_PSW/g" deploy.sh
                 sed -i "s/___EE_USER___/$HopsEECeds_USR/g" deploy.sh
@@ -54,7 +57,7 @@ pipeline {
 
                 docker buildx build . \
                   --platform linux/$TARGET_ARCH \
-                  --tag rondb-build \
+                  --tag rondb-build-all:$RONDB_VERSION \
                   --target build-all \
                   --build-arg BUILD_THREADS=$BUILD_CORES \
                   --build-arg DEPLOY_TO_REPO=1 \
