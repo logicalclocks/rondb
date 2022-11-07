@@ -16,9 +16,9 @@ if [ "$(uname)" == "Darwin" ]; then
   CPU_ARCH=$(uname -m)  # amd64 / arm64
 elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
   OS="linux"
-  CPU_ARCH=$(dpkg --print-architecture)  # amd64 / arm64
   GLIBC_VERSION=$(ldd --version | sed -n "s/.*Ubuntu GLIBC *\([[:digit:]]\.[[:digit:]][[:digit:]]\).*$/\1/p")
   COMPILER="glibc${GLIBC_VERSION}"
+  CPU_ARCH=$(dpkg --print-architecture)  # amd64 / arm64
 else
   echo "OS is neither Linux nor MacOS"
   exit 1
