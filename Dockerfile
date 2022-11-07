@@ -101,6 +101,8 @@ EOF
 
 RUN chown $USER:$USER -R .
 
+USER $USER:$USER
+
 # See https://stackoverflow.com/a/51264575/9068781 for conditional envs
 FROM rondb-build-dependencies as build-all
 ARG DEPLOY_TO_REPO
