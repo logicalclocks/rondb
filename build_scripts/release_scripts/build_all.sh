@@ -19,7 +19,7 @@ fi
 
 help() {
   cat <<EOF
-build-all.sh {-s path} [-b path] {-o path} {-j build_threads} {-r}
+build-all.sh {-s path} {-b path} {-o path} {-j build_threads} {-r} {-d}
 
 USAGE
 =====
@@ -104,12 +104,13 @@ fi
 
 if [[ "$TEMP_BUILD_DIR" == "" ]]; then
   echo "Temp build directory is not specified"
-else
-  TEMP_BUILD_DIR_ABS=$(readlink -f $TEMP_BUILD_DIR)
-  if [[ ! -d $TEMP_BUILD_DIR_ABS ]]; then
-    echo "Invalid temp build directory"
-    exit 1
-  fi
+  exit 1
+fi
+
+TEMP_BUILD_DIR_ABS=$(readlink -f $TEMP_BUILD_DIR)
+if [[ ! -d $TEMP_BUILD_DIR_ABS ]]; then
+  echo "Invalid temp build directory"
+  exit 1
 fi
 
 echo "Build Params:
