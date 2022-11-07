@@ -99,7 +99,7 @@ COPY <<-"EOF" .m2/settings.xml
 </settings>
 EOF
 
-RUN chown -R ${USER}:${USER}
+RUN chown -R ${USER}:${USER} .
 
 # See https://stackoverflow.com/a/51264575/9068781 for conditional envs
 FROM rondb-build-dependencies as build-all
@@ -109,16 +109,16 @@ ENV DEPLOY_ARG=${DEPLOY_TO_REPO:+-d}
 ARG RELEASE_TARBALL
 ENV RELEASE_ARG=${RELEASE_TARBALL:+-r}
 
-RUN mkdir rondb-src rondb-bin rondb-tarballs
+RUN mkdir rondb-src rondb-bin rondb-tarball
 RUN --mount=type=bind,source=.,target=rondb-src \
     rondb-src/build_scripts/release_scripts/build_all.sh \
     -s rondb-src \
     -b rondb-bin \
-    -o rondb-tarballs \
+    -o rondb-tarball \
     -j $THREADS_ARG \
     $DEPLOY_ARG $RELEASE_ARG
 
 # run with --output <output-folder>
 FROM scratch AS get-package-all
 ARG USER
-COPY --from=build-all /home/${USER}/rondb-tarballs .
+COPY --from=build-all /home/${USER}/rondb-tarball .
