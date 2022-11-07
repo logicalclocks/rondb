@@ -31,20 +31,18 @@ if [[ ! -f "$JAR_FILE" ]]; then
 fi
 
 mvn deploy:deploy-file -Dfile=$JAR_FILE -DgroupId=com.mysql.ndb -DartifactId=clusterj-rondb \
--Dversion=$RONDB_VERSION -Dpackaging=jar -DrepositoryId=Hops \
--Durl=https://archiva.hops.works/repository/Hops \
--DJenkinsHops.RepoID=Hops \
--DJenkinsHops.User=$CE_USER \
--DJenkinsHops.Password=$CE_PASS
-
+  -Dversion=$RONDB_VERSION -Dpackaging=jar -DrepositoryId=Hops \
+  -Durl=https://archiva.hops.works/repository/Hops \
+  -DJenkinsHops.RepoID=Hops \
+  -DJenkinsHops.User=$CE_USER \
+  -DJenkinsHops.Password=$CE_PASS
 
 mvn deploy:deploy-file -Dfile=$JAR_FILE -DgroupId=com.mysql.ndb -DartifactId=clusterj-rondb \
--Dversion=$RONDB_VERSION -Dpackaging=jar -DrepositoryId=HopsEE \
--Durl=https://nexus.hops.works/repository/hops-artifacts \
--DJenkinsHops.RepoID=HopsEE \
--DJenkinsHops.User=$EE_USER \
--DJenkinsHops.Password=$EE_PASS
-
+  -Dversion=$RONDB_VERSION -Dpackaging=jar -DrepositoryId=HopsEE \
+  -Durl=https://nexus.hops.works/repository/hops-artifacts \
+  -DJenkinsHops.RepoID=HopsEE \
+  -DJenkinsHops.User=$EE_USER \
+  -DJenkinsHops.Password=$EE_PASS
 
 LIBNDB_FILE="rondb-$RONDB_VERSION-linux-glibc$GLIBC-x86_64/lib/libndbclient.so.6.1.0"
 tar xf $TAR_FILE_ABS $LIBNDB_FILE
@@ -55,13 +53,13 @@ if [[ ! -f "$LIBNDB_FILE" ]]; then
 fi
 
 git clone --branch jenkins https://github.com/hopshadoop/clusterj-native
-cp "rondb-$RONDB_VERSION-linux-glibc$GLIBC-x86_64/lib/libndbclient.so.6.1.0"  clusterj-native/src/main/resources/libndbclient.so
+cp "rondb-$RONDB_VERSION-linux-glibc$GLIBC-x86_64/lib/libndbclient.so.6.1.0" clusterj-native/src/main/resources/libndbclient.so
 
 cd clusterj-native
 sed -i "s/___RONDBVERSION___/$RONDB_VERSION/g" pom.xml
 mvn deploy \
--DJenkinsHops.RepoID=Hops \
--DJenkinsHops.User=$CE_USER \
--DJenkinsHops.Password=$CE_PASS
+  -DJenkinsHops.RepoID=Hops \
+  -DJenkinsHops.User=$CE_USER \
+  -DJenkinsHops.Password=$CE_PASS
 
 rm -rf "rondb-$RONDB_VERSION-linux-glibc$GLIBC-x86_64"
