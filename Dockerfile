@@ -1,12 +1,16 @@
 # syntax=docker/dockerfile:1.3-labs
 
+ARG USER=mysql
+
 FROM --platform=$TARGETPLATFORM ubuntu:22.04 as rondb-build-dependencies
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
 
 RUN echo "Running on $BUILDPLATFORM, building for $TARGETPLATFORM"
 
-ARG USER=mysql
+ARG USER
+ARG CMAKE_VERSION=3.23.2
+ARG OPEN_SSL_VERSION=1.1.1m
 ARG BOOST_VERSION_MAJOR=1
 ARG BOOST_VERSION_MINOR=73
 ARG BOOST_VERSION_PATCH=0
@@ -41,37 +45,38 @@ RUN wget --progress=bar:force https://boostorg.jfrog.io/artifactory/main/release
 ENV BOOST_ROOT="/${BOOST_LABEL}"
 
 # Ubuntu 22.04 contains openssl-3.x
-# RonDB requires openssl-1.1.1m and will look for it in $OPENSSL_ROOT
-# We will not overwrite the default OpenSSL, but just install version 1.1.1m
+# RonDB may require an older OpenSSL version (e.g. 1.1.1m) and will look for 
+# it in $OPENSSL_ROOT. We will not overwrite the default OpenSSL, but 
+# just install the specified version
 # Commands are from https://linuxpip.org/install-openssl-linux/
 ENV OPENSSL_ROOT=/usr/local/ssl
 RUN apt-get update -y \
     && apt-get install -y build-essential checkinstall zlib1g-dev \
     && cd /usr/local/src/ \
-    && wget --progress=bar:force https://www.openssl.org/source/openssl-1.1.1m.tar.gz \
-    && tar -xf openssl-1.1.1m.tar.gz \
-    && cd openssl-1.1.1m \
+    && wget --progress=bar:force https://www.openssl.org/source/openssl-$OPEN_SSL_VERSION.tar.gz \
+    && tar -xf openssl-$OPEN_SSL_VERSION.tar.gz \
+    && cd openssl-$OPEN_SSL_VERSION \
     && ./config --prefix=$OPENSSL_ROOT --openssldir=$OPENSSL_ROOT shared zlib \
     && make -j$THREADS_ARG \
     && make install \
-    && echo "$OPENSSL_ROOT/lib" >> /etc/ld.so.conf.d/openssl-1.1.1m.conf \
+    && echo "$OPENSSL_ROOT/lib" >> /etc/ld.so.conf.d/openssl-$OPEN_SSL_VERSION.conf \
     && ldconfig -v \
     && cd .. \
-    && rm -r openssl-1.1.1m.*
+    && rm -r openssl-$OPEN_SSL_VERSION.*
     # Could also run `make test`
     # `make install` places shared libraries into $OPENSSL_ROOT
 
 # Installing CMake
 # CMake will look for $OPENSSL_ROOT_DIR
 ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT
-RUN wget --progress=bar:force https://github.com/Kitware/CMake/releases/download/v3.23.2/cmake-3.23.2.tar.gz \
-    && tar xzf cmake-3.23.2.tar.gz \
-    && cd cmake-3.23.2 \
+RUN wget --progress=bar:force https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION.tar.gz \
+    && tar xzf cmake-$CMAKE_VERSION.tar.gz \
+    && cd cmake-$CMAKE_VERSION \
     && ./bootstrap --prefix=/usr/local \
     && make -j$THREADS_ARG \
     && make install \
     && cd .. \
-    && rm -r cmake-3.23.2*
+    && rm -r cmake-$CMAKE_VERSION*
 
 RUN groupadd mysql && adduser mysql --ingroup mysql --shell /bin/bash
 
@@ -94,6 +99,8 @@ COPY <<-"EOF" .m2/settings.xml
 </settings>
 EOF
 
+RUN chown -R ${USER}:${USER}
+
 # See https://stackoverflow.com/a/51264575/9068781 for conditional envs
 FROM rondb-build-dependencies as build-all
 ARG DEPLOY_TO_REPO
@@ -111,10 +118,7 @@ RUN --mount=type=bind,source=.,target=rondb-src \
     -j $THREADS_ARG \
     $DEPLOY_ARG $RELEASE_ARG
 
-# TODO: Make mysql a variable/argument
 # run with --output <output-folder>
 FROM scratch AS get-package-all
-COPY --from=build-all /home/mysql/rondb-tarballs .
-
-# TODO: Check owner of all dirs in /home/mysql
-# TODO: Make Boost library a build-arg.. it varies between RonDB versions..
+ARG USER
+COPY --from=build-all /home/${USER}/rondb-tarballs .
