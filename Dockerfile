@@ -78,9 +78,9 @@ RUN wget --progress=bar:force https://github.com/Kitware/CMake/releases/download
     && cd .. \
     && rm -r cmake-$CMAKE_VERSION*
 
-RUN groupadd mysql && adduser mysql --ingroup mysql --shell /bin/bash
+RUN groupadd $USER && adduser $USER --ingroup $USER --shell /bin/bash
 
-WORKDIR /home/${USER}
+WORKDIR /home/$USER
 
 # For the deployment of Java artifacts to the Maven repository
 COPY <<-"EOF" .m2/settings.xml
@@ -99,7 +99,7 @@ COPY <<-"EOF" .m2/settings.xml
 </settings>
 EOF
 
-RUN chown -R ${USER}:${USER} .
+RUN chown $USER:$USER -R .
 
 # See https://stackoverflow.com/a/51264575/9068781 for conditional envs
 FROM rondb-build-dependencies as build-all
@@ -121,4 +121,4 @@ RUN --mount=type=bind,source=.,target=rondb-src \
 # run with --output <output-folder>
 FROM scratch AS get-package-all
 ARG USER
-COPY --from=build-all /home/${USER}/rondb-tarball .
+COPY --from=build-all /home/$USER/rondb-tarball .
