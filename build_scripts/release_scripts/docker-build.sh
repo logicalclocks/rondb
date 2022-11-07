@@ -21,11 +21,11 @@ Example: ./docker-build.sh -s ../.. -o /tmp/output/ -r -j 20
       Default is rondb_build:<rondb-version>
       The RonDB version is extracted from the MYSQL_VERSION file
 -b=path
-      Optional path to temp build directory
-      If this is omitted then the build files reside in the container
+      Optional path to directory of resulting RonDB binaries
+      If this is omitted then the binaries reside in the container
 -j=build_thread
       Optional number of build threads
-      Defaults to max number of CPUs permitted to use by Docker
+      Defaults to 1
       See $(docker info) for more information
 
 -r    Create release builds. This takes longer
@@ -42,6 +42,7 @@ fi
 # Defaults
 RELEASE_BUILD=false
 DEPLOY=false
+CORES=1
 
 # A POSIX variable
 OPTIND=1 # Reset in case getopts has been used previously in the shell.
@@ -78,9 +79,8 @@ shift $((OPTIND - 1))
 [ "$1" = "--" ] && shift
 
 MAX_DOCKER_CORES=$(docker info | sed -n "s/.*CPUs\: *\(\S*\)/\1/p") # cores are limited to the Docker configs
-if [ -z $CORES ]; then
-  CORES=$MAX_DOCKER_CORES
-elif [ $CORES -gt $MAX_DOCKER_CORES ]; then
+echo "The Docker config allows the usage of $MAX_DOCKER_CORES CPUs"
+if [ $CORES -gt $MAX_DOCKER_CORES ]; then
   echo "The amount of cores specified in the Docker configs is $MAX_DOCKER_CORES; cannot build with more threads"
   exit 1
 fi
@@ -127,7 +127,6 @@ fi
 source $SRC_DIR_ABS/MYSQL_VERSION
 RONDB_VERSION="$MYSQL_VERSION_MAJOR.$MYSQL_VERSION_MINOR.$MYSQL_VERSION_PATCH"
 
-PREFIX=$1
 if [ -z $DOCKER_IMAGE_TAG ]; then
   DOCKER_IMAGE_TAG="rondb_build:${RONDB_VERSION}"
 fi
