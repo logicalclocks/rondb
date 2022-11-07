@@ -17,29 +17,33 @@ if [[ -z "${BOOST_ROOT}" ]]; then
   exit 1
 fi
 
-CORES=$(($(nproc) / 2 + 1))
-
 help() {
-  echo "build-all.sh {-s path} [-b path] {-o path} {-j build_threads} {-r} "
-  echo "USAGE"
-  echo "====="
-  echo "      ./build-all.sh -s ../.. -o /tmp/output/ -b /tmp/build/ -r -j 20"
-  echo ""
-  echo "build-all.sh {-s path} [-b path] {-o path} {-r} "
-  echo "-s=path"
-  echo "       path to rondb source code"
-  echo "-b=path"
-  echo "       path to temp build directory"
-  echo "-o=path"
-  echo "       path to output directory where the build process will copy the final tar ball"
-  echo "-j=build_threads"
-  echo "       No of build threads. This is passed to make -j\$build_threads"
-  echo "-d deploy to remote repo"
-  echo "-r make release tar balls. Takes longer"
+  cat <<EOF
+build-all.sh {-s path} [-b path] {-o path} {-j build_threads} {-r}
+
+USAGE
+=====
+Example: ./build-all.sh -s ../.. -o /tmp/output/ -b /tmp/build/ -r -j 20
+
+build-all.sh {-s path} [-b path] {-o path} {-r} 
+-s=path
+        Path to RonDB source code
+-b=path
+        Path to temp build directory
+-o=path
+        Path to output directory where the build process will copy the final tarball
+-j=build_threads
+        No of build threads. This is passed to $(make -j$build_threads)
+-d      Deploy to remote repo.hops.works
+-r      Make release tarballs. Takes longer
+EOF
 }
 
+# Defaults
+CORES=$(($(nproc) / 2 + 1))
 RELEASE_BUILD=false
 DEPLOY=false
+
 # A POSIX variable
 OPTIND=1 # Reset in case getopts has been used previously in the shell.
 while getopts ":n:s:b:o:j:rd" opt; do
@@ -74,28 +78,28 @@ shift $((OPTIND - 1))
 if [[ "$SRC_DIR" == "" ]]; then
   echo "Source directory not specified"
   exit 1
-else
-  SRC_DIR_ABS=$(readlink -f $SRC_DIR)
-  if [[ ! -d $SRC_DIR_ABS ]]; then
-    echo "Invalid source directory"
-    exit 1
-  fi
+fi
 
-  if [[ ! -f $SRC_DIR_ABS/MYSQL_VERSION ]]; then
-    echo "Invalid source directory. MYSQL_VERSION file not found"
-    exit 1
-  fi
+SRC_DIR_ABS=$(readlink -f $SRC_DIR)
+if [[ ! -d $SRC_DIR_ABS ]]; then
+  echo "Invalid source directory"
+  exit 1
+fi
+
+if [[ ! -f $SRC_DIR_ABS/MYSQL_VERSION ]]; then
+  echo "Invalid source directory. MYSQL_VERSION file not found"
+  exit 1
 fi
 
 if [[ "$OUTPUT_DIR" == "" ]]; then
   echo "Output directory not specified"
   exit 1
-else
-  OUTPUT_DIR_ABS=$(readlink -f $OUTPUT_DIR)
-  if [[ ! -d $OUTPUT_DIR_ABS ]]; then
-    echo "Invalid output directory"
-    exit 1
-  fi
+fi
+
+OUTPUT_DIR_ABS=$(readlink -f $OUTPUT_DIR)
+if [[ ! -d $OUTPUT_DIR_ABS ]]; then
+  echo "Invalid output directory"
+  exit 1
 fi
 
 if [[ "$TEMP_BUILD_DIR" == "" ]]; then
@@ -108,10 +112,17 @@ else
   fi
 fi
 
-echo "Build Params. Src: $SRC_DIR_ABS, Build dir: $TEMP_BUILD_DIR_ABS, \
-Output dir: $OUTPUT_DIR_ABS, Release: $RELEASE_BUILD. Deploy: $DEPLOY"
+echo "Build Params:
+  Src dir:                  $SRC_DIR_ABS
+  Build dir:                $TEMP_BUILD_DIR_ABS
+  Output dir:               $OUTPUT_DIR_ABS
+  Release:                  $RELEASE_BUILD
+  Deploy:                   $DEPLOY
+  Number of build threads:  $CORES"
+
 source $SRC_DIR_ABS/MYSQL_VERSION
 RONDB_VERSION="$MYSQL_VERSION_MAJOR.$MYSQL_VERSION_MINOR.$MYSQL_VERSION_PATCH"
+
 if [ "$RELEASE_BUILD" = true ]; then
   echo "_____________ BUILDING RONDB. RELEASE: TRUE _____________"
   cd $TEMP_BUILD_DIR_ABS
@@ -140,12 +151,12 @@ echo "_____________ BUILDING BENCHMARKS _____________"
 cd $TEMP_BUILD_DIR_ABS
 $SRC_DIR_ABS/build_scripts/release_scripts/build_bench.sh $TEMP_BUILD_DIR_ABS $TEMP_BUILD_DIR_ABS/rondb_bin_use $CORES
 
-echo "_____________ Building Tarball _____________"
+echo "_____________ BUILDING TARBALL _____________"
 cd $TEMP_BUILD_DIR_ABS
 $SRC_DIR_ABS/build_scripts/release_scripts/create_rondb_tarball.sh $RONDB_VERSION $TEMP_BUILD_DIR_ABS $OUTPUT_DIR_ABS
 
 if [ "$DEPLOY" = true ]; then
-  echo "_____________ Deploying Tarball _____________"
+  echo "_____________ DEPLOYING TARBALL _____________"
   cp $SRC_DIR_ABS/build_scripts/release_scripts/id_rsa $TEMP_BUILD_DIR_ABS
   cd $TEMP_BUILD_DIR_ABS
   chmod 600 id_rsa
