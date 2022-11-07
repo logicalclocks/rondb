@@ -20,7 +20,7 @@ ARG BUILD_THREADS
 ENV THREADS_ARG=${BUILD_THREADS:-1}
 
 RUN apt-get update && apt-get -y install wget pkg-config patchelf \
-    libncurses5-dev default-jdk bison golang-go
+    libncurses5-dev default-jdk bison golang-go autoconf
 
 # Ubuntu 22.04 comes with gcc/g++ 11.3 by default; we need version 9
 # We will not remove the default installation, but change the default
