@@ -30,9 +30,6 @@ RUN apt-get update && apt-get install -y gcc-9 g++-9 \
     && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 10 \
     && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-9 10
 
-# ENV CXX=/usr/bin/gcc-9
-# ENV CPP=/usr/bin/g++-9
-
 # Installing Boost
 ENV BOOST_VERSION=${BOOST_VERSION_MAJOR}.${BOOST_VERSION_MINOR}.${BOOST_VERSION_PATCH}
 ENV BOOST_V_UNDERSCORE=${BOOST_VERSION_MAJOR}_${BOOST_VERSION_MINOR}_${BOOST_VERSION_PATCH}
