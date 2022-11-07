@@ -7,7 +7,6 @@ export DBT2_VERSION="dbt2-0.37.50.18"
 export DBT3_VERSION="dbt3-1.10"
 export RDRS_VERSION="0.1.0"
 
-
 if [[ -z "${OPENSSL_ROOT}" ]]; then
   echo "OPENSSL_ROOT environment variable is not defined. To use open ssl installed on the system use export OPENSSL_ROOT=system "
   exit 1
@@ -18,23 +17,23 @@ if [[ -z "${BOOST_ROOT}" ]]; then
   exit 1
 fi
 
-CORES=$(( $(nproc) / 2 + 1 ))
+CORES=$(($(nproc) / 2 + 1))
 
-help(){
+help() {
   echo "build-all.sh {-s path} [-b path] {-o path} {-j build_threads} {-r} "
-  echo "USAGE" 
-  echo "=====" 
+  echo "USAGE"
+  echo "====="
   echo "      ./build-all.sh -s ../.. -o /tmp/output/ -b /tmp/build/ -r -j 20"
   echo ""
   echo "build-all.sh {-s path} [-b path] {-o path} {-r} "
-  echo "-s=path" 
-  echo "       path to rondb source code" 
+  echo "-s=path"
+  echo "       path to rondb source code"
   echo "-b=path"
-  echo "       path to temp build direcotry" 
+  echo "       path to temp build directory"
   echo "-o=path"
-  echo "       path to output direcoty where the build process will copy the final tar ball" 
+  echo "       path to output directory where the build process will copy the final tar ball"
   echo "-j=build_threads"
-  echo "       No of build threads. This is passed to make -j\$build_threads" 
+  echo "       No of build threads. This is passed to make -j\$build_threads"
   echo "-d deploy to remote repo"
   echo "-r make release tar balls. Takes longer"
 }
@@ -42,35 +41,40 @@ help(){
 RELEASE_BUILD=false
 DEPLOY=false
 # A POSIX variable
-OPTIND=1         # Reset in case getopts has been used previously in the shell.
+OPTIND=1 # Reset in case getopts has been used previously in the shell.
 while getopts ":n:s:b:o:j:rd" opt; do
-    case "$opt" in
-    s)  SRC_DIR=$OPTARG
-        ;;
-    b)  TEMP_BUILD_DIR=$OPTARG
-        ;;
-    o)  OUTPUT_DIR=$OPTARG
-        ;;
-    j)  CORES=$OPTARG
-        ;;
-    r)  RELEASE_BUILD=true
-        ;;
-    d)  DEPLOY=true
-        ;;
-    *)
-        help
-        exit 0
-        ;;
-    esac
+  case "$opt" in
+  s)
+    SRC_DIR=$OPTARG
+    ;;
+  b)
+    TEMP_BUILD_DIR=$OPTARG
+    ;;
+  o)
+    OUTPUT_DIR=$OPTARG
+    ;;
+  j)
+    CORES=$OPTARG
+    ;;
+  r)
+    RELEASE_BUILD=true
+    ;;
+  d)
+    DEPLOY=true
+    ;;
+  *)
+    help
+    exit 0
+    ;;
+  esac
 done
-shift $((OPTIND-1))
+shift $((OPTIND - 1))
 [ "$1" = "--" ] && shift
-
 
 if [[ "$SRC_DIR" == "" ]]; then
   echo "Source directory not specified"
   exit 1
-else 
+else
   SRC_DIR_ABS=$(readlink -f $SRC_DIR)
   if [[ ! -d $SRC_DIR_ABS ]]; then
     echo "Invalid source directory"
@@ -108,15 +112,15 @@ echo "Build Params. Src: $SRC_DIR_ABS, Build dir: $TEMP_BUILD_DIR_ABS, \
 Output dir: $OUTPUT_DIR_ABS, Release: $RELEASE_BUILD. Deploy: $DEPLOY"
 source $SRC_DIR_ABS/MYSQL_VERSION
 RONDB_VERSION="$MYSQL_VERSION_MAJOR.$MYSQL_VERSION_MINOR.$MYSQL_VERSION_PATCH"
-if [ "$RELEASE_BUILD" = true ] ; then
+if [ "$RELEASE_BUILD" = true ]; then
   echo "_____________ BUILDING RONDB. RELEASE: TRUE _____________"
-   cd $TEMP_BUILD_DIR_ABS
-   mkdir -p feedback_build
-   cd feedback_build
-   $SRC_DIR_ABS/build_scripts/release_scripts/build_gen.sh "TRAIN" $SRC_DIR_ABS $TEMP_BUILD_DIR_ABS/feedback_build/install_dir
-   make -j$CORES
-   cd mysql-test
-   $SRC_DIR_ABS/build_scripts/release_scripts/run_training.sh
+  cd $TEMP_BUILD_DIR_ABS
+  mkdir -p feedback_build
+  cd feedback_build
+  $SRC_DIR_ABS/build_scripts/release_scripts/build_gen.sh "TRAIN" $SRC_DIR_ABS $TEMP_BUILD_DIR_ABS/feedback_build/install_dir
+  make -j$CORES
+  cd mysql-test
+  $SRC_DIR_ABS/build_scripts/release_scripts/run_training.sh
 
   cd $TEMP_BUILD_DIR_ABS
   mkdir -p use_build
@@ -147,5 +151,3 @@ if [ "$DEPLOY" = true ]; then
   chmod 600 id_rsa
   $SRC_DIR_ABS/build_scripts/release_scripts/deploy.sh $OUTPUT_DIR_ABS/*
 fi
-
-
