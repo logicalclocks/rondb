@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1.3-labs
 
+# This Dockerfile is not used for production builds. Ubuntu 22.04 comes with glibc 2.35,
+# which is not supported by enough Linux distributions (Nov 2022). Glibc tends to be
+# backwards compatible, but not forwards compatible.
+
 ARG USER=mysql
 
-FROM --platform=$TARGETPLATFORM ubuntu:22.04 as rondb-build-dependencies
-ARG BUILDPLATFORM
-ARG TARGETPLATFORM
-
-RUN echo "Running on $BUILDPLATFORM, building for $TARGETPLATFORM"
+FROM ubuntu:22.04 as rondb-build-dependencies
 
 ARG USER
 ARG CMAKE_VERSION=3.23.2

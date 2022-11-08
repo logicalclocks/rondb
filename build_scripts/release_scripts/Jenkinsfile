@@ -3,7 +3,6 @@ pipeline {
     parameters{
       choice(name: 'BRANCH', choices: ['21.04', '22.10'], description: 'RonDB branch to build.')
       choice(name: 'BUILD_CORES', choices: ['8', '1', '16', '24', '32', '48'],  description: 'No of build threads. This is passed to make -j. Note jenkins machine is shared with other build process.')
-      choice(name: 'TARGET_ARCH', choices: ['arm64', 'amd64'], description: 'Target CPU architecture to build for')
       booleanParam(name: 'RELEASE_BUILD', defaultValue: true, description: 'Enable this for release build. It uses PGO (profile guided optimization) and it take ~ 3 hrs to build')
     }
     environment {
@@ -56,7 +55,7 @@ pipeline {
                 fi
 
                 docker buildx build . \
-                  --platform linux/$TARGET_ARCH \
+                  -f Dockerfile.oraclelinux7 \
                   --tag rondb-build-all:$RONDB_VERSION \
                   --target build-all \
                   --build-arg BUILD_THREADS=$BUILD_CORES \
