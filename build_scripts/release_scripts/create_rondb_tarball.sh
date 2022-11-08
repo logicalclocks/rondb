@@ -50,9 +50,12 @@ TAR_SRC_FOLDER=$TARBALL_NAME
 set +e
 which pigz >/dev/null
 if [[ "$?" -ne "0" ]]; then
-  tar cfzv $TAR_FILE $TAR_SRC_FOLDER
+  # use gzip
+  tar czvf $TAR_FILE $TAR_SRC_FOLDER
 else
-  tar -v -c --use-compress-program=pigz -f $TAR_FILE $TAR_SRC_FOLDER
+  # pigz uses multi-threading; has compatible compression to gzip, but
+  # potentially a lot faster
+  tar --use-compress-program=pigz -cvf $TAR_FILE $TAR_SRC_FOLDER
 fi
 set -e
 
