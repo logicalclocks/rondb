@@ -5,10 +5,14 @@
 # backwards compatible, but not forwards compatible.
 
 ARG USER=mysql
+ARG UID=1000
+ARG GID=1000
 
 FROM ubuntu:22.04 as rondb-build-dependencies
 
 ARG USER
+ARG UID
+ARG GID
 ARG CMAKE_VERSION=3.23.2
 ARG OPEN_SSL_VERSION=1.1.1m
 ARG BOOST_VERSION_MAJOR=1
@@ -19,25 +23,34 @@ ARG BOOST_VERSION_PATCH=0
 ARG BUILD_THREADS
 ENV THREADS_ARG=${BUILD_THREADS:-1}
 
-RUN apt-get update && apt-get -y install wget pkg-config patchelf \
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt/lists \
+    apt-get update && apt-get -y install wget pkg-config patchelf \
     libncurses5-dev default-jdk bison golang-go autoconf pigz
 
 # Ubuntu 22.04 comes with gcc/g++ 11.3 by default; we need version 9
 # We will not remove the default installation, but change the default
 # one using `update-alternatives`
 # See https://askubuntu.com/a/26518/1646182 for reference
-RUN apt-get update && apt-get install -y gcc-9 g++-9 \
+RUN --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt/lists \
+    apt-get update && apt-get install -y gcc-9 g++-9 \
     && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 10 \
     && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-9 10
+
+# Creating a cache dir for downloads to avoid redownloading
+ENV DOWNLOADS_CACHE_DIR=/tmp/downloads
+RUN mkdir $DOWNLOADS_CACHE_DIR
 
 # Installing Boost
 ENV BOOST_VERSION=${BOOST_VERSION_MAJOR}.${BOOST_VERSION_MINOR}.${BOOST_VERSION_PATCH}
 ENV BOOST_V_UNDERSCORE=${BOOST_VERSION_MAJOR}_${BOOST_VERSION_MINOR}_${BOOST_VERSION_PATCH}
 ENV BOOST_LABEL="boost_${BOOST_V_UNDERSCORE}"
 ENV BOOST_TARBALL="${BOOST_LABEL}.tar.gz"
-RUN wget --progress=bar:force https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/${BOOST_TARBALL} \
-    && tar xzf ${BOOST_TARBALL} \
-    && rm ${BOOST_TARBALL}
+RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
+    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
+        https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/${BOOST_TARBALL} \
+    && tar xzf $DOWNLOADS_CACHE_DIR/${BOOST_TARBALL} -C .
 # Important env variable for RonDB compilation
 ENV BOOST_ROOT="/${BOOST_LABEL}"
 
@@ -47,11 +60,14 @@ ENV BOOST_ROOT="/${BOOST_LABEL}"
 # just install the specified version
 # Commands are from https://linuxpip.org/install-openssl-linux/
 ENV OPENSSL_ROOT=/usr/local/ssl
-RUN apt-get update -y \
+RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
+    --mount=type=cache,target=/var/cache/apt \
+    --mount=type=cache,target=/var/lib/apt/lists \
+    apt-get update -y \
     && apt-get install -y build-essential checkinstall zlib1g-dev \
-    && cd /usr/local/src/ \
-    && wget --progress=bar:force https://www.openssl.org/source/openssl-$OPEN_SSL_VERSION.tar.gz \
-    && tar -xf openssl-$OPEN_SSL_VERSION.tar.gz \
+    && wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
+        https://www.openssl.org/source/openssl-$OPEN_SSL_VERSION.tar.gz \
+    && tar -xf $DOWNLOADS_CACHE_DIR/openssl-$OPEN_SSL_VERSION.tar.gz -C . \
     && cd openssl-$OPEN_SSL_VERSION \
     && ./config --prefix=$OPENSSL_ROOT --openssldir=$OPENSSL_ROOT shared zlib \
     && make -j$THREADS_ARG \
@@ -59,23 +75,25 @@ RUN apt-get update -y \
     && echo "$OPENSSL_ROOT/lib" >> /etc/ld.so.conf.d/openssl-$OPEN_SSL_VERSION.conf \
     && ldconfig -v \
     && cd .. \
-    && rm -r openssl-$OPEN_SSL_VERSION.*
+    && rm -r openssl-$OPEN_SSL_VERSION
     # Could also run `make test`
     # `make install` places shared libraries into $OPENSSL_ROOT
 
 # Installing CMake
 # CMake will look for $OPENSSL_ROOT_DIR
 ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT
-RUN wget --progress=bar:force https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION.tar.gz \
-    && tar xzf cmake-$CMAKE_VERSION.tar.gz \
+RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
+    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
+        https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION.tar.gz \
+    && tar xzf $DOWNLOADS_CACHE_DIR/cmake-$CMAKE_VERSION.tar.gz -C . \
     && cd cmake-$CMAKE_VERSION \
     && ./bootstrap --prefix=/usr/local \
     && make -j$THREADS_ARG \
     && make install \
     && cd .. \
-    && rm -r cmake-$CMAKE_VERSION*
+    && rm -r cmake-$CMAKE_VERSION
 
-RUN groupadd $USER && adduser $USER --ingroup $USER --shell /bin/bash
+RUN groupadd $USER --gid $GID && adduser $USER --uid $UID --ingroup $USER --shell /bin/bash
 
 WORKDIR /home/$USER
 
@@ -102,6 +120,9 @@ USER $USER:$USER
 
 # See https://stackoverflow.com/a/51264575/9068781 for conditional envs
 FROM rondb-build-dependencies as build-all
+ARG UID
+ARG GID
+
 ARG DEPLOY_TO_REPO
 ENV DEPLOY_ARG=${DEPLOY_TO_REPO:+-d}
 
@@ -110,6 +131,7 @@ ENV RELEASE_ARG=${RELEASE_TARBALL:+-r}
 
 RUN mkdir rondb-src rondb-bin rondb-tarball
 RUN --mount=type=bind,source=.,target=rondb-src \
+    --mount=type=cache,target=rondb-bin,uid=$UID,gid=$GID \
     rondb-src/build_scripts/release_scripts/build_all.sh \
     -s rondb-src \
     -b rondb-bin \
