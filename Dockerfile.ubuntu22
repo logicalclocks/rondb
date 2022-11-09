@@ -2,7 +2,8 @@
 
 # This Dockerfile is not used for production builds. Ubuntu 22.04 comes with glibc 2.35,
 # which is not supported by enough Linux distributions (Nov 2022). Glibc tends to be
-# backwards compatible, but not forwards compatible.
+# backwards compatible, but not forwards compatible. It is however recommended to use this
+# Dockerfile for building on ARM for personal use.
 
 ARG USER=mysql
 ARG UID=1000
@@ -23,8 +24,8 @@ ARG BOOST_VERSION_PATCH=0
 ARG BUILD_THREADS
 ENV THREADS_ARG=${BUILD_THREADS:-1}
 
-RUN --mount=type=cache,target=/var/cache/apt \
-    --mount=type=cache,target=/var/lib/apt/lists \
+RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
+    --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
     apt-get update && apt-get -y install wget pkg-config patchelf \
     libncurses5-dev default-jdk bison golang-go autoconf pigz
 
@@ -32,8 +33,8 @@ RUN --mount=type=cache,target=/var/cache/apt \
 # We will not remove the default installation, but change the default
 # one using `update-alternatives`
 # See https://askubuntu.com/a/26518/1646182 for reference
-RUN --mount=type=cache,target=/var/cache/apt \
-    --mount=type=cache,target=/var/lib/apt/lists \
+RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
+    --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
     apt-get update && apt-get install -y gcc-9 g++-9 \
     && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 10 \
     && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-9 10
@@ -55,14 +56,14 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
 ENV BOOST_ROOT="/${BOOST_LABEL}"
 
 # Ubuntu 22.04 contains openssl-3.x
-# RonDB may require an older OpenSSL version (e.g. 1.1.1m) and will look for 
+# RonDB 21.04 requires an older OpenSSL version (1.1.1m) and will look for 
 # it in $OPENSSL_ROOT. We will not overwrite the default OpenSSL, but 
 # just install the specified version
 # Commands are from https://linuxpip.org/install-openssl-linux/
 ENV OPENSSL_ROOT=/usr/local/ssl
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
-    --mount=type=cache,target=/var/cache/apt \
-    --mount=type=cache,target=/var/lib/apt/lists \
+    --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
+    --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
     apt-get update -y \
     && apt-get install -y build-essential checkinstall zlib1g-dev \
     && wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
@@ -131,7 +132,7 @@ ENV RELEASE_ARG=${RELEASE_TARBALL:+-r}
 
 RUN mkdir rondb-src rondb-bin rondb-tarball
 RUN --mount=type=bind,source=.,target=rondb-src \
-    --mount=type=cache,target=rondb-bin,uid=$UID,gid=$GID \
+    --mount=type=cache,target=rondb-bin,uid=$UID,gid=$GID,id=ubuntu22-rondb2104-bin \
     rondb-src/build_scripts/release_scripts/build_all.sh \
     -s rondb-src \
     -b rondb-bin \
