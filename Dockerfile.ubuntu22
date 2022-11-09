@@ -29,7 +29,8 @@ RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
     apt-get update && apt-get -y install wget pkg-config patchelf \
     libncurses5-dev default-jdk bison golang-go autoconf pigz
 
-# Ubuntu 22.04 comes with gcc/g++ 11.3 by default; we need version 9
+# RonDB 21.04 requires gcc/g++ 9
+# Ubuntu 22.04 comes with gcc/g++ 11.3 by default
 # We will not remove the default installation, but change the default
 # one using `update-alternatives`
 # See https://askubuntu.com/a/26518/1646182 for reference
