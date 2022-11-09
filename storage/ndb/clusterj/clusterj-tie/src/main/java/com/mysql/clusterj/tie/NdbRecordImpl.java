@@ -318,7 +318,12 @@ public class NdbRecordImpl {
 
     /** Return the buffer to the buffer pool */
     protected void returnBuffer(ByteBuffer buffer) {
-        bufferPool.returnBuffer(buffer);
+        // bufferPool is set to null when unload schema is called.
+        // after unloading the schema if the user tries to release
+        // the NdbRecord then the user will get NPE
+        if (bufferPool!=null) {
+            bufferPool.returnBuffer(buffer);
+        }
     }
 
     /** Check the NdbRecord buffer guard */
