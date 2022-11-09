@@ -3,6 +3,7 @@
 # This Dockerfile is used for x86 production builds. Oracle Linux 7 comes with glibc 2.17,
 # which is supported by all Linux distributions used by Hopsworks: CentOS >=7 and Ubuntu >=16.
 # Glibc tends to be backwards compatible, but not forwards compatible.
+# Using this file for arm64 requires too many modifications.
 
 ARG USER=mysql
 ARG UID=1000
@@ -23,19 +24,16 @@ ARG BOOST_VERSION_PATCH=0
 ARG BUILD_THREADS
 ENV THREADS_ARG=${BUILD_THREADS:-1}
 
-# RonDB 21.04 requires gcc/g++ 9/10, depending on amd64/arm64.
+# RonDB 21.04 requires gcc/g++ 9/10 for amd64/arm64 respectively.
 # We will not remove the default installation, but change the default
 # one using software collections (scl).
 # To use the required version, the command
-#   >> source scl_source enable devtoolset-$DEVTOOLSET_VERSION
+#   >> source scl_source enable devtoolset-9
 # is run in the given RUN statement. Unfortunately, this command
 # does not persist between RUN statements.
 ARG TARGETARCH
-ARG DEVTOOLSET_VERSION=9
-RUN if [ "$TARGETARCH" = "amd64" -a "$DEVTOOLSET_VERSION" -ne "9" ]; then \
-        echo "amd64 requires devtoolset version 9" && exit 1; \
-    elif [ "$TARGETARCH" = "arm64" -a "$DEVTOOLSET_VERSION" -ne "10" ]; then \
-        echo "arm64 requires devtoolset version 10" && exit 1; \
+RUN if [ "$TARGETARCH" != "amd64" ]; then \
+        echo "This Dockerfile only support amd64" && exit 1; \
     fi
 
 COPY <<-"EOF" /etc/yum/repos.d/epel-yum-ol7.repo
@@ -48,8 +46,7 @@ enabled=1
 EOF
 
 RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
-    yum repolist \
-    && yum -y update \
+    yum -y update \
     && yum -y install \
     wget make git which perl-core openldap-devel \
     bison krb5-server krb5-workstation krb5-devel \
@@ -58,7 +55,7 @@ RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
     zlib-devel scl-utils oracle-softwarecollection-release-el7 \
     golang maven vim pigz \
     && yum-config-manager -y --enable "ol7_optional_latest" \
-    && yum -y install devtoolset-$DEVTOOLSET_VERSION
+    && yum -y install devtoolset-9
 
 # Creating a cache dir for downloads to avoid redownloading
 ENV DOWNLOADS_CACHE_DIR=/tmp/downloads
@@ -76,9 +73,9 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
 # Important env variable for RonDB compilation
 ENV BOOST_ROOT="/${BOOST_LABEL}"
 
-# RonDB 21.04 requires an older OpenSSL version (1.1.1m) and will look for 
+# RonDB 21.04 requires OpenSSL version 1.1.1m and will look for 
 # it in $OPENSSL_ROOT. We will not overwrite the default OpenSSL, but 
-# just install the specified version
+# just install the specified version.
 # Commands are from https://linuxpip.org/install-openssl-linux/
 ENV OPENSSL_ROOT=/usr/local/ssl
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
@@ -100,7 +97,7 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
 # CMake will look for $OPENSSL_ROOT_DIR
 ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
-    source scl_source enable devtoolset-$DEVTOOLSET_VERSION \
+    source scl_source enable devtoolset-9 \
     && wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
         https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION.tar.gz \
     && tar xzf $DOWNLOADS_CACHE_DIR/cmake-$CMAKE_VERSION.tar.gz -C . \
@@ -116,7 +113,7 @@ RUN groupadd ${USER} --gid ${GID} \
 
 WORKDIR /home/$USER
 
-RUN echo "source scl_source enable devtoolset-$DEVTOOLSET_VERSION" >> .bashrc
+RUN echo "source scl_source enable devtoolset-9" >> .bashrc
 
 # For the deployment of Java artifacts to the Maven repository
 COPY <<-"EOF" .m2/settings.xml
@@ -153,7 +150,7 @@ ENV RELEASE_ARG=${RELEASE_TARBALL:+-r}
 RUN mkdir rondb-src rondb-bin rondb-tarball
 RUN --mount=type=bind,source=.,target=rondb-src \
     --mount=type=cache,target=rondb-bin,uid=$UID,gid=$GID,id=oracle7-rondb2104-bin \
-    source scl_source enable devtoolset-$DEVTOOLSET_VERSION \
+    source scl_source enable devtoolset-9 \
     && rondb-src/build_scripts/release_scripts/build_all.sh \
     -s rondb-src \
     -b rondb-bin \
