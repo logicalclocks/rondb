@@ -33,7 +33,7 @@ ENV THREADS_ARG=${BUILD_THREADS:-1}
 # does not persist between RUN statements.
 ARG TARGETARCH
 RUN if [ "$TARGETARCH" != "amd64" ]; then \
-        echo "This Dockerfile only support amd64" && exit 1; \
+        echo "This Dockerfile only supports amd64" && exit 1; \
     fi
 
 COPY <<-"EOF" /etc/yum/repos.d/epel-yum-ol7.repo
