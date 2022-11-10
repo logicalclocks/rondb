@@ -355,8 +355,12 @@ public abstract class AbstractDomainTypeHandlerImpl<T> implements DomainTypeHand
         try {
             result = dictionary.getTable(tableName);
         } catch (Exception ex) {
-            throw new ClusterJException(
-                    local.message("ERR_Get_NdbTable", name, tableName), ex);
+            if (!(ex instanceof ClusterJException)) {
+                throw new ClusterJException(
+                  local.message("ERR_Get_NdbTable", name, tableName), ex);
+            } else {
+                throw ex;
+            }
         }
         return result;
     }
