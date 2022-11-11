@@ -30,6 +30,7 @@
 #include <ndb_daemon.h>
 #include <portlib/NdbHost.h>
 #include <stdio.h>
+#include <util/require.h>
 
 #include "m_string.h"
 #include "my_sys.h"
@@ -256,7 +257,8 @@ static inline int unlink(const char *filename)
 }
 #endif
 
-static const char *g_pidfile_name = 0;
+static bool g_pidfile_name_set = false;
+static char g_pidfile_name[PATH_MAX];
 static int g_pidfd = -1, g_logfd = -1;
 
 static int
@@ -384,7 +386,9 @@ int ndb_daemonize(const char* pidfile_name, const char *logfile_name)
   if (do_files(pidfile_name, logfile_name, pidfd, logfd))
     return 1;
 
-  g_pidfile_name = pidfile_name;
+  require(strlen(pidfile_name) < PATH_MAX);
+  strcpy(g_pidfile_name, pidfile_name);
+  g_pidfile_name_set = true;
 
   return 0;
 }
@@ -397,8 +401,8 @@ void ndb_daemon_exit(int status)
   if (g_logfd != -1)
     close(g_logfd);
 
-  if (g_pidfile_name)
-    unlink(g_pidfile_name);
+  if (g_pidfile_name_set)
+    unlink(&g_pidfile_name[0]);
 
 #ifdef _WIN32
   /*

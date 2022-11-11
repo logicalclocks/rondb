@@ -3054,7 +3054,13 @@ NdbDictionaryImpl::fetchGlobalTableImplRef(const GlobalCacheInitObject &obj)
 
   if (impl == 0){
     if (error == 0)
+    {
       impl = m_receiver.getTable(obj.m_name);
+      if (impl == 0)
+      {
+        m_error.code = m_receiver.m_error.code;
+      }
+    }
     else
       m_error.code = 4000;
     if (impl != 0 && (obj.init(this, *impl)))
