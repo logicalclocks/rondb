@@ -937,6 +937,7 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
 
     public void close() {
         if (!is_cached) {
+            dropInstanceCache();
             if (clusterTransaction != null) {
                 clusterTransaction.close();
                 clusterTransaction = null;
