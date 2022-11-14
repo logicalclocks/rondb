@@ -58,6 +58,7 @@ pipeline {
                   -f Dockerfile.oraclelinux7 \
                   --tag rondb-build-all:$RONDB_VERSION \
                   --target build-all \
+                  --no-cache \
                   --build-arg BUILD_THREADS=$BUILD_CORES \
                   --build-arg DEPLOY_TO_REPO=1 \
                   $RELEASE_ARG
