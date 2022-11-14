@@ -40,7 +40,6 @@ EOF
 }
 
 # Defaults
-CORES=$(($(nproc) / 2 + 1))
 RELEASE_BUILD=false
 DEPLOY=false
 
@@ -110,6 +109,11 @@ fi
 TEMP_BUILD_DIR_ABS=$(readlink -f $TEMP_BUILD_DIR)
 if [[ ! -d $TEMP_BUILD_DIR_ABS ]]; then
   echo "Invalid temp build directory"
+  exit 1
+fi
+
+if [[ "$CORES" == "" ]]; then
+  echo "The number of build threads is not specified is not specified"
   exit 1
 fi
 
