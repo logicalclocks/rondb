@@ -54,7 +54,7 @@ pipeline {
                   RELEASE_ARG="--build-arg RELEASE_TARBALL=$RELEASE_TARBALL"
                 fi
 
-                docker buildx build . \
+                BUILDKIT_PROGRESS=plain docker buildx build . \
                   -f Dockerfile.oraclelinux7 \
                   --tag rondb-build-all:$RONDB_VERSION \
                   --target build-all \
