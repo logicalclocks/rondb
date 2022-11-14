@@ -177,7 +177,7 @@ docker buildx build . \
 
 echo "Building RonDB using $DOCKER_IMAGE_NAME"
 
-# Consider using --user mysql
+# Using ´docker run` lets us mount the build directory into a local directory
 docker run --rm \
   --mount type=bind,src=$SRC_DIR_ABS,dst=/rondb-src \
   --mount type=bind,src=$OUTPUT_DIR_ABS,dst=/rondb-tarball \
