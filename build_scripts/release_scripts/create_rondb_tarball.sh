@@ -40,7 +40,7 @@ elif [ "$CPU_ARCH" == "arm64" -o "$CPU_ARCH" == "aarch64" ]; then
   CPU_ARCH_FULL="arm64_v8"
 else
   echo "Cannot figure out the exact CPU architecture"
-  CPU_ARCH_FULL="unknown_arch"
+  exit 1
 fi
 
 TARBALL_NAME="rondb-${RONDB_VERSION}-${OS}-${STD_LIBRARY}-${CPU_ARCH_FULL}"
