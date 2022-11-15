@@ -2,8 +2,6 @@
 
 set -e
 
-GLIBC=2.17
-
 RONDB_VERSION=$1
 TARBALL_NAME=$2
 
