@@ -18,7 +18,7 @@ if [[ ! -f "$TAR_FILE_ABS" ]]; then
   exit 1
 fi
 
-DST="repo@repo.hops.works:/opt/repository/dev/vincent.l/$TAR_FILE"
+DST="repo@repo.hops.works:/opt/repository/master/$TAR_FILE"
 echo "Copying: $TAR_FILE_ABS to $DST"
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i ./id_rsa $TAR_FILE_ABS $DST
 
@@ -37,14 +37,14 @@ if [[ ! -f "$JAR_FILE" ]]; then
   exit 1
 fi
 
-mvn deploy:deploy-file -Dfile=$JAR_FILE -DgroupId=com.mysql.ndb -DartifactId=clusterj-rondb-testing \
+mvn deploy:deploy-file -Dfile=$JAR_FILE -DgroupId=com.mysql.ndb -DartifactId=clusterj-rondb \
   -Dversion=$RONDB_VERSION -Dpackaging=jar -DrepositoryId=Hops \
   -Durl=https://archiva.hops.works/repository/Hops \
   -DJenkinsHops.RepoID=Hops \
   -DJenkinsHops.User=$CE_USER \
   -DJenkinsHops.Password=$CE_PASS
 
-mvn deploy:deploy-file -Dfile=$JAR_FILE -DgroupId=com.mysql.ndb -DartifactId=clusterj-rondb-testing \
+mvn deploy:deploy-file -Dfile=$JAR_FILE -DgroupId=com.mysql.ndb -DartifactId=clusterj-rondb \
   -Dversion=$RONDB_VERSION -Dpackaging=jar -DrepositoryId=HopsEE \
   -Durl=https://nexus.hops.works/repository/hops-artifacts \
   -DJenkinsHops.RepoID=HopsEE \
