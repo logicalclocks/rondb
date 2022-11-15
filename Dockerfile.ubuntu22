@@ -100,6 +100,8 @@ RUN groupadd $USER --gid $GID && adduser $USER --uid $UID --ingroup $USER --shel
 WORKDIR /home/$USER
 
 # For the deployment of Java artifacts to the Maven repository
+# This is not needed by default, since we already deploy JAR files
+# for x86 and they do not change across architectures.
 COPY <<-"EOF" .m2/settings.xml
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -125,6 +127,9 @@ FROM rondb-build-dependencies as build-all
 ARG UID
 ARG GID
 
+# Check deploy script what exactly will be deployed for ARM.
+# JAR files should not be deployed; they do not change between
+# architectures, so we only deploy them for x86
 ARG DEPLOY_TO_REPO
 ENV DEPLOY_ARG=${DEPLOY_TO_REPO:+-d}
 
