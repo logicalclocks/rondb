@@ -90,6 +90,9 @@ if [[ ! -f $SRC_DIR_ABS/MYSQL_VERSION ]]; then
   exit 1
 fi
 
+source $SRC_DIR_ABS/MYSQL_VERSION
+RONDB_VERSION="$MYSQL_VERSION_MAJOR.$MYSQL_VERSION_MINOR.$MYSQL_VERSION_PATCH"
+
 if [[ "$OUTPUT_DIR" == "" ]]; then
   echo "Output directory not specified"
   exit 1
@@ -123,10 +126,8 @@ echo "Build Params:
   Output dir:               $OUTPUT_DIR_ABS
   Release:                  $RELEASE_BUILD
   Deploy:                   $DEPLOY
-  Number of build threads:  $CORES"
-
-source $SRC_DIR_ABS/MYSQL_VERSION
-RONDB_VERSION="$MYSQL_VERSION_MAJOR.$MYSQL_VERSION_MINOR.$MYSQL_VERSION_PATCH"
+  Number of build threads:  $CORES
+  RonDB version:            $RONDB_VERSION"
 
 if [ "$RELEASE_BUILD" = true ]; then
   echo "_____________ BUILDING RONDB. RELEASE: TRUE _____________"
@@ -156,14 +157,24 @@ echo "_____________ BUILDING BENCHMARKS _____________"
 cd $TEMP_BUILD_DIR_ABS
 $SRC_DIR_ABS/build_scripts/release_scripts/build_bench.sh $TEMP_BUILD_DIR_ABS $TEMP_BUILD_DIR_ABS/rondb_bin_use $CORES
 
+source $SRC_DIR_ABS/build_scripts/release_scripts/get_tarball_name.sh
+set +e
+TAR_OUTPUT=$(get_tarball_name $RONDB_VERSION)
+if [ $? -ne 0 ]; then
+    echo $TAR_OUTPUT
+    exit 1
+fi
+set -e
+TARBALL_NAME=$(echo "$TAR_OUTPUT" | tail -1)
+
 echo "_____________ BUILDING TARBALL _____________"
 cd $TEMP_BUILD_DIR_ABS
-$SRC_DIR_ABS/build_scripts/release_scripts/create_rondb_tarball.sh $RONDB_VERSION $TEMP_BUILD_DIR_ABS $OUTPUT_DIR_ABS
+$SRC_DIR_ABS/build_scripts/release_scripts/create_rondb_tarball.sh $TARBALL_NAME $TEMP_BUILD_DIR_ABS $OUTPUT_DIR_ABS
 
 if [ "$DEPLOY" = true ]; then
   echo "_____________ DEPLOYING TARBALL _____________"
   cp $SRC_DIR_ABS/id_rsa $TEMP_BUILD_DIR_ABS
   cd $TEMP_BUILD_DIR_ABS
   chmod 600 id_rsa
-  $SRC_DIR_ABS/build_scripts/release_scripts/deploy.sh $OUTPUT_DIR_ABS/*
+  $SRC_DIR_ABS/build_scripts/release_scripts/deploy.sh $RONDB_VERSION $TARBALL_NAME
 fi
