@@ -2320,7 +2320,6 @@ void Dbtc::sendSignalErrorRefuseLab(Signal* signal, ApiConnectRecordPtr const ap
     jam();
     /* Force state print */
     printState(signal, 12, apiConnectptr, true);
-    ndbabort();
     signal->theData[0] = apiConnectptr.p->ndbapiConnect;
     signal->theData[1] = signal->theData[ttransid_ptr];
     signal->theData[2] = signal->theData[ttransid_ptr + 1];
@@ -2471,7 +2470,6 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
   }
   case 3:
     jam();
-    printState(signal, 7, apiConnectptr);
     noFreeConnectionErrorLab(signal, apiConnectptr);
     return;
   case 4:
@@ -2486,7 +2484,9 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
     return;
   case 7:
     jam();
-    tabStateErrorLab(signal, apiConnectptr);
+    /* Table out of range */
+    terrorCode = ZSTATE_ERROR;
+    abortErrorLab(signal, apiConnectptr);
     return;
 
   case 8:
@@ -14823,12 +14823,6 @@ void Dbtc::execTC_CLOPSIZEREQ(Signal* signal)
 /* ######################################################################### */
 /* #######                        ERROR MODULE                       ####### */
 /* ######################################################################### */
-void Dbtc::tabStateErrorLab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
-{
-  terrorCode = ZSTATE_ERROR;
-  releaseAtErrorLab(signal, apiConnectptr);
-}//Dbtc::tabStateErrorLab()
-
 void Dbtc::wrongSchemaVersionErrorLab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
 {
   const TcKeyReq * const tcKeyReq = (TcKeyReq *)&signal->theData[0];
