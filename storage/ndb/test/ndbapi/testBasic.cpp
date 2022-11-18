@@ -672,6 +672,39 @@ int runCommit_CommitAsMuchAsPossible630(NDBT_Context* ctx, NDBT_Step* step){
   return result;
 }
 
+int runOneNoCommitEarlyError(NDBT_Context* ctx,
+                             NDBT_Step* step,
+                             unsigned int error_inject,
+                             unsigned int error_expect)
+{
+  NdbRestarter restarter;
+  HugoOperations hugoOps(*ctx->getTab());
+  Ndb* pNdb = GETNDB(step);
+  restarter.insertErrorInAllNodes(error_inject);
+  CHECK(hugoOps.startTransaction(pNdb) == 0);
+  CHECK(hugoOps.pkReadRecord(pNdb, 1, 1, NdbOperation::LM_Read) == 0);
+  CHECK(hugoOps.execute_NoCommit(pNdb) == error_expect);
+  CHECK(hugoOps.closeTransaction(pNdb) == 0);
+  restarter.insertErrorInAllNodes(0);
+  hugoOps.closeTransaction(pNdb);
+  return NDBT_OK;
+}
+
+int runNoCommitEarlyError(NDBT_Context* ctx, NDBT_Step* step){
+  int result = NDBT_OK;
+  CHECK(runOneNoCommitEarlyError(ctx, step, 8032, 233) == NDBT_OK);
+  CHECK(runOneNoCommitEarlyError(ctx, step, 8120, 202) == NDBT_OK);
+  CHECK(runOneNoCommitEarlyError(ctx, step, 8121, 202) == NDBT_OK);
+  CHECK(runOneNoCommitEarlyError(ctx, step, 8122, 282) == NDBT_OK);
+  CHECK(runOneNoCommitEarlyError(ctx, step, 8123, 209) == NDBT_OK);
+  CHECK(runOneNoCommitEarlyError(ctx, step, 8124, 237) == NDBT_OK);
+  CHECK(runOneNoCommitEarlyError(ctx, step, 8125, 277) == NDBT_OK);
+  CHECK(runOneNoCommitEarlyError(ctx, step, 8126, 209) == NDBT_OK);
+  CHECK(runOneNoCommitEarlyError(ctx, step, 8127, 275) == NDBT_OK);
+  CHECK(runOneNoCommitEarlyError(ctx, step, 8128, 241) == NDBT_OK);
+  return result;
+}
+
 int runNoCommit626(NDBT_Context* ctx, NDBT_Step* step){
   int result = NDBT_OK;
   HugoOperations hugoOps(*ctx->getTab());
@@ -4330,6 +4363,13 @@ TESTCASE("CommitAsMuch626",
   INITIALIZER(runCommit_CommitAsMuchAsPossible626);
   FINALIZER(runClearTable2);
 }
+TESTCASE("NoCommitEarlyErrors",
+         "Verify that we can handle early errors in TCKEYREQ processing"){
+  INITIALIZER(runClearTable2);
+  INITIALIZER(runNoCommitEarlyError);
+  FINALIZER(runClearTable2);
+}
+
 TESTCASE("NoCommit626", 
 	 "Verify what happens when a NoCommit transaction is aborted by "
 	 "NDB because the record does no exist" ){
