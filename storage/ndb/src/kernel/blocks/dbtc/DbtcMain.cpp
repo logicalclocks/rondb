@@ -3557,6 +3557,12 @@ void Dbtc::execTCKEYREQ(Signal* signal)
     warningHandlerLab(signal, __LINE__);
     return;
   }//if
+  if (ERROR_INSERTED(8120))
+  {
+    releaseSections(handle);
+    TCKEY_abort(signal, 7, apiConnectptr);
+    return;
+  }
   if (unlikely(TtabIndex >= TtabMaxIndex))
   {
     releaseSections(handle);
@@ -3673,6 +3679,42 @@ void Dbtc::execTCKEYREQ(Signal* signal)
   TableRecordPtr localTabptr;
   localTabptr.i = TtabIndex;
   localTabptr.p = &tableRecord[TtabIndex];
+  if (ERROR_INSERTED(8121))
+  {
+    releaseSections(handle);
+    TCKEY_abort(signal, 0, apiConnectptr);
+    return;
+  }
+  if (ERROR_INSERTED(8122))
+  {
+    releaseSections(handle);
+    TCKEY_abort(signal, TexecFlag ? 60 : 57, apiConnectptr);
+    return;
+  }
+  if (ERROR_INSERTED(8123))
+  {
+    releaseSections(handle);
+    TCKEY_abort(signal, 1, apiConnectptr);
+    return;
+  }
+  if (ERROR_INSERTED(8124))
+  {
+    releaseSections(handle);
+    TCKEY_abort(signal, 59, apiConnectptr);
+    return;
+  }
+  if (ERROR_INSERTED(8125))
+  {
+    releaseSections(handle);
+    TCKEY_abort(signal, 2, apiConnectptr);
+    return;
+  }
+  if (ERROR_INSERTED(8126))
+  {
+    releaseSections(handle);
+    TCKEY_abort(signal, 55, apiConnectptr);
+    return;
+  }
   switch (regApiPtr->apiConnectstate) {
   case CS_CONNECTED:{
     if (likely(TstartFlag == 1 &&
@@ -3690,7 +3732,6 @@ void Dbtc::execTCKEYREQ(Signal* signal)
       if (getAllowStartTransaction(refToNode(sendersBlockRef),
                                    localTabptr.p->singleUserMode) == true)
       {
-
 	/*------------------------------------------------------------------
 	 * WE EXPECTED A START TRANSACTION. SINCE NO OPERATIONS HAVE BEEN 
 	 * RECEIVED WE INDICATE THIS BY SETTING FIRST_TC_CONNECT TO RNIL TO 
@@ -3889,6 +3930,19 @@ void Dbtc::execTCKEYREQ(Signal* signal)
     return;
   }//switch
 
+  if (ERROR_INSERTED(8127))
+  {
+    releaseSections(handle);
+    terrorCode = ZSEIZE_API_COPY_ERROR;
+    abortErrorLab(signal, apiConnectptr);
+    return;
+  }
+  if (ERROR_INSERTED(8128))
+  {
+    releaseSections(handle);
+    TCKEY_abort(signal, 8, apiConnectptr);
+    return;
+  }
   if (regApiPtr->apiCopyRecord == RNIL)
   {
     ndbrequire(TstartFlag == 1);
@@ -3919,7 +3973,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
   // Error Insertion for testing purposes. Test to see what happens when no
   // more TC records available.
   //-------------------------------------------------------------------------
-  if (ERROR_INSERTED(8032)) {
+  if (ERROR_INSERTED(8032))
+  {
     releaseSections(handle);
     TCKEY_abort(signal, 3, apiConnectptr);
     return;
