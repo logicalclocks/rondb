@@ -2320,7 +2320,6 @@ void Dbtc::sendSignalErrorRefuseLab(Signal* signal, ApiConnectRecordPtr const ap
     jam();
     /* Force state print */
     printState(signal, 12, apiConnectptr, true);
-    ndbabort();
     signal->theData[0] = apiConnectptr.p->ndbapiConnect;
     signal->theData[1] = signal->theData[ttransid_ptr];
     signal->theData[2] = signal->theData[ttransid_ptr + 1];
@@ -2471,7 +2470,6 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
   }
   case 3:
     jam();
-    printState(signal, 7, apiConnectptr);
     noFreeConnectionErrorLab(signal, apiConnectptr);
     return;
   case 4:
@@ -2486,7 +2484,9 @@ Dbtc::TCKEY_abort(Signal* signal, int place, ApiConnectRecordPtr const apiConnec
     return;
   case 7:
     jam();
-    tabStateErrorLab(signal, apiConnectptr);
+    /* Table out of range */
+    terrorCode = ZSTATE_ERROR;
+    abortErrorLab(signal, apiConnectptr);
     return;
 
   case 8:
@@ -3557,13 +3557,6 @@ void Dbtc::execTCKEYREQ(Signal* signal)
     warningHandlerLab(signal, __LINE__);
     return;
   }//if
-  if (unlikely(TtabIndex >= TtabMaxIndex))
-  {
-    releaseSections(handle);
-    TCKEY_abort(signal, 7, apiConnectptr);
-    return;
-  }//if
-  
 #ifdef ERROR_INSERT
   if (ERROR_INSERTED(8079))
   {
@@ -3670,14 +3663,19 @@ void Dbtc::execTCKEYREQ(Signal* signal)
     jamDebug();
     regApiPtr->m_flags |= TexecFlag;
   }
+  bool tabSingleUserMode = false;
   TableRecordPtr localTabptr;
   localTabptr.i = TtabIndex;
   localTabptr.p = &tableRecord[TtabIndex];
+  if (TtabIndex < TtabMaxIndex)
+  {
+    tabSingleUserMode = localTabptr.p->singleUserMode;
+  }
   switch (regApiPtr->apiConnectstate) {
   case CS_CONNECTED:{
     if (likely(TstartFlag == 1 &&
                getAllowStartTransaction(refToNode(sendersBlockRef),
-                                 localTabptr.p->singleUserMode) == true))
+                                        tabSingleUserMode) == true))
     {
       //---------------------------------------------------------------------
       // Initialise API connect record if transaction is started.
@@ -3688,9 +3686,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
     } else {
       releaseSections(handle);
       if (getAllowStartTransaction(refToNode(sendersBlockRef),
-                                   localTabptr.p->singleUserMode) == true)
+                                   tabSingleUserMode) == true)
       {
-
 	/*------------------------------------------------------------------
 	 * WE EXPECTED A START TRANSACTION. SINCE NO OPERATIONS HAVE BEEN 
 	 * RECEIVED WE INDICATE THIS BY SETTING FIRST_TC_CONNECT TO RNIL TO 
@@ -3719,7 +3716,7 @@ void Dbtc::execTCKEYREQ(Signal* signal)
       jam();
       if (unlikely(getNodeState().getSingleUserMode()) &&
           getNodeState().getSingleUserApi() != refToNode(sendersBlockRef) &&
-          !localTabptr.p->singleUserMode)
+          !tabSingleUserMode)
       {
         releaseSections(handle);
         TCKEY_abort(signal, TexecFlag ? 60 : 57, apiConnectptr);
@@ -3783,7 +3780,7 @@ void Dbtc::execTCKEYREQ(Signal* signal)
       if (likely(TstartFlag == 1))
       {
         if (unlikely(getAllowStartTransaction(refToNode(sendersBlockRef),
-                          localTabptr.p->singleUserMode) == false))
+                          tabSingleUserMode) == false))
         {
           releaseSections(handle);
           TCKEY_abort(signal, TexecFlag ? 60 : 57, apiConnectptr);
@@ -3888,7 +3885,56 @@ void Dbtc::execTCKEYREQ(Signal* signal)
     TCKEY_abort(signal, 55, apiConnectptr);
     return;
   }//switch
-
+  if (unlikely(ERROR_INSERTED(8120) || (TtabIndex >= TtabMaxIndex)))
+  {
+    releaseSections(handle);
+    TCKEY_abort(signal, 7, apiConnectptr);
+    return;
+  }
+  if (ERROR_INSERTED(8121))
+  {
+    releaseSections(handle);
+    TCKEY_abort(signal, 0, apiConnectptr);
+    return;
+  }
+  if (ERROR_INSERTED(8122))
+  {
+    releaseSections(handle);
+    TCKEY_abort(signal, TexecFlag ? 60 : 57, apiConnectptr);
+    return;
+  }
+  if (ERROR_INSERTED(8123))
+  {
+    releaseSections(handle);
+    TCKEY_abort(signal, 1, apiConnectptr);
+    return;
+  }
+  if (ERROR_INSERTED(8124))
+  {
+    releaseSections(handle);
+    TCKEY_abort(signal, 59, apiConnectptr);
+    return;
+  }
+  if (ERROR_INSERTED(8126))
+  {
+    releaseSections(handle);
+    TCKEY_abort(signal, 55, apiConnectptr);
+    return;
+  }
+  if (ERROR_INSERTED(8127))
+  {
+    releaseSections(handle);
+    terrorCode = ZSEIZE_API_COPY_ERROR;
+    abortErrorLab(signal, apiConnectptr);
+    return;
+  }
+  if (ERROR_INSERTED(8128))
+  {
+    releaseSections(handle);
+    terrorCode = ZWRONG_SCHEMA_VERSION_ERROR;
+    abortErrorLab(signal, apiConnectptr);
+    return;
+  }
   if (regApiPtr->apiCopyRecord == RNIL)
   {
     ndbrequire(TstartFlag == 1);
@@ -3919,7 +3965,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
   // Error Insertion for testing purposes. Test to see what happens when no
   // more TC records available.
   //-------------------------------------------------------------------------
-  if (ERROR_INSERTED(8032)) {
+  if (ERROR_INSERTED(8032))
+  {
     releaseSections(handle);
     TCKEY_abort(signal, 3, apiConnectptr);
     return;
@@ -14823,12 +14870,6 @@ void Dbtc::execTC_CLOPSIZEREQ(Signal* signal)
 /* ######################################################################### */
 /* #######                        ERROR MODULE                       ####### */
 /* ######################################################################### */
-void Dbtc::tabStateErrorLab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
-{
-  terrorCode = ZSTATE_ERROR;
-  releaseAtErrorLab(signal, apiConnectptr);
-}//Dbtc::tabStateErrorLab()
-
 void Dbtc::wrongSchemaVersionErrorLab(Signal* signal, ApiConnectRecordPtr const apiConnectptr)
 {
   const TcKeyReq * const tcKeyReq = (TcKeyReq *)&signal->theData[0];
@@ -18245,7 +18286,10 @@ void Dbtc::releaseAbortResources(Signal* signal,
       ok = true;
       break;
     case RS_TCKEYCONF:
+      jamDebug();
+      break;
     case RS_TC_COMMITCONF:
+      jamDebug();
       break;
     }    
     if(!ok){

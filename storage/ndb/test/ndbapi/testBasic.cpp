@@ -672,6 +672,50 @@ int runCommit_CommitAsMuchAsPossible630(NDBT_Context* ctx, NDBT_Step* step){
   return result;
 }
 
+int runOneNoCommitEarlyError(NDBT_Context* ctx,
+                             NDBT_Step* step,
+                             unsigned int error_inject,
+                             int error_expect)
+{
+  int result = NDBT_OK;
+  NdbRestarter restarter;
+  HugoOperations hugoOps(*ctx->getTab());
+  Ndb* pNdb = GETNDB(step);
+  ndbout << "Inject error " << error_inject << " expect error " << error_expect << endl;
+  restarter.insertErrorInAllNodes(error_inject);
+  do {
+    CHECK(hugoOps.startTransaction(pNdb) == 0);
+    CHECK(hugoOps.pkReadRecord(pNdb, 1, 1, NdbOperation::LM_Read) == 0);
+    CHECK(hugoOps.execute_NoCommit(pNdb) == error_expect);
+    CHECK(hugoOps.closeTransaction(pNdb) == 0);
+    restarter.insertErrorInAllNodes(0);
+    return NDBT_OK;
+  } while (false);
+  return NDBT_FAILED;
+}
+
+int runNoCommitEarlyError(NDBT_Context* ctx, NDBT_Step* step){
+  if (runOneNoCommitEarlyError(ctx, step, 8032, 233) != NDBT_OK)
+    return NDBT_FAILED;
+  if (runOneNoCommitEarlyError(ctx, step, 8120, 202) != NDBT_OK)
+    return NDBT_FAILED;
+  if (runOneNoCommitEarlyError(ctx, step, 8121, 202) != NDBT_OK)
+    return NDBT_FAILED;
+  if (runOneNoCommitEarlyError(ctx, step, 8122, 282) != NDBT_OK)
+    return NDBT_FAILED;
+  if (runOneNoCommitEarlyError(ctx, step, 8123, 209) != NDBT_OK)
+    return NDBT_FAILED;
+  if (runOneNoCommitEarlyError(ctx, step, 8124, 237) != NDBT_OK)
+    return NDBT_FAILED;
+  if (runOneNoCommitEarlyError(ctx, step, 8126, 209) != NDBT_OK)
+    return NDBT_FAILED;
+  if (runOneNoCommitEarlyError(ctx, step, 8127, 275) != NDBT_OK)
+    return NDBT_FAILED;
+  if (runOneNoCommitEarlyError(ctx, step, 8128, 241) != NDBT_OK)
+    return NDBT_FAILED;
+  return NDBT_OK;
+}
+
 int runNoCommit626(NDBT_Context* ctx, NDBT_Step* step){
   int result = NDBT_OK;
   HugoOperations hugoOps(*ctx->getTab());
@@ -4330,6 +4374,13 @@ TESTCASE("CommitAsMuch626",
   INITIALIZER(runCommit_CommitAsMuchAsPossible626);
   FINALIZER(runClearTable2);
 }
+TESTCASE("NoCommitEarlyError",
+         "Verify that we can handle early errors in TCKEYREQ processing"){
+  INITIALIZER(runClearTable2);
+  INITIALIZER(runNoCommitEarlyError);
+  FINALIZER(runClearTable2);
+}
+
 TESTCASE("NoCommit626", 
 	 "Verify what happens when a NoCommit transaction is aborted by "
 	 "NDB because the record does no exist" ){
