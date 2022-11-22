@@ -93,6 +93,7 @@ DROP TABLE varcharpk;
 DROP TABLE varbinarypk;
 DROP TABLE varbinarytypes;
 DROP TABLE dynamicstringpks;
+DROP TABLE IF EXISTS TABLE fgtest;
 DROP TABLE IF EXISTS test2.t_basic2;
 DROP DATABASE IF EXISTS test2;
 DROP TABLE IF EXISTS test3.t_basic3;

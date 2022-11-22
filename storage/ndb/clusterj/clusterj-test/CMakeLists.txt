@@ -151,6 +151,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/TransactionErrorSetPartitionKeyTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/TransactionStateTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/UpdateTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/UnloadSchemaTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/VarbinaryPKTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/VarbinaryTypesTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/VarcharPKTest.java

@@ -24,7 +24,7 @@
 #
 
 # run RonNDB  as 
-#./mtr --suite=ndb -start-and-exit
+#./mtr --suite=ndb clusterj -start-and-exit
 
 # depending on your set if you get SSL excption then adding the following to storage/ndb/clusterj/clusterj-test/src/main/java/testsuite/clusterj/AbstractClusterJTest.java
 #        props.put("allowPublicKeyRetrieval", "true");
