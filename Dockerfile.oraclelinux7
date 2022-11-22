@@ -148,4 +148,4 @@ RUN --mount=type=bind,source=.,target=rondb-src \
 
 # run with --output <output-folder>
 FROM scratch AS get-package-all
-COPY --from=build-all /home/rondb-tarball .
+COPY --from=build-all /root/rondb-tarball .
