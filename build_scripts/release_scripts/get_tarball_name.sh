@@ -19,7 +19,10 @@ get_tarball_name() {
         STD_LIBRARY="xcode-${XCODE_VERSION}"
     elif [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
         OS="linux"
-        GLIBC_VERSION=$(ldd --version | sed -n "s/.*Ubuntu GLIBC *\([[:digit:]]\.[[:digit:]][[:digit:]]\).*$/\1/p")
+        # Oraclelinux:7-slim    --> ldd (GNU libc) 2.17
+        # Almalinux:9           --> ldd (GNU libc) 2.34
+        # Ubuntu:22.04          --> ldd (Ubuntu GLIBC 2.35-0ubuntu3.1) 2.35
+        GLIBC_VERSION=$(ldd --version | sed -n "s/.*ldd *\(.*\) *\([[:digit:]]\.[[:digit:]][[:digit:]]\).*$/\2/p")
         STD_LIBRARY="glibc${GLIBC_VERSION}"
     else
         echo "OS is neither Linux nor MacOS"
