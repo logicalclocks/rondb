@@ -5,15 +5,8 @@
 # backwards compatible, but not forwards compatible. It is however recommended to use this
 # Dockerfile for building on ARM for personal use.
 
-ARG USER=mysql
-ARG UID=1000
-ARG GID=1000
-
 FROM ubuntu:22.04 as rondb-build-dependencies
 
-ARG USER
-ARG UID
-ARG GID
 ARG CMAKE_VERSION=3.23.2
 ARG OPEN_SSL_VERSION=1.1.1s
 ARG BOOST_VERSION_MAJOR=1
@@ -27,7 +20,8 @@ ENV THREADS_ARG=${BUILD_THREADS:-1}
 RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
     --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
     apt-get update && apt-get -y install wget pkg-config patchelf \
-    libncurses5-dev default-jdk bison golang-go autoconf pigz
+    libncurses5-dev default-jdk bison golang-go autoconf pigz \
+    openssh-client maven
 
 # RonDB 21.04 requires gcc/g++ 9
 # Ubuntu 22.04 comes with gcc/g++ 11.3 by default
@@ -95,14 +89,12 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     && cd .. \
     && rm -r cmake-$CMAKE_VERSION
 
-RUN groupadd $USER --gid $GID && adduser $USER --uid $UID --ingroup $USER --shell /bin/bash
-
-WORKDIR /home/$USER
+WORKDIR /root
 
 # For the deployment of Java artifacts to the Maven repository
 # This is not needed by default, since we already deploy JAR files
 # for x86 and they do not change across architectures.
-COPY <<-"EOF" .m2/settings.xml
+COPY <<-"EOF" /root/.m2/settings.xml
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
@@ -118,14 +110,8 @@ COPY <<-"EOF" .m2/settings.xml
 </settings>
 EOF
 
-RUN chown $USER:$USER -R .
-
-USER $USER:$USER
-
 # See https://stackoverflow.com/a/51264575/9068781 for conditional envs
 FROM rondb-build-dependencies as build-all
-ARG UID
-ARG GID
 
 # Check deploy script what exactly will be deployed for ARM.
 # JAR files should not be deployed; they do not change between
@@ -138,7 +124,7 @@ ENV RELEASE_ARG=${RELEASE_TARBALL:+-r}
 
 RUN mkdir rondb-src rondb-bin rondb-tarball
 RUN --mount=type=bind,source=.,target=rondb-src \
-    --mount=type=cache,target=rondb-bin,uid=$UID,gid=$GID,id=ubuntu22-rondb2104-bin \
+    --mount=type=cache,target=rondb-bin,id=ubuntu22-rondb2104-bin \
     rondb-src/build_scripts/release_scripts/build_all.sh \
     -s rondb-src \
     -b rondb-bin \
@@ -148,5 +134,4 @@ RUN --mount=type=bind,source=.,target=rondb-src \
 
 # run with --output <output-folder>
 FROM scratch AS get-package-all
-ARG USER
-COPY --from=build-all /home/$USER/rondb-tarball .
+COPY --from=build-all /home/rondb-tarball .

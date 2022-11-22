@@ -5,15 +5,8 @@
 # Glibc tends to be backwards compatible, but not forwards compatible.
 # Using this file for arm64 requires too many modifications.
 
-ARG USER=mysql
-ARG UID=1000
-ARG GID=1000
-
 FROM oraclelinux:7-slim as rondb-build-dependencies
 
-ARG USER
-ARG UID
-ARG GID
 ARG CMAKE_VERSION=3.23.2
 ARG OPEN_SSL_VERSION=1.1.1s
 ARG BOOST_VERSION_MAJOR=1
@@ -53,9 +46,13 @@ RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
     numactl numactl-libs numactl-devel \
     patchelf ncurses-devel java-1.8.0-openjdk-devel automake \
     zlib-devel scl-utils oracle-softwarecollection-release-el7 \
-    golang maven vim pigz \
+    golang vim pigz
+
+RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
+    yum -y update \
     && yum-config-manager -y --enable "ol7_optional_latest" \
-    && yum -y install devtoolset-9
+    && yum -y install devtoolset-9 maven
+
 
 # Creating a cache dir for downloads to avoid redownloading
 ENV DOWNLOADS_CACHE_DIR=/tmp/downloads
@@ -108,15 +105,12 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     && cd .. \
     && rm -r cmake-${CMAKE_VERSION}
 
-RUN groupadd ${USER} --gid ${GID} \
-    && useradd -ms /bin/bash ${USER} --uid ${UID} --gid ${GID}
+WORKDIR /root
 
-WORKDIR /home/$USER
-
-RUN echo "source scl_source enable devtoolset-9" >> .bashrc
+RUN echo "source scl_source enable devtoolset-9" >> /root/.bashrc
 
 # For the deployment of Java artifacts to the Maven repository
-COPY <<-"EOF" .m2/settings.xml
+COPY <<-"EOF" /root/.m2/settings.xml
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
@@ -132,14 +126,8 @@ COPY <<-"EOF" .m2/settings.xml
 </settings>
 EOF
 
-RUN chown $USER:$USER -R .
-
-USER $USER:$USER
-
 # See https://stackoverflow.com/a/51264575/9068781 for conditional envs
 FROM rondb-build-dependencies as build-all
-ARG UID
-ARG GID
 
 ARG DEPLOY_TO_REPO
 ENV DEPLOY_ARG=${DEPLOY_TO_REPO:+-d}
@@ -149,7 +137,7 @@ ENV RELEASE_ARG=${RELEASE_TARBALL:+-r}
 
 RUN mkdir rondb-src rondb-bin rondb-tarball
 RUN --mount=type=bind,source=.,target=rondb-src \
-    --mount=type=cache,target=rondb-bin,uid=$UID,gid=$GID,id=oracle7-rondb2104-bin \
+    --mount=type=cache,target=rondb-bin,id=oracle7-rondb2104-bin \
     source scl_source enable devtoolset-9 \
     && rondb-src/build_scripts/release_scripts/build_all.sh \
     -s rondb-src \
@@ -160,5 +148,4 @@ RUN --mount=type=bind,source=.,target=rondb-src \
 
 # run with --output <output-folder>
 FROM scratch AS get-package-all
-ARG USER
-COPY --from=build-all /home/$USER/rondb-tarball .
+COPY --from=build-all /home/rondb-tarball .
