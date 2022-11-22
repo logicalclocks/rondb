@@ -40,24 +40,37 @@ pipeline {
             steps {
               sh '''
                 echo "Building RonDB"
-                cd ${WORKSPACE}/rondb/build_scripts/release_scripts/
-                mkdir output
-                chmod 777 output
+                cd ${WORKSPACE}/rondb
 
-                sed -i "s/___CE_USER___/$HopsCECeds_USR/g" deploy.sh
-                sed -i "s/___CE_PASS___/$HopsCECeds_PSW/g" deploy.sh
-                sed -i "s/___EE_USER___/$HopsEECeds_USR/g" deploy.sh
-                sed -i "s/___EE_PASS___/$HopsEECeds_PSW/g" deploy.sh
+                source ./MYSQL_VERSION
+                RONDB_VERSION="$MYSQL_VERSION_MAJOR.$MYSQL_VERSION_MINOR.$MYSQL_VERSION_PATCH"
 
+                DEPLOY_SCRIPT="./build_scripts/release_scripts/deploy.sh"
+                sed -i "s/___CE_USER___/$HopsCECeds_USR/g" $DEPLOY_SCRIPT
+                sed -i "s/___CE_PASS___/$HopsCECeds_PSW/g" $DEPLOY_SCRIPT
+                sed -i "s/___EE_USER___/$HopsEECeds_USR/g" $DEPLOY_SCRIPT
+                sed -i "s/___EE_PASS___/$HopsEECeds_PSW/g" $DEPLOY_SCRIPT
+
+                # Source code will be mounted into Docker build with root:root as owner,
+                # regardless of what user is running this script.
                 cat $RepoCeds > id_rsa
                 chmod 600 id_rsa
 
-                release=""
+                RELEASE_ARG=
                 if [ "$RELEASE_BUILD" = true ]; then
-                  release=" -r "
+                  RELEASE_ARG="--build-arg RELEASE_TARBALL=1"
                 fi
 
-                ./docker-build.sh -s ../.. -o output -j ${BUILD_CORES} -d $release
+                export DOCKER_CLI_EXPERIMENTAL=enabled
+                export BUILDKIT_PROGRESS=plain
+                docker buildx build . \
+                  -f Dockerfile.oraclelinux7 \
+                  --tag rondb-build-all:$RONDB_VERSION \
+                  --target build-all \
+                  --no-cache \
+                  --build-arg BUILD_THREADS=$BUILD_CORES \
+                  --build-arg DEPLOY_TO_REPO=1 \
+                  $RELEASE_ARG
               '''
             }
         }

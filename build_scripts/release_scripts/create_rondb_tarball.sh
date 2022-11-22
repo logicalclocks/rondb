@@ -1,27 +1,28 @@
 #!/bin/bash
 set -e
 
-RONDB_VERSION=$1
+TARBALL_NAME=$1
 TEMP_BUILD_DIR_ABS=$2
 OUTPUT_DIR_ABS=$3
 
+TAR_FILE="$TEMP_BUILD_DIR_ABS/$TARBALL_NAME.tar.gz"
+
 cd $TEMP_BUILD_DIR_ABS
 
-
-rm -rf rondb-$RONDB_VERSION-linux-glibc2.17-x86_64
-mv rondb_bin_use rondb-$RONDB_VERSION-linux-glibc2.17-x86_64
-
-TAR_FILE="$TEMP_BUILD_DIR_ABS/rondb-$RONDB_VERSION-linux-glibc2.17-x86_64.tar.gz"
-TAR_SRC_FOLDER="rondb-$RONDB_VERSION-linux-glibc2.17-x86_64"
+rm -rf $TARBALL_NAME
+mv rondb_bin_use $TARBALL_NAME
 
 set +e
-which pigz > /dev/null
+which pigz >/dev/null
 if [[ "$?" -ne "0" ]]; then
-  tar cfzv  $TAR_FILE $TAR_SRC_FOLDER 
+  # use gzip
+  tar czvf $TAR_FILE $TARBALL_NAME
 else
-  tar -v -c --use-compress-program=pigz -f $TAR_FILE $TAR_SRC_FOLDER 
+  # pigz uses multi-threading; has compatible compression to gzip, but
+  # potentially a lot faster
+  tar --use-compress-program=pigz -cvf $TAR_FILE $TARBALL_NAME
 fi
 set -e
 
-rm -rf rondb-$RONDB_VERSION-linux-glibc2.17-x86_64
-mv -f rondb-$RONDB_VERSION-linux-glibc2.17-x86_64.tar.gz $OUTPUT_DIR_ABS
+rm -rf $TARBALL_NAME
+mv -f $TAR_FILE $OUTPUT_DIR_ABS
