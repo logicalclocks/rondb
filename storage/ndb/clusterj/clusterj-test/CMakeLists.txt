@@ -91,6 +91,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/NegativeMetadataTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/NotPersistentTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/NullValuesTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/NotNullColumnTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/ObjectNotFoundTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/PartitionKeyTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/ProjectionTest.java

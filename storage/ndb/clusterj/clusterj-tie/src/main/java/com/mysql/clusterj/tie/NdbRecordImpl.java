@@ -353,6 +353,11 @@ public class NdbRecordImpl {
         initializeBuffer(buffer, true);
     }
 
+    public boolean isNullable(ByteBuffer buffer, Column storeColumn) {
+        int columnId = storeColumn.getColumnId();
+        return storeColumn.getNullable();
+    }
+
     public int setNull(ByteBuffer buffer, Column storeColumn) {
         int columnId = storeColumn.getColumnId();
         if (!storeColumn.getNullable()) {

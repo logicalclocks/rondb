@@ -567,8 +567,10 @@ public class NdbRecordOperationImpl implements Operation {
     }
 
     public void setNull(Column storeColumn) {
-        int columnId = ndbRecordValues.setNull(valueBuffer, storeColumn);
-        columnSet(columnId);
+        if (ndbRecordValues.isNullable(valueBuffer, storeColumn)) {
+            int columnId = ndbRecordValues.setNull(valueBuffer, storeColumn);
+            columnSet(columnId);
+        }
     }
 
     public void setNull(int columnId) {

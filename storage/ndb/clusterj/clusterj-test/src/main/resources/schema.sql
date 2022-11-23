@@ -1067,6 +1067,12 @@ CREATE TABLE `fgtest` (
   PRIMARY KEY (`id`)
 ) ENGINE=ndbcluster;
 
+CREATE TABLE `notnulltable` (
+  `id` int NOT NULL,
+  `value` varchar(50) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=ndbcluster;
+
 drop table if exists same_table;
 create table same_table (
   id int not null,
