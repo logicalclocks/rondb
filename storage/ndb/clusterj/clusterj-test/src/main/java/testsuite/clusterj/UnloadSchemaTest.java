@@ -58,7 +58,8 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
 
   private static boolean USE_COPY_ALGO = true;
 
-  boolean useCache = true;
+  //unloadSchema can not be used with caching
+  boolean useCache = false;
 
   @Override
   public void localSetUp() {
@@ -116,6 +117,7 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
     private boolean running = false;
     private int startIndex = 0;
     private int insertsCounter = 0;
+    private int failCounter = 0;
 
     DataInsertWorker(int startIndex) {
       this.startIndex = startIndex;
@@ -135,9 +137,11 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
           closeDTO(session, e, FGTest.class);
           insertsCounter++;
           rowInserted = true;
+          Thread.sleep(1);
         } catch (Exception ex) {
-//          ex.printStackTrace();
+          //ex.printStackTrace();
           System.out.println(ex.getMessage());
+          failCounter++;
         } finally {
           if (!rowInserted) {
             session.unloadSchema(FGTest.class);
@@ -161,6 +165,10 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
 
     public int getInsertsCounter() {
       return insertsCounter;
+    }
+
+    public int getFailCounter() {
+      return failCounter;
     }
 
     public void setFields(DynamicObject e, int num) {
@@ -218,11 +226,14 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
       }
 
       int totalInsertions = 0;
+      int totalFailures = 0;
       for (int i = 0; i < NUM_THREADS; i++) {
         threads.get(i).join();
         totalInsertions += threads.get(i).getInsertsCounter();
+        totalFailures += threads.get(i).getFailCounter();
       }
-      System.out.println("PASS: Total Insertions " + totalInsertions);
+      System.out.println("PASS: Total Insertions " + totalInsertions+
+          " Failed Inserts: "+ totalFailures);
     } catch (Exception e) {
       this.error("FAILED . Error: " + e.getMessage());
     }

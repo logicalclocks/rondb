@@ -1078,9 +1078,15 @@ public class NdbRecordImpl {
         return numberOfTableColumns;
     }
 
+
+    // see comments in unloadSchema method in ClusterConnectionImpl.java   
+    protected void finalize() {
+        this.releaseNdbRecord();
+    }
+
     protected void releaseNdbRecord() {
         if (ndbRecord != null) {
-            if (logger.isDebugEnabled())logger.debug("Releasing NdbRecord for " + tableConst.getName());
+            if (logger.isInfoEnabled())logger.info("Releasing NdbRecord for " + tableConst.getName());
             ndbDictionary.releaseRecord(ndbRecord);
             ndbRecord = null;
             // release the buffer pool; pooled byte buffers will be garbage collected
