@@ -3,15 +3,15 @@
 Currently, the REST API server only supports batched and non-batched  primary key operations. Default mappings of MySQL data types to JSON data types are as follows
 
 
-| MySQL Data Type | JSON Data Type |
-| --------------- | -------------- |
-| TINYINT, SMALLINT MEDIUMINT, INT, BIGINT  | number |
-| FLOAT, DOUBLE, DECIMAL  | number |
-| CHAR, VARCHAR  | escaped string |
-| BINARY, VARBINARY  | base64 encoded string |
-| DATE, DATETIME, TIME, TIMESTAMP, YEAR   | string |
-| YEAR   | number |
-| BIT    | base64 encoded string |
+| MySQL Data Type                          | JSON Data Type        |
+| ---------------------------------------- | --------------------- |
+| TINYINT, SMALLINT MEDIUMINT, INT, BIGINT | number                |
+| FLOAT, DOUBLE, DECIMAL                   | number                |
+| CHAR, VARCHAR                            | escaped string        |
+| BINARY, VARBINARY                        | base64 encoded string |
+| DATE, DATETIME, TIME, TIMESTAMP, YEAR    | string                |
+| YEAR                                     | number                |
+| BIT                                      | base64 encoded string |
 
 
 
@@ -176,40 +176,39 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
 ## Configuration 
 ```json
-{                                                         
-        "RestServer": {                                   
-                "IP": "localhost",                        
-                "Port": 4406,                             
-                "APIVersion": "0.1.0",                    
-                "BufferSize": 327680,                     
-                "PreAllocatedBuffers": 1024,              
-                "GOMAXPROCS": -1                          
-        },                                                
-        "RonDBConfig": {                                  
-                "IP": "localhost",                        
-                "Port": 1186                              
-        },                                                
-        "MySQLServer": {                                  
-                "IP": "localhost",                        
-                "Port": 3306,                             
-                "User": "rondb",                          
-                "Password": "rondb"                       
-        },                                                
-        "Security": {                                     
-                "EnableTLS": true,                        
-                "RequireAndVerifyClientCert": true,       
-                "CertificateFile": "",                    
-                "PrivateKeyFile": ""                      
-        },                                                
-        "Log": {                                          
-                "Level": "info",                          
-                "FilePath": "",                           
-                "MaxSizeMB": 100,                         
-                "MaxBackups": 10,                         
-                "MaxAge": 30                              
-        }                                                             
-}                                                             
-
+{
+    "RestServer": {
+        "IP": "localhost",
+        "Port": 4406,
+        "APIVersion": "0.1.0",
+        "BufferSize": 327680,
+        "PreAllocatedBuffers": 1024,
+        "GOMAXPROCS": -1
+    },
+    "RonDBConfig": {
+        "IP": "localhost",
+        "Port": 1186
+    },
+    "MySQLServer": {
+        "IP": "localhost",
+        "Port": 3306,
+        "User": "rondb",
+        "Password": "rondb"
+    },
+    "Security": {
+        "EnableTLS": true,
+        "RequireAndVerifyClientCert": true,
+        "CertificateFile": "",
+        "PrivateKeyFile": ""
+    },
+    "Log": {
+        "Level": "info",
+        "FilePath": "",
+        "MaxSizeMB": 100,
+        "MaxBackups": 10,
+        "MaxAge": 30
+    }
+}
 ```
 
  - **RestServer** 
