@@ -225,9 +225,11 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
    
    - **GOMAXPROCS:** The GOMAXPROCS variable limits the number of operating system threads that can execute user-level Go code simultaneously.  The default value is -1, that is it does not change the current settings.
 
-   - **RonDBConfig.IP:** RonDB management node IP. The default value is *localhost*.
+- **RonDBConfig**
+
+   - **IP:** RonDB management node IP. The default value is *localhost*.
    
-   - **RonDBConfig.Port:** RonDB management node port. The default value is *1186*.
+   - **Port:** RonDB management node port. The default value is *1186*.
   
  - **MySQLServer:** configuration. MySQL server is only used for testing
   
