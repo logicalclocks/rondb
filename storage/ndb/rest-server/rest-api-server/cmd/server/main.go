@@ -37,7 +37,7 @@ import (
 
 func main() {
 	configFile := flag.String("config", "", "Configuration file path")
-	ver := flag.Bool("v", false, "Configuration file path")
+	ver := flag.Bool("v", false, "Print API and application version")
 	flag.Parse()
 
 	if *configFile != "" {
