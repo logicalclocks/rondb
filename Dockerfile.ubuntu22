@@ -1,0 +1,137 @@
+# syntax=docker/dockerfile:1.3-labs
+
+# This Dockerfile is not used for production builds. Ubuntu 22.04 comes with glibc 2.35,
+# which is not supported by enough Linux distributions (Nov 2022). Glibc tends to be
+# backwards compatible, but not forwards compatible. It is however recommended to use this
+# Dockerfile for building on ARM for personal use.
+
+FROM ubuntu:22.04 as rondb-build-dependencies
+
+ARG CMAKE_VERSION=3.23.2
+ARG OPEN_SSL_VERSION=1.1.1s
+ARG BOOST_VERSION_MAJOR=1
+ARG BOOST_VERSION_MINOR=77
+ARG BOOST_VERSION_PATCH=0
+
+# Default build threads to 1; max is defined in Docker config (run `nproc` in Docker container)
+ARG BUILD_THREADS
+ENV THREADS_ARG=${BUILD_THREADS:-1}
+
+RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
+    --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
+    apt-get update && apt-get -y install wget pkg-config patchelf \
+    libncurses5-dev default-jdk bison golang-go autoconf pigz \
+    openssh-client maven
+
+# RonDB 22.10 requires gcc/g++ 9
+# Ubuntu 22.04 comes with gcc/g++ 11.3 by default
+# We will not remove the default installation, but change the default
+# one using `update-alternatives`
+# See https://askubuntu.com/a/26518/1646182 for reference
+RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
+    --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
+    apt-get update && apt-get install -y gcc-9 g++-9 \
+    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 10 \
+    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-9 10
+
+# Creating a cache dir for downloads to avoid redownloading
+ENV DOWNLOADS_CACHE_DIR=/tmp/downloads
+RUN mkdir $DOWNLOADS_CACHE_DIR
+
+# Installing Boost
+ENV BOOST_VERSION=${BOOST_VERSION_MAJOR}.${BOOST_VERSION_MINOR}.${BOOST_VERSION_PATCH}
+ENV BOOST_V_UNDERSCORE=${BOOST_VERSION_MAJOR}_${BOOST_VERSION_MINOR}_${BOOST_VERSION_PATCH}
+ENV BOOST_LABEL="boost_${BOOST_V_UNDERSCORE}"
+ENV BOOST_TARBALL="${BOOST_LABEL}.tar.gz"
+RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
+    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
+        https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/${BOOST_TARBALL} \
+    && tar xzf $DOWNLOADS_CACHE_DIR/${BOOST_TARBALL} -C .
+# Important env variable for RonDB compilation
+ENV BOOST_ROOT="/${BOOST_LABEL}"
+
+# Ubuntu 22.04 contains openssl-3.x
+# RonDB 22.10 requires an older OpenSSL version (1.1.1) and will look for 
+# it in $OPENSSL_ROOT. We will not overwrite the system's OpenSSL library, 
+# but just install the specified version.
+# Commands are from https://linuxpip.org/install-openssl-linux/
+ENV OPENSSL_ROOT=/usr/local/ssl
+RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
+    --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
+    --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
+    apt-get update -y \
+    && apt-get install -y build-essential checkinstall zlib1g-dev \
+    && wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
+        https://www.openssl.org/source/openssl-$OPEN_SSL_VERSION.tar.gz \
+    && tar -xf $DOWNLOADS_CACHE_DIR/openssl-$OPEN_SSL_VERSION.tar.gz -C . \
+    && cd openssl-$OPEN_SSL_VERSION \
+    && ./config --prefix=$OPENSSL_ROOT --openssldir=$OPENSSL_ROOT shared zlib \
+    && make -j$THREADS_ARG \
+    && make install \
+    && echo "$OPENSSL_ROOT/lib" >> /etc/ld.so.conf.d/openssl-$OPEN_SSL_VERSION.conf \
+    && ldconfig -v \
+    && cd .. \
+    && rm -r openssl-$OPEN_SSL_VERSION
+    # Could also run `make test`
+    # `make install` places shared libraries into $OPENSSL_ROOT
+
+# Installing CMake
+# CMake will look for $OPENSSL_ROOT_DIR
+ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT
+RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
+    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
+        https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION.tar.gz \
+    && tar xzf $DOWNLOADS_CACHE_DIR/cmake-$CMAKE_VERSION.tar.gz -C . \
+    && cd cmake-$CMAKE_VERSION \
+    && ./bootstrap --prefix=/usr/local \
+    && make -j$THREADS_ARG \
+    && make install \
+    && cd .. \
+    && rm -r cmake-$CMAKE_VERSION
+
+WORKDIR /root
+
+# For the deployment of Java artifacts to the Maven repository
+# This is not needed by default, since we already deploy JAR files
+# for x86 and they do not change across architectures.
+COPY <<-"EOF" /root/.m2/settings.xml
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
+    <servers>
+        <server>
+            <id>${JenkinsHops.RepoID}</id>
+            <username>${JenkinsHops.User}</username>
+            <filePermissions>664</filePermissions>
+            <directoryPermissions>775</directoryPermissions>
+            <password>${JenkinsHops.Password}</password>
+        </server>
+    </servers>
+</settings>
+EOF
+
+# See https://stackoverflow.com/a/51264575/9068781 for conditional envs
+FROM rondb-build-dependencies as build-all
+
+# Check deploy script what exactly will be deployed for ARM.
+# JAR files should not be deployed; they do not change between
+# architectures, so we only deploy them for x86
+ARG DEPLOY_TO_REPO
+ENV DEPLOY_ARG=${DEPLOY_TO_REPO:+-d}
+
+ARG RELEASE_TARBALL
+ENV RELEASE_ARG=${RELEASE_TARBALL:+-r}
+
+RUN mkdir rondb-src rondb-bin rondb-tarball
+RUN --mount=type=bind,source=.,target=rondb-src \
+    --mount=type=cache,target=rondb-bin,id=ubuntu22-rondb2210-bin \
+    rondb-src/build_scripts/release_scripts/build_all.sh \
+    -s rondb-src \
+    -b rondb-bin \
+    -o rondb-tarball \
+    -j $THREADS_ARG \
+    $DEPLOY_ARG $RELEASE_ARG
+
+# run with --output <output-folder>
+FROM scratch AS get-package-all
+COPY --from=build-all /root/rondb-tarball .
