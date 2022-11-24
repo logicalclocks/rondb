@@ -135,7 +135,7 @@ func (rc *RouterContext) StartRouter() error {
 
 		serverTLS, err = serverTLSConfig()
 		if err != nil {
-			return fmt.Errorf("Unable to set server TLS config. Error %v", err)
+			return fmt.Errorf("Unable to set server TLS config. Error: %w", err)
 		}
 	}
 
@@ -217,7 +217,7 @@ func (rc *RouterContext) StopRouter() error {
 	dal.ReleaseAllBuffers()
 
 	if dalErr != nil {
-		log.Errorf("Failed to stop RonDB API. Error %v", dalErr)
+		log.Errorf("Failed to stop RonDB API. Error: %v", dalErr)
 	}
 
 	// Clean API Key Cache

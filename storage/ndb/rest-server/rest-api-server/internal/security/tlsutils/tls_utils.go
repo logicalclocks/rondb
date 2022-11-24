@@ -251,13 +251,13 @@ func appendCertToPool(certFile string, pool *x509.CertPool) error {
 func readCACert(rootCACertFile string) (*x509.Certificate, error) {
 	bytes, err := ioutil.ReadFile(rootCACertFile)
 	if err != nil {
-		return nil, fmt.Errorf("Failed read certificate %q. Error: %v", rootCACertFile, err)
+		return nil, fmt.Errorf("Failed read certificate %q. Error: %w", rootCACertFile, err)
 	}
 
 	block, _ := pem.Decode(bytes)
 	rootCACert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse cert %v", err)
+		return nil, fmt.Errorf("Failed to parse cert %w", err)
 	}
 
 	return rootCACert, nil
@@ -266,13 +266,13 @@ func readCACert(rootCACertFile string) (*x509.Certificate, error) {
 func readCAKey(rootCAKeyFile string) (interface{}, error) {
 	bytes, err := ioutil.ReadFile(rootCAKeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("Failed read key %q. Error: %v", rootCAKeyFile, err)
+		return nil, fmt.Errorf("Failed read key %q. Error: %w", rootCAKeyFile, err)
 	}
 
 	block, _ := pem.Decode(bytes)
 	rootCAKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse cert %v", err)
+		return nil, fmt.Errorf("Failed to parse cert. Error: %w", err)
 	}
 	return rootCAKey, nil
 }

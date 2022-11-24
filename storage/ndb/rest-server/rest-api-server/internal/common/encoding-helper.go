@@ -62,7 +62,7 @@ func CopyGoStrToNDBStr(src []byte, dst *dal.NativeBuffer, offset uint32) (uint32
 		// it is quoted string,
 		uqSrc, err := strconv.Unquote(string(src))
 		if err != nil {
-			return 0, fmt.Errorf("Failed to unquote string %v", err)
+			return 0, fmt.Errorf("Failed to unquote string. Error: %w")
 		}
 		src = []byte(uqSrc)
 	}
