@@ -2,133 +2,189 @@
 
 set -e
 
-help(){
-  echo "docker-build.sh {-n name} {-s path} [-b path] {-o path} {-j build_threads} {-r} "
-  echo "USAGE" 
-  echo "=====" 
-  echo "      ./docker-build.sh -s ../.. -o /tmp/output/ -r -j 20"
-  echo ""
-  echo "-n=name" 
-  echo "       docker image name. Default iname name is rondb_build" 
-  echo "-s=path" 
-  echo "       path to rondb source code" 
-  echo "-b=path"
-  echo "       path to temp build direcotry. This is optional. if this is omitted then the build files reside in the container" 
-  echo "-o=path"
-  echo "       path to output direcoty where the build process will copy the final tar ball" 
-  echo "-j=build_thread"
-  echo "       number of build threads" 
-  echo "-d deploy to remote repo. Hopsworks AB specific"
-  echo "-r make release tar balls. Takes longer"
+help() {
+  cat <<EOF
+docker-build.sh {-s path} {-o path} [-n name] [-b path] [-j build_threads] [-r] [-d]
+
+This script builds RonDB using Docker and returns tarballs containing the binaries.
+Use this file if access to the RonDB build directory is required. When only using
+the Dockerfile for building RonDB, the build directory will be stored inside a Docker
+cache.
+
+USAGE
+=====
+Example: ./docker-build.sh -s ../.. -o /tmp/output/ -b /tmp/build/ -r -j 20
+
+-s=path
+      Path to RonDB source code
+-o=path
+      Path to output directory where the build process will copy the final tarball
+-b=path
+      Path to directory of resulting RonDB binaries
+      If this is omitted then the binaries reside in the container
+-f=Dockerfile
+      Name of the Dockerfile; Default: Dockerfile.oraclelinux7 (amd64 builds)
+-n=name
+      Optional Docker image name
+      Default is "rondb-build-dependencies"
+      The tag will be <rondb-version>
+      The RonDB version is extracted from the MYSQL_VERSION file
+-j=build_thread
+      Optional number of build threads
+      Defaults to 1
+      See "docker info" for how many CPUs Docker has access to
+
+-r    Create release builds. This takes longer
+-d    Deploy to remote repo.hops.works. Hopsworks AB specific
+EOF
 }
 
 command -v "docker"
 if [[ "${?}" -ne 0 ]]; then
-  echo "Make sure that you have docker installed to be able to build ePipe."
+  echo "Make sure that you have Docker installed"
   exit 1
 fi
 
-CORES=$(( $(nproc) / 2 + 1 ))
-USERID=`id -u`
-GROUPID=`id -g`
-RELEASE_BUILD=false
-DEPLOY=false
+# Defaults
+DOCKERFILE="Dockerfile.oraclelinux7"
+CORES=1
+RELEASE_BUILD=
+DEPLOY=
+
 # A POSIX variable
-OPTIND=1         # Reset in case getopts has been used previously in the shell.
-while getopts ":n:s:b:o:j:rd" opt; do
-    case "$opt" in
-    n)  PREFIX=$OPTARG
-        ;;
-    s)  SRC_DIR=$OPTARG
-        ;;
-    b)  TEMP_BUILD_DIR=$OPTARG
-        ;;
-    o)  OUTPUT_DIR=$OPTARG
-        ;;
-    j)  CORES=$OPTARG
-        ;;
-    r)  RELEASE_BUILD=true
-        ;;
-    d)  DEPLOY=true
-        ;;
-    *)
-        help
-        exit 0
-        ;;
-    esac
+OPTIND=1 # Reset in case getopts has been used previously in the shell.
+while getopts ":n:s:b:o:f:j:rd" opt; do
+  case "$opt" in
+  t)
+    DOCKER_IMAGE_NAME=$OPTARG
+    ;;
+  s)
+    SRC_DIR=$OPTARG
+    ;;
+  b)
+    BUILD_DIR=$OPTARG
+    ;;
+  o)
+    OUTPUT_DIR=$OPTARG
+    ;;
+  f)
+    DOCKERFILE=$OPTARG
+    ;;
+  j)
+    CORES=$OPTARG
+    ;;
+  r)
+    RELEASE_BUILD="-r"
+    ;;
+  d)
+    DEPLOY="-d"
+    ;;
+  *)
+    help
+    exit 0
+    ;;
+  esac
 done
-shift $((OPTIND-1))
+shift $((OPTIND - 1))
 [ "$1" = "--" ] && shift
 
+# Differentiate between Mac/Linux (greadlink/readlink)
+readlinkcmd=
+case "$(uname -sr)" in
+Darwin*)
+  readlinkcmd="greadlink"
+  ;;
 
-if [[ "$SRC_DIR" == "" ]]; then
+Linux*Microsoft*)
+  readlinkcmd="readlink"
+  ;;
+
+Linux*)
+  readlinkcmd="readlink"
+  ;;
+
+*)
+  echo 'Other OS'
+  exit 1
+  ;;
+esac
+
+if [ -z $SRC_DIR ]; then
   echo "Source directory not specified"
   exit 1
-else 
-  SRC_DIR_ABS=$(readlink -f $SRC_DIR)
-  if [[ ! -d $SRC_DIR_ABS ]]; then
-    echo "Invalid source directory"
-    exit 1
-  fi
-
-  if [[ ! -f $SRC_DIR_ABS/MYSQL_VERSION ]]; then
-    echo "Invalid source directory. MYSQL_VERSION file not found"
-    exit 1
-  fi
 fi
 
-if [[ "$OUTPUT_DIR" == "" ]]; then
+SRC_DIR_ABS=$($readlinkcmd -f $SRC_DIR)
+if [[ ! -d $SRC_DIR_ABS ]]; then
+  echo "Invalid source directory"
+  exit 1
+fi
+
+# Basic source code check
+if [[ ! -f $SRC_DIR_ABS/MYSQL_VERSION ]]; then
+  echo "Invalid source directory. MYSQL_VERSION file not found"
+  exit 1
+fi
+
+if [ -z $OUTPUT_DIR ]; then
   echo "Output directory not specified"
   exit 1
-else
-  OUTPUT_DIR_ABS=$(readlink -f $OUTPUT_DIR)
-  if [[ ! -d $OUTPUT_DIR_ABS ]]; then
-    echo "Invalid output directory"
-    exit 1
-  fi
 fi
 
-if [[ "$TEMP_BUILD_DIR" == "" ]]; then
-  echo "Temp build directory is not specified"
-else
-  TEMP_BUILD_DIR_ABS=$(readlink -f $TEMP_BUILD_DIR)
-  if [[ ! -d $TEMP_BUILD_DIR_ABS ]]; then
-    echo "Invalid temp build directory"
-    exit 1
-  fi
+OUTPUT_DIR_ABS=$($readlinkcmd -f $OUTPUT_DIR)
+if [[ ! -d $OUTPUT_DIR_ABS ]]; then
+  echo "Invalid output directory"
+  exit 1
 fi
 
-source ../../MYSQL_VERSION
+if [ -z $BUILD_DIR ]; then
+  echo "Build directory is not specified"
+  exit 1
+fi
+
+BUILD_DIR_ABS=$($readlinkcmd -f $BUILD_DIR)
+if [[ ! -d $BUILD_DIR_ABS ]]; then
+  echo "Invalid build directory"
+  exit 1
+fi
+
+source $SRC_DIR_ABS/MYSQL_VERSION
 RONDB_VERSION="$MYSQL_VERSION_MAJOR.$MYSQL_VERSION_MINOR.$MYSQL_VERSION_PATCH"
 
-DOCKER_IMAGE="rondb_build:${RONDB_VERSION}"
-PREFIX=$1
-if [ "$PREFIX" != "" ]; then
-  DOCKER_IMAGE="${PREFIX}:${RONDB_VERSION}"
+if [ -z $DOCKER_IMAGE_NAME ]; then
+  DOCKER_IMAGE_NAME="rondb-build-dependencies:${RONDB_VERSION}"
+else
+  DOCKER_IMAGE_NAME="$DOCKER_IMAGE_NAME:${RONDB_VERSION}"
 fi
 
-echo "Build Params. Src: $SRC_DIR_ABS, Build dir: $TEMP_BUILD_DIR_ABS, Output dir: $OUTPUT_DIR_ABS, \ 
-  Release: $RELEASE_BUILD. Docker image name: $DOCKER_IMAGE. No of build threads: $CORES. Deploy: $DEPLOY"
+echo "Build Params:
+  Src dir: $SRC_DIR_ABS
+  Build dir: $BUILD_DIR_ABS
+  Output dir: $OUTPUT_DIR_ABS
+  Dockerfile: $DOCKERFILE
+  Docker image: $DOCKER_IMAGE_NAME
+  No of build threads: $CORES
+  Release: $RELEASE_BUILD
+  Deploy: $DEPLOY"
 
-echo "Creating docker image ${DOCKER_IMAGE}"
+echo "Creating Docker image ${DOCKER_IMAGE_NAME}"
 
-docker build --build-arg userid=${USERID} --build-arg groupid=${GROUPID}  -t $DOCKER_IMAGE . 
+docker buildx build . \
+  -f $SRC_DIR_ABS/$DOCKERFILE \
+  --tag $DOCKER_IMAGE_NAME \
+  --target rondb-build-dependencies \
+  --build-arg BUILD_THREADS=$CORES
 
-echo "Building RonDB using $DOCKER_IMAGE"
-mount="-v $SRC_DIR_ABS:/src -v $OUTPUT_DIR_ABS:/output "
-if [[ -d $TEMP_BUILD_DIR_ABS ]]; then
-   mount="$mount -v $TEMP_BUILD_DIR_ABS:/build " 
-fi
+echo "Building RonDB using $DOCKER_IMAGE_NAME"
 
-build_args="-j $CORES -s /src -b /build -o /output "
-
-if [ "$RELEASE_BUILD" = true ] ; then
-build_args="$build_args -r"
-fi
-
-if [ "$DEPLOY" = true ] ; then
-build_args="$build_args -d"
-fi
-
-docker run --rm $mount -w /src --user mysql "$DOCKER_IMAGE" /bin/bash -l ./build_scripts/release_scripts/build_all.sh $build_args
-#docker run --rm $mount -w /src --user mysql -it "$DOCKER_IMAGE" /bin/bash -l 
+# Using ´docker run` lets us mount the build directory into a local directory
+docker run --rm \
+  --mount type=bind,src=$SRC_DIR_ABS,dst=/rondb-src \
+  --mount type=bind,src=$OUTPUT_DIR_ABS,dst=/rondb-tarball \
+  --mount type=bind,src=$BUILD_DIR_ABS,dst=/rondb-bin \
+  $DOCKER_IMAGE_NAME \
+  /rondb-src/build_scripts/release_scripts/build_all.sh \
+  -s /rondb-src \
+  -b /rondb-bin \
+  -o /rondb-tarball \
+  -j $CORES $RELEASE_BUILD $DEPLOY

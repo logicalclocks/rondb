@@ -12,7 +12,7 @@ if [[ -z "${SYSBENCH_VERSION}" ]]; then
   exit 1
 else
   rm -rf ${SYSBENCH_VERSION}*
-  wget https://repo.hops.works/master/${SYSBENCH_VERSION}.tar.gz
+  wget -N --progress=bar:force https://repo.hops.works/master/${SYSBENCH_VERSION}.tar.gz
   tar xfz ${SYSBENCH_VERSION}.tar.gz
   cd ${SYSBENCH_VERSION}
   ./configure --with-mysql=$RONDB_INSTALL_DIR
@@ -26,7 +26,7 @@ if [[ -z "${DBT2_VERSION}" ]]; then
   exit 1
 else
   rm -rf ${DBT2_VERSION}*
-  wget https://repo.hops.works/master/${DBT2_VERSION}.tar.gz
+  wget -N --progress=bar:force https://repo.hops.works/master/${DBT2_VERSION}.tar.gz
   tar xfz ${DBT2_VERSION}.tar.gz
   cd ${DBT2_VERSION}
   ./configure --with-mysql=$RONDB_INSTALL_DIR
@@ -40,7 +40,7 @@ if [[ -z "${DBT3_VERSION}" ]]; then
   exit 1
 else
   rm -rf ${DBT3_VERSION}*
-  wget https://repo.hops.works/master/${DBT3_VERSION}.tar.gz 
+  wget -N --progress=bar:force https://repo.hops.works/master/${DBT3_VERSION}.tar.gz 
   tar xfz ${DBT3_VERSION}.tar.gz
   cd ${DBT3_VERSION}
   ./configure --with-mysql=$RONDB_INSTALL_DIR
