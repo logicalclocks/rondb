@@ -47,7 +47,7 @@ type Router interface {
 	GetServer() (*http.Server, *grpc.Server)
 }
 
-type RouterConext struct {
+type RouterContext struct {
 	// REST Server
 	RESTServerIP   string
 	RESTServerPort uint16
@@ -68,9 +68,9 @@ type RouterConext struct {
 	handlers *handlers.AllHandlers
 }
 
-var _ Router = (*RouterConext)(nil)
+var _ Router = (*RouterContext)(nil)
 
-func (rc *RouterConext) SetupRouter(handlers *handlers.AllHandlers) error {
+func (rc *RouterContext) SetupRouter(handlers *handlers.AllHandlers) error {
 	gin.SetMode(gin.ReleaseMode)
 	rc.Engine = gin.New()
 
@@ -92,7 +92,7 @@ func (rc *RouterConext) SetupRouter(handlers *handlers.AllHandlers) error {
 	return nil
 }
 
-func (rc *RouterConext) registerHandlers(handlers *handlers.AllHandlers) error {
+func (rc *RouterContext) registerHandlers(handlers *handlers.AllHandlers) error {
 	// register handlers
 	// pk
 	if handlers.PKReader != nil {
@@ -119,7 +119,7 @@ func (rc *RouterConext) registerHandlers(handlers *handlers.AllHandlers) error {
 	return nil
 }
 
-func (rc *RouterConext) StartRouter() error {
+func (rc *RouterContext) StartRouter() error {
 
 	log.Infof("REST Server Listening on %s:%d, GRPC Server Listening on %s:%d ",
 		rc.RESTServerIP, rc.RESTServerPort, rc.GRPCServerIP, rc.GRPCServerPort)
@@ -200,7 +200,7 @@ func serverTLSConfig() (*tls.Config, error) {
 	return tlsConfig, nil
 }
 
-func (rc *RouterConext) StopRouter() error {
+func (rc *RouterContext) StopRouter() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -227,7 +227,7 @@ func (rc *RouterConext) StopRouter() error {
 }
 
 func CreateRouterContext() Router {
-	router := RouterConext{
+	router := RouterContext{
 		RESTServerIP:   config.Configuration().RestServer.RESTServerIP,
 		RESTServerPort: config.Configuration().RestServer.RESTServerPort,
 
@@ -244,6 +244,6 @@ func CreateRouterContext() Router {
 	return &router
 }
 
-func (rc *RouterConext) GetServer() (*http.Server, *grpc.Server) {
+func (rc *RouterContext) GetServer() (*http.Server, *grpc.Server) {
 	return rc.HttpServer, rc.GRPCServer
 }
