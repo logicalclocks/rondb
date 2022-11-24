@@ -1124,7 +1124,7 @@ Dbtup::commit_operation(Signal* signal,
   {
     c_lqh->add_update_size(average_row_size);
   }
-#if 1
+#ifdef TUP_DATA_VALIDATION 
   {
     /**
      * Function used to verify that we can still read the PK
