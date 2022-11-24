@@ -61,6 +61,7 @@ import com.mysql.ndbjtie.ndbapi.NdbDictionary.IndexConst;
 import com.mysql.ndbjtie.ndbapi.NdbDictionary.RecordSpecification;
 import com.mysql.ndbjtie.ndbapi.NdbDictionary.RecordSpecificationArray;
 import com.mysql.ndbjtie.ndbapi.NdbDictionary.TableConst;
+import com.mysql.ndbjtie.ndbapi.Ndb_cluster_connection;
 
 /**
  * Wrapper around an NdbRecord. Operations may use one or two instances.
@@ -203,12 +204,15 @@ public class NdbRecordImpl {
     /** The set of projected column names */
     private Set<String> projectedColumnSet;
 
+    private final  ClusterConnectionImpl clusterConnectionImpl;
+
     /** Constructor for table operations. The NdbRecord has entries just for
      * projected columns.
      * @param storeTable the store table
      * @param ndbDictionary the ndb dictionary
      */
-    protected NdbRecordImpl(Table storeTable, Dictionary ndbDictionary) {
+    protected NdbRecordImpl(Table storeTable, Dictionary ndbDictionary,
+                            ClusterConnectionImpl clusterConnectionImpl) {
         this.ndbDictionary = ndbDictionary;
         this.tableConst = getNdbTable(storeTable.getName());
         this.name = storeTable.getKey();
@@ -220,6 +224,7 @@ public class NdbRecordImpl {
         this.nullbitByteOffset = new int[numberOfTableColumns];
         this.storeColumns = new Column[numberOfTableColumns];
         this.projectedColumnSet = new TreeSet<String>();
+        this.clusterConnectionImpl = clusterConnectionImpl;
         for (String projectedColumnName: storeTable.getProjectedColumnNames()) {
             this.projectedColumnSet.add(projectedColumnName);
         }
@@ -244,7 +249,8 @@ public class NdbRecordImpl {
      * @param storeTable the store table
      * @param ndbDictionary the ndb dictionary
      */
-    protected NdbRecordImpl(Index storeIndex, Table storeTable, Dictionary ndbDictionary) {
+    protected NdbRecordImpl(Index storeIndex, Table storeTable, Dictionary ndbDictionary,
+                            ClusterConnectionImpl clusterConnectionImpl) {
         this.ndbDictionary = ndbDictionary;
         this.tableConst = getNdbTable(storeTable.getName());
         this.indexConst = getNdbIndex(storeIndex.getInternalName(), tableConst.getName());
@@ -258,6 +264,7 @@ public class NdbRecordImpl {
         this.nullbitByteOffset = new int[numberOfTableColumns];
         this.storeColumns = new Column[numberOfTableColumns];
         this.projectedColumnSet = new TreeSet<String>();
+        this.clusterConnectionImpl = clusterConnectionImpl;
         for (String projectedColumnName: storeTable.getProjectedColumnNames()) {
             this.projectedColumnSet.add(projectedColumnName);
         }
@@ -1081,7 +1088,7 @@ public class NdbRecordImpl {
 
     // see comments in unloadSchema method in ClusterConnectionImpl.java   
     protected void finalize() {
-        this.releaseNdbRecord();
+        clusterConnectionImpl.release(this);
     }
 
     protected void releaseNdbRecord() {

@@ -325,8 +325,18 @@ public class ClusterConnectionImpl
             }
             databaseForNdbRecord.clear();
             ndbRecordImplMap.clear();
-            Ndb_cluster_connection.delete(clusterConnection);
-            clusterConnection = null;
+            synchronized (this) {
+                Ndb_cluster_connection.delete(clusterConnection);
+                clusterConnection = null;
+            }
+        }
+    }
+
+    public void release(NdbRecordImpl record){
+        synchronized (this){
+            if (clusterConnection != null){
+                record.releaseNdbRecord();
+            }
         }
     }
 
@@ -384,7 +394,7 @@ public class ClusterConnectionImpl
                 if (!db.isDefaultDatabase()) {
                     dictionary = dbDictionaryForNdbRecord.get(db.getName());
                 }
-                newNdbRecordImpl = new NdbRecordImpl(storeTable, dictionary);   
+                newNdbRecordImpl = new NdbRecordImpl(storeTable, dictionary, this);
                 ndbRecordImplMap.put(tableName, newNdbRecordImpl);
             }
             return newNdbRecordImpl;
@@ -431,7 +441,7 @@ public class ClusterConnectionImpl
                 if (!db.isDefaultDatabase()) {
                     dictionary = dbDictionaryForNdbRecord.get(db.getName());
                 }
-                newNdbRecordImpl = new NdbRecordImpl(storeIndex, storeTable, dictionary);
+                newNdbRecordImpl = new NdbRecordImpl(storeIndex, storeTable, dictionary, this);
                 ndbRecordImplMap.put(recordName, newNdbRecordImpl);
             }
             return newNdbRecordImpl;
