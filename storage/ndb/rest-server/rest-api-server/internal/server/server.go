@@ -20,6 +20,7 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -130,7 +131,7 @@ func (rc *RouterContext) StartRouter() error {
 	if config.Configuration().Security.EnableTLS {
 		if config.Configuration().Security.CertificateFile == "" ||
 			config.Configuration().Security.PrivateKeyFile == "" {
-			return fmt.Errorf("Server Certificate/Key not set")
+			return errors.New("Server Certificate/Key not set")
 		}
 
 		serverTLS, err = serverTLSConfig()
@@ -152,8 +153,11 @@ func (rc *RouterContext) StartRouter() error {
 	go func() { // Start REST Server
 		if config.Configuration().Security.EnableTLS {
 			rc.HttpServer.TLSConfig = serverTLS
-			err = rc.HttpServer.ServeTLS(httpListener, config.Configuration().Security.CertificateFile,
-				config.Configuration().Security.PrivateKeyFile)
+			err = rc.HttpServer.ServeTLS(
+				httpListener,
+				config.Configuration().Security.CertificateFile,
+				config.Configuration().Security.PrivateKeyFile,
+			)
 		} else {
 			err = rc.HttpServer.ListenAndServe()
 		}
