@@ -104,7 +104,7 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
     try {
       preparedStatement = connection.prepareStatement(cmd);
       preparedStatement.executeUpdate();
-      System.out.println(cmd);
+      //System.out.println(cmd);
     } catch (SQLException e) {
       test.error("Failed to drop table. Error: " + e.getMessage());
       throw new RuntimeException("Failed to command: ", e);
@@ -140,7 +140,7 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
           Thread.sleep(1);
         } catch (Exception ex) {
           //ex.printStackTrace();
-          System.out.println(ex.getMessage());
+          //System.out.println(ex.getMessage());
           failCounter++;
         } finally {
           if (!rowInserted) {
@@ -232,8 +232,8 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
         totalInsertions += threads.get(i).getInsertsCounter();
         totalFailures += threads.get(i).getFailCounter();
       }
-      System.out.println("PASS: Total Insertions " + totalInsertions+
-          " Failed Inserts: "+ totalFailures);
+      //System.out.println("PASS: Total Insertions " + totalInsertions+
+      //    " Failed Inserts: "+ totalFailures);
     } catch (Exception e) {
       this.error("FAILED . Error: " + e.getMessage());
     }
