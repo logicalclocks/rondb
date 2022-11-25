@@ -90,7 +90,7 @@ if [ -n "$SINGLE_TEST" ]; then
   make
   cd $CLUSTERJ_BUILD_DIR/clusterj-test/target/classes
   jar cvf test.jar testsuite/clusterj/$SINGLE_TEST.class
-  TEST_JAR=$(readlink -f test.jar)
+  TEST_JAR=$CLUSTERJ_BUILD_DIR/clusterj-test/target/classes/test.jar
 fi
 
 cd $CLUSTERJ_BUILD_DIR
@@ -108,7 +108,7 @@ fi
 
 echo "ALL_JARS = $ALL_JARS"
 
-rm clusterj.properties
+rm -f clusterj.properties
 echo   "com.mysql.clusterj.connectstring=localhost:13000"               >>   clusterj.properties
 echo   "com.mysql.clusterj.connect.retries=4"                           >>   clusterj.properties
 echo   "com.mysql.clusterj.connect.delay=5"                             >>   clusterj.properties
@@ -122,4 +122,5 @@ echo   "com.mysql.clusterj.jdbc.password="                              >>   clu
 echo   "com.mysql.clusterj.database=test"                               >>   clusterj.properties
 echo   "com.mysql.clusterj.max.transactions=1024"                       >>   clusterj.properties
 echo   "com.mysql.clusterj.connection.reconnect.timeout=3"              >>   clusterj.properties
+echo   "com.mysql.clusterj.max.cached.instances=128"                    >>   clusterj.properties
 java -cp $ALL_JARS -Djava.library.path=$LIBNDBCLIENT_PATH -Dclusterj.properties=$CLUSTERJ_BUILD_DIR/clusterj.properties testsuite.clusterj.AllTests  $TEST_JAR

@@ -1100,7 +1100,6 @@ public class NdbRecordImpl {
             this.bufferPool = null;
         }
     }
-
     protected void assertValid() {
         if (ndbRecord == null) {
             throw new ClusterJUserException(local.message("ERR_NdbRecord_was_released"));

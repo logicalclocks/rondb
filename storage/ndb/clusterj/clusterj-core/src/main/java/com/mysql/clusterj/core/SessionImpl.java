@@ -344,14 +344,13 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
     public <T> T newInstance(Class<T> cls) {
         try {
             assertNotClosed();
-            if (dtoCache != null) {
-                T instance = dtoCache.get(cls);
-                if (instance != null) {
-                    return instance;
-                }
+            T instance = dtoCache.get(cls);
+            if (instance != null) {
+                return instance;
             }
-
-            return factory.newInstance(cls, dictionary, db);
+            instance = factory.newInstance(cls, dictionary, db);
+            dtoCache.insert(instance, cls);
+            return instance;
         } catch (ClusterJDatastoreException cjde) {
             checkConnection(cjde);
             throw cjde;
@@ -367,14 +366,13 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
     public <T> T newInstance(Class<T> cls, Object key) {
         assertNotClosed();
         T instance = null;
-        if (dtoCache != null) {
-            instance = dtoCache.get(cls);
-        }
+        instance = dtoCache.get(cls);
         DomainTypeHandler<T> domainTypeHandler = getDomainTypeHandler(cls);
         if (instance == null) {
             instance = factory.newInstance(cls, dictionary, db);
         }
         domainTypeHandler.objectSetKeys(key, instance);
+        dtoCache.insert(instance, cls);
         return instance;
     }
 
@@ -926,7 +924,7 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
     }
 
     public void closeCache(boolean dropCache) {
-        if (dtoCache != null && dropCache) {
+        if (dropCache) {
             dtoCache.drop();
         }
         if (db.isDefaultDatabase()) {
@@ -1761,6 +1759,7 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
                 if (is_caching_allowed) {
                     dtoCache.put(param, cls);
                 } else {
+                    dtoCache.remove(param);
                     DynamicObject dynamicObject = (DynamicObject)param;
                     DynamicObjectDelegate delegate = dynamicObject.delegate();
                     if (delegate != null) {
@@ -1772,6 +1771,7 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
                 if (is_caching_allowed) {
                     dtoCache.put(param, cls);
                 } else {
+                    dtoCache.remove(param);
                     try {
                         InvocationHandler handler = Proxy.getInvocationHandler(param);
                         if (!ValueHandler.class.isAssignableFrom(handler.getClass())) {

@@ -989,5 +989,4 @@ public class NdbRecordOperationImpl implements Operation {
             ndbRecordValues.checkGuard(this.valueBuffer, where);
         }
     }
-
 }

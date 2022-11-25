@@ -53,13 +53,13 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
           "truncate table "+TABLE;
 
   private static String defaultDB = "test";
-  private static final int NUM_THREADS = 10;
+  private static final int NUM_THREADS = 20;
   private int SLEEP_TIME = 3000;
 
   private static boolean USE_COPY_ALGO = true;
 
   //unloadSchema can not be used with caching
-  boolean useCache = false;
+  boolean useCache = true;
 
   @Override
   public void localSetUp() {
@@ -137,7 +137,7 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
           closeDTO(session, e, FGTest.class);
           insertsCounter++;
           rowInserted = true;
-          Thread.sleep(1);
+          Thread.sleep(5);
         } catch (Exception ex) {
           //ex.printStackTrace();
           //System.out.println(ex.getMessage());
