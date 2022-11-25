@@ -1486,7 +1486,7 @@ Dbtup::commit_operation(Signal* signal,
                         gci_hi);
 #endif
   }
-#if 1
+#ifdef TUP_DATA_VALIDATION 
   {
     /**
      * Function used to verify that we can still read the PK
