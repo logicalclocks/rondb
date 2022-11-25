@@ -91,6 +91,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/NegativeMetadataTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/NotPersistentTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/NullValuesTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/NotNullColumnTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/ObjectNotFoundTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/PartitionKeyTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/ProjectionTest.java
@@ -151,6 +152,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/TransactionErrorSetPartitionKeyTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/TransactionStateTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/UpdateTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/UnloadSchemaTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/VarbinaryPKTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/VarbinaryTypesTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/VarcharPKTest.java

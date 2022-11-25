@@ -325,8 +325,18 @@ public class ClusterConnectionImpl
             }
             databaseForNdbRecord.clear();
             ndbRecordImplMap.clear();
-            Ndb_cluster_connection.delete(clusterConnection);
-            clusterConnection = null;
+            synchronized (this) {
+                Ndb_cluster_connection.delete(clusterConnection);
+                clusterConnection = null;
+            }
+        }
+    }
+
+    public void release(NdbRecordImpl record){
+        synchronized (this){
+            if (clusterConnection != null){
+                record.releaseNdbRecord();
+            }
         }
     }
 
@@ -384,7 +394,7 @@ public class ClusterConnectionImpl
                 if (!db.isDefaultDatabase()) {
                     dictionary = dbDictionaryForNdbRecord.get(db.getName());
                 }
-                newNdbRecordImpl = new NdbRecordImpl(storeTable, dictionary);   
+                newNdbRecordImpl = new NdbRecordImpl(storeTable, dictionary, this);
                 ndbRecordImplMap.put(tableName, newNdbRecordImpl);
             }
             return newNdbRecordImpl;
@@ -431,7 +441,7 @@ public class ClusterConnectionImpl
                 if (!db.isDefaultDatabase()) {
                     dictionary = dbDictionaryForNdbRecord.get(db.getName());
                 }
-                newNdbRecordImpl = new NdbRecordImpl(storeIndex, storeTable, dictionary);
+                newNdbRecordImpl = new NdbRecordImpl(storeIndex, storeTable, dictionary, this);
                 ndbRecordImplMap.put(recordName, newNdbRecordImpl);
             }
             return newNdbRecordImpl;
@@ -484,9 +494,24 @@ public class ClusterConnectionImpl
                     if (logger.isDebugEnabled())logger.debug("Removing cached NdbRecord for " + key);
                     NdbRecordImpl record = entry.getValue();
                     iterator.remove();
-                    if (record != null) {
-                        record.releaseNdbRecord();
-                    }
+                    //NdbRecordImpl is shared with multiple dynamic objects.
+                    //Calling releaseNdbRecord will also release associated native NDB objects.
+                    //Dynamic objects that hold reference to this record will encounter
+                    //seg faults when they access this released NdbRecordImpl object
+                    //Note: unloadSchema can not be used with dynamic object caching
+                    //Although we clear the cache when the user calls unloadSchema, the user
+                    //might have other active dynamic objects a reference to this
+                    //bad NdbRecordImpl object, and after using these objects the
+                    //user puts the dynamic object in the cache.
+
+                    //This piece of code has been commented out as we want to delay
+                    //releasing the NdbRecordImpl object as long as any dynamic object has
+                    //a reference to it. If there are no references to this object then
+                    //the GC will call the finalize method of this object which will call the
+                    //releaseNdbRecord() method
+                    //if (record != null) {
+                    //    record.releaseNdbRecord();
+                    //}
                 }
             }
             // invalidate cached dictionary table after invalidate cached indexes
