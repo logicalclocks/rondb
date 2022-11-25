@@ -1060,6 +1060,19 @@ create table `hope` (
   PRIMARY KEY (partition_id, id)
   ) ENGINE=ndbcluster DEFAULT CHARSET=latin1 partition by key (partition_id);
 
+CREATE TABLE `fgtest` (
+  `id` int NOT NULL,
+  `col_1` int DEFAULT NULL,
+  `col_2` varchar(1000) CHARACTER SET utf8 COLLATE utf8_unicode_ci DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=ndbcluster;
+
+CREATE TABLE `notnulltable` (
+  `id` int NOT NULL,
+  `value` varchar(50) NOT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=ndbcluster;
+
 drop table if exists same_table;
 create table same_table (
   id int not null,

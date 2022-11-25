@@ -7,7 +7,7 @@ ndb_mgmd=
 # ClusterJ test runs with 1 mysqld and 4 ndbapi nodes
 mysqld=
 ndbapi=,,,
-DataMemory            = 50M
+DataMemory            = 200M
 MaxNoOfOrderedIndexes = 150
 ClassicFragmentation  = 1
 
