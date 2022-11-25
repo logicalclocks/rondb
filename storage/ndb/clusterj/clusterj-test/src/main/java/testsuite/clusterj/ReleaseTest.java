@@ -83,7 +83,8 @@ public class ReleaseTest extends AbstractClusterJModelTest {
 
     @Override
     public void localSetUp() {
-
+        closeAllExistingSessionFactories();
+        sessionFactory = null;
         createSessionFactory();
         session = sessionFactory.getSession();
         session.deletePersistentAll(Employee.class);

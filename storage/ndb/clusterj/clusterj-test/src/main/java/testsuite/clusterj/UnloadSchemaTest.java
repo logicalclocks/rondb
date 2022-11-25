@@ -32,6 +32,7 @@ import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
 
 
 public class UnloadSchemaTest extends AbstractClusterJModelTest {
@@ -50,16 +51,30 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
   private static String ADD_COL_4_INPLACE =
           "alter table " + TABLE + " add column col_4 varchar(100) COLLATE utf8_unicode_ci, algorithm=INPLACE";
   private static String TRUNCATE_TABLE =
-          "truncate table "+TABLE;
+          "truncate table " + TABLE;
 
   private static String defaultDB = "test";
-  private static final int NUM_THREADS = 20;
+  private static final int NUM_THREADS = 10;
   private int SLEEP_TIME = 3000;
 
   private static boolean USE_COPY_ALGO = true;
 
   //unloadSchema can not be used with caching
   boolean useCache = true;
+
+  @Override
+  protected Properties modifyProperties() {
+    if (useCache) {
+      props.setProperty(Constants.PROPERTY_CLUSTER_MAX_CACHED_INSTANCES, Integer.toString(NUM_THREADS));
+      props.setProperty(Constants.PROPERTY_CLUSTER_WARMUP_CACHED_SESSIONS, Integer.toString(NUM_THREADS));
+      props.setProperty(Constants.PROPERTY_CLUSTER_MAX_CACHED_SESSIONS, Integer.toString(NUM_THREADS));
+    } else {
+      props.setProperty(Constants.PROPERTY_CLUSTER_MAX_CACHED_INSTANCES, "0");
+      props.setProperty(Constants.PROPERTY_CLUSTER_WARMUP_CACHED_SESSIONS, "0");
+      props.setProperty(Constants.PROPERTY_CLUSTER_MAX_CACHED_SESSIONS, "0");
+    }
+    return props;
+  }
 
   @Override
   public void localSetUp() {
@@ -116,28 +131,34 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
     private boolean run = true;
     private boolean running = false;
     private int startIndex = 0;
+
+    private int maxRowsToWrite = 0;
     private int insertsCounter = 0;
     private int failCounter = 0;
 
-    DataInsertWorker(int startIndex) {
+    DataInsertWorker(int startIndex, int maxRowsToWrite) {
       this.startIndex = startIndex;
+      this.maxRowsToWrite = maxRowsToWrite;
     }
 
     @Override
     public void run() {
 
+      int currentIndex = startIndex;
       while (run) {
         Session session = getSession(defaultDB);
         DynamicObject e = null;
         boolean rowInserted = false;
         try {
           e = (DynamicObject) session.newInstance(FGTest.class);
-          setFields(e, startIndex++);
+          setFields(e, currentIndex++);
           session.savePersistent(e);
           closeDTO(session, e, FGTest.class);
           insertsCounter++;
           rowInserted = true;
-          Thread.sleep(5);
+          if (currentIndex > (startIndex + maxRowsToWrite)) {
+            currentIndex = startIndex;
+          }
         } catch (Exception ex) {
           //ex.printStackTrace();
           //System.out.println(ex.getMessage());
@@ -191,14 +212,26 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
     }
   }
 
-  public void testUnloadSchema() {
+  public void testUnloadSchemaUsingCache() {
+    unloadSchema(true);
+  }
+
+  public void testUnloadSchemaNoCache() {
+    unloadSchema(false);
+  }
+  public void unloadSchema(boolean useCache) {
     try {
+      this.useCache = useCache;
+      closeAllExistingSessionFactories();
+      sessionFactory = null;
+      createSessionFactory();
+
       runSQLCMD(this, DROP_TABLE_CMD);
       runSQLCMD(this, CREATE_TABLE_CMD);
 
       List<DataInsertWorker> threads = new ArrayList<>(NUM_THREADS);
       for (int i = 0; i < NUM_THREADS; i++) {
-        DataInsertWorker t = new DataInsertWorker(i * 1000000);
+        DataInsertWorker t = new DataInsertWorker(i * 1000000, 1000);
         threads.add(t);
         t.start();
       }
