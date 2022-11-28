@@ -720,7 +720,6 @@ Dbtup::varsize_reader(Uint8* outBuffer,
   Uint32 newIndexBuf = indexBuf + srcBytes;
   Uint8* dst = (outBuffer + indexBuf);
 
-#ifdef TUP_DATA_VALIDATION
   if (unlikely(srcBytes > max_var_size))
   {
     Uint32 var_idx= AttributeOffset::getOffset(attrDes2);
@@ -745,9 +744,14 @@ Dbtup::varsize_reader(Uint8* outBuffer,
                         req_struct->m_var_data[MM].m_data_ptr,
                         req_struct->m_var_data[MM].m_offset_array_ptr[var_idx+idx+1],
                         req_struct->m_var_data[MM].m_offset_array_ptr[var_idx+idx+2]);
-  }
+#ifdef DEBUG_FRAGMENT_LOCK
+    if (req_struct->m_lqh != nullptr &&
+        req_struct->fragPtrP != nullptr)
+      req_struct->m_lqh->print_fragment_lock(req_struct->fragPtrP->fragTableId,
+                                             req_struct->fragPtrP->fragmentId);
 #endif
-  require(srcBytes <= max_var_size);
+    require(srcBytes <= max_var_size);
+  }
   if (! charsetFlag || ! req_struct->xfrm_flag)
   {
     if (likely(newIndexBuf <= max_read))
@@ -901,11 +905,13 @@ Dbtup::readVarSizeNotNULL(Uint8* out_buffer,
   Uint32 var_idx= AttributeOffset::getOffset(attrDes2);
   Uint32 var_attr_pos= req_struct->m_var_data[MM].m_offset_array_ptr[var_idx];
   Uint32 idx= req_struct->m_var_data[MM].m_var_len_offset;
-  Uint32 srcBytes =
-    req_struct->m_var_data[MM].m_offset_array_ptr[var_idx+idx] - var_attr_pos;
+  Uint32 next_attr_pos = req_struct->m_var_data[MM].m_offset_array_ptr[var_idx+idx];
+  Uint32 srcBytes = next_attr_pos - var_attr_pos;
   const char* src_ptr= req_struct->m_var_data[MM].m_data_ptr+var_attr_pos;
-
-  thrjamDebug(req_struct->jamBuffer);
+#ifdef TUP_DATA_VALIDATION
+  thrjam(req_struct->jamBuffer);
+  thrjamLine(req_struct->jamBuffer, var_idx);
+#endif
   return varsize_reader(out_buffer, req_struct, ah_out, attrDes,
                         src_ptr, srcBytes);
 }
@@ -3934,7 +3940,9 @@ Dbtup::read_lcp_keys(Uint32 tableId,
    */
   Tuple_header*ptr = (Tuple_header*)(src - Tuple_header::HeaderSize);
   KeyReqStruct req_struct(this);
+  req_struct.m_lqh = c_lqh;
   req_struct.tablePtrP = tabPtr.p;
+  req_struct.fragPtrP = nullptr;
   req_struct.m_tuple_ptr = ptr;
   req_struct.check_offset[MM]= len;
   req_struct.is_expanded = false;

@@ -53,7 +53,8 @@ extern class SignalLoggerManager globalSignalLoggers;
 #define EMULATED_JAM_SIZE 32768
 #else
 // Keep jam buffer small for optimized build to improve locality of reference.
-#define EMULATED_JAM_SIZE 1024
+//#define EMULATED_JAM_SIZE 1024
+#define EMULATED_JAM_SIZE 32768 //Temporary
 #endif
 #define JAM_MASK (EMULATED_JAM_SIZE - 1)
 

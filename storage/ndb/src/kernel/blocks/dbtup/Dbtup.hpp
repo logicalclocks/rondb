@@ -2014,6 +2014,7 @@ struct KeyReqStruct {
   Bitmask<MAXNROFATTRIBUTESINWORDS> changeMask;
   Uint16 var_pos_array[2*MAX_ATTRIBUTES_IN_TABLE + 1];
   OperationrecPtr prevOpPtr;
+  Dblqh *m_lqh;
 };
 
   friend struct Undo_buffer;

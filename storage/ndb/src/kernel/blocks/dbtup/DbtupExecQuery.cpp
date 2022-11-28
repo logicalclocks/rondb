@@ -174,6 +174,7 @@ Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId)
 {
   Uint32 attrinfoVal;
   KeyReqStruct req_struct(this);
+  req_struct.m_lqh = nullptr;
   getStoredProcAttrInfo(storedProcId, &req_struct, attrinfoVal);
   copyAttrinfo(req_struct.attrinfo_len, attrinfoVal);
   return req_struct.attrinfo_len;
@@ -903,6 +904,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
 
    jamEntryDebug();
    jamLineDebug(Uint16(prepare_oper_ptr.i));
+   req_struct.m_lqh = c_lqh;
 
 #ifdef VM_TRACE
    {
@@ -5032,12 +5034,15 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
 #ifdef TUP_DATA_VALIDATION
         thrjam(req_struct->jamBuffer);
         thrjamLine(req_struct->jamBuffer, mm_vars);
-        thrjamLine(req_struct->jamBuffer, ((Uint16*)src_data)[0]);
-        thrjamLine(req_struct->jamBuffer, ((Uint16*)src_data)[1]);
+        for (Uint32 i = 0; i < (mm_vars + 1); i++)
+          thrjamLine(req_struct->jamBuffer, ((Uint16*)src_data)[i]);
 #endif
       }
       else
       {
+#ifdef TUP_DATA_VALIDATION
+        thrjam(req_struct->jamBuffer);
+#endif
         varstart = 0;
         varlen = 0;
         dynstart = src_data;
@@ -5623,6 +5628,7 @@ Dbtup::nr_read_pk(Uint32 fragPtrI,
   KeyReqStruct req_struct(this);
   Uint32* ptr= ((Fix_page*)pagePtr.p)->get_ptr(key->m_page_idx, 0);
   
+  req_struct.m_lqh = c_lqh;
   req_struct.m_page_ptr = pagePtr;
   req_struct.m_tuple_ptr = (Tuple_header*)ptr;
   Uint32 bits = req_struct.m_tuple_ptr->m_header_bits;
@@ -5769,6 +5775,8 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
                                       0))
     {
       KeyReqStruct req_struct(jamBuffer(), KRS_PREPARE);
+      req_struct.m_lqh = c_lqh;
+      req_struct.fragPtrP = fragPtr.p;
       Operationrec oprec;
       Tuple_header *copy;
       if ((copy = alloc_copy_tuple(tablePtr.p,

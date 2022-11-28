@@ -7546,13 +7546,6 @@ Dblqh::send_print_mutex_stats(Signal *signal)
  */
 
 #ifdef DEBUG_FRAGMENT_LOCK
-#define DEB_FRAGMENT_LOCK(frag) debug_fragment_lock(frag, __LINE__)
-
-#else
-#define DEB_FRAGMENT_LOCK(frag)
-#endif
-
-#ifdef DEBUG_FRAGMENT_LOCK
 void Dblqh::debug_fragment_lock(Fragrecord *fragPtrP, Uint32 line)
 {
   Uint32 instance_no = instance();
@@ -7564,6 +7557,42 @@ void Dblqh::debug_fragment_lock(Fragrecord *fragPtrP, Uint32 line)
   fragPtrP->lock_line[fragPtrP->lock_line_index] = Uint16(line);
   fragPtrP->lock_line_index = (fragPtrP->lock_line_index + 1) & LOCK_LINE_MASK;
   fragPtrP->lock_line[fragPtrP->lock_line_index] = Uint16(instance_no);
+}
+
+void Dblqh::print_fragment_lock(Uint32 tableId, Uint32 fragId)
+{
+  Fragrecord *fragPtrP = fragptr.p;
+  NdbMutex_Lock(&fragPtrP->frag_mutex);
+  g_eventLogger->info("Table(%u,%u): lock_line_index: %u",
+                      tableId,
+                      fragId,
+                      fragPtrP->lock_line_index);
+  for (Uint32 i = 0; i < (LOCK_LINE_MASK + 1); i+= 2)
+  {
+    g_eventLogger->info("Table(%u,%u): i: %u line = %u instance_no = %u",
+                        tableId,
+                        fragId,
+                        i,
+                        fragPtrP->lock_line[i],
+                        fragPtrP->lock_line[i+1]);
+  }
+  g_eventLogger->info("Table(%u,%u): conc_scan: %u, conc_rkey: %u"
+                      ", cond_read_waiters: %u, cond_excl_waiters: %u"
+                      ", cond_wk_waiters: %u, m_spin_excl_waiters: %u"
+                      ", m_spin_excl_waiters: %u, m_wk_locked: %u"
+                      ", m_excl_locked: %u",
+                      tableId,
+                      fragId,
+                      fragPtrP->m_concurrent_scan_count,
+                      fragPtrP->m_concurrent_read_key_count,
+                      fragPtrP->m_cond_read_waiters,
+                      fragPtrP->m_cond_exclusive_waiters,
+                      fragPtrP->m_cond_write_key_waiters,
+                      fragPtrP->m_spin_exclusive_waiters,
+                      fragPtrP->m_spin_write_key_waiters,
+                      fragPtrP->m_write_key_locked,
+                      fragPtrP->m_exclusive_locked);
+  NdbMutex_Unlock(&fragPtrP->frag_mutex);
 }
 #endif
 
@@ -32501,7 +32530,6 @@ bool Dblqh::getFragmentrec(Uint32 fragId)
 {
   for (Uint32 i = 0; i < NDB_ARRAY_SIZE(tabptr.p->fragid); i++)
   {
-    jamDebug();
     if (tabptr.p->fragid[i] == fragId) {
       fragptr.i = tabptr.p->fragrec[i];
       c_fragment_pool.getPtr(fragptr);
