@@ -202,7 +202,8 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
         } else if (fieldName.equals("col_2")) {
           e.set(i, Long.toString(num));
         } else if (fieldName.equals("col_3")) {
-          e.set(i, new Long(num));
+          long num_long = num;
+          e.set(i, num_long);
         } else if (fieldName.equals("col_4")) {
           e.set(i, Long.toString(num));
         } else {

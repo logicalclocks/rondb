@@ -106,7 +106,8 @@ MACRO(CREATE_JAR TARGET_ARG)
   ENDIF()
 
   # Treat all deprecation warnings as errors
-  SET(JAVA_ARGS ${JAVA_ARGS} -Xlint:deprecation -Xlint:-options -Werror)
+  # Removed since we are using finalize method which is deprecated
+  SET(JAVA_ARGS ${JAVA_ARGS} -Xlint:deprecation -Xlint:-options)
 
   # Compile
   IF (JAVA_FILES)
