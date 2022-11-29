@@ -728,10 +728,17 @@ public:
  */
 #define ZMAX_SCAN_DIRECT_COUNT 16
 
-//#define DEBUG_FRAGMENT_LOCK 1
-#define LOCK_LINE_MASK 2047
+#define DEBUG_FRAGMENT_LOCK 1 //Temporary
+//#define LOCK_LINE_MASK 2047
+#define LOCK_LINE_MASK 511
 #define LOCK_READ_SPIN_TIME 30
 #define LOCK_WRITE_SPIN_TIME 40
+
+#ifdef DEBUG_FRAGMENT_LOCK
+#define DEB_FRAGMENT_LOCK(frag) debug_fragment_lock(frag, __LINE__)
+#else
+#define DEB_FRAGMENT_LOCK(frag)
+#endif
 
   struct Fragrecord {
     Fragrecord()
@@ -4859,7 +4866,10 @@ private:
   bool is_write_key_condition_ready(Fragrecord*);
   bool is_exclusive_condition_ready(Fragrecord*);
 #ifdef DEBUG_FRAGMENT_LOCK
+  public:
+  void print_fragment_lock(Uint32, Uint32);
   void debug_fragment_lock(Fragrecord *fragPtrP, Uint32 line);
+  private:
 #endif
   void acquire_frag_abort_access(Fragrecord *fragPtrP,
                                  TcConnectionrec *regTcPtr);
@@ -5400,11 +5410,7 @@ Dblqh::acquire_frag_commit_access_write_key()
     {
       jamDebug();
       NdbMutex_Lock(&fragPtrP->frag_mutex);
-#ifdef DEBUG_FRAGMENT_LOCK
-      fragPtrP->lock_line_index = (fragPtrP->lock_line_index + 1) &
-        LOCK_LINE_MASK;
-      fragPtrP->lock_line[fragPtrP->lock_line_index] = __LINE__;
-#endif
+      DEB_FRAGMENT_LOCK(fragPtrP);
       /**
        * In Commit access we set m_cond_exclusive_waiters and
        * m_spin_exclusive_waiters to 1 to ensure that we don't start any
@@ -5439,11 +5445,7 @@ Dblqh::acquire_frag_commit_access_exclusive()
     ndbrequire(m_fragment_lock_status == FRAGMENT_LOCKED_IN_WRITE_KEY_MODE ||
                m_fragment_lock_status == FRAGMENT_UNLOCKED);
     NdbMutex_Lock(&fragPtrP->frag_mutex);
-#ifdef DEBUG_FRAGMENT_LOCK
-    fragPtrP->lock_line_index = (fragPtrP->lock_line_index + 1) &
-      LOCK_LINE_MASK;
-    fragPtrP->lock_line[fragPtrP->lock_line_index] = __LINE__;
-#endif
+    DEB_FRAGMENT_LOCK(fragPtrP);
     fragPtrP->m_cond_exclusive_waiters = 0;
     fragPtrP->m_spin_exclusive_waiters = 0;
     fragPtrP->m_write_key_locked = false;
@@ -5477,11 +5479,7 @@ Dblqh::acquire_frag_prepare_key_access(Fragrecord *fragPtrP,
      */
     jamDebug();
     NdbMutex_Lock(&fragPtrP->frag_mutex);
-#ifdef DEBUG_FRAGMENT_LOCK
-    fragPtrP->lock_line_index = (fragPtrP->lock_line_index + 1) &
-      LOCK_LINE_MASK;
-    fragPtrP->lock_line[fragPtrP->lock_line_index] = __LINE__;
-#endif
+    DEB_FRAGMENT_LOCK(fragPtrP);
     fragPtrP->m_cond_write_key_waiters = 1;
     fragPtrP->m_spin_write_key_waiters = 1;
     handle_acquire_read_key_frag_access(fragPtrP, true, false);
@@ -5492,11 +5490,7 @@ Dblqh::acquire_frag_prepare_key_access(Fragrecord *fragPtrP,
     /* Refresh requires exclusive access, prepare for this */
     jamDebug();
     NdbMutex_Lock(&fragPtrP->frag_mutex);
-#ifdef DEBUG_FRAGMENT_LOCK
-    fragPtrP->lock_line_index = (fragPtrP->lock_line_index + 1) &
-      LOCK_LINE_MASK;
-    fragPtrP->lock_line[fragPtrP->lock_line_index] = __LINE__;
-#endif
+    DEB_FRAGMENT_LOCK(fragPtrP);
     fragPtrP->m_cond_exclusive_waiters = 1;
     fragPtrP->m_spin_exclusive_waiters = 1;
     handle_acquire_read_key_frag_access(fragPtrP, true, false);

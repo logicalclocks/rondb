@@ -1805,6 +1805,7 @@ Dbtup::exec_tup_commit(Signal *signal)
   no_of_fragrec= cnoOfFragrec;
   no_of_tablerec= cnoOfTablerec;
 
+  req_struct.m_lqh = c_lqh;
   req_struct.signal= signal;
   req_struct.hash_value= hash_value;
   req_struct.gci_hi = gci_hi;
@@ -1818,6 +1819,7 @@ Dbtup::exec_tup_commit(Signal *signal)
   regTabPtr.i= regFragPtr.p->fragTableId;
 
   /* Put transid in req_struct, so detached triggers can access it */
+  req_struct.fragPtrP = regFragPtr.p;
   req_struct.trans_id1 = transId1;
   req_struct.trans_id2 = transId2;
   req_struct.m_reorg = regOperPtr.p->op_struct.bit_field.m_reorg;
