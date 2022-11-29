@@ -5034,7 +5034,7 @@ Dbtup::prepare_read(KeyReqStruct* req_struct,
 #ifdef TUP_DATA_VALIDATION
         thrjam(req_struct->jamBuffer);
         thrjamLine(req_struct->jamBuffer, mm_vars);
-        for (Uint32 i = 0; i < (mm_vars + 1); i++)
+        for (Uint16 i = 0; i < (mm_vars + 1); i++)
           thrjamLine(req_struct->jamBuffer, ((Uint16*)src_data)[i]);
 #endif
       }

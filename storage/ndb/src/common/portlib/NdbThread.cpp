@@ -355,8 +355,8 @@ NdbThread_Create(NDB_THREAD_FUNC *p_thread_func,
 
   my_thread_attr_init(&thread_attr);
 #ifdef PTHREAD_STACK_MIN
-  if (thread_stack_size < PTHREAD_STACK_MIN)
-    thread_stack_size = PTHREAD_STACK_MIN;
+  if (thread_stack_size < (NDB_THREAD_STACKSIZE)PTHREAD_STACK_MIN)
+    thread_stack_size = (NDB_THREAD_STACKSIZE)PTHREAD_STACK_MIN;
 #endif
   DBUG_PRINT("info", ("stack_size: %llu", (ulonglong)thread_stack_size));
 #ifndef _WIN32
