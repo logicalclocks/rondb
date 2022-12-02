@@ -62,7 +62,7 @@ func (b *Batch) BatchOpsHttpHandler(c *gin.Context) {
 	}
 
 	if operations.Operations == nil {
-		common.SetResponseBodyError(c, http.StatusBadRequest, fmt.Errorf("No valid operations found"))
+		common.SetResponseBodyError(c, http.StatusBadRequest, errors.New("No valid operations found"))
 		return
 	}
 
@@ -111,8 +111,8 @@ func (b *Batch) BatchOpsHandler(pkOperations *[]*api.PKReadParams, apiKey *strin
 	}
 
 	dalErr := dal.RonDBBatchedPKRead(noOps, reqPtrs, respPtrs)
-	var message string
 	if dalErr != nil {
+		var message string
 		if dalErr.HttpCode >= http.StatusInternalServerError {
 			message = fmt.Sprintf("%v File: %v, Line: %v ", dalErr.Message, dalErr.ErrFileName, dalErr.ErrLineNo)
 		} else {
@@ -175,7 +175,7 @@ func parseOperation(operation *api.BatchSubOp, pkReadarams *api.PKReadParams) er
 func makePKReadParams(operation *api.BatchSubOp, pkReadarams *api.PKReadParams) error {
 	params := *operation.Body
 
-	//split the relative url to extract path parameters
+	// split the relative url to extract path parameters
 	splits := strings.Split(*operation.RelativeURL, "/")
 	if len(splits) != 3 {
 		return errors.New("Failed to extract database and table information from relative url")
