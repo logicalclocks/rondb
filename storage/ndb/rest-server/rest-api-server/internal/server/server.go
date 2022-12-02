@@ -122,8 +122,10 @@ func (rc *RouterContext) registerHandlers(handlers *handlers.AllHandlers) error 
 
 func (rc *RouterContext) StartRouter() error {
 
-	log.Infof("REST Server Listening on %s:%d, GRPC Server Listening on %s:%d ",
-		rc.RESTServerIP, rc.RESTServerPort, rc.GRPCServerIP, rc.GRPCServerPort)
+	restApiAddress := fmt.Sprintf("%s:%d", rc.RESTServerIP, rc.RESTServerPort)
+	grpcAddress := fmt.Sprintf("%s:%d", rc.GRPCServerIP, rc.GRPCServerPort)
+	log.Infof("REST Server Listening on %s, GRPC Server Listening on %s ",
+		restApiAddress, grpcAddress)
 
 	var serverTLS *tls.Config
 	var err error
@@ -140,13 +142,11 @@ func (rc *RouterContext) StartRouter() error {
 		}
 	}
 
-	restApiAddress := fmt.Sprintf("%s:%d", rc.RESTServerIP, rc.RESTServerPort)
 	httpListener, err := net.Listen("tcp", restApiAddress)
 	if err != nil {
 		log.Fatalf("Failed listening to REST server address '%s'. Error: %v", restApiAddress, err)
 	}
 
-	grpcAddress := fmt.Sprintf("%s:%d", rc.GRPCServerIP, rc.GRPCServerPort)
 	grpcListener, err := net.Listen("tcp", grpcAddress)
 	if err != nil {
 		log.Fatalf("Failed listening to GRPC server address '%s'. Error: %v", grpcAddress, err)
