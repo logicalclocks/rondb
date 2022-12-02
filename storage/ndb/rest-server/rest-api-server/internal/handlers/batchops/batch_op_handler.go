@@ -17,6 +17,7 @@
 package batchops
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -66,7 +67,7 @@ func (b *Batch) BatchOpsHttpHandler(c *gin.Context) {
 		err := parseOperation(&operation, pkOperations[i])
 		if err != nil {
 			if log.IsDebug() {
-				log.Debugf("Error: %v", err)
+				log.Debug(err.Error())
 			}
 			common.SetResponseBodyError(c, http.StatusBadRequest, err)
 			return
@@ -112,7 +113,7 @@ func (b *Batch) BatchOpsHandler(pkOperations *[]*api.PKReadParams, apiKey *strin
 		} else {
 			message = fmt.Sprintf("%v", dalErr.Message)
 		}
-		return dalErr.HttpCode, fmt.Errorf("%s", message)
+		return dalErr.HttpCode, errors.New(message)
 	}
 
 	status, err := processResponses(&respPtrs, response)
@@ -172,7 +173,7 @@ func makePKReadParams(operation *api.BatchSubOp, pkReadarams *api.PKReadParams) 
 	//split the relative url to extract path parameters
 	splits := strings.Split(*operation.RelativeURL, "/")
 	if len(splits) != 3 {
-		return fmt.Errorf("Failed to extract database and table information from relative url")
+		return errors.New("Failed to extract database and table information from relative url")
 	}
 
 	pkReadarams.DB = &splits[0]
@@ -193,7 +194,7 @@ func checkAPIKey(pkOperations *[]*api.PKReadParams, apiKey *string) error {
 	// check for Hopsworks api keys
 	if config.Configuration().Security.UseHopsWorksAPIKeys {
 		if apiKey == nil || *apiKey == "" { // not set
-			return fmt.Errorf("Unauthorized. No API key supplied")
+			return errors.New("Unauthorized. No API key supplied")
 		}
 
 		dbMap := make(map[string]bool)
