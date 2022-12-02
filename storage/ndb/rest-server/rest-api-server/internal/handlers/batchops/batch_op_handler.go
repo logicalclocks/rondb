@@ -49,8 +49,13 @@ func (b *Batch) BatchOpsHttpHandler(c *gin.Context) {
 	err := c.ShouldBindJSON(&operations)
 	if err != nil {
 		if log.IsDebug() {
-			body, _ := ioutil.ReadAll(c.Request.Body)
-			log.Debugf("Unable to parse request. Error: %v. Body: %s\n", err, body)
+			msg := fmt.Sprintf("failed parsing request. Error: %v", err)
+			body, err := ioutil.ReadAll(c.Request.Body)
+			if err != nil {
+				log.Debugf(fmt.Sprintf("%s. failed reading request body. Error: %v", msg, err))
+			} else {
+				log.Debugf("%s. Request body: %s", msg, body)
+			}
 		}
 		common.SetResponseBodyError(c, http.StatusBadRequest, err)
 		return
