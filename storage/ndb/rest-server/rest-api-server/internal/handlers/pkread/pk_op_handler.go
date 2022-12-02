@@ -105,6 +105,9 @@ func (p *PKRead) PkReadHandler(pkReadParams *api.PKReadParams, apiKey *string, r
 	return int(status), nil
 }
 
+/*
+	Parsing both GET and POST parameters
+*/
 func ParseRequest(c *gin.Context, pkReadParams *api.PKReadParams) error {
 
 	body := api.PKReadBody{}
@@ -124,12 +127,7 @@ func ParseRequest(c *gin.Context, pkReadParams *api.PKReadParams) error {
 	pkReadParams.ReadColumns = body.ReadColumns
 	pkReadParams.OperationID = body.OperationID
 
-	err := ValidatePKReadRequest(pkReadParams)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return ValidatePKReadRequest(pkReadParams)
 }
 
 func ParseBody(req *http.Request, params *api.PKReadBody) error {
