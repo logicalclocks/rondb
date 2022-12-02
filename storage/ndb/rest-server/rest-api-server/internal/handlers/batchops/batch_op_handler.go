@@ -131,12 +131,12 @@ func (b *Batch) BatchOpsHandler(pkOperations *[]*api.PKReadParams, apiKey *strin
 
 func processResponses(respBuffs *[]*dal.NativeBuffer, response api.BatchOpResponse) (int, error) {
 	for _, respBuff := range *respBuffs {
-
 		pkReadResponseWithCode := response.CreateNewSubResponse()
 		pkReadResponse := pkReadResponseWithCode.GetPKReadResponse()
 
 		subRespCode, err := pkread.ProcessPKReadResponse(respBuff, pkReadResponse)
 		if err != nil {
+			// TODO: Weird practice to return error and code together
 			return int(subRespCode), err
 		}
 
