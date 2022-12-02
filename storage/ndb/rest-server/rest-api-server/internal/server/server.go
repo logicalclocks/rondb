@@ -140,17 +140,22 @@ func (rc *RouterContext) StartRouter() error {
 		}
 	}
 
-	httpListener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", rc.RESTServerIP, rc.RESTServerPort))
+	restApiAddress := fmt.Sprintf("%s:%d", rc.RESTServerIP, rc.RESTServerPort)
+	httpListener, err := net.Listen("tcp", restApiAddress)
 	if err != nil {
-		log.Fatalf("HTTP server returned. Error: %v", err)
+		log.Fatalf("Failed listening to REST server address '%s'. Error: %v", restApiAddress, err)
 	}
 
-	grpcListener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", rc.GRPCServerIP, rc.GRPCServerPort))
+	grpcAddress := fmt.Sprintf("%s:%d", rc.GRPCServerIP, rc.GRPCServerPort)
+	grpcListener, err := net.Listen("tcp", grpcAddress)
 	if err != nil {
-		log.Fatalf("GRPC server returned. Error: %v", err)
+		log.Fatalf("Failed listening to GRPC server address '%s'. Error: %v", grpcAddress, err)
 	}
 
-	go func() { // Start REST Server
+	// TODO: Fail program if one of these two servers fails starting
+
+	// Start REST Server
+	go func() {
 		if config.Configuration().Security.EnableTLS {
 			rc.HttpServer.TLSConfig = serverTLS
 			err = rc.HttpServer.ServeTLS(
@@ -161,17 +166,23 @@ func (rc *RouterContext) StartRouter() error {
 		} else {
 			err = rc.HttpServer.ListenAndServe()
 		}
-		if err != nil {
-			log.Infof("Http server returned. Error: %v", err)
+
+		if errors.Is(err, http.ErrServerClosed) {
+			log.Info("Http server closed")
+		} else if err != nil {
+			log.Errorf("Http failed serving. Error: %w", err)
 		}
 	}()
 
-	go func() { // Start GRPC Server
-		// rc.GRPCServer = grpc.NewServer()
+	// Start GRPC Server
+	go func() {
+		// TODO: Make credentials optional
 		rc.GRPCServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
 		GRPCServer := grpcsrv.GetGRPCServer()
 		api.RegisterRonDBRESTServer(rc.GRPCServer, GRPCServer)
-		rc.GRPCServer.Serve(grpcListener)
+		if err := rc.GRPCServer.Serve(grpcListener); err != nil {
+			log.Errorf("failed to serve grpc. Error: %w", err)
+		}
 	}()
 
 	return nil
