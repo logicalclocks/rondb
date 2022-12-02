@@ -63,7 +63,6 @@ CREATE TABLE `my_table` (
   ],
   "operationId": "ABC123"
 }
-
 ```
 
   - **filters** : This is mandatory parameter. It is an array of objects one for each column that forms the primary key. 
@@ -257,7 +256,7 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
   
    - **Level:** log level, Supported levels are *panic, error, warn, info, debug,* and  *trace*. The default value is *info*.
    
-   - **FilePath:** log file location. The default value is not set.
+   - **FilePath:** log file location. The default value is stdout.
    
    - **MaxSizeMB:** max log file size. The default value is *100*.
    
