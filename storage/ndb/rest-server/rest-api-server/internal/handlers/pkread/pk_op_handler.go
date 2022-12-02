@@ -140,6 +140,62 @@ func ParseBody(req *http.Request, params *api.PKReadBody) error {
 	return nil
 }
 
+func parseURI(c *gin.Context, resource *api.PKReadPP) error {
+	err := c.ShouldBindUri(&resource)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func getAPIKey(c *gin.Context) *string {
+	apiKey := c.GetHeader(config.API_KEY_NAME)
+	return &apiKey
+}
+
+func checkAPIKey(apiKey *string, db *string) error {
+	// check for Hopsworks api keys
+	if config.Configuration().Security.UseHopsWorksAPIKeys {
+		if apiKey == nil || *apiKey == "" { // not set
+			return fmt.Errorf("Unauthorized. No API key supplied")
+		}
+		return apikey.ValidateAPIKey(apiKey, db)
+	}
+	return nil
+}
+
+func ValidatePKReadRequest(req *api.PKReadParams) error {
+
+	if err := validateDBIdentifier(*req.DB); err != nil {
+		return err
+	}
+
+	if err := validateDBIdentifier(*req.Table); err != nil {
+		return err
+	}
+
+	err := ValidateBody(req)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func validateDBIdentifier(identifier string) error {
+	if len(identifier) < 1 || len(identifier) > 64 {
+		return fmt.Errorf("field length validation failed")
+	}
+
+	//https://dev.mysql.com/doc/refman/8.0/en/identifiers.html
+	for _, r := range identifier {
+		if !((r >= rune(0x0001) && r <= rune(0x007F)) || (r >= rune(0x0080) && r <= rune(0x0FFF))) {
+			return fmt.Errorf("field validation failed. Invalid character '%U' ", r)
+		}
+	}
+	return nil
+}
+
 func ValidateBody(params *api.PKReadParams) error {
 
 	for _, filter := range *params.Filters {
@@ -183,62 +239,6 @@ func ValidateBody(params *api.PKReadParams) error {
 				existingCols[*readCol.Column] = true
 			}
 		}
-	}
-
-	return nil
-}
-
-func parseURI(c *gin.Context, resource *api.PKReadPP) error {
-	err := c.ShouldBindUri(&resource)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func validateDBIdentifier(identifier string) error {
-	if len(identifier) < 1 || len(identifier) > 64 {
-		return fmt.Errorf("field length validation failed")
-	}
-
-	//https://dev.mysql.com/doc/refman/8.0/en/identifiers.html
-	for _, r := range identifier {
-		if !((r >= rune(0x0001) && r <= rune(0x007F)) || (r >= rune(0x0080) && r <= rune(0x0FFF))) {
-			return fmt.Errorf("field validation failed. Invalid character '%U' ", r)
-		}
-	}
-	return nil
-}
-
-func getAPIKey(c *gin.Context) *string {
-	apiKey := c.GetHeader(config.API_KEY_NAME)
-	return &apiKey
-}
-
-func checkAPIKey(apiKey *string, db *string) error {
-	// check for Hopsworks api keys
-	if config.Configuration().Security.UseHopsWorksAPIKeys {
-		if apiKey == nil || *apiKey == "" { // not set
-			return fmt.Errorf("Unauthorized. No API key supplied")
-		}
-		return apikey.ValidateAPIKey(apiKey, db)
-	}
-	return nil
-}
-
-func ValidatePKReadRequest(req *api.PKReadParams) error {
-
-	if err := validateDBIdentifier(*req.DB); err != nil {
-		return err
-	}
-
-	if err := validateDBIdentifier(*req.Table); err != nil {
-		return err
-	}
-
-	err := ValidateBody(req)
-	if err != nil {
-		return err
 	}
 
 	return nil
