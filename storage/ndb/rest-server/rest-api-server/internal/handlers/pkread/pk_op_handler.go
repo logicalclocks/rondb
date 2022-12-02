@@ -19,6 +19,7 @@
 package pkread
 
 import (
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -184,7 +185,7 @@ func ValidatePKReadRequest(req *api.PKReadParams) error {
 
 func validateDBIdentifier(identifier string) error {
 	if len(identifier) < 1 || len(identifier) > 64 {
-		return fmt.Errorf("field length validation failed")
+		return errors.New("field length validation failed")
 	}
 
 	//https://dev.mysql.com/doc/refman/8.0/en/identifiers.html
@@ -208,7 +209,7 @@ func ValidateBody(params *api.PKReadParams) error {
 	// make sure that the columns are unique.
 	existingFilters := make(map[string]bool)
 	for _, filter := range *params.Filters {
-		if _, value := existingFilters[*filter.Column]; value {
+		if _, ok := existingFilters[*filter.Column]; ok {
 			return fmt.Errorf("field validation for filter failed on the 'unique' tag")
 		} else {
 			existingFilters[*filter.Column] = true
@@ -229,11 +230,11 @@ func ValidateBody(params *api.PKReadParams) error {
 	if params.ReadColumns != nil {
 		existingCols := make(map[string]bool)
 		for _, readCol := range *params.ReadColumns {
-			if _, value := existingFilters[*readCol.Column]; value {
+			if _, ok := existingFilters[*readCol.Column]; ok {
 				return fmt.Errorf("field validation for read columns faild. '%s' already included in filter", *readCol.Column)
 			}
 
-			if _, value := existingCols[*readCol.Column]; value {
+			if _, ok := existingCols[*readCol.Column]; ok {
 				return fmt.Errorf("field validation for 'ReadColumns' failed on the 'unique' tag.")
 			} else {
 				existingCols[*readCol.Column] = true
