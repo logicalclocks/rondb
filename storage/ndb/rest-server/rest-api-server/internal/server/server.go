@@ -124,8 +124,7 @@ func (rc *RouterContext) StartRouter() error {
 
 	restApiAddress := fmt.Sprintf("%s:%d", rc.RESTServerIP, rc.RESTServerPort)
 	grpcAddress := fmt.Sprintf("%s:%d", rc.GRPCServerIP, rc.GRPCServerPort)
-	log.Infof("REST Server Listening on %s, GRPC Server Listening on %s ",
-		restApiAddress, grpcAddress)
+	log.Infof("Starting both REST & GRPC servers; REST address: '%s'; GRPC address: '%s'", restApiAddress, grpcAddress)
 
 	var serverTLS *tls.Config
 	var err error
