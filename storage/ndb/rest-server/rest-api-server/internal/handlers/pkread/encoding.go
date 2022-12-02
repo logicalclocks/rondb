@@ -37,39 +37,40 @@ import (
 
 // Also checkout internal/router/handler/pkread/encoding-scheme.png
 
-//  PK READ Request
-//  ===============
-//
-//  HEADER
-//  ======
-//  [   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ] ....
-//    Type     Capacity  Length     DB         Table      PK     Read Cols    Op_ID    TX_ID
-//                               Offset      Offset    Offset     Offset     Offset   Offset
-//  BODY
-//  ====
-//  [ bytes ... ]
-//    Null termnated DB Name
-//
-//  [ bytes ... ]
-//    Null termnated Table Name
-//
-//  [   4B   ][   4B   ]...[   4B   ][   4B   ][   4B   ][   bytes ...  ][ 2B ] [ bytes... ][   4B   ][   4B   ] ....
-//    Count     kv 1          kv n       key       value     key          val     val
-//            offset        offset     offset     offset                 size
-//                                      ^
-//              ________________________|                                                     ^
-//                           _________________________________________________________________|
-//
-//
-//  [   4B   ] [  4B     ] [  4B     ] ...
-//    Count   col1 offset   col2 offset
-//
-//  [  4B ] [   bytes ... ] [  4B ] [   bytes ... ] ...
-//  type     null terminated column names
-//
-//  [ bytes ... ] ...
-//    null terminated  operation Id
-//
+/*
+	PK READ Request
+	===============
+
+	HEADER
+	======
+	[   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ] ....
+	Type     Capacity  Length     DB         Table      PK     Read Cols    Op_ID    TX_ID
+								Offset      Offset    Offset     Offset     Offset   Offset
+	BODY
+	====
+	[ bytes ... ]
+	Null terminated DB Name
+
+	[ bytes ... ]
+	Null terminated Table Name
+
+	[   4B   ][   4B   ]...[   4B   ][   4B   ][   4B   ][   bytes ...  ][ 2B ] [ bytes... ][   4B   ][   4B   ] ....
+	Count     kv 1          kv n       key       value     key          val     val
+			offset        offset     offset     offset                 size
+										^
+				________________________|                                                     ^
+							_________________________________________________________________|
+
+
+	[   4B   ] [  4B     ] [  4B     ] ...
+	Count   col1 offset   col2 offset
+
+	[  4B ] [   bytes ... ] [  4B ] [   bytes ... ] ...
+	type     null terminated column names
+
+	[ bytes ... ] ...
+	null terminated  operation Id
+*/
 
 func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.NativeBuffer, error) {
 	response := dal.GetBuffer()
@@ -191,7 +192,7 @@ func ProcessPKReadResponse(respBuff *dal.NativeBuffer, response api.PKReadRespon
 
 	responseType := iBuf[C.PK_RESP_OP_TYPE_IDX]
 	if responseType != C.RDRS_PK_RESP_ID {
-		return http.StatusInternalServerError, fmt.Errorf("Wrong resonse type")
+		return http.StatusInternalServerError, fmt.Errorf("Wrong response type")
 	}
 
 	// some sanity checks
@@ -199,7 +200,7 @@ func ProcessPKReadResponse(respBuff *dal.NativeBuffer, response api.PKReadRespon
 	dataLength := iBuf[C.PK_RESP_LENGTH_IDX]
 	if respBuff.Size != capacity || !(dataLength < capacity) {
 		return http.StatusInternalServerError,
-			fmt.Errorf("Response buffer may be corrupt. Buffer capacity: %d, Buffer data lenght: %d", capacity, dataLength)
+			fmt.Errorf("Response buffer may be corrupt. Buffer capacity: %d, Buffer data length: %d", capacity, dataLength)
 	}
 
 	opIDX := iBuf[C.PK_RESP_OP_ID_IDX]
@@ -257,6 +258,6 @@ func dataReturnType(drt *string) (uint32, error) {
 	if *drt == api.DRT_DEFAULT {
 		return C.DEFAULT_DRT, nil
 	} else {
-		return math.MaxUint32, fmt.Errorf("Return data type is not supported. Data type: " + *drt)
+		return math.MaxUint32, fmt.Errorf("Return data type is not supported. Data type: %s", *drt)
 	}
 }
