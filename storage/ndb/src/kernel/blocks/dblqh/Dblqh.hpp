@@ -4915,6 +4915,7 @@ public:
   void increment_usage_count_for_table(Uint32 tableId);
   void decrement_usage_count_for_table(Uint32 tableId);
   void reset_old_fragment_lock_status();
+  FragmentLockStatusType get_fragment_lock_status();
   void acquire_frag_commit_access_write_key();
   void acquire_frag_commit_access_exclusive();
 
@@ -5535,6 +5536,12 @@ inline void
 Dblqh::reset_old_fragment_lock_status()
 {
   m_old_fragment_lock_status = FRAGMENT_UNLOCKED;
+}
+
+inline Dblqh::FragmentLockStatusType
+Dblqh::get_fragment_lock_status()
+{
+  return m_fragment_lock_status;
 }
 
 inline void

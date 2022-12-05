@@ -157,8 +157,27 @@ Dbtup::alloc_var_part(Uint32 * err,
   */
   ndbassert(fragPtr->m_varWordsFree >= ((Var_page*)pagePtr.p)->free_space);
   fragPtr->m_varWordsFree -= ((Var_page*)pagePtr.p)->free_space;
+
+  bool upgrade_exclusive = false;
+  if (alloc_size >= ((Var_page*)pagePtr.p)->largest_frag_size() &&
+      c_lqh->get_fragment_lock_status() !=
+        Dblqh::FRAGMENT_LOCKED_IN_EXCLUSIVE_MODE)
+  {
+    jam();
+    /**
+     * Page will be reorganised to fit in the new row, this requires
+     * exclusive access to the fragment.
+     */
+    upgrade_exclusive = true;
+    c_lqh->upgrade_to_exclusive_frag_access();
+  }
   Uint32 idx= ((Var_page*)pagePtr.p)
     ->alloc_record(alloc_size, (Var_page*)ctemp_page, Var_page::CHAIN);
+
+  if (upgrade_exclusive)
+  {
+    c_lqh->downgrade_from_exclusive_frag_access();
+  }
 
   fragPtr->m_varElemCount++;
   key->m_page_no = pagePtr.i;
@@ -400,6 +419,22 @@ Dbtup::move_var_part(Fragrecord* fragPtr,
   ndbassert(fragPtr->m_varWordsFree >= ((Var_page*)new_pagePtr.p)->free_space);
   fragPtr->m_varWordsFree -= ((Var_page*)new_pagePtr.p)->free_space;
 
+  /**
+   * At his point we need to upgrade to exclusive fragment access.
+   * The variable sized part might be used for reading in query
+   * thread at this point in time. To avoid having to use a mutex
+   * to protect reads of rows we ensure that all places where we
+   * reorganize pages and rows are done with exclusive fragment
+   * access.
+   *
+   * Since we change the reference to the variable part we also
+   * need to recalculate while being in exclusive mode.
+   *
+   * We could need this exclusive access already in alloc_record
+   * since that could potentially reorganise the row.
+   */
+  c_lqh->upgrade_to_exclusive_frag_access();
+
   Uint32 idx= ((Var_page*)new_pagePtr.p)
     ->alloc_record(size,(Var_page*)ctemp_page, Var_page::CHAIN);
 
@@ -416,18 +451,6 @@ Dbtup::move_var_part(Fragrecord* fragPtr,
    */
   memcpy(dst, src, 4*size);
 
-  /**
-   * At his point we need to upgrade to exclusive fragment access.
-   * The variable sized part might be used for reading in query
-   * thread at this point in time. To avoid having to use a mutex
-   * to protect reads of rows we ensure that all places where we
-   * reorganize pages and rows are done with exclusive fragment
-   * access.
-   *
-   * Since we change the reference to the variable part we also
-   * need to recalculate while being in exclusive mode.
-   */
-  c_lqh->upgrade_to_exclusive_frag_access();
   fragPtr->m_varElemCount++;
   /**
    * remove old var part of tuple (and decrement m_varElemCount).
