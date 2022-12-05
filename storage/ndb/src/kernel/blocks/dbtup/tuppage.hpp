@@ -50,7 +50,7 @@
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
 #define TUP_DATA_VALIDATION 1
 #else
-#define TUP_DATA_VALIDATION 1 // Temporarily enabled for production builds
+//#define TUP_DATA_VALIDATION 1 // Not enabled for production builds
 #endif
 
 struct Tup_page 

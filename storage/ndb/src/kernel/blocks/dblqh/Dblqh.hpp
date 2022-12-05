@@ -728,9 +728,9 @@ public:
  */
 #define ZMAX_SCAN_DIRECT_COUNT 16
 
-#define DEBUG_FRAGMENT_LOCK 1 //Temporary
-//#define LOCK_LINE_MASK 2047
-#define LOCK_LINE_MASK 511
+//#define DEBUG_FRAGMENT_LOCK 1
+#define LOCK_LINE_MASK 2047
+//#define LOCK_LINE_MASK 511
 #define LOCK_READ_SPIN_TIME 30
 #define LOCK_WRITE_SPIN_TIME 40
 
@@ -4915,6 +4915,7 @@ public:
   void increment_usage_count_for_table(Uint32 tableId);
   void decrement_usage_count_for_table(Uint32 tableId);
   void reset_old_fragment_lock_status();
+  FragmentLockStatusType get_fragment_lock_status();
   void acquire_frag_commit_access_write_key();
   void acquire_frag_commit_access_exclusive();
 
@@ -5535,6 +5536,12 @@ inline void
 Dblqh::reset_old_fragment_lock_status()
 {
   m_old_fragment_lock_status = FRAGMENT_UNLOCKED;
+}
+
+inline Dblqh::FragmentLockStatusType
+Dblqh::get_fragment_lock_status()
+{
+  return m_fragment_lock_status;
 }
 
 inline void
