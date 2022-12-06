@@ -62,7 +62,8 @@ Dbtup::alloc_var_part(Uint32 * err,
                       Fragrecord* fragPtr,
 		      Tablerec* tabPtr,
 		      Uint32 alloc_size,
-		      Local_key* key)
+		      Local_key* key,
+                      bool insert_flag)
 {
   PagePtr pagePtr;
   pagePtr.i= get_alloc_page(fragPtr, (alloc_size + 1));
@@ -95,7 +96,8 @@ Dbtup::alloc_var_part(Uint32 * err,
   bool upgrade_exclusive = false;
   if (alloc_size >= ((Var_page*)pagePtr.p)->largest_frag_size() &&
       c_lqh->get_fragment_lock_status() !=
-        Dblqh::FRAGMENT_LOCKED_IN_EXCLUSIVE_MODE)
+        Dblqh::FRAGMENT_LOCKED_IN_EXCLUSIVE_MODE &&
+      insert_flag)
   {
     jam();
     /**
@@ -280,7 +282,12 @@ Dbtup::realloc_var_part(Uint32 * err,
   {
     jam();
     Local_key newref;
-    new_var_ptr = alloc_var_part(err, fragPtr, tabPtr, newsz, &newref);
+    new_var_ptr = alloc_var_part(err,
+                                 fragPtr,
+                                 tabPtr,
+                                 newsz,
+                                 &newref,
+                                 false);
     if (unlikely(new_var_ptr == 0))
       return NULL;
 
@@ -607,7 +614,12 @@ Dbtup::alloc_var_row(Uint32 * err,
   Local_key varref;
   if (likely(alloc_size))
   {
-    if (unlikely(alloc_var_part(err, fragPtr, tabPtr, alloc_size, &varref) == 0))
+    if (unlikely(alloc_var_part(err,
+                                fragPtr,
+                                tabPtr,
+                                alloc_size,
+                                &varref,
+                                true) == 0))
     {
       return 0;
     }
