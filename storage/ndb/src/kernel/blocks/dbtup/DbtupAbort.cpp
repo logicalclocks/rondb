@@ -503,13 +503,17 @@ void Dbtup::tupkeyErrorLab(KeyReqStruct* req_struct)
   if (use_lock)
   {
     jamDebug();
-    acquire_frag_mutex(req_struct->fragPtrP, regOperPtr->fragPageId);
+    acquire_frag_mutex(req_struct->fragPtrP,
+                       regOperPtr->fragPageId,
+                       jamBuffer());
   }
   removeActiveOpList(regOperPtr, (Tuple_header*)ptr);
   if (use_lock)
   {
     jamDebug();
-    release_frag_mutex(req_struct->fragPtrP, regOperPtr->fragPageId);
+    release_frag_mutex(req_struct->fragPtrP,
+                       regOperPtr->fragPageId,
+                       jamBuffer());
   }
   initOpConnection(regOperPtr);
   TupKeyRef * const tupKeyRef =

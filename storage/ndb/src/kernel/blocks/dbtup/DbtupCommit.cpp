@@ -1421,12 +1421,16 @@ Dbtup::prepare_disk_page_for_commit(Signal *signal,
       {
         jam();
         /* Set bit to indicate the tuple is already deleted */
-        acquire_frag_mutex(regFragPtr.p, leaderOperPtr.p->fragPageId);
+        acquire_frag_mutex(regFragPtr.p,
+                           leaderOperPtr.p->fragPageId,
+                           jamBuffer());
         Uint32 old_header = tuple_ptr->m_header_bits;
         Uint32 new_header = tuple_ptr->m_header_bits =
           old_header | Tuple_header::DELETE_WAIT;
         updateChecksum(tuple_ptr, regTabPtrP, old_header, new_header);
-        release_frag_mutex(regFragPtr.p, leaderOperPtr.p->fragPageId);
+        release_frag_mutex(regFragPtr.p,
+                           leaderOperPtr.p->fragPageId,
+                           jamBuffer());
       }
       return ZDISK_PAGE_NOT_READY_FOR_COMMIT;
     }
@@ -1451,12 +1455,16 @@ Dbtup::prepare_disk_page_for_commit(Signal *signal,
       {
         jam();
         /* Set bit to indicate the tuple is already deleted */
-        acquire_frag_mutex(regFragPtr.p, leaderOperPtr.p->fragPageId);
+        acquire_frag_mutex(regFragPtr.p,
+                           leaderOperPtr.p->fragPageId,
+                           jamBuffer());
         Uint32 old_header = tuple_ptr->m_header_bits;
         Uint32 new_header = tuple_ptr->m_header_bits =
           old_header | Tuple_header::DELETE_WAIT;
         updateChecksum(tuple_ptr, regTabPtrP, old_header, new_header);
-        release_frag_mutex(regFragPtr.p, leaderOperPtr.p->fragPageId);
+        release_frag_mutex(regFragPtr.p,
+                           leaderOperPtr.p->fragPageId,
+                           jamBuffer());
       }
       return ZDISK_PAGE_NOT_READY_FOR_COMMIT;
     }

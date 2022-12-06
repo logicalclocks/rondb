@@ -840,9 +840,9 @@ void Dbtup::prepare_scanTUPKEYREQ(Uint32 page_id, Uint32 page_idx)
   {
     Uint32 fixed_part_size_in_words =
       prepare_tabptr.p->m_offsets[MM].m_fix_header_size;
-    acquire_frag_page_map_mutex_read(prepare_fragptr.p);
+    acquire_frag_page_map_mutex_read(prepare_fragptr.p, jamBuffer());
     page_id = getRealpid(prepare_fragptr.p, page_id);
-    release_frag_page_map_mutex_read(prepare_fragptr.p);
+    release_frag_page_map_mutex_read(prepare_fragptr.p, jamBuffer());
     key.m_page_no = page_id;
     key.m_page_idx = page_idx;
     Uint32 *tuple_ptr = get_ptr(&pagePtr,
@@ -1229,14 +1229,14 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
         * and these are all exclusive access that first will ensure that no
         * query threads are executing on the fragment before proceeding.
         */
-       acquire_frag_mutex_read(regFragPtr, pageid);
+       acquire_frag_mutex_read(regFragPtr, pageid, jamBuffer());
        if (unlikely(req_struct.m_tuple_ptr->m_header_bits &
                     Tuple_header::FREE))
        {
          jam();
          terrorCode = ZTUPLE_DELETED_ERROR;
          tupkeyErrorLab(&req_struct);
-         release_frag_mutex_read(regFragPtr, pageid);
+         release_frag_mutex_read(regFragPtr, pageid, jamBuffer());
          return false;
        }
        if (unlikely(setup_read(&req_struct, regOperPtr, regTabPtr, 
@@ -1244,7 +1244,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
        {
          jam();
          tupkeyErrorLab(&req_struct);
-         release_frag_mutex_read(regFragPtr, pageid);
+         release_frag_mutex_read(regFragPtr, pageid, jamBuffer());
          return false;
        }
        /* Check checksum with mutex protection. */
@@ -1253,11 +1253,11 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
             ERROR_INSERTED(4036)))
        {
          jam();
-         release_frag_mutex_read(regFragPtr, pageid);
+         release_frag_mutex_read(regFragPtr, pageid, jamBuffer());
          corruptedTupleDetected(&req_struct, regTabPtr);
          return false;
        }
-       release_frag_mutex_read(regFragPtr, pageid);
+       release_frag_mutex_read(regFragPtr, pageid, jamBuffer());
      }
      if (handleReadReq(signal, regOperPtr, regTabPtr, &req_struct) != -1)
      {
@@ -1343,7 +1343,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
        if (tuple_ptr != nullptr)
        {
          jam();
-         acquire_frag_mutex(regFragPtr, pageid);
+         acquire_frag_mutex(regFragPtr, pageid, jamBuffer());
          /**
           * Updates of checksum needs to be protected during non-initial
           * INSERTs.
@@ -1412,7 +1412,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
           * to be aborted.
           */
          insertActiveOpList(operPtr, &req_struct, tuple_ptr);
-         release_frag_mutex(regFragPtr, pageid);
+         release_frag_mutex(regFragPtr, pageid, jamBuffer());
        }
        else
        {
@@ -1511,7 +1511,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
          return false;
        }
        jamDebug();
-       acquire_frag_mutex(regFragPtr, pageid);
+       acquire_frag_mutex(regFragPtr, pageid, jamBuffer());
        if (tuple_ptr->m_header_bits != m_base_header_bits)
        {
          jamDebug();
@@ -1546,7 +1546,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
          ndbabort();
        }
 #endif
-       release_frag_mutex(regFragPtr, pageid);
+       release_frag_mutex(regFragPtr, pageid, jamBuffer());
        terrorCode = 0;
        checkImmediateTriggersAfterUpdate(&req_struct,
                                          regOperPtr,
@@ -1608,9 +1608,9 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
         * access to it.
         */
        jamDebug();
-       acquire_frag_mutex(regFragPtr, pageid);
+       acquire_frag_mutex(regFragPtr, pageid, jamBuffer());
        insertActiveOpList(operPtr, &req_struct, tuple_ptr);
-       release_frag_mutex(regFragPtr, pageid);
+       release_frag_mutex(regFragPtr, pageid, jamBuffer());
        checkImmediateTriggersAfterDelete(&req_struct,
                                          regOperPtr,
                                          regTabPtr,
@@ -1627,16 +1627,16 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
         */
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
        /* Verify that we didn't mess up the checksum */
-       acquire_frag_mutex(regFragPtr, pageid);
+       acquire_frag_mutex(regFragPtr, pageid, jamBuffer());
        if (tuple_ptr != nullptr &&
            ((tuple_ptr->m_header_bits & Tuple_header::ALLOC) == 0) &&
            (regTabPtr->m_bits & Tablerec::TR_Checksum) &&
            (calculateChecksum(tuple_ptr, regTabPtr) != 0))
        {
-         release_frag_mutex(regFragPtr, pageid);
+         release_frag_mutex(regFragPtr, pageid, jamBuffer());
          ndbabort();
        }
-       release_frag_mutex(regFragPtr, pageid);
+       release_frag_mutex(regFragPtr, pageid, jamBuffer());
 #endif
        c_lqh->release_frag_access();
        returnTUPKEYCONF(signal, &req_struct, regOperPtr, TRANS_STARTED);
@@ -2685,11 +2685,12 @@ int Dbtup::handleInsertReq(Signal* signal,
       {
 	jam();
 	regOperPtr.p->m_tuple_location.m_file_no= sizes[2+MM];
-	ptr= alloc_var_rec(&terrorCode,
+	ptr= alloc_var_row(&terrorCode,
                            regFragPtr, regTabPtr,
 			   sizes[2+MM],
 			   &regOperPtr.p->m_tuple_location,
-			   &frag_page_id);
+			   &frag_page_id,
+                           false);
       }
       if (unlikely(ptr == 0))
       {
@@ -2719,11 +2720,12 @@ int Dbtup::handleInsertReq(Signal* signal,
       {
 	jam();
 	regOperPtr.p->m_tuple_location.m_file_no= sizes[2+MM];
-	ptr= alloc_var_rowid(&terrorCode,
-                             regFragPtr, regTabPtr,
-			     sizes[2+MM],
-			     &regOperPtr.p->m_tuple_location,
-			     &frag_page_id);
+	ptr= alloc_var_row(&terrorCode,
+                           regFragPtr, regTabPtr,
+			   sizes[2+MM],
+			   &regOperPtr.p->m_tuple_location,
+			   &frag_page_id,
+                           true);
       }
       if (unlikely(ptr == 0))
       {
@@ -2832,7 +2834,7 @@ int Dbtup::handleInsertReq(Signal* signal,
      * is used for reading. So no need to update it already here. It will
      * be set when we commit the change.
      */
-    release_frag_mutex(regFragPtr, frag_page_id);
+    release_frag_mutex(regFragPtr, frag_page_id, jamBuffer());
   }
   else 
   {
@@ -2956,7 +2958,7 @@ disk_prealloc_error:
   jam();
   base->m_header_bits |= Tuple_header::FREE;
   setInvalidChecksum(base, regTabPtr);
-  release_frag_mutex(regFragPtr, frag_page_id);
+  release_frag_mutex(regFragPtr, frag_page_id, jamBuffer());
   c_lqh->upgrade_to_exclusive_frag_access_no_return();
   goto exit_error;
 }
@@ -5813,14 +5815,14 @@ Dbtup::nr_delete(Signal* signal, Uint32 senderData,
                              fragPtr.p,
                              tablePtr.p);
       jamDebug();
-      acquire_frag_mutex(fragPtr.p, key->m_page_no);
+      acquire_frag_mutex(fragPtr.p, key->m_page_no, jamBuffer());
       ptr->m_header_bits |= Tuple_header::LCP_SKIP;
       /**
        * Updating checksum of stored row requires protection against
        * readers in other threads.
        */
       updateChecksum(ptr, tablePtr.p, bits, ptr->m_header_bits);
-      release_frag_mutex(fragPtr.p, key->m_page_no);
+      release_frag_mutex(fragPtr.p, key->m_page_no, jamBuffer());
     }
   }
 

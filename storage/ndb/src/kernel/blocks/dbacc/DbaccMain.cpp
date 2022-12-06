@@ -1171,7 +1171,7 @@ void Dbacc::execACCKEYREQ(Signal* signal,
    * page map mutex again and doing so without releasing the
    * ACC fragment mutex first would cause a mutex deadlock.
    */
-  c_tup->acquire_frag_page_map_mutex_read();
+  c_tup->acquire_frag_page_map_mutex_read(jamBuffer());
   acquire_frag_mutex_get(fragrecptr.p, operationRecPtr);
   const Uint32 found = getElement(req,
                                   lockOwnerPtr,
@@ -1180,7 +1180,7 @@ void Dbacc::execACCKEYREQ(Signal* signal,
                                   elemPageptr,
                                   elemConptr,
                                   elemptr);
-  c_tup->release_frag_page_map_mutex_read();
+  c_tup->release_frag_page_map_mutex_read(jamBuffer());
 
   Uint32 opbits = operationRecPtr.p->m_op_bits;
 
@@ -6393,7 +6393,6 @@ void Dbacc::execDEBUG_SIG(Signal* signal)
 
 LHBits32 Dbacc::getElementHash(OperationrecPtr& oprec)
 {
-  jam();
   ndbassert(!oprec.isNull());
 
   // Only calculate hash value if operation does not already have a complete hash value
@@ -6471,8 +6470,6 @@ LHBits32 Dbacc::getElementHash(Uint32 const* elemptr)
 
 LHBits32 Dbacc::getElementHash(Uint32 const* elemptr, OperationrecPtr& oprec)
 {
-  jam();
-
   if (!oprec.isNull())
   {
     jam();

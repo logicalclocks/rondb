@@ -1289,6 +1289,8 @@ public:
     {
       LHBits32 hashVal = getElementHash(opPtr);
       Uint32 inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
+      jamDebug();
+      jamLine(inx);
       NdbMutex_Lock(&fragPtrP->acc_frag_mutex[inx]);
       return true;
     }
@@ -1301,6 +1303,8 @@ public:
     {
       LHBits32 hashVal = getElementHash(opPtr);
       Uint32 inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
+      jamDebug();
+      jamLine(inx);
       NdbMutex_Unlock(&fragPtrP->acc_frag_mutex[inx]);
     }
   }
@@ -1311,6 +1315,8 @@ public:
     {
       LHBits32 hashVal = getElementHash(opPtr);
       Uint32 inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
+      jamDebug();
+      jamLine(inx);
       NdbMutex_Lock(&fragPtrP->acc_frag_mutex[inx]);
       return true;
     }
@@ -1324,6 +1330,8 @@ public:
       LHBits32 hashVal = getElementHash(opPtr);
       Uint32 inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
       NdbMutex_Unlock(&fragPtrP->acc_frag_mutex[inx]);
+      jamDebug();
+      jamLine(inx);
     }
   }
   void acquire_frag_mutex_bucket(Fragmentrec *fragPtrP,
@@ -1332,6 +1340,8 @@ public:
     if (qt_likely(globalData.ndbMtQueryThreads > 0))
     {
       Uint32 inx = bucket & (NUM_ACC_FRAGMENT_MUTEXES - 1);
+      jamDebug();
+      jamLine(inx);
       NdbMutex_Lock(&fragPtrP->acc_frag_mutex[inx]);
     }
   }
@@ -1341,6 +1351,8 @@ public:
     {
       Uint32 inx = bucket & (NUM_ACC_FRAGMENT_MUTEXES - 1);
       NdbMutex_Unlock(&fragPtrP->acc_frag_mutex[inx]);
+      jamDebug();
+      jamLine(inx);
     }
   }
 };

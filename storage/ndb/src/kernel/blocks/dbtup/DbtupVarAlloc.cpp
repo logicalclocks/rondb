@@ -57,78 +57,13 @@ void Dbtup::init_list_sizes(void)
   c_max_list_size[5]= 199;
 }
 
-/*
-  Allocator for variable sized segments
-  Part of the external interface for variable sized segments
-
-  This method is used to allocate and free variable sized tuples and
-  parts of tuples. This part can be used to implement variable sized
-  attributes without wasting memory. It can be used to support small
-  BLOB's attached to the record. It can also be used to support adding
-  and dropping attributes without the need to copy the entire table.
-
-  SYNOPSIS
-    fragPtr         A pointer to the fragment description
-    tabPtr          A pointer to the table description
-    alloc_size       Size of the allocated record
-    signal           The signal object to be used if a signal needs to
-                     be sent
-  RETURN VALUES
-    Returns true if allocation was successful otherwise false
-
-    page_offset      Page offset of allocated record
-    page_index       Page index of allocated record
-    page_ptr         The i and p value of the page where the record was
-                     allocated
-*/
-Uint32* Dbtup::alloc_var_rec(Uint32 * err,
-                             Fragrecord* fragPtr,
-			     Tablerec* tabPtr,
-			     Uint32 alloc_size,
-			     Local_key* key,
-			     Uint32 * out_frag_page_id)
-{
-  /**
-   * TODO alloc fix+var part
-   */
-  Uint32 *ptr = alloc_fix_rec(jamBuffer(), err, fragPtr, tabPtr, key,
-                              out_frag_page_id);
-  if (unlikely(ptr == 0))
-  {
-    return 0;
-  }
-  
-  Local_key varref;
-  Tuple_header* tuple = (Tuple_header*)ptr;
-  Var_part_ref* dst = tuple->get_var_part_ref_ptr(tabPtr);
-  if (alloc_size)
-  {
-    if (likely(alloc_var_part(err, fragPtr, tabPtr, alloc_size, &varref) != 0))
-    {
-      dst->assign(&varref);
-      return ptr;
-    }
-  }
-  else
-  {
-    varref.m_page_no = RNIL;
-    dst->assign(&varref);
-    return ptr;
-  }
-  
-  PagePtr pagePtr;
-  c_page_pool.getPtr(pagePtr, key->m_page_no);
-  free_fix_rec(fragPtr, tabPtr, key, (Fix_page*)pagePtr.p);
-  release_frag_mutex(fragPtr, *out_frag_page_id);
-  return 0;
-}
-
 Uint32*
 Dbtup::alloc_var_part(Uint32 * err,
                       Fragrecord* fragPtr,
 		      Tablerec* tabPtr,
 		      Uint32 alloc_size,
-		      Local_key* key)
+		      Local_key* key,
+                      bool insert_flag)
 {
   PagePtr pagePtr;
   pagePtr.i= get_alloc_page(fragPtr, (alloc_size + 1));
@@ -161,7 +96,8 @@ Dbtup::alloc_var_part(Uint32 * err,
   bool upgrade_exclusive = false;
   if (alloc_size >= ((Var_page*)pagePtr.p)->largest_frag_size() &&
       c_lqh->get_fragment_lock_status() !=
-        Dblqh::FRAGMENT_LOCKED_IN_EXCLUSIVE_MODE)
+        Dblqh::FRAGMENT_LOCKED_IN_EXCLUSIVE_MODE &&
+      insert_flag)
   {
     jam();
     /**
@@ -346,7 +282,12 @@ Dbtup::realloc_var_part(Uint32 * err,
   {
     jam();
     Local_key newref;
-    new_var_ptr = alloc_var_part(err, fragPtr, tabPtr, newsz, &newref);
+    new_var_ptr = alloc_var_part(err,
+                                 fragPtr,
+                                 tabPtr,
+                                 newsz,
+                                 &newref,
+                                 false);
     if (unlikely(new_var_ptr == 0))
       return NULL;
 
@@ -642,42 +583,77 @@ Uint64 Dbtup::calculate_used_var_words(Fragrecord* fragPtr)
   return totalUsed;
 }
 
+/*
+  Allocator for variable sized rows, allocates both the fixed size
+  part and the variable sized part. To ensure that we don't hold
+  any mutex while allocating varsize part we allocate that first.
+  We might need exclusive access while allocating varsized part.
+
+  This method is used both to allocate from a specific rowid or from
+  any rowid.
+
+  SYNOPSIS
+    err             Error object
+    fragPtr         A pointer to the fragment description
+    tabPtr          A pointer to the table description
+    alloc_size      Size of the allocated varsize record
+    out_frag_page_id Row id of new row
+    use_rowid       Use the row id as input as well
+  RETURN VALUES
+    Return 0 if unsuccessful, otherwise pointer to fixed part.
+*/
 Uint32* 
-Dbtup::alloc_var_rowid(Uint32 * err,
-                       Fragrecord* fragPtr,
-		       Tablerec* tabPtr,
-		       Uint32 alloc_size,
-		       Local_key* key,
-		       Uint32 * out_frag_page_id)
+Dbtup::alloc_var_row(Uint32 * err,
+                     Fragrecord* const fragPtr,
+		     Tablerec* const tabPtr,
+		     Uint32 alloc_size,
+		     Local_key* key,
+		     Uint32 * out_frag_page_id,
+                     bool use_rowid)
 {
-  Uint32 *ptr = alloc_fix_rowid(err, fragPtr, tabPtr, key, out_frag_page_id);
+  Local_key varref;
+  if (likely(alloc_size))
+  {
+    if (unlikely(alloc_var_part(err,
+                                fragPtr,
+                                tabPtr,
+                                alloc_size,
+                                &varref,
+                                true) == 0))
+    {
+      return 0;
+    }
+  }
+  Uint32 *ptr;
+  if (!use_rowid)
+  {
+    ptr = alloc_fix_rec(jamBuffer(), err, fragPtr, tabPtr, key,
+                         out_frag_page_id);
+  }
+  else
+  {
+    ptr = alloc_fix_rowid(err, fragPtr, tabPtr, key, out_frag_page_id);
+  }
   if (unlikely(ptr == 0))
   {
+    if (alloc_size)
+    {
+      PagePtr pagePtr;
+      c_page_pool.getPtr(pagePtr, varref.m_page_no);
+      free_var_part(fragPtr, pagePtr, varref.m_page_idx);
+    }
     return 0;
   }
-
-  Local_key varref;
   Tuple_header* tuple = (Tuple_header*)ptr;
   Var_part_ref* dst = (Var_part_ref*)tuple->get_var_part_ref_ptr(tabPtr);
-
-  if (alloc_size)
+  if (likely(alloc_size))
   {
-    if (likely(alloc_var_part(err, fragPtr, tabPtr, alloc_size, &varref) != 0))
-    {
-      dst->assign(&varref);
-      return ptr;
-    }
+    dst->assign(&varref);
   }
   else
   {
     varref.m_page_no = RNIL;
     dst->assign(&varref);
-    return ptr;
   }
-  
-  PagePtr pagePtr;
-  c_page_pool.getPtr(pagePtr, key->m_page_no);
-  free_fix_rec(fragPtr, tabPtr, key, (Fix_page*)pagePtr.p);
-  release_frag_mutex(fragPtr, *out_frag_page_id);
-  return 0;
+  return ptr;
 }
