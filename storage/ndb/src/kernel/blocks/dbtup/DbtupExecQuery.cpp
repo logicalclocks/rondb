@@ -2685,11 +2685,12 @@ int Dbtup::handleInsertReq(Signal* signal,
       {
 	jam();
 	regOperPtr.p->m_tuple_location.m_file_no= sizes[2+MM];
-	ptr= alloc_var_rec(&terrorCode,
+	ptr= alloc_var_row(&terrorCode,
                            regFragPtr, regTabPtr,
 			   sizes[2+MM],
 			   &regOperPtr.p->m_tuple_location,
-			   &frag_page_id);
+			   &frag_page_id,
+                           false);
       }
       if (unlikely(ptr == 0))
       {
@@ -2719,11 +2720,12 @@ int Dbtup::handleInsertReq(Signal* signal,
       {
 	jam();
 	regOperPtr.p->m_tuple_location.m_file_no= sizes[2+MM];
-	ptr= alloc_var_rowid(&terrorCode,
-                             regFragPtr, regTabPtr,
-			     sizes[2+MM],
-			     &regOperPtr.p->m_tuple_location,
-			     &frag_page_id);
+	ptr= alloc_var_row(&terrorCode,
+                           regFragPtr, regTabPtr,
+			   sizes[2+MM],
+			   &regOperPtr.p->m_tuple_location,
+			   &frag_page_id,
+                           true);
       }
       if (unlikely(ptr == 0))
       {

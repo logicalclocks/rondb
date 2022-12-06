@@ -3801,8 +3801,13 @@ private:
 //---------------------------------------------------------------
 //
 // Public methods
-  Uint32* alloc_var_rec(Uint32 * err,
-                        Fragrecord*, Tablerec*, Uint32, Local_key*, Uint32*);
+  Uint32* alloc_var_row(Uint32 * err,
+                        Fragrecord* const,
+                        Tablerec* const,
+                        Uint32,
+                        Local_key*,
+                        Uint32*,
+                        bool);
   void free_var_rec(Fragrecord*, Tablerec*, Local_key*, Ptr<Page>);
   void free_var_part(Fragrecord*, Tablerec*, Local_key*);
   Uint32* alloc_var_part(Uint32*err,Fragrecord*, Tablerec*, Uint32, Local_key*);
@@ -3816,15 +3821,19 @@ private:
 
   void validate_page(Tablerec*, Var_page* page);
   
-  Uint32* alloc_fix_rec(EmulatedJamBuffer* jamBuf, Uint32* err,
-                        Fragrecord*const, Tablerec*const, Local_key*,
+  Uint32* alloc_fix_rec(EmulatedJamBuffer* jamBuf,
+                        Uint32* err,
+                        Fragrecord* const,
+                        Tablerec* const,
+                        Local_key*,
                         Uint32*);
   void free_fix_rec(Fragrecord*, Tablerec*, Local_key*, Fix_page*);
   
   Uint32* alloc_fix_rowid(Uint32 * err,
-                          Fragrecord*, Tablerec*, Local_key*, Uint32 *);
-  Uint32* alloc_var_rowid(Uint32 * err,
-                          Fragrecord*, Tablerec*, Uint32, Local_key*, Uint32*);
+                          Fragrecord* const,
+                          Tablerec* const,
+                          Local_key*,
+                          Uint32 *);
 // Private methods
   void convertThPage(Fix_page* regPagePtr,
 		     Tablerec*,

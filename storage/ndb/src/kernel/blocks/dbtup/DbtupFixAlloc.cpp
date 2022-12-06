@@ -241,8 +241,8 @@ void Dbtup::free_fix_rec(Fragrecord* regFragPtr,
 
 Uint32*
 Dbtup::alloc_fix_rowid(Uint32 * err,
-                       Fragrecord* regFragPtr,
-		       Tablerec* regTabPtr,
+                       Fragrecord* const regFragPtr,
+		       Tablerec* const regTabPtr,
 		       Local_key* key,
 		       Uint32 * out_frag_page_id) 
 {
