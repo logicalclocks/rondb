@@ -636,9 +636,12 @@ Dbtup::alloc_var_row(Uint32 * err,
   }
   if (unlikely(ptr == 0))
   {
-    PagePtr pagePtr;
-    c_page_pool.getPtr(pagePtr, varref.m_page_no);
-    free_var_part(fragPtr, pagePtr, varref.m_page_idx);
+    if (alloc_size)
+    {
+      PagePtr pagePtr;
+      c_page_pool.getPtr(pagePtr, varref.m_page_no);
+      free_var_part(fragPtr, pagePtr, varref.m_page_idx);
+    }
     return 0;
   }
   Tuple_header* tuple = (Tuple_header*)ptr;

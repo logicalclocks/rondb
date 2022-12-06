@@ -252,6 +252,7 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
   PagePtr pagePtr;
   if ((pagePtr.i = allocFragPage(err, regTabPtr, regFragPtr, page_no)) == RNIL)
   {
+    jam();
     return 0;
   }
 
@@ -263,6 +264,7 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
     acquire_frag_mutex(regFragPtr, page_no, jamBuffer());
     if (((Fix_page*)pagePtr.p)->alloc_record(idx) != idx)
     {
+      jam();
       DEB_899_ERROR(("(%u)899 error FREE: tab(%u,%u) row(%u,%u)",
                       instance(),
                       regFragPtr->fragTableId,
@@ -280,13 +282,14 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
       pagePtr.p->page_state = ZTH_MM_FULL;
       free_pages.remove(pagePtr);
     }
-    
+ 
     regFragPtr->m_fixedElemCount++;
     *out_frag_page_id= page_no;
     key->m_page_no = pagePtr.i;
     key->m_page_idx = idx;
     return pagePtr.p->m_data + idx;
   case ZTH_MM_FULL:
+    jam();
     * err = ZROWID_ALLOCATED;
     DEB_899_ERROR(("(%u)899 error FULL: tab(%u,%u) row(%u,%u)",
                     instance(),
