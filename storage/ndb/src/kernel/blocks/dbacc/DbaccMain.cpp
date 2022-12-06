@@ -6393,7 +6393,6 @@ void Dbacc::execDEBUG_SIG(Signal* signal)
 
 LHBits32 Dbacc::getElementHash(OperationrecPtr& oprec)
 {
-  jam();
   ndbassert(!oprec.isNull());
 
   // Only calculate hash value if operation does not already have a complete hash value
@@ -6471,8 +6470,6 @@ LHBits32 Dbacc::getElementHash(Uint32 const* elemptr)
 
 LHBits32 Dbacc::getElementHash(Uint32 const* elemptr, OperationrecPtr& oprec)
 {
-  jam();
-
   if (!oprec.isNull())
   {
     jam();
