@@ -839,90 +839,98 @@ struct Fragrecord {
 };
 typedef Ptr<Fragrecord> FragrecordPtr;
 
-  void acquire_frag_page_map_mutex(Fragrecord *fragPtrP)
+  void acquire_frag_page_map_mutex(Fragrecord *fragPtrP,
+                                   EmulatedJamBuffer *jamBuf)
   {
     if (qt_likely(globalData.ndbMtQueryThreads > 0))
     {
-      jam();
+      thrjam(jamBuf);
       ndbrequire(!m_is_in_query_thread);
       NdbMutex_Lock(&fragPtrP->tup_frag_page_map_mutex);
     }
   }
-  void release_frag_page_map_mutex(Fragrecord *fragPtrP)
+  void release_frag_page_map_mutex(Fragrecord *fragPtrP,
+                                   EmulatedJamBuffer *jamBuf)
   {
     if (qt_likely(globalData.ndbMtQueryThreads > 0))
     {
       NdbMutex_Unlock(&fragPtrP->tup_frag_page_map_mutex);
-      jam();
+      thrjam(jamBuf);
     }
   }
-  void acquire_frag_page_map_mutex_read()
+  void acquire_frag_page_map_mutex_read(EmulatedJamBuffer *jamBuf)
   {
-    acquire_frag_page_map_mutex_read(prepare_fragptr.p);
+    acquire_frag_page_map_mutex_read(prepare_fragptr.p, jamBuf);
   }
-  void release_frag_page_map_mutex_read()
+  void release_frag_page_map_mutex_read(EmulatedJamBuffer* jamBuf)
   {
-    release_frag_page_map_mutex_read(prepare_fragptr.p);
+    release_frag_page_map_mutex_read(prepare_fragptr.p, jamBuf);
   }
-  void acquire_frag_page_map_mutex_read(Fragrecord *fragPtrP)
+  void acquire_frag_page_map_mutex_read(Fragrecord *fragPtrP,
+                                        EmulatedJamBuffer* jamBuf)
   {
     if (unlikely(m_is_in_query_thread))
     {
-      jam();
+      thrjam(jamBuf);
       NdbMutex_Lock(&fragPtrP->tup_frag_page_map_mutex);
     }
   }
-  void release_frag_page_map_mutex_read(Fragrecord *fragPtrP)
+  void release_frag_page_map_mutex_read(Fragrecord *fragPtrP,
+                                        EmulatedJamBuffer* jamBuf)
   {
     if (unlikely(m_is_in_query_thread))
     {
       NdbMutex_Unlock(&fragPtrP->tup_frag_page_map_mutex);
-      jam();
+      thrjam(jamBuf);
     }
   }
   void acquire_frag_mutex(Fragrecord *fragPtrP,
-                          Uint32 logicalPageId)
+                          Uint32 logicalPageId,
+                          EmulatedJamBuffer *jamBuf)
   {
     if (qt_likely(globalData.ndbMtQueryThreads > 0))
     {
       ndbrequire(!m_is_in_query_thread);
       Uint32 hash = logicalPageId & (NUM_TUP_FRAGMENT_MUTEXES - 1);
-      jamDebug();
-      jamLine(hash);
+      thrjamDebug(jamBuf);
+      thrjamLine(jamBuf, hash);
       NdbMutex_Lock(&fragPtrP->tup_frag_mutex[hash]);
     }
   }
   void release_frag_mutex(Fragrecord *fragPtrP,
-                          Uint32 logicalPageId)
+                          Uint32 logicalPageId,
+                          EmulatedJamBuffer *jamBuf)
   {
     if (qt_likely(globalData.ndbMtQueryThreads > 0))
     {
       Uint32 hash = logicalPageId & (NUM_TUP_FRAGMENT_MUTEXES - 1);
       NdbMutex_Unlock(&fragPtrP->tup_frag_mutex[hash]);
-      jamDebug();
-      jamLine(hash);
+      thrjamDebug(jamBuf);
+      thrjamLine(jamBuf, hash);
     }
   }
   void acquire_frag_mutex_read(Fragrecord *fragPtrP,
-                               Uint32 logicalPageId)
+                               Uint32 logicalPageId,
+                               EmulatedJamBuffer* jamBuf)
   {
     if (unlikely(m_is_in_query_thread))
     {
       Uint32 hash = logicalPageId & (NUM_TUP_FRAGMENT_MUTEXES - 1);
-      jamDebug();
-      jamLine(hash);
+      thrjamDebug(jamBuf);
+      thrjamLine(jamBuf, hash);
       NdbMutex_Lock(&fragPtrP->tup_frag_mutex[hash]);
     }
   }
   void release_frag_mutex_read(Fragrecord *fragPtrP,
-                               Uint32 logicalPageId)
+                               Uint32 logicalPageId,
+                               EmulatedJamBuffer* jamBuf)
   {
     if (unlikely(m_is_in_query_thread))
     {
       Uint32 hash = logicalPageId & (NUM_TUP_FRAGMENT_MUTEXES - 1);
       NdbMutex_Unlock(&fragPtrP->tup_frag_mutex[hash]);
-      jamDebug();
-      jamLine(hash);
+      thrjamDebug(jamBuf);
+      thrjamLine(jamBuf, hash);
     }
   }
 

@@ -95,7 +95,7 @@ Dbtup::tuxAllocNode(EmulatedJamBuffer * jamBuf,
     thrjam(jamBuf);
     return err;
   }
-  release_frag_mutex(fragPtrP, frag_page_id);
+  release_frag_mutex(fragPtrP, frag_page_id, jamBuf);
   c_allow_alloc_spare_page=false;
   pageId= key.m_page_no;
   pageOffset= key.m_page_idx;

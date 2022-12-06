@@ -123,7 +123,7 @@ Dbtup::alloc_fix_rec(EmulatedJamBuffer* jamBuf,
   }
 
   *out_frag_page_id= pagePtr.p->frag_page_id;
-  acquire_frag_mutex(regFragPtr, pagePtr.p->frag_page_id);
+  acquire_frag_mutex(regFragPtr, pagePtr.p->frag_page_id, jamBuf);
   Uint32 page_offset= alloc_tuple_from_page(regFragPtr, (Fix_page*)pagePtr.p);
 
   regFragPtr->m_fixedElemCount++;
@@ -260,7 +260,7 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
   Local_Page_fifo free_pages(c_page_pool, regFragPtr->thFreeFirst);
   switch(state){
   case ZTH_MM_FREE:
-    acquire_frag_mutex(regFragPtr, page_no);
+    acquire_frag_mutex(regFragPtr, page_no, jamBuffer());
     if (((Fix_page*)pagePtr.p)->alloc_record(idx) != idx)
     {
       DEB_899_ERROR(("(%u)899 error FREE: tab(%u,%u) row(%u,%u)",
@@ -270,7 +270,7 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
                       page_no,
                       idx));
       * err = ZROWID_ALLOCATED;
-      release_frag_mutex(regFragPtr, page_no);
+      release_frag_mutex(regFragPtr, page_no, jamBuffer());
       return 0;
     }
     
