@@ -126,6 +126,7 @@ func (rc *RouterContext) StartRouter() error {
 	grpcAddress := fmt.Sprintf("%s:%d", rc.GRPCServerIP, rc.GRPCServerPort)
 	log.Infof("Starting both REST & GRPC servers; REST address: '%s'; GRPC address: '%s'", restApiAddress, grpcAddress)
 
+	var httpListener net.Listener
 	var serverTLS *tls.Config
 	var err error
 
@@ -139,11 +140,11 @@ func (rc *RouterContext) StartRouter() error {
 		if err != nil {
 			return fmt.Errorf("Unable to set server TLS config. Error: %w", err)
 		}
-	}
 
-	httpListener, err := net.Listen("tcp", restApiAddress)
-	if err != nil {
-		log.Fatalf("Failed listening to REST server address '%s'. Error: %v", restApiAddress, err)
+		httpListener, err = net.Listen("tcp", restApiAddress)
+		if err != nil {
+			log.Fatalf("Failed listening to REST server address '%s'. Error: %v", restApiAddress, err)
+		}
 	}
 
 	grpcListener, err := net.Listen("tcp", grpcAddress)
