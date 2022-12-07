@@ -169,7 +169,7 @@ func (rc *RouterContext) StartRouter() error {
 		if errors.Is(err, http.ErrServerClosed) {
 			log.Info("Http server closed")
 		} else if err != nil {
-			log.Errorf("Http failed serving. Error: %w", err)
+			log.Errorf("Http failed serving. Error: %v", err)
 		}
 	}()
 
@@ -180,7 +180,7 @@ func (rc *RouterContext) StartRouter() error {
 		GRPCServer := grpcsrv.GetGRPCServer()
 		api.RegisterRonDBRESTServer(rc.GRPCServer, GRPCServer)
 		if err := rc.GRPCServer.Serve(grpcListener); err != nil {
-			log.Errorf("failed to serve grpc. Error: %w", err)
+			log.Errorf("failed to serve grpc. Error: %v", err)
 		}
 	}()
 
