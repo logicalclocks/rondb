@@ -1327,6 +1327,8 @@ public:
     {
       LHBits32 hashVal = getElementHash(opPtr);
       inx = hashVal.get_bits(NUM_ACC_FRAGMENT_MUTEXES - 1);
+      jamDebug();
+      jamLine(inx);
       NdbMutex_Lock(&fragPtrP->acc_frag_mutex[inx]);
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
       m_acc_mutex_locked = inx;
@@ -1351,6 +1353,8 @@ public:
       m_acc_mutex_locked = RNIL;
 #endif
       NdbMutex_Unlock(&fragPtrP->acc_frag_mutex[inx]);
+      jamDebug();
+      jamLine(inx);
     }
     else
     {
@@ -1366,6 +1370,8 @@ public:
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
       m_acc_mutex_locked = inx;
 #endif
+      jamDebug();
+      jamLine(inx);
       NdbMutex_Lock(&fragPtrP->acc_frag_mutex[inx]);
     }
   }
@@ -1379,6 +1385,8 @@ public:
       m_acc_mutex_locked = RNIL;
 #endif
       NdbMutex_Unlock(&fragPtrP->acc_frag_mutex[inx]);
+      jamDebug();
+      jamLine(inx);
     }
   }
 };

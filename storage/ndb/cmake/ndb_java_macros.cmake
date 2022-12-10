@@ -103,8 +103,8 @@ MACRO(CREATE_JAR TARGET_ARG)
     SET(JAVA_ARGS "-J-Xmx1G")
   ENDIF()
 
-  # Treat all deprecation warnings as errors
-  SET(JAVA_ARGS ${JAVA_ARGS} -Xlint:deprecation -Xlint:-options -Werror)
+  # Treat all deprecation warnings as errors (nope, use finalize method now)
+  SET(JAVA_ARGS ${JAVA_ARGS} -Xlint:deprecation -Xlint:-options)
 
   # Set Java 1.8 as the target version
   SET(_JAVAC_TARGET "8")

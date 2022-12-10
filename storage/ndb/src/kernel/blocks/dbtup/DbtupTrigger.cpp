@@ -636,6 +636,8 @@ Dbtup::execFIRE_TRIG_REQ(Signal* signal)
   regTabPtr.i = regFragPtr.p->fragTableId;
   ptrCheckGuard(regTabPtr, no_of_tablerec, tablerec);
 
+  req_struct.fragPtrP = regFragPtr.p;
+  req_struct.m_lqh = c_lqh;
   req_struct.signal = signal;
   req_struct.TC_ref = signal->theData[1];
   req_struct.TC_index = signal->theData[2];

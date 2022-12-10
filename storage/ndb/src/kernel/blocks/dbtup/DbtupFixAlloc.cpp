@@ -131,7 +131,7 @@ Dbtup::alloc_fix_rec(EmulatedJamBuffer* jamBuf,
   }
 
   *out_frag_page_id= pagePtr.p->frag_page_id;
-  acquire_frag_mutex(regFragPtr, pagePtr.p->frag_page_id);
+  acquire_frag_mutex(regFragPtr, pagePtr.p->frag_page_id, jamBuf);
   Uint32 page_offset= alloc_tuple_from_page(regFragPtr, (Fix_page*)pagePtr.p);
 
   regFragPtr->m_fixedElemCount++;
@@ -268,8 +268,8 @@ void Dbtup::free_fix_rec(Fragrecord* regFragPtr,
 
 Uint32*
 Dbtup::alloc_fix_rowid(Uint32 * err,
-                       Fragrecord* regFragPtr,
-		       Tablerec* regTabPtr,
+                       Fragrecord* const regFragPtr,
+		       Tablerec* const regTabPtr,
 		       Local_key* key,
 		       Uint32 * out_frag_page_id) 
 {
@@ -279,6 +279,7 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
   PagePtr pagePtr;
   if ((pagePtr.i = allocFragPage(err, regTabPtr, regFragPtr, page_no)) == RNIL)
   {
+    jam();
     return 0;
   }
 
@@ -287,9 +288,10 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
   Local_Page_fifo free_pages(c_page_pool, regFragPtr->thFreeFirst);
   switch(state){
   case ZTH_MM_FREE:
-    acquire_frag_mutex(regFragPtr, page_no);
+    acquire_frag_mutex(regFragPtr, page_no, jamBuffer());
     if (((Fix_page*)pagePtr.p)->alloc_record(idx) != idx)
     {
+      jam();
       DEB_899_ERROR(("(%u)899 error FREE: tab(%u,%u) row(%u,%u)",
                       instance(),
                       regFragPtr->fragTableId,
@@ -297,7 +299,7 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
                       page_no,
                       idx));
       * err = ZROWID_ALLOCATED;
-      release_frag_mutex(regFragPtr, page_no);
+      release_frag_mutex(regFragPtr, page_no, jamBuffer());
       return 0;
     }
     
@@ -307,7 +309,7 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
       pagePtr.p->page_state = ZTH_MM_FULL;
       free_pages.remove(pagePtr);
     }
-    
+ 
     regFragPtr->m_fixedElemCount++;
     DEB_ELEM_COUNT(("(%u) Inc m_fixedElemCount: now %llu tab(%u,%u),"
                     " line: %u",
@@ -321,6 +323,7 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
     key->m_page_idx = idx;
     return pagePtr.p->m_data + idx;
   case ZTH_MM_FULL:
+    jam();
     * err = ZROWID_ALLOCATED;
     DEB_899_ERROR(("(%u)899 error FULL: tab(%u,%u) row(%u,%u)",
                     instance(),

@@ -7965,13 +7965,6 @@ Dblqh::send_print_mutex_stats(Signal *signal)
  */
 
 #ifdef DEBUG_FRAGMENT_LOCK
-#define DEB_FRAGMENT_LOCK(frag) debug_fragment_lock(frag, __LINE__)
-
-#else
-#define DEB_FRAGMENT_LOCK(frag)
-#endif
-
-#ifdef DEBUG_FRAGMENT_LOCK
 void Dblqh::debug_fragment_lock(Fragrecord *fragPtrP, Uint32 line)
 {
   Uint32 instance_no = instance();
@@ -7983,6 +7976,42 @@ void Dblqh::debug_fragment_lock(Fragrecord *fragPtrP, Uint32 line)
   fragPtrP->lock_line[fragPtrP->lock_line_index] = Uint16(line);
   fragPtrP->lock_line_index = (fragPtrP->lock_line_index + 1) & LOCK_LINE_MASK;
   fragPtrP->lock_line[fragPtrP->lock_line_index] = Uint16(instance_no);
+}
+
+void Dblqh::print_fragment_lock(Uint32 tableId, Uint32 fragId)
+{
+  Fragrecord *fragPtrP = fragptr.p;
+  NdbMutex_Lock(&fragPtrP->frag_mutex);
+  g_eventLogger->info("Table(%u,%u): lock_line_index: %u",
+                      tableId,
+                      fragId,
+                      fragPtrP->lock_line_index);
+  for (Uint32 i = 0; i < (LOCK_LINE_MASK + 1); i+= 2)
+  {
+    g_eventLogger->info("Table(%u,%u): i: %u line = %u instance_no = %u",
+                        tableId,
+                        fragId,
+                        i,
+                        fragPtrP->lock_line[i],
+                        fragPtrP->lock_line[i+1]);
+  }
+  g_eventLogger->info("Table(%u,%u): conc_scan: %u, conc_rkey: %u"
+                      ", cond_read_waiters: %u, cond_excl_waiters: %u"
+                      ", cond_wk_waiters: %u, m_spin_excl_waiters: %u"
+                      ", m_spin_excl_waiters: %u, m_wk_locked: %u"
+                      ", m_excl_locked: %u",
+                      tableId,
+                      fragId,
+                      fragPtrP->m_concurrent_scan_count,
+                      fragPtrP->m_concurrent_read_key_count,
+                      fragPtrP->m_cond_read_waiters,
+                      fragPtrP->m_cond_exclusive_waiters,
+                      fragPtrP->m_cond_write_key_waiters,
+                      fragPtrP->m_spin_exclusive_waiters,
+                      fragPtrP->m_spin_write_key_waiters,
+                      fragPtrP->m_write_key_locked,
+                      fragPtrP->m_exclusive_locked);
+  NdbMutex_Unlock(&fragPtrP->frag_mutex);
 }
 #endif
 
@@ -8084,6 +8113,7 @@ Dblqh::downgrade_exclusive_to_scan()
     NdbCondition_Broadcast(&fragPtrP->frag_read_cond);
   }
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
+  jam();
 }
 
 void
@@ -8097,6 +8127,7 @@ Dblqh::downgrade_exclusive_to_write_key(Fragrecord *fragPtrP)
   fragPtrP->m_exclusive_locked = false;
   fragPtrP->m_write_key_locked = true;
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
+  jam();
 }
 
 void
@@ -8119,6 +8150,7 @@ Dblqh::downgrade_exclusive_to_read_key(Fragrecord *fragPtrP)
     fragPtrP->m_spin_exclusive_waiters = 1;
   }
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
+  jam();
 }
 
 void
@@ -8141,7 +8173,6 @@ Dblqh::handle_acquire_scan_frag_access(Fragrecord *fragPtrP)
   {
     if (unlikely(!first))
     {
-      jam();
       goto scan_cond_wait;
     }
     m_scan_frag_access_contended++;
@@ -8217,6 +8248,7 @@ got_lock:
   fragPtrP->m_concurrent_scan_count++;
   DEB_FRAGMENT_LOCK(fragPtrP);
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
+  jam();
   m_fragment_lock_status = FRAGMENT_LOCKED_IN_SCAN_MODE;
   m_scan_frag_access_spintime += elapsed;
   m_scan_frag_access_spinloops += spin_loops;
@@ -8299,6 +8331,7 @@ got_lock:
   fragPtrP->m_concurrent_read_key_count++;
   DEB_FRAGMENT_LOCK(fragPtrP);
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
+  jam();
   m_read_key_frag_access_spintime += elapsed;
   m_read_key_frag_access_spinloops += spin_loops;
 }
@@ -8397,6 +8430,7 @@ got_lock:
   fragPtrP->m_write_key_locked = true;
   DEB_FRAGMENT_LOCK(fragPtrP);
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
+  jam();
   m_fragment_lock_status = FRAGMENT_LOCKED_IN_WRITE_KEY_MODE;
   m_write_key_frag_access_spintime += elapsed;
   m_write_key_frag_access_spinloops += spin_loops;
@@ -8512,6 +8546,7 @@ got_lock:
   fragPtrP->m_spin_exclusive_waiters = 0;
   DEB_FRAGMENT_LOCK(fragPtrP);
   NdbMutex_Unlock(&fragPtrP->frag_mutex);
+  jam();
   m_fragment_lock_status = FRAGMENT_LOCKED_IN_EXCLUSIVE_MODE;
   m_exclusive_frag_access_spintime += elapsed;
   m_exclusive_frag_access_spinloops += spin_loops;
@@ -8526,19 +8561,19 @@ Dblqh::handle_acquire_frag_abort_access(Fragrecord *fragPtrP,
     if (is_read_key_frag_access(regTcPtr) ||
         is_read_key_delete_frag_access(regTcPtr))
     {
-      jamDebug();
+      jam();
       handle_acquire_read_key_frag_access(fragPtrP, false, true);
       m_fragment_lock_status = FRAGMENT_LOCKED_IN_READ_KEY_MODE;
     }
     else
     {
-      jamDebug();
+      jam();
       handle_acquire_exclusive_frag_access(fragPtrP, false);
     }
   }
   else
   {
-    jamDebug();
+    jam();
     if (is_read_key_frag_access(regTcPtr) ||
         is_read_key_delete_frag_access(regTcPtr))
     {
@@ -8568,7 +8603,7 @@ Dblqh::handle_acquire_frag_abort_access(Fragrecord *fragPtrP,
     }
     else
     {
-      jamDebug();
+      jam();
       upgrade_to_exclusive_frag_access();
     }
   }
@@ -8581,12 +8616,12 @@ Dblqh::handle_upgrade_to_exclusive_frag_access(Fragrecord *fragPtrP)
   m_old_fragment_lock_status = m_fragment_lock_status;
   if (m_fragment_lock_status == FRAGMENT_UNLOCKED)
   {
-    jamDebug();
+    jam();
     handle_acquire_exclusive_frag_access(fragPtrP, false);
   }
   else if (m_fragment_lock_status == FRAGMENT_LOCKED_IN_WRITE_KEY_MODE)
   {
-    jamDebug();
+    jam();
     NdbMutex_Lock(&fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
     fragPtrP->m_write_key_locked = false;
@@ -8594,7 +8629,7 @@ Dblqh::handle_upgrade_to_exclusive_frag_access(Fragrecord *fragPtrP)
   }
   else if (m_fragment_lock_status == FRAGMENT_LOCKED_IN_READ_KEY_MODE)
   {
-    jamDebug();
+    jam();
     ndbassert(!m_is_in_query_thread);
     NdbMutex_Lock(&fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
@@ -8604,7 +8639,7 @@ Dblqh::handle_upgrade_to_exclusive_frag_access(Fragrecord *fragPtrP)
   }
   else if (m_fragment_lock_status == FRAGMENT_LOCKED_IN_RK_WK_MODE)
   {
-    jamDebug();
+    jam();
     ndbassert(!m_is_in_query_thread);
     NdbMutex_Lock(&fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
@@ -8616,7 +8651,7 @@ Dblqh::handle_upgrade_to_exclusive_frag_access(Fragrecord *fragPtrP)
   }
   else if (m_fragment_lock_status == FRAGMENT_LOCKED_IN_RK_REFRESH_MODE)
   {
-    jamDebug();
+    jam();
     ndbassert(!m_is_in_query_thread);
     NdbMutex_Lock(&fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
@@ -8628,11 +8663,11 @@ Dblqh::handle_upgrade_to_exclusive_frag_access(Fragrecord *fragPtrP)
   }
   else if (m_fragment_lock_status == FRAGMENT_LOCKED_IN_EXCLUSIVE_MODE)
   {
-    jamDebug(); /* Already at exclusive level */
+    jam(); /* Already at exclusive level */
   }
   else if (m_fragment_lock_status == FRAGMENT_LOCKED_IN_SCAN_MODE)
   {
-    jamDebug();
+    jam();
     ndbassert(!m_is_query_block);
     NdbMutex_Lock(&fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
@@ -8657,13 +8692,13 @@ Dblqh::handle_upgrade_to_write_key_frag_access(Fragrecord *fragPtrP)
   ndbrequire(m_old_fragment_lock_status == FRAGMENT_UNLOCKED);
   if (m_fragment_lock_status == FRAGMENT_UNLOCKED)
   {
-    jamDebug();
+    jam();
     handle_acquire_write_key_frag_access(fragPtrP, false);
   }
   else if (m_fragment_lock_status == FRAGMENT_LOCKED_IN_READ_KEY_MODE)
   {
     ndbabort(); // No such case should exist
-    jamDebug();
+    jam();
     ndbassert(!m_is_in_query_thread);
     NdbMutex_Lock(&fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
@@ -8673,7 +8708,7 @@ Dblqh::handle_upgrade_to_write_key_frag_access(Fragrecord *fragPtrP)
   }
   else if (m_fragment_lock_status == FRAGMENT_LOCKED_IN_RK_WK_MODE)
   {
-    jamDebug();
+    jam();
     ndbassert(!m_is_in_query_thread);
     NdbMutex_Lock(&fragPtrP->frag_mutex);
     DEB_FRAGMENT_LOCK(fragPtrP);
@@ -8710,36 +8745,36 @@ Dblqh::handle_downgrade_from_exclusive_frag_access(Fragrecord *fragPtrP)
 {
   if (m_old_fragment_lock_status == FRAGMENT_LOCKED_IN_WRITE_KEY_MODE)
   {
-    jamDebug();
+    jam();
     downgrade_exclusive_to_write_key(fragPtrP);
   }
   else if (m_old_fragment_lock_status == FRAGMENT_UNLOCKED)
   {
-    jamDebug();
+    jam();
     release_frag_access(fragPtrP);
   }
   else if (m_old_fragment_lock_status == FRAGMENT_LOCKED_IN_EXCLUSIVE_MODE)
   {
-    jamDebug(); /* Already at exclusive level */
+    jam(); /* Already at exclusive level */
   }
   else if (m_old_fragment_lock_status == FRAGMENT_LOCKED_IN_READ_KEY_MODE)
   {
-    jamDebug();
+    jam();
     downgrade_exclusive_to_read_key(fragPtrP);
   }
   else if (m_old_fragment_lock_status == FRAGMENT_LOCKED_IN_RK_WK_MODE)
   {
-    jamDebug();
+    jam();
     downgrade_exclusive_to_read_key(fragPtrP);
   }
   else if (m_old_fragment_lock_status == FRAGMENT_LOCKED_IN_RK_REFRESH_MODE)
   {
-    jamDebug();
+    jam();
     downgrade_exclusive_to_read_key(fragPtrP);
   }
   else if (m_old_fragment_lock_status == FRAGMENT_LOCKED_IN_SCAN_MODE)
   {
-    jamDebug();
+    jam();
     downgrade_exclusive_to_scan();
   }
   else
@@ -8755,32 +8790,32 @@ Dblqh::handle_release_frag_access(Fragrecord *fragPtrP)
 {
   if (m_fragment_lock_status == FRAGMENT_LOCKED_IN_SCAN_MODE)
   {
-    jamDebug();
+    jam();
     handle_release_scan_frag_access(fragPtrP);
   }
   else if (m_fragment_lock_status == FRAGMENT_LOCKED_IN_READ_KEY_MODE)
   {
-    jamDebug();
+    jam();
     handle_release_read_key_frag_access(fragPtrP);
   }
   else if (m_fragment_lock_status == FRAGMENT_LOCKED_IN_WRITE_KEY_MODE)
   {
-    jamDebug();
+    jam();
     handle_release_write_key_frag_access(fragPtrP);
   }
   else if (m_fragment_lock_status == FRAGMENT_LOCKED_IN_EXCLUSIVE_MODE)
   {
-    jamDebug();
+    jam();
     handle_release_exclusive_frag_access(fragPtrP);
   }
   else if (m_fragment_lock_status == FRAGMENT_LOCKED_IN_RK_WK_MODE)
   {
-    jamDebug();
+    jam();
     handle_release_read_key_frag_access(fragPtrP);
   }
   else if (m_fragment_lock_status == FRAGMENT_LOCKED_IN_RK_REFRESH_MODE)
   {
-    jamDebug();
+    jam();
     handle_release_read_key_frag_access(fragPtrP);
   }
   else
