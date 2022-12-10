@@ -799,7 +799,7 @@ angel_run(const char* progname,
           reportShutdown(config, nodeid,
                          error_exit, 0, false, false,
                          child_error, child_signal, child_sphase);
-          angel_exit(0);
+          angel_exit(2);
         }
         // Fall-through
       case NRT_DoStart_Restart:
@@ -828,7 +828,7 @@ angel_run(const char* progname,
         reportShutdown(config, nodeid,
                        error_exit, 0, false, false,
                        child_error, child_signal, child_sphase);
-        angel_exit(0);
+        angel_exit(2);
       }
       else
       {
@@ -853,7 +853,7 @@ angel_run(const char* progname,
         reportShutdown(config, nodeid,
                        error_exit, 0, false, false,
                        child_error, child_signal, child_sphase);
-        angel_exit(0);
+        angel_exit(2);
       }
       g_eventLogger->info("Angel detected startup failure, count: %u",
                           failed_startups_counter);
