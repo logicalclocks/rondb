@@ -366,9 +366,9 @@ Dbtup::getRealpidScan(Fragrecord* regFragPtr,
      * that we have this exclusive access before we proceed using the
      * mutex protecting the page map.
      */
-    acquire_frag_page_map_mutex(regFragPtr);
+    acquire_frag_page_map_mutex(regFragPtr, jamBuffer());
     ptr = init_page_map_entry(regFragPtr, logicalPageId);
-    release_frag_page_map_mutex(regFragPtr);
+    release_frag_page_map_mutex(regFragPtr, jamBuffer());
     if (ptr == 0)
     {
       /**
@@ -861,8 +861,8 @@ Dbtup::allocFragPage(EmulatedJamBuffer* jamBuf,
   {
     thrjam(jamBuf);
     Uint32 max_page_cnt = regFragPtr->m_max_page_cnt;
-    acquire_frag_page_map_mutex(regFragPtr);
-    acquire_frag_mutex(regFragPtr, max_page_cnt);
+    acquire_frag_page_map_mutex(regFragPtr, jamBuf);
+    acquire_frag_mutex(regFragPtr, max_page_cnt, jamBuf);
     pageId = insert_new_page_into_page_map(jamBuf,
                                            regFragPtr,
                                            pagePtr,
@@ -874,8 +874,8 @@ Dbtup::allocFragPage(EmulatedJamBuffer* jamBuf,
             pageId));
     if (pageId == RNIL)
     {
-      release_frag_page_map_mutex(regFragPtr);
-      release_frag_mutex(regFragPtr, max_page_cnt);
+      release_frag_page_map_mutex(regFragPtr, jamBuf);
+      release_frag_mutex(regFragPtr, max_page_cnt, jamBuf);
       thrjam(jamBuf);
       * err = ZMEM_NOMEM_ERROR;
       return RNIL;
@@ -884,8 +884,8 @@ Dbtup::allocFragPage(EmulatedJamBuffer* jamBuf,
   else
   {
     thrjam(jamBuf);
-    acquire_frag_page_map_mutex(regFragPtr);
-    acquire_frag_mutex(regFragPtr, regFragPtr->m_free_page_id_list);
+    acquire_frag_page_map_mutex(regFragPtr, jamBuf);
+    acquire_frag_mutex(regFragPtr, regFragPtr->m_free_page_id_list, jamBuf);
     pageId = remove_first_free_from_page_map(jamBuf, regFragPtr, pagePtr);
     DEB_LCP(("(%u)allocFragPage(2): tab(%u,%u):%u",
             instance(),
@@ -910,8 +910,8 @@ Dbtup::allocFragPage(EmulatedJamBuffer* jamBuf,
   }
   regFragPtr->noOfPages++;
   handle_new_page(jamBuf, regFragPtr, regTabPtr, pagePtr, pageId);
-  release_frag_page_map_mutex(regFragPtr);
-  release_frag_mutex(regFragPtr, pageId);
+  release_frag_page_map_mutex(regFragPtr, jamBuf);
+  release_frag_mutex(regFragPtr, pageId, jamBuf);
   return pagePtr.i;
 }//Dbtup::allocFragPage()
 
@@ -927,13 +927,13 @@ Dbtup::allocFragPage(Uint32 * err,
           fragPtrP->fragTableId,
           fragPtrP->fragmentId,
           page_no));
-  acquire_frag_page_map_mutex(fragPtrP);
-  acquire_frag_mutex(fragPtrP, page_no);
+  acquire_frag_page_map_mutex(fragPtrP, jamBuffer());
+  acquire_frag_mutex(fragPtrP, page_no, jamBuffer());
   Uint32 *prev_ptr = map.set(2 * page_no + 1);
   if (unlikely(prev_ptr == 0))
   {
-    release_frag_page_map_mutex(fragPtrP);
-    release_frag_mutex(fragPtrP, page_no);
+    release_frag_page_map_mutex(fragPtrP, jamBuffer());
+    release_frag_mutex(fragPtrP, page_no, jamBuffer());
     jam();
     *err = ZMEM_NOMEM_ERROR;
     return RNIL;
@@ -941,8 +941,8 @@ Dbtup::allocFragPage(Uint32 * err,
   Uint32 * ptr = map.set(2 * page_no);
   if (unlikely(ptr == 0))
   {
-    release_frag_page_map_mutex(fragPtrP);
-    release_frag_mutex(fragPtrP, page_no);
+    release_frag_page_map_mutex(fragPtrP, jamBuffer());
+    release_frag_mutex(fragPtrP, page_no, jamBuffer());
     jam();
     *prev_ptr = FREE_PAGE_RNIL | LAST_LCP_FREE_BIT;
     * err = ZMEM_NOMEM_ERROR;
@@ -951,8 +951,8 @@ Dbtup::allocFragPage(Uint32 * err,
   pagePtr.i = * ptr;
   if (likely(pagePtr.i != RNIL && (pagePtr.i & FREE_PAGE_BIT) == 0))
   {
-    release_frag_page_map_mutex(fragPtrP);
-    release_frag_mutex(fragPtrP, page_no);
+    release_frag_page_map_mutex(fragPtrP, jamBuffer());
+    release_frag_mutex(fragPtrP, page_no, jamBuffer());
     jam();
     return (pagePtr.i & PAGE_BIT_MASK);
   }
@@ -965,8 +965,8 @@ Dbtup::allocFragPage(Uint32 * err,
                  pagePtr.i);
   if (unlikely(noOfPagesAllocated == 0))
   {
-    release_frag_page_map_mutex(fragPtrP);
-    release_frag_mutex(fragPtrP, page_no);
+    release_frag_page_map_mutex(fragPtrP, jamBuffer());
+    release_frag_mutex(fragPtrP, page_no, jamBuffer());
     jam();
     * err = ZMEM_NOMEM_ERROR;
     return RNIL;
@@ -1028,8 +1028,8 @@ Dbtup::allocFragPage(Uint32 * err,
     }
   }
   handle_new_page(jamBuffer(), fragPtrP, tabPtrP, pagePtr, page_no);
-  release_frag_page_map_mutex(fragPtrP);
-  release_frag_mutex(fragPtrP, page_no);
+  release_frag_page_map_mutex(fragPtrP, jamBuffer());
+  release_frag_mutex(fragPtrP, page_no, jamBuffer());
   return pagePtr.i;
 }
 

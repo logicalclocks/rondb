@@ -93,7 +93,7 @@ Dbtup::tuxAllocNode(EmulatedJamBuffer * jamBuf,
     thrjam(jamBuf);
     return err;
   }
-  release_frag_mutex(fragPtrP, frag_page_id);
+  release_frag_mutex(fragPtrP, frag_page_id, jamBuf);
   pageId= key.m_page_no;
   pageOffset= key.m_page_idx;
   Uint32 attrDes2 = tablePtrP->tabDescriptor[1];
@@ -142,6 +142,7 @@ Dbtup::tuxReadAttrsCurr(EmulatedJamBuffer *jamBuf,
   // search for tuple version if not original
   Operationrec tmpOp;
   KeyReqStruct req_struct(jamBuf);
+  req_struct.m_lqh = c_lqh;
   req_struct.tablePtrP = tablePtrP;
   req_struct.fragPtrP = fragPtrP;
 
@@ -178,6 +179,7 @@ Dbtup::tuxReadAttrsOpt(EmulatedJamBuffer * jamBuf,
 
   Operationrec tmpOp;
   KeyReqStruct req_struct(jamBuf);
+  req_struct.m_lqh = c_lqh;
   req_struct.tablePtrP = (Tablerec*)tablePtrP;
   req_struct.fragPtrP = (Fragrecord*)fragPtrP;
 
@@ -271,6 +273,7 @@ Dbtup::tuxReadPk(Uint32* fragPtrP_input,
   tmpOp.m_tuple_location.m_page_idx= pageIndex;
   
   KeyReqStruct req_struct(this);
+  req_struct.m_lqh = c_lqh;
   req_struct.tablePtrP = tablePtrP;
   req_struct.fragPtrP = fragPtrP;
  
@@ -553,6 +556,7 @@ Dbtup::tuxReadAttrs(EmulatedJamBuffer * jamBuf,
 
   Operationrec tmpOp;
   KeyReqStruct req_struct(jamBuf);
+  req_struct.m_lqh = c_lqh;
   req_struct.tablePtrP = tablePtr.p;
   req_struct.fragPtrP = fragPtr.p;
 

@@ -280,7 +280,7 @@ int runPkUpdateUntilStopped(NDBT_Context* ctx, NDBT_Step* step)
     records = num_records;
   }
   HugoTransactions hugoTrans(*ctx->getTab());
-  while (ctx->isTestStopped()) {
+  while (ctx->isTestStopped() == false) {
     g_info << i << ": ";
     if (hugoTrans.pkUpdateRecords(GETNDB(step), records, batchSize) != 0){
       g_info << endl;
@@ -4892,10 +4892,16 @@ TESTCASE("CheckCompletedLCPStats",
 TESTCASE("ParallelReadUpdate",
          "Test interaction of read and updates for Query Thread")
 {
-  TC_PROPERTY("Records", Uint32(10));
+  TC_PROPERTY("Records", Uint32(1000));
   INITIALIZER(runLoadTable);
   STEP(runPkUpdateUntilStopped);
   STEP(runPkUpdateUntilStopped);
+  STEP(runPkUpdateUntilStopped);
+  STEP(runPkUpdateUntilStopped);
+  STEP(runPkUpdateUntilStopped);
+  STEP(runPkDirtyReadUntilStopped);
+  STEP(runPkDirtyReadUntilStopped);
+  STEP(runPkDirtyReadUntilStopped);
   STEP(runPkDirtyReadUntilStopped);
   STEP(runPkDirtyReadUntilStopped);
   STEP(runPkDirtyReadUntilStopped);

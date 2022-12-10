@@ -845,78 +845,98 @@ struct Fragrecord {
   RSS_OP_SNAPSHOT(cnoOfAllocatedFragrec);
   FragrecordPtr prepare_fragptr;
 
-  void acquire_frag_page_map_mutex(Fragrecord *fragPtrP)
+  void acquire_frag_page_map_mutex(Fragrecord *fragPtrP,
+                                   EmulatedJamBuffer *jamBuf)
   {
     if (qt_likely(globalData.ndbMtQueryWorkers > 0))
     {
+      thrjam(jamBuf);
       ndbrequire(!m_is_in_query_thread);
       NdbMutex_Lock(&fragPtrP->tup_frag_page_map_mutex);
     }
   }
-  void release_frag_page_map_mutex(Fragrecord *fragPtrP)
+  void release_frag_page_map_mutex(Fragrecord *fragPtrP,
+                                   EmulatedJamBuffer *jamBuf)
   {
     if (qt_likely(globalData.ndbMtQueryWorkers > 0))
     {
       NdbMutex_Unlock(&fragPtrP->tup_frag_page_map_mutex);
+      thrjam(jamBuf);
     }
   }
-  void acquire_frag_page_map_mutex_read()
+  void acquire_frag_page_map_mutex_read(EmulatedJamBuffer *jamBuf)
   {
-    acquire_frag_page_map_mutex_read(prepare_fragptr.p);
+    acquire_frag_page_map_mutex_read(prepare_fragptr.p, jamBuf);
   }
-  void release_frag_page_map_mutex_read()
+  void release_frag_page_map_mutex_read(EmulatedJamBuffer* jamBuf)
   {
-    release_frag_page_map_mutex_read(prepare_fragptr.p);
+    release_frag_page_map_mutex_read(prepare_fragptr.p, jamBuf);
   }
-  void acquire_frag_page_map_mutex_read(Fragrecord *fragPtrP)
+  void acquire_frag_page_map_mutex_read(Fragrecord *fragPtrP,
+                                        EmulatedJamBuffer* jamBuf)
   {
     if (unlikely(m_is_in_query_thread))
     {
+      thrjam(jamBuf);
       NdbMutex_Lock(&fragPtrP->tup_frag_page_map_mutex);
     }
   }
-  void release_frag_page_map_mutex_read(Fragrecord *fragPtrP)
+  void release_frag_page_map_mutex_read(Fragrecord *fragPtrP,
+                                        EmulatedJamBuffer* jamBuf)
   {
     if (unlikely(m_is_in_query_thread))
     {
       NdbMutex_Unlock(&fragPtrP->tup_frag_page_map_mutex);
+      thrjam(jamBuf);
     }
   }
   void acquire_frag_mutex(Fragrecord *fragPtrP,
-                          Uint32 logicalPageId)
+                          Uint32 logicalPageId,
+                          EmulatedJamBuffer *jamBuf)
   {
     if (qt_likely(globalData.ndbMtQueryWorkers > 0))
     {
       ndbrequire(!m_is_in_query_thread);
       Uint32 hash = logicalPageId & (NUM_TUP_FRAGMENT_MUTEXES - 1);
+      thrjamDebug(jamBuf);
+      thrjamLine(jamBuf, hash);
       NdbMutex_Lock(&fragPtrP->tup_frag_mutex[hash]);
     }
   }
   void release_frag_mutex(Fragrecord *fragPtrP,
-                          Uint32 logicalPageId)
+                          Uint32 logicalPageId,
+                          EmulatedJamBuffer *jamBuf)
   {
     if (qt_likely(globalData.ndbMtQueryWorkers > 0))
     {
       Uint32 hash = logicalPageId & (NUM_TUP_FRAGMENT_MUTEXES - 1);
       NdbMutex_Unlock(&fragPtrP->tup_frag_mutex[hash]);
+      thrjamDebug(jamBuf);
+      thrjamLine(jamBuf, hash);
     }
   }
   void acquire_frag_mutex_read(Fragrecord *fragPtrP,
-                               Uint32 logicalPageId)
+                               Uint32 logicalPageId,
+                               EmulatedJamBuffer* jamBuf)
   {
     if (unlikely(m_is_in_query_thread))
     {
       Uint32 hash = logicalPageId & (NUM_TUP_FRAGMENT_MUTEXES - 1);
+      thrjamDebug(jamBuf);
+      thrjamLine(jamBuf, hash);
       NdbMutex_Lock(&fragPtrP->tup_frag_mutex[hash]);
     }
   }
   void release_frag_mutex_read(Fragrecord *fragPtrP,
-                               Uint32 logicalPageId)
+                               Uint32 logicalPageId,
+                               EmulatedJamBuffer* jamBuf)
   {
     if (unlikely(m_is_in_query_thread))
     {
       Uint32 hash = logicalPageId & (NUM_TUP_FRAGMENT_MUTEXES - 1);
       NdbMutex_Unlock(&fragPtrP->tup_frag_mutex[hash]);
+      thrjamDebug(jamBuf);
+      thrjamLine(jamBuf, hash);
     }
   }
 
@@ -2071,6 +2091,7 @@ struct KeyReqStruct {
   Bitmask<MAXNROFATTRIBUTESINWORDS> changeMask;
   Uint16 var_pos_array[2][2*MAX_ATTRIBUTES_IN_TABLE + 1];
   OperationrecPtr prevOpPtr;
+  Dblqh *m_lqh;
 };
 
   friend struct Undo_buffer;
@@ -3854,16 +3875,22 @@ private:
 //---------------------------------------------------------------
 //
 // Public methods
-  Uint32* alloc_var_rec(Uint32 * err,
-                        Fragrecord*, Tablerec*, Uint32, Local_key*, Uint32*);
+  Uint32* alloc_var_row(Uint32 * err,
+                        Fragrecord* const,
+                        Tablerec* const,
+                        Uint32,
+                        Local_key*,
+                        Uint32*,
+                        bool);
   void free_var_rec(Fragrecord*, Tablerec*, Local_key*, Ptr<Page>);
   void free_var_part(Fragrecord*, Tablerec*, Local_key*);
-  Uint32* alloc_var_part(Uint32 *err,
+  Uint32* alloc_var_part(Uint32*err,
                          Fragrecord*,
                          Tablerec*,
                          Uint32,
                          Local_key*,
-                         Uint32);
+                         Uint32,
+                         bool);
   Uint32 *realloc_var_part(Uint32 * err, Fragrecord*, Tablerec*,
                            PagePtr, Var_part_ref*, Uint32, Uint32);
   
@@ -3874,15 +3901,19 @@ private:
 
   void validate_page(TablerecPtr, Var_page* page);
   
-  Uint32* alloc_fix_rec(EmulatedJamBuffer* jamBuf, Uint32* err,
-                        Fragrecord*const, Tablerec*const, Local_key*,
+  Uint32* alloc_fix_rec(EmulatedJamBuffer* jamBuf,
+                        Uint32* err,
+                        Fragrecord* const,
+                        Tablerec* const,
+                        Local_key*,
                         Uint32*);
   void free_fix_rec(Fragrecord*, Tablerec*, Local_key*, Fix_page*);
   
   Uint32* alloc_fix_rowid(Uint32 * err,
-                          Fragrecord*, Tablerec*, Local_key*, Uint32 *);
-  Uint32* alloc_var_rowid(Uint32 * err,
-                          Fragrecord*, Tablerec*, Uint32, Local_key*, Uint32*);
+                          Fragrecord* const,
+                          Tablerec* const,
+                          Local_key*,
+                          Uint32 *);
 // Private methods
   void convertThPage(Fix_page* regPagePtr,
 		     Tablerec*,

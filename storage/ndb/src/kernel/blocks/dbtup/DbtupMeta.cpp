@@ -1008,7 +1008,8 @@ int Dbtup::store_default_record(const TablerecPtr& regTabPtr)
                                        regTabPtr.p,
                                        sizes,
                                        &regTabPtr.p->m_default_value_location,
-                                       __LINE__);
+                                       __LINE__,
+                                       false);
   if (unlikely( var_data_ptr == 0 ))
   {
     jam();
