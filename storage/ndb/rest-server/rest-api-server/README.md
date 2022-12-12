@@ -15,7 +15,7 @@ Currently, the REST API server only supports batched and non-batched  primary ke
 
 
 
-## POST /0.1.0/{database}/{table}/pk-read
+## POST /{api-version}/{database}/{table}/pk-read
 
 Is used to perform a primary key read operation. 
 
@@ -33,9 +33,9 @@ CREATE TABLE `my_table` (
 
 **Path Parameters:**
 
-  - *api-version* : current api version is 0.1.0
-  - *database* : database name
-  - *table* : table name
+  - **api-version**: The current api version is 0.1.0
+  - **database**: The database name to query from
+  - **table**: The table name to query from
 
 **Body:**
 
@@ -65,10 +65,10 @@ CREATE TABLE `my_table` (
 }
 ```
 
-  - **filters**: (*required*) This is an array of objects one for each column that forms the primary key. 
+  - **filters**: (*required*) This is an array of objects one for each column that forms the primary key.
   - **readColumns**: (*optional*) This is used to perform projections. If it is omitted, all the columns of the table will be read
-    - **dataReturnType**: (*optional*) This can be used to control in which format the data is returned, for example, hex, base64, etc. However, in this version (0.1.0) we only support the default return type.  
-  - **operationId**: (*optional*) It is a *string* parameter and it can be up to 64 characters long. 
+    - **dataReturnType**: (*optional*) This can be used to control in which format the data is returned, for example, hex, base64, etc. However, in this version (0.1.0) we only support the default return type.
+  - **operationId**: (*optional*) It is a *string* parameter and it can be up to 64 characters long.
 
 **Response**
 
@@ -82,15 +82,17 @@ CREATE TABLE `my_table` (
 }
 ```
 
-## POST /0.1.0/batch
+## POST /{api-version}/batch
 
-Is used to perform batched primary key read operations. 
+This is used to perform batched primary key read operations. 
 
 **Path Parameters:**
 
-  - *api-version* : current api version is 0.1.0
+  - **api-version**: The current api version is 0.1.0
 
 **Body:**
+
+The body here is a list of arbitrary pk-reads under the key *operations*:
 
 ```json
 {
@@ -122,7 +124,6 @@ Is used to perform batched primary key read operations.
         "operationId": "1"
       },
     },
-
     {
       "method": "POST",
       "relative-url": "my_database_2/my_table_2/pk-read",
@@ -142,6 +143,9 @@ Is used to perform batched primary key read operations.
   ]
 }
 ```
+
+Additional parameters:
+  - **relative-url**: (*required*) This represents the url the given pk-read would have in a single request (omitting the api-version).
 
 **Response**
 
