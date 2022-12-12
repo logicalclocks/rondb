@@ -65,10 +65,10 @@ CREATE TABLE `my_table` (
 }
 ```
 
-  - **filters** : This is mandatory parameter. It is an array of objects one for each column that forms the primary key. 
-  - **readColumns** : It is an optional parameter that is used to perform projections. If it is omitted then all the columns of the table will be read
-    - **dataReturnType** : It is an optional parameter. It can be used to control in which format the data is returned, for example, hex, base64, etc. However, in this version (0.1.0) we only support the default return type.  
-  - **operationId** : It is an optional parameter. It is a *string* parameter and it can be up to 64 characters long. 
+  - **filters**: (*required*) This is an array of objects one for each column that forms the primary key. 
+  - **readColumns**: (*optional*) This is used to perform projections. If it is omitted, all the columns of the table will be read
+    - **dataReturnType**: (*optional*) This can be used to control in which format the data is returned, for example, hex, base64, etc. However, in this version (0.1.0) we only support the default return type.  
+  - **operationId**: (*optional*) It is a *string* parameter and it can be up to 64 characters long. 
 
 **Response**
 
