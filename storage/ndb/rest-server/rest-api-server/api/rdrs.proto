@@ -15,9 +15,15 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+// TODO: Add comment why we're not using proto3
 syntax = "proto2";
-
+ 
+package grpcserver.v1;
+ 
 option go_package = "./pkg/api";
+option java_multiple_files = true;
+option java_package = "com.rondb.grpcserver";
+option java_outer_classname = "RonDBGrpcProto";
 
 //__________________  PK Read Operation __________________
 message FilterProto {
@@ -88,4 +94,3 @@ service RonDBREST {
   rpc Batch(BatchRequestProto) returns (BatchResponseProto);
   rpc Stat(StatRequestProto) returns (StatResponseProto);
 }
-
