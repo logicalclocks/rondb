@@ -154,6 +154,7 @@ func getAPIKey(c *gin.Context) *string {
 	return &apiKey
 }
 
+// TODO: Place this into middleware
 func checkAPIKey(apiKey *string, db *string) error {
 	// check for Hopsworks api keys
 	if config.Configuration().Security.UseHopsWorksAPIKeys {
@@ -166,7 +167,6 @@ func checkAPIKey(apiKey *string, db *string) error {
 }
 
 func ValidatePKReadRequest(req *api.PKReadParams) error {
-
 	if err := validateDBIdentifier(*req.DB); err != nil {
 		return err
 	}
