@@ -176,8 +176,11 @@ func (rc *RouterContext) StartRouter() error {
 
 	// Start GRPC Server
 	go func() {
-		// TODO: Make credentials optional
-		rc.GRPCServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
+		if serverTLS != nil {
+			rc.GRPCServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
+		} else {
+			rc.GRPCServer = grpc.NewServer()
+		}
 		GRPCServer := grpcsrv.GetGRPCServer()
 		api.RegisterRonDBRESTServer(rc.GRPCServer, GRPCServer)
 		if err := rc.GRPCServer.Serve(grpcListener); err != nil {
