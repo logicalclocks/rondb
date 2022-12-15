@@ -52,8 +52,8 @@ my $opt_bench_name; # Benchmark name (aka. "testname")
 my $opt_engine = $ENV{CRUNCH_ENGINE} || "ndbcluster";
 my $opt_warmup = 0;
 my $opt_tables = $ENV{CRUNCH_TABLES} || 4;
-my $opt_rows = $ENV{CRUNCH_ROWS} || 1000000; # 1M
-my $opt_time = $ENV{CRUNCH_TIME} || 60; # seconds
+my $opt_rows = $ENV{CRUNCH_ROWS} || 100000; # 100k
+my $opt_time = $ENV{CRUNCH_TIME} || 30; # seconds
 my $opt_events = $ENV{CRUNCH_EVENTS} || 0; # => run until time elapsed
 my $opt_threads = $ENV{CRUNCH_THREADS} || 0; # Use specific threads number
 my $opt_report_interval = 1;  # seconds

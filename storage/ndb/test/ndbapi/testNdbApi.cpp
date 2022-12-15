@@ -53,6 +53,13 @@
                   obj.getNdbError().message); \
     return -1; }
 
+#define CHECKEP(b,obj) if (!(b)) {                          \
+    g_err.println("ERR:failed on line %u with err %u %s",  \
+                  __LINE__,                                \
+                  obj->getNdbError().code,                 \
+                  obj->getNdbError().message); \
+    return -1; }
+
 static const char* ApiFailTestRun = "ApiFailTestRun";
 static const char* ApiFailTestComplete = "ApiFailTestComplete";
 static const char* ApiFailTestsRunning = "ApiFailTestsRunning";
@@ -2912,7 +2919,7 @@ testNdbRecordRowLength(NDBT_Context* ctx, NDBT_Step* step)
   NdbDictionary::RecordSpecification rsArray[ NDB_MAX_ATTRIBUTES_IN_TABLE ];
 
   bool hasNullable= false;
-  Uint32 highestUsed= 9000;
+  Uint32 highestUsed= 31000;
   for (int attrId=0; attrId< numCols; attrId++)
   {
     NdbDictionary::RecordSpecification& rs= rsArray[attrId];
@@ -2941,7 +2948,7 @@ testNdbRecordRowLength(NDBT_Context* ctx, NDBT_Step* step)
                                                                    rsArray,
                                                                    numCols,
                                                                    sizeof(NdbDictionary::RecordSpecification));
-    CHECK(myRecord != 0);
+    CHECKEP(myRecord != 0, pNdb->getDictionary());
     Uint32 rowLength= NdbDictionary::getRecordRowLength(myRecord);
     if (rowLength != highestUsed)
     {
