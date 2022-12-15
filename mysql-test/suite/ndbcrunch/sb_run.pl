@@ -52,7 +52,7 @@ my $opt_bench_name; # Benchmark name (aka. "testname")
 my $opt_engine = $ENV{CRUNCH_ENGINE} || "ndbcluster";
 my $opt_warmup = 0;
 my $opt_tables = 8;
-my $opt_rows = $ENV{CRUNCH_ROWS} || 10000000; # 10M
+my $opt_rows = $ENV{CRUNCH_ROWS} || 100000; # 100k
 my $opt_time = $ENV{CRUNCH_TIME} || 30; # seconds
 my $opt_events = $ENV{CRUNCH_EVENTS} || 0; # => run until time elapsed
 my $opt_threads = $ENV{CRUNCH_THREADS}; # Use specific threads number
@@ -150,7 +150,7 @@ sub threads {
   }
 
   # Geometric serie of threads
-  for (my $i = 1; $i <= 1024; $i = $i*2) {
+  for (my $i = 1; $i <= 128; $i = $i*2) {
     push(@threads, $i);
   }
   return @threads;

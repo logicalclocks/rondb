@@ -497,7 +497,7 @@ HugoCalculator::equalForRow(Uint8 * pRow,
 
     if (attr->getPrimaryKey() == true)
     {
-      char buf[8000];
+      char buf[NDB_MAX_TUPLE_SIZE];
       int len = attr->getSizeInBytes();
       memset(buf, 0, sizeof(buf));
       Uint32 real_len;
@@ -532,7 +532,7 @@ HugoCalculator::setValues(Uint8 * pRow,
 
     if (attr->getPrimaryKey() == false)
     {
-      char buf[8000];
+      char buf[NDB_MAX_TUPLE_SIZE];
       int len = attr->getSizeInBytes();
       memset(buf, 0, sizeof(buf));
       Uint32 real_len;
