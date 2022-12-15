@@ -1659,7 +1659,15 @@ runBug27756(NDBT_Context* ctx, NDBT_Step* step)
 
   int loops = ctx->getNumLoops();
   //const int rows = ctx->getNumRecords();
-  
+
+  /**
+   * This test case will only work if we can fit 3 copy rows in
+   * the same page. Thus row size cannot go beyond around 10 kB
+   * for any table tested with this test. If it goes beyond this
+   * then each loop will use more than one copy page and the next
+   * loop will use the second page first. Thus it won't show a
+   * memory leak, but rather an inefficiency of the test case.
+   */
   Vector<Uint64> copies;
   while (loops--)
   {
