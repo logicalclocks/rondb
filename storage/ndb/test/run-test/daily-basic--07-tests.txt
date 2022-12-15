@@ -67,7 +67,7 @@ args: -n TestFragmentedSend T1
 max-time: 180
 
 cmd: testBasic
-args: -n Bug27756
+args: -n Bug27756 T1 T2 T3 T4 T6 T13 T14 T15 T16 T17 D1 D2 I1 I2 I3
 max-time: 180
 
 cmd: testNodeRestart
