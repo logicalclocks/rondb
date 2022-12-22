@@ -1,7 +1,6 @@
 # RonDB REST API Server 
 
-Currently, the REST API server only supports batched and non-batched  primary key operations. Default mappings of MySQL data types to JSON data types are as follows
-
+Currently, the REST API server only supports batched and non-batched  primary key operations. Default mappings of MySQL data types to JSON data types are as follows:
 
 | MySQL Data Type                          | JSON Data Type        |
 | ---------------------------------------- | --------------------- |
@@ -12,8 +11,6 @@ Currently, the REST API server only supports batched and non-batched  primary ke
 | DATE, DATETIME, TIME, TIMESTAMP, YEAR    | string                |
 | YEAR                                     | number                |
 | BIT                                      | base64 encoded string |
-
-
 
 ## POST /{api-version}/{database}/{table}/pk-read
 
@@ -267,3 +264,31 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
    - **MaxBackups:** max number of log files to store. The default value is *10*.
    
    - **MaxAge:** max-age of log files in days. The default value is *30*.
+
+## Developing the RDRS
+
+First, build RonDB into a given directory, e.g. `/tmp/rondb-bin`. Do so, by navigating into this directory and then calling one of the scripts in the [build_scripts](/build_scripts). Make sure that the flag `-DWITH_RDRS=1` is set. If it is not, simply append it to the other CMake flags. After RonDB has built, use the following environment variable for running any GO commands.
+
+```bash
+export CGO_LDFLAGS="-g -L/tmp/rondb-bin/lib -lrdrclient"
+```
+
+This may be required for running unit tests, the language server `gopls` or building. Your IDE may also allow you to specifically set this variable. For example, Visual Studio Code v1.74 lets you set the following in its settings.json:
+
+```json
+"gopls": {
+  "build.env": {
+    "CGO_LDFLAGS": "-g -L/tmp/rondb-bin/lib -lrdrclient"
+  }
+},
+"go.testEnvVars": {
+  "CGO_LDFLAGS": "-g -L/tmp/rondb-bin/lib -lrdrclient"
+}
+```
+
+Otherwise, if you wish to compile ***only*** the RDRS binary, you can run the following:
+
+```bash
+cd /tmp/rondb-bin/storage/ndb/rest-server/rest-api-server
+make -j8
+```
