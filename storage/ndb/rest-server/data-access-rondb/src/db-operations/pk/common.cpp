@@ -76,9 +76,6 @@ inline void my_unpack_date(MYSQL_TIME *l_time, const void *d) {
 
 RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *operation,
                             PKRRequest *request, Uint32 colIdx) {
-  // validate the data and set data according to column type
-  char *data;
-
   switch (col->getType()) {
   case NdbDictionary::Column::Undefined: {
     ///< 4 bytes + 0-3 fraction
@@ -309,7 +306,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     int scale          = col->getScale();
     int bytesNeeded    = getDecimalColumnSpace(precision, scale);
     const char *decStr = request->PKValueCStr(colIdx);
-    char decBin[bytesNeeded];
+    char* decBin = new char[bytesNeeded];
     if (decimal_str2bin(decStr, strlen(decStr), precision, scale, decBin, bytesNeeded) != 0) {
       return RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting Decimal with Precision: ") +
                              std::to_string(precision) + std::string(" and Scale: ") +
@@ -332,7 +329,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     }
 
     const char *charStr = request->PKValueCStr(colIdx);
-    char pk[col->getLength()];
+    char* pk = new char[col->getLength()];
     for (int i = 0; i < col->getLength(); i++) {
       pk[i] = 0;
     }
@@ -370,7 +367,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     size_t decoded_size = boost::beast::detail::base64::decoded_size(request->PKValueLen(colIdx));
     int maxlen          = std::max(col->getLength(), static_cast<int>(decoded_size));
 
-    char pk[maxlen];
+    char* pk = new char[maxlen];
     for (int i = 0; i < col->getLength(); i++) {
       pk[i] = 0;
     }
@@ -403,7 +400,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     }
 
     int maxlen = std::max(col->getLength(), static_cast<int>(decoded_size) + additional_len);
-    char pk[maxlen];
+    char* pk = new char[maxlen];
     for (int i = 0; i < maxlen; i++) {
       pk[i] = 0;
     }
@@ -455,7 +452,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                              " Expecting only date data. Column: " + std::string(col->getName()));
     }
 
-    unsigned char packed[col->getSizeInBytes()];
+    unsigned char* packed = new unsigned char[col->getSizeInBytes()];
     my_date_to_binary(&l_time, packed);
 
     if (operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed),
@@ -533,7 +530,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
 
     size_t packed_len = col->getSizeInBytes();
     int precision     = col->getPrecision();
-    unsigned char packed[packed_len];
+    unsigned char* packed = new unsigned char[packed_len];
 
     longlong numaric_date_time = TIME_to_longlong_time_packed(l_time);
     my_time_packed_to_binary(numaric_date_time, packed, precision);
@@ -559,7 +556,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
 
     size_t packed_len = col->getSizeInBytes();
     int precision     = col->getPrecision();
-    unsigned char packed[packed_len];
+    unsigned char* packed = new unsigned char[packed_len];
 
     longlong numaric_date_time = TIME_to_longlong_datetime_packed(l_time);
 
@@ -577,7 +574,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     const char *ts_str = request->PKValueCStr(colIdx);
     size_t ts_str_len  = request->PKValueLen(colIdx);
     size_t packed_len  = col->getSizeInBytes();
-    unsigned char packed[packed_len];
+    unsigned char* packed = new unsigned char[packed_len];
     uint precision = col->getPrecision();
 
     MYSQL_TIME l_time;
@@ -748,7 +745,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
       return RS_CLIENT_ERROR(ERROR_019);
     } else {
       size_t encoded_str_size = boost::beast::detail::base64::encoded_size(attr_bytes);
-      char buffer[encoded_str_size];
+      char* buffer = new char[encoded_str_size];
       size_t ret = boost::beast::detail::base64::encode(reinterpret_cast<void *>(buffer),
                                                         data_start, attr_bytes);
       return response->Append_string(attr->getColumn()->getName(), std::string(buffer, ret),
@@ -781,7 +778,6 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
   }
   case NdbDictionary::Column::Bit: {
     //< Bit, length specifies no of bits
-    int32 attr_bytes = col->getSizeInBytes();
     Uint32 words     = attr->getColumn()->getLength() / 8;
     if (attr->getColumn()->getLength() % 8 != 0) {
       words += 1;
@@ -789,13 +785,14 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
 
     // change endieness
     int i = 0;
-    char reversed[words];
+    // char reversed[words];
+    char* reversed = new char[words];
     for (int j = words - 1; j >= 0; j--) {
       reversed[i++] = attr->aRef()[j];
     }
 
     size_t encoded_str_size = boost::beast::detail::base64::encoded_size(words);
-    char buffer[encoded_str_size];
+    char* buffer = new char[encoded_str_size];
     size_t ret =
         boost::beast::detail::base64::encode(reinterpret_cast<void *>(buffer), reversed, words);
     return response->Append_string(attr->getColumn()->getName(), std::string(buffer, ret),

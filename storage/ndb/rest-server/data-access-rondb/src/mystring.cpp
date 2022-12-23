@@ -46,7 +46,7 @@ std::size_t extra_space(const std::string &s) noexcept {
     }
 
     default: {
-      if (c >= 0x00 && c <= 0x1f) {
+      if (c <= 0x1f) {
         // from c (1 byte) to \uxxxx (6 bytes)
         result += 5;
       }
@@ -131,7 +131,7 @@ std::string escape_string(const std::string &s) noexcept {
     }
 
     default: {
-      if (c >= 0x00 && c <= 0x1f) {
+      if (c <= 0x1f) {
         int len = 7;  // print character c as \uxxxx. +1 or null character
         snprintf(&result[pos + 1], len, "u%04x", static_cast<int>(c));
         pos += 6;
