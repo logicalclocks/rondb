@@ -20,44 +20,36 @@ package stat
 import (
 	"net/http"
 
-	"github.com/gin-gonic/gin"
-	"hopsworks.ai/rdrs/internal/common"
+	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
-	"hopsworks.ai/rdrs/internal/handlers"
+	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-const PATH = "/stat"
+type Handler struct{}
 
-type Stat struct{}
-
-var _ handlers.Stater = (*Stat)(nil)
-var stat Stat
-
-func GetStater() handlers.Stater {
-	return &stat
+func (h Handler) Validate(request interface{}) error {
+	return nil
 }
 
-func (s *Stat) StatOpsHttpHandler(c *gin.Context) {
-	statResp := api.StatResponse{}
-	stats, err := stat.StatOpsHandler(&statResp)
-	if err != nil {
-		common.SetResponseBodyError(c, http.StatusInternalServerError, err)
-		return
+func (h Handler) Authenticate(apiKey *string, request interface{}) error {
+	if !config.Configuration().Security.UseHopsWorksAPIKeys {
+		return nil
 	}
-	common.SetResponseBody(c, stats, &statResp)
+	return apikey.ValidateAPIKey(apiKey, nil)
 }
 
-func (s *Stat) StatOpsHandler(statResp *api.StatResponse) (int, error) {
-
+func (h Handler) Execute(request interface{}, response interface{}) (int, error) {
 	rondbStats, err := dal.GetRonDBStats()
 	if err != nil {
 		return http.StatusInternalServerError, err
 	}
 
 	nativeBuffersStats := dal.GetNativeBuffersStats()
-	statResp.MemoryStats = nativeBuffersStats
-	statResp.RonDBStats = *rondbStats
+
+	statsResponse := response.(*api.StatResponse)
+	statsResponse.MemoryStats = nativeBuffersStats
+	statsResponse.RonDBStats = *rondbStats
 
 	return http.StatusOK, nil
 }

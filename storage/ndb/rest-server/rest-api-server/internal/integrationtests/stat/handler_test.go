@@ -26,16 +26,13 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/handlers"
-	"hopsworks.ai/rdrs/internal/handlers/pkread"
-	tu "hopsworks.ai/rdrs/internal/handlers/utils"
+	"hopsworks.ai/rdrs/internal/integrationtests"
+	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
 func TestStat(t *testing.T) {
-
 	db := "DB004"
 	table := "int_table"
 
@@ -48,8 +45,8 @@ func TestStat(t *testing.T) {
 		expectedAllocations = config.Configuration().RestServer.PreAllocatedBuffers
 	}
 
-	tu.WithDBs(t, []string{db},
-		getStatHandlers(), func(tc common.TestContext) {
+	integrationtests.WithDBs(t, []string{db},
+		func(tc testutils.TlsContext) {
 			for i := uint32(0); i < numOps; i++ {
 				go performPkOp(t, tc, db, table, ch)
 			}
@@ -80,23 +77,23 @@ func compare(t *testing.T, stats *api.StatResponse, expectedAllocations int64, n
 	}
 }
 
-func performPkOp(t *testing.T, tc common.TestContext, db string, table string, ch chan int) {
+func performPkOp(t *testing.T, tc testutils.TlsContext, db string, table string, ch chan int) {
 	param := api.PKReadBody{
-		Filters:     tu.NewFiltersKVs("id0", 0, "id1", 0),
-		ReadColumns: tu.NewReadColumn("col0"),
+		Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
+		ReadColumns: integrationtests.NewReadColumn("col0"),
 	}
 	body, _ := json.MarshalIndent(param, "", "\t")
 
-	url := tu.NewPKReadURL(db, table)
-	tu.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusOK, "")
+	url := integrationtests.NewPKReadURL(db, table)
+	integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusOK, "")
 
 	ch <- 0
 }
 
-func getStatsHttp(t *testing.T, tc common.TestContext) *api.StatResponse {
+func getStatsHttp(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
 	body := ""
-	url := tu.NewStatURL()
-	_, respBody := tu.SendHttpRequest(t, tc, config.STAT_HTTP_VERB, url, string(body), http.StatusOK, "")
+	url := integrationtests.NewStatURL()
+	_, respBody := integrationtests.SendHttpRequest(t, tc, config.STAT_HTTP_VERB, url, string(body), http.StatusOK, "")
 
 	var stats api.StatResponse
 	err := json.Unmarshal([]byte(respBody), &stats)
@@ -106,17 +103,17 @@ func getStatsHttp(t *testing.T, tc common.TestContext) *api.StatResponse {
 	return &stats
 }
 
-func getStatsGRPC(t *testing.T, tc common.TestContext) *api.StatResponse {
+func getStatsGRPC(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
 	stats := sendGRPCStatRequest(t, tc)
 	return stats
 }
 
-func sendGRPCStatRequest(t *testing.T, tc common.TestContext) *api.StatResponse {
+func sendGRPCStatRequest(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
 	// Create gRPC client
 	conn, err := grpc.Dial(fmt.Sprintf("%s:%d",
 		config.Configuration().RestServer.GRPCServerIP,
 		config.Configuration().RestServer.GRPCServerPort),
-		grpc.WithTransportCredentials(credentials.NewTLS(tu.GetClientTLSConfig(t, tc))))
+		grpc.WithTransportCredentials(credentials.NewTLS(testutils.GetClientTLSConfig(t, tc))))
 	defer conn.Close()
 
 	if err != nil {
@@ -134,7 +131,7 @@ func sendGRPCStatRequest(t *testing.T, tc common.TestContext) *api.StatResponse 
 	var errStr string
 	respProto, err := client.Stat(context.Background(), reqProto)
 	if err != nil {
-		respCode = tu.GetStatusCodeFromError(t, err)
+		respCode = integrationtests.GetStatusCodeFromError(t, err)
 		errStr = fmt.Sprintf("%v", err)
 	}
 
@@ -143,12 +140,4 @@ func sendGRPCStatRequest(t *testing.T, tc common.TestContext) *api.StatResponse 
 	}
 
 	return api.ConvertStatResponseProto(respProto)
-}
-
-func getStatHandlers() *handlers.AllHandlers {
-	return &handlers.AllHandlers{
-		Stater:   GetStater(),
-		Batcher:  nil,
-		PKReader: pkread.GetPKReader(),
-	}
 }

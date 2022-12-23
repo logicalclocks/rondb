@@ -36,8 +36,7 @@ var databases map[string][][]string = make(map[string][][]string)
 func init() {
 	db := "bench"
 	databases[db] = [][]string{
-		benchmarSchema(db, 1000),
-
+		createBenchmarkSchema(db, 1000),
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -51,7 +50,6 @@ func init() {
 			"CREATE DATABASE " + db,
 			"USE " + db,
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -64,11 +62,9 @@ func init() {
 			"DROP DATABASE IF EXISTS " + db,
 			"CREATE DATABASE " + db,
 			"USE " + db,
-
 			"CREATE TABLE table_1(id0 VARCHAR(10), col_0 VARCHAR(100), col_1 VARCHAR(100), col_2 VARCHAR(100), PRIMARY KEY(id0)) ENGINE=ndbcluster",
 			"INSERT INTO table_1 VALUES('id0_data', 'col_0_data', 'col_1_data', 'col_2_data')",
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -81,11 +77,9 @@ func init() {
 			"DROP DATABASE IF EXISTS " + db,
 			"CREATE DATABASE " + db,
 			"USE " + db,
-
 			"CREATE TABLE table_1(id0 VARCHAR(10), id1 VARCHAR(10), col_0 VARCHAR(100), col_1 VARCHAR(100), col_2 VARCHAR(100), PRIMARY KEY(id0, id1)) ENGINE=ndbcluster",
 			"INSERT INTO table_1 VALUES('id0_data', 'id1_data', 'col_0_data', 'col_1_data', 'col_2_data')",
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -124,7 +118,6 @@ func init() {
 			"insert into blob_table values(1, 0xFFFF, 0xFFFF, 0xFFFF,  0xFFFF, \"abcd\", \"abcd\", \"abcd\")",
 			"insert into blob_table set id0=2",
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -149,7 +142,6 @@ func init() {
 			"CREATE TABLE int_table1(id0 INT, id1 INT UNSIGNED, PRIMARY KEY(id0, id1)) ENGINE=ndbcluster",
 			"INSERT INTO  int_table1 VALUES(0,0)",
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -169,7 +161,6 @@ func init() {
 			"INSERT INTO  bigint_table VALUES(0,0,0,0)",
 			"INSERT INTO  bigint_table set id0=1, id1=1", // NULL values for non primary columns
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -189,7 +180,6 @@ func init() {
 			"INSERT INTO  tinyint_table VALUES(0,0,0,0)",
 			"INSERT INTO  tinyint_table set id0=1, id1=1", // NULL values for non primary columns
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -208,9 +198,7 @@ func init() {
 			"INSERT INTO  smallint_table VALUES(-32768,0,-32768,0)",
 			"INSERT INTO  smallint_table VALUES(0,0,0,0)",
 			"INSERT INTO  smallint_table set id0=1, id1=1", // NULL values for non primary columns
-
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -229,9 +217,7 @@ func init() {
 			"INSERT INTO  mediumint_table VALUES(-8388608,0,-8388608,0)",
 			"INSERT INTO  mediumint_table VALUES(0,0,0,0)",
 			"INSERT INTO  mediumint_table set id0=1, id1=1", // NULL values for non primary columns
-
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -273,7 +259,6 @@ func init() {
 
 			"CREATE TABLE double_table2(id0 DOUBLE, col0 DOUBLE, col1 DOUBLE UNSIGNED, PRIMARY KEY(id0)) ENGINE=ndbcluster",
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -291,7 +276,6 @@ func init() {
 			"INSERT INTO  decimal_table VALUES(-12345.12345,12345.12345,-12345.12345,12345.12345)",
 			"INSERT INTO  decimal_table set id0=-67890.12345, id1=67890.12345",
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -314,25 +298,24 @@ func init() {
 			"CREATE TABLE text_table(id0 int, col0 text, col1 int, PRIMARY KEY(id0)) ENGINE=ndbcluster",
 			"INSERT INTO  text_table VALUES(1,\"FFFF\", 1)",
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
 	}
 
-	db = "DB014" //varchar
+	db = "DB014" // varchar
 	databases[db] = SchemaTextualColumns("VARCHAR", db, 50)
 
-	db = "DB015" //long varchar
+	db = "DB015" // long varchar
 	databases[db] = SchemaTextualColumns("VARCHAR", db, 256)
 
-	db = "DB016" //binary fix size
+	db = "DB016" // binary fix size
 	databases[db] = SchemaTextualColumns("BINARY", db, 100)
 
-	db = "DB017" //varbinary
+	db = "DB017" // varbinary
 	databases[db] = SchemaTextualColumns("VARBINARY", db, 100)
 
-	db = "DB018" //long varbinary
+	db = "DB018" // long varbinary
 	databases[db] = SchemaTextualColumns("VARBINARY", db, 256)
 
 	db = "DB019"
@@ -375,7 +358,6 @@ func init() {
 			"insert into date_table6 values( \"1111-11-11 11:11:11.123456\", \"1111-11-11 11:11:11.123456\")",
 			"insert into date_table6 set id0= \"1111-11-12 11:11:11.123456\"",
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -402,7 +384,6 @@ func init() {
 			"insert into time_table6 values( \"11:11:11.123456\", \"11:11:11.123456\")",
 			"insert into time_table6 set id0= \"12:11:11.123456\"",
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -429,7 +410,6 @@ func init() {
 			"insert into ts_table6 values( \"2022-11-11 11:11:11.123456\", \"2022-11-11 11:11:11.123456\")",
 			"insert into ts_table6 set id0= \"2022-11-12 11:11:11.123456\"",
 		},
-
 		{ // clean up commands
 			"DROP DATABASE " + db,
 		},
@@ -478,7 +458,7 @@ func init() {
 }
 
 func GenerateHWSchema(userProjects ...string) [][]string {
-	creaetSchema := []string{
+	createSchema := []string{
 		// setup commands
 		"DROP DATABASE IF EXISTS " + HOPSWORKS_SCHEMA_NAME,
 		"CREATE DATABASE " + HOPSWORKS_SCHEMA_NAME,
@@ -577,20 +557,20 @@ func GenerateHWSchema(userProjects ...string) [][]string {
 	}
 
 	for i, project := range userProjects {
-		creaetSchema = append(creaetSchema, fmt.Sprintf("INSERT INTO `project` VALUES (%d,322,'%s',322,'%s','macho@hopsworks.ai',"+
+		createSchema = append(createSchema, fmt.Sprintf("INSERT INTO `project` VALUES (%d,322,'%s',322,'%s','macho@hopsworks.ai',"+
 			"'2022-05-30 14:17:22','2032-05-30',0,0,NULL,'A demo project for getting started with featurestore',"+
 			"'NOLIMIT','2022-05-30 14:17:38',100,'demo_fs_meb10000:1653921933268-2.6.0-SNAPSHOT.1',1)", i+1, project, project))
 	}
 
 	for i := 1; i <= len(userProjects); i++ {
-		creaetSchema = append(creaetSchema, fmt.Sprintf("INSERT INTO `project_team` VALUES (%d,'macho@hopsworks.ai','Data scientist','2022-06-01 13:28:05')", i))
+		createSchema = append(createSchema, fmt.Sprintf("INSERT INTO `project_team` VALUES (%d,'macho@hopsworks.ai','Data scientist','2022-06-01 13:28:05')", i))
 	}
 
 	dropSchema := []string{ // clean up commands
 		"DROP DATABASE " + HOPSWORKS_SCHEMA_NAME,
 	}
 
-	commands := [][]string{creaetSchema, dropSchema}
+	commands := [][]string{createSchema, dropSchema}
 	databases[HOPSWORKS_SCHEMA_NAME] = commands
 
 	return commands
@@ -617,7 +597,6 @@ func SchemaTextualColumns(colType string, db string, length int) [][]string {
 				`INSERT INTO  table1 VALUES("6","\"\\\b\f\n\r\t$%_?")`, // in mysql \f is replaced by f
 				`INSERT INTO  table1 VALUES("\"7\"","abc")`,            // testing quoted primary key
 			},
-
 			{ // clean up commands
 				"DROP DATABASE " + db,
 			},
@@ -627,7 +606,7 @@ func SchemaTextualColumns(colType string, db string, length int) [][]string {
 	}
 }
 
-func benchmarSchema(db string, count int) []string {
+func createBenchmarkSchema(db string, count int) []string {
 	colWidth := 1000
 	dummyData := ""
 	for i := 0; i < colWidth; i++ {
@@ -674,7 +653,6 @@ func DropDatabases(t testing.TB, dbNames ...string) {
 }
 
 func createDatabasesInt(t testing.TB, create bool, dbNames ...string) {
-
 	if len(dbNames) == 0 {
 		t.Fatal("No database specified")
 	}
@@ -684,17 +662,17 @@ func createDatabasesInt(t testing.TB, create bool, dbNames ...string) {
 		dbs = append(dbs, Database(dbName))
 	}
 
-	//user:password@tcp(IP:Port)/
+	// user:password@tcp(IP:Port)/
 	connectionString := fmt.Sprintf("%s:%s@tcp(%s:%d)/",
 		config.Configuration().MySQLServer.User,
 		config.Configuration().MySQLServer.Password,
 		config.Configuration().MySQLServer.IP,
 		config.Configuration().MySQLServer.Port)
 	dbConnection, err := sql.Open("mysql", connectionString)
-	defer dbConnection.Close()
 	if err != nil {
 		t.Fatalf("failed to connect to db. %v", err)
 	}
+	defer dbConnection.Close()
 
 	for _, db := range dbs {
 		if len(db) != 2 {
@@ -704,7 +682,7 @@ func createDatabasesInt(t testing.TB, create bool, dbNames ...string) {
 		}
 		if create {
 			runSQLQueries(t, dbConnection, db[0])
-		} else { //drop
+		} else { // drop
 			runSQLQueries(t, dbConnection, db[1])
 		}
 	}

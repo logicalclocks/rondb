@@ -37,7 +37,6 @@ type HopsworksAPIKey struct {
 }
 
 func GetAPIKey(userKey string) (*HopsworksAPIKey, *DalError) {
-
 	cUserKey := C.CString(userKey)
 	defer C.free(unsafe.Pointer(cUserKey))
 

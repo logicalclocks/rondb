@@ -32,17 +32,6 @@ import (
 	"unsafe"
 )
 
-type DalError struct {
-	HttpCode    int
-	Message     string
-	ErrLineNo   int
-	ErrFileName string
-}
-
-func (e *DalError) Error() string {
-	return e.Message
-}
-
 type RonDBStats struct {
 	NdbObjectsCreationCount int64
 	NdbObjectsDeletionCount int64
@@ -50,31 +39,9 @@ type RonDBStats struct {
 	NdbObjectsFreeCount     int64
 }
 
-func InitRonDBConnection(connStr string, find_available_node_id bool) *DalError {
-
-	cs := C.CString(connStr)
-	defer C.free(unsafe.Pointer(cs))
-	ret := C.init(cs, C.uint(btoi(find_available_node_id)))
-
-	if ret.http_code != http.StatusOK {
-		return cToGoRet(&ret)
-	}
-
-	return nil
-}
-
-func ShutdownConnection() *DalError {
-	ret := C.shutdown_connection()
-
-	if ret.http_code != http.StatusOK {
-		return cToGoRet(&ret)
-	}
-	return nil
-}
-
 func RonDBPKRead(request *NativeBuffer, response *NativeBuffer) *DalError {
 	// unsafe.Pointer
-	// create C structs for  buffers
+	// create C structs for buffers
 	var crequest C.RS_Buffer
 	var cresponse C.RS_Buffer
 	crequest.buffer = (*C.char)(request.Buffer)
@@ -118,13 +85,7 @@ func RonDBBatchedPKRead(noOps uint32, requests []*NativeBuffer, responses []*Nat
 	return nil
 }
 
-func cToGoRet(ret *C.RS_Status) *DalError {
-	return &DalError{HttpCode: int(ret.http_code), Message: C.GoString(&ret.message[0]),
-		ErrLineNo: int(ret.err_line_no), ErrFileName: C.GoString(&ret.err_file_name[0])}
-}
-
 func GetRonDBStats() (*RonDBStats, *DalError) {
-
 	p := (*C.RonDB_Stats)(C.malloc(C.size_t(C.sizeof_RonDB_Stats)))
 	defer C.free(unsafe.Pointer(p))
 
@@ -140,11 +101,4 @@ func GetRonDBStats() (*RonDBStats, *DalError) {
 	rstats.NdbObjectsFreeCount = int64(p.ndb_objects_available)
 
 	return &rstats, nil
-}
-
-func btoi(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }

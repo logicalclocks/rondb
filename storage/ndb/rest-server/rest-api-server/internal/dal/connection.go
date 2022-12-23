@@ -1,4 +1,5 @@
 /*
+
  * This file is part of the RonDB REST API Server
  * Copyright (c) 2022 Hopsworks AB
  *
@@ -14,13 +15,36 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-package common
 
-// These are some parameters needed for testing
-type TestContext struct {
-	CertsDir       string
-	RootCACertFile string
-	RootCAKeyFile  string
-	ClientCertFile string
-	ClientKeyFile  string
+package dal
+
+/*
+#include <stdlib.h>
+#include "./../../../data-access-rondb/src/rdrs-dal.h"
+*/
+import "C"
+import (
+	"net/http"
+	"unsafe"
+)
+
+func InitRonDBConnection(connStr string, find_available_node_id bool) *DalError {
+	cs := C.CString(connStr)
+	defer C.free(unsafe.Pointer(cs))
+	ret := C.init(cs, C.uint(btoi(find_available_node_id)))
+
+	if ret.http_code != http.StatusOK {
+		return cToGoRet(&ret)
+	}
+
+	return nil
+}
+
+func ShutdownConnection() *DalError {
+	ret := C.shutdown_connection()
+
+	if ret.http_code != http.StatusOK {
+		return cToGoRet(&ret)
+	}
+	return nil
 }

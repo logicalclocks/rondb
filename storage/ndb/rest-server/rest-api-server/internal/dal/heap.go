@@ -44,6 +44,7 @@ type MemoryStats struct {
 	FreeBuffers        int64
 }
 
+// Thread-safe buffers to save users' database permissions
 var buffers []*NativeBuffer
 var buffersStats MemoryStats
 var initialized bool
@@ -54,11 +55,11 @@ func InitializeBuffers() {
 	defer mutex.Unlock()
 
 	if initialized {
-		panic(fmt.Sprintf("Native buffers are already initialized"))
+		panic("Native buffers are already initialized")
 	}
 
 	if C.ADDRESS_SIZE != 4 {
-		panic(fmt.Sprintf("Only 4 byte address are supported"))
+		panic("Only 4 byte address are supported")
 	}
 
 	if config.Configuration().RestServer.BufferSize%C.ADDRESS_SIZE != 0 {
@@ -66,7 +67,7 @@ func InitializeBuffers() {
 	}
 
 	for i := uint32(0); i < config.Configuration().RestServer.PreAllocatedBuffers; i++ {
-		buffers = append(buffers, __allocateBuffer())
+		buffers = append(buffers, allocateBuffer())
 	}
 
 	buffersStats.AllocationsCount = int64(config.Configuration().RestServer.PreAllocatedBuffers)
@@ -92,9 +93,11 @@ func ReleaseAllBuffers() {
 	initialized = false
 }
 
-func __allocateBuffer() *NativeBuffer {
-	buff := NativeBuffer{Buffer: C.malloc(C.size_t(config.Configuration().RestServer.BufferSize)),
-		Size: uint32(config.Configuration().RestServer.BufferSize)}
+func allocateBuffer() *NativeBuffer {
+	buff := NativeBuffer{
+		Buffer: C.malloc(C.size_t(config.Configuration().RestServer.BufferSize)),
+		Size:   uint32(config.Configuration().RestServer.BufferSize),
+	}
 	dstBuf := unsafe.Slice((*byte)(buff.Buffer), config.Configuration().RestServer.BufferSize)
 	dstBuf[0] = 0x00 // reset buffer by putting null terminator in the begenning
 	return &buff
@@ -113,7 +116,7 @@ func GetBuffer() *NativeBuffer {
 		buff = buffers[len(buffers)-1]
 		buffers = buffers[:len(buffers)-1]
 	} else {
-		buff = __allocateBuffer()
+		buff = allocateBuffer()
 		buffersStats.BuffersCount++
 		buffersStats.AllocationsCount++
 	}
@@ -123,7 +126,7 @@ func GetBuffer() *NativeBuffer {
 
 func ReturnBuffer(buffer *NativeBuffer) {
 	if !initialized {
-		panic(fmt.Sprintf("Native buffers are not initialized"))
+		panic("Native buffers are not initialized")
 	}
 
 	if buffer == nil {
@@ -138,15 +141,11 @@ func ReturnBuffer(buffer *NativeBuffer) {
 
 func GetNativeBuffersStats() MemoryStats {
 	if !initialized {
-		panic(fmt.Sprintf("Native buffers are not initialized"))
+		panic("Native buffers are not initialized")
 	}
-	//update the free buffers cound
+	// update the free buffers cound
 	mutex.Lock()
 	defer mutex.Unlock()
 	buffersStats.FreeBuffers = int64(len(buffers))
 	return buffersStats
-}
-
-func BuffersInitialized() bool {
-	return initialized
 }

@@ -25,6 +25,7 @@ package pkread
 import "C"
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -187,12 +188,11 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 	return request, response, nil
 }
 func ProcessPKReadResponse(respBuff *dal.NativeBuffer, response api.PKReadResponse) (int32, error) {
-
 	iBuf := unsafe.Slice((*uint32)(respBuff.Buffer), respBuff.Size)
 
 	responseType := iBuf[C.PK_RESP_OP_TYPE_IDX]
 	if responseType != C.RDRS_PK_RESP_ID {
-		return http.StatusInternalServerError, fmt.Errorf("Wrong response type")
+		return http.StatusInternalServerError, errors.New("wrong response type")
 	}
 
 	// some sanity checks
@@ -200,7 +200,7 @@ func ProcessPKReadResponse(respBuff *dal.NativeBuffer, response api.PKReadRespon
 	dataLength := iBuf[C.PK_RESP_LENGTH_IDX]
 	if respBuff.Size != capacity || !(dataLength < capacity) {
 		return http.StatusInternalServerError,
-			fmt.Errorf("Response buffer may be corrupt. Buffer capacity: %d, Buffer data length: %d", capacity, dataLength)
+			fmt.Errorf("response buffer may be corrupt. Buffer capacity: %d, Buffer data length: %d", capacity, dataLength)
 	}
 
 	opIDX := iBuf[C.PK_RESP_OP_ID_IDX]
@@ -258,6 +258,6 @@ func dataReturnType(drt *string) (uint32, error) {
 	if *drt == api.DRT_DEFAULT {
 		return C.DEFAULT_DRT, nil
 	} else {
-		return math.MaxUint32, fmt.Errorf("Return data type is not supported. Data type: %s", *drt)
+		return math.MaxUint32, fmt.Errorf("return data type is not supported. Data type: %s", *drt)
 	}
 }

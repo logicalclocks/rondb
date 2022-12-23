@@ -16,10 +16,42 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-package common
+package dal
 
+/*
+#include <stdlib.h>
+#include "./../../../data-access-rondb/src/rdrs-dal.h"
+*/
 import "C"
+import "fmt"
 
-type ErrorResponse struct {
-	Error string `json:"error"    form:"error"    binding:"required"`
+type DalError struct {
+	HttpCode    int
+	Message     string
+	ErrLineNo   int
+	ErrFileName string
+}
+
+func (e *DalError) Error() string {
+	return e.Message
+}
+
+func (e *DalError) VerboseError() string {
+	return fmt.Sprintf("%v; File: %v, Line: %v ", e.Message, e.ErrFileName, e.ErrLineNo)
+}
+
+func cToGoRet(ret *C.RS_Status) *DalError {
+	return &DalError{
+		HttpCode:    int(ret.http_code),
+		Message:     C.GoString(&ret.message[0]),
+		ErrLineNo:   int(ret.err_line_no),
+		ErrFileName: C.GoString(&ret.err_file_name[0]),
+	}
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

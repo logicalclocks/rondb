@@ -19,6 +19,7 @@
 package common
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"unsafe"
@@ -32,7 +33,7 @@ func CopyGoStrToCStr(src []byte, dst *dal.NativeBuffer, offset uint32) (uint32, 
 	dstBuf := unsafe.Slice((*byte)(dst.Buffer), dst.Size)
 
 	if offset+uint32(len(src))+1 > dst.Size {
-		return 0, fmt.Errorf("Trying to write more data than the buffer capacity")
+		return 0, errors.New("trying to write more data than the buffer capacity")
 	}
 
 	for i, j := offset, 0; i < (offset + uint32(len(src))); i, j = i+1, j+1 {
@@ -42,16 +43,18 @@ func CopyGoStrToCStr(src []byte, dst *dal.NativeBuffer, offset uint32) (uint32, 
 	return offset + uint32(len(src)) + 1, nil
 }
 
-// copy a go string to the buffer at the specified location.
-// first two bytes store the size of the string
-// and NULL is appended to the string for c/c++ compatibility.
-//
-// Note: at this moment we do not know the column type.
-// NdbDictionary::Column::ArrayTypeFixed uses 0 bytes for length
-// NdbDictionary::Column::ArrayTypeShortVar uses 1 byte for length
-// NdbDictionary::Column::ArrayTypeMediumVar uses 2 bytes for length
-// for now we store the length in 2 bytes. Later in the native layer
-// we adjust the size accordingly.
+/*
+	Copy a go string to the buffer at the specified location.
+	first two bytes store the size of the string
+	and NULL is appended to the string for c/c++ compatibility.
+
+	Note: at this moment we do not know the column type.
+	NdbDictionary::Column::ArrayTypeFixed uses 0 bytes for length
+	NdbDictionary::Column::ArrayTypeShortVar uses 1 byte for length
+	NdbDictionary::Column::ArrayTypeMediumVar uses 2 bytes for length
+	for now we store the length in 2 bytes. Later in the native layer
+	we adjust the size accordingly.
+*/
 
 func CopyGoStrToNDBStr(src []byte, dst *dal.NativeBuffer, offset uint32) (uint32, error) {
 	dstBuf := unsafe.Slice((*byte)(dst.Buffer), dst.Size)
@@ -62,13 +65,13 @@ func CopyGoStrToNDBStr(src []byte, dst *dal.NativeBuffer, offset uint32) (uint32
 		// it is quoted string,
 		uqSrc, err := strconv.Unquote(string(src))
 		if err != nil {
-			return 0, fmt.Errorf("Failed to unquote string. Error: %w")
+			return 0, fmt.Errorf("failed to unquote string. Error: %w", err)
 		}
 		src = []byte(uqSrc)
 	}
 
 	if offset+uint32(len(src))+1+2 > dst.Size {
-		return 0, fmt.Errorf("Trying to write more data than the buffer capacity")
+		return 0, errors.New("trying to write more data than the buffer capacity")
 	}
 
 	dstBuf[offset] = byte(len(src) % 256)

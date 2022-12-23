@@ -14,55 +14,62 @@
  * You should have received a copy of the GNU General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
-package utils
+package integrationtests
 
 import (
 	"context"
-	"crypto/tls"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
 	"net/http"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
-	"hopsworks.ai/rdrs/internal/handlers"
 	"hopsworks.ai/rdrs/internal/log"
-	"hopsworks.ai/rdrs/internal/security/tlsutils"
-	"hopsworks.ai/rdrs/internal/server"
+	"hopsworks.ai/rdrs/internal/servers"
+	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/version"
 )
 
-func SendHttpRequest(t testing.TB, tc common.TestContext, httpVerb string,
-	url string, body string, expectedStatus int, expectedErrMsg string) (int, string) {
+var withRonDB = flag.Bool("with-rondb", false, "test with a running RonDB instance")
+
+func SendHttpRequest(
+	t testing.TB,
+	tlsCtx testutils.TlsContext,
+	httpVerb string,
+	url string,
+	body string,
+	expectedStatus int,
+	expectedErrMsg string,
+) (int, string) {
 	t.Helper()
 
-	client := setupHttpClient(t, tc)
+	client := setupHttpClient(t, tlsCtx)
 	var req *http.Request
 	var resp *http.Response
 	var err error
 	switch httpVerb {
-	case "POST":
-		req, err = http.NewRequest("POST", url, strings.NewReader(body))
+	case http.MethodPost:
+		req, err = http.NewRequest(http.MethodPost, url, strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 
-	case "GET":
-		req, err = http.NewRequest("GET", url, nil)
+	case http.MethodGet:
+		req, err = http.NewRequest(http.MethodGet, url, nil)
 
 	default:
-		t.Fatalf("Http verb not yet implemented. Verb %s", httpVerb)
+		t.Fatalf("HTTP verb '%s' is not implemented", httpVerb)
 	}
 
 	if err != nil {
@@ -87,40 +94,21 @@ func SendHttpRequest(t testing.TB, tc common.TestContext, httpVerb string,
 
 	if respCode != expectedStatus {
 		t.Fatalf("Test failed. Expected: %d, Got: %d. Complete Response Body: %v ", expectedStatus, respCode, respBody)
-	}
-
-	if respCode != http.StatusOK && !strings.Contains(respBody, expectedErrMsg) {
+	} else if respCode != http.StatusOK && !strings.Contains(respBody, expectedErrMsg) {
 		t.Fatalf("Test failed. Response error body does not contain %s. Body: %s", expectedErrMsg, respBody)
 	}
 
 	return respCode, respBody
 }
 
-func setupHttpClient(t testing.TB, tc common.TestContext) *http.Client {
-	c := &http.Client{}
-	c.Transport = &http.Transport{TLSClientConfig: GetClientTLSConfig(t, tc)}
-	return c
-}
-
-func GetClientTLSConfig(t testing.TB, tc common.TestContext) *tls.Config {
-	clientTLSConfig := tls.Config{}
-	if config.Configuration().Security.RootCACertFile != "" {
-		clientTLSConfig.RootCAs = tlsutils.TrustedCAs(tc.RootCACertFile)
+func setupHttpClient(t testing.TB, tlsCtx testutils.TlsContext) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: testutils.GetClientTLSConfig(t, tlsCtx)},
 	}
-
-	if config.Configuration().Security.RequireAndVerifyClientCert {
-		clientCert, err := tls.LoadX509KeyPair(tc.ClientCertFile, tc.ClientKeyFile)
-		if err != nil {
-			t.Fatalf("%v", err)
-		}
-		clientTLSConfig.Certificates = []tls.Certificate{clientCert}
-	}
-	return &clientTLSConfig
 }
 
 func ValidateResHttp(t testing.TB, testInfo api.PKTestInfo, resp string, isBinaryData bool) {
 	t.Helper()
-
 	for i := 0; i < len(testInfo.RespKVs); i++ {
 		key := string(testInfo.RespKVs[i].(string))
 
@@ -140,10 +128,13 @@ func ValidateResHttp(t testing.TB, testInfo api.PKTestInfo, resp string, isBinar
 	}
 }
 
-func ValidateResGRPC(t testing.TB, testInfo api.PKTestInfo,
-	resp *api.PKReadResponseGRPC, isBinaryData bool) {
+func ValidateResGRPC(
+	t testing.TB,
+	testInfo api.PKTestInfo,
+	resp *api.PKReadResponseGRPC,
+	isBinaryData bool,
+) {
 	t.Helper()
-
 	for i := 0; i < len(testInfo.RespKVs); i++ {
 		key := string(testInfo.RespKVs[i].(string))
 
@@ -170,10 +161,10 @@ func compareDataWithDB(t testing.TB, db string, table string, filters *[]api.Fil
 	colName *string, colDataFromRestServer *string, isBinaryData bool) {
 	dbVal, err := getColumnDataFromDB(t, db, table, filters, *colName, isBinaryData)
 	if err != nil {
-		t.Fatalf("%v", err)
+		t.Fatalf(err.Error())
 	}
 
-	if (colDataFromRestServer == nil || dbVal == nil) && !(colDataFromRestServer == nil && dbVal == nil) { // if one of prts is nill
+	if (colDataFromRestServer == nil || dbVal == nil) && !(colDataFromRestServer == nil && dbVal == nil) { // if one of prts is nil
 		t.Fatalf("The read value for key %s does not match.", *colName)
 	}
 
@@ -187,9 +178,8 @@ func getColumnDataFromGRPC(t testing.TB, colName string, pkResponse *api.PKReadR
 	val, ok := (*pkResponse.Data)[colName]
 	if !ok {
 		return nil, ok
-	} else {
-		return val, ok
 	}
+	return val, ok
 }
 
 func getColumnDataFromJson(t testing.TB, colName string, pkResponse *api.PKReadResponseJSON) (*string, bool) {
@@ -197,31 +187,36 @@ func getColumnDataFromJson(t testing.TB, colName string, pkResponse *api.PKReadR
 
 	kvMap := make(map[string]*string)
 	for colName, colValue := range *pkResponse.Data {
-		if colValue != nil {
-			value := string([]byte(*colValue))
-			var err error
-			if value[0] == '"' {
-				value, err = strconv.Unquote(value)
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			kvMap[colName] = &value
-		} else {
+		if colValue == nil {
 			kvMap[colName] = nil
+			continue
 		}
+		value := string([]byte(*colValue))
+		if value[0] == '"' {
+			var err error
+			value, err = strconv.Unquote(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		kvMap[colName] = &value
 	}
 
 	val, ok := kvMap[colName]
 	if !ok {
 		return nil, ok
-	} else {
-		return val, ok
 	}
+	return val, ok
 }
 
-func getColumnDataFromDB(t testing.TB, db string, table string, filters *[]api.Filter, col string, isBinary bool) (*string, error) {
-
+func getColumnDataFromDB(
+	t testing.TB,
+	db string,
+	table string,
+	filters *[]api.Filter,
+	col string,
+	isBinary bool,
+) (*string, error) {
 	connectionString := fmt.Sprintf("%s:%s@tcp(%s:%d)/",
 		config.Configuration().MySQLServer.User,
 		config.Configuration().MySQLServer.Password,
@@ -329,10 +324,12 @@ func NewReadColumn(col string) *[]api.ReadColumn {
 }
 
 func NewPKReadURL(db string, table string) string {
-
-	url := fmt.Sprintf("%s:%d%s%s", config.Configuration().RestServer.RESTServerIP,
+	url := fmt.Sprintf("%s:%d%s%s",
+		config.Configuration().RestServer.RESTServerIP,
 		config.Configuration().RestServer.RESTServerPort,
-		config.DB_OPS_EP_GROUP, config.PK_DB_OPERATION)
+		config.DB_OPS_EP_GROUP,
+		config.PK_DB_OPERATION,
+	)
 	url = strings.Replace(url, ":"+config.DB_PP, db, 1)
 	url = strings.Replace(url, ":"+config.TABLE_PP, table, 1)
 	appendURLProtocol(&url)
@@ -425,59 +422,63 @@ func RandString(n int) string {
 	return string(b)
 }
 
-func WithDBs(t testing.TB, dbs []string, handlers *handlers.AllHandlers,
-	fn func(tc common.TestContext)) {
+func WithDBs(
+	t testing.TB,
+	dbs []string,
+	executer func(tc testutils.TlsContext),
+) {
 	t.Helper()
 
-	tc := common.TestContext{}
+	if !*withRonDB {
+		t.Skip("skipping test without RonDB")
+	}
 
 	// init logger
 	log.InitLogger(config.Configuration().Log)
 
+	var err error
+	var tlsCtx testutils.TlsContext
+	var cleanup func()
 	if config.Configuration().Security.EnableTLS {
-		tlsutils.SetupCerts(&tc)
+		tlsCtx, cleanup, err = testutils.CreateAllTLSCerts()
+		if err != nil {
+			t.Fatalf(err.Error())
+		}
+		defer cleanup()
 	}
 
+	// TODO: Explain why?
 	rand.Seed(int64(time.Now().Nanosecond()))
+
+	defer func() {
+		stats := dal.GetNativeBuffersStats()
+		if stats.BuffersCount != stats.FreeBuffers {
+			t.Fatalf("Number of free buffers do not match. Expecting: %d, Got: %d",
+				stats.BuffersCount, stats.FreeBuffers)
+		}
+	}()
 
 	common.CreateDatabases(t, dbs...)
 	defer common.DropDatabases(t, dbs...)
 
-	routerCtx := server.CreateRouterContext()
-
-	routerCtx.SetupRouter(handlers)
-
-	err := routerCtx.StartRouter()
+	// Wait for interrupt signal to gracefully shutdown the server
+	quit := make(chan os.Signal)
+	err, cleanupServers := servers.CreateAndStartDefaultServers(quit)
+	defer cleanupServers()
 	if err != nil {
-		t.Fatalf("%v", err)
-	}
-	defer shutDownRouter(t, routerCtx)
-
-	fn(tc)
-
-	stats := dal.GetNativeBuffersStats()
-	if stats.BuffersCount != stats.FreeBuffers {
-		t.Fatalf("Number of free buffers do not match. Expecting: %d, Got: %d",
-			stats.BuffersCount, stats.FreeBuffers)
+		panic(err.Error())
 	}
 
-	if config.Configuration().Security.EnableTLS {
-		tlsutils.DeleteCerts(&tc)
-	}
+	executer(tlsCtx)
 }
 
-func shutDownRouter(t testing.TB, router server.Router) error {
-	t.Helper()
-	return router.StopRouter()
-}
-
-func PkTest(t *testing.T, tests map[string]api.PKTestInfo, isBinaryData bool, handlers *handlers.AllHandlers) {
+func PkTest(t *testing.T, tests map[string]api.PKTestInfo, isBinaryData bool) {
 	for name, testInfo := range tests {
 		t.Run(name, func(t *testing.T) {
 			dbs := []string{}
 			dbs = append(dbs, testInfo.Db)
 
-			WithDBs(t, dbs, handlers, func(tc common.TestContext) {
+			WithDBs(t, dbs, func(tc testutils.TlsContext) {
 				pkRESTTest(t, testInfo, tc, isBinaryData)
 				pkGRPCTest(t, testInfo, tc, isBinaryData)
 			})
@@ -485,7 +486,7 @@ func PkTest(t *testing.T, tests map[string]api.PKTestInfo, isBinaryData bool, ha
 	}
 }
 
-func pkGRPCTest(t *testing.T, testInfo api.PKTestInfo, tc common.TestContext, isBinaryData bool) {
+func pkGRPCTest(t *testing.T, testInfo api.PKTestInfo, tc testutils.TlsContext, isBinaryData bool) {
 	respCode, resp := sendGRPCPKReadRequest(t, tc, testInfo)
 
 	if respCode == http.StatusOK {
@@ -493,30 +494,31 @@ func pkGRPCTest(t *testing.T, testInfo api.PKTestInfo, tc common.TestContext, is
 	}
 }
 
-func sendGRPCPKReadRequest(t *testing.T, tc common.TestContext,
-	testInfo api.PKTestInfo) (int, *api.PKReadResponseGRPC) {
-	// Create gRPC client
-	conn, err := grpc.Dial(fmt.Sprintf("%s:%d",
-		config.Configuration().RestServer.GRPCServerIP,
-		config.Configuration().RestServer.GRPCServerPort),
-		grpc.WithTransportCredentials(credentials.NewTLS(GetClientTLSConfig(t, tc))))
-	defer conn.Close()
+func sendGRPCPKReadRequest(
+	t *testing.T,
+	tc testutils.TlsContext,
+	testInfo api.PKTestInfo,
+) (int, *api.PKReadResponseGRPC) {
 
+	// Create gRPC client
+	conn, err := testutils.CreateGrpcConn(t, tc, true, true)
 	if err != nil {
 		t.Fatalf("Failed to connect to server %v", err)
 	}
+	defer conn.Close()
+
 	client := api.NewRonDBRESTClient(conn)
 
 	// Create Request
-	pkReadParams := api.PKReadParams{}
-	pkReadParams.DB = &testInfo.Db
-	pkReadParams.Table = &testInfo.Table
-	pkReadParams.Filters = testInfo.PkReq.Filters
-	pkReadParams.OperationID = testInfo.PkReq.OperationID
-	pkReadParams.ReadColumns = testInfo.PkReq.ReadColumns
+	pkReadParams := api.PKReadParams{
+		DB:          &testInfo.Db,
+		Table:       &testInfo.Table,
+		Filters:     testInfo.PkReq.Filters,
+		OperationID: testInfo.PkReq.OperationID,
+		ReadColumns: testInfo.PkReq.ReadColumns,
+	}
 
-	apiKey := common.HOPSWORKS_TEST_API_KEY
-	reqProto := api.ConvertPKReadParams(&pkReadParams, &apiKey)
+	reqProto := api.ConvertPKReadParams(&pkReadParams)
 
 	expectedStatus := testInfo.HttpCode
 	respCode := 200
@@ -562,7 +564,7 @@ func GetStatusCodeFromError(t *testing.T, errGot error) int {
 	return errCode
 }
 
-func pkRESTTest(t *testing.T, testInfo api.PKTestInfo, tc common.TestContext, isBinaryData bool) {
+func pkRESTTest(t *testing.T, testInfo api.PKTestInfo, tc testutils.TlsContext, isBinaryData bool) {
 	url := NewPKReadURL(testInfo.Db, testInfo.Table)
 	body, err := json.MarshalIndent(testInfo.PkReq, "", "\t")
 	if err != nil {
@@ -576,8 +578,7 @@ func pkRESTTest(t *testing.T, testInfo api.PKTestInfo, tc common.TestContext, is
 	}
 }
 
-func BatchTest(t *testing.T, tests map[string]api.BatchOperationTestInfo, isBinaryData bool,
-	handlers *handlers.AllHandlers) {
+func BatchTest(t *testing.T, tests map[string]api.BatchOperationTestInfo, isBinaryData bool) {
 	for name, testInfo := range tests {
 		t.Run(name, func(t *testing.T) {
 
@@ -594,7 +595,7 @@ func BatchTest(t *testing.T, tests map[string]api.BatchOperationTestInfo, isBina
 				dbNamesArr = append(dbNamesArr, k)
 			}
 
-			WithDBs(t, dbNamesArr, handlers, func(tc common.TestContext) {
+			WithDBs(t, dbNamesArr, func(tc testutils.TlsContext) {
 				batchRESTTest(t, testInfo, tc, isBinaryData)
 				batchGRPCTest(t, testInfo, tc, isBinaryData)
 			})
@@ -602,28 +603,26 @@ func BatchTest(t *testing.T, tests map[string]api.BatchOperationTestInfo, isBina
 	}
 }
 
-func batchGRPCTest(t *testing.T, testInfo api.BatchOperationTestInfo, tc common.TestContext, isBinaryData bool) {
+func batchGRPCTest(t *testing.T, testInfo api.BatchOperationTestInfo, tc testutils.TlsContext, isBinaryData bool) {
 	httpCode, res := sendGRPCBatchRequest(t, tc, testInfo)
 	if httpCode == http.StatusOK {
 		validateBatchResponseGRPC(t, testInfo, res, isBinaryData)
 	}
 }
 
-func sendGRPCBatchRequest(t *testing.T, tc common.TestContext,
+func sendGRPCBatchRequest(t *testing.T, tc testutils.TlsContext,
 	testInfo api.BatchOperationTestInfo) (int, *api.BatchResponseGRPC) {
-	// Create gRPC client
-	conn, err := grpc.Dial(fmt.Sprintf("%s:%d",
-		config.Configuration().RestServer.GRPCServerIP,
-		config.Configuration().RestServer.GRPCServerPort),
-		grpc.WithTransportCredentials(credentials.NewTLS(GetClientTLSConfig(t, tc))))
-	defer conn.Close()
 
+	// Create gRPC client
+	conn, err := testutils.CreateGrpcConn(t, tc, true, true)
 	if err != nil {
 		t.Fatalf("Failed to connect to server %v", err)
 	}
+	defer conn.Close()
+
 	client := api.NewRonDBRESTClient(conn)
 
-	// Create Request
+	// Create request
 	batchOpRequest := make([]*api.PKReadParams, len(testInfo.Operations))
 	for i := 0; i < len(testInfo.Operations); i++ {
 		op := testInfo.Operations[i]
@@ -636,8 +635,7 @@ func sendGRPCBatchRequest(t *testing.T, tc common.TestContext,
 		batchOpRequest[i] = &pkReadParams
 	}
 
-	apiKey := common.HOPSWORKS_TEST_API_KEY
-	batchRequestProto := api.ConvertBatchOpRequest(batchOpRequest, &apiKey)
+	batchRequestProto := api.ConvertBatchOpRequest(batchOpRequest)
 
 	expectedStatus := testInfo.HttpCode
 	respCode := 200
@@ -664,8 +662,8 @@ func sendGRPCBatchRequest(t *testing.T, tc common.TestContext,
 	}
 }
 
-func batchRESTTest(t *testing.T, testInfo api.BatchOperationTestInfo, tc common.TestContext, isBinaryData bool) {
-	//batch operation
+func batchRESTTest(t *testing.T, testInfo api.BatchOperationTestInfo, tc testutils.TlsContext, isBinaryData bool) {
+	// batch operation
 	subOps := []api.BatchSubOp{}
 	for _, op := range testInfo.Operations {
 		subOps = append(subOps, op.SubOperation)
@@ -707,16 +705,19 @@ func validateBatchResponseOpIdsNCodeGRPC(t testing.TB, testInfo api.BatchOperati
 	}
 }
 
-func checkOpIDandStatus(t testing.TB, testInfo api.BatchSubOperationTestInfo, opIDGot *string,
-	statusGot int) {
-
-	expctingOpID := testInfo.SubOperation.Body.OperationID
+func checkOpIDandStatus(
+	t testing.TB,
+	testInfo api.BatchSubOperationTestInfo,
+	opIDGot *string,
+	statusGot int,
+) {
+	expectingOpID := testInfo.SubOperation.Body.OperationID
 	expectingStatus := testInfo.HttpCode
 
-	if expctingOpID != nil {
-		if *expctingOpID != *opIDGot {
+	if expectingOpID != nil {
+		if *expectingOpID != *opIDGot {
 			t.Fatalf("Operation ID does not match. Expecting: %s, Got: %s. TestInfo: %v",
-				*expctingOpID, *opIDGot, testInfo)
+				*expectingOpID, *opIDGot, testInfo)
 		}
 	}
 
@@ -804,7 +805,6 @@ func validateBatchResponseValuesGRPC(t testing.TB, testInfo api.BatchOperationTe
 
 func Encode(data string, binary bool, colWidth int, padding bool) string {
 	if binary {
-
 		newData := []byte(data)
 		if padding {
 			length := colWidth

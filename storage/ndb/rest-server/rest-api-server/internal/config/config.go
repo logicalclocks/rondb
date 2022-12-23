@@ -19,6 +19,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -126,17 +127,17 @@ func init() {
 
 	configFile := os.Getenv("RDRS_CONFIG_FILE")
 	if configFile != "" {
-		LoadConfig(configFile, true)
+		err := LoadConfig(configFile)
+		if err != nil {
+			panic(err)
+		}
 	}
 }
 
-func LoadConfig(path string, fail bool) {
+func LoadConfig(path string) error {
 	jsonFile, err := os.Open(path)
 	if err != nil {
-		if fail {
-			panic(fmt.Sprintf("Unable to read configuration file. Error: %v", err))
-		}
-		return
+		return err
 	}
 	defer jsonFile.Close()
 
@@ -144,8 +145,19 @@ func LoadConfig(path string, fail bool) {
 
 	err = json.Unmarshal([]byte(byteValue), &_config)
 	if err != nil {
-		panic(fmt.Sprintf("Unable to load configuration from file. Error: %v", err))
+		return err
 	}
+	return validate()
+}
+
+func validate() error {
+	if _config.Security.EnableTLS {
+		if _config.Security.CertificateFile == "" ||
+			_config.Security.PrivateKeyFile == "" {
+			return errors.New("Server Certificate/Key not set")
+		}
+	}
+	return nil
 }
 
 func PrintConfig() {

@@ -25,7 +25,12 @@ option java_multiple_files = true;
 option java_package = "com.rondb.grpcserver";
 option java_outer_classname = "RonDBGrpcProto";
 
+//________________________  Ping _________________________
+
+message Empty {}
+
 //__________________  PK Read Operation __________________
+
 message FilterProto {
   required string Column = 1;
   required string Value = 2;
@@ -37,12 +42,11 @@ message ReadColumnProto {
 }
 
 message PKReadRequestProto {
-  optional string APIKey = 1;
-  required string DB = 2;
-  required string Table = 3;
-  repeated FilterProto Filters = 4;
-  repeated ReadColumnProto ReadColumns = 5;
-  optional string OperationID = 6;
+  required string DB = 1;
+  required string Table = 2;
+  repeated FilterProto Filters = 3;
+  repeated ReadColumnProto ReadColumns = 4;
+  optional string OperationID = 5;
 }
 
 message ColumnValueProto {
@@ -56,9 +60,9 @@ message PKReadResponseProto {
 }
 
 //__________________  Batch Operation ________________________
+
 message BatchRequestProto {
-  optional string APIKey = 1;
-  repeated PKReadRequestProto operations = 2;
+  repeated PKReadRequestProto operations = 1;
 }
 
 message BatchResponseProto {
@@ -88,8 +92,10 @@ message StatResponseProto {
   required RonDBStatsProto RonDBStats = 2;
 }
 
+// TODO: Rename service; REST is misleading
 //__________________  Service ______________________________
 service RonDBREST {
+  rpc Ping(Empty) returns (Empty) {}
   rpc PKRead(PKReadRequestProto) returns (PKReadResponseProto);
   rpc Batch(BatchRequestProto) returns (BatchResponseProto);
   rpc Stat(StatRequestProto) returns (StatResponseProto);

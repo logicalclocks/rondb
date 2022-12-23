@@ -23,8 +23,10 @@ const API_KEY_NAME = "X-API-KEY"
 
 const DB_PP = "db"
 const TABLE_PP = "table"
-const DB_OPS_EP_GROUP = "/" + version.API_VERSION + "/:" + DB_PP + "/:" + TABLE_PP + "/"
-const DBS_OPS_EP_GROUP = "/" + version.API_VERSION + "/"
+
+const VERSION_GROUP = "/" + version.API_VERSION
+const DB_OPS_EP_GROUP = VERSION_GROUP + "/:" + DB_PP + "/:" + TABLE_PP + "/"
+const DBS_OPS_EP_GROUP = VERSION_GROUP + "/"
 
 const PK_DB_OPERATION = "pk-read"
 const BATCH_OPERATION = "batch"

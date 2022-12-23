@@ -26,12 +26,8 @@ import (
 	"syscall"
 
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/handlers"
-	"hopsworks.ai/rdrs/internal/handlers/batchops"
-	"hopsworks.ai/rdrs/internal/handlers/pkread"
-	"hopsworks.ai/rdrs/internal/handlers/stat"
 	"hopsworks.ai/rdrs/internal/log"
-	"hopsworks.ai/rdrs/internal/server"
+	"hopsworks.ai/rdrs/internal/servers"
 	"hopsworks.ai/rdrs/version"
 )
 
@@ -40,8 +36,8 @@ func main() {
 	ver := flag.Bool("version", false, "Print API and application version")
 	flag.Parse()
 
-	if *configFile != "" {
-		config.LoadConfig(*configFile, true)
+	if configFile != nil && *configFile != "" {
+		config.LoadConfig(*configFile)
 	}
 
 	if *ver == true {
@@ -49,42 +45,30 @@ func main() {
 		return
 	}
 
+	// TODO: Not sure if sharing a logger like this is best practice
 	log.InitLogger(config.Configuration().Log)
 	log.Infof("Current configuration: %s", config.Configuration())
-
 	log.Infof("Starting Version : %s, Git Branch: %s (%s). Built on %s at %s",
 		version.VERSION, version.BRANCH, version.GITCOMMIT, version.BUILDTIME, version.HOSTNAME)
 	log.Infof("Starting API Version : %s", version.API_VERSION)
 
 	runtime.GOMAXPROCS(config.Configuration().RestServer.GOMAXPROCS)
 
-	router := server.CreateRouterContext()
-
-	handlers := &handlers.AllHandlers{
-		PKReader: pkread.GetPKReader(),
-		Stater:   stat.GetStater(),
-		Batcher:  batchops.GetBatcher(),
-	}
-
-	err := router.SetupRouter(handlers)
-	if err != nil {
-		log.Panic(fmt.Sprintf("Unable to setup router: Error: %v", err))
-	}
-
-	err = router.StartRouter()
-	if err != nil {
-		log.Panic(fmt.Sprintf("Unable to start router: Error: %v", err))
-	}
-
-	// Wait for interrupt signal to gracefully shutdown the server with
-	// a timeout of 5 seconds.
+	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)
-	// kill (no param) default send syscall.SIGTERM
-	// kill -2 is syscall.SIGINT
-	// kill -9 is syscall.SIGKILL but can't be caught, so don't need to add it
+
+	err, cleanupServers := servers.CreateAndStartDefaultServers(quit)
+	defer cleanupServers()
+	if err != nil {
+		panic(err.Error())
+	}
+
+	/*
+		kill (no param) default send syscall.SIGTERM
+		kill -2 is syscall.SIGINT
+		kill -9 is syscall.SIGKILL but can't be caught, so don't need to add it
+	*/
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Info("Shutting down server...")
-
-	router.StopRouter()
 }
