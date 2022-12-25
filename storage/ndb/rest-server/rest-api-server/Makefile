@@ -21,7 +21,7 @@ SERVER_BIN="rdrs"
 RDRS_LIB_DIR?=./../data-access-rondb/build
 OUTPUT_DIR?=./bin/server/${SERVER_BIN}
 
-COVERAGE_OUTPUT_FILE?=./cover_profile.out
+COVERAGE_OUTPUT_FILE?=./coverage.out
 COVERAGE_HTML_OUTPUT_FILE?=./coverage.html
 COVERAGE_FUNC_OUTPUT_FILE?=/dev/stdout
 
@@ -53,12 +53,12 @@ build_proto:
 	protoc --go_out=. --go-grpc_out=. ./api/rdrs.proto
 
 test:
-	go clean -testcache
-	echo "Getting cross-package (integration) coverage and writing it to $(COVERAGE_OUTPUT_FILE)"
+	@go clean -testcache
+	@echo "Getting cross-package (integration) coverage and writing it to $(COVERAGE_OUTPUT_FILE)"
 	CGO_LDFLAGS="-g -L${RDRS_LIB_DIR} -lrdrclient" go test -p 1 -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg ./... `go list ./... | grep -v cmd`
 
 print-func-coverage: test
-	@go tool cover -func $(COVERAGE_OUTPUT_FILE) > $(COVERAGE_FUNC_OUTPUT_FILE)
+	go tool cover -func $(COVERAGE_OUTPUT_FILE) > $(COVERAGE_FUNC_OUTPUT_FILE)
 
 show-html-coverage: test
 	go tool cover -html $(COVERAGE_OUTPUT_FILE) -o $(COVERAGE_HTML_OUTPUT_FILE) && xdg-open $(COVERAGE_HTML_OUTPUT_FILE)
