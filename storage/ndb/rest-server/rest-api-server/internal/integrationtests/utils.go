@@ -32,7 +32,6 @@ import (
 	"testing"
 	"time"
 
-	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/log"
@@ -455,8 +454,8 @@ func WithDBs(
 		}
 	}()
 
-	common.CreateDatabases(t, dbs...)
-	defer common.DropDatabases(t, dbs...)
+	testutils.CreateDatabases(t, dbs...)
+	defer testutils.DropDatabases(t, dbs...)
 
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)

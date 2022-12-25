@@ -21,7 +21,6 @@ import (
 	"testing"
 	"time"
 
-	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/security/authcache"
@@ -44,8 +43,8 @@ func TestAPIKey(t *testing.T) {
 	}
 	defer dal.ShutdownConnection()
 
-	common.CreateDatabases(t, []string{"DB001", "DB002"}...)
-	defer common.DropDatabases(t, []string{"DB001", "DB002"}...)
+	testutils.CreateDatabases(t, []string{"DB001", "DB002"}...)
+	defer testutils.DropDatabases(t, []string{"DB001", "DB002"}...)
 
 	apiKey := "bkYjEz6OTZyevbqT.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
 	err := ValidateAPIKey(&apiKey, nil)
@@ -115,8 +114,8 @@ func TestAPIKeyCache1(t *testing.T) {
 	}
 	defer dal.ShutdownConnection()
 
-	common.CreateDatabases(t, []string{"DB001", "DB002"}...)
-	defer common.DropDatabases(t, []string{"DB001", "DB002"}...)
+	testutils.CreateDatabases(t, []string{"DB001", "DB002"}...)
+	defer testutils.DropDatabases(t, []string{"DB001", "DB002"}...)
 
 	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 	db1 := "DB001"
@@ -174,8 +173,8 @@ func TestAPIKeyCache2(t *testing.T) {
 	}
 	defer dal.ShutdownConnection()
 
-	common.CreateDatabases(t, []string{"DB001", "DB002"}...)
-	defer common.DropDatabases(t, []string{"DB001", "DB002"}...)
+	testutils.CreateDatabases(t, []string{"DB001", "DB002"}...)
+	defer testutils.DropDatabases(t, []string{"DB001", "DB002"}...)
 
 	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 	db3 := "DB003"

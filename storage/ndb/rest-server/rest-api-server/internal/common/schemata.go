@@ -18,19 +18,17 @@
 package common
 
 import (
-	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
-	"testing"
 
 	_ "github.com/go-sql-driver/mysql"
-	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/testutils"
 )
 
 const HOPSWORKS_SCHEMA_NAME = "hopsworks"
 
+// Mapping database names to their create & destroy SQL commands
+// TODO: Are destroy commands really necessary? It's always "DROP DATABASE xyz"?
 var databases map[string][][]string = make(map[string][][]string)
 
 func init() {
@@ -454,11 +452,14 @@ func init() {
 		},
 	}
 
-	GenerateHWSchema(db)
+	GenerateHopsworksSchema(db)
 }
 
-func GenerateHWSchema(userProjects ...string) [][]string {
-	createSchema := []string{
+// TODO: Add comment what this does
+func GenerateHopsworksSchema(userProjects ...string) [][]string {
+
+	// TODO: Create embedded SQL file for this instead
+	hopsworksCreateSchemata := []string{
 		// setup commands
 		"DROP DATABASE IF EXISTS " + HOPSWORKS_SCHEMA_NAME,
 		"CREATE DATABASE " + HOPSWORKS_SCHEMA_NAME,
@@ -557,20 +558,20 @@ func GenerateHWSchema(userProjects ...string) [][]string {
 	}
 
 	for i, project := range userProjects {
-		createSchema = append(createSchema, fmt.Sprintf("INSERT INTO `project` VALUES (%d,322,'%s',322,'%s','macho@hopsworks.ai',"+
+		hopsworksCreateSchemata = append(hopsworksCreateSchemata, fmt.Sprintf("INSERT INTO `project` VALUES (%d,322,'%s',322,'%s','macho@hopsworks.ai',"+
 			"'2022-05-30 14:17:22','2032-05-30',0,0,NULL,'A demo project for getting started with featurestore',"+
 			"'NOLIMIT','2022-05-30 14:17:38',100,'demo_fs_meb10000:1653921933268-2.6.0-SNAPSHOT.1',1)", i+1, project, project))
 	}
 
 	for i := 1; i <= len(userProjects); i++ {
-		createSchema = append(createSchema, fmt.Sprintf("INSERT INTO `project_team` VALUES (%d,'macho@hopsworks.ai','Data scientist','2022-06-01 13:28:05')", i))
+		hopsworksCreateSchemata = append(hopsworksCreateSchemata, fmt.Sprintf("INSERT INTO `project_team` VALUES (%d,'macho@hopsworks.ai','Data scientist','2022-06-01 13:28:05')", i))
 	}
 
-	dropSchema := []string{ // clean up commands
+	hopsworksDropSchema := []string{ // clean up commands
 		"DROP DATABASE " + HOPSWORKS_SCHEMA_NAME,
 	}
 
-	commands := [][]string{createSchema, dropSchema}
+	commands := [][]string{hopsworksCreateSchemata, hopsworksDropSchema}
 	databases[HOPSWORKS_SCHEMA_NAME] = commands
 
 	return commands
@@ -628,77 +629,10 @@ func createBenchmarkSchema(db string, count int) []string {
 	return schema
 }
 
-func Database(name string) [][]string {
+func GetCreateAndDestroySchemata(name string) [][]string {
 	db, ok := databases[name]
 	if !ok {
 		return [][]string{}
 	}
 	return db
-}
-
-func CreateDatabases(t testing.TB, dbNames ...string) {
-	if config.Configuration().Security.UseHopsWorksAPIKeys {
-		GenerateHWSchema(dbNames...)
-		dbNames = append(dbNames, HOPSWORKS_SCHEMA_NAME)
-	}
-	createOrDestroyDatabases(t, true, dbNames...)
-}
-
-func DropDatabases(t testing.TB, dbNames ...string) {
-	if config.Configuration().Security.UseHopsWorksAPIKeys {
-		GenerateHWSchema(dbNames...)
-		dbNames = append(dbNames, HOPSWORKS_SCHEMA_NAME)
-	}
-	createOrDestroyDatabases(t, false, dbNames...)
-}
-
-func createOrDestroyDatabases(t testing.TB, create bool, dbNames ...string) {
-	if len(dbNames) == 0 {
-		t.Fatal("No database specified")
-	}
-
-	createAndDestroySchemata := [][][]string{}
-	for _, dbName := range dbNames {
-		createAndDestroySchemata = append(createAndDestroySchemata, Database(dbName))
-	}
-
-	t.Helper()
-	if !*testutils.WithRonDB {
-		t.Skip("skipping test without RonDB")
-	}
-
-	// user:password@tcp(IP:Port)/
-	connectionString := fmt.Sprintf("%s:%s@tcp(%s:%d)/",
-		config.Configuration().MySQLServer.User,
-		config.Configuration().MySQLServer.Password,
-		config.Configuration().MySQLServer.IP,
-		config.Configuration().MySQLServer.Port)
-	dbConnection, err := sql.Open("mysql", connectionString)
-	if err != nil {
-		t.Fatalf("failed to connect to db. %v", err)
-	}
-	defer dbConnection.Close()
-
-	for _, createDestroyScheme := range createAndDestroySchemata {
-		if len(createDestroyScheme) != 2 {
-			t.Fatal("expecting the setup array to contain two sub arrays where the first " +
-				"sub array contains commands to setup the DBs, " +
-				"and the second sub array contains commands to clean up the DBs")
-		}
-		if create {
-			runSQLQueries(t, dbConnection, createDestroyScheme[0])
-		} else { // drop
-			runSQLQueries(t, dbConnection, createDestroyScheme[1])
-		}
-	}
-}
-
-func runSQLQueries(t testing.TB, db *sql.DB, setup []string) {
-	t.Helper()
-	for _, command := range setup {
-		_, err := db.Exec(command)
-		if err != nil {
-			t.Fatalf("failed to run command. %s. Error: %v", command, err)
-		}
-	}
 }
