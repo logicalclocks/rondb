@@ -13,7 +13,7 @@ import (
 )
 
 func CreateGrpcConn(t testing.TB, tc TlsContext, withAuth, withTLS bool) (*grpc.ClientConn, error) {
-	port := config.Configuration().RestServer.GRPCServerPort
+	t.Helper()
 
 	grpcDialOptions := []grpc.DialOption{}
 	if withAuth {
@@ -26,6 +26,7 @@ func CreateGrpcConn(t testing.TB, tc TlsContext, withAuth, withTLS bool) (*grpc.
 	}
 
 	// Set up a connection to the server
+	port := config.Configuration().RestServer.GRPCServerPort
 	return grpc.Dial(
 		fmt.Sprintf("%s:%d", "localhost", port),
 		grpcDialOptions...,

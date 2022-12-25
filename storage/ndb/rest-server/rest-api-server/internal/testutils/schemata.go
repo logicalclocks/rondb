@@ -10,6 +10,7 @@ import (
 )
 
 func CreateDatabases(t testing.TB, dbNames ...string) {
+	t.Helper()
 	if config.Configuration().Security.UseHopsWorksAPIKeys {
 		common.GenerateHopsworksSchema(dbNames...)
 		dbNames = append(dbNames, common.HOPSWORKS_SCHEMA_NAME)
@@ -18,6 +19,7 @@ func CreateDatabases(t testing.TB, dbNames ...string) {
 }
 
 func DropDatabases(t testing.TB, dbNames ...string) {
+	t.Helper()
 	if config.Configuration().Security.UseHopsWorksAPIKeys {
 		common.GenerateHopsworksSchema(dbNames...)
 		dbNames = append(dbNames, common.HOPSWORKS_SCHEMA_NAME)
@@ -26,18 +28,18 @@ func DropDatabases(t testing.TB, dbNames ...string) {
 }
 
 func createOrDestroyDatabases(t testing.TB, create bool, dbNames ...string) {
+	t.Helper()
+	if !*WithRonDB {
+		t.Skip("skipping test without RonDB")
+	}
+
 	if len(dbNames) == 0 {
-		t.Fatal("No database specified")
+		panic("No database specified")
 	}
 
 	createAndDestroySchemata := [][][]string{}
 	for _, dbName := range dbNames {
 		createAndDestroySchemata = append(createAndDestroySchemata, common.GetCreateAndDestroySchemata(dbName))
-	}
-
-	t.Helper()
-	if !*WithRonDB {
-		t.Skip("skipping test without RonDB")
 	}
 
 	// user:password@tcp(IP:Port)/
@@ -48,15 +50,15 @@ func createOrDestroyDatabases(t testing.TB, create bool, dbNames ...string) {
 		config.Configuration().MySQLServer.Port)
 	dbConnection, err := sql.Open("mysql", connectionString)
 	if err != nil {
-		t.Fatalf("failed to connect to db. %v", err)
+		panic(fmt.Sprintf("failed to connect to db. %v", err))
 	}
 	defer dbConnection.Close()
 
 	for _, createDestroyScheme := range createAndDestroySchemata {
 		if len(createDestroyScheme) != 2 {
-			t.Fatal("expecting the setup array to contain two sub arrays where the first " +
+			panic(fmt.Sprintf("expecting the setup array to contain two sub arrays where the first " +
 				"sub array contains commands to setup the DBs, " +
-				"and the second sub array contains commands to clean up the DBs")
+				"and the second sub array contains commands to clean up the DBs"))
 		}
 		if create {
 			runSQLQueries(t, dbConnection, createDestroyScheme[0])
@@ -71,7 +73,7 @@ func runSQLQueries(t testing.TB, db *sql.DB, setup []string) {
 	for _, command := range setup {
 		_, err := db.Exec(command)
 		if err != nil {
-			t.Fatalf("failed to run command. %s. Error: %v", command, err)
+			panic(fmt.Sprintf("failed to run command '%s'; error: %v", command, err))
 		}
 	}
 }
