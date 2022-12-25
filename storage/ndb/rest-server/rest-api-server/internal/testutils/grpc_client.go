@@ -9,7 +9,6 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
-	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 )
 
@@ -43,7 +42,7 @@ func clientAuthInterceptor(
 	opts ...grpc.CallOption,
 ) error {
 	// Logic before invoking the invoker
-	apiKey := common.HOPSWORKS_TEST_API_KEY
+	apiKey := HOPSWORKS_TEST_API_KEY
 	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", apiKey)
 
 	// Calls the invoker to execute RPC

@@ -26,10 +26,10 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/testutils"
 )
 
 const HOPSWORKS_SCHEMA_NAME = "hopsworks"
-const HOPSWORKS_TEST_API_KEY = "bkYjEz6OTZyevbqt.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
 
 var databases map[string][][]string = make(map[string][][]string)
 
@@ -641,7 +641,7 @@ func CreateDatabases(t testing.TB, dbNames ...string) {
 		GenerateHWSchema(dbNames...)
 		dbNames = append(dbNames, HOPSWORKS_SCHEMA_NAME)
 	}
-	createDatabasesInt(t, true, dbNames...)
+	createOrDestroyDatabases(t, true, dbNames...)
 }
 
 func DropDatabases(t testing.TB, dbNames ...string) {
@@ -649,17 +649,22 @@ func DropDatabases(t testing.TB, dbNames ...string) {
 		GenerateHWSchema(dbNames...)
 		dbNames = append(dbNames, HOPSWORKS_SCHEMA_NAME)
 	}
-	createDatabasesInt(t, false, dbNames...)
+	createOrDestroyDatabases(t, false, dbNames...)
 }
 
-func createDatabasesInt(t testing.TB, create bool, dbNames ...string) {
+func createOrDestroyDatabases(t testing.TB, create bool, dbNames ...string) {
 	if len(dbNames) == 0 {
 		t.Fatal("No database specified")
 	}
 
-	dbs := [][][]string{}
+	createAndDestroySchemata := [][][]string{}
 	for _, dbName := range dbNames {
-		dbs = append(dbs, Database(dbName))
+		createAndDestroySchemata = append(createAndDestroySchemata, Database(dbName))
+	}
+
+	t.Helper()
+	if !*testutils.WithRonDB {
+		t.Skip("skipping test without RonDB")
 	}
 
 	// user:password@tcp(IP:Port)/
@@ -674,16 +679,16 @@ func createDatabasesInt(t testing.TB, create bool, dbNames ...string) {
 	}
 	defer dbConnection.Close()
 
-	for _, db := range dbs {
-		if len(db) != 2 {
+	for _, createDestroyScheme := range createAndDestroySchemata {
+		if len(createDestroyScheme) != 2 {
 			t.Fatal("expecting the setup array to contain two sub arrays where the first " +
 				"sub array contains commands to setup the DBs, " +
 				"and the second sub array contains commands to clean up the DBs")
 		}
 		if create {
-			runSQLQueries(t, dbConnection, db[0])
+			runSQLQueries(t, dbConnection, createDestroyScheme[0])
 		} else { // drop
-			runSQLQueries(t, dbConnection, db[1])
+			runSQLQueries(t, dbConnection, createDestroyScheme[1])
 		}
 	}
 }

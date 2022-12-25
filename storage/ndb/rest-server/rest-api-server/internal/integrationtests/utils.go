@@ -21,7 +21,6 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -42,8 +41,6 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/version"
 )
-
-var withRonDB = flag.Bool("with-rondb", false, "test with a running RonDB instance")
 
 func SendHttpRequest(
 	t testing.TB,
@@ -77,7 +74,7 @@ func SendHttpRequest(
 	}
 
 	if config.Configuration().Security.UseHopsWorksAPIKeys {
-		req.Header.Set(config.API_KEY_NAME, common.HOPSWORKS_TEST_API_KEY)
+		req.Header.Set(config.API_KEY_NAME, testutils.HOPSWORKS_TEST_API_KEY)
 	}
 
 	resp, err = client.Do(req)
@@ -429,7 +426,7 @@ func WithDBs(
 ) {
 	t.Helper()
 
-	if !*withRonDB {
+	if !*testutils.WithRonDB {
 		t.Skip("skipping test without RonDB")
 	}
 
