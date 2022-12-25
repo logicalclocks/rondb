@@ -28,7 +28,13 @@ func init() {
 }
 
 func CreateAllTLSCerts() (tlsCtx TlsContext, cleanup func(), err error) {
+	cleanup = func() {}
+
 	certsDir := filepath.Join(os.TempDir(), "certs-for-unit-testing")
+	err = os.RemoveAll(certsDir) // In case it has been already created
+	if err != nil {
+		return
+	}
 
 	initialRootCAFile := config.Configuration().Security.RootCACertFile
 	initialCertFile := config.Configuration().Security.CertificateFile
@@ -119,7 +125,9 @@ func createRootCA(certificateDir string) (rootCACertFilepath string, rootCAKeyFi
 		Bytes: rootCAKeyPairBytes,
 	})
 
-	os.Mkdir(certificateDir, 0755)
+	if err = os.MkdirAll(certificateDir, 0755); err != nil {
+		return
+	}
 	rootCACertFilepath = filepath.Join(certificateDir, "root-cert.pem")
 	rootCAKeyFilepath = filepath.Join(certificateDir, "root-key.pem")
 
@@ -181,7 +189,9 @@ func createServerCerts(certsDir string, rootCaCertFile, rootCaKeyFile string) (
 		Bytes: serverKeyPairBytes,
 	})
 
-	os.Mkdir(certsDir, 0755)
+	if err = os.MkdirAll(certsDir, 0755); err != nil {
+		return
+	}
 	serverCertFilepath = filepath.Join(certsDir, "server-cert.pem")
 	serverKeyFilepath = filepath.Join(certsDir, "server-key.pem")
 
@@ -255,8 +265,7 @@ func createClientCerts(certsDir string, rootCaCertFile, rootCaKeyFile string) (
 		return
 	}
 
-	err = os.Mkdir(certsDir, 0755)
-	if err != nil {
+	if err = os.MkdirAll(certsDir, 0755); err != nil {
 		return
 	}
 	clientCertFilepath = filepath.Join(certsDir, "client-cert.pem")
