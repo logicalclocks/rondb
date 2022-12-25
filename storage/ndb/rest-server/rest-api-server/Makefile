@@ -21,6 +21,10 @@ SERVER_BIN="rdrs"
 RDRS_LIB_DIR?=./../data-access-rondb/build
 OUTPUT_DIR?=./bin/server/${SERVER_BIN}
 
+COVERAGE_OUTPUT_FILE?=./cover_profile.out
+COVERAGE_HTML_OUTPUT_FILE?=./coverage.html
+COVERAGE_FUNC_OUTPUT_FILE?=/dev/stdout
+
 DIRS = $(shell find . -type d)
 FILES = $(shell find . -type f -iname '*.go')
 
@@ -28,7 +32,7 @@ all: rdrs
 #static linking https://ragoragino.github.io/softwareengineering/miscellaneous/2021/03/23/cgo-static.html
 #-tags osusergo,netgo
 
-BUILD_COMMAND=go build  -ldflags="-w \
+BUILD_COMMAND=go build -ldflags="-w \
      -X hopsworks.ai/rdrs/version.GITCOMMIT=${GITCOMMIT} \
      -X hopsworks.ai/rdrs/version.BUILDTIME=${BUILDTIME} \
      -X hopsworks.ai/rdrs/version.HOSTNAME=${HOSTNAME} \
@@ -47,6 +51,11 @@ build_proto:
 
 test:
 	go clean -testcache
-	CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" go test -v -p 1 ./... -coverprofile coverage.out
-	go tool cover -html=coverage.out -o coverage.html && xdg-open coverage.html
+	echo "Getting cross-package (integration) coverage and writing it to $(COVERAGE_OUTPUT_FILE)"
+	CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" go test -p 1 -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg ./... `go list ./... | grep -v cmd`
 
+print-func-coverage: test
+	@go tool cover -func $(COVERAGE_OUTPUT_FILE) > $(COVERAGE_FUNC_OUTPUT_FILE)
+
+show-html-coverage: test
+	go tool cover -html $(COVERAGE_OUTPUT_FILE) -o $(COVERAGE_HTML_OUTPUT_FILE) && xdg-open $(COVERAGE_HTML_OUTPUT_FILE)
