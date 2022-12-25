@@ -28,6 +28,9 @@ COVERAGE_FUNC_OUTPUT_FILE?=/dev/stdout
 DIRS = $(shell find . -type d)
 FILES = $(shell find . -type f -iname '*.go')
 
+# TODO: Add debug flag here to deal with -03 flag
+# CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient"
+
 all: rdrs
 #static linking https://ragoragino.github.io/softwareengineering/miscellaneous/2021/03/23/cgo-static.html
 #-tags osusergo,netgo
@@ -40,7 +43,7 @@ BUILD_COMMAND=go build -ldflags="-w \
      -o ${OUTPUT_DIR}/rdrs ./cmd/server/main.go
 
 rdrs:
-	CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" ${BUILD_COMMAND}
+	CGO_LDFLAGS="-g -L${RDRS_LIB_DIR} -lrdrclient" ${BUILD_COMMAND}
 
 clean:
 	go clean -cache
@@ -52,7 +55,7 @@ build_proto:
 test:
 	go clean -testcache
 	echo "Getting cross-package (integration) coverage and writing it to $(COVERAGE_OUTPUT_FILE)"
-	CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" go test -p 1 -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg ./... `go list ./... | grep -v cmd`
+	CGO_LDFLAGS="-g -L${RDRS_LIB_DIR} -lrdrclient" go test -p 1 -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg ./... `go list ./... | grep -v cmd`
 
 print-func-coverage: test
 	@go tool cover -func $(COVERAGE_OUTPUT_FILE) > $(COVERAGE_FUNC_OUTPUT_FILE)
