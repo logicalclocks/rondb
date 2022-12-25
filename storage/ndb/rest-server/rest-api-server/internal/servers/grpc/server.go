@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"syscall"
 
@@ -91,9 +92,17 @@ func NewRonDBServer() *RonDBServer {
 	}
 }
 
-// TODO: Add more error codes
 func convertError(httpStatus int, msg string) error {
-	return status.Error(codes.Internal, msg)
+	switch httpStatus {
+	case http.StatusUnauthorized:
+		return status.Error(codes.PermissionDenied, msg)
+	case http.StatusBadRequest:
+		return status.Error(codes.InvalidArgument, msg)
+	case http.StatusNotFound:
+		return status.Error(codes.NotFound, msg)
+	default:
+		return status.Error(codes.Internal, msg)
+	}
 }
 
 func (s *RonDBServer) getApiKey(ctx context.Context) (*string, error) {
