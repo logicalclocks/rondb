@@ -292,3 +292,11 @@ Otherwise, if you wish to compile ***only*** the RDRS binary, you can run the fo
 cd /tmp/rondb-bin/storage/ndb/rest-server/rest-api-server
 make -j8
 ```
+
+## Unit testing
+
+To unit test the RDRS, view the hand-written Makefile. Generally, we differentiate between tests that require a RonDB connection, and ones that don't. By default, we skip the tests that require one. If you wish to run the unit tests against a RonDB cluster, run the following command:
+
+```bash
+WITH_RONDB=1 make test
+```

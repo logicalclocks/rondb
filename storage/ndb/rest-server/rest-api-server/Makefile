@@ -21,6 +21,11 @@ SERVER_BIN="rdrs"
 RDRS_LIB_DIR?=./../data-access-rondb/build
 OUTPUT_DIR?=./bin/server/${SERVER_BIN}
 
+# We skip tests using RonDB by default
+ifdef WITH_RONDB
+override WITH_RONDB := -with-rondb
+endif
+
 COVERAGE_OUTPUT_FILE?=./coverage.out
 COVERAGE_HTML_OUTPUT_FILE?=./coverage.html
 COVERAGE_FUNC_OUTPUT_FILE?=/dev/stdout
@@ -55,7 +60,7 @@ build_proto:
 test:
 	@go clean -testcache
 	@echo "Getting cross-package (integration) coverage and writing it to $(COVERAGE_OUTPUT_FILE)"
-	CGO_LDFLAGS="-g -L${RDRS_LIB_DIR} -lrdrclient" go test -p 1 -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg ./... `go list ./... | grep -v cmd`
+	CGO_LDFLAGS="-g -L${RDRS_LIB_DIR} -lrdrclient" go test -p 1 -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg ./... `go list ./... | grep -v cmd` $(WITH_RONDB)
 
 print-func-coverage: test
 	go tool cover -func $(COVERAGE_OUTPUT_FILE) > $(COVERAGE_FUNC_OUTPUT_FILE)
