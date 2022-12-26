@@ -438,7 +438,7 @@ func WithDBs(
 	if config.Configuration().Security.EnableTLS {
 		tlsCtx, cleanup, err = testutils.CreateAllTLSCerts()
 		if err != nil {
-			panic(err)
+			t.Fatal(err)
 		}
 		defer cleanup()
 	}
@@ -449,8 +449,8 @@ func WithDBs(
 	defer func() {
 		stats := dal.GetNativeBuffersStats()
 		if stats.BuffersCount != stats.FreeBuffers {
-			panic(fmt.Sprintf("Number of free buffers do not match. Expecting: %d, Got: %d",
-				stats.BuffersCount, stats.FreeBuffers))
+			t.Fatalf("Number of free buffers do not match. Expecting: %d, Got: %d",
+				stats.BuffersCount, stats.FreeBuffers)
 		}
 	}()
 
@@ -462,7 +462,7 @@ func WithDBs(
 	err, cleanupServers := servers.CreateAndStartDefaultServers(quit)
 	defer cleanupServers()
 	if err != nil {
-		panic(err)
+		t.Fatal(err)
 	}
 
 	executer(tlsCtx)

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/log"
 )
 
 var ipAddresses []net.IP
@@ -41,7 +42,10 @@ func CreateAllTLSCerts() (tlsCtx TlsContext, cleanup func(), err error) {
 	initialPrivateKeyFile := config.Configuration().Security.PrivateKeyFile
 
 	cleanup = func() {
-		os.RemoveAll(certsDir)
+		err = os.RemoveAll(certsDir)
+		if err != nil {
+			log.Error(err.Error())
+		}
 		// TODO: We should not be overwriting this in the first place
 		config.Configuration().Security.RootCACertFile = initialRootCAFile
 		config.Configuration().Security.CertificateFile = initialCertFile

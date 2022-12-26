@@ -34,7 +34,7 @@ func createOrDestroyDatabases(t testing.TB, create bool, dbNames ...string) {
 	}
 
 	if len(dbNames) == 0 {
-		panic("No database specified")
+		t.Fatal("No database specified")
 	}
 
 	createAndDestroySchemata := [][][]string{}
@@ -50,15 +50,15 @@ func createOrDestroyDatabases(t testing.TB, create bool, dbNames ...string) {
 		config.Configuration().MySQLServer.Port)
 	dbConnection, err := sql.Open("mysql", connectionString)
 	if err != nil {
-		panic(fmt.Sprintf("failed to connect to db. %v", err))
+		t.Fatalf("failed to connect to db; error: %v", err)
 	}
 	defer dbConnection.Close()
 
 	for _, createDestroyScheme := range createAndDestroySchemata {
 		if len(createDestroyScheme) != 2 {
-			panic(fmt.Sprintf("expecting the setup array to contain two sub arrays where the first " +
+			t.Fatalf("expecting the setup array to contain two sub arrays where the first " +
 				"sub array contains commands to setup the DBs, " +
-				"and the second sub array contains commands to clean up the DBs"))
+				"and the second sub array contains commands to clean up the DBs")
 		}
 		if create {
 			runSQLQueries(t, dbConnection, createDestroyScheme[0])
@@ -73,7 +73,7 @@ func runSQLQueries(t testing.TB, db *sql.DB, setup []string) {
 	for _, command := range setup {
 		_, err := db.Exec(command)
 		if err != nil {
-			panic(fmt.Sprintf("failed to run command '%s'; error: %v", command, err))
+			t.Fatalf("failed to run command '%s'; error: %v", command, err)
 		}
 	}
 }
