@@ -74,8 +74,16 @@ func (h Handler) Execute(request interface{}, response interface{}) (int, error)
 	var err error
 	for i, pkOp := range *pkOperations {
 		reqPtrs[i], respPtrs[i], err = pkread.CreateNativeRequest(pkOp)
-		defer dal.ReturnBuffer(reqPtrs[i])
-		defer dal.ReturnBuffer(respPtrs[i])
+		defer func() {
+			err = dal.ReturnBuffer(reqPtrs[i])
+			if err != nil {
+				panic(err)
+			}
+			err = dal.ReturnBuffer(respPtrs[i])
+			if err != nil {
+				panic(err)
+			}
+		}()
 		if err != nil {
 			return http.StatusInternalServerError, err
 		}

@@ -25,6 +25,7 @@ package dal
 */
 import "C"
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"unsafe"
@@ -50,20 +51,20 @@ var buffersStats MemoryStats
 var initialized bool
 var mutex sync.Mutex
 
-func InitializeBuffers() {
+func InitializeBuffers() error {
 	mutex.Lock()
 	defer mutex.Unlock()
 
 	if initialized {
-		panic("Native buffers are already initialized")
+		return errors.New("Native buffers are already initialized")
 	}
 
 	if C.ADDRESS_SIZE != 4 {
-		panic("Only 4 byte address are supported")
+		return errors.New("Only 4 byte address are supported")
 	}
 
 	if config.Configuration().RestServer.BufferSize%C.ADDRESS_SIZE != 0 {
-		panic(fmt.Sprintf("Buffer size must be multiple of %d", C.ADDRESS_SIZE))
+		return fmt.Errorf("Buffer size must be multiple of %d", C.ADDRESS_SIZE)
 	}
 
 	for i := uint32(0); i < config.Configuration().RestServer.PreAllocatedBuffers; i++ {
@@ -75,14 +76,15 @@ func InitializeBuffers() {
 	buffersStats.DeallocationsCount = 0
 
 	initialized = true
+	return nil
 }
 
-func ReleaseAllBuffers() {
+func ReleaseAllBuffers() error {
 	mutex.Lock()
 	defer mutex.Unlock()
 
 	if !initialized {
-		panic(fmt.Sprintf("Native buffers are not initialized"))
+		return fmt.Errorf("Native buffers are not initialized")
 	}
 
 	for _, buffer := range buffers {
@@ -91,6 +93,7 @@ func ReleaseAllBuffers() {
 	buffers = make([]*NativeBuffer, 0)
 	buffersStats = MemoryStats{}
 	initialized = false
+	return nil
 }
 
 func allocateBuffer() *NativeBuffer {
@@ -103,9 +106,9 @@ func allocateBuffer() *NativeBuffer {
 	return &buff
 }
 
-func GetBuffer() *NativeBuffer {
+func GetBuffer() (*NativeBuffer, error) {
 	if !initialized {
-		panic(fmt.Sprintf("Native buffers are not initialized"))
+		return nil, fmt.Errorf("Native buffers are not initialized")
 	}
 
 	mutex.Lock()
@@ -121,31 +124,32 @@ func GetBuffer() *NativeBuffer {
 		buffersStats.AllocationsCount++
 	}
 
-	return buff
+	return buff, nil
 }
 
-func ReturnBuffer(buffer *NativeBuffer) {
+func ReturnBuffer(buffer *NativeBuffer) error {
 	if !initialized {
-		panic("Native buffers are not initialized")
+		return errors.New("Native buffers are not initialized")
 	}
 
 	if buffer == nil {
-		return
+		return nil
 	}
 
 	mutex.Lock()
 	defer mutex.Unlock()
 
 	buffers = append(buffers, buffer)
+	return nil
 }
 
-func GetNativeBuffersStats() MemoryStats {
+func GetNativeBuffersStats() (MemoryStats, error) {
 	if !initialized {
-		panic("Native buffers are not initialized")
+		return buffersStats, errors.New("Native buffers are not initialized")
 	}
 	// update the free buffers cound
 	mutex.Lock()
 	defer mutex.Unlock()
 	buffersStats.FreeBuffers = int64(len(buffers))
-	return buffersStats
+	return buffersStats, nil
 }

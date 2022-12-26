@@ -428,6 +428,7 @@ func WithDBs(
 	if !*testutils.WithRonDB {
 		t.Skip("skipping test without RonDB")
 	}
+	t.Logf("Running executor against dbs '%v", dbs)
 
 	// init logger
 	log.InitLogger(config.Configuration().Log)
@@ -446,24 +447,27 @@ func WithDBs(
 	// TODO: Explain why?
 	rand.Seed(int64(time.Now().Nanosecond()))
 
-	defer func() {
-		stats := dal.GetNativeBuffersStats()
-		if stats.BuffersCount != stats.FreeBuffers {
-			t.Fatalf("Number of free buffers do not match. Expecting: %d, Got: %d",
-				stats.BuffersCount, stats.FreeBuffers)
-		}
-	}()
-
 	testutils.CreateDatabases(t, dbs...)
 	defer testutils.DropDatabases(t, dbs...)
 
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)
 	err, cleanupServers := servers.CreateAndStartDefaultServers(quit)
-	defer cleanupServers()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("failed creating default servers; error: %v ", err)
 	}
+	defer cleanupServers()
+
+	defer func() {
+		stats, err := dal.GetNativeBuffersStats()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stats.BuffersCount != stats.FreeBuffers {
+			t.Fatalf("Number of free buffers do not match. Expecting: %d, Got: %d",
+				stats.BuffersCount, stats.FreeBuffers)
+		}
+	}()
 
 	executer(tlsCtx)
 }

@@ -40,12 +40,15 @@ func (h Handler) Authenticate(apiKey *string, request interface{}) error {
 }
 
 func (h Handler) Execute(request interface{}, response interface{}) (int, error) {
-	rondbStats, err := dal.GetRonDBStats()
+	rondbStats, dalErr := dal.GetRonDBStats()
+	if dalErr != nil {
+		return http.StatusInternalServerError, dalErr
+	}
+
+	nativeBuffersStats, err := dal.GetNativeBuffersStats()
 	if err != nil {
 		return http.StatusInternalServerError, err
 	}
-
-	nativeBuffersStats := dal.GetNativeBuffersStats()
 
 	statsResponse := response.(*api.StatResponse)
 	statsResponse.MemoryStats = nativeBuffersStats

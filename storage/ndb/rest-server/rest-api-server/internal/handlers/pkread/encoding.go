@@ -73,9 +73,16 @@ import (
 	null terminated  operation Id
 */
 
+// TODO: Add cleanup function here and run dal.ReturnBuffer()
 func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.NativeBuffer, error) {
-	response := dal.GetBuffer()
-	request := dal.GetBuffer()
+	response, err := dal.GetBuffer()
+	if err != nil {
+		return nil, nil, err
+	}
+	request, err := dal.GetBuffer()
+	if err != nil {
+		return nil, nil, err
+	}
 	iBuf := unsafe.Slice((*uint32)(request.Buffer), request.Size/C.ADDRESS_SIZE)
 
 	// First N bytes are for header
@@ -83,7 +90,7 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 
 	dbOffSet := head
 
-	head, err := common.CopyGoStrToCStr([]byte(*pkrParams.DB), request, head)
+	head, err = common.CopyGoStrToCStr([]byte(*pkrParams.DB), request, head)
 	if err != nil {
 		return nil, nil, err
 	}

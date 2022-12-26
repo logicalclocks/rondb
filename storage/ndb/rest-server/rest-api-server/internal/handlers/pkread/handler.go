@@ -55,8 +55,18 @@ func (h Handler) Authenticate(apiKey *string, request interface{}) error {
 func (h Handler) Execute(request interface{}, response interface{}) (int, error) {
 	pkReadParams := request.(*api.PKReadParams)
 	reqBuff, respBuff, err := CreateNativeRequest(pkReadParams)
-	defer dal.ReturnBuffer(reqBuff)
-	defer dal.ReturnBuffer(respBuff)
+	defer func() {
+		err = dal.ReturnBuffer(reqBuff)
+		if err != nil {
+			// TODO: Figure out way how to stop server
+			panic(err)
+		}
+		err = dal.ReturnBuffer(respBuff)
+		if err != nil {
+			// TODO: Figure out way how to stop server
+			panic(err)
+		}
+	}()
 	if err != nil {
 		return http.StatusInternalServerError, err
 	}

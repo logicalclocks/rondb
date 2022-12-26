@@ -7,9 +7,21 @@ import (
 )
 
 func TestHeap(t *testing.T) {
-	InitializeBuffers()
+	err := InitializeBuffers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		err = ReleaseAllBuffers()
+		if err != nil {
+			t.Log(err)
+		}
+	}()
 
-	stats := GetNativeBuffersStats()
+	stats, err := GetNativeBuffersStats()
+	if err != nil {
+		t.Fatal(err)
+	}
 	totalBuffers := stats.BuffersCount
 
 	if stats.AllocationsCount != int64(config.Configuration().RestServer.PreAllocatedBuffers) {
@@ -17,14 +29,26 @@ func TestHeap(t *testing.T) {
 			config.Configuration().RestServer.PreAllocatedBuffers, stats.AllocationsCount)
 	}
 
-	buff := GetBuffer()
-	stats = GetNativeBuffersStats()
+	buff, err := GetBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err = GetNativeBuffersStats()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if stats.FreeBuffers != totalBuffers-1 {
 		t.Fatalf("Number of free buffers did not match. Expecting: %d, Got: %d ",
 			stats.FreeBuffers, totalBuffers-1)
 	}
-	ReturnBuffer(buff)
-	stats = GetNativeBuffersStats()
+	err = ReturnBuffer(buff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err = GetNativeBuffersStats()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if stats.FreeBuffers != totalBuffers {
 		t.Fatalf("Number of free buffers did not match. Expecting: %d, Got: %d ",
 			stats.FreeBuffers, totalBuffers)
@@ -33,6 +57,7 @@ func TestHeap(t *testing.T) {
 	allocations := stats.FreeBuffers + 100
 	c := make(chan *NativeBuffer, 1)
 	for i := int64(0); i < allocations; i++ {
+		// TODO: Avoid using go-routine here
 		go allocateBuffTest(t, c)
 	}
 
@@ -41,7 +66,10 @@ func TestHeap(t *testing.T) {
 		myBuffers[i] = <-c
 	}
 
-	stats = GetNativeBuffersStats()
+	stats, err = GetNativeBuffersStats()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if stats.FreeBuffers != 0 {
 		t.Fatalf("Number of free buffers is not zero. Expecting: 0, Got: %d", stats.FreeBuffers)
 	}
@@ -52,10 +80,16 @@ func TestHeap(t *testing.T) {
 	}
 
 	for i := int64(0); i < allocations; i++ {
-		ReturnBuffer(myBuffers[i])
+		err = ReturnBuffer(myBuffers[i])
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	stats = GetNativeBuffersStats()
+	stats, err = GetNativeBuffersStats()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if stats.FreeBuffers != allocations {
 		t.Fatalf("Number of free buffers does not match. Expecting: %d, Got: %d",
 			allocations, stats.FreeBuffers)
@@ -63,6 +97,9 @@ func TestHeap(t *testing.T) {
 }
 
 func allocateBuffTest(t *testing.T, c chan *NativeBuffer) {
-	b := GetBuffer()
+	b, err := GetBuffer()
+	if err != nil {
+		t.Fatal(err)
+	}
 	c <- b
 }

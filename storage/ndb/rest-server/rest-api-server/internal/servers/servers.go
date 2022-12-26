@@ -17,20 +17,30 @@ import (
 func CreateAndStartDefaultServers(quit chan os.Signal) (err error, cleanup func()) {
 	cleanup = func() {}
 
+	err = dal.InitializeBuffers()
+	if err != nil {
+		return
+	}
+	actualCleanup := func() {
+		err = dal.ReleaseAllBuffers()
+		if err != nil {
+			log.Error(err.Error())
+		}
+	}
 	// Connect to RonDB
-	dal.InitializeBuffers()
 	dbIp := config.Configuration().RonDBConfig.IP
 	dbPort := config.Configuration().RonDBConfig.Port
 	err = dal.InitRonDBConnection(fmt.Sprintf("%s:%d", dbIp, dbPort), true)
 	if err != nil {
+		actualCleanup()
 		return
 	}
-	cleanup = func() {
+	actualCleanup = func() {
+		actualCleanup()
 		dalErr := dal.ShutdownConnection()
 		if dalErr != nil {
 			log.Error(dalErr.Error())
 		}
-		dal.ReleaseAllBuffers()
 	}
 
 	var tlsConfig *tls.Config
@@ -42,6 +52,7 @@ func CreateAndStartDefaultServers(quit chan os.Signal) (err error, cleanup func(
 			config.Configuration().Security.PrivateKeyFile,
 		)
 		if err != nil {
+			actualCleanup()
 			return
 		}
 	}
@@ -51,10 +62,11 @@ func CreateAndStartDefaultServers(quit chan os.Signal) (err error, cleanup func(
 	grpcPort := config.Configuration().RestServer.GRPCServerPort
 	err, cleanupGrpc := grpc.Start(grpcServer, grpcIp, grpcPort, quit)
 	if err != nil {
+		actualCleanup()
 		return
 	}
-	cleanup = func() {
-		cleanup()
+	actualCleanup = func() {
+		actualCleanup()
 		cleanupGrpc()
 	}
 
@@ -62,12 +74,12 @@ func CreateAndStartDefaultServers(quit chan os.Signal) (err error, cleanup func(
 	restPort := config.Configuration().RestServer.RESTServerPort
 	restServer := rest.New(restIp, restPort, tlsConfig)
 	cleanupRest := restServer.Start(quit)
-	cleanup = func() {
-		cleanup()
+	actualCleanup = func() {
+		actualCleanup()
 		cleanupRest()
 
 		// Clean API Key Cache
 		authcache.Reset()
 	}
-	return
+	return nil, actualCleanup
 }
