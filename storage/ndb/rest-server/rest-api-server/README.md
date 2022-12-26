@@ -295,7 +295,7 @@ make -j8
 
 ## Unit testing
 
-In contrast to building, unit testing also requires the env variable `LD_LIBRARY_PATH` to be set. Continueing from the previous section, where RonDB has been built into `/tmp/rondb-bin`, we would run the following:
+In contrast to building, unit testing also requires the env variable `LD_LIBRARY_PATH` to be set. Continuing from the previous section, where RonDB has been built into `/tmp/rondb-bin`, we would run the following:
 
 ```bash
 export LD_LIBRARY_PATH="/tmp/rondb-bin/lib"
@@ -308,4 +308,14 @@ To run all unit tests of the RDRS, view the hand-written [Makefile](./Makefile).
 
 ```bash
 WITH_RONDB=1 make test
+```
+
+One way of developing against a RonDB cluster is via docker-compose. See the GitHub repository [rondb-docker](https://github.com/logicalclocks/rondb-docker) to create a docker-compose RonDB cluster locally. It is expected to map its internal ports to the localhost network, so that you can connect to a mgmd and MySQLd. In case you are developing the rdrs inside a development container as well, you can connect it to the network bridge of the compose cluster as such:
+
+```bash
+# List the available networks and find the RonDB docker-compose one
+docker network ls
+
+# Connect the development container to the network of the docker-compose cluster
+docker network connect <rondb-docker-compose-cluster-network> <dev-container-name>
 ```
