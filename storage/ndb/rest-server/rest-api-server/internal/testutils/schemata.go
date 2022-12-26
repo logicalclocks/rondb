@@ -48,6 +48,7 @@ func createOrDestroyDatabases(t testing.TB, create bool, dbNames ...string) {
 		config.Configuration().MySQLServer.Password,
 		config.Configuration().MySQLServer.IP,
 		config.Configuration().MySQLServer.Port)
+	t.Logf("Connecting to mysqld with '%s'", connectionString)
 	dbConnection, err := sql.Open("mysql", connectionString)
 	if err != nil {
 		t.Fatalf("failed to connect to db; error: %v", err)
