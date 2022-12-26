@@ -295,7 +295,16 @@ make -j8
 
 ## Unit testing
 
-To unit test the RDRS, view the hand-written Makefile. Generally, we differentiate between tests that require a RonDB connection, and ones that don't. By default, we skip the tests that require one. If you wish to run the unit tests against a RonDB cluster, run the following command:
+In contrast to building, unit testing also requires the env variable `LD_LIBRARY_PATH` to be set. Continueing from the previous section, where RonDB has been built into `/tmp/rondb-bin`, we would run the following:
+
+```bash
+export LD_LIBRARY_PATH="/tmp/rondb-bin/lib"
+ldconfig
+```
+
+Only then the env variable `CGO_LDFLAGS` mentioned previously will work.
+
+To run all unit tests of the RDRS, view the hand-written [Makefile](./Makefile). Generally, we differentiate between tests that require a RonDB connection, and ones that don't. By default, we skip the tests that require one. If you wish to run the unit tests against a RonDB cluster, run the following command:
 
 ```bash
 WITH_RONDB=1 make test
