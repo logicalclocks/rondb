@@ -11,7 +11,8 @@ import (
 
 func CreateDatabases(t testing.TB, dbNames ...string) {
 	t.Helper()
-	if config.Configuration().Security.UseHopsWorksAPIKeys {
+	conf := config.GetAll()
+	if conf.Security.UseHopsWorksAPIKeys {
 		common.GenerateHopsworksSchema(dbNames...)
 		dbNames = append(dbNames, common.HOPSWORKS_SCHEMA_NAME)
 	}
@@ -20,7 +21,8 @@ func CreateDatabases(t testing.TB, dbNames ...string) {
 
 func DropDatabases(t testing.TB, dbNames ...string) {
 	t.Helper()
-	if config.Configuration().Security.UseHopsWorksAPIKeys {
+	conf := config.GetAll()
+	if conf.Security.UseHopsWorksAPIKeys {
 		common.GenerateHopsworksSchema(dbNames...)
 		dbNames = append(dbNames, common.HOPSWORKS_SCHEMA_NAME)
 	}
@@ -43,11 +45,12 @@ func createOrDestroyDatabases(t testing.TB, create bool, dbNames ...string) {
 	}
 
 	// user:password@tcp(IP:Port)/
+	conf := config.GetAll()
 	connectionString := fmt.Sprintf("%s:%s@tcp(%s:%d)/",
-		config.Configuration().MySQLServer.User,
-		config.Configuration().MySQLServer.Password,
-		config.Configuration().MySQLServer.IP,
-		config.Configuration().MySQLServer.Port)
+		conf.MySQLServer.User,
+		conf.MySQLServer.Password,
+		conf.MySQLServer.IP,
+		conf.MySQLServer.Port)
 	t.Logf("Connecting to mysqld with '%s'", connectionString)
 	dbConnection, err := sql.Open("mysql", connectionString)
 	if err != nil {

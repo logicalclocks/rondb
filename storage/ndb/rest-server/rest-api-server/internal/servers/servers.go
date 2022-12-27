@@ -28,9 +28,9 @@ func CreateAndStartDefaultServers(quit chan os.Signal) (err error, cleanup func(
 		}
 	}
 	// Connect to RonDB
-	dbIp := config.Configuration().RonDBConfig.IP
-	dbPort := config.Configuration().RonDBConfig.Port
-	err = dal.InitRonDBConnection(fmt.Sprintf("%s:%d", dbIp, dbPort), true)
+	conf := config.GetAll()
+	connectString := fmt.Sprintf("%s:%d", conf.REST.ServerIP, conf.REST.ServerPort)
+	err = dal.InitRonDBConnection(connectString, true)
 	if err != nil {
 		actualCleanup()
 		return
@@ -44,12 +44,12 @@ func CreateAndStartDefaultServers(quit chan os.Signal) (err error, cleanup func(
 	}
 
 	var tlsConfig *tls.Config
-	if config.Configuration().Security.EnableTLS {
+	if conf.Security.EnableTLS {
 		tlsConfig, err = tlsutils.GenerateTLSConfig(
-			config.Configuration().Security.RequireAndVerifyClientCert,
-			config.Configuration().Security.RootCACertFile,
-			config.Configuration().Security.CertificateFile,
-			config.Configuration().Security.PrivateKeyFile,
+			conf.Security.RequireAndVerifyClientCert,
+			conf.Security.RootCACertFile,
+			conf.Security.CertificateFile,
+			conf.Security.PrivateKeyFile,
 		)
 		if err != nil {
 			actualCleanup()
@@ -58,9 +58,12 @@ func CreateAndStartDefaultServers(quit chan os.Signal) (err error, cleanup func(
 	}
 
 	grpcServer := grpc.New(tlsConfig)
-	grpcIp := config.Configuration().RestServer.GRPCServerIP
-	grpcPort := config.Configuration().RestServer.GRPCServerPort
-	err, cleanupGrpc := grpc.Start(grpcServer, grpcIp, grpcPort, quit)
+	err, cleanupGrpc := grpc.Start(
+		grpcServer,
+		conf.GRPC.ServerIP,
+		conf.GRPC.ServerPort,
+		quit,
+	)
 	if err != nil {
 		actualCleanup()
 		return
@@ -70,9 +73,11 @@ func CreateAndStartDefaultServers(quit chan os.Signal) (err error, cleanup func(
 		cleanupGrpc()
 	}
 
-	restIp := config.Configuration().RestServer.RESTServerIP
-	restPort := config.Configuration().RestServer.RESTServerPort
-	restServer := rest.New(restIp, restPort, tlsConfig)
+	restServer := rest.New(
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		tlsConfig,
+	)
 	cleanupRest := restServer.Start(quit)
 	actualCleanup = func() {
 		actualCleanup()

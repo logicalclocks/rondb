@@ -37,19 +37,17 @@ func CreateAllTLSCerts() (tlsCtx TlsContext, cleanup func(), err error) {
 		return
 	}
 
-	initialRootCAFile := config.Configuration().Security.RootCACertFile
-	initialCertFile := config.Configuration().Security.CertificateFile
-	initialPrivateKeyFile := config.Configuration().Security.PrivateKeyFile
-
+	conf := config.GetAll()
 	cleanup = func() {
 		err = os.RemoveAll(certsDir)
 		if err != nil {
 			log.Error(err.Error())
 		}
-		// TODO: We should not be overwriting this in the first place
-		config.Configuration().Security.RootCACertFile = initialRootCAFile
-		config.Configuration().Security.CertificateFile = initialCertFile
-		config.Configuration().Security.PrivateKeyFile = initialPrivateKeyFile
+		// Undo all upcoming changes made to conf
+		err = config.SetAll(conf)
+		if err != nil {
+			log.Error(err.Error())
+		}
 	}
 
 	rootCACertFile, rootCAKeyFile, err := createRootCA(certsDir)
@@ -59,16 +57,16 @@ func CreateAllTLSCerts() (tlsCtx TlsContext, cleanup func(), err error) {
 
 	tlsCtx.RootCACertFile = rootCACertFile
 	tlsCtx.RootCAKeyFile = rootCAKeyFile
-	config.Configuration().Security.RootCACertFile = rootCACertFile
+	conf.Security.RootCACertFile = rootCACertFile
 
 	serverCertFile, serverKeyFile, err := createServerCerts(certsDir, rootCACertFile, rootCAKeyFile)
 	if err != nil {
 		return
 	}
-	config.Configuration().Security.CertificateFile = serverCertFile
-	config.Configuration().Security.PrivateKeyFile = serverKeyFile
+	conf.Security.CertificateFile = serverCertFile
+	conf.Security.PrivateKeyFile = serverKeyFile
 
-	if config.Configuration().Security.RequireAndVerifyClientCert {
+	if conf.Security.RequireAndVerifyClientCert {
 		var clientCertFilepath, clientKeyFilepath string
 		clientCertFilepath, clientKeyFilepath, err = createClientCerts(certsDir, rootCACertFile, rootCAKeyFile)
 		if err != nil {
@@ -78,6 +76,7 @@ func CreateAllTLSCerts() (tlsCtx TlsContext, cleanup func(), err error) {
 		tlsCtx.ClientKeyFile = clientKeyFilepath
 	}
 
+	err = config.SetAll(conf)
 	return
 }
 

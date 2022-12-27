@@ -49,10 +49,11 @@ func (s *RonDBRestServer) Start(quit chan os.Signal) (cleanupFunc func()) {
 	}
 	go func() {
 		var err error
-		if config.Configuration().Security.EnableTLS {
+		conf := config.GetAll()
+		if conf.Security.EnableTLS {
 			err = s.server.ListenAndServeTLS(
-				config.Configuration().Security.CertificateFile,
-				config.Configuration().Security.PrivateKeyFile,
+				conf.Security.CertificateFile,
+				conf.Security.PrivateKeyFile,
 			)
 		} else {
 			err = s.server.ListenAndServe()

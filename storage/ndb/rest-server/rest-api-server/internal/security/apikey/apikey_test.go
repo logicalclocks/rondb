@@ -32,9 +32,10 @@ func TestAPIKey(t *testing.T) {
 		t.Skip("skipping test without RonDB")
 	}
 
+	conf := config.GetAll()
 	connectString := fmt.Sprintf("%s:%d",
-		config.Configuration().RonDBConfig.IP,
-		config.Configuration().RonDBConfig.Port,
+		conf.RonDB.MgmdIP,
+		conf.RonDB.MgmdPort,
 	)
 
 	dalErr := dal.InitRonDBConnection(connectString, true)
@@ -103,9 +104,10 @@ func TestAPIKeyCache1(t *testing.T) {
 		t.Skip("skipping test without RonDB")
 	}
 
+	conf := config.GetAll()
 	connectString := fmt.Sprintf("%s:%d",
-		config.Configuration().RonDBConfig.IP,
-		config.Configuration().RonDBConfig.Port,
+		conf.RonDB.MgmdIP,
+		conf.RonDB.MgmdPort,
 	)
 
 	dalErr := dal.InitRonDBConnection(connectString, true)
@@ -139,7 +141,7 @@ func TestAPIKeyCache1(t *testing.T) {
 		t.Fatalf("Cache update time is expected to be the same; error: %v", err)
 	}
 
-	time.Sleep(time.Duration(config.Configuration().Security.HopsWorksAPIKeysCacheValiditySec))
+	time.Sleep(time.Duration(conf.Security.HopsWorksAPIKeysCacheValiditySec))
 
 	apiKey = testutils.HOPSWORKS_TEST_API_KEY
 	db1 = "DB001"
@@ -150,7 +152,7 @@ func TestAPIKeyCache1(t *testing.T) {
 
 	lastUpdated3 := authcache.RefreshExpiration(testutils.HOPSWORKS_TEST_API_KEY)
 
-	lastUpdated2p := lastUpdated2.Add(time.Duration(config.Configuration().Security.HopsWorksAPIKeysCacheValiditySec))
+	lastUpdated2p := lastUpdated2.Add(time.Duration(conf.Security.HopsWorksAPIKeysCacheValiditySec))
 	if lastUpdated2 != lastUpdated3 && lastUpdated2p.Before(lastUpdated3) {
 		t.Fatalf("Cache time is not updated properly; error: %v", err)
 	}
@@ -162,9 +164,10 @@ func TestAPIKeyCache2(t *testing.T) {
 		t.Skip("skipping test without RonDB")
 	}
 
+	conf := config.GetAll()
 	connectString := fmt.Sprintf("%s:%d",
-		config.Configuration().RonDBConfig.IP,
-		config.Configuration().RonDBConfig.Port,
+		conf.RonDB.MgmdIP,
+		conf.RonDB.MgmdPort,
 	)
 
 	dalErr := dal.InitRonDBConnection(connectString, true)

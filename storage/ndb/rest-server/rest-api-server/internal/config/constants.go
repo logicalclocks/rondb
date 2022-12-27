@@ -35,3 +35,9 @@ const STAT_OPERATION = "stat"
 const PK_HTTP_VERB = "POST"
 const BATCH_HTTP_VERB = "POST"
 const STAT_HTTP_VERB = "GET"
+
+/*
+	Env variables
+*/
+
+const CONFIG_FILE_PATH = "RDRS_CONFIG_FILE"

@@ -24,7 +24,8 @@ func GetClientTLSConfig(t testing.TB, tlsCtx TlsContext) *tls.Config {
 		clientTLSConfig.RootCAs = tlsutils.TrustedCAs(tlsCtx.RootCACertFile)
 	}
 
-	if config.Configuration().Security.RequireAndVerifyClientCert {
+	conf := config.GetAll()
+	if conf.Security.RequireAndVerifyClientCert {
 		clientCert, err := tls.LoadX509KeyPair(tlsCtx.ClientCertFile, tlsCtx.ClientKeyFile)
 		if err != nil {
 			t.Fatal(err)

@@ -72,7 +72,8 @@ func SendHttpRequest(
 		t.Fatalf("Test failed to create request. Error: %v", err)
 	}
 
-	if config.Configuration().Security.UseHopsWorksAPIKeys {
+	conf := config.GetAll()
+	if conf.Security.UseHopsWorksAPIKeys {
 		req.Header.Set(config.API_KEY_NAME, testutils.HOPSWORKS_TEST_API_KEY)
 	}
 
@@ -213,11 +214,12 @@ func getColumnDataFromDB(
 	col string,
 	isBinary bool,
 ) (*string, error) {
+	conf := config.GetAll()
 	connectionString := fmt.Sprintf("%s:%s@tcp(%s:%d)/",
-		config.Configuration().MySQLServer.User,
-		config.Configuration().MySQLServer.Password,
-		config.Configuration().MySQLServer.IP,
-		config.Configuration().MySQLServer.Port)
+		conf.MySQLServer.User,
+		conf.MySQLServer.Password,
+		conf.MySQLServer.IP,
+		conf.MySQLServer.Port)
 
 	dbConn, err := sql.Open("mysql", connectionString)
 	defer dbConn.Close()
@@ -320,9 +322,10 @@ func NewReadColumn(col string) *[]api.ReadColumn {
 }
 
 func NewPKReadURL(db string, table string) string {
+	conf := config.GetAll()
 	url := fmt.Sprintf("%s:%d%s%s",
-		config.Configuration().RestServer.RESTServerIP,
-		config.Configuration().RestServer.RESTServerPort,
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
 		config.DB_OPS_EP_GROUP,
 		config.PK_DB_OPERATION,
 	)
@@ -333,23 +336,32 @@ func NewPKReadURL(db string, table string) string {
 }
 
 func NewBatchReadURL() string {
-	url := fmt.Sprintf("%s:%d/%s/%s", config.Configuration().RestServer.RESTServerIP,
-		config.Configuration().RestServer.RESTServerPort,
-		version.API_VERSION, config.BATCH_OPERATION)
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION,
+		config.BATCH_OPERATION,
+	)
 	appendURLProtocol(&url)
 	return url
 }
 
 func NewStatURL() string {
-	url := fmt.Sprintf("%s:%d/%s/%s", config.Configuration().RestServer.RESTServerIP,
-		config.Configuration().RestServer.RESTServerPort,
-		version.API_VERSION, config.STAT_OPERATION)
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION,
+		config.STAT_OPERATION,
+	)
 	appendURLProtocol(&url)
 	return url
 }
 
 func appendURLProtocol(url *string) {
-	if config.Configuration().Security.EnableTLS {
+	conf := config.GetAll()
+	if conf.Security.EnableTLS {
 		*url = fmt.Sprintf("https://%s", *url)
 	} else {
 		*url = fmt.Sprintf("http://%s", *url)
@@ -430,13 +442,15 @@ func WithDBs(
 	}
 	t.Logf("Running executor against dbs '%v", dbs)
 
+	conf := config.GetAll()
+
 	// init logger
-	log.InitLogger(config.Configuration().Log)
+	log.InitLogger(conf.Log)
 
 	var err error
 	var tlsCtx testutils.TlsContext
 	var cleanup func()
-	if config.Configuration().Security.EnableTLS {
+	if conf.Security.EnableTLS {
 		tlsCtx, cleanup, err = testutils.CreateAllTLSCerts()
 		if err != nil {
 			t.Fatal(err)

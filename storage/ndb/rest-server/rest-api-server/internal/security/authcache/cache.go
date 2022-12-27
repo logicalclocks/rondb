@@ -58,8 +58,9 @@ func Set(apikey string, dbs []string) {
 		dbsMap[db] = true
 	}
 
+	conf := config.GetAll()
 	userDBs := UserDBs{uDBs: dbsMap,
-		expires: time.Now().Add(time.Duration(config.Configuration().Security.HopsWorksAPIKeysCacheValiditySec) * time.Second)}
+		expires: time.Now().Add(time.Duration(conf.Security.HopsWorksAPIKeysCacheValiditySec) * time.Second)}
 
 	key2UserDBsMutex.Lock()
 	key2UserDBs[apikey] = userDBs
@@ -73,7 +74,8 @@ func RefreshExpiration(apiKey string) time.Time {
 	defer key2UserDBsMutex.Unlock()
 	val, ok := key2UserDBs[apiKey]
 	if ok {
-		return val.expires.Add(time.Duration(-config.Configuration().Security.HopsWorksAPIKeysCacheValiditySec) * time.Second)
+		conf := config.GetAll()
+		return val.expires.Add(time.Duration(-conf.Security.HopsWorksAPIKeysCacheValiditySec) * time.Second)
 	} else {
 		return time.Unix(0, 0)
 	}

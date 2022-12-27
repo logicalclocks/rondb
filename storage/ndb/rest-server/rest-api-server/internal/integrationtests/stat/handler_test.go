@@ -41,8 +41,11 @@ func TestStat(t *testing.T) {
 	numOps := uint32(5)
 	expectedAllocations := numOps * 2
 
-	if config.Configuration().RestServer.PreAllocatedBuffers > numOps {
-		expectedAllocations = config.Configuration().RestServer.PreAllocatedBuffers
+	conf := config.GetAll()
+
+	preAllocatedBuffers := conf.Internal.PreAllocatedBuffers
+	if preAllocatedBuffers > numOps {
+		expectedAllocations = preAllocatedBuffers
 	}
 
 	integrationtests.WithDBs(t, []string{db},
@@ -110,9 +113,10 @@ func getStatsGRPC(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
 
 func sendGRPCStatRequest(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
 	// Create gRPC client
+	conf := config.GetAll()
 	conn, err := grpc.Dial(fmt.Sprintf("%s:%d",
-		config.Configuration().RestServer.GRPCServerIP,
-		config.Configuration().RestServer.GRPCServerPort),
+		conf.GRPC.ServerIP,
+		conf.GRPC.ServerPort),
 		grpc.WithTransportCredentials(credentials.NewTLS(testutils.GetClientTLSConfig(t, tc))))
 	defer conn.Close()
 

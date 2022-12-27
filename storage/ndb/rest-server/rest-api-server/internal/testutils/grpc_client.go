@@ -26,9 +26,9 @@ func CreateGrpcConn(t testing.TB, tc TlsContext, withAuth, withTLS bool) (*grpc.
 	}
 
 	// Set up a connection to the server
-	port := config.Configuration().RestServer.GRPCServerPort
+	conf := config.GetAll()
 	return grpc.Dial(
-		fmt.Sprintf("%s:%d", "localhost", port),
+		fmt.Sprintf("%s:%d", "localhost", conf.GRPC.ServerPort),
 		grpcDialOptions...,
 	)
 }

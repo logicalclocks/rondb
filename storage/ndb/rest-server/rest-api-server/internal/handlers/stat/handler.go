@@ -33,7 +33,8 @@ func (h Handler) Validate(request interface{}) error {
 }
 
 func (h Handler) Authenticate(apiKey *string, request interface{}) error {
-	if !config.Configuration().Security.UseHopsWorksAPIKeys {
+	conf := config.GetAll()
+	if !conf.Security.UseHopsWorksAPIKeys {
 		return nil
 	}
 	return apikey.ValidateAPIKey(apiKey, nil)

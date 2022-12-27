@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"syscall"
 
+	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/servers"
@@ -32,27 +33,26 @@ import (
 )
 
 func main() {
-	configFile := flag.String("config", "", "Configuration file path")
-	ver := flag.Bool("version", false, "Print API and application version")
 	flag.Parse()
 
-	if configFile != nil && *configFile != "" {
-		config.LoadConfig(*configFile)
-	}
-
-	if *ver == true {
+	if *common.Version == true {
 		fmt.Printf("App version %s, API version %s\n", version.VERSION, version.API_VERSION)
 		return
 	}
 
-	// TODO: Not sure if sharing a logger like this is best practice
-	log.InitLogger(config.Configuration().Log)
-	log.Infof("Current configuration: %s", config.Configuration())
+	err := config.SetFromFileIfExists(*common.ConfigFile)
+	if err != nil {
+		panic(err)
+	}
+	conf := config.GetAll()
+
+	log.InitLogger(conf.Log)
+	log.Infof("Current configuration: %s", conf)
 	log.Infof("Starting Version : %s, Git Branch: %s (%s). Built on %s at %s",
 		version.VERSION, version.BRANCH, version.GITCOMMIT, version.BUILDTIME, version.HOSTNAME)
 	log.Infof("Starting API Version : %s", version.API_VERSION)
 
-	runtime.GOMAXPROCS(config.Configuration().RestServer.GOMAXPROCS)
+	runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
 
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)
@@ -60,7 +60,7 @@ func main() {
 	err, cleanupServers := servers.CreateAndStartDefaultServers(quit)
 	defer cleanupServers()
 	if err != nil {
-		panic(err.Error())
+		panic(err)
 	}
 
 	/*
