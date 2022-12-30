@@ -1,7 +1,7 @@
 SLEEP_TIME="3"
 SLEEP_START_TIME="60"
 SLEEP_STOP_TIME="20"
-HOSTNAME_SERVER="192.168.0.102"
+HOSTNAME_SERVER="192.168.0.101"
 rm -rf $HOME/test_activate/ndb
 mkdir -p $HOME/test_activate
 mkdir -p $HOME/test_activate/ndb
@@ -24,6 +24,7 @@ sleep ${SLEEP_TIME}
 #
 echo "## Start MGM Server, nodeid 66, expect it to fail since deactivated"
 ndb_mgmd --configdir=$HOME/test_activate/mgm_66 --ndb-nodeid=66 --initial --verbose >> tmp_file
+ndb_mgm -e "show"
 export NDB_CONNECTSTRING="$HOSTNAME_SERVER:1187"
 echo "## Connect to MGM server 66 to verify that it failed to start"
 ndb_mgm --connect-retries=2 -e "66 activate"
