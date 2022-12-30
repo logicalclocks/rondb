@@ -36,7 +36,7 @@ the execution was correct and differs from the stored result one
 updates the test_activate.res file through the command:
 cp test.res test_activate.res
 
-The config.ini sets up active nodes to use the IP address 192.168.0.102.
+The config.ini sets up active nodes to use the IP address 192.168.0.101.
 This IP address should be replaced with an IP address of the machine
 where the test is executed. The inactive nodes are set to use hostname
 192.168.0.104, this IP address should be a correct IP address that should

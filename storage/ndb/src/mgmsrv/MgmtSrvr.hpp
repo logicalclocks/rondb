@@ -144,6 +144,7 @@ private:
   bool start_transporter(const Config*);
   bool start_mgm_service(const Config*);
   bool connect_to_self(void);
+  bool is_node_active();
 
 public:
 
