@@ -41,7 +41,7 @@ func goLog(logMsg C.RS_LOG_MSG) {
 	case log.TraceLevel:
 		Trace(msg)
 	default:
-		Error("Please fix log level for this message: " + msg)
+		Errorf("Unknown log level '%d' for this message: %s", level, msg)
 	}
 }
 
