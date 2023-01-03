@@ -194,6 +194,7 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 	//xxd.Print(0, bBuf[:])
 	return request, response, nil
 }
+
 func ProcessPKReadResponse(respBuff *dal.NativeBuffer, response api.PKReadResponse) (int32, error) {
 	iBuf := unsafe.Slice((*uint32)(respBuff.Buffer), respBuff.Size)
 
