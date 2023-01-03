@@ -25,7 +25,7 @@
 #include "src/db-operations/pk/pkr-request.hpp"
 #include "src/db-operations/pk/pkr-response.hpp"
 #include "src/db-operations/pk/common.hpp"
-#include "src/error-strs.h"
+#include "src/error-strings.h"
 #include "src/logger.hpp"
 #include "src/rdrs-const.h"
 #include "src/status.hpp"

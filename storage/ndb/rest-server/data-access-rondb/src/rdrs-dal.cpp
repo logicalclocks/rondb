@@ -26,7 +26,7 @@
 #include <iterator>
 #include <sstream>
 #include <NdbApi.hpp>
-#include "src/error-strs.h"
+#include "src/error-strings.h"
 #include "src/logger.hpp"
 #include "src/db-operations/pk/pkr-operation.hpp"
 #include "src/status.hpp"

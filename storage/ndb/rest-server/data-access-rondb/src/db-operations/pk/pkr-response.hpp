@@ -24,7 +24,7 @@
 #include <string>
 #include "src/rdrs-dal.h"
 #include "src/status.hpp"
-#include "src/error-strs.h"
+#include "src/error-strings.h"
 
 class PKRResponse {
  private:

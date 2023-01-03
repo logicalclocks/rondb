@@ -22,7 +22,7 @@
 #include <string>
 #include <iostream>
 #include <vector>
-#include "src/error-strs.h"
+#include "src/error-strings.h"
 #include "src/logger.hpp"
 #include "src/ndb_object_pool.hpp"
 #include "src/db-operations/pk/common.hpp"
