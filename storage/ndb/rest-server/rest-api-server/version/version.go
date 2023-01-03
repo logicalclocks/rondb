@@ -18,10 +18,10 @@
 package version
 
 const (
-	//TODO: manually update
+	// TODO: manually update
 	VERSION = "0.1.0"
 
-	//TODO: manually update
+	// TODO: manually update
 	API_VERSION = "0.1.0"
 )
 

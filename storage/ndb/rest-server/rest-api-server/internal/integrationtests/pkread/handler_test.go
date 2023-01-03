@@ -32,7 +32,6 @@ import (
 )
 
 func TestPKReadOmitRequired(t *testing.T) {
-
 	integrationtests.WithDBs(t, []string{"DB000"},
 		func(tc testutils.TlsContext) {
 			// Test. Omitting filter should result in 400 error
