@@ -25,6 +25,7 @@ import (
 	"hopsworks.ai/rdrs/internal/integrationtests"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
+	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 func TestBatchSimple(t *testing.T) {
@@ -43,7 +44,7 @@ func TestBatchSimple(t *testing.T) {
 						},
 					},
 					Table:    "int_table",
-					DB:       "DB004",
+					DB:       testdbs.DB004,
 					HttpCode: http.StatusOK,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
@@ -64,7 +65,7 @@ func TestBatchSimple(t *testing.T) {
 						},
 					},
 					Table:    "int_table",
-					DB:       "DB004",
+					DB:       testdbs.DB004,
 					HttpCode: http.StatusOK,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
@@ -79,7 +80,7 @@ func TestBatchSimple(t *testing.T) {
 						},
 					},
 					Table:    "bigint_table",
-					DB:       "DB005",
+					DB:       testdbs.DB005,
 					HttpCode: http.StatusOK,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
@@ -100,7 +101,7 @@ func TestBatchSimple(t *testing.T) {
 						},
 					},
 					Table:    "int_table",
-					DB:       "DB004",
+					DB:       testdbs.DB004,
 					HttpCode: http.StatusOK,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
@@ -115,7 +116,7 @@ func TestBatchSimple(t *testing.T) {
 						},
 					},
 					Table:    "bigint_table",
-					DB:       "DB005",
+					DB:       testdbs.DB005,
 					HttpCode: http.StatusOK,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
@@ -130,7 +131,7 @@ func TestBatchSimple(t *testing.T) {
 						},
 					},
 					Table:    "tinyint_table",
-					DB:       "DB006",
+					DB:       testdbs.DB006,
 					HttpCode: http.StatusOK,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
@@ -145,7 +146,7 @@ func TestBatchSimple(t *testing.T) {
 						},
 					},
 					Table:    "smallint_table",
-					DB:       "DB007",
+					DB:       testdbs.DB007,
 					HttpCode: http.StatusOK,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
@@ -160,7 +161,7 @@ func TestBatchSimple(t *testing.T) {
 						},
 					},
 					Table:    "smallint_table",
-					DB:       "DB007",
+					DB:       testdbs.DB007,
 					HttpCode: http.StatusOK,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
@@ -181,7 +182,7 @@ func TestBatchSimple(t *testing.T) {
 						},
 					},
 					Table:    "int_table",
-					DB:       "DB004",
+					DB:       testdbs.DB004,
 					HttpCode: http.StatusNotFound,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
@@ -196,7 +197,7 @@ func TestBatchSimple(t *testing.T) {
 						},
 					},
 					Table:    "bigint_table",
-					DB:       "DB005",
+					DB:       testdbs.DB005,
 					HttpCode: http.StatusNotFound,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
@@ -213,18 +214,18 @@ func TestBatchDate(t *testing.T) {
 		"date": {
 			HttpCode: http.StatusOK,
 			Operations: []api.BatchSubOperationTestInfo{
-				createSubOperation(t, "date_table", "DB019", "1111-11-11", http.StatusOK),
-				createSubOperation(t, "date_table", "DB019", "1111-11-11 00:00:00", http.StatusOK),
-				createSubOperation(t, "date_table", "DB019", "1111-11-12", http.StatusOK),
+				createSubOperation(t, "date_table", testdbs.DB019, "1111-11-11", http.StatusOK),
+				createSubOperation(t, "date_table", testdbs.DB019, "1111-11-11 00:00:00", http.StatusOK),
+				createSubOperation(t, "date_table", testdbs.DB019, "1111-11-12", http.StatusOK),
 			},
 		},
 		"wrong_sub_op": {
 			HttpCode: http.StatusBadRequest,
 			Operations: []api.BatchSubOperationTestInfo{
-				createSubOperation(t, "date_table", "DB019", "1111-11-11", http.StatusOK),
-				createSubOperation(t, "date_table", "DB019", "1111-11-11 00:00:00", http.StatusOK),
-				createSubOperation(t, "date_table", "DB019", "1111-11-12", http.StatusOK),
-				createSubOperation(t, "date_table", "DB019", "1111-13-12", http.StatusOK),
+				createSubOperation(t, "date_table", testdbs.DB019, "1111-11-11", http.StatusOK),
+				createSubOperation(t, "date_table", testdbs.DB019, "1111-11-11 00:00:00", http.StatusOK),
+				createSubOperation(t, "date_table", testdbs.DB019, "1111-11-12", http.StatusOK),
+				createSubOperation(t, "date_table", testdbs.DB019, "1111-13-12", http.StatusOK),
 			},
 		},
 	}
@@ -237,31 +238,31 @@ func TestBatchDateTime(t *testing.T) {
 		"date": {
 			HttpCode: http.StatusOK,
 			Operations: []api.BatchSubOperationTestInfo{
-				createSubOperation(t, "date_table0", "DB020", "1111-11-11 11:11:11", http.StatusOK),
-				createSubOperation(t, "date_table3", "DB020", "1111-11-11 11:11:11.123", http.StatusOK),
-				createSubOperation(t, "date_table6", "DB020", "1111-11-11 11:11:11.123456", http.StatusOK),
-				createSubOperation(t, "date_table0", "DB020", "1111-11-11 11:11:11.123123", http.StatusOK),
-				createSubOperation(t, "date_table3", "DB020", "1111-11-11 11:11:11.123000", http.StatusOK),
-				createSubOperation(t, "date_table6", "DB020", "1111-11-11 -11:11:11.123456", http.StatusOK),
-				createSubOperation(t, "date_table0", "DB020", "1111-11-12 11:11:11", http.StatusOK),
-				createSubOperation(t, "date_table3", "DB020", "1111-11-12 11:11:11.123", http.StatusOK),
-				createSubOperation(t, "date_table6", "DB020", "1111-11-12 11:11:11.123456", http.StatusOK),
+				createSubOperation(t, "date_table0", testdbs.DB020, "1111-11-11 11:11:11", http.StatusOK),
+				createSubOperation(t, "date_table3", testdbs.DB020, "1111-11-11 11:11:11.123", http.StatusOK),
+				createSubOperation(t, "date_table6", testdbs.DB020, "1111-11-11 11:11:11.123456", http.StatusOK),
+				createSubOperation(t, "date_table0", testdbs.DB020, "1111-11-11 11:11:11.123123", http.StatusOK),
+				createSubOperation(t, "date_table3", testdbs.DB020, "1111-11-11 11:11:11.123000", http.StatusOK),
+				createSubOperation(t, "date_table6", testdbs.DB020, "1111-11-11 -11:11:11.123456", http.StatusOK),
+				createSubOperation(t, "date_table0", testdbs.DB020, "1111-11-12 11:11:11", http.StatusOK),
+				createSubOperation(t, "date_table3", testdbs.DB020, "1111-11-12 11:11:11.123", http.StatusOK),
+				createSubOperation(t, "date_table6", testdbs.DB020, "1111-11-12 11:11:11.123456", http.StatusOK),
 			},
 			ErrMsgContains: "",
 		},
 		"wrong_sub_op": {
 			HttpCode: http.StatusBadRequest,
 			Operations: []api.BatchSubOperationTestInfo{
-				createSubOperation(t, "date_table0", "DB020", "1111-11-11 11:11:11", http.StatusOK),
-				createSubOperation(t, "date_table3", "DB020", "1111-11-11 11:11:11.123", http.StatusOK),
-				createSubOperation(t, "date_table6", "DB020", "1111-11-11 11:11:11.123456", http.StatusOK),
-				createSubOperation(t, "date_table0", "DB020", "1111-11-11 11:11:11.123123", http.StatusOK),
-				createSubOperation(t, "date_table3", "DB020", "1111-11-11 11:11:11.123000", http.StatusOK),
-				createSubOperation(t, "date_table6", "DB020", "1111-11-11 -11:11:11.123456", http.StatusOK),
-				createSubOperation(t, "date_table0", "DB020", "1111-11-12 11:11:11", http.StatusOK),
-				createSubOperation(t, "date_table3", "DB020", "1111-11-12 11:11:11.123", http.StatusOK),
-				createSubOperation(t, "date_table6", "DB020", "1111-11-12 11:11:11.123456", http.StatusOK),
-				createSubOperation(t, "date_table6", "DB020", "1111-13-11 11:11:11", http.StatusOK), // wrong op
+				createSubOperation(t, "date_table0", testdbs.DB020, "1111-11-11 11:11:11", http.StatusOK),
+				createSubOperation(t, "date_table3", testdbs.DB020, "1111-11-11 11:11:11.123", http.StatusOK),
+				createSubOperation(t, "date_table6", testdbs.DB020, "1111-11-11 11:11:11.123456", http.StatusOK),
+				createSubOperation(t, "date_table0", testdbs.DB020, "1111-11-11 11:11:11.123123", http.StatusOK),
+				createSubOperation(t, "date_table3", testdbs.DB020, "1111-11-11 11:11:11.123000", http.StatusOK),
+				createSubOperation(t, "date_table6", testdbs.DB020, "1111-11-11 -11:11:11.123456", http.StatusOK),
+				createSubOperation(t, "date_table0", testdbs.DB020, "1111-11-12 11:11:11", http.StatusOK),
+				createSubOperation(t, "date_table3", testdbs.DB020, "1111-11-12 11:11:11.123", http.StatusOK),
+				createSubOperation(t, "date_table6", testdbs.DB020, "1111-11-12 11:11:11.123456", http.StatusOK),
+				createSubOperation(t, "date_table6", testdbs.DB020, "1111-13-11 11:11:11", http.StatusOK), // wrong op
 			},
 			ErrMsgContains: "",
 		},
@@ -275,29 +276,29 @@ func TestBatchTime(t *testing.T) {
 		"date": {
 			HttpCode: http.StatusOK,
 			Operations: []api.BatchSubOperationTestInfo{
-				createSubOperation(t, "time_table0", "DB021", "11:11:11", http.StatusOK),
-				createSubOperation(t, "time_table3", "DB021", "11:11:11.123", http.StatusOK),
-				createSubOperation(t, "time_table6", "DB021", "11:11:11.123456", http.StatusOK),
-				createSubOperation(t, "time_table0", "DB021", "11:11:11.123123", http.StatusOK),
-				createSubOperation(t, "time_table3", "DB021", "11:11:11.123000", http.StatusOK),
-				createSubOperation(t, "time_table0", "DB021", "12:11:11", http.StatusOK),
-				createSubOperation(t, "time_table3", "DB021", "12:11:11.123", http.StatusOK),
-				createSubOperation(t, "time_table6", "DB021", "12:11:11.123456", http.StatusOK),
+				createSubOperation(t, "time_table0", testdbs.DB021, "11:11:11", http.StatusOK),
+				createSubOperation(t, "time_table3", testdbs.DB021, "11:11:11.123", http.StatusOK),
+				createSubOperation(t, "time_table6", testdbs.DB021, "11:11:11.123456", http.StatusOK),
+				createSubOperation(t, "time_table0", testdbs.DB021, "11:11:11.123123", http.StatusOK),
+				createSubOperation(t, "time_table3", testdbs.DB021, "11:11:11.123000", http.StatusOK),
+				createSubOperation(t, "time_table0", testdbs.DB021, "12:11:11", http.StatusOK),
+				createSubOperation(t, "time_table3", testdbs.DB021, "12:11:11.123", http.StatusOK),
+				createSubOperation(t, "time_table6", testdbs.DB021, "12:11:11.123456", http.StatusOK),
 			},
 			ErrMsgContains: "",
 		},
 		"wrong_sub_op": {
 			HttpCode: http.StatusBadRequest,
 			Operations: []api.BatchSubOperationTestInfo{
-				createSubOperation(t, "time_table0", "DB021", "11:11:11", http.StatusOK),
-				createSubOperation(t, "time_table3", "DB021", "11:11:11.123", http.StatusOK),
-				createSubOperation(t, "time_table6", "DB021", "11:11:11.123456", http.StatusOK),
-				createSubOperation(t, "time_table0", "DB021", "11:11:11.123123", http.StatusOK),
-				createSubOperation(t, "time_table3", "DB021", "11:11:11.123000", http.StatusOK),
-				createSubOperation(t, "time_table0", "DB021", "12:11:11", http.StatusOK),
-				createSubOperation(t, "time_table3", "DB021", "12:11:11.123", http.StatusOK),
-				createSubOperation(t, "time_table6", "DB021", "12:11:11.123456", http.StatusOK),
-				createSubOperation(t, "time_table6", "DB021", "11:61:11", http.StatusOK),
+				createSubOperation(t, "time_table0", testdbs.DB021, "11:11:11", http.StatusOK),
+				createSubOperation(t, "time_table3", testdbs.DB021, "11:11:11.123", http.StatusOK),
+				createSubOperation(t, "time_table6", testdbs.DB021, "11:11:11.123456", http.StatusOK),
+				createSubOperation(t, "time_table0", testdbs.DB021, "11:11:11.123123", http.StatusOK),
+				createSubOperation(t, "time_table3", testdbs.DB021, "11:11:11.123000", http.StatusOK),
+				createSubOperation(t, "time_table0", testdbs.DB021, "12:11:11", http.StatusOK),
+				createSubOperation(t, "time_table3", testdbs.DB021, "12:11:11.123", http.StatusOK),
+				createSubOperation(t, "time_table6", testdbs.DB021, "12:11:11.123456", http.StatusOK),
+				createSubOperation(t, "time_table6", testdbs.DB021, "11:61:11", http.StatusOK),
 			},
 			ErrMsgContains: "",
 		},
@@ -326,27 +327,27 @@ func createSubOperation(t *testing.T, table string, database string, pk string, 
 }
 
 func TestBatchArrayTableChar(t *testing.T) {
-	ArrayColumnBatchTest(t, "table1", "DB012", false, 100, true)
+	ArrayColumnBatchTest(t, "table1", testdbs.DB012, false, 100, true)
 }
 
 func TestBatchArrayTableVarchar(t *testing.T) {
-	ArrayColumnBatchTest(t, "table1", "DB014", false, 50, false)
+	ArrayColumnBatchTest(t, "table1", testdbs.DB014, false, 50, false)
 }
 
 func TestBatchArrayTableLongVarchar(t *testing.T) {
-	ArrayColumnBatchTest(t, "table1", "DB015", false, 256, false)
+	ArrayColumnBatchTest(t, "table1", testdbs.DB015, false, 256, false)
 }
 
 func TestBatchArrayTableBinary(t *testing.T) {
-	ArrayColumnBatchTest(t, "table1", "DB016", true, 100, true)
+	ArrayColumnBatchTest(t, "table1", testdbs.DB016, true, 100, true)
 }
 
 func TestBatchArrayTableVarbinary(t *testing.T) {
-	ArrayColumnBatchTest(t, "table1", "DB017", true, 100, false)
+	ArrayColumnBatchTest(t, "table1", testdbs.DB017, true, 100, false)
 }
 
 func TestBatchArrayTableLongVarbinary(t *testing.T) {
-	ArrayColumnBatchTest(t, "table1", "DB018", true, 256, false)
+	ArrayColumnBatchTest(t, "table1", testdbs.DB018, true, 256, false)
 }
 
 func ArrayColumnBatchTest(t *testing.T, table string, database string, isBinary bool, colWidth int, padding bool) {
@@ -375,7 +376,7 @@ func ArrayColumnBatchTest(t *testing.T, table string, database string, isBinary 
 */
 func TestBatchBadSubOp(t *testing.T) {
 	table := "table1"
-	database := "DB018"
+	database := testdbs.DB018
 	isBinary := true
 	padding := false
 	colWidth := 256

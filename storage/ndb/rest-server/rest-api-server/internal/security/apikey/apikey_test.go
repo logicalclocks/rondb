@@ -25,6 +25,7 @@ import (
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/security/authcache"
 	"hopsworks.ai/rdrs/internal/testutils"
+	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 func TestAPIKey(t *testing.T) {
@@ -44,11 +45,15 @@ func TestAPIKey(t *testing.T) {
 	}
 	defer dal.ShutdownConnection()
 
-	testutils.CreateDatabases(t, []string{"DB001", "DB002"}...)
-	defer testutils.DropDatabases(t, []string{"DB001", "DB002"}...)
+	databases := []string{testdbs.DB001, testdbs.DB002}
+	err, dropDatabases := testutils.CreateDatabases(t, true, databases...)
+	if err != nil {
+		t.Fatalf("failed creating databases %v; error: %v ", databases, err)
+	}
+	defer dropDatabases()
 
 	apiKey := "bkYjEz6OTZyevbqT.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
-	err := ValidateAPIKey(&apiKey, nil)
+	err = ValidateAPIKey(&apiKey, nil)
 	if err == nil {
 		t.Fatalf("Supplied wrong prefix. This should have failed; error: %v", err)
 	}
@@ -75,7 +80,7 @@ func TestAPIKey(t *testing.T) {
 
 	// correct api key
 	apiKey = testutils.HOPSWORKS_TEST_API_KEY
-	db1 = "DB001"
+	db1 = testdbs.DB001
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
 		t.Fatalf("No error expected; error: %v", err)
@@ -90,8 +95,7 @@ func TestAPIKey(t *testing.T) {
 
 	// no errors
 	apiKey = testutils.HOPSWORKS_TEST_API_KEY
-	db1 = "DB001"
-	db2 := "DB002"
+	db2 := testdbs.DB002
 	err = ValidateAPIKey(&apiKey, &db1, &db2)
 	if err != nil {
 		t.Fatalf("No error expected; err: %v", err)
@@ -105,36 +109,36 @@ func TestAPIKeyCache1(t *testing.T) {
 	}
 
 	conf := config.GetAll()
+
 	connectString := fmt.Sprintf("%s:%d",
 		conf.RonDB.MgmdIP,
 		conf.RonDB.MgmdPort,
 	)
-
 	dalErr := dal.InitRonDBConnection(connectString, true)
 	if dalErr != nil {
 		t.Fatalf("failed to initialise RonDB connection; error: %s", dalErr.VerboseError())
 	}
 	defer dal.ShutdownConnection()
 
-	testutils.CreateDatabases(t, []string{"DB001", "DB002"}...)
-	defer testutils.DropDatabases(t, []string{"DB001", "DB002"}...)
-
 	apiKey := testutils.HOPSWORKS_TEST_API_KEY
-	db1 := "DB001"
-	err := ValidateAPIKey(&apiKey, &db1)
+	databases := []string{testdbs.DB001, testdbs.DB002}
+
+	err, dropDatabases := testutils.CreateDatabases(t, true, databases...)
+	if err != nil {
+		t.Fatalf("failed creating databases %v; error: %v ", databases, err)
+	}
+	defer dropDatabases()
+
+	err = ValidateAPIKey(&apiKey, &databases[0])
 	if err != nil {
 		t.Fatalf("No error expected; error: %v", err)
 	}
-
 	lastUpdated1 := authcache.RefreshExpiration(testutils.HOPSWORKS_TEST_API_KEY)
 
-	apiKey = testutils.HOPSWORKS_TEST_API_KEY
-	db1 = "DB001"
-	err = ValidateAPIKey(&apiKey, &db1)
+	err = ValidateAPIKey(&apiKey, &databases[0])
 	if err != nil {
 		t.Fatalf("No error expected; error: %v", err)
 	}
-
 	lastUpdated2 := authcache.RefreshExpiration(testutils.HOPSWORKS_TEST_API_KEY)
 
 	if lastUpdated1 != lastUpdated2 {
@@ -143,9 +147,7 @@ func TestAPIKeyCache1(t *testing.T) {
 
 	time.Sleep(time.Duration(conf.Security.HopsWorksAPIKeysCacheValiditySec))
 
-	apiKey = testutils.HOPSWORKS_TEST_API_KEY
-	db1 = "DB001"
-	err = ValidateAPIKey(&apiKey, &db1)
+	err = ValidateAPIKey(&apiKey, &databases[0])
 	if err != nil {
 		t.Fatalf("No error expected; error: %v", err)
 	}
@@ -176,26 +178,27 @@ func TestAPIKeyCache2(t *testing.T) {
 	}
 	defer dal.ShutdownConnection()
 
-	testutils.CreateDatabases(t, []string{"DB001", "DB002"}...)
-	defer testutils.DropDatabases(t, []string{"DB001", "DB002"}...)
-
+	databases := []string{testdbs.DB001, testdbs.DB002}
 	apiKey := testutils.HOPSWORKS_TEST_API_KEY
-	db3 := "DB003"
-	err := ValidateAPIKey(&apiKey, &db3)
+
+	err, dropDatabases := testutils.CreateDatabases(t, true, databases...)
+	if err != nil {
+		t.Fatalf("failed creating databases %v; error: %v ", databases, err)
+	}
+	defer dropDatabases()
+
+	db3 := testdbs.DB003
+	err = ValidateAPIKey(&apiKey, &db3)
 	if err == nil {
 		t.Fatalf("Expected it to fail; error: %v", err)
 	}
+	lastUpdated1 := authcache.RefreshExpiration(apiKey)
 
-	lastUpdated1 := authcache.RefreshExpiration(testutils.HOPSWORKS_TEST_API_KEY)
-
-	apiKey = testutils.HOPSWORKS_TEST_API_KEY
-	db1 := "DB001"
-	err = ValidateAPIKey(&apiKey, &db1)
+	err = ValidateAPIKey(&apiKey, &databases[0])
 	if err != nil {
 		t.Fatalf("No error expected; error: %v", err)
 	}
-
-	lastUpdated2 := authcache.RefreshExpiration(testutils.HOPSWORKS_TEST_API_KEY)
+	lastUpdated2 := authcache.RefreshExpiration(apiKey)
 
 	if lastUpdated1 != lastUpdated2 {
 		t.Fatalf("Cache update time is expected to be the same; error: %v", err)

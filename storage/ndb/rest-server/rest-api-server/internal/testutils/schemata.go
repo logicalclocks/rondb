@@ -3,81 +3,72 @@ package testutils
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 
-	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
-func CreateDatabases(t testing.TB, dbNames ...string) {
+func CreateDatabases(
+	t testing.TB,
+	registerAsHopsworksProjects bool,
+	dbNames ...string,
+) (err error, cleanupDbs func()) {
 	t.Helper()
-	conf := config.GetAll()
-	if conf.Security.UseHopsWorksAPIKeys {
-		common.GenerateHopsworksSchema(dbNames...)
-		dbNames = append(dbNames, common.HOPSWORKS_SCHEMA_NAME)
+
+	createSchemata, err := testdbs.GetCreationSchemaPerDB(registerAsHopsworksProjects, dbNames...)
+	if err != nil {
+		return err, cleanupDbs
 	}
-	createOrDestroyDatabases(t, true, dbNames...)
+
+	dropDatabases := ""
+	cleanupDbs = func() {}
+	for db, createSchema := range createSchemata {
+		err = runQueries(t, createSchema)
+		if err != nil {
+			cleanupDbs()
+			return err, cleanupDbs
+		}
+		cleanupDbs = func() {
+			dropDatabases += fmt.Sprintf("DROP DATABASE %s;\n", db)
+			err = runQueries(t, dropDatabases)
+			if err != nil {
+				t.Errorf("failed cleaning up databases; error: %v", err)
+			}
+		}
+	}
+	return
 }
 
-func DropDatabases(t testing.TB, dbNames ...string) {
-	t.Helper()
-	conf := config.GetAll()
-	if conf.Security.UseHopsWorksAPIKeys {
-		common.GenerateHopsworksSchema(dbNames...)
-		dbNames = append(dbNames, common.HOPSWORKS_SCHEMA_NAME)
-	}
-	createOrDestroyDatabases(t, false, dbNames...)
-}
-
-func createOrDestroyDatabases(t testing.TB, create bool, dbNames ...string) {
+func runQueries(t testing.TB, sqlQueries string) error {
 	t.Helper()
 	if !*WithRonDB {
 		t.Skip("skipping test without RonDB")
 	}
 
-	if len(dbNames) == 0 {
-		t.Fatal("No database specified")
+	if sqlQueries == "" {
+		return nil
+	}
+	splitQueries := strings.Split(sqlQueries, ";")
+	if len(splitQueries) == 0 {
+		return nil
 	}
 
-	createAndDestroySchemata := [][][]string{}
-	for _, dbName := range dbNames {
-		createAndDestroySchemata = append(createAndDestroySchemata, common.GetCreateAndDestroySchemata(dbName))
-	}
-
-	// user:password@tcp(IP:Port)/
 	conf := config.GetAll()
-	connectionString := fmt.Sprintf("%s:%s@tcp(%s:%d)/",
-		conf.MySQLServer.User,
-		conf.MySQLServer.Password,
-		conf.MySQLServer.IP,
-		conf.MySQLServer.Port)
+	connectionString := config.GenerateConnectionString(conf)
 	t.Logf("Connecting to mysqld with '%s'", connectionString)
 	dbConnection, err := sql.Open("mysql", connectionString)
 	if err != nil {
-		t.Fatalf("failed to connect to db; error: %v", err)
+		return fmt.Errorf("failed to connect to db; error: %v", err)
 	}
 	defer dbConnection.Close()
 
-	for _, createDestroyScheme := range createAndDestroySchemata {
-		if len(createDestroyScheme) != 2 {
-			t.Fatalf("expecting the setup array to contain two sub arrays where the first " +
-				"sub array contains commands to setup the DBs, " +
-				"and the second sub array contains commands to clean up the DBs")
-		}
-		if create {
-			runSQLQueries(t, dbConnection, createDestroyScheme[0])
-		} else { // drop
-			runSQLQueries(t, dbConnection, createDestroyScheme[1])
-		}
-	}
-}
-
-func runSQLQueries(t testing.TB, db *sql.DB, setup []string) {
-	t.Helper()
-	for _, command := range setup {
-		_, err := db.Exec(command)
+	for _, query := range splitQueries {
+		_, err := dbConnection.Exec(query)
 		if err != nil {
-			t.Fatalf("failed to run command '%s'; error: %v", command, err)
+			return fmt.Errorf("failed to run SQL query '%s'; error: %v", query, err)
 		}
 	}
+	return nil
 }

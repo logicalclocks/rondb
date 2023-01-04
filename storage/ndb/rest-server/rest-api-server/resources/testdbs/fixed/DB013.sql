@@ -1,0 +1,20 @@
+DROP DATABASE IF EXISTS DB013;
+
+CREATE DATABASE DB013;
+
+USE DB013;
+
+-- blobs in PK is not supported by RonDB
+CREATE TABLE blob_table(id0 int, col0 blob, col1 int, PRIMARY KEY(id0)) ENGINE = ndbcluster;
+
+INSERT INTO
+    blob_table
+VALUES
+(1, 0xFFFF, 1);
+
+CREATE TABLE text_table(id0 int, col0 text, col1 int, PRIMARY KEY(id0)) ENGINE = ndbcluster;
+
+INSERT INTO
+    text_table
+VALUES
+(1, "FFFF", 1);

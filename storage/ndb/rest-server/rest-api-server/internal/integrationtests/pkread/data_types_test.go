@@ -25,13 +25,14 @@ import (
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/integrationtests"
 	"hopsworks.ai/rdrs/pkg/api"
+	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 // INT TESTS
 // Test signed and unsigned int data type
 func TestDataTypesInt(t *testing.T) {
 	testTable := "int_table"
-	testDb := "DB004"
+	testDb := testdbs.DB004
 	validateColumns := []interface{}{"col0", "col1"}
 	tests := map[string]api.PKTestInfo{
 		"notfound": {
@@ -170,7 +171,7 @@ func TestDataTypesInt(t *testing.T) {
 func TestDataTypesBigInt(t *testing.T) {
 
 	testTable := "bigint_table"
-	testDb := "DB005"
+	testDb := testdbs.DB005
 
 	validateColumns := []interface{}{"col0", "col1"}
 	tests := map[string]api.PKTestInfo{
@@ -268,7 +269,7 @@ func TestDataTypesBigInt(t *testing.T) {
 func TestDataTypesTinyInt(t *testing.T) {
 
 	testTable := "tinyint_table"
-	testDb := "DB006"
+	testDb := testdbs.DB006
 	validateColumns := []interface{}{"col0", "col1"}
 	tests := map[string]api.PKTestInfo{
 
@@ -365,7 +366,7 @@ func TestDataTypesTinyInt(t *testing.T) {
 func TestDataTypesSmallInt(t *testing.T) {
 
 	testTable := "smallint_table"
-	testDb := "DB007"
+	testDb := testdbs.DB007
 	validateColumns := []interface{}{"col0", "col1"}
 	tests := map[string]api.PKTestInfo{
 
@@ -462,7 +463,7 @@ func TestDataTypesSmallInt(t *testing.T) {
 func TestDataTypesMediumInt(t *testing.T) {
 
 	testTable := "mediumint_table"
-	testDb := "DB008"
+	testDb := testdbs.DB008
 	validateColumns := []interface{}{"col0", "col1"}
 	tests := map[string]api.PKTestInfo{
 
@@ -559,7 +560,7 @@ func TestDataTypesMediumInt(t *testing.T) {
 func TestDataTypesFloat(t *testing.T) {
 
 	// testTable := "float_table"
-	testDb := "DB009"
+	testDb := testdbs.DB009
 	validateColumns := []interface{}{"col0", "col1"}
 	tests := map[string]api.PKTestInfo{
 
@@ -618,7 +619,7 @@ func TestDataTypesFloat(t *testing.T) {
 func TestDataTypesDouble(t *testing.T) {
 
 	// testTable := "float_table"
-	testDb := "DB010"
+	testDb := testdbs.DB010
 	validateColumns := []interface{}{"col0", "col1"}
 	tests := map[string]api.PKTestInfo{
 
@@ -677,7 +678,7 @@ func TestDataTypesDouble(t *testing.T) {
 func TestDataTypesDecimal(t *testing.T) {
 
 	testTable := "decimal_table"
-	testDb := "DB011"
+	testDb := testdbs.DB011
 	validateColumns := []interface{}{"col0", "col1"}
 	tests := map[string]api.PKTestInfo{
 
@@ -737,7 +738,7 @@ func TestDataTypesDecimal(t *testing.T) {
 
 func TestDataTypesBlobs(t *testing.T) {
 
-	testDb := "DB013"
+	testDb := testdbs.DB013
 	tests := map[string]api.PKTestInfo{
 
 		"blob1": {
@@ -797,27 +798,27 @@ func TestDataTypesBlobs(t *testing.T) {
 }
 
 func TestDataTypesChar(t *testing.T) {
-	ArrayColumnTest(t, "table1", "DB012", false, 100, true)
+	ArrayColumnTest(t, "table1", testdbs.DB012, false, 100, true)
 }
 
 func TestDataTypesVarchar(t *testing.T) {
-	ArrayColumnTest(t, "table1", "DB014", false, 50, false)
+	ArrayColumnTest(t, "table1", testdbs.DB014, false, 50, false)
 }
 
 func TestDataTypesLongVarchar(t *testing.T) {
-	ArrayColumnTest(t, "table1", "DB015", false, 256, false)
+	ArrayColumnTest(t, "table1", testdbs.DB015, false, 256, false)
 }
 
 func TestDataTypesBinary(t *testing.T) {
-	ArrayColumnTest(t, "table1", "DB016", true, 100, true)
+	ArrayColumnTest(t, "table1", testdbs.DB016, true, 100, true)
 }
 
 func TestDataTypesVarbinary(t *testing.T) {
-	ArrayColumnTest(t, "table1", "DB017", true, 100, false)
+	ArrayColumnTest(t, "table1", testdbs.DB017, true, 100, false)
 }
 
 func TestDataTypesLongVarbinary(t *testing.T) {
-	ArrayColumnTest(t, "table1", "DB018", true, 256, false)
+	ArrayColumnTest(t, "table1", testdbs.DB018, true, 256, false)
 }
 
 func ArrayColumnTest(t *testing.T, table string, database string, isBinary bool, colWidth int, padding bool) {
@@ -964,7 +965,7 @@ func ArrayColumnTest(t *testing.T, table string, database string, isBinary bool,
 func TestDataTypesDateColumn(t *testing.T) {
 	t.Helper()
 	testTable := "date_table"
-	testDb := "DB019"
+	testDb := testdbs.DB019
 	validateColumns := []interface{}{"col0"}
 	tests := map[string]api.PKTestInfo{
 
@@ -1051,7 +1052,7 @@ func TestDataTypesDateColumn(t *testing.T) {
 
 func TestDataTypesDatetimeColumn(t *testing.T) {
 	t.Helper()
-	testDb := "DB020"
+	testDb := testdbs.DB020
 	validateColumns := []interface{}{"col0"}
 	tests := map[string]api.PKTestInfo{
 
@@ -1186,7 +1187,7 @@ func TestDataTypesDatetimeColumn(t *testing.T) {
 
 func TestDataTypesTimeColumn(t *testing.T) {
 	t.Helper()
-	testDb := "DB021"
+	testDb := testdbs.DB021
 	validateColumns := []interface{}{"col0"}
 	tests := map[string]api.PKTestInfo{
 
@@ -1308,7 +1309,7 @@ func TestDataTypesTimeColumn(t *testing.T) {
 
 func TestDataTypesTimestampColumn(t *testing.T) {
 	t.Helper()
-	testDb := "DB022"
+	testDb := testdbs.DB022
 	validateColumns := []interface{}{"col0"}
 	tests := map[string]api.PKTestInfo{
 
@@ -1483,7 +1484,7 @@ func TestDataTypesTimestampColumn(t *testing.T) {
 func TestDataTypesYearColumn(t *testing.T) {
 	///< Year 1901-2155 (1 byte)
 	t.Helper()
-	testDb := "DB023"
+	testDb := testdbs.DB023
 	testTable := "year_table"
 	validateColumns := []interface{}{"col0"}
 	tests := map[string]api.PKTestInfo{
@@ -1571,11 +1572,10 @@ func TestDataTypesYearColumn(t *testing.T) {
 
 func TestDataTypesBitColumn(t *testing.T) {
 	t.Helper()
-	testDb := "DB024"
+	testDb := testdbs.DB024
 	testTable := "bit_table"
 	validateColumns := []interface{}{"col0"}
 	tests := map[string]api.PKTestInfo{
-
 		"simple1": {
 			PkReq: api.PKReadBody{
 				Filters:     integrationtests.NewFiltersKVs("id0", integrationtests.Encode("1", true, 100, true)),

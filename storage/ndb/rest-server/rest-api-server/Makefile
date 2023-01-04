@@ -57,6 +57,14 @@ clean:
 build_proto:
 	protoc --go_out=. --go-grpc_out=. ./api/rdrs.proto
 
+# By default, unit tests in different packages are run concurrently by the order of CPUs.
+# Using t.Parallel() allows tests within packages to run concurrently.
+# We disallow cross-package concurrency using `-p 1` since some of our tests have side 
+# 	effects such as creating and removing databases. If two tests require the same
+# 	database, then it may accidentally be deleted by one test whilst the other one
+# 	is still using it.
+# Info on running tests in parallel in Go:
+# 	https://stackoverflow.com/a/58987438/9068781
 test:
 	@go clean -testcache
 	@echo "Getting cross-package (integration) coverage and writing it to $(COVERAGE_OUTPUT_FILE)"

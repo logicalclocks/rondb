@@ -29,6 +29,7 @@ import (
 	"hopsworks.ai/rdrs/internal/integrationtests"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
+	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 func TestPKReadOmitRequired(t *testing.T) {
@@ -208,7 +209,7 @@ func TestPKUniqueParams(t *testing.T) {
 
 // DB/Table does not exist
 func TestPKERROR_011(t *testing.T) {
-	integrationtests.WithDBs(t, []string{"DB001"},
+	integrationtests.WithDBs(t, []string{testdbs.DB001},
 		func(tc testutils.TlsContext) {
 			pkCol := "id0"
 			pkVal := "1"
@@ -223,14 +224,14 @@ func TestPKERROR_011(t *testing.T) {
 			url := integrationtests.NewPKReadURL("DB001_XXX", "table_1")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusUnauthorized, "")
 
-			url = integrationtests.NewPKReadURL("DB001", "table_1_XXX")
+			url = integrationtests.NewPKReadURL(testdbs.DB001, "table_1_XXX")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest, common.ERROR_011())
 		})
 }
 
 // column does not exist
 func TestPKERROR_012(t *testing.T) {
-	integrationtests.WithDBs(t, []string{"DB001"},
+	integrationtests.WithDBs(t, []string{testdbs.DB001},
 		func(tc testutils.TlsContext) {
 			pkCol := "id0"
 			pkVal := "1"
@@ -242,14 +243,14 @@ func TestPKERROR_012(t *testing.T) {
 
 			body, _ := json.MarshalIndent(param, "", "\t")
 
-			url := integrationtests.NewPKReadURL("DB001", "table_1")
+			url := integrationtests.NewPKReadURL(testdbs.DB001, "table_1")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest, common.ERROR_012())
 		})
 }
 
 // Primary key test.
 func TestPKERROR_013_ERROR_014(t *testing.T) {
-	integrationtests.WithDBs(t, []string{"DB002"},
+	integrationtests.WithDBs(t, []string{testdbs.DB002},
 		func(tc testutils.TlsContext) {
 			// send an other request with one column missing from def
 			// //		// one PK col is missing
@@ -259,7 +260,7 @@ func TestPKERROR_013_ERROR_014(t *testing.T) {
 				OperationID: integrationtests.NewOperationID(64),
 			}
 			body, _ := json.MarshalIndent(param, "", "\t")
-			url := integrationtests.NewPKReadURL("DB002", "table_1")
+			url := integrationtests.NewPKReadURL(testdbs.DB002, "table_1")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest, common.ERROR_013())
 
 			// send an other request with two pk cols but wrong names
@@ -269,7 +270,7 @@ func TestPKERROR_013_ERROR_014(t *testing.T) {
 				OperationID: integrationtests.NewOperationID(64),
 			}
 			body, _ = json.MarshalIndent(param, "", "\t")
-			url = integrationtests.NewPKReadURL("DB002", "table_1")
+			url = integrationtests.NewPKReadURL(testdbs.DB002, "table_1")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest, common.ERROR_014())
 		})
 }

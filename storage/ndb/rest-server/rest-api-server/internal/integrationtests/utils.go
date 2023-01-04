@@ -215,12 +215,8 @@ func getColumnDataFromDB(
 	isBinary bool,
 ) (*string, error) {
 	conf := config.GetAll()
-	connectionString := fmt.Sprintf("%s:%s@tcp(%s:%d)/",
-		conf.MySQLServer.User,
-		conf.MySQLServer.Password,
-		conf.MySQLServer.IP,
-		conf.MySQLServer.Port)
 
+	connectionString := config.GenerateConnectionString(conf)
 	dbConn, err := sql.Open("mysql", connectionString)
 	defer dbConn.Close()
 	if err != nil {
@@ -461,8 +457,11 @@ func WithDBs(
 	// TODO: Explain why?
 	rand.Seed(int64(time.Now().Nanosecond()))
 
-	testutils.CreateDatabases(t, dbs...)
-	defer testutils.DropDatabases(t, dbs...)
+	err, removeDatabases := testutils.CreateDatabases(t, conf.Security.UseHopsWorksAPIKeys, dbs...)
+	if err != nil {
+		t.Fatalf("failed creating databases; error: %v ", err)
+	}
+	defer removeDatabases()
 
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)
