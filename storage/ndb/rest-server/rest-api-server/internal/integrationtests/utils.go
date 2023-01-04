@@ -640,13 +640,14 @@ func sendGRPCBatchRequest(t *testing.T, tc testutils.TlsContext,
 	batchOpRequest := make([]*api.PKReadParams, len(testInfo.Operations))
 	for i := 0; i < len(testInfo.Operations); i++ {
 		op := testInfo.Operations[i]
-		pkReadParams := api.PKReadParams{}
-		pkReadParams.DB = &op.DB
-		pkReadParams.Table = &op.Table
-		pkReadParams.Filters = op.SubOperation.Body.Filters
-		pkReadParams.OperationID = op.SubOperation.Body.OperationID
-		pkReadParams.ReadColumns = op.SubOperation.Body.ReadColumns
-		batchOpRequest[i] = &pkReadParams
+		pkReadParams := &api.PKReadParams{
+			DB:          &op.DB,
+			Table:       &op.Table,
+			Filters:     op.SubOperation.Body.Filters,
+			OperationID: op.SubOperation.Body.OperationID,
+			ReadColumns: op.SubOperation.Body.ReadColumns,
+		}
+		batchOpRequest[i] = pkReadParams
 	}
 
 	batchRequestProto := api.ConvertBatchOpRequest(batchOpRequest)
