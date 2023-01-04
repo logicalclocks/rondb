@@ -28,7 +28,7 @@ func CreateDatabases(
 		err = runQueries(t, createSchema)
 		if err != nil {
 			cleanupDbs()
-			return err, cleanupDbs
+			return fmt.Errorf("failed running createSchema for db '%s'; error: %w", db, err), cleanupDbs
 		}
 		cleanupDbs = func() {
 			dropDatabases += fmt.Sprintf("DROP DATABASE %s;\n", db)
