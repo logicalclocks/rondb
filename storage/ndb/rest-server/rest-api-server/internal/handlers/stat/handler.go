@@ -22,11 +22,18 @@ import (
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-type Handler struct{}
+type Handler struct {
+	heap *heap.Heap
+}
+
+func New(heap *heap.Heap) Handler {
+	return Handler{heap}
+}
 
 func (h Handler) Validate(request interface{}) error {
 	return nil
@@ -46,13 +53,10 @@ func (h Handler) Execute(request interface{}, response interface{}) (int, error)
 		return http.StatusInternalServerError, dalErr
 	}
 
-	nativeBuffersStats, err := dal.GetNativeBuffersStats()
-	if err != nil {
-		return http.StatusInternalServerError, err
-	}
+	stats := h.heap.GetNativeBuffersStats()
 
 	statsResponse := response.(*api.StatResponse)
-	statsResponse.MemoryStats = nativeBuffersStats
+	statsResponse.MemoryStats = stats
 	statsResponse.RonDBStats = *rondbStats
 
 	return http.StatusOK, nil

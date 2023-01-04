@@ -21,12 +21,19 @@ import (
 	"net/http"
 
 	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-type Handler struct{}
+type Handler struct {
+	heap *heap.Heap
+}
+
+func New(heap *heap.Heap) Handler {
+	return Handler{heap}
+}
 
 // TODO: This might have to be instantiated properly
 var pkReadHandler pkread.Handler
@@ -68,22 +75,20 @@ func (h Handler) Execute(request interface{}, response interface{}) (int, error)
 	pkOperations := request.(*[]*api.PKReadParams)
 
 	noOps := uint32(len(*pkOperations))
-	reqPtrs := make([]*dal.NativeBuffer, noOps)
-	respPtrs := make([]*dal.NativeBuffer, noOps)
+	reqPtrs := make([]*heap.NativeBuffer, noOps)
+	respPtrs := make([]*heap.NativeBuffer, noOps)
 
 	var err error
-	for i, pkOp := range *pkOperations {
-		reqPtrs[i], respPtrs[i], err = pkread.CreateNativeRequest(pkOp)
-		defer func() {
-			err = dal.ReturnBuffer(reqPtrs[i])
-			if err != nil {
-				panic(err)
-			}
-			err = dal.ReturnBuffer(respPtrs[i])
-			if err != nil {
-				panic(err)
-			}
-		}()
+	for _, pkOp := range *pkOperations {
+		reqBuff, releaseReqBuff := h.heap.GetBuffer()
+		defer releaseReqBuff()
+		respBuff, releaseResBuff := h.heap.GetBuffer()
+		defer releaseResBuff()
+
+		reqPtrs = append(reqPtrs, reqBuff)
+		respPtrs = append(respPtrs, respBuff)
+
+		err = pkread.CreateNativeRequest(pkOp, reqBuff, respBuff)
 		if err != nil {
 			return http.StatusInternalServerError, err
 		}
@@ -109,7 +114,7 @@ func (h Handler) Execute(request interface{}, response interface{}) (int, error)
 	return http.StatusOK, nil
 }
 
-func processResponses(respBuffs *[]*dal.NativeBuffer, response api.BatchOpResponse) (int, error) {
+func processResponses(respBuffs *[]*heap.NativeBuffer, response api.BatchOpResponse) (int, error) {
 	for _, respBuff := range *respBuffs {
 		pkReadResponseWithCode := response.CreateNewSubResponse()
 		pkReadResponse := pkReadResponseWithCode.GetPKReadResponse()

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 
 	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 )
 
 // Converters for PK Read Request
@@ -225,7 +226,7 @@ func ConvertStatResponse(resp *StatResponse) *StatResponseProto {
 
 func ConvertStatResponseProto(resp *StatResponseProto) *StatResponse {
 	statResponse := StatResponse{}
-	memoryStats := dal.MemoryStats{}
+	memoryStats := heap.MemoryStats{}
 	ronDBStats := dal.RonDBStats{}
 
 	memoryStats.AllocationsCount = *resp.MemoryStats.AllocationsCount

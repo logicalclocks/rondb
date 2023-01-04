@@ -27,6 +27,7 @@ import (
 
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/servers"
 	"hopsworks.ai/rdrs/version"
@@ -57,7 +58,13 @@ func main() {
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)
 
-	err, cleanupServers := servers.CreateAndStartDefaultServers(quit)
+	newHeap, releaseBuffers, err := heap.New()
+	if err != nil {
+		panic(err)
+	}
+	defer releaseBuffers()
+
+	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, quit)
 	defer cleanupServers()
 	if err != nil {
 		panic(err)

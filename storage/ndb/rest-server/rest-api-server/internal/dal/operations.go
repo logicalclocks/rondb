@@ -30,6 +30,8 @@ import "C"
 import (
 	"net/http"
 	"unsafe"
+
+	"hopsworks.ai/rdrs/internal/dal/heap"
 )
 
 type RonDBStats struct {
@@ -39,7 +41,7 @@ type RonDBStats struct {
 	NdbObjectsFreeCount     int64
 }
 
-func RonDBPKRead(request *NativeBuffer, response *NativeBuffer) *DalError {
+func RonDBPKRead(request *heap.NativeBuffer, response *heap.NativeBuffer) *DalError {
 	// unsafe.Pointer
 	// create C structs for buffers
 	var crequest C.RS_Buffer
@@ -59,7 +61,7 @@ func RonDBPKRead(request *NativeBuffer, response *NativeBuffer) *DalError {
 	return nil
 }
 
-func RonDBBatchedPKRead(noOps uint32, requests []*NativeBuffer, responses []*NativeBuffer) *DalError {
+func RonDBBatchedPKRead(noOps uint32, requests []*heap.NativeBuffer, responses []*heap.NativeBuffer) *DalError {
 	reqMem := C.malloc(C.size_t(noOps) * C.size_t(C.sizeof_RS_Buffer))
 	defer C.free(reqMem)
 	cReqs := unsafe.Slice((*C.RS_Buffer)(reqMem), noOps)

@@ -7,6 +7,7 @@ import (
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/security/authcache"
 	"hopsworks.ai/rdrs/internal/security/tlsutils"
@@ -14,29 +15,17 @@ import (
 	"hopsworks.ai/rdrs/internal/servers/rest"
 )
 
-func CreateAndStartDefaultServers(quit chan os.Signal) (err error, cleanup func()) {
+func CreateAndStartDefaultServers(heap *heap.Heap, quit chan os.Signal) (err error, cleanup func()) {
 	cleanup = func() {}
 
-	err = dal.InitializeBuffers()
-	if err != nil {
-		return
-	}
-	actualCleanup := func() {
-		err = dal.ReleaseAllBuffers()
-		if err != nil {
-			log.Error(err.Error())
-		}
-	}
 	// Connect to RonDB
 	conf := config.GetAll()
 	connectString := fmt.Sprintf("%s:%d", conf.REST.ServerIP, conf.REST.ServerPort)
 	err = dal.InitRonDBConnection(connectString, true)
 	if err != nil {
-		actualCleanup()
 		return
 	}
-	actualCleanup = func() {
-		actualCleanup()
+	actualCleanup := func() {
 		dalErr := dal.ShutdownConnection()
 		if dalErr != nil {
 			log.Error(dalErr.Error())
@@ -57,7 +46,7 @@ func CreateAndStartDefaultServers(quit chan os.Signal) (err error, cleanup func(
 		}
 	}
 
-	grpcServer := grpc.New(tlsConfig)
+	grpcServer := grpc.New(tlsConfig, heap)
 	err, cleanupGrpc := grpc.Start(
 		grpcServer,
 		conf.GRPC.ServerIP,
@@ -77,6 +66,7 @@ func CreateAndStartDefaultServers(quit chan os.Signal) (err error, cleanup func(
 		conf.REST.ServerIP,
 		conf.REST.ServerPort,
 		tlsConfig,
+		heap,
 	)
 	cleanupRest := restServer.Start(quit)
 	actualCleanup = func() {

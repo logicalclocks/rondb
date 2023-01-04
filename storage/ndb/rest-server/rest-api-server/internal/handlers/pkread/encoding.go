@@ -32,7 +32,7 @@ import (
 	"unsafe"
 
 	"hopsworks.ai/rdrs/internal/common"
-	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
@@ -73,16 +73,10 @@ import (
 	null terminated  operation Id
 */
 
-// TODO: Add cleanup function here and run dal.ReturnBuffer()
-func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.NativeBuffer, error) {
-	response, err := dal.GetBuffer()
-	if err != nil {
-		return nil, nil, err
-	}
-	request, err := dal.GetBuffer()
-	if err != nil {
-		return nil, nil, err
-	}
+func CreateNativeRequest(
+	pkrParams *api.PKReadParams,
+	request, response *heap.NativeBuffer,
+) (err error) {
 	iBuf := unsafe.Slice((*uint32)(request.Buffer), request.Size/C.ADDRESS_SIZE)
 
 	// First N bytes are for header
@@ -92,13 +86,13 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 
 	head, err = common.CopyGoStrToCStr([]byte(*pkrParams.DB), request, head)
 	if err != nil {
-		return nil, nil, err
+		return
 	}
 
 	tableOffSet := head
 	head, err = common.CopyGoStrToCStr([]byte(*pkrParams.Table), request, head)
 	if err != nil {
-		return nil, nil, err
+		return
 	}
 
 	// PK Filters
@@ -119,12 +113,12 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 		keyOffset := head
 		head, err = common.CopyGoStrToCStr([]byte(*filter.Column), request, head)
 		if err != nil {
-			return nil, nil, err
+			return
 		}
 		valueOffset := head
 		head, err = common.CopyGoStrToNDBStr(*filter.Value, request, head)
 		if err != nil {
-			return nil, nil, err
+			return
 		}
 
 		iBuf[kvi] = tupleOffset
@@ -156,7 +150,7 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 			if col.DataReturnType != nil {
 				drt, err = dataReturnType(col.DataReturnType)
 				if err != nil {
-					return nil, nil, err
+					return
 				}
 			}
 
@@ -166,7 +160,7 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 			// col name
 			head, err = common.CopyGoStrToCStr([]byte(*col.Column), request, head)
 			if err != nil {
-				return nil, nil, err
+				return
 			}
 		}
 	}
@@ -177,7 +171,7 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 		opIdOffset = head
 		head, err = common.CopyGoStrToCStr([]byte(*pkrParams.OperationID), request, head)
 		if err != nil {
-			return nil, nil, err
+			return
 		}
 	}
 
@@ -192,10 +186,10 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 	iBuf[C.PK_REQ_OP_ID_IDX] = uint32(opIdOffset)
 
 	//xxd.Print(0, bBuf[:])
-	return request, response, nil
+	return
 }
 
-func ProcessPKReadResponse(respBuff *dal.NativeBuffer, response api.PKReadResponse) (int32, error) {
+func ProcessPKReadResponse(respBuff *heap.NativeBuffer, response api.PKReadResponse) (int32, error) {
 	iBuf := unsafe.Slice((*uint32)(respBuff.Buffer), respBuff.Size)
 
 	responseType := iBuf[C.PK_RESP_OP_TYPE_IDX]

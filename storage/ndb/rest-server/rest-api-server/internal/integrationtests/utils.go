@@ -33,7 +33,7 @@ import (
 	"time"
 
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/servers"
 	"hopsworks.ai/rdrs/internal/testutils"
@@ -463,19 +463,22 @@ func WithDBs(
 	}
 	defer removeDatabases()
 
+	newHeap, releaseBuffers, err := heap.New()
+	if err != nil {
+		t.Fatalf("failed creating new heap; error: %v ", err)
+	}
+	defer releaseBuffers()
+
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)
-	err, cleanupServers := servers.CreateAndStartDefaultServers(quit)
+	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, quit)
 	if err != nil {
 		t.Fatalf("failed creating default servers; error: %v ", err)
 	}
 	defer cleanupServers()
 
 	defer func() {
-		stats, err := dal.GetNativeBuffersStats()
-		if err != nil {
-			t.Fatal(err)
-		}
+		stats := newHeap.GetNativeBuffersStats()
 		if stats.BuffersCount != stats.FreeBuffers {
 			t.Fatalf("Number of free buffers do not match. Expecting: %d, Got: %d",
 				stats.BuffersCount, stats.FreeBuffers)

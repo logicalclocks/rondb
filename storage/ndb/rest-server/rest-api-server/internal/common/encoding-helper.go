@@ -24,12 +24,12 @@ import (
 	"strconv"
 	"unsafe"
 
-	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 )
 
 // copy a go string to the buffer at the specified location.
 // NULL is appended to the string for c/c++ compatibility
-func CopyGoStrToCStr(src []byte, dst *dal.NativeBuffer, offset uint32) (uint32, error) {
+func CopyGoStrToCStr(src []byte, dst *heap.NativeBuffer, offset uint32) (uint32, error) {
 	dstBuf := unsafe.Slice((*byte)(dst.Buffer), dst.Size)
 
 	if offset+uint32(len(src))+1 > dst.Size {
@@ -56,7 +56,7 @@ func CopyGoStrToCStr(src []byte, dst *dal.NativeBuffer, offset uint32) (uint32, 
 	we adjust the size accordingly.
 */
 
-func CopyGoStrToNDBStr(src []byte, dst *dal.NativeBuffer, offset uint32) (uint32, error) {
+func CopyGoStrToNDBStr(src []byte, dst *heap.NativeBuffer, offset uint32) (uint32, error) {
 	dstBuf := unsafe.Slice((*byte)(dst.Buffer), dst.Size)
 
 	// remove the quotation marks from string

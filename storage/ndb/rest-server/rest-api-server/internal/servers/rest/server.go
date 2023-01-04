@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	"hopsworks.ai/rdrs/internal/handlers/stat"
@@ -23,12 +24,12 @@ type RonDBRestServer struct {
 	server *http.Server
 }
 
-func New(host string, port uint16, tlsConfig *tls.Config) *RonDBRestServer {
+func New(host string, port uint16, tlsConfig *tls.Config, heap *heap.Heap) *RonDBRestServer {
 	restApiAddress := fmt.Sprintf("%s:%d", host, port)
 	log.Infof("Initialising REST API server; Network address: '%s'", restApiAddress)
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
-	registerHandlers(router)
+	registerHandlers(router, heap)
 	return &RonDBRestServer{
 		server: &http.Server{
 			Addr:      restApiAddress,
@@ -75,13 +76,13 @@ type RouteHandler struct {
 	batchPkReadHandler batchpkread.Handler
 }
 
-func registerHandlers(router *gin.Engine) {
+func registerHandlers(router *gin.Engine, heap *heap.Heap) {
 	versionGroup := router.Group(config.VERSION_GROUP)
 
 	routeHandler := &RouteHandler{
-		statsHandler:       stat.Handler{},
-		pkReadHandler:      pkread.Handler{},
-		batchPkReadHandler: batchpkread.Handler{},
+		statsHandler:       stat.New(heap),
+		pkReadHandler:      pkread.New(heap),
+		batchPkReadHandler: batchpkread.New(heap),
 	}
 
 	// ping

@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	"hopsworks.ai/rdrs/internal/handlers/stat"
@@ -37,14 +38,14 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func New(serverTLS *tls.Config) *grpc.Server {
+func New(serverTLS *tls.Config, heap *heap.Heap) *grpc.Server {
 	var grpcServer *grpc.Server
 	if serverTLS != nil {
 		grpcServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
 	} else {
 		grpcServer = grpc.NewServer()
 	}
-	RonDBServer := NewRonDBServer()
+	RonDBServer := NewRonDBServer(heap)
 	api.RegisterRonDBRESTServer(grpcServer, RonDBServer)
 	return grpcServer
 }
@@ -84,11 +85,11 @@ type RonDBServer struct {
 	batchPkReadHandler batchpkread.Handler
 }
 
-func NewRonDBServer() *RonDBServer {
+func NewRonDBServer(heap *heap.Heap) *RonDBServer {
 	return &RonDBServer{
-		statsHandler:       stat.Handler{},
-		pkReadHandler:      pkread.Handler{},
-		batchPkReadHandler: batchpkread.Handler{},
+		statsHandler:       stat.New(heap),
+		pkReadHandler:      pkread.New(heap),
+		batchPkReadHandler: batchpkread.New(heap),
 	}
 }
 

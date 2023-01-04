@@ -23,12 +23,19 @@ import (
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/handlers/validators"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-type Handler struct{}
+type Handler struct {
+	heap *heap.Heap
+}
+
+func New(heap *heap.Heap) Handler {
+	return Handler{heap}
+}
 
 func (h Handler) Validate(request interface{}) error {
 	pkReadParams := request.(*api.PKReadParams)
@@ -55,19 +62,13 @@ func (h Handler) Authenticate(apiKey *string, request interface{}) error {
 
 func (h Handler) Execute(request interface{}, response interface{}) (int, error) {
 	pkReadParams := request.(*api.PKReadParams)
-	reqBuff, respBuff, err := CreateNativeRequest(pkReadParams)
-	defer func() {
-		err = dal.ReturnBuffer(reqBuff)
-		if err != nil {
-			// TODO: Figure out way how to stop server
-			panic(err)
-		}
-		err = dal.ReturnBuffer(respBuff)
-		if err != nil {
-			// TODO: Figure out way how to stop server
-			panic(err)
-		}
-	}()
+
+	reqBuff, releaseReqBuff := h.heap.GetBuffer()
+	defer releaseReqBuff()
+	respBuff, releaseResBuff := h.heap.GetBuffer()
+	defer releaseResBuff()
+
+	err := CreateNativeRequest(pkReadParams, reqBuff, respBuff)
 	if err != nil {
 		return http.StatusInternalServerError, err
 	}
