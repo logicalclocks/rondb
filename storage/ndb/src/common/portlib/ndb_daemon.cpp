@@ -393,6 +393,28 @@ int ndb_daemonize(const char* pidfile_name, const char *logfile_name)
   return 0;
 }
 
+int write_real_pid(pid_t new_pid)
+{
+  char buf[32];
+  if (g_pidfile_name_set)
+  {
+    int length = (int)snprintf(buf, sizeof(buf), "%d", new_pid);
+    if (pwrite(g_pidfd, buf, length, (off_t)0) != length)
+      return ERR1("Failed to write pid to pidfile '%s', errno: %d",
+                  g_pidfile_name, errno);
+  }
+  return 0;
+}
+
+char* get_pidfile_name()
+{
+  if (g_pidfile_name_set)
+  {
+    return g_pidfile_name;
+  }
+  return NULL;
+}
+
 void ndb_daemon_exit(int status)
 {
   if (g_pidfd != -1)

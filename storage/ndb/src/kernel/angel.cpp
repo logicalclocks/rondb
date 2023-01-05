@@ -761,7 +761,22 @@ angel_run(const char* progname,
      */
     g_eventLogger->info("Angel pid: %d started child: %d",
                         getpid(), child);
-
+    if (write_real_pid(child) != 0)
+    {
+      g_eventLogger->error("Failed to write real data node PID into pidfile %s",
+                           get_pidfile_name());
+      //Ignore error, data node already started
+    }
+    else if (get_pidfile_name() != NULL)
+    {
+      g_eventLogger->info("Wrote data node PID: %d into pidfile %s",
+                          child,
+                          get_pidfile_name());
+    }
+    else
+    {
+      g_eventLogger->info("Not using pid file for ndbmtd");
+    }
     ignore_signals();
 
     if(have_password_option)

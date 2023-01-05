@@ -399,9 +399,24 @@ MgmtSrvr::init()
 
   assert(_ownNodeId);
 
+  if (!is_node_active())
+  {
+    g_eventLogger->error("Failed to start MgmtSrvr as node is deactivated");
+    DBUG_RETURN(false);
+  }
   DBUG_RETURN(true);
 }
 
+bool
+MgmtSrvr::is_node_active()
+{
+  ConfigIter iter(m_local_config, CFG_SECTION_NODE);
+  require(iter.find(CFG_NODE_ID, _ownNodeId) == 0);
+
+  unsigned is_active = 1;
+  iter.get(CFG_NODE_ACTIVE, &is_active);
+  return (bool)is_active;
+}
 
 bool
 MgmtSrvr::start_transporter(const Config* config)
