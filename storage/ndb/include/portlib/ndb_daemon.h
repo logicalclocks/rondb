@@ -59,6 +59,16 @@ int ndb_daemonize(const char* pidfile_name, const char *logfile_name);
 [[noreturn]] void ndb_daemon_exit(int status);
 
 /*
+  Called from ndbmtd after creating the real data node process.
+  We will write this PID into the pid file instead of the angel
+  process which is not very useful to know the pid of. Killing
+  the angel process doesn't affect the real data node process.
+  Killing the real data node will however be handled by the
+  angel process.
+*/
+int write_real_pid(pid_t real_data_node_pid);
+char* get_pidfile_name();
+/*
    if any of the functions in ndb_daemon return non-zero (failure)
    then ndb_daemon_error contains the error message
 */
