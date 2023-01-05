@@ -32,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
@@ -436,7 +437,7 @@ func WithDBs(
 	if !*testutils.WithRonDB {
 		t.Skip("skipping test without RonDB")
 	}
-	t.Logf("Running executor against dbs '%v", dbs)
+	t.Logf("Running executor against dbs %v", dbs)
 
 	conf := config.GetAll()
 

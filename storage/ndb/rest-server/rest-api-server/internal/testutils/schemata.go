@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	_ "github.com/go-sql-driver/mysql"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
@@ -30,6 +31,7 @@ func CreateDatabases(
 			cleanupDbs()
 			return fmt.Errorf("failed running createSchema for db '%s'; error: %w", db, err), cleanupDbs
 		}
+		t.Logf("successfully ran all queries to instantiate db '%s'", db)
 		cleanupDbs = func() {
 			dropDatabases += fmt.Sprintf("DROP DATABASE %s;\n", db)
 			err = runQueries(t, dropDatabases)
@@ -54,6 +56,8 @@ func runQueries(t testing.TB, sqlQueries string) error {
 	if len(splitQueries) == 0 {
 		return nil
 	}
+	// the last semi-colon will produce an empty last element
+	splitQueries = splitQueries[:len(splitQueries)-1]
 
 	conf := config.GetAll()
 	connectionString := config.GenerateConnectionString(conf)
@@ -65,6 +69,7 @@ func runQueries(t testing.TB, sqlQueries string) error {
 	defer dbConnection.Close()
 
 	for _, query := range splitQueries {
+		t.Logf("running query: %s", query)
 		_, err := dbConnection.Exec(query)
 		if err != nil {
 			return fmt.Errorf("failed to run SQL query '%s'; error: %v", query, err)
