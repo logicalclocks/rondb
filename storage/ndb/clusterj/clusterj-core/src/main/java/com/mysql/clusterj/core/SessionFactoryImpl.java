@@ -25,16 +25,7 @@
 
 package com.mysql.clusterj.core;
 
-import com.mysql.clusterj.ClusterJDatastoreException;
-import com.mysql.clusterj.ClusterJException;
-import com.mysql.clusterj.ClusterJFatalException;
-import com.mysql.clusterj.ClusterJFatalInternalException;
-import com.mysql.clusterj.ClusterJFatalUserException;
-import com.mysql.clusterj.ClusterJHelper;
-import com.mysql.clusterj.ClusterJUserException;
-import com.mysql.clusterj.Constants;
-import com.mysql.clusterj.Session;
-import com.mysql.clusterj.SessionFactory;
+import com.mysql.clusterj.*;
 import com.mysql.clusterj.core.spi.DomainTypeHandler;
 import com.mysql.clusterj.core.spi.DomainTypeHandlerFactory;
 import com.mysql.clusterj.core.spi.ValueHandlerFactory;
@@ -967,19 +958,71 @@ public class SessionFactoryImpl implements SessionFactory, Constants {
             if (domainTypeHandler != null) {
                 // remove the ndb dictionary cached table definition
                 tableName = domainTypeHandler.getTableName();
-                if (tableName != null) {
-                    if (logger.isDebugEnabled())logger.debug("Removing dictionary entry for table "
-                            + "db:" + databaseName + " " + tableName
-                            + " for class " + cls.getName());
-                    dictionary.removeCachedTable(tableName);
-                    for (ClusterConnection clusterConnection: pooledConnections) {
-                        clusterConnection.unloadSchema(databaseName, tableName, defaultDatabase);
-                    }
-                }
+                unloadSchemaInternal(cls, dictionary, tableName, databaseName, defaultDatabase);
+            } else {
+                /*
+                When a table is deleted and recreated with different schema then we need to unload
+                the schema otherwise we will get schema version mismatch errors. However, the
+                typeToHandlerMap uses Class as keys. The Dynamic class that will represent the
+                new table will not match with any key in typeToHandlerMap and unloadSchema
+                will not do anything.
+
+                If we do not find the user key in the typeToHandlerMap then we iterate over
+                the keys in the typeToHandlersMap and check if the table name matches
+                with the user supplied class. If a match is found then we unload that table and
+                return.
+                 */
+                newTableUnloadSchemaInternal(cls, dictionary, databaseName, defaultDatabase);
             }
             return tableName;
         }
     }
+
+    private void unloadSchemaInternal(Class<?> cls, Dictionary dictionary, String tableName,
+                                      String databaseName, boolean defaultDatabase) {
+        if (tableName != null) {
+            if (logger.isDebugEnabled()) logger.debug("Removing dictionary entry for table "
+                    + "db:" + databaseName + " " + tableName
+                    + " for class " + cls.getName());
+            dictionary.removeCachedTable(tableName);
+            for (ClusterConnection clusterConnection : pooledConnections) {
+                clusterConnection.unloadSchema(databaseName, tableName, defaultDatabase);
+            }
+        }
+    }
+
+    private void newTableUnloadSchemaInternal(Class<?> cls, Dictionary dictionary,
+                                              String databaseName, boolean defaultDatabase) {
+        String userTable = getTableFromClass(cls);
+        if (userTable != null) {
+            for (Class<?> c : typeToHandlerMap.keySet()) {
+                String keyTable = getTableFromClass(c);
+                if (keyTable != null) {
+                    if (userTable.compareTo(keyTable) == 0) {
+                        DomainTypeHandler<?> domainTypeHandler = typeToHandlerMap.remove(c);
+                        if (domainTypeHandler != null) {
+                            // remove the ndb dictionary cached table definition
+                            String tableName = domainTypeHandler.getTableName();
+                            unloadSchemaInternal(cls, dictionary, tableName, databaseName, defaultDatabase);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private String getTableFromClass(Class<?> cls) {
+        try {
+            DynamicObject test = (DynamicObject) cls.newInstance();
+            return test.table();
+        } catch (InstantiationException | IllegalAccessException e) {
+            logger.warn(local.message("ERR_Create_Instance", cls.toString()));
+            return null;
+        }
+    }
+
+
     protected ThreadGroup threadGroup = new ThreadGroup("Reconnect");
 
     protected Thread reconnectThread;
