@@ -69,7 +69,8 @@ func runQueries(t testing.TB, sqlQueries string) error {
 	defer dbConnection.Close()
 
 	for _, query := range splitQueries {
-		t.Logf("running query: %s", query)
+		query := strings.TrimSpace(query)
+		t.Logf("running query: \n%s", query)
 		_, err := dbConnection.Exec(query)
 		if err != nil {
 			return fmt.Errorf("failed to run SQL query '%s'; error: %v", query, err)
