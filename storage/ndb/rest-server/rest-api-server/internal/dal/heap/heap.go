@@ -85,7 +85,7 @@ func allocateBuffer() *NativeBuffer {
 		Size:   uint32(bufferSize),
 	}
 	dstBuf := unsafe.Slice((*byte)(buff.Buffer), bufferSize)
-	dstBuf[0] = 0x00 // reset buffer by putting null terminator in the begenning
+	dstBuf[0] = 0x00 // reset buffer by putting null terminator in the beginning
 	return &buff
 }
 

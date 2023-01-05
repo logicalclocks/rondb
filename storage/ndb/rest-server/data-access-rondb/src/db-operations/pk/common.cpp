@@ -414,7 +414,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
           " Data len is greater than column length. Column: " + std::string(col->getName()));
     }
 
-    // insert the length at the begenning of the array
+    // insert the length at the beginning of the array
     if (col->getType() == NdbDictionary::Column::Varbinary) {
       pk[0] = (Uint8)ret.first;
     } else if (col->getType() == NdbDictionary::Column::Longvarbinary) {
