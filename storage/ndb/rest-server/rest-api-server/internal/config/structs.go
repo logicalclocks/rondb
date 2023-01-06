@@ -44,8 +44,8 @@ type Security struct {
 	CertificateFile                  string
 	PrivateKeyFile                   string
 	RootCACertFile                   string
-	UseHopsWorksAPIKeys              bool
-	HopsWorksAPIKeysCacheValiditySec int
+	UseHopsworksAPIKeys              bool
+	HopsworksAPIKeysCacheValiditySec int
 }
 
 func (c Security) Validate() error {

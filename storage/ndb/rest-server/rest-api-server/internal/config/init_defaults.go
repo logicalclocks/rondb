@@ -66,8 +66,8 @@ func newWithDefaults() AllConfigs {
 			CertificateFile:                  "",
 			PrivateKeyFile:                   "",
 			RootCACertFile:                   "",
-			UseHopsWorksAPIKeys:              false,
-			HopsWorksAPIKeysCacheValiditySec: 3,
+			UseHopsworksAPIKeys:              false,
+			HopsworksAPIKeysCacheValiditySec: 3,
 		},
 		Log: log.LogConfig{
 			Level:      "warn",

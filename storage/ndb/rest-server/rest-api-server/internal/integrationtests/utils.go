@@ -74,7 +74,7 @@ func SendHttpRequest(
 	}
 
 	conf := config.GetAll()
-	if conf.Security.UseHopsWorksAPIKeys {
+	if conf.Security.UseHopsworksAPIKeys {
 		req.Header.Set(config.API_KEY_NAME, testutils.HOPSWORKS_TEST_API_KEY)
 	}
 
@@ -458,7 +458,7 @@ func WithDBs(
 	// TODO: Explain why?
 	rand.Seed(int64(time.Now().Nanosecond()))
 
-	err, removeDatabases := testutils.CreateDatabases(t, conf.Security.UseHopsWorksAPIKeys, dbs...)
+	err, removeDatabases := testutils.CreateDatabases(t, conf.Security.UseHopsworksAPIKeys, dbs...)
 	if err != nil {
 		t.Fatalf("failed creating databases; error: %v ", err)
 	}
