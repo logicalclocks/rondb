@@ -15,7 +15,7 @@ func (s *RonDBServer) Batch(ctx context.Context, reqProto *api.BatchRequestProto
 	var responseIntf api.BatchOpResponse = (api.BatchOpResponse)(&api.BatchResponseGRPC{})
 	responseIntf.Init()
 
-	httpStatus, err := handlers.Handle(s.pkReadHandler, apiKey, request, responseIntf)
+	httpStatus, err := handlers.Handle(s.batchPkReadHandler, apiKey, request, responseIntf)
 	if err != nil {
 		return nil, convertError(httpStatus, err.Error())
 	} else if httpStatus != http.StatusOK {
