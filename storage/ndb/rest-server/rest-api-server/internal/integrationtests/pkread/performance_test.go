@@ -28,6 +28,7 @@ import (
 	"hopsworks.ai/rdrs/internal/integrationtests"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
+	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 /*
@@ -44,22 +45,21 @@ func BenchmarkSimple(b *testing.B) {
 	numOps := b.N
 	b.Logf("numOps: %d", numOps)
 
-	db := "bench"
 	table := "table_1"
-	maxRows := 1000
+	maxRows := testdbs.BENCH_DB_NUM_ROWS
 	opCount := 0
 	threadId := 0
-	integrationtests.WithDBs(b, []string{db}, func(tc testutils.TlsContext) {
+	integrationtests.WithDBs(b, []string{testdbs.Benchmark}, func(tc testutils.TlsContext) {
 		b.ResetTimer()
 		start := time.Now()
 
 		b.RunParallel(func(bp *testing.PB) {
-			url := integrationtests.NewPKReadURL(db, table)
+			url := integrationtests.NewPKReadURL(testdbs.Benchmark, table)
 			operationId := fmt.Sprintf("operation_%d", threadId)
 			threadId++
 
 			opCount++
-			reqBody := createReq(maxRows, opCount, operationId)
+			reqBody := createReq(b, maxRows, opCount, operationId)
 
 			for bp.Next() {
 				integrationtests.SendHttpRequest(b, tc, config.PK_HTTP_VERB, url, reqBody, http.StatusOK, "")
@@ -74,7 +74,7 @@ func BenchmarkSimple(b *testing.B) {
 	})
 }
 
-func createReq(maxRows, opCount int, operationId string) string {
+func createReq(b *testing.B, maxRows, opCount int, operationId string) string {
 	rowId := opCount % maxRows
 	col := "id0"
 	param := api.PKReadBody{
@@ -82,7 +82,10 @@ func createReq(maxRows, opCount int, operationId string) string {
 		ReadColumns: integrationtests.NewReadColumns("col_", 1),
 		OperationID: &operationId,
 	}
-	body, _ := json.Marshal(param)
+	body, err := json.Marshal(param)
+	if err != nil {
+		b.Fatalf("failed marshaling body; error: %v", err)
+	}
 	return string(body)
 }
 
@@ -90,7 +93,6 @@ func BenchmarkMT(b *testing.B) {
 	numOps := b.N
 	b.Logf("numOps: %d", numOps)
 
-	db := "bench"
 	table := "table_1"
 	maxRows := 1000
 
@@ -105,12 +107,12 @@ func BenchmarkMT(b *testing.B) {
 		sharedLoad <- operationId
 	}
 
-	integrationtests.WithDBs(b, []string{db}, func(tc testutils.TlsContext) {
+	integrationtests.WithDBs(b, []string{testdbs.Benchmark}, func(tc testutils.TlsContext) {
 		b.ResetTimer()
 		start := time.Now()
 
 		for _, done := range donePerThread {
-			go runner(b, tc, db, table, maxRows, sharedLoad, done)
+			go runner(b, tc, testdbs.Benchmark, table, maxRows, sharedLoad, done)
 		}
 
 		for _, done := range donePerThread {
