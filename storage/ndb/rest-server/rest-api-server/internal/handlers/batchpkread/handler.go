@@ -79,14 +79,14 @@ func (h Handler) Execute(request interface{}, response interface{}) (int, error)
 	respPtrs := make([]*heap.NativeBuffer, noOps)
 
 	var err error
-	for _, pkOp := range *pkOperations {
+	for idx, pkOp := range *pkOperations {
 		reqBuff, releaseReqBuff := h.heap.GetBuffer()
 		defer releaseReqBuff()
 		respBuff, releaseResBuff := h.heap.GetBuffer()
 		defer releaseResBuff()
 
-		reqPtrs = append(reqPtrs, reqBuff)
-		respPtrs = append(respPtrs, respBuff)
+		reqPtrs[idx] = reqBuff
+		respPtrs[idx] = respBuff
 
 		err = pkread.CreateNativeRequest(pkOp, reqBuff, respBuff)
 		if err != nil {
