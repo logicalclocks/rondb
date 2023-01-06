@@ -28,7 +28,7 @@ func New(host string, port uint16, tlsConfig *tls.Config, heap *heap.Heap) *RonD
 	restApiAddress := fmt.Sprintf("%s:%d", host, port)
 	log.Infof("Initialising REST API server with network address: '%s'", restApiAddress)
 	gin.SetMode(gin.ReleaseMode)
-	router := gin.New()
+	router := gin.New() // gin.Default() for better logging
 	registerHandlers(router, heap)
 	return &RonDBRestServer{
 		server: &http.Server{
@@ -94,6 +94,6 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap) {
 	versionGroup.POST("/"+config.BATCH_OPERATION, routeHandler.BatchPkRead)
 
 	// pk read
-	tableSpecificGroup := versionGroup.Group(config.DB_OPS_EP_GROUP)
+	tableSpecificGroup := versionGroup.Group(config.DB_TABLE_PP)
 	tableSpecificGroup.POST(config.PK_DB_OPERATION, routeHandler.PkRead)
 }

@@ -21,11 +21,13 @@ import "hopsworks.ai/rdrs/version"
 
 const API_KEY_NAME = "X-API-KEY"
 
+// TODO: What's a "PP"?
 const DB_PP = "db"
 const TABLE_PP = "table"
+const DB_TABLE_PP = "/:" + DB_PP + "/:" + TABLE_PP + "/"
 
 const VERSION_GROUP = "/" + version.API_VERSION
-const DB_OPS_EP_GROUP = VERSION_GROUP + "/:" + DB_PP + "/:" + TABLE_PP + "/"
+const DB_OPS_EP_GROUP = VERSION_GROUP + DB_TABLE_PP
 const DBS_OPS_EP_GROUP = VERSION_GROUP + "/"
 
 const PK_DB_OPERATION = "pk-read"
