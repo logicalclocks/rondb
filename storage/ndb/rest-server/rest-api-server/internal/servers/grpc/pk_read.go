@@ -16,7 +16,7 @@ func (s *RonDBServer) PKRead(ctx context.Context, reqProto *api.PKReadRequestPro
 	var responseIntf api.PKReadResponse = (api.PKReadResponse)(&api.PKReadResponseGRPC{})
 	responseIntf.Init()
 
-	httpStatus, err := handlers.Handle(s.pkReadHandler, apiKey, request, responseIntf)
+	httpStatus, err := handlers.Handle(s.pkReadHandler, &apiKey, request, responseIntf)
 	if err != nil {
 		return nil, convertError(httpStatus, err.Error())
 	} else if httpStatus != http.StatusOK {

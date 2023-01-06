@@ -20,6 +20,7 @@ import (
 	"errors"
 	"net/http"
 
+	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
@@ -55,6 +56,11 @@ func (h Handler) Validate(request interface{}) error {
 }
 
 func (h Handler) Authenticate(apiKey *string, request interface{}) error {
+	conf := config.GetAll()
+	if !conf.Security.UseHopsworksAPIKeys {
+		return nil
+	}
+
 	pkOperations := request.(*[]*api.PKReadParams)
 
 	dbMap := make(map[string]bool)

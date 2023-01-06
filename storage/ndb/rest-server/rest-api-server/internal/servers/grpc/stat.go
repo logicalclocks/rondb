@@ -11,7 +11,7 @@ import (
 func (s *RonDBServer) Stat(ctx context.Context, reqProto *api.StatRequestProto) (*api.StatResponseProto, error) {
 	apiKey, err := s.getApiKey(ctx)
 	statResp := api.StatResponse{}
-	httpStatus, err := handlers.Handle(s.statsHandler, apiKey, nil, statResp)
+	httpStatus, err := handlers.Handle(s.statsHandler, &apiKey, nil, statResp)
 	if err != nil {
 		return nil, convertError(httpStatus, err.Error())
 	} else if httpStatus != http.StatusOK {

@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
@@ -111,17 +112,22 @@ func convertError(httpStatus int, msg string) error {
 	}
 }
 
-func (s *RonDBServer) getApiKey(ctx context.Context) (*string, error) {
+func (s *RonDBServer) getApiKey(ctx context.Context) (string, error) {
+	conf := config.GetAll()
+	if !conf.Security.UseHopsworksAPIKeys {
+		return "", nil
+	}
+
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return nil, status.Errorf(codes.Unauthenticated, "Retrieving metadata is failed")
+		return "", status.Errorf(codes.Unauthenticated, "Retrieving metadata is failed")
 	}
 	authHeader, ok := md["authorization"]
 	if !ok {
-		return nil, status.Errorf(codes.Unauthenticated, "authorization token is not supplied")
+		return "", status.Errorf(codes.Unauthenticated, "authorization token is not supplied")
 	}
 	if len(authHeader) == 0 {
-		return nil, status.Errorf(codes.OutOfRange, "authorization token is not supplied")
+		return "", status.Errorf(codes.OutOfRange, "authorization token is not supplied")
 	}
-	return &authHeader[0], nil
+	return authHeader[0], nil
 }
