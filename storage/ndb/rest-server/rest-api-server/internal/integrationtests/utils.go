@@ -478,6 +478,7 @@ func WithDBs(
 	}
 	defer cleanupServers()
 	log.Info("Successfully started up default servers")
+	time.Sleep(500 * time.Millisecond)
 
 	defer func() {
 		stats := newHeap.GetNativeBuffersStats()
