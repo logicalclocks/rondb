@@ -138,7 +138,7 @@ func TestAPIKeyCache1(t *testing.T) {
 		t.Fatalf("Cache update time is expected to be the same; error: %v", err)
 	}
 
-	time.Sleep(time.Duration(conf.Security.HopsWorksAPIKeysCacheValiditySec))
+	time.Sleep(time.Duration(conf.Security.HopsworksAPIKeysCacheValiditySec))
 
 	err = ValidateAPIKey(&apiKey, &databases[0])
 	if err != nil {
@@ -147,7 +147,7 @@ func TestAPIKeyCache1(t *testing.T) {
 
 	lastUpdated3 := authcache.RefreshExpiration(testutils.HOPSWORKS_TEST_API_KEY)
 
-	lastUpdated2p := lastUpdated2.Add(time.Duration(conf.Security.HopsWorksAPIKeysCacheValiditySec))
+	lastUpdated2p := lastUpdated2.Add(time.Duration(conf.Security.HopsworksAPIKeysCacheValiditySec))
 	if lastUpdated2 != lastUpdated3 && lastUpdated2p.Before(lastUpdated3) {
 		t.Fatalf("Cache time is not updated properly; error: %v", err)
 	}
