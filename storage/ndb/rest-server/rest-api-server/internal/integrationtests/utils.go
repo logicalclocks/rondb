@@ -70,7 +70,7 @@ func SendHttpRequest(
 	}
 
 	if err != nil {
-		t.Fatalf("Test failed to create request. Error: %v", err)
+		t.Fatalf("failed to create request; error: %v", err)
 	}
 
 	conf := config.GetAll()
@@ -80,13 +80,14 @@ func SendHttpRequest(
 
 	resp, err = client.Do(req)
 	if err != nil {
-		t.Fatalf("Test failed to perform request. Error: %v", err)
+		t.Fatalf("failed to perform HTTP request towards url: '%s'\nrequest body: '%s'\nerror: %v", url, body, err)
 	}
+	defer resp.Body.Close()
 
 	respCode := resp.StatusCode
 	respBodyBtyes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("Test failed to read response body. Error: %v", err)
+		t.Fatalf("failed to read HTTP response body for url: '%s'\nrequest body: '%s'\nresponse code: %d\nerror: %v", url, body, respCode, err)
 	}
 	respBody := string(respBodyBtyes)
 
@@ -521,7 +522,8 @@ func sendGRPCPKReadRequest(
 ) (int, *api.PKReadResponseGRPC) {
 
 	// Create gRPC client
-	conn, err := testutils.CreateGrpcConn(t, tc, true, true)
+	conf := config.GetAll()
+	conn, err := testutils.CreateGrpcConn(t, tc, conf.Security.UseHopsworksAPIKeys, conf.Security.RequireAndVerifyClientCert)
 	if err != nil {
 		t.Fatalf("Failed to connect to server %v", err)
 	}
@@ -634,7 +636,8 @@ func sendGRPCBatchRequest(t *testing.T, tc testutils.TlsContext,
 	testInfo api.BatchOperationTestInfo) (int, *api.BatchResponseGRPC) {
 
 	// Create gRPC client
-	conn, err := testutils.CreateGrpcConn(t, tc, true, true)
+	conf := config.GetAll()
+	conn, err := testutils.CreateGrpcConn(t, tc, conf.Security.UseHopsworksAPIKeys, conf.Security.RequireAndVerifyClientCert)
 	if err != nil {
 		t.Fatalf("Failed to connect to server %v", err)
 	}
