@@ -61,7 +61,7 @@ func Start(
 	if err != nil {
 		return fmt.Errorf("failed listening to GRPC server address '%s'; error: %v", grpcAddress, err), func() {}
 	}
-	log.Infof("listening at %s for gRPC server", grpcListener.Addr())
+	log.Infof("Listening at %s for gRPC server", grpcListener.Addr())
 	go func() {
 		log.Info("Starting up gRPC server")
 		if err := grpcServer.Serve(grpcListener); err != nil {
@@ -70,13 +70,15 @@ func Start(
 		}
 	}()
 	return nil, func() {
-		log.Info("Closing gRPC listener")
-		err = grpcListener.Close()
-		if err != nil {
-			log.Errorf("failed closing gRPC listener; error: %v", err)
-		}
 		log.Info("Gracefully stopping grpc server")
 		grpcServer.GracefulStop()
+		/*
+			// This seems to already be run with GracefulStop()
+			err = grpcListener.Close()
+			if err != nil {
+				log.Errorf("failed closing gRPC listener; error: %v", err)
+			}
+		*/
 	}
 }
 

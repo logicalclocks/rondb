@@ -26,7 +26,7 @@ type RonDBRestServer struct {
 
 func New(host string, port uint16, tlsConfig *tls.Config, heap *heap.Heap) *RonDBRestServer {
 	restApiAddress := fmt.Sprintf("%s:%d", host, port)
-	log.Infof("Initialising REST API server; Network address: '%s'", restApiAddress)
+	log.Infof("Initialising REST API server with network address: '%s'", restApiAddress)
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	registerHandlers(router, heap)

@@ -91,9 +91,9 @@ func SendHttpRequest(
 	respBody := string(respBodyBtyes)
 
 	if respCode != expectedStatus {
-		t.Fatalf("Test failed. Expected: %d, Got: %d. Complete Response Body: %v ", expectedStatus, respCode, respBody)
+		t.Fatalf("received unexpected status '%d'\nexpected status: '%d'\nurl: '%s'\nbody: '%s'\nresponse body: %v ", respCode, expectedStatus, url, body, respBody)
 	} else if respCode != http.StatusOK && !strings.Contains(respBody, expectedErrMsg) {
-		t.Fatalf("Test failed. Response error body does not contain %s. Body: %s", expectedErrMsg, respBody)
+		t.Fatalf("response error body does not contain '%s'; received response body: '%s'", expectedErrMsg, respBody)
 	}
 
 	return respCode, respBody
@@ -477,6 +477,7 @@ func WithDBs(
 		t.Fatalf("failed creating default servers; error: %v ", err)
 	}
 	defer cleanupServers()
+	log.Info("Successfully started up default servers")
 
 	defer func() {
 		stats := newHeap.GetNativeBuffersStats()
@@ -487,6 +488,7 @@ func WithDBs(
 	}()
 
 	executer(tlsCtx)
+	log.Info("Finished executing all requests")
 }
 
 func PkTest(t *testing.T, tests map[string]api.PKTestInfo, isBinaryData bool) {
