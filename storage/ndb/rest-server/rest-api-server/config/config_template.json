@@ -29,8 +29,8 @@
                 "CertificateFile": "",
                 "PrivateKeyFile": "",
                 "RootCACertFile": "",
-                "UseHopsWorksAPIKeys": true,
-                "HopsWorksAPIKeysCacheValiditySec": 3
+                "UseHopsworksAPIKeys": true,
+                "HopsworksAPIKeysCacheValiditySec": 3
         },
         "Log": {
                 "Level": "info",
