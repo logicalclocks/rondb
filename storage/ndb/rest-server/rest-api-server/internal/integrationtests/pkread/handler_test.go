@@ -33,7 +33,7 @@ import (
 )
 
 func TestPKReadOmitRequired(t *testing.T) {
-	integrationtests.WithDBs(t, []string{"DB000"},
+	integrationtests.WithDBs(t, []string{testdbs.DB000},
 		func(tc testutils.TlsContext) {
 			// Test. Omitting filter should result in 400 error
 			param := api.PKReadBody{
@@ -66,7 +66,7 @@ func TestPKReadOmitRequired(t *testing.T) {
 }
 
 func TestPKReadLargeColumns(t *testing.T) {
-	integrationtests.WithDBs(t, []string{"DB000"},
+	integrationtests.WithDBs(t, []string{testdbs.DB000},
 		func(tc testutils.TlsContext) {
 
 			// Test. Large filter column names.
@@ -116,7 +116,7 @@ func TestPKReadLargeColumns(t *testing.T) {
 
 func TestPKInvalidIdentifier(t *testing.T) {
 
-	integrationtests.WithDBs(t, []string{"DB000"},
+	integrationtests.WithDBs(t, []string{testdbs.DB000},
 		func(tc testutils.TlsContext) {
 			//Valid chars [ U+0001 .. U+007F] and [ U+0080 .. U+FFFF]
 			// Test. invalid filter
@@ -161,8 +161,7 @@ func TestPKInvalidIdentifier(t *testing.T) {
 }
 
 func TestPKUniqueParams(t *testing.T) {
-
-	integrationtests.WithDBs(t, []string{"DB000"},
+	integrationtests.WithDBs(t, []string{testdbs.DB000},
 		func(tc testutils.TlsContext) {
 			// Test. unique read columns
 			readColumns := make([]api.ReadColumn, 2)

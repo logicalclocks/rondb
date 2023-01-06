@@ -419,7 +419,7 @@ func arrayColumnBatchTestSubOp(t *testing.T, table string, database string, isBi
 }
 
 func TestBatchMissingReqField(t *testing.T) {
-	integrationtests.WithDBs(t, []string{"DB000"},
+	integrationtests.WithDBs(t, []string{testdbs.DB000},
 		func(tlsCtx testutils.TlsContext) {
 			url := integrationtests.NewBatchReadURL()
 			// Test missing method
