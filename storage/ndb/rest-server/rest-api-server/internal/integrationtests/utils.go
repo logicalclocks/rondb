@@ -217,7 +217,7 @@ func getColumnDataFromDB(
 ) (*string, error) {
 	conf := config.GetAll()
 
-	connectionString := config.GenerateConnectionString(conf)
+	connectionString := config.GenerateMysqldConnectString(conf)
 	dbConn, err := sql.Open("mysql", connectionString)
 	defer dbConn.Close()
 	if err != nil {

@@ -20,13 +20,13 @@ func CreateAndStartDefaultServers(heap *heap.Heap, quit chan os.Signal) (err err
 
 	// Connect to RonDB
 	conf := config.GetAll()
-	connectString := fmt.Sprintf("%s:%d", conf.REST.ServerIP, conf.REST.ServerPort)
-	err = dal.InitRonDBConnection(connectString, true)
-	if err != nil {
-		return
+	connectString := config.GenerateMgmdConnectString(conf)
+	dalErr := dal.InitRonDBConnection(connectString, true)
+	if dalErr != nil {
+		return fmt.Errorf("failed creating RonDB connection; error: %w", dalErr), cleanup
 	}
-	actualCleanup := func() {
-		dalErr := dal.ShutdownConnection()
+	cleanupRonDB := func() {
+		dalErr = dal.ShutdownConnection()
 		if dalErr != nil {
 			log.Error(dalErr.Error())
 		}
@@ -41,8 +41,8 @@ func CreateAndStartDefaultServers(heap *heap.Heap, quit chan os.Signal) (err err
 			conf.Security.PrivateKeyFile,
 		)
 		if err != nil {
-			actualCleanup()
-			return
+			cleanupRonDB()
+			return fmt.Errorf("failed generating tls configuration; error: %w", err), cleanup
 		}
 	}
 
@@ -54,12 +54,8 @@ func CreateAndStartDefaultServers(heap *heap.Heap, quit chan os.Signal) (err err
 		quit,
 	)
 	if err != nil {
-		actualCleanup()
-		return
-	}
-	actualCleanup = func() {
-		actualCleanup()
-		cleanupGrpc()
+		cleanupRonDB()
+		return fmt.Errorf("failed starting gRPC server; error: %w", err), cleanup
 	}
 
 	restServer := rest.New(
@@ -69,12 +65,12 @@ func CreateAndStartDefaultServers(heap *heap.Heap, quit chan os.Signal) (err err
 		heap,
 	)
 	cleanupRest := restServer.Start(quit)
-	actualCleanup = func() {
-		actualCleanup()
+	return nil, func() {
+		cleanupRonDB()
+		cleanupGrpc()
 		cleanupRest()
 
 		// Clean API Key Cache
 		authcache.Reset()
 	}
-	return nil, actualCleanup
 }

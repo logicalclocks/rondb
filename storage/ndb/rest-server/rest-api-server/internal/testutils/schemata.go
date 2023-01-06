@@ -60,7 +60,7 @@ func runQueries(t testing.TB, sqlQueries string) error {
 	splitQueries = splitQueries[:len(splitQueries)-1]
 
 	conf := config.GetAll()
-	connectionString := config.GenerateConnectionString(conf)
+	connectionString := config.GenerateMysqldConnectString(conf)
 	t.Logf("Connecting to mysqld with '%s'", connectionString)
 	dbConnection, err := sql.Open("mysql", connectionString)
 	if err != nil {

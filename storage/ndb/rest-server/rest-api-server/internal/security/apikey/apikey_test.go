@@ -17,7 +17,6 @@
 package apikey
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
@@ -34,10 +33,7 @@ func TestAPIKey(t *testing.T) {
 	}
 
 	conf := config.GetAll()
-	connectString := fmt.Sprintf("%s:%d",
-		conf.RonDB.MgmdIP,
-		conf.RonDB.MgmdPort,
-	)
+	connectString := config.GenerateMgmdConnectString(conf)
 
 	dalErr := dal.InitRonDBConnection(connectString, true)
 	if dalErr != nil {
@@ -110,10 +106,7 @@ func TestAPIKeyCache1(t *testing.T) {
 
 	conf := config.GetAll()
 
-	connectString := fmt.Sprintf("%s:%d",
-		conf.RonDB.MgmdIP,
-		conf.RonDB.MgmdPort,
-	)
+	connectString := config.GenerateMgmdConnectString(conf)
 	dalErr := dal.InitRonDBConnection(connectString, true)
 	if dalErr != nil {
 		t.Fatalf("failed to initialise RonDB connection; error: %s", dalErr.VerboseError())
@@ -167,10 +160,7 @@ func TestAPIKeyCache2(t *testing.T) {
 	}
 
 	conf := config.GetAll()
-	connectString := fmt.Sprintf("%s:%d",
-		conf.RonDB.MgmdIP,
-		conf.RonDB.MgmdPort,
-	)
+	connectString := config.GenerateMgmdConnectString(conf)
 
 	dalErr := dal.InitRonDBConnection(connectString, true)
 	if dalErr != nil {

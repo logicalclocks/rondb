@@ -40,14 +40,6 @@ func New(host string, port uint16, tlsConfig *tls.Config, heap *heap.Heap) *RonD
 }
 
 func (s *RonDBRestServer) Start(quit chan os.Signal) (cleanupFunc func()) {
-	cleanupFunc = func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		err := s.server.Shutdown(ctx)
-		if err != nil {
-			log.Errorf("failed shutting down REST API server; error: %v", err)
-		}
-	}
 	go func() {
 		var err error
 		conf := config.GetAll()
@@ -66,7 +58,14 @@ func (s *RonDBRestServer) Start(quit chan os.Signal) (cleanupFunc func()) {
 			quit <- syscall.SIGINT
 		}
 	}()
-	return
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		err := s.server.Shutdown(ctx)
+		if err != nil {
+			log.Errorf("failed shutting down REST API server; error: %v", err)
+		}
+	}
 }
 
 type RouteHandler struct {
