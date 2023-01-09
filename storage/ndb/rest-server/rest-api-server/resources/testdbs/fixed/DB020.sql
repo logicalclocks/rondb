@@ -1,3 +1,5 @@
+-- Experimenting with different datetime lengths (0,3,6)
+
 DROP DATABASE IF EXISTS DB020;
 
 CREATE DATABASE DB020;
@@ -14,7 +16,7 @@ CREATE TABLE `date_table0` (
 insert into
     date_table0
 values
-("1111-11-11 11:11:11", "1111-11-11 11:11:11");
+    ("1111-11-11 11:11:11", "1111-11-11 11:11:11");
 
 insert into
     date_table0
@@ -30,7 +32,7 @@ CREATE TABLE `date_table3` (
 insert into
     date_table3
 values
-(
+    (
         "1111-11-11 11:11:11.123",
         "1111-11-11 11:11:11.123"
     );
@@ -49,7 +51,7 @@ CREATE TABLE `date_table6` (
 insert into
     date_table6
 values
-(
+    (
         "1111-11-11 11:11:11.123456",
         "1111-11-11 11:11:11.123456"
     );

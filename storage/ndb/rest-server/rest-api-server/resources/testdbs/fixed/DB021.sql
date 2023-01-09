@@ -1,3 +1,4 @@
+-- Experimenting with different time lengths (0,3,6)
 DROP DATABASE IF EXISTS DB021;
 
 CREATE DATABASE DB021;
@@ -14,7 +15,7 @@ CREATE TABLE `time_table0` (
 insert into
     time_table0
 values
-("11:11:11", "11:11:11");
+    ("11:11:11", "11:11:11");
 
 insert into
     time_table0
@@ -30,7 +31,7 @@ CREATE TABLE `time_table3` (
 insert into
     time_table3
 values
-("11:11:11.123", "11:11:11.123");
+    ("11:11:11.123", "11:11:11.123");
 
 insert into
     time_table3
@@ -46,7 +47,7 @@ CREATE TABLE `time_table6` (
 insert into
     time_table6
 values
-("11:11:11.123456", "11:11:11.123456");
+    ("11:11:11.123456", "11:11:11.123456");
 
 insert into
     time_table6
