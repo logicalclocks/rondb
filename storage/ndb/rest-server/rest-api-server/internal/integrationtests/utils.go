@@ -33,6 +33,8 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"google.golang.org/grpc/status"
+	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
@@ -567,23 +569,13 @@ func sendGRPCPKReadRequest(
 	}
 }
 
-func GetStatusCodeFromError(t *testing.T, errGot error) int {
-	errStr := fmt.Sprintf("%v", errGot)
-	// error code is sandwiched b/w these two substrings
-	subStr1 := "Error code: "
-
-	if !strings.Contains(errStr, subStr1) {
-		t.Fatalf("Invalid GRPC Error message: %s\n", errStr)
+func GetStatusCodeFromError(t *testing.T, err error) int {
+	status, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("could not find gRPC status in error: %v", err)
 	}
 
-	numStartIdx := strings.LastIndex(errStr, subStr1) + len(subStr1)
-	numStr := errStr[numStartIdx : numStartIdx+3]
-	errCode, err := strconv.Atoi(numStr)
-	if err != nil {
-		t.Fatalf("Invalid GRPC Error message. Unable to convert error code to int. Error msg: \"%s\". Error:%v ", errStr, err)
-	}
-
-	return errCode
+	return common.GrpcCodeToHttpStatus(status.Code())
 }
 
 func pkRESTTest(t *testing.T, testInfo api.PKTestInfo, tc testutils.TlsContext, isBinaryData bool) {

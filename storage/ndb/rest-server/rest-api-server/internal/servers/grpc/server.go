@@ -21,7 +21,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
 	"syscall"
 
@@ -60,7 +59,7 @@ func Start(
 	grpcAddress := fmt.Sprintf("%s:%d", host, port)
 	grpcListener, err := net.Listen("tcp", grpcAddress)
 	if err != nil {
-		return fmt.Errorf("failed listening to GRPC server address '%s'; error: %v", grpcAddress, err), func() {}
+		return fmt.Errorf("failed listening to gRPC server address '%s'; error: %v", grpcAddress, err), func() {}
 	}
 	log.Infof("Listening at %s for gRPC server", grpcListener.Addr())
 	go func() {
@@ -71,7 +70,7 @@ func Start(
 		}
 	}()
 	return nil, func() {
-		log.Info("Gracefully stopping grpc server")
+		log.Info("Gracefully stopping gRPC server")
 		grpcServer.GracefulStop()
 		/*
 			// This seems to already be run with GracefulStop()
@@ -96,19 +95,6 @@ func NewRonDBServer(heap *heap.Heap) *RonDBServer {
 		statsHandler:       stat.New(heap),
 		pkReadHandler:      pkread.New(heap),
 		batchPkReadHandler: batchpkread.New(heap),
-	}
-}
-
-func convertError(httpStatus int, msg string) error {
-	switch httpStatus {
-	case http.StatusUnauthorized:
-		return status.Error(codes.PermissionDenied, msg)
-	case http.StatusBadRequest:
-		return status.Error(codes.InvalidArgument, msg)
-	case http.StatusNotFound:
-		return status.Error(codes.NotFound, msg)
-	default:
-		return status.Error(codes.Internal, msg)
 	}
 }
 

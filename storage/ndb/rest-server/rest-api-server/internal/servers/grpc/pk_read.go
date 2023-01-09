@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 
+	"google.golang.org/grpc/status"
+	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/handlers"
 	"hopsworks.ai/rdrs/pkg/api"
 )
@@ -17,10 +19,11 @@ func (s *RonDBServer) PKRead(ctx context.Context, reqProto *api.PKReadRequestPro
 	responseIntf.Init()
 
 	httpStatus, err := handlers.Handle(s.pkReadHandler, &apiKey, request, responseIntf)
+	statusCode := common.HttpStatusToGrpcCode(httpStatus)
 	if err != nil {
-		return nil, convertError(httpStatus, err.Error())
+		return nil, status.Error(statusCode, err.Error())
 	} else if httpStatus != http.StatusOK {
-		return nil, convertError(httpStatus, "")
+		return nil, status.Error(statusCode, "")
 	}
 
 	respProto := api.ConvertPKReadResponse(responseIntf.(*api.PKReadResponseGRPC))
