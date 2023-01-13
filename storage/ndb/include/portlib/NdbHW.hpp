@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2013, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -46,6 +47,7 @@ struct ndb_cpuinfo_data
   Uint32 group_number;
   Uint32 group_index;
 #endif
+  Uint32 cpu_capacity;
 };
 
 struct ndb_cpudata
@@ -74,6 +76,7 @@ struct ndb_hwinfo
    */
   Uint32 cpu_cnt_max;
   Uint32 cpu_cnt;
+  Uint32 total_cpu_capacity;
   Uint32 num_cpu_cores;
   Uint32 num_cpu_sockets;
   Uint32 num_cpu_per_core;
@@ -99,6 +102,8 @@ struct ndb_hwinfo
   Uint32 is_cpudata_available;
   Uint32 is_memory_info_available;
   Uint32 first_cpu_map;
+  Uint32 is_mixed_core_throughput;
+  Uint32 is_mixed_cpu_thread_per_cpu_core;
   struct ndb_cpuinfo_data *cpu_info;
   struct ndb_cpudata *cpu_data;
 };

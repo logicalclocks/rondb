@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2013, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -93,12 +93,21 @@ int NdbHW_Init()
     else
     {
       ncpu = (Uint32) tmp;
+      DEBUG_HW((stderr,
+                "%u CPUs found using sysconf(_SC_NPROCESSORS_CONF)\n",
+                ncpu));
     }
   }
 #elif _WIN32
   ncpu = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+  DEBUG_HW((stderr,
+            "%u CPUs found using GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)\n",
+            ncpu));
 #else
   ncpu = std::thread::hardware_concurrency();
+  DEBUG_HW((stderr,
+            "%u CPUs found using std::thread::hardware_concurrency()\n",
+            ncpu));
 #endif
   if (ncpu == 0)
   {
@@ -1091,6 +1100,7 @@ static struct ndb_hwinfo *Ndb_SetHWInfo()
   res->cpu_data = (ndb_cpudata*)p_cpudata;
   res->cpu_cnt_max = ncpu;
   res->cpu_cnt = ncpu;
+  res->total_cpu_capacity = ncpu * 100;
 
   for (Uint32 i = 0; i < ncpu; i++)
   {
@@ -1107,6 +1117,7 @@ static struct ndb_hwinfo *Ndb_SetHWInfo()
     g_ndb_hwinfo->cpu_info[i].group_number = Uint32(~0);
     g_ndb_hwinfo->cpu_info[i].group_index = Uint32(~0);
 #endif
+    g_ndb_hwinfo->cpu_info[i].cpu_capacity = 1;
   }
 
   if (init_hwinfo(res) || Ndb_ReloadHWInfo(res))
@@ -1194,6 +1205,7 @@ Uint32 Ndb_getCPUL3CacheId(Uint32 cpu_id)
 static void
 check_cpu_online(struct ndb_hwinfo *hwinfo)
 {
+  Uint32 total_cpu_capacity = 0;
   for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
   {
     if (!NdbThread_IsCPUAvailable(i))
@@ -1205,8 +1217,28 @@ check_cpu_online(struct ndb_hwinfo *hwinfo)
           abort();
         hwinfo->cpu_cnt--;
       }
+      else
+      {
+        if (hwinfo->cpu_info != nullptr)
+        {
+          total_cpu_capacity += hwinfo->cpu_info[i].cpu_capacity;
+        }
     }
   }
+  if (total_cpu_capacity > 0)
+  {
+    /**
+     * Only count in full CPUs (capacity == 100)
+     */
+    total_cpu_capacity /= 100;
+    total_cpu_capacity *= 100;
+    hwinfo->total_cpu_capacity = total_cpu_capacity;
+  }
+  DEBUG_HW((stderr,
+            "There are %u CPUs online after checking,"
+            " total CPU capacity %u\n",
+            hwinfo->cpu_cnt,
+            hwinfo->total_cpu_capacity));
 }
 #endif
 
@@ -1831,8 +1863,264 @@ static int Ndb_ReloadCPUData(struct ndb_hwinfo *hwinfo)
   }
   return 0;
 }
+static Uint32
+get_cpu_atom_core(struct ndb_hwinfo *hwinfo)
+{
+  char buf[128];
+  char read_buf[128];
+  SparseBitmask mask(hwinfo->cpu_cnt_max);
 
-int
+  for (Uint32 type = 0; type < 2; type++)
+  {
+    if (type == 0)
+    {
+      snprintf(buf,
+               sizeof(buf),
+               "/sys/devices/cpu_atom/cpus");
+    }
+    else
+    {
+      snprintf(buf,
+               sizeof(buf),
+               "/sys/devices/cpu_core/cpus");
+    }
+    FILE *atom_core_info = fopen(buf, "r");
+
+    if (atom_core_info == nullptr)
+    {
+      /**
+       * No Intel Atom/Core processors, we assume that all CPUs are equal
+       */
+      return (type == 0) ? 1 : 50;
+    }
+    char error_buf[384];
+    FileGuard g(atom_core_info); // close at end...
+    if (fgets(read_buf, sizeof(read_buf), atom_core_info) == nullptr)
+    {
+      snprintf(error_buf, sizeof(error_buf), "Failed to read %s", buf);
+      perror(error_buf);
+      return 0;
+    }
+    mask.clear();
+    int res = ::parse_mask(read_buf, mask);
+    if (res <= 0)
+    {
+      snprintf(error_buf,
+               sizeof(error_buf),
+               "Failed to parse %s from %s",
+               read_buf,
+               buf);
+      perror(error_buf);
+      return 0;
+    }
+    Uint32 start_bit = 0;
+    do
+    {
+      Uint32 next_cpu = mask.find(start_bit);
+      if (next_cpu == SparseBitmask::NotFound)
+      {
+        if (start_bit == 0)
+        {
+          /**
+           * There is an Intel Atom/Core file, but no CPUs,
+           * assume all are equal.
+           */
+          return (type == 0) ? 1 : 50;
+        }
+      }
+      break;
+      if (next_cpu >= hwinfo->cpu_cnt_max)
+      {
+        snprintf(error_buf,
+                 sizeof(error_buf),
+                 "CPU number %u higher than max %u",
+                 next_cpu,
+                 hwinfo->cpu_cnt_max);
+        perror(error_buf);
+        return 0;
+      }
+      /**
+       * We set CPU capacity to half of Intel Core for Intel Atom
+       * and to 100 for Intel Core.
+       */
+      hwinfo->cpu_info[next_cpu].cpu_capacity = (type == 0) ? 50 : 100;
+    } while (1);
+  }
+  return 100;
+}
+
+static int
+get_cpu_capacity(ndb_cpuinfo_data *cpuinfo, Uint32 cpu)
+{
+  char buf[256];
+  char read_buf[256];
+  snprintf(buf,
+           sizeof(buf),
+           "/sys/devices/system/cpu/cpu%u/cpu_capacity",
+           cpu);
+  FILE *capacity_info = fopen(buf, "r");
+  if (capacity_info == nullptr)
+  {
+    DEBUG_HW((stderr,
+              "Found no CPU capacity for CPU %u\n",
+              cpu));
+    return -1;
+  }
+  FileGuard g(capacity_info); // close at end...
+  if (fgets(read_buf, sizeof(read_buf), capacity_info) == nullptr)
+  {
+    DEBUG_HW((stderr,
+              "Failed to read CPU capacity for CPU %u\n",
+              cpu));
+    return -1;
+  }
+  Uint32 capacity;
+  if (sscanf(read_buf, "%u", &capacity) == 1)
+  {
+    cpuinfo->cpu_capacity = capacity;
+    DEBUG_HW((stderr,
+              "Read CPU capacity %u for CPU %u\n",
+              capacity,
+              cpu));
+  }
+  else
+  {
+    DEBUG_HW((stderr,
+              "Failed to sscanf CPU capacity for CPU %u\n",
+              cpu));
+    return -1;
+  }
+  return 0;
+}
+
+static void
+get_cpu_throughput(struct ndb_hwinfo *hwinfo)
+{
+
+  Uint32 cpu_capacity = 0;
+  Uint32 max_cpu_capacity = 0;
+  Uint32 i;
+  for (i = 0; i < hwinfo->cpu_cnt_max; i++)
+  {
+    /**
+     * First check if we get cpu_capacity file (usually found on ARMs)
+     */
+    struct ndb_cpuinfo_data *cpuinfo = &hwinfo->cpu_info[i];
+    if (cpuinfo->online)
+    {
+      if (cpu_capacity == 0)
+      {
+        if (get_cpu_capacity(cpuinfo, i) != 0)
+          break;
+        cpu_capacity = cpuinfo->cpu_capacity;
+      }
+      else
+      {
+        if (get_cpu_capacity(cpuinfo, i) != 0)
+        {
+          char error_buf[256];
+          snprintf(error_buf,
+                   sizeof(error_buf),
+                   "Failed to read CPU capacity after success, cpu: %u",
+                   i);
+          perror(error_buf);
+          abort();
+          return;
+        }
+      }
+      max_cpu_capacity = MAX(max_cpu_capacity,
+                             cpuinfo->cpu_capacity);
+    }
+  }
+  if (i == hwinfo->cpu_cnt_max)
+  {
+    ;
+  }
+  else
+  {
+    /**
+     * Could not find any cpu_capacity file
+     * Check if it is Intel using Atom + Core
+     * If it isn't we assume all CPUs are equal and they
+     * will below all be set to throughput of 100 since
+     * they are initialised to 1.
+     */
+    max_cpu_capacity = get_cpu_atom_core(hwinfo);
+    require(max_cpu_capacity > 0);
+  }   
+  /**
+   * Standardise on highest throughput = 100
+   * CPU capacity is set to 0 for offline CPUs.
+   */
+  bool is_mixed_core_throughput = false;
+  for (i = 0; i < hwinfo->cpu_cnt_max; i++)
+  {
+    struct ndb_cpuinfo_data *cpuinfo = &hwinfo->cpu_info[i];
+    if (cpuinfo->online)
+    {
+      Uint32 capacity = (cpuinfo->cpu_capacity * 100) /
+                        max_cpu_capacity;
+      if (capacity != 100)
+      {
+        /**
+         * For the moment that the Power efficient has half the
+         * throughput compared to the efficiency cores is a good
+         * estimation. In reality benchmarks has shown that it is
+         * around 45%. However setting it to 50% instead makes it
+         * easy to handle mapping threads to CPUs.
+         *
+         * In an environment like Intel Alder Lake and Intel
+         * Raptor Lake the efficiency cores are hyperthreaded, thus
+         * when both are used the two CPUs within this one core
+         * has about the same throughput as two Power efficient
+         * cores. The automatic mapping will always try to use
+         * efficiency cores for LDM threads which benefits from
+         * hyperthreading (in the sense that one CPU could make
+         * use of almost the entire CPU core). Thus the LDM
+         * threads are using the CPU core to its full measure
+         * both with 1 and 2 threads active in the CPU core.
+         *
+         * Thus the other thread types are more likely to run
+         * equally well on both efficiency cores and power
+         * efficient cores.
+         *
+         * Apple M1 Pro (running on Linux) is an example of
+         * a CPU architecture where no hyperthreading is used,
+         * but also in this case the throughput of Power
+         * efficient cores is about half of the throughput of
+         * efficiency cores.
+         *
+         * So assuming we run on a CPU with 3 efficiency cores
+         * and 2 Power efficient cores, we get a total capacity
+         * of 400. Thus one manner of handling this is to use
+         * automatic thread management with 4 CPUs. These will
+         * be 2 LDM threads, 1 main thread and 1 receive thread.
+         *
+         *  In this case we will provide 2 efficiency cores for
+         * LDM thread, another efficiency cores for the main
+         * thread and finally the single recv thread will notice
+         * that it has only Power efficient cores to choose from.
+         * Thus it will choose to use two receive threads instead
+         * using the two power efficient cores.
+         */
+        is_mixed_core_throughput = true;
+        capacity = 50;
+      }
+      cpuinfo->cpu_capacity = capacity;
+    }
+    else
+    {
+      cpuinfo->cpu_capacity = 0;
+    }
+    require(cpuinfo->cpu_capacity <= 100);
+  }
+  hwinfo->is_mixed_core_throughput = is_mixed_core_throughput;
+  DEBUG_HW((stderr,
+            "There are%s mixed CPU cores\n",
+            is_mixed_core_throughput ? "" : " no"));
+}
+
+static int
 get_meminfo(struct ndb_hwinfo *hwinfo)
 {
   char buf[1024];
@@ -1860,6 +2148,9 @@ get_meminfo(struct ndb_hwinfo *hwinfo)
     perror("Found no MemTotal in /proc/meminfo");
     return -1;
   }
+  DEBUG_HW((stderr,
+            "Total memory is %llu MBytes\n",
+            memory_size_kb / 1024));
   /* Memory is in kBytes */
   hwinfo->hw_memory_size = memory_size_kb * 1024; // hw_memory_size in bytes
   return 0;
@@ -1891,7 +2182,7 @@ get_core_siblings_info(struct ndb_hwinfo *hwinfo)
     char buf[256];
     snprintf(buf,
              sizeof(buf),
-             "/sys/devices/system/cpu/cpu%u/topology/core_siblings_list",
+             "/sys/devices/system/cpu/cpu%u/topology/core_cpus_list",
              i);
     FILE *sibl_info = fopen(buf, "r");
     if (sibl_info == nullptr)
@@ -1921,7 +2212,6 @@ get_core_siblings_info(struct ndb_hwinfo *hwinfo)
       perror(error_buf);
       return -1;
     }
-    hwinfo->num_cpu_per_core = mask.count();
     Uint32 start_bit = 0;
     do
     {
@@ -1947,6 +2237,10 @@ get_core_siblings_info(struct ndb_hwinfo *hwinfo)
         return -1;
       }
       hwinfo->cpu_info[next_cpu].core_id = next_core_id;
+      DEBUG_HW((stderr,
+                "CPU %u found in core %u\n",
+                next_cpu,
+                next_core_id));
       start_bit = next_cpu + 1;
     } while (true);
     next_core_id++;
@@ -2089,6 +2383,10 @@ get_l3_cache_info(struct ndb_hwinfo *hwinfo)
       return -1;
     }
     hwinfo->cpu_info[i].l3_cache_id = next_l3_id;
+    DEBUG_HW((stderr,
+              "Found CPU %u in L3 cache region %u\n",
+              i,
+              next_l3_id));
     mask.clear();
     int res = ::parse_mask(read_buf, mask);
     if (res <= 0)
@@ -2116,6 +2414,10 @@ get_l3_cache_info(struct ndb_hwinfo *hwinfo)
         return -1;
       }
       hwinfo->cpu_info[next_cpu].l3_cache_id = next_l3_id;
+      DEBUG_HW((stderr,
+                "Found CPU %u in L3 cache region %u\n",
+                next_cpu,
+                next_l3_id));
       start_bit = next_cpu + 1;
     } while (true);
     next_l3_id++;
@@ -2199,6 +2501,10 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
         return -1;
       }
       hwinfo->cpu_info[curr_cpu].core_id = val;
+      DEBUG_HW((stderr,
+                "CPU %u in core_id: %u\n",
+                curr_cpu,
+                val));
     }
     else if (sscanf(buf, "physical id : %u", &val) == 1)
     {
@@ -2239,54 +2545,101 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
         size_t sz = sizeof(hwinfo->cpu_model_name);
         strncpy(hwinfo->cpu_model_name, p, sz);
         hwinfo->cpu_model_name[sz - 1] = 0; // null terminate
+        if (curr_cpu == 0)
+        {
+          DEBUG_HW((stderr,
+                    "CPU model: %s\n",
+                    p));
+        }
       }
     }
   }
+  Uint32 num_cpu_cores;
   if (num_cpu_cores_per_socket == 0)
   {
     /* Linux ARM needs information from other sources */
     hwinfo->cpu_cnt = cpu_online_count;
+    DEBUG_HW((stderr,
+              "Found %u CPUs online, no core info in /proc/cpuinfo\n",
+              cpu_online_count));
     int res = get_core_siblings_info(hwinfo);
     if (res == -1)
     {
       return -1;
     }
-    hwinfo->num_cpu_cores = (Uint32)res;
+    num_cpu_cores = (Uint32)res;
+    hwinfo->num_cpu_cores = num_cpu_cores;
     res = get_physical_package_ids(hwinfo);
     if (res == -1)
     {
       return -1;
     }
   }
-  Uint32 max_socket_id = 0;
-  for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
+  else
   {
-    if (hwinfo->cpu_info[i].online)
+    DEBUG_HW((stderr,
+              "Found %u CPU cores per CPU socket\n",
+              num_cpu_cores_per_socket));
+    Uint32 max_socket_id = 0;
+    Uint32 max_core_id = 0;
+    for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
     {
-      max_socket_id = MAX(max_socket_id, hwinfo->cpu_info[i].socket_id);
+      if (hwinfo->cpu_info[i].online)
+      {
+        max_socket_id = MAX(max_socket_id, hwinfo->cpu_info[i].socket_id);
+        max_core_id = MAX(max_core_id, hwinfo->cpu_info[i].core_id);
+      }
+    }
+    Uint32 num_cpu_sockets = max_socket_id + 1;
+    num_cpu_cores = num_cpu_cores_per_socket * num_cpu_sockets;
+    hwinfo->num_cpu_sockets = num_cpu_sockets;
+    hwinfo->num_cpu_cores = num_cpu_cores;
+    for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
+    {
+      struct ndb_cpuinfo_data *cpuinfo = &hwinfo->cpu_info[i];
+      if (cpuinfo->online)
+      {
+        cpuinfo->core_id += ((max_core_id + 1) * hwinfo->cpu_info[i].socket_id);
+      }
     }
   }
-  Uint32 num_cpu_sockets = max_socket_id + 1;
-  Uint32 num_cpu_cores = num_cpu_cores_per_socket * num_cpu_sockets;
-  hwinfo->num_cpu_sockets = num_cpu_sockets;
-  hwinfo->num_cpu_cores = num_cpu_cores;
-  for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
+  DEBUG_HW((stderr,
+            "There are %u sockets\n",
+            hwinfo->num_cpu_sockets));
+  DEBUG_HW((stderr,
+            "There are %u cores\n",
+            hwinfo->num_cpu_cores));
+ 
+  Uint32 num_cpu_per_core = hwinfo->cpu_cnt_max / num_cpu_cores;
+  Uint32 cpu_cnt_max = num_cpu_per_core * num_cpu_cores;
+  if (hwinfo->cpu_cnt_max != cpu_cnt_max)
   {
-    struct ndb_cpuinfo_data *cpuinfo = &hwinfo->cpu_info[i];
-    if (cpuinfo->online)
-    {
-      cpuinfo->core_id +=
-       ((cpuinfo->socket_id * hwinfo->num_cpu_cores) /
-         hwinfo->num_cpu_sockets);
-    }
+    hwinfo->is_mixed_cpu_thread_per_cpu_core = 1;
+    DEBUG_HW((stderr,
+          "The computer has a mix of number of CPU threads per CPU core\n"));
+    hwinfo->num_cpu_per_core = 1;
   }
-  hwinfo->num_cpu_per_core = hwinfo->cpu_cnt_max / num_cpu_cores;
+  else
+  {
+    DEBUG_HW((stderr,
+              "We found %u CPUs per CPU core\n",
+              num_cpu_per_core));
+  }
   hwinfo->cpu_cnt = cpu_online_count;
+  DEBUG_HW((stderr,
+            "There are %u CPUs online before checking\n",
+            cpu_online_count));
+
+  get_cpu_throughput(hwinfo);
+
   Uint32 num_shared_l3_caches = 0;
   int res = get_l3_cache_info(hwinfo);
   if (res > 0)
   {
     num_shared_l3_caches = (Uint32)res;
+    DEBUG_HW((stderr,
+              "We found %u L3 cache regions\n",
+              num_shared_l3_caches));
   }
   else if (res == (int)-1)
   {
@@ -2294,11 +2647,9 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
     {
       hwinfo->cpu_info[i].l3_cache_id = hwinfo->cpu_info[i].socket_id;
     }
-    if (num_cpu_sockets == 0)
-    {
-      num_cpu_sockets = 1;
-    }
-    num_shared_l3_caches = num_cpu_sockets;
+    num_shared_l3_caches = hwinfo->num_cpu_sockets;
+    DEBUG_HW((stderr,
+              "We found 1 L3 cache region per socket\n"));
   }
   else
   {
