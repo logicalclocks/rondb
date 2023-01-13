@@ -10663,7 +10663,7 @@ struct Fkdef {
   static const int colmax = 5;
   static const int indmax = 5;
   static const int keymax = tabmax * 5;
-  static const int strmax = 10;
+  static const int strmax = 24;
   struct Ob {
     bool retrieved;
     int id;
