@@ -421,6 +421,59 @@ static void create_init_virt_l3_cache_list(struct ndb_hwinfo *hwinfo)
       virt_l3_cache_index++;
     }
   }
+  /**
+   * Sort CPUs such that we first list the efficiency cores to be used
+   * by LDM threads as much as possible. We keep the original order of
+   * the lists except that those with Power efficiency will be sorted
+   * at the end of each L3 cache list.
+   */
+  for (Uint32 i = 0; i < virt_l3_cache_index; i++)
+  {
+    Uint32 new_core_first = RNIL;
+    Uint32 new_core_last = RNIL;
+    Uint32 new_power_first = RNIL;
+    Uint32 new_power_last = RNIL;
+    Uint32 l3_list = g_first_virt_l3_cache[i];
+    do
+    {
+      Uint32 cpu_capacity = hwinfo->cpu_info[l3_list].cpu_capacity;
+      Uint32 next_list = hwinfo->cpu_info[l3_list].next_virt_l3_cpu_map;
+      if (cpu_capacity == 100)
+      {
+        if (new_core_first == RNIL)
+        {
+          new_core_first = l3_list;
+          hwinfo->cpu_info[l3_list].prev_virt_l3_cpu_map = RNIL;
+        }
+        else
+        {
+          hwinfo->cpu_info[new_core_last].next_virt_l3_cpu_map = l3_list;
+          hwinfo->cpu_info[l3_list].prev_virt_l3_cpu_map = new_core_last;
+        }
+        hwinfo->cpu_info[l3_list].next_virt_l3_cpu_map = RNIL;
+        new_core_last = l3_list;
+      }
+      else
+      {
+        if (new_power_first == RNIL)
+        {
+          new_power_first = l3_list;
+          hwinfo->cpu_info[l3_list].prev_virt_l3_cpu_map = RNIL;
+        }
+        else
+        {
+          hwinfo->cpu_info[new_power_last].next_virt_l3_cpu_map = l3_list;
+          hwinfo->cpu_info[l3_list].prev_virt_l3_cpu_map = new_power_last;
+        }
+        hwinfo->cpu_info[l3_list].next_virt_l3_cpu_map = RNIL;
+        new_power_last = l3_list;
+      }
+      l3_list = next_list;
+    } while (l3_list != RNIL);
+    g_first_virt_l3_cache[i] = new_core_first;
+    hwinfo->cpu_info[new_core_last].next_virt_l3_cpu_map = new_power_first;
+    hwinfo->cpu_info[new_power_first].prev_virt_l3_cpu_map = new_core_last;
+  }
   hwinfo->num_virt_l3_caches = virt_l3_cache_index;
 }
 
