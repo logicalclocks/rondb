@@ -178,7 +178,7 @@ Ndb_GetCoreCPUIds(Uint32 cpu_id, Uint32 *cpu_ids, Uint32 &num_cpus)
 {
   struct ndb_hwinfo *hwinfo = g_ndb_hwinfo;
   require(hwinfo->is_cpuinfo_available);
-  require(hwinfo->cpu_info[cpu_id].virt_l3_used);
+  require(hwinfo->cpu_info[cpu_id].online);
   if (cpu_id >= hwinfo->cpu_cnt_max)
   {
     perror("CPU out of bounds in Ndb_GetCoreCPUIds");
@@ -234,23 +234,6 @@ Ndb_GetCoreCPUIds(Uint32 cpu_id, Uint32 *cpu_ids, Uint32 &num_cpus)
   num_cpus = num_cpu_index;
 }
 
-void
-Ndb_SetVirtL3CPU(Uint32 cpu_id)
-{
-  require(cpu_id < g_ndb_hwinfo->cpu_cnt_max);
-  g_ndb_hwinfo->cpu_info[cpu_id].virt_l3_used = 1;
-}
-
-void
-Ndb_SetOnlineAsVirtL3CPU()
-{
-  for (Uint32 cpu_id = 0; cpu_id < g_ndb_hwinfo->cpu_cnt_max; cpu_id++)
-  {
-    g_ndb_hwinfo->cpu_info[cpu_id].virt_l3_used =
-      g_ndb_hwinfo->cpu_info[cpu_id].online;
-  }
-}
-
 Uint32
 Ndb_GetRRGroups(Uint32 ldm_threads)
 {
@@ -290,6 +273,7 @@ create_prev_list(struct ndb_hwinfo *hwinfo)
     require(loop_count < 10000);
   }
 }
+
 static void
 create_cpu_list(struct ndb_hwinfo *hwinfo,
                 Uint32 num_cpus_per_ldm_group,
@@ -413,7 +397,7 @@ static void create_init_virt_l3_cache_list(struct ndb_hwinfo *hwinfo)
     Uint32 count = 0;
     for (Uint32 j = 0; j < num_cpus; j++)
     {
-      if (hwinfo->cpu_info[next_cpu].virt_l3_used)
+      if (hwinfo->cpu_info[next_cpu].online)
       {
         count++;
         if (found)
@@ -3323,8 +3307,6 @@ test_create_cpumap()
     test_create(&test_map, i);
     printf("Create HW info for test %u\n", i + 1);
     create_hwinfo_test_cpu_map(&test_map);
-    printf("Set online as Virt L3 CPUs for test %u\n", i + 1);
-    Ndb_SetOnlineAsVirtL3CPU();
     printf("Create CPUMap for test %u\n", i + 1);
     Uint32 num_rr_groups =
       Ndb_CreateCPUMap(test_map.num_ldm_instances,

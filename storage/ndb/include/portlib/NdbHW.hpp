@@ -39,7 +39,6 @@ struct ndb_cpuinfo_data
   Uint32 next_l3_cpu_map;
   Uint32 next_virt_l3_cpu_map;
   Uint32 prev_virt_l3_cpu_map;
-  Uint32 virt_l3_used;
   Uint32 in_l3_cache_list;
   Uint32 next_cpu_map;
   Uint32 prev_cpu_map;
@@ -131,17 +130,6 @@ extern "C"
    * @note this call is not thread safe!
    */
   struct ndb_hwinfo * Ndb_GetHWInfo(bool get_data);
-
-  /**
-   * Prepare for creating the virtual L3 cache groups used to create
-   * Round Robin groups.
-   *
-   * The specific CPU id is used in conjunction with old configs using
-   * ThreadConfig and LockExecuteThreadToCPU. The set online variant is
-   * used by automatic thread configuration.
-   */
-  void Ndb_SetVirtL3CPU(Uint32 cpu_id);
-  void Ndb_SetOnlineAsVirtL3CPU();
 
   /**
    * Create simple CPU map that organises the locked CPU in an order
