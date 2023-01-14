@@ -190,48 +190,21 @@ Ndb_GetCoreCPUIds(Uint32 cpu_id, Uint32 *cpu_ids, Uint32 &num_cpus)
     num_cpus = 1;
     return;
   }
-  Uint32 loop_count = 0;
-  /* Search backwards in the virtual L3 cache group this CPU belongs to */
-  Uint32 first_cpu_id = cpu_id;
-  Uint32 cpu_id_index = 0;
-  /**
-   * The CPUs in an L3 cache group are inserted in order of their CPU
-   * core. The num_cpus_per_group says how many CPUs per CPU core there
-   * are. We are searching for the first CPU in the CPU core. We start
-   * by going to start of the list, next we get the index of the first
-   * CPU in the CPU core with a little number magic. Finally we insert
-   * the CPUs in the same CPU core to the provided list.
-   */
-  while (hwinfo->cpu_info[first_cpu_id].prev_virt_l3_cpu_map != RNIL)
+  Uint32 index = 1;
+  Uint32 core_id = hwinfo->cpu_info[cpu_id].core_id;
+  cpu_ids[0] = cpu_id;
+  for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
   {
-    first_cpu_id = hwinfo->cpu_info[first_cpu_id].prev_virt_l3_cpu_map;
-    cpu_id_index++;
-    loop_count++;
-    require(loop_count < 10000);
-  }
-  Uint32 num_cpus_per_group = hwinfo->num_cpus_per_group;
-  Uint32 start_cpu_index = cpu_id_index - (cpu_id_index % num_cpus_per_group);
-  Uint32 next_cpu = first_cpu_id;
-  for (Uint32 i = 0; i < start_cpu_index; i++)
-  {
-    next_cpu = hwinfo->cpu_info[next_cpu].next_virt_l3_cpu_map;
-    loop_count++;
-    require(loop_count < 10000);
-  }
-  Uint32 num_cpu_index = 0;
-  for (Uint32 i = 0; i < num_cpus_per_group; i++)
-  {
-    if (next_cpu == RNIL)
+    if ((hwinfo->cpu_info[i].online == 1) &&
+        (hwinfo->cpu_info[i].core_id == core_id) &&
+        (i != cpu_id))
     {
-      break;
+      cpu_ids[index] = i;
+      index++;
     }
-    cpu_ids[num_cpu_index++] = next_cpu;
-    next_cpu = hwinfo->cpu_info[next_cpu].next_virt_l3_cpu_map;
-    loop_count++;
-    require(loop_count < 10000);
   }
-  require(num_cpu_index > 0);
-  num_cpus = num_cpu_index;
+  num_cpus = index;
+  return;
 }
 
 Uint32
