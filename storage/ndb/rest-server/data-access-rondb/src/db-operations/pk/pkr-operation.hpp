@@ -115,7 +115,6 @@ class PKROperation {
    * Append operation records to response buffer
    * @return status
    */
-  RS_Status AppendOpRecs(bool found, PKRRequest *req, PKRResponse *resp,
-                         std::vector<NdbRecAttr *> *recs);
+  RS_Status AppendOpRecs(PKRResponse *resp, std::vector<NdbRecAttr *> *recs);
 };
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_

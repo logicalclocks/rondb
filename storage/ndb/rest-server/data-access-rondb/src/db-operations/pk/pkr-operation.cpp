@@ -25,7 +25,7 @@
 #include "src/db-operations/pk/pkr-request.hpp"
 #include "src/db-operations/pk/pkr-response.hpp"
 #include "src/db-operations/pk/common.hpp"
-#include "src/error-strs.h"
+#include "src/error-strings.h"
 #include "src/logger.hpp"
 #include "src/rdrs-const.h"
 #include "src/status.hpp"
@@ -164,7 +164,7 @@ RS_Status PKROperation::CreateResponse() {
 
     if (found) {
       // iterate over all columns
-      RS_Status ret = AppendOpRecs(found, req, resp, &recs);
+      RS_Status ret = AppendOpRecs(resp, &recs);
       if (ret.http_code != SUCCESS) {
         return ret;
       }
@@ -178,7 +178,7 @@ RS_Status PKROperation::CreateResponse() {
   return RS_OK;
 }
 
-RS_Status PKROperation::AppendOpRecs(bool found, PKRRequest *req, PKRResponse *resp,
+RS_Status PKROperation::AppendOpRecs(PKRResponse *resp,
                                      std::vector<NdbRecAttr *> *recs) {
   for (Uint32 i = 0; i < recs->size(); i++) {
     RS_Status status = WriteColToRespBuff((*recs)[i], resp);
@@ -352,4 +352,3 @@ RS_Status PKROperation::Abort() {
 
   return RS_OK;
 }
-
