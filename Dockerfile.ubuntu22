@@ -126,6 +126,7 @@ ENV RELEASE_ARG=${RELEASE_TARBALL:+-r}
 
 RUN --mount=type=bind,source=.,target=rondb-src \
     --mount=type=cache,target=rondb-bin,id=ubuntu22-rondb2104-bin \
+    --mount=type=cache,target=/root/.cache/go-build,id=ubuntu22-rondb2104-golang \
     rondb-src/build_scripts/release_scripts/build_all.sh \
     -s rondb-src \
     -b rondb-bin \

@@ -139,6 +139,7 @@ ENV RELEASE_ARG=${RELEASE_TARBALL:+-r}
 
 RUN --mount=type=bind,source=.,target=rondb-src \
     --mount=type=cache,target=rondb-bin,id=oracle7-rondb2104-bin \
+    --mount=type=cache,target=/root/.cache/go-build,id=oracle7-rondb2104-golang \
     source scl_source enable devtoolset-9 \
     && rondb-src/build_scripts/release_scripts/build_all.sh \
     -s rondb-src \
