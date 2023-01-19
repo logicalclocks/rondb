@@ -110,6 +110,8 @@ COPY <<-"EOF" /root/.m2/settings.xml
 </settings>
 EOF
 
+RUN mkdir rondb-src rondb-bin rondb-tarball
+
 # See https://stackoverflow.com/a/51264575/9068781 for conditional envs
 FROM rondb-build-dependencies as build-all
 
@@ -122,7 +124,6 @@ ENV DEPLOY_ARG=${DEPLOY_TO_REPO:+-d}
 ARG RELEASE_TARBALL
 ENV RELEASE_ARG=${RELEASE_TARBALL:+-r}
 
-RUN mkdir rondb-src rondb-bin rondb-tarball
 RUN --mount=type=bind,source=.,target=rondb-src \
     --mount=type=cache,target=rondb-bin,id=ubuntu22-rondb2104-bin \
     rondb-src/build_scripts/release_scripts/build_all.sh \
