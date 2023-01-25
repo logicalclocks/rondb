@@ -23,6 +23,7 @@
 #include <decimal_utils.hpp>
 #include <my_time.h>
 #include <sql_string.h>
+#include <ndb_limits.h>
 #include <string>
 #include <algorithm>
 #include <utility>
@@ -73,7 +74,14 @@ inline void my_unpack_date(MYSQL_TIME *l_time, const void *d) {
   l_time->time_type = MYSQL_TIMESTAMP_DATE;
 }
 
-
+/** Prepare the Operation object by setting the PK value that we are querying for
+ *
+ * @param col information of column that we're querying
+ * @param operation the RonDB operation that we wish to prepare
+ * @param request the incoming request from the REST API server
+ * @param colIdx the scale
+ * @return the REST API status of performing the operation
+ */
 RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *operation,
                             PKRRequest *request, Uint32 colIdx) {
   switch (col->getType()) {
@@ -321,19 +329,17 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
   case NdbDictionary::Column::Char: {
     ///< Len. A fixed array of 1-byte chars
 
-    const int len = request->PKValueLen(colIdx);
-    if (len > col->getLength()) {
+    const int dataLen = request->PKValueLen(colIdx);
+    if (dataLen > col->getLength()) {
       return RS_CLIENT_ERROR(
           std::string(ERROR_008) +
-          " Data len is greater than column length. Column: " + std::string(col->getName()));
+          " Data length is greater than column length. Column: " + std::string(col->getName()));
     }
 
-    const char *charStr = request->PKValueCStr(colIdx);
-    char* pk = new char[col->getLength()];
-    for (int i = 0; i < col->getLength(); i++) {
-      pk[i] = 0;
-    }
-    memcpy(pk, charStr, len);
+    const char *charStr = request->PKValueCStr(colIdx);    
+    // operation->equal expects a zero-padded char string
+    char pk[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
+    memcpy(pk, charStr, dataLen);
 
     if (operation->equal(request->PKName(colIdx), pk, col->getLength()) != 0) {
       return RS_SERVER_ERROR(ERROR_023);
@@ -345,17 +351,17 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     [[fallthrough]];
   case NdbDictionary::Column::Longvarchar: {
     ///< Length bytes: 2, little-endian
-    const int len = request->PKValueLen(colIdx);
-    if (len > col->getLength()) {
+    const int dataLen = request->PKValueLen(colIdx);
+    if (dataLen > col->getLength()) {
       return RS_CLIENT_ERROR(
           std::string(ERROR_008) +
-          " Data len is greater than column length. Column: " + std::string(col->getName()));
+          " Data length is greater than column length. Column: " + std::string(col->getName()));
     }
     char *charStr;
     if (request->PKValueNDBStr(colIdx, col, &charStr) != 0) {
       return RS_CLIENT_ERROR(ERROR_019);
     }
-    if (operation->equal(request->PKName(colIdx), charStr, len) != 0) {
+    if (operation->equal(request->PKName(colIdx), charStr, dataLen) != 0) {
       return RS_SERVER_ERROR(ERROR_023);
     }
     return RS_OK;
@@ -364,22 +370,19 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     ///< Len
     // we get the data in base64
     const char *encodedStr = request->PKValueCStr(colIdx);
-    size_t decoded_size = boost::beast::detail::base64::decoded_size(request->PKValueLen(colIdx));
-    int maxlen          = std::max(col->getLength(), static_cast<int>(decoded_size));
+    int dataLen = request->PKValueLen(colIdx);
+    size_t decoded_size = boost::beast::detail::base64::decoded_size(dataLen);
 
-    char* pk = new char[maxlen];
-    for (int i = 0; i < col->getLength(); i++) {
-      pk[i] = 0;
-    }
-
-    std::pair<std::size_t, std::size_t> ret =
-        boost::beast::detail::base64::decode(pk, encodedStr, request->PKValueLen(colIdx));
-
-    if (static_cast<int>(ret.first) > col->getLength()) {
+    if (static_cast<int>(decoded_size) > col->getLength()) {
       return RS_CLIENT_ERROR(
           std::string(ERROR_008) +
           " Data len is greater than column length. Column: " + std::string(col->getName()));
     }
+
+    // operation->equal expects a zero-padded char string
+    char pk[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
+
+    boost::beast::detail::base64::decode(pk, encodedStr, dataLen);
 
     if (operation->equal(request->PKName(colIdx), pk, col->getLength()) != 0) {
       return RS_SERVER_ERROR(ERROR_023);
@@ -392,23 +395,25 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
   case NdbDictionary::Column::Longvarbinary: {
     ///< Length bytes: 2, little-endian
 
-    const char *encodedStr = request->PKValueCStr(colIdx);
-    size_t decoded_size = boost::beast::detail::base64::decoded_size(request->PKValueLen(colIdx));
-    int additional_len  = 1;
-    if (col->getType() == NdbDictionary::Column::Longvarbinary) {
-      additional_len = 2;
+    // TODO: Double-check this; not entirely sure if it's correct
+
+    const int dataLen = request->PKValueLen(colIdx);
+    size_t decoded_size = boost::beast::detail::base64::decoded_size(dataLen);
+    if (decoded_size > static_cast<size_t>(col->getLength())) {
+      return RS_CLIENT_ERROR(
+          std::string(ERROR_008) +
+          " Data length is greater than column length. Column: " + std::string(col->getName()));
     }
 
-    int maxlen = std::max(col->getLength(), static_cast<int>(decoded_size) + additional_len);
-    char* pk = new char[maxlen];
-    for (int i = 0; i < maxlen; i++) {
-      pk[i] = 0;
-    }
+    const char *encodedStr = request->PKValueCStr(colIdx);
+
+    // operation->equal expects a zero-padded char string
+    char pk[MAX_KEY_SIZE_IN_WORDS*4 + 2] = { 0 };
 
     std::pair<std::size_t, std::size_t> ret = boost::beast::detail::base64::decode(
-        pk + additional_len, encodedStr, request->PKValueLen(colIdx));
+        pk, encodedStr, request->PKValueLen(colIdx));
 
-    if (static_cast<int>(ret.first) > col->getLength()) {
+    if (ret.first > static_cast<size_t>(col->getLength())) {
       return RS_CLIENT_ERROR(
           std::string(ERROR_008) +
           " Data len is greater than column length. Column: " + std::string(col->getName()));
@@ -422,6 +427,11 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
       pk[1] = (Uint8)(ret.first / 256);
     } else {
       return RS_SERVER_ERROR(ERROR_015);
+    }
+
+    int additional_len = 1;
+    if (col->getType() == NdbDictionary::Column::Longvarbinary) {
+      additional_len = 2;
     }
 
     if (operation->equal(request->PKName(colIdx), pk, ret.first + additional_len) != 0) {
@@ -452,11 +462,11 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                              " Expecting only date data. Column: " + std::string(col->getName()));
     }
 
-    unsigned char* packed = new unsigned char[col->getSizeInBytes()];
+    unsigned char packed[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
     my_date_to_binary(&l_time, packed);
 
-    if (operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed),
-                         col->getSizeInBytes()) != 0) {
+    int exitCode = operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), col->getSizeInBytes());
+    if ( exitCode != 0 ) {
       return RS_SERVER_ERROR(ERROR_023);
     }
     return RS_OK;
@@ -530,13 +540,13 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
 
     size_t packed_len = col->getSizeInBytes();
     int precision     = col->getPrecision();
-    unsigned char* packed = new unsigned char[packed_len];
+    unsigned char packed[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
 
     longlong numaric_date_time = TIME_to_longlong_time_packed(l_time);
     my_time_packed_to_binary(numaric_date_time, packed, precision);
 
-    if (operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), packed_len) !=
-        0) {
+    int exitCode = operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), packed_len);
+    if ( exitCode != 0) {
       return RS_SERVER_ERROR(ERROR_023);
     }
     return RS_OK;
@@ -556,14 +566,14 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
 
     size_t packed_len = col->getSizeInBytes();
     int precision     = col->getPrecision();
-    unsigned char* packed = new unsigned char[packed_len];
+    unsigned char packed[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
 
     longlong numaric_date_time = TIME_to_longlong_datetime_packed(l_time);
 
     my_datetime_packed_to_binary(numaric_date_time, packed, precision);
 
-    if (operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), packed_len) !=
-        0) {
+    int exitCode = operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), packed_len);
+    if ( exitCode != 0 ) {
       return RS_SERVER_ERROR(ERROR_023);
     }
     return RS_OK;
@@ -573,8 +583,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     /// < 4 bytes + 0-3 fraction
     const char *ts_str = request->PKValueCStr(colIdx);
     size_t ts_str_len  = request->PKValueLen(colIdx);
-    size_t packed_len  = col->getSizeInBytes();
-    unsigned char* packed = new unsigned char[packed_len];
+    // TODO: Check that col input is less than MAX_KEY_SIZE_IN_WORDS
+    unsigned char packed[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
     uint precision = col->getPrecision();
 
     MYSQL_TIME l_time;
@@ -623,8 +633,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     timeval my_tv{epoch, (Int64)l_time.second_part};
     my_timestamp_to_binary(&my_tv, packed, precision);
 
-    if (operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), packed_len) !=
-        0) {
+    size_t packed_len = col->getSizeInBytes();
+    int exitCode = operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), packed_len);
+    if ( exitCode != 0 ) {
       return RS_SERVER_ERROR(ERROR_023);
     }
     return RS_OK;
@@ -744,8 +755,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     if (GetByteArray(attr, &data_start, &attr_bytes) != 0) {
       return RS_CLIENT_ERROR(ERROR_019);
     } else {
-      size_t encoded_str_size = boost::beast::detail::base64::encoded_size(attr_bytes);
-      char* buffer = new char[encoded_str_size];
+      char buffer[MAX_TUPLE_SIZE_IN_WORDS*4];
       size_t ret = boost::beast::detail::base64::encode(reinterpret_cast<void *>(buffer),
                                                         data_start, attr_bytes);
       return response->Append_string(attr->getColumn()->getName(), std::string(buffer, ret),
