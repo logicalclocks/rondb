@@ -55,7 +55,7 @@ Uint32 PKRRequest::PKColumnsCount() {
 }
 
 Uint32 PKRRequest::PKTupleOffset(const int n) {
-  // [count][kv offset1]...[kv offset n][k offset][v offset] [ bytes ... ] [koffset][v offset]...
+  // [count][kv offset1]...[kv offset n] [k offset][v offset] [ bytes ... ] [k offset][v offset]...
   //                                      ^
   //          ............................|                                 ^
   //                         ...............................................|
