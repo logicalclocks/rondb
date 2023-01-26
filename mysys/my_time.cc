@@ -1994,6 +1994,7 @@ void my_datetime_packed_to_binary(longlong nr, uchar *ptr, uint dec) {
   assert((my_packed_time_get_frac_part(nr) %
           static_cast<int>(log_10_int[DATETIME_MAX_DECIMALS - dec])) == 0);
 
+  // Regardless of the precision, the fraction part is expected to have 6 digits
   mi_int5store(ptr, my_packed_time_get_int_part(nr) + DATETIMEF_INT_OFS);
   switch (dec) {
     case 0:
@@ -2001,15 +2002,18 @@ void my_datetime_packed_to_binary(longlong nr, uchar *ptr, uint dec) {
       break;
     case 1:
     case 2:
+      // e.g. 0.860000 -> 860000 / 10000 = 86 (requires 1 byte)
       ptr[5] = static_cast<unsigned char>(
           static_cast<char>(my_packed_time_get_frac_part(nr) / 10000));
       break;
     case 3:
     case 4:
+      // e.g. 0.867400 -> 867400 / 100 = 8674 (requires 2 bytes)
       mi_int2store(ptr + 5, my_packed_time_get_frac_part(nr) / 100);
       break;
     case 5:
     case 6:
+      // e.g. 0.867421 -> 867421 = 867421 (requires 3 bytes)
       mi_int3store(ptr + 5, my_packed_time_get_frac_part(nr));
   }
 }

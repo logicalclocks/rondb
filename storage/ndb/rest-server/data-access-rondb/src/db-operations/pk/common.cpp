@@ -532,8 +532,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     int precision     = col->getPrecision();
     unsigned char* packed = new unsigned char[packed_len];
 
-    longlong numaric_date_time = TIME_to_longlong_time_packed(l_time);
-    my_time_packed_to_binary(numaric_date_time, packed, precision);
+    TruncatePrecision(&l_time, status.fractional_digits, precision);
+    longlong numeric_date_time = TIME_to_longlong_time_packed(l_time);
+    my_time_packed_to_binary(numeric_date_time, packed, precision);
 
     if (operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), packed_len) !=
         0) {
@@ -556,11 +557,11 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
 
     size_t packed_len = col->getSizeInBytes();
     int precision     = col->getPrecision();
+    TruncatePrecision(&l_time, status.fractional_digits, precision);
+
     unsigned char* packed = new unsigned char[packed_len];
-
-    longlong numaric_date_time = TIME_to_longlong_datetime_packed(l_time);
-
-    my_datetime_packed_to_binary(numaric_date_time, packed, precision);
+    longlong numeric_date_time = TIME_to_longlong_datetime_packed(l_time);
+    my_datetime_packed_to_binary(numeric_date_time, packed, precision);
 
     if (operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), packed_len) !=
         0) {
@@ -921,4 +922,21 @@ int GetByteArray(const NdbRecAttr *attr, const char **first_byte, Uint32 *bytes)
     *bytes     = 0;
     return -1;
   }
+}
+
+void TruncatePrecision(MYSQL_TIME *l_time, int currentPrecision, int maxPrecision) {
+    int precisionDifference = currentPrecision - maxPrecision;
+    if (precisionDifference > 0) {
+      for (int i = 1; i <= precisionDifference; i++) {
+        int rest = l_time->second_part % 10;
+        l_time->second_part = l_time->second_part / 10;
+
+        // round up the last digit
+        if (i == precisionDifference && rest > 4) {
+          l_time->second_part++;
+        }
+      }
+      // Append zeros
+      l_time->second_part = l_time->second_part * pow(10, precisionDifference);
+    }
 }
