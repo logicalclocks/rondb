@@ -24,6 +24,7 @@
 #include <iostream>
 #include <sstream>
 #include <cassert>
+#include <ndb_limits.h>
 #include "src/mystring.hpp"
 #include "src/rdrs-const.h"
 
