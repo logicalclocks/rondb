@@ -268,7 +268,7 @@ RS_Status PKRResponse::Append_char(const char *colName, const char *fromBuff, Ui
                            std::to_string(estimatedBytes));
   }
   // from_buffer -> printable string  -> escaped string
-  char* tempBuff = new char[estimatedBytes];
+  char tempBuff [MAX_TUPLE_SIZE_IN_WORDS*4];
   const char *well_formed_error_pos;
   const char *cannot_convert_error_pos;
   const char *from_end_pos;
