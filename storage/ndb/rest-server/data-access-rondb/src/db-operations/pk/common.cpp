@@ -542,8 +542,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     int precision     = col->getPrecision();
     unsigned char packed[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
 
-    longlong numaric_date_time = TIME_to_longlong_time_packed(l_time);
-    my_time_packed_to_binary(numaric_date_time, packed, precision);
+    longlong numeric_date_time = TIME_to_longlong_time_packed(l_time);
+    my_time_packed_to_binary(numeric_date_time, packed, precision);
 
     int exitCode = operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), col_byte_size);
     if ( exitCode != 0) {
@@ -568,9 +568,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     int precision     = col->getPrecision();
     unsigned char packed[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
 
-    longlong numaric_date_time = TIME_to_longlong_datetime_packed(l_time);
+    longlong numeric_date_time = TIME_to_longlong_datetime_packed(l_time);
 
-    my_datetime_packed_to_binary(numaric_date_time, packed, precision);
+    my_datetime_packed_to_binary(numeric_date_time, packed, precision);
 
     int exitCode = operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), col_byte_size);
     if ( exitCode != 0 ) {
