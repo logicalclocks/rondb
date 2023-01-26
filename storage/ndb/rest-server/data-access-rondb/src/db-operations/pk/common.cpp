@@ -632,6 +632,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     int precision     = col->getPrecision();
     unsigned char packed[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
 
+    TruncatePrecision(&l_time, status.fractional_digits, precision);
     longlong numeric_date_time = TIME_to_longlong_time_packed(l_time);
     my_time_packed_to_binary(numeric_date_time, packed, precision);
 
@@ -656,6 +657,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
 
     size_t col_byte_size = col->getSizeInBytes();
     int precision     = col->getPrecision();
+
+    TruncatePrecision(&l_time, status.fractional_digits, precision);
     unsigned char packed[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
 
     longlong numeric_date_time = TIME_to_longlong_datetime_packed(l_time);
@@ -1019,4 +1022,21 @@ int GetByteArray(const NdbRecAttr *attr, const char **first_byte, Uint32 *bytes)
     *bytes     = 0;
     return -1;
   }
+}
+
+void TruncatePrecision(MYSQL_TIME *l_time, int currentPrecision, int maxPrecision) {
+    int precisionDifference = currentPrecision - maxPrecision;
+    if (precisionDifference > 0) {
+      for (int i = 1; i <= precisionDifference; i++) {
+        int rest = l_time->second_part % 10;
+        l_time->second_part = l_time->second_part / 10;
+
+        // round up the last digit
+        if (i == precisionDifference && rest > 4) {
+          l_time->second_part++;
+        }
+      }
+      // Append zeros
+      l_time->second_part = l_time->second_part * pow(10, precisionDifference);
+    }
 }

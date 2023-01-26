@@ -22,6 +22,7 @@
 
 #include <NdbDictionary.hpp>
 #include "src/rdrs-dal.h"
+#include <my_time.h>
 #include "src/db-operations/pk/pkr-request.hpp"
 #include "src/db-operations/pk/pkr-response.hpp"
 
@@ -47,5 +48,14 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response);
  *
  */
 int GetByteArray(const NdbRecAttr *attr, const char **first_byte, Uint32 *bytes);
+
+/*
+ * Nullify microseconds which go beyond the maxPrecision
+ * E.g. 123456 microseconds:
+ *   --> currentPrecision = 6
+ *   --> if maxPrecision == 2
+ *     --> 120000 microseconds
+*/
+void TruncatePrecision(MYSQL_TIME *l_time, int currentPrecision, int maxPrecision);
 
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_COMMON_HPP_
