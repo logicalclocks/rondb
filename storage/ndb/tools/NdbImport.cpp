@@ -92,7 +92,7 @@ NdbImport::Opt::Opt()
   m_monitor = 2;
   m_ai_prefetch_sz = 1024;
   m_ai_increment = 1;
-  m_use_auto_increment = true;
+  m_use_auto_increment = false;
   m_ai_offset = 1;
   m_no_asynch = false;
   m_no_hint = false;

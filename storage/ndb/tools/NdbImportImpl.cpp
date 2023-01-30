@@ -3352,9 +3352,12 @@ NdbImportImpl::ExecOpWorkerAsynch::state_define()
       const Attr& attr = attrs[table.m_autoIncAttrId];
 
       const bool ai_value_not_provided = attr.ai_value_not_provided(row);
-      if (ai_value_not_provided) {
+      if (ai_value_not_provided ||
+          m_util.c_opt.m_use_auto_increment) {
         // No auto inc value was provided in the input file for an
         // auto inc field, generate one
+        // If --use-auto-increment is set we will override the data in the
+        // input file and create an auto increment value.
         Uint64 val;
         /**
          * Each and every worker caches opt.m_ai_prefetch_sz auto inc
