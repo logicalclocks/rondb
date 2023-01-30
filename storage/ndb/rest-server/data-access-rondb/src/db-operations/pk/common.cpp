@@ -378,23 +378,30 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
       This means that any data which is not a multiple of 3 bytes will
       append the padding character "=" once or twice in the encoded string.
 
-      E.g. the string "a" -> to byte array: [ 97 ] -> to base64 string: "YQ==""
+      E.g. the string "a"
+        -> to byte array: [ 97 ]
+        -> to base64 string: "YQ=="
       This uses "==" as padding, since we only have 1 byte to represent.
 
-      The function decoded_size() does not (always?) interpret "==" as 
-      padding and therefore will claim that "YQ==" will have a decoded 
-      size of 3 bytes.
+      Since the function decoded_size() does not read the string, it is not aware
+      of whether it contains padding characters or not. PKValueLen() is also not
+      aware of this. Thereby, any "==" will be intepreted as part of the data
+      and therefore decoded_size() will always return a multiple of 3 bytes.
+
+      E.g. given base64 string "YQ==" (4 ASCII characters)
+        -> data_len == 4 bytes
+        -> decoded_size == 3 bytes (since base64 always uses 4 bytes to represent 3 bytes of data)
     */
     size_t decoded_size = boost::beast::detail::base64::decoded_size(data_len);
 
     if (decoded_size > size_t(col->getLength())) {
       
       /*
-        As described above, it may be the case that the decoded_size falsely interpreted
-        1-2 padding bytes as part of the data. If so, the decoded_size must be a
-        multiple of 3 and it can only be the next multiple after col->getLength().
+        As described above, it may be the case that the decoded_size falsely interpretes
+        1 or 2 padding bytes as part of the data. Since the decoded_size must be a
+        multiple of 3, it may now only be the next multiple after col->getLength().
 
-        E.g.: col->getLength() == 100; decoded_size must be 102
+        E.g.: col->getLength() == 100; decoded_size is now only allowed to be 102
       */
       int base64Mod = col->getLength() % 3; // 100 % 3 == 1
       int base64Total = col->getLength() - base64Mod + 3; // 100 - 1 + 3 == 102
@@ -407,6 +414,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
             "). Column: " + std::string(col->getName())
         );
       }
+      /*
+        It may now still be the case that the real decoded_size is 1 byte larger than
+        the column length. But we cannot find out unless we decode the string.
+      */
     }
 
     // operation->equal expects a zero-padded char string
@@ -414,7 +425,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
 
     std::pair<std::size_t, std::size_t> ret = boost::beast::detail::base64::decode(pk, encodedStr, data_len);
 
-    // ret.first does interpret padding bytes as part of data
+    // ret.first does not interpret padding bytes as part of data
     if (ret.first > size_t(col->getLength())) {
         return RS_CLIENT_ERROR(
             std::string(ERROR_008) +
@@ -434,33 +445,74 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
   case NdbDictionary::Column::Longvarbinary: {
     ///< Length bytes: 2, little-endian
 
+    /*
+      In NDB, a row containing a varbinary column will use 11 bytes to store 
+      10 bytes in this column. This is because the first byte will represent
+      the length of the array. A longvarbinary column will use the first 2 bytes
+      to represent the length.
+
+      col->getLength() should not include the length bytes.
+    */
+
+    /*
+      PKValueLen refers to data without prepended length bytes.
+      The length bytes are only native to RonDB.
+    */
+    const int data_len = request->PKValueLen(colIdx); // data length of binary value
+
+    /*
+      Similarly to binary columns, the data in the request will be a base64 string.
+      Once again, the data_len is unaware of base64's "=" used as padding. Therefore the
+      decoded_size may be off by 1 or 2 bytes.
+    */ 
+    size_t decoded_size = boost::beast::detail::base64::decoded_size(data_len);
+
+    if (decoded_size > size_t(col->getLength())) {
+
+      /*
+        As described above, it may be the case that the decoded_size falsely interpretes
+        1-2 padding bytes as part of the data. If so, the decoded_size must be a
+        multiple of 3 and it may only be the next multiple after col->getLength().
+
+        E.g.: col->getLength() == 100; decoded_size may now only be 102
+      */
+      int base64Mod = col->getLength() % 3; // 100 % 3 == 1
+      int base64Total = col->getLength() - base64Mod + 3; // 100 - 1 + 3 == 102
+
+      if (decoded_size != size_t(base64Total)) {
+        return RS_CLIENT_ERROR(
+            std::string(ERROR_008) +
+            " Decoded data length (" + std::to_string(decoded_size) +
+            ") is greater than column length (" + std::to_string(col->getLength()) +
+            "). Column: " + std::string(col->getName())
+        );
+      }
+      // It can now still be the case that the true decoded length is
+      // 101 or 102 bytes. We can only find out by decoding the string
+    }
+
     int additional_len  = 1;
     if (col->getType() == NdbDictionary::Column::Longvarbinary) {
       additional_len = 2;
     }
 
-    // data_len refers to data without prepended length bytes
-    // the length bytes are only native to RonDB
-    const int data_len = request->PKValueLen(colIdx); // data length of binary value
-    size_t decoded_size = boost::beast::detail::base64::decoded_size(data_len);
-    if (decoded_size + additional_len > static_cast<size_t>(col->getLength())) {
-      return RS_CLIENT_ERROR(
-          std::string(ERROR_008) +
-          " Data length is greater than column length. Column: " + std::string(col->getName()));
-    }
-
     const char *encodedStr = request->PKValueCStr(colIdx);
 
     // operation->equal expects a zero-padded char string
-    char pk[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
+    char pk[MAX_KEY_SIZE_IN_WORDS*4 + 2] = { 0 };
 
     // leave first 1-2 bytes free for saving length bytes
     std::pair<std::size_t, std::size_t> ret = boost::beast::detail::base64::decode(
         pk + additional_len, encodedStr, data_len);
 
-    // TODO: Use this
-    // assert(ret.first, decoded_size)
-    // errMsg = std::string(ERROR_008) + " Data len is greater than column length. Column: " + std::string(col->getName()))
+    // ret.first does not interpret padding bytes as part of data
+    if (ret.first > size_t(col->getLength())) {
+        return RS_CLIENT_ERROR(
+            std::string(ERROR_008) +
+            " Size of decoded bytes (" + std::to_string(ret.first) +
+            ") is greater than the varbinary column length (" + std::to_string(col->getLength())
+        );
+    }
 
     // insert the length at the beginning of the array
     if (col->getType() == NdbDictionary::Column::Varbinary) {
