@@ -368,21 +368,60 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
   }
   case NdbDictionary::Column::Binary: {
     ///< Len
-    // we get the data in base64
     const char *encodedStr = request->PKValueCStr(colIdx);
     int data_len = request->PKValueLen(colIdx);
+
+    /*
+      Binary data will be sent as base64 strings.
+      These use 4 ASCII characters to represent any 3 bytes.
+
+      This means that any data which is not a multiple of 3 bytes will
+      append the padding character "=" once or twice in the encoded string.
+
+      E.g. the string "a" -> to byte array: [ 97 ] -> to base64 string: "YQ==""
+      This uses "==" as padding, since we only have 1 byte to represent.
+
+      The function decoded_size() does not (always?) interpret "==" as 
+      padding and therefore will claim that "YQ==" will have a decoded 
+      size of 3 bytes.
+    */
     size_t decoded_size = boost::beast::detail::base64::decoded_size(data_len);
 
-    if (static_cast<int>(decoded_size) > col->getLength()) {
-      return RS_CLIENT_ERROR(
-          std::string(ERROR_008) +
-          " Data len is greater than column length. Column: " + std::string(col->getName()));
+    if (decoded_size > size_t(col->getLength())) {
+      
+      /*
+        As described above, it may be the case that the decoded_size falsely interpreted
+        1-2 padding bytes as part of the data. If so, the decoded_size must be a
+        multiple of 3 and it can only be the next multiple after col->getLength().
+
+        E.g.: col->getLength() == 100; decoded_size must be 102
+      */
+      int base64Mod = col->getLength() % 3; // 100 % 3 == 1
+      int base64Total = col->getLength() - base64Mod + 3; // 100 - 1 + 3 == 102
+
+      if (decoded_size != size_t(base64Total)) {
+        return RS_CLIENT_ERROR(
+            std::string(ERROR_008) +
+            " Decoded data length (" + std::to_string(decoded_size) +
+            ") is greater than column length (" + std::to_string(col->getLength()) +
+            "). Column: " + std::string(col->getName())
+        );
+      }
     }
 
     // operation->equal expects a zero-padded char string
     char pk[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
 
-    boost::beast::detail::base64::decode(pk, encodedStr, data_len);
+    std::pair<std::size_t, std::size_t> ret = boost::beast::detail::base64::decode(pk, encodedStr, data_len);
+
+    // ret.first does interpret padding bytes as part of data
+    if (ret.first > size_t(col->getLength())) {
+        return RS_CLIENT_ERROR(
+            std::string(ERROR_008) +
+            " ret.first (" + std::to_string(ret.first) +
+            ") is not equal to decoded_size (" + std::to_string(decoded_size)
+        );
+    }
 
     if (operation->equal(request->PKName(colIdx), pk, col->getLength()) != 0) {
       return RS_SERVER_ERROR(ERROR_023);
