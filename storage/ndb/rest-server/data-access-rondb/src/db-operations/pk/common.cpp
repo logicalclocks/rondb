@@ -314,7 +314,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     int scale          = col->getScale();
     int bytesNeeded    = getDecimalColumnSpace(precision, scale);
     const char *decStr = request->PKValueCStr(colIdx);
-    char decBin [MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
+    char decBin [MAX_KEY_SIZE_IN_WORDS*4] = { 0 };  // Mikael: performance bug
     if (decimal_str2bin(decStr, strlen(decStr), precision, scale, decBin, bytesNeeded) != 0) {
       return RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting Decimal with Precision: ") +
                              std::to_string(precision) + std::string(" and Scale: ") +
@@ -338,10 +338,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
 
     const char *data_str = request->PKValueCStr(colIdx);
     // operation->equal expects a zero-padded char string
-    char pk[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
+    char pk[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };  // Mikael: perfomance bug
     memcpy(pk, data_str, data_len);
 
-    if (operation->equal(request->PKName(colIdx), pk, col->getLength()) != 0) {
+    if (operation->equal(request->PKName(colIdx), pk, data_len) != 0) {
       return RS_SERVER_ERROR(ERROR_023);
     }
     return RS_OK;
@@ -395,11 +395,16 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
   case NdbDictionary::Column::Longvarbinary: {
     ///< Length bytes: 2, little-endian
 
-    // TODO: Double-check this; not entirely sure if it's correct
+    int additional_len  = 1;
+    if (col->getType() == NdbDictionary::Column::Longvarbinary) {
+      additional_len = 2;
+    }
 
-    const int data_len = request->PKValueLen(colIdx);
+    // data_len refers to data without prepended length bytes
+    // the length bytes are only native to RonDB
+    const int data_len = request->PKValueLen(colIdx); // data length of binary value
     size_t decoded_size = boost::beast::detail::base64::decoded_size(data_len);
-    if (decoded_size > static_cast<size_t>(col->getLength())) {
+    if (decoded_size + additional_len > static_cast<size_t>(col->getLength())) {
       return RS_CLIENT_ERROR(
           std::string(ERROR_008) +
           " Data length is greater than column length. Column: " + std::string(col->getName()));
@@ -410,14 +415,13 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     // operation->equal expects a zero-padded char string
     char pk[MAX_KEY_SIZE_IN_WORDS*4] = { 0 };
 
+    // leave first 1-2 bytes free for saving length bytes
     std::pair<std::size_t, std::size_t> ret = boost::beast::detail::base64::decode(
-        pk, encodedStr, data_len);
+        pk + additional_len, encodedStr, data_len);
 
-    if (ret.first > static_cast<size_t>(col->getLength())) {
-      return RS_CLIENT_ERROR(
-          std::string(ERROR_008) +
-          " Data len is greater than column length. Column: " + std::string(col->getName()));
-    }
+    // TODO: Use this
+    // assert(ret.first, decoded_size)
+    // errMsg = std::string(ERROR_008) + " Data len is greater than column length. Column: " + std::string(col->getName()))
 
     // insert the length at the beginning of the array
     if (col->getType() == NdbDictionary::Column::Varbinary) {
@@ -427,11 +431,6 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
       pk[1] = (Uint8)(ret.first / 256);
     } else {
       return RS_SERVER_ERROR(ERROR_015);
-    }
-
-    int additional_len = 1;
-    if (col->getType() == NdbDictionary::Column::Longvarbinary) {
-      additional_len = 2;
     }
 
     if (operation->equal(request->PKName(colIdx), pk, ret.first + additional_len) != 0) {
