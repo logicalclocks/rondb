@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -6995,9 +6995,16 @@ static bool validate_unique_mgm_ports(Vector<ConfigInfo::ConfigRuleSection>&,
 
     const char* hostname;
     Uint32 port;
+    Uint32 nodeActive = 1;
     require(nodeProperties->get("HostName", &hostname));
     require(nodeProperties->get("PortNumber", &port));
+    require(nodeProperties->get("NodeActive", &nodeActive));
 
+    if (!nodeActive)
+    {
+      // Ignore deactivated nodes, they can have fake hostnames at this point.
+      continue;
+    }
     // Get ipv4/ipv6 address string from the hostname.
     std::string addr_str(hostname);
     struct in6_addr addr;

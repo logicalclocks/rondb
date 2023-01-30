@@ -900,7 +900,6 @@ THRConfig::do_parse(unsigned realtime,
     {
       thread_ldm_type = T_RECV;
     }
-    Ndb_SetOnlineAsVirtL3CPU();
     Uint32 num_query_threads_per_ldm = g_num_query_threads_per_ldm;
     num_rr_groups =
       Ndb_CreateCPUMap(ldm_threads, num_query_threads_per_ldm);

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2017, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -92,7 +92,7 @@ NdbImport::Opt::Opt()
   m_monitor = 2;
   m_ai_prefetch_sz = 1024;
   m_ai_increment = 1;
-  m_use_auto_increment = true;
+  m_use_auto_increment = false;
   m_ai_offset = 1;
   m_no_asynch = false;
   m_no_hint = false;

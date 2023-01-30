@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2013, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -38,7 +39,6 @@ struct ndb_cpuinfo_data
   Uint32 next_l3_cpu_map;
   Uint32 next_virt_l3_cpu_map;
   Uint32 prev_virt_l3_cpu_map;
-  Uint32 virt_l3_used;
   Uint32 in_l3_cache_list;
   Uint32 next_cpu_map;
   Uint32 prev_cpu_map;
@@ -46,6 +46,7 @@ struct ndb_cpuinfo_data
   Uint32 group_number;
   Uint32 group_index;
 #endif
+  Uint32 cpu_capacity;
 };
 
 struct ndb_cpudata
@@ -74,6 +75,7 @@ struct ndb_hwinfo
    */
   Uint32 cpu_cnt_max;
   Uint32 cpu_cnt;
+  Uint32 total_cpu_capacity;
   Uint32 num_cpu_cores;
   Uint32 num_cpu_sockets;
   Uint32 num_cpu_per_core;
@@ -99,6 +101,8 @@ struct ndb_hwinfo
   Uint32 is_cpudata_available;
   Uint32 is_memory_info_available;
   Uint32 first_cpu_map;
+  Uint32 is_mixed_core_throughput;
+  Uint32 is_mixed_cpu_thread_per_cpu_core;
   struct ndb_cpuinfo_data *cpu_info;
   struct ndb_cpudata *cpu_data;
 };
@@ -126,17 +130,6 @@ extern "C"
    * @note this call is not thread safe!
    */
   struct ndb_hwinfo * Ndb_GetHWInfo(bool get_data);
-
-  /**
-   * Prepare for creating the virtual L3 cache groups used to create
-   * Round Robin groups.
-   *
-   * The specific CPU id is used in conjunction with old configs using
-   * ThreadConfig and LockExecuteThreadToCPU. The set online variant is
-   * used by automatic thread configuration.
-   */
-  void Ndb_SetVirtL3CPU(Uint32 cpu_id);
-  void Ndb_SetOnlineAsVirtL3CPU();
 
   /**
    * Create simple CPU map that organises the locked CPU in an order

@@ -150,7 +150,7 @@ sub threads {
   }
 
   # Geometric serie of threads
-  for (my $i = 1; $i <= 128; $i = $i*2) {
+  for (my $i = 1; $i <= 256; $i = $i*2) {
     push(@threads, $i);
   }
   return @threads;
