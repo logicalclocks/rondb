@@ -1233,6 +1233,7 @@ check_cpu_online(struct ndb_hwinfo *hwinfo)
         {
           total_cpu_capacity += hwinfo->cpu_info[i].cpu_capacity;
         }
+      }
     }
   }
   if (total_cpu_capacity > 0)
