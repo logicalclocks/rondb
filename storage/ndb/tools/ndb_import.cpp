@@ -160,6 +160,11 @@ my_long_options[] =
     " up to some pre-defined limit",
     &g_opt.m_monitor, nullptr, 0,
     GET_UINT, REQUIRED_ARG, g_opt.m_monitor, 0, 0, 0, 0, 0 },
+  { "use-auto-increment", NDB_OPT_NOSHORT,
+    "Ignore value in CSV file for auto increment fields, "
+    " instead use an automatically incremented value",
+    &g_opt.m_use_auto_increment, &g_opt.m_use_auto_increment, 0,
+    GET_UINT, REQUIRED_ARG, g_opt.m_ai_increment, 0, 0, 0, 0, 0 },
   { "ai-prefetch-sz", NDB_OPT_NOSHORT,
     "For table with an auto inc (including hidden) PK,"
     " specify number of autoincrement values"
