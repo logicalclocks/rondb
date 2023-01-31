@@ -56,6 +56,8 @@ static int opt_initial;
 static int opt_no_start;
 static unsigned opt_allocated_nodeid;
 static int opt_angel_pid;
+static int opt_retries;
+static int opt_delay;
 static unsigned long opt_logbuffer_size;
 
 ndb_password_state g_filesystem_password_state("filesystem", nullptr);
@@ -134,6 +136,14 @@ static struct my_option my_long_options[] =
   { "angel-pid", NDB_OPT_NOSHORT, "INTERNAL: angel process id",
     &opt_angel_pid, nullptr, nullptr, GET_UINT, REQUIRED_ARG,
     0, 0, UINT_MAX, nullptr, 0, nullptr },
+  { "connect-retries", 'r',
+    "Number of times mgmd is contacted at start. -1: eternal retries",
+    (uchar**) &opt_retries, (uchar**) &opt_retries, 0,
+    GET_INT, REQUIRED_ARG, 0, -1, 65535, 0, 0, 0 },
+  { "connect-delay", NDB_OPT_NOSHORT,
+    "Number of seconds between each connection attempt",
+    (uchar**) &opt_delay, (uchar**) &opt_delay, 0,
+    GET_INT, REQUIRED_ARG, 0, 0, 3600, 0, 0, 0 },
   { "logbuffer-size", NDB_OPT_NOSHORT,
     "Size of the log buffer for data node ndb_x_out.log",
     &opt_logbuffer_size, nullptr, nullptr,
@@ -263,6 +273,21 @@ real_main(int argc, char** argv)
       This is where we start running the real data node process after
       reading options. This function will never return.
     */
+    /**
+     * The command options connect-retries and connect-delay have been
+     * deprecated. However to ensure that scripts that still use it continue
+     * to function we have made those default to 0, if someone sets them to
+     * a non-zero value, we will use that value instead of the normal
+     * command parameters for setting those variables.
+     */
+    if (opt_retries != 0)
+    {
+      opt_connect_retries = opt_retries;
+    }
+    if (opt_delay != 0)
+    {
+      opt_connect_retry_delay = opt_delay;
+    }
     ndbd_run(opt_foreground, opt_report_fd,
              opt_ndb_connectstring, opt_ndb_nodeid, opt_bind_address,
              opt_no_start, opt_initial, opt_initialstart,
