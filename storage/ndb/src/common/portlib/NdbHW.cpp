@@ -443,9 +443,19 @@ static void create_init_virt_l3_cache_list(struct ndb_hwinfo *hwinfo)
       }
       l3_list = next_list;
     } while (l3_list != RNIL);
-    g_first_virt_l3_cache[i] = new_core_first;
-    hwinfo->cpu_info[new_core_last].next_virt_l3_cpu_map = new_power_first;
-    hwinfo->cpu_info[new_power_first].prev_virt_l3_cpu_map = new_core_last;
+    if (new_core_first != RNIL)
+    {
+      g_first_virt_l3_cache[i] = new_core_first;
+      hwinfo->cpu_info[new_core_last].next_virt_l3_cpu_map = new_power_first;
+      if (new_power_first != RNIL)
+      {
+        hwinfo->cpu_info[new_power_first].prev_virt_l3_cpu_map = new_core_last;
+      }
+    }
+    else
+    {
+      g_first_virt_l3_cache[i] = new_power_first;
+    }
   }
   hwinfo->num_virt_l3_caches = virt_l3_cache_index;
 }
