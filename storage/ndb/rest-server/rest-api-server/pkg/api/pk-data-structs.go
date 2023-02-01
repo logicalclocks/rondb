@@ -61,9 +61,9 @@ func (f Filter) String() string {
 	if f.Value != nil {
 		j, err := json.Marshal(f.Value)
 		if err != nil {
-			stringify.WriteString(fmt.Sprintf("Value: %s\n", j))
-		} else {
 			stringify.WriteString(fmt.Sprintf("Error marshaling Value: %s\n", err.Error()))
+		} else {
+			stringify.WriteString(fmt.Sprintf("Value: %s\n", j))
 		}
 	}
 	return stringify.String()
