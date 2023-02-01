@@ -191,7 +191,7 @@ func ProcessPKReadResponse(respBuff *dal.NativeBuffer, response api.PKReadRespon
 
 	responseType := iBuf[C.PK_RESP_OP_TYPE_IDX]
 	if responseType != C.RDRS_PK_RESP_ID {
-		return http.StatusInternalServerError, fmt.Errorf("Wrong resonse type")
+		return http.StatusInternalServerError, fmt.Errorf("Received response type %d; expected %d", responseType, C.RDRS_PK_RESP_ID)
 	}
 
 	// some sanity checks
@@ -199,7 +199,7 @@ func ProcessPKReadResponse(respBuff *dal.NativeBuffer, response api.PKReadRespon
 	dataLength := iBuf[C.PK_RESP_LENGTH_IDX]
 	if respBuff.Size != capacity || !(dataLength < capacity) {
 		return http.StatusInternalServerError,
-			fmt.Errorf("Response buffer may be corrupt. Buffer capacity: %d, Buffer data lenght: %d", capacity, dataLength)
+			fmt.Errorf("Response buffer may be corrupt. Buffer capacity: %d, Buffer data length: %d", capacity, dataLength)
 	}
 
 	opIDX := iBuf[C.PK_RESP_OP_ID_IDX]
@@ -213,14 +213,14 @@ func ProcessPKReadResponse(respBuff *dal.NativeBuffer, response api.PKReadRespon
 		colIDX := iBuf[C.PK_RESP_COLS_IDX]
 		colCount := *(*uint32)(unsafe.Pointer(uintptr(respBuff.Buffer) + uintptr(colIDX)))
 
-		for i := uint32(0); i < colCount; i++ {
+		for colNum := uint32(0); colNum < colCount; colNum++ {
 			colHeaderStart := (*uint32)(unsafe.Pointer(
 				uintptr(respBuff.Buffer) +
 					uintptr(colIDX+
 						uint32(C.ADDRESS_SIZE)+ // +1 for skipping the column count
-						(i*4*C.ADDRESS_SIZE)))) // 4 number of header fields
+						(colNum*4*C.ADDRESS_SIZE)))) // 4 number of header fields
 
-			colHeader := unsafe.Slice((*uint32)(colHeaderStart), 4)
+			colHeader := unsafe.Slice(colHeaderStart, 4)
 
 			nameAdd := colHeader[0]
 			name := C.GoString((*C.char)(unsafe.Pointer(uintptr(respBuff.Buffer) + uintptr(nameAdd))))
