@@ -909,13 +909,13 @@ THRConfig::do_parse(unsigned realtime,
     if (num_database_threads == 0)
     {
       num_database_threads = recv_threads;
+      recv_threads = 0;
     }
     for (Uint32 i = 0; i < num_database_threads; i++)
     {
       require(next_cpu_id != Uint32(RNIL));
       m_threads[thread_ldm_type][i].m_bind_no = next_cpu_id;
       m_threads[thread_ldm_type][i].m_bind_type = T_Thread::B_CPU_BIND;
-      next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
       m_threads[thread_ldm_type][i].m_core_bind = true;
 
       Uint32 core_cpu_ids[MAX_NUM_CPUS];
@@ -932,14 +932,15 @@ THRConfig::do_parse(unsigned realtime,
         }
         m_threads[thread_ldm_type][i].m_shared_cpu_id = neighbour_cpu;
       }
+      next_cpu_id = Ndb_GetNextCPUInMap(next_cpu_id);
     }
     for (Uint32 i = 0; i < num_database_threads; i++)
     {
       Uint32 my_cpu_id = m_threads[thread_ldm_type][i].m_bind_no;
       for (Uint32 j = i; j < ldm_threads; j++)
       {
-        if (m_threads[T_LDM][i].m_shared_cpu_id != Uint32(~0) &&
-            m_threads[T_LDM][i].m_shared_cpu_id == my_cpu_id)
+        if (m_threads[thread_ldm_type][i].m_shared_cpu_id != Uint32(~0) &&
+            m_threads[thread_ldm_type][i].m_shared_cpu_id == my_cpu_id)
         {
           m_threads[thread_ldm_type][i].m_shared_instance = j + 1;
           m_threads[thread_ldm_type][j].m_shared_instance = i + 1;
