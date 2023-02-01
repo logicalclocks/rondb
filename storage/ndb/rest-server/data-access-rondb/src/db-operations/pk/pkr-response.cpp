@@ -194,11 +194,11 @@ RS_Status PKRResponse::Append_string(const char *colName, std::string value, Uin
   return SetColumnData(colName, value.c_str(), type);
 }
 
-RS_Status PKRResponse::Append_i8(const char *colName, char num) {
+RS_Status PKRResponse::Append_i8(const char *colName, Int8 num) {
   return Append_i64(colName, num);
 }
 
-RS_Status PKRResponse::Append_iu8(const char *colName, unsigned char num) {
+RS_Status PKRResponse::Append_iu8(const char *colName, Uint8 num) {
   return Append_iu64(colName, num);
 }
 
