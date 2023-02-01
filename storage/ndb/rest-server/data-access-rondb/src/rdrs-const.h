@@ -35,9 +35,9 @@ extern "C" {
 #define RDRS_BATCH_RESP_ID 4
 
 // Data types
-// Everyting is a string.
+// Everything is a string.
 // However for RDRS_STRING_DATATYPE the string
-// is enclosed in quotes. This is now JSON works
+// is enclosed in quotes. This is how JSON works
 #define RDRS_UNKNOWN_DATATYPE  0
 #define RDRS_STRING_DATATYPE   1
 #define RDRS_INTEGER_DATATYPE  2
