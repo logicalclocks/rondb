@@ -218,7 +218,7 @@ func ProcessPKReadResponse(respBuff *dal.NativeBuffer, response api.PKReadRespon
 				uintptr(respBuff.Buffer) +
 					uintptr(colIDX+
 						uint32(C.ADDRESS_SIZE)+ // +1 for skipping the column count
-						(i*4*C.ADDRESS_SIZE)))) // 4 number of header fieldse
+						(i*4*C.ADDRESS_SIZE)))) // 4 number of header fields
 
 			colHeader := unsafe.Slice((*uint32)(colHeaderStart), 4)
 
