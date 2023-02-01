@@ -167,7 +167,7 @@ struct NdbUpGradeCompatible ndbCompatibleTable_backup_table[] = {
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_full[] = {
-  { MAKE_VERSION(22,10,NDB_VERSION_BUILD),MAKE_VERSION(21,4,10), UG_Range },
+  { MAKE_VERSION(22,10,NDB_VERSION_BUILD),MAKE_VERSION(21,4,9), UG_Range },
   { 0, 0, UG_Null }
 };
 
