@@ -1395,7 +1395,7 @@ func TestDataTypesTimestampColumn(t *testing.T) {
 				ReadColumns: tu.NewReadColumns("col", 1),
 				OperationID: tu.NewOperationID(5),
 			},
-			Table:          "ts_table0",
+			Table:          "ts_table0", // This has precision 0
 			Db:             testDb,
 			HttpCode:       http.StatusOK,
 			ErrMsgContains: "",
