@@ -27,7 +27,6 @@
 #include <string>
 #include <algorithm>
 #include <utility>
-#include "src/logger.hpp"
 #include "src/error-strings.h"
 #include "src/status.hpp"
 #include "src/mystring.hpp"
@@ -316,7 +315,6 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     int bytesNeeded    = getDecimalColumnSpace(precision, scale);
     const char *decStr = request->PKValueCStr(colIdx);
     char decBin [MAX_KEY_SIZE_IN_WORDS*4];
-    // std::fill (decBin, decBin + bytesNeeded, 0);
 
     if (decimal_str2bin(decStr, strlen(decStr), precision, scale, decBin, bytesNeeded) != 0) {
       return RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting Decimal with Precision: ") +
@@ -505,7 +503,6 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     const char *encodedStr = request->PKValueCStr(colIdx);
 
     char pk[MAX_KEY_SIZE_IN_WORDS*4 + 2];
-    // std::fill (pk, pk + col->getLength(), 0);  // What's column length in varbinary?
 
     // leave first 1-2 bytes free for saving length bytes
     std::pair<std::size_t, std::size_t> ret = boost::beast::detail::base64::decode(
@@ -558,8 +555,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                              " Expecting only date data. Column: " + std::string(col->getName()));
     }
 
-    unsigned char packed[MAX_KEY_SIZE_IN_WORDS*4];
-    // std::fill (pk, pk + col->getLength(), 0);
+    unsigned char packed[4];
     my_date_to_binary(&l_time, packed);
 
     int exitCode = operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), col->getSizeInBytes());
@@ -637,8 +633,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
 
     size_t col_byte_size = col->getSizeInBytes();
     int precision     = col->getPrecision();
-    unsigned char packed[MAX_KEY_SIZE_IN_WORDS*4];
-    // std::fill (pk, pk + col->getLength(), 0);
+    unsigned char packed[6];
 
     TruncatePrecision(&l_time, status.fractional_digits, precision);
     longlong numeric_date_time = TIME_to_longlong_time_packed(l_time);
@@ -667,8 +662,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     int precision     = col->getPrecision();
 
     TruncatePrecision(&l_time, status.fractional_digits, precision);
-    unsigned char packed[MAX_KEY_SIZE_IN_WORDS*4];
-    // std::fill (pk, pk + col->getLength(), 0);
+    unsigned char packed[8];
 
     longlong numeric_date_time = TIME_to_longlong_datetime_packed(l_time);
 
@@ -685,9 +679,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     /// < 4 bytes + 0-3 fraction
     const char *ts_str = request->PKValueCStr(colIdx);
     size_t ts_str_len  = request->PKValueLen(colIdx);
-    // TODO: Check that col input is less than MAX_KEY_SIZE_IN_WORDS
-    unsigned char packed[MAX_KEY_SIZE_IN_WORDS*4];
-    // std::fill (pk, pk + col->getLength(), 0);
+    unsigned char packed[7];
     uint precision = col->getPrecision();
 
     MYSQL_TIME l_time;
@@ -859,7 +851,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     if (GetByteArray(attr, &data_start, &attr_bytes) != 0) {
       return RS_CLIENT_ERROR(ERROR_019);
     } else {
-      char buffer[MAX_TUPLE_SIZE_IN_WORDS*4];
+      char buffer[MAX_TUPLE_SIZE_IN_WORDS*4 + 2];
       size_t ret = boost::beast::detail::base64::encode(reinterpret_cast<void *>(buffer),
                                                         data_start, attr_bytes);
       return response->Append_string(attr->getColumn()->getName(), std::string(buffer, ret),
