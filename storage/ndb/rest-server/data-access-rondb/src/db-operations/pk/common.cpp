@@ -723,6 +723,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     // TODO(salman) how to deal with time zone setting in mysql server
     //
 
+    TruncatePrecision(&l_time, status.fractional_digits, precision);
     timeval my_tv{epoch, (Int64)l_time.second_part};
     my_timestamp_to_binary(&my_tv, packed, precision);
 
