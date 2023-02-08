@@ -42,7 +42,7 @@ func SetResponseBody(c *gin.Context, code int, response interface{}) {
 	responseBytes, err := json.Marshal(response)
 	if err != nil {
 		c.Writer.WriteHeader(http.StatusInternalServerError)
-		c.Writer.Write(([]byte)(fmt.Sprintf("Unable to marshall response %v.  obj: %v", err, response)))
+		c.Writer.Write(([]byte)(fmt.Sprintf("Unable to marshal response; error: %v", err)))
 	} else {
 		c.Writer.WriteHeader(code)
 		c.Writer.Write(responseBytes)
