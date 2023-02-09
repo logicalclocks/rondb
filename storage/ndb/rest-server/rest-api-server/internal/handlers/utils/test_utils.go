@@ -65,8 +65,9 @@ func SendHttpRequest(t testing.TB, tc common.TestContext, httpVerb string,
 		t.Fatalf("Http verb not yet implemented. Verb %s", httpVerb)
 	}
 
+	logMsg := fmt.Sprintf("HTTP request with url: %s; request body: %s", url, body)
 	if err != nil {
-		t.Fatalf("Test failed to create request. Error: %v", err)
+		t.Fatalf("Test failed to create request for %s; Error: %v", logMsg, err)
 	}
 
 	if config.Configuration().Security.UseHopsWorksAPIKeys {
@@ -75,22 +76,22 @@ func SendHttpRequest(t testing.TB, tc common.TestContext, httpVerb string,
 
 	resp, err = client.Do(req)
 	if err != nil {
-		t.Fatalf("Test failed to perform request. Error: %v", err)
+		t.Fatalf("Test failed to perform request for %s; Error: %v", logMsg, err)
 	}
 
 	respCode := resp.StatusCode
 	respBodyBtyes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("Test failed to read response body. Error: %v", err)
+		t.Fatalf("Test failed to read response body for %s; Error: %v", logMsg, err)
 	}
 	respBody := string(respBodyBtyes)
 
 	if respCode != expectedStatus {
-		t.Fatalf("Test failed. Expected: %d, Got: %d. Complete Response Body: %v ", expectedStatus, respCode, respBody)
+		t.Fatalf("got wrong HTTP status; expected: %d; got: %d; response body: %s; for %s", expectedStatus, respCode, respBody, logMsg)
 	}
 
 	if respCode != http.StatusOK && !strings.Contains(respBody, expectedErrMsg) {
-		t.Fatalf("Test failed. Response error body does not contain %s. Body: %s", expectedErrMsg, respBody)
+		t.Fatalf("Response error body does not contain %s. response body: %s; for %s", expectedErrMsg, respBody, logMsg)
 	}
 
 	return respCode, respBody
