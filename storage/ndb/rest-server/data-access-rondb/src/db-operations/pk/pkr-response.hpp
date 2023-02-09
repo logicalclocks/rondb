@@ -168,13 +168,13 @@ class PKRResponse {
   RS_Status Append_d64(const char *colName, double num);
 
   /**
-   * Append to response buffer. Append
+   * Append to response buffer
    */
   RS_Status Append_char(const char *colName, const char *from_buffer, Uint32 from_length,
                         CHARSET_INFO *from_cs);
 
   /**
-   * Append to response buffer. Append
+   * Append to response buffer
    */
   RS_Status Append_string(const char *colName, std::string value, Uint32 type);
 
