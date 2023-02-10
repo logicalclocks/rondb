@@ -8,6 +8,7 @@ pipeline {
       choice(name: 'BRANCH', choices: ['21.04', '21.04.7', '22.10'], description: 'RonDB branch to build.')
       choice(name: 'BUILD_CORES', choices: ['8', '1', '16', '24', '32', '48'],  description: 'No of build threads. This is passed to make -j. Note jenkins machine is shared with other build process.')
       booleanParam(name: 'RELEASE_BUILD', defaultValue: true, description: 'Enable this for release build. It uses PGO (profile guided optimization) and it take ~ 3 hrs to build')
+      booleanParam(name: 'RELEASE_FINAL_CLUSTERJ', defaultValue: false, description: "By default clusterj jar is uploaded as a 'SNAPSHOT' version. Enable this parameter to release final JARs")
     }
     environment {
         HopsCECeds = credentials('HopsCE')
@@ -61,6 +62,11 @@ pipeline {
                   RELEASE_ARG="--build-arg RELEASE_TARBALL=1"
                 fi
 
+                RELEASE_FINAL_CLUSTERJ_ARG=
+                if [ "$RELEASE_FINAL_CLUSTERJ" = true ]; then
+                  RELEASE_FINAL_CLUSTERJ_ARG="--build-arg RELEASE_FINAL_CLUSTERJ=1"
+                fi
+
                 export DOCKER_CLI_EXPERIMENTAL=enabled
                 export BUILDKIT_PROGRESS=plain
                 docker buildx build . \
@@ -70,7 +76,7 @@ pipeline {
                   --no-cache \
                   --build-arg BUILD_THREADS=$BUILD_CORES \
                   --build-arg DEPLOY_TO_REPO=1 \
-                  $RELEASE_ARG
+                  $RELEASE_ARG $RELEASE_FINAL_CLUSTERJ_ARG
               '''
             }
         }
