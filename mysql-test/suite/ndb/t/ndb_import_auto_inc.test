@@ -35,7 +35,7 @@ create table t10 (
 
 create table t10ver like t10;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp
       --keep-state --log-level=1 --csvopt=n
       --fields-terminated-by="|"
       test
@@ -67,7 +67,7 @@ create table t10 (
 
 create table t10ver like t10;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp
       --keep-state --log-level=1 --csvopt=n
       --fields-terminated-by="|" --rejects=1
       test
@@ -99,7 +99,7 @@ create table t10 (
 
 create table t10ver like t10;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp
       --keep-state --log-level=1 --csvopt=n
       --fields-terminated-by="|"
       test
@@ -131,7 +131,7 @@ create table t10 (
 
 create table t10ver like t10;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp
       --keep-state --log-level=1 --csvopt=n
       --fields-terminated-by="|" --rejects=1
       test
@@ -163,7 +163,7 @@ create table t10 (
 
 create table t10ver like t10;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp
       --keep-state --log-level=1 --csvopt=n
       --fields-terminated-by="|"
       test
@@ -195,7 +195,7 @@ create table t10 (
 
 create table t10ver like t10;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp
       --keep-state --log-level=1 --csvopt=n
       --fields-terminated-by="|" --rejects=1
       test
@@ -227,7 +227,7 @@ create table t10 (
 
 create table t10ver like t10;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp
       --keep-state --log-level=1 --csvopt=n
       --fields-terminated-by="|"
       test
@@ -259,7 +259,7 @@ create table t10 (
 
 create table t10ver like t10;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp
       --keep-state --log-level=1 --csvopt=n
       --fields-terminated-by="|" --rejects=1
       test
@@ -291,7 +291,7 @@ create table t10 (
 
 create table t10ver like t10;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp
       --keep-state --log-level=1 --csvopt=n
       --fields-terminated-by="|"
       test
@@ -323,7 +323,7 @@ create table t10 (
 
 create table t10ver like t10;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp
       --keep-state --log-level=1 --csvopt=n
       --fields-terminated-by="|" --rejects=1
       test
@@ -373,7 +373,7 @@ create table t3 (
 
 create table t3ver like t3;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp --keep-state
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp --keep-state
      --log-level=1
      test $MYSQLTEST_VARDIR/tmp/t3.csv >> $NDB_TOOLS_OUTPUT 2>&1;
 
@@ -411,7 +411,7 @@ create table t12 (
 
 create table t12ver like t12;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp
       --keep-state --log-level=1 --csvopt=n
       --fields-terminated-by="|"
       test
@@ -454,7 +454,7 @@ create table t13 (
 
 create table t13ver like t13;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp
       --keep-state --log-level=1 --csvopt=n
       --fields-terminated-by="|" --ignore-lines=1
       test
@@ -496,7 +496,7 @@ create table t14 (
 
 create table t14ver like t14;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp
       --keep-state --log-level=1 --csvopt=n
       --fields-terminated-by="|" --ignore-lines=1
       test
