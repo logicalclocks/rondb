@@ -1,4 +1,5 @@
 -- source include/have_ndb.inc
+-- source include/not_parallel.inc
 
 --source suite/ndb/include/turn_off_ndb_read_backup.inc
 
@@ -183,5 +184,131 @@ while ($i) {
 --source suite/ndb/include/ndb_desc_print.inc
 
 drop table t1,t2,t3,t4,t5,t6,t7,t8;
+
+create table t9(id int NOT NULL PRIMARY KEY, data char(8)) engine=ndb
+  comment="NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2";
+select node_id, fragment_num, block_instance from ndbinfo.memory_per_fragment
+where fq_name = 'test/def/t9' order by node_id, fragment_num, block_instance;
+
+create table t10 (id int NOT NULL PRIMARY KEY, data char(8)) engine=ndb
+  comment="NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_4";
+select node_id, fragment_num, block_instance from ndbinfo.memory_per_fragment
+where fq_name = 'test/def/t10' order by node_id, fragment_num, block_instance;
+
+create table t11 (id int NOT NULL PRIMARY KEY, data char(8)) engine=ndb
+  comment="NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_6";
+select node_id, fragment_num, block_instance from ndbinfo.memory_per_fragment
+where fq_name = 'test/def/t11' order by node_id, fragment_num, block_instance;
+
+create table t12 (id int NOT NULL PRIMARY KEY, data char(8)) engine=ndb
+  comment="NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8";
+select node_id, fragment_num, block_instance from ndbinfo.memory_per_fragment
+where fq_name = 'test/def/t12' order by node_id, fragment_num, block_instance;
+
+create table t13 (id int NOT NULL PRIMARY KEY, data char(8)) engine=ndb
+  comment="NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_16";
+select node_id, fragment_num, block_instance from ndbinfo.memory_per_fragment
+where fq_name = 'test/def/t13' order by node_id, fragment_num, block_instance;
+
+create table t14 (id int NOT NULL PRIMARY KEY, data char(8)) engine=ndb
+  comment="NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM";
+select node_id, fragment_num, block_instance from ndbinfo.memory_per_fragment
+where fq_name = 'test/def/t2' order by node_id, fragment_num, block_instance;
+
+select count(*) into @cnt_t9_0
+from information_schema.partitions
+where table_schema = 'test' and table_name = 't9';
+
+select count(*) into @cnt_t10_0
+from information_schema.partitions
+where table_schema = 'test' and table_name = 't10';
+
+select count(*) into @cnt_t11_0
+from information_schema.partitions
+where table_schema = 'test' and table_name = 't11';
+
+select count(*) into @cnt_t12_0
+from information_schema.partitions
+where table_schema = 'test' and table_name = 't12';
+
+select count(*) into @cnt_t13_0
+from information_schema.partitions
+where table_schema = 'test' and table_name = 't13';
+
+select count(*) into @cnt_t14_0
+from information_schema.partitions
+where table_schema = 'test' and table_name = 't14';
+
+select @cnt_t9_0 = 2 * @cnt_t14_0;
+select @cnt_t10_0 = 4 * @cnt_t14_0;
+select @cnt_t11_0 = 6 * @cnt_t14_0;
+select @cnt_t12_0 = 8 * @cnt_t14_0;
+select @cnt_t13_0 = 16 * @cnt_t14_0;
+
+## Create nodegroup for "new" nodes
+--echo Creating nodegroup
+--exec $NDB_MGM -e "create nodegroup 7,8" > /dev/null
+
+alter table t9 algorithm=inplace, reorganize partition;
+select node_id, fragment_num, block_instance from ndbinfo.memory_per_fragment
+where fq_name = 'test/def/t9' order by node_id, fragment_num, block_instance;
+
+alter table t10 algorithm=inplace, reorganize partition;
+select node_id, fragment_num, block_instance from ndbinfo.memory_per_fragment
+where fq_name = 'test/def/t10' order by node_id, fragment_num, block_instance;
+
+alter table t11 algorithm=inplace, reorganize partition;
+select node_id, fragment_num, block_instance from ndbinfo.memory_per_fragment
+where fq_name = 'test/def/t11' order by node_id, fragment_num, block_instance;
+
+alter table t12 algorithm=inplace, reorganize partition;
+select node_id, fragment_num, block_instance from ndbinfo.memory_per_fragment
+where fq_name = 'test/def/t12' order by node_id, fragment_num, block_instance;
+
+alter table t13 algorithm=inplace, reorganize partition;
+select node_id, fragment_num, block_instance from ndbinfo.memory_per_fragment
+where fq_name = 'test/def/t13' order by node_id, fragment_num, block_instance;
+
+alter table t14 algorithm=inplace, reorganize partition;
+select node_id, fragment_num, block_instance from ndbinfo.memory_per_fragment
+where fq_name = 'test/def/t14' order by node_id, fragment_num, block_instance;
+
+select count(*) into @cnt_t9_1
+from information_schema.partitions
+where table_schema = 'test' and table_name = 't9';
+
+select count(*) into @cnt_t10_1
+from information_schema.partitions
+where table_schema = 'test' and table_name = 't10';
+
+select count(*) into @cnt_t11_1
+from information_schema.partitions
+where table_schema = 'test' and table_name = 't11';
+
+select count(*) into @cnt_t12_1
+from information_schema.partitions
+where table_schema = 'test' and table_name = 't12';
+
+select count(*) into @cnt_t13_1
+from information_schema.partitions
+where table_schema = 'test' and table_name = 't13';
+
+select count(*) into @cnt_t14_1
+from information_schema.partitions
+where table_schema = 'test' and table_name = 't14';
+
+select @cnt_t9_1 = 2 * @cnt_t14_1;
+select @cnt_t10_1 = 4 * @cnt_t14_1;
+select @cnt_t11_1 = 6 * @cnt_t14_1;
+select @cnt_t12_1 = 8 * @cnt_t14_1;
+select @cnt_t13_1 = 16 * @cnt_t14_1;
+
+select @cnt_t9_1 > @cnt_t9_0;
+select @cnt_t10_1 > @cnt_t10_0;
+select @cnt_t11_1 > @cnt_t11_0;
+select @cnt_t12_1 > @cnt_t12_0;
+select @cnt_t13_1 > @cnt_t13_0;
+
+drop table t9,t10,t11,t12,t13,t14;
 
 --source suite/ndb/include/restore_ndb_read_backup.inc
