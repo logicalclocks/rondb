@@ -433,11 +433,6 @@ int Dbtup::TUPKEY_abort(KeyReqStruct * req_struct, int error_type)
     terrorCode = ZTOO_MANY_INSTRUCTIONS_ERROR;
     break;
 
-  case 38:
-    jam();
-    terrorCode = ZTEMPORARY_RESOURCE_FAILURE;
-    break;
-
   case 39:
     if (get_trans_state(req_struct->operPtrP) == TRANS_TOO_MUCH_AI) {
       jam();

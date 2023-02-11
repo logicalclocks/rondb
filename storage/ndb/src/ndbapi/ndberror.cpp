@@ -137,25 +137,27 @@ ErrorBundle ErrorCodes[] = {
   /**
    * Node recovery errors
    */
-  {  286, DMEC, NR, "Node failure caused abort of transaction" }, 
+  {  286, HA_ERR_LOCK_WAIT_TIMEOUT, NR, "Node failure caused abort of transaction" },
+  /* Error code 250 never used, is ZSCAN_NODE_ERROR in DBTC */
   {  250, DMEC, NR, "Node where lock was held crashed, restart scan transaction" },
-  {  499, DMEC, NR, "Scan take over error, restart scan transaction" },
-  {  631, DMEC, NR, "Scan take over error, restart scan transaction" },
-  { 1204, DMEC, NR, "Temporary failure, distribution changed" },
+  {  499, HA_ERR_LOCK_WAIT_TIMEOUT, NR, "Scan take over error, restart scan transaction" },
+  {  631, HA_ERR_LOCK_WAIT_TIMEOUT, NR, "Scan take over error, restart scan transaction" },
+  { 1204, HA_ERR_LOCK_WAIT_TIMEOUT, NR, "Temporary failure, distribution changed" },
+  /* Send failures are not expected and are not temporary errors */
   { 4002, DMEC, NR, "Send to NDB failed" },
   { 4007, DMEC, NR, "Send to ndbd node failed" },
-  { 4010, DMEC, NR, "Node failure caused abort of transaction" }, 
+  { 4010, HA_ERR_LOCK_WAIT_TIMEOUT, NR, "Node failure caused abort of transaction" },
+  /* 4013 is node failure during schema transaction */
   { 4013, DMEC, NR, "Request timed out in waiting for node failure"}, 
-  { 4025, DMEC, NR, "Node failure caused abort of transaction" }, 
-  { 4027, DMEC, NR, "Node failure caused abort of transaction" },
-  { 4028, DMEC, NR, "Node failure caused abort of transaction" },
-  { 4029, DMEC, NR, "Node failure caused abort of transaction" },
-  { 4031, DMEC, NR, "Node failure caused abort of transaction" },
+  { 4025, HA_ERR_LOCK_WAIT_TIMEOUT, NR, "Node failure caused abort of transaction" }, 
+  { 4028, HA_ERR_LOCK_WAIT_TIMEOUT, NR, "Node failure caused abort of transaction" },
+  { 4029, HA_ERR_LOCK_WAIT_TIMEOUT, NR, "Node failure caused abort of transaction" },
+  { 4031, HA_ERR_LOCK_WAIT_TIMEOUT, NR, "Node failure caused abort of transaction" },
   { 4033, DMEC, NR, "Send to NDB failed" },
   { 4115, DMEC, NR, 
     "Transaction was committed but all read information was not "
     "received due to node crash" },
-  { 4119, DMEC, NR, "Simple/dirty read failed due to node failure" },
+  { 4119, HA_ERR_LOCK_WAIT_TIMEOUT, NR, "Simple/dirty read failed due to node failure" },
 
   /**
    * SPJ error codes
@@ -222,14 +224,11 @@ ErrorBundle ErrorCodes[] = {
   /**
    * Node shutdown
    */
-  {  280, DMEC, NS, "Transaction aborted due to node shutdown" },
+  {  280, HA_ERR_LOCK_WAIT_TIMEOUT, NS, "Transaction aborted due to node shutdown" },
   /* This scan trans had an active fragment scan in a LQH which have crashed */
-  {  270, DMEC, NS, "Transaction aborted due to node shutdown" }, 
-  { 1223, DMEC, NS, "Read operation aborted due to node shutdown" },
-  { 4023, DMEC, NS, "Transaction aborted due to node shutdown" },
-  { 4030, DMEC, NS, "Transaction aborted due to node shutdown" },
-  { 4034, DMEC, NS, "Transaction aborted due to node shutdown" },
-
+  {  270, HA_ERR_LOCK_WAIT_TIMEOUT, NS, "Transaction aborted due to node shutdown" }, 
+  { 1223, HA_ERR_LOCK_WAIT_TIMEOUT, NS, "Read operation aborted due to node shutdown" },
+  { 4030, HA_ERR_LOCK_WAIT_TIMEOUT, NS, "Transaction aborted due to node shutdown" },
 
   
   /**
@@ -296,7 +295,7 @@ ErrorBundle ErrorCodes[] = {
   { 805,  DMEC, TR, "Out of attrinfo records in tuple manager, increase LongSignalMemory" },
   { 830,  DMEC, TR, "Out of add fragment operation records" },
   { 873,  DMEC, TR, "Out of transaction memory in local data manager, ordered index data (increase SharedGlobalMemory)" },
-  { 899,  DMEC, TR, "Rowid already allocated" },
+  { 899,  HA_ERR_LOCK_WAIT_TIMEOUT, TR, "Rowid already allocated" },
   { 909,  DMEC, TR, "Out of transaction memory in local data manager, ordered scan operation (increase SharedGlobalMemory)" },
   { 921,  DMEC, TR, "Out of transaction memory in local data manager, copy tuples (increase SharedGlobalMemory)" },
   { 923,  DMEC, TR, "Out of UNDO buffer memory (increase UNDO_BUFFER_SIZE)" },
@@ -359,12 +358,10 @@ ErrorBundle ErrorCodes[] = {
   /**
    * OverloadError
    */
-  { 701,  DMEC, OL, "System busy with other schema operation" },
-  { 711,  DMEC, OL, "System busy with node restart, schema operations not allowed" },
+  { 701,  HA_ERR_LOCK_WAIT_TIMEOUT, TO, "System busy with other schema operation" },
+  { 711,  HA_ERR_LOCK_WAIT_TIMEOUT, NR, "System busy with node restart, schema operations not allowed" },
   { 410,  DMEC, OL, "REDO log files overloaded (decrease TimeBetweenLocalCheckpoints or increase NoOfFragmentLogFiles)" },
-  { 677,  DMEC, OL, "Index UNDO buffers overloaded (increase UndoIndexBuffer)" },
-  { 891,  DMEC, OL, "Data UNDO buffers overloaded (increase UndoDataBuffer)" },
-  { 1221, DMEC, OL, "REDO buffers overloaded (increase RedoBuffer)" },
+  { 1221, HA_ERR_LOCK_WAIT_TIMEOUT, OL, "REDO buffers overloaded (increase RedoBuffer)" },
   { 4006, DMEC, OL, "Connect failure - out of connection objects (increase MaxNoOfConcurrentTransactions)" }, 
 
 
@@ -431,7 +428,7 @@ ErrorBundle ErrorCodes[] = {
   { 4348, DMEC, IE, "Inconsistency detected at alter index" },
   { 4349, DMEC, IE, "Inconsistency detected at index usage" },
   { 4350, DMEC, IE, "Transaction already aborted" },
-  { 4351, DMEC, TO, "Timeout/deadlock during index build" },
+  { 4351, HA_ERR_LOCK_WAIT_TIMEOUT, TO, "Timeout/deadlock during index build" },
   { 294,  DMEC, IE, "Unlocked operation has out of range index" },
   { 295,  DMEC, IE, "Unlocked operation has invalid state" },
   { 298,  DMEC, IE, "Invalid distribution key" },
