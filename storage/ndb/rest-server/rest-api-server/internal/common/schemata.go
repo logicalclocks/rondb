@@ -44,7 +44,7 @@ func init() {
 		},
 	}
 
-	db = "DB000"
+	db = "db000"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -58,7 +58,7 @@ func init() {
 		},
 	}
 
-	db = "DB001"
+	db = "db001"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -75,7 +75,7 @@ func init() {
 		},
 	}
 
-	db = "DB002"
+	db = "db002"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -92,7 +92,7 @@ func init() {
 		},
 	}
 
-	db = "DB003"
+	db = "db003"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -132,7 +132,7 @@ func init() {
 	}
 
 	// signed and unsigned number data types
-	db = "DB004"
+	db = "db004"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -156,7 +156,7 @@ func init() {
 		},
 	}
 
-	db = "DB005"
+	db = "db005"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -176,7 +176,7 @@ func init() {
 		},
 	}
 
-	db = "DB006"
+	db = "db006"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -196,7 +196,7 @@ func init() {
 		},
 	}
 
-	db = "DB007"
+	db = "db007"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -217,7 +217,7 @@ func init() {
 		},
 	}
 
-	db = "DB008"
+	db = "db008"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -238,7 +238,7 @@ func init() {
 		},
 	}
 
-	db = "DB009"
+	db = "db009"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -259,7 +259,7 @@ func init() {
 		},
 	}
 
-	db = "DB010"
+	db = "db010"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -280,7 +280,7 @@ func init() {
 		},
 	}
 
-	db = "DB011"
+	db = "db011"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -298,10 +298,10 @@ func init() {
 		},
 	}
 
-	db = "DB012"
+	db = "db012"
 	databases[db] = SchemaTextualColumns("char", db, 100)
 
-	db = "DB013"
+	db = "db013"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -327,16 +327,16 @@ func init() {
 	db = "db015" //long varchar
 	databases[db] = SchemaTextualColumns("VARCHAR", db, 256)
 
-	db = "DB016" //binary fix size
+	db = "db016" //binary fix size
 	databases[db] = SchemaTextualColumns("BINARY", db, 100)
 
-	db = "DB017" //varbinary
+	db = "db017" //varbinary
 	databases[db] = SchemaTextualColumns("VARBINARY", db, 100)
 
-	db = "DB018" //long varbinary
+	db = "db018" //long varbinary
 	databases[db] = SchemaTextualColumns("VARBINARY", db, 256)
 
-	db = "DB019"
+	db = "db019"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -355,7 +355,7 @@ func init() {
 		},
 	}
 
-	db = "DB020"
+	db = "db020"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -382,7 +382,7 @@ func init() {
 		},
 	}
 
-	db = "DB021"
+	db = "db021"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -409,7 +409,7 @@ func init() {
 		},
 	}
 
-	db = "DB022"
+	db = "db022"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -436,7 +436,7 @@ func init() {
 		},
 	}
 
-	db = "DB023"
+	db = "db023"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -455,7 +455,7 @@ func init() {
 		},
 	}
 
-	db = "DB024"
+	db = "db024"
 	databases[db] = [][]string{
 		{
 			// setup commands

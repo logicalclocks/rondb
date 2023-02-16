@@ -34,8 +34,8 @@ func TestAPIKey(t *testing.T) {
 	dal.InitRonDBConnection(conString, true)
 	defer dal.ShutdownConnection()
 
-	common.CreateDatabases(t, []string{"DB001", "DB002"}...)
-	defer common.DropDatabases(t, []string{"DB001", "DB002"}...)
+	common.CreateDatabases(t, []string{"db001", "db002"}...)
+	defer common.DropDatabases(t, []string{"db001", "db002"}...)
 
 	apiKey := "bkYjEz6OTZyevbqT.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
 	err := ValidateAPIKey(&apiKey, nil)
@@ -65,7 +65,7 @@ func TestAPIKey(t *testing.T) {
 
 	// correct api key
 	apiKey = common.HOPSWORKS_TEST_API_KEY
-	db1 = "DB001"
+	db1 = "db001"
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
 		t.Fatalf("No error expected")
@@ -80,8 +80,8 @@ func TestAPIKey(t *testing.T) {
 
 	// no errors
 	apiKey = common.HOPSWORKS_TEST_API_KEY
-	db1 = "DB001"
-	db2 := "DB002"
+	db1 = "db001"
+	db2 := "db002"
 	err = ValidateAPIKey(&apiKey, &db1, &db2)
 	if err != nil {
 		t.Fatalf("No error expected")
@@ -97,11 +97,11 @@ func TestAPIKeyCache1(t *testing.T) {
 	dal.InitRonDBConnection(conString, true)
 	defer dal.ShutdownConnection()
 
-	common.CreateDatabases(t, []string{"DB001", "DB002"}...)
-	defer common.DropDatabases(t, []string{"DB001", "DB002"}...)
+	common.CreateDatabases(t, []string{"db001", "db002"}...)
+	defer common.DropDatabases(t, []string{"db001", "db002"}...)
 
 	apiKey := common.HOPSWORKS_TEST_API_KEY
-	db1 := "DB001"
+	db1 := "db001"
 	err := ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
 		t.Fatalf("No error expected")
@@ -110,7 +110,7 @@ func TestAPIKeyCache1(t *testing.T) {
 	lastUpdated1 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
 
 	apiKey = common.HOPSWORKS_TEST_API_KEY
-	db1 = "DB001"
+	db1 = "db001"
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
 		t.Fatalf("No error expected")
@@ -125,7 +125,7 @@ func TestAPIKeyCache1(t *testing.T) {
 	time.Sleep(time.Duration(config.Configuration().Security.HopsWorksAPIKeysCacheValiditySec))
 
 	apiKey = common.HOPSWORKS_TEST_API_KEY
-	db1 = "DB001"
+	db1 = "db001"
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
 		t.Fatalf("No error expected")
@@ -149,11 +149,11 @@ func TestAPIKeyCache2(t *testing.T) {
 	dal.InitRonDBConnection(conString, true)
 	defer dal.ShutdownConnection()
 
-	common.CreateDatabases(t, []string{"DB001", "DB002"}...)
-	defer common.DropDatabases(t, []string{"DB001", "DB002"}...)
+	common.CreateDatabases(t, []string{"db001", "db002"}...)
+	defer common.DropDatabases(t, []string{"db001", "db002"}...)
 
 	apiKey := common.HOPSWORKS_TEST_API_KEY
-	db3 := "DB003"
+	db3 := "db003"
 	err := ValidateAPIKey(&apiKey, &db3)
 	if err == nil {
 		t.Fatalf("Expected it to fail")
@@ -162,7 +162,7 @@ func TestAPIKeyCache2(t *testing.T) {
 	lastUpdated1 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
 
 	apiKey = common.HOPSWORKS_TEST_API_KEY
-	db1 := "DB001"
+	db1 := "db001"
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
 		t.Fatalf("No error expected")

@@ -36,7 +36,7 @@ import (
 
 func TestStat(t *testing.T) {
 
-	db := "DB004"
+	db := "db004"
 	table := "int_table"
 
 	ch := make(chan int)
