@@ -141,6 +141,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/ReleaseWithCacheTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/SaveTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/SchemaChangeTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/SessionCacheTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/SerialTransactionsTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/SessionFactoryTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/StressTest.java
@@ -155,6 +156,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/UpdateTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/UnloadSchemaTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/UnloadSchemaAfterRecreateTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/UnloadSchemaAfterDeleteWithCacheTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/VarbinaryPKTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/VarbinaryTypesTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/VarcharPKTest.java
