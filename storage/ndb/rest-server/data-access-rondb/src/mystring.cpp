@@ -18,7 +18,7 @@
  */
 
 #include "src/mystring.hpp"
-#include <iostream>
+#include <ndb_types.h>
 #include <stdint.h>
 #include <cstring>
 #include <string>
@@ -29,12 +29,12 @@
     @return the number of characters required to escape string @a s
     @complexity Linear in the length of string @a s.
     */
-std::size_t extra_space(const Int8 *str, std::size_t length) noexcept {
+std::size_t extra_space(const std::string &s) noexcept {
   std::size_t result = 0;
 
-  for (std::size_t i = 0; i < length; i++) {
-    char c = str[i];
-    switch (c) {
+  for (const auto &c : s) {
+    Int8 ci = (Int8)c;
+    switch (ci) {
     case '"':
     case '\\':
     case '\b':
@@ -48,7 +48,7 @@ std::size_t extra_space(const Int8 *str, std::size_t length) noexcept {
     }
 
     default: {
-      if (c >= 0x00 && c <= 0x1f) {
+      if (ci >= 0x00 && ci <= 0x1f) {
         // from c (1 byte) to \uxxxx (6 bytes)
         result += 5;
       }
@@ -71,19 +71,19 @@ std::size_t extra_space(const Int8 *str, std::size_t length) noexcept {
     @return  the escaped string
     @complexity Linear in the length of string @a s.
     */
-const Int8 *escape_string(const Int8 *str, std::size_t *length) noexcept {
-  const auto space = extra_space(str, *length);
+std::string escape_string(const std::string &s) noexcept {
+  const auto space = extra_space(s);
   if (space == 0) {
-    return str; 
+    return s;
   }
 
   // create a result string of necessary size
-  std::string result(*length + space, '\\');
+  std::string result(s.size() + space, '\\');
   std::size_t pos = 0;
 
-  for (std::size_t i = 0; i < *length; i++) {
-    char c = str[i];
-    switch (c) {
+  for (const auto &c : s) {
+    Int8 ci = (Int8)c;
+    switch (ci) {
     // quotation mark (0x22)
     case '"': {
       result[pos + 1] = '"';
@@ -134,7 +134,7 @@ const Int8 *escape_string(const Int8 *str, std::size_t *length) noexcept {
     }
 
     default: {
-      if (c >= 0x00 && c <= 0x1f) {
+      if (ci >= 0x00 && ci <= 0x1f) {
         int len = 7;  // print character c as \uxxxx. +1 or null character
         snprintf(&result[pos + 1], len, "u%04x", static_cast<int>(c));
         pos += 6;
@@ -149,6 +149,5 @@ const Int8 *escape_string(const Int8 *str, std::size_t *length) noexcept {
     }
   }
 
-  *length =  *length + space;
-  return reinterpret_cast<const Int8 *>(result.c_str());
+  return result;
 }

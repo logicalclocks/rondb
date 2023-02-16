@@ -802,7 +802,7 @@ func TestDataTypesChar(t *testing.T) {
 }
 
 func TestDataTypesVarchar(t *testing.T) {
-	ArrayColumnTest(t, "table1", "DB014", false, 50, false)
+	ArrayColumnTest(t, "table1", "db014", false, 50, false)
 }
 
 func TestDataTypesLongVarchar(t *testing.T) {

@@ -26,6 +26,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/log"
 )
 
 const HOPSWORKS_SCHEMA_NAME = "hopsworks"
@@ -320,10 +321,10 @@ func init() {
 		},
 	}
 
-	db = "DB014" //varchar
+	db = "db014" //varchar
 	databases[db] = SchemaTextualColumns("VARCHAR", db, 50)
 
-	db = "DB015" //long varchar
+	db = "db015" //long varchar
 	databases[db] = SchemaTextualColumns("VARCHAR", db, 256)
 
 	db = "DB016" //binary fix size
@@ -710,11 +711,35 @@ func createDatabasesInt(t testing.TB, create bool, dbNames ...string) {
 	}
 }
 
+type Tag struct {
+	Level   string `json:"level"`
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
 func runSQLQueries(t testing.TB, db *sql.DB, setup []string) {
 	t.Helper()
 	for _, command := range setup {
 		_, err := db.Exec(command)
 		if err != nil {
+
+			log.Warnf("failed to run command. %s. Error: %v ", command, err)
+			res, werr := db.Query("show warnings")
+			if werr != nil {
+				log.Warnf("failed to run 'show warnings' command. Error: %v ", werr)
+				t.Fatalf("failed to run command. %s. Error: %v, Error: %v ", command, err, werr)
+			}
+
+			for res.Next() {
+				var tag Tag
+				werr = res.Scan(&tag.Level, &tag.Code, &tag.Message)
+				if werr != nil {
+					log.Warnf("Error in 'show warnings' command. Error: %v", werr)
+				} else {
+					log.Warnf("Error Details. Level: %s, Code: %d, Message: %s", tag.Level, tag.Code, tag.Message)
+				}
+			}
+
 			t.Fatalf("failed to run command. %s. Error: %v", command, err)
 		}
 	}

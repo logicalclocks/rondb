@@ -339,7 +339,7 @@ func TestBatchArrayTableVarchar(t *testing.T) {
 }
 
 func TestBatchArrayTableLongVarchar(t *testing.T) {
-	ArrayColumnBatchTest(t, "table1", "DB015", false, 256, false)
+	ArrayColumnBatchTest(t, "table1", "db015", false, 256, false)
 }
 
 func TestBatchArrayTableBinary(t *testing.T) {

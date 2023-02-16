@@ -304,13 +304,9 @@ RS_Status PKRResponse::Append_char(const char *colName, const char *fromBuff, Ui
     wellFormedString = wellFormedString.substr(0, endpos + 1);
   }
 
-   std::size_t wellFormedStringLength = wellFormedString.length();
-  const char *escapedstr = reinterpret_cast<const char *>(escape_string(
-      reinterpret_cast<const Int8 *>(wellFormedString.c_str()), &wellFormedStringLength ));
-
-  if ((wellFormedStringLength + extraSpace) >= GetRemainingCapacity()) {  // +2 for quotation marks
+  std::string escapedstr = escape_string(wellFormedString);
+  if ((escapedstr.length() + extraSpace) >= GetRemainingCapacity()) {  // +2 for quotation marks
     return RS_SERVER_ERROR(ERROR_010);
   }
-
-  return this->SetColumnData(colName, escapedstr, RDRS_STRING_DATATYPE);
+  return this->SetColumnData(colName, escapedstr.c_str(), RDRS_STRING_DATATYPE);
 }
