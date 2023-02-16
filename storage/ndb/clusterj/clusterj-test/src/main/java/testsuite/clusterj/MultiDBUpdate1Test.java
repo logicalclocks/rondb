@@ -96,7 +96,7 @@ public class MultiDBUpdate1Test extends AbstractClusterJModelTest {
   }
 
   public void runTest(String db, Class cls) {
-    System.out.println("Adding rows to DB: " + db + " table: " + cls);
+    //System.out.println("Adding rows to DB: " + db + " table: " + cls);
     for (int i = 0; i < NUMBER_TO_INSERT; i++) {
       Session s = getSession(db);
       DynamicObject e = (DynamicObject) s.newInstance(cls);

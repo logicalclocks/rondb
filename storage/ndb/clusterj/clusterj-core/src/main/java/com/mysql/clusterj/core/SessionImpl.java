@@ -927,10 +927,11 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
         if (dropCache) {
             dtoCache.drop();
         }
-        if (db.isDefaultDatabase()) {
-            factory.storeCachedSession(this);
-        } else {
+
+        if (factory.isSessionCacheEnabled()) {
             factory.storeCachedSession(this, db.getName());
+        } else {
+            close();
         }
     }
 

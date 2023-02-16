@@ -47,6 +47,7 @@ public class ConnectionPoolTest extends AbstractClusterJTest {
     public void localSetUp() {
         loadProperties();
         // close the existing session factory because it uses one of the cluster connection (api) nodes
+        closeSession();
         closeAllExistingSessionFactories();
     }
 

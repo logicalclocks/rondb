@@ -50,15 +50,24 @@ public class FindByPrimaryKeyErrorHandlingTest
         }
         createEmployeeInstances(NUMBER_TO_INSERT);
         session.makePersistentAll(employees);
-        addTearDownClasses(Employee.class);
     }
 
     public void test() {
-        testErrorHandling();
+        try {
+            testErrorHandling();
+        } finally {
+            session = sessionFactory.getSession();
+            session.deletePersistentAll(Employee.class);
+        }
         failOnError();
     }
 
     private void testErrorHandling() {
+        closeSession();
+        closeAllExistingSessionFactories();
+        sessionFactory = null;
+        createSessionFactory();
+
         try (MgmClient mgmClient = new MgmClient(props)) {
             // Insert error to simulate a temporary error while reading
             if (!mgmClient.insertErrorOnAllDataNodes(5098)) {

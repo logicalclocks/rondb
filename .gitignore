@@ -18,3 +18,9 @@ source_downloads
 
 # Configuration files for Visual Studio Code
 .vscode/
+
+# Cache files for ccls / clangd
+.ccls-cache/
+.ccls/
+.cache/
+compile_commands.json
