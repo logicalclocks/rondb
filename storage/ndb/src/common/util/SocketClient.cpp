@@ -29,7 +29,7 @@
 #include <SocketClient.hpp>
 #include <SocketAuthenticator.hpp>
 
-#if 0
+#if 1
 #define DEBUG_FPRINTF(arglist) do { fprintf arglist ; } while (0)
 #else
 #define DEBUG_FPRINTF(a)
@@ -80,6 +80,8 @@ int
 SocketClient::bind(const char* local_hostname,
                    unsigned short local_port)
 {
+  DEBUG_FPRINTF((stderr, "SocketClient::bind, port: %u, host: %s\n",
+                 (unsigned int)local_port, local_hostname));
   if (!ndb_socket_valid(m_sockfd))
     return -1;
 
@@ -100,12 +102,14 @@ SocketClient::bind(const char* local_hostname,
     // Resolve local address
     if (Ndb_getInAddr6(&local.sin6_addr, local_hostname))
     {
+      DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr6, errno: %d\n", errno));
       return errno ? errno : EINVAL;
     }
 
     if (ndb_socket_reuseaddr(m_sockfd, true) == -1)
     {
       int ret = ndb_socket_errno();
+      DEBUG_FPRINTF((stderr, "Failed call to reuse address, errno: %d\n", ret));
       ndb_socket_close(m_sockfd);
       ndb_socket_invalidate(&m_sockfd);
       return ret;
@@ -124,6 +128,7 @@ SocketClient::bind(const char* local_hostname,
       }
 
       int ret = ndb_socket_errno();
+      DEBUG_FPRINTF((stderr, "Failed call to bind address, errno: %d\n", ret));
       ndb_socket_close(m_sockfd);
       ndb_socket_invalidate(&m_sockfd);
       return ret;
@@ -146,12 +151,14 @@ SocketClient::bind(const char* local_hostname,
     // Resolve local address
     if (Ndb_getInAddr(&local.sin_addr, local_hostname))
     {
+      DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr, errno: %d\n", errno));
       return errno ? errno : EINVAL;
     }
 
     if (ndb_socket_reuseaddr(m_sockfd, true) == -1)
     {
       int ret = ndb_socket_errno();
+      DEBUG_FPRINTF((stderr, "Failed call to reuse address, errno: %d\n", ret));
       ndb_socket_close(m_sockfd);
       ndb_socket_invalidate(&m_sockfd);
       return ret;
@@ -170,6 +177,7 @@ SocketClient::bind(const char* local_hostname,
       }
 
       int ret = ndb_socket_errno();
+      DEBUG_FPRINTF((stderr, "Failed call to bind address, errno: %d\n", ret));
       ndb_socket_close(m_sockfd);
       ndb_socket_invalidate(&m_sockfd);
       return ret;
@@ -190,6 +198,8 @@ SocketClient::connect(const char* server_hostname,
                       unsigned short server_port)
 {
   // Reset last used port(in case connect fails)
+  DEBUG_FPRINTF((stderr, "SocketClient::connect, port: %u, server: %s\n",
+                 (unsigned int)server_port, server_hostname));
   m_last_used_port = 0;
 
   if (!ndb_socket_valid(m_sockfd))
