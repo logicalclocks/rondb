@@ -36,7 +36,7 @@
 #include <EventLogger.hpp>
 extern EventLogger * g_eventLogger;
 
-#if 1
+#if 0
 #define DEBUG_FPRINTF(arglist) do { fprintf arglist ; } while (0)
 #else
 #define DEBUG_FPRINTF(a)
@@ -298,70 +298,35 @@ Transporter::connect_client(bool multi_connection)
   }
   else
   {
-    bool use_ipv4_only = true;
-    while (!m_use_only_ipv4)
+    if (!m_socket_client->init(m_use_only_ipv4))
     {
-      if (!m_socket_client->init(m_use_only_ipv4))
-      {
-        DEBUG_FPRINTF((stderr, "m_socket_client->init failed, node: %u\n",
-                               getRemoteNodeId()));
-        break;
-      }
-
-      if (pre_connect_options(m_socket_client->m_sockfd) != 0)
-      {
-        DEBUG_FPRINTF((stderr, "pre_connect_options failed, node: %u\n",
-                               getRemoteNodeId()));
-        break;
+      DEBUG_FPRINTF((stderr, "m_socket_client->init failed, node: %u\n",
+                             getRemoteNodeId()));
+      DBUG_RETURN(false);
     }
 
-      if (strlen(localHostName) > 0)
-      {
-        if (m_socket_client->bind(localHostName, 0) != 0)
-        {
-          DEBUG_FPRINTF((stderr, "m_socket_client->bind failed, node: %u\n",
-                                 getRemoteNodeId()));
-          break;
-        }
-      }
-      DEBUG_FPRINTF((stderr, "m_socket_client->connect to %s\n",
-                     remoteHostName));
-      sockfd= m_socket_client->connect(remoteHostName,
-                                       port);
-      use_ipv4_only = false;
-    }
-    if (use_ipv4_only)
+    if (pre_connect_options(m_socket_client->m_sockfd) != 0)
     {
-      m_use_only_ipv4 = true;
-      if (!m_socket_client->init(m_use_only_ipv4))
+      DEBUG_FPRINTF((stderr, "pre_connect_options failed, node: %u\n",
+                             getRemoteNodeId()));
+      DBUG_RETURN(false);
+    }
+
+    if (strlen(localHostName) > 0)
+    {
+      if (m_socket_client->bind(localHostName, 0) != 0)
       {
-        DEBUG_FPRINTF((stderr, "m_socket_client->init failed, node: %u\n",
+        DEBUG_FPRINTF((stderr, "m_socket_client->bind failed, node: %u\n",
                                getRemoteNodeId()));
         DBUG_RETURN(false);
       }
-
-      if (pre_connect_options(m_socket_client->m_sockfd) != 0)
-      {
-        DEBUG_FPRINTF((stderr, "pre_connect_options failed, node: %u\n",
-                               getRemoteNodeId()));
-        DBUG_RETURN(false);
-      }
-
-      if (strlen(localHostName) > 0)
-      {
-        if (m_socket_client->bind(localHostName, 0) != 0)
-        {
-          DEBUG_FPRINTF((stderr, "m_socket_client->bind failed, node: %u\n",
-                                 getRemoteNodeId()));
-          DBUG_RETURN(false);
-        }
-      }
-      DEBUG_FPRINTF((stderr, "m_socket_client->connect to %s\n",
-                     remoteHostName));
-      sockfd= m_socket_client->connect(remoteHostName,
-                                       port);
     }
+    DEBUG_FPRINTF((stderr, "m_socket_client->connect to %s\n",
+                   remoteHostName));
+    sockfd= m_socket_client->connect(remoteHostName,
+                                     port);
   }
+
   DBUG_RETURN(connect_client(sockfd));
 }
 

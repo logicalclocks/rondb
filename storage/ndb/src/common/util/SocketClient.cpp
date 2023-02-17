@@ -57,22 +57,27 @@ SocketClient::init(bool use_only_ipv4)
   m_use_only_ipv4 = use_only_ipv4;
 
   if (ndb_socket_valid(m_sockfd))
-    ndb_socket_close(m_sockfd);
-
-  if (m_use_only_ipv4)
   {
-    m_sockfd= ndb_socket_create(AF_INET, SOCK_STREAM, 0);
+    ndb_socket_close(m_sockfd);
+    ndb_socket_invalidate(&m_sockfd);
   }
-  else
+
+  if (!m_use_only_ipv4)
   {
     m_sockfd= ndb_socket_create_dual_stack(SOCK_STREAM, 0);
   }
-  if (!ndb_socket_valid(m_sockfd)) {
-    return false;
+  if (!ndb_socket_valid(m_sockfd))
+  {
+    m_use_only_ipv4 = true;
+    m_sockfd= ndb_socket_create(AF_INET, SOCK_STREAM, 0);
   }
+  if (!ndb_socket_valid(m_sockfd))
+    return false;
+
   DBUG_PRINT("info",("NDB_SOCKET: " MY_SOCKET_FORMAT,
                      MY_SOCKET_FORMAT_VALUE(m_sockfd)));
-
+  DEBUG_FPRINTF((stderr, "NDB_SOCKET: " MY_SOCKET_FORMAT "\n",
+                 MY_SOCKET_FORMAT_VALUE(m_sockfd)));
   return true;
 }
 
