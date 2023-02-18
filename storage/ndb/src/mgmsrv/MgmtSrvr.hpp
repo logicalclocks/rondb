@@ -482,7 +482,7 @@ private:
 
   bool m_need_restart;
 
-  struct in6_addr m_connect_address[MAX_NODES];
+  struct sockaddr_in6 m_connect_address[MAX_NODES];
   const char *get_connect_address(NodeId node_id,
                                   char *addr_buf,
                                   size_t addr_buf_size);

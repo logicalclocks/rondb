@@ -59,7 +59,7 @@ void setOwnProcessInfoServerAddress4(struct sockaddr * addr)
 {
   theApiMutex.lock();
   sockaddr_in *addr_in = (sockaddr_in *)addr;
-  singletonInfo.setHostAddress4(&addr_in->sin_addr);
+  singletonInfo.setHostAddress(&addr_in->sin_addr);
   theApiMutex.unlock();
 }
 
