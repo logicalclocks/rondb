@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,7 +29,7 @@
 #include <SocketClient.hpp>
 #include <SocketAuthenticator.hpp>
 
-#if 1
+#if 0
 #define DEBUG_FPRINTF(arglist) do { fprintf arglist ; } while (0)
 #else
 #define DEBUG_FPRINTF(a)
