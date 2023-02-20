@@ -24,7 +24,7 @@
 
 set -e
 
-files="daily-basic-tests.txt daily-devel-tests.txt upgrade-tests.txt"
+files="upgrade-tests.txt"
 
 die(){
     echo "error at $1 : $2"

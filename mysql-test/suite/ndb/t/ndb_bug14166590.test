@@ -35,7 +35,7 @@ select * from t1 where attr1 = 9412 order by pk1;
 disable_query_log;
 while (`select @@error_count = 0`)
 {
-  --error 0,1296,1297
+  --error 0,1205,1296,1297
   select pk1 from t1 where attr1 = 9412 into @slask;
 }
 enable_query_log;

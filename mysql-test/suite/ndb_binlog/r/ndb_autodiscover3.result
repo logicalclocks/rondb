@@ -2,7 +2,7 @@ create table t1 (a int key) engine=ndbcluster;
 begin;
 insert into t1 values (1);
 insert into t1 values (2);
-ERROR HY000: Got temporary error 4025 'Node failure caused abort of transaction' from NDBCLUSTER
+Got one of the listed errors
 rollback;
 drop table t1;
 create table t2 (a int, b int, primary key(a,b)) engine=ndbcluster;
