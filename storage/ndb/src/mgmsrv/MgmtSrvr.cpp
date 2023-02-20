@@ -4094,19 +4094,22 @@ MgmtSrvr::get_connect_address(NodeId node_id,
 {
   assert(node_id < NDB_ARRAY_SIZE(m_connect_address));
 
-  if (m_connect_address[node_id].sin6_family == AF_INET6)
+  if (!is_m_connect_address_set[node_id])
   {
-    if (IN6_IS_ADDR_UNSPECIFIED(&m_connect_address[node_id].sin6_addr))
+    // No cached connect address available
+    const trp_node &node= getNodeInfo(node_id);
+    if (node.is_connected())
     {
-      // No cached connect address available
-      const trp_node &node= getNodeInfo(node_id);
-      if (node.is_connected())
-      {
-        // Cache the connect address, it's valid until
-        // node disconnects
-        m_connect_address[node_id] =
-          theFacade->ext_get_connect_address(node_id);
-      }
+      // Cache the connect address, it's valid until
+      // node disconnects
+      is_m_connect_address_set[node_id] = true;
+      m_connect_address[node_id] =
+        theFacade->ext_get_connect_address(node_id);
+    }
+    else
+    {
+      addr_buf[0] = 0;
+      return addr_buf;
     }
   }
 
@@ -4138,7 +4141,7 @@ MgmtSrvr::clear_connect_address_cache(NodeId nodeid)
   if (nodeid < NDB_ARRAY_SIZE(m_connect_address))
   {
     memset(&m_connect_address[nodeid], 0, sizeof(struct sockaddr_in6));
-    m_connect_address[nodeid].sin6_addr = IN6ADDR_ANY_INIT;
+    is_m_connect_address_set[nodeid] = false;
   }
 }
 
