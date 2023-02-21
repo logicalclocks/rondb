@@ -98,18 +98,21 @@ func (rc *RouterConext) registerHandlers(handlers *handlers.AllHandlers) error {
 	if handlers.PKReader != nil {
 		group := rc.Engine.Group(config.DB_OPS_EP_GROUP)
 		group.POST(config.PK_DB_OPERATION, handlers.PKReader.PkReadHttpHandler)
+		log.Infof("REST Server registering POST %s%s", config.DB_OPS_EP_GROUP, config.PK_DB_OPERATION)
 	}
 
 	// batch
 	if handlers.Batcher != nil {
-		rc.Engine.POST("/"+version.API_VERSION+"/"+config.BATCH_OPERATION,
-			handlers.Batcher.BatchOpsHttpHandler)
+		uri := "/" + version.API_VERSION + "/" + config.BATCH_OPERATION
+		rc.Engine.POST(uri, handlers.Batcher.BatchOpsHttpHandler)
+		log.Infof("REST Server registering POST %s", uri)
 	}
 
 	// stat
 	if handlers.Stater != nil {
-		rc.Engine.GET("/"+version.API_VERSION+"/"+config.STAT_OPERATION,
-			handlers.Stater.StatOpsHttpHandler)
+		uri := "/" + version.API_VERSION + "/" + config.STAT_OPERATION
+		rc.Engine.GET(uri, handlers.Stater.StatOpsHttpHandler)
+		log.Infof("REST Server registering GET %s", uri)
 	}
 
 	// GRPC
@@ -141,12 +144,12 @@ func (rc *RouterConext) StartRouter() error {
 
 	httpListener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", rc.RESTServerIP, rc.RESTServerPort))
 	if err != nil {
-		log.Fatalf("HTTP server returned. Error: %v", err)
+		log.Fatalf("HTTP server error in listner. Error: %v", err)
 	}
 
 	grpcListener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", rc.GRPCServerIP, rc.GRPCServerPort))
 	if err != nil {
-		log.Fatalf("GRPC server returned. Error: %v", err)
+		log.Fatalf("HTTP server error in listner. Error: %v", err)
 	}
 
 	go func() { // Start REST Server
@@ -155,16 +158,19 @@ func (rc *RouterConext) StartRouter() error {
 			err = rc.HttpServer.ServeTLS(httpListener, config.Configuration().Security.CertificateFile,
 				config.Configuration().Security.PrivateKeyFile)
 		} else {
-			err = rc.HttpServer.ListenAndServe()
+			err = rc.HttpServer.Serve(httpListener)
 		}
 		if err != nil {
-			log.Infof("Http server returned. Error: %v", err)
+			log.Infof("HTTP server error in serve. Error: %v", err)
 		}
 	}()
 
 	go func() { // Start GRPC Server
-		// rc.GRPCServer = grpc.NewServer()
-		rc.GRPCServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
+		if config.Configuration().Security.EnableTLS {
+			rc.GRPCServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
+		} else {
+			rc.GRPCServer = grpc.NewServer()
+		}
 		GRPCServer := grpcsrv.GetGRPCServer()
 		api.RegisterRonDBRESTServer(rc.GRPCServer, GRPCServer)
 		rc.GRPCServer.Serve(grpcListener)

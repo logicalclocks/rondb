@@ -29,11 +29,11 @@ import (
 
 // Request
 type PKReadParams struct {
-	DB          *string       `json:"db" `
+	DB          *string       `json:"db"`
 	Table       *string       `json:"table"`
 	Filters     *[]Filter     `json:"filters"`
-	ReadColumns *[]ReadColumn `json:"readColumns"`
-	OperationID *string       `json:"operationId"`
+	ReadColumns *[]ReadColumn `json:"readColumns" binding:"omitempty"`
+	OperationID *string       `json:"operationId" binding:"omitempty"`
 }
 
 // Path parameters

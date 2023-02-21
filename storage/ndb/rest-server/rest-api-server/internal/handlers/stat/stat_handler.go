@@ -24,6 +24,7 @@ import (
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/handlers"
+	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
@@ -39,6 +40,9 @@ func GetStater() handlers.Stater {
 }
 
 func (s *Stat) StatOpsHttpHandler(c *gin.Context) {
+	if log.IsTrace() {
+		log.Tracef("HTTP Stat request received from %s\n", c.ClientIP())
+	}
 	statResp := api.StatResponse{}
 	stats, err := stat.StatOpsHandler(&statResp)
 	if err != nil {
