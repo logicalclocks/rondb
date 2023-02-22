@@ -24,6 +24,4 @@ This will create the RonDB tarball as part of the Docker build process. It will 
 
 The builds in the mounted caches are however difficult to access. If you wish to access the builds themselves, it is recommended to use the script [docker-build.sh](/build_scripts/release_scripts/docker-build.sh). This will use the same Dockerfiles, but instead of building RonDB inside the Docker build process, it will build RonDB inside a running RonDB container. This makes it easier to access the builds.
 
-If you wish to build RonDB manually inside a container, you can use [docker-create-builder.sh](/build_scripts/release_scripts/docker-create-builder.sh). This can be useful if you want to try different build configurations whilst developing RonDB. The build
-files are persisted inside a volume and the source code is mounted into the container. The script finishes by opening a shell
-inside the container.
+If you wish to build RonDB manually inside a container, you can use [docker-create-builder.sh](/build_scripts/release_scripts/docker-create-builder.sh). This can be useful if you want to try different build configurations whilst developing RonDB. The build files are persisted inside a volume and the source code is mounted into the container. The script finishes by opening a shell inside the container.
