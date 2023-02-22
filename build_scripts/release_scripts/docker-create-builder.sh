@@ -115,25 +115,29 @@ Linux*)
   ;;
 
 *)
-  echo 'Other OS'
+  echo 'Other OS' >&2
+  help
   exit 1
   ;;
 esac
 
 if [ -z $SRC_DIR ]; then
-  echo "Source directory not specified"
+  echo "Source directory not specified" >&2
+  help
   exit 1
 fi
 
 SRC_DIR_ABS=$($readlinkcmd -f $SRC_DIR)
 if [[ ! -d $SRC_DIR_ABS ]]; then
-  echo "Invalid source directory"
+  echo "Invalid source directory" >&2
+  help
   exit 1
 fi
 
 # Basic source code check
 if [[ ! -f $SRC_DIR_ABS/MYSQL_VERSION ]]; then
-  echo "Invalid source directory. MYSQL_VERSION file not found"
+  echo "Invalid source directory. MYSQL_VERSION file not found" >&2
+  help
   exit 1
 fi
 
@@ -146,11 +150,13 @@ else
   DOCKER_IMAGE_NAME="$DOCKER_IMAGE_NAME:${RONDB_VERSION}"
 fi
 
-echo "Build Params:
+cat <<EOF
+Build Params:
   Src dir: $SRC_DIR_ABS
   Dockerfile: $DOCKERFILE
   Docker image: $DOCKER_IMAGE_NAME
-  No of build threads: $CORES"
+  No of build threads: $CORES
+EOF
 
 echo "Creating Docker image ${DOCKER_IMAGE_NAME}"
 
