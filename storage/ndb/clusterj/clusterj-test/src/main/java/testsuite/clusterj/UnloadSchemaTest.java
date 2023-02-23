@@ -223,6 +223,7 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
   public void unloadSchema(boolean useCache) {
     try {
       this.useCache = useCache;
+      closeSession();
       closeAllExistingSessionFactories();
       sessionFactory = null;
       createSessionFactory();

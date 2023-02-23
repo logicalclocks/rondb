@@ -35,10 +35,7 @@ import com.mysql.clusterj.query.QueryDefinition;
 import com.mysql.clusterj.query.QueryDomainType;
 import testsuite.clusterj.model.Employee;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.List;
+import java.util.*;
 
 
 /*
@@ -70,6 +67,12 @@ public class MultiDBScan1Test extends AbstractClusterJModelTest {
     public String table() {
       return "t_basic3";
     }
+  }
+
+  @Override
+  protected Properties modifyProperties() {
+    props.put(Constants.PROPERTY_CLUSTER_MAX_CACHED_SESSIONS, 10);
+    return props;
   }
 
   @Override
@@ -107,7 +110,7 @@ public class MultiDBScan1Test extends AbstractClusterJModelTest {
   }
 
   public void runTest(String db, Class cls) {
-    System.out.println("Adding rows to DB: " + db + " table: " + cls);
+    //System.out.println("Adding rows to DB: " + db + " table: " + cls);
     for (int i = 0; i < NUMBER_TO_INSERT; i++) {
       Session s = getSession(db);
       DynamicObject e = (DynamicObject) s.newInstance(cls);
