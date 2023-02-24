@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -482,8 +482,7 @@ private:
 
   bool m_need_restart;
 
-  struct sockaddr_in6 m_connect_address[MAX_NODES];
-  bool is_m_connect_address_set[MAX_NODES];
+  struct in6_addr m_connect_address[MAX_NODES];
   const char *get_connect_address(NodeId node_id,
                                   char *addr_buf,
                                   size_t addr_buf_size);

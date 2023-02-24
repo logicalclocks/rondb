@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -112,7 +112,7 @@ TransporterRegistry::is_server(NodeId node_id) const
 }
 
 
-struct sockaddr_in6
+struct in6_addr
 TransporterRegistry::get_connect_address(NodeId node_id) const
 {
   if (theNodeIdTransporters[node_id]->isMultiTransporter())
@@ -126,6 +126,22 @@ TransporterRegistry::get_connect_address(NodeId node_id) const
     }
   }
   return theNodeIdTransporters[node_id]->m_connect_address;
+}
+
+struct in_addr
+TransporterRegistry::get_connect_address4(NodeId node_id) const
+{
+  if (theNodeIdTransporters[node_id]->isMultiTransporter())
+  {
+    Multi_Transporter *multi_trp =
+      (Multi_Transporter*)theNodeIdTransporters[node_id];
+    if (multi_trp->get_num_active_transporters() > 0)
+    {
+      Transporter *trp = multi_trp->get_active_transporter(0);
+      return trp->m_connect_address4;
+    }
+  }
+  return theNodeIdTransporters[node_id]->m_connect_address4;
 }
 
 Uint64

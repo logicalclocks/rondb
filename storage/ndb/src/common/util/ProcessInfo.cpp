@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates. All rights reserved.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -182,36 +182,20 @@ void ProcessInfo::setHostAddress(const char * address_string) {
   }
 }
 
-void ProcessInfo::setHostAddress(const struct sockaddr *addr)
-{
-  const struct sockaddr_in6 *in6 = (const struct sockaddr_in6*)addr;
-  if (IN6_IS_ADDR_UNSPECIFIED(&in6->sin6_addr))
-  {
-    return;
-  }
-  if (addr->sa_family == AF_INET6)
-  {
-    setHostAddress(&in6->sin6_addr);
-  }
-  else
-  {
-    const struct sockaddr_in *in = (const struct sockaddr_in*)addr;
-    setHostAddress(&in->sin_addr);
-  }
-}
-
 void ProcessInfo::setHostAddress(Uint32 * signal_data) {
   setHostAddress((const char *) signal_data);
 }
 
 void ProcessInfo::setHostAddress(const struct in6_addr * addr) {
   /* If address passed in is a wildcard address, do not use it. */
-  Ndb_inet_ntop(AF_INET6, addr, host_address, AddressStringLength);
+  if (!IN6_IS_ADDR_UNSPECIFIED(addr))
+    Ndb_inet_ntop(AF_INET6, addr, host_address, AddressStringLength);
 }
 
-void ProcessInfo::setHostAddress(const struct in_addr * addr) {
+void ProcessInfo::setHostAddress4(const struct in_addr * addr) {
   /* If address passed in is a wildcard address, do not use it. */
-  Ndb_inet_ntop(AF_INET, addr, host_address, AddressStringLength);
+  if (!IN_IS_ADDR_UNSPECIFIED(addr))
+    Ndb_inet_ntop(AF_INET, addr, host_address, AddressStringLength);
 }
 
 void ProcessInfo::setAngelPid(Uint32 pid) {
