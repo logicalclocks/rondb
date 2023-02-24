@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -5393,24 +5393,35 @@ Qmgr::execAPI_VERSION_REQ(Signal * signal) {
     conf->mysql_version = nodeInfo.m_mysql_version;
     if (use_ipv4_socket(nodeId))
     {
-      struct in_addr in =
-        globalTransporterRegistry.get_connect_address4(nodeId);
-      conf->m_inet_addr = in.s_addr;
+      struct sockaddr_in6 in =
+        globalTransporterRegistry.get_connect_address(nodeId);
+      require(in.sin6_family == AF_INET);
+      struct sockaddr_in *in4 = (struct sockaddr_in*)&in;
+      conf->m_inet_addr = in4->sin_addr.s_addr;
       len = ApiVersionConf::SignalLengthIPv4;
     }
     else
     {
-      struct in6_addr in =
+      struct sockaddr_in6 in =
         globalTransporterRegistry.get_connect_address(nodeId);
-      memcpy(conf->m_inet6_addr, in.s6_addr, sizeof(conf->m_inet6_addr));
-      if (IN6_IS_ADDR_V4MAPPED(&in))
+      if (in.sin6_family == AF_INET6)
       {
-        memcpy(&conf->m_inet_addr, &conf->m_inet6_addr[12], sizeof(in_addr));
-        len = ApiVersionConf::SignalLengthIPv4;
+        memcpy(&conf->m_inet6_addr, &in.sin6_addr, sizeof(conf->m_inet6_addr));
+        if (IN6_IS_ADDR_V4MAPPED(&in.sin6_addr))
+        {
+          memcpy(&conf->m_inet_addr, &conf->m_inet6_addr[12], sizeof(in_addr));
+          len = ApiVersionConf::SignalLengthIPv4;
+        }
+        else
+        {
+          len = ApiVersionConf::SignalLength;
+        }
       }
       else
       {
-        len = ApiVersionConf::SignalLength;
+        struct sockaddr_in *in4 = (struct sockaddr_in*)&in;
+        conf->m_inet_addr = in4->sin_addr.s_addr;
+        len = ApiVersionConf::SignalLengthIPv4;
       }
     }
   }
@@ -9568,18 +9579,30 @@ Qmgr::execDBINFO_SCANREQ(Signal *signal)
              fallback-style report */
 
           char service_uri[INET6_ADDRSTRLEN + 6];
+          strcpy(service_uri, "ndb://");
           if (use_ipv4_socket(i))
           {
-            struct in_addr addr =
-              globalTransporterRegistry.get_connect_address4(i);
-            Ndb_inet_ntop(AF_INET, & addr, service_uri + 6, 46);
+            struct sockaddr_in6 in6 =
+              globalTransporterRegistry.get_connect_address(i);
+            require(in6.sin6_family == AF_INET);
+            struct sockaddr_in *in4 = (struct sockaddr_in*)&in6;
+            Ndb_inet_ntop(AF_INET, &in4->sin_addr, service_uri + 6, 46);
           }
           else
           {
-            struct in6_addr addr =
+            struct sockaddr_in6 in6 =
               globalTransporterRegistry.get_connect_address(i);
-            strcpy(service_uri, "ndb://");
-            Ndb_inet_ntop(AF_INET6, & addr, service_uri + 6, 46);
+            if (in6.sin6_family == AF_INET6)
+            {
+              struct in6_addr *addr = &in6.sin6_addr;
+              Ndb_inet_ntop(AF_INET6, addr, service_uri + 6, 46);
+            }
+            else
+            {
+              struct sockaddr_in *in4 = (struct sockaddr_in*)&in6;
+              struct in_addr *addr = &in4->sin_addr;
+              Ndb_inet_ntop(AF_INET, addr, service_uri + 6, 46);
+            }
           }
 
           Ndbinfo::Row row(signal, req);
@@ -9637,18 +9660,10 @@ Qmgr::execPROCESSINFO_REP(Signal *signal)
          of ProcessInfo::setHostAddress() is also available, which
          takes a struct sockaddr * and length.
       */
-      if (use_ipv4_socket(report->node_id))
-      {
-        struct in_addr addr=
-          globalTransporterRegistry.get_connect_address4(report->node_id);
-        processInfo->setHostAddress4(& addr);
-      }
-      else
-      {
-        struct in6_addr addr=
-          globalTransporterRegistry.get_connect_address(report->node_id);
-        processInfo->setHostAddress(& addr);
-      }
+
+      struct sockaddr_in6 in6 =
+        globalTransporterRegistry.get_connect_address(report->node_id);
+      processInfo->setHostAddress((struct sockaddr *)&in6);
     }
   }
   releaseSections(handle);
