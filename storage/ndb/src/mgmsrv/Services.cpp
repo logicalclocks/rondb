@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2023, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -48,12 +48,6 @@
 extern bool g_StopServer;
 extern bool g_RestartServer;
 extern EventLogger * g_eventLogger;
-
-#if 0
-#define DEBUG_FPRINTF(arglist) do { fprintf arglist ; } while (0)
-#else
-#define DEBUG_FPRINTF(a)
-#endif
 
 /**
    const char * name;
@@ -382,45 +376,23 @@ MgmApiSession::MgmApiSession(class MgmtSrvr & mgm, NDB_SOCKET_TYPE sock, Uint64 
   m_errorInsert= 0;
   m_vMajor = m_vMinor = m_vBuild = 0;
 
-  struct sockaddr_storage addr;
-  char buf[512];
-  char addr_buf[NDB_ADDR_STRLEN];
-  if (ndb_getpeername(sock, (struct sockaddr*)&addr) == 0)
+  struct sockaddr_in6 addr;
+  ndb_socket_len_t addrlen= sizeof(addr);
+  if (ndb_getpeername(sock, (struct sockaddr*)&addr, &addrlen) == 0)
   {
-    if (addr.ss_family == AF_INET6)
-    {
-      DEBUG_FPRINTF((stderr, "new connection from IPv6\n"));
-      struct sockaddr_in6 *addr6 = (struct sockaddr_in6*)&addr;
-      char *addr_str = Ndb_inet_ntop(AF_INET6,
-                                     static_cast<void*>(&addr6->sin6_addr),
-                                     addr_buf,
-                                     sizeof(addr_buf));
-      char *sockaddr_string = Ndb_combine_address_port(buf, sizeof(buf),
-                                                       addr_str,
-                                                       ntohs((*addr6).sin6_port));
-      m_name.assfmt("%s", sockaddr_string);
-    }
-    else
-    {
-      DEBUG_FPRINTF((stderr, "new connection from IPv4\n"));
-      require(addr.ss_family == AF_INET);
-      struct sockaddr_in *addr4 = (struct sockaddr_in*)&addr;
-      char *addr_str = Ndb_inet_ntop(AF_INET,
-                                     static_cast<void*>(&addr4->sin_addr),
-                                     addr_buf,
-                                     sizeof(addr_buf));
-      char *sockaddr_string = Ndb_combine_address_port(buf, sizeof(buf),
-                                                       addr_str,
-                                                       ntohs((*addr4).sin_port));
-      m_name.assfmt("%s", sockaddr_string);
-    }
-    DBUG_PRINT("info", ("new connection from: %s", m_name.c_str()));
-    DEBUG_FPRINTF((stderr, "new connection from: %s\n", m_name.c_str()));
+    char addr_buf[NDB_ADDR_STRLEN];
+    char *addr_str = Ndb_inet_ntop(AF_INET6,
+                                   static_cast<void*>(&addr.sin6_addr),
+                                   addr_buf,
+                                   sizeof(addr_buf));
+    char buf[512];
+    char *sockaddr_string = Ndb_combine_address_port(buf, sizeof(buf),
+                                                     addr_str,
+                                                     ntohs(addr.sin6_port));
+    m_name.assfmt("%s", sockaddr_string);
   }
-  else
-  {
-    DEBUG_FPRINTF((stderr, "new connection failed\n"));
-  }
+  DBUG_PRINT("info", ("new connection from: %s", m_name.c_str()));
+
   DBUG_VOID_RETURN;
 }
 
@@ -594,9 +566,10 @@ MgmApiSession::get_nodeid(Parser_t::Context &,
     return;
   }
 
-  struct sockaddr_storage addr;
+  struct sockaddr_in6 addr;
   {
-    int r = ndb_getpeername(m_socket, (struct sockaddr*)&addr);
+    ndb_socket_len_t addrlen= sizeof(addr);
+    int r = ndb_getpeername(m_socket, (struct sockaddr*)&addr, &addrlen);
     if (r != 0 )
     {
       m_output->println("result: getpeername(" MY_SOCKET_FORMAT \

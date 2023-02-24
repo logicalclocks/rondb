@@ -1,6 +1,5 @@
 /*
    Copyright (c) 2020 Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -67,8 +66,7 @@ GlobalDnsCache::~GlobalDnsCache() {
     delete pair.second;
  }
 
-bool GlobalDnsCache::getAddress(struct in6_addr *result,
-                                const char *hostname) {
+bool GlobalDnsCache::getAddress(struct in6_addr *result, const char *hostname) {
   Guard locked(m_mutex);
   NDB_TICKS current_time = NdbTick_getCurrentTicks();
   auto pair = m_resolver_cache.find(hostname);
@@ -85,12 +83,7 @@ bool GlobalDnsCache::getAddress(struct in6_addr *result,
   }
 
   if (Ndb_getInAddr6(result, hostname) != 0)
-  {
-    if (Ndb_getInAddr((struct in_addr*)result, hostname) != 0)
-    {
-      return false;   // hostname not found in DNS
-    }
-  }
+    return false;   // hostname not found in DNS
 
   /* Hostname found; create a cache entry*/
   m_resolver_cache[hostname] = new CacheEntry(*result, current_time);
@@ -104,8 +97,7 @@ bool GlobalDnsCache::getAddress(struct in6_addr *result,
  */
 static GlobalDnsCache theGlobalCache;
 
-int LocalDnsCache::getAddress(struct in6_addr * result,
-                              const char *hostname) {
+int LocalDnsCache::getAddress(struct in6_addr * result, const char *hostname) {
   if(m_failed_lookups.count(hostname)) return -1;
 
   bool globalResult = theGlobalCache.getAddress(result, hostname);
@@ -113,3 +105,6 @@ int LocalDnsCache::getAddress(struct in6_addr * result,
   if(! globalResult) m_failed_lookups.insert(hostname);
   return globalResult ? 0 : -1;
 }
+
+
+

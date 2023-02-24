@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2008, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,7 +26,6 @@
 #include <netdb.h>
 #include <errno.h>
 #include <stdlib.h>
-#include <string.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -244,23 +243,35 @@ int ndb_connect_inet6(ndb_socket_t s, const struct sockaddr_in6 *addr)
 }
 
 static inline
-int ndb_socket_connect_address(ndb_socket_t s, struct sockaddr_in6 *a)
+int ndb_socket_connect_address(ndb_socket_t s, struct in6_addr *a)
 {
-  ndb_socket_len_t addrlen= sizeof(*a);
-  if (getpeername(s.fd, (struct sockaddr*)a, &addrlen))
+  struct sockaddr_in6 addr;
+  ndb_socket_len_t addrlen= sizeof(addr);
+  if(getpeername(s.fd, (struct sockaddr*)&addr, &addrlen))
     return ndb_socket_errno();
+
+  *a= addr.sin6_addr;
   return 0;
 }
 
 static inline
-int ndb_getpeername(ndb_socket_t s, struct sockaddr *a)
+int ndb_socket_connect_address4(ndb_socket_t s, struct in_addr *a)
 {
-  socklen_t len = sizeof(struct sockaddr_storage);
-  memset(a, 0, len);
-  if(getpeername(s.fd, a, &len))
-  {
+  struct sockaddr_in addr;
+  ndb_socket_len_t addrlen= sizeof(addr);
+  if(getpeername(s.fd, (struct sockaddr*)&addr, &addrlen))
     return ndb_socket_errno();
-  }
+
+  *a= addr.sin_addr;
+  return 0;
+}
+
+static inline
+int ndb_getpeername(ndb_socket_t s, struct sockaddr *a, ndb_socket_len_t *addrlen)
+{
+  if(getpeername(s.fd, a, addrlen))
+    return ndb_socket_errno();
+
   return 0;
 }
 
