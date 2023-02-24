@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -122,7 +122,7 @@ public:
    * These are functions used by ndb_mgmd
    */
   void ext_set_max_api_reg_req_interval(Uint32 ms);
-  struct in6_addr ext_get_connect_address(Uint32 nodeId);
+  struct sockaddr_in6 ext_get_connect_address(Uint32 nodeId);
   bool ext_isConnected(NodeId aNodeId);
   void ext_doConnect(int aNodeId);
 

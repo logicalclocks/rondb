@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -51,9 +51,9 @@ public:
   void setUriPath(Uint32 *signal_data);
   void setUriScheme(const char *);
   void setProcessName(const char *);
-  void setHostAddress(const struct sockaddr *, socklen_t);
+  void setHostAddress(const struct sockaddr *);
   void setHostAddress(const struct in6_addr *);
-  void setHostAddress4(const struct in_addr *);
+  void setHostAddress(const struct in_addr *);
   void setHostAddress(Uint32 *signal_data);
   void setHostAddress(const char *);
   void setPid();
