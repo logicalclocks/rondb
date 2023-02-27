@@ -4,7 +4,7 @@ set -e
 
 help() {
   cat <<EOF
-docker-run-image.sh {-s path} [-f dockerfile] [-n name] [-j build_threads] [-j build_volume_name]
+docker-create-builder.sh {-s path} [-f dockerfile] [-n name] [-j build_threads] [-j build_volume_name]
 
 This script first builds an image with all dependencies installed that RonDB
 requires to be built. It then runs this image and opens a shell in the container.
@@ -15,12 +15,12 @@ The name of this volume can be altered via the CLI.
 
 USAGE
 =====
-Example: ./docker-build.sh -s ../.. -f ../../Dockerfile.ubuntu22 -j 20
+Example: ./docker-create-builder.sh -s ../.. -f ../../Dockerfile.ubuntu22 -j 20
 
 -s    <string>
       Path to RonDB source code
 -f    <string> (optional)
-      Name of the Dockerfile
+      Name (not path) of the Dockerfile
       Default: Dockerfile.oraclelinux7 (amd64 builds)
 -n    <string> (optional)
       Docker image name
