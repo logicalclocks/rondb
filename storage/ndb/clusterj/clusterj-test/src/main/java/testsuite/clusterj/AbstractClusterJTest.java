@@ -150,6 +150,7 @@ public abstract class AbstractClusterJTest extends TestCase {
             sessionFactory = ClusterJHelper.getSessionFactory(modifiedProperties);
             existingSessionFactories.add(sessionFactory);
             loadSchema();
+            createSession();
         }
     }
 
@@ -181,6 +182,13 @@ public abstract class AbstractClusterJTest extends TestCase {
         }
         session = sessionFactory.getSession();
         tx = session.currentTransaction();
+    }
+
+    public void closeSession() {
+        if (session != null && !session.isClosed()) {
+            session.close();
+            session = null;
+        }
     }
 
     protected void dumpSystemProperties() {

@@ -107,6 +107,7 @@ public class UnloadSchemaAfterRecreateTest extends AbstractClusterJModelTest {
   }
 
   public void testUnloadSchema() throws Exception {
+    closeSession();
     closeAllExistingSessionFactories();
     sessionFactory = null;
     createSessionFactory();

@@ -68,7 +68,6 @@ public class ReleaseWithCacheTest extends AbstractClusterJModelTest {
   @Override
   protected Properties modifyProperties() {
     // Modify JDBC properties to enable caching
-    System.out.println("Modified properties to enable caching");
     Properties modifiedProps = new Properties();
     modifiedProps.putAll(props);
 
@@ -142,7 +141,7 @@ public class ReleaseWithCacheTest extends AbstractClusterJModelTest {
   }
 
   public void runTest(String db, Class cls) {
-    System.out.println("Adding rows to DB: " + db + " table: " + cls);
+    //System.out.println("Adding rows to DB: " + db + " table: " + cls);
     for (int i = 0; i < NUMBER_TO_INSERT; i++) {
       Session s = getSession(db);
       DynamicObject e = (DynamicObject) s.newInstance(cls);
@@ -217,7 +216,7 @@ public class ReleaseWithCacheTest extends AbstractClusterJModelTest {
       //cache works after creating many sessions
       //and dynamic objects
 
-      System.out.println("Adding rows to DB: " + db + " table: " + cls);
+      //System.out.println("Adding rows to DB: " + db + " table: " + cls);
       for (int i = 0; i < NUMBER_TO_INSERT; i++) {
         Session s = getSession(db);
         DynamicObject e = (DynamicObject) s.newInstance(cls);

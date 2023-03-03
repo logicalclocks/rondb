@@ -29,6 +29,8 @@ import com.mysql.clusterj.Constants;
 import com.mysql.clusterj.DynamicObject;
 import com.mysql.clusterj.Session;
 
+import java.util.Properties;
+
 /*
 same table in three different databases
  */
@@ -44,6 +46,12 @@ public class MultiDBUpdate3Test extends AbstractClusterJModelTest {
     public String table() {
       return "same_table";
     }
+  }
+
+  @Override
+  protected Properties modifyProperties() {
+    props.put(Constants.PROPERTY_CLUSTER_MAX_CACHED_SESSIONS, 10);
+    return props;
   }
 
   @Override
@@ -80,7 +88,7 @@ public class MultiDBUpdate3Test extends AbstractClusterJModelTest {
   }
 
   public void runTest(String db, Class cls) {
-    System.out.println("Adding rows to DB: " + db + " table: " + cls);
+    //System.out.println("Adding rows to DB: " + db + " table: " + cls);
     for (int i = 0; i < NUMBER_TO_INSERT; i++) {
       Session s = getSession(db);
       DynamicObject e = (DynamicObject) s.newInstance(cls);

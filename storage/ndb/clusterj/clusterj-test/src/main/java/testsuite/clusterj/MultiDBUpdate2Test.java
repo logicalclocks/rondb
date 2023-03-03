@@ -31,6 +31,8 @@ import testsuite.clusterj.model.Employee;
 import testsuite.clusterj.model.Employee2;
 import testsuite.clusterj.model.Employee3;
 
+import java.util.Properties;
+
 /*
 Using table models
  */
@@ -39,6 +41,12 @@ public class MultiDBUpdate2Test extends AbstractClusterJModelTest {
   private static final int NUMBER_TO_INSERT = 1024;
   private static String defaultDB;
   boolean useCache = false;
+
+  @Override
+  protected Properties modifyProperties() {
+    props.put(Constants.PROPERTY_CLUSTER_MAX_CACHED_SESSIONS, 10);
+    return props;
+  }
 
   @Override
   public void localSetUp() {

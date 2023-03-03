@@ -87,7 +87,8 @@ TEST_JAR="$CLUSTERJ_BUILD_DIR/clusterj-test/clusterj-test-$VERSION.jar"
 
 if [ -n "$SINGLE_TEST" ]; then
   cd $CLUSTERJ_BUILD_DIR
-  make
+  make clean
+  make 
   cd $CLUSTERJ_BUILD_DIR/clusterj-test/target/classes
   jar cvf test.jar testsuite/clusterj/$SINGLE_TEST.class
   TEST_JAR=$CLUSTERJ_BUILD_DIR/clusterj-test/target/classes/test.jar

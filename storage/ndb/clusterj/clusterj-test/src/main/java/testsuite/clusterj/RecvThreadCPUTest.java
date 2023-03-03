@@ -40,6 +40,7 @@ public class RecvThreadCPUTest extends AbstractClusterJTest {
     @Override
     protected void localSetUp() {
         // close any existing session factory
+        closeSession();
         closeAllExistingSessionFactories();
         // checking if CPU set is supported in the system
         if (bindCPUsupport != BindCpuSupport.UNDEFINED) {

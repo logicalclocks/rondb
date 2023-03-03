@@ -41,6 +41,8 @@ public class Reconnect2Test extends AbstractClusterJTest {
 
     @Override
     public void localSetUp() {
+        closeSession();
+        closeAllExistingSessionFactories();
         createSessionFactory();
         session = sessionFactory.getSession();
         // delete all rows in AutoPKInt

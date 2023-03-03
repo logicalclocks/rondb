@@ -37,6 +37,7 @@ public class SessionFactoryTest extends AbstractClusterJTest {
     @Override
     protected void localSetUp() {
         // close any existing session factory
+        closeSession();
         closeAllExistingSessionFactories();
     }
 
