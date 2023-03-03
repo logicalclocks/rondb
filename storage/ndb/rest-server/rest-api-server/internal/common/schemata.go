@@ -26,6 +26,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/log"
 )
 
 const HOPSWORKS_SCHEMA_NAME = "hopsworks"
@@ -43,7 +44,7 @@ func init() {
 		},
 	}
 
-	db = "DB000"
+	db = "db000"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -57,7 +58,7 @@ func init() {
 		},
 	}
 
-	db = "DB001"
+	db = "db001"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -74,7 +75,7 @@ func init() {
 		},
 	}
 
-	db = "DB002"
+	db = "db002"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -91,7 +92,7 @@ func init() {
 		},
 	}
 
-	db = "DB003"
+	db = "db003"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -131,7 +132,7 @@ func init() {
 	}
 
 	// signed and unsigned number data types
-	db = "DB004"
+	db = "db004"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -155,7 +156,7 @@ func init() {
 		},
 	}
 
-	db = "DB005"
+	db = "db005"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -175,7 +176,7 @@ func init() {
 		},
 	}
 
-	db = "DB006"
+	db = "db006"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -195,7 +196,7 @@ func init() {
 		},
 	}
 
-	db = "DB007"
+	db = "db007"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -216,7 +217,7 @@ func init() {
 		},
 	}
 
-	db = "DB008"
+	db = "db008"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -237,7 +238,7 @@ func init() {
 		},
 	}
 
-	db = "DB009"
+	db = "db009"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -258,7 +259,7 @@ func init() {
 		},
 	}
 
-	db = "DB010"
+	db = "db010"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -279,7 +280,7 @@ func init() {
 		},
 	}
 
-	db = "DB011"
+	db = "db011"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -297,10 +298,10 @@ func init() {
 		},
 	}
 
-	db = "DB012"
+	db = "db012"
 	databases[db] = SchemaTextualColumns("char", db, 100)
 
-	db = "DB013"
+	db = "db013"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -320,22 +321,22 @@ func init() {
 		},
 	}
 
-	db = "DB014" //varchar
+	db = "db014" //varchar
 	databases[db] = SchemaTextualColumns("VARCHAR", db, 50)
 
-	db = "DB015" //long varchar
+	db = "db015" //long varchar
 	databases[db] = SchemaTextualColumns("VARCHAR", db, 256)
 
-	db = "DB016" //binary fix size
+	db = "db016" //binary fix size
 	databases[db] = SchemaTextualColumns("BINARY", db, 100)
 
-	db = "DB017" //varbinary
+	db = "db017" //varbinary
 	databases[db] = SchemaTextualColumns("VARBINARY", db, 100)
 
-	db = "DB018" //long varbinary
+	db = "db018" //long varbinary
 	databases[db] = SchemaTextualColumns("VARBINARY", db, 256)
 
-	db = "DB019"
+	db = "db019"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -354,7 +355,7 @@ func init() {
 		},
 	}
 
-	db = "DB020"
+	db = "db020"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -381,7 +382,7 @@ func init() {
 		},
 	}
 
-	db = "DB021"
+	db = "db021"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -408,7 +409,7 @@ func init() {
 		},
 	}
 
-	db = "DB022"
+	db = "db022"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -435,7 +436,7 @@ func init() {
 		},
 	}
 
-	db = "DB023"
+	db = "db023"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -454,7 +455,7 @@ func init() {
 		},
 	}
 
-	db = "DB024"
+	db = "db024"
 	databases[db] = [][]string{
 		{
 			// setup commands
@@ -609,7 +610,7 @@ func SchemaTextualColumns(colType string, db string, length int) [][]string {
 				// blobs in PK is not supported by RonDB
 				"CREATE TABLE table1(id0 " + colType + "(" + strconv.Itoa(length) + "), col0 " + colType + "(" + strconv.Itoa(length) + "),  PRIMARY KEY(id0)) ENGINE=ndbcluster",
 				`INSERT INTO  table1 VALUES("1","这是一个测验。 我不知道怎么读中文。")`,
-				`INSERT INTO  table1 VALUES("2",0x660066)`,
+				`INSERT INTO  table1 VALUES("2",0x660066)`, // --> [f,NULL,f]
 				`INSERT INTO  table1 VALUES("3","a\nb")`,
 				`INSERT INTO  table1 VALUES("这是一个测验","12345")`,
 				`INSERT INTO  table1 VALUES("4","ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïð")`, // some chars
@@ -710,11 +711,35 @@ func createDatabasesInt(t testing.TB, create bool, dbNames ...string) {
 	}
 }
 
+type Tag struct {
+	Level   string `json:"level"`
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
 func runSQLQueries(t testing.TB, db *sql.DB, setup []string) {
 	t.Helper()
 	for _, command := range setup {
 		_, err := db.Exec(command)
 		if err != nil {
+
+			log.Warnf("failed to run command. %s. Error: %v ", command, err)
+			res, werr := db.Query("show warnings")
+			if werr != nil {
+				log.Warnf("failed to run 'show warnings' command. Error: %v ", werr)
+				t.Fatalf("failed to run command. %s. Error: %v, Error: %v ", command, err, werr)
+			}
+
+			for res.Next() {
+				var tag Tag
+				werr = res.Scan(&tag.Level, &tag.Code, &tag.Message)
+				if werr != nil {
+					log.Warnf("Error in 'show warnings' command. Error: %v", werr)
+				} else {
+					log.Warnf("Error Details. Level: %s, Code: %d, Message: %s", tag.Level, tag.Code, tag.Message)
+				}
+			}
+
 			t.Fatalf("failed to run command. %s. Error: %v", command, err)
 		}
 	}

@@ -22,7 +22,7 @@
 #include <string>
 #include <iostream>
 #include <vector>
-#include "src/error-strs.h"
+#include "src/error-strings.h"
 #include "src/logger.hpp"
 #include "src/ndb_object_pool.hpp"
 #include "src/db-operations/pk/common.hpp"
@@ -120,7 +120,7 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
     return RS_CLIENT_ERROR("Wrong length of the search key");
   }
 
-  char cmp_str[col_size];
+  char* cmp_str = new char[col_size];
   memcpy(cmp_str + 1, prefix, col_size - 1);
   cmp_str[0] = static_cast<char>(strlen(prefix));
 
@@ -348,7 +348,7 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
     return RS_CLIENT_ERROR("Wrong length of the search key");
   }
 
-  char cmp_str[col_size];
+  char* cmp_str = new char[col_size];
   memcpy(cmp_str + 1, users->email, strlen(users->email));
   cmp_str[0] = static_cast<char>(strlen(users->email));
 
@@ -549,7 +549,7 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
 /**
  * only for testing
  */
-int main(int argc, char **argv) {
+int main() {
   std::cout << "size of is " << sizeof(HopsworksAPIKey) << std::endl;
 
   char connection_string[] = "localhost:1186";

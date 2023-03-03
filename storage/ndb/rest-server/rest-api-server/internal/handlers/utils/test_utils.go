@@ -65,8 +65,9 @@ func SendHttpRequest(t testing.TB, tc common.TestContext, httpVerb string,
 		t.Fatalf("Http verb not yet implemented. Verb %s", httpVerb)
 	}
 
+	logMsg := fmt.Sprintf("HTTP request with url: %s; request body: %s", url, body)
 	if err != nil {
-		t.Fatalf("Test failed to create request. Error: %v", err)
+		t.Fatalf("Test failed to create request for %s; Error: %v", logMsg, err)
 	}
 
 	if config.Configuration().Security.UseHopsWorksAPIKeys {
@@ -75,22 +76,22 @@ func SendHttpRequest(t testing.TB, tc common.TestContext, httpVerb string,
 
 	resp, err = client.Do(req)
 	if err != nil {
-		t.Fatalf("Test failed to perform request. Error: %v", err)
+		t.Fatalf("Test failed to perform request for %s; Error: %v", logMsg, err)
 	}
 
 	respCode := resp.StatusCode
 	respBodyBtyes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("Test failed to read response body. Error: %v", err)
+		t.Fatalf("Test failed to read response body for %s; Error: %v", logMsg, err)
 	}
 	respBody := string(respBodyBtyes)
 
 	if respCode != expectedStatus {
-		t.Fatalf("Test failed. Expected: %d, Got: %d. Complete Response Body: %v ", expectedStatus, respCode, respBody)
+		t.Fatalf("got wrong HTTP status; expected: %d; got: %d; response body: %s; for %s", expectedStatus, respCode, respBody, logMsg)
 	}
 
 	if respCode != http.StatusOK && !strings.Contains(respBody, expectedErrMsg) {
-		t.Fatalf("Test failed. Response error body does not contain %s. Body: %s", expectedErrMsg, respBody)
+		t.Fatalf("Response error body does not contain %s. response body: %s; for %s", expectedErrMsg, respBody, logMsg)
 	}
 
 	return respCode, respBody
@@ -135,8 +136,11 @@ func ValidateResHttp(t testing.TB, testInfo api.PKTestInfo, resp string, isBinar
 			t.Fatalf("Key not found in the response. Key %s", key)
 		}
 
-		compareDataWithDB(t, testInfo.Db, testInfo.Table, testInfo.PkReq.Filters,
+		err = compareDataWithDB(t, testInfo.Db, testInfo.Table, testInfo.PkReq.Filters,
 			&key, jsonVal, isBinaryData)
+		if err != nil {
+			t.Fatalf("failed validating HTTP response; error: %v", err)
+		}
 	}
 }
 
@@ -161,25 +165,35 @@ func ValidateResGRPC(t testing.TB, testInfo api.PKTestInfo,
 			}
 		}
 
-		compareDataWithDB(t, testInfo.Db, testInfo.Table, testInfo.PkReq.Filters,
+		err = compareDataWithDB(t, testInfo.Db, testInfo.Table, testInfo.PkReq.Filters,
 			&key, val, isBinaryData)
+		if err != nil {
+			t.Fatalf("failed validating gRPC response; error: %v", err)
+		}
 	}
 }
 
 func compareDataWithDB(t testing.TB, db string, table string, filters *[]api.Filter,
-	colName *string, colDataFromRestServer *string, isBinaryData bool) {
+	colName *string, colDataFromRestServer *string, isBinaryData bool) error {
 	dbVal, err := getColumnDataFromDB(t, db, table, filters, *colName, isBinaryData)
 	if err != nil {
-		t.Fatalf("%v", err)
+		return err
 	}
 
 	if (colDataFromRestServer == nil || dbVal == nil) && !(colDataFromRestServer == nil && dbVal == nil) { // if one of prts is nill
-		t.Fatalf("The read value for key %s does not match.", *colName)
+		return fmt.Errorf("The read value for key %s does not match.", *colName)
 	}
 
 	if !((colDataFromRestServer == nil && dbVal == nil) || (*colDataFromRestServer == *dbVal)) {
-		t.Fatalf("The read value for key %s does not match. Got from REST Server: %s, Got from MYSQL Server: %s", *colName, *colDataFromRestServer, *dbVal)
+		return fmt.Errorf(
+			"The read value for key '%s' does not match when querying '%s.%s'. "+
+				"Result from REST Server: '%s'; "+
+				"Result from MYSQL Server: '%s'; "+
+				"Filters: %v",
+			*colName, db, table, *colDataFromRestServer, *dbVal, *filters,
+		)
 	}
+	return nil
 }
 
 func getColumnDataFromGRPC(t testing.TB, colName string, pkResponse *api.PKReadResponseGRPC) (*string, bool) {
@@ -766,8 +780,11 @@ func validateBatchResponseValuesHttp(t testing.TB, testInfo api.BatchOperationTe
 				t.Fatalf("Key not found in the response. Key %s", key)
 			}
 
-			compareDataWithDB(t, operation.DB, operation.Table, operation.SubOperation.Body.Filters,
+			err = compareDataWithDB(t, operation.DB, operation.Table, operation.SubOperation.Body.Filters,
 				&key, val, isBinaryData)
+			if err != nil {
+				t.Fatalf("failed validating batched HTTP response; error: %v", err)
+			}
 		}
 	}
 }
@@ -796,8 +813,11 @@ func validateBatchResponseValuesGRPC(t testing.TB, testInfo api.BatchOperationTe
 				}
 			}
 
-			compareDataWithDB(t, operation.DB, operation.Table, operation.SubOperation.Body.Filters,
+			err = compareDataWithDB(t, operation.DB, operation.Table, operation.SubOperation.Body.Filters,
 				&key, val, isBinaryData)
+			if err != nil {
+				t.Fatalf("failed validating batched gRPC response; error: %v", err)
+			}
 		}
 	}
 }

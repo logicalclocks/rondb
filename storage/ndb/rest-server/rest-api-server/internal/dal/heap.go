@@ -26,6 +26,7 @@ package dal
 import "C"
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"unsafe"
 
@@ -35,6 +36,13 @@ import (
 type NativeBuffer struct {
 	Size   uint32
 	Buffer unsafe.Pointer
+}
+
+func (n NativeBuffer) String() string {
+	var stringify strings.Builder
+	stringify.WriteString(fmt.Sprintf("Size: %d\n", n.Size))
+	stringify.WriteString(fmt.Sprintf("Buffer: %v\n", n.Buffer))
+	return stringify.String()
 }
 
 type MemoryStats struct {
