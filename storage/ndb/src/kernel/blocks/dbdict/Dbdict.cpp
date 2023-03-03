@@ -6121,6 +6121,21 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
           case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_4:
             pb_str = " PB_RAL4";
             break;
+          case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_2:
+            pb_str = " PB_RPL2";
+            break;
+          case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_4:
+            pb_str = " PB_RPL4";
+            break;
+          case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_6:
+            pb_str = " PB_RPL6";
+            break;
+          case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_8:
+            pb_str = " PB_RPL8";
+            break;
+          case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_16:
+            pb_str = " PB_RPL16";
+            break;
           default:
             ndbabort();
         }
@@ -6458,6 +6473,11 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
         case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_2:
         case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_3:
         case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_4:
+        case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_2:
+        case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_4:
+        case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_6:
+        case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_8:
+        case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_16:
         {
           jam();
           if (!restart)
@@ -34108,6 +34128,11 @@ Dbdict::createHashMap_parse(Signal* signal, bool master,
     case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_2:
     case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_3:
     case NDB_PARTITION_BALANCE_FOR_RA_BY_LDM_X_4:
+    case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_2:
+    case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_4:
+    case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_6:
+    case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_8:
+    case NDB_PARTITION_BALANCE_FOR_RP_BY_LDM_X_16:
     case NDB_PARTITION_BALANCE_FOR_RP_BY_NODE:
     case NDB_PARTITION_BALANCE_FOR_RA_BY_NODE:
       jam();

@@ -674,11 +674,11 @@ id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
 val INT NOT NULL
 ) engine=NDB;
 
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp --ai-prefetch-sz=1
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp --ai-prefetch-sz=1
  test $MYSQLTEST_VARDIR/tmp/tauto_inc1.csv >> $NDB_TOOLS_OUTPUT 2>&1;
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp --ai-prefetch-sz=1
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp --ai-prefetch-sz=1
  test $MYSQLTEST_VARDIR/tmp/tauto_inc2.csv >> $NDB_TOOLS_OUTPUT 2>&1;
-exec $NDB_IMPORT --state-dir=$MYSQLTEST_VARDIR/tmp --ai-prefetch-sz=1
+exec $NDB_IMPORT --use-auto-increment --state-dir=$MYSQLTEST_VARDIR/tmp --ai-prefetch-sz=1
  test $MYSQLTEST_VARDIR/tmp/tauto_inc3.csv >> $NDB_TOOLS_OUTPUT 2>&1;
 
 select id from tauto_inc1 order by id;

@@ -788,6 +788,11 @@ struct {
   {NdbDictionary::Object::PartitionBalance_ForRAByLDMx2,     "FOR_RA_BY_LDM_X_2"},
   {NdbDictionary::Object::PartitionBalance_ForRAByLDMx3,     "FOR_RA_BY_LDM_X_3"},
   {NdbDictionary::Object::PartitionBalance_ForRAByLDMx4,     "FOR_RA_BY_LDM_X_4"},
+  {NdbDictionary::Object::PartitionBalance_ForRPByLDMx2,     "FOR_RP_BY_LDM_X_2"},
+  {NdbDictionary::Object::PartitionBalance_ForRPByLDMx4,     "FOR_RP_BY_LDM_X_4"},
+  {NdbDictionary::Object::PartitionBalance_ForRPByLDMx6,     "FOR_RP_BY_LDM_X_6"},
+  {NdbDictionary::Object::PartitionBalance_ForRPByLDMx8,     "FOR_RP_BY_LDM_X_8"},
+  {NdbDictionary::Object::PartitionBalance_ForRPByLDMx16,    "FOR_RP_BY_LDM_X_16"},
 };
 
 NdbDictionary::Object::PartitionBalance
