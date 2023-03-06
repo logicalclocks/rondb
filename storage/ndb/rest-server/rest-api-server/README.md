@@ -181,89 +181,119 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 ## Configuration 
 ```json
 {
-    "RestServer": {
-        "IP": "localhost",
-        "Port": 4406,
-        "APIVersion": "0.1.0",
-        "BufferSize": 327680,
-        "PreAllocatedBuffers": 1024,
-        "GOMAXPROCS": -1
-    },
-    "RonDBConfig": {
-        "IP": "localhost",
-        "Port": 1186
-    },
-    "MySQLServer": {
-        "IP": "localhost",
-        "Port": 3306,
-        "User": "rondb",
-        "Password": "rondb"
-    },
-    "Security": {
-        "EnableTLS": true,
-        "RequireAndVerifyClientCert": true,
-        "CertificateFile": "",
-        "PrivateKeyFile": ""
-    },
-    "Log": {
-        "Level": "info",
-        "FilePath": "",
-        "MaxSizeMB": 100,
-        "MaxBackups": 10,
-        "MaxAge": 30
-    }
-}                                                     
-
+        "Internal": {
+                "APIVersion": "0.1.0",
+                "BufferSize": 327680,
+                "PreAllocatedBuffers": 1024,
+                "GOMAXPROCS": -1
+        },
+        "REST": {
+                "ServerIP": "localhost",
+                "ServerPort": 4406
+        },
+        "GRPC": {
+                "ServerIP": "localhost",
+                "ServerPort": 5406
+        },
+        "RonDB": {
+                "Mgmds": [
+                        {
+                                "IP": "localhost",
+                                "Port": 1186
+                        }
+                ]
+        },
+        "MySQL": {
+                "User": "rondb",
+                "Password": "rondb",
+                "Servers": [
+                        {
+                                "IP": "localhost",
+                                "Port": 3306
+                        }
+                ],
+        },
+        "Security": {
+                "EnableTLS": true,
+                "RequireAndVerifyClientCert": false,
+                "CertificateFile": "",
+                "PrivateKeyFile": "",
+                "RootCACertFile": "",
+                "UseHopsworksAPIKeys": true,
+                "HopsworksAPIKeysCacheValiditySec": 3
+        },
+        "Log": {
+                "Level": "info",
+                "FilePath": "",
+                "MaxSizeMB": 100,
+                "MaxBackups": 10,
+                "MaxAge": 30
+        }
+}
 ```
 
- - **RestServer** 
+- **Internal**
 
-   - **IP:** Binds the REST server to this IP. The default value is *localhost*
+  - **APIVersion:** Current version of the REST API. Current version is *0.1.0*
+
+  - **BufferSize:** Size of the buffers that are used to pass requests/responses between the Go and C++ layers. The buffers should be large enough to accommodate any request/response. The default size is *327680* (32 KB). 
+
+  - **PreAllocatedBuffers:** Numbers of buffers to preallocate. The default value is *1024*.
+
+  - **GOMAXPROCS:** The GOMAXPROCS variable limits the number of operating system threads that can execute user-level Go code simultaneously.  The default value is -1, that is it does not change the current settings.
+
+- **REST** 
+
+  - **ServerIP:** Binds the REST server to this IP. The default value is *localhost*
+
+  - **ServerPort:** REST server port. The default port is *4406*
+
+- **GRPC** 
+
+  - **ServerIP:** Binds the GRPC server to this IP. The default value is *localhost*
+
+  - **ServerPort:** GRPC server port. The default port is *5406*
+
+- **RonDB** 
+
+  - **Mgmds:**
+
+    - **IP:** RonDB management node IP. The default value is *localhost*.
+
+    - **Port:** RonDB management node port. The default value is *1186*.
+
+- **MySQL:** MySQL server is only used for testing
+
+  - **User:** MySQL Server user. The default value is *rondb*.
   
-   - **Port:** REST server port. The default port is *4406*
-   
-   - **APIVersion:** Current version of the REST API. Current version is *0.1.0*
-   
-   - **BufferSize:** Size of the buffers that are used to pass requests/responses between the Go and C++ layers. The buffers should be large enough to accommodate any request/response. The default size is *327680* (32 KB). 
-
-   - **PreAllocatedBuffers:** Numbers of buffers to preallocate. The default value is *1024*.
-   
-   - **GOMAXPROCS:** The GOMAXPROCS variable limits the number of operating system threads that can execute user-level Go code simultaneously.  The default value is -1, that is it does not change the current settings.
-
-   - **RonDBConfig.IP:** RonDB management node IP. The default value is *localhost*.
-   
-   - **RonDBConfig.Port:** RonDB management node port. The default value is *1186*.
+  - **Password:** MySQL Server user password. The default value is *rondb*.
   
- - **MySQLServer:** configuration. MySQL server is only used for testing
-  
-   - **IP:** MySQL Server IP. The default value is *localhost*.
-   
-   - **Port:** MySQL Server port. The default value is *3306*.
-   
-   - **User:** MySQL Server user. The default value is *rondb*.
-   
-   - **Password:** MySQL Server user password. The default value is *rondb*.
+  - **Servers:**
 
- - **Security:** REST server security settings 
-  
-   - **EnableTLS:** Enable/Disable TLS. The default value is *true*.
-   
-   - **RequireAndVerifyClientCert:**  Enable/Disable TLS client certificate requirement. The default value is *true*.
+    - **IP:** MySQL Server IP. The default value is *localhost*.
+    
+    - **Port:** MySQL Server port. The default value is *3306*.
 
-   - **RootCACertFile:**  Root CA file. Used in testing that use self-signed certificates. The default value is not set.
-   
-   - **CertificateFile:** Server certificate file. The default value is not set.
-   
-   - **PrivateKeyFile:** Server private key file. The default value is not set.
+- **Security:** REST server security settings 
 
- - **Log:** REST Server logging settings 
+  - **EnableTLS:** Enable/Disable TLS. The default value is *true*.
   
-   - **Level:** log level, Supported levels are *panic, error, warn, info, debug,* and  *trace*. The default value is *info*.
-   
-   - **FilePath:** log file location. The default value is stdout.
-   
-   - **MaxSizeMB:** max log file size. The default value is *100*.
-   
-   - **MaxBackups:** max number of log files to store. The default value is *10*.
-   
-   - **MaxAge:** max-age of log files in days. The default value is *30*.
+  - **RequireAndVerifyClientCert:**  Enable/Disable TLS client certificate requirement. The default value is *true*.
+
+  - **RootCACertFile:**  Root CA file. Used in testing that use self-signed certificates. The default value is not set.
+  
+  - **CertificateFile:** Server certificate file. The default value is not set.
+  
+  - **PrivateKeyFile:** Server private key file. The default value is not set.
+
+- **Log:** REST Server logging settings 
+
+  - **Level:** log level, Supported levels are *panic, error, warn, info, debug,* and  *trace*. The default value is *info*.
+  
+  - **FilePath:** log file location. The default value is stdout.
+  
+  - **MaxSizeMB:** max log file size. The default value is *100*.
+  
+  - **MaxBackups:** max number of log files to store. The default value is *10*.
+  
+  - **MaxAge:** max-age of log files in days. The default value is *30*.
