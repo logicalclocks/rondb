@@ -1,6 +1,6 @@
-# RDRS -- *R*on*D*B *R*EST API *S*erver 
+# **R**on**D**B **R**EST API **S**erver (RDRS)
 
-This RonDB REST API Server and data access library. 
+ This is the RonDB REST API Server and data access library. 
 
 ## Running unit tests via Docker
 

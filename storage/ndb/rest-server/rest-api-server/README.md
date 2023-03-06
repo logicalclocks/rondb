@@ -1,21 +1,21 @@
 # RonDB REST API Server 
 
-Currently, the REST API server only supports batched and non-batched  primary key operations. Default mappings of MySQL data types to JSON data types are as follows
+Currently, the REST API server only supports batched and non-batched  primary key operations. Default mappings of MySQL data types to JSON data types are as follows:
 
 
-| MySQL Data Type | JSON Data Type |
-| --------------- | -------------- |
-| TINYINT, SMALLINT MEDIUMINT, INT, BIGINT  | number |
-| FLOAT, DOUBLE, DECIMAL  | number |
-| CHAR, VARCHAR  | escaped string |
-| BINARY, VARBINARY  | base64 encoded string |
-| DATE, DATETIME, TIME, TIMESTAMP, YEAR   | string |
-| YEAR   | number |
-| BIT    | base64 encoded string |
+| MySQL Data Type                          | JSON Data Type        |
+| ---------------------------------------- | --------------------- |
+| TINYINT, SMALLINT MEDIUMINT, INT, BIGINT | number                |
+| FLOAT, DOUBLE, DECIMAL                   | number                |
+| CHAR, VARCHAR                            | escaped string        |
+| BINARY, VARBINARY                        | base64 encoded string |
+| DATE, DATETIME, TIME, TIMESTAMP, YEAR    | string                |
+| YEAR                                     | number                |
+| BIT                                      | base64 encoded string |
 
 
 
-## POST /0.1.0/{database}/{table}/pk-read
+## POST /{api-version}/{database}/{table}/pk-read
 
 Is used to perform a primary key read operation. 
 
@@ -33,9 +33,9 @@ CREATE TABLE `my_table` (
 
 **Path Parameters:**
 
-  - *api-version* : current api version is 0.1.0
-  - *database* : database name
-  - *table* : table name
+  - **api-version**: The current api version is 0.1.0
+  - **database**: The database name to query from
+  - **table**: The table name to query from
 
 **Body:**
 
@@ -66,10 +66,10 @@ CREATE TABLE `my_table` (
 
 ```
 
-  - **filters** : This is mandatory parameter. It is an array of objects one for each column that forms the primary key. 
-  - **readColumns** : It is an optional parameter that is used to perform projections. If it is omitted then all the columns of the table will be read
-    - **dataReturnType** : It is an optional parameter. It can be used to control in which format the data is returned, for example, hex, base64, etc. However, in this version (0.1.0) we only support the default return type.  
-  - **operationId** : It is an optional parameter. It is a *string* parameter and it can be up to 64 characters long. 
+  - **filters**: (*required*) This is an array of objects one for each column that forms the primary key.
+  - **readColumns**: (*optional*) This is used to perform projections. If it is omitted, all the columns of the table will be read
+    - **dataReturnType**: (*optional*) This can be used to control in which format the data is returned, for example, hex, base64, etc. However, in this version (0.1.0) we only support the default return type.
+  - **operationId**: (*optional*) It is a *string* parameter and it can be up to 64 characters long.
 
 **Response**
 
@@ -83,15 +83,17 @@ CREATE TABLE `my_table` (
 }
 ```
 
-## POST /0.1.0/batch
+## POST /{api-version}/batch
 
-Is used to perform batched primary key read operations. 
+This is used to perform batched primary key read operations. 
 
 **Path Parameters:**
 
-  - *api-version* : current api version is 0.1.0
+  - **api-version**: The current api version is 0.1.0
 
 **Body:**
+
+The body here is a list of arbitrary pk-reads under the key *operations*:
 
 ```json
 {
@@ -123,7 +125,6 @@ Is used to perform batched primary key read operations.
         "operationId": "1"
       },
     },
-
     {
       "method": "POST",
       "relative-url": "my_database_2/my_table_2/pk-read",
@@ -143,6 +144,9 @@ Is used to perform batched primary key read operations.
   ]
 }
 ```
+
+Additional parameters:
+  - **relative-url**: (*required*) This represents the url the given pk-read would have in a single request (omitting the api-version).
 
 **Response**
 
@@ -176,39 +180,39 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
 ## Configuration 
 ```json
-{                                                         
-        "RestServer": {                                   
-                "IP": "localhost",                        
-                "Port": 4406,                             
-                "APIVersion": "0.1.0",                    
-                "BufferSize": 327680,                     
-                "PreAllocatedBuffers": 1024,              
-                "GOMAXPROCS": -1                          
-        },                                                
-        "RonDBConfig": {                                  
-                "IP": "localhost",                        
-                "Port": 1186                              
-        },                                                
-        "MySQLServer": {                                  
-                "IP": "localhost",                        
-                "Port": 3306,                             
-                "User": "rondb",                          
-                "Password": "rondb"                       
-        },                                                
-        "Security": {                                     
-                "EnableTLS": true,                        
-                "RequireAndVerifyClientCert": true,       
-                "CertificateFile": "",                    
-                "PrivateKeyFile": ""                      
-        },                                                
-        "Log": {                                          
-                "Level": "info",                          
-                "FilePath": "",                           
-                "MaxSizeMB": 100,                         
-                "MaxBackups": 10,                         
-                "MaxAge": 30                              
-        }                                                             
-}                                                             
+{
+    "RestServer": {
+        "IP": "localhost",
+        "Port": 4406,
+        "APIVersion": "0.1.0",
+        "BufferSize": 327680,
+        "PreAllocatedBuffers": 1024,
+        "GOMAXPROCS": -1
+    },
+    "RonDBConfig": {
+        "IP": "localhost",
+        "Port": 1186
+    },
+    "MySQLServer": {
+        "IP": "localhost",
+        "Port": 3306,
+        "User": "rondb",
+        "Password": "rondb"
+    },
+    "Security": {
+        "EnableTLS": true,
+        "RequireAndVerifyClientCert": true,
+        "CertificateFile": "",
+        "PrivateKeyFile": ""
+    },
+    "Log": {
+        "Level": "info",
+        "FilePath": "",
+        "MaxSizeMB": 100,
+        "MaxBackups": 10,
+        "MaxAge": 30
+    }
+}                                                     
 
 ```
 
@@ -256,7 +260,7 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
   
    - **Level:** log level, Supported levels are *panic, error, warn, info, debug,* and  *trace*. The default value is *info*.
    
-   - **FilePath:** log file location. The default value is not set.
+   - **FilePath:** log file location. The default value is stdout.
    
    - **MaxSizeMB:** max log file size. The default value is *100*.
    
