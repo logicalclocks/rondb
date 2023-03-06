@@ -79,7 +79,7 @@ func (c Security) Validate() error {
 	}
 	if c.EnableTLS {
 		if c.CertificateFile == "" || c.PrivateKeyFile == "" {
-			return errors.New("Server Certificate/Key not set")
+			return errors.New("cannot enable TLS if `CertificateFile` or `PrivateKeyFile` is not set")
 		}
 	}
 	return nil
