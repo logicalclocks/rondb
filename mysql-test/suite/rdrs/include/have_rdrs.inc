@@ -148,19 +148,19 @@ my $CONF = IO::File->new("$vardir/tmp/rdrs_config.json", 'w') or die;
 printf $CONF "{\n";
 
 printf $CONF "        \"REST\": {\n";
-printf $CONF "                \"ServerIP\": \"localhost\"\n";
-printf $CONF "                \"ServerPort\": $rest_server_port,\n";
+printf $CONF "                \"ServerIP\": \"localhost\",\n";
+printf $CONF "                \"ServerPort\": $rest_server_port\n";
 printf $CONF "        },\n";
 
 printf $CONF "        \"GRPC\": {\n";
-printf $CONF "                \"ServerIP\": \"localhost\"\n";
-printf $CONF "                \"ServerPort\": $grpc_server_port,\n";
+printf $CONF "                \"ServerIP\": \"localhost\",\n";
+printf $CONF "                \"ServerPort\": $grpc_server_port\n";
 printf $CONF "        },\n";
 
 printf $CONF "        \"RonDB\": {\n";
 printf $CONF "                \"Mgmds\": [\n";
 printf $CONF "                    {\n";
-printf $CONF "                        \"IP\": \"localhost\"\n";
+printf $CONF "                        \"IP\": \"localhost\",\n";
 printf $CONF "                        \"Port\": $ENV{'NDB_MGMD_PORT'}\n";
 printf $CONF "                    }\n";
 printf $CONF "                ]\n";
@@ -169,10 +169,10 @@ printf $CONF "        },\n";
 printf $CONF "        \"MySQL\": {\n";
 printf $CONF "                \"Servers\": [\n";
 printf $CONF "                    {\n";
-printf $CONF "                        \"IP\": \"localhost\"\n";
+printf $CONF "                        \"IP\": \"localhost\",\n";
 printf $CONF "                        \"Port\": $ENV{MASTER_MYPORT}\n";
 printf $CONF "                    }\n";
-printf $CONF "                ]\n";
+printf $CONF "                ],\n";
 printf $CONF "                \"User\": \"rondb\",\n";
 printf $CONF "                \"Password\": \"rondb\"\n";
 printf $CONF "        },\n";
@@ -180,8 +180,8 @@ printf $CONF "        },\n";
 printf $CONF "        \"Security\": {\n";
 printf $CONF "                \"EnableTLS\": true,\n";
 printf $CONF "                \"RequireAndVerifyClientCert\": true,\n";
-printf $CONF "                \"UseHopsWorksAPIKeys\": true,\n";
-printf $CONF "        },\n";
+printf $CONF "                \"UseHopsWorksAPIKeys\": true\n";
+printf $CONF "        }\n";
 
 printf $CONF "}\n";
 
