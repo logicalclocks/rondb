@@ -306,9 +306,16 @@ func SetupCerts(tc *common.TestContext) error {
 		tc.ClientKeyFile = clientKeyFile
 	}
 
-	return nil
+	return config.SetAll(conf)
 }
 
 func DeleteCerts(tc *common.TestContext) error {
-	return os.RemoveAll(tc.CertsDir)
+	if err := os.RemoveAll(tc.CertsDir); err != nil {
+		return err
+	}
+	conf := config.GetAll()
+	conf.Security.RootCACertFile = ""
+	conf.Security.CertificateFile = ""
+	conf.Security.PrivateKeyFile = ""
+	return config.SetAll(conf)
 }
