@@ -81,8 +81,8 @@ func ConvertPKReadRequestProto(reqProto *PKReadRequestProto) (*PKReadParams, str
 			readColumn := ReadColumn{}
 
 			readColumn.Column = readColumnProto.Column
-			readColumn.DataReturnType = readColumnProto.DataReturnType
-
+			retType := readColumnProto.GetDataReturnType() // not a pointer
+			readColumn.DataReturnType = &retType
 			readColumns = append(readColumns, readColumn)
 		}
 	}

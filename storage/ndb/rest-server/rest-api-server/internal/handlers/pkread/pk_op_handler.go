@@ -19,6 +19,7 @@
 package pkread
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -54,6 +55,11 @@ func (p *PKRead) PkReadHttpHandler(c *gin.Context) {
 		}
 		common.SetResponseBodyError(c, http.StatusBadRequest, err)
 		return
+	}
+
+	if log.IsTrace() {
+		reqString, _ := json.Marshal(pkReadParams)
+		log.Tracef("HTTP Primary key request received from %s, Request: %s\n", c.ClientIP(), reqString)
 	}
 
 	apiKey := getAPIKey(c)

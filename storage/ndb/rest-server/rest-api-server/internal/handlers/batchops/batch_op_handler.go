@@ -17,6 +17,7 @@
 package batchops
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -73,7 +74,12 @@ func (b *Batch) BatchOpsHttpHandler(c *gin.Context) {
 		}
 	}
 
-	var response api.BatchOpResponse = (api.BatchOpResponse)(&api.BatchResponseJSON{})
+	if log.IsTrace() {
+		reqString, _ := json.Marshal(pkOperations)
+		log.Tracef("HTTP batch primary key request received from %s, Request: %s\n", c.ClientIP(), reqString)
+	}
+
+	var response = (api.BatchOpResponse)(&api.BatchResponseJSON{})
 	response.Init()
 
 	status, err := batch.BatchOpsHandler(&pkOperations, getAPIKey(c), response)
