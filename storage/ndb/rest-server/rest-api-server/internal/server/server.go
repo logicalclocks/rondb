@@ -144,12 +144,12 @@ func (rc *RouterConext) StartRouter() error {
 
 	httpListener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", rc.RESTServerIP, rc.RESTServerPort))
 	if err != nil {
-		log.Fatalf("HTTP server error in listner. Error: %v", err)
+		log.Fatalf("HTTP server error in listener. Error: %v", err)
 	}
 
 	grpcListener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", rc.GRPCServerIP, rc.GRPCServerPort))
 	if err != nil {
-		log.Fatalf("HTTP server error in listner. Error: %v", err)
+		log.Fatalf("GRPC server error in listener. Error: %v", err)
 	}
 
 	go func() { // Start REST Server
