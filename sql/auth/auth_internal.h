@@ -266,8 +266,7 @@ struct role_id_hash {
   }
 };
 
-typedef std::unordered_multimap<const Role_id, const Role_id, role_id_hash>
-    Default_roles;
+typedef std::unordered_multimap<Role_id, Role_id, role_id_hash> Default_roles;
 typedef std::map<std::string, bool> Dynamic_privileges;
 
 void get_privilege_access_maps(
@@ -302,7 +301,7 @@ bool set_and_validate_user_attributes(
     bool is_privileged_user, bool is_role, TABLE_LIST *history_table,
     bool *history_check_done, const char *cmd, Userhostpassword_list &);
 typedef std::pair<std::string, bool> Grant_privilege;
-typedef std::unordered_multimap<const Role_id, Grant_privilege, role_id_hash>
+typedef std::unordered_multimap<Role_id, Grant_privilege, role_id_hash>
     User_to_dynamic_privileges_map;
 User_to_dynamic_privileges_map *get_dynamic_privileges_map();
 User_to_dynamic_privileges_map *swap_dynamic_privileges_map(
