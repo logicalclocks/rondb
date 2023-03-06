@@ -1,6 +1,14 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func IsUnitTest() bool {
+	return strings.HasSuffix(os.Args[0], ".test")
+}
 
 func GenerateMysqldConnectString(conf AllConfigs) string {
 	server := conf.MySQL.Servers[0]

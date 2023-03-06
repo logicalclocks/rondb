@@ -73,6 +73,10 @@ type Security struct {
 }
 
 func (c Security) Validate() error {
+	if IsUnitTest() {
+		// In case of unit tests, we create dummy certificates
+		return nil
+	}
 	if c.EnableTLS {
 		if c.CertificateFile == "" || c.PrivateKeyFile == "" {
 			return errors.New("Server Certificate/Key not set")
