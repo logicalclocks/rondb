@@ -34,7 +34,7 @@ func TestBatchSimple(t *testing.T) {
 		"simple1": { //single operation batch
 			HttpCode: http.StatusOK,
 			Operations: []api.BatchSubOperationTestInfo{
-				api.BatchSubOperationTestInfo{
+				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string("db004/int_table/" + config.PK_DB_OPERATION)}[0],
@@ -55,7 +55,7 @@ func TestBatchSimple(t *testing.T) {
 		"simple2": { //small batch operation
 			HttpCode: http.StatusOK,
 			Operations: []api.BatchSubOperationTestInfo{
-				api.BatchSubOperationTestInfo{
+				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string("db004/int_table/" + config.PK_DB_OPERATION)}[0],
@@ -70,7 +70,7 @@ func TestBatchSimple(t *testing.T) {
 					HttpCode: http.StatusOK,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
-				api.BatchSubOperationTestInfo{
+				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string("db005/bigint_table/" + config.PK_DB_OPERATION)}[0],
@@ -91,7 +91,7 @@ func TestBatchSimple(t *testing.T) {
 		"simple3": { // bigger batch of numbers table
 			HttpCode: http.StatusOK,
 			Operations: []api.BatchSubOperationTestInfo{
-				api.BatchSubOperationTestInfo{
+				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string("db004/int_table/" + config.PK_DB_OPERATION)}[0],
@@ -106,7 +106,7 @@ func TestBatchSimple(t *testing.T) {
 					HttpCode: http.StatusOK,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
-				api.BatchSubOperationTestInfo{
+				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string("db005/bigint_table/" + config.PK_DB_OPERATION)}[0],
@@ -121,7 +121,7 @@ func TestBatchSimple(t *testing.T) {
 					HttpCode: http.StatusOK,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
-				api.BatchSubOperationTestInfo{
+				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string("db006/tinyint_table/" + config.PK_DB_OPERATION)}[0],
@@ -136,7 +136,7 @@ func TestBatchSimple(t *testing.T) {
 					HttpCode: http.StatusOK,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
-				api.BatchSubOperationTestInfo{
+				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string("db007/smallint_table/" + config.PK_DB_OPERATION)}[0],
@@ -151,7 +151,7 @@ func TestBatchSimple(t *testing.T) {
 					HttpCode: http.StatusOK,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
-				api.BatchSubOperationTestInfo{
+				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string("db007/smallint_table/" + config.PK_DB_OPERATION)}[0],
@@ -172,7 +172,7 @@ func TestBatchSimple(t *testing.T) {
 		"notfound": { // a batch operation with operations throwing 404
 			HttpCode: http.StatusOK,
 			Operations: []api.BatchSubOperationTestInfo{
-				api.BatchSubOperationTestInfo{
+				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string("db004/int_table/" + config.PK_DB_OPERATION)}[0],
@@ -187,7 +187,7 @@ func TestBatchSimple(t *testing.T) {
 					HttpCode: http.StatusNotFound,
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
-				api.BatchSubOperationTestInfo{
+				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string("db005/bigint_table/" + config.PK_DB_OPERATION)}[0],
