@@ -41,6 +41,7 @@ import (
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/security/tlsutils"
 	"hopsworks.ai/rdrs/internal/server"
+	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/version"
 )
@@ -442,6 +443,10 @@ func RandString(n int) string {
 func WithDBs(t testing.TB, dbs []string, handlers *handlers.AllHandlers,
 	fn func(tc common.TestContext)) {
 	t.Helper()
+
+	if !*testutils.WithRonDB {
+		t.Skip("skipping test without RonDB")
+	}
 
 	tc := common.TestContext{}
 

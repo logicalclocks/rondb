@@ -27,6 +27,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/testutils"
 )
 
 const HOPSWORKS_SCHEMA_NAME = "hopsworks"
@@ -719,6 +720,10 @@ type Tag struct {
 
 func runSQLQueries(t testing.TB, db *sql.DB, setup []string) {
 	t.Helper()
+	if !*testutils.WithRonDB {
+		t.Skip("skipping test without RonDB")
+	}
+
 	for _, command := range setup {
 		_, err := db.Exec(command)
 		if err != nil {

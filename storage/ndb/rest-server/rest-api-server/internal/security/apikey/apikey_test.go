@@ -24,9 +24,14 @@ import (
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/testutils"
 )
 
 func TestAPIKey(t *testing.T) {
+
+	if !*testutils.WithRonDB {
+		t.Skip("skipping test without RonDB")
+	}
 
 	conString := fmt.Sprintf("%s:%d", config.Configuration().RonDBConfig.IP,
 		config.Configuration().RonDBConfig.Port)
@@ -91,6 +96,10 @@ func TestAPIKey(t *testing.T) {
 // check that cache is updated every N secs
 func TestAPIKeyCache1(t *testing.T) {
 
+	if !*testutils.WithRonDB {
+		t.Skip("skipping test without RonDB")
+	}
+
 	conString := fmt.Sprintf("%s:%d", config.Configuration().RonDBConfig.IP,
 		config.Configuration().RonDBConfig.Port)
 
@@ -142,6 +151,10 @@ func TestAPIKeyCache1(t *testing.T) {
 
 // check that cache is updated every N secs even if the user is not authorized to access a DB
 func TestAPIKeyCache2(t *testing.T) {
+
+	if !*testutils.WithRonDB {
+		t.Skip("skipping test without RonDB")
+	}
 
 	conString := fmt.Sprintf("%s:%d", config.Configuration().RonDBConfig.IP,
 		config.Configuration().RonDBConfig.Port)
