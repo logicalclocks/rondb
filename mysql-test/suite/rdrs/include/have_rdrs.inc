@@ -180,20 +180,9 @@ printf $CONF "        },\n";
 printf $CONF "        \"Security\": {\n";
 printf $CONF "                \"EnableTLS\": true,\n";
 printf $CONF "                \"RequireAndVerifyClientCert\": true,\n";
-printf $CONF "                \"CertificateFile\": \"\",\n";
-printf $CONF "                \"PrivateKeyFile\": \"\",\n";
-printf $CONF "                \"RootCACertFile\": \"\",\n";
 printf $CONF "                \"UseHopsWorksAPIKeys\": true,\n";
-printf $CONF "                \"HopsWorksAPIKeysCacheValiditySec\": 3\n";
 printf $CONF "        },\n";
 
-printf $CONF "        \"Log\": {\n";
-printf $CONF "                \"Level\": \"WARN\",\n";
-printf $CONF "                \"FilePath\": \"\",\n";
-printf $CONF "                \"MaxSizeMB\": 100,\n";
-printf $CONF "                \"MaxBackups\": 10,\n";
-printf $CONF "                \"MaxAge\": 30\n";
-printf $CONF "        }\n";
 printf $CONF "}\n";
 
 $CONF->close();
