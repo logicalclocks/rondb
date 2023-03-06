@@ -85,6 +85,13 @@ func (c Security) Validate() error {
 	return nil
 }
 
+/*
+	The RDRS is tested on a regular basis by RonDB's MTR tests. These MTR tests
+	have a config file defined for the RDRS in `mysql-test/suite/rdrs/include/have_rdrs.inc`.
+
+	Therefore, when committing a change to this struct or its defaults, change
+	the corresponding file for the MTR tests as well.
+*/
 type AllConfigs struct {
 	Internal Internal
 	REST     REST
