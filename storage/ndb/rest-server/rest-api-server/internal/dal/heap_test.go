@@ -12,9 +12,11 @@ func TestHeap(t *testing.T) {
 	stats := GetNativeBuffersStats()
 	totalBuffers := stats.BuffersCount
 
-	if stats.AllocationsCount != int64(config.Configuration().RestServer.PreAllocatedBuffers) {
+	conf := config.GetAll()
+
+	if stats.AllocationsCount != int64(conf.Internal.PreAllocatedBuffers) {
 		t.Fatalf("Number of pre allocated buffers does not match. Expecting: %d, Got: %d ",
-			config.Configuration().RestServer.PreAllocatedBuffers, stats.AllocationsCount)
+			conf.Internal.PreAllocatedBuffers, stats.AllocationsCount)
 	}
 
 	buff := GetBuffer()
@@ -48,7 +50,7 @@ func TestHeap(t *testing.T) {
 
 	if stats.BuffersCount != allocations {
 		t.Fatalf("Number of free buffers did not match. Expecting: %d, Got: %d ",
-			config.Configuration().RestServer.PreAllocatedBuffers, stats.AllocationsCount)
+			conf.Internal.PreAllocatedBuffers, stats.AllocationsCount)
 	}
 
 	for i := int64(0); i < allocations; i++ {

@@ -284,18 +284,20 @@ func SetupCerts(tc *common.TestContext) error {
 		return err
 	}
 
+	conf := config.GetAll()
+
 	tc.RootCACertFile = rootCACertFile
 	tc.RootCAKeyFile = rootCAKeyFile
-	config.Configuration().Security.RootCACertFile = rootCACertFile
+	conf.Security.RootCACertFile = rootCACertFile
 
 	serverCertFile, serverKeyFile, err := serverCerts(certsDir, rootCACertFile, rootCAKeyFile)
 	if err != nil {
 		return err
 	}
-	config.Configuration().Security.CertificateFile = serverCertFile
-	config.Configuration().Security.PrivateKeyFile = serverKeyFile
+	conf.Security.CertificateFile = serverCertFile
+	conf.Security.PrivateKeyFile = serverKeyFile
 
-	if config.Configuration().Security.RequireAndVerifyClientCert {
+	if conf.Security.RequireAndVerifyClientCert {
 		clientCertFile, clientKeyFile, err := clientCerts(certsDir, rootCACertFile, rootCAKeyFile)
 		if err != nil {
 			return err

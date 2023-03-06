@@ -61,6 +61,8 @@ func InitializeBuffers() {
 	mutex.Lock()
 	defer mutex.Unlock()
 
+	conf := config.GetAll()
+
 	if initialized {
 		panic(fmt.Sprintf("Native buffers are already initialized"))
 	}
@@ -69,15 +71,15 @@ func InitializeBuffers() {
 		panic(fmt.Sprintf("Only 4 byte address are supported"))
 	}
 
-	if config.Configuration().RestServer.BufferSize%C.ADDRESS_SIZE != 0 {
+	if conf.Internal.BufferSize%C.ADDRESS_SIZE != 0 {
 		panic(fmt.Sprintf("Buffer size must be multiple of %d", C.ADDRESS_SIZE))
 	}
 
-	for i := uint32(0); i < config.Configuration().RestServer.PreAllocatedBuffers; i++ {
+	for i := uint32(0); i < conf.Internal.PreAllocatedBuffers; i++ {
 		buffers = append(buffers, __allocateBuffer())
 	}
 
-	buffersStats.AllocationsCount = int64(config.Configuration().RestServer.PreAllocatedBuffers)
+	buffersStats.AllocationsCount = int64(conf.Internal.PreAllocatedBuffers)
 	buffersStats.BuffersCount = buffersStats.AllocationsCount
 	buffersStats.DeallocationsCount = 0
 
@@ -101,9 +103,10 @@ func ReleaseAllBuffers() {
 }
 
 func __allocateBuffer() *NativeBuffer {
-	buff := NativeBuffer{Buffer: C.malloc(C.size_t(config.Configuration().RestServer.BufferSize)),
-		Size: uint32(config.Configuration().RestServer.BufferSize)}
-	dstBuf := unsafe.Slice((*byte)(buff.Buffer), config.Configuration().RestServer.BufferSize)
+	conf := config.GetAll()
+	buff := NativeBuffer{Buffer: C.malloc(C.size_t(conf.Internal.BufferSize)),
+		Size: uint32(conf.Internal.BufferSize)}
+	dstBuf := unsafe.Slice((*byte)(buff.Buffer), conf.Internal.BufferSize)
 	dstBuf[0] = 0x00 // reset buffer by putting null terminator in the begenning
 	return &buff
 }

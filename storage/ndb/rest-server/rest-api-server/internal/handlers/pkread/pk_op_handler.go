@@ -219,8 +219,8 @@ func getAPIKey(c *gin.Context) *string {
 }
 
 func checkAPIKey(apiKey *string, db *string) error {
-	// check for Hopsworks api keys
-	if config.Configuration().Security.UseHopsWorksAPIKeys {
+	conf := config.GetAll()
+	if conf.Security.UseHopsworksAPIKeys {
 		if apiKey == nil || *apiKey == "" { // not set
 			return fmt.Errorf("Unauthorized. No API key supplied")
 		}
