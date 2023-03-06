@@ -1,21 +1,21 @@
 # RonDB REST API Server 
 
-Currently, the REST API server only supports batched and non-batched  primary key operations. Default mappings of MySQL data types to JSON data types are as follows
+Currently, the REST API server only supports batched and non-batched  primary key operations. Default mappings of MySQL data types to JSON data types are as follows:
 
 
-| MySQL Data Type | JSON Data Type |
-| --------------- | -------------- |
-| TINYINT, SMALLINT MEDIUMINT, INT, BIGINT  | number |
-| FLOAT, DOUBLE, DECIMAL  | number |
-| CHAR, VARCHAR  | escaped string |
-| BINARY, VARBINARY  | base64 encoded string |
-| DATE, DATETIME, TIME, TIMESTAMP, YEAR   | string |
-| YEAR   | number |
-| BIT    | base64 encoded string |
+| MySQL Data Type                          | JSON Data Type        |
+| ---------------------------------------- | --------------------- |
+| TINYINT, SMALLINT MEDIUMINT, INT, BIGINT | number                |
+| FLOAT, DOUBLE, DECIMAL                   | number                |
+| CHAR, VARCHAR                            | escaped string        |
+| BINARY, VARBINARY                        | base64 encoded string |
+| DATE, DATETIME, TIME, TIMESTAMP, YEAR    | string                |
+| YEAR                                     | number                |
+| BIT                                      | base64 encoded string |
 
 
 
-## POST /0.1.0/{database}/{table}/pk-read
+## POST /{api-version}/{database}/{table}/pk-read
 
 Is used to perform a primary key read operation. 
 
@@ -33,9 +33,9 @@ CREATE TABLE `my_table` (
 
 **Path Parameters:**
 
-  - *api-version* : current api version is 0.1.0
-  - *database* : database name
-  - *table* : table name
+  - **api-version**: The current api version is 0.1.0
+  - **database**: The database name to query from
+  - **table**: The table name to query from
 
 **Body:**
 
@@ -66,10 +66,10 @@ CREATE TABLE `my_table` (
 
 ```
 
-  - **filters** : This is mandatory parameter. It is an array of objects one for each column that forms the primary key. 
-  - **readColumns** : It is an optional parameter that is used to perform projections. If it is omitted then all the columns of the table will be read
-    - **dataReturnType** : It is an optional parameter. It can be used to control in which format the data is returned, for example, hex, base64, etc. However, in this version (0.1.0) we only support the default return type.  
-  - **operationId** : It is an optional parameter. It is a *string* parameter and it can be up to 64 characters long. 
+  - **filters**: (*required*) This is an array of objects one for each column that forms the primary key.
+  - **readColumns**: (*optional*) This is used to perform projections. If it is omitted, all the columns of the table will be read
+    - **dataReturnType**: (*optional*) This can be used to control in which format the data is returned, for example, hex, base64, etc. However, in this version (0.1.0) we only support the default return type.
+  - **operationId**: (*optional*) It is a *string* parameter and it can be up to 64 characters long.
 
 **Response**
 
@@ -83,15 +83,17 @@ CREATE TABLE `my_table` (
 }
 ```
 
-## POST /0.1.0/batch
+## POST /{api-version}/batch
 
-Is used to perform batched primary key read operations. 
+This is used to perform batched primary key read operations. 
 
 **Path Parameters:**
 
-  - *api-version* : current api version is 0.1.0
+  - **api-version**: The current api version is 0.1.0
 
 **Body:**
+
+The body here is a list of arbitrary pk-reads under the key *operations*:
 
 ```json
 {
@@ -123,7 +125,6 @@ Is used to perform batched primary key read operations.
         "operationId": "1"
       },
     },
-
     {
       "method": "POST",
       "relative-url": "my_database_2/my_table_2/pk-read",
@@ -143,6 +144,9 @@ Is used to perform batched primary key read operations.
   ]
 }
 ```
+
+Additional parameters:
+  - **relative-url**: (*required*) This represents the url the given pk-read would have in a single request (omitting the api-version).
 
 **Response**
 
@@ -176,90 +180,120 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
 ## Configuration 
 ```json
-{                                                         
-        "RestServer": {                                   
-                "IP": "localhost",                        
-                "Port": 4406,                             
-                "APIVersion": "0.1.0",                    
-                "BufferSize": 327680,                     
-                "PreAllocatedBuffers": 1024,              
-                "GOMAXPROCS": -1                          
-        },                                                
-        "RonDBConfig": {                                  
-                "IP": "localhost",                        
-                "Port": 1186                              
-        },                                                
-        "MySQLServer": {                                  
-                "IP": "localhost",                        
-                "Port": 3306,                             
-                "User": "rondb",                          
-                "Password": "rondb"                       
-        },                                                
-        "Security": {                                     
-                "EnableTLS": true,                        
-                "RequireAndVerifyClientCert": true,       
-                "CertificateFile": "",                    
-                "PrivateKeyFile": ""                      
-        },                                                
-        "Log": {                                          
-                "Level": "info",                          
-                "FilePath": "",                           
-                "MaxSizeMB": 100,                         
-                "MaxBackups": 10,                         
-                "MaxAge": 30                              
-        }                                                             
-}                                                             
-
+{
+        "Internal": {
+                "APIVersion": "0.1.0",
+                "BufferSize": 327680,
+                "PreAllocatedBuffers": 1024,
+                "GOMAXPROCS": -1
+        },
+        "REST": {
+                "ServerIP": "localhost",
+                "ServerPort": 4406
+        },
+        "GRPC": {
+                "ServerIP": "localhost",
+                "ServerPort": 5406
+        },
+        "RonDB": {
+                "Mgmds": [
+                        {
+                                "IP": "localhost",
+                                "Port": 1186
+                        }
+                ]
+        },
+        "MySQL": {
+                "User": "rondb",
+                "Password": "rondb",
+                "Servers": [
+                        {
+                                "IP": "localhost",
+                                "Port": 3306
+                        }
+                ],
+        },
+        "Security": {
+                "EnableTLS": true,
+                "RequireAndVerifyClientCert": false,
+                "CertificateFile": "",
+                "PrivateKeyFile": "",
+                "RootCACertFile": "",
+                "UseHopsworksAPIKeys": true,
+                "HopsworksAPIKeysCacheValiditySec": 3
+        },
+        "Log": {
+                "Level": "info",
+                "FilePath": "",
+                "MaxSizeMB": 100,
+                "MaxBackups": 10,
+                "MaxAge": 30
+        }
+}
 ```
 
- - **RestServer** 
+- **Internal**
 
-   - **IP:** Binds the REST server to this IP. The default value is *localhost*
+  - **APIVersion:** Current version of the REST API. Current version is *0.1.0*
+
+  - **BufferSize:** Size of the buffers that are used to pass requests/responses between the Go and C++ layers. The buffers should be large enough to accommodate any request/response. The default size is *327680* (32 KB). 
+
+  - **PreAllocatedBuffers:** Numbers of buffers to preallocate. The default value is *1024*.
+
+  - **GOMAXPROCS:** The GOMAXPROCS variable limits the number of operating system threads that can execute user-level Go code simultaneously.  The default value is -1, that is it does not change the current settings.
+
+- **REST** 
+
+  - **ServerIP:** Binds the REST server to this IP. The default value is *localhost*
+
+  - **ServerPort:** REST server port. The default port is *4406*
+
+- **GRPC** 
+
+  - **ServerIP:** Binds the GRPC server to this IP. The default value is *localhost*
+
+  - **ServerPort:** GRPC server port. The default port is *5406*
+
+- **RonDB** 
+
+  - **Mgmds:**
+
+    - **IP:** RonDB management node IP. The default value is *localhost*.
+
+    - **Port:** RonDB management node port. The default value is *1186*.
+
+- **MySQL:** MySQL server is only used for testing
+
+  - **User:** MySQL Server user. The default value is *rondb*.
   
-   - **Port:** REST server port. The default port is *4406*
-   
-   - **APIVersion:** Current version of the REST API. Current version is *0.1.0*
-   
-   - **BufferSize:** Size of the buffers that are used to pass requests/responses between the Go and C++ layers. The buffers should be large enough to accommodate any request/response. The default size is *327680* (32 KB). 
-
-   - **PreAllocatedBuffers:** Numbers of buffers to preallocate. The default value is *1024*.
-   
-   - **GOMAXPROCS:** The GOMAXPROCS variable limits the number of operating system threads that can execute user-level Go code simultaneously.  The default value is -1, that is it does not change the current settings.
-
-   - **RonDBConfig.IP:** RonDB management node IP. The default value is *localhost*.
-   
-   - **RonDBConfig.Port:** RonDB management node port. The default value is *1186*.
+  - **Password:** MySQL Server user password. The default value is *rondb*.
   
- - **MySQLServer:** configuration. MySQL server is only used for testing
-  
-   - **IP:** MySQL Server IP. The default value is *localhost*.
-   
-   - **Port:** MySQL Server port. The default value is *3306*.
-   
-   - **User:** MySQL Server user. The default value is *rondb*.
-   
-   - **Password:** MySQL Server user password. The default value is *rondb*.
+  - **Servers:**
 
- - **Security:** REST server security settings 
-  
-   - **EnableTLS:** Enable/Disable TLS. The default value is *true*.
-   
-   - **RequireAndVerifyClientCert:**  Enable/Disable TLS client certificate requirement. The default value is *true*.
+    - **IP:** MySQL Server IP. The default value is *localhost*.
+    
+    - **Port:** MySQL Server port. The default value is *3306*.
 
-   - **RootCACertFile:**  Root CA file. Used in testing that use self-signed certificates. The default value is not set.
-   
-   - **CertificateFile:** Server certificate file. The default value is not set.
-   
-   - **PrivateKeyFile:** Server private key file. The default value is not set.
+- **Security:** REST server security settings 
 
- - **Log:** REST Server logging settings 
+  - **EnableTLS:** Enable/Disable TLS. The default value is *true*.
   
-   - **Level:** log level, Supported levels are *panic, error, warn, info, debug,* and  *trace*. The default value is *info*.
-   
-   - **FilePath:** log file location. The default value is not set.
-   
-   - **MaxSizeMB:** max log file size. The default value is *100*.
-   
-   - **MaxBackups:** max number of log files to store. The default value is *10*.
-   
-   - **MaxAge:** max-age of log files in days. The default value is *30*.
+  - **RequireAndVerifyClientCert:**  Enable/Disable TLS client certificate requirement. The default value is *true*.
+
+  - **RootCACertFile:**  Root CA file. Used in testing that use self-signed certificates. The default value is not set.
+  
+  - **CertificateFile:** Server certificate file. The default value is not set.
+  
+  - **PrivateKeyFile:** Server private key file. The default value is not set.
+
+- **Log:** REST Server logging settings 
+
+  - **Level:** log level, Supported levels are *panic, error, warn, info, debug,* and  *trace*. The default value is *info*.
+  
+  - **FilePath:** log file location. The default value is stdout.
+  
+  - **MaxSizeMB:** max log file size. The default value is *100*.
+  
+  - **MaxBackups:** max number of log files to store. The default value is *10*.
+  
+  - **MaxAge:** max-age of log files in days. The default value is *30*.
