@@ -72,7 +72,7 @@ func TestAPIKey(t *testing.T) {
 	db1 = "db001"
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
-		t.Fatalf("No error expected")
+		t.Fatalf("No error expected; err: %v", err)
 	}
 
 	// valid api key but no db
@@ -88,7 +88,7 @@ func TestAPIKey(t *testing.T) {
 	db2 := "db002"
 	err = ValidateAPIKey(&apiKey, &db1, &db2)
 	if err != nil {
-		t.Fatalf("No error expected")
+		t.Fatalf("No error expected; err: %v", err)
 	}
 }
 
@@ -112,7 +112,7 @@ func TestAPIKeyCache1(t *testing.T) {
 	db1 := "db001"
 	err := ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
-		t.Fatalf("No error expected")
+		t.Fatalf("No error expected; err: %v", err)
 	}
 
 	lastUpdated1 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
@@ -121,7 +121,7 @@ func TestAPIKeyCache1(t *testing.T) {
 	db1 = "db001"
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
-		t.Fatalf("No error expected")
+		t.Fatalf("No error expected; err: %v", err)
 	}
 
 	lastUpdated2 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
@@ -136,7 +136,7 @@ func TestAPIKeyCache1(t *testing.T) {
 	db1 = "db001"
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
-		t.Fatalf("No error expected")
+		t.Fatalf("No error expected; err: %v", err)
 	}
 
 	lastUpdated3 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
@@ -177,7 +177,7 @@ func TestAPIKeyCache2(t *testing.T) {
 	db1 := "db001"
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
-		t.Fatalf("No error expected")
+		t.Fatalf("No error expected; err: %v", err)
 	}
 
 	lastUpdated2 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
