@@ -50,6 +50,8 @@ func SendHttpRequest(t testing.TB, tc common.TestContext, httpVerb string,
 	url string, body string, expectedStatus int, expectedErrMsg string) (int, string) {
 	t.Helper()
 
+	conf := config.GetAll()
+
 	client := setupHttpClient(t, tc)
 	var req *http.Request
 	var resp *http.Response
@@ -71,7 +73,7 @@ func SendHttpRequest(t testing.TB, tc common.TestContext, httpVerb string,
 		t.Fatalf("Test failed to create request for %s; Error: %v", logMsg, err)
 	}
 
-	if config.Configuration().Security.UseHopsWorksAPIKeys {
+	if conf.Security.UseHopsworksAPIKeys {
 		req.Header.Set(config.API_KEY_NAME, common.HOPSWORKS_TEST_API_KEY)
 	}
 
@@ -106,11 +108,12 @@ func setupHttpClient(t testing.TB, tc common.TestContext) *http.Client {
 
 func GetClientTLSConfig(t testing.TB, tc common.TestContext) *tls.Config {
 	clientTLSConfig := tls.Config{}
-	if config.Configuration().Security.RootCACertFile != "" {
+	conf := config.GetAll()
+	if conf.Security.RootCACertFile != "" {
 		clientTLSConfig.RootCAs = tlsutils.TrustedCAs(tc.RootCACertFile)
 	}
 
-	if config.Configuration().Security.RequireAndVerifyClientCert {
+	if conf.Security.RequireAndVerifyClientCert {
 		clientCert, err := tls.LoadX509KeyPair(tc.ClientCertFile, tc.ClientKeyFile)
 		if err != nil {
 			t.Fatalf("%v", err)
@@ -237,11 +240,8 @@ func getColumnDataFromJson(t testing.TB, colName string, pkResponse *api.PKReadR
 
 func getColumnDataFromDB(t testing.TB, db string, table string, filters *[]api.Filter, col string, isBinary bool) (*string, error) {
 
-	connectionString := fmt.Sprintf("%s:%s@tcp(%s:%d)/",
-		config.Configuration().MySQLServer.User,
-		config.Configuration().MySQLServer.Password,
-		config.Configuration().MySQLServer.IP,
-		config.Configuration().MySQLServer.Port)
+	conf := config.GetAll()
+	connectionString := config.GenerateMysqldConnectString(conf)
 
 	dbConn, err := sql.Open("mysql", connectionString)
 	defer dbConn.Close()
@@ -344,9 +344,9 @@ func NewReadColumn(col string) *[]api.ReadColumn {
 }
 
 func NewPKReadURL(db string, table string) string {
-
-	url := fmt.Sprintf("%s:%d%s%s", config.Configuration().RestServer.RESTServerIP,
-		config.Configuration().RestServer.RESTServerPort,
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d%s%s", conf.REST.ServerIP,
+		conf.REST.ServerPort,
 		config.DB_OPS_EP_GROUP, config.PK_DB_OPERATION)
 	url = strings.Replace(url, ":"+config.DB_PP, db, 1)
 	url = strings.Replace(url, ":"+config.TABLE_PP, table, 1)
@@ -355,23 +355,26 @@ func NewPKReadURL(db string, table string) string {
 }
 
 func NewBatchReadURL() string {
-	url := fmt.Sprintf("%s:%d/%s/%s", config.Configuration().RestServer.RESTServerIP,
-		config.Configuration().RestServer.RESTServerPort,
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s", conf.REST.ServerIP,
+		conf.REST.ServerPort,
 		version.API_VERSION, config.BATCH_OPERATION)
 	appendURLProtocol(&url)
 	return url
 }
 
 func NewStatURL() string {
-	url := fmt.Sprintf("%s:%d/%s/%s", config.Configuration().RestServer.RESTServerIP,
-		config.Configuration().RestServer.RESTServerPort,
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s", conf.REST.ServerIP,
+		conf.REST.ServerPort,
 		version.API_VERSION, config.STAT_OPERATION)
 	appendURLProtocol(&url)
 	return url
 }
 
 func appendURLProtocol(url *string) {
-	if config.Configuration().Security.EnableTLS {
+	conf := config.GetAll()
+	if conf.Security.EnableTLS {
 		*url = fmt.Sprintf("https://%s", *url)
 	} else {
 		*url = fmt.Sprintf("http://%s", *url)
@@ -448,12 +451,14 @@ func WithDBs(t testing.TB, dbs []string, handlers *handlers.AllHandlers,
 		t.Skip("skipping test without RonDB")
 	}
 
+	conf := config.GetAll()
+
 	tc := common.TestContext{}
 
 	// init logger
-	log.InitLogger(config.Configuration().Log)
+	log.InitLogger(conf.Log)
 
-	if config.Configuration().Security.EnableTLS {
+	if conf.Security.EnableTLS {
 		tlsutils.SetupCerts(&tc)
 	}
 
@@ -480,7 +485,7 @@ func WithDBs(t testing.TB, dbs []string, handlers *handlers.AllHandlers,
 			stats.BuffersCount, stats.FreeBuffers)
 	}
 
-	if config.Configuration().Security.EnableTLS {
+	if conf.Security.EnableTLS {
 		tlsutils.DeleteCerts(&tc)
 	}
 }
@@ -514,10 +519,11 @@ func pkGRPCTest(t *testing.T, testInfo api.PKTestInfo, tc common.TestContext, is
 
 func sendGRPCPKReadRequest(t *testing.T, tc common.TestContext,
 	testInfo api.PKTestInfo) (int, *api.PKReadResponseGRPC) {
+	conf := config.GetAll()
 	// Create gRPC client
 	conn, err := grpc.Dial(fmt.Sprintf("%s:%d",
-		config.Configuration().RestServer.GRPCServerIP,
-		config.Configuration().RestServer.GRPCServerPort),
+		conf.GRPC.ServerIP,
+		conf.GRPC.ServerPort),
 		grpc.WithTransportCredentials(credentials.NewTLS(GetClientTLSConfig(t, tc))))
 	defer conn.Close()
 
@@ -630,10 +636,11 @@ func batchGRPCTest(t *testing.T, testInfo api.BatchOperationTestInfo, tc common.
 
 func sendGRPCBatchRequest(t *testing.T, tc common.TestContext,
 	testInfo api.BatchOperationTestInfo) (int, *api.BatchResponseGRPC) {
+	conf := config.GetAll()
 	// Create gRPC client
 	conn, err := grpc.Dial(fmt.Sprintf("%s:%d",
-		config.Configuration().RestServer.GRPCServerIP,
-		config.Configuration().RestServer.GRPCServerPort),
+		conf.GRPC.ServerIP,
+		conf.GRPC.ServerPort),
 		grpc.WithTransportCredentials(credentials.NewTLS(GetClientTLSConfig(t, tc))))
 	defer conn.Close()
 

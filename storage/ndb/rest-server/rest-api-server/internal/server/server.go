@@ -129,13 +129,9 @@ func (rc *RouterConext) StartRouter() error {
 
 	var serverTLS *tls.Config
 	var err error
+	conf := config.GetAll()
 
-	if config.Configuration().Security.EnableTLS {
-		if config.Configuration().Security.CertificateFile == "" ||
-			config.Configuration().Security.PrivateKeyFile == "" {
-			return fmt.Errorf("Server Certificate/Key not set")
-		}
-
+	if conf.Security.EnableTLS {
 		serverTLS, err = serverTLSConfig()
 		if err != nil {
 			return fmt.Errorf("Unable to set server TLS config. Error %v", err)
@@ -153,10 +149,10 @@ func (rc *RouterConext) StartRouter() error {
 	}
 
 	go func() { // Start REST Server
-		if config.Configuration().Security.EnableTLS {
+		if conf.Security.EnableTLS {
 			rc.HttpServer.TLSConfig = serverTLS
-			err = rc.HttpServer.ServeTLS(httpListener, config.Configuration().Security.CertificateFile,
-				config.Configuration().Security.PrivateKeyFile)
+			err = rc.HttpServer.ServeTLS(httpListener, conf.Security.CertificateFile,
+				conf.Security.PrivateKeyFile)
 		} else {
 			err = rc.HttpServer.Serve(httpListener)
 		}
@@ -166,7 +162,7 @@ func (rc *RouterConext) StartRouter() error {
 	}()
 
 	go func() { // Start GRPC Server
-		if config.Configuration().Security.EnableTLS {
+		if conf.Security.EnableTLS {
 			rc.GRPCServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
 		} else {
 			rc.GRPCServer = grpc.NewServer()
@@ -185,18 +181,20 @@ func serverTLSConfig() (*tls.Config, error) {
 		PreferServerCipherSuites: true,
 	}
 
-	if config.Configuration().Security.RequireAndVerifyClientCert {
+	conf := config.GetAll()
+
+	if conf.Security.RequireAndVerifyClientCert {
 		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
 	} else {
 		tlsConfig.ClientAuth = tls.NoClientCert
 	}
 
-	if config.Configuration().Security.RootCACertFile != "" {
-		tlsConfig.ClientCAs = tlsutils.TrustedCAs(config.Configuration().Security.RootCACertFile)
+	if conf.Security.RootCACertFile != "" {
+		tlsConfig.ClientCAs = tlsutils.TrustedCAs(conf.Security.RootCACertFile)
 	}
 
-	serverCert, err := tls.LoadX509KeyPair(config.Configuration().Security.CertificateFile,
-		config.Configuration().Security.PrivateKeyFile)
+	serverCert, err := tls.LoadX509KeyPair(conf.Security.CertificateFile,
+		conf.Security.PrivateKeyFile)
 	if err != nil {
 		return nil, err
 	}
@@ -233,17 +231,18 @@ func (rc *RouterConext) StopRouter() error {
 }
 
 func CreateRouterContext() Router {
+	conf := config.GetAll()
 	router := RouterConext{
-		RESTServerIP:   config.Configuration().RestServer.RESTServerIP,
-		RESTServerPort: config.Configuration().RestServer.RESTServerPort,
+		RESTServerIP:   conf.REST.ServerIP,
+		RESTServerPort: conf.REST.ServerPort,
 
-		GRPCServerIP:   config.Configuration().RestServer.GRPCServerIP,
-		GRPCServerPort: config.Configuration().RestServer.GRPCServerPort,
+		GRPCServerIP:   conf.GRPC.ServerIP,
+		GRPCServerPort: conf.GRPC.ServerPort,
 
 		APIVersion: version.API_VERSION,
 
-		DBIP:   config.Configuration().RonDBConfig.IP,
-		DBPort: config.Configuration().RonDBConfig.Port,
+		DBIP:   conf.RonDB.Mgmds[0].IP,
+		DBPort: conf.RonDB.Mgmds[0].Port,
 
 		HttpServer: &http.Server{},
 	}

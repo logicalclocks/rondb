@@ -660,7 +660,8 @@ func Database(name string) [][]string {
 }
 
 func CreateDatabases(t testing.TB, dbNames ...string) {
-	if config.Configuration().Security.UseHopsWorksAPIKeys {
+	conf := config.GetAll()
+	if conf.Security.UseHopsworksAPIKeys {
 		GenerateHWSchema(dbNames...)
 		dbNames = append(dbNames, HOPSWORKS_SCHEMA_NAME)
 	}
@@ -668,7 +669,8 @@ func CreateDatabases(t testing.TB, dbNames ...string) {
 }
 
 func DropDatabases(t testing.TB, dbNames ...string) {
-	if config.Configuration().Security.UseHopsWorksAPIKeys {
+	conf := config.GetAll()
+	if conf.Security.UseHopsworksAPIKeys {
 		GenerateHWSchema(dbNames...)
 		dbNames = append(dbNames, HOPSWORKS_SCHEMA_NAME)
 	}
@@ -686,12 +688,8 @@ func createDatabasesInt(t testing.TB, create bool, dbNames ...string) {
 		dbs = append(dbs, Database(dbName))
 	}
 
-	//user:password@tcp(IP:Port)/
-	connectionString := fmt.Sprintf("%s:%s@tcp(%s:%d)/",
-		config.Configuration().MySQLServer.User,
-		config.Configuration().MySQLServer.Password,
-		config.Configuration().MySQLServer.IP,
-		config.Configuration().MySQLServer.Port)
+	conf := config.GetAll()
+	connectionString := config.GenerateMysqldConnectString(conf)
 	dbConnection, err := sql.Open("mysql", connectionString)
 	defer dbConnection.Close()
 	if err != nil {

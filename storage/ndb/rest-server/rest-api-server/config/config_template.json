@@ -1,21 +1,33 @@
 {
-        "RestServer": {
-                "RESTServerIP": "localhost",
-                "RESTServerPort": 4406,
-                "GRPCServerIP": "localhost",
-                "GRPCServerPort": 5406,
+        "Internal": {
                 "APIVersion": "0.1.0",
                 "BufferSize": 327680,
                 "PreAllocatedBuffers": 1024,
                 "GOMAXPROCS": -1
         },
-        "RonDBConfig": {
-                "IP": "localhost",
-                "Port": 1186
+        "REST": {
+                "ServerIP": "localhost",
+                "ServerPort": 4406
         },
-        "MySQLServer": {
-                "IP": "localhost",
-                "Port": 3306,
+        "GRPC": {
+                "ServerIP": "localhost",
+                "ServerPort": 5406
+        },
+        "RonDB": {
+                "Mgmds": [
+                        {
+                                "IP": "localhost",
+                                "Port": 1186
+                        }
+                ]
+        },
+        "MySQL": {
+                "Servers": [
+                        {
+                                "IP": "localhost",
+                                "Port": 3306
+                        }
+                ],
                 "User": "rondb",
                 "Password": "rondb"
         },
@@ -23,7 +35,10 @@
                 "EnableTLS": true,
                 "RequireAndVerifyClientCert": false,
                 "CertificateFile": "",
-                "PrivateKeyFile": ""
+                "PrivateKeyFile": "",
+                "RootCACertFile": "",
+                "UseHopsworksAPIKeys": true,
+                "HopsworksAPIKeysCacheValiditySec": 3
         },
         "Log": {
                 "Level": "info",
@@ -33,4 +48,3 @@
                 "MaxAge": 30
         }
 }
-

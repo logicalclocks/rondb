@@ -125,9 +125,10 @@ func GetUserDatabases(apiKey *string) ([]string, error) {
 	for _, db := range dbs {
 		dbsMap[db] = true
 	}
+	conf := config.GetAll()
 
 	userDBs := UserDBs{uDBs: dbsMap,
-		expires: time.Now().Add(time.Duration(config.Configuration().Security.HopsWorksAPIKeysCacheValiditySec) * time.Second)}
+		expires: time.Now().Add(time.Duration(conf.Security.HopsworksAPIKeysCacheValiditySec) * time.Second)}
 
 	key2UserDBsMutex.Lock()
 	key2UserDBs[*apiKey] = userDBs
@@ -145,9 +146,10 @@ func Reset() {
 func cacheUpdateTime(apiKey string) time.Time {
 	key2UserDBsMutex.Lock()
 	defer key2UserDBsMutex.Unlock()
+	conf := config.GetAll()
 	val, ok := key2UserDBs[apiKey]
 	if ok {
-		return val.expires.Add(time.Duration(-config.Configuration().Security.HopsWorksAPIKeysCacheValiditySec) * time.Second)
+		return val.expires.Add(time.Duration(-conf.Security.HopsworksAPIKeysCacheValiditySec) * time.Second)
 	} else {
 		return time.Unix(0, 0)
 	}

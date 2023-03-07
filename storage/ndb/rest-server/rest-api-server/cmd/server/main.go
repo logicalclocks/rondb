@@ -36,27 +36,28 @@ import (
 )
 
 func main() {
-	configFile := flag.String("config", "", "Configuration file path")
-	ver := flag.Bool("v", false, "Configuration file path")
+	configFileArg := flag.String("config", "", "Configuration file path")
+	versionArg := flag.Bool("version", false, "Print API and application version")
 	flag.Parse()
 
-	if *configFile != "" {
-		config.LoadConfig(*configFile, true)
-	}
-
-	if *ver == true {
+	if *versionArg == true {
 		fmt.Printf("App version %s, API version %s\n", version.VERSION, version.API_VERSION)
 		return
 	}
 
-	log.InitLogger(config.Configuration().Log)
-	log.Infof("Current configuration: %s", config.Configuration())
+	err := config.SetFromFileIfExists(*configFileArg)
+	if err != nil {
+		panic(err)
+	}
+	conf := config.GetAll()
 
+	log.InitLogger(conf.Log)
+	log.Infof("Current configuration: %s", conf)
 	log.Infof("Starting Version : %s, Git Branch: %s (%s). Built on %s at %s",
 		version.VERSION, version.BRANCH, version.GITCOMMIT, version.BUILDTIME, version.HOSTNAME)
 	log.Infof("Starting API Version : %s", version.API_VERSION)
 
-	runtime.GOMAXPROCS(config.Configuration().RestServer.GOMAXPROCS)
+	runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
 
 	router := server.CreateRouterContext()
 
@@ -66,7 +67,7 @@ func main() {
 		Batcher:  batchops.GetBatcher(),
 	}
 
-	err := router.SetupRouter(handlers)
+	err = router.SetupRouter(handlers)
 	if err != nil {
 		log.Panic(fmt.Sprintf("Unable to setup router: Error: %v", err))
 	}
