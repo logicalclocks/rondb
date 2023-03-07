@@ -225,9 +225,11 @@ func TestPKERROR_011(t *testing.T) {
 
 			body, _ := json.MarshalIndent(param, "", "\t")
 
+			// inexistent database
 			url := tu.NewPKReadURL("db001_XXX", "table_1")
 			tu.SendHttpRequest(t, tlsCtx, config.PK_HTTP_VERB, url, string(body), http.StatusUnauthorized, "")
 
+			// inexistent table
 			url = tu.NewPKReadURL(testdbs.DB001, "table_1_XXX")
 			tu.SendHttpRequest(t, tlsCtx, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest, common.ERROR_011())
 		})
