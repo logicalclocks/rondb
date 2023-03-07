@@ -14,12 +14,12 @@ CREATE TABLE double_table1(
 INSERT INTO
     double_table1
 VALUES
-(1, -123.123, 123.123);
+    (1, -123.123, 123.123);
 
 INSERT INTO
     double_table1
 VALUES
-(0, 0, 0);
+    (0, 0, 0);
 
 -- NULL values for non primary columns
 INSERT INTO

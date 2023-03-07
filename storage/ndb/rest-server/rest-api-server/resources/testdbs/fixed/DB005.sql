@@ -15,7 +15,7 @@ CREATE TABLE bigint_table(
 INSERT INTO
     bigint_table
 VALUES
-(
+    (
         9223372036854775807,
         18446744073709551615,
         9223372036854775807,
@@ -25,12 +25,12 @@ VALUES
 INSERT INTO
     bigint_table
 VALUES
-(-9223372036854775808, 0, -9223372036854775808, 0);
+    (-9223372036854775808, 0, -9223372036854775808, 0);
 
 INSERT INTO
     bigint_table
 VALUES
-(0, 0, 0, 0);
+    (0, 0, 0, 0);
 
 -- NULL values for non primary columns
 INSERT INTO

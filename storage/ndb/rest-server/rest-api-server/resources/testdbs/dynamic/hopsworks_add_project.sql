@@ -1,5 +1,4 @@
 -- Sed keywords PROJECT_NAME, PROJECT_NUMBER
-
 INSERT INTO
     `project`
 VALUES

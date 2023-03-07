@@ -14,7 +14,7 @@ CREATE TABLE `year_table` (
 insert into
     year_table
 values
-("2022", "2022");
+    ("2022", "2022");
 
 insert into
     year_table

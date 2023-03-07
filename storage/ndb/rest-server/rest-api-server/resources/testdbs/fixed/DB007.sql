@@ -15,17 +15,17 @@ CREATE TABLE smallint_table(
 INSERT INTO
     smallint_table
 VALUES
-(32767, 65535, 32767, 65535);
+    (32767, 65535, 32767, 65535);
 
 INSERT INTO
     smallint_table
 VALUES
-(-32768, 0, -32768, 0);
+    (-32768, 0, -32768, 0);
 
 INSERT INTO
     smallint_table
 VALUES
-(0, 0, 0, 0);
+    (0, 0, 0, 0);
 
 -- NULL values for non primary columns
 INSERT INTO

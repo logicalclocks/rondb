@@ -1,5 +1,4 @@
 -- Sed keywords DATABASE_NAME, COLUMN_TYPE, COLUMN_LENGTH
-
 DROP DATABASE IF EXISTS DATABASE_NAME;
 
 CREATE DATABASE DATABASE_NAME;
@@ -16,28 +15,28 @@ CREATE TABLE table1(
 INSERT INTO
     table1
 VALUES
-("1", "这是一个测验。 我不知道怎么读中文。");
+    ("1", "这是一个测验。 我不知道怎么读中文。");
 
 INSERT INTO
     table1
 VALUES
-("2", 0x660066);
+    ("2", 0x660066);
 
 INSERT INTO
     table1
 VALUES
-("3", "a\nb");
+    ("3", "a\nb");
 
 INSERT INTO
     table1
 VALUES
-("这是一个测验", "12345");
+    ("这是一个测验", "12345");
 
 -- some chars
 INSERT INTO
     table1
 VALUES
-(
+    (
         "4",
         "ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïð"
     );
@@ -51,10 +50,10 @@ set
 INSERT INTO
     table1
 VALUES
-("6", '"\\\b\f\n\r\t$%_?');
+    ("6", '"\\\b\f\n\r\t$%_?');
 
 -- testing quoted primary key
 INSERT INTO
     table1
 VALUES
-('"7"', "abc");
+    ('"7"', "abc");

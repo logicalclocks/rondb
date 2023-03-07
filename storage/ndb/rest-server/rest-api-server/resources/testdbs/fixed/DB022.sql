@@ -14,7 +14,7 @@ CREATE TABLE `ts_table0` (
 insert into
     ts_table0
 values
-("2022-11-11 11:11:11", "2022-11-11 11:11:11");
+    ("2022-11-11 11:11:11", "2022-11-11 11:11:11");
 
 insert into
     ts_table0
@@ -30,7 +30,7 @@ CREATE TABLE `ts_table3` (
 insert into
     ts_table3
 values
-(
+    (
         "2022-11-11 11:11:11.123",
         "2022-11-11 11:11:11.123"
     );
@@ -49,7 +49,7 @@ CREATE TABLE `ts_table6` (
 insert into
     ts_table6
 values
-(
+    (
         "2022-11-11 11:11:11.123456",
         "2022-11-11 11:11:11.123456"
     );

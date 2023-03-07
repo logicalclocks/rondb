@@ -18,7 +18,7 @@ CREATE TABLE `bit_table` (
 insert into
     bit_table
 values
-(
+    (
         1,
         b '1',
         b '111',
@@ -30,7 +30,7 @@ values
 insert into
     bit_table
 values
-(
+    (
         2,
         b '0',
         b '000',

@@ -15,7 +15,7 @@ CREATE TABLE table_1(
 INSERT INTO
     table_1
 VALUES
-(
+    (
         'id0_data',
         'col_0_data',
         'col_1_data',

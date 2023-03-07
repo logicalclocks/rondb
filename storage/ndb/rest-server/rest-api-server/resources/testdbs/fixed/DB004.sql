@@ -16,17 +16,17 @@ CREATE TABLE int_table(
 INSERT INTO
     int_table
 VALUES
-(2147483647, 4294967295, 2147483647, 4294967295);
+    (2147483647, 4294967295, 2147483647, 4294967295);
 
 INSERT INTO
     int_table
 VALUES
-(-2147483648, 0, -2147483648, 0);
+    (-2147483648, 0, -2147483648, 0);
 
 INSERT INTO
     int_table
 VALUES
-(0, 0, 0, 0);
+    (0, 0, 0, 0);
 
 -- NULL values for non primary columns;
 INSERT INTO
@@ -41,4 +41,4 @@ CREATE TABLE int_table1(id0 INT, id1 INT UNSIGNED, PRIMARY KEY(id0, id1)) ENGINE
 INSERT INTO
     int_table1
 VALUES
-(0, 0);
+    (0, 0);

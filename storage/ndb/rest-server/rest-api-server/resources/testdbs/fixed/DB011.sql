@@ -15,7 +15,7 @@ CREATE TABLE decimal_table(
 INSERT INTO
     decimal_table
 VALUES
-(
+    (
         -12345.12345,
         12345.12345,
         -12345.12345,

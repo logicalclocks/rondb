@@ -1,5 +1,4 @@
 -- Experimenting with different datetime lengths (0,3,6)
-
 DROP DATABASE IF EXISTS db020;
 
 CREATE DATABASE db020;

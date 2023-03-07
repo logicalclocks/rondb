@@ -15,17 +15,17 @@ CREATE TABLE tinyint_table(
 INSERT INTO
     tinyint_table
 VALUES
-(127, 255, 127, 255);
+    (127, 255, 127, 255);
 
 INSERT INTO
     tinyint_table
 VALUES
-(-128, 0, -128, 0);
+    (-128, 0, -128, 0);
 
 INSERT INTO
     tinyint_table
 VALUES
-(0, 0, 0, 0);
+    (0, 0, 0, 0);
 
 -- NULL values for non primary columns
 INSERT INTO

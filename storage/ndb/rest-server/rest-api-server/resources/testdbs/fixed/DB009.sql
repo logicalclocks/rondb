@@ -14,12 +14,12 @@ CREATE TABLE float_table1(
 INSERT INTO
     float_table1
 VALUES
-(1, -123.123, 123.123);
+    (1, -123.123, 123.123);
 
 INSERT INTO
     float_table1
 VALUES
-(0, 0, 0);
+    (0, 0, 0);
 
 -- NULL values for non primary columns
 INSERT INTO

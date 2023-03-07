@@ -1,5 +1,4 @@
 -- Sed keywords VALUE_COLUMN_1, VALUE_COLUMN_2
-
 INSERT INTO
     table_1
 VALUES
