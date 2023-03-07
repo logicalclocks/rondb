@@ -28,6 +28,7 @@ package dal
 */
 import "C"
 import (
+	"fmt"
 	"net/http"
 	"unsafe"
 )
@@ -41,6 +42,10 @@ type DalError struct {
 
 func (e *DalError) Error() string {
 	return e.Message
+}
+
+func (e *DalError) VerboseError() string {
+	return fmt.Sprintf("%v; File: %v, Line: %v ", e.Message, e.ErrFileName, e.ErrLineNo)
 }
 
 type RonDBStats struct {
