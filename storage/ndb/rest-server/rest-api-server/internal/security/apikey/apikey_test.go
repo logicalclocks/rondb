@@ -54,19 +54,19 @@ func TestAPIKey(t *testing.T) {
 	apiKey := "bkYjEz6OTZyevbqT.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
 	err = ValidateAPIKey(&apiKey, nil)
 	if err == nil {
-		t.Fatalf("Supplied wrong prefix. This should have failed; error: %v", err)
+		t.Fatal("Supplied wrong prefix. This should have failed")
 	}
 
 	apiKey = "bkYjEz6OTZyevbqT."
 	err = ValidateAPIKey(&apiKey)
 	if err == nil {
-		t.Fatalf("No secret. This should have failed; error: %v", err)
+		t.Fatal("No secret. This should have failed")
 	}
 
 	apiKey = "bkYjEz6OTZyevbq.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
 	err = ValidateAPIKey(&apiKey)
 	if err == nil {
-		t.Fatalf("Wrong length prefix. This should have failed; error: %v", err)
+		t.Fatal("Wrong length prefix. This should have failed")
 	}
 
 	// correct api key but wrong db. this api key can not access test3 db
@@ -74,7 +74,7 @@ func TestAPIKey(t *testing.T) {
 	db1 := "test3"
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err == nil {
-		t.Fatalf("This should have failed; error: %v", err)
+		t.Fatal("Using an inexistent database. This should have failed")
 	}
 
 	// correct api key
@@ -89,7 +89,7 @@ func TestAPIKey(t *testing.T) {
 	apiKey = testutils.HOPSWORKS_TEST_API_KEY
 	err = ValidateAPIKey(&apiKey, nil)
 	if err == nil {
-		t.Fatalf("This should have failed; error: %v", err)
+		t.Fatal("This should have failed")
 	}
 
 	// no errors
@@ -189,7 +189,7 @@ func TestAPIKeyCache2(t *testing.T) {
 	db3 := testdbs.DB003
 	err = ValidateAPIKey(&apiKey, &db3)
 	if err == nil {
-		t.Fatalf("Expected it to fail; error: %v", err)
+		t.Fatal("Database should not exist. Expected tes to fail")
 	}
 	lastUpdated1 := authcache.RefreshExpiration(apiKey)
 
