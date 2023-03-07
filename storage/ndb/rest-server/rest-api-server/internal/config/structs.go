@@ -29,6 +29,15 @@ type MySQLServer struct {
 	Port uint16
 }
 
+func (m MySQLServer) Validate() error {
+	if m.IP == "" {
+		return errors.New("MySQL server IP cannot be empty")
+	} else if m.Port == 0 {
+		return errors.New("MySQL server port cannot be empty")
+	}
+	return nil
+}
+
 type MySQL struct {
 	Servers  []MySQLServer
 	User     string
@@ -41,12 +50,26 @@ func (m MySQL) Validate() error {
 	} else if len(m.Servers) > 1 {
 		return errors.New("we do not support specifying more than one MySQL server yet")
 	}
+	for _, server := range m.Servers {
+		if err := server.Validate(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
 type Mgmd struct {
 	IP   string
 	Port uint16
+}
+
+func (m Mgmd) Validate() error {
+	if m.IP == "" {
+		return errors.New("the Management server IP cannot be empty")
+	} else if m.Port == 0 {
+		return errors.New("the Management server port cannot be empty")
+	}
+	return nil
 }
 
 type RonDB struct {
@@ -58,6 +81,11 @@ func (r RonDB) Validate() error {
 		return errors.New("at least one Management server has to be defined")
 	} else if len(r.Mgmds) > 1 {
 		return errors.New("we do not support specifying more than one Management server yet")
+	}
+	for _, server := range r.Mgmds {
+		if err := server.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
