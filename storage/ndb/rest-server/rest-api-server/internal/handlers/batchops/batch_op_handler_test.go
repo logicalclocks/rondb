@@ -21,10 +21,10 @@ import (
 	"net/http"
 	"testing"
 
-	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/handlers"
 	tu "hopsworks.ai/rdrs/internal/handlers/utils"
+	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
@@ -425,14 +425,14 @@ func arrayColumnBatchTestSubOp(t *testing.T, table string, database string, isBi
 
 func TestBatchMissingReqField(t *testing.T) {
 	tu.WithDBs(t, []string{"db000"},
-		getBatchHandler(), func(tc common.TestContext) {
+		getBatchHandler(), func(tlsCtx testutils.TlsContext) {
 			url := tu.NewBatchReadURL()
 			// Test missing method
 			operations := NewOperationsTBD(t, 3)
 			operations[1].Method = nil
 			operationsWrapper := api.BatchOpRequest{Operations: &operations}
 			body, _ := json.Marshal(operationsWrapper)
-			tu.SendHttpRequest(t, tc, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
+			tu.SendHttpRequest(t, tlsCtx, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
 				"Error:Field validation for 'Method' failed ")
 
 			// Test missing relative URL
@@ -440,7 +440,7 @@ func TestBatchMissingReqField(t *testing.T) {
 			operations[1].RelativeURL = nil
 			operationsWrapper = api.BatchOpRequest{Operations: &operations}
 			body, _ = json.Marshal(operationsWrapper)
-			tu.SendHttpRequest(t, tc, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
+			tu.SendHttpRequest(t, tlsCtx, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
 				"Error:Field validation for 'RelativeURL' failed ")
 
 			// Test missing body
@@ -448,7 +448,7 @@ func TestBatchMissingReqField(t *testing.T) {
 			operations[1].Body = nil
 			operationsWrapper = api.BatchOpRequest{Operations: &operations}
 			body, _ = json.Marshal(operationsWrapper)
-			tu.SendHttpRequest(t, tc, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
+			tu.SendHttpRequest(t, tlsCtx, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
 				"Error:Field validation for 'Body' failed ")
 
 			// Test missing filter in an operation
@@ -456,7 +456,7 @@ func TestBatchMissingReqField(t *testing.T) {
 			*&operations[1].Body.Filters = nil
 			operationsWrapper = api.BatchOpRequest{Operations: &operations}
 			body, _ = json.Marshal(operationsWrapper)
-			tu.SendHttpRequest(t, tc, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
+			tu.SendHttpRequest(t, tlsCtx, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
 				"Error:Field validation for 'Filters' failed")
 		})
 }
