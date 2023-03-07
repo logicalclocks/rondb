@@ -69,7 +69,7 @@ func newWithDefaults() AllConfigs {
 			Password: "rondb",
 		},
 		Security: Security{
-			EnableTLS:                        true,
+			EnableTLS:                        false,
 			RequireAndVerifyClientCert:       false,
 			CertificateFile:                  "",
 			PrivateKeyFile:                   "",
