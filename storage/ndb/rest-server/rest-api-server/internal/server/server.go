@@ -162,7 +162,7 @@ func (rc *RouterConext) StartRouter() error {
 	}()
 
 	go func() { // Start GRPC Server
-		if config.Configuration().Security.EnableTLS {
+		if conf.Security.EnableTLS {
 			rc.GRPCServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
 		} else {
 			rc.GRPCServer = grpc.NewServer()
