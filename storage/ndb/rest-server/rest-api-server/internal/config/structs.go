@@ -19,14 +19,41 @@ type GRPC struct {
 	ServerPort uint16
 }
 
+func (g GRPC) Validate() error {
+	if g.ServerIP == "" {
+		return errors.New("the gRPC server IP cannot be empty")
+	} else if g.ServerPort == 0 {
+		return errors.New("the gRPC server port cannot be empty")
+	}
+	return nil
+}
+
 type REST struct {
 	ServerIP   string
 	ServerPort uint16
 }
 
+func (g REST) Validate() error {
+	if g.ServerIP == "" {
+		return errors.New("the REST server IP cannot be empty")
+	} else if g.ServerPort == 0 {
+		return errors.New("the REST server port cannot be empty")
+	}
+	return nil
+}
+
 type MySQLServer struct {
 	IP   string
 	Port uint16
+}
+
+func (m MySQLServer) Validate() error {
+	if m.IP == "" {
+		return errors.New("MySQL server IP cannot be empty")
+	} else if m.Port == 0 {
+		return errors.New("MySQL server port cannot be empty")
+	}
+	return nil
 }
 
 type MySQL struct {
@@ -41,12 +68,29 @@ func (m MySQL) Validate() error {
 	} else if len(m.Servers) > 1 {
 		return errors.New("we do not support specifying more than one MySQL server yet")
 	}
+	for _, server := range m.Servers {
+		if err := server.Validate(); err != nil {
+			return err
+		}
+	}
+	if m.User == "" {
+		return errors.New("the MySQL user cannot be empty")
+	}
 	return nil
 }
 
 type Mgmd struct {
 	IP   string
 	Port uint16
+}
+
+func (m Mgmd) Validate() error {
+	if m.IP == "" {
+		return errors.New("the Management server IP cannot be empty")
+	} else if m.Port == 0 {
+		return errors.New("the Management server port cannot be empty")
+	}
+	return nil
 }
 
 type RonDB struct {
@@ -58,6 +102,11 @@ func (r RonDB) Validate() error {
 		return errors.New("at least one Management server has to be defined")
 	} else if len(r.Mgmds) > 1 {
 		return errors.New("we do not support specifying more than one Management server yet")
+	}
+	for _, server := range r.Mgmds {
+		if err := server.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -104,7 +153,11 @@ type AllConfigs struct {
 
 func (c AllConfigs) Validate() error {
 	var err error
-	if err = c.RonDB.Validate(); err != nil {
+	if err = c.GRPC.Validate(); err != nil {
+		return err
+	} else if err = c.REST.Validate(); err != nil {
+		return err
+	} else if err = c.RonDB.Validate(); err != nil {
 		return err
 	} else if err = c.MySQL.Validate(); err != nil {
 		return err
