@@ -22,7 +22,7 @@ import (
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
-	"hopsworks.ai/rdrs/internal/security/authcache"
+	"hopsworks.ai/rdrs/internal/security/apikey/authcache"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )

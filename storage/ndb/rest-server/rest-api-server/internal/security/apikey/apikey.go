@@ -23,7 +23,7 @@ import (
 	"strings"
 
 	"hopsworks.ai/rdrs/internal/dal"
-	"hopsworks.ai/rdrs/internal/security/authcache"
+	"hopsworks.ai/rdrs/internal/security/apikey/authcache"
 )
 
 func ValidateAPIKey(apiKey *string, dbs ...*string) error {
