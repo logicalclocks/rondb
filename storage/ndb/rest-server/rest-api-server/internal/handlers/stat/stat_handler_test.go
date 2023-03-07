@@ -26,11 +26,11 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/handlers"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	tu "hopsworks.ai/rdrs/internal/handlers/utils"
+	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
@@ -51,7 +51,7 @@ func TestStat(t *testing.T) {
 	}
 
 	tu.WithDBs(t, []string{db},
-		getStatHandlers(), func(tc common.TestContext) {
+		getStatHandlers(), func(tc testutils.TlsContext) {
 			for i := uint32(0); i < numOps; i++ {
 				go performPkOp(t, tc, db, table, ch)
 			}
@@ -82,7 +82,7 @@ func compare(t *testing.T, stats *api.StatResponse, expectedAllocations int64, n
 	}
 }
 
-func performPkOp(t *testing.T, tc common.TestContext, db string, table string, ch chan int) {
+func performPkOp(t *testing.T, tc testutils.TlsContext, db string, table string, ch chan int) {
 	param := api.PKReadBody{
 		Filters:     tu.NewFiltersKVs("id0", 0, "id1", 0),
 		ReadColumns: tu.NewReadColumn("col0"),
@@ -95,7 +95,7 @@ func performPkOp(t *testing.T, tc common.TestContext, db string, table string, c
 	ch <- 0
 }
 
-func getStatsHttp(t *testing.T, tc common.TestContext) *api.StatResponse {
+func getStatsHttp(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
 	body := ""
 	url := tu.NewStatURL()
 	_, respBody := tu.SendHttpRequest(t, tc, config.STAT_HTTP_VERB, url, string(body), http.StatusOK, "")
@@ -108,13 +108,14 @@ func getStatsHttp(t *testing.T, tc common.TestContext) *api.StatResponse {
 	return &stats
 }
 
-func getStatsGRPC(t *testing.T, tc common.TestContext) *api.StatResponse {
+func getStatsGRPC(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
 	stats := sendGRPCStatRequest(t, tc)
 	return stats
 }
 
-func sendGRPCStatRequest(t *testing.T, tc common.TestContext) *api.StatResponse {
+func sendGRPCStatRequest(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
 	conf := config.GetAll()
+
 	// Create gRPC client
 	conn, err := grpc.Dial(fmt.Sprintf("%s:%d",
 		conf.GRPC.ServerIP,
