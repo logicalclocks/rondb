@@ -19,9 +19,27 @@ type GRPC struct {
 	ServerPort uint16
 }
 
+func (g GRPC) Validate() error {
+	if g.ServerIP == "" {
+		return errors.New("the gRPC server IP cannot be empty")
+	} else if g.ServerPort == 0 {
+		return errors.New("the gRPC server port cannot be empty")
+	}
+	return nil
+}
+
 type REST struct {
 	ServerIP   string
 	ServerPort uint16
+}
+
+func (g REST) Validate() error {
+	if g.ServerIP == "" {
+		return errors.New("the REST server IP cannot be empty")
+	} else if g.ServerPort == 0 {
+		return errors.New("the REST server port cannot be empty")
+	}
+	return nil
 }
 
 type MySQLServer struct {
@@ -135,7 +153,11 @@ type AllConfigs struct {
 
 func (c AllConfigs) Validate() error {
 	var err error
-	if err = c.RonDB.Validate(); err != nil {
+	if err = c.GRPC.Validate(); err != nil {
+		return err
+	} else if err = c.REST.Validate(); err != nil {
+		return err
+	} else if err = c.RonDB.Validate(); err != nil {
 		return err
 	} else if err = c.MySQL.Validate(); err != nil {
 		return err
