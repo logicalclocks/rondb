@@ -473,8 +473,11 @@ func WithDBs(
 
 	rand.Seed(int64(time.Now().Nanosecond()))
 
-	testutils.CreateDatabases(t, dbs...)
-	defer testutils.DropDatabases(t, dbs...)
+	err, removeDatabases := testutils.CreateDatabases(t, conf.Security.UseHopsworksAPIKeys, dbs...)
+	if err != nil {
+		t.Fatalf("failed creating databases; error: %v ", err)
+	}
+	defer removeDatabases()
 
 	routerCtx := server.CreateRouterContext()
 

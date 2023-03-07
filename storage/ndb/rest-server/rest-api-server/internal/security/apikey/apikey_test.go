@@ -41,11 +41,15 @@ func TestAPIKey(t *testing.T) {
 	dal.InitRonDBConnection(conString, true)
 	defer dal.ShutdownConnection()
 
-	testutils.CreateDatabases(t, []string{"db001", "db002"}...)
-	defer testutils.DropDatabases(t, []string{"db001", "db002"}...)
+	dbs := []string{"db001", "db002"}
+	err, removeDatabases := testutils.CreateDatabases(t, conf.Security.UseHopsworksAPIKeys, dbs...)
+	if err != nil {
+		t.Fatalf("failed creating databases; error: %v ", err)
+	}
+	defer removeDatabases()
 
 	apiKey := "bkYjEz6OTZyevbqT.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
-	err := ValidateAPIKey(&apiKey, nil)
+	err = ValidateAPIKey(&apiKey, nil)
 	if err == nil {
 		t.Fatalf("Supplied wrong prefix. This should have failed. ")
 	}
@@ -112,12 +116,16 @@ func TestAPIKeyCache1(t *testing.T) {
 	dal.InitRonDBConnection(conString, true)
 	defer dal.ShutdownConnection()
 
-	testutils.CreateDatabases(t, []string{"db001", "db002"}...)
-	defer testutils.DropDatabases(t, []string{"db001", "db002"}...)
+	dbs := []string{"db001", "db002"}
+	err, removeDatabases := testutils.CreateDatabases(t, conf.Security.UseHopsworksAPIKeys, dbs...)
+	if err != nil {
+		t.Fatalf("failed creating databases; error: %v ", err)
+	}
+	defer removeDatabases()
 
 	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 	db1 := "db001"
-	err := ValidateAPIKey(&apiKey, &db1)
+	err = ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
 		t.Fatalf("No error expected; err: %v", err)
 	}
@@ -172,12 +180,16 @@ func TestAPIKeyCache2(t *testing.T) {
 	dal.InitRonDBConnection(conString, true)
 	defer dal.ShutdownConnection()
 
-	testutils.CreateDatabases(t, []string{"db001", "db002"}...)
-	defer testutils.DropDatabases(t, []string{"db001", "db002"}...)
+	dbs := []string{"db001", "db002"}
+	err, removeDatabases := testutils.CreateDatabases(t, conf.Security.UseHopsworksAPIKeys, dbs...)
+	if err != nil {
+		t.Fatalf("failed creating databases; error: %v ", err)
+	}
+	defer removeDatabases()
 
 	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 	db3 := "db003"
-	err := ValidateAPIKey(&apiKey, &db3)
+	err = ValidateAPIKey(&apiKey, &db3)
 	if err == nil {
 		t.Fatalf("Expected it to fail")
 	}
