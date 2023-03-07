@@ -32,7 +32,7 @@ import (
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/handlers"
 	"hopsworks.ai/rdrs/internal/log"
-	"hopsworks.ai/rdrs/internal/security/apikey"
+	"hopsworks.ai/rdrs/internal/security/apikey/authcache"
 	"hopsworks.ai/rdrs/internal/security/tlsutils"
 	"hopsworks.ai/rdrs/internal/server/grpcsrv"
 	"hopsworks.ai/rdrs/pkg/api"
@@ -225,7 +225,7 @@ func (rc *RouterConext) StopRouter() error {
 	}
 
 	// Clean API Key Cache
-	apikey.Reset()
+	authcache.Reset()
 
 	return nil
 }
