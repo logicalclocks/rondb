@@ -51,10 +51,10 @@ set
 INSERT INTO
     table1
 VALUES
-("6", `"\\\b\f\n\r\t$%_?`);
+("6", '"\\\b\f\n\r\t$%_?');
 
 -- testing quoted primary key
 INSERT INTO
     table1
 VALUES
-(`"7"`, "abc");
+('"7"', "abc");
