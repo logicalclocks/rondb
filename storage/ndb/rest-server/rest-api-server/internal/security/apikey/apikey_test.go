@@ -33,6 +33,10 @@ func TestAPIKey(t *testing.T) {
 	}
 
 	conf := config.GetAll()
+	if !conf.Security.UseHopsworksAPIKeys {
+		t.Log("tests may fail because Hopsworks API keys are deactivated")
+	}
+
 	conString := config.GenerateMgmdConnectString(conf)
 
 	dal.InitRonDBConnection(conString, true)
@@ -100,6 +104,10 @@ func TestAPIKeyCache1(t *testing.T) {
 	}
 
 	conf := config.GetAll()
+	if !conf.Security.UseHopsworksAPIKeys {
+		t.Log("tests may fail because Hopsworks API keys are deactivated")
+	}
+
 	conString := config.GenerateMgmdConnectString(conf)
 
 	dal.InitRonDBConnection(conString, true)
@@ -156,6 +164,10 @@ func TestAPIKeyCache2(t *testing.T) {
 	}
 
 	conf := config.GetAll()
+	if !conf.Security.UseHopsworksAPIKeys {
+		t.Log("tests may fail because Hopsworks API keys are deactivated")
+	}
+
 	conString := config.GenerateMgmdConnectString(conf)
 
 	dal.InitRonDBConnection(conString, true)
