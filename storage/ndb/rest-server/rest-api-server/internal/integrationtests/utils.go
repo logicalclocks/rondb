@@ -206,14 +206,11 @@ func getColumnDataFromDB(
 	col string,
 	isBinary bool,
 ) (*string, error) {
-	conf := config.GetAll()
-
-	connectionString := config.GenerateMysqldConnectString(conf)
-	dbConn, err := sql.Open("mysql", connectionString)
-	defer dbConn.Close()
+	dbConn, err := testutils.CreateMySQLConnection()
 	if err != nil {
 		t.Fatalf("failed to connect to db. %v", err)
 	}
+	defer dbConn.Close()
 
 	command := "use " + db
 	_, err = dbConn.Exec(command)
