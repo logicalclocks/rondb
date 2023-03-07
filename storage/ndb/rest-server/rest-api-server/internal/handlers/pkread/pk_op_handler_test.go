@@ -30,11 +30,12 @@ import (
 	tu "hopsworks.ai/rdrs/internal/handlers/utils"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
+	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 func TestPKReadOmitRequired(t *testing.T) {
 
-	tu.WithDBs(t, []string{"db000"},
+	tu.WithDBs(t, []string{testdbs.DB000},
 		getPKHandler(), func(tlsCtx testutils.TlsContext) {
 
 			// Test. Omitting filter should result in 400 error
@@ -68,7 +69,7 @@ func TestPKReadOmitRequired(t *testing.T) {
 }
 
 func TestPKReadLargeColumns(t *testing.T) {
-	tu.WithDBs(t, []string{"db000"},
+	tu.WithDBs(t, []string{testdbs.DB000},
 		getPKHandler(), func(tlsCtx testutils.TlsContext) {
 
 			// Test. Large filter column names.
@@ -118,7 +119,7 @@ func TestPKReadLargeColumns(t *testing.T) {
 
 func TestPKInvalidIdentifier(t *testing.T) {
 
-	tu.WithDBs(t, []string{"db000"},
+	tu.WithDBs(t, []string{testdbs.DB000},
 		getPKHandler(), func(tlsCtx testutils.TlsContext) {
 			//Valid chars [ U+0001 .. U+007F] and [ U+0080 .. U+FFFF]
 			// Test. invalid filter
@@ -164,7 +165,7 @@ func TestPKInvalidIdentifier(t *testing.T) {
 
 func TestPKUniqueParams(t *testing.T) {
 
-	tu.WithDBs(t, []string{"db000"},
+	tu.WithDBs(t, []string{testdbs.DB001},
 		getPKHandler(), func(tlsCtx testutils.TlsContext) {
 			// Test. unique read columns
 			readColumns := make([]api.ReadColumn, 2)
@@ -212,7 +213,7 @@ func TestPKUniqueParams(t *testing.T) {
 // DB/Table does not exist
 func TestPKERROR_011(t *testing.T) {
 
-	tu.WithDBs(t, []string{"db001"},
+	tu.WithDBs(t, []string{testdbs.DB001},
 		getPKHandler(), func(tlsCtx testutils.TlsContext) {
 			pkCol := "id0"
 			pkVal := "1"
@@ -224,10 +225,12 @@ func TestPKERROR_011(t *testing.T) {
 
 			body, _ := json.MarshalIndent(param, "", "\t")
 
+			// inexistent database
 			url := tu.NewPKReadURL("db001_XXX", "table_1")
 			tu.SendHttpRequest(t, tlsCtx, config.PK_HTTP_VERB, url, string(body), http.StatusUnauthorized, "")
 
-			url = tu.NewPKReadURL("db001", "table_1_XXX")
+			// inexistent table
+			url = tu.NewPKReadURL(testdbs.DB001, "table_1_XXX")
 			tu.SendHttpRequest(t, tlsCtx, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest, common.ERROR_011())
 		})
 }
@@ -235,7 +238,7 @@ func TestPKERROR_011(t *testing.T) {
 // column does not exist
 func TestPKERROR_012(t *testing.T) {
 
-	tu.WithDBs(t, []string{"db001"},
+	tu.WithDBs(t, []string{testdbs.DB001},
 		getPKHandler(), func(tlsCtx testutils.TlsContext) {
 			pkCol := "id0"
 			pkVal := "1"
@@ -247,7 +250,7 @@ func TestPKERROR_012(t *testing.T) {
 
 			body, _ := json.MarshalIndent(param, "", "\t")
 
-			url := tu.NewPKReadURL("db001", "table_1")
+			url := tu.NewPKReadURL(testdbs.DB001, "table_1")
 			tu.SendHttpRequest(t, tlsCtx, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest, common.ERROR_012())
 		})
 }
@@ -255,7 +258,7 @@ func TestPKERROR_012(t *testing.T) {
 // Primary key test.
 func TestPKERROR_013_ERROR_014(t *testing.T) {
 
-	tu.WithDBs(t, []string{"db002"},
+	tu.WithDBs(t, []string{testdbs.DB002},
 		getPKHandler(), func(tlsCtx testutils.TlsContext) {
 			// send an other request with one column missing from def
 			// //		// one PK col is missing
@@ -265,7 +268,7 @@ func TestPKERROR_013_ERROR_014(t *testing.T) {
 				OperationID: tu.NewOperationID(64),
 			}
 			body, _ := json.MarshalIndent(param, "", "\t")
-			url := tu.NewPKReadURL("db002", "table_1")
+			url := tu.NewPKReadURL(testdbs.DB002, "table_1")
 			tu.SendHttpRequest(t, tlsCtx, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest, common.ERROR_013())
 
 			// send an other request with two pk cols but wrong names
@@ -275,7 +278,7 @@ func TestPKERROR_013_ERROR_014(t *testing.T) {
 				OperationID: tu.NewOperationID(64),
 			}
 			body, _ = json.MarshalIndent(param, "", "\t")
-			url = tu.NewPKReadURL("db002", "table_1")
+			url = tu.NewPKReadURL(testdbs.DB002, "table_1")
 			tu.SendHttpRequest(t, tlsCtx, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest, common.ERROR_014())
 		})
 }

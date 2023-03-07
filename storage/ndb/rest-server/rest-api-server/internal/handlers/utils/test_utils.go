@@ -34,7 +34,6 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/handlers"
@@ -74,7 +73,7 @@ func SendHttpRequest(t testing.TB, tlsCtx testutils.TlsContext, httpVerb string,
 	}
 
 	if conf.Security.UseHopsworksAPIKeys {
-		req.Header.Set(config.API_KEY_NAME, common.HOPSWORKS_TEST_API_KEY)
+		req.Header.Set(config.API_KEY_NAME, testutils.HOPSWORKS_TEST_API_KEY)
 	}
 
 	resp, err = client.Do(req)
@@ -473,8 +472,11 @@ func WithDBs(
 
 	rand.Seed(int64(time.Now().Nanosecond()))
 
-	common.CreateDatabases(t, dbs...)
-	defer common.DropDatabases(t, dbs...)
+	err, removeDatabases := testutils.CreateDatabases(t, conf.Security.UseHopsworksAPIKeys, dbs...)
+	if err != nil {
+		t.Fatalf("failed creating databases; error: %v ", err)
+	}
+	defer removeDatabases()
 
 	routerCtx := server.CreateRouterContext()
 
@@ -545,7 +547,7 @@ func sendGRPCPKReadRequest(t *testing.T, tlsCtx testutils.TlsContext,
 	pkReadParams.OperationID = testInfo.PkReq.OperationID
 	pkReadParams.ReadColumns = testInfo.PkReq.ReadColumns
 
-	apiKey := common.HOPSWORKS_TEST_API_KEY
+	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 	reqProto := api.ConvertPKReadParams(&pkReadParams, &apiKey)
 
 	expectedStatus := testInfo.HttpCode
@@ -667,7 +669,7 @@ func sendGRPCBatchRequest(t *testing.T, tlsCtx testutils.TlsContext,
 		batchOpRequest[i] = &pkReadParams
 	}
 
-	apiKey := common.HOPSWORKS_TEST_API_KEY
+	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 	batchRequestProto := api.ConvertBatchOpRequest(batchOpRequest, &apiKey)
 
 	expectedStatus := testInfo.HttpCode

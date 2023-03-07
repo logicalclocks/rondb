@@ -32,11 +32,12 @@ import (
 	tu "hopsworks.ai/rdrs/internal/handlers/utils"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
+	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 func TestStat(t *testing.T) {
 
-	db := "db004"
+	db := testdbs.DB004
 	table := "int_table"
 
 	ch := make(chan int)
