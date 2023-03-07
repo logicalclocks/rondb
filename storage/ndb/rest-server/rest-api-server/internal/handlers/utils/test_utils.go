@@ -239,7 +239,7 @@ func getColumnDataFromJson(t testing.TB, colName string, pkResponse *api.PKReadR
 
 func getColumnDataFromDB(t testing.TB, db string, table string, filters *[]api.Filter, col string, isBinary bool) (*string, error) {
 
-	dbConn, err := testutils.CreateMySQLConnection()
+	dbConn, err := testutils.CreateMySQLConnection(t)
 	if err != nil {
 		t.Fatalf("failed to connect to db. %v", err)
 	}

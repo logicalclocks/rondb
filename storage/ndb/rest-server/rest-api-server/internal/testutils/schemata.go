@@ -23,7 +23,7 @@ func CreateDatabases(
 	}
 	cleanupDbs = func() {}
 
-	dbConn, err := CreateMySQLConnection()
+	dbConn, err := CreateMySQLConnection(t)
 	if err != nil {
 		return
 	}
@@ -51,7 +51,7 @@ func CreateDatabases(
 }
 
 func runQueriesWithConnection(t testing.TB, sqlQueries string) error {
-	dbConn, err := CreateMySQLConnection()
+	dbConn, err := CreateMySQLConnection(t)
 	if err != nil {
 		return err
 	}
