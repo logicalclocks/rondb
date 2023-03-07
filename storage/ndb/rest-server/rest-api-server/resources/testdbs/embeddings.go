@@ -31,12 +31,12 @@ const textualColumns_DATABASE_NAME = "DATABASE_NAME"
 const textualColumns_COLUMN_TYPE = "COLUMN_TYPE"
 const textualColumns_COLUMN_LENGTH = "COLUMN_LENGTH"
 
-const DB012 = "DB012"
-const DB014 = "DB014"
-const DB015 = "DB015"
-const DB016 = "DB016"
-const DB017 = "DB017"
-const DB018 = "DB018"
+const DB012 = "db012"
+const DB014 = "db014"
+const DB015 = "db015"
+const DB016 = "db016"
+const DB017 = "db017"
+const DB018 = "db018"
 
 /*
 	Fixed schemes
@@ -56,94 +56,94 @@ const HOPSWORKS_DB_NAME = "hopsworks"
 //go:embed fixed/DB000.sql
 var DB000Scheme string
 
-const DB000 = "DB000"
+const DB000 = "db000"
 
 //go:embed fixed/DB001.sql
 var DB001Scheme string
 
-const DB001 = "DB001"
+const DB001 = "db001"
 
 //go:embed fixed/DB002.sql
 var DB002Scheme string
 
-const DB002 = "DB002"
+const DB002 = "db002"
 
 //go:embed fixed/DB003.sql
 var DB003Scheme string
 
-const DB003 = "DB003"
+const DB003 = "db003"
 
 //go:embed fixed/DB004.sql
 var DB004Scheme string
 
-const DB004 = "DB004"
+const DB004 = "db004"
 
 //go:embed fixed/DB005.sql
 var DB005Scheme string
 
-const DB005 = "DB005"
+const DB005 = "db005"
 
 //go:embed fixed/DB006.sql
 var DB006Scheme string
 
-const DB006 = "DB006"
+const DB006 = "db006"
 
 //go:embed fixed/DB007.sql
 var DB007Scheme string
 
-const DB007 = "DB007"
+const DB007 = "db007"
 
 //go:embed fixed/DB008.sql
 var DB008Scheme string
 
-const DB008 = "DB008"
+const DB008 = "db008"
 
 //go:embed fixed/DB009.sql
 var DB009Scheme string
 
-const DB009 = "DB009"
+const DB009 = "db009"
 
 //go:embed fixed/DB010.sql
 var DB010Scheme string
 
-const DB010 = "DB010"
+const DB010 = "db010"
 
 //go:embed fixed/DB011.sql
 var DB011Scheme string
 
-const DB011 = "DB011"
+const DB011 = "db011"
 
 //go:embed fixed/DB013.sql
 var DB013Scheme string
 
-const DB013 = "DB013"
+const DB013 = "db013"
 
 //go:embed fixed/DB019.sql
 var DB019Scheme string
 
-const DB019 = "DB019"
+const DB019 = "db019"
 
 //go:embed fixed/DB020.sql
 var DB020Scheme string
 
-const DB020 = "DB020"
+const DB020 = "db020"
 
 //go:embed fixed/DB021.sql
 var DB021Scheme string
 
-const DB021 = "DB021"
+const DB021 = "db021"
 
 //go:embed fixed/DB022.sql
 var DB022Scheme string
 
-const DB022 = "DB022"
+const DB022 = "db022"
 
 //go:embed fixed/DB023.sql
 var DB023Scheme string
 
-const DB023 = "DB023"
+const DB023 = "db023"
 
 //go:embed fixed/DB024.sql
 var DB024Scheme string
 
-const DB024 = "DB024"
+const DB024 = "db024"
