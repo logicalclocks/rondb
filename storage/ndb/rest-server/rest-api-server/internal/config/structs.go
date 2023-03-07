@@ -55,6 +55,9 @@ func (m MySQL) Validate() error {
 			return err
 		}
 	}
+	if m.User == "" {
+		return errors.New("the MySQL user cannot be empty")
+	}
 	return nil
 }
 
