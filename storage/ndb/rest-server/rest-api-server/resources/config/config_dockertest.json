@@ -16,7 +16,7 @@
         "RonDB": {
                 "Mgmds": [
                         {
-                                "IP": "localhost",
+                                "IP": "mgmd_1",
                                 "Port": 1186
                         }
                 ]
@@ -24,12 +24,12 @@
         "MySQL": {
                 "Servers": [
                         {
-                                "IP": "localhost",
+                                "IP": "mysqld_1",
                                 "Port": 3306
                         }
                 ],
-                "User": "rondb",
-                "Password": "rondb"
+                "User": "mysql",
+                "Password": "Abc123?e"
         },
         "Security": {
                 "EnableTLS": true,

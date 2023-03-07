@@ -35,7 +35,8 @@ const BATCH_HTTP_VERB = "POST"
 const STAT_HTTP_VERB = "GET"
 
 /*
- Env variables
+	Env variables
 */
 
+// This makes it easier to run tests with a given configuration file and not requiring a flag
 const CONFIG_FILE_PATH = "RDRS_CONFIG_FILE"

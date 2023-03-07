@@ -27,6 +27,15 @@ import (
 var globalConfig AllConfigs
 var mutex sync.Mutex
 
+/*
+	Order:
+	1. Read from ENV
+		if no ENV:
+			2. Set to defaults
+	3. Read CLI arguments
+		if no CLI:
+			4. Set to defaults
+*/
 func init() {
 	configFile := os.Getenv(CONFIG_FILE_PATH)
 	err := SetFromFileIfExists(configFile)

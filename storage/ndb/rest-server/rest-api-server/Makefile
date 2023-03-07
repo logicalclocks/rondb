@@ -19,6 +19,7 @@ HOSTNAME=`hostname`
 BRANCH=`git rev-parse --abbrev-ref HEAD`
 SERVER_BIN="rdrs"
 RDRS_LIB_DIR?=./../data-access-rondb/build
+RDRS_CONFIG_FILE=$(PWD)/resources/config/config_dockertest.json
 OUTPUT_DIR?=./bin/server/${SERVER_BIN}
 
 COVERAGE_OUTPUT_FILE?=./coverage.out
@@ -60,7 +61,7 @@ build_proto:
 test:
 	@go clean -testcache
 	@echo "Getting cross-package (integration) coverage and writing it to $(COVERAGE_OUTPUT_FILE)"
-	CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" go test -p 1 -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg ./... `go list ./... | grep -v cmd`
+	CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" RDRS_CONFIG_FILE=$(RDRS_CONFIG_FILE) go test -p 1 -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg ./... `go list ./... | grep -v cmd`
 
 print-func-coverage: test
 	go tool cover -func $(COVERAGE_OUTPUT_FILE) > $(COVERAGE_FUNC_OUTPUT_FILE)
