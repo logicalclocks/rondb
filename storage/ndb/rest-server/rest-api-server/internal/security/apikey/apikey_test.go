@@ -20,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/testutils"
@@ -42,8 +41,8 @@ func TestAPIKey(t *testing.T) {
 	dal.InitRonDBConnection(conString, true)
 	defer dal.ShutdownConnection()
 
-	common.CreateDatabases(t, []string{"db001", "db002"}...)
-	defer common.DropDatabases(t, []string{"db001", "db002"}...)
+	testutils.CreateDatabases(t, []string{"db001", "db002"}...)
+	defer testutils.DropDatabases(t, []string{"db001", "db002"}...)
 
 	apiKey := "bkYjEz6OTZyevbqT.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
 	err := ValidateAPIKey(&apiKey, nil)
@@ -64,7 +63,7 @@ func TestAPIKey(t *testing.T) {
 	}
 
 	// correct api key but wrong db. this api key can not access test3 db
-	apiKey = common.HOPSWORKS_TEST_API_KEY
+	apiKey = testutils.HOPSWORKS_TEST_API_KEY
 	db1 := "test3"
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err == nil {
@@ -72,7 +71,7 @@ func TestAPIKey(t *testing.T) {
 	}
 
 	// correct api key
-	apiKey = common.HOPSWORKS_TEST_API_KEY
+	apiKey = testutils.HOPSWORKS_TEST_API_KEY
 	db1 = "db001"
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
@@ -80,14 +79,14 @@ func TestAPIKey(t *testing.T) {
 	}
 
 	// valid api key but no db
-	apiKey = common.HOPSWORKS_TEST_API_KEY
+	apiKey = testutils.HOPSWORKS_TEST_API_KEY
 	err = ValidateAPIKey(&apiKey, nil)
 	if err == nil {
 		t.Fatalf("This should have failed")
 	}
 
 	// no errors
-	apiKey = common.HOPSWORKS_TEST_API_KEY
+	apiKey = testutils.HOPSWORKS_TEST_API_KEY
 	db1 = "db001"
 	db2 := "db002"
 	err = ValidateAPIKey(&apiKey, &db1, &db2)
@@ -113,26 +112,26 @@ func TestAPIKeyCache1(t *testing.T) {
 	dal.InitRonDBConnection(conString, true)
 	defer dal.ShutdownConnection()
 
-	common.CreateDatabases(t, []string{"db001", "db002"}...)
-	defer common.DropDatabases(t, []string{"db001", "db002"}...)
+	testutils.CreateDatabases(t, []string{"db001", "db002"}...)
+	defer testutils.DropDatabases(t, []string{"db001", "db002"}...)
 
-	apiKey := common.HOPSWORKS_TEST_API_KEY
+	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 	db1 := "db001"
 	err := ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
 		t.Fatalf("No error expected; err: %v", err)
 	}
 
-	lastUpdated1 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
+	lastUpdated1 := cacheUpdateTime(testutils.HOPSWORKS_TEST_API_KEY)
 
-	apiKey = common.HOPSWORKS_TEST_API_KEY
+	apiKey = testutils.HOPSWORKS_TEST_API_KEY
 	db1 = "db001"
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
 		t.Fatalf("No error expected; err: %v", err)
 	}
 
-	lastUpdated2 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
+	lastUpdated2 := cacheUpdateTime(testutils.HOPSWORKS_TEST_API_KEY)
 
 	if lastUpdated1 != lastUpdated2 {
 		t.Fatalf("Cache update time is expected to be the same")
@@ -140,14 +139,14 @@ func TestAPIKeyCache1(t *testing.T) {
 
 	time.Sleep(time.Duration(conf.Security.HopsworksAPIKeysCacheValiditySec))
 
-	apiKey = common.HOPSWORKS_TEST_API_KEY
+	apiKey = testutils.HOPSWORKS_TEST_API_KEY
 	db1 = "db001"
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
 		t.Fatalf("No error expected; err: %v", err)
 	}
 
-	lastUpdated3 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
+	lastUpdated3 := cacheUpdateTime(testutils.HOPSWORKS_TEST_API_KEY)
 
 	lastUpdated2p := lastUpdated2.Add(time.Duration(conf.Security.HopsworksAPIKeysCacheValiditySec))
 	if lastUpdated2 != lastUpdated3 && lastUpdated2p.Before(lastUpdated3) {
@@ -173,26 +172,26 @@ func TestAPIKeyCache2(t *testing.T) {
 	dal.InitRonDBConnection(conString, true)
 	defer dal.ShutdownConnection()
 
-	common.CreateDatabases(t, []string{"db001", "db002"}...)
-	defer common.DropDatabases(t, []string{"db001", "db002"}...)
+	testutils.CreateDatabases(t, []string{"db001", "db002"}...)
+	defer testutils.DropDatabases(t, []string{"db001", "db002"}...)
 
-	apiKey := common.HOPSWORKS_TEST_API_KEY
+	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 	db3 := "db003"
 	err := ValidateAPIKey(&apiKey, &db3)
 	if err == nil {
 		t.Fatalf("Expected it to fail")
 	}
 
-	lastUpdated1 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
+	lastUpdated1 := cacheUpdateTime(testutils.HOPSWORKS_TEST_API_KEY)
 
-	apiKey = common.HOPSWORKS_TEST_API_KEY
+	apiKey = testutils.HOPSWORKS_TEST_API_KEY
 	db1 := "db001"
 	err = ValidateAPIKey(&apiKey, &db1)
 	if err != nil {
 		t.Fatalf("No error expected; err: %v", err)
 	}
 
-	lastUpdated2 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
+	lastUpdated2 := cacheUpdateTime(testutils.HOPSWORKS_TEST_API_KEY)
 
 	if lastUpdated1 != lastUpdated2 {
 		t.Fatalf("Cache update time is expected to be the same")

@@ -15,7 +15,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-package common
+package testutils
 
 import (
 	"database/sql"
@@ -27,11 +27,9 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/log"
-	"hopsworks.ai/rdrs/internal/testutils"
 )
 
 const HOPSWORKS_SCHEMA_NAME = "hopsworks"
-const HOPSWORKS_TEST_API_KEY = "bkYjEz6OTZyevbqt.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
 
 var databases map[string][][]string = make(map[string][][]string)
 
@@ -718,7 +716,7 @@ type Tag struct {
 
 func runSQLQueries(t testing.TB, db *sql.DB, setup []string) {
 	t.Helper()
-	if !*testutils.WithRonDB {
+	if !*WithRonDB {
 		t.Skip("skipping test without RonDB")
 	}
 

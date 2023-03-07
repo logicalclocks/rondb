@@ -74,7 +74,7 @@ func SendHttpRequest(t testing.TB, tlsCtx testutils.TlsContext, httpVerb string,
 	}
 
 	if conf.Security.UseHopsworksAPIKeys {
-		req.Header.Set(config.API_KEY_NAME, common.HOPSWORKS_TEST_API_KEY)
+		req.Header.Set(config.API_KEY_NAME, testutils.HOPSWORKS_TEST_API_KEY)
 	}
 
 	resp, err = client.Do(req)
@@ -473,8 +473,8 @@ func WithDBs(
 
 	rand.Seed(int64(time.Now().Nanosecond()))
 
-	common.CreateDatabases(t, dbs...)
-	defer common.DropDatabases(t, dbs...)
+	testutils.CreateDatabases(t, dbs...)
+	defer testutils.DropDatabases(t, dbs...)
 
 	routerCtx := server.CreateRouterContext()
 
@@ -545,7 +545,7 @@ func sendGRPCPKReadRequest(t *testing.T, tlsCtx testutils.TlsContext,
 	pkReadParams.OperationID = testInfo.PkReq.OperationID
 	pkReadParams.ReadColumns = testInfo.PkReq.ReadColumns
 
-	apiKey := common.HOPSWORKS_TEST_API_KEY
+	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 	reqProto := api.ConvertPKReadParams(&pkReadParams, &apiKey)
 
 	expectedStatus := testInfo.HttpCode
@@ -667,7 +667,7 @@ func sendGRPCBatchRequest(t *testing.T, tlsCtx testutils.TlsContext,
 		batchOpRequest[i] = &pkReadParams
 	}
 
-	apiKey := common.HOPSWORKS_TEST_API_KEY
+	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 	batchRequestProto := api.ConvertBatchOpRequest(batchOpRequest, &apiKey)
 
 	expectedStatus := testInfo.HttpCode
