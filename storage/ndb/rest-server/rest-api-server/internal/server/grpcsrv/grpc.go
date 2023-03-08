@@ -18,14 +18,11 @@ package grpcsrv
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 
 	"fmt"
 
-	"google.golang.org/grpc/peer"
 	"hopsworks.ai/rdrs/internal/handlers"
-	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
@@ -54,15 +51,6 @@ func (s *GRPCServer) PKRead(c context.Context, reqProto *api.PKReadRequestProto)
 
 	req, apiKey := api.ConvertPKReadRequestProto(reqProto)
 
-	if log.IsTrace() {
-		ip := "NA"
-		if p, ok := peer.FromContext(c); ok {
-			ip = p.Addr.String()
-		}
-		reqString, _ := json.Marshal(*req)
-		log.Tracef("GRPC Primary key request received from %s, Request: \"%s\" %#v\n", ip, reqString)
-	}
-
 	var response api.PKReadResponse = (api.PKReadResponse)(&api.PKReadResponseGRPC{})
 	response.Init()
 
@@ -87,16 +75,7 @@ func (s *GRPCServer) Batch(c context.Context, reqProto *api.BatchRequestProto) (
 
 	req, apikey := api.ConvertBatchRequestProto(reqProto)
 
-	if log.IsTrace() {
-		ip := "NA"
-		if p, ok := peer.FromContext(c); ok {
-			ip = p.Addr.String()
-		}
-		reqString, _ := json.Marshal(req)
-		log.Tracef("GRPC batch request received from %s, Request: %s\n", ip, reqString)
-	}
-
-	var response = (api.BatchOpResponse)(&api.BatchResponseGRPC{})
+	var response api.BatchOpResponse = (api.BatchOpResponse)(&api.BatchResponseGRPC{})
 	response.Init()
 
 	status, err := s.allHandlers.Batcher.BatchOpsHandler(req, &apikey, response)
@@ -115,15 +94,7 @@ func (s *GRPCServer) Batch(c context.Context, reqProto *api.BatchRequestProto) (
 func (s *GRPCServer) Stat(ctx context.Context, reqProto *api.StatRequestProto) (*api.StatResponseProto, error) {
 
 	if s.allHandlers == nil || s.allHandlers.Stater == nil {
-		return nil, fmt.Errorf("stat handler is not registered")
-	}
-
-	if log.IsTrace() {
-		ip := "NA"
-		if p, ok := peer.FromContext(ctx); ok {
-			ip = p.Addr.String()
-		}
-		log.Tracef("GRPC stat request received from %s\n", ip)
+		return nil, fmt.Errorf("Stat handler is not registered")
 	}
 
 	response := &api.StatResponse{}
@@ -142,9 +113,9 @@ func (s *GRPCServer) Stat(ctx context.Context, reqProto *api.StatRequestProto) (
 
 func mkError(status int, err error) error {
 	if err != nil {
-		return fmt.Errorf("error code: %d, Error: %v ", status, err)
+		return fmt.Errorf("Error code: %d, Error: %v ", status, err)
 	} else {
-		return fmt.Errorf("error code: %d", status)
+		return fmt.Errorf("Error code: %d", status)
 	}
 }
 
