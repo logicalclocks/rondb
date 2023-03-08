@@ -130,6 +130,10 @@ func (c Security) Validate() error {
 		if c.CertificateFile == "" || c.PrivateKeyFile == "" {
 			return errors.New("cannot enable TLS if `CertificateFile` or `PrivateKeyFile` is not set")
 		}
+	} else {
+		if c.RequireAndVerifyClientCert {
+			return errors.New("cannot require client certs if TLS is not enabled")
+		}
 	}
 	return nil
 }
