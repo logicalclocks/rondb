@@ -26,12 +26,9 @@ import (
 	"syscall"
 
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/handlers"
-	"hopsworks.ai/rdrs/internal/handlers/batchops"
-	"hopsworks.ai/rdrs/internal/handlers/pkread"
-	"hopsworks.ai/rdrs/internal/handlers/stat"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
-	"hopsworks.ai/rdrs/internal/server"
+	"hopsworks.ai/rdrs/internal/servers"
 	"hopsworks.ai/rdrs/version"
 )
 
@@ -59,33 +56,27 @@ func main() {
 
 	runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
 
-	router := server.CreateRouterContext()
-
-	handlers := &handlers.AllHandlers{
-		PKReader: pkread.GetPKReader(),
-		Stater:   stat.GetStater(),
-		Batcher:  batchops.GetBatcher(),
-	}
-
-	err = router.SetupRouter(handlers)
-	if err != nil {
-		log.Panic(fmt.Sprintf("Unable to setup router: Error: %v", err))
-	}
-
-	err = router.StartRouter()
-	if err != nil {
-		log.Panic(fmt.Sprintf("Unable to start router: Error: %v", err))
-	}
-
-	// Wait for interrupt signal to gracefully shutdown the server with
-	// a timeout of 5 seconds.
+	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)
-	// kill (no param) default send syscall.SIGTERM
-	// kill -2 is syscall.SIGINT
-	// kill -9 is syscall.SIGKILL but can't be caught, so don't need to add it
+
+	newHeap, releaseBuffers, err := heap.New()
+	if err != nil {
+		panic(err)
+	}
+	defer releaseBuffers()
+
+	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, quit)
+	defer cleanupServers()
+	if err != nil {
+		panic(err)
+	}
+
+	/*
+	 kill (no param) default send syscall.SIGTERM
+	 kill -2 is syscall.SIGINT
+	 kill -9 is syscall.SIGKILL but can't be caught, so don't need to add it
+	*/
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Info("Shutting down server...")
-
-	router.StopRouter()
 }

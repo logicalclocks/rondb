@@ -1,4 +1,5 @@
 /*
+
  * This file is part of the RonDB REST API Server
  * Copyright (c) 2022 Hopsworks AB
  *
@@ -15,31 +16,35 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-package config
-
-import "hopsworks.ai/rdrs/version"
-
-const API_KEY_NAME = "X-API-KEY"
-
-// TODO: What's a "PP"?
-const DB_PP = "db"
-const TABLE_PP = "table"
-const DB_TABLE_PP = "/:" + DB_PP + "/:" + TABLE_PP + "/"
-
-const VERSION_GROUP = "/" + version.API_VERSION
-const DB_OPS_EP_GROUP = VERSION_GROUP + DB_TABLE_PP
-const DBS_OPS_EP_GROUP = VERSION_GROUP + "/"
-
-const PK_DB_OPERATION = "pk-read"
-const BATCH_OPERATION = "batch"
-const STAT_OPERATION = "stat"
-
-const PK_HTTP_VERB = "POST"
-const BATCH_HTTP_VERB = "POST"
-const STAT_HTTP_VERB = "GET"
+package dal
 
 /*
- Env variables
+ #include <stdlib.h>
+ #include "./../../../data-access-rondb/src/rdrs-dal.h"
 */
+import "C"
+import (
+	"net/http"
+	"unsafe"
+)
 
-const CONFIG_FILE_PATH = "RDRS_CONFIG_FILE"
+func InitRonDBConnection(connStr string, find_available_node_id bool) *DalError {
+	cs := C.CString(connStr)
+	defer C.free(unsafe.Pointer(cs))
+	ret := C.init(cs, C.uint(btoi(find_available_node_id)))
+
+	if ret.http_code != http.StatusOK {
+		return cToGoRet(&ret)
+	}
+
+	return nil
+}
+
+func ShutdownConnection() *DalError {
+	ret := C.shutdown_connection()
+
+	if ret.http_code != http.StatusOK {
+		return cToGoRet(&ret)
+	}
+	return nil
+}

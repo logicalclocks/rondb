@@ -19,34 +19,20 @@
 package dal
 
 /*
-#cgo CFLAGS: -g -Wall
-#include <stdlib.h>
-#include "./../../../data-access-rondb/src/rdrs-dal.h"
-#include "./../../../data-access-rondb/src/rdrs-hopsworks-dal.h"
-#include "./../../../data-access-rondb/src/rdrs-const.h"
-#include "./../../../data-access-rondb/src/error-strings.h"
+ #cgo CFLAGS: -g -Wall
+ #include <stdlib.h>
+ #include "./../../../data-access-rondb/src/rdrs-dal.h"
+ #include "./../../../data-access-rondb/src/rdrs-hopsworks-dal.h"
+ #include "./../../../data-access-rondb/src/rdrs-const.h"
+ #include "./../../../data-access-rondb/src/error-strings.h"
 */
 import "C"
 import (
-	"fmt"
 	"net/http"
 	"unsafe"
+
+	"hopsworks.ai/rdrs/internal/dal/heap"
 )
-
-type DalError struct {
-	HttpCode    int
-	Message     string
-	ErrLineNo   int
-	ErrFileName string
-}
-
-func (e *DalError) Error() string {
-	return e.Message
-}
-
-func (e *DalError) VerboseError() string {
-	return fmt.Sprintf("%v; File: %v, Line: %v ", e.Message, e.ErrFileName, e.ErrLineNo)
-}
 
 type RonDBStats struct {
 	NdbObjectsCreationCount int64
@@ -55,31 +41,9 @@ type RonDBStats struct {
 	NdbObjectsFreeCount     int64
 }
 
-func InitRonDBConnection(connStr string, find_available_node_id bool) *DalError {
-
-	cs := C.CString(connStr)
-	defer C.free(unsafe.Pointer(cs))
-	ret := C.init(cs, C.uint(btoi(find_available_node_id)))
-
-	if ret.http_code != http.StatusOK {
-		return cToGoRet(&ret)
-	}
-
-	return nil
-}
-
-func ShutdownConnection() *DalError {
-	ret := C.shutdown_connection()
-
-	if ret.http_code != http.StatusOK {
-		return cToGoRet(&ret)
-	}
-	return nil
-}
-
-func RonDBPKRead(request *NativeBuffer, response *NativeBuffer) *DalError {
+func RonDBPKRead(request *heap.NativeBuffer, response *heap.NativeBuffer) *DalError {
 	// unsafe.Pointer
-	// create C structs for  buffers
+	// create C structs for buffers
 	var crequest C.RS_Buffer
 	var cresponse C.RS_Buffer
 	crequest.buffer = (*C.char)(request.Buffer)
@@ -97,7 +61,7 @@ func RonDBPKRead(request *NativeBuffer, response *NativeBuffer) *DalError {
 	return nil
 }
 
-func RonDBBatchedPKRead(noOps uint32, requests []*NativeBuffer, responses []*NativeBuffer) *DalError {
+func RonDBBatchedPKRead(noOps uint32, requests []*heap.NativeBuffer, responses []*heap.NativeBuffer) *DalError {
 	reqMem := C.malloc(C.size_t(noOps) * C.size_t(C.sizeof_RS_Buffer))
 	defer C.free(reqMem)
 	cReqs := unsafe.Slice((*C.RS_Buffer)(reqMem), noOps)
@@ -123,13 +87,7 @@ func RonDBBatchedPKRead(noOps uint32, requests []*NativeBuffer, responses []*Nat
 	return nil
 }
 
-func cToGoRet(ret *C.RS_Status) *DalError {
-	return &DalError{HttpCode: int(ret.http_code), Message: C.GoString(&ret.message[0]),
-		ErrLineNo: int(ret.err_line_no), ErrFileName: C.GoString(&ret.err_file_name[0])}
-}
-
 func GetRonDBStats() (*RonDBStats, *DalError) {
-
 	p := (*C.RonDB_Stats)(C.malloc(C.size_t(C.sizeof_RonDB_Stats)))
 	defer C.free(unsafe.Pointer(p))
 
@@ -145,11 +103,4 @@ func GetRonDBStats() (*RonDBStats, *DalError) {
 	rstats.NdbObjectsFreeCount = int64(p.ndb_objects_available)
 
 	return &rstats, nil
-}
-
-func btoi(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }
