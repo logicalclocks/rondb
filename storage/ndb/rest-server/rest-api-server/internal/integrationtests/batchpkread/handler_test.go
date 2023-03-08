@@ -23,12 +23,17 @@ import (
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/integrationtests"
+	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 func TestBatchSimple(t *testing.T) {
+
+	conf := config.GetAll()
+	log.InitLogger(conf.Log)
+
 	tests := map[string]api.BatchOperationTestInfo{
 		"simple1": { // single operation batch
 			HttpCode: http.StatusOK,
@@ -36,7 +41,7 @@ func TestBatchSimple(t *testing.T) {
 				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
-						RelativeURL: &[]string{string("DB004/int_table/" + config.PK_DB_OPERATION)}[0],
+						RelativeURL: &[]string{string(testdbs.DB004 + "/int_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
 							Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
 							ReadColumns: integrationtests.NewReadColumns("col", 2),
@@ -57,7 +62,7 @@ func TestBatchSimple(t *testing.T) {
 				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
-						RelativeURL: &[]string{string("DB004/int_table/" + config.PK_DB_OPERATION)}[0],
+						RelativeURL: &[]string{string(testdbs.DB004 + "/int_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
 							Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
 							ReadColumns: integrationtests.NewReadColumns("col", 2),
@@ -72,7 +77,7 @@ func TestBatchSimple(t *testing.T) {
 				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
-						RelativeURL: &[]string{string("DB005/bigint_table/" + config.PK_DB_OPERATION)}[0],
+						RelativeURL: &[]string{string(testdbs.DB005 + "/bigint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
 							Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
 							ReadColumns: integrationtests.NewReadColumns("col", 2),
@@ -93,7 +98,7 @@ func TestBatchSimple(t *testing.T) {
 				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
-						RelativeURL: &[]string{string("DB004/int_table/" + config.PK_DB_OPERATION)}[0],
+						RelativeURL: &[]string{string(testdbs.DB004 + "/int_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
 							Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
 							ReadColumns: integrationtests.NewReadColumns("col", 2),
@@ -108,7 +113,7 @@ func TestBatchSimple(t *testing.T) {
 				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
-						RelativeURL: &[]string{string("DB005/bigint_table/" + config.PK_DB_OPERATION)}[0],
+						RelativeURL: &[]string{string(testdbs.DB005 + "/bigint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
 							Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
 							ReadColumns: integrationtests.NewReadColumns("col", 2),
@@ -123,7 +128,7 @@ func TestBatchSimple(t *testing.T) {
 				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
-						RelativeURL: &[]string{string("DB006/tinyint_table/" + config.PK_DB_OPERATION)}[0],
+						RelativeURL: &[]string{string(testdbs.DB006 + "/tinyint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
 							Filters:     integrationtests.NewFiltersKVs("id0", -128, "id1", 0),
 							ReadColumns: integrationtests.NewReadColumns("col", 2),
@@ -138,7 +143,7 @@ func TestBatchSimple(t *testing.T) {
 				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
-						RelativeURL: &[]string{string("DB007/smallint_table/" + config.PK_DB_OPERATION)}[0],
+						RelativeURL: &[]string{string(testdbs.DB007 + "/smallint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
 							Filters:     integrationtests.NewFiltersKVs("id0", 32767, "id1", 65535),
 							ReadColumns: integrationtests.NewReadColumns("col", 2),
@@ -153,7 +158,7 @@ func TestBatchSimple(t *testing.T) {
 				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
-						RelativeURL: &[]string{string("DB007/smallint_table/" + config.PK_DB_OPERATION)}[0],
+						RelativeURL: &[]string{string(testdbs.DB007 + "/smallint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
 							Filters:     integrationtests.NewFiltersKVs("id0", 1, "id1", 1),
 							ReadColumns: integrationtests.NewReadColumns("col", 2),
@@ -174,7 +179,7 @@ func TestBatchSimple(t *testing.T) {
 				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
-						RelativeURL: &[]string{string("DB004/int_table/" + config.PK_DB_OPERATION)}[0],
+						RelativeURL: &[]string{string(testdbs.DB004 + "/int_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
 							Filters:     integrationtests.NewFiltersKVs("id0", 100, "id1", 100),
 							ReadColumns: integrationtests.NewReadColumns("col", 2),
@@ -189,7 +194,7 @@ func TestBatchSimple(t *testing.T) {
 				{
 					SubOperation: api.BatchSubOp{
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
-						RelativeURL: &[]string{string("DB005/bigint_table/" + config.PK_DB_OPERATION)}[0],
+						RelativeURL: &[]string{string(testdbs.DB005 + "/bigint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
 							Filters:     integrationtests.NewFiltersKVs("id0", 100, "id1", 100),
 							ReadColumns: integrationtests.NewReadColumns("col", 2),
