@@ -66,10 +66,10 @@ func main() {
 	defer releaseBuffers()
 
 	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, quit)
-	defer cleanupServers()
 	if err != nil {
 		panic(err)
 	}
+	defer cleanupServers()
 
 	/*
 	 kill (no param) default send syscall.SIGTERM
