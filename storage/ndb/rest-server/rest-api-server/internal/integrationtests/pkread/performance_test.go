@@ -54,7 +54,7 @@ func BenchmarkSimple(b *testing.B) {
 		start := time.Now()
 
 		b.RunParallel(func(bp *testing.PB) {
-			url := integrationtests.NewPKReadURL(testdbs.Benchmark, table)
+			url := testutils.NewPKReadURL(testdbs.Benchmark, table)
 			operationId := fmt.Sprintf("operation_%d", threadId)
 			threadId++
 
@@ -132,7 +132,7 @@ func runner(b *testing.B, tc testutils.TlsContext, db string, table string, maxR
 		select {
 		case opId := <-load:
 			rowId := opId % maxRowID
-			url := integrationtests.NewPKReadURL(db, table)
+			url := testutils.NewPKReadURL(db, table)
 			col := "id0"
 			param := api.PKReadBody{
 				Filters:     integrationtests.NewFilter(&col, rowId),

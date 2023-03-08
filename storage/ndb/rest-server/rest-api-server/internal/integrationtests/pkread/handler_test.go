@@ -42,7 +42,7 @@ func TestPKReadOmitRequired(t *testing.T) {
 				OperationID: integrationtests.NewOperationID(64),
 			}
 
-			url := integrationtests.NewPKReadURL("db", "table")
+			url := testutils.NewPKReadURL("db", "table")
 
 			body, _ := json.MarshalIndent(param, "", "\t")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest,
@@ -78,7 +78,7 @@ func TestPKReadLargeColumns(t *testing.T) {
 				OperationID: integrationtests.NewOperationID(64),
 			}
 			body, _ := json.MarshalIndent(param, "", "\t")
-			url := integrationtests.NewPKReadURL("db", "table")
+			url := testutils.NewPKReadURL("db", "table")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body),
 				http.StatusBadRequest, "Field validation for 'Column' failed on the 'max' tag")
 
@@ -99,16 +99,16 @@ func TestPKReadLargeColumns(t *testing.T) {
 				OperationID: integrationtests.NewOperationID(64),
 			}
 			body, _ = json.MarshalIndent(param, "", "\t")
-			url1 := integrationtests.NewPKReadURL(integrationtests.RandString(65), "table")
+			url1 := testutils.NewPKReadURL(integrationtests.RandString(65), "table")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url1, string(body),
 				http.StatusBadRequest, "Field validation for 'DB' failed on the 'max' tag")
-			url2 := integrationtests.NewPKReadURL("db", integrationtests.RandString(65))
+			url2 := testutils.NewPKReadURL("db", integrationtests.RandString(65))
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url2, string(body),
 				http.StatusBadRequest, "Field validation for 'Table' failed on the 'max' tag")
-			url3 := integrationtests.NewPKReadURL("", "table")
+			url3 := testutils.NewPKReadURL("", "table")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url3, string(body),
 				http.StatusBadRequest, "Field validation for 'DB' failed on the 'min' tag")
-			url4 := integrationtests.NewPKReadURL("db", "")
+			url4 := testutils.NewPKReadURL("db", "")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url4, string(body), http.StatusBadRequest,
 				"Field validation for 'Table' failed on the 'min' tag")
 		})
@@ -127,7 +127,7 @@ func TestPKInvalidIdentifier(t *testing.T) {
 				OperationID: integrationtests.NewOperationID(64),
 			}
 			body, _ := json.MarshalIndent(param, "", "\t")
-			url := integrationtests.NewPKReadURL("db", "table")
+			url := testutils.NewPKReadURL("db", "table")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest,
 				fmt.Sprintf("invalid character '%U' ", rune(0x0000)))
 
@@ -150,10 +150,10 @@ func TestPKInvalidIdentifier(t *testing.T) {
 				OperationID: integrationtests.NewOperationID(64),
 			}
 			body, _ = json.MarshalIndent(param, "", "\t")
-			url1 := integrationtests.NewPKReadURL("db"+string(rune(0x10000)), "table")
+			url1 := testutils.NewPKReadURL("db"+string(rune(0x10000)), "table")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url1, string(body), http.StatusBadRequest,
 				fmt.Sprintf("invalid character '%U'", rune(0x10000)))
-			url2 := integrationtests.NewPKReadURL("db", "table"+string(rune(0x10000)))
+			url2 := testutils.NewPKReadURL("db", "table"+string(rune(0x10000)))
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url2, string(body), http.StatusBadRequest,
 				fmt.Sprintf("invalid character '%U'", rune(0x10000)))
 		})
@@ -172,7 +172,7 @@ func TestPKUniqueParams(t *testing.T) {
 				ReadColumns: &readColumns,
 				OperationID: integrationtests.NewOperationID(64),
 			}
-			url := integrationtests.NewPKReadURL("db", "table")
+			url := testutils.NewPKReadURL("db", "table")
 			body, _ := json.MarshalIndent(param, "", "\t")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest,
 				"field validation for 'ReadColumns' failed on the 'unique' tag")
@@ -219,10 +219,10 @@ func TestPKERROR_011(t *testing.T) {
 
 			body, _ := json.MarshalIndent(param, "", "\t")
 
-			url := integrationtests.NewPKReadURL("DB001_XXX", "table_1")
+			url := testutils.NewPKReadURL("DB001_XXX", "table_1")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusUnauthorized, "")
 
-			url = integrationtests.NewPKReadURL(testdbs.DB001, "table_1_XXX")
+			url = testutils.NewPKReadURL(testdbs.DB001, "table_1_XXX")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest, common.ERROR_011())
 		})
 }
@@ -241,7 +241,7 @@ func TestPKERROR_012(t *testing.T) {
 
 			body, _ := json.MarshalIndent(param, "", "\t")
 
-			url := integrationtests.NewPKReadURL(testdbs.DB001, "table_1")
+			url := testutils.NewPKReadURL(testdbs.DB001, "table_1")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest, common.ERROR_012())
 		})
 }
@@ -258,7 +258,7 @@ func TestPKERROR_013_ERROR_014(t *testing.T) {
 				OperationID: integrationtests.NewOperationID(64),
 			}
 			body, _ := json.MarshalIndent(param, "", "\t")
-			url := integrationtests.NewPKReadURL(testdbs.DB002, "table_1")
+			url := testutils.NewPKReadURL(testdbs.DB002, "table_1")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest, common.ERROR_013())
 
 			// send an other request with two pk cols but wrong names
@@ -268,7 +268,7 @@ func TestPKERROR_013_ERROR_014(t *testing.T) {
 				OperationID: integrationtests.NewOperationID(64),
 			}
 			body, _ = json.MarshalIndent(param, "", "\t")
-			url = integrationtests.NewPKReadURL(testdbs.DB002, "table_1")
+			url = testutils.NewPKReadURL(testdbs.DB002, "table_1")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest, common.ERROR_014())
 		})
 }
