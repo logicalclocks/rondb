@@ -546,13 +546,10 @@ func BatchTest(t *testing.T, tests map[string]api.BatchOperationTestInfo, isBina
 			dbNamesMap := map[string]bool{}
 			dbNamesArr := []string{}
 			for _, op := range testInfo.Operations {
-				if _, ok := dbNamesMap[op.DB]; !ok {
-					dbNamesMap[op.DB] = true
-				}
+				dbNamesMap[op.DB] = true
 			}
-
-			for k := range dbNamesMap {
-				dbNamesArr = append(dbNamesArr, k)
+			for db := range dbNamesMap {
+				dbNamesArr = append(dbNamesArr, db)
 			}
 
 			WithDBs(t, dbNamesArr, func(tc testutils.TlsContext) {
