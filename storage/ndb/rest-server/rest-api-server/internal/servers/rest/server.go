@@ -76,6 +76,8 @@ type RouteHandler struct {
 }
 
 func registerHandlers(router *gin.Engine, heap *heap.Heap) {
+	router.Use(ErrorHandler)
+
 	versionGroup := router.Group(config.VERSION_GROUP)
 
 	routeHandler := &RouteHandler{
@@ -96,4 +98,19 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap) {
 	// pk read
 	tableSpecificGroup := versionGroup.Group(config.DB_TABLE_PP)
 	tableSpecificGroup.POST(config.PK_DB_OPERATION, routeHandler.PkRead)
+}
+
+// TODO: Pass logger to this like in https://stackoverflow.com/a/69948929/9068781
+func ErrorHandler(c *gin.Context) {
+	c.Next()
+
+	for _, ginErr := range c.Errors {
+		log.Errorf("GIN error: %s", ginErr.Error())
+	}
+
+	if len(c.Errors) > 0 {
+		// Just get the last error to the client
+		// status -1 doesn't overwrite existing status code
+		c.JSON(-1, c.Errors[len(c.Errors)-1].Error())
+	}
 }
