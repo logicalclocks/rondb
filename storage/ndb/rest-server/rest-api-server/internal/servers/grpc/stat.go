@@ -13,7 +13,7 @@ import (
 func (s *RonDBServer) Stat(ctx context.Context, reqProto *api.StatRequestProto) (*api.StatResponseProto, error) {
 	apiKey, err := s.getApiKey(ctx)
 	statResp := api.StatResponse{}
-	httpStatus, err := handlers.Handle(s.statsHandler, &apiKey, nil, statResp)
+	httpStatus, err := handlers.Handle(s.statsHandler, &apiKey, nil, &statResp)
 	statusCode := common.HttpStatusToGrpcCode(httpStatus)
 	if err != nil {
 		return nil, status.Error(statusCode, err.Error())
