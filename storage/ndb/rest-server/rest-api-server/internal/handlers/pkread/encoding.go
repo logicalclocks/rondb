@@ -39,38 +39,38 @@ import (
 // Also checkout internal/router/handler/pkread/encoding-scheme.png
 
 /*
-	 PK READ Request
-	 ===============
+	PK READ Request
+	===============
 
-	 HEADER
-	 ======
-	 [   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ] ....
-	 Type     Capacity  Length     DB         Table      PK     Read Cols    Op_ID    TX_ID
-								 Offset      Offset    Offset     Offset     Offset   Offset
-	 BODY
-	 ====
-	 [ bytes ... ]
-	 Null terminated DB Name
+	HEADER
+	======
+	[   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ] ....
+	Type     Capacity  Length     DB         Table      PK     Read Cols    Op_ID    TX_ID
+								Offset      Offset    Offset     Offset     Offset   Offset
+	BODY
+	====
+	[ bytes ... ]
+	Null terminated DB Name
 
-	 [ bytes ... ]
-	 Null terminated Table Name
+	[ bytes ... ]
+	Null terminated Table Name
 
-	 [   4B   ][   4B   ]...[   4B   ][   4B   ][   4B   ][   bytes ...  ][ 2B ] [ bytes... ][   4B   ][   4B   ] ....
-	 Count     kv 1          kv n       key       value     key          val     val
-			 offset        offset     offset     offset                 size
-										 ^
-				 ________________________|                                                     ^
-							 _________________________________________________________________|
+	[   4B   ][   4B   ]...[   4B   ][   4B   ][   4B   ][   bytes ...  ][ 2B ] [ bytes... ][   4B   ][   4B   ] ....
+	Count     kv 1          kv n       key       value     key          val     val
+			offset        offset     offset     offset                 size
+										^
+				________________________|                                                     ^
+							_________________________________________________________________|
 
 
-	 [   4B   ] [  4B     ] [  4B     ] ...
-	 Count   col1 offset   col2 offset
+	[   4B   ] [  4B     ] [  4B     ] ...
+	Count   col1 offset   col2 offset
 
-	 [  4B ] [   bytes ... ] [  4B ] [   bytes ... ] ...
-	 type     null terminated column names
+	[  4B ] [   bytes ... ] [  4B ] [   bytes ... ] ...
+	type     null terminated column names
 
-	 [ bytes ... ] ...
-	 null terminated  operation Id
+	[ bytes ... ] ...
+	null terminated  operation Id
 */
 
 func CreateNativeRequest(
