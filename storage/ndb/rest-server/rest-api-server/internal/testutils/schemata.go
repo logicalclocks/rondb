@@ -8,6 +8,7 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
@@ -31,7 +32,7 @@ func CreateDatabases(
 			cleanupDbs()
 			return fmt.Errorf("failed running createSchema for db '%s'; error: %w", db, err), cleanupDbs
 		}
-		t.Logf("successfully ran all queries to instantiate db '%s'", db)
+		log.Debugf("successfully ran all queries to instantiate db '%s'", db)
 		cleanupDbs = func() {
 			dropDatabases += fmt.Sprintf("DROP DATABASE %s;\n", db)
 			err = runQueries(t, dropDatabases)
@@ -61,7 +62,7 @@ func runQueries(t testing.TB, sqlQueries string) error {
 
 	conf := config.GetAll()
 	connectionString := config.GenerateMysqldConnectString(conf)
-	t.Logf("Connecting to mysqld with '%s'", connectionString)
+	log.Debugf("Connecting to mysqld with '%s'", connectionString)
 	dbConnection, err := sql.Open("mysql", connectionString)
 	if err != nil {
 		return fmt.Errorf("failed to connect to db; error: %v", err)
@@ -70,7 +71,7 @@ func runQueries(t testing.TB, sqlQueries string) error {
 
 	for _, query := range splitQueries {
 		query := strings.TrimSpace(query)
-		t.Logf("running query: \n%s", query)
+		log.Debugf("running query: \n%s", query)
 		_, err := dbConnection.Exec(query)
 		if err != nil {
 			return fmt.Errorf("failed to run SQL query '%s'; error: %v", query, err)

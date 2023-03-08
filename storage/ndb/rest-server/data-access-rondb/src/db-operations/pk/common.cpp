@@ -726,7 +726,11 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     //
 
     TruncatePrecision(&l_time, status.fractional_digits, precision);
-    timeval my_tv{epoch, (Int64)l_time.second_part};
+    // On Mac timeval.tv_usec is Int32 and on linux it is Int64.
+    // Inorder to be compatible we cast l_time.second_part to Int32
+    // This will not create problems as only six digit nanoseconds 
+    // are stored in Timestamp2
+    timeval my_tv{epoch, (Int32)l_time.second_part};
     my_timestamp_to_binary(&my_tv, packed, precision);
 
     size_t col_byte_size = col->getSizeInBytes();
