@@ -13,7 +13,7 @@ func ValidateBody(params *api.PKReadParams) error {
 	for _, filter := range *params.Filters {
 		// make sure filter columns are valid
 		if err := validators.ValidateDBIdentifier(filter.Column); err != nil {
-			return err
+			return fmt.Errorf("filter column name is invalid; error: %w", err)
 		}
 	}
 
@@ -31,7 +31,7 @@ func ValidateBody(params *api.PKReadParams) error {
 	if params.ReadColumns != nil {
 		for _, col := range *params.ReadColumns {
 			if err := validators.ValidateDBIdentifier(col.Column); err != nil {
-				return err
+				return fmt.Errorf("read column name is invalid; error: %w", err)
 			}
 		}
 	}

@@ -17,7 +17,7 @@ func ValidateDBIdentifier(identifier *string) error {
 	//https://dev.mysql.com/doc/refman/8.0/en/identifiers.html
 	for _, r := range *identifier {
 		if !((r >= rune(0x0001) && r <= rune(0x007F)) || (r >= rune(0x0080) && r <= rune(0x0FFF))) {
-			return fmt.Errorf("field validation failed. Invalid character '%U' ", r)
+			return fmt.Errorf("identifier carries an invalid character '%U' ", r)
 		}
 	}
 	return nil

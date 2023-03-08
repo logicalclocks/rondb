@@ -104,8 +104,8 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap) {
 func ErrorHandler(c *gin.Context) {
 	c.Next()
 
-	for _, ginErr := range c.Errors {
-		log.Errorf("GIN error: %s", ginErr.Error())
+	for i, ginErr := range c.Errors {
+		log.Errorf("GIN error nr %d: %s", i, ginErr.Error())
 	}
 
 	if len(c.Errors) > 0 {

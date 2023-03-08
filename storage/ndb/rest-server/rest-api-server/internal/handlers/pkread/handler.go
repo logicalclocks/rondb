@@ -19,6 +19,7 @@
 package pkread
 
 import (
+	"fmt"
 	"net/http"
 
 	"hopsworks.ai/rdrs/internal/config"
@@ -41,11 +42,11 @@ func (h Handler) Validate(request interface{}) error {
 	pkReadParams := request.(*api.PKReadParams)
 
 	if err := validators.ValidateDBIdentifier(pkReadParams.DB); err != nil {
-		return err
+		return fmt.Errorf("db name is invalid; error: %w", err)
 	}
 
 	if err := validators.ValidateDBIdentifier(pkReadParams.Table); err != nil {
-		return err
+		return fmt.Errorf("table name is invalid; error: %w", err)
 	}
 
 	return ValidateBody(pkReadParams)
