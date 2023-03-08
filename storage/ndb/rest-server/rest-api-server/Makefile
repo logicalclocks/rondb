@@ -26,9 +26,6 @@ COVERAGE_OUTPUT_FILE?=./coverage.out
 COVERAGE_HTML_OUTPUT_FILE?=./coverage.html
 COVERAGE_FUNC_OUTPUT_FILE?=/dev/stdout
 
-DIRS = $(shell find . -type d)
-FILES = $(shell find . -type f -iname '*.go')
-
 all: rdrs
 #static linking https://ragoragino.github.io/softwareengineering/miscellaneous/2021/03/23/cgo-static.html
 #-tags osusergo,netgo
@@ -41,6 +38,8 @@ BUILD_COMMAND=go build -ldflags="-w \
      -o ${OUTPUT_DIR}/rdrs ./cmd/server/main.go
 
 rdrs:
+	export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
+	export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
 	CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" ${BUILD_COMMAND}
 
 clean:
@@ -61,7 +60,11 @@ build_proto:
 test:
 	@go clean -testcache
 	@echo "Getting cross-package (integration) coverage and writing it to $(COVERAGE_OUTPUT_FILE)"
-	CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" RDRS_CONFIG_FILE=$(RDRS_CONFIG_FILE) go test -p 1 -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg ./... `go list ./... | grep -v cmd`
+	export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
+	export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
+	export RDRS_CONFIG_FILE=$(RDRS_CONFIG_FILE) && \
+	export CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" && \
+	go test -p 1 -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg ./... `go list ./... | grep -v cmd`
 
 print-func-coverage: test
 	go tool cover -func $(COVERAGE_OUTPUT_FILE) > $(COVERAGE_FUNC_OUTPUT_FILE)
