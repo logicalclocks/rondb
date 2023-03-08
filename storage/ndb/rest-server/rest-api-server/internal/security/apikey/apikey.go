@@ -42,7 +42,7 @@ func ValidateAPIKey(apiKey *string, dbs ...*string) error {
 	keyFoundInCache, allowedAccess := authcache.FindAndValidateCache(apiKey, dbs...)
 	if keyFoundInCache {
 		if !allowedAccess {
-			return errors.New("unauthorized")
+			return errors.New("unauthorized: no access to db registered in cache")
 		}
 		return nil
 	}
@@ -59,7 +59,7 @@ func ValidateAPIKey(apiKey *string, dbs ...*string) error {
 
 	keyFoundInCache, allowedAccess = authcache.FindAndValidateCache(apiKey, dbs...)
 	if !keyFoundInCache || !allowedAccess {
-		return errors.New("unauthorized")
+		return errors.New("unauthorized: no access to db registered")
 	}
 	return nil
 }
