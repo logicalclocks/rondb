@@ -72,13 +72,6 @@ func Start(
 	return nil, func() {
 		log.Info("Gracefully stopping gRPC server")
 		grpcServer.GracefulStop()
-		/*
-			 // This seems to already be run with GracefulStop()
-			 err = grpcListener.Close()
-			 if err != nil {
-				 log.Errorf("failed closing gRPC listener; error: %v", err)
-			 }
-		*/
 	}
 }
 

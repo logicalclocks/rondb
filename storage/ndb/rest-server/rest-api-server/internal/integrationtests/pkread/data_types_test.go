@@ -129,7 +129,7 @@ func TestDataTypesInt(t *testing.T) {
 
 		"assigningBiggerVals": {
 			PkReq: api.PKReadBody{
-				Filters:     integrationtests.NewFiltersKVs("id0", 2147483648, "id1", 4294967295), //bigger than the range
+				Filters:     integrationtests.NewFiltersKVs("id0", 2147483648, "id1", 4294967295), // bigger than the range
 				ReadColumns: integrationtests.NewReadColumns("col", 2),
 			},
 			Table:          testTable,

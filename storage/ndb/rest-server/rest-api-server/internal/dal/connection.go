@@ -26,9 +26,12 @@ import "C"
 import (
 	"net/http"
 	"unsafe"
+
+	"hopsworks.ai/rdrs/internal/log"
 )
 
 func InitRonDBConnection(connStr string, find_available_node_id bool) *DalError {
+	log.Info("Initialising RonDB connection")
 	cs := C.CString(connStr)
 	defer C.free(unsafe.Pointer(cs))
 	ret := C.init(cs, C.uint(btoi(find_available_node_id)))
@@ -41,6 +44,7 @@ func InitRonDBConnection(connStr string, find_available_node_id bool) *DalError 
 }
 
 func ShutdownConnection() *DalError {
+	log.Info("Shutting down RonDB connection")
 	ret := C.shutdown_connection()
 
 	if ret.http_code != http.StatusOK {

@@ -39,6 +39,7 @@ func CreateAllTLSCerts() (tlsCtx TlsContext, cleanup func(), err error) {
 
 	conf := config.GetAll()
 	cleanup = func() {
+		log.Info("Removing all TLS test certificates")
 		err = os.RemoveAll(certsDir)
 		if err != nil {
 			log.Error(err.Error())
