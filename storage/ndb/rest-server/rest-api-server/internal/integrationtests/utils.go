@@ -554,11 +554,11 @@ func sendGRPCPKReadRequest(
 	}
 
 	if respCode != expectedStatus {
-		t.Fatalf("Test failed. Expected: %d, Got: %d. Complete Error Message: %v ", expectedStatus, respCode, errStr)
+		t.Fatalf("Received unexpected status; Expected: %d, Got: %d; Complete Error Message: '%s'", expectedStatus, respCode, errStr)
 	}
 
 	if respCode != http.StatusOK && !strings.Contains(errStr, testInfo.ErrMsgContains) {
-		t.Fatalf("Test failed. Error does not contain string: %s. Complete Error Message: %s", testInfo.ErrMsgContains, errStr)
+		t.Fatalf("Received unexpected error message; It does not contain string: '%s'; Complete Error Message: '%s'", testInfo.ErrMsgContains, errStr)
 	}
 
 	if respCode == http.StatusOK {
@@ -663,11 +663,11 @@ func sendGRPCBatchRequest(t *testing.T, tc testutils.TlsContext,
 	}
 
 	if respCode != expectedStatus {
-		t.Fatalf("Test failed. Expected: %d, Got: %d. Complete Error Message: %v ", expectedStatus, respCode, errStr)
+		t.Fatalf("Received unexpected status; Expected: %d, Got: %d; Complete Error Message: '%s'", expectedStatus, respCode, errStr)
 	}
 
 	if respCode != http.StatusOK && !strings.Contains(errStr, testInfo.ErrMsgContains) {
-		t.Fatalf("Test failed. Error does not contain string: %s. Complete Error Message: %s", testInfo.ErrMsgContains, errStr)
+		t.Fatalf("Received unexpected error message; It does not contain string: '%s'; Complete Error Message: '%s'", testInfo.ErrMsgContains, errStr)
 	}
 
 	if respCode == http.StatusOK {

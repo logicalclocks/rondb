@@ -141,7 +141,7 @@ func sendGRPCStatRequest(t *testing.T, tc testutils.TlsContext) *api.StatRespons
 	}
 
 	if respCode != expectedStatus {
-		t.Fatalf("Test failed. Expected: %d, Got: %d. Complete Error Message: %v ", expectedStatus, respCode, errStr)
+		t.Fatalf("Received unexpected status; Expected: %d, Got: %d; Complete Error Message: %v ", expectedStatus, respCode, errStr)
 	}
 
 	return api.ConvertStatResponseProto(respProto)
