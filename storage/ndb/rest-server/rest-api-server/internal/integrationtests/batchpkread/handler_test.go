@@ -421,7 +421,7 @@ func arrayColumnBatchTestSubOp(t *testing.T, table string, database string, isBi
 func TestBatchMissingReqField(t *testing.T) {
 	integrationtests.WithDBs(t, []string{testdbs.DB000},
 		func(tlsCtx testutils.TlsContext) {
-			url := integrationtests.NewBatchReadURL()
+			url := testutils.NewBatchReadURL()
 			// Test missing method
 			operations := NewOperationsTBD(t, 3)
 			operations[1].Method = nil
@@ -467,7 +467,7 @@ func NewOperationsTBD(t *testing.T, numOps int) []api.BatchSubOp {
 func NewOperationTBD(t *testing.T) api.BatchSubOp {
 	pkOp := integrationtests.NewPKReadReqBodyTBD()
 	method := "POST"
-	relativeURL := integrationtests.NewPKReadURL("db", "table")
+	relativeURL := testutils.NewPKReadURL("db", "table")
 
 	return api.BatchSubOp{
 		Method:      &method,

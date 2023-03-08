@@ -41,7 +41,6 @@ import (
 	"hopsworks.ai/rdrs/internal/servers"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
-	"hopsworks.ai/rdrs/version"
 )
 
 func SendHttpRequest(
@@ -55,7 +54,7 @@ func SendHttpRequest(
 ) (int, string) {
 	t.Helper()
 
-	client := setupHttpClient(t, tlsCtx)
+	client := testutils.SetupHttpClient(t, tlsCtx)
 	var req *http.Request
 	var resp *http.Response
 	var err error
@@ -100,12 +99,6 @@ func SendHttpRequest(
 	}
 
 	return respCode, respBody
-}
-
-func setupHttpClient(t testing.TB, tlsCtx testutils.TlsContext) *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{TLSClientConfig: testutils.GetClientTLSConfig(t, tlsCtx)},
-	}
 }
 
 func ValidateResHttp(t testing.TB, testInfo api.PKTestInfo, resp string, isBinaryData bool) {
@@ -321,53 +314,6 @@ func NewReadColumn(col string) *[]api.ReadColumn {
 	return &readColumns
 }
 
-func NewPKReadURL(db string, table string) string {
-	conf := config.GetAll()
-	url := fmt.Sprintf("%s:%d%s%s",
-		conf.REST.ServerIP,
-		conf.REST.ServerPort,
-		config.DB_OPS_EP_GROUP,
-		config.PK_DB_OPERATION,
-	)
-	url = strings.Replace(url, ":"+config.DB_PP, db, 1)
-	url = strings.Replace(url, ":"+config.TABLE_PP, table, 1)
-	appendURLProtocol(&url)
-	return url
-}
-
-func NewBatchReadURL() string {
-	conf := config.GetAll()
-	url := fmt.Sprintf("%s:%d/%s/%s",
-		conf.REST.ServerIP,
-		conf.REST.ServerPort,
-		version.API_VERSION,
-		config.BATCH_OPERATION,
-	)
-	appendURLProtocol(&url)
-	return url
-}
-
-func NewStatURL() string {
-	conf := config.GetAll()
-	url := fmt.Sprintf("%s:%d/%s/%s",
-		conf.REST.ServerIP,
-		conf.REST.ServerPort,
-		version.API_VERSION,
-		config.STAT_OPERATION,
-	)
-	appendURLProtocol(&url)
-	return url
-}
-
-func appendURLProtocol(url *string) {
-	conf := config.GetAll()
-	if conf.Security.EnableTLS {
-		*url = fmt.Sprintf("https://%s", *url)
-	} else {
-		*url = fmt.Sprintf("http://%s", *url)
-	}
-}
-
 func NewOperationID(size int) *string {
 	opID := RandString(size)
 	return &opID
@@ -579,7 +525,7 @@ func GetStatusCodeFromError(t *testing.T, err error) int {
 }
 
 func pkRESTTest(t *testing.T, testInfo api.PKTestInfo, tc testutils.TlsContext, isBinaryData bool) {
-	url := NewPKReadURL(testInfo.Db, testInfo.Table)
+	url := testutils.NewPKReadURL(testInfo.Db, testInfo.Table)
 	body, err := json.MarshalIndent(testInfo.PkReq, "", "\t")
 	if err != nil {
 		t.Fatalf("Failed to marshall test request %v", err)
@@ -686,7 +632,7 @@ func batchRESTTest(t *testing.T, testInfo api.BatchOperationTestInfo, tc testuti
 	}
 	batch := api.BatchOpRequest{Operations: &subOps}
 
-	url := NewBatchReadURL()
+	url := testutils.NewBatchReadURL()
 	body, err := json.MarshalIndent(batch, "", "\t")
 	if err != nil {
 		t.Fatalf("Failed to marshall test request %v", err)

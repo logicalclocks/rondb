@@ -3,6 +3,7 @@ package testutils
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -11,6 +12,20 @@ import (
 	"google.golang.org/grpc/metadata"
 	"hopsworks.ai/rdrs/internal/config"
 )
+
+//////////////////////
+//////// HTTP ////////
+//////////////////////
+
+func SetupHttpClient(t testing.TB, tlsCtx TlsContext) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: GetClientTLSConfig(t, tlsCtx)},
+	}
+}
+
+//////////////////////
+//////// gRPC ////////
+//////////////////////
 
 func CreateGrpcConn(t testing.TB, tc TlsContext, withAuth, withTLS bool) (*grpc.ClientConn, error) {
 	t.Helper()
