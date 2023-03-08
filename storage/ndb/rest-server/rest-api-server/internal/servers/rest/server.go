@@ -87,7 +87,7 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap) {
 	}
 
 	// ping
-	versionGroup.GET("/ping", routeHandler.Ping)
+	versionGroup.GET("/"+config.PING_OPERATION, routeHandler.Ping)
 
 	// stat
 	versionGroup.GET("/"+config.STAT_OPERATION, routeHandler.Stat)

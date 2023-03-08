@@ -30,9 +30,10 @@ const VERSION_GROUP = "/" + version.API_VERSION
 const DB_OPS_EP_GROUP = VERSION_GROUP + DB_TABLE_PP
 const DBS_OPS_EP_GROUP = VERSION_GROUP + "/"
 
+const PING_OPERATION = "ping"
+const STAT_OPERATION = "stat"
 const PK_DB_OPERATION = "pk-read"
 const BATCH_OPERATION = "batch"
-const STAT_OPERATION = "stat"
 
 const PK_HTTP_VERB = "POST"
 const BATCH_HTTP_VERB = "POST"
