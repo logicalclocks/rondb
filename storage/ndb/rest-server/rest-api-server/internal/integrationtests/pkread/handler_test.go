@@ -90,7 +90,7 @@ func TestPKReadLargeColumns(t *testing.T) {
 			}
 			body, _ = json.MarshalIndent(param, "", "\t")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB,
-				url, string(body), http.StatusBadRequest, "field length validation failed")
+				url, string(body), http.StatusBadRequest, "identifier is too large")
 
 			// Test. Large db and table names
 			param = api.PKReadBody{
@@ -115,7 +115,6 @@ func TestPKReadLargeColumns(t *testing.T) {
 }
 
 func TestPKInvalidIdentifier(t *testing.T) {
-
 	integrationtests.WithDBs(t, []string{testdbs.DB000},
 		func(tc testutils.TlsContext) {
 			//Valid chars [ U+0001 .. U+007F] and [ U+0080 .. U+FFFF]
@@ -130,7 +129,7 @@ func TestPKInvalidIdentifier(t *testing.T) {
 			body, _ := json.MarshalIndent(param, "", "\t")
 			url := integrationtests.NewPKReadURL("db", "table")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest,
-				fmt.Sprintf("field validation failed. Invalid character '%U' ", rune(0x0000)))
+				fmt.Sprintf("invalid character '%U' ", rune(0x0000)))
 
 			// Test. invalid read col
 			col = "col"
@@ -142,7 +141,7 @@ func TestPKInvalidIdentifier(t *testing.T) {
 			}
 			body, _ = json.MarshalIndent(param, "", "\t")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusBadRequest,
-				fmt.Sprintf("field validation failed. Invalid character '%U'", rune(0x10000)))
+				fmt.Sprintf("invalid character '%U'", rune(0x10000)))
 
 			// Test. Invalid path parameteres
 			param = api.PKReadBody{
@@ -153,10 +152,10 @@ func TestPKInvalidIdentifier(t *testing.T) {
 			body, _ = json.MarshalIndent(param, "", "\t")
 			url1 := integrationtests.NewPKReadURL("db"+string(rune(0x10000)), "table")
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url1, string(body), http.StatusBadRequest,
-				fmt.Sprintf("field validation failed. Invalid character '%U'", rune(0x10000)))
+				fmt.Sprintf("invalid character '%U'", rune(0x10000)))
 			url2 := integrationtests.NewPKReadURL("db", "table"+string(rune(0x10000)))
 			integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url2, string(body), http.StatusBadRequest,
-				fmt.Sprintf("field validation failed. Invalid character '%U'", rune(0x10000)))
+				fmt.Sprintf("invalid character '%U'", rune(0x10000)))
 		})
 }
 
