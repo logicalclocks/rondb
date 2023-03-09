@@ -23,17 +23,12 @@ import (
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/integrationtests"
-	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 func TestBatchSimple(t *testing.T) {
-
-	conf := config.GetAll()
-	log.InitLogger(conf.Log)
-
 	tests := map[string]api.BatchOperationTestInfo{
 		"simple1": { // single operation batch
 			HttpCode: http.StatusOK,
@@ -210,7 +205,6 @@ func TestBatchSimple(t *testing.T) {
 			ErrMsgContains: "",
 		},
 	}
-
 	integrationtests.BatchTest(t, tests, false)
 }
 
@@ -234,7 +228,6 @@ func TestBatchDate(t *testing.T) {
 			},
 		},
 	}
-
 	integrationtests.BatchTest(t, tests, false)
 }
 
@@ -272,7 +265,6 @@ func TestBatchDateTime(t *testing.T) {
 			ErrMsgContains: "",
 		},
 	}
-
 	integrationtests.BatchTest(t, tests, false)
 }
 
@@ -308,7 +300,6 @@ func TestBatchTime(t *testing.T) {
 			ErrMsgContains: "",
 		},
 	}
-
 	integrationtests.BatchTest(t, tests, false)
 }
 
@@ -456,7 +447,6 @@ func TestBatchMissingReqField(t *testing.T) {
 	body, _ = json.Marshal(operationsWrapper)
 	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
 		"Error:Field validation for 'Filters' failed")
-
 }
 
 func NewOperationsTBD(t *testing.T, numOps int) []api.BatchSubOp {
