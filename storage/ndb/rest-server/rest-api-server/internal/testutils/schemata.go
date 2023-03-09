@@ -28,16 +28,8 @@ func CreateDatabases(
 	defer dbConn.Close()
 
 	dropDatabases := ""
-	for db, createSchema := range createSchemata {
-		err = runQueries(createSchema, dbConn)
-		if err != nil {
-			cleanupDbs()
-			err = fmt.Errorf("failed running createSchema for db '%s'; error: %w", db, err)
-			return err, func() {}
-		}
-		log.Debugf("successfully ran all queries to instantiate db '%s'", db)
-		cleanupDbs = func() {
-			dropDatabases += fmt.Sprintf("DROP DATABASE %s;\n", db)
+	cleanupDbsWrapper := func(dropDatabases string) func() {
+		return func() {
 			// We need a new DB connection since this might be called after the
 			// initial connection is closed.
 			err = runQueriesWithConnection(dropDatabases)
@@ -46,7 +38,17 @@ func CreateDatabases(
 			}
 		}
 	}
-	return
+	for db, createSchema := range createSchemata {
+		err = runQueries(createSchema, dbConn)
+		if err != nil {
+			cleanupDbsWrapper(dropDatabases)()
+			err = fmt.Errorf("failed running createSchema for db '%s'; error: %w", db, err)
+			return err, func() {}
+		}
+		log.Debugf("successfully ran all queries to instantiate db '%s'", db)
+		dropDatabases += fmt.Sprintf("DROP DATABASE %s;\n", db)
+	}
+	return nil, cleanupDbsWrapper(dropDatabases)
 }
 
 func runQueriesWithConnection(sqlQueries string) error {
