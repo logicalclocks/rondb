@@ -111,6 +111,11 @@ func (r RonDB) Validate() error {
 	return nil
 }
 
+type TestParameters struct {
+	ClientCertFile string
+	ClientKeyFile  string
+}
+
 type Security struct {
 	EnableTLS                        bool
 	RequireAndVerifyClientCert       bool
@@ -119,6 +124,7 @@ type Security struct {
 	RootCACertFile                   string
 	UseHopsworksAPIKeys              bool
 	HopsworksAPIKeysCacheValiditySec int
+	TestParameters                   TestParameters
 }
 
 func (c Security) Validate() error {

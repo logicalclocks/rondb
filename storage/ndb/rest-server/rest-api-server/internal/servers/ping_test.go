@@ -23,10 +23,9 @@ func TestPing(t *testing.T) {
 
 	cleanupTLSCerts := func() {}
 	var err error
-	var tlsCtx testutils.TlsContext
 	if conf.Security.EnableTLS {
 		// The server will need this when starting up
-		tlsCtx, cleanupTLSCerts, err = testutils.CreateAllTLSCerts()
+		cleanupTLSCerts, err = testutils.CreateAllTLSCerts()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -50,7 +49,7 @@ func TestPing(t *testing.T) {
 	//////// gRPC ////////
 	//////////////////////
 
-	connection, err := testutils.CreateGrpcConn(&testing.B{}, tlsCtx, conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
+	connection, err := testutils.CreateGrpcConn(&testing.B{}, conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +69,7 @@ func TestPing(t *testing.T) {
 	//////// HTTP ////////
 	//////////////////////
 
-	httpClient := testutils.SetupHttpClient(t, tlsCtx)
+	httpClient := testutils.SetupHttpClient(t)
 
 	url := testutils.NewPingURL()
 	req, err := http.NewRequest(http.MethodGet, url, nil)

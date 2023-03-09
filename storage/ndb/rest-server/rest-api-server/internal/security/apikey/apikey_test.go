@@ -47,7 +47,7 @@ func TestAPIKey(t *testing.T) {
 	defer dal.ShutdownConnection()
 
 	databases := []string{testdbs.DB001, testdbs.DB002}
-	err, dropDatabases := testutils.CreateDatabases(t, true, databases...)
+	err, dropDatabases := testutils.CreateDatabases(true, databases...)
 	if err != nil {
 		t.Fatalf("failed creating databases %v; error: %v ", databases, err)
 	}
@@ -118,7 +118,7 @@ func TestAPIKeyCache1(t *testing.T) {
 	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 	databases := []string{testdbs.DB001, testdbs.DB002}
 
-	err, dropDatabases := testutils.CreateDatabases(t, true, databases...)
+	err, dropDatabases := testutils.CreateDatabases(true, databases...)
 	if err != nil {
 		t.Fatalf("failed creating databases %v; error: %v ", databases, err)
 	}
@@ -176,7 +176,7 @@ func TestAPIKeyCache2(t *testing.T) {
 	databases := []string{testdbs.DB001, testdbs.DB002}
 	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 
-	err, dropDatabases := testutils.CreateDatabases(t, true, databases...)
+	err, dropDatabases := testutils.CreateDatabases(true, databases...)
 	if err != nil {
 		t.Fatalf("failed creating databases %v; error: %v ", databases, err)
 	}
@@ -185,7 +185,7 @@ func TestAPIKeyCache2(t *testing.T) {
 	db3 := testdbs.DB003
 	err = ValidateAPIKey(&apiKey, &db3)
 	if err == nil {
-		t.Fatal("Database should not exist. Expected tes to fail")
+		t.Fatal("Database should not exist. Expected test to fail")
 	}
 	lastUpdated1 := authcache.RefreshExpiration(apiKey)
 

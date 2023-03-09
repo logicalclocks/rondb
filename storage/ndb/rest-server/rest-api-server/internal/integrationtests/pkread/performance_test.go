@@ -49,29 +49,28 @@ func BenchmarkSimple(b *testing.B) {
 	maxRows := testdbs.BENCH_DB_NUM_ROWS
 	opCount := 0
 	threadId := 0
-	integrationtests.WithDBs(b, []string{testdbs.Benchmark}, func(tc testutils.TlsContext) {
-		b.ResetTimer()
-		start := time.Now()
 
-		b.RunParallel(func(bp *testing.PB) {
-			url := testutils.NewPKReadURL(testdbs.Benchmark, table)
-			operationId := fmt.Sprintf("operation_%d", threadId)
-			threadId++
+	b.ResetTimer()
+	start := time.Now()
 
-			opCount++
-			reqBody := createReq(b, maxRows, opCount, operationId)
+	b.RunParallel(func(bp *testing.PB) {
+		url := testutils.NewPKReadURL(testdbs.Benchmark, table)
+		operationId := fmt.Sprintf("operation_%d", threadId)
+		threadId++
 
-			for bp.Next() {
-				integrationtests.SendHttpRequest(b, tc, config.PK_HTTP_VERB, url, reqBody, http.StatusOK, "")
-			}
-		})
-		b.StopTimer()
+		opCount++
+		reqBody := createReq(b, maxRows, opCount, operationId)
 
-		opsPerSecond := float64(numOps) / time.Since(start).Seconds()
-		nanoSecondsPerOp := float64(time.Since(start).Nanoseconds()) / float64(numOps)
-		b.Logf("Throughput: %f operations/second", opsPerSecond)
-		b.Logf("Latency: 	%f nanoseconds/operation", nanoSecondsPerOp)
+		for bp.Next() {
+			integrationtests.SendHttpRequest(b, config.PK_HTTP_VERB, url, reqBody, http.StatusOK, "")
+		}
 	})
+	b.StopTimer()
+
+	opsPerSecond := float64(numOps) / time.Since(start).Seconds()
+	nanoSecondsPerOp := float64(time.Since(start).Nanoseconds()) / float64(numOps)
+	b.Logf("Throughput: %f operations/second", opsPerSecond)
+	b.Logf("Latency: 	%f nanoseconds/operation", nanoSecondsPerOp)
 }
 
 func createReq(b *testing.B, maxRows, opCount int, operationId string) string {
@@ -107,27 +106,25 @@ func BenchmarkMT(b *testing.B) {
 		sharedLoad <- operationId
 	}
 
-	integrationtests.WithDBs(b, []string{testdbs.Benchmark}, func(tc testutils.TlsContext) {
-		b.ResetTimer()
-		start := time.Now()
+	b.ResetTimer()
+	start := time.Now()
 
-		for _, done := range donePerThread {
-			go runner(b, tc, testdbs.Benchmark, table, maxRows, sharedLoad, done)
-		}
+	for _, done := range donePerThread {
+		go runner(b, testdbs.Benchmark, table, maxRows, sharedLoad, done)
+	}
 
-		for _, done := range donePerThread {
-			<-done
-		}
+	for _, done := range donePerThread {
+		<-done
+	}
 
-		b.StopTimer()
-		opsPerSecond := float64(numOps) / time.Since(start).Seconds()
-		nanoSecondsPerOp := float64(time.Since(start).Nanoseconds()) / float64(b.N)
-		b.Logf("Throughput: %f operations/second", opsPerSecond)
-		b.Logf("Latency: 	%f nanoseconds/operation", nanoSecondsPerOp)
-	})
+	b.StopTimer()
+	opsPerSecond := float64(numOps) / time.Since(start).Seconds()
+	nanoSecondsPerOp := float64(time.Since(start).Nanoseconds()) / float64(b.N)
+	b.Logf("Throughput: %f operations/second", opsPerSecond)
+	b.Logf("Latency: 	%f nanoseconds/operation", nanoSecondsPerOp)
 }
 
-func runner(b *testing.B, tc testutils.TlsContext, db string, table string, maxRowID int, load chan int, done chan bool) {
+func runner(b *testing.B, db string, table string, maxRowID int, load chan int, done chan bool) {
 	for {
 		select {
 		case opId := <-load:
@@ -141,7 +138,7 @@ func runner(b *testing.B, tc testutils.TlsContext, db string, table string, maxR
 			}
 			body, _ := json.Marshal(param)
 
-			integrationtests.SendHttpRequest(b, tc, config.PK_HTTP_VERB, url, string(body), http.StatusOK, "")
+			integrationtests.SendHttpRequest(b, config.PK_HTTP_VERB, url, string(body), http.StatusOK, "")
 		default:
 			done <- true
 		}

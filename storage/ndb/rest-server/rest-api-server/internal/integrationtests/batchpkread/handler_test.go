@@ -424,41 +424,39 @@ func arrayColumnBatchTestSubOp(t *testing.T, table string, database string, isBi
 }
 
 func TestBatchMissingReqField(t *testing.T) {
-	integrationtests.WithDBs(t, []string{testdbs.DB000},
-		func(tlsCtx testutils.TlsContext) {
-			url := testutils.NewBatchReadURL()
-			// Test missing method
-			operations := NewOperationsTBD(t, 3)
-			operations[1].Method = nil
-			operationsWrapper := api.BatchOpRequest{Operations: &operations}
-			body, _ := json.Marshal(operationsWrapper)
-			integrationtests.SendHttpRequest(t, tlsCtx, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
-				"Error:Field validation for 'Method' failed ")
+	url := testutils.NewBatchReadURL()
+	// Test missing method
+	operations := NewOperationsTBD(t, 3)
+	operations[1].Method = nil
+	operationsWrapper := api.BatchOpRequest{Operations: &operations}
+	body, _ := json.Marshal(operationsWrapper)
+	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
+		"Error:Field validation for 'Method' failed ")
 
-			// Test missing relative URL
-			operations = NewOperationsTBD(t, 3)
-			operations[1].RelativeURL = nil
-			operationsWrapper = api.BatchOpRequest{Operations: &operations}
-			body, _ = json.Marshal(operationsWrapper)
-			integrationtests.SendHttpRequest(t, tlsCtx, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
-				"Error:Field validation for 'RelativeURL' failed ")
+	// Test missing relative URL
+	operations = NewOperationsTBD(t, 3)
+	operations[1].RelativeURL = nil
+	operationsWrapper = api.BatchOpRequest{Operations: &operations}
+	body, _ = json.Marshal(operationsWrapper)
+	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
+		"Error:Field validation for 'RelativeURL' failed ")
 
-			// Test missing body
-			operations = NewOperationsTBD(t, 3)
-			operations[1].Body = nil
-			operationsWrapper = api.BatchOpRequest{Operations: &operations}
-			body, _ = json.Marshal(operationsWrapper)
-			integrationtests.SendHttpRequest(t, tlsCtx, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
-				"Error:Field validation for 'Body' failed ")
+	// Test missing body
+	operations = NewOperationsTBD(t, 3)
+	operations[1].Body = nil
+	operationsWrapper = api.BatchOpRequest{Operations: &operations}
+	body, _ = json.Marshal(operationsWrapper)
+	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
+		"Error:Field validation for 'Body' failed ")
 
-			// Test missing filter in an operation
-			operations = NewOperationsTBD(t, 3)
-			*&operations[1].Body.Filters = nil
-			operationsWrapper = api.BatchOpRequest{Operations: &operations}
-			body, _ = json.Marshal(operationsWrapper)
-			integrationtests.SendHttpRequest(t, tlsCtx, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
-				"Error:Field validation for 'Filters' failed")
-		})
+	// Test missing filter in an operation
+	operations = NewOperationsTBD(t, 3)
+	*&operations[1].Body.Filters = nil
+	operationsWrapper = api.BatchOpRequest{Operations: &operations}
+	body, _ = json.Marshal(operationsWrapper)
+	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
+		"Error:Field validation for 'Filters' failed")
+
 }
 
 func NewOperationsTBD(t *testing.T, numOps int) []api.BatchSubOp {

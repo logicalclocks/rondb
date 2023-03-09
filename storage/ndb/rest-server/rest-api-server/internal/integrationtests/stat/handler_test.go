@@ -47,22 +47,19 @@ func TestStat(t *testing.T) {
 		expectedAllocations = preAllocatedBuffers
 	}
 
-	integrationtests.WithDBs(t, []string{db},
-		func(tc testutils.TlsContext) {
-			for i := uint32(0); i < numOps; i++ {
-				go performPkOp(t, tc, db, table, ch)
-			}
-			for i := uint32(0); i < numOps; i++ {
-				<-ch
-			}
+	for i := uint32(0); i < numOps; i++ {
+		go performPkOp(t, db, table, ch)
+	}
+	for i := uint32(0); i < numOps; i++ {
+		<-ch
+	}
 
-			// get stats
-			statsHttp := getStatsHttp(t, tc)
-			compare(t, statsHttp, int64(expectedAllocations), int64(numOps))
+	// get stats
+	statsHttp := getStatsHttp(t)
+	compare(t, statsHttp, int64(expectedAllocations), int64(numOps))
 
-			statsGRPC := getStatsGRPC(t, tc)
-			compare(t, statsGRPC, int64(expectedAllocations), int64(numOps))
-		})
+	statsGRPC := getStatsGRPC(t)
+	compare(t, statsGRPC, int64(expectedAllocations), int64(numOps))
 }
 
 func compare(t *testing.T, stats *api.StatResponse, expectedAllocations int64, numOps int64) {
@@ -79,7 +76,7 @@ func compare(t *testing.T, stats *api.StatResponse, expectedAllocations int64, n
 	}
 }
 
-func performPkOp(t *testing.T, tc testutils.TlsContext, db string, table string, ch chan int) {
+func performPkOp(t *testing.T, db string, table string, ch chan int) {
 	param := api.PKReadBody{
 		Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
 		ReadColumns: integrationtests.NewReadColumn("col0"),
@@ -87,15 +84,15 @@ func performPkOp(t *testing.T, tc testutils.TlsContext, db string, table string,
 	body, _ := json.MarshalIndent(param, "", "\t")
 
 	url := testutils.NewPKReadURL(db, table)
-	integrationtests.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusOK, "")
+	integrationtests.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body), http.StatusOK, "")
 
 	ch <- 0
 }
 
-func getStatsHttp(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
+func getStatsHttp(t *testing.T) *api.StatResponse {
 	body := ""
 	url := testutils.NewStatURL()
-	_, respBody := integrationtests.SendHttpRequest(t, tc, config.STAT_HTTP_VERB, url, string(body), http.StatusOK, "")
+	_, respBody := integrationtests.SendHttpRequest(t, config.STAT_HTTP_VERB, url, string(body), http.StatusOK, "")
 
 	var stats api.StatResponse
 	err := json.Unmarshal([]byte(respBody), &stats)
@@ -105,15 +102,15 @@ func getStatsHttp(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
 	return &stats
 }
 
-func getStatsGRPC(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
-	stats := sendGRPCStatRequest(t, tc)
+func getStatsGRPC(t *testing.T) *api.StatResponse {
+	stats := sendGRPCStatRequest(t)
 	return stats
 }
 
-func sendGRPCStatRequest(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
+func sendGRPCStatRequest(t *testing.T) *api.StatResponse {
 	// Create gRPC client
 	conf := config.GetAll()
-	conn, err := testutils.CreateGrpcConn(t, tc, conf.Security.UseHopsworksAPIKeys, conf.Security.RequireAndVerifyClientCert)
+	conn, err := testutils.CreateGrpcConn(t, conf.Security.UseHopsworksAPIKeys, conf.Security.RequireAndVerifyClientCert)
 	if err != nil {
 		t.Fatalf("Failed to connect to server %v", err)
 	}

@@ -25,27 +25,22 @@ import (
 	"io/ioutil"
 	"math/rand"
 	"net/http"
-	"os"
 	"reflect"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"google.golang.org/grpc/status"
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
-	"hopsworks.ai/rdrs/internal/servers"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
 func SendHttpRequest(
 	t testing.TB,
-	tlsCtx testutils.TlsContext,
 	httpVerb string,
 	url string,
 	body string,
@@ -54,7 +49,7 @@ func SendHttpRequest(
 ) (int, string) {
 	t.Helper()
 
-	client := testutils.SetupHttpClient(t, tlsCtx)
+	client := testutils.SetupHttpClient(t)
 	var req *http.Request
 	var resp *http.Response
 	var err error
@@ -376,88 +371,17 @@ func RandString(n int) string {
 	return string(b)
 }
 
-func WithDBs(
-	t testing.TB,
-	dbs []string,
-	executer func(tc testutils.TlsContext),
-) {
-	t.Helper()
-
-	if !*testutils.WithRonDB {
-		t.Skip("skipping test without RonDB")
-	}
-	t.Logf("Running executor against dbs %v", dbs)
-
-	conf := config.GetAll()
-
-	// init logger
-	log.InitLogger(conf.Log)
-
-	var err error
-	var tlsCtx testutils.TlsContext
-	var cleanup func()
-	if conf.Security.EnableTLS {
-		tlsCtx, cleanup, err = testutils.CreateAllTLSCerts()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer cleanup()
-	}
-
-	// TODO: Explain why?
-	rand.Seed(int64(time.Now().Nanosecond()))
-
-	err, removeDatabases := testutils.CreateDatabases(t, conf.Security.UseHopsworksAPIKeys, dbs...)
-	if err != nil {
-		t.Fatalf("failed creating databases; error: %v ", err)
-	}
-	defer removeDatabases()
-
-	newHeap, releaseBuffers, err := heap.New()
-	if err != nil {
-		t.Fatalf("failed creating new heap; error: %v ", err)
-	}
-	defer releaseBuffers()
-
-	// Wait for interrupt signal to gracefully shutdown the server
-	quit := make(chan os.Signal)
-	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, quit)
-	if err != nil {
-		t.Fatalf("failed creating default servers; error: %v ", err)
-	}
-	defer cleanupServers()
-	log.Info("Successfully started up default servers")
-	time.Sleep(500 * time.Millisecond)
-
-	defer func() {
-		stats := newHeap.GetNativeBuffersStats()
-		if stats.BuffersCount != stats.FreeBuffers {
-			t.Fatalf("Number of free buffers do not match. Expecting: %d, Got: %d",
-				stats.BuffersCount, stats.FreeBuffers)
-		}
-	}()
-
-	executer(tlsCtx)
-	log.Info("Finished executing all requests")
-}
-
 func PkTest(t *testing.T, tests map[string]api.PKTestInfo, isBinaryData bool) {
 	for name, testInfo := range tests {
 		t.Run(name, func(t *testing.T) {
-			dbs := []string{}
-			dbs = append(dbs, testInfo.Db)
-
-			WithDBs(t, dbs, func(tc testutils.TlsContext) {
-				pkRESTTest(t, testInfo, tc, isBinaryData)
-				pkGRPCTest(t, testInfo, tc, isBinaryData)
-			})
+			pkRESTTest(t, testInfo, isBinaryData)
+			pkGRPCTest(t, testInfo, isBinaryData)
 		})
 	}
 }
 
-func pkGRPCTest(t *testing.T, testInfo api.PKTestInfo, tc testutils.TlsContext, isBinaryData bool) {
-	respCode, resp := sendGRPCPKReadRequest(t, tc, testInfo)
-
+func pkGRPCTest(t *testing.T, testInfo api.PKTestInfo, isBinaryData bool) {
+	respCode, resp := sendGRPCPKReadRequest(t, testInfo)
 	if respCode == http.StatusOK {
 		ValidateResGRPC(t, testInfo, resp, isBinaryData)
 	}
@@ -465,13 +389,12 @@ func pkGRPCTest(t *testing.T, testInfo api.PKTestInfo, tc testutils.TlsContext, 
 
 func sendGRPCPKReadRequest(
 	t *testing.T,
-	tc testutils.TlsContext,
 	testInfo api.PKTestInfo,
 ) (int, *api.PKReadResponseGRPC) {
 
 	// Create gRPC client
 	conf := config.GetAll()
-	conn, err := testutils.CreateGrpcConn(t, tc, conf.Security.UseHopsworksAPIKeys, conf.Security.RequireAndVerifyClientCert)
+	conn, err := testutils.CreateGrpcConn(t, conf.Security.UseHopsworksAPIKeys, conf.Security.RequireAndVerifyClientCert)
 	if err != nil {
 		t.Fatalf("Failed to connect to server %v", err)
 	}
@@ -524,14 +447,14 @@ func GetStatusCodeFromError(t *testing.T, err error) int {
 	return common.GrpcCodeToHttpStatus(status.Code())
 }
 
-func pkRESTTest(t *testing.T, testInfo api.PKTestInfo, tc testutils.TlsContext, isBinaryData bool) {
+func pkRESTTest(t *testing.T, testInfo api.PKTestInfo, isBinaryData bool) {
 	url := testutils.NewPKReadURL(testInfo.Db, testInfo.Table)
 	body, err := json.MarshalIndent(testInfo.PkReq, "", "\t")
 	if err != nil {
 		t.Fatalf("Failed to marshall test request %v", err)
 	}
 
-	httpCode, res := SendHttpRequest(t, tc, config.PK_HTTP_VERB, url,
+	httpCode, res := SendHttpRequest(t, config.PK_HTTP_VERB, url,
 		string(body), testInfo.HttpCode, testInfo.ErrMsgContains)
 	if httpCode == http.StatusOK {
 		ValidateResHttp(t, testInfo, res, isBinaryData)
@@ -541,38 +464,24 @@ func pkRESTTest(t *testing.T, testInfo api.PKTestInfo, tc testutils.TlsContext, 
 func BatchTest(t *testing.T, tests map[string]api.BatchOperationTestInfo, isBinaryData bool) {
 	for name, testInfo := range tests {
 		t.Run(name, func(t *testing.T) {
-
-			// all databases used in this test
-			dbNamesMap := map[string]bool{}
-			dbNamesArr := []string{}
-			for _, op := range testInfo.Operations {
-				dbNamesMap[op.DB] = true
-			}
-			for db := range dbNamesMap {
-				dbNamesArr = append(dbNamesArr, db)
-			}
-
-			WithDBs(t, dbNamesArr, func(tc testutils.TlsContext) {
-				batchRESTTest(t, testInfo, tc, isBinaryData)
-				batchGRPCTest(t, testInfo, tc, isBinaryData)
-			})
+			batchRESTTest(t, testInfo, isBinaryData)
+			batchGRPCTest(t, testInfo, isBinaryData)
 		})
 	}
 }
 
-func batchGRPCTest(t *testing.T, testInfo api.BatchOperationTestInfo, tc testutils.TlsContext, isBinaryData bool) {
-	httpCode, res := sendGRPCBatchRequest(t, tc, testInfo)
+func batchGRPCTest(t *testing.T, testInfo api.BatchOperationTestInfo, isBinaryData bool) {
+	httpCode, res := sendGRPCBatchRequest(t, testInfo)
 	if httpCode == http.StatusOK {
 		validateBatchResponseGRPC(t, testInfo, res, isBinaryData)
 	}
 }
 
-func sendGRPCBatchRequest(t *testing.T, tc testutils.TlsContext,
-	testInfo api.BatchOperationTestInfo) (int, *api.BatchResponseGRPC) {
+func sendGRPCBatchRequest(t *testing.T, testInfo api.BatchOperationTestInfo) (int, *api.BatchResponseGRPC) {
 
 	// Create gRPC client
 	conf := config.GetAll()
-	conn, err := testutils.CreateGrpcConn(t, tc, conf.Security.UseHopsworksAPIKeys, conf.Security.RequireAndVerifyClientCert)
+	conn, err := testutils.CreateGrpcConn(t, conf.Security.UseHopsworksAPIKeys, conf.Security.RequireAndVerifyClientCert)
 	if err != nil {
 		t.Fatalf("Failed to connect to server %v", err)
 	}
@@ -621,7 +530,7 @@ func sendGRPCBatchRequest(t *testing.T, tc testutils.TlsContext,
 	}
 }
 
-func batchRESTTest(t *testing.T, testInfo api.BatchOperationTestInfo, tc testutils.TlsContext, isBinaryData bool) {
+func batchRESTTest(t *testing.T, testInfo api.BatchOperationTestInfo, isBinaryData bool) {
 	// batch operation
 	subOps := []api.BatchSubOp{}
 	for _, op := range testInfo.Operations {
@@ -634,7 +543,7 @@ func batchRESTTest(t *testing.T, testInfo api.BatchOperationTestInfo, tc testuti
 	if err != nil {
 		t.Fatalf("Failed to marshall test request %v", err)
 	}
-	httpCode, res := SendHttpRequest(t, tc, config.BATCH_HTTP_VERB, url,
+	httpCode, res := SendHttpRequest(t, config.BATCH_HTTP_VERB, url,
 		string(body), testInfo.HttpCode, testInfo.ErrMsgContains)
 	if httpCode == http.StatusOK {
 		validateBatchResponseHttp(t, testInfo, res, isBinaryData)

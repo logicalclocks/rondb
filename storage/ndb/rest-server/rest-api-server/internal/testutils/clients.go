@@ -16,9 +16,10 @@ import (
 //////// HTTP ////////
 //////////////////////
 
-func SetupHttpClient(t testing.TB, tlsCtx TlsContext) *http.Client {
+func SetupHttpClient(t testing.TB) *http.Client {
+	tlsConfig := GetClientTLSConfig(t)
 	return &http.Client{
-		Transport: &http.Transport{TLSClientConfig: GetClientTLSConfig(t, tlsCtx)},
+		Transport: &http.Transport{TLSClientConfig: tlsConfig},
 	}
 }
 
@@ -26,7 +27,7 @@ func SetupHttpClient(t testing.TB, tlsCtx TlsContext) *http.Client {
 //////// gRPC ////////
 //////////////////////
 
-func CreateGrpcConn(t testing.TB, tc TlsContext, withAuth, withTLS bool) (*grpc.ClientConn, error) {
+func CreateGrpcConn(t testing.TB, withAuth, withTLS bool) (*grpc.ClientConn, error) {
 	t.Helper()
 
 	grpcDialOptions := []grpc.DialOption{}
@@ -34,7 +35,8 @@ func CreateGrpcConn(t testing.TB, tc TlsContext, withAuth, withTLS bool) (*grpc.
 		grpcDialOptions = append(grpcDialOptions, grpc.WithUnaryInterceptor(clientAuthInterceptor))
 	}
 	if withTLS {
-		grpcDialOptions = append(grpcDialOptions, grpc.WithTransportCredentials(credentials.NewTLS(GetClientTLSConfig(t, tc))))
+		tlsConfig := GetClientTLSConfig(t)
+		grpcDialOptions = append(grpcDialOptions, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
 	}
 
 	// Set up a connection to the server

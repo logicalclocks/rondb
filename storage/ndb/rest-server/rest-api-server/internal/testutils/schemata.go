@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	"testing"
 
 	_ "github.com/go-sql-driver/mysql"
 	"hopsworks.ai/rdrs/internal/config"
@@ -13,11 +12,9 @@ import (
 )
 
 func CreateDatabases(
-	t testing.TB,
 	registerAsHopsworksProjects bool,
 	dbNames ...string,
 ) (err error, cleanupDbs func()) {
-	t.Helper()
 
 	createSchemata, err := testdbs.GetCreationSchemaPerDB(registerAsHopsworksProjects, dbNames...)
 	if err != nil {
@@ -27,28 +24,25 @@ func CreateDatabases(
 	dropDatabases := ""
 	cleanupDbs = func() {}
 	for db, createSchema := range createSchemata {
-		err = runQueries(t, createSchema)
+		err = runQueries(createSchema)
 		if err != nil {
 			cleanupDbs()
-			return fmt.Errorf("failed running createSchema for db '%s'; error: %w", db, err), cleanupDbs
+			err = fmt.Errorf("failed running createSchema for db '%s'; error: %w", db, err)
+			return err, func() {}
 		}
 		log.Debugf("successfully ran all queries to instantiate db '%s'", db)
 		cleanupDbs = func() {
 			dropDatabases += fmt.Sprintf("DROP DATABASE %s;\n", db)
-			err = runQueries(t, dropDatabases)
+			err = runQueries(dropDatabases)
 			if err != nil {
-				t.Errorf("failed cleaning up databases; error: %v", err)
+				log.Errorf("failed cleaning up databases; error: %v", err)
 			}
 		}
 	}
 	return
 }
 
-func runQueries(t testing.TB, sqlQueries string) error {
-	t.Helper()
-	if !*WithRonDB {
-		t.Skip("skipping test without RonDB")
-	}
+func runQueries(sqlQueries string) error {
 
 	if sqlQueries == "" {
 		return nil
