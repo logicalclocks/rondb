@@ -17,7 +17,7 @@ import (
 /*
 	Wraps all unit tests in this package
 */
-func InitialiseTesting(conf config.AllConfigs) (cleanup func(), err error) {
+func InitialiseTesting(conf config.AllConfigs, createTestDBs bool) (cleanup func(), err error) {
 
 	if !*testutils.WithRonDB {
 		return
@@ -34,11 +34,14 @@ func InitialiseTesting(conf config.AllConfigs) (cleanup func(), err error) {
 	// TODO: Explain why?
 	rand.Seed(int64(time.Now().Nanosecond()))
 
-	allDBs := testdbs.GetAllDBs()
-	err, dropDatabases := testutils.CreateDatabases(conf.Security.UseHopsworksAPIKeys, allDBs...)
-	if err != nil {
-		cleanupTLSCerts()
-		return cleanup, fmt.Errorf("failed creating databases; error: %v", err)
+	dropDatabases := func() {}
+	if createTestDBs {
+		allDBs := testdbs.GetAllDBs()
+		err, dropDatabases = testutils.CreateDatabases(conf.Security.UseHopsworksAPIKeys, allDBs...)
+		if err != nil {
+			cleanupTLSCerts()
+			return cleanup, fmt.Errorf("failed creating databases; error: %v", err)
+		}
 	}
 
 	newHeap, releaseBuffers, err := heap.New()
