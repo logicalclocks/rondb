@@ -1,17 +1,14 @@
 package batchpkread
 
 import (
-	"math/rand"
+	"fmt"
 	"os"
+	"runtime/debug"
 	"testing"
-	"time"
 
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/dal/heap"
+	"hopsworks.ai/rdrs/internal/integrationtests"
 	"hopsworks.ai/rdrs/internal/log"
-	"hopsworks.ai/rdrs/internal/servers"
-	"hopsworks.ai/rdrs/internal/testutils"
-	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 /*
@@ -19,62 +16,24 @@ import (
 */
 func TestMain(m *testing.M) {
 
-	if !*testutils.WithRonDB {
-		return
-	}
+	// We do this so that we can exit with error code 1 without discarding defer() functions
+	retcode := 0
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("caught a panic in main(); making sure we are not returning with exit code 0;\nrecovery: %s\nstacktrace:\n%s", r, debug.Stack())
+			retcode = 1
+		}
+		os.Exit(retcode)
+	}()
 
 	conf := config.GetAll()
-
 	log.InitLogger(conf.Log)
 
-	var err error
-	var cleanup func()
-	if conf.Security.EnableTLS {
-		cleanup, err = testutils.CreateAllTLSCerts()
-		if err != nil {
-			log.Errorf(err.Error())
-			return
-		}
-		defer cleanup()
-	}
-
-	// TODO: Explain why?
-	rand.Seed(int64(time.Now().Nanosecond()))
-
-	allDBs := testdbs.GetAllDBs()
-	err, removeDatabases := testutils.CreateDatabases(conf.Security.UseHopsworksAPIKeys, allDBs...)
+	cleanup, err := integrationtests.InitialiseTesting(conf)
 	if err != nil {
-		log.Errorf("failed creating databases; error: %v", err)
-		return
+		log.Fatalf(err.Error())
 	}
-	defer removeDatabases()
+	defer cleanup()
 
-	newHeap, releaseBuffers, err := heap.New()
-	if err != nil {
-		log.Errorf("failed creating new heap; error: %v ", err)
-		return
-	}
-	defer releaseBuffers()
-
-	// Wait for interrupt signal to gracefully shutdown the server
-	quit := make(chan os.Signal)
-	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, quit)
-	if err != nil {
-		log.Errorf("failed creating default servers; error: %v ", err)
-		return
-	}
-	defer cleanupServers()
-	log.Info("Successfully started up default servers")
-	time.Sleep(500 * time.Millisecond)
-
-	defer func() {
-		stats := newHeap.GetNativeBuffersStats()
-		if stats.BuffersCount != stats.FreeBuffers {
-			log.Errorf("Number of free buffers do not match. Expecting: %d, Got: %d",
-				stats.BuffersCount, stats.FreeBuffers)
-			return
-		}
-	}()
-	runTests := m.Run()
-	os.Exit(runTests)
+	retcode = m.Run()
 }
