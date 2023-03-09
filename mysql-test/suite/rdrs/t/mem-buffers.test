@@ -8,7 +8,7 @@
 
 --source suite/rdrs/include/have_rdrs.inc
 
---let RDRS_TEST_CMD=go  test -v -run Test ./internal/dal
+--let RDRS_TEST_CMD=go  test -v -run Test ./internal/dal/heap
 
 --source suite/rdrs/include/run_rdrs_unit_test.inc
 

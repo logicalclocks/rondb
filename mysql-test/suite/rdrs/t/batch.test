@@ -8,7 +8,7 @@
 
 --source suite/rdrs/include/have_rdrs.inc
 
---let RDRS_TEST_CMD=go test -v -timeout 30m -run Test ./internal/handlers/batchops/
+--let RDRS_TEST_CMD=go test -v -timeout 30m -run Test ./internal/integrationtests/batchpkread
 
 --source suite/rdrs/include/run_rdrs_unit_test.inc
 
