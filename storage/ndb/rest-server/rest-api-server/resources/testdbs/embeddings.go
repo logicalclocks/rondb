@@ -9,7 +9,7 @@ import _ "embed"
 //go:embed dynamic/benchmark.sql
 var BenchmarkScheme string
 
-const Benchmark = "RDRS_BENCH"
+const Benchmark = "rdrs_bench"
 const benchmarkSed_COLUMN_LENGTH = "COLUMN_LENGTH"
 
 //go:embed dynamic/benchmark_add_row.sql
