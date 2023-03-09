@@ -29,7 +29,7 @@ func TestMain(m *testing.M) {
 	conf := config.GetAll()
 	log.InitLogger(conf.Log)
 
-	cleanup, err := integrationtests.InitialiseTesting(conf, true)
+	cleanup, err := integrationtests.InitialiseTesting(conf)
 	if err != nil {
 		log.Fatalf(err.Error())
 	}
