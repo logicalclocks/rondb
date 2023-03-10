@@ -10,7 +10,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/handlers"
-	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
@@ -35,9 +34,6 @@ func (h *RouteHandler) BatchPkRead(c *gin.Context) {
 		pkOperations[i] = &api.PKReadParams{}
 		err := parseOperation(&operation, pkOperations[i])
 		if err != nil {
-			if log.IsDebug() {
-				log.Debug(err.Error())
-			}
 			c.AbortWithError(http.StatusBadRequest, err)
 			return
 		}
