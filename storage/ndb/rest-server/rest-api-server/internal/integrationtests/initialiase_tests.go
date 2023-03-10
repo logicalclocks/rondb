@@ -48,8 +48,8 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 
 	newHeap, releaseBuffers, err := heap.New()
 	if err != nil {
-		cleanupTLSCerts()
 		dropDatabases()
+		cleanupTLSCerts()
 		return cleanup, fmt.Errorf("failed creating new heap; error: %v ", err)
 	}
 
@@ -57,9 +57,9 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 	quit := make(chan os.Signal)
 	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, quit)
 	if err != nil {
-		cleanupTLSCerts()
-		dropDatabases()
 		releaseBuffers()
+		dropDatabases()
+		cleanupTLSCerts()
 		return cleanup, fmt.Errorf("failed creating default servers; error: %v ", err)
 	}
 
@@ -67,16 +67,16 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 	time.Sleep(500 * time.Millisecond)
 
 	return func() {
-		cleanupTLSCerts()
-		dropDatabases()
-		releaseBuffers()
-		cleanupServers()
+		// Running defer here in case checking the heap fails
+		defer cleanupTLSCerts()
+		defer dropDatabases()
+		defer releaseBuffers()
+		defer cleanupServers()
 
 		stats := newHeap.GetNativeBuffersStats()
 		if stats.BuffersCount != stats.FreeBuffers {
 			log.Errorf("Number of free buffers do not match. Expecting: %d, Got: %d",
 				stats.BuffersCount, stats.FreeBuffers)
-			return
 		}
 	}, nil
 }
