@@ -26,17 +26,23 @@ import (
 	"hopsworks.ai/rdrs/internal/security/apikey/authcache"
 )
 
+/*
+	Checking whether the API key can access the given databases
+*/
 func ValidateAPIKey(apiKey *string, dbs ...*string) error {
 	err := validateApiKeyFormat(apiKey)
 	if err != nil {
 		return err
 	}
 
-	// TODO: Make sure allowedAccess=true with empty databases
+	if len(dbs) < 1 || dbs == nil {
+		return nil
+	}
+
 	keyFoundInCache, allowedAccess := authcache.FindAndValidateCache(apiKey, dbs...)
 	if keyFoundInCache {
 		if !allowedAccess {
-			return errors.New("unauthorized")
+			return errors.New("unauthorized: no access to db registered in cache")
 		}
 		return nil
 	}
@@ -53,7 +59,7 @@ func ValidateAPIKey(apiKey *string, dbs ...*string) error {
 
 	keyFoundInCache, allowedAccess = authcache.FindAndValidateCache(apiKey, dbs...)
 	if !keyFoundInCache || !allowedAccess {
-		return errors.New("unauthorized")
+		return errors.New("unauthorized: no access to db registered")
 	}
 	return nil
 }
@@ -63,7 +69,7 @@ func validateApiKeyFormat(apiKey *string) error {
 		return errors.New("the apikey is nil")
 	}
 	splits := strings.Split(*apiKey, ".")
-	if len(splits) != 2 || len(splits[0]) != 16 {
+	if len(splits) != 2 || len(splits[0]) != 16 || len(splits[1]) < 1 {
 		return errors.New("the apikey has an incorrect format")
 	}
 	return nil

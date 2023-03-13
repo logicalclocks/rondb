@@ -33,7 +33,7 @@
         },
         "Security": {
                 "EnableTLS": true,
-                "RequireAndVerifyClientCert": false,
+                "RequireAndVerifyClientCert": true,
                 "CertificateFile": "",
                 "PrivateKeyFile": "",
                 "RootCACertFile": "",

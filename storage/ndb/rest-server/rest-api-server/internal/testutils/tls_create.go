@@ -28,7 +28,11 @@ func init() {
 	dnsNames = []string{"localhost"}
 }
 
-func CreateAllTLSCerts() (tlsCtx TlsContext, cleanup func(), err error) {
+/*
+	Create and save both client and server TLS certificates and also saves
+	them to configuration.
+*/
+func CreateAllTLSCerts() (cleanup func(), err error) {
 	cleanup = func() {}
 
 	certsDir := filepath.Join(os.TempDir(), "certs-for-unit-testing")
@@ -39,6 +43,7 @@ func CreateAllTLSCerts() (tlsCtx TlsContext, cleanup func(), err error) {
 
 	conf := config.GetAll()
 	cleanup = func() {
+		log.Info("Removing all TLS test certificates")
 		err = os.RemoveAll(certsDir)
 		if err != nil {
 			log.Error(err.Error())
@@ -50,30 +55,27 @@ func CreateAllTLSCerts() (tlsCtx TlsContext, cleanup func(), err error) {
 		}
 	}
 
-	rootCACertFile, rootCAKeyFile, err := createRootCA(certsDir)
+	rootCACertFilepath, rootCAKeyFilepath, err := createRootCA(certsDir)
 	if err != nil {
 		return
 	}
 
-	tlsCtx.RootCACertFile = rootCACertFile
-	tlsCtx.RootCAKeyFile = rootCAKeyFile
-	conf.Security.RootCACertFile = rootCACertFile
-
-	serverCertFile, serverKeyFile, err := createServerCerts(certsDir, rootCACertFile, rootCAKeyFile)
+	serverCertFilepath, serverKeyFilepath, err := createServerCerts(certsDir, rootCACertFilepath, rootCAKeyFilepath)
 	if err != nil {
 		return
 	}
-	conf.Security.CertificateFile = serverCertFile
-	conf.Security.PrivateKeyFile = serverKeyFile
+
+	conf.Security.RootCACertFile = rootCACertFilepath
+	conf.Security.CertificateFile = serverCertFilepath
+	conf.Security.PrivateKeyFile = serverKeyFilepath
 
 	if conf.Security.RequireAndVerifyClientCert {
-		var clientCertFilepath, clientKeyFilepath string
-		clientCertFilepath, clientKeyFilepath, err = createClientCerts(certsDir, rootCACertFile, rootCAKeyFile)
+		clientCertFilepath, clientKeyFilepath, err := createClientCerts(certsDir, rootCACertFilepath, rootCAKeyFilepath)
 		if err != nil {
-			return
+			return cleanup, err
 		}
-		tlsCtx.ClientCertFile = clientCertFilepath
-		tlsCtx.ClientKeyFile = clientKeyFilepath
+		conf.Security.TestParameters.ClientCertFile = clientCertFilepath
+		conf.Security.TestParameters.ClientKeyFile = clientKeyFilepath
 	}
 
 	err = config.SetAll(conf)
@@ -206,8 +208,11 @@ func createServerCerts(certsDir string, rootCaCertFile, rootCaKeyFile string) (
 	return
 }
 
-func createClientCerts(certsDir string, rootCaCertFile, rootCaKeyFile string) (
-	clientCertFilepath string, clientKeyFilepath string, err error) {
+func createClientCerts(certsDir, rootCaCertFile, rootCaKeyFile string) (
+	clientCertFilepath string,
+	clientKeyFilepath string,
+	err error,
+) {
 
 	// Cert template
 	serialNumber, _ := rand.Int(rand.Reader, big.NewInt(32))

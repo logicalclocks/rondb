@@ -24,19 +24,14 @@ import (
 	"net/http"
 	"testing"
 
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/handlers"
-	"hopsworks.ai/rdrs/internal/handlers/pkread"
-	tu "hopsworks.ai/rdrs/internal/handlers/utils"
+	"hopsworks.ai/rdrs/internal/integrationtests"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 func TestStat(t *testing.T) {
-
 	db := testdbs.DB004
 	table := "int_table"
 
@@ -47,26 +42,24 @@ func TestStat(t *testing.T) {
 
 	conf := config.GetAll()
 
-	if conf.Internal.PreAllocatedBuffers > numOps {
-		expectedAllocations = conf.Internal.PreAllocatedBuffers
+	preAllocatedBuffers := conf.Internal.PreAllocatedBuffers
+	if preAllocatedBuffers > numOps {
+		expectedAllocations = preAllocatedBuffers
 	}
 
-	tu.WithDBs(t, []string{db},
-		getStatHandlers(), func(tc testutils.TlsContext) {
-			for i := uint32(0); i < numOps; i++ {
-				go performPkOp(t, tc, db, table, ch)
-			}
-			for i := uint32(0); i < numOps; i++ {
-				<-ch
-			}
+	for i := uint32(0); i < numOps; i++ {
+		go performPkOp(t, db, table, ch)
+	}
+	for i := uint32(0); i < numOps; i++ {
+		<-ch
+	}
 
-			// get stats
-			statsHttp := getStatsHttp(t, tc)
-			compare(t, statsHttp, int64(expectedAllocations), int64(numOps))
+	// get stats
+	statsHttp := getStatsHttp(t)
+	compare(t, statsHttp, int64(expectedAllocations), int64(numOps))
 
-			statsGRPC := getStatsGRPC(t, tc)
-			compare(t, statsGRPC, int64(expectedAllocations), int64(numOps))
-		})
+	statsGRPC := getStatsGRPC(t)
+	compare(t, statsGRPC, int64(expectedAllocations), int64(numOps))
 }
 
 func compare(t *testing.T, stats *api.StatResponse, expectedAllocations int64, numOps int64) {
@@ -83,23 +76,23 @@ func compare(t *testing.T, stats *api.StatResponse, expectedAllocations int64, n
 	}
 }
 
-func performPkOp(t *testing.T, tc testutils.TlsContext, db string, table string, ch chan int) {
+func performPkOp(t *testing.T, db string, table string, ch chan int) {
 	param := api.PKReadBody{
-		Filters:     tu.NewFiltersKVs("id0", 0, "id1", 0),
-		ReadColumns: tu.NewReadColumn("col0"),
+		Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
+		ReadColumns: integrationtests.NewReadColumn("col0"),
 	}
 	body, _ := json.MarshalIndent(param, "", "\t")
 
-	url := tu.NewPKReadURL(db, table)
-	tu.SendHttpRequest(t, tc, config.PK_HTTP_VERB, url, string(body), http.StatusOK, "")
+	url := testutils.NewPKReadURL(db, table)
+	integrationtests.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body), http.StatusOK, "")
 
 	ch <- 0
 }
 
-func getStatsHttp(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
+func getStatsHttp(t *testing.T) *api.StatResponse {
 	body := ""
-	url := tu.NewStatURL()
-	_, respBody := tu.SendHttpRequest(t, tc, config.STAT_HTTP_VERB, url, string(body), http.StatusOK, "")
+	url := testutils.NewStatURL()
+	_, respBody := integrationtests.SendHttpRequest(t, config.STAT_HTTP_VERB, url, string(body), http.StatusOK, "")
 
 	var stats api.StatResponse
 	err := json.Unmarshal([]byte(respBody), &stats)
@@ -109,19 +102,18 @@ func getStatsHttp(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
 	return &stats
 }
 
-func getStatsGRPC(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
-	stats := sendGRPCStatRequest(t, tc)
+func getStatsGRPC(t *testing.T) *api.StatResponse {
+	stats := sendGRPCStatRequest(t)
 	return stats
 }
 
-func sendGRPCStatRequest(t *testing.T, tc testutils.TlsContext) *api.StatResponse {
-	conf := config.GetAll()
-
+func sendGRPCStatRequest(t *testing.T) *api.StatResponse {
 	// Create gRPC client
-	conn, err := grpc.Dial(fmt.Sprintf("%s:%d",
-		conf.GRPC.ServerIP,
-		conf.GRPC.ServerPort),
-		grpc.WithTransportCredentials(credentials.NewTLS(tu.GetClientTLSConfig(t, tc))))
+	conf := config.GetAll()
+	conn, err := testutils.CreateGrpcConn(t, conf.Security.UseHopsworksAPIKeys, conf.Security.RequireAndVerifyClientCert)
+	if err != nil {
+		t.Fatalf("Failed to connect to server %v", err)
+	}
 	defer conn.Close()
 
 	if err != nil {
@@ -139,21 +131,13 @@ func sendGRPCStatRequest(t *testing.T, tc testutils.TlsContext) *api.StatRespons
 	var errStr string
 	respProto, err := client.Stat(context.Background(), reqProto)
 	if err != nil {
-		respCode = tu.GetStatusCodeFromError(t, err)
+		respCode = integrationtests.GetStatusCodeFromError(t, err)
 		errStr = fmt.Sprintf("%v", err)
 	}
 
 	if respCode != expectedStatus {
-		t.Fatalf("Test failed. Expected: %d, Got: %d. Complete Error Message: %v ", expectedStatus, respCode, errStr)
+		t.Fatalf("Received unexpected status; Expected: %d, Got: %d; Complete Error Message: %v ", expectedStatus, respCode, errStr)
 	}
 
 	return api.ConvertStatResponseProto(respProto)
-}
-
-func getStatHandlers() *handlers.AllHandlers {
-	return &handlers.AllHandlers{
-		Stater:   GetStater(),
-		Batcher:  nil,
-		PKReader: pkread.GetPKReader(),
-	}
 }

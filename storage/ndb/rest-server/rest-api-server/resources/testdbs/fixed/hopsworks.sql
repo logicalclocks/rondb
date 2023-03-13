@@ -151,7 +151,9 @@ VALUES
         '2022-06-01 13:28:05'
     );
 
--- 1  bkYjEz6OTZyevbqt.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub
+-- We're inserting our test API key into the database, so we can test authentication
+-- This API key is:
+--      bkYjEz6OTZyevbqt.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub
 INSERT INTO
     `api_key`
 VALUES

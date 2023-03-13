@@ -111,6 +111,11 @@ func (r RonDB) Validate() error {
 	return nil
 }
 
+type TestParameters struct {
+	ClientCertFile string
+	ClientKeyFile  string
+}
+
 type Security struct {
 	EnableTLS                        bool
 	RequireAndVerifyClientCert       bool
@@ -119,6 +124,7 @@ type Security struct {
 	RootCACertFile                   string
 	UseHopsworksAPIKeys              bool
 	HopsworksAPIKeysCacheValiditySec int
+	TestParameters                   TestParameters
 }
 
 func (c Security) Validate() error {
@@ -129,6 +135,10 @@ func (c Security) Validate() error {
 	if c.EnableTLS {
 		if c.CertificateFile == "" || c.PrivateKeyFile == "" {
 			return errors.New("cannot enable TLS if `CertificateFile` or `PrivateKeyFile` is not set")
+		}
+	} else {
+		if c.RequireAndVerifyClientCert {
+			return errors.New("cannot require client certs if TLS is not enabled")
 		}
 	}
 	return nil

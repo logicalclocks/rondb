@@ -19,61 +19,64 @@
 package pkread
 
 /*
-#include "./../../../../data-access-rondb/src/rdrs-const.h"
-#include "./../../../../data-access-rondb/src/rdrs-dal.h"
+ #include "./../../../../data-access-rondb/src/rdrs-const.h"
+ #include "./../../../../data-access-rondb/src/rdrs-dal.h"
 */
 import "C"
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"unsafe"
 
 	"hopsworks.ai/rdrs/internal/common"
-	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
 // Also checkout internal/router/handler/pkread/encoding-scheme.png
 
-//  PK READ Request
-//  ===============
-//
-//  HEADER
-//  ======
-//  [   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ] ....
-//    Type     Capacity  Length     DB         Table      PK     Read Cols    Op_ID    TX_ID
-//                               Offset      Offset    Offset     Offset     Offset   Offset
-//  BODY
-//  ====
-//  [ bytes ... ]
-//    Null termnated DB Name
-//
-//  [ bytes ... ]
-//    Null termnated Table Name
-//
-//  [   4B   ][   4B   ]...[   4B   ][   4B   ][   4B   ][   bytes ...  ][ 2B ] [ bytes... ][   4B   ][   4B   ] ....
-//    Count     kv 1          kv n       key       value     key          val     val
-//            offset        offset     offset     offset                 size
-//                                      ^
-//              ________________________|                                                     ^
-//                           _________________________________________________________________|
-//
-//
-//  [   4B   ] [  4B     ] [  4B     ] ...
-//    Count   col1 offset   col2 offset
-//
-//  [  4B ] [   bytes ... ] [  4B ] [   bytes ... ] ...
-//  type     null terminated column names
-//
-//  [ bytes ... ] ...
-//    null terminated  operation Id
-//
+/*
+	PK READ Request
+	===============
 
-func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.NativeBuffer, error) {
-	response := dal.GetBuffer()
-	request := dal.GetBuffer()
+	HEADER
+	======
+	[   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ] ....
+	Type     Capacity  Length     DB         Table      PK     Read Cols    Op_ID    TX_ID
+								Offset      Offset    Offset     Offset     Offset   Offset
+	BODY
+	====
+	[ bytes ... ]
+	Null terminated DB Name
+
+	[ bytes ... ]
+	Null terminated Table Name
+
+	[   4B   ][   4B   ]...[   4B   ][   4B   ][   4B   ][   bytes ...  ][ 2B ] [ bytes... ][   4B   ][   4B   ] ....
+	Count     kv 1          kv n       key       value     key          val     val
+			offset        offset     offset     offset                 size
+										^
+				________________________|                                                     ^
+							_________________________________________________________________|
+
+
+	[   4B   ] [  4B     ] [  4B     ] ...
+	Count   col1 offset   col2 offset
+
+	[  4B ] [   bytes ... ] [  4B ] [   bytes ... ] ...
+	type     null terminated column names
+
+	[ bytes ... ] ...
+	null terminated  operation Id
+*/
+
+func CreateNativeRequest(
+	pkrParams *api.PKReadParams,
+	request, response *heap.NativeBuffer,
+) (err error) {
 	iBuf := unsafe.Slice((*uint32)(request.Buffer), request.Size/C.ADDRESS_SIZE)
 
 	// First N bytes are for header
@@ -81,15 +84,15 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 
 	dbOffSet := head
 
-	head, err := common.CopyGoStrToCStr([]byte(*pkrParams.DB), request, head)
+	head, err = common.CopyGoStrToCStr([]byte(*pkrParams.DB), request, head)
 	if err != nil {
-		return nil, nil, err
+		return
 	}
 
 	tableOffSet := head
 	head, err = common.CopyGoStrToCStr([]byte(*pkrParams.Table), request, head)
 	if err != nil {
-		return nil, nil, err
+		return
 	}
 
 	// PK Filters
@@ -110,12 +113,12 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 		keyOffset := head
 		head, err = common.CopyGoStrToCStr([]byte(*filter.Column), request, head)
 		if err != nil {
-			return nil, nil, err
+			return
 		}
 		valueOffset := head
 		head, err = common.CopyGoStrToNDBStr(*filter.Value, request, head)
 		if err != nil {
-			return nil, nil, err
+			return
 		}
 
 		iBuf[kvi] = tupleOffset
@@ -147,7 +150,7 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 			if col.DataReturnType != nil {
 				drt, err = dataReturnType(col.DataReturnType)
 				if err != nil {
-					return nil, nil, err
+					return
 				}
 			}
 
@@ -157,7 +160,7 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 			// col name
 			head, err = common.CopyGoStrToCStr([]byte(*col.Column), request, head)
 			if err != nil {
-				return nil, nil, err
+				return
 			}
 		}
 	}
@@ -168,7 +171,7 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 		opIdOffset = head
 		head, err = common.CopyGoStrToCStr([]byte(*pkrParams.OperationID), request, head)
 		if err != nil {
-			return nil, nil, err
+			return
 		}
 	}
 
@@ -183,15 +186,15 @@ func CreateNativeRequest(pkrParams *api.PKReadParams) (*dal.NativeBuffer, *dal.N
 	iBuf[C.PK_REQ_OP_ID_IDX] = uint32(opIdOffset)
 
 	//xxd.Print(0, bBuf[:])
-	return request, response, nil
+	return
 }
-func ProcessPKReadResponse(respBuff *dal.NativeBuffer, response api.PKReadResponse) (int32, error) {
 
+func ProcessPKReadResponse(respBuff *heap.NativeBuffer, response api.PKReadResponse) (int32, error) {
 	iBuf := unsafe.Slice((*uint32)(respBuff.Buffer), respBuff.Size)
 
 	responseType := iBuf[C.PK_RESP_OP_TYPE_IDX]
 	if responseType != C.RDRS_PK_RESP_ID {
-		return http.StatusInternalServerError, fmt.Errorf("Received response type %d; expected %d", responseType, C.RDRS_PK_RESP_ID)
+		return http.StatusInternalServerError, errors.New("wrong response type")
 	}
 
 	// some sanity checks
@@ -199,7 +202,7 @@ func ProcessPKReadResponse(respBuff *dal.NativeBuffer, response api.PKReadRespon
 	dataLength := iBuf[C.PK_RESP_LENGTH_IDX]
 	if respBuff.Size != capacity || !(dataLength < capacity) {
 		return http.StatusInternalServerError,
-			fmt.Errorf("Response buffer may be corrupt. Buffer capacity: %d, Buffer data length: %d", capacity, dataLength)
+			fmt.Errorf("response buffer may be corrupt. Buffer capacity: %d, Buffer data length: %d", capacity, dataLength)
 	}
 
 	opIDX := iBuf[C.PK_RESP_OP_ID_IDX]
@@ -213,14 +216,14 @@ func ProcessPKReadResponse(respBuff *dal.NativeBuffer, response api.PKReadRespon
 		colIDX := iBuf[C.PK_RESP_COLS_IDX]
 		colCount := *(*uint32)(unsafe.Pointer(uintptr(respBuff.Buffer) + uintptr(colIDX)))
 
-		for colNum := uint32(0); colNum < colCount; colNum++ {
+		for i := uint32(0); i < colCount; i++ {
 			colHeaderStart := (*uint32)(unsafe.Pointer(
 				uintptr(respBuff.Buffer) +
 					uintptr(colIDX+
 						uint32(C.ADDRESS_SIZE)+ // +1 for skipping the column count
-						(colNum*4*C.ADDRESS_SIZE)))) // 4 number of header fields
+						(i*4*C.ADDRESS_SIZE)))) // 4 number of header fieldse
 
-			colHeader := unsafe.Slice(colHeaderStart, 4)
+			colHeader := unsafe.Slice((*uint32)(colHeaderStart), 4)
 
 			nameAdd := colHeader[0]
 			name := C.GoString((*C.char)(unsafe.Pointer(uintptr(respBuff.Buffer) + uintptr(nameAdd))))
@@ -257,6 +260,6 @@ func dataReturnType(drt *string) (uint32, error) {
 	if *drt == api.DRT_DEFAULT {
 		return C.DEFAULT_DRT, nil
 	} else {
-		return math.MaxUint32, fmt.Errorf("Return data type is not supported. Data type: " + *drt)
+		return math.MaxUint32, fmt.Errorf("return data type is not supported. Data type: %s", *drt)
 	}
 }

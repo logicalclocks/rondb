@@ -8,7 +8,7 @@
 
 --source suite/rdrs/include/have_rdrs.inc
 
---let RDRS_TEST_CMD=go test -v -run Test ./internal/handlers/stat/
+--let RDRS_TEST_CMD=go test -v -run Test ./internal/integrationtests/stat
 
 --source suite/rdrs/include/run_rdrs_unit_test.inc
 

@@ -8,25 +8,20 @@ import (
 	"hopsworks.ai/rdrs/internal/security/tlsutils"
 )
 
-// These are some parameters needed for testing
-type TlsContext struct {
-	CertsDir       string
-	RootCACertFile string
-	RootCAKeyFile  string
-	ClientCertFile string
-	ClientKeyFile  string
-}
-
-func GetClientTLSConfig(t testing.TB, tlsCtx TlsContext) *tls.Config {
+func GetClientTLSConfig(t testing.TB) *tls.Config {
 	t.Helper()
+	conf := config.GetAll()
+
 	clientTLSConfig := &tls.Config{}
-	if tlsCtx.RootCACertFile != "" {
-		clientTLSConfig.RootCAs = tlsutils.TrustedCAs(tlsCtx.RootCACertFile)
+	if conf.Security.RootCACertFile != "" {
+		clientTLSConfig.RootCAs = tlsutils.TrustedCAs(conf.Security.RootCACertFile)
 	}
 
-	conf := config.GetAll()
 	if conf.Security.RequireAndVerifyClientCert {
-		clientCert, err := tls.LoadX509KeyPair(tlsCtx.ClientCertFile, tlsCtx.ClientKeyFile)
+		clientCert, err := tls.LoadX509KeyPair(
+			conf.Security.TestParameters.ClientCertFile,
+			conf.Security.TestParameters.ClientKeyFile,
+		)
 		if err != nil {
 			t.Fatal(err)
 		}

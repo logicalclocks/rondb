@@ -19,9 +19,9 @@
 package dal
 
 /*
-#include <stdlib.h>
-#include "./../../../data-access-rondb/src/rdrs-hopsworks-dal.h"
-#include "./../../../data-access-rondb/src/rdrs-dal.h"
+ #include <stdlib.h>
+ #include "./../../../data-access-rondb/src/rdrs-hopsworks-dal.h"
+ #include "./../../../data-access-rondb/src/rdrs-dal.h"
 */
 import "C"
 import (
@@ -37,7 +37,6 @@ type HopsworksAPIKey struct {
 }
 
 func GetAPIKey(userKey string) (*HopsworksAPIKey, *DalError) {
-
 	cUserKey := C.CString(userKey)
 	defer C.free(unsafe.Pointer(cUserKey))
 

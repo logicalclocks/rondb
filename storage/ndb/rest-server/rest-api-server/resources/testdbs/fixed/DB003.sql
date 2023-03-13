@@ -55,32 +55,37 @@ CREATE TABLE `set_table` (
     `col0` enum('a', 'b', 'c', 'd') DEFAULT NULL,
     `col1`
     set
-('a', 'b', 'c', 'd') DEFAULT NULL,
+        ('a', 'b', 'c', 'd') DEFAULT NULL,
         PRIMARY KEY (`id0`)
-) ENGINE = ndbcluster
+) ENGINE = ndbcluster;
+
 INSERT INTO
     `set_table`
 VALUES
-    (1, 'a', 'a')
+    (1, 'a', 'a');
+
 INSERT INTO
     `set_table`
 VALUES
-    (2, 'b', 'a,b')
+    (2, 'b', 'a,b');
+
 INSERT INTO
     set_table
 set
-    id0 = 3 CREATE TABLE `special_table` (
-        `id0` int NOT NULL,
-        `col0` geometry DEFAULT NULL,
-        `col1` point DEFAULT NULL,
-        `col2` linestring DEFAULT NULL,
-        `col3` polygon DEFAULT NULL,
-        `col4` geomcollection DEFAULT NULL,
-        `col5` multilinestring DEFAULT NULL,
-        `col6` multipoint DEFAULT NULL,
-        `col7` multipolygon DEFAULT NULL,
-        PRIMARY KEY (`id0`)
-    ) ENGINE = ndbcluster;
+    id0 = 3;
+
+CREATE TABLE `special_table` (
+    `id0` int NOT NULL,
+    `col0` geometry DEFAULT NULL,
+    `col1` point DEFAULT NULL,
+    `col2` linestring DEFAULT NULL,
+    `col3` polygon DEFAULT NULL,
+    `col4` geomcollection DEFAULT NULL,
+    `col5` multilinestring DEFAULT NULL,
+    `col6` multipoint DEFAULT NULL,
+    `col7` multipolygon DEFAULT NULL,
+    PRIMARY KEY (`id0`)
+) ENGINE = ndbcluster;
 
 INSERT INTO
     special_table
@@ -143,7 +148,7 @@ CREATE TABLE `blob_table` (
 INSERT INTO
     blob_table
 values
-(
+    (
         1,
         0xFFFF,
         0xFFFF,

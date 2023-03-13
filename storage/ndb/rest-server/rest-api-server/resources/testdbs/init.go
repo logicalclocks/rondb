@@ -112,6 +112,17 @@ func createTextualColumnsSchema(dbName string, columnType string, columnLength i
 }
 
 /*
+	Simply export databaseCreateSchemes as slice
+*/
+func GetAllDBs() []string {
+	allDBs := []string{}
+	for db := range databaseCreateSchemes {
+		allDBs = append(allDBs, db)
+	}
+	return allDBs
+}
+
+/*
 	This function can be used to export the embedded schemata of different databases. In case
 	it is wished to use the databases in conjunction with Hopsworks as an authentication layer,
 	this function also supplies the required Hopsworks schemata.

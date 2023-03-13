@@ -4,52 +4,63 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	"testing"
 
 	_ "github.com/go-sql-driver/mysql"
-	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 func CreateDatabases(
-	t testing.TB,
 	registerAsHopsworksProjects bool,
 	dbNames ...string,
 ) (err error, cleanupDbs func()) {
-	t.Helper()
 
 	createSchemata, err := testdbs.GetCreationSchemaPerDB(registerAsHopsworksProjects, dbNames...)
 	if err != nil {
 		return err, cleanupDbs
 	}
+	cleanupDbs = func() {}
+
+	dbConn, err := CreateMySQLConnection()
+	if err != nil {
+		return
+	}
+	defer dbConn.Close()
 
 	dropDatabases := ""
-	cleanupDbs = func() {}
-	for db, createSchema := range createSchemata {
-		err = runQueries(t, createSchema)
-		if err != nil {
-			cleanupDbs()
-			return fmt.Errorf("failed running createSchema for db '%s'; error: %w", db, err), cleanupDbs
-		}
-		log.Debugf("successfully ran all queries to instantiate db '%s'", db)
-		cleanupDbs = func() {
-			dropDatabases += fmt.Sprintf("DROP DATABASE %s;\n", db)
-			err = runQueries(t, dropDatabases)
+	cleanupDbsWrapper := func(dropDatabases string) func() {
+		return func() {
+			// We need a new DB connection since this might be called after the
+			// initial connection is closed.
+			err = runQueriesWithConnection(dropDatabases)
 			if err != nil {
-				t.Errorf("failed cleaning up databases; error: %v", err)
+				log.Errorf("failed cleaning up databases; error: %v", err)
 			}
 		}
 	}
-	return
+	for db, createSchema := range createSchemata {
+		err = runQueries(createSchema, dbConn)
+		if err != nil {
+			cleanupDbsWrapper(dropDatabases)()
+			err = fmt.Errorf("failed running createSchema for db '%s'; error: %w", db, err)
+			return err, func() {}
+		}
+		log.Debugf("successfully ran all queries to instantiate db '%s'", db)
+		dropDatabases += fmt.Sprintf("DROP DATABASE %s;\n", db)
+	}
+	return nil, cleanupDbsWrapper(dropDatabases)
 }
 
-func runQueries(t testing.TB, sqlQueries string) error {
-	t.Helper()
-	if !*WithRonDB {
-		t.Skip("skipping test without RonDB")
+func runQueriesWithConnection(sqlQueries string) error {
+	dbConn, err := CreateMySQLConnection()
+	if err != nil {
+		return err
 	}
+	defer dbConn.Close()
+	return runQueries(sqlQueries, dbConn)
+}
 
+func runQueries(sqlQueries string, dbConnection *sql.DB) error {
 	if sqlQueries == "" {
 		return nil
 	}
@@ -59,15 +70,6 @@ func runQueries(t testing.TB, sqlQueries string) error {
 	}
 	// the last semi-colon will produce an empty last element
 	splitQueries = splitQueries[:len(splitQueries)-1]
-
-	conf := config.GetAll()
-	connectionString := config.GenerateMysqldConnectString(conf)
-	log.Debugf("Connecting to mysqld with '%s'", connectionString)
-	dbConnection, err := sql.Open("mysql", connectionString)
-	if err != nil {
-		return fmt.Errorf("failed to connect to db; error: %v", err)
-	}
-	defer dbConnection.Close()
 
 	for _, query := range splitQueries {
 		query := strings.TrimSpace(query)
