@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
 
    This program is free software; you can redistribute it and/or modify
@@ -291,8 +291,8 @@ private:
     Uint64 avg_send_percentage;
   };
 
-  Uint32 m_configured_spintime;
-  Uint32 m_current_spintime;
+  Uint32 m_configured_spintime_us;
+  Uint32 m_current_spintime_us;
   Uint32 m_gain_spintime_in_us;
   Uint32 m_current_cpu_usage;
 
@@ -341,6 +341,9 @@ private:
   Uint32 calc_new_spin(ndb_spin_stat*);
   void measure_wakeup_time(Signal*, Uint32);
   Uint64 get_real_exec_time(MeasurementRecord *measurePtrP);
+  Uint64 get_os_measured_exec_time(MeasurementRecord *measurePtrP);
+  Uint64 get_measured_exec_time(MeasurementRecord *measurePtrP);
+  Uint64 get_measured_block_exec_time(MeasurementRecord *measurePtrP);
 
   void set_configured_spintime(Uint32 val, bool specific);
   void set_allowed_spin_overhead(Uint32 val);
@@ -402,6 +405,7 @@ private:
   bool calculate_stats_last_second(MeasureStats *stats);
   bool calculate_stats_last_100ms(MeasureStats *stats);
 
+  bool calculate_cpu_load_last_measurement(MeasurementRecord *measure);
   bool calculate_cpu_load_last_second(MeasurementRecord *measure);
   bool calculate_cpu_load_last_20seconds(MeasurementRecord *measure);
   bool calculate_cpu_load_last_400seconds(MeasurementRecord *measure);

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,6 +29,7 @@
 #include <md5_hash.hpp>
 
 #include <ndb_version.h>
+#include <signaldata/GetCpuUsage.hpp>
 #include <signaldata/AccKeyReq.hpp>
 #include <signaldata/NodeRecoveryStatusRep.hpp>
 #include <signaldata/TuxBound.hpp>
@@ -134,6 +135,14 @@ extern EventLogger * g_eventLogger;
 //#define NDB_DEBUG_REDO_EXEC 1
 //#define NDB_DEBUG_REDO_REC 1
 //#define DEBUG_LOG_QUEUE 1
+//#define DEBUG_PARALLEL_COPY_EXTRA 1
+//#define DEBUG_PARALLEL_COPY 1
+#endif
+
+#ifdef DEBUG_PARALLEL_COPY
+#define DEB_PARALLEL_COPY(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_PARALLEL_COPY(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_TABLE_LIST
@@ -366,7 +375,8 @@ static int DEBUG_REDO_EXEC = 1;
  * id up to a maximum of 252 is used for TUP full table scans. Scan ids
  * 253, 254 and 255 are reserved for LCP scans, Backup scans and NR scans.
  */
-const Uint32 NR_ScanNo = 253;
+const Uint32 FirstNR_ScanNo = 246;
+const Uint32 LastNR_ScanNo = 253;
 const Uint32 LCP_ScanNo = 254;
 const Uint32 Backup_ScanNo = 255;
 
@@ -880,6 +890,18 @@ void Dblqh::execCONTINUEB(Signal* signal)
   Uint32 data2 = signal->theData[3];
   TcConnectionrecPtr tcConnectptr;
   switch (tcase) {
+  case ZUPDATE_CPU_USAGE:
+  {
+    jam();
+    update_cpu_usage(signal);
+    return;
+  }
+  case ZRESUME_BLOCKED_COPY_FRAGMENT:
+  {
+    jam();
+    resume_one_copy_fragment_process(signal);
+    return;
+  }
   case ZHANDLE_TC_FAILED_SCANS:
   {
     jam();
@@ -1265,6 +1287,7 @@ void Dblqh::execINCL_NODEREQ(Signal* signal)
                      nodeId));
   }
 
+  setup_nodegroup_info();
   signal->theData[0] = nodeId;
   signal->theData[1] = cownref; 
   sendSignal(retRef, GSN_INCL_NODECONF, signal, 2, JBB);
@@ -1550,6 +1573,7 @@ void Dblqh::execSTTOR(Signal* signal)
     else
     {
       send_read_local_sysfile(signal);
+      update_cpu_usage(signal);
     }
     return;
   case 4:
@@ -1902,7 +1926,9 @@ void Dblqh::startphase1Lab(Signal* signal, Uint32 _dummy, Uint32 ownNodeId)
 /* ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++ */
 void Dblqh::startphase2Lab(Signal* signal, Uint32 _dummy) 
 {
-  cmaxWordsAtNodeRec = MAX_NO_WORDS_OUTSTANDING_COPY_FRAGMENT;
+  cmaxWordsAtNodeRec = DEF_NO_WORDS_OUTSTANDING_COPY_FRAGMENT;
+  ctotalMaxWordsAtNodeRec = DEF_NO_WORDS_OUTSTANDING_COPY_FRAGMENT;
+  cmaxParallelCopyFragment = 1;
 /* -- ACC AND TUP CONNECTION PROCESS -- */
   TcConnectionrecPtr tcConnectptr;
   ndbrequire(tcConnect_pool.seize(tcConnectptr));
@@ -2094,7 +2120,7 @@ void Dblqh::execREAD_NODESCONF(Signal* signal)
   ndbrequire(ind == cnoOfNodes);
   ndbrequire(cnoOfNodes >= 1 && cnoOfNodes < MAX_NDB_NODES);
   ndbrequire(!(cnoOfNodes == 1 && cstartType == NodeState::ST_NODE_RESTART));
-
+  setup_nodegroup_info();
 #ifdef ERROR_INSERT
   c_master_node_id = readNodes->masterNodeId;
 #endif
@@ -2466,10 +2492,10 @@ void Dblqh::execREAD_CONFIG_REQ(Signal* signal)
   ndb_mgm_get_int_parameter(p, CFG_DB_PARALLEL_SCANS_PER_FRAG,
                             &c_max_parallel_scans_per_frag);
 
-  if (c_max_parallel_scans_per_frag > (256 - MAX_PARALLEL_SCANS_PER_FRAG) / 2)
+  if (c_max_parallel_scans_per_frag > 192) 
   {
     jam();
-    c_max_parallel_scans_per_frag = (256 - MAX_PARALLEL_SCANS_PER_FRAG) / 2;
+    c_max_parallel_scans_per_frag = 192;
   }
 
   {
@@ -9190,12 +9216,13 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
     ndbassert(fragptr.p->fragStatus == Fragrecord::ACTIVE_CREATION);
     fragptr.p->m_copy_started_state = Fragrecord::AC_NR_COPY;
 
+    Fragrecord::UsageStat& useStat = fragptr.p->m_useStat;
     if (op == ZDELETE)
-      c_fragCopyRowsDel++;
+      useStat.m_fragCopyRowsDel++;
     else
-      c_fragCopyRowsIns++;
+      useStat.m_fragCopyRowsIns++;
     
-    c_fragBytesCopied+= (signal->length() << 2);
+    useStat.m_fragBytesCopied+= (signal->length() << 2);
   }
   else if (!m_is_in_query_thread &&
            refToMain(senderRef) != getRESTORE())
@@ -9658,9 +9685,10 @@ Dblqh::handle_nr_copy(Signal* signal, Ptr<TcConnectionrec> regTcPtr)
   }
 
   /* Signal header was counted for when receiving LQHKEYREQ */
-  c_fragBytesCopied += ((regTcPtr.p->primKeyLen +
-                         ((regTcPtr.p->attrInfoIVal == RNIL)? 0 : 
-                          getSectionSz(regTcPtr.p->attrInfoIVal))) << 2);
+  Fragrecord::UsageStat& useStat = fragptr.p->m_useStat;
+  useStat.m_fragBytesCopied += ((regTcPtr.p->primKeyLen +
+                               ((regTcPtr.p->attrInfoIVal == RNIL)? 0 :
+                               getSectionSz(regTcPtr.p->attrInfoIVal))) << 2);
 
   regTcPtr.p->m_nr_delete.m_cnt = 1; // Wait for real op aswell
   Uint32* dst = signal->theData+24;
@@ -14650,6 +14678,7 @@ void Dblqh::execNODE_FAILREP(Signal* signal)
     }
   }
   ndbrequire(TnoOfNodes == TfoundNodes);
+  setup_nodegroup_info();
 }
 
 void
@@ -18566,9 +18595,10 @@ Uint32 Dblqh::initScanrec(const ScanFragReq* scanFragReq,
   ExecFunction f;
   if (accScan)
   {
-    blockRef = caccBlockref;
-    block = c_acc;
-    f = c_acc->getExecuteFunction(GSN_NEXT_SCANREQ);
+    blockRef = ctupBlockref;
+    block = c_tup;
+    f = c_tup->getExecuteFunction(GSN_NEXT_SCANREQ);
+    tupScan = 1;
   }
   else if (! tupScan)
   {
@@ -18638,18 +18668,16 @@ Uint32 Dblqh::initScanrec(const ScanFragReq* scanFragReq,
   c_tup->prepare_tab_pointers(prim_tab_fragptr.p->tupFragptr);
   
   /**
-   * ACC scan uses 1 - (MAX_PARALLEL_SCANS_PER_FRAG - 1) inclusive  =  0-11
-   * Range scans uses from MAX_PARALLEL_SCANS_PER_FRAG - MAX = 12-134
-   * TUP scans uses from 135 - 252
+   * Range scans uses from 0 - MAX = 0-122
+   * TUP scans uses from 123 - 245
    * The boundary between Range and TUP scans are configurable and is
    * set in variable c_max_parallel_scans_per_frag.
    */
 
   /**
-   * ACC only supports 12 parallel scans per fragment (hard limit)
-   * TUP/TUX does not have any such limit...but when scanning with keyinfo
+   * TUP/TUX does not have limit...but when scanning with keyinfo
    *         (for take-over) no more than 255 such scans can be active
-   *         at a fragment (dur to 8 bit number in scan-keyinfo protocol)
+   *         at a fragment (due to 8 bit number in scan-keyinfo protocol)
    *
    * TODO: Make TUP/TUX limits depend on scanKeyinfoFlag (possibly with
    *       other config limit too)
@@ -18657,28 +18685,22 @@ Uint32 Dblqh::initScanrec(const ScanFragReq* scanFragReq,
 
   Uint32 start, stop;
   Uint32 max_parallel_scans_per_frag = c_max_parallel_scans_per_frag;
-  if (accScan)
+  if (rangeScan)
   {
     jam();
     start = 0;
-    stop = MAX_PARALLEL_SCANS_PER_FRAG;
-  }
-  else if (rangeScan)
-  {
-    jam();
-    start = MAX_PARALLEL_SCANS_PER_FRAG;
-    stop = start + max_parallel_scans_per_frag;
+    stop = max_parallel_scans_per_frag;
   }
   else
   {
     jam();
     ndbassert(tupScan);
-    start = MAX_PARALLEL_SCANS_PER_FRAG + max_parallel_scans_per_frag;
+    start = max_parallel_scans_per_frag;
     stop = start + max_parallel_scans_per_frag;
-    if (stop > NR_ScanNo)
+    if (stop > FirstNR_ScanNo)
     {
       jam();
-      stop = NR_ScanNo;
+      stop = FirstNR_ScanNo;
     }
   }
   ndbrequire((start < 32 * tFragPtr.p->m_scanNumberMask.Size) &&
@@ -18700,6 +18722,7 @@ Uint32 Dblqh::initScanrec(const ScanFragReq* scanFragReq,
       free = LCP_ScanNo;
       c_check_scanptr_i[ZLCP_CHECK_INDEX] = scanptr.i;
       c_check_scanptr_save_timer[ZLCP_CHECK_INDEX] = regTcPtr->tcTimer;
+      c_check_scanptr_save_line[ZLCP_CHECK_INDEX] = __LINE__;
     }
     else
     {
@@ -18708,12 +18731,13 @@ Uint32 Dblqh::initScanrec(const ScanFragReq* scanFragReq,
       free = Backup_ScanNo;
       c_check_scanptr_i[ZBACKUP_CHECK_INDEX] = scanptr.i;
       c_check_scanptr_save_timer[ZBACKUP_CHECK_INDEX] = regTcPtr->tcTimer;
+      c_check_scanptr_save_line[ZBACKUP_CHECK_INDEX] = __LINE__;
     }
     ndbassert(tFragPtr.p->m_scanNumberMask.get(free));
   }
   else
   {
-    if (!(scanPtr->scanKeyinfoFlag || accScan))
+    if (!scanPtr->scanKeyinfoFlag)
     {
       jam();
       fragptr.p->m_activeScans++;
@@ -18955,7 +18979,7 @@ bool Dblqh::finishScanrec(Signal* signal,
      * Start of queued scans
      */
     if (likely(!queue.first(restart)) ||
-         (scanNumber >= NR_ScanNo &&
+         (scanNumber >= FirstNR_ScanNo &&
           scanNumber <= Backup_ScanNo))
     {
       jamDebug();
@@ -19034,8 +19058,10 @@ void Dblqh::releaseScanrec(Signal* signal)
   else
   {
     jam();
-    ndbrequire(scanptr.p->scanNumber == NR_ScanNo);
-    c_check_scanptr_i[ZCOPY_FRAGREQ_CHECK_INDEX] = RNIL;
+    ndbrequire(scanptr.p->scanNumber >= FirstNR_ScanNo);
+    ndbrequire(scanptr.p->scanNumber <= LastNR_ScanNo);
+    Uint32 inx = scanptr.p->scanNumber - FirstNR_ScanNo;
+    c_check_scanptr_i[ZCOPY_FRAGREQ_CHECK_INDEX + inx] = RNIL;
   }
   init_release_scanrec(scanPtr);
   m_reserved_scans.addFirst(scanptr);
@@ -19582,8 +19608,6 @@ Dblqh::execPREPARE_COPY_FRAG_REQ(Signal* signal)
 
   Uint32 completedGci = 0;
   /* Assuming 1 at a time... */
-  c_fragCopyTable = req.tableId;
-  c_fragCopyFrag = req.fragId;
   if (!c_copy_fragment_in_progress)
   {
     jam();
@@ -19598,16 +19622,15 @@ Dblqh::execPREPARE_COPY_FRAG_REQ(Signal* signal)
                         instance());
   }
   c_fragmentsCopied++;
-  c_prepare_copy_fragreq_save = req;
 
   if (! DictTabInfo::isOrderedIndex(tabptr.p->tableType))
   {
     jam();
+    ndbrequire(getFragmentrec(req.fragId));
     DEB_COPY(("(%u)Copy tab(%u,%u) starts",
               instance(),
-              c_fragCopyTable,
-              c_fragCopyFrag));
-    ndbrequire(getFragmentrec(req.fragId));
+              fragptr.p->tabRef,
+              fragptr.p->fragId));
     
     /**
      * We set AC_IGNORED to ensure we ignore transactions (but still
@@ -19620,30 +19643,15 @@ Dblqh::execPREPARE_COPY_FRAG_REQ(Signal* signal)
      * no longer existing on the live node.
      */
     fragptr.p->m_copy_started_state = Fragrecord::AC_IGNORED;
+    Fragrecord::UsageStat& useStat = fragptr.p->m_useStat;
+    useStat.m_fragCopyRowsIns = 0;
+    useStat.m_fragCopyRowsDel = 0;
+    useStat.m_fragBytesCopied = 0;
     fragptr.p->fragStatus = Fragrecord::ACTIVE_CREATION;
     fragptr.p->logFlag = Fragrecord::STATE_FALSE;
     completedGci = fragptr.p->m_completed_gci;
 
     c_tup->get_frag_info(req.tableId, req.fragId, &max_page);
-    if ((c_copy_frag_halted &&
-         c_copy_frag_halt_state == COPY_FRAG_HALT_STATE_IDLE) ||
-         (!c_copy_frag_halted &&
-          c_copy_frag_halt_state == COPY_FRAG_HALT_WAIT_FIRST_LQHKEYREQ))
-    {
-      jam();
-      /**
-       * Copy fragment process have been halted due to overload
-       * of UNDO log. We will respond to this signal when
-       * overload is gone.
-       */
-      DEB_COPY(("(%u)Halt after PREPARE_COPY_FRAG_REQ, tab(%u,%u)",
-                instance(),
-                req.tableId,
-                req.fragId));
-      c_copy_frag_halted = true;
-      c_copy_frag_halt_state = PREPARE_COPY_FRAG_IS_HALTED;
-      return;
-    }
   }
   send_prepare_copy_frag_conf(signal, req, completedGci, max_page);
 }
@@ -19673,6 +19681,12 @@ Dblqh::send_prepare_copy_frag_conf(Signal *signal,
 void Dblqh::execCOPY_FRAGREQ(Signal* signal) 
 {
   jamEntry();
+  bool from_queue = false;
+  if (signal->getSendersBlockRef() == reference())
+  {
+    jam();
+    from_queue = true;
+  }
   const CopyFragReq copy = *(CopyFragReq *)&signal->theData[0];
   const CopyFragReq* copyFragReq = &copy;
   tabptr.i = copyFragReq->tableId;
@@ -19684,7 +19698,6 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
   const Uint32 nodeId = copyFragReq->nodeId;
   const Uint32 gci = copyFragReq->gci;
   
-  ndbrequire(cnoActiveCopy < 3);
   ndbrequire(getFragmentrec(fragId));
   ndbrequire(cfirstfreeTcConrec != RNIL);
 
@@ -19753,34 +19766,75 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
                  UpdateFragDistKeyOrd::SignalLength, JBB);
     }
   }
-  if (c_copy_fragment_ongoing && copyFragReq->nodeCount > 0)
+  if (!from_queue)
   {
-    jam();
-    /**
-     * We are already busy copying a fragment. We only handle one
-     * fragment at a time to avoid overloading the live node.
-     * Queue the request in FIFO order.
-     *
-     * We handle distribution key update immediately and thus we have
-     * to remove the node list from the signal to avoid setting the
-     * distribution key again when restarted.
-     */
-    CopyFragRecordPtr copy_fragptr;
-    c_copy_fragment_pool.seize(copy_fragptr);
-    copy_fragptr.p->m_copy_fragreq = *copyFragReq;
-    Uint32 nodeCount = copyFragReq->nodeCount;
-    copy_fragptr.p->m_copy_fragreq.nodeCount = 0;
-    copy_fragptr.p->m_copy_fragreq.nodeList[0] =
-      copy_fragptr.p->m_copy_fragreq.nodeList[nodeCount];
-    copy_fragptr.p->m_copy_fragreq.nodeList[1] =
-      copy_fragptr.p->m_copy_fragreq.nodeList[nodeCount + 1];
-    c_copy_fragment_queue.addLast(copy_fragptr);
-    return;
+    if (!is_ok_to_start_copyFragReq())
+    {
+      jam();
+      /**
+       * We are already busy copying fragments and not allowed to start
+       * any new ones. Queue the request in FIFO order.
+       *
+       * We handle distribution key update immediately and thus we have
+       * to remove the node list from the signal to avoid setting the
+       * distribution key again when restarted.
+       *
+       * nodeCount == 0 can happen when we send COPY_FRAGREQ to
+       * restart a queued COPY_FRAGREQ request. The queued COPY_FRAGREQ
+       * signal took care of the node list before being queued and thus
+       * we are ok with a node count of 0 for restarted COPY_FRAGREQ.
+       *
+       * nodeCount == 0 can also happen with non-transactional copy.
+       * In this case we should not update the distribution key and
+       * thus it is ok that there is no node list.
+       */
+      DEB_PARALLEL_COPY(("(%u)Copy scan queued from signal, now active: %u",
+                         instance(),
+                         c_active_copyFragReq));
+      CopyFragRecordPtr copy_fragptr;
+      c_copy_fragment_pool.seize(copy_fragptr);
+      copy_fragptr.p->m_copy_fragreq = *copyFragReq;
+      Uint32 nodeCount = copyFragReq->nodeCount;
+      copy_fragptr.p->m_copy_fragreq.nodeCount = 0;
+      copy_fragptr.p->m_copy_fragreq.nodeList[0] =
+        copy_fragptr.p->m_copy_fragreq.nodeList[nodeCount];
+      copy_fragptr.p->m_copy_fragreq.nodeList[1] =
+        copy_fragptr.p->m_copy_fragreq.nodeList[nodeCount + 1];
+      c_copy_fragment_queue.addLast(copy_fragptr);
+      return;
+    }
+    else
+    {
+      jam();
+      adjust_copyFragReq_rates(true);
+      DEB_PARALLEL_COPY(("(%u)Start Copy scan from signal, now active: %u",
+                         instance(),
+                         c_active_copyFragReq));
+    }
   }
-  jam();
-  c_copy_fragment_ongoing = true;
+  else
+  {
+    /**
+     * Sent from queue locally.
+     * c_active_copyFragReq updated already when sending COPY_FRAGREQ to
+     * ensure we are still allowed to start when reaching here.
+     */
+    jam();
+  }
 
-  ndbrequire(fragptr.p->m_scanNumberMask.get(NR_ScanNo));
+  bool found = false;
+  Uint32 scanNumberIndex = RNIL;
+  for (Uint32 i = 0; i < ZMAX_PARALLEL_COPY_FRAGMENT_OPS; i++)
+  {
+    if (fragptr.p->m_scanNumberMask.get(FirstNR_ScanNo + i))
+    {
+      found = true;
+      scanNumberIndex = i;
+      break;
+    }
+  }
+  jamLine(scanNumberIndex);
+  ndbrequire(found);
   {
     /* NR Scans allocate reserved scan records */
     ndbrequire(m_reserved_scans.first(scanptr));
@@ -19802,7 +19856,7 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
   ScanRecord * const scanPtr = scanptr.p;
   scanPtr->m_max_batch_size_rows = 0;
   scanPtr->rangeScan = 0;
-  scanPtr->tupScan = 0;
+  scanPtr->tupScan = 1;
   /**
    * Will always succeed since we can only call this once at a time for
    * NR operations, LCP scan operation and backup scan operation. All these
@@ -19839,7 +19893,7 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
     scanPtr->scanType = ScanRecord::COPY;
     scanPtr->scanCompletedStatus = ZFALSE;
     scanPtr->scanErrorCounter = 0;
-    scanPtr->scanNumber = NR_ScanNo;
+    scanPtr->scanNumber = FirstNR_ScanNo + scanNumberIndex;
     scanPtr->scanKeyinfoFlag = 0; // Don't put into hash
     scanPtr->scanLockHold = ZFALSE;
     scanPtr->m_curr_batch_size_rows = 0;
@@ -19853,9 +19907,9 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
     scanPtr->scan_lastSeen = __LINE__;
     scanPtr->scan_check_lcp_stop = 0;
     m_scan_direct_count = ZMAX_SCAN_DIRECT_COUNT - 6;
-    fragptr.p->m_scanNumberMask.clear(NR_ScanNo);
-    c_check_scanptr_i[ZCOPY_FRAGREQ_CHECK_INDEX] = scanptr.i;
-    c_check_scanptr_save_timer[ZCOPY_FRAGREQ_CHECK_INDEX] =
+    fragptr.p->m_scanNumberMask.clear(FirstNR_ScanNo + scanNumberIndex);
+    c_check_scanptr_i[ZCOPY_FRAGREQ_CHECK_INDEX + scanNumberIndex] = scanptr.i;
+    c_check_scanptr_save_timer[ZCOPY_FRAGREQ_CHECK_INDEX + scanNumberIndex] =
       tcConnectptr.p->tcTimer;
   }
   
@@ -19872,12 +19926,6 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
    */
   prim_tab_fragptr = fragptr;
   c_tup->prepare_tab_pointers(prim_tab_fragptr.p->tupFragptr);
-  /* Save TC connect record used */
-  c_tc_connect_rec_copy_frag = tcConnectptr.i;
-
-  cactiveCopy[cnoActiveCopy] = fragptr.i;
-  cnoActiveCopy++;
-
   {
     TcConnectionrec * const regTcPtr = tcConnectptr.p;
     const Uint32 tcPtrI = tcConnectptr.i;
@@ -20185,11 +20233,15 @@ void Dblqh::nextScanConfCopyLab(Signal* signal,
      * Also see TR 587.
      *----------------------------------------------------------------*/
     tcConP->transid[0] = TnoOfWords; // Data overload, see note!
-    ndbrequire(!c_copy_frag_live_node_halted);
     packLqhkeyreqLab(signal, tcConnectptr);
     tcConP->copyCountWords += TnoOfWords;
+#ifdef STATS_PARALLEL_COPY_FRAGMENT
+    c_outstanding_words_copy_fragreq += TnoOfWords;
+    c_outstanding_rows_copy_fragreq++;
+#endif
+    ndbrequire(scanptr.p->scanState != ScanRecord::COPY_FRAG_HALTED);
     scanptr.p->scanState = ScanRecord::WAIT_LQHKEY_COPY;
-    if (tcConP->copyCountWords < cmaxWordsAtNodeRec)
+    if (is_ok_to_send_next_record(tcConP))
     {
       nextRecordCopy(signal, tcConnectptr);
       return;
@@ -20308,10 +20360,12 @@ void Dblqh::copyTupkeyRefLab(Signal* signal,
     closeCopyLab(signal, tcConnectptr.p);
     return;
   }
-
-  ndbrequire(tcConnectptr.p->copyCountWords < cmaxWordsAtNodeRec);
   scanptr.p->scanState = ScanRecord::WAIT_LQHKEY_COPY;
-  nextRecordCopy(signal, tcConnectptr);
+  if (is_ok_to_send_next_record(tcConnectptr.p))
+  {
+    jam();
+    nextRecordCopy(signal, tcConnectptr);
+  }
 }
 
 void Dblqh::copyTupkeyConfLab(Signal* signal,
@@ -20417,17 +20471,19 @@ void Dblqh::copyTupkeyConfLab(Signal* signal,
    * Also see TR 587.
    *----------------------------------------------------------------*/
   tcConnectptr.p->transid[0] = TnoOfWords; // Data overload, see note!
-  ndbrequire(!c_copy_frag_live_node_halted);
   packLqhkeyreqLab(signal, tcConnectptr);
   tcConnectptr.p->copyCountWords += TnoOfWords;
+#ifdef STATS_PARALLEL_COPY_FRAGMENT
+  c_outstanding_words_copy_fragreq += TnoOfWords;
+  c_outstanding_rows_copy_fragreq++;
+#endif
+  ndbrequire(scanptr.p->scanState != ScanRecord::COPY_FRAG_HALTED);
   scanptr.p->scanState = ScanRecord::WAIT_LQHKEY_COPY;
-  if (tcConnectptr.p->copyCountWords < cmaxWordsAtNodeRec)
+  if (is_ok_to_send_next_record(tcConnectptr.p))
   {
     nextRecordCopy(signal, tcConnectptr);
-    return;
-  }//if
-  return;
-}//Dblqh::copyTupkeyConfLab()
+  }
+}
 
 /*---------------------------------------------------------------------------*/
 /*     ENTER LQHKEYCONF                                                      */
@@ -20440,43 +20496,23 @@ void Dblqh::copyCompletedLab(Signal* signal,
   const LqhKeyConf * const lqhKeyConf = (LqhKeyConf *)signal->getDataPtr();  
 
   ndbrequire(tcConnectptr.p->transid[1] == lqhKeyConf->transId2);
-  if (tcConnectptr.p->copyCountWords >= cmaxWordsAtNodeRec) {
-    tcConnectptr.p->copyCountWords -= lqhKeyConf->transId1; // Data overload, see note!
-    if (scanptr.p->scanCompletedStatus == ZTRUE) {
-      jam();
-/*---------------------------------------------------------------------------*/
-// Copy to complete, we will not start any new copying.
-/*---------------------------------------------------------------------------*/
-      closeCopyLab(signal, tcConnectptr.p);
-      return;
-    }//if
-    if (tcConnectptr.p->copyCountWords < cmaxWordsAtNodeRec)
-    {
-      jam();
-      nextRecordCopy(signal, tcConnectptr);
-      return;
-    }//if
-    return;
-  }//if
-  tcConnectptr.p->copyCountWords -= lqhKeyConf->transId1; // Data overload, see note!
-  ndbrequire(tcConnectptr.p->copyCountWords <= cmaxWordsAtNodeRec);
-  if (tcConnectptr.p->copyCountWords > 0) {
-    jam();
-    return;
-  }//if
-/*---------------------------------------------------------------------------*/
-// No more outstanding copies. We will only start new ones from here if it was
-// stopped before and this only happens when copyCountWords is bigger than the
-// threshold value. Since this did not occur we must be waiting for completion.
-// Check that this is so. If not we crash to find out what is going on.
-/*---------------------------------------------------------------------------*/
-
+  Uint32 words = lqhKeyConf->transId1;
+#ifdef STATS_PARALLEL_COPY_FRAGMENT
+  c_words_copy_fragreq += words;
+  c_rows_copy_fragreq++;
+  c_outstanding_words_copy_fragreq -= words;
+  c_outstanding_rows_copy_fragreq--;
+#endif
+  tcConnectptr.p->copyCountWords -= words;
   if (scanptr.p->scanCompletedStatus == ZTRUE) {
     jam();
+/*---------------------------------------------------------------------------*/
+// Copy to complete, we will not start any new copying.
+// closeCopyLab will only act if copyCountWords == 0.
+/*---------------------------------------------------------------------------*/
     closeCopyLab(signal, tcConnectptr.p);
     return;
-  }//if
-
+  }
   if (scanptr.p->scanState == ScanRecord::WAIT_LQHKEY_COPY &&
       scanptr.p->scanErrorCounter)
   {
@@ -20484,41 +20520,31 @@ void Dblqh::copyCompletedLab(Signal* signal,
     closeCopyLab(signal, tcConnectptr.p);
     return;
   }
-
-  if (c_copy_frag_live_node_performing_halt &&
-      scanptr.p->scanState == ScanRecord::WAIT_LQHKEY_COPY)
+  if (c_copy_frag_live_node_halted)
   {
     jam();
-    /* No more outstanding copy rows. We are only waiting now. */
-    DEB_COPY(("(%u):2: Copy fragment process halted", instance()));
-    scanptr.p->scanState = ScanRecord::COPY_FRAG_HALTED;
-    scanptr.p->scan_lastSeen = __LINE__;
-    c_copy_frag_live_node_halted = true;
-    c_copy_frag_live_node_performing_halt = false;
-    send_halt_copy_frag_conf(signal, false);
     return;
   }
-
-  /**
-   * We could come here even when c_copy_frag_live_node_performing_halt
-   * is set. In this case scanState is WAIT_NEXT_SCAN_COPY which means
-   * we are waiting for an outstanding NEXT_SCANREQ signal.
-   */
-  ndbassert(!c_copy_frag_live_node_performing_halt ||
-            scanptr.p->scanState == ScanRecord::WAIT_NEXT_SCAN_COPY);
-
-  if (scanptr.p->scanState == ScanRecord::WAIT_LQHKEY_COPY)
+  if (scanptr.p->scanState == ScanRecord::WAIT_LQHKEY_COPY &&
+      is_ok_to_send_next_record(tcConnectptr.p))
   {
     jam();
-/*---------------------------------------------------------------------------*/
-// Make sure that something is in progress. Otherwise we will simply stop
-// and nothing more will happen.
-/*---------------------------------------------------------------------------*/
-    systemErrorLab(signal, __LINE__);
+    nextRecordCopy(signal, tcConnectptr);
     return;
-  }//if
-  return;
-}//Dblqh::copyCompletedLab()
+  }
+}
+
+void Dblqh:: block_copy_fragment_process(ScanRecord *scanPtr,
+                                         Uint32 tcConPtrI)
+{
+  DEB_COPY(("(%u):Copy fragment process halted", instance()));
+  scanPtr->scanState = ScanRecord::COPY_FRAG_HALTED;
+  scanPtr->scan_lastSeen = __LINE__;
+  Uint32 block_index = c_num_blocked_copy_fragment_processes;
+  c_num_blocked_copy_fragment_processes++;
+  ndbrequire(block_index < ZMAX_PARALLEL_COPY_FRAGMENT_OPS);
+  c_blocked_copy_fragment_processes[block_index] = tcConPtrI;
+}
 
 void Dblqh::nextRecordCopy(Signal* signal,
                            const TcConnectionrecPtr tcConnectptr)
@@ -20540,23 +20566,16 @@ void Dblqh::nextRecordCopy(Signal* signal,
   ndbrequire(fragptr.p->fragStatus == Fragrecord::FSACTIVE);
 
   regTcPtr->errorCode = 0;
-  if (c_copy_frag_live_node_performing_halt)
+  if (c_copy_frag_live_node_halted)
   {
     jam();
-    ndbrequire(c_tc_connect_rec_copy_frag ==
-               tcConnectptr.i);
-
-    if (regTcPtr->copyCountWords == 0)
-    {
-      jam();
-      /* No more outstanding copy rows. We are only waiting now. */
-      DEB_COPY(("(%u):Copy fragment process halted", instance()));
-      scanPtr->scanState = ScanRecord::COPY_FRAG_HALTED;
-      scanPtr->scan_lastSeen = __LINE__;
-      c_copy_frag_live_node_halted = true;
-      c_copy_frag_live_node_performing_halt = false;
-      send_halt_copy_frag_conf(signal, false);
-    }
+    /**
+     * Copy fragment process have been blocked, we need to stop this copy
+     * fragment process until the starting node resumes it again.
+     * Since we can have multiple processes ongoing we need to track all
+     * blocked copy fragment processes.
+     */
+    block_copy_fragment_process(scanPtr, tcConnectptr.i);
     return;
   }
   Uint32 acc_op_ptr= get_acc_ptr_from_scan_record(scanptr.p, 0, false);
@@ -20706,8 +20725,6 @@ void Dblqh::accCopyCloseConfLab(Signal* signal,
 void Dblqh::tupCopyCloseConfLab(Signal* signal,
                                 const TcConnectionrecPtr tcConnectptr)
 {
-  c_tc_connect_rec_copy_frag = RNIL;
-
   if (tcConnectptr.p->abortState == TcConnectionrec::NEW_FROM_TC)
   {
     jam();
@@ -20731,14 +20748,6 @@ void Dblqh::tupCopyCloseConfLab(Signal* signal,
   }
   else
   {
-    if (c_copy_frag_live_node_performing_halt)
-    {
-      jam();
-      send_halt_copy_frag_conf(signal, true);
-      c_copy_frag_live_node_performing_halt = false;
-    }
-    ndbrequire(!c_copy_frag_live_node_halted);
-
     if (scanptr.p->scanErrorCounter > 0)
     {
       jam();
@@ -20771,26 +20780,34 @@ void Dblqh::tupCopyCloseConfLab(Signal* signal,
 		 CopyFragConf::SignalLength, JBB);
     }//if
   }//if
-  releaseActiveCopy(signal);
+  DEB_PARALLEL_COPY(("(%u)Finished Copy scan(%u), now active: %u",
+                     instance(),
+                     scanptr.i,
+                     c_active_copyFragReq - 1));
   handle_finish_scan(signal, tcConnectptr);
-  if (c_copy_fragment_queue.isEmpty())
+  ndbrequire(c_active_copyFragReq > 0);
+  adjust_copyFragReq_rates(false);
+  start_new_copyFragReq(signal);
+}//Dblqh::tupCopyCloseConfLab()
+
+void Dblqh::start_new_copyFragReq(Signal *signal)
+{
+  if (is_ok_to_start_copyFragReq() && !c_copy_fragment_queue.isEmpty())
   {
     jam();
     /**
-     * No more COPY_FRAGREQ queued, allow anyone to start that arrives.
-     */
-    c_copy_fragment_ongoing = false;
-  }
-  else
-  {
-    jam();
-    /**
-     * Queued COPY_FRAGREQ exists, this will be sent as normal JBB signal,
-     * We will retaint the c_copy_fragment_ongoing to be false to ensure
-     * that signals coming directly from DBDIH will be queued. Our signal
+     * Queued COPY_FRAGREQ exists and it is ok to start a new copy fragment.
+     * This will be sent as normal JBB signal, our signal
      * will be let through as it has nodeCount set to 0 and this can only
      * be sent from here.
+     *
+     * We update the c_active_copyFragReq already here to ensure no one can
+     * steal our chance to copy this fragment.
      */
+    adjust_copyFragReq_rates(true);
+    DEB_PARALLEL_COPY(("(%u)Start Copy scan from queue, now active: %u",
+                       instance(),
+                       c_active_copyFragReq));
     CopyFragRecordPtr copy_fragptr;
     c_copy_fragment_queue.first(copy_fragptr);
     memcpy(&signal->theData[0],
@@ -20800,7 +20817,7 @@ void Dblqh::tupCopyCloseConfLab(Signal* signal,
                CopyFragReq::SignalLength, JBB);
     c_copy_fragment_queue.removeFirst(copy_fragptr);
   }
-}//Dblqh::tupCopyCloseConfLab()
+}
 
 /*---------------------------------------------------------------------------*/
 /*   A NODE FAILURE OCCURRED DURING THE COPY PROCESS. WE NEED TO CLOSE THE   */
@@ -20929,9 +20946,6 @@ void Dblqh::execCOPY_ACTIVEREQ(Signal* signal)
 	    << " COPY ACTIVE"
             << " flags: " << hex << flags << endl);
 
-  ndbrequire(cnoActiveCopy < 3);
-  cactiveCopy[cnoActiveCopy] = fragptr.i;
-  cnoActiveCopy++;
   fragptr.p->masterBlockref = masterRef;
   fragptr.p->masterPtr = masterPtr;
 
@@ -20959,51 +20973,11 @@ void Dblqh::execCOPY_ACTIVEREQ(Signal* signal)
      * fragment means that the copy fragment process is
      * completed and we can cease to worry about halt and
      * resume of copy fragment process.
-     *
-     * We can reach this state if we attempted to halt the
-     * last fragment to copy and we failed to halt it before
-     * it was completed. This can happen e.g. if we waited
-     * for the first LQHKEYREQ.
-     *
-     * It can also happen if we sent HALT_COPY_FRAG_REQ,
-     * in this case we might fail to halt the process and
-     * the response signal HALT_COPY_FRAG_CONF is raced
-     * by the COPY_FRAGCONF and COPY_ACTIVEREQ signals that
-     * are sent through a different path. So this path is
-     * more uncommon.
      */
-    if (!c_copy_frag_halted &&
-        c_copy_frag_halt_state == COPY_FRAG_HALT_WAIT_FIRST_LQHKEYREQ)
-    {
-      jam();
-      DEB_LCP(("(%u)Phase 2 of copy fragment started while waiting for "
-               "LQHKEYREQ",
-               instance()));
-      c_copy_frag_halt_state = COPY_FRAG_HALT_STATE_IDLE;
-    }
-    if (!c_copy_frag_halted &&
-        c_copy_frag_halt_process_locked &&
-        c_copy_frag_halt_state == WAIT_HALT_COPY_FRAG_CONF)
-    {
-      jam();
-      DEB_LCP(("(%u)Phase 2 of copy fragment started while waiting for halt",
-               instance()));
-      c_copy_frag_halt_process_locked = false;
-      c_copy_frag_halt_state = COPY_FRAG_HALT_STATE_IDLE;
-    }
-    if (c_copy_frag_halted &&
-        c_copy_frag_halt_process_locked &&
-        c_copy_frag_halt_state == WAIT_RESUME_COPY_FRAG_CONF)
-    {
-      jam();
-      DEB_LCP(("(%u)Phase 2 of copy fragment started while resuming",
-               instance()));
-      c_copy_frag_halted = false;
-      c_copy_frag_halt_process_locked = false;
-      c_copy_frag_halt_state = COPY_FRAG_HALT_STATE_IDLE;
-    }
-    ndbrequire(!c_copy_frag_halted &&
-               c_copy_frag_halt_state == COPY_FRAG_HALT_STATE_IDLE);
+    c_copy_frag_live_node_halted = false;
+    ndbrequire(c_num_blocked_copy_fragment_processes == 0);
+    ndbrequire(c_copy_fragment_queue.isEmpty());
+
     if (c_copy_fragment_in_progress)
     {
       jam();
@@ -21824,7 +21798,6 @@ void Dblqh::initCopyTc(Signal* signal, Operation_t op, TcConnectionrec* regTcPtr
 /* ------------------------------------------------------------------------- */
 void Dblqh::sendCopyActiveConf(Signal* signal, Uint32 tableId) 
 {
-  releaseActiveCopy(signal);
   CopyActiveConf * const conf = (CopyActiveConf *)&signal->theData[0];
   conf->userPtr = fragptr.p->masterPtr;
   conf->tableId = tableId;
@@ -21868,117 +21841,29 @@ void Dblqh::sendCopyActiveConf(Signal* signal, Uint32 tableId)
  *
  * We discover that we need to halt the execution of copy
  * fragment in the starting node. When we receive this condition
- * we might have copy fragments ongoing. The variables
- * c_fragCopyTable and c_fragCopyFrag is set to RNIL when no
- * copy fragment is ongoing. Otherwise they point to the currently
- * active fragment being copied.
- *
- * The starting node see the following flow of signals.
- *
- * 0) Before any copy started
- * Indicated by m_copy_started_state is AC_NORMAL, fragStatus is
- * FSACTIVE and m_copy_complete_flag is 0.
- *
- * 1) PREPARE_COPY_FRAGREQ
- * Sent before the live node gets the COPY_FRAGREQ signal.
- * Indicated by setting m_copy_started_state to AC_IGNORED and setting
- * fragStatus to ACTIVE_CREATION.
- *
- * 2) First LQHKEYREQ signal received (=> COPY_FRAGREQ received
- *    at live node).
- * Indicated by setting m_copy_started_state to AC_NR_COPY.
- *
- * 3) COPY_ACTIVEREQ received with CAR_NO_LOGGING and CAR_NO_WAIT set
- * Indicated by setting m_copy_started to AC_NORMAL and fragStatus to
- * FSACTIVE and m_copy_complete_flag to 1.
- *
- * If we find a copy fragment active it will be in either 1) or 2) above.
- * If all fragments are in either 0) or 3) then no active copy fragment
- * is ongoing.
+ * we might have copy fragments ongoing controlled by the
+ * live node(s). We will ask the live node(s) to stop copying
+ * until the UNDO log has recovered from its overload in the
+ * starting node.
  */
-void
-Dblqh::send_halt_copy_frag(Signal *signal)
+void Dblqh::setup_nodegroup_info()
 {
-  ndbrequire(c_undo_log_overloaded);
-  ndbrequire(!c_copy_frag_halt_process_locked);
-  ndbrequire(!(c_copy_frag_halted &&
-               c_copy_frag_halt_state == WAIT_RESUME_COPY_FRAG_CONF));
-  ndbrequire(!(!c_copy_frag_halted &&
-               c_copy_frag_halt_state == WAIT_HALT_COPY_FRAG_CONF));
-  ndbassert(is_copy_frag_in_progress());
-  if (c_fragCopyTable == RNIL)
+  c_num_nodes_in_our_nodegroup = 0;
+
+  Uint16 our_nodegroup = getNodeInfo(getOwnNodeId()).m_node_group_id;
+  for (Uint16 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++)
   {
-    jam();
-    /**
-     * No active checkpoint ongoing.
-     * Set c_copy_frag_halted to true and c_copy_frag_halt_state to
-     * COPY_FRAG_HALT_STATE_IDLE. Will halt copy fragment when receiving
-     * PREPARE_COPY_FRAGREQ.
-     */
-    DEB_COPY(("(%u): Halted, no active copy", instance()));
-    c_copy_frag_halted = true;
-    c_copy_frag_halt_state = COPY_FRAG_HALT_STATE_IDLE;
-    return;
+    if (nodeId == getOwnNodeId() ||
+        getNodeInfo(nodeId).getType() != NodeInfo::DB)
+      continue;
+    if (getNodeInfo(nodeId).m_node_group_id == our_nodegroup)
+    {
+      jam();
+      jamLine(nodeId);
+      c_nodes_in_our_nodegroup[c_num_nodes_in_our_nodegroup] = nodeId;
+      c_num_nodes_in_our_nodegroup++;
+    }
   }
-
-  tabptr.i = c_fragCopyTable;
-  ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
-  ndbrequire(getFragmentrec(c_fragCopyFrag));
-
-  if (fragptr.p->m_copy_started_state == Fragrecord::AC_IGNORED)
-  {
-    jam();
-    /**
-     * State 1) above
-     * We have received the PREPARE_COPY_FRAGREQ already, but we have
-     * not yet received the first LQHKEYREQ yet. So we cannot be sure
-     * that the starting node have received COPY_FRAGREQ yet. We
-     * indicate that we wait for first LQHKEYREQ by setting
-     * c_copy_frag_halted to true AND c_copy_frag_halt_state to
-     * WAIT_FIRST_LQHKEYREQ.
-     *
-     * It is possible that not no first LQHKEYREQ arrives if no rows
-     * are sent before the copy fragment of this fragment is
-     * completed. In this case we will either see a new
-     * PREPARE_COPY_FRAG_REQ arrive or we will see that the
-     * first phase of copy fragment is completed.
-     */
-    DEB_COPY(("(%u): Halt when first LQHKEYREQ arrives, tab(%u,%u)",
-              instance(),
-              c_fragCopyTable,
-              c_fragCopyFrag));
-    c_copy_frag_halted = false;
-    c_copy_frag_halt_state = COPY_FRAG_HALT_WAIT_FIRST_LQHKEYREQ;
-    return;
-  }
-  ndbrequire(fragptr.p->m_copy_started_state == Fragrecord::AC_NR_COPY);
-  jam();
-  /**
-   * We can be sure that the live node have received the COPY_FRAGREQ.
-   * Send HALT_COPY_FRAG_REQ to live node to stop copy fragment process
-   * temporarily.
-   */
-  DEB_COPY(("(%u): Halt copy fragment process in live node, tab(%u,%u)",
-            instance(),
-            c_fragCopyTable,
-            c_fragCopyFrag));
-  c_copy_frag_halted = false;
-  c_copy_frag_halt_process_locked = true;
-  c_copy_frag_halt_state = WAIT_HALT_COPY_FRAG_CONF;
-  Uint32 nodeId = c_prepare_copy_fragreq_save.copyNodeId;
-  Uint32 instanceKey = fragptr.p->lqhInstanceKey;
-  Uint32 instanceNo = getInstanceNo(nodeId, instanceKey);
-  BlockReference ref = numberToRef(DBLQH,
-                                   instanceNo,
-                                   nodeId);
-
-  HaltCopyFragReq *req = (HaltCopyFragReq*)signal->getDataPtrSend();
-  req->senderRef = reference();
-  req->senderData = 0;
-  req->tableId = fragptr.p->tabRef;
-  req->fragmentId = fragptr.p->fragId;
-  sendSignal(ref, GSN_HALT_COPY_FRAG_REQ, signal,
-             HaltCopyFragReq::SignalLength, JBB);
 }
 
 bool Dblqh::is_copy_frag_in_progress(void)
@@ -21993,196 +21878,64 @@ bool Dblqh::is_copy_frag_in_progress(void)
 }
 
 void
-Dblqh::execHALT_COPY_FRAG_CONF(Signal *signal)
+Dblqh::send_halt_copy_frag(Signal *signal)
 {
-  HaltCopyFragConf *conf = (HaltCopyFragConf*)signal->getDataPtr();
-  Uint32 cause = conf->cause;
-  tabptr.i = conf->tableId;
-  Uint32 fragId = conf->fragmentId;
-  ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
-  ndbrequire(getFragmentrec(fragId));
-  c_copy_frag_halt_process_locked = false;
-  if (cause == HaltCopyFragConf::COPY_FRAG_HALTED)
+  ndbrequire(c_undo_log_overloaded);
+  ndbassert(is_copy_frag_in_progress());
+  DEB_COPY(("(%u): Halt copy fragment process in live node(s)",
+            instance()));
+  for (Uint32 i = 0; i < c_num_nodes_in_our_nodegroup; i++)
   {
     jam();
-    ndbrequire(is_copy_frag_in_progress());
-    DEB_COPY(("(%u)Halted copy fragment process in live node,"
-              " tab(%u,%u)",
-              instance(),
-              tabptr.i,
-              fragId));
-    c_copy_frag_halted = true;
-    c_copy_frag_halt_state = COPY_FRAG_IS_HALTED;
-    if (!c_undo_log_overloaded)
+    Uint32 nodeId = c_nodes_in_our_nodegroup[i];
+    jamLine(nodeId);
+    bool support_parallel = ndbd_support_parallel_copy_fragment(
+      getNodeInfo(nodeId).m_version);
+    if (support_parallel)
     {
       jam();
-      send_resume_copy_frag(signal);
+      BlockReference ref = numberToRef(DBLQH,
+                                       0,
+                                       nodeId);
+
+      HaltCopyFragReq *req = (HaltCopyFragReq*)signal->getDataPtrSend();
+      req->senderRef = reference();
+      req->senderData = 0;
+      req->tableId = 0;
+      req->fragmentId = 0;
+      sendSignal(ref, GSN_HALT_COPY_FRAG_REQ, signal,
+                 HaltCopyFragReq::SignalLength, JBB);
     }
-    return;
   }
-  ndbrequire(cause == HaltCopyFragConf::COPY_FRAG_COMPLETED);
-  /**
-   * The copy fragment completed before we got to it. Let's restart
-   * the halt process.
-   */
-  DEB_COPY(("(%u)Completed copy fragment process in live node"
-            ", tab(%u,%u)",
-            instance(),
-            tabptr.i,
-            fragId));
-  ndbrequire(!c_copy_frag_halted);
-  c_copy_frag_halt_state = COPY_FRAG_HALT_STATE_IDLE;
-  if (c_undo_log_overloaded && is_copy_frag_in_progress())
-  {
-    jam();
-    DEB_COPY(("(%u): Restart halt copy fragment process",
-              instance()));
-    send_halt_copy_frag(signal);
-  }
-  return;
 }
 
 void
 Dblqh::send_resume_copy_frag(Signal *signal)
 {
   ndbrequire(!c_undo_log_overloaded);
-  ndbrequire(!c_copy_frag_halt_process_locked);
   ndbassert(is_copy_frag_in_progress());
-  if (c_copy_frag_halted)
-  {
-    if (c_copy_frag_halt_state == COPY_FRAG_HALT_STATE_IDLE)
-    {
-      jam();
-      /**
-       * No need to do anything. We had not yet been able to halt any
-       * copy fragment process. So simply continue after resetting
-       * c_copy_frag_halted flag.
-       */
-      DEB_COPY(("(%u): Copy fragment process resumed, was idle",
-                instance()));
-      c_copy_frag_halted = false;
-      return;
-    }
-    else if (c_copy_frag_halt_state == COPY_FRAG_IS_HALTED)
-    {
-      jam();
-      /**
-       * The live node has halted its copy fragment scan. We need to
-       * resume the copy fragment scan again.
-       * Only after receiving RESUME_COPY_FRAG_CONF are we able to
-       * reset the halt state flag.
-       */
-      tabptr.i = c_fragCopyTable;
-      Uint32 fragId = c_fragCopyFrag;
-      ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
-      ndbrequire(getFragmentrec(fragId));
 
-      DEB_COPY(("(%u): Send RESUME_COPY_FRAG_REQ, tab(%u,%u)",
-                instance(),
-                fragptr.p->tabRef,
-                fragptr.p->fragId));
-      c_copy_frag_halt_process_locked = true;
-      Uint32 nodeId = c_prepare_copy_fragreq_save.copyNodeId;
-      Uint32 instanceKey = fragptr.p->lqhInstanceKey;
-      Uint32 instanceNo = getInstanceNo(nodeId, instanceKey);
-      BlockReference ref = numberToRef(DBLQH, instanceNo, nodeId);
-      c_copy_frag_halt_state = WAIT_RESUME_COPY_FRAG_CONF;
+  for (Uint32 i = 0; i < c_num_nodes_in_our_nodegroup; i++)
+  {
+    jam();
+    Uint32 nodeId = c_nodes_in_our_nodegroup[i];
+    jamLine(nodeId);
+    bool support_parallel = ndbd_support_parallel_copy_fragment(
+      getNodeInfo(nodeId).m_version);
+    if (support_parallel)
+    {
+      BlockReference ref = numberToRef(DBLQH,
+                                       0,
+                                       nodeId);
+
       ResumeCopyFragReq *req = (ResumeCopyFragReq*)signal->getDataPtrSend();
       req->senderRef = reference();
       req->senderData = 0;
-      req->tableId = fragptr.p->tabRef;
-      req->fragmentId = fragptr.p->fragId;
+      req->tableId = 0;
+      req->fragmentId = 0;
       sendSignal(ref, GSN_RESUME_COPY_FRAG_REQ, signal,
-                 HaltCopyFragReq::SignalLength, JBB);
-      return;
+                 ResumeCopyFragReq::SignalLength, JBB);
     }
-    else if (c_copy_frag_halt_state == PREPARE_COPY_FRAG_IS_HALTED)
-    {
-      jam();
-      Uint32 tableId = c_prepare_copy_fragreq_save.tableId;
-      Uint32 fragId = c_prepare_copy_fragreq_save.fragId;
-      DEB_COPY(("(%u): Resume PREPARE_COPY_FRAGREQ, tab(%u,%u)",
-                instance(),
-                tableId,
-                fragId));
-      Uint32 max_page;
-      tabptr.i = tableId;
-      ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
-      ndbrequire(getFragmentrec(fragId));
-      Uint32 completedGci = fragptr.p->m_completed_gci;
-      c_tup->get_frag_info(tableId, fragId, &max_page);
-      send_prepare_copy_frag_conf(signal,
-                                  c_prepare_copy_fragreq_save,
-                                  completedGci,
-                                  max_page);
-      c_copy_frag_halted = false;
-      c_copy_frag_halt_state = COPY_FRAG_HALT_STATE_IDLE;
-      return;
-    }
-    else
-    {
-      jamLine(Uint16(c_copy_frag_halt_state));
-      ndbabort();
-      return; //Compiler silencer
-    }
-  }
-  else if (c_copy_frag_halt_state == COPY_FRAG_HALT_WAIT_FIRST_LQHKEYREQ)
-  {
-    jam();
-    /**
-     * No need to do anything. We had not yet been able to halt any
-     * copy fragment process. So simply continue after resetting to
-     * an idle state again.
-     */
-    c_copy_frag_halted = false;
-    DEB_COPY(("(%u): Resumed, was still waiting for LQHKEYREQ",
-              instance()));
-    c_copy_frag_halt_state = COPY_FRAG_HALT_STATE_IDLE;
-    return;
-  }
-  else
-  {
-    jamLine(c_copy_frag_halt_state);
-    ndbabort();
-  }
-}
-
-void
-Dblqh::execRESUME_COPY_FRAG_CONF(Signal *signal)
-{
-  jamEntry();
-  jamLine(Uint16(c_copy_frag_halt_state));
-  c_copy_frag_halted = false;
-  c_copy_frag_halt_process_locked = false;
-  c_copy_frag_halt_state = COPY_FRAG_HALT_STATE_IDLE;
-  DEB_COPY(("(%u) execRESUME_COPY_FRAG_CONF, tab(%u,%u)",
-            instance(),
-            c_fragCopyTable,
-            c_fragCopyFrag));
-  if (c_undo_log_overloaded && is_copy_frag_in_progress())
-  {
-    jam();
-    /**
-     * UNDO log is overloaded again. We need to halt it again.
-     */
-    DEB_COPY(("(%u): Need to halt again", instance()));
-    send_halt_copy_frag(signal);
-    return;
-  }
-  else
-  {
-    jam();
-    /**
-     * Normal path, the UNDO isn't overloaded anymore and we have
-     * resumed normal operation. We have already set the correct
-     * state, so we can simply return and the copy processes will
-     * continue as normal. The resume was done by the live node.
-     */
-    DEB_COPY(("(%u): Resumed copy fragment, tab(%u,%u)",
-              instance(),
-              c_fragCopyTable,
-              c_fragCopyFrag));
-    return;
   }
 }
 
@@ -22210,8 +21963,29 @@ Dblqh::execUNDO_LOG_LEVEL_REP(Signal *signal)
                        instance(),
                        levelUsed,
                        c_copy_fragment_in_progress));
-  if (c_copy_fragment_in_progress)
+  if (c_copy_fragment_in_progress &&
+      instance() == 1)
   {
+    /**
+     * We ignore sending HALT_COPY_FRAG_REQ to versions not supporting
+     * parallel copy fragment processes. The reason is that we cannot
+     * really trust the implementation to do the right thing in a
+     * number of cases. So better to hope that we can avoid the overload
+     * of the UNDO log.
+     *
+     * Since our version supports it, this means that we are starting
+     * with a newer version and we are performing an upgrade. Downgrade
+     * means that an old version sends halt to a new version. The new
+     * version must in this case block new PREPARE_COPY_FRAG_REQ since
+     * the old version relies on this. Also to minimise risk we ensure
+     * that only 1 copy fragment process is allowed per LDM when we
+     * have old versions in the cluster. This will minimise the risk of
+     * UNDO log overload.
+     *
+     * We only check the overload level in the first LDM instance.
+     * This instance will broadcast any halts and resumes to all LDMs
+     * in the nodes of the same node group.
+     */
     if (levelUsed >= OVERLOAD_LEVEL)
     {
       if (c_undo_log_overloaded)
@@ -22234,11 +22008,7 @@ Dblqh::execUNDO_LOG_LEVEL_REP(Signal *signal)
          * only method to bring down the UNDO log level.
          */
         c_undo_log_overloaded = true;
-        if (!c_copy_frag_halt_process_locked)
-        {
-          jam();
-          send_halt_copy_frag(signal);
-        }
+        send_halt_copy_frag(signal);
       }
     }
     else
@@ -22256,11 +22026,7 @@ Dblqh::execUNDO_LOG_LEVEL_REP(Signal *signal)
       {
         jam();
         c_undo_log_overloaded = false;
-        if (!c_copy_frag_halt_process_locked)
-        {
-          jam();
-          send_resume_copy_frag(signal);
-        }
+        send_resume_copy_frag(signal);
       }
     }
   }
@@ -22271,87 +22037,164 @@ Dblqh::execUNDO_LOG_LEVEL_REP(Signal *signal)
  * ----------------------------------------
  * This is executed on the live node that is copying the rows to the
  * starting node.
+ *
+ * In this version we will simply set the c_copy_frag_halted variable to
+ * true. We currently only support one node to start at a time inside a
+ * node group. This means that the live node can only be involved in one
+ * copy fragment process at any time. Thus a global variable in the
+ * LQH block is sufficient to halt that process when receiving the
+ * HALT_COPY_FRAGREQ signal.
+ *
+ * The copy fragment processes will not be blocked instantanously. Instead
+ * we will halt the process at a specific point that sets a limit on how
+ * much the copy fragment processes can progress after being halted which
+ * is well within the security limits.
+ *
+ * This makes the halt and resume process in the live node very easy to
+ * handle. We set one variable when receiving the halt signal, we track
+ * the copy fragment processes when they are halted. Thus when the resume
+ * signal arrives, we will start up the copy fragment processes that
+ * were halted again.
+ *
+ * The old implementation of halt/resume was broken, so instead of
+ * attempting to follow it, we will simply ignore even trying to
+ * stop older nodes and we will ignore stop signals from old nodes.
+ * We will only respond to the signal as if we stopped.
+ *
+ * We will block the copy fragment process in the nextRecordCopy processing.
+ * If it gets blocked there, it will not receive any more TUPKEYCONF,
+ * TUPKEYREF, and no more NEXT_SCANCONF messages until the copy fragment
+ * process is unblocked again. It can still receive LQHKEYCONF from outstanding
+ * LQHKEYREQ signals to copy rows.
+ *
+ * The scan when blocked will be put into the state COPY_FRAG_HALTED, if we
+ * receive in this state it will be coming from the LQHKEYCONF handling and
+ * this code will check that the copy fragment process isn't blocked before
+ * resuming the copy fragment process again.
+ *
+ * Since we can block multiple copy fragment processes in this version,
+ * we track the blocked copy fragment processes in an array.
  */
 void
 Dblqh::execHALT_COPY_FRAG_REQ(Signal *signal)
 {
-  HaltCopyFragReq *req = (HaltCopyFragReq*)signal->getDataPtr();
-  c_halt_copy_fragreq_save = *req;
+  HaltCopyFragReq req = *(HaltCopyFragReq*)signal->getDataPtr();
+  DEB_COPY(("(%u):HALT_COPY_FRAG_REQ, start halting", instance()));
 
-  if (c_tc_connect_rec_copy_frag == RNIL)
+  Uint32 senderNodeId = refToNode(req.senderRef);
+  bool support_parallel = ndbd_support_parallel_copy_fragment(
+    getNodeInfo(senderNodeId).m_version);
+  if (!support_parallel)
   {
-    jamEntry();
     /**
-     * No active copy fragment, obviously copy has been completed
-     * already, we will not arrive here unless there was an active
-     * copy fragment going on. So if none is active anymore it
-     * means we've already completed the copy. We return immediately.
+     * Ignore signal but respond to it if an older version attempts
+     * to send a halt message to us.
      */
-    DEB_COPY(("(%u):HALT_COPY_FRAG_REQ: no active copy",
-                   instance()));
-    send_halt_copy_frag_conf(signal, true);
+    HaltCopyFragConf *conf= (HaltCopyFragConf*)signal->getDataPtrSend();
+    conf->cause = HaltCopyFragConf::COPY_FRAG_HALTED;
+    conf->senderData = req.senderData;
+    conf->tableId = req.tableId;
+    conf->fragmentId = req.fragmentId;
+    sendSignal(req.senderRef,
+               GSN_HALT_COPY_FRAG_CONF,
+               signal,
+               HaltCopyFragConf::SignalLength,
+               JBB);
     return;
   }
-  jamEntry();
-  /**
-   * Active copy fragment found, we will wait for it to be fully
-   * halted before responding. When successfully halted it we
-   * will respond, we will also respond if not able to halt it
-   * before it was completed.
-   */
-  DEB_COPY(("(%u):HALT_COPY_FRAG_REQ: start halting",
-            instance()));
-  c_copy_frag_live_node_performing_halt = true;
-  c_copy_frag_live_node_halted = false;
-}
-
-void
-Dblqh::send_halt_copy_frag_conf(Signal *signal, bool completed)
-{
-  HaltCopyFragConf *conf= (HaltCopyFragConf*)signal->getDataPtrSend();
-  conf->cause = completed ?
-                HaltCopyFragConf::COPY_FRAG_COMPLETED :
-                HaltCopyFragConf::COPY_FRAG_HALTED;
-
-  conf->senderData = c_halt_copy_fragreq_save.senderData;
-  conf->tableId = c_halt_copy_fragreq_save.tableId;
-  conf->fragmentId = c_halt_copy_fragreq_save.fragmentId;
-  sendSignal(c_halt_copy_fragreq_save.senderRef,
-             GSN_HALT_COPY_FRAG_CONF,
-             signal,
-             HaltCopyFragConf::SignalLength,
-             JBB);
+  c_copy_frag_live_node_halted = true;
 }
 
 void
 Dblqh::execRESUME_COPY_FRAG_REQ(Signal *signal)
 {
   jamEntry();
-  ndbrequire(c_copy_frag_live_node_halted);
-  ndbrequire(!c_copy_frag_live_node_performing_halt);
-  ndbrequire(c_tc_connect_rec_copy_frag != RNIL);
+  ResumeCopyFragReq *req = (ResumeCopyFragReq*)signal->getDataPtr();
+  Uint32 senderNodeId = refToNode(req->senderRef);
+  bool support_parallel = ndbd_support_parallel_copy_fragment(
+    getNodeInfo(senderNodeId).m_version);
+  if (!support_parallel)
+  {
+    send_resume_copy_frag_conf(signal);
+    return;
+  }
   c_copy_frag_live_node_halted = false;
   DEB_COPY(("(%u):RESUME_COPY_FRAG_REQ received", instance()));
 
-  send_resume_copy_frag_conf(signal);
-
+  resume_one_copy_fragment_process(signal);
   /**
-   * Resume copy fragment process by reissuing nextRecordCopy
+   * No need to respond to this signal, the starting node is giving
+   * us a request which we are asked to do as much as possible to
+   * handle, but no need to respond exists.
    */
-  TcConnectionrecPtr tcConnectptr;
-  tcConnectptr.i = c_tc_connect_rec_copy_frag;
-  ndbrequire(tcConnect_pool.getValidPtr(tcConnectptr));
-  setup_scan_pointers_from_tc_con(tcConnectptr, __LINE__);
-  ndbrequire(tcConnectptr.p->copyCountWords == 0);
-  ndbrequire(scanptr.p->scanState == ScanRecord::COPY_FRAG_HALTED);
-  scanptr.p->scanState = ScanRecord::WAIT_LQHKEY_COPY;
-  nextRecordCopy(signal, tcConnectptr);
-  release_frag_access(prim_tab_fragptr.p);
+}
+
+void Dblqh::resume_one_copy_fragment_process(Signal *signal)
+{
+  /**
+   * Resume one copy fragment process by reissuing nextRecordCopy
+   */
+  if (c_undo_log_overloaded)
+  {
+    /* Stop resume, we have been halted again. */
+    return;
+  }
+  Uint32 num_blocked = c_num_blocked_copy_fragment_processes;
+  if (num_blocked > 0)
+  {
+    TcConnectionrecPtr tcConnectptr;
+    tcConnectptr.i = c_blocked_copy_fragment_processes[num_blocked - 1];
+    ndbrequire(tcConnect_pool.getValidPtr(tcConnectptr));
+    setup_scan_pointers_from_tc_con(tcConnectptr, __LINE__);
+    ndbrequire(scanptr.p->scanState == ScanRecord::COPY_FRAG_HALTED);
+    scanptr.p->scanState = ScanRecord::WAIT_LQHKEY_COPY;
+    if (tcConnectptr.p->copyCountWords == 0)
+    {
+      jam();
+      /**
+       * If there are still outstanding copy rows we need not do
+       * anything other than remove the blocking state. The copy
+       * fragment process will restart again as soon as a row
+       * returns from the starting node. Thus we only start it up
+       * here when copyCountWords is 0 indicating no outstanding
+       * copy rows.
+       */
+      if (scanptr.p->scanCompletedStatus == ZTRUE ||
+          scanptr.p->scanErrorCounter)
+      {
+        jam();
+        closeCopyLab(signal, tcConnectptr.p);
+      }
+      else
+      {
+        nextRecordCopy(signal, tcConnectptr);
+      }
+    }
+    release_frag_access(prim_tab_fragptr.p);
+    num_blocked--;
+    c_num_blocked_copy_fragment_processes = num_blocked;
+  }
+  if (num_blocked > 0)
+  {
+    jam();
+    signal->theData[0] = ZRESUME_BLOCKED_COPY_FRAGMENT;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
+  }
+  else
+  {
+    jam();
+    start_new_copyFragReq(signal);
+  }
 }
 
 void
 Dblqh::send_resume_copy_frag_conf(Signal *signal)
 {
+  /**
+   * This signal isn't needed in the new implementation and if any old
+   * node tries to halt/resume us we will simply ignore it by sending
+   * a CONF signal immediately in both cases.
+   */
   ResumeCopyFragReq req = *(ResumeCopyFragReq*)signal->getDataPtr();
   ResumeCopyFragConf *conf= (ResumeCopyFragConf*)signal->getDataPtrSend();
   conf->senderData = req.senderData;
@@ -22359,6 +22202,207 @@ Dblqh::send_resume_copy_frag_conf(Signal *signal)
   conf->fragmentId = req.fragmentId;
   sendSignal(req.senderRef, GSN_RESUME_COPY_FRAG_CONF, signal,
              ResumeCopyFragConf::SignalLength, JBB);
+}
+
+void
+Dblqh::update_cpu_usage(Signal *signal)
+{
+  GetCpuUsageReq* req = (GetCpuUsageReq*)signal->getDataPtrSend();
+  req->requestType = GetCpuUsageReq::LastMeasure;
+  EXECUTE_DIRECT_MT(THRMAN, GSN_GET_CPU_USAGE_REQ, signal,
+                    1,
+                    getThrmanInstance());
+  GetCpuUsageConf *conf = (GetCpuUsageConf*)signal->getDataPtr();
+  Uint32 real_exec_time = conf->real_exec_time;
+  Uint32 os_exec_time = conf->os_exec_time;
+  Uint32 exec_time = conf->exec_time;
+  Uint32 block_exec_time = conf->block_exec_time;
+  /**
+   * Dependent on the load on the CPUs we will set the maximum number of
+   * outstanding words, the outstanding words per copy fragment is set
+   * in cmaxWordsAtNodeRec, however we also set cmaxParallelCopyFragment
+   * dependent on the CPU load. The real outstanding words is the product
+   * of cmaxWordsAtNodeRec and cmaxParallelCopyFragment.
+   *
+   * The total outstanding words will never be lower than
+   * DEF_NO_WORDS_OUTSTANDING_COPY_FRAGMENT and it will never be higher
+   * than MAX_NO_WORDS_OUTSTANDING_COPY_FRAGMENT.
+   */
+
+  Uint64 max_outstanding_words = MAX_NO_WORDS_OUTSTANDING_COPY_FRAGMENT;
+  if (exec_time > (os_exec_time + 20))
+  {
+    /**
+     * More than 20% higher exec_time compared to os_exec_time
+     * compared to the os_exec_time means that we are very much in
+     * an shared environment and we will be a lot more conservative
+     * in recovery speed.
+     */
+    max_outstanding_words /= 8;
+  }
+
+  Uint64 total_outstanding_words = ctotalMaxWordsAtNodeRec;
+  /**
+   * We try to achieve a load around 90%, thus if load goes below 90%
+   * we can increase the copy speed a bit, if it goes above we can
+   * increase the speed. We can decrease speed fairly fast, but increasing
+   * speed should be more conservative in change speed.
+   *
+   * real_exec_time is execution we measured minus the time we measured
+   * that we were spinning. It includes the send time as well.
+   * block_exec_time is the real_exec_time minus also the send time. Thus
+   * it reflects the amount of CPU load currently used by the block code.
+   *
+   * We try to balance the load around 90% real_exec_time, but if the
+   * send time is more than 10% we can increase to try to set to around
+   * 95%.
+   *
+   * We will never change
+   */
+  Uint32 goal_load = 85;
+  if ((real_exec_time - block_exec_time) > 10)
+  {
+    jam();
+    goal_load = 90;
+  }
+  if (real_exec_time < goal_load)
+  {
+    jam();
+    /* Increase copy speed by up to 20% per time we check. */
+    Uint32 diff = goal_load - real_exec_time;
+    Uint32 percentage_change = MIN(diff, 10);
+    total_outstanding_words *= (100 + percentage_change);
+    total_outstanding_words /= 100;
+  }
+  else if (real_exec_time > goal_load)
+  {
+    /* Decrease copy speed by up to 20% per time we check. */
+    Uint32 diff = 5 * (real_exec_time - goal_load);
+    Uint32 percentage_change = MIN(diff, 30);
+    total_outstanding_words *= (100 - percentage_change);
+    total_outstanding_words /= 100;
+  }
+
+  if (total_outstanding_words > max_outstanding_words)
+  {
+    jam();
+    total_outstanding_words = max_outstanding_words;
+  }
+  else if (total_outstanding_words < DEF_NO_WORDS_OUTSTANDING_COPY_FRAGMENT)
+  {
+    jam();
+    total_outstanding_words = DEF_NO_WORDS_OUTSTANDING_COPY_FRAGMENT;
+  }
+
+  /**
+   * Set the maximum parallel copy fragment processes we can handle in this
+   * LDM thread at a time.
+   */
+  if (total_outstanding_words < (2 * DEF_NO_WORDS_OUTSTANDING_COPY_FRAGMENT))
+  {
+    jam();
+    cmaxParallelCopyFragment = 1;
+  }
+  else if (total_outstanding_words <
+           (8 * DEF_NO_WORDS_OUTSTANDING_COPY_FRAGMENT))
+  {
+    jam();
+    cmaxParallelCopyFragment = 4;
+  }
+  else
+  {
+    jam();
+    cmaxParallelCopyFragment = ZMAX_PARALLEL_COPY_FRAGMENT_OPS;
+  }
+
+  if (real_exec_time >= 95)
+  {
+    cmaxParallelCopyFragment = MIN(cmaxParallelCopyFragment, 2);
+  }
+  else if (real_exec_time >= 90)
+  {
+    cmaxParallelCopyFragment = MIN(cmaxParallelCopyFragment, 4);
+  }
+  else if (real_exec_time >= 80)
+  {
+    cmaxParallelCopyFragment = MIN(cmaxParallelCopyFragment, 6);
+  }
+
+  ctotalMaxWordsAtNodeRec = total_outstanding_words;
+  set_max_words_copy_fragreq();
+
+#ifdef STATS_PARALLEL_COPY_FRAGMENT
+  c_total_words_copy_fragreq += c_words_copy_fragreq;
+  c_total_rows_copy_fragreq += c_rows_copy_fragreq;
+#ifdef DEBUG_PARALLEL_COPY_EXTRA
+  if (os_exec_time > 70)
+  {
+    g_eventLogger->info("(%u)maxW: %u, totMaxW: %u"
+                        ", maxPar: %u, os_exec: %u, real_exec: %u,"
+                        " block_exec: %u, exec: %u",
+                        instance(),
+                        cmaxWordsAtNodeRec,
+                        ctotalMaxWordsAtNodeRec,
+                        cmaxParallelCopyFragment,
+                        os_exec_time,
+                        real_exec_time,
+                        block_exec_time,
+                        exec_time);
+    g_eventLogger->info("(%u)wCopy: %u, totWCopy: %llu,"
+                        " rCopy: %u, totRCopy: %llu,"
+                        " outW: %u, outR: %u",
+                        instance(),
+                        c_words_copy_fragreq,
+                        c_total_words_copy_fragreq,
+                        c_rows_copy_fragreq,
+                        c_total_rows_copy_fragreq,
+                        c_outstanding_words_copy_fragreq,
+                        c_outstanding_rows_copy_fragreq);
+  }
+#endif
+  c_words_copy_fragreq = 0;
+  c_rows_copy_fragreq = 0;
+#endif
+  signal->theData[0] = ZUPDATE_CPU_USAGE;
+  sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 50, 1);
+}
+
+bool Dblqh::is_ok_to_start_copyFragReq()
+{
+  if (c_active_copyFragReq >= cmaxParallelCopyFragment)
+  {
+    return false;
+  }
+  return true;
+}
+
+void Dblqh::adjust_copyFragReq_rates(bool increase)
+{
+  if (increase)
+  {
+    jam();
+    c_active_copyFragReq++;
+  }
+  else
+  {
+    jam();
+    c_active_copyFragReq--;
+  }
+  set_max_words_copy_fragreq();
+}
+
+void Dblqh::set_max_words_copy_fragreq()
+{
+  if (c_active_copyFragReq == 0)
+  {
+    jam();
+    cmaxWordsAtNodeRec = ctotalMaxWordsAtNodeRec;
+  }
+  else
+  {
+    jam();
+    cmaxWordsAtNodeRec = ctotalMaxWordsAtNodeRec / c_active_copyFragReq;
+  }
 }
 
 /* ########################################################################## 
@@ -27607,7 +27651,19 @@ Dblqh::send_restore_lcp(Signal * signal)
     if (fragptr.p->srChkpnr != Z8NIL)
     {
       Uint32 instanceNo = 0;
-      if (m_num_local_restores_active == 0)
+      bool allow_use_ldm_thread = true;
+      if (m_num_copy_restores_active > 0)
+      {
+        /**
+         * We are performing a Copy fragment process, let's wait for
+         * this to complete before we start any copy process using
+         * the local LDM.
+         */
+        jam();
+        allow_use_ldm_thread = false;
+        return;
+      }
+      if (m_num_local_restores_active == 0 && allow_use_ldm_thread)
       {
         jam();
         DEB_LCP_RESTORE(("(%u) send_restore_lcp, LOC1", instance()));
@@ -27745,18 +27801,29 @@ Dblqh::send_restore_lcp(Signal * signal)
     else
     {
       jam();
-      if (m_num_copy_restores_active > 0)
+      Uint32 nodeId = fragptr.p->srLqhLognode[0];
+      Uint32 max_parallel_copy = ZMAX_PARALLEL_COPY_FRAGMENT_OPS;
+      if (!ndbd_support_parallel_copy_fragment(getNodeInfo(nodeId).m_version))
+      {
+        jam();
+        max_parallel_copy = 1;
+      }
+      if (m_num_copy_restores_active >= max_parallel_copy)
       {
         jam();
         return;
       }
+      /**
+       * If we are already performing a local restore in this thread, there
+       * is no need to add more work to the thread. The local restore will
+       * keep the thread busy completely.
+       */
       if (m_num_local_restores_active > 0)
       {
         jam();
         return;
       }
       m_num_copy_restores_active++;
-      m_num_restores_active++;
 
       c_lcp_waiting_fragments.remove(fragptr);
       c_lcp_restoring_fragments.addLast(fragptr);
@@ -27776,7 +27843,6 @@ Dblqh::send_restore_lcp(Signal * signal)
       req->gci = fragptr.p->lcpId[0];
       req->nodeCount = 0;
       req->nodeList[1] = CopyFragReq::CFR_NON_TRANSACTIONAL;
-      Uint32 nodeId = fragptr.p->srLqhLognode[0];
       Uint32 instanceKey = fragptr.p->lqhInstanceKey;
       Uint32 instanceNo = getInstanceNo(nodeId, instanceKey);
       BlockReference ref = numberToRef(DBLQH, instanceNo, nodeId);
@@ -27925,12 +27991,12 @@ void Dblqh::execRESTORE_LCP_CONF(Signal* signal)
   Uint32 afterRestore = conf->afterRestore;
   BlockReference ref = conf->senderRef;
   Uint32 block = refToMain(ref);
-  ndbrequire(m_num_restores_active > 0);
-  m_num_restores_active--;
   if (block == DBQTUP)
   {
     jam();
     /* Returning from Recover thread */
+    ndbrequire(m_num_restores_active > 0);
+    m_num_restores_active--;
     DEB_LCP_RESTORE(("(%u) Recover thread restored", instance()));
     completed_restore(refToInstance(ref));
   }
@@ -27946,10 +28012,12 @@ void Dblqh::execRESTORE_LCP_CONF(Signal* signal)
   {
     jam();
     DEB_LCP_RESTORE(("(%u) Local thread restored", instance()));
-    ndbrequire(m_num_local_restores_active > 0);
-    m_num_local_restores_active--;
     /* Returning from local Restore operation */
     ndbrequire(block == DBTUP);
+    ndbrequire(m_num_restores_active > 0);
+    m_num_restores_active--;
+    ndbrequire(m_num_local_restores_active > 0);
+    m_num_local_restores_active--;
   }
   c_fragment_pool.getPtr(fragptr);
 
@@ -32792,17 +32860,12 @@ void Dblqh::initialisePageRef()
 void Dblqh::initialiseRecordsLab(Signal* signal, Uint32 data,
 				 Uint32 retRef, Uint32 retData) 
 {
-  Uint32 i;
   switch (data) {
   case 0:
     jam();
     m_sr_nodes.clear();
     m_sr_exec_sr_req.clear();
     m_sr_exec_sr_conf.clear();
-    for (i = 0; i < 4; i++) {
-      cactiveCopy[i] = RNIL;
-    }//for
-    cnoActiveCopy = 0;
     ccurrentGcprec = RNIL;
     caddNodeState = ZFALSE;
     cstartRecReq = SRR_INITIAL; // Initial
@@ -32942,24 +33005,15 @@ void Dblqh::initialiseScanrec(Signal* signal)
    * We mark as reserved afterwards as there should be no further seizing
    * of segments for acc_ptrs, and this is checked.
    */
-  ndbrequire(c_scanRecordPool.seize(scanptr));
-  m_reserved_scans.addFirst(scanptr); //LCP
-  ndbrequire(scanptr.i == 0);
-  ndbrequire(seize_acc_ptr_list(scanptr.p, 0, ZRESERVED_SCAN_BATCH_SIZE));
-  scanptr.p->m_reserved = 1;
-
-  ndbrequire(c_scanRecordPool.seize(scanptr));
-  m_reserved_scans.addFirst(scanptr); //NR
-  ndbrequire(scanptr.i == 1);
-  ndbrequire(seize_acc_ptr_list(scanptr.p, 0, ZRESERVED_SCAN_BATCH_SIZE));
-  scanptr.p->m_reserved = 1;
-
-  ndbrequire(c_scanRecordPool.seize(scanptr));
-  m_reserved_scans.addFirst(scanptr); //Backup
-  ndbrequire(scanptr.i == 2);
-  ndbrequire(seize_acc_ptr_list(scanptr.p, 0, ZRESERVED_SCAN_BATCH_SIZE));
-  scanptr.p->m_reserved = 1;
-}//Dblqh::initialiseScanrec()
+  for (Uint32 i = 0; i < (ZMAX_PARALLEL_COPY_FRAGMENT_OPS + 2); i++)
+  {
+    ndbrequire(c_scanRecordPool.seize(scanptr));
+    m_reserved_scans.addFirst(scanptr);
+    ndbrequire(scanptr.i < (ZMAX_PARALLEL_COPY_FRAGMENT_OPS + 2));
+    ndbrequire(seize_acc_ptr_list(scanptr.p, 0, ZRESERVED_SCAN_BATCH_SIZE));
+    scanptr.p->m_reserved = 1;
+  }
+}
 
 /* ========================================================================== 
  * =======                      INITIATE TABLE RECORD                 ======= 
@@ -33949,38 +34003,6 @@ void Dblqh::readSinglePage(Signal* signal,
              pageNo >> ZTWOLOG_NO_PAGES_IN_MBYTE);
   }
 }//Dblqh::readSinglePage()
-
-/* -------------------------------------------------------------------------- 
- * -------       REMOVE COPY FRAGMENT FROM ACTIVE COPY LIST           ------- 
- *
- * ------------------------------------------------------------------------- */
-void Dblqh::releaseActiveCopy(Signal* signal) 
-{
-  UintR tracFlag;
-  UintR tracIndex;
-
-  tracFlag = ZFALSE;
-  for (tracIndex = 0; tracIndex < 4; tracIndex++) {
-    if (tracFlag == ZFALSE) {
-      jam();
-      if (cactiveCopy[tracIndex] == fragptr.i) {
-        jam();
-        tracFlag = ZTRUE;
-      }//if
-    } else {
-      if (tracIndex < 3) {
-        jam();
-        cactiveCopy[tracIndex - 1] = cactiveCopy[tracIndex];
-      } else {
-        jam();
-        cactiveCopy[3] = RNIL;
-      }//if
-    }//if
-  }//for
-  ndbrequire(tracFlag == ZTRUE);
-  cnoActiveCopy--;
-}//Dblqh::releaseActiveCopy()
-
 
 /* --------------------------------------------------------------------------
  * -------       RELEASE ADD FRAGMENT RECORD                          ------- 
@@ -35448,7 +35470,7 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
       /* Dump reserved LCP scan rec */
       /* As there's only one, we'll do a tight loop here */
       infoEvent(" dumping reserved scan records");
-      for (Uint32 rec=0; rec < 3; rec++)
+      for (Uint32 rec = 0; rec < (ZMAX_PARALLEL_COPY_FRAGMENT_OPS + 2); rec++)
       {
         ScanRecordPtr sp;
         sp.i = rec;
@@ -36234,8 +36256,8 @@ Dblqh::execDUMP_STATE_ORD(Signal* signal)
     rate = (c_totalBytesCopied * 1000) / duration;
 
     infoEvent("LDM(%u): CopyFrag complete. %u frags,"
-              " +%llu/-%llu rows, "
-              "%llu bytes/%llu ms %llu bytes/s.",
+              "INS %llu, DEL %llu rows, "
+              "%llu bytes, %llu ms %llu bytes/s.",
               instance(),
               c_fragmentsCopied,
               c_totalCopyRowsIns,
@@ -38429,31 +38451,31 @@ Dblqh::log_fragment_copied(Signal* signal)
 
   const Uint64 fragRows = fs.committedRowCount;
 
+  Fragrecord::UsageStat& useStat = fragptr.p->m_useStat;
   Uint64 percentChanged = (fragRows ?
-        ((c_fragCopyRowsIns + c_fragCopyRowsDel) * 100) / fragRows
+        ((useStat.m_fragCopyRowsIns +
+          useStat.m_fragCopyRowsDel) * 100) / fragRows
                            : 0);
 
   /* Have already copied a fragment...report on it now */
   g_eventLogger->info("LDM(%u): Completed copy of fragment T%uF%u. "
-                      "Changed +%llu/-%llu rows, %llu bytes. "
+                      "INS %llu, DEL %llu rows, %llu kBytes. "
                       "%llu pct churn to %llu rows.",
                       instance(),
-                      c_fragCopyTable,
-                      c_fragCopyFrag,
-                      c_fragCopyRowsIns,
-                      c_fragCopyRowsDel,
-                      c_fragBytesCopied,
+                      fragptr.p->tabRef,
+                      fragptr.p->fragId,
+                      useStat.m_fragCopyRowsIns,
+                      useStat.m_fragCopyRowsDel,
+                      useStat.m_fragBytesCopied / 1024,
                       percentChanged,
                       fragRows);
 
-  c_totalCopyRowsIns+= c_fragCopyRowsIns;
-  c_totalCopyRowsDel+= c_fragCopyRowsDel;
-  c_totalBytesCopied+= c_fragBytesCopied;
-  c_fragCopyTable = RNIL;
-  c_fragCopyFrag = RNIL;
-  c_fragCopyRowsIns = 0;
-  c_fragCopyRowsDel = 0;
-  c_fragBytesCopied = 0;
+  c_totalCopyRowsIns+= useStat.m_fragCopyRowsIns;
+  c_totalCopyRowsDel+= useStat.m_fragCopyRowsDel;
+  c_totalBytesCopied+= useStat.m_fragBytesCopied;
+  useStat.m_fragCopyRowsIns = 0;
+  useStat.m_fragCopyRowsDel = 0;
+  useStat.m_fragBytesCopied = 0;
 }
 
 /**

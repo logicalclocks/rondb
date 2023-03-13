@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -259,7 +260,9 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
 // parallelism of node recovery and the amount of scan 
 // operations needed for node recovery.
 /* ------------------------------------------------------------------ */
-#define MAX_NO_WORDS_OUTSTANDING_COPY_FRAGMENT 6000
+#define ZMAX_PARALLEL_COPY_FRAGMENT_OPS 8
+#define DEF_NO_WORDS_OUTSTANDING_COPY_FRAGMENT 6000
+#define MAX_NO_WORDS_OUTSTANDING_COPY_FRAGMENT 48000
 #define MAGIC_CONSTANT 56
 #define NODE_RECOVERY_SCAN_OP_RECORDS \
          (4 + ((4*MAX_NO_WORDS_OUTSTANDING_COPY_FRAGMENT)/ \

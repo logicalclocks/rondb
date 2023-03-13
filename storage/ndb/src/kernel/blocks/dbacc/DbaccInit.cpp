@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -174,10 +175,13 @@ void Dbacc::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
   }
   if (!m_is_query_block)
   {
-    ndbrequire(oprec_pool.seize(operationRecPtr));
-    operationRecPtr.p->userptr = RNIL;
-    operationRecPtr.p->userblockref = 0;
-    c_copy_frag_oprec = operationRecPtr.i;
+    for (Uint32 i = 0; i < ZMAX_PARALLEL_COPY_FRAGMENT_OPS; i++)
+    {
+      ndbrequire(oprec_pool.seize(operationRecPtr));
+      operationRecPtr.p->userptr = RNIL;
+      operationRecPtr.p->userblockref = 0;
+      m_reserved_copy_frag_lock.addFirst(operationRecPtr);
+    }
   }
 }//Dbacc::initRecords()
 
@@ -186,6 +190,7 @@ Dbacc::Dbacc(Block_context& ctx,
              Uint32 blockNo):
   SimulatedBlock(blockNo, ctx, instanceNumber),
   c_tup(0),
+  m_reserved_copy_frag_lock(oprec_pool),
   c_page8_pool(c_page_pool)
 {
   BLOCK_CONSTRUCTOR(Dbacc);

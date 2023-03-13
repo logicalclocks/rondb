@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2062,6 +2062,7 @@ private:
 
   bool check_takeover_thread(TakeOverRecordPtr takeOverPtr,
                              FragmentstorePtr fragPtr,
+                             Uint32 tableId,
                              Uint32 fragmentReplicaInstanceKey);
   void send_continueb_start_next_copy(Signal *signal,
                                       TakeOverRecordPtr takeOverPtr);
