@@ -47,7 +47,7 @@ class PKRResponse {
   RS_Status SetStatus(Uint32 value);
 
   /**
-   * Close response and set the data lenght. 
+   * Close response and set the data lenght.
    */
   RS_Status Close();
 
@@ -62,7 +62,7 @@ class PKRResponse {
   RS_Status SetTable(const char *table);
 
   /**
-   * Set Operation ID 
+   * Set Operation ID
    */
   RS_Status SetOperationID(const char *opID);
 
@@ -204,7 +204,7 @@ class PKRResponse {
   RS_Status Append_cstring(const char *str);
 
   /**
-   * write header field with string value 
+   * write header field with string value
    *
    */
   RS_Status WriteStringHeaderField(Uint32 index, const char *str);

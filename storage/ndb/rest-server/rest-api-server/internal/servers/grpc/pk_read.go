@@ -11,7 +11,7 @@ import (
 )
 
 func (s *RonDBServer) PKRead(ctx context.Context, reqProto *api.PKReadRequestProto) (*api.PKReadResponseProto, error) {
-	apiKey, err := s.getApiKey(ctx)
+	apiKey, _ := s.getApiKey(ctx)
 
 	request := api.ConvertPKReadRequestProto(reqProto)
 

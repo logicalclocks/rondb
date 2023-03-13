@@ -42,7 +42,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 
 	//creating databases for each test run is very slow
 	//if sentinel DB exists then skip creating DBs
-	//drop the "sentinel" DB if you wan to recreate all the databasese.
+	//drop the "sentinel" DB if you want to recreate all the databases.
 	//for MTR the cleanup is done in mysql-test/suite/rdrs/include/rdrs_cleanup.inc
 	if !testutils.SentinelDBExists() {
 		err, _ := testutils.CreateDatabases(conf.Security.UseHopsworksAPIKeys, dbsToCreate...)
@@ -68,7 +68,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 	}
 
 	log.Info("Successfully started up default servers")
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	return func() {
 		// Running defer here in case checking the heap fails

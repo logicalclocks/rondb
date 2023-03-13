@@ -64,4 +64,3 @@ RS_Status find_all_projects(int uid, char ***projects, int *count);
 #ifdef __cplusplus
 }
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_HOPSWORKS_DAL_H_
-

@@ -80,6 +80,10 @@ const char *PKRRequest::PKValueCStr(Uint32 index) {
   return req->buffer + vOffset + 2;  // skip first 2 bytes that contain size of string
 }
 
+/*
+  PKValueLen refers to data without prepended length bytes.
+  The length bytes are only native to RonDB.
+*/
 Uint16 PKRRequest::PKValueLen(Uint32 index) {
   Uint32 kvOffset           = PKTupleOffset(index);
   Uint32 vOffset            = (reinterpret_cast<Uint32 *>(req->buffer))[(kvOffset / 4) + 1];

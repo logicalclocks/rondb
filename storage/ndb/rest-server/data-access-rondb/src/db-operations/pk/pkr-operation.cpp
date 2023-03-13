@@ -178,8 +178,7 @@ RS_Status PKROperation::CreateResponse() {
   return RS_OK;
 }
 
-RS_Status PKROperation::AppendOpRecs(PKRResponse *resp,
-                                     std::vector<NdbRecAttr *> *recs) {
+RS_Status PKROperation::AppendOpRecs(PKRResponse *resp, std::vector<NdbRecAttr *> *recs) {
   for (Uint32 i = 0; i < recs->size(); i++) {
     RS_Status status = WriteColToRespBuff((*recs)[i], resp);
     if (status.http_code != SUCCESS) {

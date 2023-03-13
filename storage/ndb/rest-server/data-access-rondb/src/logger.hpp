@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Hopsworks AB
+ * Copyright (C) 2023 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -19,8 +19,6 @@
 #ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_LOGGER_HPP_
 #define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_LOGGER_HPP_
 
-#include <string.h>
-#include <iostream>
 #include <string>
 #include "src/rdrs-dal.h"
 
@@ -32,74 +30,38 @@
 #define DebugLevel 5
 #define TraceLevel 6
 
-static Callbacks my_cb_fns;
+// FIXME TODO  Make small function inline and pass log level from go layer  JIRA RONDB-287
 
-inline void setLogCallBackFns(const Callbacks cbs) {
-  my_cb_fns = cbs;
-}
+void log(const int level, const char *msg);
 
-inline void log(const int level, const char *msg) {
-  if (my_cb_fns.logger != nullptr) {
-    RS_LOG_MSG log_msg;
-    log_msg.level = level;
-    strncpy(log_msg.message, msg, RS_LOG_MSG_LEN - 1);
-    log_msg.message[RS_LOG_MSG_LEN - 1] = 0;
-    my_cb_fns.logger(log_msg);
-  } else {
-    std::cout << msg << std::endl;
-  }
-}
+void setLogCallBackFns(const Callbacks cbs);
 
-inline void PANIC(const char *msg) {
-  log(PanicLevel, msg);
-}
+void log(const int level, const char *msg);
 
-inline void PANIC(const std::string msg) {
-  log(PanicLevel, msg.c_str());
-}
+void PANIC(const char *msg);
 
-inline void FATAL(const char *msg) {
-  log(FatalLevel, msg);
-}
+void PANIC(const std::string msg);
 
-inline void FATAL(const std::string msg) {
-  log(FatalLevel, msg.c_str());
-}
+void FATAL(const char *msg);
 
-inline void ERROR(const char *msg) {
-  log(ErrorLevel, msg);
-}
+void FATAL(const std::string msg);
 
-inline void ERROR(const std::string msg) {
-  log(ErrorLevel, msg.c_str());
-}
+void ERROR(const char *msg);
 
-inline void WARN(const char *msg) {
-  log(WarnLevel, msg);
-}
+void ERROR(const std::string msg);
 
-inline void WARN(const std::string msg) {
-  log(WarnLevel, msg.c_str());
-}
+void WARN(const char *msg);
 
-inline void INFO(const char *msg) {
-  log(InfoLevel, msg);
-}
+void WARN(const std::string msg);
 
-inline void INFO(const std::string msg) {
-  log(InfoLevel, msg.c_str());
-}
+void INFO(const char *msg);
 
-inline void DEBUG(const char *msg) {
-  log(DebugLevel, msg);
-}
+void INFO(const std::string msg);
 
-inline void DEBUG(const std::string msg) {
-  log(DebugLevel, msg.c_str());
-}
+void DEBUG(const char *msg);
 
-inline void TRACE(char *msg) {
-  log(TraceLevel, msg);
-}
+void DEBUG(const std::string msg);
+
+void TRACE(char *msg);
 
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_LOGGER_HPP_
