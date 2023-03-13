@@ -33,12 +33,13 @@ var databaseCreateSchemes = map[string]string{
 
 	DB013: DB013Scheme,
 
-	DB019: DB019Scheme,
-	DB020: DB020Scheme,
-	DB021: DB021Scheme,
-	DB022: DB022Scheme,
-	DB023: DB023Scheme,
-	DB024: DB024Scheme,
+	DB019:      DB019Scheme,
+	DB020:      DB020Scheme,
+	DB021:      DB021Scheme,
+	DB022:      DB022Scheme,
+	DB023:      DB023Scheme,
+	DB024:      DB024Scheme,
+	SentinelDB: SentinelDBScheme,
 }
 
 /*

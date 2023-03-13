@@ -147,3 +147,10 @@ const DB023 = "db023"
 var DB024Scheme string
 
 const DB024 = "db024"
+
+//This is sentinel DB
+//If this exists then we have Successfully initialized all the DBs
+//go:embed fixed/sentinel.sql
+var SentinelDBScheme string
+
+const SentinelDB = "sentinel"

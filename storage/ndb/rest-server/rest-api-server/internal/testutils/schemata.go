@@ -42,7 +42,7 @@ func CreateDatabases(
 		err = runQueries(createSchema, dbConn)
 		if err != nil {
 			cleanupDbsWrapper(dropDatabases)()
-			err = fmt.Errorf("failed running createSchema for db '%s'; error: %w", db, err)
+			err = fmt.Errorf("failed running createSchema for db '%s'; error: %v", db, err)
 			return err, func() {}
 		}
 		log.Debugf("successfully ran all queries to instantiate db '%s'", db)
@@ -80,4 +80,20 @@ func runQueries(sqlQueries string, dbConnection *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func SentinelDBExists() bool {
+	dbConn, err := CreateMySQLConnection()
+	if err != nil {
+		return false
+	}
+	defer dbConn.Close()
+
+	testQuery := "select SCHEMA_NAME from information_schema.SCHEMATA where SCHEMA_NAME=\"sentinel\""
+	rows, err := dbConn.Query(testQuery)
+	if err == nil && rows.Next() {
+		return true
+	} else {
+		return false
+	}
 }

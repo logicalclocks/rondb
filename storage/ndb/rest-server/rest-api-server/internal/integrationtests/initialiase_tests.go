@@ -18,7 +18,6 @@ import (
 	Wraps all unit tests in this package
 */
 func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cleanup func(), err error) {
-
 	if !*testutils.WithRonDB {
 		return
 	}
@@ -40,15 +39,21 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 	} else {
 		dbsToCreate = testdbs.GetAllDBs()
 	}
-	err, dropDatabases := testutils.CreateDatabases(conf.Security.UseHopsworksAPIKeys, dbsToCreate...)
-	if err != nil {
-		cleanupTLSCerts()
-		return cleanup, fmt.Errorf("failed creating databases; error: %v", err)
+
+	//creating databases for each test run is very slow
+	//if sentinel DB exists then skip creating DBs
+	//drop the "sentinel" DB if you wan to recreate all the databasese.
+	//for MTR the cleanup is done in mysql-test/suite/rdrs/include/rdrs_cleanup.inc
+	if !testutils.SentinelDBExists() {
+		err, _ := testutils.CreateDatabases(conf.Security.UseHopsworksAPIKeys, dbsToCreate...)
+		if err != nil {
+			cleanupTLSCerts()
+			return cleanup, fmt.Errorf("failed creating databases; error: %v", err)
+		}
 	}
 
 	newHeap, releaseBuffers, err := heap.New()
 	if err != nil {
-		dropDatabases()
 		cleanupTLSCerts()
 		return cleanup, fmt.Errorf("failed creating new heap; error: %v ", err)
 	}
@@ -58,18 +63,16 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, quit)
 	if err != nil {
 		releaseBuffers()
-		dropDatabases()
 		cleanupTLSCerts()
 		return cleanup, fmt.Errorf("failed creating default servers; error: %v ", err)
 	}
 
 	log.Info("Successfully started up default servers")
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(300 * time.Millisecond)
 
 	return func() {
 		// Running defer here in case checking the heap fails
 		defer cleanupTLSCerts()
-		defer dropDatabases()
 		defer releaseBuffers()
 		defer cleanupServers()
 

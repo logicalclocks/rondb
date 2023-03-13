@@ -63,7 +63,7 @@ func Start(
 	}
 	log.Infof("Listening at %s for gRPC server", grpcListener.Addr())
 	go func() {
-		log.Info("Starting up gRPC server")
+		log.Infof("Starting up gRPC server at %s\n ", grpcAddress)
 		if err := grpcServer.Serve(grpcListener); err != nil {
 			log.Errorf("failed to serve gRPC; error: %v", err)
 			quit <- syscall.SIGINT

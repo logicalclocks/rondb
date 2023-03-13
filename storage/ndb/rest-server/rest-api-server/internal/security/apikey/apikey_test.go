@@ -46,19 +46,12 @@ func TestAPIKey(t *testing.T) {
 	}
 	defer dal.ShutdownConnection()
 
-	databases := []string{testdbs.DB001, testdbs.DB002}
-	err, dropDatabases := testutils.CreateDatabases(true, databases...)
-	if err != nil {
-		t.Fatalf("failed creating databases %v; error: %v ", databases, err)
-	}
-	defer dropDatabases()
-
 	existentDB := testdbs.DB001
 	existentDB2 := testdbs.DB002
 	fakeDB := "test3"
 
 	apiKey := "bkYjEz6OTZyevbqT.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
-	err = ValidateAPIKey(&apiKey, &existentDB)
+	err := ValidateAPIKey(&apiKey, &existentDB)
 	if err == nil {
 		t.Fatal("Wrong prefix was falsely validated")
 	}
@@ -118,13 +111,7 @@ func TestAPIKeyCache1(t *testing.T) {
 	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 	databases := []string{testdbs.DB001, testdbs.DB002}
 
-	err, dropDatabases := testutils.CreateDatabases(true, databases...)
-	if err != nil {
-		t.Fatalf("failed creating databases %v; error: %v ", databases, err)
-	}
-	defer dropDatabases()
-
-	err = ValidateAPIKey(&apiKey, &databases[0])
+	err := ValidateAPIKey(&apiKey, &databases[0])
 	if err != nil {
 		t.Fatalf("No error expected; error: %v", err)
 	}
@@ -176,14 +163,8 @@ func TestAPIKeyCache2(t *testing.T) {
 	databases := []string{testdbs.DB001, testdbs.DB002}
 	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 
-	err, dropDatabases := testutils.CreateDatabases(true, databases...)
-	if err != nil {
-		t.Fatalf("failed creating databases %v; error: %v ", databases, err)
-	}
-	defer dropDatabases()
-
-	db3 := testdbs.DB003
-	err = ValidateAPIKey(&apiKey, &db3)
+	db3 := "dbxxx"
+	err := ValidateAPIKey(&apiKey, &db3)
 	if err == nil {
 		t.Fatal("Database should not exist. Expected test to fail")
 	}
