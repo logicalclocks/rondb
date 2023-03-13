@@ -68,7 +68,33 @@ extern "C" {
 #define PK_RESP_OP_ID_IDX     7
 #define PK_RESP_HEADER_END    32
 
-// Primary Key Read Request Header Indexes
+// Hopsworks
+#define API_KEY_PREFIX_SIZE           45 + 1
+#define PROJECT_TEAM_TEAM_MEMBER_SIZE 150 + 1
+
+// Data types
+#define DECIMAL_MAX_SIZE_IN_BYTES           9 * 4   /*4 bytes per 9 digits. 65/9 + 1 * 4*/
+#define CHAR_MAX_SIZE_IN_BYTES              255 * 4 /*MAX 255 chars. *4 for char set*/
+#define DECIMAL_MAX_PRECISION_SIZE_IN_BYTES 65
+#define DECIMAL_MAX_STR_LEN_IN_BYTES        DECIMAL_MAX_PRECISION_SIZE_IN_BYTES + 3
+#define BINARY_MAX_SIZE_IN_BYTES            255
+#define BINARY_MAX_SIZE_IN_BYTES_DECODED                                                           \
+  BINARY_MAX_SIZE_IN_BYTES + 3 /*encoding 255 bytes takes max 343 bytes.*/
+                               /*decoding 343 bytes takes max 258 bytes */
+#define KEY_MAX_SIZE_IN_BYTES 1023 * 4
+#define KEY_MAX_SIZE_IN_BYTES_DECODED                                                              \
+  KEY_MAX_SIZE_IN_BYTES + 3 + 2 /*encoding 4092 bytes takes max 5458 bytes */
+                                /*decoding 5458 bytes takes max 4095 bytes. +2 for length */
+#define DATE_MAX_SIZE_IN_BYTES          3
+#define TIME2_MAX_SIZE_IN_BYTES         6
+#define DATETIME_MAX_SIZE_IN_BYTES      8
+#define TIMESTAMP2_MAX_SIZE_IN_BYTES    7
+#define MAX_TUPLE_SIZE_IN_BYTES         7501 * 4
+#define MAX_TUPLE_SIZE_IN_BYTES_ENCODED 40008
+#define MAX_TUPLE_SIZE_IN_BYTES_ESCAPED                                                            \
+  MAX_TUPLE_SIZE_IN_BYTES * 2 /*worst cast every character needs to be escaped*/
+#define BIT_MAX_SIZE_IN_BYTES         4096 / 8
+#define BIT_MAX_SIZE_IN_BYTES_ENCODED 686
 
 #ifdef __cplusplus
 }

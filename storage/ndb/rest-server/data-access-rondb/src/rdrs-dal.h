@@ -123,4 +123,3 @@ void register_callbacks(Callbacks cbs);
 #ifdef __cplusplus
 }
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_DAL_H_
-
