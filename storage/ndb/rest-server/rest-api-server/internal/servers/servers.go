@@ -24,7 +24,7 @@ func CreateAndStartDefaultServers(heap *heap.Heap, quit chan os.Signal) (err err
 	connectString := config.GenerateMgmdConnectString(conf)
 	dalErr := dal.InitRonDBConnection(connectString, true)
 	if dalErr != nil {
-		return fmt.Errorf("failed creating RonDB connection; error: %w", dalErr), cleanup
+		return fmt.Errorf("failed to connect to RonDB %s. error: %w", connectString, dalErr), cleanup
 	}
 	cleanupRonDB := func() {
 		dalErr = dal.ShutdownConnection()

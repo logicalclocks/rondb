@@ -391,7 +391,7 @@ func sendGRPCPKReadRequest(
 
 	// Create gRPC client
 	conf := config.GetAll()
-	conn, err := testutils.CreateGrpcConn(t, conf.Security.UseHopsworksAPIKeys, conf.Security.RequireAndVerifyClientCert)
+	conn, err := testutils.CreateGrpcConn(t, conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
 	if err != nil {
 		t.Fatalf("Failed to connect to server %v", err)
 	}
@@ -478,7 +478,7 @@ func sendGRPCBatchRequest(t *testing.T, testInfo api.BatchOperationTestInfo) (in
 
 	// Create gRPC client
 	conf := config.GetAll()
-	conn, err := testutils.CreateGrpcConn(t, conf.Security.UseHopsworksAPIKeys, conf.Security.RequireAndVerifyClientCert)
+	conn, err := testutils.CreateGrpcConn(t, conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
 	if err != nil {
 		t.Fatalf("Failed to connect to server %v", err)
 	}
