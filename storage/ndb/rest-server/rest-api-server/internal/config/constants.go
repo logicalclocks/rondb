@@ -21,7 +21,7 @@ import "hopsworks.ai/rdrs/version"
 
 const API_KEY_NAME = "X-API-KEY"
 
-// TODO: What's a "PP"?
+// PP: Path prefix
 const DB_PP = "db"
 const TABLE_PP = "table"
 const DB_TABLE_PP = "/:" + DB_PP + "/:" + TABLE_PP + "/"
