@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,7 +32,7 @@
 #include "sql_string.h"          // String
 
 class THD;
-struct TABLE_LIST;
+class Table_ref;
 
 namespace dd {
 namespace info_schema {
@@ -42,24 +42,24 @@ namespace info_schema {
   mysql.table_stats.
 
   @param thd   Thread.
-  @param table TABLE_LIST pointing to table info.
+  @param table Table_ref pointing to table info.
 
   @returns false on success.
            true on failure.
 */
-bool update_table_stats(THD *thd, TABLE_LIST *table);
+bool update_table_stats(THD *thd, Table_ref *table);
 
 /**
   Get dynamic index statistics of a table and store them into
   mysql.index_stats.
 
   @param thd   Thread.
-  @param table TABLE_LIST pointing to table info.
+  @param table Table_ref pointing to table info.
 
   @returns false on success.
            true on failure.
 */
-bool update_index_stats(THD *thd, TABLE_LIST *table);
+bool update_index_stats(THD *thd, Table_ref *table);
 
 /**
   If the db is 'information_schema' then convert 'db' to
@@ -166,7 +166,7 @@ class Table_statistics {
   /**
     @brief
     Read dynamic table/index statistics from SE by opening the user table
-    provided OR by reading cached statistics from SELECT_LEX.
+    provided OR by reading cached statistics from Query_block.
 
     @param thd                     - Current thread.
     @param schema_name_ptr         - Schema name of table.
@@ -271,7 +271,7 @@ class Table_statistics {
  private:
   /**
     Read dynamic table/index statistics from SE API's OR by reading
-    cached statistics from SELECT_LEX.
+    cached statistics from Query_block.
 
     @param thd                     - Current thread.
     @param schema_name_ptr         - Schema name of table.
@@ -299,7 +299,7 @@ class Table_statistics {
 
   /**
     Read dynamic table/index statistics by opening the table OR by reading
-    cached statistics from SELECT_LEX.
+    cached statistics from Query_block.
 
     @param thd                     - Current thread.
     @param schema_name_ptr         - Schema name of table.
@@ -374,6 +374,10 @@ class Table_statistics {
 
   /// Set open table in progress.
   void set_read_stats_by_open(bool status) { m_read_stats_by_open = status; }
+
+ public:
+  /// Predicate for determinig if cache is valid
+  bool is_valid() const { return !m_key.empty(); }
 
  private:
   // The cache key

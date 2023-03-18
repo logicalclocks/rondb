@@ -1,7 +1,7 @@
 #ifndef JSON_DIFF_INCLUDED
 #define JSON_DIFF_INCLUDED
 
-/* Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2017, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -39,8 +39,9 @@
 #include <memory>  // std::unique_ptr
 #include <vector>
 
-#include "sql/json_path.h"
+#include "sql-common/json_path.h"
 #include "sql/mem_root_allocator.h"
+#include "sql/psi_memory_key.h"  // key_memory_JSON
 
 class Field_json;
 class Json_dom;
@@ -102,7 +103,9 @@ class Json_diff final {
   */
   Json_diff(const Json_seekable_path &path, enum_json_diff_operation operation,
             std::unique_ptr<Json_dom> value)
-      : m_path(), m_operation(operation), m_value(std::move(value)) {
+      : m_path(key_memory_JSON),
+        m_operation(operation),
+        m_value(std::move(value)) {
     for (const Json_path_leg *leg : path) m_path.append(*leg);
   }
 
@@ -148,7 +151,7 @@ class Json_diff_vector {
     Constructor
     @param arg Mem_root_allocator to use for the vector
   */
-  Json_diff_vector(allocator_type arg);
+  explicit Json_diff_vector(allocator_type arg);
   /**
     Append a new diff at the end of this vector.
     @param path Path to update

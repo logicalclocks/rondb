@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2011, 2020 Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2011, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -102,6 +102,7 @@ Thrman::Thrman(Block_context & ctx, Uint32 instanceno) :
   addRecSignal(GSN_MEASURE_WAKEUP_TIME_ORD, &Thrman::execMEASURE_WAKEUP_TIME_ORD);
   addRecSignal(GSN_DUMP_STATE_ORD, &Thrman::execDUMP_STATE_ORD);
   addRecSignal(GSN_UPD_THR_LOAD_ORD, &Thrman::execUPD_THR_LOAD_ORD);
+  addRecSignal(GSN_SEND_PUSH_ORD, &Thrman::execSEND_PUSH_ORD);
 
   m_enable_adaptive_spinning = false;
   m_allowed_spin_overhead = 130;
@@ -129,7 +130,6 @@ Thrman::Thrman(Block_context & ctx, Uint32 instanceno) :
     m_rep_thrman_instance =
       1 + globalData.ndbMtLqhThreads +
           globalData.ndbMtTcThreads +
-          globalData.ndbMtQueryThreads +
           globalData.ndbMtRecoverThreads;
   }
 }
@@ -483,7 +483,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
       {
         jam();
         CPURecordPtr cpuPtr;
-        c_CPURecordPool.seizeId(cpuPtr, cpu_no);
+        ndbrequire(c_CPURecordPool.seizeId(cpuPtr, cpu_no));
         jam();
         cpuPtr.p = new (cpuPtr.p) CPURecord();
         ndbrequire(cpuPtr.i == cpu_no);
@@ -496,7 +496,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
               list(c_CPUMeasurementRecordPool,
                    cpuPtr.p->m_next_50ms_measure);
             CPUMeasurementRecordPtr cpuMeasurePtr;
-            c_CPUMeasurementRecordPool.seize(cpuMeasurePtr);
+            ndbrequire(c_CPUMeasurementRecordPool.seize(cpuMeasurePtr));
             jam();
             cpuMeasurePtr.p = new (cpuMeasurePtr.p) CPUMeasurementRecord();
             list.addFirst(cpuMeasurePtr);
@@ -507,7 +507,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
               list(c_CPUMeasurementRecordPool,
                    cpuPtr.p->m_next_1sec_measure);
             CPUMeasurementRecordPtr cpuMeasurePtr;
-            c_CPUMeasurementRecordPool.seize(cpuMeasurePtr);
+            ndbrequire(c_CPUMeasurementRecordPool.seize(cpuMeasurePtr));
             cpuMeasurePtr.p = new (cpuMeasurePtr.p) CPUMeasurementRecord();
             list.addFirst(cpuMeasurePtr);
 	  }
@@ -516,7 +516,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
               list(c_CPUMeasurementRecordPool,
                    cpuPtr.p->m_next_20sec_measure);
             CPUMeasurementRecordPtr cpuMeasurePtr;
-            c_CPUMeasurementRecordPool.seize(cpuMeasurePtr);
+            ndbrequire(c_CPUMeasurementRecordPool.seize(cpuMeasurePtr));
             cpuMeasurePtr.p = new (cpuMeasurePtr.p) CPUMeasurementRecord();
             list.addFirst(cpuMeasurePtr);
 	  }
@@ -540,13 +540,13 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
   for (Uint32 i = 0; i < NUM_MEASUREMENTS; i++)
   {
     jam();
-    c_measurementRecordPool.seize(measurePtr);
+    ndbrequire(c_measurementRecordPool.seize(measurePtr));
     measurePtr.p = new (measurePtr.p) MeasurementRecord();
     c_next_50ms_measure.addFirst(measurePtr);
-    c_measurementRecordPool.seize(measurePtr);
+    ndbrequire(c_measurementRecordPool.seize(measurePtr));
     measurePtr.p = new (measurePtr.p) MeasurementRecord();
     c_next_1sec_measure.addFirst(measurePtr);
-    c_measurementRecordPool.seize(measurePtr);
+    ndbrequire(c_measurementRecordPool.seize(measurePtr));
     measurePtr.p = new (measurePtr.p) MeasurementRecord();
     c_next_20sec_measure.addFirst(measurePtr);
   }
@@ -559,7 +559,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
     {
       jam();
       SendThreadPtr sendThreadPtr;
-      c_sendThreadRecordPool.seizeId(sendThreadPtr, send_instance);
+      ndbrequire(c_sendThreadRecordPool.seizeId(sendThreadPtr, send_instance));
       sendThreadPtr.p = new (sendThreadPtr.p) SendThreadRecord();
       sendThreadPtr.p->m_send_thread_50ms_measurements.init();
       sendThreadPtr.p->m_send_thread_1sec_measurements.init();
@@ -570,7 +570,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
         jam();
         SendThreadMeasurementPtr sendThreadMeasurementPtr;
 
-        c_sendThreadMeasurementPool.seize(sendThreadMeasurementPtr);
+        ndbrequire(c_sendThreadMeasurementPool.seize(sendThreadMeasurementPtr));
         sendThreadMeasurementPtr.p =
             new (sendThreadMeasurementPtr.p) SendThreadMeasurement();
         {
@@ -581,7 +581,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
           list_50ms.addFirst(sendThreadMeasurementPtr);
         }
 
-        c_sendThreadMeasurementPool.seize(sendThreadMeasurementPtr);
+        ndbrequire(c_sendThreadMeasurementPool.seize(sendThreadMeasurementPtr));
         sendThreadMeasurementPtr.p =
             new (sendThreadMeasurementPtr.p) SendThreadMeasurement();
         {
@@ -592,7 +592,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
           list_1sec.addFirst(sendThreadMeasurementPtr);
         }
 
-        c_sendThreadMeasurementPool.seize(sendThreadMeasurementPtr);
+        ndbrequire(c_sendThreadMeasurementPool.seize(sendThreadMeasurementPtr));
         sendThreadMeasurementPtr.p =
             new (sendThreadMeasurementPtr.p) SendThreadMeasurement();
         {
@@ -688,7 +688,7 @@ Thrman::execSTTOR(Signal *signal)
       {
         jam();
         SendThreadPtr sendThreadPtr;
-        c_sendThreadRecordPool.getPtr(sendThreadPtr, send_instance);
+        ndbrequire(c_sendThreadRecordPool.getPtr(sendThreadPtr, send_instance));
         Uint64 send_exec_time;
         Uint64 send_sleep_time;
         Uint64 send_spin_time;
@@ -771,7 +771,7 @@ Thrman::execSTTOR(Signal *signal)
       sendSTTORRY(signal, false);
     }
     if (instance() == m_rep_thrman_instance &&
-        globalData.ndbMtQueryThreads > 0)
+        globalData.ndbMtQueryWorkers > 0)
     {
       jam();
       initial_query_distribution(signal);
@@ -792,7 +792,7 @@ Thrman::execSTTOR(Signal *signal)
   case 9:
   {
     if (instance() == m_rep_thrman_instance &&
-        globalData.ndbMtQueryThreads > 0)
+        globalData.ndbMtQueryWorkers > 0)
     {
       jam();
       signal->theData[0] = ZUPDATE_QUERY_DISTRIBUTION;
@@ -1358,6 +1358,7 @@ Thrman::execOVERLOAD_STATUS_REP(Signal *signal)
 {
   Uint32 thr_no = signal->theData[0];
   Uint32 overload_status = signal->theData[1];
+  ndbrequire(thr_no < NDB_ARRAY_SIZE(m_thread_overload_status));
   m_thread_overload_status[thr_no].overload_status = (OverloadStatus)overload_status;
 
   Uint32 node_overload_level = 0;
@@ -1637,7 +1638,7 @@ Uint32 Thrman::calc_new_spin(ndb_spin_stat *spin_stat)
         spin_stat->m_spin_interval[i] > m_configured_spintime)
     {
       /**
-       * Ignore empty slots, they will not be choosen for sure.
+       * Ignore empty slots, they will not be chosen for sure.
        * Also ignore slots where we measure 0 spin time.
        * Also ignore slots with higher spintime than what is
        * configured as maximum spintime.
@@ -2243,8 +2244,21 @@ void Thrman::measure_cpu_data(Signal *signal)
 }
 
 void
+Thrman::execSEND_PUSH_ORD(Signal *signal)
+{
+  (void)signal;
+  /**
+   * No need to do anything, this signal is only about updating the
+   * m_exec_thread_signal_id entry to discover if a certain signal
+   * has been executed yet. This happens in mt.cpp before executing
+   * the signal.
+   */
+}
+
+void
 Thrman::execUPD_THR_LOAD_ORD(Signal *signal)
 {
+  ndbrequire(globalData.ndbMtLqhThreads > 0);
   UpdThrLoadOrd * const thrLoadOrd = (UpdThrLoadOrd*)&signal->theData[0];
   ndbrequire(instance() == m_rep_thrman_instance);
   Uint32 cpu_load = thrLoadOrd->cpuLoad;
@@ -2253,8 +2267,7 @@ Thrman::execUPD_THR_LOAD_ORD(Signal *signal)
   Uint32 first_ldm_instance = getFirstLDMThreadInstance();
   Uint32 last_ldm_instance = first_ldm_instance +
                              globalData.ndbMtLqhThreads - 1;
-  Uint32 last_query_instance = last_ldm_instance +
-                               globalData.ndbMtQueryThreads;
+  Uint32 last_query_instance = last_ldm_instance;
   ndbrequire(send_instance >= first_ldm_instance);
   ndbrequire(send_instance <= last_query_instance);
   Uint32 instance_no = send_instance - first_ldm_instance;
@@ -2270,10 +2283,10 @@ Thrman::send_measure_to_rep_thrman(Signal *signal,
   Uint32 first_ldm_instance = getFirstLDMThreadInstance();
   Uint32 last_ldm_instance = first_ldm_instance +
                              globalData.ndbMtLqhThreads - 1;
-  Uint32 last_query_instance = last_ldm_instance +
-                               globalData.ndbMtQueryThreads;
+  Uint32 last_query_instance = last_ldm_instance;
   Uint32 our_instance = instance();
-  if (our_instance < first_ldm_instance ||
+  if (globalData.ndbMtLqhThreads == 0 ||
+      our_instance < first_ldm_instance ||
       our_instance > last_query_instance)
   {
     jam();
@@ -2312,16 +2325,11 @@ Thrman::send_measure_to_rep_thrman(Signal *signal,
 void
 Thrman::initial_query_distribution(Signal *signal)
 {
-  Uint32 num_ldm_instances = getNumLDMInstances();
-  Uint32 num_query_threads = globalData.ndbMtQueryThreads;
-  Uint32 num_distr_threads = num_ldm_instances + num_query_threads;
+  Uint32 num_distr_threads = getNumLDMInstances();
   memset(m_curr_weights, 0, sizeof(m_curr_weights));
   for (Uint32 i = 0; i < num_distr_threads; i++)
   {
-    if (i < num_ldm_instances)
-      m_curr_weights[i] = 33;
-    else
-      m_curr_weights[i] = 8;
+    m_curr_weights[i] = 8;
   }
   send_query_distribution(&m_curr_weights[0], signal);
 }
@@ -2397,8 +2405,8 @@ static Int32 get_change_percent(Int32 diff)
 }
 
 /**
- * A weighted load takes the load from 100ms into account a bit, it can
- * affect the weighted load with up to 5%.
+ * A weighted load takes the load from 100ms into account a bit, the
+ * load from the previous 50ms can affect the weighted load with up to 5%.
  */
 static Uint32 calculate_weighted_load(Uint32 last_load, Uint32 prev_load)
 {
@@ -2466,68 +2474,10 @@ static Uint32 apply_change_query(Int32 change,
 
 }
 
-static Uint32 apply_change_ldm(Int32 change,
-                               Uint32 in_weight)
-{
-  Int32 desired_change = 0;
-  if (change < Int32(-2))
-  {
-    if (change < Int32(-15))
-    {
-      desired_change = -3;
-    }
-    else if (change < Int32(-9))
-    {
-      desired_change = -2;
-    }
-    else
-    {
-      desired_change = -1;
-    }
-    /* Decrease weight */
-  }
-  else if (change >= 3)
-  {
-    if (change > Int32(+15))
-    {
-      desired_change = +3;
-    }
-    else if (change > Int32(+9))
-    {
-      desired_change = +3;
-    }
-    else
-    {
-      desired_change = +1;
-    }
-  }
-  else
-  {
-    desired_change = 0;
-  }
-
-  Int32 new_weight = (Int32)in_weight + desired_change;
-  if (new_weight < 0)
-  {
-    new_weight = 0;
-  }
-  else if (new_weight > MAX_LDM_DISTRIBUTION_WEIGHT)
-  {
-    new_weight = MAX_DISTRIBUTION_WEIGHT;
-  }
-  return Uint32(new_weight);
-}
-
 void Thrman::check_weights()
 {
-  Uint32 num_ldm_instances = getNumLDMInstances();
-  Uint32 num_query_threads = globalData.ndbMtQueryThreads;
-  Uint32 num_distr_threads = num_ldm_instances + num_query_threads;
-  for (Uint32 i = 0; i < num_ldm_instances; i++)
-  {
-    ndbrequire(m_curr_weights[i] <= MAX_LDM_DISTRIBUTION_WEIGHT);
-  }
-  for (Uint32 i = num_ldm_instances; i < num_distr_threads; i++)
+  Uint32 num_distr_threads = getNumLDMInstances();
+  for (Uint32 i = 0; i < num_distr_threads; i++)
   {
     ndbrequire(m_curr_weights[i] <= MAX_DISTRIBUTION_WEIGHT);
   }
@@ -2536,12 +2486,7 @@ void Thrman::check_weights()
 void
 Thrman::update_query_distribution(Signal *signal)
 {
-  Uint32 average_cpu_load_ldm = 0;
-  Uint32 average_cpu_load_query = 0;
-  Uint32 average_send_load_ldm = 0;
-  Uint32 average_send_load_query = 0;
-  Uint32 max_load_ldm = 0;
-  Uint32 max_load_query = 0;
+  Uint32 max_load = 0;
   check_weights();
   /**
    * This function takes the CPU load information from the last
@@ -2549,21 +2494,17 @@ Thrman::update_query_distribution(Signal *signal)
    * weights to be used by DBTC, DBSPJ and the receive threads
    * when mapping virtual blocks to LDM and query thread instances.
    */
-  Uint32 num_ldm_instances = getNumLDMInstances();
-  Uint32 num_query_threads = globalData.ndbMtQueryThreads;
-  Uint32 num_distr_threads = num_ldm_instances + num_query_threads;
+  Uint32 num_distr_threads = getNumLDMInstances();
   Uint32 sum_cpu_load = 0;
   Uint32 sum_send_load = 0;
   Uint32 weighted_cpu_load[MAX_DISTR_THREADS];
   /**
-   * Count sum of CPU load in LDM threads
-   * Count sum of send CPU load in LDM threads
    * Count sum of CPU load in LDM and Query threads
    * Count sum of send CPU load in LDM and Query threads
-   * Count max CPU load on any LDM thread
-   * Count max send CPU load on any LDM thread
+   * Count max CPU load on any LDM and Query thread
+   * Count max send CPU load on any LDM and Query thread
    */
-  for (Uint32 i = 0; i < num_ldm_instances; i++)
+  for (Uint32 i = 0; i < num_distr_threads; i++)
   {
     Uint32 cpu_load =
       calculate_weighted_load(m_thr_load[i][0].m_cpu_load,
@@ -2574,45 +2515,10 @@ Thrman::update_query_distribution(Signal *signal)
                               m_thr_load[i][1].m_send_load);
     sum_cpu_load += cpu_load;
     sum_send_load += send_load;
-    max_load_ldm = MAX(cpu_load + send_load, max_load_ldm);
-  }
-  /* Calculate average CPU and send CPU load on LDM threads */
-  average_cpu_load_ldm = sum_cpu_load / num_ldm_instances;
-  average_send_load_ldm = sum_send_load / num_ldm_instances;
-  sum_cpu_load = 0;
-  sum_send_load = 0;
-  ndbrequire(num_query_threads != 0)
-  {
-    /**
-     * Count sum of CPU load on Query threads
-     * Count sum of send CPU load on Query threads
-     * Count sum of CPU load in LDM and Query threads
-     * Count sum of send CPU load in LDM and Query threads
-     * Count max CPU load on any Query thread
-     * Count max send CPU load on any Query thread
-     */
-    for (Uint32 i = num_ldm_instances; i < num_distr_threads; i++)
-    {
-      Uint32 cpu_load =
-        calculate_weighted_load(m_thr_load[i][0].m_cpu_load,
-                                m_thr_load[i][1].m_cpu_load);
-      weighted_cpu_load[i] = cpu_load;
-      Uint32 send_load =
-        calculate_weighted_load(m_thr_load[i][0].m_send_load,
-                                m_thr_load[i][1].m_send_load);
-      sum_cpu_load += cpu_load;
-      sum_send_load += send_load;
-      max_load_query = MAX(cpu_load + send_load, max_load_query);
-    }
-    /* Calculate average CPU and send CPU load on Query threads */
-    average_cpu_load_query = sum_cpu_load / num_query_threads;
-    average_send_load_query = sum_send_load / num_query_threads;
+    max_load = MAX(cpu_load + send_load, max_load);
   }
   /* Calculate average and max CPU load on Query and LDM threads */
-  Uint32 average_cpu_load = sum_cpu_load /
-                            (num_ldm_instances + num_query_threads);
-  Uint32 max_load = MAX(max_load_ldm, max_load_query);
-
+  Uint32 average_cpu_load = sum_cpu_load / num_distr_threads;
   if (average_cpu_load < 30 &&
       max_load < 40)
   {
@@ -2638,21 +2544,11 @@ Thrman::update_query_distribution(Signal *signal)
      * desired direction.
      */
     Uint32 sum_weights = 0;
-    for (Uint32 i = 0; i < num_ldm_instances; i++)
-    /* Count sum of LDM thread weights that we currently use */
+    for (Uint32 i = 0; i < num_distr_threads; i++)
     {
       sum_weights += m_curr_weights[i];
     }
-    /* Count sum of Query thread weights that we currently use */
-    ndbrequire(num_query_threads != 0)
-    {
-      for (Uint32 i = num_ldm_instances; i < num_distr_threads; i++)
-      {
-        sum_weights += m_curr_weights[i];
-      }
-      /* Count average Query thread weights that we currently use */
-      average_weight = sum_weights / (num_query_threads + num_ldm_instances);
-    }
+    average_weight = sum_weights / num_distr_threads;
   }
   bool move_weights_down = (average_weight < (MAX_DISTRIBUTION_WEIGHT / 2));
 
@@ -2665,20 +2561,14 @@ Thrman::update_query_distribution(Signal *signal)
    * For LDM threads it can be expected that they sometimes have differing
    * loads since they don't necessarily have a balanced load. Here we try
    * to move the weight such that LDMs conform to the average load of all
-   * CPUs.
+   * query thread CPUs.
    */
-  for (Uint32 i = 0; i < num_ldm_instances; i++)
-  {
-    Uint32 cpu_load = weighted_cpu_load[i];
-    Uint32 diff = average_cpu_load_query - cpu_load;
-    m_curr_weights[i] = apply_change_ldm(diff,
-                                         m_curr_weights[i]);
-  }
-  for (Uint32 i = num_ldm_instances; i < num_distr_threads; i++)
+  /* Combined LDM+Query threads treated as Query threads */
+  for (Uint32 i = 0; i < num_distr_threads; i++)
   {
     Uint32 cpu_load = weighted_cpu_load[i];
     Uint32 loc_change =
-      get_change_percent(cpu_load - average_cpu_load_query);
+      get_change_percent(cpu_load - average_cpu_load);
     m_curr_weights[i] = apply_change_query(loc_change,
                                            move_weights_down,
                                            m_curr_weights[i]);
@@ -2691,50 +2581,23 @@ Thrman::update_query_distribution(Signal *signal)
     weighted_cpu_load[9], weighted_cpu_load[10], weighted_cpu_load[11],
     weighted_cpu_load[12], weighted_cpu_load[13], weighted_cpu_load[14],
     weighted_cpu_load[15]));
+  DEB_SCHED_WEIGHTS(("CPU weights: %u %u %u %u %u %u %u %u"
+                     " %u %u %u %u %u %u %u %u",
+    m_curr_weights[0], m_curr_weights[1], m_curr_weights[2],
+    m_curr_weights[3], m_curr_weights[4], m_curr_weights[5],
+    m_curr_weights[6], m_curr_weights[7], m_curr_weights[8],
+    m_curr_weights[9], m_curr_weights[10],m_curr_weights[11],
+    m_curr_weights[12],m_curr_weights[13],m_curr_weights[14],
+    m_curr_weights[15]));
   check_weights();
-  for (Uint32 i = 0; i < num_ldm_instances; i++)
-  {
-    if (m_curr_weights[i] == 0)
-    {
-      Uint32 num_query_thread_per_ldm = globalData.QueryThreadsPerLdm;
-      Uint32 query_inx = num_ldm_instances +
-                         (i * num_query_thread_per_ldm);
-      Uint32 query_load = weighted_cpu_load[query_inx];
-      Uint32 ldm_load = weighted_cpu_load[i];
-      /**
-       * LDM load is only allowed to be at 0 if it is fully used,
-       * we set the limit to be 80% CPU load. If the LDM load is over
-       * 80% we will stop assisting the query threads since our
-       * adaptive algorithm decided so.
-       *
-       * We will not stop using LDM thread until query thread is at least
-       * 8% higher than the LDM thread. If LDM thread is very highly loaded
-       * AND query threads as well, it makes sense to continue using the
-       * LDM thread as well for READ COMMITTED queries even if the load
-       * is above 80%.
-       */
-      if (((query_load + 8) >= ldm_load) ||
-          ldm_load <= 80)
-      {
-        m_curr_weights[i] = 1;
-      }
-    }
-  }
-  for (Uint32 i = num_ldm_instances; i < num_distr_threads; i++)
+  for (Uint32 i = 0; i < num_distr_threads; i++)
   {
     if (m_curr_weights[i] == 0)
     {
       /**
-       * Only LDM threads are allowed to set their weight to 0.
-       * Query threads must always be accessible with at least a
-       * small weight. If set to 0 the query thread would not
-       * be used at all which is a bit useless. So going below
-       * 1 for query threads isn't very practical.
-       *
-       * LDM threads has a lot of activities that they will do
-       * even in the case when they don't assist query threads.
-       * So they are allowed to drop to 0 and not do any work
-       * on query thread activities.
+       * Combined LDM+Query must allow for use of all LDM+Query threads.
+       * Otherwise we would disable the use of load indicators to monitor
+       * the load at shorter timespans.
        */
       m_curr_weights[i] = 1;
     }
@@ -2745,9 +2608,7 @@ Thrman::update_query_distribution(Signal *signal)
 void
 Thrman::send_query_distribution(Uint32 *weights, Signal *signal)
 {
-  Uint32 num_ldm_instances = getNumLDMInstances();
-  Uint32 num_query_threads = globalData.ndbMtQueryThreads;
-  Uint32 num_distr_threads = num_ldm_instances + num_query_threads;
+  Uint32 num_distr_threads = getNumLDMInstances();
   BlockReference ref;
 
   DEB_SCHED_WEIGHTS(("LDM/QT weights: %u %u %u %u %u %u %u %u"
@@ -2756,24 +2617,7 @@ Thrman::send_query_distribution(Uint32 *weights, Signal *signal)
                      weights[4], weights[5], weights[6], weights[7],
                      weights[8], weights[9], weights[10], weights[11],
                      weights[12], weights[13], weights[14], weights[15]));
-  if (!isNdbMtLqh())
-  {
-    {
-      signal->theData[0] = 0;
-      LinearSectionPtr lsptr[3];
-      lsptr[0].p = weights;
-      lsptr[0].sz = 1;
-      sendSignal(DBTC, GSN_UPD_QUERY_DIST_ORD, signal, 1, JBB, lsptr, 1);
-    }
-    {
-      signal->theData[0] = 0;
-      LinearSectionPtr lsptr[3];
-      lsptr[0].p = weights;
-      lsptr[0].sz = 1;
-      sendSignal(TRPMAN, GSN_UPD_QUERY_DIST_ORD, signal, 1, JBB, lsptr, 1);
-    }
-    return;
-  }
+  ndbrequire(isNdbMtLqh());
   Uint32 num_recv_threads = globalData.ndbMtReceiveThreads;
   for (Uint32 i = 0; i < num_recv_threads; i++)
   {
@@ -2858,7 +2702,7 @@ Thrman::send_query_distribution(Uint32 *weights, Signal *signal)
  * fast. One reason for this is that as we increase our level of send
  * assistance we will obviously become more loaded, we want to keep
  * this extra load on a level such that the block thread still can
- * deliver reponses to its main activities within reasonable limits.
+ * deliver responses to its main activities within reasonable limits.
  *
  * So we will have at least 3 different levels of load for a thread.
  * STATE: Overload
@@ -3082,7 +2926,7 @@ Thrman::measure_cpu_usage(Signal *signal)
                        curr_send_thread_measure.m_kernel_time_os,
                        curr_send_thread_measure.m_elapsed_time_os);
 
-      c_sendThreadRecordPool.getPtr(sendThreadPtr, send_instance);
+      ndbrequire(c_sendThreadRecordPool.getPtr(sendThreadPtr, send_instance));
       {
         jam();
         Local_SendThreadMeasurement_fifo list_50ms(c_sendThreadMeasurementPool,
@@ -3376,7 +3220,7 @@ Thrman::calculate_cpu_load_last_second(MeasurementRecord *measure)
     } while (measurePtr.i != RNIL &&
              measure->m_elapsed_time <
              Uint64(NUM_MEASUREMENTS * 50 * 1000));
-    STATIC_ASSERT(NUM_MEASUREMENTS * 50 * 1000 == 1000 * 1000);
+    static_assert(NUM_MEASUREMENTS * 50 * 1000 == 1000 * 1000);
     return true;
   }
   jam();
@@ -3401,7 +3245,7 @@ Thrman::calculate_cpu_load_last_20seconds(MeasurementRecord *measure)
     } while (measurePtr.i != RNIL &&
              measure->m_elapsed_time <
              Uint64(NUM_MEASUREMENTS * NUM_MEASUREMENTS * 50 * 1000));
-    STATIC_ASSERT(NUM_MEASUREMENTS *
+    static_assert(NUM_MEASUREMENTS *
                   NUM_MEASUREMENTS *
                   50 * 1000 == 20 * 1000 * 1000);
     return true;
@@ -3430,7 +3274,7 @@ Thrman::calculate_cpu_load_last_400seconds(MeasurementRecord *measure)
              Uint64(NUM_MEASUREMENTS *
                     NUM_MEASUREMENTS *
                     NUM_MEASUREMENTS * 50 * 1000));
-    STATIC_ASSERT(NUM_MEASUREMENTS *
+    static_assert(NUM_MEASUREMENTS *
                   NUM_MEASUREMENTS *
                   NUM_MEASUREMENTS *
                   50 * 1000 == 400 * 1000 * 1000);
@@ -3653,7 +3497,7 @@ Thrman::calculate_stats_last_second(MeasureStats *stats)
     c_next_50ms_measure.next(measurePtr);
   } while (measurePtr.i != RNIL &&
            elapsed_time < Uint64(NUM_MEASUREMENTS * 50 * 1000));
-  STATIC_ASSERT(NUM_MEASUREMENTS * 50 * 1000 == 1000 * 1000);
+  static_assert(NUM_MEASUREMENTS * 50 * 1000 == 1000 * 1000);
   calc_avgs(stats, num_stats);
   return true;
 }
@@ -3682,7 +3526,7 @@ Thrman::calculate_stats_last_20seconds(MeasureStats *stats)
   } while (measurePtr.i != RNIL &&
            elapsed_time <
            Uint64(NUM_MEASUREMENTS * NUM_MEASUREMENTS * 50 * 1000));
-  STATIC_ASSERT(NUM_MEASUREMENTS *
+  static_assert(NUM_MEASUREMENTS *
                 NUM_MEASUREMENTS *
                 50 * 1000 == 20 * 1000 * 1000);
   calc_avgs(stats, num_stats);
@@ -3715,7 +3559,7 @@ Thrman::calculate_stats_last_400seconds(MeasureStats *stats)
            Uint64(NUM_MEASUREMENTS *
                   NUM_MEASUREMENTS *
                   NUM_MEASUREMENTS * 50 * 1000));
-  STATIC_ASSERT(NUM_MEASUREMENTS *
+  static_assert(NUM_MEASUREMENTS *
                 NUM_MEASUREMENTS *
                 NUM_MEASUREMENTS *
                 50 * 1000 == 400 * 1000 * 1000);
@@ -3733,7 +3577,7 @@ Thrman::calculate_send_thread_load_last_ms(Uint32 send_instance,
 
   memset(measure, 0, sizeof(SendThreadMeasurement));
 
-  c_sendThreadRecordPool.getPtr(sendThreadPtr, send_instance);
+  ndbrequire(c_sendThreadRecordPool.getPtr(sendThreadPtr, send_instance));
 
   Local_SendThreadMeasurement_fifo list_50ms(c_sendThreadMeasurementPool,
                          sendThreadPtr.p->m_send_thread_50ms_measurements);
@@ -4761,6 +4605,7 @@ Thrman::execDBINFO_SCANREQ(Signal* signal)
     Uint32 arr[MAX_INSTANCES_PER_THREAD];
     Uint32 len = mt_get_blocklist(this, arr, NDB_ARRAY_SIZE(arr));
     Uint32 pos = cursor->data[0];
+    ndbrequire(pos < NDB_ARRAY_SIZE(arr));
     for (; ; )
     {
       Ndbinfo::Row row(signal, req);
@@ -4899,12 +4744,13 @@ Thrman::execDBINFO_SCANREQ(Signal* signal)
           ndbinfo_send_scan_conf(signal, req, rl);
           return;
         }
-        c_sendThreadMeasurementPool.getPtr(sendThreadMeasurementPtr, pos_ptrI);
+        ndbrequire(c_sendThreadMeasurementPool.getPtr(sendThreadMeasurementPtr,
+                                                      pos_ptrI));
       }
       else
       {
         jam();
-        c_measurementRecordPool.getPtr(measurePtr, pos_ptrI);
+        ndbrequire(c_measurementRecordPool.getPtr(measurePtr, pos_ptrI));
       }
 
       Ndbinfo::Row row(signal, req);
@@ -4974,7 +4820,7 @@ Thrman::execDBINFO_SCANREQ(Signal* signal)
       }
       else
       {
-        // Procede to next thread at first undone measurement
+        // Proceed to next thread at first undone measurement
         pos_index = NUM_MEASUREMENTS - 1;
       }
 
@@ -4998,7 +4844,8 @@ Thrman::execDBINFO_SCANREQ(Signal* signal)
         jam();
         pos_thread_id++;
         SendThreadPtr sendThreadPtr;
-        c_sendThreadRecordPool.getPtr(sendThreadPtr, pos_thread_id - 1);
+        ndbrequire(c_sendThreadRecordPool.getPtr(sendThreadPtr,
+                                                 pos_thread_id - 1));
 
         if (req.tableId == Ndbinfo::CPUSTAT_50MS_TABLEID)
         {
@@ -5086,7 +4933,7 @@ Thrman::execDBINFO_SCANREQ(Signal* signal)
       else
       {
         SendThreadPtr sendThreadPtr;
-        c_sendThreadRecordPool.getPtr(sendThreadPtr, pos_thread_id - 1);
+        ndbrequire(c_sendThreadRecordPool.getPtr(sendThreadPtr, pos_thread_id - 1));
 
         ndbrequire(sendThreadMeasurementPtr.i != RNIL);
         if (req.tableId == Ndbinfo::CPUSTAT_50MS_TABLEID)

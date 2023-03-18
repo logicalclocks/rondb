@@ -1,4 +1,4 @@
-/* Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2003, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -21,15 +21,15 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
-
 #include <signaldata/FsConf.hpp>
 
-bool 
-printFSCONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
-  
-  const FsConf * const sig = (FsConf *) theData;
-  
+bool printFSCONF(FILE *output,
+                 const Uint32 *theData,
+                 Uint32 len,
+                 Uint16 /*receiverBlockNo*/)
+{
+  const FsConf *const sig = (const FsConf *)theData;
+
   fprintf(output, " UserPointer: %d\n", sig->userPointer);
 
   if (len > 1){

@@ -1,5 +1,5 @@
--- Copyright (c) 2009, 2018, Oracle and/or its affiliates. All rights
--- reserved.
+-- Copyright (c) 2009, 2022, Oracle and/or its affiliates.
+-- Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 --
 -- This program is free software; you can redistribute it and/or modify
 -- it under the terms of the GNU General Public License, version 2.0,
@@ -217,13 +217,13 @@ create table charsetutf8 (
  mediumcolumn varchar(500),
  largecolumn text(10000)
 
-) ENGINE=ndbcluster DEFAULT CHARSET=utf8;
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb3;
 
 drop table if exists charsetswedishutf8;
 create table charsetswedishutf8 (
  id int not null primary key,
  swedishcolumn char(4) COLLATE latin1_swedish_ci,
- utfcolumn char(4) COLLATE utf8_general_ci
+ utfcolumn char(4) COLLATE utf8mb3_general_ci
  
 ) ENGINE=ndbcluster;
  

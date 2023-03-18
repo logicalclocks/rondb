@@ -1,4 +1,4 @@
-/* Copyright (c) 2012, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2012, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,6 +23,7 @@
 #ifndef _SP_INSTR_H_
 #define _SP_INSTR_H_
 
+#include <assert.h>
 #include <limits.h>
 #include <string.h>
 #include <sys/types.h>
@@ -32,12 +33,13 @@
 #include "m_string.h"
 #include "my_alloc.h"
 #include "my_compiler.h"
-#include "my_dbug.h"
+
 #include "my_inttypes.h"
 #include "my_psi_config.h"
 #include "my_sys.h"
-#include "mysql/components/services/psi_statement_bits.h"
+#include "mysql/components/services/bits/psi_statement_bits.h"
 #include "sql/sql_class.h"  // Query_arena
+#include "sql/sql_const.h"
 #include "sql/sql_error.h"
 #include "sql/sql_lex.h"
 #include "sql/sql_list.h"
@@ -51,7 +53,7 @@ class sp_handler;
 class sp_head;
 class sp_pcontext;
 class sp_variable;
-struct TABLE_LIST;
+class Table_ref;
 
 ///////////////////////////////////////////////////////////////////////////
 // This file contains SP-instruction classes.
@@ -65,7 +67,7 @@ class sp_printable {
  public:
   virtual void print(const THD *thd, String *str) = 0;
 
-  virtual ~sp_printable() {}
+  virtual ~sp_printable() = default;
 };
 
 /**
@@ -90,7 +92,7 @@ class sp_branch_instr {
   */
   virtual void backpatch(uint dest) = 0;
 
-  virtual ~sp_branch_instr() {}
+  virtual ~sp_branch_instr() = default;
 };
 
 ///////////////////////////////////////////////////////////////////////////
@@ -157,8 +159,7 @@ class sp_instr : public sp_printable {
     index to the next instruction. Jump instruction will add their
     destination to the leads list.
   */
-  virtual uint opt_mark(sp_head *,
-                        List<sp_instr> *leads MY_ATTRIBUTE((unused))) {
+  virtual uint opt_mark(sp_head *, List<sp_instr> *leads [[maybe_unused]]) {
     m_marked = true;
     return get_ip() + 1;
   }
@@ -169,8 +170,7 @@ class sp_instr : public sp_printable {
     used to prevent the mark sweep from looping for ever. Return the
     end destination.
   */
-  virtual uint opt_shortcut_jump(sp_head *,
-                                 sp_instr *start MY_ATTRIBUTE((unused))) {
+  virtual uint opt_shortcut_jump(sp_head *, sp_instr *start [[maybe_unused]]) {
     return get_ip();
   }
 
@@ -180,8 +180,7 @@ class sp_instr : public sp_printable {
     must also take care of their destination pointers. Forward jumps get
     pushed to the backpatch list 'ibp'.
   */
-  virtual void opt_move(uint dst,
-                        List<sp_branch_instr> *ibp MY_ATTRIBUTE((unused))) {
+  virtual void opt_move(uint dst, List<sp_branch_instr> *ibp [[maybe_unused]]) {
     m_ip = dst;
   }
 
@@ -371,6 +370,10 @@ class sp_lex_instr : public sp_instr {
   */
   virtual void get_query(String *sql_query) const;
 
+  /**
+    Some expressions may be re-parsed as SELECT statements, but need to be
+    adjusted to another SQL command. This function facilitates that change.
+  */
   virtual void adjust_sql_command(LEX *) {}
 
   /**
@@ -395,7 +398,7 @@ class sp_lex_instr : public sp_instr {
 
     @return Error flag.
   */
-  virtual bool on_after_expr_parsing(THD *thd MY_ATTRIBUTE((unused))) {
+  virtual bool on_after_expr_parsing(THD *thd [[maybe_unused]]) {
     return false;
   }
 
@@ -416,7 +419,7 @@ class sp_lex_instr : public sp_instr {
     mem-root is freed when a reparse is triggered or the stored
     routine is dropped.
   */
-  MEM_ROOT m_lex_mem_root;
+  MEM_ROOT m_lex_mem_root{PSI_NOT_INSTRUMENTED, MEM_ROOT_BLOCK_SIZE};
 
   /**
     Indicates whether this sp_lex_instr instance is responsible for
@@ -441,13 +444,13 @@ class sp_lex_instr : public sp_instr {
     List of additional tables this statement needs to lock when it
     enters/leaves prelocked mode on its own.
   */
-  TABLE_LIST *m_prelocking_tables;
+  Table_ref *m_prelocking_tables;
 
   /**
     The value m_lex->query_tables_own_last should be set to this when the
     statement enters/leaves prelocked mode on its own.
   */
-  TABLE_LIST **m_lex_query_tables_own_last;
+  Table_ref **m_lex_query_tables_own_last;
 
   /**
     List of all the Item_trigger_field's of instruction.
@@ -548,8 +551,8 @@ class sp_instr_set : public sp_lex_instr {
   void invalidate() override { m_value_item = nullptr; }
 
   bool on_after_expr_parsing(THD *thd) override {
-    m_value_item = thd->lex->select_lex->single_visible_field();
-    DBUG_ASSERT(m_value_item != nullptr);
+    m_value_item = thd->lex->query_block->single_visible_field();
+    assert(m_value_item != nullptr);
 
     return false;
   }
@@ -557,6 +560,7 @@ class sp_instr_set : public sp_lex_instr {
   LEX_CSTRING get_expr_query() const override { return m_value_query; }
 
   void adjust_sql_command(LEX *lex) override {
+    assert(lex->sql_command == SQLCOM_SELECT);
     lex->sql_command = SQLCOM_SET_OPTION;
   }
 
@@ -680,8 +684,8 @@ class sp_instr_freturn : public sp_lex_instr {
   }
 
   bool on_after_expr_parsing(THD *thd) override {
-    m_expr_item = thd->lex->select_lex->single_visible_field();
-    DBUG_ASSERT(m_expr_item != nullptr);
+    m_expr_item = thd->lex->query_block->single_visible_field();
+    assert(m_expr_item != nullptr);
     return false;
   }
 
@@ -756,7 +760,7 @@ class sp_instr_jump : public sp_instr, public sp_branch_instr {
 
   void backpatch(uint dest) override {
     /* Calling backpatch twice is a logic flaw in jump resolution. */
-    DBUG_ASSERT(m_dest == 0);
+    assert(m_dest == 0);
     m_dest = dest;
   }
 
@@ -840,8 +844,13 @@ class sp_lex_branch_instr : public sp_lex_instr, public sp_branch_instr {
 
   void backpatch(uint dest) override {
     /* Calling backpatch twice is a logic flaw in jump resolution. */
-    DBUG_ASSERT(m_dest == 0);
+    assert(m_dest == 0);
     m_dest = dest;
+  }
+
+  void adjust_sql_command(LEX *lex) override {
+    assert(lex->sql_command == SQLCOM_SELECT);
+    lex->sql_command = SQLCOM_END;
   }
 
  protected:
@@ -893,8 +902,8 @@ class sp_instr_jump_if_not : public sp_lex_branch_instr {
   bool exec_core(THD *thd, uint *nextp) override;
 
   bool on_after_expr_parsing(THD *thd) override {
-    m_expr_item = thd->lex->select_lex->single_visible_field();
-    DBUG_ASSERT(m_expr_item != nullptr);
+    m_expr_item = thd->lex->query_block->single_visible_field();
+    assert(m_expr_item != nullptr);
     return false;
   }
 
@@ -941,7 +950,7 @@ class sp_instr_set_case_expr : public sp_lex_branch_instr {
   /////////////////////////////////////////////////////////////////////////
 
   /*
-    NOTE: set_destination() and backpatch() are overriden here just because the
+    NOTE: set_destination() and backpatch() are overridden here just because the
     m_dest attribute is not used by this class, so there is no need to do
     anything about it.
 
@@ -966,8 +975,8 @@ class sp_instr_set_case_expr : public sp_lex_branch_instr {
   bool exec_core(THD *thd, uint *nextp) override;
 
   bool on_after_expr_parsing(THD *thd) override {
-    m_expr_item = thd->lex->select_lex->single_visible_field();
-    DBUG_ASSERT(m_expr_item != nullptr);
+    m_expr_item = thd->lex->query_block->single_visible_field();
+    assert(m_expr_item != nullptr);
     return false;
   }
 
@@ -1099,7 +1108,7 @@ class sp_instr_hpush_jump : public sp_instr_jump {
   /////////////////////////////////////////////////////////////////////////
 
   void backpatch(uint dest) override {
-    DBUG_ASSERT(!m_dest || !m_opt_hpop);
+    assert(!m_dest || !m_opt_hpop);
     if (!m_dest)
       m_dest = dest;
     else

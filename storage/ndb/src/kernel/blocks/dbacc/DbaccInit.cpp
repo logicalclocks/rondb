@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,6 +26,7 @@
 
 
 #define DBACC_C
+#include "util/require.h"
 #include "Dbacc.hpp"
 
 #define JAM_FILE_ID 346
@@ -34,27 +36,25 @@
 
 Uint64 Dbacc::getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
-    const ndb_mgm_configuration_iterator * mgm_cfg,
-    const bool use_reserved)
+    const ndb_mgm_configuration_iterator * mgm_cfg)
 {
   Uint32 acc_scan_recs = 0;
+  Uint32 acc_op_reserved_recs = 0;
   Uint32 acc_op_recs = 0;
 
-  if (use_reserved)
   {
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_ACC_RESERVED_SCAN_RECORDS,
                                        &acc_scan_recs));
+    acc_scan_recs += (500 * globalData.ndbMtQueryWorkers);
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_LDM_RESERVED_OPERATIONS,
-                                       &acc_op_recs));
-  }
-  else
-  {
-    require(!ndb_mgm_get_int_parameter(mgm_cfg, CFG_ACC_SCAN, &acc_scan_recs));
+                                       &acc_op_reserved_recs));
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_ACC_OP_RECS,
                                        &acc_op_recs));
+    acc_op_recs += acc_op_reserved_recs;
+    acc_op_recs += (1000 * globalData.ndbMtQueryWorkers);
   }
   Uint64 scan_byte_count = 0;
   scan_byte_count += ScanRec_pool::getMemoryNeed(acc_scan_recs);
@@ -66,10 +66,14 @@ Uint64 Dbacc::getTransactionMemoryNeed(
   return (scan_byte_count + op_byte_count);
 }
 
-void Dbacc::initData() 
+void Dbacc::initData()
 {
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  m_acc_mutex_locked = RNIL;
+#endif
+  c_restart_allow_use_spare = true;
+  m_curr_acc = this;
   ctablesize = ZTABLESIZE;
-  cfragmentsize = ZFRAGMENTSIZE;
 
   Pool_context pc;
   pc.m_block = this;
@@ -83,11 +87,12 @@ void Dbacc::initData()
     directoryPoolPtr = 0;
   }
 
-  fragmentrec = 0;
   tabrec = 0;
 
   void* ptr = m_ctx.m_mm.get_memroot();
   c_page_pool.set((Page32*)ptr, (Uint32)~0);
+
+  c_fragment_pool.init(RT_DBACC_FRAGMENT, pc);
 
   c_allow_use_of_spare_pages = false;
   cfreeopRec = RNIL;
@@ -95,7 +100,7 @@ void Dbacc::initData()
   cnoOfAllocatedPagesMax = cnoOfAllocatedPages = cpageCount = 0;
   // Records with constant sizes
 
-  RSS_OP_COUNTER_INIT(cnoOfFreeFragrec);
+  RSS_OP_COUNTER_INIT(cnoOfAllocatedFragrec);
 
 }//Dbacc::initData()
 
@@ -119,12 +124,8 @@ void Dbacc::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
 
   if (m_is_query_block)
   {
-    cfragmentsize = 0;
     ctablesize = 0;
   }
-  fragmentrec = (Fragmentrec*)allocRecord("Fragmentrec",
-					  sizeof(Fragmentrec), 
-					  cfragmentsize);
 
   tabrec = (Tabrec*)allocRecord("Tabrec",
 				sizeof(Tabrec),
@@ -143,7 +144,7 @@ void Dbacc::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
             CFG_ACC_RESERVED_SCAN_RECORDS, &reserveScanRecs));
   if (m_is_query_block)
   {
-    reserveScanRecs = 1;
+    reserveScanRecs = 500;
   }
   scanRec_pool.init(
     ScanRec::TYPE_ID,
@@ -156,12 +157,15 @@ void Dbacc::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
   }
 
   Uint32 reserveOpRecs = 1;
+  Uint32 local_acc_operations = 1;
   ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg,
             CFG_LDM_RESERVED_OPERATIONS, &reserveOpRecs));
-  reserveOpRecs += 200;
+  ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg,
+            CFG_ACC_OP_RECS, &local_acc_operations));
+  reserveOpRecs += local_acc_operations;
   if (m_is_query_block)
   {
-    reserveOpRecs = 200;
+    reserveOpRecs = 1000;
   }
   oprec_pool.init(
     Operationrec::TYPE_ID,
@@ -242,16 +246,12 @@ Dbacc::Dbacc(Block_context& ctx,
     &scanRec_pool;
   c_transient_pools[DBACC_OPERATION_RECORD_TRANSIENT_POOL_INDEX] =
     &oprec_pool;
-  NDB_STATIC_ASSERT(c_transient_pool_count == 2);
+  static_assert(c_transient_pool_count == 2);
   c_transient_pools_shrinking.clear();
 }//Dbacc::Dbacc()
 
 Dbacc::~Dbacc() 
 {
-  deallocRecord((void **)&fragmentrec, "Fragmentrec",
-		sizeof(Fragmentrec), 
-		cfragmentsize);
-  
   deallocRecord((void **)&tabrec, "Tabrec",
 		sizeof(Tabrec),
 		ctablesize);

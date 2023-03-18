@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2007, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2007, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
 #include <ndb_global.h>
 #include <util/ndb_opts.h>
 #include <map>
@@ -275,7 +277,7 @@ static atrt_host* find(const char* hostname, Vector<atrt_host*>& hosts) {
 
   atrt_host* host = new atrt_host;
   host->m_index = hosts.size();
-  host->m_cpcd = new SimpleCpcClient(hostname, 1234);
+  host->m_cpcd = new SimpleCpcClient(hostname, 1235);
   host->m_basedir = g_basedir;
   host->m_user = g_user;
   host->m_hostname = hostname;
@@ -453,19 +455,33 @@ static bool load_process(atrt_config& config,
 
   proc.m_proc.m_env.appfmt(" ATRT_PID=%u", (unsigned)proc_no);
 
-  BaseString gcov_prefix = proc.m_host->m_basedir;
-  gcov_prefix.appfmt("/gcov/%s", proc.m_host->m_hostname.c_str());
-  proc.m_proc.m_env.appfmt(" GCOV_PREFIX=%s", gcov_prefix.c_str());
+  BaseString gcov_prefix;
+  switch (coverage_config.m_analysis) {
+    case coverage::Coverage::Testcase:
+      gcov_prefix = proc.m_host->m_basedir;
+      break;
+    case coverage::Coverage::Testsuite:
+      /**
+       * Setting gcov_prefix to current working directory ensures .gcda files
+       * to be persistent after each test case execution. This ensures coverage
+       * data for each test case to be accumulated in .gcda files.
+       */
+      gcov_prefix = g_cwd;
+      break;
+    case coverage::Coverage::None:
+      break;
+  }
+  if (coverage_config.m_analysis != coverage::Coverage::None) {
+    gcov_prefix.appfmt("/gcov/%s", proc.m_host->m_hostname.c_str());
+    proc.m_proc.m_env.appfmt(" GCOV_PREFIX=%s", gcov_prefix.c_str());
+    proc.m_proc.m_env.appfmt(" GCOV_PREFIX_STRIP=%d",
+                             coverage_config.m_prefix_strip);
+  }
 
   if (clean_shutdown) {
     proc.m_proc.m_shutdown_options = "SIGTERM";
   } else {
     proc.m_proc.m_shutdown_options = "SIGKILL";
-  }
-
-  if (coverage_config.m_coverage) {
-    proc.m_proc.m_env.appfmt(" GCOV_PREFIX_STRIP=%d",
-                             coverage_config.m_coverage_prefix_strip);
   }
 
   {
@@ -577,6 +593,12 @@ static bool load_process(atrt_config& config,
           proc.m_proc.m_args.assfmt("--config-file=%s/config%s.ini",
                                     proc.m_host->m_basedir.c_str(),
                                     cluster.m_name.c_str());
+          if (g_restart) {
+            proc.m_proc.m_args.append(" --reload");
+          } else {
+            proc.m_proc.m_args.append(" --initial");
+          }
+
           break;
         }
       }
@@ -589,15 +611,9 @@ static bool load_process(atrt_config& config,
       proc.m_proc.m_name.assfmt("%u-%s", proc_no, "ndbd");
       proc.m_proc.m_cwd.assfmt("%sndbd.%u", dir.c_str(), proc.m_index);
 
-      if (g_mt == 0 || (g_mt == 1 && ((g_mt_rr++) & 1) == 0)) {
-        BaseString ndbd_bin_path =
-            g_resources.getExecutableFullPath(g_resources.NDBD).c_str();
-        proc.m_proc.m_path.assign(ndbd_bin_path);
-      } else {
-        BaseString ndbmtd_bin_path =
-            g_resources.getExecutableFullPath(g_resources.NDBMTD).c_str();
-        proc.m_proc.m_path.assign(ndbmtd_bin_path);
-      }
+      BaseString ndbmtd_bin_path =
+          g_resources.getExecutableFullPath(g_resources.NDBMTD).c_str();
+      proc.m_proc.m_path.assign(ndbmtd_bin_path);
 
       proc.m_proc.m_env.appfmt(" MYSQL_GROUP_SUFFIX=%s",
                                cluster.m_name.c_str());
@@ -1191,13 +1207,13 @@ NdbOut& operator<<(NdbOut& out, const atrt_process& proc) {
 
   out << " ]";
 
-#if 0  
+#if 0
   proc.m_index = 0; //idx;
   proc.m_host = host_ptr;
   proc.m_cluster = cluster;
   proc.m_proc.m_id = -1;
   proc.m_proc.m_type = "temporary";
-  proc.m_proc.m_owner = "atrt";  
+  proc.m_proc.m_owner = "atrt";
   proc.m_proc.m_group = cluster->m_name.c_str();
   proc.m_proc.m_cwd.assign(dir).append("/atrt/").append(cluster->m_dir);
   proc.m_proc.m_stdout = "log.out";

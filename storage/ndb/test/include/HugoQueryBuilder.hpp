@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2011, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2011, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -70,7 +70,7 @@ public:
     O_TABLE_SCAN = 0x20,
 
     /**
-     * Column referrences may also include grandparents (Default 'on')
+     * Column references may also include grandparents (Default 'on')
      */
     O_GRANDPARENT = 0x100
   };

@@ -1,4 +1,4 @@
-/* Copyright (c) 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2020, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -23,9 +23,11 @@
 // Implements
 #include "storage/ndb/plugin/ndb_sync_pending_objects_table.h"
 
+#include <assert.h>
+#include <cstdint>
 #include <cstring>  // std::strlen
 
-#include "my_dbug.h"                                  // DBUG_ASSERT
+// assert
 #include "storage/ndb/plugin/ha_ndbcluster_binlog.h"  // ndbcluster_binlog_retrieve_sync_pending_objects
 
 static unsigned long long ndb_pending_objects_row_count() {
@@ -68,12 +70,12 @@ int Ndb_sync_pending_objects_table::rnd_init() {
   return 0;
 }
 
-extern SERVICE_TYPE_NO_CONST(pfs_plugin_column_string_v1) * pfscol_string;
+extern SERVICE_TYPE_NO_CONST(pfs_plugin_column_string_v2) * pfscol_string;
 extern SERVICE_TYPE_NO_CONST(pfs_plugin_column_enum_v1) * pfscol_enum;
 
 int Ndb_sync_pending_objects_table::read_column_value(PSI_field *field,
                                                       uint32_t index) {
-  DBUG_ASSERT(!is_empty() && rows_pending_read());
+  assert(!is_empty() && rows_pending_read());
   PSI_ulonglong bigint_value;
 
   const unsigned int row_index = get_position();
@@ -81,11 +83,11 @@ int Ndb_sync_pending_objects_table::read_column_value(PSI_field *field,
 
   switch (index) {
     case 0: /* SCHEMA_NAME: Name of the schema */
-      pfscol_string->set_varchar_utf8(
+      pfscol_string->set_varchar_utf8mb4(
           field, obj.m_schema_name == "" ? nullptr : obj.m_schema_name.c_str());
       break;
     case 1: /* NAME: Object name */
-      pfscol_string->set_varchar_utf8(
+      pfscol_string->set_varchar_utf8mb4(
           field, obj.m_name == "" ? nullptr : obj.m_name.c_str());
       break;
     case 2: /* TYPE */
@@ -95,7 +97,7 @@ int Ndb_sync_pending_objects_table::read_column_value(PSI_field *field,
       pfscol_enum->set(field, bigint_value);
       break;
     default:
-      DBUG_ASSERT(false);
+      assert(false);
   }
   return 0;
 }

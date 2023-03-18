@@ -10,15 +10,13 @@ INITIAL_SIZE 8M
 EXTENT_SIZE 256k
 ENGINE NDB;
 create table t1 (a int column_format DYNAMIC STORAGE DISK) TABLESPACE ts1 engine NDB CHARACTER SET latin1;
-Warnings:
-Warning	1478	DYNAMIC column a with STORAGE DISK is not supported, column will become FIXED
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `a` int /*!50606 STORAGE DISK */ /*!50606 COLUMN_FORMAT DYNAMIC */ DEFAULT NULL
 ) /*!50100 TABLESPACE `ts1` */ ENGINE=ndbcluster DEFAULT CHARSET=latin1
 Attributes:
-a Int NULL AT=FIXED ST=DISK
+a Int NULL AT=FIXED ST=DISK DYNAMIC
 $PK Bigunsigned PRIMARY KEY DISTRIBUTION KEY AT=FIXED ST=MEMORY AUTO_INCR
 drop table t1;
 create table t1 (a int column_format DYNAMIC,
@@ -34,15 +32,11 @@ e1 CHAR(100) column_format DYNAMIC,
 f CHAR(100) NOT NULL column_format FIXED,
 f1 char(100) NOT NULL column_format DYNAMIC storage DISK,
 index (b)) TABLESPACE ts1 engine NDB CHARACTER SET latin1;
-Warnings:
-Warning	1478	DYNAMIC column f1 with STORAGE DISK is not supported, column will become FIXED
 insert into t1 (b, b1, d,d1,f,f1) values
 (1,1,"1","1","1","1"),
 (2,2,"2","2","2","2"),
 (3,3,"3","3","3","3");
 alter table t1 change column a a int column_format FIXED;
-Warnings:
-Warning	1478	DYNAMIC column f1 with STORAGE DISK is not supported, column will become FIXED
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -61,8 +55,6 @@ t1	CREATE TABLE `t1` (
   KEY `b` (`b`)
 ) /*!50100 TABLESPACE `ts1` */ ENGINE=ndbcluster DEFAULT CHARSET=latin1
 alter table t1 change column a a int storage disk;
-Warnings:
-Warning	1478	DYNAMIC column f1 with STORAGE DISK is not supported, column will become FIXED
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -92,11 +84,9 @@ d1 Varchar(100;latin1_swedish_ci) NOT NULL AT=SHORT_VAR ST=MEMORY DYNAMIC
 e Char(100;latin1_swedish_ci) NULL AT=FIXED ST=MEMORY
 e1 Char(100;latin1_swedish_ci) NULL AT=FIXED ST=MEMORY DYNAMIC
 f Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=MEMORY
-f1 Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=DISK
+f1 Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=DISK DYNAMIC
 $PK Bigunsigned PRIMARY KEY DISTRIBUTION KEY AT=FIXED ST=MEMORY AUTO_INCR
 alter table t1 change column a a int storage memory;
-Warnings:
-Warning	1478	DYNAMIC column f1 with STORAGE DISK is not supported, column will become FIXED
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -126,7 +116,7 @@ d1 Varchar(100;latin1_swedish_ci) NOT NULL AT=SHORT_VAR ST=MEMORY DYNAMIC
 e Char(100;latin1_swedish_ci) NULL AT=FIXED ST=MEMORY
 e1 Char(100;latin1_swedish_ci) NULL AT=FIXED ST=MEMORY DYNAMIC
 f Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=MEMORY
-f1 Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=DISK
+f1 Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=DISK DYNAMIC
 $PK Bigunsigned PRIMARY KEY DISTRIBUTION KEY AT=FIXED ST=MEMORY AUTO_INCR
 alter table t1 algorithm=inplace, change column a1 a1 int column_format FIXED NOT NULL;
 ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Altering if field is nullable is not supported. Try ALGORITHM=COPY.
@@ -137,8 +127,6 @@ alter table t1 algorithm=inplace, change column b b int NOT NULL storage memory,
 ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Add/drop index is not supported for disk stored column. Try ALGORITHM=COPY.
 alter table t1 change column b b int NOT NULL storage memory;
 alter table t1 add column a2 int column_format FIXED;
-Warnings:
-Warning	1478	DYNAMIC column f1 with STORAGE DISK is not supported, column will become FIXED
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -170,12 +158,10 @@ d1 Varchar(100;latin1_swedish_ci) NOT NULL AT=SHORT_VAR ST=MEMORY DYNAMIC
 e Char(100;latin1_swedish_ci) NULL AT=FIXED ST=MEMORY
 e1 Char(100;latin1_swedish_ci) NULL AT=FIXED ST=MEMORY DYNAMIC
 f Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=MEMORY
-f1 Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=DISK
+f1 Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=DISK DYNAMIC
 a2 Int NULL AT=FIXED ST=MEMORY
 $PK Bigunsigned PRIMARY KEY DISTRIBUTION KEY AT=FIXED ST=MEMORY AUTO_INCR
 alter table t1 add column c2 VARCHAR(100) column_format DYNAMIC;
-Warnings:
-Warning	1478	DYNAMIC column f1 with STORAGE DISK is not supported, column will become FIXED
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -208,13 +194,11 @@ d1 Varchar(100;latin1_swedish_ci) NOT NULL AT=SHORT_VAR ST=MEMORY DYNAMIC
 e Char(100;latin1_swedish_ci) NULL AT=FIXED ST=MEMORY
 e1 Char(100;latin1_swedish_ci) NULL AT=FIXED ST=MEMORY DYNAMIC
 f Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=MEMORY
-f1 Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=DISK
+f1 Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=DISK DYNAMIC
 a2 Int NULL AT=FIXED ST=MEMORY
 c2 Varchar(100;latin1_swedish_ci) NULL AT=SHORT_VAR ST=MEMORY DYNAMIC
 $PK Bigunsigned PRIMARY KEY DISTRIBUTION KEY AT=FIXED ST=MEMORY AUTO_INCR
 alter table t1 add column c3 VARCHAR(100) column_format FIXED;
-Warnings:
-Warning	1478	DYNAMIC column f1 with STORAGE DISK is not supported, column will become FIXED
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -248,7 +232,7 @@ d1 Varchar(100;latin1_swedish_ci) NOT NULL AT=SHORT_VAR ST=MEMORY DYNAMIC
 e Char(100;latin1_swedish_ci) NULL AT=FIXED ST=MEMORY
 e1 Char(100;latin1_swedish_ci) NULL AT=FIXED ST=MEMORY DYNAMIC
 f Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=MEMORY
-f1 Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=DISK
+f1 Char(100;latin1_swedish_ci) NOT NULL AT=FIXED ST=DISK DYNAMIC
 a2 Int NULL AT=FIXED ST=MEMORY
 c2 Varchar(100;latin1_swedish_ci) NULL AT=SHORT_VAR ST=MEMORY DYNAMIC
 c3 Varchar(100;latin1_swedish_ci) NULL AT=SHORT_VAR ST=MEMORY

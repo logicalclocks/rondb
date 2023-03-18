@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2011, 2020, Oracle and/or its affiliates.
+  Copyright (c) 2011, 2022, Oracle and/or its affiliates.
   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
@@ -24,16 +24,17 @@
 */
 
 #include "trpman.hpp"
-#include <TransporterRegistry.hpp>
-#include <signaldata/CloseComReqConf.hpp>
-#include <signaldata/DisconnectRep.hpp>
-#include <signaldata/EnableCom.hpp>
-#include <signaldata/RouteOrd.hpp>
-#include <signaldata/DumpStateOrd.hpp>
+#include "TransporterRegistry.hpp"
+#include "signaldata/CloseComReqConf.hpp"
+#include "signaldata/DisconnectRep.hpp"
+#include "signaldata/EnableCom.hpp"
+#include "signaldata/RouteOrd.hpp"
+#include "signaldata/DumpStateOrd.hpp"
+#include "signaldata/Abort.hpp"
+#include "portlib/NdbTCP.h"
 
-#include <mt.hpp>
-#include <EventLogger.hpp>
-extern EventLogger * g_eventLogger;
+#include "mt.hpp"
+#include "EventLogger.hpp"
 
 #define JAM_FILE_ID 430
 
@@ -62,11 +63,14 @@ Trpman::Trpman(Block_context & ctx, Uint32 instanceno) :
   addRecSignal(GSN_SYNC_THREAD_VIA_REQ, &Trpman::execSYNC_THREAD_VIA_REQ);
   addRecSignal(GSN_ACTIVATE_TRP_REQ, &Trpman::execACTIVATE_TRP_REQ);
   addRecSignal(GSN_UPD_QUERY_DIST_ORD, &Trpman::execUPD_QUERY_DIST_ORD);
+  addRecSignal(GSN_SEND_PUSH_ABORTREQ, &Trpman::execSEND_PUSH_ABORTREQ);
 
   addRecSignal(GSN_NDB_TAMPER, &Trpman::execNDB_TAMPER, true);
   addRecSignal(GSN_DUMP_STATE_ORD, &Trpman::execDUMP_STATE_ORD);
   addRecSignal(GSN_DBINFO_SCANREQ, &Trpman::execDBINFO_SCANREQ);
+  addRecSignal(GSN_CONTINUEB, &Trpman::execCONTINUEB);
   m_distribution_handler_inited = false;
+  m_init_continueb = false;
 }
 
 BLOCK_FUNCTIONS(Trpman)
@@ -75,6 +79,48 @@ BLOCK_FUNCTIONS(Trpman)
 static NodeBitmask c_error_9000_nodes_mask;
 extern Uint32 MAX_RECEIVED_SIGNALS;
 #endif
+
+void
+Trpman::startCONTINUEB(Signal *signal)
+{
+  jamEntry();
+  if (!m_init_continueb)
+  {
+    m_init_continueb = true;
+    execCONTINUEB(signal);
+    sendCONTINUEB(signal);
+  }
+}
+
+void
+Trpman::sendCONTINUEB(Signal *signal)
+{
+  signal->theData[0] = 0;
+  sendSignalWithDelay(reference(),
+                      GSN_CONTINUEB,
+                      signal,
+                      10000,
+                      1);
+}
+
+void
+Trpman::execCONTINUEB(Signal *signal)
+{
+  /**
+   * We rely on signal ids not wrapping without any signals sent to
+   * a specific query thread, by sending an empty signal every 10
+   * seconds we ensure that we regularly send to each query thread
+   * (colocated with LDM threads).
+   */
+  Uint32 qt_thr_no = getFirstQueryThreadId();
+  for (Uint32 i = 0; i < globalData.ndbMtQueryWorkers; i++)
+  {
+    Uint32 instance_no = qt_thr_no + i + 1;
+    Uint32 ref = numberToRef(THRMAN, instance_no, getOwnNodeId());
+    sendSignal(ref, GSN_SEND_PUSH_ORD, signal, 1, JBB);
+  }
+  sendCONTINUEB(signal);
+}
 
 bool
 Trpman::handles_this_node(Uint32 nodeId, bool all)
@@ -119,17 +165,19 @@ Trpman::handles_this_node(Uint32 nodeId, bool all)
 void
 Trpman::execOPEN_COMORD(Signal* signal)
 {
-  // Connect to the specifed NDB node, only QMGR allowed communication
+  // Connect to the specified NDB node, only QMGR allowed communication
   // so far with the node
 
+  startCONTINUEB(signal); //Start CONTINUEB processing if required
+
   const BlockReference userRef = signal->theData[0];
-  Uint32 tStartingNode = signal->theData[1];
-  Uint32 tData2 = signal->theData[2];
   jamEntry();
 
   const Uint32 len = signal->getLength();
   if (len == 2)
   {
+    Uint32 tStartingNode = signal->theData[1];
+    ndbrequire(tStartingNode > 0 && tStartingNode < MAX_NODES);
 #ifdef ERROR_INSERT
     if (! ((ERROR_INSERTED(9000) || ERROR_INSERTED(9002))
 	   && c_error_9000_nodes_mask.get(tStartingNode)))
@@ -155,6 +203,7 @@ Trpman::execOPEN_COMORD(Signal* signal)
   }
   else
   {
+    Uint32 tData2 = signal->theData[2];
     for(unsigned int i = 1; i < MAX_NODES; i++ )
     {
       jam();
@@ -268,7 +317,7 @@ Trpman::execCLOSE_COMREQ(Signal* signal)
     ndbrequire(signal->getNoOfSections() == 1);
     SegmentedSectionPtr ptr;
     SectionHandle handle(this, signal);
-    handle.getSection(ptr, 0);
+    ndbrequire(handle.getSection(ptr, 0));
     NdbNodeBitmask nodes;
     ndbrequire(ptr.sz <= NdbNodeBitmask::Size);
     copy(nodes.rep.data, ptr);
@@ -371,7 +420,7 @@ Trpman::execENABLE_COMREQ(Signal* signal)
     memset (nodes, 0, sizeof(nodes));
     SegmentedSectionPtr ptr;
     SectionHandle handle(this, signal);
-    handle.getSection(ptr, 0);
+    ndbrequire(handle.getSection(ptr, 0));
     ndbrequire(ptr.sz <= NodeBitmask::Size);
     copy(nodes, ptr);
     releaseSections(handle);
@@ -609,7 +658,7 @@ Trpman::execNDB_TAMPER(Signal* signal)
     {
       MAX_RECEIVED_SIGNALS = 1 + (rand() % 128);
     }
-    ndbout_c("MAX_RECEIVED_SIGNALS: %d", MAX_RECEIVED_SIGNALS);
+    g_eventLogger->info("MAX_RECEIVED_SIGNALS: %d", MAX_RECEIVED_SIGNALS);
     CLEAR_ERROR_INSERT_VALUE;
   }
 #endif
@@ -664,7 +713,7 @@ Trpman::execDUMP_STATE_ORD(Signal* signal)
     {
       signal->theData[0] = i;
       sendSignal(calcQmgrBlockRef(db),GSN_API_FAILREQ, signal, 1, JBA);
-      ndbout_c("stopping %u using %u", i, db);
+      g_eventLogger->info("stopping %u using %u", i, db);
     }
     CLEAR_ERROR_INSERT_VALUE;
   }
@@ -718,8 +767,8 @@ Trpman::execDUMP_STATE_ORD(Signal* signal)
       }
       else
       {
-        ndbout_c("TRPMAN : Ignoring dump %u for node %u",
-                 arg, nodeId);
+        g_eventLogger->info("TRPMAN : Ignoring dump %u for node %u", arg,
+                            nodeId);
       }
     }
   }
@@ -729,8 +778,9 @@ Trpman::execDUMP_STATE_ORD(Signal* signal)
     if (signal->getLength() > 1)
     {
       pattern = signal->theData[1];
-      ndbout_c("TRPMAN : Blocking receive from all ndbds matching pattern -%s-",
-               ((pattern == 1)? "Other side":"Unknown"));
+      g_eventLogger->info(
+          "TRPMAN : Blocking receive from all ndbds matching pattern -%s-",
+          ((pattern == 1) ? "Other side" : "Unknown"));
     }
 
     TransporterReceiveHandle * recvdata = mt_get_trp_receive_handle(instance());
@@ -827,8 +877,8 @@ Trpman::execDUMP_STATE_ORD(Signal* signal)
       }
       else
       {
-        ndbout_c("TRPMAN : Ignoring dump %u for node %u",
-                 arg, nodeId);
+        g_eventLogger->info("TRPMAN : Ignoring dump %u for node %u", arg,
+                            nodeId);
       }
     }
 
@@ -912,14 +962,94 @@ Trpman::execACTIVATE_TRP_REQ(Signal *signal)
   }
 }
 
+void
+Trpman::execSEND_PUSH_ABORTREQ(Signal *signal)
+{
+  const SendPushAbortReq * const req = 
+    (SendPushAbortReq *)signal->getDataPtr();
+  Uint32 tcOprec = req->tcOprec;
+  Uint32 tcBlockref = req->tcBlockref;
+  Uint32 transid1 = req->transid1;
+  Uint32 transid2 = req->transid2;
+
+  Uint32 sender_ref = req->senderRef;
+  Uint32 send_signal_id = req->sendThreadSignalId;
+  Uint32 num_threads = req->numThreads;
+  Uint32 thread_id = req->threadId;
+  ndbrequire(num_threads <= globalData.ndbMtQueryWorkers);
+  for (Uint32 i = 0; i < num_threads; i++)
+  {
+    /**
+     * Send a signal to all query threads that haven't yet executed
+     * any signals after the ABORT signal was sent. This ensures that
+     * we know that the signal LQHKEYREQ must have been pushed through.
+     * It is merely a safety mechanism to ensure that we see the sent
+     * signal earlier. No need to send it if signals already executed
+     * in query thread since ABORT was sent.
+     */
+    Uint32 thr_no = req->threadIds[i];
+    Uint32 our_thr_no = getFirstReceiveThreadId() + instance() - 1;
+    Uint32 exec_signal_id = getExecThreadSignalId(thr_no, our_thr_no);
+    Int32 diff = get_diff_signal_id(send_signal_id, exec_signal_id);
+    if (diff > 0)
+    {
+      jam();
+      jamData(thr_no);
+      Uint32 ref = numberToRef(THRMAN, thr_no + 1, getOwnNodeId());
+      sendSignal(ref, GSN_SEND_PUSH_ORD, signal, 1, JBB);
+    }
+  }
+  SendPushAbortConf* conf =
+    CAST_PTR(SendPushAbortConf, signal->getDataPtrSend());
+  conf->tcOprec = tcOprec;
+  conf->tcBlockref = tcBlockref;
+  conf->transid1 = transid1;
+  conf->transid2 = transid2;
+  conf->sendThreadSignalId = send_signal_id;
+  conf->threadId = thread_id;
+  sendSignal(sender_ref,
+             GSN_SEND_PUSH_ABORTCONF,
+             signal,
+             SendPushAbortConf::SignalLength,
+             JBB);
+}
+
 Uint32
 Trpman::distribute_signal(SignalHeader * const header,
-                          const Uint32 instance_no)
+                          const Uint32 instance_no,
+                          Uint32 ** theData,
+                          Uint32 *buf_ptr)
 {
   DistributionHandler *handle = &m_distribution_handle;
   Uint32 gsn = header->theVerId_signalNumber;
+  ndbrequire(globalData.ndbMtQueryWorkers > 0);
   ndbrequire(m_distribution_handler_inited);
-  if (gsn == GSN_LQHKEYREQ)
+  if (unlikely(gsn == GSN_ABORT))
+  {
+    /**
+     * ABORT signals can have race conditions when the query was
+     * executed potentially in a query thread. The ABORT code
+     * has handling of this possibility when signal is sent
+     * with a bit more data about this threads id and the
+     * signal id used by this signal. This ensures that we can
+     * guarantee that all signals sent before ABORT was
+     * executed in DBLQH before we're done.
+     */
+    memcpy(buf_ptr,
+           *theData,
+           Abort::SignalLengthKey * 4);
+    Abort* abo = CAST_PTR(Abort, buf_ptr);
+    *theData = buf_ptr;
+    abo->threadId = getThreadId();
+    abo->senderThreadSignalId = getThreadSignalId();
+    header->theLength = Abort::SignalLengthDistr;
+#ifdef ERROR_INSERT
+    return numberToRef(DBQLQH, instance_no, getOwnNodeId());
+#else
+    return numberToRef(DBLQH, instance_no, getOwnNodeId());
+#endif
+  }
+  if (likely(gsn == GSN_LQHKEYREQ))
   {
     return get_lqhkeyreq_ref(handle, instance_no);
   }
@@ -951,7 +1081,9 @@ Trpman::execUPD_QUERY_DIST_ORD(Signal *signal)
   ndbrequire(signal->getNoOfSections() == 1);
   SegmentedSectionPtr ptr;
   SectionHandle handle(this, signal);
-  handle.getSection(ptr, 0);
+  ndbrequire(handle.getSection(ptr, 0));
+  ndbrequire(ptr.sz <= NDB_ARRAY_SIZE(dist_handle->m_weights));
+
   memset(dist_handle->m_weights, 0, sizeof(dist_handle->m_weights));
   copy(dist_handle->m_weights, ptr);
   releaseSections(handle);

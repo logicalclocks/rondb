@@ -1,4 +1,4 @@
-/* Copyright (c) 2015, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -95,7 +95,7 @@ static ulonglong dd_get_old_view_check_type(dd::View::enum_check_option type) {
 
   /* purecov: begin deadcode */
   LogErr(ERROR_LEVEL, ER_DD_FAILSAFE, "view check option.");
-  DBUG_ASSERT(false);
+  assert(false);
 
   return VIEW_CHECK_NONE;
   /* purecov: end */
@@ -116,7 +116,7 @@ static dd::View::enum_check_option dd_get_new_view_check_type(ulonglong type) {
 
   /* purecov: begin deadcode */
   LogErr(ERROR_LEVEL, ER_DD_FAILSAFE, "view check option.");
-  DBUG_ASSERT(false);
+  assert(false);
 
   return dd::View::CO_NONE;
   /* purecov: end */
@@ -137,7 +137,7 @@ static enum enum_view_algorithm dd_get_old_view_algorithm_type(
 
   /* purecov: begin deadcode */
   LogErr(ERROR_LEVEL, ER_DD_FAILSAFE, "view algorithm.");
-  DBUG_ASSERT(false);
+  assert(false);
 
   return VIEW_ALGORITHM_UNDEFINED;
   /* purecov: end */
@@ -158,7 +158,7 @@ static dd::View::enum_algorithm dd_get_new_view_algorithm_type(
 
   /* purecov: begin deadcode */
   LogErr(ERROR_LEVEL, ER_DD_FAILSAFE, "view algorithm.");
-  DBUG_ASSERT(false);
+  assert(false);
 
   return dd::View::VA_UNDEFINED;
   /* purecov: end */
@@ -179,7 +179,7 @@ static ulonglong dd_get_old_view_security_type(
 
   /* purecov: begin deadcode */
   LogErr(ERROR_LEVEL, ER_DD_FAILSAFE, "view security type.");
-  DBUG_ASSERT(false);
+  assert(false);
 
   return VIEW_SUID_DEFAULT;
   /* purecov: end */
@@ -200,25 +200,25 @@ static dd::View::enum_security_type dd_get_new_view_security_type(
 
   /* purecov: begin deadcode */
   LogErr(ERROR_LEVEL, ER_DD_FAILSAFE, "view security type.");
-  DBUG_ASSERT(false);
+  assert(false);
 
   return dd::View::ST_DEFAULT;
   /* purecov: end */
 }
 
 /**
-  Method to fill view columns from the first SELECT_LEX of view query.
+  Method to fill view columns from the first Query_block of view query.
 
   @param  thd       Thread Handle.
   @param  view_obj  DD view object.
-  @param  view      TABLE_LIST object of view.
+  @param  view      Table_ref object of view.
 
   @retval false     On Success.
   @retval true      On failure.
 */
 
 static bool fill_dd_view_columns(THD *thd, View *view_obj,
-                                 const TABLE_LIST *view) {
+                                 const Table_ref *view) {
   DBUG_TRACE;
 
   // Helper class which takes care restoration of THD::variables.sql_mode and
@@ -246,7 +246,7 @@ static bool fill_dd_view_columns(THD *thd, View *view_obj,
   };
 
   // Creating dummy TABLE and TABLE_SHARE objects to prepare Field objects from
-  // the items of first SELECT_LEX of the view query. We prepare these once and
+  // the items of first Query_block of the view query. We prepare these once and
   // reuse them for all the fields.
   TABLE table;
   TABLE_SHARE share;
@@ -264,7 +264,7 @@ static bool fill_dd_view_columns(THD *thd, View *view_obj,
   const dd::Properties &names_dict = view_obj->column_names();
 
   /*
-    Iterate through all the items of first SELECT_LEX if view query is of
+    Iterate through all the items of first Query_block if view query is of
     single query block. Otherwise iterate through all the type holders items
     created for unioned column types of all the query blocks.
   */
@@ -286,7 +286,7 @@ static bool fill_dd_view_columns(THD *thd, View *view_obj,
         if (is_sp_func_item == false && item->result_type() == INT_RESULT &&
             item->max_char_length() >= (MY_INT32_NUM_DECIMAL_DIGITS - 1)) {
           tmp_field = new (thd->mem_root)
-              Field_longlong(item->max_char_length(), item->maybe_null,
+              Field_longlong(item->max_char_length(), item->is_nullable(),
                              item->item_name.ptr(), item->unsigned_flag);
           if (tmp_field) tmp_field->init(&table);
         } else
@@ -301,7 +301,7 @@ static bool fill_dd_view_columns(THD *thd, View *view_obj,
             // tmp_table_field_from_field_type, so creating the blob field by
             // passing set_packlenth value as "true" here.
             tmp_field = new (thd->mem_root) Field_blob(
-                item->max_length, item->maybe_null, item->item_name.ptr(),
+                item->max_length, item->is_nullable(), item->item_name.ptr(),
                 item->collation.collation, true);
 
             if (tmp_field) tmp_field->init(&table);
@@ -314,7 +314,7 @@ static bool fill_dd_view_columns(THD *thd, View *view_obj,
       Field *from_field, *default_field;
       tmp_field = create_tmp_field(thd, &table, item, item->type(), nullptr,
                                    &from_field, &default_field, false, false,
-                                   false, false, false);
+                                   false, false);
     }
     if (!tmp_field) {
       my_error(ER_OUT_OF_RESOURCES, MYF(ME_FATALERROR));
@@ -348,14 +348,14 @@ static bool fill_dd_view_columns(THD *thd, View *view_obj,
       }
       if (!name) return true; /* purecov: inspected */
       cr_field->field_name = name;
-    } else if (thd->lex->unit->is_union()) {
+    } else if (thd->lex->unit->is_set_operation()) {
       /*
         If view query has any duplicate column names then generated unique name
-        is stored only with the first SELECT_LEX. So when Create_field instance
-        is created with type holder item, store name from first SELECT_LEX.
+        is stored only with the first Query_block. So when Create_field instance
+        is created with type holder item, store name from first Query_block.
       */
       cr_field->field_name =
-          GetNthVisibleField(thd->lex->select_lex->fields, i - 1)
+          GetNthVisibleField(thd->lex->query_block->fields, i - 1)
               ->item_name.ptr();
     }
 
@@ -378,15 +378,15 @@ static bool fill_dd_view_columns(THD *thd, View *view_obj,
   View object.
 
   @param  view_obj       DD view object.
-  @param  view           TABLE_LIST object of view.
+  @param  view           Table_ref object of view.
   @param  query_tables   View query tables list.
 */
 
-static void fill_dd_view_tables(View *view_obj, const TABLE_LIST *view,
-                                const TABLE_LIST *query_tables) {
+static void fill_dd_view_tables(View *view_obj, const Table_ref *view,
+                                const Table_ref *query_tables) {
   DBUG_TRACE;
 
-  for (const TABLE_LIST *table = query_tables; table != nullptr;
+  for (const Table_ref *table = query_tables; table != nullptr;
        table = table->next_global) {
     /*
       Skip if table is not directly referred by a view or if table is a
@@ -395,7 +395,7 @@ static void fill_dd_view_tables(View *view_obj, const TABLE_LIST *view,
     if ((table->referencing_view && table->referencing_view != view) ||
         get_dictionary()->is_dd_table_name(table->get_db_name(),
                                            table->get_table_name()) ||
-        is_temporary_table(const_cast<TABLE_LIST *>(table)))
+        is_temporary_table(const_cast<Table_ref *>(table)))
       continue;
 
     LEX_CSTRING db_name = {table->db, table->db_length};
@@ -450,7 +450,7 @@ static void fill_dd_view_routines(View *view_obj,
       We should get only stored functions here, as procedures are not directly
       used by views, and thus not stored as dependencies.
     */
-    DBUG_ASSERT(rt->type() == Sroutine_hash_entry::FUNCTION);
+    assert(rt->type() == Sroutine_hash_entry::FUNCTION);
 
     // view routine catalog
     view_sf_obj->set_routine_catalog(Dictionary_impl::default_catalog_name());
@@ -474,8 +474,7 @@ static void fill_dd_view_routines(View *view_obj,
   @retval true         On failure.
 */
 
-static bool fill_dd_view_definition(THD *thd, View *view_obj,
-                                    TABLE_LIST *view) {
+static bool fill_dd_view_definition(THD *thd, View *view_obj, Table_ref *view) {
   // View name.
   view_obj->set_name(view->table_name);
 
@@ -537,7 +536,7 @@ static bool fill_dd_view_definition(THD *thd, View *view_obj,
     }
   }
 
-  time_t tm = my_time(0);
+  time_t tm = time(nullptr);
   get_date(view->timestamp.str,
            GETDATE_DATE_TIME | GETDATE_GMT | GETDATE_FIXEDLENGTH, tm);
   view->timestamp.length = PARSE_FILE_TIMESTAMPLENGTH;
@@ -555,7 +554,7 @@ static bool fill_dd_view_definition(THD *thd, View *view_obj,
     metadata stored with column information. Fill view columns only when view
     metadata is stored with column information.
   */
-  if (!thd->lex->select_lex->field_list_is_empty() &&
+  if (!thd->lex->query_block->field_list_is_empty() &&
       fill_dd_view_columns(thd, view_obj, view))
     return true;
 
@@ -572,7 +571,7 @@ static bool fill_dd_view_definition(THD *thd, View *view_obj,
   return false;
 }
 
-bool update_view(THD *thd, dd::View *new_view, TABLE_LIST *view) {
+bool update_view(THD *thd, dd::View *new_view, Table_ref *view) {
   // Clear the columns, tables and routines since it will be added later.
   new_view->remove_children();
 
@@ -587,7 +586,7 @@ bool update_view(THD *thd, dd::View *new_view, TABLE_LIST *view) {
   return thd->dd_client()->update(new_view);
 }
 
-bool create_view(THD *thd, const dd::Schema &schema, TABLE_LIST *view) {
+bool create_view(THD *thd, const dd::Schema &schema, Table_ref *view) {
   // Create dd::View object.
   bool hidden_system_view = false;
   std::unique_ptr<dd::View> view_obj;
@@ -607,8 +606,8 @@ bool create_view(THD *thd, const dd::Schema &schema, TABLE_LIST *view) {
   return thd->dd_client()->store(view_obj.get());
 }
 
-bool read_view(TABLE_LIST *view, const dd::View &view_obj, MEM_ROOT *mem_root) {
-  // Fill TABLE_LIST 'view' with view details.
+bool read_view(Table_ref *view, const dd::View &view_obj, MEM_ROOT *mem_root) {
+  // Fill Table_ref 'view' with view details.
   String_type definer_user = view_obj.definer_user();
   view->definer.user.length = definer_user.length();
   view->definer.user.str = (char *)strmake_root(mem_root, definer_user.c_str(),
@@ -649,15 +648,17 @@ bool read_view(TABLE_LIST *view, const dd::View &view_obj, MEM_ROOT *mem_root) {
   // Get view_client_cs_name. Note that this is the character set name.
   CHARSET_INFO *collation =
       dd_get_mysql_charset(view_obj.client_collation_id());
-  DBUG_ASSERT(collation);
-  view->view_client_cs_name.length = strlen(collation->csname);
-  view->view_client_cs_name.str = strdup_root(mem_root, collation->csname);
+  assert(collation);
+  const char *csname = collation->csname;
+  view->view_client_cs_name.length = strlen(csname);
+  view->view_client_cs_name.str = strdup_root(mem_root, csname);
 
   // Get view_connection_cl_name. Note that this is the collation name.
   collation = dd_get_mysql_charset(view_obj.connection_collation_id());
-  DBUG_ASSERT(collation);
-  view->view_connection_cl_name.length = strlen(collation->name);
-  view->view_connection_cl_name.str = strdup_root(mem_root, collation->name);
+  assert(collation);
+  view->view_connection_cl_name.length = strlen(collation->m_coll_name);
+  view->view_connection_cl_name.str =
+      strdup_root(mem_root, collation->m_coll_name);
 
   if (!(view->definer.user.str && view->definer.host.str &&  // OOM
         view->view_body_utf8.str && view->select_stmt.str &&

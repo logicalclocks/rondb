@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2017, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
 #include "NdbImportImpl.hpp"
 
 #include <inttypes.h>
@@ -792,6 +793,7 @@ void
 NdbImportImpl::Job::start_resume()
 {
   log_debug(1, "start_resume jobno=" << m_jobno);
+  if(m_util.c_opt.m_stats)
   // verify old stats counts against old rowmap
   {
     uint64 old_rows;
@@ -944,10 +946,21 @@ NdbImportImpl::Job::collect_stats()
   uint64 total_rows;
   uint64 total_reject;
   rowmap.get_total(total_rows, total_reject);
-  require(total_rows >= m_old_rows);
-  require(total_reject >= m_old_reject);
-  m_new_rows = total_rows - m_old_rows;
-  m_new_reject = total_reject - m_old_reject;
+  uint64 old_rows = m_old_rows;
+  uint64 old_reject = m_old_reject;
+  if (total_rows < old_rows ||
+      total_reject < old_reject)
+  {
+    log_debug(1, "collect_stats" <<
+               " m_old_rows = " << old_rows <<
+               " total_rows = " << total_rows <<
+               " m_old_reject = " << old_reject <<
+               " total_reject = " << total_reject << flush);
+  }
+  require(total_rows >= old_rows);
+  require(total_reject >= old_reject);
+  m_new_rows = total_rows - old_rows;
+  m_new_reject = total_reject - old_reject;
   m_stat_rows->add(m_new_rows);
   m_stat_reject->add(m_new_reject);
   // times
@@ -3147,7 +3160,6 @@ NdbImportImpl::ExecOpWorkerAsynch::do_end()
     //   2) Release the ops not called with insertTuple()
     //      These will be taken care of when import resumes
     Op* one_op = NULL;
-    log_debug(1, "Mai async do_end ops " << m_ops.cnt());
     while ((one_op = m_ops.pop_front()) != NULL)
     {
       if (one_op->m_row != NULL)
@@ -3245,6 +3257,75 @@ NdbImportImpl::ExecOpWorkerAsynch::asynch_callback(Tx* tx)
 }
 
 void
+NdbImportImpl::ExecOpWorkerAsynch::set_auto_inc_val(const Attr& attr,
+                                                     Row *row,
+                                                     Uint64 val,
+                                                     Error& error) {
+  switch (attr.m_type) {
+    case NdbDictionary::Column::Tinyint: {
+      const int8 byteval = val;
+      attr.set_value(row, &byteval, 1);
+      break;
+    }
+    case NdbDictionary::Column::Tinyunsigned: {
+      const uint8 byteval = val;
+      attr.set_value(row, &byteval, 1);
+      break;
+    }
+    case NdbDictionary::Column::Smallint: {
+      const int16 shortval = val;
+      attr.set_value(row, &shortval, 2);
+      break;
+    }
+    case NdbDictionary::Column::Smallunsigned: {
+      const uint16 shortval = val;
+      attr.set_value(row, &shortval, 2);
+      break;
+    }
+    case NdbDictionary::Column::Mediumint: {
+      uchar val3[3];
+      int3store(val3, val);
+      attr.set_value(row, val3, 3);
+      break;
+    }
+    case NdbDictionary::Column::Mediumunsigned:
+    {
+      uchar val3[3];
+      int3store(val3, val);
+      attr.set_value(row, val3, 3);
+      break;
+    }
+    case NdbDictionary::Column::Int:
+    {
+      const Int32 intval = val;
+      attr.set_value(row, &intval, 4);
+      break;
+    }
+    case NdbDictionary::Column::Unsigned:
+    {
+      const Uint32 uintval = val;
+      attr.set_value(row, &uintval, 4);
+      break;
+    }
+    case NdbDictionary::Column::Bigint:
+    {
+      const Int64 int64val = val;
+      attr.set_value(row, &int64val, 8);
+      break;
+    }
+    case NdbDictionary::Column::Bigunsigned: {
+      // val is of type Uint64, no conversion needed
+      attr.set_value(row, &val, 8);
+      break;
+    }
+    default: {
+      require(false);
+      break;
+    }
+  }
+}
+
+void
 NdbImportImpl::ExecOpWorkerAsynch::state_define()
 {
   log_debug(2, "state_define/asynch");
@@ -3264,76 +3345,63 @@ NdbImportImpl::ExecOpWorkerAsynch::state_define()
     op = m_ops.pop_front();
     Row* row = op->m_row;
     require(row != 0);
+
     const Table& table = m_util.get_table(row->m_tabid);
-    if (table.m_has_hidden_pk ||
-        table.m_has_auto_increment)
-    {
+    if (table.m_autoIncAttrId != Inval_uint) {
       const Attrs& attrs = table.m_attrs;
-      const uint attrcnt = attrs.size();
-      Uint64 val;
-      if (m_ndb->getAutoIncrementValue(table.m_tab, val,
-                                       opt.m_ai_prefetch_sz,
-                                       opt.m_ai_increment,
-                                       opt.m_ai_offset) == -1)
-      {
-        const NdbError& ndberror = m_ndb->getNdbError();
-        require(ndberror.code != 0);
-        if (ndberror.status == NdbError::TemporaryError)
+      const Attr& attr = attrs[table.m_autoIncAttrId];
+
+      const bool ai_value_not_provided = attr.ai_value_not_provided(row);
+      if (ai_value_not_provided ||
+          m_util.c_opt.m_use_auto_increment) {
+        // No auto inc value was provided in the input file for an
+        // auto inc field, generate one
+        // If --use-auto-increment is set we will override the data in the
+        // input file and create an auto increment value.
+        Uint64 val;
+        /**
+         * Each and every worker caches opt.m_ai_prefetch_sz auto inc
+         * values by calling getAutoIncrementValue(). If no cached
+         * value available, this call will update the table meta data
+         * next-autoincrement value in SYSTAB to cache another
+         * opt.m_ai_prefetch_sz range exclusively for this worker.
+         */
+        if (m_ndb->getAutoIncrementValue(table.m_tab, val,
+                                         opt.m_ai_prefetch_sz,
+                                         opt.m_ai_increment,
+                                         opt.m_ai_offset) == -1)
         {
-          m_errormap.add_one(ndberror.code);
-          uint temperrors = m_errormap.get_sum();
-          if (temperrors <= opt.m_temperrors)
+          const NdbError& ndberror = m_ndb->getNdbError();
+          require(ndberror.code != 0);
+          if (ndberror.status == NdbError::TemporaryError)
           {
-            log_debug(1, "get autoincr try " << temperrors << ": " << ndberror);
-            m_ops.push_front(op);
-            NdbSleep_MilliSleep(opt.m_tempdelay);
-            continue;
+            m_errormap.add_one(ndberror.code);
+            uint temperrors = m_errormap.get_sum();
+            if (temperrors <= opt.m_temperrors)
+            {
+              log_debug(1, "get autoincr try " << temperrors << ": " << ndberror);
+              m_ops.push_front(op);
+              NdbSleep_MilliSleep(opt.m_tempdelay);
+              continue;
+            }
+            m_util.set_error_gen(m_error, __LINE__,
+                                 "number of transaction tries with"
+                                 " temporary errors is %u (limit %u)",
+                                 temperrors, opt.m_temperrors);
+            break;
           }
-          m_util.set_error_gen(m_error, __LINE__,
-                               "number of transaction tries with"
-                               " temporary errors is %u (limit %u)",
-                               temperrors, opt.m_temperrors);
+          else
+          {
+            m_util.set_error_ndb(m_error, __LINE__, ndberror,
+                                 "table %s: get autoincrement failed",
+                                 table.m_tab->getName());
+            break;
+          }
+        }
+
+        set_auto_inc_val(attr, row, val, m_error);
+        if (m_util.has_error()) {
           break;
-        }
-        else
-        {
-          m_util.set_error_ndb(m_error, __LINE__, ndberror,
-                               "table %s: get autoincrement failed",
-                               table.m_tab->getName());
-          break;
-        }
-      }
-      if (table.m_has_hidden_pk)
-      {
-        const Attr& attr = attrs[attrcnt - 1];
-        require(attr.m_type == NdbDictionary::Column::Bigunsigned);
-        attr.set_value(row, &val, 8);
-      }
-      else
-      {
-        const Attr& attr = attrs[table.m_auto_increment_col];
-        if (attr.m_type == NdbDictionary::Column::Bigunsigned)
-        {
-          attr.set_value(row, &val, 8);
-        }
-        else if (attr.m_type == NdbDictionary::Column::Bigint)
-        {
-          Int64 val64 = Int64(val);
-          attr.set_value(row, &val64, 8);
-        }
-        else if (attr.m_type == NdbDictionary::Column::Int)
-        {
-          Int32 val32 = Uint32(val);
-          attr.set_value(row, &val32, 4);
-        }
-        else if (attr.m_type == NdbDictionary::Column::Unsigned)
-        {
-          Uint32 val32 = Uint32(val);
-          attr.set_value(row, &val32, 4);
-        }
-        else
-        {
-          require(false);
         }
       }
     }
@@ -3799,6 +3867,7 @@ NdbImportImpl::DiagTeam::read_old_diags()
     log_debug(1, "old rowmap:" << rowmap_in);
   }
   // old counts
+  if (opt.m_stats)
   {
     const char* path = opt.m_stats_file;
     const Table& table = m_util.c_stats_table;

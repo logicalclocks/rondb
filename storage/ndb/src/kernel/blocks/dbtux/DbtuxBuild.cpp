@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2009, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2009, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -87,18 +88,18 @@ Uint32 // error code
 Dbtux::mt_buildIndexFragment(mt_BuildIndxCtx* req)
 {
   IndexPtr indexPtr;
-  c_indexPool.getPtr(indexPtr, req->indexId);
+  ndbrequire(c_indexPool.getPtr(indexPtr, req->indexId));
   ndbrequire(indexPtr.p->m_tableId == req->tableId);
   // get base fragment id and extra bits
   const Uint32 fragId = req->fragId;
   // get the fragment
   FragPtr fragPtr;
   TuxCtx & ctx = * (TuxCtx*)req->tux_ctx_ptr;
-  findFrag(ctx.jamBuffer, *indexPtr.p, fragId, fragPtr);
-  ndbrequire(fragPtr.i != RNIL);
+  findFrag(ctx.jamBuffer, indexPtr.i, fragId, fragPtr);
+  ndbrequire(fragPtr.i != RNIL64);
   Frag& frag = *fragPtr.p;
   Local_key pos;
-  Uint32 fragPtrI;
+  Uint64 fragPtrI;
   prepare_build_ctx(ctx, fragPtr);
   int err = req->tup_ptr->mt_scan_init(req->tableId, req->fragId,
                                        &pos, &fragPtrI);

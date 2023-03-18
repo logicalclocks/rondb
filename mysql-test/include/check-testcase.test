@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2013, 2020, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2013, 2022, Oracle and/or its affiliates.
 #
 
 # ==== Purpose ====
@@ -154,6 +154,7 @@ if ($proceed_with_check_of_files) {
   SET SESSION sql_log_bin = 0;
   # Checking needs to create temporary tables without primary key
   SET SESSION sql_require_primary_key = 0;
+  SET SESSION sql_generate_invisible_primary_key = 0;
 
   USE test;
 
@@ -237,7 +238,7 @@ EOF
       --enable_abort_on_error
     }
 
-    SELECT filename FROM file_tbl
+    SELECT /*+SET_VAR(use_secondary_engine=OFF)*/ filename FROM file_tbl
       WHERE filename NOT LIKE 'check-mysqld_%'
       AND filename NOT LIKE 'mysql%.sock%'
       AND filename NOT LIKE 'file_list_%.flist'

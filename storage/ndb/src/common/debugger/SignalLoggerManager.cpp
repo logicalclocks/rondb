@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2014, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -31,6 +31,7 @@
 #include <DebuggerNames.hpp>
 #include <NdbTick.h>
 #include <NdbEnv.h>
+#include <EventLogger.hpp>
 
 #ifdef VM_TRACE_TIME
 static char* mytime()
@@ -48,12 +49,12 @@ SignalLoggerManager::SignalLoggerManager()
   for (int i = 0; i < NO_OF_BLOCKS; i++){
       logModes[i] = 0;
   }
-  outputStream = 0;
+  outputStream = nullptr;
   m_ownNodeId = 0;
   m_logDistributed = false;
 
   // using mutex avoids MT log mixups but has some serializing effect
-  m_mutex = 0;
+  m_mutex = nullptr;
 
 #ifdef NDB_USE_GET_ENV
   const char* p = NdbEnv_GetEnv("NDB_SIGNAL_LOG_MUTEX", (char*)0, 0);
@@ -64,21 +65,21 @@ SignalLoggerManager::SignalLoggerManager()
 
 SignalLoggerManager::~SignalLoggerManager()
 {
-  if(outputStream != 0){
+  if(outputStream != nullptr){
     fflush(outputStream);
     fclose(outputStream);
-    outputStream = 0;
+    outputStream = nullptr;
   }
-  if (m_mutex != 0) {
+  if (m_mutex != nullptr) {
     NdbMutex_Destroy(m_mutex);
-    m_mutex = 0;
+    m_mutex = nullptr;
   }
 }
 
 FILE *
 SignalLoggerManager::setOutputStream(FILE * output)
 {
-  if (outputStream != 0)
+  if (outputStream != nullptr)
   {
     lock();
     fflush(outputStream);
@@ -99,7 +100,7 @@ SignalLoggerManager::getOutputStream() const
 void
 SignalLoggerManager::flushSignalLog()
 {
-  if (outputStream != 0)
+  if (outputStream != nullptr)
   {
     lock();
     fflush(outputStream);
@@ -133,7 +134,7 @@ static int
 getParameter(char *blocks[NO_OF_BLOCKS], const char * par, const char * line)
 {
   const char * loc = strstr(line, par);
-  if(loc == NULL)
+  if(loc == nullptr)
     return 0;
 
   loc += strlen(par);
@@ -188,8 +189,9 @@ SignalLoggerManager::log(LogMode logMode, const char * params)
       if (bno == 0)
       {
         // Could not find any block with matching name
-        ndbout_c("Could not turn on signal logging for unknown block '%s'",
-                 blocks[i]);
+        g_eventLogger->info(
+            "Could not turn on signal logging for unknown block '%s'",
+            blocks[i]);
         continue;
       }
       cnt += log(SLM_ON, bno, logMode);
@@ -275,7 +277,7 @@ SignalLoggerManager::executeDirect(const SignalHeader& sh,
   Uint32 senderBlockNo = refToBlock(sh.theSendersBlockRef);
   Uint32 receiverBlockNo = sh.theReceiversBlockNumber;
   
-  if(outputStream != 0 && 
+  if(outputStream != nullptr && 
      (traceId == 0 || traceId == trace) &&
      (logMatch(senderBlockNo, LogOut) || logMatch(receiverBlockNo, LogIn))){
     lock();
@@ -305,7 +307,7 @@ SignalLoggerManager::executeSignal(const SignalHeader& sh, Uint8 prio,
   Uint32 receiverBlockNo = sh.theReceiversBlockNumber;
   Uint32 senderNode = refToNode(sh.theSendersBlockRef);
 
-  if(outputStream != 0 && 
+  if(outputStream != nullptr && 
      (traceId == 0 || traceId == trace) &&
      (logMatch(receiverBlockNo, LogOut) ||
       (m_logDistributed && m_ownNodeId != senderNode))){
@@ -334,7 +336,7 @@ SignalLoggerManager::executeSignal(const SignalHeader& sh, Uint8 prio,
   Uint32 receiverBlockNo = sh.theReceiversBlockNumber;
   Uint32 senderNode = refToNode(sh.theSendersBlockRef);
 
-  if(outputStream != 0 && 
+  if(outputStream != nullptr && 
      (traceId == 0 || traceId == trace) &&
      (logMatch(receiverBlockNo, LogOut) ||
       (m_logDistributed && m_ownNodeId != senderNode))){
@@ -366,7 +368,7 @@ SignalLoggerManager::sendSignal(const SignalHeader& sh,
   Uint32 senderBlockNo = refToBlock(sh.theSendersBlockRef);
   //Uint32 receiverBlockNo = sh.theReceiversBlockNumber;
 
-  if(outputStream != 0 && 
+  if(outputStream != nullptr && 
      (traceId == 0 || traceId == trace) &&
      (logMatch(senderBlockNo, LogOut) ||
       (m_logDistributed && m_ownNodeId != node))){
@@ -397,7 +399,7 @@ SignalLoggerManager::sendSignal(const SignalHeader& sh, Uint8 prio,
   Uint32 senderBlockNo = refToBlock(sh.theSendersBlockRef);
   //Uint32 receiverBlockNo = sh.theReceiversBlockNumber;
 
-  if(outputStream != 0 && 
+  if(outputStream != nullptr && 
      (traceId == 0 || traceId == trace) &&
      (logMatch(senderBlockNo, LogOut) ||
       (m_logDistributed && m_ownNodeId != node))){
@@ -426,7 +428,7 @@ SignalLoggerManager::sendSignal(const SignalHeader& sh,
   Uint32 senderBlockNo = refToBlock(sh.theSendersBlockRef);
   //Uint32 receiverBlockNo = sh.theReceiversBlockNumber;
 
-  if(outputStream != 0 && 
+  if(outputStream != nullptr && 
      (traceId == 0 || traceId == trace) &&
      (logMatch(senderBlockNo, LogOut) ||
       (m_logDistributed && m_ownNodeId != node))){
@@ -455,7 +457,7 @@ SignalLoggerManager::sendSignalWithDelay(Uint32 delayInMilliSeconds,
   Uint32 senderBlockNo = refToBlock(sh.theSendersBlockRef);
   //Uint32 receiverBlockNo = sh.theReceiversBlockNumber;
 
-  if(outputStream != 0 && 
+  if(outputStream != nullptr && 
      (traceId == 0 || traceId == trace) &&
      logMatch(senderBlockNo, LogOut)){
     lock();
@@ -487,7 +489,7 @@ SignalLoggerManager::log(BlockNumber bno, const char * msg, ...)
   const BlockNumber bno2 = bno - MIN_BLOCK_NO;
   assert(bno2<NO_OF_BLOCKS);
 
-  if(outputStream != 0 &&
+  if(outputStream != nullptr &&
      logModes[bno2] != LogOff){
     lock();
     va_list ap;
@@ -565,6 +567,8 @@ SignalLoggerManager::printSignalHeader(FILE * output,
   Uint32 trace = sh.theTrace;
   Uint32 rSigId = sh.theSignalId;
   Uint32 sSigId = sh.theSendersSignalId;
+  Uint32 send_thread_id = sh.theSenderThreadId;
+  Uint32 send_thread_signal_id = sh.theThreadSenderSignalId;
 
   const char * signalName = getSignalName(gsn);
   const char * rBlockName =
@@ -584,22 +588,24 @@ SignalLoggerManager::printSignalHeader(FILE * output,
   if (senderInstanceNo != 0)
     sprintf(sInstanceText, "/%u", (uint)senderInstanceNo);
 
+  // If you change the print format, then update the legend in
+  // ErrorReporter::WriteMessage to match.
+  fprintf(output, "r.bn: %d%s \"%s\", r.nodeId: %d, "
+          , receiverBlockNo, rInstanceText, rBlockName, receiverProcessor);
   if (printReceiversSignalId)
-    fprintf(output, 
-	    "r.bn: %d%s \"%s\", r.proc: %d, r.sigId: %d gsn: %d \"%s\" prio: %d\n"
-	    ,receiverBlockNo, rInstanceText, rBlockName, receiverProcessor,
-            rSigId, gsn, signalName, prio);
-  else 
-    fprintf(output,
-	    "r.bn: %d%s \"%s\", r.proc: %d, gsn: %d \"%s\" prio: %d\n",
-	    receiverBlockNo, rInstanceText, rBlockName, receiverProcessor,
-            gsn, signalName, prio);
-  
-  fprintf(output, 
-	  "s.bn: %d%s \"%s\", s.proc: %d, s.sigId: %d length: %d trace: %d "
-	  "#sec: %d fragInf: %d\n",
-	  senderBlockNo, sInstanceText, sBlockName, senderProcessor,
-          sSigId, length, trace, sh.m_noOfSections, sh.m_fragmentInfo);
+    fprintf(output, "r.sigId: H\'%.8x, ", rSigId);
+  fprintf(output,
+          "r.gsn: %d, r.sn: \"%s\"\n",
+          gsn, signalName);
+  fprintf(output,
+	  "s.bn: %d%s \"%s\", s.nodeId: %d, s.sigId: H\'%.8x",
+	  senderBlockNo, sInstanceText, sBlockName, senderProcessor, sSigId);
+  if (receiverProcessor == senderProcessor)
+    fprintf(output, ", s.threadId: %u, s.threadSigId: H\'%.8x",
+            send_thread_id, send_thread_signal_id);
+  fprintf(output, "\nprio: %s, length: %d, trace: %d, #sec: %d, fragInfo: %d\n",
+          prio == 1 ? "JBB" : "JBA", length, trace, sh.m_noOfSections,
+          sh.m_fragmentInfo);
 
   //assert(strcmp(rBlockName, dummy_block_name) != 0);
   //assert(strcmp(sBlockName, dummy_block_name) != 0);
@@ -615,34 +621,21 @@ SignalLoggerManager::printSignalData(FILE * output,
     findPrintFunction(sh.theVerId_signalNumber);
   
   bool ok = false;      // done with printing
-  if(printFunction != 0){
+  if(printFunction != nullptr){
     ok = (* printFunction)(output, signalData, len,
                            isApiBlock(sh.theReceiversBlockNumber)
                            ? sh.theReceiversBlockNumber
                            : blockToMain(sh.theReceiversBlockNumber));
   }
   if(!ok){
-    while(len >= 7){
-      fprintf(output, 
-              " H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x H\'%.8x\n",
-              signalData[0], signalData[1], signalData[2], signalData[3], 
-              signalData[4], signalData[5], signalData[6]);
-      len -= 7;
-      signalData += 7;
-    }
-    if(len > 0){
-      for(Uint32 i = 0; i<len; i++)
-        fprintf(output, " H\'%.8x", signalData[i]);
-      fprintf(output, "\n");
-    }
+    printHex(output, signalData, len, "");
   }
 }
 
-void
-SignalLoggerManager::printLinearSection(FILE * output,
-                                        const SignalHeader & sh,
-                                        const LinearSectionPtr ptr[3],
-                                        unsigned i)
+void SignalLoggerManager::printLinearSection(FILE* output,
+                                             const SignalHeader& /*sh*/,
+                                             const LinearSectionPtr ptr[3],
+                                             unsigned i)
 {
   fprintf(output, "SECTION %u type=linear", i);
   if (i >= 3) {
@@ -660,11 +653,10 @@ SignalLoggerManager::printLinearSection(FILE * output,
     putc('\n', output);
 }
 
-void
-SignalLoggerManager::printGenericSection(FILE * output,
-                                         const SignalHeader & sh,
-                                         const GenericSectionPtr ptr[3],
-                                         unsigned i)
+void SignalLoggerManager::printGenericSection(FILE* output,
+                                              const SignalHeader& /*sh*/,
+                                              const GenericSectionPtr ptr[3],
+                                              unsigned i)
 {
   fprintf(output, "SECTION %u type=generic", i);
   if (i >= 3) {

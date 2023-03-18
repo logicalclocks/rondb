@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -44,7 +45,7 @@
 //
 // The cfreepageList is 16 free lists. Free list 0 contains chunks of
 // pages with 2^0 (=1) pages in each chunk. Free list 1 chunks of 2^1
-// (=2) pages in each chunk and so forth upto free list 15 which
+// (=2) pages in each chunk and so forth up to free list 15 which
 // contains chunks of 2^15 (=32768) pages in each chunk.
 // The cfreepageList array contains the pointer to the first chunk
 // in each of those lists. The lists are doubly linked where the
@@ -63,7 +64,7 @@
 // performed in chunks of pages and the algorithm tries to make the
 // chunks as large as possible.
 // This manager is invoked when fragments lack internal page space to
-// accomodate all the data they are requested to store. It is also
+// accommodate all the data they are requested to store. It is also
 // invoked when fragments deallocate page space back to the free area.
 //
 // The following routines are part of the external interface:
@@ -131,6 +132,7 @@ void Dbtup::initializePage()
 }//Dbtup::initializePage()
 
 void Dbtup::allocConsPages(EmulatedJamBuffer* jamBuf,
+                           Tablerec *regTabPtr,
                            Uint32 noOfPagesToAllocate,
                            Uint32& noOfPagesAllocated,
                            Uint32& allocPageRef)
@@ -143,9 +145,17 @@ void Dbtup::allocConsPages(EmulatedJamBuffer* jamBuf,
 
   if (noOfPagesToAllocate == 1)
   {
+    bool allow_use_spare = false;
+    if (regTabPtr->m_allow_use_spare ||
+        c_restart_allow_use_spare)
+    {
+      thrjam(jamBuf);
+      allow_use_spare = true;
+    }
     void* p = m_ctx.m_mm.alloc_page(RT_DBTUP_PAGE,
                                     &allocPageRef,
-                                    Ndbd_mem_manager::NDB_ZONE_LE_30);
+                                    Ndbd_mem_manager::NDB_ZONE_LE_30,
+                                    allow_use_spare);
     if (p != NULL)
     {
       noOfPagesAllocated = 1;
@@ -168,17 +178,6 @@ void Dbtup::allocConsPages(EmulatedJamBuffer* jamBuf,
                            1);
 #endif
   }
-  if(noOfPagesAllocated == 0 && c_allow_alloc_spare_page)
-  {
-    void* p = m_ctx.m_mm.alloc_spare_page(RT_DBTUP_PAGE,
-                                          &allocPageRef,
-                                          Ndbd_mem_manager::NDB_ZONE_LE_30);
-    if (p != NULL)
-    {
-      noOfPagesAllocated = 1;
-    }
-  }
-
   // Count number of allocated pages
   update_pages_allocated(noOfPagesAllocated);
 
@@ -192,18 +191,6 @@ void Dbtup::returnCommonArea(Uint32 retPageRef, Uint32 retNo)
   // Count number of allocated pages
   update_pages_allocated(-retNo);
 }//Dbtup::returnCommonArea()
-
-bool Dbtup::returnCommonArea_for_reuse(Uint32 retPageRef, Uint32 retNo)
-{
-  if (!m_ctx.m_mm.give_up_pages(RT_DBTUP_PAGE, retNo))
-  {
-    return false;
-  }
-
-  // Count number of allocated pages
-  update_pages_allocated(-retNo);
-  return true;
-}
 
 void
 Dbtup::update_pages_allocated(int retNo)
@@ -251,7 +238,7 @@ Dbtup::update_pages_allocated(int retNo)
   tup_block->m_pages_allocated += retNo;
   if (retNo > 0 &&
       tup_block->m_pages_allocated >
-        tup_block->m_pages_allocated_max)
+      tup_block->m_pages_allocated_max)
   {
     tup_block->m_pages_allocated_max = tup_block->m_pages_allocated;
   }
@@ -260,4 +247,9 @@ Dbtup::update_pages_allocated(int retNo)
   {
     NdbMutex_Unlock(lqh_block->m_lock_tup_page_mutex);
   }
+}
+
+Uint32 Dbtup::get_pages_allocated() const
+{
+  return m_pages_allocated;
 }

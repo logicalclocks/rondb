@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -41,8 +42,8 @@ extern thread_local EmulatedJamBuffer* NDB_THREAD_TLS_JAM;
 struct thr_data;
 extern thread_local thr_data* NDB_THREAD_TLS_THREAD;
 
-#define qt_likely unlikely
-#define qt_unlikely likely
+#define qt_likely likely
+#define qt_unlikely unlikely
 
 #ifdef NDB_DEBUG_RES_OWNERSHIP
 
@@ -70,87 +71,130 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
 
 #ifdef NO_EMULATED_JAM
 
-#define jam()
-#define jamLine(line)
-#define jamEntry()
-#define jamDebug()
-#define jamLineDebug(line)
-#define jamEntryDebug()
-#define jamEntryLine(line)
-#define jamBlock(block)
-#define jamBlockLine(block, line)
-#define jamEntryBlock(block)
-#define jamEntryBlockLine(block, line)
-#define jamNoBlock()
-#define jamNoBlockLine(line)
-#define thrjamEntry(buf)
-#define thrjamEntryLine(buf, line)
-#define thrjam(buf)
-#define thrjamLine(buf, line)
-#define thrjamEntryDebug(buf)
-#define thrjamEntryLineDebug(buf, line)
-#define thrjamDebug(buf)
-#define thrjamLineDebug(buf, line)
+#define _internal_thrjamLinenumber
+#define _internal_thrjamData
 
 #else
 
-#define thrjamEntryBlockLine(jamBufferArg, blockNo, line) \
-  thrjamLine(jamBufferArg, line)
-
 /**
- * Make an entry in the jamBuffer to record that execution reached a given
- * point in the source code. For a description of how to maintain and debug 
- * JAM_FILE_IDs, please refer to the comments for jamFileNames in Emulator.cpp.
+ * Make an entry in the jamBuffer to record that execution reached a given point
+ * in the source code (file and line number). For a description of how to
+ * maintain and debug JAM_FILE_IDs, please refer to the comments for
+ * jamFileNames in Emulator.cpp.
  */
-#define thrjamLine(jamBufferArg, line) \
+#define _internal_thrjamLinenumber(jamBufferArg, lineNumber)  \
   do { \
     EmulatedJamBuffer* const jamBuffer = jamBufferArg; \
-    Uint32 jamIndex = jamBuffer->theEmulatedJamIndex; \
-    jamBuffer->theEmulatedJam[jamIndex++] = JamEvent((JAM_FILE_ID), (line)); \
-    jamBuffer->theEmulatedJamIndex = jamIndex & JAM_MASK; \
-    /* Occasionally check that the jam buffer belongs to this thread.*/ \
-    assert((jamIndex & 3) != 0 || jamBuffer == NDB_THREAD_TLS_JAM);       \
-    /* Occasionally check that jamFileNames[JAM_FILE_ID] matches __FILE__.*/ \
-    assert((jamIndex & 0xff) != 0 ||                     \
-           JamEvent::verifyId((JAM_FILE_ID), __FILE__)); \
-  } while(0)
+    /* Make sure both file and line number are known at compile-time. */ \
+    constexpr Uint32 constJamFileId = (JAM_FILE_ID); \
+    constexpr Uint32 constLineNumber = (lineNumber); \
+    /* Statically check that file id fits in 14 bits. */ \
+    static_assert((constJamFileId & 0x3fff) == constJamFileId); \
+    /* Statically check that file id does not collide with Empty jam type. */ \
+    static_assert(constJamFileId != 0x3fff); \
+    /* Statically check that line number fits in 16 bits. */ \
+    static_assert((constLineNumber & 0xffff) == constLineNumber); \
+    /* Make sure the whole jam event is known at compile-time. */ \
+    constexpr JamEvent newJamEvent = JamEvent(constJamFileId, constLineNumber, \
+                                              true); \
+    /* Insert the event */ \
+    jamBuffer->insertJamEvent(newJamEvent); \
+    /**
+     * Occasionally, check at run-time that the jam buffer belongs to this
+     * thread.
+     */ \
+    assert((jamBuffer->theEmulatedJamIndex & 3) != 0 || \
+           jamBuffer == NDB_THREAD_TLS_JAM); \
+    /* Statically check that jamFileNames[JAM_FILE_ID] matches __FILE__.*/ \
+    static_assert(JamEvent::verifyId((JAM_FILE_ID), __FILE__)); \
+  } while (0)
 
-#define jamBlockLine(block, line) thrjamLine(block->jamBuffer(), line)
-#define jamBlock(block) jamBlockLine((block), __LINE__)
-#define jamLine(line) jamBlockLine(this, (line))
-#define jam() jamLine(__LINE__)
-#define jamBlockEntryLine(block, line) \
-  thrjamEntryBlockLine(block->jamBuffer(), block->number(), line)
-#define jamEntryBlock(block) jamEntryBlockLine(block, __LINE__)
-#define jamEntryLine(line) jamBlockEntryLine(this, (line))
-#define jamEntry() jamEntryLine(__LINE__)
+/**
+ * Make an entry in the jamBuffer to record file number and up to 16 bits of
+ * arbitrary data.
+ */
+#define _internal_thrjamData(jamBufferArg, data) \
+  do { \
+    EmulatedJamBuffer* const jamBuffer = jamBufferArg; \
+    /* Make sure file number is known at compile-time. */ \
+    constexpr Uint32 constJamFileId = (JAM_FILE_ID); \
+    /* Statically check that file id fits in 14 bits */ \
+    static_assert((constJamFileId & 0x3fff) == constJamFileId); \
+    /* Statically check that file id does not collide with Empty jam type */ \
+    static_assert(constJamFileId != 0x3fff); \
+    jamBuffer->insertJamEvent(JamEvent(constJamFileId, (data), false)); \
+    /**
+     * Occasionally, check at run-time that the jam buffer belongs to this
+     * thread.
+     */ \
+    assert((jamBuffer->theEmulatedJamIndex & 3) != 0 || \
+           jamBuffer == NDB_THREAD_TLS_JAM); \
+    /* Statically check that jamFileNames[JAM_FILE_ID] matches __FILE__.*/ \
+    static_assert(JamEvent::verifyId((JAM_FILE_ID), __FILE__)); \
+  } while (0)
+#endif
 
-#define jamNoBlockLine(line) \
-    thrjamLine(NDB_THREAD_TLS_JAM, line)
-#define jamNoBlock() jamNoBlockLine(__LINE__)
+/** The jam macro names have seven parts:
+    1) "_internal_": Only for use in macro definitions.
+       "":           For use in code.
+    2) "thr":        The macro takes a jam buffer as an argument.
+       "":           No jam buffer argument, it's inferred.
+    3) "jam"
+    4) "Block":      The macro takes a block object as argument
+       "NoBlock":    Not called from a block. The jam buffer is NDB_THREAD_TLS_JAM.
+       "":           No block object argument, it's inferred.
+    5) "Entry":      Present for historical reasons. Now same as "".
+       ""
+    6) "Linenumber": The macro takes a line number argument.
+       "Data":       The macro takes an argument with arbitrary data. Line
+                     number is not registered.
+       "Line":       Deprecated synonym for "Data".
+       "":           No argument, line number is inferred.
+    7) "Debug":      Turned off in production unless EXTRA_JAM is set.
+       "":           Turned on unless NO_EMULATED_JAM is set.
 
-#define thrjamEntryLine(buf, line) thrjamEntryBlockLine(buf, number(), line)
+    There are many possible combinations, so here we define only those that are
+    actually used, as well as the "Data" macros since "Line" is deprecated.
+*/
 
-#define thrjam(buf) thrjamLine(buf, __LINE__)
-#define thrjamEntry(buf) thrjamEntryLine(buf, __LINE__)
+#define thrjamData(buf, data) _internal_thrjamData(buf, data)
+#define thrjamLine(buf, data) thrjamData(buf, data)
+
+#define jamBlockData(block, data) thrjamData(block->jamBuffer(), data)
+#define jamBlockLine(block, data) jamBlockData(block, data)
+#define _internal_jamBlockLinenumber(block, line) _internal_thrjamLinenumber(block->jamBuffer(), line)
+#define jamBlock(block) _internal_jamBlockLinenumber((block), __LINE__)
+#define jamData(data) jamBlockData(this, (data))
+#define jamLine(data) jamData(data)
+#define _internal_jamLinenumber(line) _internal_jamBlockLinenumber(this, (line))
+#define jam() _internal_jamLinenumber(__LINE__)
+
+#define jamEntry() jam()
+
+#define _internal_jamNoBlockLinenumber(line) _internal_thrjamLinenumber(NDB_THREAD_TLS_JAM, line)
+#define jamNoBlock() _internal_jamNoBlockLinenumber(__LINE__)
+
+#define thrjam(buf) _internal_thrjamLinenumber(buf, __LINE__)
+#define thrjamEntry(buf) thrjam(buf)
 
 #if defined VM_TRACE || defined ERROR_INSERT || defined EXTRA_JAM
 #define jamDebug() jam()
-#define jamLineDebug(line) jamLine(line)
+#define jamDataDebug(data) jamData(data)
+#define jamLineDebug(data) jamLine(data)
 #define jamEntryDebug() jamEntry()
 #define thrjamEntryDebug(buf) thrjamEntry(buf)
-#define thrjamEntryLineDebug(buf, line) thrJamEntryLine(guf, line)
 #define thrjamDebug(buf) thrjam(buf)
-#define thrjamLineDebug(buf, line) thrjamLine(buf, line)
+#define thrjamDataDebug(buf, data) thrjamData(buf, data)
+#define thrjamLineDebug(buf, data) thrjamLine(buf, data)
 #else
 #define jamDebug()
-#define jamLineDebug(line)
+#define jamDataDebug(data)
+#define jamLineDebug(data)
 #define jamEntryDebug()
 #define thrjamEntryDebug(buf)
-#define thrjamEntryLineDebug(buf, line)
 #define thrjamDebug(buf)
-#define thrjamLineDebug(buf, line)
-#endif
+#define thrjamDataDebug(buf, data)
+#define thrjamLineDebug(buf, data)
 #endif
 
 #ifndef NDB_OPT
@@ -239,17 +283,10 @@ extern thread_local Uint32 NDB_THREAD_TLS_RES_OWNER;
 // need large value.
 /* ------------------------------------------------------------------------- */
 #define NO_OF_FRAG_PER_NODE 1
-#define MAX_FRAG_PER_LQH 16
-
-/**
-* DIH allocates fragments in chunk for fast find of fragment record.
-* These parameters define chunk size and log of chunk size.
-*/
-#define NO_OF_FRAGS_PER_CHUNK 4
-#define LOG_NO_OF_FRAGS_PER_CHUNK 2
+#define MAX_FRAG_PER_LQH (4 * MAX_NDB_PARTITIONS + 16)
 
 /* ---------------------------------------------------------------- */
-// To avoid synching too big chunks at a time we synch after writing
+// To avoid syncing too big chunks at a time we synch after writing
 // a certain number of data/UNDO pages. (e.g. 2 MBytes).
 /* ---------------------------------------------------------------- */
 #define MAX_REDO_PAGES_WITHOUT_SYNCH 32

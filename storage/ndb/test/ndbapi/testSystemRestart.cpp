@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,6 +23,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
+#include <cstring>
 #include <NDBT.hpp>
 #include <NDBT_Test.hpp>
 #include <HugoTransactions.hpp>
@@ -33,6 +36,7 @@
 #include <Bitmask.hpp>
 #include <DbUtil.hpp>
 #include <NdbMgmd.hpp>
+#include <NdbSleep.h>
 
 #define CHK(b,e) \
   if (!(b)) { \
@@ -111,6 +115,9 @@ int
 clearOldBackups(NDBT_Context* ctx, NDBT_Step* step)
 {
   NdbBackup backup;
+  backup.set_default_encryption_password(ctx->getProperty("BACKUP_PASSWORD",
+                                                          (char*)NULL),
+                                         -1);
   backup.clearOldBackups();
   return NDBT_OK;
 }
@@ -2354,7 +2361,7 @@ runOneNodeWithCleanFilesystem(NDBT_Context* ctx, NDBT_Step* step)
     CHECK(restarter.waitClusterNoStart() == 0);
     g_info << "Cluster failed start as expected" << endl;
 
-    // A successul test must leave a live cluster behind
+    // A successful test must leave a live cluster behind
     g_info << "Restore file system on restart for node " << node << endl;
     CHECK(restarter.insertError2InNode(node, 2001, 0) == 0);
     restarter.startAll();
@@ -2435,6 +2442,9 @@ int runSR_DD_1(NDBT_Context* ctx, NDBT_Step* step)
   Uint32 loops = ctx->getNumLoops();
   NdbRestarter restarter;
   NdbBackup backup;
+  backup.set_default_encryption_password(ctx->getProperty("BACKUP_PASSWORD",
+                                                          (char*)NULL),
+                                         -1);
   bool lcploop = ctx->getProperty("LCP", (unsigned)0);
   bool all = ctx->getProperty("ALL", (unsigned)0);
 
@@ -2485,12 +2495,12 @@ int runSR_DD_1(NDBT_Context* ctx, NDBT_Step* step)
 
       /**
        * As table space is a (fixed) limited resource on our
-       * test rigs, we cant allow a fast test client to fill tables at
+       * test rigs, we can't allow a fast test client to fill tables at
        * an unlimited speed. Limit to 10.000 row inserts/sec.
        */ 
       const NDB_TICKS now = NdbTick_getCurrentTicks();
       const Uint64 elapsed_ms = NdbTick_Elapsed(start, now).milliSec();
-      if (elapsed_ms >= 4000)
+      if (elapsed_ms >= 6000)
         break;
 
       const Uint64 time_goal = (row-startFrom)/10;
@@ -2557,6 +2567,9 @@ int runSR_DD_2(NDBT_Context* ctx, NDBT_Step* step)
   Uint32 rows = ctx->getNumRecords();
   NdbRestarter restarter;
   NdbBackup backup;
+  backup.set_default_encryption_password(ctx->getProperty("BACKUP_PASSWORD",
+                                                          (char*)NULL),
+                                         -1);
   bool lcploop = ctx->getProperty("LCP", (unsigned)0);
   bool all = ctx->getProperty("ALL", (unsigned)0);
   int error = (int)ctx->getProperty("ERROR", (unsigned)0);
@@ -2611,7 +2624,7 @@ int runSR_DD_2(NDBT_Context* ctx, NDBT_Step* step)
 
       /**
        * As redo/undo log is a (fixed) limited resource on our
-       * test rigs, we cant allow a fast test client to create such logs at
+       * test rigs, we can't allow a fast test client to create such logs at
        * an unlimited speed. Limit to 10.000 row inserts+deletes/sec.
        */ 
       const NDB_TICKS now = NdbTick_getCurrentTicks();
@@ -2688,6 +2701,9 @@ int runSR_DD_3(NDBT_Context* ctx, NDBT_Step* step)
   Uint32 rows = ctx->getNumRecords();
   NdbRestarter restarter;
   NdbBackup backup;
+  backup.set_default_encryption_password(ctx->getProperty("BACKUP_PASSWORD",
+                                                          (char*)NULL),
+                                         -1);
   bool lcploop = ctx->getProperty("LCP", (unsigned)0);
   bool all = ctx->getProperty("ALL", (unsigned)0);
   int error = (int)ctx->getProperty("ERROR", (unsigned)0);
@@ -2994,10 +3010,10 @@ runTO(NDBT_Context* ctx, NDBT_Step* step)
     
     do 
     {
-      bzero(&event, sizeof(event));
+      std::memset(&event, 0, sizeof(event));
       while(ndb_logevent_get_next(handle, &event, 0) >= 0 &&
             event.type != NDB_LE_LocalCheckpointCompleted)
-        bzero(&event, sizeof(event));
+        std::memset(&event, 0, sizeof(event));
       
       if (event.type == NDB_LE_LocalCheckpointCompleted &&
           event.LocalCheckpointCompleted.lci < LCP + 3)
@@ -3314,7 +3330,7 @@ runBug46412(NDBT_Context* ctx, NDBT_Step* step)
   {
     printf("checking nodegroups of getNextMasterNodeId(): ");
     int nodes[256];
-    bzero(nodes, sizeof(nodes));
+    std::memset(nodes, 0, sizeof(nodes));
     nodes[0] = res.getMasterNodeId();
     printf("%d ", nodes[0]);
     for (Uint32 i = 1; i<nodeCount; i++)
@@ -3419,7 +3435,7 @@ runBug46412(NDBT_Context* ctx, NDBT_Step* step)
         }
       }
       ndbout_c("Wait for a while to allow the first set of nodes to stop");
-      sleep(6);
+      NdbSleep_SecSleep(6);
       ndbout_c("Cluster restart");
       res.restartAll(false, true, true, true);
       res.waitClusterNoStart();
@@ -3427,7 +3443,7 @@ runBug46412(NDBT_Context* ctx, NDBT_Step* step)
       {
         ndbout_c("Start node %u", nodes[i]);
         res.startNodes(&nodes[i], 1);
-        sleep(4);
+        NdbSleep_SecSleep(4);
       }
     }
     if (res.waitClusterStarted())
@@ -3484,7 +3500,7 @@ runBug48436(NDBT_Context* ctx, NDBT_Step* step)
       case 0:
       case 1:
         res.dumpStateAllNodes(&val, 1);
-        // Fall through
+        [[fallthrough]];
       case 2:
       case 3:
       case 4:
@@ -3494,7 +3510,7 @@ runBug48436(NDBT_Context* ctx, NDBT_Step* step)
         res.dumpStateOneNode(nodes[0], val2, 2);
         res.insertErrorInNode(nodes[0], 5054); // crash during restart
         res.startAll();
-        sleep(3);
+        NdbSleep_SecSleep(3);
         res.waitNodesNoStart(nodes+0,1);
         res.startAll();
         break;
@@ -3505,14 +3521,14 @@ runBug48436(NDBT_Context* ctx, NDBT_Step* step)
         break;
       case 7:
         res.dumpStateAllNodes(&val, 1);
-        // Fall through
+        [[fallthrough]];
       case 8:
         res.restartOneDbNode(nodes[1], false, true, true);
         res.waitNodesNoStart(nodes+1,1);
         res.dumpStateOneNode(nodes[1], val2, 2);
         res.insertErrorInNode(nodes[1], 5054); // crash during restart
         res.startAll();
-        sleep(3);
+        NdbSleep_SecSleep(3);
         res.waitNodesNoStart(nodes+1,1);
         res.startAll();
         break;
@@ -3707,7 +3723,7 @@ int runAlterTableAndOptimize(NDBT_Context* ctx, NDBT_Step* step)
     g_info << "Executing query : "<< query.c_str() << endl;
     if(!sql.doQuery(query.c_str(), resultSet)){
       if(nodesKilledDuringStep &&
-          sql.getErrorNumber() == 0)
+         resultSet.mysqlErrno() == 0)
       {
         /* query failed probably because of a node kill in another step.
            wait for the nodes to get into start phase before retrying */
@@ -3742,6 +3758,9 @@ int runAlterTableAndOptimize(NDBT_Context* ctx, NDBT_Step* step)
       return NDBT_FAILED;
     }
   }
+
+  DbUtil::thread_end();
+
   return NDBT_OK;
 }
 
@@ -3860,7 +3879,7 @@ int runMixedModeRestart(NDBT_Context* ctx, NDBT_Step* step){
   int nodeToKill = nodeIds[0];
   int val[] = { DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1 };
   /**
-  1. Killing two nodes of diffrent groups.
+  1. Killing two nodes of different groups.
   2. Starting nodes with and without --initial option.
   **/
 
@@ -3989,7 +4008,7 @@ int runMixedModeRestart4Node(NDBT_Context* ctx, NDBT_Step* step){
     nodeIds.push_back(restarter.getDbNodeId(i));
   int val[] = { DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1 };
   /**
-  1. Killing four nodes of diffrent groups.
+  1. Killing four nodes of different groups.
   2. Starting nodes with and without --initial option.
   **/
 
@@ -4291,19 +4310,19 @@ runCheckLaggardShutdown(NDBT_Context* ctx, NDBT_Step* step)
 NDBT_TESTSUITE(testSystemRestart);
 TESTCASE("SR1", 
 	 "Basic system restart test. Focus on testing restart from REDO log.\n"
-	 "NOTE! Time between lcp's and gcp's should be left at default, \n"
+	 "NOTE! Time between lcp's and gcp's should be left at default,\n"
 	 "so that Ndb  uses the Redo log when restarting\n" 
 	 "1. Load records\n"
-	 "2. Restart cluster and verify records \n"
+	 "2. Restart cluster and verify records\n"
 	 "3. Update records\n"
-	 "4. Restart cluster and verify records \n"
-	 "5. Delete half of the records \n"
-	 "6. Restart cluster and verify records \n"
-	 "7. Delete all records \n"
-	 "8. Restart cluster and verify records \n"
-	 "9. Insert, update, delete records \n"
+	 "4. Restart cluster and verify records\n"
+	 "5. Delete half of the records\n"
+	 "6. Restart cluster and verify records\n"
+	 "7. Delete all records\n"
+	 "8. Restart cluster and verify records\n"
+	 "9. Insert, update, delete records\n"
 	 "10. Restart cluster and verify records\n"
-	 "11. Insert, update, delete records \n"
+	 "11. Insert, update, delete records\n"
 	 "12. Restart cluster with error insert 5020 and verify records\n"){ 
   INITIALIZER(runWaitStarted);
   STEP(runSystemRestart1);
@@ -4313,14 +4332,14 @@ TESTCASE("SR2",
 	 "NOTE! Time between lcp's is automatically set to it's  min value\n"
 	 "so that Ndb  uses LCP's when restarting.\n" 
 	 "1. Load records\n"
-	 "2. Restart cluster and verify records \n"
+	 "2. Restart cluster and verify records\n"
 	 "3. Update records\n"
-	 "4. Restart cluster and verify records \n"
-	 "5. Delete half of the records \n"
-	 "6. Restart cluster and verify records \n"
-	 "7. Delete all records \n"
-	 "8. Restart cluster and verify records \n"
-	 "9. Insert, update, delete records \n"
+	 "4. Restart cluster and verify records\n"
+	 "5. Delete half of the records\n"
+	 "6. Restart cluster and verify records\n"
+	 "7. Delete all records\n"
+	 "8. Restart cluster and verify records\n"
+	 "9. Insert, update, delete records\n"
 	 "10. Restart cluster and verify records\n"){
   INITIALIZER(runWaitStarted);
   STEP(runSystemRestart2);
@@ -4328,7 +4347,7 @@ TESTCASE("SR2",
 TESTCASE("SR_UNDO", 
 	 "System restart test. Focus on testing of undologging\n"
 	 "in DBACC and DBTUP.\n"
-	 "This is done by starting a LCP, turn on undologging \n"
+	 "This is done by starting a LCP, turn on undologging\n"
 	 "but don't start writing the datapages. This will force all\n"
 	 "operations to be written into the undolog.\n"
 	 "Then write datapages and complete LCP.\n"

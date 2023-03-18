@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2010, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2010, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -142,7 +143,7 @@ void test()
     }
 
     // test store
-    const char* kv4 = ("\\ a\\ key\\ =\\ a value \n"
+    const char* kv4 = ("\\ a\\ key\\ =\\ a value\n"
                        "key\\!=value\\!\n"
                        "key\\#=value\\#\n"
                        "key0=value0\n" "key1=value1\n"

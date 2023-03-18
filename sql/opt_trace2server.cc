@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,7 +26,7 @@
    Helpers connecting the optimizer trace to THD or Information Schema. They
    are dedicated "to the server" (hence the file's name).
    In order to create a unit test of the optimizer trace without defining
-   Item_field (and all its parent classes), SELECT_LEX..., these helpers
+   Item_field (and all its parent classes), Query_block..., these helpers
    are defined in opt_trace2server.cc.
 */
 
@@ -76,7 +76,7 @@ const char I_S_table_name[] = "OPTIMIZER_TRACE";
    OPTIMIZER_TRACE will overwrite OPTIMIZER_TRACE as it runs and provide
    uninteresting info.
 */
-bool list_has_optimizer_trace_table(const TABLE_LIST *tbl) {
+bool list_has_optimizer_trace_table(const Table_ref *tbl) {
   for (; tbl; tbl = tbl->next_global) {
     if (tbl->schema_table &&
         0 == strcmp(tbl->schema_table->table_name, I_S_table_name))
@@ -96,7 +96,7 @@ inline bool sql_command_can_be_traced(enum enum_sql_command sql_command) {
     Reasons to not trace other commands:
     - it reduces the range of potential unknown bugs and misuse
     - they probably don't have anything interesting optimizer-related
-    - select_lex for them might be uninitialized and unprintable.
+    - query_block for them might be uninitialized and unprintable.
     - SHOW WARNINGS would create an uninteresting trace and thus overwrite the
       previous interesting one.
 
@@ -126,11 +126,11 @@ bool sets_var_optimizer_trace(enum enum_sql_command sql_command,
   return false;
 }
 
-void opt_trace_disable_if_no_tables_access(THD *thd, TABLE_LIST *tbl);
+void opt_trace_disable_if_no_tables_access(THD *thd, Table_ref *tbl);
 
 }  // namespace
 
-Opt_trace_start::Opt_trace_start(THD *thd, TABLE_LIST *tbl,
+Opt_trace_start::Opt_trace_start(THD *thd, Table_ref *tbl,
                                  enum enum_sql_command sql_command,
                                  List<set_var_base> *set_vars,
                                  const char *query, size_t query_length,
@@ -240,13 +240,13 @@ Opt_trace_start::~Opt_trace_start() {
   if (likely(!error)) ctx->end();
 }
 
-void opt_trace_print_expanded_query(const THD *thd, SELECT_LEX *select_lex,
+void opt_trace_print_expanded_query(const THD *thd, Query_block *query_block,
                                     Opt_trace_object *trace_object)
 
 {
   const Opt_trace_context *const trace = &thd->opt_trace;
   /**
-     It's hard to prove that SELECT_LEX::print() doesn't modify any of its
+     It's hard to prove that Query_block::print() doesn't modify any of its
      Item-s in a dangerous way. Item_int::print(), for example, modifies its
      internal str_value.
      To make the danger rare, we print the expanded query as rarely as
@@ -265,9 +265,9 @@ void opt_trace_print_expanded_query(const THD *thd, SELECT_LEX *select_lex,
     This is acceptable given the audience (developers) and the goal (the
     inexact parts are irrelevant for the optimizer).
   */
-  select_lex->print(thd, &str,
-                    enum_query_type(QT_TO_SYSTEM_CHARSET |
-                                    QT_SHOW_SELECT_NUMBER | QT_NO_DEFAULT_DB));
+  query_block->print(thd, &str,
+                     enum_query_type(QT_TO_SYSTEM_CHARSET |
+                                     QT_SHOW_SELECT_NUMBER | QT_NO_DEFAULT_DB));
   trace_object->add_utf8("expanded_query", str.ptr(), str.length());
 }
 
@@ -322,13 +322,13 @@ void opt_trace_disable_if_no_security_context_access(THD *thd) {
       this command. The command itself is not traced though
       (SQLCOM_SHOW_FIELDS does not have CF_OPTIMIZER_TRACE).
     */
-    DBUG_ASSERT(false);
+    assert(false);
     trace->disable_I_S_for_this_and_children();
     return;
   }
   /*
     Note that thd->m_main_security_ctx.master_access is probably invariant
-    accross the life of THD: GRANT/REVOKE don't affect global privileges of an
+    across the life of THD: GRANT/REVOKE don't affect global privileges of an
     existing connection, per the manual.
   */
   if (!(thd->m_main_security_ctx.check_access(GLOBAL_ACLS & ~GRANT_ACL)) &&
@@ -348,7 +348,7 @@ void opt_trace_disable_if_no_stored_proc_func_access(THD *thd, sp_head *sp) {
     return;
   Opt_trace_context *const trace = &thd->opt_trace;
   if (!trace->is_started()) {
-    DBUG_ASSERT(false);
+    assert(false);
     trace->disable_I_S_for_this_and_children();
     return;
   }
@@ -361,8 +361,8 @@ void opt_trace_disable_if_no_stored_proc_func_access(THD *thd, sp_head *sp) {
   if (rc) trace->missing_privilege();
 }
 
-void opt_trace_disable_if_no_view_access(THD *thd, TABLE_LIST *view,
-                                         TABLE_LIST *underlying_tables) {
+void opt_trace_disable_if_no_view_access(THD *thd, Table_ref *view,
+                                         Table_ref *underlying_tables) {
   DBUG_TRACE;
   if (likely(!(thd->variables.optimizer_trace &
                Opt_trace_context::FLAG_ENABLED)) ||
@@ -370,7 +370,7 @@ void opt_trace_disable_if_no_view_access(THD *thd, TABLE_LIST *view,
     return;
   Opt_trace_context *const trace = &thd->opt_trace;
   if (!trace->is_started()) {
-    DBUG_ASSERT(false);
+    assert(false);
     trace->disable_I_S_for_this_and_children();
     return;
   }
@@ -418,7 +418,7 @@ namespace {
    @param thd thread context
    @param tbl list of tables to check
 */
-void opt_trace_disable_if_no_tables_access(THD *thd, TABLE_LIST *tbl) {
+void opt_trace_disable_if_no_tables_access(THD *thd, Table_ref *tbl) {
   DBUG_TRACE;
   if (likely(!(thd->variables.optimizer_trace &
                Opt_trace_context::FLAG_ENABLED)) ||
@@ -426,14 +426,14 @@ void opt_trace_disable_if_no_tables_access(THD *thd, TABLE_LIST *tbl) {
     return;
   Opt_trace_context *const trace = &thd->opt_trace;
   if (!trace->is_started()) {
-    DBUG_ASSERT(false);
+    assert(false);
     trace->disable_I_S_for_this_and_children();
     return;
   }
   Security_context *const backup_thd_sctx = thd->security_context();
   thd->set_security_context(&thd->m_main_security_ctx);
-  const TABLE_LIST *const first_not_own_table = thd->lex->first_not_own_table();
-  for (TABLE_LIST *t = tbl; t != nullptr && t != first_not_own_table;
+  const Table_ref *const first_not_own_table = thd->lex->first_not_own_table();
+  for (Table_ref *t = tbl; t != nullptr && t != first_not_own_table;
        t = t->next_global) {
     DBUG_PRINT("opt", ("table: '%s'", t->table_name));
     /*
@@ -476,7 +476,7 @@ void opt_trace_disable_if_no_tables_access(THD *thd, TABLE_LIST *tbl) {
 
 }  // namespace
 
-int fill_optimizer_trace_info(THD *thd, TABLE_LIST *tables, Item *) {
+int fill_optimizer_trace_info(THD *thd, Table_ref *tables, Item *) {
   TABLE *table = tables->table;
   Opt_trace_info info;
 

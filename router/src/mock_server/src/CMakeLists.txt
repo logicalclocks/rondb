@@ -1,4 +1,4 @@
-# Copyright (c) 2017, 2020, Oracle and/or its affiliates.
+# Copyright (c) 2017, 2022, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -46,7 +46,7 @@ ELSE()
   LIST(APPEND math_libraries -lm)
 ENDIF()
 
-SET(DUKTAPE_SOURCE_DIR ${CMAKE_SOURCE_DIR}/extra/duktape/duktape-2.3.0/)
+SET(DUKTAPE_SOURCE_DIR ${CMAKE_SOURCE_DIR}/extra/duktape/duktape-2.7.0/)
 
 SET(DUKTAPE_SRCS
   ${DUKTAPE_SOURCE_DIR}/src/duktape.c
@@ -57,6 +57,11 @@ SET(MOCK_SERVER_HTTP_CLIENT_SRCS
     mock_server_rest_client.cc)
 
 # disable compiler warnings in duktape
+MY_CHECK_CXX_COMPILER_WARNING("-Wunused-function" HAS_WARN_FLAG)
+IF(HAS_WARN_FLAG)
+  ADD_COMPILE_FLAGS(${DUKTAPE_SRCS} COMPILE_FLAGS "${HAS_WARN_FLAG}")
+ENDIF()
+
 MY_CHECK_CXX_COMPILER_WARNING("-Werror" HAS_WARN_FLAG)
 IF(HAS_WARN_FLAG)
   ADD_COMPILE_FLAGS(${DUKTAPE_SRCS} COMPILE_FLAGS "${HAS_WARN_FLAG}")
@@ -96,7 +101,15 @@ MY_CHECK_CXX_COMPILER_WARNING("-Wparentheses-equality" HAS_WARN_FLAG)
 IF(HAS_WARN_FLAG)
   ADD_COMPILE_FLAGS(${DUKTAPE_SRCS} COMPILE_FLAGS "${HAS_WARN_FLAG}")
 ENDIF()
+MY_CHECK_CXX_COMPILER_WARNING("-Wmissing-profile" HAS_WARN_FLAG)
+IF(HAS_WARN_FLAG)
+  ADD_COMPILE_FLAGS(${DUKTAPE_SRCS} COMPILE_FLAGS "${HAS_WARN_FLAG}")
+ENDIF()
 
+MY_CHECK_CXX_COMPILER_WARNING("-Wmaybe-uninitialized" HAS_WARN_FLAG)
+IF(HAS_WARN_FLAG)
+  ADD_COMPILE_FLAGS(${DUKTAPE_SRCS} COMPILE_FLAGS "${HAS_WARN_FLAG}")
+ENDIF()
 
 ADD_LIBRARY(duktape SHARED ${DUKTAPE_SRCS})
 TARGET_INCLUDE_DIRECTORIES(duktape SYSTEM PUBLIC
@@ -128,25 +141,30 @@ add_harness_plugin(mock_server
   x_protocol_decoder.cc
   x_protocol_encoder.cc
   mysql_server_mock.cc
-  mock_session.cc
   classic_mock_session.cc
   x_mock_session.cc
   mysql_server_mock_schema.cc
-  duk_module_shim.c
+  duk_module_shim.cc
   duk_node_fs.c
   mock_server_plugin.cc
   mock_server_component.cc
   authentication.cc
-  REQUIRES mysql_protocol;duktape;${PROTOBUF_LITE_LIBRARY};mysqlxmessages_lite;
-  harness_stdx;harness-library;router_lib)
+  protocol_base.cc
+  REQUIRES
+    mysql_protocol
+    duktape
+    router_mysqlxmessages
+    harness_stdx
+    harness-library
+    router_lib
+    harness_tls
+  )
 
 TARGET_INCLUDE_DIRECTORIES(mock_server SYSTEM PUBLIC
   ${DUKTAPE_SOURCE_DIR}/src/
   ${DUKTAPE_SOURCE_DIR}/extras/logging/
   ${DUKTAPE_SOURCE_DIR}/extras/module-node/
   ${DUKTAPE_SOURCE_DIR}/extras/module-duktape/
-  ${MYSQLX_GENERATE_DIR}
-  ${CMAKE_SOURCE_DIR}/plugin/x/client
   )
 
 TARGET_INCLUDE_DIRECTORIES(mock_server PUBLIC
@@ -170,8 +188,6 @@ MYSQL_ADD_EXECUTABLE(mysql_server_mock
   LINK_LIBRARIES
   ${common_libraries}
   harness-library
-  mysqlxmessages_lite
-  ${PROTOBUF_LITE_LIBRARY}
   harness_stdx
   harness_net_ts
   SKIP_INSTALL
@@ -189,4 +205,3 @@ TARGET_COMPILE_DEFINITIONS(mysql_server_mock
   PRIVATE -Dmysql_protocol_DEFINE_STATIC=1
   )
 SET_PATH_TO_CUSTOM_SSL_FOR_APPLE(mysql_server_mock)
-

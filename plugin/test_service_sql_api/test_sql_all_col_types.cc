@@ -1,4 +1,4 @@
-/* Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2015, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -169,7 +169,7 @@ static int sql_start_result_metadata(void *ctx, uint num_cols, uint,
   DBUG_TRACE;
   DBUG_PRINT("info", ("resultcs->number: %d", resultcs->number));
   DBUG_PRINT("info", ("resultcs->csname: %s", resultcs->csname));
-  DBUG_PRINT("info", ("resultcs->name: %s", resultcs->name));
+  DBUG_PRINT("info", ("resultcs->name: %s", resultcs->m_coll_name));
   pctx->num_cols = num_cols;
   pctx->resultcs = resultcs;
   pctx->current_col = 0;
@@ -763,7 +763,7 @@ static void handle_error(struct st_plugin_ctx *pctx) {
 }
 
 static void exec_test_cmd(MYSQL_SESSION session, const char *test_cmd,
-                          void *p MY_ATTRIBUTE((unused)), void *ctx,
+                          void *p [[maybe_unused]], void *ctx,
                           enum cs_text_or_binary text_or_binary) {
   char buffer[STRING_BUFFER_SIZE];
   COM_DATA cmd;
@@ -775,8 +775,8 @@ static void exec_test_cmd(MYSQL_SESSION session, const char *test_cmd,
   cmd.com_query.query = test_cmd;
   cmd.com_query.length = strlen(cmd.com_query.query);
   int fail = command_service_run_command(session, COM_QUERY, &cmd,
-                                         &my_charset_utf8_general_ci, &sql_cbs,
-                                         text_or_binary, ctx);
+                                         &my_charset_utf8mb3_general_ci,
+                                         &sql_cbs, text_or_binary, ctx);
   if (fail)
     LogPluginErrMsg(ERROR_LEVEL, ER_LOG_PRINTF_MSG,
                     "test_sql_all_col_types - ret code : %d", fail);
@@ -978,7 +978,7 @@ static int test_sql_service_plugin_init(void *p) {
   return 0;
 }
 
-static int test_sql_service_plugin_deinit(void *p MY_ATTRIBUTE((unused))) {
+static int test_sql_service_plugin_deinit(void *p [[maybe_unused]]) {
   DBUG_TRACE;
   LogPluginErr(INFORMATION_LEVEL, ER_LOG_PRINTF_MSG, "Uninstallation.");
   deinit_logging_service_for_plugin(&reg_srv, &log_bi, &log_bs);

@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2018, 2020, Oracle and/or its affiliates.
+  Copyright (c) 2018, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -30,8 +30,6 @@
 #include <gtest/gtest.h>
 
 #ifdef RAPIDJSON_NO_SIZETYPEDEFINE
-// if we build within the server, it will set RAPIDJSON_NO_SIZETYPEDEFINE
-// globally and require to include my_rapidjson_size_t.h
 #include "my_rapidjson_size_t.h"
 #endif
 #include <rapidjson/document.h>
@@ -39,13 +37,14 @@
 #include "dim.h"
 #include "mock_server_rest_client.h"
 #include "mock_server_testutils.h"
-#include "mysql_session.h"
 #include "mysqlrouter/cluster_metadata.h"
+#include "mysqlrouter/mysql_session.h"
 #include "mysqlrouter/rest_client.h"
 #include "random_generator.h"
 #include "rest_metadata_client.h"
 #include "router_component_test.h"
 #include "router_component_testutils.h"
+#include "router_test_helpers.h"
 #include "tcp_port_pool.h"
 
 #define ASSERT_NO_ERROR(expr) \
@@ -275,13 +274,21 @@ class RouterRoutingConnectionCommonTest : public RouterComponentTest {
         [](mysql_harness::RandomGeneratorInterface *) {});
 #if 1
     {
+      ProcessWrapper::OutputResponder responder{
+          [](const std::string &line) -> std::string {
+            if (line == "Please enter password: ")
+              return std::string(kRestApiPassword) + "\n";
+
+            return "";
+          }};
+
       auto &cmd = launch_command(
           ProcessManager::get_origin().join("mysqlrouter_passwd").str(),
           {"set",
            mysql_harness::Path(temp_test_dir_.name()).join("users").str(),
            kRestApiUsername},
-          EXIT_SUCCESS, true);
-      cmd.register_response("Please enter password", kRestApiPassword + "\n");
+          EXIT_SUCCESS, true,
+          std::vector<std::pair<std::string, std::string>>{}, responder);
       EXPECT_EQ(cmd.wait_for_exit(), 0);
     }
 #endif
@@ -410,7 +417,6 @@ class RouterRoutingConnectionCommonTest : public RouterComponentTest {
     EXPECT_NO_THROW(MockServerRestClient(http_port).set_globals(json_str));
   }
 
-  TcpPortPool port_pool_;
   std::chrono::milliseconds metadata_refresh_ttl_{100};
   std::chrono::milliseconds wait_for_cache_ready_timeout{
       metadata_refresh_ttl_ + std::chrono::milliseconds(5000)};
@@ -472,7 +478,7 @@ TEST_F(RouterRoutingConnectionTest, OldSchemaVersion) {
                                config_generator_->build_config_file(
                                    temp_test_dir_.name(), ClusterType::GR_V2),
                                -1s);
-  ASSERT_NO_FATAL_FAILURE(check_port_ready(router, router_rw_port_));
+  EXPECT_TRUE(wait_for_port_ready(monitoring_port_));
 
   SCOPED_TRACE("// [prep] waiting " +
                std::to_string(wait_for_cache_ready_timeout.count()) +
@@ -511,7 +517,7 @@ TEST_F(RouterRoutingConnectionTest, OldSchemaVersion) {
 #endif
   };
 
-  ASSERT_THAT(vec_from_lines(router.get_full_logfile()),
+  ASSERT_THAT(vec_from_lines(router.get_logfile_content()),
               ::testing::Contains(::testing::ContainsRegex(log_msg_re)));
 }
 
@@ -633,6 +639,13 @@ TEST_P(IsConnectionsClosedWhenPrimaryRemovedFromClusterTest,
     auto &client = client_and_port.first;
     EXPECT_TRUE(wait_connection_dropped(client));
   }
+
+  // check there info about closing invalid connections in the logfile
+  const auto log_content = router.get_logfile_content();
+  const std::string pattern = "INFO .* got request to disconnect " +
+                              std::to_string(clients.size()) + " invalid";
+
+  EXPECT_TRUE(pattern_found(log_content, pattern));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -664,6 +677,7 @@ TEST_P(IsConnectionsClosedWhenSecondaryRemovedFromClusterTest,
   launch_router(router_rw_port_,
                 config_generator_->build_config_file(temp_test_dir_.name(),
                                                      GetParam().cluster_type));
+  EXPECT_TRUE(wait_for_port_used(router_ro_port_));
 
   SCOPED_TRACE("// connect clients");
   std::vector<std::pair<MySQLSession, uint16_t>> clients(6);
@@ -740,6 +754,8 @@ TEST_P(IsRWConnectionsClosedWhenPrimaryFailoverTest,
   launch_router(router_ro_port_,
                 config_generator_->build_config_file(temp_test_dir_.name(),
                                                      GetParam().cluster_type));
+  EXPECT_TRUE(wait_for_port_used(router_rw_port_));
+
   // connect clients
   std::vector<std::pair<MySQLSession, uint16_t>> clients(2);
 
@@ -778,6 +794,60 @@ INSTANTIATE_TEST_SUITE_P(
         TracefileTestParam("metadata_3_secondaries_primary_failover.js",
                            ClusterType::GR_V1)));
 
+class RWDestinationUnreachableTest
+    : public RouterRoutingConnectionTest,
+      public ::testing::WithParamInterface<TracefileTestParam> {};
+
+TEST_P(RWDestinationUnreachableTest, RWDestinationUnreachable) {
+  TempDirectory tmp_dir("conf");
+  const std::string tracefile = GetParam().tracefile;
+
+  // TTL is large enough so that router will not notice that RW destination is
+  // gone when we kill it
+  const auto ttl = 3600s;
+  config_generator_.reset(new ConfigGenerator(
+      get_DEFAULT_defaults(), tmp_dir.name(), {cluster_nodes_ports_[0]},
+      router_rw_port_, router_ro_port_, monitoring_port_, ttl));
+
+  SCOPED_TRACE("// launch the primary node on port " +
+               std::to_string(cluster_nodes_ports_.at(0)) +
+               " working also as metadata server");
+  cluster_nodes_.push_back(&launch_server(cluster_nodes_ports_[0], tracefile,
+                                          cluster_nodes_http_ports_[0], 1));
+
+  SCOPED_TRACE("// launching router");
+  auto &router = launch_router(
+      router_rw_port_, config_generator_->build_config_file(
+                           temp_test_dir_.name(), GetParam().cluster_type));
+  ASSERT_NO_FATAL_FAILURE(check_port_ready(router, router_rw_port_));
+
+  SCOPED_TRACE("// make a connection to primary node");
+  {
+    MySQLSession client;
+    ASSERT_NO_FATAL_FAILURE(client.connect("127.0.0.1", router_rw_port_,
+                                           "username", "password", "", ""));
+  }
+
+  SCOPED_TRACE("// kill the primary node");
+  EXPECT_NO_THROW(cluster_nodes_[0]->send_clean_shutdown_event());
+  EXPECT_NO_THROW(cluster_nodes_[0]->wait_for_exit());
+
+  SCOPED_TRACE("// RW connection should fail");
+  {
+    MySQLSession client;
+    ASSERT_THROW(client.connect("127.0.0.1", router_rw_port_, "username",
+                                "password", "", "", /*connect_timeout*/ 1),
+                 MySQLSession::Error);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    RWDestinationUnreachable, RWDestinationUnreachableTest,
+    ::testing::Values(TracefileTestParam("metadata_1_node_repeat_v2_gr.js",
+                                         ClusterType::GR_V2),
+                      TracefileTestParam("metadata_1_node_repeat.js",
+                                         ClusterType::GR_V1)));
+
 class IsROConnectionsKeptWhenPrimaryFailoverTest
     : public RouterRoutingConnectionTest,
       public ::testing::WithParamInterface<TracefileTestParam> {};
@@ -798,6 +868,8 @@ TEST_P(IsROConnectionsKeptWhenPrimaryFailoverTest,
   launch_router(router_ro_port_,
                 config_generator_->build_config_file(
                     temp_test_dir_.name(), GetParam().cluster_type, true));
+  EXPECT_TRUE(wait_for_port_used(router_ro_port_));
+
   // connect clients
   std::vector<std::pair<MySQLSession, uint16_t>> clients(4);
 
@@ -859,6 +931,8 @@ TEST_P(RouterRoutingConnectionPromotedTest,
   launch_router(router_ro_port_,
                 config_generator_->build_config_file(temp_test_dir_.name(),
                                                      GetParam().cluster_type));
+  EXPECT_TRUE(wait_for_port_used(router_ro_port_));
+
   // connect clients
   std::vector<std::pair<MySQLSession, uint16_t>> clients(6);
 
@@ -927,6 +1001,8 @@ TEST_P(IsConnectionToSecondaryClosedWhenPromotedToPrimaryTest,
   launch_router(router_ro_port_,
                 config_generator_->build_config_file(temp_test_dir_.name(),
                                                      GetParam().cluster_type));
+  EXPECT_TRUE(wait_for_port_used(router_ro_port_));
+
   // connect clients
   std::vector<std::pair<MySQLSession, uint16_t>> clients(6);
 
@@ -991,6 +1067,7 @@ TEST_P(IsConnectionToMinorityClosedWhenClusterPartitionTest,
   launch_router(router_ro_port_,
                 config_generator_->build_config_file(temp_test_dir_.name(),
                                                      GetParam().cluster_type));
+  EXPECT_TRUE(wait_for_port_used(router_rw_port_));
 
   // connect clients
   std::vector<std::pair<MySQLSession, uint16_t>> clients(10);
@@ -1076,6 +1153,8 @@ TEST_P(IsConnectionClosedWhenClusterOverloadedTest,
   launch_router(router_ro_port_,
                 config_generator_->build_config_file(temp_test_dir_.name(),
                                                      GetParam().cluster_type));
+  EXPECT_TRUE(wait_for_port_used(router_ro_port_));
+
   // connect clients
   std::vector<std::pair<MySQLSession, uint16_t>> clients(6);
 
@@ -1139,6 +1218,8 @@ TEST_P(RouterRoutingConnectionMDUnavailableTest,
   launch_router(router_ro_port_,
                 config_generator_->build_config_file(temp_test_dir_.name(),
                                                      GetParam().cluster_type));
+  EXPECT_TRUE(wait_for_port_used(router_ro_port_));
+
   // connect clients
   std::vector<std::pair<MySQLSession, uint16_t>> clients(6);
 
@@ -1249,9 +1330,10 @@ TEST_P(RouterRoutingConnectionMDRefreshTest,
 
   config_generator_->disconnect_on_metadata_unavailable(
       "&disconnect_on_metadata_unavailable=yes");
-  launch_router(router_ro_port_,
-                config_generator_->build_config_file(temp_test_dir_.name(),
-                                                     GetParam().cluster_type));
+  auto &router = launch_router(
+      router_ro_port_, config_generator_->build_config_file(
+                           temp_test_dir_.name(), GetParam().cluster_type));
+  EXPECT_TRUE(wait_for_port_used(router_rw_port_));
 
   // connect clients
   std::vector<std::pair<MySQLSession, uint16_t>> clients(10);
@@ -1291,6 +1373,12 @@ TEST_P(RouterRoutingConnectionMDRefreshTest,
     ASSERT_NO_THROW(std::unique_ptr<MySQLSession::ResultRow> result{
         client.query_one("select @@port")});
   }
+
+  // check there is NO info about closing invalid connections in the logfile
+  const auto log_content = router.get_logfile_content();
+  const std::string pattern = ".* got request to disconnect .* invalid";
+
+  EXPECT_FALSE(pattern_found(log_content, pattern));
 }
 
 MDRefreshTestParam steps[] = {

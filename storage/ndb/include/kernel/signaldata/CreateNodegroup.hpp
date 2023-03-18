@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2016, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -40,7 +40,7 @@ struct CreateNodegroupReq {
    */
   friend bool printCREATE_NODEGROUP_REQ(FILE*, const Uint32*, Uint32, Uint16);
 
-  STATIC_CONST( SignalLength = 10 );
+  static constexpr Uint32 SignalLength = 10;
 
   union {
     Uint32 senderData;
@@ -73,7 +73,7 @@ struct CreateNodegroupRef {
    */
   friend bool printCREATE_NODEGROUP_REF(FILE*, const Uint32*, Uint32, Uint16);
 
-  STATIC_CONST( SignalLength = 7 );
+  static constexpr Uint32 SignalLength = 7;
 
   enum ErrorCode {
     NoError = 0,
@@ -116,7 +116,7 @@ struct CreateNodegroupConf {
    */
   friend bool printCREATE_NODEGROUP_CONF(FILE*, const Uint32*, Uint32, Uint16);
 
-  STATIC_CONST( SignalLength = 4 );
+  static constexpr Uint32 SignalLength = 4;
 
   Uint32 senderData;
   Uint32 senderRef;

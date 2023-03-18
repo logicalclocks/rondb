@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -418,7 +419,7 @@ int SimpleCpcClient::select_protocol(Properties &reply) {
 SimpleCpcClient::SimpleCpcClient(const char *_host, int _port) {
   host = strdup(_host);
   port = _port;
-  ndb_socket_invalidate(&cpc_sock);
+  ndb_socket_initialize(&cpc_sock);
   m_cpcd_protocol_version = 0;
 }
 
@@ -452,7 +453,7 @@ int SimpleCpcClient::open_connection() {
   struct sockaddr_in6 sa;
 
   /* Create socket */
-  cpc_sock = ndb_socket_create_dual_stack(SOCK_STREAM, IPPROTO_TCP);
+  ndb_socket_create_dual_stack(cpc_sock, SOCK_STREAM, IPPROTO_TCP);
   if (!ndb_socket_valid(cpc_sock)) return -1;
 
   memset(&sa, 0, sizeof(sa));
@@ -504,7 +505,7 @@ int SimpleCpcClient::cpc_send(const char *cmd, const Properties &args) {
   Properties::Iterator iter(&args);
   const char *name;
   while ((name = iter.next()) != NULL) {
-    PropertiesType t;
+    PropertiesType t = PropertiesType(0);
     Uint32 val_i;
     BaseString val_s;
     const size_t namelen = strlen(name);
@@ -591,7 +592,7 @@ const Properties *SimpleCpcClient::cpc_call(const char *cmd,
   return ret;
 }
 
-SimpleCpcClient::ParserDummy::ParserDummy(NDB_SOCKET_TYPE sock)
+SimpleCpcClient::ParserDummy::ParserDummy(ndb_socket_t sock)
     : SocketServer::Session(sock) {}
 
 template class Vector<SimpleCpcClient::Process>;

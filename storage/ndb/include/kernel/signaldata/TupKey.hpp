@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,7 +47,7 @@ class TupKeyReq {
   friend bool printTUPKEYREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo);
 
 public:
-  STATIC_CONST( SignalLength = 10 );
+  static constexpr Uint32 SignalLength = 9;
 
   enum
   {
@@ -67,7 +67,6 @@ private:
   Uint32 keyRef2;
   Uint32 storedProcedure;
   Uint32 fragPtr;
-  Uint32 disk_page;
   Uint32 m_row_id_page_no;
   Uint32 m_row_id_page_idx;
   Uint32 attrInfoIVal;
@@ -136,7 +135,7 @@ class TupKeyConf {
   friend bool printTUPKEYCONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo);
 
 public:
-  STATIC_CONST( SignalLength = 7 );
+  static constexpr Uint32 SignalLength = 7;
 
 private:
 
@@ -170,7 +169,7 @@ class TupKeyRef {
   friend bool printTUPKEYREF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo);
 
 public:
-  STATIC_CONST( SignalLength = 3 );
+  static constexpr Uint32 SignalLength = 3;
 
 private:
 

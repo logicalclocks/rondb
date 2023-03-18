@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -27,10 +27,11 @@
 
 #include "storage/perfschema/table_events_statements.h"
 
+#include <assert.h>
 #include <stddef.h>
 
 #include "my_compiler.h"
-#include "my_dbug.h"
+
 #include "my_thread.h"
 #include "sql/plugin_table.h"
 #include "sql/sp_head.h" /* TYPE_ENUM_FUNCTION, ... */
@@ -92,6 +93,10 @@ Plugin_table table_events_statements_current::m_table_def(
     "  NESTING_EVENT_TYPE ENUM('TRANSACTION', 'STATEMENT', 'STAGE', 'WAIT'),\n"
     "  NESTING_EVENT_LEVEL INTEGER,\n"
     "  STATEMENT_ID BIGINT unsigned,\n"
+    "  CPU_TIME BIGINT unsigned not null,\n"
+    "  MAX_CONTROLLED_MEMORY BIGINT unsigned not null,\n"
+    "  MAX_TOTAL_MEMORY BIGINT unsigned not null,\n"
+    "  EXECUTION_ENGINE ENUM ('PRIMARY', 'SECONDARY'),\n"
     "  PRIMARY KEY (THREAD_ID, EVENT_ID) USING HASH\n",
     /* Options */
     " ENGINE=PERFORMANCE_SCHEMA",
@@ -163,6 +168,10 @@ Plugin_table table_events_statements_history::m_table_def(
     "  NESTING_EVENT_TYPE ENUM('TRANSACTION', 'STATEMENT', 'STAGE', 'WAIT'),\n"
     "  NESTING_EVENT_LEVEL INTEGER,\n"
     "  STATEMENT_ID BIGINT unsigned,\n"
+    "  CPU_TIME BIGINT unsigned not null,\n"
+    "  MAX_CONTROLLED_MEMORY BIGINT unsigned not null,\n"
+    "  MAX_TOTAL_MEMORY BIGINT unsigned not null,\n"
+    "  EXECUTION_ENGINE ENUM ('PRIMARY', 'SECONDARY'),\n"
     "  PRIMARY KEY (THREAD_ID, EVENT_ID) USING HASH\n",
     /* Options */
     " ENGINE=PERFORMANCE_SCHEMA",
@@ -233,7 +242,11 @@ Plugin_table table_events_statements_history_long::m_table_def(
     "  NESTING_EVENT_ID BIGINT unsigned,\n"
     "  NESTING_EVENT_TYPE ENUM('TRANSACTION', 'STATEMENT', 'STAGE', 'WAIT'),\n"
     "  NESTING_EVENT_LEVEL INTEGER,\n"
-    "  STATEMENT_ID BIGINT unsigned\n",
+    "  STATEMENT_ID BIGINT unsigned,\n"
+    "  CPU_TIME BIGINT unsigned not null,\n"
+    "  MAX_CONTROLLED_MEMORY BIGINT unsigned not null,\n"
+    "  MAX_TOTAL_MEMORY BIGINT unsigned not null,\n"
+    "  EXECUTION_ENGINE ENUM ('PRIMARY', 'SECONDARY')\n",
     /* Options */
     " ENGINE=PERFORMANCE_SCHEMA",
     /* Tablespace */
@@ -316,25 +329,14 @@ int table_events_statements_common::make_row_part_1(
                         &m_row.m_timer_wait);
   m_row.m_lock_time = statement->m_lock_time * MICROSEC_TO_PICOSEC;
 
-  m_row.m_name = klass->m_name;
-  m_row.m_name_length = klass->m_name_length;
+  m_row.m_name = klass->m_name.str();
+  m_row.m_name_length = klass->m_name.length();
 
-  m_row.m_current_schema_name_length = statement->m_current_schema_name_length;
-  if (m_row.m_current_schema_name_length > 0)
-    memcpy(m_row.m_current_schema_name, statement->m_current_schema_name,
-           m_row.m_current_schema_name_length);
+  m_row.m_current_schema_name = statement->m_current_schema_name;
 
   m_row.m_object_type = statement->m_sp_type;
-
-  m_row.m_schema_name_length = statement->m_schema_name_length;
-  if (m_row.m_schema_name_length > 0)
-    memcpy(m_row.m_schema_name, statement->m_schema_name,
-           m_row.m_schema_name_length);
-
-  m_row.m_object_name_length = statement->m_object_name_length;
-  if (m_row.m_object_name_length > 0)
-    memcpy(m_row.m_object_name, statement->m_object_name,
-           m_row.m_object_name_length);
+  m_row.m_schema_name = statement->m_schema_name;
+  m_row.m_object_name = statement->m_object_name;
 
   make_source_column(statement->m_source_file, statement->m_source_line,
                      m_row.m_source, sizeof(m_row.m_source),
@@ -363,6 +365,10 @@ int table_events_statements_common::make_row_part_1(
   m_row.m_sort_scan = statement->m_sort_scan;
   m_row.m_no_index_used = statement->m_no_index_used;
   m_row.m_no_good_index_used = statement->m_no_good_index_used;
+  m_row.m_cpu_time = statement->m_cpu_time * NANOSEC_TO_PICOSEC;
+  m_row.m_max_controlled_memory = statement->m_max_controlled_memory;
+  m_row.m_max_total_memory = statement->m_max_total_memory;
+  m_row.m_secondary = statement->m_secondary;
 
   /* Copy the digest storage. */
   digest->copy(&statement->m_digest_storage);
@@ -416,7 +422,7 @@ int table_events_statements_common::read_row_values(TABLE *table,
   uint len;
 
   /* Set the null bits */
-  DBUG_ASSERT(table->s->null_bytes == 3);
+  assert(table->s->null_bytes == 3);
   buf[0] = 0;
   buf[1] = 0;
   buf[2] = 0;
@@ -438,10 +444,10 @@ int table_events_statements_common::read_row_values(TABLE *table,
           }
           break;
         case 3: /* EVENT_NAME */
-          set_field_varchar_utf8(f, m_row.m_name, m_row.m_name_length);
+          set_field_varchar_utf8mb4(f, m_row.m_name, m_row.m_name_length);
           break;
         case 4: /* SOURCE */
-          set_field_varchar_utf8(f, m_row.m_source, m_row.m_source_length);
+          set_field_varchar_utf8mb4(f, m_row.m_source, m_row.m_source_length);
           break;
         case 5: /* TIMER_START */
           if (m_row.m_timer_start != 0) {
@@ -482,8 +488,8 @@ int table_events_statements_common::read_row_values(TABLE *table,
           break;
         case 10: /* DIGEST */
           if (m_row.m_digest.m_digest_length > 0)
-            set_field_varchar_utf8(f, m_row.m_digest.m_digest,
-                                   m_row.m_digest.m_digest_length);
+            set_field_varchar_utf8mb4(f, m_row.m_digest.m_digest,
+                                      m_row.m_digest.m_digest_length);
           else {
             f->set_null();
           }
@@ -497,35 +503,20 @@ int table_events_statements_common::read_row_values(TABLE *table,
           }
           break;
         case 12: /* CURRENT_SCHEMA */
-          if (m_row.m_current_schema_name_length)
-            set_field_varchar_utf8(f, m_row.m_current_schema_name,
-                                   m_row.m_current_schema_name_length);
-          else {
-            f->set_null();
-          }
+          set_nullable_field_schema_name(f, &m_row.m_current_schema_name);
           break;
         case 13: /* OBJECT_TYPE */
-          if (m_row.m_object_name_length > 0) {
+          if (m_row.m_object_name.length() > 0) {
             set_field_object_type(f, m_row.m_object_type);
           } else {
             f->set_null();
           }
           break;
         case 14: /* OBJECT_SCHEMA */
-          if (m_row.m_schema_name_length)
-            set_field_varchar_utf8(f, m_row.m_schema_name,
-                                   m_row.m_schema_name_length);
-          else {
-            f->set_null();
-          }
+          set_nullable_field_schema_name(f, &m_row.m_schema_name);
           break;
         case 15: /* OBJECT_NAME */
-          if (m_row.m_object_name_length)
-            set_field_varchar_utf8(f, m_row.m_object_name,
-                                   m_row.m_object_name_length);
-          else {
-            f->set_null();
-          }
+          set_nullable_field_object_name(f, &m_row.m_object_name);
           break;
         case 16: /* OBJECT_INSTANCE_BEGIN */
           f->set_null();
@@ -535,7 +526,7 @@ int table_events_statements_common::read_row_values(TABLE *table,
           break;
         case 18: /* RETURNED_SQLSTATE */
           if (m_row.m_sqlstate[0] != 0) {
-            set_field_varchar_utf8(f, m_row.m_sqlstate, SQLSTATE_LENGTH);
+            set_field_varchar_utf8mb4(f, m_row.m_sqlstate, SQLSTATE_LENGTH);
           } else {
             f->set_null();
           }
@@ -543,7 +534,7 @@ int table_events_statements_common::read_row_values(TABLE *table,
         case 19: /* MESSAGE_TEXT */
           len = (uint)strlen(m_row.m_message_text);
           if (len) {
-            set_field_varchar_utf8(f, m_row.m_message_text, len);
+            set_field_varchar_utf8mb4(f, m_row.m_message_text, len);
           } else {
             f->set_null();
           }
@@ -626,8 +617,20 @@ int table_events_statements_common::read_row_values(TABLE *table,
             f->set_null();
           }
           break;
+        case 42: /* CPU_TIME */
+          set_field_ulonglong(f, m_row.m_cpu_time);
+          break;
+        case 43: /* MAX_CONTROLLED_MEMORY */
+          set_field_ulonglong(f, m_row.m_max_controlled_memory);
+          break;
+        case 44: /* MAX_TOTAL_MEMORY */
+          set_field_ulonglong(f, m_row.m_max_total_memory);
+          break;
+        case 45: /* EXECUTION_ENGINE */
+          set_field_enum(f, m_row.m_secondary ? ENUM_SECONDARY : ENUM_PRIMARY);
+          break;
         default:
-          DBUG_ASSERT(false);
+          assert(false);
       }
     }
   }
@@ -703,7 +706,7 @@ int table_events_statements_current::rnd_pos(const void *pos) {
       }
     }
 
-    DBUG_ASSERT(m_pos.m_index_2 < statement_stack_max);
+    assert(m_pos.m_index_2 < statement_stack_max);
 
     statement = &pfs_thread->m_statement_stack[m_pos.m_index_2];
 
@@ -791,10 +794,10 @@ ha_rows table_events_statements_current::get_row_count(void) {
   return global_thread_container.get_row_count() * statement_stack_max;
 }
 
-int table_events_statements_current::index_init(uint idx MY_ATTRIBUTE((unused)),
+int table_events_statements_current::index_init(uint idx [[maybe_unused]],
                                                 bool) {
   PFS_index_events_statements *result;
-  DBUG_ASSERT(idx == 0);
+  assert(idx == 0);
   result = PFS_NEW(PFS_index_events_statements);
   m_opened_index = result;
   m_index = result;
@@ -856,12 +859,12 @@ int table_events_statements_history::rnd_pos(const void *pos) {
   PFS_thread *pfs_thread;
   PFS_events_statements *statement;
 
-  DBUG_ASSERT(events_statements_history_per_thread != 0);
+  assert(events_statements_history_per_thread != 0);
   set_position(pos);
 
   pfs_thread = global_thread_container.get(m_pos.m_index_1);
   if (pfs_thread != nullptr) {
-    DBUG_ASSERT(m_pos.m_index_2 < events_statements_history_per_thread);
+    assert(m_pos.m_index_2 < events_statements_history_per_thread);
 
     if (!pfs_thread->m_statements_history_full &&
         (m_pos.m_index_2 >= pfs_thread->m_statements_history_index)) {
@@ -951,10 +954,10 @@ ha_rows table_events_statements_history::get_row_count(void) {
          global_thread_container.get_row_count();
 }
 
-int table_events_statements_history::index_init(uint idx MY_ATTRIBUTE((unused)),
+int table_events_statements_history::index_init(uint idx [[maybe_unused]],
                                                 bool) {
   PFS_index_events_statements *result;
-  DBUG_ASSERT(idx == 0);
+  assert(idx == 0);
   result = PFS_NEW(PFS_index_events_statements);
   m_opened_index = result;
   m_index = result;

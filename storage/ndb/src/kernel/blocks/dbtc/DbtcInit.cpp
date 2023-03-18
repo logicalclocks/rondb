@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -24,6 +24,7 @@
 */
 
 #define DBTC_C
+#include "util/require.h"
 #include "Dbtc.hpp"
 #include "ndb_global.h"
 #include <pc.hpp>
@@ -35,7 +36,6 @@
 
 #define JAM_FILE_ID 349
 
-extern EventLogger * g_eventLogger;
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
 #define DEBUG_MEM
@@ -46,8 +46,7 @@ extern EventLogger * g_eventLogger;
 
 Uint64 Dbtc::getTransactionMemoryNeed(
     const Uint32 dbtc_instance_count,
-    const ndb_mgm_configuration_iterator * mgm_cfg,
-    const bool use_reserved)
+    const ndb_mgm_configuration_iterator * mgm_cfg)
 {
   Uint32 numFragLocation = 0;
   Uint32 numScanFragment = 0;
@@ -65,7 +64,6 @@ Uint64 Dbtc::getTransactionMemoryNeed(
   Uint32 numCommitAckMarkerBuffer = 0;
   Uint32 numTakeOverCommitAckMarkerBuffer = 0;
 
-  if (use_reserved)
   {
     require(!ndb_mgm_get_int_parameter(mgm_cfg,
                                        CFG_TC_RESERVED_FRAG_LOCATION,
@@ -114,54 +112,6 @@ Uint64 Dbtc::getTransactionMemoryNeed(
                                        CFG_TC_RESERVED_TO_COMMIT_ACK_MARKER_BUFFER,
                                        &numTakeOverCommitAckMarkerBuffer));
   }
-  else
-  {
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_FRAG_LOCATION,
-                                       &numFragLocation));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_SCAN_FRAGMENT,
-                                       &numScanFragment));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_SCAN_RECORD,
-                                       &numScanRecord));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_CONNECT_RECORD,
-                                       &numConnectRecord));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_TO_CONNECT_RECORD,
-                                       &numTakeOverConnectRecord));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_COMMIT_ACK_MARKER,
-                                       &numCommitAckMarker));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_TO_COMMIT_ACK_MARKER,
-                                       &numTakeOverCommitAckMarker));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_INDEX_OPERATION,
-                                       &numIndexOperations));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_API_CONNECT_RECORD,
-                                       &numApiConnectRecord));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_TO_API_CONNECT_RECORD,
-                                       &numTakeOverApiConnectRecord));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_CACHE_RECORD,
-                                       &numCacheRecord));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_FIRED_TRIGGER_DATA,
-                                       &numFiredTriggerData));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_ATTRIBUTE_BUFFER,
-                                       &numAttributeBuffer));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_COMMIT_ACK_MARKER_BUFFER,
-                                       &numCommitAckMarkerBuffer));
-    require(!ndb_mgm_get_int_parameter(mgm_cfg,
-                                       CFG_TC_TARGET_TO_COMMIT_ACK_MARKER_BUFFER,
-                                       &numTakeOverCommitAckMarkerBuffer));
-  }
 
   Uint64 byte_count = 0;
   Uint64 byte_count_to = 0; // Only one tc instance do tc take over.
@@ -191,6 +141,29 @@ Uint64 Dbtc::getTransactionMemoryNeed(
 
 void Dbtc::initData() 
 {
+#ifdef DEBUG_QUERY_THREAD_USAGE
+  c_qt_used_dirty_flag = 0;
+  c_qt_used_locked_read = 0;
+  c_qt_used_locked_read_take_over = 0;
+
+  c_no_qt_no_read_flag = 0;
+  c_no_qt_disk_flag = 0;
+  c_no_qt_util_flag = 0;
+  c_no_qt_no_exec_flag = 0;
+  c_no_qt_exec_write_count = 0;
+  c_no_qt_wrong_version = 0;
+
+  c_last_qt_used_dirty_flag = 0;
+  c_last_qt_used_locked_read = 0;
+  c_last_qt_used_locked_read_take_over = 0;
+
+  c_last_no_qt_no_read_flag = 0;
+  c_last_no_qt_disk_flag = 0;
+  c_last_no_qt_util_flag = 0;
+  c_last_no_qt_no_exec_flag = 0;
+  c_last_no_qt_exec_write_count = 0;
+  c_last_no_qt_wrong_version = 0;
+#endif
   m_gcp_finished = 0;
   m_gcp_finished_prev = 0;
   chostFilesize = MAX_NODES;
@@ -210,8 +183,34 @@ void Dbtc::initData()
   ctcTimer = 0;
 
   // Trigger and index pools
-  c_theDefinedTriggerPool.setSize(c_maxNumberOfDefinedTriggers);
-  c_theIndexPool.setSize(c_maxNumberOfIndexes);
+  Pool_context pc;
+  pc.m_block = this;
+
+  c_theDefinedTriggerPool.init(
+    TcDefinedTriggerData::TYPE_ID,
+    pc,
+    c_maxNumberOfDefinedTriggers,
+    UINT32_MAX);
+
+  while (c_theDefinedTriggerPool.startup())
+  {
+    refresh_watch_dog();
+  }
+  Uint32 triggerHashSize = MAX(c_maxNumberOfDefinedTriggers, 16384);
+  c_theDefinedTriggerHash.setSize(triggerHashSize);
+
+  c_theIndexPool.init(
+    TcIndexData::TYPE_ID,
+    pc,
+    c_maxNumberOfIndexes,
+    UINT32_MAX);
+
+  while (c_theIndexPool.startup())
+  {
+    refresh_watch_dog();
+  }
+  Uint32 indexHashSize = MAX(c_maxNumberOfIndexes, 8192);
+  c_theIndexHash.setSize(indexHashSize);
 }//Dbtc::initData()
 
 void Dbtc::initRecords(const ndb_mgm_configuration_iterator * mgm_cfg) 
@@ -361,7 +360,6 @@ void Dbtc::initRecords(const ndb_mgm_configuration_iterator * mgm_cfg)
                                           &reserveFailCommitAckMarkerBuffer));
   }
 
-  void *p;
 #if defined(USE_INIT_GLOBAL_VARIABLES)
   {
     void* tmp[] = { &tcConnectptr,
@@ -375,14 +373,6 @@ void Dbtc::initRecords(const ndb_mgm_configuration_iterator * mgm_cfg)
   // Records with dynamic sizes
 
   // Init all index records
-  TcIndexData_list indexes(c_theIndexPool);
-  TcIndexDataPtr iptr;
-  while(indexes.seizeFirst(iptr) == true) {
-    p= iptr.p;
-    new (p) TcIndexData();
-  }
-  while (indexes.releaseFirst());
-
   hostRecord = (HostRecord*)allocRecord("HostRecord",
 					sizeof(HostRecord),
 					chostFilesize);
@@ -558,10 +548,10 @@ Dbtc::getParam(const char* name, Uint32* count)
 Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
   SimulatedBlock(DBTC, ctx, instanceNo),
   c_dih(0),
-  c_theDefinedTriggers(c_theDefinedTriggerPool),
+  c_theDefinedTriggerHash(c_theDefinedTriggerPool),
   c_firedTriggerHash(c_theFiredTriggerPool),
   c_maxNumberOfDefinedTriggers(0),
-  c_theIndexes(c_theIndexPool),
+  c_theIndexHash(c_theIndexPool),
   c_maxNumberOfIndexes(0),
   c_fk_hash(c_fk_pool),
   c_currentApiConTimers(NULL),
@@ -714,7 +704,11 @@ Dbtc::Dbtc(Block_context& ctx, Uint32 instanceNo):
     &scanRecordPool;
   c_transient_pools[DBTC_COMMIT_ACK_MARKER_TRANSIENT_POOL_INDEX] =
     &m_commitAckMarkerPool;
-  NDB_STATIC_ASSERT(c_transient_pool_count == 13);
+  c_transient_pools[DBTC_INDEX_DATA_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_theIndexPool;
+  c_transient_pools[DBTC_DEFINED_TRIGGER_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_theDefinedTriggerPool;
+  static_assert(c_transient_pool_count == 15);
   c_transient_pools_shrinking.clear();
 }//Dbtc::Dbtc()
 

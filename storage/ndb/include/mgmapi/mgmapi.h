@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -121,7 +121,7 @@
  *   between structs so use ndb_logevent::type to decide which struct
  *   is valid.
  *
- * Sample code for listening to Backup related events.  The availaable log
+ * Sample code for listening to Backup related events.  The available log
  * events are listed in @ref ndb_logevent.h
  *
  * @code
@@ -540,8 +540,8 @@ extern "C" {
   int ndb_mgm_set_configuration_nodeid(NdbMgmHandle handle, int nodeid);
 
   /**
-   * Set local bindaddress
-   * @param arg - Srting of form "host[:port]"
+   * Set local bind address
+   * @param arg - String of form "host[:port]"
    * @note must be called before connect
    * @note Error on binding local address will not be reported until connect
    * @return 0 on success
@@ -575,7 +575,7 @@ extern "C" {
   /**
    * Sets the number of milliseconds for timeout of network operations
    * Default is 60 seconds.
-   * Only increments of 1000 ms are supported. No function is gaurenteed
+   * Only increments of 1000 ms are supported. No function is guaranteed
    * to return in a fraction of a second.
    *
    * @param handle  NdbMgmHandle
@@ -1256,7 +1256,7 @@ extern "C" {
    * Retrieve filedescriptor from NdbLogEventHandle.  May be used in
    * e.g. an application select() statement.
    *
-   * @note Do not attemt to read from it, it will corrupt the parsing.
+   * @note Do not attempt to read from it, it will corrupt the parsing.
    *
    * @return       filedescriptor, -1 on failure.
    */

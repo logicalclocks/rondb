@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2014, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2014, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,10 +25,11 @@
 
 #include "sql/sql_lex_hints.h"
 
+#include <assert.h>
 #include <climits>
 
 #include "my_compiler.h"
-#include "my_dbug.h"
+
 #include "mysqld_error.h"
 #include "sql/derror.h"
 #include "sql/lex_token.h"
@@ -40,7 +41,7 @@
 class PT_hint_list;
 
 /**
-  Consrtuctor.
+  Constructor.
 
   @param thd_arg          The thread handler.
   @param lineno_arg       The starting line number of a hint string in a query.
@@ -113,7 +114,7 @@ int Hint_scanner::scan() {
   }
 }
 
-void HINT_PARSER_error(THD *thd MY_ATTRIBUTE((unused)), Hint_scanner *scanner,
+void HINT_PARSER_error(THD *thd [[maybe_unused]], Hint_scanner *scanner,
                        PT_hint_list **, const char *msg) {
   if (strcmp(msg, "syntax error") == 0)
     msg = ER_THD(thd, ER_WARN_OPTIMIZER_HINT_SYNTAX_ERROR);
@@ -145,7 +146,7 @@ void Hint_scanner::syntax_warning(const char *msg) const {
   Add hint tokens to main lexer's digest calculation buffer.
 */
 void Hint_scanner::add_hint_token_digest() {
-  if (digest_state == nullptr) return;  // cant add: digest buffer is full
+  if (digest_state == nullptr) return;  // can't add: digest buffer is full
 
   if (prev_token == 0 || prev_token == HINT_ERROR) return;  // nothing to add
 
@@ -227,7 +228,7 @@ void Hint_scanner::add_hint_token_digest() {
           case NO_DERIVED_CONDITION_PUSHDOWN_HINT:
             break;
           default:
-            DBUG_ASSERT(false);
+            assert(false);
         }
         add_digest(prev_token);
       }

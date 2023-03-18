@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,9 +25,12 @@
 #ifndef NDB_TABLE_MAP_H
 #define NDB_TABLE_MAP_H
 
+#include <assert.h>
 #include "my_bitmap.h"
-#include "my_dbug.h"
+
 #include "storage/ndb/include/ndbapi/NdbApi.hpp"
+
+struct TABLE;
 
 /** Ndb_table_map
  *
@@ -49,7 +52,7 @@
  */
 class Ndb_table_map {
  public:
-  Ndb_table_map(struct TABLE *, const NdbDictionary::Table *ndb_table = 0);
+  Ndb_table_map(const TABLE *, const NdbDictionary::Table *ndb_table = nullptr);
   ~Ndb_table_map();
 
   /* Get the NDB column number for a MySQL field.
@@ -99,32 +102,29 @@ class Ndb_table_map {
   unsigned char *get_column_mask(const MY_BITMAP *mysql_field_map);
 
   /*
-   Adapter function for checking wheter a TABLE*
+   Adapter function for checking whether a TABLE*
    has virtual generated columns.
    Function existed in 5.7 as table->has_virtual_gcol()
   */
-  static bool has_virtual_gcol(const struct TABLE *table);
+  static bool has_virtual_gcol(const TABLE *table);
 
   /*
     Adapter function for returning the number of
     stored fields in the TABLE*(i.e those who are
     not virtual).
   */
-  static uint num_stored_fields(const struct TABLE *table);
+  static uint num_stored_fields(const TABLE *table);
 
-  /*
-    Check if the table has physical blob columns(i.e actually stored in
-    the engine)
-   */
-  static bool have_physical_blobs(const struct TABLE *table);
+  /* Get number of stored fields in the TABLE */
+  uint get_num_stored_fields() const { return m_stored_fields; }
 
-#ifndef DBUG_OFF
-  static void print_record(const struct TABLE *table, const uchar *record);
-  static void print_table(const char *info, const struct TABLE *table);
+#ifndef NDEBUG
+  static void print_record(const TABLE *table, const uchar *record);
+  static void print_table(const char *info, const TABLE *table);
 #endif
 
  private:
-  const NdbDictionary::Table *m_ndb_table;
+  const NdbDictionary::Table *const m_ndb_table;
   MY_BITMAP m_moved_fields;
   MY_BITMAP m_rewrite_set;
   int *m_map_by_field;
@@ -152,7 +152,7 @@ inline NdbBlob *Ndb_table_map::getBlobHandle(const NdbOperation *ndb_op,
 }
 
 inline uint Ndb_table_map::get_hidden_key_column() const {
-  DBUG_ASSERT(m_hidden_pk);
+  assert(m_hidden_pk);
   // The hidden primary key is just after the final stored, visible column
   return m_stored_fields;
 }

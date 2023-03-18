@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,6 +28,29 @@
 #include <GlobalSignalNumbers.h>
 #include <signaldata/SignalData.hpp>
 #include <signaldata/SignalDataPrint.hpp>
+
+void printHex(FILE * output, const Uint32 * theData, Uint32 len,
+              const char * prefix)
+{
+  int prefixLen = strlen(prefix);
+  fprintf(output, "%s", prefix);
+  int pos = prefixLen;
+  for (Uint32 i = 0; i < len; i++)
+  {
+    if (80 < (pos + 11))
+    {
+      fprintf(output, "\n");
+      for (int j = 0; j < prefixLen; j++)
+      {
+        fprintf(output, " ");
+      }
+      pos = prefixLen;
+    }
+    fprintf(output, " H\'%.8x", theData[i]);
+    pos += 11;
+  }
+  fprintf(output,"\n");
+}
 
 /** 
  * This is the register
@@ -129,9 +153,9 @@ SignalDataPrintFunctions[] = {
   { GSN_SCAN_TABCONF,           printSCANTABCONF },
   { GSN_SCAN_TABREF,            printSCANTABREF },
   { GSN_SCAN_NEXTREQ,           printSCANNEXTREQ }, 
-  { GSN_LQHFRAGREQ,             printLQH_FRAG_REQ },
-  { GSN_LQHFRAGREF,             printLQH_FRAG_REF },
-  { GSN_LQHFRAGCONF,            printLQH_FRAG_CONF },
+  { GSN_LQHFRAGREQ,             printLQHFRAGREQ },
+  { GSN_LQHFRAGREF,             printLQHFRAGREF },
+  { GSN_LQHFRAGCONF,            printLQHFRAGCONF },
   { GSN_PREP_DROP_TAB_REQ,      printPREP_DROP_TAB_REQ },
   { GSN_PREP_DROP_TAB_REF,      printPREP_DROP_TAB_REF },
   { GSN_PREP_DROP_TAB_CONF,     printPREP_DROP_TAB_CONF },
@@ -155,6 +179,14 @@ SignalDataPrintFunctions[] = {
   { GSN_SIGNAL_DROPPED_REP,     printSIGNAL_DROPPED_REP },
   { GSN_FAIL_REP,               printFAIL_REP },
   { GSN_DISCONNECT_REP,         printDISCONNECT_REP },
+  { GSN_COMMIT,                 printCOMMIT },
+  { GSN_COMMITREQ,              printCOMMITREQ },
+  { GSN_COMMITTED,              printCOMMITTED },
+  { GSN_COMMITCONF,             printCOMMITCONF },
+  { GSN_COMPLETE,               printCOMPLETE },
+  { GSN_COMPLETEREQ,            printCOMPLETEREQ },
+  { GSN_COMPLETED,              printCOMPLETED },
+  { GSN_COMPLETECONF,           printCOMPLETECONF },
   
   { GSN_SUB_CREATE_REQ,         printSUB_CREATE_REQ },
   { GSN_SUB_CREATE_REF,         printSUB_CREATE_REF },
@@ -311,6 +343,7 @@ SignalDataPrintFunctions[] = {
   ,{ GSN_DROP_FK_CONF, printDROP_FK_CONF }
   ,{ GSN_PROCESSINFO_REP, printPROCESSINFO_REP }
 
-  ,{ 0, 0 }
+  ,{ GSN_TRP_KEEP_ALIVE, printTRP_KEEP_ALIVE }
+  ,{ 0, nullptr }
 };
 

@@ -19,12 +19,32 @@ if (mysqld.global.primary_id === undefined) {
   mysqld.global.primary_id = 0;
 }
 
-if (mysqld.global.update_version_count === undefined) {
-  mysqld.global.update_version_count = 0;
+if (mysqld.global.update_attributes_count === undefined) {
+  mysqld.global.update_attributes_count = 0;
 }
 
 if (mysqld.global.router_version === undefined) {
   mysqld.global.router_version = "";
+}
+
+if (mysqld.global.router_rw_classic_port === undefined) {
+  mysqld.global.router_rw_classic_port = "";
+}
+
+if (mysqld.global.router_ro_classic_port === undefined) {
+  mysqld.global.router_ro_classic_port = "";
+}
+
+if (mysqld.global.router_rw_x_port === undefined) {
+  mysqld.global.router_rw_x_port = "";
+}
+
+if (mysqld.global.router_ro_x_port === undefined) {
+  mysqld.global.router_ro_x_port = "";
+}
+
+if (mysqld.global.router_metadata_user === undefined) {
+  mysqld.global.router_metadata_user = "";
 }
 
 if (mysqld.global.perm_error_on_version_update === undefined) {
@@ -43,6 +63,10 @@ if (mysqld.global.queries === undefined) {
   mysqld.global.queries = [];
 }
 
+if (mysqld.global.transaction_count === undefined) {
+  mysqld.global.transaction_count = 0;
+}
+
 var nodes = function(host, port_and_state) {
   return port_and_state.map(function(current_value) {
     return [
@@ -51,6 +75,50 @@ var nodes = function(host, port_and_state) {
     ];
   });
 };
+
+
+var group_replication_membership_online =
+    nodes(gr_node_host, mysqld.global.gr_nodes);
+
+var metadata_version =
+    (mysqld.global.upgrade_in_progress === 1) ? [0, 0, 0] : [1, 0, 2];
+var options = {
+  metadata_schema_version: metadata_version,
+  group_replication_membership: group_replication_membership_online,
+  gr_id: mysqld.global.gr_id,
+  router_version: mysqld.global.router_version,
+  router_rw_classic_port: mysqld.global.router_rw_classic_port,
+  router_ro_classic_port: mysqld.global.router_ro_classic_port,
+  router_rw_x_port: mysqld.global.router_rw_x_port,
+  router_ro_x_port: mysqld.global.router_ro_x_port,
+  router_metadata_user: mysqld.global.router_metadata_user,
+};
+
+// first node is PRIMARY
+options.group_replication_primary_member =
+    options.group_replication_membership[mysqld.global.primary_id][0];
+
+// prepare the responses for common statements
+var common_responses = common_stmts.prepare_statement_responses(
+    [
+      "router_set_session_options",
+      "router_set_gr_consistency_level",
+      "select_port",
+      "router_commit",
+      "router_select_schema_version",
+      "router_select_group_replication_primary_member",
+      "router_select_group_membership_with_primary_mode",
+    ],
+    options);
+
+var router_update_attributes_strict_v1 =
+    common_stmts.get("router_update_attributes_strict_v1", options);
+
+var router_select_metadata =
+    common_stmts.get("router_select_metadata", options);
+
+var router_start_transaction =
+    common_stmts.get("router_start_transaction", options);
 
 ({
   stmts: function(stmt) {
@@ -62,46 +130,13 @@ var nodes = function(host, port_and_state) {
       mysqld.global.queries_count++;
     }
 
-    var group_replication_membership_online =
-        nodes(gr_node_host, mysqld.global.gr_nodes);
-
-    var metadata_version =
-        (mysqld.global.upgrade_in_progress === 1) ? [0, 0, 0] : [1, 0, 2];
-    var options = {
-      metadata_schema_version: metadata_version,
-      group_replication_membership: group_replication_membership_online,
-      gr_id: mysqld.global.gr_id,
-      router_version: mysqld.global.router_version,
-    };
-
-    // first node is PRIMARY
-    options.group_replication_primary_member =
-        options.group_replication_membership[mysqld.global.primary_id][0];
-
-    // prepare the responses for common statements
-    var common_responses = common_stmts.prepare_statement_responses(
-        [
-          "router_set_session_options",
-          "router_set_gr_consistency_level",
-          "select_port",
-          "router_start_transaction",
-          "router_commit",
-          "router_select_schema_version",
-          "router_select_group_replication_primary_member",
-          "router_select_group_membership_with_primary_mode",
-        ],
-        options);
-
-    var router_update_version_strict_v1 =
-        common_stmts.get("router_update_version_strict_v1", options);
-
-    var router_select_metadata =
-        common_stmts.get("router_select_metadata", options);
-
     if (common_responses.hasOwnProperty(stmt)) {
       return common_responses[stmt];
-    } else if (stmt === router_update_version_strict_v1.stmt) {
-      mysqld.global.update_version_count++;
+    } else if (stmt === router_start_transaction.stmt) {
+      mysqld.global.transaction_count++;
+      return router_start_transaction;
+    } else if (stmt === router_update_attributes_strict_v1.stmt) {
+      mysqld.global.update_attributes_count++;
       if (mysqld.global.perm_error_on_version_update === 1) {
         return {
           error: {
@@ -112,7 +147,7 @@ var nodes = function(host, port_and_state) {
           }
         }
       } else
-        return router_update_version_strict_v1;
+        return router_update_attributes_strict_v1;
     } else if (stmt === router_select_metadata.stmt) {
       mysqld.global.md_query_count++;
       return router_select_metadata;

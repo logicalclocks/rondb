@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -40,7 +40,7 @@
 #include "my_time.h"
 #include "myisampack.h"
 #include "mysql/components/services/bits/psi_bits.h"
-#include "mysql/components/services/psi_mutex_bits.h"
+#include "mysql/components/services/bits/psi_mutex_bits.h"
 #include "sql/auth/auth_acls.h"
 #include "sql/current_thd.h"
 #include "sql/field.h"
@@ -99,6 +99,7 @@
 #include "storage/perfschema/table_global_variables.h"
 #include "storage/perfschema/table_host_cache.h"
 #include "storage/perfschema/table_hosts.h"
+#include "storage/perfschema/table_keyring_component_status.h"
 #include "storage/perfschema/table_keyring_keys.h"
 #include "storage/perfschema/table_md_locks.h"
 #include "storage/perfschema/table_mems_by_account_by_event_name.h"
@@ -477,88 +478,6 @@
   @{
 */
 
-bool PFS_table_context::initialize(void) {
-  if (m_restore) {
-    /* Restore context from TLS. */
-    PFS_table_context *context = THR_PFS_contexts[m_thr_key];
-    DBUG_ASSERT(context != nullptr);
-
-    if (context) {
-      m_last_version = context->m_current_version;
-      m_map = context->m_map;
-      DBUG_ASSERT(m_map_size == context->m_map_size);
-      m_map_size = context->m_map_size;
-      m_word_size = context->m_word_size;
-    }
-  } else {
-    /* Check that TLS is not in use. */
-    PFS_table_context *context = THR_PFS_contexts[m_thr_key];
-
-    context = this;
-
-    /* Initialize a new context, store in TLS. */
-    m_last_version = m_current_version;
-    m_map = nullptr;
-    m_word_size = sizeof(ulong) * 8;
-
-    /* Write to TLS. */
-    THR_PFS_contexts[m_thr_key] = context;
-  }
-
-  m_initialized = (m_map_size > 0) ? (m_map != nullptr) : true;
-
-  return m_initialized;
-}
-
-/* Constructor for global or single thread tables, map size = 0.  */
-PFS_table_context::PFS_table_context(ulonglong current_version, bool restore,
-                                     THR_PFS_key key)
-    : m_thr_key(key),
-      m_current_version(current_version),
-      m_last_version(0),
-      m_map(nullptr),
-      m_map_size(0),
-      m_word_size(sizeof(ulong)),
-      m_restore(restore),
-      m_initialized(false),
-      m_last_item(0) {
-  initialize();
-}
-
-/* Constructor for by-thread or aggregate tables, map size = max
- * thread/user/host/account. */
-PFS_table_context::PFS_table_context(ulonglong current_version, ulong map_size,
-                                     bool restore, THR_PFS_key key)
-    : m_thr_key(key),
-      m_current_version(current_version),
-      m_last_version(0),
-      m_map(nullptr),
-      m_map_size(map_size),
-      m_word_size(sizeof(ulong)),
-      m_restore(restore),
-      m_initialized(false),
-      m_last_item(0) {
-  initialize();
-}
-
-PFS_table_context::~PFS_table_context(void) {}
-
-void PFS_table_context::set_item(ulong n) {
-  if (n == m_last_item) {
-    return;
-  }
-  ulong word = n / m_word_size;
-  ulong bit = n % m_word_size;
-  m_map[word] |= (1UL << bit);
-  m_last_item = n;
-}
-
-bool PFS_table_context::is_item_set(ulong n) {
-  ulong word = n / m_word_size;
-  ulong bit = n % m_word_size;
-  return (m_map[word] & (1UL << bit));
-}
-
 static PFS_engine_table_share *all_shares[] = {
     &table_cond_instances::m_share,
     &table_error_log::m_share,
@@ -681,8 +600,8 @@ static PFS_engine_table_share *all_shares[] = {
     &table_persisted_variables::m_share,
     &table_user_defined_functions::m_share,
     &table_binary_log_transaction_compression_stats::m_share,
-
     &table_tls_channel_status::m_share,
+    &table_keyring_component_status::m_share,
     nullptr};
 
 static PSI_mutex_key key_LOCK_pfs_share_list;
@@ -905,21 +824,21 @@ int PFS_engine_table::update_row_values(TABLE *, const unsigned char *,
 int PFS_engine_table::index_read(KEY *key_infos, uint index, const uchar *key,
                                  uint key_len,
                                  enum ha_rkey_function find_flag) {
-  // DBUG_ASSERT(m_index != NULL);
+  // assert(m_index != NULL);
   if (m_index == nullptr) {
     return HA_ERR_END_OF_FILE;
   }
 
   // FIXME: Unclear what to do here
-  DBUG_ASSERT(find_flag != HA_READ_PREFIX_LAST);
-  DBUG_ASSERT(find_flag != HA_READ_PREFIX_LAST_OR_PREV);
+  assert(find_flag != HA_READ_PREFIX_LAST);
+  assert(find_flag != HA_READ_PREFIX_LAST_OR_PREV);
 
   // No GIS here
-  DBUG_ASSERT(find_flag != HA_READ_MBR_CONTAIN);
-  DBUG_ASSERT(find_flag != HA_READ_MBR_INTERSECT);
-  DBUG_ASSERT(find_flag != HA_READ_MBR_WITHIN);
-  DBUG_ASSERT(find_flag != HA_READ_MBR_DISJOINT);
-  DBUG_ASSERT(find_flag != HA_READ_MBR_EQUAL);
+  assert(find_flag != HA_READ_MBR_CONTAIN);
+  assert(find_flag != HA_READ_MBR_INTERSECT);
+  assert(find_flag != HA_READ_MBR_WITHIN);
+  assert(find_flag != HA_READ_MBR_DISJOINT);
+  assert(find_flag != HA_READ_MBR_EQUAL);
 
   KEY *key_info = key_infos + index;
   m_index->set_key_info(key_info);
@@ -978,12 +897,12 @@ void PFS_dynamic_table_shares::remove_share(PFS_engine_table_share *share) {
 /** Implementation of internal ACL checks, for the performance schema. */
 class PFS_internal_schema_access : public ACL_internal_schema_access {
  public:
-  PFS_internal_schema_access() {}
+  PFS_internal_schema_access() = default;
 
-  ~PFS_internal_schema_access() override {}
+  ~PFS_internal_schema_access() override = default;
 
-  ACL_internal_access_result check(ulong want_access,
-                                   ulong *save_priv) const override;
+  ACL_internal_access_result check(ulong want_access, ulong *save_priv,
+                                   bool any_combination_will_do) const override;
 
   const ACL_internal_table_access *lookup(const char *name) const override;
 };
@@ -994,16 +913,18 @@ static bool allow_drop_schema_privilege() {
     in particular, as a schema level privilege:
     - DROP SCHEMA
     - GRANT DROP on performance_schema.*
+    - REVOKE DROP ON performance_schema.*
     - DROP TABLE performance_schema.*
 
     As a table level privilege:
     - DROP TABLE performance_schema.foo
     - GRANT DROP on performance_schema.foo
+    - REVOKE DROP on performance_schema.foo
     - TRUNCATE TABLE performance_schema.foo
 
     Here, we want to:
     - always prevent DROP SCHEMA (SQLCOM_DROP_DB)
-    - allow GRANT to give the TRUNCATE on any tables
+    - allow GRANT/REVOKE to give the TRUNCATE on any tables
     - allow DROP TABLE checks to proceed further,
       in particular to drop unknown tables,
       see PFS_unknown_acl::check()
@@ -1013,9 +934,10 @@ static bool allow_drop_schema_privilege() {
     return false;
   }
 
-  DBUG_ASSERT(thd->lex != nullptr);
+  assert(thd->lex != nullptr);
   if ((thd->lex->sql_command != SQLCOM_TRUNCATE) &&
       (thd->lex->sql_command != SQLCOM_GRANT) &&
+      (thd->lex->sql_command != SQLCOM_REVOKE) &&
       (thd->lex->sql_command != SQLCOM_DROP_TABLE)) {
     return false;
   }
@@ -1024,7 +946,8 @@ static bool allow_drop_schema_privilege() {
 }
 
 ACL_internal_access_result PFS_internal_schema_access::check(ulong want_access,
-                                                             ulong *) const {
+                                                             ulong *,
+                                                             bool) const {
   const ulong always_forbidden =
       CREATE_ACL | REFERENCES_ACL | INDEX_ACL | ALTER_ACL | CREATE_TMP_ACL |
       EXECUTE_ACL | CREATE_VIEW_ACL | SHOW_VIEW_ACL | CREATE_PROC_ACL |
@@ -1098,7 +1021,7 @@ static bool allow_drop_table_privilege() {
     return false;
   }
 
-  DBUG_ASSERT(thd->lex != nullptr);
+  assert(thd->lex != nullptr);
   if ((thd->lex->sql_command != SQLCOM_TRUNCATE) &&
       (thd->lex->sql_command != SQLCOM_GRANT)) {
     return false;
@@ -1109,26 +1032,42 @@ static bool allow_drop_table_privilege() {
 
 PFS_readonly_acl pfs_readonly_acl;
 
-ACL_internal_access_result PFS_readonly_acl::check(ulong want_access,
-                                                   ulong *) const {
+ACL_internal_access_result PFS_readonly_acl::check(
+    ulong want_access, ulong *granted_access,
+    bool any_combination_will_do) const {
   const ulong always_forbidden = INSERT_ACL | UPDATE_ACL | DELETE_ACL |
                                  CREATE_ACL | DROP_ACL | REFERENCES_ACL |
                                  INDEX_ACL | ALTER_ACL | CREATE_VIEW_ACL |
                                  SHOW_VIEW_ACL | TRIGGER_ACL | LOCK_TABLES_ACL;
 
-  if (unlikely(want_access & always_forbidden)) {
-    return ACL_INTERNAL_ACCESS_DENIED;
-  }
+  ulong can_be_allowed = TABLE_ACLS & (~always_forbidden);
 
-  return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+  ulong want_forbidden = want_access & always_forbidden;
+
+  ulong want_allowable = want_access & can_be_allowed;
+
+  if (any_combination_will_do) {
+    if (want_allowable != 0) {
+      *granted_access = want_allowable;
+      return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+    }
+
+    return ACL_INTERNAL_ACCESS_DENIED;
+  } else {
+    if (want_forbidden != 0) {
+      return ACL_INTERNAL_ACCESS_DENIED;
+    }
+
+    return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+  }
 }
 
 PFS_readonly_world_acl pfs_readonly_world_acl;
 
 ACL_internal_access_result PFS_readonly_world_acl::check(
-    ulong want_access, ulong *save_priv) const {
+    ulong want_access, ulong *save_priv, bool any_combination_will_do) const {
   ACL_internal_access_result res =
-      PFS_readonly_acl::check(want_access, save_priv);
+      PFS_readonly_acl::check(want_access, save_priv, any_combination_will_do);
   if (res == ACL_INTERNAL_ACCESS_CHECK_GRANT) {
     res = ACL_INTERNAL_ACCESS_GRANTED;
   }
@@ -1138,58 +1077,61 @@ ACL_internal_access_result PFS_readonly_world_acl::check(
 PFS_readonly_processlist_acl pfs_readonly_processlist_acl;
 
 ACL_internal_access_result PFS_readonly_processlist_acl::check(
-    ulong want_access, ulong *save_priv) const {
+    ulong want_access, ulong *save_priv, bool any_combination_will_do) const {
   ACL_internal_access_result res =
-      PFS_readonly_acl::check(want_access, save_priv);
+      PFS_readonly_acl::check(want_access, save_priv, any_combination_will_do);
 
-  if ((res == ACL_INTERNAL_ACCESS_CHECK_GRANT) && (want_access == SELECT_ACL)) {
-    THD *thd = current_thd;
-    if (thd != nullptr) {
-      if (thd->lex->sql_command == SQLCOM_SHOW_PROCESSLIST ||
-          thd->lex->sql_command == SQLCOM_SELECT) {
-        /*
-          For compatibility with the historical
-          SHOW PROCESSLIST command,
-          SHOW PROCESSLIST does not require a
-          SELECT privilege on table performance_schema.processlist,
-          when rewriting the query using table processlist.
-        */
-        return ACL_INTERNAL_ACCESS_GRANTED;
-      }
-    }
+  if ((res == ACL_INTERNAL_ACCESS_CHECK_GRANT) && (want_access & SELECT_ACL)) {
+    return ACL_INTERNAL_ACCESS_GRANTED;
   }
-
   return res;
 }
 
 PFS_truncatable_acl pfs_truncatable_acl;
 
-ACL_internal_access_result PFS_truncatable_acl::check(ulong want_access,
-                                                      ulong *) const {
+ACL_internal_access_result PFS_truncatable_acl::check(
+    ulong want_access, ulong *granted_access,
+    bool any_combination_will_do) const {
   const ulong always_forbidden = INSERT_ACL | UPDATE_ACL | DELETE_ACL |
                                  CREATE_ACL | REFERENCES_ACL | INDEX_ACL |
                                  ALTER_ACL | CREATE_VIEW_ACL | SHOW_VIEW_ACL |
                                  TRIGGER_ACL | LOCK_TABLES_ACL;
 
-  if (unlikely(want_access & always_forbidden)) {
-    return ACL_INTERNAL_ACCESS_DENIED;
-  }
+  ulong can_be_allowed = TABLE_ACLS & (~always_forbidden);
+
+  ulong want_allowable = want_access & can_be_allowed;
+
+  ulong want_forbidden = want_access & always_forbidden;
 
   if (want_access & DROP_ACL) {
     if (!allow_drop_table_privilege()) {
-      return ACL_INTERNAL_ACCESS_DENIED;
+      want_forbidden |= DROP_ACL;
+      want_allowable &= ~DROP_ACL;
     }
   }
 
-  return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+  if (any_combination_will_do) {
+    if (want_allowable != 0) {
+      *granted_access = want_allowable;
+      return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+    }
+
+    return ACL_INTERNAL_ACCESS_DENIED;
+  } else {
+    if (want_forbidden != 0) {
+      return ACL_INTERNAL_ACCESS_DENIED;
+    }
+
+    return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+  }
 }
 
 PFS_truncatable_world_acl pfs_truncatable_world_acl;
 
 ACL_internal_access_result PFS_truncatable_world_acl::check(
-    ulong want_access, ulong *save_priv) const {
-  ACL_internal_access_result res =
-      PFS_truncatable_acl::check(want_access, save_priv);
+    ulong want_access, ulong *save_priv, bool any_combination_will_do) const {
+  ACL_internal_access_result res = PFS_truncatable_acl::check(
+      want_access, save_priv, any_combination_will_do);
   if (res == ACL_INTERNAL_ACCESS_CHECK_GRANT) {
     res = ACL_INTERNAL_ACCESS_GRANTED;
   }
@@ -1198,69 +1140,122 @@ ACL_internal_access_result PFS_truncatable_world_acl::check(
 
 PFS_updatable_acl pfs_updatable_acl;
 
-ACL_internal_access_result PFS_updatable_acl::check(ulong want_access,
-                                                    ulong *) const {
+ACL_internal_access_result PFS_updatable_acl::check(
+    ulong want_access, ulong *granted_access,
+    bool any_combination_will_do) const {
   const ulong always_forbidden =
       INSERT_ACL | DELETE_ACL | CREATE_ACL | DROP_ACL | REFERENCES_ACL |
       INDEX_ACL | ALTER_ACL | CREATE_VIEW_ACL | SHOW_VIEW_ACL | TRIGGER_ACL;
 
-  if (unlikely(want_access & always_forbidden)) {
-    return ACL_INTERNAL_ACCESS_DENIED;
-  }
+  ulong can_be_allowed = TABLE_ACLS & (~always_forbidden);
 
-  return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+  ulong want_forbidden = want_access & always_forbidden;
+
+  ulong want_allowable = want_access & can_be_allowed;
+
+  if (any_combination_will_do) {
+    if (want_allowable != 0) {
+      *granted_access = want_allowable;
+      return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+    }
+
+    return ACL_INTERNAL_ACCESS_DENIED;
+  } else {
+    if (want_forbidden != 0) {
+      return ACL_INTERNAL_ACCESS_DENIED;
+    }
+
+    return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+  }
 }
 
 PFS_editable_acl pfs_editable_acl;
 
-ACL_internal_access_result PFS_editable_acl::check(ulong want_access,
-                                                   ulong *) const {
+ACL_internal_access_result PFS_editable_acl::check(
+    ulong want_access, ulong *granted_access,
+    bool any_combination_will_do) const {
   const ulong always_forbidden = CREATE_ACL | REFERENCES_ACL | INDEX_ACL |
                                  ALTER_ACL | CREATE_VIEW_ACL | SHOW_VIEW_ACL |
                                  TRIGGER_ACL;
 
-  if (unlikely(want_access & always_forbidden)) {
-    return ACL_INTERNAL_ACCESS_DENIED;
-  }
+  ulong can_be_allowed = TABLE_ACLS & (~always_forbidden);
+
+  ulong want_forbidden = want_access & always_forbidden;
+
+  ulong want_allowable = want_access & can_be_allowed;
 
   if (want_access & DROP_ACL) {
     if (!allow_drop_table_privilege()) {
-      return ACL_INTERNAL_ACCESS_DENIED;
+      want_forbidden |= DROP_ACL;
+      want_allowable &= ~DROP_ACL;
     }
   }
 
-  return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+  if (any_combination_will_do) {
+    if (want_allowable != 0) {
+      *granted_access = want_allowable;
+      return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+    }
+
+    return ACL_INTERNAL_ACCESS_DENIED;
+  } else {
+    if (want_forbidden != 0) {
+      return ACL_INTERNAL_ACCESS_DENIED;
+    }
+
+    return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+  }
 }
 
 PFS_unknown_acl pfs_unknown_acl;
 
-ACL_internal_access_result PFS_unknown_acl::check(ulong want_access,
-                                                  ulong *) const {
-  const ulong always_forbidden = CREATE_ACL | REFERENCES_ACL | INDEX_ACL |
-                                 ALTER_ACL | CREATE_VIEW_ACL | TRIGGER_ACL |
-                                 INSERT_ACL | UPDATE_ACL | DELETE_ACL |
-                                 SHOW_VIEW_ACL | LOCK_TABLES_ACL;
-
-  if (unlikely(want_access & always_forbidden)) {
-    return ACL_INTERNAL_ACCESS_DENIED;
-  }
-
+ACL_internal_access_result PFS_unknown_acl::check(
+    ulong want_access, ulong *granted_access,
+    bool any_combination_will_do) const {
   /*
-    About SELECT_ACL:
-    There is no point in hiding (by enforcing ACCESS_DENIED for SELECT_ACL
-    on performance_schema.*) tables that do not exist anyway.
-    When SELECT_ACL is granted on performance_schema.* or *.*,
-    SELECT * from performance_schema.wrong_table
-    will fail with a more understandable ER_NO_SUCH_TABLE error,
-    instead of ER_TABLEACCESS_DENIED_ERROR.
-    The same goes for other DML (INSERT_ACL | UPDATE_ACL | DELETE_ACL),
-    for ease of use: error messages will be less surprising.
-
-    About DROP_ACL:
-    "Unknown" tables are not supposed to be here,
-    so allowing DROP_ACL to make cleanup possible.
+    Only enforce ACL_INTERNAL_ACCESS_DENIED
+    for operations that can create unwanted SQL objects
+    in the performance schema,
+    relax error messages otherwise.
   */
-  return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+  const ulong always_forbidden = CREATE_ACL | REFERENCES_ACL | INDEX_ACL |
+                                 ALTER_ACL | CREATE_VIEW_ACL | TRIGGER_ACL;
+
+  ulong can_be_allowed = TABLE_ACLS & (~always_forbidden);
+
+  ulong want_forbidden = want_access & always_forbidden;
+
+  ulong want_allowable = want_access & can_be_allowed;
+
+  if (any_combination_will_do) {
+    if (want_allowable != 0) {
+      *granted_access = want_allowable;
+      return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+    }
+
+    return ACL_INTERNAL_ACCESS_DENIED;
+  } else {
+    if (want_forbidden != 0) {
+      return ACL_INTERNAL_ACCESS_DENIED;
+    }
+
+    /*
+      About SELECT_ACL:
+      There is no point in hiding (by enforcing ACCESS_DENIED for SELECT_ACL
+      on performance_schema.*) tables that do not exist anyway.
+      When SELECT_ACL is granted on performance_schema.* or *.*,
+      SELECT * from performance_schema.wrong_table
+      will fail with a more understandable ER_NO_SUCH_TABLE error,
+      instead of ER_TABLEACCESS_DENIED_ERROR.
+      The same goes for other DML (INSERT_ACL | UPDATE_ACL | DELETE_ACL),
+      for ease of use: error messages will be less surprising.
+
+      About DROP_ACL:
+      "Unknown" tables are not supposed to be here,
+      so allowing DROP_ACL to make cleanup possible.
+    */
+    return ACL_INTERNAL_ACCESS_CHECK_GRANT;
+  }
 }
 
 /*
@@ -1273,8 +1268,8 @@ ACL_internal_access_result PFS_unknown_acl::check(ulong want_access,
 #define READ_INT_COMMON(DS, KT, DT, KORR)                                \
   if (m_remaining_key_part_info->store_length <= m_remaining_key_len) {  \
     size_t data_size = DS;                                               \
-    DBUG_ASSERT(m_remaining_key_part_info->type == KT);                  \
-    DBUG_ASSERT(m_remaining_key_part_info->store_length >= data_size);   \
+    assert(m_remaining_key_part_info->type == KT);                       \
+    assert(m_remaining_key_part_info->store_length >= data_size);        \
     isnull = false;                                                      \
     if (m_remaining_key_part_info->field->is_nullable()) {               \
       if (m_remaining_key[0]) {                                          \
@@ -1291,7 +1286,7 @@ ACL_internal_access_result PFS_unknown_acl::check(ulong want_access,
     *value = data;                                                       \
     return ((m_remaining_key_len == 0) ? find_flag : HA_READ_KEY_EXACT); \
   }                                                                      \
-  DBUG_ASSERT(m_remaining_key_len == 0);                                 \
+  assert(m_remaining_key_len == 0);                                      \
   return HA_READ_INVALID
 
 enum ha_rkey_function PFS_key_reader::read_int8(enum ha_rkey_function find_flag,
@@ -1347,11 +1342,11 @@ enum ha_rkey_function PFS_key_reader::read_ulonglong(
 enum ha_rkey_function PFS_key_reader::read_timestamp(
     enum ha_rkey_function find_flag, bool &isnull, ulonglong *value, uint dec) {
   size_t data_size = 4 + ((size_t)((dec + 1) / 2));
-  struct timeval tm;
+  my_timeval tm;
 
   if (m_remaining_key_part_info->store_length <= m_remaining_key_len) {
-    DBUG_ASSERT(m_remaining_key_part_info->type == HA_KEYTYPE_BINARY);
-    DBUG_ASSERT(m_remaining_key_part_info->store_length >= data_size);
+    assert(m_remaining_key_part_info->type == HA_KEYTYPE_BINARY);
+    assert(m_remaining_key_part_info->store_length >= data_size);
     isnull = false;
     if (m_remaining_key_part_info->field->is_nullable()) {
       if (m_remaining_key[0]) {
@@ -1361,7 +1356,8 @@ enum ha_rkey_function PFS_key_reader::read_timestamp(
       m_remaining_key_len -= HA_KEY_NULL_LENGTH;
     }
     my_timestamp_from_binary(&tm, m_remaining_key, dec);
-    ulonglong data = (((ulonglong)tm.tv_sec) * 1000000ULL) + tm.tv_usec;
+    ulonglong data =
+        static_cast<ulonglong>(tm.m_tv_sec) * 1000000ULL + tm.m_tv_usec;
     m_remaining_key += data_size;
     m_remaining_key_len -= (uint)data_size;
     m_parts_found++;
@@ -1369,13 +1365,13 @@ enum ha_rkey_function PFS_key_reader::read_timestamp(
     *value = data;
     return ((m_remaining_key_len == 0) ? find_flag : HA_READ_KEY_EXACT);
   }
-  DBUG_ASSERT(m_remaining_key_len == 0);
+  assert(m_remaining_key_len == 0);
   return HA_READ_INVALID;
 }
 
 enum ha_rkey_function PFS_key_reader::read_varchar_utf8(
     enum ha_rkey_function find_flag, bool &isnull, char *buffer,
-    uint *buffer_length, uint buffer_capacity MY_ATTRIBUTE((unused))) {
+    uint *buffer_length, uint buffer_capacity [[maybe_unused]]) {
   if (m_remaining_key_part_info->store_length <= m_remaining_key_len) {
     /*
       Stored as:
@@ -1389,7 +1385,7 @@ enum ha_rkey_function PFS_key_reader::read_varchar_utf8(
     size_t data_offset = 2;
     isnull = false;
     if (m_remaining_key_part_info->field->is_nullable()) {
-      DBUG_ASSERT(HA_KEY_NULL_LENGTH <= m_remaining_key_len);
+      assert(HA_KEY_NULL_LENGTH <= m_remaining_key_len);
 
       length_offset++;
       data_offset++;
@@ -1398,15 +1394,14 @@ enum ha_rkey_function PFS_key_reader::read_varchar_utf8(
       }
     }
 
-    DBUG_ASSERT(m_remaining_key_part_info->type == HA_KEYTYPE_VARTEXT1 ||
-                m_remaining_key_part_info->type == HA_KEYTYPE_VARTEXT2);
+    assert(m_remaining_key_part_info->type == HA_KEYTYPE_VARTEXT1 ||
+           m_remaining_key_part_info->type == HA_KEYTYPE_VARTEXT2);
 
-    DBUG_ASSERT(data_offset <= m_remaining_key_len);
+    assert(data_offset <= m_remaining_key_len);
     size_t string_len = uint2korr(m_remaining_key + length_offset);
-    DBUG_ASSERT(data_offset + string_len <=
-                m_remaining_key_part_info->store_length);
-    DBUG_ASSERT(data_offset + string_len <= m_remaining_key_len);
-    DBUG_ASSERT(string_len <= buffer_capacity);
+    assert(data_offset + string_len <= m_remaining_key_part_info->store_length);
+    assert(data_offset + string_len <= m_remaining_key_len);
+    assert(string_len <= buffer_capacity);
 
     memcpy(buffer, m_remaining_key + data_offset, string_len);
     *buffer_length = (uint)string_len;
@@ -1422,13 +1417,13 @@ enum ha_rkey_function PFS_key_reader::read_varchar_utf8(
     return ((m_remaining_key_len == 0) ? find_flag : HA_READ_KEY_EXACT);
   }
 
-  DBUG_ASSERT(m_remaining_key_len == 0);
+  assert(m_remaining_key_len == 0);
   return HA_READ_INVALID;
 }
 
 enum ha_rkey_function PFS_key_reader::read_text_utf8(
     enum ha_rkey_function find_flag, bool &isnull, char *buffer,
-    uint *buffer_length, uint buffer_capacity MY_ATTRIBUTE((unused))) {
+    uint *buffer_length, uint buffer_capacity [[maybe_unused]]) {
   if (m_remaining_key_part_info->store_length <= m_remaining_key_len) {
     /*
       Stored as:
@@ -1436,27 +1431,24 @@ enum ha_rkey_function PFS_key_reader::read_text_utf8(
       - followed by data
       - Length determined by key definition
     */
-    DBUG_ASSERT(m_remaining_key_part_info->type == HA_KEYTYPE_TEXT);
+    assert(m_remaining_key_part_info->type == HA_KEYTYPE_TEXT);
 
-    size_t length_offset = 0;
     size_t data_offset = 0;
     isnull = false;
     if (m_remaining_key_part_info->field->is_nullable()) {
-      DBUG_ASSERT(HA_KEY_NULL_LENGTH <= m_remaining_key_len);
+      assert(HA_KEY_NULL_LENGTH <= m_remaining_key_len);
 
-      length_offset++;
       data_offset++;
       if (m_remaining_key[0]) {
         isnull = true;
       }
     }
 
-    DBUG_ASSERT(data_offset <= m_remaining_key_len);
+    assert(data_offset <= m_remaining_key_len);
     size_t string_len = m_remaining_key_part_info->length;
-    DBUG_ASSERT(data_offset + string_len <=
-                m_remaining_key_part_info->store_length);
-    DBUG_ASSERT(data_offset + string_len <= m_remaining_key_len);
-    DBUG_ASSERT(string_len <= buffer_capacity);
+    assert(data_offset + string_len <= m_remaining_key_part_info->store_length);
+    assert(data_offset + string_len <= m_remaining_key_len);
+    assert(string_len <= buffer_capacity);
 
     memcpy(buffer, m_remaining_key + data_offset, string_len);
     *buffer_length = (uint)string_len;
@@ -1479,7 +1471,7 @@ enum ha_rkey_function PFS_key_reader::read_text_utf8(
     return ((m_remaining_key_len == 0) ? find_flag : HA_READ_KEY_EXACT);
   }
 
-  DBUG_ASSERT(m_remaining_key_len == 0);
+  assert(m_remaining_key_len == 0);
   return HA_READ_INVALID;
 }
 
@@ -1488,32 +1480,32 @@ void PFS_engine_index::read_key(const uchar *key, uint key_len,
   PFS_key_reader reader(m_key_info, key, key_len);
 
   if (m_key_ptr_1 != nullptr) {
-    DBUG_ASSERT(native_strcasecmp(m_key_info->key_part[0].field->field_name,
-                                  m_key_ptr_1->m_name) == 0);
+    assert(native_strcasecmp(m_key_info->key_part[0].field->field_name,
+                             m_key_ptr_1->m_name) == 0);
     m_key_ptr_1->read(reader, find_flag);
   }
 
   if (m_key_ptr_2 != nullptr) {
-    DBUG_ASSERT(native_strcasecmp(m_key_info->key_part[1].field->field_name,
-                                  m_key_ptr_2->m_name) == 0);
+    assert(native_strcasecmp(m_key_info->key_part[1].field->field_name,
+                             m_key_ptr_2->m_name) == 0);
     m_key_ptr_2->read(reader, find_flag);
   }
 
   if (m_key_ptr_3 != nullptr) {
-    DBUG_ASSERT(native_strcasecmp(m_key_info->key_part[2].field->field_name,
-                                  m_key_ptr_3->m_name) == 0);
+    assert(native_strcasecmp(m_key_info->key_part[2].field->field_name,
+                             m_key_ptr_3->m_name) == 0);
     m_key_ptr_3->read(reader, find_flag);
   }
 
   if (m_key_ptr_4 != nullptr) {
-    DBUG_ASSERT(native_strcasecmp(m_key_info->key_part[3].field->field_name,
-                                  m_key_ptr_4->m_name) == 0);
+    assert(native_strcasecmp(m_key_info->key_part[3].field->field_name,
+                             m_key_ptr_4->m_name) == 0);
     m_key_ptr_4->read(reader, find_flag);
   }
 
   if (m_key_ptr_5 != nullptr) {
-    DBUG_ASSERT(native_strcasecmp(m_key_info->key_part[4].field->field_name,
-                                  m_key_ptr_5->m_name) == 0);
+    assert(native_strcasecmp(m_key_info->key_part[4].field->field_name,
+                             m_key_ptr_5->m_name) == 0);
     m_key_ptr_5->read(reader, find_flag);
   }
 

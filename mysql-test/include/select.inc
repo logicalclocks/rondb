@@ -2,6 +2,17 @@
 # Find string "NOTE NOTE NOTE" in order to find some 'unsure' tests
 #
 
+-- disable_query_log
+-- disable_result_log
+# High values set for sampling scanning, effectively forcing full scan for
+# statistics.
+SET @innodb_stats_transient_sample_pages= @@GLOBAL.innodb_stats_transient_sample_pages;
+SET @@global.innodb_stats_transient_sample_pages=5000000000;
+SET @innodb_stats_persistent_sample_pages= @@GLOBAL.innodb_stats_persistent_sample_pages;
+SET @@global.innodb_stats_persistent_sample_pages=5000000000;
+-- enable_result_log
+-- enable_query_log
+
 #
 # Simple select test
 #
@@ -1347,6 +1358,7 @@ select fld1,fld3 from t2 where fld1 like "25050_";
 # it will be sorted first before the distinct table is created.
 #
 
+--sorted_result
 select distinct companynr from t2;
 select distinct companynr from t2 order by companynr;
 select distinct companynr from t2 order by companynr desc;
@@ -1355,9 +1367,13 @@ select distinct t2.fld3,period from t2,t1  where companynr=37 and fld3 like "O%"
 select distinct fld3 from t2 where companynr = 34 order by fld3;
 select distinct fld3 from t2 limit 10;
 select distinct fld3 from t2 having fld3 like "A%" limit 10;
+--replace_result ann Ann abr Abr art Art ant Ant
 select distinct substring(fld3,1,3) from t2 where fld3 like "A%";
+--replace_result abr Abr
 select distinct substring(fld3,1,3) as a from t2 having a like "A%" order by a limit 10;
+--replace_result abr Abr
 select distinct substring(fld3,1,3) from t2 where fld3 like "A%" limit 10;
+--replace_result abr Abr
 select distinct substring(fld3,1,3) as a from t2 having a like "A%" limit 10;
 
 # make a big table.
@@ -1407,6 +1423,8 @@ insert into t3 select * from tmp;
 #insert into tmp select * from t3;
 #insert into t3 select * from tmp;
 
+# The test assumes a 1-1 correspondence of autoinc values to  fields tested.
+set session innodb_parallel_read_threads = 1;
 alter table t3 add t2nr int not null auto_increment primary key first;
 
 drop table tmp;
@@ -1419,6 +1437,7 @@ SET BIG_TABLES=0;
 --source include/turn_off_only_full_group_by.inc
 select distinct concat(fld3," ",fld3) from t2,t3 where t2.fld1=t3.t2nr order by fld3 limit 10;
 --source include/restore_sql_mode_after_turn_off_only_full_group_by.inc
+--skip_if_hypergraph   # Nondeterministic (depends on which rows DISTINCT outputs first).
 select distinct fld5 from t2 limit 10;
 
 #
@@ -3423,7 +3442,7 @@ CREATE TABLE t1 (name varchar(255)) charset latin1;
 CREATE TABLE t2 (name varchar(255), n int, KEY (name(3))) charset latin1;
 INSERT INTO t1 VALUES ('ccc'), ('bb'), ('cc '), ('aa  '), ('aa');
 INSERT INTO t2 VALUES ('bb',1), ('aa',2), ('cc   ',3);
-INSERT INTO t2 VALUES (concat('cc ', 0x06), 4);
+INSERT INTO t2 VALUES (concat('cc ', '!'), 4);
 INSERT INTO t2 VALUES ('cc',5), ('bb ',6), ('cc ',7);
 ANALYZE TABLE t1, t2;
 SELECT * FROM t2;
@@ -3446,7 +3465,7 @@ CREATE TABLE t1 (name text) charset latin1;
 CREATE TABLE t2 (name text, n int, KEY (name(3))) charset latin1;
 INSERT INTO t1 VALUES ('ccc'), ('bb'), ('cc '), ('aa  '), ('aa');
 INSERT INTO t2 VALUES ('bb',1), ('aa',2), ('cc   ',3);
-INSERT INTO t2 VALUES (concat('cc ', 0x06), 4);
+INSERT INTO t2 VALUES (concat('cc ', '!'), 4);
 INSERT INTO t2 VALUES ('cc',5), ('bb ',6), ('cc ',7);
 ANALYZE TABLE t1, t2;
 SELECT * FROM t2;
@@ -4543,3 +4562,10 @@ eval EXPLAIN FORMAT=tree $query;  # Verify that we get BKA, and no NULL rejectio
 eval $query;
 
 DROP TABLE t1;
+
+-- disable_query_log
+-- disable_result_log
+SET @@GLOBAL.innodb_stats_transient_sample_pages= @innodb_stats_transient_sample_pages;
+SET @@GLOBAL.innodb_stats_persistent_sample_pages= @innodb_stats_persistent_sample_pages;
+-- enable_result_log
+-- enable_query_log

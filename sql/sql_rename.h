@@ -1,4 +1,4 @@
-/* Copyright (c) 2006, 2017, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2006, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -24,8 +24,8 @@
 #define SQL_RENAME_INCLUDED
 
 class THD;
-struct TABLE_LIST;
+class Table_ref;
 
-bool mysql_rename_tables(THD *thd, TABLE_LIST *table_list);
+bool mysql_rename_tables(THD *thd, Table_ref *table_list);
 
 #endif /* SQL_RENAME_INCLUDED */

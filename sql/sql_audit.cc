@@ -1,4 +1,4 @@
-/* Copyright (c) 2007, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2007, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -34,11 +34,11 @@
 #include "my_psi_config.h"
 #include "my_sqlcommand.h"
 #include "my_sys.h"
+#include "mysql/components/services/bits/mysql_mutex_bits.h"
 #include "mysql/components/services/bits/psi_bits.h"
+#include "mysql/components/services/bits/psi_mutex_bits.h"
 #include "mysql/components/services/log_builtins.h"
 #include "mysql/components/services/log_shared.h"
-#include "mysql/components/services/mysql_mutex_bits.h"
-#include "mysql/components/services/psi_mutex_bits.h"
 #include "mysql/mysql_lex_string.h"
 #include "mysql/plugin.h"
 #include "mysql/psi/mysql_mutex.h"
@@ -69,7 +69,7 @@ class Audit_error_handler : public Internal_error_handler {
   /**
     @brief Blocked copy constructor (private).
   */
-  Audit_error_handler(const Audit_error_handler &obj MY_ATTRIBUTE((unused)))
+  Audit_error_handler(const Audit_error_handler &obj [[maybe_unused]])
       : m_thd(nullptr),
         m_warning_message(nullptr),
         m_error_reported(false),
@@ -309,6 +309,7 @@ inline const CHARSET_INFO *thd_get_audit_query(THD *thd,
   } else {
     query->str = thd->query().str;
     query->length = thd->query().length;
+    DBUG_PRINT("print_query", ("%.*s\n", (int)query->length, query->str));
     return thd->charset();
   }
 }
@@ -346,9 +347,8 @@ class Ignore_event_error_handler : public Audit_error_handler {
     @param sqlstate  The SQL state of the underlying error. NULL if none
     @param msg       The text of the underlying error. NULL if none
   */
-  void print_warning(const char *warn_msg MY_ATTRIBUTE((unused)),
-                     uint sql_errno, const char *sqlstate,
-                     const char *msg) override {
+  void print_warning(const char *warn_msg [[maybe_unused]], uint sql_errno,
+                     const char *sqlstate, const char *msg) override {
     LogErr(WARNING_LEVEL, ER_AUDIT_CANT_ABORT_EVENT, m_event_name, sql_errno,
            sqlstate ? sqlstate : "<NO_STATE>", msg ? msg : "<NO_MESSAGE>");
   }
@@ -366,7 +366,7 @@ int mysql_audit_notify(THD *thd, mysql_event_general_subclass_t subclass,
   mysql_event_general event;
   char user_buff[MAX_USER_HOST_SIZE];
 
-  DBUG_ASSERT(thd);
+  assert(thd);
 
   if (mysql_audit_acquire_plugins(thd, MYSQL_AUDIT_GENERAL_CLASS,
                                   static_cast<unsigned long>(subclass)))
@@ -487,11 +487,12 @@ int mysql_audit_notify(THD *thd, mysql_event_parse_subclass_t subclass,
   Events for Views, table catogories other than 'SYSTEM' or 'USER' and
   temporary tables are not generated.
 
+  @param thd   Thread handler
   @param table Table that is to be check.
 
   @retval true - generate event, otherwise not.
 */
-inline bool generate_table_access_event(TABLE_LIST *table) {
+inline bool generate_table_access_event(THD *thd, Table_ref *table) {
   /* Discard views or derived tables. */
   if (table->is_view_or_derived()) return false;
 
@@ -499,7 +500,7 @@ inline bool generate_table_access_event(TABLE_LIST *table) {
   if (!table->table) return true;
 
   /* Do not generate events, which come from PS preparation. */
-  if (table->table->in_use->lex->is_ps_or_view_context_analysis()) return false;
+  if (thd->lex->is_ps_or_view_context_analysis()) return false;
 
   /* Generate event for SYSTEM and USER tables, which are not temp tables. */
   if ((table->table->s->table_category == TABLE_CATEGORY_SYSTEM ||
@@ -543,11 +544,11 @@ inline static void set_table_access_subclass(
 */
 static int mysql_audit_notify(THD *thd,
                               mysql_event_table_access_subclass_t subclass,
-                              const char *subclass_name, TABLE_LIST *table) {
+                              const char *subclass_name, Table_ref *table) {
   LEX_CSTRING str;
   mysql_event_table_access event;
 
-  if (!generate_table_access_event(table) ||
+  if (!generate_table_access_event(thd, table) ||
       mysql_audit_acquire_plugins(thd, MYSQL_AUDIT_TABLE_ACCESS_CLASS,
                                   static_cast<unsigned long>(subclass)))
     return 0;
@@ -570,7 +571,7 @@ static int mysql_audit_notify(THD *thd,
                                     subclass_name, &event);
 }
 
-int mysql_audit_table_access_notify(THD *thd, TABLE_LIST *table) {
+int mysql_audit_table_access_notify(THD *thd, Table_ref *table) {
   mysql_event_table_access_subclass_t subclass;
   const char *subclass_name;
   int ret;
@@ -811,9 +812,8 @@ class Ignore_command_start_error_handler : public Audit_error_handler {
     @param sqlstate  The SQL state of the underlying error. NULL if none
     @param msg       The text of the underlying error. NULL if none
   */
-  void print_warning(const char *warn_msg MY_ATTRIBUTE((unused)),
-                     uint sql_errno, const char *sqlstate,
-                     const char *msg) override {
+  void print_warning(const char *warn_msg [[maybe_unused]], uint sql_errno,
+                     const char *sqlstate, const char *msg) override {
     LogErr(WARNING_LEVEL, ER_AUDIT_CANT_ABORT_COMMAND, m_command_text,
            sql_errno, sqlstate ? sqlstate : "<NO_STATE>",
            msg ? msg : "<NO_MESSAGE>");
@@ -1186,7 +1186,7 @@ void mysql_audit_init_thd(THD *thd) {
 
 void mysql_audit_free_thd(THD *thd) {
   mysql_audit_release(thd);
-  DBUG_ASSERT(thd->audit_class_plugins.empty());
+  assert(thd->audit_class_plugins.empty());
 }
 
 #ifdef HAVE_PSI_INTERFACE
@@ -1419,7 +1419,7 @@ static int event_class_dispatch_error(THD *thd, mysql_event_class_t event_class,
 }
 
 /**  There's at least one active audit plugin tracking a specified class */
-bool is_audit_plugin_class_active(THD *thd MY_ATTRIBUTE((unused)),
+bool is_audit_plugin_class_active(THD *thd [[maybe_unused]],
                                   unsigned long event_class) {
   return mysql_global_audit_mask[event_class] != 0;
 }

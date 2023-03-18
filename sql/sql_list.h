@@ -1,6 +1,6 @@
 #ifndef INCLUDES_MYSQL_SQL_LIST_H
 #define INCLUDES_MYSQL_SQL_LIST_H
-/* Copyright (c) 2000, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -169,7 +169,8 @@ class base_list {
   */
   base_list(const base_list &rhs, MEM_ROOT *mem_root);
   inline bool push_back(void *info) {
-    if (((*last) = new (*THR_MALLOC) list_node(info, &end_of_list))) {
+    *last = new (*THR_MALLOC) list_node(info, &end_of_list);
+    if (*last) {
       last = &(*last)->next;
       elements++;
       return false;
@@ -177,7 +178,8 @@ class base_list {
     return true;
   }
   inline bool push_back(void *info, MEM_ROOT *mem_root) {
-    if (((*last) = new (mem_root) list_node(info, &end_of_list))) {
+    *last = new (mem_root) list_node(info, &end_of_list);
+    if (*last) {
       last = &(*last)->next;
       elements++;
       return false;
@@ -371,7 +373,7 @@ class base_list_iterator {
   inline void rewind(void) { el = &list->first; }
   inline void *replace(void *element) {  // Return old element
     void *tmp = current->info;
-    DBUG_ASSERT(current->info != nullptr);
+    assert(current->info != nullptr);
     current->info = element;
     return tmp;
   }
@@ -482,14 +484,14 @@ class List : public base_list {
   }
 
   T *operator[](uint index) const {
-    DBUG_ASSERT(index < elements);
+    assert(index < elements);
     list_node *current = first;
     for (uint i = 0; i < index; ++i) current = current->next;
     return static_cast<T *>(current->info);
   }
 
   void replace(uint index, T *new_value) {
-    DBUG_ASSERT(index < elements);
+    assert(index < elements);
     list_node *current = first;
     for (uint i = 0; i < index; ++i) current = current->next;
     current->info = new_value;
@@ -548,7 +550,7 @@ class List : public base_list {
     // If the list overlaps another list, last isn't actually
     // the last element, and if so, we'd give a different result from
     // List_iterator_fast.
-    DBUG_ASSERT((*last)->next == &end_of_list);
+    assert((*last)->next == &end_of_list);
 
     return iterator(*last);
   }
@@ -556,12 +558,12 @@ class List : public base_list {
   using const_iterator = List_STL_Iterator<const T>;
   const_iterator begin() const { return const_iterator(first); }
   const_iterator end() const {
-    DBUG_ASSERT((*last)->next == &end_of_list);
+    assert((*last)->next == &end_of_list);
     return const_iterator(*last);
   }
   const_iterator cbegin() const { return const_iterator(first); }
   const_iterator cend() const {
-    DBUG_ASSERT((*last)->next == &end_of_list);
+    assert((*last)->next == &end_of_list);
     return const_iterator(*last);
   }
 };
@@ -581,7 +583,10 @@ class List_iterator : public base_list_iterator {
   inline bool after(T *a, MEM_ROOT *mem_root) {
     return base_list_iterator::after(a, mem_root);
   }
-  inline T **ref(void) { return (T **)base_list_iterator::ref(); }
+  inline T **ref(void) {
+    return const_cast<T **>(
+        (std::remove_const_t<T> **)base_list_iterator::ref());
+  }
 };
 
 template <class T>
@@ -642,7 +647,7 @@ class List_STL_Iterator {
   T *operator->() const { return static_cast<T *>(m_current->info); }
 
   // DefaultConstructible (required for ForwardIterator).
-  List_STL_Iterator() {}
+  List_STL_Iterator() = default;
 
   // ForwardIterator.
   List_STL_Iterator operator++(int) {
@@ -764,7 +769,7 @@ class base_ilist {
   */
 
   void move_elements_to(base_ilist *new_owner) {
-    DBUG_ASSERT(new_owner->is_empty());
+    assert(new_owner->is_empty());
     new_owner->first = first;
     new_owner->sentinel = sentinel;
     clear();

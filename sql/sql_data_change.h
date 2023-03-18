@@ -1,6 +1,6 @@
 #ifndef SQL_DATA_CHANGE_INCLUDED
 #define SQL_DATA_CHANGE_INCLUDED
-/* Copyright (c) 2000, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,12 +30,12 @@
   sql_{insert, update}.{h,cc}
 */
 
+#include <assert.h>
 #include <stddef.h>
 #include <sys/types.h>
 
 #include "my_base.h"    // ha_rows
 #include "my_bitmap.h"  // MY_BITMAP
-#include "my_dbug.h"
 
 class Item;
 struct TABLE;
@@ -100,7 +100,7 @@ class COPY_INFO {
   const operation_type m_optype;
 
   /**
-     List of columns of the target table which the statement will explicitely
+     List of columns of the target table which the statement will explicitly
      fill; and thus we must not set a function default for them.
      NULL means "empty list".
   */
@@ -160,7 +160,7 @@ class COPY_INFO {
 
      @param optype           The data change operation type.
      @param inserted_columns List of columns of the target table which
-                             the statement will explicitely fill; COPY_INFO
+                             the statement will explicitly fill; COPY_INFO
                              must not set a function default for them. NULL
                              means "empty list".
      @param manage_defaults  Whether this object should manage function
@@ -180,7 +180,7 @@ class COPY_INFO {
         escape_char(0),
         last_errno(0),
         update_values(nullptr) {
-    DBUG_ASSERT(optype == INSERT_OPERATION);
+    assert(optype == INSERT_OPERATION);
   }
 
   /**
@@ -196,7 +196,7 @@ class COPY_INFO {
 
      @param optype            The data change operation type.
      @param inserted_columns List of columns of the target table which
-                             the statement will explicitely fill; COPY_INFO
+                             the statement will explicitly fill; COPY_INFO
                              must not set a function default for them. NULL
                              means "empty list".
      @param inserted_columns2 A second list like inserted_columns
@@ -218,7 +218,7 @@ class COPY_INFO {
         escape_char(escape_character),
         last_errno(0),
         update_values(nullptr) {
-    DBUG_ASSERT(optype == INSERT_OPERATION);
+    assert(optype == INSERT_OPERATION);
   }
 
   /**
@@ -243,7 +243,7 @@ class COPY_INFO {
         escape_char(0),
         last_errno(0),
         update_values(values) {
-    DBUG_ASSERT(optype == UPDATE_OPERATION);
+    assert(optype == UPDATE_OPERATION);
   }
 
   operation_type get_operation_type() const { return m_optype; }
@@ -277,7 +277,7 @@ class COPY_INFO {
                   my_error has already been called so the calling function
                   only needs to bail out.
   */
-  bool set_function_defaults(TABLE *table);
+  [[nodiscard]] bool set_function_defaults(TABLE *table);
 
   /**
      Adds the columns that are bound to receive default values from a function
@@ -304,7 +304,7 @@ class COPY_INFO {
      invoking this function.
   */
   bool function_defaults_apply(const TABLE *) const {
-    DBUG_ASSERT(m_function_default_columns != nullptr);
+    assert(m_function_default_columns != nullptr);
     return !bitmap_is_clear_all(m_function_default_columns);
   }
 
@@ -313,7 +313,7 @@ class COPY_INFO {
     that may set the column.
   */
   bool function_defaults_apply_on_columns(MY_BITMAP *map) {
-    DBUG_ASSERT(m_function_default_columns != nullptr);
+    assert(m_function_default_columns != nullptr);
     return bitmap_is_overlapping(m_function_default_columns, map);
   }
 
@@ -341,7 +341,7 @@ class COPY_INFO {
      This class allocates its memory in a MEM_ROOT, so there's nothing to
      delete.
   */
-  virtual ~COPY_INFO() {}
+  virtual ~COPY_INFO() = default;
 };
 
 #endif  // SQL_DATA_CHANGE_INCLUDED

@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -190,7 +191,7 @@ Dbtup::execCREATE_TRIG_IMPL_REQ(Signal* signal)
   else
   {
     SegmentedSectionPtr ptr;
-    handle.getSection(ptr, CreateTrigImplReq::ATTRIBUTE_MASK_SECTION);
+    ndbrequire(handle.getSection(ptr, CreateTrigImplReq::ATTRIBUTE_MASK_SECTION));
     ndbrequire(ptr.sz == mask.getSizeInWords());
     ::copy(mask.rep.data, ptr);
   }
@@ -412,7 +413,9 @@ Dbtup::createTrigger(Tablerec* table,
       jam();
       goto err;
     }
-
+    cnoOfAllocatedTriggerRec++;
+    cnoOfMaxAllocatedTriggerRec = MAX(cnoOfMaxAllocatedTriggerRec,
+                                      cnoOfAllocatedTriggerRec);
     tmp[i].ptr = tptr;
 
     // Set trigger id
@@ -488,15 +491,6 @@ err:
   return false;
 }//Dbtup::createTrigger()
 
-bool
-Dbtup::primaryKey(Tablerec* const regTabPtr, Uint32 attrId)
-{
-  Uint32 attrDescriptorStart = regTabPtr->tabDescriptor;
-  Uint32 attrDescriptor = getTabDescrWord(attrDescriptorStart +
-                                          (attrId * ZAD_SIZE));
-  return (bool)AttributeDescriptor::getPrimaryKey(attrDescriptor);
-}//Dbtup::primaryKey()
-
 /* ---------------------------------------------------------------- */
 /* -------------------------- dropTrigger ------------------------- */
 /*                                                                  */
@@ -508,7 +502,9 @@ Dbtup::primaryKey(Tablerec* const regTabPtr, Uint32 attrId)
 /*                                                                  */
 /* ---------------------------------------------------------------- */
 Uint32
-Dbtup::dropTrigger(Tablerec* table, const DropTrigImplReq* req, BlockNumber receiver)
+Dbtup::dropTrigger(Tablerec* table,
+                   const DropTrigImplReq* req,
+                   BlockNumber receiver)
 {
   if (ERROR_INSERTED(4004)) {
     CLEAR_ERROR_INSERT_VALUE;
@@ -520,8 +516,6 @@ Dbtup::dropTrigger(Tablerec* table, const DropTrigImplReq* req, BlockNumber rece
   TriggerType::Value ttype = TriggerInfo::getTriggerType(tinfo);
   TriggerActionTime::Value ttime = TriggerInfo::getTriggerActionTime(tinfo);
   TriggerEvent::Value tevent = TriggerInfo::getTriggerEvent(tinfo);
-
-  //  ndbout_c("Drop TupTrigger %u = %u %u %u %u by %u", triggerId, table, ttype, ttime, tevent, sender);
 
   int cnt;
   struct {
@@ -567,9 +561,12 @@ Dbtup::dropTrigger(Tablerec* table, const DropTrigImplReq* req, BlockNumber rece
     tmp[i].list = findTriggerList(table, ttype, ttime, tmp[i].event);
     ndbrequire(tmp[i].list != NULL);
 
-    Ptr<TupTriggerData> ptr;
+    TriggerPtr ptr;
     tmp[i].ptr.setNull();
-    for (tmp[i].list->first(ptr); !ptr.isNull(); tmp[i].list->next(ptr))
+    bool ret;
+    for (ret = tmp[i].list->first(ptr);
+         ret;
+         ret = tmp[i].list->next(ptr))
     {
       jam();
       if (ptr.p->triggerId == triggerId)
@@ -603,6 +600,8 @@ Dbtup::dropTrigger(Tablerec* table, const DropTrigImplReq* req, BlockNumber rece
   {
     jam();
     tmp[i].list->release(tmp[i].ptr);
+    ndbrequire(cnoOfAllocatedTriggerRec > 0);
+    cnoOfAllocatedTriggerRec--;
   }
   return 0;
 }//Dbtup::dropTrigger()
@@ -619,17 +618,16 @@ Dbtup::execFIRE_TRIG_REQ(Signal* signal)
   TablerecPtr regTabPtr;
   KeyReqStruct req_struct(this,
                           (When)(KRS_PRE_COMMIT_BASE +
-                                 (pass & TriggerPreCommitPass::TPCP_PASS_MAX)));
+                                (pass & TriggerPreCommitPass::TPCP_PASS_MAX)));
 
   regOperPtr.i = opPtrI;
 
   jamEntry();
 
-  ndbrequire(c_operation_pool.getValidPtr(regOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(regOperPtr));
 
   regFragPtr.i = regOperPtr.p->fragmentPtr;
-  Uint32 no_of_fragrec = cnoOfFragrec;
-  ptrCheckGuard(regFragPtr, no_of_fragrec, fragrecord);
+  ndbrequire(c_fragment_pool.getPtr(regFragPtr));
 
   TransState trans_state = get_trans_state(regOperPtr.p);
   ndbrequire(trans_state == TRANS_STARTED);
@@ -655,7 +653,7 @@ Dbtup::execFIRE_TRIG_REQ(Signal* signal)
 
   OperationrecPtr lastOperPtr;
   lastOperPtr.i = tuple_ptr->m_operation_ptr_i;
-  ndbrequire(c_operation_pool.getValidPtr(lastOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(lastOperPtr));
   ndbassert(regOperPtr.p->op_struct.bit_field.m_reorg ==
             lastOperPtr.p->op_struct.bit_field.m_reorg);
 
@@ -823,8 +821,8 @@ Dbtup::checkDeferredTriggersDuringPrepare(KeyReqStruct *req_struct,
 {
   jam();
   TriggerPtr trigPtr;
-  triggerList.first(trigPtr);
-  while (trigPtr.i != RNIL)
+  bool ret = triggerList.first(trigPtr);
+  while (ret)
   {
     jam();
     if (trigPtr.p->monitorAllAttributes ||
@@ -851,7 +849,7 @@ Dbtup::checkDeferredTriggersDuringPrepare(KeyReqStruct *req_struct,
         return;
       }
     }
-    triggerList.next(trigPtr);
+    ret = triggerList.next(trigPtr);
   }
 }
 
@@ -879,7 +877,8 @@ void Dbtup::checkDeferredTriggers(KeyReqStruct *req_struct,
   case ZUPDATE:
   case ZINSERT:
     jam();
-    req_struct->m_tuple_ptr =get_copy_tuple(&regOperPtr->m_copy_tuple_location);
+    req_struct->m_tuple_ptr =
+      get_copy_tuple(&regOperPtr->m_copy_tuple_location);
     break;
   }
 
@@ -1119,8 +1118,8 @@ Dbtup::fireImmediateTriggers(KeyReqStruct *req_struct,
                              bool disk)
 {
   TriggerPtr trigPtr;
-  triggerList.first(trigPtr);
-  while (trigPtr.i != RNIL) {
+  bool ret = triggerList.first(trigPtr);
+  while (ret) {
     jam();
     if (trigPtr.p->monitorAllAttributes ||
         trigPtr.p->attributeMask.overlaps(req_struct->changeMask)) {
@@ -1150,7 +1149,7 @@ Dbtup::fireImmediateTriggers(KeyReqStruct *req_struct,
                        disk);
       }
     }
-    triggerList.next(trigPtr);
+    ret = triggerList.next(trigPtr);
   }//while
 }//Dbtup::fireImmediateTriggers()
 
@@ -1161,8 +1160,8 @@ Dbtup::fireDeferredConstraints(KeyReqStruct *req_struct,
                                bool disk)
 {
   TriggerPtr trigPtr;
-  triggerList.first(trigPtr);
-  while (trigPtr.i != RNIL) {
+  bool ret = triggerList.first(trigPtr);
+  while (ret) {
     jam();
 
     if (trigPtr.p->monitorAllAttributes ||
@@ -1198,7 +1197,7 @@ Dbtup::fireDeferredConstraints(KeyReqStruct *req_struct,
         ndbabort();
       }
     }//if
-    triggerList.next(trigPtr);
+    ret = triggerList.next(trigPtr);
   }//while
 }//Dbtup::fireDeferredConstraints()
 
@@ -1209,8 +1208,8 @@ Dbtup::fireDeferredTriggers(KeyReqStruct *req_struct,
                             bool disk)
 {
   TriggerPtr trigPtr;
-  triggerList.first(trigPtr);
-  while (trigPtr.i != RNIL) {
+  bool ret = triggerList.first(trigPtr);
+  while (ret) {
     jam();
     if (trigPtr.p->monitorAllAttributes ||
         trigPtr.p->attributeMask.overlaps(req_struct->changeMask)) {
@@ -1220,7 +1219,7 @@ Dbtup::fireDeferredTriggers(KeyReqStruct *req_struct,
                      regOperPtr,
                      disk);
     }//if
-    triggerList.next(trigPtr);
+    ret = triggerList.next(trigPtr);
   }//while
 }//Dbtup::fireDeferredTriggers()
 
@@ -1240,8 +1239,8 @@ Dbtup::fireDetachedTriggers(KeyReqStruct *req_struct,
   req_struct->m_disk_page_ptr.i = diskPagePtrI;
   
   ndbrequire(regOperPtr->is_first_operation());
-  triggerList.first(trigPtr);
-  while (trigPtr.i != RNIL) {
+  bool ret = triggerList.first(trigPtr);
+  while (ret) {
     jam();
     if ((trigPtr.p->monitorReplicas ||
          regOperPtr->op_struct.bit_field.m_triggers ==
@@ -1254,7 +1253,7 @@ Dbtup::fireDetachedTriggers(KeyReqStruct *req_struct,
                      regOperPtr,
                      disk);
     }
-    triggerList.next(trigPtr);
+    ret = triggerList.next(trigPtr);
   }
 }
 
@@ -1494,7 +1493,7 @@ void Dbtup::executeTrigger(KeyReqStruct *req_struct,
 
   FragrecordPtr regFragPtr;
   regFragPtr.i= regOperPtr->fragmentPtr;
-  ptrCheckGuard(regFragPtr, cnoOfFragrec, fragrecord);
+  ndbrequire(c_fragment_pool.getPtr(regFragPtr));
   Fragrecord::FragState fragstatus = regFragPtr.p->fragStatus;
 
   if (refToMain(ref) == getBACKUP())
@@ -1607,7 +1606,7 @@ out:
       trigAttrInfo->setTriggerId(triggerId);
     }
   }
-  // Fall through
+  [[fallthrough]];
   case (TriggerType::REORG_TRIGGER):
   case (TriggerType::FK_PARENT):
   case (TriggerType::FK_CHILD):
@@ -1740,13 +1739,13 @@ out:
       switch(regOperPtr->m_copy_tuple_location.m_file_no){
       case Operationrec::RF_SINGLE_NOT_EXIST:
         jam();
-        // Fall through
+        [[fallthrough]];
       case Operationrec::RF_MULTI_NOT_EXIST:
         jam();
         goto is_delete;
       case Operationrec::RF_SINGLE_EXIST:
         jam();
-        // Fall through
+        [[fallthrough]];
       case Operationrec::RF_MULTI_EXIST:
         jam();
         goto is_insert;
@@ -1786,14 +1785,14 @@ out:
     switch(regOperPtr->m_copy_tuple_location.m_file_no){
     case Operationrec::RF_SINGLE_NOT_EXIST:
       jam();
-      // Fall through
+      [[fallthrough]];
     case Operationrec::RF_MULTI_NOT_EXIST:
       jam();
       fireTrigOrd->m_triggerEvent = TriggerEvent::TE_DELETE;
       break;
     case Operationrec::RF_SINGLE_EXIST:
       jam();
-      // Fall through
+      [[fallthrough]];
     case Operationrec::RF_MULTI_EXIST:
       jam();
       fireTrigOrd->m_triggerEvent = TriggerEvent::TE_INSERT;
@@ -1956,15 +1955,13 @@ bool Dbtup::readTriggerInfo(TupTriggerData* const trigPtr,
   ptrCheckGuard(tabptr, cnoOfTablerec, tablerec);
 
   Tablerec* const regTabPtr = tabptr.p;
-  Uint32 num_attr= regTabPtr->m_no_of_attributes;
-  Uint32 descr_start= regTabPtr->tabDescriptor;
-  ndbrequire(descr_start + (num_attr << ZAD_LOG_SIZE) <= cnoOfTabDescrRec);
+  Uint32 *tab_descr = regTabPtr->tabDescriptor;
 
   req_struct->tablePtrP = regTabPtr;
   req_struct->operPtrP = regOperPtr;
   req_struct->check_offset[MM]= regTabPtr->get_check_offset(MM);
   req_struct->check_offset[DD]= regTabPtr->get_check_offset(DD);
-  req_struct->attr_descr= &tableDescriptor[descr_start];
+  req_struct->attr_descr = tab_descr;
 
   if ((regOperPtr->op_struct.bit_field.m_triggers == 
          TupKeyReq::OP_NO_TRIGGERS) &&
@@ -1995,7 +1992,7 @@ bool Dbtup::readTriggerInfo(TupTriggerData* const trigPtr,
     prepare_read(req_struct, regTabPtr, disk);
   
   int ret = readAttributes(req_struct,
-			   &tableDescriptor[regTabPtr->readKeyArray].tabDescr,
+                           regTabPtr->readKeyArray,
 			   regTabPtr->noOfKeyAttr,
 			   keyBuffer,
 			   ZATTR_BUFFER_SIZE,
@@ -2231,9 +2228,9 @@ Dbtup::addTuxEntries(Signal* signal,
   TuxMaintReq* const req = (TuxMaintReq*)signal->getDataPtrSend();
   const TupTriggerData_list& triggerList = regTabPtr->tuxCustomTriggers;
   TriggerPtr triggerPtr;
-  Uint32 failPtrI;
-  triggerList.first(triggerPtr);
-  while (triggerPtr.i != RNIL) {
+  Uint64 failPtrI;
+  bool ret = triggerList.first(triggerPtr);
+  while (ret) {
     jamDebug();
     req->indexId = triggerPtr.p->indexId;
     req->errorCode = RNIL;
@@ -2254,12 +2251,12 @@ Dbtup::addTuxEntries(Signal* signal,
       failPtrI = triggerPtr.i;
       goto fail;
     }
-    triggerList.next(triggerPtr);
+    ret = triggerList.next(triggerPtr);
   }
   return 0;
 fail:
   req->opInfo = TuxMaintReq::OpRemove;
-  triggerList.first(triggerPtr);
+  ret = triggerList.first(triggerPtr);
   while (triggerPtr.i != failPtrI) {
     jamDebug();
     req->indexId = triggerPtr.p->indexId;
@@ -2267,7 +2264,7 @@ fail:
     c_tux->execTUX_MAINT_REQ(signal);
     jamEntryDebug();
     ndbrequire(req->errorCode == 0);
-    triggerList.next(triggerPtr);
+    ret = triggerList.next(triggerPtr);
   }
 #ifdef VM_TRACE
   ndbout << "aborted partial tux update: op " << hex << regOperPtr << endl;
@@ -2366,8 +2363,8 @@ Dbtup::removeTuxEntries(Signal* signal,
   TuxMaintReq* const req = (TuxMaintReq*)signal->getDataPtrSend();
   const TupTriggerData_list& triggerList = regTabPtr->tuxCustomTriggers;
   TriggerPtr triggerPtr;
-  triggerList.first(triggerPtr);
-  while (triggerPtr.i != RNIL)
+  bool ret = triggerList.first(triggerPtr);
+  while (ret)
   {
     jamDebug();
     req->indexId = triggerPtr.p->indexId;
@@ -2376,7 +2373,7 @@ Dbtup::removeTuxEntries(Signal* signal,
     jamEntryDebug();
     // must succeed
     ndbrequire(req->errorCode == 0);
-    triggerList.next(triggerPtr);
+    ret = triggerList.next(triggerPtr);
   }
 }
 
@@ -2412,9 +2409,13 @@ Dbtup::ndbmtd_buffer_suma_trigger(Signal * signal,
       ndbassert(m_suma_trigger_buffer.m_pageId == RNIL);
       Uint32 page_count = (tot - 1) / GLOBAL_PAGE_SIZE_WORDS + 1;
       Uint32 count = page_count;
-      m_ctx.m_mm.alloc_pages(RT_SUMA_TRIGGER_BUFFER, &m_suma_trigger_buffer.m_pageId, &count, page_count);
+      c_suma->alloc_trigger_page(instance(),
+                                 &m_suma_trigger_buffer.m_pageId,
+                                 &m_suma_trigger_buffer.m_chunkId,
+                                 jamBuffer(),
+                                 page_count);
       pageId = m_suma_trigger_buffer.m_pageId;
-      if (count == 0)
+      if (pageId == RNIL)
       {
         jam();
         ptr = 0;
@@ -2475,37 +2476,50 @@ Dbtup::flush_ndbmtd_suma_buffer(Signal* signal)
   jam();
 
   Uint32 pageId = m_suma_trigger_buffer.m_pageId;
+  Uint32 chunkId = m_suma_trigger_buffer.m_chunkId;
   Uint32 used = m_suma_trigger_buffer.m_usedWords;
   Uint32 oom = m_suma_trigger_buffer.m_out_of_memory;
 
   if (pageId != RNIL)
   {
     jam();
-    Uint32 save[2];
+    Uint32 save[4];
     save[0] = signal->theData[0];
     save[1] = signal->theData[1];
+    save[2] = signal->theData[2];
+    save[3] = signal->theData[3];
     signal->theData[0] = pageId;
     signal->theData[1] =  used;
-    sendSignal(SUMA_REF, GSN_FIRE_TRIG_ORD_L, signal, 2, JBB);
-
+    signal->theData[2] = instance();
+    signal->theData[3] = chunkId;
+    sendSignal(SUMA_REF, GSN_FIRE_TRIG_ORD_L, signal, 4, JBB);
     signal->theData[0] = save[0];
     signal->theData[1] = save[1];
+    signal->theData[2] = save[2];
+    signal->theData[3] = save[3];
   }
   else if (oom)
   {
     jam();
-    Uint32 save[2];
+    Uint32 save[4];
     save[0] = signal->theData[0];
     save[1] = signal->theData[1];
+    save[2] = signal->theData[2];
+    save[3] = signal->theData[3];
     signal->theData[0] = RNIL;
     signal->theData[1] =  0;
-    sendSignal(SUMA_REF, GSN_FIRE_TRIG_ORD_L, signal, 2, JBB);
+    signal->theData[2] = instance();
+    signal->theData[3] = RNIL;
+    sendSignal(SUMA_REF, GSN_FIRE_TRIG_ORD_L, signal, 4, JBB);
 
     signal->theData[0] = save[0];
     signal->theData[1] = save[1];
+    signal->theData[2] = save[2];
+    signal->theData[3] = save[3];
   }
 
   m_suma_trigger_buffer.m_pageId = RNIL;
+  m_suma_trigger_buffer.m_chunkId = RNIL;
   m_suma_trigger_buffer.m_usedWords = 0;
   m_suma_trigger_buffer.m_freeWords = 0;
   m_suma_trigger_buffer.m_out_of_memory = 0;

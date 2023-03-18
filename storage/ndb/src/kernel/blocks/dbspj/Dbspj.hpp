@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2011, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2011, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -55,6 +55,8 @@ public:
 
   struct Request;
   struct TreeNode;
+  struct ScanFragHandle;
+
 private:
   BLOCK_DEFINES(Dbspj);
 
@@ -104,11 +106,40 @@ private:
 
   void sendSTTORRY(Signal* signal);
 
-protected:
-  //virtual bool getParam(const char* name, Uint32* count);
+  /**
+   * Security layer:
+   *   Provide verification of 'i-pointers' used in the signaling protocol.
+   *   - 'insert' the GuardedPtr to allow it to be referred.
+   *   - 'remove' at end of lifecycle.
+   *   - 'get' will fetch the 'real' pointer to the object.
+   * Crash if ptrI is unknown to us.
+   */
+  void insertGuardedPtr(Ptr<Request>, Ptr<TreeNode>);
+  void removeGuardedPtr(Ptr<TreeNode>);
+  bool getGuardedPtr(Ptr<TreeNode>&, Uint32 ptrI);
+
+  void insertGuardedPtr(Ptr<Request>, Ptr<ScanFragHandle>);
+  void removeGuardedPtr(Ptr<ScanFragHandle>);
+  bool getGuardedPtr(Ptr<ScanFragHandle>&, Uint32 ptrI);
+
+  /**
+   * Calculate a reasonable good hashKey for an i-pointer.
+   * Lower 13 bits in i-pointer is the page offset, with those above
+   * the page no. As the same page_no is reused for multiple object,
+   * and the objects are of same size, there *will* be repeating patterns.
+   * Thus a good hash function is required, based on murmur3 hash.
+   */
+  static Uint32 hashPtrI(Uint32 ptrI)
+  {
+    Uint32 k = (ptrI >> 13) ^ ptrI;  // Fold page_no and pos
+    // Murmur scramble:
+    k *= 0xcc9e2d51;
+    k = (k << 15) | (k >> 17);
+    k *= 0x1b873593;
+    return k;
+  }
 
 public:
-  struct ScanFragHandle;
   typedef DataBuffer<14, LocalArenaPool<DataBufferSegment<14> > > Correlation_list;
   typedef LocalDataBuffer<14, LocalArenaPool<DataBufferSegment<14> > > Local_correlation_list;
   typedef DataBuffer<14, LocalArenaPool<DataBufferSegment<14> > > Dependency_map;
@@ -216,10 +247,10 @@ public:
   struct RowBuffer;  // forward decl.
 
   /**
-   * Define overlayed 'base class' for SLFifoRowList and RowMap.
+   * Define overlaid 'base class' for SLFifoRowList and RowMap.
    * As we want these to be POD struct, we does not use 
    * inheritance, but have to take care that first part
-   * of these struct are correctly overlayed.
+   * of these struct are correctly overlaid.
    */
   struct RowCollectionBase
   {
@@ -229,7 +260,7 @@ public:
   struct SLFifoRowList //: public RowCollectionBase
   {
     /**
-     * BEWARE: Overlayed 'struct RowCollectionBase'
+     * BEWARE: Overlaid 'struct RowCollectionBase'
      */
     RowBuffer* m_rowBuffer;
 
@@ -252,7 +283,7 @@ public:
   struct RowMap //: public RowCollectionBase
   {
     /**
-     * BEWARE: Overlayed 'struct RowCollectionBase'
+     * BEWARE: Overlaid 'struct RowCollectionBase'
      */
     RowBuffer* m_rowBuffer;
 
@@ -310,15 +341,15 @@ public:
       return RowRef::map_is_null(ptr);
     }
 
-    STATIC_CONST( MAP_SIZE_PER_REF_16 = 3 );
+    static constexpr Uint32 MAP_SIZE_PER_REF_16 = 3;
   };
 
   /**
-   * Define overlayed 'base class' for SLFifoRowListIterator
+   * Define overlaid 'base class' for SLFifoRowListIterator
    * and RowMapIterator.
    * As we want these to be POD struct, we does not use 
    * inheritance, but have to take care that first part
-   * of these struct are correctly overlayed.
+   * of these struct are correctly overlaid.
    */
   struct RowIteratorBase
   {
@@ -332,7 +363,7 @@ public:
   struct SLFifoRowListIterator //: public RowIteratorBase
   {
     /**
-     * BEWARE: Overlayed 'struct RowIteratorBase'
+     * BEWARE: Overlaid 'struct RowIteratorBase'
      */
     RowRef m_ref;
     Uint32 * m_row_ptr;
@@ -345,7 +376,7 @@ public:
   struct RowMapIterator //: public RowIteratorBase
   {
     /**
-     * BEWARE: Overlayed 'struct RowIteratorBase'
+     * BEWARE: Overlaid 'struct RowIteratorBase'
      */
     RowRef m_ref;
     Uint32 * m_row_ptr;
@@ -454,7 +485,7 @@ public:
     Uint32 nextList;
     Uint32 prevList;
     Uint32 m_data[GLOBAL_PAGE_SIZE_WORDS - 7];
-    STATIC_CONST( SIZE = GLOBAL_PAGE_SIZE_WORDS - 7 );
+    static constexpr Uint32 SIZE = GLOBAL_PAGE_SIZE_WORDS - 7;
   };
   typedef ArrayPool<RowPage> RowPage_pool;
   // Use 'counted' list to keep track of GlobalSharedMemory size used.
@@ -640,6 +671,7 @@ public:
       m_fragId = fid;
       m_state = SFH_NOT_STARTED;
       m_rangePtrI = RNIL;
+      m_paramPtrI = RNIL;
       m_readBackup = readBackup;
     }
 
@@ -650,7 +682,20 @@ public:
     Uint8 m_readBackup;
     Uint32 m_ref;
     Uint32 m_next_ref;
-    Uint32 m_rangePtrI;
+    Uint32 m_rangePtrI;  // Set of lower/upper bound keys.
+    Uint32 m_paramPtrI;  // Set of interpreter parameters
+
+    // Below are requirements for the hash lists
+    bool equal(const ScanFragHandle &other) const {
+      return key == other.key;
+    }
+    Uint32 hashValue() const {
+      return hashPtrI(key);
+    }
+
+    Uint32 key;  // Its own ptrI, used as hash key
+    Uint32 nextHash, prevHash;
+
     union {
       Uint32 nextList;
       Uint32 nextPool;
@@ -660,6 +705,7 @@ public:
   typedef RecordPool<ArenaPool<ScanFragHandle> > ScanFragHandle_pool;
   typedef SLFifoList<ScanFragHandle_pool> ScanFragHandle_list;
   typedef LocalSLFifoList<ScanFragHandle_pool> Local_ScanFragHandle_list;
+  typedef KeyTable<ScanFragHandle_pool> ScanFragHandle_hash;
 
   /**
    * This class computes mean and standard deviation incrementally for a series
@@ -776,7 +822,7 @@ public:
    */
   struct TreeNode
   {
-    STATIC_CONST ( MAGIC = ~RT_SPJ_TREENODE );
+    static constexpr Uint32 MAGIC = ~RT_SPJ_TREENODE;
 
     TreeNode()
     : m_magic(MAGIC), m_state(TN_END),
@@ -1024,7 +1070,7 @@ public:
     Dependency_map::Head m_next_nodes;
 
     /**
-     * We provide some TreeNodeBitMap's. Usefull to check how
+     * We provide some TreeNodeBitMap's. Useful to check how
      * a specific node relates to other TreeNodes:
      *
      * - 'ancestors' are the set of TreeNodes reachable through
@@ -1067,7 +1113,7 @@ public:
      * T_CHK_CONGESTION may cause execution of child operations to
      * be deferred.  These operations are queued in the 'struct DeferredParentOps'
      * The congestion check will always happen on a Scan TreeNode having
-     * some Lookup childrens, which are the operations which might be deferred.
+     * some Lookup children, which are the operations which might be deferred.
      */
     DeferredParentOps m_deferred;
 
@@ -1099,6 +1145,18 @@ public:
       Uint32 m_attrInfoPtrI;     // attrInfoSection
     } m_send;
 
+
+    // Below are requirements for the hash lists
+    bool equal(const TreeNode &other) const {
+      return key == other.key;
+    }
+    Uint32 hashValue() const {
+      return hashPtrI(key);
+    }
+
+    Uint32 key;  // Its own ptrI, used as hash key
+    Uint32 nextHash, prevHash;
+
     union {
       Uint32 nextList;
       Uint32 nextPool;
@@ -1110,13 +1168,12 @@ public:
   static const Ptr<TreeNode> NullTreeNodePtr;
 
   typedef RecordPool<ArenaPool<TreeNode> > TreeNode_pool;
+  typedef KeyTable<TreeNode_pool> TreeNode_hash;
   typedef DLFifoList<TreeNode_pool> TreeNode_list;
   typedef LocalDLFifoList<TreeNode_pool> Local_TreeNode_list;
 
-  typedef SLList<TreeNode_pool, IA_Cursor>
-  TreeNodeCursor_list;
-  typedef LocalSLList<TreeNode_pool, IA_Cursor>
-  Local_TreeNodeCursor_list;
+  typedef SLList<TreeNode_pool, IA_Cursor> TreeNodeCursor_list;
+  typedef LocalSLList<TreeNode_pool, IA_Cursor> Local_TreeNodeCursor_list;
 
   /**
    * A request (i.e a query + parameters)
@@ -1211,7 +1268,7 @@ private:
   enum CounterId
   {
     /**
-     * This is the number of incomming LQHKEYREQ messages (i.e queries with a
+     * This is the number of incoming LQHKEYREQ messages (i.e queries with a
      * lookup as root).
      */
     CI_READS_RECEIVED = 0,
@@ -1231,12 +1288,12 @@ private:
     /**
      * No of lookup operations which did not return a row (LQHKEYREF).
      * (Most likely due to non matching key, or predicate
-     * filter which evalueted  to 'false').
+     * filter which evaluated  to 'false').
      */
     CI_READS_NOT_FOUND = 3,
 
     /**
-     * This is the number of incomming queries where the root operation is a
+     * This is the number of incoming queries where the root operation is a
      * fragment scan and this is a "direct scan" that does not go via an index.
      */
     CI_TABLE_SCANS_RECEIVED = 4,
@@ -1248,7 +1305,7 @@ private:
     CI_LOCAL_TABLE_SCANS_SENT = 5,
 
     /**
-     * This is the number of incomming queries where the root operation is a
+     * This is the number of incoming queries where the root operation is a
      * fragment scan which scans the fragment via an ordered index..
      */
     CI_RANGE_SCANS_RECEIVED = 6,
@@ -1331,7 +1388,9 @@ private:
   Request_hash m_lookup_request_hash;
   ArenaPool<DataBufferSegment<14> > m_dependency_map_pool;
   TreeNode_pool m_treenode_pool;
+  TreeNode_hash m_treenode_hash;
   ScanFragHandle_pool m_scanfraghandle_pool;
+  ScanFragHandle_hash m_scanfraghandle_hash;
 
   TableRecord *m_tableRecord;
   UintR c_tabrecFilesize;
@@ -1390,7 +1449,7 @@ private:
   void prepareNextBatch(Signal*, Ptr<Request>);
   void sendConf(Signal*, Ptr<Request>, bool is_complete);
   void complete(Signal*, Ptr<Request>);
-  void cleanup(Ptr<Request>);
+  void cleanup(Ptr<Request>, bool in_hash);
   void cleanupBatch(Ptr<Request>);
   void abort(Signal*, Ptr<Request>, Uint32 errCode);
   Uint32 nodeFail(Signal*, Ptr<Request>, NdbNodeBitmask mask);

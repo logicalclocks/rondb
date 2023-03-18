@@ -180,12 +180,12 @@ FROM INFORMATION_SCHEMA.partitions
 WHERE table_name='t1'
 GROUP BY table_name;
 TABLE_NAME	SUM(table_rows)	SUM(data_length)	MAX(max_data_length)	SUM(data_free)
-t1	501	262144	1048576	8345820
+t1	501	262144	1048576	41121440
 SELECT table_name, table_rows, data_length, max_data_length, data_free
 FROM information_schema.tables
 WHERE table_name='t1';
 TABLE_NAME	TABLE_ROWS	DATA_LENGTH	MAX_DATA_LENGTH	DATA_FREE
-t1	501	262144	8388608	8345820
+t1	501	262144	8388608	41121440
 CREATE LOGFILE GROUP lg2
 ADD UNDOFILE 'x.dat'
 INITIAL_SIZE 10y
@@ -217,16 +217,68 @@ DROP TABLE t1;
 create table t1(
 col1 int unsigned not null primary key,
 col2 int unsigned not null,
-col3 varchar(8176),
-col4 int)
+col3 char(255),
+col4 char(255),
+col5 char(255),
+col6 char(255),
+col7 char(255),
+col8 char(255),
+col9 char(255),
+col10 char(255),
+col11 char(255),
+col12 char(255),
+col13 char(255),
+col14 char(255),
+col15 char(255),
+col16 char(255),
+col17 char(255),
+col18 char(255),
+col19 char(255),
+col20 char(255),
+col21 char(255),
+col22 char(255),
+col23 char(255),
+col24 char(255),
+col25 char(255),
+col26 char(255),
+col27 char(255),
+col28 char(255),
+col29 char(255),
+col30 char(255),
+col31 char(255),
+col32 char(255),
+col33 char(255),
+col34 char(255),
+col35 char(255))
 tablespace ts1 storage disk
 charset = latin1 engine=ndbcluster;
-ERROR HY000: Can't create table 't1'
+ERROR HY000: Can't create table 't1' (use SHOW WARNINGS for more info).
 show warnings;
 Level	Code	Message
-Warning	1296	Got error 851 'Fixed-size column offset exceeded max.Use VARCHAR or COLUMN_FORMAT DYNAMIC for memory-stored columns' from NDB
+Warning	1296	Got error 851 'Fixed-size column offset exceeded max. Use VARCHAR or COLUMN_FORMAT DYNAMIC for some columns' from NDB
 Warning	1296	Failed to commit NDB schema transaction
-Error	1005	Can't create table 't1'
+Error	1005	Can't create table 't1' (use SHOW WARNINGS for more info).
+create table t1(
+col1 int unsigned not null primary key,
+col2 int unsigned not null,
+col3 varchar(8192),
+col4 varchar(8192))
+tablespace ts1 storage disk
+charset = latin1 engine=ndbcluster;
+show warnings;
+Level	Code	Message
+drop table t1;
+create table t1(
+col1 int unsigned not null primary key,
+col2 int unsigned not null,
+col3 varchar(30000))
+tablespace ts1 storage disk
+charset = latin1 engine=ndbcluster;
+ERROR HY000: Can't create table 't1' (use SHOW WARNINGS for more info).
+show warnings;
+Level	Code	Message
+Warning	1296	Got error 738 'Record too big' from NDB
+Error	1005	Can't create table 't1' (use SHOW WARNINGS for more info).
 CREATE TABLE t1 (a bigint primary key, b bigint storage disk)
 ENGINE ndb
 COMMENT="NDB_TABLE=NOLOGGING=1"
@@ -280,7 +332,7 @@ insert
 into City (Name,CountryCode,District,Population)
 values ('BeiJing','CN','Beijing',2000);
 ERROR HY000: Got error 1602 'No datafile in tablespace' from NDBCLUSTER
-# Dropping tablsepace before dropping table should fail
+# Dropping tablespace before dropping table should fail
 drop tablespace ts2;
 ERROR HY000: Tablespace `ts2` is not empty.
 # Cleanup
@@ -594,13 +646,164 @@ commit;
 delete from t1;
 begin;
 insert into t1 values (1, 'x');
-select * from t1;
+select * from t1 where a = 1;
 a	b
 1	x
+update t1 set b = 'y' where a = 1;
+select * from t1;
+a	b
+1	y
 rollback;
 set autocommit = 1;
-# Cleanup
+insert into t1 values (1, 'x');
+select * from t1 where a = 1;
+a	b
+1	x
+update t1 set b = 'y' where a = 1;
+select * from t1;
+a	b
+1	y
 drop table t1;
+CREATE TABLE t1 (
+a int NOT NULL,
+b int,
+PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+set autocommit = 0;
+begin;
+insert into t1 values (1, 1);
+select * from t1 where a = 1;
+a	b
+1	1
+update t1 set b = 2 where a = 1;
+select * from t1;
+a	b
+1	2
+rollback;
+set autocommit = 1;
+insert into t1 values (1, 1);
+select * from t1 where a = 1;
+a	b
+1	1
+update t1 set b = 2 where a = 1;
+select * from t1;
+a	b
+1	2
+drop table t1;
+CREATE TABLE t1 (
+a int NOT NULL,
+b int,
+c varchar(128) charset latin1,
+PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+set autocommit = 0;
+begin;
+insert into t1 values (1, 1, 'x');
+select * from t1 where a = 1;
+a	b	c
+1	1	x
+update t1 set c = 'y' where a = 1;
+select * from t1;
+a	b	c
+1	1	y
+rollback;
+set autocommit = 1;
+insert into t1 values (1, 1, 'x');
+select * from t1 where a = 1;
+a	b	c
+1	1	x
+update t1 set c = 'y' where a = 1;
+select * from t1;
+a	b	c
+1	1	y
+drop table t1;
+CREATE TABLE t1 (
+a int NOT NULL,
+b int,
+c varchar(128),
+d int column_format dynamic,
+PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+set autocommit = 0;
+begin;
+insert into t1 values (1, 2, 'x', 3);
+select * from t1 where a = 1;
+a	b	c	d
+1	2	x	3
+update t1 set c = 'y' where a = 1;
+select * from t1;
+a	b	c	d
+1	2	y	3
+rollback;
+set autocommit = 1;
+insert into t1 values (1, 2, 'x', 3);
+select * from t1 where a = 1;
+a	b	c	d
+1	2	x	3
+update t1 set c = 'y' where a = 1;
+select * from t1;
+a	b	c	d
+1	2	y	3
+drop table t1;
+CREATE TABLE t1 (
+a int NOT NULL,
+b int column_format dynamic,
+PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+set autocommit = 0;
+begin;
+insert into t1 values (1, 1);
+select * from t1 where a = 1;
+a	b
+1	1
+update t1 set b = NULL where a = 1;
+select * from t1;
+a	b
+1	NULL
+rollback;
+set autocommit = 1;
+insert into t1 values (1, 1);
+select * from t1 where a = 1;
+a	b
+1	1
+update t1 set b = NULL where a = 1;
+select * from t1;
+a	b
+1	NULL
+drop table t1;
+CREATE TABLE t1 (
+a int NOT NULL,
+b int column_format dynamic,
+c varchar(128) column_format dynamic,
+PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+set autocommit = 0;
+begin;
+insert into t1 values (1, 2, 'z');
+select * from t1 where a = 1;
+a	b	c
+1	2	z
+update t1 set b = NULL, c = NULL where a = 1;
+select * from t1;
+a	b	c
+1	NULL	NULL
+rollback;
+set autocommit = 1;
+insert into t1 values (1, 2, 'z');
+select * from t1 where a = 1;
+a	b	c
+1	2	z
+update t1 set b = NULL, c = NULL where a = 1;
+select * from t1;
+a	b	c
+1	NULL	NULL
+drop table t1;
+# Cleanup
 alter tablespace ts1
 drop datafile 'datafile.dat';
 drop tablespace ts1;

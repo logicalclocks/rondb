@@ -1,5 +1,5 @@
-/* Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+/* Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,6 +23,7 @@
 */
 
 
+#include "util/require.h"
 #include <ndb_global.h>
 
 #include "API.hpp"
@@ -47,7 +48,7 @@
 #include <ndb_limits.h>
 #include <NdbOut.hpp>
 #include <NdbTick.h>
-#ifndef DBUG_OFF
+#ifndef NDEBUG
 #include <NdbSleep.h>
 #endif
 #include <EventLogger.hpp>
@@ -88,7 +89,7 @@ Ndb::init(int aMaxNoOfTransactions)
 
   const Uint32 tRef = theImpl->open(theFacade);
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   if(DBUG_EVALUATE_IF("sleep_in_ndbinit", true, false))
   {
     fprintf(stderr, "Ndb::init() (%p) taking a break\n", this);
@@ -147,20 +148,20 @@ Ndb::init(int aMaxNoOfTransactions)
   theSentTransactionsArray = new NdbTransaction* [tMaxNoOfTransactions];
   theCompletedTransactionsArray = new NdbTransaction* [tMaxNoOfTransactions];
   
-  if ((thePreparedTransactionsArray == NULL) ||
-      (theSentTransactionsArray == NULL) ||
-      (theCompletedTransactionsArray == NULL)) {
+  if ((thePreparedTransactionsArray == nullptr) ||
+      (theSentTransactionsArray == nullptr) ||
+      (theCompletedTransactionsArray == nullptr)) {
     goto error_handler;
   }//if
   
   for (i = 0; i < tMaxNoOfTransactions; i++) {
-    thePreparedTransactionsArray[i] = NULL;
-    theSentTransactionsArray[i] = NULL;
-    theCompletedTransactionsArray[i] = NULL;
+    thePreparedTransactionsArray[i] = nullptr;
+    theSentTransactionsArray[i] = nullptr;
+    theCompletedTransactionsArray[i] = nullptr;
   }//for     
   for (i = 0; i < 16; i++){
     tSignal[i] = getSignal();
-    if(tSignal[i] == NULL) {
+    if(tSignal[i] == nullptr) {
       theError.code = 4000;
       goto error_handler;
     }
@@ -176,7 +177,7 @@ Ndb::init(int aMaxNoOfTransactions)
   DBUG_RETURN(0);
   
 error_handler:
-  ndbout << "error_handler" << endl;
+  g_eventLogger->info("error_handler");
   releaseTransactionArrays();
   delete theDictionary;
   theImpl->close();
@@ -187,13 +188,13 @@ void
 Ndb::releaseTransactionArrays()
 {
   DBUG_ENTER("Ndb::releaseTransactionArrays");
-  if (thePreparedTransactionsArray != NULL) {
+  if (thePreparedTransactionsArray != nullptr) {
     delete [] thePreparedTransactionsArray;
   }//if
-  if (theSentTransactionsArray != NULL) {
+  if (theSentTransactionsArray != nullptr) {
     delete [] theSentTransactionsArray;
   }//if
-  if (theCompletedTransactionsArray != NULL) {
+  if (theCompletedTransactionsArray != nullptr) {
     delete [] theCompletedTransactionsArray;
   }//if
   DBUG_VOID_RETURN;
@@ -294,7 +295,7 @@ Ndb::abortTransactionsAfterNodeFailure(Uint16 aNodeId)
         localCon->theCompletionStatus = NdbTransaction::CompletedSuccess;
       } else {
 #ifdef VM_TRACE
-        printState("abortTransactionsAfterNodeFailure %lx", (long)this);
+        printState("abortTransactionsAfterNodeFailure %p", this);
         abort();
 #endif
       }
@@ -330,7 +331,7 @@ NdbImpl::lookupTransactionFromOperation(const TcKeyConf * conf)
       return rec->getTransaction(rec->getType());
     }
   }
-  return 0;
+  return nullptr;
 }
 
 void
@@ -351,7 +352,7 @@ NdbImpl::drop_batched_fragments(AssembleBatchedFragments* batched_fragments)
 /** NdbImpl::assemble_data_event_signal() assembles the fragments of a data
  * event sent in GSN_SUB_TABLE_DATA into one signal.
  * returns
- *   -2 some error occured, batched fragments state is cleaned up
+ *   -2 some error occurred, batched fragments state is cleaned up
  *   -1 more fragments is needed
  *    0 signal was not fragmented, use as is, no cleanup needed.
  *   >0 signal complete, call cleanup after use
@@ -472,7 +473,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   case GSN_TCKEYCONF:
   case GSN_TCINDXCONF:
   {
-    const TcKeyConf * const keyConf = (TcKeyConf *)tDataPtr;
+    const TcKeyConf* const keyConf = (const TcKeyConf*)tDataPtr;
     if (tFirstData != RNIL)
     {
       tCon = void2con(tFirstDataPtr);
@@ -481,7 +482,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
     {
       tCon = lookupTransactionFromOperation(keyConf);
     }
-    if (likely(tCon != NULL))
+    if (likely(tCon != nullptr))
     {
       const Uint32 magicNumber = tCon->getMagicNumberFromObject();
       NdbTransaction::SendStatusType tSendStatus = tCon->theSendStatus;
@@ -553,7 +554,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   }
   case GSN_TRANSID_AI:
   {
-    if (likely(tFirstDataPtr != NULL))
+    if (likely(tFirstDataPtr != nullptr))
     {
       NdbReceiver* const tRec = void2rec(tFirstDataPtr);
       Uint32 magicNumber = tRec->getMagicNumberFromObject();
@@ -568,7 +569,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
         return;
       }
       tCon = tRec->getTransaction(type);
-      if (likely(((tCon != NULL) &&
+      if (likely(((tCon != nullptr) &&
                    tCon->checkState_TransId(
                      ((const TransIdAI*)tDataPtr)->transId))))
       {
@@ -692,14 +693,14 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   case GSN_SCAN_TABCONF:
   {
     tCon = void2con(tFirstDataPtr);
-    if (unlikely(tFirstDataPtr == NULL))
+    if (unlikely(tFirstDataPtr == nullptr))
     {
       goto InvalidSignal;
     }
     Uint32 magicNumber = tCon->getMagicNumberFromObject();
     Uint32 num_sections = aSignal->m_noOfSections;
     Uint32 sz;
-    Uint32 *sig_ptr;
+    const Uint32* sig_ptr;
 
     if (unlikely(magicNumber != tCon->getMagicNumber()))
     {
@@ -712,7 +713,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
     }
     else
     {
-      sig_ptr = (Uint32*)tDataPtr + ScanTabConf::SignalLength, 
+      sig_ptr = tDataPtr + ScanTabConf::SignalLength,
       sz = tLen - ScanTabConf::SignalLength;
     }
     tReturnCode = tCon->receiveSCAN_TABCONF(aSignal, sig_ptr, sz);
@@ -724,10 +725,10 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   }
   case GSN_TC_COMMITCONF:
   {
-    const TcCommitConf * const commitConf = (TcCommitConf *)tDataPtr;
+    const TcCommitConf* const commitConf = (const TcCommitConf*)tDataPtr;
     const BlockReference aTCRef = aSignal->theSendersBlockRef;
 
-    if (tFirstDataPtr == 0)
+    if (tFirstDataPtr == nullptr)
     {
       goto invalid0;
     }
@@ -783,7 +784,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   }
   case GSN_TCROLLBACKCONF:
   {
-    if (tFirstDataPtr == 0)
+    if (tFirstDataPtr == nullptr)
     {
       goto InvalidSignal;
     }
@@ -845,7 +846,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   }
   case GSN_TCKEYREF:
   {
-    if (tFirstDataPtr == 0)
+    if (tFirstDataPtr == nullptr)
     {
       goto InvalidSignal;
     }
@@ -855,7 +856,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
       goto InvalidSignal; 
     }
     tCon = receiver->getTransaction(receiver->getType());
-    if (tCon != NULL)
+    if (tCon != nullptr)
     {
       if (tCon->theSendStatus == NdbTransaction::sendTC_OP)
       {
@@ -892,7 +893,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   } 
   case GSN_TCINDXREF:
   {
-    if (tFirstDataPtr == 0)
+    if (tFirstDataPtr == nullptr)
     {
       goto InvalidSignal;
     }
@@ -905,7 +906,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
     if (tIndexOp->checkMagicNumber() == 0)
     {
       tCon = tIndexOp->theNdbCon;
-      if (tCon != NULL)
+      if (tCon != nullptr)
       {
         if (tCon->theSendStatus == NdbTransaction::sendTC_OP)
         {
@@ -923,7 +924,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   } 
   case GSN_TC_COMMITREF:
   {
-    if (tFirstDataPtr == 0)
+    if (tFirstDataPtr == nullptr)
     {
       goto InvalidSignal;
     }
@@ -941,7 +942,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   }
   case GSN_TCROLLBACKREF:
   {
-    if (tFirstDataPtr == 0)
+    if (tFirstDataPtr == nullptr)
     {
       goto InvalidSignal;
     }
@@ -959,7 +960,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   }
   case GSN_TCROLLBACKREP:
   {
-    if (tFirstDataPtr == 0)
+    if (tFirstDataPtr == nullptr)
     {
       goto InvalidSignal;
     }
@@ -976,7 +977,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   }
   case GSN_SCAN_TABREF:
   {
-    if (tFirstDataPtr == 0)
+    if (tFirstDataPtr == nullptr)
     {
       goto InvalidSignal;
     }
@@ -994,7 +995,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   }
   case GSN_TCSEIZECONF:
   {
-    if (tFirstDataPtr == 0)
+    if (tFirstDataPtr == nullptr)
     {
       goto InvalidSignal;
     }
@@ -1020,7 +1021,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   }
   case GSN_TCSEIZEREF:
   {
-    if (tFirstDataPtr == 0)
+    if (tFirstDataPtr == nullptr)
     {
       goto InvalidSignal;
     }
@@ -1046,7 +1047,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   }
   case GSN_TCRELEASECONF:
   {
-    if (tFirstDataPtr == 0)
+    if (tFirstDataPtr == nullptr)
     {
       goto InvalidSignal;
     }
@@ -1068,7 +1069,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   } 
   case GSN_TCRELEASEREF:
   {
-    if (tFirstDataPtr == 0)
+    if (tFirstDataPtr == nullptr)
     {
       goto InvalidSignal;
     }
@@ -1090,9 +1091,9 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   }
   case GSN_TCKEY_FAILCONF:
   {
-    const TcKeyFailConf * failConf = (TcKeyFailConf *)tDataPtr;
+    const TcKeyFailConf* failConf = (const TcKeyFailConf*)tDataPtr;
     const BlockReference aTCRef = aSignal->theSendersBlockRef;
-    if (tFirstDataPtr != 0)
+    if (tFirstDataPtr != nullptr)
     {
       const NdbReceiver* const receiver = void2rec(tFirstDataPtr);
       if (!receiver->checkMagicNumber())
@@ -1103,7 +1104,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
       if (tOp->checkMagicNumber(false) == 0)
       {
         tCon = tOp->theNdbCon;
-        if (tCon != NULL)
+        if (tCon != nullptr)
         {
           if ((tCon->theSendStatus == NdbTransaction::sendTC_OP) ||
               (tCon->theSendStatus == NdbTransaction::sendTC_COMMIT))
@@ -1130,7 +1131,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
     else
     {
 #ifdef VM_TRACE
-      ndbout_c("Recevied TCKEY_FAILCONF wo/ operation");
+      g_eventLogger->info("Received TCKEY_FAILCONF wo/ operation");
 #endif
     }
     if(tFirstData & 1)
@@ -1146,7 +1147,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   }
   case GSN_TCKEY_FAILREF:
   {
-    if (tFirstDataPtr != 0)
+    if (tFirstDataPtr != nullptr)
     {
       const NdbReceiver* const receiver = void2rec(tFirstDataPtr);
       if (!receiver->checkMagicNumber())
@@ -1157,7 +1158,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
       if (tOp->checkMagicNumber(false) == 0)
       {
         tCon = tOp->theNdbCon;
-        if (tCon != NULL)
+        if (tCon != nullptr)
         {
           if ((tCon->theSendStatus == NdbTransaction::sendTC_OP) ||
               (tCon->theSendStatus == NdbTransaction::sendTC_ROLLBACK))
@@ -1173,7 +1174,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
       }
     }
 #ifdef VM_TRACE
-    ndbout_c("Recevied TCKEY_FAILREF wo/ operation");
+    g_eventLogger->info("Received TCKEY_FAILREF wo/ operation");
 #endif
     return;
   }
@@ -1283,7 +1284,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
     }
     for (int i = aSignal->m_noOfSections; i < 3; i++)
     {
-      copy_ptr[i].p = NULL;
+      copy_ptr[i].p = nullptr;
       copy_ptr[i].sz = 0;
     }
 
@@ -1292,7 +1293,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
 
     const Uint32 oid = sdata->senderData;
     NdbEventOperationImpl *op= (NdbEventOperationImpl*)int2void(oid);
-    if (unlikely(op == 0 || op->m_magic_number != NDB_EVENT_OP_MAGIC_NUMBER))
+    if (unlikely(op == nullptr || op->m_magic_number != NDB_EVENT_OP_MAGIC_NUMBER))
     {
       g_eventLogger->error("dropped GSN_SUB_TABLE_DATA due to wrong magic "
                            "number");
@@ -1343,7 +1344,7 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
         aSignal = &copy_signal;
         for (int i = num_secs; i < 3; i++)
         {
-          copy_ptr[i].p = NULL;
+          copy_ptr[i].p = nullptr;
           copy_ptr[i].sz = 0;
         }
         do_cleanup = true;
@@ -1435,10 +1436,10 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
   }
   default:
   {
-    tFirstDataPtr = NULL;
+    tFirstDataPtr = nullptr;
     goto InvalidSignal;
   }
-  }//swich
+  }//switch
 
   if (tNewState != tWaitState)
   {
@@ -1459,14 +1460,13 @@ NdbImpl::trp_deliver_signal(const NdbApiSignal * aSignal,
 
 InvalidSignal:
 #ifdef VM_TRACE
-  ndbout_c("Ndbif: Error NdbImpl::trp_deliver_signal "
-	   "(tFirstDataPtr=%p, GSN=%d, theWaiter.m_state=%d)"
-	   " sender = (Block: %d Node: %d)",
-           tFirstDataPtr,
-	   tSignalNumber,
-	   tWaitState,
-	   refToBlock(aSignal->theSendersBlockRef),
-	   refToNode(aSignal->theSendersBlockRef));
+  g_eventLogger->info(
+      "Ndbif: Error NdbImpl::trp_deliver_signal "
+      "(tFirstDataPtr=%p, GSN=%d, theWaiter.m_state=%d)"
+      " sender = (Block: %d Node: %d)",
+      tFirstDataPtr, tSignalNumber, tWaitState,
+      refToBlock(aSignal->theSendersBlockRef),
+      refToNode(aSignal->theSendersBlockRef));
 #endif
 #ifdef NDB_NO_DROPPED_SIGNAL
   abort();
@@ -1499,14 +1499,14 @@ Ndb::completedTransaction(NdbTransaction* aCon)
       tMoveCon->theTransArrayIndex = tTransArrayIndex;
       theSentTransactionsArray[tTransArrayIndex] = tMoveCon;
     }//if
-    theSentTransactionsArray[tNoSentTransactions - 1] = NULL;
+    theSentTransactionsArray[tNoSentTransactions - 1] = nullptr;
     theNoOfCompletedTransactions = tNoCompletedTransactions + 1;
 
     theNoOfSentTransactions = tNoSentTransactions - 1;
     aCon->theListState = NdbTransaction::InCompletedList;
     aCon->handleExecuteCompletion();
 
-    if (theImpl->wakeHandler == 0)
+    if (theImpl->wakeHandler == nullptr)
     {
       if ((theMinNoOfEventsToWakeUp != 0) &&
           (theNoOfCompletedTransactions >= theMinNoOfEventsToWakeUp))
@@ -1524,10 +1524,10 @@ Ndb::completedTransaction(NdbTransaction* aCon)
       theImpl->wakeHandler->notifyTransactionCompleted(this);
     }
   } else {
-    ndbout << "theNoOfSentTransactions = " << (int) theNoOfSentTransactions;
-    ndbout << " theListState = " << (int) aCon->theListState;
-    ndbout << " theTransArrayIndex = " << aCon->theTransArrayIndex;
-    ndbout << endl << flush;
+    g_eventLogger->info(
+        "theNoOfSentTransactions = %d theListState = %d"
+        " theTransArrayIndex = %d",
+        theNoOfSentTransactions, aCon->theListState, aCon->theTransArrayIndex);
 #ifdef VM_TRACE
     printState("completedTransaction abort");
     //abort();
@@ -1549,7 +1549,7 @@ Ndb::reportCallback(NdbTransaction** aCopyArray, Uint32 aNoOfCompletedTrans)
       void* anyObject = aCopyArray[i]->theCallbackObject;
       NdbAsynchCallback aCallback = aCopyArray[i]->theCallbackFunction;
       int tResult = 0;
-      if (aCallback != NULL) {
+      if (aCallback != nullptr) {
         if (aCopyArray[i]->theReturnStatus == NdbTransaction::ReturnFailure) {
           tResult = -1;
         }//if
@@ -1575,11 +1575,11 @@ Ndb::pollCompleted(NdbTransaction** aCopyArray)
     for (i = 0; i < tNoCompletedTransactions; i++) {
       aCopyArray[i] = theCompletedTransactionsArray[i];
       if (aCopyArray[i]->theListState != NdbTransaction::InCompletedList) {
-        ndbout << "pollCompleted error ";
-        ndbout << (int) aCopyArray[i]->theListState << endl;
-	abort();
+        g_eventLogger->info("pollCompleted error %d",
+                            (int)aCopyArray[i]->theListState);
+        abort();
       }//if
-      theCompletedTransactionsArray[i] = NULL;
+      theCompletedTransactionsArray[i] = nullptr;
       aCopyArray[i]->theListState = NdbTransaction::NotInList;
     }//for
   }//if
@@ -1593,7 +1593,7 @@ Ndb::check_send_timeout()
   const Uint32 timeout = theImpl->get_ndbapi_config_parameters().m_waitfor_timeout;
   const Uint64 current_time = NdbTick_CurrentMillisecond();
   assert(current_time >= the_last_check_time);
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   if(DBUG_EVALUATE_IF("early_trans_timeout", true, false))
   {
     fprintf(stderr, "Forcing immediate timeout check in Ndb::check_send_timeout()\n");
@@ -1605,7 +1605,7 @@ Ndb::check_send_timeout()
     Uint32 no_of_sent = theNoOfSentTransactions;
     for (Uint32 i = 0; i < no_of_sent; i++) {
       NdbTransaction* a_con = theSentTransactionsArray[i];
-#ifndef DBUG_OFF
+#ifndef NDEBUG
       if(DBUG_EVALUATE_IF("early_trans_timeout", true, false))
       {
         fprintf(stderr, "Inducing early timeout in Ndb::check_send_timeout()\n");
@@ -1618,8 +1618,8 @@ Ndb::check_send_timeout()
         a_con->printState();
 	Uint32 t1 = (Uint32) a_con->theTransactionId;
 	Uint32 t2 = a_con->theTransactionId >> 32;
-	ndbout_c("4012 [%.8x %.8x]", t1, t2);
-	//abort();
+        g_eventLogger->info("4012 [%.8x %.8x]", t1, t2);
+        //abort();
 #endif
         a_con->theReleaseOnClose = true;
 	a_con->theError.code = 4012;
@@ -1646,7 +1646,7 @@ Ndb::remove_sent_list(Uint32 list_index)
     theSentTransactionsArray[list_index] = t_con;
   }//if
   theNoOfSentTransactions = last_index;
-  theSentTransactionsArray[last_index] = 0;
+  theSentTransactionsArray[last_index] = nullptr;
 }
 
 Uint32
@@ -1699,7 +1699,7 @@ Ndb::sendPrepTrans(int forceSend)
   Uint32 no_of_prep_trans = theNoOfPreparedTransactions;
   for (i = 0; i < no_of_prep_trans; i++) {
     NdbTransaction * a_con = thePreparedTransactionsArray[i];
-    thePreparedTransactionsArray[i] = NULL;
+    thePreparedTransactionsArray[i] = nullptr;
     Uint32 node_id = a_con->getConnectedNodeId();
     if ((theImpl->getNodeSequence(node_id) == a_con->theNodeSequence) &&
         (theImpl->get_node_alive(node_id) || theImpl->get_node_stopping(node_id)))
@@ -1797,25 +1797,26 @@ Ndb::waitCompletedTransactions(int aMilliSecondsToWait,
    */
   int waitTime = aMilliSecondsToWait;
   theImpl->m_start_time = NdbTick_getCurrentTicks();
+  NDB_TICKS wait_end;
   theMinNoOfEventsToWakeUp = noOfEventsToWaitFor;
   theImpl->incClientStat(Ndb::WaitExecCompleteCount, 1);
   do {
     int maxsleep = waitTime;
-#ifndef DBUG_OFF
+#ifndef NDEBUG
     if(DBUG_EVALUATE_IF("early_trans_timeout", true, false))
     {
       maxsleep = waitTime > 10 ? 10 : waitTime;
     }
 #endif
     poll_guard->wait_for_input(maxsleep);
+    wait_end = NdbTick_getCurrentTicks();
     if (theNoOfCompletedTransactions >= (Uint32)noOfEventsToWaitFor) {
       break;
     }//if
     theMinNoOfEventsToWakeUp = noOfEventsToWaitFor;
-    const NDB_TICKS now = NdbTick_getCurrentTicks();
     waitTime = aMilliSecondsToWait - 
-      (int)NdbTick_Elapsed(theImpl->m_start_time,now).milliSec();
-#ifndef DBUG_OFF
+      (int)NdbTick_Elapsed(theImpl->m_start_time,wait_end).milliSec();
+#ifndef NDEBUG
     if(DBUG_EVALUATE_IF("early_trans_timeout", true, false))
     {
       fprintf(stderr, "Inducing early timeout in Ndb::waitCompletedTransactions()\n");
@@ -1823,6 +1824,8 @@ Ndb::waitCompletedTransactions(int aMilliSecondsToWait,
     }
 #endif
   } while (waitTime > 0);
+  theImpl->recordWaitTimeNanos(NdbTick_Elapsed(theImpl->m_start_time,
+                                               wait_end).nanoSec());
 }//Ndb::waitCompletedTransactions()
 
 /*****************************************************************************
@@ -1880,7 +1883,7 @@ Ndb::poll_trans(int aMillisecondNumber, int minNoOfEventsToWakeup,
   } else {
     tNoCompletedTransactions = pollCompleted(tConArray);
   }//if
-  theMinNoOfEventsToWakeUp = 0; // no more wakup
+  theMinNoOfEventsToWakeUp = 0; // no more wakeup
   pg->unlock_and_signal();
   reportCallback(tConArray, tNoCompletedTransactions);
   return tNoCompletedTransactions;
@@ -1942,8 +1945,8 @@ Ndb::sendRecSignal(Uint16 node_id,
    */
   read_conn_seq= theImpl->getNodeSequence(node_id);
   bool ok =
-    (conn_seq == read_conn_seq && ret_conn_seq == 0) ||
-    (conn_seq == 0 && ret_conn_seq != 0);
+    (conn_seq == read_conn_seq && ret_conn_seq == nullptr) ||
+    (conn_seq == 0 && ret_conn_seq != nullptr);
 
   if (ret_conn_seq)
     *ret_conn_seq= read_conn_seq;
@@ -1980,10 +1983,8 @@ NdbTransaction::sendTC_COMMIT_ACK(NdbImpl * impl,
                                   bool send_immediate)
 {
 #ifdef MARKER_TRACE
-  ndbout_c("Sending TC_COMMIT_ACK(0x%.8x, 0x%.8x) to -> %d",
-	   transId1,
-	   transId2,
-	   refToNode(aTCRef));
+  g_eventLogger->info("Sending TC_COMMIT_ACK(0x%.8x, 0x%.8x) to -> %d",
+                      transId1, transId2, refToNode(aTCRef));
 #endif  
   aSignal->theTrace                = TestOrd::TraceAPI;
   aSignal->theReceiversBlockNumber = refToBlock(aTCRef);
@@ -2056,7 +2057,7 @@ NdbImpl::send_event_report(bool is_poll_owner,
   aSignal.theReceiversBlockNumber = CMVMI;
   aSignal.theVerId_signalNumber   = GSN_EVENT_REP;
   aSignal.theLength               = length;
-  memcpy((char *)aSignal.getDataPtrSend(), (char *)data, length*4);
+  memcpy(aSignal.getDataPtrSend(), data, length * 4);
 
   return send_to_nodes(&aSignal, is_poll_owner, false);
 }

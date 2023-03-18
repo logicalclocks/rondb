@@ -1,5 +1,5 @@
 use test;
-create table t1 (a varchar(1024)) engine=ndb max_rows=100000000;
+create table t1 (a varchar(1024)) engine=ndb;
 insert into t1 values (repeat('I', 1024));
 insert into t1 select * from t1;
 insert into t1 select * from t1;

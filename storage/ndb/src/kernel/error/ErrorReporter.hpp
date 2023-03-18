@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,6 +30,7 @@
 #include <ndbd_exit_codes.h>
 
 #include "../ndbd.hpp"
+#include "../vm/Emulator.hpp"
 
 #define JAM_FILE_ID 487
 
@@ -56,8 +58,39 @@ public:
   static int get_trace_no();
 
   static void prepare_to_crash(bool first_phase, bool error_insert_crash);
+
+  static bool dumpOneJam(FILE *jamStream, int syncMethod, Uint32 syncValue,
+                         const char* prefix);
+
 private:
+
   static enum NdbShutdownType s_errorHandlerShutdownType;
+
+  // true during a crashlog when it's possible to print a jam table for a
+  // signal.
+  static bool dumpJam_ok;
+
+  // The index of the jamEvent that would've been logged next. todo for the current thread in crashlog
+  static Uint32 dumpJam_oldest;
+
+  // The JamEvent array of the thread currently undergoing crashlog
+  static const JamEvent *dumpJam_buffer;
+
+  // The last jam event of the next signal to be printed. Always in the range
+  // dumpJam_oldest <= dumpJam_cursor < dumpJam_oldest + EMULATED_JAM_SIZE
+  static Uint32 dumpJam_cursor;
+
+  static int WriteMessage(int thrdMessageID,
+                          const char* thrdProblemData,
+                          const char* thrdObjRef,
+                          NdbShutdownType & nst);
+
+  /**
+   * Given the index for the last jam event for a signal, return the index for
+   * the first. Both the argument and the return value is in the range
+   * dumpJam_oldest <= X < dumpJam_oldest + EMULATED_JAM_SIZE
+   */
+  static Uint32 startOfJamSignal(Uint32 endIndex);
 };
 
 

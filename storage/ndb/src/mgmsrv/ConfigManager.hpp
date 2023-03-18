@@ -1,5 +1,5 @@
-/* Copyright (c) 2008, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+/* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -134,7 +134,7 @@ class ConfigManager : public MgmtThread {
 
   /* Functions used from 'init' */
   static Config* load_init_config(const char*);
-  static Config* load_init_mycnf(void);
+  static Config* load_init_mycnf(const char* cluster_config_suffix);
   Config* load_config(void) const;
   Config* fetch_config(void);
   bool save_config(const Config* conf);
@@ -270,7 +270,8 @@ public:
                          Uint32 node_id);
 
   static Config* load_config(const char* config_filename, bool mycnf,
-                             BaseString& msg);
+                             BaseString& msg,
+                             const char* cluster_config_suffix);
 
   bool set_dynamic_port(int node1, int node2, int value, BaseString& msg);
   bool set_dynamic_ports(int node, MgmtSrvr::DynPortSpec ports[],

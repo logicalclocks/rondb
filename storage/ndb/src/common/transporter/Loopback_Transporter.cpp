@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2010, 2019, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2010, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,7 +30,6 @@
 #include <NdbSleep.h>
 
 #include <EventLogger.hpp>
-extern EventLogger * g_eventLogger;
 // End of stuff to be moved
 
 
@@ -49,7 +48,7 @@ bool
 Loopback_Transporter::connect_client(bool multi_connection)
 {
   (void)multi_connection;
-  NDB_SOCKET_TYPE pair[2];
+  ndb_socket_t pair[2];
   if (ndb_socketpair(pair))
   {
     perror("socketpair failed!");
@@ -77,7 +76,7 @@ err:
 void
 Loopback_Transporter::disconnectImpl()
 {
-  NDB_SOCKET_TYPE pair[] = { theSocket, m_send_socket };
+  ndb_socket_t pair[] = { theSocket, m_send_socket };
 
   get_callback_obj()->lock_transporter(remoteNodeId, m_transporter_index);
 
@@ -125,7 +124,7 @@ Loopback_Transporter::doSend(bool need_wakeup)
 
   if (cnt == NDB_ARRAY_SIZE(iov))
   {
-    // If pulling all iov's make sure that we never return everyting
+    // If pulling all iov's make sure that we never return everything
     // flushed
     sum++;
   }

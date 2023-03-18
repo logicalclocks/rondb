@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -66,6 +66,7 @@ File my_create(const char *FileName, int CreateFlags, int AccessFlags,
 
   File fd = -1;
 #if defined(_WIN32)
+  (void)CreateFlags;  // [[maybe_unused]]
   fd = my_win_open(FileName, AccessFlags | O_CREAT);
 #else
   fd = mysys_priv::RetryOnEintr(

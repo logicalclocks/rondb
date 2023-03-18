@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,10 +28,11 @@
 
 #include <ndb_global.h>
 #include <NdbOut.hpp>
+#include <EventLogger.hpp>
 
 /**
  * @class SimpleProperties
- * @brief Key-value-pair container.  Actully a list of named elements.
+ * @brief Key-value-pair container.  Actually a list of named elements.
  *
  * SimpleProperties:
  * - The keys are Uint16
@@ -93,8 +95,8 @@ public:
   static UnpackStatus unpack(class Reader &,
 			     void * struct_dst,
                              const SP2StructMapping[], Uint32 mapSz,
-                             IndirectReader *indirectReader = 0,
-                             void * readerExtra = 0);
+                             IndirectReader *indirectReader = nullptr,
+                             void * readerExtra = nullptr);
   
   class Writer;
 
@@ -107,8 +109,8 @@ public:
   static UnpackStatus pack(class Writer &,
 			   const void * struct_src,
 			   const SP2StructMapping[], Uint32 mapSz,
-                           IndirectWriter *indirectWriter = 0,
-                           const void * writerExtra = 0);
+                           IndirectWriter *indirectWriter = nullptr,
+                           const void * writerExtra = nullptr);
   
   /**
    * Reader class
@@ -144,7 +146,7 @@ public:
      * Get value length in bytes - (including terminating 0 for strings)
      *  Note only valid is valid() == true
      */
-    Uint16 getValueLen() const;
+    Uint32 getValueLen() const;
 
     /**
      * Get value length including any padding that may be returned
@@ -175,12 +177,30 @@ public:
      * Print the complete simple properties (for debugging)
      */
     void printAll(NdbOut& ndbout);
+    void printAll(EventLogger* logger);
 
-  private:
+   /**
+    * Has any error occurred
+    */
+   bool getError()
+   {
+     return m_error;
+   }
+   void setError()
+   {
+     m_error = true;
+   }
+    void resetError()
+    {
+      m_error = false;
+    }
+
+   private:
     bool readValue();
-    
+
+    bool m_error;
     Uint16 m_key;
-    Uint16 m_itemLen;
+    Uint32 m_itemLen;
     union {
       Uint32 m_ui32_value;
       Uint32 m_strLen; // Including 0-byte in words
@@ -201,7 +221,10 @@ public:
    */
   class Writer {
   public:
-    Writer() {}
+    Writer()
+    {
+      m_error = false;
+    }
 
     bool first();
     bool add(Uint16 key, Uint32 value);
@@ -220,6 +243,18 @@ public:
     */
     bool addKey(Uint16 key, ValueType type, Uint32 value_length);
     int append(const char * buf, Uint32 buf_size);
+    bool getError()
+    {
+      return m_error;
+    }
+    void setError()
+    {
+      m_error = true;
+    }
+    void resetError()
+    {
+      m_error = false;
+    }
 
   protected:
     bool add(ValueType type, Uint16 key, const void * value, int len);
@@ -231,6 +266,7 @@ public:
     bool add(const char* value, int len);
 
   private:
+    bool m_error;
     Uint32 m_value_length;
     Uint32 m_bytes_written;
   };

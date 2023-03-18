@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -41,13 +42,13 @@ main(int argc, char ** argv)
   int memsize;
   if(argc < 4) {
     printf("Usage:  memtest X loopcount memsize(MB)\n");
-    printf("where X = \n");
-    printf("1 : malloc test \n");
-    printf("2 : mmap test \n");
+    printf("where X =\n");
+    printf("1 : malloc test\n");
+    printf("2 : mmap test\n");
     printf("3 : malloc test + touch pages\n");
     printf("4 : mmap test + touch pages\n");
-    printf("5 : malloc/free test \n");
-    printf("6 : mmap/munmap test \n");
+    printf("5 : malloc/free test\n");
+    printf("6 : mmap/munmap test\n");
     printf("loopcount - number of loops\n");
     printf("memsize - memory segment size to allocate in MB.\n");
     exit(1);
@@ -124,7 +125,7 @@ void malloctest(int loopcount, int memsize, int touch) {
   total=(int)(getMicro()-start);
   
   mean=(float)((float)total/(float)loopcount);
-  printf("Total time malloc %d bytes: %2.3f microsecs  loopcount %d touch %d \n",
+  printf("Total time malloc %d bytes: %2.3f microsecs  loopcount %d touch %d\n",
 	 size, mean,loopcount, touch);  
 }
 
@@ -137,9 +138,9 @@ void mmaptest(int loopcount, int memsize, int touch) {
   int size=memsize*1024*1024; /*bytes*/;
   float mean;
 
-  printf("Staring mmaptest ");
+  printf("Staring mmaptest");
   if(touch)
-    printf("with touch \n");
+    printf(" with touch\n");
   else
     printf("\n");
 
@@ -163,7 +164,7 @@ void mmaptest(int loopcount, int memsize, int touch) {
   }
   total=(int)(getMicro()-start);
   mean=(float)((float)total/(float)loopcount);
-  printf("Total time mmap %d bytes: %2.3f microsecs  \n",size, mean);  
+  printf("Total time mmap %d bytes: %2.3f microsecs\n",size, mean);
 }
 
 
@@ -216,7 +217,7 @@ void unmaptest(loopcount, memsize)
     */
   }
   mean=(float)((float)total/(float)loopcount);
-  printf("Total time unmap %d bytes: %2.3f microsecs  \n",size, mean);  
+  printf("Total time unmap %d bytes: %2.3f microsecs\n",size, mean);
 }
 
 void freetest(int loopcount, int memsize) {
@@ -246,6 +247,6 @@ void freetest(int loopcount, int memsize) {
 
   
   mean=(float)((float)total/(float)loopcount);
-  printf("Total time free %d bytes: %2.3f microsecs  loopcount %d \n",
+  printf("Total time free %d bytes: %2.3f microsecs  loopcount %d\n",
 	 size, mean,loopcount);  
 }

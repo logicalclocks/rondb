@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
 #include <NDBT.hpp>
 #include <NDBT_Test.hpp>
 #include "NdbMgmd.hpp"
@@ -50,7 +52,7 @@ int runTestApiSession(NDBT_Context* ctx, NDBT_Step* step)
   h= ndb_mgm_create_handle();
   ndb_mgm_set_connectstring(h, mgmd.getConnectString());
   ndb_mgm_connect(h,0,0,0);
-  ndb_native_socket_t s = ndb_mgm_get_fd(h);
+  socket_t s = ndb_mgm_get_fd(h);
   session_id= ndb_mgm_get_session_id(h);
   ndbout << "MGM Session id: " << session_id << endl;
   send(s,"get",3,0);
@@ -375,12 +377,10 @@ int runTestMgmApiGetConfigTimeout(NDBT_Context* ctx, NDBT_Step* step)
 
     ndb_mgm_set_timeout(h,2500);
 
-    struct ndb_mgm_configuration *c= ndb_mgm_get_configuration(h,0);
+    // Get configuration, will fail when error has been inserted
+    const ndb_mgm::config_ptr c(ndb_mgm_get_configuration(h, 0));
 
-    if(c!=NULL)
-      free(c);
-
-    if(error_ins!=0 && c!=NULL)
+    if (error_ins!=0 && c)
     {
       ndbout << "FAILED: got a ndb_mgm_configuration back" << endl;
       result= NDBT_FAILED;
@@ -459,8 +459,9 @@ int runTestMgmApiEventTimeout(NDBT_Context* ctx, NDBT_Step* step)
                      1, NDB_MGM_EVENT_CATEGORY_STARTUP,
                      0 };
 
-    ndb_native_socket_t fd= ndb_mgm_listen_event(h, filter);
-    ndb_socket_t my_fd = ndb_socket_create_from_native(fd);
+    socket_t fd= ndb_mgm_listen_event(h, filter);
+    ndb_socket_t my_fd;
+    ndb_socket_create_from_native(my_fd, fd);
 
     if(!ndb_socket_valid(my_fd))
     {
@@ -574,7 +575,8 @@ int runTestMgmApiStructEventTimeout(NDBT_Context* ctx, NDBT_Step* step)
     int filter[] = { 15, NDB_MGM_EVENT_CATEGORY_BACKUP,
                      1, NDB_MGM_EVENT_CATEGORY_STARTUP,
                      0 };
-    NdbLogEventHandle le_handle= ndb_mgm_create_logevent_handle(h, filter);
+    const ndb_mgm::logevent_handle_ptr le_handle(
+        ndb_mgm_create_logevent_handle(h, filter));
 
     struct ndb_logevent le;
     for(int i=0; i<20; i++)
@@ -595,7 +597,7 @@ int runTestMgmApiStructEventTimeout(NDBT_Context* ctx, NDBT_Step* step)
 
         ndb_mgm_report_event(h, theData, 6);
       }
-      int r= ndb_logevent_get_next(le_handle, &le, 2500);
+      const int r= ndb_logevent_get_next(le_handle.get(), &le, 2500);
       if(r>0)
       {
         ndbout << "Receieved event" << endl;
@@ -651,7 +653,8 @@ int runTestMgmApiReadErrorRestart(NDBT_Context* ctx, NDBT_Step* step)
   int filter[] = { 15, NDB_MGM_EVENT_CATEGORY_BACKUP,
                    0};
 
-  NdbLogEventHandle le_handle= ndb_mgm_create_logevent_handle(h, filter);
+  const ndb_mgm::logevent_handle_ptr le_handle(
+      ndb_mgm_create_logevent_handle(h, filter));
 
   if(ndb_mgm_check_connection(h) < 0)
   {
@@ -702,7 +705,7 @@ int runTestMgmApiReadErrorRestart(NDBT_Context* ctx, NDBT_Step* step)
     // Restart mgmd
     if(i == 10)
     {
-      ndb_mgm_cluster_state *state = ndb_mgm_get_status(h);
+      const ndb_mgm::cluster_state_ptr state(ndb_mgm_get_status(h));
       if(state == NULL)
       {
         ndbout_c("Could not get status");
@@ -729,7 +732,7 @@ int runTestMgmApiReadErrorRestart(NDBT_Context* ctx, NDBT_Step* step)
       }
     }
 
-    int r= ndb_logevent_get_next2(le_handle, &le, 2500);
+    const int r= ndb_logevent_get_next2(le_handle.get(), &le, 2500);
 
     if(r > 0)
     {
@@ -737,17 +740,19 @@ int runTestMgmApiReadErrorRestart(NDBT_Context* ctx, NDBT_Step* step)
     }
     else if(r < 0)
     {
-      ndbout << "Error received: " << ndb_logevent_get_latest_error_msg(le_handle) << endl << endl;
+      ndbout << "Error received: "
+             << ndb_logevent_get_latest_error_msg(le_handle.get()) << endl
+             << endl;
 
-      if(ndb_logevent_get_latest_error(le_handle) == NDB_LEH_READ_ERROR && i >= 10)
+      if (ndb_logevent_get_latest_error(le_handle.get()) ==
+              NDB_LEH_READ_ERROR &&
+          i >= 10)
       {
         ndb_mgm_disconnect(h);
         ndb_mgm_destroy_handle(&h);
 
         return NDBT_OK;
-      }
-      else
-      {
+      } else {
         ndbout << "FAILED: Unexpected error received" << endl;
         return NDBT_FAILED;
       }
@@ -783,8 +788,7 @@ int runSetConfig(NDBT_Context* ctx, NDBT_Step* step)
   for (int l= 0; l < loops; l++){
     g_info << l << ": ";
 
-    struct ndb_mgm_configuration* conf=
-      ndb_mgm_get_configuration(mgmd.handle(), 0);
+    const ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(mgmd.handle(), 0));
     if (!conf)
     {
       g_err << "ndb_mgm_get_configuration failed, error: "
@@ -792,9 +796,7 @@ int runSetConfig(NDBT_Context* ctx, NDBT_Step* step)
       return NDBT_FAILED;
     }
 
-    int r= ndb_mgm_set_configuration(mgmd.handle(), conf);
-    free(conf);
-
+    const int r= ndb_mgm_set_configuration(mgmd.handle(), conf.get());
     if (r != 0)
     {
       g_err << "ndb_mgm_set_configuration failed, error: " << endl
@@ -828,11 +830,9 @@ int runGetConfig(NDBT_Context* ctx, NDBT_Step* step)
   int loops= ctx->getNumLoops();
   for (int l= 0; l < loops; l++){
     g_info << l << ": ";
-    struct ndb_mgm_configuration* conf=
-      ndb_mgm_get_configuration(mgmd.handle(), 0);
+    const ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(mgmd.handle(), 0));
     if (!conf)
       return NDBT_FAILED;
-    free(conf);
   }
   return NDBT_OK;
 }
@@ -886,8 +886,8 @@ get_nodeid_of_type(NdbMgmd& mgmd, ndb_mgm_node_type type, int *nodeId)
 static bool
 get_config_from_illegal_node(NdbMgmd& mgmd, int nodeId)
 {
-  struct ndb_mgm_configuration* conf=
-      ndb_mgm_get_configuration_from_node(mgmd.handle(), nodeId);
+  const ndb_mgm::config_ptr conf(
+      ndb_mgm_get_configuration_from_node(mgmd.handle(), nodeId));
 
   // Get conf from an illegal node should fail.
   if (ndb_mgm_get_latest_error(mgmd.handle()) != NDB_MGM_GET_CONFIG_FAILED)
@@ -906,7 +906,6 @@ get_config_from_illegal_node(NdbMgmd& mgmd, int nodeId)
           << nodeId << ", error: "
           << ndb_mgm_get_latest_error(mgmd.handle()) << " "
           << ndb_mgm_get_latest_error_msg(mgmd.handle()) << endl;
-    free(conf);
     return false;
   }
   return true;
@@ -983,8 +982,8 @@ int runGetConfigFromNode(NDBT_Context* ctx, NDBT_Step* step)
     int nodeId = 0;
     if (get_nodeid_of_type(mgmd,  NDB_MGM_NODE_TYPE_NDB, &nodeId))
     {
-      struct ndb_mgm_configuration* conf =
-        ndb_mgm_get_configuration_from_node(mgmd.handle(), nodeId);
+      ndb_mgm::config_ptr conf(
+          ndb_mgm_get_configuration_from_node(mgmd.handle(), nodeId));
       if (!conf)
       {
         g_err << "ndb_mgm_get_configuration_from_node "
@@ -993,7 +992,6 @@ int runGetConfigFromNode(NDBT_Context* ctx, NDBT_Step* step)
               << ndb_mgm_get_latest_error_msg(mgmd.handle()) << endl;
         return NDBT_FAILED;
       }
-      free(conf);
     }
     else
     {
@@ -1760,8 +1758,7 @@ set_config(NdbMgmd& mgmd,
   if (!call_args.contains("Content-Transfer-Encoding"))
     call_args.put("Content-Transfer-Encoding", "base64");
   if (!call_args.contains("Content-Length"))
-    call_args.put("Content-Length",
-                  encoded_config.length() ? encoded_config.length() - 1 : 1);
+    call_args.put("Content-Length", encoded_config.length());
 
   const char *cmd_str = v2 ? "set config_v2" : "set config";
   if (!mgmd.call(cmd_str, call_args,
@@ -1813,6 +1810,7 @@ static bool set_config_result_contains(NdbMgmd& mgmd,
 static bool
 check_set_config_invalid_content_type(NdbMgmd& mgmd)
 {
+  g_info << __func__ << endl;
   Properties args;
   args.put("Content-Type", "illegal type");
   return set_config_result_contains(mgmd, args, BaseString(""),
@@ -1822,6 +1820,7 @@ check_set_config_invalid_content_type(NdbMgmd& mgmd)
 static bool
 check_set_config_invalid_content_encoding(NdbMgmd& mgmd)
 {
+  g_info << __func__ << endl;
   Properties args;
   args.put("Content-Transfer-Encoding", "illegal encoding");
   return set_config_result_contains(mgmd, args, BaseString(""),
@@ -1832,6 +1831,7 @@ check_set_config_invalid_content_encoding(NdbMgmd& mgmd)
 static bool
 check_set_config_too_large_content_length(NdbMgmd& mgmd)
 {
+  g_info << __func__ << endl;
   Properties args;
   args.put("Content-Length", 1024*1024 + 1);
   return set_config_result_contains(mgmd, args, BaseString(""),
@@ -1841,6 +1841,7 @@ check_set_config_too_large_content_length(NdbMgmd& mgmd)
 static bool
 check_set_config_too_small_content_length(NdbMgmd& mgmd)
 {
+  g_info << __func__ << endl;
   Properties args;
   args.put("Content-Length", (Uint32)0);
   return set_config_result_contains(mgmd, args, BaseString(""),
@@ -1850,6 +1851,7 @@ check_set_config_too_small_content_length(NdbMgmd& mgmd)
 static bool
 check_set_config_wrong_config_length(NdbMgmd& mgmd)
 {
+  g_info << __func__ << endl;
 
   // Get the binary config
   Config conf;
@@ -1865,13 +1867,30 @@ check_set_config_wrong_config_length(NdbMgmd& mgmd)
     return false;
 
   Properties args;
-  args.put("Content-Length", encoded_config.length() - 20);
-  bool res = set_config_result_contains(mgmd, args, encoded_config,
-                                        "Failed to decode config");
+  /*
+   * Skipping last 19 bytes of base64 encoded data.
+   * The base64 encoding used ensures encoded data is multiple of 4 bytes block
+   * encoding 3 characters plus some new lines.
+   * Skipping the last 19 bytes should result in a encoded unit to be
+   * incomplete even if there is one newline included and result in decode
+   * error.
+   * This is not really critical since also other failure will be accepted.
+   */
+  args.put("Content-Length", encoded_config.length() - 19);
+  /*
+   * Depending on there config data is truncated one of the following error
+   * messages may be returned:
+   *
+   *   Failed to read config
+   *   Failed to decode config
+   *   Failed to unpack config
+   */
+  bool res =
+      set_config_result_contains(mgmd, args, encoded_config, "Failed to ");
 
   if (res){
     /*
-      There are now additional 20 bytes of junk that has been
+      There are now additional 19 bytes of junk that has been
       sent to mgmd, reconnect to get rid of it
     */
     if (!mgmd.disconnect())
@@ -1885,6 +1904,7 @@ check_set_config_wrong_config_length(NdbMgmd& mgmd)
 static bool
 check_set_config_any_node(NDBT_Context* ctx, NDBT_Step* step, NdbMgmd& mgmd)
 {
+  g_info << __func__ << endl;
 
   // Get the binary config
   Config conf;
@@ -1928,6 +1948,7 @@ check_set_config_any_node(NDBT_Context* ctx, NDBT_Step* step, NdbMgmd& mgmd)
 static bool
 check_set_config_fail_wrong_generation(NdbMgmd& mgmd)
 {
+  g_info << __func__ << endl;
   // Get the binary config
   Config conf;
   if (!mgmd.get_config(conf))
@@ -1945,6 +1966,7 @@ check_set_config_fail_wrong_generation(NdbMgmd& mgmd)
 static bool
 check_set_config_fail_wrong_name(NdbMgmd& mgmd)
 {
+  g_info << __func__ << endl;
   // Get the binary config
   Config conf;
   if (!mgmd.get_config(conf))
@@ -1962,6 +1984,7 @@ check_set_config_fail_wrong_name(NdbMgmd& mgmd)
 static bool
 check_set_config_fail_wrong_primary(NdbMgmd& mgmd)
 {
+  g_info << __func__ << endl;
   // Get the binary config
   Config conf;
   if (!mgmd.get_config(conf))
@@ -2033,7 +2056,7 @@ int runTestSetConfigParallel(NDBT_Context* ctx, NDBT_Step* step)
     mgmd.verbose(false);
     if (mgmd.set_config(conf))
     {
-      /* Config change suceeded */
+      /* Config change succeeded */
       sucessful++;
     }
     else
@@ -2520,7 +2543,7 @@ check_set_ports_mgmapi(NdbMgmd& mgmd)
   int nodeid = 1;
   unsigned num_ports = 1;
   ndb_mgm_dynamic_port ports[MAX_NODES * 10];
-  static_assert(MAX_NODES < NDB_ARRAY_SIZE(ports), "");
+  static_assert(MAX_NODES < NDB_ARRAY_SIZE(ports));
   ports[0].nodeid = 1;
   ports[0].port = -1;
 
@@ -2538,7 +2561,7 @@ check_set_ports_mgmapi(NdbMgmd& mgmd)
     no_con.verbose(false);
     if (no_con.connect("no_such_host:12345", 0, 1))
     {
-      // Connect should not suceed!
+      // Connect should not succeed!
       return false;
     }
 
@@ -3657,7 +3680,7 @@ int runTestNdbApiConfig(NDBT_Context* ctx, NDBT_Step* step)
   };
   // Catch if new members are added to NdbApiConfig,
   // if so add tests and adjust expected size
-  NDB_STATIC_ASSERT(sizeof(NdbApiConfig) == 7 * sizeof(Uint32));
+  static_assert(sizeof(NdbApiConfig) == 7 * sizeof(Uint32));
 
   Config savedconf;
   if (!mgmd.get_config(savedconf))
@@ -3674,7 +3697,7 @@ int runTestNdbApiConfig(NDBT_Context* ctx, NDBT_Step* step)
     if (!mgmd.get_config(conf))
       return NDBT_FAILED;
 
-    ConfigValues::Iterator iter(conf.m_configValues->m_config);
+    ConfigValues::Iterator iter(conf.m_configuration->m_config_values);
     for (Uint32 nodeid = 1; nodeid < MAX_NODES; nodeid ++)
     {
       Uint32 type;
@@ -3963,6 +3986,9 @@ int main(int argc, const char** argv){
   NDBT_TESTSUITE_INSTANCE(testMgm);
   testMgm.setCreateTable(false);
   testMgm.setRunAllTables(true);
+  // Disable ensuring index stat tables since use of NdbApi is turned off for
+  // this test
+  testMgm.setEnsureIndexStatTables(false);
   return testMgm.execute(argc, argv);
 }
 

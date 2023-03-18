@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
 #include <ndb_global.h>
 #include <ndb_opts.h>
 #include <time.h>
@@ -55,32 +56,40 @@ static NdbNodeBitmask nowait_nodes_bitmask;
 
 static struct my_option my_long_options[] =
 {
-  NDB_STD_OPTS("ndb_waiter"),
+  NdbStdOpt::usage,
+  NdbStdOpt::help,
+  NdbStdOpt::version,
+  NdbStdOpt::ndb_connectstring,
+  NdbStdOpt::mgmd_host,
+  NdbStdOpt::connectstring,
+  NdbStdOpt::connect_retry_delay,
+  NdbStdOpt::connect_retries,
+  NDB_STD_OPT_DEBUG
   { "no-contact", 'n', "Wait for cluster no contact",
-    (uchar**) &_no_contact, (uchar**) &_no_contact, 0,
-    GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 }, 
+    &_no_contact, nullptr, nullptr, GET_BOOL, NO_ARG,
+    0, 0, 0, nullptr, 0, nullptr },
   { "not-started", NDB_OPT_NOSHORT, "Wait for cluster not started",
-    (uchar**) &_not_started, (uchar**) &_not_started, 0,
-    GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 }, 
+    &_not_started, nullptr, nullptr, GET_BOOL, NO_ARG,
+    0, 0, 0, nullptr, 0, nullptr },
   { "allow-partial-start", NDB_OPT_NOSHORT,
     "Wait for cluster started, allow partial start",
-    (uchar**) &_allow_partial_start, (uchar**) &_allow_partial_start, 0,
-    GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 }, 
+    &_allow_partial_start, nullptr, nullptr,
+    GET_BOOL, NO_ARG, 0, 0, 0, nullptr, 0, nullptr }, 
   { "single-user", NDB_OPT_NOSHORT,
     "Wait for cluster to enter single user mode",
-    (uchar**) &_single_user, (uchar**) &_single_user, 0,
-    GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 }, 
+    &_single_user, nullptr, nullptr, GET_BOOL, NO_ARG,
+    0, 0, 0, nullptr, 0, nullptr },
   { "timeout", 't', "Timeout to wait in seconds",
-    (uchar**) &_timeout, (uchar**) &_timeout, 0,
-    GET_INT, REQUIRED_ARG, 120, 0, 0, 0, 0, 0 }, 
+    &_timeout, nullptr, nullptr, GET_INT, REQUIRED_ARG,
+    120, 0, 0, nullptr, 0, nullptr },
   { "wait-nodes", 'w', "Node ids to wait on, e.g. '1,2-4'",
-    (uchar**) &_wait_nodes, (uchar**) &_wait_nodes, 0,
-    GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
+    &_wait_nodes, nullptr, nullptr, GET_STR, REQUIRED_ARG,
+    0, 0, 0, nullptr, 0, nullptr },
   { "nowait-nodes", NDB_OPT_NOSHORT,
     "Nodes that will not be waited for, e.g. '2,3,4-7'",
-    (uchar**) &_nowait_nodes, (uchar**) &_nowait_nodes, 0,
-    GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
-  { 0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
+    &_nowait_nodes, nullptr, nullptr, GET_STR, REQUIRED_ARG,
+    0, 0, 0, nullptr, 0, nullptr },
+  NdbStdOpt::end_of_options
 };
 
 extern "C"
@@ -100,7 +109,7 @@ set_inactive_nodes_as_nowait(NdbMgmHandle mgmsrv)
     ndbout_c("Could not get configuration from MGM Server, exiting");
     return false;
   }
-  ConfigValues::Iterator iter(conf->m_config);
+  ConfigValues::Iterator iter(conf->m_config_values);
   for (Uint32 i = 0; i < MAX_NODES; i++)
   {
     if (!iter.openSection(CFG_SECTION_NODE, i))
@@ -147,7 +156,7 @@ int main(int argc, char** argv){
   NDB_INIT(argv[0]);
   Ndb_opts opts(argc, argv, my_long_options);
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   opt_debug= "d:t:O,/tmp/ndb_waiter.trace";
 #endif
 

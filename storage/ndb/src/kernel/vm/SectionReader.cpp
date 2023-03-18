@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2013, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -491,7 +492,7 @@ int testSR(Uint32 iVal, SectionSegmentPool* ssp, Uint32 len)
   {
     const Uint32 remain= len-pos;
     const Uint32 readSize= remain == 1 ? 1 : myRandom48(remain);
-    //printf("Pos=%u Len=%u readSize=%u \n", pos, len, readSize);
+    //printf("Pos=%u Len=%u readSize=%u\n", pos, len, readSize);
     /* Check that peek + step get the correct words */
     VERIFY(srStepPeek.peekWords(buffer, readSize));
     if (len > pos + readSize)

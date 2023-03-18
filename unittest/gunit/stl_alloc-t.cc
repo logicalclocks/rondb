@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -61,11 +61,10 @@ class Malloc_allocator_wrapper : public Malloc_allocator<T> {
 
 template <typename T>
 class Mem_root_allocator_wrapper : public Mem_root_allocator<T> {
-  MEM_ROOT m_mem_root;
+  MEM_ROOT m_mem_root{PSI_NOT_INSTRUMENTED, 1024};
 
  public:
   Mem_root_allocator_wrapper() : Mem_root_allocator<T>(&m_mem_root) {
-    init_sql_alloc(PSI_NOT_INSTRUMENTED, &m_mem_root, 1024, 0);
     // memory allocation error is expected, don't abort unit test.
     m_mem_root.set_error_handler(nullptr);
   }
@@ -75,14 +74,14 @@ class Mem_root_allocator_wrapper : public Mem_root_allocator<T> {
     this (libstdc++ is fine with them being move-only). As a hack, we implement
     copying the MEM_ROOT here; this type is never used outside of unit tests.
 
-    Note that this will stop working if MEM_ROOT grows a destructor.
+    Without this copy CTOR, clang on macOS will complain about
+    "call to implicitly-deleted copy constructor of ..."
+    even with -std=c++17
   */
   Mem_root_allocator_wrapper(const Mem_root_allocator_wrapper &other)
       : Mem_root_allocator<T>(&m_mem_root) {
     memcpy(&m_mem_root, &other.m_mem_root, sizeof(m_mem_root));
   }
-
-  ~Mem_root_allocator_wrapper() { free_root(&m_mem_root, MYF(0)); }
 };
 
 /*
@@ -241,7 +240,7 @@ TYPED_TEST(STLAllocTestInt, SimpleList) {
   EXPECT_EQ(0U, l2.size());
 }
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
 TYPED_TEST(STLAllocTestInt, OutOfMemory) {
   vector<int, TypeParam> v1(this->allocator);
   v1.reserve(10);

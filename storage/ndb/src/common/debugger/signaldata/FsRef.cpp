@@ -1,6 +1,7 @@
 /*
-   Copyright (C) 2003, 2005, 2006 MySQL AB
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
     Use is subject to license terms.
+   Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,18 +24,23 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
-
 #include <signaldata/FsRef.hpp>
 
-bool 
-printFSREF(FILE * output, const Uint32 * theData, 
-	   Uint32 len, Uint16 receiverBlockNo){
-  
+bool printFSREF(FILE *output,
+                const Uint32 *theData,
+                Uint32 len,
+                Uint16 /*receiverBlockNo*/)
+{
+  if (len < FsRef::SignalLength)
+  {
+    assert(false);
+    return false;
+  }
+
   bool ret = true;
 
-  const FsRef * const sig = (FsRef *) theData;
-  
+  const FsRef *const sig = (const FsRef *)theData;
+
   fprintf(output, " UserPointer: %d\n", 
 	  sig->userPointer);
 
@@ -49,7 +55,7 @@ printFSREF(FILE * output, const Uint32 * theData,
     break;
   }
   fprintf(output, "\n");
-  fprintf(output, " OS ErrorCode: %d \n", sig->osErrorCode);
+  fprintf(output, " OS ErrorCode: %d\n", sig->osErrorCode);
 
   return ret;
 }

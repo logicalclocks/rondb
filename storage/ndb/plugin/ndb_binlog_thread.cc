@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2014, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2014, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,13 +28,17 @@
 #include <cstdint>
 
 // Using
-#include "m_string.h"          // NullS
+#include "m_string.h"  // NullS
+#include "my_dbug.h"
 #include "mysql/status_var.h"  // enum_mysql_show_type
 #include "sql/current_thd.h"   // current_thd
+#include "storage/ndb/include/ndbapi/NdbError.hpp"
+#include "storage/ndb/plugin/ndb_apply_status_table.h"
 #include "storage/ndb/plugin/ndb_global_schema_lock_guard.h"  // Ndb_global_schema_lock_guard
 #include "storage/ndb/plugin/ndb_local_connection.h"
 #include "storage/ndb/plugin/ndb_log.h"
 #include "storage/ndb/plugin/ndb_metadata_change_monitor.h"
+#include "storage/ndb/plugin/ndb_share.h"
 
 int Ndb_binlog_thread::do_init() {
   if (!binlog_hooks.register_hooks(do_after_reset_master)) {
@@ -54,7 +58,7 @@ int Ndb_binlog_thread::do_deinit() {
   reset index. This means that ndbcluster also need to clear its own binlog
   index(which is stored in the mysql.ndb_binlog_index table).
 
-  @return 0 on sucess
+  @return 0 on success
 */
 int Ndb_binlog_thread::do_after_reset_master(void *) {
   DBUG_TRACE;
@@ -265,7 +269,44 @@ void Ndb_binlog_thread::synchronize_detected_object(THD *thd) {
     }
     default: {
       // Unexpected type, should never happen
-      DBUG_ASSERT(false);
+      assert(false);
     }
+  }
+}
+
+#ifndef NDEBUG
+void Ndb_binlog_thread::dbug_sync_setting() const {
+  char global_value[256];
+  DBUG_EXPLAIN_INITIAL(global_value, sizeof(global_value));
+  char local_value[256];
+  DBUG_EXPLAIN(local_value, sizeof(local_value));
+
+  // Detect change, log and set
+  if (std::string(global_value) != std::string(local_value)) {
+    log_info("Setting debug='%s'", global_value);
+    DBUG_SET(global_value);
+  }
+}
+#endif
+
+void Ndb_binlog_thread::log_ndb_error(const NdbError &ndberr) const {
+  log_error("Got NDB error '%d - %s'", ndberr.code, ndberr.message);
+}
+
+bool Ndb_binlog_thread::acquire_apply_status_reference() {
+  DBUG_TRACE;
+
+  m_apply_status_share = NDB_SHARE::acquire_reference(
+      Ndb_apply_status_table::DB_NAME.c_str(),
+      Ndb_apply_status_table::TABLE_NAME.c_str(), "m_apply_status_share");
+  return m_apply_status_share != nullptr;
+}
+
+void Ndb_binlog_thread::release_apply_status_reference() {
+  DBUG_TRACE;
+
+  if (m_apply_status_share != nullptr) {
+    NDB_SHARE::release_reference(m_apply_status_share, "m_apply_status_share");
+    m_apply_status_share = nullptr;
   }
 }

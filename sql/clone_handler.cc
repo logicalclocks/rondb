@@ -1,4 +1,4 @@
-/* Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2017, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,6 +22,7 @@
 
 #include "sql/clone_handler.h"
 
+#include <assert.h>
 #include <string.h>
 #include <cctype>
 #include <chrono>
@@ -29,7 +30,6 @@
 #include <string>
 #include <thread>
 
-#include "my_dbug.h"
 #include "my_dir.h"
 #include "my_inttypes.h"
 #include "my_sys.h"
@@ -102,7 +102,7 @@ bool Clone_handler::get_donor_error(Srv_session *session, int &error,
 
     /* No more separator, return. */
     if (err_pos == std::string::npos) {
-      DBUG_ASSERT(false);
+      assert(false);
       return (false);
     }
     /* Skip ":" and space. */
@@ -115,7 +115,7 @@ bool Clone_handler::get_donor_error(Srv_session *session, int &error,
     err_pos = msg_string.find(": ", err_pos);
     /* Should find the error message following the error code. */
     if (err_pos == std::string::npos) {
-      DBUG_ASSERT(false);
+      assert(false);
       return (false);
     }
     /* Skip ":" and space. */
@@ -264,7 +264,7 @@ int Clone_handler::validate_dir(const char *in_dir, char *out_dir) {
 
     /* length must always decrease for the loop to terminate */
     if (length <= new_length) {
-      DBUG_ASSERT(false);
+      assert(false);
       break;
     }
 
@@ -288,6 +288,20 @@ int clone_handle_create(const char *plugin_name) {
   }
 
   return clone_handle->init();
+}
+
+int clone_handle_check_drop(MYSQL_PLUGIN plugin_info) {
+  auto plugin = static_cast<st_plugin_int *>(plugin_info);
+  int error = 0;
+
+  mysql_mutex_lock(&LOCK_plugin);
+  assert(plugin->state == PLUGIN_IS_DYING);
+
+  if (plugin->ref_count > 0) {
+    error = ER_PLUGIN_CANNOT_BE_UNINSTALLED; /* purecov: inspected */
+  }
+  mysql_mutex_unlock(&LOCK_plugin);
+  return error;
 }
 
 int clone_handle_drop() {
@@ -317,7 +331,7 @@ Clone_handler *clone_plugin_lock(THD *thd, plugin_ref *plugin) {
   if (*plugin != nullptr && plugin_state(*plugin) == PLUGIN_IS_READY) {
     mysql_mutex_unlock(&LOCK_plugin);
 
-    DBUG_ASSERT(clone_handle != nullptr);
+    assert(clone_handle != nullptr);
     return clone_handle;
   }
 
@@ -412,7 +426,7 @@ bool Clone_handler::XA_Block::failed() const { return (!m_success); }
 
 bool Clone_handler::block_xa_operation(THD *thd) {
   bool ret = true;
-  DBUG_ASSERT(!s_xa_block_op.load());
+  assert(!s_xa_block_op.load());
 
   mysql_mutex_lock(&s_xa_mutex);
   /* Block new xa prepare/commit/rollback. No new XA operation can start after

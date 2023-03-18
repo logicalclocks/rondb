@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2020, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2020, 2022, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -38,7 +38,7 @@ within lock_sys for it's entire scope.
 */
 class Global_exclusive_latch_guard : private ut::Non_copyable {
  public:
-  Global_exclusive_latch_guard();
+  Global_exclusive_latch_guard(ut::Location location);
   ~Global_exclusive_latch_guard();
 };
 
@@ -49,7 +49,7 @@ from activity within lock_sys for it's entire scope, if owns_lock().
 */
 class Global_exclusive_try_latch : private ut::Non_copyable {
  public:
-  Global_exclusive_try_latch();
+  Global_exclusive_try_latch(ut::Location location);
   ~Global_exclusive_try_latch();
   /** Checks if succeeded to latch the global_latch during construction.
   @return true iff the current thread owns (through this instance) the exclusive
@@ -69,8 +69,12 @@ preferably by simply using Shard_latch_guard which combines the two for you.
 */
 class Global_shared_latch_guard : private ut::Non_copyable {
  public:
-  Global_shared_latch_guard();
+  Global_shared_latch_guard(ut::Location location);
   ~Global_shared_latch_guard();
+  /** Checks if there is a thread requesting the global_latch in exclusive mode
+  blocked by our thread.
+  @return true iff there is an x-latcher blocked by our s-latch. */
+  bool is_x_blocked_by_us();
 };
 
 /**
@@ -84,12 +88,15 @@ first obtain an s-latch on the global_latch, or simply use the Shard_latch_guard
 class which already combines the two for you.
 */
 class Shard_naked_latch_guard : private ut::Non_copyable {
-  explicit Shard_naked_latch_guard(Lock_mutex &shard_mutex);
+  explicit Shard_naked_latch_guard(ut::Location location,
+                                   Lock_mutex &shard_mutex);
 
  public:
-  explicit Shard_naked_latch_guard(const dict_table_t &table);
+  explicit Shard_naked_latch_guard(ut::Location location,
+                                   const table_id_t &table_id);
 
-  explicit Shard_naked_latch_guard(const page_id_t &page_id);
+  explicit Shard_naked_latch_guard(ut::Location location,
+                                   const page_id_t &page_id);
 
   ~Shard_naked_latch_guard();
 
@@ -109,11 +116,13 @@ class Shard_latch_guard {
   Shard_naked_latch_guard m_shard_naked_latch_guard;
 
  public:
-  explicit Shard_latch_guard(const dict_table_t &table)
-      : m_global_shared_latch_guard{}, m_shard_naked_latch_guard{table} {}
+  explicit Shard_latch_guard(ut::Location location, const dict_table_t &table)
+      : m_global_shared_latch_guard{location},
+        m_shard_naked_latch_guard{location, table.id} {}
 
-  explicit Shard_latch_guard(const page_id_t &page_id)
-      : m_global_shared_latch_guard{}, m_shard_naked_latch_guard{page_id} {}
+  explicit Shard_latch_guard(ut::Location location, const page_id_t &page_id)
+      : m_global_shared_latch_guard{location},
+        m_shard_naked_latch_guard{location, page_id} {}
 };
 
 /**
@@ -157,9 +166,10 @@ BEFORE we attempt to use hash function to compute correct shard and latch it.
 */
 class Shard_latches_guard {
  public:
-  explicit Shard_latches_guard(const buf_block_t &block_a,
+  explicit Shard_latches_guard(ut::Location location,
+                               const buf_block_t &block_a,
                                const buf_block_t &block_b)
-      : m_global_shared_latch_guard{},
+      : m_global_shared_latch_guard{location},
         m_shard_naked_latches_guard{block_a, block_b} {}
 
  private:

@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,7 +48,9 @@ private:
     RESET_DISK_SPEED_COUNTER = 6,
     ZGET_NEXT_FRAGMENT = 7,
     ZDELETE_LCP_FILE = 8,
-    ZCHECK_PGMAN_PREP_LCP = 9
+    ZCHECK_PGMAN_PREP_LCP = 9,
+    ZTRANSIENT_POOL_STAT = 10,
+    ZSHRINK_TRANSIENT_POOLS = 11
   };
 };
 

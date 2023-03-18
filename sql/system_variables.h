@@ -1,4 +1,4 @@
-/* Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2015, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -100,6 +100,30 @@ enum use_secondary_engine {
   SECONDARY_ENGINE_FORCED = 2
 };
 
+/**
+  Values for explain_format sysvar.
+
+  The value "TRADITIONAL_STRICT" is meant only to be used by the mtr test
+  suite. With hypergraph optimizer, if explain_format value is TRADITIONAL,
+  EXPLAIN without a format specifier prints in TREE format. The mtr tests were
+  written *before* this traditional-tree conversion was introduced. So mtr was
+  designed to just ignore the "format not supported with hypergraph" error when
+  a test runs an EXPLAIN without format specifier with --hypergraph. With the
+  conversion introduced, EXPLAIN without format specifier therefore would have
+  output in different formats with and without the mtr --hypergraph option.  In
+  order for the mtr tests to be able to continue to pass, mtr internally sets
+  explain_format to TRADITIONAL_STRICT so that these statements continue to
+  error out rather than print TREE format as they would do with TRADITIONAL
+  format. This is a temporary stuff.  Once all tests start using TREE format,
+  we will deprecate this value.
+*/
+enum class Explain_format_type : ulong {
+  TRADITIONAL = 0,
+  TRADITIONAL_STRICT = 1,
+  TREE = 2,
+  JSON = 3
+};
+
 /* Bits for different SQL modes modes (including ANSI mode) */
 #define MODE_REAL_AS_FLOAT 1
 #define MODE_PIPES_AS_CONCAT 2
@@ -183,7 +207,7 @@ struct System_variables {
     They both should have the same 'version' and 'size'.
     When attempting to access a dynamic variable, if the session version
     is out of date, then the session version is updated and realloced if
-    neccessary and bytes copied from global to make up for missing data.
+    necessary and bytes copied from global to make up for missing data.
   */
   ulong dynamic_variables_version;
   char *dynamic_variables_ptr;
@@ -229,6 +253,7 @@ struct System_variables {
   ulong net_write_timeout;
   ulong optimizer_prune_level;
   ulong optimizer_search_depth;
+  ulong optimizer_max_subgraph_pairs;
   ulonglong parser_max_mem_size;
   ulong range_optimizer_max_mem_size;
   ulong preload_buff_size;
@@ -318,7 +343,7 @@ struct System_variables {
 
   double long_query_time_double;
 
-  bool pseudo_slave_mode;
+  bool pseudo_replica_mode;
 
   Gtid_specification gtid_next;
   Gtid_set_or_null gtid_next_list;
@@ -374,6 +399,16 @@ struct System_variables {
   bool sql_require_primary_key;
 
   /**
+    @sa Sys_sql_generate_invisible_primary_key
+  */
+  bool sql_generate_invisible_primary_key;
+
+  /**
+    @sa Sys_show_gipk_in_create_table_and_information_schema
+  */
+  bool show_gipk_in_create_table_and_information_schema;
+
+  /**
     Used in replication to determine the server version of the original server
     where the transaction was executed.
   */
@@ -422,6 +457,48 @@ struct System_variables {
     @sa Sys_select_disk_sync_delay
   */
   uint select_into_disk_sync_delay;
+
+  /**
+    @sa Sys_terminology_use_previous
+  */
+  ulong terminology_use_previous;
+
+  /**
+    @sa Sys_connection_memory_limit
+  */
+  ulonglong conn_mem_limit;
+  /**
+    @sa Sys_connection_memory_chunk_size
+  */
+  ulong conn_mem_chunk_size;
+  /**
+    @sa Sys_connection_global_memory_tracking
+  */
+  bool conn_global_mem_tracking;
+
+  /**
+    Switch which controls whether XA transactions are detached
+    (made accessible to other connections for commit/rollback)
+    as part of XA PREPARE (true), or at session disconnect (false, default).
+    An important side effect of setting this to true is that temporary tables
+    are disallowed in XA transactions. This is necessary because temporary
+    tables and their contents (and thus changes to them) is bound to
+    specific connections, so they don't make sense if XA transaction is
+    committed or rolled back from another connection.
+   */
+  bool xa_detach_on_prepare;
+
+  /**
+    @sa Sys_debug_sensitive_session_string
+  */
+  char *debug_sensitive_session_str;
+
+  /**
+    Used to specify the format in which the EXPLAIN statement should display
+    information if the FORMAT option is not explicitly specified.
+    @sa Sys_explain_format
+   */
+  Explain_format_type explain_format;
 };
 
 /**

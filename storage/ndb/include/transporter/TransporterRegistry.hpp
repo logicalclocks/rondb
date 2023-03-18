@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -29,7 +29,7 @@
 //      TransporterRegistry
 //
 //  DESCRIPTION
-//      TransporterRegistry (singelton) is the interface to the 
+//      TransporterRegistry (singleton) is the interface to the 
 //      transporter layer. It handles transporter states and 
 //      holds the transporter arrays.
 //
@@ -44,12 +44,12 @@
 #include <SocketServer.hpp>
 #include <SocketClient.hpp>
 
-#include <NdbTCP.h>
-
 #include <mgmapi/mgmapi.h>
 
 #include <NodeBitmask.hpp>
 #include <NdbMutex.h>
+
+#include "portlib/NdbTick.h"
 
 #ifndef _WIN32
 /*
@@ -97,16 +97,16 @@ class TransporterService : public SocketServer::Service {
   SocketAuthenticator * m_auth;
   TransporterRegistry * m_transporter_registry;
 public:
-  TransporterService(SocketAuthenticator *auth= 0)
+  TransporterService(SocketAuthenticator *auth= nullptr)
   {
     m_auth= auth;
-    m_transporter_registry= 0;
+    m_transporter_registry= nullptr;
   }
   void setTransporterRegistry(TransporterRegistry *t)
   {
     m_transporter_registry= t;
   }
-  SocketServer::Session * newSession(NDB_SOCKET_TYPE socket) override;
+  SocketServer::Session * newSession(ndb_socket_t socket) override;
 };
 
 /**
@@ -135,25 +135,32 @@ struct TransporterReceiveData
 
   /**
    * Bitmask of transporters having data awaiting to be received
-   * from its transporter.
+   * on its socket.
    */
-  TrpBitmask m_recv_transporters;
+  TrpBitmask m_recv_socket_transporters;
 
   /**
-   * Bitmask of transporters that has already received data buffered
-   * inside its transporter. Possibly "carried over" from last 
-   * performReceive
+   * This is the bitmap indicating which transporters to read
+   * from. Normally all transporters in m_recv_socket_transporters
+   * should be read, but in Job buffer full conditions this is
+   * not always true. Thus we need to execute an OR of
+   * m_recv_socket_transporters and m_read_transporters to find
+   * transporters to look at in performRececive.
+   *
+   * The bitmap is set in the start of a new iteration in pollReceive.
+   * It includes those transporters that had more data from the
+   * previous iteration (these will set m_read_transporters, but
+   * not m_recv_socket_transporters).
+   */
+  TrpBitmask m_read_transporters;
+
+  /**
+   * Bitmask of transporters that had more data remaining in transporter
+   * even after handling it in performReceive. Those transporters will
+   * be set in m_read_transporters in the next iteration from
+   * pollReceive.
    */
   TrpBitmask m_has_data_transporters;
-
-  /**
-   * Subset of m_has_data_transporters which we completed handling
-   * of in previous ::performReceive before we was interrupted due
-   * to lack of job buffers. Will skip these when we later retry 
-   * ::performReceive in order to avoid starvation of non-handled
-   * transporters.
-   */
-  TrpBitmask m_handled_transporters;
 
   /**
    * Bitmask of transporters having received corrupted or unsupported
@@ -168,6 +175,12 @@ struct TransporterReceiveData
    */
   Uint32 m_last_trp_id;
 
+  /**
+   * We found a Job buffer full condition. Report this with a
+   * transporter id != 0. Ensure next iteration only unpacks
+   * starting at m_stop_trp_id.
+   */
+  Uint32 m_stop_trp_id;
   /**
    * Spintime calculated as maximum of currently connected transporters.
    * Only applies to shared memory transporters.
@@ -223,7 +236,7 @@ public:
 
   /**
    * Iff using non-default TransporterReceiveHandle's
-   *   they need to get initalized
+   *   they need to get initialized
    */
   bool init(TransporterReceiveHandle&);
 
@@ -244,7 +257,7 @@ public:
 
      @returns false on failure and true on success
   */
-  bool connect_server(NDB_SOCKET_TYPE sockfd,
+  bool connect_server(ndb_socket_t sockfd,
                       BaseString& msg,
                       bool& close_with_reset,
                       bool& log_failure);
@@ -255,14 +268,14 @@ public:
    * Given a SocketClient, creates a NdbMgmHandle, turns it into a transporter
    * and returns the socket.
    */
-  NDB_SOCKET_TYPE connect_ndb_mgmd(const char* server_name,
-                                   unsigned short server_port);
+  ndb_socket_t connect_ndb_mgmd(const char* server_name,
+                                unsigned short server_port);
 
   /**
    * Given a connected NdbMgmHandle, turns it into a transporter
    * and returns the socket.
    */
-  NDB_SOCKET_TYPE connect_ndb_mgmd(NdbMgmHandle *h);
+  ndb_socket_t connect_ndb_mgmd(NdbMgmHandle *h);
 
   /**
    * Manage allTransporters and theNodeIdTransporters when using
@@ -364,9 +377,10 @@ private:
   void report_connect(TransporterReceiveHandle&, NodeId node_id);
   void report_disconnect(TransporterReceiveHandle&, NodeId node_id, int errnum);
   void report_error(NodeId nodeId, TransporterError errorCode,
-                    const char *errorInfo = 0);
+                    const char *errorInfo = nullptr);
   void dump_and_report_bad_message(const char file[], unsigned line,
                     TransporterReceiveHandle & recvHandle,
+                    SignalHeader & sig_header,
                     Uint32 * readPtr,
                     size_t sizeOfData,
                     NodeId remoteNodeId,
@@ -416,7 +430,7 @@ public:
    * correct.
    */
   Uint64 get_total_max_send_buffer() {
-    DBUG_ASSERT(m_total_max_send_buffer > 0);
+    assert(m_total_max_send_buffer > 0);
     return m_total_max_send_buffer;
   } 
 
@@ -469,9 +483,13 @@ private:
                          Uint8 prio,
                          const Uint32 *signalData,
                          NodeId nodeId,
-                         TrpId &trp_id,
+                         Transporter* t,
                          AnySectionArg section);
 
+  Transporter* prepareSend_getTransporter(const SignalHeader *signalHeader,
+                                          NodeId nodeId,
+                                          TrpId &trp_id,
+                                          SendStatus& status);
 
 public:
   SendStatus prepareSend(TransporterSendBufferHandle *sendHandle,
@@ -497,7 +515,15 @@ public:
                          const Uint32 *signalData,
                          NodeId nodeId,
                          const GenericSectionPtr ptr[3]);
-  
+
+  SendStatus prepareSendOverAllLinks(
+                         TransporterSendBufferHandle *sendHandle,
+                         const SignalHeader *signalHeader,
+                         Uint8 prio,
+                         const Uint32 *signalData,
+                         NodeId nodeId,
+                         TrpBitmask &trp_mask);
+
   /* Send on a specific transporter */
   bool performSend(TrpId id, bool need_wakeup = true);
   /* performSendNode is only used from NDB API */
@@ -518,6 +544,7 @@ public:
 
   int get_transporter_count() const;
   Transporter* get_transporter(TrpId id) const;
+  NodeId get_node_id_trp(TrpId id) const;
   Transporter* get_node_transporter(NodeId nodeId) const;
   bool is_shm_transporter(NodeId nodeId);
   bool use_only_ipv4(NodeId nodeId)
@@ -660,17 +687,20 @@ private:
   Uint32 m_transp_count;
 
 public:
+  bool setup_recv_wakeup_socket(TransporterReceiveHandle&);
   bool setup_wakeup_socket(TransporterReceiveHandle&);
   void wakeup();
+  void wakeup(TransporterReceiveHandle*);
 
   inline bool setup_wakeup_socket() {
-    assert(receiveHandle != 0);
+    assert(receiveHandle != nullptr);
     return setup_wakeup_socket(* receiveHandle);
   }
 private:
   bool m_has_extra_wakeup_socket;
-  NDB_SOCKET_TYPE m_extra_wakeup_sockets[2];
+  ndb_socket_t m_extra_wakeup_sockets[2];
   void consume_extra_sockets();
+  void consume_extra_sockets(TransporterReceiveHandle &recvdata);
 
   Uint32 *getWritePtr(TransporterSendBufferHandle *handle,
                       Transporter*,
@@ -707,32 +737,36 @@ public:
    * Receiving
    */
   Uint32 pollReceive(Uint32 timeOutMillis, TransporterReceiveHandle& mask);
-  Uint32 performReceive(TransporterReceiveHandle&, Uint32 receive_thread_idx);
+  Uint32 performReceive(TransporterReceiveHandle&,
+                        Uint32 receive_thread_idx,
+                        bool data_node);
   Uint32 update_connections(TransporterReceiveHandle&,
                           Uint32 max_spintime = UINT32_MAX);
 
   inline Uint32 pollReceive(Uint32 timeOutMillis) {
-    assert(receiveHandle != 0);
+    assert(receiveHandle != nullptr);
     return pollReceive(timeOutMillis, * receiveHandle);
   }
 
   inline Uint32 performReceive() {
     assert(receiveHandle != 0);
-    return performReceive(* receiveHandle, 0);
+    return performReceive(* receiveHandle,
+                          0,
+                          false);
   }
 
   inline void update_connections() {
-    assert(receiveHandle != 0);
+    assert(receiveHandle != nullptr);
     update_connections(* receiveHandle);
   }
   inline Uint32 get_total_spintime()
   {
-    assert(receiveHandle != 0);
+    assert(receiveHandle != nullptr);
     return receiveHandle->m_total_spintime;
   }
   inline void reset_total_spintime()
   {
-    assert(receiveHandle != 0);
+    assert(receiveHandle != nullptr);
     receiveHandle->m_total_spintime = 0;
   }
 

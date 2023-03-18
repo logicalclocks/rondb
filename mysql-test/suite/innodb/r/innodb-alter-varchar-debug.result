@@ -227,9 +227,9 @@ Table	Create Table
 t1	CREATE TABLE `t1` (
   `a` int DEFAULT '100',
   `b` varchar(255) CHARACTER SET latin1 COLLATE latin1_swedish_ci DEFAULT NULL,
-  `c` varchar(255) CHARACTER SET utf8 COLLATE utf8_general_ci DEFAULT NULL,
+  `c` varchar(255) CHARACTER SET utf8mb3 COLLATE utf8mb3_general_ci DEFAULT NULL,
   KEY `idx` (`b`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3
 INSERT IGNORE INTO t1 (a,b,c) VALUES (5,repeat('d',300),"Môžem");
 Warnings:
 Warning	1265	Data truncated for column 'b' at row 1

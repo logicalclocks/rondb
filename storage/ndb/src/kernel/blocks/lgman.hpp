@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2005, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2005, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,17 +29,20 @@
 #include <SimulatedBlock.hpp>
 
 #include <IntrusiveList.hpp>
+#include <Intrusive64List.hpp>
 #include <KeyTable.hpp>
 #include <DLHashTable.hpp>
 #include <NodeBitmask.hpp>
 #include "diskpage.hpp"
 #include <signaldata/GetTabInfo.hpp>
 
-#include <WOPool.hpp>
+#include <RWPool.hpp>
+#include <RWPool64.hpp>
 #include <SafeMutex.hpp>
 
 #define JAM_FILE_ID 339
 
+class FsReadWriteReq;
 
 class Lgman : public SimulatedBlock
 {
@@ -47,8 +51,9 @@ public:
   ~Lgman() override;
   BLOCK_DEFINES(Lgman);
   
+public:
+  void execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross threads from Ndbfs */;
 protected:
-  
   void execSTTOR(Signal* signal);
   void sendSTTORRY(Signal*);
   void execREAD_CONFIG_REQ(Signal* signal);
@@ -62,7 +67,6 @@ protected:
   void execDROP_FILE_IMPL_REQ(Signal* signal);
   void execDROP_FILEGROUP_IMPL_REQ(Signal* signal);
   
-  void execFSWRITEREQ(Signal*);
   void execFSWRITEREF(Signal*);
   void execFSWRITECONF(Signal*);
 
@@ -94,17 +98,18 @@ public:
   {
     CallbackPtr m_callback;
     union {
-      Uint32 m_size;
+      Uint64 m_size;
       Uint64 m_sync_lsn;
     };
     Uint32 m_block; // includes instance
-    Uint32 nextList;
     Uint32 m_magic;
+    Uint64 nextList;
+    Uint64 nextPool;
   };
 
-  typedef RecordPool<WOPool<Log_waiter> > Log_waiter_pool;
-  typedef SLFifoList<Log_waiter_pool> Log_waiter_list;
-  typedef LocalSLFifoList<Log_waiter_pool> Local_log_waiter_list;
+  typedef RecordPool64<RWPool64<Log_waiter> > Log_waiter_pool;
+  typedef SLFifo64List<Log_waiter_pool> Log_waiter_list;
+  typedef LocalSLFifo64List<Log_waiter_pool> Local_log_waiter_list;
   
   struct Undofile
   {
@@ -162,6 +167,10 @@ public:
     };
   };
 
+  /**
+   * Contains only one record for the moment, so can definitely stay in the
+   * RWPool with limited memory availability for now.
+   */
   typedef RecordPool<RWPool<Undofile> > Undofile_pool;
   typedef DLFifoList<Undofile_pool> Undofile_list;
   typedef LocalDLFifoList<Undofile_pool> Local_undofile_list;
@@ -230,7 +239,7 @@ public:
       Uint64 m_last_read_lsn;
       Uint64 m_last_lcp_lsn;
     };
-    Log_waiter_list::Head m_log_sync_waiters;
+    Log_waiter_list::Head64 m_log_sync_waiters;
     
     Buffer_idx m_tail_pos[2]; // 0 is cut point, 1 is current LCP cut point
     Buffer_idx m_file_pos[2]; // 0 tail, 1 head = { file_ptr_i, page_no }
@@ -245,7 +254,7 @@ public:
     Uint32 m_free_buffer_words;     // Free buffer page words
     Uint32 m_callback_buffer_words; // buffer words that has been
                                     // returned to user, but not yet consumed
-    Log_waiter_list::Head m_log_buffer_waiters;
+    Log_waiter_list::Head64 m_log_buffer_waiters;
     /**
      * Each page range consists of up to 64 pages == 2 MByte.
      * m_current_page.m_ptr_i points to position in Page_map (m_buffer_pages)
@@ -324,6 +333,9 @@ private:
   Uint32 m_end_lcp_senderdata;
   bool m_node_restart_ongoing;
   bool m_dropped_undo_log;
+  bool c_encrypted_filesystem;
+  bool c_o_direct;
+  bool c_o_direct_sync_flag;
 
   Uint64 m_records_applied; // Track number of records applied
   Uint64 m_pages_applied; // Track number of pages applied
@@ -530,7 +542,11 @@ public:
                           Uint32 cnt,
                           Uint32 alloc_size,
                           bool update_callback_buffer_words = true);
-  Uint64 add_entry_complex(const Change*, Uint32 cnt, bool, Uint32 alloc_size);
+  Uint64 add_entry_complex(const Change*,
+                           Uint32 cnt,
+                           bool,
+                           Uint32 alloc_size,
+                           bool var_disk);
 
   /**
    * Check for space in log buffer

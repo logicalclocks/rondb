@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -113,10 +114,10 @@ void Dbtup::execDBINFO_SCANREQ(Signal* signal)
         { CFG_DB_NO_LOCAL_SCANS,0,0,0 },
         0},
       { "Trigger",
-        c_triggerPool.getUsed(),
-        c_triggerPool.getSize(),
-        c_triggerPool.getEntrySize(),
-        c_triggerPool.getUsedHi(),
+        cnoOfAllocatedTriggerRec,
+        0,
+        sizeof(TupTriggerData)/4,
+        cnoOfMaxAllocatedTriggerRec,
         { CFG_DB_NO_TRIGGERS,0,0,0 },
         0},
       { "Stored Proc",
@@ -174,7 +175,9 @@ void Dbtup::execDBINFO_SCANREQ(Signal* signal)
 
     const size_t num_config_params =
       sizeof(pools[0].config_params) / sizeof(pools[0].config_params[0]);
+    const Uint32 numPools = NDB_ARRAY_SIZE(pools);
     Uint32 pool = cursor->data[0];
+    ndbrequire(pool < numPools);
     BlockNumber bn = blockToMain(number());
     while(pools[pool].poolname)
     {
@@ -244,6 +247,7 @@ static Uint32 fc_left = 0, fc_right = 0, fc_remove = 0;
 void
 Dbtup::execDUMP_STATE_ORD(Signal* signal)
 {
+  DumpStateOrd * const dumpState = (DumpStateOrd *)&signal->theData[0];
   Uint32 type = signal->theData[0];
 
   (void)type;
@@ -309,6 +313,48 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
     return;
   }//if
 #endif
+  if (dumpState->args[0] == DumpStateOrd::TupDumpOneScanRec)
+  {
+    Uint32 recordNo = RNIL;
+    if (signal->length() == 2)
+    {
+      jam();
+      recordNo = dumpState->args[1];
+    }
+    else
+    {
+      jam();
+      return;
+    }
+    ScanOpPtr scanPtr;
+    scanPtr.i = recordNo;
+    if (!c_scanOpPool.getValidPtr(scanPtr))
+    {
+      jam();
+      return;
+    }
+    jam();
+    g_eventLogger->info("(%u)Dbtup::ScanRecord[%u]: state: %u, bits: %x",
+                        instance(),
+                        scanPtr.i,
+                        scanPtr.p->m_state,
+                        scanPtr.p->m_bits);
+    g_eventLogger->info("tab(%u,%u), last_seen: %u, transid(%u,%u)",
+                        scanPtr.p->m_tableId,
+                        scanPtr.p->m_fragId,
+                        scanPtr.p->m_last_seen,
+                        scanPtr.p->m_transId1,
+                        scanPtr.p->m_transId2);
+    g_eventLogger->info("endPage: %u, scanGCI: %u, lock op: %u",
+                        scanPtr.p->m_endPage,
+                        scanPtr.p->m_scanGCI,
+                        scanPtr.p->m_accLockOp);
+    g_eventLogger->info("scanPos.m_get: %u, scanPos.m_key(%u,%u,%u)",
+                        scanPtr.p->m_scanPos.m_get,
+                        scanPtr.p->m_scanPos.m_key.m_page_no,
+                        scanPtr.p->m_scanPos.m_key.m_page_idx,
+                        scanPtr.p->m_scanPos.m_key.m_file_no);
+  }
 #ifdef ERROR_INSERT
   if (type == DumpStateOrd::EnableUndoDelayDataWrite) {
     DumpStateOrd * const dumpState = (DumpStateOrd *)&signal->theData[0];
@@ -324,7 +370,8 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
     Uint32 seed = (Uint32)time(0);
     if (signal->getLength() > 1)
       seed = signal->theData[1];
-    ndbout_c("Startar modul test av Page Manager (seed: 0x%x)", seed);
+    g_eventLogger->info("Startar modul test av Page Manager (seed: 0x%x)",
+                        seed);
     srand(seed);
 
     Vector<Chunk> chunks;
@@ -353,7 +400,8 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
       }
       
       if (type == 1211)
-        ndbout_c("loop=%d case=%d free=%d alloc=%d", i, c, free, alloc);
+        g_eventLogger->info("loop=%d case=%d free=%d alloc=%d", i, c, free,
+                            alloc);
 
       if (type == 1213)
       {
@@ -370,7 +418,6 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
 	break;
       case 2: { // Seize(n) - fail
 	alloc += free;
-	// Fall through
         sum_req += free;
         goto doalloc;
       }
@@ -378,20 +425,27 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
         sum_req += alloc;
     doalloc:
 	Chunk chunk;
-	allocConsPages(jamBuffer(), alloc, chunk.pageCount, chunk.pageId);
+        Tablerec tab(c_triggerPool);
+        tab.m_allow_use_spare = false;
+	allocConsPages(jamBuffer(),
+                       &tab,
+                       alloc,
+                       chunk.pageCount,
+                       chunk.pageId);
 	ndbrequire(chunk.pageCount <= alloc);
 	if(chunk.pageCount != 0){
 	  chunks.push_back(chunk);
 	  if(chunk.pageCount != alloc) {
 	    if (type == 1211)
-              ndbout_c("  Tried to allocate %d - only allocated %d - free: %d",
-                       alloc, chunk.pageCount, free);
-	  }
-	} else {
-	  ndbout_c("  Failed to alloc %d pages with %d pages free",
-		   alloc, free);
-	}
-	
+              g_eventLogger->info(
+                  "  Tried to allocate %d - only allocated %d - free: %d",
+                  alloc, chunk.pageCount, free);
+          }
+        } else {
+          g_eventLogger->info("  Failed to alloc %d pages with %d pages free",
+                              alloc, free);
+        }
+
         sum_conf += chunk.pageCount;
         Uint32 tot = fc_left + fc_right + fc_remove;
         sum_loop += tot;
@@ -418,9 +472,9 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
       chunks.erase(chunks.size() - 1);
     }
 
-    ndbout_c("Got %u%% of requested allocs, loops : %u 100*avg: %u max: %u",
-             (100 * sum_conf) / sum_req, sum_loop, 100*sum_loop / LOOPS,
-             max_loop);
+    g_eventLogger->info(
+        "Got %u%% of requested allocs, loops : %u 100*avg: %u max: %u",
+        (100 * sum_conf) / sum_req, sum_loop, 100 * sum_loop / LOOPS, max_loop);
   }
 #endif
 
@@ -436,8 +490,9 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
       RSS_OP_SNAPSHOT_SAVE(defaultValueWordsHi);
       RSS_OP_SNAPSHOT_SAVE(defaultValueWordsLo);
     }
+    g_eventLogger->info("(%u)SAVE TUP: cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
     RSS_OP_SNAPSHOT_SAVE(cnoOfFreeFragoprec);
-    RSS_OP_SNAPSHOT_SAVE(cnoOfFreeFragrec);
+    RSS_OP_SNAPSHOT_SAVE(cnoOfAllocatedFragrec);
     RSS_OP_SNAPSHOT_SAVE(cnoOfFreeTabDescrRec);
 
     RSS_AP_SNAPSHOT_SAVE2(c_storedProcPool, c_storedProcCountNonAPI);
@@ -455,8 +510,9 @@ Dbtup::execDUMP_STATE_ORD(Signal* signal)
       RSS_OP_SNAPSHOT_CHECK(defaultValueWordsHi);
       RSS_OP_SNAPSHOT_CHECK(defaultValueWordsLo);
     }
+    g_eventLogger->info("(%u)CHECK TUP: cnoOfAllocatedFragrec: %u", instance(), cnoOfAllocatedFragrec);
     RSS_OP_SNAPSHOT_CHECK(cnoOfFreeFragoprec);
-    RSS_OP_SNAPSHOT_CHECK(cnoOfFreeFragrec);
+    RSS_OP_SNAPSHOT_CHECK(cnoOfAllocatedFragrec);
     RSS_OP_SNAPSHOT_CHECK(cnoOfFreeTabDescrRec);
 
     RSS_AP_SNAPSHOT_CHECK2(c_storedProcPool, c_storedProcCountNonAPI);
@@ -507,7 +563,7 @@ void Dbtup::execMEMCHECKREQ(Signal* signal)
   regTabPtr.i = 2;
   ptrCheckGuard(regTabPtr, cnoOfTablerec, tablerec);
   if(tablerec && regTabPtr.p->tableStatus == DEFINED)
-    validate_page(regTabPtr.p, 0);
+    validate_page(regTabPtr, 0);
 
 #if 0
   const Dbtup::Tablerec& tab = *tup->tabptr.p;
@@ -535,32 +591,6 @@ void Dbtup::execMEMCHECKREQ(Signal* signal)
   sendSignal(blockref, GSN_MEMCHECKCONF, signal, 25, JBB);
 #endif
 }//Dbtup::memCheck()
-
-// ------------------------------------------------------------------------
-// Help function to be used when debugging. Prints out a tuple page.
-// printLimit is the number of bytes that is printed out from the page. A 
-// page is of size 32768 bytes as of March 2003.
-// ------------------------------------------------------------------------
-void Dbtup::printoutTuplePage(Uint32 fragid, Uint32 pageid, Uint32 printLimit) 
-{
-  PagePtr tmpPageP;
-  FragrecordPtr tmpFragP;
-  TablerecPtr tmpTableP;
-
-  c_page_pool.getPtr(tmpPageP, pageid);
-
-  tmpFragP.i = fragid;
-  ptrCheckGuard(tmpFragP, cnoOfFragrec, fragrecord);
-
-  tmpTableP.i = tmpFragP.p->fragTableId;
-  ptrCheckGuard(tmpTableP, cnoOfTablerec, tablerec);
-
-  ndbout << "Fragid: " << fragid << " Pageid: " << pageid << endl
-	 << "----------------------------------------" << endl;
-
-  ndbout << "PageHead : ";
-  ndbout << endl;
-}//Dbtup::printoutTuplePage
 
 #ifdef VM_TRACE
 NdbOut&
@@ -609,10 +639,18 @@ template class Vector<Chunk>;
 NdbOut&
 operator<<(NdbOut& out, const Local_key & key)
 {
-  out << "[ m_page_no: " << dec << key.m_page_no 
-      << " m_file_no: " << dec << key.m_file_no 
-      << " m_page_idx: " << dec << key.m_page_idx << "]";
+  out << "[ m_page_no: " << dec << key.m_page_no << " m_file_no: " << dec
+      << key.m_file_no << " m_page_idx: " << dec << key.m_page_idx << "]";
   return out;
+}
+
+char*
+printLocal_Key(char buf[], int bufsize, const Local_key& key)
+{
+  BaseString::snprintf(buf, bufsize,
+                       "[ m_page_no: %u m_file_no: %u m_page_idx: %u ]",
+                       key.m_page_no, key.m_file_no, key.m_page_idx);
+  return buf;
 }
 
 static

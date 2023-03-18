@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -112,7 +113,7 @@ public:
 
     Uint32 m_wait_sp[MAX_NDB_NODES];
   } c_start;
-  
+
   struct LocalSysfile
   {
     LocalSysfile() {}
@@ -123,6 +124,7 @@ public:
     bool m_initial_read_done;
     bool m_last_write_done;
     bool m_initial_write_local_sysfile_ongoing;
+    static constexpr Uint32 FILE_ID = 0;
     enum
     {
       NOT_USED = 0,
@@ -143,6 +145,32 @@ public:
     Uint32 m_restorable_flag;
     Uint32 m_max_restorable_gci;
   } c_local_sysfile;
+
+
+  struct SecretsFileOperationRecord
+  {
+    SecretsFileOperationRecord() {}
+    Uint32 m_data[128];
+    Uint32 m_file_pointer;
+    Uint32 m_sender_data;
+    Uint32 m_sender_ref;
+    static constexpr Uint32 FILE_ID = 1;
+    enum
+    {
+      NOT_USED = 0,
+      OPEN_READ_FILE_0 = 1,
+      READ_FILE_0 = 2,
+      CLOSE_READ_FILE_0 = 3,
+      OPEN_WRITE_FILE_0 = 4,
+      WRITE_FILE_0 = 5,
+      CLOSE_WRITE_FILE_0 = 6,
+      CHECK_MISSING_0 = 7,
+      WAITING = 8
+    } m_state;
+  } c_secretsfile;
+  
+  static constexpr Uint32 c_nodeMasterKeyLength = 32;
+  bool c_encrypted_filesystem;
 
   struct NdbBlocksRec {
     BlockReference blockref;
@@ -343,12 +371,16 @@ private:
   void execFSREADCONF(Signal*);
   void execFSWRITECONF(Signal*);
   void execFSWRITEREF(Signal*);
+  void execFSAPPENDREF(Signal*);
+  void execFSAPPENDCONF(Signal*);
   void execFSCLOSEREF(Signal*);
   void execFSCLOSECONF(Signal*);
 
   void sendReadLocalSysfile(Signal *signal);
   void sendWriteLocalSysfile_initial(Signal *signal);
   void update_withLog();
+
+  void alloc_local_bat();
 
   void init_local_sysfile();
   void init_local_sysfile_vars();
@@ -365,6 +397,18 @@ private:
   void getNodeGroup(Signal* signal);
 
   void send_node_started_rep(Signal *signal);
+
+  /* Secrets file stuff */
+
+  void init_secretsfile();
+  void init_secretsfile_vars();
+  void create_secrets_file(Signal *signal);
+  void open_secretsfile(Signal *signal, Uint32 secretsfile_num,
+                        bool open_for_read, bool check_file_exists);
+  void write_secretsfile(Signal *signal);
+  void read_secretsfile(Signal *signal);
+  void read_secretsfile_data(Signal *signal);
+  void close_secretsfile(Signal *signal);
 
   // Initialisation
   void initData();
@@ -467,7 +511,6 @@ private:
 
     Uint32 currentBlockIndex;
     Uint32 currentStartPhase;
-    Uint32 nextStartPhase[NO_OF_BLOCKS];
 
     void execSTART_ORD(Signal* signal);
     void execSTTORRY(Signal* signal);

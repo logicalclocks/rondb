@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,20 +23,20 @@
 #ifndef MEM_ROOT_ALLOCATOR_INCLUDED
 #define MEM_ROOT_ALLOCATOR_INCLUDED
 
+#include <assert.h>
 #include <limits>
 #include <new>
 #include <utility>  // std::forward
 
 #include "my_alloc.h"
-#include "my_dbug.h"
 
 /**
   Mem_root_allocator is a C++ STL memory allocator based on MEM_ROOT.
 
-  No deallocation is done by this allocator. Calling init_sql_alloc()
-  and free_root() on the supplied MEM_ROOT is the responsibility of
-  the caller. Do *not* call free_root() until the destructor of any
-  objects using this allocator has completed. This includes iterators.
+  No deallocation is done by this allocator. Calling the constructor
+  and destructor on the supplied MEM_ROOT is the responsibility of
+  the caller. Do *not* call Clear() or ~MEM_ROOT until the destructor
+  of any objects using this allocator has completed. This includes iterators.
 
   Example of use:
   vector<int, Mem_root_allocator<int> > v((Mem_root_allocator<int>(&mem_root)));
@@ -91,13 +91,12 @@ class Mem_root_allocator {
       : m_memroot(other.memroot()) {}
 
   template <class U>
-  Mem_root_allocator &operator=(
-      const Mem_root_allocator<U> &other MY_ATTRIBUTE((unused))) {
-    DBUG_ASSERT(m_memroot == other.memroot());  // Don't swap memroot.
+  Mem_root_allocator &operator=(const Mem_root_allocator<U> &other
+                                [[maybe_unused]]) {
+    assert(m_memroot == other.memroot());  // Don't swap memroot.
   }
 
-  pointer allocate(size_type n,
-                   const_pointer hint MY_ATTRIBUTE((unused)) = nullptr) {
+  pointer allocate(size_type n, const_pointer hint [[maybe_unused]] = nullptr) {
     if (n == 0) return nullptr;
     if (n > max_size()) throw std::bad_alloc();
 
@@ -110,20 +109,20 @@ class Mem_root_allocator {
 
   template <class U, class... Args>
   void construct(U *p, Args &&... args) {
-    DBUG_ASSERT(p != nullptr);
+    assert(p != nullptr);
     try {
       ::new ((void *)p) U(std::forward<Args>(args)...);
     } catch (...) {
-      DBUG_ASSERT(false);  // Constructor should not throw an exception.
+      assert(false);  // Constructor should not throw an exception.
     }
   }
 
   void destroy(pointer p) {
-    DBUG_ASSERT(p != nullptr);
+    assert(p != nullptr);
     try {
       p->~T();
     } catch (...) {
-      DBUG_ASSERT(false);  // Destructor should not throw an exception
+      assert(false);  // Destructor should not throw an exception
     }
   }
 

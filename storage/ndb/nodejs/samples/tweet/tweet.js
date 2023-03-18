@@ -2,6 +2,7 @@
  *
  * This depends on the schema defined in create_tweet_tables.sql
  *
+ * Copyright (c) 2022, 2022, Logical Clocks and/or its affiliates.
  */
 
 'use strict';
@@ -562,7 +563,7 @@ function RunWebServerOperation(cli_params, cli_data) {
     params = url.parse(request.url).pathname.split("/");
     params.shift();
     
-    request.setEncoding('utf8');
+    request.setEncoding('utf8mb3');
     function gatherData(chunk) {    data += chunk;    }
     request.on('data', gatherData);
     request.on('end', runOperation);
@@ -617,7 +618,7 @@ function get_cmdline_args() {
     "         -d or --debug: set the debug flag\n" +
     "               --detail: set the detail debug flag\n" +
     "               -df <file>: enable debug output from <file>\n" +
-    "         -E or --deployment <name>: use deployment <name> (default: test) \n" +
+    "         -E or --deployment <name>: use deployment <name> (default: test)\n" +
     "\n" +
     "  COMMANDS:\n" + operationMap.cli_help;
   

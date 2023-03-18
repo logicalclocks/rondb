@@ -1,4 +1,4 @@
-/* Copyright (c) 2013, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2013, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,12 +23,13 @@
 #ifndef PARSE_TREE_HELPERS_INCLUDED
 #define PARSE_TREE_HELPERS_INCLUDED
 
+#include <assert.h>
 #include <sys/types.h>  // TODO: replace with cstdint
 #include <new>
 
 #include "lex_string.h"
 #include "m_ctype.h"
-#include "my_dbug.h"
+
 #include "my_inttypes.h"  // TODO: replace with cstdint
 #include "mysql_time.h"
 #include "sql/item.h"
@@ -40,9 +41,12 @@
 #include "sql/sql_error.h"
 #include "sql/sql_list.h"
 
+class PT_query_expression_body;
+class PT_query_primary;
 class String;
 class THD;
 class my_decimal;
+enum class Set_operator;
 struct Column_parse_context;
 struct MEM_ROOT;
 struct handlerton;
@@ -68,27 +72,27 @@ class Parse_tree_item : public Item {
 
   enum Type type() const override { return INVALID_ITEM; }
   double val_real() override {
-    DBUG_ASSERT(0);
+    assert(0);
     return 0;
   }
   longlong val_int() override {
-    DBUG_ASSERT(0);
+    assert(0);
     return 0;
   }
   String *val_str(String *) override {
-    DBUG_ASSERT(0);
+    assert(0);
     return nullptr;
   }
   my_decimal *val_decimal(my_decimal *) override {
-    DBUG_ASSERT(0);
+    assert(0);
     return nullptr;
   }
   bool get_date(MYSQL_TIME *, uint) override {
-    DBUG_ASSERT(0);
+    assert(0);
     return false;
   }
   bool get_time(MYSQL_TIME *) override {
-    DBUG_ASSERT(0);
+    assert(0);
     return false;
   }
 };
@@ -137,7 +141,7 @@ class PT_item_list : public Parse_tree_node {
   }
 
   Item *pop_front() {
-    DBUG_ASSERT(!is_empty());
+    assert(!is_empty());
     Item *ret = value.front();
     value.pop_front();
     return ret;
@@ -231,12 +235,7 @@ Item_splocal *create_item_for_sp_var(THD *thd, LEX_CSTRING name,
                                      const char *query_start_ptr,
                                      const char *start, const char *end);
 
-bool find_sys_var_null_base(THD *thd, struct sys_var_with_base *tmp);
-bool set_system_variable(THD *thd, struct sys_var_with_base *tmp,
-                         enum enum_var_type var_type, Item *val);
 LEX_CSTRING make_string(THD *thd, const char *start_ptr, const char *end_ptr);
-bool set_trigger_new_row(Parse_context *pc, LEX_CSTRING trigger_field_name,
-                         Item *expr_item, LEX_CSTRING expr_query);
 void sp_create_assignment_lex(THD *thd, const char *option_ptr);
 bool sp_create_assignment_instr(THD *thd, const char *expr_end_ptr);
 bool resolve_engine(THD *thd, const LEX_CSTRING &name, bool is_temp_table,
@@ -251,7 +250,6 @@ inline bool is_identifier(const char *str, const char *ident) {
 inline bool is_identifier(const LEX_STRING &str, const char *ident) {
   return is_identifier(str.str, ident);
 }
-bool is_key_cache_variable_suffix(const char *suffix);
 
 bool validate_vcpu_range(const resourcegroups::Range &range);
 bool validate_resource_group_priority(THD *thd, int *priority,
@@ -262,4 +260,5 @@ bool check_resource_group_name_len(const LEX_CSTRING &name,
                                    Sql_condition::enum_severity_level severity);
 
 void move_cf_appliers(Parse_context *tddlpc, Column_parse_context *cpc);
+
 #endif /* PARSE_TREE_HELPERS_INCLUDED */

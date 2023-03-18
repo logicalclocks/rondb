@@ -1,4 +1,5 @@
-/* Copyright (c) 2008, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,7 +33,6 @@
 
 #define JAM_FILE_ID 413
 
-extern EventLogger * g_eventLogger;
 
 #ifdef VM_TRACE
 //#define DEBUG_TUP_RESTART_ 1
@@ -319,8 +319,8 @@ DbtupProxy::disk_restart_undo(Signal* signal, Uint64 lsn,
   case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_PART:
   {
     jam();
-    const Dbtup::Disk_undo::Update* rec =
-      (const Dbtup::Disk_undo::Update*)ptr;
+    const Dbtup::Disk_undo::Update_Free* rec =
+      (const Dbtup::Disk_undo::Update_Free*)ptr;
     undo.m_key.m_file_no = rec->m_file_no_page_idx >> 16;
     undo.m_key.m_page_no = rec->m_page_no;
     undo.m_key.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
@@ -330,6 +330,7 @@ DbtupProxy::disk_restart_undo(Signal* signal, Uint64 lsn,
     break;
   }
   case File_formats::Undofile::UNDO_TUP_UPDATE_PART:
+  case File_formats::Undofile::UNDO_TUP_UPDATE_VAR_PART:
   {
     jam();
     const Dbtup::Disk_undo::UpdatePart* rec =
@@ -346,8 +347,22 @@ DbtupProxy::disk_restart_undo(Signal* signal, Uint64 lsn,
   case File_formats::Undofile::UNDO_TUP_FREE_PART:
   {
     jam();
-    const Dbtup::Disk_undo::Free* rec =
-      (const Dbtup::Disk_undo::Free*)ptr;
+    const Dbtup::Disk_undo::Update_Free* rec =
+      (const Dbtup::Disk_undo::Update_Free*)ptr;
+    undo.m_key.m_file_no = rec->m_file_no_page_idx >> 16;
+    undo.m_key.m_page_no = rec->m_page_no;
+    undo.m_key.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
+    undo.m_actions |= Proxy_undo::ReadTupPage;
+    undo.m_actions |= Proxy_undo::GetInstance;
+    undo.m_actions |= Proxy_undo::SendUndoNext; // Don't wait for LDM
+    break;
+  }
+  case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_VAR_PART:
+  case File_formats::Undofile::UNDO_TUP_FREE_VAR_PART:
+  {
+    jam();
+    const Dbtup::Disk_undo::Update_Free_FirstVarPart* rec =
+      (const Dbtup::Disk_undo::Update_Free_FirstVarPart*)ptr;
     undo.m_key.m_file_no = rec->m_file_no_page_idx >> 16;
     undo.m_key.m_page_no = rec->m_page_no;
     undo.m_key.m_page_idx = rec->m_file_no_page_idx & 0xFFFF;
@@ -478,7 +493,7 @@ DbtupProxy::disk_restart_undo_callback(Signal* signal, Uint32, Uint32 page_id)
   undo.m_page_id = page_id;
 
   Ptr<GlobalPage> gptr;
-  m_global_page_pool.getPtr(gptr, undo.m_page_id);
+  ndbrequire(m_global_page_pool.getPtr(gptr, undo.m_page_id));
 
   ndbrequire(undo.m_actions & Proxy_undo::ReadTupPage);
   {

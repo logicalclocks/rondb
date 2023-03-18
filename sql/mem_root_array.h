@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,12 +23,13 @@
 #ifndef MEM_ROOT_ARRAY_INCLUDED
 #define MEM_ROOT_ARRAY_INCLUDED
 
+#include <assert.h>
 #include <algorithm>
 #include <type_traits>
 #include <utility>
 
 #include "my_alloc.h"
-#include "my_dbug.h"
+
 #include "sql/thr_malloc.h"
 
 /**
@@ -70,7 +71,7 @@ class Mem_root_array_YY {
   typedef Element_type value_type;
 
   void init(MEM_ROOT *root) {
-    DBUG_ASSERT(root != nullptr);
+    assert(root != nullptr);
 
     m_root = root;
     m_array = nullptr;
@@ -86,13 +87,16 @@ class Mem_root_array_YY {
     m_capacity = 0;
   }
 
+  Element_type *data() { return m_array; }
+  const Element_type *data() const { return m_array; }
+
   Element_type &at(size_t n) {
-    DBUG_ASSERT(n < size());
+    assert(n < size());
     return m_array[n];
   }
 
   const Element_type &at(size_t n) const {
-    DBUG_ASSERT(n < size());
+    assert(n < size());
     return m_array[n];
   }
 
@@ -130,7 +134,7 @@ class Mem_root_array_YY {
     @param pos Index of first element to erase.
   */
   void chop(const size_t pos) {
-    DBUG_ASSERT(pos < m_size);
+    assert(pos < m_size);
     if (!has_trivial_destructor) {
       for (size_t ix = pos; ix < m_size; ++ix) {
         Element_type *p = &m_array[ix];
@@ -178,16 +182,7 @@ class Mem_root_array_YY {
     @param  element Object to copy.
     @retval true if out-of-memory, false otherwise.
   */
-  bool push_back(const Element_type &element) {
-    const size_t min_capacity = 20;
-    const size_t expansion_factor = 2;
-    if (0 == m_capacity && reserve(min_capacity)) return true;
-    if (m_size == m_capacity && reserve(m_capacity * expansion_factor))
-      return true;
-    Element_type *p = &m_array[m_size++];
-    ::new (p) Element_type(element);
-    return false;
-  }
+  bool push_back(const Element_type &element) { return emplace_back(element); }
 
   /**
     Adds a new element at the end of the array, after its current last
@@ -198,13 +193,26 @@ class Mem_root_array_YY {
     @retval true if out-of-memory, false otherwise.
   */
   bool push_back(Element_type &&element) {
-    const size_t min_capacity = 20;
-    const size_t expansion_factor = 2;
-    if (0 == m_capacity && reserve(min_capacity)) return true;
-    if (m_size == m_capacity && reserve(m_capacity * expansion_factor))
-      return true;
+    return emplace_back(std::move(element));
+  }
+
+  /**
+    Constructs an element at the back of the array in-place.
+
+    @param  args Arguments to pass to the constructor.
+    @return true if out-of-memory, false otherwise.
+  */
+  template <typename... Args>
+  bool emplace_back(Args &&... args) {
+    constexpr size_t min_capacity = 20;
+    constexpr size_t expansion_factor = 2;
+    if (m_size == m_capacity) {
+      if (reserve(std::max(min_capacity, m_capacity * expansion_factor))) {
+        return true;
+      }
+    }
     Element_type *p = &m_array[m_size++];
-    ::new (p) Element_type(std::move(element));
+    ::new (p) Element_type(std::forward<Args>(args)...);
     return false;
   }
 
@@ -240,7 +248,7 @@ class Mem_root_array_YY {
     container size by one. This destroys the removed element.
    */
   void pop_back() {
-    DBUG_ASSERT(!empty());
+    assert(!empty());
     if (!has_trivial_destructor) back().~Element_type();
     m_size -= 1;
   }
@@ -333,7 +341,7 @@ class Mem_root_array_YY {
     @return an iterator to the first element after the removed range
   */
   iterator erase(size_t ix) {
-    DBUG_ASSERT(ix < size());
+    assert(ix < size());
     return erase(std::next(this->cbegin(), ix));
   }
 
@@ -386,7 +394,7 @@ class Mem_root_array_YY {
     We use std::copy to move objects, hence Element_type must be assignable.
   */
   iterator erase(iterator position) {
-    DBUG_ASSERT(position != end());
+    assert(position != end());
     if (position + 1 != end()) std::copy(position + 1, end(), position);
     this->pop_back();
     return position;
@@ -434,6 +442,7 @@ class Mem_root_array : public Mem_root_array_YY<Element_type> {
     this->m_size = other.m_size;
     this->m_capacity = other.m_capacity;
     other.init_empty_const();
+    other.m_root = this->m_root;
   }
   Mem_root_array &operator=(Mem_root_array &&other) {
     if (this != &other) {

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2017, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -139,7 +139,12 @@ bool migrate_schema_to_dd(THD *thd, const char *dbname) {
   dd::cache::Dictionary_client::Auto_releaser releaser(thd->dd_client());
 
   // Construct the schema name from its canonical format.
-  filename_to_tablename(dbname, schema_name, sizeof(schema_name));
+  bool has_invalid_name = false;
+  filename_to_tablename(dbname, schema_name, sizeof(schema_name), false,
+                        &has_invalid_name);
+
+  // If the filename of the database is invalid, stop the upgrade.
+  if (has_invalid_name) return true;
 
   dbopt_file_name.str = dbopt_path_buff;
   dbopt_file_name.length = build_table_filename(dbopt_path_buff, FN_REFLEN - 1,
@@ -156,7 +161,7 @@ bool migrate_schema_to_dd(THD *thd, const char *dbname) {
   // See comments regarding l_c_t_n in migrate_all_frm_to_dd().
   if (lower_case_table_names == 0)
     // Supported only for case sensitive file systems.
-    DBUG_ASSERT(!lower_case_file_system);
+    assert(!lower_case_file_system);
   else if (lower_case_table_names == 1) {
     // Supported for any file system. All names must be in lower case.
     if (!is_string_in_lowercase(schema_name, system_charset_info)) {
@@ -166,9 +171,9 @@ bool migrate_schema_to_dd(THD *thd, const char *dbname) {
     }
   } else if (lower_case_table_names == 2)
     // Supported only for case insensitive file systems.
-    DBUG_ASSERT(lower_case_file_system);
+    assert(lower_case_file_system);
   else
-    DBUG_ASSERT(false);
+    assert(false);
 
   // Disable autocommit option
   Disable_autocommit_guard autocommit_guard(thd);
@@ -202,7 +207,8 @@ bool find_schema_from_datadir(std::vector<String_type> *db_name) {
     if (file->name[0] == '.') continue;
 
     if (MY_S_ISDIR(a->dir_entry[i].mystat->st_mode) &&
-        strcmp(a->dir_entry[i].name, "#innodb_temp") != 0) {
+        strcmp(a->dir_entry[i].name, "#innodb_temp") != 0 &&
+        strcmp(a->dir_entry[i].name, "#innodb_redo") != 0) {
       db_name->push_back(a->dir_entry[i].name);
       continue;
     }

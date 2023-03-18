@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,13 +22,14 @@
 
 #include "sql/dd/impl/tables/character_sets.h"
 
+#include <assert.h>
 #include <stddef.h>
 #include <new>
 #include <set>
 #include <vector>
 
 #include "m_ctype.h"
-#include "my_dbug.h"
+
 #include "my_sys.h"
 #include "sql/dd/cache/dictionary_client.h"     // dd::cache::Dictionary_...
 #include "sql/dd/dd.h"                          // dd::create_object
@@ -54,7 +55,7 @@ const Character_sets &Character_sets::instance() {
 ///////////////////////////////////////////////////////////////////////////
 
 const CHARSET_INFO *Character_sets::name_collation() {
-  return &my_charset_utf8_general_ci;
+  return &my_charset_utf8mb3_general_ci;
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -66,13 +67,13 @@ Character_sets::Character_sets() {
                          "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT");
   m_target_def.add_field(FIELD_NAME, "FIELD_NAME",
                          "name VARCHAR(64) NOT NULL COLLATE " +
-                             String_type(name_collation()->name));
+                             String_type(name_collation()->m_coll_name));
   m_target_def.add_field(FIELD_DEFAULT_COLLATION_ID,
                          "FIELD_DEFAULT_COLLATION_ID",
                          "default_collation_id BIGINT UNSIGNED NOT NULL");
   m_target_def.add_field(FIELD_COMMENT, "FIELD_COMMENT",
                          "comment VARCHAR(2048)"
-                         " COLLATE utf8_general_ci NOT NULL");
+                         " COLLATE utf8mb3_general_ci NOT NULL");
   m_target_def.add_field(FIELD_MB_MAX_LENGTH, "FIELD_MB_MAX_LENGTH",
                          "mb_max_length INT UNSIGNED NOT NULL");
   m_target_def.add_field(FIELD_OPTIONS, "FIELD_OPTIONS", "options MEDIUMTEXT");
@@ -151,7 +152,7 @@ bool Character_sets::populate(THD *thd) const {
     const Charset *del_cset = nullptr;
     if (thd->dd_client()->acquire(*del_it, &del_cset)) return true;
 
-    DBUG_ASSERT(del_cset);
+    assert(del_cset);
     if (thd->dd_client()->drop(del_cset)) return true;
   }
 

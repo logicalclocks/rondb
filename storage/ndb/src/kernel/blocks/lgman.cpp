@@ -1,4 +1,5 @@
-/* Copyright (c) 2005, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2005, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -21,6 +22,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
 #include "lgman.hpp"
 #include "diskpage.hpp"
 #include <signaldata/FsRef.hpp>
@@ -42,7 +44,6 @@
 #include "dbtup/Dbtup.hpp"
 
 #include <EventLogger.hpp>
-extern EventLogger * g_eventLogger;
 
 #include <record_types.hpp>
 
@@ -50,16 +51,24 @@ extern EventLogger * g_eventLogger;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_LGMAN 1
+//#define DEBUG_LGMAN_EXTRA 1
+//#define DEBUG_LGMAN_SPLIT 1
 //#define DEBUG_DROP_LG 1
 //#define DEBUG_LGMAN_LCP 1
 //#define DEBUG_UNDO_SPACE 1
-#define DEBUG_UNDO_BUFFER 1
+//#define DEBUG_UNDO_BUFFER 1
 #endif
 
 #ifdef DEBUG_LGMAN
 #define DEB_LGMAN(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_LGMAN(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_LGMAN_EXTRA
+#define DEB_LGMAN_EXTRA(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_LGMAN_EXTRA(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_LGMAN_LCP
@@ -84,6 +93,50 @@ extern EventLogger * g_eventLogger;
 #define DEB_DROP_LG(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_DROP_LG(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_LGMAN_SPLIT
+static void
+log_buf_print(const Uint32 *ptr, Uint32 len)
+{
+  while (len >= 8)
+  {
+    g_eventLogger->info("%x %x %x %x %x %x %x %x",
+                        ptr[0],
+                        ptr[1],
+                        ptr[2],
+                        ptr[3],
+                        ptr[4],
+                        ptr[5],
+                        ptr[6],
+                        ptr[7]);
+    ptr+= 8;
+    len -= 8;
+  }
+  if (len >= 4)
+  {
+    g_eventLogger->info("%x %x %x %x",
+                        ptr[0],
+                        ptr[1],
+                        ptr[2],
+                        ptr[3]);
+    ptr+= 4;
+    len -= 4;
+  }
+  if (len >= 2)
+  {
+    g_eventLogger->info("%x %x",
+                        ptr[0],
+                        ptr[1]);
+    ptr+= 2;
+    len -= 2;
+  }
+  if (len > 0)
+  {
+    g_eventLogger->info("%x",
+                        ptr[0]);
+  }
+}
 #endif
 
 /**
@@ -251,7 +304,7 @@ extern EventLogger * g_eventLogger;
  * executing REDO log from the GCI_last_completed + 1 until the GCI we want to
  * restore, then we have restored the data consistently.
  *
- * In order to be able to write the UNDO log continously we need to cut the
+ * In order to be able to write the UNDO log continuously we need to cut the
  * log tail every now and then. We enable cutting of the log tail for both
  * REDO and UNDO logs by running checkpoints. We call our checkpoints, LCPs.
  * At start of a new LCP we can cut away the log tail back until we reach the
@@ -270,7 +323,7 @@ extern EventLogger * g_eventLogger;
  * We need to retain UNDO log entries for the running LCP and for the last
  * completed LCP. We could theoretically move the UNDO log tail forward
  * as soon as a fragment LCP is restorable since we only now need 1 LCP
- * per fragment and we continously move forward. (TODO).
+ * per fragment and we continuously move forward. (TODO).
  *
  * So in short LGMAN receives log entries from DBTUP, before PGMAN can write
  * any page it ensures that all log entries of the page have been flushed to
@@ -659,7 +712,6 @@ Lgman::Lgman(Block_context & ctx) :
   addRecSignal(GSN_DROP_FILEGROUP_IMPL_REQ,
                &Lgman::execDROP_FILEGROUP_IMPL_REQ);
 
-  addRecSignal(GSN_FSWRITEREQ, &Lgman::execFSWRITEREQ);
   addRecSignal(GSN_FSWRITEREF, &Lgman::execFSWRITEREF, true);
   addRecSignal(GSN_FSWRITECONF, &Lgman::execFSWRITECONF);
 
@@ -767,9 +819,27 @@ Lgman::execREAD_CONFIG_REQ(Signal* signal)
                            &disk_data_format);
   g_v2 = (disk_data_format == 1);
 #endif
+
+  Uint32 encrypted_filesystem = 0;
+  ndb_mgm_get_int_parameter(
+      p, CFG_DB_ENCRYPTED_FILE_SYSTEM, &encrypted_filesystem);
+  c_encrypted_filesystem = encrypted_filesystem;
+
+  c_o_direct = false;
+  Uint32 o_direct = 0;
+  ndb_mgm_get_int_parameter(p, CFG_DB_O_DIRECT,
+                            &o_direct);
+  c_o_direct = o_direct;
+
+  c_o_direct_sync_flag = false;
+  Uint32 o_direct_sync_flag = 0;
+  ndb_mgm_get_int_parameter(p, CFG_DB_O_DIRECT_SYNC_FLAG,
+                            &o_direct_sync_flag);
+  c_o_direct_sync_flag = o_direct_sync_flag;
+
   Pool_context pc;
   pc.m_block = this;
-  m_log_waiter_pool.wo_pool_init(RT_LGMAN_LOG_WAITER, pc);
+  m_log_waiter_pool.init(RT_LGMAN_LOG_WAITER, pc);
   m_file_pool.init(RT_LGMAN_FILE, pc);
   m_logfile_group_pool.init(RT_LGMAN_FILEGROUP, pc);
   // 1200 -> 18000M
@@ -841,7 +911,7 @@ Lgman::execCONTINUEB(Signal* signal)
   {
     jam();
     Ptr<Logfile_group> lg_ptr;
-    m_logfile_group_pool.getPtr(lg_ptr, ptrI);
+    ndbrequire(m_logfile_group_pool.getPtr(lg_ptr, ptrI));
     level_report_thread(signal, lg_ptr);
     break;
   }
@@ -852,7 +922,7 @@ Lgman::execCONTINUEB(Signal* signal)
   {
     jam();
     Ptr<Logfile_group> lg_ptr;
-    m_logfile_group_pool.getPtr(lg_ptr, ptrI);
+    ndbrequire(m_logfile_group_pool.getPtr(lg_ptr, ptrI));
     cut_log_tail(signal, lg_ptr);
     break;
   }
@@ -860,7 +930,7 @@ Lgman::execCONTINUEB(Signal* signal)
   {
     jam();
     Ptr<Logfile_group> lg_ptr;
-    m_logfile_group_pool.getPtr(lg_ptr, ptrI);
+    ndbrequire(m_logfile_group_pool.getPtr(lg_ptr, ptrI));
     flush_log(signal, lg_ptr, signal->theData[2], true);
     break;
   }
@@ -868,7 +938,7 @@ Lgman::execCONTINUEB(Signal* signal)
   {
     jam();
     Ptr<Logfile_group> lg_ptr;
-    m_logfile_group_pool.getPtr(lg_ptr, ptrI);
+    ndbrequire(m_logfile_group_pool.getPtr(lg_ptr, ptrI));
     process_log_buffer_waiters(signal, lg_ptr);
     break;
   }
@@ -879,7 +949,7 @@ Lgman::execCONTINUEB(Signal* signal)
     if(ptrI != RNIL)
     {
       jam();
-      m_logfile_group_pool.getPtr(lg_ptr, ptrI);
+      ndbrequire(m_logfile_group_pool.getPtr(lg_ptr, ptrI));
       find_log_head(signal, lg_ptr);
     }
     else
@@ -915,7 +985,7 @@ Lgman::execCONTINUEB(Signal* signal)
   {
     jam();
     Ptr<Logfile_group> lg_ptr;
-    m_logfile_group_pool.getPtr(lg_ptr, ptrI);
+    ndbrequire(m_logfile_group_pool.getPtr(lg_ptr, ptrI));
     read_undo_log(signal, lg_ptr);
     break;
   }
@@ -923,7 +993,7 @@ Lgman::execCONTINUEB(Signal* signal)
   {
     jam();
     Ptr<Logfile_group> lg_ptr;
-    m_logfile_group_pool.getPtr(lg_ptr, ptrI);
+    ndbrequire(m_logfile_group_pool.getPtr(lg_ptr, ptrI));
     process_log_sync_waiters(signal, lg_ptr);
     break;
   }
@@ -931,7 +1001,7 @@ Lgman::execCONTINUEB(Signal* signal)
   {
     jam();
     Ptr<Logfile_group> lg_ptr;
-    m_logfile_group_pool.getPtr(lg_ptr, ptrI);
+    ndbrequire(m_logfile_group_pool.getPtr(lg_ptr, ptrI));
     force_log_sync(signal, lg_ptr, signal->theData[2], signal->theData[3]);
     break;
   }
@@ -939,7 +1009,7 @@ Lgman::execCONTINUEB(Signal* signal)
   {
     jam();
     Ptr<Logfile_group> lg_ptr;
-    m_logfile_group_pool.getPtr(lg_ptr, ptrI);
+    ndbrequire(m_logfile_group_pool.getPtr(lg_ptr, ptrI));
     if ((lg_ptr.p->m_state & Logfile_group::LG_THREAD_MASK) ||
         lg_ptr.p->m_outstanding_fs > 0)
     {
@@ -969,7 +1039,7 @@ Lgman::execNODE_FAILREP(Signal* signal)
         getNodeInfo(refToNode(signal->getSendersBlockRef())).m_version));
     SegmentedSectionPtr ptr;
     SectionHandle handle(this, signal);
-    handle.getSection(ptr, 0);
+    ndbrequire(handle.getSection(ptr, 0));
     memset(rep->theNodes, 0, sizeof(rep->theNodes));
     copy(rep->theNodes, ptr);
     releaseSections(handle);
@@ -1020,7 +1090,7 @@ Lgman::execDUMP_STATE_ORD(Signal* signal){
                            !ptr.p->m_log_sync_waiters.isEmpty());
       if (clusterLog)
         infoEvent("%s", tmp);
-      ndbout_c("%s", tmp);
+      g_eventLogger->info("%s", tmp);
 
       BaseString::snprintf(tmp, sizeof(tmp),
                            "   callback_buffer_words: %u"
@@ -1030,42 +1100,44 @@ Lgman::execDUMP_STATE_ORD(Signal* signal){
                            ptr.p->m_free_log_words);
       if (clusterLog)
         infoEvent("%s", tmp);
-      ndbout_c("%s", tmp);
+      g_eventLogger->info("%s", tmp);
       if (!ptr.p->m_log_buffer_waiters.isEmpty())
       {
-	Ptr<Log_waiter> waiter;
+	Ptr64<Log_waiter> waiter;
 	Local_log_waiter_list 
 	  list(m_log_waiter_pool, ptr.p->m_log_buffer_waiters);
-	list.first(waiter);
+	ndbrequire(list.first(waiter));
         BaseString::snprintf(tmp, sizeof(tmp),
-                             "  head(waiters).sz: %u %u",
+                             "  head(waiters).sz: %llu %u",
                              waiter.p->m_size,
                              FREE_BUFFER_MARGIN(this, ptr));
         if (clusterLog)
           infoEvent("%s", tmp);
-        ndbout_c("%s", tmp);
+        g_eventLogger->info("%s", tmp);
       }
       if (!ptr.p->m_log_sync_waiters.isEmpty())
       {
-	Ptr<Log_waiter> waiter;
+	Ptr64<Log_waiter> waiter;
 	Local_log_waiter_list 
 	  list(m_log_waiter_pool, ptr.p->m_log_sync_waiters);
-	list.first(waiter);
+	ndbrequire(list.first(waiter));
         BaseString::snprintf(tmp, sizeof(tmp),
-                             "  m_last_synced_lsn: %llu head(waiters %x).m_sync_lsn: %llu",
+                             "  m_last_synced_lsn: %llu head(waiters %llx)"
+                             ".m_sync_lsn: %llu",
                              ptr.p->m_last_synced_lsn,
                              waiter.i,
                              waiter.p->m_sync_lsn);
         if (clusterLog)
           infoEvent("%s", tmp);
-        ndbout_c("%s", tmp);
-	
-	while(!waiter.isNull())
-	{
-	  ndbout_c("ptr: %x %p lsn: %llu next: %x",
-		   waiter.i, waiter.p, waiter.p->m_sync_lsn, waiter.p->nextList);
-	  list.next(waiter);
-	}
+        g_eventLogger->info("%s", tmp);
+
+        while (!waiter.isNull())
+        {
+          g_eventLogger->info("ptr: %llx %p lsn: %llu next: %llx", waiter.i,
+                              waiter.p, waiter.p->m_sync_lsn,
+                              waiter.p->nextList);
+          list.next(waiter);
+        }
       }
       m_logfile_group_list.next(ptr);
     }
@@ -1086,7 +1158,8 @@ Lgman::execDUMP_STATE_ORD(Signal* signal){
 
     if (crash)
     {
-      ndbout_c("Detected logfile-group with non zero m_callback_buffer_words");
+      g_eventLogger->info(
+          "Detected logfile-group with non zero m_callback_buffer_words");
       signal->theData[0] = DumpStateOrd::LgmanDumpUndoStateLocalLog;
       execDUMP_STATE_ORD(signal);
       ndbabort();
@@ -1094,7 +1167,7 @@ Lgman::execDUMP_STATE_ORD(Signal* signal){
 #ifdef VM_TRACE
     else
     {
-      ndbout_c("Check for non zero m_callback_buffer_words OK!");
+      g_eventLogger->info("Check for non zero m_callback_buffer_words OK!");
     }
 #endif
   }
@@ -1620,8 +1693,21 @@ Lgman::open_file(Signal* signal,
 
   req->fileFlags = 0;
   req->fileFlags |= FsOpenReq::OM_READWRITE;
-  req->fileFlags |= FsOpenReq::OM_DIRECT;
-  req->fileFlags |= FsOpenReq::OM_SYNC;
+  if (c_o_direct)
+  {
+    jam();
+    req->fileFlags |= FsOpenReq::OM_DIRECT;
+    if (!c_o_direct_sync_flag)
+    {
+      jam();
+      req->fileFlags |= FsOpenReq::OM_SYNC;
+    }
+  }
+  else
+  {
+    jam();
+    req->fileFlags |= FsOpenReq::OM_SYNC;
+  }
   switch(requestInfo){
   case CreateFileImplReq::Create:
     jam();
@@ -1643,11 +1729,32 @@ Lgman::open_file(Signal* signal,
   default:
     ndbabort();
   }
+  if (c_encrypted_filesystem)
+  {
+    jam();
+    req->fileFlags |= FsOpenReq::OM_ENCRYPT_XTS;
+  }
 
   req->page_size = File_formats::NDB_PAGE_SIZE;
   Uint64 size = (Uint64)file_ptr.p->m_file_size * (Uint64)File_formats::NDB_PAGE_SIZE;
   req->file_size_hi = (Uint32)(size >> 32);
   req->file_size_lo = (Uint32)(size & 0xFFFFFFFF);
+  req->auto_sync_size = 0;
+
+  if ((req->fileFlags & FsOpenReq::OM_ENCRYPT_CIPHER_MASK) != 0)
+  {
+    ndbrequire(handle->m_cnt == 1);
+
+    EncryptionKeyMaterial nmk;
+    nmk.length = globalData.nodeMasterKeyLength;
+    memcpy(&nmk.data, globalData.nodeMasterKey, globalData.nodeMasterKeyLength);
+
+    ndbrequire(import(handle->m_ptr[FsOpenReq::ENCRYPT_KEY_MATERIAL],
+                      (const Uint32*)&nmk,
+                      nmk.get_needed_words()));
+    handle->m_cnt++;
+    req->fileFlags |= FsOpenReq::OM_ENCRYPT_KEY;
+  }
 
   sendSignal(NDBFS_REF, GSN_FSOPENREQ, signal, FsOpenReq::SignalLength, JBB,
 	     handle);
@@ -1663,15 +1770,17 @@ Lgman::open_file(Signal* signal,
  * change since they are owned at this moment by the NDB file system thread.
  */
 void
-Lgman::execFSWRITEREQ(Signal* signal)
+Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross threads from Ndbfs */
 {
   jamNoBlock();
   Ptr<Undofile> ptr;
   Ptr<GlobalPage> page_ptr;
-  FsReadWriteReq* req= (FsReadWriteReq*)signal->getDataPtr();
   
-  m_file_pool.getPtr(ptr, req->userPointer);
-  m_shared_page_pool.getPtr(page_ptr, req->data.pageData[0]);
+  ndbrequire(m_file_pool.getPtr(ptr, req->userPointer));
+  ndbrequire(req->getFormatFlag(req->operationFlag) ==
+               req->fsFormatSharedPage);
+  ndbrequire(m_shared_page_pool.getPtr(page_ptr,
+                                       req->data.sharedPage.pageNumber));
   /**
    * This code is executed when creating a new UNDO logfile group.
    * In this case we always use the new v2 format.
@@ -1783,8 +1892,8 @@ Lgman::execFSOPENREF(Signal* signal)
   Uint32 errCode = ref->errorCode;
   Uint32 osErrCode = ref->osErrorCode;
 
-  m_file_pool.getPtr(ptr, ref->userPointer);
-  m_logfile_group_pool.getPtr(lg_ptr, ptr.p->m_logfile_group_ptr_i);
+  ndbrequire(m_file_pool.getPtr(ptr, ref->userPointer));
+  ndbrequire(m_logfile_group_pool.getPtr(lg_ptr, ptr.p->m_logfile_group_ptr_i));
 
   Uint32 ptrI = ptr.p->m_zero_page_i;
   ptr.p->m_zero_page_i = RNIL;
@@ -1819,7 +1928,7 @@ Lgman::execFSOPENCONF(Signal* signal)
   FsConf* conf = (FsConf*)signal->getDataPtr();
   
   Uint32 fd = conf->filePointer;
-  m_file_pool.getPtr(file_ptr, conf->userPointer);
+  ndbrequire(m_file_pool.getPtr(file_ptr, conf->userPointer));
 
   file_ptr.p->m_fd = fd;
 
@@ -1844,7 +1953,7 @@ Lgman::execFSOPENCONF(Signal* signal)
      * that initially wrote it.
      */
     Ptr<Logfile_group> lg_ptr;
-    m_logfile_group_pool.getPtr(lg_ptr, file_ptr.p->m_logfile_group_ptr_i);
+    ndbrequire(m_logfile_group_pool.getPtr(lg_ptr, file_ptr.p->m_logfile_group_ptr_i));
     file_ptr.p->m_state = Undofile::FS_OUTSTANDING |
                           Undofile::FS_READ_ZERO_PAGE;
     lg_ptr.p->m_outstanding_fs = 1;
@@ -1855,10 +1964,9 @@ Lgman::execFSOPENCONF(Signal* signal)
     req->userPointer = file_ptr.i;
     req->varIndex = 0;
     req->numberOfPages = 1;
-    req->data.pageData[0] = file_ptr.p->m_zero_page_i;
+    req->data.sharedPage.pageNumber = file_ptr.p->m_zero_page_i;
     req->operationFlag = 0;
-    FsReadWriteReq::setFormatFlag(req->operationFlag,
-				  FsReadWriteReq::fsFormatSharedPage);
+    req->setFormatFlag(req->operationFlag, FsReadWriteReq::fsFormatSharedPage);
     
     sendSignal(NDBFS_REF, GSN_FSREADREQ, signal,
 	       FsReadWriteReq::FixedLength + 1, JBA);
@@ -1876,9 +1984,9 @@ Lgman::completed_zero_page_read(Signal *signal, Ptr<Undofile> file_ptr)
 {
   Ptr<Logfile_group> lg_ptr;
   Ptr<GlobalPage> page_ptr;
-  m_logfile_group_pool.getPtr(lg_ptr, file_ptr.p->m_logfile_group_ptr_i);
+  ndbrequire(m_logfile_group_pool.getPtr(lg_ptr, file_ptr.p->m_logfile_group_ptr_i));
 
-  m_shared_page_pool.getPtr(page_ptr, file_ptr.p->m_zero_page_i);
+  ndbrequire(m_shared_page_pool.getPtr(page_ptr, file_ptr.p->m_zero_page_i));
 
   /* Get NDB version that created the UNDO log file */
   File_formats::Zero_page_header *zp =
@@ -1975,7 +2083,7 @@ Lgman::create_file_commit(Signal* signal,
        * Add log file next after current head
        */
       Ptr<Undofile> curr;
-      m_file_pool.getPtr(curr, lg_ptr.p->m_file_pos[HEAD].m_ptr_i);
+      ndbrequire(m_file_pool.getPtr(curr, lg_ptr.p->m_file_pos[HEAD].m_ptr_i));
       if(free_list.next(curr))
       {
         jam();
@@ -2076,12 +2184,12 @@ Lgman::execFSCLOSECONF(Signal* signal)
   Ptr<Undofile> file_ptr;
   Ptr<Logfile_group> lg_ptr;
   Uint32 ptrI = ((FsConf*)signal->getDataPtr())->userPointer;
-  m_file_pool.getPtr(file_ptr, ptrI);
+  ndbrequire(m_file_pool.getPtr(file_ptr, ptrI));
   
   Uint32 senderRef = file_ptr.p->m_create.m_senderRef;
   Uint32 senderData = file_ptr.p->m_create.m_senderData;
   
-  m_logfile_group_pool.getPtr(lg_ptr, file_ptr.p->m_logfile_group_ptr_i);
+  ndbrequire(m_logfile_group_pool.getPtr(lg_ptr, file_ptr.p->m_logfile_group_ptr_i));
 
   if (lg_ptr.p->m_state & Logfile_group::LG_DROPPING)
   {
@@ -2212,7 +2320,9 @@ Lgman::alloc_logbuffer_memory(Ptr<Logfile_group> ptr, Uint64 bytes)
   }
   
 #if defined VM_TRACE || defined ERROR_INSERT
-  ndbout << "DD lgman: fg id:" << ptr.p->m_logfile_group_id << " undo buffer pages/bytes:" << (requested-pages) << "/" << (requested-pages)*File_formats::NDB_PAGE_SIZE << endl;
+  g_eventLogger->info("DD lgman: fg id: %u undo buffer pages/bytes: %u/%u",
+                      ptr.p->m_logfile_group_id, requested - pages,
+                      (requested - pages) * File_formats::NDB_PAGE_SIZE);
 #endif
   
   init_logbuffer_pointers(ptr);
@@ -2361,7 +2471,7 @@ Lgman::compute_free_file_pages(Ptr<Logfile_group> ptr,
   {
     thrjam(jamBuf);
     Ptr<Undofile> file;
-    m_file_pool.getPtr(file, head.m_ptr_i);
+    ndbrequire(m_file_pool.getPtr(file, head.m_ptr_i));
     Local_undofile_list list(m_file_pool, ptr.p->m_files);
     
     do 
@@ -2419,7 +2529,8 @@ Lgman::Undofile::Undofile(const struct CreateFileImplReq* req, Uint32 ptrI)
   m_file_size = Uint32(pages);
   m_requestInfo = req->requestInfo;
 #if defined VM_TRACE || defined ERROR_INSERT
-  ndbout << "DD lgman: file id:" << m_file_id << " undofile pages/bytes:" << m_file_size << "/" << m_file_size*GLOBAL_PAGE_SIZE << endl;
+  g_eventLogger->info("DD lgman: file id: %u undofile pages/bytes: %u/%u",
+                      m_file_id, m_file_size, m_file_size * GLOBAL_PAGE_SIZE);
 #endif
 
   m_create.m_senderRef = req->senderRef; // During META
@@ -2440,7 +2551,7 @@ Logfile_client::Logfile_client(SimulatedBlock* block,
   m_lock = lock;
   m_logfile_group_id= logfile_group_id;
   D("client ctor " << bno << "/" << ino);
-  if (m_lock)
+  require(m_lock);
   {
     jamBlock(block);
     m_lgman->client_lock(m_block, 0, block);
@@ -2454,8 +2565,8 @@ Logfile_client::~Logfile_client()
   Uint32 ino = blockToInstance(m_block);
 #endif
   D("client dtor " << bno << "/" << ino);
-  if (m_lock)
-    m_lgman->client_unlock(m_block, 0, m_client_block);
+  require(m_lock);
+  m_lgman->client_unlock(m_block, 0, m_client_block);
 }
 
 bool
@@ -2503,7 +2614,7 @@ Logfile_client::sync_lsn(Signal* signal,
       return 1;
     }
     
-    Ptr<Lgman::Log_waiter> wait;
+    Ptr64<Lgman::Log_waiter> wait;
     {
       Lgman::Local_log_waiter_list
 	list(m_lgman->m_log_waiter_pool, ptr.p->m_log_sync_waiters);
@@ -2664,8 +2775,8 @@ Lgman::process_log_sync_waiters(Signal* signal, Ptr<Logfile_group> ptr)
   }
 
   bool removed= false;
-  Ptr<Log_waiter> waiter;
-  list.first(waiter);
+  Ptr64<Log_waiter> waiter;
+  ndbrequire(list.first(waiter));
   Uint32 logfile_group_id = ptr.p->m_logfile_group_id;
 
   if(waiter.p->m_sync_lsn <= ptr.p->m_last_synced_lsn)
@@ -2736,6 +2847,7 @@ next:
     ptr.p->m_pos[PRODUCER].m_current_pos.m_idx = pos + sz;
     Uint32* record = get_undo_data_ptr((Uint32*)page, ptr, jamBuf) + pos;
     ndbrequire(record < &((Uint32*)page)[GLOBAL_PAGE_SIZE_WORDS]);
+    DEB_LGMAN_EXTRA(("UNDO Page pos moved to: %u", (pos + sz)));
     return record;
   }
   thrjam(jamBuf);
@@ -2744,6 +2856,7 @@ next:
    * It didn't fit page...fill page with a NOOP log entry
    */
   Uint64 lsn= ptr.p->m_next_lsn - 1;
+  DEB_LGMAN_EXTRA(("New UNDO page lsn: %llu", lsn));
   File_formats::Undofile::Undo_page* undo= 
     (File_formats::Undofile::Undo_page*)page;
   undo->m_page_header.m_page_lsn_lo = (Uint32)(lsn & 0xFFFFFFFF);
@@ -2848,7 +2961,7 @@ Logfile_client::get_log_buffer(Signal* signal,
     
     bool empty= false;
     {
-      Ptr<Lgman::Log_waiter> wait;
+      Ptr64<Lgman::Log_waiter> wait;
       Lgman::Local_log_waiter_list
 	list(m_lgman->m_log_waiter_pool, ptr.p->m_log_buffer_waiters);
       
@@ -2914,9 +3027,9 @@ Lgman::flush_log(Signal* signal,
 #if 0
     if (force)
     {
-      ndbout_c("force: %d ptr.p->m_file_pos[HEAD].m_ptr_i= %x", 
+      g_eventLogger->info("force: %d ptr.p->m_file_pos[HEAD].m_ptr_i= %x",
 	       force, ptr.p->m_file_pos[HEAD].m_ptr_i);
-      ndbout_c("consumer.m_current_page: %d %d producer.m_current_page: %d %d",
+      g_eventLogger->info("consumer.m_current_page: %d %d producer.m_current_page: %d %d",
 	       consumer.m_current_page.m_ptr_i, consumer.m_current_page.m_idx,
 	       producer.m_current_page.m_ptr_i, producer.m_current_page.m_idx);
     }
@@ -3162,8 +3275,8 @@ Lgman::process_log_buffer_waiters(Signal* signal, Ptr<Logfile_group> ptr)
   }
   
   bool removed= false;
-  Ptr<Log_waiter> waiter;
-  list.first(waiter);
+  Ptr64<Log_waiter> waiter;
+  ndbrequire(list.first(waiter));
   Uint32 sz  = waiter.p->m_size;
   Uint32 logfile_group_id = ptr.p->m_logfile_group_id;
   if (sz + callback_buffer + FREE_BUFFER_MARGIN(this, ptr) < free_buffer)
@@ -3241,7 +3354,7 @@ Lgman::write_log_pages(Signal* signal, Ptr<Logfile_group> ptr,
   Ptr<Undofile> filePtr;
   Buffer_idx head= ptr.p->m_file_pos[HEAD];
   Buffer_idx tail= ptr.p->m_file_pos[TAIL];
-  m_file_pool.getPtr(filePtr, head.m_ptr_i);
+  ndbrequire(m_file_pool.getPtr(filePtr, head.m_ptr_i));
   
   if(filePtr.p->m_online.m_outstanding > 0)
   {
@@ -3332,10 +3445,9 @@ Lgman::write_log_pages(Signal* signal, Ptr<Logfile_group> ptr,
   req->userPointer = filePtr.i;
   req->varIndex = 1+head.m_idx; // skip zero page
   req->numberOfPages = pages;
-  req->data.pageData[0] = pageId;
+  req->data.sharedPage.pageNumber = pageId;
   req->operationFlag = 0;
-  FsReadWriteReq::setFormatFlag(req->operationFlag,
-				FsReadWriteReq::fsFormatSharedPage);
+  req->setFormatFlag(req->operationFlag, FsReadWriteReq::fsFormatSharedPage);
 
   DEB_LGMAN(("Writing %u pages, start page: %u",
              pages,
@@ -3435,13 +3547,13 @@ Lgman::execFSWRITECONF(Signal* signal)
   client_lock(number(), __LINE__, this);
   FsConf * conf = (FsConf*)signal->getDataPtr();
   Ptr<Undofile> file_ptr;
-  m_file_pool.getPtr(file_ptr, conf->userPointer);
+  ndbrequire(m_file_pool.getPtr(file_ptr, conf->userPointer));
 
   ndbrequire(file_ptr.p->m_state & Undofile::FS_OUTSTANDING);
   file_ptr.p->m_state &= ~(Uint32)Undofile::FS_OUTSTANDING;
 
   Ptr<Logfile_group> lg_ptr;
-  m_logfile_group_pool.getPtr(lg_ptr, file_ptr.p->m_logfile_group_ptr_i);
+  ndbrequire(m_logfile_group_pool.getPtr(lg_ptr, file_ptr.p->m_logfile_group_ptr_i));
   
   Uint32 cnt= lg_ptr.p->m_outstanding_fs;
   ndbrequire(cnt);
@@ -3688,7 +3800,7 @@ Lgman::cut_log_tail(Signal* signal, Ptr<Logfile_group> lg_ptr)
     Buffer_idx tail= lg_ptr.p->m_file_pos[TAIL];
     
     Ptr<Undofile> filePtr;
-    m_file_pool.getPtr(filePtr, tail.m_ptr_i);
+    ndbrequire(m_file_pool.getPtr(filePtr, tail.m_ptr_i));
     
     if(!(tmp == tail))
     {
@@ -3762,7 +3874,7 @@ Lgman::execSUB_GCP_COMPLETE_REP(Signal* signal)
   m_logfile_group_list.first(ptr);
 
   /**
-   * Filter all logfile groups in parallell
+   * Filter all log file groups in parallel
    */
   return; // NOT IMPLEMENTED YET
   
@@ -3785,16 +3897,24 @@ Lgman::alloc_log_space(Uint32 ref,
 {
   ndbrequire(words);
   Uint64 words_64 = Uint64(words);
+  /**
+   * We always add at least one extra word per alloc_log_space call. The reason
+   * is that we use a bit more space at page endings, up to 6 words extra. To
+   * protect for this we add one word per log entry and one word per 4 kByte
+   * of words written.
+   *
+   * We return this space at the time when we commit the transaction and write
+   * into the UNDO log buffer.
+   *
+   * We don't add any extra words for Copy fragment when it is performing deletes.
+   * This avoids some complexity around handling the actual UNDO size.
+   */
   if (add_extra_words)
   {
     thrjamEntry(jamBuf);
-    Uint64 extra_words = ((words_64 + Uint64(511)) / Uint64(512));
+    Uint64 extra_words = ((words_64 + Uint64(1023)) / Uint64(1024));
     words_64 += extra_words;
     words = Uint32(words_64);
-  }
-  else
-  {
-    thrjamEntry(jamBuf);
   }
   Logfile_group key;
   key.m_logfile_group_id= ref;
@@ -3811,9 +3931,10 @@ Lgman::alloc_log_space(Uint32 ref,
     {
       thrjam(jamBuf);
       lg_ptr.p->m_free_log_words -= words_64;
-      DEB_LGMAN(("Line(%u): free_log_words: %llu",
+      DEB_LGMAN(("Line(%u): free_log_words: %llu, remove: %llu words",
                  __LINE__,
-                 lg_ptr.p->m_free_log_words));
+                 lg_ptr.p->m_free_log_words,
+                 words_64));
       validate_logfile_group(lg_ptr, "alloc_log_space", jamBuf);
       return 0;
     }
@@ -3845,9 +3966,10 @@ Lgman::free_log_space(Uint32 ref,
   {
     thrjam(jamBuf);
     lg_ptr.p->m_free_log_words += words_64;
-    DEB_LGMAN(("Line(%u): free_log_words: %llu",
+    DEB_LGMAN(("Line(%u): free_log_words: %llu, add: %llu words",
                __LINE__,
-               lg_ptr.p->m_free_log_words));
+               lg_ptr.p->m_free_log_words,
+               words_64));
     validate_logfile_group(lg_ptr, "free_log_space", jamBuf);
     return 0;
   }
@@ -3859,7 +3981,8 @@ Uint64
 Logfile_client::add_entry_complex(const Change* src,
                                   Uint32 cnt,
                                   bool is_update,
-                                  Uint32 alloc_size)
+                                  Uint32 alloc_size,
+                                  bool var_disk)
 {
   Uint32 tot = 0;
   require(cnt == 3);
@@ -3890,18 +4013,38 @@ Logfile_client::add_entry_complex(const Change* src,
     jamBlock(m_client_block);
     return add_entry_simple(src, cnt, alloc_size, true);
   }
+#ifdef DEBUG_LGMAN_SPLIT
+  log_buf_print((const Uint32*)src[1].ptr, src[1].len);
+#endif
   Lgman::Logfile_group key;
   key.m_logfile_group_id= m_logfile_group_id;
   Ptr<Lgman::Logfile_group> lg_ptr;
   require(m_lgman->m_logfile_group_hash.find(lg_ptr, key));
   Uint32 callback_buffer = lg_ptr.p->m_callback_buffer_words;
-  Uint32 over_allocated_size = (alloc_size - tot);
-  Uint32 sz_first_part = remaining_page_space - 4;
+  Uint32 in_page_header_size = var_disk ? 5 : 4;
+  Uint32 sz_first_part = remaining_page_space - in_page_header_size;
+  DEB_LGMAN_EXTRA(("Write split UNDO, sz_first_part: %u, remaining_space: %u",
+                   sz_first_part,
+                   remaining_page_space));
   lg_ptr.p->m_callback_buffer_words = callback_buffer - alloc_size;
-  if ((alloc_size - tot) >= 5)
+  /**
+   * This record is split into two records, thus we use a bit more header
+   * space. For fixed size records we use an extra 5 byte header plus the
+   * original 4 byte header. For variable sized disk rows we use two 5
+   * word headers and thus we add 6 words extra in this case.
+   *
+   * We need to update the free log words accordingly and remove the
+   * extra overhead at the same time. Thus the calls to add_entry_simple
+   * below need not handle free log words any more.
+   *
+   * We ensure that we use the full page both for fixed size and variable
+   * sized rows.
+   */
+  Uint32 extra_overhead = var_disk ? 6 : 5;
+  if ((alloc_size - tot) >= extra_overhead)
   {
     jamBlock(m_client_block);
-    Uint64 diff = Uint64(alloc_size - tot) - Uint64(5);
+    Uint64 diff = Uint64(alloc_size - tot) - Uint64(extra_overhead);
     lg_ptr.p->m_free_log_words += diff;
     DEB_LGMAN(("Line(%u): free_log_words: %llu, change: +%llu",
                __LINE__,
@@ -3911,37 +4054,107 @@ Logfile_client::add_entry_complex(const Change* src,
   else
   {
     jamBlock(m_client_block);
-    Uint64 diff = Uint64(5) - Uint64(alloc_size - tot);
+    Uint64 diff = Uint64(extra_overhead) - Uint64(alloc_size - tot);
     lg_ptr.p->m_free_log_words -= diff;
     DEB_LGMAN(("Line(%u): free_log_words: %llu, change: -%llu",
                __LINE__,
                lg_ptr.p->m_free_log_words,
                diff));
   }
-  Uint32 type_length;
+
+  /**
+   * Given that this is an UNDO log, it means that the first item we
+   * write will be the last item executed. It worked to do it in the
+   * wrong order with fixed size rows since the rows are in fixed places.
+   * Thus it made no matter that we executed UNDO record handling areas
+   * currently not allocated by any.
+   *
+   * With variable sized rows we have to be more careful and write UNDO
+   * log records in the opposite order. Thus we start by writing the UNDO
+   * update part, this will always execute after the FREE_PART or
+   * FIRST_FREE_PART, thus we can rely on that the entry is allocated
+   * when this entry is executed.
+   *
+   * We still write the first part of the row in the first thing written
+   * to the UNDO log, this has no real meaning, we could have done it the
+   * opposite way as well.
+   *
+   * We won't reverse the order of writing log records for fixed size rows.
+   * This would cause downgrade issues that we can avoid by not changing
+   * the order.
+   */
+  if (var_disk)
   {
+    Uint32 *offset_ptr = (Uint32*)src[1].ptr;
+    const Uint32 offset_first_part = src[1].len - sz_first_part;
+    const void *first_part_ptr = (const void *)&offset_ptr[offset_first_part];
+    Dbtup::Disk_undo::UpdatePart update_part;
+    memcpy(&update_part, src[0].ptr, 3*4);
+    Uint32 sz_last_part = src[1].len - sz_first_part;
+    update_part.m_offset = offset_first_part;
+    update_part.m_type_length =
+      ((Dbtup::Disk_undo::UNDO_UPDATE_VAR_PART << 16) |
+        remaining_page_space);
+    {
+      Logfile_client::Change c[3] =
+      {
+        { &update_part, 4},
+        { first_part_ptr, sz_first_part},
+        { &update_part.m_type_length, 1}
+      };
+      jamBlock(m_client_block);
+      add_entry_simple(c, 3, remaining_page_space, false);
+    }
+    Uint32 type_length;
+    Dbtup::Disk_undo::Update_Free_FirstVarPart update_var_part;
+    memcpy(&update_var_part, src[0].ptr, 3*4);
+    update_var_part.m_tot_len = src[1].len;
+    Uint32 tot_part_len = sz_last_part + in_page_header_size;
     if (is_update)
     {
       type_length =
-        (Dbtup::Disk_undo::UNDO_FIRST_UPDATE_PART << 16 | remaining_page_space);
+        (Dbtup::Disk_undo::UNDO_FIRST_UPDATE_VAR_PART << 16 | tot_part_len);
     }
     else
     {
       type_length =
-        (Dbtup::Disk_undo::UNDO_FREE_PART << 16 | remaining_page_space);
+        (Dbtup::Disk_undo::UNDO_FREE_VAR_PART << 16 | tot_part_len);
     }
     Logfile_client::Change c[3] =
     {
-      { src[0].ptr, src[0].len},
-      { src[1].ptr, sz_first_part},
+      { &update_var_part, 4},
+      { src[1].ptr, sz_last_part},
       { &type_length, 1}
     };
     jamBlock(m_client_block);
-    add_entry_simple(c,
-                     3,
-                     (remaining_page_space + over_allocated_size),
-                     false);
+    return add_entry_simple(c,
+                            3,
+                            tot_part_len,
+                            false);
   }
+  // !var_disk
+  Uint32 type_length;
+  if (is_update)
+  {
+    type_length =
+      (Dbtup::Disk_undo::UNDO_FIRST_UPDATE_PART << 16 | remaining_page_space);
+  }
+  else
+  {
+    type_length =
+      (Dbtup::Disk_undo::UNDO_FREE_PART << 16 | remaining_page_space);
+  }
+  Logfile_client::Change c[3] =
+  {
+    { src[0].ptr, src[0].len},
+    { src[1].ptr, sz_first_part},
+    { &type_length, 1}
+  };
+  jamBlock(m_client_block);
+  add_entry_simple(c,
+                   3,
+                   remaining_page_space,
+                   false);
   Uint32 *offset_ptr = (Uint32*)src[1].ptr;
   const void *first_part_ptr = (const void *)&offset_ptr[sz_first_part];
   Dbtup::Disk_undo::UpdatePart update_part;
@@ -4021,6 +4234,10 @@ Logfile_client::add_entry_simple(const Change* src,
         abort();
       }
       jamBlock(m_client_block);
+      /**
+       * Return overallocated space now that we know that we no longer need
+       * the extra space.
+       */
       lg_ptr.p->m_callback_buffer_words = callback_buffer - alloc_size;
       lg_ptr.p->m_free_log_words += (alloc_size - tot);
       DEB_LGMAN(("Line(%u): free_log_words: %llu, change: %d",
@@ -4140,10 +4357,9 @@ Lgman::find_log_head(Signal* signal, Ptr<Logfile_group> lg_ptr)
     req->userPointer = file_ptr.i;
     req->varIndex = 1; // skip zero page
     req->numberOfPages = 1;
-    req->data.pageData[0] = page_id;
+    req->data.sharedPage.pageNumber = page_id;
     req->operationFlag = 0;
-    FsReadWriteReq::setFormatFlag(req->operationFlag,
-				  FsReadWriteReq::fsFormatSharedPage);
+    req->setFormatFlag(req->operationFlag, FsReadWriteReq::fsFormatSharedPage);
     
     sendSignal(NDBFS_REF, GSN_FSREADREQ, signal,
 	       FsReadWriteReq::FixedLength + 1, JBA);
@@ -4157,7 +4373,7 @@ Lgman::find_log_head(Signal* signal, Ptr<Logfile_group> lg_ptr)
     jam();
     /**
      * All files have read first page
-     *   and m_files is sorted acording to lsn
+     *   and m_files is sorted according to lsn
      */
     Local_undofile_list read_files(m_file_pool, lg_ptr.p->m_files);
     read_files.last(file_ptr);
@@ -4180,10 +4396,9 @@ Lgman::find_log_head(Signal* signal, Ptr<Logfile_group> lg_ptr)
     req->userPointer = file_ptr.i;
     req->varIndex = lg_ptr.p->m_file_pos[HEAD].m_ptr_i;
     req->numberOfPages = 1;
-    req->data.pageData[0] = page_id;
+    req->data.sharedPage.pageNumber = page_id;
     req->operationFlag = 0;
-    FsReadWriteReq::setFormatFlag(req->operationFlag,
-				  FsReadWriteReq::fsFormatSharedPage);
+    req->setFormatFlag(req->operationFlag, FsReadWriteReq::fsFormatSharedPage);
     
     sendSignal(NDBFS_REF, GSN_FSREADREQ, signal, 
 	       FsReadWriteReq::FixedLength + 1, JBA);
@@ -4204,8 +4419,9 @@ Lgman::execFSREADCONF(Signal* signal)
   Ptr<Logfile_group> lg_ptr;
   FsConf* conf = (FsConf*)signal->getDataPtr();
   
-  m_file_pool.getPtr(file_ptr, conf->userPointer);
-  m_logfile_group_pool.getPtr(lg_ptr, file_ptr.p->m_logfile_group_ptr_i);
+  ndbrequire(m_file_pool.getPtr(file_ptr, conf->userPointer));
+  ndbrequire(m_logfile_group_pool.getPtr(lg_ptr,
+                                         file_ptr.p->m_logfile_group_ptr_i));
 
   ndbrequire(file_ptr.p->m_state & Undofile::FS_OUTSTANDING);
   file_ptr.p->m_state &= ~(Uint32)Undofile::FS_OUTSTANDING;
@@ -4261,7 +4477,8 @@ Lgman::execFSREADCONF(Signal* signal)
   lg_ptr.p->m_outstanding_fs = cnt - 1;
 
   Ptr<GlobalPage> page_ptr;
-  m_shared_page_pool.getPtr(page_ptr, file_ptr.p->m_online.m_outstanding);
+  ndbrequire(m_shared_page_pool.getPtr(page_ptr,
+                                       file_ptr.p->m_online.m_outstanding));
   file_ptr.p->m_online.m_outstanding= 0;
   
   File_formats::Undofile::Undo_page* page = 
@@ -4418,10 +4635,9 @@ Lgman::find_log_head_in_file(Signal* signal,
     // We need to find more pages to be sure...
     lg_ptr.p->m_file_pos[HEAD].m_ptr_i = curr = ((head + tail) >> 1);
 
-    if (DEBUG_SEARCH_LOG_HEAD)    
-      ndbout_c("-> new search tail: %d(%lld) head: %d -> %d", 
-	       tail, file_ptr.p->m_online.m_lsn,
-	       head, curr);
+    if (DEBUG_SEARCH_LOG_HEAD)
+      g_eventLogger->info("-> new search tail: %d(%lld) head: %d -> %d", tail,
+                          file_ptr.p->m_online.m_lsn, head, curr);
 
     Uint32 page_id = lg_ptr.p->m_pos[CONSUMER].m_current_pos.m_ptr_i;
     file_ptr.p->m_online.m_outstanding= page_id;
@@ -4432,10 +4648,9 @@ Lgman::find_log_head_in_file(Signal* signal,
     req->userPointer = file_ptr.i;
     req->varIndex = curr;
     req->numberOfPages = 1;
-    req->data.pageData[0] = page_id;
+    req->data.sharedPage.pageNumber = page_id;
     req->operationFlag = 0;
-    FsReadWriteReq::setFormatFlag(req->operationFlag,
-				  FsReadWriteReq::fsFormatSharedPage);
+    req->setFormatFlag(req->operationFlag, FsReadWriteReq::fsFormatSharedPage);
     
     sendSignal(NDBFS_REF, GSN_FSREADREQ, signal, 
 	       FsReadWriteReq::FixedLength + 1, JBA);
@@ -4466,8 +4681,8 @@ Lgman::find_log_head_in_file(Signal* signal,
    * use the WAL protocol to write pages to disk.
    */
 
-  if (DEBUG_SEARCH_LOG_HEAD)    
-    ndbout_c("-> found last page in binary search: %d", tail);
+  if (DEBUG_SEARCH_LOG_HEAD)
+    g_eventLogger->info("-> found last page in binary search: %d", tail);
 
   /**
    * m_next_lsn indicates next LSN to write, so we step this forward one
@@ -4555,10 +4770,9 @@ Lgman::find_log_head_end_check(Signal* signal,
     req->userPointer = file_ptr.i;
     req->varIndex = curr;
     req->numberOfPages = 1;
-    req->data.pageData[0] = page_id;
+    req->data.sharedPage.pageNumber = page_id;
     req->operationFlag = 0;
-    FsReadWriteReq::setFormatFlag(req->operationFlag,
-                                  FsReadWriteReq::fsFormatSharedPage);
+    req->setFormatFlag(req->operationFlag, FsReadWriteReq::fsFormatSharedPage);
 
     sendSignal(NDBFS_REF, GSN_FSREADREQ, signal,
                FsReadWriteReq::FixedLength + 1, JBA);
@@ -4584,10 +4798,9 @@ Lgman::find_log_head_end_check(Signal* signal,
   req->userPointer = file_ptr.i;
   req->varIndex = curr;
   req->numberOfPages = 1;
-  req->data.pageData[0] = page_id;
+  req->data.sharedPage.pageNumber = page_id;
   req->operationFlag = 0;
-  FsReadWriteReq::setFormatFlag(req->operationFlag,
-                                FsReadWriteReq::fsFormatSharedPage);
+  req->setFormatFlag(req->operationFlag, FsReadWriteReq::fsFormatSharedPage);
 
   sendSignal(NDBFS_REF, GSN_FSREADREQ, signal,
              FsReadWriteReq::FixedLength + 1, JBA);
@@ -4888,7 +5101,7 @@ Lgman::read_undo_pages(Signal* signal, Ptr<Logfile_group> lg_ptr,
   ndbrequire(pages);
   Ptr<Undofile> filePtr;
   Buffer_idx tail= lg_ptr.p->m_file_pos[TAIL];
-  m_file_pool.getPtr(filePtr, tail.m_ptr_i);
+  ndbrequire(m_file_pool.getPtr(filePtr, tail.m_ptr_i));
   
   if (filePtr.p->m_online.m_outstanding > 0)
   {
@@ -4903,8 +5116,7 @@ Lgman::read_undo_pages(Signal* signal, Ptr<Logfile_group> lg_ptr,
   req->userReference = reference();
   req->userPointer = filePtr.i;
   req->operationFlag = 0;
-  FsReadWriteReq::setFormatFlag(req->operationFlag, 
-				FsReadWriteReq::fsFormatSharedPage);
+  req->setFormatFlag(req->operationFlag, FsReadWriteReq::fsFormatSharedPage);
 
 
   if (max > pages)
@@ -4914,13 +5126,13 @@ Lgman::read_undo_pages(Signal* signal, Ptr<Logfile_group> lg_ptr,
 
     req->varIndex = 1 + tail.m_idx;
     req->numberOfPages = pages;
-    req->data.pageData[0] = pageId - pages;
+    req->data.sharedPage.pageNumber = pageId - pages;
     lg_ptr.p->m_file_pos[TAIL] = tail;
     
     if (DEBUG_UNDO_EXECUTION)
-      ndbout_c("a reading from file: %d page(%d-%d) into (%d-%d)",
-	       lg_ptr.i, 1 + tail.m_idx, 1+tail.m_idx+pages-1,
-	       pageId - pages, pageId - 1);
+      g_eventLogger->info("a reading from file: %d page(%d-%d) into (%d-%d)",
+                          lg_ptr.i, 1 + tail.m_idx, 1 + tail.m_idx + pages - 1,
+                          pageId - pages, pageId - 1);
 
     sendSignal(NDBFS_REF, GSN_FSREADREQ, signal, 
 	       FsReadWriteReq::FixedLength + 1, JBA);
@@ -4937,13 +5149,12 @@ Lgman::read_undo_pages(Signal* signal, Ptr<Logfile_group> lg_ptr,
     ndbrequire(tail.m_idx - max == 0);
     req->varIndex = 1;
     req->numberOfPages = max;
-    req->data.pageData[0] = pageId - max;
+    req->data.sharedPage.pageNumber = pageId - max;
     
     if (DEBUG_UNDO_EXECUTION)
-      ndbout_c("b reading from file: %d page(%d-%d) into (%d-%d)",
-	       lg_ptr.i, 1 , 1+max-1,
-	       pageId - max, pageId - 1);
-    
+      g_eventLogger->info("b reading from file: %d page(%d-%d) into (%d-%d)",
+                          lg_ptr.i, 1, 1 + max - 1, pageId - max, pageId - 1);
+
     sendSignal(NDBFS_REF, GSN_FSREADREQ, signal, 
 	       FsReadWriteReq::FixedLength + 1, JBA);
     
@@ -4961,7 +5172,7 @@ Lgman::read_undo_pages(Signal* signal, Ptr<Logfile_group> lg_ptr,
       }
     }
     if (DEBUG_UNDO_EXECUTION)
-      ndbout_c("changing file from %d to %d", filePtr.i, prev.i);
+      g_eventLogger->info("changing file from %d to %d", filePtr.i, prev.i);
 
     tail.m_idx= prev.p->m_file_size - 1;
     tail.m_ptr_i= prev.i;
@@ -5109,6 +5320,9 @@ Lgman::execute_undo_record(Signal* signal)
         jam();
         DEB_LGMAN(("LGMAN: CONTINUEB from DBTUP(0)"));
         Uint32 ldm_tup_instance = signal->theData[2];
+        ndbrequire(ldm_tup_instance <
+                   NDB_ARRAY_SIZE(m_pending_undo_records));
+
         if (ldm_tup_instance)
         {
           /**
@@ -5237,6 +5451,9 @@ Lgman::execute_undo_record(Signal* signal)
     case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_PART:
     case File_formats::Undofile::UNDO_TUP_UPDATE_PART:
     case File_formats::Undofile::UNDO_TUP_FREE_PART:
+    case File_formats::Undofile::UNDO_TUP_FREE_VAR_PART:
+    case File_formats::Undofile::UNDO_TUP_UPDATE_VAR_PART:
+    case File_formats::Undofile::UNDO_TUP_FIRST_UPDATE_VAR_PART:
       break;
     default:
       ndbabort();
@@ -5277,7 +5494,7 @@ void Lgman::update_consumer_file_pos(Ptr<Logfile_group> lg_ptr)
     /* We switch to a new file now */
     jam();
     Ptr<Undofile> filePtr;
-    m_file_pool.getPtr(filePtr, consumer_file_pos.m_ptr_i);
+    ndbrequire(m_file_pool.getPtr(filePtr, consumer_file_pos.m_ptr_i));
     Ptr<Undofile> prev = filePtr;
     Local_undofile_list files(m_file_pool, lg_ptr.p->m_files);
     if(!files.prev(prev))
@@ -5319,7 +5536,8 @@ Lgman::get_next_undo_record(Uint64 * this_lsn)
     m_shared_page_pool.getPtr(page);
 
   Ptr<Undofile> filePtr;
-  m_file_pool.getPtr(filePtr, lg_ptr.p->m_consumer_file_pos.m_ptr_i);
+  ndbrequire(m_file_pool.getPtr(filePtr,
+                                lg_ptr.p->m_consumer_file_pos.m_ptr_i));
 
   if (lg_ptr.p->m_last_read_lsn == (Uint64)1)
   {
@@ -5539,7 +5757,7 @@ Lgman::get_next_undo_record(Uint64 * this_lsn)
     }
 
     if(DEBUG_UNDO_EXECUTION)
-      ndbout_c("reading from %d", consumer.m_current_pos.m_ptr_i);
+      g_eventLogger->info("reading from %d", consumer.m_current_pos.m_ptr_i);
 
     lg_ptr.p->m_free_buffer_words += get_undo_page_words(lg_ptr);
 
@@ -5671,7 +5889,7 @@ Lgman::stop_run_undo_log(Signal* signal)
       {
         Buffer_idx head= lg_ptr.p->m_file_pos[HEAD];
         Ptr<Undofile> file;
-        m_file_pool.getPtr(file, head.m_ptr_i);
+        ndbrequire(m_file_pool.getPtr(file, head.m_ptr_i));
         if (head.m_idx == file.p->m_file_size - 1)
         {
           jam();
@@ -5710,8 +5928,8 @@ Lgman::stop_run_undo_log(Signal* signal)
       {
         SimulatedBlock* fs = globalData.getBlock(NDBFS);
         Ptr<Undofile> hf, tf;
-        m_file_pool.getPtr(tf, tail.m_ptr_i);
-        m_file_pool.getPtr(hf,  lg_ptr.p->m_file_pos[HEAD].m_ptr_i);
+        ndbrequire(m_file_pool.getPtr(tf, tail.m_ptr_i));
+        ndbrequire(m_file_pool.getPtr(hf,  lg_ptr.p->m_file_pos[HEAD].m_ptr_i));
         infoEvent("LGMAN: Logfile group: %d ", lg_ptr.p->m_logfile_group_id);
         g_eventLogger->info("LGMAN: Logfile group: %d ",
                             lg_ptr.p->m_logfile_group_id);

@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2011, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2011, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,12 +28,18 @@
 #include <ctype.h>
 #include <mysql/plugin.h>
 #include <mysql/psi/mysql_thread.h>
+#include <time.h>
+#include <atomic>
 
 #include "my_dbug.h"
+#include "sql/field.h"
 #include "sql/mysqld.h"  // LOCK_global_system_variables
+#include "sql/partition_info.h"
+#include "sql/table.h"
 #include "storage/ndb/plugin/ha_ndbcluster.h"
 #include "storage/ndb/plugin/ha_ndbcluster_connection.h"
 #include "storage/ndb/plugin/ndb_require.h"
+#include <atomic>
 
 // Implementation still uses its own instance
 extern Ndb_index_stat_thread ndb_index_stat_thread;
@@ -46,7 +53,7 @@ typedef NdbDictionary::Index NDBINDEX;
 
 /** ndb_index_stat_thread */
 Ndb_index_stat_thread::Ndb_index_stat_thread()
-    : Ndb_component("Index Stat"), client_waiting(false) {}
+    : Ndb_component("Index Stat", "ndb_index_stat"), client_waiting(false) {}
 
 int Ndb_index_stat_thread::do_init() {
   mysql_mutex_init(PSI_INSTRUMENT_ME, &LOCK_client_waiting, MY_MUTEX_INIT_FAST);
@@ -97,9 +104,10 @@ struct Ndb_index_stat {
   NdbIndexStat *is;
   int index_id;
   int index_version;
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   char id[32];
 #endif
+  uint query_count;
   time_t access_time;  /* by any table handler */
   time_t update_time;  /* latest successful update by us */
   time_t load_time;    /* when stats were created by kernel */
@@ -122,20 +130,30 @@ struct Ndb_index_stat {
   struct Ndb_index_stat *list_next;
   struct Ndb_index_stat *list_prev;
   struct NDB_SHARE *share;
-  uint ref_count;     /* from client requests */
   bool to_delete;     /* detached from share and marked for delete */
-  bool abort_request; /* abort all requests and allow no more */
+                      /* abort all requests and allow no more */
   Ndb_index_stat();
+
+ private:
+  std::atomic<uint> m_ref_count{0}; /* from client requests */
+ public:
+  void acquire_client_ref() { m_ref_count++; }
+  void release_client_ref() {
+    const uint prev_count [[maybe_unused]] = m_ref_count--;
+    // Detect decrement from zero, indicates mismatch
+    assert(prev_count > 0);
+  }
+  bool has_client_ref() const { return m_ref_count != 0; }
 };
 
 struct Ndb_index_stat_list {
-  const char *const name;                    /* name of list */
-  const Ndb_index_stat::List_type list_type; /* type of list */
+  const char *const name; /* name of list */
   struct Ndb_index_stat *head{nullptr};
   struct Ndb_index_stat *tail{nullptr};
+  const Ndb_index_stat::List_type list_type; /* type of list */
   uint count{0}; /* number of entries in list, i.e between "head" and "tail" */
-  Ndb_index_stat_list(Ndb_index_stat::List_type the_list_type,
-                      const char *the_name);
+  Ndb_index_stat_list(Ndb_index_stat::List_type _list_type, const char *_name)
+      : name(_name), list_type(_list_type) {}
 };
 
 extern Ndb_index_stat_list ndb_index_stat_list[];
@@ -143,7 +161,7 @@ extern Ndb_index_stat_list ndb_index_stat_list[];
 static time_t ndb_index_stat_time_now = 0;
 
 static time_t ndb_index_stat_time() {
-  time_t now = time(0);
+  time_t now = time(nullptr);
 
   if (unlikely(ndb_index_stat_time_now == 0)) ndb_index_stat_time_now = now;
 
@@ -262,7 +280,7 @@ static void ndb_index_stat_opt2str(const Ndb_index_stat_opt &opt, char *str) {
 
     switch (v.unit) {
       case Ndb_index_stat_opt::Ubool: {
-        DBUG_ASSERT(v.val == 0 || v.val == 1);
+        assert(v.val == 0 || v.val == 1);
         if (v.val == 0)
           snprintf(ptr, sz, "%s%s=0", sep, v.name);
         else
@@ -305,7 +323,7 @@ static void ndb_index_stat_opt2str(const Ndb_index_stat_opt &opt, char *str) {
       } break;
 
       default:
-        DBUG_ASSERT(false);
+        assert(false);
         break;
     }
   }
@@ -319,7 +337,7 @@ static int ndb_index_stat_option_parse(char *p, Ndb_index_stat_opt &opt) {
   DBUG_TRACE;
 
   char *r = strchr(p, '=');
-  if (r == 0) return -1;
+  if (r == nullptr) return -1;
   *r++ = 0;
 
   while (isspace(*r)) *r++ = 0;
@@ -396,7 +414,7 @@ static int ndb_index_stat_option_parse(char *p, Ndb_index_stat_opt &opt) {
       } break;
 
       default:
-        DBUG_ASSERT(false);
+        assert(false);
         break;
     }
   }
@@ -412,7 +430,7 @@ static int ndb_index_stat_str2opt(const char *str, Ndb_index_stat_opt &opt) {
 
   char buf[ndb_index_stat_option_sz];
 
-  assert(str != 0);
+  assert(str != nullptr);
   if (strlen(str) >= sizeof(buf)) return -1;
   strcpy(buf, str);
 
@@ -423,12 +441,12 @@ static int ndb_index_stat_str2opt(const char *str, Ndb_index_stat_opt &opt) {
 
     char *q = strchr(p, ',');
     if (q == p) return -1;
-    if (q != 0) *q = 0;
+    if (q != nullptr) *q = 0;
 
     DBUG_PRINT("index_stat", ("parse: %s", p));
     if (ndb_index_stat_option_parse(p, opt) == -1) return -1;
 
-    if (q == 0) break;
+    if (q == nullptr) break;
     p = q + 1;
   }
 
@@ -447,7 +465,7 @@ int ndb_index_stat_option_check(THD *, SYS_VAR *, void *save,
   char buf[ndb_index_stat_option_sz];
   int len = sizeof(buf);
   const char *str = value->val_str(value, buf, &len);
-  if (str != 0) {
+  if (str != nullptr) {
     /* Seems to be nothing in buf */
     DBUG_PRINT("index_stat", ("str: %s len: %d", str, len));
     char buf2[ndb_index_stat_option_sz];
@@ -475,6 +493,7 @@ void ndb_index_stat_option_update(THD *, SYS_VAR *, void *var_ptr,
 
 /* Global stuff */
 
+std::atomic<unsigned int> glob_query_count;
 struct Ndb_index_stat_glob {
   bool th_allow;  /* Queries allowed */
   bool th_enable; /* Stats thread idea of ndb_index_stat_enable */
@@ -487,7 +506,6 @@ struct Ndb_index_stat_glob {
   /* Accumulating counters */
   uint analyze_count; /* Client counters */
   uint analyze_error;
-  uint query_count;
   uint query_no_stats;
   uint query_error;
   uint event_act;     /* Events acted on */
@@ -523,7 +541,6 @@ Ndb_index_stat_glob::Ndb_index_stat_glob() {
   wait_stats = 0;
   analyze_count = 0;
   analyze_error = 0;
-  query_count = 0;
   query_no_stats = 0;
   query_error = 0;
   event_act = 0;
@@ -544,6 +561,13 @@ Ndb_index_stat_glob::Ndb_index_stat_glob() {
 }
 
 static Ndb_index_stat_glob ndb_index_stat_glob;
+
+static void
+move_to_glob(Ndb_index_stat *st)
+{
+  glob_query_count += st->query_count;
+  st->query_count = 0;
+}
 
 /*
   Check if stats thread is running and has initialized required
@@ -604,7 +628,8 @@ void Ndb_index_stat_glob::set_status() {
   p += strlen(p);
   sprintf(p, "analyze:(all:%u,error:%u)", analyze_count, analyze_error);
   p += strlen(p);
-  sprintf(p, ",query:(all:%u,nostats:%u,error:%u)", query_count, query_no_stats,
+  uint loc_query_count = glob_query_count;
+  sprintf(p, ",query:(all:%u,nostats:%u,error:%u)", loc_query_count, query_no_stats,
           query_error);
   p += strlen(p);
   sprintf(p, ",event:(act:%u,skip:%u,miss:%u)", event_act, event_skip,
@@ -643,11 +668,13 @@ void Ndb_index_stat_glob::set_status() {
   mysql_mutex_unlock(&LOCK_global_system_variables);
 }
 
+static long g_ndb_status_index_stat_event_count = 0;
+
 /* Zero accumulating counters */
 void Ndb_index_stat_glob::zero_total() {
   analyze_count = 0;
   analyze_error = 0;
-  query_count = 0;
+  glob_query_count = 0;
   query_no_stats = 0;
   query_error = 0;
   event_act = 0;
@@ -660,17 +687,19 @@ void Ndb_index_stat_glob::zero_total() {
   evict_count = 0;
   /* Reset highest use seen to current */
   cache_high_bytes = cache_query_bytes + cache_clean_bytes;
+  g_ndb_status_index_stat_event_count = 0;
 }
 
 /* Shared index entries */
 
 Ndb_index_stat::Ndb_index_stat() {
-  is = 0;
+  is = nullptr;
   index_id = 0;
   index_version = 0;
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   memset(id, 0, sizeof(id));
 #endif
+  query_count = 0;
   access_time = 0;
   update_time = 0;
   load_time = 0;
@@ -685,13 +714,11 @@ Ndb_index_stat::Ndb_index_stat() {
   no_stats = false;
   error_time = 0;
   error_count = 0;
-  share_next = 0;
-  list_next = 0;
-  list_prev = 0;
-  share = 0;
-  ref_count = 0;
+  share_next = nullptr;
+  list_next = nullptr;
+  list_prev = nullptr;
+  share = nullptr;
   to_delete = false;
-  abort_request = false;
 }
 
 /*
@@ -701,7 +728,7 @@ Ndb_index_stat::Ndb_index_stat() {
   Argument "from" is 0=stats thread 1=client.
 */
 static void ndb_index_stat_error(Ndb_index_stat *st, int from,
-                                 const char *place MY_ATTRIBUTE((unused))) {
+                                 const char *place [[maybe_unused]]) {
   time_t now = ndb_index_stat_time();
   NdbIndexStat::Error error = st->is->getNdbError();
   if (error.code == 0) {
@@ -729,10 +756,6 @@ static void ndb_index_stat_clear_error(Ndb_index_stat *st) {
 
 /* Lists across shares */
 
-Ndb_index_stat_list::Ndb_index_stat_list(
-    Ndb_index_stat::List_type the_list_type, const char *the_name)
-    : name(the_name), list_type(the_list_type) {}
-
 Ndb_index_stat_list ndb_index_stat_list[Ndb_index_stat::LT_Count] = {
     Ndb_index_stat_list(Ndb_index_stat::LT_Undef, nullptr),
     Ndb_index_stat_list(Ndb_index_stat::LT_New, "new"),
@@ -745,18 +768,18 @@ Ndb_index_stat_list ndb_index_stat_list[Ndb_index_stat::LT_Count] = {
 
 static void ndb_index_stat_list_add(Ndb_index_stat *st, int lt) {
   assert(st != nullptr && st->array_index == Ndb_index_stat::LT_Undef);
-  assert(st->list_next == 0 && st->list_prev == 0);
+  assert(st->list_next == nullptr && st->list_prev == nullptr);
   assert(Ndb_index_stat::LT_New <= lt && lt < Ndb_index_stat::LT_Count);
   Ndb_index_stat_list &list = ndb_index_stat_list[lt];
 
   DBUG_PRINT("index_stat", ("st %s -> %s", st->id, list.name));
 
   if (list.count == 0) {
-    assert(list.head == 0 && list.tail == 0);
+    assert(list.head == nullptr && list.tail == nullptr);
     list.head = st;
     list.tail = st;
   } else {
-    assert(list.tail != 0 && list.tail->list_next == 0);
+    assert(list.tail != nullptr && list.tail->list_next == nullptr);
     st->list_prev = list.tail;
     list.tail->list_next = st;
     list.tail = st;
@@ -767,7 +790,7 @@ static void ndb_index_stat_list_add(Ndb_index_stat *st, int lt) {
 }
 
 static void ndb_index_stat_list_remove(Ndb_index_stat *st) {
-  assert(st != 0);
+  assert(st != nullptr);
   const int lt = st->array_index;
   assert(Ndb_index_stat::LT_New <= lt && lt < Ndb_index_stat::LT_Count);
   Ndb_index_stat_list &list = ndb_index_stat_list[lt];
@@ -782,16 +805,16 @@ static void ndb_index_stat_list_remove(Ndb_index_stat *st) {
   assert(list.count != 0);
   list.count--;
 
-  if (next != 0) next->list_prev = prev;
-  if (prev != 0) prev->list_next = next;
+  if (next != nullptr) next->list_prev = prev;
+  if (prev != nullptr) prev->list_next = next;
 
   st->array_index = Ndb_index_stat::LT_Undef;
-  st->list_next = 0;
-  st->list_prev = 0;
+  st->list_next = nullptr;
+  st->list_prev = nullptr;
 }
 
 static void ndb_index_stat_list_move(Ndb_index_stat *st, int lt) {
-  assert(st != 0);
+  assert(st != nullptr);
   ndb_index_stat_list_remove(st);
   ndb_index_stat_list_add(st, lt);
 }
@@ -800,6 +823,7 @@ static void ndb_index_stat_list_move(Ndb_index_stat *st, int lt) {
 
 static void ndb_index_stat_force_update(Ndb_index_stat *st, bool onoff) {
   Ndb_index_stat_glob &glob = ndb_index_stat_glob;
+  move_to_glob(st);
   if (onoff) {
     if (!st->force_update) {
       glob.force_update++;
@@ -818,6 +842,7 @@ static void ndb_index_stat_force_update(Ndb_index_stat *st, bool onoff) {
 
 static void ndb_index_stat_no_stats(Ndb_index_stat *st, bool flag) {
   Ndb_index_stat_glob &glob = ndb_index_stat_glob;
+  move_to_glob(st);
   if (st->no_stats != flag) {
     if (flag) {
       glob.no_stats++;
@@ -829,19 +854,6 @@ static void ndb_index_stat_no_stats(Ndb_index_stat *st, bool flag) {
     }
     glob.set_status();
   }
-}
-
-static void ndb_index_stat_ref_count(Ndb_index_stat *st, bool flag) {
-  uint old_count = st->ref_count;
-  (void)old_count;  // USED
-  if (flag) {
-    st->ref_count++;
-  } else {
-    assert(st->ref_count != 0);
-    st->ref_count--;
-  }
-  DBUG_PRINT("index_stat",
-             ("st %s ref_count:%u->%u", st->id, old_count, st->ref_count));
 }
 
 /* Find or add entry under the share */
@@ -864,11 +876,11 @@ static Ndb_index_stat *ndb_index_stat_alloc(const NDBINDEX *index,
   err_out = 0;
   Ndb_index_stat *st = new Ndb_index_stat;
   NdbIndexStat *is = new NdbIndexStat;
-  if (st != 0 && is != 0) {
+  if (st != nullptr && is != nullptr) {
     st->is = is;
     st->index_id = index->getObjectId();
     st->index_version = index->getObjectVersion();
-#ifndef DBUG_OFF
+#ifndef NDEBUG
     snprintf(st->id, sizeof(st->id), "%d.%d", st->index_id, st->index_version);
 #endif
     if (is->set_index(*index, *table) == 0) return st;
@@ -877,9 +889,9 @@ static Ndb_index_stat *ndb_index_stat_alloc(const NDBINDEX *index,
   } else {
     err_out = NdbIndexStat::NoMemError;
   }
-  if (is != 0) delete is;
-  if (st != 0) delete st;
-  return 0;
+  if (is != nullptr) delete is;
+  if (st != nullptr) delete st;
+  return nullptr;
 }
 
 /* Subroutine, have lock */
@@ -887,10 +899,10 @@ static Ndb_index_stat *ndb_index_stat_find_share(NDB_SHARE *share,
                                                  const NDBINDEX *index,
                                                  Ndb_index_stat *&st_last) {
   struct Ndb_index_stat *st = share->index_stat_list;
-  st_last = 0;
-  while (st != 0) {
+  st_last = nullptr;
+  while (st != nullptr) {
     assert(st->share == share);
-    assert(st->is != 0);
+    assert(st->is != nullptr);
     NdbIndexStat::Head head;
     st->is->get_head(head);
     if (head.m_indexId == (uint)index->getObjectId() &&
@@ -906,7 +918,7 @@ static Ndb_index_stat *ndb_index_stat_find_share(NDB_SHARE *share,
 static void ndb_index_stat_add_share(NDB_SHARE *share, Ndb_index_stat *st,
                                      Ndb_index_stat *st_last) {
   st->share = share;
-  if (st_last == 0)
+  if (st_last == nullptr)
     share->index_stat_list = st;
   else
     st_last->share_next = st;
@@ -920,50 +932,121 @@ static Ndb_index_stat *ndb_index_stat_get_share(NDB_SHARE *share,
                                                 bool force_update) {
   Ndb_index_stat_glob &glob = ndb_index_stat_glob;
 
+  /**
+   * The fast path when we arrive here is that we will find a share
+   * in the call to ndb_index_stat_find_share. This searches for a
+   * Ndb_index_stat in the NDB_SHARE object which is local to each
+   * handler object (one such object per MySQL connection.
+   *
+   * The only thing to worry about in this path is to ensure that
+   * the object isn't deleted before we have managed to increment
+   * ref_count on this object.
+   *
+   * The deletion of those objects happens in the function
+   * ndb_index_stat_proc_delete. However the deletion happens in
+   * steps, before the object can be released it must be removed
+   * from the list on the NDB_SHARE object. At this point the
+   * variable to_delete is set to true. Thus if an object is
+   * found in ndb_index_stat_find_share it cannot have the
+   * variable to_delete set to true. Thus it cannot be deleted
+   * while it is still in this list.
+   *
+   * Since we removed holding the stat_mutex while processing this
+   * list we have to protect this list. This protection comes from
+   * holding the share->mutex while both inserting, deleting and
+   * reading from this list.
+   *
+   * However as soon as we have released this mutex the deletion
+   * process can continue. However the Ndb_index_stat object will
+   * not be deleted if it has a ref_count which is higher than 0.
+   *
+   * Thus before we release the share->mutex we need to ensure that
+   * the ref_count is incremented. This ensures that the object is
+   * not deleted until we are done using it.
+   *
+   * If find_share doesn't find an object in its list of objects,
+   * then we create a new Ndb_index_stat, this is still happening
+   * using protection from the global stat_mutex since we will
+   * insert it into a global list of Ndb_index_stat objects.
+   *
+   * The share->mutex also protects changes to the to_delete
+   * variable on the Ndb_index_stat object.
+   *
+   * Thus if this function returns an object it will be in the
+   * NDB_SHARE and thus cannot be deleted. It can still be
+   * removed from the share object, but it cannot be deleted
+   * due to incrementing the ref_count. Thus it is safe to use
+   * until we are done with it.
+   *
+   * One problem to handle is counting the query_count, this is
+   * statistics on how often we queried the index statistics.
+   * To avoid making this variable a global bottleneck we increment
+   * it in the Ndb_index_stat object instead and regularly move
+   * the result of those increments to the global object. In
+   * addition we check it during the hot path to see if it reaches
+   * beyond 1000 when we perform a move to the global object.
+   * The global query count is an atomic variable to avoid the
+   * need to update it during holding the global index stats mutex.
+   *
+   * The ref_count is an atomic variable. Thus it is always incremented
+   * while holding the share->mutex, this mutex ensures that it stays
+   * in the NDB_SHARE list, the ref_count is only checked before
+   * deleting the object. Thus it is sufficient to use an atomic
+   * variable here. We will not execute the delete logic before the
+   * object has moved from the list, and moving from the NDB_SHARE
+   * list happens under protection of share->mutex. Thus it is
+   * sufficient to ensure that no updates of the ref_count is lost
+   * through making it an atomic variable. It isn't necessary to
+   * protect it with a mutex.
+   */
   mysql_mutex_lock(&share->mutex);
-  mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
   time_t now = ndb_index_stat_time();
   err_out = 0;
 
-  struct Ndb_index_stat *st = 0;
-  struct Ndb_index_stat *st_last = 0;
+  struct Ndb_index_stat *st = nullptr;
+  struct Ndb_index_stat *st_last = nullptr;
   do {
     if (unlikely(!ndb_index_stat_get_allow())) {
       err_out = NdbIndexStat::MyNotAllow;
       break;
     }
     st = ndb_index_stat_find_share(share, index, st_last);
-    if (st == 0) {
+    if (unlikely(st == nullptr)) {
       if (!allow_add) {
         err_out = NdbIndexStat::MyNotFound;
         break;
       }
       st = ndb_index_stat_alloc(index, table, err_out);
-      if (st == 0) {
+      if (st == nullptr) {
         assert(err_out != 0);
         break;
       }
       ndb_index_stat_add_share(share, st, st_last);
+      move_to_glob(st);
+      mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
       ndb_index_stat_list_add(st, Ndb_index_stat::LT_New);
       glob.set_status();
-    } else if (unlikely(st->abort_request)) {
+      mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
+    } else if (unlikely(st->to_delete)) {
       err_out = NdbIndexStat::MyAbortReq;
       break;
     }
-    if (force_update) ndb_index_stat_force_update(st, true);
+    if (unlikely(force_update)) {
+      mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
+      ndb_index_stat_force_update(st, true);
+      mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
+    }
     snap.load_time = st->load_time;
     snap.sample_version = st->sample_version;
     snap.error_count = st->error_count;
     st->access_time = now;
   } while (0);
 
-  if (err_out == 0) {
-    assert(st != 0);
-    ndb_index_stat_ref_count(st, true);
+  if (likely(err_out == 0)) {
+    st->acquire_client_ref();
   } else
-    st = 0;
+    st = nullptr;
 
-  mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
   mysql_mutex_unlock(&share->mutex);
   return st;
 }
@@ -978,31 +1061,31 @@ static void ndb_index_stat_free(Ndb_index_stat *st) {
   DBUG_TRACE;
   Ndb_index_stat_glob &glob = ndb_index_stat_glob;
   NDB_SHARE *share = st->share;
-  assert(share != 0);
+  assert(share != nullptr);
 
-  Ndb_index_stat *st_head = 0;
-  Ndb_index_stat *st_tail = 0;
+  Ndb_index_stat *st_head = nullptr;
+  Ndb_index_stat *st_tail = nullptr;
   Ndb_index_stat *st_loop = share->index_stat_list;
   uint found = 0;
-  while (st_loop != 0) {
+  while (st_loop != nullptr) {
+    move_to_glob(st_loop);
     if (st == st_loop) {
       // Unlink entry from NDB_SHARE and request it to be released
       DBUG_PRINT("index_stat", ("st %s stat free one", st->id));
       st_loop = st_loop->share_next;
-      st->share_next = 0;
-      st->share = 0;
+      st->share_next = nullptr;
+      st->share = nullptr;
       assert(!st->to_delete);
       st->to_delete = true;
-      st->abort_request = true;
       found++;
     } else {
-      if (st_head == 0)
+      if (st_head == nullptr)
         st_head = st_loop;
       else
         st_tail->share_next = st_loop;
       st_tail = st_loop;
       st_loop = st_loop->share_next;
-      st_tail->share_next = 0;
+      st_tail->share_next = nullptr;
     }
   }
   assert(found == 1);
@@ -1017,10 +1100,12 @@ void ndb_index_stat_free(NDB_SHARE *share, int index_id, int index_version) {
   DBUG_PRINT("index_stat",
              ("(index_id:%d index_version:%d", index_id, index_version));
   Ndb_index_stat_glob &glob = ndb_index_stat_glob;
+  mysql_mutex_lock(&share->mutex);
   mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
 
   Ndb_index_stat *st = share->index_stat_list;
-  while (st != 0) {
+  while (st != nullptr) {
+    move_to_glob(st);
     if (st->index_id == index_id && st->index_version == index_version) {
       ndb_index_stat_free(st);
       glob.drop_count++;
@@ -1034,23 +1119,25 @@ void ndb_index_stat_free(NDB_SHARE *share, int index_id, int index_version) {
 
   glob.set_status();
   mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
+  mysql_mutex_unlock(&share->mutex);
 }
 
 void ndb_index_stat_free(NDB_SHARE *share) {
   DBUG_TRACE;
   Ndb_index_stat_glob &glob = ndb_index_stat_glob;
+  mysql_mutex_lock(&share->mutex);
   mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
 
   Ndb_index_stat *st;
-  while ((st = share->index_stat_list) != 0) {
+  while ((st = share->index_stat_list) != nullptr) {
+    move_to_glob(st);
     // Unlink entry from NDB_SHARE and request it to be released
     DBUG_PRINT("index_stat", ("st %s stat free all", st->id));
     share->index_stat_list = st->share_next;
-    st->share_next = 0;
-    st->share = 0;
+    st->share_next = nullptr;
+    st->share = nullptr;
     assert(!st->to_delete);
     st->to_delete = true;
-    st->abort_request = true;
     glob.drop_count++;
     assert(st->drop_bytes == 0);
     st->drop_bytes += st->query_bytes + st->clean_bytes;
@@ -1059,6 +1146,7 @@ void ndb_index_stat_free(NDB_SHARE *share) {
 
   glob.set_status();
   mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
+  mysql_mutex_unlock(&share->mutex);
 }
 
 /**
@@ -1169,14 +1257,19 @@ struct Ndb_index_stat_proc {
   int lt;
   bool busy;
   bool end;
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   uint cache_query_bytes;
   uint cache_clean_bytes;
 #endif
   Ndb_index_stat_proc()
-      : is_util(0), ndb(0), now(0), lt(0), busy(false), end(false) {}
+      : is_util(nullptr),
+        ndb(nullptr),
+        now(0),
+        lt(0),
+        busy(false),
+        end(false) {}
 
-  ~Ndb_index_stat_proc() { assert(ndb == NULL); }
+  ~Ndb_index_stat_proc() { assert(ndb == nullptr); }
 };
 
 static void ndb_index_stat_proc_new(Ndb_index_stat_proc &pr,
@@ -1194,7 +1287,8 @@ static void ndb_index_stat_proc_new(Ndb_index_stat_proc &pr) {
   Ndb_index_stat_list &list = ndb_index_stat_list[Ndb_index_stat::LT_New];
 
   Ndb_index_stat *st_loop = list.head;
-  while (st_loop != 0) {
+  while (st_loop != nullptr) {
+    move_to_glob(st_loop);
     Ndb_index_stat *st = st_loop;
     st_loop = st_loop->list_next;
     DBUG_PRINT("index_stat", ("st %s proc %s", st->id, list.name));
@@ -1246,7 +1340,7 @@ static void ndb_index_stat_proc_update(Ndb_index_stat_proc &pr) {
 
   Ndb_index_stat *st_loop = list.head;
   uint cnt = 0;
-  while (st_loop != 0 && cnt < batch) {
+  while (st_loop != nullptr && cnt < batch) {
     Ndb_index_stat *st = st_loop;
     st_loop = st_loop->list_next;
     DBUG_PRINT("index_stat", ("st %s proc %s", st->id, list.name));
@@ -1254,6 +1348,7 @@ static void ndb_index_stat_proc_update(Ndb_index_stat_proc &pr) {
     assert(pr.lt != Ndb_index_stat::LT_Update);
     ndb_index_stat_list_move(st, pr.lt);
     // db op so update status after each
+    move_to_glob(st);
     mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
     glob.set_status();
     mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
@@ -1314,7 +1409,7 @@ static void ndb_index_stat_proc_read(Ndb_index_stat_proc &pr) {
 
   Ndb_index_stat *st_loop = list.head;
   uint cnt = 0;
-  while (st_loop != 0 && cnt < batch) {
+  while (st_loop != nullptr && cnt < batch) {
     Ndb_index_stat *st = st_loop;
     st_loop = st_loop->list_next;
     DBUG_PRINT("index_stat", ("st %s proc %s", st->id, list.name));
@@ -1322,6 +1417,7 @@ static void ndb_index_stat_proc_read(Ndb_index_stat_proc &pr) {
     assert(pr.lt != Ndb_index_stat::LT_Read);
     ndb_index_stat_list_move(st, pr.lt);
     // db op so update status after each
+    move_to_glob(st);
     mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
     glob.set_status();
     mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
@@ -1400,7 +1496,7 @@ static void ndb_index_stat_proc_idle(Ndb_index_stat_proc &pr) {
 
   Ndb_index_stat *st_loop = list.head;
   uint cnt = 0;
-  while (st_loop != 0 && cnt < batch) {
+  while (st_loop != nullptr && cnt < batch) {
     Ndb_index_stat *st = st_loop;
     st_loop = st_loop->list_next;
     DBUG_PRINT("index_stat", ("st %s proc %s", st->id, list.name));
@@ -1408,6 +1504,7 @@ static void ndb_index_stat_proc_idle(Ndb_index_stat_proc &pr) {
     // rotates list if entry remains LT_Idle
     ndb_index_stat_list_move(st, pr.lt);
     cnt++;
+    move_to_glob(st);
   }
   // full batch does not set pr.busy
   mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
@@ -1454,7 +1551,7 @@ static void ndb_index_stat_proc_check(Ndb_index_stat_proc &pr) {
 
   Ndb_index_stat *st_loop = list.head;
   uint cnt = 0;
-  while (st_loop != 0 && cnt < batch) {
+  while (st_loop != nullptr && cnt < batch) {
     Ndb_index_stat *st = st_loop;
     st_loop = st_loop->list_next;
     DBUG_PRINT("index_stat", ("st %s proc %s", st->id, list.name));
@@ -1462,6 +1559,7 @@ static void ndb_index_stat_proc_check(Ndb_index_stat_proc &pr) {
     assert(pr.lt != Ndb_index_stat::LT_Check);
     ndb_index_stat_list_move(st, pr.lt);
     // db op so update status after each
+    move_to_glob(st);
     mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
     glob.set_status();
     mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
@@ -1515,7 +1613,7 @@ static void ndb_index_stat_proc_evict(Ndb_index_stat_proc &pr, int lt) {
   Ndb_index_stat *st_lru_arr[ndb_index_stat_max_evict_batch + 1];
   uint st_lru_cnt = 0;
   Ndb_index_stat *st_loop = list.head;
-  while (st_loop != 0 && st_lru_cnt < batch) {
+  while (st_loop != nullptr && st_lru_cnt < batch) {
     Ndb_index_stat *st = st_loop;
     st_loop = st_loop->list_next;
     const longlong st_read_time = (longlong)st->read_time;
@@ -1558,10 +1656,10 @@ static void ndb_index_stat_proc_evict(Ndb_index_stat_proc &pr, int lt) {
     }
   }
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   for (uint i = 0; i < st_lru_cnt; i++) {
     Ndb_index_stat *st1 = st_lru_arr[i];
-    assert(!st1->to_delete && st1->share != 0);
+    assert(!st1->to_delete && st1->share != nullptr);
     if (i + 1 < st_lru_cnt) {
       Ndb_index_stat *st2 = st_lru_arr[i + 1];
       assert(ndb_index_stat_evict(st1, st2));
@@ -1607,7 +1705,7 @@ static void ndb_index_stat_proc_delete(Ndb_index_stat_proc &pr) {
 
   Ndb_index_stat *st_loop = list.head;
   uint cnt = 0;
-  while (st_loop != 0 && cnt < batch) {
+  while (st_loop != nullptr && cnt < batch) {
     Ndb_index_stat *st = st_loop;
     st_loop = st_loop->list_next;
     DBUG_PRINT("index_stat", ("st %s proc %s", st->id, list.name));
@@ -1618,12 +1716,12 @@ static void ndb_index_stat_proc_delete(Ndb_index_stat_proc &pr) {
 
     /*
       Do not wait for requests to terminate since this could
-      risk stats thread hanging.  Instead try again next time.
-      Presumably clients will eventually notice abort_request.
+      risk stats thread hanging. Instead try again next time.
+      Presumably clients will eventually notice to_delete.
     */
-    if (st->ref_count != 0) {
-      DBUG_PRINT("index_stat", ("st %s proc %s: ref_count:%u", st->id,
-                                list.name, st->ref_count));
+    if (st->has_client_ref()) {
+      DBUG_PRINT("index_stat",
+                 ("st %s proc %s: referenced by client", st->id, list.name));
       continue;
     }
 
@@ -1633,6 +1731,7 @@ static void ndb_index_stat_proc_delete(Ndb_index_stat_proc &pr) {
     assert(glob.cache_evict_bytes >= st->evict_bytes);
     glob.cache_evict_bytes -= st->evict_bytes;
     ndb_index_stat_list_remove(st);
+    move_to_glob(st);
     delete st->is;
     delete st;
     cnt++;
@@ -1686,7 +1785,7 @@ static void ndb_index_stat_proc_error(Ndb_index_stat_proc &pr) {
 
   Ndb_index_stat *st_loop = list.head;
   uint cnt = 0;
-  while (st_loop != 0 && cnt < batch) {
+  while (st_loop != nullptr && cnt < batch) {
     Ndb_index_stat *st = st_loop;
     st_loop = st_loop->list_next;
     DBUG_PRINT("index_stat", ("st %s proc %s", st->id, list.name));
@@ -1694,6 +1793,7 @@ static void ndb_index_stat_proc_error(Ndb_index_stat_proc &pr) {
     // rotates list if entry remains LT_Error
     ndb_index_stat_list_move(st, pr.lt);
     cnt++;
+    move_to_glob(st);
   }
   // full batch does not set pr.busy
   mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
@@ -1736,7 +1836,7 @@ static void ndb_index_stat_proc_event(Ndb_index_stat_proc &pr) {
   DBUG_PRINT("index_stat", ("poll_listener ret: %d", ret));
   if (ret == -1) {
     // wl4124_todo report error
-    DBUG_ASSERT(false);
+    assert(false);
     return;
   }
   if (ret == 0) return;
@@ -1746,7 +1846,7 @@ static void ndb_index_stat_proc_event(Ndb_index_stat_proc &pr) {
     DBUG_PRINT("index_stat", ("next_listener ret: %d", ret));
     if (ret == -1) {
       // wl4124_todo report error
-      DBUG_ASSERT(false);
+      assert(false);
       return;
     }
     if (ret == 0) break;
@@ -1756,12 +1856,18 @@ static void ndb_index_stat_proc_event(Ndb_index_stat_proc &pr) {
     DBUG_PRINT("index_stat", ("next_listener eventType: %d indexId: %u",
                               head.m_eventType, head.m_indexId));
 
+    if (head.m_eventType == 4) {
+      // Event that denotes that the stats have been updated in the kernel
+      g_ndb_status_index_stat_event_count++;
+      DBUG_PRINT("index_stat", ("Incremented stat_event_count to %ld",
+                                g_ndb_status_index_stat_event_count));
+    }
     Ndb_index_stat *st = find_entry(head.m_indexId, head.m_indexVersion);
     /*
       Another process can update stats for an index which is not found
       in this mysqld.  Ignore it.
      */
-    if (st != 0) {
+    if (st != nullptr) {
       DBUG_PRINT("index_stat", ("st %s proc %s", st->id, "event"));
       ndb_index_stat_proc_event(pr, st);
       if (pr.lt != st->array_index) {
@@ -1769,6 +1875,7 @@ static void ndb_index_stat_proc_event(Ndb_index_stat_proc &pr) {
         glob.event_act++;
       } else
         glob.event_skip++;
+      move_to_glob(st);
     } else {
       DBUG_PRINT("index_stat", ("entry not found in this mysqld"));
       glob.event_miss++;
@@ -1786,32 +1893,32 @@ static void ndb_index_stat_proc_control() {
   Ndb_index_stat_opt &opt = ndb_index_stat_opt;
 
   /* Request to zero accumulating counters */
-  if (opt.get(Ndb_index_stat_opt::Izero_total) == true) {
+  if (opt.get(Ndb_index_stat_opt::Izero_total) == 1) {
     mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
     glob.zero_total();
     glob.set_status();
-    opt.set(Ndb_index_stat_opt::Izero_total, false);
+    opt.set(Ndb_index_stat_opt::Izero_total, 0);
     mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
   }
 }
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
 static void ndb_index_stat_entry_verify(Ndb_index_stat_proc &pr,
                                         const Ndb_index_stat *st) {
   const NDB_SHARE *share = st->share;
   if (st->to_delete) {
-    assert(st->share_next == 0);
-    assert(share == 0);
+    assert(st->share_next == nullptr);
+    assert(share == nullptr);
   } else {
-    assert(share != 0);
+    assert(share != nullptr);
     const Ndb_index_stat *st2 = share->index_stat_list;
-    assert(st2 != 0);
+    assert(st2 != nullptr);
     uint found = 0;
-    while (st2 != 0) {
+    while (st2 != nullptr) {
       assert(st2->share == share);
       const Ndb_index_stat *st3 = st2->share_next;
       uint guard = 0;
-      while (st3 != 0) {
+      while (st3 != nullptr) {
         assert(st2 != st3);
         guard++;
         assert(guard <= 1000);  // MAX_INDEXES
@@ -1831,13 +1938,13 @@ static void ndb_index_stat_list_verify(Ndb_index_stat_proc &pr, int lt) {
   const Ndb_index_stat_list &list = ndb_index_stat_list[lt];
   const Ndb_index_stat *st = list.head;
   uint count = 0;
-  while (st != 0) {
+  while (st != nullptr) {
     count++;
     assert(count <= list.count);
-    if (st->list_prev != 0) {
+    if (st->list_prev != nullptr) {
       assert(st->list_prev->list_next == st);
     }
-    if (st->list_next != 0) {
+    if (st->list_next != nullptr) {
       assert(st->list_next->list_prev == st);
     }
     if (count == 1) {
@@ -1848,15 +1955,15 @@ static void ndb_index_stat_list_verify(Ndb_index_stat_proc &pr, int lt) {
     }
     if (st == list.head) {
       assert(count == 1);
-      assert(st->list_prev == 0);
+      assert(st->list_prev == nullptr);
     }
     if (st == list.tail) {
       assert(count == list.count);
-      assert(st->list_next == 0);
+      assert(st->list_next == nullptr);
     }
     const Ndb_index_stat *st2 = st->list_next;
     uint guard = 0;
-    while (st2 != 0) {
+    while (st2 != nullptr) {
       assert(st != st2);
       guard++;
       assert(guard <= list.count);
@@ -1899,7 +2006,7 @@ static void ndb_index_stat_proc(Ndb_index_stat_proc &pr) {
 
   ndb_index_stat_proc_control();
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   ndb_index_stat_list_verify(pr);
   Ndb_index_stat_glob old_glob = ndb_index_stat_glob;
 #endif
@@ -1916,7 +2023,7 @@ static void ndb_index_stat_proc(Ndb_index_stat_proc &pr) {
   ndb_index_stat_proc_error(pr);
   ndb_index_stat_proc_event(pr);
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   ndb_index_stat_list_verify(pr);
   ndb_index_stat_report(old_glob);
 #endif
@@ -1938,7 +2045,7 @@ void ndb_index_stat_end() {
     if (lt == Ndb_index_stat::LT_Delete) continue;
     Ndb_index_stat_list &list = ndb_index_stat_list[lt];
     Ndb_index_stat *st_loop = list.head;
-    while (st_loop != 0) {
+    while (st_loop != nullptr) {
       Ndb_index_stat *st = st_loop;
       st_loop = st_loop->list_next;
       DBUG_PRINT("index_stat", ("st %s end %s", st->id, list.name));
@@ -1953,121 +2060,75 @@ void ndb_index_stat_end() {
 
 /* Index stats thread */
 
-int Ndb_index_stat_thread::check_or_create_systables(Ndb_index_stat_proc &pr) {
+int Ndb_index_stat_thread::check_systables(
+    const Ndb_index_stat_proc &pr) const {
   DBUG_TRACE;
 
-  NdbIndexStat *is = pr.is_util;
-  Ndb *ndb = pr.ndb;
-
-  if (is->check_systables(ndb) == 0) {
+  if (pr.is_util->check_systables(pr.ndb) == 0) {
     DBUG_PRINT("index_stat", ("using existing index stats tables"));
     return 0;
   }
-
-  if (is->create_systables(ndb) == 0) {
-    DBUG_PRINT("index_stat", ("created index stats tables"));
-    return 0;
-  }
-
-  if (is->getNdbError().code == 721 || is->getNdbError().code == 4244 ||
-      is_cluster_failure_code(is->getNdbError().code))  // no connection
-  {
-    // probably race between mysqlds
-    DBUG_PRINT("index_stat",
-               ("create index stats tables failed: error %d line %d",
-                is->getNdbError().code, is->getNdbError().line));
-    return -1;
-  }
-
-  log_info("create tables failed, error: %d, line: %d", is->getNdbError().code,
-           is->getNdbError().line);
   return -1;
 }
 
-int Ndb_index_stat_thread::check_or_create_sysevents(Ndb_index_stat_proc &pr) {
+int Ndb_index_stat_thread::check_sysevents(
+    const Ndb_index_stat_proc &pr) const {
   DBUG_TRACE;
 
-  NdbIndexStat *is = pr.is_util;
-  Ndb *ndb = pr.ndb;
-
-  if (is->check_sysevents(ndb) == 0) {
+  if (pr.is_util->check_sysevents(pr.ndb) == 0) {
     DBUG_PRINT("index_stat", ("using existing index stats events"));
     return 0;
   }
+  return -1;
+}
 
-  if (is->create_sysevents(ndb) == 0) {
-    DBUG_PRINT("index_stat", ("created index stats events"));
-    return 0;
-  }
+int Ndb_index_stat_thread::create_ndb(
+    Ndb_index_stat_proc *const pr,
+    Ndb_cluster_connection *const connection) const {
+  DBUG_TRACE;
+  assert(pr->ndb == nullptr);
+  assert(connection != nullptr);
 
-  if (is->getNdbError().code == 746) {
-    // Probably race between mysqlds
-    DBUG_PRINT("index_stat",
-               ("create index stats events failed: error %d line %d",
-                is->getNdbError().code, is->getNdbError().line));
+  pr->ndb = new (std::nothrow) Ndb(connection, NDB_INDEX_STAT_DB);
+  if (pr->ndb == nullptr) {
+    log_error("Failed to create Ndb object");
     return -1;
   }
 
-  log_info("create events failed, error: %d, line: %d", is->getNdbError().code,
-           is->getNdbError().line);
-  return -1;
-}
-
-int Ndb_index_stat_thread::create_ndb(Ndb_index_stat_proc &pr,
-                                      Ndb_cluster_connection *connection) {
-  DBUG_TRACE;
-  assert(pr.ndb == NULL);
-  assert(connection != NULL);
-
-  Ndb *ndb = NULL;
-  do {
-    ndb = new (std::nothrow) Ndb(connection, "");
-    if (ndb == nullptr) {
-      log_error("failed to create Ndb object");
-      break;
-    }
-
-    if (ndb->setNdbObjectName("Ndb Index Stat")) {
-      log_error("failed to set Ndb object name, error: %d",
-                ndb->getNdbError().code);
-      break;
-    }
-
-    if (ndb->init() != 0) {
-      log_error("failed to init Ndb, error: %d", ndb->getNdbError().code);
-      break;
-    }
-
-    if (ndb->setDatabaseName(NDB_INDEX_STAT_DB) != 0) {
-      log_error("failed to set database '%s', error: %d", NDB_INDEX_STAT_DB,
-                ndb->getNdbError().code);
-      break;
-    }
-
-    log_info("created Ndb object '%s', ref: 0x%x", ndb->getNdbObjectName(),
-             ndb->getReference());
-
-    pr.ndb = ndb;
-    return 0;
-  } while (0);
-
-  if (ndb != NULL) delete ndb;
-  return -1;
-}
-
-void Ndb_index_stat_thread::drop_ndb(Ndb_index_stat_proc &pr) {
-  DBUG_TRACE;
-
-  if (pr.is_util->has_listener()) {
-    stop_listener(pr);
+  if (pr->ndb->setNdbObjectName("Ndb Index Stat")) {
+    log_error("Failed to set Ndb object name. Error = %d: %s",
+              pr->ndb->getNdbError().code, pr->ndb->getNdbError().message);
+    delete pr->ndb;
+    pr->ndb = nullptr;
+    return -1;
   }
-  if (pr.ndb != NULL) {
-    delete pr.ndb;
-    pr.ndb = NULL;
+
+  if (pr->ndb->init() != 0) {
+    log_error("Failed to init Ndb. Error = %d:%s", pr->ndb->getNdbError().code,
+              pr->ndb->getNdbError().message);
+    delete pr->ndb;
+    pr->ndb = nullptr;
+    return -1;
+  }
+
+  log_info("Created Ndb object '%s', ref: 0x%x", pr->ndb->getNdbObjectName(),
+           pr->ndb->getReference());
+  return 0;
+}
+
+void Ndb_index_stat_thread::drop_ndb(Ndb_index_stat_proc *const pr) const {
+  DBUG_TRACE;
+
+  if (pr->is_util->has_listener()) {
+    stop_listener(*pr);
+  }
+  if (pr->ndb != nullptr) {
+    delete pr->ndb;
+    pr->ndb = nullptr;
   }
 }
 
-int Ndb_index_stat_thread::start_listener(Ndb_index_stat_proc &pr) {
+int Ndb_index_stat_thread::start_listener(const Ndb_index_stat_proc &pr) const {
   DBUG_TRACE;
 
   NdbIndexStat *is = pr.is_util;
@@ -2090,13 +2151,9 @@ int Ndb_index_stat_thread::start_listener(Ndb_index_stat_proc &pr) {
   return 0;
 }
 
-void Ndb_index_stat_thread::stop_listener(Ndb_index_stat_proc &pr) {
+void Ndb_index_stat_thread::stop_listener(const Ndb_index_stat_proc &pr) const {
   DBUG_TRACE;
-
-  NdbIndexStat *is = pr.is_util;
-  Ndb *ndb = pr.ndb;
-
-  (void)is->drop_listener(ndb);
+  (void)pr.is_util->drop_listener(pr.ndb);
 }
 
 /* Restart things after system restart */
@@ -2110,7 +2167,7 @@ void ndb_index_stat_restart() {
 }
 
 bool Ndb_index_stat_thread::is_setup_complete() {
-  if (ndb_index_stat_get_enable(NULL)) {
+  if (ndb_index_stat_get_enable(nullptr)) {
     return ndb_index_stat_get_allow();
   }
   return true;
@@ -2135,8 +2192,8 @@ void Ndb_index_stat_thread::do_run() {
   /*
     Wait for cluster to start
   */
-  while (!ndbcluster_is_connected(1)) {
-    /* ndb not connected yet */
+  while (!ndb_connection_is_ready(g_ndb_cluster_connection, 1)) {
+    /* NDB not connected yet */
     if (is_stop_requested()) {
       /* Terminated with a stop_request */
       mysql_mutex_lock(&LOCK_client_waiting);
@@ -2161,7 +2218,8 @@ void Ndb_index_stat_thread::do_run() {
   bool enable_ok;
   enable_ok = false;
 
-  // do we need to check or re-check sys objects (expensive)
+  // Flag used to indicate if there's a need to check for creation of index
+  // stat tables and events
   bool check_sys;
   check_sys = true;
 
@@ -2192,22 +2250,24 @@ void Ndb_index_stat_thread::do_run() {
      * created.  If not, drop out and try again next time.
      *
      * It is allowed to do initial restart of cluster while we are
-     * running.  In such case the Ndb object must be recycled to avoid
-     * some event-related asserts (bug#20888668),
+     * running. In such cases, the listener must be restarted for the event
+     * functionality to work correctly
      */
     do {
-      // initial restart was done while this mysqld was left running
+      // An initial restart may have occurred while this mysqld was left running
       if (ndb_index_stat_restart_flag) {
         ndb_index_stat_restart_flag = false;
         ndb_index_stat_set_allow(false);
-        drop_ndb(pr);
-        check_sys = true;  // sys objects are gone
+        // Stop the listener thus enforcing that it's started again further
+        // down in the loop
+        if (pr.is_util->has_listener()) stop_listener(pr);
+        check_sys = true;  // check if sys objects are gone
+        log_info("Initial restart detected");
       }
 
       // check enable flag
       {
-        /* const bool enable_ok_new= THDVAR(NULL, index_stat_enable); */
-        const bool enable_ok_new = ndb_index_stat_get_enable(NULL);
+        const bool enable_ok_new = ndb_index_stat_get_enable(nullptr);
 
         if (enable_ok != enable_ok_new) {
           DBUG_PRINT("index_stat",
@@ -2220,21 +2280,19 @@ void Ndb_index_stat_thread::do_run() {
       if (!enable_ok) {
         DBUG_PRINT("index_stat", ("Index stats is not enabled"));
         ndb_index_stat_set_allow(false);
-        drop_ndb(pr);
+        drop_ndb(&pr);
         break;
       }
 
       // the Ndb object is needed first
-      if (pr.ndb == NULL) {
-        if (create_ndb(pr, g_ndb_cluster_connection) == -1) break;
+      if (pr.ndb == nullptr) {
+        if (create_ndb(&pr, g_ndb_cluster_connection) == -1) break;
       }
 
       // sys objects
       if (check_sys) {
         // at enable check or create stats tables and events
-        if (check_or_create_systables(pr) == -1 ||
-            check_or_create_sysevents(pr) == -1)
-          break;
+        if (check_systables(pr) == -1 || check_sysevents(pr) == -1) break;
       }
 
       // listener is not critical but error means something is wrong
@@ -2279,9 +2337,9 @@ ndb_index_stat_thread_end:
   ndb_index_stat_set_allow(false);
 
   if (pr.is_util) {
-    drop_ndb(pr);
+    drop_ndb(&pr);
     delete pr.is_util;
-    pr.is_util = 0;
+    pr.is_util = nullptr;
   }
 
   mysql_mutex_unlock(&LOCK_client_waiting);
@@ -2297,7 +2355,7 @@ static ulonglong ndb_index_stat_round(double x) {
   if (x < 0.0) x = 0.0;
   snprintf(buf, sizeof(buf), "%.0f", x);
   /* mysql provides my_strtoull */
-  ulonglong n = my_strtoull(buf, 0, 10);
+  ulonglong n = my_strtoull(buf, nullptr, 10);
   return n;
 }
 
@@ -2310,17 +2368,20 @@ static int ndb_index_stat_wait_query(Ndb_index_stat *st,
                                      const Ndb_index_stat_snap &snap) {
   DBUG_TRACE;
 
+  bool hold_lock = false;
   Ndb_index_stat_glob &glob = ndb_index_stat_glob;
-  mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
   int err = 0;
-  uint count = 0;
+  uint count [[maybe_unused]] = 0;
   struct timespec abstime;
-  glob.wait_stats++;
-  glob.query_count++;
   while (true) {
     int ret = 0;
     /* Query waits for any samples */
-    if (st->sample_version > 0) break;
+    if (likely(st->sample_version > 0)) break;
+    if (!hold_lock) {
+      mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
+      glob.wait_stats++;
+    }
+    hold_lock = true;
     if (st->no_stats) {
       /* Have detected no stats now or before */
       err = NdbIndexStat::NoIndexStats;
@@ -2328,7 +2389,7 @@ static int ndb_index_stat_wait_query(Ndb_index_stat *st,
       break;
     }
     if (st->error.code != 0) {
-      /* An error has accured now or before */
+      /* An error has occured now or before */
       err = NdbIndexStat::MyHasError;
       glob.query_error++;
       break;
@@ -2339,11 +2400,11 @@ static int ndb_index_stat_wait_query(Ndb_index_stat *st,
     */
     if (st->load_time != snap.load_time ||
         st->sample_version != snap.sample_version) {
-      DBUG_ASSERT(false);
+      assert(false);
       err = NdbIndexStat::NoIndexStats;
       break;
     }
-    if (st->abort_request) {
+    if (st->to_delete) {
       err = NdbIndexStat::MyAbortReq;
       break;
     }
@@ -2359,10 +2420,12 @@ static int ndb_index_stat_wait_query(Ndb_index_stat *st,
       break;
     }
   }
-  assert(glob.wait_stats != 0);
-  glob.wait_stats--;
-  mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
-  if (err != 0) {
+  if (unlikely(hold_lock)) {
+    assert(glob.wait_stats != 0);
+    glob.wait_stats--;
+    mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
+  }
+  if (unlikely(err != 0)) {
     DBUG_PRINT("index_stat", ("st %s wait_query error: %d", st->id, err));
     return err;
   }
@@ -2378,7 +2441,7 @@ static int ndb_index_stat_wait_analyze(Ndb_index_stat *st,
   Ndb_index_stat_glob &glob = ndb_index_stat_glob;
   mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
   int err = 0;
-  uint count = 0;
+  uint count [[maybe_unused]] = 0;
   struct timespec abstime;
   glob.wait_update++;
   glob.analyze_count++;
@@ -2388,7 +2451,7 @@ static int ndb_index_stat_wait_analyze(Ndb_index_stat *st,
     if (st->sample_version > snap.sample_version) break;
     if (st->error_count != snap.error_count) {
       /* A new error has occurred */
-      DBUG_ASSERT(st->error_count > snap.error_count);
+      assert(st->error_count > snap.error_count);
       err = st->error.code;
       glob.analyze_error++;
       break;
@@ -2399,11 +2462,11 @@ static int ndb_index_stat_wait_analyze(Ndb_index_stat *st,
     */
     if (st->load_time != snap.load_time ||
         st->sample_version != snap.sample_version) {
-      DBUG_ASSERT(false);
+      assert(false);
       err = NdbIndexStat::AlienUpdate;
       break;
     }
-    if (st->abort_request) {
+    if (st->to_delete) {
       err = NdbIndexStat::MyAbortReq;
       break;
     }
@@ -2469,10 +2532,14 @@ int ha_ndbcluster::ndb_index_stat_query(uint inx, const key_range *min_key,
   Ndb_index_stat_snap snap;
   Ndb_index_stat *st =
       ndb_index_stat_get_share(m_share, index, m_table, snap, err, true, false);
-  if (st == 0) return err;
+  if (unlikely(st == nullptr)) return err;
   /* Now holding reference to st */
 
   do {
+    st->query_count++;
+    if (unlikely(st->query_count > 1000)) {
+      move_to_glob(st);
+    }
     err = ndb_index_stat_wait_query(st, snap);
     if (err != 0) break;
     assert(st->sample_version != 0);
@@ -2501,9 +2568,7 @@ int ha_ndbcluster::ndb_index_stat_query(uint inx, const key_range *min_key,
   } while (0);
 
   /* Release reference to st */
-  mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
-  ndb_index_stat_ref_count(st, false);
-  mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
+  st->release_client_ref();
   return err;
 }
 
@@ -2515,13 +2580,47 @@ int ha_ndbcluster::ndb_index_stat_get_rir(uint inx, key_range *min_key,
   NdbIndexStat::Stat stat(stat_buffer);
   int err = ndb_index_stat_query(inx, min_key, max_key, stat, 1);
   if (err == 0) {
+    /*
+     * TODO: 'Rows in range' estimates will be inaccurate for
+     * 'pruned-scan' ranges. Need to be solved in a way similar to
+     * ::ndb_index_stat_set_rpk()
+     */
+    const Uint32 fragments = m_table->getFragmentCount();
+
+    /**
+     * Check quality of index_stat before it is used to set RPK.
+     * There might have been too much update activity on the table,
+     * not yet reflected by the statistics, or the single fragment sample
+     * being too skeewed such that it does not represent the real data.
+     */
+    if (stats.records / fragments <= 1) {
+      // Too few rows for a single fragment sample to be useful at all
+      DBUG_PRINT("index_stat",
+                 ("Too few rows in: %s", m_index[inx].index->getName()));
+      return NdbIndexStat::NoIndexStats;
+    }
+    Uint32 rows_in_sample;
+    NdbIndexStat::get_numrows(stat, &rows_in_sample);
+    const ha_rows estm_rows = rows_in_sample * fragments;
+    if (estm_rows * 2 < stats.records || estm_rows / 2 > stats.records) {
+      /**
+       * Number of estimated rows in statistics deviated too much from
+       * what we have recorded on the table stats level. Thus we choose
+       * to not use it, handle it as 'NoIndexStats'.
+       */
+      DBUG_PRINT("index_stat",
+                 ("Ignored outdated statistics: %s"
+                  ", estm_rows:%llu, records:%llu",
+                  m_index[inx].index->getName(), estm_rows, stats.records));
+      return NdbIndexStat::NoIndexStats;
+    }
     double rir = -1.0;
     NdbIndexStat::get_rir(stat, &rir);
     ha_rows rows = ndb_index_stat_round(rir);
     /* Estimate only so cannot return exact zero */
     if (rows == 0) rows = 1;
     *rows_out = rows;
-#ifndef DBUG_OFF
+#ifndef NDEBUG
     char rule[NdbIndexStat::RuleBufferBytes];
     NdbIndexStat::get_rule(stat, rule);
 #endif
@@ -2536,16 +2635,80 @@ int ha_ndbcluster::ndb_index_stat_set_rpk(uint inx) {
 
   uint8 stat_buffer[NdbIndexStat::StatBufferBytes];
   NdbIndexStat::Stat stat(stat_buffer);
-  const key_range *min_key = 0;
-  const key_range *max_key = 0;
+  const key_range *min_key = nullptr;
+  const key_range *max_key = nullptr;
   const int err = ndb_index_stat_query(inx, min_key, max_key, stat, 2);
   if (err == 0) {
+    Uint32 rows_in_sample;
+    NdbIndexStat::get_numrows(stat, &rows_in_sample);
+    const Uint32 fragments = m_table->getFragmentCount();
+    const ha_rows estm_rows = rows_in_sample * fragments;
+
+    /**
+     * Check quality of index_stat before it is used to get RPK.
+     * There might have been too much update activity on the table,
+     * not yet reflected by the statistics, or the single fragment sample
+     * being too skeewed such that it does not represent the real data.
+     */
+    if (stats.records / fragments <= 1) {
+      // Too few rows for a single fragment sample to be useful at all
+      DBUG_PRINT("index_stat",
+                 ("Too few rows in: %s", m_index[inx].index->getName()));
+      return NdbIndexStat::NoIndexStats;
+    }
+    if (estm_rows * 2 < stats.records || estm_rows / 2 > stats.records) {
+      /**
+       * Number of estimated rows in statistics deviated too much from
+       * what we have recorded on the table stats level. Thus we choose
+       * to not use it, handle it as 'NoIndexStats'.
+       */
+      DBUG_PRINT("index_stat",
+                 ("Ignored outdated statistics: %s"
+                  ", estm_rows:%llu, records:%llu",
+                  m_index[inx].index->getName(), estm_rows, stats.records));
+      return NdbIndexStat::NoIndexStats;
+    }
     KEY *key_info = table->key_info + inx;
+    const KEY_PART_INFO *key_part_info = key_info->key_part;
+    const uint num_part_fields =
+        bitmap_bits_set(&m_part_info->full_part_field_set);
+    uint num_part_fields_found = 0;
     for (uint k = 0; k < key_info->user_defined_key_parts; k++) {
-      double rpk = -1.0;
-      NdbIndexStat::get_rpk(stat, k, &rpk);
-      key_info->set_records_per_key(k, static_cast<rec_per_key_t>(rpk));
-#ifndef DBUG_OFF
+      double rpk = REC_PER_KEY_UNKNOWN;  // unknown -> -1.0
+      const uint field_index = key_part_info[k].field->field_index();
+      if (bitmap_is_set(&m_part_info->full_part_field_set, field_index)) {
+        num_part_fields_found++;
+      }
+      if ((k == (key_info->user_defined_key_parts - 1)) &&
+          (get_index_type(inx) == UNIQUE_ORDERED_INDEX ||
+           get_index_type(inx) == PRIMARY_KEY_ORDERED_INDEX)) {
+        /**
+         * All key fields in a UQ/PK are specified. No need to consult
+         * index stat to know that only a single row will be returned.
+         */
+        rpk = 1.0;
+      } else {
+        if (num_part_fields_found >= num_part_fields) {
+          /**
+           * The records per key calculation assumes independence between
+           * distribution of data and key columns. This is true as long as
+           * the key parts don't set the entire partition key. In this case
+           * the records per key as calculated by one fragment is the
+           * records per key also for the entire table since different
+           * fragments will have its own set of unique key values in this
+           * case. For more information on this see NdbIndexStatImpl.cpp
+           * and the method iterative_solution and get_unp_factor.
+           */
+          assert(num_part_fields_found == num_part_fields);
+          NdbIndexStat::get_rpk_pruned(stat, k, &rpk);
+        } else {
+          NdbIndexStat::get_rpk(stat, k, &rpk);
+        }
+      }
+      if (rpk != REC_PER_KEY_UNKNOWN) {
+        key_info->set_records_per_key(k, static_cast<rec_per_key_t>(rpk));
+      }
+#ifndef NDEBUG
       char rule[NdbIndexStat::RuleBufferBytes];
       NdbIndexStat::get_rule(stat, rule);
 #endif
@@ -2564,7 +2727,7 @@ int ha_ndbcluster::ndb_index_stat_analyze(uint *inx_list, uint inx_count) {
     Ndb_index_stat_snap snap;
     int err;
     Req() {
-      st = 0;
+      st = nullptr;
       err = 0;
     }
   };
@@ -2580,7 +2743,7 @@ int ha_ndbcluster::ndb_index_stat_analyze(uint *inx_list, uint inx_count) {
 
     r.st = ndb_index_stat_get_share(m_share, index, m_table, r.snap, r.err,
                                     true, true);
-    assert((r.st != 0) == (r.err == 0));
+    assert((r.st != nullptr) == (r.err == 0));
     /* Now holding reference to r.st if r.err == 0 */
   }
 
@@ -2596,9 +2759,7 @@ int ha_ndbcluster::ndb_index_stat_analyze(uint *inx_list, uint inx_count) {
       DBUG_PRINT("index_stat", ("wait for update: %s", index->getName()));
       r.err = ndb_index_stat_wait_analyze(r.st, r.snap);
       /* Release reference to r.st */
-      mysql_mutex_lock(&ndb_index_stat_thread.stat_mutex);
-      ndb_index_stat_ref_count(r.st, false);
-      mysql_mutex_unlock(&ndb_index_stat_thread.stat_mutex);
+      r.st->release_client_ref();
     }
   }
 
@@ -2621,6 +2782,8 @@ static SHOW_VAR ndb_status_vars_index_stat[] = {
     {"cache_query", (char *)&g_ndb_status_index_stat_cache_query, SHOW_LONG,
      SHOW_SCOPE_GLOBAL},
     {"cache_clean", (char *)&g_ndb_status_index_stat_cache_clean, SHOW_LONG,
+     SHOW_SCOPE_GLOBAL},
+    {"event_count", (char *)&g_ndb_status_index_stat_event_count, SHOW_LONG,
      SHOW_SCOPE_GLOBAL},
     {NullS, NullS, SHOW_LONG, SHOW_SCOPE_GLOBAL}};
 

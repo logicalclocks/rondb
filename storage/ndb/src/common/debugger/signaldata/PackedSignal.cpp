@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,118 +28,204 @@
 #include <signaldata/FireTrigOrd.hpp>
 #include <debugger/DebuggerNames.hpp>
 
+#include <EventLogger.hpp>
+
+Uint32 packedSignalLength(Uint32 signalType)
+{
+  switch (signalType)
+  {
+  case ZCOMMIT:
+  {
+    return 5;
+  }
+  case ZCOMPLETE:
+  {
+    return 3;
+  }
+  case ZCOMMITTED:
+  {
+    return 3;
+  }
+  case ZCOMPLETED:
+  {
+    return 3;
+  }
+  case ZLQHKEYCONF:
+  {
+    return LqhKeyConf::SignalLength;
+  }
+  case ZREMOVE_MARKER:
+  {
+    return 3;
+  }
+  case ZFIRE_TRIG_REQ:
+  {
+    return FireTrigReq::SignalLength;
+  }
+  case ZFIRE_TRIG_CONF:
+  {
+    return FireTrigConf::SignalLength;
+  }
+  default:
+  {
+    return RNIL;
+  }
+  }
+}
+
+const char* packedSignalName(Uint32 signalType, bool failApi)
+{
+  switch (signalType)
+  {
+  case ZCOMMIT:
+  {
+    return "COMMIT";
+  }
+  case ZCOMPLETE:
+  {
+    return "COMPLETE";
+  }
+  case ZCOMMITTED:
+  {
+    return "COMMITTED";
+  }
+  case ZCOMPLETED:
+  {
+    return "COMPLETED";
+  }
+  case ZLQHKEYCONF:
+  {
+    return "LQHKEYCONF";
+  }
+  case ZREMOVE_MARKER:
+  {
+    return failApi ? "REMOVE_MARKER_FAIL_API" : "REMOVE_MARKER";
+  }
+  case ZFIRE_TRIG_REQ:
+  {
+    return "FIRE_TRIG_REQ";
+  }
+  case ZFIRE_TRIG_CONF:
+  {
+    return "FIRE_TRIG_CONF";
+  }
+  default:
+  {
+    return 0;
+  }
+  }
+}
+
 bool
-printPACKED_SIGNAL(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
-  fprintf(output, "Signal data: ");
-  Uint32 i = 0;
-  while (i < len)
-    fprintf(output, "H\'%.8x ", theData[i++]);
-  fprintf(output,"\n");
-  fprintf(output, "--------- Begin Packed Signals --------\n");  
-  // Print each signal separately
-  for (i = 0; i < len;) {
-    switch (PackedSignal::getSignalType(theData[i])) {
-    case ZCOMMIT: {
-      Uint32 signalLength = 5;
-      fprintf(output, "--------------- Signal ----------------\n");
-      fprintf(output, "r.bn: %u \"%s\", length: %u \"COMMIT\"\n", 
-	      receiverBlockNo, getBlockName(receiverBlockNo,""), signalLength);
-      fprintf(output, "Signal data: ");
-      for(Uint32 j = 0; j < signalLength; j++)
-	fprintf(output, "H\'%.8x ", theData[i++]);
-      fprintf(output,"\n");
-      break;
-    }
-    case ZCOMPLETE: {
-      Uint32 signalLength = 3;
-      fprintf(output, "--------------- Signal ----------------\n");
-      fprintf(output, "r.bn: %u \"%s\", length: %u \"COMPLETE\"\n",
-	      receiverBlockNo, getBlockName(receiverBlockNo,""), signalLength);
-      fprintf(output, "Signal data: ");
-      for(Uint32 j = 0; j < signalLength; j++)
-	fprintf(output, "H\'%.8x ", theData[i++]);
-      fprintf(output,"\n");
-      break;
-    }    
-    case ZCOMMITTED: {
-      Uint32 signalLength = 3;
-      fprintf(output, "--------------- Signal ----------------\n");
-      fprintf(output, "r.bn: %u \"%s\", length: %u \"COMMITTED\"\n",
-	      receiverBlockNo, getBlockName(receiverBlockNo,""), signalLength);
-      fprintf(output, "Signal data: ");
-      for(Uint32 j = 0; j < signalLength; j++)
-	fprintf(output, "H\'%.8x ", theData[i++]);
-      fprintf(output,"\n");
-      break;
-    }
-    case ZCOMPLETED: {
-      Uint32 signalLength = 3;
-      fprintf(output, "--------------- Signal ----------------\n");
-      fprintf(output, "r.bn: %u \"%s\", length: %u \"COMPLETED\"\n",
-	      receiverBlockNo, getBlockName(receiverBlockNo,""), signalLength);
-      fprintf(output, "Signal data: ");
-      for(Uint32 j = 0; j < signalLength; j++)
-	fprintf(output, "H\'%.8x ", theData[i++]);
-      fprintf(output,"\n");
-      break;
-    }
-    case  ZLQHKEYCONF: {
-      Uint32 signalLength = LqhKeyConf::SignalLength;
-
-      fprintf(output, "--------------- Signal ----------------\n");
-      fprintf(output, "r.bn: %u \"%s\", length: %u \"LQHKEYCONF\"\n",
-	      receiverBlockNo, getBlockName(receiverBlockNo,""), signalLength);
-      printLQHKEYCONF(output, theData + i, signalLength, receiverBlockNo);
-      i += signalLength;
-      break;
-    }
-    case ZREMOVE_MARKER:
+printPACKED_SIGNAL(FILE * output,
+                   const Uint32 * theData,
+                   Uint32 len,
+                   Uint16 /*receiverBlockNo*/)
+{
+  assert(len <= 25);
+  Uint32 sigOffsets[25];
+  int numberOfSignals = 0;
+  for (Uint32 i = 0; i < len;)
+  {
+    sigOffsets[numberOfSignals] = i;
+    numberOfSignals++;
+    Uint32 signalType = PackedSignal::getSignalType(theData[i]);
+    switch (signalType)
     {
-      bool removed_by_api = !(theData[i] & 1);
-      Uint32 signalLength = 2;
-      fprintf(output, "--------------- Signal ----------------\n");
-      if (removed_by_api)
-      {
-        fprintf(output, "r.bn: %u \"%s\", length: %u \"REMOVE_MARKER\"\n",
-	        receiverBlockNo, getBlockName(receiverBlockNo,""), signalLength);
-      }
-      else
-      {
-        fprintf(output, "r.bn: %u \"%s\", length: %u \"REMOVE_MARKER_FAIL_API\"\n",
-	        receiverBlockNo, getBlockName(receiverBlockNo,""), signalLength);
-      }
-      fprintf(output, "Signal data: ");
-      i++; // Skip first word!
-      for(Uint32 j = 0; j < signalLength; j++)
-	fprintf(output, "H\'%.8x ", theData[i++]);
-      fprintf(output,"\n");
-      break;
-    }
-    case ZFIRE_TRIG_REQ: {
-      Uint32 signalLength = FireTrigReq::SignalLength;
-
-      fprintf(output, "--------------- Signal ----------------\n");
-      fprintf(output, "r.bn: %u \"%s\", length: %u \"FIRE_TRIG_REQ\"\n",
-	      receiverBlockNo, getBlockName(receiverBlockNo,""), signalLength);
-      i += signalLength;
-      break;
-    }
-    case ZFIRE_TRIG_CONF: {
-      Uint32 signalLength = FireTrigConf::SignalLength;
-
-      fprintf(output, "--------------- Signal ----------------\n");
-      fprintf(output, "r.bn: %u \"%s\", length: %u \"FIRE_TRIG_CONF\"\n",
-	      receiverBlockNo, getBlockName(receiverBlockNo,""), signalLength);
-      i += signalLength;
+    case ZCOMMIT:
+    case ZCOMPLETE:
+    case ZCOMMITTED:
+    case ZCOMPLETED:
+    case ZLQHKEYCONF:
+    case ZREMOVE_MARKER:
+    case ZFIRE_TRIG_REQ:
+    case ZFIRE_TRIG_CONF:
+    {
+      i += packedSignalLength(signalType);
       break;
     }
     default:
-      fprintf(output, "Unknown signal type\n");
-      i = len; // terminate printing
+    {
+      // Stop processing
+      i = len;
       break;
     }
+    }
+  }
+  // Print each signal separately
+  for (int i = -1; i < numberOfSignals; i++)
+  {
+    // Reverse the print order if we are in signal memory dump.
+    int idx = globalIsInCrashlog ? (numberOfSignals - i - 2) : i;
+    /**
+     * Print the main signal when idx == -1 and the packed signals when
+     * 0 <= idx < numberOfSignals. We handle the special case idx == -1 inside
+     * the loop to make it easier to reverse the order.
+     */
+    if (idx == -1) // Print the main signal
+    {
+      printHex(output, theData, len, "Signal data:");
+    }
+    if (idx == (globalIsInCrashlog ? numberOfSignals - 1 : 0))
+    {
+      fprintf(output, "  -------- Begin Packed Signals --------\n");
+    }
+    if (0 <= idx) // Print a packed signal
+    {
+      Uint32 offset = sigOffsets[idx];
+      Uint32 signalType = PackedSignal::getSignalType(theData[offset]);
+      Uint32 signalLength = packedSignalLength(signalType);
+      const char* signalName =
+        packedSignalName(signalType, theData[offset] & 1);
+      // If you change the print format, then update the legend in
+      // ErrorReporter::WriteMessage to match.
+      fprintf(output, "  ----------- Packed signal %d -----------\n", idx);
+      fprintf(output, "  length: %u, r.sn: \"%s\"\n", signalLength, signalName);
+      switch (signalType)
+      {
+      case ZCOMMIT:
+      case ZCOMPLETE:
+      case ZCOMMITTED:
+      case ZCOMPLETED:
+      case ZLQHKEYCONF:
+      {
+        printHex(output, &theData[offset], signalLength, "  Signal data:");
+        break;
+      }
+      case ZREMOVE_MARKER:
+      {
+        // Skip first word!
+        printHex(output, &theData[offset + 1], signalLength - 1,
+                 "  Signal data:");
+        break;
+      }
+      case ZFIRE_TRIG_REQ:
+      case ZFIRE_TRIG_CONF:
+      {
+        break;
+      }
+      default:
+      {
+        fprintf(output, "  ----------- Packed signal %d -----------\n", idx);
+        fprintf(output, "  Unknown signal type H\'%.8x.\n", signalType);
+        fprintf(output,
+                "  There might be more packed signals with indices higher than"
+                " %d.\n  If so, they are not printed.\n", idx);
+        break;
+      }
+      }
+      if (globalIsInCrashlog)
+      {
+        // Print the jam table for one signal, using the packed index for
+        // synchronization.
+        globalDumpOneJam(output, 2, idx, "");
+      }
+    }
+    if (idx == (globalIsInCrashlog ? 0 : numberOfSignals - 1))
+    {
+      fprintf(output, "  --------- End Packed Signals ---------\n");
+    }
   }//for
-  fprintf(output, "--------- End Packed Signals ----------\n");
   return true;
 }
 
@@ -151,7 +238,7 @@ PackedSignal::verify(const Uint32* data, Uint32 len, Uint32 receiverBlockNo,
 
   if (unlikely(len > 25))
   {
-    fprintf(stderr, "Bad PackedSignal length : %u\n", len);
+    g_eventLogger->info("Bad PackedSignal length : %u", len);
     bad = true;
   }
   else
@@ -161,8 +248,9 @@ PackedSignal::verify(const Uint32* data, Uint32 len, Uint32 receiverBlockNo,
       Uint32 sigType = data[pos] >> 28;
       if (unlikely(((1 << sigType) & typesExpected) == 0))
       {
-        fprintf(stderr, "Unexpected sigtype in packed signal : %u at pos %u.  Expected : %u\n",
-                sigType, pos, typesExpected);
+        g_eventLogger->info(
+            "Unexpected sigtype in packed signal: %u at pos %u. Expected : %u",
+            sigType, pos, typesExpected);
         bad = true;
         break;
       }
@@ -194,8 +282,8 @@ PackedSignal::verify(const Uint32* data, Uint32 len, Uint32 receiverBlockNo,
         pos+= FireTrigConf::SignalLength;
         break;
       default :
-        fprintf(stderr, "Unrecognised signal type %u at pos %u\n",
-                sigType, pos);
+        g_eventLogger->info("Unrecognised signal type %u at pos %u", sigType,
+                            pos);
         bad = true;
         break;
       }
@@ -209,8 +297,9 @@ PackedSignal::verify(const Uint32* data, Uint32 len, Uint32 receiverBlockNo,
     
     if (!bad)
     {
-      fprintf(stderr, "Packed signal component length (%u) != total length (%u)\n",
-               pos, len);
+      g_eventLogger->info(
+          "Packed signal component length (%u) != total length (%u)",
+          pos, len);
     }
   }
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2015, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -58,7 +58,8 @@ using std::map;
 Gcs_xcom_communication::Gcs_xcom_communication(
     Gcs_xcom_statistics_updater *stats, Gcs_xcom_proxy *proxy,
     Gcs_xcom_view_change_control_interface *view_control,
-    Gcs_xcom_engine *gcs_engine, Gcs_group_identifier const &group_id)
+    Gcs_xcom_engine *gcs_engine, Gcs_group_identifier const &group_id,
+    std::unique_ptr<Network_provider_management_interface> comms_mgmt)
     : event_listeners(),
       stats(stats),
       m_xcom_proxy(proxy),
@@ -67,13 +68,14 @@ Gcs_xcom_communication::Gcs_xcom_communication(
       m_buffered_packets(),
       m_xcom_nodes(),
       m_gid_hash(),
-      m_protocol_changer(*gcs_engine, m_msg_pipeline) {
+      m_protocol_changer(*gcs_engine, m_msg_pipeline),
+      m_comms_mgmt_interface(std::move(comms_mgmt)) {
   const void *id_str = group_id.get_group_id().c_str();
   m_gid_hash = Gcs_xcom_utils::mhash(static_cast<const unsigned char *>(id_str),
                                      group_id.get_group_id().size());
 }
 
-Gcs_xcom_communication::~Gcs_xcom_communication() {}
+Gcs_xcom_communication::~Gcs_xcom_communication() = default;
 
 std::map<int, const Gcs_communication_event_listener &>
     *Gcs_xcom_communication::get_event_listeners() {
@@ -218,7 +220,7 @@ void Gcs_xcom_communication::notify_received_message(
 
 void Gcs_xcom_communication::buffer_incoming_packet(
     Gcs_packet &&packet, std::unique_ptr<Gcs_xcom_nodes> &&xcom_nodes) {
-  DBUG_ASSERT(m_view_control->is_view_changing());
+  assert(m_view_control->is_view_changing());
 
   MYSQL_GCS_LOG_TRACE("Buffering packet cargo=%u", packet.get_cargo_type());
 
@@ -257,7 +259,7 @@ void Gcs_xcom_communication::update_members_information(
 std::vector<Gcs_xcom_node_information>
 Gcs_xcom_communication::possible_packet_recovery_donors() const {
   auto const &all_members = m_xcom_nodes.get_nodes();
-  DBUG_ASSERT(!all_members.empty());
+  assert(!all_members.empty());
 
   std::vector<Gcs_xcom_node_information> donors;
 
@@ -273,7 +275,7 @@ Gcs_xcom_communication::possible_packet_recovery_donors() const {
         };
     std::copy_if(all_members.cbegin(), all_members.cend(),
                  std::back_inserter(donors), not_me_predicate);
-    DBUG_ASSERT(donors.size() == all_members.size() - 1);
+    assert(donors.size() == all_members.size() - 1);
   }
 
   return donors;
@@ -307,7 +309,8 @@ Gcs_xcom_communication::process_recovered_packet(
   std::memcpy(data.get(), recovered_data.data.data_val, data_len);
   // Create the packet.
   packet = Gcs_packet::make_incoming_packet(
-      std::move(data), data_len, recovered_data.synode, m_msg_pipeline);
+      std::move(data), data_len, recovered_data.synode, recovered_data.origin,
+      m_msg_pipeline);
 
   /*
    The packet should always be a user data packet, but rather than asserting
@@ -526,13 +529,13 @@ Gcs_message *Gcs_xcom_communication::convert_packet_to_message(
     /* purecov: end */
   }
   // Get packet origin.
-  packet_synode = packet_in.get_delivery_synode();
+  packet_synode = packet_in.get_origin_synode();
   node = xcom_nodes->get_node(packet_synode.get_synod().node);
   origin = Gcs_member_identifier(node->get_member_id());
   intf = static_cast<Gcs_xcom_interface *>(Gcs_xcom_interface::get_interface());
   destination =
       intf->get_xcom_group_information(packet_synode.get_synod().group_id);
-  DBUG_ASSERT(destination != nullptr);
+  assert(destination != nullptr);
   // Construct the message.
   message = new Gcs_message(origin, *destination, message_data);
 
@@ -631,4 +634,14 @@ Gcs_xcom_communication::get_maximum_supported_protocol_version() const {
 void Gcs_xcom_communication::set_maximum_supported_protocol_version(
     Gcs_protocol_version version) {
   return m_protocol_changer.set_maximum_supported_protocol_version(version);
+}
+
+void Gcs_xcom_communication::set_communication_protocol(
+    enum_transport_protocol protocol) {
+  m_comms_mgmt_interface->set_running_protocol(protocol);
+}
+
+enum_transport_protocol
+Gcs_xcom_communication::get_incoming_connections_protocol() {
+  return m_comms_mgmt_interface->get_incoming_connections_protocol();
 }

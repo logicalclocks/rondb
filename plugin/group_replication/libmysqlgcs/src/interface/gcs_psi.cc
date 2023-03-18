@@ -1,4 +1,4 @@
-/* Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2017, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,22 +30,25 @@
 PSI_thread_key key_GCS_THD_Gcs_ext_logger_impl_m_consumer,
     key_GCS_THD_Gcs_xcom_engine_m_engine_thread,
     key_GCS_THD_Gcs_xcom_control_m_xcom_thread,
-    key_GCS_THD_Gcs_xcom_control_m_suspicions_processing_thread;
+    key_GCS_THD_Gcs_xcom_control_m_suspicions_processing_thread,
+    key_GCS_THD_Gcs_xcom_network_provider_m_network_provider_tcp_server;
 
 static PSI_thread_info all_gcs_psi_thread_keys_info[] = {
     {&key_GCS_THD_Gcs_ext_logger_impl_m_consumer,
-     "THD_Gcs_ext_logger_impl::m_consumer", PSI_FLAG_SINGLETON, 0,
-     PSI_DOCUMENT_ME},
+     "THD_Gcs_ext_logger_impl::m_consumer", "gcs_ext_log", PSI_FLAG_SINGLETON,
+     0, PSI_DOCUMENT_ME},
     {&key_GCS_THD_Gcs_xcom_engine_m_engine_thread,
-     "THD_Gcs_xcom_engine::m_engine_thread", PSI_FLAG_SINGLETON, 0,
-     PSI_DOCUMENT_ME},
+     "THD_Gcs_xcom_engine::m_engine_thread", "gcs_engine", PSI_FLAG_SINGLETON,
+     0, PSI_DOCUMENT_ME},
     {&key_GCS_THD_Gcs_xcom_control_m_xcom_thread,
-     "THD_Gcs_xcom_control::m_xcom_thread", PSI_FLAG_SINGLETON, 0,
+     "THD_Gcs_xcom_control::m_xcom_thread", "gcs_xcom", PSI_FLAG_SINGLETON, 0,
      PSI_DOCUMENT_ME},
     {&key_GCS_THD_Gcs_xcom_control_m_suspicions_processing_thread,
-     "THD_Gcs_xcom_control::m_suspicions_processing_thread", PSI_FLAG_SINGLETON,
-     0, PSI_DOCUMENT_ME},
-};
+     "THD_Gcs_xcom_control::m_suspicions_processing_thread", "gcs_suspect",
+     PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME},
+    {&key_GCS_THD_Gcs_xcom_network_provider_m_network_provider_tcp_server,
+     "THD_Gcs_xcom_network_provider::m_network_provider_tcp_server",
+     "gcs_xcom_comm", PSI_FLAG_SINGLETON, 0, PSI_DOCUMENT_ME}};
 
 PSI_mutex_key key_GCS_MUTEX_Gcs_async_buffer_m_free_buffer_mutex,
     key_GCS_MUTEX_Gcs_suspicions_manager_m_suspicions_mutex,
@@ -137,12 +140,16 @@ static PSI_cond_info all_gcs_psi_cond_keys_info[] = {
      "GCS_Gcs_suspicions_manager::m_suspicions_cond", PSI_FLAG_SINGLETON, 0,
      PSI_DOCUMENT_ME}};
 
-PSI_memory_key key_MEM_XCOM_xcom_cache;
+PSI_memory_key key_MEM_XCOM_xcom_cache, key_MEM_Gcs_message_data_m_buffer;
 
 static PSI_memory_info xcom_cache_memory_info[] = {
     {&key_MEM_XCOM_xcom_cache, "GCS_XCom::xcom_cache",
      PSI_FLAG_ONLY_GLOBAL_STAT, PSI_VOLATILITY_UNKNOWN,
-     "Memory usage statistics for the XCom cache."}};
+     "Memory usage statistics for the XCom cache."},
+    {&key_MEM_Gcs_message_data_m_buffer, "Gcs_message_data::m_buffer",
+     PSI_FLAG_ONLY_GLOBAL_STAT, PSI_VOLATILITY_UNKNOWN,
+     "Memory used for the transaction data payload which is send to the "
+     "network."}};
 
 void register_gcs_thread_psi_keys() {
   const char *category = "group_rpl";
@@ -188,7 +195,7 @@ int psi_report_mem_alloc(size_t size) {
     return 0;
   }
   /* This instrument is flagged global, so there should be no thread owner. */
-  DBUG_ASSERT(owner == nullptr);
+  assert(owner == nullptr);
 #endif /* HAVE_PSI_MEMORY_INTERFACE */
   current_count += size;
   return 1;
@@ -213,4 +220,4 @@ void psi_report_mem_free(size_t size, int is_instrumented) {
   we have allocated data that has not been deallocated (or has not been
   reported as deallocated).
 */
-void psi_report_cache_shutdown() { DBUG_ASSERT(current_count == 0); }
+void psi_report_cache_shutdown() { assert(current_count == 0); }

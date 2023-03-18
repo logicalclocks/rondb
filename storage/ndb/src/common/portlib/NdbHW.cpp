@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2013, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2013, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,12 +22,14 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+#include "util/require.h"
 #include <NdbHW.hpp>
 #include <UtilBuffer.hpp>
 #include <File.hpp>
 #include <NdbTick.h>
 #include <NdbThread.h>
 #include <ndb_limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include "../src/common/util/parse_mask.hpp"
 #include <iostream>
@@ -91,12 +93,21 @@ int NdbHW_Init()
     else
     {
       ncpu = (Uint32) tmp;
+      DEBUG_HW((stderr,
+                "%u CPUs found using sysconf(_SC_NPROCESSORS_CONF)\n",
+                ncpu));
     }
   }
 #elif _WIN32
   ncpu = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+  DEBUG_HW((stderr,
+            "%u CPUs found using GetActiveProcessorCount(ALL_PROCESSOR_GROUPS)\n",
+            ncpu));
 #else
   ncpu = std::thread::hardware_concurrency();
+  DEBUG_HW((stderr,
+            "%u CPUs found using std::thread::hardware_concurrency()\n",
+            ncpu));
 #endif
   if (ncpu == 0)
   {
@@ -167,7 +178,7 @@ Ndb_GetCoreCPUIds(Uint32 cpu_id, Uint32 *cpu_ids, Uint32 &num_cpus)
 {
   struct ndb_hwinfo *hwinfo = g_ndb_hwinfo;
   require(hwinfo->is_cpuinfo_available);
-  require(hwinfo->cpu_info[cpu_id].virt_l3_used);
+  require(hwinfo->cpu_info[cpu_id].online);
   if (cpu_id >= hwinfo->cpu_cnt_max)
   {
     perror("CPU out of bounds in Ndb_GetCoreCPUIds");
@@ -179,57 +190,21 @@ Ndb_GetCoreCPUIds(Uint32 cpu_id, Uint32 *cpu_ids, Uint32 &num_cpus)
     num_cpus = 1;
     return;
   }
-  Uint32 loop_count = 0;
-  /* Search backwards in the virtual L3 cache group this CPU belongs to */
-  Uint32 first_cpu_id = cpu_id;
-  Uint32 cpu_id_index = 0;
-  while (hwinfo->cpu_info[first_cpu_id].prev_virt_l3_cpu_map != RNIL)
+  Uint32 index = 1;
+  Uint32 core_id = hwinfo->cpu_info[cpu_id].core_id;
+  cpu_ids[0] = cpu_id;
+  for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
   {
-    first_cpu_id = hwinfo->cpu_info[first_cpu_id].prev_virt_l3_cpu_map;
-    cpu_id_index++;
-    loop_count++;
-    require(loop_count < 10000);
-  }
-  Uint32 num_cpus_per_group = hwinfo->num_cpus_per_group;
-  Uint32 start_cpu_index = cpu_id_index - (cpu_id_index % num_cpus_per_group);
-  Uint32 next_cpu = first_cpu_id;
-  for (Uint32 i = 0; i < start_cpu_index; i++)
-  {
-    next_cpu = hwinfo->cpu_info[next_cpu].next_virt_l3_cpu_map;
-    loop_count++;
-    require(loop_count < 10000);
-  }
-  Uint32 num_cpu_index = 0;
-  for (Uint32 i = 0; i < num_cpus_per_group; i++)
-  {
-    if (next_cpu == RNIL)
+    if ((hwinfo->cpu_info[i].online == 1) &&
+        (hwinfo->cpu_info[i].core_id == core_id) &&
+        (i != cpu_id))
     {
-      break;
+      cpu_ids[index] = i;
+      index++;
     }
-    cpu_ids[num_cpu_index++] = next_cpu;
-    next_cpu = hwinfo->cpu_info[next_cpu].next_virt_l3_cpu_map;
-    loop_count++;
-    require(loop_count < 10000);
   }
-  require(num_cpu_index > 0);
-  num_cpus = num_cpu_index;
-}
-
-void
-Ndb_SetVirtL3CPU(Uint32 cpu_id)
-{
-  require(cpu_id < g_ndb_hwinfo->cpu_cnt_max);
-  g_ndb_hwinfo->cpu_info[cpu_id].virt_l3_used = 1;
-}
-
-void
-Ndb_SetOnlineAsVirtL3CPU()
-{
-  for (Uint32 cpu_id = 0; cpu_id < g_ndb_hwinfo->cpu_cnt_max; cpu_id++)
-  {
-    g_ndb_hwinfo->cpu_info[cpu_id].virt_l3_used =
-      g_ndb_hwinfo->cpu_info[cpu_id].online;
-  }
+  num_cpus = index;
+  return;
 }
 
 Uint32
@@ -271,6 +246,7 @@ create_prev_list(struct ndb_hwinfo *hwinfo)
     require(loop_count < 10000);
   }
 }
+
 static void
 create_cpu_list(struct ndb_hwinfo *hwinfo,
                 Uint32 num_cpus_per_ldm_group,
@@ -281,7 +257,7 @@ create_cpu_list(struct ndb_hwinfo *hwinfo,
   Uint32 prev_cpu = RNIL;
   Uint32 next_cpu = RNIL;
   Uint32 all_groups = hwinfo->num_virt_l3_caches;
-  Uint32 current_groups = num_rr_groups;
+  Uint32 current_groups = num_rr_groups > 0 ? num_rr_groups : all_groups;
   bool found = false;
   Uint32 first_virt_l3_cache[MAX_NUM_CPUS];
   for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
@@ -394,7 +370,7 @@ static void create_init_virt_l3_cache_list(struct ndb_hwinfo *hwinfo)
     Uint32 count = 0;
     for (Uint32 j = 0; j < num_cpus; j++)
     {
-      if (hwinfo->cpu_info[next_cpu].virt_l3_used)
+      if (hwinfo->cpu_info[next_cpu].online)
       {
         count++;
         if (found)
@@ -416,6 +392,69 @@ static void create_init_virt_l3_cache_list(struct ndb_hwinfo *hwinfo)
     {
       g_num_virt_l3_cpus[virt_l3_cache_index] = count;
       virt_l3_cache_index++;
+    }
+  }
+  /**
+   * Sort CPUs such that we first list the efficiency cores to be used
+   * by LDM threads as much as possible. We keep the original order of
+   * the lists except that those with Power efficiency will be sorted
+   * at the end of each L3 cache list.
+   */
+  for (Uint32 i = 0; i < virt_l3_cache_index; i++)
+  {
+    Uint32 new_core_first = RNIL;
+    Uint32 new_core_last = RNIL;
+    Uint32 new_power_first = RNIL;
+    Uint32 new_power_last = RNIL;
+    Uint32 l3_list = g_first_virt_l3_cache[i];
+    do
+    {
+      Uint32 cpu_capacity = hwinfo->cpu_info[l3_list].cpu_capacity;
+      Uint32 next_list = hwinfo->cpu_info[l3_list].next_virt_l3_cpu_map;
+      if (cpu_capacity == 100)
+      {
+        if (new_core_first == RNIL)
+        {
+          new_core_first = l3_list;
+          hwinfo->cpu_info[l3_list].prev_virt_l3_cpu_map = RNIL;
+        }
+        else
+        {
+          hwinfo->cpu_info[new_core_last].next_virt_l3_cpu_map = l3_list;
+          hwinfo->cpu_info[l3_list].prev_virt_l3_cpu_map = new_core_last;
+        }
+        hwinfo->cpu_info[l3_list].next_virt_l3_cpu_map = RNIL;
+        new_core_last = l3_list;
+      }
+      else
+      {
+        if (new_power_first == RNIL)
+        {
+          new_power_first = l3_list;
+          hwinfo->cpu_info[l3_list].prev_virt_l3_cpu_map = RNIL;
+        }
+        else
+        {
+          hwinfo->cpu_info[new_power_last].next_virt_l3_cpu_map = l3_list;
+          hwinfo->cpu_info[l3_list].prev_virt_l3_cpu_map = new_power_last;
+        }
+        hwinfo->cpu_info[l3_list].next_virt_l3_cpu_map = RNIL;
+        new_power_last = l3_list;
+      }
+      l3_list = next_list;
+    } while (l3_list != RNIL);
+    if (new_core_first != RNIL)
+    {
+      g_first_virt_l3_cache[i] = new_core_first;
+      hwinfo->cpu_info[new_core_last].next_virt_l3_cpu_map = new_power_first;
+      if (new_power_first != RNIL)
+      {
+        hwinfo->cpu_info[new_power_first].prev_virt_l3_cpu_map = new_core_last;
+      }
+    }
+    else
+    {
+      g_first_virt_l3_cache[i] = new_power_first;
     }
   }
   hwinfo->num_virt_l3_caches = virt_l3_cache_index;
@@ -520,7 +559,7 @@ create_l3_cache_list(struct ndb_hwinfo *hwinfo)
               found_online,
               l3_cache_id));
   }
-  return 0; 
+  return 0;
 }
 
 static bool
@@ -691,7 +730,7 @@ split_group(struct ndb_hwinfo *hwinfo,
             Uint32 check_group_size)
 {
   /**
-   * Removed group_size CPUs from the choosen group (which is the largest
+   * Removed group_size CPUs from the chosen group (which is the largest
    * group still existing). Place the removed group at the last position
    * in the array of L3 cache groups. The original is kept in its original
    * position with the first group_size CPUs removed to the new list.
@@ -721,6 +760,8 @@ adjust_rr_group_sizes(struct ndb_hwinfo *hwinfo,
                       Uint32 ldm_group_size,
                       Uint32 num_ldm_instances)
 {
+  if(num_rr_groups == 0)
+    return;
   Uint32 group_size =
     (num_ldm_instances + (num_rr_groups - 1)) / num_rr_groups;
   Uint32 non_full_groups =
@@ -800,7 +841,7 @@ create_min_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
   for (Uint32 i = 0; i < hwinfo->num_virt_l3_caches; i++)
   {
     DEBUG_HW((stderr,
-              "Group[%u]: %u \n", i, g_num_virt_l3_cpus[i]));
+              "Group[%u]: %u\n", i, g_num_virt_l3_cpus[i]));
     if (g_num_virt_l3_cpus[i] < group_size &&
         g_num_virt_l3_cpus[i] > largest_group_size)
     {
@@ -849,13 +890,14 @@ create_min_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
 static int
 create_virt_l3_cache_list(struct ndb_hwinfo *hwinfo,
                           Uint32 optimal_group_size,
-                          Uint32 optimal_num_ldm_groups,
                           Uint32 min_group_size,
                           Uint32 max_num_groups,
                           Uint32 ldm_group_size,
                           Uint32 num_ldm_instances)
 {
   create_init_virt_l3_cache_list(hwinfo);
+  if(num_ldm_instances == 0 && max_num_groups == 0)
+    return 0;
 
   /**
    * We start by attempting to create a number of L3 cache groups
@@ -994,13 +1036,15 @@ Ndb_CreateCPUMap(Uint32 num_ldm_instances,
   Uint32 optimal_num_ldm_groups =
     (num_ldm_instances + (MAX_RR_GROUP_SIZE - 1)) /
     MAX_RR_GROUP_SIZE;
-  Uint32 optimal_group_size = 
+  Uint32 optimal_group_size = (num_ldm_instances > 0) ?
     (num_ldm_instances + (optimal_num_ldm_groups - 1)) /
-    optimal_num_ldm_groups;
+    optimal_num_ldm_groups : 0;
   Uint32 max_num_groups = num_ldm_instances < MAX_RR_GROUP_SIZE ? 1 :
     num_ldm_instances / MIN_RR_GROUP_SIZE;
-  Uint32 min_group_size = (num_ldm_instances + (max_num_groups - 1)) /
-                          max_num_groups;
+  max_num_groups = (num_ldm_instances > 0) ? max_num_groups : 0;
+  Uint32 min_group_size = (max_num_groups > 0) ?
+      (num_ldm_instances + (max_num_groups - 1)) / max_num_groups : 0;
+
   hwinfo->num_cpus_per_group = num_cpus_per_ldm_group;
   DEBUG_HW((stderr,
             "Call create_virt_l3_cache_list: "
@@ -1015,7 +1059,6 @@ Ndb_CreateCPUMap(Uint32 num_ldm_instances,
             num_cpus_per_ldm_group));
   Uint32 num_rr_groups = create_virt_l3_cache_list(hwinfo,
                                                    optimal_group_size,
-                                                   optimal_num_ldm_groups,
                                                    min_group_size,
                                                    max_num_groups,
                                                    num_cpus_per_ldm_group,
@@ -1077,6 +1120,7 @@ static struct ndb_hwinfo *Ndb_SetHWInfo()
   res->cpu_data = (ndb_cpudata*)p_cpudata;
   res->cpu_cnt_max = ncpu;
   res->cpu_cnt = ncpu;
+  res->total_cpu_capacity = ncpu * 100;
 
   for (Uint32 i = 0; i < ncpu; i++)
   {
@@ -1093,6 +1137,7 @@ static struct ndb_hwinfo *Ndb_SetHWInfo()
     g_ndb_hwinfo->cpu_info[i].group_number = Uint32(~0);
     g_ndb_hwinfo->cpu_info[i].group_index = Uint32(~0);
 #endif
+    g_ndb_hwinfo->cpu_info[i].cpu_capacity = 1;
   }
 
   if (init_hwinfo(res) || Ndb_ReloadHWInfo(res))
@@ -1180,6 +1225,7 @@ Uint32 Ndb_getCPUL3CacheId(Uint32 cpu_id)
 static void
 check_cpu_online(struct ndb_hwinfo *hwinfo)
 {
+  Uint32 total_cpu_capacity = 0;
   for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
   {
     if (!NdbThread_IsCPUAvailable(i))
@@ -1191,8 +1237,29 @@ check_cpu_online(struct ndb_hwinfo *hwinfo)
           abort();
         hwinfo->cpu_cnt--;
       }
+      else
+      {
+        if (hwinfo->cpu_info != nullptr)
+        {
+          total_cpu_capacity += hwinfo->cpu_info[i].cpu_capacity;
+        }
+      }
     }
   }
+  if (total_cpu_capacity > 0)
+  {
+    /**
+     * Only count in full CPUs (capacity == 100)
+     */
+    total_cpu_capacity /= 100;
+    total_cpu_capacity *= 100;
+    hwinfo->total_cpu_capacity = total_cpu_capacity;
+  }
+  DEBUG_HW((stderr,
+            "There are %u CPUs online after checking,"
+            " total CPU capacity %u\n",
+            hwinfo->cpu_cnt,
+            hwinfo->total_cpu_capacity));
 }
 #endif
 
@@ -1231,7 +1298,7 @@ get_processor_data(LOGICAL_PROCESSOR_RELATIONSHIP relationship,
   glpi = (LPFN_GLPI) GetProcAddress(
                           GetModuleHandle(TEXT("kernel32")),
                           "GetLogicalProcessorInformationEx");
-  if (nullptr == glpi) 
+  if (nullptr == glpi)
   {
     return nullptr;
   }
@@ -1242,9 +1309,9 @@ get_processor_data(LOGICAL_PROCESSOR_RELATIONSHIP relationship,
   {
     DWORD res = glpi(relationship, buf, &buf_len);
 
-    if (res == FALSE) 
+    if (!res)
     {
-      if (GetLastError() == ERROR_INSUFFICIENT_BUFFER) 
+      if (GetLastError() == ERROR_INSUFFICIENT_BUFFER)
       {
         if (buf != nullptr)
         {
@@ -1254,7 +1321,7 @@ get_processor_data(LOGICAL_PROCESSOR_RELATIONSHIP relationship,
         buf = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)
            malloc(buf_len);
 
-        if (buf == nullptr) 
+        if (buf == nullptr)
         {
           return nullptr;
         }
@@ -1266,7 +1333,7 @@ get_processor_data(LOGICAL_PROCESSOR_RELATIONSHIP relationship,
     }
     else
     {
-       done = TRUE;
+       done = true;
     }
   }
   return buf;
@@ -1280,8 +1347,7 @@ get_processor_data(LOGICAL_PROCESSOR_RELATIONSHIP relationship,
  * at least not outside its L3 cache, and these always reside
  * in the same CPU group in Windows.
  */
-int set_num_groups(struct ndb_hwinfo *hwinfo,
-                   Uint32 cpu_cnt)
+int set_num_groups(struct ndb_hwinfo *hwinfo)
 {
   DWORD buf_len = 0;
   PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX buf = nullptr;
@@ -1340,12 +1406,11 @@ Uint32 get_cpu_number(struct ndb_hwinfo *hwinfo,
 
 static int Ndb_ReloadHWInfo(struct ndb_hwinfo *hwinfo)
 {
-  if (set_num_groups(hwinfo, ncpu) == (int)-1)
+  if (set_num_groups(hwinfo) == (int)-1)
   {
     return -1;
   }
 
-  BOOL done = FALSE;
   PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX buf = nullptr;
   PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX ptr = nullptr;
   DWORD buf_len = 0;
@@ -1766,13 +1831,13 @@ static int Ndb_ReloadCPUData(struct ndb_hwinfo *hwinfo)
   {
     hwinfo->cpu_data[i].online = 0;
   }
-  Uint32 cpu_online_count = 0;
+
   char buf[1024];
   char * p = &buf[0];
   char * c = nullptr;
   while (fgets(buf, sizeof(buf), stat_file))
   {
-    if (curr_cpu > max_cpu_no || (c = strstr(p, "cpu")) == 0)
+    if (curr_cpu > max_cpu_no || (c = strstr(p, "cpu")) == nullptr)
     {
       break;
     }
@@ -1784,7 +1849,7 @@ static int Ndb_ReloadCPUData(struct ndb_hwinfo *hwinfo)
       continue;
     }
     // c + 3 should be a number
-    char * endptr = 0;
+    char * endptr = nullptr;
     long val = strtol(c + 3, &endptr, 10);
     if (endptr == c + 3)
     {
@@ -1797,7 +1862,6 @@ static int Ndb_ReloadCPUData(struct ndb_hwinfo *hwinfo)
       return -1;
     }
     curr_cpu = val;
-    cpu_online_count++;
 
     Uint64 ticks[12];
     memset(ticks, 0, sizeof(ticks));
@@ -1817,8 +1881,264 @@ static int Ndb_ReloadCPUData(struct ndb_hwinfo *hwinfo)
   }
   return 0;
 }
+static Uint32
+get_cpu_atom_core(struct ndb_hwinfo *hwinfo)
+{
+  char buf[128];
+  char read_buf[128];
+  SparseBitmask mask(hwinfo->cpu_cnt_max);
 
-int
+  for (Uint32 type = 0; type < 2; type++)
+  {
+    if (type == 0)
+    {
+      snprintf(buf,
+               sizeof(buf),
+               "/sys/devices/cpu_atom/cpus");
+    }
+    else
+    {
+      snprintf(buf,
+               sizeof(buf),
+               "/sys/devices/cpu_core/cpus");
+    }
+    FILE *atom_core_info = fopen(buf, "r");
+
+    if (atom_core_info == nullptr)
+    {
+      /**
+       * No Intel Atom/Core processors, we assume that all CPUs are equal
+       */
+      return (type == 0) ? 1 : 50;
+    }
+    char error_buf[384];
+    FileGuard g(atom_core_info); // close at end...
+    if (fgets(read_buf, sizeof(read_buf), atom_core_info) == nullptr)
+    {
+      snprintf(error_buf, sizeof(error_buf), "Failed to read %s", buf);
+      perror(error_buf);
+      return 0;
+    }
+    mask.clear();
+    int res = ::parse_mask(read_buf, mask);
+    if (res <= 0)
+    {
+      snprintf(error_buf,
+               sizeof(error_buf),
+               "Failed to parse %s from %s",
+               read_buf,
+               buf);
+      perror(error_buf);
+      return 0;
+    }
+    Uint32 start_bit = 0;
+    do
+    {
+      Uint32 next_cpu = mask.find(start_bit);
+      if (next_cpu == SparseBitmask::NotFound)
+      {
+        if (start_bit == 0)
+        {
+          /**
+           * There is an Intel Atom/Core file, but no CPUs,
+           * assume all are equal.
+           */
+          return (type == 0) ? 1 : 50;
+        }
+      }
+      break;
+      if (next_cpu >= hwinfo->cpu_cnt_max)
+      {
+        snprintf(error_buf,
+                 sizeof(error_buf),
+                 "CPU number %u higher than max %u",
+                 next_cpu,
+                 hwinfo->cpu_cnt_max);
+        perror(error_buf);
+        return 0;
+      }
+      /**
+       * We set CPU capacity to half of Intel Core for Intel Atom
+       * and to 100 for Intel Core.
+       */
+      hwinfo->cpu_info[next_cpu].cpu_capacity = (type == 0) ? 50 : 100;
+    } while (1);
+  }
+  return 100;
+}
+
+static int
+get_cpu_capacity(ndb_cpuinfo_data *cpuinfo, Uint32 cpu)
+{
+  char buf[256];
+  char read_buf[256];
+  snprintf(buf,
+           sizeof(buf),
+           "/sys/devices/system/cpu/cpu%u/cpu_capacity",
+           cpu);
+  FILE *capacity_info = fopen(buf, "r");
+  if (capacity_info == nullptr)
+  {
+    DEBUG_HW((stderr,
+              "Found no CPU capacity for CPU %u\n",
+              cpu));
+    return -1;
+  }
+  FileGuard g(capacity_info); // close at end...
+  if (fgets(read_buf, sizeof(read_buf), capacity_info) == nullptr)
+  {
+    DEBUG_HW((stderr,
+              "Failed to read CPU capacity for CPU %u\n",
+              cpu));
+    return -1;
+  }
+  Uint32 capacity;
+  if (sscanf(read_buf, "%u", &capacity) == 1)
+  {
+    cpuinfo->cpu_capacity = capacity;
+    DEBUG_HW((stderr,
+              "Read CPU capacity %u for CPU %u\n",
+              capacity,
+              cpu));
+  }
+  else
+  {
+    DEBUG_HW((stderr,
+              "Failed to sscanf CPU capacity for CPU %u\n",
+              cpu));
+    return -1;
+  }
+  return 0;
+}
+
+static void
+get_cpu_throughput(struct ndb_hwinfo *hwinfo)
+{
+
+  Uint32 cpu_capacity = 0;
+  Uint32 max_cpu_capacity = 0;
+  Uint32 i;
+  for (i = 0; i < hwinfo->cpu_cnt_max; i++)
+  {
+    /**
+     * First check if we get cpu_capacity file (usually found on ARMs)
+     */
+    struct ndb_cpuinfo_data *cpuinfo = &hwinfo->cpu_info[i];
+    if (cpuinfo->online)
+    {
+      if (cpu_capacity == 0)
+      {
+        if (get_cpu_capacity(cpuinfo, i) != 0)
+          break;
+        cpu_capacity = cpuinfo->cpu_capacity;
+      }
+      else
+      {
+        if (get_cpu_capacity(cpuinfo, i) != 0)
+        {
+          char error_buf[256];
+          snprintf(error_buf,
+                   sizeof(error_buf),
+                   "Failed to read CPU capacity after success, cpu: %u",
+                   i);
+          perror(error_buf);
+          abort();
+          return;
+        }
+      }
+      max_cpu_capacity = MAX(max_cpu_capacity,
+                             cpuinfo->cpu_capacity);
+    }
+  }
+  if (i == hwinfo->cpu_cnt_max)
+  {
+    ;
+  }
+  else
+  {
+    /**
+     * Could not find any cpu_capacity file
+     * Check if it is Intel using Atom + Core
+     * If it isn't we assume all CPUs are equal and they
+     * will below all be set to throughput of 100 since
+     * they are initialised to 1.
+     */
+    max_cpu_capacity = get_cpu_atom_core(hwinfo);
+    require(max_cpu_capacity > 0);
+  }   
+  /**
+   * Standardise on highest throughput = 100
+   * CPU capacity is set to 0 for offline CPUs.
+   */
+  bool is_mixed_core_throughput = false;
+  for (i = 0; i < hwinfo->cpu_cnt_max; i++)
+  {
+    struct ndb_cpuinfo_data *cpuinfo = &hwinfo->cpu_info[i];
+    if (cpuinfo->online)
+    {
+      Uint32 capacity = (cpuinfo->cpu_capacity * 100) /
+                        max_cpu_capacity;
+      if (capacity != 100)
+      {
+        /**
+         * For the moment that the Power efficient has half the
+         * throughput compared to the efficiency cores is a good
+         * estimation. In reality benchmarks has shown that it is
+         * around 45%. However setting it to 50% instead makes it
+         * easy to handle mapping threads to CPUs.
+         *
+         * In an environment like Intel Alder Lake and Intel
+         * Raptor Lake the efficiency cores are hyperthreaded, thus
+         * when both are used the two CPUs within this one core
+         * has about the same throughput as two Power efficient
+         * cores. The automatic mapping will always try to use
+         * efficiency cores for LDM threads which benefits from
+         * hyperthreading (in the sense that one CPU could make
+         * use of almost the entire CPU core). Thus the LDM
+         * threads are using the CPU core to its full measure
+         * both with 1 and 2 threads active in the CPU core.
+         *
+         * Thus the other thread types are more likely to run
+         * equally well on both efficiency cores and power
+         * efficient cores.
+         *
+         * Apple M1 Pro (running on Linux) is an example of
+         * a CPU architecture where no hyperthreading is used,
+         * but also in this case the throughput of Power
+         * efficient cores is about half of the throughput of
+         * efficiency cores.
+         *
+         * So assuming we run on a CPU with 3 efficiency cores
+         * and 2 Power efficient cores, we get a total capacity
+         * of 400. Thus one manner of handling this is to use
+         * automatic thread management with 4 CPUs. These will
+         * be 2 LDM threads, 1 main thread and 1 receive thread.
+         *
+         *  In this case we will provide 2 efficiency cores for
+         * LDM thread, another efficiency cores for the main
+         * thread and finally the single recv thread will notice
+         * that it has only Power efficient cores to choose from.
+         * Thus it will choose to use two receive threads instead
+         * using the two power efficient cores.
+         */
+        is_mixed_core_throughput = true;
+        capacity = 50;
+      }
+      cpuinfo->cpu_capacity = capacity;
+    }
+    else
+    {
+      cpuinfo->cpu_capacity = 0;
+    }
+    require(cpuinfo->cpu_capacity <= 100);
+  }
+  hwinfo->is_mixed_core_throughput = is_mixed_core_throughput;
+  DEBUG_HW((stderr,
+            "There are%s mixed CPU cores\n",
+            is_mixed_core_throughput ? "" : " no"));
+}
+
+static int
 get_meminfo(struct ndb_hwinfo *hwinfo)
 {
   char buf[1024];
@@ -1831,23 +2151,26 @@ get_meminfo(struct ndb_hwinfo *hwinfo)
 
   FileGuard g(meminfo); // close at end...
 
-  Uint64 memory_size = 0;
+  Uint64 memory_size_kb = 0;
   while (fgets(buf, sizeof(buf), meminfo))
   {
     Uint64 val;
     if (sscanf(buf, "MemTotal: %llu", &val) == 1)
     {
-      memory_size = val;
+      memory_size_kb = val; // /proc/meminfo reports MemTotal in kb
       break;
     }
   }
-  if (memory_size == 0)
+  if (memory_size_kb == 0)
   {
     perror("Found no MemTotal in /proc/meminfo");
     return -1;
   }
+  DEBUG_HW((stderr,
+            "Total memory is %llu MBytes\n",
+            memory_size_kb / 1024));
   /* Memory is in kBytes */
-  hwinfo->hw_memory_size = (memory_size * 1024);
+  hwinfo->hw_memory_size = memory_size_kb * 1024; // hw_memory_size in bytes
   return 0;
 }
 
@@ -1877,7 +2200,7 @@ get_core_siblings_info(struct ndb_hwinfo *hwinfo)
     char buf[256];
     snprintf(buf,
              sizeof(buf),
-             "/sys/devices/system/cpu/cpu%u/topology/core_siblings_list",
+             "/sys/devices/system/cpu/cpu%u/topology/core_cpus_list",
              i);
     FILE *sibl_info = fopen(buf, "r");
     if (sibl_info == nullptr)
@@ -1907,7 +2230,6 @@ get_core_siblings_info(struct ndb_hwinfo *hwinfo)
       perror(error_buf);
       return -1;
     }
-    hwinfo->num_cpu_per_core = mask.count();
     Uint32 start_bit = 0;
     do
     {
@@ -1933,6 +2255,10 @@ get_core_siblings_info(struct ndb_hwinfo *hwinfo)
         return -1;
       }
       hwinfo->cpu_info[next_cpu].core_id = next_core_id;
+      DEBUG_HW((stderr,
+                "CPU %u found in core %u\n",
+                next_cpu,
+                next_core_id));
       start_bit = next_cpu + 1;
     } while (true);
     next_core_id++;
@@ -1954,6 +2280,7 @@ static int
 get_physical_package_ids(struct ndb_hwinfo* hwinfo)
 {
   char error_buf[512];
+  Uint32 num_cpu_sockets = 0;
   for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
   {
     if (hwinfo->cpu_info[i].socket_id != Uint32(~0))
@@ -2021,7 +2348,12 @@ get_physical_package_ids(struct ndb_hwinfo* hwinfo)
     hwinfo->cpu_info[i].package_id = package_id;
     hwinfo->cpu_info[i].socket_id = socket_id;
     hwinfo->cpu_info[i].l3_cache_id = socket_id;
+
+    if (socket_id == num_cpu_sockets)
+      num_cpu_sockets++;
   }
+  hwinfo->num_shared_l3_caches = num_cpu_sockets;
+  hwinfo->num_cpu_sockets = num_cpu_sockets;
   return 0;
 }
 
@@ -2069,6 +2401,10 @@ get_l3_cache_info(struct ndb_hwinfo *hwinfo)
       return -1;
     }
     hwinfo->cpu_info[i].l3_cache_id = next_l3_id;
+    DEBUG_HW((stderr,
+              "Found CPU %u in L3 cache region %u\n",
+              i,
+              next_l3_id));
     mask.clear();
     int res = ::parse_mask(read_buf, mask);
     if (res <= 0)
@@ -2096,6 +2432,10 @@ get_l3_cache_info(struct ndb_hwinfo *hwinfo)
         return -1;
       }
       hwinfo->cpu_info[next_cpu].l3_cache_id = next_l3_id;
+      DEBUG_HW((stderr,
+                "Found CPU %u in L3 cache region %u\n",
+                next_cpu,
+                next_l3_id));
       start_bit = next_cpu + 1;
     } while (true);
     next_l3_id++;
@@ -2142,7 +2482,7 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
   while (fgets(buf, sizeof(buf), cpuinfo))
   {
     Uint32 val;
-    char * p = 0;
+    char * p = nullptr;
     if (sscanf(buf, "processor : %u", &val) == 1)
     {
       if (val > max_cpu_no)
@@ -2179,6 +2519,10 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
         return -1;
       }
       hwinfo->cpu_info[curr_cpu].core_id = val;
+      DEBUG_HW((stderr,
+                "CPU %u in core_id: %u\n",
+                curr_cpu,
+                val));
     }
     else if (sscanf(buf, "physical id : %u", &val) == 1)
     {
@@ -2199,7 +2543,7 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
     {
       num_cpu_cores_per_socket = val;
     }
-    else if ((p = strstr(buf, "model name")) != 0)
+    else if ((p = strstr(buf, "model name")) != nullptr)
     {
       if (! (curr_cpu >= 0 && curr_cpu <= (int)max_cpu_no))
       {
@@ -2219,54 +2563,101 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
         size_t sz = sizeof(hwinfo->cpu_model_name);
         strncpy(hwinfo->cpu_model_name, p, sz);
         hwinfo->cpu_model_name[sz - 1] = 0; // null terminate
+        if (curr_cpu == 0)
+        {
+          DEBUG_HW((stderr,
+                    "CPU model: %s\n",
+                    p));
+        }
       }
     }
   }
+  Uint32 num_cpu_cores;
   if (num_cpu_cores_per_socket == 0)
   {
     /* Linux ARM needs information from other sources */
     hwinfo->cpu_cnt = cpu_online_count;
+    DEBUG_HW((stderr,
+              "Found %u CPUs online, no core info in /proc/cpuinfo\n",
+              cpu_online_count));
     int res = get_core_siblings_info(hwinfo);
-    if (res == (int)-1)
+    if (res == -1)
     {
       return -1;
     }
-    hwinfo->num_cpu_cores = (Uint32)res;
+    num_cpu_cores = (Uint32)res;
+    hwinfo->num_cpu_cores = num_cpu_cores;
     res = get_physical_package_ids(hwinfo);
-    if (res == (int)-1)
+    if (res == -1)
     {
       return -1;
     }
   }
-  Uint32 max_socket_id = 0;
-  for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
+  else
   {
-    if (hwinfo->cpu_info[i].online)
+    DEBUG_HW((stderr,
+              "Found %u CPU cores per CPU socket\n",
+              num_cpu_cores_per_socket));
+    Uint32 max_socket_id = 0;
+    Uint32 max_core_id = 0;
+    for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
     {
-      max_socket_id = MAX(max_socket_id, hwinfo->cpu_info[i].socket_id);
+      if (hwinfo->cpu_info[i].online)
+      {
+        max_socket_id = MAX(max_socket_id, hwinfo->cpu_info[i].socket_id);
+        max_core_id = MAX(max_core_id, hwinfo->cpu_info[i].core_id);
+      }
+    }
+    Uint32 num_cpu_sockets = max_socket_id + 1;
+    num_cpu_cores = num_cpu_cores_per_socket * num_cpu_sockets;
+    hwinfo->num_cpu_sockets = num_cpu_sockets;
+    hwinfo->num_cpu_cores = num_cpu_cores;
+    for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
+    {
+      struct ndb_cpuinfo_data *cpuinfo = &hwinfo->cpu_info[i];
+      if (cpuinfo->online)
+      {
+        cpuinfo->core_id += ((max_core_id + 1) * hwinfo->cpu_info[i].socket_id);
+      }
     }
   }
-  Uint32 num_cpu_sockets = max_socket_id + 1;
-  Uint32 num_cpu_cores = num_cpu_cores_per_socket * num_cpu_sockets;
-  hwinfo->num_cpu_sockets = num_cpu_sockets;
-  hwinfo->num_cpu_cores = num_cpu_cores;
-  for (Uint32 i = 0; i < hwinfo->cpu_cnt_max; i++)
+  DEBUG_HW((stderr,
+            "There are %u sockets\n",
+            hwinfo->num_cpu_sockets));
+  DEBUG_HW((stderr,
+            "There are %u cores\n",
+            hwinfo->num_cpu_cores));
+ 
+  Uint32 num_cpu_per_core = hwinfo->cpu_cnt_max / num_cpu_cores;
+  Uint32 cpu_cnt_max = num_cpu_per_core * num_cpu_cores;
+  if (hwinfo->cpu_cnt_max != cpu_cnt_max)
   {
-    struct ndb_cpuinfo_data *cpuinfo = &hwinfo->cpu_info[i];
-    if (cpuinfo->online)
-    {
-      cpuinfo->core_id +=
-       ((cpuinfo->socket_id * hwinfo->num_cpu_cores) /
-         hwinfo->num_cpu_sockets);
-    }
+    hwinfo->is_mixed_cpu_thread_per_cpu_core = 1;
+    DEBUG_HW((stderr,
+          "The computer has a mix of number of CPU threads per CPU core\n"));
+    hwinfo->num_cpu_per_core = 1;
   }
-  hwinfo->num_cpu_per_core = hwinfo->cpu_cnt_max / num_cpu_cores;
+  else
+  {
+    DEBUG_HW((stderr,
+              "We found %u CPUs per CPU core\n",
+              num_cpu_per_core));
+  }
   hwinfo->cpu_cnt = cpu_online_count;
+  DEBUG_HW((stderr,
+            "There are %u CPUs online before checking\n",
+            cpu_online_count));
+
+  get_cpu_throughput(hwinfo);
+
   Uint32 num_shared_l3_caches = 0;
   int res = get_l3_cache_info(hwinfo);
   if (res > 0)
   {
     num_shared_l3_caches = (Uint32)res;
+    DEBUG_HW((stderr,
+              "We found %u L3 cache regions\n",
+              num_shared_l3_caches));
   }
   else if (res == (int)-1)
   {
@@ -2274,11 +2665,9 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
     {
       hwinfo->cpu_info[i].l3_cache_id = hwinfo->cpu_info[i].socket_id;
     }
-    if (num_cpu_sockets == 0)
-    {
-      num_cpu_sockets = 1;
-    }
-    num_shared_l3_caches = num_cpu_sockets;
+    num_shared_l3_caches = hwinfo->num_cpu_sockets;
+    DEBUG_HW((stderr,
+              "We found 1 L3 cache region per socket\n"));
   }
   else
   {
@@ -2305,24 +2694,22 @@ static void NdbHW_End_platform()
 {
 }
 
-static int init_cpudata(struct ndb_hwinfo * hwinfo)
-{
-  (void)hwinfo;
-  return 0;
-}
-
-static int Ndb_ReloadCPUData(struct ndb_hwinfo *hwinfo)
-{
-  (void)hwinfo;
-  return 0;
-}
-
-static int init_hwinfo(struct ndb_hwinfo * hwinfo)
+static int init_cpudata(struct ndb_hwinfo *)
 {
   return 0;
 }
 
-static int Ndb_ReloadHWInfo(struct ndb_hwinfo *hwinfo)
+static int Ndb_ReloadCPUData(struct ndb_hwinfo *)
+{
+  return 0;
+}
+
+static int init_hwinfo(struct ndb_hwinfo *)
+{
+  return 0;
+}
+
+static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
 {
   hwinfo->cpu_cnt_max = ncpu;
   hwinfo->cpu_cnt = ncpu;
@@ -2341,27 +2728,23 @@ static void NdbHW_End_platform()
 {
 }
 
-static int init_hwinfo(struct ndb_hwinfo * hwinfo)
+static int init_hwinfo(struct ndb_hwinfo *)
 {
-  (void)hwinfo;
   return -1;
 }
 
-static int init_cpudata(struct ndb_hwinfo * hwinfo)
+static int init_cpudata(struct ndb_hwinfo *)
 {
-  (void)hwinfo;
   return -1;
 }
 
-static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
+static int Ndb_ReloadHWInfo(struct ndb_hwinfo *)
 {
-  (void)hwinfo;
   return -1;
 }
 
-static int Ndb_ReloadCPUData(struct ndb_hwinfo *hwinfo)
+static int Ndb_ReloadCPUData(struct ndb_hwinfo *)
 {
-  (void)hwinfo;
   return -1;
 }
 
@@ -2958,8 +3341,6 @@ test_create_cpumap()
     test_create(&test_map, i);
     printf("Create HW info for test %u\n", i + 1);
     create_hwinfo_test_cpu_map(&test_map);
-    printf("Set online as Virt L3 CPUs for test %u\n", i + 1);
-    Ndb_SetOnlineAsVirtL3CPU();
     printf("Create CPUMap for test %u\n", i + 1);
     Uint32 num_rr_groups =
       Ndb_CreateCPUMap(test_map.num_ldm_instances,
@@ -2990,7 +3371,7 @@ test_create_cpumap()
 void
 printdata(const struct ndb_hwinfo* data, Uint32 cpu)
 {
-  long long sum_sys = 0;
+  uintmax_t sum_sys = 0;
 
   for (Uint32 i = 0; i < data->cpu_cnt; i++)
   {
@@ -3001,7 +3382,7 @@ printdata(const struct ndb_hwinfo* data, Uint32 cpu)
     sum_sys += data->cpu_data[i].cs_guest_nice_us;
   }
 
-  long long elapsed = 0;
+  uintmax_t elapsed = 0;
   elapsed += data->cpu_data[cpu].cs_user_us;
   elapsed += data->cpu_data[cpu].cs_idle_us;
   elapsed += data->cpu_data[cpu].cs_nice_us;
@@ -3013,7 +3394,7 @@ printdata(const struct ndb_hwinfo* data, Uint32 cpu)
   elapsed += data->cpu_data[cpu].cs_guest_us;
   elapsed += data->cpu_data[cpu].cs_guest_nice_us;
 
-  long long cpu_sys = 0;
+  uintmax_t cpu_sys = 0;
   cpu_sys += data->cpu_data[cpu].cs_sys_us;
   cpu_sys += data->cpu_data[cpu].cs_irq_us;
   cpu_sys += data->cpu_data[cpu].cs_sirq_us;
@@ -3021,9 +3402,11 @@ printdata(const struct ndb_hwinfo* data, Uint32 cpu)
   cpu_sys += data->cpu_data[cpu].cs_guest_nice_us;
   cpu_sys += data->cpu_data[cpu].cs_steal_us;
 
-  printf("time: %llu sys: %llu%%",
+  printf("Cpu %u time: %juus sys: %ju%% All cpu sys: %juus\n",
+         cpu,
          elapsed,
-         elapsed ? (100 * cpu_sys) / elapsed : 0);
+         elapsed ? (100 * cpu_sys) / elapsed : 0,
+         sum_sys);
 }
 
 TAPTEST(NdbCPU)
@@ -3037,6 +3420,7 @@ TAPTEST(NdbCPU)
     return 0;
   }
 
+  ndb_init();
   long sysconf_ncpu_conf = 0;
 #ifdef _SC_NPROCESSORS_CONF
   {
@@ -3056,8 +3440,8 @@ TAPTEST(NdbCPU)
 #endif
   printf("sysconf(_SC_NPROCESSORS_CONF) => %lu\n", sysconf_ncpu_conf);
 
-  long sysconf_ncpu_online = 0;
 #ifdef _SC_NPROCESSORS_ONLN
+  long sysconf_ncpu_online = 0;
   sysconf_ncpu_online = sysconf(_SC_NPROCESSORS_ONLN);
   printf("sysconf(_SC_NPROCESSORS_ONLN) => %lu\n", sysconf_ncpu_online);
 #endif
@@ -3066,13 +3450,14 @@ TAPTEST(NdbCPU)
   /**
    * Test of CPU info
    */
-  OK(info != 0);
+  OK(info != nullptr);
   if (sysconf_ncpu_conf)
   {
     OK(sysconf_ncpu_conf == (long)info->cpu_cnt);
   }
   Ndb_FreeHWInfo();
   NdbHW_End();
+  ndb_end(0);
   return 1; // OK
 }
 #endif

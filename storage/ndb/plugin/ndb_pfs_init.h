@@ -1,4 +1,4 @@
-/* Copyright (c) 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2020, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -23,20 +23,23 @@
 #ifndef NDB_PFS_INIT_H
 #define NDB_PFS_INIT_H
 
-#include "mysql/components/my_service.h"  // SERVICE_TYPE
+#include "mysql/psi/mysql_memory.h"
 
 /*
   @brief Acquire service handles and create proxy tables
 
   @return false on success, true on failure
 */
-bool ndb_pfs_init(SERVICE_TYPE(registry) * mysql_service_registry);
+bool ndb_pfs_init();
 
 /*
   @brief Release service handles and delete proxy tables
 
   @return void
 */
-void ndb_pfs_deinit(SERVICE_TYPE(registry) * mysql_service_registry);
+void ndb_pfs_deinit();
+
+// Keys registered for instrumented memory
+extern PSI_memory_key key_memory_thd_ndb_batch_mem_root;
 
 #endif

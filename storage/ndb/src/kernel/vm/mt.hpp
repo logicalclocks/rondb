@@ -1,5 +1,5 @@
-/* Copyright (c) 2008, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+/* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -63,7 +63,7 @@
  */
 #define MAX_INSTANCES_PER_THREAD ((2 * NO_OF_BLOCKS) + 1)
 
-static_assert(MAX_BLOCK_THREADS == NDB_MAX_BLOCK_THREADS, "");
+static_assert(MAX_BLOCK_THREADS == NDB_MAX_BLOCK_THREADS);
 
 Uint32 mt_get_instance_count(Uint32 block);
 
@@ -72,14 +72,13 @@ void mt_init_thr_map();
 void mt_add_thr_map(Uint32 block, Uint32 instance);
 void mt_finalize_thr_map();
 #ifdef DEBUG_SCHED_STATS
-void get_jbb_estimated_stats(Uint32, Uint32, Uint64**, Uint64**);
+void get_jbb_estimated_stats(Uint32, Uint32, Uint64**, Uint64**, Uint64**);
 #endif
-Uint32 get_qt_jbb_level(Uint32 instance);
 void prefetch_load_indicators(Uint32 *rr_groups, Uint32 rr_group);
 Uint32 get_load_indicator(Uint32 dst);
 
 void sendlocal(Uint32 self,
-               const struct SignalHeader *s,
+               struct SignalHeader *s,
                const Uint32 *data,
                const Uint32 secPtr[3]);
 void sendprioa(Uint32 self, const struct SignalHeader *s,
@@ -90,6 +89,9 @@ void mt_execSTOP_FOR_CRASH();
 /**
  * Interface methods to SimulatedBlock for ndbtmd.
  */
+Uint32 mt_get_thread_signal_id(Uint32 thr_no);
+Uint32 mt_get_exec_thread_signal_id(Uint32 thr_no, Uint32 sender_thr_no);
+Uint32 mt_map_api_node_to_recv_instance(NodeId);
 void mt_getSendBufferLevel(Uint32 self, NodeId node, SB_LevelType &level);
 Uint32 mt_getEstimatedJobBufferLevel(Uint32 self);
 bool mt_isEstimatedJobBufferLevelChanged(Uint32 self);
@@ -152,6 +154,9 @@ SendStatus mt_send_remote(Uint32 self, const SignalHeader *sh, Uint8 prio,
                           const Uint32 *data, NodeId nodeId,
                           class SectionSegmentPool *thePool,
                           const SegmentedSectionPtr ptr[3]);
+SendStatus mt_send_remote_over_all_links(Uint32 self, const SignalHeader *sh,
+                                         Uint8 prio, const Uint32 *data,
+                                         NodeId nodeId);
 
 #ifdef ERROR_INSERT
 void mt_set_delayed_prepare(Uint32 self);

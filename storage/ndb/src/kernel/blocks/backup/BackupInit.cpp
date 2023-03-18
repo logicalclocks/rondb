@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -35,7 +35,6 @@
 #include <Configuration.hpp>
 #include <signaldata/RedoStateRep.hpp>
 #include <EventLogger.hpp>
-extern EventLogger * g_eventLogger;
 
 #define JAM_FILE_ID 472
 
@@ -46,6 +45,7 @@ Backup::Backup(Block_context& ctx,
                Uint32 instanceNumber,
                Uint32 blockNo) :
   SimulatedBlock(blockNo, ctx, instanceNumber),
+  m_delete_lcp_file_list(c_deleteLcpFilePool),
   c_nodes(c_nodePool),
   c_backups(c_backupPool)
 {
@@ -60,6 +60,7 @@ Backup::Backup(Block_context& ctx,
     addRecSignal(GSN_STTOR, &Backup::execSTTOR);
     addRecSignal(GSN_DUMP_STATE_ORD, &Backup::execDUMP_STATE_ORD);
     addRecSignal(GSN_READ_NODESCONF, &Backup::execREAD_NODESCONF);
+    addRecSignal(GSN_NODE_START_REP, &Backup::execNODE_START_REP, true);
     addRecSignal(GSN_NODE_FAILREP, &Backup::execNODE_FAILREP);
     addRecSignal(GSN_INCL_NODEREQ, &Backup::execINCL_NODEREQ);
     addRecSignal(GSN_CONTINUEB, &Backup::execCONTINUEB);
@@ -263,6 +264,11 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
   ndb_mgm_get_int_parameter(p, CFG_DB_O_DIRECT,
                             &c_defaults.m_o_direct);
 
+  Uint32 encrypted_filesystem = 0;
+  ndb_mgm_get_int_parameter(
+      p, CFG_DB_ENCRYPTED_FILE_SYSTEM, &encrypted_filesystem);
+  c_encrypted_filesystem = encrypted_filesystem;
+
   ndb_mgm_get_int64_parameter(p, CFG_DB_MIN_DISK_WRITE_SPEED,
 			      &c_defaults.m_disk_write_speed_min);
   ndb_mgm_get_int64_parameter(p, CFG_DB_MAX_DISK_WRITE_SPEED,
@@ -360,15 +366,37 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
   c_backupFilePool.setSize(3 * noBackups +
                            4 + (2*BackupFormat::NDB_MAX_FILES_PER_LCP));
   c_tablePool.setSize(noBackups * noTables + 2);
-  c_triggerPool.setSize(noBackups * 3 * noTables);
-  c_fragmentPool.setSize(noBackups * noFrags + 2);
-  c_deleteLcpFilePool.setSize(noDeleteLcpFile);
 
+  c_transient_pools[BACKUP_TRIGGER_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_triggerPool;
+  static_assert(c_transient_pool_count == 1);
+  c_transient_pools_shrinking.clear();
+
+  Pool_context pc;
+  pc.m_block = this;
+  Uint32 reserveBackupTriggerRecords = 1000;
+  if (m_is_query_block)
+  {
+    reserveBackupTriggerRecords = 1;
+  }
+  c_triggerPool.init(
+    TriggerRecord::TYPE_ID,
+    pc,
+    reserveBackupTriggerRecords,
+    UINT32_MAX);
+  while (c_triggerPool.startup())
+  {
+    refresh_watch_dog();
+  }
+
+  c_deleteLcpFilePool.init(RT_BACKUP_DELETE_LCP, pc);
+
+  c_tableMapSize = noBackups * noTables;
   c_tableMap = (Uint32*)allocRecord("c_tableMap",
                                     sizeof(Uint32),
-                                    noBackups * noTables);
+                                    c_tableMapSize);
 
-  for (Uint32 i = 0; i < (noBackups * noTables); i++)
+  for (Uint32 i = 0; i < c_tableMapSize; i++)
   {
     c_tableMap[i] = RNIL;
   }
@@ -501,7 +529,7 @@ Backup::execREAD_CONFIG_REQ(Signal* signal)
     Table_list tables(c_tablePool);
     TablePtr ptr;
     while (tables.seizeFirst(ptr)){
-      new (ptr.p) Table(c_fragmentPool);
+      new (ptr.p) Table();
       ptr.p->backupPtrI = RNIL;
       ptr.p->tableId = RNIL;
     }
@@ -571,8 +599,8 @@ void Backup::calculate_real_disk_write_speed_parameters(void)
      * we will remove the adaptiveness of the LCP speed.
      */
     jam();
-    ndbout << "Setting MaxDiskWriteSpeed to MinDiskWriteSpeed since max < min"
-           << endl;
+    g_eventLogger->info(
+        "Setting MaxDiskWriteSpeed to MinDiskWriteSpeed since max < min");
     c_defaults.m_disk_write_speed_max = c_defaults.m_disk_write_speed_min;
   }
 
@@ -585,8 +613,9 @@ void Backup::calculate_real_disk_write_speed_parameters(void)
      * at other nodes restarts.
      */
     jam();
-    ndbout << "MaxDiskWriteSpeed larger than MaxDiskWriteSpeedOtherNodeRestart"
-           << " setting both to MaxDiskWriteSpeed" << endl;
+    g_eventLogger->info(
+        "MaxDiskWriteSpeed larger than MaxDiskWriteSpeedOtherNodeRestart"
+        " setting both to MaxDiskWriteSpeed");
     c_defaults.m_disk_write_speed_max_other_node_restart =
       c_defaults.m_disk_write_speed_max;
   }
@@ -600,20 +629,14 @@ void Backup::calculate_real_disk_write_speed_parameters(void)
      * LCP speed at other nodes restarts.
      */
     jam();
-    ndbout << "Setting MaxDiskWriteSpeedOwnRestart to "
-           << " MaxDiskWriteSpeedOtherNodeRestart since it was smaller"
-           << endl;
+    g_eventLogger->info(
+        "Setting MaxDiskWriteSpeedOwnRestart to "
+        "MaxDiskWriteSpeedOtherNodeRestart since it was smaller");
     c_defaults.m_disk_write_speed_max_own_restart =
       c_defaults.m_disk_write_speed_max_other_node_restart;
   }
 
-  Uint32 num_ldm_threads = globalData.ndbMtLqhThreads;
-  if (num_ldm_threads == 0)
-  {
-    /* We are running with ndbd binary */
-    jam();
-    num_ldm_threads = 1;
-  }
+  Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
 
   c_defaults.m_disk_write_speed_min /= num_ldm_threads;
   c_defaults.m_disk_write_speed_max /= num_ldm_threads;
@@ -681,13 +704,7 @@ void Backup::restore_disk_write_speed_numbers(void)
   c_defaults.m_disk_write_speed_max_own_restart *=
     CURR_DISK_SPEED_CONVERSION_FACTOR_TO_SECONDS;
 
-  Uint32 num_ldm_threads = globalData.ndbMtLqhThreads;
-  if (num_ldm_threads == 0)
-  {
-    /* We are running with ndbd binary */
-    jam();
-    num_ldm_threads = 1;
-  }
+  Uint32 num_ldm_threads = globalData.ndbMtLqhWorkers;
 
   c_defaults.m_disk_write_speed_min *= num_ldm_threads;
   c_defaults.m_disk_write_speed_max *= num_ldm_threads;

@@ -54,8 +54,8 @@ FILE_NAME	FILE_TYPE	TABLESPACE_NAME	LOGFILE_GROUP_NAME
 **** Do First Set of ALTERs in the master table ****
 CREATE INDEX t1_i ON t1(c2, c3);
 CREATE UNIQUE INDEX t1_i2 ON t1(c2);
-ALTER TABLE t1 ADD c4 TIMESTAMP;
-ALTER TABLE t1 ADD c5 DOUBLE;
+ALTER TABLE t1 algorithm=copy, ADD c4 TIMESTAMP;
+ALTER TABLE t1 algorithm=copy, ADD c5 DOUBLE;
 ALTER TABLE t1 ADD INDEX (c5);
 SHOW CREATE TABLE t1;
 Table	Create Table
@@ -237,6 +237,10 @@ COUNT(*)
 ******** Run in some transactions ***************
 ***** Time to try slave sync ***********
 **** Must make sure slave is clean *****
+USE tpcb;
+SELECT COUNT(*) FROM account;
+COUNT(*)
+1000
 STOP SLAVE;
 Warnings:
 Warning	1287	'STOP SLAVE' is deprecated and will be removed in a future release. Please use STOP REPLICA instead
@@ -277,15 +281,10 @@ COUNT(*)
 1000
 ***** Add some more records to master *********
 ***** Finsh the slave sync process *******
-@the_epoch:=MAX(epoch)
+@the_epoch
 <the_epoch>
-Warnings:
-<the_epoch>	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
-@the_pos:=Position	@the_file:=SUBSTRING_INDEX(REPLACE(FILE,'\\','/'), '/', -1)
+@the_pos	@the_file
 <the_pos>	master-bin.000001
-Warnings:
-<the_pos>	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
-<the_pos>	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 CHANGE REPLICATION SOURCE TO
 SOURCE_LOG_FILE = 'master-bin.000001',
 SOURCE_LOG_POS = <the_pos> ;

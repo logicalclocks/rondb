@@ -1,4 +1,4 @@
-/* Copyright (c) 2018, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2018, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -33,14 +33,14 @@
 
 #include "sql/sql_const_folding.h"
 
+#include <assert.h>
 #include <float.h>                         // DBL_MAX, FLT_MAX
 #include <stdint.h>                        // UINT64_MAX
 #include <sys/types.h>                     // uint
-#include <cstring>                         // memset
 #include <utility>                         // swap
 #include "decimal.h"                       // E_DEC_FATAL_ERROR
 #include "field_types.h"                   // MYSQL_TYPE_DATE
-#include "my_dbug.h"                       // DBUG_ASSERT
+                                           // assert
 #include "my_decimal.h"                    // my_decimal, my_decimal_cmp
 #include "my_inttypes.h"                   // longlong, ulonglong
 #include "my_time.h"                       // TIME_to_longlong_datetime_packed
@@ -243,7 +243,7 @@ static bool analyze_int_field_constant(THD *thd, Item_field *f,
         break;
       }
     }
-      // fall-through
+      [[fallthrough]];
     case REAL_RESULT: {
       /*
         Try to convert to decimal. If that fails, we know the constant is out of
@@ -271,24 +271,24 @@ static bool analyze_int_field_constant(THD *thd, Item_field *f,
         */
         my_decimal n;
         err = int2my_decimal(E_DEC_FATAL_ERROR, 0, false, &n);
-        DBUG_ASSERT(err == 0);
-        DBUG_ASSERT(my_decimal_cmp(&n, &dec) == 0);
+        assert(err == 0);
+        assert(my_decimal_cmp(&n, &dec) == 0);
         if (v > 0) {
           // underflow on the positive side
           String s("0.1", thd->charset());
           err = str2my_decimal(E_DEC_FATAL_ERROR, s.ptr(), s.length(),
                                s.charset(), &dec);
-          DBUG_ASSERT(err == 0);
+          assert(err == 0);
         } else {
           String s("-0.1", thd->charset());
           err = str2my_decimal(E_DEC_FATAL_ERROR, s.ptr(), s.length(),
                                s.charset(), &dec);
-          DBUG_ASSERT(err == 0);
+          assert(err == 0);
         }
       }
       d = &dec;
     }
-      // fall-through
+      [[fallthrough]];
     case DECIMAL_RESULT: {
       /*
         If out of bounds of longlong, return RP_OUTSIDE_LOW or RP_OUTSIDE_HIGH
@@ -358,7 +358,7 @@ static bool analyze_int_field_constant(THD *thd, Item_field *f,
       // special treatment below
       break;
     default:
-      DBUG_ASSERT(false); /* purecov: inspected */
+      assert(false); /* purecov: inspected */
   }
 
   switch (f->field->type()) {
@@ -427,7 +427,7 @@ static bool analyze_int_field_constant(THD *thd, Item_field *f,
       }
     } break;
     default:
-      DBUG_ASSERT(false); /* purecov: inspected */
+      assert(false); /* purecov: inspected */
   }
 
   return false;
@@ -480,7 +480,9 @@ static bool analyze_decimal_field_constant(THD *thd, const Item_field *f,
     case INT_RESULT: {
       my_decimal tmp;
       const auto *const d = (*const_val)->val_decimal(&tmp);
-      DBUG_ASSERT(decimal_actual_fraction(d) == 0);
+      if (thd->is_error()) return true;
+      assert(d != nullptr);
+      assert(decimal_actual_fraction(d) == 0);
       const int actual_intg = decimal_intg(d);
 
       if (actual_intg > f_intg) {  // overflow
@@ -521,7 +523,7 @@ static bool analyze_decimal_field_constant(THD *thd, const Item_field *f,
         *negative = v < 0;
         my_decimal tmp;
         err = longlong2decimal(0, &tmp);
-        DBUG_ASSERT(err == 0);
+        assert(err == 0);
 
         widen_fraction(f_frac, &tmp);
         const auto new_dec = new (thd->mem_root) Item_decimal(&tmp);
@@ -531,7 +533,7 @@ static bool analyze_decimal_field_constant(THD *thd, const Item_field *f,
       }
       was_string_or_real = true;
     }
-      // fall-thru
+      [[fallthrough]];
     case DECIMAL_RESULT: {
       /*
         Decimal constant can have different range and precision
@@ -541,6 +543,8 @@ static bool analyze_decimal_field_constant(THD *thd, const Item_field *f,
       // Compute actual (minimal) decimal type of the constant
       my_decimal buff, *d;
       d = (*const_val)->val_decimal(&buff);
+      if ((*const_val)->null_value) return false;
+      assert(d != nullptr);
       const int actual_frac = decimal_actual_fraction(d);
       const int actual_intg = decimal_intg(d);
       const bool overflow = actual_intg > f_intg;
@@ -625,7 +629,7 @@ static bool analyze_real_field_constant(THD *thd, Item_field *f,
       */
       break;
     default:
-      DBUG_ASSERT(false); /* purecov: inspected */
+      assert(false); /* purecov: inspected */
       break;
   }
 
@@ -699,7 +703,7 @@ static bool analyze_year_field_constant(THD *thd, Item **const_val,
       allowed year values have been typed as MYSQL_TYPE_YEAR, cf.
       convert_constant_item called during type resolution.
     */
-    DBUG_ASSERT((*const_val)->result_type() == INT_RESULT);
+    assert((*const_val)->result_type() == INT_RESULT);
     const longlong year = (*const_val)->val_int();
 
     if (year == 0)
@@ -747,7 +751,7 @@ static bool analyze_year_field_constant(THD *thd, Item **const_val,
       }
     } break;
     default:
-      DBUG_ASSERT(false); /* purecov: inspected */
+      assert(false); /* purecov: inspected */
       break;
   }
   return false;
@@ -778,7 +782,7 @@ static bool analyze_timestamp_field_constant(THD *thd, const Item_field *f,
     case INT_RESULT: {
       MYSQL_TIME ltime =
           my_time_set(0, 0, 0, 0, 0, 0, 0, false, MYSQL_TIMESTAMP_DATETIME);
-      MYSQL_TIME_STATUS status{0, 0, 0};
+      MYSQL_TIME_STATUS status;
       if (rtype == STRING_RESULT) {
         String buf, *res = (*const_val)->val_str(&buf);
         /*
@@ -821,11 +825,11 @@ static bool analyze_timestamp_field_constant(THD *thd, const Item_field *f,
       if (ft == MYSQL_TYPE_TIMESTAMP) {
         /*
           Convert constant to timeval, if it fits. If not, we are out of
-          range for a TIMESTAMP. The timeval is UTC since epoch.
+          range for a TIMESTAMP. The timeval is UTC since epoch, using 32
+          bits range.
         */
         int warnings = 0;
-        struct timeval tm;
-        std::memset(&tm, 0, sizeof(tm));
+        my_timeval tm = {0, 0};
         int zeros = 0;
         zeros += ltime.year == 0;
         zeros += ltime.month == 0;
@@ -849,7 +853,7 @@ static bool analyze_timestamp_field_constant(THD *thd, const Item_field *f,
           compare with min/max, unless it is 0 or has a zero date part (year,
           month or day)
         */
-        if (tm.tv_sec != 0) {
+        if (tm.m_tv_sec != 0) {
           /* '2038-01-19 03:14:07.[999999]' */
           MYSQL_TIME max_timestamp = my_time_set(
               TIMESTAMP_MAX_YEAR, 1, 19, 3, 14, 7,
@@ -1074,7 +1078,7 @@ static bool fold_or_simplify(THD *thd, Item *ref_or_field,
       ft == Item_func::MULT_EQUAL_FUNC ||
       down_cast<Item_bool_func2 *>(*retcond)->ignore_unknown();
   if (always_true) {
-    if (ref_or_field->maybe_null) {
+    if (ref_or_field->is_nullable()) {
       if (is_top_level) {
         i = new (thd->mem_root) Item_func_isnotnull(ref_or_field);
       } else {
@@ -1101,7 +1105,7 @@ static bool fold_or_simplify(THD *thd, Item *ref_or_field,
       return false;
     }
 
-    if (ref_or_field->maybe_null && ft != Item_func::EQUAL_FUNC) {
+    if (ref_or_field->is_nullable() && ft != Item_func::EQUAL_FUNC) {
       i = new (thd->mem_root) Item_func_ne(ref_or_field, ref_or_field);
     } else {
       i = new (thd->mem_root) Item_func_false();
@@ -1271,7 +1275,7 @@ bool fold_condition(THD *thd, Item *cond, Item **retcond,
 
   switch (func_type) {
     case Item_func::ISNOTNULL_FUNC:
-      if (func->arguments()[0]->maybe_null) {
+      if (func->arguments()[0]->is_nullable()) {
         return fold_arguments(thd, func);
       }
 
@@ -1312,7 +1316,7 @@ bool fold_condition(THD *thd, Item *cond, Item **retcond,
     const auto equal = down_cast<Item_equal *>(func);
     // Use first field:  any one will do: they have the same type
     equal->m_const_folding[0] = equal->get_first();
-    equal->m_const_folding[1] = equal->get_const();
+    equal->m_const_folding[1] = equal->const_arg();
     args = equal->m_const_folding;
   }
 
@@ -1435,8 +1439,8 @@ bool fold_condition(THD *thd, Item *cond, Item **retcond,
       if (func_type == Item_func::MULT_EQUAL_FUNC && (*retcond != nullptr)) {
         // The constant may have been modified, update the multi-equal
         const auto equal = down_cast<Item_equal *>(func);
-        DBUG_ASSERT(equal->m_const_folding[1] != nullptr);  // the constant
-        equal->set_const(equal->m_const_folding[1]);
+        assert(equal->m_const_folding[1] != nullptr);  // the constant
+        equal->set_const_arg(equal->m_const_folding[1]);
       }
       break;
     case Item_func::LT_FUNC:

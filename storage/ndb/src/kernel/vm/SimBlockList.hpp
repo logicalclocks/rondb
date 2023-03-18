@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -44,8 +45,7 @@ public:
   Uint64 getTransactionMemoryNeed(
     const Uint32 dbtc_instance_count,
     const Uint32 ldm_instance_count,
-    const ndb_mgm_configuration_iterator * mgm_cfg,
-    const bool use_reserved) const;
+    const ndb_mgm_configuration_iterator * mgm_cfg) const;
 private:
   int noOfBlocks;
   SimulatedBlock** theList;

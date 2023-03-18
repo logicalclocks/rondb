@@ -1,5 +1,6 @@
 /*
-  Copyright (c) 2006, 2020, Oracle and/or its affiliates.
+  Copyright (c) 2006, 2022, Oracle and/or its affiliates.
+  Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -39,39 +40,53 @@
 #include "sql/mysqld_thd_manager.h"       // Global_THD_manager
 #include "sql/protocol_classic.h"
 #include "sql/rpl_injector.h"
-#include "sql/rpl_slave.h"
+#include "sql/sql_base.h"
 #include "sql/sql_lex.h"
 #include "sql/sql_rewrite.h"
-#include "sql/sql_table.h"  // build_table_filename
 #include "sql/sql_thd_internal_api.h"
 #include "sql/thd_raii.h"
 #include "sql/transaction.h"
 #include "storage/ndb/include/ndbapi/NdbDictionary.hpp"
 #include "storage/ndb/include/ndbapi/ndb_cluster_connection.hpp"
-#include "storage/ndb/plugin/ha_ndbcluster.h"
 #include "storage/ndb/plugin/ha_ndbcluster_connection.h"
+#include "storage/ndb/plugin/ndb_anyvalue.h"
 #include "storage/ndb/plugin/ndb_apply_status_table.h"
 #include "storage/ndb/plugin/ndb_binlog_client.h"
+#include "storage/ndb/plugin/ndb_binlog_extra_row_info.h"
+#include "storage/ndb/plugin/ndb_binlog_thread.h"
 #include "storage/ndb/plugin/ndb_bitmap.h"
+#include "storage/ndb/plugin/ndb_blobs_buffer.h"
+#include "storage/ndb/plugin/ndb_conflict.h"
 #include "storage/ndb/plugin/ndb_dd.h"
 #include "storage/ndb/plugin/ndb_dd_client.h"
 #include "storage/ndb/plugin/ndb_dd_disk_data.h"
 #include "storage/ndb/plugin/ndb_dd_sync.h"  // Ndb_dd_sync
 #include "storage/ndb/plugin/ndb_dd_table.h"
+#include "storage/ndb/plugin/ndb_event_data.h"
 #include "storage/ndb/plugin/ndb_global_schema_lock_guard.h"
+#include "storage/ndb/plugin/ndb_index_stat_head_table.h"
+#include "storage/ndb/plugin/ndb_index_stat_sample_table.h"
 #include "storage/ndb/plugin/ndb_local_connection.h"
 #include "storage/ndb/plugin/ndb_log.h"
+#include "storage/ndb/plugin/ndb_mysql_services.h"
 #include "storage/ndb/plugin/ndb_name_util.h"
+#include "storage/ndb/plugin/ndb_ndbapi_errors.h"
 #include "storage/ndb/plugin/ndb_ndbapi_util.h"
+#include "storage/ndb/plugin/ndb_repl_tab.h"
 #include "storage/ndb/plugin/ndb_require.h"
 #include "storage/ndb/plugin/ndb_retry.h"
+#include "storage/ndb/plugin/ndb_schema_dist.h"
 #include "storage/ndb/plugin/ndb_schema_dist_table.h"
+#include "storage/ndb/plugin/ndb_schema_object.h"
 #include "storage/ndb/plugin/ndb_schema_result_table.h"
+#include "storage/ndb/plugin/ndb_share.h"
 #include "storage/ndb/plugin/ndb_sleep.h"
 #include "storage/ndb/plugin/ndb_stored_grants.h"
 #include "storage/ndb/plugin/ndb_table_guard.h"
+#include "storage/ndb/plugin/ndb_table_map.h"
 #include "storage/ndb/plugin/ndb_tdc.h"
 #include "storage/ndb/plugin/ndb_thd.h"
+#include "storage/ndb/plugin/ndb_thd_ndb.h"
 #include "storage/ndb/plugin/ndb_upgrade_util.h"
 
 typedef NdbDictionary::Event NDBEVENT;
@@ -79,31 +94,28 @@ typedef NdbDictionary::Table NDBTAB;
 
 extern bool opt_ndb_log_orig;
 extern bool opt_ndb_log_bin;
+extern bool opt_ndb_log_empty_epochs;
 extern bool opt_ndb_log_update_as_write;
 extern bool opt_ndb_log_updated_only;
 extern bool opt_ndb_log_update_minimal;
 extern bool opt_ndb_log_binlog_index;
 extern bool opt_ndb_log_apply_status;
-extern st_ndb_slave_state g_ndb_slave_state;
 extern bool opt_ndb_log_transaction_id;
-extern bool log_bin_use_v1_row_events;
+extern bool opt_ndb_log_trx_compression;
+extern uint opt_ndb_log_trx_compression_level_zstd;
 extern bool opt_ndb_log_empty_update;
 extern bool opt_ndb_clear_apply_status;
 extern bool opt_ndb_log_fail_terminate;
 extern int opt_ndb_schema_dist_timeout;
 extern ulong opt_ndb_schema_dist_lock_wait_timeout;
+extern ulong opt_ndb_report_thresh_binlog_epoch_slip;
+extern ulong opt_ndb_report_thresh_binlog_mem_usage;
+extern ulonglong opt_ndb_eventbuffer_max_alloc;
+extern uint opt_ndb_eventbuffer_free_percent;
 
-bool ndb_log_empty_epochs(void);
+extern st_ndb_slave_state g_ndb_slave_state;
 
 void ndb_index_stat_restart();
-
-#include "storage/ndb/plugin/ndb_anyvalue.h"
-#include "storage/ndb/plugin/ndb_binlog_extra_row_info.h"
-#include "storage/ndb/plugin/ndb_binlog_thread.h"
-#include "storage/ndb/plugin/ndb_event_data.h"
-#include "storage/ndb/plugin/ndb_repl_tab.h"
-#include "storage/ndb/plugin/ndb_schema_dist.h"
-#include "storage/ndb/plugin/ndb_schema_object.h"
 
 extern Ndb_cluster_connection *g_ndb_cluster_connection;
 
@@ -124,7 +136,7 @@ enum Ndb_binlog_index_cols {
   NBICOL_NUM_UPDATES = 4,
   NBICOL_NUM_DELETES = 5,
   NBICOL_NUM_SCHEMAOPS = 6
-  /* Following colums in schema 'v2' */
+  /* Following columns in schema 'v2' */
   ,
   NBICOL_ORIG_SERVERID = 7,
   NBICOL_ORIG_EPOCH = 8,
@@ -167,12 +179,12 @@ static mysql_cond_t injector_data_cond;
 /*
   NOTE:
   Several of the ndb_binlog* variables use a 'relaxed locking' schema.
-  Such a variable is only modified by the 'injector_thd' thread,
-  but could be read by any 'thd'. Thus:
+  Such a variable is only modified by the ndb binlog injector thread,
+  but could be read by any other thread. Thus:
     - Any update of such a variable need a mutex lock.
-    - Reading such a variable outside of the injector_thd need the mutex.
-  However, it should be safe to read the variable within the injector_thd
-  without holding the mutex! (As there are no other threads updating it)
+    - Reading such a variable from another thread need the mutex.
+  However, it should be safe to read the variable within the ndb binlog injector
+  thread without holding the mutex! (As there are no other threads updating it)
 */
 
 /**
@@ -187,7 +199,9 @@ bool ndb_binlog_running = false;
 static bool ndb_binlog_tables_inited = false;  // injector_data_mutex, relaxed
 static bool ndb_binlog_is_ready = false;       // injector_data_mutex, relaxed
 
-bool ndb_binlog_is_read_only(void) {
+bool ndb_binlog_is_initialized() { return ndb_binlog_is_ready; }
+
+bool ndb_binlog_is_read_only() {
   /*
     Could be called from any client thread. Need a mutex to
     protect ndb_binlog_tables_inited and ndb_binlog_is_ready.
@@ -208,115 +222,29 @@ bool ndb_binlog_is_read_only(void) {
   return false;
 }
 
-static THD *injector_thd = NULL;
-
 /*
-  Global reference to ndb injector thd object.
+  Global pointers to ndb injector objects.
 
   Used mainly by the binlog index thread, but exposed to the client sql
-  thread for one reason; to setup the events operations for a table
-  to enable ndb injector thread receiving events.
+  threads; for example to setup the events operations for a table
+  to enable ndb injector thread to receive events.
 
   Must therefore always be used with a surrounding
   mysql_mutex_lock(&injector_event_mutex), when create/dropEventOperation
 */
-static Ndb *injector_ndb = NULL;  // Need injector_event_mutex
-static Ndb *schema_ndb = NULL;    // Need injector_event_mutex
+static Ndb *injector_ndb = nullptr;  // Need injector_event_mutex
+static Ndb *schema_ndb = nullptr;    // Need injector_event_mutex
 
 static int ndbcluster_binlog_inited = 0;
 
-/* NDB Injector thread (used for binlog creation) */
 static ulonglong ndb_latest_applied_binlog_epoch = 0;
 static ulonglong ndb_latest_handled_binlog_epoch = 0;
 static ulonglong ndb_latest_received_binlog_epoch = 0;
 
-NDB_SHARE *ndb_apply_status_share = NULL;
-
-extern bool opt_log_slave_updates;
-static bool g_ndb_log_slave_updates;
+extern bool opt_log_replica_updates;
+static bool g_ndb_log_replica_updates;
 
 static bool g_injector_v1_warning_emitted = false;
-
-bool Ndb_binlog_client::create_event_data(NDB_SHARE *share,
-                                          const dd::Table *table_def,
-                                          Ndb_event_data **event_data) const {
-  DBUG_TRACE;
-  DBUG_ASSERT(table_def);
-  DBUG_ASSERT(event_data);
-
-  Ndb_event_data *new_event_data = Ndb_event_data::create_event_data(
-      m_thd, share, share->db, share->table_name, share->key_string(),
-      injector_thd, table_def);
-  if (!new_event_data) return false;
-
-  // Return the newly created event_data to caller
-  *event_data = new_event_data;
-
-  return true;
-}
-
-static int get_ndb_blobs_value(TABLE *table, NdbValue *value_array,
-                               uchar *&buffer, uint &buffer_size,
-                               ptrdiff_t ptrdiff) {
-  DBUG_TRACE;
-
-  // Field has no field number so cannot use TABLE blob_field
-  // Loop twice, first only counting total buffer size
-  for (int loop = 0; loop <= 1; loop++) {
-    uint32 offset = 0;
-    for (uint i = 0; i < table->s->fields; i++) {
-      Field *field = table->field[i];
-      NdbValue value = value_array[i];
-      if (!(field->is_flag_set(BLOB_FLAG) && field->stored_in_db)) continue;
-      if (value.blob == NULL) {
-        DBUG_PRINT("info", ("[%u] skipped", i));
-        continue;
-      }
-      Field_blob *field_blob = (Field_blob *)field;
-      NdbBlob *ndb_blob = value.blob;
-      int isNull;
-      if (ndb_blob->getNull(isNull) != 0) return -1;
-      if (isNull == 0) {
-        Uint64 len64 = 0;
-        if (ndb_blob->getLength(len64) != 0) return -1;
-        // Align to Uint64
-        uint32 size = Uint32(len64);
-        if (size % 8 != 0) size += 8 - size % 8;
-        if (loop == 1) {
-          uchar *buf = buffer + offset;
-          uint32 len = buffer_size - offset;  // Size of buf
-          if (ndb_blob->readData(buf, len) != 0) return -1;
-          DBUG_PRINT("info",
-                     ("[%u] offset: %u  buf: 0x%lx  len=%u  [ptrdiff=%d]", i,
-                      offset, (long)buf, len, (int)ptrdiff));
-          DBUG_ASSERT(len == len64);
-          // Ugly hack assumes only ptr needs to be changed
-          field_blob->set_ptr_offset(ptrdiff, len, buf);
-        }
-        offset += size;
-      } else if (loop == 1)  // undefined or null
-      {
-        // have to set length even in this case
-        uchar *buf = buffer + offset;  // or maybe NULL
-        uint32 len = 0;
-        field_blob->set_ptr_offset(ptrdiff, len, buf);
-        DBUG_PRINT("info", ("[%u] isNull=%d", i, isNull));
-      }
-    }
-    if (loop == 0 && offset > buffer_size) {
-      my_free(buffer);
-      buffer_size = 0;
-      DBUG_PRINT("info", ("allocate blobs buffer size %u", offset));
-      buffer = (uchar *)my_malloc(PSI_INSTRUMENT_ME, offset, MYF(MY_WME));
-      if (buffer == NULL) {
-        ndb_log_error("get_ndb_blobs_value, my_malloc(%u) failed", offset);
-        return -1;
-      }
-      buffer_size = offset;
-    }
-  }
-  return 0;
-}
 
 /*
   @brief Wait until the last committed epoch from the session enters the
@@ -346,9 +274,9 @@ static void ndbcluster_binlog_wait(THD *thd) {
     return;
   }
 
-  const char *save_info = thd->proc_info;
-  thd->proc_info =
-      "Waiting for ndbcluster binlog update to reach current position";
+  const char *save_info = thd->proc_info();
+  thd->set_proc_info(
+      "Waiting for ndbcluster binlog update to reach current position");
 
   // Highest epoch that a transaction against Ndb has received
   // as part of commit processing *in this thread*. This is a
@@ -384,10 +312,10 @@ static void ndbcluster_binlog_wait(THD *thd) {
         Uint32(ndb_latest_handled_binlog_epoch & 0xffffffff));
 
     // Fail on wait/deadlock timeout in debug compile
-    DBUG_ASSERT(false);
+    assert(false);
   }
 
-  thd->proc_info = save_info;
+  thd->set_proc_info(save_info);
 }
 
 /*
@@ -397,8 +325,8 @@ static void ndbcluster_binlog_wait(THD *thd) {
 THD *ndb_create_thd(char *stackptr) {
   DBUG_TRACE;
   THD *thd = new THD; /* note that constructor of THD uses DBUG_ */
-  if (thd == 0) {
-    return 0;
+  if (thd == nullptr) {
+    return nullptr;
   }
   THD_CHECK_SENTRY(thd);
 
@@ -413,7 +341,7 @@ THD *ndb_create_thd(char *stackptr) {
   thd->security_context()->skip_grants();
 
   CHARSET_INFO *charset_connection =
-      get_charset_by_csname("utf8", MY_CS_PRIMARY, MYF(MY_WME));
+      get_charset_by_csname("utf8mb3", MY_CS_PRIMARY, MYF(MY_WME));
   thd->variables.character_set_client = charset_connection;
   thd->variables.character_set_results = charset_connection;
   thd->variables.collation_connection = charset_connection;
@@ -603,7 +531,7 @@ static void ndbcluster_acl_notify(THD *thd,
     query.assign(thd->rewritten_query().ptr(), thd->rewritten_query().length());
   else
     query.assign(thd->query().str, thd->query().length);
-  DBUG_ASSERT(query.length());
+  assert(query.length());
   ndb_log_verbose(9, "ACL considering: %s", query.c_str());
 
   std::string user_list;
@@ -615,8 +543,14 @@ static void ndbcluster_acl_notify(THD *thd,
 
   Ndb_schema_dist_client schema_dist_client(thd);
 
+  auto raise_error = [thd, query](const char *details) {
+    get_thd_ndb(thd)->push_warning(
+        "Could not distribute ACL change to other MySQL servers");
+    ndb_log_error("Failed to distribute '%s' %s", query.c_str(), details);
+  };
+
   if (strategy == Ndb_stored_grants::Strategy::ERROR) {
-    ndb_log_error("Not distributing ACL change after error.");
+    raise_error("after error");
     return;
   }
 
@@ -627,18 +561,23 @@ static void ndbcluster_acl_notify(THD *thd,
 
   const unsigned int &node_id = g_ndb_cluster_connection->node_id();
   if (!schema_dist_client.prepare_acl_change(node_id)) {
-    ndb_log_error("Failed to distribute '%s' (Failed prepare)", query.c_str());
+    raise_error("(Failed prepare)");
     return;
   }
 
   if (strategy == Ndb_stored_grants::Strategy::SNAPSHOT) {
     ndb_log_verbose(9, "ACL change distribution: SNAPSHOT");
-    if (!schema_dist_client.acl_notify(user_list))
-      ndb_log_error("Failed to distribute '%s' (SNAPSHOT)", query.c_str());
+    NdbTransaction *lock_trans = Ndb_stored_grants::acquire_snapshot_lock(thd);
+    if (lock_trans) {
+      if (!schema_dist_client.acl_notify(user_list)) raise_error("as snapshot");
+      Ndb_stored_grants::release_snapshot_lock(lock_trans);
+    } else {
+      raise_error("- did not acquire snapshot lock");
+    }
     return;
   }
 
-  DBUG_ASSERT(strategy == Ndb_stored_grants::Strategy::STATEMENT);
+  assert(strategy == Ndb_stored_grants::Strategy::STATEMENT);
   ndb_log_verbose(9, "ACL change distribution: STATEMENT");
 
   /* If the notice contains rewrite_params, query is an ALTER USER or SET
@@ -650,13 +589,13 @@ static void ndbcluster_acl_notify(THD *thd,
     mysql_rewrite_acl_query(thd, rewritten_query, Consumer_type::BINLOG,
                             notice->get_rewrite_params(), false);
     query.assign(rewritten_query.c_ptr_safe(), rewritten_query.length());
-    DBUG_ASSERT(query.length());
+    assert(query.length());
   }
 
   if (!schema_dist_client.acl_notify(
           dist_use_db ? notice->get_db().c_str() : nullptr, query.c_str(),
           query.length(), dist_refresh))
-    ndb_log_error("Failed to distribute '%s' (STATEMENT)", query.c_str());
+    raise_error("as statement");
 }
 
 /*
@@ -735,23 +674,17 @@ static int ndbcluster_binlog_func(handlerton *, THD *thd, enum_binlog_func fn,
   return res;
 }
 
-void ndbcluster_binlog_init(handlerton *h) {
+bool ndbcluster_binlog_init(handlerton *h) {
   h->binlog_func = ndbcluster_binlog_func;
   h->binlog_log_query = ndbcluster_binlog_log_query;
   h->acl_notify = ndbcluster_acl_notify;
-}
 
-/*
-   ndb_notify_tables_writable
+  if (!Ndb_stored_grants::init()) {
+    ndb_log_error("Failed to initialize synchronized privileges");
+    return false;
+  }
 
-   Called to notify any waiting threads that Ndb tables are
-   now writable
-*/
-static void ndb_notify_tables_writable() {
-  mysql_mutex_lock(&ndbcluster_mutex);
-  ndb_setup_complete = 1;
-  mysql_cond_broadcast(&ndbcluster_cond);
-  mysql_mutex_unlock(&ndbcluster_mutex);
+  return true;
 }
 
 /**
@@ -772,17 +705,18 @@ class Ndb_binlog_setup {
      @brief Detect whether the binlog is being setup after an initial system
             start/restart or after a normal system start/restart.
 
-     @param thd_ndb  The Thd_ndb object
+     @param      thd_ndb           The Thd_ndb object
+     @param[out] initial_restart   Set to true if this is an initial system
+                                   start/restart, false otherwise.
 
-     @return true if this is an initial system start/restart, false otherwise.
+     @return true if the method succeeded in detecting, false otherwise.
    */
-  bool detect_initial_restart(Thd_ndb *thd_ndb) {
+  bool detect_initial_restart(Thd_ndb *thd_ndb, bool *initial_restart) {
     DBUG_TRACE;
 
     // Retrieve the old schema UUID stored in DD.
     dd::String_type dd_schema_uuid;
     if (!ndb_dd_get_schema_uuid(m_thd, &dd_schema_uuid)) {
-      DBUG_ASSERT(false);
       ndb_log_warning("Failed to read the schema UUID of DD");
       return false;
     }
@@ -795,6 +729,7 @@ class Ndb_binlog_setup {
         code simple and due to the fact that the upgrade is probably being done
         from a 5.x or a non GA 8.0.x versions to a 8.0.x cluster GA version.
       */
+      *initial_restart = true;
       ndb_log_info("Detected an initial system start");
       return true;
     }
@@ -806,6 +741,7 @@ class Ndb_binlog_setup {
         The ndb_schema table does not exist in NDB yet but the DD already has a
         schema UUID. This is an initial system restart.
       */
+      *initial_restart = true;
       ndb_log_info("Detected an initial system restart");
       return true;
     }
@@ -814,7 +750,7 @@ class Ndb_binlog_setup {
     std::string ndb_schema_uuid;
     if (!schema_dist_table.open() ||
         !schema_dist_table.get_schema_uuid(&ndb_schema_uuid)) {
-      DBUG_ASSERT(false);
+      ndb_log_warning("Failed to read the schema UUID tuple from NDB");
       return false;
     }
     /*
@@ -822,7 +758,7 @@ class Ndb_binlog_setup {
       empty as whichever mysqld created the table would also have updated the
       schema UUID in NDB.
     */
-    DBUG_ASSERT(!ndb_schema_uuid.empty());
+    assert(!ndb_schema_uuid.empty());
 
     if (ndb_schema_uuid == dd_schema_uuid.c_str()) {
       /*
@@ -830,8 +766,9 @@ class Ndb_binlog_setup {
         upgrade. Any upgrade from versions having schema UUID to another newer
         version will be handled here.
       */
+      *initial_restart = false;
       ndb_log_info("Detected a normal system restart");
-      return false;
+      return true;
     }
 
     /*
@@ -842,6 +779,7 @@ class Ndb_binlog_setup {
       From this mysqld's perspective, this will be treated as an
       initial system restart.
     */
+    *initial_restart = true;
     ndb_log_info("Detected an initial system restart");
     return true;
   }
@@ -859,11 +797,11 @@ class Ndb_binlog_setup {
 
     @note See special error handling required when function fails.
 
-    @return true if setup is succesful
+    @return true if setup is successful
     @return false if setup fails. The creation of ndb_schema table and setup
     of event operation registers this node in schema distribution protocol. Thus
     this node is expected to reply to schema distribution events. Replying is
-    however not possible until setup has succesfully completed and the binlog
+    however not possible until setup has successfully completed and the binlog
     thread has started to handle events. If setup fails the event operation on
     ndb_schema table and all other event operations must be removed in order to
     signal unsubcribe and remove this node from schema distribution.
@@ -876,20 +814,18 @@ class Ndb_binlog_setup {
       ndb_log_info(" <- sleep");
     }
 
-    DBUG_ASSERT(ndb_apply_status_share == nullptr);
-
     // Protect the schema synchronization with GSL(Global Schema Lock)
     Ndb_global_schema_lock_guard global_schema_lock_guard(m_thd);
     if (global_schema_lock_guard.lock()) {
       return false;
     }
 
-    /* Give additional 'binlog_setup rights' to this Thd_ndb */
-    Thd_ndb::Options_guard thd_ndb_options(thd_ndb);
-    thd_ndb_options.set(Thd_ndb::ALLOW_BINLOG_SETUP);
-
     // Check if this is a initial restart/start
-    const bool initial_system_restart = detect_initial_restart(thd_ndb);
+    bool initial_system_restart = false;
+    if (!detect_initial_restart(thd_ndb, &initial_system_restart)) {
+      // Failed to detect if this was a initial restart
+      return false;
+    }
 
     Ndb_dd_sync dd_sync(m_thd, thd_ndb);
     if (initial_system_restart) {
@@ -908,6 +844,10 @@ class Ndb_binlog_setup {
         return false;
       }
     }
+
+    // Allow setup of NDB_SHARE for ndb_schema before schema dist is ready
+    Thd_ndb::Options_guard thd_ndb_options(thd_ndb);
+    thd_ndb_options.set(Thd_ndb::ALLOW_BINLOG_SETUP);
 
     const bool ndb_schema_dist_upgrade_allowed = ndb_allow_ndb_schema_upgrade();
     Ndb_schema_dist_table schema_dist_table(thd_ndb);
@@ -956,6 +896,19 @@ class Ndb_binlog_setup {
       return false;
     }
 
+    Ndb_index_stat_head_table index_stat_head_table(thd_ndb);
+    if (!index_stat_head_table.create_or_upgrade(m_thd, true)) return false;
+
+    Ndb_index_stat_sample_table index_stat_sample_table(thd_ndb);
+    if (!index_stat_sample_table.create_or_upgrade(m_thd, true)) return false;
+
+    if (initial_system_restart) {
+      // The index stat thread must be restarted to ensure that the index stat
+      // functionality is ready to be used as soon as binlog setup is done
+      ndb_log_info("Signalling the index stat thread to restart");
+      ndb_index_stat_restart();
+    }
+
     Ndb_apply_status_table apply_status_table(thd_ndb);
     if (!apply_status_table.create_or_upgrade(m_thd, true)) return false;
 
@@ -964,11 +917,8 @@ class Ndb_binlog_setup {
       return false;
     }
 
-    // Check that references for ndb_apply_status has been created
-    DBUG_ASSERT(!ndb_binlog_running || ndb_apply_status_share);
-
-    if (!Ndb_stored_grants::initialize(m_thd, thd_ndb)) {
-      ndb_log_warning("stored grants: failed to initialize");
+    if (!Ndb_stored_grants::setup(m_thd, thd_ndb)) {
+      ndb_log_warning("Failed to setup synchronized privileges");
       return false;
     }
 
@@ -982,6 +932,24 @@ class Ndb_binlog_setup {
     return true;  // Setup completed OK
   }
 };
+
+/**
+  @brief Force start of GCP, don't wait for reply.
+
+  @note This function is used by schema distribution to speed up handling of
+  schema changes in the cluster. By forcing a GCP to start, the
+  Ndb_schema_event_handler will receive the events notifying about changes to
+  the ndb_schema* tables faster. Beware that forcing GCP will temporarily cause
+  smaller transactions in the binlog, thus potentially affecting batching when
+  applied on the replicas.
+
+  @param ndb  Ndb Object
+*/
+static inline void schema_dist_send_force_gcp(Ndb *ndb) {
+  // Send signal to DBDIH to start new micro gcp
+  constexpr int START_GCP_NO_WAIT = 1;
+  (void)ndb->getDictionary()->forceGCPWait(START_GCP_NO_WAIT);
+}
 
 /*
   Defines for the expected order of columns in ndb_schema table, should
@@ -997,27 +965,6 @@ constexpr uint SCHEMA_ID_I = 6;
 constexpr uint SCHEMA_VERSION_I = 7;
 constexpr uint SCHEMA_TYPE_I = 8;
 constexpr uint SCHEMA_OP_ID_I = 9;
-
-static void ndb_report_waiting(const char *key, int the_time, const char *op,
-                               const char *obj) {
-  ulonglong ndb_latest_epoch = 0;
-  const char *proc_info = "<no info>";
-  mysql_mutex_lock(&injector_event_mutex);
-  if (injector_ndb) ndb_latest_epoch = injector_ndb->getLatestGCI();
-  if (injector_thd) proc_info = injector_thd->proc_info;
-  mysql_mutex_unlock(&injector_event_mutex);
-  {
-    ndb_log_info(
-        "%s, waiting max %u sec for %s %s."
-        "  epochs: (%u/%u,%u/%u,%u/%u)"
-        "  injector proc_info: %s",
-        key, the_time, op, obj, (uint)(ndb_latest_handled_binlog_epoch >> 32),
-        (uint)(ndb_latest_handled_binlog_epoch),
-        (uint)(ndb_latest_received_binlog_epoch >> 32),
-        (uint)(ndb_latest_received_binlog_epoch),
-        (uint)(ndb_latest_epoch >> 32), (uint)(ndb_latest_epoch), proc_info);
-  }
-}
 
 bool Ndb_schema_dist_client::write_schema_op_to_NDB(
     Ndb *ndb, const char *query, int query_length, const char *db,
@@ -1042,7 +989,8 @@ bool Ndb_schema_dist_client::write_schema_op_to_NDB(
   // The expectation is that all participants will reply and those not
   // connected will be filtered away by the coordinator.
   std::vector<char> slock_data;
-  slock_data.assign(schema_dist_table.get_slock_bytes(), 0xFF);
+  slock_data.assign(schema_dist_table.get_slock_bytes(),
+                    static_cast<char>(0xFF));
 
   // Function for writing row to ndb_schema
   std::function<const NdbError *(NdbTransaction *)> write_schema_op_func =
@@ -1090,7 +1038,7 @@ bool Ndb_schema_dist_client::write_schema_op_to_NDB(
     return false;
   }
 
-  (void)ndb->getDictionary()->forceGCPWait(1);
+  schema_dist_send_force_gcp(ndb);
 
   return true;
 }
@@ -1164,13 +1112,14 @@ bool Ndb_schema_dist_client::log_schema_op_impl(
   if (ndb_log_get_verbose_level() >= 19) {
     ndb_log_error_dump("Schema_op {");
     ndb_log_error_dump("type: %d", type);
-    ndb_log_error_dump("query: '%s'", query);
+    // ACL statements may contain passwords, so skip logging them here
+    if (type != SOT_ACL_STATEMENT && type != SOT_ACL_STATEMENT_REFRESH)
+      ndb_log_error_dump("query: '%s'", query);
     ndb_log_error_dump("}");
   }
 
-  int count = 0;
-
   // Wait for participants to complete the schema change
+  int count = 0;
   while (true) {
     const bool completed = ndb_schema_object->client_wait_completed(1);
     if (completed) {
@@ -1179,18 +1128,19 @@ bool Ndb_schema_dist_client::log_schema_op_impl(
       break;
     }
 
+    // Client normally relies on the coordinator to time out the schema
+    // operation when it has received the schema operation. Until then
+    // the client will check for timeout itself.
     count++;
-    if (count > opt_ndb_schema_dist_timeout &&
-        !ndb_schema_object->has_coordinator_received_schema_op()) {
-      // Client rely on the coordinator to time-out the schema operation.
-      // But when the client doesn't hear back from coordinator after
-      // ndb_schema_dist_timeout second(s), it implies that some thing is
-      // wrong and So, check if the coordinator has received the schema op.
+    if (ndb_schema_object->has_coordinator_received_schema_op() == false &&
+        count > opt_ndb_schema_dist_timeout) {
       ndb_log_verbose(19,
-                      "Schema events for '%s' - not received by "
-                      "the co-ordinator",
+                      "Schema events for '%s' - not received by coordinator",
                       op_name.c_str());
       ndb_log_warning("Schema dist client detected timeout");
+      // Delay the execution of client thread so that the Coordinator
+      // will receive the schema event when the schema object is valid
+      DBUG_EXECUTE_IF("ndb_stale_event_with_schema_obj", sleep(2););
       return false;
     }
 
@@ -1220,7 +1170,7 @@ bool Ndb_schema_dist_client::log_schema_op_impl(
     if (thd_killed(m_thd)) {
       ndb_log_verbose(
           19,
-          "Distribution of '%s' - client killed but waiting for co-ordinator "
+          "Distribution of '%s' - client killed but waiting for coordinator "
           "to complete!",
           op_name.c_str());
     }
@@ -1260,14 +1210,9 @@ static void ndbcluster_binlog_event_operation_teardown(THD *thd, Ndb *is_ndb,
   DBUG_PRINT("enter", ("pOp: %p", pOp));
 
   // Get Ndb_event_data associated with the NdbEventOperation
-  const Ndb_event_data *event_data =
-      static_cast<const Ndb_event_data *>(pOp->getCustomData());
-  DBUG_ASSERT(event_data);
-
-  // Get NDB_SHARE associated with the Ndb_event_data, the share
-  // is referenced by "binlog" and will not go away until released
-  // further down in this function
-  NDB_SHARE *share = event_data->share;
+  const Ndb_event_data *const event_data =
+      Ndb_event_data::get_event_data(pOp->getCustomData());
+  NDB_SHARE *const share = event_data->share;
 
   // Invalidate any cached NdbApi table if object version is lower
   // than what was used when setting up the NdbEventOperation
@@ -1283,33 +1228,31 @@ static void ndbcluster_binlog_event_operation_teardown(THD *thd, Ndb *is_ndb,
       ndbtab_g.invalidate();
   }
 
-  // Remove NdbEventOperation from the share
-  mysql_mutex_lock(&share->mutex);
-  DBUG_ASSERT(share->op == pOp);
-  share->op = NULL;
-  mysql_mutex_unlock(&share->mutex);
-
-  /* Signal ha_ndbcluster::delete/rename_table that drop is done */
-  DBUG_PRINT("info", ("signal that drop is done"));
-  mysql_cond_broadcast(&injector_data_cond);
-
   // Close the table in MySQL Server
   ndb_tdc_close_cached_table(thd, share->db, share->table_name);
 
-  // Release the "binlog" reference from NDB_SHARE
-  NDB_SHARE::release_reference(share, "binlog");
-
-  // Remove pointer to event_data from the EventOperation
-  pOp->setCustomData(NULL);
-
   // Drop the NdbEventOperation from NdbApi
-  DBUG_PRINT("info", ("Dropping event operation: %p", pOp));
   mysql_mutex_lock(&injector_event_mutex);
   is_ndb->dropEventOperation(pOp);
   mysql_mutex_unlock(&injector_event_mutex);
 
-  // Finally delete the event_data and thus it's mem_root, shadow_table etc.
+  // Release op from NDB_SHARE
+  mysql_mutex_lock(&share->mutex);
+  assert(share->op == pOp);
+  share->op = nullptr;
+  mysql_mutex_unlock(&share->mutex);
+
+  // Release event data reference
+  NDB_SHARE::release_reference(share, "event_data");
+
+  // Delete the event_data, it's mem_root, shadow_table etc.
   Ndb_event_data::destroy(event_data);
+
+  // Signal that teardown has been completed by binlog. This mechanism is used
+  // when deleting or renaming table to not return until the command also has
+  // been injected in binlog on local server
+  DBUG_PRINT("info", ("signal that teardown is done"));
+  mysql_cond_broadcast(&injector_data_cond);
 }
 
 /*
@@ -1321,13 +1264,16 @@ static void ndbcluster_binlog_event_operation_teardown(THD *thd, Ndb *is_ndb,
  */
 class Ndb_schema_dist_data {
   uint m_own_nodeid;
-  uint m_max_subscribers{0};
   // List of active schema operations in this coordinator. Having an
   // active schema operation means it need to be checked
   // for timeout or request to be killed regularly
   std::unordered_set<const NDB_SCHEMA_OBJECT *> m_active_schema_ops;
 
   std::chrono::steady_clock::time_point m_next_check_time;
+
+  // The schema distribution tables or their subscriptions has been lost and
+  // setup is required
+  bool m_check_schema_dist_setup{false};
 
   // Keeps track of subscribers as reported by one data node
   class Node_subscribers {
@@ -1341,7 +1287,7 @@ class Ndb_schema_dist_data {
       bitmap_init(&m_bitmap, nullptr, max_subscribers);
 
       // Assume that all bits are cleared by bitmap_init()
-      DBUG_ASSERT(bitmap_is_clear_all(&m_bitmap));
+      assert(bitmap_is_clear_all(&m_bitmap));
     }
     ~Node_subscribers() { bitmap_free(&m_bitmap); }
     void clear_all() { bitmap_clear_all(&m_bitmap); }
@@ -1399,21 +1345,16 @@ class Ndb_schema_dist_data {
   // Holds the new key for a table to be renamed
   struct NDB_SHARE_KEY *m_prepared_rename_key;
 
-  // Holds the Ndb_event_data which is created during inplace alter table
-  // prepare and used during commit
-  // NOTE! this place holder is only used for the participant in same node
-  const class Ndb_event_data *m_inplace_alter_event_data{nullptr};
-
  public:
   Ndb_schema_dist_data(const Ndb_schema_dist_data &);  // Not implemented
-  Ndb_schema_dist_data() : m_prepared_rename_key(NULL) {}
+  Ndb_schema_dist_data() : m_prepared_rename_key(nullptr) {}
   ~Ndb_schema_dist_data() {
     // There should be no schema operations active
-    DBUG_ASSERT(m_active_schema_ops.size() == 0);
+    assert(m_active_schema_ops.size() == 0);
   }
 
   void init(Ndb_cluster_connection *cluster_connection) {
-    Uint32 max_subscribers = cluster_connection->max_api_nodeid() + 1;
+    const Uint32 max_subscribers = cluster_connection->max_api_nodeid() + 1;
     m_own_nodeid = cluster_connection->node_id();
     NDB_SCHEMA_OBJECT::init(m_own_nodeid);
 
@@ -1424,28 +1365,20 @@ class Ndb_schema_dist_data {
       m_subscriber_bitmaps.emplace(node_id,
                                    new Node_subscribers(max_subscribers));
     }
-    // Remember max number of subscribers
-    m_max_subscribers = max_subscribers;
   }
 
   void release(void) {
     // Release the subscriber bitmaps
-    for (const auto it : m_subscriber_bitmaps) {
+    for (const auto &it : m_subscriber_bitmaps) {
       Node_subscribers *subscriber_bitmap = it.second;
       delete subscriber_bitmap;
     }
     m_subscriber_bitmaps.clear();
-    m_max_subscribers = 0;
 
     // Release the prepared rename key, it's very unlikely
     // that the key is still around here, but just in case
     NDB_SHARE::free_key(m_prepared_rename_key);
-    m_prepared_rename_key = NULL;
-
-    // Release the event_data saved for inplace alter, it's very
-    // unlikley that the event_data is still around, but just in case
-    Ndb_event_data::destroy(m_inplace_alter_event_data);
-    m_inplace_alter_event_data = nullptr;
+    m_prepared_rename_key = nullptr;
 
     // Release any remaining active schema operations
     for (const NDB_SCHEMA_OBJECT *schema_op : m_active_schema_ops) {
@@ -1506,7 +1439,7 @@ class Ndb_schema_dist_data {
      @param subscriber_list The list where to return subscribers
   */
   void get_subscriber_list(std::unordered_set<uint32> &subscriber_list) const {
-    for (const auto it : m_subscriber_bitmaps) {
+    for (const auto &it : m_subscriber_bitmaps) {
       Node_subscribers *subscribers = it.second;
       subscribers->get_subscriber_list(subscriber_list);
     }
@@ -1522,21 +1455,12 @@ class Ndb_schema_dist_data {
     return m_prepared_rename_key;
   }
 
-  void save_inplace_alter_event_data(const Ndb_event_data *event_data) {
-    // Should not already be set when saving a new pointer
-    DBUG_ASSERT(event_data == nullptr || !m_inplace_alter_event_data);
-    m_inplace_alter_event_data = event_data;
-  }
-  const Ndb_event_data *get_inplace_alter_event_data() const {
-    return m_inplace_alter_event_data;
-  }
-
   void add_active_schema_op(NDB_SCHEMA_OBJECT *schema_op) {
     // Current assumption is that as long as all users of schema distribution
     // hold the GSL, there will ever only be one active schema operation at a
     // time. This assumption will probably change soon, but until then it can
     // be verifed with an assert.
-    DBUG_ASSERT(m_active_schema_ops.size() == 0);
+    assert(m_active_schema_ops.size() == 0);
 
     // Get coordinator reference to NDB_SCHEMA_OBJECT. It will be kept alive
     // until the coordinator releases it
@@ -1544,6 +1468,8 @@ class Ndb_schema_dist_data {
 
     // Insert NDB_SCHEMA_OBJECT in list of active schema ops
     ndbcluster::ndbrequire(m_active_schema_ops.insert(schema_op).second);
+
+    schedule_next_check();
   }
 
   void remove_active_schema_op(NDB_SCHEMA_OBJECT *schema_op) {
@@ -1561,16 +1487,49 @@ class Ndb_schema_dist_data {
     return m_active_schema_ops;
   }
 
+  // This function is called after each epoch, but checks should only
+  // be performed at regular intervals in order to allow binlog thread focus on
+  // other stuff.
+  // Return true if something is active and sufficient time has passed since
+  // last check.
   bool time_for_check() {
-    std::chrono::steady_clock::time_point curr_time =
+    // Check if there is anything which need to be checked
+    if (m_active_schema_ops.size() == 0 && !m_check_schema_dist_setup)
+      return false;
+
+    // Check if enough time has passed sinced last check
+    const std::chrono::steady_clock::time_point curr_time =
         std::chrono::steady_clock::now();
     if (m_next_check_time > curr_time) return false;
 
-    // Setup time for next check in 1 second
-    m_next_check_time = curr_time + std::chrono::seconds(1);
     return true;
   }
 
+  void schedule_next_check() {
+    // Only allow scheduling check if there are something active (this is a
+    // consistency check of the intention to only check when necessary)
+    assert(m_active_schema_ops.size() > 0 || m_check_schema_dist_setup);
+
+    // Schedule next check (at the earliest) in 1 second
+    m_next_check_time =
+        std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  }
+
+  // Activate setup of schema distribution
+  void activate_schema_dist_setup() {
+    m_check_schema_dist_setup = true;
+    schedule_next_check();
+  }
+
+  // Deactivate setup of schema distribution
+  void deactivate_schema_dist_setup() {
+    assert(m_check_schema_dist_setup);  // Must already be on
+
+    m_check_schema_dist_setup = false;
+  }
+
+  // Check if schema distribution setup is active
+  bool is_schema_dist_setup_active() const { return m_check_schema_dist_setup; }
 };  // class Ndb_schema_dist_data
 
 class Ndb_schema_event_handler {
@@ -1657,7 +1616,7 @@ class Ndb_schema_event_handler {
           (*THR_MALLOC)->Alloc(field->field_length));
       ndbcluster::ndbrequire(slock_buf);
 
-      // Initialize bitmap(always suceeds when buffer is already allocated)
+      // Initialize bitmap(always succeeds when buffer is already allocated)
       (void)bitmap_init(&slock, slock_buf, field->field_length * 8);
 
       // Copy data into bitmap buffer
@@ -1765,7 +1724,7 @@ class Ndb_schema_event_handler {
     void set_result(Ndb_schema_dist::Schema_op_result_code result,
                     const std::string message) {
       // Both result and message must be set
-      DBUG_ASSERT(result && message.length());
+      assert(result && message.length());
       m_result = result;
       m_message = message;
     }
@@ -1833,7 +1792,7 @@ class Ndb_schema_event_handler {
          mysqld.
          TODO : Assert that we are running in the Binlog injector thread?
       */
-      if (!g_ndb_log_slave_updates) {
+      if (!g_ndb_log_replica_updates) {
         /* This MySQLD does not log slave updates */
         return;
       }
@@ -1847,7 +1806,7 @@ class Ndb_schema_event_handler {
       to the server_id where the query originated.
     */
     const uint32 thd_server_id_save = thd->server_id;
-    DBUG_ASSERT(sizeof(thd_server_id_save) == sizeof(thd->server_id));
+    assert(sizeof(thd_server_id_save) == sizeof(thd->server_id));
     thd->server_id = loggedServerId;
 
     LEX_CSTRING thd_db_save = thd->db();
@@ -1902,7 +1861,7 @@ class Ndb_schema_event_handler {
 
     const NdbError *ndb_error = nullptr;
     char tmp_buf[FN_REFLEN];
-    NdbTransaction *trans = 0;
+    NdbTransaction *trans = nullptr;
     int retries = 100;
     std::string before_slock;
 
@@ -1914,30 +1873,30 @@ class Ndb_schema_event_handler {
     (void)bitmap_init(&slock, nullptr, slock_bits);
 
     while (1) {
-      if ((trans = ndb->startTransaction()) == 0) goto err;
+      if ((trans = ndb->startTransaction()) == nullptr) goto err;
       {
-        NdbOperation *op = 0;
-        int r = 0;
+        NdbOperation *op = nullptr;
+        int r [[maybe_unused]] = 0;
 
-        /* read row from ndb_schema with exlusive row lock */
-        r |= (op = trans->getNdbOperation(ndbtab)) == 0;
-        DBUG_ASSERT(r == 0);
+        /* read row from ndb_schema with exclusive row lock */
+        r |= (op = trans->getNdbOperation(ndbtab)) == nullptr;
+        assert(r == 0);
         r |= op->readTupleExclusive();
-        DBUG_ASSERT(r == 0);
+        assert(r == 0);
 
         /* db */
         ndb_pack_varchar(ndbtab, SCHEMA_DB_I, tmp_buf, schema->db,
                          strlen(schema->db));
         r |= op->equal(SCHEMA_DB_I, tmp_buf);
-        DBUG_ASSERT(r == 0);
+        assert(r == 0);
         /* name */
         ndb_pack_varchar(ndbtab, SCHEMA_NAME_I, tmp_buf, schema->name,
                          strlen(schema->name));
         r |= op->equal(SCHEMA_NAME_I, tmp_buf);
-        DBUG_ASSERT(r == 0);
+        assert(r == 0);
         /* slock */
-        r |= op->getValue(SCHEMA_SLOCK_I, (char *)slock.bitmap) == 0;
-        DBUG_ASSERT(r == 0);
+        r |= op->getValue(SCHEMA_SLOCK_I, (char *)slock.bitmap) == nullptr;
+        assert(r == 0);
 
         /* Execute in NDB */
         if (trans->execute(NdbTransaction::NoCommit)) goto err;
@@ -1958,42 +1917,42 @@ class Ndb_schema_event_handler {
       }
 
       {
-        NdbOperation *op = 0;
-        int r = 0;
+        NdbOperation *op = nullptr;
+        int r [[maybe_unused]] = 0;
 
         /* now update the tuple */
-        r |= (op = trans->getNdbOperation(ndbtab)) == 0;
-        DBUG_ASSERT(r == 0);
+        r |= (op = trans->getNdbOperation(ndbtab)) == nullptr;
+        assert(r == 0);
         r |= op->updateTuple();
-        DBUG_ASSERT(r == 0);
+        assert(r == 0);
 
         /* db */
         ndb_pack_varchar(ndbtab, SCHEMA_DB_I, tmp_buf, schema->db,
                          strlen(schema->db));
         r |= op->equal(SCHEMA_DB_I, tmp_buf);
-        DBUG_ASSERT(r == 0);
+        assert(r == 0);
         /* name */
         ndb_pack_varchar(ndbtab, SCHEMA_NAME_I, tmp_buf, schema->name,
                          strlen(schema->name));
         r |= op->equal(SCHEMA_NAME_I, tmp_buf);
-        DBUG_ASSERT(r == 0);
+        assert(r == 0);
         /* slock */
         r |= op->setValue(SCHEMA_SLOCK_I, (char *)slock.bitmap);
-        DBUG_ASSERT(r == 0);
+        assert(r == 0);
         /* node_id */
         // NOTE! Sends own nodeid here instead of nodeid who started schema op
         r |= op->setValue(SCHEMA_NODE_ID_I, own_nodeid());
-        DBUG_ASSERT(r == 0);
+        assert(r == 0);
         /* type */
         r |= op->setValue(SCHEMA_TYPE_I, (uint32)SOT_CLEAR_SLOCK);
-        DBUG_ASSERT(r == 0);
+        assert(r == 0);
       }
       if (trans->execute(NdbTransaction::Commit,
                          NdbOperation::DefaultAbortOption,
                          1 /*force send*/) == 0) {
         DBUG_PRINT("info", ("node %d cleared lock on '%s.%s'", own_nodeid(),
                             schema->db, schema->name));
-        (void)ndb->getDictionary()->forceGCPWait(1);
+        schema_dist_send_force_gcp(ndb);
         break;
       }
     err:
@@ -2024,7 +1983,7 @@ class Ndb_schema_event_handler {
 
   /**
     @brief Inform the other nodes that schema operation has been completed by
-    all nodes, this is done by updating the row in the ndb_schema table whith
+    all nodes, this is done by updating the row in the ndb_schema table with
     all bits of the 'slock' column cleared.
 
     @note this is done to allow the coordinator to control when the schema
@@ -2034,7 +1993,7 @@ class Ndb_schema_event_handler {
     @param db First part of key, normally used for db name
     @param table_name Second part of key, normally used for table name
 
-    @return zero on sucess
+    @return zero on success
 
   */
   int ack_schema_op_final(const char *db, const char *table_name) const {
@@ -2094,9 +2053,10 @@ class Ndb_schema_event_handler {
       ndb_log_warning("Could not release slock on '%s.%s'", db, table_name);
       return 1;
     }
-    ndb_log_verbose(19, "Cleared slock on '%s.%s'", db, table_name);
 
-    (void)ndb->getDictionary()->forceGCPWait(1);
+    schema_dist_send_force_gcp(ndb);
+
+    ndb_log_verbose(19, "Cleared slock on '%s.%s'", db, table_name);
 
     return 0;
   }
@@ -2107,7 +2067,7 @@ class Ndb_schema_event_handler {
 
     @param schema The schema operation which has just been completed
 
-    @return true if ack suceeds
+    @return true if ack succeeds
     @return false if ack fails(writing to the table could not be done)
 
   */
@@ -2122,7 +2082,7 @@ class Ndb_schema_event_handler {
     DBUG_EXECUTE_IF("ndb_defer_sending_participant_ack", {
       ndb_log_info("sending participant ack deferred");
       const char action[] = "now WAIT_FOR resume_sending_participant_ack";
-      DBUG_ASSERT(!debug_sync_set_action(m_thd, action, strlen(action)));
+      assert(!debug_sync_set_action(m_thd, action, strlen(action)));
       ndb_log_info("continuing..");
     });
 
@@ -2188,6 +2148,8 @@ class Ndb_schema_event_handler {
       return false;
     }
 
+    schema_dist_send_force_gcp(ndb);
+
     // Success
     ndb_log_verbose(19,
                     "Replied to schema operation '%s.%s(%u/%u)', nodeid: %d, "
@@ -2249,7 +2211,7 @@ class Ndb_schema_event_handler {
       const char action[] =
           "now SIGNAL reached_check_wakeup_clients "
           "WAIT_FOR continue_check_wakeup_clients NO_CLEAR_EVENT";
-      DBUG_ASSERT(!debug_sync_set_action(m_thd, action, strlen(action)));
+      assert(!debug_sync_set_action(m_thd, action, strlen(action)));
     });
 
     // Build list of current subscribers
@@ -2287,8 +2249,6 @@ class Ndb_schema_event_handler {
       return false;
     }
     assert(event_data->shadow_table);
-    assert(event_data->ndb_value[0]);
-    assert(event_data->ndb_value[1]);
     assert(Ndb_schema_dist_client::is_schema_dist_table(share->db,
                                                         share->table_name));
     return true;
@@ -2316,10 +2276,7 @@ class Ndb_schema_event_handler {
     DBUG_TRACE;
     DBUG_PRINT("enter", ("db: '%s', name: '%s'", db, name));
 
-    char key[FN_REFLEN + 1];
-    build_table_filename(key, sizeof(key) - 1, db, name, "", 0);
-    NDB_SHARE *share = NDB_SHARE::acquire_reference_by_key(key, reference);
-    return share;
+    return NDB_SHARE::acquire_reference(db, name, reference);
   }
 
   bool has_shadow_table(Ndb_dd_client &dd_client, const char *schema_name,
@@ -2399,7 +2356,7 @@ class Ndb_schema_event_handler {
     const NDBTAB *ndbtab = ndbtab_g.get_table();
     if (!ndbtab) {
       // Could not open the table from NDB, very unusual
-      log_NDB_error(ndb->getDictionary()->getNdbError());
+      log_NDB_error(ndbtab_g.getNdbError());
       ndb_log_error("Failed to open table '%s.%s' from NDB", schema_name,
                     table_name);
       return false;
@@ -2533,36 +2490,50 @@ class Ndb_schema_event_handler {
     ndbapi_invalidate_table(schema->db, schema->name);
     ndb_tdc_close_cached_table(m_thd, schema->db, schema->name);
 
-    NDB_SHARE *share =
-        acquire_reference(schema->db, schema->name,
-                          "offline_alter_table_commit");  // Temp ref.
+    // Get temporary share reference
+    NDB_SHARE *share = acquire_reference(schema->db, schema->name,
+                                         "offline_alter_table_commit");
     if (share) {
       mysql_mutex_lock(&share->mutex);
-      if (share->op) {
-        const Ndb_event_data *event_data =
-            static_cast<const Ndb_event_data *>(share->op->getCustomData());
-        Ndb_event_data::destroy(event_data);
-        share->op->setCustomData(NULL);
-        {
-          Mutex_guard injector_mutex_g(injector_event_mutex);
-          injector_ndb->dropEventOperation(share->op);
-        }
-        share->op = 0;
-        NDB_SHARE::release_reference(share, "binlog");
-      }
-      mysql_mutex_unlock(&share->mutex);
+      if (share->op == nullptr) {
+        // Binlog is not subscribed to changes of the altered table
 
-      mysql_mutex_lock(&ndbcluster_mutex);
-      NDB_SHARE::mark_share_dropped(&share);
-      NDB_SHARE::release_reference_have_lock(share,
-                                             "offline_alter_table_commit");
-      // If this was the last share ref, it is now deleted. If there are more
-      // references, the share will remain in the list of dropped until
-      // remaining references are released.
-      mysql_mutex_unlock(&ndbcluster_mutex);
+        // Double check that there is no reference from event_data
+        // NOTE! Really requires "shares_mutex"
+        assert(!share->refs_exists("event_data"));
+
+        mysql_mutex_unlock(&share->mutex);
+      } else {
+        // Binlog is subscribed, release subscription and its data
+        NdbEventOperation *const old_op = share->op;
+        const Ndb_event_data *old_event_data =
+            Ndb_event_data::get_event_data(old_op->getCustomData(), share);
+
+        NDB_SHARE *const share = old_event_data->share;
+
+        // Drop the op from NdbApi
+        mysql_mutex_lock(&injector_event_mutex);
+        injector_ndb->dropEventOperation(old_op);
+        mysql_mutex_unlock(&injector_event_mutex);
+
+        // Release op from NDB_SHARE
+        share->op = nullptr;
+        mysql_mutex_unlock(&share->mutex);
+
+        // Release reference for event data
+        NDB_SHARE::release_reference(share, "event_data");
+
+        // Delete event data and thus it's mem_root, shadow_table etc.
+        Ndb_event_data::destroy(old_event_data);
+      }
+
+      // Release temporary share reference and mark share as dropped
+      NDB_SHARE::mark_share_dropped_and_release(share,
+                                                "offline_alter_table_commit");
     }
 
-    // Install table from NDB, overwrite the existing table
+    // Install table from NDB, setup new subscription if necessary, overwrite
+    // the existing table
     if (!create_table_from_engine(schema->db, schema->name,
                                   true /* force_overwrite */,
                                   true /* invalidate_referenced_tables */)) {
@@ -2581,49 +2552,7 @@ class Ndb_schema_event_handler {
     ndbapi_invalidate_table(schema->db, schema->name);
     ndb_tdc_close_cached_table(m_thd, schema->db, schema->name);
 
-    if (schema->node_id == own_nodeid()) {
-      // Special case for schema dist participant in own node!
-      // The schema dist client has exclusive MDL lock and thus
-      // the schema dist participant(this code) on the same mysqld
-      // can't open the table def from the DD, trying to acquire
-      // another MDL lock will just block. Instead(since this is in
-      // the same mysqld) it provides the new table def via a
-      // pointer in the NDB_SHARE.
-      NDB_SHARE *share =
-          acquire_reference(schema->db, schema->name,
-                            "online_alter_table_prepare");  // temporary ref.
-
-      const dd::Table *new_table_def =
-          static_cast<const dd::Table *>(share->inplace_alter_new_table_def);
-      DBUG_ASSERT(new_table_def);
-
-      // Create a new Ndb_event_data which will be used when creating
-      // the new NdbEventOperation
-      Ndb_event_data *event_data = Ndb_event_data::create_event_data(
-          m_thd, share, share->db, share->table_name, share->key_string(),
-          injector_thd, new_table_def);
-      if (!event_data) {
-        ndb_log_error("NDB Binlog: Failed to create event data for table %s.%s",
-                      schema->db, schema->name);
-        DBUG_ASSERT(false);
-        // NOTE! Should abort the alter from here
-      }
-
-      // Release old prepared event_data, this is rare but will happen
-      // when an inplace alter table fails between prepare and commit phase
-      const Ndb_event_data *old_event_data =
-          m_schema_dist_data.get_inplace_alter_event_data();
-      if (old_event_data) {
-        Ndb_event_data::destroy(old_event_data);
-        m_schema_dist_data.save_inplace_alter_event_data(nullptr);
-      }
-
-      // Save the new event_data
-      m_schema_dist_data.save_inplace_alter_event_data(event_data);
-
-      NDB_SHARE::release_reference(share,
-                                   "online_alter_table_prepare");  // temp ref.
-    } else {
+    if (schema->node_id != own_nodeid()) {
       write_schema_op_to_binlog(m_thd, schema);
 
       // Install table from NDB, overwrite the altered table.
@@ -2639,34 +2568,60 @@ class Ndb_schema_event_handler {
             "Distribution of ALTER TABLE " + std::string(1, '\'') +
                 std::string(schema->name) + std::string(1, '\'') + " failed");
       }
-
-      // Check that no event_data have been prepared yet(that is only
-      // done on participant in same node)
-      DBUG_ASSERT(m_schema_dist_data.get_inplace_alter_event_data() == nullptr);
     }
   }
 
-  const Ndb_event_data *remote_participant_inplace_alter_create_event_data(
-      NDB_SHARE *share, const char *schema_name, const char *table_name) const {
-    DBUG_TRACE;
+  bool handle_online_alter_table_commit(const Ndb_schema_op *schema) {
+    assert(is_post_epoch());  // Always after epoch
 
-    // Read table definition from NDB, it might not exist in DD on this Server
-    Ndb *ndb = m_thd_ndb->ndb;
-    Ndb_table_guard ndbtab_g(ndb, schema_name, table_name);
+    // Get temporary share reference
+    NDB_SHARE *share = acquire_reference(schema->db, schema->name,
+                                         "online_alter_table_commit");
+
+    if (!share) {
+      // The altered table is not known by this server
+      return true;  // OK
+    }
+
+    // Guard for the temporary share, release the share reference automatically
+    Ndb_share_temp_ref share_guard(share, "online_alter_table_commit");
+
+    // Check if the share have an event subscription that need reconfiguration
+    mysql_mutex_lock(&share->mutex);
+    NdbEventOperation *const old_op = share->op;
+    if (old_op == nullptr) {
+      // The altered table does not have event subscription
+      mysql_mutex_unlock(&share->mutex);
+      return true;  // OK
+    }
+    mysql_mutex_unlock(&share->mutex);
+
+    // The table have an event subscription and during inplace alter table it
+    // need to be recreated for the new table layout.
+    Ndb_binlog_client binlog_client(m_thd, schema->db, schema->name);
+
+    // NOTE! Nothing has changed here regarding whether or not the
+    // table should still have event operation, i.e if it had
+    // it before, it should still have it after the alter. But
+    // for consistency, check that table should have event op
+    assert(binlog_client.table_should_have_event_op(share));
+
+    // Get table from NDB
+    Ndb_table_guard ndbtab_g(m_thd_ndb->ndb, schema->db, schema->name);
     const NDBTAB *ndbtab = ndbtab_g.get_table();
     if (!ndbtab) {
       // Could not open the table from NDB, very unusual
-      log_NDB_error(ndb->getDictionary()->getNdbError());
-      ndb_log_error("Failed to open table '%s.%s' from NDB", schema_name,
-                    table_name);
-      return nullptr;
+      log_NDB_error(ndbtab_g.getNdbError());
+      ndb_log_error("Failed to open table '%s.%s' from NDB", schema->db,
+                    schema->name);
+      return false;  // error
     }
 
     std::string serialized_metadata;
     if (!ndb_table_get_serialized_metadata(ndbtab, serialized_metadata)) {
       ndb_log_error("Failed to get serialized metadata for table '%s.%s'",
-                    schema_name, table_name);
-      return nullptr;
+                    schema->db, schema->name);
+      return false;  // error
     }
 
     // Deserialize the metadata from NDB
@@ -2676,133 +2631,32 @@ class Ndb_schema_event_handler {
     if (!dd_client.deserialize_table(sdi, dd_table.get_table_def())) {
       log_and_clear_thd_conditions(m_thd, condition_logging_level::ERROR);
       ndb_log_error("Failed to deserialize metadata for table '%s.%s'",
-                    schema_name, table_name);
-      return nullptr;
+                    schema->db, schema->name);
+      return false;  // error
     }
 
-    // Create new event_data
-    Ndb_event_data *event_data = Ndb_event_data::create_event_data(
-        m_thd, share, schema_name, table_name, share->key_string(),
-        injector_thd, dd_table.get_table_def());
-    if (!event_data) {
-      ndb_log_error("NDB Binlog: Failed to create event data for table '%s.%s'",
-                    share->db, share->table_name);
-      return nullptr;
+    // Create new event operation and replace the old one both in injector and
+    // in the share.
+    if (binlog_client.create_event_op(share, dd_table.get_table_def(), ndbtab,
+                                      true /* replace_op */) != 0) {
+      ndb_log_error("Failed to create event operation for table '%s.%s'",
+                    schema->db, schema->name);
+      return false;  // error
     }
 
-    return event_data;
-  }
+    // Get old event_data
+    const Ndb_event_data *old_event_data =
+        Ndb_event_data::get_event_data(old_op->getCustomData(), share);
 
-  void handle_online_alter_table_commit(const Ndb_schema_op *schema) {
-    assert(is_post_epoch());  // Always after epoch
+    // Drop old event operation
+    mysql_mutex_lock(&injector_event_mutex);
+    injector_ndb->dropEventOperation(old_op);
+    mysql_mutex_unlock(&injector_event_mutex);
 
-    NDB_SHARE *share =
-        acquire_reference(schema->db, schema->name,
-                          "online_alter_table_commit");  // temporary ref.
-    if (share) {
-      ndb_log_verbose(9, "NDB Binlog: handling online alter/rename");
+    // Delete old event data, its mem_root, shadow_table etc.
+    Ndb_event_data::destroy(old_event_data);
 
-      mysql_mutex_lock(&share->mutex);
-
-      const Ndb_event_data *event_data;
-      if (schema->node_id == own_nodeid()) {
-        // Get the event_data which has been created during prepare phase
-        event_data = m_schema_dist_data.get_inplace_alter_event_data();
-        if (!event_data) {
-          ndb_log_error("Failed to get prepared event data '%s'",
-                        share->key_string());
-          DBUG_ASSERT(false);
-        }
-        // The event_data pointer has been taken over
-        m_schema_dist_data.save_inplace_alter_event_data(nullptr);
-      } else {
-        // Create Ndb_event_data which will be used when creating
-        // the new NdbEventOperation.
-        event_data = remote_participant_inplace_alter_create_event_data(
-            share, share->db, share->table_name);
-        if (!event_data) {
-          ndb_log_error("Failed to create event data for table '%s'",
-                        share->key_string());
-          DBUG_ASSERT(false);
-        }
-      }
-      DBUG_ASSERT(event_data);
-
-      NdbEventOperation *new_op = nullptr;
-      if (share->op && event_data /* safety */) {
-        Ndb_binlog_client binlog_client(m_thd, schema->db, schema->name);
-        // The table have an event operation setup and during an inplace
-        // alter table that need to be recreated for the new table layout.
-        // NOTE! Nothing has changed here regarding whether or not the
-        // table should still have event operation, i.e if it had
-        // it before, it should still have it after the alter. But
-        // for consistency, check that table should have event op
-        DBUG_ASSERT(binlog_client.table_should_have_event_op(share));
-
-        // Save the current event operation since create_event_op()
-        // will assign the new in "share->op", also release the "binlog"
-        // reference as it will be acquired again in create_event_op()
-        // NOTE! This should probably be rewritten to not assign share->op and
-        // acquire the reference in create_event_op()
-        NdbEventOperation *const curr_op = share->op;
-        share->op = nullptr;
-        NDB_SHARE::release_reference(share, "binlog");
-
-        // Get table from NDB
-        Ndb_table_guard ndbtab_g(m_thd_ndb->ndb, schema->db, schema->name);
-        const NDBTAB *ndbtab = ndbtab_g.get_table();
-
-        DBUG_ASSERT(ndbtab != nullptr);
-
-        // Create new NdbEventOperation
-        if (binlog_client.create_event_op(share, ndbtab, event_data)) {
-          ndb_log_error("Failed to create event operation for table '%s'",
-                        share->key_string());
-
-          // NOTE! Should fail the alter here
-          DBUG_ASSERT(false);
-        } else {
-          // Get the newly created NdbEventOperation, will be swapped
-          // into place (again) later
-          new_op = share->op;
-        }
-
-        // Reinstall the current NdbEventOperation
-        share->op = curr_op;
-      } else {
-        // New event_data was created(that's the default) but the table didn't
-        // have event operations and thus the event_data is unused, free it
-        Ndb_event_data::destroy(event_data);
-      }
-
-      ndb_log_verbose(9, "NDB Binlog: handling online alter/rename done");
-
-      // There should be no event_data left in m_schema_dist_data at this point
-      DBUG_ASSERT(m_schema_dist_data.get_inplace_alter_event_data() == nullptr);
-
-      // Start using the new event operation and release the old
-      if (share->op && new_op) {
-        // Delete old event_data
-        const Ndb_event_data *event_data =
-            static_cast<const Ndb_event_data *>(share->op->getCustomData());
-        share->op->setCustomData(NULL);
-        Ndb_event_data::destroy(event_data);
-
-        // Drop old event operation
-        {
-          Mutex_guard injector_mutex_g(injector_event_mutex);
-          injector_ndb->dropEventOperation(share->op);
-        }
-        // Install new event operation
-        share->op = new_op;
-      }
-      mysql_mutex_unlock(&share->mutex);
-
-      NDB_SHARE::release_reference(share,
-                                   "online_alter_table_commit");  // temp ref.
-    }
-
-    DBUG_ASSERT(m_schema_dist_data.get_inplace_alter_event_data() == nullptr);
+    return true;  // OK
   }
 
   bool remove_table_from_dd(const char *schema_name, const char *table_name) {
@@ -2865,19 +2719,14 @@ class Ndb_schema_event_handler {
               std::string(schema->name) + std::string(1, '\'') + " failed");
     }
 
-    NDB_SHARE *share = acquire_reference(schema->db, schema->name,
-                                         "drop_table");  // temporary ref.
+    NDB_SHARE *share =
+        acquire_reference(schema->db, schema->name, "drop_table");
     if (!share || !share->op) {
       ndbapi_invalidate_table(schema->db, schema->name);
       ndb_tdc_close_cached_table(m_thd, schema->db, schema->name);
     }
     if (share) {
-      mysql_mutex_lock(&ndbcluster_mutex);
-      NDB_SHARE::mark_share_dropped(&share);  // server ref.
-      DBUG_ASSERT(share);                     // Should still be ref'ed
-      NDB_SHARE::release_reference_have_lock(share,
-                                             "drop_table");  // temporary ref.
-      mysql_mutex_unlock(&ndbcluster_mutex);
+      NDB_SHARE::mark_share_dropped_and_release(share, "drop_table");
     }
 
     ndbapi_invalidate_table(schema->db, schema->name);
@@ -3041,7 +2890,7 @@ class Ndb_schema_event_handler {
                               "rename_table");  // temporary ref.
     if (!share) {
       // The RENAME need to find share so it can be renamed
-      DBUG_ASSERT(share);
+      assert(share);
       return;
     }
 
@@ -3049,14 +2898,14 @@ class Ndb_schema_event_handler {
     if (!prepared_key) {
       // The rename need to have new_key set
       // by a previous RENAME_PREPARE
-      DBUG_ASSERT(prepared_key);
+      assert(prepared_key);
       return;
     }
 
     // Rename on participant is always from real to
     // real name(i.e neiher old or new name should be a temporary name)
-    DBUG_ASSERT(!ndb_name_is_temp(schema->name));
-    DBUG_ASSERT(!ndb_name_is_temp(NDB_SHARE::key_get_table_name(prepared_key)));
+    assert(!ndb_name_is_temp(schema->name));
+    assert(!ndb_name_is_temp(NDB_SHARE::key_get_table_name(prepared_key)));
 
     // Open the renamed table from NDB
     const char *new_db_name = NDB_SHARE::key_get_db_name(prepared_key);
@@ -3065,7 +2914,7 @@ class Ndb_schema_event_handler {
     const NdbDictionary::Table *ndbtab = ndbtab_g.get_table();
     if (!ndbtab) {
       // Could not open the table from NDB, very unusual
-      log_NDB_error(m_thd_ndb->ndb->getDictionary()->getNdbError());
+      log_NDB_error(ndbtab_g.getNdbError());
       ndb_log_error("Failed to rename, could not open table '%s.%s' from NDB",
                     new_db_name, new_table_name);
       m_schema_op_result.set_result(
@@ -3092,7 +2941,7 @@ class Ndb_schema_event_handler {
     // Rename share and release the old key
     NDB_SHARE_KEY *old_key = share->key;
     NDB_SHARE::rename_share(share, prepared_key);
-    m_schema_dist_data.save_prepared_rename_key(NULL);
+    m_schema_dist_data.save_prepared_rename_key(nullptr);
     NDB_SHARE::free_key(old_key);
 
     NDB_SHARE::release_reference(share, "rename_table");  // temporary ref.
@@ -3193,12 +3042,7 @@ class Ndb_schema_event_handler {
         ndb_tdc_close_cached_table(m_thd, schema->db, ndb_table_name.c_str());
       }
       if (share) {
-        mysql_mutex_lock(&ndbcluster_mutex);
-        NDB_SHARE::mark_share_dropped(&share);  // server ref.
-        DBUG_ASSERT(share);                     // Should still be ref'ed
-        NDB_SHARE::release_reference_have_lock(share,
-                                               "drop_db");  // temporary ref.
-        mysql_mutex_unlock(&ndbcluster_mutex);
+        NDB_SHARE::mark_share_dropped_and_release(share, "drop_db");
       }
 
       ndbapi_invalidate_table(schema->db, ndb_table_name.c_str());
@@ -3388,6 +3232,17 @@ class Ndb_schema_event_handler {
     }
   }
 
+  void rewrite_acl_change_for_server_log(std::string &query) {
+    /* Truncate everything after IDENTIFIED and replace it with ellipsis */
+    const std::string kw(" IDENTIFIED ");
+    auto it = std::search(
+        query.begin(), query.end(), kw.begin(), kw.end(),
+        [](char ch1, char ch2) { return std::toupper(ch1) == ch2; });
+    if (it != query.end()) {
+      query.replace(it, query.end(), " IDENTIFIED ... ");
+    }
+  }
+
   void handle_grant_op(const Ndb_schema_op *schema) {
     DBUG_TRACE;
     Ndb_local_connection sql_runner(m_thd);
@@ -3406,6 +3261,9 @@ class Ndb_schema_event_handler {
       return;
     }
 
+    // Possibly change server id for binlog, or disable binlogging:
+    sql_runner.set_binlog_options(g_ndb_log_replica_updates, schema->any_value);
+
     /* For SOT_ACL_SNAPSHOT, update the snapshots for the users listed.
      */
     if (schema->type == SOT_ACL_SNAPSHOT) {
@@ -3419,8 +3277,8 @@ class Ndb_schema_event_handler {
       return;
     }
 
-    DBUG_ASSERT(schema->type == SOT_ACL_STATEMENT ||
-                schema->type == SOT_ACL_STATEMENT_REFRESH);
+    assert(schema->type == SOT_ACL_STATEMENT ||
+           schema->type == SOT_ACL_STATEMENT_REFRESH);
 
     LEX_CSTRING thd_db_save = m_thd->db();
 
@@ -3438,6 +3296,7 @@ class Ndb_schema_event_handler {
     m_thd->reset_db(set_db);
     ndb_log_verbose(40, "Using database: %s", use_db.c_str());
     if (sql_runner.run_acl_statement(query)) {
+      rewrite_acl_change_for_server_log(query);
       ndb_log_error("Failed to execute ACL query: %s", query.c_str());
       m_schema_op_result.set_result(Ndb_schema_dist::SCHEMA_OP_FAILURE,
                                     "Distribution of ACL change failed");
@@ -3808,12 +3667,16 @@ class Ndb_schema_event_handler {
     DBUG_TRACE;
     {
       const SCHEMA_OP_TYPE schema_type = (SCHEMA_OP_TYPE)schema->type;
+      std::string query(schema->query);
+      if (schema->type == SOT_ACL_STATEMENT ||
+          schema->type == SOT_ACL_STATEMENT_REFRESH)
+        rewrite_acl_change_for_server_log(query);
 
       ndb_log_verbose(19,
                       "Schema event on '%s.%s(%u/%u)' query: '%s' "
                       "type: %s(%d) node: %u slock: %x%08x",
                       schema->db, schema->name, schema->id, schema->version,
-                      schema->query,
+                      query.c_str(),
                       Ndb_schema_dist_client::type_name(
                           static_cast<SCHEMA_OP_TYPE>(schema->type)),
                       schema_type, schema->node_id, schema->slock.bitmap[1],
@@ -3840,6 +3703,10 @@ class Ndb_schema_event_handler {
         return 0;
       }
 
+      // Delay the execution of the Binlog thread, until the client thread
+      // detects the schema distribution timeout
+      DBUG_EXECUTE_IF("ndb_stale_event_with_schema_obj", sleep(7););
+
       if (schema->node_id == own_nodeid()) {
         // This is the Coordinator who hear about this schema operation for
         // the first time. Save the list of current subscribers as participants
@@ -3851,14 +3718,13 @@ class Ndb_schema_event_handler {
                 NDB_SCHEMA_OBJECT::get(schema->db, schema->name, schema->id,
                                        schema->version),
                 NDB_SCHEMA_OBJECT::release);
-        if (!ndb_schema_object) {
-          // There is no NDB_SCHEMA_OBJECT waiting for this schema operation
-          // Unexpected since the client who started this schema op
-          // is always in same node as coordinator
-          ndbcluster::ndbrequire(false);
+        if (!ndb_schema_object ||
+            !ndb_schema_object->set_coordinator_received_schema_op()) {
+          // Schema dict client already detected the schema distribution
+          // timeout for this event. So, its a stale event dont not process
+          ndb_log_info("Coordinator received a stale schema event");
           return 0;
         }
-        ndb_schema_object->coordinator_received_schema_op();
         std::unordered_set<uint32> subscribers;
         m_schema_dist_data.get_subscriber_list(subscribers);
         ndb_schema_object->register_participants(subscribers);
@@ -3869,6 +3735,10 @@ class Ndb_schema_event_handler {
         // Add active schema operation to coordinator
         m_schema_dist_data.add_active_schema_op(ndb_schema_object.get());
       }
+
+      // Prevent schema dist participant from taking GSL as part of taking MDL
+      Thd_ndb::Options_guard thd_ndb_options(m_thd_ndb);
+      thd_ndb_options.set(Thd_ndb::IS_SCHEMA_DIST_PARTICIPANT);
 
       // Set the custom lock_wait_timeout for schema distribution
       Lock_wait_timeout_guard lwt_guard(m_thd,
@@ -3935,7 +3805,7 @@ class Ndb_schema_event_handler {
               "Skipping old schema operation"
               "(RENAME_TABLE_NEW) on %s.%s",
               schema->db, schema->name);
-          DBUG_ASSERT(false);
+          assert(false);
           break;
 
         case SOT_CREATE_TABLESPACE:
@@ -3969,7 +3839,7 @@ class Ndb_schema_event_handler {
     }
 
     // Errors should have been reported to log and then cleared
-    DBUG_ASSERT(!m_thd->is_error());
+    assert(!m_thd->is_error());
 
     return 0;
   }
@@ -3978,6 +3848,10 @@ class Ndb_schema_event_handler {
     DBUG_TRACE;
     DBUG_PRINT("enter", ("%s.%s: query: '%s'  type: %d", schema->db,
                          schema->name, schema->query, schema->type));
+
+    // Prevent schema dist participant from taking GSL as part of taking MDL
+    Thd_ndb::Options_guard thd_ndb_options(m_thd_ndb);
+    thd_ndb_options.set(Thd_ndb::IS_SCHEMA_DIST_PARTICIPANT);
 
     // Set the custom lock_wait_timeout for schema distribution
     Lock_wait_timeout_guard lwt_guard(m_thd,
@@ -4016,7 +3890,15 @@ class Ndb_schema_event_handler {
           break;
 
         case SOT_ONLINE_ALTER_TABLE_COMMIT:
-          handle_online_alter_table_commit(schema);
+          ndb_log_verbose(9, "handling online alter/rename");
+          if (!handle_online_alter_table_commit(schema)) {
+            ndb_log_error("Failed to handle online alter table commit");
+            m_schema_op_result.set_result(Ndb_schema_dist::SCHEMA_OP_FAILURE,
+                                          "Handling of ALTER TABLE '" +
+                                              std::string(schema->name) +
+                                              "' failed");
+          }
+          ndb_log_verbose(9, "handling online alter/rename done");
           break;
 
         case SOT_DROP_TABLESPACE:
@@ -4028,15 +3910,15 @@ class Ndb_schema_event_handler {
           break;
 
         default:
-          DBUG_ASSERT(false);
+          assert(false);
       }
     }
 
     // Errors should have been reported to log and then cleared
-    DBUG_ASSERT(!m_thd->is_error());
+    assert(!m_thd->is_error());
 
     // There should be no MDL locks left now
-    DBUG_ASSERT(!m_thd->mdl_context.has_locks());
+    assert(!m_thd->mdl_context.has_locks());
 
     return;
   }
@@ -4068,7 +3950,43 @@ class Ndb_schema_event_handler {
 
   ~Ndb_schema_event_handler() {
     // There should be no work left todo...
-    DBUG_ASSERT(m_post_epoch_handle_list.elements == 0);
+    assert(m_post_epoch_handle_list.elements == 0);
+  }
+
+  /*
+     Handle cluster failure by indicating that the binlog tables are not
+     available, this will cause the injector thread to restart and prepare for
+     reconnecting to the cluster when it is available again.
+  */
+  void handle_cluster_failure(Ndb *s_ndb, NdbEventOperation *pOp) const {
+    if (ndb_binlog_tables_inited && ndb_binlog_running)
+      ndb_log_verbose(1, "NDB Binlog: util tables need to reinitialize");
+
+    // Indicate util tables not ready
+    mysql_mutex_lock(&injector_data_mutex);
+    ndb_binlog_tables_inited = false;
+    ndb_binlog_is_ready = false;
+    mysql_mutex_unlock(&injector_data_mutex);
+
+    ndb_tdc_close_cached_tables();
+
+    // Tear down the event subscriptions and related resources for the failed
+    // event operation
+    ndbcluster_binlog_event_operation_teardown(m_thd, s_ndb, pOp);
+  }
+
+  /*
+    Handle drop of one the schema distribution tables and let the injector
+    thread continue processing changes from the cluster without any disruption
+    to binlog injector functionality.
+  */
+  void handle_schema_table_drop(Ndb *s_ndb, NdbEventOperation *pOp) const {
+    // Tear down the event subscriptions and related resources for the failed
+    // event operation, this is same as if any other NDB table would be dropped.
+    ndbcluster_binlog_event_operation_teardown(m_thd, s_ndb, pOp);
+
+    // Turn on checking of schema distribution setup
+    m_schema_dist_data.activate_schema_dist_setup();
   }
 
   void handle_schema_result_insert(uint32 nodeid, uint32 schema_op_id,
@@ -4134,22 +4052,16 @@ class Ndb_schema_event_handler {
         break;
 
       case NdbDictionary::Event::TE_CLUSTER_FAILURE:
-        // fall through
+        handle_cluster_failure(s_ndb, pOp);
+        break;
+
       case NdbDictionary::Event::TE_DROP:
-        // Cluster failure or ndb_schema_result table dropped
-        if (ndb_binlog_tables_inited && ndb_binlog_running)
-          ndb_log_verbose(1, "NDB Binlog: util tables need to reinitialize");
+        ndb_log_info("The 'mysql.ndb_schema_result' table has been dropped");
+        handle_schema_table_drop(s_ndb, pOp);
+        break;
 
-        // Indicate util tables not ready
-        mysql_mutex_lock(&injector_data_mutex);
-        ndb_binlog_tables_inited = false;
-        ndb_binlog_is_ready = false;
-        mysql_mutex_unlock(&injector_data_mutex);
-
-        ndb_tdc_close_cached_tables();
-
-        // Tear down the event subscription on ndb_schema_result
-        ndbcluster_binlog_event_operation_teardown(m_thd, s_ndb, pOp);
+      case NdbDictionary::Event::TE_ALTER:
+        /* ndb_schema_result table altered -> ignore */
         break;
 
       default:
@@ -4162,8 +4074,9 @@ class Ndb_schema_event_handler {
   void handle_event(Ndb *s_ndb, NdbEventOperation *pOp) {
     DBUG_TRACE;
 
-    const Ndb_event_data *event_data =
-        static_cast<const Ndb_event_data *>(pOp->getCustomData());
+    const Ndb_event_data *const event_data =
+        Ndb_event_data::get_event_data(pOp->getCustomData());
+
     if (Ndb_schema_dist_client::is_schema_dist_result_table(
             event_data->share->db, event_data->share->table_name)) {
       // Received event on ndb_schema_result table
@@ -4207,22 +4120,7 @@ class Ndb_schema_event_handler {
       case NDBEVENT::TE_CLUSTER_FAILURE:
         ndb_log_verbose(1, "cluster failure at epoch %u/%u.",
                         (uint)(pOp->getGCI() >> 32), (uint)(pOp->getGCI()));
-
-        // fall through
-      case NDBEVENT::TE_DROP:
-        /* ndb_schema table DROPped */
-        if (ndb_binlog_tables_inited && ndb_binlog_running)
-          ndb_log_verbose(1, "NDB Binlog: util tables need to reinitialize");
-
-        // Indicate util tables not ready
-        mysql_mutex_lock(&injector_data_mutex);
-        ndb_binlog_tables_inited = false;
-        ndb_binlog_is_ready = false;
-        mysql_mutex_unlock(&injector_data_mutex);
-
-        ndb_tdc_close_cached_tables();
-
-        ndbcluster_binlog_event_operation_teardown(m_thd, s_ndb, pOp);
+        handle_cluster_failure(s_ndb, pOp);
 
         if (DBUG_EVALUATE_IF("ndb_schema_dist_client_not_ready", true, false)) {
           ndb_log_info("Wait for client to detect not ready...");
@@ -4231,8 +4129,13 @@ class Ndb_schema_event_handler {
         }
         break;
 
+      case NDBEVENT::TE_DROP:
+        ndb_log_info("The 'mysql.ndb_schema' table has been dropped");
+        handle_schema_table_drop(s_ndb, pOp);
+        break;
+
       case NDBEVENT::TE_ALTER:
-        /* ndb_schema table ALTERed */
+        /* ndb_schema table altered -> ignore */
         break;
 
       case NDBEVENT::TE_NODE_FAILURE: {
@@ -4268,23 +4171,11 @@ class Ndb_schema_event_handler {
     return;
   }
 
-  void check_active_schema_ops(ulonglong current_epoch) {
-    // This function is called repeatedly as epochs pass but checks should only
-    // be performed at regular intervals. Check if it's time for one now and
-    // calculate the time for next if time is up
-    if (likely(!m_schema_dist_data.time_for_check())) return;
-
-    const uint active_ops = m_schema_dist_data.active_schema_ops().size();
-    if (likely(active_ops == 0)) return;  // Nothing to do at this time
-
-    ndb_log_info(
-        "Coordinator checking active schema operations, "
-        "epochs: (%u/%u,%u/%u,%u/%u), proc_info: '%s'",
-        (uint)(ndb_latest_handled_binlog_epoch >> 32),
-        (uint)(ndb_latest_handled_binlog_epoch),
-        (uint)(ndb_latest_received_binlog_epoch >> 32),
-        (uint)(ndb_latest_received_binlog_epoch), (uint)(current_epoch >> 32),
-        (uint)(current_epoch), m_thd->proc_info);
+  // Check active schema operations.
+  // Return false when there is nothing left to check
+  bool check_active_schema_ops() {
+    if (m_schema_dist_data.active_schema_ops().size() == 0)
+      return false;  // No schema ops to check
 
     for (const NDB_SCHEMA_OBJECT *schema_object :
          m_schema_dist_data.active_schema_ops()) {
@@ -4301,10 +4192,63 @@ class Ndb_schema_event_handler {
           "Participant timeout");
       if (completed) {
         ndb_log_warning("Schema dist coordinator detected timeout");
-        // Timeout occured -> send final ack to complete the schema opration
+        // Timeout occurred -> send final ack to complete the schema operation
         ack_schema_op_final(schema_object->db(), schema_object->name());
       }
     }
+    return true;
+  }
+
+  // Check setup of schema distribution tables, event subscriptions etc.
+  // Return false when there is nothing left to check
+  bool check_setup_schema_dist() {
+    if (!m_schema_dist_data.is_schema_dist_setup_active())
+      return false;  // No schema dist to setup
+
+    ndb_log_info("Checking schema distribution setup...");
+
+    // Make sure not to be "schema dist participant" here since that would not
+    // take the GSL properly
+    assert(!m_thd_ndb->check_option(Thd_ndb::IS_SCHEMA_DIST_PARTICIPANT));
+
+    // Sleep here will make other mysql server in same cluster setup to create
+    // the schema result table in NDB before this mysql server. This also makes
+    // the create table in the connection thread to acquire GSL before the
+    // Binlog thread
+    DBUG_EXECUTE_IF("ndb_bi_sleep_before_gsl", sleep(1););
+    // Protect the setup with GSL(Global Schema Lock)
+    Ndb_global_schema_lock_guard global_schema_lock_guard(m_thd);
+    if (global_schema_lock_guard.lock()) {
+      ndb_log_info(" - failed to lock GSL");
+      return true;
+    }
+
+    // Allow setup of NDB_SHARE for ndb_schema before schema dist is ready
+    Thd_ndb::Options_guard thd_ndb_options(m_thd_ndb);
+    thd_ndb_options.set(Thd_ndb::ALLOW_BINLOG_SETUP);
+
+    // This code path is activated when the Ndb_schema_event_handler has
+    // detected that the ndb_schema* tables has been dropped, since it's dropped
+    // there is nothing to upgrade
+    const bool allow_upgrade = false;
+
+    Ndb_schema_dist_table schema_dist_table(m_thd_ndb);
+    if (!schema_dist_table.create_or_upgrade(m_thd, allow_upgrade)) {
+      ndb_log_info(" - failed to setup ndb_schema");
+      return true;
+    }
+
+    Ndb_schema_result_table schema_result_table(m_thd_ndb);
+    if (!schema_result_table.create_or_upgrade(m_thd, allow_upgrade)) {
+      ndb_log_info(" - failed to setup ndb_schema_result");
+      return true;
+    }
+
+    // Successfully created and setup the table
+    m_schema_dist_data.deactivate_schema_dist_setup();
+
+    ndb_log_info("Schema distribution setup completed");
+    return false;
   }
 
   void post_epoch(ulonglong ndb_latest_epoch) {
@@ -4338,10 +4282,30 @@ class Ndb_schema_event_handler {
       }
     }
 
-    check_active_schema_ops(ndb_latest_epoch);
+    // Perform any active checks if sufficient time has passed since last time
+    if (m_schema_dist_data.time_for_check()) {
+      // Log a status message indicating that check is happening
+      ndb_log_info(
+          "Performing checks, epochs: (%u/%u,%u/%u,%u/%u), proc_info: '%s'",
+          (uint)(ndb_latest_handled_binlog_epoch >> 32),
+          (uint)(ndb_latest_handled_binlog_epoch),
+          (uint)(ndb_latest_received_binlog_epoch >> 32),
+          (uint)(ndb_latest_received_binlog_epoch),
+          (uint)(ndb_latest_epoch >> 32), (uint)(ndb_latest_epoch),
+          m_thd->proc_info());
+
+      // Check the schema operations first, although it's an unlikely
+      // case with active schema operations at the same time as missing schema
+      // distribution, better to do the op check first since schema dist setup
+      // might take some time.
+      if (check_active_schema_ops() || check_setup_schema_dist()) {
+        // There are still checks active, schedule next check
+        m_schema_dist_data.schedule_next_check();
+      }
+    }
 
     // There should be no work left todo...
-    DBUG_ASSERT(m_post_epoch_handle_list.elements == 0);
+    assert(m_post_epoch_handle_list.elements == 0);
   }
 };
 
@@ -4389,9 +4353,9 @@ class Ndb_binlog_index_table_util {
     const char *save_proc_info =
         thd_proc_info(thd, "Opening 'mysql.ndb_binlog_index'");
 
-    TABLE_LIST tables(DB_NAME,     // db
-                      TABLE_NAME,  // name, alias
-                      TL_WRITE);   // for write
+    Table_ref tables(DB_NAME,     // db
+                     TABLE_NAME,  // name, alias
+                     TL_WRITE);   // for write
 
     /* Only allow real table to be opened */
     tables.required_type = dd::enum_table_type::BASE_TABLE;
@@ -4419,7 +4383,7 @@ class Ndb_binlog_index_table_util {
   static int write_rows_impl(THD *thd, ndb_binlog_index_row *row) {
     int error = 0;
     ndb_binlog_index_row *first = row;
-    TABLE *ndb_binlog_index = 0;
+    TABLE *ndb_binlog_index = nullptr;
     // Save previous option settings
     ulonglong option_bits = thd->variables.option_bits;
 
@@ -4456,7 +4420,7 @@ class Ndb_binlog_index_table_util {
       ulonglong epoch = 0, orig_epoch = 0;
       uint orig_server_id = 0;
 
-      // Intialize ndb_binlog_index->record[0]
+      // Initialize ndb_binlog_index->record[0]
       empty_record(ndb_binlog_index);
 
       ndb_binlog_index->field[NBICOL_START_POS]->store(
@@ -4625,7 +4589,7 @@ class Ndb_binlog_index_table_util {
       ndb_log_error(
           "NDB Binlog: Failed writing to ndb_binlog_index table "
           "while retrying after kill during shutdown");
-      DBUG_ASSERT(false);  // Crash in debug compile
+      assert(false);  // Crash in debug compile
     }
 
     new_thd->restore_globals();
@@ -4655,7 +4619,7 @@ class Ndb_binlog_index_table_util {
   static void write_rows_retry_after_kill(THD *orig_thd,
                                           ndb_binlog_index_row *rows) {
     // Should only be called when original THD has been killed
-    DBUG_ASSERT(orig_thd->is_killed());
+    assert(orig_thd->is_killed());
 
     write_rows_with_new_thd(rows);
 
@@ -4701,8 +4665,6 @@ class Ndb_binlog_index_table_util {
     return false;
   }
 };
-constexpr const char *const Ndb_binlog_index_table_util::DB_NAME;
-constexpr const char *const Ndb_binlog_index_table_util::TABLE_NAME;
 
 // Wrapper function allowing Ndb_binlog_index_table_util::remove_rows_for_file()
 // to be forward declared
@@ -4807,7 +4769,7 @@ void NDB_SHARE::set_binlog_flags(Ndb_binlog_type ndb_binlog_type) {
       break;
     case NBT_USE_UPDATE:
       DBUG_PRINT("info", ("NBT_USE_UPDATE"));
-      // fall through
+      [[fallthrough]];
     case NBT_UPDATED_ONLY_USE_UPDATE:
       DBUG_PRINT("info", ("NBT_UPDATED_ONLY_USE_UPDATE"));
       flags &= ~NDB_SHARE::FLAG_BINLOG_MODE_FULL;
@@ -4865,7 +4827,7 @@ bool Ndb_binlog_client::read_replication_info(
           "ndb-log-apply-status forcing 'mysql.ndb_apply_status' to FULL "
           "USE_WRITE");
       *binlog_flags = NBT_FULL;
-      *conflict_fn = NULL;
+      *conflict_fn = nullptr;
       *num_args = 0;
       return false;
     }
@@ -4878,7 +4840,7 @@ bool Ndb_binlog_client::read_replication_info(
   if (rc == 0) {
     // lookup() may return a warning although it succeeds
     const char *msg = rep_tab_reader.get_warning_message();
-    if (msg != NULL) {
+    if (msg != nullptr) {
       push_warning_printf(m_thd, Sql_condition::SL_WARNING,
                           ER_NDB_REPLICATION_SCHEMA_ERROR,
                           ER_THD(m_thd, ER_NDB_REPLICATION_SCHEMA_ERROR), msg);
@@ -4888,7 +4850,7 @@ bool Ndb_binlog_client::read_replication_info(
     /* When rep_tab_reader.lookup() returns with non-zero error code,
     it must give a warning message describing why it failed*/
     const char *msg = rep_tab_reader.get_warning_message();
-    DBUG_ASSERT(msg);
+    assert(msg);
     my_error(ER_NDB_REPLICATION_SCHEMA_ERROR, MYF(0), msg);
     ndb_log_warning("NDB Binlog: %s", msg);
     return true;
@@ -4897,7 +4859,7 @@ bool Ndb_binlog_client::read_replication_info(
   *binlog_flags = rep_tab_reader.get_binlog_flags();
   const char *conflict_fn_spec = rep_tab_reader.get_conflict_fn_spec();
 
-  if (conflict_fn_spec != NULL) {
+  if (conflict_fn_spec != nullptr) {
     char msgbuf[FN_REFLEN];
     if (parse_conflict_fn_spec(conflict_fn_spec, conflict_fn, args, num_args,
                                msgbuf, sizeof(msgbuf)) != 0) {
@@ -4915,8 +4877,8 @@ bool Ndb_binlog_client::read_replication_info(
     }
   } else {
     /* No conflict function specified */
-    conflict_fn = NULL;
-    num_args = 0;
+    conflict_fn = nullptr;
+    num_args = nullptr;
   }
 
   return false;
@@ -4932,7 +4894,7 @@ int Ndb_binlog_client::apply_replication_info(
   DBUG_PRINT("info", ("Setting binlog flags to %u", binlog_flags));
   share->set_binlog_flags((enum Ndb_binlog_type)binlog_flags);
 
-  if (conflict_fn != NULL) {
+  if (conflict_fn != nullptr) {
     if (setup_conflict_fn(ndb, &share->m_cfn_share, share->db,
                           share->table_name, share->get_binlog_use_update(),
                           ndbtab, tmp_buf, sizeof(tmp_buf), conflict_fn, args,
@@ -4966,7 +4928,7 @@ int Ndb_binlog_client::read_and_apply_replication_info(
     uint server_id) {
   DBUG_TRACE;
   uint32 binlog_flags;
-  const st_conflict_fn_def *conflict_fn = NULL;
+  const st_conflict_fn_def *conflict_fn = nullptr;
   st_conflict_fn_arg args[MAX_CONFLICT_ARGS];
   uint num_args = MAX_CONFLICT_ARGS;
 
@@ -4991,10 +4953,9 @@ static int ndbcluster_setup_binlog_for_share(THD *thd, Ndb *ndb,
 
   // This function should not be used to setup binlogging
   // of tables with temporary names.
-  DBUG_ASSERT(!ndb_name_is_temp(share->table_name));
+  assert(!ndb_name_is_temp(share->table_name));
 
-  Mutex_guard share_g(share->mutex);
-  if (share->op != 0) {
+  if (share->have_event_operation()) {
     DBUG_PRINT("info", ("binlogging already setup"));
     return 0;
   }
@@ -5003,8 +4964,8 @@ static int ndbcluster_setup_binlog_for_share(THD *thd, Ndb *ndb,
 
   Ndb_table_guard ndbtab_g(ndb, share->db, share->table_name);
   const NDBTAB *ndbtab = ndbtab_g.get_table();
-  if (ndbtab == 0) {
-    const NdbError ndb_error = ndb->getDictionary()->getNdbError();
+  if (ndbtab == nullptr) {
+    const NdbError &ndb_error = ndb->getDictionary()->getNdbError();
     ndb_log_verbose(1,
                     "NDB Binlog: Failed to open table '%s' from NDB, "
                     "error: '%d - %s'",
@@ -5032,10 +4993,8 @@ static int ndbcluster_setup_binlog_for_share(THD *thd, Ndb *ndb,
     }
 
     if (binlog_client.table_should_have_event_op(share)) {
-      // Create the NDB event operation on the event
-      Ndb_event_data *event_data;
-      if (!binlog_client.create_event_data(share, table_def, &event_data) ||
-          binlog_client.create_event_op(share, ndbtab, event_data)) {
+      // Create the event operation on the event
+      if (binlog_client.create_event_op(share, table_def, ndbtab) != 0) {
         // Failed to create event data or event operation
         return -1;
       }
@@ -5047,36 +5006,22 @@ static int ndbcluster_setup_binlog_for_share(THD *thd, Ndb *ndb,
 
 int ndbcluster_binlog_setup_table(THD *thd, Ndb *ndb, const char *db,
                                   const char *table_name,
-                                  const dd::Table *table_def) {
+                                  const dd::Table *table_def,
+                                  const bool skip_error_handling) {
   DBUG_TRACE;
   DBUG_PRINT("enter", ("db: '%s', table_name: '%s'", db, table_name));
-  DBUG_ASSERT(table_def);
+  assert(table_def);
 
-  DBUG_ASSERT(!ndb_name_is_blob_prefix(table_name));
+  assert(!ndb_name_is_blob_prefix(table_name));
 
-  // Create key for ndbcluster_open_tables
-  char key[FN_REFLEN + 1];
-  {
-    char *end = key + build_table_filename(key, sizeof(key) - 1, db, "", "", 0);
-    end += tablename_to_filename(table_name, end,
-                                 (uint)(sizeof(key) - (end - key)));
-  }
-
-  mysql_mutex_lock(&ndbcluster_mutex);
-
-  // Check if NDB_SHARE for this table already exist
-  NDB_SHARE *share =
-      NDB_SHARE::acquire_reference_by_key_have_lock(key, "create_binlog_setup");
+  // Acquire or create reference to NDB_SHARE
+  NDB_SHARE *share = NDB_SHARE::acquire_or_create_reference(
+      db, table_name, "create_binlog_setup");
   if (share == nullptr) {
-    // NDB_SHARE didn't exist, the normal case, try to create it
-    share = NDB_SHARE::create_and_acquire_reference(key, "create_binlog_setup");
-    if (share == nullptr) {
-      // Could not create the NDB_SHARE. Unlikely, catch in debug
-      DBUG_ASSERT(false);
-      return -1;
-    }
+    // Could not create the NDB_SHARE. Unlikely, catch in debug
+    assert(false);
+    return -1;
   }
-  mysql_mutex_unlock(&ndbcluster_mutex);
 
   // Before 'schema_dist_is_ready', Thd_ndb::ALLOW_BINLOG_SETUP is required
   int ret = 0;
@@ -5087,7 +5032,7 @@ int ndbcluster_binlog_setup_table(THD *thd, Ndb *ndb, const char *db,
 
   NDB_SHARE::release_reference(share, "create_binlog_setup");  // temporary ref.
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   // Force failure of setting up binlogging of a user table
   if (DBUG_EVALUATE_IF("ndb_binlog_fail_setup", true, false) &&
       !Ndb_schema_dist_client::is_schema_dist_table(db, table_name) &&
@@ -5096,25 +5041,40 @@ int ndbcluster_binlog_setup_table(THD *thd, Ndb *ndb, const char *db,
       !(!strcmp("test", db) && !strcmp(table_name, "check_not_readonly"))) {
     ret = -1;
   }
+
+  // Force failure of setting up binlogging of a util table
+  DBUG_EXECUTE_IF("ndb_binlog_fail_setup_util_table", {
+    ret = -1;
+    DBUG_SET("-d,ndb_binlog_fail_setup_util_table");
+  });
 #endif
 
-  /*
-   * Handle failure of setting up binlogging of a table
-   */
+  if (skip_error_handling) {
+    // Skip the potentially fatal error handling below and instead just return
+    // error to caller. This is useful when failed setup will be retried later
+    return ret;
+  }
+
   if (ret != 0) {
+    /*
+     * Handle failure of setting up binlogging of a table
+     */
     ndb_log_error("Failed to setup binlogging for table '%s.%s'", db,
                   table_name);
-    ndbcluster_handle_incomplete_binlog_setup();
+
+    if (opt_ndb_log_fail_terminate) {
+      ndb_log_error("Requesting server shutdown..");
+      // Use server service to request shutdown
+      Ndb_mysql_services services;
+      if (services.request_mysql_server_shutdown()) {
+        // The shutdown failed -> abort the server.
+        ndb_log_error("Shutdown failed, aborting server...");
+        abort();
+      }
+    }
   }
 
   return ret;
-}
-
-extern void kill_mysql(void);
-
-void ndbcluster_handle_incomplete_binlog_setup() {
-  ndb_log_error("NDB Binlog: ndbcluster_handle_incomplete_binlog_setup");
-  if (opt_ndb_log_fail_terminate) kill_mysql();
 }
 
 int Ndb_binlog_client::create_event(Ndb *ndb,
@@ -5124,19 +5084,18 @@ int Ndb_binlog_client::create_event(Ndb *ndb,
   DBUG_PRINT("enter", ("table: '%s', version: %d", ndbtab->getName(),
                        ndbtab->getObjectVersion()));
   DBUG_PRINT("enter", ("share->key: '%s'", share->key_string()));
-  DBUG_ASSERT(share);
+  assert(share);
 
   // Never create event on table with temporary name
-  DBUG_ASSERT(!ndb_name_is_temp(ndbtab->getName()));
+  assert(!ndb_name_is_temp(ndbtab->getName()));
 
   // Never create event on the blob table(s)
-  DBUG_ASSERT(!ndb_name_is_blob_prefix(ndbtab->getName()));
+  assert(!ndb_name_is_blob_prefix(ndbtab->getName()));
 
-  std::string event_name =
+  const std::string event_name =
       event_name_for_table(m_dbname, m_tabname, share->get_binlog_full());
 
-  ndb->setDatabaseName(share->db);
-  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  // Define the event
   NDBEVENT my_event(event_name.c_str());
   my_event.setTable(*ndbtab);
   my_event.addTableEvent(NDBEVENT::TE_ALL);
@@ -5175,10 +5134,13 @@ int Ndb_binlog_client::create_event(Ndb *ndb,
 
   /* add all columns to the event */
   const int n_cols = ndbtab->getNoOfColumns();
-  for (int a = 0; a < n_cols; a++) my_event.addEventColumn(a);
+  for (int a = 0; a < n_cols; a++) {
+    my_event.addEventColumn(a);
+  }
 
-  if (dict->createEvent(my_event))  // Add event to database
-  {
+  // Create event in NDB
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  if (dict->createEvent(my_event)) {
     if (dict->getNdbError().classification != NdbError::SchemaObjectExists) {
       // Failed to create event, log warning
       log_warning(ER_GET_ERRMSG,
@@ -5190,13 +5152,15 @@ int Ndb_binlog_client::create_event(Ndb *ndb,
     }
 
     /*
-      try retrieving the event, if table version/id matches, we will get
+      Try retrieving the event, if table version/id matches, we will get
       a valid event.  Otherwise we have an old event from before
     */
-    const NDBEVENT *ev;
-    if ((ev = dict->getEvent(event_name.c_str()))) {
-      delete ev;
-      return 0;
+    {
+      NdbDictionary::Event_ptr ev(dict->getEvent(event_name.c_str()));
+      if (ev) {
+        // The event already exists in NDB
+        return 0;
+      }
     }
 
     // Old event from before; an error, but try to correct it
@@ -5236,77 +5200,27 @@ inline int is_ndb_compatible_type(Field *field) {
          field->pack_length() != 0;
 }
 
-/*
-  - create NdbEventOperation for receiving log events
-  - setup ndb recattrs for reception of log event data
-  - "start" the event operation
+/**
+   Create event operation in NDB and setup Ndb_event_data for receiving events.
 
-  used at create/discover of tables
+   NOTE! The provided event_data will be consumed by function on success,
+   otherwise the event_data need to be released by caller.
+
+   @param ndb           The Ndb object
+   @param ndbtab        The Ndb table to create event operation for
+   @param event_name    Name of the event in NDB to create event operation on
+   @param event_data    Pointer to Ndb_event_data to setup for receiving events
+
+   @return Pointer to created NdbEventOperation on success, nullptr on failure
 */
-int Ndb_binlog_client::create_event_op(NDB_SHARE *share,
-                                       const NdbDictionary::Table *ndbtab,
-                                       const Ndb_event_data *event_data) {
-  /*
-    we are in either create table or rename table so table should be
-    locked, hence we can work with the share without locks
-  */
-
-  DBUG_TRACE;
-  DBUG_PRINT("enter", ("table: '%s', share->key: '%s'", ndbtab->getName(),
-                       share->key_string()));
-  DBUG_ASSERT(share);
-  DBUG_ASSERT(event_data);
-
-  // Never create event op on table with temporary name
-  DBUG_ASSERT(!ndb_name_is_temp(ndbtab->getName()));
-
-  // Never create event op on the blob table(s)
-  DBUG_ASSERT(!ndb_name_is_blob_prefix(ndbtab->getName()));
-
-  // Schema dist tables need special processing
-  const bool is_schema_dist_setup =
-      Ndb_schema_dist_client::is_schema_dist_table(share->db,
-                                                   share->table_name) ||
-      Ndb_schema_dist_client::is_schema_dist_result_table(share->db,
-                                                          share->table_name);
-
-  // Check if this is the event operation on mysql.ndb_apply_status
-  // as it need special processing
-  const bool do_ndb_apply_status_share =
-      Ndb_apply_status_table::is_apply_status_table(share->db,
-                                                    share->table_name);
-
-  std::string event_name =
-      event_name_for_table(m_dbname, m_tabname, share->get_binlog_full());
-
-  // There should be no NdbEventOperation assigned yet
-  DBUG_ASSERT(!share->op);
-
-  TABLE *table = event_data->shadow_table;
-
+NdbEventOperation *Ndb_binlog_client::create_event_op_in_NDB(
+    Ndb *ndb, const NdbDictionary::Table *ndbtab, const std::string &event_name,
+    const Ndb_event_data *event_data) {
   int retries = 100;
-  int retry_sleep = 0;
-  while (1) {
-    if (retry_sleep > 0) {
-      ndb_retry_sleep(retry_sleep);
-    }
-    Mutex_guard injector_mutex_g(injector_event_mutex);
-    Ndb *ndb = injector_ndb;
-    if (is_schema_dist_setup) ndb = schema_ndb;
-
-    if (ndb == NULL) return -1;
-
-    NdbEventOperation *op;
-    if (is_schema_dist_setup)
-      op = ndb->createEventOperation(event_name.c_str());
-    else {
-      // set injector_ndb database/schema from table internal name
-      int ret = ndb->setDatabaseAndSchemaName(ndbtab);
-      ndbcluster::ndbrequire(ret == 0);
-      op = ndb->createEventOperation(event_name.c_str());
-      // reset to catch errors
-      ndb->setDatabaseName("");
-    }
+  while (true) {
+    // Create the event operation. This incurs one roundtrip to check that event
+    // with given name exists in NDB and may thus return error.
+    NdbEventOperation *op = ndb->createEventOperation(event_name.c_str());
     if (!op) {
       const NdbError &ndb_err = ndb->getNdbError();
       if (ndb_err.code == 4710) {
@@ -5316,37 +5230,36 @@ int Ndb_binlog_client::create_event_op(NDB_SHARE *share,
         log_warning(ER_GET_ERRMSG,
                     "Failed to create event operation on '%s', "
                     "table '%s' not found",
-                    event_name.c_str(), table->s->table_name.str);
-        return -1;
+                    event_name.c_str(), m_tabname);
+        return nullptr;
       }
       log_warning(ER_GET_ERRMSG,
                   "Failed to create event operation on '%s', error: %d - %s",
                   event_name.c_str(), ndb_err.code, ndb_err.message);
-      return -1;
+      return nullptr;
     }
 
-    if (ndb_table_has_blobs(ndbtab))
-      op->mergeEvents(true);  // currently not inherited from event
-
-    const uint n_columns = ndbtab->getNoOfColumns();
-    const uint n_stored_fields = Ndb_table_map::num_stored_fields(table);
-    const uint val_length = sizeof(NdbValue) * n_columns;
-
-    /*
-       Allocate memory globally so it can be reused after online alter table
-    */
-    if (my_multi_malloc(PSI_INSTRUMENT_ME, MYF(MY_WME),
-                        &event_data->ndb_value[0], val_length,
-                        &event_data->ndb_value[1], val_length, NULL) == 0) {
-      log_warning(ER_GET_ERRMSG,
-                  "Failed to allocate records for event operation");
-      return -1;
+    // Configure the event operation
+    if (event_data->have_blobs) {
+      // The table has blobs, this means the event has been created with "merge
+      // events". Turn that on also for the event operation.
+      op->mergeEvents(true);
     }
 
+    /* Check if user explicitly requires monitoring of empty updates */
+    if (opt_ndb_log_empty_update) {
+      op->setAllowEmptyUpdate(true);
+    }
+
+    // Setup the attributes that should be subscribed.
+    const TABLE *table = event_data->shadow_table;
     Ndb_table_map map(table);
+    const uint n_stored_fields = map.get_num_stored_fields();
+    const uint n_columns = ndbtab->getNoOfColumns();
     for (uint j = 0; j < n_columns; j++) {
       const char *col_name = ndbtab->getColumn(j)->getName();
-      NdbValue attr0, attr1;
+      NdbValue &attr0 = event_data->ndb_value[0][j];
+      NdbValue &attr1 = event_data->ndb_value[1][j];
       if (j < n_stored_fields) {
         Field *f = table->field[map.get_field_for_column(j)];
         if (is_ndb_compatible_type(f)) {
@@ -5361,17 +5274,19 @@ int Ndb_binlog_client::create_event_op(NDB_SHARE *share,
           attr1.rec = op->getPreValue(col_name);
         } else {
           DBUG_PRINT("info", ("%s blob", col_name));
-          DBUG_ASSERT(ndb_table_has_blobs(ndbtab));
+          // Check that Ndb_event_data indicates that table have blobs
+          assert(event_data->have_blobs);
           attr0.blob = op->getBlobHandle(col_name);
           attr1.blob = op->getPreBlobHandle(col_name);
-          if (attr0.blob == NULL || attr1.blob == NULL) {
+          if (attr0.blob == nullptr || attr1.blob == nullptr) {
             log_warning(ER_GET_ERRMSG,
                         "Failed to cretate NdbEventOperation on '%s', "
                         "blob field %u handles failed, error: %d - %s",
                         event_name.c_str(), j, op->getNdbError().code,
                         op->getNdbError().message);
+            mysql_mutex_assert_owner(&injector_event_mutex);
             ndb->dropEventOperation(op);
-            return -1;
+            return nullptr;
           }
         }
       } else {
@@ -5379,28 +5294,17 @@ int Ndb_binlog_client::create_event_op(NDB_SHARE *share,
         attr0.rec = op->getValue(col_name);
         attr1.rec = op->getPreValue(col_name);
       }
-      event_data->ndb_value[0][j].ptr = attr0.ptr;
-      event_data->ndb_value[1][j].ptr = attr1.ptr;
-      DBUG_PRINT("info",
-                 ("&event_data->ndb_value[0][%d]: 0x%lx  "
-                  "event_data->ndb_value[0][%d]: 0x%lx",
-                  j, (long)&event_data->ndb_value[0][j], j, (long)attr0.ptr));
-      DBUG_PRINT("info",
-                 ("&event_data->ndb_value[1][%d]: 0x%lx  "
-                  "event_data->ndb_value[1][%d]: 0x%lx",
-                  j, (long)&event_data->ndb_value[0][j], j, (long)attr1.ptr));
     }
-    op->setCustomData(
-        const_cast<Ndb_event_data *>(event_data));  // set before execute
-    share->op = op;                                 // assign op in NDB_SHARE
 
-    /* Check if user explicitly requires monitoring of empty updates */
-    if (opt_ndb_log_empty_update) op->setAllowEmptyUpdate(true);
+    // Save Ndb_event_data in the op so that all state (describing the
+    // subscribed attributes, shadow table and bitmaps related to this event
+    // operation) can be found when an event is received.
+    op->setCustomData(const_cast<Ndb_event_data *>(event_data));
 
-    if (op->execute()) {
-      // Failed to create the NdbEventOperation
+    // Start the event subscription in NDB, this incurs one roundtrip
+    if (op->execute() != 0) {
+      // Failed to start the NdbEventOperation
       const NdbError &ndb_err = op->getNdbError();
-      share->op = NULL;
       retries--;
       if (ndb_err.status != NdbError::TemporaryError && ndb_err.code != 1407) {
         // Don't retry after these errors
@@ -5412,35 +5316,129 @@ int Ndb_binlog_client::create_event_op(NDB_SHARE *share,
                     "error: %d - %s",
                     event_name.c_str(), ndb_err.code, ndb_err.message);
       }
-      op->setCustomData(NULL);
-      ndb->dropEventOperation(op);
+      mysql_mutex_assert_owner(&injector_event_mutex);
+      (void)ndb->dropEventOperation(op);  // Never fails, drop is in NdbApi only
+
       if (retries && !m_thd->killed) {
         // fairly high retry sleep, temporary error on schema operation can
         // take some time to resolve
-        retry_sleep = 100;  // milliseconds
+        ndb_retry_sleep(100);  // milliseconds
         continue;
       }
-      // Delete the event data, caller should create new before calling
-      // this function again
-      Ndb_event_data::destroy(event_data);
-      return -1;
+      return nullptr;
     }
-    break;
+
+    // Success, return the newly created NdbEventOperation to caller
+    return op;
   }
 
-  /* ndb_share reference binlog */
-  NDB_SHARE::acquire_reference_on_existing(share, "binlog");
+  // Never reached
+  return nullptr;
+}
 
-  if (do_ndb_apply_status_share) {
-    ndb_apply_status_share = NDB_SHARE::acquire_reference_on_existing(
-        share, "ndb_apply_status_share");
+/**
+  Create event operation for the given table.
 
-    DBUG_ASSERT(get_thd_ndb(m_thd)->check_option(Thd_ndb::ALLOW_BINLOG_SETUP));
+   @param share         NDB_SHARE for the table
+   @param table_def     Table definition for the table
+   @param ndbtab        The Ndb table to create event operation for
+   @param replace_op    Replace already existing event operation with new
+                        (this is used by inplace alter table)
+
+  @note When using "replace_op" the already exsting (aka. "old" )event operation
+  has to be released by the caller
+
+   @return 0 on success, other values on failure (normally -1)
+ */
+int Ndb_binlog_client::create_event_op(NDB_SHARE *share,
+                                       const dd::Table *table_def,
+                                       const NdbDictionary::Table *ndbtab,
+                                       bool replace_op) {
+  DBUG_TRACE;
+  DBUG_PRINT("enter", ("table: '%s.%s'", share->db, share->table_name));
+
+  // Create Ndb_event_data
+  const Ndb_event_data *event_data = Ndb_event_data::create_event_data(
+      m_thd, share->db, share->table_name, share->key_string(), share,
+      table_def, ndbtab->getNoOfColumns(), ndb_table_has_blobs(ndbtab));
+  if (event_data == nullptr) {
+    log_warning(ER_GET_ERRMSG,
+                "Failed to create event data for event operation");
+    return -1;
   }
 
+  // Never create event op on table with temporary name
+  assert(!ndb_name_is_temp(ndbtab->getName()));
+
+  // Never create event op on the blob table(s)
+  assert(!ndb_name_is_blob_prefix(ndbtab->getName()));
+
+  // Schema dist tables need special processing
+  const bool is_schema_dist_setup =
+      Ndb_schema_dist_client::is_schema_dist_table(share->db,
+                                                   share->table_name) ||
+      Ndb_schema_dist_client::is_schema_dist_result_table(share->db,
+                                                          share->table_name);
+
+  const std::string event_name =
+      event_name_for_table(m_dbname, m_tabname, share->get_binlog_full());
+
+  // NOTE! Locking the injector while performing at least two roundtrips to NDB!
+  // The locks are primarily for using the exposed pointers, but without keeping
+  // the locks the Ndb object they are pointing to may be recreated should the
+  // binlog restart in the middle of this.
+  Mutex_guard injector_mutex_g(injector_event_mutex);
+  Ndb *ndb = injector_ndb;
+  if (is_schema_dist_setup) {
+    ndb = schema_ndb;
+  }
+  if (ndb == nullptr) {
+    log_warning(ER_GET_ERRMSG,
+                "Failed to create event operation, no Ndb object available");
+    Ndb_event_data::destroy(event_data);
+    return -1;
+  }
+
+  NdbEventOperation *new_op =
+      create_event_op_in_NDB(ndb, ndbtab, event_name, event_data);
+  if (new_op == nullptr) {
+    // Warnings already printed/logged
+    Ndb_event_data::destroy(event_data);
+    return -1;
+  }
+
+  // Install op in NDB_SHARE
+  mysql_mutex_lock(&share->mutex);
+  if (!share->install_event_op(new_op, replace_op)) {
+    mysql_mutex_unlock(&share->mutex);
+    // Failed to save event op in share, remove the event operation
+    // and return error
+    log_warning(ER_GET_ERRMSG,
+                "Failed to create event operation, could not save in share");
+
+    mysql_mutex_assert_owner(&injector_event_mutex);
+    (void)ndb->dropEventOperation(new_op);  // Never fails
+
+    Ndb_event_data::destroy(event_data);
+    return -1;
+  }
+  mysql_mutex_unlock(&share->mutex);
+
+  if (replace_op) {
+    // Replaced op, double check that event_data->share already have reference
+    // NOTE! Really requires "shares_mutex"
+    assert(event_data->share->refs_exists("event_data"));
+  } else {
+    // Acquire share reference for event_data
+    (void)NDB_SHARE::acquire_reference_on_existing(event_data->share,
+                                                   "event_data");
+  }
+
+  // This MySQL Server are now logging changes for the table
   ndb_log_verbose(1, "NDB Binlog: logging %s (%s,%s)", share->key_string(),
                   share->get_binlog_full() ? "FULL" : "UPDATED",
                   share->get_binlog_use_update() ? "USE_UPDATE" : "USE_WRITE");
+
   return 0;
 }
 
@@ -5484,24 +5482,25 @@ void Ndb_binlog_client::drop_events_for_table(THD *thd, Ndb *ndb,
   }
 }
 
-/*
-  Wait for the binlog thread to drop it's NdbEventOperations
-  during a drop table
+/**
+  Wait for the binlog thread to remove its NdbEventOperation and other resources
+  it uses to listen to changes to the table in NDB during a drop table.
 
-  Syncronized drop between client and injector thread is
-  neccessary in order to maintain ordering in the binlog,
+  @note Synchronized drop between client and injector thread is
+  necessary in order to maintain ordering in the binlog,
   such that the drop occurs _after_ any inserts/updates/deletes.
 
-  Also the injector thread need to be given time to detect the
-  drop and release it's resources allocated in the NDB_SHARE.
+  @param thd   Thread handle of the waiting thread
+  @param share The NDB_SHARE whose resources are waiting to be released
+
+  @return Always return 0 for success
 */
-
-int ndbcluster_binlog_wait_synch_drop_table(THD *thd, NDB_SHARE *share) {
+int ndbcluster_binlog_wait_synch_drop_table(THD *thd, const NDB_SHARE *share) {
   DBUG_TRACE;
-  DBUG_ASSERT(share);
+  assert(share);
 
-  const char *save_proc_info = thd->proc_info;
-  thd->proc_info = "Syncing ndb table schema operation and binlog";
+  const char *save_proc_info = thd->proc_info();
+  thd->set_proc_info("Syncing ndb table schema operation and binlog");
 
   int max_timeout = DEFAULT_SYNC_TIMEOUT;
 
@@ -5520,23 +5519,44 @@ int ndbcluster_binlog_wait_synch_drop_table(THD *thd, NDB_SHARE *share) {
     mysql_mutex_unlock(&injector_data_mutex);
     mysql_mutex_lock(&share->mutex);
 
-    if (thd->killed || share->op == 0) break;
+    if (thd->killed || share->op == nullptr) {
+      // The waiting thread has beeen killed or the event operation has been
+      // removed from NDB_SHARE (by the binlog thread) -> done!
+      break;
+    }
+
     if (ret) {
       max_timeout--;
       if (max_timeout == 0) {
         ndb_log_error("%s, delete table timed out. Ignoring...",
                       share->key_string());
-        DBUG_ASSERT(false);
+        assert(false);
         break;
       }
-      if (ndb_log_get_verbose_level())
-        ndb_report_waiting("delete table", max_timeout, "delete table",
-                           share->key_string());
+      if (ndb_log_get_verbose_level()) {
+        // Log message that may provide some insight into why the binlog thread
+        // is not detecting the drop table and removes the event operation
+        ulonglong ndb_latest_epoch = 0;
+        mysql_mutex_lock(&injector_event_mutex);
+        if (injector_ndb) ndb_latest_epoch = injector_ndb->getLatestGCI();
+        mysql_mutex_unlock(&injector_event_mutex);
+        // NOTE! Excessive use of mutex synchronization, locking both NDB_SHARE
+        // and injector_event_mutex in order to print a log message.
+        ndb_log_info(
+            "wait_synch_drop_table, waiting max %u sec for %s."
+            "  epochs: (%u/%u,%u/%u,%u/%u)",
+            max_timeout, share->key_string(),
+            (uint)(ndb_latest_handled_binlog_epoch >> 32),
+            (uint)(ndb_latest_handled_binlog_epoch),
+            (uint)(ndb_latest_received_binlog_epoch >> 32),
+            (uint)(ndb_latest_received_binlog_epoch),
+            (uint)(ndb_latest_epoch >> 32), (uint)(ndb_latest_epoch));
+      }
     }
   }
   mysql_mutex_unlock(&share->mutex);
 
-  thd->proc_info = save_proc_info;
+  thd->set_proc_info(save_proc_info);
 
   return 0;
 }
@@ -5613,27 +5633,142 @@ unsigned int ndbcluster_binlog_get_sync_pending_objects_count() {
   return ndb_binlog_thread.get_sync_pending_objects_count();
 }
 
-/********************************************************************
-  Internal helper functions for differentd events from the stoarage nodes
-  used by the ndb injector thread
-********************************************************************/
+/**
+   @brief Get blob column(s) data for one event received from NDB. The blob
+   data is already buffered inside the NdbApi so this is basically an unpack.
 
-/*
-  Unpack a record read from NDB
+   @note The function will loop over all columns in table twice:
+     - first lap calculates size of the buffer which need to be allocated for
+       holding blob data for all columns. At the end of first loop
+       space is allocated in the buffer provided by caller.
+     - second lap copies each columns blob data into the allocated blobs buffer
+       and set up the Field_blob data pointers with length of blob and pointer
+       into the blobs buffer.
 
-  SYNOPSIS
-    ndb_unpack_record()
-    buf                 Buffer to store read row
+  This means that after this function has returned all Field_blob of TABLE will
+  point to data in the blobs buffer from where it will be extracted when
+  writing the blob data to the binlog.
 
-  NOTE
-    The data for each row is read directly into the
-    destination buffer. This function is primarily
-    called in order to check if any fields should be
-    set to null.
-*/
+  It might look something like this:
+    TABLE:
+      fields: {
+        [0] Field->ptr      -> record[0]+field0_offset
+        [1] Field_blob->ptr -> record[0]+field1_offset
+                                 <length_blob1>
+                                 <ptr_blob1>      -> blobs_buffer[offset1]
+        [2] Field_blob->ptr -> record[0]+field2_offset
+                                 <length_blob2>
+                                 <ptr_blob2>      -> blobs_buffer[offset2]
+        [3] Field->ptr      -> record[0]+field3_offset
+        [N] ...
+      }
 
-static void ndb_unpack_record(TABLE *table, NdbValue *value, MY_BITMAP *defined,
-                              uchar *buf) {
+   @param table             The table which received event
+   @param value_array       Pointer to array with the NdbApi objects to
+                            used for receiving
+   @param[out] buffer       Buffer to hold the data for all received blobs
+   @param ptrdiff           Offset to store the blob data pointer in correct
+                            "record", used when both before and after image
+                            are received
+
+   @return 0 on success, other values (normally -1) for error
+ */
+int Ndb_binlog_thread::handle_data_get_blobs(const TABLE *table,
+                                             const NdbValue *const value_array,
+                                             Ndb_blobs_buffer &buffer,
+                                             ptrdiff_t ptrdiff) const {
+  DBUG_TRACE;
+
+  // Loop twice, first only counting total buffer size
+  for (int loop = 0; loop <= 1; loop++) {
+    uint32 offset = 0;
+    for (uint i = 0; i < table->s->fields; i++) {
+      Field *field = table->field[i];
+      if (!(field->is_flag_set(BLOB_FLAG) && field->stored_in_db)) {
+        // Skip field
+        continue;
+      }
+      const NdbValue &value = value_array[i];
+      if (value.blob == nullptr) {
+        DBUG_PRINT("info", ("[%u] skipped", i));
+        continue;
+      }
+      Field_blob *field_blob = (Field_blob *)field;
+      NdbBlob *ndb_blob = value.blob;
+      int isNull;
+      if (ndb_blob->getNull(isNull) != 0) {
+        log_ndb_error(ndb_blob->getNdbError());
+        log_error("Failed to get 'isNull' for column '%s'",
+                  ndb_blob->getColumn()->getName());
+        return -1;
+      }
+      if (isNull == 0) {
+        Uint64 len64 = 0;
+        if (ndb_blob->getLength(len64) != 0) {
+          log_ndb_error(ndb_blob->getNdbError());
+          log_error("Failed to get length for column '%s'",
+                    ndb_blob->getColumn()->getName());
+          return -1;
+        }
+        // Align to Uint64
+        uint32 size = Uint32(len64);
+        if (size % 8 != 0) size += 8 - size % 8;
+        if (loop == 1) {
+          // Read data for one blob into its place in buffer
+          uchar *buf = buffer.get_ptr(offset);
+          uint32 len = buffer.size() - offset;  // Length of buffer after offset
+          if (ndb_blob->readData(buf, len) != 0) {
+            log_ndb_error(ndb_blob->getNdbError());
+            log_error("Failed to read data for column '%s'",
+                      ndb_blob->getColumn()->getName());
+            return -1;
+          }
+          DBUG_PRINT("info", ("[%u] offset: %u  buf: %p  len=%u  [ptrdiff=%d]",
+                              i, offset, buf, len, (int)ptrdiff));
+          assert(len == len64);
+          // Ugly hack assumes only ptr needs to be changed
+          field_blob->set_ptr_offset(ptrdiff, len, buf);
+        }
+        offset += size;
+      } else if (loop == 1)  // undefined or null
+      {
+        // have to set length even in this case
+        const uchar *buf = buffer.get_ptr(offset);
+        const uint32 len = 0;
+        field_blob->set_ptr_offset(ptrdiff, len, buf);
+        DBUG_PRINT("info", ("[%u] isNull=%d", i, isNull));
+      }
+    }
+    if (loop == 0) {
+      // Allocate space for all received blobs
+      if (!buffer.allocate(offset)) {
+        log_error("Could not allocate blobs buffer, size: %u", offset);
+        return -1;
+      }
+    }
+  }
+  return 0;
+}
+
+/**
+   @brief Unpack data for one event received from NDB.
+
+   @note The data for each row is read directly into the destination buffer.
+   This function is primarily called in order to check if any fields should be
+   set to null.
+
+   @param table             The table which received event
+   @param value             Pointer to array with the NdbApi objects to
+                            used for receiving
+   @param[out] defined      Bitmap with defined fields, function will clear
+                            undefined fields.
+   @param buf               Buffer to store read row
+ */
+
+void Ndb_binlog_thread::handle_data_unpack_record(TABLE *table,
+                                                  const NdbValue *value,
+                                                  MY_BITMAP *defined,
+                                                  uchar *buf) const {
   Field **p_field = table->field, *field = *p_field;
   ptrdiff_t row_offset = (ptrdiff_t)(buf - table->record[0]);
   my_bitmap_map *old_map = dbug_tmp_use_all_columns(table, table->write_set);
@@ -5662,7 +5797,7 @@ static void ndb_unpack_record(TABLE *table, NdbValue *value, MY_BITMAP *defined,
         DBUG_PRINT("info", ("[%u] is virtual blob, setting length 0",
                             field->field_index()));
         Uint32 zerolen = 0;
-        field_blob->set_ptr((uchar *)&zerolen, NULL);
+        field_blob->set_ptr((uchar *)&zerolen, nullptr);
       }
 
       continue;
@@ -5719,7 +5854,7 @@ static void ndb_unpack_record(TABLE *table, NdbValue *value, MY_BITMAP *defined,
                      ("[%u] SET", (*value).rec->getColumn()->getColumnNo()));
           DBUG_DUMP("info", field->field_ptr(), field->pack_length());
         } else {
-          DBUG_ASSERT(
+          assert(
               !strcmp((*value).rec->getColumn()->getName(), field->field_name));
           DBUG_PRINT("info",
                      ("[%u] SET", (*value).rec->getColumn()->getColumnNo()));
@@ -5737,13 +5872,12 @@ static void ndb_unpack_record(TABLE *table, NdbValue *value, MY_BITMAP *defined,
           DBUG_PRINT("info", ("[%u] UNDEFINED", field_no));
           bitmap_clear_bit(defined, field_no);
         } else {
-#ifndef DBUG_OFF
-          // pointer vas set in get_ndb_blobs_value
+#ifndef NDEBUG
+          // pointer was set in handle_data_get_blobs
           Field_blob *field_blob = (Field_blob *)field;
           const uchar *ptr = field_blob->get_blob_data(row_offset);
           uint32 len = field_blob->get_length(row_offset);
-          DBUG_PRINT("info", ("[%u] SET ptr: 0x%lx  len: %u", field_no,
-                              (long)ptr, len));
+          DBUG_PRINT("info", ("[%u] SET ptr: %p  len: %u", field_no, ptr, len));
 #endif
         }
       }       // else
@@ -5751,36 +5885,82 @@ static void ndb_unpack_record(TABLE *table, NdbValue *value, MY_BITMAP *defined,
     value++;  // this field was not virtual
   }           // for()
   dbug_tmp_restore_column_map(table->write_set, old_map);
+
+  DBUG_EXECUTE("info", Ndb_table_map::print_record(table, buf););
 }
 
-/*
-  Handle error states on events from the storage nodes
+/**
+  Handle error state on one event received from NDB
+
+  @param pOp The NdbEventOperation which indicated there was an error
+
+  @return 0 for success
 */
-static int handle_error(NdbEventOperation *pOp) {
-  Ndb_event_data *event_data = (Ndb_event_data *)pOp->getCustomData();
-  NDB_SHARE *share = event_data->share;
+int Ndb_binlog_thread::handle_error(NdbEventOperation *pOp) const {
   DBUG_TRACE;
 
-  ndb_log_error("NDB Binlog: unhandled error %d for table %s", pOp->hasError(),
-                share->key_string());
+  const Ndb_event_data *const event_data =
+      Ndb_event_data::get_event_data(pOp->getCustomData());
+  const NDB_SHARE *const share = event_data->share;
+
+  log_error("Unhandled error %d for table %s", pOp->hasError(),
+            share->key_string());
   pOp->clearError();
   return 0;
 }
 
-/*
-  Handle _non_ data events from the storage nodes
-*/
+/**
+   Inject an incident (aka. 'lost events' or 'gap') into the injector,
+   indicating that problem has occurred while processing the event stream.
 
-static void handle_non_data_event(THD *thd, NdbEventOperation *pOp,
-                                  ndb_binlog_index_row &row) {
-  const Ndb_event_data *event_data =
-      static_cast<const Ndb_event_data *>(pOp->getCustomData());
-  NDB_SHARE *share = event_data->share;
+   @param thd           The thread handle
+   @param inj           Pointer to the injector
+   @param event_type    Type of the event problem that has occurred.
+   @param gap_epoch     The epoch when problem was detected.
+
+*/
+void Ndb_binlog_thread::inject_incident(
+    injector *inj, THD *thd, NdbDictionary::Event::TableEvent event_type,
+    Uint64 gap_epoch) const {
+  DBUG_TRACE;
+
+  const char *reason = "problem";
+  if (event_type == NdbDictionary::Event::TE_INCONSISTENT) {
+    reason = "missing data";
+  } else if (event_type == NdbDictionary::Event::TE_OUT_OF_MEMORY) {
+    reason = "event buffer full";
+  }
+
+  char errmsg[80];
+  snprintf(errmsg, sizeof(errmsg),
+           "Detected %s in GCI %llu, "
+           "inserting GAP event",
+           reason, gap_epoch);
+
+  // Write error message to log
+  log_error("%s", errmsg);
+
+  // Record incident in injector
+  LEX_CSTRING const msg = {errmsg, strlen(errmsg)};
+  if (inj->record_incident(
+          thd, binary_log::Incident_event::INCIDENT_LOST_EVENTS, msg) != 0) {
+    log_error("Failed to record incident");
+  }
+}
+
+/**
+   @brief Handle one "non data" event received from NDB.
+
+   @param thd          The thread handle
+   @param pOp          The NdbEventOperation that received data
+   @param row          The ndb_binlog_index row
+
+ */
+void Ndb_binlog_thread::handle_non_data_event(THD *thd, NdbEventOperation *pOp,
+                                              ndb_binlog_index_row &row) {
   const NDBEVENT::TableEvent type = pOp->getEventType();
 
   DBUG_TRACE;
-  DBUG_PRINT("enter",
-             ("pOp: %p, event_data: %p, share: %p", pOp, event_data, share));
   DBUG_PRINT("enter", ("type: %d", type));
 
   if (type == NDBEVENT::TE_DROP || type == NDBEVENT::TE_ALTER) {
@@ -5788,21 +5968,20 @@ static void handle_non_data_event(THD *thd, NdbEventOperation *pOp,
     row.n_schemaops++;
   }
 
+  const Ndb_event_data *event_data =
+      Ndb_event_data::get_event_data(pOp->getCustomData());
+  const NDB_SHARE *const share = event_data->share;
   switch (type) {
     case NDBEVENT::TE_CLUSTER_FAILURE:
-      ndb_log_verbose(1, "NDB Binlog: cluster failure for %s at epoch %u/%u.",
-                      share->key_string(), (uint)(pOp->getGCI() >> 32),
-                      (uint)(pOp->getGCI()));
-      // fallthrough
+      // Connection to NDB has been lost, release resources in same way as when
+      // table has been dropped
+      [[fallthrough]];
     case NDBEVENT::TE_DROP:
-      if (ndb_apply_status_share == share) {
+      if (m_apply_status_share == share) {
         if (ndb_binlog_tables_inited && ndb_binlog_running)
-          ndb_log_verbose(1, "NDB Binlog: util tables need to reinitialize");
+          log_verbose(1, "util tables need to reinitialize");
 
-        /* release the ndb_apply_status_share */
-        NDB_SHARE::release_reference(ndb_apply_status_share,
-                                     "ndb_apply_status_share");
-        ndb_apply_status_share = NULL;
+        release_apply_status_reference();
 
         Mutex_guard injector_g(injector_data_mutex);
         ndb_binlog_tables_inited = false;
@@ -5822,22 +6001,16 @@ static void handle_non_data_event(THD *thd, NdbEventOperation *pOp,
       break;
 
     default:
-      ndb_log_error(
-          "NDB Binlog: unknown non data event %d for %s. "
-          "Ignoring...",
-          (unsigned)type, share->key_string());
+      log_error("unknown non data event %d, ignoring...", type);
       break;
   }
 }
 
-/*
-  Handle data events from the storage nodes
-*/
-inline ndb_binlog_index_row *ndb_find_binlog_index_row(
+static inline ndb_binlog_index_row *ndb_find_binlog_index_row(
     ndb_binlog_index_row **rows, uint orig_server_id, int flag) {
   ndb_binlog_index_row *row = *rows;
   if (opt_ndb_log_orig) {
-    ndb_binlog_index_row *first = row, *found_id = 0;
+    ndb_binlog_index_row *first = row, *found_id = nullptr;
     for (;;) {
       if (row->orig_server_id == orig_server_id) {
         /* */
@@ -5846,7 +6019,7 @@ inline ndb_binlog_index_row *ndb_find_binlog_index_row(
       }
       if (row->orig_server_id == 0) break;
       row = row->next;
-      if (row == NULL) {
+      if (row == nullptr) {
         // Allocate memory in current MEM_ROOT
         row = (ndb_binlog_index_row *)(*THR_MALLOC)
                   ->Alloc(sizeof(ndb_binlog_index_row));
@@ -5877,25 +6050,32 @@ inline ndb_binlog_index_row *ndb_find_binlog_index_row(
   return row;
 }
 
-static int handle_data_event(NdbEventOperation *pOp,
-                             ndb_binlog_index_row **rows,
-                             injector::transaction &trans,
-                             unsigned &trans_row_count,
-                             unsigned &trans_slave_row_count) {
-  Ndb_event_data *event_data = (Ndb_event_data *)pOp->getCustomData();
-  TABLE *table = event_data->shadow_table;
-  NDB_SHARE *share = event_data->share;
+// Subclass to allow forward declaration of the nested class
+class injector_transaction : public injector::transaction {};
+
+/**
+   @brief Handle one data event received from NDB
+
+   @param pOp           The NdbEventOperation that received data
+   @param rows          The rows which will be written to ndb_binlog_index
+   @param trans         The injector transaction
+   @param[out] trans_row_count       Counter for rows in event
+   @param[out] replicated_row_count  Counter for replicated rows in event
+   @return 0 for success, other values (normally -1) for error
+ */
+int Ndb_binlog_thread::handle_data_event(const NdbEventOperation *pOp,
+                                         ndb_binlog_index_row **rows,
+                                         injector_transaction &trans,
+                                         unsigned &trans_row_count,
+                                         unsigned &replicated_row_count) const {
   bool reflected_op = false;
   bool refresh_op = false;
   bool read_op = false;
-
-  if (pOp != share->op) {
-    return 0;
-  }
-
   uint32 anyValue = pOp->getAnyValue();
   if (ndbcluster_anyvalue_is_reserved(anyValue)) {
-    if (ndbcluster_anyvalue_is_nologging(anyValue)) return 0;
+    if (ndbcluster_anyvalue_is_nologging(anyValue)) {
+      return 0;
+    }
 
     if (ndbcluster_anyvalue_is_reflect_op(anyValue)) {
       DBUG_PRINT("info", ("Anyvalue -> Reflect (%u)", anyValue));
@@ -5910,75 +6090,80 @@ static int handle_data_event(NdbEventOperation *pOp,
       read_op = true;
       anyValue = 0;
     } else {
-      ndb_log_warning(
-          "unknown value for binlog signalling 0x%X, "
-          "event not logged",
-          anyValue);
+      log_warning("unknown value for binlog signalling 0x%X, event not logged",
+                  anyValue);
       return 0;
     }
   }
 
+  const Ndb_event_data *event_data =
+      Ndb_event_data::get_event_data(pOp->getCustomData());
+  const NDB_SHARE *const share = event_data->share;
+  TABLE *const table = event_data->shadow_table;
+
+  if (pOp != share->op) {
+    // NOTE! Silently skipping data event when the share that the
+    // Ndb_event_data is pointing at does not match, seems like
+    // a synchronization issue
+    assert(false);
+    return 0;
+  }
+
   uint32 originating_server_id = ndbcluster_anyvalue_get_serverid(anyValue);
-  bool log_this_slave_update = g_ndb_log_slave_updates;
+  bool log_this_slave_update = g_ndb_log_replica_updates;
   bool count_this_event = true;
 
-  if (share == ndb_apply_status_share) {
+  if (share == m_apply_status_share) {
     /*
        Note that option values are read without synchronisation w.r.t.
        thread setting option variable or epoch boundaries.
     */
     if (opt_ndb_log_apply_status || opt_ndb_log_orig) {
-      Uint32 ndb_apply_status_logging_server_id = originating_server_id;
-      Uint32 ndb_apply_status_server_id = 0;
-      Uint64 ndb_apply_status_epoch = 0;
-      bool event_has_data = false;
+      Uint32 logging_server_id = originating_server_id;
 
-      switch (pOp->getEventType()) {
-        case NDBEVENT::TE_INSERT:
-        case NDBEVENT::TE_UPDATE:
-          event_has_data = true;
-          break;
+      const NDBEVENT::TableEvent event_type = pOp->getEventType();
+      if (event_type == NDBEVENT::TE_INSERT ||
+          event_type == NDBEVENT::TE_UPDATE) {
+        // Initialize "unused_bitmap" which is an output parameter from
+        // handle_data_unpack_record, afterwards it's not used which means it
+        // need not be initialized with anything useful
+        MY_BITMAP unused_bitmap;
+        Ndb_bitmap_buf<NDB_MAX_ATTRIBUTES_IN_TABLE> unused_bitbuf;
+        ndb_bitmap_init(&unused_bitmap, unused_bitbuf, table->s->fields);
 
-        case NDBEVENT::TE_DELETE:
-          break;
-        default:
-          /* We should REALLY never get here */
-          abort();
-      }
+        // Unpack data event on mysql.ndb_apply_status to get orig_server_id
+        // and orig_epoch
+        handle_data_unpack_record(table, event_data->ndb_value[0].get(),
+                                  &unused_bitmap, table->record[0]);
 
-      if (likely(event_has_data)) {
-        /* unpack data to fetch orig_server_id and orig_epoch */
-        MY_BITMAP b;
-        uint32 bitbuf[128 / (sizeof(uint32) * 8)];
-        ndb_bitmap_init(b, bitbuf, table->s->fields);
-        bitmap_copy(&b, &event_data->stored_columns);
-        ndb_unpack_record(table, event_data->ndb_value[0], &b,
-                          table->record[0]);
-        ndb_apply_status_server_id =
-            (uint)((Field_long *)table->field[0])->val_int();
-        ndb_apply_status_epoch = ((Field_longlong *)table->field[1])->val_int();
+        // Assume that mysql.ndb_apply_status table has two fields (which should
+        // thus have been unpacked)
+        ndbcluster::ndbrequire(table->field[0] != nullptr &&
+                               table->field[1] != nullptr);
+
+        const Uint32 orig_server_id =
+            (Uint32) static_cast<Field_long *>(table->field[0])->val_int();
+        const Uint64 orig_epoch =
+            static_cast<Field_longlong *>(table->field[1])->val_int();
 
         if (opt_ndb_log_apply_status) {
           /*
              Determine if event came from our immediate Master server
              Ignore locally manually sourced and reserved events
           */
-          if ((ndb_apply_status_logging_server_id != 0) &&
-              (!ndbcluster_anyvalue_is_reserved(
-                  ndb_apply_status_logging_server_id))) {
-            bool isFromImmediateMaster = (ndb_apply_status_server_id ==
-                                          ndb_apply_status_logging_server_id);
-
-            if (isFromImmediateMaster) {
+          if (logging_server_id != 0 &&
+              !ndbcluster_anyvalue_is_reserved(logging_server_id)) {
+            const bool immediate_master = (orig_server_id == logging_server_id);
+            if (immediate_master) {
               /*
                  We log this event with our server-id so that it
                  propagates back to the originating Master (our
                  immediate Master)
               */
-              assert(ndb_apply_status_logging_server_id != ::server_id);
+              assert(logging_server_id != ::server_id);
 
-              originating_server_id =
-                  0; /* Will be set to our ::serverid below */
+              /* Will be set to our ::serverid below */
+              originating_server_id = 0;
             }
           }
         }
@@ -5986,8 +6171,8 @@ static int handle_data_event(NdbEventOperation *pOp,
         if (opt_ndb_log_orig) {
           /* store */
           ndb_binlog_index_row *row =
-              ndb_find_binlog_index_row(rows, ndb_apply_status_server_id, 1);
-          row->orig_epoch = ndb_apply_status_epoch;
+              ndb_find_binlog_index_row(rows, orig_server_id, 1);
+          row->orig_epoch = orig_epoch;
         }
       }
     }  // opt_ndb_log_apply_status || opt_ndb_log_orig)
@@ -6010,7 +6195,7 @@ static int handle_data_event(NdbEventOperation *pOp,
   else {
     assert(!reflected_op && !refresh_op);
     /* Track that we received a replicated row event */
-    if (likely(count_this_event)) trans_slave_row_count++;
+    if (likely(count_this_event)) replicated_row_count++;
 
     if (!log_this_slave_update) {
       /*
@@ -6035,7 +6220,7 @@ static int handle_data_event(NdbEventOperation *pOp,
      Get NdbApi transaction id for this event to put into Binlog
   */
   Ndb_binlog_extra_row_info extra_row_info;
-  const unsigned char *extra_row_info_ptr = NULL;
+  const unsigned char *extra_row_info_ptr = nullptr;
   Uint16 erif_flags = 0;
   if (opt_ndb_log_transaction_id) {
     erif_flags |= Ndb_binlog_extra_row_info::NDB_ERIF_TRANSID;
@@ -6071,10 +6256,9 @@ static int handle_data_event(NdbEventOperation *pOp,
        * Produce 1 warning at most
        */
       if (!g_injector_v1_warning_emitted) {
-        ndb_log_error(
-            "Binlog Injector discarding row event "
-            "meta data as server is using v1 row events. "
-            "(%u %x)",
+        log_error(
+            "Injector discarding row event meta data, server is using v1 row "
+            "events. (%u %x)",
             opt_ndb_log_transaction_id, event_conflict_flags);
 
         g_injector_v1_warning_emitted = true;
@@ -6082,18 +6266,14 @@ static int handle_data_event(NdbEventOperation *pOp,
     }
   }
 
-  DBUG_ASSERT(trans.good());
-  DBUG_ASSERT(table != 0);
+  assert(trans.good());
+  assert(table != nullptr);
 
-#ifndef DBUG_OFF
-  Ndb_table_map::print_table("table", table);
-#endif
+  DBUG_EXECUTE("", Ndb_table_map::print_table("table", table););
 
   MY_BITMAP b;
-  my_bitmap_map
-      bitbuf[(NDB_MAX_ATTRIBUTES_IN_TABLE + 8 * sizeof(my_bitmap_map) - 1) /
-             (8 * sizeof(my_bitmap_map))];
-  ndb_bitmap_init(b, bitbuf, table->s->fields);
+  Ndb_bitmap_buf<NDB_MAX_ATTRIBUTES_IN_TABLE> bitbuf;
+  ndb_bitmap_init(&b, bitbuf, table->s->fields);
   bitmap_copy(&b, &event_data->stored_columns);
   if (bitmap_is_clear_all(&b)) {
     DBUG_PRINT("info", ("Skip logging of event without stored columns"));
@@ -6106,15 +6286,15 @@ static int handle_data_event(NdbEventOperation *pOp,
    (saves moving data about many times)
   */
 
-  /*
-    for now malloc/free blobs buffer each time
-    TODO if possible share single permanent buffer with handlers
-   */
-  uchar *blobs_buffer[2] = {0, 0};
-  uint blobs_buffer_size[2] = {0, 0};
-
   ndb_binlog_index_row *row =
       ndb_find_binlog_index_row(rows, originating_server_id, 0);
+
+  // The data of any received blobs will live in these buffers for a short
+  // time while processing one event. The buffers are populated in
+  // handle_data_get_blobs(), then written to injector and finally released when
+  // function returns. Two buffers are used for keeping both before and after
+  // image when required.
+  Ndb_blobs_buffer blobs_buffer[2];
 
   switch (pOp->getEventType()) {
     case NDBEVENT::TE_INSERT:
@@ -6125,21 +6305,24 @@ static int handle_data_event(NdbEventOperation *pOp,
       DBUG_PRINT("info", ("INSERT INTO %s.%s", table->s->db.str,
                           table->s->table_name.str));
       {
-        int ret;
-        (void)ret;  // Bug27150740 HANDLE_DATA_EVENT NEED ERROR HANDLING
-        if (event_data->have_blobs) {
-          ptrdiff_t ptrdiff = 0;
-          ret = get_ndb_blobs_value(table, event_data->ndb_value[0],
-                                    blobs_buffer[0], blobs_buffer_size[0],
-                                    ptrdiff);
-          assert(ret == 0);
+        if (event_data->have_blobs &&
+            handle_data_get_blobs(table, event_data->ndb_value[0].get(),
+                                  blobs_buffer[0], 0) != 0) {
+          log_error(
+              "Failed to get blob values from INSERT event on table '%s.%s'",
+              table->s->db.str, table->s->table_name.str);
+          return -1;
         }
-        ndb_unpack_record(table, event_data->ndb_value[0], &b,
-                          table->record[0]);
-        ret = trans.write_row(logged_server_id,
-                              injector::transaction::table(table, true), &b,
-                              table->record[0], extra_row_info_ptr);
-        assert(ret == 0);
+        handle_data_unpack_record(table, event_data->ndb_value[0].get(), &b,
+                                  table->record[0]);
+        const int error =
+            trans.write_row(logged_server_id,  //
+                            injector::transaction::table(table, true), &b,
+                            table->record[0], extra_row_info_ptr);
+        if (error != 0) {
+          log_error("Could not log write row, error: %d", error);
+          return -1;
+        }
       }
       break;
     case NDBEVENT::TE_DELETE:
@@ -6150,40 +6333,39 @@ static int handle_data_event(NdbEventOperation *pOp,
       DBUG_PRINT("info", ("DELETE FROM %s.%s", table->s->db.str,
                           table->s->table_name.str));
       {
-        /*
-          table->record[0] contains only the primary key in this case
-          since we do not have an after image
-        */
+        // NOTE! table->record[0] contains only the primary key in this case
+        // since we do not have an after image
         int n;
-        if (!share->get_binlog_full() && table->s->primary_key != MAX_KEY)
-          n = 0; /*
-                   use the primary key only as it save time and space and
-                   it is the only thing needed to log the delete
-                 */
-        else
-          n = 1; /*
-                   we use the before values since we don't have a primary key
-                   since the mysql server does not handle the hidden primary
-                   key
-                 */
-
-        int ret;
-        (void)ret;  // Bug27150740 HANDLE_DATA_EVENT NEED ERROR HANDLING
-        if (event_data->have_blobs) {
-          ptrdiff_t ptrdiff = table->record[n] - table->record[0];
-          ret = get_ndb_blobs_value(table, event_data->ndb_value[n],
-                                    blobs_buffer[n], blobs_buffer_size[n],
-                                    ptrdiff);
-          assert(ret == 0);
+        if (!share->get_binlog_full() && table->s->primary_key != MAX_KEY) {
+          // Use the primary key only, it saves time and space
+          // and is the only thing needed to log the delete
+          n = 0;
+        } else {
+          // Table doesn't have a primary key or full rows should be logged, use
+          // the before values
+          n = 1;
         }
-        ndb_unpack_record(table, event_data->ndb_value[n], &b,
-                          table->record[n]);
-        DBUG_EXECUTE("info",
-                     Ndb_table_map::print_record(table, table->record[n]););
-        ret = trans.delete_row(logged_server_id,
-                               injector::transaction::table(table, true), &b,
-                               table->record[n], extra_row_info_ptr);
-        assert(ret == 0);
+
+        if (event_data->have_blobs &&
+            handle_data_get_blobs(table, event_data->ndb_value[n].get(),
+                                  blobs_buffer[n],
+                                  table->record[n] - table->record[0]) != 0) {
+          log_error(
+              "Failed to get blob values from DELETE event on table '%s.%s'",
+              table->s->db.str, table->s->table_name.str);
+          return -1;
+        }
+        handle_data_unpack_record(table, event_data->ndb_value[n].get(), &b,
+                                  table->record[n]);
+
+        const int error =
+            trans.delete_row(logged_server_id,  //
+                             injector::transaction::table(table, true), &b,
+                             table->record[n], extra_row_info_ptr);
+        if (error != 0) {
+          log_error("Could not log delete row, error: %d", error);
+          return -1;
+        }
       }
       break;
     case NDBEVENT::TE_UPDATE:
@@ -6194,130 +6376,296 @@ static int handle_data_event(NdbEventOperation *pOp,
       DBUG_PRINT("info",
                  ("UPDATE %s.%s", table->s->db.str, table->s->table_name.str));
       {
-        int ret;
-        (void)ret;  // Bug27150740 HANDLE_DATA_EVENT NEED ERROR HANDLING
-        if (event_data->have_blobs) {
-          ptrdiff_t ptrdiff = 0;
-          ret = get_ndb_blobs_value(table, event_data->ndb_value[0],
-                                    blobs_buffer[0], blobs_buffer_size[0],
-                                    ptrdiff);
-          assert(ret == 0);
+        if (event_data->have_blobs &&
+            handle_data_get_blobs(table, event_data->ndb_value[0].get(),
+                                  blobs_buffer[0], 0) != 0) {
+          log_error(
+              "Failed to get blob after values from UPDATE event "
+              "on table '%s.%s'",
+              table->s->db.str, table->s->table_name.str);
+          return -1;
         }
-        ndb_unpack_record(table, event_data->ndb_value[0], &b,
-                          table->record[0]);
-        DBUG_EXECUTE("info",
-                     Ndb_table_map::print_record(table, table->record[0]););
+        handle_data_unpack_record(table, event_data->ndb_value[0].get(), &b,
+                                  table->record[0]);
         if (table->s->primary_key != MAX_KEY &&
             !share->get_binlog_use_update()) {
-          /*
-            since table has a primary key, we can do a write
-            using only after values
-          */
-          ret = trans.write_row(logged_server_id,
-                                injector::transaction::table(table, true), &b,
-                                table->record[0],  // after values
-                                extra_row_info_ptr);
-          assert(ret == 0);
-        } else {
-          /*
-            mysql server cannot handle the ndb hidden key and
-            therefore needs the before image as well
-          */
-          if (event_data->have_blobs) {
-            ptrdiff_t ptrdiff = table->record[1] - table->record[0];
-            ret = get_ndb_blobs_value(table, event_data->ndb_value[1],
-                                      blobs_buffer[1], blobs_buffer_size[1],
-                                      ptrdiff);
-            assert(ret == 0);
+          // Table has primary key, do write using only after values
+          const int error =
+              trans.write_row(logged_server_id,  //
+                              injector::transaction::table(table, true), &b,
+                              table->record[0],  // after values
+                              extra_row_info_ptr);
+          if (error != 0) {
+            log_error("Could not log write row for UPDATE, error: %d", error);
+            return -1;
           }
-          ndb_unpack_record(table, event_data->ndb_value[1], &b,
-                            table->record[1]);
-          DBUG_EXECUTE("info",
-                       Ndb_table_map::print_record(table, table->record[1]););
+        } else {
+          // Table have hidden key or "use update" is on, before values are
+          // needed as well
+          if (event_data->have_blobs &&
+              handle_data_get_blobs(table, event_data->ndb_value[1].get(),
+                                    blobs_buffer[1],
+                                    table->record[1] - table->record[0]) != 0) {
+            log_error(
+                "Failed to get blob before values from UPDATE event "
+                "on table '%s.%s'",
+                table->s->db.str, table->s->table_name.str);
+            return -1;
+          }
+          handle_data_unpack_record(table, event_data->ndb_value[1].get(), &b,
+                                    table->record[1]);
 
           MY_BITMAP col_bitmap_before_update;
-          my_bitmap_map bitbuf[(NDB_MAX_ATTRIBUTES_IN_TABLE +
-                                8 * sizeof(my_bitmap_map) - 1) /
-                               (8 * sizeof(my_bitmap_map))];
-          ndb_bitmap_init(col_bitmap_before_update, bitbuf, table->s->fields);
+          Ndb_bitmap_buf<NDB_MAX_ATTRIBUTES_IN_TABLE> bitbuf;
+          ndb_bitmap_init(&col_bitmap_before_update, bitbuf, table->s->fields);
           if (share->get_binlog_update_minimal()) {
             event_data->generate_minimal_bitmap(&col_bitmap_before_update, &b);
           } else {
             bitmap_copy(&col_bitmap_before_update, &b);
           }
 
-          ret = trans.update_row(logged_server_id,
-                                 injector::transaction::table(table, true),
-                                 &col_bitmap_before_update, &b,
-                                 table->record[1],  // before values
-                                 table->record[0],  // after values
-                                 extra_row_info_ptr);
-          assert(ret == 0);
+          const int error =
+              trans.update_row(logged_server_id,  //
+                               injector::transaction::table(table, true),
+                               &col_bitmap_before_update, &b,
+                               table->record[1],  // before values
+                               table->record[0],  // after values
+                               extra_row_info_ptr);
+          if (error != 0) {
+            log_error("Could not log update row, error: %d", error);
+            return -1;
+          }
         }
       }
       break;
     default:
-      /* We should REALLY never get here. */
-      DBUG_PRINT("info", ("default - uh oh, a brain exploded."));
+      log_warning("Unknown data event %d. Ignoring...", pOp->getEventType());
       break;
-  }
-
-  if (event_data->have_blobs) {
-    my_free(blobs_buffer[0]);
-    my_free(blobs_buffer[1]);
   }
 
   return 0;
 }
 
-/****************************************************************
-  Injector thread main loop
-****************************************************************/
+#ifndef NDEBUG
+/**
+  Check that event op from 'event list' exists also in 'gci op list' of the Ndb
+  object. This makes sure that there are some form of consistency between the
+  different lists of events.
 
-void Ndb_binlog_thread::remove_event_operations(Ndb *ndb) const {
+   @param ndb        The Ndb object to search for event op in 'gci op list'
+   @param op         The event operation to find
+
+   @return true
+ */
+static bool check_event_list_consistency(Ndb *ndb,
+                                         const NdbEventOperation *op) {
+  Uint32 it = 0;
+  const NdbEventOperation *gci_op;
+  Uint32 event_types;
+  while ((gci_op = ndb->getGCIEventOperations(&it, &event_types)) != nullptr) {
+    if (gci_op == op) {
+      assert((event_types & op->getEventType()) != 0);
+      return true;
+    }
+  }
+  return false;
+}
+#endif
+
+void Ndb_binlog_thread::fix_per_epoch_trans_settings(THD *thd) {
+  // No effect for self logging engine
+  // thd->variables.binlog_row_format
+
+  // With HTON_NO_BINLOG_ROW_OPT handlerton flag setting has no effect
+  // thd->variables.binlog_row_image
+
+  // Compression settings should take effect next binlog transaction
+  thd->variables.binlog_trx_compression = opt_ndb_log_trx_compression;
+  thd->variables.binlog_trx_compression_type = 0;  // zstd
+  thd->variables.binlog_trx_compression_level_zstd =
+      opt_ndb_log_trx_compression_level_zstd;
+
+  // Without HA_BLOB_PARTIAL_UPDATE setting has no effect
+  // thd->variables.binlog_row_value_options & PARTIAL_JSON
+
+  // Controls writing Rows_query_log events with the query to binlog, disable
+  // since query is not known for changes received from NDB
+  thd->variables.binlog_rows_query_log_events = false;
+
+  // No effect unless statement-based binary logging
+  // thd->variables.binlog_direct_non_trans_update
+
+  // Write set extraction setting will be handled by --ndb-log- variable
+  // thd->variables.transaction_write_set_extraction =
+
+  // Charset setting
+  thd->variables.character_set_client = &my_charset_latin1;
+}
+
+/**
+   @brief Handle events for one epoch
+
+   @param thd           The thread handle
+   @param inj           The injector
+   @param i_ndb         The injector Ndb object
+   @param[in,out] i_pOp The current NdbEventOperation pointer
+   @param current_epoch The epoch to process
+
+   @return true for success and false for error
+*/
+bool Ndb_binlog_thread::handle_events_for_epoch(THD *thd, injector *inj,
+                                                Ndb *i_ndb,
+                                                NdbEventOperation *&i_pOp,
+                                                const Uint64 current_epoch) {
+  DBUG_TRACE;
+  const NDBEVENT::TableEvent event_type = i_pOp->getEventType2();
+
+  if (event_type == NdbDictionary::Event::TE_INCONSISTENT ||
+      event_type == NdbDictionary::Event::TE_OUT_OF_MEMORY) {
+    // Error has occurred in event stream processing, inject incident
+    inject_incident(inj, thd, event_type, current_epoch);
+
+    i_pOp = i_ndb->nextEvent2();
+    return true;  // OK, error handled
+  }
+
+  // No error has occurred in event stream, continue processing
+  thd->set_proc_info("Processing events");
+
+  ndb_binlog_index_row _row;
+  ndb_binlog_index_row *rows = &_row;
+  memset(&_row, 0, sizeof(_row));
+
+  fix_per_epoch_trans_settings(thd);
+
+  // Create new binlog transaction
+  injector_transaction trans;
+  inj->new_trans(thd, &trans);
+
+  unsigned trans_row_count = 0;
+  unsigned replicated_row_count = 0;
+  if (event_type == NdbDictionary::Event::TE_EMPTY) {
+    // Handle empty epoch
+    if (opt_ndb_log_empty_epochs) {
+      DBUG_PRINT("info", ("Writing empty epoch %u/%u "
+                          "latest_handled_binlog_epoch %u/%u",
+                          (uint)(current_epoch >> 32), (uint)(current_epoch),
+                          (uint)(ndb_latest_handled_binlog_epoch >> 32),
+                          (uint)(ndb_latest_handled_binlog_epoch)));
+
+      commit_trans(trans, thd, current_epoch, rows, trans_row_count,
+                   replicated_row_count);
+    }
+
+    i_pOp = i_ndb->nextEvent2();
+
+    return true;  // OK, empty epoch handled (whether committed or not)
+  }
+
+  // Handle non-empty epoch, process and inject all events in epoch
+  DBUG_PRINT("info", ("Handling non-empty epoch: %u/%u",
+                      (uint)(current_epoch >> 32), (uint)(current_epoch)));
+
+  // sometimes get TE_ALTER with invalid table
+  assert(event_type == NdbDictionary::Event::TE_ALTER ||
+         !ndb_name_is_blob_prefix(i_pOp->getEvent()->getTable()->getName()));
+
+  if (ndb_latest_received_binlog_epoch == 0) {
+    // Cluster is restarted after a cluster failure. Let injector Ndb
+    // handle the received events including TE_NODE_FAILURE and/or
+    // TE_CLUSTER_FAILURE.
+  } else {
+    assert(current_epoch <= ndb_latest_received_binlog_epoch);
+  }
+
+  // Update thread-local debug settings based on the global
+  DBUG_EXECUTE("", dbug_sync_setting(););
+
+  // Apply changes to user configurable variables once per epoch
+  i_ndb->set_eventbuf_max_alloc(opt_ndb_eventbuffer_max_alloc);
+  g_ndb_log_replica_updates = opt_log_replica_updates;
+  i_ndb->setReportThreshEventGCISlip(opt_ndb_report_thresh_binlog_epoch_slip);
+  i_ndb->setReportThreshEventFreeMem(opt_ndb_report_thresh_binlog_mem_usage);
+
+  inject_table_map(trans, i_ndb);
+
+  if (trans.good()) {
+    /* Inject ndb_apply_status WRITE_ROW event */
+    if (!inject_apply_status_write(trans, current_epoch)) {
+      log_error("Failed to inject apply status write row");
+      return false;  // Error, failed to inject ndb_apply_status
+    }
+  }
+
+  do {
+    if (i_pOp->hasError() && handle_error(i_pOp) < 0) {
+      // NOTE! The 'handle_error' function currently always return 0
+      log_error("Failed to handle error on event operation");
+      return false;  // Failed to handle error on event op
+    }
+
+    assert(check_event_list_consistency(i_ndb, i_pOp));
+
+    if (i_pOp->getEventType() < NDBEVENT::TE_FIRST_NON_DATA_EVENT) {
+      if (handle_data_event(i_pOp, &rows, trans, trans_row_count,
+                            replicated_row_count) != 0) {
+        log_error("Failed to handle data event");
+        return false;  // Error, failed to handle data event
+      }
+    } else {
+      handle_non_data_event(thd, i_pOp, *rows);
+    }
+
+    i_pOp = i_ndb->nextEvent2();
+  } while (i_pOp && i_pOp->getEpoch() == current_epoch);
+
+  /*
+    NOTE: i_pOp is now referring to an event in the next epoch
+    or is == NULL
+  */
+
+  commit_trans(trans, thd, current_epoch, rows, trans_row_count,
+               replicated_row_count);
+
+  return true;  // OK
+}
+
+void Ndb_binlog_thread::remove_event_operations(Ndb *ndb) {
   DBUG_TRACE;
   NdbEventOperation *op;
   while ((op = ndb->getEventOperation())) {
-    DBUG_ASSERT(
-        !ndb_name_is_blob_prefix(op->getEvent()->getTable()->getName()));
-    DBUG_PRINT("info",
-               ("removing event operation on %s", op->getEvent()->getName()));
+    const Ndb_event_data *event_data =
+        Ndb_event_data::get_event_data(op->getCustomData());
 
-    Ndb_event_data *event_data = (Ndb_event_data *)op->getCustomData();
-    DBUG_ASSERT(event_data);
+    // Drop the op from NdbApi
+    mysql_mutex_lock(&injector_event_mutex);
+    (void)ndb->dropEventOperation(op);
+    mysql_mutex_unlock(&injector_event_mutex);
 
-    NDB_SHARE *share = event_data->share;
-    DBUG_ASSERT(share != NULL);
-    DBUG_ASSERT(share->op == op);
-    Ndb_event_data::destroy(event_data);
-    op->setCustomData(NULL);
-
+    NDB_SHARE *const share = event_data->share;
+    // Remove op from NDB_SHARE
     mysql_mutex_lock(&share->mutex);
-    share->op = 0;
+    assert(share->op == op);
+    share->op = nullptr;
     mysql_mutex_unlock(&share->mutex);
 
-    NDB_SHARE::release_reference(share, "binlog");
+    // Release event data reference
+    NDB_SHARE::release_reference(share, "event_data");
 
-    ndb->dropEventOperation(op);
+    // Delete the event data, its mem root, shadow_table etc.
+    Ndb_event_data::destroy(event_data);
   }
 }
 
-void Ndb_binlog_thread::remove_all_event_operations(Ndb *s_ndb,
-                                                    Ndb *i_ndb) const {
+void Ndb_binlog_thread::remove_all_event_operations(Ndb *s_ndb, Ndb *i_ndb) {
   DBUG_TRACE;
-
-  if (ndb_apply_status_share) {
-    NDB_SHARE::release_reference(ndb_apply_status_share,
-                                 "ndb_apply_status_share");
-    ndb_apply_status_share = NULL;
-  }
 
   if (s_ndb) remove_event_operations(s_ndb);
 
   if (i_ndb) remove_event_operations(i_ndb);
 
   if (ndb_log_get_verbose_level() > 15) {
-    NDB_SHARE::print_remaining_open_tables();
+    NDB_SHARE::print_remaining_open_shares();
   }
 }
 
@@ -6355,41 +6703,40 @@ int show_ndb_status_injector(THD *, SHOW_VAR *var, char *) {
 }
 
 /**
-   injectApplyStatusWriteRow
+   @brief Inject one WRITE_ROW that contains this servers 'server_id' and the
+   supplied epoch number into the ndb_apply_status table. When applied on the
+   replica it gives a transactional position marker.
 
-   Inject a WRITE_ROW event on the ndb_apply_status table into
-   the Binlog.
-   This contains our server_id and the supplied epoch number.
-   When applied on the Slave it gives a transactional position
-   marker
-*/
-static bool injectApplyStatusWriteRow(injector::transaction &trans,
-                                      ulonglong gci) {
+   @param trans         The injector transaction
+   @param gci           The supplied epoch number
+
+   @return true on success and false on error
+ */
+bool Ndb_binlog_thread::inject_apply_status_write(injector_transaction &trans,
+                                                  ulonglong gci) const {
   DBUG_TRACE;
-  if (ndb_apply_status_share == NULL) {
-    ndb_log_error("Could not get apply status share");
-    DBUG_ASSERT(ndb_apply_status_share != NULL);
+  if (m_apply_status_share == nullptr) {
+    log_error("Could not get apply status share");
+    assert(m_apply_status_share != nullptr);
     return false;
   }
 
   longlong gci_to_store = (longlong)gci;
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   if (DBUG_EVALUATE_IF("ndb_binlog_injector_cycle_gcis", true, false)) {
     ulonglong gciHi = ((gci_to_store >> 32) & 0xffffffff);
     ulonglong gciLo = (gci_to_store & 0xffffffff);
     gciHi = (gciHi % 3);
-    ndb_log_warning("Binlog injector cycling gcis (%llu -> %llu)", gci_to_store,
-                    (gciHi << 32) + gciLo);
+    log_warning("cycling gcis (%llu -> %llu)", gci_to_store,
+                (gciHi << 32) + gciLo);
     gci_to_store = (gciHi << 32) + gciLo;
   }
   if (DBUG_EVALUATE_IF("ndb_binlog_injector_repeat_gcis", true, false)) {
-    ulonglong gciHi = ((gci_to_store >> 32) & 0xffffffff);
-    ulonglong gciLo = (gci_to_store & 0xffffffff);
-    gciHi = 0xffffff00;
-    gciLo = 0;
-    ndb_log_warning("Binlog injector repeating gcis (%llu -> %llu)",
-                    gci_to_store, (gciHi << 32) + gciLo);
+    const ulonglong gciHi = 0xffffff00;
+    const ulonglong gciLo = 0;
+    log_warning("repeating gcis (%llu -> %llu)", gci_to_store,
+                (gciHi << 32) + gciLo);
     gci_to_store = (gciHi << 32) + gciLo;
   }
 #endif
@@ -6398,15 +6745,21 @@ static bool injectApplyStatusWriteRow(injector::transaction &trans,
      WRITE_ROW event
      First get the relevant table structure.
   */
-  DBUG_ASSERT(ndb_apply_status_share->op);
-  Ndb_event_data *event_data =
-      (Ndb_event_data *)ndb_apply_status_share->op->getCustomData();
-  DBUG_ASSERT(event_data);
-  DBUG_ASSERT(event_data->shadow_table);
-  TABLE *apply_status_table = event_data->shadow_table;
+
+  TABLE *apply_status_table;
+  {
+    // NOTE! Getting the TABLE* from "share->op->event_data->shadow_table"
+    // without holding any mutex
+    const NdbEventOperation *op = m_apply_status_share->op;
+    const Ndb_event_data *event_data = Ndb_event_data::get_event_data(
+        op->getCustomData(), m_apply_status_share);
+    assert(event_data);
+    assert(event_data->shadow_table);
+    apply_status_table = event_data->shadow_table;
+  }
 
   /*
-    Intialize apply_status_table->record[0]
+    Initialize apply_status_table->record[0]
 
     When iterating past the end of the last epoch, the first event of
     the new epoch may be on ndb_apply_status.  Its event data saved
@@ -6415,7 +6768,7 @@ static bool injectApplyStatusWriteRow(injector::transaction &trans,
   */
   static const ulong sav_max = 512;  // current is 284
   const ulong sav_len = apply_status_table->s->reclength;
-  DBUG_ASSERT(sav_len <= sav_max);
+  assert(sav_len <= sav_max);
   uchar sav_buf[sav_max];
   memcpy(sav_buf, apply_status_table->record[0], sav_len);
   empty_record(apply_status_table);
@@ -6425,7 +6778,7 @@ static bool injectApplyStatusWriteRow(injector::transaction &trans,
   apply_status_table->field[2]->store("", 0, &my_charset_bin);
   apply_status_table->field[3]->store((longlong)0, true);
   apply_status_table->field[4]->store((longlong)0, true);
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   const LEX_CSTRING &name = apply_status_table->s->table_name;
   DBUG_PRINT("info", ("use_table: %.*s", (int)name.length, name.str));
 #endif
@@ -6443,12 +6796,8 @@ static bool injectApplyStatusWriteRow(injector::transaction &trans,
   return true;
 }
 
-extern ulong opt_ndb_report_thresh_binlog_epoch_slip;
-extern ulong opt_ndb_report_thresh_binlog_mem_usage;
-extern ulong opt_ndb_eventbuffer_max_alloc;
-extern uint opt_ndb_eventbuffer_free_percent;
-
-Ndb_binlog_thread::Ndb_binlog_thread() : Ndb_component("Binlog") {}
+Ndb_binlog_thread::Ndb_binlog_thread()
+    : Ndb_component("Binlog", "ndb_binlog") {}
 
 Ndb_binlog_thread::~Ndb_binlog_thread() {}
 
@@ -6545,13 +6894,13 @@ void Ndb_binlog_thread::recall_pending_purges(THD *thd) {
 */
 static Uint64 find_epoch_to_handle(const NdbEventOperation *s_pOp,
                                    const NdbEventOperation *i_pOp) {
-  if (i_pOp != NULL) {
-    if (s_pOp != NULL) {
+  if (i_pOp != nullptr) {
+    if (s_pOp != nullptr) {
       return std::min(i_pOp->getEpoch(), s_pOp->getEpoch());
     }
     return i_pOp->getEpoch();
   }
-  if (s_pOp != NULL) {
+  if (s_pOp != nullptr) {
     if (ndb_binlog_running) {
       return std::min(ndb_latest_received_binlog_epoch, s_pOp->getEpoch());
     }
@@ -6561,11 +6910,154 @@ static Uint64 find_epoch_to_handle(const NdbEventOperation *s_pOp,
   return ndb_latest_received_binlog_epoch;
 }
 
+void Ndb_binlog_thread::commit_trans(injector_transaction &trans, THD *thd,
+                                     Uint64 current_epoch,
+                                     ndb_binlog_index_row *rows,
+                                     unsigned trans_row_count,
+                                     unsigned replicated_row_count) {
+  if (!trans.good()) {
+    return;
+  }
+
+  if (!opt_ndb_log_empty_epochs) {
+    /*
+      If
+        - We did not add any 'real' rows to the Binlog
+      AND
+        - We did not apply any slave row updates, only
+          ndb_apply_status updates
+      THEN
+        Don't write the Binlog transaction which just
+        contains ndb_apply_status updates.
+        (For circular rep with log_apply_status, ndb_apply_status
+        updates will propagate while some related, real update
+        is propagating)
+    */
+    if ((trans_row_count == 0) &&
+        (!(opt_ndb_log_apply_status && replicated_row_count))) {
+      /* nothing to commit, rollback instead */
+      (void)trans.rollback();  // Rollback never fails (by design)
+      return;
+    }
+  }
+
+  thd->set_proc_info("Committing events to binlog");
+  {
+    const int commit_res = trans.commit();
+    if (commit_res != 0) {
+      log_error("Error during COMMIT of GCI. Error: %d", commit_res);
+      ndbcluster::ndbrequire(commit_res == 0);
+    }
+  }
+
+  injector::transaction::binlog_pos start = trans.start_pos();
+  injector::transaction::binlog_pos next = trans.next_pos();
+  rows->gci = (Uint32)(current_epoch >> 32);  //  Expose gci hi/lo
+  rows->epoch = current_epoch;
+  rows->start_master_log_file = start.file_name();
+  rows->start_master_log_pos = start.file_pos();
+  if (next.file_pos() == 0 && opt_ndb_log_empty_epochs) {
+    /* Empty transaction 'committed' due to log_empty_epochs
+     * therefore no next position
+     */
+    rows->next_master_log_file = start.file_name();
+    rows->next_master_log_pos = start.file_pos();
+  } else {
+    rows->next_master_log_file = next.file_name();
+    rows->next_master_log_pos = next.file_pos();
+  }
+
+  DBUG_PRINT("info", ("COMMIT epoch: %lu", (ulong)current_epoch));
+  if (opt_ndb_log_binlog_index) {
+    if (Ndb_binlog_index_table_util::write_rows(thd, rows)) {
+      /*
+        Writing to ndb_binlog_index failed, check if it's because THD have
+        been killed and retry in such case
+      */
+      if (thd->killed) {
+        DBUG_PRINT(
+            "error",
+            ("Failed to write to ndb_binlog_index at shutdown, retrying"));
+        Ndb_binlog_index_table_util::write_rows_retry_after_kill(thd, rows);
+      }
+    }
+  }
+
+  if (m_cache_spill_checker.check_disk_spill(binlog_cache_disk_use)) {
+    log_warning(
+        "Binary log cache data overflowed to disk %u time(s). "
+        "Consider increasing --binlog-cache-size.",
+        m_cache_spill_checker.m_disk_spills);
+  }
+
+  ndb_latest_applied_binlog_epoch = current_epoch;
+}
+
+/**
+  Inject all tables used by current epoch into injector transaction.
+
+  @param trans    The injector transaction
+  @param ndb      The Ndb object to retrieve list of tables from.
+
+*/
+void Ndb_binlog_thread::inject_table_map(injector_transaction &trans,
+                                         Ndb *ndb) const {
+  DBUG_TRACE;
+  Uint32 iter = 0;
+  const NdbEventOperation *gci_op;
+  Uint32 event_types;
+  Uint32 cumulative_any_value;
+  while ((gci_op = ndb->getNextEventOpInEpoch3(
+              &iter, &event_types, &cumulative_any_value)) != nullptr) {
+    const Ndb_event_data *const event_data =
+        Ndb_event_data::get_event_data(gci_op->getCustomData());
+
+    if ((event_types & ~NdbDictionary::Event::TE_STOP) == 0) {
+      // workaround for interface returning TE_STOP events
+      // which are normally filtered out in the nextEvent loop
+      DBUG_PRINT("info", ("Skipped TE_STOP on table %s",
+                          gci_op->getEvent()->getTable()->getName()));
+      continue;
+    }
+
+    const NDB_SHARE *const share = event_data->share;
+    if (share == m_apply_status_share) {
+      // skip this table, it is handled specially
+      continue;
+    }
+
+    TABLE *const table = event_data->shadow_table;
+    if ((event_types &
+         (NdbDictionary::Event::TE_INSERT | NdbDictionary::Event::TE_UPDATE |
+          NdbDictionary::Event::TE_DELETE)) == 0) {
+      DBUG_PRINT("info", ("Skipping non data event, table: %s",
+                          table->s->table_name.str));
+      continue;
+    }
+
+    if (ndbcluster_anyvalue_is_reserved(cumulative_any_value) &&
+        ndbcluster_anyvalue_is_nologging(cumulative_any_value)) {
+      // All events for this table in this epoch are marked as
+      // nologging, therefore we do not include the table in the epoch
+      // transaction.
+      DBUG_PRINT("info",
+                 ("Skip binlogging, table: %s", table->s->table_name.str));
+      continue;
+    }
+
+    DBUG_PRINT("info", ("Use table, name: %s, fields: %u",
+                        table->s->table_name.str, table->s->fields));
+    injector::transaction::table tbl(table, true);
+    int ret = trans.use_table(::server_id, tbl);
+    ndbcluster::ndbrequire(ret == 0);
+  }
+}
+
 void Ndb_binlog_thread::do_run() {
   THD *thd; /* needs to be first for thread_stack */
-  Ndb *i_ndb = NULL;
-  Ndb *s_ndb = NULL;
-  Thd_ndb *thd_ndb = NULL;
+  Ndb *i_ndb = nullptr;
+  Ndb *s_ndb = nullptr;
+  Thd_ndb *thd_ndb = nullptr;
   injector *inj = injector::instance();
   Global_THD_manager *thd_manager = Global_THD_manager::get_instance();
 
@@ -6600,7 +7092,7 @@ void Ndb_binlog_thread::do_run() {
   thd->get_protocol_classic()->set_client_capabilities(0);
   thd->security_context()->skip_grants();
   // Create thd->net vithout vio
-  thd->get_protocol_classic()->init_net((Vio *)0);
+  thd->get_protocol_classic()->init_net((Vio *)nullptr);
 
   // Ndb binlog thread always use row format
   thd->set_current_stmt_binlog_format_row();
@@ -6620,17 +7112,11 @@ restart_cluster_failure:
    * s_pOp and s_ndb handle events from the 'ndb_schema' dist table,
    * while i_pOp and i_ndb is for binlogging 'everything else'.
    */
-  NdbEventOperation *s_pOp = NULL;
-  NdbEventOperation *i_pOp = NULL;
+  NdbEventOperation *s_pOp = nullptr;
+  NdbEventOperation *i_pOp = nullptr;
   binlog_thread_state = BCCC_starting;
 
   log_verbose(1, "Setting up");
-
-  if (!(thd_ndb = Thd_ndb::seize(thd))) {
-    log_error("Creating Thd_ndb object failed");
-    goto err;
-  }
-  thd_ndb->set_option(Thd_ndb::NO_LOG_SCHEMA_OP);
 
   if (!(s_ndb = new (std::nothrow) Ndb(g_ndb_cluster_connection)) ||
       s_ndb->setNdbObjectName("schema change monitoring") || s_ndb->init()) {
@@ -6663,10 +7149,8 @@ restart_cluster_failure:
     with the storage
   */
   mysql_mutex_lock(&injector_event_mutex);
-  injector_thd = thd;
   injector_ndb = i_ndb;
   schema_ndb = s_ndb;
-  DBUG_PRINT("info", ("set schema_ndb to s_ndb"));
   mysql_mutex_unlock(&injector_event_mutex);
 
   if (opt_bin_log && opt_ndb_log_bin) {
@@ -6681,8 +7165,17 @@ restart_cluster_failure:
     and thus can receive the first GAP event)
   */
   if (!wait_for_server_started()) {
+    log_error("Failed to wait for server started..");
     goto err;
   }
+
+  // Create Thd_ndb after server started
+  if (!(thd_ndb = Thd_ndb::seize(thd))) {
+    log_error("Failed to seize Thd_ndb object");
+    goto err;
+  }
+  thd_ndb->set_option(Thd_ndb::NO_LOG_SCHEMA_OP);
+  thd_set_thd_ndb(thd, thd_ndb);
 
   // Defer call of THD::init_query_mem_roots until after
   // wait_for_server_started() to ensure that the parts of
@@ -6704,13 +7197,17 @@ restart_cluster_failure:
 
   {
     log_verbose(1, "Wait for cluster to start");
-    thd->proc_info = "Waiting for ndbcluster to start";
-    thd_set_thd_ndb(thd, thd_ndb);
+    thd->set_proc_info("Waiting for ndbcluster to start");
 
-    while (!ndbcluster_is_connected(1) || !binlog_setup.setup(thd_ndb)) {
+    assert(m_apply_status_share == nullptr);
+
+    while (!ndb_connection_is_ready(thd_ndb->connection, 1) ||
+           !binlog_setup.setup(thd_ndb)) {
       // Failed to complete binlog_setup, remove all existing event
       // operations from potential partial setup
       remove_all_event_operations(s_ndb, i_ndb);
+
+      release_apply_status_reference();
 
       // Fail any schema operations that has been registered but
       // never reached the coordinator
@@ -6734,7 +7231,7 @@ restart_cluster_failure:
           Since the ndb binlog thread adds itself to the "global thread list"
           it need to look at the "killed" flag and stop the thread to avoid
           that the server hangs during shutdown while waiting for the "global
-          thread list" to be emtpy.
+          thread list" to be empty.
         */
         log_info(
             "Server shutdown detected while "
@@ -6746,14 +7243,12 @@ restart_cluster_failure:
     }  // while (!ndb_binlog_setup())
 
     log_and_clear_thd_conditions(thd, condition_logging_level::WARNING);
+  }
 
-    DBUG_ASSERT(ndbcluster_hton->slot != ~(uint)0);
-
-    /*
-      Prevent schema dist participant from (implicitly)
-      taking GSL lock as part of taking MDL lock
-    */
-    thd_ndb->set_option(Thd_ndb::IS_SCHEMA_DIST_PARTICIPANT);
+  // Setup reference to ndb_apply_status share
+  if (!acquire_apply_status_reference()) {
+    log_error("Failed to acquire ndb_apply_status reference");
+    goto err;
   }
 
   /* Apply privilege statements stored in snapshot */
@@ -6761,12 +7256,42 @@ restart_cluster_failure:
     ndb_log_error("stored grants: failed to apply stored grants.");
   }
 
+  /* Verify and warn binlog compression without using --ndb parameters */
+  if (!opt_ndb_log_trx_compression &&
+      global_system_variables.binlog_trx_compression) {
+    // The user has turned on --binlog-transaction-compression -> intialize
+    // default values for --ndb* compression settings from MySQL Server values
+    // NOTE! This will make it impossible to use the combination:
+    //   --ndb-log-transaction-compression=OFF
+    //   --binlog-transaction-compression=ON
+    const uint zstd_level =
+        opt_ndb_log_trx_compression_level_zstd == DEFAULT_ZSTD_COMPRESSION_LEVEL
+            ? global_system_variables.binlog_trx_compression_level_zstd
+            : opt_ndb_log_trx_compression_level_zstd;
+
+    opt_ndb_log_trx_compression = true;
+    opt_ndb_log_trx_compression_level_zstd = zstd_level;
+
+    log_info(
+        "Used --binlog-transaction-compression to configure compression "
+        "settings");
+  }
+
+  if (opt_ndb_log_trx_compression &&
+      global_system_variables.binlog_trx_compression_type != 0) {
+    // The binlog compression type of MySQL Server is currently hardcoded to
+    // zstd and there is no user variable to change it either. In case more
+    // compression types and a user variable is added in the future, this is an
+    // attempt at detecting it.
+    log_error("Only ZSTD compression algorithm supported");
+  }
+
   schema_dist_data.init(g_ndb_cluster_connection);
 
   {
     log_verbose(1, "Wait for first event");
     // wait for the first event
-    thd->proc_info = "Waiting for first event from ndbcluster";
+    thd->set_proc_info("Waiting for first event from ndbcluster");
     Uint64 schema_gci;
     do {
       DBUG_PRINT("info", ("Waiting for the first event"));
@@ -6786,7 +7311,7 @@ restart_cluster_failure:
 
         my_thread_yield();
         mysql_mutex_lock(&injector_event_mutex);
-        (void)i_ndb->pollEvents(10, &gci);
+        (void)i_ndb->pollEvents2(10, &gci);
         mysql_mutex_unlock(&injector_event_mutex);
       }
       if (gci > schema_gci) {
@@ -6814,7 +7339,6 @@ restart_cluster_failure:
         ndb_latest_handled_binlog_epoch = 0;
         ndb_latest_applied_binlog_epoch = 0;
         ndb_latest_received_binlog_epoch = 0;
-        ndb_index_stat_restart();
       } else if (ndb_latest_applied_binlog_epoch > 0) {
         log_warning(
             "cluster has reconnected. "
@@ -6838,16 +7362,7 @@ restart_cluster_failure:
   log_verbose(1, "ndb tables writable");
   ndb_tdc_close_cached_tables();
 
-  /*
-     Signal any waiting thread that ndb table setup is
-     now complete
-  */
-  ndb_notify_tables_writable();
-
-  {
-    static LEX_CSTRING db_lex_cstr = EMPTY_CSTR;
-    thd->reset_db(db_lex_cstr);
-  }
+  thd->reset_db(EMPTY_CSTR);
 
   log_verbose(1, "Startup and setup completed");
 
@@ -6865,29 +7380,20 @@ restart_cluster_failure:
   while (binlog_thread_state == BCCC_running &&
          (!is_stop_requested() ||
           ndb_latest_handled_binlog_epoch < ndb_get_latest_trans_gci())) {
-#ifndef DBUG_OFF
-    /**
-     * As the Binlog thread is not a client thread, the 'set debug' commands
-     * does not affect it. Update our thread-local debug settings from 'global'
-     */
-    {
-      char buf[256];
-      DBUG_EXPLAIN_INITIAL(buf, sizeof(buf));
-      DBUG_SET(buf);
-    }
-#endif
+    // Update thread-local debug settings based on the global
+    DBUG_EXECUTE("", dbug_sync_setting(););
 
     /*
       now we don't want any events before next gci is complete
     */
-    thd->proc_info = "Waiting for event from ndbcluster";
+    thd->set_proc_info("Waiting for event from ndbcluster");
     thd->set_time();
 
     /**
      * The binlog-thread holds the injector_mutex when waiting for
      * pollEvents() - which is >99% of the elapsed time. As the
      * native mutex guarantees no 'fairness', there is no guarantee
-     * that another thread waiting for the mutex will immeditately
+     * that another thread waiting for the mutex will immediately
      * get the lock when unlocked by this thread. Thus this thread
      * may lock it again rather soon and starve the waiting thread.
      * To avoid this, my_thread_yield() is used to give any waiting
@@ -6902,17 +7408,22 @@ restart_cluster_failure:
 
     // If there are remaining unhandled injector eventOp we continue
     // handling of these, else poll for more.
-    if (i_pOp == NULL) {
+    if (i_pOp == nullptr) {
       // Capture any dynamic changes to max_alloc
       i_ndb->set_eventbuf_max_alloc(opt_ndb_eventbuffer_max_alloc);
+
+      if (opt_ndb_log_empty_epochs) {
+        // Ensure that empty epochs (event type TE_EMPTY) are queued
+        i_ndb->setEventBufferQueueEmptyEpoch(true);
+      }
 
       mysql_mutex_lock(&injector_event_mutex);
       Uint64 latest_epoch = 0;
       const int poll_wait = (ndb_binlog_running) ? tot_poll_wait : 0;
-      const int res = i_ndb->pollEvents(poll_wait, &latest_epoch);
+      const int res = i_ndb->pollEvents2(poll_wait, &latest_epoch);
       (void)res;  // Unused except DBUG_PRINT
       mysql_mutex_unlock(&injector_event_mutex);
-      i_pOp = i_ndb->nextEvent();
+      i_pOp = i_ndb->nextEvent2();
       if (ndb_binlog_running) {
         ndb_latest_received_binlog_epoch = latest_epoch;
         tot_poll_wait = 0;
@@ -6921,16 +7432,17 @@ restart_cluster_failure:
     }
 
     // Epoch to handle from i_ndb. Use latest 'empty epoch' if no events.
-    const Uint64 i_epoch =
-        (i_pOp != NULL) ? i_pOp->getEpoch() : ndb_latest_received_binlog_epoch;
+    const Uint64 i_epoch = (i_pOp != nullptr)
+                               ? i_pOp->getEpoch()
+                               : ndb_latest_received_binlog_epoch;
 
     // If there are remaining unhandled schema eventOp we continue
     // handling of these, else poll for more.
-    if (s_pOp == NULL) {
+    if (s_pOp == nullptr) {
       if (DBUG_EVALUATE_IF("ndb_binlog_injector_yield_before_schema_pollEvent",
                            true, false)) {
         /**
-         * Simulate that the binlog thread yields the CPU inbetween
+         * Simulate that the binlog thread yields the CPU in between
          * these two pollEvents, which can result in reading a
          * 'schema_gci > gci'. (Likely due to mutex locking)
          */
@@ -6944,17 +7456,17 @@ restart_cluster_failure:
       s_pOp = s_ndb->nextEvent();
 
       /*
-        Make sure we have seen any schema epochs upto the injector epoch,
+        Make sure we have seen any schema epochs up to the injector epoch,
         or we have an earlier schema event to handle.
       */
-      while (s_pOp == NULL && i_epoch > schema_epoch && schema_res >= 0) {
+      while (s_pOp == nullptr && i_epoch > schema_epoch && schema_res >= 0) {
         static char buf[64];
-        thd->proc_info = "Waiting for schema epoch";
-        snprintf(buf, sizeof(buf), "%s %u/%u(%u/%u)", thd->proc_info,
+        thd->set_proc_info("Waiting for schema epoch");
+        snprintf(buf, sizeof(buf), "%s %u/%u(%u/%u)", thd->proc_info(),
                  (uint)(schema_epoch >> 32), (uint)(schema_epoch),
                  (uint)(ndb_latest_received_binlog_epoch >> 32),
                  (uint)(ndb_latest_received_binlog_epoch));
-        thd->proc_info = buf;
+        thd->set_proc_info(buf);
 
         my_thread_yield();
         mysql_mutex_lock(&injector_event_mutex);
@@ -6975,10 +7487,10 @@ restart_cluster_failure:
 
     // Calculate the epoch to handle events from in this iteration.
     const Uint64 current_epoch = find_epoch_to_handle(s_pOp, i_pOp);
-    DBUG_ASSERT(current_epoch != 0 || !ndb_binlog_running);
+    assert(current_epoch != 0 || !ndb_binlog_running);
 
     // Did someone else request injector thread to stop?
-    DBUG_ASSERT(binlog_thread_state == BCCC_running);
+    assert(binlog_thread_state == BCCC_running);
     if (is_stop_requested() &&
         (ndb_latest_handled_binlog_epoch >= ndb_get_latest_trans_gci() ||
          !ndb_binlog_running))
@@ -6989,7 +7501,7 @@ restart_cluster_failure:
         Since the ndb binlog thread adds itself to the "global thread list"
         it need to look at the "killed" flag and stop the thread to avoid
         that the server hangs during shutdown while waiting for the "global
-        thread list" to be emtpy.
+        thread list" to be empty.
         In pre 5.6 versions the thread was also added to "global thread
         list" but the "global thread *count*" variable was not incremented
         and thus the same problem didn't exist.
@@ -7004,7 +7516,7 @@ restart_cluster_failure:
     MEM_ROOT **root_ptr = THR_MALLOC;
     MEM_ROOT *old_root = *root_ptr;
     MEM_ROOT mem_root;
-    init_sql_alloc(PSI_INSTRUMENT_ME, &mem_root, 4096, 0);
+    init_sql_alloc(PSI_INSTRUMENT_ME, &mem_root, 4096);
 
     // The Ndb_schema_event_handler does not necessarily need
     // to use the same memroot(or vice versa)
@@ -7013,16 +7525,16 @@ restart_cluster_failure:
 
     *root_ptr = &mem_root;
 
-    if (unlikely(s_pOp != NULL && s_pOp->getEpoch() == current_epoch)) {
-      thd->proc_info = "Processing events from schema table";
-      g_ndb_log_slave_updates = opt_log_slave_updates;
+    if (unlikely(s_pOp != nullptr && s_pOp->getEpoch() == current_epoch)) {
+      thd->set_proc_info("Processing events from schema table");
+      g_ndb_log_replica_updates = opt_log_replica_updates;
       s_ndb->setReportThreshEventGCISlip(
           opt_ndb_report_thresh_binlog_epoch_slip);
       s_ndb->setReportThreshEventFreeMem(
           opt_ndb_report_thresh_binlog_mem_usage);
 
       // Handle all schema event, limit within 'current_epoch'
-      while (s_pOp != NULL && s_pOp->getEpoch() == current_epoch) {
+      while (s_pOp != nullptr && s_pOp->getEpoch() == current_epoch) {
         if (!s_pOp->hasError()) {
           schema_event_handler.handle_event(s_ndb, s_pOp);
 
@@ -7040,21 +7552,6 @@ restart_cluster_failure:
               log_info("...and on our way");
             }
           }
-
-          DBUG_PRINT("info",
-                     ("s_ndb first: %s", s_ndb->getEventOperation()
-                                             ? s_ndb->getEventOperation()
-                                                   ->getEvent()
-                                                   ->getTable()
-                                                   ->getName()
-                                             : "<empty>"));
-          DBUG_PRINT("info",
-                     ("i_ndb first: %s", i_ndb->getEventOperation()
-                                             ? i_ndb->getEventOperation()
-                                                   ->getEvent()
-                                                   ->getTable()
-                                                   ->getName()
-                                             : "<empty>"));
         } else {
           log_error("error %d (%s) on handling binlog schema event",
                     s_pOp->getNdbError().code, s_pOp->getNdbError().message);
@@ -7064,337 +7561,42 @@ restart_cluster_failure:
       update_injector_stats(s_ndb, i_ndb);
     }
 
-    Uint64 inconsistent_epoch = 0;
     if (!ndb_binlog_running) {
       /*
         Just consume any events, not used if no binlogging
         e.g. node failure events
       */
-      while (i_pOp != NULL && i_pOp->getEpoch() == current_epoch) {
-        if ((unsigned)i_pOp->getEventType() >=
-            (unsigned)NDBEVENT::TE_FIRST_NON_DATA_EVENT) {
+      while (i_pOp != nullptr && i_pOp->getEpoch() == current_epoch) {
+        if (i_pOp->getEventType() >= NDBEVENT::TE_FIRST_NON_DATA_EVENT) {
           ndb_binlog_index_row row;
           handle_non_data_event(thd, i_pOp, row);
         }
-        i_pOp = i_ndb->nextEvent();
+        i_pOp = i_ndb->nextEvent2();
       }
       update_injector_stats(s_ndb, i_ndb);
-    }
+    } else if (i_pOp != nullptr && i_pOp->getEpoch() == current_epoch) {
+      if (!handle_events_for_epoch(thd, inj, i_ndb, i_pOp, current_epoch)) {
+        log_error("Failed to handle events, epoch: %u/%u",
+                  (uint)(current_epoch >> 32), (uint)current_epoch);
 
-    // i_pOp == NULL means an inconsistent epoch or the queue is empty
-    else if (i_pOp == NULL && !i_ndb->isConsistent(inconsistent_epoch)) {
-      char errmsg[72];
-      snprintf(errmsg, sizeof(errmsg),
-               "Detected missing data in GCI %llu, "
-               "inserting GAP event",
-               inconsistent_epoch);
-      DBUG_PRINT("info", ("Detected missing data in GCI %llu, "
-                          "inserting GAP event",
-                          inconsistent_epoch));
-      LEX_CSTRING const msg = {errmsg, strlen(errmsg)};
-      inj->record_incident(
-          thd, binary_log::Incident_event::INCIDENT_LOST_EVENTS, msg);
-    }
-
-    /* Handle all events withing 'current_epoch', or possible
-     * log an empty epoch if log_empty_epoch is specified.
-     */
-    else if ((i_pOp != NULL && i_pOp->getEpoch() == current_epoch) ||
-             (ndb_log_empty_epochs() &&
-              current_epoch > ndb_latest_handled_binlog_epoch)) {
-      thd->proc_info = "Processing events";
-      ndb_binlog_index_row _row;
-      ndb_binlog_index_row *rows = &_row;
-      injector::transaction trans;
-      unsigned trans_row_count = 0;
-      unsigned trans_slave_row_count = 0;
-
-      if (i_pOp == NULL || i_pOp->getEpoch() != current_epoch) {
-        /*
-          Must be an empty epoch since the condition
-          (ndb_log_empty_epochs() &&
-           current_epoch > ndb_latest_handled_binlog_epoch)
-          must be true we write empty epoch into
-          ndb_binlog_index
-        */
-        DBUG_ASSERT(ndb_log_empty_epochs());
-        DBUG_ASSERT(current_epoch > ndb_latest_handled_binlog_epoch);
-        DBUG_PRINT("info", ("Writing empty epoch for gci %llu", current_epoch));
-        DBUG_PRINT("info", ("Initializing transaction"));
-        inj->new_trans(thd, &trans);
-        rows = &_row;
-        memset(&_row, 0, sizeof(_row));
-        thd->variables.character_set_client = &my_charset_latin1;
-        goto commit_to_binlog;
-      } else {
-        assert(i_pOp != NULL && i_pOp->getEpoch() == current_epoch);
-        rows = &_row;
-
-        DBUG_PRINT("info",
-                   ("Handling epoch: %u/%u", (uint)(current_epoch >> 32),
-                    (uint)(current_epoch)));
-        // sometimes get TE_ALTER with invalid table
-        DBUG_ASSERT(
-            i_pOp->getEventType() == NdbDictionary::Event::TE_ALTER ||
-            !ndb_name_is_blob_prefix(i_pOp->getEvent()->getTable()->getName()));
-        DBUG_ASSERT(current_epoch <= ndb_latest_received_binlog_epoch);
-
-        /* Update our thread-local debug settings based on the global */
-#ifndef DBUG_OFF
-        /* Get value of global...*/
-        {
-          char buf[256];
-          DBUG_EXPLAIN_INITIAL(buf, sizeof(buf));
-          //  fprintf(stderr, "Ndb Binlog Injector, setting debug to %s\n",
-          //          buf);
-          DBUG_SET(buf);
-        }
-#endif
-
-        /* initialize some variables for this epoch */
-
-        i_ndb->set_eventbuf_max_alloc(opt_ndb_eventbuffer_max_alloc);
-        g_ndb_log_slave_updates = opt_log_slave_updates;
-        i_ndb->setReportThreshEventGCISlip(
-            opt_ndb_report_thresh_binlog_epoch_slip);
-        i_ndb->setReportThreshEventFreeMem(
-            opt_ndb_report_thresh_binlog_mem_usage);
-
-        memset(&_row, 0, sizeof(_row));
-        thd->variables.character_set_client = &my_charset_latin1;
-        DBUG_PRINT("info", ("Initializing transaction"));
-        inj->new_trans(thd, &trans);
-        trans_row_count = 0;
-        trans_slave_row_count = 0;
-        // pass table map before epoch
-        {
-          Uint32 iter = 0;
-          const NdbEventOperation *gci_op;
-          Uint32 event_types;
-          Uint32 cumulative_any_value;
-
-          while ((gci_op = i_ndb->getNextEventOpInEpoch3(
-                      &iter, &event_types, &cumulative_any_value)) != NULL) {
-            Ndb_event_data *event_data =
-                (Ndb_event_data *)gci_op->getCustomData();
-            NDB_SHARE *share = (event_data) ? event_data->share : NULL;
-            DBUG_PRINT("info",
-                       ("per gci_op: 0x%lx  share: 0x%lx  event_types: 0x%x",
-                        (long)gci_op, (long)share, event_types));
-            // workaround for interface returning TE_STOP events
-            // which are normally filtered out below in the nextEvent loop
-            if ((event_types & ~NdbDictionary::Event::TE_STOP) == 0) {
-              DBUG_PRINT("info", ("Skipped TE_STOP on table %s",
-                                  gci_op->getEvent()->getTable()->getName()));
-              continue;
-            }
-            // this should not happen
-            if (share == NULL || event_data->shadow_table == NULL) {
-              DBUG_PRINT("info", ("no share or table %s!",
-                                  gci_op->getEvent()->getTable()->getName()));
-              continue;
-            }
-            if (share == ndb_apply_status_share) {
-              // skip this table, it is handled specially
-              continue;
-            }
-            TABLE *table = event_data->shadow_table;
-#ifndef DBUG_OFF
-            const LEX_CSTRING &name = table->s->table_name;
-#endif
-            if ((event_types & (NdbDictionary::Event::TE_INSERT |
-                                NdbDictionary::Event::TE_UPDATE |
-                                NdbDictionary::Event::TE_DELETE)) == 0) {
-              DBUG_PRINT("info", ("skipping non data event table: %.*s",
-                                  (int)name.length, name.str));
-              continue;
-            }
-            if (!trans.good()) {
-              DBUG_PRINT("info",
-                         ("Found new data event, initializing transaction"));
-              inj->new_trans(thd, &trans);
-            }
-            {
-              bool use_table = true;
-              if (ndbcluster_anyvalue_is_reserved(cumulative_any_value)) {
-                /*
-                   All events for this table in this epoch are marked as
-                   nologging, therefore we do not include the table in the epoch
-                   transaction.
-                */
-                if (ndbcluster_anyvalue_is_nologging(cumulative_any_value)) {
-                  DBUG_PRINT("info", ("Skip binlogging table table: %.*s",
-                                      (int)name.length, name.str));
-                  use_table = false;
-                }
-              }
-              if (use_table) {
-                DBUG_PRINT("info",
-                           ("use_table: %.*s, cols %u", (int)name.length,
-                            name.str, table->s->fields));
-                injector::transaction::table tbl(table, true);
-                int ret = trans.use_table(::server_id, tbl);
-                ndbcluster::ndbrequire(ret == 0);
-              }
-            }
-          }
-        }
-        if (trans.good()) {
-          /* Inject ndb_apply_status WRITE_ROW event */
-          if (!injectApplyStatusWriteRow(trans, current_epoch)) {
-            log_error("Failed to inject apply status write row");
-          }
-        }
-
-        do {
-          if (i_pOp->hasError() && handle_error(i_pOp) < 0) goto err;
-
-#ifndef DBUG_OFF
-          {
-            Ndb_event_data *event_data =
-                (Ndb_event_data *)i_pOp->getCustomData();
-            NDB_SHARE *share = (event_data) ? event_data->share : NULL;
-            DBUG_PRINT("info",
-                       ("EVENT TYPE: %d  Epoch: %u/%u last applied: %u/%u  "
-                        "share: 0x%lx (%s.%s)",
-                        i_pOp->getEventType(), (uint)(current_epoch >> 32),
-                        (uint)(current_epoch),
-                        (uint)(ndb_latest_applied_binlog_epoch >> 32),
-                        (uint)(ndb_latest_applied_binlog_epoch), (long)share,
-                        share ? share->db : "'NULL'",
-                        share ? share->table_name : "'NULL'"));
-            DBUG_ASSERT(share != 0);
-          }
-          // assert that there is consistancy between gci op list
-          // and event list
-          {
-            Uint32 iter = 0;
-            const NdbEventOperation *gci_op;
-            Uint32 event_types;
-            while ((gci_op = i_ndb->getGCIEventOperations(
-                        &iter, &event_types)) != NULL) {
-              if (gci_op == i_pOp) break;
-            }
-            DBUG_ASSERT(gci_op == i_pOp);
-            DBUG_ASSERT((event_types & i_pOp->getEventType()) != 0);
-          }
-#endif
-
-          if ((unsigned)i_pOp->getEventType() <
-              (unsigned)NDBEVENT::TE_FIRST_NON_DATA_EVENT)
-            handle_data_event(i_pOp, &rows, trans, trans_row_count,
-                              trans_slave_row_count);
-          else {
-            handle_non_data_event(thd, i_pOp, *rows);
-            DBUG_PRINT("info",
-                       ("s_ndb first: %s", s_ndb->getEventOperation()
-                                               ? s_ndb->getEventOperation()
-                                                     ->getEvent()
-                                                     ->getTable()
-                                                     ->getName()
-                                               : "<empty>"));
-            DBUG_PRINT("info",
-                       ("i_ndb first: %s", i_ndb->getEventOperation()
-                                               ? i_ndb->getEventOperation()
-                                                     ->getEvent()
-                                                     ->getTable()
-                                                     ->getName()
-                                               : "<empty>"));
-          }
-
-          // Capture any dynamic changes to max_alloc
-          i_ndb->set_eventbuf_max_alloc(opt_ndb_eventbuffer_max_alloc);
-
-          i_pOp = i_ndb->nextEvent();
-        } while (i_pOp && i_pOp->getEpoch() == current_epoch);
-
-        update_injector_stats(s_ndb, i_ndb);
-
-        /*
-          NOTE: i_pOp is now referring to an event in the next epoch
-          or is == NULL
-        */
-
-        while (trans.good()) {
-        commit_to_binlog:
-          if (!ndb_log_empty_epochs()) {
-            /*
-              If
-                - We did not add any 'real' rows to the Binlog AND
-                - We did not apply any slave row updates, only
-                  ndb_apply_status updates
-              THEN
-                Don't write the Binlog transaction which just
-                contains ndb_apply_status updates.
-                (For cicular rep with log_apply_status, ndb_apply_status
-                updates will propagate while some related, real update
-                is propagating)
-            */
-            if ((trans_row_count == 0) &&
-                (!(opt_ndb_log_apply_status && trans_slave_row_count))) {
-              /* nothing to commit, rollback instead */
-              if (int r = trans.rollback()) {
-                log_error("Error during ROLLBACK of GCI %u/%u. Error: %d",
-                          uint(current_epoch >> 32), uint(current_epoch), r);
-                /* TODO: Further handling? */
-              }
-              break;
-            }
-          }
-          thd->proc_info = "Committing events to binlog";
-          if (int r = trans.commit()) {
-            log_error("Error during COMMIT of GCI. Error: %d", r);
-            /* TODO: Further handling? */
-          }
-          injector::transaction::binlog_pos start = trans.start_pos();
-          injector::transaction::binlog_pos next = trans.next_pos();
-          rows->gci = (Uint32)(current_epoch >> 32);  // Expose gci hi/lo
-          rows->epoch = current_epoch;
-          rows->start_master_log_file = start.file_name();
-          rows->start_master_log_pos = start.file_pos();
-          if ((next.file_pos() == 0) && ndb_log_empty_epochs()) {
-            /* Empty transaction 'committed' due to log_empty_epochs
-             * therefore no next position
-             */
-            rows->next_master_log_file = start.file_name();
-            rows->next_master_log_pos = start.file_pos();
-          } else {
-            rows->next_master_log_file = next.file_name();
-            rows->next_master_log_pos = next.file_pos();
-          }
-
-          DBUG_PRINT("info", ("COMMIT epoch: %lu", (ulong)current_epoch));
-          if (opt_ndb_log_binlog_index) {
-            if (Ndb_binlog_index_table_util::write_rows(thd, rows)) {
-              /*
-                 Writing to ndb_binlog_index failed, check if it's because THD
-                 have been killed and retry in such case
-              */
-              if (thd->killed) {
-                DBUG_PRINT("error", ("Failed to write to ndb_binlog_index at "
-                                     "shutdown, retrying"));
-                Ndb_binlog_index_table_util::write_rows_retry_after_kill(thd,
-                                                                         rows);
-              }
-            }
-          }
-          ndb_latest_applied_binlog_epoch = current_epoch;
-          break;
-        }  // while (trans.good())
-
-        /*
-          NOTE: There are possible more i_pOp available.
-          However, these are from another epoch and should be handled
-          in next iteration of the binlog injector loop.
-        */
+        // Continue with post epoch actions and restore mem_root, then restart!
+        binlog_thread_state = BCCC_restart;
       }
-    }  // end: 'handled a 'current_epoch' of i_pOp's
+
+      /*
+        NOTE: There are possible more i_pOp available.
+        However, these are from another epoch and should be handled
+        in next iteration of the binlog injector loop.
+      */
+
+      update_injector_stats(s_ndb, i_ndb);
+    }
 
     // Notify the schema event handler about post_epoch so it may finish
     // any outstanding business
     schema_event_handler.post_epoch(current_epoch);
 
-    free_root(&mem_root, MYF(0));
+    mem_root.Clear();
     *root_ptr = old_root;
 
     if (current_epoch > ndb_latest_handled_binlog_epoch) {
@@ -7404,14 +7606,12 @@ restart_cluster_failure:
       mysql_cond_broadcast(&injector_data_cond);
     }
 
-    DBUG_ASSERT(binlog_thread_state == BCCC_running);
-
     // When a cluster failure occurs, each event operation will receive a
     // TE_CLUSTER_FAILURE event causing it to be torn down and removed.
     // When all event operations has been removed from their respective Ndb
     // object, the thread should restart and try to connect to NDB again.
-    if (i_ndb->getEventOperation() == NULL &&
-        s_ndb->getEventOperation() == NULL) {
+    if (i_ndb->getEventOperation() == nullptr &&
+        s_ndb->getEventOperation() == nullptr) {
       log_error("All event operations gone, restarting thread");
       binlog_thread_state = BCCC_restart;
       break;
@@ -7445,27 +7645,30 @@ restart_cluster_failure:
 err:
   if (binlog_thread_state != BCCC_restart) {
     log_info("Shutting down");
-    thd->proc_info = "Shutting down";
+    thd->set_proc_info("Shutting down");
   } else {
     log_info("Restarting");
-    thd->proc_info = "Restarting";
+    thd->set_proc_info("Restarting");
   }
 
   mysql_mutex_lock(&injector_event_mutex);
+
+  Ndb_stored_grants::shutdown(thd, thd_ndb,
+                              binlog_thread_state == BCCC_restart);
+
   /* don't mess with the injector_ndb anymore from other threads */
-  injector_thd = NULL;
-  injector_ndb = NULL;
-  schema_ndb = NULL;
+  injector_ndb = nullptr;
+  schema_ndb = nullptr;
   mysql_mutex_unlock(&injector_event_mutex);
 
   mysql_mutex_lock(&injector_data_mutex);
   ndb_binlog_tables_inited = false;
   mysql_mutex_unlock(&injector_data_mutex);
 
-  Ndb_stored_grants::shutdown(thd_ndb);
-
   thd->reset_db(NULL_CSTR);  // as not to try to free memory
   remove_all_event_operations(s_ndb, i_ndb);
+
+  release_apply_status_reference();
 
   schema_dist_data.release();
 
@@ -7475,15 +7678,15 @@ err:
                                          "Aborted during shutdown");
 
   delete s_ndb;
-  s_ndb = NULL;
+  s_ndb = nullptr;
 
   delete i_ndb;
-  i_ndb = NULL;
+  i_ndb = nullptr;
 
   if (thd_ndb) {
     Thd_ndb::release(thd_ndb);
-    thd_set_thd_ndb(thd, NULL);
-    thd_ndb = NULL;
+    thd_set_thd_ndb(thd, nullptr);
+    thd_ndb = nullptr;
   }
 
   /**
@@ -7496,7 +7699,7 @@ err:
 
   ndb_tdc_close_cached_tables();
   if (ndb_log_get_verbose_level() > 15) {
-    NDB_SHARE::print_remaining_open_tables();
+    NDB_SHARE::print_remaining_open_shares();
   }
 
   if (binlog_thread_state == BCCC_restart) {

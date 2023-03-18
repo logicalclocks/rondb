@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,7 +28,8 @@
 
 #include "ndb_version.h"  // Limits might depend on NDB version
 
-#define RNIL    0xffffff00
+#define RNIL    Uint32(0xffffff00)
+#define RNIL64  Uint64(0xffffffffffffff00)
 #define MBYTE64 Uint64(1024 * 1024)
 #define MBYTE32 Uint32(1024 * 1024)
 
@@ -160,9 +161,19 @@
 #define NDB_PARTITION_BITS 16
 #define NDB_PARTITION_MASK ((Uint32)((1 << NDB_PARTITION_BITS) - 1))
 
-#define MAX_RANGE_DATA (131072+MAX_NDB_PARTITIONS) //0.5 MByte of list data
-
-#define MAX_WORDS_META_FILE 24576
+/**
+ * Not an exact number, but calculated something like this:
+ * 512 columns of upto 192 bytes per name
+ * Up to 30000 bytes of default values
+ * Up to 80 kB of ReplicaData (8160 fragments with 4 replicas)
+ * Up to 16 kB of FragmentData
+ * Up to an extra 50 kB of Frm data for partitions
+ * Up to an extra 32 kB of TablespaceData
+ * Up to an extra 32 kB of attribute information
+ * Thus allocating 256 kB of space for metadata should be sufficient
+ * for almost every case.
+ */
+#define MAX_WORDS_META_FILE 65536
 
 #define MIN_ATTRBUF ((MAX_ATTRIBUTES_IN_TABLE/24) + 1)
 /*
@@ -195,7 +206,7 @@
 /*
  * Maximum number of Parallel Scan queries on one hash index fragment
  */
-#define MAX_PARALLEL_SCANS_PER_FRAG 12
+#define MAX_PARALLEL_SCANS_PER_FRAG 0
 
 /**
  * Computed defines
@@ -281,6 +292,7 @@
  * also if up to 16 ldm threads per node is used.
  */
 
+#define EXTRA_OPERATIONS_FOR_FIRST_TRANSACTION 32768
 #define NDB_MAX_HASHMAP_BUCKETS (3840 * 2 * 3)
 #define NDB_DEFAULT_HASHMAP_MAX_FRAGMENTS 1536
 
@@ -404,20 +416,20 @@
 
 #define MAX_UNDO_DATA            20 + MAX_TUPLE_SIZE_IN_WORDS
 // Max. number of pending undo records allowed per LDM
-#define MAX_PENDING_UNDO_RECORDS 100
+#define MAX_PENDING_UNDO_RECORDS 1000
 
 // Maximum handling of DROP_TRIG_REQs in parallel by LocalProxy
 #define NDB_MAX_PROXY_DROP_TRIG_IMPL_REQ 21
-/* Maximum number of DROP_TRIGGER_REQs SUMA can send parallely after the
+/* Maximum number of DROP_TRIGGER_REQs SUMA can send in parallel after the
  * execution of SUB_STOP_REQ.
  *
  * We do not anticipate multiple parallel sub stop reqs from multiple APIs.
  * So, it should be fair to restrict the number of API nodes sending
- * sub stop requests parallely to 2. Any further sub stop requests from any
+ * sub stop requests in parallel to 2. Any further sub stop requests from any
  * other API nodes will be delayed. We delay the sub stop requests execution
  * based on outstanding trigger drop requests. Each sub stop request can
  * send a maximum of 3 drop trigger requests. So now a maximum of 6 is
- * allowed to execute parallely from all api nodes.*/
+ * allowed to execute in parallel from all api nodes.*/
 #define NDB_MAX_SUMA_DROP_TRIG_REQ_SUBSTOP 2 * 3
 /* Max DROP_TRIG_REQ allowed from api_fail_subscriber_list
  * This is greater than the maximum requests allowed from SUB_STOP_REQ
@@ -428,29 +440,21 @@
 // Max. 256 bytes for encryption password given via mgmapi
 #define MAX_BACKUP_ENCRYPTION_PASSWORD_LENGTH 256
 
-#define EXTRA_OPERATIONS_FOR_FIRST_TRANSACTION 32768
+// Max. 32 bytes for node master key
+#define MAX_NODE_MASTER_KEY_LENGTH 64
 
-#ifdef NDB_STATIC_ASSERT
+static_assert(NDB_DEFAULT_HASHMAP_BUCKETS <= NDB_MAX_HASHMAP_BUCKETS);
+static_assert(MAX_NDB_PARTITIONS <= NDB_MAX_HASHMAP_BUCKETS);
+static_assert(MAX_NDB_PARTITIONS - 1 <= NDB_PARTITION_MASK);
 
-static inline void ndb_limits_constraints()
-{
-  NDB_STATIC_ASSERT(NDB_DEFAULT_HASHMAP_BUCKETS <= NDB_MAX_HASHMAP_BUCKETS);
+// MAX_NDB_NODES should be 48, but code assumes it is 49
+static constexpr Uint32 MAX_NDB_DATA_NODES = MAX_DATA_NODE_ID;
+static_assert(MAX_NDB_NODES == MAX_NDB_DATA_NODES + 1);
 
-  NDB_STATIC_ASSERT(MAX_NDB_PARTITIONS <= NDB_MAX_HASHMAP_BUCKETS);
+// Default partitioning is 1 partition per LDM
+static_assert(MAX_NDB_DATA_NODES * NDB_MAX_LOG_PARTS <= MAX_NDB_PARTITIONS);
 
-  NDB_STATIC_ASSERT(MAX_NDB_PARTITIONS - 1 <= NDB_PARTITION_MASK);
-
-  // MAX_NDB_NODES should be 48, but code assumes it is 49
-  STATIC_CONST(MAX_NDB_DATA_NODES = MAX_DATA_NODE_ID);
-  NDB_STATIC_ASSERT(MAX_NDB_NODES == MAX_NDB_DATA_NODES + 1);
-
-  // Default partitioning is 1 partition per LDM
-  NDB_STATIC_ASSERT(MAX_NDB_DATA_NODES * NDB_MAX_LOG_PARTS <= MAX_NDB_PARTITIONS);
-
-  // The default hashmap should atleast support the maximum default partitioning
-  NDB_STATIC_ASSERT(MAX_NDB_DATA_NODES * NDB_MAX_LOG_PARTS <= NDB_MAX_HASHMAP_BUCKETS);
-}
-
-#endif
+// The default hashmap should at least support the maximum default partitioning
+static_assert(MAX_NDB_DATA_NODES * NDB_MAX_LOG_PARTS <= NDB_MAX_HASHMAP_BUCKETS);
 
 #endif

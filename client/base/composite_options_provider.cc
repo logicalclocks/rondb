@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2001, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -24,18 +24,18 @@
 
 #include "client/base/composite_options_provider.h"
 
+#include <assert.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <vector>
 
 #include "client/base/i_options_provider.h"
-#include "my_dbug.h"
 
 using std::vector;
 using namespace Mysql::Tools::Base::Options;
 
 void Composite_options_provider::add_providers(I_options_provider *first, ...) {
-  DBUG_ASSERT(this->m_options_providers.size() == 0);
+  assert(this->m_options_providers.size() == 0);
 
   va_list options_to_add;
   va_start(options_to_add, first);
@@ -63,7 +63,7 @@ void Composite_options_provider::add_provider(
 void Composite_options_provider::options_parsed() {
   vector<I_options_provider *>::iterator it;
   for (it = this->m_options_providers.begin();
-       it != this->m_options_providers.end(); it++) {
+       it != this->m_options_providers.end(); ++it) {
     (*it)->options_parsed();
   }
 }
@@ -74,7 +74,7 @@ vector<my_option> Composite_options_provider::generate_options() {
   // Add options for all children providers.
   vector<I_options_provider *>::iterator it;
   for (it = this->m_options_providers.begin();
-       it != this->m_options_providers.end(); it++) {
+       it != this->m_options_providers.end(); ++it) {
     vector<my_option> new_options = (*it)->generate_options();
     result.insert(result.end(), new_options.begin(), new_options.end());
   }

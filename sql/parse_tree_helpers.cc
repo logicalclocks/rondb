@@ -1,4 +1,4 @@
-/* Copyright (c) 2013, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2013, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,6 +22,7 @@
 
 #include "sql/parse_tree_helpers.h"
 
+#include <assert.h>
 #include <cstddef>
 #include <initializer_list>
 #include <utility>
@@ -30,14 +31,13 @@
 #include "lex_string.h"
 #include "m_string.h"
 #include "my_alloc.h"
-#include "my_dbug.h"
+
 #include "my_inttypes.h"  // TODO: replace with cstdint
 #include "my_sqlcommand.h"
 #include "my_sys.h"
 #include "mysql/mysql_lex_string.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
-#include "sql/auth/auth_acls.h"
 #include "sql/current_thd.h"
 #include "sql/dd/info_schema/show.h"
 #include "sql/derror.h"
@@ -93,9 +93,10 @@ Item_splocal *create_item_for_sp_var(THD *thd, LEX_CSTRING name,
     return nullptr;
   }
 
-  DBUG_ASSERT(pctx && spv);
+  assert(pctx && spv);
 
-  if (lex->reparse_common_table_expr_at != 0) {
+  if (lex->reparse_common_table_expr_at != 0 ||
+      lex->reparse_derived_table_condition) {
     /*
       This variable doesn't exist in the original query: shouldn't be
       substituted for logging.
@@ -112,69 +113,11 @@ Item_splocal *create_item_for_sp_var(THD *thd, LEX_CSTRING name,
   Item_splocal *item = new (thd->mem_root) Item_splocal(
       name, spv->offset, spv->type, spv_pos_in_query, spv_len_in_query);
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   if (item) item->m_sp = lex->sphead;
 #endif
 
   return item;
-}
-
-bool find_sys_var_null_base(THD *thd, struct sys_var_with_base *tmp) {
-  tmp->var = find_sys_var(thd, tmp->base_name.str, tmp->base_name.length);
-
-  if (tmp->var == nullptr)
-    my_error(ER_UNKNOWN_SYSTEM_VARIABLE, MYF(0), tmp->base_name.str);
-  else
-    tmp->base_name = NULL_CSTR;
-
-  return thd->is_error();
-}
-
-/**
-  Helper action for a SET statement.
-  Used to push a system variable into the assignment list.
-
-  @param thd      the current thread
-  @param var_with_base  the system variable with base name
-  @param var_type the scope of the variable
-  @param val      the value being assigned to the variable
-
-  @return true if error, false otherwise.
-*/
-
-bool set_system_variable(THD *thd, struct sys_var_with_base *var_with_base,
-                         enum enum_var_type var_type, Item *val) {
-  LEX *lex = thd->lex;
-  sp_head *sp = lex->sphead;
-  sp_pcontext *pctx = lex->get_sp_current_parsing_ctx();
-
-  /* No AUTOCOMMIT from a stored function or trigger. */
-  if (pctx && var_with_base->var == Sys_autocommit_ptr)
-    sp->m_flags |= sp_head::HAS_SET_AUTOCOMMIT_STMT;
-
-  if (lex->uses_stored_routines() &&
-      ((var_with_base->var == Sys_gtid_next_ptr
-#ifdef HAVE_GTID_NEXT_LIST
-        || var_with_base->var == Sys_gtid_next_list_ptr
-#endif
-        ) ||
-       Sys_gtid_purged_ptr == var_with_base->var)) {
-    my_error(ER_SET_STATEMENT_CANNOT_INVOKE_FUNCTION, MYF(0),
-             var_with_base->var->name.str);
-    return true;
-  }
-
-  if (val && val->type() == Item::FIELD_ITEM &&
-      ((Item_field *)val)->table_name) {
-    my_error(ER_WRONG_TYPE_FOR_VAR, MYF(0), var_with_base->var->name.str);
-    return true;
-  }
-
-  set_var *var = new (thd->mem_root)
-      set_var(var_type, var_with_base->var, var_with_base->base_name, val);
-  if (var == nullptr) return true;
-
-  return lex->var_list.push_back(var);
 }
 
 /**
@@ -191,52 +134,6 @@ bool set_system_variable(THD *thd, struct sys_var_with_base *var_with_base,
 LEX_CSTRING make_string(THD *thd, const char *start_ptr, const char *end_ptr) {
   size_t length = end_ptr - start_ptr;
   return {strmake_root(thd->mem_root, start_ptr, length), length};
-}
-
-/**
-  Helper action for a SET statement.
-  Used to SET a field of NEW row.
-
-  @param pc                 the parse context
-  @param trigger_field_name the NEW-row field name
-  @param expr_item          the value expression being assigned
-  @param expr_query         the value expression query
-
-  @return error status (true if error, false otherwise).
-*/
-
-bool set_trigger_new_row(Parse_context *pc, LEX_CSTRING trigger_field_name,
-                         Item *expr_item, LEX_CSTRING expr_query) {
-  THD *thd = pc->thd;
-  LEX *lex = thd->lex;
-  sp_head *sp = lex->sphead;
-
-  DBUG_ASSERT(expr_item);
-  DBUG_ASSERT(sp->m_trg_chistics.action_time == TRG_ACTION_BEFORE &&
-              (sp->m_trg_chistics.event == TRG_EVENT_INSERT ||
-               sp->m_trg_chistics.event == TRG_EVENT_UPDATE));
-
-  Item_trigger_field *trg_fld = new (pc->mem_root) Item_trigger_field(
-      POS(), TRG_NEW_ROW, trigger_field_name.str, UPDATE_ACL, false);
-
-  if (trg_fld == nullptr || trg_fld->itemize(pc, (Item **)&trg_fld))
-    return true;
-  DBUG_ASSERT(trg_fld->type() == Item::TRIGGER_FIELD_ITEM);
-
-  sp_instr_set_trigger_field *i = new (pc->mem_root)
-      sp_instr_set_trigger_field(sp->instructions(), lex, trigger_field_name,
-                                 trg_fld, expr_item, expr_query);
-
-  if (!i) return true;
-
-  /*
-    Let us add this item to list of all Item_trigger_field
-    objects in trigger.
-  */
-  sp->m_cur_instr_trig_field_items.link_in_list(trg_fld,
-                                                &trg_fld->next_trg_field);
-
-  return sp->add_instr(thd, i);
 }
 
 void sp_create_assignment_lex(THD *thd, const char *option_ptr) {

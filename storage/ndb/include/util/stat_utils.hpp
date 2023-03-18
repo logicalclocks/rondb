@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -37,7 +37,7 @@
  *   http://en.wikipedia.org/wiki/Moving_average
  *   http://www-uxsup.csx.cam.ac.uk/~fanf2/hermes/doc/antiforgery/stats.pdf
  *
- * A 'simple moving average' is calculated upto the 
+ * A 'simple moving average' is calculated up to the 
  * specified 'sampleSize', short description:
  *
  *   Suppose that the data set is x1, x2,..., xn then for each xn
@@ -99,7 +99,7 @@ public:
       /* Add 'sample' as 'simple moving average' */
       m_noOfSamples++;
       m_mean      += (delta / m_noOfSamples);
-      m_sumSquare += (delta * (sample - m_mean));
+      m_sumSquare += fabs(delta * (sample - m_mean));
     }
   }
 

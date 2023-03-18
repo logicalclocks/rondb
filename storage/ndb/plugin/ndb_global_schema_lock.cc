@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2011, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2011, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -34,6 +34,7 @@
 #include "sql/sql_class.h"
 #include "sql/sql_thd_internal_api.h"  // thd_query_unsafe
 #include "storage/ndb/include/ndbapi/NdbApi.hpp"
+#include "storage/ndb/plugin/ndb_ndbapi_errors.h"
 #include "storage/ndb/plugin/ndb_sleep.h"
 #include "storage/ndb/plugin/ndb_table_guard.h"
 
@@ -281,7 +282,7 @@ static NdbTransaction *gsl_lock_ext(THD *thd, Ndb *ndb, NdbError &ndb_error,
       return nullptr;
     }
 
-    DBUG_ASSERT(trans->getNdbError().status == NdbError::TemporaryError);
+    assert(trans->getNdbError().status == NdbError::TemporaryError);
     if (!retry) {
       ndb_error = trans->getNdbError();
       ndb->closeTransaction(trans);
@@ -293,7 +294,7 @@ static NdbTransaction *gsl_lock_ext(THD *thd, Ndb *ndb, NdbError &ndb_error,
   }
 
   // This should be unreachable code
-  DBUG_ASSERT(false);
+  assert(false);
   return nullptr;
 }
 
@@ -310,7 +311,7 @@ static bool gsl_unlock_ext(Ndb *ndb, NdbTransaction *trans,
 
 class Thd_proc_info_guard {
  public:
-  Thd_proc_info_guard(THD *thd) : m_thd(thd), m_proc_info(NULL) {}
+  Thd_proc_info_guard(THD *thd) : m_thd(thd), m_proc_info(nullptr) {}
   void set(const char *message) {
     const char *old = thd_proc_info(m_thd, message);
     if (!m_proc_info) {
@@ -356,13 +357,13 @@ static int ndbcluster_global_schema_lock(THD *thd,
     if (thd_ndb->global_schema_lock_trans)
       thd_ndb->global_schema_lock_trans->refresh();
     else
-      DBUG_ASSERT(thd_ndb->global_schema_lock_error != 0);
+      assert(thd_ndb->global_schema_lock_error != 0);
     thd_ndb->global_schema_lock_count++;
     DBUG_PRINT("exit", ("global_schema_lock_count: %d",
                         thd_ndb->global_schema_lock_count));
     return 0;
   }
-  DBUG_ASSERT(thd_ndb->global_schema_lock_count == 0);
+  assert(thd_ndb->global_schema_lock_count == 0);
   thd_ndb->global_schema_lock_count = 1;
   thd_ndb->global_schema_lock_error = 0;
   DBUG_PRINT("exit", ("global_schema_lock_count: %d",
@@ -399,12 +400,12 @@ static int ndbcluster_global_schema_lock(THD *thd,
   // Else, didn't get GSL: Deadlock or failure from NDB
 
   /**
-   * If GSL request failed due to no cluster connection (4009),
+   * If GSL request failed due to cluster failure,
    * we consider the lock granted, else GSL request failed.
    */
   if (!is_cluster_failure_code(ndb_error.code))  // No cluster connection
   {
-    DBUG_ASSERT(thd_ndb->global_schema_lock_count == 1);
+    assert(thd_ndb->global_schema_lock_count == 1);
     // This reset triggers the special case in ndbcluster_global_schema_unlock()
     thd_ndb->global_schema_lock_count = 0;
   }
@@ -429,26 +430,26 @@ static int ndbcluster_global_schema_lock(THD *thd,
 
 static int ndbcluster_global_schema_unlock(THD *thd, bool record_gsl) {
   Thd_ndb *thd_ndb = get_thd_ndb(thd);
-  if (unlikely(thd_ndb == NULL)) {
+  if (unlikely(thd_ndb == nullptr)) {
     return 0;
   }
 
   if (thd_ndb->check_option(Thd_ndb::IS_SCHEMA_DIST_PARTICIPANT)) {
-    ndb_set_gsl_participant(NULL);
+    ndb_set_gsl_participant(nullptr);
     return 0;
   }
 
   if (!is_cluster_failure_code(thd_ndb->global_schema_lock_error) &&
       thd_ndb->global_schema_lock_count == 0) {
     // Special case to handle unlock after failure to acquire GSL due to
-    // any error other than 4009.
-    // - when error 4009 occurs the lock is granted anyway and the lock count is
-    // not reset, thus unlock() should be called.
+    // any error other than cluster failure.
+    // - when cluster failure occurs the lock is granted anyway and the lock
+    //   count is not reset, thus unlock() should be called.
     // - for other errors the lock is not granted, lock count is reset and
     // the exact same error code is returned. Thus it's impossible to know
     // that there is actually no need to call unlock. Fix by allowing unlock
     // without doing anything since the trans is already closed.
-    DBUG_ASSERT(thd_ndb->global_schema_lock_trans == NULL);
+    assert(thd_ndb->global_schema_lock_trans == nullptr);
     thd_ndb->global_schema_lock_count++;
   }
 
@@ -456,22 +457,22 @@ static int ndbcluster_global_schema_unlock(THD *thd, bool record_gsl) {
   DBUG_TRACE;
   NdbTransaction *trans = thd_ndb->global_schema_lock_trans;
   // Don't allow decrementing from zero
-  DBUG_ASSERT(thd_ndb->global_schema_lock_count > 0);
+  assert(thd_ndb->global_schema_lock_count > 0);
   thd_ndb->global_schema_lock_count--;
   DBUG_PRINT("exit", ("global_schema_lock_count: %d",
                       thd_ndb->global_schema_lock_count));
-  DBUG_ASSERT(ndb != NULL);
-  if (ndb == NULL) {
+  assert(ndb != nullptr);
+  if (ndb == nullptr) {
     return 0;
   }
-  DBUG_ASSERT(trans != NULL || thd_ndb->global_schema_lock_error != 0);
+  assert(trans != nullptr || thd_ndb->global_schema_lock_error != 0);
   if (thd_ndb->global_schema_lock_count != 0) {
     return 0;
   }
   thd_ndb->global_schema_lock_error = 0;
 
   if (trans) {
-    thd_ndb->global_schema_lock_trans = NULL;
+    thd_ndb->global_schema_lock_trans = nullptr;
 
     // Remember that GSL has been released
     if (record_gsl) ndb_gsl_for_mdl_guard.gsl_released();
@@ -613,7 +614,7 @@ bool Ndb_global_schema_lock_guard::try_lock(void) {
 
 bool Ndb_global_schema_lock_guard::unlock() {
   // This function should only be called in conjunction with try_lock()
-  DBUG_ASSERT(m_try_locked);
+  assert(m_try_locked);
 
   Thd_ndb *thd_ndb = get_thd_ndb(m_thd);
   if (unlikely(thd_ndb == nullptr)) {

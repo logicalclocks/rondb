@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
@@ -19,6 +19,8 @@ GNU General Public License, version 2.0, for more details.
 You should have received a copy of the GNU General Public License
 along with this program; if not, write to the Free Software
 Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
+
+#include "my_config.h"
 
 #include <mysql/components/component_implementation.h>
 #include <mysql/components/service_implementation.h>
@@ -125,8 +127,15 @@ DEFINE_BOOL_METHOD(mysql_dynamic_loader_scheme_file_imp::load,
 #endif
 
     /* Open library. */
+#if defined(HAVE_ASAN) || defined(HAVE_LSAN)
+    // Do not unload the shared object during dlclose().
+    // LeakSanitizer needs this in order to provide call stacks,
+    // and to match entries in lsan.supp.
+    void *handle = dlopen(file_name.c_str(), RTLD_NOW | RTLD_NODELETE);
+#else
     void *handle = dlopen(file_name.c_str(), RTLD_NOW);
-    if (handle == NULL) {
+#endif
+    if (handle == nullptr) {
       const char *errmsg;
       int error_number = dlopen_errno;
       DLERROR_GENERATE(errmsg, error_number);
@@ -142,7 +151,7 @@ DEFINE_BOOL_METHOD(mysql_dynamic_loader_scheme_file_imp::load,
     /* Look for "list_components" function. */
     list_components_func list_func = reinterpret_cast<list_components_func>(
         dlsym(handle, COMPONENT_ENTRY_FUNC));
-    if (list_func == NULL) {
+    if (list_func == nullptr) {
       return true;
     }
 

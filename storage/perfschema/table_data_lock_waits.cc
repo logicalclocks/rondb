@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -259,7 +259,7 @@ int table_data_lock_waits::index_init(uint idx, bool) {
       result = PFS_NEW(PFS_index_data_lock_waits_by_blocking_thread_id);
       break;
     default:
-      DBUG_ASSERT(false);
+      assert(false);
       break;
   }
 
@@ -281,17 +281,17 @@ int table_data_lock_waits::read_row_values(TABLE *table, unsigned char *buf,
   }
 
   /* Set the null bits */
-  DBUG_ASSERT(table->s->null_bytes == 1);
+  assert(table->s->null_bytes == 1);
   buf[0] = 0;
 
   for (; (f = *fields); fields++) {
     if (read_all || bitmap_is_set(table->read_set, f->field_index())) {
       switch (f->field_index()) {
         case 0: /* ENGINE */
-          set_field_varchar_utf8(f, m_row->m_engine);
+          set_field_varchar_utf8mb4(f, m_row->m_engine);
           break;
         case 1: /* REQUESTING_ENGINE_LOCK_ID */
-          set_field_varchar_utf8(
+          set_field_varchar_utf8mb4(
               f, m_row->m_hidden_pk.m_requesting_engine_lock_id,
               m_row->m_hidden_pk.m_requesting_engine_lock_id_length);
           break;
@@ -308,7 +308,7 @@ int table_data_lock_waits::read_row_values(TABLE *table, unsigned char *buf,
           set_field_ulonglong(f, (intptr)m_row->m_requesting_identity);
           break;
         case 6: /* BLOCKING_ENGINE_LOCK_ID */
-          set_field_varchar_utf8(
+          set_field_varchar_utf8mb4(
               f, m_row->m_hidden_pk.m_blocking_engine_lock_id,
               m_row->m_hidden_pk.m_blocking_engine_lock_id_length);
           break;
@@ -325,7 +325,7 @@ int table_data_lock_waits::read_row_values(TABLE *table, unsigned char *buf,
           set_field_ulonglong(f, (intptr)m_row->m_blocking_identity);
           break;
         default:
-          DBUG_ASSERT(false);
+          assert(false);
       }
     }
   }

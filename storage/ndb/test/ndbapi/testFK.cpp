@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2013, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2013, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,6 +23,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
+#include <cstring>
 #include <NDBT.hpp>
 #include <NDBT_Test.hpp>
 #include <HugoTransactions.hpp>
@@ -33,7 +35,7 @@
 #include <signaldata/DumpStateOrd.hpp>
 #include <NodeBitmask.hpp>
 #include <NdbEnv.h>
-
+#include "portlib/NdbSleep.h"
 
 #define DBG(x) \
   do { g_info << x << " at line " << __LINE__ << endl; } while (0)
@@ -225,13 +227,13 @@ runMixedDML(NDBT_Context* ctx, NDBT_Step* step)
         }
         lastrow = rowId;
 
-        bzero(pRow, len);
+        std::memset(pRow, 0, len);
 
         HugoCalculator calc(* pTab);
         calc.setValues(pRow, pRowRecord, rowId, rand());
 
         NdbOperation::OperationOptions opts;
-        bzero(&opts, sizeof(opts));
+        std::memset(&opts, 0, sizeof(opts));
         if (deferred)
         {
           opts.optionsPresent =
@@ -923,7 +925,7 @@ runRSSsnapshotCheck(NDBT_Context* ctx, NDBT_Step* step)
 {
   NdbRestarter restarter;
   g_info << "check all resource usage" << endl;
-  sleep(2);
+  NdbSleep_SecSleep(2);
   int dump1[] = { DumpStateOrd::SchemaResourceCheckLeak };
   restarter.dumpStateAllNodes(dump1, 1);
   return NDBT_OK;
@@ -1193,13 +1195,13 @@ runMixedCascade(NDBT_Context* ctx, NDBT_Step* step)
         }
         lastrow = rowId;
 
-        bzero(pRow, len);
+        std::memset(pRow, 0, len);
 
         HugoCalculator calc(* pTab);
         calc.setValues(pRow, pRowRecord, rowId, rand());
 
         NdbOperation::OperationOptions opts;
-        bzero(&opts, sizeof(opts));
+        std::memset(&opts, 0, sizeof(opts));
         if (deferred)
         {
           opts.optionsPresent =
@@ -1443,7 +1445,7 @@ runAbortWithSlowChildScans(NDBT_Context* ctx, NDBT_Step* step)
   restarter.insertErrorInAllNodes(8109);
 
   /* Now perform delete of parent rows in a separate connection
-   * Separate connection used as some validation is perfomed by
+   * Separate connection used as some validation is performed by
    * TC at connection close time (TCRELEASEREQ)
    */
   

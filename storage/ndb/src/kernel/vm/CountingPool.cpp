@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2012, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2012, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,7 +31,6 @@
 #include "Pool.hpp"
 #include "RWPool.hpp"
 #include "test_context.hpp"
-#include "WOPool.hpp"
 
 #define JAM_FILE_ID 304
 
@@ -40,7 +40,6 @@ struct record
 };
 
 template class CountingPool<RecordPool<RWPool<record> > >;
-template class CountingPool<RecordPool<WOPool<record> > >;
 
 TAPTEST(CountingPool)
 {

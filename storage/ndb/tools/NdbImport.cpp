@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2017, 2019, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2017, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
 #include <ndb_global.h>
 #include <NdbOut.hpp>
 #include "NdbImportImpl.hpp"
@@ -91,7 +92,7 @@ NdbImport::Opt::Opt()
   m_monitor = 2;
   m_ai_prefetch_sz = 1024;
   m_ai_increment = 1;
-  m_use_auto_increment = true;
+  m_use_auto_increment = false;
   m_ai_offset = 1;
   m_no_asynch = false;
   m_no_hint = false;
@@ -111,6 +112,7 @@ NdbImport::Opt::Opt()
   m_checkloop = 1;
   m_alloc_chunk = 20;
   m_rejects = 0;
+  m_missing_ai_col = false;
   // character set
   m_charset_name = "binary";
   m_charset = 0;

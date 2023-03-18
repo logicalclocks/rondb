@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2011, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,7 +26,7 @@
 #include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_sys.h"
-#include "mysql/components/services/psi_stage_bits.h"
+#include "mysql/components/services/bits/psi_stage_bits.h"
 #include "mysql/psi/mysql_cond.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/service_mysql_alloc.h"
@@ -83,7 +83,7 @@ enum_return_status Mutex_cond_array::ensure_index(int n) {
                        nullptr);
       mysql_cond_init(key_gtid_ensure_index_cond, &mutex_cond->cond);
       m_array.push_back(mutex_cond);
-      DBUG_ASSERT(&get_mutex_cond(i)->mutex == &mutex_cond->mutex);
+      assert(&get_mutex_cond(i)->mutex == &mutex_cond->mutex);
     }
   }
   RETURN_OK;

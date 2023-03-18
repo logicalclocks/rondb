@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2004, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2004, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,7 +27,6 @@
 #include <ndb_global.h>
 #include <ndberror.h>
 
-#include "../mgmsrv/ndb_mgmd_error.h"
 #include "NdbQueryBuilderImpl.hpp"
 #include "m_string.h"
 #include "my_base.h"
@@ -286,13 +285,13 @@ ErrorBundle ErrorCodes[] = {
   { 293,  DMEC, TR, "Out of attribute buffers in TC block, increase SharedGlobalMemory" },
   { 312,  DMEC, TR, "Out of LongMessageBuffer" },
   { 414,  DMEC, TR, "414" },
-  { 418,  DMEC, TR, "Out of transaction buffers in LQH, increase LongSignalMemory" },
-  { 419,  DMEC, TR, "Out of signal memory, increase LongSignalMemory" },
+  { 418,  DMEC, TR, "Out of transaction buffers in LQH, increase LongMessageBuffer" },
+  { 419,  DMEC, TR, "Out of signal memory, increase LongMessageBuffer" },
   { 245,  DMEC, TR, "Too many active scans, increase MaxNoOfConcurrentScans" },
   { 488,  DMEC, TR, "Too many active scans" },
   { 489,  DMEC, TR, "Out of scan records in LQH, increase SharedGlobalMemory" },
   { 490,  DMEC, TR, "Too many active scans" },
-  { 805,  DMEC, TR, "Out of attrinfo records in tuple manager, increase LongSignalMemory" },
+  { 805,  DMEC, TR, "Out of attrinfo records in tuple manager, increase LongMessageBuffer" },
   { 830,  DMEC, TR, "Out of add fragment operation records" },
   { 873,  DMEC, TR, "Out of transaction memory in local data manager, ordered index data (increase SharedGlobalMemory)" },
   { 899,  HA_ERR_LOCK_WAIT_TIMEOUT, TR, "Rowid already allocated" },
@@ -351,8 +350,6 @@ ErrorBundle ErrorCodes[] = {
   { 296,  HA_ERR_LOCK_WAIT_TIMEOUT, TO, "Time-out in NDB, probably caused by deadlock" }, /* Scan trans timeout */
   { 297,  HA_ERR_LOCK_WAIT_TIMEOUT, TO, "Time-out in NDB, probably caused by deadlock" }, /* Scan trans timeout, temporary!! */
   { 237,  HA_ERR_LOCK_WAIT_TIMEOUT, TO, "Transaction had timed out when trying to commit it" },
-  { 5024, DMEC, TO, "Time-out due to node shutdown not starting in time" },
-  { 5025, DMEC, TO, "Time-out due to node shutdown not completing in time" },
   { 635,  HA_ERR_LOCK_WAIT_TIMEOUT, TO, "Lock already taken, not waiting" }, // HA_ERR_NO_WAIT_LOCK
   
   /**
@@ -409,6 +406,7 @@ ErrorBundle ErrorCodes[] = {
   { 887,  DMEC, IE, "887" },
   { 888,  DMEC, IE, "888" },
   { 890,  DMEC, IE, "890" },
+  { 927,  DMEC, IE, "Flag set to not use disk columns, but still done" },
   { 4000, DMEC, IE, "MEMORY ALLOCATION ERROR" },
   { 4001, DMEC, IE, "Signal Definition Error" },
   { 4005, DMEC, IE, "Internal Error in NdbApi" },
@@ -443,11 +441,12 @@ ErrorBundle ErrorCodes[] = {
   { 261,  DMEC, AE,
     "DML count in transaction exceeds config parameter MaxDMLOperationsPerTransaction/MaxNoOfConcurrentOperations" },
   { 763,  DMEC, AE, "DDL is not supported with mixed data-node versions" },
+  { 801,  DMEC, AE, "Dynamic fields in storage disk not supported by cluster" },
   { 823,  DMEC, AE, "Too much attrinfo from application in tuple manager" },
   { 829,  DMEC, AE, "Corrupt data received for insert/update" },
   { 831,  DMEC, AE, "Too many nullable/bitfields in table definition" },
-  { 851,  DMEC, AE, "Fixed-size column offset exceeded max."
-    "Use VARCHAR or COLUMN_FORMAT DYNAMIC for memory-stored columns"},
+  { 851,  DMEC, AE, "Fixed-size column offset exceeded max. "
+    "Use VARCHAR or COLUMN_FORMAT DYNAMIC for some columns"},
   { 850,  DMEC, AE, "Too long or too short default value"},
   { 876,  DMEC, AE, "876" },
   { 877,  DMEC, AE, "877" },
@@ -521,7 +520,9 @@ ErrorBundle ErrorCodes[] = {
    * SchemaError
    */
   { 306,  DMEC, IE, "Out of fragment records in DIH" },
+  { 308,  DMEC, IE, "Out of Schema Memory" },
   { 311,  DMEC, AE, "Undefined partition used in setPartitionId" },
+  { 460,  DMEC, SE, "Out of SchemaMemory, please modify SchemaMemory config parameter" },
   { 703,  DMEC, SE, "Invalid table format" },
   { 704,  DMEC, SE, "Attribute name too long" },
   { 705,  DMEC, SE, "Table name too long" },
@@ -618,7 +619,7 @@ ErrorBundle ErrorCodes[] = {
   { 1517, DMEC, SE, "Insufficient disk page buffer memory. Increase DiskPageBufferMemory or reduce data file size." },
   { 1518, DMEC, OL, "IO overload error" },
 
-  { 773,  DMEC, SE, "Out of string memory, please modify StringMemory config parameter" },
+  { 773,  DMEC, SE, "Out of SchemaMemory, please modify SchemaMemory config parameter" },
   { 775,  DMEC, SE, "Create file is not supported when Diskless=1" },
   { 776,  DMEC, AE, "Index created on temporary table must itself be temporary" },
   { 777,  DMEC, AE, "Cannot create a temporary index on a non-temporary table" },
@@ -629,6 +630,7 @@ ErrorBundle ErrorCodes[] = {
   { 796,  DMEC, SE, "Out of schema transaction memory" },
   { 798,  DMEC, AE, "A disk table must not be specified as no logging" },
   { 799,  HA_WRONG_CREATE_OPTION, SE, "Non default partitioning without partitions" },
+  { 4377, DMEC, AE, "Database and schema name must be set on Ndb object"},
 
   /**
    * FunctionNotImplemented
@@ -687,7 +689,7 @@ ErrorBundle ErrorCodes[] = {
   /*
    * Index stats error codes
    */
-  { 4714, DMEC, AE, "Index stats sys tables " NDB_INDEX_STAT_PREFIX " do not exist" },
+  { 4714, DMEC, AE, "Index stats system tables do not exist" },
   { 4715, DMEC, AE, "Index stats for specified index do not exist" },
   { 4716, DMEC, AE, "Index stats methods usage error" },
   { 4717, DMEC, AE, "Index stats cannot allocate memory" },
@@ -831,6 +833,7 @@ ErrorBundle ErrorCodes[] = {
   { 4556, DMEC, AE, "RecordSpecification has illegal value in column_flags" },
   { 4557, DMEC, AE, "Column types must be identical when comparing two columns" },
   { 4558, DMEC, AE, "Pending Blob operations must be executed before this call" },
+  { 4559, DMEC, AE, "Failed to transfer KeyInfo to AttrInfo for InterpretedWrite" },
 
   { 4200, DMEC, AE, "Status Error when defining an operation" },
   { 4201, DMEC, AE, "Variable Arrays not yet supported" },
@@ -993,42 +996,49 @@ ErrorBundle ErrorCodes[] = {
   { QRY_NEST_NOT_SUPPORTED, DMEC, AE,
     "FirstInner/Upper has to be an ancestor or a sibling" },
 
-  { FAILED_ACTIVATE_REQUEST, DMEC, AE,
-    "Data nodes failed Activate Request"},
-  { FAILED_DEACTIVATE_REQUEST, DMEC, AE,
-    "Data nodes failed Deactivate Request"},
-  { NODE_CURRENTLY_DEACTIVATED, DMEC, AE,
-    "Alloc node id failed since node is deactivated"},
-  { INCORRECT_MGM_COMMAND, DMEC, AE,
-    "MGM Server received incorrect command from client"},
-  { FAILED_SET_HOSTNAME_REQUEST, DMEC, AE,
-    "Data nodes failed to set new hostname"},
-  { NO_CONTACT_WITH_PROCESS, DMEC, AE,
+  /*
+   * Management server error codes
+   */
+  { 5000 /* NO_CONTACT_WITH_PROCESS */, DMEC, AE,
     "No contact with the process (dead ?)."},
-  { WRONG_PROCESS_TYPE, DMEC, AE,
+  { 5002 /* WRONG_PROCESS_TYPE */, DMEC, AE,
    "The process has wrong type. Expected a DB process."},
-  { SEND_OR_RECEIVE_FAILED, DMEC, AE,
+  { 5005 /* SEND_OR_RECEIVE_FAILED */, DMEC, AE,
     "Send to process or receive failed."},
-  { INVALID_ERROR_NUMBER, DMEC, AE,
+  { 5007 /* INVALID_ERROR_NUMBER */, DMEC, AE,
     "Invalid error number. Should be >= 0."},
-  { INVALID_TRACE_NUMBER, DMEC, AE,
+  { 5008 /* INVALID_TRACE_NUMBER */, DMEC, AE,
     "Invalid trace number."},
-  { INVALID_BLOCK_NAME, DMEC, AE,
+  { 5010 /* INVALID_BLOCK_NAME */, DMEC, AE,
     "Invalid block name"},
-  { NODE_SHUTDOWN_IN_PROGESS, DMEC, AE,
+  { 5024 /* WAIT_FOR_NDBD_SHUTDOWN_FAILED */, DMEC, TO,
+    "Time-out due to node shutdown not starting in time" },
+  { 5025 /* WAIT_FOR_NDBD_SHUTDOWN_FAILED */, DMEC, TO,
+    "Time-out due to node shutdown not completing in time" },
+  { 5026 /* NODE_SHUTDOWN_IN_PROGESS */, DMEC, AE,
     "Node shutdown in progress" },
-  { SYSTEM_SHUTDOWN_IN_PROGRESS, DMEC, AE,
+  { 5027 /* SYSTEM_SHUTDOWN_IN_PROGRESS */, DMEC, AE,
     "System shutdown in progress" },
-  { NODE_SHUTDOWN_WOULD_CAUSE_SYSTEM_CRASH, DMEC, AE,
+  { 5028 /* NODE_SHUTDOWN_WOULD_CAUSE_SYSTEM_CRASH */, DMEC, AE,
    "Node shutdown would cause system crash" },
-  { UNSUPPORTED_NODE_SHUTDOWN, DMEC, AE,
+  { 5030 /* NO_CONTACT_WITH_DB_NODES */, DMEC, AE,
+    "No contact with database nodes" },
+  { 5031 /* UNSUPPORTED_NODE_SHUTDOWN */, DMEC, AE,
    "Unsupported multi node shutdown. Abort option required." },
-  { NODE_NOT_API_NODE, DMEC, AE,
+  { 5062 /* NODE_NOT_API_NODE */, DMEC, AE,
     "The specified node is not an API node." },
-  { OPERATION_NOT_ALLOWED_START_STOP, DMEC, AE,
+  { 5063 /* OPERATION_NOT_ALLOWED_START_STOP */, DMEC, AE,
    "Operation not allowed while nodes are starting or stopping."},
-  { NO_CONTACT_WITH_DB_NODES, DMEC, AE,
-    "No contact with database nodes" }
+  { 5064 /* FAILED_ACTIVATE_REQUEST */, DMEC, AE,
+    "Data nodes failed Activate Request"},
+  { 5065 /* NODE_CURRENTLY_DEACTIVATED */, DMEC, AE,
+    "Alloc node id failed since node is deactivated"},
+  { 5066 /* INCORRECT_MGM_COMMAND */, DMEC, AE,
+    "MGM Server received incorrect command from client"},
+  { 5067 /* FAILED_SET_HOSTNAME_REQUEST */, DMEC, AE,
+    "Data nodes failed to set new hostname"},
+  { 5068 /* FAILED_DEACTIVATE_REQUEST */, DMEC, AE,
+    "Data nodes failed Deactivate Request"}
 };
 
 static

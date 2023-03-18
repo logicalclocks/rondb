@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -39,14 +39,23 @@ const char *load_default_groups[]= { "mysql_cluster",0 };
 
 static struct my_option my_long_options[] =
 {
-  NDB_STD_OPTS("ndbinfo_select_all"),
+  NdbStdOpt::usage,
+  NdbStdOpt::help,
+  NdbStdOpt::version,
+  NdbStdOpt::ndb_connectstring,
+  NdbStdOpt::mgmd_host,
+  NdbStdOpt::connectstring,
+  NdbStdOpt::ndb_nodeid,
+  NdbStdOpt::connect_retry_delay,
+  NdbStdOpt::connect_retries,
+  NDB_STD_OPT_DEBUG
   { "loops", 'l', "Run same select several times",
-    (uchar**) &loops, (uchar**) &loops, 0,
-    GET_INT, REQUIRED_ARG, loops, 0, 0, 0, 0, 0 },
+    &loops, nullptr, nullptr, GET_INT, REQUIRED_ARG,
+    loops, 0, 0, nullptr, 0, nullptr },
   { "delay", 256, "Delay between loops (in seconds)",
-    (uchar**) &delay, (uchar**) &delay, 0,
-    GET_INT, REQUIRED_ARG, delay, 0, 0, 0, 0, 0 },
-  { 0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
+    &delay, nullptr, nullptr, GET_INT, REQUIRED_ARG,
+    delay, 0, 0, nullptr, 0, nullptr },
+  NdbStdOpt::end_of_options,
 };
 
 int
@@ -54,7 +63,7 @@ main(int argc, char** argv)
 {
   NDB_INIT(argv[0]);
   Ndb_opts opts(argc, argv, my_long_options);
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   opt_debug= "d:t:O,/tmp/ndbinfo_select_all.trace";
 #endif
   if (opts.handle_options())

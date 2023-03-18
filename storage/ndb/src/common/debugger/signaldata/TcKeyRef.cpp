@@ -1,6 +1,7 @@
 /*
-   Copyright (C) 2003, 2005, 2006 MySQL AB
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
     Use is subject to license terms.
+   Copyright (c) 2021, 2021, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,13 +26,11 @@
 
 #include <signaldata/TcKeyRef.hpp>
 
-bool
-printTCKEYREF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 receiverBlockNo){
-  fprintf(output, "Signal data: ");
-  Uint32 i = 0;
-  while (i < len)
-    fprintf(output, "H\'%.8x ", theData[i++]);
-  fprintf(output,"\n");
-  
+bool printTCKEYREF(FILE* output,
+                   const Uint32* theData,
+                   Uint32 len,
+                   Uint16 /*receiverBlockNo*/)
+{
+  printHex(output, theData, len, "Signal data:");
   return true;
 }

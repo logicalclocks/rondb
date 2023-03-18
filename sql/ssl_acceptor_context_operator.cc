@@ -1,4 +1,4 @@
-/* Copyright (c) 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2020, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -20,7 +20,7 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include "my_dbug.h"                                /* DBUG_ASSERT */
+#include "my_dbug.h"                                /* assert */
 #include "mysql/components/services/log_builtins.h" /* LogErr */
 #include "mysql/status_var.h"                       /* SHOW_VAR */
 #include "mysqld_error.h"                           /* Error/Warning macros */
@@ -232,6 +232,12 @@ int Ssl_mysql_main_status::show_ssl_ctx_sess_timeouts(THD *, SHOW_VAR *var,
                                                       char *buff) {
   return show_long_status(
       var, buff, Ssl_acceptor_context_property_type::session_cache_timeouts);
+}
+
+int Ssl_mysql_main_status::show_ssl_ctx_sess_timeout(THD *, SHOW_VAR *var,
+                                                     char *buff) {
+  return show_long_status(
+      var, buff, Ssl_acceptor_context_property_type::session_cache_timeout);
 }
 
 int Ssl_mysql_main_status::show_ssl_ctx_sess_number(THD *, SHOW_VAR *var,

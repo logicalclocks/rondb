@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -60,15 +60,14 @@ bool Raw_record_set::open() {
   }
 
   if (m_key)
-    rc = m_table->file->ha_index_read_idx_map(
-        m_table->record[0], m_key->index_no, m_key->key, m_key->keypart_map,
-        HA_READ_KEY_EXACT);
+    rc = m_table->file->ha_index_read_map(
+        m_table->record[0], m_key->key, m_key->keypart_map, HA_READ_KEY_EXACT);
   else
     rc = m_table->file->ha_index_first(m_table->record[0]);
 
   // Row not found.
   if (rc == HA_ERR_KEY_NOT_FOUND || rc == HA_ERR_END_OF_FILE) {
-    DBUG_ASSERT(!m_current_record);
+    assert(!m_current_record);
     return false;
   }
 
@@ -143,7 +142,7 @@ Raw_record_set::~Raw_record_set() {
     if (rc) {
       /* purecov: begin inspected */
       m_table->file->print_error(rc, MYF(ME_ERRORLOG));
-      DBUG_ASSERT(false);
+      assert(false);
       /* purecov: end */
     }
   }

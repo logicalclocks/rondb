@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2011, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -151,10 +152,34 @@ DbtcProxy::execTCSEIZEREQ(Signal* signal)
     return;
   }
 
-  signal->theData[2] = 1 + m_tc_seize_req_instance;
-  sendSignal(workerRef(m_tc_seize_req_instance), GSN_TCSEIZEREQ, signal,
-             signal->getLength(), JBB);
-  m_tc_seize_req_instance = (m_tc_seize_req_instance + 1) % c_workers;
+  if (globalData.ndbMtTcThreads == 0)
+  {
+    jam();
+    BlockReference sender_ref = signal->senderBlockRef();
+    NodeId node_id = refToNode(sender_ref);
+    Uint32 instance;
+    if (node_id == getOwnNodeId())
+    {
+      instance = 0; /* Handle Startup */
+    }
+    else
+    {
+      instance = map_api_node_to_recv_instance(node_id);
+      ndbrequire(instance != RNIL);
+      ndbrequire(instance < globalData.ndbMtReceiveThreads);
+    }
+    signal->theData[2] = (1 + instance);
+    sendSignal(workerRef(instance), GSN_TCSEIZEREQ, signal,
+               signal->getLength(), JBB);
+  }
+  else
+  {
+    jam();
+    signal->theData[2] = 1 + m_tc_seize_req_instance;
+    sendSignal(workerRef(m_tc_seize_req_instance), GSN_TCSEIZEREQ, signal,
+               signal->getLength(), JBB);
+    m_tc_seize_req_instance = (m_tc_seize_req_instance + 1) % c_workers;
+  }
 }
 
 // GSN_TCGETOPSIZEREQ

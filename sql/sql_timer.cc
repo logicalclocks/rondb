@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -31,7 +31,7 @@
 #include "my_sys.h"
 #include "my_thread_local.h"
 #include "my_timer.h"  // my_timer_t
-#include "mysql/components/services/mysql_mutex_bits.h"
+#include "mysql/components/services/bits/mysql_mutex_bits.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/service_mysql_alloc.h"
 #include "sql/mysqld.h"              // key_thd_timer_mutex
@@ -99,20 +99,20 @@ static THD_timer_info *thd_timer_create(void) {
 
 static bool timer_notify(THD_timer_info *thd_timer) {
   Find_thd_with_id find_thd_with_id(thd_timer->thread_id);
-  THD *thd = Global_THD_manager::get_instance()->find_thd(&find_thd_with_id);
+  THD_ptr thd_ptr =
+      Global_THD_manager::get_instance()->find_thd(&find_thd_with_id);
 
-  DBUG_ASSERT(!thd_timer->destroy || !thd_timer->thread_id);
+  assert(!thd_timer->destroy || !thd_timer->thread_id);
   /*
     Statement might have finished while the timer notification
     was being delivered. If this is the case, the timer object
     was detached (orphaned) and has no associated session (thd).
   */
-  if (thd) {
+  if (thd_ptr) {
     /* process only if thread is not already undergoing any kill connection. */
-    if (thd->killed != THD::KILL_CONNECTION) {
-      thd->awake(THD::KILL_TIMEOUT);
+    if (thd_ptr->killed != THD::KILL_CONNECTION) {
+      thd_ptr->awake(THD::KILL_TIMEOUT);
     }
-    mysql_mutex_unlock(&thd->LOCK_thd_data);
   }
 
   /* Mark the object as unreachable. */
@@ -161,7 +161,7 @@ THD_timer_info *thd_timer_set(THD *thd, THD_timer_info *thd_timer,
   if (thd_timer == nullptr && (thd_timer = thd_timer_create()) == nullptr)
     return nullptr;
 
-  DBUG_ASSERT(!thd_timer->destroy && !thd_timer->thread_id);
+  assert(!thd_timer->destroy && !thd_timer->thread_id);
 
   /* Mark the notification as pending. */
   thd_timer->thread_id = thd->thread_id();
@@ -189,10 +189,10 @@ THD_timer_info *thd_timer_set(THD *thd, THD_timer_info *thd_timer,
 
 static bool reap_timer(THD_timer_info *thd_timer, bool pending) {
   /* Cannot be tagged for destruction. */
-  DBUG_ASSERT(!thd_timer->destroy);
+  assert(!thd_timer->destroy);
 
   /* If not pending, timer hasn't fired. */
-  DBUG_ASSERT(pending || thd_timer->thread_id);
+  assert(pending || thd_timer->thread_id);
 
   /*
     The timer object can be reused if the timer was stopped before

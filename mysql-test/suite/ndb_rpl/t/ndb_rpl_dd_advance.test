@@ -89,8 +89,8 @@ connection master;
 CREATE INDEX t1_i ON t1(c2, c3);
 #Bug 18039
 CREATE UNIQUE INDEX t1_i2 ON t1(c2);
-ALTER TABLE t1 ADD c4 TIMESTAMP;
-ALTER TABLE t1 ADD c5 DOUBLE;
+ALTER TABLE t1 algorithm=copy, ADD c4 TIMESTAMP;
+ALTER TABLE t1 algorithm=copy, ADD c5 DOUBLE;
 ALTER TABLE t1 ADD INDEX (c5);
 --disable_warnings
 SHOW CREATE TABLE t1;
@@ -241,8 +241,12 @@ while ($j)
 
 
 --echo ***** Time to try slave sync ***********
+--sync_slave_with_master
+
 --echo **** Must make sure slave is clean *****
 --connection slave
+USE tpcb;
+SELECT COUNT(*) FROM account;
 STOP SLAVE;
 RESET SLAVE;
 DROP PROCEDURE IF EXISTS tpcb.load;

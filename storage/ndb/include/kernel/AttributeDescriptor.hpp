@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2013, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -180,6 +180,7 @@ void
 AttributeDescriptor::setDiskBased(Uint32 & desc, Uint32 val)
 {
   assert(val <= 1);
+  desc &= (~(1 << AD_DISK_SHIFT));
   desc |= (val << AD_DISK_SHIFT);
 }
 

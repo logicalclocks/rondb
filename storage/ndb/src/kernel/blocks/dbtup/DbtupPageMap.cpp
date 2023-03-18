@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -843,7 +844,11 @@ Dbtup::allocFragPage(EmulatedJamBuffer* jamBuf,
   Uint32 noOfPagesAllocated = 0;
   Uint32 list = regFragPtr->m_free_page_id_list;
 
-  allocConsPages(jamBuf, 1, noOfPagesAllocated, pagePtr.i);
+  allocConsPages(jamBuf,
+                 regTabPtr,
+                 1,
+                 noOfPagesAllocated,
+                 pagePtr.i);
   if (noOfPagesAllocated == 0) 
   {
     thrjam(jamBuf);
@@ -953,7 +958,11 @@ Dbtup::allocFragPage(Uint32 * err,
   }
   
   Uint32 noOfPagesAllocated = 0;
-  allocConsPages(jamBuffer(), 1, noOfPagesAllocated, pagePtr.i);
+  allocConsPages(jamBuffer(),
+                 tabPtrP,
+                 1,
+                 noOfPagesAllocated,
+                 pagePtr.i);
   if (unlikely(noOfPagesAllocated == 0))
   {
     release_frag_page_map_mutex(fragPtrP, jamBuffer());
@@ -1051,6 +1060,7 @@ Dbtup::releaseFragPage(Fragrecord* fragPtrP,
   Uint32 last_lcp_state = (*prev) & LAST_LCP_FREE_BIT;
   Uint32 lcp_scan_ptr_i = fragPtrP->m_lcp_scan_op;
   bool lcp_to_scan = false;
+  bool rowid_in_remaining_lcp_set = false;
   if (lcp_scan_ptr_i != RNIL)
   {
     /**
@@ -1062,17 +1072,20 @@ Dbtup::releaseFragPage(Fragrecord* fragPtrP,
      * duplicate some DELETE BY ROWID, but it should only have a minor
      * performance impact. Otherwise we will ignore it.
      */
+    jam();
     ScanOpPtr scanOp;
     Local_key key;
     scanOp.i = lcp_scan_ptr_i;
     ndbrequire(c_scanOpPool.getValidPtr(scanOp));
     key.m_page_no = logicalPageId;
     key.m_page_idx = ZNIL;
-    if (is_rowid_in_remaining_lcp_set(pagePtr.p,
-                                      fragPtrP,
-                                      key,
-                                      *scanOp.p,
-                                      1 /* Debug for LCP scanned bit */) ||
+    rowid_in_remaining_lcp_set =
+      is_rowid_in_remaining_lcp_set(pagePtr.p,
+                                    fragPtrP,
+                                    key,
+                                    *scanOp.p,
+                                    1 /* Debug for LCP scanned bit */);
+    if (rowid_in_remaining_lcp_set ||
         pagePtr.p->is_page_to_skip_lcp())
     {
       jam();
@@ -1208,18 +1221,7 @@ Dbtup::releaseFragPage(Fragrecord* fragPtrP,
       /* Coverage tested */
     }
   }
-  if (!lcp_to_scan)
-  {
-    if (unlikely(lcp_scanned_bit != 0))
-    {
-      g_eventLogger->info("(%u)tab(%u,%u):%u crash lcp_scanned_bit set",
-                          instance(),
-                          fragPtrP->fragTableId,
-                          fragPtrP->fragmentId,
-                          logicalPageId);
-      ndbrequire(lcp_scanned_bit == 0);
-    }
-  }
+
   if (!page_freed)
   {
     jam();
@@ -1334,9 +1336,9 @@ Dbtup::rebuild_page_free_list(Signal* signal)
   Uint32 tail = signal->theData[3];
   ptrCheckGuard(fragOpPtr, cnoOfFragoprec, fragoperrec);
   
-  Ptr<Fragrecord> fragPtr;
+  FragrecordPtr fragPtr;
   fragPtr.i= fragOpPtr.p->fragPointer;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   
   if (pageId == fragPtr.p->m_max_page_cnt)
   {
@@ -1348,6 +1350,8 @@ Dbtup::rebuild_page_free_list(Signal* signal)
     conf->restoredLocalLcpId = fragOpPtr.p->m_restoredLocalLcpId;
     conf->maxGciCompleted = fragOpPtr.p->m_maxGciCompleted;
     conf->afterRestore = 1;
+    conf->tableId = fragPtr.p->fragTableId;
+    conf->fragId = fragPtr.p->fragmentId;
     sendSignal(fragOpPtr.p->m_senderRef,
 	       GSN_RESTORE_LCP_CONF, signal, 
 	       RestoreLcpConf::SignalLength, JBB);

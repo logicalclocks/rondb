@@ -1,5 +1,5 @@
-/* Copyright (c) 2009, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+/* Copyright (c) 2009, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,6 +29,7 @@
 
 #include "angel.hpp"
 #include "ndbd.hpp"
+#include "main.hpp"
 
 #include <NdbConfig.h>
 #include <NdbAutoPtr.hpp>
@@ -38,9 +39,9 @@
 
 #include <ConfigRetriever.hpp>
 
-#include <EventLogger.hpp>
 #include <NdbTCP.h>
-extern EventLogger * g_eventLogger;
+#include "util/ndb_opts.h"
+#include <EventLogger.hpp>
 
 static void
 angel_exit(int code)
@@ -92,7 +93,7 @@ reportShutdown(const ndb_mgm_configuration* config,
                      rep->getNodeId(), 0);
 
   // Log event to cluster log
-  ndb_mgm_configuration_iterator iter(*config, CFG_SECTION_NODE);
+  ndb_mgm_configuration_iterator iter(config, CFG_SECTION_NODE);
   for (iter.first(); iter.valid(); iter.next())
   {
     Uint32 type;
@@ -212,6 +213,8 @@ int pipe(int pipefd[2]){
 
 #undef getpid
 #include <process.h>
+#include <io.h>
+#include <windows.h>
 
 typedef DWORD pid_t;
 
@@ -224,7 +227,7 @@ pid_t waitpid(pid_t pid, int *stat_loc, int options)
   assert(options == WNOHANG);
   assert(stat_loc);
 
-  HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+  HANDLE handle = OpenProcess(PROCESS_ALL_ACCESS, false, pid);
   if (handle == NULL)
   {
     g_eventLogger->error("waitpid: Could not open handle for pid %d, "
@@ -289,7 +292,7 @@ kill(pid_t pid, int sig)
   /* Open the event to signal */
   HANDLE shutdown_event;
   while ((shutdown_event =
-          OpenEvent(EVENT_MODIFY_STATE, FALSE, shutdown_event_name)) == NULL)
+          OpenEvent(EVENT_MODIFY_STATE, false, shutdown_event_name)) == NULL)
   {
      /*
       Check if the process is alive, otherwise there is really
@@ -297,7 +300,7 @@ kill(pid_t pid, int sig)
      */
     DWORD exit_code;
     HANDLE process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_INFORMATION,
-                                  FALSE, pid);
+                                  false, pid);
     if (!process)
     {
       /* Already died */
@@ -320,7 +323,7 @@ kill(pid_t pid, int sig)
     }
 
     if (retry_open_event--)
-      Sleep(100);
+      NdbSleep_MilliSleep(100);
     else
     {
       g_eventLogger->error("Failed to open shutdown_event '%s', error: %d",
@@ -460,7 +463,7 @@ spawn_process(const char* progname, const Vector<BaseString>& args)
 }
 
 /*
-  retry failed spawn after sleep until fork suceeds or
+  retry failed spawn after sleep until fork succeeds or
   max number of retries occurs
 */
 
@@ -492,7 +495,7 @@ retry_spawn_process(const char* progname, const Vector<BaseString>& args)
 
 static Uint32 stop_on_error;
 static Uint32 config_max_start_fail_retries;
-static Uint32 config_restart_delay_secs; 
+static Uint32 config_restart_delay_secs;
 
 
 /*
@@ -503,7 +506,7 @@ static bool
 configure(const ndb_mgm_configuration* conf, NodeId nodeid)
 {
   Uint32 generation = 0;
-  ndb_mgm_configuration_iterator sys_iter(*conf, CFG_SECTION_SYSTEM);
+  ndb_mgm_configuration_iterator sys_iter(conf, CFG_SECTION_SYSTEM);
   if (sys_iter.get(CFG_SYS_CONFIG_GENERATION, &generation))
   {
     g_eventLogger->warning("Configuration didn't contain generation "
@@ -511,7 +514,7 @@ configure(const ndb_mgm_configuration* conf, NodeId nodeid)
   }
   g_eventLogger->debug("Using configuration with generation %u", generation);
 
-  ndb_mgm_configuration_iterator iter(*conf, CFG_SECTION_NODE);
+  ndb_mgm_configuration_iterator iter(conf, CFG_SECTION_NODE);
   if (iter.find(CFG_NODE_ID, nodeid))
   {
     g_eventLogger->error("Invalid configuration fetched, could not "
@@ -544,6 +547,7 @@ configure(const ndb_mgm_configuration* conf, NodeId nodeid)
     NdbConfig_SetPidfilePath(pidfile_dir);
     g_eventLogger->debug("Using Directory: %s for pid file", pidfile_dir);
   }
+
   const char * datadir;
   if (iter.get(CFG_NODE_DATADIR, &datadir))
   {
@@ -625,11 +629,8 @@ angel_run(const char* progname,
   }
   g_eventLogger->info("Angel allocated nodeid: %u", nodeid);
 
-  std::unique_ptr<ndb_mgm_configuration, ConfigRetriever::ConfigDeleter>
-      config_autoptr{retriever.getConfig(nodeid)};
-  ndb_mgm_configuration* config{config_autoptr.get()};
-
-  if (config == 0)
+  const ndb_mgm::config_ptr config(retriever.getConfig(nodeid));
+  if (!config)
   {
     g_eventLogger->error("Could not fetch configuration/invalid "
                          "configuration, error: '%s'",
@@ -637,7 +638,7 @@ angel_run(const char* progname,
     angel_exit(1);
   }
 
-  if (!configure(config, nodeid))
+  if (!configure(config.get(), nodeid))
   {
     // Failed to configure, error already printed
     angel_exit(1);
@@ -657,6 +658,10 @@ angel_run(const char* progname,
       angel_exit(1);
     }
   }
+
+  const bool have_password_option  =
+      g_filesystem_password_state.have_password_option();
+
 
   // Counter for consecutive failed startups
   Uint32 failed_startups_counter = 0;
@@ -678,6 +683,21 @@ angel_run(const char* progname,
       g_eventLogger->error("Failed to open stream for pipe, errno: %d (%s)",
                            errno, strerror(errno));
       angel_exit(1);
+    }
+
+    int fs_password_fds[2];
+    if(have_password_option) {
+      if (pipe(fs_password_fds))
+      {
+        g_eventLogger->error("Failed to create pipe, errno: %d (%s)",
+                             errno, strerror(errno));
+        angel_exit(1);
+      }
+      // Angel stdin is closed and attached to pipe, not strictly wanted,
+      // but to make it work on windows and spawn we need to reset the
+      // angels stdin since child inherits it as is.
+      dup2(fs_password_fds[0], 0);
+      close(fs_password_fds[0]);
     }
 
     // Build the args used to start ndbd by appending
@@ -705,7 +725,30 @@ angel_run(const char* progname,
     one_arg.assfmt("--angel-pid=%d", getpid());
     args.push_back(one_arg);
 
+
+    if(have_password_option) {
+      /**
+       * Removes all password opts and adds a new one
+       * (filesystem-password-from-stdin) to pass password to child always
+       * in same way.
+       * --skip-filesystem-password-from-stdin is not strictly needed,
+       * it is used just to clarify the way we are passing the password.
+       * Any future new filesystem-password option should also be skipped here.
+       */
+      args.push_back("--skip-filesystem-password");
+      args.push_back("--skip-filesystem-password-from-stdin");
+      args.push_back("--filesystem-password-from-stdin");
+    }
+
+    /**
+     * We need to set g_is_forked=true temporarily in order to make the
+     * forked child to inherit it. After fork we set g_is_forked to false
+     * again in parent (angel).
+     */
+
+    g_is_forked = true;
     pid_t child = retry_spawn_process(progname, args);
+    g_is_forked = false;
     if (child <= 0)
     {
       // safety, retry_spawn_process returns valid child or give up
@@ -736,6 +779,33 @@ angel_run(const char* progname,
     }
     ignore_signals();
 
+    if(have_password_option)
+    {
+      const char *nul = IF_WIN("nul:", "/dev/null");
+      int fd = open(nul, O_RDONLY, 0);
+      if (fd == -1) {
+        g_eventLogger->error("Failed to open %s errno: %d (%s)",
+                             nul, errno, strerror(errno));
+        angel_exit(1);
+      }
+
+      // angel stdin reset to /dev/null
+      dup2(fd,0);
+      close(fd);
+
+      const Uint32 password_length = g_filesystem_password_state.get_password_length();
+      const char *state_password = g_filesystem_password_state.get_password();
+      char *password = new char[password_length+1]();
+      memcpy(password, state_password, password_length);
+      password[password_length] = '\n';
+      if (write(fs_password_fds[1], password, password_length + 1) == -1)
+      {
+        g_eventLogger->error("Failed to write to pipe, errno: %d (%s)",
+                             errno, strerror(errno));
+        angel_exit(1);
+      }
+    }
+
     int status=0, error_exit=0;
     while(true)
     {
@@ -760,8 +830,9 @@ angel_run(const char* progname,
       NdbSleep_MilliSleep(100);
     }
 
-    // Close the write end of pipe
+    // Close the write end of pipes
     close(fds[1]);
+    close(fs_password_fds[1]);
 
     // Read info from the child's pipe
     char buf[128];
@@ -776,7 +847,7 @@ angel_run(const char* progname,
       else if (sscanf(buf, "sphase=%d\n", &value) == 1)
         child_sphase = value;
       else if (strcmp(buf, "\n") != 0)
-        fprintf(stderr, "unknown info from child: '%s'\n", buf);
+        g_eventLogger->info("unknown info from child: '%s'", buf);
     }
     g_eventLogger->debug("error: %u, signal: %u, sphase: %u",
                          child_error, child_signal, child_sphase);
@@ -788,7 +859,7 @@ angel_run(const char* progname,
       switch (WEXITSTATUS(status)) {
       case NRT_Default:
         g_eventLogger->info("Angel shutting down");
-        reportShutdown(config, nodeid, 0, 0, false, false,
+        reportShutdown(config.get(), nodeid, 0, 0, false, false,
                        child_error, child_signal, child_sphase);
         angel_exit(0);
         break;
@@ -811,12 +882,12 @@ angel_run(const char* progname,
           /**
            * Error shutdown && stopOnError()
            */
-          reportShutdown(config, nodeid,
+          reportShutdown(config.get(), nodeid,
                          error_exit, 0, false, false,
                          child_error, child_signal, child_sphase);
           angel_exit(2);
         }
-        // Fall-through
+        [[fallthrough]];
       case NRT_DoStart_Restart:
         initial = false;
         no_start = false;
@@ -840,7 +911,7 @@ angel_run(const char* progname,
         /**
          * Error shutdown && stopOnError()
          */
-        reportShutdown(config, nodeid,
+        reportShutdown(config.get(), nodeid,
                        error_exit, 0, false, false,
                        child_error, child_signal, child_sphase);
         angel_exit(2);
@@ -865,14 +936,14 @@ angel_run(const char* progname,
       {
         g_eventLogger->alert("Angel detected too many startup failures(%d), "
                              "not restarting again", failed_startups_counter);
-        reportShutdown(config, nodeid,
+        reportShutdown(config.get(), nodeid,
                        error_exit, 0, false, false,
                        child_error, child_signal, child_sphase);
         angel_exit(2);
       }
       g_eventLogger->info("Angel detected startup failure, count: %u",
                           failed_startups_counter);
-      
+
       restart_delay_secs = config_restart_delay_secs;
     }
     else
@@ -881,7 +952,7 @@ angel_run(const char* progname,
       failed_startups_counter = 0;
     }
 
-    reportShutdown(config, nodeid,
+    reportShutdown(config.get(), nodeid,
                    error_exit, 1,
                    no_start,
                    initial,

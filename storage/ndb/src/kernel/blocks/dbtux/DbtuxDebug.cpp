@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -56,18 +57,18 @@ void Dbtux::execDBINFO_SCANREQ(Signal *signal)
           CFG_DB_NO_UNIQUE_HASH_INDEXES,0 },
         0},
       { "Fragment",
-        c_fragPool.getUsed(),
-        c_fragPool.getSize(),
-        c_fragPool.getEntrySize(),
-        c_fragPool.getUsedHi(),
+        cnoOfAllocatedFragrec,
+        0,
+        sizeof(Frag)/4,
+        cnoOfMaxAllocatedFragrec,
         { CFG_DB_NO_ORDERED_INDEXES,
           CFG_DB_NO_REPLICAS,0,0 },
         0},
       { "Descriptor page",
-        c_descPagePool.getUsed(),
-        c_descPagePool.getSize(),
-        c_descPagePool.getEntrySize(),
-        c_descPagePool.getUsedHi(),
+        c_descPageList.getCount(),
+        0,
+        sizeof(DescPage),
+        c_descMaxPagesAllocated,
         { CFG_DB_NO_TABLES,
           CFG_DB_NO_ORDERED_INDEXES,
           CFG_DB_NO_UNIQUE_HASH_INDEXES,0 },
@@ -106,7 +107,9 @@ void Dbtux::execDBINFO_SCANREQ(Signal *signal)
 
     const size_t num_config_params =
       sizeof(pools[0].config_params) / sizeof(pools[0].config_params[0]);
+    const Uint32 numPools = NDB_ARRAY_SIZE(pools);
     Uint32 pool = cursor->data[0];
+    ndbrequire(pool < numPools);
     BlockNumber bn = blockToMain(number());
     while(pools[pool].poolname)
     {
@@ -182,20 +185,20 @@ Dbtux::execDUMP_STATE_ORD(Signal* signal)
   }
 #endif
 
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
   if (signal->theData[0] == DumpStateOrd::SchemaResourceSnapshot)
   {
     RSS_AP_SNAPSHOT_SAVE(c_indexPool);
-    RSS_AP_SNAPSHOT_SAVE(c_fragPool);
+    cnoOfSaveAllocatedFragrec = cnoOfAllocatedFragrec;
     RSS_AP_SNAPSHOT_SAVE(c_fragOpPool);
   }
 
   if (signal->theData[0] == DumpStateOrd::SchemaResourceCheckLeak)
   {
     RSS_AP_SNAPSHOT_CHECK(c_indexPool);
-    RSS_AP_SNAPSHOT_CHECK(c_fragPool);
+    ndbrequire(cnoOfAllocatedFragrec == cnoOfSaveAllocatedFragrec);
     RSS_AP_SNAPSHOT_CHECK(c_fragOpPool);
   }
-#if defined(VM_TRACE) || defined(ERROR_INSERT)
   if (signal->theData[0] == DumpStateOrd::TuxSetTransientPoolMaxSize)
   {
     jam();
@@ -319,7 +322,7 @@ Dbtux::printNode(TuxCtx & ctx,
   for (unsigned i = 0; i <= 1; i++) {
     if (node.getLink(i) != NullTupLoc &&
         node.getLink(1 - i) == NullTupLoc &&
-        // our semi-leaf seems to satify interior minOccup condition
+        // our semi-leaf seems to satisfy interior minOccup condition
         node.getOccup() < tree.m_minOccup) {
       par.m_ok = false;
       out << par.m_path << sep;
@@ -504,18 +507,8 @@ operator<<(NdbOut& out, const Dbtux::ScanOp& scan)
 NdbOut&
 operator<<(NdbOut& out, const Dbtux::Index& index)
 {
-  Dbtux* tux = (Dbtux*)globalData.getBlock(DBTUX);
   out << "[Index " << hex << &index;
   out << " [tableId " << dec << index.m_tableId << "]";
-  out << " [numFrags " << dec << index.m_numFrags << "]";
-  if (globalData.isNdbMtLqh)//TODO
-    return out;
-  for (unsigned i = 0; i < index.m_numFrags; i++) {
-    out << " [frag " << dec << i << " ";
-    const Dbtux::Frag& frag = *tux->c_fragPool.getPtr(index.m_fragPtrI[i]);
-    out << frag;
-    out << "]";
-  }
   out << " [descPage " << hex << index.m_descPage << "]";
   out << " [descOff " << dec << index.m_descOff << "]";
   out << " [numAttrs " << dec << index.m_numAttrs << "]";

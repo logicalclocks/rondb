@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,7 +32,7 @@
  *
  * When adding a new signal, remember to update MAX_GSN and SignalNames.cpp
  */
-const GlobalSignalNumber MAX_GSN = 908;
+const GlobalSignalNumber MAX_GSN = 912;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -77,9 +77,10 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_GET_TABINFOREQ              24
 #define GSN_GET_TABINFO_CONF            190
 
-#define GSN_GET_TABLEID_REQ             683
-#define GSN_GET_TABLEID_REF             684
-#define GSN_GET_TABLEID_CONF            685
+/* Signals removed from 8.0.27 */
+/* 683 used to be GET_TABLEID_REQ, no longer used */
+/* 684 used to be GET_TABLEID_REF, no longer used */
+/* 685 used to be GET_TABLEID_CONF, no longer used */
 
 #define GSN_DIHNDBTAMPER                25
 #define GSN_NODE_FAILREP                26
@@ -978,7 +979,7 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_TUX_BOUND_INFO		710
 
 #define GSN_ACC_LOCKREQ			711
-#define GSN_READ_PSEUDO_REQ             712
+// #define GSN_READ_PSEUDO_REQ             712 /* Not a signal since 8.0.24 */
 
 /**
  * Filegroup 
@@ -1215,6 +1216,8 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_UPD_QUERY_DIST_ORD          848
 #define GSN_UPD_THR_LOAD_ORD            849
 
+#define GSN_TRP_KEEP_ALIVE              850
+
 #define GSN_ACTIVATE_REQ                900
 #define GSN_ACTIVATE_CONF               901
 #define GSN_ACTIVATE_REF                902
@@ -1224,5 +1227,10 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 #define GSN_SET_HOSTNAME_REQ            906
 #define GSN_SET_HOSTNAME_CONF           907
 #define GSN_SET_HOSTNAME_REF            908
+
+#define GSN_SEND_PUSH_ORD               909
+#define GSN_SEND_PUSH_ABORTREQ          910
+#define GSN_SEND_PUSH_ABORTCONF         911
+#define GSN_PUSH_ABORT_TRAIN_ORD        912
 
 #endif

@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -43,6 +43,7 @@
 #include "mysql/psi/mysql_thread.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
+#include "scope_guard.h"  // create_scope_guard
 #include "sql/auth/sql_security_ctx.h"
 #include "sql/bootstrap_impl.h"
 #include "sql/error_handler.h"  // Internal_error_handler
@@ -60,7 +61,7 @@
 #include "sql/sql_lex.h"
 #include "sql/sql_parse.h"  // dispatch_sql_command
 #include "sql/sql_profile.h"
-#include "sql/sys_vars_shared.h"  // intern_find_sys_var
+#include "sql/sys_vars_shared.h"  // find_static_system_variable
 #include "sql/system_variables.h"
 #include "sql/thd_raii.h"
 #include "sql/transaction_info.h"
@@ -93,7 +94,7 @@ static char *mysql_file_fgets_fn(char *buffer, size_t size, MYSQL_FILE *input,
   return line;
 }
 
-File_command_iterator::~File_command_iterator() {}
+File_command_iterator::~File_command_iterator() = default;
 
 static void bootstrap_log_error(const char *message) {
   my_printf_error(ER_UNKNOWN_ERROR, "%s", MYF(0), message);
@@ -137,7 +138,7 @@ static bool handle_bootstrap_impl(handle_bootstrap_args *args) {
       term solution to allow SRS data to be entered by INSERT statements
       instead of CREATE statements.
     */
-    DBUG_ASSERT(thd->system_thread == SYSTEM_THREAD_SERVER_INITIALIZE);
+    assert(thd->system_thread == SYSTEM_THREAD_SERVER_INITIALIZE);
 
     /*
       The server must avoid logging compiled statements into the binary log
@@ -166,7 +167,7 @@ static bool handle_bootstrap_impl(handle_bootstrap_args *args) {
       statement from an init file, we must make sure that the thread type is
       set to the appropriate value.
     */
-    DBUG_ASSERT(thd->system_thread == SYSTEM_THREAD_INIT_FILE);
+    assert(thd->system_thread == SYSTEM_THREAD_INIT_FILE);
 
     File_command_iterator file_iter(args->m_file_name, args->m_file,
                                     mysql_file_fgets_fn);
@@ -180,15 +181,14 @@ static bool handle_bootstrap_impl(handle_bootstrap_args *args) {
 }
 
 static int process_iterator(THD *thd, Command_iterator *it,
-                            bool enforce_invariants MY_ATTRIBUTE((unused))) {
+                            bool enforce_invariants [[maybe_unused]]) {
   std::string query;
   Key_length_error_handler error_handler;
   bool error = false;
 
-  const bool saved_sql_log_bin MY_ATTRIBUTE((unused)) =
-      thd->variables.sql_log_bin;
-  const ulonglong invariant_bits MY_ATTRIBUTE((unused)) = OPTION_BIN_LOG;
-  const ulonglong saved_option_bits MY_ATTRIBUTE((unused)) =
+  const bool saved_sql_log_bin [[maybe_unused]] = thd->variables.sql_log_bin;
+  const ulonglong invariant_bits [[maybe_unused]] = OPTION_BIN_LOG;
+  const ulonglong saved_option_bits [[maybe_unused]] =
       thd->variables.option_bits & invariant_bits;
 
   it->begin();
@@ -268,18 +268,18 @@ static int process_iterator(THD *thd, Command_iterator *it,
       break;
     }
 
-    free_root(thd->mem_root, MYF(MY_KEEP_PREALLOC));
+    thd->mem_root->ClearForReuse();
 
     /*
       Make sure bootstrap statements do not change binlog options.
       Currently enforced for compiled in statements.
     */
-    DBUG_ASSERT(
+    assert(
         !enforce_invariants ||
         (saved_option_bits == (thd->variables.option_bits & invariant_bits)));
 
-    DBUG_ASSERT(!enforce_invariants ||
-                (saved_sql_log_bin == thd->variables.sql_log_bin));
+    assert(!enforce_invariants ||
+           (saved_sql_log_bin == thd->variables.sql_log_bin));
   }
 
   it->end();
@@ -317,6 +317,10 @@ static void *handle_bootstrap(void *arg) {
     // if the server is started with --transaction-read-only=true.
     thd->variables.transaction_read_only = false;
     thd->tx_read_only = false;
+    ErrorHandlerFunctionPointer existing_hook = error_handler_hook;
+    auto grd =
+        create_scope_guard([&]() { error_handler_hook = existing_hook; });
+    if (opt_initialize) error_handler_hook = my_message_sql;
 
     bootstrap_functor handler = args->m_bootstrap_handler;
     if (handler) {
@@ -369,7 +373,8 @@ bool run_bootstrap_thread(const char *file_name, MYSQL_FILE *file,
 
   // Set server default sql_mode irrespective of mysqld server command line
   // argument.
-  thd->variables.sql_mode = intern_find_sys_var("sql_mode", 0)->get_default();
+  thd->variables.sql_mode =
+      find_static_system_variable("sql_mode")->get_default();
 
   // Set session server and connection collation irrespective of
   // mysqld server command line argument.
@@ -382,7 +387,7 @@ bool run_bootstrap_thread(const char *file_name, MYSQL_FILE *file,
   // avoid problems due to transactions being active when they are
   // not supposed to.
   thd->variables.completion_type =
-      intern_find_sys_var("completion_type", 0)->get_default();
+      find_static_system_variable("completion_type")->get_default();
 
   /*
     Set default value for explicit_defaults_for_timestamp variable. Bootstrap
@@ -391,7 +396,8 @@ bool run_bootstrap_thread(const char *file_name, MYSQL_FILE *file,
     the user.
   */
   thd->variables.explicit_defaults_for_timestamp =
-      intern_find_sys_var("explicit_defaults_for_timestamp", 0)->get_default();
+      find_static_system_variable("explicit_defaults_for_timestamp")
+          ->get_default();
 
   /*
     The global table encryption default setting applies to user threads.
@@ -411,7 +417,7 @@ bool run_bootstrap_thread(const char *file_name, MYSQL_FILE *file,
   my_thread_attr_getstacksize(&thr_attr, &stacksize);
   if (stacksize < my_thread_stack_size) {
     if (0 != my_thread_attr_setstacksize(&thr_attr, my_thread_stack_size)) {
-      DBUG_ASSERT(false);
+      assert(false);
     }
   }
 

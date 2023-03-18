@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2022, Oracle and/or its affiliates.
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
@@ -87,12 +87,12 @@ void Security_context::init() {
   m_master_access = 0;
   m_db_access = NO_ACCESS;
   m_acl_map = nullptr;
-  m_map_checkout_count = 0;
   m_password_expired = false;
   m_is_locked = false;
   m_is_skip_grants_user = false;
   m_has_drop_policy = false;
   m_executed_drop_policy = false;
+  m_registration_sandbox_mode = false;
 }
 
 void Security_context::logout() {
@@ -159,6 +159,7 @@ void Security_context::destroy() {
   m_password_expired = false;
   m_is_skip_grants_user = false;
   clear_db_restrictions();
+  m_registration_sandbox_mode = false;
 }
 
 /**
@@ -181,11 +182,12 @@ void Security_context::skip_grants(const char *user /*= "skip-grants user"*/,
   m_is_skip_grants_user = true;
 
   /*
-    If the security context is tied upto to the THD object and it is
-    current security context in THD then set the flag to true.
+    If the security context is tied up to to the THD object and it is
+    current security context in THD, then set the flags to true.
   */
   if (m_thd && m_thd->security_context() == this) {
     m_thd->set_system_user(true);
+    m_thd->set_connection_admin(true);
   }
 }
 
@@ -263,12 +265,12 @@ void Security_context::copy_security_ctx(const Security_context &src_sctx) {
   For the main security context, the memory for user/host/ip is
   allocated on system heap, and the THD class frees this memory in
   its destructor. The only case when contents of the main security
-  context may change during its life time is when someone issued
+  context may change during its life time is when someone issued a
   CHANGE USER command.
   Memory management of a "temporary" security context is
   responsibility of the module that creates it.
 
-  @retval true  there is no user with the given credentials. The erro
+  @retval true  There is no user with the given credentials. The error
                 is reported in the thread.
   @retval false success
 */
@@ -280,7 +282,7 @@ bool Security_context::change_security_context(
 
   DBUG_TRACE;
 
-  DBUG_ASSERT(definer_user.str && definer_host.str);
+  assert(definer_user.str && definer_host.str);
 
   *backup = nullptr;
   needs_change =
@@ -394,7 +396,6 @@ void Security_context::checkout_access_maps(void) {
   }
 
   if (m_active_roles.size() == 0) return;
-  ++m_map_checkout_count;
   Auth_id_ref uid;
   uid.first.str = this->m_priv_user;
   uid.first.length = this->m_priv_user_length;
@@ -504,8 +505,8 @@ ulong Security_context::db_acl(LEX_CSTRING db, bool use_pattern_scan) const {
     ulong access = 0;
     for (; it != m_acl_map->db_wild_acls()->end(); ++it) {
       /*
-        Do the usual string comparision if partial_revokes is ON,
-        otherwise do the wildcard grant comparision
+        Do the usual string comparison if partial_revokes is ON,
+        otherwise do the wildcard grant comparison
       */
       if (mysqld_partial_revokes()
               ? (my_strcasecmp(system_charset_info, db.str,
@@ -868,7 +869,7 @@ void Security_context::set_host_ptr(const char *host_arg,
                                     const size_t host_arg_length) {
   DBUG_TRACE;
 
-  DBUG_ASSERT(host_arg != nullptr);
+  assert(host_arg != nullptr);
 
   if (host_arg == m_host.ptr()) return;
 
@@ -1152,7 +1153,7 @@ ulong Security_context::filter_access(const ulong access,
 std::pair<bool, bool> Security_context::fetch_global_grant(
     const ACL_USER &acl_user, const std::string &privilege,
     bool cumulative /*= false */) {
-  DBUG_ASSERT(assert_acl_cache_read_lock(current_thd));
+  assert(assert_acl_cache_read_lock(current_thd));
   std::pair<bool, bool> has_privilege{false, false};
   Security_context sctx;
 
@@ -1180,12 +1181,12 @@ std::pair<bool, bool> Security_context::fetch_global_grant(
   @param [in,out] tables Table list object
 
   @returns access information
-  @retval true Sucess
+  @retval true Success
   @retval false Failure
  */
-bool Security_context::has_table_access(ulong priv, TABLE_LIST *tables) {
+bool Security_context::has_table_access(ulong priv, Table_ref *tables) {
   DBUG_TRACE;
-  DBUG_ASSERT(tables != nullptr);
+  assert(tables != nullptr);
   TABLE const *table = tables->table;
   LEX_CSTRING db, table_name;
   db.str = table->s->db.str;
@@ -1229,7 +1230,7 @@ bool Security_context::has_table_access(ulong priv, TABLE_LIST *tables) {
  */
 bool Security_context::is_table_blocked(ulong priv, TABLE const *table) {
   DBUG_TRACE;
-  DBUG_ASSERT(table != nullptr);
+  assert(table != nullptr);
   LEX_CSTRING db, table_name;
   db.str = table->s->db.str;
   db.length = table->s->db.length;
@@ -1238,7 +1239,7 @@ bool Security_context::is_table_blocked(ulong priv, TABLE const *table) {
   table_name.length = strlen(table->alias);
 
   /* Table privs */
-  TABLE_LIST tables;
+  Table_ref tables;
   tables.table = const_cast<TABLE *>(table);
   tables.db = db.str;
   tables.db_length = db.length;
@@ -1257,13 +1258,13 @@ bool Security_context::is_table_blocked(ulong priv, TABLE const *table) {
   @param [in] columns List of column names to check
 
   @returns access information
-  @retval true Sucess
+  @retval true Success
   @retval false Failure
  */
 bool Security_context::has_column_access(ulong priv, TABLE const *table,
                                          std::vector<std::string> columns) {
   DBUG_TRACE;
-  DBUG_ASSERT(table != nullptr);
+  assert(table != nullptr);
   LEX_CSTRING db, table_name;
   db.str = table->s->db.str;
   db.length = table->s->db.length;
@@ -1272,7 +1273,7 @@ bool Security_context::has_column_access(ulong priv, TABLE const *table,
   table_name.length = strlen(table->alias);
 
   /* Table privs */
-  TABLE_LIST tables;
+  Table_ref tables;
   tables.table = const_cast<TABLE *>(table);
   tables.db = db.str;
   tables.db_length = db.length;

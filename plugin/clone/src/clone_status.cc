@@ -1,4 +1,4 @@
-/* Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2019, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -38,7 +38,7 @@ SERVICE_TYPE_NO_CONST(pfs_plugin_table_v1) *mysql_pfs_table = nullptr;
 SERVICE_TYPE_NO_CONST(pfs_plugin_column_integer_v1) *mysql_pfscol_int = nullptr;
 SERVICE_TYPE_NO_CONST(pfs_plugin_column_bigint_v1) *mysql_pfscol_bigint =
     nullptr;
-SERVICE_TYPE_NO_CONST(pfs_plugin_column_string_v1) *mysql_pfscol_string =
+SERVICE_TYPE_NO_CONST(pfs_plugin_column_string_v2) *mysql_pfscol_string =
     nullptr;
 SERVICE_TYPE_NO_CONST(pfs_plugin_column_timestamp_v2) *mysql_pfscol_timestamp =
     nullptr;
@@ -135,7 +135,7 @@ bool Table_pfs::acquire_services() {
   /* Get column services. */
   ACQUIRE_SERVICE(mysql_pfscol_int, "pfs_plugin_column_integer_v1")
   ACQUIRE_SERVICE(mysql_pfscol_bigint, "pfs_plugin_column_bigint_v1")
-  ACQUIRE_SERVICE(mysql_pfscol_string, "pfs_plugin_column_string_v1")
+  ACQUIRE_SERVICE(mysql_pfscol_string, "pfs_plugin_column_string_v2")
   ACQUIRE_SERVICE(mysql_pfscol_timestamp, "pfs_plugin_column_timestamp_v2")
 
   auto err = create_proxy_tables();
@@ -165,8 +165,8 @@ void Table_pfs::init_state_names() {
       case STATE_FAILED:
         state_name = "Failed";
         break;
-      default:              /* purecov: inspected */
-        DBUG_ASSERT(false); /* purecov: inspected */
+      default:         /* purecov: inspected */
+        assert(false); /* purecov: inspected */
         state_name = nullptr;
     }
     ++index;
@@ -200,8 +200,8 @@ void Table_pfs::init_state_names() {
       case STAGE_RECOVERY:
         stage_name = "RECOVERY";
         break;
-      default:              /* purecov: inspected */
-        DBUG_ASSERT(false); /* purecov: inspected */
+      default:         /* purecov: inspected */
+        assert(false); /* purecov: inspected */
         stage_name = nullptr;
     }
     ++index;
@@ -327,8 +327,8 @@ Status_pfs::Status_pfs() : Table_pfs(S_NUM_ROWS) {
       "`ID` int,"
       "`PID` int,"
       "`STATE` char(16),"
-      "`BEGIN_TIME` timestamp(3),"
-      "`END_TIME` timestamp(3),"
+      "`BEGIN_TIME` timestamp(3) NULL,"
+      "`END_TIME` timestamp(3) NULL,"
       "`SOURCE` varchar(512),"
       "`DESTINATION` varchar(512),"
       "`ERROR_NO` int,"
@@ -349,7 +349,7 @@ int Status_pfs::rnd_init() {
 }
 
 int Status_pfs::read_column_value(PSI_field *field, uint32_t index) {
-  DBUG_ASSERT(!is_empty());
+  assert(!is_empty());
   PSI_uint int_value;
   PSI_ulonglong bigint_value;
 
@@ -369,8 +369,9 @@ int Status_pfs::read_column_value(PSI_field *field, uint32_t index) {
       mysql_pfscol_int->set_unsigned(field, int_value);
       break;
     case 2: /* STATE */
-      mysql_pfscol_string->set_char_utf8(field, s_state_names[m_data.m_state],
-                                         strlen(s_state_names[m_data.m_state]));
+      mysql_pfscol_string->set_char_utf8mb4(
+          field, s_state_names[m_data.m_state],
+          strlen(s_state_names[m_data.m_state]));
       break;
     case 3: /* BEGIN_TIME */
       mysql_pfscol_timestamp->set2(field, is_null ? 0 : m_data.m_start_time);
@@ -379,11 +380,11 @@ int Status_pfs::read_column_value(PSI_field *field, uint32_t index) {
       mysql_pfscol_timestamp->set2(field, is_null ? 0 : m_data.m_end_time);
       break;
     case 5: /* SOURCE */
-      mysql_pfscol_string->set_varchar_utf8(
+      mysql_pfscol_string->set_varchar_utf8mb4(
           field, is_null ? nullptr : m_data.m_source);
       break;
     case 6: /* DESTINATION */
-      mysql_pfscol_string->set_varchar_utf8(
+      mysql_pfscol_string->set_varchar_utf8mb4(
           field, is_null ? nullptr : m_data.m_destination);
       break;
     case 7: /* ERROR_NUMBER */
@@ -392,12 +393,12 @@ int Status_pfs::read_column_value(PSI_field *field, uint32_t index) {
       mysql_pfscol_int->set_unsigned(field, int_value);
       break;
     case 8: /* ERROR_MESSAGE */
-      mysql_pfscol_string->set_varchar_utf8(
+      mysql_pfscol_string->set_varchar_utf8mb4(
           field, is_null ? nullptr : m_data.m_error_mesg);
       break;
     case 9: /* BINLOG_FILE */ {
       size_t dir_len = dirname_length(m_data.m_binlog_file);
-      mysql_pfscol_string->set_varchar_utf8(
+      mysql_pfscol_string->set_varchar_utf8mb4(
           field, is_null ? nullptr : m_data.m_binlog_file + dir_len);
     } break;
     case 10: /* BINLOG_POSITION */
@@ -406,11 +407,11 @@ int Status_pfs::read_column_value(PSI_field *field, uint32_t index) {
       mysql_pfscol_bigint->set_unsigned(field, bigint_value);
       break;
     case 11: /* GTID_EXECUTED */ {
-      mysql_pfscol_string->set_varchar_utf8(
+      mysql_pfscol_string->set_varchar_utf8mb4(
           field, is_null ? nullptr : m_data.m_gtid_string.c_str());
     } break;
-    default:              /* purecov: inspected */
-      DBUG_ASSERT(false); /* purecov: inspected */
+    default:         /* purecov: inspected */
+      assert(false); /* purecov: inspected */
   }
   return (0);
 }
@@ -605,8 +606,8 @@ Progress_pfs::Progress_pfs() : Table_pfs(S_NUM_ROWS) {
       "`ID` int,"
       "`STAGE` char(32),"
       "`STATE` char(16),"
-      "`BEGIN_TIME` timestamp(6),"
-      "`END_TIME` timestamp(6),"
+      "`BEGIN_TIME` timestamp(6) NULL,"
+      "`END_TIME` timestamp(6) NULL,"
       "`THREADS` int,"
       "`ESTIMATE` bigint,"
       "`DATA` bigint,"
@@ -626,7 +627,7 @@ int Progress_pfs::rnd_init() {
 }
 
 int Progress_pfs::read_column_value(PSI_field *field, uint32_t index) {
-  DBUG_ASSERT(!is_empty());
+  assert(!is_empty());
   PSI_uint int_value;
   PSI_ulonglong bigint_value;
 
@@ -641,13 +642,13 @@ int Progress_pfs::read_column_value(PSI_field *field, uint32_t index) {
       mysql_pfscol_int->set_unsigned(field, int_value);
       break;
     case 1: /* STAGE */
-      mysql_pfscol_string->set_char_utf8(
+      mysql_pfscol_string->set_char_utf8mb4(
           field, s_stage_names[row_index],
           is_null ? 0 : strlen(s_stage_names[row_index]));
       break;
     case 2: /* STATE */ {
       auto name_index = m_data.m_states[row_index];
-      mysql_pfscol_string->set_char_utf8(
+      mysql_pfscol_string->set_char_utf8mb4(
           field, s_state_names[name_index],
           is_null ? 0 : strlen(s_state_names[name_index]));
       break;
@@ -694,8 +695,8 @@ int Progress_pfs::read_column_value(PSI_field *field, uint32_t index) {
       int_value.is_null = is_null;
       mysql_pfscol_int->set_unsigned(field, int_value);
       break;
-    default:              /* purecov: inspected */
-      DBUG_ASSERT(false); /* purecov: inspected */
+    default:         /* purecov: inspected */
+      assert(false); /* purecov: inspected */
   }
   return (0);
 }

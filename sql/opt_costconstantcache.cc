@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2014, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2014, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -35,12 +35,12 @@
 #include "sql/current_thd.h"            // current_thd
 #include "sql/dd/upgrade_57/upgrade.h"  // dd::upgrade_57::in_progress()
 #include "sql/field.h"                  // Field
-#include "sql/mysqld.h"                 // key_LOCK_cost_const
-#include "sql/records.h"                // unique_ptr_destroy_only<RowIterator>
-#include "sql/row_iterator.h"
+#include "sql/iterators/row_iterator.h"
+#include "sql/mysqld.h"     // key_LOCK_cost_const
 #include "sql/sql_base.h"   // open_and_lock_tables
 #include "sql/sql_class.h"  // THD
 #include "sql/sql_const.h"
+#include "sql/sql_executor.h"   // unique_ptr_destroy_only<RowIterator>
 #include "sql/sql_lex.h"        // lex_start/lex_end
 #include "sql/sql_tmp_table.h"  // init_cache_tmp_engine_properties
 #include "sql/table.h"          // TABLE
@@ -64,14 +64,14 @@ Cost_constant_cache::Cost_constant_cache()
 
 Cost_constant_cache::~Cost_constant_cache() {
   // Verify that close has been called
-  DBUG_ASSERT(current_cost_constants == nullptr);
-  DBUG_ASSERT(m_inited == false);
+  assert(current_cost_constants == nullptr);
+  assert(m_inited == false);
 }
 
 void Cost_constant_cache::init() {
   DBUG_TRACE;
 
-  DBUG_ASSERT(m_inited == false);
+  assert(m_inited == false);
 
   // Initialize the mutex that is used for protecting the cost constants
   mysql_mutex_init(key_LOCK_cost_const, &LOCK_cost_const, MY_MUTEX_INIT_FAST);
@@ -88,7 +88,7 @@ void Cost_constant_cache::init() {
 void Cost_constant_cache::close() {
   DBUG_TRACE;
 
-  DBUG_ASSERT(m_inited);
+  assert(m_inited);
 
   if (m_inited == false) return; /* purecov: inspected */
 
@@ -109,7 +109,7 @@ void Cost_constant_cache::close() {
 
 void Cost_constant_cache::reload() {
   DBUG_TRACE;
-  DBUG_ASSERT(m_inited = true);
+  assert(m_inited = true);
 
   // Create cost constants from the constants defined in the source code
   Cost_model_constants *cost_constants = create_defaults();
@@ -181,7 +181,7 @@ static void report_server_cost_warnings(const LEX_CSTRING &cost_name,
              value);
       break;
     default:
-      DBUG_ASSERT(false); /* purecov: inspected */
+      assert(false); /* purecov: inspected */
   }
 }
 
@@ -220,7 +220,7 @@ static void report_engine_cost_warnings(const LEX_CSTRING &se_name,
              cost_name.str, se_name.str, storage_category, value);
       break;
     default:
-      DBUG_ASSERT(false); /* purecov: inspected */
+      assert(false); /* purecov: inspected */
   }
 }
 
@@ -242,16 +242,16 @@ static void read_server_cost_constants(THD *thd, TABLE *table,
   /*
     The server constant table has the following columns:
 
-    cost_name   VARCHAR(64) NOT NULL COLLATE utf8_general_ci
+    cost_name   VARCHAR(64) NOT NULL COLLATE utf8mb3_general_ci
     cost_value  FLOAT DEFAULT NULL
     last_update TIMESTAMP
     comment     VARCHAR(1024) DEFAULT NULL
   */
 
   // Prepare to read from the table
-  unique_ptr_destroy_only<RowIterator> iterator = init_table_iterator(
-      thd, table, nullptr,
-      /*ignore_not_found_rows=*/false, /*count_examined_rows=*/false);
+  unique_ptr_destroy_only<RowIterator> iterator =
+      init_table_iterator(thd, table, /*ignore_not_found_rows=*/false,
+                          /*count_examined_rows=*/false);
   if (iterator != nullptr) {
     table->use_all_columns();
 
@@ -264,7 +264,7 @@ static void read_server_cost_constants(THD *thd, TABLE *table,
       if (!table->field[1]->is_null()) {
         char cost_name_buf[MAX_FIELD_WIDTH];
         String cost_name(cost_name_buf, sizeof(cost_name_buf),
-                         &my_charset_utf8_general_ci);
+                         &my_charset_utf8mb3_general_ci);
 
         // Read the name of the cost constant
         table->field[0]->val_str(&cost_name);
@@ -305,18 +305,18 @@ static void read_engine_cost_constants(THD *thd, TABLE *table,
   /*
     The engine constant table has the following columns:
 
-    engine_name VARCHAR(64) NOT NULL COLLATE utf8_general_ci,
+    engine_name VARCHAR(64) NOT NULL COLLATE utf8mb3_general_ci,
     device_type INTEGER NOT NULL,
-    cost_name   VARCHAR(64) NOT NULL COLLATE utf8_general_ci,
+    cost_name   VARCHAR(64) NOT NULL COLLATE utf8mb3_general_ci,
     cost_value  FLOAT DEFAULT NULL,
     last_update TIMESTAMP
     comment     VARCHAR(1024) DEFAULT NULL,
   */
 
   // Prepare to read from the table
-  unique_ptr_destroy_only<RowIterator> iterator = init_table_iterator(
-      thd, table, nullptr,
-      /*ignore_not_found_rows=*/false, /*count_examined_rows=*/false);
+  unique_ptr_destroy_only<RowIterator> iterator =
+      init_table_iterator(thd, table, /*ignore_not_found_rows=*/false,
+                          /*count_examined_rows=*/false);
   if (iterator != nullptr) {
     table->use_all_columns();
 
@@ -329,10 +329,10 @@ static void read_engine_cost_constants(THD *thd, TABLE *table,
       if (!table->field[3]->is_null()) {
         char engine_name_buf[MAX_FIELD_WIDTH];
         String engine_name(engine_name_buf, sizeof(engine_name_buf),
-                           &my_charset_utf8_general_ci);
+                           &my_charset_utf8mb3_general_ci);
         char cost_name_buf[MAX_FIELD_WIDTH];
         String cost_name(cost_name_buf, sizeof(cost_name_buf),
-                         &my_charset_utf8_general_ci);
+                         &my_charset_utf8mb3_general_ci);
 
         // Read the name of the storage engine
         table->field[0]->val_str(&engine_name);
@@ -386,19 +386,19 @@ static void read_cost_constants(Cost_model_constants *cost_constants) {
 
   // Create and initialize a new THD.
   THD *thd = new THD;
-  DBUG_ASSERT(thd);
+  assert(thd);
   thd->thread_stack = pointer_cast<char *>(&thd);
   thd->store_globals();
   lex_start(thd);
 
-  TABLE_LIST tables[2] = {TABLE_LIST("mysql", "server_cost", TL_READ),
-                          TABLE_LIST("mysql", "engine_cost", TL_READ)};
+  Table_ref tables[2] = {Table_ref("mysql", "server_cost", TL_READ),
+                         Table_ref("mysql", "engine_cost", TL_READ)};
   tables[0].next_global = tables[0].next_local =
       tables[0].next_name_resolution_table = &tables[1];
 
   if (!open_and_lock_tables(thd, tables, MYSQL_LOCK_IGNORE_TIMEOUT)) {
-    DBUG_ASSERT(tables[0].table != nullptr);
-    DBUG_ASSERT(tables[1].table != nullptr);
+    assert(tables[0].table != nullptr);
+    assert(tables[1].table != nullptr);
 
     // Read the server constants table
     read_server_cost_constants(thd, tables[0].table, cost_constants);
@@ -435,7 +435,7 @@ static void read_cost_constants(Cost_model_constants *cost_constants) {
 }
 
 void init_optimizer_cost_module(bool enable_plugins) {
-  DBUG_ASSERT(cost_constant_cache == nullptr);
+  assert(cost_constant_cache == nullptr);
   cost_constant_cache = new Cost_constant_cache();
   cost_constant_cache->init();
   /*

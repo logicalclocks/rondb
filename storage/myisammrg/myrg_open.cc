@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -114,7 +114,7 @@ MYRG_INFO *myrg_open(const char *name, int mode, int handle_locking) {
                                                 key_parts * sizeof(long),
                                             MYF(MY_WME | MY_ZEROFILL))))
         goto err;
-      DBUG_ASSERT(files);
+      assert(files);
       m_info->open_tables = (MYRG_TABLE *)(m_info + 1);
       m_info->rec_per_key_part = (ulong *)(m_info->open_tables + files);
       m_info->tables = files;
@@ -184,10 +184,10 @@ err:
     case 3:
       while (files) (void)mi_close(m_info->open_tables[--files].table);
       my_free(m_info);
-      /* Fall through */
+      [[fallthrough]];
     case 2:
       end_io_cache(&file);
-      /* Fall through */
+      [[fallthrough]];
     case 1:
       (void)mysql_file_close(fd, MYF(0));
   }
@@ -324,10 +324,10 @@ err:
   switch (errpos) {
     case 3:
       my_free(m_info);
-      /* Fall through */
+      [[fallthrough]];
     case 2:
       end_io_cache(&file_cache);
-      /* Fall through */
+      [[fallthrough]];
     case 1:
       (void)mysql_file_close(fd, MYF(0));
   }
@@ -484,7 +484,7 @@ err:
   @param[in]    m_info          MERGE parent table structure
 
   @note Detach must not touch the children in any way.
-    They may have been closed at ths point already.
+    They may have been closed at this point already.
     All references to the children should be removed.
 
   @return status

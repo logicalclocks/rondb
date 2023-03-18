@@ -1,4 +1,4 @@
-# Copyright (c) 2006, 2019, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2006, 2022, Oracle and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -57,14 +57,6 @@ SET(STRINGS_SOURCES
   strxnmov.cc
   xml.cc
 )
-
-# Aliasing bug in union in Clang
-# Bug#26161442 MAIN.SELECT* TESTS ARE FAILING WITH CLANG 4.0
-# Problem: wrong results for some corner cases when converting string to double.
-IF(MY_COMPILER_IS_CLANG AND
-    CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL "4.0")
-  ADD_COMPILE_FLAGS(dtoa.cc COMPILE_FLAGS "-fno-strict-aliasing")
-ENDIF()
 
 MYSQL_ADD_EXECUTABLE(uca9dump uca9-dump.cc SKIP_INSTALL)
 

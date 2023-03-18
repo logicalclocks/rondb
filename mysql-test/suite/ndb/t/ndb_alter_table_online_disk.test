@@ -1,0 +1,584 @@
+#############################################################
+# Author: Martin
+# Date: 2007-07
+# Purpose: basic online alter test
+##############################################################
+# Change Author: Jonathan
+# Date 2006-08-28
+# Purpose: Add more testing for online alter
+##############################################################
+--source include/have_multi_ndb.inc
+--source suite/ndb/include/backup_restore_setup.inc
+
+# Note : This logfile group is used by
+# most of the tests in this file
+CREATE LOGFILE GROUP lg1
+ADD UNDOFILE 'undofile.dat'
+INITIAL_SIZE 16M
+UNDO_BUFFER_SIZE = 8M
+ENGINE=NDB;
+
+CREATE TABLESPACE ts1
+ADD DATAFILE 'datafile.dat'
+USE LOGFILE GROUP lg1
+INITIAL_SIZE 64M
+ENGINE NDB;
+
+# Create view which displays all user tables.
+# NOTE! Uses a format which is backward compatible with the output
+# from "ndb_show_tables" previously used by this test - for example names
+# have surrounding quotes.
+--disable_query_log ONCE
+CREATE VIEW ndb_show_tables_results AS
+  SELECT
+    id,
+    /* Hardcoded since only user tables are selected */
+    'UserTable' AS type,
+    /* Table name is last part of fq_name */
+    CONCAT("'", CONCAT(SUBSTRING_INDEX(fq_name, "/", -1), "'")) AS name
+  FROM ndbinfo.dict_obj_info WHERE type = 2 /* User table */;
+
+######################################
+# basic online alter tests
+######################################
+--echo *******************************
+--echo * basic online alter tests
+--echo *******************************
+
+CREATE TABLE t1 (a INT UNSIGNED KEY, b INT UNSIGNED) ROW_FORMAT=DYNAMIC STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,1);
+
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+
+--echo *******************************
+--echo * Alter Table online add column
+--echo *******************************
+--echo * Add column c as CHAR
+--echo *******************************
+
+ALTER TABLE t1 ADD column c CHAR(19) STORAGE DISK;
+
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+INSERT INTO t1 values (2,1,"a");
+SELECT * FROM t1 ORDER BY a;
+UPDATE t1 SET c='b' where a = 2;
+SELECT * FROM t1 ORDER BY a;
+DROP TABLE t1;
+
+--echo *******************************
+--echo * Alter Table online add column
+--echo *******************************
+--echo * Add column c as nullable INT
+--echo *******************************
+
+CREATE TABLE t1 (a INT UNSIGNED KEY, b VARCHAR(19)) STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,"a");
+
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+
+ALTER TABLE t1 ADD column c INT STORAGE DISK;
+
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+INSERT INTO t1 values (2,"a",1);
+SELECT * FROM t1 ORDER BY a;
+UPDATE t1 SET c = 2 where a = 2;
+SELECT * FROM t1 ORDER BY a;
+DROP TABLE t1;
+
+--echo *******************************
+--echo * Alter Table online add column
+--echo *******************************
+--echo * Add column c as nullable INT
+--echo *******************************
+
+CREATE TABLE t1 (a INT UNSIGNED KEY, b INT COLUMN_FORMAT DYNAMIC) STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,1);
+
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+
+ALTER TABLE t1 ADD column c INT STORAGE DISK;
+
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+INSERT INTO t1 values (2,1,1);
+SELECT * FROM t1 ORDER BY a;
+UPDATE t1 SET c = 2 where a = 2;
+SELECT * FROM t1 ORDER BY a;
+
+DROP TABLE t1;
+
+--echo *******************************
+--echo * Add column c as NULLABLE TIMESTAMP online
+--echo *******************************
+
+CREATE TABLE t1 (a INT UNSIGNED KEY, b INT UNSIGNED) ROW_FORMAT=DYNAMIC STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,1);
+
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+
+ALTER TABLE t1 algorithm=inplace, ADD column c TIMESTAMP;
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+INSERT INTO t1 values (2,2,'2007-09-19 18:46:02');
+SELECT * FROM t1 ORDER BY a;
+UPDATE t1 SET c = '2007-10-22 16:35:06' where a = 2;
+SELECT * FROM t1 ORDER BY a;
+SHOW CREATE TABLE t1;
+DROP TABLE t1;
+
+--echo *******************************
+--echo * The following ALTER operations are not supported on-line
+--echo *******************************
+--echo * Not supported Test#1
+--echo *******************************
+
+CREATE TABLE t1 (a INT UNSIGNED KEY, b INT UNSIGNED) ROW_FORMAT=FIXED STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,1);
+
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE t1 algorithm=inplace, ADD column c CHAR(19) STORAGE DISK;
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+ALTER TABLE t1 algorithm=inplace, ADD column c CHAR(19) STORAGE DISK COLUMN_FORMAT DYNAMIC;
+
+INSERT INTO t1 values (2,1,"a");
+SELECT * FROM t1 ORDER BY a;
+UPDATE t1 SET c = 'b' where a = 2;
+SELECT * FROM t1 ORDER BY a;
+SHOW CREATE TABLE t1;
+DROP TABLE t1;
+
+--echo *******************************
+--echo * Not supported Test#2
+--echo *******************************
+
+CREATE TABLE t1 (a INT UNSIGNED KEY, b INT UNSIGNED) ROW_FORMAT=DYNAMIC STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,1);
+
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE t1 algorithm=inplace, ADD column c CHAR(19) DEFAULT 17;
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+ALTER TABLE t1 ADD column c CHAR(19) DEFAULT 17;
+
+INSERT INTO t1 values (2,1,"a");
+SELECT * FROM t1 ORDER BY a;
+UPDATE t1 SET c = 'b' where a = 2;
+SELECT * FROM t1 ORDER BY a;
+SHOW CREATE TABLE t1;
+--echo *******************************
+--echo * Not supported Test#3
+--echo *******************************
+
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE t1 algorithm=inplace, ADD column d INT STORAGE DISK AFTER b;
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+ALTER TABLE t1 ADD column d INT STORAGE DISK AFTER b;
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+INSERT INTO t1 VALUES(3,1,1,'b');
+SELECT * FROM t1 ORDER BY a;
+UPDATE t1 SET d = 2 where a = 3;
+SELECT * FROM t1 ORDER BY a;
+SHOW CREATE TABLE t1;
+
+--echo *******************************
+--echo * Not supported Test#4
+--echo *******************************
+
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+
+--error ER_ALTER_OPERATION_NOT_SUPPORTED
+ALTER TABLE t1 algorithm=inplace, ENGINE MYISAM STORAGE DISK;
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+DROP TABLE t1;
+
+--echo *******************************
+--echo * Not supported Test#5
+--echo *******************************
+
+CREATE TABLE t1 (a INT UNSIGNED KEY, b INT UNSIGNED) ROW_FORMAT=DYNAMIC STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,1);
+
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE t1 algorithm=inplace, ADD column c CHAR(19) NOT NULL STORAGE DISK;
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+ALTER TABLE t1 ADD column c CHAR(19) NOT NULL STORAGE DISK;
+
+INSERT INTO t1 values (2,1,"a");
+SELECT * FROM t1 ORDER BY a;
+UPDATE t1 SET c = 'b' where a = 2;
+SELECT * FROM t1 ORDER BY a;
+SHOW CREATE TABLE t1;
+DROP TABLE t1;
+
+--echo *******************************
+--echo * Not supported Test#6
+--echo *******************************
+
+CREATE TABLE t1 (a INT UNSIGNED KEY, b INT UNSIGNED) ROW_FORMAT=DYNAMIC STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+INSERT INTO t1 values (1,1);
+
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE t1 algorithm=inplace, ADD column c CHAR(19) COLUMN_FORMAT FIXED STORAGE DISK;
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+ALTER TABLE t1 ADD column c CHAR(19) COLUMN_FORMAT FIXED STORAGE DISK;
+
+INSERT INTO t1 values (2,1,"a");
+SELECT * FROM t1 ORDER BY a;
+UPDATE t1 SET c = 'b' WHERE a = 2;
+SELECT * FROM t1 ORDER BY a;
+SHOW CREATE TABLE t1;
+DROP TABLE t1;
+
+--echo *******************************
+--echo * Not supported Test#7
+--echo * Ndb doesn't support renaming attributes on-line
+--echo *******************************
+
+CREATE TABLE t1 (
+  auto int(5) unsigned NOT NULL auto_increment,
+  string char(10),
+  vstring varchar(10),
+  bin binary(2),
+  vbin varbinary(7),
+  tiny tinyint(4) DEFAULT '0' NOT NULL ,
+  short smallint(6) DEFAULT '1' NOT NULL ,
+  medium mediumint(8) DEFAULT '0' NOT NULL,
+  long_int int(11) DEFAULT '0' NOT NULL,
+  longlong bigint(13) DEFAULT '0' NOT NULL,
+  real_float float(13,1) DEFAULT 0.0 NOT NULL,
+  real_double double(16,4),
+  real_decimal decimal(16,4),
+  utiny tinyint(3) unsigned DEFAULT '0' NOT NULL,
+  ushort smallint(5) unsigned zerofill DEFAULT '00000' NOT NULL,
+  umedium mediumint(8) unsigned DEFAULT '0' NOT NULL,
+  ulong int(11) unsigned DEFAULT '0' NOT NULL,
+  ulonglong bigint(13) unsigned DEFAULT '0' NOT NULL,
+  bits bit(3),
+  options enum('zero','one','two','three','four') not null,
+  flags set('zero','one','two','three','four') not null,
+  date_field date,
+  year_field year,
+  time_field time,
+  date_time datetime,
+  time_stamp timestamp,
+  PRIMARY KEY (auto)
+) STORAGE DISK TABLESPACE ts1 engine=ndb;
+                                                                                                   
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+alter table t1 algorithm=inplace, change tiny new_tiny tinyint(4) DEFAULT '0';
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+alter table t1 change tiny tiny2 tinyint(4) DEFAULT '0' NOT NULL;
+SHOW CREATE TABLE t1;
+alter table t1 algorithm=inplace, change tiny2 new_tiny tinyint(4) DEFAULT '0' NOT NULL;
+SHOW CREATE TABLE t1;
+# Changing default value is not supported online
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+alter table t1 algorithm=inplace, change new_tiny new_tiny tinyint(4) DEFAULT '1' NOT NULL;
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+alter table t1 change new_tiny new_tiny tinyint(4) DEFAULT '1' NOT NULL;
+SHOW CREATE TABLE t1;
+
+create index i1 on t1(medium);
+SHOW CREATE TABLE t1;
+alter table t1 add index i2(new_tiny);
+SHOW CREATE TABLE t1;
+drop index i1 on t1;
+SHOW CREATE TABLE t1;
+
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+DROP TABLE t1;
+
+######################################
+# Alter dynamic table, add TEXT column
+######################################
+# Bug:30205
+######################################
+--echo ****************************************
+--echo * Add column c as nullable TEXT and BLOB
+--echo ****************************************
+CREATE TABLE t1 (a INT UNSIGNED  AUTO_INCREMENT KEY, b INT DEFAULT 2 COLUMN_FORMAT DYNAMIC) STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+
+let $v=5;
+disable_query_log;
+while ($v)
+{
+  INSERT INTO t1 VALUES(NULL, DEFAULT); 
+  dec $v;
+}
+enable_query_log;
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE t1 algorithm=inplace, ADD column c TEXT STORAGE DISK;
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE t1 algorithm=inplace, ADD column d BLOB STORAGE DISK;
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+DROP TABLE t1;
+
+######################################
+# Alter dynamic table, add column
+######################################
+
+CREATE TABLE t1 (a INT UNSIGNED AUTO_INCREMENT KEY, b INT COLUMN_FORMAT DYNAMIC) STORAGE DISK TABLESPACE ts1 ENGINE NDB;
+
+let $v=5;
+disable_query_log;
+while ($v)
+{
+  --eval INSERT INTO t1 VALUES(NULL, $v); 
+  dec $v;
+}
+enable_query_log;
+
+set @t1_id = (select id from ndb_show_tables_results where name like '%t1%' and type like '%UserTable%');
+
+--echo *******************************
+--echo * Add column c as nullable FLOAT
+--echo *******************************
+ALTER TABLE t1 algorithm=inplace, ADD column c FLOAT STORAGE DISK;
+
+let $v=5;
+disable_query_log;
+while ($v)
+{
+  --eval INSERT INTO t1 VALUES(NULL, $v, -3.402823466E+38); 
+  dec $v;
+}
+enable_query_log;
+
+--echo *******************************
+--echo * Add column d as nullable DOUBLE
+--echo *******************************
+ALTER TABLE t1 algorithm=inplace, ADD column d DOUBLE UNSIGNED STORAGE DISK;
+
+let $v=5;
+disable_query_log;
+while ($v)
+{
+  --eval INSERT INTO t1 VALUES(NULL, $v, -3.402823466E+38, 1.7976931348623E+308); 
+  dec $v;
+}
+enable_query_log;
+
+--echo *******************************
+--echo * Add column e as nullable DECIMAL
+--echo *******************************
+ALTER TABLE t1 algorithm=inplace, ADD column e DECIMAL(5,2) STORAGE DISK;
+
+let $v=5;
+disable_query_log;
+while ($v)
+{
+  --eval INSERT INTO t1 VALUES(NULL, $v, -3.402823466E+38, 1.7976931348623E+308, 345.21); 
+  dec $v;
+}
+enable_query_log;
+
+--echo *******************************
+--echo * Add column f as nullable DATETIME
+--echo *******************************
+ALTER TABLE t1 algorithm=inplace, ADD column f DATETIME STORAGE DISK;
+
+let $v=5;
+disable_query_log;
+while ($v)
+{
+  --eval INSERT INTO t1 VALUES(NULL, $v, -3.402823466E+38, 1.7976931348623E+308, 345.21, '1000-01-01 00:00:00'); 
+  dec $v;
+}
+enable_query_log;
+
+--echo *******************************
+--echo * Add column g as nullable BINARY
+--echo *******************************
+ALTER TABLE t1 ADD column g BINARY(4) STORAGE DISK;
+
+let $v=5;
+disable_query_log;
+while ($v)
+{
+  --eval INSERT INTO t1 VALUES(NULL, $v, -3.402823466E+38, 1.7976931348623E+308, 345.21, '1000-01-01 00:00:00', '0101');
+  dec $v;
+}
+enable_query_log;
+
+select name from ndb_show_tables_results where id = @t1_id and name like '%t1%' and type like '%UserTable%';
+
+SELECT COUNT(*) FROM t1 WHERE c IS NULL;
+SELECT COUNT(*) FROM t1 WHERE d IS NULL;
+SELECT COUNT(*) FROM t1 WHERE e IS NULL;
+SELECT COUNT(*) FROM t1 WHERE f IS NULL;
+SELECT COUNT(*) FROM t1 WHERE g IS NULL;
+
+UPDATE t1 SET c = 3.402823466E+38, d = 1.2686868689898E+308, e = 666.66, f = '2007-10-23 23:23:23', g = '1111' WHERE a = 1;
+SELECT * FROM t1 WHERE a = 1 or a = 10 or a = 20 or a = 30 ORDER BY a;
+
+##############################
+# Backup and restore section #
+##############################
+--echo *********************************
+--echo * Backup and restore tables w/ new column
+--echo *********************************
+
+--source include/ndb_backup.inc
+
+DROP TABLE t1;
+
+ALTER TABLESPACE ts1
+DROP DATAFILE 'datafile.dat';
+
+DROP TABLESPACE ts1;
+
+DROP LOGFILE GROUP lg1
+ENGINE =NDB; 
+
+--let $initial_detected_count_server1 = query_get_value(SHOW STATUS LIKE 'Ndb_metadata_detected_count', Value, 1)
+--let $initial_synced_count_server1 = query_get_value(SHOW STATUS LIKE 'Ndb_metadata_synced_count', Value, 1)
+
+--connection server2
+--let $initial_detected_count_server2 = query_get_value(SHOW STATUS LIKE 'Ndb_metadata_detected_count', Value, 1)
+--let $initial_synced_count_server2 = query_get_value(SHOW STATUS LIKE 'Ndb_metadata_synced_count', Value, 1)
+
+--connection server1
+
+-- source include/ndb_restore_master.inc
+
+# Set low interval so changes are detected quickly
+SET @old_ndb_metadata_check_interval = @@global.ndb_metadata_check_interval;
+SET GLOBAL ndb_metadata_check_interval = 0;
+
+# Wait until the following 3 object changes are detected:
+# Logfile group 'log_group1'
+# Tablespace 'table_space1'
+# Table 'test.t1'
+--let $initial_detected_count = $initial_detected_count_server1
+--let $expected_changes = 3
+--let $max_wait = 30
+--source wait_metadata_changes_detected.inc
+
+# Changes have been detected, reset value
+SET GLOBAL ndb_metadata_check_interval = @old_ndb_metadata_check_interval;
+
+# Wait until the changes detected have been synced
+--let $initial_synced_count = $initial_synced_count_server1
+--let $max_wait = 30
+--source wait_metadata_synced.inc
+
+--connection server2
+# Sync on server 2 as well
+# Set low interval so changes are detected quickly
+SET @old_ndb_metadata_check_interval = @@global.ndb_metadata_check_interval;
+SET GLOBAL ndb_metadata_check_interval = 0;
+
+--let $initial_detected_count = $initial_detected_count_server2
+--let $expected_changes = 3
+--let $max_wait = 30
+--source wait_metadata_changes_detected.inc
+
+# Changes have been detected, reset value
+SET GLOBAL ndb_metadata_check_interval = @old_ndb_metadata_check_interval;
+
+# Wait until the changes detected have been synced
+--let $initial_synced_count = $initial_synced_count_server2
+--let $max_wait = 30
+--source wait_metadata_synced.inc
+
+--connection server1
+
+source show_varpart.inc;
+SHOW CREATE TABLE t1;
+
+DROP TABLE t1;
+
+###################################
+# Disk Data Error testing section #
+###################################
+--echo *********************************
+--echo * Disk Data error testing
+--echo *********************************
+
+set default_storage_engine=ndb;
+
+CREATE TABLE t1
+(pk1 INT NOT NULL PRIMARY KEY, b INT COLUMN_FORMAT DYNAMIC)
+TABLESPACE ts1 STORAGE DISK
+ENGINE=NDB;
+
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE t1 algorithm=inplace, CHANGE b b INT COLUMN_FORMAT FIXED STORAGE MEMORY;
+# Column rename
+ALTER TABLE t1 algorithm=inplace, CHANGE b b_1 INT COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, CHANGE b_1 b_2 INT COLUMN_FORMAT DYNAMIC STORAGE DISK;
+ALTER TABLE t1 algorithm=inplace, RENAME COLUMN b_2 TO b;
+--error ER_DUP_FIELDNAME
+ALTER TABLE t1 algorithm=inplace, CHANGE b pk1 INT COLUMN_FORMAT DYNAMIC;
+# Testing no change
+ALTER TABLE t1 algorithm=inplace, CHANGE b b INT COLUMN_FORMAT DYNAMIC STORAGE DISK;
+ALTER TABLE t1 algorithm=inplace, CHANGE b b INT COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, CHANGE b b INT;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN c INT COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN d FLOAT COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN  e DOUBLE COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN f DATETIME COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN g DECIMAL(5,2) COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN h CHAR(20) COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN i VARCHAR(20) COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN j BINARY(20) COLUMN_FORMAT DYNAMIC;
+ALTER TABLE t1 algorithm=inplace, ADD COLUMN k VARBINARY(20) COLUMN_FORMAT DYNAMIC;
+SHOW CREATE TABLE t1;
+DROP TABLE t1;
+
+#
+# bug#42549
+#
+create table t1 (a int primary key, b int) storage disk tablespace ts1 engine = ndb;
+alter table t1 algorithm=inplace, add column c0 int null column_format DYNAMIC;
+alter table t1 algorithm=inplace, add column c1 int null column_format DYNAMIC storage memory;
+SHOW CREATE TABLE t1;
+drop table t1;
+
+create table t1 (a int primary key, b int storage disk) tablespace ts1 engine = ndb;
+alter table t1 algorithm=inplace, add column c0 int null column_format DYNAMIC;
+alter table t1 algorithm=inplace, add column c1 int null column_format DYNAMIC storage memory;
+SHOW CREATE TABLE t1;
+drop table t1;
+
+ALTER TABLESPACE ts1
+DROP DATAFILE 'datafile.dat';
+
+DROP TABLESPACE ts1;
+
+DROP LOGFILE GROUP lg1
+ENGINE =NDB; 
+
+--source suite/ndb/include/backup_restore_cleanup.inc
+--remove_file $NDB_TOOLS_OUTPUT
+
+--disable_query_log ONCE
+DROP VIEW ndb_show_tables_results;

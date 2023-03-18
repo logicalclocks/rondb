@@ -1,4 +1,4 @@
-/* Copyright (c) 2002, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2002, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,6 +23,7 @@
 #ifndef SPATIAL_INCLUDED
 #define SPATIAL_INCLUDED
 
+#include <assert.h>
 #include <float.h>
 #include <string.h>
 #include <sys/types.h>
@@ -33,7 +34,7 @@
 #include "lex_string.h"
 #include "my_byteorder.h"
 #include "my_compiler.h"
-#include "my_dbug.h"
+
 #include "my_inttypes.h"
 #include "mysql/components/services/bits/psi_bits.h"
 #include "mysql/service_mysql_alloc.h"
@@ -61,7 +62,7 @@ class point_xy {
  public:
   double x;
   double y;
-  point_xy() {}
+  point_xy() = default;
   point_xy(double x_arg, double y_arg) : x(x_arg), y(y_arg) {}
   double distance(const point_xy &p) const;
   /**
@@ -127,8 +128,6 @@ struct MBR {
 
   int intersects(const MBR *mbr) const { return !disjoint(mbr); }
 
-  int touches(const MBR *mbr) const;
-
   int within(const MBR *mbr) const;
 
   int contains(const MBR *mbr) const { return mbr->within(this); }
@@ -176,7 +175,7 @@ struct MBR {
       same dimension.
     */
     int d = dimension();
-    DBUG_ASSERT(d >= 0 && d <= 2);
+    assert(d >= 0 && d <= 2);
 
     if (d != mbr->dimension() || d == 0 || contains(mbr) || within(mbr))
       return 0;
@@ -334,7 +333,7 @@ class Geometry {
     const char *m_data_end;
 
    public:
-    wkb_container() {}
+    wkb_container() = default;
     wkb_container(const char *data, const char *data_end) {
       set(data, data_end);
     }
@@ -396,7 +395,7 @@ class Geometry {
 
     /* Routines to skip non-interesting data */
     void skip_unsafe(size_t nbytes) {
-      DBUG_ASSERT(!no_data(nbytes));
+      assert(!no_data(nbytes));
       m_data += nbytes;
     }
     bool skip(size_t nbytes) {
@@ -435,7 +434,7 @@ class Geometry {
 
     /* Routines to scan coordinate information */
     void scan_xy_unsafe(point_xy *p) {
-      DBUG_ASSERT(!no_data(POINT_DATA_SIZE));
+      assert(!no_data(POINT_DATA_SIZE));
       get_float8(&p->x);
       m_data += SIZEOF_STORED_DOUBLE;
       get_float8(&p->y);
@@ -465,32 +464,37 @@ class Geometry {
     Class_info(const char *name, int type_id, create_geom_t create_func);
   };
 
+  // LCOV_EXCL_START
+
   virtual const Class_info *get_class_info() const { return nullptr; }
 
-  virtual uint32 get_data_size() const { return -1; }
+  virtual uint32 get_data_size() const { return ~0U; }
 
   /* read from trs the wkt string and write into wkb as wkb encoded data. */
-  virtual bool init_from_wkt(Gis_read_stream *trs MY_ATTRIBUTE((unused)),
-                             String *wkb MY_ATTRIBUTE((unused))) {
+  virtual bool init_from_wkt(Gis_read_stream *trs [[maybe_unused]],
+                             String *wkb [[maybe_unused]]) {
     return true;
   }
 
   /* read from wkb the wkb data and write into res as wkb encoded data. */
   /* returns the length of the wkb that was read */
-  virtual uint init_from_wkb(THD *thd MY_ATTRIBUTE((unused)),
-                             const char *wkb MY_ATTRIBUTE((unused)),
-                             uint len MY_ATTRIBUTE((unused)),
-                             wkbByteOrder bo MY_ATTRIBUTE((unused)),
-                             String *res MY_ATTRIBUTE((unused))) {
+  virtual uint init_from_wkb(THD *thd [[maybe_unused]],
+                             const char *wkb [[maybe_unused]],
+                             uint len [[maybe_unused]],
+                             wkbByteOrder bo [[maybe_unused]],
+                             String *res [[maybe_unused]]) {
     return 0;
   }
 
-  virtual bool get_data_as_wkt(String *txt MY_ATTRIBUTE((unused)),
-                               wkb_parser *wkb MY_ATTRIBUTE((unused))) const {
+  virtual bool get_data_as_wkt(String *txt [[maybe_unused]],
+                               wkb_parser *wkb [[maybe_unused]]) const {
     return true;
   }
-  virtual bool get_mbr(MBR *mbr MY_ATTRIBUTE((unused)),
-                       wkb_parser *wkb MY_ATTRIBUTE((unused))) const {
+
+  // LCOV_EXCL_STOP
+
+  virtual bool get_mbr(MBR *mbr [[maybe_unused]],
+                       wkb_parser *wkb [[maybe_unused]]) const {
     return true;
   }
   bool get_mbr(MBR *mbr) {
@@ -513,51 +517,41 @@ class Geometry {
   }
   enum_coordinate_reference_system get_coordsys() const { return cartesian; }
   virtual uint32 feature_dimension() const {
-    DBUG_ASSERT(false);
+    assert(false);
     return 0;
   }
 
-  virtual int get_x(double *x MY_ATTRIBUTE((unused))) const { return -1; }
-  virtual int get_y(double *y MY_ATTRIBUTE((unused))) const { return -1; }
-  virtual int geom_length(double *len MY_ATTRIBUTE((unused))) const {
-    return -1;
-  }
-  virtual int is_closed(int *closed MY_ATTRIBUTE((unused))) const { return -1; }
-  virtual int num_interior_ring(
-      uint32 *n_int_rings MY_ATTRIBUTE((unused))) const {
-    return -1;
-  }
-  virtual int num_points(uint32 *n_points MY_ATTRIBUTE((unused))) const {
-    return -1;
-  }
-  virtual int num_geometries(uint32 *num MY_ATTRIBUTE((unused))) const {
-    return -1;
-  }
-  virtual int copy_points(String *result MY_ATTRIBUTE((unused))) const {
-    return -1;
-  }
+  virtual int get_x(double *) const { return -1; }           // LCOV_EXCL_LINE
+  virtual int get_y(double *) const { return -1; }           // LCOV_EXCL_LINE
+  virtual int geom_length(double *) const { return -1; }     // LCOV_EXCL_LINE
+  virtual int is_closed(int *) const { return -1; }          // LCOV_EXCL_LINE
+  virtual int num_interior_ring(uint32 *) const {            // LCOV_EXCL_LINE
+    return -1;                                               // LCOV_EXCL_LINE
+  }                                                          // LCOV_EXCL_LINE
+  virtual int num_points(uint32 *) const { return -1; }      // LCOV_EXCL_LINE
+  virtual int num_geometries(uint32 *) const { return -1; }  // LCOV_EXCL_LINE
+  virtual int copy_points(String *) const { return -1; }     // LCOV_EXCL_LINE
   /* The following 7 functions return geometries in wkb format. */
-  virtual int start_point(String *point MY_ATTRIBUTE((unused))) const {
+  virtual int start_point(String *) const { return -1; }    // LCOV_EXCL_LINE
+  virtual int end_point(String *) const { return -1; }      // LCOV_EXCL_LINE
+  virtual int exterior_ring(String *) const { return -1; }  // LCOV_EXCL_LINE
+
+  // LCOV_EXCL_START
+
+  virtual int point_n(uint32 num [[maybe_unused]],
+                      String *result [[maybe_unused]]) const {
     return -1;
   }
-  virtual int end_point(String *point MY_ATTRIBUTE((unused))) const {
+  virtual int interior_ring_n(uint32 num [[maybe_unused]],
+                              String *result [[maybe_unused]]) const {
     return -1;
   }
-  virtual int exterior_ring(String *ring MY_ATTRIBUTE((unused))) const {
+  virtual int geometry_n(uint32 num [[maybe_unused]],
+                         String *result [[maybe_unused]]) const {
     return -1;
   }
-  virtual int point_n(uint32 num MY_ATTRIBUTE((unused)),
-                      String *result MY_ATTRIBUTE((unused))) const {
-    return -1;
-  }
-  virtual int interior_ring_n(uint32 num MY_ATTRIBUTE((unused)),
-                              String *result MY_ATTRIBUTE((unused))) const {
-    return -1;
-  }
-  virtual int geometry_n(uint32 num MY_ATTRIBUTE((unused)),
-                         String *result MY_ATTRIBUTE((unused))) const {
-    return -1;
-  }
+
+  // LCOV_EXCL_STOP
 
   /**
     Reverses the coordinates of a geometry.
@@ -672,9 +666,9 @@ class Geometry {
   }
 
   void set_components_no_overlapped(bool b) {
-    DBUG_ASSERT(get_type() == wkb_multilinestring ||
-                get_type() == wkb_multipolygon ||
-                get_type() == wkb_geometrycollection);
+    assert(get_type() == wkb_multilinestring ||
+           get_type() == wkb_multipolygon ||
+           get_type() == wkb_geometrycollection);
     if (b)
       m_flags.props |= MULTIPOLYGON_NO_OVERLAPPED_COMPS;
     else
@@ -682,7 +676,7 @@ class Geometry {
   }
 
   void set_props(uint16 flag) {
-    DBUG_ASSERT(0xfff >= flag);
+    assert(0xfff >= flag);
     m_flags.props |= flag;
   }
 
@@ -704,7 +698,6 @@ class Geometry {
   void append_points(String *txt, uint32 n_points, wkb_parser *wkb,
                      uint32 offset, bool bracket_pt = false) const;
   bool create_point(String *result, wkb_parser *wkb) const;
-  bool create_point(String *result, point_xy p) const;
   bool get_mbr_for_points(MBR *mbr, wkb_parser *wkb, uint offset) const;
   bool is_length_verified() const {
     return m_flags.props & GEOM_LENGTH_VERIFIED;
@@ -744,21 +737,16 @@ class Geometry {
   */
   class Flags_t {
    public:
-    Flags_t() {
-      memset(this, 0, sizeof(*this));
-      bo = wkb_ndr;
-      dim = GEOM_DIM - 1;
-      nomem = 1;
-    }
+    Flags_t() : Flags_t(wkb_invalid_type, /*len*/ 0) {}
 
-    Flags_t(wkbType type, size_t len) {
-      memset(this, 0, sizeof(*this));
-      geotype = type;
-      nbytes = len;
-      bo = wkb_ndr;
-      dim = GEOM_DIM - 1;
-      nomem = 1;
-    }
+    Flags_t(wkbType type, size_t len)
+        : bo(wkb_ndr),
+          dim(GEOM_DIM - 1),
+          nomem(1),
+          geotype(type),
+          nbytes(len),
+          props(0),
+          zm(0) {}
 
     uint64 bo : 1;
     uint64 dim : 2;
@@ -814,13 +802,13 @@ class Geometry {
   void set_owner(Geometry *o) { m_owner = o; }
 
   void set_byte_order(Geometry::wkbByteOrder bo) {
-    DBUG_ASSERT(bo == Geometry::wkb_ndr);
+    assert(bo == Geometry::wkb_ndr);
     m_flags.bo = static_cast<char>(bo);
   }
 
   void set_dimension(char dim) {
     // Valid dim is one of [1, 2, 3, 4].
-    DBUG_ASSERT(dim > 0 && dim < 5);
+    assert(dim > 0 && dim < 5);
     m_flags.dim = dim - 1;
   }
 
@@ -889,7 +877,7 @@ class Geometry {
     @param from String to check
     @param length Length of string
     @param type Expected type of geometry, or
-           Geoemtry::wkb_invalid_type if any type is allowed
+           Geometry::wkb_invalid_type if any type is allowed
 
     @param bo byte order
     @return True if the string is a well-formed GEOMETRY string,
@@ -926,7 +914,7 @@ class Geometry {
   bool get_ownmem() const { return !m_flags.nomem; }
 
   Geometry::wkbByteOrder get_byte_order() const {
-    DBUG_ASSERT(m_flags.bo == 1);
+    assert(m_flags.bo == 1);
     return Geometry::wkb_ndr;
   }
 
@@ -1037,7 +1025,9 @@ class Geometry {
   }
 
   void clear_wkb_data();
-  virtual void shallow_push(const Geometry *) { DBUG_ASSERT(false); }
+  virtual void shallow_push(const Geometry *) {  // LCOV_EXCL_LINE
+    assert(false);                               // LCOV_EXCL_LINE
+  }                                              // LCOV_EXCL_LINE
 
  protected:
   /**
@@ -1093,7 +1083,7 @@ inline void set_byte_order(void *p0, Geometry::wkbByteOrder bo) {
 inline Geometry::wkbType get_wkb_geotype(const void *p0) {
   const char *p = static_cast<const char *>(p0);
   uint32 gt = uint4korr(p);
-  DBUG_ASSERT(Geometry::is_valid_geotype(gt));
+  assert(Geometry::is_valid_geotype(gt));
   return static_cast<Geometry::wkbType>(gt);
 }
 
@@ -1216,7 +1206,7 @@ class Gis_point : public Geometry {
             gis::srid_t srid)
       : Geometry(ptr, nbytes, flags, srid) {
     set_geotype(wkb_point);
-    DBUG_ASSERT(
+    assert(
         (ptr != nullptr && get_nbytes() == SIZEOF_STORED_DOUBLE * GEOM_DIM) ||
         (ptr == nullptr && get_nbytes() == 0));
     set_ownmem(false);
@@ -1225,7 +1215,7 @@ class Gis_point : public Geometry {
 
   Gis_point(const self &pt);
 
-  ~Gis_point() override {}
+  ~Gis_point() override = default;
 
   Gis_point &operator=(const Gis_point &rhs);
 
@@ -1236,10 +1226,10 @@ class Gis_point : public Geometry {
   /// @return the coordinate
   template <std::size_t K>
   double get() const {
-    DBUG_ASSERT(K < static_cast<size_t>(get_dimension()) &&
-                ((m_ptr != nullptr &&
-                  get_nbytes() == SIZEOF_STORED_DOUBLE * GEOM_DIM) ||
-                 (m_ptr == nullptr && get_nbytes() == 0)));
+    assert(K < static_cast<size_t>(get_dimension()) &&
+           ((m_ptr != nullptr &&
+             get_nbytes() == SIZEOF_STORED_DOUBLE * GEOM_DIM) ||
+            (m_ptr == nullptr && get_nbytes() == 0)));
 
     set_bg_adapter(true);
     const char *p = static_cast<char *>(m_ptr) + K * SIZEOF_STORED_DOUBLE;
@@ -1262,9 +1252,9 @@ class Gis_point : public Geometry {
   template <std::size_t K>
   void set(double const &value) {
     /* Allow assigning to others' memory. */
-    DBUG_ASSERT((m_ptr != nullptr && K < static_cast<size_t>(get_dimension()) &&
-                 get_nbytes() == SIZEOF_STORED_DOUBLE * GEOM_DIM) ||
-                (!get_ownmem() && get_nbytes() == 0 && m_ptr == nullptr));
+    assert((m_ptr != nullptr && K < static_cast<size_t>(get_dimension()) &&
+            get_nbytes() == SIZEOF_STORED_DOUBLE * GEOM_DIM) ||
+           (!get_ownmem() && get_nbytes() == 0 && m_ptr == nullptr));
     set_bg_adapter(true);
     if (m_ptr == nullptr) {
       m_ptr = gis_wkb_fixed_alloc(SIZEOF_STORED_DOUBLE * GEOM_DIM);
@@ -1341,7 +1331,7 @@ class Gis_wkb_vector_const_iterator {
   /// This is the return type for operator[].
   typedef value_type &reference;
   typedef value_type *pointer;
-  // Use the STL tag, to ensure compatability with interal STL functions.
+  // Use the STL tag, to ensure compatibility with internal STL functions.
   //
   typedef std::random_access_iterator_tag iterator_category;
   ////////////////////////////////////////////////////////////////////
@@ -1349,7 +1339,7 @@ class Gis_wkb_vector_const_iterator {
   ////////////////////////////////////////////////////////////////////
   // Begin public constructors and destructor.
   /// @name Constructors and destroctor
-  /// Do not construct iterators explictily using these constructors,
+  /// Do not construct iterators explicitly using these constructors,
   /// but call Gis_wkb_vector::begin() const to get an valid iterator.
   /// @sa Gis_wkb_vector::begin() const
   //@{
@@ -1368,7 +1358,7 @@ class Gis_wkb_vector_const_iterator {
     m_owner = const_cast<owner_t *>(owner);
   }
 
-  ~Gis_wkb_vector_const_iterator() {}
+  ~Gis_wkb_vector_const_iterator() = default;
   //@}
 
   ////////////////////////////////////////////////////////////////////
@@ -1394,7 +1384,7 @@ class Gis_wkb_vector_const_iterator {
   /// @param itr The iterator to compare against.
   /// @return True if this iterator equals to itr; False otherwise.
   bool operator==(const self &itr) const {
-    DBUG_ASSERT(m_owner == itr.m_owner);
+    assert(m_owner == itr.m_owner);
     return m_curidx == itr.m_curidx;
   }
 
@@ -1408,7 +1398,7 @@ class Gis_wkb_vector_const_iterator {
   /// @param itr The iterator to compare against.
   /// @return True if this iterator is less than itr.
   bool operator<(const self &itr) const {
-    DBUG_ASSERT(m_owner == itr.m_owner);
+    assert(m_owner == itr.m_owner);
     return m_curidx < itr.m_curidx;
   }
 
@@ -1427,7 +1417,7 @@ class Gis_wkb_vector_const_iterator {
   /// @param itr The iterator to compare against.
   /// @return True if this iterator is greater than itr.
   bool operator>(const self &itr) const {
-    DBUG_ASSERT(m_owner == itr.m_owner);
+    assert(m_owner == itr.m_owner);
     return m_curidx > itr.m_curidx;
   }
   //@} // vctitr_cmp
@@ -1555,12 +1545,12 @@ class Gis_wkb_vector_const_iterator {
   /// Return the index difference of this iterator and itr, so if this
   /// iterator sits on an element with a smaller index, this call will
   /// return a negative number.
-  /// @param itr The other iterator to substract. itr can be the invalid
+  /// @param itr The other iterator to subtract. itr can be the invalid
   /// iterator after last element or before first element, their index
   /// will be regarded as last element's index + 1 and -1 respectively.
   /// @return The index difference.
   difference_type operator-(const self &itr) const {
-    DBUG_ASSERT(m_owner == itr.m_owner);
+    assert(m_owner == itr.m_owner);
     return (m_curidx - itr.m_curidx);
   }
 
@@ -1577,9 +1567,8 @@ class Gis_wkb_vector_const_iterator {
   /// element.
   /// @return The reference to the element this iterator points to.
   reference operator*() const {
-    DBUG_ASSERT(this->m_owner != nullptr && this->m_curidx >= 0 &&
-                this->m_curidx <
-                    static_cast<index_type>(this->m_owner->size()));
+    assert(this->m_owner != nullptr && this->m_curidx >= 0 &&
+           this->m_curidx < static_cast<index_type>(this->m_owner->size()));
     return (*m_owner)[m_curidx];
   }
 
@@ -1590,9 +1579,8 @@ class Gis_wkb_vector_const_iterator {
   /// element.
   /// @return The address of the referenced object.
   pointer operator->() const {
-    DBUG_ASSERT(this->m_owner != NULL && this->m_curidx >= 0 &&
-                this->m_curidx <
-                    static_cast<index_type>(this->m_owner->size()));
+    assert(this->m_owner != NULL && this->m_curidx >= 0 &&
+           this->m_curidx < static_cast<index_type>(this->m_owner->size()));
     return &(*m_owner)[m_curidx];
   }
 
@@ -1607,8 +1595,8 @@ class Gis_wkb_vector_const_iterator {
     self itr = *this;
     move_by(itr, offset, false);
 
-    DBUG_ASSERT(itr.m_owner != NULL && itr.m_curidx >= 0 &&
-                itr.m_curidx < static_cast<index_type>(itr.m_owner->size()));
+    assert(itr.m_owner != NULL && itr.m_curidx >= 0 &&
+           itr.m_curidx < static_cast<index_type>(itr.m_owner->size()));
     return (*m_owner)[itr.m_curidx];
   }
   //@}
@@ -1661,15 +1649,15 @@ class Gis_wkb_vector_iterator : public Gis_wkb_vector_const_iterator<T> {
   typedef difference_type distance_type;
   typedef value_type &reference;
   typedef value_type *pointer;
-  // Use the STL tag, to ensure compatability with interal STL functions.
+  // Use the STL tag, to ensure compatibility with internal STL functions.
   typedef std::random_access_iterator_tag iterator_category;
 
   ////////////////////////////////////////////////////////////////////
   /// Begin public constructors and destructor.
   //
   /// @name Constructors and destructor
-  /// Do not construct iterators explictily using these constructors,
-  /// but call Gis_wkb_vector::begin to get an valid iterator.
+  /// Do not construct iterators explicitly using these constructors,
+  /// but call Gis_wkb_vector::begin to get a valid iterator.
   /// @sa Gis_wkb_vector::begin
   //@{
   Gis_wkb_vector_iterator(const self &vi) : base(vi) {}
@@ -1681,7 +1669,7 @@ class Gis_wkb_vector_iterator : public Gis_wkb_vector_const_iterator<T> {
   Gis_wkb_vector_iterator(index_type idx, const owner_t *owner)
       : base(idx, owner) {}
 
-  ~Gis_wkb_vector_iterator() {}
+  ~Gis_wkb_vector_iterator() = default;
   //@}
 
   ////////////////////////////////////////////////////////////////////
@@ -1801,7 +1789,7 @@ class Gis_wkb_vector_iterator : public Gis_wkb_vector_const_iterator<T> {
   /// Return the index difference of this iterator and itr, so if this
   /// iterator sits on an element with a smaller index, this call will
   /// return a negative number.
-  /// @param itr The other iterator to substract. itr can be the invalid
+  /// @param itr The other iterator to subtract. itr can be the invalid
   /// iterator after last element or before first element, their index
   /// will be regarded as last element's index + 1 and -1 respectively.
   /// @return The index difference.
@@ -1824,9 +1812,8 @@ class Gis_wkb_vector_iterator : public Gis_wkb_vector_const_iterator<T> {
   /// element.
   /// @return The reference to the element this iterator points to.
   reference operator*() const {
-    DBUG_ASSERT(this->m_owner != nullptr && this->m_curidx >= 0 &&
-                this->m_curidx <
-                    static_cast<index_type>(this->m_owner->size()));
+    assert(this->m_owner != nullptr && this->m_curidx >= 0 &&
+           this->m_curidx < static_cast<index_type>(this->m_owner->size()));
     return (*this->m_owner)[this->m_curidx];
   }
 
@@ -1837,9 +1824,8 @@ class Gis_wkb_vector_iterator : public Gis_wkb_vector_const_iterator<T> {
   /// element.
   /// @return The address of the referenced object.
   pointer operator->() const {
-    DBUG_ASSERT(this->m_owner != nullptr && this->m_curidx >= 0 &&
-                this->m_curidx <
-                    static_cast<index_type>(this->m_owner->size()));
+    assert(this->m_owner != nullptr && this->m_curidx >= 0 &&
+           this->m_curidx < static_cast<index_type>(this->m_owner->size()));
     return &(*this->m_owner)[this->m_curidx];
   }
 
@@ -1852,8 +1838,8 @@ class Gis_wkb_vector_iterator : public Gis_wkb_vector_const_iterator<T> {
   reference operator[](difference_type offset) const {
     self itr = *this;
     this->move_by(itr, offset, false);
-    DBUG_ASSERT(itr.m_owner != NULL && itr.m_curidx >= 0 &&
-                itr.m_curidx < static_cast<index_type>(this->m_owner->size()));
+    assert(itr.m_owner != NULL && itr.m_curidx >= 0 &&
+           itr.m_curidx < static_cast<index_type>(this->m_owner->size()));
     return (*this->m_owner)[itr.m_curidx];
   }
   //@} // funcs_val
@@ -2009,7 +1995,7 @@ class Gis_wkb_vector : public Geometry {
   }
 
   const_reference operator[](index_type i) const {
-    DBUG_ASSERT(!(i < 0 || i >= (index_type)size()));
+    assert(!(i < 0 || i >= (index_type)size()));
     set_bg_adapter(true);
 
     const Geometry *p = &((*m_geo_vect)[i]);
@@ -2017,7 +2003,7 @@ class Gis_wkb_vector : public Geometry {
   }
 
   reference operator[](index_type i) {
-    DBUG_ASSERT(!(i < 0 || i >= (index_type)size()));
+    assert(!(i < 0 || i >= (index_type)size()));
     set_bg_adapter(true);
 
     Geometry *p = &((*m_geo_vect)[i]);
@@ -2037,17 +2023,17 @@ class Gis_wkb_vector : public Geometry {
       Note that although ~Inplace_vector() calls std::vector member functions,
       all of them have no-throw guarantees, so this function won't throw any
       exception now. We do so nonetheless for potential mis-use of exceptions
-      in futher code.
+      in further code.
     */
-#if !defined(DBUG_OFF)
+#if !defined(NDEBUG)
     try {
 #endif
       if (!is_bg_adapter()) return;
       if (m_geo_vect != nullptr) clear_wkb_data();
-#if !defined(DBUG_OFF)
+#if !defined(NDEBUG)
     } catch (...) {
       // Should never throw exceptions in destructor.
-      DBUG_ASSERT(false);
+      assert(false);
     }
 #endif
   }
@@ -2091,12 +2077,12 @@ class Gis_wkb_vector : public Geometry {
   void resize(size_t sz);
   void reassemble();
   bool reverse_coordinates() override {
-    DBUG_ASSERT(false);
+    assert(false);
     return true;
   }
   bool validate_coordinate_range(double, bool *, bool *, double *) override {
-    DBUG_ASSERT(false); /* purecov: inspected */
-    return true;        /* purecov: inspected */
+    assert(false); /* purecov: inspected */
+    return true;   /* purecov: inspected */
   }
 
  private:
@@ -2151,7 +2137,7 @@ class Gis_line_string : public Gis_wkb_vector<Gis_point> {
     set_geotype(wkb_linestring);
   }
 
-  Gis_line_string(const self &ls) : base_type(ls) {}
+  Gis_line_string(const self &ls) = default;
 
   Gis_line_string &operator=(const Gis_line_string &) = default;
 };
@@ -2167,7 +2153,7 @@ class Gis_polygon_ring : public Gis_wkb_vector<Gis_point> {
   typedef Gis_wkb_vector<Gis_point> base;
   typedef Gis_polygon_ring self;
 
-  ~Gis_polygon_ring() override {}
+  ~Gis_polygon_ring() override = default;
   Gis_polygon_ring(const void *wkb, size_t nbytes, const Flags_t &flags,
                    gis::srid_t srid)
       : base(wkb, nbytes, flags, srid, true) {
@@ -2176,7 +2162,7 @@ class Gis_polygon_ring : public Gis_wkb_vector<Gis_point> {
 
   // Coordinate data type, closed-ness and direction will never change, thus no
   // need for the template version of copy constructor.
-  Gis_polygon_ring(const self &r) : base(r) {}
+  Gis_polygon_ring(const self &r) = default;
 
   Gis_polygon_ring &operator=(const Gis_polygon_ring &) = default;
 
@@ -2191,7 +2177,7 @@ class Gis_polygon_ring : public Gis_wkb_vector<Gis_point> {
 
 // For internal use only, only convert types, don't create rings.
 inline Gis_polygon_ring *outer_ring(const Geometry *g) {
-  DBUG_ASSERT(g->get_geotype() == Geometry::wkb_polygon);
+  assert(g->get_geotype() == Geometry::wkb_polygon);
   Gis_polygon_ring *out = static_cast<Gis_polygon_ring *>(g->get_ptr());
 
   return out;
@@ -2222,7 +2208,7 @@ class Gis_polygon : public Geometry {
   typedef Gis_wkb_vector<ring_type> inner_container_type;
 
   ring_type &outer() const {
-    DBUG_ASSERT(!polygon_is_wkb_form());
+    assert(!polygon_is_wkb_form());
     set_bg_adapter(true);
     // Create outer ring if none, although read only, calller may just want
     // to traverse the outer ring if any.
@@ -2232,7 +2218,7 @@ class Gis_polygon : public Geometry {
   }
 
   inner_container_type &inners() const {
-    DBUG_ASSERT(!polygon_is_wkb_form());
+    assert(!polygon_is_wkb_form());
     set_bg_adapter(true);
     // Create inner rings if none, although read only, calller may just want
     // to traverse the inner rings if any.
@@ -2338,7 +2324,7 @@ class Gis_multi_point : public Gis_wkb_vector<Gis_point> {
     set_geotype(wkb_multipoint);
   }
 
-  Gis_multi_point(const self &mpts) : base_type(mpts) {}
+  Gis_multi_point(const self &mpts) = default;
 };
 
 /***************************** MultiLineString *******************************/
@@ -2378,7 +2364,7 @@ class Gis_multi_line_string : public Gis_wkb_vector<Gis_line_string> {
     set_geotype(wkb_multilinestring);
   }
 
-  Gis_multi_line_string(const self &mls) : base(mls) {}
+  Gis_multi_line_string(const self &mls) = default;
 };
 
 /***************************** MultiPolygon *******************************/
@@ -2415,7 +2401,7 @@ class Gis_multi_polygon : public Gis_wkb_vector<Gis_polygon> {
     set_geotype(wkb_multipolygon);
   }
 
-  Gis_multi_polygon(const self &mpl) : base(mpl) {}
+  Gis_multi_polygon(const self &mpl) = default;
 };
 
 /*********************** GeometryCollection *******************************/
@@ -2445,7 +2431,7 @@ class Gis_geometry_collection : public Geometry {
   int geometry_n(uint32 num, String *result) const override;
   bool dimension(uint32 *dim, wkb_parser *wkb) const override;
   uint32 feature_dimension() const override {
-    DBUG_ASSERT(0);
+    assert(0);
     return 0;
   }
   bool reverse_coordinates() override;
@@ -2468,7 +2454,7 @@ struct Geometry_buffer {
 
 class WKB_scanner_event_handler {
  public:
-  virtual ~WKB_scanner_event_handler() {}
+  virtual ~WKB_scanner_event_handler() = default;
 
   /**
     Notified when scanner sees the start of a geometry WKB.

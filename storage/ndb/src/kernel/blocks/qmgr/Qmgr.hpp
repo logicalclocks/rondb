@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -27,6 +27,7 @@
 #define QMGR_H
 
 
+#include <cstring>
 #include <pc.hpp>
 #include <NdbTick.h>
 #include <NdbGetRUsage.h>
@@ -72,6 +73,7 @@
 #define ZCHECK_MULTI_TRP_CONNECT 8
 #define ZRESEND_GET_NUM_MULTI_TRP_REQ 9
 #define ZSWITCH_MULTI_TRP 10
+#define ZSEND_TRP_KEEP_ALIVE 11
 
 /* Error Codes ------------------------------*/
 #define ZERRTOOMANY 1101
@@ -381,7 +383,7 @@ public:
     NDB_TICKS m_alloc_timeout;
     Uint16 m_failconf_blocks[QMGR_MAX_FAIL_STATE_BLOCKS];
 
-    NodeRec() { bzero(m_failconf_blocks, sizeof(m_failconf_blocks)); }
+    NodeRec() { std::memset(m_failconf_blocks, 0, sizeof(m_failconf_blocks)); }
   }; /* p2c: size = 52 bytes */
   
   typedef Ptr<NodeRec> NodeRecPtr;
@@ -518,6 +520,7 @@ private:
 
   void execAPI_VERSION_REQ(Signal* signal);
   void execAPI_BROADCAST_REP(Signal* signal);
+  void execTRP_KEEP_ALIVE(Signal* signal);
 
   void execNODE_FAILREP(Signal *);
   void execALLOC_NODEID_REQ(Signal *);
@@ -685,6 +688,9 @@ private:
   void setHbApiDelay(UintR aHbApiDelay);
   void setArbitTimeout(UintR aArbitTimeout);
   void setCCDelay(UintR aCCDelay);
+  void send_trp_keep_alive_start(Signal* signal);
+  void send_trp_keep_alive(Signal* signal);
+  void setTrpKeepAliveSendDelay(Uint32 delay);
 
   // Interface to arbitration module
   void handleArbitStart(Signal* signal);
@@ -794,11 +800,14 @@ private:
 
   QmgrState ctoStatus;
   bool cHbSent;
+  bool c_keep_alive_send_in_progress;
+  Uint32 c_keepalive_seqnum;
 
   Timer interface_check_timer;
   Timer hb_check_timer;
   Timer hb_send_timer;
   Timer hb_api_timer;
+  Timer ka_send_timer;
 
   Int16 processInfoNodeIndex[MAX_NODES];
   ProcessInfo * receivedProcessInfo;

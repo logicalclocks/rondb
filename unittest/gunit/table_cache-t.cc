@@ -1,4 +1,4 @@
-/* Copyright (c) 2012, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2012, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -127,7 +127,9 @@ class Mock_share : public TABLE_SHARE {
   Mock_share(const char *key)
       :  // Assertion in some of Table_cache methods check that the
          // version of the share is up-to-date, so make sure it's set.
-        TABLE_SHARE(refresh_version, false) {
+        TABLE_SHARE(refresh_version, false),
+        // MEM_ROOT is used for constructing ha_example() instances.
+        m_mem_root(PSI_NOT_INSTRUMENTED, 1024) {
     /*
       Both table_cache_key and cache_element array are used by
       Table_cache code.
@@ -136,13 +138,11 @@ class Mock_share : public TABLE_SHARE {
     table_cache_key.length = strlen(key);
     memset(cache_element_arr, 0, sizeof(cache_element_arr));
     cache_element = cache_element_arr;
-    // MEM_ROOT is used for constructing ha_example() instances.
-    init_alloc_root(PSI_NOT_INSTRUMENTED, &m_mem_root, 1024, 0);
     // Ensure that share is never destroyed.
     increment_ref_count();
   }
 
-  ~Mock_share() { free_root(&m_mem_root, MYF(0)); }
+  ~Mock_share() { m_mem_root.Clear(); }
 
   TABLE *create_table(THD *thd) {
     TABLE *result =
@@ -749,7 +749,7 @@ TEST_F(TableCacheDoubleCacheDeathTest, ManagerFreeTable) {
   // There should be assert failure since we are trying
   // to free all tables for share_1, while some tables
   // are in use.
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   EXPECT_DEATH_IF_SUPPORTED(
       table_cache_manager.free_table(thd_1, TDC_RT_REMOVE_ALL, &share_1),
       ".*Assertion.*is_empty.*");
@@ -787,7 +787,7 @@ TEST_F(TableCacheDoubleCacheDeathTest, ManagerFreeTable) {
   // There should be assert failure since we are trying
   // to free all not own TABLEs for share_1, while thd_2
   // has a TABLE object for it in used
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   EXPECT_DEATH_IF_SUPPORTED(
       table_cache_manager.free_table(thd_1, TDC_RT_REMOVE_NOT_OWN, &share_1),
       ".*Assertion.*0.*");

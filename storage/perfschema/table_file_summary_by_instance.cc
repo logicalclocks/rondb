@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -27,10 +27,11 @@
 
 #include "storage/perfschema/table_file_summary_by_instance.h"
 
+#include <assert.h>
 #include <stddef.h>
 
 #include "my_compiler.h"
-#include "my_dbug.h"
+
 #include "my_inttypes.h"
 #include "my_thread.h"
 #include "sql/field.h"
@@ -193,7 +194,7 @@ int table_file_summary_by_instance::index_init(uint idx, bool) {
       result = PFS_NEW(PFS_index_file_summary_by_instance_by_event_name);
       break;
     default:
-      DBUG_ASSERT(false);
+      assert(false);
       break;
   }
 
@@ -240,8 +241,7 @@ int table_file_summary_by_instance::make_row(PFS_file *pfs) {
     return HA_ERR_RECORD_DELETED;
   }
 
-  m_row.m_filename = pfs->m_filename;
-  m_row.m_filename_length = pfs->m_filename_length;
+  m_row.m_file_name = pfs->m_file_name;
   m_row.m_event_name.make_row(safe_class);
   m_row.m_identity = pfs->m_identity;
 
@@ -262,13 +262,14 @@ int table_file_summary_by_instance::read_row_values(TABLE *table,
   Field *f;
 
   /* Set the null bits */
-  DBUG_ASSERT(table->s->null_bytes == 0);
+  assert(table->s->null_bytes == 0);
 
   for (; (f = *fields); fields++) {
     if (read_all || bitmap_is_set(table->read_set, f->field_index())) {
       switch (f->field_index()) {
         case 0: /* FILE_NAME */
-          set_field_varchar_utf8(f, m_row.m_filename, m_row.m_filename_length);
+          set_field_varchar_utf8mb4(f, m_row.m_file_name.ptr(),
+                                    m_row.m_file_name.length());
           break;
         case 1: /* EVENT_NAME */
           m_row.m_event_name.set_field(f);
@@ -347,7 +348,7 @@ int table_file_summary_by_instance::read_row_values(TABLE *table,
           set_field_ulonglong(f, m_row.m_io_stat.m_misc.m_waits.m_max);
           break;
         default:
-          DBUG_ASSERT(false);
+          assert(false);
       }
     }
   }

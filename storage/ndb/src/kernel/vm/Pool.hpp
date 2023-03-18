@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2006, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2006, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -99,32 +100,36 @@ struct Resource_limit
   Uint32 m_max;
 
   /**
+   * After reaching this number we are only allowed to request pages using a
+   * lower priority.
+   */
+  Uint32 m_max_high_prio;
+
+  /**
     Number of pages currently in use by resource group.
   */
   Uint32 m_curr;
 
   /**
     Number of pages currently reserved as spare.
-
-    These spare pages may be used in exceptional cases, and to use them one
-    need to call special allocations functions, see alloc_spare_page in
-    Ndbd_mem_manager.
-
-    See also m_spare_pct below.
+    These pages are used by DataMemory as a way to ensure that we spare a bit
+    of memory for restart situations, for situations where we want to add new
+    fragments or reorganize fragments in some other fashion.
   */
   Uint32 m_spare;
 
   /**
-    The number of dedicated pages that a resource do not use but made available
-    for other resources to use, using give_up_pages().
+   * We have run completely out of resources and stolen pages from some other
+   * resource with reserved memory. To be able to keep the counters consistent
+   * we need to ensure that these are returned as soon as possible.
    */
-  Uint32 m_lent;
+  Uint32 m_stolen_reserved;
 
   /**
-    The number of pages this resource use from pages otherwise dedicated to
-    other resources, using take_pages().
-  */
-  Uint32 m_borrowed;
+   * We have used all our reserved resources, but calls to alloc_spare_page
+   * have extended our set of reserved pages.
+   */
+  Uint32 m_overflow_reserved;
 
   /**
     A positive number identifying the resource group.
@@ -132,9 +137,15 @@ struct Resource_limit
   Uint32 m_resource_id;
 
   /**
-    Control how many spare pages there should be for each page in use.
-  */
-  Uint32 m_spare_pct;
+   * See explanation in Resource_limits class.
+   */
+  enum PrioMemory
+  {
+    LOW_PRIO_MEMORY = 0,
+    HIGH_PRIO_MEMORY = 1,
+    ULTRA_HIGH_PRIO_MEMORY = 2
+  };
+  PrioMemory m_prio_memory;
 };
 
 class Magic
@@ -142,9 +153,18 @@ class Magic
 public:
   explicit Magic(Uint32 type_id) { m_magic = make(type_id); }
   bool check(Uint32 type_id) { return match(m_magic, type_id); }
-  template<typename T> static bool check_ptr(const T* ptr) { return match(ptr->m_magic, T::TYPE_ID); }
-static bool match(Uint32 magic, Uint32 type_id);
-static Uint32 make(Uint32 type_id);
+  template<typename T> static bool check_ptr(const T* ptr)
+  {
+    return match(ptr->m_magic, T::TYPE_ID);
+  }
+  template<typename T> static bool check_ptr_rw(const T* ptr)
+  {
+    return match_rw(ptr->m_magic, T::TYPE_ID);
+  }
+  static Uint32 make(Uint32 type_id);
+  static bool match(Uint32 magic, Uint32 type_id);
+  static Uint32 make_rw(Uint32 type_id);
+  static bool match_rw(Uint32 magic, Uint32 type_id);
 private:
   Uint32 m_magic;
 };
@@ -157,6 +177,16 @@ inline Uint32 Magic::make(Uint32 type_id)
 inline bool Magic::match(Uint32 magic, Uint32 type_id)
 {
   return magic == make(type_id);
+}
+
+inline Uint32 Magic::make_rw(Uint32 type_id)
+{
+  return ~type_id;
+}
+
+inline bool Magic::match_rw(Uint32 magic, Uint32 type_id)
+{
+  return magic == make_rw(type_id);
 }
 
 class Ndbd_mem_manager;
@@ -179,10 +209,10 @@ struct Pool_context
    *
    * Will handle resource limit
    */
-  void* alloc_page19(Uint32 type_id, Uint32 *i);
-  void* alloc_page27(Uint32 type_id, Uint32 *i);
-  void* alloc_page30(Uint32 type_id, Uint32 *i);
-  void* alloc_page32(Uint32 type_id, Uint32 *i);
+  void* alloc_page19(Uint32 type_id, Uint32 *i, bool allow_use_spare = false);
+  void* alloc_page27(Uint32 type_id, Uint32 *i, bool allow_use_spare = false);
+  void* alloc_page30(Uint32 type_id, Uint32 *i, bool allow_use_spare = false);
+  void* alloc_page32(Uint32 type_id, Uint32 *i, bool allow_use_spare = false);
 
   /**
    * Release page
@@ -279,6 +309,66 @@ struct ConstPtr
   }
 };
 
+template <typename T>
+struct Ptr64
+{
+  typedef Uint64 I;
+  T * p;
+  Uint64 i;
+
+  static Ptr64 get(T* _p, Uint64 _i)
+  {
+    Ptr64 x;
+    x.p = _p;
+    x.i = _i;
+    return x;
+  }
+
+  Ptr64(){assert(memset(this, 0xff, sizeof(*this)));}
+  Ptr64(T* pVal, Uint64 iVal):p(pVal), i(iVal){}
+
+
+  bool isNull() const 
+  { 
+    assert(i <= RNIL64);
+    return i == RNIL64; 
+  }
+
+  inline void setNull()
+  {
+    i = RNIL64;
+  }
+};
+
+template <typename T>
+struct ConstPtr64
+{
+  const T * p;
+  Uint64 i;
+
+  static ConstPtr64 get(T const* _p, Uint32 _i)
+  {
+    ConstPtr64 x;
+    x.p = _p;
+    x.i = _i;
+    return x;
+  }
+
+  ConstPtr64(){assert(memset(this, 0xff, sizeof(*this)));}
+  ConstPtr64(T* pVal, Uint64 iVal):p(pVal), i(iVal){}
+
+  bool isNull() const 
+  { 
+    assert(i <= RNIL64);
+    return i == RNIL64; 
+  }
+
+  inline void setNull()
+  {
+    i = RNIL64;
+  }
+};
+
 #ifdef XX_DOCUMENTATION_XX
 /**
  * Any pool should implement the following
@@ -326,7 +416,7 @@ public:
   /**
    * Update p & i value for ptr according to <b>i</b> value 
    */
-  void getPtr(Ptr<T> &, Uint32 i) const;
+  [[nodiscard]] bool getPtr(Ptr<T> &, Uint32 i) const;
   void getPtr(ConstPtr<T> &, Uint32 i) const;
 
   /**
@@ -440,11 +530,17 @@ RecordPool<P, T>::getPtr(ConstPtr<T> & ptr) const
 
 template <typename P, typename T>
 inline
-void
+bool
 RecordPool<P, T>::getPtr(Ptr<T> & ptr, Uint32 i) const
 {
+  if (unlikely(i >= RNIL))
+  {
+    assert(i == RNIL);
+    return false;
+  }
   ptr.i = i;
   ptr.p = static_cast<T*>(m_pool.getPtr(ptr.i));  
+  return true;
 }
 
 template <typename P, typename T>
@@ -524,6 +620,191 @@ RecordPool<P, T>::release(Ptr<T> ptr)
   m_pool.release(tmp);
 }
 
+template <typename P, typename T = typename P::Type>
+class RecordPool64 {
+public:
+  typedef T Type;
+  RecordPool64();
+  ~RecordPool64();
+  
+  void init(Uint32 type_id, const Pool_context& pc);
+
+  bool checkMagic(void *record) const;
+  /**
+   * Update p value for ptr according to i value 
+   */
+  void getUncheckedPtr(Ptr64<T> &) const;
+  [[nodiscard]] bool getPtr(Ptr64<T> &) const;
+  [[nodiscard]] bool getPtr(ConstPtr64<T> &) const;
+  
+  /**
+   * Get pointer for i value
+   */
+  T * getPtr(Uint64 i) const;
+  const T * getConstPtr(Uint64 i) const;
+
+  /**
+   * Update p & i value for ptr according to <b>i</b> value 
+   */
+  [[nodiscard]] bool getPtr(Ptr64<T> &, Uint64 i) const;
+  [[nodiscard]] bool getPtr(ConstPtr64<T> &, Uint64 i) const;
+
+  /**
+   * Allocate an object from pool - update Ptr
+   *
+   * Return i
+   */
+  bool seize(Ptr64<T> &);
+
+  /**
+   * Return an object to pool
+   */
+  void release(Uint64 i);
+
+  /**
+   * Return an object to pool
+   */
+  void release(Ptr64<T>);
+private:
+  P m_pool;
+};
+
+template <typename P, typename T>
+inline
+RecordPool64<P, T>::RecordPool64()
+{
+}
+
+template <typename P, typename T>
+inline
+void
+RecordPool64<P, T>::init(Uint32 type_id, const Pool_context& pc)
+{
+  T tmp;
+  const char * off_base = (char*)&tmp;
+  const char * off_next = (char*)&tmp.nextPool;
+  const char * off_magic = (char*)&tmp.m_magic;
+
+  Record_info ri;
+  ri.m_size = sizeof(T);
+  ri.m_offset_next_pool = Uint32(off_next - off_base);
+  ri.m_offset_magic = Uint32(off_magic - off_base);
+  ri.m_type_id = type_id;
+  m_pool.init(ri, pc);
+}
+
+template <typename P, typename T>
+inline
+RecordPool64<P, T>::~RecordPool64()
+{
+}
+
+template <typename P, typename T>
+inline
+bool
+RecordPool64<P, T>::checkMagic(void *record) const
+{
+  return m_pool.checkMagic(record);
+}
+
+template <typename P, typename T>
+inline
+void
+RecordPool64<P, T>::getUncheckedPtr(Ptr64<T> & ptr) const
+{
+  ptr.p = static_cast<T*>(m_pool.getUncheckedPtr(ptr.i));
+}
+
+template <typename P, typename T>
+inline
+bool
+RecordPool64<P, T>::getPtr(Ptr64<T> & ptr) const
+{
+  ptr.p = static_cast<T*>(m_pool.getPtr(ptr.i));
+  return ptr.p != nullptr;
+}
+
+template <typename P, typename T>
+inline
+bool
+RecordPool64<P, T>::getPtr(ConstPtr64<T> & ptr) const 
+{
+  ptr.p = static_cast<const T*>(m_pool.getPtr(ptr.i));
+  return ptr.p != nullptr;
+}
+
+template <typename P, typename T>
+inline
+bool
+RecordPool64<P, T>::getPtr(Ptr64<T> & ptr, Uint64 i) const
+{
+  ptr.i = i;
+  ptr.p = static_cast<T*>(m_pool.getPtr(ptr.i));  
+  return ptr.p != nullptr;
+}
+
+template <typename P, typename T>
+inline
+bool
+RecordPool64<P, T>::getPtr(ConstPtr64<T> & ptr, Uint64 i) const 
+{
+  ptr.i = i;
+  ptr.p = static_cast<const T*>(m_pool.getPtr(ptr.i));  
+  return ptr.p != nullptr;
+}
+  
+template <typename P, typename T>
+inline
+T * 
+RecordPool64<P, T>::getPtr(Uint64 i) const
+{
+  return static_cast<T*>(m_pool.getPtr(i));  
+}
+
+template <typename P, typename T>
+inline
+const T * 
+RecordPool64<P, T>::getConstPtr(Uint64 i) const 
+{
+  return static_cast<const T*>(m_pool.getPtr(i)); 
+}
+  
+template <typename P, typename T>
+inline
+bool
+RecordPool64<P, T>::seize(Ptr64<T> & ptr)
+{
+  Ptr64<T> tmp;
+  bool ret = m_pool.seize(tmp);
+  if(likely(ret))
+  {
+    ptr.i = tmp.i;
+    ptr.p = static_cast<T*>(tmp.p);
+  }
+  return ret;
+}
+
+template <typename P, typename T>
+inline
+void
+RecordPool64<P, T>::release(Uint64 i)
+{
+  Ptr64<T> ptr;
+  ptr.i = i;
+  ptr.p = m_pool.getPtr(i);
+  m_pool.release(ptr);
+}
+
+template <typename P, typename T>
+inline
+void
+RecordPool64<P, T>::release(Ptr64<T> ptr)
+{
+  Ptr64<T> tmp;
+  tmp.i = ptr.i;
+  tmp.p = ptr.p;
+  m_pool.release(tmp);
+}
 
 #undef JAM_FILE_ID
 

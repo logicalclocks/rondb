@@ -1,4 +1,4 @@
-// Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
+// Copyright (c) 2017, 2022, Oracle and/or its affiliates.
 //
 // This program is free software; you can redistribute it and/or modify
 // it under the terms of the GNU General Public License, version 2.0,
@@ -27,11 +27,12 @@
 #include "sql/gis/distance_sphere.h"
 #include "sql/gis/distance_sphere_functor.h"
 
+#include <assert.h>
 #include <boost/geometry.hpp>
 #include <cmath>      // std::isinf, M_PI
 #include <stdexcept>  // std::overflow_error
 
-#include "my_dbug.h"                                // DBUG_ASSERT
+// assert
 #include "sql/dd/types/spatial_reference_system.h"  // dd::Spatial_reference_system
 #include "sql/gis/functor.h"     // gis::Functor, gis::not_implemented_exception
 #include "sql/gis/geometries.h"  // gis::{Geometry{,_type}, Coordinate_system}
@@ -46,8 +47,8 @@ namespace gis {
 /// Map Cartesian geometry to geographic, mapping degrees east = x, degrees
 /// north = y. Do not canonicalize coordinates of poles.
 ///
-/// Used when a SQL function needs to accept Cartesian coordiates as a shorthand
-/// for geographic with some default SRS.
+/// Used when a SQL function needs to accept Cartesian coordinates as a
+/// shorthand for geographic with some default SRS.
 static Geographic_point reinterpret_as_degrees(const Cartesian_point &g) {
   double lon_deg = g.x();
   double lat_deg = g.y();
@@ -64,8 +65,8 @@ static Geographic_point reinterpret_as_degrees(const Cartesian_point &g) {
 /// Map Cartesian geometry to geographic, mapping degrees east = x, degrees
 /// north = y. Do not canonicalize coordinates of poles.
 ///
-/// Used when a SQL function needs to accept Cartesian coordiates as a shorthand
-/// for geographic with some default SRS.
+/// Used when a SQL function needs to accept Cartesian coordinates as a
+/// shorthand for geographic with some default SRS.
 static Geographic_multipoint reinterpret_as_degrees(
     const Cartesian_multipoint &g) {
   Geographic_multipoint dg{};
@@ -128,7 +129,7 @@ double Distance_sphere::eval(const Geographic_multipoint *g1,
 double Distance_sphere::eval(const Geographic_multipoint *g1,
                              const Geographic_multipoint *g2) const {
   // Boost does not yet implement distance between two multipoints. Find
-  // minumum by iterating over multipoint-point distances.
+  // minimum by iterating over multipoint-point distances.
   double minimum = eval(g1, &(*g2)[0]);
   for (size_t i = 1; i < g2->size(); i++) {
     double d = eval(g1, &(*g2)[i]);
@@ -146,13 +147,12 @@ bool distance_sphere(const dd::Spatial_reference_system *srs,
                      const char *func_name, double sphere_radius,
                      double *result, bool *result_null) noexcept {
   try {
-    DBUG_ASSERT(g1->coordinate_system() == g2->coordinate_system());
-    DBUG_ASSERT(!srs || srs->is_cartesian() || srs->is_geographic());
-    DBUG_ASSERT(!srs || srs->is_cartesian() == (g1->coordinate_system() ==
-                                                Coordinate_system::kCartesian));
-    DBUG_ASSERT(!srs ||
-                srs->is_geographic() == (g1->coordinate_system() ==
-                                         Coordinate_system::kGeographic));
+    assert(g1->coordinate_system() == g2->coordinate_system());
+    assert(!srs || srs->is_cartesian() || srs->is_geographic());
+    assert(!srs || srs->is_cartesian() == (g1->coordinate_system() ==
+                                           Coordinate_system::kCartesian));
+    assert(!srs || srs->is_geographic() == (g1->coordinate_system() ==
+                                            Coordinate_system::kGeographic));
 
     *result_null = false;
 

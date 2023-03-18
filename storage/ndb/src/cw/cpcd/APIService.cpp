@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -126,7 +127,7 @@ const ParserRow<CPCDAPISession> commands[] = {
     CPCD_ARG("version", Int, Mandatory, "Protocol version to use"),
 
     CPCD_END()};
-CPCDAPISession::CPCDAPISession(NDB_SOCKET_TYPE sock, CPCD &cpcd)
+CPCDAPISession::CPCDAPISession(ndb_socket_t sock, CPCD &cpcd)
     : SocketServer::Session(sock), m_cpcd(cpcd), m_protocol_version(1) {
   m_input = new SocketInputStream(sock, 7 * 24 * 60 * 60000);
   m_output = new SocketOutputStream(sock);
@@ -134,7 +135,7 @@ CPCDAPISession::CPCDAPISession(NDB_SOCKET_TYPE sock, CPCD &cpcd)
 }
 
 CPCDAPISession::CPCDAPISession(FILE *f, CPCD &cpcd)
-    : SocketServer::Session(ndb_socket_create_invalid()),
+    : SocketServer::Session(ndb_socket_create_return(m_create_socket)),
       m_cpcd(cpcd),
       m_protocol_version(1) {
   m_input = new FileInputStream(f);
@@ -287,7 +288,7 @@ void CPCDAPISession::stopProcess(Parser_t::Context & /* unused */,
 static const char *propToString(Properties *prop, const char *key) {
   static char buf[32];
   const char *retval = NULL;
-  PropertiesType pt;
+  PropertiesType pt = PropertiesType(0);
 
   prop->getTypeOf(key, &pt);
   switch (pt) {
@@ -395,12 +396,12 @@ void CPCDAPISession::listProcesses(Parser_t::Context & /* unused */,
 }
 
 void CPCDAPISession::showVersion(Parser_t::Context & /* unused */,
-                                 const class Properties &args) {
+                                 const class Properties & /*args*/)
+{
   CPCD::RequestStatus rs;
 
   m_output->println("show version");
 
-  m_output->println("compile time: %s %s", __DATE__, __TIME__);
   m_output->println("supported protocol: %u", CPCD::CPC_PROTOCOL_VERSION);
   m_output->println("effective protocol: %u", m_protocol_version);
   m_output->println("%s", "");

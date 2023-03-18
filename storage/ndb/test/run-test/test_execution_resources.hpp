@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2019, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -34,7 +35,6 @@
 class TestExecutionResources {
  public:
   const char* const NDB_MGMD = "ndb_mgmd";
-  const char* const NDBD = "ndbd";
   const char* const NDBMTD = "ndbmtd";
   const char* const MYSQLD = "mysqld";
   const char* const MYSQL_INSTALL_DB = "mysql_install_db";
@@ -84,7 +84,6 @@ class TestExecutionResources {
 
   std::map<std::string, TestExecutionResources::Resource> m_resources = {
       {NDB_MGMD, {NDB_MGMD, Resource::Type::Exe, true, {"", ""}}},
-      {NDBD, {NDBD, Resource::Type::Exe, true, {"", ""}}},
       {NDBMTD, {NDBMTD, Resource::Type::Exe, false, {"", ""}}},
       {MYSQLD, {MYSQLD, Resource::Type::Exe, false, {"", ""}}},
       {MYSQL_INSTALL_DB,

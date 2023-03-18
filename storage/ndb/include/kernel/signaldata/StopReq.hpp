@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -44,8 +44,8 @@ class StopReq
   friend class MgmtSrvr;
 
 public:
-  STATIC_CONST (SignalLength = 9);
-  STATIC_CONST( SignalLength_v1 = 9 + NdbNodeBitmask48::Size);
+  static constexpr Uint32 SignalLength = 9;
+  static constexpr Uint32 SignalLength_v1 = 9 + NdbNodeBitmask48::Size;
   
 public:
   Uint32 senderRef;
@@ -91,7 +91,7 @@ public:
 
 struct StopConf
 {
-  STATIC_CONST( SignalLength = 2 );
+  static constexpr Uint32 SignalLength = 2;
   Uint32 senderData;
   union {
     Uint32 nodeState;
@@ -112,7 +112,7 @@ class StopRef
   friend class Ndbcntr;
 
 public:
-  STATIC_CONST( SignalLength = 3 );
+  static constexpr Uint32 SignalLength = 3;
   
   enum ErrorCode {
     OK = 0,

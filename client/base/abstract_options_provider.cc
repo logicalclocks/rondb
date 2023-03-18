@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2001, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2001, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -24,19 +24,20 @@
 
 #include "client/base/abstract_options_provider.h"
 
+#include <assert.h>
 #include <stdlib.h>
 #include <iostream>
+#include <optional>
 #include <vector>
 
 #include "client/base/i_options_provider.h"
-#include "my_dbug.h"
+
 #include "my_getopt.h"
 
 using std::map;
 using std::string;
 using std::vector;
 using namespace Mysql::Tools::Base::Options;
-using Mysql::Nullable;
 
 Simple_option *Abstract_options_provider::create_new_option(
     std::string name, std::string description) {
@@ -57,13 +58,14 @@ Char_array_option *Abstract_options_provider::create_new_option(
 }
 
 Password_option *Abstract_options_provider::create_new_password_option(
-    Nullable<string> *value, std::string name, std::string description) {
+    std::optional<string> *value, std::string name, std::string description) {
   return this->attach_new_option<Password_option>(
       new Password_option(value, name, description));
 }
 
 String_option *Abstract_options_provider::create_new_option(
-    Nullable<std::string> *value, std::string name, std::string description) {
+    std::optional<std::string> *value, std::string name,
+    std::string description) {
   return this->attach_new_option<String_option>(
       new String_option(value, name, description));
 }
@@ -112,7 +114,7 @@ vector<my_option> Abstract_options_provider::generate_options() {
 
   vector<my_option> res;
   for (vector<I_option *>::iterator it = this->m_options_created.begin();
-       it != this->m_options_created.end(); it++) {
+       it != this->m_options_created.end(); ++it) {
     res.push_back((*it)->get_my_option());
   }
 
@@ -126,14 +128,14 @@ Abstract_options_provider::Abstract_options_provider()
 
 Abstract_options_provider::~Abstract_options_provider() {
   for (vector<I_option *>::iterator it = this->m_options_created.begin();
-       it != this->m_options_created.end(); it++) {
+       it != this->m_options_created.end(); ++it) {
     delete *it;
   }
 }
 
 void Abstract_options_provider::set_option_changed_listener(
     I_option_changed_listener *listener) {
-  DBUG_ASSERT(this->m_option_changed_listener == nullptr);
+  assert(this->m_option_changed_listener == nullptr);
   this->m_option_changed_listener = listener;
 }
 

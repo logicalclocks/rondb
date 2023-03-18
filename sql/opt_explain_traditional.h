@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2011, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,13 +23,20 @@
 #ifndef OPT_EXPLAIN_FORMAT_TRADITIONAL_INCLUDED
 #define OPT_EXPLAIN_FORMAT_TRADITIONAL_INCLUDED
 
-#include "my_dbug.h"  // DBUG_ASSERT
+#include <assert.h>
+// assert
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "sql/opt_explain_format.h"
 #include "sql/parse_tree_node_base.h"
 
 class Item;
+class Json_dom;
+class Json_object;
 class Query_result;
-class SELECT_LEX_UNIT;
+class Query_expression;
 template <class T>
 class mem_root_deque;
 
@@ -46,7 +53,7 @@ class Explain_format_traditional : public Explain_format {
 
   bool is_hierarchical() const override { return false; }
   bool send_headers(Query_result *result) override;
-  bool begin_context(enum_parsing_context, SELECT_LEX_UNIT *,
+  bool begin_context(enum_parsing_context, Query_expression *,
                      const Explain_format_flags *) override {
     return false;
   }
@@ -60,34 +67,45 @@ class Explain_format_traditional : public Explain_format {
 
 class Explain_format_tree : public Explain_format {
  public:
-  Explain_format_tree() {}
+  Explain_format_tree() = default;
 
   bool is_hierarchical() const override { return false; }
   bool send_headers(Query_result *) override {
-    DBUG_ASSERT(false);
+    assert(false);
     return true;
   }
-  bool begin_context(enum_parsing_context, SELECT_LEX_UNIT *,
+  bool begin_context(enum_parsing_context, Query_expression *,
                      const Explain_format_flags *) override {
-    DBUG_ASSERT(false);
+    assert(false);
     return true;
   }
   bool end_context(enum_parsing_context) override {
-    DBUG_ASSERT(false);
+    assert(false);
     return true;
   }
   bool flush_entry() override {
-    DBUG_ASSERT(false);
+    assert(false);
     return true;
   }
   qep_row *entry() override {
-    DBUG_ASSERT(false);
+    assert(false);
     return nullptr;
   }
-  bool is_tree() const override { return true; }
+  bool is_iterator_based() const override { return true; }
+
+  /* Convert Json object to string */
+  std::string ExplainJsonToString(Json_object *json) override;
+  void ExplainPrintTreeNode(const Json_dom *json, int level,
+                            std::string *explain,
+                            std::vector<std::string> *tokens_for_force_subplan);
 
  private:
   bool push_select_type(mem_root_deque<Item *> *items);
+
+  void AppendChildren(const Json_dom *children, int level, std::string *explain,
+                      std::vector<std::string> *tokens_for_force_subplan,
+                      std::string *child_token_digest);
+  void ExplainPrintCosts(const Json_object *obj, std::string *explain);
 };
 
 #endif  // OPT_EXPLAIN_FORMAT_TRADITIONAL_INCLUDED

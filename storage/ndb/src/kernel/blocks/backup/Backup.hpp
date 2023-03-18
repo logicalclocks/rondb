@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -39,7 +39,6 @@
 #include <SignalCounter.hpp>
 #include <blocks/mutexes.hpp>
 
-#include <NdbTCP.h>
 #include <NdbTick.h>
 #include <Array.hpp>
 #include <Mutex.hpp>
@@ -87,6 +86,7 @@ protected:
   void execREAD_CONFIG_REQ(Signal* signal);
   void execDUMP_STATE_ORD(Signal* signal);
   void execREAD_NODESCONF(Signal* signal);
+  void execNODE_START_REP(Signal* signal);
   void execNODE_FAILREP(Signal* signal);
   void execINCL_NODEREQ(Signal* signal);
   void execCONTINUEB(Signal* signal);
@@ -211,10 +211,9 @@ private:
   void defineBackupMutex_locked(Signal* signal, Uint32 ptrI,Uint32 retVal);
   void dictCommitTableMutex_locked(Signal* signal, Uint32 ptrI,Uint32 retVal);
   void startDropTrig_synced(Signal* signal, Uint32 ptrI, Uint32 retVal);
-  Uint32 validateEncryptionPassword(const EncryptionPasswordData* epd);
+  Uint32 validateEncryptionPassword(const EncryptionKeyMaterial* epd);
 
-
-public:
+ public:
   struct Node {
     Uint32 nodeId;
     Uint32 alive;
@@ -289,20 +288,17 @@ public:
     Uint64 noOfRecords;
     Uint32 tableId;
     Uint32 createGci;
+    Uint32 lqhInstanceKey;
+    Uint32 notUsed;
     Uint16 node;
     Uint16 fragmentId;
-    Uint32 lqhInstanceKey;
-    Uint8 scanned;  // 0 = not scanned x = scanned by node x
-    Uint8 scanning; // 0 = not scanning x = scanning on node x
-    Uint8 firstFragment;
-    Uint32 nextPool;
+    Uint16 scanned;  // 0 = not scanned x = scanned by node x
+    Uint16 scanning; // 0 = not scanning x = scanning on node x
   };
-  typedef Ptr<Fragment> FragmentPtr;
-  typedef ArrayPool<Fragment> Fragment_pool;
 
   struct DeleteLcpFile
   {
-    Uint64 lcpLsn;
+    Uint32 m_magic;
     Uint32 tableId;
     Uint32 fragmentId;
     Uint32 firstFileId;
@@ -310,19 +306,18 @@ public:
     Uint32 waitCompletedGci;
     Uint32 lcpCtlFileNumber;
     Uint32 validFlag;
+    Uint64 lcpLsn;
     union
     {
-      Uint32 nextPool;
-      Uint32 nextList;
+      Uint64 nextPool;
+      Uint64 nextList;
     };
-    Uint32 prevList;
+    Uint64 prevList;
   };
-  typedef Ptr<DeleteLcpFile> DeleteLcpFilePtr;
-  typedef ArrayPool<DeleteLcpFile> DeleteLcpFile_pool;
-  typedef DLCFifoList<DeleteLcpFile_pool> DeleteLcpFile_list;
-  typedef LocalDLCFifoList<DeleteLcpFile_pool>
-    LocalDeleteLcpFile_list;
-  DeleteLcpFile_list::Head m_delete_lcp_file_head;
+  typedef Ptr64<DeleteLcpFile> DeleteLcpFilePtr;
+  typedef RecordPool64<RWPool64<DeleteLcpFile> > DeleteLcpFile_pool;
+  typedef DLCFifo64List<DeleteLcpFile_pool> DeleteLcpFile_list;
+  DeleteLcpFile_list m_delete_lcp_file_list;
 
   Uint32 m_newestRestorableGci;
   bool m_delete_lcp_files_ongoing;
@@ -335,10 +330,8 @@ public:
   bool m_skew_disk_speed;
 
   struct Table {
-    Table(Fragment_pool &);
-    
+    Table();
     Uint64 noOfRecords;
-
     Uint32 tableId;
     Uint32 backupPtrI;
     Uint32 schemaVersion;
@@ -355,19 +348,24 @@ public:
      */
     Uint32 attrInfo[1+MAXNROFATTRIBUTESINWORDS+3];
     
-    Array<Fragment> fragments;
-
     Uint32 nextList;
     union { Uint32 nextPool; Uint32 prevList; };
     /**
      * Pointer used by c_tableMap
      */
     Uint32 nextMapTable;
+
+    Uint32 num_backup_fragments;
+    Fragment *backup_fragments;
+    Fragment lcp_fragment;
   };
   typedef Ptr<Table> TablePtr;
   typedef ArrayPool<Table> Table_pool;
   typedef SLList<Table_pool> Table_list;
   typedef DLCFifoList<Table_pool> Table_fifo;
+
+  void get_backup_fragment(Fragment **fragPtrP, TablePtr, Uint32 frag_id);
+  void get_lcp_fragment(Fragment **fragPtrP, TablePtr);
 
   struct OperationRecord {
   public:
@@ -445,7 +443,13 @@ public:
   friend struct OperationRecord;
 
   struct TriggerRecord {
-    TriggerRecord() { event = ~0;}
+    static constexpr Uint32 TYPE_ID = RT_BACKUP_TRIGGER;
+    TriggerRecord() :
+      m_magic(Magic::make(TYPE_ID))
+    {
+      event = ~0;
+    }
+    Uint32 m_magic;
     OperationRecord * operation;
     BackupFormat::LogFile::LogEntry * logEntry;
     Uint32 tableId;
@@ -453,10 +457,15 @@ public:
     Uint32 event;
     Uint32 backupPtr;
     Uint32 errorCode;
-    union { Uint32 nextPool; Uint32 nextList; };
+    union
+    {
+      Uint32 nextPool;
+      Uint32 nextList;
+    };
   };
+  static constexpr Uint32 BACKUP_TRIGGER_RECORD_TRANSIENT_POOL_INDEX = 0;
   typedef Ptr<TriggerRecord> TriggerPtr;
-  typedef ArrayPool<TriggerRecord> TriggerRecord_pool;
+  typedef TransientPool<TriggerRecord> TriggerRecord_pool;
   typedef SLList<TriggerRecord_pool> TriggerRecord_list;
 
   /**
@@ -464,7 +473,11 @@ public:
    */
   struct BackupFile {
     BackupFile(Backup & backup, Page32_pool& pp)
-      : operation(backup),  pages(pp) { m_retry_count = 0; }
+      : operation(backup),  pages(pp)
+  {
+    m_retry_count = 0;
+    m_use_o_direct = false;
+  }
     
     Uint32 backupPtr; // Pointer to backup record
     Uint32 tableId;
@@ -476,6 +489,7 @@ public:
     Uint32 errorCode;
     BackupFormat::FileType fileType;
     OperationRecord operation;
+    bool m_use_o_direct;
 
     Uint64 m_lcp_inserts;
     Uint64 m_lcp_writes;
@@ -619,7 +633,7 @@ public:
         masterData.gsn = 0;
         m_informDropTabTableId = Uint32(~0);
         m_informDropTabReference = Uint32(~0);
-        currentDeleteLcpFile = RNIL;
+        currentDeleteLcpFile = RNIL64;
         noOfRecords = 0;
         noOfBytes = 0;
         for (Uint32 i = 0; i < BackupFormat::NDB_MAX_FILES_PER_LCP; i++)
@@ -769,7 +783,7 @@ public:
     Uint32 m_num_sync_extent_pages_written;
     /* Data for delete LCP file process */
     Uint32 deleteFilePtr;
-    Uint32 currentDeleteLcpFile;
+    Uint64 currentDeleteLcpFile;
     bool m_delete_data_file_ongoing;
 
     Uint32 backupId; /* LCP id for LCPs, backupId for backups */
@@ -921,7 +935,7 @@ public:
     }
 
     bool m_encrypted_file;
-    EncryptionPasswordData m_encryption_password_data;
+    EncryptionKeyMaterial m_encryption_password_data;
   };
   friend struct BackupRecord;
   typedef Ptr<BackupRecord> BackupRecordPtr;
@@ -974,11 +988,14 @@ public:
    * look for the table with the correct backupPtr.
    */
   Uint32 * c_tableMap;
+  Uint32 c_tableMapSize;
   NodeId c_masterNodeId;
   Node_list c_nodes;
   NdbNodeBitmask c_aliveNodes;
   BackupRecord_dllist c_backups;
   Config c_defaults;
+
+  bool c_encrypted_filesystem;
 
   /*
     Variables that control checkpoint to disk speed
@@ -1195,9 +1212,9 @@ public:
                              Uint64 & std_dev_redo_in_bytes_per_sec);
 
 
-  STATIC_CONST(NO_OF_PAGES_META_FILE = 
-	       (2*MAX_WORDS_META_FILE + BACKUP_WORDS_PER_PAGE - 1) / 
-	       BACKUP_WORDS_PER_PAGE);
+  static constexpr Uint32 NO_OF_PAGES_META_FILE = 
+	       (2*MAX_WORDS_META_FILE + BACKUP_WORDS_PER_PAGE - 1) /
+	       BACKUP_WORDS_PER_PAGE;
 
   Uint32 m_backup_report_frequency;
 
@@ -1211,10 +1228,9 @@ public:
   BackupRecord_pool c_backupPool;
   BackupFile_pool c_backupFilePool;
   Page32_pool c_pagePool;
-  Fragment_pool c_fragmentPool;
   Node_pool c_nodePool;
   TriggerRecord_pool c_triggerPool;
-  ArrayPool<DeleteLcpFile> c_deleteLcpFilePool;
+  DeleteLcpFile_pool c_deleteLcpFilePool;
 
   void checkFile(Signal*, BackupFilePtr);
   void checkScan(Signal*, BackupRecordPtr, BackupFilePtr, bool);
@@ -1265,7 +1281,7 @@ public:
                        BackupRecordPtr,
                        BackupFilePtr,
                        TablePtr,
-                       FragmentPtr,
+                       Fragment*,
                        Uint32 delay);
 
   void init_scan_prio_level(Signal *signal, BackupRecordPtr ptr);
@@ -1322,7 +1338,7 @@ public:
   */
   /* Init at start of backup, timers etc... */
   void initReportStatus(Signal* signal, BackupRecordPtr ptr);
-  /* Sheck timers for reporting at certain points */
+  /* Check timers for reporting at certain points */
   void checkReportStatus(Signal* signal, BackupRecordPtr ptr);
   /* Send backup status, invoked either periodically, or explicitly */
   void reportStatus(Signal* signal, BackupRecordPtr ptr,
@@ -1365,8 +1381,7 @@ public:
   void start_lcp_scan(Signal *signal,
                       BackupRecordPtr ptr,
                       TablePtr tabPtr,
-                      Uint32 ptrI,
-                      Uint32 fragNo);
+                      Uint32 ptrI);
   Uint32 get_part_add(Uint32 start_part, Uint32 num_parts);
   Uint32 get_file_add(Uint32 start_file, Uint32 num_files);
   Uint32 get_file_sub(Uint32 start_file, Uint32 num_files);
@@ -1456,9 +1471,9 @@ public:
    * MT LQH.  LCP runs separately in each instance number.
    * BACKUP uses instance key 1 (real instance 0 or 1) as master.
   */
-  STATIC_CONST( NdbdInstanceKey = 0 );
-  STATIC_CONST( BackupProxyInstanceKey = 0 );
-  STATIC_CONST( UserBackupInstanceKey = 1 );
+  static constexpr Uint32 NdbdInstanceKey = 0;
+  static constexpr Uint32 BackupProxyInstanceKey = 0;
+  static constexpr Uint32 UserBackupInstanceKey = 1;
   /*
    * instanceNo() is used for routing backup control signals and has 3
    * use cases:
@@ -1538,6 +1553,17 @@ public:
   void pausing_lcp(Uint32 place, Uint32 val);
   void get_lcp_record(BackupRecordPtr &ptr);
   bool get_backup_record(BackupRecordPtr &ptr);
+
+private:
+  void checkPoolShrinkNeed(Uint32 pool_index,
+                           const TransientFastSlotPool& pool);
+  void sendPoolShrink(Uint32 pool_index);
+  void shrinkTransientPools(Uint32 pool_index);
+
+  static const Uint32 c_transient_pool_count = 1;
+  TransientFastSlotPool* c_transient_pools[c_transient_pool_count];
+  Bitmask<1> c_transient_pools_shrinking;
+
 public:
   bool is_change_part_state(Uint32 page_id);
   Uint32 get_max_words_per_scan_batch(Uint32, Uint32&, Uint32, Uint32);
@@ -1627,6 +1653,35 @@ Backup::get_max_words_per_scan_batch(Uint32 prioAFlag,
     if (ret_val)
       wordsWritten = 0;
     return ret_val;
+  }
+}
+
+inline
+void
+Backup::get_backup_fragment(Fragment **fragPtrP, TablePtr tabPtr, Uint32 frag_id)
+{
+  ndbrequire(frag_id < tabPtr.p->num_backup_fragments);
+  *fragPtrP = &tabPtr.p->backup_fragments[frag_id];
+}
+
+inline
+void
+Backup::get_lcp_fragment(Fragment **fragPtrP, TablePtr tabPtr)
+{
+  *fragPtrP = &tabPtr.p->lcp_fragment;
+}
+
+
+inline void Backup::checkPoolShrinkNeed(const Uint32 pool_index,
+                                        const TransientFastSlotPool& pool)
+{
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  ndbrequire(pool_index < c_transient_pool_count);
+  ndbrequire(c_transient_pools[pool_index] == &pool);
+#endif
+  if (pool.may_shrink())
+  {
+    sendPoolShrink(pool_index);
   }
 }
 

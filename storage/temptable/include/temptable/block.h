@@ -1,4 +1,4 @@
-/* Copyright (c) 2019, 2020, Oracle and/or its affiliates. All Rights Reserved.
+/* Copyright (c) 2019, 2022, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -34,6 +34,7 @@ Block abstraction for temptable-allocator. */
 
 #include "memory_debugging.h"
 #include "my_dbug.h"
+#include "mysql/psi/mysql_memory.h"
 #include "storage/temptable/include/temptable/chunk.h"
 #include "storage/temptable/include/temptable/header.h"
 #include "storage/temptable/include/temptable/memutils.h"
@@ -54,24 +55,26 @@ void Block_PSI_track_logical_allocation(size_t size);
 void Block_PSI_track_logical_deallocation(size_t size);
 /** Log physical memory allocation of a Block located in RAM.
  *
+ * [in] Pointer to user memory block
  * [in] Number of bytes allocated
  * */
-void Block_PSI_track_physical_ram_allocation(size_t size);
+void Block_PSI_track_physical_ram_allocation(void *ptr, size_t size);
 /** Log physical memory deallocation of a Block located in RAM.
  *
- * [in] Number of bytes deallocated
+ * [in]  Pointer to PSI header
  * */
-void Block_PSI_track_physical_ram_deallocation(size_t size);
+void Block_PSI_track_physical_ram_deallocation(uint8_t *ptr);
 /** Log physical memory allocation of a Block located in MMAP-ed file.
  *
+ * [in] Pointer to user memory block
  * [in] Number of bytes allocated
  * */
-void Block_PSI_track_physical_disk_allocation(size_t size);
+void Block_PSI_track_physical_disk_allocation(void *ptr, size_t size);
 /** Log physical memory deallocation of a Block located in MMAP-ed file.
  *
- * [in] Number of bytes deallocated
+ * [in]  Pointer to PSI header
  * */
-void Block_PSI_track_physical_disk_deallocation(size_t size);
+void Block_PSI_track_physical_disk_deallocation(uint8_t *ptr);
 
 /** Memory-block abstraction whose purpose is to serve as a building block
  * for custom memory-allocator implementations.
@@ -164,7 +167,7 @@ class Block : private Header {
 
  public:
   /** Default constructor which creates an empty Block. */
-  Block() noexcept;
+  Block() noexcept = default;
 
   /** Constructor which creates a Block of given size from the given
    * memory source.
@@ -274,44 +277,56 @@ class Block : private Header {
 };
 
 static inline uint8_t *allocate_from(Source src, size_t size) {
-  uint8_t *ptr = nullptr;
+  void *ptr = nullptr;
+  size_t raw_size = size;
+#ifdef HAVE_PSI_MEMORY_INTERFACE
+  raw_size += PSI_HEADER_SIZE;
+#endif
   if (src == Source::RAM) {
-    ptr = static_cast<uint8_t *>(Memory<Source::RAM>::allocate(size));
-    Block_PSI_track_physical_ram_allocation(size);
+    ptr = Memory<Source::RAM>::allocate(raw_size);
+    Block_PSI_track_physical_ram_allocation(ptr, size);
   } else if (src == Source::MMAP_FILE) {
-    ptr = static_cast<uint8_t *>(Memory<Source::MMAP_FILE>::allocate(size));
-    Block_PSI_track_physical_disk_allocation(size);
+    ptr = Memory<Source::MMAP_FILE>::allocate(raw_size);
+    Block_PSI_track_physical_disk_allocation(ptr, size);
   }
-  return ptr;
+#ifdef HAVE_PSI_MEMORY_INTERFACE
+  return reinterpret_cast<uint8_t *>(HEADER_TO_USER(ptr));
+#else
+  return reinterpret_cast<uint8_t *>(ptr);
+#endif
 }
 
 static inline void deallocate_from(Source src, size_t size,
                                    uint8_t *block_address) {
+  size_t raw_size = size;
+  uint8_t *raw_block_address = block_address;
+#ifdef HAVE_PSI_MEMORY_INTERFACE
+  raw_size += PSI_HEADER_SIZE;
+  raw_block_address = USER_TO_HEADER_UINT8_T(block_address);
+#endif
   if (src == Source::RAM) {
-    Block_PSI_track_physical_ram_deallocation(size);
-    Memory<Source::RAM>::deallocate(block_address, size);
+    Block_PSI_track_physical_ram_deallocation(raw_block_address);
+    Memory<Source::RAM>::deallocate(raw_block_address, raw_size);
   } else if (src == Source::MMAP_FILE) {
-    Block_PSI_track_physical_disk_deallocation(size);
-    Memory<Source::MMAP_FILE>::deallocate(block_address, size);
+    Block_PSI_track_physical_disk_deallocation(raw_block_address);
+    Memory<Source::MMAP_FILE>::deallocate(raw_block_address, raw_size);
   }
 }
 
-inline Block::Block() noexcept {}
-
 inline Block::Block(Chunk chunk) noexcept : Header(chunk.block()) {
-  DBUG_ASSERT(!is_empty());
+  assert(!is_empty());
 }
 
 inline Block::Block(size_t size, Source memory_source)
     : Block(allocate_from(memory_source, Block::aligned_size(size)),
             memory_source, Block::aligned_size(size)) {
-  DBUG_ASSERT(!is_empty());
+  assert(!is_empty());
 }
 
 inline Block::Block(uint8_t *block_memory, Source block_memory_type,
                     size_t block_size) noexcept
     : Header(block_memory, block_memory_type, block_size) {
-  DBUG_ASSERT(!is_empty());
+  assert(!is_empty());
 
   /* Prevent writes to the memory which we took from the OS but still have
    * not shipped outside of the Allocator. This will also prevent reads, but
@@ -333,8 +348,8 @@ inline bool Block::operator!=(const Block &other) const {
 }
 
 inline Chunk Block::allocate(size_t chunk_size) noexcept {
-  DBUG_ASSERT(!is_empty());
-  DBUG_ASSERT(can_accommodate(chunk_size));
+  assert(!is_empty());
+  assert(can_accommodate(chunk_size));
 
   const size_t chunk_size_aligned = Block::aligned_size(chunk_size);
 
@@ -356,7 +371,7 @@ inline Chunk Block::allocate(size_t chunk_size) noexcept {
 }
 
 inline size_t Block::deallocate(Chunk chunk, size_t chunk_size) noexcept {
-  DBUG_ASSERT(!is_empty());
+  assert(!is_empty());
   DBUG_PRINT("temptable_allocator",
              ("deallocate from block: size=%zu, from_block=(%s), chunk_data=%p",
               chunk_size, to_string().c_str(), chunk.data()));
@@ -370,8 +385,8 @@ inline size_t Block::deallocate(Chunk chunk, size_t chunk_size) noexcept {
 }
 
 inline void Block::destroy() noexcept {
-  DBUG_ASSERT(!is_empty());
-  DBUG_ASSERT(Header::number_of_used_chunks() == 0);
+  assert(!is_empty());
+  assert(Header::number_of_used_chunks() == 0);
   DBUG_PRINT("temptable_allocator",
              ("destroying the block: (%s)", to_string().c_str()));
 
@@ -385,36 +400,36 @@ inline bool Block::is_empty() const {
 }
 
 inline bool Block::can_accommodate(size_t n_bytes) const {
-  DBUG_ASSERT(!is_empty());
+  assert(!is_empty());
 
   const size_t n_bytes_aligned = Block::aligned_size(n_bytes);
   const size_t block_size = Header::block_size();
   const size_t first_pristine_offset = Header::first_pristine_offset();
-  DBUG_ASSERT(first_pristine_offset <=
-              std::numeric_limits<decltype(block_size)>::max() -
-                  Chunk::size_hint(n_bytes_aligned));
+  assert(first_pristine_offset <=
+         std::numeric_limits<decltype(block_size)>::max() -
+             Chunk::size_hint(n_bytes_aligned));
 
   return first_pristine_offset + Chunk::size_hint(n_bytes_aligned) <=
          block_size;
 }
 
 inline Source Block::type() const {
-  DBUG_ASSERT(!is_empty());
+  assert(!is_empty());
   return Header::memory_source_type();
 }
 
 inline size_t Block::size() const {
-  DBUG_ASSERT(!is_empty());
+  assert(!is_empty());
   return Header::block_size();
 }
 
 inline size_t Block::number_of_used_chunks() const {
-  DBUG_ASSERT(!is_empty());
+  assert(!is_empty());
   return Header::number_of_used_chunks();
 }
 
 inline std::string Block::to_string() const {
-  DBUG_ASSERT(!is_empty());
+  assert(!is_empty());
   std::stringstream s;
   s << "address=" << static_cast<void *>(Header::block_address())
     << ", size=" << Header::block_size()
@@ -425,7 +440,7 @@ inline std::string Block::to_string() const {
 
 inline bool Block::is_rightmost_chunk(const Chunk &chunk,
                                       size_t size_bytes) const {
-  DBUG_ASSERT(!is_empty());
+  assert(!is_empty());
   return chunk.offset() + size_bytes == Header::first_pristine_offset();
 }
 

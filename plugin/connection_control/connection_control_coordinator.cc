@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -68,7 +68,7 @@ bool Connection_event_coordinator::register_event_subscriber(
   std::vector<opt_connection_control>::iterator sys_vars_it;
   std::vector<stats_connection_control>::iterator status_vars_it;
 
-  DBUG_ASSERT(subscriber != nullptr);
+  assert(subscriber != nullptr);
 
   if (status_vars) {
     for (status_vars_it = status_vars->begin();
@@ -138,7 +138,7 @@ bool Connection_event_coordinator::register_event_subscriber(
     1. Iterate through list of subscribers
     - If a subscriber has shown interest in received event,
       call notify() for the subscriber
-    2. Interate through list of status variables
+    2. Iterate through list of status variables
     - If subscriber has show interest in any status variable,
       call notify_status_var() for the subscriber
     - If subscriber suggests an action on status variable,
@@ -227,7 +227,7 @@ bool Connection_event_coordinator::notify_status_var(
         }
         default: {
           error = true;
-          DBUG_ASSERT(false);
+          assert(false);
           break;
         }
       }

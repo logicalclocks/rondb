@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2005, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2005, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -151,10 +152,7 @@ Dbtup::execACC_SCANREQ(Signal* signal)
     tablePtr.i = req->tableId;
     ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
     FragrecordPtr fragPtr;
-    Uint32 fragId = req->fragmentNo;
-    fragPtr.i = RNIL;
-    getFragmentrec(fragPtr, fragId, tablePtr.p);
-    ndbrequire(fragPtr.i != RNIL);
+    fragPtr = prepare_fragptr;
     Fragrecord& frag = *fragPtr.p;
     // flags
     Uint32 bits = 0;
@@ -232,9 +230,9 @@ Dbtup::execACC_SCANREQ(Signal* signal)
       scanPtr.p->m_endPage = req->maxPage;
       if (req->maxPage != RNIL && req->maxPage > frag.m_max_page_cnt)
       {
-        DEB_NR_SCAN(("%u %u endPage: %u (noOfPages: %u maxPage: %u)", 
+        DEB_NR_SCAN(("tab(%u,%u) endPage: %u (noOfPages: %u maxPage: %u)", 
                      tablePtr.i,
-                     fragId,
+                     fragPtr.p->fragmentId,
                      req->maxPage,
                      fragPtr.p->noOfPages,
                      fragPtr.p->m_max_page_cnt));
@@ -303,7 +301,7 @@ Dbtup::execNEXT_SCANREQ(Signal* signal)
     break;
   case NextScanReq::ZSCAN_COMMIT:
     jam();
-    // Fall through
+    [[fallthrough]];
   case NextScanReq::ZSCAN_NEXT_COMMIT:
     jam();
     if ((scan.m_bits & ScanOp::SCAN_LOCK) != 0)
@@ -390,7 +388,7 @@ Dbtup::execACC_CHECK_SCAN(Signal* signal)
   // fragment
   FragrecordPtr fragPtr;
   fragPtr.i = scan.m_fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   Fragrecord& frag = *fragPtr.p;
   bool wait_for_scan_lock_record = false;
   if (scan.m_bits & ScanOp::SCAN_LOCK &&
@@ -527,7 +525,7 @@ Dbtup::scanReply(Signal* signal, ScanOpPtr scanPtr)
   ScanOp& scan = *scanPtr.p;
   FragrecordPtr fragPtr;
   fragPtr.i = scan.m_fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   Fragrecord& frag = *fragPtr.p;
   // for reading tuple key in Current state
   Uint32* pkData = (Uint32*)c_dataBuffer;
@@ -569,7 +567,6 @@ Dbtup::scanReply(Signal* signal, ScanOpPtr scanPtr)
       lockReq->userRef = reference();
       lockReq->tableId = scan.m_tableId;
       lockReq->fragId = frag.fragmentId;
-      lockReq->fragPtrI = RNIL; // no cached frag ptr yet
       lockReq->hashValue = md5_hash((Uint64*)pkData, pkSize);
       lockReq->page_id = key_mm.m_page_no;
       lockReq->page_idx = key_mm.m_page_idx;
@@ -758,6 +755,7 @@ Dbtup::execACCKEYCONF(Signal* signal)
   Local_key tmp;
   tmp.m_page_no = localKey1;
   tmp.m_page_idx = localKey2;
+  tmp.m_file_no = 0;
 
   ndbassert(!m_is_query_block);
   ndbrequire(c_scanOpPool.getValidPtr(scanPtr));
@@ -789,9 +787,12 @@ Dbtup::execACCKEYCONF(Signal* signal)
        *   so rescan this position.
        *   Which is implemented by using execACCKEYREF...
        */
-      ndbout << "execACCKEYCONF "
-             << scan.m_scanPos.m_key_mm
-             << " != " << tmp << " ";
+      char key_str1[MAX_LOG_MESSAGE_SIZE];
+      printLocal_Key(key_str1, sizeof(key_str1), scan.m_scanPos.m_key_mm);
+      char key_str2[MAX_LOG_MESSAGE_SIZE];
+      printLocal_Key(key_str2, sizeof(key_str2), tmp);
+      g_eventLogger->info("execACCKEYCONF %s != %s ", key_str1, key_str2);
+
       scan.m_bits |= ScanOp::SCAN_LOCK_WAIT;
       execACCKEYREF(signal);
       return;
@@ -858,13 +859,15 @@ Dbtup::execACCKEYREF(Signal* signal)
          */
 	scan.m_state = ScanOp::Next;
 	scan.m_scanPos.m_get = ScanPos::Get_tuple;
-	DEB_NR_SCAN(("Ignoring scan.m_state == ScanOp::Blocked, refetch"));
+	DEB_NR_SCAN(("(%u)Ignoring scan.m_state == ScanOp::Blocked, refetch",
+                     instance()));
       }
       else
       {
 	jam();
 	scan.m_state = ScanOp::Next;
-	DEB_NR_SCAN(("Ignoring scan.m_state == ScanOp::Blocked"));
+	DEB_NR_SCAN(("(%u)Ignoring scan.m_state == ScanOp::Blocked",
+                     instance()));
       }
     }
     // LQH has the ball
@@ -909,7 +912,7 @@ Dbtup::scanFirst(Signal*, ScanOpPtr scanPtr)
   // fragment
   FragrecordPtr fragPtr;
   fragPtr.i = scan.m_fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   Fragrecord& frag = *fragPtr.p;
 
   if (bits & ScanOp::SCAN_NR)
@@ -1857,7 +1860,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
   // fragment
   FragrecordPtr fragPtr;
   fragPtr.i = scan.m_fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   Fragrecord& frag = *fragPtr.p;
   m_curr_fragptr = fragPtr;
   // tuple found
@@ -1961,13 +1964,14 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
             if (key.m_page_no < scan.m_endPage)
             {
               jam();
-              DEB_NR_SCAN(("scanning page %u", key.m_page_no));
+              DEB_NR_SCAN(("(%u)scanning page %u", instance(), key.m_page_no));
               goto cont;
             }
             jam();
             // no more pages, scan ends
             pos.m_get = ScanPos::Get_undef;
             scan.m_state = ScanOp::Last;
+            scan.m_last_seen = __LINE__;
             return true;
           }
           else if (bits & ScanOp::SCAN_LCP &&
@@ -2047,7 +2051,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
         // clear cached value
         pos.m_realpid_mm = RNIL;
       }
-      /*FALLTHRU*/
+      [[fallthrough]];
     case ScanPos::Get_page_mm:
       // get TUP real page
       {
@@ -2110,7 +2114,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
         {
           jam();
         }
-	c_page_pool.getPtr(pagePtr, pos.m_realpid_mm);
+        ndbrequire(c_page_pool.getPtr(pagePtr, pos.m_realpid_mm));
         /**
          * We are in the process of performing a Full table scan, this can be
          * either due to a user requesting a full table scan, it can also be
@@ -2209,7 +2213,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
         Disk_alloc_info& alloc = frag.m_disk_alloc_info;
         Local_fragment_extent_list list(c_extent_pool, alloc.m_extent_list);
         Ptr<Extent_info> ext_ptr;
-        c_extent_pool.getPtr(ext_ptr, pos.m_extent_info_ptr_i);
+        ndbrequire(c_extent_pool.getPtr(ext_ptr, pos.m_extent_info_ptr_i));
         Extent_info* ext = ext_ptr.p;
         key.m_page_no++;
         if (key.m_page_no >= ext->m_first_page_no + alloc.m_extent_size) {
@@ -2220,6 +2224,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
             jam();
             pos.m_get = ScanPos::Get_undef;
             scan.m_state = ScanOp::Last;
+            scan.m_last_seen = __LINE__;
             return true;
           } else {
             // move to next extent
@@ -2297,7 +2302,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
           }
         } // if ScanOp::SCAN_DD read ahead
       }
-      /*FALLTHRU*/
+      [[fallthrough]];
     case ScanPos::Get_page_dd:
       // get global page in PGMAN cache
       jam();
@@ -2340,6 +2345,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
           jam();
           // request queued
           pos.m_get = ScanPos::Get_tuple;
+          scan.m_last_seen = __LINE__;
           return false;
         }
         else if (res < 0)
@@ -2358,6 +2364,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
           }
           /* Flag to reply code that we have an error */
           scan.m_state = ScanOp::Invalid;
+          scan.m_last_seen = __LINE__;
           return true;
         }
         ndbrequire(res > 0);
@@ -2369,15 +2376,15 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
       // move to next tuple
     case ScanPos::Get_next_tuple:
       // move to next fixed size tuple
-      jam();
+      jamDebug();
       {
         key.m_page_idx += size;
         pos.m_get = ScanPos::Get_tuple;
       }
-      /*FALLTHRU*/
+      [[fallthrough]];
     case ScanPos::Get_tuple:
       // get fixed size tuple
-      jam();
+      jamDebug();
       if ((bits & ScanOp::SCAN_VS) == 0)
       {
         Fix_page* page = (Fix_page*)pos.m_page;
@@ -2425,7 +2432,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
                      ((bits & ScanOp::SCAN_LCP) &&
                       !pos.m_lcp_scan_changed_rows_page)))
           {
-            jam();
+            jamDebug();
             /**
              * We come here for normal full table scans and also for LCP
              * scans where we scan ALL ROWS pages.
@@ -2731,6 +2738,7 @@ Dbtup::scanNext(Signal* signal, ScanOpPtr scanPtr)
             pos.m_realpid_mm = getRealpid(fragPtr.p, key_mm.m_page_no);
           }
           // TUPKEYREQ handles savepoint stuff
+          scan.m_last_seen = __LINE__;
           scan.m_state = ScanOp::Current;
           return true;
         }
@@ -2922,6 +2930,7 @@ Dbtup::record_delete_by_rowid(Signal *signal,
   conf->gci = foundGCI;
   if (set_scan_state)
     scan.m_state = ScanOp::Next;
+  scan.m_last_seen = __LINE__;
   signal->setLength(NextScanConf::SignalLengthNoKeyInfo);
   c_lqh->exec_next_scan_conf(signal);
   return;
@@ -3311,19 +3320,25 @@ Dbtup::handle_lcp_drop_change_page(Fragrecord *fragPtrP,
     returnCommonArea(pagePtr.i, 1);
     return;
   }
+  m_ctx.m_mm.lock();
+  m_ctx.m_mm.release_page(RT_DBTUP_PAGE, pagePtr.i, true);
   Uint32 words = 6 + ((found_idx_count + 1) / 2);
-  if (likely(c_undo_buffer.alloc_copy_tuple(&location, words) != nullptr))
+  if (unlikely(c_undo_buffer.alloc_copy_tuple(&location,
+                                              words,
+                                              true) ==
+               nullptr))
   {
-    jam();
-    returnCommonArea(pagePtr.i, 1);
+    char buf[256];
+    BaseString::snprintf(buf, sizeof(buf),
+                         "Global memory manager is out of memory completely,"
+                         " no memory in shared global memory left and no"
+                         " memory in reserved memory either.");
+    progError(__LINE__,
+              NDBD_OUT_OF_MEMORY,
+              buf);
   }
-  else
-  {
-    jam();
-    ndbrequire(returnCommonArea_for_reuse(pagePtr.i, 1));
-    ndbrequire(c_undo_buffer.reuse_page_for_copy_tuple(pagePtr.i));
-    ndbrequire(c_undo_buffer.alloc_copy_tuple(&location, words) != nullptr);
-  }
+  m_ctx.m_mm.unlock();
+  update_pages_allocated(-1);
   Uint32 * copytuple = get_copy_tuple_raw(&location);
   Local_key flag_key;
   flag_key.m_page_no = FREE_PAGE_RNIL;
@@ -3407,7 +3422,7 @@ Dbtup::disk_page_tup_scan_callback(Signal* signal, Uint32 scanPtrI, Uint32 page_
   ScanPos& pos = scan.m_scanPos;
   // get cache page
   Ptr<GlobalPage> gptr;
-  m_global_page_pool.getPtr(gptr, page_i);
+  ndbrequire(m_global_page_pool.getPtr(gptr, page_i));
   pos.m_page = (Page*)gptr.p;
   // continue
   ndbrequire((scan.m_bits & ScanOp::SCAN_LOCK) == 0);
@@ -3536,14 +3551,10 @@ void
 Dbtup::stop_lcp_scan(Uint32 tableId, Uint32 fragId)
 {
   jamEntry();
-  TablerecPtr tablePtr;
-  tablePtr.i = tableId;
-  ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
-
   FragrecordPtr fragPtr;
   fragPtr.i = RNIL;
-  getFragmentrec(fragPtr, fragId, tablePtr.p);
-  ndbrequire(fragPtr.i != RNIL);
+  getFragmentrec(fragPtr, fragId, tableId);
+  ndbrequire(fragPtr.i != RNIL64);
   Fragrecord& frag = *fragPtr.p;
 
   ndbrequire(frag.m_lcp_scan_op != RNIL && c_lcp_scan_op != RNIL);
@@ -3553,7 +3564,7 @@ Dbtup::stop_lcp_scan(Uint32 tableId, Uint32 fragId)
   ndbrequire(scanPtr.p->m_fragPtrI != RNIL);
 
   fragPtr.p->m_lcp_scan_op = RNIL;
-  scanPtr.p->m_fragPtrI = RNIL;
+  scanPtr.p->m_fragPtrI = RNIL64;
   scanPtr.p->m_tableId = RNIL;
 }
 
@@ -3562,7 +3573,7 @@ Dbtup::releaseScanOp(ScanOpPtr& scanPtr)
 {
   FragrecordPtr fragPtr;
   fragPtr.i = scanPtr.p->m_fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
 
   if (scanPtr.p->m_bits & ScanOp::SCAN_LCP)
   {
@@ -3594,14 +3605,10 @@ Dbtup::start_lcp_scan(Uint32 tableId,
                       Uint32 & max_page_cnt)
 {
   jamEntry();
-  TablerecPtr tablePtr;
-  tablePtr.i = tableId;
-  ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
-
   FragrecordPtr fragPtr;
-  fragPtr.i = RNIL;
-  getFragmentrec(fragPtr, fragId, tablePtr.p);
-  ndbrequire(fragPtr.i != RNIL);
+  fragPtr.i = RNIL64;
+  getFragmentrec(fragPtr, fragId, tableId);
+  ndbrequire(fragPtr.i != RNIL64);
   Fragrecord& frag = *fragPtr.p;
   
   ndbrequire(frag.m_lcp_scan_op == RNIL && c_lcp_scan_op != RNIL);
@@ -3609,7 +3616,7 @@ Dbtup::start_lcp_scan(Uint32 tableId,
   ScanOpPtr scanPtr;
   scanPtr.i = frag.m_lcp_scan_op;
   ndbrequire(c_scanOpPool.getValidPtr(scanPtr));
-  ndbrequire(scanPtr.p->m_fragPtrI == RNIL);
+  ndbrequire(scanPtr.p->m_fragPtrI == RNIL64);
   new (scanPtr.p) ScanOp;
   scanPtr.p->m_fragPtrI = fragPtr.i;
   scanPtr.p->m_tableId = tableId;
@@ -3625,19 +3632,15 @@ Dbtup::start_lcp_scan(Uint32 tableId,
 void
 Dbtup::lcp_frag_watchdog_print(Uint32 tableId, Uint32 fragId)
 {
-  TablerecPtr tablePtr;
-  tablePtr.i = tableId;
   if (tableId > cnoOfTablerec)
   {
     jam();
     return;
   }
-  ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
-
   FragrecordPtr fragPtr;
   fragPtr.i = RNIL;
-  getFragmentrec(fragPtr, fragId, tablePtr.p);
-  ndbrequire(fragPtr.i != RNIL);
+  getFragmentrec(fragPtr, fragId, tableId);
+  ndbrequire(fragPtr.i != RNIL64);
   Fragrecord& frag = *fragPtr.p;
 
   if (c_lcp_scan_op == RNIL)

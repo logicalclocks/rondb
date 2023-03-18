@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -27,16 +27,18 @@
 #define GLOBAL_DATA_H
 
 #include <ndb_global.h>
+#include <cstring>
 #include <kernel_types.h>
 #include "Prio.hpp"
 #include "VMSignal.hpp"
 
 #include <BlockNumbers.h>
-#include <NodeState.hpp>
-#include <NodeInfo.hpp>
-#include "ArrayPool.hpp"
-#include <NdbTick.h>
 #include <NdbMutex.h>
+#include <NdbTick.h>
+#include <ndb_openssl_evp.h>
+#include <NodeInfo.hpp>
+#include <NodeState.hpp>
+#include "ArrayPool.hpp"
 
 // #define GCP_TIMER_HACK
 
@@ -95,6 +97,7 @@ struct GlobalData {
   Uint32     ndbMtTcWorkers;
   Uint32     ndbMtTcThreads;
   Uint32     ndbMtQueryThreads;
+  Uint32     ndbMtQueryWorkers;
   Uint32     ndbMtRecoverThreads;
   Uint32     ndbMtSendThreads;
   Uint32     ndbMtReceiveThreads;
@@ -114,6 +117,9 @@ struct GlobalData {
   Uint64     theRedoBuffer;
   Uint64     theUndoBuffer;
   Uint64     theTransactionMemory;
+  Uint64     theSchemaMemory;
+  Uint64     theBackupSchemaMemory;
+  Uint64     theReplicationMemory;
   Uint64     theSharedGlobalMemory;
   Uint64     theLongSignalMemory;
 
@@ -126,7 +132,14 @@ struct GlobalData {
   bool       theGracefulShutdownFlag;
   bool       theUseOnlyIPv4Flag;
 
+
   NdbMutex   *theIO_lag_mutex;
+  ndb_openssl_evp::byte nodeMasterKey[MAX_NODE_MASTER_KEY_LENGTH];
+  Uint32 nodeMasterKeyLength;
+  unsigned char filesystemPassword[MAX_BACKUP_ENCRYPTION_PASSWORD_LENGTH];
+  Uint32 filesystemPasswordLength;
+
+
 
   GlobalData(){ 
     theSignalId = 0; 
@@ -141,6 +154,7 @@ struct GlobalData {
     ndbMtTcWorkers = 0;
     ndbMtTcThreads = 0;
     ndbMtQueryThreads = 0;
+    ndbMtQueryWorkers = 0;
     ndbMtRecoverThreads = 0;
     ndbMtSendThreads = 0;
     ndbMtReceiveThreads = 0;
@@ -153,7 +167,7 @@ struct GlobalData {
     theBufferFullMicrosSleep = 0;
     theMicrosSend = 0;
     theMicrosSpin = 0;
-    bzero(m_hb_count, sizeof(m_hb_count));
+    std::memset(m_hb_count, 0, sizeof(m_hb_count));
 #ifdef GCP_TIMER_HACK
     gcp_timer_limit = 0;
 #endif
@@ -193,7 +207,10 @@ struct GlobalData {
   Uint32 * getWatchDogPtr();
 
   Uint32 getBlockThreads() const {
-    return ndbMtLqhThreads + ndbMtTcThreads + ndbMtReceiveThreads;
+    return ndbMtLqhThreads +
+           ndbMtQueryThreads +
+           ndbMtTcThreads +
+           ndbMtReceiveThreads;
   }
 
   Uint32 get_hb_count(Uint32 nodeId) const {

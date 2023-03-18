@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -31,7 +31,7 @@
 struct MEM_ROOT;
 class MDL_request;
 class THD;
-struct TABLE_LIST;
+class Table_ref;
 
 namespace dd {
 namespace sdi {
@@ -72,7 +72,7 @@ class Import_target {
     Creates an instance to handle the import of a single sdi file.
     @param path full path to an sdi file to import
     @param in_datadir true if the file is located somewhere under the
-           server's data directrory.
+           server's data directory.
    */
   Import_target(String_type &&path, bool in_datadir);
 
@@ -136,17 +136,17 @@ class Import_target {
   bool load(THD *thd, String_type *shared_buffer);
 
   /**
-    Constructs a TABLE_LIST object with info from this Import_target.
-    TABLE_LIST::db and TABLE_LIST::table_name are initialized to the
+    Constructs a Table_ref object with info from this Import_target.
+    Table_ref::db and Table_ref::table_name are initialized to the
     canonical (lowercased for lctn==2) representation,
-    TABLE_LIST::alias to the native
-    table_name, and TABLE_LIST::m_lock_descriptor.type is set to
+    Table_ref::alias to the native
+    table_name, and Table_ref::m_lock_descriptor.type is set to
     TL_IGNORE.
    */
-  TABLE_LIST make_table_list() const;
+  Table_ref make_table_ref() const;
 
   /**
-    Upadate the schema reference in the Table object and store
+    Update the schema reference in the Table object and store
     it in the DD so that it becomes visible. Precondition: The
     Import_target must be loaded and privileges checked before this
     member function is called.
@@ -181,6 +181,18 @@ bool check_privileges(THD *thd, const Import_target &t);
 */
 MDL_request *mdl_request(const Import_target &t, MEM_ROOT *mem_root);
 
+/**
+  Drop all SDIs from all tablespaces associated with table. For a partitioned
+  table SDIs are deleted from all the partition tablespaces.
+*/
+bool drop_all_for_table(THD *, const Table *);
+
+/**
+  Drop all SDIs from all tablespaces associated with partition or
+  sub-partition. For a top-level partition of a sub-partitioned table, SDIs are
+  removed for all sub-partitions of that partition.
+*/
+bool drop_all_for_part(THD *, const Partition *);
 }  // namespace sdi
 }  // namespace dd
 

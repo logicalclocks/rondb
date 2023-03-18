@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -619,6 +620,7 @@ Dbtux::addScanList(NodeHandle& node,
   scanPtr.i = scanList;
   do {
     jam();
+    ndbrequire(checkScanInstance(scanInstance));
     scanPtr.p = getScanOpPtrP(scanPtr.i, scanInstance);
 #ifdef VM_TRACE
       if (debugFlags & DebugScan) {
@@ -660,6 +662,7 @@ Dbtux::removeScanList(NodeHandle& node,
   node.getNodeScan(scanPtr.i, loc_scanInstance);
   do {
     jam();
+    ndbrequire(checkScanInstance(loc_scanInstance));
     scanPtr.p = getScanOpPtrP(scanPtr.i, loc_scanInstance);
     const Uint32 nextPtrI = scanPtr.p->m_nodeScanPtrI;
     const Uint32 nextScanInstance = scanPtr.p->m_nodeScanInstance;
@@ -761,9 +764,10 @@ Dbtux::moveScanList(NodeHandle& node, unsigned pos)
       ScanOp& scan = *scanPtr.p;
       scan.m_scanLinkedPos = scan.m_scanPos.m_loc;
       scanNext(scanPtr, true, frag);
+      /* Relink scan in new pos, passing in its instance (can be a QTUX scan) */
       relinkScan(scan,
-                 frag,
                  scanInstance,
+                 frag,
                  false,
                  __LINE__);
       ndbassert(scanPtr.p->m_scanLinkedPos == NullTupLoc);
@@ -805,7 +809,7 @@ Dbtux::unlinkScan(NodeHandle& node,
   ScanOpPtr prevPtr;
   prevPtr.i = RNIL;
   prevPtr.p = nullptr;
-  while (true)
+  while (currPtr.i != RNIL)
   {
     jamDebug();
     currPtr.p = getScanOpPtrP(currPtr.i, loc_scanInstance);
@@ -836,6 +840,23 @@ Dbtux::unlinkScan(NodeHandle& node,
     currPtr.i = nextPtrI;
     loc_scanInstance = nextScanInstance;
   }
+  /* Should be unreachable */
+  g_eventLogger->error("Block %u instance %u unlinkScan failed to "
+                       "find scan object %u:%u",
+                       reference(),
+                       instance(),
+                       scanPtr.i,
+                       scanInstance);
+  /* Show list */
+  node.getNodeScan(currPtr.i, loc_scanInstance);
+  while (currPtr.i != RNIL)
+  {
+    currPtr.p = getScanOpPtrP(currPtr.i, loc_scanInstance);
+    g_eventLogger->error("  Scan %u:%u", currPtr.i, loc_scanInstance);
+    currPtr.i = currPtr.p->m_nodeScanPtrI;
+    loc_scanInstance = currPtr.p->m_nodeScanInstance;
+  }
+  ndbrequire(false);
 }
 
 /*

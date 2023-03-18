@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2016, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -57,7 +58,7 @@ int main(int argc, const char** argv){
   char desc[] = 
     "tabname\n"\
     "This program will lock p% of the records in the table for x milliseconds\n"\
-    "then it will lock the next 1% and continue to do so until it has locked \n"\
+    "then it will lock the next 1% and continue to do so until it has locked\n"\
     "all records in the table\n";
   
   if(getarg(args, num_args, argc, argv, &optind) ||

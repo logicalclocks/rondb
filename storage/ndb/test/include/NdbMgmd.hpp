@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2008, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2008, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,7 +26,10 @@
 #ifndef NDB_MGMD_HPP
 #define NDB_MGMD_HPP
 
+#include "util/require.h"
+#include "portlib/ndb_compiler.h"
 #include <mgmapi.h>
+#include "mgmcommon/NdbMgm.hpp"
 #include "../../src/mgmapi/mgmapi_internal.h"
 
 #include <BaseString.hpp>
@@ -34,9 +38,11 @@
 #include <OutputStream.hpp>
 #include <SocketInputStream2.hpp>
 
-#include "../../src/mgmsrv/Config.hpp"
+#include "mgmcommon/Config.hpp"
 
 #include <InputStream.hpp>
+
+#include "NdbSleep.h"
 
 class NdbMgmd {
   BaseString m_connect_str;
@@ -45,7 +51,7 @@ class NdbMgmd {
   bool m_verbose;
   unsigned int m_timeout;
   unsigned int m_version;
-  NDB_SOCKET_TYPE m_event_socket;
+  ndb_socket_t m_event_socket;
   
   void error(const char* msg, ...) ATTRIBUTE_FORMAT(printf, 2, 3)
   {
@@ -99,7 +105,7 @@ public:
     return m_handle;
   }
 
-  NDB_SOCKET_TYPE socket(void) const {
+  ndb_socket_t socket(void) const {
     return _ndb_mgm_get_socket(m_handle);
   }
 
@@ -290,7 +296,7 @@ public:
       }
     }
 
-    // Emtpy line terminates argument list
+    // Empty line terminates argument list
     if (out.print("\n")){
       error("call: print('\n') failed at line %d", __LINE__);
       return false;
@@ -370,14 +376,13 @@ public:
       return false;
     }
 
-    struct ndb_mgm_configuration* conf =
-      ndb_mgm_get_configuration(m_handle,0);
+    ndb_mgm::config_ptr conf(ndb_mgm_get_configuration(m_handle,0));
     if (!conf) {
       error("get_config: ndb_mgm_get_configuration failed");
       return false;
     }
 
-    config.m_configValues= conf;
+    config.m_configuration= conf.release();
     return true;
   }
 
@@ -389,7 +394,7 @@ public:
     }
 
     if (ndb_mgm_set_configuration(m_handle,
-                                  config.values()) != 0)
+                                  config.get_configuration()) != 0)
     {
       error("set_config: ndb_mgm_set_configuration failed");
       return false;
@@ -433,7 +438,9 @@ public:
       0
     };
 
-    m_event_socket = ndb_socket_create_from_native(ndb_mgm_listen_event(m_handle, filter));
+    ndb_socket_create_from_native(
+      m_event_socket,
+      ndb_mgm_listen_event(m_handle, filter));
     
     return ndb_socket_valid(m_event_socket);
   }
@@ -490,7 +497,7 @@ public:
     }
 
     Uint64 default_value = 0;
-    ConfigValues::Iterator iter(conf.m_configValues->m_config);
+    ConfigValues::Iterator iter(conf.m_configuration->m_config_values);
     for (int nodeid = 1; nodeid < MAX_NODES; nodeid++)
     {
       if (!iter.openSection(type_of_section, nodeid))
@@ -527,7 +534,7 @@ public:
 
     // TODO: Instead of using flaky sleep, try reconnect and
     // determine whether the config is changed.
-    sleep(10); //Give MGM server time to restart
+    NdbSleep_SecSleep(10); //Give MGM server time to restart
 
     return true;
   }
@@ -552,7 +559,7 @@ public:
     }
 
     Uint32 default_value = 0;
-    ConfigValues::Iterator iter(conf.m_configValues->m_config);
+    ConfigValues::Iterator iter(conf.m_configuration->m_config_values);
     for (int nodeid = 1; nodeid < MAX_NODES; nodeid++)
     {
       if (!iter.openSection(type_of_section, nodeid))
@@ -589,7 +596,7 @@ public:
 
     // TODO: Instead of using flaky sleep, try reconnect and
     // determine whether the config is changed.
-    sleep(10); //Give MGM server time to restart
+    NdbSleep_SecSleep(10); //Give MGM server time to restart
 
     return true;
   }
@@ -613,7 +620,7 @@ public:
       return 0;
     }
 
-    ConfigValues::Iterator iter(conf.m_configValues->m_config);
+    ConfigValues::Iterator iter(conf.m_configuration->m_config_values);
     for (int nodeid = 1; nodeid < MAX_NODES; nodeid++)
     {
       if (!iter.openSection(type_of_section, nodeid))

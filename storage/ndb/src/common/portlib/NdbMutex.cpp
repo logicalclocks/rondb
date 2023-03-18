@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,9 +24,12 @@
 */
 
 
+#include "util/require.h"
 #include <ndb_global.h>
+#include <cstring>
 
 #include <NdbMutex.h>
+#include <EventLogger.hpp>
 
 #ifdef NDB_MUTEX_DEADLOCK_DETECTOR
 #include "NdbMutex_DeadlockDetector.h"
@@ -57,7 +61,7 @@ NdbMutex_SysEnd()
 
 NdbMutex* NdbMutex_Create()
 {
-  return NdbMutex_CreateWithName(0);
+  return NdbMutex_CreateWithName(nullptr);
 }
 
 NdbMutex* NdbMutex_CreateWithName(const char * name)
@@ -66,8 +70,8 @@ NdbMutex* NdbMutex_CreateWithName(const char * name)
   int result;
 
   pNdbMutex = (NdbMutex*)malloc(sizeof(NdbMutex));
-  if (pNdbMutex == NULL)
-    return NULL;
+  if (pNdbMutex == nullptr)
+    return nullptr;
 
   result = NdbMutex_InitWithName(pNdbMutex, name);
   if (result == 0)
@@ -75,7 +79,7 @@ NdbMutex* NdbMutex_CreateWithName(const char * name)
     return pNdbMutex;
   }
   free(pNdbMutex);
-  return 0;
+  return nullptr;
 }
 
 static
@@ -85,7 +89,7 @@ int NdbMutex_InitWithName_local(NdbMutex* pNdbMutex,
 
 int NdbMutex_Init(NdbMutex* pNdbMutex)
 {
-  return NdbMutex_InitWithName_local(pNdbMutex, 0, 0);
+  return NdbMutex_InitWithName_local(pNdbMutex, nullptr, 0);
 }
 
 int NdbMutex_InitWithName(NdbMutex* pNdbMutex, const char * name)
@@ -95,7 +99,7 @@ int NdbMutex_InitWithName(NdbMutex* pNdbMutex, const char * name)
 
 int NdbMutex_Init_Shared(NdbMutex *pNdbMutex)
 {
-  return NdbMutex_InitWithName_local(pNdbMutex, 0, 1);
+  return NdbMutex_InitWithName_local(pNdbMutex, nullptr, 1);
 }
 
 static
@@ -109,7 +113,7 @@ int NdbMutex_InitWithName_local(NdbMutex* pNdbMutex,
   (void)name;
 
 #ifdef NDB_MUTEX_STRUCT
-  bzero(pNdbMutex, sizeof(NdbMutex));
+  std::memset(pNdbMutex, 0, sizeof(NdbMutex));
   p = &pNdbMutex->mutex;
 
 #ifdef NDB_MUTEX_STAT
@@ -186,7 +190,7 @@ int NdbMutex_Deinit(NdbMutex* p_mutex)
 {
   int result;
 
-  if (p_mutex == NULL)
+  if (p_mutex == nullptr)
     return -1;
 
 #ifdef NDB_MUTEX_DEADLOCK_DETECTOR
@@ -206,10 +210,10 @@ int NdbMutex_Destroy(NdbMutex* p_mutex)
 {
   int result;
 
-  if (p_mutex == NULL)
+  if (p_mutex == nullptr)
     return -1;
   result = NdbMutex_Deinit(p_mutex);
-  memset(p_mutex, 0xff, sizeof(NdbMutex));
+  std::memset(p_mutex, 0xff, sizeof(NdbMutex));
   free(p_mutex);
   return result;
 }
@@ -268,7 +272,7 @@ int NdbMutex_Lock(NdbMutex* p_mutex)
 {
   int result;
 
-  if (p_mutex == NULL)
+  if (p_mutex == nullptr)
     return -1;
 
 #ifdef NDB_MUTEX_STAT
@@ -314,7 +318,7 @@ int NdbMutex_Unlock(NdbMutex* p_mutex)
 {
   int result;
 
-  if (p_mutex == NULL)
+  if (p_mutex == nullptr)
     return -1;
 
 #ifdef NDB_MUTEX_STAT
@@ -339,7 +343,7 @@ int NdbMutex_Unlock(NdbMutex* p_mutex)
 #else
   result = native_mutex_unlock(p_mutex);
 #endif
-  assert(result == 0);
+  //assert(result == 0);
 
 #ifdef NDB_MUTEX_DEADLOCK_DETECTOR
   ndb_mutex_unlocked(p_mutex);
@@ -353,7 +357,7 @@ int NdbMutex_Trylock(NdbMutex* p_mutex)
 {
   int result;
 
-  if (p_mutex == NULL)
+  if (p_mutex == nullptr)
     return -1;
 
 #ifdef NDB_MUTEX_STAT
@@ -375,8 +379,10 @@ int NdbMutex_Trylock(NdbMutex* p_mutex)
 #ifndef NDEBUG
   if (result && result != EBUSY)
   {
-    fprintf(stderr, "NdbMutex_TryLock, unexpected result %d returned from "
-            "pthread_mutex_trylock: '%s'\n", result, strerror(result));
+    g_eventLogger->info(
+        "NdbMutex_TryLock, unexpected result %d returned from "
+        "pthread_mutex_trylock: '%s'",
+        result, strerror(result));
   }
 #endif
   assert(result == 0 || result == EBUSY);

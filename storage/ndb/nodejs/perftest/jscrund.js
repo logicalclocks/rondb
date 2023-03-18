@@ -1,5 +1,6 @@
 /*
- Copyright (c) 2013, 2016, Oracle and/or its affiliates. All rights reserved.
+ Copyright (c) 2013, 2022, Oracle and/or its affiliates.
+ Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
  
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
@@ -61,7 +62,7 @@ function usage() {
   "   -n      :  Use ndb adapter (default)\n" +
   "   --adapter=mysql\n" +
   "   -m      :  Use mysql adapter\n" +
-  "   --spi   :  Run tests using DBServiceProvider SPI \n" +
+  "   --spi   :  Run tests using DBServiceProvider SPI\n" +
   "   --adapter=sql\n" +
   "   -f      :  Use felix sql driver (not mysql-js api)\n" +
   "   --adapter=null\n" +
@@ -82,7 +83,7 @@ function usage() {
   "   --trace :\n" +
   "   -t      :  Enable trace output\n" +
   "   --set prop=value: set connection property prop to value\n" +
-  "   -E <name> \n" +
+  "   -E <name>\n" +
   "   --deployment=<name>\n: use deplyment <name> from jones_deployments.js\n"
   ;
   console.log(msg);

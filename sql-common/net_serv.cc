@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -33,7 +33,7 @@
   Write and read of logical packets to/from socket.
 
   Writes are cached into net_buffer_length big packets.
-  Read packets are reallocated dynamicly when reading big packets.
+  Read packets are reallocated dynamically when reading big packets.
   Each logical packet has the following pre-info:
   3 byte length & 1 byte package-number.
 */
@@ -43,6 +43,10 @@
 #include <algorithm>
 
 #include <mysql/components/services/log_builtins.h>
+#include <mysql/thread_pool_priv.h>
+#include "../sql/current_thd.h"
+#include "../sql/sql_class.h"
+#include "../sql/sql_thd_internal_api.h"
 #include "my_byteorder.h"
 #include "my_compiler.h"
 #include "my_dbug.h"
@@ -117,14 +121,13 @@ void net_extension_free(NET *net) {
 }
 
 /**
-  Returns the appropiate compression_context based on caller.
-  If the caller is server then fetch is fromthe server extension
+  Returns the appropriate compression_context based on caller.
+  If the caller is server then fetch is from the server extension
   structure.
 
-  @param net  [in]    NET structure
+  @param[in] net    NET structure
 
-  @return
-    @retval  mysql_compress_context structure pointer
+  @returns mysql_compress_context structure pointer
 */
 static mysql_compress_context *compress_context(NET *net) {
   mysql_compress_context *mysql_compress_ctx = nullptr;
@@ -152,7 +155,7 @@ bool my_net_init(NET *net, Vio *vio) {
             MYF(MY_WME))))
     return true;
   net->buff_end = net->buff + net->max_packet;
-  net->error = 0;
+  net->error = NET_ERROR_UNSET;
   net->return_status = nullptr;
   net->pkt_nr = net->compress_pkt_nr = 0;
   net->write_pos = net->read_pos = net->buff;
@@ -212,8 +215,8 @@ bool net_realloc(NET *net, size_t length) {
   if (length >= net->max_packet_size) {
     DBUG_PRINT("error",
                ("Packet too large. Max size: %lu", net->max_packet_size));
-    /* @todo: 1 and 2 codes are identical. */
-    net->error = 1;
+    /* Error, but no need to stop using the socket. */
+    net->error = NET_ERROR_SOCKET_RECOVERABLE;
     net->last_errno = ER_NET_PACKET_TOO_LARGE;
 #ifdef MYSQL_SERVER
     my_error(ER_NET_PACKET_TOO_LARGE, MYF(0));
@@ -230,8 +233,8 @@ bool net_realloc(NET *net, size_t length) {
   if (!(buff = (uchar *)my_realloc(
             key_memory_NET_buff, (char *)net->buff,
             pkt_length + NET_HEADER_SIZE + COMP_HEADER_SIZE, MYF(MY_WME)))) {
-    /* @todo: 1 and 2 codes are identical. */
-    net->error = 1;
+    /* Error, but no need to stop using the socket. */
+    net->error = NET_ERROR_SOCKET_RECOVERABLE;
     net->last_errno = ER_OUT_OF_RESOURCES;
     /* In the server the error is reported by MY_WME flag. */
     return true;
@@ -257,8 +260,9 @@ bool net_realloc(NET *net, size_t length) {
   @param check_buffer  Whether to check the socket buffer.
 */
 
-void net_clear(NET *net, bool check_buffer MY_ATTRIBUTE((unused))) {
+void net_clear(NET *net, bool check_buffer [[maybe_unused]]) {
   DBUG_TRACE;
+
   DBUG_EXECUTE_IF("simulate_bad_field_length_1", {
     net->pkt_nr = net->compress_pkt_nr = 0;
     net->write_pos = net->buff;
@@ -269,8 +273,6 @@ void net_clear(NET *net, bool check_buffer MY_ATTRIBUTE((unused))) {
     net->write_pos = net->buff;
     return;
   });
-  /* Ensure the socket buffer is empty, except for an EOF (at least 1). */
-  DBUG_ASSERT(!check_buffer || (vio_pending(net->vio) <= 1));
 
   /* Ready for new command */
   net->pkt_nr = net->compress_pkt_nr = 0;
@@ -302,8 +304,7 @@ bool net_flush(NET *net) {
   @retval false   Operation should not be retried. Fatal error.
 */
 
-static bool net_should_retry(NET *net,
-                             uint *retry_count MY_ATTRIBUTE((unused))) {
+static bool net_should_retry(NET *net, uint *retry_count [[maybe_unused]]) {
   bool retry;
 
 #ifndef MYSQL_SERVER
@@ -710,12 +711,12 @@ static int begin_packet_write_state(NET *net, uchar command,
 
     /* Make sure we sent entire packets. */
     if (total_len > 0) {
-      DBUG_ASSERT(packet_size == MAX_PACKET_LENGTH);
+      assert(packet_size == MAX_PACKET_LENGTH);
     }
   }
 
   /* Make sure we don't have anything left to send. */
-  DBUG_ASSERT(total_len == 0);
+  assert(total_len == 0);
 
   net_async->async_write_vector_size = (vec - net_async->async_write_vector);
   net_async->async_write_vector_current = 0;
@@ -807,7 +808,7 @@ net_async_status net_write_command_nonblocking(NET *net, uchar command,
         goto done;
       }
       net_async->async_operation = NET_ASYNC_OP_WRITING;
-      /* fallthrough */
+      [[fallthrough]];
     case NET_ASYNC_OP_WRITING:
       status = net_write_vector_nonblocking(net, &rc);
       if (status == NET_ASYNC_COMPLETE) {
@@ -820,7 +821,7 @@ net_async_status net_write_command_nonblocking(NET *net, uchar command,
       }
       return NET_ASYNC_NOT_READY;
     default:
-      DBUG_ASSERT(false);
+      assert(false);
       *res = true;
       return NET_ASYNC_COMPLETE;
   }
@@ -1009,9 +1010,13 @@ static bool net_write_raw_loop(NET *net, const uchar *buf, size_t count) {
 
   /* On failure, propagate the error code. */
   if (count) {
+#ifdef MYSQL_SERVER
     /* Socket should be closed. */
-    net->error = 2;
-
+    net->error = NET_ERROR_SOCKET_UNUSABLE;
+#else
+    /* Socket has failed for writing but it might still work for reading. */
+    net->error = NET_ERROR_SOCKET_NOT_WRITABLE;
+#endif
     /* Interrupted by a timeout? */
     if (vio_was_timeout(net->vio))
       net->last_errno = ER_NET_WRITE_INTERRUPTED;
@@ -1285,14 +1290,16 @@ bool net_write_packet(NET *net, const uchar *packet, size_t length) {
   DBUG_TRACE;
 
   /* Socket can't be used */
-  if (net->error == 2) return true;
+  if (net->error == NET_ERROR_SOCKET_UNUSABLE ||
+      net->error == NET_ERROR_SOCKET_NOT_WRITABLE)
+    return true;
 
   net->reading_or_writing = 2;
 
   const bool do_compress = net->compress;
   if (do_compress) {
     if ((packet = compress_packet(net, packet, &length)) == nullptr) {
-      net->error = 2;
+      net->error = NET_ERROR_SOCKET_UNUSABLE;
       net->last_errno = ER_OUT_OF_RESOURCES;
       /* In the server, allocation failure raises a error. */
       net->reading_or_writing = 0;
@@ -1309,6 +1316,12 @@ bool net_write_packet(NET *net, const uchar *packet, size_t length) {
   if (do_compress) my_free(const_cast<uchar *>(packet));
 
   net->reading_or_writing = 0;
+
+  /* Socket can't be used any more */
+  if (net->error == NET_ERROR_SOCKET_NOT_READABLE) {
+    net->error = NET_ERROR_SOCKET_UNUSABLE;
+    return true;
+  }
 
   return res;
 }
@@ -1331,7 +1344,15 @@ static bool net_read_raw_loop(NET *net, size_t count) {
   bool eof = false;
   unsigned int retry_count = 0;
   uchar *buf = net->buff + net->where_b;
+  bool timeout_on_full_packet = false;
+  bool is_packet_timeout = false;
+#ifdef MYSQL_SERVER
+  NET_SERVER *server_ext = static_cast<NET_SERVER *>(net->extension);
+  if (server_ext) timeout_on_full_packet = server_ext->timeout_on_full_packet;
+#endif
 
+  time_t start_time = 0;
+  if (timeout_on_full_packet) start_time = time(&start_time);
   while (count) {
     size_t recvcnt = vio_read(net->vio, buf, count);
 
@@ -1354,27 +1375,50 @@ static bool net_read_raw_loop(NET *net, size_t count) {
 #ifdef MYSQL_SERVER
     thd_increment_bytes_received(recvcnt);
 #endif
+    if (timeout_on_full_packet) {
+      time_t current_time = time(&current_time);
+      if (static_cast<unsigned int>(current_time - start_time) >
+          net->read_timeout) {
+        is_packet_timeout = true;
+        break;
+      }
+    }
   }
 
   /* On failure, propagate the error code. */
   if (count) {
-    /* Socket should be closed. */
-    net->error = 2;
-
     /* Interrupted by a timeout? */
-    if (!eof && vio_was_timeout(net->vio))
+    if (!eof && (vio_was_timeout(net->vio) || is_packet_timeout))
       net->last_errno = ER_NET_READ_INTERRUPTED;
     else
       net->last_errno = ER_NET_READ_ERROR;
 
 #ifdef MYSQL_SERVER
-    my_error(net->last_errno, MYF(0));
     /* First packet always wait for net_wait_timeout */
-    if (net->pkt_nr == 0 && vio_was_timeout(net->vio)) {
-      net->last_errno = ER_NET_WAIT_ERROR;
+    if (net->pkt_nr == 0 && (vio_was_timeout(net->vio) || is_packet_timeout)) {
+      net->last_errno = ER_CLIENT_INTERACTION_TIMEOUT;
       /* Socket should be closed after trying to write/send error. */
-      LogErr(INFORMATION_LEVEL, net->last_errno);
+      THD *thd = current_thd;
+      if (thd) {
+        Security_context *sctx = thd->security_context();
+        std::string timeout{std::to_string(thd_get_net_wait_timeout(thd))};
+        Auth_id auth_id(sctx->priv_user(), sctx->priv_host());
+        LogErr(INFORMATION_LEVEL, ER_NET_WAIT_ERROR2, timeout.c_str(),
+               auth_id.auth_str().c_str());
+      } else {
+        LogErr(INFORMATION_LEVEL, ER_NET_WAIT_ERROR);
+      }
     }
+    net->error = NET_ERROR_SOCKET_NOT_READABLE;
+    /*
+      Attempt to send error message to client although the client won't be
+      expecting messages. If later the client tries to send a command and fail
+      it will instead check if it can read an error message.
+    */
+    my_error(net->last_errno, MYF(0));
+#else
+    /* Socket should be closed. */
+    net->error = NET_ERROR_SOCKET_UNUSABLE;
 #endif
   }
 
@@ -1412,8 +1456,8 @@ static bool net_read_packet_header(NET *net) {
 
   if (server_extension != nullptr && server_extension->m_user_data != nullptr) {
     void *user_data = server_extension->m_user_data;
-    DBUG_ASSERT(server_extension->m_before_header != nullptr);
-    DBUG_ASSERT(server_extension->m_after_header != nullptr);
+    assert(server_extension->m_before_header != nullptr);
+    assert(server_extension->m_after_header != nullptr);
 
     server_extension->m_before_header(net, user_data, count);
     rc = net_read_raw_loop(net, count);
@@ -1436,6 +1480,27 @@ static bool net_read_packet_header(NET *net) {
   */
   if (pkt_nr != (uchar)net->pkt_nr) {
     /* Not a NET error on the client. XXX: why? */
+#if !defined(MYSQL_SERVER)
+    DBUG_PRINT("info", ("pkt_nr %u net->pkt_nr %u", pkt_nr, net->pkt_nr));
+    if (net->pkt_nr == 1) {
+      assert(net->where_b == 0);
+      /*
+        Server may have sent an error before it received our new command.
+        Perhaps due to wait_timeout.
+        Only use what is already read and then close the socket.
+      */
+      net->error = NET_ERROR_SOCKET_UNUSABLE;
+      net->last_errno = ER_NET_PACKETS_OUT_OF_ORDER;
+      net->pkt_nr = pkt_nr + 1;
+
+      /*
+        The caller should handle the error code in the packet
+        and the socket are blocked from further usage,
+        so reading the packet header was OK.
+      */
+      return false;
+    }
+#endif
 #if defined(MYSQL_SERVER)
     my_error(ER_NET_PACKETS_OUT_OF_ORDER, MYF(0));
 #elif defined(EXTRA_DEBUG)
@@ -1447,7 +1512,7 @@ static bool net_read_packet_header(NET *net) {
     */
     my_message_local(ERROR_LEVEL, EE_PACKETS_OUT_OF_ORDER, (uint)pkt_nr,
                      net->pkt_nr);
-    DBUG_ASSERT(pkt_nr == net->pkt_nr);
+    assert(pkt_nr == net->pkt_nr);
 #endif
     return true;
   }
@@ -1514,7 +1579,7 @@ static ulong net_read_available(NET *net, size_t count) {
   }
 
   /* EOF or hard failure; socket should be closed. */
-  net->error = 2;
+  net->error = NET_ERROR_SOCKET_UNUSABLE;
   net->last_errno = ER_NET_READ_ERROR;
   return packet_error;
 }
@@ -1531,7 +1596,7 @@ static net_async_status net_read_data_nonblocking(NET *net, size_t count,
       net_async->async_bytes_wanted = count;
       net_async->async_operation = NET_ASYNC_OP_READING;
       net_async->cur_pos = net->buff + net->where_b;
-      /* fallthrough */
+      [[fallthrough]];
     case NET_ASYNC_OP_READING:
       rc = net_read_available(net, net_async->async_bytes_wanted);
       if (rc == packet_error) {
@@ -1548,7 +1613,7 @@ static net_async_status net_read_data_nonblocking(NET *net, size_t count,
         return NET_ASYNC_NOT_READY;
       }
       net_async->async_operation = NET_ASYNC_OP_COMPLETE;
-      /* fallthrough */
+      [[fallthrough]];
     case NET_ASYNC_OP_COMPLETE:
       net_async->async_bytes_wanted = 0;
       net_async->async_operation = NET_ASYNC_OP_IDLE;
@@ -1557,7 +1622,7 @@ static net_async_status net_read_data_nonblocking(NET *net, size_t count,
       return NET_ASYNC_COMPLETE;
     default:
       /* error, sure wish we could log something here */
-      DBUG_ASSERT(false);
+      assert(false);
       net_async->async_bytes_wanted = 0;
       net_async->async_operation = NET_ASYNC_OP_IDLE;
       *err_ptr = true;
@@ -1600,7 +1665,7 @@ static net_async_status net_read_packet_header_nonblocking(NET *net,
     */
     fprintf(stderr, "Error: packets out of order (found %u, expected %u)\n",
             (uint)pkt_nr, net->pkt_nr);
-    DBUG_ASSERT(pkt_nr == net->pkt_nr);
+    assert(pkt_nr == net->pkt_nr);
 #endif
     *err_ptr = true;
     return NET_ASYNC_COMPLETE;
@@ -1626,8 +1691,14 @@ static net_async_status net_read_packet_nonblocking(NET *net, ulong *ret) {
     case NET_ASYNC_PACKET_READ_IDLE:
       net_async->async_packet_read_state = NET_ASYNC_PACKET_READ_HEADER;
       net->reading_or_writing = 0;
-      /* fallthrough */
+      [[fallthrough]];
     case NET_ASYNC_PACKET_READ_HEADER:
+      /*
+        We should reset compress_packet_nr even before reading the header
+        because reading can fail and then the compressed packet number won't get
+        reset.
+      */
+      net->compress_pkt_nr = net->pkt_nr;
       if (net_read_packet_header_nonblocking(net, &err) ==
           NET_ASYNC_NOT_READY) {
         return NET_ASYNC_NOT_READY;
@@ -1652,8 +1723,8 @@ static net_async_status net_read_packet_nonblocking(NET *net, ulong *ret) {
           read unallocated or uninitialized memory. The right-hand expression
           must match the size of the buffer allocated in net_realloc().
         */
-        DBUG_ASSERT(net->where_b + NET_HEADER_SIZE + sizeof(uint32) <=
-                    net->max_packet + NET_HEADER_SIZE + COMP_HEADER_SIZE + 1);
+        assert(net->where_b + NET_HEADER_SIZE + sizeof(uint32) <=
+               net->max_packet + NET_HEADER_SIZE + COMP_HEADER_SIZE + 1);
         async_packet_uncompressed_length =
             uint3korr(net->buff + net->where_b + NET_HEADER_SIZE);
       }
@@ -1670,7 +1741,7 @@ static net_async_status net_read_packet_nonblocking(NET *net, ulong *ret) {
         goto error;
 
       net_async->async_packet_read_state = NET_ASYNC_PACKET_READ_BODY;
-      /* fallthrough */
+      [[fallthrough]];
     case NET_ASYNC_PACKET_READ_BODY:
       if (net_read_data_nonblocking(net, net_async->async_packet_length,
                                     &err) == NET_ASYNC_NOT_READY) {
@@ -1680,7 +1751,7 @@ static net_async_status net_read_packet_nonblocking(NET *net, ulong *ret) {
       if (err) goto error;
 
       net_async->async_packet_read_state = NET_ASYNC_PACKET_READ_COMPLETE;
-      /* fallthrough */
+      [[fallthrough]];
 
     case NET_ASYNC_PACKET_READ_COMPLETE:
       net_async->async_packet_read_state = NET_ASYNC_PACKET_READ_IDLE;
@@ -1704,7 +1775,7 @@ end:
 #ifdef MYSQL_SERVER
       my_error(ER_NET_UNCOMPRESS_ERROR, MYF(0));
 #else
-      net->error = 2;  // caller will close socket
+      net->error = NET_ERROR_SOCKET_UNUSABLE;  // caller will close socket
       net->last_errno = ER_NET_UNCOMPRESS_ERROR;
 #endif
       goto error;
@@ -1759,9 +1830,8 @@ static void net_read_init_offsets(NET *net, size_t &start_of_packet,
   @param [in, out]  multi_byte_packet Flag that indicate if packet is multibyte
   @param [in, out]  first_packet_offset Starting offset of the packet to read
 
-  @returns
-   @retval true   The last packet read
-   @retval false  Otherwise
+  @retval true   The last packet read
+  @retval false  Otherwise
 */
 static bool net_read_process_buffer(NET *net, size_t &start_of_packet,
                                     size_t &buf_length, uint &multi_byte_packet,
@@ -1788,7 +1858,7 @@ begin:
           multi_byte_packet on. Thus there shall never be a non-zero
           first_packet_offset here.
         */
-        DBUG_ASSERT(first_packet_offset == 0);
+        assert(first_packet_offset == 0);
         /* Remove packet header for second packet */
         memmove(net->buff + start_of_packet,
                 net->buff + start_of_packet + NET_HEADER_SIZE,
@@ -1860,7 +1930,7 @@ static ulong net_read_update_offsets(NET *net, size_t start_of_packet,
       packet at read_pos[len]. Adding the size of one header
       reads the correct byte that will later be replaced. Guarded
       to avoid buffer overflow. If remain_buf = 0 then the char
-      wont be restored anyway
+      won't be restored anyway.
     */
     net->save_char = net->read_pos[len + multi_byte_packet];
   }
@@ -1901,7 +1971,7 @@ static ulong net_read_update_offsets(NET *net, size_t start_of_packet,
 static net_async_status net_read_compressed_nonblocking(NET *net,
                                                         ulong *len_ptr) {
   DBUG_TRACE;
-  DBUG_ASSERT(net->compress);
+  assert(net->compress);
   ulong &len = *len_ptr;
 
   /* Maintain the local states to read the multipacket asynchronously */
@@ -1922,7 +1992,7 @@ static net_async_status net_read_compressed_nonblocking(NET *net,
       break;
 
     /*
-      Read the mysql packet from vio, uncompress it and make it accessable
+      Read the mysql packet from vio, uncompress it and make it accessible
       through net->buff.
     */
     status = net_read_packet_nonblocking(net, &len);
@@ -1940,7 +2010,7 @@ static net_async_status net_read_compressed_nonblocking(NET *net,
   }
   /*
     Once the packets are read in the net->buff, adjust the tracking offsets to
-    the appropiate values
+    the appropriate values.
   */
   len = net_read_update_offsets(net, start_of_packet, first_packet_offset,
                                 buf_length, multi_byte_packet);
@@ -1959,7 +2029,7 @@ static net_async_status net_read_compressed_nonblocking(NET *net,
 static net_async_status net_read_uncompressed_nonblocking(NET *net,
                                                           ulong *len_ptr) {
   DBUG_TRACE;
-  DBUG_ASSERT(!net->compress);
+  assert(!net->compress);
   ulong &len = *len_ptr;
 
   // Maintain the local states
@@ -2006,6 +2076,12 @@ static size_t net_read_packet(NET *net, size_t *complen) {
 
   net->reading_or_writing = 1;
 
+  /*
+    We should reset compress_packet_nr even before reading the header because
+    reading can fail and then the compressed packet number won't get reset.
+  */
+  net->compress_pkt_nr = net->pkt_nr;
+
   /* Retrieve packet length and number. */
   if (net_read_packet_header(net)) goto error;
 
@@ -2016,8 +2092,8 @@ static size_t net_read_packet(NET *net, size_t *complen) {
       The right-hand expression
       must match the size of the buffer allocated in net_realloc().
     */
-    DBUG_ASSERT(net->where_b + NET_HEADER_SIZE + 3 <=
-                net->max_packet + NET_HEADER_SIZE + COMP_HEADER_SIZE);
+    assert(net->where_b + NET_HEADER_SIZE + 3 <=
+           net->max_packet + NET_HEADER_SIZE + COMP_HEADER_SIZE);
 
     /*
       If the packet is compressed then complen > 0 and contains the
@@ -2042,11 +2118,15 @@ static size_t net_read_packet(NET *net, size_t *complen) {
   if (net_read_raw_loop(net, pkt_len)) goto error;
 
 end:
+  if (net->error == NET_ERROR_SOCKET_NOT_WRITABLE)
+    net->error = NET_ERROR_SOCKET_UNUSABLE;
   DBUG_DUMP("net read", net->buff + net->where_b, pkt_len);
   net->reading_or_writing = 0;
   return pkt_len;
 
 error:
+  if (net->error == NET_ERROR_SOCKET_NOT_WRITABLE)
+    net->error = NET_ERROR_SOCKET_UNUSABLE;
   net->reading_or_writing = 0;
   return packet_error;
 }
@@ -2081,7 +2161,7 @@ net_async_status my_net_read_nonblocking(NET *net, ulong *len_ptr) {
 */
 static void net_read_uncompressed_packet(NET *net, size_t &len) {
   size_t complen;
-  DBUG_ASSERT(!net->compress);
+  assert(!net->compress);
   len = net_read_packet(net, &complen);
   if (len == MAX_PACKET_LENGTH) {
     /* First packet of a multi-packet.  Concatenate the packets */
@@ -2107,7 +2187,7 @@ static void net_read_compressed_packet(NET *net, size_t &len) {
   size_t first_packet_offset;
   size_t buf_length;
   uint multi_byte_packet = 0;
-  DBUG_ASSERT(net->compress);
+  assert(net->compress);
   net_read_init_offsets(net, start_of_packet, first_packet_offset,
                         multi_byte_packet, buf_length);
   for (;;) {
@@ -2120,7 +2200,7 @@ static void net_read_compressed_packet(NET *net, size_t &len) {
     mysql_compress_context *mysql_compress_ctx = compress_context(net);
     if (my_uncompress(mysql_compress_ctx, net->buff + net->where_b, len,
                       &complen)) {
-      net->error = 2; /* caller will close socket */
+      net->error = NET_ERROR_SOCKET_UNUSABLE; /* caller will close socket */
       net->last_errno = ER_NET_UNCOMPRESS_ERROR;
 #ifdef MYSQL_SERVER
       my_error(ER_NET_UNCOMPRESS_ERROR, MYF(0));

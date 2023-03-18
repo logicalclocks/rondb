@@ -500,26 +500,31 @@ partition by key(a) partitions 3;
 Table: test.t1
 PartitionCount: 2
 FragmentCount: 2
+
 b$unique(b) - UniqueHashIndex
 FragmentCount: 2
 Table: test.t2
 PartitionCount: 2
 FragmentCount: 2
+
 b$unique(b) - UniqueHashIndex
 FragmentCount: 2
 Table: test.t3
 PartitionCount: 4
 FragmentCount: 4
+
 b$unique(b) - UniqueHashIndex
 FragmentCount: 4
 Table: test.t4
 PartitionCount: 2
 FragmentCount: 2
+
 b$unique(b) - UniqueHashIndex
 FragmentCount: 2
 Table: test.t5
 PartitionCount: 3
 FragmentCount: 3
+
 b$unique(b) - UniqueHashIndex
 FragmentCount: 3
 c$unique(c) - UniqueHashIndex
@@ -1052,7 +1057,7 @@ ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: REORGANIZE of table wit
 show warnings;
 Level	Code	Message
 Error	1846	ALGORITHM=INPLACE is not supported. Reason: REORGANIZE of table with MAX_ROWS. Try ALGORITHM=COPY.
-alter table t3 algorithm=inplace, max_rows=50000000;
+alter table t3 algorithm=inplace;
 -- t3 --
 Version: Any
 Fragment type: HashMapPartition
@@ -1520,7 +1525,7 @@ PRIMARY KEY(b) - UniqueHashIndex
 
 NDBT_ProgramExit: 0 - OK
 
-alter table t3 algorithm=inplace, max_rows=100000000;
+alter table t3 algorithm=inplace;
 -- t3 --
 Version: Any
 Fragment type: HashMapPartition
@@ -1536,14 +1541,14 @@ Row Checksum: 1
 Row GCI: 1
 SingleUserMode: 0
 ForceVarPart: 1
-PartitionCount: 6
-FragmentCount: 6
+PartitionCount: 4
+FragmentCount: 4
 PartitionBalance: SPECIFIC
 ExtraRowGciBits: 0
 ExtraRowAuthorBits: 0
 TableStatus: Retrieved
 Table options: readbackup
-HashMap: HASHMAP-3840-4-6
+HashMap: DEFAULT-HASHMAP-3840-4
 -- Attributes --
 a Unsigned PRIMARY KEY DISTRIBUTION KEY AT=FIXED ST=MEMORY
 b Unsigned PRIMARY KEY DISTRIBUTION KEY AT=FIXED ST=MEMORY
@@ -1579,7 +1584,7 @@ Row GCI: 1
 SingleUserMode: 2
 ForceVarPart: 0
 PartitionCount: 4
-FragmentCount: 6
+FragmentCount: 4
 PartitionBalance: FOR_RP_BY_LDM
 ExtraRowGciBits: 0
 ExtraRowAuthorBits: 0
@@ -1617,7 +1622,7 @@ Row GCI: 1
 SingleUserMode: 2
 ForceVarPart: 0
 PartitionCount: 4
-FragmentCount: 6
+FragmentCount: 4
 PartitionBalance: FOR_RP_BY_LDM
 ExtraRowGciBits: 0
 ExtraRowAuthorBits: 0
@@ -1653,14 +1658,14 @@ Row Checksum: 1
 Row GCI: 1
 SingleUserMode: 2
 ForceVarPart: 0
-PartitionCount: 6
-FragmentCount: 6
+PartitionCount: 4
+FragmentCount: 4
 PartitionBalance: SPECIFIC
 ExtraRowGciBits: 0
 ExtraRowAuthorBits: 0
 TableStatus: Retrieved
 Table options: readbackup
-HashMap: HASHMAP-3840-4-6
+HashMap: DEFAULT-HASHMAP-3840-4
 -- Attributes --
 b Unsigned PRIMARY KEY DISTRIBUTION KEY AT=FIXED ST=MEMORY
 NDB$PK Unsigned [3] NOT NULL AT=FIXED ST=MEMORY
@@ -1670,8 +1675,7 @@ PRIMARY KEY(b) - UniqueHashIndex
 
 NDBT_ProgramExit: 0 - OK
 
-alter table t4 algorithm=inplace, max_rows=100000000;
-ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: setting MAX_ROWS on table without MAX_ROWS. Try ALGORITHM=COPY.
+alter table t4 algorithm=inplace;
 partitions added to t1 (expect 1)
 t1_added
 1
@@ -1680,7 +1684,7 @@ t2_added
 4
 partitions added to t3 (expect 4)
 t3_added
-2
+0
 partitions added to t4 (expect 0)
 t4_added
 0
@@ -1881,6 +1885,7 @@ a	b	c
 Table: test.t4
 PartitionCount: 2
 FragmentCount: 2
+
 b$unique(b) - UniqueHashIndex
 FragmentCount: 2
 drop table t4;
@@ -2186,7 +2191,7 @@ PRIMARY KEY(b) - UniqueHashIndex
 
 NDBT_ProgramExit: 0 - OK
 
-alter table t3 algorithm=inplace, max_rows=150000000;
+alter table t3 algorithm=inplace;
 -- t3 --
 Version: Any
 Fragment type: HashMapPartition
@@ -2202,14 +2207,14 @@ Row Checksum: 1
 Row GCI: 1
 SingleUserMode: 0
 ForceVarPart: 1
-PartitionCount: 8
-FragmentCount: 8
+PartitionCount: 4
+FragmentCount: 4
 PartitionBalance: SPECIFIC
 ExtraRowGciBits: 0
 ExtraRowAuthorBits: 0
 TableStatus: Retrieved
 Table options: readbackup
-HashMap: HASHMAP-3840-6-8
+HashMap: DEFAULT-HASHMAP-3840-4
 -- Attributes --
 a Unsigned PRIMARY KEY DISTRIBUTION KEY AT=FIXED ST=MEMORY
 b Unsigned PRIMARY KEY DISTRIBUTION KEY AT=FIXED ST=MEMORY
@@ -2245,7 +2250,7 @@ Row GCI: 1
 SingleUserMode: 2
 ForceVarPart: 0
 PartitionCount: 4
-FragmentCount: 8
+FragmentCount: 4
 PartitionBalance: FOR_RP_BY_LDM
 ExtraRowGciBits: 0
 ExtraRowAuthorBits: 0
@@ -2283,7 +2288,7 @@ Row GCI: 1
 SingleUserMode: 2
 ForceVarPart: 0
 PartitionCount: 4
-FragmentCount: 8
+FragmentCount: 4
 PartitionBalance: FOR_RP_BY_LDM
 ExtraRowGciBits: 0
 ExtraRowAuthorBits: 0
@@ -2319,14 +2324,14 @@ Row Checksum: 1
 Row GCI: 1
 SingleUserMode: 2
 ForceVarPart: 0
-PartitionCount: 8
-FragmentCount: 8
+PartitionCount: 4
+FragmentCount: 4
 PartitionBalance: SPECIFIC
 ExtraRowGciBits: 0
 ExtraRowAuthorBits: 0
 TableStatus: Retrieved
 Table options: readbackup
-HashMap: HASHMAP-3840-6-8
+HashMap: DEFAULT-HASHMAP-3840-4
 -- Attributes --
 b Unsigned PRIMARY KEY DISTRIBUTION KEY AT=FIXED ST=MEMORY
 NDB$PK Unsigned [3] NOT NULL AT=FIXED ST=MEMORY
@@ -2344,7 +2349,7 @@ t2_added
 5
 partitions added to t3 (expect 4)
 t3_added
-4
+0
 select count(*) from t1;
 count(*)
 100
@@ -2489,21 +2494,25 @@ a	b	c
 Table: test.t1
 PartitionCount: 5
 FragmentCount: 5
+
 b$unique(b) - UniqueHashIndex
 FragmentCount: 5
 Table: test.t2
 PartitionCount: 7
 FragmentCount: 7
+
 b$unique(b) - UniqueHashIndex
 FragmentCount: 7
 Table: test.t3
-PartitionCount: 8
-FragmentCount: 8
+PartitionCount: 4
+FragmentCount: 4
+
 b$unique(b) - UniqueHashIndex
-FragmentCount: 8
+FragmentCount: 4
 Table: test.t5
 PartitionCount: 3
 FragmentCount: 3
+
 b$unique(b) - UniqueHashIndex
 FragmentCount: 3
 c$unique(c) - UniqueHashIndex
@@ -2736,6 +2745,46 @@ PRIMARY KEY(c) - UniqueHashIndex
 NDBT_ProgramExit: 0 - OK
 
 drop table t1,t2,t3,t5;
+Bug 33523991 Ndb online reorg : Scan count verification
+Scan count issue on complete phase of reorg
+create table t1 (a int primary key, b int, c int, d int, unique(b), unique(c)) engine=ndb;
+Populate some data
+insert into t1 values (1,1,1,1);
+insert into t1 select a+1, b+1, c+1, d+1 from t1;
+insert into t1 select a+2, b+2, c+2, d+2 from t1;
+insert into t1 select a+4, b+4, c+4, d+4 from t1;
+insert into t1 select a+8, b+8, c+8, d+8 from t1;
+insert into t1 select a+16, b+16, c+16, d+16 from t1;
+insert into t1 select a+32, b+32, c+32, d+32 from t1;
+insert into t1 select a+64, b+64, c+64, d+64 from t1;
+insert into t1 select a+128, b+128, c+128, d+128 from t1;
+insert into t1 select a+256, b+256, c+256, d+256 from t1;
+insert into t1 select a+512, b+512, c+512, d+512 from t1;
+insert into t1 select a+1024, b+1024, c+1024, d+1024 from t1;
+insert into t1 select a+2048, b+2048, c+2048, d+2048 from t1;
+create procedure scans (max_iterations int)
+sp: begin
+DECLARE sum_d int;
+set @x=0;
+repeat
+select sum(d) into sum_d from t1;
+set @x = @x + 1;
+if sum_d = 0
+then
+leave sp;
+end if;
+until @x=max_iterations
+end repeat;
+end%
+call scans(20000);;
+alter table t1 algorithm=inplace, add partition partitions 1;
+Alter ok, run again
+alter table t1 algorithm=inplace, add partition partitions 1;
+Second alter ok, finish scans
+select sum(d) into @sum_d from t1;
+insert into t1 values (20000,20000,20000, 0 - @sum_d);
+drop procedure scans;
+drop table t1;
 alter tablespace ts1 drop datafile 'datafile.dat';
 drop tablespace ts1;
 drop logfile group lg1 engine = ndb;

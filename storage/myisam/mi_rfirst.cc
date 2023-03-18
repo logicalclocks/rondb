@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -24,7 +24,7 @@
 #include "my_inttypes.h"
 #include "storage/myisam/myisamdef.h"
 
-/*  Read first row through  a specfic key */
+/*  Read first row through a specific key */
 
 int mi_rfirst(MI_INFO *info, uchar *buf, int inx) {
   DBUG_TRACE;

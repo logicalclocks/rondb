@@ -1,4 +1,4 @@
-/* Copyright (c) 2017, 2018, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2017, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,6 +22,7 @@
 
 #include "sql/dd/impl/types/column_statistics_impl.h"
 
+#include <assert.h>
 #include <string.h>
 
 #include "my_rapidjson_size_t.h"  // IWYU pragma: keep
@@ -31,8 +32,9 @@
 
 #include "m_ctype.h"
 #include "m_string.h"  // STRING_WITH_LEN
-#include "my_dbug.h"
+
 #include "mysql_com.h"
+#include "sql-common/json_dom.h"  // Json_*
 #include "sql/auth/sql_security_ctx.h"
 #include "sql/current_thd.h"                       // current_thd
 #include "sql/dd/impl/dictionary_impl.h"           // Dictionary_impl
@@ -42,7 +44,8 @@
 #include "sql/dd/impl/tables/column_statistics.h"  // Column_statistics
 #include "sql/dd/impl/transaction_impl.h"          // Open_dictionary_tables_ctx
 #include "sql/histograms/histogram.h"              // histograms::Histogram
-#include "sql/json_dom.h"                          // Json_*
+                                                   // histograms::Error_context
+#include "sql-common/json_dom.h"                   // Json_*
 #include "template_utils.h"
 
 namespace dd {
@@ -64,7 +67,7 @@ String_type Column_statistics::create_name(const String_type &schema_name,
     Lookups in the dictionary is always done using the name, so this should
     ensure that we always get back our object.
   */
-  DBUG_ASSERT(column_name.length() <= NAME_LEN);
+  assert(column_name.length() <= NAME_LEN);
   char lowercase_name[NAME_LEN + 1];  // Max column length name + \0
   memcpy(lowercase_name, column_name.c_str(), column_name.length() + 1);
   my_casedn_str(system_charset_info, lowercase_name);
@@ -84,7 +87,7 @@ void Column_statistics::create_mdl_key(const String_type &schema_name,
     Lookups in MDL is always done using this method, so this should
     ensure that we always have consistent locks.
   */
-  DBUG_ASSERT(column_name.length() <= NAME_LEN);
+  assert(column_name.length() <= NAME_LEN);
   char lowercase_name[NAME_LEN + 1];  // Max column length name + \0
   memcpy(lowercase_name, column_name.c_str(), column_name.length() + 1);
   my_casedn_str(system_charset_info, lowercase_name);
@@ -109,15 +112,16 @@ bool Column_statistics_impl::restore_attributes(const Raw_record &r) {
   if (r.read_json(dd::tables::Column_statistics::FIELD_HISTOGRAM, &wrapper))
     return true; /* purecov: deadcode */
 
-  Json_dom *json_dom = wrapper.to_dom(current_thd);
+  Json_dom *json_dom = wrapper.to_dom();
   if (json_dom->json_type() != enum_json_type::J_OBJECT)
     return true; /* purecov: deadcode */
 
   const Json_object *json_object = down_cast<const Json_object *>(json_dom);
+  histograms::Error_context context;
   m_histogram = histograms::Histogram::json_to_histogram(
       &m_mem_root, {m_schema_name.data(), m_schema_name.size()},
       {m_table_name.data(), m_table_name.size()},
-      {m_column_name.data(), m_column_name.size()}, *json_object);
+      {m_column_name.data(), m_column_name.size()}, *json_object, &context);
   if (m_histogram == nullptr) return true; /* purecov: deadcode */
   return false;
 }

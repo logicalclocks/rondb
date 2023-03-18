@@ -1,4 +1,4 @@
-/* Copyright (c) 2017, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2017, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -20,9 +20,9 @@
   along with this program; if not, write to the Free Software
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+#include <assert.h>
 #include <cstring>
 
-#include "my_dbug.h"
 #include "pfs_example_country.h"
 
 PFS_engine_table_share_proxy country_st_share;
@@ -39,7 +39,7 @@ Country_record country_records_array[COUNTRY_MAX_ROWS] = {
 
 /**
   Check for duplicate value of Primary/Unique Key column(s).
-  A sequential search is being used here, but its upto plugin writer to
+  A sequential search is being used here, but it is up to the plugin writer to
   implement his/her own search to make sure duplicate values are not
   inserted/updated for Primary/Unique Key Column(s).
 
@@ -160,7 +160,7 @@ int country_index_init(PSI_table_handle *handle, unsigned int idx, bool,
       *index = (PSI_index_handle *)i;
     } break;
     default:
-      DBUG_ASSERT(0);
+      assert(0);
       break;
   }
 
@@ -174,13 +174,15 @@ int country_index_read(PSI_index_handle *index, PSI_key_reader *reader,
     case 0: {
       Country_index_by_name *i = (Country_index_by_name *)index;
       /* Read all keys on index one by one */
-      mysql_service_pfs_plugin_table->read_key_string(
-          reader, &i->m_country_name, find_flag);
-      mysql_service_pfs_plugin_table->read_key_string(
-          reader, &i->m_continent_name, find_flag);
-    } break;
+      pc_string_srv->read_key_string(reader, &i->m_country_name, find_flag);
+      pc_string_srv->read_key_string(reader, &i->m_continent_name, find_flag);
+
+      /* Remember the number of key parts found. */
+      i->m_fields = pt_srv->get_parts_found(reader);
+      break;
+    }
     default:
-      DBUG_ASSERT(0);
+      assert(0);
       break;
   }
 
@@ -197,7 +199,7 @@ int country_index_next(PSI_table_handle *handle) {
       i = (Country_index_by_name *)&h->m_index;
       break;
     default:
-      DBUG_ASSERT(0);
+      assert(0);
       break;
   }
 
@@ -231,28 +233,24 @@ int country_read_column_value(PSI_table_handle *handle, PSI_field *field,
 
   switch (index) {
     case 0: /* COUNTRY_NAME */
-      mysql_service_pfs_plugin_table->set_field_char_utf8(
-          field, h->current_row.name, h->current_row.name_length);
+      pc_string_srv->set_char_utf8mb4(field, h->current_row.name,
+                                      h->current_row.name_length);
       break;
     case 1: /* CONTINENT_NAME */
-      mysql_service_pfs_plugin_table->set_field_char_utf8(
-          field, h->current_row.continent_name,
-          h->current_row.continent_name_length);
+      pc_string_srv->set_char_utf8mb4(field, h->current_row.continent_name,
+                                      h->current_row.continent_name_length);
       break;
     case 2: /* YEAR */
-      mysql_service_pfs_plugin_table->set_field_year(field,
-                                                     h->current_row.year);
+      pc_year_srv->set(field, h->current_row.year);
       break;
     case 3: /* POPULATION */
-      mysql_service_pfs_plugin_table->set_field_bigint(
-          field, h->current_row.population);
+      pc_bigint_srv->set(field, h->current_row.population);
       break;
     case 4: /* GROWTH_FACTOR */
-      mysql_service_pfs_plugin_table->set_field_double(
-          field, h->current_row.growth_factor);
+      pc_double_srv->set(field, h->current_row.growth_factor);
       break;
     default: /* We should never reach here */
-      DBUG_ASSERT(0);
+      assert(0);
       break;
   }
 
@@ -313,27 +311,23 @@ int country_write_column_value(PSI_table_handle *handle, PSI_field *field,
 
   switch (index) {
     case 0: /* COUNTRY_NAME */
-      mysql_service_pfs_plugin_table->get_field_char_utf8(field, name,
-                                                          name_length);
+      pc_string_srv->get_char_utf8mb4(field, name, name_length);
       break;
     case 1: /* CONTINENT_NAME */
-      mysql_service_pfs_plugin_table->get_field_char_utf8(
-          field, continent_name, continent_name_length);
+      pc_string_srv->get_char_utf8mb4(field, continent_name,
+                                      continent_name_length);
       break;
     case 2: /* YEAR */
-      mysql_service_pfs_plugin_table->get_field_year(field,
-                                                     &h->current_row.year);
+      pc_year_srv->get(field, &h->current_row.year);
       break;
     case 3: /* POPULATION */
-      mysql_service_pfs_plugin_table->get_field_bigint(
-          field, &h->current_row.population);
+      pc_bigint_srv->get(field, &h->current_row.population);
       break;
     case 4: /* GROWTH_FACTOR */
-      mysql_service_pfs_plugin_table->get_field_double(
-          field, &h->current_row.growth_factor);
+      pc_double_srv->get(field, &h->current_row.growth_factor);
       break;
     default: /* We should never reach here */
-      DBUG_ASSERT(0);
+      assert(0);
       break;
   }
 
@@ -347,7 +341,7 @@ int country_update_row_values(PSI_table_handle *handle) {
 
   Country_record *cur = &country_records_array[h->m_pos.get_index()];
 
-  DBUG_ASSERT(cur->m_exist == true);
+  assert(cur->m_exist == true);
 
   native_mutex_lock(&LOCK_country_records_array);
   if (is_duplicate(&h->current_row, h->m_pos.get_index()))
@@ -370,27 +364,23 @@ int country_update_column_value(PSI_table_handle *handle, PSI_field *field,
 
   switch (index) {
     case 0: /* COUNTRY_NAME */
-      mysql_service_pfs_plugin_table->get_field_char_utf8(field, name,
-                                                          name_length);
+      pc_string_srv->get_char_utf8mb4(field, name, name_length);
       break;
     case 1: /* CONTINENT_NAME */
-      mysql_service_pfs_plugin_table->get_field_char_utf8(
-          field, continent_name, continent_name_length);
+      pc_string_srv->get_char_utf8mb4(field, continent_name,
+                                      continent_name_length);
       break;
     case 2: /* YEAR */
-      mysql_service_pfs_plugin_table->get_field_year(field,
-                                                     &h->current_row.year);
+      pc_year_srv->get(field, &h->current_row.year);
       break;
     case 3: /* POPULATION */
-      mysql_service_pfs_plugin_table->get_field_bigint(
-          field, &h->current_row.population);
+      pc_bigint_srv->get(field, &h->current_row.population);
       break;
     case 4: /* GROWTH_FACTOR */
-      mysql_service_pfs_plugin_table->get_field_double(
-          field, &h->current_row.growth_factor);
+      pc_double_srv->get(field, &h->current_row.growth_factor);
       break;
     default: /* We should never reach here */
-      DBUG_ASSERT(0);
+      assert(0);
       break;
   }
   return 0;
@@ -402,7 +392,7 @@ int country_delete_row_values(PSI_table_handle *handle) {
 
   Country_record *cur = &country_records_array[h->m_pos.get_index()];
 
-  DBUG_ASSERT(cur->m_exist == true);
+  assert(cur->m_exist == true);
 
   native_mutex_lock(&LOCK_country_records_array);
   cur->m_exist = false;

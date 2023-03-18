@@ -53,8 +53,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -85,8 +85,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -119,8 +119,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -151,8 +151,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -185,8 +185,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -217,8 +217,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -272,8 +272,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -304,8 +304,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -338,8 +338,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -370,8 +370,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -396,7 +396,7 @@ EXECUTING:[30][SELECT CAST(0 AS UNSIGNED) - 1]
 			[meta][field] org table name: 
 			[meta][field] col name: CAST(0 AS UNSIGNED) - 1
 			[meta][field] org col name: 
-			[meta][field] length: 2
+			[meta][field] length: 22
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -404,8 +404,8 @@ EXECUTING:[30][SELECT CAST(0 AS UNSIGNED) - 1]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.CAST(0 AS UNSIGNED) - 1][  2][-1]
@@ -428,7 +428,7 @@ EXECUTING:[30][SELECT CAST(0 AS UNSIGNED) - 1]
 			[meta][field] org table name: 
 			[meta][field] col name: CAST(0 AS UNSIGNED) - 1
 			[meta][field] org col name: 
-			[meta][field] length: 2
+			[meta][field] length: 22
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -436,8 +436,8 @@ EXECUTING:[30][SELECT CAST(0 AS UNSIGNED) - 1]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.CAST(0 AS UNSIGNED) - 1][  2][-1]
@@ -512,8 +512,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][ 12][NO_ZERO_DATE]
@@ -544,8 +544,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][ 12][NO_ZERO_DATE]
@@ -578,8 +578,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 12][NO_ZERO_DATE]
@@ -610,8 +610,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 12][NO_ZERO_DATE]
@@ -686,8 +686,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][117][ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION]
@@ -718,8 +718,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][117][ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION]
@@ -752,8 +752,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][117][ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION]
@@ -784,8 +784,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][117][ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION]
@@ -831,8 +831,8 @@ EXECUTING:[57][SELECT * FROM t1 WHERE t1.a IN (SELECT MAX(t1.b) FROM t2)]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -874,8 +874,8 @@ EXECUTING:[57][SELECT * FROM t1 WHERE t1.a IN (SELECT MAX(t1.b) FROM t2)]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -929,8 +929,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 78][REAL_AS_FLOAT,PIPES_AS_CONCAT,ANSI_QUOTES,IGNORE_SPACE,ONLY_FULL_GROUP_BY,ANSI]
@@ -961,8 +961,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 78][REAL_AS_FLOAT,PIPES_AS_CONCAT,ANSI_QUOTES,IGNORE_SPACE,ONLY_FULL_GROUP_BY,ANSI]
@@ -1062,8 +1062,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 19][STRICT_TRANS_TABLES]
@@ -1094,8 +1094,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 19][STRICT_TRANS_TABLES]
@@ -1188,8 +1188,8 @@ EXECUTING:[33][SELECT * FROM t1 WHERE a = 't2a2']
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -1231,8 +1231,8 @@ EXECUTING:[33][SELECT * FROM t1 WHERE a = 't2a2']
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -1288,8 +1288,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][128][STRICT_TRANS_TABLES,STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,TRADITIONAL,NO_ENGINE_SUBSTITUTION]
@@ -1320,8 +1320,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][128][STRICT_TRANS_TABLES,STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,TRADITIONAL,NO_ENGINE_SUBSTITUTION]
@@ -1414,8 +1414,8 @@ EXECUTING:[33][SELECT * FROM t1 WHERE a = 't2a2']
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -1457,8 +1457,8 @@ EXECUTING:[33][SELECT * FROM t1 WHERE a = 't2a2']
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -1539,8 +1539,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -1571,8 +1571,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -1605,8 +1605,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -1637,8 +1637,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -1671,8 +1671,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -1703,8 +1703,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -1758,8 +1758,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -1790,8 +1790,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -1824,8 +1824,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -1856,8 +1856,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 23][NO_UNSIGNED_SUBTRACTION]
@@ -1882,7 +1882,7 @@ EXECUTING:[30][SELECT CAST(0 AS UNSIGNED) - 1]
 			[meta][field] org table name: 
 			[meta][field] col name: CAST(0 AS UNSIGNED) - 1
 			[meta][field] org col name: 
-			[meta][field] length: 2
+			[meta][field] length: 22
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -1890,8 +1890,8 @@ EXECUTING:[30][SELECT CAST(0 AS UNSIGNED) - 1]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.CAST(0 AS UNSIGNED) - 1][  2][-1]
@@ -1914,7 +1914,7 @@ EXECUTING:[30][SELECT CAST(0 AS UNSIGNED) - 1]
 			[meta][field] org table name: 
 			[meta][field] col name: CAST(0 AS UNSIGNED) - 1
 			[meta][field] org col name: 
-			[meta][field] length: 2
+			[meta][field] length: 22
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -1922,8 +1922,8 @@ EXECUTING:[30][SELECT CAST(0 AS UNSIGNED) - 1]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.CAST(0 AS UNSIGNED) - 1][  2][-1]
@@ -1998,8 +1998,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][ 12][NO_ZERO_DATE]
@@ -2030,8 +2030,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][ 12][NO_ZERO_DATE]
@@ -2064,8 +2064,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 12][NO_ZERO_DATE]
@@ -2096,8 +2096,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 12][NO_ZERO_DATE]
@@ -2172,8 +2172,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][117][ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION]
@@ -2204,8 +2204,8 @@ EXECUTING:[24][SELECT @@global.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@global.sql_mode][117][ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION]
@@ -2238,8 +2238,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][117][ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION]
@@ -2270,8 +2270,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][117][ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION]
@@ -2317,8 +2317,8 @@ EXECUTING:[57][SELECT * FROM t1 WHERE t1.a IN (SELECT MAX(t1.b) FROM t2)]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -2360,8 +2360,8 @@ EXECUTING:[57][SELECT * FROM t1 WHERE t1.a IN (SELECT MAX(t1.b) FROM t2)]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -2415,8 +2415,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 78][REAL_AS_FLOAT,PIPES_AS_CONCAT,ANSI_QUOTES,IGNORE_SPACE,ONLY_FULL_GROUP_BY,ANSI]
@@ -2447,8 +2447,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 78][REAL_AS_FLOAT,PIPES_AS_CONCAT,ANSI_QUOTES,IGNORE_SPACE,ONLY_FULL_GROUP_BY,ANSI]
@@ -2548,8 +2548,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 19][STRICT_TRANS_TABLES]
@@ -2580,8 +2580,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][ 19][STRICT_TRANS_TABLES]
@@ -2674,8 +2674,8 @@ EXECUTING:[33][SELECT * FROM t1 WHERE a = 't2a2']
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -2717,8 +2717,8 @@ EXECUTING:[33][SELECT * FROM t1 WHERE a = 't2a2']
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -2774,8 +2774,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][128][STRICT_TRANS_TABLES,STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,TRADITIONAL,NO_ENGINE_SUBSTITUTION]
@@ -2806,8 +2806,8 @@ EXECUTING:[25][SELECT @@session.sql_mode]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@@session.sql_mode][128][STRICT_TRANS_TABLES,STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,TRADITIONAL,NO_ENGINE_SUBSTITUTION]
@@ -2900,8 +2900,8 @@ EXECUTING:[33][SELECT * FROM t1 WHERE a = 't2a2']
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -2943,8 +2943,8 @@ EXECUTING:[33][SELECT * FROM t1 WHERE a = 't2a2']
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows

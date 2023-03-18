@@ -1,5 +1,7 @@
 use ndbinfo;
-create table test.t1 (a int primary key, b int, c int, unique(b), key(c)) engine=ndb;
+create table test.t1 (a int primary key, b int, c int, unique(b), key(c))
+engine=ndb
+partition by key(a) partitions 64;
 create view frag_locks as 
 select fq_name = 'test/def/t1' as main_tab,
 type, 
@@ -763,9 +765,6 @@ Ok wait case
 Expect > 0 ok_millis, 0 fail_millis
 ok_millis	fail_millis
 1	0
-Warnings:
-Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
-Warning	1287	Setting user variables within expressions is deprecated and will be removed in a future release. Consider alternatives: 'SET variable=expression, ...', or 'SELECT expression(s) INTO variables(s)'.
 drop table test.t1;
 delete from current;
 delete from baseline;

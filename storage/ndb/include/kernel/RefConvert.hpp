@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -103,7 +104,7 @@ BlockReference numberToRef_old(Uint32 main, Uint32 instance, Uint32 node)
 inline
 BlockNumber blockToMain(Uint32 block)
 {
-  assert(block < (1 << 16));
+  //assert(block < (1 << 16));
   assert(FIRST_BLOCK + 12 == 256);
   Uint32 block_part = block & ((1 << NDBMT_BLOCK_BITS) - 1);
   if (unlikely(block_part < FIRST_BLOCK))
@@ -129,7 +130,7 @@ BlockNumber blockToMain(Uint32 block)
  */
 inline BlockInstance blockToInstance(Uint32 block)
 {
-  assert(block < (1 << 16));
+  //assert(block < (1 << 16));
   Uint32 instance = (BlockNumber)(block >> NDBMT_BLOCK_BITS);
   Uint32 block_part = block & ((1 << NDBMT_BLOCK_BITS) - 1);
   if (unlikely(block_part < FIRST_BLOCK))

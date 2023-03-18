@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -20,6 +20,7 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+#include <assert.h>
 #include <gtest/gtest.h>
 #include <stddef.h>
 
@@ -27,7 +28,6 @@
 #include <string>
 #include <vector>
 
-#include "my_dbug.h"
 #include "my_inttypes.h"
 #include "my_table_map.h"
 #include "sql/item_cmpfunc.h"
@@ -60,14 +60,13 @@ class ItemFilterTest : public ::testing::Test {
   void SetUp() override {
     initializer.SetUp();
     init_sql_alloc(PSI_NOT_INSTRUMENTED, &m_alloc,
-                   thd()->variables.range_alloc_block_size, 0);
+                   thd()->variables.range_alloc_block_size);
   }
 
   void TearDown() override {
     delete m_table;
 
     initializer.TearDown();
-    free_root(&m_alloc, MYF(0));
   }
 
   THD *thd() { return initializer.thd(); }
@@ -181,7 +180,7 @@ class ItemFilterTest : public ::testing::Test {
     PT_item_list *list = new (thd()->mem_root) PT_item_list;
     list->value = lst;
     Item_func_in *in_item = new Item_func_in(POS(), list, false);
-    Parse_context pc(thd(), thd()->lex->current_select());
+    Parse_context pc(thd(), thd()->lex->current_query_block());
     EXPECT_FALSE(in_item->itemize(&pc, (Item **)&in_item));
 
     Item *itm = static_cast<Item *>(in_item);
@@ -206,7 +205,7 @@ class ItemFilterTest : public ::testing::Test {
   MEM_ROOT m_alloc;
 
   Fake_TABLE *m_table;
-  TABLE_LIST *m_table_list;
+  Table_ref *m_table_list;
   /*
     Pointer to m_table->field. Only valid if the table was
     created by calling one of ItemFilterTest::create_table*()
@@ -243,7 +242,7 @@ Item_func *ItemFilterTest::create_item(Item_func::Functype type, Field *fld,
       result = new Item_func_isnotnull(new Item_field(fld));
       break;
     case Item_func::BETWEEN: {
-      Parse_context pc(thd(), thd()->lex->current_select());
+      Parse_context pc(thd(), thd()->lex->current_query_block());
       result =
           new Item_func_between(POS(), new Item_field(fld), new Item_int(val1),
                                 new Item_int(val2), false);
@@ -252,7 +251,7 @@ Item_func *ItemFilterTest::create_item(Item_func::Functype type, Field *fld,
     }
     default:
       result = nullptr;
-      DBUG_ASSERT(false);
+      assert(false);
       return result;
   }
   Item *itm = static_cast<Item *>(result);
@@ -297,7 +296,7 @@ TEST_F(ItemFilterTest, BasicDefaultRows) {
                            m_field[0], unused_int, unused_int, used_tables,
                            &no_ignore_flds);
   // Check filtering for predicate: field0 IS NOT NULL
-  create_item_check_filter(1.0 - COND_FILTER_EQUALITY,
+  create_item_check_filter(1.0F - COND_FILTER_EQUALITY,
                            Item_func::ISNOTNULL_FUNC, m_field[0], unused_int,
                            unused_int, used_tables, &no_ignore_flds);
   // Check filtering for predicate: field0 BETWEEN 10 AND 12

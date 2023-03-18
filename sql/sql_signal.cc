@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -31,7 +31,7 @@
 #include "my_inttypes.h"
 #include "my_macros.h"
 #include "my_sys.h"
-#include "mysql/components/services/psi_error_bits.h"
+#include "mysql/components/services/bits/psi_error_bits.h"
 #include "mysql/psi/mysql_error.h"
 #include "mysqld_error.h"     // ER_*
 #include "sql/derror.h"       // ER_THD
@@ -95,7 +95,7 @@ bool Set_signal_information::set_item(enum_condition_item_name name,
 }
 
 void Sql_cmd_common_signal::assign_defaults(
-    THD *thd MY_ATTRIBUTE((unused)), Sql_condition *cond, bool set_level_code,
+    THD *thd [[maybe_unused]], Sql_condition *cond, bool set_level_code,
     Sql_condition::enum_severity_level level, int sqlcode) {
   if (set_level_code) {
     cond->m_severity_level = level;
@@ -106,7 +106,7 @@ void Sql_cmd_common_signal::assign_defaults(
 }
 
 void Sql_cmd_common_signal::eval_defaults(THD *thd, Sql_condition *cond) {
-  DBUG_ASSERT(cond);
+  assert(cond);
 
   const char *sqlstate;
   bool set_defaults = (m_cond != nullptr);
@@ -115,15 +115,15 @@ void Sql_cmd_common_signal::eval_defaults(THD *thd, Sql_condition *cond) {
     /*
       SIGNAL is restricted in sql_yacc.yy to only signal SQLSTATE conditions.
     */
-    DBUG_ASSERT(m_cond->type == sp_condition_value::SQLSTATE);
+    assert(m_cond->type == sp_condition_value::SQLSTATE);
     sqlstate = m_cond->sql_state;
     cond->set_returned_sqlstate(sqlstate);
   } else
     sqlstate = cond->returned_sqlstate();
 
-  DBUG_ASSERT(sqlstate);
+  assert(sqlstate);
   /* SQLSTATE class "00": illegal, rejected in the parser. */
-  DBUG_ASSERT(!is_sqlstate_completion(sqlstate));
+  assert(!is_sqlstate_completion(sqlstate));
 
   if (is_sqlstate_warning(sqlstate)) {
     /* SQLSTATE class "01": warning. */
@@ -186,7 +186,7 @@ static bool assign_fixed_string(MEM_ROOT *mem_root, CHARSET_INFO *dst_cs,
       dst_copied = well_formed_copy_nchars(
           dst_cs, dst_str, dst_len, src_cs, src_str, src_len, numchars,
           &well_formed_error_pos, &cannot_convert_error_pos, &from_end_pos);
-      DBUG_ASSERT(dst_copied <= dst_len);
+      assert(dst_copied <= dst_len);
       dst_len = dst_copied; /* In case the copy truncated the data */
       dst_str[dst_copied] = '\0';
     }
@@ -206,7 +206,7 @@ static bool assign_fixed_string(MEM_ROOT *mem_root, CHARSET_INFO *dst_cs,
 static int assign_condition_item(MEM_ROOT *mem_root, const char *name, THD *thd,
                                  Item *set, String *ci) {
   char str_buff[(64 + 1) * 4]; /* Room for a null terminated UTF8 String 64 */
-  String str_value(str_buff, sizeof(str_buff), &my_charset_utf8_bin);
+  String str_value(str_buff, sizeof(str_buff), &my_charset_utf8mb3_bin);
   String *str;
   bool truncated;
 
@@ -218,7 +218,8 @@ static int assign_condition_item(MEM_ROOT *mem_root, const char *name, THD *thd,
   }
 
   str = set->val_str(&str_value);
-  truncated = assign_fixed_string(mem_root, &my_charset_utf8_bin, 64, ci, str);
+  truncated =
+      assign_fixed_string(mem_root, &my_charset_utf8mb3_bin, 64, ci, str);
   if (truncated) {
     if (thd->is_strict_mode()) {
       thd->raise_error_printf(ER_COND_ITEM_TOO_LONG, name);
@@ -305,7 +306,7 @@ int Sql_cmd_common_signal::eval_signal_informations(THD *thd,
     bool truncated;
     String utf8_text;
     str = set->val_str(&str_value);
-    truncated = assign_fixed_string(thd->mem_root, &my_charset_utf8_bin, 128,
+    truncated = assign_fixed_string(thd->mem_root, &my_charset_utf8mb3_bin, 128,
                                     &utf8_text, str);
     if (truncated) {
       if (thd->is_strict_mode()) {
@@ -382,14 +383,14 @@ bool Sql_cmd_signal::execute(THD *thd) {
   thd->set_row_count_func(0);
   thd->get_stmt_da()->reset_condition_info(thd);
 
-  DBUG_ASSERT(thd->lex->query_tables == nullptr);
+  assert(thd->lex->query_tables == nullptr);
 
   eval_defaults(thd, &cond);
   if (eval_signal_informations(thd, &cond)) return true;
 
   /* SIGNAL should not signal SL_NOTE */
-  DBUG_ASSERT((cond.severity() == Sql_condition::SL_WARNING) ||
-              (cond.severity() == Sql_condition::SL_ERROR));
+  assert((cond.severity() == Sql_condition::SL_WARNING) ||
+         (cond.severity() == Sql_condition::SL_ERROR));
 
   Sql_condition *raised =
       thd->raise_condition(cond.mysql_errno(), cond.returned_sqlstate(),
@@ -476,8 +477,8 @@ bool Sql_cmd_resignal::execute(THD *thd) {
   }
 
   // RESIGNAL should not resignal SL_NOTE
-  DBUG_ASSERT(!raised || (raised->severity() == Sql_condition::SL_WARNING) ||
-              (raised->severity() == Sql_condition::SL_ERROR));
+  assert(!raised || (raised->severity() == Sql_condition::SL_WARNING) ||
+         (raised->severity() == Sql_condition::SL_ERROR));
 
   /*
     We now have the following possibilities:

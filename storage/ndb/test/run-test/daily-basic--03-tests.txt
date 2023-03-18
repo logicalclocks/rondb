@@ -1,4 +1,4 @@
-# Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2015, 2022, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -54,10 +54,6 @@ cmd: testScan
 args: -n Bug24447 T1
 max-time: 180
 
-cmd: testInterpreter
-args: T1
-max-time: 180
-
 cmd: testBitfield
 args:
 max-time: 180
@@ -105,6 +101,10 @@ max-time: 360
 cmd: testDict
 args: -n TableAddAttrsDuringError
 max-time: 900
+
+cmd: testDict
+args: -n TableAddAttrsDuringError_Disk
+max-time: 1200
 
 cmd: testNdbinfo
 args:

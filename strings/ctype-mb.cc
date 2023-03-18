@@ -1,4 +1,4 @@
-/* Copyright (c) 2002, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2002, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,6 +25,7 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+#include <assert.h>
 #include <string.h>
 #include <sys/types.h>
 
@@ -33,7 +34,7 @@
 #include "m_ctype.h"
 #include "m_string.h"
 #include "my_compiler.h"
-#include "my_dbug.h"
+
 #include "my_inttypes.h"
 #include "my_macros.h"
 #include "strings/str_uca_type.h"
@@ -84,15 +85,15 @@ static inline const MY_UNICASE_CHARACTER *get_case_info_for_ch(
   For character sets which don't change octet length in case conversion.
 */
 size_t my_caseup_mb(const CHARSET_INFO *cs, char *src, size_t srclen,
-                    char *dst MY_ATTRIBUTE((unused)),
-                    size_t dstlen MY_ATTRIBUTE((unused))) {
+                    char *dst [[maybe_unused]],
+                    size_t dstlen [[maybe_unused]]) {
   uint32 l;
   char *srcend = src + srclen;
   const uchar *map = cs->to_upper;
 
-  DBUG_ASSERT(cs->caseup_multiply == 1);
-  DBUG_ASSERT(src == dst && srclen == dstlen);
-  DBUG_ASSERT(cs->mbmaxlen == 2);
+  assert(cs->caseup_multiply == 1);
+  assert(src == dst && srclen == dstlen);
+  assert(cs->mbmaxlen == 2);
 
   while (src < srcend) {
     if ((l = my_ismbchar(cs, src, srcend))) {
@@ -111,15 +112,15 @@ size_t my_caseup_mb(const CHARSET_INFO *cs, char *src, size_t srclen,
 }
 
 size_t my_casedn_mb(const CHARSET_INFO *cs, char *src, size_t srclen,
-                    char *dst MY_ATTRIBUTE((unused)),
-                    size_t dstlen MY_ATTRIBUTE((unused))) {
+                    char *dst [[maybe_unused]],
+                    size_t dstlen [[maybe_unused]]) {
   uint32 l;
   char *srcend = src + srclen;
   const uchar *map = cs->to_lower;
 
-  DBUG_ASSERT(cs->casedn_multiply == 1);
-  DBUG_ASSERT(src == dst && srclen == dstlen);
-  DBUG_ASSERT(cs->mbmaxlen == 2);
+  assert(cs->casedn_multiply == 1);
+  assert(src == dst && srclen == dstlen);
+  assert(cs->mbmaxlen == 2);
 
   while (src < srcend) {
     if ((l = my_ismbchar(cs, src, srcend))) {
@@ -148,11 +149,11 @@ size_t my_casedn_mb(const CHARSET_INFO *cs, char *src, size_t srclen,
 */
 static size_t my_casefold_mb_varlen(const CHARSET_INFO *cs, char *src,
                                     size_t srclen, char *dst,
-                                    size_t dstlen MY_ATTRIBUTE((unused)),
+                                    size_t dstlen [[maybe_unused]],
                                     const uchar *map, size_t is_upper) {
   char *srcend = src + srclen, *dst0 = dst;
 
-  DBUG_ASSERT(cs->mbmaxlen == 2);
+  assert(cs->mbmaxlen == 2);
 
   while (src < srcend) {
     size_t mblen = my_ismbchar(cs, src, srcend);
@@ -176,15 +177,15 @@ static size_t my_casefold_mb_varlen(const CHARSET_INFO *cs, char *src,
 
 size_t my_casedn_mb_varlen(const CHARSET_INFO *cs, char *src, size_t srclen,
                            char *dst, size_t dstlen) {
-  DBUG_ASSERT(dstlen >= srclen * cs->casedn_multiply);
-  DBUG_ASSERT(src != dst || cs->casedn_multiply == 1);
+  assert(dstlen >= srclen * cs->casedn_multiply);
+  assert(src != dst || cs->casedn_multiply == 1);
   return my_casefold_mb_varlen(cs, src, srclen, dst, dstlen, cs->to_lower, 0);
 }
 
 size_t my_caseup_mb_varlen(const CHARSET_INFO *cs, char *src, size_t srclen,
                            char *dst, size_t dstlen) {
-  DBUG_ASSERT(dstlen >= srclen * cs->caseup_multiply);
-  DBUG_ASSERT(src != dst || cs->caseup_multiply == 1);
+  assert(dstlen >= srclen * cs->caseup_multiply);
+  assert(src != dst || cs->caseup_multiply == 1);
   return my_casefold_mb_varlen(cs, src, srclen, dst, dstlen, cs->to_upper, 1);
 }
 
@@ -206,7 +207,7 @@ int my_strcasecmp_mb(const CHARSET_INFO *cs, const char *s, const char *t) {
       return 1;
   }
   /* At least one of '*s' and '*t' is zero here. */
-  DBUG_ASSERT(!*t || !*s);
+  assert(!*t || !*s);
   return (*t != *s);
 }
 
@@ -278,7 +279,7 @@ static int my_wildcmp_mb_impl(const CHARSET_INFO *cs, const char *str,
 
       mb = wildstr;
       mb_len = my_ismbchar(cs, wildstr, wildend);
-      INC_PTR(cs, wildstr, wildend); /* This is compared trough cmp */
+      INC_PTR(cs, wildstr, wildend); /* This is compared through cmp */
       cmp = likeconv(cs, cmp);
       do {
         for (;;) {
@@ -326,8 +327,8 @@ size_t my_numchars_mb(const CHARSET_INFO *cs, const char *pos,
   return count;
 }
 
-size_t my_charpos_mb(const CHARSET_INFO *cs, const char *pos, const char *end,
-                     size_t length) {
+size_t my_charpos_mb3(const CHARSET_INFO *cs, const char *pos, const char *end,
+                      size_t length) {
   const char *start = pos;
 
   while (length && pos < end) {
@@ -405,9 +406,9 @@ uint my_instr_mb(const CHARSET_INFO *cs, const char *b, size_t b_length,
 
 /* BINARY collations handlers for MB charsets */
 
-int my_strnncoll_mb_bin(const CHARSET_INFO *cs MY_ATTRIBUTE((unused)),
-                        const uchar *s, size_t slen, const uchar *t,
-                        size_t tlen, bool t_is_prefix) {
+int my_strnncoll_mb_bin(const CHARSET_INFO *cs [[maybe_unused]], const uchar *s,
+                        size_t slen, const uchar *t, size_t tlen,
+                        bool t_is_prefix) {
   size_t len = std::min(slen, tlen);
   int cmp = len == 0 ? 0 : memcmp(s, t, len);
   return cmp ? cmp : (int)((t_is_prefix ? len : slen) - tlen);
@@ -418,7 +419,7 @@ int my_strnncoll_mb_bin(const CHARSET_INFO *cs MY_ATTRIBUTE((unused)),
 
   SYNOPSIS
     my_strnncollsp_mb_bin()
-    cs			Chararacter set
+    cs			Character set
     s			String to compare
     slen		Length of 's'
     t			String to compare
@@ -435,7 +436,7 @@ int my_strnncoll_mb_bin(const CHARSET_INFO *cs MY_ATTRIBUTE((unused)),
     0 if strings are equal
 */
 
-int my_strnncollsp_mb_bin(const CHARSET_INFO *cs MY_ATTRIBUTE((unused)),
+int my_strnncollsp_mb_bin(const CHARSET_INFO *cs [[maybe_unused]],
                           const uchar *a, size_t a_length, const uchar *b,
                           size_t b_length) {
   const uchar *end;
@@ -480,13 +481,13 @@ int my_strnncollsp_mb_bin(const CHARSET_INFO *cs MY_ATTRIBUTE((unused)),
     switch (cs->cset->ismbchar(cs, (const char *)src, (const char *)se)) {   \
       case 4:                                                                \
         *dst++ = *src++;                                                     \
-        /* fall through */                                                   \
+        [[fallthrough]];                                                     \
       case 3:                                                                \
         *dst++ = *src++;                                                     \
-        /* fall through */                                                   \
+        [[fallthrough]];                                                     \
       case 2:                                                                \
         *dst++ = *src++;                                                     \
-        /* fall through */                                                   \
+        [[fallthrough]];                                                     \
       case 0:                                                                \
         *dst++ = *src++; /* byte in range 0x80..0xFF which is not MB head */ \
     }                                                                        \
@@ -505,7 +506,7 @@ size_t my_strnxfrm_mb(const CHARSET_INFO *cs, uchar *dst, size_t dstlen,
   const uchar *se = src + srclen;
   const uchar *sort_order = cs->sort_order;
 
-  DBUG_ASSERT(cs->mbmaxlen <= 4);
+  assert(cs->mbmaxlen <= 4);
 
   /*
     If "srclen" is smaller than both "dstlen" and "nweights"
@@ -534,7 +535,7 @@ size_t my_strnxfrm_mb(const CHARSET_INFO *cs, uchar *dst, size_t dstlen,
   }
 
   /*
-    A thourough loop, checking all possible limits:
+    A thorough loop, checking all possible limits:
     "se", "nweights" and "de".
   */
   for (; src < se && nweights && dst < de; nweights--) {
@@ -556,12 +557,12 @@ pad:
   return my_strxfrm_pad(cs, d0, dst, de, nweights, flags);
 }
 
-int my_strcasecmp_mb_bin(const CHARSET_INFO *cs MY_ATTRIBUTE((unused)),
-                         const char *s, const char *t) {
+int my_strcasecmp_mb_bin(const CHARSET_INFO *cs [[maybe_unused]], const char *s,
+                         const char *t) {
   return strcmp(s, t);
 }
 
-void my_hash_sort_mb_bin(const CHARSET_INFO *cs MY_ATTRIBUTE((unused)),
+void my_hash_sort_mb_bin(const CHARSET_INFO *cs [[maybe_unused]],
                          const uchar *key, size_t len, uint64 *nr1,
                          uint64 *nr2) {
   const uchar *pos = key;
@@ -611,7 +612,7 @@ static void pad_max_char(const CHARSET_INFO *cs, char *str, char *end) {
       buflen = 2;
     } else {
       /* Currently, it's only for GB18030, so it must be a 4-byte char */
-      DBUG_ASSERT(cs->max_sort_char > 0xFFFFFF);
+      assert(cs->max_sort_char > 0xFFFFFF);
       buf[0] = cs->max_sort_char >> 24 & 0xFF;
       buf[1] = cs->max_sort_char >> 16 & 0xFF;
       buf[2] = cs->max_sort_char >> 8 & 0xFF;
@@ -623,10 +624,10 @@ static void pad_max_char(const CHARSET_INFO *cs, char *str, char *end) {
                              (uchar *)buf + sizeof(buf));
   }
 
-  DBUG_ASSERT(buflen > 0);
+  assert(buflen > 0);
   do {
     if ((str + buflen) <= end) {
-      /* Enough space for the characer */
+      /* Enough space for the character */
       memcpy(str, buf, buflen);
       str += buflen;
     } else {
@@ -833,11 +834,11 @@ bool my_like_range_generic(const CHARSET_INFO *cs, const char *ptr,
                                  pointer_cast<const uchar *>(end))) <= 0) {
         if (res == MY_CS_ILSEQ)
           return true; /* min_length and max_length are not important */
-        /*
-           End of the string: Escape is the last character.
-           Put escape as a normal character.
-           We'll will leave the loop on the next iteration.
-        */
+                       /*
+                          End of the string: Escape is the last character.
+                          Put escape as a normal character.
+                          We'll will leave the loop on the next iteration.
+                       */
       } else
         ptr += res;
 
@@ -1008,7 +1009,7 @@ static int my_wildcmp_mb_bin_impl(const CHARSET_INFO *cs, const char *str,
 
       mb = wildstr;
       mb_len = my_ismbchar(cs, wildstr, wildend);
-      INC_PTR(cs, wildstr, wildend); /* This is compared trough cmp */
+      INC_PTR(cs, wildstr, wildend); /* This is compared through cmp */
       do {
         for (;;) {
           if (str >= str_end) return -1;

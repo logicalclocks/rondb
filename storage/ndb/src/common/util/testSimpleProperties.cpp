@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
 #include <ndb_global.h>
 
 #include "SimpleProperties.hpp"
@@ -171,7 +173,7 @@ void testBuffered() {
   /* write key 2 */
   memset(test2, '\0', sizeof(test2));
   sprintf(test2, "In Xanadu did Kubla Khan a stately");
-  printf("Length for key 2: %zu/%zu \n", strlen(test2)+1, sizeof(test2));
+  printf("Length for key 2: %zu/%zu\n", strlen(test2)+1, sizeof(test2));
   w.add(2, test2);
 
   SimplePropertiesLinearReader r(page, w.getWordsUsed());
@@ -196,10 +198,10 @@ void testBuffered() {
   memset(smallbuf, '\0', sizeof(smallbuf));
   while((nread = r.getBuffered(smallbuf, 8)) > 0) {
     nreadcalls++;
-    printf("%d => %c%c%c%c%c%c%c%c \n",
+    printf("%d => %c%c%c%c%c%c%c%c\n",
            nread, smallbuf[0], smallbuf[1], smallbuf[2], smallbuf[3],
                   smallbuf[4], smallbuf[5], smallbuf[6], smallbuf[7]);
     memset(smallbuf, '\0', sizeof(smallbuf));
   }
-  printf("Total buffered read calls: %d \n", nreadcalls);
+  printf("Total buffered read calls: %d\n", nreadcalls);
 }

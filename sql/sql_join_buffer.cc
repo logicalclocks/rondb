@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,13 +29,14 @@
 
 #include "sql/sql_join_buffer.h"
 
+#include <assert.h>
 #include <limits.h>
 #include <sys/types.h>
 #include <unordered_map>
 
 #include "my_alloc.h"
 #include "my_bitmap.h"
-#include "my_dbug.h"
+
 #include "sql/field.h"
 #include "sql/sql_bitmap.h"
 #include "sql/sql_const.h"
@@ -78,7 +79,7 @@
 
 static void filter_gcol_for_dynamic_range_scan(const QEP_TAB *tab) {
   TABLE *table = tab->table();
-  DBUG_ASSERT(tab->dynamic_range() && table->vfield);
+  assert(tab->dynamic_range() && table->vfield);
 
   for (uint key = 0; key < table->s->keys; ++key) {
     /*
@@ -95,7 +96,18 @@ static void filter_gcol_for_dynamic_range_scan(const QEP_TAB *tab) {
       // Make a bitmap of which fields this covering index can read
       table->mark_columns_used_by_index_no_reset(key, &range_read_set,
                                                  UINT_MAX);
-
+      // If this is a unique index, server does not extend it with primary
+      // key even though storage engine does. So, this key might be marked
+      // as covering although the "key_info" for the key contains only
+      // the user defined keyparts. See add_pk_parts_to_sk(). So we might
+      // set the read set wrongly above. Correct it below by marking fields
+      // part of the primary key as needed.
+      if ((table->key_info[key].flags & HA_NOSAME) &&
+          (table->file->ha_table_flags() & HA_PRIMARY_KEY_IN_READ_INDEX) &&
+          (table->s->primary_key < MAX_KEY)) {
+        table->mark_columns_used_by_index_no_reset(table->s->primary_key,
+                                                   &range_read_set, UINT_MAX);
+      }
       // Compute the minimal read_set that must be included in the join buffer
       bitmap_intersect(table->read_set, &range_read_set);
     }

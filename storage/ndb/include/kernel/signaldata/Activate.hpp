@@ -43,8 +43,8 @@ class ActivateReq
   friend class MgmtSrvr;
 
 public:
-  STATIC_CONST (SignalLength = 2);
-  STATIC_CONST (TimeOutSignalLength = 3);
+  static constexpr Uint32 SignalLength = 2;
+  static constexpr Uint32 TimeOutSignalLength = 3;
   
 public:
   Uint32 senderRef;
@@ -66,7 +66,7 @@ class ActivateConf
   friend class MgmtSrvr;
 
 public:
-  STATIC_CONST (SignalLength = 3);
+  static constexpr Uint32 SignalLength = 3;
   
 public:
   Uint32 senderRef;
@@ -88,7 +88,7 @@ class ActivateRef
   friend class MgmtSrvr;
 
 public:
-  STATIC_CONST (SignalLength = 3);
+  static constexpr Uint32 SignalLength = 3;
   
 public:
   Uint32 senderRef;
@@ -110,7 +110,7 @@ class DeactivateReq
   friend class MgmtSrvr;
 
 public:
-  STATIC_CONST (SignalLength = 2);
+  static constexpr Uint32 SignalLength = 2;
   
 public:
   Uint32 senderRef;
@@ -131,7 +131,7 @@ class DeactivateConf
   friend class MgmtSrvr;
 
 public:
-  STATIC_CONST (SignalLength = 3);
+  static constexpr Uint32 SignalLength = 3;
   
 public:
   Uint32 senderRef;
@@ -153,7 +153,7 @@ class DeactivateRef
   friend class MgmtSrvr;
 
 public:
-  STATIC_CONST (SignalLength = 3);
+  static constexpr Uint32 SignalLength = 3;
   
 public:
   Uint32 senderRef;

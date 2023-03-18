@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,7 +29,7 @@
 #include "sql/table.h"
 #include "storage/ndb/include/ndbapi/NdbApi.hpp"
 
-Ndb_table_map::Ndb_table_map(struct TABLE *mysqlTable,
+Ndb_table_map::Ndb_table_map(const TABLE *mysqlTable,
                              const NdbDictionary::Table *ndbTable)
     : m_ndb_table(ndbTable),
       m_array_size(mysqlTable->s->fields),
@@ -42,8 +42,8 @@ Ndb_table_map::Ndb_table_map(struct TABLE *mysqlTable,
     m_map_by_col = new int[m_array_size];
 
     /* Initialize the two bitmaps */
-    bitmap_init(&m_moved_fields, 0, m_array_size);
-    bitmap_init(&m_rewrite_set, 0, m_array_size);
+    bitmap_init(&m_moved_fields, nullptr, m_array_size);
+    bitmap_init(&m_rewrite_set, nullptr, m_array_size);
 
     /* Initialize both arrays full of -1 */
     for (uint i = 0; i < m_array_size; i++) {
@@ -79,12 +79,12 @@ uint Ndb_table_map::get_field_for_column(uint colId) const {
   if (m_trivial) return colId;
 
   const int fieldId = m_map_by_col[colId];
-  DBUG_ASSERT(fieldId >= 0);  // We do not expect any non-final hidden columns
+  assert(fieldId >= 0);  // We do not expect any non-final hidden columns
   return (uint)fieldId;
 }
 
 unsigned char *Ndb_table_map::get_column_mask(const MY_BITMAP *field_mask) {
-  unsigned char *map = 0;
+  unsigned char *map = nullptr;
   if (field_mask) {
     map = (unsigned char *)(field_mask->bitmap);
     if ((!m_trivial) && bitmap_is_overlapping(&m_moved_fields, field_mask)) {
@@ -111,7 +111,7 @@ Ndb_table_map::~Ndb_table_map() {
 }
 
 bool Ndb_table_map::has_virtual_gcol(const TABLE *table) {
-  if (table->vfield == NULL) return false;
+  if (table->vfield == nullptr) return false;
   for (Field **gc = table->vfield; *gc; gc++) {
     if (!(*gc)->stored_in_db) return true;
   }
@@ -119,7 +119,7 @@ bool Ndb_table_map::has_virtual_gcol(const TABLE *table) {
 }
 
 uint Ndb_table_map::num_stored_fields(const TABLE *table) {
-  if (table->vfield == NULL) {
+  if (table->vfield == nullptr) {
     // Table has no virtual fields, just return number of fields
     return table->s->fields;
   }
@@ -133,25 +133,7 @@ uint Ndb_table_map::num_stored_fields(const TABLE *table) {
   return num_stored_fields;
 }
 
-bool Ndb_table_map::have_physical_blobs(const TABLE *table) {
-  for (uint i = 0; i < table->s->fields; i++) {
-    Field *field = table->field[i];
-    if (!field->stored_in_db) {
-      // Not stored
-      continue;
-    }
-
-    if (field->is_flag_set(BLOB_FLAG)) {
-      // Double check that TABLE_SHARE thinks that table had some
-      // blobs(physical or not)
-      DBUG_ASSERT(table->s->blob_fields > 0);
-      return true;
-    }
-  }
-  return false;
-}
-
-#ifndef DBUG_OFF
+#ifndef NDEBUG
 void Ndb_table_map::print_record(const TABLE *table, const uchar *record) {
   for (uint j = 0; j < table->s->fields; j++) {
     char buf[40];
@@ -170,39 +152,39 @@ void Ndb_table_map::print_record(const TABLE *table, const uchar *record) {
 }
 
 void Ndb_table_map::print_table(const char *info, const TABLE *table) {
-  if (table == 0) {
+  if (table == nullptr) {
     DBUG_PRINT("info", ("%s: (null)", info));
     return;
   }
   DBUG_PRINT("info",
              ("%s: %s.%s s->fields: %d  "
-              "reclength: %lu  rec_buff_length: %u  record[0]: 0x%lx  "
-              "record[1]: 0x%lx",
+              "reclength: %lu  rec_buff_length: %u  record[0]: %p  "
+              "record[1]: %p",
               info, table->s->db.str, table->s->table_name.str,
               table->s->fields, table->s->reclength, table->s->rec_buff_length,
-              (long)table->record[0], (long)table->record[1]));
+              table->record[0], table->record[1]));
 
   for (unsigned int i = 0; i < table->s->fields; i++) {
     Field *f = table->field[i];
-    DBUG_PRINT("info",
-               ("[%d] \"%s\"(0x%lx:%s%s%s%s%s%s) type: %d  pack_length: %d  "
-                "ptr: 0x%lx[+%d]  null_bit: %u  null_ptr: 0x%lx[+%d]",
-                i, f->field_name, (long)f->all_flags(),
-                f->is_flag_set(PRI_KEY_FLAG) ? "pri" : "attr",
-                f->is_flag_set(NOT_NULL_FLAG) ? "" : ",nullable",
-                f->is_flag_set(UNSIGNED_FLAG) ? ",unsigned" : ",signed",
-                f->is_flag_set(ZEROFILL_FLAG) ? ",zerofill" : "",
-                f->is_flag_set(BLOB_FLAG) ? ",blob" : "",
-                f->is_flag_set(BINARY_FLAG) ? ",binary" : "", f->real_type(),
-                f->pack_length(), (long)f->field_ptr(),
-                (int)(f->offset(table->record[0])), f->null_bit,
-                (long)f->null_offset(nullptr), (int)f->null_offset()));
+    DBUG_PRINT(
+        "info",
+        ("[%d] \"%s\"(0x%lx:%s%s%s%s%s%s) type: %d  pack_length: %d  "
+         "ptr: %p[+%d]  null_bit: %u  null_ptr: 0x%lx[+%d]",
+         i, f->field_name, (long)f->all_flags(),
+         f->is_flag_set(PRI_KEY_FLAG) ? "pri" : "attr",
+         f->is_flag_set(NOT_NULL_FLAG) ? "" : ",nullable",
+         f->is_flag_set(UNSIGNED_FLAG) ? ",unsigned" : ",signed",
+         f->is_flag_set(ZEROFILL_FLAG) ? ",zerofill" : "",
+         f->is_flag_set(BLOB_FLAG) ? ",blob" : "",
+         f->is_flag_set(BINARY_FLAG) ? ",binary" : "", f->real_type(),
+         f->pack_length(), f->field_ptr(), (int)(f->offset(table->record[0])),
+         f->null_bit, (long)f->null_offset(nullptr), (int)f->null_offset()));
     if (f->type() == MYSQL_TYPE_BIT) {
       Field_bit *g = (Field_bit *)f;
       DBUG_PRINT("MYSQL_TYPE_BIT",
-                 ("field_length: %d  bit_ptr: 0x%lx[+%d] "
+                 ("field_length: %d  bit_ptr: %p[+%d] "
                   "bit_ofs: %d  bit_len: %u",
-                  g->field_length, (long)g->bit_ptr,
+                  g->field_length, g->bit_ptr,
                   (int)((uchar *)g->bit_ptr - table->record[0]), g->bit_ofs,
                   g->bit_len));
     }

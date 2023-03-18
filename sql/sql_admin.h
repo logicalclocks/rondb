@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2010, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,11 +23,12 @@
 #ifndef SQL_TABLE_MAINTENANCE_H
 #define SQL_TABLE_MAINTENANCE_H
 
+#include <assert.h>
 #include <stddef.h>
 #include <set>
 
 #include "lex_string.h"
-#include "my_dbug.h"
+
 #include "my_sqlcommand.h"
 #include "sql/histograms/histogram.h"
 #include "sql/mem_root_allocator.h"
@@ -39,7 +40,7 @@ class Clone_handler;
 class String;
 class THD;
 
-struct TABLE_LIST;
+class Table_ref;
 template <class T>
 class List;
 
@@ -77,7 +78,7 @@ class Sql_cmd_analyze_table : public Sql_cmd_ddl_table {
   */
   Sql_cmd_analyze_table(THD *thd, Alter_info *alter_info,
                         Histogram_command histogram_command,
-                        int histogram_buckets);
+                        int histogram_buckets, LEX_STRING data);
 
   bool execute(THD *thd) override;
 
@@ -102,6 +103,9 @@ class Sql_cmd_analyze_table : public Sql_cmd_ddl_table {
   /// The number of buckets specified by the user in UPDATE HISTOGRAM
   int m_histogram_buckets;
 
+  /// The histogram json literal for update
+  const LEX_STRING m_data;
+
   /// @return The histogram command specified, if any.
   Histogram_command get_histogram_command() const {
     return m_histogram_command;
@@ -109,6 +113,9 @@ class Sql_cmd_analyze_table : public Sql_cmd_ddl_table {
 
   /// @return The number of buckets specified in UPDATE HISTOGRAM.
   int get_histogram_buckets() const { return m_histogram_buckets; }
+
+  /// @return The histogram json literal specified in UPDATE HISTOGRAM.
+  LEX_STRING get_histogram_data_string() const { return m_data; }
 
   /// @return The fields specified in UPDATE/DROP HISTOGRAM
   const columns_set &get_histogram_fields() const { return m_histogram_fields; }
@@ -123,7 +130,7 @@ class Sql_cmd_analyze_table : public Sql_cmd_ddl_table {
     @return false on success, true otherwise.
   */
   bool send_histogram_results(THD *thd, const histograms::results_map &results,
-                              const TABLE_LIST *table);
+                              const Table_ref *table);
 
   /**
     Update one or more histograms
@@ -138,7 +145,7 @@ class Sql_cmd_analyze_table : public Sql_cmd_ddl_table {
 
     @return false on success, true on error.
   */
-  bool update_histogram(THD *thd, TABLE_LIST *table,
+  bool update_histogram(THD *thd, Table_ref *table,
                         histograms::results_map &results);
 
   /**
@@ -154,10 +161,10 @@ class Sql_cmd_analyze_table : public Sql_cmd_ddl_table {
 
     @return false on success, true on error.
   */
-  bool drop_histogram(THD *thd, TABLE_LIST *table,
+  bool drop_histogram(THD *thd, Table_ref *table,
                       histograms::results_map &results);
 
-  bool handle_histogram_command(THD *thd, TABLE_LIST *table);
+  bool handle_histogram_command(THD *thd, Table_ref *table);
 };
 
 /**
@@ -232,10 +239,10 @@ class Sql_cmd_set_role : public Sql_cmd {
       : role_type(role_type_arg),
         role_list(nullptr),
         except_roles(except_roles_arg) {
-    DBUG_ASSERT(role_type == role_enum::ROLE_NONE ||
-                role_type == role_enum::ROLE_DEFAULT ||
-                role_type == role_enum::ROLE_ALL);
-    DBUG_ASSERT(role_type == role_enum::ROLE_ALL || except_roles == nullptr);
+    assert(role_type == role_enum::ROLE_NONE ||
+           role_type == role_enum::ROLE_DEFAULT ||
+           role_type == role_enum::ROLE_ALL);
+    assert(role_type == role_enum::ROLE_ALL || except_roles == nullptr);
   }
   explicit Sql_cmd_set_role(const List<LEX_USER> *role_arg)
       : role_type(role_enum::ROLE_NAME), role_list(role_arg) {}
@@ -356,9 +363,10 @@ enum alter_instance_action_enum {
   ALTER_INSTANCE_RELOAD_TLS,
   ALTER_INSTANCE_RELOAD_TLS_ROLLBACK_ON_ERROR,
   ROTATE_BINLOG_MASTER_KEY,
-  LAST_MASTER_KEY, /* Add new master key type before this */
   ALTER_INSTANCE_ENABLE_INNODB_REDO,
-  ALTER_INSTANCE_DISABLE_INNODB_REDO
+  ALTER_INSTANCE_DISABLE_INNODB_REDO,
+  RELOAD_KEYRING,
+  LAST_ACTION /* Add new master key type before this */
 };
 
 /**

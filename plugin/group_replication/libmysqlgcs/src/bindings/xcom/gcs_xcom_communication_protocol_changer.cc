@@ -1,4 +1,4 @@
-/* Copyright (c) 2018, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2018, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -57,11 +57,11 @@ Gcs_xcom_communication_protocol_changer::set_protocol_version(
    There is at most one group action executing at a time, so by definition we
    should always be able to acquire the lock.
   */
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   bool const we_acquired_lock =
 #endif
       m_tagged_lock.try_lock();
-  DBUG_ASSERT(we_acquired_lock);
+  assert(we_acquired_lock);
 
   if (new_version <= get_maximum_supported_protocol_version()) {
     begin_protocol_version_change(new_version);
@@ -77,19 +77,19 @@ Gcs_xcom_communication_protocol_changer::set_protocol_version(
 
 void Gcs_xcom_communication_protocol_changer::begin_protocol_version_change(
     Gcs_protocol_version new_version) {
-  DBUG_ASSERT(is_protocol_change_ongoing() &&
-              "A protocol change should have been ongoing");
+  assert(is_protocol_change_ongoing() &&
+         "A protocol change should have been ongoing");
 
   m_tentative_new_protocol = new_version;
   m_promise = std::promise<void>();
 
   /* Change the pipeline. */
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   bool const failed =
 #endif
       m_msg_pipeline.set_version(
           static_cast<Gcs_protocol_version>(m_tentative_new_protocol));
-  DBUG_ASSERT(!failed && "Setting the pipeline version should not have failed");
+  assert(!failed && "Setting the pipeline version should not have failed");
 
   /*
    Finish the protocol change if all my in-transit messages have been delivered.
@@ -99,10 +99,10 @@ void Gcs_xcom_communication_protocol_changer::begin_protocol_version_change(
 }
 
 void Gcs_xcom_communication_protocol_changer::commit_protocol_version_change() {
-  DBUG_ASSERT(is_protocol_change_ongoing() &&
-              "A protocol change should have been ongoing");
-  DBUG_ASSERT(m_tentative_new_protocol != Gcs_protocol_version::UNKNOWN &&
-              "Protocol version should have been set");
+  assert(is_protocol_change_ongoing() &&
+         "A protocol change should have been ongoing");
+  assert(m_tentative_new_protocol != Gcs_protocol_version::UNKNOWN &&
+         "Protocol version should have been set");
 
   /* Stop buffering outgoing messages. */
   release_tagged_lock_and_notify_waiters();
@@ -295,13 +295,26 @@ void Gcs_xcom_communication_protocol_changer::adjust_nr_packets_in_transit(
 
 void Gcs_xcom_communication_protocol_changer::decrement_nr_packets_in_transit(
     Gcs_packet const &packet, Gcs_xcom_nodes const &xcom_nodes) {
-  DBUG_ASSERT(packet.get_cargo_type() !=
-              Cargo_type::CT_INTERNAL_STATE_EXCHANGE);
+  assert(packet.get_cargo_type() != Cargo_type::CT_INTERNAL_STATE_EXCHANGE);
 
   /* Get the packet's origin. */
-  auto node_id = packet.get_delivery_synode().get_synod().node;
+  auto node_id = packet.get_origin_synode().get_synod().node;
   auto const *node = xcom_nodes.get_node(node_id);
-  Gcs_member_identifier origin(node->get_member_id());
+
+  if (!node) {
+    MYSQL_GCS_LOG_INFO(
+        "Not able to decrement number of packets in transit. Non-existing node "
+        "from incoming packet.");
+  }
+
+  const Gcs_member_identifier origin_member_id = node->get_member_id();
+  if (origin_member_id.get_member_id().empty()) {
+    MYSQL_GCS_LOG_INFO(
+        "Not able to decrement number of packets in transit. Non-existing "
+        "member identifier from incoming packet.");
+  }
+
+  Gcs_member_identifier origin(origin_member_id);
 
   /*
    If the packet comes from me, decrement the number of packets in transit.
@@ -312,12 +325,30 @@ void Gcs_xcom_communication_protocol_changer::decrement_nr_packets_in_transit(
   Gcs_xcom_interface *const xcom_interface =
       static_cast<Gcs_xcom_interface *>(Gcs_xcom_interface::get_interface());
   if (xcom_interface != nullptr) {
-    Gcs_member_identifier myself{
-        xcom_interface->get_node_address()->get_member_address()};
+    Gcs_xcom_node_address *myself_node_address =
+        xcom_interface->get_node_address();
+
+    if (!myself_node_address) {
+      MYSQL_GCS_LOG_INFO(
+          "Not able to decrement number of packets in transit. Non-existing "
+          "own address from currently installed configuration.")
+    }
+
+    std::string myself_node_address_string =
+        myself_node_address->get_member_address();
+
+    if (myself_node_address_string.empty()) {
+      MYSQL_GCS_LOG_INFO(
+          "Not able to decrement number of packets in transit. Non-existing "
+          "own address representation from currently installed configuration.")
+    }
+
+    Gcs_member_identifier myself{myself_node_address_string};
+
     bool const message_comes_from_me = (origin == myself);
     if (message_comes_from_me) {
-      DBUG_ASSERT(get_nr_packets_in_transit() > 0 &&
-                  "Number of packets in transit should not have been 0");
+      assert(get_nr_packets_in_transit() > 0 &&
+             "Number of packets in transit should not have been 0");
 
       // Update number of packets in transit
       auto previous_nr_of_packets_in_transit =

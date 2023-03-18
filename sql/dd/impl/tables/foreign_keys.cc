@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -44,7 +44,7 @@ const Foreign_keys &Foreign_keys::instance() {
 ///////////////////////////////////////////////////////////////////////////
 
 const CHARSET_INFO *Foreign_keys::name_collation() {
-  return &my_charset_utf8_general_ci;
+  return &my_charset_utf8mb3_general_ci;
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -60,10 +60,10 @@ Foreign_keys::Foreign_keys() {
                          "table_id BIGINT UNSIGNED NOT NULL");
   m_target_def.add_field(FIELD_NAME, "FIELD_NAME",
                          "name VARCHAR(64) NOT NULL COLLATE " +
-                             String_type(name_collation()->name));
+                             String_type(name_collation()->m_coll_name));
   m_target_def.add_field(
       FIELD_UNIQUE_CONSTRAINT_NAME, "FIELD_UNIQUE_CONSTRAINT_NAME",
-      "unique_constraint_name VARCHAR(64) COLLATE utf8_tolower_ci");
+      "unique_constraint_name VARCHAR(64) COLLATE utf8mb3_tolower_ci");
   m_target_def.add_field(FIELD_MATCH_OPTION, "FIELD_MATCH_OPTION",
                          "match_option ENUM('NONE', 'PARTIAL', 'FULL') "
                          "NOT NULL");
@@ -83,17 +83,20 @@ Foreign_keys::Foreign_keys() {
       FIELD_REFERENCED_TABLE_CATALOG, "FIELD_REFERENCED_TABLE_CATALOG",
       "referenced_table_catalog "
       "VARCHAR(64) NOT NULL COLLATE " +
-          String_type(Object_table_definition_impl::fs_name_collation()->name));
+          String_type(
+              Object_table_definition_impl::fs_name_collation()->m_coll_name));
   m_target_def.add_field(
       FIELD_REFERENCED_TABLE_SCHEMA, "FIELD_REFERENCED_TABLE_SCHEMA",
       "referenced_table_schema "
       "VARCHAR(64) NOT NULL COLLATE " +
-          String_type(Object_table_definition_impl::fs_name_collation()->name));
+          String_type(
+              Object_table_definition_impl::fs_name_collation()->m_coll_name));
   m_target_def.add_field(
       FIELD_REFERENCED_TABLE, "FIELD_REFERENCED_TABLE",
       "referenced_table_name "
       "VARCHAR(64) NOT NULL COLLATE " +
-          String_type(Object_table_definition_impl::fs_name_collation()->name));
+          String_type(
+              Object_table_definition_impl::fs_name_collation()->m_coll_name));
   m_target_def.add_field(FIELD_OPTIONS, "FIELD_OPTIONS", "options MEDIUMTEXT");
 
   m_target_def.add_index(INDEX_PK_ID, "INDEX_PK_ID", "PRIMARY KEY (id)");
@@ -149,7 +152,7 @@ bool Foreign_keys::check_foreign_key_exists(THD *thd, Object_id schema_id,
       create_key_by_foreign_key_name(schema_id, foreign_key_name.c_str()));
 
   Raw_table *table = trx.otx.get_table(instance().name());
-  DBUG_ASSERT(table != nullptr);
+  assert(table != nullptr);
 
   // Find record by the object-key.
   std::unique_ptr<Raw_record> record;

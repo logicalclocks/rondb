@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2011, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -133,7 +133,7 @@ bool Diagnostics_information_item::set_value(THD *thd, Item **value) {
   /* Get a settable reference to the target. */
   srp = m_target->get_settable_routine_parameter();
 
-  DBUG_ASSERT(srp);
+  assert(srp);
 
   /* Set variable/parameter value. */
   rc = srp->set_value(thd, thd->sp_runtime_ctx, value);
@@ -247,7 +247,7 @@ bool Condition_information::aggregate(THD *thd, const Diagnostics_area *da) {
   /* Advance to the requested condition. */
   while (cond_number--) cond = it_conds++;
 
-  DBUG_ASSERT(cond);
+  assert(cond);
 
   /* Evaluate the requested information in the context of the condition. */
   while ((cond_info_item = it_items++)) {
@@ -272,8 +272,8 @@ bool Condition_information::aggregate(THD *thd, const Diagnostics_area *da) {
 
 Item *Condition_information_item::make_utf8_string_item(THD *thd,
                                                         const String *str) {
-  /* Default is utf8 character set and utf8_general_ci collation. */
-  const CHARSET_INFO *to_cs = &my_charset_utf8_general_ci;
+  /* Default is utf8mb3 character set and utf8mb3_general_ci collation. */
+  const CHARSET_INFO *to_cs = &my_charset_utf8mb3_general_ci;
   /* If a charset was not set, assume that no conversion is needed. */
   const CHARSET_INFO *from_cs = str->charset() ? str->charset() : to_cs;
   Item_string *item = new Item_string(str->ptr(), str->length(), from_cs);

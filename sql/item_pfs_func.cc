@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,15 +29,16 @@
 
 #include "sql/item_pfs_func.h"
 
+#include <assert.h>
 #include <cstdint>  // uint64_t
 #include <cstdio>
 #include <cstdlib>  // abs
 
 #include "m_ctype.h"
-#include "my_dbug.h"
+
 #include "my_psi_config.h"
 #include "my_sys.h"
-#include "mysql/components/services/psi_thread_bits.h"
+#include "mysql/components/services/bits/psi_thread_bits.h"
 #include "mysqld_error.h"
 #include "pfs_thread_provider.h"
 #include "sql/field.h"
@@ -59,7 +60,7 @@ bool Item_func_pfs_current_thread_id::itemize(Parse_context *pc, Item **res) {
 
 bool Item_func_pfs_current_thread_id::resolve_type(THD *) {
   unsigned_flag = true;
-  maybe_null = true;
+  set_nullable(true);
   return false;
 }
 
@@ -70,7 +71,7 @@ bool Item_func_pfs_current_thread_id::fix_fields(THD *thd, Item **ref) {
 }
 
 longlong Item_func_pfs_current_thread_id::val_int() {
-  DBUG_ASSERT(fixed);
+  assert(fixed);
   /* Verify Performance Schema available. */
   if (!pfs_enabled) {
     my_printf_error(ER_WRONG_PERFSCHEMA_USAGE,
@@ -100,12 +101,12 @@ bool Item_func_pfs_thread_id::itemize(Parse_context *pc, Item **res) {
 
 bool Item_func_pfs_thread_id::resolve_type(THD *) {
   unsigned_flag = true;
-  maybe_null = true;
+  set_nullable(true);
   return false;
 }
 
 longlong Item_func_pfs_thread_id::val_int() {
-  DBUG_ASSERT(fixed);
+  assert(fixed);
 
   /* Verify Performance Schema available. */
   if (!pfs_enabled) {
@@ -153,7 +154,7 @@ longlong Item_func_pfs_thread_id::val_int() {
 
 bool Item_func_pfs_format_bytes::resolve_type(THD *) {
   /* Format is 'AAAA.BB UUU' = 11 characters or 'AAAA bytes' = 10 characters. */
-  set_data_type_string(11U, &my_charset_utf8_general_ci);
+  set_data_type_string(11U, &my_charset_utf8mb3_general_ci);
   return false;
 }
 
@@ -215,16 +216,16 @@ String *Item_func_pfs_format_bytes::val_str(String *) {
     }
   }
 
-  m_value.set(m_value_buffer, len, &my_charset_utf8_general_ci);
+  m_value.set(m_value_buffer, len, &my_charset_utf8mb3_general_ci);
   return &m_value;
 }
 
 /** format_pico_time() */
 
 bool Item_func_pfs_format_pico_time::resolve_type(THD *) {
-  maybe_null = true;
+  set_nullable(true);
   /* Format is 'AAAA.BB UUU' = 11 characters or 'AAA ps' = 6 characters. */
-  set_data_type_string(11U, &my_charset_utf8_general_ci);
+  set_data_type_string(11U, &my_charset_utf8mb3_general_ci);
   return false;
 }
 
@@ -291,6 +292,6 @@ String *Item_func_pfs_format_pico_time::val_str(String *) {
     }
   }
 
-  m_value.set(m_value_buffer, len, &my_charset_utf8_general_ci);
+  m_value.set(m_value_buffer, len, &my_charset_utf8mb3_general_ci);
   return &m_value;
 }

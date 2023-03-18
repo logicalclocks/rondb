@@ -1,4 +1,4 @@
-/* Copyright (c) 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2020, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -143,7 +143,7 @@ void table_tls_channel_status::reset_position(void) {
 
 int table_tls_channel_status::rnd_pos(const void *pos) {
   set_position(pos);
-  DBUG_ASSERT(m_pos.m_index < m_row_tls_channel_status.size());
+  assert(m_pos.m_index < m_row_tls_channel_status.size());
   m_row = &m_row_tls_channel_status[m_pos.m_index];
   return 0;
 }
@@ -163,31 +163,31 @@ int table_tls_channel_status::rnd_next(void) {
 int table_tls_channel_status::read_row_values(TABLE *table, unsigned char *buf,
                                               Field **fields, bool read_all) {
   Field *f;
-  DBUG_ASSERT(m_row);
+  assert(m_row);
   /* Set the null bits */
-  DBUG_ASSERT(table->s->null_bytes == 0);
+  assert(table->s->null_bytes == 0);
   buf[0] = 0;
 
   for (; (f = *fields); fields++) {
     if (read_all || bitmap_is_set(table->read_set, f->field_index())) {
       switch (f->field_index()) {
         case tls_channel_status_offsets::FO_CHANNEL:
-          set_field_varchar_utf8(
+          set_field_varchar_utf8mb4(
               f, m_row->m_interface.c_str(),
               static_cast<uint>(m_row->m_interface.length()));
           break;
         case tls_channel_status_offsets::FO_PROPERTY:
-          set_field_varchar_utf8(
+          set_field_varchar_utf8mb4(
               f, m_row->m_property_name.c_str(),
               static_cast<uint>(m_row->m_property_name.length()));
           break;
         case tls_channel_status_offsets::FO_VALUE:
-          set_field_varchar_utf8(
+          set_field_varchar_utf8mb4(
               f, m_row->m_property_value.c_str(),
               static_cast<uint>(m_row->m_property_value.length()));
           break;
         default:
-          DBUG_ASSERT(false);
+          assert(false);
       }
     }
   }

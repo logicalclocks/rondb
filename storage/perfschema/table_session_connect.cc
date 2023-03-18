@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -27,8 +27,9 @@
 
 #include "storage/perfschema/table_session_connect.h"
 
+#include <assert.h>
 #include "my_compiler.h"
-#include "my_dbug.h"
+
 #include "my_inttypes.h"
 #include "sql/field.h"
 #include "sql/table.h"
@@ -70,8 +71,8 @@ table_session_connect::~table_session_connect() {
   my_free(m_copy_session_connect_attrs);
 }
 
-int table_session_connect::index_init(uint idx MY_ATTRIBUTE((unused)), bool) {
-  DBUG_ASSERT(idx == 0);
+int table_session_connect::index_init(uint idx [[maybe_unused]], bool) {
+  assert(idx == 0);
   m_opened_index = PFS_NEW(PFS_index_session_connect);
   m_index = m_opened_index;
   return 0;
@@ -152,7 +153,7 @@ static bool parse_length_encoded_string(const char **ptr, char *dest,
     this is still UTF8MB3 printed in a UTF8MB4 column.
   */
   copy_length = well_formed_copy_nchars(
-      &my_charset_utf8_bin, dest, dest_size, from_cs, *ptr, data_length,
+      &my_charset_utf8mb3_bin, dest, dest_size, from_cs, *ptr, data_length,
       nchars_max, &well_formed_error_pos, &cannot_convert_error_pos,
       &from_end_pos);
   *copied_len = copy_length;
@@ -310,7 +311,7 @@ int table_session_connect::read_row_values(TABLE *table, unsigned char *buf,
   Field *f;
 
   /* Set the null bits */
-  DBUG_ASSERT(table->s->null_bytes == 1);
+  assert(table->s->null_bytes == 1);
   buf[0] = 0;
 
   for (; (f = *fields); fields++) {
@@ -324,13 +325,13 @@ int table_session_connect::read_row_values(TABLE *table, unsigned char *buf,
           }
           break;
         case FO_ATTR_NAME:
-          set_field_varchar_utf8(f, m_row.m_attr_name,
-                                 m_row.m_attr_name_length);
+          set_field_varchar_utf8mb4(f, m_row.m_attr_name,
+                                    m_row.m_attr_name_length);
           break;
         case FO_ATTR_VALUE:
           if (m_row.m_attr_value_length)
-            set_field_varchar_utf8(f, m_row.m_attr_value,
-                                   m_row.m_attr_value_length);
+            set_field_varchar_utf8mb4(f, m_row.m_attr_value,
+                                      m_row.m_attr_value_length);
           else {
             f->set_null();
           }
@@ -339,7 +340,7 @@ int table_session_connect::read_row_values(TABLE *table, unsigned char *buf,
           set_field_ulong(f, m_row.m_ordinal_position);
           break;
         default:
-          DBUG_ASSERT(false);
+          assert(false);
       }
     }
   }

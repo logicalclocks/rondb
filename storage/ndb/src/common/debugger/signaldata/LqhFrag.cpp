@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,12 +23,14 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
 #include <signaldata/LqhFrag.hpp>
 
-bool
-printLQH_FRAG_REQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 recB){
-  LqhFragReq* sig = (LqhFragReq*)theData;
+bool printLQHFRAGREQ(FILE* output,
+                     const Uint32* theData,
+                     Uint32 /* len */,
+                     Uint16 /*recB*/)
+{
+  const LqhFragReq* sig = (const LqhFragReq*)theData;
   
   fprintf(output, " senderData: %d senderRef: %x",
 	  sig->senderData, sig->senderRef);
@@ -48,20 +51,28 @@ printLQH_FRAG_REQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 recB
           sig->tableVersion, sig->startGci, sig->requestInfo);
   fprintf(output, " changeMask: %x, partitionId: %u, createGci: %u\n",
           sig->changeMask, sig->partitionId, sig->createGci);
+  fprintf(output, " nodeFragmentCount: %u\n", sig->nodeFragCount);
   return true;
 }
-bool
-printLQH_FRAG_CONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 rec){
-  LqhFragConf* sig = (LqhFragConf*)theData;
+
+bool printLQHFRAGCONF(FILE* output,
+                      const Uint32* theData,
+                      Uint32 /*len*/,
+                      Uint16 /*rec*/)
+{
+  const LqhFragConf* sig = (const LqhFragConf*)theData;
   
   fprintf(output, " senderData: %d lqhFragPtr: %d\n",
 	  sig->senderData, sig->lqhFragPtr);
   return true;
 }
 
-bool
-printLQH_FRAG_REF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 rec){
-  LqhFragRef* sig = (LqhFragRef*)theData;
+bool printLQHFRAGREF(FILE* output,
+                     const Uint32* theData,
+                     Uint32 /*len*/,
+                     Uint16 /*rec*/)
+{
+  const LqhFragRef* sig = (const LqhFragRef*)theData;
   
   fprintf(output, " senderData: %d errorCode: %d\n",
 	  sig->senderData, sig->errorCode);

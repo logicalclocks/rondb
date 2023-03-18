@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -38,11 +39,11 @@ Uint32 MAX_RECEIVED_SIGNALS = 1024;
 #define MAX_RECEIVED_SIGNALS 1024
 #endif
 
-extern EventLogger* g_eventLogger;
 
 void
 TransporterRegistry::dump_and_report_bad_message(const char file[], unsigned line,
                           TransporterReceiveHandle & recvHandle,
+                          SignalHeader & sig_header,
                           Uint32 * readPtr,
                           size_t sizeInWords,
                           NodeId remoteNodeId,
@@ -50,6 +51,21 @@ TransporterRegistry::dump_and_report_bad_message(const char file[], unsigned lin
                           TransporterError errorCode)
 {
   report_error(remoteNodeId, errorCode);
+
+  g_eventLogger->error("Last signal: GSN: %u, RecBlock: %u, "
+                       "SendBlockRef: %x, Length: %u, "
+                       "SenderSignalId: %u, SignalId: %u"
+                       ", trace: %u, num_sections: %u"
+                       ", fragInfo: %u",
+                       sig_header.theVerId_signalNumber,
+                       sig_header.theReceiversBlockNumber,
+                       sig_header.theSendersBlockRef,
+                       sig_header.theLength,
+                       sig_header.theSendersSignalId,
+                       sig_header.theSignalId,
+                       sig_header.theTrace,
+                       sig_header.m_noOfSections,
+                       sig_header.m_fragmentInfo);
 
   char msg[MAX_LOG_MESSAGE_SIZE];
   const size_t sz = sizeof(msg);
@@ -71,8 +87,9 @@ TransporterRegistry::dump_and_report_bad_message(const char file[], unsigned lin
     Uint32 threshold;
     Logger::LoggerLevel severity;
     EventLogger::EventTextFunction textF;
-    EventLoggerBase::event_lookup(NDB_LE_TransporterError,
-                                  cat, threshold, severity, textF);
+    if (EventLoggerBase::event_lookup(NDB_LE_TransporterError,
+                                      cat, threshold, severity, textF) != 0)
+      goto log_it;
     Uint32 TE_words[3] = {0, remoteNodeId, (Uint32) errorCode};
     g_eventLogger->getText(msg + offs, sz - offs, textF, TE_words, 3);
     nb = strlen(msg + offs);
@@ -91,7 +108,7 @@ TransporterRegistry::dump_and_report_bad_message(const char file[], unsigned lin
     size_t reserve;
     if (!nextMsgOffset)
     {
-      // If next message wont be dumped, print as much as possible
+      // If next message won't be dumped, print as much as possible
       // from start of buffer.
       reserve = 0;
     }
@@ -339,8 +356,15 @@ TransporterRegistry::unpack(TransporterReceiveHandle & recvHandle,
 
   if (errorCode != TE_NO_ERROR)
   {
-    dump_and_report_bad_message(__FILE__, __LINE__,
-            recvHandle, readPtr, eodPtr - readPtr, remoteNodeId, state,
+    dump_and_report_bad_message(
+            __FILE__,
+            __LINE__,
+            recvHandle,
+            signalHeader,
+            readPtr,
+            eodPtr - readPtr,
+            remoteNodeId,
+            state,
             errorCode);
     g_eventLogger->info("Loop count:%u", loop_count);
   }
@@ -427,7 +451,7 @@ TransporterRegistry::unpack(TransporterReceiveHandle & recvHandle,
 
       Uint32 rBlockNum = signalHeader.theReceiversBlockNumber;
 
-      if(rBlockNum == 252){
+      if(rBlockNum == QMGR){
 	Uint32 sBlockNum = signalHeader.theSendersBlockRef;
 	sBlockNum = numberToRef(sBlockNum, remoteNodeId);
 	signalHeader.theSendersBlockRef = sBlockNum;
@@ -446,9 +470,16 @@ TransporterRegistry::unpack(TransporterReceiveHandle & recvHandle,
 
   if (errorCode != TE_NO_ERROR)
   {
-    dump_and_report_bad_message(__FILE__, __LINE__,
-            recvHandle, readPtr, eodPtr - readPtr, remoteNodeId, state,
-            errorCode);
+    dump_and_report_bad_message(
+      __FILE__,
+      __LINE__,
+      recvHandle,
+      signalHeader,
+      readPtr,
+      eodPtr - readPtr,
+      remoteNodeId,
+      state,
+      errorCode);
   }
 
   stopReceiving = doStopReceiving;
@@ -488,7 +519,7 @@ importGeneric(Uint32 * & insertPtr, const GenericSectionPtr & ptr){
     const Uint32* next= ptr.sectionIter->getNextWords(len);
 
     assert(len <= remain);
-    assert(next != NULL);
+    assert(next != nullptr);
 
     memcpy(insertPtr, next, 4 * len);
     insertPtr+= len;
@@ -498,7 +529,7 @@ importGeneric(Uint32 * & insertPtr, const GenericSectionPtr & ptr){
   /* Check that there were no more words available from the
    * Signal iterator
    */
-  assert(ptr.sectionIter->getNextWords(remain) == NULL);
+  assert(ptr.sectionIter->getNextWords(remain) == nullptr);
 }
 
 void copy(Uint32 * & insertPtr, 

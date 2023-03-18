@@ -8,8 +8,7 @@
  * For conditions of distribution and use, see copyright notice in zlib.h
  *
  * This file was modified by Oracle on 2015-01-23.
- * Modifications copyright (c) 2015, 2019, Oracle and/or its affiliates. All
- * rights reserved.
+ * Modifications Copyright (c) 2015, 2022, Oracle and/or its affiliates.
  */
 
 /* @(#) $Id$ */
@@ -70,21 +69,21 @@ int az_open(azio_stream *s, const char *path, int Flags, File fd) {
   memset(s, 0, sizeof(azio_stream));
   s->stream.next_in = s->inbuf;
   s->stream.next_out = s->outbuf;
-  DBUG_ASSERT(s->z_err == Z_OK);
+  assert(s->z_err == Z_OK);
   s->back = EOF;
   s->crc = crc32(0L, Z_NULL, 0);
   s->mode = 'r';
   /* this needs to be a define to version */
   s->version = (unsigned char)az_magic[1];
   s->minor_version = (unsigned char)az_magic[2]; /* minor version */
-  DBUG_ASSERT(s->dirty == AZ_STATE_CLEAN);
+  assert(s->dirty == AZ_STATE_CLEAN);
 
   /*
     We do our own version of append by nature.
     We must always have write access to take card of the header.
   */
-  DBUG_ASSERT(Flags | O_APPEND);
-  DBUG_ASSERT(Flags | O_WRONLY);
+  assert(Flags | O_APPEND);
+  assert(Flags | O_WRONLY);
 
   if (Flags & O_RDWR) s->mode = 'w';
 
@@ -194,7 +193,7 @@ int write_header(azio_stream *s) {
   *(ptr + AZ_DIRTY_POS) =
       (unsigned char)s->dirty; /* Start of Data Block Index Block */
 
-  /* Always begin at the begining, and end there as well */
+  /* Always begin at the beginning, and end there as well */
   return my_pwrite(s->file, (uchar *)buffer, AZHEADER_SIZE + AZMETA_BUFFER_SIZE,
                    0, MYF(MY_NABP))
              ? 1
@@ -221,7 +220,7 @@ int azdopen(azio_stream *s, File fd, int Flags) {
 /* ===========================================================================
   Read a byte from a azio_stream; update next_in and avail_in. Return EOF
   for end of file.
-  IN assertion: the stream s has been sucessfully opened for reading.
+  IN assertion: the stream s has been successfully opened for reading.
 */
 int get_byte(azio_stream *s) {
   if (s->z_eof) return EOF;
@@ -248,7 +247,7 @@ int get_byte(azio_stream *s) {
   mode to transparent if the gzip magic header is not present; set s->err
   to Z_DATA_ERROR if the magic header is present but the rest of the header
   is incorrect.
-  IN assertion: the stream s has already been created sucessfully;
+  IN assertion: the stream s has already been created successfully;
   s->stream.avail_in is zero for the first time, but may be non-zero
   for concatenated .gz files.
 */

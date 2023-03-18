@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -41,10 +42,10 @@ class AddFragReq {
    */
   friend class Dbdict;
   
-  friend bool printADD_FRAG_REQ(FILE *, const Uint32 *, Uint32, Uint16);
+  friend bool printADDFRAGREQ(FILE *, const Uint32 *, Uint32, Uint16);
 
 public:
-  STATIC_CONST( SignalLength = 14 );
+  static constexpr Uint32 SignalLength = 15;
   
   enum RequestInfo {
     CreateInRunning = 0x8000000,
@@ -65,6 +66,7 @@ private:
   Uint32 changeMask;
   Uint32 partitionId;
   Uint32 createGci;
+  Uint32 nodeFragCount;
 };
 
 class AddFragRef {
@@ -78,9 +80,9 @@ class AddFragRef {
    */
   friend class Dbdih;
 
-  friend bool printADD_FRAG_REF(FILE *, const Uint32 *, Uint32, Uint16);
+  friend bool printADDFRAGREF(FILE *, const Uint32 *, Uint32, Uint16);
 public:
-  STATIC_CONST( SignalLength = 2 );
+  static constexpr Uint32 SignalLength = 2;
   
 private:
   Uint32 dihPtr;
@@ -98,9 +100,9 @@ class AddFragConf {
    */
   friend class Dbdih;
 
-  friend bool printADD_FRAG_CONF(FILE *, const Uint32 *, Uint32, Uint16);
+  friend bool printADDFRAGCONF(FILE *, const Uint32 *, Uint32, Uint16);
 public:
-  STATIC_CONST( SignalLength = 2 );
+  static constexpr Uint32 SignalLength = 2;
   
 private:
   Uint32 dihPtr;
@@ -119,12 +121,11 @@ class LqhFragReq {
   friend class Dblqh;
   friend class DblqhProxy;
   
-  friend bool printLQH_FRAG_REQ(FILE *, const Uint32 *, Uint32, Uint16);
+  friend bool printLQHFRAGREQ(FILE *, const Uint32 *, Uint32, Uint16);
 
 public:
-  STATIC_CONST( SignalLength = 24 );
-  STATIC_CONST( OldSignalLength = 23 );
-  STATIC_CONST( OldestSignalLength = 22 );
+  static constexpr Uint32 SignalLength = 25;
+  static constexpr Uint32 OldSignalLength = 24;
   
   enum RequestInfo {
     CreateInRunning = 0x8000000,
@@ -162,6 +163,7 @@ private:
   Uint32 changeMask;
   Uint32 partitionId;
   Uint32 createGci;
+  Uint32 nodeFragCount;
 };
 
 class LqhFragConf {
@@ -176,9 +178,9 @@ class LqhFragConf {
    */
   friend class Dbdict;
 
-  friend bool printLQH_FRAG_CONF(FILE *, const Uint32 *, Uint32, Uint16);
+  friend bool printLQHFRAGCONF(FILE *, const Uint32 *, Uint32, Uint16);
 public:
-  STATIC_CONST( SignalLength = 5 );
+  static constexpr Uint32 SignalLength = 5;
 
 private:
   Uint32 senderData;
@@ -200,9 +202,9 @@ class LqhFragRef {
    */
   friend class Dbdict;
 
-  friend bool printLQH_FRAG_REF(FILE *, const Uint32 *, Uint32, Uint16);
+  friend bool printLQHFRAGREF(FILE *, const Uint32 *, Uint32, Uint16);
 public:
-  STATIC_CONST( SignalLength = 6 );
+  static constexpr Uint32 SignalLength = 6;
 
 private:
   Uint32 senderData;
@@ -227,10 +229,10 @@ class LqhAddAttrReq {
 
   friend bool printLQH_ADD_ATTR_REQ(FILE *, const Uint32 *, Uint32, Uint16);
 public:
-  STATIC_CONST( HeaderLength = 4 );
-  STATIC_CONST( EntryLength = 3 );
-  STATIC_CONST( MAX_ATTRIBUTES = 6 );
-  STATIC_CONST( DEFAULT_VALUE_SECTION_NUM = 0 );
+  static constexpr Uint32 HeaderLength = 4;
+  static constexpr Uint32 EntryLength = 3;
+  static constexpr Uint32 MAX_ATTRIBUTES = 6;
+  static constexpr Uint32 DEFAULT_VALUE_SECTION_NUM = 0;
   struct Entry {
     Uint32 attrId;              // for index, includes primary attr id << 16
     Uint32 attrDescriptor;      // 2 words type info
@@ -258,7 +260,7 @@ class LqhAddAttrRef {
 
   friend bool printLQH_ADD_ATTR_REF(FILE *, const Uint32 *, Uint32, Uint16);
 public:
-  STATIC_CONST( SignalLength = 2 );
+  static constexpr Uint32 SignalLength = 2;
 
 private:
   Uint32 senderData;
@@ -279,7 +281,7 @@ class LqhAddAttrConf {
 
   friend bool printLQH_ADD_ATTR_CONF(FILE *, const Uint32 *, Uint32, Uint16);
 public:
-  STATIC_CONST( SignalLength = 2 );
+  static constexpr Uint32 SignalLength = 2;
 
 private:
   Uint32 senderData;
@@ -288,7 +290,7 @@ private:
 
 struct DropFragReq
 {
-  STATIC_CONST( SignalLength = 5 );
+  static constexpr Uint32 SignalLength = 5;
   enum RequestInfo
   {
     AlterTableAbort = 0x1
@@ -302,7 +304,7 @@ struct DropFragReq
 
 struct DropFragRef
 {
-  STATIC_CONST( SignalLength = 5 );
+  static constexpr Uint32 SignalLength = 5;
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 tableId;
@@ -312,7 +314,7 @@ struct DropFragRef
 
 struct DropFragConf
 {
-  STATIC_CONST( SignalLength = 4 );
+  static constexpr Uint32 SignalLength = 4;
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 tableId;

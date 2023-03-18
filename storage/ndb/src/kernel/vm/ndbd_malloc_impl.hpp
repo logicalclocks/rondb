@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2006, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2006, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,6 +26,7 @@
 #ifndef NDBD_MALLOC_IMPL_H
 #define NDBD_MALLOC_IMPL_H
 
+#include "util/require.h"
 #include <algorithm>
 #ifdef VM_TRACE
 //#ifndef NDBD_RANDOM_START_PAGE
@@ -39,7 +41,7 @@
 #include "NdbSeqLock.hpp"
 #include "Pool.hpp"
 #include <Vector.hpp>
-#include "util/NdbOut.hpp"
+#include <EventLogger.hpp>
 
 #define JAM_FILE_ID 291
 
@@ -105,7 +107,7 @@ struct Free_page_data
 
 #define FPD_2LOG 2
 
-#define MM_RG_COUNT 9
+#define MM_RG_COUNT 12
 
 /**
   Information of restriction and current usage of shared global page memory.
@@ -113,10 +115,25 @@ struct Free_page_data
 class Resource_limits
 {
   /**
-    Number of pages dedicated for different resource group but currently not
-    in use.
+    Number of pages reserved for specific resource groups but currently
+    not in use.
   */
   Uint32 m_free_reserved;
+
+  /**
+   * Number of pages currently reserved for specific resource groups.
+   */
+  Uint32 m_reserved;
+
+  /**
+   * Number of pages in shared global memory.
+   */
+  Uint32 m_shared;
+
+  /**
+   * Number of pages in shared global memory currently in use.
+   */
+  Uint32 m_shared_in_use;
 
   /**
     Number of pages currently in use.
@@ -129,39 +146,6 @@ class Resource_limits
   Uint32 m_allocated;
 
   /**
-    Total number of spare pages currently allocated by resource groups.
-  */
-  Uint32 m_spare;
-
-  /**
-    Number of pages that some resource have given up but have not been taken
-    by some other resource yet.
-
-    This should zero, but while transferring pages from one resource to another
-    pages using give_up_pages() and take_pages() this can be non zero for a
-    short moment.
-
-    Note, untaken pages still are accounted as in_use in global.
-  */
-  Uint32 m_untaken;
-
-  /**
-    The number of pages otherwise dedicated to some resource that are available
-    for other resources.
-
-    See give_up_pages() and take_pages().
-  */
-  Uint32 m_lent;
-
-  /**
-    The number of pages used by some resource that are lent from dedicated
-    pages for some other resource.
-
-    See give_up_pages() and take_pages().
-  */
-  Uint32 m_borrowed;
-
-  /**
     One more than highest page number allocated.
 
     Used internally by Ndbd_mem_manager for consistency checks.
@@ -171,14 +155,21 @@ class Resource_limits
   /**
     Number of pages reserved for high priority resource groups.
 
+    Ultra prio free limit is memory reserved for things that are
+    of survival necessity. This includes allocations for job buffer,
+    send buffers, backup meta memory and some other minor things.
+
+    Most other memory resources are in the category of prioritized, but
+    can survive a memory request failure.
+
+    Finally we have low priority memory resources, this is mainly intended
+    for complex SQL queries handled by SPJ.
+
     Page allocations for low priority resource groups will be denied if number
     of free pages are less than this number.
-
-    Note that not have any dedicated pages is the criteria for a resource group
-    to have low priority, and there will never be any dedicted free pages for
-    that resource.
   */
   Uint32 m_prio_free_limit;
+  Uint32 m_ultra_prio_free_limit;
 
   /**
     Per resource group statistics.
@@ -193,68 +184,166 @@ class Resource_limits
     High priority of a resource group is indicated by setting the minimal
     reserved to zero (Resource_limit::m_min == 0).
   */
+  static const Uint32 ULTRA_PRIO_FREE_PCT = 4;
   static const Uint32 HIGH_PRIO_FREE_PCT = 10;
 
-  Uint32 alloc_resource_spare(Uint32 id, Uint32 cnt);
-  void release_resource_spare(Uint32 id, Uint32 cnt);
   void dec_in_use(Uint32 cnt);
-  void dec_resource_borrowed(Uint32 id, Uint32 cnt);
-  void dec_resource_lent(Uint32 id, Uint32 cnt);
   void dec_resource_in_use(Uint32 id, Uint32 cnt);
-  void dec_resource_spare(Uint32 id, Uint32 cnt);
-  void dec_spare(Uint32 cnt);
   Uint32 get_resource_in_use(Uint32 resource) const;
-  Uint32 get_resource_lent(Uint32 id) const;
-  Uint32 get_resource_borrowed(Uint32 id) const;
   void inc_free_reserved(Uint32 cnt);
   void inc_in_use(Uint32 cnt);
   void inc_resource_in_use(Uint32 id, Uint32 cnt);
-  void inc_resource_spare(Uint32 id, Uint32 cnt);
-  void inc_spare(Uint32 cnt);
+
+  /**
+   * Increment number of pages this resource has stolen from the
+   * reserved area.
+   */
+  void inc_stolen_reserved(Uint32 id, Uint32 cnt);
+
+  /**
+   * Decrement number of pages this resource has stolen from the
+   * reserved area.
+   */
+  void dec_stolen_reserved(Uint32 id, Uint32 cnt);
+
+  /**
+   * Get number of pages this resource has stolen from the
+   * reserved area.
+   */
+  Uint32 get_stolen_reserved(Uint32 id) const;
+
+  /**
+   * Increment number of pages this resource has extended the
+   * reserved area by through calls to alloc_spare_page.
+   */
+  void inc_overflow_reserved(Uint32 id, Uint32 cnt);
+
+  /**
+   * Decrement number of pages this resource has extended the
+   * reserved area by through calls to alloc_spare_page.
+   */
+  void dec_overflow_reserved(Uint32 id, Uint32 cnt);
+
+  /**
+   * Get number of pages this resource has extended the
+   * reserved area by through calls to alloc_spare_page.
+   */
+  Uint32 get_overflow_reserved(Uint32 id) const;
+
 public:
   Resource_limits();
 
   void get_resource_limit(Uint32 id, Resource_limit& rl) const;
-  void init_resource_limit(Uint32 id, Uint32 min, Uint32 max);
+  void init_resource_limit(Uint32 id,
+                           Uint32 min,
+                           Uint32 max,
+                           Uint32 max_high_prio,
+                           Uint32 prio);
   void init_resource_spare(Uint32 id, Uint32 pct);
 
+  /**
+   * Get total number of allocated pages in global memory manager.
+   */
   Uint32 get_allocated() const;
+
+  /**
+   * Get total number of reserved pages in global memory manager.
+   */
   Uint32 get_reserved() const;
+
+  /**
+   * Get total number of pages in shared global memory.
+   */
   Uint32 get_shared() const;
-  Uint32 get_spare() const;
+
+  /**
+   * Get total number of pages used in shared global memory.
+   */
+  Uint32 get_shared_in_use() const;
+
   Uint32 get_free_reserved() const;
   Uint32 get_free_shared() const;
+  
+  /**
+   * Get total number of pages in use in the global memory manager.
+   */
   Uint32 get_in_use() const;
   Uint32 get_reserved_in_use() const;
-  Uint32 get_shared_in_use() const;
+
+  /**
+   * The page id of the last page in the global memory manager.
+   */
   Uint32 get_max_page() const;
-  Uint32 get_resource_free(Uint32 id) const;
-  Uint32 get_resource_free_reserved(Uint32 id) const;
+
+  /**
+   * Get number of pages that are free in the resource until we have
+   * reached the maximum allowed usage.
+   */
+  Uint32 get_resource_free(Uint32 id, bool use_spare) const;
+
+  /**
+   * Get number of free pages in the reserved part of the resource.
+   */
+  Uint32 get_resource_free_reserved(Uint32 id, bool use_spare) const;
+
+  /**
+   * Get number of free pages in shared global memory as seen by this
+   * resource group.
+   */
   Uint32 get_resource_free_shared(Uint32 id) const;
-  Uint32 get_resource_free_lent(Uint32 id) const;
+
+  /**
+   * Get number of reserved pages in resource group.
+   * To get actual number of reserved pages one need to
+   * add spare pages as well since they are also part of
+   * reserved pages although not always accessible.
+   */
   Uint32 get_resource_reserved(Uint32 id) const;
-  Uint32 get_resource_spare(Uint32 resource) const;
+
+  /**
+   * Get number of spare pages in resource group.
+   */
+  Uint32 get_resource_spare(Uint32 id) const;
+
+  /**
+   * Decrement number of pages in use in shared global memory.
+   */
+  void dec_shared_in_use(Uint32 cnt);
+
+  /**
+   * Increment number of pages in use in shared global memory.
+   */
+  void inc_shared_in_use(Uint32 cnt);
+
+  /**
+   * Decrease number of free reserved pages.
+   */
   void dec_free_reserved(Uint32 cnt);
-  void dec_untaken(Uint32 cnt);
-  void dec_borrowed(Uint32 cnt);
-  void dec_lent(Uint32 cnt);
-  void inc_borrowed(Uint32 cnt);
-  void inc_lent(Uint32 cnt);
-  void inc_untaken(Uint32 cnt);
-  void inc_resource_lent(Uint32 id, Uint32 cnt);
-  void inc_resource_borrowed(Uint32 id, Uint32 cnt);
+
+  /**
+   * Set the page id of the last page in the global memory manager.
+   */
   void set_max_page(Uint32 page);
+
+  /**
+   * Set the total number of pages allocated in the global memory
+   * manager, set in init and map calls.
+   */
   void set_allocated(Uint32 cnt);
-  void set_free_reserved(Uint32 cnt);
-  void update_low_prio_shared_limit();
 
-  Uint32 post_alloc_resource_pages(Uint32 id, Uint32 cnt);
+  /**
+   * Set high prio and ultra prio free limits.
+   */
+  void set_prio_free_limits(Uint32);
+
+  /**
+   * Set number of pages in shared global memory.
+   */
+  void set_shared();
+
+  void post_alloc_resource_pages(Uint32 id, Uint32 cnt);
   void post_release_resource_pages(Uint32 id, Uint32 cnt);
-  void post_alloc_resource_spare(Uint32 id, Uint32 cnt);
-
-  bool give_up_pages(Uint32 id, Uint32 cnt);
-  bool take_pages(Uint32 id, Uint32 cnt);
-  void reclaim_lent_pages(Uint32 id, Uint32 cnt);
+  void post_alloc_resource_spare(Uint32 id, Uint32 cnt, bool);
 
   void check() const;
   void dump() const;
@@ -266,28 +355,147 @@ class Ndbd_mem_manager
 public:
   Ndbd_mem_manager();
   
+  /**
+   * This call is executed once for each memory region to initialize the
+   * resource limits for the region.
+   */
   void set_resource_limit(const Resource_limit& rl);
+
+  /**
+   * This call initialize the prio free limits, this is a global setting
+   * that contains the number of pages that can only be allocated from regions
+   * with ULTRA_PRIO_MEMORY set and also for calls to alloc_spare_page.
+   * It also sets the limit of the high priority memory region.
+   */
+  void set_prio_free_limits(Uint32);
+
+  /**
+   * This calls set the total number of pages in the shared global memory.
+   */
+  void set_shared();
+
+  /**
+   * get_resource_limit is used in a number of places for debugging, to print
+   * information about state of global memory manager, to issue information
+   * in ndbinfo calls and in various algorithmic parts where it is important
+   * to know about certain sizes.
+   *
+   * Also used to discover send buffer level to see if we are in a critical
+   * state where we are running out of send buffers. In this particular
+   * case the memory is read without using the mutex.
+   */
   bool get_resource_limit(Uint32 id, Resource_limit& rl) const;
   bool get_resource_limit_nolock(Uint32 id, Resource_limit& rl) const;
 
+  /**
+   * Get the number of reserved pages in the resource group
+   */
+  Uint32 get_reserved(Uint32 id);
+  /**
+   * get_allocated is used by one DUMP command and in the resources table in
+   * ndbinfo.
+   */
   Uint32 get_allocated() const;
+
+  /**
+   * get_reserved, get_reserved_in_use, get_shared, get_shared_in_use and
+   * get_spare are only used by a DUMP command.
+   * The command is DUMP 1000 0 0
+   * This command prints the information about the total memory resources
+   * and their state.
+   */
   Uint32 get_reserved() const;
-  Uint32 get_shared() const;
-  Uint32 get_free_shared() const;
-  Uint32 get_free_shared_nolock() const;
-  Uint32 get_spare() const;
-  Uint32 get_in_use() const;
   Uint32 get_reserved_in_use() const;
+  Uint32 get_shared() const;
   Uint32 get_shared_in_use() const;
 
-  bool init(Uint32 *watchCounter, Uint32 pages, bool allow_alloc_less_than_requested = true);
-  void map(Uint32 * watchCounter, bool memlock = false, Uint32 resources[] = 0);
+  /**
+   * get_free_shared is only used internally, get_free_shared_nolock is
+   * used externally in mt.cpp to retrieve the send buffer level we are
+   * currently at.
+   */
+  Uint32 get_free_shared() const;
+  Uint32 get_free_shared_nolock() const;
+
+  /**
+   * get_in_use is used by the resources ndbinfo table and by the above
+   * mentioned DUMP 1000 command.
+   */
+  Uint32 get_in_use() const;
+
+  /**
+   * init initialises the global memory manager, this includes allocating the
+   * memory.
+   * map touches the memory, sets up the internal data structures of the global
+   * memory manager and locks the memory also if required.
+   *
+   * After initialising the global memory manager we initialize the memory pools
+   * that can be used using a malloc-like interface.
+   */
+  bool init(Uint32 *watchCounter,
+            Uint32 pages,
+            bool allow_alloc_less_than_requested = true);
+  void map(Uint32 * watchCounter,
+           bool memlock = false,
+           Uint32 resources[] = 0);
+  void init_memory_pools();
+
+  /**
+   * init_resource_spare is called to ensure that Data memory is no longer
+   * using the full data memory unless calling alloc_spare_page.
+   */
   void init_resource_spare(Uint32 id, Uint32 pct);
+
+  /**
+   * get_memroot retrieves the memory address of the very first page in the
+   * global memory manager. Thus every word in the global memory manager can
+   * be accessed using (Uint32*(get_memroot()) + page_id * 8192 + page_index.
+   */
   void* get_memroot() const;
-  
+
+  /**
+   * Calls to control debugging of crashes involving the global memory
+   * manager.
+   */
   void dump(bool locked) const ;
   void dump_on_alloc_fail(bool on);
 
+  /**
+   * In some cases we have stored page id's with less than 32 bits of space.
+   * These page id's cannot be used to access any memory, for example a
+   * 19-bit page id can be used to allocate memory from the first 16 GByte
+   * of memory, the 27-bit pointers are used to allocate from the first
+   * 4 TByte of memory and the 30-bit pointers can be used to address the
+   * first 32 TBytes of memory and finally 32-bit pointers can be used to
+   * address 128 TByte of memory.
+   *
+   * Most of the DataMemory uses 30-bit pointers since we use 2 bits in
+   * the page maps to contain state used by e.g. local checkpoints.
+   * Thus going beyond 32 TBytes of space in a single node will require some
+   * adaption of those page maps such that they contain at least 32 bits of
+   * page id and thus extending memory space to 128 TByte. This should
+   * suffice for 10 years or so. After that one will have to store pointers
+   * that are larger than 32 bits in various places.
+   * The references in the database (in hash index, ordered index, references
+   * to other parts of the row (varsize and disk part of the row) are 8-bytes
+   * long. So there is plenty of space to grow beyond 32 bits page ids when
+   * the time for this arrives.
+   *
+   * Most data structures have been converted RWPool64 except for those data
+   * structures that require a 32-bit page id and require substantial amounts
+   * of memory. Since signal sending is still 32-bit arrays, there needs to
+   * be some handling of 64-bit references in various protocols to grow those
+   * spaces beyond 32 bit references. However we can thus have up to 4G
+   * records in each block, thus most internal data structures can grow to
+   * 100's of GBytes per block instance. Thus it is very unlikely that this
+   * becomes a memory issue in the next 20 years at least.
+   *
+   * RWPool64 address records using the memroot and the 64 bit i-value
+   * contains a page id and a page index. The page index is 13 bits and
+   * the page id can be up to 51 bits, thus RWPool64 can address up to
+   * 64 EB (Exabyte == 1.000.000 TB). This should be sufficient for a
+   * very long time.
+   */
   enum AllocZone
   {
     NDB_ZONE_LE_19 = 0, // Only allocate with page_id < (1 << 19)
@@ -296,30 +504,113 @@ public:
     NDB_ZONE_LE_32 = 3,
   };
 
+  /* get_page uses memroot and page id to get address to a page */
   void* get_page(Uint32 i) const; /* Note, no checks, i must be valid. */
   void* get_valid_page(Uint32 i) const; /* DO NOT USE see why at definition */
 
+  /**
+   * These are the main routines used by the global memory manager to manage
+   * its memory.
+   * alloc_page requests allocation of a single page.
+   * alloc_pages requests allocation of multiple pages, with a desired count
+   * and a minimum count.
+   * release_page releases a single page
+   * release_pages release a set of pages.
+   *
+   * All calls specify the type (the memory region) to use.
+   * All calls have a flag indicating whether the memory manager is locked
+   * already or not. Some variants require multiple calls while holding
+   * the lock.
+   *
+   * All allocation calls specify the Zone to use for allocation. We always
+   * attempt to allocate from the highest possible region first and then
+   * proceed downwards until we reach the lowest region. Each of the regions
+   * have their own set of free lists.
+   *
+   * All allocation calls will return pages in consecutive order, thus we
+   * only return one page id in the i variable.
+   *
+   * alloc_page has a special flag called use_max_part. This is used
+   * by mt.cpp for the send buffer. It says that if this is true we
+   * should only allocate reserved pages. This makes it possible for
+   * the send thread to see if it can steal pages from another send
+   * thread to avoid allocating from the global memory manager. If
+   * this fails it will call again to retrieve a page also from the
+   * shared global memory.
+   *
+   * alloc_pages have count variable called cnt, this is input with
+   * the number of desired pages to return, it is also an output
+   * variable that indicates how many pages that was actually
+   * allocated. Finally the min variable indicates the minimum
+   * number of pages to allocate.
+   *
+   * All release calls have an i variable containing the page id of
+   * the first released page.
+   *
+   * release_pages has a count variable called cnt, this indicates
+   * the number of pages that are released.
+   */
   void* alloc_page(Uint32 type,
                    Uint32* i,
                    enum AllocZone,
+                   bool allow_use_spare_page = false,
                    bool locked = false,
                    bool use_max_part = true);
-  void* alloc_spare_page(Uint32 type, Uint32* i, enum AllocZone);
-  void release_page(Uint32 type, Uint32 i, bool locked = false);
-  
   void alloc_pages(Uint32 type,
                    Uint32* i,
                    Uint32 *cnt,
                    Uint32 min = 1,
                    AllocZone zone = NDB_ZONE_LE_32,
                    bool locked = false);
+  void release_page(Uint32 type, Uint32 i, bool locked = false);
   void release_pages(Uint32 type, Uint32 i, Uint32 cnt, bool locked = false);
 
-  bool give_up_pages(Uint32 type, Uint32 cnt);
-  bool take_pages(Uint32 type, Uint32 cnt);
+  /**
+   * There are a number of cases where we might need to allocate pages
+   * even beyond what the reserved and shared global memory allows for.
+   *
+   * In DBACC we need to be able to allocate pages from DataMemory during
+   * expand and shrink calls, we cannot handle failures in this particular
+   * call chain.
+   *
+   * In DBTUP and DBACC we want to enable tables that are undergoing
+   * fragmentation changes to be able to access the extra 5% of space.
+   * This ensures that those operations have a higher probaility of
+   * success.
+   *
+   * Similarly we want to have access to those 5% during restart.
+   *
+   * During a local checkpoint we might be in a situation that requires
+   * allocating a page to store LCP related information of dropped
+   * pages. This must not fail since that would fail the whole
+   * LCP which isn't allowed. This call allocates a page in
+   * TransactionMemory, but can in this rare case allocate from
+   * also other areas to ensure that the allocation doesn't fail.
+   *
+   * The solution to this is to have a flag in alloc_page that indicates
+   * if we are allowed to use spare pages in the resource. This is used
+   * during restarts and during reorganization of the fragments.
+   *
+   * In critical situations we instead use alloc_spare_page, this will
+   * allocate a page also from shared global memory if required.
+   * The FORCE_RESERVED flag below can be used to test alloc_spare_page
+   * functionality where we steal pages from the reserved memory rather
+   * than from the shared global memory.
+   */
+#define FORCE_RESERVED false
+  void* alloc_spare_page(Uint32 type,
+                         Uint32* i,
+                         enum AllocZone,
+                         bool locked,
+                         bool force_reserved);
 
+  /**
+   * Lock/Unlock the global memory manager for multi-call
+   * scenarios.
+   */
   void lock();
   void unlock();
+  void check() const;
 
   /**
    * Compute 2log of size 
@@ -373,7 +664,7 @@ private:
    * mapped into memory.
    *
    * This is normally not changed but still some thread safety is needed for
-   * the rare cases when changes do happend whenever map() is called.
+   * the rare cases when changes do happen whenever map() is called.
    *
    * A static array is used since pointers can not be protected by NdbSeqLock.
    *
@@ -425,98 +716,87 @@ private:
  */
 
 inline
-void Resource_limits::reclaim_lent_pages(Uint32 id, Uint32 cnt)
+void
+Resource_limits::post_alloc_resource_pages(Uint32 id, Uint32 cnt)
 {
-  const Uint32 resource_lent = get_resource_lent(id);
-  const Uint32 returned_lent = m_lent - (m_untaken + m_borrowed);
-  const Uint32 reclaim_lent = std::min({cnt, returned_lent, resource_lent});
-  if (reclaim_lent > 0)
-  {
-    dec_resource_lent(id, reclaim_lent);
-    dec_lent(reclaim_lent);
-    inc_free_reserved(reclaim_lent);
-  }
-}
-
-inline
-Uint32 Resource_limits::post_alloc_resource_pages(Uint32 id, Uint32 cnt)
-{
-  const Uint32 inuse = get_resource_in_use(id) +
-                       get_resource_spare(id) +
-                       get_resource_lent(id);
-  const Uint32 reserved = get_resource_reserved(id);
+  const Uint32 inuse = get_resource_in_use(id);
+  const Uint32 reserved = get_resource_reserved(id) +
+                          get_resource_spare(id);
+  Uint32 shared_cnt = 0;
   if (inuse < reserved)
   {
     Uint32 res_cnt = reserved - inuse;
-    if (res_cnt > cnt)
+    if (res_cnt >= cnt)
+    {
       res_cnt = cnt;
+    }
+    else
+    {
+      /**
+       * We will take parts from reserved memory and parts of it
+       * from shared global memory.
+       */
+      shared_cnt = cnt - res_cnt;
+      inc_shared_in_use(shared_cnt);
+    }
     dec_free_reserved(res_cnt);
+  }
+  else
+  {
+    /**
+     * All parts of the reserved space is already taken,
+     * Increment shared in use.
+     */
+    inc_shared_in_use(cnt);
   }
   inc_resource_in_use(id, cnt);
   inc_in_use(cnt);
-
-  return alloc_resource_spare(id, cnt);
 }
 
 inline
-Uint32 Resource_limits::alloc_resource_spare(Uint32 id, Uint32 cnt)
+void
+Resource_limits::post_alloc_resource_spare(Uint32 id,
+                                           Uint32 cnt,
+                                           bool force_reserved)
 {
-  const Resource_limit& rl = m_limit[id - 1];
-
-  Uint32 pct = rl.m_spare_pct;
-  if (pct == 0)
+  if (m_shared > m_shared_in_use && !force_reserved)
   {
-    return 0;
+    /**
+     * A high priority resource was grabbed from the shared
+     * global memory. Simply update the in use variables.
+     */
+    inc_shared_in_use(cnt);
   }
-
-  Uint32 inuse = rl.m_curr + rl.m_spare;
-  Int64 spare_level = Int64(rl.m_spare) * 100 - Int64(inuse) * pct;
-
-  if (spare_level >= 0)
+  else
   {
-    return 0;
+    /**
+     * We have run out of shared global memory. We must steal
+     * a page from the reserved area instead.
+     * We need to remember that this page have been stolen
+     * from reserved memory to handle the case when pages are
+     * released from this resource group later on.
+     */
+    require(m_free_reserved > 0);
+    inc_stolen_reserved(id, cnt);
+    dec_free_reserved(cnt);
   }
+  inc_overflow_reserved(id, cnt);
+  inc_resource_in_use(id, cnt);
+  inc_in_use(cnt);
+}
 
-  Uint32 gain = 100 - pct;
-  Uint32 spare_need = (-spare_level + gain - 1) / gain;
+inline
+void Resource_limits::dec_shared_in_use(Uint32 cnt)
+{
+  assert(m_shared_in_use >= cnt);
+  m_shared_in_use -= cnt;
+}
 
-  Uint32 spare_res = 0;
-  if (rl.m_min > rl.m_curr + rl.m_spare + rl.m_lent)
-  {
-    spare_res = rl.m_min - (rl.m_curr + rl.m_spare + rl.m_lent);
-    if (spare_res >= spare_need)
-    {
-      m_limit[id - 1].m_spare += spare_need;
-      m_spare += spare_need;
-      m_free_reserved -= spare_need;
-      return 0;
-    }
-    spare_need -= spare_res;
-  }
-
-  Uint32 free_shr = m_allocated - m_in_use - m_spare;
-  assert(rl.m_max >= rl.m_curr + rl.m_spare + spare_res + rl.m_lent);
-  Uint32 limit = rl.m_max - (rl.m_curr + rl.m_spare + spare_res + rl.m_lent);
-  if (free_shr > limit)
-  {
-    free_shr = limit;
-  }
-  Uint32 spare_shr = (free_shr > spare_need) ? spare_need : free_shr;
-  spare_need -= spare_shr;
-
-  Uint32 spare_take = (spare_need > cnt) ? cnt : spare_need;
-
-  m_limit[id - 1].m_spare += spare_res + spare_shr + spare_take;
-  m_limit[id - 1].m_curr -= spare_take;
-  m_free_reserved -= spare_res;
-  m_in_use -= spare_take;
-  m_spare += spare_res + spare_shr + spare_take;
-
-  // TODO if spare_need > 0, mark out of memory in some way
-
-  require(rl.m_max >= rl.m_curr + rl.m_spare);
-
-  return spare_take;
+inline
+void Resource_limits::inc_shared_in_use(Uint32 cnt)
+{
+  assert((m_shared_in_use + cnt) <= m_shared);
+  m_shared_in_use += cnt;
 }
 
 inline
@@ -541,20 +821,6 @@ void Resource_limits::dec_resource_in_use(Uint32 id, Uint32 cnt)
 }
 
 inline
-void Resource_limits::dec_resource_spare(Uint32 id, Uint32 cnt)
-{
-  assert(m_limit[id - 1].m_spare >= cnt);
-  m_limit[id - 1].m_spare -= cnt;
-}
-
-inline
-void Resource_limits::dec_spare(Uint32 cnt)
-{
-  assert(m_spare >= cnt);
-  m_spare -= cnt;
-}
-
-inline
 Uint32 Resource_limits::get_allocated() const
 {
   return m_allocated;
@@ -563,12 +829,7 @@ Uint32 Resource_limits::get_allocated() const
 inline
 Uint32 Resource_limits::get_reserved() const
 {
-  Uint32 reserved = 0;
-  for (Uint32 id = 1; id <= MM_RG_COUNT; id++)
-  {
-    reserved += get_resource_reserved(id);
-  }
-  return reserved;
+  return m_reserved;
 }
 
 inline
@@ -590,36 +851,35 @@ Uint32 Resource_limits::get_free_reserved() const
 inline
 Uint32 Resource_limits::get_free_shared() const
 {
-  assert(m_allocated >= m_free_reserved + m_in_use + m_spare);
-  const Uint32 used = m_free_reserved + m_in_use + m_spare;
-  const Uint32 total = m_allocated;
+  Uint32 shared = m_shared;
+  Uint32 shared_in_use = m_shared_in_use;
   /*
    * When called from get_free_shared_nolock ensure that total is not less
    * than used.
    */
-  if (unlikely(total < used))
+  if (unlikely(shared < shared_in_use))
   {
     return 0;
   }
-  return total - used;
+  return shared - shared_in_use;
 }
 
 inline
 Uint32 Resource_limits::get_in_use() const
 {
-  return m_in_use + m_untaken;
+  return m_in_use;
 }
 
 inline
 Uint32 Resource_limits::get_reserved_in_use() const
 {
-  return get_reserved() - get_free_reserved();
+  return m_reserved - m_free_reserved;
 }
 
 inline
 Uint32 Resource_limits::get_shared_in_use() const
 {
-  return get_shared() - get_free_shared();
+  return m_shared_in_use;
 }
 
 inline
@@ -629,22 +889,30 @@ Uint32 Resource_limits::get_max_page() const
 }
 
 inline
-Uint32 Resource_limits::get_resource_free(Uint32 id) const
+Uint32 Resource_limits::get_resource_free(Uint32 id, bool use_spare) const
 {
   require(id <= MM_RG_COUNT);
   const Resource_limit& rl = m_limit[id - 1];
-  assert(rl.m_curr + rl.m_spare + rl.m_lent <= rl.m_max);
-  return rl.m_max - (rl.m_curr + rl.m_spare + rl.m_lent);
+  Uint32 spare = use_spare ? rl.m_spare : 0;
+  Uint32 used_reserve = rl.m_max + spare;
+  if (used_reserve > rl.m_curr)
+  {
+     return (used_reserve - rl.m_curr);
+  }
+  return 0;
 }
 
 inline
-Uint32 Resource_limits::get_resource_free_reserved(Uint32 id) const
+Uint32
+Resource_limits::get_resource_free_reserved(Uint32 id, bool use_spare) const
 {
   require(id <= MM_RG_COUNT);
   const Resource_limit& rl = m_limit[id - 1];
-  if (rl.m_min > (rl.m_curr + rl.m_spare + rl.m_lent))
+  Uint32 spare = use_spare ? rl.m_spare : 0;
+  Uint32 used_reserve = rl.m_min + spare;
+  if (used_reserve > rl.m_curr)
   {
-     return rl.m_min - (rl.m_curr + rl.m_spare + rl.m_lent);
+     return (used_reserve - rl.m_curr);
   }
   return 0;
 }
@@ -652,18 +920,28 @@ Uint32 Resource_limits::get_resource_free_reserved(Uint32 id) const
 inline
 Uint32 Resource_limits::get_resource_free_shared(Uint32 id) const
 {
-  const Uint32 free_shared = get_free_shared();
-
+  const Uint32 free_shared = m_shared - m_shared_in_use;
   require(id <= MM_RG_COUNT);
   const Resource_limit& rl = m_limit[id - 1];
 
-  if (rl.m_min > 0) /* high prio */
+  if (rl.m_prio_memory == Resource_limit::ULTRA_HIGH_PRIO_MEMORY)
   {
     return free_shared;
   }
-  if (free_shared >= m_prio_free_limit) /* low prio */
+  else if (rl.m_prio_memory == Resource_limit::HIGH_PRIO_MEMORY)
   {
-    return free_shared - m_prio_free_limit;
+    if (rl.m_curr <= rl.m_max_high_prio)
+    {
+      if (free_shared > m_ultra_prio_free_limit)
+      {
+        return (free_shared - m_ultra_prio_free_limit);
+      }
+      return 0;
+    }
+  }
+  if (free_shared >= m_prio_free_limit)
+  {
+    return (free_shared - m_prio_free_limit);
   }
   return 0;
 }
@@ -699,12 +977,6 @@ Uint32 Resource_limits::get_resource_spare(Uint32 id) const
 }
 
 inline
-Uint32 Resource_limits::get_spare() const
-{
-  return m_spare;
-}
-
-inline
 void Resource_limits::inc_free_reserved(Uint32 cnt)
 {
   m_free_reserved += cnt;
@@ -719,6 +991,51 @@ void Resource_limits::inc_in_use(Uint32 cnt)
 }
 
 inline
+Uint32
+Resource_limits::get_stolen_reserved(Uint32 id) const
+{
+  return m_limit[id - 1].m_stolen_reserved;
+}
+
+inline
+void
+Resource_limits::inc_stolen_reserved(Uint32 id, Uint32 cnt)
+{
+  assert((m_limit[id - 1].m_stolen_reserved + cnt) < m_reserved);
+  m_limit[id - 1].m_stolen_reserved += cnt;
+}
+
+inline
+void
+Resource_limits::dec_stolen_reserved(Uint32 id, Uint32 cnt)
+{
+  assert(m_limit[id - 1].m_stolen_reserved >= cnt);
+  m_limit[id - 1].m_stolen_reserved -= cnt;
+}
+
+inline
+Uint32
+Resource_limits::get_overflow_reserved(Uint32 id) const
+{
+  return m_limit[id - 1].m_overflow_reserved;
+}
+
+inline
+void
+Resource_limits::inc_overflow_reserved(Uint32 id, Uint32 cnt)
+{
+  m_limit[id - 1].m_overflow_reserved += cnt;
+}
+
+inline
+void
+Resource_limits::dec_overflow_reserved(Uint32 id, Uint32 cnt)
+{
+  assert(m_limit[id - 1].m_overflow_reserved >= cnt);
+  m_limit[id - 1].m_overflow_reserved -= cnt;
+}
+
+inline
 void Resource_limits::inc_resource_in_use(Uint32 id, Uint32 cnt)
 {
   m_limit[id - 1].m_curr += cnt;
@@ -726,80 +1043,60 @@ void Resource_limits::inc_resource_in_use(Uint32 id, Uint32 cnt)
 }
 
 inline
-void Resource_limits::inc_resource_spare(Uint32 id, Uint32 cnt)
-{
-  m_limit[id - 1].m_spare += cnt;
-  assert(m_limit[id - 1].m_spare >= cnt);
-}
-
-inline
-void Resource_limits::inc_spare(Uint32 cnt)
-{
-  m_spare += cnt;
-  assert(m_spare >= cnt);
-}
-
-inline
 void Resource_limits::post_release_resource_pages(Uint32 id, Uint32 cnt)
 {
-  const Uint32 inuse = get_resource_in_use(id) +
-                       get_resource_spare(id) +
-                       get_resource_lent(id);
-  const Uint32 reserved = get_resource_reserved(id);
-  if (inuse - cnt < reserved)
+  Uint32 overflow_cnt = cnt;
+  while (get_overflow_reserved(id) > 0 &&
+         overflow_cnt > 0)
+  {
+    dec_overflow_reserved(id, 1);
+    overflow_cnt--;
+  }
+  Uint32 stolen_cnt = cnt;
+  while (get_stolen_reserved(id) > 0 &&
+         stolen_cnt > 0)
+  {
+    inc_free_reserved(1);
+    dec_stolen_reserved(id, 1);
+    dec_resource_in_use(id, 1);
+    dec_in_use(1);
+    stolen_cnt--;
+    if (stolen_cnt == 0)
+    {
+      return;
+    }
+  }
+  const Uint32 inuse = get_resource_in_use(id);
+  const Uint32 reserved = get_resource_reserved(id) +
+                          get_resource_spare(id);
+  if ((inuse - cnt) < reserved)
   {
     Uint32 res_cnt = reserved - inuse + cnt;
-    if (res_cnt > cnt)
+    if (res_cnt >= cnt)
+    {
       res_cnt = cnt;
+    }
+    else
+    {
+      /**
+       * Parts of the memory will go into reserved memory and parts of it
+       * will go into shared global memory.
+       */
+      Uint32 shared_cnt = cnt - res_cnt;
+      dec_shared_in_use(shared_cnt);
+    }
     inc_free_reserved(res_cnt);
+  }
+  else
+  {
+    /**
+     * All of the reserved will still be used even after this release.
+     * Thus simply decrease the amount of shared global memory used.
+     */
+    dec_shared_in_use(cnt);
   }
   dec_resource_in_use(id, cnt);
   dec_in_use(cnt);
-
-  /* If resource have pages borrowed from other resource, return them now.
-   * Note that there is no way that this release is exactly for the pages
-   * earlier borrowed by take_pages().
-   */
-  const Uint32 return_borrowed = std::min(cnt, get_resource_borrowed(id));
-  if (return_borrowed > 0)
-  {
-    dec_resource_borrowed(id, return_borrowed);
-    dec_borrowed(return_borrowed);
-  }
-
-  release_resource_spare(id, cnt);
-}
-
-inline
-void Resource_limits::release_resource_spare(Uint32 id, Uint32 cnt)
-{
-  const Resource_limit& rl = m_limit[id - 1];
-
-  Uint32 pct = rl.m_spare_pct;
-  if (pct == 0)
-  {
-    return;
-  }
-  Uint32 gain = 100 - pct;
-  Uint32 inuse = rl.m_curr + rl.m_spare;
-  Int64 spare_level = Int64(rl.m_spare) * 100 - Int64(inuse) * pct;
-
-  if (spare_level < gain)
-  {
-    return;
-  }
-
-  Uint32 spare_excess = spare_level / gain;
-
-  if (inuse < rl.m_min + spare_excess)
-  {
-    Uint32 res_cnt = rl.m_min + spare_excess - inuse;
-    if (res_cnt > spare_excess)
-      res_cnt = spare_excess;
-    m_free_reserved += res_cnt;
-  }
-  m_limit[id - 1].m_spare -= spare_excess;
-  m_spare -= spare_excess;
 }
 
 inline
@@ -809,122 +1106,34 @@ void Resource_limits::set_allocated(Uint32 cnt)
 }
 
 inline
-void Resource_limits::update_low_prio_shared_limit()
+void Resource_limits::set_shared()
 {
-  Uint32 shared = get_shared();
-  m_prio_free_limit = shared * HIGH_PRIO_FREE_PCT / 100 + 1;
+  if (m_allocated > m_reserved)
+  {
+    m_shared = m_allocated - m_reserved;
+  }
 }
 
 inline
-void Resource_limits::set_free_reserved(Uint32 cnt)
+void Resource_limits::set_prio_free_limits(Uint32 res)
 {
-  m_free_reserved = cnt;
-}
+  Uint64 shared = m_shared;
+  Uint64 ultra_prio_free_limit = shared * Uint64(ULTRA_PRIO_FREE_PCT);
+  ultra_prio_free_limit /= 100;
+  ultra_prio_free_limit += 1;
+  m_ultra_prio_free_limit = res + Uint32(ultra_prio_free_limit);
 
-inline
-Uint32 Resource_limits::get_resource_lent(Uint32 id) const
-{
-  require(id > 0);
-  require(id <= MM_RG_COUNT);
-  return m_limit[id - 1].m_lent;
-}
+  Uint64 low_prio_free_limit = shared * Uint64(HIGH_PRIO_FREE_PCT);
+  low_prio_free_limit /= 100;
+  low_prio_free_limit += 1;
+  m_prio_free_limit = Uint32(low_prio_free_limit) + m_ultra_prio_free_limit;
 
-inline
-Uint32 Resource_limits::get_resource_borrowed(Uint32 id) const
-{
-  require(id > 0);
-  require(id <= MM_RG_COUNT);
-  return m_limit[id - 1].m_borrowed;
-}
-
-inline
-void Resource_limits::dec_untaken(Uint32 cnt)
-{
-  assert(m_untaken >= cnt);
-  m_untaken -= cnt;
-}
-
-inline
-void Resource_limits::dec_borrowed(Uint32 cnt)
-{
-  assert(m_borrowed >= cnt);
-  m_borrowed -= cnt;
-}
-
-inline
-void Resource_limits::dec_lent(Uint32 cnt)
-{
-  assert(m_lent >= cnt);
-  m_lent -= cnt;
-}
-
-inline
-void Resource_limits::inc_borrowed(Uint32 cnt)
-{
-  m_borrowed += cnt;
-  assert(m_borrowed >= cnt);
-}
-
-inline
-void Resource_limits::inc_lent(Uint32 cnt)
-{
-  m_lent += cnt;
-  assert(m_lent >= cnt);
-}
-
-inline
-void Resource_limits::inc_untaken(Uint32 cnt)
-{
-  m_untaken += cnt;
-  assert(m_untaken >= cnt);
-}
-
-inline
-void Resource_limits::dec_resource_lent(Uint32 id, Uint32 cnt)
-{
-  require(id > 0);
-  require(id <= MM_RG_COUNT);
-  m_limit[id - 1].m_lent -= cnt;
-}
-
-inline
-void Resource_limits::dec_resource_borrowed(Uint32 id, Uint32 cnt)
-{
-  require(id > 0);
-  require(id <= MM_RG_COUNT);
-  m_limit[id - 1].m_borrowed -= cnt;
-}
-
-inline
-void Resource_limits::inc_resource_lent(Uint32 id, Uint32 cnt)
-{
-  require(id > 0);
-  require(id <= MM_RG_COUNT);
-  m_limit[id - 1].m_lent += cnt;
-}
-
-inline
-void Resource_limits::inc_resource_borrowed(Uint32 id, Uint32 cnt)
-{
-  require(id > 0);
-  require(id <= MM_RG_COUNT);
-  m_limit[id - 1].m_borrowed += cnt;
 }
 
 inline
 void Resource_limits::set_max_page(Uint32 page)
 {
   m_max_page = page;
-}
-
-inline
-void Resource_limits::post_alloc_resource_spare(Uint32 id, Uint32 cnt)
-{
-  assert(get_resource_spare(id) > 0);
-  dec_resource_spare(id, cnt);
-  inc_resource_in_use(id, cnt);
-  dec_spare(cnt);
-  inc_in_use(cnt);
 }
 
 /**
@@ -951,7 +1160,7 @@ Ndbd_mem_manager::get_page(Uint32 page_num) const
  * This function is typically used for converting legacy code using static
  * arrays of records to dynamically allocated records.
  * For these static arrays there has been possible to inspect state of freed
- * records to detemine that they are free.  Still this was a weak way to ensure
+ * records to determine that they are free.  Still this was a weak way to ensure
  * if the reference to record actually is to the right version of record.
  *
  * In some cases it is used to dump the all records of a kind for debugging
@@ -977,12 +1186,13 @@ Ndbd_mem_manager::get_valid_page(Uint32 page_num) const
      * Last page is region is reserved for no use.
      */
 #ifdef NDBD_RANDOM_START_PAGE
-    ndbout_c("Warning: Ndbd_mem_manager::get_valid_page: internal page %u %u",
-             (page_num + m_random_start_page_id),
-             page_num);
+    g_eventLogger->info(
+        "Warning: Ndbd_mem_manager::get_valid_page: internal page %u %u",
+        (page_num + m_random_start_page_id), page_num);
 #else
-    ndbout_c("Warning: Ndbd_mem_manager::get_valid_page: internal page %u",
-             page_num);
+    g_eventLogger->info(
+        "Warning: Ndbd_mem_manager::get_valid_page: internal page %u",
+        page_num);
 #endif
 #ifdef VM_TRACE
     abort();
@@ -1019,12 +1229,13 @@ Ndbd_mem_manager::get_valid_page(Uint32 page_num) const
   if (unlikely(!page_is_mapped))
   {
 #ifdef NDBD_RANDOM_START_PAGE
-    ndbout_c("Warning: Ndbd_mem_manager::get_valid_page: unmapped page %u %u",
-             (page_num + m_random_start_page_id),
-             page_num);
+    g_eventLogger->info(
+        "Warning: Ndbd_mem_manager::get_valid_page: unmapped page %u %u",
+        (page_num + m_random_start_page_id), page_num);
 #else
-    ndbout_c("Warning: Ndbd_mem_manager::get_valid_page: unmapped page %u",
-             page_num);
+    g_eventLogger->info(
+        "Warning: Ndbd_mem_manager::get_valid_page: unmapped page %u",
+        page_num);
 #endif
 #ifdef VM_TRACE
     abort();

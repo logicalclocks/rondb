@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020 Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,6 +23,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
+#include <cstring>
 #include <NDBT_Test.hpp>
 #include <NDBT_ReturnCodes.h>
 #include <HugoTransactions.hpp>
@@ -35,6 +38,7 @@
 #include <BlockNumbers.h>
 #include <NdbHost.h>
 #include <NdbMgmd.hpp>
+#include <NdbSleep.h>
 
 #define CHK1(b) \
   if (!(b)) { \
@@ -198,7 +202,7 @@ int runPkRead(NDBT_Context* ctx, NDBT_Step* step){
 
 int runTimer(NDBT_Context* ctx, NDBT_Step* step)
 {
-  sleep(120);
+  NdbSleep_SecSleep(120);
   ctx->stopTest();
   return NDBT_OK;
 }
@@ -437,7 +441,7 @@ runReadOne(NDBT_Context* ctx, NDBT_Step* step){
   }    
 
   // Read a record with NoCommit
-  // Since the record isn't inserted yet it wil return 626
+  // Since the record isn't inserted yet it will return 626
   const int res1 = readOneNoCommit(pNdb, pTrans, tab, &row1);
   g_info << "|- res1 = " << res1 << endl;
 
@@ -455,7 +459,7 @@ runReadOne(NDBT_Context* ctx, NDBT_Step* step){
 
   // Now the record should have been inserted
   // Read it once again in the same transaction
-  // Should also reutrn 626 if reads are consistent
+  // Should also return 626 if reads are consistent
 
   // NOTE! Currently it's not possible to start a new operation
   // on a transaction that has returned an error code
@@ -1415,7 +1419,7 @@ runTupErrors(NDBT_Context* ctx, NDBT_Step* step){
       return NDBT_FAILED;
     }      
     pDict->dropTable(copy.getName());
-    sleep(2);
+    NdbSleep_SecSleep(2);
     struct ndb_mgm_events * after =
       ndb_mgm_dump_events(restarter.handle, NDB_LE_MemoryUsage, 0, 0);
     if (after == 0)
@@ -1488,7 +1492,7 @@ runTupErrors(NDBT_Context* ctx, NDBT_Step* step){
       return NDBT_FAILED;
     }
     pDict->dropTable(copy.getName());
-    sleep(2);
+    NdbSleep_SecSleep(2);
     struct ndb_mgm_events * after =
       ndb_mgm_dump_events(restarter.handle, NDB_LE_MemoryUsage, 0, 0);
 
@@ -1577,7 +1581,7 @@ runBug25090(NDBT_Context* ctx, NDBT_Step* step){
     ops.startTransaction(pNdb);
     ops.pkReadRecord(pNdb, 1, 1);
     ops.execute_Commit(pNdb, AO_IgnoreError);
-    sleep(10);
+    NdbSleep_SecSleep(10);
     ops.closeTransaction(pNdb);
   }
   
@@ -2612,12 +2616,12 @@ runTest899(NDBT_Context* ctx, NDBT_Step* step)
 
       for (int b = 0; rowNo < rows && b < batch; rowNo++, b++)
       {
-        bzero(pRow, len);
+        std::memset(pRow, 0, len);
 
         HugoCalculator calc(* pTab);
 
         NdbOperation::OperationOptions opts;
-        bzero(&opts, sizeof(opts));
+        std::memset(&opts, 0, sizeof(opts));
 
         const NdbOperation* pOp = 0;
         switch(i % 2){
@@ -3091,7 +3095,8 @@ int verifyEvents(const Vector<EventInfo>& receivedEvents,
 }
 
 int runRefreshTuple(NDBT_Context* ctx, NDBT_Step* step){
-  int records = ctx->getNumRecords();
+  int records = ctx->getNumRecords()/2;
+  g_err << "runRefreshTuple : #recs " << records << endl;
   Ndb* ndb = GETNDB(step);
 
   /* Now attempt to create EventOperation */
@@ -3256,6 +3261,7 @@ int runRefreshTuple(NDBT_Context* ctx, NDBT_Step* step){
         expectedEvents.push_back(Delete);
       }
       // Fall through - done with last optype
+      [[fallthrough]];
       default:
         done = true;
         break;
@@ -3486,7 +3492,7 @@ runRefreshLocking(NDBT_Context* ctx, NDBT_Step* step)
 
       if (scenario.preRefreshOps == PR_INSERT)
         break;
-      // Fall through
+      [[fallthrough]];
     case PR_DELETE:
       if (hugoTrans.pkDeleteRecord(ndb, 0) != 0)
       {
@@ -3808,14 +3814,16 @@ runBug16834333(NDBT_Context* ctx, NDBT_Step* step)
       restarter.insertErrorInNode(nodeId, code);
     }
 
-    ndbout_c("running big trans");
+    NdbSleep_MilliSleep(100);
+    ndbout_c("run lookup that should fail with error code 1223");
     HugoOperations ops(* pTab);
     CHK2(ops.startTransaction(pNdb) == 0, ops.getNdbError());
     CHK2(ops.pkReadRecord(0, 16384) == 0, ops.getNdbError());
     if (ops.execute_Commit(pNdb, AO_IgnoreError) != 0)
     {
       // XXX should this occur if AO_IgnoreError ?
-      CHK2(ops.getNdbError().code == 1223, ops.getNdbError());
+      CHK2((ops.getNdbError().code == 1223 ||
+            ops.getNdbError().code == 626), ops.getNdbError());
       g_info << ops.getNdbError() << endl;
     }
     ops.closeTransaction(pNdb);
@@ -4252,6 +4260,206 @@ runCheckLCPStats(NDBT_Context* ctx, NDBT_Step* step)
   return NDBT_OK;
 }
 
+
+int testAbortIgnoreError(NDBT_Context* ctx, NDBT_Step* step)
+{
+  /**
+   * Testing of correct behaviour when a batch of operations
+   * affecting the same row are executed with AO_IgnoreError,
+   * and some non-terminal operation fails on the backup replica.
+   * This is interesting at the primary replica as there can
+   * be operations prepared on top of the failing operation,
+   * which are then invalidated and must be rolled back.
+   *
+   * An error insert causes the first two operations to fail,
+   * at primary or backup replica, and the following ops to
+   * succeed (if allowed by other constraints).
+   *
+   * Scenario variants :
+   *  - Row Exists : Partial updates, each affecting a disjoint 
+   *    set of columns.
+   *    If the transaction is not rolled back, then we may
+   *    see different effects on different replicas as they
+   *    retain different ops, affecting different columns.
+   *
+   *  - Row Exists : Update, Delete, Insert *
+   *    Testing 'late discovered' abort of op which later ops
+   *    depend on for semantics.
+   *  
+   *  - Exists : Delete, Insert, Update *
+   *    Testing 'late discovered' abort of op which later ops
+   *    depend on for semantics
+   *
+   *  - !Exists : Insert, Update, Delete *
+   *    Testing 'late discovered' abort of op which later ops
+   *    depend on for semantics
+   *
+   * Commit/Rollback is chosen pseudo randomly
+   * 
+   * The table is then checked for :
+   *    - Hugo record level consistency : A scan shows that all
+   *      records are self-consistent wrt rowId + update value
+   *    - Index and Replica consistency : Indexes are checked 
+   *      relative to the table, and Replicas are checked relative
+   *      to each other.
+   */
+
+  int result = NDBT_OK;
+  const NdbDictionary::Table *table= ctx->getTab();
+  Ndb* pNdb = GETNDB(step);
+  NdbRestarter restarter;
+
+  const int numOps = 4;
+  int numSetableCols = 0;
+  for (int col=0; col < table->getNoOfColumns(); col++)
+  {
+    if (!table->getColumn(col)->getPrimaryKey())
+    {
+      numSetableCols++;
+    }
+  }
+
+  if (numSetableCols < numOps)
+  {
+    ndbout_c("Table %s has too few columns for this test (need %d)",
+             table->getName(),
+             numOps);
+    return NDBT_OK;
+  }
+
+  /* Not too many rows for test duration */
+  const Uint32 numRows = MIN(ctx->getNumRecords(), 20);
+
+  do
+  {
+    HugoOperations hugoOps(*table);
+    for (Uint32 rowId=0; rowId < numRows; rowId ++)
+    {
+      CHECK(hugoOps.startTransaction(pNdb) == 0);
+      NdbTransaction* trans = hugoOps.getTransaction();
+      
+      const Uint32 scenario = rand() % 4;
+      switch (scenario)
+      {
+      case 0:
+      {
+        ndbout_c("RowId %u : Partial updates", rowId);
+        for (int opNum=0; opNum<numOps; opNum++)
+        {
+          NdbOperation* uOp = trans->getNdbOperation(table);
+          CHECK3(uOp != NULL);
+          CHECK3(uOp->updateTuple() == 0);
+          CHECK3(hugoOps.equalForRow(uOp, rowId) == 0);
+          int idx = 0;
+          for (int col=0; col < table->getNoOfColumns(); col++)
+          {
+            if (!table->getColumn(col)->getPrimaryKey())
+            {
+              if (idx == opNum)
+              {
+                CHECK3(hugoOps.setValueForAttr(uOp, col, rowId, opNum) == 0);
+                break;
+              }
+              idx++;
+            }
+          }
+        }
+        break;
+      }
+      case 1:
+      {
+        ndbout_c("RowId %u : Update, Delete, Insert*", rowId);
+        for (Uint32 i=0; i < 6; i++)
+        {
+          CHECK3(hugoOps.pkUpdateRecord(pNdb, rowId, 1, 2*i + 1) == 0);
+          CHECK3(hugoOps.pkDeleteRecord(pNdb, rowId, 1) == 0);
+          CHECK3(hugoOps.pkInsertRecord(pNdb, rowId, 1, 2*i + 2) == 0);
+        }
+        break;
+      }
+      case 2:
+      {
+        ndbout_c("RowId %u : Delete, Insert, Update*", rowId);
+        for (Uint32 i=0; i < 6; i++)
+        {
+          CHECK3(hugoOps.pkDeleteRecord(pNdb, rowId, 1) == 0);
+          CHECK3(hugoOps.pkInsertRecord(pNdb, rowId, 1, 2*i + 1) == 0);
+          CHECK3(hugoOps.pkUpdateRecord(pNdb, rowId, 1, 2*i + 2) == 0);
+        }
+        break;
+      }
+      case 3:
+      {
+        /* !Exists case, using offsets beyond the defined records */
+        const Uint32 offset = ctx->getNumRecords();
+        ndbout_c("RowId %u (%u): Insert, Update, Delete*", rowId, offset + rowId);
+        for (Uint32 i=0; i < 6; i++)
+        {          
+          CHECK3(hugoOps.pkInsertRecord(pNdb, offset + rowId, 1, 2*i + 1) == 0);
+          CHECK3(hugoOps.pkUpdateRecord(pNdb, offset + rowId, 1, 2*i + 2) == 0);
+          CHECK3(hugoOps.pkDeleteRecord(pNdb, offset + rowId, 1) == 0);
+        }
+        break;
+      }
+      default:
+        abort();
+      }
+
+      /* Insert error */
+      restarter.insertErrorInAllNodes(5108);
+
+      int rc = hugoOps.execute_NoCommit(pNdb, AO_IgnoreError);
+
+      /* Check error(s) */
+      ndbout_c("ExecuteNoCommit rc : %d", rc);
+
+      const NdbOperation* op = NULL;
+
+      while((op = trans->getNextCompletedOperation(op)) != NULL)
+      {
+        ndbout_c("Operation %p error %u %s", op, op->getNdbError().code, op->getNdbError().message);
+      }
+      
+      restarter.insertErrorInAllNodes(0);
+
+      switch (rand() % 2)
+      {
+      case 0:
+        /* Commit */
+        rc = hugoOps.execute_Commit(pNdb);
+        ndbout_c("Commit rc %u", rc);
+        break;
+      case 1:
+        /* Rollback */
+        rc = hugoOps.execute_Rollback(pNdb);
+        ndbout_c("Rollback rc %u", rc);
+        break;
+      default:
+        abort();
+      }
+
+      rc = hugoOps.closeTransaction(pNdb);
+    }
+
+    ndbout_c("Checking the table");
+
+    HugoTransactions hugoTrans(*table);
+    ndbout_c("Checking data validity");
+    CHECK2(hugoTrans.scanReadRecords(pNdb,
+                                     ctx->getNumRecords()) == 0);
+
+    hugoTrans.setVerbosity(1);
+    ndbout_c("Checking data consistency");
+    CHECK2(hugoTrans.verifyTableAndAllIndexes(pNdb) == 0);
+  } while (0);
+
+  restarter.insertErrorInAllNodes(0);
+
+  return result;
+}
+
+
+
 NDBT_TESTSUITE(testBasic);
 TESTCASE("PkInsert", 
 	 "Verify that we can insert and delete from this table using PK"
@@ -4367,7 +4575,7 @@ TESTCASE("Commit626",
   FINALIZER(runClearTable2);
 }
 TESTCASE("CommitTry626", 
-	 "Verify what happens when a Commit(TryCommit) \n"
+	 "Verify what happens when a Commit(TryCommit)\n"
 	 "transaction is aborted by "
 	 "NDB because the record does no exist" ){
   INITIALIZER(runClearTable2);
@@ -4375,7 +4583,7 @@ TESTCASE("CommitTry626",
   FINALIZER(runClearTable2);
 }
 TESTCASE("CommitAsMuch626", 
-	 "Verify what happens when a Commit(CommitAsMuchAsPossible) \n"
+	 "Verify what happens when a Commit(CommitAsMuchAsPossible)\n"
 	 "transaction is aborted by\n"
 	 "NDB because the record does no exist" ){
   INITIALIZER(runClearTable2);
@@ -4412,7 +4620,7 @@ TESTCASE("Commit630",
   FINALIZER(runClearTable2);
 }
 TESTCASE("CommitTry630", 
-	 "Verify what happens when a Commit(TryCommit) \n"
+	 "Verify what happens when a Commit(TryCommit)\n"
 	 "transaction is aborted by "
 	 "NDB because the record already exist" ){
   INITIALIZER(runLoadTable);
@@ -4420,7 +4628,7 @@ TESTCASE("CommitTry630",
   FINALIZER(runClearTable2);
 }
 TESTCASE("CommitAsMuch630", 
-	 "Verify what happens when a Commit(CommitAsMuchAsPossible) \n"
+	 "Verify what happens when a Commit(CommitAsMuchAsPossible)\n"
 	 "transaction is aborted by\n"
 	 "NDB because the record already exist" ){
   INITIALIZER(runLoadTable);
@@ -4707,6 +4915,14 @@ TESTCASE("ParallelReadUpdate",
   STEP(runPkDirtyReadUntilStopped);
   STEP(runPkDirtyReadUntilStopped);
   STEP(runTimer);
+  FINALIZER(runClearTable);
+}
+TESTCASE("AbortIgnoreError",
+         "Cause an operation in a multi-operation transaction "
+         "to rollback from a replica")
+{
+  INITIALIZER(runLoadTable);
+  STEP(testAbortIgnoreError);
   FINALIZER(runClearTable);
 }
 NDBT_TESTSUITE_END(testBasic)

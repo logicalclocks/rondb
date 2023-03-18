@@ -1,4 +1,4 @@
-/* Copyright (c) 2013, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2013, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -40,7 +40,7 @@ namespace dd_properties_unittest {
 
 class PropertiesTest : public ::testing::Test {
  protected:
-  PropertiesTest() {}
+  PropertiesTest() = default;
 
   void SetUp() override { m_props = new dd::Properties_impl(); }
 
@@ -53,8 +53,8 @@ class PropertiesTest : public ::testing::Test {
   dd::Properties *m_props;
 
  private:
-  // Declares (but does not define) copy constructor and assignment operator.
-  GTEST_DISALLOW_COPY_AND_ASSIGN_(PropertiesTest);
+  PropertiesTest(PropertiesTest const &) = delete;
+  PropertiesTest &operator=(PropertiesTest const &) = delete;
 };
 
 static const dd::String_type value(const dd::Properties &p,
@@ -200,7 +200,7 @@ TEST_F(PropertiesTest, SetGetStrings) {
   // Key "" is illegal and will not be added
   p->set("", "");
 
-#if !defined(DBUG_OFF)
+#if !defined(NDEBUG)
   EXPECT_DEATH_IF_SUPPORTED(p->get("", &str), ".*UTC - mysqld got.*");
 #else
   EXPECT_TRUE(p->get("", &str));
@@ -400,7 +400,7 @@ TEST_F(PropertiesTest, ValidSetGetIntBool) {
   delete p;
 }
 
-#if !defined(DBUG_OFF)
+#if !defined(NDEBUG)
 
 // Tests invalid setting and getting of int and bool options
 typedef PropertiesTest PropertiesTestDeathTest;
@@ -488,7 +488,7 @@ TEST_F(PropertiesTestDeathTest, FailingSetGetIntBool) {
   delete p;
 }
 
-#endif  // DBUG_OFF
+#endif  // NDEBUG
 
 // Tests the exists function
 TEST_F(PropertiesTest, OptionsExist) {
@@ -627,7 +627,7 @@ TEST_F(PropertiesTest, IterationSize) {
 
   EXPECT_TRUE(p->size() == 0);
 
-  for (dd::Properties::iterator it MY_ATTRIBUTE((unused)) = p->begin();
+  for (dd::Properties::iterator it [[maybe_unused]] = p->begin();
        it != p->end(); ++it, ++i)
     EXPECT_TRUE(false);
 
@@ -961,7 +961,7 @@ TEST_F(PropertiesTest, ValidKeys) {
   dd::Properties_impl p({"a"});
 
   EXPECT_FALSE(p.set("a", "1"));
-#if defined(DBUG_OFF)
+#if defined(NDEBUG)
   EXPECT_TRUE(p.set("b", "2"));
 #else
   EXPECT_DEATH_IF_SUPPORTED(p.set("b", "2"), ".*UTC - mysqld got.*");
@@ -981,7 +981,7 @@ TEST_F(PropertiesTest, ValidKeys) {
   dd::String_type str;
   EXPECT_TRUE(!p.get("b", &str) && str == "2");
 
-#if !defined(DBUG_OFF)
+#if !defined(NDEBUG)
   // Then adding a valid key asserts in dbug, though, because
   // we might then hide keys present.
   EXPECT_DEATH_IF_SUPPORTED(p.add_valid_keys({"c"}), ".*UTC - mysqld got.*");

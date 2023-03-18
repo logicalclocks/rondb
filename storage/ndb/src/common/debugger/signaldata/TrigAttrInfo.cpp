@@ -1,6 +1,7 @@
 /*
-   Copyright (C) 2003, 2005, 2006 MySQL AB
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
     Use is subject to license terms.
+   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -42,21 +43,17 @@ tatype(Uint32 i){
   return "UNKNOWN";
 }
 
-bool
-printTRIG_ATTRINFO(FILE * output, const Uint32 * theData, 
-		   Uint32 len, Uint16 receiverBlockNo)
+bool printTRIG_ATTRINFO(FILE *output,
+                        const Uint32 *theData,
+                        Uint32 len,
+                        Uint16 /*receiverBlockNo*/)
 {
-  const TrigAttrInfo * const sig = (TrigAttrInfo *) theData;
-  
+  const TrigAttrInfo *const sig = (const TrigAttrInfo *)theData;
+
   fprintf(output, " TriggerId: %d Type: %s ConnectPtr: %x\n",
 	  sig->getTriggerId(),
 	  tatype(sig->getAttrInfoType()),
 	  sig->getConnectionPtr());
-  
-  Uint32 i = 0;
-  while (i < len - TrigAttrInfo::StaticLength)
-    fprintf(output, " H\'%.8x", sig->getData()[i++]);
-  fprintf(output,"\n");
-  
+  printHex(output, sig->getData(), len - TrigAttrInfo::StaticLength, "");
   return true;
 }

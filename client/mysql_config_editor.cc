@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2012, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2012, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -133,9 +133,9 @@ struct my_command_data {
 
 /* mysql_config_editor utility options. */
 static struct my_option my_program_long_options[] = {
-#ifdef DBUG_OFF
-    {"debug", '#', "This is a non-debug version. Catch this and exit.", 0, 0, 0,
-     GET_DISABLED, OPT_ARG, 0, 0, 0, 0, 0, 0},
+#ifdef NDEBUG
+    {"debug", '#', "This is a non-debug version. Catch this and exit.", nullptr,
+     nullptr, nullptr, GET_DISABLED, OPT_ARG, 0, 0, 0, nullptr, 0, nullptr},
 #else
     {"debug", '#', "Output debug log. Often this is 'd:t:o,filename'.", nullptr,
      nullptr, nullptr, GET_STR, OPT_ARG, 0, 0, 0, nullptr, 0, nullptr},
@@ -237,9 +237,10 @@ static struct my_option my_help_command_options[] = {
      0, nullptr, 0, nullptr}};
 
 extern "C" {
-static bool my_program_get_one_option(
-    int optid, const struct my_option *opt MY_ATTRIBUTE((unused)),
-    char *argument MY_ATTRIBUTE((unused))) {
+static bool my_program_get_one_option(int optid,
+                                      const struct my_option *opt
+                                      [[maybe_unused]],
+                                      char *argument [[maybe_unused]]) {
   switch (optid) {
     case '#':
       DBUG_PUSH(argument ? argument : "d:t:o,/tmp/mysql_config_editor.trace");
@@ -515,24 +516,24 @@ static int set_command(void) {
   if (opt_user) /* --user */
   {
     dynstr_append(&path_buf, "\nuser = ");
-    dynstr_append(&path_buf, opt_user);
+    dynstr_append_quoted(&path_buf, "\"", 1, opt_user, NullS);
   }
 
   if (opt_password) /* --password */
   {
     dynstr_append(&path_buf, "\npassword = ");
-    dynstr_append(&path_buf, opt_password);
+    dynstr_append_quoted(&path_buf, "\"", 1, opt_password, NullS);
   }
 
   if (opt_host) /* --host */
   {
     dynstr_append(&path_buf, "\nhost = ");
-    dynstr_append(&path_buf, opt_host);
+    dynstr_append_quoted(&path_buf, "\"", 1, opt_host, NullS);
   }
 
   if (opt_socket) {
     dynstr_append(&path_buf, "\nsocket = ");
-    dynstr_append(&path_buf, opt_socket);
+    dynstr_append_quoted(&path_buf, "\"", 1, opt_socket, NullS);
   }
 
   if (opt_port) {

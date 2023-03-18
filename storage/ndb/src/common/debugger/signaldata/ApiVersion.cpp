@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -20,37 +20,37 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+#include "signaldata/ApiVersion.hpp"
+#include "RefConvert.hpp"
+#include "portlib/NdbTCP.h"
 
-#include <signaldata/ApiVersion.hpp>
-#include <RefConvert.hpp>
-#include <NdbTCP.h>
-#ifdef _WIN32
-#include <ws2tcpip.h>
-#endif
+bool printAPI_VERSION_REQ(FILE *output,
+                          const Uint32 *theData,
+                          Uint32 len,
+                          Uint16 /*recBlockNo*/)
+{
+  if (len < ApiVersionReq::SignalLength)
+  {
+    assert(false);
+    return false;
+  }
 
-bool
-printAPI_VERSION_REQ(FILE * output,
-                     const Uint32 * theData,
-                     Uint32 len,
-                     Uint16 recBlockNo){
-
-  ApiVersionReq * sig = (ApiVersionReq *)&theData[0];
+  const ApiVersionReq *sig = (const ApiVersionReq *)&theData[0];
 
   fprintf(output,
           " senderRef: (node: %d, block: %d), nodeId: %d\n" \
-          " version: %d, mysql_version: %d\n",
+          " version: %x, mysql_version: %x\n",
 	  refToNode(sig->senderRef), refToBlock(sig->senderRef),
 	  sig->nodeId, sig->version, sig->mysql_version);
   return true;
 }
 
-bool
-printAPI_VERSION_CONF(FILE * output,
-                      const Uint32 * theData,
-                      Uint32 len,
-                      Uint16 recBlockNo){
-
-  ApiVersionConf * sig = (ApiVersionConf *)&theData[0];
+bool printAPI_VERSION_CONF(FILE *output,
+                           const Uint32 *theData,
+                           Uint32 len,
+                           Uint16 /*recBlockNo*/)
+{
+  const ApiVersionConf *sig = (const ApiVersionConf *)&theData[0];
 
   if (len <= ApiVersionConf::SignalLengthIPv4)
   {

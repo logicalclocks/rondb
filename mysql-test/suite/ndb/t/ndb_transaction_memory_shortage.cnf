@@ -1,6 +1,6 @@
 !include suite/ndb/my.cnf
 [cluster_config]
-ThreadConfig=ldm={count=4}
+ThreadConfig=ldm={count=4},main,rep,recv
 MaxNoOfConcurrentOperations=32768
 [mysqld]
 ndb-read-backup=0

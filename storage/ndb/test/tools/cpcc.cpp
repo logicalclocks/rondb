@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -31,7 +32,7 @@
 #include <util/NdbOut.hpp>
 #include <ndb_version.h>
 
-#define DEFAULT_PORT 1234
+#define DEFAULT_PORT 1235
 #define ENV_HOSTS "NDB_CPCC_HOSTS"
 #define CPCC_VERSION_NUMBER 1
 

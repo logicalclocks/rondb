@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -181,7 +181,7 @@ static void prepare_type_string_from_dd_param(THD *thd,
     type_str->append(field->charset()->csname);
     if (!(field->charset()->state & MY_CS_PRIMARY)) {
       type_str->append(STRING_WITH_LEN(" COLLATE "));
-      type_str->append(field->charset()->name);
+      type_str->append(field->charset()->m_coll_name);
     }
   }
 }
@@ -203,7 +203,7 @@ void prepare_return_type_string_from_dd_routine(
 
     if (!parameters.empty()) {
       const dd::Parameter *param = *parameters.begin();
-      DBUG_ASSERT(param->ordinal_position() == 1);
+      assert(param->ordinal_position() == 1);
 
       String type_str(64);
       type_str.set_charset(system_charset_info);

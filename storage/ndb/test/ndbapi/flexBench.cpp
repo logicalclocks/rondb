@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -56,6 +57,7 @@ Arguments:
 
 * *************************************************** */
 
+#include "util/require.h"
 #include <ndb_global.h>
 #include "NdbApi.hpp"
 
@@ -170,7 +172,9 @@ statReport(enum StartType st, int ops)
   if (statState != statOpen) {
     char *p = getenv("NDB_NODEID");
     nodeid = p == 0 ? 0 : atoi(p);
-    if ((statSock = ndb_socket_create_dual_stack(SOCK_STREAM, 0)) < 0) {
+    ndb_socket_create_dual_stack(statSock, SOCK_STREAM, 0);
+    if (!ndb_socket_valid(statSock))
+    {
       if (statState != statError) {
 	ndbout_c("stat: create socket failed: %s", strerror(socket_errno));
 	statState = statError;

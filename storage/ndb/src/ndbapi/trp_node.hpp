@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2010, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2010, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2021, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -35,23 +35,21 @@ NdbOut& operator<<(NdbOut&, const struct trp_node&);
 
 struct trp_node
 {
-  trp_node();
-
   NodeInfo  m_info;
-  NodeState m_state;
+  NodeState m_state{NodeState::SL_NOTHING};
 
-  Uint32 minDbVersion;
-  Uint32 minApiVersion;
-  bool defined;
-  bool compatible;     // Version is compatible
-  bool nfCompleteRep;  // NF Complete Rep has arrived
-  bool m_alive;        // Node is alive
-  bool m_node_fail_rep;// NodeFailRep has arrived
-  bool m_node_active;  // Is node activated
-private:
-  bool m_connected;     // Transporter connected
-  bool m_api_reg_conf;// API_REGCONF has arrived
-public:
+  Uint32 minDbVersion = 0;
+  Uint32 minApiVersion = 0;
+  bool defined = false;
+  bool compatible = true;        // Version is compatible
+  bool nfCompleteRep = true;     // NF Complete Rep has arrived
+  bool m_alive = false;          // Node is alive
+  bool m_node_fail_rep = false;  // NodeFailRep has arrived
+  bool m_node_active = false;    // Is node activated
+ private:
+  bool m_connected = false;     // Transporter connected
+  bool m_api_reg_conf = false;  // API_REGCONF has arrived
+ public:
 
   void set_connected(bool connected) {
     assert(defined);
@@ -77,8 +75,6 @@ public:
            (confirmed && is_connected()));
     return confirmed;
   }
-
-  bool operator==(const trp_node& other) const;
 
 private:
 

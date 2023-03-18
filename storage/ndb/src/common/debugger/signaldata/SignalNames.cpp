@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -898,6 +898,7 @@ const GsnName SignalNames [] = {
   ,{ GSN_MEASURE_WAKEUP_TIME_ORD, "MEASURE_WAKEUP_TIME_ORD" }
   ,{ GSN_UPD_QUERY_DIST_ORD, "UPD_QUERY_DIST_ORD" }
   ,{ GSN_UPD_THR_LOAD_ORD, "UPDATE_THR_LOAD_ORD" }
+  ,{ GSN_TRP_KEEP_ALIVE, "TRP_KEEP_ALIVE" }
   ,{ GSN_ACTIVATE_REQ, "ACTIVATE_REQ" }
   ,{ GSN_ACTIVATE_CONF, "ACTIVATE_CONF" }
   ,{ GSN_ACTIVATE_REF, "ACTIVATE_REF" }
@@ -907,5 +908,13 @@ const GsnName SignalNames [] = {
   ,{ GSN_SET_HOSTNAME_REQ, "SET_HOSTNAME_REQ" }
   ,{ GSN_SET_HOSTNAME_CONF, "SET_HOSTNAME_CONF" }
   ,{ GSN_SET_HOSTNAME_REF, "SET_HOSTNAME_REF" }
+  ,{ GSN_COPY_DATA_IMPL_REQ, "COPY_DATA_IMPL_REQ" }
+  ,{ GSN_COPY_DATA_IMPL_REF, "COPY_DATA_IMPL_REF" }
+  ,{ GSN_COPY_DATA_IMPL_CONF, "COPY_DATA_IMPL_CONF" }
+  ,{ GSN_SEND_PUSH_ORD, "SEND_PUSH_ORD" }
+  ,{ GSN_SEND_PUSH_ABORTREQ, "SEND_PUSH_ABORTREQ" }
+  ,{ GSN_SEND_PUSH_ABORTCONF, "SEND_PUSH_ABORTCONF" }
+  ,{ GSN_PUSH_ABORT_TRAIN_ORD, "PUSH_ABORT_TRAIN_ORD" }
+  ,{ GSN_API_BROADCAST_REP, "API_BROADCAST_REP" }
 };
 const unsigned short NO_OF_SIGNAL_NAMES = sizeof(SignalNames)/sizeof(GsnName);

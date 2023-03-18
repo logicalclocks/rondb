@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2016, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -78,7 +79,7 @@ int main(int argc, const char** argv){
   int optind = 0;
   char desc[] = 
     "tabname\n"\
-    "This program will read 'r' records from one table in Ndb. \n"\
+    "This program will read 'r' records from one table in Ndb.\n"\
     "It will verify every column read by calculating the expected value.\n";
   
   if(getarg(args, num_args, argc, argv, &optind) ||
@@ -168,6 +169,10 @@ int main(int argc, const char** argv){
     }
     i++;
   }
+
+  ths.disconnect();
+  ths.exit();
+  ths.join();
 
   return NDBT_ProgramExit(NDBT_OK);
 }

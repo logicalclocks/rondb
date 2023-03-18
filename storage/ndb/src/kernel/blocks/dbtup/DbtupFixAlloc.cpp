@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -33,6 +34,13 @@
 
 #ifdef VM_TRACE
 //#define DEBUG_899_ERROR 1
+//#define DEBUG_ELEM_COUNT 1
+#endif
+
+#ifdef DEBUG_ELEM_COUNT
+#define DEB_ELEM_COUNT(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_ELEM_COUNT(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_899_ERROR
@@ -127,6 +135,13 @@ Dbtup::alloc_fix_rec(EmulatedJamBuffer* jamBuf,
   Uint32 page_offset= alloc_tuple_from_page(regFragPtr, (Fix_page*)pagePtr.p);
 
   regFragPtr->m_fixedElemCount++;
+  DEB_ELEM_COUNT(("(%u) Inc m_fixedElemCount: now %llu tab(%u,%u),"
+                  " line: %u",
+                  instance(),
+                  regFragPtr->m_fixedElemCount,
+                  regFragPtr->fragTableId,
+                  regFragPtr->fragmentId,
+                  __LINE__));
   key->m_page_no = pagePtr.i;
   key->m_page_idx = page_offset;
   return pagePtr.p->m_data + page_offset;
@@ -147,8 +162,6 @@ void Dbtup::convertThPage(Fix_page* regPagePtr,
 #ifdef VM_TRACE
   memset(regPagePtr->m_data, 0xF1, 4*Fix_page::DATA_WORDS);
 #endif
-  Uint32 gci_pos;
-  Uint32 gci_val;
   /**
    * All tables must have GCI entry since it is mandatory for node
    * restart to work. It is however reset during restore temporarily
@@ -162,26 +175,33 @@ void Dbtup::convertThPage(Fix_page* regPagePtr,
    * Uint32 gci_val = 0xF1F1F1F1;
    * if (regTabPtr->m_bits & Tablerec::TR_RowGCI)
    */
+  const Uint32 gci_pos = Tuple_header::get_mm_gci_pos(regTabPtr);
+  const Uint32 gci_val = 0;
+  if ((mm == MM) ||
+      ((regTabPtr->m_bits & Tablerec::TR_UseVarSizedDiskData) == 0))
   {
-    Tuple_header* ptr = 0;
-    gci_pos = Uint32(ptr->get_mm_gci(regTabPtr) - (Uint32*)ptr);
-    gci_val = 0;
-  }
-  while (pos + nextTuple <= Fix_page::DATA_WORDS)
-  {
-    regPagePtr->m_data[pos] = (prev << 16) | (pos + nextTuple);
-    regPagePtr->m_data[pos + 1] = Fix_page::FREE_RECORD;
-    regPagePtr->m_data[pos + gci_pos] = gci_val;
-    prev = pos;
-    pos += nextTuple;
-    cnt ++;
-  }
+    while (pos + nextTuple <= Fix_page::DATA_WORDS)
+    {
+      regPagePtr->m_data[pos] = (prev << 16) | (pos + nextTuple);
+      regPagePtr->m_data[pos + 1] = Fix_page::FREE_RECORD;
+      regPagePtr->m_data[pos + gci_pos] = gci_val;
+      prev = pos;
+      pos += nextTuple;
+      cnt ++;
+    }
   
-  regPagePtr->m_data[prev] |= 0xFFFF;
-  regPagePtr->next_free_index= 0;
-  regPagePtr->free_space= cnt;
-  regPagePtr->m_page_header.m_page_type = File_formats::PT_Tup_fixsize_page;
-}//Dbtup::convertThPage()
+    regPagePtr->m_data[prev] |= 0xFFFF;
+    regPagePtr->next_free_index= 0;
+    regPagePtr->free_space= cnt;
+    regPagePtr->m_page_header.m_page_type = File_formats::PT_Tup_fixsize_page;
+  }
+  else
+  {
+    jam();
+    Tup_varsize_page *var_page = (Tup_varsize_page*)regPagePtr;
+    var_page->init();
+  }
+}
 
 Uint32
 Dbtup::alloc_tuple_from_page(Fragrecord* const regFragPtr,
@@ -219,6 +239,13 @@ void Dbtup::free_fix_rec(Fragrecord* regFragPtr,
   PagePtr pagePtr((Page*)regPagePtr, key->m_page_no);
   ndbassert(regFragPtr->m_fixedElemCount > 0);
   regFragPtr->m_fixedElemCount--;
+  DEB_ELEM_COUNT(("(%u) Dec m_fixedElemCount: now %llu tab(%u,%u),"
+                  " line: %u",
+                  instance(),
+                  regFragPtr->m_fixedElemCount,
+                  regFragPtr->fragTableId,
+                  regFragPtr->fragmentId,
+                  __LINE__));
   
   if(free == 1)
   {
@@ -284,6 +311,13 @@ Dbtup::alloc_fix_rowid(Uint32 * err,
     }
  
     regFragPtr->m_fixedElemCount++;
+    DEB_ELEM_COUNT(("(%u) Inc m_fixedElemCount: now %llu tab(%u,%u),"
+                    " line: %u",
+                    instance(),
+                    regFragPtr->m_fixedElemCount,
+                    regFragPtr->fragTableId,
+                    regFragPtr->fragmentId,
+                    __LINE__));
     *out_frag_page_id= page_no;
     key->m_page_no = pagePtr.i;
     key->m_page_idx = idx;

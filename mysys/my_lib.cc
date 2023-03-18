@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,7 +30,7 @@
   @file mysys/my_lib.cc
 */
 
-/* TODO: check for overun of memory for names. */
+/* TODO: check for overrun of memory for names. */
 
 #include <errno.h>
 #include <string.h>
@@ -71,9 +71,8 @@ void my_dirend(MY_DIR *buffer) {
     Entries_array *array = pointer_cast<Entries_array *>(
         (char *)buffer + ALIGN_SIZE(sizeof(MY_DIR)));
     array->~Entries_array();
-    free_root((MEM_ROOT *)((char *)buffer + ALIGN_SIZE(sizeof(MY_DIR)) +
-                           ALIGN_SIZE(sizeof(Entries_array))),
-              MYF(0));
+    destroy((MEM_ROOT *)((char *)buffer + ALIGN_SIZE(sizeof(MY_DIR)) +
+                         ALIGN_SIZE(sizeof(Entries_array))));
     my_free(buffer);
   }
 } /* my_dirend */
@@ -106,13 +105,11 @@ MY_DIR *my_dir(const char *path, myf MyFlags) {
 
   rawmem = pointer_cast<Entries_array *>(buffer + ALIGN_SIZE(sizeof(MY_DIR)));
   dir_entries_storage = new (rawmem) Entries_array(key_memory_MY_DIR);
-  names_storage = (MEM_ROOT *)(buffer + ALIGN_SIZE(sizeof(MY_DIR)) +
-                               ALIGN_SIZE(sizeof(Entries_array)));
-
-  init_alloc_root(key_memory_MY_DIR, names_storage, NAMES_START_SIZE,
-                  NAMES_START_SIZE);
-
-  /* MY_DIR structure is allocated and completly initialized at this point */
+  names_storage = new (buffer + ALIGN_SIZE(sizeof(MY_DIR)) +
+                       ALIGN_SIZE(sizeof(Entries_array)))
+      MEM_ROOT(key_memory_MY_DIR, NAMES_START_SIZE);
+  ;
+  /* MY_DIR structure is allocated and completely initialized at this point */
   result = (MY_DIR *)buffer;
 
   tmp_file = strend(tmp_path);
@@ -166,7 +163,7 @@ error:
 static char *directory_file_name(char *dst, const char *src) {
   /* Process as Unix format: just remove test the final slash. */
   char *end;
-  DBUG_ASSERT(strlen(src) < (FN_REFLEN + 1));
+  assert(strlen(src) < (FN_REFLEN + 1));
 
   if (src[0] == 0) src = "."; /* Use empty as current */
   end = my_stpnmov(dst, src, FN_REFLEN + 1);
@@ -194,7 +191,7 @@ MY_DIR *my_dir(const char *path, myf MyFlags) {
   struct _finddata_t find;
   ushort mode;
   char tmp_path[FN_REFLEN], *tmp_file, attrib;
-  __int64 handle;
+  __int64 handle = -1;
   void *rawmem = NULL;
 
   DBUG_TRACE;
@@ -220,13 +217,11 @@ MY_DIR *my_dir(const char *path, myf MyFlags) {
 
   rawmem = buffer + ALIGN_SIZE(sizeof(MY_DIR));
   dir_entries_storage = new (rawmem) Entries_array(key_memory_MY_DIR);
-  names_storage = pointer_cast<MEM_ROOT *>(buffer + ALIGN_SIZE(sizeof(MY_DIR)) +
-                                           ALIGN_SIZE(sizeof(Entries_array)));
+  names_storage = new (buffer + ALIGN_SIZE(sizeof(MY_DIR)) +
+                       ALIGN_SIZE(sizeof(Entries_array)))
+      MEM_ROOT(key_memory_MY_DIR, NAMES_START_SIZE);
 
-  init_alloc_root(key_memory_MY_DIR, names_storage, NAMES_START_SIZE,
-                  NAMES_START_SIZE);
-
-  /* MY_DIR structure is allocated and completly initialized at this point */
+  /* MY_DIR structure is allocated and completely initialized at this point */
   result = (MY_DIR *)buffer;
 
   if ((handle = _findfirst(tmp_path, &find)) == -1L) {
@@ -306,7 +301,7 @@ int my_fstat(File Filedes, MY_STAT *stat_area) {
 
 MY_STAT *my_stat(const char *path, MY_STAT *stat_area, myf MyFlags) {
   DBUG_TRACE;
-  DBUG_ASSERT(stat_area != nullptr);
+  assert(stat_area != nullptr);
   DBUG_PRINT("my", ("path: '%s'  stat_area: %p  MyFlags: %d", path, stat_area,
                     MyFlags));
 

@@ -1,6 +1,6 @@
 !include suite/ndb/my.cnf
 
 [cluster_config]
-ThreadConfig=ldm={count=4}
 PartitionsPerNode=4
+ThreadConfig=main,rep,recv,ldm={count=4}
 TimeBetweenGlobalCheckpoints=  200

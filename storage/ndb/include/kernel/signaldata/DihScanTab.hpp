@@ -1,5 +1,5 @@
-/* Copyright (c) 2008, 2016, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+/* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -34,8 +34,8 @@
  */
 struct DihScanTabReq
 {
-  STATIC_CONST( SignalLength = 6 );
-  STATIC_CONST( RetryInterval = 5 );
+  static constexpr Uint32 SignalLength = 6;
+  static constexpr Uint32 RetryInterval = 5;
 
   Uint32 tableId;
   Uint32 senderData;
@@ -52,8 +52,8 @@ struct DihScanTabReq
  */
 struct DihScanTabConf
 {
-  STATIC_CONST( SignalLength = 7 );
-  STATIC_CONST( InvalidCookie = RNIL );
+  static constexpr Uint32 SignalLength = 7;
+  static constexpr Uint32 InvalidCookie = RNIL;
 
   Uint32 tableId;
   Uint32 senderData;
@@ -73,7 +73,7 @@ struct DihScanTabRef
     ErroneousState = 0,
     ErroneousTableState = 1
   };
-  STATIC_CONST( SignalLength = 5 );
+  static constexpr Uint32 SignalLength = 5;
 
   Uint32 tableId;
   Uint32 senderData;
@@ -84,7 +84,7 @@ struct DihScanTabRef
 
 struct DihScanTabCompleteRep
 {
-  STATIC_CONST( SignalLength = 5 );
+  static constexpr Uint32 SignalLength = 5;
 
   Uint32 tableId;
   Uint32 schemaVersionCookie;

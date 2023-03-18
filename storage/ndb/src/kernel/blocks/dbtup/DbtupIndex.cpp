@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -24,6 +25,7 @@
 
 #define DBTUP_C
 #define DBTUP_INDEX_CPP
+#include <cstring>
 #include <dblqh/Dblqh.hpp>
 #include "Dbtup.hpp"
 #include <RefConvert.hpp>
@@ -38,7 +40,6 @@
 #define JAM_FILE_ID 418
 
 #include <EventLogger.hpp>
-extern EventLogger * g_eventLogger;
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_INDEX_BUILD 1
@@ -53,15 +54,14 @@ extern EventLogger * g_eventLogger;
 // methods used by ordered index
 
 void
-Dbtup::tuxGetTupAddr(Uint32 fragPtrI,
-                     Uint32 pageId,
+Dbtup::tuxGetTupAddr(Uint32 pageId,
                      Uint32 pageIndex,
                      Uint32& lkey1,
                      Uint32& lkey2)
 {
   jamEntryDebug();
   PagePtr pagePtr;
-  c_page_pool.getPtr(pagePtr, pageId);
+  ndbrequire(c_page_pool.getPtr(pagePtr, pageId));
   lkey1 = pagePtr.p->frag_page_id;
   lkey2 = pageIndex;
 }
@@ -83,25 +83,21 @@ Dbtup::tuxAllocNode(EmulatedJamBuffer * jamBuf,
 
   Local_key key;
   Uint32* ptr, frag_page_id, err;
-  c_allow_alloc_spare_page=true;
   if ((ptr = alloc_fix_rec(jamBuf,
                            &err,
                            fragPtrP,
                            tablePtrP,
-                           &key, 
+                           &key,
                            &frag_page_id)) == 0)
   {
-    c_allow_alloc_spare_page=false;
     thrjam(jamBuf);
     return err;
   }
   release_frag_mutex(fragPtrP, frag_page_id, jamBuf);
-  c_allow_alloc_spare_page=false;
   pageId= key.m_page_no;
   pageOffset= key.m_page_idx;
-  Uint32 attrDescIndex= tablePtrP->tabDescriptor + (0 << ZAD_LOG_SIZE);
-  Uint32 attrDataOffset= AttributeOffset::getOffset(
-                              tableDescriptor[attrDescIndex + 1].tabDescr);
+  Uint32 attrDes2 = tablePtrP->tabDescriptor[1];
+  Uint32 attrDataOffset= AttributeOffset::getOffset(attrDes2);
   node= ptr + attrDataOffset;
   return 0;
 }
@@ -123,8 +119,8 @@ Dbtup::tuxFreeNode(Uint32* fragPtrP_input,
   PagePtr pagePtr;
   Tuple_header* ptr = (Tuple_header*)get_ptr(&pagePtr, &key, tablePtrP);
 
-  Uint32 attrDescIndex= tablePtrP->tabDescriptor + (0 << ZAD_LOG_SIZE);
-  Uint32 attrDataOffset= AttributeOffset::getOffset(tableDescriptor[attrDescIndex + 1].tabDescr);
+  Uint32 attrDes2 = tablePtrP->tabDescriptor[1];
+  Uint32 attrDataOffset= AttributeOffset::getOffset(attrDes2);
   ndbrequire(node == (Uint32*)ptr + attrDataOffset);
 
   free_fix_rec(fragPtrP, tablePtrP, &key, (Fix_page*)pagePtr.p);
@@ -316,14 +312,10 @@ Dbtup::tuxReadPk(Uint32* fragPtrP_input,
     jam();
     return -ZTUPLE_DELETED_ERROR; /* Leads to crash in DBTUX and DBTUP */
   }
+  Uint32* tab_descr = tablePtrP->tabDescriptor;
   req_struct.check_offset[MM]= tablePtrP->get_check_offset(MM);
   req_struct.check_offset[DD]= tablePtrP->get_check_offset(DD);
-    
-  Uint32 num_attr= tablePtrP->m_no_of_attributes;
-  Uint32 descr_start= tablePtrP->tabDescriptor;
-  TableDescriptor *tab_descr= &tableDescriptor[descr_start];
-  ndbrequire(descr_start + (num_attr << ZAD_LOG_SIZE) <= cnoOfTabDescrRec);
-  req_struct.attr_descr= tab_descr; 
+  req_struct.attr_descr = tab_descr; 
 
   /**
    * Resetting the ALLOC bit can only happen in exclusive access from
@@ -368,7 +360,7 @@ Dbtup::tuxReadPk(Uint32* fragPtrP_input,
   }
   prepare_read(&req_struct, tablePtrP, false);
     
-  const Uint32* attrIds= &tableDescriptor[tablePtrP->readKeyArray].tabDescr;
+  const Uint32* attrIds = tablePtrP->readKeyArray;
   const Uint32 numAttrs= tablePtrP->noOfKeyAttr;
   // read pk attributes from original tuple
     
@@ -386,6 +378,7 @@ Dbtup::tuxReadPk(Uint32* fragPtrP_input,
     Uint32 i= 0;
     while (n < numAttrs)
     {
+      jamDebug();
       const AttributeHeader ah(dataOut[i]);
       Uint32 size= ah.getDataSize();
       ndbrequire(size != 0);
@@ -541,7 +534,7 @@ Dbtup::tuxQueryTh(Uint32 opPtrI,
  */
 int
 Dbtup::tuxReadAttrs(EmulatedJamBuffer * jamBuf,
-                    Uint32 fragPtrI,
+                    Uint64 fragPtrI,
                     Uint32 pageId,
                     Uint32 pageIndex,
                     Uint32 tupVersion,
@@ -554,7 +547,7 @@ Dbtup::tuxReadAttrs(EmulatedJamBuffer * jamBuf,
   // use own variables instead of globals
   FragrecordPtr fragPtr;
   fragPtr.i= fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
   TablerecPtr tablePtr;
   tablePtr.i= fragPtr.p->fragTableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
@@ -643,15 +636,15 @@ Dbtup::execBUILD_INDX_IMPL_REQ(Signal* signal)
 	tablePtr.p->tuxCustomTriggers;
 
       TriggerPtr triggerPtr;
-      triggerList.first(triggerPtr);
-      while (triggerPtr.i != RNIL) {
+      bool ret = triggerList.first(triggerPtr);
+      while (ret) {
 	if (triggerPtr.p->indexId == buildReq->indexId) {
 	  jam();
 	  break;
 	}
-	triggerList.next(triggerPtr);
+	ret = triggerList.next(triggerPtr);
       }
-      if (triggerPtr.i == RNIL) {
+      if (triggerPtr.i == RNIL64) {
 	jam();
 	// trigger was not created
         ndbassert(false);
@@ -726,23 +719,23 @@ Dbtup::buildIndex(Signal* signal, Uint32 buildPtrI)
   do {
     // get fragment
     FragrecordPtr fragPtr;
-    if (buildPtr.p->m_fragNo == NDB_ARRAY_SIZE(tablePtr.p->fragrec)) {
+    if (buildPtr.p->m_fragNo == MAX_FRAG_PER_LQH) {
       jam();
       // build ready
       buildIndexReply(signal, buildPtr.p);
       c_buildIndexList.release(buildPtr);
       return;
     }
-    ndbrequire(buildPtr.p->m_fragNo < NDB_ARRAY_SIZE(tablePtr.p->fragrec));
-    fragPtr.i= tablePtr.p->fragrec[buildPtr.p->m_fragNo];
-    if (fragPtr.i == RNIL) {
+    ndbrequire(buildPtr.p->m_fragNo < MAX_FRAG_PER_LQH);
+    fragPtr.i = c_lqh->getNextTupFragrec(tablePtr.i, buildPtr.p->m_fragNo);
+    if (fragPtr.i == RNIL64) {
       jam();
       buildPtr.p->m_fragNo++;
       buildPtr.p->m_pageId= 0;
       buildPtr.p->m_tupleNo= firstTupleNo;
       break;
     }
-    ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+    ndbrequire(c_fragment_pool.getPtr(fragPtr));
     // get page
     PagePtr pagePtr;
     if (buildPtr.p->m_pageId >= fragPtr.p->m_max_page_cnt)
@@ -761,7 +754,7 @@ Dbtup::buildIndex(Signal* signal, Uint32 buildPtrI)
       goto next_tuple;
     }
 
-    c_page_pool.getPtr(pagePtr, realPageId);
+    ndbrequire(c_page_pool.getPtr(pagePtr, realPageId));
 
 next_tuple:
     // get tuple
@@ -800,7 +793,9 @@ next_tuple:
     req->errorCode = RNIL;
     req->tableId = tablePtr.i;
     req->indexId = buildPtr.p->m_indexId;
-    req->fragId = tablePtr.p->fragid[buildPtr.p->m_fragNo];
+    Uint32 save = buildPtr.p->m_fragNo;
+    req->fragId = c_lqh->getNextTupFragid(tablePtr.i, buildPtr.p->m_fragNo);
+    ndbrequire(save == buildPtr.p->m_fragNo);
     req->pageId = realPageId;
     req->tupVersion = tupVersion;
     req->opInfo = TuxMaintReq::OpAdd;
@@ -826,7 +821,7 @@ next_tuple:
       update. If an update aborts then the copy tuple is copied to
       the original tuple. The build will however have found that
       tuple as a copy tuple. The original tuple is stable and is thus
-      preferrable to store in TUX.
+      preferable to store in TUX.
       */
       jam();
 
@@ -835,7 +830,7 @@ next_tuple:
        *   we will here build all copies of the tuple
        *
        * Note only "real" tupVersion's should be added 
-       *      i.e delete's shouldnt be added 
+       *      i.e delete's shouldn't be added 
        *      (unless it's the first op, when "original" should be added)
        */
 
@@ -843,12 +838,12 @@ next_tuple:
        * Start from first operation.  This is only to make things more
        * clear.  It is not required by ordered index implementation.
        */
-      ndbrequire(c_operation_pool.getValidPtr(pageOperPtr));
+      ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(pageOperPtr));
       while (pageOperPtr.p->prevActiveOp != RNIL)
       {
         jam();
         pageOperPtr.i = pageOperPtr.p->prevActiveOp;
-        ndbrequire(c_operation_pool.getValidPtr(pageOperPtr));
+        ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(pageOperPtr));
       }
       /*
        * Do not use req->errorCode as global control.
@@ -889,7 +884,7 @@ next_tuple:
       while (pageOperPtr.i != RNIL && ok)
       {
         jam();
-        ndbrequire(c_operation_pool.getValidPtr(pageOperPtr));
+        ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(pageOperPtr));
         req->errorCode = RNIL;
         req->tupVersion = pageOperPtr.p->op_struct.bit_field.tupVersion;
         EXECUTE_DIRECT(buildPtr.p->m_buildRef, GSN_TUX_MAINT_REQ,
@@ -961,7 +956,7 @@ Dbtup::buildIndexOffline(Signal* signal, Uint32 buildPtrI)
    * Note: before 7.3.4, 7.2.15, 7.1.30 fifth word and
    * up was undefined.
    */
-  bzero(req, sizeof(*req));
+  std::memset(req, 0, sizeof(*req));
   req->senderRef = reference();
   req->senderData = buildPtrI;
   req->tableId = buildReq->tableId;
@@ -992,7 +987,7 @@ Dbtup::execALTER_TAB_CONF(Signal* signal)
     jam();
     TablerecPtr tablePtr;
     (void)tablePtr; // hide unused warning
-    ndbrequire(buildPtr.p->m_fragNo >= NDB_ARRAY_SIZE(tablePtr.p->fragid));
+    ndbrequire(buildPtr.p->m_fragNo >= MAX_FRAG_PER_LQH);
     buildIndexReply(signal, buildPtr.p);
     c_buildIndexList.release(buildPtr);
     return;
@@ -1019,25 +1014,26 @@ Dbtup::buildIndexOffline_table_readonly(Signal* signal, Uint32 buildPtrI)
                    instance(),
                    tablePtr.i,
                    buildPtr.p->m_indexId));
-  for (;buildPtr.p->m_fragNo < NDB_ARRAY_SIZE(tablePtr.p->fragrec);
-       buildPtr.p->m_fragNo++)
+  for (;buildPtr.p->m_fragNo < MAX_FRAG_PER_LQH; buildPtr.p->m_fragNo++)
   {
     jam();
     FragrecordPtr fragPtr;
-    fragPtr.i = tablePtr.p->fragrec[buildPtr.p->m_fragNo];
-    if (fragPtr.i == RNIL)
+    fragPtr.i = c_lqh->getNextTupFragrec(tablePtr.i, buildPtr.p->m_fragNo);
+    if (fragPtr.i == RNIL64)
     {
       jam();
       continue;
     }
-    ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+    ndbrequire(c_fragment_pool.getPtr(fragPtr));
     mt_BuildIndxReq req;
-    bzero(&req, sizeof(req));
+    std::memset(&req, 0, sizeof(req));
     req.senderRef = reference();
     req.senderData = buildPtr.i;
     req.tableId = buildReq->tableId;
     req.indexId = buildPtr.p->m_indexId;
-    req.fragId = tablePtr.p->fragid[buildPtr.p->m_fragNo];
+    Uint32 save = buildPtr.p->m_fragNo;
+    req.fragId = c_lqh->getNextTupFragid(tablePtr.i, buildPtr.p->m_fragNo);
+    ndbrequire(save == buildPtr.p->m_fragNo);
 
     SimulatedBlock * tux = globalData.getBlock(DBTUX);
     if (instance() != 0)
@@ -1072,7 +1068,7 @@ Dbtup::buildIndexOffline_table_readonly(Signal* signal, Uint32 buildPtrI)
      * Note: before 7.3.4, 7.2.15, 7.1.30 fifth word and
      * up was undefined.
      */
-    bzero(req, sizeof(*req));
+    std::memset(req, 0, sizeof(*req));
     req->senderRef = reference();
     req->senderData = buildPtrI;
     req->tableId = buildReq->tableId;
@@ -1091,27 +1087,28 @@ Dbtup::buildIndexOffline_table_readonly(Signal* signal, Uint32 buildPtrI)
 
 int
 Dbtup::mt_scan_init(Uint32 tableId, Uint32 fragId,
-                    Local_key* pos, Uint32 * fragPtrI)
+                    Local_key* pos, Uint64 * fragPtrI)
 {
   TablerecPtr tablePtr;
   tablePtr.i = tableId;
   ptrCheckGuard(tablePtr, cnoOfTablerec, tablerec);
 
   FragrecordPtr fragPtr;
-  fragPtr.i = RNIL;
-  for (Uint32 i = 0; i<NDB_ARRAY_SIZE(tablePtr.p->fragid); i++)
+  fragPtr.i = RNIL64;
+  for (Uint32 i = 0; i < MAX_FRAG_PER_LQH; i++)
   {
-    if (tablePtr.p->fragid[i] == fragId)
+    if (c_lqh->getNextTupFragid(tableId, i) == fragId)
     {
-      fragPtr.i = tablePtr.p->fragrec[i];
+      Uint32 i_save = i;
+      fragPtr.i = c_lqh->getNextTupFragrec(tableId, i);
+      ndbrequire(i == i_save);
       break;
     }
   }
 
-  if (fragPtr.i == RNIL)
+  if (fragPtr.i == RNIL64)
     return -1;
-
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
 
   Uint32 fragPageId = 0;
   while (fragPageId < fragPtr.p->m_max_page_cnt)
@@ -1154,7 +1151,7 @@ Dbtup::mt_scan_init(Uint32 tableId, Uint32 fragId,
 }
 
 int
-Dbtup::mt_scan_next(Uint32 tableId, Uint32 fragPtrI,
+Dbtup::mt_scan_next(Uint32 tableId, Uint64 fragPtrI,
                     Local_key* pos, bool moveNext)
 {
   TablerecPtr tablePtr;
@@ -1163,7 +1160,7 @@ Dbtup::mt_scan_next(Uint32 tableId, Uint32 fragPtrI,
 
   FragrecordPtr fragPtr;
   fragPtr.i = fragPtrI;
-  ptrCheckGuard(fragPtr, cnoOfFragrec, fragrecord);
+  ndbrequire(c_fragment_pool.getPtr(fragPtr));
 
   Uint32 tupheadsize = tablePtr.p->m_offsets[MM].m_fix_header_size;
   if (moveNext)
@@ -1172,7 +1169,7 @@ Dbtup::mt_scan_next(Uint32 tableId, Uint32 fragPtrI,
   }
 
   PagePtr pagePtr;
-  c_page_pool.getPtr(pagePtr, pos->m_page_no);
+  ndbrequire(c_page_pool.getPtr(pagePtr, pos->m_page_no));
 
   while (1)
   {
@@ -1207,7 +1204,7 @@ Dbtup::mt_scan_next(Uint32 tableId, Uint32 fragPtrI,
       break;
 
     pos->m_page_idx = 0;
-    c_page_pool.getPtr(pagePtr, pos->m_page_no);
+    ndbrequire(c_page_pool.getPtr(pagePtr, pos->m_page_no));
   }
 
   return 1;
@@ -1230,7 +1227,7 @@ Dbtup::execBUILD_INDX_IMPL_REF(Signal* signal)
   (void)tablePtr; // hide unused warning
   buildPtr.p->m_errorCode = (BuildIndxImplRef::ErrorCode)err;
   // No point in starting any more
-  buildPtr.p->m_fragNo = NDB_ARRAY_SIZE(tablePtr.p->fragrec);
+  buildPtr.p->m_fragNo = MAX_FRAG_PER_LQH;
   buildIndexOffline_table_readonly(signal, ptr);
 }
 

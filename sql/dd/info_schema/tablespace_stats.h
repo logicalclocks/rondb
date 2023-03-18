@@ -1,4 +1,4 @@
-/* Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2017, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,7 +27,6 @@
 #include "sql_string.h"   // String
 
 class THD;
-struct TABLE_LIST;
 
 namespace dd {
 namespace info_schema {
@@ -93,7 +92,7 @@ class Tablespace_statistics {
 
   /**
     Read dynamic tablespace statistics from SE API OR by reading cached
-    statistics from SELECT_LEX.
+    statistics from Query_block.
 
     @param thd                     - Current thread.
     @param tablespace_name_ptr     - Tablespace name of which we need stats.
@@ -150,7 +149,7 @@ class Tablespace_statistics {
   }
 
   /**
-    Build a key representating the table for which stats are cached.
+    Build a key representing the table for which stats are cached.
 
     @param tablespace_name          - Tablespace name.
     @param file_name                - File name.
@@ -193,6 +192,10 @@ class Tablespace_statistics {
                          const String &file_name_ptr,
                          const String &engine_name_ptr,
                          const char *ts_se_private_data);
+
+ public:
+  /// Predicate for determinig if cache is valid
+  bool is_valid() const { return !m_key.empty(); }
 
  private:
   // The cache key

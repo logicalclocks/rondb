@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -51,6 +51,8 @@
 #include <sys/types.h>
 #include <time.h>
 
+#include <atomic>  // error_handler_hook
+
 #include "m_string.h" /* IWYU pragma: keep */
 #include "my_compiler.h"
 #include "my_compress.h"
@@ -61,13 +63,13 @@
 #include "my_psi_config.h" /* IWYU pragma: keep */
 
 #include "my_sharedlib.h"
+#include "mysql/components/services/bits/my_io_bits.h"
+#include "mysql/components/services/bits/mysql_cond_bits.h"
+#include "mysql/components/services/bits/mysql_mutex_bits.h"
 #include "mysql/components/services/bits/psi_bits.h"
-#include "mysql/components/services/my_io_bits.h"
-#include "mysql/components/services/mysql_cond_bits.h"
-#include "mysql/components/services/mysql_mutex_bits.h"
-#include "mysql/components/services/psi_file_bits.h"
-#include "mysql/components/services/psi_memory_bits.h"
-#include "mysql/components/services/psi_stage_bits.h"
+#include "mysql/components/services/bits/psi_file_bits.h"
+#include "mysql/components/services/bits/psi_memory_bits.h"
+#include "mysql/components/services/bits/psi_stage_bits.h"
 #include "sql/stream_cipher.h"
 
 struct CHARSET_INFO;
@@ -114,8 +116,8 @@ struct MEM_ROOT;
 
 /* General bitmaps for my_func's */
 // 1 used to be MY_FFNF which has been removed
-#define MY_FNABP 2         /* Fatal if not all bytes read/writen */
-#define MY_NABP 4          /* Error if not all bytes read/writen */
+#define MY_FNABP 2         /* Fatal if not all bytes read/written */
+#define MY_NABP 4          /* Error if not all bytes read/written */
 #define MY_FAE 8           /* Fatal if any error */
 #define MY_WME 16          /* Write message on error */
 #define MY_WAIT_IF_FULL 32 /* Wait and try again if disk full error */
@@ -124,7 +126,7 @@ struct MEM_ROOT;
 #define MY_FULL_IO 512 /* For my_read - loop intil I/O is complete */
 #define MY_DONT_CHECK_FILESIZE 128  /* Option to init_io_cache() */
 #define MY_LINK_WARNING 32          /* my_redel() gives warning if links */
-#define MY_COPYTIME 64              /* my_redel() copys time */
+#define MY_COPYTIME 64              /* my_redel() copies time */
 #define MY_DELETE_OLD 256           /* my_create_with_symlink() */
 #define MY_RESOLVE_LINK 128         /* my_realpath(); Only resolve links */
 #define MY_HOLD_ORIGINAL_MODES 128  /* my_copy() holds to file modes */
@@ -169,10 +171,6 @@ struct MEM_ROOT;
 #define MY_WAIT_GIVE_USER_A_MESSAGE 10   /* Every 10 times of prev */
 #define MIN_COMPRESS_LENGTH 50           /* Don't compress small bl. */
 #define DFLT_INIT_HITS 3
-
-/* root_alloc flags */
-#define MY_KEEP_PREALLOC 1
-#define MY_MARK_BLOCKS_FREE 2 /* move used to free list and reuse them */
 
 /* Internal error numbers (for assembler functions) */
 #define MY_ERRNO_EDOM 33
@@ -221,9 +219,9 @@ extern uint my_get_large_page_size(void);
 
 extern char *home_dir;          /* Home directory for user */
 extern const char *my_progname; /* program-name (printed in errors) */
-extern void (*error_handler_hook)(uint my_err, const char *str, myf MyFlags);
-extern void (*fatal_error_handler_hook)(uint my_err, const char *str,
-                                        myf MyFlags);
+
+using ErrorHandlerFunctionPointer = void (*)(uint, const char *, myf);
+extern std::atomic<ErrorHandlerFunctionPointer> error_handler_hook;
 extern void (*local_message_hook)(enum loglevel ll, uint ecode, va_list args);
 
 extern MYSQL_PLUGIN_IMPORT ulong my_thread_stack_size;
@@ -338,7 +336,7 @@ struct IO_CACHE_SHARE {
   int error;           /* Last error. */
 };
 
-struct IO_CACHE /* Used when cacheing files */
+struct IO_CACHE /* Used when caching files */
 {
   /* Offset in file corresponding to the first byte of uchar* buffer. */
   my_off_t pos_in_file{0};
@@ -408,7 +406,7 @@ struct IO_CACHE /* Used when cacheing files */
   int (*write_function)(IO_CACHE *, const uchar *, size_t){nullptr};
   /*
     Specifies the type of the cache. Depending on the type of the cache
-    certain operations might not be available and yield unpredicatable
+    certain operations might not be available and yield unpredictable
     results. Details to be documented later
   */
   cache_type type{TYPE_NOT_SET};
@@ -436,7 +434,7 @@ struct IO_CACHE /* Used when cacheing files */
 
   /*
     seek_not_done is set by my_b_seek() to inform the upcoming read/write
-    operation that a seek needs to be preformed prior to the actual I/O
+    operation that a seek needs to be performed prior to the actual I/O
     error is 0 if the cache operation was successful, -1 if there was a
     "hard" error, and the actual number of I/O-ed bytes if the read/write was
     partial.
@@ -801,6 +799,8 @@ extern bool dynstr_append(DYNAMIC_STRING *str, const char *append);
 bool dynstr_append_mem(DYNAMIC_STRING *str, const char *append, size_t length);
 extern bool dynstr_append_os_quoted(DYNAMIC_STRING *str, const char *append,
                                     ...);
+extern bool dynstr_append_quoted(DYNAMIC_STRING *str, const char *quote_str,
+                                 const uint quote_len, const char *append, ...);
 extern bool dynstr_set(DYNAMIC_STRING *str, const char *init_str);
 extern bool dynstr_realloc(DYNAMIC_STRING *str, size_t additional_size);
 extern bool dynstr_trunc(DYNAMIC_STRING *str, size_t n);
@@ -872,10 +872,9 @@ static inline int my_getpagesize() {
 int my_msync(int, void *, size_t, int);
 
 /* character sets */
-extern void my_charset_loader_init_mysys(MY_CHARSET_LOADER *loader);
 extern uint get_charset_number(const char *cs_name, uint cs_flags);
 extern uint get_collation_number(const char *name);
-extern const char *get_charset_name(uint cs_number);
+extern const char *get_collation_name(uint cs_number);
 
 extern CHARSET_INFO *get_charset(uint cs_number, myf flags);
 extern CHARSET_INFO *get_charset_by_name(const char *cs_name, myf flags);
@@ -974,7 +973,7 @@ extern void set_psi_tls_channel_service(void *psi);
 */
 
 // True if the temporary file of binlog cache is encrypted.
-#ifndef DBUG_OFF
+#ifndef NDEBUG
 extern bool binlog_cache_temporary_file_is_encrypted;
 #endif
 
@@ -1024,17 +1023,7 @@ size_t mysql_encryption_file_read(IO_CACHE *cache, uchar *buffer, size_t count,
                 MY_WME | MY_FAE | MY_NABP | MY_FNABP |
                 MY_DONT_CHECK_FILESIZE and so on
 
-   if (flags & (MY_NABP | MY_FNABP)) {
-     @retval 0 if count == 0
-     @retval 0 success
-     @retval MY_FILE_ERROR error
-   } else {
-     @retval 0 if count == 0
-     @retval The number of bytes written on success.
-     @retval MY_FILE_ERROR error
-     @retval The actual number of bytes written on partial success (if
-             less than count bytes were written).
-   }
+   @return The number of bytes written
 */
 size_t mysql_encryption_file_write(IO_CACHE *cache, const uchar *buffer,
                                    size_t count, myf flags);

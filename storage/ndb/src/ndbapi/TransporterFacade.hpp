@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -44,6 +44,7 @@ struct ndb_mgm_configuration;
 
 class Ndb;
 class NdbApiSignal;
+class ReceiveThreadClient;
 class trp_client;
 
 extern "C" {
@@ -61,8 +62,8 @@ public:
    * Max number of Ndb objects.  
    * (Ndb objects should not be shared by different threads.)
    */
-  STATIC_CONST( MAX_NO_THREADS = 4711 );
-  STATIC_CONST( MAX_LOCKED_CLIENTS = 256 );
+  static constexpr Uint32 MAX_NO_THREADS = 4711;
+  static constexpr Uint32 MAX_LOCKED_CLIENTS = 256;
   TransporterFacade(GlobalDictCache *cache);
   ~TransporterFacade() override;
 
@@ -114,9 +115,9 @@ private:
 
   /* Support routine to configure */
   void set_up_node_active_in_send_buffers(Uint32 nodeId,
-                           const ndb_mgm_configuration &conf);
+                                          const ndb_mgm_configuration *conf);
 
-public:
+ public:
 
   /**
    * These are functions used by ndb_mgmd
@@ -252,7 +253,7 @@ public:
   void reportConnect(NodeId nodeId) override;
   void reportDisconnect(NodeId nodeId, Uint32 errNo) override;
   void reportError(NodeId nodeId, TransporterError errorCode,
-                   const char *info = 0) override;
+                   const char *info = nullptr) override;
   void transporter_recv_from(NodeId node) override;
 
   /**
@@ -366,8 +367,8 @@ private:
   NdbMutex *m_wakeup_thread_mutex;
   NdbCondition *m_wakeup_thread_cond;
 
-  trp_client* recv_client;
-  bool raise_thread_prio(NdbThread*);
+  ReceiveThreadClient* recv_client;
+  bool raise_thread_prio(NdbThread *thread);
 
   friend void* runSendRequest_C(void*);
   friend void* runReceiveResponse_C(void*);
@@ -378,9 +379,9 @@ private:
 private:
 
   struct ThreadData {
-    STATIC_CONST( ACTIVE = (1 << 16) | 1 );
-    STATIC_CONST( INACTIVE = (1 << 16) );
-    STATIC_CONST( END_OF_LIST = MAX_NO_THREADS + 1 );
+    static constexpr Uint32 ACTIVE = (1 << 16) | 1;
+    static constexpr Uint32 INACTIVE = (1 << 16);
+    static constexpr Uint32 END_OF_LIST = MAX_NO_THREADS + 1;
     
     ThreadData(Uint32 initialSize = 32);
     
@@ -394,7 +395,7 @@ private:
       Uint32 m_next;
 
       Client()
-	: m_clnt(NULL), m_next(END_OF_LIST) {}
+	: m_clnt(nullptr), m_next(END_OF_LIST) {}
 
       Client(trp_client* clnt, Uint32 next)
 	: m_clnt(clnt), m_next(next) {}
@@ -430,7 +431,7 @@ private:
       {
         return m_clients[blockNo].m_clnt;
       }
-      return 0;
+      return nullptr;
     }
 
     Uint32 freeCnt() const {     //need m_open_close_mutex
@@ -716,6 +717,27 @@ trp_client::getNodeInfo(Uint32 nodeId) const
   return m_facade->theClusterMgr->getNodeInfo(nodeId);
 }
 
+inline
+Uint32
+trp_client::get_node_change_count()
+{
+  return m_facade->theClusterMgr->get_node_change_count();
+}
+
+inline
+void
+trp_client::lock_node_state()
+{
+  return m_facade->theClusterMgr->lock_node_state();
+}
+
+inline
+void
+trp_client::unlock_node_state()
+{
+  return m_facade->theClusterMgr->unlock_node_state();
+}
+
 /** 
  * LinearSectionIterator
  *
@@ -734,7 +756,7 @@ private :
 public :
   LinearSectionIterator(const Uint32* _data, Uint32 _len)
   {
-    data= (_len == 0)? NULL:_data;
+    data= (_len == 0)? nullptr:_data;
     len= _len;
     read= false;
   }
@@ -757,7 +779,7 @@ public :
       return data;
     }
     sz= 0;
-    return NULL;
+    return nullptr;
   }
 };
 
@@ -811,7 +833,7 @@ public :
   GSIReader(GenericSectionIterator* _gsi)
   {
     gsi = _gsi;
-    chunkPtr = NULL;
+    chunkPtr = nullptr;
     chunkRemain = 0;
   }
 

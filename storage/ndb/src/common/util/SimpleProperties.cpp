@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,10 +23,11 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
 #include <ndb_global.h>
 #include <SimpleProperties.hpp>
 #include <NdbOut.hpp>
-#include <NdbTCP.h>
+#include "portlib/ndb_socket.h"  // ntohl()
 #include <UtilBuffer.hpp>
 
 bool
@@ -39,7 +41,9 @@ SimpleProperties::Writer::addKey(Uint16 key, ValueType type, Uint32 data) {
   head <<= 16;
   head += key;
   if(!putWord(htonl(head)))
+  {
     return false;
+  }
 
   m_value_length = data;
   m_bytes_written = 0;
@@ -59,12 +63,10 @@ bool
 SimpleProperties::Writer::add(const char * value, int len){
   const Uint32 valLen = (len + 3) / 4;
 
-  if ((len % 4) == 0)
-    return putWords((Uint32*)value, valLen);
+  if ((len % 4) == 0) return putWords((const Uint32 *)value, valLen);
 
   const Uint32 putLen= valLen - 1;
-  if (!putWords((Uint32*)value, putLen))
-    return false;
+  if (!putWords((const Uint32 *)value, putLen)) return false;
 
   // Special handling of last bytes
   union {
@@ -82,8 +84,10 @@ bool
 SimpleProperties::Writer::add(ValueType type, Uint16 key,
                               const void * value, int len){
   if(! addKey(key, type, len))
+  {
+    setError();
     return false;
-
+  }
   return add((const char*)value, len);
 }
 
@@ -97,6 +101,7 @@ SimpleProperties::Writer::append(const char * buf, Uint32 buf_size) {
       m_bytes_written += bytesToAdd;
       return bytesToAdd;
     } else {
+      setError();
       return -1;
     }
   }
@@ -105,6 +110,7 @@ SimpleProperties::Writer::append(const char * buf, Uint32 buf_size) {
 
 SimpleProperties::Reader::Reader(){
   m_itemLen = 0;
+  m_error = false;
 }
 
 bool 
@@ -129,7 +135,7 @@ SimpleProperties::Reader::getKey() const{
   return m_key;
 }
 
-Uint16
+Uint32
 SimpleProperties::Reader::getValueLen() const {
   switch(m_type){
   case Uint32Value:
@@ -162,7 +168,7 @@ char *
 SimpleProperties::Reader::getString(char * dst) const {
   if(peekWords((Uint32*)dst, m_itemLen))
     return dst;
-  return 0;
+  return nullptr;
 }
 
 int
@@ -185,6 +191,7 @@ SimpleProperties::Reader::getBuffered(char * buf, Uint32 buf_size) {
       m_strLen -= buf_size;
       return buf_size;
     }
+    assert(m_strLen <= buf_size);
     return m_strLen;
   }
   return 0;
@@ -305,13 +312,13 @@ SimpleProperties::pack(Writer & it, const void * __src,
         ok = true;
         break;
       case SimpleProperties::Uint32Value:{
-        Uint32 val = * ((Uint32*)src);
+        Uint32 val = *((const Uint32 *)src);
         ok = it.add(key, val);
       }
         break;
       case SimpleProperties::BinaryValue:{
         const char * src_len = _src + _map[i].Length_Offset;
-        Uint32 len = *((Uint32*)src_len);
+        Uint32 len = *((const Uint32 *)src_len);
         if((!ignoreMinMax) && _map[i].maxLength && len > _map[i].maxLength)
           return ValueTooLong;
         ok = it.add(key, src, len);
@@ -333,7 +340,7 @@ SimpleProperties::pack(Writer & it, const void * __src,
 
 void
 SimpleProperties::Reader::printAll(NdbOut& ndbout){
-  char tmp[1024];
+  char tmp[MAX_LOG_MESSAGE_SIZE];
   for(first(); valid(); next()){
     switch(getValueType()){
     case SimpleProperties::Uint32Value:
@@ -343,7 +350,7 @@ SimpleProperties::Reader::printAll(NdbOut& ndbout){
       break;
     case SimpleProperties::BinaryValue:
     case SimpleProperties::StringValue:
-      if(getValueLen() < 1024){
+      if(getValueLen() < MAX_LOG_MESSAGE_SIZE){
 	getString(tmp);
 	ndbout << "Key: " << getKey()
 	       << " value(" << getValueLen() << ") : " 
@@ -362,6 +369,31 @@ SimpleProperties::Reader::printAll(NdbOut& ndbout){
   }
 }
 
+void SimpleProperties::Reader::printAll(EventLogger *logger) {
+  char tmp[MAX_LOG_MESSAGE_SIZE];
+  for (first(); valid(); next()) {
+    switch (getValueType()) {
+      case SimpleProperties::Uint32Value:
+        logger->info("Key: %u value(%u) : %u", getKey(), getValueLen(),
+                     getUint32());
+        break;
+      case SimpleProperties::BinaryValue:
+      case SimpleProperties::StringValue:
+        if (getValueLen() < MAX_LOG_MESSAGE_SIZE) {
+          getString(tmp);
+          logger->info("Key: %u value(%u) : \"%s\"", getKey(), getValueLen(),
+                       tmp);
+        } else {
+          logger->info("Key: %u value(%u) : \"<TOO LONG>\"", getKey(),
+                       getValueLen());
+        }
+        break;
+      default:
+        logger->info("Unknown type for key: %u type: %u", getKey(),
+                     (Uint32)getValueType());
+    }
+  }
+}
 SimplePropertiesLinearReader::SimplePropertiesLinearReader
 (const Uint32 * src, Uint32 len){
   m_src = src;
@@ -373,6 +405,7 @@ SimplePropertiesLinearReader::SimplePropertiesLinearReader
 void 
 SimplePropertiesLinearReader::reset() { 
   m_pos = 0;
+  resetError();
 }
 
 bool 
@@ -422,6 +455,7 @@ LinearWriter::putWord(Uint32 val){
     m_src[m_pos++] = val;
     return true;
   }
+  setError();
   return false;
 }
 
@@ -432,6 +466,7 @@ LinearWriter::putWords(const Uint32 * src, Uint32 len){
     m_pos += len;
     return true;
   }
+  setError();
   return false;
 }
 
@@ -448,12 +483,22 @@ bool UtilBufferWriter::reset() { m_buf.clear(); return true;}
 
 bool 
 UtilBufferWriter::putWord(Uint32 val){
-  return (m_buf.append(&val, 4) == 0);
+  bool ret = (m_buf.append(&val, 4) == 0);
+  if (!ret)
+  {
+    setError();
+  }
+  return ret;
 }
 
 bool 
 UtilBufferWriter::putWords(const Uint32 * src, Uint32 len){
-  return (m_buf.append(src, 4 * len) == 0);
+  bool ret (m_buf.append(src, 4 * len) == 0);
+  if (!ret)
+  {
+    setError();
+  }
+  return ret;
 }
 
 

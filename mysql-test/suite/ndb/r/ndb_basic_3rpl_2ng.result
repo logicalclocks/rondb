@@ -101,6 +101,8 @@ Ndb_conflict_fn_epoch2_trans	#
 Ndb_conflict_fn_epoch_trans	#
 Ndb_conflict_fn_max	#
 Ndb_conflict_fn_max_del_win	#
+Ndb_conflict_fn_max_del_win_ins	#
+Ndb_conflict_fn_max_ins	#
 Ndb_conflict_fn_old	#
 Ndb_conflict_last_conflict_epoch	#
 Ndb_conflict_last_stable_epoch	#
@@ -172,6 +174,8 @@ ndb_log_empty_update	#
 ndb_log_exclusive_reads	#
 ndb_log_fail_terminate	#
 ndb_log_orig	#
+ndb_log_transaction_compression	#
+ndb_log_transaction_compression_level_zstd	#
 ndb_log_transaction_id	#
 ndb_log_update_as_write	#
 ndb_log_update_minimal	#
@@ -186,6 +190,8 @@ ndb_optimized_node_selection	#
 ndb_read_backup	#
 ndb_recv_thread_activation_threshold	#
 ndb_recv_thread_cpu_mask	#
+ndb_replica_batch_size	#
+ndb_replica_blob_write_batch_bytes	#
 ndb_report_thresh_binlog_epoch_slip	#
 ndb_report_thresh_binlog_mem_usage	#
 ndb_row_checksum	#

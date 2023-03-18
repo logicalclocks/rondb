@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -145,17 +145,17 @@ uchar *zstd_compress_alloc(mysql_zstd_compress_context *comp_ctx,
 /**
   Uncompress a zstd compressed data.
 
-  @param comp_ctx         Pointer to compression context.
-  @param packet           Packet with zstd compressed data.
-  @param len              Length of zstd compressed packet.
-  @param complen [out]    Length of uncompressed packet.
+  @param      comp_ctx    Pointer to compression context.
+  @param      packet      Packet with zstd compressed data.
+  @param      len         Length of zstd compressed packet.
+  @param[out] complen     Length of uncompressed packet.
 
   @return true on error else false.
 */
 
 static bool zstd_uncompress(mysql_zstd_compress_context *comp_ctx,
                             uchar *packet, size_t len, size_t *complen) {
-  DBUG_ASSERT(comp_ctx != nullptr);
+  assert(comp_ctx != nullptr);
   size_t zstd_res;
   void *compbuf;
 
@@ -235,9 +235,9 @@ static uchar *zlib_compress_alloc(mysql_zlib_compress_context *comp_ctx,
 /**
   Uncompress a zlib compressed data.
 
-  @param packet           Packet which zstd compressed data.
-  @param len              Length of zstd compressed packet.
-  @param complen [out]    Length of uncompressed packet.
+  @param      packet      Packet which zstd compressed data.
+  @param      len         Length of zstd compressed packet.
+  @param[out] complen     Length of uncompressed packet.
 
   @return true on error else false.
 */
@@ -272,9 +272,8 @@ static bool zlib_uncompress(uchar *packet, size_t len, size_t *complen) {
    @param [in] len          Length of data to compress at 'packet'
    @param [out] complen     Compressed packet length. 0, if packet was not
                             compressed
-   @return
-     @retval 1   error. 'len' is not changed
-     @retval 0   ok.    'len' contains the size of the compressed packet
+   @retval 1   error. 'len' is not changed
+   @retval 0   ok.    'len' contains the size of the compressed packet
 */
 
 bool my_compress(mysql_compress_context *comp_ctx, uchar *packet, size_t *len,
@@ -304,7 +303,7 @@ uchar *my_compress_alloc(mysql_compress_context *comp_ctx, const uchar *packet,
     return nullptr;
   }
 
-  DBUG_ASSERT(comp_ctx->algorithm == enum_compression_algorithm::MYSQL_ZLIB);
+  assert(comp_ctx->algorithm == enum_compression_algorithm::MYSQL_ZLIB);
   return zlib_compress_alloc(&comp_ctx->u.zlib_ctx, packet, len, complen);
 }
 
@@ -315,7 +314,7 @@ uchar *my_compress_alloc(mysql_compress_context *comp_ctx, const uchar *packet,
   @param packet        Compressed data. This is is replaced with the original
                        data.
   @param len           Length of compressed data
-  @param complen [out] Length of the packet buffer after uncompression (must be
+  @param[out] complen  Length of the packet buffer after uncompression (must be
                        enough for the original data)
 
   @return true on error else false on success
@@ -324,7 +323,7 @@ uchar *my_compress_alloc(mysql_compress_context *comp_ctx, const uchar *packet,
 bool my_uncompress(mysql_compress_context *comp_ctx, uchar *packet, size_t len,
                    size_t *complen) {
   DBUG_ENTER("my_uncompress");
-  DBUG_ASSERT(comp_ctx != nullptr);
+  assert(comp_ctx != nullptr);
 
   if (*complen) /* If compressed */
   {
@@ -356,7 +355,7 @@ unsigned int mysql_default_compression_level(
     case MYSQL_ZSTD:
       return 3;
     default:
-      DBUG_ASSERT(0);  // should not reach here.
-      return 0;        // To make compiler happy.
+      assert(0);  // should not reach here.
+      return 0;   // To make compiler happy.
   }
 }

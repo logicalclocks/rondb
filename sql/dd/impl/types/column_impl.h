@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2014, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,13 +23,13 @@
 #ifndef DD__COLUMN_IMPL_INCLUDED
 #define DD__COLUMN_IMPL_INCLUDED
 
+#include <assert.h>
 #include <stddef.h>
 #include <sys/types.h>
 #include <memory>  // std::unique_ptr
 #include <new>
+#include <optional>
 
-#include "my_dbug.h"
-#include "nullable.h"
 #include "sql/dd/impl/properties_impl.h"           // Properties_impl
 #include "sql/dd/impl/types/entity_object_impl.h"  // dd::Entity_object_impl
 #include "sql/dd/impl/types/weak_object_impl.h"
@@ -41,8 +41,6 @@
 #include "sql/dd/types/column_type_element.h"  // IWYU pragma: keep
 #include "sql/gis/srid.h"                      // gis::srid_t
 #include "sql/strfunc.h"
-
-using Mysql::Nullable;
 
 namespace dd {
 
@@ -419,9 +417,11 @@ class Column_impl : public Entity_object_impl, public Column {
   /////////////////////////////////////////////////////////////////////////
   // Spatial reference system ID
   /////////////////////////////////////////////////////////////////////////
-  void set_srs_id(Nullable<gis::srid_t> srs_id) override { m_srs_id = srs_id; }
+  void set_srs_id(std::optional<gis::srid_t> srs_id) override {
+    m_srs_id = srs_id;
+  }
 
-  Nullable<gis::srid_t> srs_id() const override { return m_srs_id; }
+  std::optional<gis::srid_t> srs_id() const override { return m_srs_id; }
 
   /////////////////////////////////////////////////////////////////////////
   // Elements.
@@ -430,8 +430,8 @@ class Column_impl : public Entity_object_impl, public Column {
   Column_type_element *add_element() override;
 
   const Column_type_element_collection &elements() const override {
-    DBUG_ASSERT(type() == enum_column_types::ENUM ||
-                type() == enum_column_types::SET);
+    assert(type() == enum_column_types::ENUM ||
+           type() == enum_column_types::SET);
     return m_elements;
   }
 
@@ -543,12 +543,9 @@ class Column_impl : public Entity_object_impl, public Column {
   Object_id m_collation_id;
   bool m_is_explicit_collation;
 
-  // TODO-WIKI21 should the columns.name be defined utf8_general_cs ?
-  // instead of utf8_general_ci.
-
   enum_column_key m_column_key;
 
-  Nullable<gis::srid_t> m_srs_id;
+  std::optional<gis::srid_t> m_srs_id;
 };
 
 ///////////////////////////////////////////////////////////////////////////

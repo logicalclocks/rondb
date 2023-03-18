@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2004, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2004, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -118,7 +118,7 @@ private:
     Int32 adjusted_group; // Proximity group adjusted via ndbapi calls
     Uint32 id;
     /**
-     * Counts how many times node was choosen for hint when
+     * Counts how many times node was chosen for hint when
      * more than one were possible.
      */
     Uint32 hint_count;
@@ -131,8 +131,8 @@ private:
   Uint32 m_my_node_id;
   Uint32 m_max_api_nodeid;
   Uint32 m_my_location_domain_id;
-  int init_nodes_vector(Uint32 nodeid, const ndb_mgm_configuration &config);
-  int configure(Uint32 nodeid, const ndb_mgm_configuration &config);
+  int init_nodes_vector(Uint32 nodeid, const ndb_mgm_configuration* config);
+  int configure(Uint32 nodeid, const ndb_mgm_configuration *config);
   void connect_thread();
   void set_name(const char *name);
   int set_service_uri(const char *, const char *, int, const char *);
@@ -144,14 +144,18 @@ private:
   /**
    * Select the "closest" node
    */
-  Uint32 select_node(NdbImpl *impl_ndb, const Uint16* nodes, Uint32 cnt);
+  Uint32 select_node(NdbImpl *impl_ndb,
+                     const Uint16* nodes,
+                     Uint32 cnt,
+                     Uint32 primary);
   /**
    * Select primary or if primary in other location domain
    * choose a node in the same location domain
    */
   Uint32 select_location_based(NdbImpl *impl_ndb,
                                const Uint16* nodes,
-                               Uint32 cnt);
+                               Uint32 cnt,
+                               Uint32 primary_node);
   /**
    * Choose node in same location domain if one exists, otherwise
    * make no choice.
@@ -187,7 +191,7 @@ private:
   unsigned m_latest_error;
 
   // Scan batch configuration parameters
-  NdbApiConfig m_config;
+  NdbApiConfig m_ndbapiconfig;
 
   // Avoid transid reuse with Block ref reuse
   Vector<Uint32> m_next_transids;
@@ -209,6 +213,9 @@ private:
 
   // system.name copied from configuration
   BaseString m_system_name;
+
+  // Config generation of used configuration
+  Uint32 m_config_generation{0};
 };
 
 #endif

@@ -254,14 +254,67 @@ ENGINE = NDB;
 
 DROP TABLE t1;
 
+#
 # Create a table with a disk column having offset > max offset
+# The column col4 will have this problem.
+#
 
 --error ER_CANT_CREATE_TABLE
 create table t1(
   col1 int unsigned not null primary key,
   col2 int unsigned not null,
-  col3 varchar(8176),
-  col4 int)
+  col3 char(255),
+  col4 char(255),
+  col5 char(255),
+  col6 char(255),
+  col7 char(255),
+  col8 char(255),
+  col9 char(255),
+  col10 char(255),
+  col11 char(255),
+  col12 char(255),
+  col13 char(255),
+  col14 char(255),
+  col15 char(255),
+  col16 char(255),
+  col17 char(255),
+  col18 char(255),
+  col19 char(255),
+  col20 char(255),
+  col21 char(255),
+  col22 char(255),
+  col23 char(255),
+  col24 char(255),
+  col25 char(255),
+  col26 char(255),
+  col27 char(255),
+  col28 char(255),
+  col29 char(255),
+  col30 char(255),
+  col31 char(255),
+  col32 char(255),
+  col33 char(255),
+  col34 char(255),
+  col35 char(255))
+  tablespace ts1 storage disk
+  charset = latin1 engine=ndbcluster;
+show warnings;
+
+create table t1(
+  col1 int unsigned not null primary key,
+  col2 int unsigned not null,
+  col3 varchar(8192),
+  col4 varchar(8192))
+  tablespace ts1 storage disk
+  charset = latin1 engine=ndbcluster;
+show warnings;
+drop table t1;
+
+--error ER_CANT_CREATE_TABLE
+create table t1(
+  col1 int unsigned not null primary key,
+  col2 int unsigned not null,
+  col3 varchar(30000))
   tablespace ts1 storage disk
   charset = latin1 engine=ndbcluster;
 show warnings;
@@ -328,7 +381,7 @@ insert
 into City (Name,CountryCode,District,Population)
 values ('BeiJing','CN','Beijing',2000);
 
---echo # Dropping tablsepace before dropping table should fail
+--echo # Dropping tablespace before dropping table should fail
 --error ER_TABLESPACE_IS_NOT_EMPTY
 drop tablespace ts2;
 
@@ -516,6 +569,15 @@ USE LOGFILE GROUP lg1
 INITIAL_SIZE 8M
 ENGINE NDB;
 
+#
+# Test that variable sized rows can be seen during
+# transaction, after transaction, after inserts and
+# after updates using both key lookup and scans.
+#
+# Test with table consisting of mixes of fixed size parts,
+# variable sized parts and dynamic parts.
+#
+
 CREATE TABLE t1 (
   a int NOT NULL,
   b varchar(4000) charset latin1,  -- must use 2 pages undo
@@ -540,13 +602,139 @@ commit;
 delete from t1;
 begin;
 insert into t1 values (1, 'x');
+select * from t1 where a = 1;
+update t1 set b = 'y' where a = 1;
 select * from t1;
 rollback;
 
 set autocommit = 1;
+insert into t1 values (1, 'x');
+select * from t1 where a = 1;
+update t1 set b = 'y' where a = 1;
+select * from t1;
+
+drop table t1;
+
+CREATE TABLE t1 (
+  a int NOT NULL,
+  b int,
+  PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+
+set autocommit = 0;
+begin;
+insert into t1 values (1, 1);
+select * from t1 where a = 1;
+update t1 set b = 2 where a = 1;
+select * from t1;
+rollback;
+
+set autocommit = 1;
+insert into t1 values (1, 1);
+select * from t1 where a = 1;
+update t1 set b = 2 where a = 1;
+select * from t1;
+
+drop table t1;
+
+CREATE TABLE t1 (
+  a int NOT NULL,
+  b int,
+  c varchar(128) charset latin1,
+  PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+
+set autocommit = 0;
+begin;
+insert into t1 values (1, 1, 'x');
+select * from t1 where a = 1;
+update t1 set c = 'y' where a = 1;
+select * from t1;
+rollback;
+
+set autocommit = 1;
+insert into t1 values (1, 1, 'x');
+select * from t1 where a = 1;
+update t1 set c = 'y' where a = 1;
+select * from t1;
+
+drop table t1;
+
+CREATE TABLE t1 (
+  a int NOT NULL,
+  b int,
+  c varchar(128),
+  d int column_format dynamic,
+  PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+
+set autocommit = 0;
+begin;
+insert into t1 values (1, 2, 'x', 3);
+select * from t1 where a = 1;
+update t1 set c = 'y' where a = 1;
+select * from t1;
+rollback;
+
+set autocommit = 1;
+insert into t1 values (1, 2, 'x', 3);
+select * from t1 where a = 1;
+update t1 set c = 'y' where a = 1;
+select * from t1;
+
+drop table t1;
+
+CREATE TABLE t1 (
+  a int NOT NULL,
+  b int column_format dynamic,
+  PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+
+set autocommit = 0;
+begin;
+insert into t1 values (1, 1);
+select * from t1 where a = 1;
+update t1 set b = NULL where a = 1;
+select * from t1;
+rollback;
+
+set autocommit = 1;
+insert into t1 values (1, 1);
+select * from t1 where a = 1;
+update t1 set b = NULL where a = 1;
+select * from t1;
+
+drop table t1;
+
+CREATE TABLE t1 (
+  a int NOT NULL,
+  b int column_format dynamic,
+  c varchar(128) column_format dynamic,
+  PRIMARY KEY using hash (a)
+)
+TABLESPACE ts1 STORAGE DISK ENGINE=NDBCLUSTER;
+
+set autocommit = 0;
+begin;
+insert into t1 values (1, 2, 'z');
+select * from t1 where a = 1;
+update t1 set b = NULL, c = NULL where a = 1;
+select * from t1;
+rollback;
+
+set autocommit = 1;
+insert into t1 values (1, 2, 'z');
+select * from t1 where a = 1;
+update t1 set b = NULL, c = NULL where a = 1;
+select * from t1;
+
+drop table t1;
 
 --echo # Cleanup
-drop table t1;
 alter tablespace ts1
 drop datafile 'datafile.dat';
 drop tablespace ts1;

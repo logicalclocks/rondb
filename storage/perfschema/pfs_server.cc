@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -66,6 +66,8 @@ static void cleanup_performance_schema(void);
 void cleanup_instrument_config(void);
 
 void pre_initialize_performance_schema() {
+  record_main_thread_id();
+
   pfs_initialized = false;
 
   init_all_builtin_memory_class();
@@ -84,9 +86,6 @@ void pre_initialize_performance_schema() {
     in the instrumented code, to explicitly cleanup the instrumentation.
   */
   THR_PFS = nullptr;
-  for (int i = 0; i < THR_PFS_NUM_KEYS; ++i) {
-    THR_PFS_contexts[i] = nullptr;
-  }
 }
 
 int initialize_performance_schema(
@@ -176,6 +175,8 @@ int initialize_performance_schema(
         param->m_consumer_events_stages_history_enabled;
     flag_events_stages_history_long =
         param->m_consumer_events_stages_history_long_enabled;
+    flag_events_statements_cpu =
+        param->m_consumer_events_statements_cpu_enabled;
     flag_events_statements_current =
         param->m_consumer_events_statements_current_enabled;
     flag_events_statements_history =
@@ -201,6 +202,7 @@ int initialize_performance_schema(
     flag_events_stages_current = false;
     flag_events_stages_history = false;
     flag_events_stages_history_long = false;
+    flag_events_statements_cpu = false;
     flag_events_statements_current = false;
     flag_events_statements_history = false;
     flag_events_statements_history_long = false;
@@ -348,6 +350,7 @@ void shutdown_performance_schema(void) {
   flag_events_stages_current = false;
   flag_events_stages_history = false;
   flag_events_stages_history_long = false;
+  flag_events_statements_cpu = false;
   flag_events_statements_current = false;
   flag_events_statements_history = false;
   flag_events_statements_history_long = false;

@@ -32,7 +32,7 @@ UseOnlyIPv4=1
 ODirect= 1
 CompressedLCP= 1
 CompressedBackup= 1
-# the following parametes just function as a small regression
+# the following parameters just function as a small regression
 # test that the parameter exists
 InitialNoOfOpenFiles= 27
 
@@ -49,7 +49,7 @@ DiskIOThreadPool=1
 #
 # (Option is ignored for non-MT'ed NDB)
 #
-ThreadConfig=main={count=1},tc={count=3},ldm={count=4},query={count=4},recover={count=2},io={count=1},rep={count=1},recv={count=2},send={count=2}
+ThreadConfig=main={count=1},tc={count=3},ldm={count=4},recover={count=2},io={count=1},rep={count=1},recv={count=2},send={count=2}
 
 [api]
 UseOnlyIPv4=1

@@ -42,7 +42,6 @@ disconnection con1;
 SET @@SESSION.wait_timeout = 2;
 # Wait for con1 to be disconnected.
 # Check that con1 has been disconnected.
-# CR_SERVER_LOST, CR_SERVER_GONE_ERROR
 SELECT 1;
 Got one of the listed errors
 #
@@ -52,8 +51,10 @@ Got one of the listed errors
 SET @@SESSION.wait_timeout = 2;
 # Wait for con1 to be disconnected.
 # Check that con1 has been disconnected.
-# CR_SERVER_LOST, CR_SERVER_GONE_ERROR
+# Client interaction timeout
 SELECT 1;
 Got one of the listed errors
+SELECT "Check that we don't reconnect with reconnection disabled.";
+Got one of the listed errors
 # must find the pattern
-Pattern "The wait_timeout period was exceeded, the idle time since last command was too long." found
+Pattern "'wait_timeout' period of .* seconds was exceeded for .*\. The idle time since last command was too long\." found

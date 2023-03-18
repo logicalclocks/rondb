@@ -1,7 +1,7 @@
 #ifndef ITEM_SUBSELECT_INCLUDED
 #define ITEM_SUBSELECT_INCLUDED
 
-/* Copyright (c) 2002, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2002, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,6 +25,7 @@
 
 /* subselect Item */
 
+#include <assert.h>
 #include <sys/types.h>
 
 #include <cstddef>
@@ -33,7 +34,7 @@
 
 #include "field_types.h"  // enum_field_types
 #include "my_alloc.h"     // Destroy_only
-#include "my_dbug.h"
+
 #include "my_inttypes.h"
 #include "my_table_map.h"
 #include "my_time.h"
@@ -41,11 +42,12 @@
 #include "mysql_time.h"
 #include "sql/comp_creator.h"
 #include "sql/enum_query_type.h"
-#include "sql/item.h"            // Item_result_field
-#include "sql/parse_location.h"  // POS
+#include "sql/item.h"                    // Item_result_field
+#include "sql/iterators/row_iterator.h"  // IWYU pragma: keep
+#include "sql/parse_location.h"          // POS
 #include "sql/parse_tree_node_base.h"
-#include "sql/row_iterator.h"  // IWYU pragma: keep
 #include "sql/sql_const.h"
+#include "sql/sql_opt_exec_shared.h"
 #include "template_utils.h"
 
 class Comp_creator;
@@ -55,12 +57,11 @@ class Item_in_optimizer;
 class JOIN;
 class Json_wrapper;
 class PT_subquery;
-class QEP_TAB;
 class Query_result_interceptor;
 class Query_result_subquery;
 class Query_result_union;
-class SELECT_LEX;
-class SELECT_LEX_UNIT;
+class Query_block;
+class Query_expression;
 class String;
 class SubqueryWithResult;
 class THD;
@@ -68,7 +69,7 @@ class Temp_table_param;
 class my_decimal;
 class subselect_indexsubquery_engine;
 struct AccessPath;
-struct TABLE_LIST;
+class Table_ref;
 
 template <class T>
 class List;
@@ -104,7 +105,7 @@ class Item_subselect : public Item_result_field {
   Item *substitution;
 
   /* unit of subquery */
-  SELECT_LEX_UNIT *unit;
+  Query_expression *unit;
   /**
      If !=NO_PLAN_IDX: this Item is in the condition attached to the JOIN_TAB
      having this index in the parent JOIN.
@@ -116,7 +117,9 @@ class Item_subselect : public Item_result_field {
   enum_engine_type engine_type() const;
 
   // For EXPLAIN. Only valid if engine_type() == HASH_SJ_ENGINE.
-  const QEP_TAB *get_qep_tab() const;
+  const TABLE *get_table() const;
+  const Index_lookup &index_lookup() const;
+  join_type get_join_type() const;
 
   void create_iterators(THD *thd);
   virtual AccessPath *root_access_path() const { return nullptr; }
@@ -127,7 +130,7 @@ class Item_subselect : public Item_result_field {
     pointer in constructor initialization list, but we need to pass a pointer
     to subselect Item class to Query_result_interceptor's constructor.
   */
-  void init(SELECT_LEX *select, Query_result_subquery *result);
+  void init(Query_block *select, Query_result_subquery *result);
 
   // The inner part of the subquery.
   unique_ptr_destroy_only<SubqueryWithResult> subquery;
@@ -166,7 +169,7 @@ class Item_subselect : public Item_result_field {
   /// Accumulate properties from underlying query expression
   void accumulate_properties();
   /// Accumulate properties from underlying query block
-  void accumulate_properties(SELECT_LEX *select);
+  void accumulate_properties(Query_block *select);
   /// Accumulate properties from a selected expression within a query block.
   void accumulate_expression(Item *item);
   /// Accumulate properties from a condition or GROUP/ORDER within a query
@@ -183,14 +186,14 @@ class Item_subselect : public Item_result_field {
 
   void cleanup() override;
   virtual void reset() { null_value = true; }
-  virtual trans_res select_transformer(THD *thd, SELECT_LEX *select) = 0;
+  virtual trans_res select_transformer(THD *thd, Query_block *select) = 0;
   bool assigned() const { return value_assigned; }
   void assigned(bool a) { value_assigned = a; }
   enum Type type() const override;
   bool is_null() override { return update_null_value() || null_value; }
   bool fix_fields(THD *thd, Item **ref) override;
-  void fix_after_pullout(SELECT_LEX *parent_select,
-                         SELECT_LEX *removed_select) override;
+  void fix_after_pullout(Query_block *parent_query_block,
+                         Query_block *removed_query_block) override;
   virtual bool exec(THD *thd);
   bool resolve_type(THD *) override;
   table_map used_tables() const override { return used_tables_cache; }
@@ -223,7 +226,7 @@ class Item_subselect : public Item_result_field {
   bool clean_up_after_removal(uchar *arg) override;
 
   const char *func_name() const override {
-    DBUG_ASSERT(0);
+    assert(0);
     return "subselect";
   }
 
@@ -238,9 +241,9 @@ class Item_subselect : public Item_result_field {
   struct Collect_subq_info {
     ///< accumulated all subq (or aggregates) found
     std::vector<Item_subselect *> list;
-    SELECT_LEX *m_select{nullptr};
-    Collect_subq_info(SELECT_LEX *owner) : m_select(owner) {}
-    bool contains(SELECT_LEX_UNIT *candidate) {
+    Query_block *m_query_block{nullptr};
+    Collect_subq_info(Query_block *owner) : m_query_block(owner) {}
+    bool contains(Query_expression *candidate) {
       for (auto sq : list) {
         if (sq->unit == candidate) return true;
       }
@@ -258,8 +261,8 @@ class Item_subselect : public Item_result_field {
   friend bool Item_field::fix_fields(THD *, Item **);
   friend int Item_field::fix_outer_field(THD *, Field **, Item **);
   friend bool Item_ref::fix_fields(THD *, Item **);
-  friend void Item_ident::fix_after_pullout(SELECT_LEX *parent_select,
-                                            SELECT_LEX *removed_select);
+  friend void Item_ident::fix_after_pullout(Query_block *parent_query_block,
+                                            Query_block *removed_query_block);
 
  private:
   bool subq_opt_away_processor(uchar *arg) override;
@@ -275,7 +278,7 @@ class Item_singlerow_subselect : public Item_subselect {
   Item_cache *value, **row;
   bool no_rows;  ///< @c no_rows_in_result
  public:
-  Item_singlerow_subselect(SELECT_LEX *select_lex);
+  Item_singlerow_subselect(Query_block *query_block);
   Item_singlerow_subselect()
       : Item_subselect(), value(nullptr), row(nullptr), no_rows(false) {}
 
@@ -283,7 +286,7 @@ class Item_singlerow_subselect : public Item_subselect {
   subs_type substype() const override { return SINGLEROW_SUBS; }
 
   void reset() override;
-  trans_res select_transformer(THD *thd, SELECT_LEX *select) override;
+  trans_res select_transformer(THD *thd, Query_block *select) override;
   void store(uint i, Item *item);
   double val_real() override;
   longlong val_int() override;
@@ -328,16 +331,18 @@ class Item_singlerow_subselect : public Item_subselect {
   struct Scalar_subquery_replacement {
     Item_singlerow_subselect *m_target;  ///< subquery to be replaced with field
     Field *m_field;                      ///< the replacement field
-    SELECT_LEX *m_outer_select;          ///< The transformed query block.
-    SELECT_LEX *m_inner_select;  ///< The immediately surrounding query block.
-                                 ///< This will be the transformed block or a
-                                 ///< subquery of it
+    Query_block *m_outer_query_block;    ///< The transformed query block.
+    Query_block *m_inner_query_block;    ///< The immediately surrounding query
+                                       ///< block. This will be the transformed
+                                       ///< block or a subquery of it
+    bool m_add_coalesce{false};
     Scalar_subquery_replacement(Item_singlerow_subselect *target, Field *field,
-                                SELECT_LEX *select)
+                                Query_block *select, bool add_coalesce)
         : m_target(target),
           m_field(field),
-          m_outer_select(select),
-          m_inner_select(select) {}
+          m_outer_query_block(select),
+          m_inner_query_block(select),
+          m_add_coalesce(add_coalesce) {}
   };
 
   Item *replace_scalar_subquery(uchar *arge) override;
@@ -347,13 +352,15 @@ class Item_singlerow_subselect : public Item_subselect {
     The only caller of this method is handle_sql2003_note184_exception(),
     see the code there for more details.
     Note that this method breaks the object internal integrity, by
-    removing it's association with the corresponding SELECT_LEX,
+    removing it's association with the corresponding Query_block,
     making this object orphan from the parse tree.
     No other method, beside the destructor, should be called on this
     object, as it is now invalid.
-    @return the SELECT_LEX structure that was given in the constructor.
+    @return the Query_block structure that was given in the constructor.
   */
-  SELECT_LEX *invalidate_and_restore_select_lex();
+  Query_block *invalidate_and_restore_query_block();
+  std::optional<ContainedSubquery> get_contained_subquery(
+      const Query_block *outer_query_block) override;
   friend class Query_result_scalar_subquery;
 };
 
@@ -363,7 +370,7 @@ class Item_maxmin_subselect final : public Item_singlerow_subselect {
   bool max;
   bool was_values;  // Set if we have found at least one row
  public:
-  Item_maxmin_subselect(Item_subselect *parent, SELECT_LEX *select_lex,
+  Item_maxmin_subselect(Item_subselect *parent, Query_block *query_block,
                         bool max, bool ignore_nulls);
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
@@ -394,14 +401,14 @@ enum class Subquery_strategy : int {
   CANDIDATE_FOR_DERIVED_TABLE,
   /// Semi-join flattening
   SEMIJOIN,
-  /// Subquery's WHERE is always false, replace predicate with "false"
-  ALWAYS_FALSE,
   /// Rewrite to joined derived table
   DERIVED_TABLE,
   /// Evaluate as EXISTS subquery (possibly after rewriting from another type)
   SUBQ_EXISTS,
   /// Subquery materialization (HASH_SJ_ENGINE)
   SUBQ_MATERIALIZATION,
+  /// Subquery has been deleted, probably because it was always false
+  DELETED,
 };
 
 class Item_exists_subselect : public Item_subselect {
@@ -422,27 +429,29 @@ class Item_exists_subselect : public Item_subselect {
   /**
     Used by subquery optimizations to keep track about where this subquery
     predicate is located, and whether it is a candidate for transformation.
-      (TABLE_LIST*) 1   - the predicate is an AND-part of the WHERE
-      join nest pointer - the predicate is an AND-part of ON expression
-                          of a join nest
-      NULL              - for all other locations. It also means that the
-                          predicate is not a candidate for transformation.
+      (Table_ref*) 1 - the predicate is an AND-part of the WHERE
+      join nest pointer    - the predicate is an AND-part of ON expression
+                             of a join nest
+      NULL                 - for all other locations. It also means that the
+                             predicate is not a candidate for transformation.
     See also THD::emb_on_expr_nest.
 
     As for the second case above (the join nest pointer), note that this value
     may change if scalar subqueries are transformed to derived tables,
     cf. transform_scalar_subqueries_to_join_with_derived, due to the need to
-    build new join nests. The change is performed in SELECT_LEX::nest_derived.
+    build new join nests. The change is performed in Query_block::nest_derived.
   */
-  TABLE_LIST *embedding_join_nest{nullptr};
+  Table_ref *embedding_join_nest{nullptr};
 
-  Item_exists_subselect(SELECT_LEX *select);
+  Item_exists_subselect(Query_block *select);
 
   Item_exists_subselect() : Item_subselect() {}
 
   explicit Item_exists_subselect(const POS &pos) : super(pos) {}
 
-  trans_res select_transformer(THD *, SELECT_LEX *) override {
+  void notify_removal() override { strategy = Subquery_strategy::DELETED; }
+
+  trans_res select_transformer(THD *, Query_block *) override {
     strategy = Subquery_strategy::SUBQ_EXISTS;
     return RES_OK;
   }
@@ -588,7 +597,6 @@ class Item_in_subselect : public Item_exists_subselect {
     bool dependent_after;
   } * in2exists_info;
 
-  Item *remove_in2exists_conds(Item *conds);
   bool mark_as_outer(Item *left_row, size_t col);
 
  public:
@@ -617,7 +625,7 @@ class Item_in_subselect : public Item_exists_subselect {
     if (pushed_cond_guards) pushed_cond_guards[i] = v;
   }
 
-  Item_in_subselect(Item *left_expr, SELECT_LEX *select_lex);
+  Item_in_subselect(Item *left_expr, Query_block *query_block);
   Item_in_subselect(const POS &pos, Item *left_expr,
                     PT_subquery *pt_subquery_arg);
 
@@ -645,17 +653,17 @@ class Item_in_subselect : public Item_exists_subselect {
     null_value = false;
     was_null = false;
   }
-  trans_res select_transformer(THD *thd, SELECT_LEX *select) override;
-  trans_res select_in_like_transformer(THD *thd, SELECT_LEX *select,
+  trans_res select_transformer(THD *thd, Query_block *select) override;
+  trans_res select_in_like_transformer(THD *thd, Query_block *select,
                                        Comp_creator *func);
-  trans_res single_value_transformer(THD *thd, SELECT_LEX *select,
+  trans_res single_value_transformer(THD *thd, Query_block *select,
                                      Comp_creator *func);
-  trans_res row_value_transformer(THD *thd, SELECT_LEX *select);
-  trans_res single_value_in_to_exists_transformer(THD *thd, SELECT_LEX *select,
+  trans_res row_value_transformer(THD *thd, Query_block *select);
+  trans_res single_value_in_to_exists_transformer(THD *thd, Query_block *select,
                                                   Comp_creator *func);
-  trans_res row_value_in_to_exists_transformer(THD *thd, SELECT_LEX *select);
-  bool subquery_allows_materialization(THD *thd, SELECT_LEX *select_lex,
-                                       const SELECT_LEX *outer);
+  trans_res row_value_in_to_exists_transformer(THD *thd, Query_block *select);
+  bool subquery_allows_materialization(THD *thd, Query_block *query_block,
+                                       const Query_block *outer);
   bool walk(Item_processor processor, enum_walk walk, uchar *arg) override;
   Item *transform(Item_transformer transformer, uchar *arg) override;
   bool exec(THD *thd) override;
@@ -668,22 +676,23 @@ class Item_in_subselect : public Item_exists_subselect {
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
   bool fix_fields(THD *thd, Item **ref) override;
-  void fix_after_pullout(SELECT_LEX *parent_select,
-                         SELECT_LEX *removed_select) override;
+  void fix_after_pullout(Query_block *parent_query_block,
+                         Query_block *removed_query_block) override;
   bool init_left_expr_cache(THD *thd);
 
   /**
      Once the decision to use IN->EXISTS has been taken, performs some last
      steps of this transformation.
   */
-  bool finalize_exists_transform(THD *thd, SELECT_LEX *select);
+  bool finalize_exists_transform(THD *thd, Query_block *select);
   /**
      Once the decision to use materialization has been taken, performs some
      last steps of this transformation.
   */
   bool finalize_materialization_transform(THD *thd, JOIN *join);
-
   AccessPath *root_access_path() const override;
+  std::optional<ContainedSubquery> get_contained_subquery(
+      const Query_block *outer_query_block) override;
 
   friend class Item_ref_null_helper;
   friend class Item_is_not_null_test;
@@ -703,23 +712,23 @@ class Item_allany_subselect final : public Item_in_subselect {
   bool all;
 
   Item_allany_subselect(Item *left_expr, chooser_compare_func_creator fc,
-                        SELECT_LEX *select, bool all);
+                        Query_block *select, bool all);
 
   // only ALL subquery has upper not
   subs_type substype() const override { return all ? ALL_SUBS : ANY_SUBS; }
-  trans_res select_transformer(THD *thd, SELECT_LEX *select) override;
+  trans_res select_transformer(THD *thd, Query_block *select) override;
   void print(const THD *thd, String *str,
              enum_query_type query_type) const override;
 };
 
 class SubqueryWithResult {
  public:
-  SubqueryWithResult(SELECT_LEX_UNIT *u, Query_result_interceptor *res,
+  SubqueryWithResult(Query_expression *u, Query_result_interceptor *res,
                      Item_subselect *si);
   /**
     Cleanup subquery after complete query execution, free all resources.
   */
-  void cleanup(THD *thd);
+  void cleanup();
   bool prepare(THD *thd);
   void fix_length_and_dec(Item_cache **row);
   /**
@@ -740,13 +749,13 @@ class SubqueryWithResult {
   void print(const THD *thd, String *str, enum_query_type query_type);
   bool change_query_result(THD *thd, Item_subselect *si,
                            Query_result_subquery *result);
-  SELECT_LEX *single_select_lex() const;  // Only if unit is simple.
+  Query_block *single_query_block() const;  // Only if unit is simple.
 
   enum Item_result type() const { return res_type; }
   enum_field_types field_type() const { return res_field_type; }
   bool may_be_null() const { return maybe_null; }
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   /**
      @returns the internal Item. Defined only in debug builds, because should
      be used only for debug asserts.
@@ -765,7 +774,7 @@ class SubqueryWithResult {
   */
   bool maybe_null;
 
-  SELECT_LEX_UNIT *unit; /* corresponding unit structure */
+  Query_expression *unit; /* corresponding unit structure */
 
   void set_row(const mem_root_deque<Item *> &item_list, Item_cache **row,
                bool never_empty);
@@ -793,7 +802,10 @@ class subselect_indexsubquery_engine {
  protected:
   Query_result_union *result = nullptr; /* results storage class */
   /// Table which is read, using one of eq_ref, ref, ref_or_null.
-  QEP_TAB *tab;
+  TABLE *table{nullptr};
+  Table_ref *table_ref{nullptr};
+  Index_lookup ref;
+  join_type type{JT_UNKNOWN};
   Item *cond;     /* The WHERE condition of subselect */
   ulonglong hash; /* Hash value calculated by RefIterator, when needed. */
   /*
@@ -813,14 +825,23 @@ class subselect_indexsubquery_engine {
  public:
   enum enum_engine_type { INDEXSUBQUERY_ENGINE, HASH_SJ_ENGINE };
 
-  subselect_indexsubquery_engine(QEP_TAB *tab_arg, Item_in_subselect *subs,
-                                 Item *where, Item *having_arg)
-      : tab(tab_arg), cond(where), having(having_arg), item(subs) {}
+  subselect_indexsubquery_engine(TABLE *table, Table_ref *table_ref,
+                                 const Index_lookup &ref,
+                                 enum join_type join_type,
+                                 Item_in_subselect *subs, Item *where,
+                                 Item *having_arg)
+      : table(table),
+        table_ref(table_ref),
+        ref(ref),
+        type(join_type),
+        cond(where),
+        having(having_arg),
+        item(subs) {}
   virtual ~subselect_indexsubquery_engine() = default;
   virtual bool exec(THD *thd);
   virtual void print(const THD *thd, String *str, enum_query_type query_type);
   virtual enum_engine_type engine_type() const { return INDEXSUBQUERY_ENGINE; }
-  virtual void cleanup(THD *) {}
+  virtual void cleanup() {}
   virtual void create_iterators(THD *) {}
 };
 
@@ -830,7 +851,7 @@ class subselect_indexsubquery_engine {
  */
 Item *all_any_subquery_creator(Item *left_expr,
                                chooser_compare_func_creator cmp, bool all,
-                               SELECT_LEX *select);
+                               Query_block *select);
 
 /**
   Compute an IN predicate via a hash semi-join. The subquery is materialized
@@ -859,33 +880,58 @@ class subselect_hash_sj_engine final : public subselect_indexsubquery_engine {
     NEX_TRUE = 2
   };
   enum nulls_exist mat_table_has_nulls;
-  SELECT_LEX_UNIT *const unit;
+  Query_expression *const unit;
   unique_ptr_destroy_only<RowIterator> m_iterator;
   AccessPath *m_root_access_path;
-  /* Temp table context of the outer select's JOIN. */
-  Temp_table_param *tmp_param;
 
   /// Saved result object, must be restored after use
   Query_result_interceptor *saved_result{nullptr};
 
  public:
   subselect_hash_sj_engine(Item_in_subselect *in_predicate,
-                           SELECT_LEX_UNIT *unit_arg)
-      : subselect_indexsubquery_engine(nullptr, in_predicate, nullptr, nullptr),
+                           Query_expression *unit_arg)
+      : subselect_indexsubquery_engine(nullptr, nullptr, {}, JT_UNKNOWN,
+                                       in_predicate, nullptr, nullptr),
         is_materialized(false),
-        unit(unit_arg),
-        tmp_param(nullptr) {}
+        unit(unit_arg) {}
   ~subselect_hash_sj_engine() override;
 
   bool setup(THD *thd, const mem_root_deque<Item *> &tmp_columns);
-  void cleanup(THD *thd) override;
+  void cleanup() override;
   bool exec(THD *thd) override;
   void print(const THD *thd, String *str, enum_query_type query_type) override;
   enum_engine_type engine_type() const override { return HASH_SJ_ENGINE; }
 
-  const QEP_TAB *get_qep_tab() const { return tab; }
+  TABLE *get_table() const { return table; }
+  const Index_lookup &index_lookup() const { return ref; }
+  enum join_type get_join_type() const { return type; }
   AccessPath *root_access_path() const { return m_root_access_path; }
   void create_iterators(THD *thd) override;
 };
+
+/**
+  Removes every predicate injected by IN->EXISTS.
+
+  This function is different from others:
+  - it wants to remove all traces of IN->EXISTS (for
+  materialization)
+  - remove_subq_pushed_predicates() and remove_additional_cond() want to
+  remove only the conditions of IN->EXISTS which index lookup already
+  satisfies (they are just an optimization).
+
+  If there are no in2exists conditions, it will return the exact same
+  pointer. If it returns a new Item, the old Item is left alone, so it
+  can be reused in other settings.
+
+  @param thd    Thread handle.
+  @param conds  Condition; may be nullptr.
+  @param copy   true if a copy of the new condition needs to be returned
+                (used in case of hypergraph optimizer).
+  @returns      new condition
+ */
+Item *remove_in2exists_conds(THD *thd, Item *conds, bool copy);
+
+/// Returns whether the Item is an IN-subselect.
+bool IsItemInSubSelect(Item *item);
 
 #endif /* ITEM_SUBSELECT_INCLUDED */

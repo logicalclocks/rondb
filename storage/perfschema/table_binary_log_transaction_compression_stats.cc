@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2019, 2020, Oracle and/or its affiliates. All rights reserved.
+  Copyright (c) 2019, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -28,12 +28,13 @@
 
 #include "storage/perfschema/table_binary_log_transaction_compression_stats.h"
 
+#include <assert.h>
 #include <cmath>
 
 #include <stddef.h>
 
 #include "my_compiler.h"
-#include "my_dbug.h"
+
 #include "sql/binlog/global.h"
 #include "sql/binlog/monitoring/context.h"
 #include "sql/field.h"
@@ -132,7 +133,7 @@ PFS_engine_table_share table_binary_log_transaction_compression_stats::m_share =
     {
         &pfs_truncatable_acl,
         &table_binary_log_transaction_compression_stats::create,
-        NULL, /* write_row */
+        nullptr, /* write_row */
         table_binary_log_transaction_compression_stats::delete_all_rows,
         table_binary_log_transaction_compression_stats::get_row_count,
         sizeof(pos_t), /* ref length */
@@ -154,7 +155,7 @@ table_binary_log_transaction_compression_stats::
     : PFS_engine_table(&m_share, &m_pos), m_pos(0), m_next_pos(0) {}
 
 table_binary_log_transaction_compression_stats::
-    ~table_binary_log_transaction_compression_stats() {}
+    ~table_binary_log_transaction_compression_stats() = default;
 
 void table_binary_log_transaction_compression_stats::reset_position(void) {
   m_pos.m_index = 0;
@@ -222,7 +223,7 @@ int table_binary_log_transaction_compression_stats::read_row_values(
           std::string s_type =
               binary_log::transaction::compression::type_to_string(
                   row->get_type());
-          set_field_varchar_utf8(f, s_type.c_str(), s_type.size());
+          set_field_varchar_utf8mb4(f, s_type.c_str(), s_type.size());
           break;
         }
         case 2: /** TRANSACTION_COUNTER */
@@ -269,7 +270,7 @@ int table_binary_log_transaction_compression_stats::read_row_values(
           set_field_timestamp(f, last_trx_timestamp);
           break;
         default:
-          DBUG_ASSERT(false); /* purecov: inspected */
+          assert(false); /* purecov: inspected */
       }
     }
   }

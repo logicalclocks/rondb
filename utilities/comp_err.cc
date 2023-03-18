@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -45,6 +45,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
+#include <fstream>
 #include <new>
 #include <set>
 #include <utility>
@@ -83,7 +84,7 @@ static const char *MSGS_TO_CLIENT = "../share/messages_to_clients.txt";
 static const char *DATADIRECTORY = "../share/";
 static const char *selftest_dir = nullptr;
 bool selftest_flag = false;
-#ifndef DBUG_OFF
+#ifndef NDEBUG
 static const char *default_dbug_option = "d:t:O,/tmp/comp_err.trace";
 #endif
 
@@ -95,8 +96,6 @@ static const char *default_dbug_option = "d:t:O,/tmp/comp_err.trace";
     from 2 bytes to 4 bytes.
 */
 uchar file_head[] = {254, 254, ERRMSG_VERSION, 1};
-/* Store positions to each error message row to store in errmsg.sys header */
-std::vector<uint> file_pos;
 
 const char *empty_string = ""; /* For empty states */
 /*
@@ -181,9 +180,9 @@ using err_range = std::pair<uint, uint>;
 std::set<err_range> reserved_sections;
 
 static struct my_option my_long_options[] = {
-#ifdef DBUG_OFF
-    {"debug", '#', "This is a non-debug version. Catch this and exit", 0, 0, 0,
-     GET_DISABLED, OPT_ARG, 0, 0, 0, 0, 0, 0},
+#ifdef NDEBUG
+    {"debug", '#', "This is a non-debug version. Catch this and exit", nullptr,
+     nullptr, nullptr, GET_DISABLED, OPT_ARG, 0, 0, 0, nullptr, 0, nullptr},
 #else
     {"debug", '#', "Output debug log", &default_dbug_option,
      &default_dbug_option, nullptr, GET_STR, OPT_ARG, 0, 0, 0, nullptr, 0,
@@ -218,7 +217,7 @@ static struct my_option my_long_options[] = {
      0, nullptr, 0, nullptr}};
 
 static struct languages *parse_charset_string(char *str);
-static struct errors *parse_error_string(char *ptr, int er_count,
+static struct errors *parse_error_string(char *str, int er_count,
                                          PFS_error_stat error_stat);
 static struct message *parse_message_string(struct message *new_message,
                                             char *str);
@@ -231,11 +230,12 @@ static int parse_input_file(const char *file_name, struct errors ***last_error,
                             struct languages **top_language,
                             int base_error_code, PFS_error_stat error_stat);
 static int get_options(int *argc, char ***argv);
-static void usage(void);
+static void usage();
 static bool get_one_option(int optid, const struct my_option *opt,
                            char *argument);
 static char *parse_text_line(char *pos);
-static int copy_rows(FILE *to, char *row, int row_nr, long start_pos);
+static int copy_rows(FILE *to, char *row, long start_pos,
+                     std::vector<uint> *file_pos);
 static char *parse_default_language(char *str);
 static uint parse_error_offset(char *str);
 static bool parse_reserved_error_section(char *str);
@@ -375,6 +375,27 @@ static void print_escaped_string(FILE *f, const char *str) {
   }
 }
 
+std::string get_file_contents(std::string filename) {
+  std::ifstream ifs(filename);
+  if (!ifs.good()) {
+    return "";
+  }
+  return std::string(std::istreambuf_iterator<char>(ifs),
+                     std::istreambuf_iterator<char>());
+}
+
+static void compare_and_move_file(std::string source_filename,
+                                  std::string destination_filename) {
+  const auto source_contents = get_file_contents(source_filename);
+  const auto destination_contents = get_file_contents(destination_filename);
+  if (source_contents == destination_contents) {
+    unlink(source_filename.c_str());
+  } else {
+    unlink(destination_filename.c_str());
+    rename(source_filename.c_str(), destination_filename.c_str());
+  }
+}
+
 static int create_header_files(struct errors *error_head) {
   FILE *er_definef, *er_namef;
   FILE *er_errmsg;
@@ -384,14 +405,18 @@ static int create_header_files(struct errors *error_head) {
 
   DBUG_TRACE;
 
-  if (!(er_definef = my_fopen(HEADERFILE, O_WRONLY, MYF(MY_WME)))) {
+  std::string headerfile_tmp = std::string(HEADERFILE) + "_tmp";
+  std::string namefile_tmp = std::string(NAMEFILE) + "_tmp";
+  std::string msgfile_tmp = std::string(MSGFILE) + "_tmp";
+
+  if (!(er_definef = my_fopen(headerfile_tmp.c_str(), O_WRONLY, MYF(MY_WME)))) {
     return 1;
   }
-  if (!(er_namef = my_fopen(NAMEFILE, O_WRONLY, MYF(MY_WME)))) {
+  if (!(er_namef = my_fopen(namefile_tmp.c_str(), O_WRONLY, MYF(MY_WME)))) {
     my_fclose(er_definef, MYF(0));
     return 1;
   }
-  if (!(er_errmsg = my_fopen(MSGFILE, O_WRONLY, MYF(MY_WME)))) {
+  if (!(er_errmsg = my_fopen(msgfile_tmp.c_str(), O_WRONLY, MYF(MY_WME)))) {
     my_fclose(er_definef, MYF(0));
     my_fclose(er_namef, MYF(0));
     return 1;
@@ -553,13 +578,17 @@ static int create_header_files(struct errors *error_head) {
   my_fclose(er_definef, MYF(0));
   my_fclose(er_namef, MYF(0));
   my_fclose(er_errmsg, MYF(0));
+
+  compare_and_move_file(headerfile_tmp, HEADERFILE);
+  compare_and_move_file(namefile_tmp, NAMEFILE);
+  compare_and_move_file(msgfile_tmp, MSGFILE);
   return 0;
 }
 
 static int create_sys_files(struct languages *lang_head,
                             struct errors *error_head, uint row_count) {
   FILE *to;
-  uint csnum = 0, length, i, row_nr;
+  uint csnum = 0, length;
   uchar head[32];
   char outfile[FN_REFLEN], *outfile_end;
   long start_pos;
@@ -598,7 +627,8 @@ static int create_sys_files(struct languages *lang_head,
     /* 4 is for 4 bytes to store row position / error message */
     start_pos = (long)(HEADER_LENGTH + row_count * 4);
     fseek(to, start_pos, 0);
-    row_nr = 0;
+    // Store positions to each error message row to store in errmsg.sys header
+    std::vector<uint> file_pos;
     for (tmp_error = error_head; tmp_error; tmp_error = tmp_error->next_error) {
       /* dealing with messages */
       tmp = find_message(tmp_error, tmp_lang->lang_short_name, false);
@@ -610,11 +640,10 @@ static int create_sys_files(struct languages *lang_head,
                 tmp_error->er_name, tmp_lang->lang_short_name);
         goto err;
       }
-      if (copy_rows(to, tmp->text, row_nr, start_pos)) {
+      if (copy_rows(to, tmp->text, start_pos, &file_pos)) {
         fprintf(stderr, "Failed to copy rows to %s\n", outfile);
         goto err;
       }
-      row_nr++;
     }
 
     /* continue with header of the errmsg.sys file */
@@ -630,8 +659,8 @@ static int create_sys_files(struct languages *lang_head,
     if (my_fwrite(to, (uchar *)head, HEADER_LENGTH, MYF(MY_WME | MY_FNABP)))
       goto err;
 
-    for (i = 0; i < row_count; i++) {
-      int4store(head, file_pos.at(i));
+    for (uint pos : file_pos) {
+      int4store(head, pos);
       if (my_fwrite(to, (uchar *)head, 4, MYF(MY_WME | MY_FNABP))) goto err;
     }
     my_fclose(to, MYF(0));
@@ -685,7 +714,7 @@ static int parse_input_file(const char *file_name, struct errors ***last_error,
   char *str, buff[1000];
   const char *fail = nullptr;
   struct errors *current_error = nullptr, **tail_error = *last_error;
-  struct message current_message;
+  struct message current_message {};
   int rcount = 0; /* Number of error codes in current section. */
   int ecount = 0; /* Number of error codes in total. */
   DBUG_TRACE;
@@ -940,9 +969,7 @@ static bool parse_reserved_error_section(char *str) {
   }
 
   auto ret = reserved_sections.insert(err_range(sec_start, sec_end));
-  if (!ret.second) return true;
-
-  return false;
+  return (!ret.second);
 }
 
 /* Parsing of the default language line. e.g. "default-language eng" */
@@ -1022,7 +1049,7 @@ static struct message *find_message(struct errors *err, const char *lang,
 
     if (!strcmp(tmp->lang_short_name, lang)) return tmp;
     if (!strcmp(tmp->lang_short_name, default_language)) {
-      DBUG_ASSERT(tmp->text[0] != 0);
+      assert(tmp->text[0] != 0);
       return_val = tmp;
     }
   }
@@ -1087,7 +1114,7 @@ static ha_checksum checksum_format_specifier(const char *msg) {
             "Still inside formatspecifier after end of string"
             " in'%s'\n",
             msg);
-    DBUG_ASSERT(start == nullptr);
+    assert(start == nullptr);
   }
 
   /* Add number of format specifiers to checksum as extra safeguard */
@@ -1116,7 +1143,7 @@ static int check_message_format(struct errors *err, const char *mess) {
   if ((err->msg).empty()) return 0; /* No previous message to compare against */
 
   first = err->msg.begin();
-  DBUG_ASSERT(first != nullptr);
+  assert(first != nullptr);
 
   if (checksum_format_specifier(first->text) !=
       checksum_format_specifier(mess)) {
@@ -1376,8 +1403,8 @@ static struct languages *parse_charset_string(char *str) {
 /* Read options */
 
 static bool get_one_option(int optid,
-                           const struct my_option *opt MY_ATTRIBUTE((unused)),
-                           char *argument MY_ATTRIBUTE((unused))) {
+                           const struct my_option *opt [[maybe_unused]],
+                           char *argument [[maybe_unused]]) {
   DBUG_TRACE;
   switch (optid) {
     case 'V':
@@ -1393,7 +1420,7 @@ static bool get_one_option(int optid,
   return false;
 }
 
-static void usage(void) {
+static void usage() {
   DBUG_TRACE;
   print_version();
   printf(
@@ -1459,11 +1486,11 @@ static char *parse_text_line(char *pos) {
 
 /* Copy rows from memory to file and remember position */
 
-static int copy_rows(FILE *to, char *row, int row_nr, long start_pos) {
+static int copy_rows(FILE *to, char *row, long start_pos,
+                     std::vector<uint> *file_pos) {
   DBUG_TRACE;
 
-  file_pos.insert(file_pos.begin() + row_nr,
-                  static_cast<uint>(ftell(to) - start_pos));
+  file_pos->push_back(static_cast<uint>(ftell(to) - start_pos));
   if (fputs(row, to) == EOF || fputc('\0', to) == EOF) {
     fprintf(stderr, "Can't write to outputfile\n");
     return 1;

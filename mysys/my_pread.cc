@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -65,7 +65,7 @@ ssize_t (*mock_pwrite)(int fd, const void *buf, size_t count,
     to set the position in the file back to the original position
     if the system doesn't support pread().
 
-    @param Filedes	File decsriptor
+    @param Filedes	File descriptor
     @param Buffer	Buffer to read data into
     @param Count	Number of bytes to read
     @param offset	Position to read from
@@ -107,7 +107,7 @@ size_t my_pread(File Filedes, uchar *Buffer, size_t Count, my_off_t offset,
         return MY_FILE_ERROR;
     }                                             // if (error)
     if (MyFlags & (MY_NABP | MY_FNABP)) return 0; /* Read went ok; Return 0 */
-    DBUG_ASSERT(readbytes >= 0);
+    assert(readbytes >= 0);
     return readbytes; /* purecov: inspected */
   }                   // for (;;)
 }

@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -109,7 +110,7 @@ public:
     TableLoggedFlag    = 4,  //Default Logged
     NoOfKeyAttr        = 5,  //Default 1
     NoOfAttributes     = 6,  //Mandatory
-    NoOfNullable       = 7,  //Deafult 0
+    NoOfNullable       = 7,  //Default 0
     NoOfVariable       = 8,  //Default 0
     TableKValue        = 9,  //Default 6
     MinLoadFactor      = 10, //Default 70
@@ -170,6 +171,8 @@ public:
      * Needed for NR
      */
     FullyReplicatedTriggerId = 161,
+
+    UseVarSizedDiskDataFlag = 162,
 
     TableEnd           = 999,
     
@@ -254,7 +257,8 @@ public:
 
   // used 1) until type BlobTable added 2) in upgrade code
   static bool
-  isBlobTableName(const char* name, Uint32* ptab_id = 0, Uint32* pcol_no = 0);
+  isBlobTableName(const char* name, Uint32* ptab_id = nullptr,
+                  Uint32* pcol_no = nullptr);
   
   static inline bool
   isTable(int tableType) {
@@ -350,12 +354,12 @@ public:
   };
   
   // AttributeSize constants
-  STATIC_CONST( aBit = 0 );
-  STATIC_CONST( an8Bit = 3 );
-  STATIC_CONST( a16Bit = 4 );
-  STATIC_CONST( a32Bit = 5 );
-  STATIC_CONST( a64Bit = 6 );
-  STATIC_CONST( a128Bit = 7 );
+  static constexpr Uint32 aBit = 0;
+  static constexpr Uint32 an8Bit = 3;
+  static constexpr Uint32 a16Bit = 4;
+  static constexpr Uint32 a32Bit = 5;
+  static constexpr Uint32 a64Bit = 6;
+  static constexpr Uint32 a128Bit = 7;
     
   // Table data interpretation
   struct Table {
@@ -425,6 +429,8 @@ public:
     Uint32 FullyReplicatedFlag;
     Uint32 FullyReplicatedTriggerId;
     Uint32 PartitionCount;
+
+    Uint32 UseVarSizedDiskDataFlag;
 
     Table() {}
     void init();
@@ -665,7 +671,7 @@ public:
       fprintf(out, "AttributeExtLength = %d\n", AttributeExtLength);
       fprintf(out, "AttributeDefaultValueLen = %d\n",
               AttributeDefaultValueLen);
-      fprintf(out, "AttributeDefaultValue: \n");
+      fprintf(out, "AttributeDefaultValue:\n");
       for (unsigned int i = 0; i < AttributeDefaultValueLen; i++)
         fprintf(out, "0x%x", AttributeDefaultValue[i]);
     }
@@ -677,8 +683,8 @@ public:
   static const Uint32 AttributeMappingSize;
 
   // Signal constants
-  STATIC_CONST( DataLength = 20 );
-  STATIC_CONST( HeaderLength = 5 );
+  static constexpr Uint32 DataLength = 20;
+  static constexpr Uint32 HeaderLength = 5;
 
 private:  
   Uint32 senderRef;

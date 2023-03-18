@@ -1,7 +1,7 @@
 #ifndef SQL_STRING_INCLUDED
 #define SQL_STRING_INCLUDED
 
-/* Copyright (c) 2000, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,11 +29,13 @@
   See in particular the comment on String before you use anything from here.
 */
 
+#include <assert.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/types.h>
 #include <new>
 #include <string>
+#include <string_view>
 
 #include "lex_string.h"
 #include "m_ctype.h"   // my_convert
@@ -41,7 +43,7 @@
 #include "memory_debugging.h"
 #include "my_alloc.h"
 #include "my_compiler.h"
-#include "my_dbug.h"
+
 #include "my_inttypes.h"
 #include "mysql/components/services/bits/psi_bits.h"
 #include "mysql/mysql_lex_string.h"  // LEX_STRING
@@ -66,7 +68,7 @@ extern PSI_memory_key key_memory_String_value;
   pass it and its descendants (such as Name_string) into functions
   using call-by-value evaluation.
 
-  Don't add new members or virual methods into this class!
+  Don't add new members or virtual methods to this class!
 */
 class Simple_cstring {
  private:
@@ -79,9 +81,9 @@ class Simple_cstring {
   */
   void set(const char *str_arg, size_t length_arg) {
     // NULL is allowed only with length==0
-    DBUG_ASSERT(str_arg || length_arg == 0);
+    assert(str_arg || length_arg == 0);
     // For non-NULL, make sure length_arg is in sync with '\0' terminator.
-    DBUG_ASSERT(!str_arg || str_arg[length_arg] == '\0');
+    assert(!str_arg || str_arg[length_arg] == '\0');
     m_str = str_arg;
     m_length = length_arg;
   }
@@ -217,8 +219,8 @@ class String {
     str.m_is_alloced = false;
   }
   static void *operator new(size_t size, MEM_ROOT *mem_root,
-                            const std::nothrow_t &arg MY_ATTRIBUTE((unused)) =
-                                std::nothrow) noexcept {
+                            const std::nothrow_t &arg
+                            [[maybe_unused]] = std::nothrow) noexcept {
     return mem_root->Alloc(size);
   }
   static void operator delete(void *ptr_arg, size_t size) {
@@ -246,8 +248,8 @@ class String {
   const char *ptr() const { return m_ptr; }
   char *ptr() { return m_ptr; }
   char *c_ptr() {
-    DBUG_ASSERT(!m_is_alloced || !m_ptr || !m_alloced_length ||
-                (m_alloced_length >= (m_length + 1)));
+    assert(!m_is_alloced || !m_ptr || !m_alloced_length ||
+           (m_alloced_length >= (m_length + 1)));
 
     /*
       Should be safe, but in case valgrind complains on this line, it means
@@ -275,7 +277,7 @@ class String {
   }
 
   void set(String &str, size_t offset, size_t arg_length) {
-    DBUG_ASSERT(&str != this);
+    assert(&str != this);
     mem_free();
     m_ptr = str.ptr() + offset;
     m_length = arg_length;
@@ -416,7 +418,7 @@ class String {
         It is forbidden to do assignments like
         some_string = substring_of_that_string
        */
-      DBUG_ASSERT(!s.uses_buffer_owned_by(this));
+      assert(!s.uses_buffer_owned_by(this));
       mem_free();
       m_ptr = s.m_ptr;
       m_length = s.m_length;
@@ -432,7 +434,7 @@ class String {
         It is forbidden to do assignments like
         some_string = substring_of_that_string
        */
-      DBUG_ASSERT(!s.uses_buffer_owned_by(this));
+      assert(!s.uses_buffer_owned_by(this));
       mem_free();
       m_ptr = s.m_ptr;
       m_length = s.m_length;
@@ -453,9 +455,9 @@ class String {
     @param s - a String object to steal buffer from.
   */
   void takeover(String &s) {
-    DBUG_ASSERT(this != &s);
+    assert(this != &s);
     // Make sure buffers of the two Strings do not overlap
-    DBUG_ASSERT(!s.uses_buffer_owned_by(this));
+    assert(!s.uses_buffer_owned_by(this));
     mem_free();
     m_ptr = s.m_ptr;
     m_length = s.m_length;
@@ -468,7 +470,7 @@ class String {
     s.m_is_alloced = false;
   }
 
-  bool copy();                 // Alloc string if not alloced
+  bool copy();                 // Alloc string if not allocated
   bool copy(const String &s);  // Allocate new string
   // Allocate new string
   bool copy(const char *s, size_t arg_length, const CHARSET_INFO *cs);
@@ -494,7 +496,7 @@ class String {
   bool copy(const char *s, size_t arg_length, const CHARSET_INFO *csfrom,
             const CHARSET_INFO *csto, uint *errors);
   bool append(const String &s);
-  bool append(const char *s);
+  bool append(std::string_view s) { return append(s.data(), s.size()); }
   bool append(LEX_STRING *ls) { return append(ls->str, ls->length); }
   bool append(Simple_cstring str) { return append(str.ptr(), str.length()); }
   bool append(const char *s, size_t arg_length);
@@ -525,7 +527,7 @@ class String {
   */
   int strrstr(const String &search, size_t offset = 0) const;
   /**
-   * Returns substring of given characters lenght, starting at given character
+   * Returns substring of given characters length, starting at given character
    * offset. Note that parameter indexes are character indexes and not byte
    * indexes.
    */

@@ -1,4 +1,4 @@
-/*  Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
+/*  Copyright (c) 2015, 2022, Oracle and/or its affiliates.
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License, version 2.0,
@@ -20,12 +20,13 @@
     along with this program; if not, write to the Free Software
     Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+#include <assert.h>
 #include <stddef.h>
 
 #include "lex_string.h"
-#include "m_ctype.h" /* my_charset_utf8_bin */
+#include "m_ctype.h" /* my_charset_utf8mb3_bin */
 #include "m_string.h"
-#include "my_dbug.h" /* DBUG_ASSERT */
+/* assert */
 #include "my_inttypes.h"
 #include "my_sys.h"
 #include "mysql/plugin.h"
@@ -77,7 +78,7 @@ int my_validate_password_policy(const char *password,
   int res = 0;
 
   if (password) {
-    String tmp_str(password, password_len, &my_charset_utf8_bin);
+    String tmp_str(password, password_len, &my_charset_utf8mb3_bin);
     password_str = tmp_str;
   }
   if (!srv_registry->acquire("validate_password", &h_pv_svc)) {
@@ -110,7 +111,7 @@ int my_validate_password_policy(const char *password,
 
   Implementation of a plugin service @ref mysql_password_policy_service_st
   method.
-  Typically called when new user is created or exsisting password is changed.
+  Typically called when new user is created or existing password is changed.
   Calls the @ref validate_password_plugin / validate_password_component
   plugin's / component's @ref st_mysql_validate_password::get_password_strength
   method.
@@ -130,13 +131,14 @@ int my_calculate_password_strength(const char *password,
                                    unsigned int password_len) {
   int res = 0;
   unsigned int strength;
-  DBUG_ASSERT(password != nullptr);
+  assert(password != nullptr);
 
   my_h_service h_pv_svc = nullptr;
   SERVICE_TYPE(validate_password) * ret;
   String password_str;
 
-  if (password) password_str.set(password, password_len, &my_charset_utf8_bin);
+  if (password)
+    password_str.set(password, password_len, &my_charset_utf8mb3_bin);
   if (!srv_registry->acquire("validate_password", &h_pv_svc)) {
     ret = reinterpret_cast<SERVICE_TYPE(validate_password) *>(h_pv_svc);
     if (!ret->get_strength((void *)current_thd, (my_h_string)&password_str,

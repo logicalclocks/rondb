@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2017, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -46,8 +46,8 @@
 #include "my_macros.h"
 #include "mysql/components/my_service.h"
 #include "mysql/components/services/bits/psi_bits.h"
+#include "mysql/components/services/bits/psi_rwlock_bits.h"
 #include "mysql/components/services/log_builtins.h"
-#include "mysql/components/services/psi_rwlock_bits.h"
 #include "mysql/mysql_lex_string.h"
 #include "mysql/plugin.h"
 #include "mysql/plugin_audit.h"
@@ -64,6 +64,7 @@
 #include "sql/auth/i_sha2_password_common.h"
 #include "sql/auth/sql_auth_cache.h" /* ACL_USER                    */
 #include "sql/auth/sql_authentication.h"
+#include "sql/debug_sync.h"       // DEBUG_SYNC
 #include "sql/protocol_classic.h" /* Protocol_classic            */
 #include "sql/sql_class.h"
 #include "sql/sql_const.h" /* MAX_FIELD_WIDTH             */
@@ -78,6 +79,7 @@ char *caching_sha2_rsa_private_key_path;
 char *caching_sha2_rsa_public_key_path;
 bool caching_sha2_auto_generate_rsa_keys = true;
 Rsa_authentication_keys *g_caching_sha2_rsa_keys = nullptr;
+int caching_sha2_digest_rounds = 0;
 
 namespace sha2_password {
 using std::min;
@@ -181,8 +183,7 @@ static PSI_rwlock_info all_rwlocks[] = {
 */
 
 Caching_sha2_password::Caching_sha2_password(
-    MYSQL_PLUGIN plugin_handle,
-    size_t stored_digest_rounds,     /* = DEFAULT_STORED_DIGEST_ROUNDS */
+    MYSQL_PLUGIN plugin_handle, size_t stored_digest_rounds,
     unsigned int fast_digest_rounds, /* = DEFAULT_FAST_DIGEST_ROUNDS */
     Digest_info digest_type)         /* = Digest_info::SHA256_DIGEST */
     : m_plugin_info(plugin_handle),
@@ -217,10 +218,10 @@ Caching_sha2_password::~Caching_sha2_password() {
     b. Hash iteration count
     c. Expected hash
   2. Use plaintext password, salt and hash iteration count to generate
-     hash
-  3. Validate generated hash against expected hash
+     hash.
+  3. Validate generated hash against expected hash.
 
-  In case of successful authentication, update password cache
+  In case of successful authentication, update password cache.
 
   @param [in] authorization_id   User information
   @param [in] serialized_string        Information retrieved from
@@ -236,11 +237,11 @@ std::pair<bool, bool> Caching_sha2_password::authenticate(
     const std::string &plaintext_password) {
   DBUG_TRACE;
 
-  /* Don't process the password if it is longer than maximum limit */
+  /* Don't process the password if it is longer than maximum limit. */
   if (plaintext_password.length() > CACHING_SHA2_PASSWORD_MAX_PASSWORD_LENGTH)
     return std::make_pair(true, false);
 
-  /* Empty authentication string */
+  /* Empty authentication string. */
   if (!serialized_string[0].length())
     return std::make_pair(plaintext_password.length() ? true : false, false);
 
@@ -272,8 +273,7 @@ std::pair<bool, bool> Caching_sha2_password::authenticate(
     */
 
     if (this->generate_sha2_multi_hash(plaintext_password, random,
-                                       &generated_digest,
-                                       m_stored_digest_rounds)) {
+                                       &generated_digest, iterations)) {
       if (m_plugin_info)
         LogPluginErr(ERROR_LEVEL,
                      ER_SHA_PWD_FAILED_TO_GENERATE_MULTI_ROUND_HASH,
@@ -308,12 +308,12 @@ std::pair<bool, bool> Caching_sha2_password::authenticate(
         sha2_cache_entry stored_digest;
         m_cache.search(authorization_id, stored_digest);
 
-        /* Same digest is already added, so just return */
+        /* Same digest is already added, so just return. */
         if (memcmp(fast_digest.digest_buffer[i], stored_digest.digest_buffer[i],
                    sizeof(fast_digest.digest_buffer[i])) == 0)
           return std::make_pair(false, second);
 
-        /* Update the digest */
+        /* Update the digest. */
         uint retain_index = i ? 0 : 1;
         memcpy(fast_digest.digest_buffer[retain_index],
                stored_digest.digest_buffer[retain_index],
@@ -475,7 +475,7 @@ bool Caching_sha2_password::deserialize(const std::string &serialized_string,
   std::string iteration_info =
       serialized_string.substr(delimiter + 1, ITERATION_LENGTH);
   iterations =
-      std::min((std::stoul(iteration_info, nullptr)) * ITERATION_MULTIPLIER,
+      std::min((std::stoul(iteration_info, nullptr, 16)) * ITERATION_MULTIPLIER,
                MAX_ITERATIONS);
   if (!iterations) {
     DBUG_PRINT("info", ("Digest string is not in expected format."
@@ -554,12 +554,13 @@ bool Caching_sha2_password::serialize(std::string &serialized_string,
   }
 
   /* Iterations */
-  unsigned int iteration_info = iterations / ITERATION_MULTIPLIER;
-  if (!iteration_info || iterations > MAX_ITERATIONS) {
+  if (iterations < ITERATION_MULTIPLIER || iterations > MAX_ITERATIONS) {
     DBUG_PRINT("info", ("Invalid iteration count information."));
     return true;
   }
-  ss << std::setfill('0') << std::setw(3) << iteration_info << DELIMITER;
+  unsigned int iteration_info = iterations / ITERATION_MULTIPLIER;
+  ss << std::setfill('0') << std::setw(3) << std::uppercase << std::hex
+     << iteration_info << DELIMITER;
   serialized_string = ss.str();
 
   /* Salt */
@@ -600,10 +601,10 @@ bool Caching_sha2_password::generate_fast_digest(
     const std::string &plaintext_password, sha2_cache_entry &digest,
     unsigned int pos) {
   DBUG_TRACE;
-  DBUG_ASSERT(pos < MAX_PASSWORDS);
+  assert(pos < MAX_PASSWORDS);
   SHA256_digest sha256_digest;
   unsigned char digest_buffer[CACHING_SHA2_DIGEST_LENGTH];
-  DBUG_ASSERT(sizeof(digest.digest_buffer[pos]) == sizeof(digest_buffer));
+  assert(sizeof(digest.digest_buffer[pos]) == sizeof(digest_buffer));
 
   if (sha256_digest.update_digest(plaintext_password.c_str(),
                                   plaintext_password.length()) ||
@@ -658,7 +659,7 @@ bool Caching_sha2_password::generate_sha2_multi_hash(const std::string &source,
     case Digest_info::SHA256_DIGEST: {
       char buffer[CRYPT_MAX_PASSWORD_SIZE + 1];
       memset(buffer, 0, sizeof(buffer));
-      DBUG_ASSERT(source.length() <= CACHING_SHA2_PASSWORD_MAX_PASSWORD_LENGTH);
+      assert(source.length() <= CACHING_SHA2_PASSWORD_MAX_PASSWORD_LENGTH);
       my_crypt_genhash(buffer, CRYPT_MAX_PASSWORD_SIZE, source.c_str(),
                        source.length(), random.c_str(), nullptr, &iterations);
 
@@ -671,7 +672,7 @@ bool Caching_sha2_password::generate_sha2_multi_hash(const std::string &source,
       break;
     }
     default:
-      DBUG_ASSERT(false);
+      assert(false);
       return true;
   }
   return false;
@@ -724,10 +725,6 @@ bool Caching_sha2_password::validate_hash(const std::string serialized_string) {
 
 /** Length of encrypted packet */
 const int MAX_CIPHER_LENGTH = 1024;
-
-/** Default iteration count */
-const int CACHING_SHA2_PASSWORD_ITERATIONS =
-    sha2_password::DEFAULT_STORED_DIGEST_ROUNDS;
 
 /** Caching_sha2_password handle */
 sha2_password::Caching_sha2_password *g_caching_sha2_password = nullptr;
@@ -880,7 +877,7 @@ static char perform_full_authentication = '\4';
        if (Client: Connection check) then
          -[#red]-> [Priority#1:\nTCP with TLS OR Socket Or\nShared Memory connection:\nSend password to server] "Server: received password"
        else
-         if (Priorty#2:\nPublic key available) then
+         if (Priority#2:\nPublic key available) then
            -[#yellow]-> [yes] "Client: Public key available"
          else
            if (No\nPriority#3: Should client get\nserver's public key) then
@@ -931,8 +928,13 @@ static int caching_sha2_password_authenticate(MYSQL_PLUGIN_VIO *vio,
   char scramble[SCRAMBLE_LENGTH + 1];
   int cipher_length = 0;
   unsigned char plain_text[MAX_CIPHER_LENGTH + 1];
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+  EVP_PKEY *private_key = nullptr;
+  EVP_PKEY *public_key = nullptr;
+#else  /* OPENSSL_VERSION_NUMBER >= 0x30000000L */
   RSA *private_key = nullptr;
   RSA *public_key = nullptr;
+#endif /* OPENSSL_VERSION_NUMBER >= 0x30000000L */
 
   generate_user_salt(scramble, SCRAMBLE_LENGTH + 1);
 
@@ -1068,8 +1070,9 @@ static int caching_sha2_password_authenticate(MYSQL_PLUGIN_VIO *vio,
     if (pkt_len != cipher_length) return CR_ERROR;
 
     /* Decrypt password */
-    RSA_private_decrypt(cipher_length, pkt, plain_text, private_key,
-                        RSA_PKCS1_OAEP_PADDING);
+    if (decrypt_RSA_private_key(pkt, cipher_length, plain_text,
+                                sizeof(plain_text) - 1, private_key))
+      return CR_ERROR;
 
     plain_text[cipher_length] = '\0';  // safety
     xor_string((char *)plain_text, cipher_length, (char *)scramble,
@@ -1148,7 +1151,8 @@ static int caching_sha2_password_generate(char *outbuf, unsigned int *buflen,
   random.assign(salt, sha2_password::SALT_LENGTH);
 
   if (g_caching_sha2_password->generate_sha2_multi_hash(
-          source, random, &digest, CACHING_SHA2_PASSWORD_ITERATIONS))
+          source, random, &digest,
+          g_caching_sha2_password->get_digest_rounds()))
     return 1;
 
   if (g_caching_sha2_password->serialize(
@@ -1197,30 +1201,32 @@ static int caching_sha2_password_validate(char *const inbuf,
   @returns Always returns success (0)
 */
 
-static int caching_sha2_password_salt(
-    const char *password MY_ATTRIBUTE((unused)),
-    unsigned int password_len MY_ATTRIBUTE((unused)),
-    unsigned char *salt MY_ATTRIBUTE((unused)), unsigned char *salt_len) {
+static int caching_sha2_password_salt(const char *password [[maybe_unused]],
+                                      unsigned int password_len
+                                      [[maybe_unused]],
+                                      unsigned char *salt [[maybe_unused]],
+                                      unsigned char *salt_len) {
   DBUG_TRACE;
   *salt_len = 0;
   return 0;
 }
 
 /*
-  Initialize caching_sha2_password plugin
+Initialize caching_sha2_password plugin
 
-  @param [in] plugin_ref Plugin structure handle
+@param [in] plugin_ref Plugin structure handle
 
-  @returns Status of plugin initialization
-    @retval 0 Success
-    @retval 1 Error
+@returns Status of plugin initialization
+@retval 0 Success
+@retval 1 Error
 */
 
 static int caching_sha2_authentication_init(MYSQL_PLUGIN plugin_ref) {
   DBUG_TRACE;
+
   caching_sha2_auth_plugin_ref = plugin_ref;
-  g_caching_sha2_password =
-      new sha2_password::Caching_sha2_password(caching_sha2_auth_plugin_ref);
+  g_caching_sha2_password = new sha2_password::Caching_sha2_password(
+      caching_sha2_auth_plugin_ref, caching_sha2_digest_rounds);
   if (!g_caching_sha2_password) return 1;
 
   return 0;
@@ -1234,8 +1240,7 @@ static int caching_sha2_authentication_init(MYSQL_PLUGIN plugin_ref) {
   @returns Always returns success
 */
 
-static int caching_sha2_authentication_deinit(
-    void *arg MY_ATTRIBUTE((unused))) {
+static int caching_sha2_authentication_deinit(void *arg [[maybe_unused]]) {
   DBUG_TRACE;
   if (g_caching_sha2_password) {
     delete g_caching_sha2_password;
@@ -1274,8 +1279,8 @@ static int compare_caching_sha2_password_with_hash(
   sha2_password::Digest_info digest_type;
   size_t iterations;
 
-  DBUG_ASSERT(cleartext_length <=
-              sha2_password::CACHING_SHA2_PASSWORD_MAX_PASSWORD_LENGTH);
+  assert(cleartext_length <=
+         sha2_password::CACHING_SHA2_PASSWORD_MAX_PASSWORD_LENGTH);
   if (cleartext_length >
       sha2_password::CACHING_SHA2_PASSWORD_MAX_PASSWORD_LENGTH)
     return -1;
@@ -1307,9 +1312,11 @@ static int compare_caching_sha2_password_with_hash(
   @param [out] var Status variable structure
   @param [in]  buff Value buffer
 */
-static int show_caching_sha2_password_rsa_public_key(
-    MYSQL_THD thd MY_ATTRIBUTE((unused)), SHOW_VAR *var,
-    char *buff MY_ATTRIBUTE((unused))) {
+static int show_caching_sha2_password_rsa_public_key(MYSQL_THD thd
+                                                     [[maybe_unused]],
+                                                     SHOW_VAR *var,
+                                                     char *buff
+                                                     [[maybe_unused]]) {
   var->type = SHOW_CHAR;
   var->value =
       const_cast<char *>(g_caching_sha2_rsa_keys->get_public_key_as_pem());
@@ -1346,10 +1353,23 @@ static MYSQL_SYSVAR_BOOL(
     "at the default location.",
     nullptr, nullptr, true);
 
+static MYSQL_SYSVAR_INT(
+    digest_rounds,               // Name.
+    caching_sha2_digest_rounds,  // Variable.
+    PLUGIN_VAR_READONLY,         // Argument optional for cmd line
+    "Number of SHA2 rounds to be done when storing a password hash onto disk.",
+    nullptr,                                      // Check function.
+    nullptr,                                      // Update function.
+    sha2_password::DEFAULT_STORED_DIGEST_ROUNDS,  // Default value.
+    sha2_password::MIN_STORED_DIGEST_ROUNDS,      // Min value.
+    sha2_password::MAX_STORED_DIGEST_ROUNDS,      // Max value.
+    1                                             // Block size.
+);
+
 /** Array of system variables. Used in plugin declaration. */
 static SYS_VAR *caching_sha2_password_sysvars[] = {
     MYSQL_SYSVAR(private_key_path), MYSQL_SYSVAR(public_key_path),
-    MYSQL_SYSVAR(auto_generate_rsa_keys), nullptr};
+    MYSQL_SYSVAR(auto_generate_rsa_keys), MYSQL_SYSVAR(digest_rounds), nullptr};
 
 /** Array of status variables. Used in plugin declaration. */
 static SHOW_VAR caching_sha2_password_status_variables[] = {
@@ -1391,7 +1411,7 @@ static int sha2_cache_cleaner_notify(MYSQL_THD, mysql_event_class_t event_class,
     if (subclass == MYSQL_AUDIT_AUTHENTICATION_CREDENTIAL_CHANGE ||
         subclass == MYSQL_AUDIT_AUTHENTICATION_AUTHID_RENAME ||
         subclass == MYSQL_AUDIT_AUTHENTICATION_AUTHID_DROP) {
-      DBUG_ASSERT(
+      assert(
           authentication_event->user.str[authentication_event->user.length] ==
           '\0');
       std::string authorization_id;
@@ -1426,13 +1446,13 @@ struct st_mysql_audit sha2_cache_cleaner = {
     }};
 
 /** Init function for sha2_cache_cleaner */
-static int caching_sha2_cache_cleaner_init(
-    MYSQL_PLUGIN plugin_info MY_ATTRIBUTE((unused))) {
+static int caching_sha2_cache_cleaner_init(MYSQL_PLUGIN plugin_info
+                                           [[maybe_unused]]) {
   return 0;
 }
 
 /** Deinit function for sha2_cache_cleaner */
-static int caching_sha2_cache_cleaner_deinit(void *arg MY_ATTRIBUTE((unused))) {
+static int caching_sha2_cache_cleaner_deinit(void *arg [[maybe_unused]]) {
   return 0;
 }
 
@@ -1454,7 +1474,7 @@ mysql_declare_plugin(caching_sha2_password){
     0x0100,                                 /* version (1.0)                 */
     caching_sha2_password_status_variables, /* status variables              */
     caching_sha2_password_sysvars,          /* system variables              */
-    nullptr,                                /* reserverd                     */
+    nullptr,                                /* reserved                      */
     0,                                      /* flags                         */
 },
     {
@@ -1470,6 +1490,6 @@ mysql_declare_plugin(caching_sha2_password){
         0x0100,                            /* version (1.0)                 */
         nullptr,                           /* status variables              */
         nullptr,                           /* system variables              */
-        nullptr,                           /* reserverd                     */
+        nullptr,                           /* reserved                      */
         0                                  /* flags                         */
     } mysql_declare_plugin_end;

@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -28,9 +28,9 @@
 
 #include "storage/perfschema/table_esms_by_digest.h"
 
+#include <assert.h>
 #include <stddef.h>
 
-#include "my_dbug.h"
 #include "my_thread.h"
 #include "sql/field.h"
 #include "sql/plugin_table.h"
@@ -79,14 +79,18 @@ Plugin_table table_esms_by_digest::m_table_def(
     "  SUM_SORT_SCAN BIGINT unsigned not null,\n"
     "  SUM_NO_INDEX_USED BIGINT unsigned not null,\n"
     "  SUM_NO_GOOD_INDEX_USED BIGINT unsigned not null,\n"
-    "  FIRST_SEEN TIMESTAMP(6) NOT NULL default 0,\n"
-    "  LAST_SEEN TIMESTAMP(6) NOT NULL default 0,\n"
+    "  SUM_CPU_TIME BIGINT unsigned not null,\n"
+    "  MAX_CONTROLLED_MEMORY BIGINT unsigned not null,\n"
+    "  MAX_TOTAL_MEMORY BIGINT unsigned not null,\n"
+    "  COUNT_SECONDARY BIGINT unsigned not null,\n"
+    "  FIRST_SEEN TIMESTAMP(6) not null,\n"
+    "  LAST_SEEN TIMESTAMP(6) not null,\n"
     "  QUANTILE_95 BIGINT unsigned not null,\n"
     "  QUANTILE_99 BIGINT unsigned not null,\n"
     "  QUANTILE_999 BIGINT unsigned not null,\n"
     "  QUERY_SAMPLE_TEXT LONGTEXT,\n"
-    "  QUERY_SAMPLE_SEEN TIMESTAMP(6) NOT NULL default 0,\n"
-    "  QUERY_SAMPLE_TIMER_WAIT BIGINT unsigned NOT NULL,\n"
+    "  QUERY_SAMPLE_SEEN TIMESTAMP(6) not null,\n"
+    "  QUERY_SAMPLE_TIMER_WAIT BIGINT unsigned not null,\n"
     "  UNIQUE KEY (SCHEMA_NAME, DIGEST) USING HASH\n",
     /* Options */
     " ENGINE=PERFORMANCE_SCHEMA",
@@ -181,9 +185,9 @@ int table_esms_by_digest::rnd_pos(const void *pos) {
   return HA_ERR_RECORD_DELETED;
 }
 
-int table_esms_by_digest::index_init(uint idx MY_ATTRIBUTE((unused)), bool) {
+int table_esms_by_digest::index_init(uint idx [[maybe_unused]], bool) {
   PFS_index_esms_by_digest *result = nullptr;
-  DBUG_ASSERT(idx == 0);
+  assert(idx == 0);
   result = PFS_NEW(PFS_index_esms_by_digest);
   m_opened_index = result;
   m_index = result;
@@ -240,12 +244,12 @@ int table_esms_by_digest::make_row(PFS_statements_digest_stat *digest_stat) {
     ulonglong count_99 = ((count_star * 99) + 99) / 100;
     ulonglong count_999 = ((count_star * 999) + 999) / 1000;
 
-    DBUG_ASSERT(count_95 != 0);
-    DBUG_ASSERT(count_95 <= count_star);
-    DBUG_ASSERT(count_99 != 0);
-    DBUG_ASSERT(count_99 <= count_star);
-    DBUG_ASSERT(count_999 != 0);
-    DBUG_ASSERT(count_999 <= count_star);
+    assert(count_95 != 0);
+    assert(count_95 <= count_star);
+    assert(count_99 != 0);
+    assert(count_99 <= count_star);
+    assert(count_999 != 0);
+    assert(count_999 <= count_star);
 
     ulong index_95 = 0;
     ulong index_99 = 0;
@@ -299,7 +303,7 @@ int table_esms_by_digest::read_row_values(TABLE *table, unsigned char *buf,
     Set the null bits. It indicates how many fields could be null
     in the table.
   */
-  DBUG_ASSERT(table->s->null_bytes == 1);
+  assert(table->s->null_bytes == 1);
   buf[0] = 0;
 
   for (; (f = *fields); fields++) {
@@ -310,22 +314,22 @@ int table_esms_by_digest::read_row_values(TABLE *table, unsigned char *buf,
         case 2: /* DIGEST_TEXT */
           m_row.m_digest.set_field(f->field_index(), f);
           break;
-        case 27: /* FIRST_SEEN */
+        case 31: /* FIRST_SEEN */
           set_field_timestamp(f, m_row.m_first_seen);
           break;
-        case 28: /* LAST_SEEN */
+        case 32: /* LAST_SEEN */
           set_field_timestamp(f, m_row.m_last_seen);
           break;
-        case 29: /* QUANTILE_95 */
+        case 33: /* QUANTILE_95 */
           set_field_ulonglong(f, m_row.m_p95);
           break;
-        case 30: /* QUANTILE_99 */
+        case 34: /* QUANTILE_99 */
           set_field_ulonglong(f, m_row.m_p99);
           break;
-        case 31: /* QUANTILE_999 */
+        case 35: /* QUANTILE_999 */
           set_field_ulonglong(f, m_row.m_p999);
           break;
-        case 32: /* QUERY_SAMPLE_TEXT */
+        case 36: /* QUERY_SAMPLE_TEXT */
           if (m_row.m_query_sample.length())
             set_field_text(f, m_row.m_query_sample.ptr(),
                            m_row.m_query_sample.length(),
@@ -334,10 +338,10 @@ int table_esms_by_digest::read_row_values(TABLE *table, unsigned char *buf,
             f->set_null();
           }
           break;
-        case 33: /* QUERY_SAMPLE_SEEN */
+        case 37: /* QUERY_SAMPLE_SEEN */
           set_field_timestamp(f, m_row.m_query_sample_seen);
           break;
-        case 34: /* QUERY_SAMPLE_TIMER_WAIT */
+        case 38: /* QUERY_SAMPLE_TIMER_WAIT */
           set_field_ulonglong(f, m_row.m_query_sample_timer_wait);
           break;
         default: /* 3, ... COUNT/SUM/MIN/AVG/MAX */

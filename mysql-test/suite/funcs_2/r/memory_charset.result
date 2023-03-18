@@ -558,132 +558,6 @@ a_ascii	a_len
 7D	1
 7E	1
 7F	1
-80	1
-81	1
-82	1
-83	1
-84	1
-85	1
-86	1
-87	1
-88	1
-89	1
-8A	1
-8B	1
-8C	1
-8D	1
-8E	1
-8F	1
-90	1
-91	1
-92	1
-93	1
-94	1
-95	1
-96	1
-97	1
-98	1
-99	1
-9A	1
-9B	1
-9C	1
-9D	1
-9E	1
-9F	1
-A0	1
-A1	1
-A2	1
-A3	1
-A4	1
-A5	1
-A6	1
-A7	1
-A8	1
-A9	1
-AA	1
-AB	1
-AC	1
-AD	1
-AE	1
-AF	1
-B0	1
-B1	1
-B2	1
-B3	1
-B4	1
-B5	1
-B6	1
-B7	1
-B8	1
-B9	1
-BA	1
-BB	1
-BC	1
-BD	1
-BE	1
-BF	1
-C0	1
-C1	1
-C2	1
-C3	1
-C4	1
-C5	1
-C6	1
-C7	1
-C8	1
-C9	1
-CA	1
-CB	1
-CC	1
-CD	1
-CE	1
-CF	1
-D0	1
-D1	1
-D2	1
-D3	1
-D4	1
-D5	1
-D6	1
-D7	1
-D8	1
-D9	1
-DA	1
-DB	1
-DC	1
-DD	1
-DE	1
-DF	1
-E0	1
-E1	1
-E2	1
-E3	1
-E4	1
-E5	1
-E6	1
-E7	1
-E8	1
-E9	1
-EA	1
-EB	1
-EC	1
-ED	1
-EE	1
-EF	1
-F0	1
-F1	1
-F2	1
-F3	1
-F4	1
-F5	1
-F6	1
-F7	1
-F8	1
-F9	1
-FA	1
-FB	1
-FC	1
-FD	1
 DROP TABLE test.t1;
 SET NAMES ascii;
 CREATE TABLE test.t1 (a VARCHAR(3) CHARACTER SET ascii COLLATE ascii_general_ci) ENGINE=Memory CHARACTER SET ascii COLLATE ascii_general_ci;
@@ -787,132 +661,6 @@ a_ascii	a_len
 7D	1
 7E	1
 7F	1
-80	1
-81	1
-82	1
-83	1
-84	1
-85	1
-86	1
-87	1
-88	1
-89	1
-8A	1
-8B	1
-8C	1
-8D	1
-8E	1
-8F	1
-90	1
-91	1
-92	1
-93	1
-94	1
-95	1
-96	1
-97	1
-98	1
-99	1
-9A	1
-9B	1
-9C	1
-9D	1
-9E	1
-9F	1
-A0	1
-A1	1
-A2	1
-A3	1
-A4	1
-A5	1
-A6	1
-A7	1
-A8	1
-A9	1
-AA	1
-AB	1
-AC	1
-AD	1
-AE	1
-AF	1
-B0	1
-B1	1
-B2	1
-B3	1
-B4	1
-B5	1
-B6	1
-B7	1
-B8	1
-B9	1
-BA	1
-BB	1
-BC	1
-BD	1
-BE	1
-BF	1
-C0	1
-C1	1
-C2	1
-C3	1
-C4	1
-C5	1
-C6	1
-C7	1
-C8	1
-C9	1
-CA	1
-CB	1
-CC	1
-CD	1
-CE	1
-CF	1
-D0	1
-D1	1
-D2	1
-D3	1
-D4	1
-D5	1
-D6	1
-D7	1
-D8	1
-D9	1
-DA	1
-DB	1
-DC	1
-DD	1
-DE	1
-DF	1
-E0	1
-E1	1
-E2	1
-E3	1
-E4	1
-E5	1
-E6	1
-E7	1
-E8	1
-E9	1
-EA	1
-EB	1
-EC	1
-ED	1
-EE	1
-EF	1
-F0	1
-F1	1
-F2	1
-F3	1
-F4	1
-F5	1
-F6	1
-F7	1
-F8	1
-F9	1
-FA	1
-FB	1
-FC	1
-FD	1
 DROP TABLE test.t1;
 SET NAMES big5;
 CREATE TABLE test.t1 (a VARCHAR(3) CHARACTER SET big5 COLLATE big5_bin) ENGINE=Memory CHARACTER SET big5 COLLATE big5_bin;
@@ -6262,7 +6010,14 @@ DE	1
 DF	1
 DROP TABLE test.t1;
 SET NAMES dec8;
+Warnings:
+Warning	1287	'dec8' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 CREATE TABLE test.t1 (a VARCHAR(3) CHARACTER SET dec8 COLLATE dec8_bin) ENGINE=Memory CHARACTER SET dec8 COLLATE dec8_bin;
+Warnings:
+Warning	1287	'dec8' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'dec8_bin' is a collation of the deprecated character set dec8. Please consider using utf8mb4 with an appropriate collation instead.
+Warning	1287	'dec8' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'dec8_bin' is a collation of the deprecated character set dec8. Please consider using utf8mb4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
 t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	dec8_bin	#	#	#
@@ -6491,7 +6246,14 @@ FC	1
 FD	1
 DROP TABLE test.t1;
 SET NAMES dec8;
+Warnings:
+Warning	1287	'dec8' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 CREATE TABLE test.t1 (a VARCHAR(3) CHARACTER SET dec8 COLLATE dec8_swedish_ci) ENGINE=Memory CHARACTER SET dec8 COLLATE dec8_swedish_ci;
+Warnings:
+Warning	1287	'dec8' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'dec8_swedish_ci' is a collation of the deprecated character set dec8. Please consider using utf8mb4 with an appropriate collation instead.
+Warning	1287	'dec8' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'dec8_swedish_ci' is a collation of the deprecated character set dec8. Please consider using utf8mb4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
 t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	dec8_swedish_ci	#	#	#
@@ -9124,7 +8886,14 @@ FD	1
 DF	1
 DROP TABLE test.t1;
 SET NAMES hp8;
+Warnings:
+Warning	1287	'hp8' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 CREATE TABLE test.t1 (a VARCHAR(3) CHARACTER SET hp8 COLLATE hp8_bin) ENGINE=Memory CHARACTER SET hp8 COLLATE hp8_bin;
+Warnings:
+Warning	1287	'hp8' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'hp8_bin' is a collation of the deprecated character set hp8. Please consider using utf8mb4 with an appropriate collation instead.
+Warning	1287	'hp8' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'hp8_bin' is a collation of the deprecated character set hp8. Please consider using utf8mb4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
 t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	hp8_bin	#	#	#
@@ -9353,7 +9122,14 @@ FC	1
 FD	1
 DROP TABLE test.t1;
 SET NAMES hp8;
+Warnings:
+Warning	1287	'hp8' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 CREATE TABLE test.t1 (a VARCHAR(3) CHARACTER SET hp8 COLLATE hp8_english_ci) ENGINE=Memory CHARACTER SET hp8 COLLATE hp8_english_ci;
+Warnings:
+Warning	1287	'hp8' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'hp8_english_ci' is a collation of the deprecated character set hp8. Please consider using utf8mb4 with an appropriate collation instead.
+Warning	1287	'hp8' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'hp8_english_ci' is a collation of the deprecated character set hp8. Please consider using utf8mb4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
 t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	hp8_english_ci	#	#	#
@@ -15307,7 +15083,14 @@ A1	1
 A5	1
 DROP TABLE test.t1;
 SET NAMES macce;
+Warnings:
+Warning	1287	'macce' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 CREATE TABLE test.t1 (a VARCHAR(3) CHARACTER SET macce COLLATE macce_bin) ENGINE=Memory CHARACTER SET macce COLLATE macce_bin;
+Warnings:
+Warning	1287	'macce' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'macce_bin' is a collation of the deprecated character set macce. Please consider using utf8mb4 with an appropriate collation instead.
+Warning	1287	'macce' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'macce_bin' is a collation of the deprecated character set macce. Please consider using utf8mb4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
 t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	macce_bin	#	#	#
@@ -15536,7 +15319,14 @@ FC	1
 FD	1
 DROP TABLE test.t1;
 SET NAMES macce;
+Warnings:
+Warning	1287	'macce' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 CREATE TABLE test.t1 (a VARCHAR(3) CHARACTER SET macce COLLATE macce_general_ci) ENGINE=Memory CHARACTER SET macce COLLATE macce_general_ci;
+Warnings:
+Warning	1287	'macce' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'macce_general_ci' is a collation of the deprecated character set macce. Please consider using utf8mb4 with an appropriate collation instead.
+Warning	1287	'macce' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'macce_general_ci' is a collation of the deprecated character set macce. Please consider using utf8mb4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
 t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	macce_general_ci	#	#	#
@@ -15765,7 +15555,14 @@ E2	1
 E3	1
 DROP TABLE test.t1;
 SET NAMES macroman;
+Warnings:
+Warning	1287	'macroman' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 CREATE TABLE test.t1 (a VARCHAR(3) CHARACTER SET macroman COLLATE macroman_bin) ENGINE=Memory CHARACTER SET macroman COLLATE macroman_bin;
+Warnings:
+Warning	1287	'macroman' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'macroman_bin' is a collation of the deprecated character set macroman. Please consider using utf8mb4 with an appropriate collation instead.
+Warning	1287	'macroman' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'macroman_bin' is a collation of the deprecated character set macroman. Please consider using utf8mb4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
 t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	macroman_bin	#	#	#
@@ -15994,7 +15791,14 @@ FC	1
 FD	1
 DROP TABLE test.t1;
 SET NAMES macroman;
+Warnings:
+Warning	1287	'macroman' is deprecated and will be removed in a future release. Please use utf8mb4 instead
 CREATE TABLE test.t1 (a VARCHAR(3) CHARACTER SET macroman COLLATE macroman_general_ci) ENGINE=Memory CHARACTER SET macroman COLLATE macroman_general_ci;
+Warnings:
+Warning	1287	'macroman' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'macroman_general_ci' is a collation of the deprecated character set macroman. Please consider using utf8mb4 with an appropriate collation instead.
+Warning	1287	'macroman' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'macroman_general_ci' is a collation of the deprecated character set macroman. Please consider using utf8mb4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
 t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	macroman_general_ci	#	#	#
@@ -17689,10 +17493,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_bin;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_bin' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -20235,10 +20042,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_czech_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_czech_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -22781,10 +22591,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_danish_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_danish_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -25327,10 +25140,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_estonian_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_estonian_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -27873,10 +27689,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_general_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_general_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -30419,10 +30238,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_hungarian_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_hungarian_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -32965,10 +32787,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_icelandic_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_icelandic_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -35511,10 +35336,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_latvian_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_latvian_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -38057,10 +37885,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_lithuanian_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_lithuanian_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -40603,10 +40434,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_persian_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_persian_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -43149,10 +42983,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_polish_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_polish_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -45695,10 +45532,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_roman_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_roman_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -48241,10 +48081,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_romanian_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_romanian_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -50787,10 +50630,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_slovak_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_slovak_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -53333,10 +53179,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_slovenian_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_slovenian_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -55879,10 +55728,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_spanish2_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_spanish2_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -58425,10 +58277,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_spanish_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_spanish_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -60971,10 +60826,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_swedish_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_swedish_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -63517,10 +63375,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_turkish_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_turkish_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -66063,10 +65924,13 @@ Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but wil
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 ALTER TABLE test.t1 CHANGE a a CHAR(4) CHARACTER SET ucs2 COLLATE ucs2_unicode_ci;
+Warnings:
+Warning	1287	'ucs2' is deprecated and will be removed in a future release. Please use utf8mb4 instead
+Warning	4079	'ucs2_unicode_ci' is a collation of the deprecated character set ucs2. Please consider using utf8mb4 with an appropriate collation instead.
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
 SELECT HEX(ORD(a)) AS a_ord, CHAR_LENGTH(a) AS a_len FROM test.t1 ORDER BY a, ORD(a);
 a_ord	a_len
@@ -68603,12 +68467,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_bin) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_bin;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_bin' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_bin' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_bin' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_bin' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_bin	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_bin	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -71147,12 +71011,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_czech_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_czech_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_czech_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_czech_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_czech_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_czech_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_czech_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_czech_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -73691,12 +73555,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_danish_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_danish_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_danish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_danish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_danish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_danish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_danish_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_danish_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -76235,12 +76099,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_estonian_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_estonian_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_estonian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_estonian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_estonian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_estonian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_estonian_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_estonian_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -78779,12 +78643,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_general_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_general_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_general_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_general_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_general_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_general_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_general_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_general_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -81323,12 +81187,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_hungarian_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_hungarian_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_hungarian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_hungarian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_hungarian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_hungarian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_hungarian_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_hungarian_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -83867,12 +83731,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_icelandic_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_icelandic_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_icelandic_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_icelandic_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_icelandic_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_icelandic_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_icelandic_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_icelandic_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -86411,12 +86275,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_latvian_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_latvian_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_latvian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_latvian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_latvian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_latvian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_latvian_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_latvian_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -88955,12 +88819,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_lithuanian_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_lithuanian_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_lithuanian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_lithuanian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_lithuanian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_lithuanian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_lithuanian_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_lithuanian_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -91499,12 +91363,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_persian_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_persian_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_persian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_persian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_persian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_persian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_persian_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_persian_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -94043,12 +93907,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_polish_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_polish_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_polish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_polish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_polish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_polish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_polish_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_polish_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -96587,12 +96451,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_roman_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_roman_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_roman_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_roman_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_roman_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_roman_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_roman_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_roman_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -99131,12 +98995,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_romanian_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_romanian_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_romanian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_romanian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_romanian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_romanian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_romanian_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_romanian_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -101675,12 +101539,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_slovak_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_slovak_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_slovak_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_slovak_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_slovak_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_slovak_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_slovak_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_slovak_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -104219,12 +104083,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_slovenian_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_slovenian_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_slovenian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_slovenian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_slovenian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_slovenian_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_slovenian_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_slovenian_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -106763,12 +106627,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_spanish2_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_spanish2_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_spanish2_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_spanish2_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_spanish2_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_spanish2_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_spanish2_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_spanish2_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -109307,12 +109171,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_spanish_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_spanish_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_spanish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_spanish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_spanish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_spanish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_spanish_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_spanish_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -111851,12 +111715,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_swedish_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_swedish_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_swedish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_swedish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_swedish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_swedish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_swedish_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_swedish_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -114395,12 +114259,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_turkish_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_turkish_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_turkish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_turkish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_turkish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_turkish_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_turkish_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_turkish_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;
@@ -116939,12 +116803,12 @@ USE test;
 CREATE TABLE test.t1 (a CHAR(4) CHARACTER SET utf8 COLLATE utf8_unicode_ci) ENGINE=Memory CHARACTER SET utf8 COLLATE utf8_unicode_ci;
 Warnings:
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_unicode_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_unicode_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
-Warning	3778	'utf8_unicode_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
+Warning	3778	'utf8mb3_unicode_ci' is a collation of the deprecated character set UTF8MB3. Please consider using UTF8MB4 with an appropriate collation instead.
 SHOW TABLE STATUS LIKE 't1';
 Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	Index_length	Data_free	Auto_increment	Create_time	Update_time	Check_time	Collation	Checksum	Create_options	Comment
-t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8_unicode_ci	#	#	#
+t1	MEMORY	#	#	#	#	#	#	#	#	#	#	#	#	utf8mb3_unicode_ci	#	#	#
 LOAD DATA INFILE 
 'MYSQL_TEST_DIR/suite/funcs_2/data/charset_utf8.txt' INTO TABLE test.t1;
 DELETE FROM test.t1 WHERE CHAR_LENGTH(a) <> 1;

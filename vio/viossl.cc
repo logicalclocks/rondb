@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,7 +29,7 @@
   Note that we can't have assertion on file descriptors;  The reason for
   this is that during mysql shutdown, another thread can close a file
   we are working on.  In this case we should just return read errors from
-  the file descriptior.
+  the file descriptor.
 */
 
 #include <errno.h>
@@ -58,7 +58,7 @@
   after the data is compressed right before the data is written to
   the network layer.
 
-  The TLS suppport is announced in
+  The TLS support is announced in
   @ref page_protocol_connection_phase_packets_protocol_handshake sent by the
   server via ::CLIENT_SSL and is enabled if the client returns the same
   capability.
@@ -118,7 +118,7 @@
 */
 /* clang-format on */
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
 
 static void report_errors(SSL *ssl) {
   unsigned long l;
@@ -129,7 +129,11 @@ static void report_errors(SSL *ssl) {
 
   DBUG_TRACE;
 
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+  while ((l = ERR_get_error_all(&file, &line, nullptr, &data, &flags))) {
+#else  /* OPENSSL_VERSION_NUMBER >= 0x30000000L */
   while ((l = ERR_get_error_line_data(&file, &line, &data, &flags))) {
+#endif /* OPENSSL_VERSION_NUMBER >= 0x30000000L */
     DBUG_PRINT("error", ("OpenSSL: %s:%s:%d:%s\n", ERR_error_string(l, buf),
                          file, line, (flags & ERR_TXT_STRING) ? data : ""));
   }
@@ -239,7 +243,7 @@ static bool ssl_should_retry(Vio *vio, int ret, enum enum_vio_io_event *event,
       /* first save the top ERR error */
       err_error = ERR_get_error();
       /* now report all remaining errors on and/or clear the error stack */
-#ifndef DBUG_OFF /* Debug build */
+#ifndef NDEBUG /* Debug build */
       /* Note: the OpenSSL error queue gets cleared in report_errors(). */
       report_errors(ssl);
 #else /* Release build */
@@ -270,11 +274,11 @@ size_t vio_ssl_read(Vio *vio, uchar *buf, size_t size) {
       SSL_read() returns an error from the error queue, when SSL_read() failed
       because it would block.
     */
-    DBUG_ASSERT(ERR_peek_error() == 0);
+    assert(ERR_peek_error() == 0);
 
     ret = SSL_read(ssl, buf, (int)size);
 
-    if (ret >= 0) break;
+    if (ret > 0) break;
 
     /* Process the SSL I/O error. */
     if (!ssl_should_retry(vio, ret, &event, &ssl_errno_not_used)) break;
@@ -312,11 +316,11 @@ size_t vio_ssl_write(Vio *vio, const uchar *buf, size_t size) {
       SSL_write() returns an error from the error queue, when SSL_write() failed
       because it would block.
     */
-    DBUG_ASSERT(ERR_peek_error() == 0);
+    assert(ERR_peek_error() == 0);
 
     ret = SSL_write(ssl, buf, (int)size);
 
-    if (ret >= 0) break;
+    if (ret > 0) break;
 
     /* Process the SSL I/O error. */
     if (!ssl_should_retry(vio, ret, &event, &ssl_errno_not_used)) break;
@@ -350,7 +354,7 @@ int vio_ssl_shutdown(Vio *vio) {
     alert on socket shutdown to avoid truncation attacks. However, this can
     cause problems since we often hold a lock during shutdown and this IO can
     take an unbounded amount of time to complete. Since our packets are self
-    describing with length, we aren't vunerable to these attacks. Therefore,
+    describing with length, we aren't vulnerable to these attacks. Therefore,
     we just shutdown by closing the socket (quiet shutdown).
     */
     SSL_set_quiet_shutdown(ssl, 1);
@@ -369,6 +373,12 @@ int vio_ssl_shutdown(Vio *vio) {
       default: /* Shutdown failed */
         DBUG_PRINT("vio_error",
                    ("SSL_shutdown() failed, error: %d", SSL_get_error(ssl, r)));
+#ifndef NDEBUG /* Debug build */
+        /* Note: the OpenSSL error queue gets cleared in report_errors(). */
+        report_errors(ssl);
+#else /* Release build */
+        ERR_clear_error();
+#endif
         break;
     }
   }
@@ -425,7 +435,7 @@ static size_t ssl_handshake_loop(Vio *vio, SSL *ssl, ssl_handshake_func_t func,
       SSL-handshake-function returns an error from the error queue, when the
       function failed because it would block.
     */
-    DBUG_ASSERT(ERR_peek_error() == 0);
+    assert(ERR_peek_error() == 0);
 
     int handshake_ret;
     handshake_ret = func(ssl);
@@ -437,6 +447,11 @@ static size_t ssl_handshake_loop(Vio *vio, SSL *ssl, ssl_handshake_func_t func,
 
     /* Process the SSL I/O error. */
     if (!ssl_should_retry(vio, handshake_ret, &event, ssl_errno_holder)) break;
+
+    DBUG_EXECUTE_IF("bug32372038", {
+      DBUG_SET("+d,bug32372038_ssl_started");
+      return VIO_SOCKET_WANT_READ;
+    };);
 
     if (!vio->is_blocking_flag) {
       switch (event) {
@@ -493,7 +508,7 @@ long pfs_ssl_bio_callback_ex(BIO *b, int oper, const char * /* argp */,
   switch (oper) {
     case BIO_CB_READ:
       vio = reinterpret_cast<Vio *>(BIO_get_callback_arg(b));
-      DBUG_ASSERT(vio->m_psi_read_locker == nullptr);
+      assert(vio->m_psi_read_locker == nullptr);
       if (vio->mysql_socket.m_psi != nullptr) {
         vio->m_psi_read_locker = PSI_SOCKET_CALL(start_socket_wait)(
             &vio->m_psi_read_state, vio->mysql_socket.m_psi, PSI_SOCKET_RECV,
@@ -509,7 +524,7 @@ long pfs_ssl_bio_callback_ex(BIO *b, int oper, const char * /* argp */,
       break;
     case BIO_CB_WRITE:
       vio = reinterpret_cast<Vio *>(BIO_get_callback_arg(b));
-      DBUG_ASSERT(vio->m_psi_write_locker == nullptr);
+      assert(vio->m_psi_write_locker == nullptr);
       if (vio->mysql_socket.m_psi != nullptr) {
         vio->m_psi_write_locker = PSI_SOCKET_CALL(start_socket_wait)(
             &vio->m_psi_write_state, vio->mysql_socket.m_psi, PSI_SOCKET_SEND,
@@ -533,7 +548,7 @@ long pfs_ssl_bio_callback_ex(BIO *b, int oper, const char * /* argp */,
     case BIO_CB_GETS:
     case BIO_CB_GETS | BIO_CB_RETURN:
     default:
-      DBUG_ASSERT(false);
+      assert(false);
   }
 
   return ret;
@@ -567,15 +582,15 @@ long pfs_ssl_bio_callback(BIO *b, int oper, const char *argp, int argi,
 #ifdef HAVE_PSI_SOCKET_INTERFACE
 static void pfs_ssl_setup_instrumentation(Vio *vio, const SSL *ssl) {
   BIO *rbio = SSL_get_rbio(ssl);
-  DBUG_ASSERT(rbio != nullptr);
-  DBUG_ASSERT(BIO_method_type(rbio) == BIO_TYPE_SOCKET);
+  assert(rbio != nullptr);
+  assert(BIO_method_type(rbio) == BIO_TYPE_SOCKET);
 
   BIO *wbio = SSL_get_wbio(ssl);
-  DBUG_ASSERT(wbio != nullptr);
-  DBUG_ASSERT(BIO_method_type(wbio) == BIO_TYPE_SOCKET);
+  assert(wbio != nullptr);
+  assert(BIO_method_type(wbio) == BIO_TYPE_SOCKET);
 
   char *cb_arg = reinterpret_cast<char *>(vio);
-  DBUG_ASSERT(cb_arg != nullptr);
+  assert(cb_arg != nullptr);
 
   BIO_set_callback_arg(rbio, cb_arg);
 
@@ -597,14 +612,32 @@ static void pfs_ssl_setup_instrumentation(Vio *vio, const SSL *ssl) {
 }
 #endif /* HAVE_PSI_SOCKET_INTERFACE */
 
+#ifndef NDEBUG
+static void print_ssl_session_id(SSL_SESSION *sess, const char *action) {
+  unsigned int length;
+  const unsigned char *id = SSL_SESSION_get_id(sess, &length);
+  char tohex[1024], *w = &tohex[0];
+
+  if (id && length) {
+    for (unsigned inx = 0; inx < length && w < &tohex[1021]; inx++) {
+      sprintf(w, "%2.2X", id[inx]);
+      w += 2;
+    }
+    *w = 0;
+  } else
+    strcpy(tohex, "<empty>");
+  DBUG_PRINT("info", ("%sSSL session ID [%s]", action, tohex));
+}
+#endif  // !NDEBUG
+
 static int ssl_do(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
-                  ssl_handshake_func_t func, unsigned long *ssl_errno_holder,
-                  SSL **sslptr) {
+                  SSL_SESSION *ssl_session, ssl_handshake_func_t func,
+                  unsigned long *ssl_errno_holder, SSL **sslptr) {
   SSL *ssl = nullptr;
   my_socket sd = mysql_socket_getfd(vio->mysql_socket);
 
   /* Declared here to make compiler happy */
-#if !defined(DBUG_OFF)
+#if !defined(NDEBUG)
   int j, n;
 #endif
 
@@ -622,6 +655,21 @@ static int ssl_do(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
       return 1;
     }
 
+    if (ssl_session != nullptr) {
+#ifndef NDEBUG
+      print_ssl_session_id(ssl_session, "Setting for reuse ");
+#endif
+      if (!SSL_set_session(ssl, ssl_session)) {
+#ifndef NDEBUG
+        DBUG_PRINT("error", ("SSL_set_session failed"));
+        report_errors(ssl);
+#endif
+        ERR_clear_error();
+      } else {
+        DBUG_PRINT("info", ("reused existing session"));
+      }
+    }
+
     DBUG_PRINT("info", ("ssl: %p timeout: %ld", ssl, timeout));
     SSL_clear(ssl);
     SSL_SESSION_set_timeout(SSL_get_session(ssl), timeout);
@@ -632,7 +680,7 @@ static int ssl_do(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
     sk_SSL_COMP_zero(SSL_COMP_get_compression_methods());
 #endif
 
-#if !defined(DBUG_OFF)
+#if !defined(NDEBUG)
     {
       STACK_OF(SSL_COMP) *ssl_comp_methods = nullptr;
       ssl_comp_methods = SSL_COMP_get_compression_methods();
@@ -662,6 +710,7 @@ static int ssl_do(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
   } else {
     ssl = *sslptr;
   }
+  ERR_clear_error();
 
   size_t loop_ret;
   if ((loop_ret = ssl_handshake_loop(vio, ssl, func, ssl_errno_holder))) {
@@ -674,6 +723,9 @@ static int ssl_do(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
     *sslptr = nullptr;
     return (int)VIO_SOCKET_ERROR;
   }
+#ifndef NDEBUG
+  print_ssl_session_id(SSL_get_session(ssl), "Connected ");
+#endif
 
   /*
     Connection succeeded. Install new function handlers,
@@ -685,7 +737,7 @@ static int ssl_do(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
     *sslptr = nullptr;
   }
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   {
     /* Print some info about the peer */
     X509 *cert;
@@ -717,14 +769,17 @@ static int ssl_do(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
 int sslaccept(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
               unsigned long *ssl_errno_holder) {
   DBUG_TRACE;
-  int ret = ssl_do(ptr, vio, timeout, SSL_accept, ssl_errno_holder, nullptr);
+  int ret =
+      ssl_do(ptr, vio, timeout, nullptr, SSL_accept, ssl_errno_holder, nullptr);
   return ret;
 }
 
 int sslconnect(struct st_VioSSLFd *ptr, Vio *vio, long timeout,
-               unsigned long *ssl_errno_holder, SSL **ssl) {
+               SSL_SESSION *session, unsigned long *ssl_errno_holder,
+               SSL **ssl) {
   DBUG_TRACE;
-  int ret = ssl_do(ptr, vio, timeout, SSL_connect, ssl_errno_holder, ssl);
+  int ret =
+      ssl_do(ptr, vio, timeout, session, SSL_connect, ssl_errno_holder, ssl);
   return ret;
 }
 

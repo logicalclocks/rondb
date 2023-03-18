@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2005, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
 #include "Undo_buffer.hpp"
 #define DBTUP_C
 #include "Dbtup.hpp"
@@ -34,7 +36,7 @@ struct UndoPage
   Uint32 m_ref_count;
   Uint32 m_data[GLOBAL_PAGE_SIZE_WORDS-2];
   
-  STATIC_CONST( DATA_WORDS = GLOBAL_PAGE_SIZE_WORDS-2 );
+  static constexpr Uint32 DATA_WORDS = GLOBAL_PAGE_SIZE_WORDS-2;
 };
 
 #if defined VM_TRACE || defined ERROR_INSERT
@@ -57,7 +59,9 @@ Undo_buffer::Undo_buffer(Ndbd_mem_manager* mm)
 }
 
 Uint32 *
-Undo_buffer::alloc_copy_tuple(Local_key* dst, Uint32 words)
+Undo_buffer::alloc_copy_tuple(Local_key* dst,
+                              Uint32 words,
+                              bool allow_use_spare)
 {
   UndoPage* page = nullptr;
   assert(words);
@@ -87,7 +91,20 @@ Undo_buffer::alloc_copy_tuple(Local_key* dst, Uint32 words)
                                        &m_first_free,
                                        Ndbd_mem_manager::NDB_ZONE_LE_32);
     if (page == 0)
-      return nullptr;
+    {
+      if (allow_use_spare)
+      {
+        page = (UndoPage*)m_mm->alloc_spare_page(RT_DBTUP_COPY_PAGE,
+                                                 &m_first_free,
+                                         Ndbd_mem_manager::NDB_ZONE_LE_32,
+                                         true,
+                                         FORCE_RESERVED);
+      }
+      if (page == 0)
+      {
+        return nullptr;
+      }
+    }
 
     page->m_words_used = 0;
     pos = 0;
@@ -105,22 +122,6 @@ Undo_buffer::alloc_copy_tuple(Local_key* dst, Uint32 words)
   pos ++;
 #endif
   return page->m_data + pos;
-}
-
-bool
-Undo_buffer::reuse_page_for_copy_tuple(Uint32 reuse_page)
-{
-  require(reuse_page != RNIL);
-  if (!m_mm->take_pages(RT_DBTUP_COPY_PAGE, 1))
-  {
-    return false;
-  }
-  require(m_first_free == RNIL);
-  m_first_free = reuse_page;
-  UndoPage* page = get_page(m_mm, m_first_free);
-  page->m_words_used = 0;
-  page->m_ref_count = 0;
-  return true;
 }
 
 void
@@ -146,11 +147,11 @@ Undo_buffer::free_copy_tuple(Local_key* key)
     page->m_words_used= 0;
     if (m_first_free == key->m_page_no)
     {
-      //ndbout_c("resetting page");
+      // g_eventLogger->info("resetting page");
     }
     else 
     {
-      //ndbout_c("returning page");
+      // g_eventLogger->info("returning page");
       m_mm->release_page(RT_DBTUP_COPY_PAGE, key->m_page_no);
     }
   }

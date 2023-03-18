@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2007, 2016, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2007, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -42,7 +42,7 @@
 #define NODE_NOT_API_NODE 5062
 #define OPERATION_NOT_ALLOWED_START_STOP 5063
 #define FAILED_ACTIVATE_REQUEST 5064
-#define FAILED_DEACTIVATE_REQUEST 5064
+#define FAILED_DEACTIVATE_REQUEST 5068
 #define NODE_CURRENTLY_DEACTIVATED 5065
 #define INCORRECT_MGM_COMMAND 5066
 #define FAILED_SET_HOSTNAME_REQUEST 5067

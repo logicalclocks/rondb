@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -24,6 +25,7 @@
 
 #include "Suma.hpp"
 
+#include <cstring>
 #include <Properties.hpp>
 #include <Configuration.hpp>
 
@@ -35,6 +37,7 @@ Suma::Suma(Block_context& ctx) :
   c_tables(c_tablePool),
   c_subscriptions(c_subscriptionPool),
   c_gcp_list(c_gcp_pool),
+  c_free_page_chunks(c_page_chunk_pool),
   b_dti_buf_ref_count(0),
   m_current_gci(~(Uint64)0)
 {
@@ -155,16 +158,27 @@ Suma::Suma(Block_context& ctx) :
   m_gcp_monitor = 0;
 #endif
   m_missing_data = false;
-  bzero(c_subscriber_per_node, sizeof(c_subscriber_per_node));
+  std::memset(c_subscriber_per_node, 0, sizeof(c_subscriber_per_node));
 
   m_gcp_rep_cnt = getLqhWorkers();
   m_snd_gcp_rep_counter_index = 0;
   m_min_gcp_rep_counter_index = 0;
   m_max_gcp_rep_counter_index = 0;
-  bzero(m_gcp_rep_counter, sizeof(m_gcp_rep_counter));
+  std::memset(m_gcp_rep_counter, 0, sizeof(m_gcp_rep_counter));
   m_oldest_gcp_inflight_index = 0;
   m_newest_gcp_inflight_index = 0;
-  bzero(m_gcp_inflight, sizeof(m_gcp_inflight));
+  std::memset(m_gcp_inflight, 0, sizeof(m_gcp_inflight));
+
+  c_transient_pools[SUMA_SUBSCRIPTION_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_subscriptionPool;
+  c_transient_pools[SUMA_SUB_OP_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_subOpPool;
+  c_transient_pools[SUMA_TABLE_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_tablePool;
+  c_transient_pools[SUMA_SUBSCRIBER_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_subscriberPool;
+  c_transient_pools[SUMA_DATA_BUFFER_TRANSIENT_POOL_INDEX] =
+    &c_dataBufferPool;
 }
 
 Suma::~Suma()

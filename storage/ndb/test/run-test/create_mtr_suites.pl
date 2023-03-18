@@ -1,7 +1,7 @@
 #!/usr/bin/perl
 # -*- cperl -*-
-
-# Copyright 2009 Sun Microsystems, Inc.
+# Copyright (c) 2009, 2022, Oracle and/or its affiliates.
+# Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 #  Use is subject to license terms.
 #
 # This program is free software; you can redistribute it and/or modify
@@ -99,7 +99,7 @@ sub create_suite_from_file {
     my $path = "../storage/ndb/test/ndbapi/$cmd";
     if (!-x $path)
     {
-      print "Could not find: '$path', skipping it \n";
+      print "Could not find: '$path', skipping it\n";
       next;
     }
 

@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2019, 2020 Oracle and/or its affiliates.
+   Copyright (c) 2019, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,7 +27,6 @@
 #include "Dbqtux.hpp"
 
 #include <EventLogger.hpp>
-extern EventLogger * g_eventLogger;
 
 #define JAM_FILE_ID 530
 
@@ -39,7 +39,7 @@ Dbqtux::Dbqtux(Block_context& ctx,
 Uint64 Dbqtux::getTransactionMemoryNeed()
 {
   Uint32 query_instance_count =
-    globalData.ndbMtQueryThreads +
+    globalData.ndbMtQueryWorkers +
     globalData.ndbMtRecoverThreads;
   Uint64 scan_op_byte_count = 1;
   Uint32 tux_scan_recs = 1;

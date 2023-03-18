@@ -8,7 +8,9 @@ mysqld=,
 ndbapi=,,,,,,,,,,,
 DefaultOperationRedoProblemAction=queue
 NoOfReplicas=3
-LowLatency=1
+SchemaMemory=100M
+DataMemory=250M
+#LowLatency=1
 
 [cluster_config.mysqld.1.1]
 NodeId=49
@@ -57,7 +59,7 @@ ndb-cluster-connection-pool-nodeids=49,63,127
 # This suite(--suite=ndb) is designed to be run without binogging,
 # turn off binlogging(and thus also slave updates) for this mysqld
 skip-log-bin
-skip-log-slave-updates
+skip-log-replica-updates
 
 [mysqld.2.1]
 # Specify which nodeids the connection pool on second mysqld should use
@@ -65,7 +67,7 @@ ndb-cluster-connection-pool-nodeids=16,32,48
 # This suite(--suite=ndb) is designed to be run without binogging,
 # turn off binlogging(and thus also slave updates) for this mysqld
 skip-log-bin
-skip-log-slave-updates
+skip-log-replica-updates
 
 [ndb_restore]
 exclude-databases=mysql

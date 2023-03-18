@@ -1,5 +1,5 @@
 /*
-Copyright (c) 2019, 2020, Oracle and/or its affiliates.
+Copyright (c) 2019, 2022, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License, version 2.0,
@@ -28,8 +28,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include <thread>
 
 #ifdef RAPIDJSON_NO_SIZETYPEDEFINE
-// if we build within the server, it will set RAPIDJSON_NO_SIZETYPEDEFINE
-// globally and require to include my_rapidjson_size_t.h
 #include "my_rapidjson_size_t.h"
 #endif
 
@@ -44,8 +42,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "keyring/keyring_manager.h"
 #include "mock_server_rest_client.h"
 #include "mock_server_testutils.h"
-#include "mysql_session.h"
 #include "mysqlrouter/cluster_metadata.h"
+#include "mysqlrouter/mysql_session.h"
 #include "mysqlrouter/rest_client.h"
 #include "router_component_test.h"
 #include "router_component_testutils.h"
@@ -53,7 +51,6 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 using mysqlrouter::ClusterType;
 using mysqlrouter::MySQLSession;
-using ::testing::PrintToString;
 using namespace std::chrono_literals;
 
 Path g_origin_path;
@@ -130,7 +127,7 @@ class AsyncReplicasetTest : public RouterComponentTest {
                       const std::string &routing_section,
                       const std::string &state_file_path,
                       const int expected_errorcode = EXIT_SUCCESS,
-                      std::chrono::milliseconds wait_for_notify_ready = 5s) {
+                      std::chrono::milliseconds wait_for_notify_ready = 30s) {
     const std::string masterkey_file =
         Path(temp_test_dir).join("master.key").str();
     const std::string keyring_file = Path(temp_test_dir).join("keyring").str();
@@ -156,7 +153,7 @@ class AsyncReplicasetTest : public RouterComponentTest {
 
   void set_mock_metadata(uint16_t http_port, const std::string &gr_id,
                          const std::vector<uint16_t> &gr_node_ports,
-                         unsigned primary_id = 0, unsigned view_id = 0,
+                         unsigned primary_id = 0, uint64_t view_id = 0,
                          bool error_on_md_query = false,
                          bool empty_result_from_cluster_type_query = false) {
     auto json_doc = mock_GR_metadata_as_json(gr_id, gr_node_ports, primary_id,
@@ -184,8 +181,6 @@ class AsyncReplicasetTest : public RouterComponentTest {
   std::vector<ProcessWrapper *> cluster_nodes;
   std::vector<uint16_t> cluster_nodes_ports;
   std::vector<uint16_t> cluster_http_ports;
-
-  TcpPortPool port_pool_;
 };
 
 const std::chrono::milliseconds AsyncReplicasetTest::kTTL = 50ms;
@@ -220,7 +215,7 @@ TEST_F(AsyncReplicasetTest, NoChange) {
         "// Make our metadata server to return all 3 nodes as a cluster "
         "members");
 
-    // each memeber should report the same view_id (=1)
+    // each member should report the same view_id (=1)
     set_mock_metadata(cluster_http_ports[i], cluster_id, cluster_nodes_ports, 0,
                       view_id);
   }
@@ -228,7 +223,7 @@ TEST_F(AsyncReplicasetTest, NoChange) {
   SCOPED_TRACE("// Create a router state file with all of the members");
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE(
       "// Create a configuration file sections with low ttl so that any "
@@ -251,7 +246,8 @@ TEST_F(AsyncReplicasetTest, NoChange) {
       "// Check our state file content, it should not change, there is "
       "single metadata server reported as initially");
 
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 }
 
 /**
@@ -289,7 +285,7 @@ TEST_F(AsyncReplicasetTest, SecondaryAdded) {
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
       create_state_file_content(
-          cluster_id, {cluster_nodes_ports[0], cluster_nodes_ports[1]},
+          cluster_id, "", {cluster_nodes_ports[0], cluster_nodes_ports[1]},
           view_id));
 
   SCOPED_TRACE(
@@ -318,15 +314,11 @@ TEST_F(AsyncReplicasetTest, SecondaryAdded) {
   SCOPED_TRACE(
       "// Check our state file content, it should first contain only 2 "
       "members");
-  check_state_file(state_file, cluster_id,
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
                    {cluster_nodes_ports[0], cluster_nodes_ports[1]}, view_id);
 
   SCOPED_TRACE("// Make a connection to the secondary");
-  MySQLSession client1;
-  client1.connect("127.0.0.1", router_port_ro, "username", "password", "", "");
-  auto result{client1.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result)[0]))),
-            cluster_nodes_ports[1]);
+  auto client1 = make_new_connection_ok(router_port_ro, cluster_nodes_ports[1]);
 
   SCOPED_TRACE(
       "// Now let's change the md on the PRIMARY adding 2nd SECONDARY, also "
@@ -340,21 +332,17 @@ TEST_F(AsyncReplicasetTest, SecondaryAdded) {
   SCOPED_TRACE(
       "// Check our state file content, it should now contain all 3 members "
       "and increased view_id");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id + 1);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id + 1);
 
   SCOPED_TRACE("// Check that the existing connection is still alive");
-  ASSERT_NO_THROW(client1.query_one("select @@port"));
+  verify_existing_connection_ok(client1.get());
 
   SCOPED_TRACE("// Check that newly added node is used for ro connections ");
-  MySQLSession client2, client3;
-  client2.connect("127.0.0.1", router_port_ro, "username", "password", "", "");
-  auto result2{client2.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result2)[0]))),
-            cluster_nodes_ports[1]);
-  client3.connect("127.0.0.1", router_port_ro, "username", "password", "", "");
-  auto result3{client3.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result3)[0]))),
-            cluster_nodes_ports[2]);
+  /*auto client2 =*/make_new_connection_ok(router_port_ro,
+                                           cluster_nodes_ports[1]);
+  /*auto client3 =*/make_new_connection_ok(router_port_ro,
+                                           cluster_nodes_ports[2]);
 }
 
 /**
@@ -387,7 +375,7 @@ TEST_F(AsyncReplicasetTest, SecondaryRemovedStillReachable) {
   SCOPED_TRACE("// Create a router state file the 3 members");
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE(
       "// Create a configuration file sections with low ttl so that any "
@@ -414,20 +402,14 @@ TEST_F(AsyncReplicasetTest, SecondaryRemovedStillReachable) {
 
   SCOPED_TRACE(
       "// Check our state file content, it should first contain all 3 members");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 
   SCOPED_TRACE(
       "// Let's make a connection to the both secondaries, both should be "
       "successful");
-  MySQLSession client1, client2;
-  client1.connect("127.0.0.1", router_port_ro, "username", "password", "", "");
-  auto result{client1.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result)[0]))),
-            cluster_nodes_ports[1]);
-  client2.connect("127.0.0.1", router_port_ro, "username", "password", "", "");
-  auto result2{client2.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result2)[0]))),
-            cluster_nodes_ports[2]);
+  auto client1 = make_new_connection_ok(router_port_ro, cluster_nodes_ports[1]);
+  auto client2 = make_new_connection_ok(router_port_ro, cluster_nodes_ports[2]);
 
   SCOPED_TRACE(
       "// Now let's change the md on the first SECONDARY removing 2nd "
@@ -442,15 +424,15 @@ TEST_F(AsyncReplicasetTest, SecondaryRemovedStillReachable) {
   SCOPED_TRACE(
       "// Check our state file content, it should now contain only 2 members "
       "and increased view_id");
-  check_state_file(state_file, cluster_id,
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
                    {cluster_nodes_ports[0], cluster_nodes_ports[1]},
                    view_id + 1);
 
   SCOPED_TRACE(
       "// The connection to the first secondary should still be alive, the "
       "connection to the second secondary should be dropped");
-  ASSERT_NO_THROW(client1.query_one("select @@port"));
-  EXPECT_TRUE(wait_connection_dropped(client2));
+  verify_existing_connection_ok(client1.get());
+  EXPECT_TRUE(wait_connection_dropped(*client2.get()));
 }
 
 /**
@@ -481,10 +463,10 @@ TEST_F(AsyncReplicasetTest, ClusterIdChanged) {
                       view_id);
   }
 
-  SCOPED_TRACE("// Create a router state file the 3 members");
+  SCOPED_TRACE("// Create a router state file with 3 members");
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE(
       "// Create a configuration file sections with low ttl so that any "
@@ -511,22 +493,24 @@ TEST_F(AsyncReplicasetTest, ClusterIdChanged) {
 
   SCOPED_TRACE(
       "// Check our state file content, it should first contain all 3 members");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 
-  SCOPED_TRACE(
-      "// Now let's change the md on the PRIMARY: different cluster_id and "
-      "increased view_id");
+  SCOPED_TRACE("// Now let's change the md on the PRIMARY: " + cluster_id +
+               ", " + std::to_string(view_id) + " (cluster_id, view_id) to " +
+               changed_cluster_id + ", " + std::to_string(view_id + 1));
   set_mock_metadata(cluster_http_ports[0], changed_cluster_id,
                     {cluster_nodes_ports[0], cluster_nodes_ports[1]}, 0,
                     view_id + 1);
 
-  SCOPED_TRACE("// Wait untill the router sees this change");
+  SCOPED_TRACE("// Wait until the router sees this change");
   ASSERT_TRUE(wait_for_transaction_count_increase(cluster_http_ports[0], 2));
 
   SCOPED_TRACE(
       "// Check our state file content, not change, the PRIMARYs view of the "
       "world should not get into account as it contains different cluster_id");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 }
 
 /**
@@ -561,7 +545,7 @@ TEST_F(AsyncReplicasetTest, ClusterSecondaryQueryErrors) {
   SCOPED_TRACE("// Create a router state file the 3 members");
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE(
       "// Create a configuration file sections with low ttl so that any "
@@ -588,19 +572,22 @@ TEST_F(AsyncReplicasetTest, ClusterSecondaryQueryErrors) {
 
   SCOPED_TRACE(
       "// Check our state file content, it should contain all 3 members");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 
   SCOPED_TRACE(
       "// Check that there are warnings reported for not being able to fetch "
       "the metadata from both secondaries");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
-  const std::string log_content = router.get_full_logfile();
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
+  const std::string log_content = router.get_logfile_content();
 
   for (size_t i = 1; i <= 2; i++) {
     const std::string pattern =
-        "metadata_cache WARNING .* Failed fetching metadata from instance: " +
+        "metadata_cache WARNING .* Failed fetching metadata from metadata "
+        "server on 127.0.0.1:" +
         std::to_string(cluster_nodes_ports[i]);
-    ASSERT_TRUE(pattern_found(log_content, pattern)) << log_content;
+    ASSERT_TRUE(pattern_found(log_content, pattern));
   }
 }
 
@@ -632,7 +619,7 @@ TEST_F(AsyncReplicasetTest, MetadataUnavailableDisconnectFromSecondary) {
   SCOPED_TRACE("// Create a router state file the 3 members");
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE(
       "// Create a configuration file. disconnect_on_metadata_unavailable for "
@@ -660,18 +647,12 @@ TEST_F(AsyncReplicasetTest, MetadataUnavailableDisconnectFromSecondary) {
 
   SCOPED_TRACE(
       "// Check our state file content, it should contain both members");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 
   SCOPED_TRACE("// Let's make a connection to the both servers RW and RO");
-  MySQLSession client1, client2;
-  client1.connect("127.0.0.1", router_port_rw, "username", "password", "", "");
-  auto result{client1.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result)[0]))),
-            cluster_nodes_ports[0]);
-  client2.connect("127.0.0.1", router_port_ro, "username", "password", "", "");
-  auto result2{client2.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result2)[0]))),
-            cluster_nodes_ports[1]);
+  auto client1 = make_new_connection_ok(router_port_rw, cluster_nodes_ports[0]);
+  auto client2 = make_new_connection_ok(router_port_ro, cluster_nodes_ports[1]);
 
   SCOPED_TRACE(
       "// Make both members to start returning errors on metadata query now");
@@ -686,13 +667,14 @@ TEST_F(AsyncReplicasetTest, MetadataUnavailableDisconnectFromSecondary) {
 
   SCOPED_TRACE(
       "// RW connection should have survived, RO one should have been closed");
-  ASSERT_NO_THROW(client1.query_one("select @@port"));
-  EXPECT_TRUE(wait_connection_dropped(client2));
+  verify_existing_connection_ok(client1.get());
+  EXPECT_TRUE(wait_connection_dropped(*client2.get()));
 
   SCOPED_TRACE(
       "// Make sure the state file did not change, it should still contain "
       "the 2 members.");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 }
 
 /**
@@ -723,7 +705,7 @@ TEST_F(AsyncReplicasetTest, MetadataUnavailableDisconnectFromPrimary) {
   SCOPED_TRACE("// Create a router state file the 3 members");
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE(
       "// Create a configuration file. disconnect_on_metadata_unavailable for "
@@ -751,18 +733,12 @@ TEST_F(AsyncReplicasetTest, MetadataUnavailableDisconnectFromPrimary) {
 
   SCOPED_TRACE(
       "// Check our state file content, it should contain both members");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 
   SCOPED_TRACE("// Let's make a connection to the both servers RW and RO");
-  MySQLSession client1, client2;
-  client1.connect("127.0.0.1", router_port_rw, "username", "password", "", "");
-  auto result{client1.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result)[0]))),
-            cluster_nodes_ports[0]);
-  client2.connect("127.0.0.1", router_port_ro, "username", "password", "", "");
-  auto result2{client2.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result2)[0]))),
-            cluster_nodes_ports[1]);
+  auto client1 = make_new_connection_ok(router_port_rw, cluster_nodes_ports[0]);
+  auto client2 = make_new_connection_ok(router_port_ro, cluster_nodes_ports[1]);
 
   SCOPED_TRACE(
       "// Make both members to start returning errors on metadata query now");
@@ -777,8 +753,8 @@ TEST_F(AsyncReplicasetTest, MetadataUnavailableDisconnectFromPrimary) {
 
   SCOPED_TRACE(
       "// RO connection should have survived, RW one should have been closed");
-  EXPECT_TRUE(wait_connection_dropped(client1));
-  ASSERT_NO_THROW(client2.query_one("select @@port"));
+  EXPECT_TRUE(wait_connection_dropped(*client1.get()));
+  verify_existing_connection_ok(client2.get());
 
   /////////////////////////////////////////
   // here comes the TS_R-FR2.2_4 part
@@ -794,11 +770,8 @@ TEST_F(AsyncReplicasetTest, MetadataUnavailableDisconnectFromPrimary) {
   ASSERT_TRUE(wait_for_transaction_count_increase(cluster_http_ports[0], 2));
 
   SCOPED_TRACE("// We should be able to connect to the PRIMARY again ");
-  MySQLSession client3;
-  client3.connect("127.0.0.1", router_port_rw, "username", "password", "", "");
-  auto result3{client3.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result3)[0]))),
-            cluster_nodes_ports[0]);
+  /*auto client3 =*/make_new_connection_ok(router_port_rw,
+                                           cluster_nodes_ports[0]);
 }
 
 /**
@@ -833,9 +806,10 @@ TEST_F(AsyncReplicasetTest, MultipleChangesInTheCluster) {
 
   SCOPED_TRACE(
       "// Let us start with 3 members (one PRIMARY and 2 SECONDARIES)");
-  const std::string state_file = create_state_file(
-      temp_test_dir.name(),
-      create_state_file_content(cluster_id, initial_cluster_members, view_id));
+  const std::string state_file =
+      create_state_file(temp_test_dir.name(),
+                        create_state_file_content(
+                            cluster_id, "", initial_cluster_members, view_id));
 
   SCOPED_TRACE("// Create a configuration file.");
   const std::string metadata_cache_section =
@@ -859,7 +833,8 @@ TEST_F(AsyncReplicasetTest, MultipleChangesInTheCluster) {
 
   SCOPED_TRACE(
       "// Check our state file content, it should contain the initial members");
-  check_state_file(state_file, cluster_id, initial_cluster_members, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   initial_cluster_members, view_id);
 
   SCOPED_TRACE("// Now let's mess a little bit with the metadata");
   // let's remove one of the nodes and add another one
@@ -875,7 +850,8 @@ TEST_F(AsyncReplicasetTest, MultipleChangesInTheCluster) {
   ASSERT_TRUE(wait_for_transaction_count_increase(cluster_http_ports[2], 2));
 
   SCOPED_TRACE("// Check that the state file caught up with all those changes");
-  check_state_file(state_file, cluster_id, new_cluster_members, view_id + 1);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   new_cluster_members, view_id + 1);
 }
 
 /**
@@ -907,7 +883,7 @@ TEST_F(AsyncReplicasetTest, SecondaryRemoved) {
       "// Let us start with 3 members (one PRIMARY and 2 SECONDARIES)");
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE("// Create a configuration file.");
   const std::string metadata_cache_section =
@@ -931,18 +907,12 @@ TEST_F(AsyncReplicasetTest, SecondaryRemoved) {
 
   SCOPED_TRACE(
       "// Check our state file content, it should contain the initial members");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 
   SCOPED_TRACE("// Make 2 RO connections, one for each SECONDARY");
-  MySQLSession client1, client2;
-  client1.connect("127.0.0.1", router_port_ro, "username", "password", "", "");
-  auto result{client1.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result)[0]))),
-            cluster_nodes_ports[1]);
-  client2.connect("127.0.0.1", router_port_ro, "username", "password", "", "");
-  auto result2{client2.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result2)[0]))),
-            cluster_nodes_ports[2]);
+  auto client1 = make_new_connection_ok(router_port_ro, cluster_nodes_ports[1]);
+  auto client2 = make_new_connection_ok(router_port_ro, cluster_nodes_ports[2]);
 
   SCOPED_TRACE("// Now let's remove the second SECONDARY from the metadata");
   std::vector<uint16_t> new_cluster_members{cluster_nodes_ports[0],
@@ -956,22 +926,20 @@ TEST_F(AsyncReplicasetTest, SecondaryRemoved) {
   SCOPED_TRACE(
       "// Check that the state file does not contain the second SECONDARY "
       "anymore");
-  check_state_file(state_file, cluster_id, new_cluster_members, view_id + 1);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   new_cluster_members, view_id + 1);
 
   SCOPED_TRACE(
       "// Check that the existing connection to the second SECONDARY got "
       "dropped");
-  ASSERT_NO_THROW(client1.query_one("select @@port"));
-  EXPECT_TRUE(wait_connection_dropped(client2));
+  verify_existing_connection_ok(client1.get());
+  EXPECT_TRUE(wait_connection_dropped(*client2.get()));
 
   SCOPED_TRACE(
       "// Check that new RO connections are made to the first secondary");
   for (int i = 0; i < 2; i++) {
-    MySQLSession client;
-    client.connect("127.0.0.1", router_port_ro, "username", "password", "", "");
-    auto result{client.query_one("select @@port")};
-    EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result)[0]))),
-              cluster_nodes_ports[1]);
+    /*auto client =*/make_new_connection_ok(router_port_ro,
+                                            cluster_nodes_ports[1]);
   }
 }
 
@@ -1001,9 +969,10 @@ TEST_F(AsyncReplicasetTest, NewPrimaryOldGone) {
                       initial_cluster_members, 0, view_id);
   }
 
-  const std::string state_file = create_state_file(
-      temp_test_dir.name(),
-      create_state_file_content(cluster_id, initial_cluster_members, view_id));
+  const std::string state_file =
+      create_state_file(temp_test_dir.name(),
+                        create_state_file_content(
+                            cluster_id, "", initial_cluster_members, view_id));
 
   SCOPED_TRACE("// Create a configuration file.");
   const std::string metadata_cache_section =
@@ -1027,20 +996,14 @@ TEST_F(AsyncReplicasetTest, NewPrimaryOldGone) {
 
   SCOPED_TRACE(
       "// Check our state file content, it should contain the initial members");
-  check_state_file(state_file, cluster_id, initial_cluster_members, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   initial_cluster_members, view_id);
 
   SCOPED_TRACE("// Make one RW and one RO connection");
-  MySQLSession client_rw, client_ro;
-  client_rw.connect("127.0.0.1", router_port_rw, "username", "password", "",
-                    "");
-  auto result{client_rw.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result)[0]))),
-            cluster_nodes_ports[0]);
-  client_ro.connect("127.0.0.1", router_port_ro, "username", "password", "",
-                    "");
-  auto result2{client_ro.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result2)[0]))),
-            cluster_nodes_ports[1]);
+  auto client_rw =
+      make_new_connection_ok(router_port_rw, cluster_nodes_ports[0]);
+  auto client_ro =
+      make_new_connection_ok(router_port_ro, cluster_nodes_ports[1]);
 
   SCOPED_TRACE("// Now let's remove old primary and add a new one");
   std::vector<uint16_t> new_cluster_members{cluster_nodes_ports[1],
@@ -1054,20 +1017,17 @@ TEST_F(AsyncReplicasetTest, NewPrimaryOldGone) {
   ASSERT_TRUE(wait_for_transaction_count_increase(cluster_http_ports[1], 2));
 
   SCOPED_TRACE("// Check that the state file is as expected");
-  check_state_file(state_file, cluster_id, new_cluster_members, view_id + 1);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   new_cluster_members, view_id + 1);
 
   SCOPED_TRACE(
       "// Check that the existing connection to the old PRIMARY got dropped");
-  EXPECT_TRUE(wait_connection_dropped(client_rw));
-  ASSERT_NO_THROW(client_ro.query_one("select @@port"));
+  EXPECT_TRUE(wait_connection_dropped(*client_rw.get()));
+  verify_existing_connection_ok(client_ro.get());
 
   SCOPED_TRACE("// Check that new RW connections is made to the new PRIMARY");
-  MySQLSession client_rw2;
-  client_rw2.connect("127.0.0.1", router_port_rw, "username", "password", "",
-                     "");
-  auto result_rw2{client_rw2.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result_rw2)[0]))),
-            cluster_nodes_ports[2]);
+  /*auto client_rw2 =*/make_new_connection_ok(router_port_rw,
+                                              cluster_nodes_ports[2]);
 }
 
 /**
@@ -1095,7 +1055,7 @@ TEST_F(AsyncReplicasetTest, NewPrimaryOldBecomesSecondary) {
 
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE("// Create a configuration file.");
   const std::string metadata_cache_section =
@@ -1119,20 +1079,14 @@ TEST_F(AsyncReplicasetTest, NewPrimaryOldBecomesSecondary) {
 
   SCOPED_TRACE(
       "// Check our state file content, it should contain the initial members");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 
   SCOPED_TRACE("// Make one RW and one RO connection");
-  MySQLSession client_rw, client_ro;
-  client_rw.connect("127.0.0.1", router_port_rw, "username", "password", "",
-                    "");
-  auto result{client_rw.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result)[0]))),
-            cluster_nodes_ports[0]);
-  client_ro.connect("127.0.0.1", router_port_ro, "username", "password", "",
-                    "");
-  auto result2{client_ro.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result2)[0]))),
-            cluster_nodes_ports[1]);
+  auto client_rw =
+      make_new_connection_ok(router_port_rw, cluster_nodes_ports[0]);
+  auto client_ro =
+      make_new_connection_ok(router_port_ro, cluster_nodes_ports[1]);
 
   SCOPED_TRACE(
       "// Now let's change the primary from node[0] to node[1] and let "
@@ -1146,16 +1100,12 @@ TEST_F(AsyncReplicasetTest, NewPrimaryOldBecomesSecondary) {
   SCOPED_TRACE(
       "// Check that the existing connection to the old PRIMARY got dropped "
       "and the ro connection to the new PRIMARY is still up");
-  EXPECT_TRUE(wait_connection_dropped(client_rw));
-  ASSERT_NO_THROW(client_ro.query_one("select @@port"));
+  EXPECT_TRUE(wait_connection_dropped(*client_rw.get()));
+  verify_existing_connection_ok(client_ro.get());
 
   SCOPED_TRACE("// Check that new RW connections is made to the new PRIMARY");
-  MySQLSession client_rw2;
-  client_rw2.connect("127.0.0.1", router_port_rw, "username", "password", "",
-                     "");
-  auto result_rw2{client_rw2.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result_rw2)[0]))),
-            cluster_nodes_ports[1]);
+  /*auto client_rw2 =*/make_new_connection_ok(router_port_rw,
+                                              cluster_nodes_ports[1]);
 }
 
 /**
@@ -1183,7 +1133,7 @@ TEST_F(AsyncReplicasetTest, NewPrimaryOldBecomesSecondaryDisconnectOnPromoted) {
 
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE("// Create a configuration file.");
   const std::string metadata_cache_section =
@@ -1209,20 +1159,14 @@ TEST_F(AsyncReplicasetTest, NewPrimaryOldBecomesSecondaryDisconnectOnPromoted) {
 
   SCOPED_TRACE(
       "// Check our state file content, it should contain the initial members");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 
   SCOPED_TRACE("// Make one RW and one RO connection");
-  MySQLSession client_rw, client_ro;
-  client_rw.connect("127.0.0.1", router_port_rw, "username", "password", "",
-                    "");
-  auto result{client_rw.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result)[0]))),
-            cluster_nodes_ports[0]);
-  client_ro.connect("127.0.0.1", router_port_ro, "username", "password", "",
-                    "");
-  auto result2{client_ro.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result2)[0]))),
-            cluster_nodes_ports[1]);
+  auto client_rw =
+      make_new_connection_ok(router_port_rw, cluster_nodes_ports[0]);
+  auto client_ro =
+      make_new_connection_ok(router_port_ro, cluster_nodes_ports[1]);
 
   SCOPED_TRACE(
       "// Now let's change the primary from node[0] to node[1] and let "
@@ -1234,19 +1178,16 @@ TEST_F(AsyncReplicasetTest, NewPrimaryOldBecomesSecondaryDisconnectOnPromoted) {
   ASSERT_TRUE(wait_for_transaction_count_increase(cluster_http_ports[1], 2));
 
   SCOPED_TRACE("// Check that the state file is as expected");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id + 1);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id + 1);
 
   SCOPED_TRACE("// Check that both RW and RO connections are down");
-  EXPECT_TRUE(wait_connection_dropped(client_rw));
-  EXPECT_TRUE(wait_connection_dropped(client_ro));
+  EXPECT_TRUE(wait_connection_dropped(*client_rw.get()));
+  EXPECT_TRUE(wait_connection_dropped(*client_ro.get()));
 
   SCOPED_TRACE("// Check that new RW connections is made to the new PRIMARY");
-  MySQLSession client_rw2;
-  client_rw2.connect("127.0.0.1", router_port_rw, "username", "password", "",
-                     "");
-  auto result_rw2{client_rw2.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result_rw2)[0]))),
-            cluster_nodes_ports[1]);
+  /*auto client_rw2 =*/make_new_connection_ok(router_port_rw,
+                                              cluster_nodes_ports[1]);
 }
 
 /**
@@ -1274,7 +1215,7 @@ TEST_F(AsyncReplicasetTest, OnlyPrimaryLeftAcceptsRWAndRO) {
 
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE("// Create a configuration file.");
   const std::string metadata_cache_section =
@@ -1298,22 +1239,16 @@ TEST_F(AsyncReplicasetTest, OnlyPrimaryLeftAcceptsRWAndRO) {
 
   SCOPED_TRACE(
       "// Check our state file content, it should contain the initial members");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 
   SCOPED_TRACE("// Make one RW and one RO connection");
-  MySQLSession client_rw, client_ro;
-  client_rw.connect("127.0.0.1", router_port_rw, "username", "password", "",
-                    "");
-  auto result{client_rw.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result)[0]))),
-            cluster_nodes_ports[0]);
-  client_ro.connect("127.0.0.1", router_port_ro, "username", "password", "",
-                    "");
-  auto result2{client_ro.query_one("select @@port")};
+  auto client_rw =
+      make_new_connection_ok(router_port_rw, cluster_nodes_ports[0]);
   // the ro port is configured for PRIMARY_AND_SECONDARY so the first connection
   // will be directed to the PRIMARY
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result2)[0]))),
-            cluster_nodes_ports[0]);
+  auto client_ro =
+      make_new_connection_ok(router_port_ro, cluster_nodes_ports[0]);
 
   SCOPED_TRACE(
       "// Now let's change the primary from node[0] to node[1] and let "
@@ -1325,21 +1260,17 @@ TEST_F(AsyncReplicasetTest, OnlyPrimaryLeftAcceptsRWAndRO) {
   ASSERT_TRUE(wait_for_transaction_count_increase(cluster_http_ports[1], 2));
 
   SCOPED_TRACE("// Check that the state file is as expected");
-  check_state_file(state_file, cluster_id, {cluster_nodes_ports[1]},
-                   view_id + 1);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   {cluster_nodes_ports[1]}, view_id + 1);
 
   SCOPED_TRACE("// Check that both RW and RO connections are down");
-  EXPECT_TRUE(wait_connection_dropped(client_rw));
-  EXPECT_TRUE(wait_connection_dropped(client_ro));
+  EXPECT_TRUE(wait_connection_dropped(*client_rw.get()));
+  EXPECT_TRUE(wait_connection_dropped(*client_ro.get()));
 
   SCOPED_TRACE(
       "// Check that new RO connection is now made to the new PRIMARY");
-  MySQLSession client_ro2;
-  client_ro2.connect("127.0.0.1", router_port_ro, "username", "password", "",
-                     "");
-  auto result_ro2{client_ro2.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result_ro2)[0]))),
-            cluster_nodes_ports[1]);
+  /*auto client_ro2 =*/make_new_connection_ok(router_port_ro,
+                                              cluster_nodes_ports[1]);
 }
 
 /**
@@ -1367,7 +1298,7 @@ TEST_F(AsyncReplicasetTest, OnlyPrimaryLeftAcceptsRW) {
 
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE("// Create a configuration file.");
   const std::string metadata_cache_section =
@@ -1391,15 +1322,12 @@ TEST_F(AsyncReplicasetTest, OnlyPrimaryLeftAcceptsRW) {
 
   SCOPED_TRACE(
       "// Check our state file content, it should contain the initial members");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 
   SCOPED_TRACE("// Make one RO connection");
-  MySQLSession client_ro;
-  client_ro.connect("127.0.0.1", router_port_ro, "username", "password", "",
-                    "");
-  auto result{client_ro.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result)[0]))),
-            cluster_nodes_ports[1]);
+  auto client_ro =
+      make_new_connection_ok(router_port_ro, cluster_nodes_ports[1]);
 
   SCOPED_TRACE("// Now let's bring the only SECONDARY down");
   set_mock_metadata(cluster_http_ports[0], cluster_id, {cluster_nodes_ports[0]},
@@ -1409,14 +1337,12 @@ TEST_F(AsyncReplicasetTest, OnlyPrimaryLeftAcceptsRW) {
   ASSERT_TRUE(wait_for_transaction_count_increase(cluster_http_ports[0], 2));
 
   SCOPED_TRACE("// Check that the state file is as expected");
-  check_state_file(state_file, cluster_id, {cluster_nodes_ports[0]},
-                   view_id + 1);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   {cluster_nodes_ports[0]}, view_id + 1);
 
   SCOPED_TRACE("// Check that RO connection is down and no new is accepted");
-  EXPECT_TRUE(wait_connection_dropped(client_ro));
-  MySQLSession client_ro2;
-  ASSERT_ANY_THROW(client_ro.connect("127.0.0.1", router_port_ro, "username",
-                                     "password", "", ""));
+  EXPECT_TRUE(wait_connection_dropped(*client_ro.get()));
+  verify_new_connection_fails(router_port_ro);
 }
 
 class NodeUnavailableTest : public AsyncReplicasetTest,
@@ -1440,7 +1366,7 @@ TEST_P(NodeUnavailableTest, NodeUnavailable) {
   SCOPED_TRACE("// The cluster has 4 nodes but the first SECONDARY is down");
   const auto trace_file =
       get_data_dir().join("metadata_dynamic_nodes_v2_ar.js").str();
-  for (unsigned i = 0, nodes = 0; i < CLUSTER_NODES; ++i) {
+  for (unsigned i = 0; i < CLUSTER_NODES; ++i) {
     if (i == 1) continue;
     cluster_nodes.push_back(&ProcessManager::launch_mysql_server_mock(
         trace_file, cluster_nodes_ports[i], EXIT_SUCCESS, false,
@@ -1449,12 +1375,11 @@ TEST_P(NodeUnavailableTest, NodeUnavailable) {
     SCOPED_TRACE("// All 4 nodes are in the metadata");
     set_mock_metadata(cluster_http_ports[i], cluster_id, cluster_nodes_ports,
                       /*primary_id=*/0, view_id);
-    nodes++;
   }
 
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE("// Create a configuration file.");
   const std::string metadata_cache_section =
@@ -1478,29 +1403,27 @@ TEST_P(NodeUnavailableTest, NodeUnavailable) {
 
   SCOPED_TRACE(
       "// Check our state file content, it should contain the initial members");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 
   SCOPED_TRACE(
       "// Make 3 RO connections, even though one of the secondaries is down "
       "each of them should be successfull");
   for (size_t i = 0; i < 3; ++i) {
-    MySQLSession client_ro;
-    ASSERT_NO_THROW(client_ro.connect("127.0.0.1", router_port_ro, "username",
-                                      "password", "", ""));
-    auto result{client_ro.query_one("select @@port")};
-    const auto port =
-        static_cast<uint16_t>(std::stoul(std::string((*result)[0])));
+    uint16_t expected_port{0};
     if (routing_strategy == "round-robin" ||
         routing_strategy == "round-robin-with-fallback") {
       // for round-robin we should round-robin on nodes with id 2 and 3
       // (0-based)
-      EXPECT_EQ(port, cluster_nodes_ports[2 + i % 2]);
+      expected_port = cluster_nodes_ports[2 + i % 2];
     } else {
       ASSERT_STREQ(routing_strategy.c_str(), "first-available");
       // for fiirst-available we should go with the node id = 2 each time as the
       // node id = 1 is not available
-      EXPECT_EQ(port, cluster_nodes_ports[2]);
+      expected_port = cluster_nodes_ports[2];
     }
+
+    /*auto client_ro =*/make_new_connection_ok(router_port_ro, expected_port);
   }
 }
 
@@ -1542,7 +1465,7 @@ TEST_P(NodeUnavailableAllNodesDownTest, NodeUnavailableAllNodesDown) {
 
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE("// Create a configuration file.");
   const std::string metadata_cache_section =
@@ -1567,23 +1490,18 @@ TEST_P(NodeUnavailableAllNodesDownTest, NodeUnavailableAllNodesDown) {
 
   SCOPED_TRACE(
       "// Check our state file content, it should contain the initial members");
-  check_state_file(state_file, cluster_id, cluster_nodes_ports, view_id);
+  check_state_file(state_file, ClusterType::RS_V2, cluster_id,
+                   cluster_nodes_ports, view_id);
 
   SCOPED_TRACE(
       "// Attempt 2 RO connections, each should fail unless we fallback to the "
       "PRIMARY");
   for (size_t i = 0; i < 2; ++i) {
-    MySQLSession client_ro;
     if (routing_strategy != "round-robin-with-fallback") {
-      ASSERT_ANY_THROW(client_ro.connect("127.0.0.1", router_port_ro,
-                                         "username", "password", "", ""));
+      verify_new_connection_fails(router_port_ro);
     } else {
-      ASSERT_NO_THROW(client_ro.connect("127.0.0.1", router_port_ro, "username",
-                                        "password", "", ""));
-      auto result{client_ro.query_one("select @@port")};
-      const auto port =
-          static_cast<uint16_t>(std::stoul(std::string((*result)[0])));
-      EXPECT_EQ(cluster_nodes_ports[0], port);
+      /*auto client_ro =*/make_new_connection_ok(router_port_ro,
+                                                 cluster_nodes_ports[0]);
     }
   }
 }
@@ -1628,7 +1546,7 @@ TEST_P(ClusterTypeMismatchTest, ClusterTypeMismatch) {
 
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE("// Create a configuration file.");
   const std::string metadata_cache_section =
@@ -1657,9 +1575,8 @@ TEST_P(ClusterTypeMismatchTest, ClusterTypeMismatch) {
                                      "password", "", ""));
 
   SCOPED_TRACE("// Logfile should contain proper message");
-  const std::string log_content = router.get_full_logfile();
-  ASSERT_TRUE(pattern_found(log_content, GetParam().expected_error))
-      << log_content;
+  const std::string log_content = router.get_logfile_content();
+  ASSERT_TRUE(pattern_found(log_content, GetParam().expected_error));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -1704,7 +1621,7 @@ TEST_P(UnexpectedResultFromMDRefreshTest, UnexpectedResultFromMDRefreshQuery) {
   SCOPED_TRACE("// Create a router state file containing both members");
   const std::string state_file = create_state_file(
       temp_test_dir.name(),
-      create_state_file_content(cluster_id, cluster_nodes_ports, view_id));
+      create_state_file_content(cluster_id, "", cluster_nodes_ports, view_id));
 
   SCOPED_TRACE(
       "// Create a configuration file. disconnect_on_metadata_unavailable for "
@@ -1725,23 +1642,14 @@ TEST_P(UnexpectedResultFromMDRefreshTest, UnexpectedResultFromMDRefreshQuery) {
 
   SCOPED_TRACE("// Launch the router with the initial state file");
   launch_router(temp_test_dir.name(), metadata_cache_section, routing_section,
-                state_file, EXIT_SUCCESS,
-                /*wait_for_notify_ready=*/-1s);
+                state_file);
 
   SCOPED_TRACE("// Wait until the router at least once queried the metadata");
   ASSERT_TRUE(wait_for_transaction_count_increase(cluster_http_ports[0], 2));
 
   SCOPED_TRACE("// Let's make a connection to the both servers RW and RO");
-  MySQLSession client1, client2;
-  ASSERT_NO_THROW(client1.connect("127.0.0.1", router_port_rw, "username",
-                                  "password", "", ""));
-  auto result{client1.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result)[0]))),
-            cluster_nodes_ports[0]);
-  client2.connect("127.0.0.1", router_port_ro, "username", "password", "", "");
-  auto result2{client2.query_one("select @@port")};
-  EXPECT_EQ(static_cast<uint16_t>(std::stoul(std::string((*result2)[0]))),
-            cluster_nodes_ports[1]);
+  auto client1 = make_new_connection_ok(router_port_rw, cluster_nodes_ports[0]);
+  auto client2 = make_new_connection_ok(router_port_ro, cluster_nodes_ports[1]);
 
   SCOPED_TRACE(
       "// Make all members to start returning invalid data when queried for "
@@ -1754,8 +1662,8 @@ TEST_P(UnexpectedResultFromMDRefreshTest, UnexpectedResultFromMDRefreshQuery) {
   }
 
   SCOPED_TRACE("// Both connections should get dropped");
-  EXPECT_TRUE(wait_connection_dropped(client1));
-  EXPECT_TRUE(wait_connection_dropped(client2));
+  EXPECT_TRUE(wait_connection_dropped(*client1.get()));
+  EXPECT_TRUE(wait_connection_dropped(*client2.get()));
   // check that the router did not crash (happens automatically)
 }
 

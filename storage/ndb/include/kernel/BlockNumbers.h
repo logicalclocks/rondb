@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -76,6 +77,7 @@
 #define QBACKUP    0x10F
 #define QRESTORE   0x110
 #define V_QUERY    0x111
+// If you add a new block, be sure to update MAX_BLOCK_NO below.
 
 const BlockReference BACKUP_REF   = numberToRef(BACKUP, 0);
 const BlockReference QBACKUP_REF  = numberToRef(QBACKUP, 0);
@@ -122,7 +124,7 @@ static inline void __hide_warnings_unused_ref_vars(void) {
 }
 
 const BlockNumber MIN_BLOCK_NO = BACKUP;
-const BlockNumber MAX_BLOCK_NO = QRESTORE;
+const BlockNumber MAX_BLOCK_NO = V_QUERY;
 const BlockNumber NO_OF_BLOCKS = (MAX_BLOCK_NO - MIN_BLOCK_NO + 1);
 
 #endif

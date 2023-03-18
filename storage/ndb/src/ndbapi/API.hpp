@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2010, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,9 +47,9 @@
 #include <NdbRecAttr.hpp>
 #include <NdbReceiver.hpp>
 #include <NdbBlob.hpp>
-#include <NdbBlobImpl.hpp>
+#include "NdbBlobImpl.hpp"
 #include <NdbInterpretedCode.hpp>
-#include <NdbWaitGroup.hpp>
+#include "NdbWaitGroup.hpp"
 
 #include <NdbEventOperation.hpp>
 #include "NdbEventOperationImpl.hpp"

@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,6 +30,7 @@
 
 #include <util/BaseString.hpp>
 #include <mgmapi.h>
+#include "mgmcommon/NdbMgm.hpp"
 #include <kernel_types.h>
 #include <NdbMutex.h>
 #include <NdbThread.h>
@@ -77,10 +78,12 @@ public:
                            NodeId allocated_nodeid,
                            int connect_retries, int connect_delay);
   void setupConfiguration();
+  void setupMemoryConfiguration(Uint64);
   void closeConfiguration(bool end_session= true);
-  
+
   Uint32 lockPagesInMainMemory() const;
 
+  Uint32 getSharedLdmInstance(Uint32 instance);
   int schedulerExecutionTimer() const;
   void schedulerExecutionTimer(int value);
 
@@ -151,7 +154,9 @@ public:
   class LogLevel * m_logLevel;
   ndb_mgm_configuration_iterator * getClusterConfigIterator() const;
 
-  ndb_mgm_configuration* getClusterConfig() const { return m_clusterConfig; }
+  ndb_mgm_configuration* getClusterConfig() const {
+    return m_clusterConfig.get();
+  }
   Uint32 get_config_generation() const; 
 
   THRConfigApplier m_thr_config;
@@ -179,11 +184,12 @@ private:
 
   ndb_mgm_configuration * m_ownConfig;
   const class ConfigValues* get_own_config_values();
-  ndb_mgm_configuration * m_clusterConfig;
+  ndb_mgm::config_ptr m_clusterConfig;
   UtilBuffer m_clusterConfigPacked_v1;
   UtilBuffer m_clusterConfigPacked_v2;
 
-  ndb_mgm_configuration_iterator * m_clusterConfigIter;
+  // Iterator for nodes in the config
+  ndb_mgm_configuration_iterator * m_clusterConfigIter{nullptr};
   ndb_mgm_configuration_iterator * m_ownConfigIterator;
   
   ConfigRetriever *m_config_retriever;
@@ -198,15 +204,20 @@ private:
   void calcSizeAlt(class ConfigValues * );
   const char *get_type_string(enum ThreadTypes type);
   bool calculate_automatic_memory(
-         ndb_mgm_configuration_iterator *p);
-  void assign_default_memory_sizes(const ndb_mgm_configuration_iterator *p);
+         ndb_mgm_configuration_iterator *p,
+         Uint64 min_transaction_memory);
+  void assign_default_memory_sizes(const ndb_mgm_configuration_iterator *p,
+                                   Uint64 min_transaction_memory);
   static Uint32 get_num_threads();
   static Uint64 get_total_memory(
                   const ndb_mgm_configuration_iterator *p,
                   bool & total_memory_set);
   Uint64 get_schema_memory(ndb_mgm_configuration_iterator *p);
+  Uint64 get_backup_schema_memory(ndb_mgm_configuration_iterator *p);
+  Uint64 get_replication_memory(ndb_mgm_configuration_iterator *p);
   static Uint64 get_and_set_transaction_memory(
-           const ndb_mgm_configuration_iterator *p);
+           const ndb_mgm_configuration_iterator *p,
+           Uint64 min_transaction_memory);
   static Uint64 get_and_set_redo_buffer(
            const ndb_mgm_configuration_iterator *p);
   static Uint64 get_and_set_undo_buffer(

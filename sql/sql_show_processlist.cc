@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -20,9 +20,9 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include "sql/sql_show_processlist.h"
-
 #include <stddef.h>
+
+#include "sql/sql_show_processlist.h"
 
 #include "lex_string.h"
 #include "m_string.h"  // STRING_WITH_LEN
@@ -40,7 +40,10 @@
 #include "sql/strfunc.h"
 #include "sql_string.h"
 
-extern bool pfs_processlist_enabled;
+/**
+  Implement SHOW PROCESSLIST by using performance schema.processlist
+*/
+bool pfs_processlist_enabled = false;
 
 static const LEX_CSTRING field_id = {STRING_WITH_LEN("ID")};
 static const LEX_CSTRING alias_id = {STRING_WITH_LEN("Id")};
@@ -117,7 +120,7 @@ bool build_processlist_query(const POS &pos, THD *thd, bool verbose) {
     Default Info field length is 100. Verbose field length is limited to the
     size of the INFO columns in the Performance Schema.
   */
-  DBUG_ASSERT(PROCESS_LIST_WIDTH == 100);
+  assert(PROCESS_LIST_WIDTH == 100);
   if (verbose) {
     if (lex_string_strmake(thd->mem_root, &info_len, "1024", 4)) return true;
   } else {
@@ -143,7 +146,7 @@ bool build_processlist_query(const POS &pos, THD *thd, bool verbose) {
       new (thd->mem_root) PTI_simple_ident_ident(pos, field_info);
   if (ident_info == nullptr) return true;
 
-  /* Info length is either "25" or "100" depending on verbose */
+  /* Info length is either "100" or "1024" depending on verbose */
   Item_int *item_info_len = new (thd->mem_root) Item_int(pos, info_len);
   if (item_info_len == nullptr) return true;
 
@@ -242,11 +245,11 @@ bool build_processlist_query(const POS &pos, THD *thd, bool verbose) {
   if (query_expression2 == nullptr) return true;
 
   LEX *lex = thd->lex;
-  SELECT_LEX *current_select = lex->current_select();
-  Parse_context pc(thd, current_select);
+  Query_block *current_query_block = lex->current_query_block();
+  Parse_context pc(thd, current_query_block);
   assert(!thd->is_error());
 
   if (query_expression2->contextualize(&pc)) return true;
-
+  if (pc.finalize_query_expression()) return true;
   return false;
 }

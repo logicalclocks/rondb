@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
 #include <algorithm>
 
 #include "Restore.hpp"
@@ -44,8 +46,7 @@
 #include "kernel/signaldata/FsOpenReq.hpp"
 #include "portlib/ndb_file.h"
 #include "portlib/NdbMem.h"
-
-//#define DUMMY_PASSWORD
+#include "util/ndb_opts.h"
 
 using byte = unsigned char;
 
@@ -56,7 +57,7 @@ extern bool ga_skip_unknown_objects;
 extern bool ga_skip_broken_objects;
 extern bool opt_include_stored_grants;
 
-extern char* g_backup_password;
+extern ndb_password_state g_backup_password_state;
 
 #define LOG_MSGLEN 1024
 
@@ -115,6 +116,7 @@ public:
         break;
       }
       // Fall through - for blob/text with ArrayTypeVar
+      [[fallthrough]];
     default:
       // Default twiddling parameters
       m_twiddle_size = attr_desc->size;
@@ -550,12 +552,12 @@ RestoreMetaData::readMetaTableDesc() {
     if (!m_hostByteOrder)
     {
       /**
-       * Bloddy byte-array, need to twiddle
+       * Bloody byte-array, need to twiddle
        */
       Vector<Uint32> values;
       Uint32 len = dst->getMapLen();
       Uint32 zero = 0;
-      values.fill(len - 1, zero);
+      values.fill(len, zero);
       dst->getMapValues(values.getBase(), values.size());
       for (Uint32 i = 0; i<len; i++)
       {
@@ -897,7 +899,7 @@ RestoreMetaData::parseTableDescriptor(const Uint32 * data, Uint32 len)
 {
   NdbTableImpl* tableImpl = 0;
   int ret = NdbDictInterface::parseTableInfo
-    (&tableImpl, data, len, false,
+    (&tableImpl, data, len, false, nullptr,
      ndbd_drop6(m_fileHeader.NdbVersion) ? MAKE_VERSION(5,1,2) :
      m_fileHeader.NdbVersion);
   
@@ -1639,7 +1641,7 @@ BackupFile::~BackupFile()
   int r = 0;
   if (m_xfile.is_open())
   {
-    r = m_xfile.close();
+    r = m_xfile.close(false);
   }
 
   if (m_file.close() == -1)
@@ -1685,22 +1687,20 @@ BackupFile::openFile(){
     m_file_size = 0;
   }
 
-#if !defined(DUMMY_PASSWORD)
   r = m_xfile.open(m_file,
-                   reinterpret_cast<const byte*>(g_backup_password),
-                   g_backup_password ? strlen(g_backup_password) : 0);
-#else
-  r = m_xfile.open(m_file, reinterpret_cast<const byte*>("DUMMY"), 5);
-#endif
-  bool fail = (r == -1);
-  if (g_backup_password != nullptr)
+                   reinterpret_cast<const byte*>(
+                       g_backup_password_state.get_password()),
+                   g_backup_password_state.get_password_length());
+  bool fail = (r != 0);
+  if (g_backup_password_state.get_password() != nullptr)
   {
     if (!m_xfile.is_encrypted())
     {
-      restoreLogger.log_error("Decryption requested but file not encrypted.");
+      restoreLogger.log_error("Decryption requested but file not "
+                              "encrypted.");
       fail = true;
     }
-    else if (r == -1)
+    else if (r != 0)
     {
       restoreLogger.log_error("Can not read decrypted file. Might be wrong password.");
     }
@@ -1709,12 +1709,11 @@ BackupFile::openFile(){
   {
     if (m_xfile.is_encrypted())
     {
-#if !defined(DUMMY_PASSWORD)
-      restoreLogger.log_error("File is encrypted but no decryption requested.");
+      restoreLogger.log_error("File is encrypted but no decryption "
+                              "requested.");
       fail = true;
-#endif
     }
-    else if (r == -1)
+    else if (r != 0)
     {
       restoreLogger.log_error("Can not read file. Might be corrupt.");
     }
@@ -1727,7 +1726,7 @@ BackupFile::openFile(){
 
   if (r != -1)
   {
-    m_xfile.close();
+    m_xfile.close(false);
   }
   m_file.close();
   return false;
@@ -1760,7 +1759,7 @@ int BackupFile::buffer_get_ptr_ahead(void **p_buf_ptr, Uint32 size, Uint32 nmemb
        * For undo log file we should read log entris backwards from log file.
        *   That mean the first entries should start at sizeof(m_fileHeader).
        *   The end of the last entries should be the end of log file(EOF-1).
-       * If ther are entries left in log file to read.
+       * If there are entries left in log file to read.
        *   m_file_pos should bigger than sizeof(m_fileHeader).
        * If the length of left log entries less than the residual length of buffer,
        *   we just need to read all the left entries from log file into the buffer.
@@ -1781,7 +1780,7 @@ int BackupFile::buffer_get_ptr_ahead(void **p_buf_ptr, Uint32 size, Uint32 nmemb
          *                          top        end
          *   Bytes in file        abcdefgh0123456789
          *   Byte in buffer       0123456789             --after first read
-         *   Consume datas...     (6789) (2345)
+         *   Consume data...      (6789) (2345)
          *   Bytes in buffer      01++++++++             --after several consumes
          *   Move data to end     ++++++++01
          *   Bytes in buffer      abcdefgh01             --after second read
@@ -1799,7 +1798,7 @@ int BackupFile::buffer_get_ptr_ahead(void **p_buf_ptr, Uint32 size, Uint32 nmemb
         }
         else
         {
-	  // Fill remaing space at start of buffer with data from file.
+	  // Fill remaining space at start of buffer with data from file.
           ndbxfrm_output_reverse_iterator out((unsigned char*)m_buffer + buffer_free_space, (unsigned char*)m_buffer, false);
           byte* out_beg = out.begin();
           r = m_xfile.read_backward(&out);
@@ -1999,7 +1998,8 @@ BackupFile::readHeader(){
     }
     else
     {
-      restoreLogger.log_error("readDataFileHeader: Error reading header. Wrong password?");
+      restoreLogger.log_error("readDataFileHeader: Error reading header. "
+                              "Wrong password?");
     }
     return false;
   }
@@ -2032,7 +2032,8 @@ BackupFile::readHeader(){
       }
       else
       {
-        restoreLogger.log_error("readDataFileHeader: Error reading header. Wrong password?");
+        restoreLogger.log_error("readDataFileHeader: Error reading header. "
+                                "Wrong password?");
       }
       return false;
     }
@@ -2160,7 +2161,8 @@ bool RestoreDataIterator::readFragmentHeader(int & ret, Uint32 *fragmentId)
       }
       else
       {
-        restoreLogger.log_error("readFragmentHeader: Error reading header. Wrong password?");
+        restoreLogger.log_error("readFragmentHeader: Error reading header. "
+                                "Wrong password?");
       }
       ret = -2;
       return false;

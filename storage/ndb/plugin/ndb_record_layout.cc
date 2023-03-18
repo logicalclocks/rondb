@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2019, 2020 Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2019, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -24,9 +24,11 @@
 
 #include "storage/ndb/plugin/ndb_record_layout.h"
 
+#include <assert.h>
+#include <cstdint>
 #include "NdbApi.hpp"
 #include "my_byteorder.h"
-#include "my_dbug.h"
+
 #include "storage/ndb/plugin/ndb_ndbapi_util.h"
 
 Ndb_record_layout::Ndb_record_layout(int ncol)
@@ -40,13 +42,14 @@ Ndb_record_layout::~Ndb_record_layout() { delete[] record_specs; }
 void Ndb_record_layout::clear() {
   record_size = 4;
   m_seq = 0;
+  m_nullable_columns = 0;
 }
 
 /*
  * add a column to a Record
  */
 void Ndb_record_layout::addColumn(const NdbDictionary::Column *column) {
-  DBUG_ASSERT(m_seq < m_columns);
+  assert(m_seq < m_columns);
 
   /* Alignment */
   int align = column->getSizeInBytes();
@@ -60,12 +63,15 @@ void Ndb_record_layout::addColumn(const NdbDictionary::Column *column) {
   record_specs[m_seq].offset = record_size;
 
   /* Set nullbits in the record specification */
+
   if (column->getNullable()) {
-    record_specs[m_seq].nullbit_byte_offset = m_columns / 8;
-    record_specs[m_seq].nullbit_bit_in_byte = m_columns % 8;
+    assert(m_nullable_columns < MAX_NULLABLE_COLUMNS);
+    record_specs[m_seq].nullbit_byte_offset = m_nullable_columns / 8;
+    record_specs[m_seq].nullbit_bit_in_byte = m_nullable_columns % 8;
+    m_nullable_columns++;
   } else {
-    record_specs[m_seq].nullbit_byte_offset = 0;
-    record_specs[m_seq].nullbit_bit_in_byte = 0;
+    record_specs[m_seq].nullbit_byte_offset = UINT32_MAX;
+    record_specs[m_seq].nullbit_bit_in_byte = UINT32_MAX;
   }
 
   /* Set Column in record spec */
@@ -78,16 +84,23 @@ void Ndb_record_layout::addColumn(const NdbDictionary::Column *column) {
 
 bool Ndb_record_layout::isNull(const char *data, int idx) const {
   if (record_specs[idx].column->getNullable()) {
+    assert(record_specs[idx].nullbit_byte_offset < MAX_NULLABLE_COLUMNS / 8);
+    assert(record_specs[idx].nullbit_bit_in_byte < 8);
     return (*(data + record_specs[idx].nullbit_byte_offset) &
             (1 << record_specs[idx].nullbit_bit_in_byte));
   }
   return false;
 }
 
+void Ndb_record_layout::initRowBuffer(char *data) const {
+  // First four bytes is for null bits - clear them for sanity
+  memset(data, 0, 4);
+}
+
 void Ndb_record_layout::setValue(int idx, unsigned short value,
                                  char *data) const {
-  DBUG_ASSERT(idx < (int)m_columns);
-  DBUG_ASSERT(record_specs[idx].column->getSizeInBytes() == sizeof(short));
+  assert(idx < (int)m_columns);
+  assert(record_specs[idx].column->getSizeInBytes() == sizeof(short));
 
   setNotNull(idx, data);
   data += record_specs[idx].offset;
@@ -95,7 +108,7 @@ void Ndb_record_layout::setValue(int idx, unsigned short value,
 }
 
 void Ndb_record_layout::setValue(int idx, std::string value, char *data) const {
-  DBUG_ASSERT(idx < (int)m_columns);
+  assert(idx < (int)m_columns);
   setNotNull(idx, data);
   ndb_pack_varchar(record_specs[idx].column, record_specs[idx].offset,
                    value.c_str(), value.length(), data);
@@ -103,7 +116,7 @@ void Ndb_record_layout::setValue(int idx, std::string value, char *data) const {
 
 void Ndb_record_layout::setValue(int idx, unsigned int *value,
                                  char *data) const {
-  DBUG_ASSERT(idx < (int)m_columns);
+  assert(idx < (int)m_columns);
   if (value) {
     setNotNull(idx, data);
     data += record_specs[idx].offset;
@@ -121,7 +134,7 @@ void Ndb_record_layout::packValue(int idx, std::string value,
 
 bool Ndb_record_layout::getValue(const char *data, int idx,
                                  unsigned short *value) const {
-  DBUG_ASSERT(idx < (int)m_columns);
+  assert(idx < (int)m_columns);
   if (isNull(data, idx)) return false;
   data += record_specs[idx].offset;
   *value = *reinterpret_cast<const unsigned short *>(data);
@@ -130,7 +143,7 @@ bool Ndb_record_layout::getValue(const char *data, int idx,
 
 bool Ndb_record_layout::getValue(const char *data, int idx, size_t *length,
                                  const char **str) const {
-  DBUG_ASSERT(idx < (int)m_columns);
+  assert(idx < (int)m_columns);
   if (isNull(data, idx)) return false;
   ndb_unpack_varchar(record_specs[idx].column, record_specs[idx].offset, str,
                      length, data);
@@ -139,7 +152,7 @@ bool Ndb_record_layout::getValue(const char *data, int idx, size_t *length,
 
 bool Ndb_record_layout::getValue(const char *data, int idx,
                                  unsigned int *value) const {
-  DBUG_ASSERT(idx < (int)m_columns);
+  assert(idx < (int)m_columns);
   if (isNull(data, idx)) return false;
   data += record_specs[idx].offset;
   *value = *reinterpret_cast<const int *>(data);

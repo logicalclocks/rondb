@@ -1,4 +1,4 @@
-/* Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2015, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -431,7 +431,7 @@ static void handle_error() {
     WRITE_VAL("affected rows: %d\n", sql_affected_rows);
     WRITE_VAL("server status: %d\n", sql_server_status);
     WRITE_VAL("warn count: %d\n", sql_warn_count);
-    //           WRITE_VAL("messsage: %s\n",msg);
+    //           WRITE_VAL("message: %s\n",msg);
   }
 }
 
@@ -442,7 +442,7 @@ static void exec_test_cmd(MYSQL_SESSION session, const char *test_cmd,
   cmd.com_query.query = (char *)test_cmd;
   cmd.com_query.length = strlen(cmd.com_query.query);
   fail = command_service_run_command(session, select_prot, COM_QUERY, &cmd,
-                                     &my_charset_utf8_general_ci);
+                                     &my_charset_utf8mb3_general_ci);
   if (fail)
     LogPluginErrMsg(ERROR_LEVEL, ER_LOG_PRINTF_MSG,
                     "test_sql_9_sessions - ret code : %d", fail);
@@ -550,7 +550,7 @@ static int test_sql_service_plugin_init(void *p) {
   return 0;
 }
 
-static int test_sql_service_plugin_deinit(void *p MY_ATTRIBUTE((unused))) {
+static int test_sql_service_plugin_deinit(void *p [[maybe_unused]]) {
   DBUG_TRACE;
   LogPluginErr(INFORMATION_LEVEL, ER_LOG_PRINTF_MSG, "Uninstallation.");
   deinit_logging_service_for_plugin(&reg_srv, &log_bi, &log_bs);

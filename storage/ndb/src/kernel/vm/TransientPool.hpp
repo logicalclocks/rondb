@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2017, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2017, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,6 +26,7 @@
 #ifndef TRANSPOOL_HPP
 #define TRANSPOOL_HPP
 
+#include "util/require.h"
 #include "TransientSlotPool.hpp"
 #include "debugger/EventLogger.hpp"
 #include "vm/ComposedSlotPool.hpp"
@@ -32,7 +34,6 @@
 
 #define JAM_FILE_ID 506
 
-extern EventLogger * g_eventLogger;
 
 #define SIZEOF_IN_WORDS(T) ((sizeof(T) + sizeof(Uint32) - 1) / sizeof(Uint32))
 
@@ -52,10 +53,11 @@ public:
 #endif
   bool startup();
 
-  bool seize(Ptr<T> &p);
+  [[nodiscard]] bool seize(Ptr<T> &p);
   void release(Ptr<T> p);
-  T *getPtr(Uint32 i) const;
+  [[nodiscard]] T *getPtr(Uint32 i) const;
   void getPtr(Ptr<T> &p) const;
+  void getPtr(Ptr<T> &p, Uint32 i) const;
   /**
    * getValidPtr is often called on an operation record from a thread that
    * doesn't own the operation record. A few examples are:
@@ -100,10 +102,10 @@ public:
    * by a special map index that maps from a 32-bit value to a pointer to
    * an operation record.
    */
-  bool getValidPtr(Ptr<T> &p) const;
-  bool getUncheckedPtrRO(Ptr<T> &p) const;
-  bool getUncheckedPtrRW(Ptr<T> &p) const;
-  Uint32 getUncheckedPtrs(Uint32* from, Ptr<T> ptrs[], Uint32 cnt) const;
+  [[nodiscard]] bool getValidPtr(Ptr<T> &p) const;
+  [[nodiscard]] bool getUncheckedPtrRO(Ptr<T> &p) const;
+  [[nodiscard]] bool getUncheckedPtrRW(Ptr<T> &p) const;
+  [[nodiscard]] Uint32 getUncheckedPtrs(Uint32* from, Ptr<T> ptrs[], Uint32 cnt) const;
 
   Uint32 getEntrySize() const { return sizeof(Type); }
   Uint32 getNoOfFree() const { return SlotPool::getNoOfFree(); }
@@ -120,8 +122,8 @@ private:
 
   static void static_asserts()
   {
-    NDB_STATIC_ASSERT( offsetof(T, m_magic) == 0);
-    NDB_STATIC_ASSERT( sizeof(T::m_magic) == 4);
+    static_assert( offsetof(T, m_magic) == 0);
+    static_assert( sizeof(T::m_magic) == 4);
   }
 };
 
@@ -179,6 +181,12 @@ template<typename T, Uint32 Slot_size> inline T *TransientPool<T, Slot_size>::ge
 
 template<typename T, Uint32 Slot_size> inline void TransientPool<T, Slot_size>::getPtr(Ptr<T> &p) const
 {
+  p.p = getPtr(p.i);
+}
+
+template<typename T, Uint32 Slot_size> inline void TransientPool<T, Slot_size>::getPtr(Ptr<T> &p, Uint32 i) const
+{
+  p.i = i;
   p.p = getPtr(p.i);
 }
 

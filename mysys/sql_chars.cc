@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2015, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2015, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,11 +28,12 @@
 
 #include "sql_chars.h"
 
+#include <assert.h>
 #include <stddef.h>
 #include <sys/types.h>
 
 #include "m_ctype.h"
-#include "my_dbug.h"
+
 #include "my_sys.h"
 
 static void hint_lex_init_maps(CHARSET_INFO *cs,
@@ -46,7 +47,7 @@ static void hint_lex_init_maps(CHARSET_INFO *cs,
     else if (my_isdigit(cs, i))
       hint_map[i] = HINT_CHR_DIGIT;
     else if (my_isspace(cs, i)) {
-      DBUG_ASSERT(!my_ismb1st(cs, i));
+      assert(!my_ismb1st(cs, i));
       hint_map[i] = HINT_CHR_SPACE;
     } else
       hint_map[i] = HINT_CHR_CHAR;
@@ -124,6 +125,9 @@ bool init_state_maps(CHARSET_INFO *cs) {
   state_map[(uchar)'x'] = state_map[(uchar)'X'] = MY_LEX_IDENT_OR_HEX;
   state_map[(uchar)'b'] = state_map[(uchar)'B'] = MY_LEX_IDENT_OR_BIN;
   state_map[(uchar)'n'] = state_map[(uchar)'N'] = MY_LEX_IDENT_OR_NCHAR;
+
+  /* Special handling for identifiers that start with dollar */
+  state_map[(uchar)'$'] = MY_LEX_IDENT_OR_DOLLAR_QUOTE;
 
   return false;
 }

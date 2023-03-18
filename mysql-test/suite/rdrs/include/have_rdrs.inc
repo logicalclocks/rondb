@@ -199,4 +199,3 @@ if ($skip_test) {
   --remove_file $MYSQLTEST_VARDIR/tmp/have_rdrs_result.inc
   --skip $skip_reason
 }
-

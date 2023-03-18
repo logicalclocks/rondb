@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -41,6 +42,47 @@
 #define DEB_LCP(arglist) do { } while (0)
 #endif
 
+void Dbtup::handle_disk_reorg_flag(OperationrecPtr operPtr,
+                                   Tablerec *regTabPtr)
+{
+  OperationrecPtr lastOperPtr = operPtr;
+  findLastOp(lastOperPtr);
+  OperationrecPtr prevOperPtr;
+  prevOperPtr.i = operPtr.p->prevActiveOp;
+  ndbrequire(prevOperPtr.i != RNIL);
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOperPtr));
+
+  Tuple_header *copy_last =
+    get_copy_tuple(&lastOperPtr.p->m_copy_tuple_location);
+  Tuple_header *copy_prev =
+    get_copy_tuple(&prevOperPtr.p->m_copy_tuple_location);
+  Local_key key;
+  memcpy(&key, copy_last->get_disk_ref_ptr(regTabPtr), sizeof(key));
+  memcpy(copy_prev->get_disk_ref_ptr(regTabPtr), &key, sizeof(key));
+  ndbrequire(
+    lastOperPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit == 1);
+  prevOperPtr.p->op_struct.bit_field.m_load_extra_diskpage_on_commit = 1;
+}
+
+void Dbtup::handle_disk_row_resize(OperationrecPtr operPtr,
+                                   Tablerec *regTabPtr)
+{
+  OperationrecPtr lastOperPtr = operPtr;
+  findLastOp(lastOperPtr);
+  OperationrecPtr prevOperPtr;
+  prevOperPtr.i = operPtr.p->prevActiveOp;
+  ndbrequire(prevOperPtr.i != RNIL);
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOperPtr));
+
+  if (lastOperPtr.p->m_uncommitted_used_space >
+      prevOperPtr.p->m_uncommitted_used_space)
+  {
+    jam();
+    prevOperPtr.p->m_uncommitted_used_space =
+      lastOperPtr.p->m_uncommitted_used_space;
+  }
+}
+
 /**
  * Abort abort this operation and all after (nextActiveOp's)
  */
@@ -55,7 +97,8 @@ Dbtup::do_tup_abort_operation(Signal* signal,
                               Tuple_header *tuple_ptr,
                               Operationrec* opPtrP,
                               Fragrecord* fragPtrP,
-                              Tablerec* tablePtrP)
+                              Tablerec* tablePtrP,
+                              bool full_transaction)
 {
   /**
    * There are a couple of things that we need to handle at abort time.
@@ -84,12 +127,39 @@ Dbtup::do_tup_abort_operation(Signal* signal,
     memcpy(&key, copy->get_disk_ref_ptr(tablePtrP), sizeof(key));
     disk_page_abort_prealloc(signal, fragPtrP, &key, key.m_page_idx);
   }
-  if(! (bits & Tuple_header::ALLOC))
+  if (! (bits & Tuple_header::ALLOC))
   {
     /**
      * Tuple existed before starting this transaction.
      */
     jam();
+    if (opPtrP->is_last_operation() && full_transaction)
+    {
+      if (bits & Tuple_header::DISK_REORG)
+      {
+        jam();
+
+        Uint32 undo_insert_len = sizeof(Dbtup::Disk_undo::Alloc) >> 2;
+        Logfile_client lgman(this, c_lgman, fragPtrP->m_logfile_group_id);
+        lgman.free_log_space(undo_insert_len, jamBuffer());
+ 
+        Local_key key;
+        Tuple_header *copy= get_copy_tuple(&opPtrP->m_copy_tuple_location);
+        memcpy(&key, copy->get_disk_ref_ptr(tablePtrP), sizeof(key));
+        Uint32 row_size = key.m_page_idx;
+        disk_page_abort_prealloc(signal, fragPtrP, &key, row_size);
+        bits = bits & (~Tuple_header::DISK_REORG);
+        tuple_ptr->m_header_bits= bits;
+      }
+      else if (opPtrP->m_uncommitted_used_space > 0)
+      {
+        jam();
+        Local_key key;
+        memcpy(&key, tuple_ptr->get_disk_ref_ptr(tablePtrP), sizeof(key));
+        Uint32 inc_size = opPtrP->m_uncommitted_used_space;
+        disk_page_abort_prealloc(signal, fragPtrP, &key, inc_size);
+      }
+    }
     if (opPtrP->is_first_operation() &&
         bits & Tuple_header::MM_GROWN)
     {
@@ -184,7 +254,7 @@ void Dbtup::do_tup_abortreq(Signal* signal, Uint32 flags)
   regOperPtr.i = signal->theData[0];
   jamDebug();
   jamLineDebug(Uint16(regOperPtr.i));
-  ndbrequire(c_operation_pool.getValidPtr(regOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(regOperPtr));
   TransState trans_state= get_trans_state(regOperPtr.p);
   ndbrequire((trans_state == TRANS_STARTED) ||
              (trans_state == TRANS_TOO_MUCH_AI) ||
@@ -197,7 +267,7 @@ void Dbtup::do_tup_abortreq(Signal* signal, Uint32 flags)
   }//if
 
   regFragPtr.i = regOperPtr.p->fragmentPtr;
-  ptrCheckGuard(regFragPtr, cnoOfFragrec, fragrecord);
+  ndbrequire(c_fragment_pool.getPtr(regFragPtr));
 
   regTabPtr.i = regFragPtr.p->fragTableId;
   ptrCheckGuard(regTabPtr, cnoOfTablerec, tablerec);
@@ -236,7 +306,7 @@ void Dbtup::do_tup_abortreq(Signal* signal, Uint32 flags)
       while (loopOpPtr.i != RNIL) 
       {
         jam();
-        ndbrequire(c_operation_pool.getValidPtr(loopOpPtr));
+        ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(loopOpPtr));
         if (get_tuple_state(loopOpPtr.p) != TUPLE_ALREADY_ABORTED)
         {
           jam();
@@ -252,19 +322,45 @@ void Dbtup::do_tup_abortreq(Signal* signal, Uint32 flags)
     /**
      * Then abort all data changes
      */
+    bool full_transaction = regOperPtr.p->is_first_operation();
+    if (unlikely(!full_transaction &&
+                 regTabPtr.p->m_no_of_disk_attributes > 0 &&
+                 regTabPtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData &&
+                 tuple_ptr->m_header_bits & Tuple_header::DISK_REORG))
+    {
+      /**
+       * We are aborting an operation that have disk rows and use the variable
+       * sized disk row format. This means that we could potentially have set
+       * DISK_REORG on the last operation, this must be recalled also on the
+       * operation that survives this abort operation. Since this call will
+       * not abort the transaction we must retain the DISK_REORG flag for now.
+       * This means that we must move the key of the new row in the copy row
+       * of the last remaining operation record.
+       */
+      jam();
+      handle_disk_reorg_flag(regOperPtr, regTabPtr.p);
+    }
+    else if (unlikely(!full_transaction &&
+                      regTabPtr.p->m_no_of_disk_attributes > 0 &&
+                      regTabPtr.p->m_bits & Tablerec::TR_UseVarSizedDiskData))
+    {
+      jam();
+      handle_disk_row_resize(regOperPtr, regTabPtr.p);
+    }
     {
       do_tup_abort_operation(signal, 
                              tuple_ptr,
                              regOperPtr.p,
                              regFragPtr.p,
-                             regTabPtr.p);
+                             regTabPtr.p,
+                             full_transaction);
       
       OperationrecPtr loopOpPtr;
       loopOpPtr.i = regOperPtr.p->nextActiveOp;
       while (loopOpPtr.i != RNIL) 
       {
         jam();
-        ndbrequire(c_operation_pool.getValidPtr(loopOpPtr));
+        ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(loopOpPtr));
         if (get_tuple_state(loopOpPtr.p) != TUPLE_ALREADY_ABORTED)
         {
           jam();
@@ -272,7 +368,8 @@ void Dbtup::do_tup_abortreq(Signal* signal, Uint32 flags)
                                  tuple_ptr,
                                  loopOpPtr.p,
                                  regFragPtr.p,
-                                 regTabPtr.p);
+                                 regTabPtr.p,
+                                 full_transaction);
           set_tuple_state(loopOpPtr.p, TUPLE_ALREADY_ABORTED);      
         }
         loopOpPtr.i = loopOpPtr.p->nextActiveOp;
@@ -558,7 +655,7 @@ void Dbtup::removeActiveOpList(Operationrec*  const regOperPtr,
     if (nextOperPtr.i != RNIL)
     {
       jam();
-      ndbrequire(c_operation_pool.getValidPtr(nextOperPtr));
+      ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(nextOperPtr));
       nextOperPtr.p->prevActiveOp = prevOperPtr.i;
     }
     else
@@ -582,7 +679,7 @@ void Dbtup::removeActiveOpList(Operationrec*  const regOperPtr,
   if (prevOperPtr.i != RNIL)
   {
     jam();
-    ndbrequire(c_operation_pool.getValidPtr(prevOperPtr));
+    ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOperPtr));
     prevOperPtr.p->nextActiveOp = nextOperPtr.i;
     if (nextOperPtr.i == RNIL)
     {

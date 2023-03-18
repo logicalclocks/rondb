@@ -1,7 +1,7 @@
 /*
    Copyright 2010 Sun Microsystems, Inc.
-   Use is subject to license terms.
    Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Use is subject to license terms.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,

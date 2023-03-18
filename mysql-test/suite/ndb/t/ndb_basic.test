@@ -516,8 +516,7 @@ drop table t1;
 create table t1
   (a bigint, b bigint, c bigint, d bigint, 
    primary key (a,b,c,d)) 
-  engine=ndb
-  max_rows=800000000;
+  engine=ndb;
 insert into t1 values
   (1,2,3,4),(2,3,4,5),(3,4,5,6),
   (3,2,3,4),(1,3,4,5),(2,4,5,6),
@@ -544,8 +543,7 @@ drop table t1;
 create table t1
   (a bigint, b bigint, c bigint, d bigint, 
    primary key (a,b,c,d))
-  engine=ndb
-  max_rows=1;
+  engine=ndb;
 insert into t1 values
   (1,2,3,4),(2,3,4,5),(3,4,5,6),
   (3,2,3,4),(1,3,4,5),(2,4,5,6),
@@ -877,10 +875,10 @@ DROP TABLE child, parent;
 #
 # bug#59756
 #
---error ER_CANT_CREATE_TABLE
 CREATE TABLE t1 (a INT PRIMARY KEY, b TEXT)
 ENGINE=ndb PARTITION BY KEY(a) PARTITIONS 144;
 show warnings;
+drop table t1;
 CREATE TABLE t1 (a INT PRIMARY KEY, b TEXT)
 ENGINE=ndb;
 show warnings;

@@ -1,5 +1,5 @@
 /*
- Copyright (c) 2011, 2017, Oracle and/or its affiliates. All rights reserved.
+ Copyright (c) 2011, 2022, Oracle and/or its affiliates.
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
@@ -35,10 +35,10 @@
  * 
  * As the DBUG macros/functions don't check arguments, the caller (or JVM!)
  * crashes in case, for instance, of NULL args.  Also, macros returning a
- * value (like DBUG_EXPLAIN) ought to do so even if DBUG_OFF was defined.
+ * value (like DBUG_EXPLAIN) ought to do so even if NDEBUG was defined.
  */
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
 
 #define MY_DBUG_PUSH(a1)                                                \
     do { if ((a1)) DBUG_PUSH(a1); } while (0)
@@ -51,7 +51,7 @@
 #define MY_DBUG_PRINT(keyword, arglist)                                 \
     do { if ((keyword)) DBUG_PRINT(keyword, arglist); } while (0)
 
-#else // DBUG_OFF
+#else // NDEBUG
 
 #define MY_DBUG_PUSH(a1)
 #define MY_DBUG_POP()
@@ -59,16 +59,14 @@
 #define MY_DBUG_EXPLAIN(buf,len) 1
 #define MY_DBUG_PRINT(keyword, arglist)
 
-#endif // DBUG_OFF
+#endif // NDEBUG
 
 /*
  * These DBUG functions provide suitable mapping targets for use from Java.
  */
 
 /** Push the state of the DBUG package */
-inline
-void
-dbugPush(const char * state)
+inline void dbugPush(const char* state [[maybe_unused]])
 {
     MY_DBUG_PUSH(state);
 }
@@ -82,28 +80,20 @@ dbugPop()
 }
 
 /** Set the state of the DBUG package */
-inline
-void
-dbugSet(const char * state)
-{
-    MY_DBUG_SET(state);
-}
+inline void dbugSet(const char* state [[maybe_unused]]) { MY_DBUG_SET(state); }
 
 /** Return the state of the DBUG package */
-inline
-const char *
-dbugExplain(char * buffer, int length)
+inline const char* dbugExplain(char* buffer, int length [[maybe_unused]])
 {
     if (!MY_DBUG_EXPLAIN(buffer, length)) {
         return buffer;
     }
-    return NULL;
+    return nullptr;
 }
 
 /** Print a message */
-inline
-void
-dbugPrint(const char * keyword, const char * message)
+inline void dbugPrint(const char* keyword [[maybe_unused]],
+                      const char* message [[maybe_unused]])
 {
     MY_DBUG_PRINT(keyword, ("%s", message));
 }

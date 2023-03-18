@@ -90,8 +90,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -122,8 +122,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -196,7 +196,7 @@ EXECUTING:[25][CALL test.sp_one_result()]
 			[meta][field] org table name: 
 			[meta][field] col name: 1
 			[meta][field] org col name: 
-			[meta][field] length: 1
+			[meta][field] length: 2
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -204,8 +204,8 @@ EXECUTING:[25][CALL test.sp_one_result()]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.1][  1][1]
@@ -232,7 +232,7 @@ EXECUTING:[26][CALL test.sp_two_results()]
 			[meta][field] org table name: 
 			[meta][field] col name: 2
 			[meta][field] org col name: 
-			[meta][field] length: 1
+			[meta][field] length: 2
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -240,8 +240,8 @@ EXECUTING:[26][CALL test.sp_two_results()]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.2][  1][2]
@@ -291,7 +291,7 @@ EXECUTING:[31][CALL test.sp_one_result_out(@a)]
 			[meta][field] org table name: 
 			[meta][field] col name: 1
 			[meta][field] org col name: 
-			[meta][field] length: 1
+			[meta][field] length: 2
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -299,8 +299,8 @@ EXECUTING:[31][CALL test.sp_one_result_out(@a)]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.1][  1][1]
@@ -327,7 +327,7 @@ EXECUTING:[32][CALL test.sp_two_results_out(@a)]
 			[meta][field] org table name: 
 			[meta][field] col name: 2
 			[meta][field] org col name: 
-			[meta][field] length: 1
+			[meta][field] length: 2
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -335,8 +335,8 @@ EXECUTING:[32][CALL test.sp_two_results_out(@a)]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.2][  1][2]
@@ -408,7 +408,7 @@ EXECUTING:[27][CALL test.sp_result_error()]
 			[meta][field] org table name: 
 			[meta][field] col name: 5
 			[meta][field] org col name: 
-			[meta][field] length: 1
+			[meta][field] length: 2
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -416,8 +416,8 @@ EXECUTING:[27][CALL test.sp_result_error()]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -441,7 +441,7 @@ EXECUTING:[27][CALL test.sp_result_error()]
 			[meta][field] org table name: 
 			[meta][field] col name: 5
 			[meta][field] org col name: 
-			[meta][field] length: 1
+			[meta][field] length: 2
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -449,8 +449,8 @@ EXECUTING:[27][CALL test.sp_result_error()]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -483,8 +483,8 @@ EXECUTING:[112][SELECT SPECIFIC_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUT
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][ROUTINES.SPECIFIC_NAME][  4][proc]
@@ -515,8 +515,8 @@ EXECUTING:[112][SELECT SPECIFIC_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUT
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][ROUTINES.SPECIFIC_NAME][  4][proc]
@@ -551,8 +551,8 @@ EXECUTING:[23][SELECT avg_func(10, 20)]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.avg_func(10, 20)][  2][15]
@@ -583,8 +583,8 @@ EXECUTING:[23][SELECT avg_func(10, 20)]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.avg_func(10, 20)][  2][15]
@@ -617,8 +617,8 @@ EXECUTING:[115][SELECT SPECIFIC_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUT
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][ROUTINES.SPECIFIC_NAME][  8][avg_func]
@@ -649,8 +649,8 @@ EXECUTING:[115][SELECT SPECIFIC_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUT
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][ROUTINES.SPECIFIC_NAME][  8][avg_func]
@@ -689,8 +689,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -721,8 +721,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -795,7 +795,7 @@ EXECUTING:[25][CALL test.sp_one_result()]
 			[meta][field] org table name: 
 			[meta][field] col name: 1
 			[meta][field] org col name: 
-			[meta][field] length: 1
+			[meta][field] length: 2
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -803,8 +803,8 @@ EXECUTING:[25][CALL test.sp_one_result()]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.1][  1][1]
@@ -831,7 +831,7 @@ EXECUTING:[26][CALL test.sp_two_results()]
 			[meta][field] org table name: 
 			[meta][field] col name: 2
 			[meta][field] org col name: 
-			[meta][field] length: 1
+			[meta][field] length: 2
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -839,8 +839,8 @@ EXECUTING:[26][CALL test.sp_two_results()]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.2][  1][2]
@@ -890,7 +890,7 @@ EXECUTING:[31][CALL test.sp_one_result_out(@a)]
 			[meta][field] org table name: 
 			[meta][field] col name: 1
 			[meta][field] org col name: 
-			[meta][field] length: 1
+			[meta][field] length: 2
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -898,8 +898,8 @@ EXECUTING:[31][CALL test.sp_one_result_out(@a)]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.1][  1][1]
@@ -926,7 +926,7 @@ EXECUTING:[32][CALL test.sp_two_results_out(@a)]
 			[meta][field] org table name: 
 			[meta][field] col name: 2
 			[meta][field] org col name: 
-			[meta][field] length: 1
+			[meta][field] length: 2
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -934,8 +934,8 @@ EXECUTING:[32][CALL test.sp_two_results_out(@a)]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.2][  1][2]
@@ -1007,7 +1007,7 @@ EXECUTING:[27][CALL test.sp_result_error()]
 			[meta][field] org table name: 
 			[meta][field] col name: 5
 			[meta][field] org col name: 
-			[meta][field] length: 1
+			[meta][field] length: 2
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -1015,8 +1015,8 @@ EXECUTING:[27][CALL test.sp_result_error()]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -1040,7 +1040,7 @@ EXECUTING:[27][CALL test.sp_result_error()]
 			[meta][field] org table name: 
 			[meta][field] col name: 5
 			[meta][field] org col name: 
-			[meta][field] length: 1
+			[meta][field] length: 2
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -1048,8 +1048,8 @@ EXECUTING:[27][CALL test.sp_result_error()]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -1082,8 +1082,8 @@ EXECUTING:[112][SELECT SPECIFIC_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUT
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][ROUTINES.SPECIFIC_NAME][  4][proc]
@@ -1114,8 +1114,8 @@ EXECUTING:[112][SELECT SPECIFIC_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUT
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][ROUTINES.SPECIFIC_NAME][  4][proc]
@@ -1150,8 +1150,8 @@ EXECUTING:[23][SELECT avg_func(10, 20)]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.avg_func(10, 20)][  2][15]
@@ -1182,8 +1182,8 @@ EXECUTING:[23][SELECT avg_func(10, 20)]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.avg_func(10, 20)][  2][15]
@@ -1216,8 +1216,8 @@ EXECUTING:[115][SELECT SPECIFIC_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUT
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][ROUTINES.SPECIFIC_NAME][  8][avg_func]
@@ -1248,8 +1248,8 @@ EXECUTING:[115][SELECT SPECIFIC_NAME FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUT
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][ROUTINES.SPECIFIC_NAME][  8][avg_func]

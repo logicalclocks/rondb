@@ -1,6 +1,7 @@
 /*
-   Copyright (C) 2003-2007 MySQL AB
-    Use is subject to license terms.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Use is subject to license terms.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -38,6 +39,8 @@
 extern "C" {
 #endif
 
+  int ndbCompatible_ndb_backup(Uint32 ownVersion, Uint32 otherVersion);
+  int ndbCompatible_ndb_schema(Uint32 ownVersion, Uint32 otherVersion);
   int ndbCompatible_mgmt_ndb(Uint32 ownVersion, Uint32 otherVersion);
   int ndbCompatible_ndb_mgmt(Uint32 ownVersion, Uint32 otherVersion);
   int ndbCompatible_mgmt_api(Uint32 ownVersion, Uint32 otherVersion);

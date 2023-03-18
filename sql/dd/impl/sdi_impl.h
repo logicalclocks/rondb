@@ -1,4 +1,4 @@
-/* Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2015, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -25,13 +25,14 @@
 
 #include "my_rapidjson_size_t.h"  // IWYU pragma: keep
 
+#include <assert.h>
 #include <rapidjson/document.h>      // rapidjson::GenericValue
 #include <rapidjson/prettywriter.h>  // rapidjson::PrettyWriter
 #include <memory>
 
 #include "base64.h"    // base64_encode
 #include "m_string.h"  // STRING_WITH_LEN
-#include "my_dbug.h"
+
 #include "prealloced_array.h"  // Prealloced_array
 #include "sql/dd/object_id.h"  // Object_id typedef
 
@@ -138,7 +139,7 @@ void track_object(Sdi_rcontext *rctx, Index *index_object);
 
 /**
   Return an non-owning raw pointer to the deserialized Index object
-  with ordinal postion index opx (ordinal position opx+1). The unused
+  with ordinal position index opx (ordinal position opx+1). The unused
   const Index* argument is needed for overload resolution.
 
   @param rctx opaque context
@@ -149,7 +150,7 @@ Index *get_by_opx(Sdi_rcontext *rctx, const Index *, uint opx);
 
 /**
   Return an non-owning raw pointer to the deserialized Column object
-  with ordinal postion index opx (ordinal position opx+1). The unused
+  with ordinal position index opx (ordinal position opx+1). The unused
   const Column* argument is needed for overload resolution.
 
   @param rctx opaque context
@@ -227,7 +228,7 @@ typedef dd_vector<char, 32> Byte_buffer;
 
   Defines function templates for writing a "bare" (without the key) json value.
   Each definition is overloaded on the second argument (which isn't a template
-  argument) to handle each builtin type that has a corrsponding rapidjson type.
+  argument) to handle each builtin type that has a corresponding rapidjson type.
   @{
 */
 
@@ -378,7 +379,7 @@ void write_binary(dd::Sdi_wcontext *wctx, W *w, const binary_t &b,
   int b64sz = base64_needed_encoded_length(binsz);
 
   char *bp = dd::buf_handle(wctx, static_cast<size_t>(b64sz));
-  DBUG_ASSERT(bp);
+  assert(bp);
 
   base64_encode(b.c_str(), binsz, bp);
   w->String(key, keysz);
@@ -427,7 +428,7 @@ template <typename W, typename PP>
 void write_opx_reference(W *w, const PP &p, const char *key, size_t keysz) {
   uint opx = 0;
   if (p) {
-    DBUG_ASSERT(p->ordinal_position() > 0);
+    assert(p->ordinal_position() > 0);
     opx = p->ordinal_position() - 1;
     write(w, opx, key, keysz);
   }

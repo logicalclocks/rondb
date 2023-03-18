@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -27,9 +27,9 @@
 
 #include "storage/perfschema/table_ees_by_user_by_error.h"
 
+#include <assert.h>
 #include <stddef.h>
 
-#include "my_dbug.h"
 #include "my_thread.h"
 #include "sql/field.h"
 #include "sql/plugin_table.h"
@@ -56,8 +56,8 @@ Plugin_table table_ees_by_user_by_error::m_table_def(
     "  SQL_STATE VARCHAR(5),\n"
     "  SUM_ERROR_RAISED  BIGINT unsigned not null,\n"
     "  SUM_ERROR_HANDLED BIGINT unsigned not null,\n"
-    "  FIRST_SEEN TIMESTAMP(0) null default 0,\n"
-    "  LAST_SEEN TIMESTAMP(0) null default 0,\n"
+    "  FIRST_SEEN TIMESTAMP(0) null,\n"
+    "  LAST_SEEN TIMESTAMP(0) null,\n"
     "  UNIQUE KEY (USER, ERROR_NUMBER) USING HASH\n",
     /* Options */
     " ENGINE=PERFORMANCE_SCHEMA",
@@ -159,10 +159,9 @@ int table_ees_by_user_by_error::rnd_pos(const void *pos) {
   return HA_ERR_RECORD_DELETED;
 }
 
-int table_ees_by_user_by_error::index_init(uint idx MY_ATTRIBUTE((unused)),
-                                           bool) {
+int table_ees_by_user_by_error::index_init(uint idx [[maybe_unused]], bool) {
   PFS_index_ees_by_user_by_error *result = nullptr;
-  DBUG_ASSERT(idx == 0);
+  assert(idx == 0);
   result = PFS_NEW(PFS_index_ees_by_user_by_error);
   m_opened_index = result;
   m_index = result;
@@ -224,7 +223,7 @@ int table_ees_by_user_by_error::read_row_values(TABLE *table,
   server_error *temp_error = nullptr;
 
   /* Set the null bits */
-  DBUG_ASSERT(table->s->null_bytes == 1);
+  assert(table->s->null_bytes == 1);
   buf[0] = 0;
 
   if (m_row.m_stat.m_error_index > 0 &&
@@ -237,7 +236,7 @@ int table_ees_by_user_by_error::read_row_values(TABLE *table,
     if (read_all || bitmap_is_set(table->read_set, f->field_index())) {
       switch (f->field_index()) {
         case 0: /* USER */
-          m_row.m_user.set_field(f);
+          m_row.m_user.set_nullable_field(f);
           break;
         case 1: /* ERROR NUMBER */
         case 2: /* ERROR NAME */
@@ -251,7 +250,7 @@ int table_ees_by_user_by_error::read_row_values(TABLE *table,
           break;
         default:
           /** We should never reach here */
-          DBUG_ASSERT(0);
+          assert(0);
           break;
       }
     }

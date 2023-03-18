@@ -1,4 +1,4 @@
-# Copyright (c) 2005, 2020, Oracle and/or its affiliates.
+# Copyright (c) 2005, 2022, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -859,6 +859,48 @@
    fun:_sasl_build_mechlist
 }
 
+# The GSS API client plugin for Sasl has leaks
+{
+   cyrus libsasl2 GSS API leak 1
+   Memcheck:Leak
+   fun:calloc
+   ...
+   fun:gss_init_sec_context
+}
+
+{
+   cyrus libsasl2 GSS API leak 1.1
+   Memcheck:Leak
+   fun:malloc
+   ...
+   fun:gss_init_sec_context
+}
+
+{
+   cyrus libsasl2 GSS API leak 2
+   Memcheck:Leak
+   fun:realloc
+   ...
+   fun:gss_acquire_cred
+}
+
+{
+   cyrus libsasl2 GSS API leak 3
+   Memcheck:Leak
+   fun:calloc
+   ...
+   fun:gss_acquire_cred
+}
+
+{
+   cyrus libsasl2 GSS API leak 4
+   Memcheck:Leak
+   fun:malloc
+   ...
+   fun:gss_acquire_cred
+}
+
+# some more openssl leaks
 {
    OpenSSL still reachable.
    Memcheck:Leak
@@ -1116,40 +1158,25 @@
    fun:numa_node_*_cpu*
 }
 
+# _Znwm is operator new(unsigned long)
+# google::protobuf::internal::LazyString::Init() const
 {
    General protobuf globals
    Memcheck:Leak
    fun:_Znwm
    ...
-   fun:_GLOBAL__sub_I_mysqlx*.pb.cc
+   fun:_ZNK6google8protobuf8internal10LazyString4InitEv
    ...
 }
 
+# _Znwm is operator new(unsigned long)
 {
    General protobuf globals
    Memcheck:Leak
    match-leak-kinds: reachable
    fun:_Znwm
    ...
-   fun:_Z41__static_initialization_and_destruction_0ii
-}
-
-{
-   General protobuf globals
-   Memcheck:Leak
-   match-leak-kinds: reachable
-   fun:_Znwm
-   ...
-   fun:_ZN6Mysqlx23protobuf_mysqlx_2eproto27StaticDescriptorInitializerC1Ev
-}
-
-{
-   General protobuf globals
-   Memcheck:Leak
-   match-leak-kinds: reachable
-   fun:_Znwm
-   ...
-   fun:_ZN6google8protobuf8internal11InitSCCImplEPNS1_11SCCInfoBaseE
+   fun:_dl_init
 }
 
 {
@@ -2605,3 +2632,45 @@
    obj:/usr/lib64/libtcmalloc*
    fun:_dl_init
 }
+
+#  The ... is for malloc or realloc
+{
+   mysql_dynamic_loader_scheme_file_imp_load
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   fun:vasprintf
+   fun:asprintf
+   fun:dlerror
+   fun:_ZN36mysql_dynamic_loader_scheme_file_imp4loadEPKcPP17mysql_component_t
+}
+
+# AWS SDK 1.9 s2n leaks
+{
+   aws_sdk_1_9_186_aws_tls_init_static_state
+   Memcheck:Leak
+   ...
+   fun:s2n_init
+   ...
+}
+{
+   aws_sdk_1_9_186_aws_s2n_init_deep_stack
+   Memcheck:Leak
+   ...
+   fun:s2n_config_init
+   fun:s2n_config_defaults_init
+   ...
+}
+
+# Suppress https://bugzilla.redhat.com/show_bug.cgi?id=1462258
+
+{
+   suppress_param_points_to_unaddressable_bytes 
+   Memcheck:Param
+   ppoll(sigmask)
+   fun:ppoll
+   fun:ppoll
+   fun:_Z11vio_io_waitP3Vio17enum_vio_io_eventi
+   ...
+}
+

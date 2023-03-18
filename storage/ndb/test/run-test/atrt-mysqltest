@@ -1,6 +1,7 @@
 #!/bin/sh
 
-# Copyright (c) 2010, 2020, Oracle and/or its affiliates.
+# Copyright (c) 2010, 2022, Oracle and/or its affiliates.
+# Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -48,13 +49,7 @@ if [ -f "$MYSQL_BASE_DIR/bin/ndb_mgm" ]; then
   NDB_MGM="$MYSQL_BASE_DIR/bin/ndb_mgm"
 fi
 
-NDB_NDBD="$MYSQL_BASE_DIR/bin/ndbd"
-if [ -f "$MYSQL_BASE_DIR/bin/ndbmtd" ]; then
-  NDB_NDBD="$MYSQL_BASE_DIR/bin/ndbmtd"
-fi
-if [ -f "$MYSQL_BASE_DIR/storage/ndb/src/kernel/ndbd" ]; then
-  NDB_NDBD="$MYSQL_BASE_DIR/storage/ndb/src/kernel/ndbd"
-fi
+NDB_NDBD="$MYSQL_BASE_DIR/bin/ndbmtd"
 if [ -f "$MYSQL_BASE_DIR/storage/ndb/src/kernel/ndbmtd" ]; then
   NDB_NDBD="$MYSQL_BASE_DIR/storage/ndb/src/kernel/ndbmtd"
 fi

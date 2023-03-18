@@ -1,4 +1,4 @@
-# Copyright (c) 2009, 2020, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2009, 2022, Oracle and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -68,6 +68,7 @@ ENDMACRO()
 MACRO(ADD_CONVENIENCE_LIBRARY TARGET_ARG)
   SET(LIBRARY_OPTIONS
     EXCLUDE_FROM_ALL
+    EXCLUDE_FROM_PGO
     )
   SET(LIBRARY_ONE_VALUE_KW
     )
@@ -77,6 +78,7 @@ MACRO(ADD_CONVENIENCE_LIBRARY TARGET_ARG)
     DEPENDENCIES        # for ADD_DEPENDENCIES
     INCLUDE_DIRECTORIES # for TARGET_INCLUDE_DIRECTORIES
     LINK_LIBRARIES      # for TARGET_LINK_LIBRARIES
+    SYSTEM_INCLUDE_DIRECTORIES
     )
 
   CMAKE_PARSE_ARGUMENTS(ARG
@@ -102,6 +104,12 @@ MACRO(ADD_CONVENIENCE_LIBRARY TARGET_ARG)
   # Collect all static libraries in the same directory
   SET_TARGET_PROPERTIES(${TARGET} PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/archive_output_directory)
+
+  IF(ARG_EXCLUDE_FROM_PGO)
+    IF(FPROFILE_GENERATE OR FPROFILE_USE)
+      SET(ARG_EXCLUDE_FROM_ALL TRUE)
+    ENDIF()
+  ENDIF()
 
   IF(ARG_EXCLUDE_FROM_ALL)
     SET_PROPERTY(TARGET ${TARGET} PROPERTY EXCLUDE_FROM_ALL TRUE)
@@ -133,6 +141,12 @@ MACRO(ADD_CONVENIENCE_LIBRARY TARGET_ARG)
       ${ARG_INCLUDE_DIRECTORIES})
   ENDIF()
 
+  # Add SYSTEM INCLUDE_DIRECTORIES to _objlib
+  IF(ARG_SYSTEM_INCLUDE_DIRECTORIES)
+    TARGET_INCLUDE_DIRECTORIES(${TARGET_LIB} SYSTEM PRIVATE
+      ${ARG_SYSTEM_INCLUDE_DIRECTORIES})
+  ENDIF()
+
   # Add LINK_LIBRARIES to static lib
   IF(ARG_LINK_LIBRARIES)
     TARGET_LINK_LIBRARIES(${TARGET} ${ARG_LINK_LIBRARIES})
@@ -145,29 +159,46 @@ MACRO(ADD_CONVENIENCE_LIBRARY TARGET_ARG)
 ENDMACRO()
 
 
-# Create libs from libs.
-# Merge static libraries, creates shared libraries out of convenience libraries.
+# Creates a shared library by merging static libraries.
+# MERGE_LIBRARIES_SHARED(target options/keywords ... source libs ...)
 MACRO(MERGE_LIBRARIES_SHARED TARGET_ARG)
+  SET(SHLIB_OPTIONS
+    EXCLUDE_FROM_ALL
+    EXCLUDE_FROM_PGO # add target, but do not build for PGO
+    LINK_PUBLIC # All source libs become part of the PUBLIC interface of target.
+                # See documentation for INTERFACE_LINK_LIBRARIES
+                # The default is STATIC, i.e. the property
+                #   INTERFACE_LINK_LIBRARIES for the target library is empty.
+    SKIP_INSTALL# Do not install it.
+                # By default it will be installed to ${INSTALL_LIBDIR}
+    NAMELINK_SKIP
+    )
+  SET(SHLIB_ONE_VALUE_KW
+    COMPONENT   # Installation COMPONENT.
+    DESTINATION # Where to install
+    OUTPUT_NAME # Target library output name.
+    SOVERSION   # API version.
+    VERSION     # Build version.
+    )
+  SET(SHLIB_MULTI_VALUE_KW
+    EXPORTS     # Symbols to be exported by the target library.
+                # We force these symbols to be imported from the source libs.
+    LINK_LIBRARIES # for TARGET_LINK_LIBRARIES
+    )
+
   CMAKE_PARSE_ARGUMENTS(ARG
-    "EXCLUDE_FROM_ALL;SKIP_INSTALL"
-    "COMPONENT;OUTPUT_NAME"
-    "EXPORTS"
+    "${SHLIB_OPTIONS}"
+    "${SHLIB_ONE_VALUE_KW}"
+    "${SHLIB_MULTI_VALUE_KW}"
     ${ARGN}
     )
 
   SET(TARGET ${TARGET_ARG})
-  SET(LIBS ${ARG_UNPARSED_ARGUMENTS})
-
-  FOREACH(LIB ${LIBS})
-    LIST(FIND KNOWN_CONVENIENCE_LIBRARIES ${LIB} FOUNDIT)
-    IF(FOUNDIT LESS 0)
-      MESSAGE(STATUS "Known libs : ${KNOWN_CONVENIENCE_LIBRARIES}")
-      MESSAGE(FATAL_ERROR "Unknown static library ${LIB} FOUNDIT ${FOUNDIT}")
-    ENDIF()
-  ENDFOREACH()
+  SET(LIBS_TO_MERGE ${ARG_UNPARSED_ARGUMENTS})
 
   CREATE_EXPORT_FILE(SRC ${TARGET} "${ARG_EXPORTS}")
   IF(UNIX)
+    SET(export_link_flags)
     # Mark every export as explicitly needed, so that ld won't remove the
     # .a files containing them. This has a similar effect as
     # --Wl,--no-whole-archive, but is more focused.
@@ -178,6 +209,13 @@ MACRO(MERGE_LIBRARIES_SHARED TARGET_ARG)
         SET(export_link_flags "${export_link_flags} -Wl,-u,${SYMBOL}")
       ENDIF()
     ENDFOREACH()
+  ENDIF()
+
+  IF(ARG_EXCLUDE_FROM_PGO)
+    IF(FPROFILE_GENERATE OR FPROFILE_USE)
+      SET(ARG_EXCLUDE_FROM_ALL TRUE)
+      SET(ARG_SKIP_INSTALL TRUE)
+    ENDIF()
   ENDIF()
 
   IF(NOT ARG_SKIP_INSTALL)
@@ -197,28 +235,44 @@ MACRO(MERGE_LIBRARIES_SHARED TARGET_ARG)
 
   # Collect all dynamic libraries in the same directory
   SET_TARGET_PROPERTIES(${TARGET} PROPERTIES
-    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/library_output_directory)
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/library_output_directory
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/library_output_directory
+    )
+
   IF(WIN32_CLANG AND WITH_ASAN)
     TARGET_LINK_LIBRARIES(${TARGET} PRIVATE
       "${ASAN_LIB_DIR}/clang_rt.asan_dll_thunk-x86_64.lib")
   ENDIF()
 
-  IF(WIN32)
-    # This must be a cmake bug on windows ...
-    # Anyways, with this the .dll ends up in the desired directory.
-    SET_TARGET_PROPERTIES(${TARGET} PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/library_output_directory)
+  IF(ARG_LINK_PUBLIC)
+    SET(PUBLIC_OR_PRIVATE PUBLIC)
+  ELSE()
+    SET(PUBLIC_OR_PRIVATE PRIVATE)
+  ENDIF()
+  TARGET_LINK_LIBRARIES(${TARGET} ${PUBLIC_OR_PRIVATE} ${LIBS_TO_MERGE})
+
+  IF(ARG_LINK_LIBRARIES)
+    TARGET_LINK_LIBRARIES(${TARGET} PRIVATE ${ARG_LINK_LIBRARIES})
   ENDIF()
 
-  TARGET_LINK_LIBRARIES(${TARGET} PRIVATE ${LIBS})
   IF(ARG_OUTPUT_NAME)
     SET_TARGET_PROPERTIES(
       ${TARGET} PROPERTIES OUTPUT_NAME "${ARG_OUTPUT_NAME}")
   ENDIF()
+  IF(ARG_SOVERSION)
+    SET_TARGET_PROPERTIES(${TARGET} PROPERTIES SOVERSION "${ARG_SOVERSION}")
+  ENDIF()
+  IF(ARG_VERSION)
+    SET_TARGET_PROPERTIES(${TARGET} PROPERTIES VERSION "${ARG_VERSION}")
+  ENDIF()
+
+  IF(APPLE)
+    SET_TARGET_PROPERTIES(${TARGET} PROPERTIES MACOSX_RPATH ON)
+  ENDIF()
 
   MY_TARGET_LINK_OPTIONS(${TARGET} "${export_link_flags}")
 
-  IF(APPLE AND HAVE_CRYPTO_DYLIB AND HAVE_OPENSSL_DYLIB)
+  IF(APPLE_WITH_CUSTOM_SSL)
     SET_PATH_TO_CUSTOM_SSL_FOR_APPLE(${TARGET})
     # All executables have dependencies:  "@loader_path/../lib/xxx.dylib
     # Create a symlink so that this works for Xcode also.
@@ -235,44 +289,82 @@ MACRO(MERGE_LIBRARIES_SHARED TARGET_ARG)
     IF(ARG_COMPONENT)
       SET(COMP COMPONENT ${ARG_COMPONENT})
     ENDIF()
-    MYSQL_INSTALL_TARGET(${TARGET} DESTINATION "${INSTALL_LIBDIR}" ${COMP})
+    IF(ARG_DESTINATION)
+      SET(DESTINATION "${ARG_DESTINATION}")
+    ELSE()
+      SET(DESTINATION "${INSTALL_LIBDIR}")
+    ENDIF()
+    IF(ARG_NAMELINK_SKIP)
+      SET(INSTALL_ARGS NAMELINK_SKIP)
+    ENDIF()
+    MYSQL_INSTALL_TARGET(${TARGET} DESTINATION "${DESTINATION}" ${COMP}
+      ${INSTALL_ARGS})
   ENDIF()
-ENDMACRO()
+
+  IF(WIN32)
+    SET(LIBRARY_DIR "${CMAKE_BINARY_DIR}/library_output_directory")
+    SET(RUNTIME_DIR "${CMAKE_BINARY_DIR}/runtime_output_directory")
+    ADD_CUSTOM_COMMAND(TARGET ${TARGET} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${LIBRARY_DIR}/${CMAKE_CFG_INTDIR}/$<TARGET_FILE_NAME:${TARGET}>"
+      "${RUNTIME_DIR}/${CMAKE_CFG_INTDIR}/$<TARGET_FILE_NAME:${TARGET}>"
+      )
+  ENDIF()
+
+  IF(UNIX)
+    ADD_INSTALL_RPATH_FOR_OPENSSL(${TARGET})
+  ENDIF()
+
+  ADD_OBJDUMP_TARGET(show_${TARGET} "$<TARGET_FILE:${TARGET}>"
+    DEPENDS ${TARGET})
+
+ENDMACRO(MERGE_LIBRARIES_SHARED)
 
 
 FUNCTION(GET_DEPENDEND_OS_LIBS target result)
-  SET(deps ${${target}_LIB_DEPENDS})
-  IF(deps)
-    FOREACH(lib ${deps})
-      # Filter out keywords for used for debug vs optimized builds
-      IF(NOT lib MATCHES "general" AND
-          NOT lib MATCHES "debug" AND
-          NOT lib MATCHES "optimized")
-        LIST(FIND KNOWN_CONVENIENCE_LIBRARIES ${lib} FOUNDIT)
-        IF(FOUNDIT LESS 0)
-          SET(ret ${ret} ${lib})
-        ENDIF()
+  GET_TARGET_PROPERTY(TARGET_LIB_DEPENDS ${target} LINK_LIBRARIES)
+  SET(MY_DEPENDENT_OS_LIBS)
+  IF(TARGET_LIB_DEPENDS)
+    LIST(REMOVE_DUPLICATES TARGET_LIB_DEPENDS)
+    FOREACH(lib ${TARGET_LIB_DEPENDS})
+      IF(lib MATCHES "${CMAKE_BINARY_DIR}")
+        # This is a "custom/imported" system lib (libssl libcrypto)
+        # MESSAGE(STATUS "GET_DEPENDEND_OS_LIBS ignore imported ${lib}")
+      ELSEIF(TARGET ${lib})
+        # This is one of our own libraries
+        # MESSAGE(STATUS "GET_DEPENDEND_OS_LIBS ignore our ${lib}")
+      ELSE()
+        LIST(APPEND MY_DEPENDENT_OS_LIBS ${lib})
       ENDIF()
     ENDFOREACH()
   ENDIF()
-  SET(${result} ${ret} PARENT_SCOPE)
-ENDFUNCTION()
+  SET(${result} ${MY_DEPENDENT_OS_LIBS} PARENT_SCOPE)
+ENDFUNCTION(GET_DEPENDEND_OS_LIBS)
 
 
 MACRO(MERGE_CONVENIENCE_LIBRARIES TARGET_ARG)
   CMAKE_PARSE_ARGUMENTS(ARG
     "EXCLUDE_FROM_ALL;SKIP_INSTALL"
     "COMPONENT;OUTPUT_NAME"
-    ""
+    "LINK_LIBRARIES"
     ${ARGN}
     )
 
   SET(TARGET ${TARGET_ARG})
   SET(LIBS ${ARG_UNPARSED_ARGUMENTS})
 
+  # Add a dummy source file, with non-empty content, to avoid warning:
+  # libjson_binlog_static.a(json_binlog_static_depends.c.o) has no symbols
   SET(SOURCE_FILE
     ${CMAKE_BINARY_DIR}/archive_output_directory/${TARGET}_depends.c)
+  SET(SOURCE_FILE_CONTENT "void dummy_${TARGET}_function() {}")
+  CONFIGURE_FILE_CONTENT("${SOURCE_FILE_CONTENT}" "${SOURCE_FILE}")
+
   ADD_LIBRARY(${TARGET} STATIC ${SOURCE_FILE})
+  MY_CHECK_CXX_COMPILER_WARNING("-Wmissing-profile" HAS_MISSING_PROFILE)
+  IF(FPROFILE_USE AND HAS_MISSING_PROFILE)
+    ADD_COMPILE_FLAGS(${SOURCE_FILE} COMPILE_FLAGS ${HAS_MISSING_PROFILE})
+  ENDIF()
 
   IF(ARG_EXCLUDE_FROM_ALL)
     IF(NOT ARG_SKIP_INSTALL)
@@ -353,8 +445,19 @@ MACRO(MERGE_CONVENIENCE_LIBRARIES TARGET_ARG)
     FOREACH(LIB ${SSL_LIBRARIES})
       STRING_APPEND(LINKER_EXTRA_FLAGS " ${LIB}")
     ENDFOREACH()
+
+    # __NULL_IMPORT_DESCRIPTOR already defined, second definition ignored
+    # Same symbol from both libssl and libcrypto
+    # But: Lib.exe has no /IGNORE option, see
+    # https://docs.microsoft.com/en-us/cpp/build/reference/running-lib?view=msvc-160
+    # STRING_APPEND(LINKER_EXTRA_FLAGS " /IGNORE:LNK4006")
+
     SET_TARGET_PROPERTIES(${TARGET}
       PROPERTIES STATIC_LIBRARY_FLAGS "${LINKER_EXTRA_FLAGS}")
+  ENDIF()
+
+  IF(ARG_LINK_LIBRARIES)
+    TARGET_LINK_LIBRARIES(${TARGET} PRIVATE ${ARG_LINK_LIBRARIES})
   ENDIF()
 
   IF(OSLIBS)
@@ -374,7 +477,7 @@ MACRO(MERGE_CONVENIENCE_LIBRARIES TARGET_ARG)
       MYSQL_INSTALL_TARGET(${TARGET} DESTINATION "${INSTALL_LIBDIR}" ${COMP})
     ENDIF()
   ENDIF()
-ENDMACRO()
+ENDMACRO(MERGE_CONVENIENCE_LIBRARIES)
 
 
 FUNCTION(ADD_SHARED_LIBRARY TARGET_ARG)
@@ -384,7 +487,11 @@ FUNCTION(ADD_SHARED_LIBRARY TARGET_ARG)
     SKIP_INSTALL
   )
   SET(LIBRARY_ONE_VALUE_KW
+    COMPONENT
+    DESTINATION
     LINUX_VERSION_SCRIPT
+    OUTPUT_NAME
+    SOVERSION
     VERSION
     WIN_DEF_FILE
     )
@@ -426,13 +533,20 @@ FUNCTION(ADD_SHARED_LIBRARY TARGET_ARG)
   ENDIF()
 
   IF(NOT ARG_SKIP_INSTALL)
-    IF(WIN32)
+    IF(ARG_DESTINATION)
+      SET(DESTINATION "${ARG_DESTINATION}")
+    ELSEIF(WIN32)
       SET(DESTINATION "${INSTALL_BINDIR}")
     ELSE()
       SET(DESTINATION "${INSTALL_LIBDIR}")
     ENDIF()
+    IF(ARG_COMPONENT)
+      SET(COMP COMPONENT ${ARG_COMPONENT})
+    ELSE()
+      SET(COMP COMPONENT SharedLibraries)
+    ENDIF()
     MYSQL_INSTALL_TARGET(
-      ${TARGET} DESTINATION "${DESTINATION}" COMPONENT SharedLibraries)
+      ${TARGET} DESTINATION "${DESTINATION}" ${COMP})
   ENDIF()
 
   IF(ARG_COMPILE_DEFINITIONS)
@@ -449,6 +563,12 @@ FUNCTION(ADD_SHARED_LIBRARY TARGET_ARG)
   ENDIF()
   IF(ARG_LINK_LIBRARIES)
     TARGET_LINK_LIBRARIES(${TARGET} ${ARG_LINK_LIBRARIES})
+  ENDIF()
+  IF(ARG_OUTPUT_NAME)
+    SET_TARGET_PROPERTIES(${TARGET} PROPERTIES OUTPUT_NAME "${ARG_OUTPUT_NAME}")
+  ENDIF()
+  IF(ARG_SOVERSION)
+    SET_TARGET_PROPERTIES(${TARGET} PROPERTIES SOVERSION "${ARG_SOVERSION}")
   ENDIF()
 
   IF(LINUX AND ARG_LINUX_VERSION_SCRIPT)
@@ -484,4 +604,4 @@ FUNCTION(ADD_SHARED_LIBRARY TARGET_ARG)
   ADD_OBJDUMP_TARGET(show_${TARGET} "$<TARGET_FILE:${TARGET}>"
     DEPENDS ${TARGET})
 
-ENDFUNCTION()
+ENDFUNCTION(ADD_SHARED_LIBRARY)

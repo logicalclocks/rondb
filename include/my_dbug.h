@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -36,12 +36,24 @@
 
 #include <string.h>
 
-#if !defined(DBUG_OFF)
+#if !defined(NDEBUG)
 #include <assert.h>  // IWYU pragma: keep
 #include <stdio.h>
 #endif
 
-#if !defined(DBUG_OFF)
+/**
+  Calls our own implementation of abort, if specified, or std's abort().
+ */
+[[noreturn]] void my_abort();
+/**
+  Sets a new function to be called on my_abort().
+
+  @param new_my_abort_func pointer to a new my_abort function. It can't be
+  [[noreturn]] as pointers to methods can't have attributes.
+ */
+void set_my_abort(void (*new_my_abort_func)());
+
+#if !defined(NDEBUG)
 
 struct _db_stack_frame_ {
   const char *func;   /* function name of the previous stack frame       */
@@ -130,21 +142,8 @@ class AutoDebugTrace {
   _db_stack_frame_ m_stack_frame;
 };
 
-#ifdef __SUNPRO_CC
-// Disable debug tracing for Developer Studio, because we may get
-// a fatal error from ld when linking large executables.
-//   section .eh_frame%__gthread_trigger():
-//   unexpected negative integer encountered: offset 0x630
-#define DBUG_TRACE \
-  do {             \
-  } while (false)
-
-#else
-
 #define DBUG_TRACE \
   AutoDebugTrace _db_trace(DBUG_PRETTY_FUNCTION, __FILE__, __LINE__)
-
-#endif  // __SUNPRO_CC
 
 #endif
 
@@ -196,18 +195,17 @@ class AutoDebugTrace {
 #define DBUG_END() _db_end_()
 #define DBUG_LOCK_FILE _db_lock_file_()
 #define DBUG_UNLOCK_FILE _db_unlock_file_()
-#define DBUG_ASSERT(A) assert(A)
 #define DBUG_EXPLAIN(buf, len) _db_explain_(0, (buf), (len))
 #define DBUG_EXPLAIN_INITIAL(buf, len) _db_explain_init_((buf), (len))
 #ifndef _WIN32
-#define DBUG_ABORT() (_db_flush_(), abort())
+#define DBUG_ABORT() (_db_flush_(), my_abort())
 #define DBUG_EXIT() (_db_flush_(), exit(2))
 #else
 #include <crtdbg.h>
 
 #define DBUG_ABORT()                                                     \
   (_db_flush_(), (void)_CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE), \
-   (void)_CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR), abort())
+   (void)_CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR), my_abort())
 #define DBUG_EXIT()                                                      \
   (_db_flush_(), (void)_CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE), \
    (void)_CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR), _exit(2))
@@ -224,7 +222,7 @@ class AutoDebugTrace {
 #ifdef _WIN32
 #define DBUG_SUICIDE() DBUG_EXIT()
 #else
-extern void _db_suicide_() MY_ATTRIBUTE((noreturn));
+[[noreturn]] extern void _db_suicide_();
 extern void _db_flush_gcov_();
 #define DBUG_SUICIDE() (_db_flush_(), _db_suicide_())
 #endif
@@ -277,9 +275,6 @@ extern void _db_flush_gcov_();
 #define DBUG_END() \
   do {             \
   } while (0)
-#define DBUG_ASSERT(A) \
-  do {                 \
-  } while (0)
 #define DBUG_LOCK_FILE \
   do {                 \
   } while (0)
@@ -299,7 +294,7 @@ extern void _db_flush_gcov_();
 #endif
 
 #ifdef __cplusplus
-#if !defined(DBUG_OFF)
+#if !defined(NDEBUG)
 #include <sstream>
 #include <string>
 
@@ -318,6 +313,7 @@ extern void _db_flush_gcov_();
 
 #define DBUG_LOG(keyword, v)                           \
   do {                                                 \
+    _db_pargs_(__LINE__, keyword);                     \
     if (_db_enabled_()) {                              \
       std::ostringstream sout;                         \
       sout << v;                                       \
@@ -325,11 +321,11 @@ extern void _db_flush_gcov_();
     }                                                  \
   } while (0)
 
-#else /* DBUG_OFF */
+#else /* NDEBUG */
 #define DBUG_LOG(keyword, v) \
   do {                       \
   } while (0)
-#endif /* DBUG_OFF */
+#endif /* NDEBUG */
 
 /**
    A type-safe interface to DBUG_EXECUTE_IF, where the debug action to
@@ -344,8 +340,8 @@ extern void _db_flush_gcov_();
                   called in debug mode if the keyword is enabled.
  */
 template <class DBGCLOS>
-inline void dbug(const char *keyword MY_ATTRIBUTE((unused)),
-                 DBGCLOS &&clos MY_ATTRIBUTE((unused))) {
+inline void dbug(const char *keyword [[maybe_unused]],
+                 DBGCLOS &&clos [[maybe_unused]]) {
   DBUG_EXECUTE_IF(keyword, clos(););
 }
 

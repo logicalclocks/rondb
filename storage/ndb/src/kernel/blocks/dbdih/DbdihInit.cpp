@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -46,6 +46,7 @@
 
 void Dbdih::initData() 
 {
+  callocated_frags = 0;
   m_set_up_multi_trp_in_node_restart = false;
   cpageFileSize = ZPAGEREC;
 
@@ -99,7 +100,7 @@ void Dbdih::initData()
   c_blockCommit    = false;
   c_blockCommitNo  = 1;
   cntrlblockref    = RNIL;
-  c_set_initial_start_flag = FALSE;
+  c_set_initial_start_flag = false;
   c_sr_wait_to = false;
   c_2pass_inr = false;
   c_handled_master_take_over_copy_gci = 0;
@@ -128,15 +129,21 @@ void Dbdih::initRecords()
                                         sizeof(FileRecord),
                                         cfileFileSize);
 
-  fragmentstore = (Fragmentstore*)allocRecord("Fragmentstore",
-                                              sizeof(Fragmentstore),
-                                              cfragstoreFileSize);
-
   pageRecord = (PageRecord*)allocRecord("PageRecord",
                                   sizeof(PageRecord), 
                                   cpageFileSize);
 
-  c_replicaRecordPool.setSize(creplicaFileSize);
+  {
+    Pool_context pc;
+    pc.m_block = this;
+    c_replicaRecordPool.init(RT_DBDIH_REPLICA, pc);
+  }
+
+  {
+    Pool_context pc;
+    pc.m_block = this;
+    c_fragmentRecordPool.init(RT_DBDIH_FRAGMENT, pc);
+  }
 
   DEB_AUTOMATIC_MEMORY(("Size(TabRecord): %zu, num_tables: %u, mem: %zu",
                         sizeof(TabRecord),
@@ -242,7 +249,6 @@ Dbdih::Dbdih(Block_context& ctx):
                  &Dbdih::execUPDATE_FRAG_STATEREQ);
   addRecSignal(GSN_UPDATE_FRAG_STATECONF,
                  &Dbdih::execUPDATE_FRAG_STATECONF);
-  addRecSignal(GSN_DIVERIFYREQ, &Dbdih::execDIVERIFYREQ);
   addRecSignal(GSN_GCP_SAVEREQ, &Dbdih::execGCP_SAVEREQ);
   addRecSignal(GSN_GCP_SAVEREF, &Dbdih::execGCP_SAVEREF);
   addRecSignal(GSN_GCP_SAVECONF, &Dbdih::execGCP_SAVECONF);
@@ -386,7 +392,6 @@ Dbdih::Dbdih(Block_context& ctx):
 
   connectRecord = 0;
   fileRecord = 0;
-  fragmentstore = 0;
   pageRecord = 0;
   tabRecord = 0;
   createReplicaRecord = 0;
@@ -416,10 +421,6 @@ Dbdih::~Dbdih()
                 sizeof(FileRecord),
                 cfileFileSize);
   
-  deallocRecord((void **)&fragmentstore, "Fragmentstore",
-                sizeof(Fragmentstore),
-                cfragstoreFileSize);
-
   deallocRecord((void **)&pageRecord, "PageRecord",
                 sizeof(PageRecord), 
                 cpageFileSize);

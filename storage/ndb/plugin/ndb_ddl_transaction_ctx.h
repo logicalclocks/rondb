@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2019, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -59,7 +59,7 @@ class Ndb_DDL_stmt {
 
 /* DDL Transaction context class to log the DDLs being executed.
 
-   A DDL can be executed by making a single request or mutliple requests to
+   A DDL can be executed by making a single request or multiple requests to
    the Storage Engine depending on the nature of the DDL. For example, a
    CREATE TABLE query can be done in a single request to the SE but a ALTER
    TABLE COPY would require more than a single request. These requests are
@@ -125,7 +125,7 @@ class Ndb_DDL_transaction_ctx {
          If the DDL is already committed, it implies that the stmts so far were
          committed and this is a new stmt. This happens when the SQL Layer is
          calling commit on individual stmts rather than at the end of
-         transaction. We should treat all such stmts as mini transactions but
+         transaction. We should treat all such stmts as mini-transactions but
          still maintain the log for the overall DDL transaction.
 
          In both the cases, mark the DDL as in progress and mark this as the
@@ -174,7 +174,7 @@ class Ndb_DDL_transaction_ctx {
   Ndb_DDL_transaction_ctx(class THD *thd) : m_thd(thd) {}
 
   void get_original_sdi_for_rename(dd::sdi_t &orig_sdi) const {
-    DBUG_ASSERT(!m_original_sdi_for_rename.empty());
+    assert(!m_original_sdi_for_rename.empty());
     orig_sdi.assign(m_original_sdi_for_rename.c_str(),
                     m_original_sdi_for_rename.length());
   }
@@ -191,8 +191,10 @@ class Ndb_DDL_transaction_ctx {
   /* Helper methods to log the DDL. */
   /* @brief Log a create table statement in DDL Context.
 
-     @param path_name       Path name of the table. */
-  void log_create_table(const std::string &path_name);
+     @param db_name       Name of the table's database.
+     @param table_name    Name of the table. */
+  void log_create_table(const std::string &db_name,
+                        const std::string &table_name);
   /* @brief Log a rename table statement in DDL Context.
 
      @param old_db_name       Old name of the table's database.
@@ -210,8 +212,10 @@ class Ndb_DDL_transaction_ctx {
                         const std::string &orig_sdi);
   /* @brief Log a drop table(with temp name) statement in DDL Context.
 
-     @param path_name       Path name of the table. */
-  void log_drop_temp_table(const std::string &path_name);
+     @param db_name       Name of the table's database.
+     @param table_name    Name of the table. */
+  void log_drop_temp_table(const std::string &db_name,
+                           const std::string &table_name);
 
   /* @brief Mark the last DDL stmt as distributed */
   void mark_last_stmt_as_distributed() {

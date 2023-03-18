@@ -1,4 +1,4 @@
-/* Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2015, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -28,11 +28,11 @@
 
 #include "my_compiler.h"
 #include "my_psi_config.h"
+#include "mysql/components/services/bits/mysql_cond_bits.h"
+#include "mysql/components/services/bits/mysql_mutex_bits.h"
 #include "mysql/components/services/bits/psi_bits.h"
-#include "mysql/components/services/mysql_cond_bits.h"
-#include "mysql/components/services/mysql_mutex_bits.h"
-#include "mysql/components/services/psi_cond_bits.h"
-#include "mysql/components/services/psi_mutex_bits.h"
+#include "mysql/components/services/bits/psi_cond_bits.h"
+#include "mysql/components/services/bits/psi_mutex_bits.h"
 #include "mysql/psi/mysql_cond.h"
 #include "mysql/psi/mysql_mutex.h"
 #include "mysql/psi/mysql_thread.h"
@@ -52,6 +52,7 @@
 #include "sql/dd/types/tablespace.h"
 #include "sql/malloc_allocator.h"  // Malloc_allocator.
 #include "sql/mysqld.h"            // max_connections
+#include "sql/psi_memory_key.h"    // key_memory_DD_cache_infrastructure
 #include "thr_mutex.h"
 
 namespace dd {
@@ -137,9 +138,10 @@ class Shared_multi_map : public Multi_map_base<T> {
    public:
     // Lock the multi map on instantiation.
     explicit Autolocker(Shared_multi_map<T> *map)
-        : m_objects_to_delete(Malloc_allocator<const T *>(PSI_INSTRUMENT_ME)),
-          m_elements_to_delete(
-              Malloc_allocator<const Cache_element<T> *>(PSI_INSTRUMENT_ME)),
+        : m_objects_to_delete(
+              Malloc_allocator<const T *>(key_memory_DD_cache_infrastructure)),
+          m_elements_to_delete(Malloc_allocator<const Cache_element<T> *>(
+              key_memory_DD_cache_infrastructure)),
           m_map(map) {
       mysql_mutex_lock(&m_map->m_lock);
     }
@@ -484,7 +486,7 @@ class Shared_multi_map : public Multi_map_base<T> {
   */
   /* purecov: begin inspected */
   void dump() const {
-#ifndef DBUG_OFF
+#ifndef NDEBUG
     fprintf(stderr, "  --------------------------------\n");
     fprintf(stderr, "  Shared multi map for '%s'\n",
             T::DD_table::instance().name().c_str());

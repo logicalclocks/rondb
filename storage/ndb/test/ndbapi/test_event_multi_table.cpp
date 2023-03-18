@@ -1,4 +1,4 @@
-/* Copyright (c) 2005, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2005, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -233,7 +233,7 @@ static int copy_events(Ndb *ndb)
 	  DBUG_RETURN(-1);
 	}
 	trans->close();
-	NdbSleep_MilliSleep(100); // sleep before retying
+	NdbSleep_MilliSleep(100); // sleep before retrying
       } while(1);
     } // for
     if (error)
@@ -264,7 +264,7 @@ struct my_option my_long_options[] =
 {
   NDB_STD_OPTS(""),
   { "database", 'd', "Name of database table is in",
-    (uchar**) &_dbname, (uchar**) &_dbname, 0,
+    &_dbname, &_dbname, 0,
     GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
   { 0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
 };
@@ -276,7 +276,7 @@ main(int argc, char** argv)
   Ndb_opts opts(argc, argv, my_long_options);
 
   int ho_error;
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   opt_debug= "d:t:F:L";
 #endif
   if ((ho_error=opts.handle_options(())))

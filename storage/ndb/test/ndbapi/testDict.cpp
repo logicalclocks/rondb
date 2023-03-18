@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
 #include <NDBT.hpp>
 #include <NDBT_Test.hpp>
 #include <HugoTransactions.hpp>
@@ -1148,6 +1150,9 @@ int
 runBackup(NDBT_Context* ctx, NDBT_Step* step)
 {
   NdbBackup backup;
+  backup.set_default_encryption_password(ctx->getProperty("BACKUP_PASSWORD",
+                                                          (char*)NULL),
+                                         -1);
   Uint32 backupId = 0;
   backup.clearOldBackups();
   if (backup.start(backupId) == -1)
@@ -1297,7 +1302,7 @@ int runTestFragmentTypes(NDBT_Context* ctx, NDBT_Step* step){
   }
 /**
    This test does not work since fragmentation is
-   decided by the kernel, hence the fragementation
+   decided by the kernel, hence the fragmentation
    attribute on the column will differ
 
   if (newTab.equal(*pTab3) == false){
@@ -2391,6 +2396,7 @@ runTableAddAttrs(NDBT_Context* ctx, NDBT_Step* step){
   NdbDictionary::Dictionary* dict = pNdb->getDictionary();
   int records = ctx->getNumRecords();
   const int loops = ctx->getNumLoops();
+  int useDisk = ctx->getProperty("UseDisk", Uint32(0));
 
   ndbout << "|- " << ctx->getTab()->getName() << endl;  
 
@@ -2416,21 +2422,32 @@ runTableAddAttrs(NDBT_Context* ctx, NDBT_Step* step){
       Check that table already has a varpart, otherwise add attr is
       not possible.
     */
-    if (pTab2->getForceVarPart() == false)
+    const NdbDictionary::Column *col = nullptr;
+    if (useDisk)
     {
-      const NdbDictionary::Column *col;
       for (Uint32 i= 0; (col= pTab2->getColumn(i)) != 0; i++)
       {
-        if (col->getStorageType() == NDB_STORAGETYPE_MEMORY &&
-            (col->getDynamic() || col->getArrayType() != NDB_ARRAYTYPE_FIXED))
+        if (col->getStorageType() == NDB_STORAGETYPE_DISK)
           break;
       }
-      if (col == 0)
+    }
+    else
+    {
+      if (pTab2->getForceVarPart() == false)
       {
-        /* Alter table add attribute not applicable, just mark success. */
-        dict->dropTable(pTab2->getName());
-        break;
+        for (Uint32 i= 0; (col= pTab2->getColumn(i)) != 0; i++)
+        {
+          if (col->getStorageType() == NDB_STORAGETYPE_MEMORY &&
+              (col->getDynamic() || col->getArrayType() != NDB_ARRAYTYPE_FIXED))
+            break;
+        }
       }
+    }
+    if (col == 0)
+    {
+      /* Alter table add attribute not applicable, just mark success. */
+      dict->dropTable(pTab2->getName());
+      break;
     }
 
     ndbout << "Load table" << endl;
@@ -2448,22 +2465,44 @@ runTableAddAttrs(NDBT_Context* ctx, NDBT_Step* step){
     if (oldTable) {
       NdbDictionary::Table newTable= *oldTable;
 
-      NDBT_Attribute newcol1("NEWKOL1", NdbDictionary::Column::Unsigned, 1,
-                            false, true, 0,
-                            NdbDictionary::Column::StorageTypeMemory, true);
-      newTable.addColumn(newcol1);
-      NDBT_Attribute newcol2("NEWKOL2", NdbDictionary::Column::Char, 14,
-                            false, true, 0,
-                            NdbDictionary::Column::StorageTypeMemory, true);
-      newTable.addColumn(newcol2);
-      NDBT_Attribute newcol3("NEWKOL3", NdbDictionary::Column::Bit, 20,
-                            false, true, 0,
-                            NdbDictionary::Column::StorageTypeMemory, true);
-      newTable.addColumn(newcol3);
-      NDBT_Attribute newcol4("NEWKOL4", NdbDictionary::Column::Varbinary, 42,
-                            false, true, 0,
-                            NdbDictionary::Column::StorageTypeMemory, true);
-      newTable.addColumn(newcol4);
+      if (useDisk)
+      {
+        NDBT_Attribute newcol1("NEWKOL1", NdbDictionary::Column::Unsigned, 1,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeDisk, true);
+        newTable.addColumn(newcol1);
+        NDBT_Attribute newcol2("NEWKOL2", NdbDictionary::Column::Char, 14,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeDisk, true);
+        newTable.addColumn(newcol2);
+        NDBT_Attribute newcol3("NEWKOL3", NdbDictionary::Column::Bit, 20,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeDisk, true);
+        newTable.addColumn(newcol3);
+        NDBT_Attribute newcol4("NEWKOL4", NdbDictionary::Column::Varbinary, 42,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeDisk, true);
+        newTable.addColumn(newcol4);
+      }
+      else
+      {
+        NDBT_Attribute newcol1("NEWKOL1", NdbDictionary::Column::Unsigned, 1,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeMemory, true);
+        newTable.addColumn(newcol1);
+        NDBT_Attribute newcol2("NEWKOL2", NdbDictionary::Column::Char, 14,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeMemory, true);
+        newTable.addColumn(newcol2);
+        NDBT_Attribute newcol3("NEWKOL3", NdbDictionary::Column::Bit, 20,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeMemory, true);
+        newTable.addColumn(newcol3);
+        NDBT_Attribute newcol4("NEWKOL4", NdbDictionary::Column::Varbinary, 42,
+                              false, true, 0,
+                              NdbDictionary::Column::StorageTypeMemory, true);
+        newTable.addColumn(newcol4);
+      }
 
       CHECK2(dict->alterTable(*oldTable, newTable) == 0,
 	     "TableAddAttrs failed");
@@ -2525,6 +2564,7 @@ runTableAddAttrsDuring(NDBT_Context* ctx, NDBT_Step* step){
 
   int result = NDBT_OK;
   int abortAlter = ctx->getProperty("AbortAlter", Uint32(0));
+  int useDisk = ctx->getProperty("UseDisk", Uint32(0));
 
   int records = ctx->getNumRecords();
   const int loops = ctx->getNumLoops();
@@ -2534,24 +2574,32 @@ runTableAddAttrsDuring(NDBT_Context* ctx, NDBT_Step* step){
 
   NdbDictionary::Table myTab= *(ctx->getTab());
 
-  if (myTab.getForceVarPart() == false)
+  NdbDictionary::Column *col = nullptr;
+  if (useDisk)
   {
-    const NdbDictionary::Column *col;
     for (Uint32 i= 0; (col= myTab.getColumn(i)) != 0; i++)
     {
-      if (col->getStorageType() == NDB_STORAGETYPE_MEMORY &&
-          (col->getDynamic() || col->getArrayType() != NDB_ARRAYTYPE_FIXED))
+      if (col->getStorageType() == NDB_STORAGETYPE_DISK)
         break;
     }
-    if (col == 0)
+  }
+  else
+  {
+    if (myTab.getForceVarPart() == false)
     {
-      ctx->stopTest();
-      return NDBT_OK;
+      for (Uint32 i= 0; (col= myTab.getColumn(i)) != 0; i++)
+      {
+        if (col->getStorageType() == NDB_STORAGETYPE_MEMORY &&
+            (col->getDynamic() || col->getArrayType() != NDB_ARRAYTYPE_FIXED))
+          break;
+      }
     }
   }
-
-  //if 
-
+  if (col == 0)
+  {
+    ctx->stopTest();
+    return NDBT_OK;
+  }
   for (int l = 0; l < loops && result == NDBT_OK ; l++){
     ndbout << l << ": " << endl;    
 
@@ -2572,21 +2620,36 @@ runTableAddAttrsDuring(NDBT_Context* ctx, NDBT_Step* step){
       
       char name[256];
       BaseString::snprintf(name, sizeof(name), "NEWCOL%d", l);
-      NDBT_Attribute newcol1(name, NdbDictionary::Column::Unsigned, 1,
-                             false, true, 0,
-                             NdbDictionary::Column::StorageTypeMemory, true);
-      newTable.addColumn(newcol1);
+      if (useDisk)
+      {
+        NDBT_Attribute newcol1(name, NdbDictionary::Column::Unsigned, 1,
+                               false, true, 0,
+                               NdbDictionary::Column::StorageTypeDisk, true);
+        newTable.addColumn(newcol1);
+      }
+      else
+      {
+        NDBT_Attribute newcol1(name, NdbDictionary::Column::Unsigned, 1,
+                               false, true, 0,
+                               NdbDictionary::Column::StorageTypeMemory, true);
+        newTable.addColumn(newcol1);
+      }
       //ToDo: check #loops, how many columns l
 
       if (abortAlter == 0)
       {
+        ndbout << "Start alterTable no abortAlter" << endl;
         CHECK2(dict->alterTable(*oldTable, newTable) == 0,
                "TableAddAttrsDuring failed");
       }
       else
       {
         int nodeId = res.getNode(NdbRestarter::NS_RANDOM);
-        res.insertErrorInNode(nodeId, 4029);
+        if (l % 2 == 0)
+          res.insertErrorInNode(nodeId, 4029);
+        else
+          res.insertErrorInNode(nodeId, 4039);
+        ndbout << "Start alterTable with abortAlter" << endl;
         CHECK2(dict->alterTable(*oldTable, newTable) != 0,
                "TableAddAttrsDuring failed");
       }
@@ -2598,6 +2661,7 @@ runTableAddAttrsDuring(NDBT_Context* ctx, NDBT_Step* step){
       hugoTrans.scanUpdateRecords(pNdb, records);
     }
     else {
+      ndbout << "Failed to get oldTable" << endl;
       result= NDBT_FAILED;
       break;
     }
@@ -2878,7 +2942,7 @@ int getColumnMaxLength(const NdbDictionary::Column* c)
 int runFailAddFragment(NDBT_Context* ctx, NDBT_Step* step){
   static int acclst[] = { 3001, 6200, 6202 };
   static int tuplst[] = { 4007, 4008, 4009, 4010, 4032, 4033, 4034 };
-  static int tuxlst[] = { 12001, 12002, 12003, 12004, 
+  static int tuxlst[] = { 12001, 12003, 12004, 
                           6201, 6203 };
   static unsigned acccnt = sizeof(acclst)/sizeof(acclst[0]);
   static unsigned tupcnt = sizeof(tuplst)/sizeof(tuplst[0]);
@@ -8941,6 +9005,7 @@ runBug46585(NDBT_Context* ctx, NDBT_Step* step)
         break;
       }
       // Fall through - only system restart possible with one node
+      [[fallthrough]];
     case 1:
     {
       ndbout_c("performing system restart");
@@ -9101,7 +9166,7 @@ runBug53944(NDBT_Context* ctx, NDBT_Step* step)
 
   /**
    * With Bug53944 - none of the table-id have been reused in this scenario
-   *   check that atleast 15 of the 25 have been to return OK
+   *   check that at least 15 of the 25 have been to return OK
    */
   unsigned reused = 0;
   for (unsigned i = 0; i<ids.size(); i++)
@@ -10008,6 +10073,11 @@ runBug13416603(NDBT_Context* ctx, NDBT_Step* step)
     return NDBT_OK;
   }
 
+    if (res.getNumDbNodes() > 4)
+  {
+    g_info << "Cannot do this test with more than 4 datanodes." << endl;
+    return NDBT_OK;
+  }
   bool has_created_stat_tables = false;
   bool has_created_stat_events = false;
   pNdb->setDatabaseName("mysql");
@@ -10033,12 +10103,17 @@ runBug13416603(NDBT_Context* ctx, NDBT_Step* step)
     ndbout_c("%u - poll_listener", __LINE__);
     chk2((ret = is.poll_listener(pNdb, 10000)) != -1, is.getNdbError());
     chk1(ret == 1);
-    // one event is expected
+    // At least one event is expected from the above update_stat()
     ndbout_c("%u - next_listener", __LINE__);
     chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
     chk1(ret == 1);
-    ndbout_c("%u - next_listener", __LINE__);
-    chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
+    // Clear event queue as there may be additional events created by auto
+    // updates
+    while (ret == 1)
+    {
+      ndbout_c("%u - next_listener", __LINE__);
+      chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
+    }
     chk1(ret == 0);
   }
 
@@ -10067,12 +10142,17 @@ runBug13416603(NDBT_Context* ctx, NDBT_Step* step)
         ndbout_c("%u - poll_listener", __LINE__);
         chk2((ret = is.poll_listener(pNdb, 10000)) != -1, is.getNdbError());
         chk1(ret == 1);
-        // one event is expected
+        // At least one event is expected from the above update_stat()
         ndbout_c("%u - next_listener", __LINE__);
         chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
         chk1(ret == 1);
-        ndbout_c("%u - next_listener", __LINE__);
-        chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
+        // Clear event queue as there may be additional events created by auto
+        // updates
+        while (ret == 1)
+        {
+          ndbout_c("%u - next_listener", __LINE__);
+          chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
+        }
         chk1(ret == 0);
       }
 
@@ -10098,13 +10178,17 @@ runBug13416603(NDBT_Context* ctx, NDBT_Step* step)
       ndbout << is.getNdbError() << endl;
       ndbout_c("%u - poll_listener", __LINE__);
       chk2((ret = is.poll_listener(pNdb, 10000)) != -1, is.getNdbError());
-      if (ret == 1)
+      // Clear event queue
+      while (ret == 1)
       {
         /* After the new api is introduced, pollEvents() (old api version)
          * returns 1 when empty epoch is at the head of the event queue.
          * pollEvents2() (new api version) returns 1 when exceptional
          * epoch is at the head of the event queue.
          * So next_listener() must be called to handle them.
+         *
+         * In addition, there may be more events queued due to index
+         * stats auto updates.
          */
         chk2((ret = is.next_listener(pNdb)) != -1, is.getNdbError());
       }
@@ -10113,32 +10197,50 @@ runBug13416603(NDBT_Context* ctx, NDBT_Step* step)
     }
 
     /**
-     * Wait for one of the nodes to have died...
+     * Wait until all nodes that will die have done so
+     * We wait for 50 seconds or until all nodes are
+     * down.
      */
     int count_started = 0;
     int count_not_started = 0;
     int count_nok = 0;
-    int down = 0;
+    int down[4];
+    int num_down_nodes = 0;
+    Uint32 loop_count = 0;
     do
     {
-      NdbSleep_MilliSleep(100);
+      loop_count++;
+      NdbSleep_MilliSleep(1000);
       count_started = count_not_started = count_nok = 0;
+      num_down_nodes = 0;
       for (int i = 0; i < res.getNumDbNodes(); i++)
       {
         int n = res.getDbNodeId(i);
         if (res.getNodeStatus(n) == NDB_MGM_NODE_STATUS_NOT_STARTED)
         {
           count_not_started++;
-          down = n;
+          down[num_down_nodes] = n;
+          num_down_nodes++;
         }
         else if (res.getNodeStatus(n) == NDB_MGM_NODE_STATUS_STARTED)
+        {
           count_started++;
+        }
         else
+        {
           count_nok ++;
+        }
       }
-    } while (count_not_started != 1);
+      ndbout_c("loop: %u count_started: %u, count_not_started: %u,"
+               " count_nok: %u",
+               loop_count,
+               count_started,
+               count_not_started,
+               count_nok);
+    } while ((loop_count < 30 && count_started > 0 && count_not_started > 0) ||
+             count_nok > 0);
 
-    res.startNodes(&down, 1);
+    res.startNodes(&down[0], num_down_nodes);
     res.waitClusterStarted();
     CHK_NDB_READY(pNdb);
     res.insertErrorInAllNodes(0);
@@ -10428,8 +10530,8 @@ runBug14645319(NDBT_Context* ctx, NDBT_Step* step)
     int expected_buckets;
   };
 
-  STATIC_ASSERT(NDB_DEFAULT_HASHMAP_BUCKETS % 240 == 0);
-  STATIC_ASSERT(NDB_DEFAULT_HASHMAP_BUCKETS % 260 != 0);
+  static_assert(NDB_DEFAULT_HASHMAP_BUCKETS % 240 == 0);
+  static_assert(NDB_DEFAULT_HASHMAP_BUCKETS % 260 != 0);
   test_case test_cases[] = {
     { "Simulate online reorg, may or may not change hashmap depending on default fragment count",
       3, 120, 0, NDB_DEFAULT_HASHMAP_BUCKETS, 0 },
@@ -10561,7 +10663,7 @@ struct Fkdef {
   static const int colmax = 5;
   static const int indmax = 5;
   static const int keymax = tabmax * 5;
-  static const int strmax = 10;
+  static const int strmax = 24;
   struct Ob {
     bool retrieved;
     int id;
@@ -11819,7 +11921,7 @@ runDictTO_1(NDBT_Context* ctx, NDBT_Step* step)
         }
       }
 
-      // this should give master failuer...but trans should rollforward
+      // this should give master failure...but trans should rollforward
       if (pDic->endSchemaTrans() != 0)
       {
         ndbout << "ERROR: line: " << __LINE__ << endl;
@@ -12078,7 +12180,7 @@ runDropTableSpaceLG(NDBT_Context* ctx, NDBT_Step* step)
 }
 
 /**
- * Create upto the number of data files given in the test case until
+ * Create up to the number of data files given in the test case until
  * DiskPageBufferMemory gets exhausted, indicated by error code 1517.
  *
  * Drop data files.
@@ -12287,7 +12389,7 @@ TESTCASE("StoreFrm",
 }
 TESTCASE("GetPrimaryKey", 
 	 "Test the function NdbDictionary::Column::getPrimaryKey\n"
-	 "It should return true only if the column is part of \n"
+	 "It should return true only if the column is part of\n"
 	 "the primary key in the table"){
   INITIALIZER(runGetPrimaryKey);
 }
@@ -12379,6 +12481,11 @@ TESTCASE("TableAddAttrs",
 	 "Add attributes to an existing table using alterTable()"){
   INITIALIZER(runTableAddAttrs);
 }
+TESTCASE("TableAddAttrs_Disk",
+	 "Add attributes to an existing table using alterTable()"){
+  TC_PROPERTY("UseDisk", 1);
+  INITIALIZER(runTableAddAttrs);
+}
 TESTCASE("TableAddAttrsDuring",
 	 "Try to add attributes to the table when other thread is using it\n"
 	 "do this loop number of times\n"){
@@ -12392,6 +12499,27 @@ TESTCASE("TableAddAttrsDuringError",
 	 "Try to add attributes to the table when other thread is using it\n"
 	 "do this loop number of times\n"){
   TC_PROPERTY("AbortAlter", 1);
+  INITIALIZER(runCreateTheTable);
+  STEP(runTableAddAttrsDuring);
+  STEP(runUseTableUntilStopped2);
+  STEP(runUseTableUntilStopped3);
+  FINALIZER(runDropTheTable);
+}
+TESTCASE("TableAddAttrsDuring_Disk",
+	 "Try to add attributes to the table when other thread is using it\n"
+	 "do this loop number of times\n"){
+  TC_PROPERTY("UseDisk", 1);
+  INITIALIZER(runCreateTheTable);
+  STEP(runTableAddAttrsDuring);
+  STEP(runUseTableUntilStopped2);
+  STEP(runUseTableUntilStopped3);
+  FINALIZER(runDropTheTable);
+}
+TESTCASE("TableAddAttrsDuringError_Disk",
+	 "Try to add attributes to the table when other thread is using it\n"
+	 "do this loop number of times\n"){
+  TC_PROPERTY("AbortAlter", 1);
+  TC_PROPERTY("UseDisk", 1);
   INITIALIZER(runCreateTheTable);
   STEP(runTableAddAttrsDuring);
   STEP(runUseTableUntilStopped2);

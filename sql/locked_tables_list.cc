@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,23 +26,20 @@
 #include "sql/mysqld.h"     // table_alias_charset
 #include "sql/sql_base.h"   // close_thread_tables
 #include "sql/sql_class.h"  // THD
-#include "sql/table.h"      // TABLE TABLE_LIST
+#include "sql/table.h"      // TABLE Table_ref
 
 Locked_tables_list::Locked_tables_list()
     : m_locked_tables(nullptr),
       m_locked_tables_last(&m_locked_tables),
       m_reopen_array(nullptr),
-      m_locked_tables_count(0) {
-  init_sql_alloc(key_memory_locked_table_list, &m_locked_tables_root,
-                 MEM_ROOT_BLOCK_SIZE, 0);
-}
+      m_locked_tables_count(0) {}
 
 /**
   Enter LTM_LOCK_TABLES mode.
 
   Enter the LOCK TABLES mode using all the tables that are
   currently open and locked in this connection.
-  Initializes a TABLE_LIST instance for every locked table.
+  Initializes a Table_ref instance for every locked table.
 
   @param  thd  thread handle
 
@@ -50,19 +47,19 @@ Locked_tables_list::Locked_tables_list()
 */
 
 bool Locked_tables_list::init_locked_tables(THD *thd) {
-  DBUG_ASSERT(thd->locked_tables_mode == LTM_NONE);
-  DBUG_ASSERT(m_locked_tables == nullptr);
-  DBUG_ASSERT(m_reopen_array == nullptr);
-  DBUG_ASSERT(m_locked_tables_count == 0);
+  assert(thd->locked_tables_mode == LTM_NONE);
+  assert(m_locked_tables == nullptr);
+  assert(m_reopen_array == nullptr);
+  assert(m_locked_tables_count == 0);
 
   for (TABLE *table = thd->open_tables; table;
        table = table->next, m_locked_tables_count++) {
-    TABLE_LIST *src_table_list = table->pos_in_table_list;
+    Table_ref *src_table_list = table->pos_in_table_list;
     char *db, *table_name, *alias;
     size_t db_len = src_table_list->db_length;
     size_t table_name_len = src_table_list->table_name_length;
     size_t alias_len = strlen(src_table_list->alias);
-    TABLE_LIST *dst_table_list;
+    Table_ref *dst_table_list;
 
     if (!multi_alloc_root(&m_locked_tables_root, &dst_table_list,
                           sizeof(*dst_table_list), &db, db_len + 1, &table_name,
@@ -82,8 +79,8 @@ bool Locked_tables_list::init_locked_tables(THD *thd) {
       thd->update_lock_default.
     */
     new (dst_table_list)
-        TABLE_LIST(table, db, db_len, table_name, table_name_len, alias,
-                   src_table_list->table->reginfo.lock_type);
+        Table_ref(table, db, db_len, table_name, table_name_len, alias,
+                  src_table_list->table->reginfo.lock_type);
 
     dst_table_list->mdl_request.ticket = src_table_list->mdl_request.ticket;
 
@@ -128,8 +125,8 @@ void Locked_tables_list::unlock_locked_tables(THD *thd)
 
 {
   if (thd) {
-    DBUG_ASSERT(!thd->in_sub_stmt &&
-                !(thd->state_flags & Open_tables_state::BACKUPS_AVAIL));
+    assert(!thd->in_sub_stmt &&
+           !(thd->state_flags & Open_tables_state::BACKUPS_AVAIL));
     /*
       Sic: we must be careful to not close open tables if
       we're not in LOCK TABLES mode: unlock_locked_tables() is
@@ -138,7 +135,7 @@ void Locked_tables_list::unlock_locked_tables(THD *thd)
     */
     if (thd->locked_tables_mode != LTM_LOCK_TABLES) return;
 
-    for (TABLE_LIST *table_list = m_locked_tables; table_list;
+    for (Table_ref *table_list = m_locked_tables; table_list;
          table_list = table_list->next_global) {
       /*
         Clear the position in the list, the TABLE object will be
@@ -153,7 +150,7 @@ void Locked_tables_list::unlock_locked_tables(THD *thd)
       tst->clear_trx_state(thd, TX_LOCKED_TABLES);
     }
 
-    DBUG_ASSERT(thd->get_transaction()->is_empty(Transaction_ctx::STMT));
+    assert(thd->get_transaction()->is_empty(Transaction_ctx::STMT));
     close_thread_tables(thd);
     /*
       We rely on the caller to implicitly commit the
@@ -162,9 +159,9 @@ void Locked_tables_list::unlock_locked_tables(THD *thd)
   }
   /*
     After closing tables we can free memory used for storing lock
-    request for metadata locks and TABLE_LIST elements.
+    request for metadata locks and Table_ref elements.
   */
-  free_root(&m_locked_tables_root, MYF(0));
+  m_locked_tables_root.Clear();
   m_locked_tables = nullptr;
   m_locked_tables_last = &m_locked_tables;
   m_reopen_array = nullptr;
@@ -178,8 +175,8 @@ void Locked_tables_list::unlock_locked_tables(THD *thd)
   @param  thd        thread handle
   @param  table_list the element of locked tables list.
                      The implementation assumes that this argument
-                     points to a TABLE_LIST element linked into
-                     the locked tables list. Passing a TABLE_LIST
+                     points to a Table_ref element linked into
+                     the locked tables list. Passing a Table_ref
                      instance that is not part of locked tables
                      list will lead to a crash.
   @param  remove_from_locked_tables
@@ -191,8 +188,7 @@ void Locked_tables_list::unlock_locked_tables(THD *thd)
   @sa Locked_tables_list::reopen_tables()
 */
 
-void Locked_tables_list::unlink_from_list(const THD *thd,
-                                          TABLE_LIST *table_list,
+void Locked_tables_list::unlink_from_list(const THD *thd, Table_ref *table_list,
                                           bool remove_from_locked_tables) {
   /*
     If mode is not LTM_LOCK_TABLES, we needn't do anything. Moreover,
@@ -204,7 +200,7 @@ void Locked_tables_list::unlink_from_list(const THD *thd,
     table_list must be set and point to pos_in_locked_tables of some
     table.
   */
-  DBUG_ASSERT(table_list->table->pos_in_locked_tables == table_list);
+  assert(table_list->table->pos_in_locked_tables == table_list);
 
   /* Clear the pointer, the table will be returned to the table cache. */
   table_list->table->pos_in_locked_tables = nullptr;
@@ -253,7 +249,7 @@ void Locked_tables_list::unlink_all_closed_tables(THD *thd, MYSQL_LOCK *lock,
         in reopen_tables() always links the opened table
         to the beginning of the open_tables list.
       */
-      DBUG_ASSERT(thd->open_tables == m_reopen_array[reopen_count]);
+      assert(thd->open_tables == m_reopen_array[reopen_count]);
 
       thd->open_tables->pos_in_locked_tables->table = nullptr;
 
@@ -261,7 +257,7 @@ void Locked_tables_list::unlink_all_closed_tables(THD *thd, MYSQL_LOCK *lock,
     }
   }
   /* Exclude all closed tables from the LOCK TABLES list. */
-  for (TABLE_LIST *table_list = m_locked_tables; table_list;
+  for (Table_ref *table_list = m_locked_tables; table_list;
        table_list = table_list->next_global) {
     if (table_list->table == nullptr) {
       /* Unlink from list. */
@@ -301,7 +297,7 @@ bool Locked_tables_list::reopen_tables(THD *thd) {
   Diagnostics_area tmp_da(false);
   thd->push_diagnostics_area(&tmp_da, false);
 
-  for (TABLE_LIST *table_list = m_locked_tables; table_list;
+  for (Table_ref *table_list = m_locked_tables; table_list;
        table_list = table_list->next_global) {
     if (table_list->table) /* The table was not closed */
       continue;
@@ -323,7 +319,7 @@ bool Locked_tables_list::reopen_tables(THD *thd) {
     /* See also the comment on lock type in init_locked_tables(). */
     table_list->table->reginfo.lock_type = table_list->lock_descriptor().type;
 
-    DBUG_ASSERT(reopen_count < m_locked_tables_count);
+    assert(reopen_count < m_locked_tables_count);
     m_reopen_array[reopen_count++] = table_list->table;
   }
 
@@ -369,20 +365,20 @@ bool Locked_tables_list::reopen_tables(THD *thd) {
   @note This function is a no-op if we're not under LOCK TABLES.
 */
 
-void Locked_tables_list::rename_locked_table(TABLE_LIST *old_table_list,
+void Locked_tables_list::rename_locked_table(Table_ref *old_table_list,
                                              const char *new_db,
                                              const char *new_table_name,
                                              MDL_ticket *target_mdl_ticket) {
-  for (TABLE_LIST *table_list = m_locked_tables; table_list;
+  for (Table_ref *table_list = m_locked_tables; table_list;
        table_list = table_list->next_global) {
     if (my_strcasecmp(table_alias_charset, table_list->db,
                       old_table_list->db) == 0 &&
         my_strcasecmp(table_alias_charset, table_list->table_name,
                       old_table_list->table_name) == 0) {
-      DBUG_ASSERT(table_list->table == nullptr);
+      assert(table_list->table == nullptr);
 
       /*
-        Update TABLE_LIST element with new db and name. Allocate
+        Update Table_ref element with new db and name. Allocate
         them on Locked_tables_list private memory root.
       */
       size_t new_db_len = strlen(new_db);
@@ -393,8 +389,8 @@ void Locked_tables_list::rename_locked_table(TABLE_LIST *old_table_list,
           &m_locked_tables_root, new_table_name, new_table_name_len);
 
       if (new_db_root != nullptr && new_table_name_root != nullptr) {
-        TABLE_LIST *save_next_global = table_list->next_global;
-        TABLE_LIST **save_prev_global = table_list->prev_global;
+        Table_ref *save_next_global = table_list->next_global;
+        Table_ref **save_prev_global = table_list->prev_global;
 
         /*
           If explicit alias was used in LOCK TABLES then it makes sense
@@ -406,7 +402,7 @@ void Locked_tables_list::rename_locked_table(TABLE_LIST *old_table_list,
             my_strcasecmp(table_alias_charset, table_list->table_name,
                           table_list->alias) != 0;
 
-        *table_list = TABLE_LIST(
+        *table_list = Table_ref(
             new_db_root, new_db_len, new_table_name_root, new_table_name_len,
             real_alias ? table_list->alias : new_table_name_root,
             table_list->lock_descriptor().type);
@@ -428,8 +424,8 @@ void Locked_tables_list::rename_locked_table(TABLE_LIST *old_table_list,
 
 void Locked_tables_list::add_rename_tablespace_mdls(MDL_ticket *src,
                                                     MDL_ticket *dst) {
-  DBUG_ASSERT(m_locked_tables != nullptr);
-  DBUG_ASSERT(dst->get_duration() == MDL_TRANSACTION);
+  assert(m_locked_tables != nullptr);
+  assert(dst->get_duration() == MDL_TRANSACTION);
   m_rename_tablespace_mdls.push_back({src, dst});
 }
 

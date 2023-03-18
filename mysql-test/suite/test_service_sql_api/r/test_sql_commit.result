@@ -38,8 +38,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -68,8 +68,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -182,8 +182,8 @@ EXECUTING:[23][SELECT COUNT(*) FROM t1]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.COUNT(*)][  1][8]
@@ -212,8 +212,8 @@ EXECUTING:[23][SELECT COUNT(*) FROM t1]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.COUNT(*)][  1][8]
@@ -250,8 +250,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -280,8 +280,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -394,8 +394,8 @@ EXECUTING:[23][SELECT COUNT(*) FROM t1]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.COUNT(*)][  1][8]
@@ -424,8 +424,8 @@ EXECUTING:[23][SELECT COUNT(*) FROM t1]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.COUNT(*)][  1][8]

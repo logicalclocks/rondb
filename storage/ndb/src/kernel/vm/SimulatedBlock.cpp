@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
    Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -30,7 +30,9 @@
   macro not defined).
 */
 
+#include "util/require.h"
 #include <ndb_global.h>
+#include "portlib/ndb_compiler.h"
 
 #include "SimulatedBlock.hpp"
 #include <NdbOut.hpp>
@@ -71,7 +73,6 @@
 
 #define JAM_FILE_ID 252
 
-extern EventLogger * g_eventLogger;
 
 //
 // Constructor, Destructor
@@ -128,8 +129,10 @@ SimulatedBlock::SimulatedBlock(BlockNumber blockNumber,
   clearTimes();
 #endif
 
-  for(GlobalSignalNumber i = 0; i<=MAX_GSN; i++)
-    theExecArray[i] = 0;
+  for(GlobalSignalNumber i = 0; i<=MAX_GSN; i++){
+    theSignalHandlerArray[i].m_execFunction = nullptr;
+    theSignalHandlerArray[i].m_signalScope = SignalScope::External;
+  }
 
   installSimulatedBlockFunctions();
 
@@ -163,7 +166,7 @@ SimulatedBlock::addInstance(SimulatedBlock* b, Uint32 theInstance)
 void
 SimulatedBlock::initCommon()
 {
-  NDB_STATIC_ASSERT(RG_COUNT == MM_RG_COUNT + 1);
+  static_assert(RG_COUNT == MM_RG_COUNT + 1);
 
   Uint32 count = 10;
   this->getParam("FragmentSendPool", &count);
@@ -218,50 +221,71 @@ SimulatedBlock::~SimulatedBlock()
 
 void 
 SimulatedBlock::installSimulatedBlockFunctions(){
-  ExecFunction * a = theExecArray;
-  a[GSN_NODE_STATE_REP] = &SimulatedBlock::execNODE_STATE_REP;
-  a[GSN_CHANGE_NODE_STATE_REQ] = &SimulatedBlock::execCHANGE_NODE_STATE_REQ;
-  a[GSN_NDB_TAMPER] = &SimulatedBlock::execNDB_TAMPER;
-  a[GSN_SIGNAL_DROPPED_REP] = &SimulatedBlock::execSIGNAL_DROPPED_REP;
-  a[GSN_CONTINUE_FRAGMENTED]= &SimulatedBlock::execCONTINUE_FRAGMENTED;
-  a[GSN_STOP_FOR_CRASH]= &SimulatedBlock::execSTOP_FOR_CRASH;
-  a[GSN_UTIL_CREATE_LOCK_REF]   = &SimulatedBlock::execUTIL_CREATE_LOCK_REF;
-  a[GSN_UTIL_CREATE_LOCK_CONF]  = &SimulatedBlock::execUTIL_CREATE_LOCK_CONF;
-  a[GSN_UTIL_DESTROY_LOCK_REF]  = &SimulatedBlock::execUTIL_DESTORY_LOCK_REF;
-  a[GSN_UTIL_DESTROY_LOCK_CONF] = &SimulatedBlock::execUTIL_DESTORY_LOCK_CONF;
-  a[GSN_UTIL_LOCK_REF]    = &SimulatedBlock::execUTIL_LOCK_REF;
-  a[GSN_UTIL_LOCK_CONF]   = &SimulatedBlock::execUTIL_LOCK_CONF;
-  a[GSN_UTIL_UNLOCK_REF]  = &SimulatedBlock::execUTIL_UNLOCK_REF;
-  a[GSN_UTIL_UNLOCK_CONF] = &SimulatedBlock::execUTIL_UNLOCK_CONF;
-  a[GSN_FSOPENREF]    = &SimulatedBlock::execFSOPENREF;
-  a[GSN_FSCLOSEREF]   = &SimulatedBlock::execFSCLOSEREF;
-  a[GSN_FSWRITEREF]   = &SimulatedBlock::execFSWRITEREF;
-  a[GSN_FSREADREF]    = &SimulatedBlock::execFSREADREF;
-  a[GSN_FSREMOVEREF]  = &SimulatedBlock::execFSREMOVEREF;
-  a[GSN_FSSYNCREF]    = &SimulatedBlock::execFSSYNCREF;
-  a[GSN_FSAPPENDREF]  = &SimulatedBlock::execFSAPPENDREF;
-  a[GSN_NODE_START_REP] = &SimulatedBlock::execNODE_START_REP;
-  a[GSN_API_START_REP] = &SimulatedBlock::execAPI_START_REP;
-  a[GSN_SEND_PACKED] = &SimulatedBlock::execSEND_PACKED;
-  a[GSN_CALLBACK_CONF] = &SimulatedBlock::execCALLBACK_CONF;
-  a[GSN_SYNC_THREAD_REQ] = &SimulatedBlock::execSYNC_THREAD_REQ;
-  a[GSN_SYNC_THREAD_CONF] = &SimulatedBlock::execSYNC_THREAD_CONF;
-  a[GSN_LOCAL_ROUTE_ORD] = &SimulatedBlock::execLOCAL_ROUTE_ORD;
-  a[GSN_SYNC_REQ] = &SimulatedBlock::execSYNC_REQ;
-  a[GSN_SYNC_PATH_REQ] = &SimulatedBlock::execSYNC_PATH_REQ;
-  a[GSN_SYNC_PATH_CONF] = &SimulatedBlock::execSYNC_PATH_CONF;
+  FunctionAndScope* a = theSignalHandlerArray;
+  a[GSN_NODE_STATE_REP].m_execFunction = &SimulatedBlock::execNODE_STATE_REP;
+  a[GSN_CHANGE_NODE_STATE_REQ].m_execFunction = &SimulatedBlock::execCHANGE_NODE_STATE_REQ;
+  a[GSN_NDB_TAMPER].m_execFunction = &SimulatedBlock::execNDB_TAMPER;
+  a[GSN_SIGNAL_DROPPED_REP].m_execFunction = &SimulatedBlock::execSIGNAL_DROPPED_REP;
+  a[GSN_CONTINUE_FRAGMENTED].m_execFunction = &SimulatedBlock::execCONTINUE_FRAGMENTED;
+  a[GSN_STOP_FOR_CRASH].m_execFunction = &SimulatedBlock::execSTOP_FOR_CRASH;
+  a[GSN_UTIL_CREATE_LOCK_REF].m_execFunction  = &SimulatedBlock::execUTIL_CREATE_LOCK_REF;
+  a[GSN_UTIL_CREATE_LOCK_CONF].m_execFunction = &SimulatedBlock::execUTIL_CREATE_LOCK_CONF;
+  a[GSN_UTIL_DESTROY_LOCK_REF].m_execFunction = &SimulatedBlock::execUTIL_DESTORY_LOCK_REF;
+  a[GSN_UTIL_DESTROY_LOCK_CONF].m_execFunction = &SimulatedBlock::execUTIL_DESTORY_LOCK_CONF;
+  a[GSN_UTIL_LOCK_REF].m_execFunction = &SimulatedBlock::execUTIL_LOCK_REF;
+  a[GSN_UTIL_LOCK_CONF].m_execFunction = &SimulatedBlock::execUTIL_LOCK_CONF;
+  a[GSN_UTIL_UNLOCK_REF].m_execFunction = &SimulatedBlock::execUTIL_UNLOCK_REF;
+  a[GSN_UTIL_UNLOCK_CONF].m_execFunction = &SimulatedBlock::execUTIL_UNLOCK_CONF;
+  a[GSN_FSOPENREF].m_execFunction = &SimulatedBlock::execFSOPENREF;
+  a[GSN_FSOPENREF].m_signalScope = SignalScope::Local;
+  a[GSN_FSCLOSEREF].m_execFunction = &SimulatedBlock::execFSCLOSEREF;
+  a[GSN_FSCLOSEREF].m_signalScope = SignalScope::Local;
+  a[GSN_FSWRITEREF].m_execFunction = &SimulatedBlock::execFSWRITEREF;
+  a[GSN_FSWRITEREF].m_signalScope = SignalScope::Local;
+  a[GSN_FSREADREF].m_execFunction = &SimulatedBlock::execFSREADREF;
+  a[GSN_FSREADREF].m_signalScope = SignalScope::Local;
+  a[GSN_FSREMOVEREF].m_execFunction = &SimulatedBlock::execFSREMOVEREF;
+  a[GSN_FSREMOVEREF].m_signalScope = SignalScope::Local;
+  a[GSN_FSSYNCREF].m_execFunction = &SimulatedBlock::execFSSYNCREF;
+  a[GSN_FSSYNCREF].m_signalScope = SignalScope::Local;
+  a[GSN_FSAPPENDREF].m_execFunction = &SimulatedBlock::execFSAPPENDREF;
+  a[GSN_FSAPPENDREF].m_signalScope = SignalScope::Local;
+  a[GSN_NODE_START_REP].m_execFunction = &SimulatedBlock::execNODE_START_REP;
+  a[GSN_API_START_REP].m_execFunction = &SimulatedBlock::execAPI_START_REP;
+  a[GSN_SEND_PACKED].m_execFunction = &SimulatedBlock::execSEND_PACKED;
+  a[GSN_CALLBACK_CONF].m_execFunction = &SimulatedBlock::execCALLBACK_CONF;
+  a[GSN_SYNC_THREAD_REQ].m_execFunction = &SimulatedBlock::execSYNC_THREAD_REQ;
+  a[GSN_SYNC_THREAD_CONF].m_execFunction = &SimulatedBlock::execSYNC_THREAD_CONF;
+  a[GSN_LOCAL_ROUTE_ORD].m_execFunction = &SimulatedBlock::execLOCAL_ROUTE_ORD;
+  a[GSN_SYNC_REQ].m_execFunction = &SimulatedBlock::execSYNC_REQ;
+  a[GSN_SYNC_PATH_REQ].m_execFunction = &SimulatedBlock::execSYNC_PATH_REQ;
+  a[GSN_SYNC_PATH_CONF].m_execFunction = &SimulatedBlock::execSYNC_PATH_CONF;
 }
 
 void
 SimulatedBlock::addRecSignalImpl(GlobalSignalNumber gsn, 
 				 ExecFunction f, bool force){
-  if(gsn > MAX_GSN || (!force &&  theExecArray[gsn] != 0)){
+  if(gsn > MAX_GSN ||
+     (!force &&  theSignalHandlerArray[gsn].m_execFunction != nullptr)){
     char errorMsg[255];
     BaseString::snprintf(errorMsg, 255, 
  	     "GSN %d(%d))", gsn, MAX_GSN); 
     ERROR_SET(fatal, NDBD_EXIT_ILLEGAL_SIGNAL, errorMsg, errorMsg);
   }
-  theExecArray[gsn] = f;
+  theSignalHandlerArray[gsn].m_execFunction = f;
+}
+
+void
+SimulatedBlock::addSignalScopeImpl(GlobalSignalNumber gsn,
+                                   SignalScope scope){
+  FunctionAndScope& fas = theSignalHandlerArray[gsn];
+
+  if (!(scope == SignalScope::Local || scope == SignalScope::Remote || scope == SignalScope::Management || scope == SignalScope::External)){
+    warningEvent("SimulatedBlock::addSignalScopeImpl, incorrect use, SignalScope out of range %u", scope);
+    require(false);
+  }
+  // If scope is defined multiple times we assume the most restrictive
+  fas.m_signalScope = MIN(fas.m_signalScope, scope);
 }
 
 void
@@ -306,10 +330,6 @@ Uint32 SimulatedBlock::getInstanceNoCanFail(Uint32 tableId, Uint32 fragId)
   if (likely(instanceKey != RNIL))
   {
     Uint32 lqhWorkers = globalData.ndbMtLqhWorkers;
-    if (lqhWorkers == 0)
-    {
-      return 0;
-    }
     return (1 + ((instanceKey - 1) % lqhWorkers));
   }
   else
@@ -361,15 +381,8 @@ SimulatedBlock::getInstanceFromKey(Uint32 instanceKey)
 {
   Uint32 lqhWorkers = globalData.ndbMtLqhWorkers;
   Uint32 instanceNo;
-  if (lqhWorkers == 0)
-  {
-    instanceNo = 0;
-  }
-  else
-  {
-    assert(instanceKey != 0);
-    instanceNo = 1 + (instanceKey - 1) % lqhWorkers;
-  }
+  assert(instanceKey != 0);
+  instanceNo = 1 + (instanceKey - 1) % lqhWorkers;
   return instanceNo;
 }
 
@@ -393,7 +406,7 @@ SimulatedBlock::signal_error(Uint32 gsn, Uint32 len, Uint32 recBlockNo,
 extern class SectionSegmentPool g_sectionSegmentPool;
 
 void
-SimulatedBlock::handle_invalid_sections_in_send_signal(const Signal* signal) 
+SimulatedBlock::handle_invalid_sections_in_send_signal(const Signal25* signal)
 const
 {
   char errMsg[160];
@@ -423,7 +436,7 @@ const
 }
 
 void
-SimulatedBlock::handle_invalid_fragmentInfo(Signal* signal) const
+SimulatedBlock::handle_invalid_fragmentInfo(Signal25* signal) const
 {
   ErrorReporter::handleError(NDBD_EXIT_BLOCK_BNR_ZERO,
                              "Incorrect header->m_fragmentInfo in sendSignal()",
@@ -431,7 +444,7 @@ SimulatedBlock::handle_invalid_fragmentInfo(Signal* signal) const
 }
 
 void
-SimulatedBlock::handle_out_of_longsignal_memory(Signal * signal) const
+SimulatedBlock::handle_out_of_longsignal_memory(Signal25 * signal) const
 {
   ErrorReporter::handleError(NDBD_EXIT_OUT_OF_LONG_SIGNAL_MEMORY,
 			     "Out of LongMessageBuffer in sendSignal",
@@ -441,7 +454,7 @@ SimulatedBlock::handle_out_of_longsignal_memory(Signal * signal) const
 template<typename SecPtr>
 void
 SimulatedBlock::handle_send_failed(SendStatus ss,
-                                   Signal * signal,
+                                   Signal25 * signal,
                                    Uint32 recNode,
                                    SecPtr ptr[]) const
 {
@@ -451,7 +464,7 @@ SimulatedBlock::handle_send_failed(SendStatus ss,
                                "Out of SendBufferMemory in sendSignal", "");
     break;
   case SEND_MESSAGE_TOO_BIG:
-    /* If message is too big when sending CmvmiDummySignal log a convinient
+    /* If message is too big when sending CmvmiDummySignal log a convenient
      * message about it to.
      * Note that CmvmiDummySignal is not intended for production usage but for
      * use by test cases.
@@ -496,13 +509,13 @@ static void
 linkSegments(Uint32 head, Uint32 tail){
   
   Ptr<SectionSegment> headPtr;
-  g_sectionSegmentPool.getPtr(headPtr, head);
+  require(g_sectionSegmentPool.getPtr(headPtr, head));
   
   Ptr<SectionSegment> tailPtr;
-  g_sectionSegmentPool.getPtr(tailPtr, tail);
+  require(g_sectionSegmentPool.getPtr(tailPtr, tail));
   
   Ptr<SectionSegment> oldTailPtr;
-  g_sectionSegmentPool.getPtr(oldTailPtr, headPtr.p->m_lastSegment);
+  require(g_sectionSegmentPool.getPtr(oldTailPtr, headPtr.p->m_lastSegment));
   
   /* Can only efficiently link segments if linking to the end of a 
    * multiple-of-segment-size sized chunk
@@ -514,7 +527,7 @@ linkSegments(Uint32 head, Uint32 tail){
                                "Bad head segment size",
                                "");
 #else
-    ndbout_c("linkSegments : Bad head segment size");
+    g_eventLogger->info("linkSegments : Bad head segment size");
 #endif
   }
 
@@ -535,17 +548,17 @@ getSections(Uint32 secCount, SegmentedSectionPtr ptr[3]){
     p = g_sectionSegmentPool.getPtr(tSec2);
     ptr[2].p = p;
     ptr[2].sz = p->m_sz;
-    // Fall through
+    [[fallthrough]];
   case 2:
     p = g_sectionSegmentPool.getPtr(tSec1);
     ptr[1].p = p;
     ptr[1].sz = p->m_sz;
-    // Fall through
+    [[fallthrough]];
   case 1:
     p = g_sectionSegmentPool.getPtr(tSec0);
     ptr[0].p = p;
     ptr[0].sz = p->m_sz;
-    // Fall through
+    [[fallthrough]];
   case 0:
     return;
   }
@@ -597,23 +610,58 @@ releaseSections(SPC_ARG Uint32 secCount, SegmentedSectionPtr ptr[3]){
     g_sectionSegmentPool.releaseList(SPC_SEIZE_ARG
                                      relSz(tSz2), tSec2,
 				     ptr[2].p->m_lastSegment);
-    // Fall through
+    [[fallthrough]];
   case 2:
     g_sectionSegmentPool.releaseList(SPC_SEIZE_ARG
                                      relSz(tSz1), tSec1,
 				     ptr[1].p->m_lastSegment);
-    // Fall through
+    [[fallthrough]];
   case 1:
     g_sectionSegmentPool.releaseList(SPC_SEIZE_ARG
                                      relSz(tSz0), tSec0,
 				     ptr[0].p->m_lastSegment);
-    // Fall through
+    [[fallthrough]];
   case 0:
     return;
   }
   char msg[40];
   sprintf(msg, "secCount=%d", secCount);
   ErrorReporter::handleAssert(msg, __FILE__, __LINE__);
+}
+
+Uint32
+SimulatedBlock::map_api_node_to_recv_instance(NodeId node)
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_map_api_node_to_recv_instance(node);
+#else
+   ndbabort();
+   return 0;
+#endif
+}
+
+Uint32
+SimulatedBlock::getThreadSignalId()
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_get_thread_signal_id(m_threadId);
+#else
+   ndbabort();
+   return 0;
+#endif
+  
+}
+
+Uint32
+SimulatedBlock::getExecThreadSignalId(Uint32 thr_no, Uint32 sender_thr_no)
+{
+#ifdef NDBD_MULTITHREADED
+  return mt_get_exec_thread_signal_id(thr_no, sender_thr_no);
+#else
+   ndbabort();
+   return 0;
+#endif
+  
 }
 
 void
@@ -976,7 +1024,7 @@ SimulatedBlock::getMainThrmanInstance()
 void 
 SimulatedBlock::sendSignal(BlockReference ref, 
 			   GlobalSignalNumber gsn, 
-			   Signal* signal, 
+                           Signal25* signal,
 			   Uint32 length, 
 			   JobBufferLevel jobBuffer) const {
 
@@ -1027,8 +1075,7 @@ SimulatedBlock::sendSignal(BlockReference ref,
     else
       sendprioa(m_threadId, &signal->header, signal->theData, NULL);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock,
-			    gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
     return;
   } else { 
@@ -1051,9 +1098,8 @@ SimulatedBlock::sendSignal(BlockReference ref,
                         getBlockName(recBlock), recNode);
     }
 #ifdef TRACE_DISTRIBUTED
-    ndbout_c("send: %s(%d) to (%s, %d)",
-	     getSignalName(gsn), gsn, getBlockName(recBlock),
-	     recNode);
+    g_eventLogger->info("send: %s(%d) to (%s, %d)", getSignalName(gsn), gsn,
+                        getBlockName(recBlock), recNode);
 #endif
 
     SendStatus ss;
@@ -1082,7 +1128,7 @@ SimulatedBlock::sendSignal(BlockReference ref,
 void 
 SimulatedBlock::sendSignal(NodeReceiverGroup rg, 
 			   GlobalSignalNumber gsn, 
-			   Signal* signal, 
+                           Signal25* signal,
 			   Uint32 length, 
 			   JobBufferLevel jobBuffer) const {
 
@@ -1100,7 +1146,6 @@ SimulatedBlock::sendSignal(NodeReceiverGroup rg,
   signal->header.theSendersBlockRef = reference();
   signal->header.m_noOfSections = 0;
 
-  ndbrequire(noOfSections == 0);
   check_sections(signal, noOfSections, 0);
 
   if ((length == 0) || (length > 25) || (recBlock == 0)) {
@@ -1138,7 +1183,7 @@ SimulatedBlock::sendSignal(NodeReceiverGroup rg,
     else
       sendprioa(m_threadId, &signal->header, signal->theData, NULL);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock, gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
     
     rg.m_nodes.clear((Uint32)0);
@@ -1162,9 +1207,8 @@ SimulatedBlock::sendSignal(NodeReceiverGroup rg,
 #endif
 
 #ifdef TRACE_DISTRIBUTED
-    ndbout_c("send: %s(%d) to (%s, %d)",
-	     getSignalName(gsn), gsn, getBlockName(recBlock),
-	     recNode);
+    g_eventLogger->info("send: %s(%d) to (%s, %d)", getSignalName(gsn), gsn,
+                        getBlockName(recBlock), recNode);
 #endif
 
     SendStatus ss;
@@ -1196,7 +1240,7 @@ bool import(Ptr<SectionSegment> & first, const Uint32 * src, Uint32 len);
 void 
 SimulatedBlock::sendSignal(BlockReference ref, 
 			   GlobalSignalNumber gsn, 
-			   Signal* signal, 
+                           Signal25* signal,
 			   Uint32 length, 
 			   JobBufferLevel jobBuffer,
 			   LinearSectionPtr ptr[3],
@@ -1208,7 +1252,6 @@ SimulatedBlock::sendSignal(BlockReference ref,
   Uint32 recNode   = refToNode(ref);
   Uint32 ourProcessor         = globalData.ownId;
   
-  ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, noOfSections);
   
   signal->header.theLength = length;
@@ -1263,8 +1306,7 @@ SimulatedBlock::sendSignal(BlockReference ref,
       sendprioa(m_threadId, &signal->header, signal->theData,
                 signal->theData+length);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock,
-			    gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
     signal->header.m_noOfSections = 0;
     return;
@@ -1285,9 +1327,8 @@ SimulatedBlock::sendSignal(BlockReference ref,
     sh.m_fragmentInfo          = tFragInfo;
     
 #ifdef TRACE_DISTRIBUTED
-    ndbout_c("send: %s(%d) to (%s, %d)",
-	     getSignalName(gsn), gsn, getBlockName(recBlock),
-	     recNode);
+    g_eventLogger->info("send: %s(%d) to (%s, %d)", getSignalName(gsn), gsn,
+                        getBlockName(recBlock), recNode);
 #endif
 
     SendStatus ss;
@@ -1319,7 +1360,7 @@ SimulatedBlock::sendSignal(BlockReference ref,
 void 
 SimulatedBlock::sendSignal(NodeReceiverGroup rg, 
 			   GlobalSignalNumber gsn, 
-			   Signal* signal, 
+                           Signal25* signal,
 			   Uint32 length, 
 			   JobBufferLevel jobBuffer,
 			   LinearSectionPtr ptr[3],
@@ -1332,7 +1373,6 @@ SimulatedBlock::sendSignal(NodeReceiverGroup rg,
   Uint32 ourProcessor = globalData.ownId;
   Uint32 recBlock = rg.m_block;
   
-  ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, noOfSections);
   
   signal->header.theLength = length;
@@ -1393,7 +1433,7 @@ SimulatedBlock::sendSignal(NodeReceiverGroup rg,
       sendprioa(m_threadId, &signal->header, signal->theData,
                 signal->theData + length);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock, gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
     
     rg.m_nodes.clear((Uint32)0);
@@ -1419,9 +1459,8 @@ SimulatedBlock::sendSignal(NodeReceiverGroup rg,
 #endif
     
 #ifdef TRACE_DISTRIBUTED
-    ndbout_c("send: %s(%d) to (%s, %d)",
-	     getSignalName(gsn), gsn, getBlockName(recBlock),
-	     recNode);
+    g_eventLogger->info("send: %s(%d) to (%s, %d)", getSignalName(gsn), gsn,
+                        getBlockName(recBlock), recNode);
 #endif
 
     SendStatus ss;
@@ -1454,7 +1493,7 @@ SimulatedBlock::sendSignal(NodeReceiverGroup rg,
 void
 SimulatedBlock::sendSignal(BlockReference ref,
 			   GlobalSignalNumber gsn,
-			   Signal* signal,
+                           Signal25* signal,
 			   Uint32 length,
 			   JobBufferLevel jobBuffer,
 			   SectionHandle* sections) const {
@@ -1466,7 +1505,6 @@ SimulatedBlock::sendSignal(BlockReference ref,
   Uint32 recNode   = refToNode(ref);
   Uint32 ourProcessor         = globalData.ownId;
 
-  ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, noOfSections);
 
   signal->header.theLength = length;
@@ -1514,7 +1552,7 @@ SimulatedBlock::sendSignal(BlockReference ref,
       sendprioa(m_threadId, &signal->header, signal->theData,
                 signal->theData + length);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock, gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
   } else {
     // send distributed Signal
@@ -1532,9 +1570,8 @@ SimulatedBlock::sendSignal(BlockReference ref,
     sh.m_fragmentInfo          = tFragInfo;
 
 #ifdef TRACE_DISTRIBUTED
-    ndbout_c("send: %s(%d) to (%s, %d)",
-	     getSignalName(gsn), gsn, getBlockName(recBlock),
-	     recNode);
+    g_eventLogger->info("send: %s(%d) to (%s, %d)", getSignalName(gsn), gsn,
+                        getBlockName(recBlock), recNode);
 #endif
 
     SendStatus ss;
@@ -1569,7 +1606,7 @@ SimulatedBlock::sendSignal(BlockReference ref,
 void
 SimulatedBlock::sendSignal(NodeReceiverGroup rg,
 			   GlobalSignalNumber gsn,
-			   Signal* signal,
+                           Signal25* signal,
 			   Uint32 length,
 			   JobBufferLevel jobBuffer,
 			   SectionHandle * sections) const {
@@ -1582,7 +1619,6 @@ SimulatedBlock::sendSignal(NodeReceiverGroup rg,
   Uint32 ourProcessor = globalData.ownId;
   Uint32 recBlock = rg.m_block;
 
-  ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, noOfSections);
 
   signal->header.theLength = length;
@@ -1638,7 +1674,7 @@ SimulatedBlock::sendSignal(NodeReceiverGroup rg,
       sendprioa(m_threadId, &signal->header, signal->theData,
                 signal->theData + length);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock, gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
 
     rg.m_nodes.clear((Uint32)0);
@@ -1664,9 +1700,8 @@ SimulatedBlock::sendSignal(NodeReceiverGroup rg,
 #endif
 
 #ifdef TRACE_DISTRIBUTED
-    ndbout_c("send: %s(%d) to (%s, %d)",
-	     getSignalName(gsn), gsn, getBlockName(recBlock),
-	     recNode);
+    g_eventLogger->info("send: %s(%d) to (%s, %d)", getSignalName(gsn), gsn,
+                        getBlockName(recBlock), recNode);
 #endif
 
     SendStatus ss;
@@ -1705,7 +1740,7 @@ SimulatedBlock::sendSignal(NodeReceiverGroup rg,
 void
 SimulatedBlock::sendSignalNoRelease(BlockReference ref,
                                     GlobalSignalNumber gsn,
-                                    Signal* signal,
+                                    Signal25* signal,
                                     Uint32 length,
                                     JobBufferLevel jobBuffer,
                                     SectionHandle* sections) const {
@@ -1723,7 +1758,6 @@ SimulatedBlock::sendSignalNoRelease(BlockReference ref,
   Uint32 recNode   = refToNode(ref);
   Uint32 ourProcessor         = globalData.ownId;
 
-  ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, noOfSections);
 
   signal->header.theLength = length;
@@ -1779,7 +1813,7 @@ SimulatedBlock::sendSignalNoRelease(BlockReference ref,
       sendprioa(m_threadId, &signal->header, signal->theData,
                 signal->theData + length);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock, gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
   } else {
     // send distributed Signal
@@ -1797,9 +1831,8 @@ SimulatedBlock::sendSignalNoRelease(BlockReference ref,
     sh.m_fragmentInfo          = tFragInfo;
 
 #ifdef TRACE_DISTRIBUTED
-    ndbout_c("send: %s(%d) to (%s, %d)",
-	     getSignalName(gsn), gsn, getBlockName(recBlock),
-	     recNode);
+    g_eventLogger->info("send: %s(%d) to (%s, %d)", getSignalName(gsn), gsn,
+                        getBlockName(recBlock), recNode);
 #endif
 
     SendStatus ss;
@@ -1831,7 +1864,7 @@ SimulatedBlock::sendSignalNoRelease(BlockReference ref,
 void
 SimulatedBlock::sendSignalNoRelease(NodeReceiverGroup rg,
                                     GlobalSignalNumber gsn,
-                                    Signal* signal,
+                                    Signal25* signal,
                                     Uint32 length,
                                     JobBufferLevel jobBuffer,
                                     SectionHandle * sections) const {
@@ -1849,7 +1882,6 @@ SimulatedBlock::sendSignalNoRelease(NodeReceiverGroup rg,
   Uint32 ourProcessor = globalData.ownId;
   Uint32 recBlock = rg.m_block;
 
-  ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, noOfSections);
 
   signal->header.theLength = length;
@@ -1913,7 +1945,7 @@ SimulatedBlock::sendSignalNoRelease(NodeReceiverGroup rg,
       sendprioa(m_threadId, &signal->header, signal->theData,
                 signal->theData + length);
 #else
-    globalScheduler.execute(signal, jobBuffer, recBlock, gsn);
+    globalScheduler.execute(signal, jobBuffer);
 #endif
 
     rg.m_nodes.clear((Uint32)0);
@@ -1939,9 +1971,8 @@ SimulatedBlock::sendSignalNoRelease(NodeReceiverGroup rg,
 #endif
 
 #ifdef TRACE_DISTRIBUTED
-    ndbout_c("send: %s(%d) to (%s, %d)",
-	     getSignalName(gsn), gsn, getBlockName(recBlock),
-	     recNode);
+    g_eventLogger->info("send: %s(%d) to (%s, %d)", getSignalName(gsn), gsn,
+                        getBlockName(recBlock), recNode);
 #endif
 
     SendStatus ss;
@@ -1975,13 +2006,12 @@ SimulatedBlock::sendSignalNoRelease(NodeReceiverGroup rg,
 void
 SimulatedBlock::sendSignalWithDelay(BlockReference ref, 
 				    GlobalSignalNumber gsn,
-				    Signal* signal,
+                                    Signal25* signal,
 				    Uint32 delayInMilliSeconds, 
 				    Uint32 length) const {
   
   BlockNumber bnr = refToBlock(ref);
 
-  ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, 0);
   
   signal->header.theLength = length;
@@ -2006,17 +2036,17 @@ SimulatedBlock::sendSignalWithDelay(BlockReference ref,
 #ifdef NDBD_MULTITHREADED
   senddelay(m_threadId, &signal->header, delayInMilliSeconds);
 #else
-  globalTimeQueue.insert(signal, bnr, gsn, delayInMilliSeconds);
+  globalTimeQueue.insert(signal, delayInMilliSeconds);
 #endif
 
-  // befor 2nd parameter to globalTimeQueue.insert
+  // before 2nd parameter to globalTimeQueue.insert
   // (Priority)theSendSig[sigIndex].jobBuffer
 }
 
 void
 SimulatedBlock::sendSignalWithDelay(BlockReference ref,
 				    GlobalSignalNumber gsn,
-				    Signal* signal,
+                                    Signal25* signal,
 				    Uint32 delayInMilliSeconds,
 				    Uint32 length,
 				    SectionHandle * sections) const {
@@ -2030,7 +2060,6 @@ SimulatedBlock::sendSignalWithDelay(BlockReference ref,
     bnr_error();
   }//if
 
-  ndbrequire(signal->header.m_noOfSections == 0);
   check_sections(signal, signal->header.m_noOfSections, noOfSections);
 
   signal->header.theLength = length;
@@ -2061,12 +2090,101 @@ SimulatedBlock::sendSignalWithDelay(BlockReference ref,
 #ifdef NDBD_MULTITHREADED
   senddelay(m_threadId, &signal->header, delayInMilliSeconds);
 #else
-  globalTimeQueue.insert(signal, bnr, gsn, delayInMilliSeconds);
+  globalTimeQueue.insert(signal, delayInMilliSeconds);
 #endif
 
   signal->header.m_noOfSections = 0;
   signal->header.m_fragmentInfo = 0;
   sections->m_cnt = 0;
+}
+
+/*
+ * Copy implementation for sendSignalOverAllLinks from sendSignal, excluding part for
+ * local send.
+ */
+void
+SimulatedBlock::sendSignalOverAllLinks(BlockReference ref,
+                                 GlobalSignalNumber gsn,
+                                 Signal25* signal,
+                                 Uint32 length,
+                                 JobBufferLevel jobBuffer) const
+{
+
+  BlockReference sendBRef = reference();
+
+  Uint32 recBlock = refToBlock(ref);
+  Uint32 recNode   = refToNode(ref);
+  Uint32 ourProcessor         = globalData.ownId;
+
+  ndbrequire(signal->header.m_noOfSections == 0);
+  check_sections(signal, signal->header.m_noOfSections, 0);
+
+  signal->header.theLength = length;
+  signal->header.theVerId_signalNumber = gsn;
+  signal->header.theReceiversBlockNumber = recBlock;
+  signal->header.m_noOfSections = 0;
+
+  Uint32 tSignalId = signal->header.theSignalId;
+
+  if (unlikely((length == 0) || length > 25 || (recBlock == 0)))
+  {
+    signal_error(gsn, length, recBlock, __FILE__, __LINE__);
+    return;
+  }//if
+#ifdef VM_TRACE
+  if (globalData.testOn){
+    Uint16 proc =
+      (recNode == 0 ? globalData.ownId : recNode);
+    signal->header.theSendersBlockRef = sendBRef;
+    globalSignalLoggers.sendSignal(signal->header,
+                                   jobBuffer,
+                                   &signal->theData[0],
+                                   proc);
+  }
+#endif
+
+  // Local send part not copied from sendSignal.
+  ndbrequire(recNode != ourProcessor);
+  ndbrequire(recNode != 0);
+
+  // send distributed Signal
+  SignalHeader sh;
+
+  Uint32 tTrace = signal->getTrace();
+
+  sh.theVerId_signalNumber   = gsn;
+  sh.theReceiversBlockNumber = recBlock;
+  sh.theSendersBlockRef      = refToBlock(sendBRef);
+  sh.theLength               = length;
+  sh.theTrace                = tTrace;
+  sh.theSignalId             = tSignalId;
+  sh.m_noOfSections          = 0;
+  sh.m_fragmentInfo          = 0;
+
+#ifdef TRACE_DISTRIBUTED
+  g_eventLogger->info("send: %s(%d) to (%s, %d)", getSignalName(gsn), gsn,
+                      getBlockName(recBlock), recNode);
+#endif
+
+  SendStatus ss;
+#ifdef NDBD_MULTITHREADED
+  ss = mt_send_remote_over_all_links(m_threadId, &sh, jobBuffer,
+                                     &signal->theData[0], recNode);
+#else
+  TrpBitmask trp_ids;
+  ss = globalTransporterRegistry.
+         prepareSendOverAllLinks(getNonMTTransporterSendHandle(),
+                                 &sh, jobBuffer,
+                                 &signal->theData[0], recNode, trp_ids);
+#endif
+
+  if (unlikely(! (ss == SEND_OK ||
+                  ss == SEND_BLOCKED ||
+                  ss == SEND_DISCONNECTED)))
+  {
+    handle_send_failed(ss, signal, recNode, (LinearSectionPtr*)NULL);
+  }
+  return;
 }
 
 void
@@ -2177,26 +2295,42 @@ SimulatedBlock::freeBat(){
   }
 }
 
+/**
+ * Return pointer to a const NewVARIABLE object indexed by
+ * blockNo, instanceNo and varNo.
+ * Will return NULL if no such variable exists
+ */
 const NewVARIABLE *
-SimulatedBlock::getBat(Uint16 blockNo, Uint32 instanceNo){
+SimulatedBlock::getBatVar(Uint16 blockNo, Uint32 instanceNo, Uint32 varNo){
   assert(blockNo == blockToMain(blockNo));
+  /* Check blockNo in range */
+  if (unlikely(blockNo > MAX_BLOCK_NO ||
+               blockNo < MIN_BLOCK_NO))
+  {
+    assert(false);
+    return NULL;
+  }
   SimulatedBlock * sb = globalData.getBlock(blockNo);
-  if (sb != 0 && instanceNo != 0)
+  if (sb != NULL && instanceNo != 0)
+  {
+    /* Lookup instance within block type */
     sb = sb->getInstance(instanceNo);
-  if(sb == 0)
-    return 0;
-  return sb->NewVarRef;
-}
+  }
 
-Uint16
-SimulatedBlock::getBatSize(Uint16 blockNo, Uint32 instanceNo){
-  assert(blockNo == blockToMain(blockNo));
-  SimulatedBlock * sb = globalData.getBlock(blockNo);
-  if (sb != 0 && instanceNo != 0)
-    sb = sb->getInstance(instanceNo);
-  if(sb == 0)
-    return 0;
-  return sb->theBATSize;
+  /* Check block exists, Bat exists, Var exists */
+  if(unlikely(sb == NULL))
+  {
+    return NULL;
+  }
+  if (unlikely(sb->NewVarRef == NULL))
+  {
+    return NULL;
+  }
+  if (unlikely(varNo >= sb->theBATSize))
+  {
+    return NULL;
+  }
+  return &sb->NewVarRef[varNo];
 }
 
 void* SimulatedBlock::allocRecord(const char * type, size_t s, size_t n, bool clear, Uint32 paramId)
@@ -2307,6 +2441,30 @@ SimulatedBlock::allocChunks(AllocChunk dst[],
     m_ctx.m_mm.alloc_pages(rg, &dst[i].ptrI, &cnt, pages);
     if (unlikely(cnt == 0))
       goto fail;
+    // DBLQH error range since this function is only used there.
+    if (ERROR_INSERTED(5107))
+    {
+      /*
+       * Try chop up the allocation in chunks, with unused pages between the
+       * chunks.
+       *
+       * First allocation will typically succeed allocate all memory, we keep
+       * the last pages in the range.  Then the next allocation will also
+       * succeed to allocate all remaining pages (if there are enough page
+       * memory), we keep the last pages again, and there will be a gap between
+       * the chunks.  If there are too little page memory, allocation may
+       * succeed reusing the gaps and there might not be gaps between the
+       * chunks, if that happen try configure more page memory for test.
+       */
+      const Uint32 min_pages_per_chunk = pages / (arraysize - i) + 1;
+      if (cnt > min_pages_per_chunk)
+      {
+        const Uint32 gap_pages = cnt - min_pages_per_chunk;
+        m_ctx.m_mm.release_pages(rg, dst[i].ptrI, gap_pages);
+        dst[i].ptrI += gap_pages;
+        cnt -= gap_pages;
+      }
+    }
     pages -= cnt;
     dst[i].cnt = cnt;
   }
@@ -2403,7 +2561,7 @@ SimulatedBlock::infoEvent(const char * msg, ...) const
   if(msg == 0)
     return;
   
-  SignalT<25> signalT;
+  Signal25 signalT;
   signalT.theData[0] = NDB_LE_InfoEvent;
   Uint32 buf_str[MAX_EVENT_REP_SIZE_WORDS];
   char * buf = (char *)&buf_str[1];
@@ -2462,7 +2620,7 @@ SimulatedBlock::warningEvent(const char * msg, ...)
   if(msg == 0)
     return;
 
-  SignalT<25> signalT;
+  Signal25 signalT;
   signalT.theData[0] = NDB_LE_WarningEvent;
   Uint32 buf_str[MAX_EVENT_REP_SIZE_WORDS];
   char * buf = (char *)&buf_str[1];
@@ -2692,11 +2850,49 @@ SimulatedBlock::handle_execute_error(GlobalSignalNumber gsn)
     BaseString::snprintf(errorMsg, 255, "Illegal signal received (GSN %d too high)", gsn);
     ERROR_SET(fatal, NDBD_EXIT_PRGERR, errorMsg, errorMsg);
   }
-  if (!(theExecArray[gsn] != 0)) {
+  if (!(theSignalHandlerArray[gsn].m_execFunction != nullptr)) {
     BaseString::snprintf(errorMsg, 255, "Illegal signal received (GSN %d not added)", gsn);
     ERROR_SET(fatal, NDBD_EXIT_PRGERR, errorMsg, errorMsg);
   }
   ndbabort();
+}
+
+ATTRIBUTE_NOINLINE
+void
+SimulatedBlock::handle_sender_error(GlobalSignalNumber gsn, Signal *signal, SignalScope scope)
+{
+  const BlockReference ref = (signal->senderBlockRef());
+  Uint32 nodeId = refToNode(ref);
+  char errorMsg[255];
+    switch (scope)
+    {
+    case SignalScope::Local:
+    {
+      CRASH_INSERTION(10054);
+      BaseString::snprintf(errorMsg, 255, "Illegal signal %s received for SignalScope::Local (GSN %d from node %d, block 0x%X to 0x%X)", getSignalName(gsn), gsn, nodeId, refToMain(ref), refToMain(reference()));
+      ERROR_SET(fatal, NDBD_EXIT_PRGERR, errorMsg, getBlockName(number()));
+      break;
+    }
+    case SignalScope::Remote:
+    {
+      BaseString::snprintf(errorMsg, 255, "Illegal signal %s received for SignalScope::Remote (GSN %d from node %d, block 0x%X to 0x%X)", getSignalName(gsn), gsn, nodeId, refToMain(ref), refToMain(reference()));
+      ERROR_SET(fatal, NDBD_EXIT_PRGERR, errorMsg, getBlockName(number()));
+      break;
+    }
+    case SignalScope::Management:
+    {
+      BaseString::snprintf(errorMsg, 255, "Illegal signal %s received for SignalScope::Management (GSN %d from API node %d, block 0x%X to 0x%X)", getSignalName(gsn), gsn, nodeId, refToMain(ref), refToMain(reference()));
+      ERROR_SET(fatal, NDBD_EXIT_PRGERR, errorMsg, getBlockName(number()));
+      break;
+    }
+    case SignalScope::External:
+      // Should not be reachable
+      ndbassert(false);
+      BaseString::snprintf(errorMsg, 255, "Illegal signal %s eceived for SignalScope::External (GSN %d from API node %d, block 0x%X to 0x%X)", getSignalName(gsn), gsn, nodeId, refToMain(ref), refToMain(reference()));
+      ERROR_SET(fatal, NDBD_EXIT_PRGERR, errorMsg, getBlockName(number()));
+      break;
+    }
+   ndbabort();
 }
 
 // MT LQH callback CONF via signal
@@ -2986,7 +3182,7 @@ SimulatedBlock::assembleFragments(Signal * signal){
        *       sets sendersBlockRef to reference()
        */
       /* Perform dropped signal handling, in this thread, now */
-      jamBuffer()->markEndOfSigExec();
+      jamBuffer()->markStartOfSigExec(signal->header.theSignalId);
       executeFunction(GSN_SIGNAL_DROPPED_REP, signal);
       
       /* return false to caller - they should not process the signal */
@@ -3332,10 +3528,10 @@ SimulatedBlock::doNodeFailureCleanup(Signal* signal,
   sig->cleanup.resource = resource;
   sig->cleanup.cursor = cursor;
   sig->cleanup.elementsCleaned= elementsCleaned;
-  Uint32 callbackWords = (sizeof(Callback) + 3) >> 2;
-  Uint32 sigLen = ContinueFragmented::CONTINUE_CLEANUP_FIXED_WORDS + 
+  constexpr Uint32 callbackWords = (sizeof(Callback) + 3) >> 2;
+  constexpr Uint32 sigLen = ContinueFragmented::CONTINUE_CLEANUP_FIXED_WORDS +
     callbackWords;
-  ndbassert(sigLen <= 25); // Should be STATIC_ASSERT
+  static_assert(sigLen <= 25);
   memcpy(&sig->cleanup.callbackStart, &cb, callbackWords << 2);
   
   sendSignal(reference(), GSN_CONTINUE_FRAGMENTED, signal, sigLen, JBB);
@@ -3386,17 +3582,14 @@ SimulatedBlock::debugPrintFragmentCounts()
     c_segmentedFragmentSendList.next(ptr);
   }
 
-  ndbout_c("%s : Fragment assembly hash entry count : %d", 
-           blockName,
-           fragmentInfoCount);
+  g_eventLogger->info("%s : Fragment assembly hash entry count : %d", blockName,
+                      fragmentInfoCount);
 
-  ndbout_c("%s : Linear fragment send list size : %d", 
-           blockName,
-           linSendInfoCount);
+  g_eventLogger->info("%s : Linear fragment send list size : %d", blockName,
+                      linSendInfoCount);
 
-  ndbout_c("%s : Segmented fragment send list size : %d", 
-           blockName,
-           segSendInfoCount);
+  g_eventLogger->info("%s : Segmented fragment send list size : %d", blockName,
+                      segSendInfoCount);
 
   return fragmentInfoCount + 
     linSendInfoCount +
@@ -3428,12 +3621,12 @@ SimulatedBlock::sendFirstFragment(FragmentSendInfo & info,
     info.m_sectionPtr[2].m_segmented.i = ptr[2].i;
     info.m_sectionPtr[2].m_segmented.p = ptr[2].p;
     totalSize += ptr[2].sz;
-    // Fall through
+    [[fallthrough]];
   case 2:
     info.m_sectionPtr[1].m_segmented.i = ptr[1].i;
     info.m_sectionPtr[1].m_segmented.p = ptr[1].p;
     totalSize += ptr[1].sz;
-    // Fall through
+    [[fallthrough]];
   case 1:
     info.m_sectionPtr[0].m_segmented.i = ptr[0].i;
     info.m_sectionPtr[0].m_segmented.p = ptr[0].p;
@@ -3453,7 +3646,8 @@ SimulatedBlock::sendFirstFragment(FragmentSendInfo & info,
     info.m_status = FragmentSendInfo::SendComplete;
     return true;
   }
-    
+  ndbrequire(blockToMain(rg.m_block) != V_QUERY);
+
   /**
    * Setup info object
    */
@@ -3593,7 +3787,7 @@ SimulatedBlock::sendNextSegmentedFragment(Signal* signal,
        * The section fits
        */
       sz += size;
-      lsout(ndbout_c("section %d saved as %d", secNo, secCount-1));
+      lsout(g_eventLogger->info("section %d saved as %d", secNo, secCount - 1));
       continue;
     }
     
@@ -3603,8 +3797,8 @@ SimulatedBlock::sendNextSegmentedFragment(Signal* signal,
        * Only one segment left to send
        *   send even if sizeLeft <= size
        */
-      lsout(ndbout_c("section %d saved as %d but full over: %d", 
-		     secNo, secCount-1, overflow));
+      lsout(g_eventLogger->info("section %d saved as %d but full over: %d",
+                                secNo, secCount - 1, overflow));
       secNo--;
       break;
     }
@@ -3618,7 +3812,7 @@ SimulatedBlock::sendNextSegmentedFragment(Signal* signal,
       secCount--;
       info.m_sectionPtr[secNo].m_segmented.i = ptrI;
       loop = Full;
-      lsout(ndbout_c("section %d not saved", secNo));
+      lsout(g_eventLogger->info("section %d not saved", secNo));
       break;
     }
     
@@ -3677,13 +3871,13 @@ SimulatedBlock::sendNextSegmentedFragment(Signal* signal,
     info.m_sectionPtr[secNo].m_segmented.p = ptrP;
     
     loop = Full;
-    lsout(ndbout_c("section %d split into %d", secNo, prev));
+    lsout(g_eventLogger->info("section %d split into %d", secNo, prev));
     break;
   }
-  
-  lsout(ndbout_c("loop: %d secNo: %d secCount: %d sz: %d", 
-		 loop, secNo, secCount, sz));
-  
+
+  lsout(g_eventLogger->info("loop: %d secNo: %d secCount: %d sz: %d", loop,
+                            secNo, secCount, sz));
+
   /**
    * Store fragment id
    */
@@ -3694,17 +3888,17 @@ SimulatedBlock::sendNextSegmentedFragment(Signal* signal,
   switch(loop){
   case Unknown:
     if(secNo >= 0){
-      lsout(ndbout_c("Unknown - Full"));
+      lsout(g_eventLogger->info("Unknown - Full"));
       /**
        * Not finished
        */
       break;
     }
-    // Fall through
-    lsout(ndbout_c("Unknown - Done"));
+    lsout(g_eventLogger->info("Unknown - Done"));
     info.m_status = FragmentSendInfo::SendComplete;
     ndbassert(fragInfo == 2);
     fragInfo = 3;
+    [[fallthrough]];
   case Full:
     break;
   }
@@ -3778,8 +3972,9 @@ SimulatedBlock::sendFirstFragment(FragmentSendInfo & info,
 				  Uint32 noOfSections,
 				  Uint32 messageSize){
   
-ndbrequire(signal->header.m_noOfSections == 0);
-  check_sections(signal, signal->header.m_noOfSections, noOfSections);
+  check_sections(reinterpret_cast<Signal25*>(signal),
+                 signal->header.m_noOfSections,
+                 noOfSections);
   
   info.m_sectionPtr[0].m_linear.p = NULL;
   info.m_sectionPtr[1].m_linear.p = NULL;
@@ -3790,11 +3985,11 @@ ndbrequire(signal->header.m_noOfSections == 0);
   case 3:
     info.m_sectionPtr[2].m_linear = ptr[2];
     totalSize += ptr[2].sz;
-    // Fall through
+    [[fallthrough]];
   case 2:
     info.m_sectionPtr[1].m_linear = ptr[1];
     totalSize += ptr[1].sz;
-    // Fall through
+    [[fallthrough]];
   case 1:
     info.m_sectionPtr[0].m_linear = ptr[0];
     totalSize += ptr[0].sz;
@@ -3810,10 +4005,11 @@ ndbrequire(signal->header.m_noOfSections == 0);
     
     /**
      * Indicate to sendLinearSignalFragment
-     *   that we'r already done
+     *   that we're already done
      */
     return true;
   }
+  ndbrequire(blockToMain(rg.m_block) != V_QUERY);
 
   /**
    * Setup info object
@@ -3884,7 +4080,7 @@ SimulatedBlock::sendNextLinearFragment(Signal* signal,
   
   enum { Unknown = 0, Full = 2 } loop = Unknown;
   for(; secNo >= 0 && secCount < 3; secNo--){
-    Uint32 * ptrP = info.m_sectionPtr[secNo].m_linear.p;
+    const Uint32* ptrP = info.m_sectionPtr[secNo].m_linear.p;
     if(ptrP == NULL)
       continue;
     
@@ -3902,7 +4098,7 @@ SimulatedBlock::sendNextLinearFragment(Signal* signal,
        * The section fits
        */
       sz += size;
-      lsout(ndbout_c("section %d saved as %d", secNo, secCount-1));
+      lsout(g_eventLogger->info("section %d saved as %d", secNo, secCount - 1));
       continue;
     }
     
@@ -3912,8 +4108,8 @@ SimulatedBlock::sendNextLinearFragment(Signal* signal,
        * Only one segment left to send
        *   send even if sizeLeft <= size
        */
-      lsout(ndbout_c("section %d saved as %d but full over: %d", 
-		     secNo, secCount-1, overflow));
+      lsout(g_eventLogger->info("section %d saved as %d but full over: %d",
+                                secNo, secCount - 1, overflow));
       secNo--;
       break;
     }
@@ -3927,7 +4123,7 @@ SimulatedBlock::sendNextLinearFragment(Signal* signal,
       secCount--;
       info.m_sectionPtr[secNo].m_linear.p = ptrP;
       loop = Full;
-      lsout(ndbout_c("section %d not saved", secNo));
+      lsout(g_eventLogger->info("section %d not saved", secNo));
       break;
     }
     
@@ -3955,13 +4151,13 @@ SimulatedBlock::sendNextLinearFragment(Signal* signal,
     info.m_sectionPtr[secNo].m_linear.sz = size - sum;
     
     loop = Full;
-    lsout(ndbout_c("section %d split into %d", secNo, prev));
+    lsout(g_eventLogger->info("section %d split into %d", secNo, prev));
     break;
   }
-  
-  lsout(ndbout_c("loop: %d secNo: %d secCount: %d sz: %d", 
-		 loop, secNo, secCount, sz));
-  
+
+  lsout(g_eventLogger->info("loop: %d secNo: %d secCount: %d sz: %d", loop,
+                            secNo, secCount, sz));
+
   /**
    * Store fragment id
    */
@@ -3972,17 +4168,17 @@ SimulatedBlock::sendNextLinearFragment(Signal* signal,
   switch(loop){
   case Unknown:
     if(secNo >= 0){
-      lsout(ndbout_c("Unknown - Full"));
+      lsout(g_eventLogger->info("Unknown - Full"));
       /**
        * Not finished
        */
       break;
     }
-    // Fall through
-    lsout(ndbout_c("Unknown - Done"));
+    lsout(g_eventLogger->info("Unknown - Done"));
     info.m_status = FragmentSendInfo::SendComplete;
     ndbassert(fragInfo == 2);
     fragInfo = 3;
+    [[fallthrough]];
   case Full:
     break;
   }
@@ -4598,7 +4794,7 @@ SimulatedBlock::cmp_attr(Uint32 attrDesc, const CHARSET_INFO* cs,
 {
   const Uint32 typeId = AttributeDescriptor::getType(attrDesc);
   NdbSqlUtil::Cmp *cmp = NdbSqlUtil::getType(typeId).m_cmp;
-  return (*cmp)(cs, s1, s1Len, s2, s1Len);
+  return (*cmp)(cs, s1, s1Len, s2, s2Len);
 }
 
 
@@ -4676,9 +4872,10 @@ SimulatedBlock::xfrm_attr_hash(
     
     if (0)
     {
-      ndbout_c("srcPos: %d dstPos: %d len: %d srcWords: %d dstWords: %d",
-               srcPos, dstPos, len, srcWords, dstWords);
-      
+      g_eventLogger->info(
+          "srcPos: %d dstPos: %d len: %d srcWords: %d dstWords: %d", srcPos,
+          dstPos, len, srcWords, dstWords);
+
       for(Uint32 i = 0; i<srcWords; i++)
         printf("%.8x ", src[srcPos + i]);
       printf("\n");
@@ -4877,9 +5074,13 @@ SimulatedBlock::execLOCAL_ROUTE_ORD(Signal* signal)
   }
 
   LocalRouteOrd* ord = (LocalRouteOrd*)signal->getDataPtr();
-  Uint32 pathcnt = ord->cnt >> 16;
-  Uint32 dstcnt = ord->cnt & 0xFFFF;
+  const Uint32 pathcnt = ord->cnt >> 16;
+  const Uint32 dstcnt = ord->cnt & 0xFFFF;
   Uint32 sigLen = signal->getLength();
+
+  ndbrequire(sigLen >= (LocalRouteOrd::StaticLen +
+                        (pathcnt * 2) +
+                        (dstcnt)));
 
   if (pathcnt == 0)
   {
@@ -4889,6 +5090,8 @@ SimulatedBlock::execLOCAL_ROUTE_ORD(Signal* signal)
     jam();
     Uint32 gsn = ord->gsn;
     Uint32 prio = ord->prio;
+    ndbrequire(dstcnt <= LocalRouteOrd::MaxDstCount);
+    static_assert(25 + LocalRouteOrd::MaxDstCount <= NDB_ARRAY_SIZE(signal->theData));
     memcpy(signal->theData+25, ord->path, 4*dstcnt);
     SectionHandle handle(this, signal);
     if (sigLen > LocalRouteOrd::StaticLen + dstcnt)
@@ -5092,7 +5295,7 @@ SimulatedBlock::execSYNC_THREAD_CONF(Signal* signal)
 {
   jamEntry();
   Ptr<SyncThreadRecord> ptr;
-  c_syncThreadPool.getPtr(ptr, signal->theData[1]);
+  ndbrequire(c_syncThreadPool.getPtr(ptr, signal->theData[1]));
 
   ndbrequire(ptr.p->m_cnt > 0);
   ptr.p->m_cnt--;
@@ -5189,8 +5392,11 @@ SimulatedBlock::synchronize_path(Signal * signal,
 void
 SimulatedBlock::execSYNC_PATH_REQ(Signal* signal)
 {
+  LOCAL_SIGNAL(signal);
   jamEntry();
   SyncPathReq * req = CAST_PTR(SyncPathReq, signal->getDataPtrSend());
+  ndbrequire(req->pathlen >= 1 && req->pathlen <= SyncPathReq::MaxPathLen);
+  ndbrequire(signal->getLength() >= SyncPathReq::SignalLength + req->pathlen);
   if (req->pathlen == 1)
   {
     jam();
@@ -5220,7 +5426,7 @@ SimulatedBlock::execSYNC_PATH_CONF(Signal* signal)
   SyncPathConf conf = * CAST_CONSTPTR(SyncPathConf, signal->getDataPtr());
   Ptr<SyncThreadRecord> ptr;
 
-  c_syncThreadPool.getPtr(ptr, conf.senderData);
+  ndbrequire(c_syncThreadPool.getPtr(ptr, conf.senderData));
 
   if (ptr.p->m_cnt == 0)
   {
@@ -5249,7 +5455,7 @@ SimulatedBlock::checkNodeFailSequence(Signal* signal)
   /**
    * Make sure that a signal being part of node-failure handling
    *   from a remote node, does not get to us before we got the NODE_FAILREP
-   *   (this to avoid tricky state handling to some extent when receving
+   *   (this to avoid tricky state handling to some extent when receiving
    *    signals from old nodes)
    *
    * To ensure this, we send the signal via the transporter for the remote
@@ -5362,7 +5568,7 @@ SimulatedBlock::setup_wakeup()
 {
 #ifdef NDBD_MULTITHREADED
 #else
-  globalTransporterRegistry.setup_wakeup_socket();
+  ndbabort(); // ndbd no longer supported
 #endif
 }
 
@@ -5431,8 +5637,20 @@ SimulatedBlock::ndbinfo_send_scan_break(Signal* signal,
 
   Ndbinfo::ScanCursor::setHasMoreData(cursor->flags, true);
 
-  sendSignal(cursor->senderRef, GSN_DBINFO_SCANCONF, signal,
-             signal_length, JBB);
+  if (rl.rows > 0)
+  {
+    jam();
+    /* Send what we have so far back to requestor */
+    sendSignal(cursor->senderRef, GSN_DBINFO_SCANCONF, signal,
+               signal_length, JBB);
+  }
+  else
+  {
+    jam();
+    /* We have nothing yet, take a RTB, but keep scanning */
+    sendSignal(reference(), GSN_DBINFO_SCANREQ, signal,
+               signal_length, JBB);
+  }
 }
 
 void
@@ -5615,12 +5833,8 @@ SimulatedBlock::print_static_distr_info(DistributionHandler * const handle)
   {
     g_eventLogger->info("LDM Group %u contains LDM thread %u",
                         ldm, ldm + 1);
-    Uint32 first_query_instance = (ldm + 1) * m_num_query_thread_per_ldm;
-    for (Uint32 qt = 0; qt < m_num_query_thread_per_ldm; qt++)
-    {
-      g_eventLogger->info("LDM Group %u contains Query thread %u",
-                          ldm, first_query_instance + qt);
-    }
+    g_eventLogger->info("LDM Thread %u contains Query Worker",
+                        ldm + 1);
   }
   /* Print the Round Robin groups */
   Uint32 found_ldm = 0;
@@ -5657,82 +5871,66 @@ SimulatedBlock::print_debug_sched_stats(DistributionHandler * const handle)
     return;
   }
   deb_count = 0;
-  g_eventLogger->info("LQHKEYREQ LDM: %llu, LQHKEYREQ LQ: %llu"
+  g_eventLogger->info("LQHKEYREQ LQH: %llu"
+                      ", LQHKEYREQ QT: %llu"
                       ", LQHKEYREQ RR: %llu",
-    handle->m_lqhkeyreq_ldm,
-    handle->m_lqhkeyreq_lq,
+    handle->m_lqhkeyreq_lqh,
+    handle->m_lqhkeyreq_qt,
     handle->m_lqhkeyreq_rr);
-  g_eventLogger->info("SCAN_FRAGREQ LDM %llu, SCAN_FRAGREQ LQ: %llu"
+  g_eventLogger->info("SCAN_FRAGREQ LQH: %llu"
+                      ", SCAN_FRAGREQ QT: %llu"
                       ", SCAN_FRAGREQ RR: %llu",
-    handle->m_scan_fragreq_ldm,
-    handle->m_scan_fragreq_lq,
+    handle->m_scan_fragreq_lqh,
+    handle->m_scan_fragreq_qt,
     handle->m_scan_fragreq_rr);
-  g_eventLogger->info("LQHKEYREQ LDM instances %u %u %u %u %u %u %u %u",
-    handle->m_lqhkeyreq_ldm_count[1], handle->m_lqhkeyreq_ldm_count[2],
-    handle->m_lqhkeyreq_ldm_count[3], handle->m_lqhkeyreq_ldm_count[4],
-    handle->m_lqhkeyreq_ldm_count[5], handle->m_lqhkeyreq_ldm_count[6],
-    handle->m_lqhkeyreq_ldm_count[7], handle->m_lqhkeyreq_ldm_count[8]);
   g_eventLogger->info("LQHKEYREQ QT instances %u %u %u %u %u %u %u %u",
     handle->m_lqhkeyreq_qt_count[1], handle->m_lqhkeyreq_qt_count[2],
     handle->m_lqhkeyreq_qt_count[3], handle->m_lqhkeyreq_qt_count[4],
     handle->m_lqhkeyreq_qt_count[5], handle->m_lqhkeyreq_qt_count[6],
     handle->m_lqhkeyreq_qt_count[7], handle->m_lqhkeyreq_qt_count[8]);
-  g_eventLogger->info("SCAN_FRAGREQ LDM instances %u %u %u %u %u %u %u %u",
-    handle->m_scan_fragreq_ldm_count[1], handle->m_scan_fragreq_ldm_count[2],
-    handle->m_scan_fragreq_ldm_count[3], handle->m_scan_fragreq_ldm_count[4],
-    handle->m_scan_fragreq_ldm_count[5], handle->m_scan_fragreq_ldm_count[6],
-    handle->m_scan_fragreq_ldm_count[7], handle->m_scan_fragreq_ldm_count[8]);
   g_eventLogger->info("SCAN_FRAGREQ QT instances %u %u %u %u %u %u %u %u",
     handle->m_scan_fragreq_qt_count[1], handle->m_scan_fragreq_qt_count[2],
     handle->m_scan_fragreq_qt_count[3], handle->m_scan_fragreq_qt_count[4],
     handle->m_scan_fragreq_qt_count[5], handle->m_scan_fragreq_qt_count[6],
     handle->m_scan_fragreq_qt_count[7], handle->m_scan_fragreq_qt_count[8]);
-  handle->m_lqhkeyreq_ldm = 0;
-  handle->m_lqhkeyreq_lq = 0;
+  handle->m_lqhkeyreq_lqh = 0;
+  handle->m_lqhkeyreq_qt = 0;
   handle->m_lqhkeyreq_rr = 0;
-  handle->m_scan_fragreq_ldm = 0;
-  handle->m_scan_fragreq_lq = 0;
+  handle->m_scan_fragreq_lqh = 0;
+  handle->m_scan_fragreq_qt = 0;
   handle->m_scan_fragreq_rr = 0;
-  for (Uint32 i = 0; i < MAX_NDBMT_LQH_THREADS; i++)
-  {
-    handle->m_lqhkeyreq_ldm_count[i] = 0;
-    handle->m_scan_fragreq_ldm_count[i] = 0;
-  }
-  for (Uint32 i = 0; i < MAX_NDBMT_QUERY_THREADS; i++)
+  for (Uint32 i = 0;
+       i < MAX_NDBMT_LQH_THREADS+MAX_NDBMT_QUERY_THREADS;
+       i++)
   {
     handle->m_lqhkeyreq_qt_count[i] = 0;
     handle->m_scan_fragreq_qt_count[i] = 0;
   }
+  Uint64 *total_signals;
   Uint64 *total_words;
-  Uint64 *est_stats;
+  Uint64 *est_stat;
   for (Uint32 j = 1; j <= 8; j++)
   {
-    get_jbb_estimated_stats(DBLQH, j, &total_words, &est_stats);
-    g_eventLogger->info("LDM(%u) total: %llu, %llu %llu %llu %llu %llu"
-                        " %llu %llu %llu %llu %llu",
-                        j, *total_words,
-                        est_stats[0], est_stats[1], est_stats[2], est_stats[3],
-                        est_stats[4], est_stats[5], est_stats[6], est_stats[7],
-                        est_stats[8], est_stats[9]);
+    get_jbb_estimated_stats(DBLQH,
+                            j,
+                            &total_signals,
+                            &total_words,
+                            &est_stat);
+    g_eventLogger->info("LDM(%u) total_signals: %llu, total_words: %llu, "
+                        "%llu %llu %llu %llu "
+                        "%llu %llu %llu %llu "
+                        "%llu %llu %llu %llu "
+                        "%llu %llu %llu %llu ",
+                        j, *total_signals, *total_words,
+                        est_stat[0], est_stat[1], est_stat[2], est_stat[3],
+                        est_stat[4], est_stat[5], est_stat[6], est_stat[7],
+                        est_stat[8], est_stat[9], est_stat[10],est_stat[11],
+                        est_stat[12],est_stat[13],est_stat[14],est_stat[15]);
     *total_words = 0;
-    for (Uint32 i = 0; i < 10; i++)
+    *total_signals = 0;
+    for (Uint32 i = 0; i < 16; i++)
     {
-      est_stats[i] = 0;
-    }
-  }
-  for (Uint32 j = 1; j <= 8; j++)
-  {
-    get_jbb_estimated_stats(DBQLQH, j, &total_words, &est_stats);
-    g_eventLogger->info("QT(%u) total: %llu, %llu %llu %llu %llu %llu"
-                        " %llu %llu %llu %llu %llu",
-                        j, *total_words,
-                        est_stats[0], est_stats[1], est_stats[2], est_stats[3],
-                        est_stats[4], est_stats[5], est_stats[6], est_stats[7],
-                        est_stats[8], est_stats[9]);
-    *total_words = 0;
-    for (Uint32 i = 0; i < 10; i++)
-    {
-      est_stats[i] = 0;
+      est_stat[i] = 0;
     }
   }
 #endif
@@ -5747,20 +5945,8 @@ SimulatedBlock::get_load_indicators(DistributionHandler * const handle,
   prefetch_load_indicators(&m_rr_group[0], rr_group);
   Uint32 num_ldm_threads = globalData.ndbMtLqhThreads;
   Uint32 first_ldm_instance = globalData.ndbMtMainThreads;
-  Uint32 num_query_threads = globalData.ndbMtQueryThreads;
-  Uint32 num_distr_threads = num_ldm_threads + num_query_threads;
   Uint32 min_load = 0xFF;
   for (Uint32 i = 0; i < num_ldm_threads; i++)
-  {
-    if (m_rr_group[i] == rr_group)
-    {
-      Uint32 thr_no = i + first_ldm_instance;
-      struct LdmThreadState *ldm_state = &handle->m_ldm_state[i];
-      ldm_state->m_load_indicator = get_load_indicator(thr_no);
-      min_load = MIN(min_load, ldm_state->m_load_indicator);
-    }
-  }
-  for (Uint32 i = num_ldm_threads; i < num_distr_threads; i++)
   {
     if (m_rr_group[i] == rr_group)
     {
@@ -5780,14 +5966,6 @@ SimulatedBlock::get_load_indicators(DistributionHandler * const handle,
     {
       if (m_rr_group[i] == rr_group)
       {
-        struct LdmThreadState *ldm_state = &handle->m_ldm_state[i];
-        ldm_state->m_load_indicator -= (min_load - 1);
-      }
-    }
-    for (Uint32 i = num_ldm_threads; i < num_distr_threads; i++)
-    {
-      if (m_rr_group[i] == rr_group)
-      {
         struct QueryThreadState *q_state = &handle->m_query_state[i];
         q_state->m_load_indicator -= (min_load - 1);
       }
@@ -5798,14 +5976,21 @@ SimulatedBlock::get_load_indicators(DistributionHandler * const handle,
 
 /**
  * We are sending an LQHKEYREQ signal using COMMITTED READ to either a
- * query thread or an LDM thread. This code makes the selection of
- * where to send it and returns a block reference where the signal
- * should be sent.
+ * query thread or an LDM thread. Since RonDB 21.10 and included in
+ * new LTS version RonDB 22.10 we also send LQHKEYREQ for locked reads
+ * to either an LDM or Query block.
+ * Previous to version RonDB 22.10 the query blocks
+ * executed in their own thread. In RonDB this changed such that each
+ * LDM thread contains both blocks for LDM execution and blocks for
+ * query execution.
+ *
+ * This code makes the selection of where to send it and returns a
+ * block reference where the signal should be sent.
  *
  * The selection is based on load levels. We use two levels of loads
  * to impact this decision. We use a long-term scheduling based on
  * the CPU load the last 100 milliseconds. Thus we change the
- * scheduling 10 times per second to accomodate the load of the various
+ * scheduling 10 times per second to accommodate the load of the various
  * threads. This means that e.g. if a certain LDM thread is very busy
  * with write actions and other things it will get a lower risk of being
  * selected here in the next scheduling decision.
@@ -5813,7 +5998,7 @@ SimulatedBlock::get_load_indicators(DistributionHandler * const handle,
  * The 100 ms scheduling takes into account long-term changes of the load.
  * However we need a mechanism to also react a bit quicker. If a complex
  * query starts up and starts consuming large amounts of CPU it could very
- * will spawn up and complete within one 100 ms interval. Thus it would
+ * well spawn up and complete within one 100 ms interval. Thus it would
  * not impact the scheduling at all. It could still in a very short time
  * consume a major portion of the CPU power.
  *
@@ -5839,56 +6024,37 @@ SimulatedBlock::get_load_indicators(DistributionHandler * const handle,
  *
  * 1. Scheduling
  * -------------
+ * The principle used is fairly simple. The THRMAN will decide the work
+ * balance to use for the next 100 ms. The work balance is sent with
+ * an array of weights. These weights range between 1 and 16. At the
+ * start of each such new interval each thread gets a new weight.
  *
- * 1.1. LDM Scheduling
- * -------------------
- * The scheduling to an LDM thread follows the following pattern.
- * We calculate a weight based on the load information once every 100 ms.
- * If no load is found we start at a weight of 33. The idea with this weight
- * is that 33% of the scheduled LQHKEYREQ/SCAN_FRAGREQ will be sent to the
- * LDM thread owning the data. A higher weight means that the LDM thread is
- * not so busy and can handle a larger portion of the load and a lower weight
- * means that it is busy and needs to take a smaller portion of the load.
+ * The execution starts with assigning each thread its weight in
+ * distribute_new_weights.
+ * If the weight is e.g. 10, it means that we can execute 10
+ * LQHKEYREQ signals at normal load. If load increases this will
+ * consume those 10 weights faster. We will first try to use the
+ * LDM thread where data resides, next the query block in the LDM
+ * thread executing on the same hyperthread. Finally if both of
+ * those has already "stolen" their weights we will follow a pattern
+ * that directs us to use the remaining LDM threads in a pattern
+ * that makes most use of LDM threads with higher weight.
  *
- * We increment
- * m_current_weight_lqhkeyreq_count/m_current_weight_scan_fragreq_count
- * by the weight (m_current_weight) each time we make a scheduling decision.
- * The 1 ms load gets into the picture by dividing the weight by the
- * load indicator (normally equal to 1). Now if the current weight count
- * is smaller than the current weight, then we will use the LDM thread.
- * Otherwise we will move to decide which Query thread that should handle
- * the signal instead.
- *
+ * We track the number of signals sent and each time the counter
+ * comes to 48 (a key requests adds 1 and a scan requests adds 5)
+ * we will check the load indicators of all other threads and set
+ * new load indicators. The load indicators are relative, so if
+ * all threads are overloaded, the least loaded will still have
+ * load 1.
+ * 
  * The same code for deciding to handle by LDM is also in
  * get_scan_fragreq_ref, but it has its own counters. Also the decision
  * is kept for a number of signals to get a bit of batching happening.
  * We do currently more batching of LQHKEYREQ and not so much for scans.
  * It is intended that this should be modelled and tested a bit more.
  *
- * 1.2. Query thread scheduling
- * ----------------------------
- * We have decided to use a query thread and not the LDM thread based on
- * the above discussion. The next step is to pick which query thread to
- * use. We will always use a query thread within the same Round Robin
- * group.
- *
- * The preference is the use a query thread in the same LDM group as the
- * LDM thread. Normally the decision would be a round robin decision based
- * on the weights of the query thread. However we can "steal" from the
- * round robin up to a certain point. This means that if we decide to
- * schedule it to the same LDM group we have to ensure that we skip this
- * query thread the next time it is selected by the round robin selection.
- *
- * We can "steal" up to a maximum level which is based on the weight. With
- * high weight we get scheduled often and thus we can handle many "steals".
- * The load indicator is used here by adding to the stolen signals each
- * time the thread is used. Thus we will skip a number of signals after
- * using the thread at high load.
- *
- * The weight count is slightly modified for scans to give LDM threads a
- * bit higher priority to run scans. The reason is that it is less
- * concurrency issues with running key lookups in query threads and thus
- * we want to give LDM threads a bit more space to run scan queries.
+ * Scans consume 4 weights instead, to handle this we multiply the
+ * weight we receive by 4.
  */
 Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
                                          Uint32 ldm_instance_no)
@@ -5897,89 +6063,87 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
   Uint32 rr_group = m_rr_group[ldm_instance_no - 1];
   struct RoundRobinInfo *rr_info = 
     (struct RoundRobinInfo*)&handle->m_rr_info[rr_group];
+  Uint32 block_num = DBLQH;
+  Uint32 load_counter = rr_info->m_load_indicator_counter;
+  ndbassert(ldm_instance_no > 0);
+  load_counter++;
+  if (likely(load_counter < m_rr_load_refresh_count))
   {
-    /**
-     * load_counter tracks when we need to gather load information
-     * from the threads in the Round Robin group.
-     *
-     */
-    Uint32 load_counter = rr_info->m_load_indicator_counter;
-    struct LdmThreadState *ldm_state =
-      &handle->m_ldm_state[ldm_instance_no - 1];
-    Uint32 counter = ldm_state->m_lqhkeyreq_counter;
-    Uint32 current_weight_count = ldm_state->m_current_weight_lqhkeyreq_count;
-    Uint32 load_indicator = ldm_state->m_load_indicator;
-    Uint32 curr_weight = ldm_state->m_current_weight / load_indicator;
-    counter++;
-    load_counter++;
-    if (counter >= m_num_lqhkeyreq_counts)
-    {
-      current_weight_count += curr_weight;
-      if (current_weight_count >= MAX_LDM_DISTRIBUTION_WEIGHT)
-      {
-        current_weight_count -= MAX_LDM_DISTRIBUTION_WEIGHT;
-      }
-      counter = 0;
-      ldm_state->m_current_weight_lqhkeyreq_count = current_weight_count;
-    }
-    ldm_state->m_lqhkeyreq_counter = counter + 1;
-    if (likely(load_counter < m_rr_load_refresh_count))
-    {
-      rr_info->m_load_indicator_counter = load_counter;
-    }
-    else
-    {
-      get_load_indicators(handle, rr_group);
-    }
-    if (current_weight_count < curr_weight)
-    {
-      /**
-       * We load balance between LDM thread and the query threads.
-       * In this case we have selected to use the LDM thread.
-       */
-      Uint32 ref = numberToRef(DBLQH,
-                               ldm_instance_no,
-                               getOwnNodeId());
-#ifdef DEBUG_SCHED_STATS
-      handle->m_lqhkeyreq_ldm++;
-      handle->m_lqhkeyreq_ldm_count[ldm_instance_no]++;
-#endif
-      return ref;
-    }
+    rr_info->m_load_indicator_counter = load_counter;
   }
-  /**
-   * We selected to choose a query thread for execution of this query.
-   * We will first attempt to use the query thread local to the LDM
-   * thread.
-   */
+  else
   {
-    struct QueryThreadState *q_state =
-      &handle->m_query_state[ldm_instance_no - 1];
-    Uint32 max_count = q_state->m_max_lqhkeyreq_count;
-    Uint32 load_indicator = q_state->m_load_indicator;
-    Uint32 current_stolen_count = q_state->m_current_stolen_lqhkeyreq;
-    if (current_stolen_count <= max_count)
-    {
-      /**
-       * There was sufficient room to steal a slot for sending to the
-       * query thread of the same instance as the LDM thread. So send
-       * to this query thread and increment the current stolen count.
-       */
-      assert(load_indicator > 0);
-      Uint32 ref = numberToRef(DBQLQH,
-                               ldm_instance_no,
-                               getOwnNodeId());
-      q_state->m_current_stolen_lqhkeyreq = current_stolen_count +
-                                            load_indicator;
-#ifdef DEBUG_SCHED_STATS
-      handle->m_lqhkeyreq_lq++;
-      handle->m_lqhkeyreq_qt_count[ldm_instance_no]++;
+    get_load_indicators(handle, rr_group);
+  }
+#ifdef VM_TRACE
+  Uint32 num_ldm_instances = getNumLDMInstances();
+  ndbassert(num_ldm_instances >= ldm_instance_no);
 #endif
-      return ref;
+  {
+    Uint32 query_instance_no = ldm_instance_no;
+    Uint32 block_instance_no = ldm_instance_no;
+    for (Uint32 i = 0; i < 2; i++)
+    {
+      struct QueryThreadState *q_state =
+        &handle->m_query_state[query_instance_no - 1];
+      Uint32 weight = q_state->m_weight;
+      Uint32 load_indicator = q_state->m_load_indicator;
+      Uint32 current_stolen = q_state->m_current_stolen;
+      jamDebug();
+      jamDataDebug(query_instance_no);
+      jamDataDebug(current_stolen);
+      jamDataDebug(weight);
+      if (current_stolen < weight)
+      {
+        /**
+         * There was sufficient room to steal a slot for sending to the
+         * query thread of the same instance as the LDM thread. So send
+         * to this query thread and increment the current stolen count.
+         */
+        jamDebug();
+        jamDataDebug(load_indicator);
+        assert(load_indicator > 0);
+        Uint32 ref = numberToRef(block_num,
+                                 block_instance_no,
+                                 getOwnNodeId());
+        Uint32 new_current_stolen = current_stolen +
+                                    load_indicator;
+        q_state->m_current_stolen = new_current_stolen;
+        Uint32 extra = (new_current_stolen <= weight) ?
+                        0 : (new_current_stolen - weight);
+        rr_info->m_used_weight += (load_indicator + extra);
+        jamDataDebug(rr_info->m_used_weight);
+        jamDataDebug(rr_info->m_total_weight);
+        if (unlikely(rr_info->m_used_weight >=
+                     rr_info->m_total_weight))
+        {
+          jamDebug();
+          distribute_new_weights(handle, rr_info);
+        }
+#ifdef DEBUG_SCHED_STATS
+        if (i == 0)
+          handle->m_lqhkeyreq_lqh++;
+        else
+          handle->m_lqhkeyreq_qt++;
+        handle->m_lqhkeyreq_qt_count[query_instance_no]++;
+#endif
+        return ref;
+      }
+      if (block_num == DBLQH)
+      {
+        query_instance_no = get_shared_ldm_instance(query_instance_no);
+        if (query_instance_no == 0)
+        {
+          break;
+        }
+      }
+      block_instance_no = query_instance_no;
+      block_num = DBQLQH;
     }
   }
   /* Have to select from the Round Robin group of query threads. */
   /* Pick next according to Round Robin distribution */
+  //Uint32 loop = 0;
   do
   {
     Uint32 count = rr_info->m_lqhkeyreq_to_same_thread;
@@ -6000,14 +6164,24 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
     }
     Uint32 ref = rr_info->m_distribution_signal[inx];
     rr_info->m_lqhkeyreq_to_same_thread = count + 1;
-    Uint32 instance_no = refToInstance(ref);
-    struct QueryThreadState *q_state = &handle->m_query_state[instance_no - 1];
+    Uint32 query_instance_no = refToInstance(ref);
+    struct QueryThreadState *q_state =
+      &handle->m_query_state[query_instance_no - 1];
+    Uint32 weight = q_state->m_weight;
     Uint32 load_indicator = q_state->m_load_indicator;
-    Uint32 current_stolen = q_state->m_current_stolen_lqhkeyreq;
-    if (current_stolen == 0)
+    Uint32 current_stolen = q_state->m_current_stolen;
+    jamDebug();
+    jamDataDebug(query_instance_no);
+    jamDataDebug(inx);
+    jamDataDebug(current_stolen);
+    jamDataDebug(weight);
+    //require(loop++ < 9);
+    if (current_stolen < weight)
     {
+      jamDebug();
+      jamDataDebug(load_indicator);
       /**
-       * This query thread haven't stolen anything yet, so simply use it to
+       * This query thread haven't stolen all weights yet, so use it to
        * send this signal. We add stolen signals to handle load indicator
        * here. With normal load (== 1) we don't add anything here. With
        * load indicator set to 2 we add 1 to stolen, this means that we will
@@ -6015,19 +6189,27 @@ Uint32 SimulatedBlock::get_lqhkeyreq_ref(DistributionHandler * const handle,
        * the thread by half.
        */
       assert(load_indicator > 0);
-      q_state->m_current_stolen_lqhkeyreq = load_indicator - 1;
+      Uint32 new_current_stolen = current_stolen +
+                                  load_indicator;
+      q_state->m_current_stolen = new_current_stolen;
+      Uint32 extra = (new_current_stolen <= weight) ?
+                      0 : (new_current_stolen - weight);
+      rr_info->m_used_weight += (load_indicator + extra);
+      jamDataDebug(rr_info->m_used_weight);
+      jamDataDebug(rr_info->m_total_weight);
+      if (unlikely(rr_info->m_used_weight >=
+                   rr_info->m_total_weight))
+      {
+        jamDebug();
+        distribute_new_weights(handle, rr_info);
+      }
 #ifdef DEBUG_SCHED_STATS
       handle->m_lqhkeyreq_rr++;
-      handle->m_lqhkeyreq_qt_count[instance_no]++;
+      handle->m_lqhkeyreq_qt_count[query_instance_no]++;
 #endif
       return ref;
     }
-    /**
-     * The query thread had already stolen a signal before, we need to
-     * decrement the stolen count and continue searching for the query
-     * thread to receive this signal.
-     */
-    q_state->m_current_stolen_lqhkeyreq = current_stolen - 1;
+    rr_info->m_lqhkeyreq_to_same_thread = m_num_lqhkeyreq_counts;
   } while (true);
 #endif
   return 0;
@@ -6040,77 +6222,82 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
   Uint32 rr_group = m_rr_group[ldm_instance_no - 1];
   struct RoundRobinInfo *rr_info = 
     (struct RoundRobinInfo*)&handle->m_rr_info[rr_group];
+  Uint32 block_num = DBLQH;
+  ndbassert(ldm_instance_no > 0);
+  Uint32 load_counter = rr_info->m_load_indicator_counter;
+  load_counter += LOAD_SCAN_FRAGREQ;
+  if (likely(load_counter < m_rr_load_refresh_count))
   {
-    Uint32 load_counter = rr_info->m_load_indicator_counter;
-    struct LdmThreadState *ldm_state =
-      &handle->m_ldm_state[ldm_instance_no - 1];
-    Uint32 counter = ldm_state->m_scan_fragreq_counter;
-    Uint32 current_weight_count = 
-      ldm_state->m_current_weight_scan_fragreq_count;
-    Uint32 load_indicator = ldm_state->m_load_indicator;
-    Uint32 curr_weight = ldm_state->m_current_weight / load_indicator;
-    counter++;
-    load_counter += LOAD_SCAN_FRAGREQ;
-    if (counter >= m_num_scan_fragreq_counts)
+    rr_info->m_load_indicator_counter = load_counter;
+  }
+  else
+  {
+    get_load_indicators(handle, rr_group);
+  }
+#ifdef VM_TRACE
+  Uint32 num_ldm_instances = getNumLDMInstances();
+  ndbassert(num_ldm_instances >= ldm_instance_no);
+#endif
+  {
+    Uint32 query_instance_no = ldm_instance_no;
+    Uint32 block_instance_no = ldm_instance_no;
+    for (Uint32 i = 0; i < 2; i++)
     {
-      current_weight_count += curr_weight;
-      if (current_weight_count >= MAX_LDM_DISTRIBUTION_WEIGHT)
+      struct QueryThreadState *q_state =
+        &handle->m_query_state[query_instance_no - 1];
+      Uint32 weight = q_state->m_weight;
+      Uint32 load_indicator = q_state->m_load_indicator * LOAD_SCAN_FRAGREQ;
+      Uint32 current_stolen = q_state->m_current_stolen;
+      jamDebug();
+      jamDataDebug(query_instance_no);
+      jamDataDebug(current_stolen);
+      jamDataDebug(weight);
+      if (current_stolen < weight)
       {
-        current_weight_count -= MAX_LDM_DISTRIBUTION_WEIGHT;
+        jamDebug();
+        jamDataDebug(load_indicator);
+        assert(load_indicator > 0);
+        Uint32 ref = numberToRef(block_num,
+                                 block_instance_no,
+                                 getOwnNodeId());
+        Uint32 new_current_stolen = current_stolen +
+                                    load_indicator;
+        q_state->m_current_stolen = new_current_stolen;
+        Uint32 extra = (new_current_stolen <= weight) ?
+                        0 : (new_current_stolen - weight);
+        rr_info->m_used_weight += (load_indicator + extra);
+        jamDataDebug(rr_info->m_used_weight);
+        jamDataDebug(rr_info->m_total_weight);
+        if (unlikely(rr_info->m_used_weight >=
+                     rr_info->m_total_weight))
+        {
+          jamDebug();
+          distribute_new_weights(handle, rr_info);
+        }
+#ifdef DEBUG_SCHED_STATS
+        if (i == 0)
+          handle->m_scan_fragreq_lqh++;
+        else
+          handle->m_scan_fragreq_qt++;
+        handle->m_scan_fragreq_qt_count[query_instance_no]++;
+#endif
+        return ref;
       }
-      counter = 0;
-      ldm_state->m_current_weight_scan_fragreq_count = current_weight_count;
-    }
-    ldm_state->m_scan_fragreq_counter = counter + 1;
-    if (likely(load_counter < m_rr_load_refresh_count))
-    {
-      rr_info->m_load_indicator_counter = load_counter;
-    }
-    else
-    {
-      get_load_indicators(handle, rr_group);
-    }
-    if (current_weight_count < curr_weight ||
-        (load_indicator == 1 && current_weight_count < (curr_weight + 3)))
-    {
-      /**
-       * We load balance between LDM thread and the query threads.
-       * In this case we have selected to use the LDM thread.
-       * We give scans a tad higher priority in the LDM threads since
-       * the scans have more lock conflicts with LDM thread when executed
-       * from the query threads.
-       */
-      Uint32 ref = numberToRef(DBLQH,
-                               ldm_instance_no,
-                               getOwnNodeId());
-#ifdef DEBUG_SCHED_STATS
-      handle->m_scan_fragreq_ldm++;
-      handle->m_scan_fragreq_ldm_count[ldm_instance_no]++;
-#endif
-      return ref;
+      if (block_num == DBLQH)
+      {
+        query_instance_no = get_shared_ldm_instance(query_instance_no);
+        if (query_instance_no == 0)
+        {
+          break;
+        }
+      }
+      block_instance_no = query_instance_no;
+      block_num = DBQLQH;
     }
   }
-  {
-    struct QueryThreadState *q_state =
-      &handle->m_query_state[ldm_instance_no - 1];
-    Uint32 max_count = q_state->m_max_scan_fragreq_count;
-    Uint32 load_indicator = q_state->m_load_indicator;
-    Uint32 current_stolen_count = q_state->m_current_stolen_scan_fragreq;
-    if (current_stolen_count <= max_count)
-    {
-      assert(load_indicator > 0);
-      Uint32 ref = numberToRef(DBQLQH,
-                               ldm_instance_no,
-                               getOwnNodeId());
-      q_state->m_current_stolen_scan_fragreq = current_stolen_count +
-                                               load_indicator;
-#ifdef DEBUG_SCHED_STATS
-      handle->m_scan_fragreq_lq++;
-      handle->m_scan_fragreq_qt_count[ldm_instance_no]++;
-#endif
-      return ref;
-    }
-  }
+  /* Have to select from the Round Robin group of query threads. */
+  /* Pick next according to Round Robin distribution */
+  //Uint32 loop = 0;
   do
   {
     Uint32 count = rr_info->m_scan_fragreq_to_same_thread;
@@ -6131,21 +6318,44 @@ Uint32 SimulatedBlock::get_scan_fragreq_ref(DistributionHandler * const handle,
     }
     Uint32 ref = rr_info->m_distribution_signal[inx];
     rr_info->m_scan_fragreq_to_same_thread = count + 1;
-    Uint32 instance_no = refToInstance(ref);
-    struct QueryThreadState *q_state = &handle->m_query_state[instance_no - 1];
-    Uint32 current_stolen = q_state->m_current_stolen_scan_fragreq;
-    Uint32 load_indicator = q_state->m_load_indicator;
-    if (current_stolen == 0)
+    Uint32 query_instance_no = refToInstance(ref);
+    struct QueryThreadState *q_state =
+      &handle->m_query_state[query_instance_no - 1];
+    Uint32 current_stolen = q_state->m_current_stolen;
+    Uint32 weight = q_state->m_weight;
+    Uint32 load_indicator = q_state->m_load_indicator * LOAD_SCAN_FRAGREQ;
+    jamDebug();
+    jamDataDebug(query_instance_no);
+    jamDataDebug(inx);
+    jamDataDebug(current_stolen);
+    jamDataDebug(weight);
+    //require(loop++ < 9);
+    if (current_stolen < weight)
     {
+      jamDebug();
+      jamDataDebug(load_indicator);
       assert(load_indicator > 0);
-      q_state->m_current_stolen_scan_fragreq = load_indicator - 1;
+      Uint32 new_current_stolen = current_stolen +
+                                  load_indicator;
+      q_state->m_current_stolen = new_current_stolen;
+      Uint32 extra = (new_current_stolen <= weight) ?
+                      0 : (new_current_stolen - weight);
+      rr_info->m_used_weight += (load_indicator + extra);
+      jamDataDebug(rr_info->m_used_weight);
+      jamDataDebug(rr_info->m_total_weight);
+      if (unlikely(rr_info->m_used_weight >=
+                   rr_info->m_total_weight))
+      {
+        jamDebug();
+        distribute_new_weights(handle, rr_info);
+      }
 #ifdef DEBUG_SCHED_STATS
       handle->m_scan_fragreq_rr++;
-      handle->m_scan_fragreq_qt_count[instance_no]++;
+      handle->m_scan_fragreq_qt_count[query_instance_no]++;
 #endif
       return ref;
     }
-    q_state->m_current_stolen_scan_fragreq = current_stolen - 1;
+    rr_info->m_scan_fragreq_to_same_thread = m_num_scan_fragreq_counts;
   } while (true);
 #endif
   return 0;
@@ -6170,6 +6380,7 @@ SimulatedBlock::use_ipv4_socket(Uint32 node_id)
 /**
  * Need to create the static variables in the SimulatedBlock class.
  */
+Uint32 SimulatedBlock::m_shared_ldm_instance[MAX_DISTR_THREADS];
 Uint32 SimulatedBlock::m_rr_group[MAX_DISTR_THREADS];
 Uint32 SimulatedBlock::m_num_lqhkeyreq_counts = NUM_LQHKEYREQ_COUNTS;
 Uint32 SimulatedBlock::m_num_scan_fragreq_counts = NUM_SCAN_FRAGREQ_COUNTS;

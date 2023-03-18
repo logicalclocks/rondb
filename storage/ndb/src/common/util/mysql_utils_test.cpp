@@ -1,5 +1,6 @@
 /*
- Copyright (c) 2010, 2018, Oracle and/or its affiliates. All rights reserved.
+ Copyright (c) 2010, 2022, Oracle and/or its affiliates.
+ Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License, version 2.0,
@@ -68,7 +69,7 @@ int test_dbug_utils()
     s = dbugExplain(buffer, DBUG_BUF_SIZE);
     CHECK(!s || !strcmp(s, s0));
 
-    s = dbugExplain(NULL, DBUG_BUF_SIZE);
+    s = dbugExplain(nullptr, DBUG_BUF_SIZE);
     CHECK(!s);
 
     s = dbugExplain(buffer, 0);
@@ -79,7 +80,7 @@ int test_dbug_utils()
     s = dbugExplain(buffer, DBUG_BUF_SIZE);
     CHECK(!s || !strcmp(s, s1));
 
-    dbugSet(NULL);
+    dbugSet(nullptr);
     s = dbugExplain(buffer, DBUG_BUF_SIZE);
     CHECK(!s || !strcmp(s, s1));
 
@@ -98,7 +99,7 @@ int test_dbug_utils()
     s = dbugExplain(buffer, DBUG_BUF_SIZE);
     CHECK(!s || !strcmp(s, s2));
 
-    dbugPush(NULL);
+    dbugPush(nullptr);
     s = dbugExplain(buffer, DBUG_BUF_SIZE);
     CHECK(!s || !strcmp(s, s2));
 
@@ -115,7 +116,7 @@ int test_dbug_utils()
     s = dbugExplain(buffer, DBUG_BUF_SIZE);
     CHECK(!s || !strcmp(s, s1));
 
-    dbugPush(NULL);
+    dbugPush(nullptr);
     s = dbugExplain(buffer, DBUG_BUF_SIZE);
     CHECK(!s || !strcmp(s, s1));
 
@@ -130,14 +131,23 @@ int test_decimal(const char *s, int prec, int scale, int expected_rv)
 {
     char bin_buff[128], str_buff[128];
     int r1, r2 = 0;
+    int bin_len;
+    /*
+     * If scale is negative, set bin_len to zero to pass following checks.
+     * Call to decimal_bin2str is expected to fail with E_DEC_BAD_SCALE.
+     */
+    if (scale < 0) bin_len = 0;
+    else bin_len = decimal_bin_size(prec, scale);
+    CHECK(bin_len >= 0);
+    CHECK((unsigned)bin_len <= sizeof(bin_buff));
 
     str_buff[0] = 0;
 
     // cast: decimal_str2bin expects 'int' for size_t strlen()
     r1 = decimal_str2bin(s, (int)strlen(s), prec, scale, bin_buff, 128);
     if(r1 <= E_DEC_OVERFLOW) {
-        r2 = decimal_bin2str(bin_buff, 128, prec, scale, str_buff, 128);
-        CHECK(r2 == E_DEC_OK);
+      r2 = decimal_bin2str(bin_buff, bin_len, prec, scale, str_buff, 128);
+      CHECK(r2 == E_DEC_OK);
     }
     printf("[%-2d,%-2d] %-29s => res=%d,%d     %s\n",
            prec, scale, s, r1, r2, str_buff);
@@ -200,7 +210,7 @@ int test_charset_map()
 
     /* Now we're going to recode.
        We test with the string "ülker", which begins with the character
-       LATIN SMALL LETTER U WITH DIARESIS - unicode code point U+00FC.
+       LATIN SMALL LETTER U WITH DIAERESIS - unicode code point U+00FC.
        In the latin1 encoding this is a literal 0xFC,
        but in the UTF-8 representation it is 0xC3 0xBC.
     */
@@ -218,12 +228,12 @@ int test_charset_map()
 
     /* latin1 must be available to run the recode test */
     int latin1_num = csmap.getCharsetNumber("latin1");
-    printf("latin1 charset number: %d  standard name: \"%s\" \n",
+    printf("latin1 charset number: %d  standard name: \"%s\"\n",
            latin1_num, csmap.getName(latin1_num));
     CHECK(latin1_num != 0);
     CHECK(! strcmp(csmap.getName(latin1_num), "windows-1252"));
 
-    printf("Latin1: \"%s\"                       UTF8:  \"%s\" \n",
+    printf("Latin1: \"%s\"                       UTF8:  \"%s\"\n",
            my_word_latin1, my_word_utf8);
 
     /* RECODE TEST 1: recode from UTF-8 to Latin 1 */
@@ -231,7 +241,7 @@ int test_charset_map()
     lengths[1] = 32;
     CharsetMap::RecodeStatus rr1 = csmap.recode(lengths, utf8_num, latin1_num,
                                                 my_word_utf8, result_buff_1);
-    printf("Recode Test 1 - UTF-8 to Latin-1: %d %d %d \"%s\" => \"%s\" \n",
+    printf("Recode Test 1 - UTF-8 to Latin-1: %d %d %d \"%s\" => \"%s\"\n",
            rr1, lengths[0], lengths[1], my_word_utf8, result_buff_1);
     CHECK(rr1 == CharsetMap::RECODE_OK);
     CHECK(lengths[0] == 7);
@@ -243,7 +253,7 @@ int test_charset_map()
     lengths[1] = 32;
     CharsetMap::RecodeStatus rr2 = csmap.recode(lengths, latin1_num, utf8_num,
                                                 my_word_latin1, result_buff_2);
-    printf("Recode Test 2 - Latin-1 to UTF-8: %d %d %d \"%s\" => \"%s\" \n",
+    printf("Recode Test 2 - Latin-1 to UTF-8: %d %d %d \"%s\" => \"%s\"\n",
            rr2, lengths[0], lengths[1], my_word_latin1, result_buff_2);
     CHECK(rr2 == CharsetMap::RECODE_OK);
     CHECK(lengths[0] == 6);
@@ -255,7 +265,7 @@ int test_charset_map()
     lengths[1] = 4;
     CharsetMap::RecodeStatus rr3 = csmap.recode(lengths, latin1_num, utf8_num,
                                                 my_word_latin1, result_buff_too_small);
-    printf("Recode Test 3 - too-small buffer: %d %d %d \"%s\" => \"%.4s\" \n",
+    printf("Recode Test 3 - too-small buffer: %d %d %d \"%s\" => \"%.4s\"\n",
            rr3, lengths[0], lengths[1], my_word_latin1, result_buff_too_small);
     CHECK(rr3 == CharsetMap::RECODE_BUFF_TOO_SMALL);
     CHECK(lengths[0] == 3);
@@ -265,7 +275,7 @@ int test_charset_map()
 
     /* RECODE TEST 4: recode with an invalid character set */
     CharsetMap::RecodeStatus rr4 = csmap.recode(lengths, 0, 999, my_word_latin1, result_buff_2);
-    printf("Recode Test 4 - invalid charset: %d \n", rr4);
+    printf("Recode Test 4 - invalid charset: %d\n", rr4);
     CHECK(rr4 == CharsetMap::RECODE_BAD_CHARSET);
 
     /* RECODE TEST 5: source string is ill-formed UTF-8 */
@@ -273,7 +283,7 @@ int test_charset_map()
     lengths[1] = 32;
     int rr5 = csmap.recode(lengths, utf8_num, latin1_num,
                            my_bad_utf8, result_buff_2);
-    printf("Recode Test 5 - ill-formed source string: %d \n", rr5);
+    printf("Recode Test 5 - ill-formed source string: %d\n", rr5);
     CHECK(rr5 == CharsetMap::RECODE_BAD_SRC);
 
 
@@ -310,8 +320,9 @@ int test_charset_map()
     return 0;
 }
 
-int main(int argc, const char** argv)
+int main()
 {
+    ndb_init();
     // TAP: print number of tests to run
     plan(3);
 
@@ -324,6 +335,7 @@ int main(int argc, const char** argv)
     ok(test_decimal_conv() == 0, "subtest: decimal_conv");
     ok(test_charset_map() == 0, "subtest: charset_map");
 
+    ndb_end(0);
     // TAP: print summary report and return exit status
     return exit_status();
 }

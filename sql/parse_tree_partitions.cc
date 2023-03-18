@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,9 +22,10 @@
 
 #include "sql/parse_tree_partitions.h"
 
+#include <assert.h>
 #include "m_ctype.h"
 #include "my_alloc.h"
-#include "my_dbug.h"
+
 #include "my_sys.h"
 #include "mysql_com.h"
 #include "mysqld_error.h"
@@ -43,7 +44,7 @@ Partition_parse_context::Partition_parse_context(
     THD *thd_arg, partition_info *part_info_arg,
     partition_element *current_partition_arg,
     partition_element *curr_part_elem_arg, bool is_add_or_reorganize_partition)
-    : Parse_context(thd_arg, thd_arg->lex->current_select()),
+    : Parse_context(thd_arg, thd_arg->lex->current_query_block()),
       Parser_partition_info(part_info_arg, current_partition_arg,
                             curr_part_elem_arg, nullptr, 0),
       is_add_or_reorganize_partition(is_add_or_reorganize_partition) {}
@@ -113,9 +114,11 @@ bool PT_part_value_item_max::contextualize(Partition_parse_context *pc) {
 }
 
 bool PT_part_value_item_expr::contextualize(Partition_parse_context *pc) {
+  LEX *const lex = pc->thd->lex;
+  lex->safe_to_cache_query = true;
   if (super::contextualize(pc) || expr->itemize(pc, &expr)) return true;
 
-  if (!pc->thd->lex->safe_to_cache_query) {
+  if (!lex->safe_to_cache_query) {
     error(pc, pos, ER_THD(pc->thd, ER_WRONG_EXPR_IN_PARTITION_FUNC_ERROR));
     return true;
   }
@@ -196,8 +199,7 @@ bool PT_part_values_in_list::contextualize(Partition_parse_context *pc) {
 }
 
 bool PT_part_definition::contextualize(Partition_parse_context *pc) {
-  DBUG_ASSERT(pc->current_partition == nullptr &&
-              pc->curr_part_elem == nullptr);
+  assert(pc->current_partition == nullptr && pc->curr_part_elem == nullptr);
 
   if (super::contextualize(pc)) return true;
 
@@ -268,7 +270,7 @@ bool PT_part_definition::contextualize(Partition_parse_context *pc) {
       if (opt_part_values->contextualize(&ppc)) return true;
     } break;
     default:
-      DBUG_ASSERT(false);
+      assert(false);
       error(&ppc, pos, ER_THD(pc->thd, ER_UNKNOWN_ERROR));
       return true;
   }
@@ -315,6 +317,8 @@ bool PT_part_definition::contextualize(Partition_parse_context *pc) {
 }
 
 bool PT_sub_partition_by_hash::contextualize(Partition_parse_context *pc) {
+  LEX *const lex = pc->thd->lex;
+  lex->safe_to_cache_query = true;
   if (super::contextualize(pc) || hash->itemize(pc, &hash)) return true;
 
   partition_info *const part_info = pc->part_info;
@@ -322,12 +326,10 @@ bool PT_sub_partition_by_hash::contextualize(Partition_parse_context *pc) {
   part_info->subpart_type = partition_type::HASH;
   part_info->linear_hash_ind = is_linear;
 
-  LEX *const lex = pc->thd->lex;
   if (!lex->safe_to_cache_query) {
     error(pc, hash_pos, ER_THD(pc->thd, ER_WRONG_EXPR_IN_PARTITION_FUNC_ERROR));
     return true;
   }
-  lex->safe_to_cache_query = true;
 
   /* TODO: remove const_cast */
   if (part_info->set_part_expr(const_cast<char *>(hash_pos.cpp.start), hash,
@@ -380,13 +382,14 @@ bool PT_part_type_def::set_part_field_list(Partition_parse_context *pc,
 
 bool PT_part_type_def::itemize_part_expr(Partition_parse_context *pc,
                                          const POS &pos, Item **item) {
+  LEX *const lex = pc->thd->lex;
+  lex->safe_to_cache_query = true;
   if ((*item)->itemize(pc, item)) return true;
 
-  if (!pc->thd->lex->safe_to_cache_query) {
+  if (!lex->safe_to_cache_query) {
     error(pc, pos, ER_THD(pc->thd, ER_WRONG_EXPR_IN_PARTITION_FUNC_ERROR));
     return true;
   }
-  pc->thd->lex->safe_to_cache_query = true;
 
   if (pc->part_info->set_part_expr(const_cast<char *>(pos.cpp.start), *item,
                                    const_cast<char *>(pos.cpp.end), false))

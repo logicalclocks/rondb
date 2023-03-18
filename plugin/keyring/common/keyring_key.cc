@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -20,11 +20,12 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+#include "my_cleanse.h"
+
 #include "plugin/keyring/common/keyring_key.h"
 
+#include <assert.h>
 #include <stddef.h>
-
-#include "my_dbug.h"
 
 namespace keyring {
 
@@ -68,7 +69,7 @@ void Key::init(const char *a_key_id, const char *a_key_type,
 }
 
 Key::~Key() {
-  if (key) memset(key.get(), 0, key_len);
+  if (key) my_cleanse(key.get(), key_len);
 }
 
 void Key::store_field_length(uchar *buffer, size_t *buffer_position,
@@ -100,7 +101,7 @@ void Key::store_in_buffer(uchar *buffer, size_t *buffer_position) const {
       (sizeof(size_t) - (*buffer_position % sizeof(size_t))) % sizeof(size_t);
 
   *buffer_position += padding;
-  DBUG_ASSERT(*buffer_position % sizeof(size_t) == 0);
+  assert(*buffer_position % sizeof(size_t) == 0);
 }
 
 bool Key::load_string_from_buffer(const uchar *buffer, size_t *buffer_position,
@@ -164,7 +165,7 @@ bool Key::load_from_buffer(uchar *buffer,
   size_t padding =
       (sizeof(size_t) - (buffer_position % sizeof(size_t))) % sizeof(size_t);
   buffer_position += padding;
-  DBUG_ASSERT(buffer_position % sizeof(size_t) == 0);
+  assert(buffer_position % sizeof(size_t) == 0);
 
   *number_of_bytes_read_from_buffer = buffer_position;
 
@@ -184,7 +185,7 @@ size_t Key::get_key_pod_size() const {
       (sizeof(size_t) - (key_pod_size % sizeof(size_t))) % sizeof(size_t);
 
   size_t key_pod_size_aligned = key_pod_size + padding;
-  DBUG_ASSERT(key_pod_size_aligned % sizeof(size_t) == 0);
+  assert(key_pod_size_aligned % sizeof(size_t) == 0);
   return key_pod_size_aligned;
 }
 

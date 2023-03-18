@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2016, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -38,8 +38,8 @@ static inline bool is_separator(char c)
 const char *
 ndb_basename(const char * path)
 {
-  if (path == NULL)
-    return NULL;
+  if (path == nullptr)
+    return nullptr;
 
   const char * p = path + strlen(path);
   while (p > path && ! is_separator(p[0]))

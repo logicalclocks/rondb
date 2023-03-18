@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2011, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2011, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -51,6 +52,7 @@ public:
   void execROUTE_ORD(Signal* signal);
   void execACTIVATE_TRP_REQ(Signal*);
   void execUPD_QUERY_DIST_ORD(Signal*);
+  void execSEND_PUSH_ABORTREQ(Signal*);
 
   void sendSYNC_THREAD_VIA_CONF(Signal*, Uint32, Uint32);
   void execSYNC_THREAD_VIA_REQ(Signal*);
@@ -59,19 +61,25 @@ public:
 
   void execNDB_TAMPER(Signal*);
   void execDUMP_STATE_ORD(Signal*);
+  void startCONTINUEB(Signal*);
+  void execCONTINUEB(Signal*);
 public:
   Uint32 distribute_signal(SignalHeader * const header,
-                           const Uint32 instance);
+                           const Uint32 instance,
+                           Uint32 **out_data,
+                           Uint32 *buf_ptr);
   DistributionHandler m_distribution_handle;
   bool m_distribution_handler_inited;
 
 protected:
   bool getParam(const char* name, Uint32* count) override;
 private:
+  void sendSTTORRY(Signal*);
+  void sendCONTINUEB(Signal*);
   bool handles_this_node(Uint32 nodeId, bool all = false);
   void close_com_failed_node(Signal*, Uint32);
   void enable_com_node(Signal*, Uint32);
-
+  bool m_init_continueb;
 };
 
 class TrpmanProxy : public LocalProxy

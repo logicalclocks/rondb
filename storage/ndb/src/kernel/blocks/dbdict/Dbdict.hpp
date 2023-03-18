@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,6 +29,7 @@
 /**
  * Dict : Dictionary Block
  */
+#include <cstring>
 #include <ndb_limits.h>
 #include <trigger_definitions.h>
 #include <pc.hpp>
@@ -44,7 +45,6 @@
 #include <SignalCounter.hpp>
 #include <Bitmask.hpp>
 #include <AttributeList.hpp>
-#include <signaldata/GetTableId.hpp>
 #include <signaldata/GetTabInfo.hpp>
 #include <signaldata/DictTabInfo.hpp>
 #include <signaldata/CreateTable.hpp>
@@ -101,7 +101,8 @@
 #include <signaldata/DropFKImpl.hpp>
 
 #include <EventLogger.hpp>
-extern EventLogger * g_eventLogger;
+#include "TransientPool.hpp"
+#include "TransientSlotPool.hpp"
 
 #define JAM_FILE_ID 464
 
@@ -119,6 +120,8 @@ extern EventLogger * g_eventLogger;
 #define ZINDEX_STAT_BG_PROCESS 7
 #define ZGET_TABINFO_RETRY 8
 #define ZNEXT_GET_TAB_REQ 9
+#define ZDICT_SHRINK_TRANSIENT_POOLS 10
+#define ZDICT_TRANSIENT_POOL_STAT 11
 
 /*--------------------------------------------------------------*/
 // Other constants in alphabetical order
@@ -152,7 +155,7 @@ extern EventLogger * g_eventLogger;
    ZSIZE_OF_PAGES_IN_WORDS)
 
 /**
- * - one for retreive
+ * - one for retrieve
  * - one for read or write
  */
 #define ZNUMBER_OF_PAGES (2 * ZMAX_PAGES_OF_TABLE_DEFINITION)
@@ -195,7 +198,11 @@ public:
    * attributes.  This is wrong but convenient.
    */
   struct AttributeRecord {
-    AttributeRecord(){}
+    static constexpr Uint32 TYPE_ID = RT_DBDICT_ATTRIBUTE_RECORD;
+    AttributeRecord() :
+      m_magic(Magic::make(TYPE_ID))
+    {}
+    Uint32 m_magic;
 
     /* attribute id */
     Uint16 attributeId;
@@ -204,7 +211,7 @@ public:
     Uint16 tupleKey;
 
     /* Attribute name (unique within table) */
-    RopeHandle attributeName;
+    LcRopeHandle attributeName;
 
     /* Attribute description (old-style packed descriptor) */
     Uint32 attributeDescriptor;
@@ -219,12 +226,11 @@ public:
     bool autoIncrement;
 
     /* Default value as null-terminated string, only for ODBC/SQL */
-    RopeHandle defaultValue;
+    LcRopeHandle defaultValue;
 
     struct {
       Uint32 m_name_len;
       const char * m_name_ptr;
-      RopePool * m_pool;
     } m_key;
 
     union {
@@ -236,16 +242,19 @@ public:
     Uint32 prevHash;
 
     Uint32 hashValue() const { return attributeName.hashValue();}
-    bool equal(const AttributeRecord& obj) const {
-      if(obj.hashValue() == hashValue()){
-	ConstRope r(* m_key.m_pool, obj.attributeName);
+    bool equal(const AttributeRecord& obj) const
+    {
+      if(obj.hashValue() == hashValue())
+      {
+	LcConstRope r(obj.attributeName);
 	return r.compare(m_key.m_name_ptr, m_key.m_name_len) == 0;
       }
       return false;
     }
   };
+  static constexpr Uint32 DBDICT_ATTRIBUTE_RECORD_TRANSIENT_POOL_INDEX = 3;
   typedef Ptr<AttributeRecord> AttributeRecordPtr;
-  typedef ArrayPool<AttributeRecord> AttributeRecord_pool;
+  typedef TransientPool<AttributeRecord> AttributeRecord_pool;
   typedef DLMHashTable<AttributeRecord_pool> AttributeRecord_hash;
   typedef DLFifoList<AttributeRecord_pool> AttributeRecord_list;
   typedef LocalDLFifoList<AttributeRecord_pool> LocalAttributeRecord_list;
@@ -260,16 +269,19 @@ public:
    */
   struct TableRecord;
   typedef Ptr<TableRecord> TableRecordPtr;
-  typedef ArrayPool<TableRecord> TableRecord_pool;
-  typedef DLFifoList<TableRecord_pool> TableRecord_list;
-  typedef LocalDLFifoList<TableRecord_pool> LocalTableRecord_list;
-
+  typedef ArrayPool<TableRecord> IndexRecord_pool;
+  typedef DLFifoList<IndexRecord_pool> IndexRecord_list;
   struct TableRecord {
-    TableRecord(){
+    static constexpr Uint32 TYPE_ID = RT_DBDICT_TABLE_RECORD;
+    Uint32 m_magic;
+    TableRecord() :
+      m_magic(Magic::make(TYPE_ID))
+    {
       m_upgrade_trigger_handling.m_upgrade = false;
       fullyReplicatedTriggerId = RNIL;
     }
-    static bool isCompatible(Uint32 type) { return DictTabInfo::isTable(type) || DictTabInfo::isIndex(type); }
+    static bool isCompatible(Uint32 type)
+    { return DictTabInfo::isTable(type) || DictTabInfo::isIndex(type); }
 
     Uint32 maxRowsLow;
     Uint32 maxRowsHigh;
@@ -287,7 +299,7 @@ public:
     Uint32 hashMapVersion;
 
     /* Table name (may not be unique under "alter table") */
-    RopeHandle tableName;
+    LcRopeHandle tableName;
 
     /* Type of table or index */
     DictTabInfo::TableType tableType;
@@ -313,14 +325,14 @@ public:
       TR_Temporary    = 0x8,
       TR_ForceVarPart = 0x10,
       TR_ReadBackup   = 0x20,
-      TR_FullyReplicated = 0x40
-
+      TR_FullyReplicated = 0x40,
+      TR_UseVarSizedDiskData = 0x80
     };
     Uint8 m_extra_row_gci_bits;
     Uint8 m_extra_row_author_bits;
     Uint16 m_bits;
 
-    /* Number of attibutes in table */
+    /* Number of attributes in table */
     Uint16 noOfAttributes;
 
     /* Number of null attributes in table (should be computed) */
@@ -431,9 +443,9 @@ public:
     Uint32 noOfNullBits;
 
     /**  frm data for this table */
-    RopeHandle frmData;
-    RopeHandle ngData;
-    RopeHandle rangeData;
+    LcRopeHandle frmData;
+    LcRopeHandle ngData;
+    LcRopeHandle rangeData;
 
     Uint32 partitionBalance;
     Uint32 fragmentCount;
@@ -441,7 +453,7 @@ public:
     Uint32 m_tablespace_id;
 
     /** List of indexes attached to table */
-    TableRecord_list::Head m_indexes;
+    IndexRecord_list::Head m_indexes;
     Uint32 nextList, prevList;
 
     /*
@@ -461,10 +473,15 @@ public:
     // pending background request (IndexStatRep::RequestType)
     Uint32 indexStatBgRequest;
   };
-
+  typedef TransientPool<TableRecord> TableRecord_pool;
+  typedef DLFifoList<TableRecord_pool> TableRecord_list;
+  typedef LocalDLFifoList<TableRecord_pool> LocalTableRecord_list;
+  static constexpr Uint32 DBDICT_TABLE_RECORD_TRANSIENT_POOL_INDEX = 2;
   TableRecord_pool c_tableRecordPool_;
   RSS_AP_SNAPSHOT(c_tableRecordPool_);
   TableRecord_pool& get_pool(TableRecordPtr) { return c_tableRecordPool_; }
+
+  Uint32 cnoReplicas;
 
   /**
    * Indication that a background index stat update is already in
@@ -489,8 +506,14 @@ public:
    * trigger online creates the trigger in TC (if index) and LQH-TUP.
    */
   struct TriggerRecord {
-    TriggerRecord() {}
-    static bool isCompatible(Uint32 type) { return DictTabInfo::isTrigger(type); }
+    static constexpr Uint32 TYPE_ID = RT_DBDICT_TRIGGER_RECORD;
+    Uint32 m_magic;
+
+    TriggerRecord() :
+      m_magic(Magic::make(TYPE_ID))
+    {}
+    static bool isCompatible(Uint32 type)
+    { return DictTabInfo::isTrigger(type); }
 
     /** Trigger state */
     enum TriggerState {
@@ -505,7 +528,7 @@ public:
     TriggerState triggerState;
 
     /** Trigger name, used by DICT to identify the trigger */
-    RopeHandle triggerName;
+    LcRopeHandle triggerName;
 
     /** Trigger id, used by TRIX, TC, LQH, and TUP to identify the trigger */
     Uint32 triggerId;
@@ -532,13 +555,14 @@ public:
     /** Pointer to the next attribute used by ArrayPool */
     Uint32 nextPool;
   };
-
+  static constexpr Uint32 DBDICT_TRIGGER_RECORD_TRANSIENT_POOL_INDEX = 1;
   typedef Ptr<TriggerRecord> TriggerRecordPtr;
-  typedef ArrayPool<TriggerRecord> TriggerRecord_pool;
+  typedef TransientPool<TriggerRecord> TriggerRecord_pool;
 
   Uint32 c_maxNoOfTriggers;
   TriggerRecord_pool c_triggerRecordPool_;
-  TriggerRecord_pool& get_pool(TriggerRecordPtr) { return c_triggerRecordPool_;}
+  TriggerRecord_pool& get_pool(TriggerRecordPtr)
+  { return c_triggerRecordPool_;}
   RSS_AP_SNAPSHOT(c_triggerRecordPool_);
 
   /**
@@ -651,7 +675,7 @@ public:
     Uint32 m_type;
     Uint64 m_file_size;
     Uint64 m_file_free;
-    RopeHandle m_path;
+    LcRopeHandle m_path;
 
     Uint32 nextList;
     union {
@@ -674,7 +698,7 @@ public:
 
     Uint32 m_type;
     Uint32 m_version;
-    RopeHandle m_name;
+    LcRopeHandle m_name;
 
     union {
       struct {
@@ -702,9 +726,6 @@ public:
   File_pool& get_pool(FilePtr) { return c_file_pool; }
   Filegroup_pool& get_pool(FilegroupPtr) { return c_filegroup_pool; }
 
-  RopePool c_rope_pool;
-  RSS_AP_SNAPSHOT(c_rope_pool);
-
   template <typename T, typename U = T> struct HashedById {
     static Uint32& nextHash(U& t) { return t.nextHash_by_id; }
     static Uint32& prevHash(U& t) { return t.prevHash_by_id; }
@@ -720,20 +741,25 @@ public:
   };
 
   struct DictObject {
-    DictObject() {
+    static constexpr Uint32 TYPE_ID = RT_DBDICT_OBJECT_RECORD;
+    Uint32 m_magic;
+
+    DictObject() :
+      m_magic(Magic::make(TYPE_ID))
+    {
       m_trans_key = 0;
       m_op_ref_count = 0;
     }
+
     Uint32 m_id;
     Uint32 m_type;
     Uint32 m_object_ptr_i;
     Uint32 m_ref_count;
-    RopeHandle m_name;
+    LcRopeHandle m_name;
     union {
       struct {
 	Uint32 m_name_len;
 	const char * m_name_ptr;
-	RopePool * m_pool;
       } m_key;
       Uint32 nextPool;
       Uint32 nextList;
@@ -758,21 +784,23 @@ public:
     Uint32 nextHash_by_name;
     Uint32 prevHash_by_name;
     Uint32 hashValue_by_name() const { return m_name.hashValue(); }
-    bool equal_by_name(DictObject const& obj) const {
-      if(obj.hashValue_by_name() == hashValue_by_name()){
-	ConstRope r(* m_key.m_pool, obj.m_name);
+    bool equal_by_name(DictObject const& obj) const
+    {
+      if(obj.hashValue_by_name() == hashValue_by_name())
+      {
+	LcConstRope r(obj.m_name);
 	return r.compare(m_key.m_name_ptr, m_key.m_name_len) == 0;
       }
       return false;
     }
 
-#ifdef VM_TRACE
+#if defined VM_TRACE
     void print(NdbOut&) const;
 #endif
   };
-
+  static constexpr Uint32 DBDICT_OBJECT_RECORD_TRANSIENT_POOL_INDEX = 0;
   typedef Ptr<DictObject> DictObjectPtr;
-  typedef ArrayPool<DictObject> DictObject_pool;
+  typedef TransientPool<DictObject> DictObject_pool;
   typedef DLMHashTable<DictObject_pool, HashedByName<DictObject> > DictObjectName_hash;
   typedef DLMHashTable<DictObject_pool, HashedById<DictObject> > DictObjectId_hash;
   typedef SLList<DictObject_pool> DictObject_list;
@@ -794,7 +822,8 @@ public:
       object.setNull();
       return false;
     }
-    get_pool(object).getPtr(object, obj.p->m_object_ptr_i);
+    object.i = obj.p->m_object_ptr_i;
+    get_pool(object).getPtr(object);
     return !object.isNull();
   }
 
@@ -811,7 +840,8 @@ public:
       object.setNull();
       return false;
     }
-    get_pool(object).getPtr(object, obj.p->m_object_ptr_i);
+    object.i = obj.p->m_object_ptr_i;
+    get_pool(object).getPtr(object);
     return !object.isNull();
   }
 
@@ -819,7 +849,7 @@ public:
   {
     DictObject key;
     key.m_id = id;
-    key.m_type = 0; // Not a trigger atleast
+    key.m_type = 0; // Not a trigger at least
     bool ok = c_obj_id_hash.find(object, key);
     return ok;
   }
@@ -850,7 +880,7 @@ public:
   }
 
   DictObject * get_object(const char * name, Uint32 len){
-    return get_object(name, len, LocalRope::hash(name, len));
+    return get_object(name, len, LcLocalRope::hash(name, len));
   }
 
   DictObject * get_object(const char * name, Uint32 len, Uint32 hash);
@@ -861,7 +891,7 @@ public:
   }
 
   bool get_object(DictObjectPtr& obj_ptr, const char * name, Uint32 len){
-    return get_object(obj_ptr, name, len, LocalRope::hash(name, len));
+    return get_object(obj_ptr, name, len, LcLocalRope::hash(name, len));
   }
 
   bool get_object(DictObjectPtr&, const char* name, Uint32 len, Uint32 hash);
@@ -886,7 +916,6 @@ private:
   void execDICTSTARTREQ(Signal* signal);
 
   void execGET_TABINFOREQ(Signal* signal);
-  void execGET_TABLEDID_REQ(Signal* signal);
   void execGET_TABINFOREF(Signal* signal);
   void execGET_TABINFO_CONF(Signal* signal);
   void execCONTINUEB(Signal* signal);
@@ -1040,8 +1069,6 @@ private:
   void execALTER_TABLE_REF(Signal* signal);
   void execALTER_TABLE_CONF(Signal* signal);
   bool check_ndb_versions() const;
-  int check_sender_version(const Signal* signal, Uint32 version) const;
-
 
   void execCREATE_FILE_REQ(Signal* signal);
   void execCREATE_FILEGROUP_REQ(Signal* signal);
@@ -1697,27 +1724,27 @@ private:
 
   template <Uint32 sz>
   inline bool
-  copyRope(RopeHandle& rh_dst, const RopeHandle& rh_src)
+  copyRope(LcRopeHandle& rh_dst, const LcRopeHandle& rh_src)
   {
     char buf[sz];
-    LocalRope r_dst(c_rope_pool, rh_dst);
-    ConstRope r_src(c_rope_pool, rh_src);
+    LcLocalRope r_dst(rh_dst);
+    LcConstRope r_src(rh_src);
     ndbrequire(r_src.size() <= sz);
-    r_src.copy(buf);
+    r_src.copy(buf, sizeof(buf));
     bool ok = r_dst.assign(buf, r_src.size());
     return ok;
   }
 
-#ifdef VM_TRACE
+#if defined VM_TRACE
   template <Uint32 sz>
   inline const char*
-  copyRope(const RopeHandle& rh)
+  copyRope(const LcRopeHandle& rh)
   {
     static char buf[2][sz];
     static int i = 0;
-    ConstRope r(c_rope_pool, rh);
+    LcConstRope r(rh);
     char* str = buf[i++ % 2];
-    r.copy(str);
+    r.copy(str, sizeof(buf[0]));
     return str;
   }
 #endif
@@ -1771,6 +1798,7 @@ private:
       errorObjectName[0] = 0;
     }
     void print(NdbOut&) const;
+    void print(EventLogger*) const;
     ErrorInfo(const ErrorInfo&) = default;
   private:
     ErrorInfo& operator=(const ErrorInfo&) = default;
@@ -2061,7 +2089,7 @@ private:
       op_key = the_op_key;
     }
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -2128,16 +2156,20 @@ private:
 
   // seize / find / release, atomic on op rec + data rec
 
-  bool seizeSchemaOp(SchemaTransPtr trans_ptr, SchemaOpPtr& op_ptr, Uint32 op_key, const OpInfo& info, bool linked=false);
+  [[nodiscard]] bool seizeSchemaOp(SchemaTransPtr trans_ptr,
+                                   SchemaOpPtr& op_ptr,
+                                   Uint32 op_key,
+                                   const OpInfo& info,
+                                   bool linked = false);
 
   template <class T>
-  inline bool
+  [[nodiscard]] inline bool
   seizeSchemaOp(SchemaTransPtr trans_ptr, SchemaOpPtr& op_ptr, Uint32 op_key, bool linked) {
     return seizeSchemaOp(trans_ptr, op_ptr, op_key, T::g_opInfo, linked);
   }
 
   template <class T>
-  inline bool
+  [[nodiscard]] inline bool
   seizeSchemaOp(SchemaTransPtr trans_ptr, SchemaOpPtr& op_ptr, Ptr<T>& t_ptr, Uint32 op_key) {
     if (seizeSchemaOp<T>(trans_ptr, op_ptr, op_key)) {
       getOpRec<T>(op_ptr, t_ptr);
@@ -2147,7 +2179,7 @@ private:
   }
 
   template <class T>
-  inline bool
+  [[nodiscard]] inline bool
   seizeSchemaOp(SchemaTransPtr trans_ptr, SchemaOpPtr& op_ptr, bool linked) {
     /*
       Store node id in high 8 bits to make op_key globally unique
@@ -2163,7 +2195,7 @@ private:
   }
 
   template <class T>
-  inline bool
+  [[nodiscard]] inline bool
   seizeSchemaOp(SchemaTransPtr trans_ptr, SchemaOpPtr& op_ptr, Ptr<T>& t_ptr, bool linked=false) {
     if (seizeSchemaOp<T>(trans_ptr, op_ptr, linked)) {
       getOpRec<T>(op_ptr, t_ptr);
@@ -2173,7 +2205,7 @@ private:
   }
 
   template <class T>
-  inline bool
+  [[nodiscard]] inline bool
   seizeLinkedSchemaOp(SchemaOpPtr op_ptr, SchemaOpPtr& oplnk_ptr, Ptr<T>& t_ptr) {
     ndbrequire(op_ptr.p->m_oplnk_ptr.isNull());
     if (seizeSchemaOp<T>(op_ptr.p->m_trans_ptr, oplnk_ptr, true)) {
@@ -2186,10 +2218,10 @@ private:
     return false;
   }
 
-  bool findSchemaOp(SchemaOpPtr& op_ptr, Uint32 op_key);
+  [[nodiscard]] bool findSchemaOp(SchemaOpPtr& op_ptr, Uint32 op_key);
 
   template <class T>
-  inline bool
+  [[nodiscard]] inline bool
   findSchemaOp(SchemaOpPtr& op_ptr, Ptr<T>& t_ptr, Uint32 op_key) {
     if (findSchemaOp(op_ptr, op_key)) {
       getOpRec(op_ptr, t_ptr);
@@ -2218,7 +2250,7 @@ private:
   void getDictObject(SchemaOpPtr, DictObjectPtr&);
   void linkDictObject(SchemaOpPtr op_ptr, DictObjectPtr obj_ptr);
   void unlinkDictObject(SchemaOpPtr op_ptr);
-  void seizeDictObject(SchemaOpPtr, DictObjectPtr&, const RopeHandle& name);
+  void seizeDictObject(SchemaOpPtr, DictObjectPtr&, const LcRopeHandle& name);
   bool findDictObject(SchemaOpPtr, DictObjectPtr&, const char* name);
   bool findDictObject(SchemaOpPtr, DictObjectPtr&, Uint32 obj_ptr_i);
   void releaseDictObject(SchemaOpPtr);
@@ -2275,7 +2307,7 @@ private:
     static Uint32 weight(Uint32 state) {
     /*
       Return the "weight" of a transaction state, used to determine
-      the absolute order of beleived transaction states at master
+      the absolute order of believed transaction states at master
       takeover.
      */
       switch ((TransState) state) {
@@ -2405,7 +2437,7 @@ private:
       m_clientState = TransClient::StateUndef;
       m_clientFlags = 0;
       m_takeOverTxKey = 0;
-      bzero(&m_lockReq, sizeof(m_lockReq));
+      std::memset(&m_lockReq, 0, sizeof(m_lockReq));
       m_callback.m_callbackFunction = 0;
       m_callback.m_callbackData = 0;
       m_magic = DICT_MAGIC;
@@ -2422,7 +2454,7 @@ private:
       trans_key = the_trans_key;
     }
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -2738,7 +2770,7 @@ private:
     TxHandle(Uint32 the_tx_key) {
       tx_key = the_tx_key;
     }
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -2809,7 +2841,7 @@ private:
 
     CreateTableRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_tabInfoPtrI = RNIL;
       m_fragmentsPtrI = RNIL;
       m_dihAddFragPtr = RNIL;
@@ -2819,7 +2851,7 @@ private:
       m_modified_by_subOps = false;
     }
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -2890,12 +2922,12 @@ private:
 
     DropTableRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_block = 0;
       m_fully_replicated_trigger = false;
     }
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -2963,8 +2995,8 @@ private:
     Uint32 m_newTable_realObjectId;
 
     // before image
-    RopeHandle m_oldTableName;
-    RopeHandle m_oldFrmData;
+    LcRopeHandle m_oldTableName;
+    LcRopeHandle m_oldFrmData;
 
     // connect ptr towards TUP, DIH, LQH
     Uint32 m_dihAddFragPtr;
@@ -2990,7 +3022,7 @@ private:
 
     AlterTableRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_newTablePtrI = RNIL;
       m_dihAddFragPtr = RNIL;
       m_lqhFragPtr = RNIL;
@@ -3011,7 +3043,7 @@ private:
       m_sub_suma_enable = false;
       m_sub_suma_filter = false;
     }
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -3111,18 +3143,18 @@ private:
 
     CreateIndexRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
-      memset(m_indexName, 0, sizeof(m_indexName));
-      memset(&m_attrList, 0, sizeof(m_attrList));
+      std::memset(&m_request, 0, sizeof(m_request));
+      std::memset(m_indexName, 0, sizeof(m_indexName));
+      std::memset(&m_attrList, 0, sizeof(m_attrList));
       m_attrMask.clear();
-      memset(m_attrMap, 0, sizeof(m_attrMap));
+      std::memset(m_attrMap, 0, sizeof(m_attrMap));
       m_bits = 0;
       m_fragmentType = 0;
       m_indexKeyLength = 0;
       m_sub_create_table = false;
       m_sub_alter_index = false;
     }
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -3174,11 +3206,11 @@ private:
 
     DropIndexRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_sub_alter_index = false;
       m_sub_drop_table = false;
     }
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -3254,8 +3286,8 @@ private:
 
     AlterIndexRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
-      memset(&m_attrList, 0, sizeof(m_attrList));
+      std::memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_attrList, 0, sizeof(m_attrList));
       m_attrMask.clear();
       m_triggerTmpl = 0;
       m_sub_trigger = false;
@@ -3265,7 +3297,7 @@ private:
       m_tc_index_done = false;
     }
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
     void print(NdbOut&) const;
 #endif
   };
@@ -3347,9 +3379,9 @@ private:
 
     BuildIndexRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
-      memset(&m_indexKeyList, 0, sizeof(m_indexKeyList));
-      memset(&m_tableKeyList, 0, sizeof(m_tableKeyList));
+      std::memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_indexKeyList, 0, sizeof(m_indexKeyList));
+      std::memset(&m_tableKeyList, 0, sizeof(m_tableKeyList));
       m_attrMask.clear();
       m_triggerTmpl = 0;
       m_subOpCount = 0;
@@ -3419,7 +3451,7 @@ private:
 
     IndexStatRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_subOpCount = 0;
       m_subOpIndex = 0;
     }
@@ -3477,7 +3509,7 @@ private:
     Uint32 m_obj_ptr_i;      // in HashMap_pool
     Uint32 m_object_version;
 
-    RopeHandle m_name;
+    LcRopeHandle m_name;
 
     /**
      * ptr.i, in g_hash_map
@@ -3508,7 +3540,7 @@ private:
 
     CreateHashMapRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
     }
   };
 
@@ -3552,7 +3584,7 @@ private:
 
     CopyDataRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
     }
   };
 
@@ -3635,7 +3667,7 @@ private:
                            in case of NotMaster */
     // ctor
     OpCreateEvent() {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_requestType = CreateEvntReq::RT_UNDEFINED;
       m_errorCode = CreateEvntRef::NoError;
       m_errorLine = 0;
@@ -3677,7 +3709,7 @@ private:
     Uint32 m_errorNode;
     // ctor
     OpDropEvent() {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_errorCode = 0;
       m_errorLine = 0;
       m_errorNode = 0;
@@ -3726,8 +3758,8 @@ private:
 
     CreateTriggerRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
-      memset(m_triggerName, 0, sizeof(m_triggerName));
+      std::memset(&m_request, 0, sizeof(m_request));
+      std::memset(m_triggerName, 0, sizeof(m_triggerName));
       m_main_op = true;
       m_sub_src = false;
       m_sub_dst = false;
@@ -3789,8 +3821,8 @@ private:
 
     DropTriggerRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
-      memset(m_triggerName, 0, sizeof(m_triggerName));
+      std::memset(&m_request, 0, sizeof(m_request));
+      std::memset(m_triggerName, 0, sizeof(m_triggerName));
       m_main_op = true;
       m_sub_src = false;
       m_sub_dst = false;
@@ -3844,7 +3876,7 @@ private:
 
     CreateFilegroupRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_parsed = m_prepared = false;
       m_warningFlags = 0;
     }
@@ -3892,7 +3924,7 @@ private:
 
     CreateFileRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_parsed = m_prepared = false;
       m_warningFlags = 0;
     }
@@ -3939,7 +3971,7 @@ private:
 
     DropFilegroupRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_parsed = m_prepared = false;
     }
   };
@@ -3984,7 +4016,7 @@ private:
 
     DropFileRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_parsed = m_prepared = false;
     }
   };
@@ -4029,7 +4061,7 @@ private:
 
     CreateNodegroupRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_map_created = false;
       m_blockIndex = RNIL;
       m_blockCnt = RNIL;
@@ -4099,7 +4131,7 @@ private:
 
     DropNodegroupRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_blockIndex = RNIL;
       m_blockCnt = RNIL;
       m_cnt_waitGCP = RNIL;
@@ -4167,7 +4199,7 @@ private:
 
     CreateFKRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_parsed = m_prepared = false;
       m_sub_create_trigger = 0;
       m_sub_build_fk = false;
@@ -4228,7 +4260,7 @@ private:
 
     BuildFKRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_parsed = m_prepared = false;
     }
   };
@@ -4280,7 +4312,7 @@ private:
 
     DropFKRec() :
       OpRec(g_opInfo, (Uint32*)&m_request) {
-      memset(&m_request, 0, sizeof(m_request));
+      std::memset(&m_request, 0, sizeof(m_request));
       m_parsed = m_prepared = false;
       m_sub_drop_trigger = 0;
     }
@@ -4336,7 +4368,7 @@ private:
 
     Uint32 m_obj_ptr_i;
     Uint32 m_version;
-    RopeHandle m_name;
+    LcRopeHandle m_name;
     Uint32 m_parentTableId;
     Uint32 m_childTableId;
     Uint32 m_parentIndexId;
@@ -4376,10 +4408,10 @@ private:
    */
   // Common operation record pool
 public:
-  STATIC_CONST( opCreateEventSize = sizeof(OpCreateEvent) );
-  STATIC_CONST( opSubEventSize = sizeof(OpSubEvent) );
-  STATIC_CONST( opDropEventSize = sizeof(OpDropEvent) );
-  STATIC_CONST( opSignalUtilSize = sizeof(OpSignalUtil) );
+  static constexpr Uint32 opCreateEventSize = sizeof(OpCreateEvent);
+  static constexpr Uint32 opSubEventSize = sizeof(OpSubEvent);
+  static constexpr Uint32 opDropEventSize = sizeof(OpDropEvent);
+  static constexpr Uint32 opSignalUtilSize = sizeof(OpSignalUtil);
 private:
 #define PTR_ALIGN(n) ((((n)+sizeof(void*)-1)>>2)&~((sizeof(void*)-1)>>2))
   union OpRecordUnion {
@@ -4543,10 +4575,6 @@ private:
 			  GetTabInfoReq*,
 			  GetTabInfoRef::ErrorCode errorCode,
                           Uint32 errorLine);
-
-  void sendGET_TABLEID_REF(Signal* signal,
-			   GetTableIdReq * req,
-			   GetTableIdRef::ErrorCode errorCode);
 
   void sendGetTabResponse(Signal* signal);
 
@@ -4734,7 +4762,7 @@ public:
   int checkSingleUserMode(Uint32 senderRef);
 
   friend NdbOut& operator<<(NdbOut& out, const ErrorInfo&);
-#ifdef VM_TRACE
+#if defined(VM_TRACE)
   friend NdbOut& operator<<(NdbOut& out, const DictObject&);
   friend NdbOut& operator<<(NdbOut& out, const SchemaOp&);
   friend NdbOut& operator<<(NdbOut& out, const SchemaTrans&);
@@ -4861,32 +4889,16 @@ public:
   {
     return sizeof(struct DictObject);
   }
-  static Uint64 get_rope_pool_size(Uint64 num_tables,
-                                   Uint64 num_attributes,
-                                   Uint64 num_triggers,
-                                   Uint32 percent,
-                                   Uint64 safety)
-  {
-    Uint64 percent64 = Uint64(percent);
-    if (percent64 == 0)
-      percent64 = 6;
 
-    Uint64 rps = 0;  // Roughly calculate rope pool size:
-    rps += num_tables * (MAX_TAB_NAME_SIZE + ROPE_COPY_BUFFER_SIZE);
-    rps += (num_attributes * (MAX_ATTR_NAME_SIZE + MAX_ATTR_DEFAULT_VALUE_SIZE) / Uint64(10));
-    rps += num_triggers * MAX_TAB_NAME_SIZE;
-    rps += (10 + 10) * MAX_TAB_NAME_SIZE;
-    if (percent64 <= 100)
-    {
-      rps = (rps * percent64) / Uint64(100);
-    }
-    else
-    {
-      rps = percent64;
-    }
-    rps += safety;
-    return rps;
-  }
+private:
+  void checkPoolShrinkNeed(Uint32 pool_index,
+                           const TransientFastSlotPool& pool);
+  void sendPoolShrink(Uint32 pool_index);
+  void shrinkTransientPools(Uint32 pool_index);
+
+  static const Uint32 c_transient_pool_count = 4;
+  TransientFastSlotPool* c_transient_pools[c_transient_pool_count];
+  Bitmask<1> c_transient_pools_shrinking;
 };
 
 inline bool
@@ -4924,6 +4936,20 @@ Dbdict::TableRecord::isOrderedIndex() const
 {
   return DictTabInfo::isOrderedIndex(tableType);
 }
+
+inline void Dbdict::checkPoolShrinkNeed(const Uint32 pool_index,
+                                        const TransientFastSlotPool& pool)
+{
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  ndbrequire(pool_index < c_transient_pool_count);
+  ndbrequire(c_transient_pools[pool_index] == &pool);
+#endif
+  if (pool.may_shrink())
+  {
+    sendPoolShrink(pool_index);
+  }
+}
+
 
 // quilt keeper
 

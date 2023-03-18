@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, 2020, Oracle and/or its affiliates. All Rights Reserved.
+/* Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License, version 2.0, as published by the
@@ -57,7 +57,7 @@ struct MemoryMonitor {
      * [in] Number of bytes.
      * @return Heap-memory consumption after increase. */
     static size_t increase(size_t bytes) {
-      DBUG_ASSERT(ram <= std::numeric_limits<decltype(bytes)>::max() - bytes);
+      assert(ram <= std::numeric_limits<decltype(bytes)>::max() - bytes);
       return ram.fetch_add(bytes) + bytes;
     }
     /** Log decrements of heap-memory consumption.
@@ -65,7 +65,7 @@ struct MemoryMonitor {
      * [in] Number of bytes.
      * @return Heap-memory consumption after decrease. */
     static size_t decrease(size_t bytes) {
-      DBUG_ASSERT(ram >= bytes);
+      assert(ram >= bytes);
       return ram.fetch_sub(bytes) - bytes;
     }
     /** Get heap-memory threshold level. Level is defined by this Allocator.
@@ -84,7 +84,7 @@ struct MemoryMonitor {
      * [in] Number of bytes.
      * @return MMAP-memory consumption after increase. */
     static size_t increase(size_t bytes) {
-      DBUG_ASSERT(mmap <= std::numeric_limits<decltype(bytes)>::max() - bytes);
+      assert(mmap <= std::numeric_limits<decltype(bytes)>::max() - bytes);
       return mmap.fetch_add(bytes) + bytes;
     }
     /** Log decrements of MMAP-backed memory consumption.
@@ -92,7 +92,7 @@ struct MemoryMonitor {
      * [in] Number of bytes.
      * @return MMAP-memory consumption after decrease. */
     static size_t decrease(size_t bytes) {
-      DBUG_ASSERT(mmap >= bytes);
+      assert(mmap >= bytes);
       return mmap.fetch_sub(bytes) - bytes;
     }
     /** Get MMAP-backed memory threshold level. Level is defined by this
@@ -116,6 +116,36 @@ struct MemoryMonitor {
   /** Total bytes allocated so far by all threads in RAM/MMAP. */
   static std::atomic<size_t> ram;
   static std::atomic<size_t> mmap;
+};
+
+/* Thin abstraction which enables logging of how much resources have been
+ * consumed at the per-table level. Each temptable::Table will be composed
+ * of this type so that the temptable::Allocator through its policies can
+ * monitor its memory consumption and act appropriately when threshold
+ * is reached.
+ **/
+class TableResourceMonitor {
+ public:
+  TableResourceMonitor(size_t threshold)
+      : m_threshold(threshold), m_total_bytes(0) {}
+
+  size_t increase(size_t bytes) {
+    assert(m_total_bytes <=
+           std::numeric_limits<decltype(bytes)>::max() - bytes);
+    m_total_bytes += bytes;
+    return m_total_bytes;
+  }
+  size_t decrease(size_t bytes) {
+    assert(m_total_bytes >= bytes);
+    m_total_bytes -= bytes;
+    return m_total_bytes;
+  }
+  size_t threshold() { return m_threshold; }
+  size_t consumption() { return m_total_bytes; }
+
+ private:
+  size_t m_threshold;
+  size_t m_total_bytes;
 };
 
 /* Allocation scheme, a type which controls allocation patterns in TempTable
@@ -159,8 +189,10 @@ struct MemoryMonitor {
  */
 template <typename Block_size_policy, typename Block_source_policy>
 struct Allocation_scheme {
-  static Source block_source(size_t block_size) {
-    return Block_source_policy::block_source(block_size);
+  static Source block_source(size_t block_size,
+                             TableResourceMonitor *table_resource_monitor) {
+    return Block_source_policy::block_source(block_size,
+                                             table_resource_monitor);
   }
   static size_t block_size(size_t number_of_blocks, size_t n_bytes_requested) {
     return Block_size_policy::block_size(number_of_blocks, n_bytes_requested);
@@ -170,15 +202,18 @@ struct Allocation_scheme {
 /* Concrete implementation of Block_source_policy, a type which controls where
  * TempTable allocator is going to be allocating next Block of memory from.
  *
- * In particular, this policy will make TempTable allocator to:
+ * In particular, this policy will make TempTable allocator:
  *  1. Use RAM as long as temptable_max_ram threshold is not reached.
  *  2. Start using MMAP when temptable_max_ram threshold is reached.
  *  3. Go back using RAM as soon as RAM consumption drops below the
- *     temptable_max_ram threshold and there is enough space to accomodate the
+ *     temptable_max_ram threshold and there is enough space to accommodate the
  *     new block given the size.
+ *  4. Not take into account per-table memory limits defined through
+ *     tmp_table_size SYSVAR.
  * */
 struct Prefer_RAM_over_MMAP_policy {
-  static Source block_source(uint32_t block_size) {
+  static Source block_source(uint32_t block_size,
+                             TableResourceMonitor * = nullptr) {
     if (MemoryMonitor::RAM::consumption() < MemoryMonitor::RAM::threshold()) {
       if (MemoryMonitor::RAM::increase(block_size) <=
           MemoryMonitor::RAM::threshold()) {
@@ -196,6 +231,38 @@ struct Prefer_RAM_over_MMAP_policy {
       }
     }
     throw Result::RECORD_FILE_FULL;
+  }
+};
+
+/* Another concrete implementation of Block_source_policy, a type which controls
+ * where TempTable allocator is going to be allocating next Block of memory
+ * from. It acts the same as Prefer_RAM_over_MMAP_policy with the main
+ * difference being that this policy obeys the per-table limit.
+ *
+ * What this means is that each temptable::Table is allowed to fit no more data
+ * than the given threshold controlled through TableResourceMonitor abstraction.
+ * TableResourceMonitor is a simple abstraction which is in its part an alias
+ * for tmp_table_size, a system variable that end MySQL users will be using to
+ * control this threshold.
+ *
+ * Updating the tmp_table_size threshold can only be done through the separate
+ * SET statement which implies that the tmp_table_size threshold cannot be
+ * updated during the duration of some query which is running within the same
+ * session. Separate sessions can still of course change this value to their
+ * liking.
+ * */
+struct Prefer_RAM_over_MMAP_policy_obeying_per_table_limit {
+  static Source block_source(uint32_t block_size,
+                             TableResourceMonitor *table_resource_monitor) {
+    assert(table_resource_monitor);
+    assert(table_resource_monitor->consumption() <=
+           table_resource_monitor->threshold());
+
+    if (table_resource_monitor->consumption() + block_size >
+        table_resource_monitor->threshold())
+      throw Result::RECORD_FILE_FULL;
+
+    return Prefer_RAM_over_MMAP_policy::block_source(block_size);
   }
 };
 
@@ -247,7 +314,8 @@ struct Exponential_policy {
  * over MMAP allocations.
  */
 using Exponential_growth_preferring_RAM_over_MMAP =
-    Allocation_scheme<Exponential_policy, Prefer_RAM_over_MMAP_policy>;
+    Allocation_scheme<Exponential_policy,
+                      Prefer_RAM_over_MMAP_policy_obeying_per_table_limit>;
 
 /**
   Shared state between all instances of a given allocator.
@@ -339,7 +407,7 @@ class Allocator {
   };
 
   /** Constructor. */
-  explicit Allocator(Block *shared_block);
+  Allocator(Block *shared_block, TableResourceMonitor &table_resource_monitor);
 
   /** Constructor from allocator of another type. The state is copied into the
    * new object. */
@@ -425,27 +493,37 @@ class Allocator {
    * memory of this shared block.
    */
   Block *m_shared_block;
+  /** Table resource monitor control mechanism that limits the amount of
+   *  resources that can be consumed at the per-table level.
+   */
+  TableResourceMonitor &m_table_resource_monitor;
 };
 
 /* Implementation of inlined methods. */
 
 template <class T, class AllocationScheme>
-inline Allocator<T, AllocationScheme>::Allocator(Block *shared_block)
+inline Allocator<T, AllocationScheme>::Allocator(
+    Block *shared_block, TableResourceMonitor &table_resource_monitor)
     : m_state(std::make_shared<AllocatorState>()),
-      m_shared_block(shared_block) {}
+      m_shared_block(shared_block),
+      m_table_resource_monitor(table_resource_monitor) {}
 
 template <class T, class AllocationScheme>
 template <class U>
 inline Allocator<T, AllocationScheme>::Allocator(const Allocator<U> &other)
-    : m_state(other.m_state), m_shared_block(other.m_shared_block) {}
+    : m_state(other.m_state),
+      m_shared_block(other.m_shared_block),
+      m_table_resource_monitor(other.m_table_resource_monitor) {}
 
 template <class T, class AllocationScheme>
 template <class U>
 inline Allocator<T, AllocationScheme>::Allocator(Allocator<U> &&other) noexcept
-    : m_state(std::move(other.m_state)), m_shared_block(other.m_shared_block) {}
+    : m_state(std::move(other.m_state)),
+      m_shared_block(other.m_shared_block),
+      m_table_resource_monitor(other.m_table_resource_monitor) {}
 
 template <class T, class AllocationScheme>
-inline Allocator<T, AllocationScheme>::~Allocator() {}
+inline Allocator<T, AllocationScheme>::~Allocator() = default;
 
 template <class T, class AllocationScheme>
 template <class U>
@@ -463,7 +541,7 @@ inline bool Allocator<T, AllocationScheme>::operator!=(
 
 template <class T, class AllocationScheme>
 inline T *Allocator<T, AllocationScheme>::allocate(size_t n_elements) {
-  DBUG_ASSERT(n_elements <= std::numeric_limits<size_type>::max() / sizeof(T));
+  assert(n_elements <= std::numeric_limits<size_type>::max() / sizeof(T));
   DBUG_EXECUTE_IF("temptable_allocator_oom", throw Result::OUT_OF_MEM;);
   DBUG_EXECUTE_IF("temptable_allocator_record_file_full",
                   throw Result::RECORD_FILE_FULL;);
@@ -478,8 +556,9 @@ inline T *Allocator<T, AllocationScheme>::allocate(size_t n_elements) {
   if (m_shared_block && m_shared_block->is_empty()) {
     const size_t block_size =
         AllocationScheme::block_size(0, n_bytes_requested);
-    *m_shared_block =
-        Block(block_size, AllocationScheme::block_source(block_size));
+    *m_shared_block = Block(
+        block_size,
+        AllocationScheme::block_source(block_size, &m_table_resource_monitor));
     block = m_shared_block;
   } else if (m_shared_block &&
              m_shared_block->can_accommodate(n_bytes_requested)) {
@@ -488,24 +567,27 @@ inline T *Allocator<T, AllocationScheme>::allocate(size_t n_elements) {
              !m_state->current_block.can_accommodate(n_bytes_requested)) {
     const size_t block_size = AllocationScheme::block_size(
         m_state->number_of_blocks, n_bytes_requested);
-    m_state->current_block =
-        Block(block_size, AllocationScheme::block_source(block_size));
+    m_state->current_block = Block(
+        block_size,
+        AllocationScheme::block_source(block_size, &m_table_resource_monitor));
     block = &m_state->current_block;
     ++m_state->number_of_blocks;
   } else {
     block = &m_state->current_block;
   }
 
+  m_table_resource_monitor.increase(n_bytes_requested);
+
   T *chunk_data =
       reinterpret_cast<T *>(block->allocate(n_bytes_requested).data());
-  DBUG_ASSERT(reinterpret_cast<uintptr_t>(chunk_data) % alignof(T) == 0);
+  assert(reinterpret_cast<uintptr_t>(chunk_data) % alignof(T) == 0);
   return chunk_data;
 }
 
 template <class T, class AllocationScheme>
 inline void Allocator<T, AllocationScheme>::deallocate(T *chunk_data,
                                                        size_t n_elements) {
-  DBUG_ASSERT(reinterpret_cast<uintptr_t>(chunk_data) % alignof(T) == 0);
+  assert(reinterpret_cast<uintptr_t>(chunk_data) % alignof(T) == 0);
 
   if (chunk_data == nullptr) {
     return;
@@ -520,7 +602,7 @@ inline void Allocator<T, AllocationScheme>::deallocate(T *chunk_data,
     if (m_shared_block && (block == *m_shared_block)) {
       // Do nothing. Keep the last block alive.
     } else {
-      DBUG_ASSERT(m_state->number_of_blocks > 0);
+      assert(m_state->number_of_blocks > 0);
       if (block.type() == Source::RAM) {
         MemoryMonitor::RAM::decrease(block.size());
       } else {
@@ -534,6 +616,7 @@ inline void Allocator<T, AllocationScheme>::deallocate(T *chunk_data,
       --m_state->number_of_blocks;
     }
   }
+  m_table_resource_monitor.decrease(n_bytes_requested);
 }
 
 template <class T, class AllocationScheme>

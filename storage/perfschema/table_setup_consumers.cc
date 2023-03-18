@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -27,9 +27,9 @@
 
 #include "storage/perfschema/table_setup_consumers.h"
 
+#include <assert.h>
 #include <stddef.h>
 
-#include "my_dbug.h"
 #include "my_thread.h"
 #include "sql/field.h"
 #include "sql/plugin_table.h"
@@ -39,7 +39,7 @@
 #include "storage/perfschema/pfs_events_waits.h"
 #include "storage/perfschema/pfs_instr.h"
 
-#define COUNT_SETUP_CONSUMERS 15
+#define COUNT_SETUP_CONSUMERS 16
 
 static row_setup_consumers all_setup_consumers_data[COUNT_SETUP_CONSUMERS] = {
     {{STRING_WITH_LEN("events_stages_current")},
@@ -54,6 +54,10 @@ static row_setup_consumers all_setup_consumers_data[COUNT_SETUP_CONSUMERS] = {
      &flag_events_stages_history_long,
      false,
      true},
+    {{STRING_WITH_LEN("events_statements_cpu")},
+     &flag_events_statements_cpu,
+     false,
+     false},
     {{STRING_WITH_LEN("events_statements_current")},
      &flag_events_statements_current,
      false,
@@ -182,14 +186,14 @@ int table_setup_consumers::rnd_next(void) {
 
 int table_setup_consumers::rnd_pos(const void *pos) {
   set_position(pos);
-  DBUG_ASSERT(m_pos.m_index < COUNT_SETUP_CONSUMERS);
+  assert(m_pos.m_index < COUNT_SETUP_CONSUMERS);
   m_row = &all_setup_consumers_data[m_pos.m_index];
   return 0;
 }
 
-int table_setup_consumers::index_init(uint idx MY_ATTRIBUTE((unused)), bool) {
+int table_setup_consumers::index_init(uint idx [[maybe_unused]], bool) {
   PFS_index_setup_consumers *result = nullptr;
-  DBUG_ASSERT(idx == 0);
+  assert(idx == 0);
   result = PFS_NEW(PFS_index_setup_consumers);
   m_opened_index = result;
   m_index = result;
@@ -215,22 +219,22 @@ int table_setup_consumers::read_row_values(TABLE *table, unsigned char *,
                                            Field **fields, bool read_all) {
   Field *f;
 
-  DBUG_ASSERT(m_row);
+  assert(m_row);
 
   /* Set the null bits */
-  DBUG_ASSERT(table->s->null_bytes == 0);
+  assert(table->s->null_bytes == 0);
 
   for (; (f = *fields); fields++) {
     if (read_all || bitmap_is_set(table->read_set, f->field_index())) {
       switch (f->field_index()) {
         case 0: /* NAME */
-          set_field_varchar_utf8(f, m_row->m_name.str, m_row->m_name.length);
+          set_field_varchar_utf8mb4(f, m_row->m_name.str, m_row->m_name.length);
           break;
         case 1: /* ENABLED */
           set_field_enum(f, (*m_row->m_enabled_ptr) ? ENUM_YES : ENUM_NO);
           break;
         default:
-          DBUG_ASSERT(false);
+          assert(false);
       }
     }
   }
@@ -244,13 +248,11 @@ int table_setup_consumers::update_row_values(TABLE *table,
   Field *f;
   enum_yes_no value;
 
-  DBUG_ASSERT(m_row);
+  assert(m_row);
 
   for (; (f = *fields); fields++) {
     if (bitmap_is_set(table->write_set, f->field_index())) {
       switch (f->field_index()) {
-        case 0: /* NAME */
-          return HA_ERR_WRONG_COMMAND;
         case 1: /* ENABLED */
         {
           value = (enum_yes_no)get_field_enum(f);
@@ -258,7 +260,7 @@ int table_setup_consumers::update_row_values(TABLE *table,
           break;
         }
         default:
-          DBUG_ASSERT(false);
+          return HA_ERR_WRONG_COMMAND;
       }
     }
   }

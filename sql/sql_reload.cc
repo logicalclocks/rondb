@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -46,8 +46,8 @@
 #include "sql/mysqld.h"                 // select_errors
 #include "sql/opt_costconstantcache.h"  // reload_optimizer_cost_constants
 #include "sql/query_options.h"
-#include "sql/rpl_master.h"   // reset_master
-#include "sql/rpl_slave.h"    // reset_slave
+#include "sql/rpl_replica.h"  // reset_slave
+#include "sql/rpl_source.h"   // reset_master
 #include "sql/sql_base.h"     // close_cached_tables
 #include "sql/sql_class.h"    // THD
 #include "sql/sql_connect.h"  // reset_mqh
@@ -139,13 +139,13 @@ bool is_reload_request_denied(THD *thd, unsigned long op_type) {
     @retval !=0  Error; thd->killed is set or thd->is_error() is true
 */
 
-bool handle_reload_request(THD *thd, unsigned long options, TABLE_LIST *tables,
+bool handle_reload_request(THD *thd, unsigned long options, Table_ref *tables,
                            int *write_to_binlog) {
   bool result = false;
   select_errors = 0; /* Write if more errors */
   int tmp_write_to_binlog = *write_to_binlog = 1;
 
-  DBUG_ASSERT(!thd || !thd->in_sub_stmt);
+  assert(!thd || !thd->in_sub_stmt);
 
   if (options & REFRESH_GRANT) {
     THD *tmp_thd = nullptr;
@@ -245,13 +245,12 @@ bool handle_reload_request(THD *thd, unsigned long options, TABLE_LIST *tables,
     }
   }
 
-  DBUG_ASSERT(!thd || thd->locked_tables_mode ||
-              !thd->mdl_context.has_locks() ||
-              !thd->handler_tables_hash.empty() ||
-              thd->mdl_context.has_locks(MDL_key::USER_LEVEL_LOCK) ||
-              thd->mdl_context.has_locks(MDL_key::LOCKING_SERVICE) ||
-              thd->mdl_context.has_locks(MDL_key::BACKUP_LOCK) ||
-              thd->global_read_lock.is_acquired());
+  assert(!thd || thd->locked_tables_mode || !thd->mdl_context.has_locks() ||
+         !thd->handler_tables_hash.empty() ||
+         thd->mdl_context.has_locks(MDL_key::USER_LEVEL_LOCK) ||
+         thd->mdl_context.has_locks(MDL_key::LOCKING_SERVICE) ||
+         thd->mdl_context.has_locks(MDL_key::BACKUP_LOCK) ||
+         thd->global_read_lock.is_acquired());
 
   /*
     Note that if REFRESH_READ_LOCK bit is set then REFRESH_TABLES is set too
@@ -300,7 +299,7 @@ bool handle_reload_request(THD *thd, unsigned long options, TABLE_LIST *tables,
           lock on tables which we are going to flush.
         */
         if (tables) {
-          for (TABLE_LIST *t = tables; t; t = t->next_local)
+          for (Table_ref *t = tables; t; t = t->next_local)
             if (!find_table_for_mdl_upgrade(thd, t->db, t->table_name, false))
               return true;
         } else {
@@ -344,7 +343,7 @@ bool handle_reload_request(THD *thd, unsigned long options, TABLE_LIST *tables,
   if (options & REFRESH_THREADS)
     Per_thread_connection_handler::kill_blocked_pthreads();
   if (options & REFRESH_MASTER) {
-    DBUG_ASSERT(thd);
+    assert(thd);
     tmp_write_to_binlog = 0;
     /*
       RESET MASTER acquired global read lock (if the thread is not acquired
@@ -450,9 +449,9 @@ bool handle_reload_request(THD *thd, unsigned long options, TABLE_LIST *tables,
   are implicitly flushed (lose their position).
 */
 
-bool flush_tables_with_read_lock(THD *thd, TABLE_LIST *all_tables) {
+bool flush_tables_with_read_lock(THD *thd, Table_ref *all_tables) {
   Lock_tables_prelocking_strategy lock_tables_prelocking_strategy;
-  TABLE_LIST *table_list;
+  Table_ref *table_list;
 
   /*
     This is called from SQLCOM_FLUSH, the transaction has
@@ -527,13 +526,13 @@ error:
   until UNLOCK TABLES is executed.
 
   @param thd         Thread handler
-  @param all_tables  TABLE_LIST for tables to be exported
+  @param all_tables  Table_ref for tables to be exported
 
   @retval false  Ok
   @retval true   Error
 */
 
-bool flush_tables_for_export(THD *thd, TABLE_LIST *all_tables) {
+bool flush_tables_for_export(THD *thd, Table_ref *all_tables) {
   Lock_tables_prelocking_strategy lock_tables_prelocking_strategy;
 
   /*
@@ -561,7 +560,7 @@ bool flush_tables_for_export(THD *thd, TABLE_LIST *all_tables) {
   }
 
   // Check if all storage engines support FOR EXPORT.
-  for (TABLE_LIST *table_list = all_tables; table_list;
+  for (Table_ref *table_list = all_tables; table_list;
        table_list = table_list->next_global) {
     if (!(table_list->table->file->ha_table_flags() & HA_CAN_EXPORT)) {
       my_error(ER_ILLEGAL_HA, MYF(0), table_list->table_name);
@@ -570,7 +569,7 @@ bool flush_tables_for_export(THD *thd, TABLE_LIST *all_tables) {
   }
 
   // Notify the storage engines that the tables should be made ready for export.
-  for (TABLE_LIST *table_list = all_tables; table_list;
+  for (Table_ref *table_list = all_tables; table_list;
        table_list = table_list->next_global) {
     handler *handler_file = table_list->table->file;
     int error = handler_file->ha_extra(HA_EXTRA_EXPORT);

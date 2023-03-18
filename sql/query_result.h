@@ -1,4 +1,4 @@
-/* Copyright (c) 2015, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2015, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,29 +23,28 @@
 #ifndef QUERY_RESULT_INCLUDED
 #define QUERY_RESULT_INCLUDED
 
+#include <assert.h>
 #include <sys/types.h>
 
-#include <cstddef>
-
-#include "m_ctype.h"
-#include "mem_root_deque.h"
 #include "my_base.h"
-#include "my_compiler.h"  // MY_ATTRIBUTE
-#include "my_dbug.h"
+
 #include "my_inttypes.h"
 #include "my_io.h"
 #include "my_sys.h"
-#include "mysql/components/services/my_io_bits.h"  // File
-#include "mysqld_error.h"                          // ER_*
+#include "mysql/components/services/bits/my_io_bits.h"  // File
+#include "mysqld_error.h"                               // ER_*
 #include "sql/sql_list.h"
 
 class Item;
 class Item_subselect;
 class PT_select_var;
-class SELECT_LEX_UNIT;
+class Query_expression;
+class Query_term_set_op;
+class Server_side_cursor;
 class THD;
 struct CHARSET_INFO;
-struct TABLE_LIST;
+template <class Element_type>
+class mem_root_deque;
 
 /*
   This is used to get result from a query
@@ -53,7 +52,7 @@ struct TABLE_LIST;
 
 class Query_result {
  protected:
-  SELECT_LEX_UNIT *unit;
+  Query_expression *unit;
 
  public:
   /**
@@ -68,7 +67,7 @@ class Query_result {
   double estimated_cost;
 
   Query_result() : unit(nullptr), estimated_rowcount(0), estimated_cost(0) {}
-  virtual ~Query_result() {}
+  virtual ~Query_result() = default;
 
   virtual bool needs_file_privilege() const { return false; }
 
@@ -93,24 +92,16 @@ class Query_result {
     @returns false if success, true if error
   */
   virtual bool prepare(THD *, const mem_root_deque<Item *> &,
-                       SELECT_LEX_UNIT *u) {
+                       Query_expression *u) {
     unit = u;
     return false;
   }
 
   /**
-    Optimize the result processing of a query expression, applicable to
-    data change operation (not simple select queries).
-
-    @returns false if success, true if error
-  */
-  virtual bool optimize() { return false; }
-
-  /**
     Prepare for execution of the query expression or DML statement.
 
     Generally, this will have an implementation only for outer-most
-    SELECT_LEX objects, such as data change statements (for preparation
+    Query_block objects, such as data change statements (for preparation
     of the target table(s)) or dump statements (for preparation of target file).
 
     @returns false if success, true if error
@@ -118,7 +109,7 @@ class Query_result {
   virtual bool start_execution(THD *) { return false; }
 
   /// Create table, only needed to support CREATE TABLE ... SELECT
-  virtual bool create_table_for_select(THD *) { return false; }
+  virtual bool create_table_for_query_block(THD *) { return false; }
   /*
     Because of peculiarities of prepared statements protocol
     we need to know number of columns in the result set (if
@@ -129,18 +120,13 @@ class Query_result {
                                         const mem_root_deque<Item *> &list,
                                         uint flags) = 0;
   virtual bool send_data(THD *thd, const mem_root_deque<Item *> &items) = 0;
-  virtual void send_error(THD *, uint errcode, const char *err) {
-    my_message(errcode, err, MYF(0));
-  }
   virtual bool send_eof(THD *thd) = 0;
   /**
-    Check if this query returns a result set and therefore is allowed in
-    cursors and set an error message if it is not the case.
+    Check if this query result set supports cursors
 
-    @retval false     success
-    @retval true      error, an error message is set
+    @returns false if success, true if error
   */
-  virtual bool check_simple_select() const {
+  virtual bool check_supports_cursor() const {
     my_error(ER_SP_BAD_CURSOR_QUERY, MYF(0));
     return true;
   }
@@ -151,24 +137,15 @@ class Query_result {
     @returns true if error
   */
   virtual bool reset() {
-    DBUG_ASSERT(0);
+    assert(false);
     return false;
   }
   /**
     Cleanup after this execution. Completes the execution and resets object
     before next execution of a prepared statement/stored procedure.
   */
-  virtual void cleanup(THD *) { /* do nothing */
+  virtual void cleanup() { /* do nothing */
   }
-
-  void begin_dataset() {}
-
-  /// @returns Pointer to count of rows retained by this result.
-  virtual const ha_rows *row_count() const /* purecov: inspected */
-  {
-    DBUG_ASSERT(false);
-    return nullptr;
-  } /* purecov: inspected */
 
   /**
     Checks if this Query_result intercepts and transforms the result set.
@@ -177,21 +154,18 @@ class Query_result {
   */
   virtual bool is_interceptor() const { return false; }
 
-  /**
-    If this Query_result performs modifications to tables: tells if it modifies
-    the given table's row as it's read (a.k.a. "on the fly"), or rather buffers
-    it to a temporary structure and modifies it in a post-all-reads phase.
-    @param t  TABLE to answer for
-    @return   true if "on the fly"
-  */
-  virtual bool immediate_update(TABLE_LIST *t MY_ATTRIBUTE((unused))) const {
-    DBUG_ASSERT(false);
-    return false;
+  /// Only overridden (and non-empty) for Query_result_union, q.v.
+  virtual void set_limit(ha_rows) {}
+
+  /// @returns server side cursor, if associated with query result
+  virtual Server_side_cursor *cursor() const {
+    assert(false);
+    return nullptr;
   }
 };
 
 /*
-  Base class for Query_result descendands which intercept and
+  Base class for Query_result descendants which intercept and
   transform result set rows. As the rows are not sent to the client,
   sending of result set metadata should be suppressed as well.
 */
@@ -221,9 +195,9 @@ class Query_result_send : public Query_result {
                                 uint flags) override;
   bool send_data(THD *thd, const mem_root_deque<Item *> &items) override;
   bool send_eof(THD *thd) override;
-  bool check_simple_select() const override { return false; }
+  bool check_supports_cursor() const override { return false; }
   void abort_result_set(THD *thd) override;
-  void cleanup(THD *) override { is_result_set_started = false; }
+  void cleanup() override { is_result_set_started = false; }
 };
 
 class sql_exchange;
@@ -241,13 +215,12 @@ class Query_result_to_file : public Query_result_interceptor {
       : Query_result_interceptor(), exchange(ex), file(-1), row_count(0L) {
     path[0] = 0;
   }
-  ~Query_result_to_file() override { DBUG_ASSERT(file < 0); }
+  ~Query_result_to_file() override { assert(file < 0); }
 
   bool needs_file_privilege() const override { return true; }
-
-  void send_error(THD *thd, uint errcode, const char *err) override;
+  bool check_supports_cursor() const override;
   bool send_eof(THD *thd) override;
-  void cleanup(THD *thd) override;
+  void cleanup() override;
 };
 
 #define ESCAPE_CHARS "ntrb0ZN"  // keep synchronous with READ_INFO::unescape
@@ -284,17 +257,17 @@ class Query_result_export final : public Query_result_to_file {
  public:
   explicit Query_result_export(sql_exchange *ex) : Query_result_to_file(ex) {}
   bool prepare(THD *thd, const mem_root_deque<Item *> &list,
-               SELECT_LEX_UNIT *u) override;
+               Query_expression *u) override;
   bool start_execution(THD *thd) override;
   bool send_data(THD *thd, const mem_root_deque<Item *> &items) override;
-  void cleanup(THD *thd) override;
+  void cleanup() override;
 };
 
 class Query_result_dump : public Query_result_to_file {
  public:
   explicit Query_result_dump(sql_exchange *ex) : Query_result_to_file(ex) {}
   bool prepare(THD *thd, const mem_root_deque<Item *> &list,
-               SELECT_LEX_UNIT *u) override;
+               Query_expression *u) override;
   bool start_execution(THD *thd) override;
   bool send_data(THD *thd, const mem_root_deque<Item *> &items) override;
 };
@@ -308,11 +281,11 @@ class Query_dumpvar final : public Query_result_interceptor {
     var_list.clear();
   }
   bool prepare(THD *thd, const mem_root_deque<Item *> &list,
-               SELECT_LEX_UNIT *u) override;
+               Query_expression *u) override;
   bool send_data(THD *thd, const mem_root_deque<Item *> &items) override;
   bool send_eof(THD *thd) override;
-  bool check_simple_select() const override;
-  void cleanup(THD *) override { row_count = 0; }
+  bool check_supports_cursor() const override;
+  void cleanup() override { row_count = 0; }
 };
 
 /**

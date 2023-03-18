@@ -1,4 +1,4 @@
-/* Copyright (c) 2005, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2005, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -171,7 +171,7 @@ bool Event_creation_ctx::create_event_creation_ctx(
 /*************************************************************************/
 
 /*
-  Initiliazes dbname and name of an Event_queue_element_for_exec
+  Initializes dbname and name of an Event_queue_element_for_exec
   object
 
   SYNOPSIS
@@ -222,8 +222,6 @@ Event_queue_element_for_exec::~Event_queue_element_for_exec() {
 Event_basic::Event_basic()
     : m_schema_name(NULL_CSTR), m_event_name(NULL_CSTR), m_time_zone(nullptr) {
   DBUG_TRACE;
-  /* init memory root */
-  init_sql_alloc(key_memory_event_basic_root, &mem_root, 256, 512);
 }
 
 /*
@@ -233,10 +231,7 @@ Event_basic::Event_basic()
     Event_basic::Event_basic()
 */
 
-Event_basic::~Event_basic() {
-  DBUG_TRACE;
-  free_root(&mem_root, MYF(0));
-}
+Event_basic::~Event_basic() { DBUG_TRACE; }
 
 /*
   Constructor
@@ -265,7 +260,7 @@ Event_queue_element::Event_queue_element()
   SYNOPSIS
     Event_queue_element::Event_queue_element()
 */
-Event_queue_element::~Event_queue_element() {}
+Event_queue_element::~Event_queue_element() = default;
 
 /*
   Constructor
@@ -286,7 +281,7 @@ Event_timed::Event_timed() : m_created(0), m_modified(0), m_sql_mode(0) {
     Event_timed::~Event_timed()
 */
 
-Event_timed::~Event_timed() {}
+Event_timed::~Event_timed() = default;
 
 /*
   Constructor
@@ -381,8 +376,7 @@ bool Event_queue_element::fill_event_info(THD *thd, const dd::Event &event_obj,
     If neither STARTS and ENDS is set, then both fields are empty.
     Hence, if execute_at is empty there is an error.
   */
-  DBUG_ASSERT(
-      !(m_starts_null && m_ends_null && !m_expression && m_execute_at_null));
+  assert(!(m_starts_null && m_ends_null && !m_expression && m_execute_at_null));
 
   if (!m_expression && !m_execute_at_null)
     m_execute_at = event_obj.execute_at();
@@ -478,7 +472,7 @@ static bool get_next_time(const Time_zone *time_zone, my_time_t *next,
   DBUG_TRACE;
   DBUG_PRINT("enter", ("start: %lu  now: %lu", (long)start, (long)time_now));
 
-  DBUG_ASSERT(start <= time_now);
+  assert(start <= time_now);
 
   longlong months = 0, seconds = 0;
 
@@ -524,7 +518,7 @@ static bool get_next_time(const Time_zone *time_zone, my_time_t *next,
       return true;
       break;
     case INTERVAL_LAST:
-      DBUG_ASSERT(0);
+      assert(0);
   }
   DBUG_PRINT("info",
              ("seconds: %ld  months: %ld", (long)seconds, (long)months));
@@ -565,7 +559,7 @@ static bool get_next_time(const Time_zone *time_zone, my_time_t *next,
         then next_time was set, but perhaps to the value that is less
         then time_now.  See below for elaboration.
       */
-      DBUG_ASSERT(negative || next_time > 0);
+      assert(negative || next_time > 0);
 
       /*
         If local_now < local_start, i.e. STARTS time is in the future
@@ -654,7 +648,7 @@ static bool get_next_time(const Time_zone *time_zone, my_time_t *next,
     }
   }
 
-  DBUG_ASSERT(time_now < next_time);
+  assert(time_now < next_time);
 
   *next = next_time;
 
@@ -1049,10 +1043,15 @@ bool Event_job_data::execute(THD *thd, bool drop) {
     In case the definer user has SYSTEM_USER privilege then make THD
     non-killable through the users who do not have SYSTEM_USER privilege,
     OR vice-versa.
-    Note - Do not forget to reset the flag after the saved security context is
-           restored.
+    Recalculate the connection_admin flag state as well (CONNECTION_ADMIN
+    privilege).
+    Note - Do not forget to reset the flags after the saved security
+    context is restored.
   */
-  if (save_sctx) set_system_user_flag(thd);
+  if (save_sctx) {
+    set_system_user_flag(thd);
+    set_connection_admin_flag(thd);
+  }
 
   if (check_access(thd, EVENT_ACL, m_schema_name.str, nullptr, nullptr, false,
                    false)) {
@@ -1067,8 +1066,6 @@ bool Event_job_data::execute(THD *thd, bool drop) {
     goto end;
   }
 
-  if (construct_sp_sql(thd, &sp_sql)) goto end;
-
   /*
     Set up global thread attributes to reflect the properties of
     this Event. We can simply reset these instead of usual
@@ -1079,6 +1076,33 @@ bool Event_job_data::execute(THD *thd, bool drop) {
 
   thd->variables.sql_mode = m_sql_mode;
   thd->variables.time_zone = m_time_zone;
+
+  if (construct_sp_sql(thd, &sp_sql)) goto end;
+
+  /*
+    If enabled, log the quoted form to performance_schema.error_log.
+    We enclose it in faux guillemets to differentiate the enclosing
+    quotation seen in the log from the SQL-level quotation from
+    construct_sp_sql()'s (which calls append_identifier() in sql_show,
+    and thus ultimately get_quote_char_for_identifier() which evaluates
+    thd->variables.sql_mode & MODE_ANSI_QUOTES).
+
+    We're logging with a priority of SYSTEM_LEVEL so we won't have to
+    worry abot log_error_verbosity. (ERROR_LEVEL would also achieve
+    that, but then mysql-test-run.pl would rightfully complain about
+    the error in the log.)
+  */
+  DBUG_EXECUTE_IF("log_event_query_string", {
+    LEX_STRING sm1;
+    LEX_STRING sm2;
+    sql_mode_string_representation(thd, thd->variables.sql_mode, &sm1);
+    sql_mode_string_representation(thd, m_sql_mode, &sm2);
+    LogEvent()
+        .errcode(ER_CONDITIONAL_DEBUG)
+        .prio(SYSTEM_LEVEL)
+        .message("Query string to be compiled: \"%s\"/\"%s\" >>%s<<\n", sm1.str,
+                 sm2.str, sp_sql.c_ptr_safe());
+  });
 
   thd->set_query(sp_sql.c_ptr_safe(), sp_sql.length());
 
@@ -1104,7 +1128,7 @@ bool Event_job_data::execute(THD *thd, bool drop) {
   {
     sp_head *sphead = thd->lex->sphead;
 
-    DBUG_ASSERT(sphead);
+    assert(sphead);
 
     if (thd->enable_slow_log) sphead->m_flags |= sp_head::LOG_SLOW_STATEMENTS;
     sphead->m_flags |= sp_head::LOG_GENERAL_LOG;
@@ -1179,11 +1203,12 @@ end:
 
   if (save_sctx) {
     event_sctx.restore_security_context(thd, save_sctx);
-    /* Restore the original value in THD */
+    /* Restore the original values in THD */
     set_system_user_flag(thd);
+    set_connection_admin_flag(thd);
   }
 
-  thd->lex->cleanup(thd, true);
+  thd->lex->cleanup(true);
   thd->end_statement();
   thd->cleanup_after_query();
   /* Avoid races with SHOW PROCESSLIST */

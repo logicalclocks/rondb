@@ -15,7 +15,7 @@ if [[ "$TYPE" == "TRAIN" ]]; then
   echo "_____________ TRAIN BUILD _____________"
 
   cmake $SRC_DIR -DFPROFILE_GENERATE=1 \
-    -DWITH_NDBCLUSTER=1 -DBUILD_CONFIG=mysql_release \
+    -DWITH_NDB=1 -DBUILD_CONFIG=mysql_release \
     -DWITH_SSL=${OPENSSL_ROOT} -DWITH_LDAP=system -DWITH_KERBEROS=system \
     -DWITH_SASL=system -DWITH_BOOST=${BOOST_ROOT} \
     -DWITH_NDB_TEST=1 -DWITH_UNIT_TESTS=1 -DWITH_RDRS=1 \
@@ -26,7 +26,7 @@ elif [[ "$TYPE" == "RELEASE" ]]; then
   echo "_____________ RELEASE BUILD _____________"
 
   cmake $SRC_DIR -DFPROFILE_USE=1 \
-    -DWITH_NDBCLUSTER=1 -DBUILD_CONFIG=mysql_release \
+    -DWITH_NDB=1 -DBUILD_CONFIG=mysql_release \
     -DWITH_SSL=${OPENSSL_ROOT} -DWITH_SASL=system -DWITH_LDAP=system \
     -DWITH_KERBEROS=system -DWITH_BOOST=${BOOST_ROOT} \
     -DWITH_NDB_TEST=1 -DWITH_UNIT_TESTS=1 -DWITH_NDB_JAVA=1 \
@@ -37,7 +37,7 @@ elif [[ "$TYPE" == "SIMPLE" ]]; then
 
   echo "_____________ SIMPLE BUILD _____________"
 
-  cmake $SRC_DIR -DWITH_NDBCLUSTER=1 \
+  cmake $SRC_DIR -DWITH_NDB=1 \
     -DBUILD_CONFIG=mysql_release \
     -DWITH_SSL=${OPENSSL_ROOT} -DWITH_SASL=system -DWITH_KERBEROS=system \
     -DWITH_LDAP=system -DWITH_BOOST=${BOOST_ROOT} \

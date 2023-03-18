@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -112,7 +112,7 @@ public:
    * runs from the receive thread.
    */
   virtual void reportError(NodeId nodeId, TransporterError errorCode,
-                           const char *info = 0) = 0;
+                           const char *info = nullptr) = 0;
 
   /**
    * Called from transporter code after a successful receive from a node.
@@ -132,11 +132,17 @@ public:
    * DEBUG to detect concurrent calls to ::update_connections and
    * ::performReceive() which isn't allowed.
    */
-  TransporterReceiveHandle() : m_active(false) {}
+  TransporterReceiveHandle() :
+    m_active(false),
+    m_has_extra_wakeup_socket(false)
+  {}
+
   volatile bool m_active;
 #endif
   Uint32 nTCPTransporters;
   Uint32 nSHMTransporters;
+  bool m_has_extra_wakeup_socket;
+  ndb_socket_t m_extra_wakeup_sockets[2];
 };
 
 /**
@@ -159,7 +165,7 @@ public:
    *
    * Note that the entire process of multiple client- / block-threads
    * writing to the send buffers, and the connect/disconnect handling is
-   * higly asynch: We may disconnect at any time, and data successfully
+   * highly asynch: We may disconnect at any time, and data successfully
    * written to the send buffers may thus later be discarded before they
    * are sent.
    *
@@ -295,15 +301,15 @@ public:
    * a default will be used of sum(max send buffer) over all transporters.
    * The second is the config parameter ExtraSendBufferMemory
    */
-  virtual void allocate_send_buffers(Uint64 total_send_buffer,
-			             Uint64 extra_send_buffer) {}
+  virtual void allocate_send_buffers(Uint64 /*total_send_buffer*/,
+			             Uint64 /*extra_send_buffer*/) {}
 
   /**
    * Check that send bufferes are enabled for the specified node.
    * Calling getWritePtr() for a node with a disabled send buffer
    * is considered a protocol breakage. (could be asserted).
    *
-   * It is upto each implementation whether we allow send buffer
+   * It is up to each implementation whether we allow send buffer
    * allocation to a possibly disconnected node or not. 
    * Default is to always allow buffer allocation and silently
    * discard the prepared send message if it later turns out that
@@ -313,7 +319,7 @@ public:
    * send buffers, it may be disabled before the written data is
    * actually sent. The buffer contents is then silently discarded.
    */
-  virtual bool isSendEnabled(NodeId node) const
+  virtual bool isSendEnabled(NodeId /*node*/) const
   { return true; }
 
   /**

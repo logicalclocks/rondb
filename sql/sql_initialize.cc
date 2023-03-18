@@ -1,4 +1,4 @@
-/* Copyright (c) 2015, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2015, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,13 +22,14 @@
 
 #include "sql/sql_initialize.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
 #include "m_ctype.h"
-#include "my_dbug.h"
+
 #include "my_dir.h"
 #include "my_inttypes.h"
 #include "my_io.h"
@@ -61,9 +62,15 @@ bool opt_initialize_insecure = false;
 bool mysql_initialize_directory_freshly_created = false;
 
 static const char *initialization_data[] = {
-    "FLUSH PRIVILEGES", insert_user_buffer,
+    "FLUSH PRIVILEGES",
+    insert_user_buffer,
     "GRANT ALL PRIVILEGES ON *.* TO root@localhost WITH GRANT OPTION;\n",
-    "GRANT PROXY ON ''@'' TO 'root'@'localhost' WITH GRANT OPTION;\n", nullptr};
+    "GRANT PROXY ON ''@'' TO 'root'@'localhost' WITH GRANT OPTION;\n",
+    "INSERT IGNORE INTO mysql.global_grants VALUES ('root', 'localhost', "
+    "'AUDIT_ABORT_EXEMPT', 'Y');\n",
+    "INSERT IGNORE INTO mysql.global_grants VALUES ('root', 'localhost', "
+    "'FIREWALL_EXEMPT', 'Y')",
+    nullptr};
 
 static const char **cmds[] = {initialization_cmds, mysql_system_tables,
                               initialization_data, mysql_system_data,
@@ -81,18 +88,9 @@ static const char *cmd_descs[] = {
     "Creating the sys schema",
     nullptr};
 
-static bool generate_password(char *password, int size) {
-#define UPCHARS "QWERTYUIOPASDFGHJKLZXCVBNM"
-#define LOWCHARS "qwertyuiopasdfghjklzxcvbnm"
-#define NUMCHARS "1234567890"
-#define SYMCHARS ",.-+*;:_!#%&/()=?><"
+bool generate_password(char *password, int size) {
 #define rnd_of(x) x[((int)(my_rnd_ssl(&failed) * 100)) % (sizeof(x) - 1)]
 
-  static const char g_allowed_pwd_chars[] = LOWCHARS SYMCHARS UPCHARS NUMCHARS;
-  static const char g_upper_case_chars[] = UPCHARS;
-  static const char g_lower_case_chars[] = LOWCHARS;
-  static const char g_numeric_chars[] = NUMCHARS;
-  static const char g_special_chars[] = SYMCHARS;
   bool failed = false;
   char *ptr = password;
   bool had_upper = false, had_lower = false, had_numeric = false,
@@ -203,7 +201,7 @@ void Compiled_in_command_iterator::report_error_details(
     so ::next() never returns errors.
     Hence, there should never be an error to print.
   */
-  DBUG_ASSERT(false);
+  assert(false);
   return;
 }
 

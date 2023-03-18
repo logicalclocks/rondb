@@ -1,4 +1,4 @@
-/*  Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+/*  Copyright (c) 2015, 2022, Oracle and/or its affiliates.
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License, version 2.0,
@@ -102,42 +102,41 @@ Srv_session *srv_session_open_internal(srv_session_error_cb error_cb,
     return nullptr;
   }
 
-  Srv_session *session =
-      new (std::nothrow) class Srv_session(error_cb, plugin_ctx);
-
-  if (!session) {
+  Srv_session *session = nullptr;
+  try {
+    session = new Srv_session(error_cb, plugin_ctx);
+  } catch (...) {
     DBUG_PRINT("error", ("Can't allocate a Srv_session object"));
     connection_errors_internal++;
     if (error_cb)
       error_cb(plugin_ctx, ER_OUT_OF_RESOURCES,
                ER_DEFAULT(ER_OUT_OF_RESOURCES));
-  } else {
-    THD *current = current_thd;
-    THD *stack_thd = session->get_thd();
-
-    session->get_thd()->thread_stack = reinterpret_cast<char *>(&stack_thd);
-    session->get_thd()->store_globals();
-
-    bool result = session->open();
-
-    session->get_thd()->restore_globals();
-
-    if (result) {
-      delete session;
-      session = nullptr;
-    }
-
-    if (current) current->store_globals();
+    return nullptr;
   }
+
+  THD *current = current_thd;
+  THD *stack_thd = session->get_thd();
+
+  session->get_thd()->thread_stack = reinterpret_cast<char *>(&stack_thd);
+  session->get_thd()->store_globals();
+
+  bool result = session->open();
+
+  session->get_thd()->restore_globals();
+
+  if (result) {
+    delete session;
+    session = nullptr;
+  }
+
+  if (current) current->store_globals();
+
   return session;
 }
 
 /**
   Opens server session
 
-  @param error_cb              Default completion callback
-  @param plugin_ctx            Plugin's context, opaque pointer that would
-                               be provided to callbacks. Might be NULL.
   @return
     handler of session   on success
     NULL                 on failure
@@ -224,9 +223,6 @@ int srv_session_server_is_available() {
 
 /**
   Attaches a session to current srv_session physical thread.
-
-  @param session  Session handle to attach
-  @param ret_previous_thd Previously attached THD
 
   @returns
     0  success

@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2016, 2020, Oracle and/or its affiliates.
+  Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -25,6 +25,7 @@
 #ifndef GROUP_REPLICATION_METADATA_INCLUDED
 #define GROUP_REPLICATION_METADATA_INCLUDED
 
+#include <cstdint>
 #include <map>
 #include <string>
 #include <vector>
@@ -60,5 +61,7 @@ struct GroupReplicationMember {
  */
 std::map<std::string, GroupReplicationMember> fetch_group_replication_members(
     mysqlrouter::MySQLSession &connection, bool &single_primary);
+
+const char *to_string(GroupReplicationMember::State member_state);
 
 #endif

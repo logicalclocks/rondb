@@ -11,7 +11,7 @@ Warning	1681	Updating 'character_set_database' is deprecated. It will be made re
 'connection con1'
 SELECT @@global.character_set_database;
 @@global.character_set_database
-utf8
+utf8mb3
 SELECT @@session.character_set_database;
 @@session.character_set_database
 utf8mb4
@@ -35,14 +35,14 @@ CREATE DATABASE db1;
 USE db1;
 SHOW CREATE DATABASE db1;
 Database	Create Database
-db1	CREATE DATABASE `db1` /*!40100 DEFAULT CHARACTER SET utf8 */ /*!80016 DEFAULT ENCRYPTION='N' */
+db1	CREATE DATABASE `db1` /*!40100 DEFAULT CHARACTER SET utf8mb3 */ /*!80016 DEFAULT ENCRYPTION='N' */
 CREATE TABLE t1(a INT, b VARCHAR(40));
 SHOW CREATE TABLE t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `a` int DEFAULT NULL,
   `b` varchar(40) DEFAULT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3
 DROP TABLE t1;
 DROP DATABASE db1;
 '--ascii character set specified--'

@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2017, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2017, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,7 +48,7 @@ typedef rapidjson::PrettyWriter<dd::RJ_StringBuffer, dd::RJ_Encoding,
                                 dd::RJ_Encoding, dd::RJ_Allocator, 0>
     PrettyWriter;
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
 /*
   @brief minify a JSON formatted SDI. Remove whitespace and other
   useless data.
@@ -97,16 +98,11 @@ dd::sdi_t ndb_dd_sdi_prettify(dd::sdi_t sdi) {
 
 static bool check_sdi_compatibility(const dd::RJ_Document &doc) {
   // Check mysql_version_id
-  DBUG_ASSERT(doc.HasMember("mysqld_version_id"));
+  assert(doc.HasMember("mysqld_version_id"));
   const dd::RJ_Value &mysqld_version_id = doc["mysqld_version_id"];
-  DBUG_ASSERT(mysqld_version_id.IsUint64());
-  if (mysqld_version_id.GetUint64() > std::uint64_t(MYSQL_VERSION_ID) &&
-      ((mysqld_version_id.GetUint64() < std::uint64_t(210409)) ||
-       (mysqld_version_id.GetUint64() >= std::uint64_t(210500)))) {
+  assert(mysqld_version_id.IsUint64());
+  if (mysqld_version_id.GetUint64() > std::uint64_t(MYSQL_VERSION_ID)) {
     // Cannot deserialize SDIs from newer versions
-    // RonDB 21.04.9 is assumed compatible with new versions of the
-    // 21.04 class, only bug fixes are supposed to happen in the
-    // 21.04 version after 21.04.9.
     my_error(ER_IMP_INCOMPATIBLE_MYSQLD_VERSION, MYF(0),
              mysqld_version_id.GetUint64(), std::uint64_t(MYSQL_VERSION_ID));
     return true;
@@ -123,10 +119,10 @@ bool ndb_dd_sdi_deserialize(THD *thd, const dd::sdi_t &sdi, dd::Table *table) {
 
 dd::sdi_t ndb_dd_sdi_serialize(THD *thd, const dd::Table &table,
                                const dd::String_type &schema_name) {
-#ifndef DBUG_OFF
-  // Verify that dd::serialize generates SDI in minimzed format
+#ifndef NDEBUG
+  // Verify that dd::serialize generates SDI in minimized format
   dd::sdi_t sdi = dd::serialize(thd, table, schema_name);
-  DBUG_ASSERT(minify(sdi) == sdi);
+  assert(minify(sdi) == sdi);
 #endif
   return dd::serialize(thd, table, schema_name);
 }

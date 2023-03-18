@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,15 +47,17 @@
 #include "sql/events.h"
 #include "sql/field.h"
 #include "sql/item.h"
+#include "sql/join_optimizer/access_path.h"
 #include "sql/key.h"
 #include "sql/keycaches.h"
 #include "sql/mysqld.h"              // LOCK_status
 #include "sql/mysqld_thd_manager.h"  // Global_THD_manager
 #include "sql/opt_explain.h"         // join_type_str
-#include "sql/opt_range.h"           // QUICK_SELECT_I
 #include "sql/opt_trace.h"
 #include "sql/opt_trace_context.h"
 #include "sql/psi_memory_key.h"
+#include "sql/range_optimizer/path_helpers.h"
+#include "sql/range_optimizer/range_optimizer.h"
 #include "sql/sql_bitmap.h"
 #include "sql/sql_class.h"
 #include "sql/sql_const.h"
@@ -88,7 +90,7 @@ const char *lock_descriptions[TL_WRITE_ONLY + 1] = {
     /* TL_WRITE                   */ "High priority write lock",
     /* TL_WRITE_ONLY              */ "Highest priority write lock"};
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
 
 void print_where(const THD *thd, const Item *cond, const char *info,
                  enum_query_type query_type) {
@@ -108,7 +110,7 @@ void print_where(const THD *thd, const Item *cond, const char *info,
 void TEST_join(JOIN *join) {
   uint i, ref;
   DBUG_TRACE;
-  DBUG_ASSERT(!join->join_tab);
+  assert(!join->join_tab);
   /*
     Assemble results of all the calls to full_name() first,
     in order not to garble the tabular output below.
@@ -134,7 +136,7 @@ void TEST_join(JOIN *join) {
             form->alias, join_type_str[tab->type()],
             tab->keys().print(key_map_buff), tab->ref().key_parts,
             tab->ref().key, tab->ref().key_length);
-    if (tab->quick()) {
+    if (tab->range_scan()) {
       char buf[MAX_KEY / 8 + 1];
       if (tab->use_quick == QS_DYNAMIC_RANGE)
         fprintf(DBUG_FILE,
@@ -143,7 +145,7 @@ void TEST_join(JOIN *join) {
                 form->quick_keys.print(buf));
       else {
         fprintf(DBUG_FILE, "                  quick select used:\n");
-        tab->quick()->dbug_dump(18, false);
+        dbug_dump(tab->range_scan(), 18, false);
       }
     }
     if (tab->ref().key_parts) {
@@ -154,9 +156,9 @@ void TEST_join(JOIN *join) {
   DBUG_UNLOCK_FILE;
 }
 
-#endif /* !DBUG_OFF */
+#endif /* !NDEBUG */
 
-void print_keyuse_array(Opt_trace_context *trace,
+void print_keyuse_array(THD *thd, Opt_trace_context *trace,
                         const Key_use_array *keyuse_array) {
   if (unlikely(!trace->is_started())) return;
   Opt_trace_object wrapper(trace);
@@ -176,16 +178,15 @@ void print_keyuse_array(Opt_trace_context *trace,
                   (keyuse.keypart == FT_KEYPART)
                       ? "<fulltext>"
                       : get_field_name_or_expression(
-                            keyuse.table_ref->table->in_use,
-                            keyuse.table_ref->table->key_info[keyuse.key]
-                                .key_part[keyuse.keypart]
-                                .field))
+                            thd, keyuse.table_ref->table->key_info[keyuse.key]
+                                     .key_part[keyuse.keypart]
+                                     .field))
         .add("equals", keyuse.val)
         .add("null_rejecting", keyuse.null_rejecting);
   }
 }
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
 /* purecov: begin inspected */
 
 /**
@@ -272,7 +273,7 @@ void print_plan(JOIN *join, uint idx, double record_count, double read_time,
   DBUG_UNLOCK_FILE;
 }
 
-#endif /* !DBUG_OFF */
+#endif /* !NDEBUG */
 
 struct TABLE_LOCK_INFO {
   my_thread_id thread_id;
@@ -288,10 +289,8 @@ static inline int dl_compare(const TABLE_LOCK_INFO *a,
                              const TABLE_LOCK_INFO *b) {
   if (a->thread_id > b->thread_id) return 1;
   if (a->thread_id < b->thread_id) return -1;
-  if (a->waiting == b->waiting)
-    return 0;
-  else if (a->waiting)
-    return -1;
+  if (a->waiting == b->waiting) return 0;
+  if (a->waiting) return -1;
   return 1;
 }
 
@@ -302,7 +301,7 @@ class DL_commpare {
   }
 };
 
-#ifndef DBUG_OFF
+#ifndef NDEBUG
 #ifdef EXTRA_DEBUG_DUMP_TABLE_LISTS
 
 /*
@@ -343,26 +342,26 @@ class Unique_fifo_queue {
 
 class Dbug_table_list_dumper {
   FILE *out;
-  Unique_fifo_queue<TABLE_LIST> tables_fifo;
-  Unique_fifo_queue<mem_root_deque<TABLE_LIST *>> tbl_lists;
+  Unique_fifo_queue<Table_ref> tables_fifo;
+  Unique_fifo_queue<mem_root_deque<Table_ref *>> tbl_lists;
 
  public:
-  void dump_one_struct(TABLE_LIST *tbl);
+  void dump_one_struct(Table_ref *tbl);
 
-  int dump_graph(SELECT_LEX *select_lex, TABLE_LIST *first_leaf);
+  int dump_graph(Query_block *query_block, Table_ref *first_leaf);
 };
 
-void dump_TABLE_LIST_graph(SELECT_LEX *select_lex, TABLE_LIST *tl) {
+void dump_TABLE_LIST_graph(Query_block *query_block, Table_ref *tl) {
   Dbug_table_list_dumper dumper;
-  dumper.dump_graph(select_lex, tl);
+  dumper.dump_graph(query_block, tl);
 }
 
 /*
-  - Dump one TABLE_LIST objects and its outgoing edges
+  - Dump one Table_ref objects and its outgoing edges
   - Schedule that other objects seen along the edges are dumped too.
 */
 
-void Dbug_table_list_dumper::dump_one_struct(TABLE_LIST *tbl) {
+void Dbug_table_list_dumper::dump_one_struct(Table_ref *tbl) {
   fprintf(out, "\"%p\" [\n", tbl);
   fprintf(out, "  label = \"%p|", tbl);
   fprintf(out, "alias=%s|", tbl->alias ? tbl->alias : "NULL");
@@ -407,8 +406,8 @@ void Dbug_table_list_dumper::dump_one_struct(TABLE_LIST *tbl) {
   }
 }
 
-int Dbug_table_list_dumper::dump_graph(SELECT_LEX *select_lex,
-                                       TABLE_LIST *first_leaf) {
+int Dbug_table_list_dumper::dump_graph(Query_block *query_block,
+                                       Table_ref *first_leaf) {
   DBUG_TRACE;
   char filename[500];
   int no = 0;
@@ -434,15 +433,15 @@ int Dbug_table_list_dumper::dump_graph(SELECT_LEX *select_lex,
   fputs("  rankdir = \"LR\"", out);
   fputs("];", out);
 
-  TABLE_LIST *tbl;
+  Table_ref *tbl;
   tables_fifo.reset();
   dump_one_struct(first_leaf);
   while (tables_fifo.pop_first(&tbl)) {
     dump_one_struct(tbl);
   }
 
-  mem_root_deque<TABLE_LIST *> *plist;
-  tbl_lists.push_back(&select_lex->top_join_list);
+  mem_root_deque<Table_ref *> *plist;
+  tbl_lists.push_back(&query_block->m_table_nest);
   while (tbl_lists.pop_first(&plist)) {
     fprintf(out, "\"%p\" [\n", plist);
     fprintf(out, "  bgcolor = \"\"");
@@ -451,7 +450,7 @@ int Dbug_table_list_dumper::dump_graph(SELECT_LEX *select_lex,
   }
 
   fprintf(out, " { rank = same; ");
-  for (TABLE_LIST *tl = first_leaf; tl; tl = tl->next_leaf)
+  for (Table_ref *tl = first_leaf; tl; tl = tl->next_leaf)
     fprintf(out, " \"%p\"; ", tl);
   fprintf(out, "};\n");
   fputs("}", out);

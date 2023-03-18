@@ -4,17 +4,13 @@ var gr_memberships = require("gr_memberships");
 
 var gr_members = gr_memberships.members(mysqld.global.gr_members);
 
-if (mysqld.global.gr_id === undefined) {
-  mysqld.global.gr_id = "GR-ID";
-}
-
 var options = {
-  group_replication_name: mysqld.global.gr_id,
   cluster_type: "gr",
   innodb_cluster_name: mysqld.global.cluster_name,
+  innodb_cluster_instances: mysqld.global.innodb_cluster_instances,
+  gr_id: mysqld.global.gr_id,
+  group_replication_name: mysqld.global.gr_id,
   replication_group_members: gr_members,
-  innodb_cluster_instances:
-      [["127.0.0.1", 13001], ["127.0.0.1", 13002], ["127.0.0.1", 13003]]
 };
 
 var common_responses = common_stmts.prepare_statement_responses(
@@ -37,6 +33,7 @@ var common_responses = common_stmts.prepare_statement_responses(
       "router_start_transaction",
       "router_commit",
       "router_replication_group_members",
+      "router_clusterset_present",
     ],
     options);
 
@@ -48,6 +45,7 @@ var common_responses_regex = common_stmts.prepare_statement_responses_regex(
       "router_grant_on_routers",
       "router_grant_on_v2_routers",
       "router_update_routers_in_metadata",
+      "router_update_router_options_in_metadata",
     ],
     options);
 

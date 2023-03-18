@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -62,12 +62,7 @@ const char * ndbGetVersionString(Uint32 version, Uint32 mysql_version,
                                  const char * status,
                                  char *buf, unsigned sz)
 {
-  char tmp[NDB_VERSION_STRING_BUF_SZ];
-  if (status && status[0] != 0)
-    snprintf(tmp, sizeof(tmp), "%s", status);
-  else
-    tmp[0] = 0;
-
+  const char * tmp = (status == nullptr) ? "" : status;
   if (false && mysql_version)
   {
     bool add_mysql_zero = getMinor(mysql_version) != 0 &&
@@ -161,65 +156,23 @@ struct NdbUpGradeCompatible {
   UG_MatchType matchType;
 };
 
+struct NdbUpGradeCompatible ndbCompatibleTable_schema_table[] = {
+  { MAKE_VERSION(22,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,0), UG_Range },
+  { 0, 0, UG_Null }
+};
+
+struct NdbUpGradeCompatible ndbCompatibleTable_backup_table[] = {
+  { MAKE_VERSION(22,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,0), UG_Range },
+  { 0, 0, UG_Null }
+};
+
 struct NdbUpGradeCompatible ndbCompatibleTable_full[] = {
-  { MAKE_VERSION(21,4,NDB_VERSION_BUILD),MAKE_VERSION(21,4,0), UG_Range },
-  { MAKE_VERSION(21,4,NDB_VERSION_BUILD),MAKE_VERSION(8,0,23), UG_Exact },
-  { MAKE_VERSION(21,4,NDB_VERSION_BUILD),MAKE_VERSION(8,0,22), UG_Exact },
-  { MAKE_VERSION(21,4,NDB_VERSION_BUILD),MAKE_VERSION(8,0,21), UG_Exact },
-  { MAKE_VERSION(8,0,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range }, /* 7.0 <-> 8.0 */
-  { MAKE_VERSION(7,6,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range }, /* 7.0 <-> 7.6 */
-  { MAKE_VERSION(7,5,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range }, /* 7.0 <-> 7.5 */
-  { MAKE_VERSION(7,4,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range }, /* 7.0 <-> 7.4 */
-
-  { MAKE_VERSION(7,3,NDB_VERSION_BUILD), MAKE_VERSION(7,3,0), UG_Range },
-  { MAKE_VERSION(7,3,NDB_VERSION_BUILD), MAKE_VERSION(7,2,0), UG_Range },
-  { MAKE_VERSION(7,3,NDB_VERSION_BUILD), MAKE_VERSION(7,1,0), UG_Range },
-  { MAKE_VERSION(7,3,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range },
-
-  { MAKE_VERSION(7,2,NDB_VERSION_BUILD), MAKE_VERSION(7,2,0), UG_Range },
-  { MAKE_VERSION(7,2,NDB_VERSION_BUILD), MAKE_VERSION(7,1,0), UG_Range },
-  { MAKE_VERSION(7,2,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range },
-
-  { MAKE_VERSION(7,1,NDB_VERSION_BUILD), MAKE_VERSION(7,1,0), UG_Range },        /* From 7.1+ */
-  { MAKE_VERSION(7,1,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range },        /* From 7.0+ */
-  { MAKE_VERSION(7,1,NDB_VERSION_BUILD), MAKE_VERSION(6,4,0), UG_Range },        /* From 6.4+ */
-  { MAKE_VERSION(7,1,NDB_VERSION_BUILD), NDBD_MAX_RECVBYTESIZE_32K, UG_Range },  /* From 6.3.X + */
-  { MAKE_VERSION(7,0,NDB_VERSION_BUILD), MAKE_VERSION(7,0,0), UG_Range },
-  { MAKE_VERSION(7,0,NDB_VERSION_BUILD), MAKE_VERSION(6,4,0), UG_Range },
-  /* Can only upgrade to 6.4.X+ from versions >= 6.3.17 due to change
-   * in Transporter maximum sent message size
-   */
-  { MAKE_VERSION(7,0,NDB_VERSION_BUILD), NDBD_MAX_RECVBYTESIZE_32K, UG_Range },
-  { MAKE_VERSION(6,3,NDB_VERSION_BUILD), MAKE_VERSION(6,2,1), UG_Range },
-
-  { MAKE_VERSION(6,2,NDB_VERSION_BUILD), MAKE_VERSION(6,2,1), UG_Range },
-  { MAKE_VERSION(6,2,0), MAKE_VERSION(6,2,0), UG_Range},
-
-  { MAKE_VERSION(6,2,NDB_VERSION_BUILD), MAKE_VERSION(6,1,19), UG_Range },
-  { MAKE_VERSION(6,1,NDB_VERSION_BUILD), MAKE_VERSION(6,1,6), UG_Range},
-  /* var page reference 32bit->64bit making 6.1.6 not backwards compatible */
-  /* ndb_apply_status table changed, and no compatability code written */
-  { MAKE_VERSION(6,1,4), MAKE_VERSION(6,1,2), UG_Range},
-  { MAKE_VERSION(5,1,NDB_VERSION_BUILD), MAKE_VERSION(5,1,0), UG_Range},
-
-  { MAKE_VERSION(5,1,NDB_VERSION_BUILD), MAKE_VERSION(5,1,18), UG_Range},
-  { MAKE_VERSION(5,1,17), MAKE_VERSION(5,1,0), UG_Range},
-
-  { MAKE_VERSION(5,0,NDB_VERSION_BUILD), MAKE_VERSION(5,0,12), UG_Range},
-  { MAKE_VERSION(5,0,11), MAKE_VERSION(5,0,2), UG_Range},
-  { MAKE_VERSION(4,1,NDB_VERSION_BUILD), MAKE_VERSION(4,1,15), UG_Range },
-  { MAKE_VERSION(4,1,14), MAKE_VERSION(4,1,10), UG_Range },
-  { MAKE_VERSION(4,1,10), MAKE_VERSION(4,1,9), UG_Exact },
-  { MAKE_VERSION(4,1,9), MAKE_VERSION(4,1,8), UG_Exact },
-  { MAKE_VERSION(3,5,2), MAKE_VERSION(3,5,1), UG_Exact },
+  { MAKE_VERSION(22,10,NDB_VERSION_BUILD),MAKE_VERSION(21,4,9), UG_Range },
   { 0, 0, UG_Null }
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_upgrade[] = {
-  { MAKE_VERSION(5,0,12), MAKE_VERSION(5,0,11), UG_Exact },
-  { MAKE_VERSION(5,0,2), MAKE_VERSION(4,1,8), UG_Exact },
-  { MAKE_VERSION(4,1,15), MAKE_VERSION(4,1,14), UG_Exact },
-  { MAKE_VERSION(3,5,4), MAKE_VERSION(3,5,3), UG_Exact },
+  { MAKE_VERSION(22,10,NDB_VERSION_BUILD),MAKE_VERSION(22,10,0), UG_Range },
   { 0, 0, UG_Null }
 };
 
@@ -279,6 +232,24 @@ ndbCompatible(Uint32 ownVersion, Uint32 otherVersion, struct NdbUpGradeCompatibl
 
 static
 int
+ndbCompatible_dict(Uint32 ownVersion, Uint32 otherVersion)
+{
+  return ndbCompatible(ownVersion,
+                       otherVersion,
+                       ndbCompatibleTable_schema_table);
+}
+
+static
+int
+ndbCompatible_backup(Uint32 ownVersion, Uint32 otherVersion)
+{
+  return ndbCompatible(ownVersion,
+                       otherVersion,
+                       ndbCompatibleTable_backup_table);
+}
+
+static
+int
 ndbCompatible_full(Uint32 ownVersion, Uint32 otherVersion)
 {
   return ndbCompatible(ownVersion, otherVersion, ndbCompatibleTable_full);
@@ -291,6 +262,20 @@ ndbCompatible_upgrade(Uint32 ownVersion, Uint32 otherVersion)
   if (ndbCompatible_full(ownVersion, otherVersion))
     return 1;
   return ndbCompatible(ownVersion, otherVersion, ndbCompatibleTable_upgrade);
+}
+
+extern "C"
+int
+ndbCompatible_ndb_backup(Uint32 ownVersion, Uint32 otherVersion)
+{
+  return ndbCompatible_backup(ownVersion, otherVersion);
+}
+
+extern "C"
+int
+ndbCompatible_ndb_schema(Uint32 ownVersion, Uint32 otherVersion)
+{
+  return ndbCompatible_dict(ownVersion, otherVersion);
 }
 
 extern "C"
@@ -311,7 +296,7 @@ extern "C"
 int
 ndbCompatible_ndb_mgmt(Uint32 ownVersion, Uint32 otherVersion)
 {
-  return ndbCompatible_full(ownVersion, otherVersion);
+  return ndbCompatible_upgrade(ownVersion, otherVersion);
 }
 
 extern "C"

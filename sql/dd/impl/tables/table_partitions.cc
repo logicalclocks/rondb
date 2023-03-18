@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,7 +47,7 @@ const Table_partitions &Table_partitions::instance() {
 ///////////////////////////////////////////////////////////////////////////
 
 const CHARSET_INFO *Table_partitions::name_collation() {
-  return &my_charset_utf8_tolower_ci;
+  return &my_charset_utf8mb3_tolower_ci;
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -65,9 +65,10 @@ Table_partitions::Table_partitions() {
                          "number SMALLINT UNSIGNED NOT NULL");
   m_target_def.add_field(FIELD_NAME, "FIELD_NAME",
                          "name VARCHAR(64) NOT NULL COLLATE " +
-                             String_type(name_collation()->name));
-  m_target_def.add_field(FIELD_ENGINE, "FIELD_ENGINE",
-                         "engine VARCHAR(64) NOT NULL COLLATE utf8_general_ci");
+                             String_type(name_collation()->m_coll_name));
+  m_target_def.add_field(
+      FIELD_ENGINE, "FIELD_ENGINE",
+      "engine VARCHAR(64) NOT NULL COLLATE utf8mb3_general_ci");
   m_target_def.add_field(FIELD_DESCRIPTION_UTF8, "FIELD_DESCRIPTION_UTF8",
                          "description_utf8 TEXT");
   m_target_def.add_field(FIELD_COMMENT, "FIELD_COMMENT",
@@ -150,7 +151,7 @@ bool Table_partitions::get_partition_table_id(THD *thd,
                                               Object_id *oid) {
   DBUG_TRACE;
 
-  DBUG_ASSERT(oid);
+  assert(oid);
   *oid = INVALID_OBJECT_ID;
 
   Transaction_ro trx(thd, ISO_READ_COMMITTED);
@@ -161,7 +162,7 @@ bool Table_partitions::get_partition_table_id(THD *thd,
       create_se_private_key(engine, se_private_id));
 
   Raw_table *t = trx.otx.get_table(instance().name());
-  DBUG_ASSERT(t);
+  assert(t);
 
   // Find record by the object-key.
   std::unique_ptr<Raw_record> r;

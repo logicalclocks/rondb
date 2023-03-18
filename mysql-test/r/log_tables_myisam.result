@@ -1,4 +1,6 @@
 use mysql;
+SET @old_log_output = @@global.log_output;
+SET GLOBAL log_output="FILE,TABLE";
 truncate table general_log;
 select * from general_log;
 event_time	user_host	thread_id	server_id	command_type	argument
@@ -27,7 +29,7 @@ general_log	CREATE TABLE `general_log` (
   `server_id` int unsigned NOT NULL,
   `command_type` varchar(64) NOT NULL,
   `argument` mediumblob NOT NULL
-) ENGINE=CSV DEFAULT CHARSET=utf8 COMMENT='General log'
+) ENGINE=CSV DEFAULT CHARSET=utf8mb3 COMMENT='General log'
 show create table mysql.slow_log;
 Table	Create Table
 slow_log	CREATE TABLE `slow_log` (
@@ -43,7 +45,7 @@ slow_log	CREATE TABLE `slow_log` (
   `server_id` int unsigned NOT NULL,
   `sql_text` mediumblob NOT NULL,
   `thread_id` bigint unsigned NOT NULL
-) ENGINE=CSV DEFAULT CHARSET=utf8 COMMENT='Slow log'
+) ENGINE=CSV DEFAULT CHARSET=utf8mb3 COMMENT='Slow log'
 alter table mysql.general_log engine=myisam;
 alter table mysql.slow_log engine=myisam;
 show create table mysql.general_log;
@@ -55,7 +57,7 @@ general_log	CREATE TABLE `general_log` (
   `server_id` int unsigned NOT NULL,
   `command_type` varchar(64) NOT NULL,
   `argument` mediumblob NOT NULL
-) ENGINE=MyISAM DEFAULT CHARSET=utf8 COMMENT='General log'
+) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COMMENT='General log'
 show create table mysql.slow_log;
 Table	Create Table
 slow_log	CREATE TABLE `slow_log` (
@@ -71,7 +73,7 @@ slow_log	CREATE TABLE `slow_log` (
   `server_id` int unsigned NOT NULL,
   `sql_text` mediumblob NOT NULL,
   `thread_id` bigint unsigned NOT NULL
-) ENGINE=MyISAM DEFAULT CHARSET=utf8 COMMENT='Slow log'
+) ENGINE=MyISAM DEFAULT CHARSET=utf8mb3 COMMENT='Slow log'
 set global general_log='ON';
 set global slow_query_log='ON';
 select * from mysql.general_log;
@@ -148,4 +150,6 @@ Warning	1681	Integer display width is deprecated and will be removed in a future
 Warning	3719	'utf8' is currently an alias for the character set UTF8MB3, but will be an alias for UTF8MB4 in a future release. Please consider using UTF8MB4 in order to be unambiguous.
 set global general_log='ON';
 set global slow_query_log='ON';
+SET GLOBAL log_output=@old_log_output;
+TRUNCATE TABLE mysql.general_log;
 use test;

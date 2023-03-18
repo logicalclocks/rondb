@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,6 +27,7 @@
 
 #include <ndb_types.h>
 #include <mgmapi.h>
+#include "mgmcommon/NdbMgm.hpp"
 #include <BaseString.hpp>
 
 /**
@@ -35,15 +36,9 @@
  */
 class ConfigRetriever {
 public:
-  // Deleter usable in std::unique for pointer from getConfig().
-  class ConfigDeleter {
-  public:
-    void operator()(ndb_mgm_configuration* p);
-  };
-
   ConfigRetriever(const char * _connect_string, int force_nodeid,
                   Uint32 version, ndb_mgm_node_type nodeType,
-		  const char * _bind_address = 0,
+		  const char * _bind_address = nullptr,
                   int timeout_ms = 30000);
   ~ConfigRetriever();
 
@@ -58,11 +53,12 @@ public:
    * file.  The method loops over all the configured MGM servers and tries
    * to establish a connection.  This is repeated until a connection is 
    * established, so the function hangs until a connection is established.
+   *
+   * @param nodeid   The nodeid of the node to fetch config for
    * 
-   * @return ndb_mgm_configuration object if succeeded, 
-   *         NULL if erroneous local config file or configuration error.
+   * @return ndb_mgm_config_unique_ptr which may be empty on failure
    */
-  struct ndb_mgm_configuration * getConfig(Uint32 nodeid);
+  ndb_mgm::config_ptr getConfig(Uint32 nodeid);
   
   void resetError();
   int hasError();
@@ -76,27 +72,28 @@ public:
                      int verbose, int& error);
 
   int setNodeId(Uint32 nodeid);
-  Uint32 getNodeId();
 
   /**
    * Get config using socket
    */
-  struct ndb_mgm_configuration * getConfig(NdbMgmHandle handle);
+  ndb_mgm::config_ptr getConfig(NdbMgmHandle handle);
   
   /**
    * Get config from file
    */
-  struct ndb_mgm_configuration * getConfig(const char * file);
+  static ndb_mgm::config_ptr getConfig(const char * file, BaseString& err);
+  ndb_mgm::config_ptr getConfig(const char * file);
 
   /**
    * Verify config
    */
-  bool verifyConfig(const struct ndb_mgm_configuration *, Uint32 nodeid);
+  bool verifyConfig(const ndb_mgm_configuration *, Uint32 nodeid,
+                    bool validate_port = false);
 
   Uint32 get_mgmd_port() const;
   const char *get_mgmd_host() const;
   const char *get_connectstring(char *buf, int buf_sz) const;
-  NdbMgmHandle get_mgmHandle() { return m_handle; }
+  NdbMgmHandle get_mgmHandle() const { return m_handle; }
   NdbMgmHandle* get_mgmHandlePtr() { return &m_handle; }
   void end_session(bool end) { m_end_session= end; }
 

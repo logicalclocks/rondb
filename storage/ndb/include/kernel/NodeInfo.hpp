@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -43,7 +43,7 @@ public:
     m_log_parts(0),
     m_type(INVALID),
     m_connectCount(0),
-    m_connected(FALSE),
+    m_connected(false),
     m_node_group_id(65535)
   {}
 
@@ -130,7 +130,7 @@ operator<<(NdbOut& ndbout, const NodeInfo & info){
 
 struct NodeVersionInfo
 {
-  STATIC_CONST( DataLength = 6 );
+  static constexpr Uint32 DataLength = 6;
   struct 
   {
     Uint32 m_min_version;

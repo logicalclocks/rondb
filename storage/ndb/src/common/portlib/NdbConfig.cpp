@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,13 +23,14 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "util/require.h"
 #include <ndb_global.h>
 #include <NdbConfig.h>
 #include <NdbEnv.h>
 #include <NdbHost.h>
 
-static const char *datadir_path= 0;
-static const char *pid_file_dir_path= 0;
+static const char *datadir_path= nullptr;
+static const char *pid_file_dir_path= nullptr;
 
 const char *
 NdbConfig_get_path(int *_len)
@@ -37,7 +38,7 @@ NdbConfig_get_path(int *_len)
 #ifdef NDB_USE_GET_ENV
   const char *path= NdbEnv_GetEnv("NDB_HOME", 0, 0);
 #else
-  const char *path = NULL;
+  const char *path = nullptr;
 #endif
   int path_len= 0;
   if (path)

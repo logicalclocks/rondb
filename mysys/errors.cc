@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -138,7 +138,9 @@ const char *globerrs[GLOBERRS] = {
     "Shift character out of range: %s.",
     "Reset character out of range: %s.",
     "Unknown LDML tag: '%.*s'.",
-    "Failed to reset before a secondary ignorable character %s."};
+    "Failed to reset before a secondary ignorable character %s.",
+    "Stopped processing the '%s' directive in file %s at line %d.",
+    "pthread_kill(thread_id:%lu, signal:%s) returned '%s'."};
 
 /*
  We cannot call my_error/my_printf_error here in this function.

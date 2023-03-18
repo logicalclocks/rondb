@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2013, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2013, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -24,8 +24,9 @@
 
 #include "sql/trigger_chain.h"
 
+#include <assert.h>
 #include "m_ctype.h"
-#include "my_dbug.h"
+
 #include "my_inttypes.h"
 #include "my_sys.h"
 #include "mysqld_error.h"          // ER_*
@@ -65,7 +66,7 @@ bool Trigger_chain::add_trigger(MEM_ROOT *mem_root, Trigger *new_trigger,
 
     case TRG_ORDER_FOLLOWS:
     case TRG_ORDER_PRECEDES: {
-      DBUG_ASSERT(referenced_trigger_name.str);
+      assert(referenced_trigger_name.str);
 
       List_iterator<Trigger> it(m_triggers);
       List_iterator<Trigger> it2 = it;
@@ -103,7 +104,7 @@ bool Trigger_chain::add_trigger(MEM_ROOT *mem_root, Trigger *new_trigger,
     }
   }
 
-  DBUG_ASSERT(false);
+  assert(false);
   return true;
 }
 
@@ -152,12 +153,12 @@ bool Trigger_chain::execute_triggers(THD *thd) {
 
   @param [in]     thd               thread context
   @param [in,out] prelocking_ctx    prelocking context of the statement
-  @param [in]     table_list        TABLE_LIST for the table
+  @param [in]     table_list        Table_ref for the table
 */
 
 void Trigger_chain::add_tables_and_routines(THD *thd,
                                             Query_tables_list *prelocking_ctx,
-                                            TABLE_LIST *table_list) {
+                                            Table_ref *table_list) {
   List_iterator_fast<Trigger> it(m_triggers);
   Trigger *t;
 
@@ -195,7 +196,7 @@ bool Trigger_chain::has_updated_trigger_fields(const MY_BITMAP *used_fields) {
   Trigger *t;
 
   while ((t = it++)) {
-    // Even if one trigger is unparseable, the whole thing is not usable.
+    // Even if one trigger is unparsable, the whole thing is not usable.
 
     if (t->has_parse_error()) return false;
 

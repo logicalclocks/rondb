@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -24,6 +25,7 @@
 
 #include <ndb_global.h>
 #include <ndb_opts.h>
+#include "my_getopt.h"
 
 #include "my_alloc.h"
 
@@ -53,26 +55,49 @@ static char *opt_execute_str= 0;
 static char *opt_prompt= 0;
 static unsigned opt_verbose = 1;
 
+static ndb_password_state opt_backup_password_state("backup", nullptr);
+static ndb_password_option opt_backup_password(opt_backup_password_state);
+static ndb_password_from_stdin_option opt_backup_password_from_stdin(
+                                          opt_backup_password_state);
+
+static bool opt_encrypt_backup = false;
+
 static struct my_option my_long_options[] =
 {
-  NDB_STD_OPTS("ndb_mgm"),
-  { "execute", 'e',
-    "execute command and exit", 
-    (uchar**) &opt_execute_str, (uchar**) &opt_execute_str, 0,
-    GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
-  { "prompt", 'p',
-    "Set prompt to string specified",
-    (uchar**) &opt_prompt, (uchar**) &opt_prompt, 0,
-    GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
-  { "verbose", 'v',
-    "Control the amount of printout",
-    (uchar**) &opt_verbose, (uchar**) &opt_verbose, 0,
-    GET_UINT, REQUIRED_ARG, 1, 0, 0, 0, 0, 0}, \
-  {"try-reconnect", 't', \
-    "Same as --connect-retries", \
-    (uchar**) &opt_connect_retries, (uchar**) &opt_connect_retries, 0, \
-    GET_INT, REQUIRED_ARG, 12, 0, INT_MAX, 0, 0, 0 }, \
-  { 0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
+  NdbStdOpt::usage,
+  NdbStdOpt::help,
+  NdbStdOpt::version,
+  NdbStdOpt::ndb_connectstring,
+  NdbStdOpt::mgmd_host,
+  NdbStdOpt::connectstring,
+  NdbStdOpt::ndb_nodeid,
+  NdbStdOpt::connect_retry_delay,
+  NdbStdOpt::connect_retries,
+  NDB_STD_OPT_DEBUG
+  { "backup-password", NDB_OPT_NOSHORT, "Encryption password for backup file",
+    nullptr, nullptr, nullptr, GET_PASSWORD, OPT_ARG,
+    0, 0, 0, nullptr, 0, &opt_backup_password},
+  { "backup-password-from-stdin", NDB_OPT_NOSHORT,
+    "Encryption password for backup file",
+    &opt_backup_password_from_stdin.opt_value, nullptr, nullptr,
+    GET_BOOL, NO_ARG, 0, 0, 0, nullptr, 0, &opt_backup_password_from_stdin},
+  { "encrypt-backup", NDB_OPT_NOSHORT,
+    "Treat START BACKUP as START BACKUP ENCRYPT",
+    &opt_encrypt_backup, nullptr, nullptr, GET_BOOL, NO_ARG,
+    0, 0, 0, nullptr, 0, nullptr},
+  { "execute", 'e', "execute command and exit",
+    &opt_execute_str, nullptr, nullptr, GET_STR, REQUIRED_ARG,
+    0, 0, 0, nullptr, 0, nullptr},
+  { "prompt", 'p', "Set prompt to string specified",
+    &opt_prompt, nullptr, nullptr, GET_STR, REQUIRED_ARG,
+    0, 0, 0, nullptr, 0, nullptr},
+  { "verbose", 'v', "Control the amount of printout",
+    &opt_verbose, nullptr, nullptr, GET_UINT, REQUIRED_ARG,
+    1, 0, 0, nullptr, 0, nullptr},
+  {"try-reconnect", 't', "Same as --connect-retries",
+    &opt_connect_retries, nullptr, nullptr, GET_INT, REQUIRED_ARG,
+    12, 0, INT_MAX, nullptr, 0, nullptr},
+  NdbStdOpt::end_of_options
 };
 
 static void short_usage_sub(void)
@@ -120,11 +145,21 @@ int main(int argc, char** argv){
   opts.set_usage_funcs(short_usage_sub);
 
   int ho_error;
-#ifndef DBUG_OFF
+#ifndef NDEBUG
   opt_debug= "d:t:O,/tmp/ndb_mgm.trace";
 #endif
-  if ((ho_error=opts.handle_options()))
+  if ((ho_error = opts.handle_options()))
     exit(ho_error);
+
+  if (ndb_option::post_process_options())
+  {
+    BaseString err_msg = opt_backup_password_state.get_error_message();
+    if (!err_msg.empty())
+    {
+      fprintf(stderr, "Error: backup password: %s\n", err_msg.c_str());
+    }
+    exit(2);
+  }
 
   BaseString connect_str(opt_ndb_connectstring);
   if(argc == 1) {
@@ -142,6 +177,19 @@ int main(int argc, char** argv){
                                          "ndb_mgm> ",
                                          opt_verbose,
                                          opt_connect_retry_delay);
+  com->set_always_encrypt_backup(opt_encrypt_backup);
+  if (opt_backup_password_state.get_password())
+  {
+    if (com->set_default_backup_password(
+                 opt_backup_password_state.get_password()) == 1)
+    {
+      fprintf(stderr, "Error: Failed set default backup password.\n");
+      delete com;
+      ndb_end(opt_ndb_endinfo ? MY_CHECK_ERROR | MY_GIVE_INFO : 0);
+      return 2;
+    }
+  }
+
   if(opt_prompt)
   {
     /* Construct argument to be sent to execute function */

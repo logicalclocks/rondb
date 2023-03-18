@@ -27,6 +27,7 @@
 #include <string>
 #include <algorithm>
 #include <utility>
+#include <util/require.h>
 #include "storage/ndb/include/ndb_global.h"
 #include "decimal.h"
 #include "my_compiler.h"
@@ -625,11 +626,11 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                              std::string(col->getName()))
     }
 
-    // On Mac timeval.tv_usec is Int32 and on linux it is Int64.
+    // On Mac my_timeval.tv_usec is Int32 and on linux it is Int64.
     // Inorder to be compatible we cast l_time.second_part to Int32
     // This will not create problems as only six digit nanoseconds
     // are stored in Timestamp2
-    timeval my_tv{epoch, (Int32)l_time.second_part};
+    my_timeval my_tv{epoch, (Int32)l_time.second_part};
     my_timestamp_to_binary(&my_tv, packed, precision);
 
     size_t col_size = col->getSizeInBytes();
@@ -866,10 +867,10 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     ///< 4 bytes + 0-3 fraction
     uint precision = col->getPrecision();
 
-    timeval my_tv{};
+    my_timeval my_tv{};
     my_timestamp_from_binary(&my_tv, (const unsigned char *)attr->aRef(), precision);
 
-    Int64 epoch_in = my_tv.tv_sec;
+    Int64 epoch_in = my_tv.m_tv_sec;
     std::time_t stdtime(epoch_in);
     boost::posix_time::ptime ts = boost::posix_time::from_time_t(stdtime);
 
@@ -880,7 +881,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     l_time.hour        = ts.time_of_day().hours();
     l_time.minute      = ts.time_of_day().minutes();
     l_time.second      = ts.time_of_day().seconds();
-    l_time.second_part = my_tv.tv_usec;
+    l_time.second_part = my_tv.m_tv_usec;
     l_time.time_type   = MYSQL_TIMESTAMP_DATETIME;
 
     char to[MAX_DATE_STRING_REP_LENGTH];

@@ -1,4 +1,4 @@
-# Copyright (c) 2006, 2020, Oracle and/or its affiliates.
+# Copyright (c) 2006, 2022, Oracle and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -29,6 +29,12 @@ DISABLE_MISSING_PROFILE_WARNING()
 ADD_SUBDIRECTORY(base)
 ## Subdirectory for mysqlpump code.
 ADD_SUBDIRECTORY(dump)
+## Subdirectory for mysql_migrate_keyring code.
+ADD_SUBDIRECTORY(migrate_keyring)
+
+INCLUDE_DIRECTORIES(
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
 
 MYSQL_ADD_EXECUTABLE(mysql
   ${CMAKE_SOURCE_DIR}/sql-common/net_ns.cc
@@ -37,6 +43,8 @@ MYSQL_ADD_EXECUTABLE(mysql
   pattern_matcher.cc
   readline.cc
   client_query_attributes.cc
+  multi_factor_passwordopt-vars.cc
+  ${CMAKE_CURRENT_SOURCE_DIR}/common/user_registration.cc
   LINK_LIBRARIES mysqlclient client_base ${EDITLINE_LIBRARY}
   )
 
@@ -44,14 +52,6 @@ IF(NOT WITHOUT_SERVER)
   MYSQL_ADD_EXECUTABLE(mysql_upgrade
     upgrade/program.cc
     LINK_LIBRARIES mysqlclient client_base
-    )
-ENDIF()
-
-# Enable inlining, to avoid stack overflow for some long regular expressions.
-IF(SOLARIS_SPARC AND MY_COMPILER_IS_SUNPRO AND
-    CMAKE_BUILD_TYPE_UPPER STREQUAL "DEBUG")
-  ADD_COMPILE_FLAGS(mysqltest/regular_expressions.cc
-    COMPILE_FLAGS "-xO3"
     )
 ENDIF()
 
@@ -74,18 +74,22 @@ MYSQL_ADD_EXECUTABLE(mysqltest
 MYSQL_ADD_EXECUTABLE(mysqlcheck
   check/mysqlcheck.cc
   check/mysqlcheck_core.cc
+  multi_factor_passwordopt-vars.cc
   LINK_LIBRARIES mysqlclient
   )
 MYSQL_ADD_EXECUTABLE(mysqldump
   mysqldump.cc
+  multi_factor_passwordopt-vars.cc
   LINK_LIBRARIES mysqlclient
   )
 MYSQL_ADD_EXECUTABLE(mysqlimport
   mysqlimport.cc
+  multi_factor_passwordopt-vars.cc
   LINK_LIBRARIES mysqlclient
   )
 MYSQL_ADD_EXECUTABLE(mysqlshow
   mysqlshow.cc
+  multi_factor_passwordopt-vars.cc
   LINK_LIBRARIES mysqlclient
   )
 
@@ -95,8 +99,9 @@ OPTION(WITH_JSON_BINLOG_LIBRARY
 IF(WITH_JSON_BINLOG_LIBRARY)
   UNSET(INSTALL_JSON_BINLOG_LIBRARY)
   INSTALL(FILES
-    ../sql/json_binary.h
-    DESTINATION ${INSTALL_INCLUDEDIR}
+    ../sql-common/json_binary.h
+    ../sql-common/json_error_handler.h
+    DESTINATION ${INSTALL_INCLUDEDIR}/sql-common
     COMPONENT Development
     )
 ELSE()
@@ -122,9 +127,10 @@ ENDIF()
 # Always build it, but do not *use* it for mysqlbinlog unless
 # WITH_JSON_BINLOG_LIBRARY=ON
 ADD_SHARED_LIBRARY(json_binlog
-  ${CMAKE_SOURCE_DIR}/sql/json_binary.cc
-  ${CMAKE_SOURCE_DIR}/sql/json_dom.cc
-  ${CMAKE_SOURCE_DIR}/sql/json_syntax_check.cc
+  ${CMAKE_SOURCE_DIR}/sql-common/json_binary.cc
+  ${CMAKE_SOURCE_DIR}/sql-common/json_dom.cc
+  ${CMAKE_SOURCE_DIR}/sql-common/json_path.cc
+  ${CMAKE_SOURCE_DIR}/sql-common/json_syntax_check.cc
   ${CMAKE_SOURCE_DIR}/sql-common/sql_string.cc
 
   COMPILE_DEFINITIONS DISABLE_PSI_MUTEX EXPORT_JSON_FUNCTIONS
@@ -153,9 +159,10 @@ if(WITH_RDRS)
 endif()
 
 ADD_CONVENIENCE_LIBRARY(json_client_library
-  ${CMAKE_SOURCE_DIR}/sql/json_binary.cc
-  ${CMAKE_SOURCE_DIR}/sql/json_dom.cc
-  ${CMAKE_SOURCE_DIR}/sql/json_syntax_check.cc
+  ${CMAKE_SOURCE_DIR}/sql-common/json_binary.cc
+  ${CMAKE_SOURCE_DIR}/sql-common/json_dom.cc
+  ${CMAKE_SOURCE_DIR}/sql-common/json_path.cc
+  ${CMAKE_SOURCE_DIR}/sql-common/json_syntax_check.cc
   ${CMAKE_SOURCE_DIR}/sql-common/sql_string.cc
 
   COMPILE_DEFINITIONS DISABLE_PSI_MUTEX
@@ -175,6 +182,15 @@ MERGE_CONVENIENCE_LIBRARIES(json_binlog_static
   ${INSTALL_JSON_BINLOG_LIBRARY}
   )
 
+# This is a test executable which verifies that Json_wrapper::seek,
+# Json_dom::seek and Json_dom::parse functions are visible and can be called.
+MYSQL_ADD_EXECUTABLE(json_client_library_main
+  json_client_library_main.cc
+  INCLUDE_DIRECTORIES ../sql
+  LINK_LIBRARIES json_client_library  strings
+  SKIP_INSTALL
+  )
+
 # A test executable which does nothing, except verify that symbols are visible.
 # To test standalone build:
 #   cmake -DINSTALL_MYSQLTESTDIR=0
@@ -184,7 +200,7 @@ MERGE_CONVENIENCE_LIBRARIES(json_binlog_static
 #       -ljson_binlog
 MYSQL_ADD_EXECUTABLE(json_binlog_main
   json_binlog_main.cc
-  INCLUDE_DIRECTORIES ../sql
+  INCLUDE_DIRECTORIES ../sql ../sql-common
   LINK_LIBRARIES json_binlog
   SKIP_INSTALL
   )
@@ -196,7 +212,7 @@ MYSQL_ADD_EXECUTABLE(json_binlog_main
 #       -ljson_binlog_static -lpthread
 MYSQL_ADD_EXECUTABLE(json_binlog_main_static
   json_binlog_main.cc
-  INCLUDE_DIRECTORIES ../sql
+  INCLUDE_DIRECTORIES ../sql ../sql-common
   LINK_LIBRARIES json_binlog_static
   SKIP_INSTALL
   )
@@ -247,6 +263,14 @@ MYSQL_ADD_EXECUTABLE(mysqlbinlog
   LINK_LIBRARIES ${MYSQLBINLOG_LIBRARIES}
   )
 
+# __builtin_strncpy specified bound depends on the length of the source argument
+# mysqlbinlog.cc:2169:22: note: length computed here
+IF((WITH_LTO OR CMAKE_COMPILER_FLAG_WITH_LTO) AND
+    MY_COMPILER_IS_GNU AND
+    CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 11)
+  MY_TARGET_LINK_OPTIONS(mysqlbinlog "-Wno-stringop-truncation")
+ENDIF()
+
 IF(WITH_JSON_BINLOG_LIBRARY)
   IF(APPLE)
     ADD_CUSTOM_COMMAND(TARGET mysqlbinlog POST_BUILD
@@ -265,10 +289,12 @@ TARGET_INCLUDE_DIRECTORIES(mysqlbinlog PRIVATE ${CMAKE_SOURCE_DIR}/sql)
 
 MYSQL_ADD_EXECUTABLE(mysqladmin
   mysqladmin.cc
+  multi_factor_passwordopt-vars.cc
   LINK_LIBRARIES mysqlclient
   )
 MYSQL_ADD_EXECUTABLE(mysqlslap
   mysqlslap.cc
+  multi_factor_passwordopt-vars.cc
   LINK_LIBRARIES mysqlclient
   )
 MYSQL_ADD_EXECUTABLE(mysql_config_editor

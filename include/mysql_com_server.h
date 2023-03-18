@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2011, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -61,6 +61,15 @@ typedef struct NET_SERVER {
   void *m_user_data;
   struct compression_attributes compression;
   mysql_compress_context compress_ctx;
+  bool timeout_on_full_packet;
 } NET_SERVER;
+
+inline void net_server_ext_init(NET_SERVER *ns) {
+  ns->m_user_data = nullptr;
+  ns->m_before_header = nullptr;
+  ns->m_after_header = nullptr;
+  ns->compress_ctx.algorithm = MYSQL_UNCOMPRESSED;
+  ns->timeout_on_full_packet = false;
+}
 
 #endif

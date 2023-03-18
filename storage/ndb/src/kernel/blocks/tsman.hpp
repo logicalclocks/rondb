@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2005, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2005, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -38,6 +38,7 @@
 
 #define JAM_FILE_ID 456
 
+class FsReadWriteReq;
 
 class Tsman : public SimulatedBlock
 {
@@ -46,8 +47,10 @@ public:
   ~Tsman() override;
   BLOCK_DEFINES(Tsman);
   
+public:
+  void execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross threads from Ndbfs */;
+
 protected:
-  
   void execSTTOR(Signal* signal);
   void sendSTTORRY(Signal*);
   void execREAD_CONFIG_REQ(Signal* signal);
@@ -62,7 +65,6 @@ protected:
 
   void execSTART_RECREQ(Signal*);
   
-  void execFSWRITEREQ(Signal*);
   void execFSOPENREF(Signal*);
   void execFSOPENCONF(Signal*);
   void execFSREADREF(Signal*);
@@ -226,7 +228,8 @@ private:
   friend class Tablespace_client;
   Datafile_pool m_file_pool;
   Tablespace_pool m_tablespace_pool;
-  
+
+  bool c_encrypted_filesystem;
   bool m_lcp_ongoing;
   BlockReference m_end_lcp_ref;
   Datafile_hash m_file_hash;
@@ -236,12 +239,12 @@ private:
   Lgman * m_lgman;
   SimulatedBlock * m_tup;
 
-  NdbMutex *m_client_mutex[MAX_NDBMT_LQH_THREADS + 1];
+  mutable NdbMutex *m_client_mutex[MAX_NDBMT_LQH_THREADS + 1];
   NdbMutex *m_alloc_extent_mutex;
-  void client_lock();
-  void client_unlock();
-  void client_lock(Uint32 instance);
-  void client_unlock(Uint32 instance);
+  void client_lock() const;
+  void client_unlock() const;
+  void client_lock(Uint32 instance) const;
+  void client_unlock(Uint32 instance) const;
   bool is_datafile_ready(Uint32 file_no);
   void lock_extent_page(Uint32 file_no, Uint32 page_no);
   void unlock_extent_page(Uint32 file_no, Uint32 page_no);
@@ -375,7 +378,7 @@ public:
   /**
    * Allocated a page from an extent
    *   performs linear search in extent free bits until it find 
-   *   page that has atleast <em>bits</em> bits free
+   *   page that has at least <em>bits</em> bits free
    * 
    * Start search from key->m_page_no 
    *   and return found page in key->m_page_no
@@ -435,13 +438,13 @@ public:
    *
    * Store result in <em>rep</em>
    *
-   * Return  0 - on sucess
+   * Return  0 - on success
    *        <0 - on error
    */
-  int get_tablespace_info(CreateFilegroupImplReq* rep);
+  int get_tablespace_info(SimulatedBlock*, CreateFilegroupImplReq* rep);
 
   /**
-   * Update lsn of page corresponing to key
+   * Update lsn of page corresponding to key
    */
   int update_lsn(Local_key* key, Uint64 lsn);
 

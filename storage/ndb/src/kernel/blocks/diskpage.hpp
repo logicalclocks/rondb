@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2005, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2005, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,9 +33,9 @@
 
 struct File_formats 
 {
-  STATIC_CONST( NDB_PAGE_SIZE = 32768 );
-  STATIC_CONST( NDB_DATA_PAGE_HEADER_SIZE = 128);
-  STATIC_CONST( NDB_PAGE_SIZE_WORDS = NDB_PAGE_SIZE >> 2);
+  static constexpr Uint32 NDB_PAGE_SIZE = 32768;
+  static constexpr Uint32 NDB_DATA_PAGE_HEADER_SIZE = 128;
+  static constexpr Uint32 NDB_PAGE_SIZE_WORDS = NDB_PAGE_SIZE >> 2;
   
   enum File_type
   {
@@ -72,7 +73,7 @@ struct File_formats
     int validate(File_type ft, Uint32 node_id, Uint32 version, Uint32 now);
   };
 
-  STATIC_CONST( NDB_PAGE_HEADER_WORDS = sizeof(Page_header) >> 2);
+  static constexpr Uint32 NDB_PAGE_HEADER_WORDS = sizeof(Page_header) >> 2;
   
   struct Datafile 
   {
@@ -121,8 +122,8 @@ struct File_formats
       Extent_header() {}
     };
     
-    STATIC_CONST( EXTENT_HEADER_BITMASK_BITS_PER_PAGE = 4 );
-    STATIC_CONST( EXTENT_HEADER_FIXED_WORDS = (sizeof(Extent_header)>>2) - 1);
+    static constexpr Uint32 EXTENT_HEADER_BITMASK_BITS_PER_PAGE = 4;
+    static constexpr Uint32 EXTENT_HEADER_FIXED_WORDS = (sizeof(Extent_header)>>2) - 1;
     
     struct Extent_header_v2
     {
@@ -138,9 +139,9 @@ struct File_formats
       Extent_header_v2() {}
     };
     
-    STATIC_CONST( EXTENT_HEADER_BITMASK_BITS_PER_PAGE_v2 = 4 );
-    STATIC_CONST( EXTENT_HEADER_FIXED_WORDS_v2 =
-                  (sizeof(Extent_header_v2)>>2) - 1);
+    static constexpr Uint32 EXTENT_HEADER_BITMASK_BITS_PER_PAGE_v2 = 4;
+    static constexpr Uint32 EXTENT_HEADER_FIXED_WORDS_v2 =
+                  (sizeof(Extent_header_v2)>>2) - 1;
     static Uint32 extent_header_words(Uint32 extent_size_in_pages, bool v2);
     static Uint32 extent_page_words(bool v2);
 
@@ -173,8 +174,8 @@ struct File_formats
                                        bool v2);
     };
     
-    STATIC_CONST( EXTENT_PAGE_WORDS = NDB_PAGE_SIZE_WORDS -
-                                      NDB_PAGE_HEADER_WORDS );
+    static constexpr Uint32 EXTENT_PAGE_WORDS = NDB_PAGE_SIZE_WORDS -
+                                                NDB_PAGE_HEADER_WORDS;
     
     struct Extent_page_v2
     {
@@ -188,8 +189,8 @@ struct File_formats
       Extent_header_v2* get_header_v2(Uint32 extent_no, Uint32 extent_size);
     };
     
-    STATIC_CONST( EXTENT_PAGE_WORDS_v2 = NDB_PAGE_SIZE_WORDS -
-                                         NDB_PAGE_HEADER_WORDS - 6 );
+    static constexpr Uint32 EXTENT_PAGE_WORDS_v2 = NDB_PAGE_SIZE_WORDS -
+                                                   NDB_PAGE_HEADER_WORDS - 6;
     
     struct Data_page 
     {
@@ -269,6 +270,9 @@ struct File_formats
       ,UNDO_TUP_FIRST_UPDATE_PART = 12
       ,UNDO_TUP_UPDATE_PART = 13
       ,UNDO_TUP_FREE_PART = 14
+      ,UNDO_TUP_FREE_VAR_PART = 15
+      ,UNDO_TUP_UPDATE_VAR_PART = 16
+      ,UNDO_TUP_FIRST_UPDATE_VAR_PART = 17
       
       ,UNDO_END        = 0x7FFF 
       ,UNDO_NEXT_LSN   = 0x8000
@@ -280,10 +284,10 @@ struct File_formats
       Uint32 m_type_length; // 16 bit type, 16 bit length
     };
   };
-  STATIC_CONST( UNDO_PAGE_WORDS = NDB_PAGE_SIZE_WORDS -
-                                  NDB_PAGE_HEADER_WORDS - 1);
-  STATIC_CONST( UNDO_PAGE_WORDS_v2 = NDB_PAGE_SIZE_WORDS -
-                                     NDB_PAGE_HEADER_WORDS - 9);
+  static constexpr Uint32 UNDO_PAGE_WORDS = NDB_PAGE_SIZE_WORDS -
+                                            NDB_PAGE_HEADER_WORDS - 1;
+  static constexpr Uint32 UNDO_PAGE_WORDS_v2 = NDB_PAGE_SIZE_WORDS -
+                                               NDB_PAGE_HEADER_WORDS - 9;
 };
 
 

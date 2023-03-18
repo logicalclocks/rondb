@@ -93,6 +93,34 @@ insert into test.pfs_published_schema
  values("MySQL 8.0.23",
         "903e1e93e60651094708033160338ba66b6e59a733111e773cac126adc932488");
 
+insert into test.pfs_published_schema
+ values("MySQL 8.0.24",
+        "2db5b001fae56232df1c5fab4be6bbf10d47873a6ad55f36ad9d9be20632e973");
+
+insert into test.pfs_published_schema
+ values("MySQL 8.0.27",
+        "b229e37b78fcb1a522fb01991615e092888071981515ceca629030d7c9ae66c4");
+
+insert into test.pfs_published_schema
+ values("MySQL 8.0.28",
+        "9984eaa4462410f61339028551966d92815f4287dac45358ca326b5c55333ddf");
+
+insert into test.pfs_published_schema
+ values("MySQL 8.0.29",
+        "94c77e0c2a4f4e6616648a8ec30aebc10eee06889338a06473434fd39dc80b3a");
+
+insert into test.pfs_published_schema
+ values("MySQL 8.0.30",
+        "977641d414b2df02e404d2ca3b9fbdf6d0af30f196f7de729a67d5b6183c17a8");
+
+insert into test.pfs_published_schema
+ values("MySQL 8.0.31",
+        "572cf94b0e4b955d16ae57de514a8d93ef746f7c97e74c16b6666687bff51c6d");
+
+insert into test.pfs_published_schema
+ values("MySQL 8.0.32",
+        "f1f4333cbce3fb0e8840ecacd6d0d417abfdf7dcbf61b01180c73a837ec0753b");
+
 create table test.pfs_check_table
   (id int NOT NULL AUTO_INCREMENT,
    t text NOT NULL,

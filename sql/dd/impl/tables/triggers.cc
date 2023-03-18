@@ -1,4 +1,4 @@
-/* Copyright (c) 2016, 2020, Oracle and/or its affiliates.
+/* Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -42,7 +42,7 @@ namespace tables {
 ///////////////////////////////////////////////////////////////////////////
 
 const CHARSET_INFO *Triggers::name_collation() {
-  return &my_charset_utf8_general_ci;
+  return &my_charset_utf8mb3_general_ci;
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -56,7 +56,7 @@ Triggers::Triggers() {
                          "schema_id BIGINT UNSIGNED NOT NULL");
   m_target_def.add_field(FIELD_NAME, "FIELD_NAME",
                          "name VARCHAR(64) NOT NULL COLLATE " +
-                             String_type(name_collation()->name));
+                             String_type(name_collation()->m_coll_name));
   m_target_def.add_field(FIELD_EVENT_TYPE, "FIELD_EVENT_TYPE",
                          "event_type ENUM('INSERT', 'UPDATE', 'DELETE') "
                          "NOT NULL");
@@ -166,14 +166,14 @@ bool Triggers::get_trigger_table_id(THD *thd, Object_id schema_id,
   trx.otx.register_tables<dd::Table>();
   if (trx.otx.open_tables()) return true;
 
-  DBUG_ASSERT(oid != nullptr);
+  assert(oid != nullptr);
   *oid = INVALID_OBJECT_ID;
 
   const std::unique_ptr<Object_key> key(
       create_key_by_trigger_name(schema_id, trigger_name.c_str()));
 
   Raw_table *table = trx.otx.get_table(instance().name());
-  DBUG_ASSERT(table != nullptr);
+  assert(table != nullptr);
 
   // Find record by the object-key.
   std::unique_ptr<Raw_record> record;

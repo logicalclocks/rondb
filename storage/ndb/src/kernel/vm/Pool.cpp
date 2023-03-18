@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2006, 2017, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2006, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -31,35 +32,47 @@
 
 
 void*
-Pool_context::alloc_page19(Uint32 type_id, Uint32 *i)
+Pool_context::alloc_page19(Uint32 type_id,
+                           Uint32 *i,
+                           bool allow_use_spare)
 {
   return m_block->m_ctx.m_mm.alloc_page(type_id,
                                         i,
-                                        Ndbd_mem_manager::NDB_ZONE_LE_19);
+                                        Ndbd_mem_manager::NDB_ZONE_LE_19,
+                                        allow_use_spare);
 }
 
 void*
-Pool_context::alloc_page27(Uint32 type_id, Uint32 *i)
+Pool_context::alloc_page27(Uint32 type_id,
+                           Uint32 *i,
+                           bool allow_use_spare)
 {
   return m_block->m_ctx.m_mm.alloc_page(type_id,
                                         i,
-                                        Ndbd_mem_manager::NDB_ZONE_LE_27);
+                                        Ndbd_mem_manager::NDB_ZONE_LE_27,
+                                        allow_use_spare);
 }
 
 void*
-Pool_context::alloc_page30(Uint32 type_id, Uint32 *i)
+Pool_context::alloc_page30(Uint32 type_id,
+                           Uint32 *i,
+                           bool allow_use_spare)
 {
   return m_block->m_ctx.m_mm.alloc_page(type_id,
                                         i,
-                                        Ndbd_mem_manager::NDB_ZONE_LE_30);
+                                        Ndbd_mem_manager::NDB_ZONE_LE_30,
+                                        allow_use_spare);
 }
 
 void*
-Pool_context::alloc_page32(Uint32 type_id, Uint32 *i)
+Pool_context::alloc_page32(Uint32 type_id,
+                           Uint32 *i,
+                           bool allow_use_spare)
 {
   return m_block->m_ctx.m_mm.alloc_page(type_id,
                                         i,
-                                        Ndbd_mem_manager::NDB_ZONE_LE_32);
+                                        Ndbd_mem_manager::NDB_ZONE_LE_32,
+                                        allow_use_spare);
 }
 
 void 

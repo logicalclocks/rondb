@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2019, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,7 +23,7 @@
 /**
   @file storage/myisam/queues.cc
   Code for handling of priority Queues.
-  Implementation of queues from "Algoritms in C" by Robert Sedgewick.
+  Implementation of queues from "Algorithms in C" by Robert Sedgewick.
   An optimisation of _downheap suggested in Exercise 7.51 in "Data
   Structures & Algorithms in C++" by Mark Allen Weiss, Second Edition
   was implemented by Mikael Ronstrom 2005. Also the O(N) algorithm
@@ -180,7 +180,7 @@ void delete_queue(QUEUE *queue) {
 
 void queue_insert(QUEUE *queue, uchar *element) {
   uint idx, next;
-  DBUG_ASSERT(queue->elements < queue->max_elements);
+  assert(queue->elements < queue->max_elements);
   queue->root[0] = element;
   idx = ++queue->elements;
   /* max_at_top swaps the comparison if we want to order by desc */
@@ -199,7 +199,7 @@ void queue_insert(QUEUE *queue, uchar *element) {
 
 uchar *queue_remove(QUEUE *queue, uint idx) {
   uchar *element;
-  DBUG_ASSERT(idx < queue->max_elements);
+  assert(idx < queue->max_elements);
   element = queue->root[++idx]; /* Intern index starts from 1 */
   queue->root[idx] = queue->root[queue->elements--];
   _downheap(queue, idx);

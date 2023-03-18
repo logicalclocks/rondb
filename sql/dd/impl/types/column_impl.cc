@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -22,6 +22,7 @@
 
 #include "sql/dd/impl/types/column_impl.h"
 
+#include <assert.h>
 #include <stddef.h>
 #include <memory>
 #include <set>
@@ -34,7 +35,7 @@
 #include <rapidjson/prettywriter.h>
 
 #include "m_string.h"
-#include "my_dbug.h"
+
 #include "my_inttypes.h"
 #include "my_sys.h"
 #include "mysqld_error.h"                         // ER_*
@@ -43,7 +44,7 @@
 #include "sql/dd/impl/raw/raw_record.h"           // Raw_record
 #include "sql/dd/impl/sdi_impl.h"                 // sdi read/write functions
 #include "sql/dd/impl/tables/column_type_elements.h"  // Column_type_elements
-#include "sql/dd/impl/tables/columns.h"               // Colummns
+#include "sql/dd/impl/tables/columns.h"               // Columns
 #include "sql/dd/impl/transaction_impl.h"  // Open_dictionary_tables_ctx
 #include "sql/dd/impl/types/abstract_table_impl.h"       // Abstract_table_impl
 #include "sql/dd/impl/types/column_type_element_impl.h"  // Column_type_element_impl
@@ -63,8 +64,9 @@ class Sdi_rcontext;
 class Sdi_wcontext;
 
 static const std::set<String_type> default_valid_option_keys = {
-    "column_format", "geom_type",         "interval_count", "not_secondary",
-    "storage",       "treat_bit_as_char", "is_array"};
+    "column_format", "geom_type", "interval_count",
+    "not_secondary", "storage",   "treat_bit_as_char",
+    "is_array",      "gipk" /* generated implicit primary key column */};
 
 ///////////////////////////////////////////////////////////////////////////
 // Column_impl implementation.
@@ -122,7 +124,7 @@ Column_impl::Column_impl(Abstract_table_impl *table)
       m_is_explicit_collation(false),
       m_column_key(CK_NONE) {}
 
-Column_impl::~Column_impl() {}
+Column_impl::~Column_impl() = default;
 
 ///////////////////////////////////////////////////////////////////////////
 
@@ -500,8 +502,7 @@ void Column_impl::debug_print(String_type &outb) const {
 ///////////////////////////////////////////////////////////////////////////
 
 Column_type_element *Column_impl::add_element() {
-  DBUG_ASSERT(type() == enum_column_types::ENUM ||
-              type() == enum_column_types::SET);
+  assert(type() == enum_column_types::ENUM || type() == enum_column_types::SET);
 
   Column_type_element_impl *e =
       new (std::nothrow) Column_type_element_impl(this);

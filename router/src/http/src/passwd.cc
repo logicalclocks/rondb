@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2018, 2020, Oracle and/or its affiliates. All rights reserved.
+  Copyright (c) 2018, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -29,12 +29,12 @@
 #include <sstream>
 #include <vector>
 
-#include "common.h"  // make_file_private
 #include "mysql/harness/arg_handler.h"
-#include "mysql/harness/filesystem.h"
+#include "mysql/harness/filesystem.h"  // make_file_private
 #include "mysql/harness/utility/string.h"
-#include "mysqlrouter/utils.h"
+#include "mysqlrouter/utils.h"         // prompt_password
 #include "print_version.h"             // build_version
+#include "router_config.h"             // MYSQL_ROUTER_NAME
 #include "welcome_copyright_notice.h"  // ORACLE_WELCOME_COPYRIGHT_NOTICE
 
 #include "http_auth_backend.h"
@@ -190,7 +190,7 @@ int PasswdFrontend::run() {
 
           break;
         }
-        /* Falls through. */
+        [[fallthrough]];
       default:
         if (config_.cmd == PasswdFrontend::Cmd::List) {
           throw UsageError("expected at least one extra argument: <filename>");
@@ -398,9 +398,13 @@ void PasswdFrontend::prepare_command_options() {
       "Work-factor hint for KDF if account is updated.",
       CmdOptionValueReq::required, "num", [this](const std::string &value) {
         try {
-          long num = std::stol(value);
+          size_t end_pos;
+          long num = std::stol(value, &end_pos);
           if (num < 0) {
             throw UsageError("--work-factor is negative (must be positive)");
+          }
+          if (end_pos != value.size()) {
+            throw UsageError("--work-factor is not a positive integer");
           }
           config_.cost = num;
         } catch (const std::out_of_range &) {

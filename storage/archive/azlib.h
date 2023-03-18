@@ -1,10 +1,9 @@
 /*
-  This libary has been modified for use by the MySQL Archive Engine.
+  This library has been modified for use by the MySQL Archive Engine.
      -Brian Aker
 
   This file was modified by Oracle on 02-08-2016.
-  Modifications copyright (c) 2016, Oracle and/or its affiliates. All rights
-  reserved.
+  Modifications Copyright (c) 2016, 2022, Oracle and/or its affiliates.
 */
 
 /* zlib.h -- interface of the 'zlib' general purpose compression library

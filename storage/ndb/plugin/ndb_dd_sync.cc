@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2020, Oracle and/or its affiliates. All rights reserved.
+  Copyright (c) 2020, 2022, Oracle and/or its affiliates.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License, version 2.0,
@@ -27,6 +27,7 @@
 
 #include <functional>
 
+#include "m_string.h"                                 // is_prefix
 #include "storage/ndb/plugin/ha_ndbcluster_binlog.h"  // ndbcluster_binlog_setup_table
 #include "storage/ndb/plugin/ndb_dd.h"                // ndb_dd_fs_name_case
 #include "storage/ndb/plugin/ndb_dd_client.h"         // Ndb_dd_client
@@ -141,6 +142,17 @@ bool Ndb_dd_sync::remove_all_metadata() const {
     ndb_log_verbose(50, "Found %zu NDB tables in schema '%s'",
                     ndb_tables.size(), schema_name);
     for (const std::string &table_name : ndb_tables) {
+      // Check if the table has a trigger. Such tables are handled differently
+      // and not deleted as that would result in the trigger being deleted as
+      // well
+      const dd::Table *table_def;
+      if (!dd_client.get_table(schema_name, table_name.c_str(), &table_def)) {
+        ndb_log_error("Failed to open table '%s.%s' from DD", schema_name,
+                      table_name.c_str());
+        return false;
+      }
+      if (ndb_dd_table_has_trigger(table_def)) continue;
+
       ndb_log_info("Removing table '%s.%s'", schema_name, table_name.c_str());
       if (!remove_table(schema_name, table_name.c_str())) {
         ndb_log_error("Failed to remove table '%s.%s' from DD", schema_name,
@@ -204,8 +216,10 @@ bool Ndb_dd_sync::remove_deleted_tables() const {
     // separately during binlog setup. The index stat tables are not installed
     // in the DD.
     std::unordered_set<std::string> tables_in_NDB;
+    std::unordered_set<std::string> temp_tables_in_NDB;
     if (!ndb_get_table_names_in_schema(m_thd_ndb->ndb->getDictionary(),
-                                       schema_name, &tables_in_NDB)) {
+                                       schema_name, &tables_in_NDB,
+                                       &temp_tables_in_NDB)) {
       log_NDB_error(m_thd_ndb->ndb->getDictionary()->getNdbError());
       ndb_log_error(
           "Failed to get list of NDB tables in schema '%s' from "
@@ -217,6 +231,8 @@ bool Ndb_dd_sync::remove_deleted_tables() const {
     ndb_log_verbose(50,
                     "Found %zu NDB tables in schema '%s' in the NDB Dictionary",
                     tables_in_NDB.size(), schema_name);
+
+    remove_copying_alter_temp_tables(schema_name, temp_tables_in_NDB);
 
     // Iterate over all NDB tables found in DD. If they don't exist in NDB
     // anymore, then remove the table from DD
@@ -331,7 +347,7 @@ bool Ndb_dd_sync::synchronize_logfile_group(
   if (existing == nullptr) {
     ndb_log_error("Logfile group '%s' does not exist in DD",
                   logfile_group_name);
-    DBUG_ASSERT(false);
+    assert(false);
     return false;
   }
 
@@ -343,7 +359,7 @@ bool Ndb_dd_sync::synchronize_logfile_group(
         "Could not extract id and version from the definition "
         "of logfile group '%s'",
         logfile_group_name);
-    DBUG_ASSERT(false);
+    assert(false);
     return false;
   }
 
@@ -528,7 +544,7 @@ bool Ndb_dd_sync::synchronize_tablespace(
 
   if (existing == nullptr) {
     ndb_log_error("Tablespace '%s' does not exist in DD", tablespace_name);
-    DBUG_ASSERT(false);
+    assert(false);
     return false;
   }
 
@@ -540,7 +556,7 @@ bool Ndb_dd_sync::synchronize_tablespace(
         "Could not extract id and version from the definition "
         "of tablespace '%s'",
         tablespace_name);
-    DBUG_ASSERT(false);
+    assert(false);
     return false;
   }
 
@@ -647,7 +663,7 @@ bool Ndb_dd_sync::synchronize_tablespaces() const {
 const NdbError *Ndb_dd_sync::fetch_database_ddls(
     NdbTransaction *ndb_transaction, const NdbDictionary::Table *ndb_schema_tab,
     std::vector<Ndb_schema_tuple> *database_ddls) {
-  DBUG_ASSERT(ndb_transaction != nullptr);
+  assert(ndb_transaction != nullptr);
   DBUG_TRACE;
 
   // Create scan operation and define the read
@@ -796,7 +812,7 @@ bool Ndb_dd_sync::synchronize_databases() const {
     unsigned int ddl_counter, ddl_node_id;
     std::tie(db_name, query, schema_ddl_type, ddl_counter, ddl_node_id) =
         ddl_tuple;
-    DBUG_ASSERT(ddl_counter != 0 && ddl_node_id != 0);
+    assert(ddl_counter != 0 && ddl_node_id != 0);
     ndb_log_verbose(5,
                     "ndb_schema query : '%s', db : '%s', "
                     "counter : %u, node_id : %u",
@@ -958,7 +974,7 @@ bool Ndb_dd_sync::synchronize_databases() const {
         }
       } break;
       default:
-        DBUG_ASSERT(!"Unknown database DDL type");
+        assert(!"Unknown database DDL type");
     }
   }
 
@@ -1170,15 +1186,13 @@ bool Ndb_dd_sync::install_table(const char *schema_name, const char *table_name,
 
 bool Ndb_dd_sync::synchronize_table(const char *schema_name,
                                     const char *table_name) const {
-  Ndb *ndb = m_thd_ndb->ndb;
-
   ndb_log_verbose(1, "Synchronizing table '%s.%s'", schema_name, table_name);
 
-  Ndb_table_guard ndbtab_g(ndb, schema_name, table_name);
+  Ndb_table_guard ndbtab_g(m_thd_ndb->ndb, schema_name, table_name);
   const NdbDictionary::Table *ndbtab = ndbtab_g.get_table();
   if (!ndbtab) {
     // Failed to open the table from NDB
-    log_NDB_error(ndb->getDictionary()->getNdbError());
+    log_NDB_error(ndbtab_g.getNdbError());
     ndb_log_error("Failed to setup table '%s.%s'", schema_name, table_name);
 
     // Failed, table was listed but could not be opened, retry
@@ -1251,29 +1265,32 @@ bool Ndb_dd_sync::synchronize_table(const char *schema_name,
     return true;  // Skipped
   }
 
-  int table_id, table_version;
-  if (!ndb_dd_table_get_object_id_and_version(existing, table_id,
-                                              table_version)) {
+  Ndb_dd_handle dd_handle = ndb_dd_table_get_spi_and_version(existing);
+  if (!dd_handle.valid()) {
     ndb_log_error(
         "Failed to extract id and version from table definition "
         "for table '%s.%s'",
         schema_name, table_name);
-    DBUG_ASSERT(false);
+    assert(false);
     return false;
   }
 
-  // Check that latest version of table definition for this NDB table
-  // is installed in DD
-  if (ndbtab->getObjectId() != table_id ||
-      ndbtab->getObjectVersion() != table_version) {
-    ndb_log_info("Table '%s.%s' have different version in DD, reinstalling...",
-                 schema_name, table_name);
-    if (!install_table(schema_name, table_name, ndbtab,
-                       true /* need overwrite */)) {
-      // Failed to create table from NDB
-      ndb_log_error("Failed to install table '%s.%s' from NDB", schema_name,
-                    table_name);
-      return false;
+  {
+    // Check that latest version of table definition for this NDB table
+    // is installed in DD
+    Ndb_dd_handle curr_handle{ndbtab->getObjectId(),
+                              ndbtab->getObjectVersion()};
+    if (curr_handle != dd_handle) {
+      ndb_log_info(
+          "Table '%s.%s' have different version in DD, reinstalling...",
+          schema_name, table_name);
+      if (!install_table(schema_name, table_name, ndbtab,
+                         true /* need overwrite */)) {
+        // Failed to create table from NDB
+        ndb_log_error("Failed to install table '%s.%s' from NDB", schema_name,
+                      table_name);
+        return false;
+      }
     }
   }
 
@@ -1285,8 +1302,8 @@ bool Ndb_dd_sync::synchronize_table(const char *schema_name,
     return false;
   }
 
-  if (ndbcluster_binlog_setup_table(m_thd, ndb, schema_name, table_name,
-                                    table_def) != 0) {
+  if (ndbcluster_binlog_setup_table(m_thd, m_thd_ndb->ndb, schema_name,
+                                    table_name, table_def) != 0) {
     ndb_log_error("Failed to setup binlog for table '%s.%s'", schema_name,
                   table_name);
     return false;
@@ -1391,4 +1408,39 @@ bool Ndb_dd_sync::synchronize() const {
 
   ndb_log_info("Completed metadata synchronization");
   return true;
+}
+
+void Ndb_dd_sync::remove_copying_alter_temp_tables(
+    const char *schema_name,
+    const std::unordered_set<std::string> &temp_tables_in_ndb) const {
+  for (const std::string &ndb_table_name : temp_tables_in_ndb) {
+    // if the table starts with #sql2, it's the table left behind after
+    // renaming original table to temporary one, cannot be deleted to prevent
+    // data loss
+    if (is_prefix(ndb_table_name.c_str(), "#sql2")) {
+      ndb_log_error(
+          "Found temporary table %s.%s, which is most likely left behind"
+          " by failed copying alter table",
+          schema_name, ndb_table_name.c_str());
+      continue;
+    }
+
+    // the table is temporary and does not start with prefix #sql2,
+    // so it must have been left behind before renaming orignal table,
+    // if so, it can be deleted to cleanup unfinished copying alter table
+    ndb_log_warning(
+        "Found temporary table %s.%s, wich is most likely left behind by failed"
+        " copying alter table, this table will be removed, the operation"
+        " does not affect original data",
+        schema_name, ndb_table_name.c_str());
+    Ndb_table_guard ndbtab_g(m_thd_ndb->ndb, schema_name,
+                             ndb_table_name.c_str());
+    auto ndbtab = *ndbtab_g.get_table();
+    constexpr int flag = NdbDictionary::Dictionary::DropTableCascadeConstraints;
+
+    if (m_thd_ndb->ndb->getDictionary()->dropTableGlobal(ndbtab, flag)) {
+      log_NDB_error(m_thd_ndb->ndb->getDictionary()->getNdbError());
+      ndb_log_error("Cannot drop %s.%s", schema_name, ndb_table_name.c_str());
+    }
+  }
 }

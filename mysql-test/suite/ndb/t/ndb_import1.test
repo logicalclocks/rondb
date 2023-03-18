@@ -163,21 +163,9 @@ my $test3 = {
   dumpdata => 1,
 };
 
-my $test4 = {
-  tag => "d",
-  desc => "success, with rejected rows and resume",
-  tables => [ $t8 ],
-  csvfmt => get_csvfmt1(),
-  rejectsopt => 0,
-  rejectsgen => 10,
-  resumeopt => 1,
-  verify => 'pk',
-  dumpdata => 1,
-};
-
 my $tests = {
   tag => '1',
-  testlist => [ $test1, $test2, $test3, $test4 ],
+  testlist => [ $test1, $test2, $test3 ],
 };
 
 write_tests($tests);

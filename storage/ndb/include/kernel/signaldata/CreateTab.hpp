@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2016, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,8 +33,9 @@
 
 struct CreateTabReq
 {
-  STATIC_CONST( SignalLength = 6 );
-  STATIC_CONST( SignalLengthLDM = 6 + 11 );
+  static constexpr Uint32 SignalLength = 6;
+  static constexpr Uint32 OldSignalLengthLDM = 6 + 11;
+  static constexpr Uint32 SignalLengthLDM = 6 + 12;
 
   enum RequestType {
   };
@@ -59,13 +61,14 @@ struct CreateTabReq
   Uint32 checksumIndicator;
   Uint32 GCPIndicator;
   Uint32 extraRowAuthorBits;
+  Uint32 useVarSizedDiskData;
 
   SECTION( DICT_TAB_INFO = 0 );
   SECTION( FRAGMENTATION = 1 );
 };
 
 struct CreateTabConf {
-  STATIC_CONST( SignalLength = 3 );
+  static constexpr Uint32 SignalLength = 3;
 
   Uint32 senderRef;
   Uint32 senderData;
@@ -78,7 +81,7 @@ struct CreateTabConf {
 };
 
 struct CreateTabRef {
-  STATIC_CONST( SignalLength = 6 );
+  static constexpr Uint32 SignalLength = 6;
 
   Uint32 senderRef;
   Uint32 senderData;
@@ -105,14 +108,14 @@ struct TcSchVerReq
   Uint32 userDefinedPartition;
   Uint32 readBackup;
   Uint32 fullyReplicated;
-  STATIC_CONST( SignalLength = 11 );
+  static constexpr Uint32 SignalLength = 11;
 };
 
 struct TcSchVerConf
 {
   Uint32 senderRef;
   Uint32 senderData;
-  STATIC_CONST( SignalLength = 2 );
+  static constexpr Uint32 SignalLength = 2;
 };
 
 

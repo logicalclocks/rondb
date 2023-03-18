@@ -1,6 +1,3 @@
-DROP SCHEMA IF EXISTS xtest;
-Warnings:
-Note	1008	Can't drop database 'xtest'; database doesn't exist
 CREATE SCHEMA xtest;
 USE xtest;
 CREATE TABLE xtable (doc JSON);
@@ -17,9 +14,15 @@ command ok
 fun	oper
 2015-10-08	2015-10-08
 command ok
+Warnings generated:
+WARNING | 4095 | Delimiter '.' in position 4 in datetime value '2015.10.05' at row 1 is deprecated. Prefer the standard '-'.
+WARNING | 4095 | Delimiter '.' in position 4 in datetime value '2015.10.05' at row 1 is deprecated. Prefer the standard '-'.
 fun	oper
 2015-10-02	2015-10-02
 command ok
+Warnings generated:
+WARNING | 4095 | Delimiter '.' in position 4 in datetime value '2015.10.05' at row 1 is deprecated. Prefer the standard '-'.
+WARNING | 4095 | Delimiter '.' in position 4 in datetime value '2015.10.05' at row 1 is deprecated. Prefer the standard '-'.
 string	number
 40	10
 command ok
@@ -82,4 +85,3 @@ Mysqlx.Ok {
   msg: "bye!"
 }
 ok
-DROP SCHEMA IF EXISTS xtest;

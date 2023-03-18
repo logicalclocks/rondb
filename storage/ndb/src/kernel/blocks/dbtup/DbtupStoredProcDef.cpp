@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2019, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -43,7 +44,7 @@ void Dbtup::execSTORED_PROCREQ(Signal* signal)
   TablerecPtr regTabPtr;
   jamEntryDebug();
   regOperPtr.i = signal->theData[0];
-  ndbrequire(c_operation_pool.getValidPtr(regOperPtr));
+  ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(regOperPtr));
   regTabPtr.i = signal->theData[1];
   ptrCheckGuard(regTabPtr, cnoOfTablerec, tablerec);
 
@@ -174,6 +175,7 @@ void Dbtup::scanProcedure(Signal* signal,
   handle->clear();
   storedPtr.p->storedCode = (isCopy)? ZCOPY_PROCEDURE : ZSCAN_PROCEDURE;
   storedPtr.p->storedProcIVal= handle->m_ptr[0].i;
+  storedPtr.p->storedParamNo = 0;
 
   set_trans_state(regOperPtr, TRANS_IDLE);
   
@@ -240,7 +242,7 @@ void Dbtup::prepareCopyProcedure(Uint32 numAttrs,
   ndbassert(cCopyOverwrite == 0);
   ndbassert(cCopyOverwriteLen == 0);
   Ptr<SectionSegment> first;
-  g_sectionSegmentPool.getPtr(first, cCopyProcedure);
+  ndbrequire(g_sectionSegmentPool.getPtr(first, cCopyProcedure));
 
   /* Record original 'last segment' of section */
   cCopyLastSeg= first.p->m_lastSegment;
@@ -278,7 +280,7 @@ void Dbtup::prepareCopyProcedure(Uint32 numAttrs,
   Ptr<SectionSegment> curr= first;  
   while(newSize > SectionSegment::DataLength)
   {
-    g_sectionSegmentPool.getPtr(curr, curr.p->m_nextSegment);
+    ndbrequire(g_sectionSegmentPool.getPtr(curr, curr.p->m_nextSegment));
     newSize-= SectionSegment::DataLength;
   }
   first.p->m_lastSegment= curr.i;
@@ -291,7 +293,7 @@ void Dbtup::releaseCopyProcedure()
   ndbassert(cCopyLastSeg != RNIL);
   
   Ptr<SectionSegment> first;
-  g_sectionSegmentPool.getPtr(first, cCopyProcedure);
+  ndbrequire(g_sectionSegmentPool.getPtr(first, cCopyProcedure));
   
   ndbassert(first.p->m_sz <= MAX_COPY_PROC_LEN);
   first.p->m_sz= MAX_COPY_PROC_LEN;
@@ -344,7 +346,7 @@ void Dbtup::copyProcedure(Signal* signal,
                 &handle,
                 true); // isCopy
   Ptr<SectionSegment> first;
-  g_sectionSegmentPool.getPtr(first, cCopyProcedure);
+  ndbrequire(g_sectionSegmentPool.getPtr(first, cCopyProcedure));
   signal->theData[2] = first.p->m_sz;
 }//Dbtup::copyProcedure()
 

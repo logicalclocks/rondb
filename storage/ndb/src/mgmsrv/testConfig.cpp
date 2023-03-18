@@ -1,5 +1,5 @@
 /*
-  Copyright (c) 2008, 2020, Oracle and/or its affiliates. All rights reserved.
+  Copyright (c) 2008, 2022, Oracle and/or its affiliates.
 
 
    This program is free software; you can redistribute it and/or modify
@@ -104,7 +104,7 @@ check_param(const ConfigInfo::ParamInfo & param)
 bool
 check_params(void)
 {
-  bool ok= true;
+  bool ok [[maybe_unused]] = true;
   for (int j=0; j<g_info.m_NoOfParams; j++) {
     const ConfigInfo::ParamInfo & param= g_info.m_ParamInfo[j];
     printf("Checking %s...\n", param._fname);
@@ -201,7 +201,8 @@ create_mycnf(const char* first, ...)
   my_defaults_file = mycnf_file.c_str();
 
   InitConfigFileParser parser;
-  Config* conf = parser.parse_mycnf();
+  const char* const cluster_config_suffix = nullptr;
+  Config* conf = parser.parse_mycnf(cluster_config_suffix);
 
   // Restore the global variable
   my_defaults_file = save_defaults_file;
@@ -384,7 +385,7 @@ test_config_v1_with_dyn_ports(void)
     if (iter.get(CFG_CONNECTION_SERVER_PORT, &port) != 0 ||
         port != 0)
       continue; // Not configured as dynamic port
-    ConfigValues::Iterator i2(c1->m_configValues->m_config,
+    ConfigValues::Iterator i2(c1->m_configuration->m_config_values,
                               iter.m_config);
     const Uint32 dummy_port = 37;
     CHECK(i2.set(CFG_CONNECTION_SERVER_PORT, dummy_port));
@@ -513,7 +514,6 @@ test_hostname_mycnf(void)
 #include <NdbTap.hpp>
 
 #include <EventLogger.hpp>
-extern EventLogger* g_eventLogger;
 
 TAPTEST(MgmConfig)
 {

@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2020, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2022, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -150,8 +150,8 @@ static int is_not_initialized(MYSQL *mysql, const char *name) {
 static struct st_mysql_client_plugin *find_plugin(const char *name, int type) {
   struct st_client_plugin_int *p;
 
-  DBUG_ASSERT(initialized);
-  DBUG_ASSERT(type >= 0 && type < MYSQL_CLIENT_MAX_PLUGINS);
+  assert(initialized);
+  assert(type >= 0 && type < MYSQL_CLIENT_MAX_PLUGINS);
   if (type < 0 || type >= MYSQL_CLIENT_MAX_PLUGINS) return nullptr;
 
   for (p = plugin_list[type]; p; p = p->next) {
@@ -179,7 +179,7 @@ static struct st_mysql_client_plugin *do_add_plugin(
   struct st_client_plugin_int plugin_int, *p;
   char errbuf[1024];
 
-  DBUG_ASSERT(initialized);
+  assert(initialized);
 
   plugin_int.plugin = plugin;
   plugin_int.dlhandle = dlhandle;
@@ -331,7 +331,7 @@ int mysql_client_plugin_init() {
 
   mysql_mutex_init(key_mutex_LOCK_load_client_plugin, &LOCK_load_client_plugin,
                    MY_MUTEX_INIT_SLOW);
-  init_alloc_root(key_memory_root, &mem_root, 128, 128);
+  ::new ((void *)&mem_root) MEM_ROOT(key_memory_root, 128);
 
   memset(&plugin_list, 0, sizeof(plugin_list));
 
@@ -370,7 +370,7 @@ void mysql_client_plugin_deinit() {
 
   memset(&plugin_list, 0, sizeof(plugin_list));
   initialized = false;
-  free_root(&mem_root, MYF(0));
+  mem_root.Clear();
   mysql_mutex_destroy(&LOCK_load_client_plugin);
 }
 
@@ -583,4 +583,13 @@ int mysql_plugin_options(struct st_mysql_client_plugin *plugin,
   /* does the plugin support options call? */
   if (!plugin || !plugin->options) return 1;
   return plugin->options(option, value);
+}
+
+/* see <mysql/client_plugin.h> for a full description */
+int mysql_plugin_get_option(struct st_mysql_client_plugin *plugin,
+                            const char *option, void *value) {
+  DBUG_TRACE;
+  /* does the plugin support options call? */
+  if (!plugin || !plugin->get_options) return 1;
+  return plugin->get_options(option, value);
 }

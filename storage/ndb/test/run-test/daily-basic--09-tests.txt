@@ -1,4 +1,4 @@
-# Copyright (c) 2015, 2019, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2015, 2022, Oracle and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -108,6 +108,10 @@ max-time: 720
 
 cmd: testDict
 args: -r 2500 -n TableAddAttrs
+max-time: 2400
+
+cmd: testDict
+args: -r 2500 -n TableAddAttrs_Disk
 max-time: 2400
 
 cmd: test_event

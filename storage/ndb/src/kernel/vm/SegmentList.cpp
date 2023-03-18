@@ -1,5 +1,6 @@
 /*
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -357,7 +358,7 @@ LocalSegmentList::enqWords(const Uint32* src, Uint32 len)
   {
     SectionSegment* firstSeg= m_segmentUtils.getSegmentPtr(m_headVal);
     /* Check offset / m_ownerRef not trampled above */
-    assert(firstSeg->m_ownerRef == offset);
+    require(firstSeg->m_ownerRef == offset);
   }
 #endif
 
@@ -630,7 +631,7 @@ public:
 
   void getSegmentPtr(Ptr<SectionSegment>& ptr, Uint32 iVal)
   {
-    g_sectionSegmentPool.getPtr(ptr, iVal);
+    require(g_sectionSegmentPool.getPtr(ptr, iVal));
   }
 
   bool
@@ -696,7 +697,7 @@ bool testBasicFillAndDrain()
   for (Uint32 i = 0; i < NumVariants; i++)
   {
     printf("Variant %u\n", i);
-    printf("SectionPool used : %u \n", g_sectionSegmentPool.getUsed());
+    printf("SectionPool used : %u\n", g_sectionSegmentPool.getUsed());
 
     SegmentSubPool ssp(tsu);
     VERIFY(ssp.init(testVariants[i].minAlloc,
@@ -708,9 +709,9 @@ bool testBasicFillAndDrain()
              testVariants[i].maxAlloc);
       su = &ssp;
     }
-    printf("SectionPool used : %u \n", g_sectionSegmentPool.getUsed());
-    printf("SubPool used : %u \n", ssp.getNumOwned() - ssp.getNumAvailable());
-    printf("Actual used : %u \n", getActualUsed(ssp));
+    printf("SectionPool used : %u\n", g_sectionSegmentPool.getUsed());
+    printf("SubPool used : %u\n", ssp.getNumOwned() - ssp.getNumAvailable());
+    printf("Actual used : %u\n", getActualUsed(ssp));
 
     /* Test SegmentList */
     for (Uint32 t=0; t < 100; t++)
@@ -736,10 +737,10 @@ bool testBasicFillAndDrain()
 
       VERIFY(!lsl.isEmpty());
       VERIFY(lsl.getLen() == 10000);
-      printf("SectionPool used : %u \n", g_sectionSegmentPool.getUsed());
-      printf("SubPool owned : %u \n", ssp.getNumOwned());
-      printf("SubPool available : %u \n", ssp.getNumAvailable());
-      printf("Actual used : %u \n", getActualUsed(ssp));
+      printf("SectionPool used : %u\n", g_sectionSegmentPool.getUsed());
+      printf("SubPool owned : %u\n", ssp.getNumOwned());
+      printf("SubPool available : %u\n", ssp.getNumAvailable());
+      printf("Actual used : %u\n", getActualUsed(ssp));
 
       printf("\nDequeueing...\n");
       Uint32 elementCount = 0;
@@ -759,10 +760,10 @@ bool testBasicFillAndDrain()
       }
       VERIFY(elementCount == 10000);
 
-      printf("SectionPool used : %u \n", g_sectionSegmentPool.getUsed());
-      printf("SubPool owned : %u \n", ssp.getNumOwned());
-      printf("SubPool available : %u \n", ssp.getNumAvailable());
-      printf("Actual used : %u \n", getActualUsed(ssp));
+      printf("SectionPool used : %u\n", g_sectionSegmentPool.getUsed());
+      printf("SubPool owned : %u\n", ssp.getNumOwned());
+      printf("SubPool available : %u\n", ssp.getNumAvailable());
+      printf("Actual used : %u\n", getActualUsed(ssp));
 
       VERIFY(lsl.isEmpty());
       VERIFY(lsl.getLen() == 0);
@@ -788,7 +789,7 @@ bool testMixedEnqAndDeq()
   for (Uint32 i = 0; i < NumVariants; i++)
   {
     printf("Variant %u\n", i);
-    printf("SectionPool used : %u \n", g_sectionSegmentPool.getUsed());
+    printf("SectionPool used : %u\n", g_sectionSegmentPool.getUsed());
 
     SegmentSubPool ssp(tsu);
     VERIFY(ssp.init(testVariants[i].minAlloc,
@@ -800,9 +801,9 @@ bool testMixedEnqAndDeq()
              testVariants[i].maxAlloc);
       su = &ssp;
     }
-    printf("SectionPool used : %u \n", g_sectionSegmentPool.getUsed());
-    printf("SubPool used : %u \n", ssp.getNumOwned() - ssp.getNumAvailable());
-    printf("Actual used : %u \n", getActualUsed(ssp));
+    printf("SectionPool used : %u\n", g_sectionSegmentPool.getUsed());
+    printf("SubPool used : %u\n", ssp.getNumOwned() - ssp.getNumAvailable());
+    printf("Actual used : %u\n", getActualUsed(ssp));
 
     Uint32 headVal = 0;
     Uint32 tailVal = 0;
@@ -815,7 +816,7 @@ bool testMixedEnqAndDeq()
       Uint32 remain = maxLen - len;
 
       printf("Queue length is %u\n", len);
-      printf("Actual used : %u \n", getActualUsed(ssp));
+      printf("Actual used : %u\n", getActualUsed(ssp));
       Uint32 bestCaseUsed = len / SectionSegment::DataLength;
       Uint32 worstCaseUsed = 1 + ((len + (SectionSegment::DataLength - 1)) / SectionSegment::DataLength);
 
@@ -836,7 +837,7 @@ bool testMixedEnqAndDeq()
         len = lsl.getLen();
         headVal+= enqSize;
         printf("Queue length is %u\n", len);
-        printf("Actual used : %u \n", getActualUsed(ssp));
+        printf("Actual used : %u\n", getActualUsed(ssp));
       }
 
       if (len)
@@ -994,7 +995,7 @@ bool testSubPoolLimit()
       /* Now iterate and fill again */
     }
  
-    printf("Mai testSubPoolLimit: verify2: used %u max seg %u actual %u \n",
+    printf("Mai testSubPoolLimit: verify2: used %u max seg %u actual %u\n",
            g_sectionSegmentPool.getUsed(), maxSegs, getActualUsed(ssp));
     VERIFY(g_sectionSegmentPool.getUsed() == maxSegs);
 

@@ -28,8 +28,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -60,8 +60,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -440,8 +440,8 @@ EXECUTING:[43][SELECT * FROM test1.test_inserts ORDER BY a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][test_inserts.a][  1][1]
@@ -756,8 +756,8 @@ EXECUTING:[43][SELECT * FROM test1.test_inserts ORDER BY a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][test_inserts.a][  1][1]
@@ -1095,8 +1095,8 @@ EXECUTING:[37][SELECT * FROM test_inserts ORDER BY a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][test_inserts.a][  1][1]
@@ -1389,8 +1389,8 @@ EXECUTING:[37][SELECT * FROM test_inserts ORDER BY a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][test_inserts.a][  1][1]
@@ -1706,8 +1706,8 @@ EXECUTING:[37][SELECT * FROM test_inserts ORDER BY a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -1958,8 +1958,8 @@ EXECUTING:[37][SELECT * FROM test_inserts ORDER BY a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -2005,7 +2005,7 @@ EXECUTING:[11][EXECUTE ps1]
 			[meta][field] org table name: 
 			[meta][field] col name: 1
 			[meta][field] org col name: 
-			[meta][field] length: 1
+			[meta][field] length: 2
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -2013,8 +2013,8 @@ EXECUTING:[11][EXECUTE ps1]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.1][  1][1]
@@ -2152,8 +2152,8 @@ EXECUTING:[46][SELECT IF(SUM(a)=6, 'OK:)', 'FAIL:(') FROM tbl]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.IF(SUM(a)=6, 'OK:)', 'FAIL:(')][  4][OK:)]
@@ -2407,8 +2407,8 @@ EXECUTING:[10][SELECT 1/0]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.1/0][  6][[NULL]]
@@ -2525,8 +2525,8 @@ EXECUTING:[45][SELECT IF(SUM(a) = 15, 'OK', 'FAIL') FROM tbl]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.IF(SUM(a) = 15, 'OK', 'FAIL')][  2][OK]
@@ -2622,8 +2622,8 @@ EXECUTING:[45][SELECT IF(SUM(a) = 12, 'OK', 'FAIL') FROM tbl]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.IF(SUM(a) = 12, 'OK', 'FAIL')][  2][OK]
@@ -2719,8 +2719,8 @@ EXECUTING:[45][SELECT IF(SUM(4) = 12, 'OK', 'FAIL') FROM tbl]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.IF(SUM(4) = 12, 'OK', 'FAIL')][  2][OK]
@@ -2816,8 +2816,8 @@ EXECUTING:[45][SELECT IF(SUM(4) = 12, 'OK', 'FAIL') FROM tbl]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.IF(SUM(4) = 12, 'OK', 'FAIL')][  2][OK]
@@ -2890,8 +2890,8 @@ EXECUTING:[9][SELECT @a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@a][  1][0]
@@ -2922,8 +2922,8 @@ EXECUTING:[9][SELECT @a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@a][  1][0]
@@ -2996,8 +2996,8 @@ EXECUTING:[9][SELECT @b]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@b][  2][42]
@@ -3028,8 +3028,8 @@ EXECUTING:[9][SELECT @b]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@b][  2][42]
@@ -3062,8 +3062,8 @@ EXECUTING:[20][SELECT @non_existing]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@non_existing][  6][[NULL]]
@@ -3094,8 +3094,8 @@ EXECUTING:[20][SELECT @non_existing]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@non_existing][  6][[NULL]]
@@ -3237,8 +3237,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -3269,8 +3269,8 @@ EXECUTING:[35][SELECT 'first complex command' as a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.a][ 21][first complex command]
@@ -3649,8 +3649,8 @@ EXECUTING:[43][SELECT * FROM test1.test_inserts ORDER BY a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][test_inserts.a][  1][1]
@@ -3965,8 +3965,8 @@ EXECUTING:[43][SELECT * FROM test1.test_inserts ORDER BY a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][test_inserts.a][  1][1]
@@ -4304,8 +4304,8 @@ EXECUTING:[37][SELECT * FROM test_inserts ORDER BY a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][test_inserts.a][  1][1]
@@ -4598,8 +4598,8 @@ EXECUTING:[37][SELECT * FROM test_inserts ORDER BY a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][test_inserts.a][  1][1]
@@ -4915,8 +4915,8 @@ EXECUTING:[37][SELECT * FROM test_inserts ORDER BY a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -5167,8 +5167,8 @@ EXECUTING:[37][SELECT * FROM test_inserts ORDER BY a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data] no rows
@@ -5214,7 +5214,7 @@ EXECUTING:[11][EXECUTE ps1]
 			[meta][field] org table name: 
 			[meta][field] col name: 1
 			[meta][field] org col name: 
-			[meta][field] length: 1
+			[meta][field] length: 2
 			[meta][field] charsetnr: 8
 			[meta][field] flags: 129 (NOT_NULL BINARY )
 			[meta][field] decimals: 0
@@ -5222,8 +5222,8 @@ EXECUTING:[11][EXECUTE ps1]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.1][  1][1]
@@ -5361,8 +5361,8 @@ EXECUTING:[46][SELECT IF(SUM(a)=6, 'OK:)', 'FAIL:(') FROM tbl]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.IF(SUM(a)=6, 'OK:)', 'FAIL:(')][  4][OK:)]
@@ -5616,8 +5616,8 @@ EXECUTING:[10][SELECT 1/0]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.1/0][  6][[NULL]]
@@ -5734,8 +5734,8 @@ EXECUTING:[45][SELECT IF(SUM(a) = 15, 'OK', 'FAIL') FROM tbl]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.IF(SUM(a) = 15, 'OK', 'FAIL')][  2][OK]
@@ -5831,8 +5831,8 @@ EXECUTING:[45][SELECT IF(SUM(a) = 12, 'OK', 'FAIL') FROM tbl]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.IF(SUM(a) = 12, 'OK', 'FAIL')][  2][OK]
@@ -5928,8 +5928,8 @@ EXECUTING:[45][SELECT IF(SUM(4) = 12, 'OK', 'FAIL') FROM tbl]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.IF(SUM(4) = 12, 'OK', 'FAIL')][  2][OK]
@@ -6025,8 +6025,8 @@ EXECUTING:[45][SELECT IF(SUM(4) = 12, 'OK', 'FAIL') FROM tbl]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.IF(SUM(4) = 12, 'OK', 'FAIL')][  2][OK]
@@ -6099,8 +6099,8 @@ EXECUTING:[9][SELECT @a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@a][  1][0]
@@ -6131,8 +6131,8 @@ EXECUTING:[9][SELECT @a]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@a][  1][0]
@@ -6205,8 +6205,8 @@ EXECUTING:[9][SELECT @b]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@b][  2][42]
@@ -6237,8 +6237,8 @@ EXECUTING:[9][SELECT @b]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@b][  2][42]
@@ -6271,8 +6271,8 @@ EXECUTING:[20][SELECT @non_existing]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@non_existing][  6][[NULL]]
@@ -6303,8 +6303,8 @@ EXECUTING:[20][SELECT @non_existing]
 
 
 		[meta][charset result] number: 33
-		[meta][charset result] name: utf8
-		[meta][charset result] collation: utf8_general_ci
+		[meta][charset result] name: utf8mb3
+		[meta][charset result] collation: utf8mb3_general_ci
 		[meta][charset result] sort order: 
 
 		[data][.@non_existing][  6][[NULL]]
