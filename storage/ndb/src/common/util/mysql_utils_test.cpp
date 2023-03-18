@@ -69,7 +69,7 @@ int test_dbug_utils()
     s = dbugExplain(buffer, DBUG_BUF_SIZE);
     CHECK(!s || !strcmp(s, s0));
 
-    s = dbugExplain(NULL, DBUG_BUF_SIZE);
+    s = dbugExplain(nullptr, DBUG_BUF_SIZE);
     CHECK(!s);
 
     s = dbugExplain(buffer, 0);
@@ -80,7 +80,7 @@ int test_dbug_utils()
     s = dbugExplain(buffer, DBUG_BUF_SIZE);
     CHECK(!s || !strcmp(s, s1));
 
-    dbugSet(NULL);
+    dbugSet(nullptr);
     s = dbugExplain(buffer, DBUG_BUF_SIZE);
     CHECK(!s || !strcmp(s, s1));
 
@@ -99,7 +99,7 @@ int test_dbug_utils()
     s = dbugExplain(buffer, DBUG_BUF_SIZE);
     CHECK(!s || !strcmp(s, s2));
 
-    dbugPush(NULL);
+    dbugPush(nullptr);
     s = dbugExplain(buffer, DBUG_BUF_SIZE);
     CHECK(!s || !strcmp(s, s2));
 
@@ -116,7 +116,7 @@ int test_dbug_utils()
     s = dbugExplain(buffer, DBUG_BUF_SIZE);
     CHECK(!s || !strcmp(s, s1));
 
-    dbugPush(NULL);
+    dbugPush(nullptr);
     s = dbugExplain(buffer, DBUG_BUF_SIZE);
     CHECK(!s || !strcmp(s, s1));
 

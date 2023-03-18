@@ -253,7 +253,7 @@ public:
   void reportConnect(NodeId nodeId) override;
   void reportDisconnect(NodeId nodeId, Uint32 errNo) override;
   void reportError(NodeId nodeId, TransporterError errorCode,
-                   const char *info = 0) override;
+                   const char *info = nullptr) override;
   void transporter_recv_from(NodeId node) override;
 
   /**
@@ -395,7 +395,7 @@ private:
       Uint32 m_next;
 
       Client()
-	: m_clnt(NULL), m_next(END_OF_LIST) {}
+	: m_clnt(nullptr), m_next(END_OF_LIST) {}
 
       Client(trp_client* clnt, Uint32 next)
 	: m_clnt(clnt), m_next(next) {}
@@ -431,7 +431,7 @@ private:
       {
         return m_clients[blockNo].m_clnt;
       }
-      return 0;
+      return nullptr;
     }
 
     Uint32 freeCnt() const {     //need m_open_close_mutex
@@ -756,7 +756,7 @@ private :
 public :
   LinearSectionIterator(const Uint32* _data, Uint32 _len)
   {
-    data= (_len == 0)? NULL:_data;
+    data= (_len == 0)? nullptr:_data;
     len= _len;
     read= false;
   }
@@ -779,7 +779,7 @@ public :
       return data;
     }
     sz= 0;
-    return NULL;
+    return nullptr;
   }
 };
 
@@ -833,7 +833,7 @@ public :
   GSIReader(GenericSectionIterator* _gsi)
   {
     gsi = _gsi;
-    chunkPtr = NULL;
+    chunkPtr = nullptr;
     chunkRemain = 0;
   }
 

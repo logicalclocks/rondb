@@ -194,7 +194,7 @@ TransporterFacade::checkJobBuffer()
 
 #ifdef API_TRACE
 static const char * API_SIGNAL_LOG = "API_SIGNAL_LOG";
-static const char * apiSignalLog   = 0;
+static const char * apiSignalLog   = nullptr;
 static SignalLoggerManager signalLogger;
 static
 inline
@@ -202,16 +202,17 @@ bool
 setSignalLog(){
   signalLogger.flushSignalLog();
 
-  const char * tmp = NdbEnv_GetEnv(API_SIGNAL_LOG, (char *)0, 0);
-  if(tmp != 0 && apiSignalLog != 0 && strcmp(tmp,apiSignalLog) == 0){
+  const char * tmp = NdbEnv_GetEnv(API_SIGNAL_LOG, (char *)nullptr, 0);
+  if(tmp != nullptr && apiSignalLog != nullptr &&
+     strcmp(tmp,apiSignalLog) == 0){
     return true;
-  } else if(tmp == 0 && apiSignalLog == 0){
+  } else if(tmp == nullptr && apiSignalLog == nullptr){
     return false;
-  } else if(tmp == 0 && apiSignalLog != 0){
-    signalLogger.setOutputStream(0);
+  } else if(tmp == nullptr && apiSignalLog != nullptr){
+    signalLogger.setOutputStream(nullptr);
     apiSignalLog = tmp;
     return false;
-  } else if(tmp !=0){
+  } else if(tmp !=nullptr){
     if (strcmp(tmp, "-") == 0)
         signalLogger.setOutputStream(stdout);
 #ifndef NDEBUG
@@ -271,7 +272,7 @@ bool TransporterFacade::deliver_signal(SignalHeader* const header,
   if (tRecBlockNo >= MIN_API_BLOCK_NO)
   {
     trp_client * clnt = m_threads.get(tRecBlockNo);
-    if (clnt != 0)
+    if (clnt != nullptr)
     {
       const bool client_locked = clnt->is_locked_for_poll();
       /**
@@ -334,7 +335,7 @@ bool TransporterFacade::deliver_signal(SignalHeader* const header,
           if (tRecBlockNo >= MIN_API_BLOCK_NO)
           {
             trp_client * clnt = m_threads.get(tRecBlockNo);
-            if(clnt != 0)
+            if(clnt != nullptr)
             {
               const bool client_locked = clnt->is_locked_for_poll();
               NdbApiSignal tmpSignal(*header);
@@ -345,7 +346,7 @@ bool TransporterFacade::deliver_signal(SignalHeader* const header,
                 lock_client(clnt);
               }
               assert(clnt->check_if_locked());
-              clnt->trp_deliver_signal(tSignal, 0);
+              clnt->trp_deliver_signal(tSignal, nullptr);
             }
             else
             {
@@ -361,7 +362,7 @@ bool TransporterFacade::deliver_signal(SignalHeader* const header,
   {
     Uint32 dynamic= m_fixed2dynamic[tRecBlockNo - MIN_API_FIXED_BLOCK_NO];
     trp_client * clnt = m_threads.get(dynamic);
-    if (clnt != 0)
+    if (clnt != nullptr)
     {
       const bool client_locked = clnt->is_locked_for_poll();
       NdbApiSignal tmpSignal(*header);
@@ -385,7 +386,7 @@ bool TransporterFacade::deliver_signal(SignalHeader* const header,
     if (header->theVerId_signalNumber == GSN_DUMP_STATE_ORD)
     {
       trp_client * clnt = get_poll_owner(false);
-      require(clnt != 0);
+      require(clnt != nullptr);
       NdbApiSignal sig(*header);
       sig.setDataPtr(theData);
       assert(clnt->check_if_locked());
@@ -522,7 +523,7 @@ TransporterFacade::start_instance(NodeId nodeId,
 #endif
 
   theTransporterRegistry = new TransporterRegistry(this, this);
-  if (theTransporterRegistry == NULL)
+  if (theTransporterRegistry == nullptr)
   {
     DBUG_RETURN(-1);
   }
@@ -532,12 +533,12 @@ TransporterFacade::start_instance(NodeId nodeId,
     DBUG_RETURN(-1);
   }
 
-  if (theClusterMgr == NULL)
+  if (theClusterMgr == nullptr)
   {
     theClusterMgr = new ClusterMgr(*this);
   }
 
-  if (theClusterMgr == NULL)
+  if (theClusterMgr == nullptr)
   {
     DBUG_RETURN(-1);
   }
@@ -582,12 +583,12 @@ TransporterFacade::start_instance(NodeId nodeId,
                                       0, // Use default stack size
                                       "ndb_receive",
                                       NDB_THREAD_PRIO_LOW);
-  if (theReceiveThread == NULL)
+  if (theReceiveThread == nullptr)
   {
     g_eventLogger->info(
         "TransporterFacade::start_instance:"
         " Failed to create thread for receive.");
-    assert(theReceiveThread != NULL);
+    assert(theReceiveThread != nullptr);
     DBUG_RETURN(-1);
   }
   theSendThread = NdbThread_Create(runSendRequest_C,
@@ -595,12 +596,12 @@ TransporterFacade::start_instance(NodeId nodeId,
                                    0, // Use default stack size
                                    "ndb_send",
                                    NDB_THREAD_PRIO_LOW);
-  if (theSendThread == NULL)
+  if (theSendThread == nullptr)
   {
     g_eventLogger->info(
         "TransporterFacade::start_instance:"
         " Failed to create thread for send.");
-    assert(theSendThread != NULL);
+    assert(theSendThread != nullptr);
     DBUG_RETURN(-1);
   }
 
@@ -670,7 +671,7 @@ void*
 runSendRequest_C(void * me)
 {
   ((TransporterFacade*) me)->threadMainSend();
-  return 0;
+  return nullptr;
 }
 
 static inline
@@ -683,7 +684,7 @@ link_buffer(TFBuffer* dst, const TFBuffer * src)
   assert(src->m_tail);
   TFBufferGuard g0(* dst);
   TFBufferGuard g1(* src);
-  if (dst->m_head == 0)
+  if (dst->m_head == nullptr)
   {
     dst->m_head = src->m_head;
   }
@@ -702,7 +703,7 @@ void*
 runWakeupThread_C(void *me)
 {
   ((TransporterFacade*)me)->threadMainWakeup();
-  return 0;
+  return nullptr;
 }
 
 void TransporterFacade::init_cpu_usage(NDB_TICKS currTime)
@@ -926,7 +927,7 @@ void TransporterFacade::calc_recv_thread_wakeup()
 
 void TransporterFacade::threadMainWakeup()
 {
-  while (theWakeupThread == NULL)
+  while (theWakeupThread == nullptr)
   {
     /* Wait until theWakeupThread have been set */
     NdbSleep_MilliSleep(10);
@@ -1004,7 +1005,7 @@ void TransporterFacade::wakeup_and_unlock_calls()
   {
     Uint32 inx = m_wakeup_clients_cnt - 1;
     tmp = m_wakeup_clients[inx];
-    m_wakeup_clients[inx] = 0;
+    m_wakeup_clients[inx] = nullptr;
     count_wakeup++;
     m_wakeup_clients_cnt = inx;
     if (count_wakeup == 4 && inx > 0)
@@ -1165,13 +1166,13 @@ TransporterFacade::do_send_adaptive(const NodeBitmask& nodes)
  */
 void TransporterFacade::threadMainSend(void)
 {
-  while (theSendThread == NULL)
+  while (theSendThread == nullptr)
   {
     /* Wait until theSendThread have been set */
     NdbSleep_MilliSleep(10);
   }
   theTransporterRegistry->startSending();
-  if (theTransporterRegistry->start_clients() == 0){
+  if (theTransporterRegistry->start_clients() == nullptr){
     g_eventLogger->info(
         "Unable to start theTransporterRegistry->start_clients");
     exit(0);
@@ -1262,7 +1263,7 @@ void*
 runReceiveResponse_C(void * me)
 {
   ((TransporterFacade*) me)->threadMainReceive();
-  return 0;
+  return nullptr;
 }
 
 class ReceiveThreadClient : public trp_client
@@ -1496,7 +1497,7 @@ void TransporterFacade::threadMainReceive(void)
   NDB_TICKS receive_activation_time;
   init_cpu_usage(lastCheck);
 
-  while (theReceiveThread == NULL)
+  while (theReceiveThread == nullptr)
   {
     /* Wait until theReceiveThread have been set */
     NdbSleep_MilliSleep(10);
@@ -1667,42 +1668,42 @@ TransporterFacade::TransporterFacade(GlobalDictCache *cache) :
   min_active_clients_recv_thread(DEFAULT_MIN_ACTIVE_CLIENTS_RECV_THREAD),
   recv_thread_cpu_id(NO_RECV_THREAD_CPU_ID),
   m_poll_owner_tid(),
-  m_poll_owner(NULL),
-  m_poll_queue_head(NULL),
-  m_poll_queue_tail(NULL),
+  m_poll_owner(nullptr),
+  m_poll_queue_head(nullptr),
+  m_poll_queue_tail(nullptr),
   m_poll_waiters(0),
   m_locked_cnt(0),
   m_locked_clients(),
   m_num_active_clients(0),
   m_check_connections(true),
-  theTransporterRegistry(0),
+  theTransporterRegistry(nullptr),
   theOwnId(0),
   theStartNodeId(1),
-  theClusterMgr(NULL),
-  dozer(NULL),
+  theClusterMgr(nullptr),
+  dozer(nullptr),
   theStopReceive(0),
   theStopSend(0),
   theStopWakeup(0),
   sendThreadWaitMillisec(10),
-  theSendThread(NULL),
-  theReceiveThread(NULL),
-  theWakeupThread(NULL),
+  theSendThread(nullptr),
+  theReceiveThread(nullptr),
+  theWakeupThread(nullptr),
   m_last_recv_thread_cpu_usage_in_micros(0),
   m_recv_thread_cpu_usage_in_percent(0),
   m_recv_thread_wakeup(MAX_NO_THREADS),
   m_wakeup_clients_cnt(0),
-  m_wakeup_thread_mutex(NULL),
-  m_wakeup_thread_cond(NULL),
-  recv_client(NULL),
+  m_wakeup_thread_mutex(nullptr),
+  m_wakeup_thread_cond(nullptr),
+  recv_client(nullptr),
   m_enabled_nodes_mask(),
   m_fragmented_signal_id(0),
-  m_open_close_mutex(NULL),
-  thePollMutex(NULL),
+  m_open_close_mutex(nullptr),
+  thePollMutex(nullptr),
   m_globalDictCache(cache),
   m_send_buffer("sendbufferpool"),
   m_active_nodes(),
-  m_send_thread_mutex(NULL),
-  m_send_thread_cond(NULL),
+  m_send_thread_mutex(nullptr),
+  m_send_thread_cond(nullptr),
   m_send_thread_nodes(),
   m_has_data_nodes()
 {
@@ -1729,7 +1730,7 @@ TransporterFacade::TransporterFacade(GlobalDictCache *cache) :
   m_use_only_ipv4 = false;
 
 #ifdef API_TRACE
-  apiSignalLog = 0;
+  apiSignalLog = nullptr;
 #endif
 
   theClusterMgr = new ClusterMgr(*this);
@@ -1884,7 +1885,7 @@ TransporterFacade::configure(NodeId nodeId,
                             reserved_send_buffer_size_t))
     {
       g_eventLogger->info(
-          "Unable to allocate %lu bytes of memory for send buffers!!",
+          "Unable to allocate %zu bytes of memory for send buffers!!",
           total_send_buffer_size_t);
       DBUG_RETURN(false);
     }
@@ -1893,7 +1894,7 @@ TransporterFacade::configure(NodeId nodeId,
   Uint32 auto_reconnect=1;
   iter.get(CFG_AUTO_RECONNECT, &auto_reconnect);
 
-  const char * priospec = 0;
+  const char * priospec = nullptr;
   if (iter.get(CFG_HB_THREAD_PRIO, &priospec) == 0)
   {
     NdbThread_SetHighPrioProperties(priospec);
@@ -1958,7 +1959,7 @@ TransporterFacade::for_each(trp_client* sender,
   for (Uint32 i = 0; i < sz ; i ++) 
   {
     trp_client * clnt = m_threads.m_clients[i].m_clnt;
-    if (clnt != 0 && clnt != sender && !clnt->is_receiver_thread())
+    if (clnt != nullptr && clnt != sender && !clnt->is_receiver_thread())
     {
       /**
        * We skip sending signal to receive thread. The receive thread
@@ -2026,7 +2027,7 @@ TransporterFacade::connected()
   for (Uint32 i = 0; i < sz ; i ++)
   {
     trp_client * clnt = m_threads.m_clients[i].m_clnt;
-    if (clnt != 0 && !clnt->is_receiver_thread())
+    if (clnt != nullptr && !clnt->is_receiver_thread())
     {
       /**
        * The receiver thread have no interest in the
@@ -2034,7 +2035,7 @@ TransporterFacade::connected()
        * it to receive thread client.
        */
       NdbMutex_Lock(clnt->m_mutex);
-      clnt->trp_deliver_signal(&signal, 0);
+      clnt->trp_deliver_signal(&signal, nullptr);
       NdbMutex_Unlock(clnt->m_mutex);
     }
   }
@@ -2284,7 +2285,7 @@ TransporterFacade::~TransporterFacade()
   NdbMutex_Destroy(m_wakeup_thread_mutex);
   NdbCondition_Destroy(m_wakeup_thread_cond);
 #ifdef API_TRACE
-  signalLogger.setOutputStream(0);
+  signalLogger.setOutputStream(nullptr);
 #endif
   DBUG_VOID_RETURN;
 }
@@ -2323,7 +2324,7 @@ bool
 TransporterFacade::is_poll_owner_thread() const
 {
   Guard g(thePollMutex);
-  return m_poll_owner != NULL &&
+  return m_poll_owner != nullptr &&
          my_thread_equal(my_thread_self(),m_poll_owner_tid);
 }
 
@@ -2353,13 +2354,14 @@ TransporterFacade::sendSignal(trp_client* clnt,
 #endif
   if ((Tlen != 0) && (Tlen <= 25) && (TBno != 0)) {
     TrpId trp_id = 0;
-    SendStatus ss = theTransporterRegistry->prepareSend(clnt,
-                                                        aSignal,
-                                                        1, // JBB
-                                                        tDataPtr,
-                                                        aNode,
-                                                        trp_id,
-                                                        (LinearSectionPtr*)0);
+    SendStatus ss =
+        theTransporterRegistry->prepareSend(clnt,
+                                            aSignal,
+                                            1, // JBB
+                                            tDataPtr,
+                                            aNode,
+                                            trp_id,
+                                            (LinearSectionPtr*) nullptr);
     //if (ss != SEND_OK) ndbout << ss << endl;
     if (ss == SEND_OK)
     {
@@ -2415,7 +2417,7 @@ public:
     realCurrPos= 0;
     rangeStart= 0;
     rangeLen= rangeRemain= realIterWords;
-    lastReadPtr= NULL;
+    lastReadPtr= nullptr;
     lastReadPtrLen= 0;
     moveToPos(0);
 
@@ -2430,19 +2432,19 @@ private:
    */
   bool checkInvariants()
   {
-    assert( (realIterator != NULL) || (realIterWords == 0) );
+    assert( (realIterator != nullptr) || (realIterWords == 0) );
     assert( realCurrPos <= realIterWords );
     assert( rangeStart <= realIterWords );
     assert( (rangeStart+rangeLen) <= realIterWords);
     assert( rangeRemain <= rangeLen );
     
     /* Can only have a null readptr if nothing is left */
-    assert( (lastReadPtr != NULL) || (rangeRemain == 0));
+    assert( (lastReadPtr != nullptr) || (rangeRemain == 0));
 
     /* If we have a non-null readptr and some remaining 
      * words the readptr must have some words
      */
-    assert( (lastReadPtr == NULL) || 
+    assert( (lastReadPtr == nullptr) || 
             ((rangeRemain == 0) || (lastReadPtrLen != 0)));
     return true;
   }
@@ -2464,11 +2466,11 @@ private:
       /* Need to reset, and advance from the start */
       realIterator->reset();
       realCurrPos= 0;
-      lastReadPtr= NULL;
+      lastReadPtr= nullptr;
       lastReadPtrLen= 0;
     }
 
-    if ((lastReadPtr == NULL) && 
+    if ((lastReadPtr == nullptr) && 
         (realIterWords != 0) &&
         (pos != realIterWords))
       lastReadPtr= realIterator->getNextWords(lastReadPtrLen);
@@ -2481,7 +2483,7 @@ private:
     {
       realCurrPos+= lastReadPtrLen;
       lastReadPtr= realIterator->getNextWords(lastReadPtrLen);
-      assert(lastReadPtr != NULL);
+      assert(lastReadPtr != nullptr);
     }
 
     const Uint32 chunkOffset= pos - realCurrPos;
@@ -2535,11 +2537,11 @@ public:
   const Uint32* getNextWords(Uint32& sz) override
   {
     assert(checkInvariants());
-    const Uint32* currPtr= NULL;
+    const Uint32* currPtr= nullptr;
 
     if (rangeRemain)
     {
-      assert(lastReadPtr != NULL);
+      assert(lastReadPtr != nullptr);
       assert(lastReadPtrLen != 0);
       currPtr= lastReadPtr;
       
@@ -2640,7 +2642,7 @@ TransporterFacade::sendFragmentedSignal(trp_client* clnt,
 
   NdbApiSignal tmp_signal(*(SignalHeader*)aSignal);
   GenericSectionPtr tmp_ptr[3];
-  GenericSectionPtr empty= {0, NULL};
+  GenericSectionPtr empty= {0, nullptr};
   Uint32 unique_id= m_fragmented_signal_id++; // next unique id
   
   /* Init tmp_ptr array from ptr[] array, make sure we have
@@ -2841,7 +2843,7 @@ TransporterFacade::sendFragmentedSignal(trp_client* clnt,
   /* Use the GenericSection variant of sendFragmentedSignal */
   GenericSectionPtr tmpPtr[3];
   LinearSectionPtr linCopy[3];
-  const LinearSectionPtr empty= {0, NULL};
+  const LinearSectionPtr empty= {0, nullptr};
   
   /* Make sure all of linCopy is initialised */
   for (Uint32 j=0; j<3; j++)
@@ -3100,7 +3102,7 @@ TransporterFacade::ThreadData::expand(Uint32 size){
   const Uint32 sz = m_clients.size();
   m_clients.expand(sz + size);
   for(Uint32 i = 0; i<size; i++){
-    m_clients.push_back(Client(NULL, sz + i + 1));
+    m_clients.push_back(Client(nullptr, sz + i + 1));
   }
 
   m_clients.back().m_next =  m_firstFree;
@@ -3152,13 +3154,13 @@ TransporterFacade::ThreadData::close(int number){
    * Guard against race between close from multiple threads.
    * Couldn't detect this for sure until we now have the poll right.
    */
-  if (m_clients[index].m_clnt == NULL)
+  if (m_clients[index].m_clnt == nullptr)
     return 0;
 
   assert(m_use_cnt);
   m_use_cnt--;
   m_firstFree = index;
-  m_clients[index] = Client(NULL, nextFree);
+  m_clients[index] = Client(nullptr, nextFree);
   return 0;
 }
 
@@ -3194,7 +3196,7 @@ TransporterFacade::propose_poll_owner()
   {
     lock_poll_mutex();
 
-    if (m_poll_owner != NULL || m_poll_queue_tail == NULL)
+    if (m_poll_owner != nullptr || m_poll_queue_tail == nullptr)
     {
       /**
        * New poll owner already appointed or none waiting
@@ -3282,7 +3284,7 @@ TransporterFacade::try_become_poll_owner(trp_client* clnt, Uint32 wait_time)
   lock_poll_mutex();
   assert(m_poll_owner != clnt);
 
-  if (m_poll_owner != NULL)
+  if (m_poll_owner != nullptr)
   {
     /*
       Dont wait for the poll right to become available if
@@ -3364,7 +3366,7 @@ TransporterFacade::try_become_poll_owner(trp_client* clnt, Uint32 wait_time)
       }
 
       lock_poll_mutex();
-      if (m_poll_owner == NULL)
+      if (m_poll_owner == nullptr)
       {
         assert(clnt->m_poll.m_poll_owner == false);
         break;
@@ -3393,7 +3395,7 @@ TransporterFacade::try_become_poll_owner(trp_client* clnt, Uint32 wait_time)
   }
 
   /* We found the poll-right available, grab it */
-  assert(m_poll_owner == NULL);
+  assert(m_poll_owner == nullptr);
   m_poll_owner = clnt;
   m_poll_owner_tid = my_thread_self();
   unlock_poll_mutex();
@@ -3411,7 +3413,7 @@ TransporterFacade::try_become_poll_owner(trp_client* clnt, Uint32 wait_time)
 void
 TransporterFacade::start_poll()
 {
-  assert(m_poll_owner != NULL);
+  assert(m_poll_owner != nullptr);
   assert(m_poll_owner->m_poll.m_waiting == trp_client::PollQueue::PQ_WAITING);
   assert(m_poll_owner->m_poll.m_locked);
 
@@ -3426,7 +3428,7 @@ TransporterFacade::start_poll()
 int
 TransporterFacade::finish_poll(trp_client* arr[])
 {
-  assert(m_poll_owner != NULL);
+  assert(m_poll_owner != nullptr);
   assert(m_locked_cnt > 0);
   assert(m_locked_cnt <= MAX_LOCKED_CLIENTS);
   assert(m_locked_clients[0] == m_poll_owner);
@@ -3622,7 +3624,7 @@ TransporterFacade::do_poll(trp_client* clnt,
     if (!stay_poll_owner)
     {
       clnt->m_poll.m_poll_owner = false;
-      m_poll_owner = NULL;
+      m_poll_owner = nullptr;
       /**
        * Note, there is no platform independent 'NULL' defined for
        * thread id, so can't clear it as one might have expected here.
@@ -3731,22 +3733,22 @@ TransporterFacade::lock_client(trp_client* clnt)
 void
 TransporterFacade::add_to_poll_queue(trp_client* clnt)  //Need thePollMutex
 {
-  assert(clnt != 0);
-  assert(clnt->m_poll.m_prev == 0);
-  assert(clnt->m_poll.m_next == 0);
+  assert(clnt != nullptr);
+  assert(clnt->m_poll.m_prev == nullptr);
+  assert(clnt->m_poll.m_next == nullptr);
   assert(clnt->m_poll.m_locked == true);
   assert(clnt->m_poll.m_poll_owner == false);
   assert(clnt->m_poll.m_poll_queue == false);
 
   clnt->m_poll.m_poll_queue = true;
-  if (m_poll_queue_head == 0)
+  if (m_poll_queue_head == nullptr)
   {
-    assert(m_poll_queue_tail == 0);
+    assert(m_poll_queue_tail == nullptr);
     m_poll_queue_head = clnt;
   }
   else
   {
-    assert(m_poll_queue_tail->m_poll.m_next == 0);
+    assert(m_poll_queue_tail->m_poll.m_next == nullptr);
     m_poll_queue_tail->m_poll.m_next = clnt;
     clnt->m_poll.m_prev = m_poll_queue_tail;
   }
@@ -3769,14 +3771,14 @@ TransporterFacade::remove_from_poll_queue(trp_client* const arr[], Uint32 cnt)
 void
 TransporterFacade::remove_from_poll_queue(trp_client* clnt)  //Need thePollMutex
 {
-  assert(clnt != 0);
+  assert(clnt != nullptr);
   assert(clnt->m_poll.m_locked == true);
   assert(clnt->m_poll.m_poll_owner == false);
   assert(clnt->m_poll.m_poll_queue == true);
   assert(m_poll_waiters > 0);
   m_poll_waiters--;
 
-  if (clnt->m_poll.m_prev != 0)
+  if (clnt->m_poll.m_prev != nullptr)
   {
     clnt->m_poll.m_prev->m_poll.m_next = clnt->m_poll.m_next;
   }
@@ -3786,7 +3788,7 @@ TransporterFacade::remove_from_poll_queue(trp_client* clnt)  //Need thePollMutex
     m_poll_queue_head = clnt->m_poll.m_next;
   }
 
-  if (clnt->m_poll.m_next != 0)
+  if (clnt->m_poll.m_next != nullptr)
   {
     clnt->m_poll.m_next->m_poll.m_prev = clnt->m_poll.m_prev;
   }
@@ -3796,13 +3798,13 @@ TransporterFacade::remove_from_poll_queue(trp_client* clnt)  //Need thePollMutex
     m_poll_queue_tail = clnt->m_poll.m_prev;
   }
 
-  if (m_poll_queue_head == 0)
-    assert(m_poll_queue_tail == 0);
-  else if (m_poll_queue_tail == 0)
-    assert(m_poll_queue_head == 0);
+  if (m_poll_queue_head == nullptr)
+    assert(m_poll_queue_tail == nullptr);
+  else if (m_poll_queue_tail == nullptr)
+    assert(m_poll_queue_head == nullptr);
 
-  clnt->m_poll.m_prev = 0;
-  clnt->m_poll.m_next = 0;
+  clnt->m_poll.m_prev = nullptr;
+  clnt->m_poll.m_next = nullptr;
   clnt->m_poll.m_poll_queue = false;
 }
 
@@ -3814,7 +3816,7 @@ template class Vector<TransporterFacade::ThreadData::Client>;
 const Uint32*
 SignalSectionIterator::getNextWords(Uint32& sz)
 {
-  if (likely(currentSignal != NULL))
+  if (likely(currentSignal != nullptr))
   {
     NdbApiSignal* signal= currentSignal;
     currentSignal= currentSignal->next();
@@ -3822,7 +3824,7 @@ SignalSectionIterator::getNextWords(Uint32& sz)
     return signal->getDataPtrSend();
   }
   sz= 0;
-  return NULL;
+  return nullptr;
 }
 
 /**
@@ -3843,7 +3845,7 @@ SignalSectionIterator::getNextWords(Uint32& sz)
 void
 TransporterFacade::flush_send_buffer(Uint32 node, const TFBuffer * sb)
 {
-  if (unlikely(sb->m_head == NULL)) //Cleared by ::disable_send_buffer()
+  if (unlikely(sb->m_head == nullptr)) //Cleared by ::disable_send_buffer()
     return;
 
   assert(node < NDB_ARRAY_SIZE(m_send_buffers));
@@ -4002,7 +4004,7 @@ TransporterFacade::do_send_buffer(Uint32 node, struct TFSendBuffer *b)
    * wo/ 'out_buffer' being cleared as we held the send_lock.
    * Thus, discard any out_buffer'ed send data now.
    */
-  if (unlikely(!b->m_node_enabled && b->m_out_buffer.m_head != NULL))
+  if (unlikely(!b->m_node_enabled && b->m_out_buffer.m_head != nullptr))
   {
     m_send_buffer.release_list(b->m_out_buffer.m_head);
     b->m_out_buffer.clear();
@@ -4036,7 +4038,7 @@ TransporterFacade::get_bytes_to_send_iovec(NodeId node,
   TFBuffer *b = &m_send_buffers[node].m_out_buffer;
   TFBufferGuard g0(* b);
   TFPage *page = b->m_head;
-  while (page != NULL && count < max)
+  while (page != nullptr && count < max)
   {
     dst[count].iov_base = page->m_data+page->m_start;
     dst[count].iov_len = page->m_bytes;
@@ -4069,7 +4071,7 @@ TransporterFacade::bytes_sent(NodeId node,
   b->m_bytes_in_buffer = used_bytes;
 
   TFPage *page = b->m_head;
-  TFPage *prev = 0;
+  TFPage *prev = nullptr;
   while (bytes && bytes >= page->m_bytes)
   {
     prev = page;
@@ -4081,8 +4083,8 @@ TransporterFacade::bytes_sent(NodeId node,
   if (used_bytes == 0)
   {
     m_send_buffer.release(b->m_head, b->m_tail, page_count);
-    b->m_head = 0;
-    b->m_tail = 0;
+    b->m_head = nullptr;
+    b->m_tail = nullptr;
   }
   else
   {
@@ -4169,7 +4171,7 @@ TransporterFacade::enable_send_buffer(NodeId node, TrpId trp_id, bool locked)
   for (Uint32 i = 0; i < sz ; i ++)
   {
     trp_client *const clnt = m_threads.m_clients[i].m_clnt;
-    if (clnt != NULL)
+    if (clnt != nullptr)
     {
       if (clnt->is_locked_for_poll())
       {
@@ -4207,7 +4209,7 @@ TransporterFacade::disable_send_buffer(NodeId node, TrpId trp_id, bool locked)
   for (Uint32 i = 0; i < sz ; i ++)
   {
     trp_client * clnt = m_threads.m_clients[i].m_clnt;
-    if (clnt != NULL)
+    if (clnt != nullptr)
     {
       if (clnt->is_locked_for_poll())
       {
@@ -4248,7 +4250,7 @@ TransporterFacade::discard_send_buffer(struct TFSendBuffer *b)
    */
   {
     TFBuffer *buffer = &b->m_buffer;
-    if (buffer->m_head != NULL)
+    if (buffer->m_head != nullptr)
     {
       m_send_buffer.release_list(buffer->m_head);
       buffer->clear();
@@ -4258,7 +4260,7 @@ TransporterFacade::discard_send_buffer(struct TFSendBuffer *b)
   if (b->try_lock_send())
   {
     TFBuffer *out_buffer = &b->m_out_buffer;
-    if (out_buffer->m_head != NULL)
+    if (out_buffer->m_head != nullptr)
     {
       m_send_buffer.release_list(out_buffer->m_head);
       out_buffer->clear();
@@ -4600,7 +4602,7 @@ TransporterFacade::registerForWakeup(trp_client* _dozer)
    * For now, we just have one/TransporterFacade
    */
   dbg2("register dozer = %p on  %p", _dozer, this);
-  if (dozer != NULL)
+  if (dozer != nullptr)
     return false;
 
   dozer = _dozer;
@@ -4615,7 +4617,7 @@ TransporterFacade::unregisterForWakeup(trp_client* _dozer)
     return false;
 
   dbg2("unregister dozer = %p on %p", _dozer, this);
-  dozer = NULL;
+  dozer = nullptr;
   return true;
 }
 
@@ -4636,7 +4638,7 @@ TransporterFacade::reportWakeup()
    * Called with Transporter Mutex held
    */
   /* Notify interested parties */
-  if (dozer != NULL)
+  if (dozer != nullptr)
   {
     dozer->trp_wakeup();
   };
@@ -4645,7 +4647,7 @@ TransporterFacade::reportWakeup()
 #ifdef ERROR_INSERT
 
 /* Test methods to consume sendbuffer */
-static TFPage* consumed_sendbuff = 0;
+static TFPage* consumed_sendbuff = nullptr;
 
 void 
 TransporterFacade::consume_sendbuffer(Uint32 bytes_remain)
@@ -4694,7 +4696,7 @@ TransporterFacade::release_consumed_sendbuffer()
   
   m_send_buffer.release_list(consumed_sendbuff);
   
-  consumed_sendbuff = NULL;
+  consumed_sendbuff = nullptr;
 
   g_eventLogger->info("Remaining bytes : %llu",
                       m_send_buffer.get_total_send_buffer_size() -

@@ -40,11 +40,11 @@ SocketAuthSimple::SocketAuthSimple(const char *username, const char *passwd) {
   if (username)
     m_username= strdup(username);
   else
-    m_username= 0;
+    m_username= nullptr;
   if (passwd)
     m_passwd= strdup(passwd);
   else
-    m_passwd= 0;
+    m_passwd= nullptr;
 }
 
 SocketAuthSimple::~SocketAuthSimple()
@@ -69,7 +69,7 @@ bool SocketAuthSimple::client_authenticate(ndb_socket_t sockfd)
   char buf[16];
 
   // Read authentication result
-  if (s_input.gets(buf, sizeof(buf)) == 0)
+  if (s_input.gets(buf, sizeof(buf)) == nullptr)
   {
     DEBUG_FPRINTF((stderr, "Failed client authenticate on NDB_SOCKET: %s\n",
                    ndb_socket_to_string(sockfd).c_str()));
@@ -100,7 +100,7 @@ bool SocketAuthSimple::server_authenticate(ndb_socket_t sockfd)
   // Read username
   DEBUG_FPRINTF((stderr, "server authenticate on NDB_SOCKET: %s\n",
                  ndb_socket_to_string(sockfd).c_str()));
-  if (s_input.gets(buf, sizeof(buf)) == 0)
+  if (s_input.gets(buf, sizeof(buf)) == nullptr)
   {
     DEBUG_FPRINTF((stderr, "Failed server auth on NDB_SOCKET: %s\n",
                    ndb_socket_to_string(sockfd).c_str()));
@@ -109,7 +109,7 @@ bool SocketAuthSimple::server_authenticate(ndb_socket_t sockfd)
   buf[sizeof(buf)-1]= 0;
 
   // Read password
-  if (s_input.gets(buf, sizeof(buf)) == 0)
+  if (s_input.gets(buf, sizeof(buf)) == nullptr)
   {
     DEBUG_FPRINTF((stderr, "Failed server read passwd on NDB_SOCKET: %s\n",
                    ndb_socket_to_string(sockfd).c_str()));

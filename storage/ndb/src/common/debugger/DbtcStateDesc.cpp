@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2011, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -65,5 +66,5 @@ struct ndbkernel_state_desc g_dbtc_apiconnect_state_desc[] =
   SDESC(CS_SEND_FIRE_TRIG_REQ, "Precomitting", ""),
   SDESC(CS_WAIT_FIRE_TRIG_REQ, "Precomitting", ""),
   SDESC(CS_RELEASE, "Releasing objects", ""),
-  { 0, 0, 0, 0 }
+  { 0, nullptr, nullptr, nullptr }
 };

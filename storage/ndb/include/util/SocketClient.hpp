@@ -37,7 +37,7 @@ class SocketClient
   SocketAuthenticator *m_auth;
   bool m_use_only_ipv4;
 public:
-  SocketClient(SocketAuthenticator *sa = 0);
+  SocketClient(SocketAuthenticator *sa = nullptr);
   ~SocketClient();
   bool init(bool use_only_ipv4);
   void set_connect_timeout(unsigned int timeout_millisec) {

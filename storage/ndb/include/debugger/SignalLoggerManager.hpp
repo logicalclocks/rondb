@@ -73,7 +73,7 @@ public:
    */
   void executeSignal(const SignalHeader& sh, Uint8 prio,
 		     const Uint32 * theData, Uint32 node) {
-    executeSignal(sh, prio, theData, node, (LinearSectionPtr*)0, 0);
+    executeSignal(sh, prio, theData, node, (LinearSectionPtr*)nullptr, 0);
   }
 
   void executeSignal(const SignalHeader&, Uint8 prio,
@@ -89,7 +89,7 @@ public:
    */
   void sendSignal(const SignalHeader& sh, Uint8 prio,
 		  const Uint32 * theData, Uint32 node) {
-    sendSignal(sh, prio, theData, node, (LinearSectionPtr*)0, 0);
+    sendSignal(sh, prio, theData, node, (LinearSectionPtr*)nullptr, 0);
   }
 
   void sendSignal(const SignalHeader&, Uint8 prio,
@@ -111,7 +111,7 @@ public:
 			   const SignalHeader& sh,
 			   Uint8 prio, const Uint32 * data, Uint32 node){
     sendSignalWithDelay(delayInMilliSeconds, sh, prio, data, node,
-			(SegmentedSectionPtr*)0, 0);
+			(SegmentedSectionPtr*)nullptr, 0);
   }
 
   void sendSignalWithDelay(Uint32 delayInMilliSeconds,
@@ -207,8 +207,8 @@ private:
   NdbMutex* m_mutex;
 
 public:
-  void lock() { if (m_mutex != 0) NdbMutex_Lock(m_mutex); }
-  void unlock() { if (m_mutex != 0) NdbMutex_Unlock(m_mutex); }
+  void lock() { if (m_mutex != nullptr) NdbMutex_Lock(m_mutex); }
+  void unlock() { if (m_mutex != nullptr) NdbMutex_Unlock(m_mutex); }
  
   inline bool
   logMatch(BlockNumber bno, LogMode mask)

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -100,7 +100,7 @@ public:
   static bool tryBind(unsigned short port,
                       bool use_only_ipv4 = false,
                       const char* intface = 0,
-                      char* error = NULL,
+                      char* error = nullptr,
                       size_t error_size = 0);
 
   /**
@@ -108,7 +108,8 @@ public:
    *   bind & listen
    * Returns false if no success
    */
-  bool setup(Service *, unsigned short *port, const char * pinterface = 0);
+  bool setup(Service *, unsigned short *port, 
+             const char * pinterface = nullptr);
   
   /**
    * start/stop the server

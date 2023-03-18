@@ -289,7 +289,6 @@ Ndbfs::get_base_path(Uint32 no) const
 void 
 Ndbfs::execREAD_CONFIG_REQ(Signal* signal)
 {
-  LOCAL_SIGNAL(signal);
   const ReadConfigReq * req = (ReadConfigReq*)signal->getDataPtr();
 
   Uint32 ref = req->senderRef;
@@ -494,7 +493,6 @@ Ndbfs::execREAD_CONFIG_REQ(Signal* signal)
 void
 Ndbfs::execSTTOR(Signal* signal)
 {
-  LOCAL_SIGNAL(signal);
   jamEntry();
   
   if(signal->theData[1] == 0){ // StartPhase 0
@@ -577,7 +575,6 @@ Ndbfs::forward( AsyncFile * file, Request* request)
 void 
 Ndbfs::execFSOPENREQ(Signal* signal)
 {
-  LOCAL_SIGNAL(signal);
   jamEntry();
   require(signal->getLength() >= FsOpenReq::SignalLength);
 #if defined(NAME_BASED_DISABLING_COMPRESS_ENCRYPT_ODIRECT)
@@ -718,7 +715,6 @@ Ndbfs::execFSOPENREQ(Signal* signal)
 void 
 Ndbfs::execFSREMOVEREQ(Signal* signal)
 {
-  LOCAL_SIGNAL(signal);
   jamEntry();
   const FsRemoveReq * const req = (FsRemoveReq *)signal->getDataPtr();
   const BlockReference userRef = req->userReference;
@@ -773,7 +769,6 @@ ignore:
 void 
 Ndbfs::execFSCLOSEREQ(Signal * signal)
 {
-  LOCAL_SIGNAL(signal);
   jamEntry();
   const FsCloseReq * const fsCloseReq = (FsCloseReq *)&signal->theData[0];
   const BlockReference userRef = fsCloseReq->userReference;
@@ -1041,7 +1036,6 @@ error:
 void 
 Ndbfs::execFSWRITEREQ(Signal* signal)
 {
-  LOCAL_SIGNAL(signal);
   jamEntry();
   const FsReadWriteReq * const fsWriteReq = (FsReadWriteReq *)&signal->theData[0];
   
@@ -1066,7 +1060,6 @@ Ndbfs::execFSWRITEREQ(Signal* signal)
 void 
 Ndbfs::execFSREADREQ(Signal* signal)
 {
-  LOCAL_SIGNAL(signal);
   jamEntry();
   FsReadWriteReq * req = (FsReadWriteReq *)signal->getDataPtr();
   if (FsReadWriteReq::getPartialReadFlag(req->operationFlag))
@@ -1087,7 +1080,6 @@ Ndbfs::execFSREADREQ(Signal* signal)
 void
 Ndbfs::execFSSYNCREQ(Signal * signal)
 {
-  LOCAL_SIGNAL(signal);
   jamEntry();
   Uint16 filePointer =  (Uint16)signal->theData[0];
   BlockReference userRef = signal->theData[1];
@@ -1123,7 +1115,6 @@ Ndbfs::execFSSYNCREQ(Signal * signal)
 void
 Ndbfs::execFSSUSPENDORD(Signal * signal)
 {
-  LOCAL_SIGNAL(signal);
   jamEntry();
   Uint16 filePointer =  (Uint16)signal->theData[0];
   Uint32 millis = signal->theData[1];
@@ -1150,7 +1141,6 @@ Ndbfs::execFSSUSPENDORD(Signal * signal)
 void 
 Ndbfs::execFSAPPENDREQ(Signal * signal)
 {
-  LOCAL_SIGNAL(signal);
   jamEntry();
   const FsAppendReq * const fsReq = (FsAppendReq *)&signal->theData[0];
   const Uint16 filePointer =  (Uint16)fsReq->filePointer;
@@ -1226,7 +1216,6 @@ error:
 void
 Ndbfs::execALLOC_MEM_REQ(Signal* signal)
 {
-  LOCAL_SIGNAL(signal);
   jamEntry();
   AllocMemReq* req = (AllocMemReq*)signal->getDataPtr();
 
@@ -1253,7 +1242,6 @@ Ndbfs::execALLOC_MEM_REQ(Signal* signal)
 void
 Ndbfs::execBUILD_INDX_IMPL_REQ(Signal* signal)
 {
-  LOCAL_SIGNAL(signal);
   jamEntry();
   mt_BuildIndxReq * req = (mt_BuildIndxReq*)signal->getDataPtr();
 
@@ -1819,7 +1807,6 @@ Uint32 Ndbfs::translateErrno(int aErrno)
 void 
 Ndbfs::execCONTINUEB(Signal* signal)
 {
-  LOCAL_SIGNAL(signal);
   jamEntry();
   if (signal->theData[0] == NdbfsContinueB::ZSCAN_MEMORYCHANNEL_10MS_DELAY) {
     jam();
@@ -1881,7 +1868,7 @@ Ndbfs::execSEND_PACKED(Signal* signal)
 void
 Ndbfs::execDUMP_STATE_ORD(Signal* signal)
 {
-  LOCAL_SIGNAL(signal);
+  LOCAL_SIGNAL(signal); // Not local for all blocks!
   jamEntry();
   if(signal->theData[0] == 19){
     return;
@@ -2170,6 +2157,12 @@ void Ndbfs::log_file_error(GlobalSignalNumber gsn, AsyncFile* file,
              strstr(file_name, ".FragList"))
     {
       // OM_READWRITE existing: D1/DBDIH/S17.FragList - disk full?
+    }
+    else if (gsn == GSN_FSREADREF &&
+             file != nullptr &&
+             strstr(file_name, "S0.sysfile"))
+    {
+      // Invalid/corrupt secretsfile D1/NDBCNTR/S0.sysfile
     }
     else
     {

@@ -168,7 +168,7 @@ char *
 SimpleProperties::Reader::getString(char * dst) const {
   if(peekWords((Uint32*)dst, m_itemLen))
     return dst;
-  return 0;
+  return nullptr;
 }
 
 int

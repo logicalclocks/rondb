@@ -42,13 +42,13 @@
 
 class Config {
 public:
-  Config(ndb_mgm_configuration *configuration = NULL);
+  Config(ndb_mgm_configuration *configuration = nullptr);
   Config(ConfigValues* config_values);
   Config(const Config*);
   virtual ~Config();
 
-  void print(const char* section_filter = NULL, NodeId nodeid_filter = 0,
-             const char* param_filter = NULL,
+  void print(const char* section_filter = nullptr, NodeId nodeid_filter = 0,
+             const char* param_filter = nullptr,
              NdbOut& out = ndbout) const;
 
   /*
@@ -94,7 +94,7 @@ public:
     differences in a Properties object
   */
   void diff(const Config* other, Properties& diff_list,
-            const unsigned* exclude=NULL) const;
+            const unsigned* exclude=nullptr) const;
 
   /*
     Print the difference against another config
@@ -114,7 +114,7 @@ public:
     Print the difference to string buffer
   */
   const char* diff2str(const Config* other, BaseString& str,
-                       const unsigned* exclude = NULL) const;
+                       const unsigned* exclude = nullptr) const;
 
   /*
     Determine if changing to the other config is illegal
@@ -124,7 +124,7 @@ public:
   /*
     Check if the config is equal to another config
   */
-  bool equal(const Config*, const unsigned* exclude = NULL) const;
+  bool equal(const Config*, const unsigned* exclude = nullptr) const;
 
   /*
     Return the checksum of the config. The checksum can be used to compare

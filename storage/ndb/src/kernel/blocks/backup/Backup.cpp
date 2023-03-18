@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -4470,6 +4470,15 @@ Backup::execBACKUP_REQ(Signal* signal)
 {
   jamEntry();
   BackupReq * req = (BackupReq*)signal->getDataPtr();
+
+  if (ERROR_INSERTED(10054) && (getOwnNodeId() == getMasterNodeId()))
+  {
+    // Don't allow this signal to be sent from any other node,
+    // only from the same local node
+    // BACKUP_REQ is sent bt MGMD to Master so this will cause
+    // a node failure
+    addSignalScopeImpl(GSN_BACKUP_REQ, Local);
+  }
   
   const Uint32 senderData = req->senderData;
   const BlockReference senderRef = signal->senderBlockRef();

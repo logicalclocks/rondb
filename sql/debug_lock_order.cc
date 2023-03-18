@@ -2484,7 +2484,7 @@ class LO_rwlock {
 class LO_rwlock_pr : public LO_rwlock {
  public:
   LO_rwlock_pr(const LO_rwlock_class_pr *klass) : LO_rwlock(klass) {}
-  ~LO_rwlock_pr() {}
+  ~LO_rwlock_pr() override {}
 
   virtual LO_rwlock_lock *build_lock(const char *src_file, int src_line,
                                      LO_thread *thread) override;
@@ -2493,7 +2493,7 @@ class LO_rwlock_pr : public LO_rwlock {
 class LO_rwlock_rw : public LO_rwlock {
  public:
   LO_rwlock_rw(const LO_rwlock_class_rw *klass) : LO_rwlock(klass) {}
-  ~LO_rwlock_rw() {}
+  ~LO_rwlock_rw() override {}
 
   virtual LO_rwlock_lock *build_lock(const char *src_file, int src_line,
                                      LO_thread *thread) override;
@@ -2502,7 +2502,7 @@ class LO_rwlock_rw : public LO_rwlock {
 class LO_rwlock_sx : public LO_rwlock {
  public:
   LO_rwlock_sx(const LO_rwlock_class_sx *klass) : LO_rwlock(klass) {}
-  ~LO_rwlock_sx() {}
+  ~LO_rwlock_sx() override {}
 
   virtual LO_rwlock_lock *build_lock(const char *src_file, int src_line,
                                      LO_thread *thread) override;
@@ -2571,7 +2571,7 @@ class LO_rwlock_lock_pr : public LO_rwlock_lock {
  public:
   LO_rwlock_lock_pr(LO_rwlock *rwlock, const char *src_file, int src_line,
                     LO_thread *thread);
-  ~LO_rwlock_lock_pr() {}
+  ~LO_rwlock_lock_pr() override {}
 
   virtual void set_locked(PSI_rwlock_operation op, const char *src_file,
                           int src_line) override;
@@ -2598,7 +2598,7 @@ class LO_rwlock_lock_rw : public LO_rwlock_lock {
  public:
   LO_rwlock_lock_rw(LO_rwlock *rwlock, const char *src_file, int src_line,
                     LO_thread *thread);
-  ~LO_rwlock_lock_rw() {}
+  ~LO_rwlock_lock_rw() override {}
 
   virtual void set_locked(PSI_rwlock_operation op, const char *src_file,
                           int src_line) override;
@@ -2625,7 +2625,7 @@ class LO_rwlock_lock_sx : public LO_rwlock_lock {
  public:
   LO_rwlock_lock_sx(LO_rwlock *rwlock, const char *src_file, int src_line,
                     LO_thread *thread);
-  ~LO_rwlock_lock_sx() {}
+  ~LO_rwlock_lock_sx() override {}
 
   virtual void set_locked(PSI_rwlock_operation op, const char *src_file,
                           int src_line) override;

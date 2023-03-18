@@ -40,6 +40,7 @@
 #include "TimeModule.hpp"
 
 #include <NdbAutoPtr.hpp>
+#include <NdbSleep.h>
 
 #define JAM_FILE_ID 490
 
@@ -54,6 +55,10 @@
 #define OLD_MESSAGE_LENGTH 499
 
 const char * ndb_basename(const char *path);
+
+#ifdef ERROR_INSERT
+int simulate_error_during_error_reporting = 0;
+#endif
 
 static
 const char*
@@ -433,6 +438,14 @@ ErrorReporter::WriteMessage(int thrdMessageID,
   fclose(stream);
 
   prepare_to_crash(false, (nst == NST_ErrorInsert));
+
+#ifdef ERROR_INSERT
+  if (simulate_error_during_error_reporting == 1)
+  {
+    fprintf(stderr, "Stall during error reporting after releasing lock\n");
+    NdbSleep_MilliSleep(30000);
+  }
+#endif
 
   if (theTraceFileName) {
     /* Attempt to stop all processing to be able to dump a consistent state. */

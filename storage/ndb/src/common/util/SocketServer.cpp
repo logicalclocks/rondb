@@ -49,7 +49,7 @@ SocketServer::SocketServer(unsigned maxSessions) :
   m_maxSessions(maxSessions),
   m_use_only_ipv4(false),
   m_stopThread(false),
-  m_thread(0)
+  m_thread(nullptr)
 {
 }
 
@@ -82,7 +82,7 @@ bool SocketServer::tryBind(unsigned short port,
     servaddr.sin6_addr = in6addr_any;
     servaddr.sin6_port = htons(port);
 
-    if (intface != 0)
+    if (intface != nullptr)
     {
       if(Ndb_getInAddr6(&servaddr.sin6_addr, intface))
       {
@@ -112,7 +112,7 @@ bool SocketServer::tryBind(unsigned short port,
     }
 
     if (ndb_bind_inet(sock, &servaddr) == -1) {
-      if (error != NULL) {
+      if (error != nullptr) {
         int err_code = ndb_socket_errno();
         snprintf(error, error_size, "%d '%s'", err_code,
                  ndb_socket_err_message(err_code).c_str());
@@ -135,7 +135,7 @@ bool SocketServer::tryBind(unsigned short port,
     servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
     servaddr.sin_port = htons(port);
 
-    if (intface != 0)
+    if (intface != nullptr)
     {
       if(Ndb_getInAddr(&servaddr.sin_addr, intface))
       {
@@ -163,7 +163,7 @@ bool SocketServer::tryBind(unsigned short port,
     }
 
     if (ndb_bind_inet4(sock, &servaddr) == -1) {
-      if (error != NULL) {
+      if (error != nullptr) {
         int err_code = ndb_socket_errno();
         snprintf(error, error_size, "%d '%s'", err_code,
                  ndb_socket_err_message(err_code).c_str());
@@ -196,7 +196,7 @@ SocketServer::setup(SocketServer::Service * service,
     servaddr.sin6_addr = in6addr_any;
     servaddr.sin6_port = htons(*port);
 
-    if(intface != 0)
+    if(intface != nullptr)
     {
       if (Ndb_getInAddr6(&servaddr.sin6_addr, intface))
       {
@@ -393,7 +393,7 @@ SocketServer::doAccept()
     ServiceInstance & si = m_services[i];
     assert(m_services_poller.is_socket_equal(i, si.m_socket));
 
-    const ndb_socket_t childSock = ndb_accept(si.m_socket, 0, 0);
+    const ndb_socket_t childSock = ndb_accept(si.m_socket, nullptr, nullptr);
     if (!ndb_socket_valid(childSock))
     {
       DEBUG_FPRINTF((stderr,"NDB_SOCKET failed accept: %s\n",
@@ -407,7 +407,7 @@ SocketServer::doAccept()
     SessionInstance s;
     s.m_service = si.m_service;
     s.m_session = si.m_service->newSession(childSock);
-    if (s.m_session != 0)
+    if (s.m_session != nullptr)
     {
       m_session_mutex.lock();
       m_sessions.push_back(s);
@@ -425,14 +425,14 @@ void*
 socketServerThread_C(void* _ss){
   SocketServer * ss = (SocketServer *)_ss;
   ss->doRun();
-  return 0;
+  return nullptr;
 }
 
 struct NdbThread*
 SocketServer::startServer()
 {
   m_threadLock.lock();
-  if(m_thread == 0 && m_stopThread == false)
+  if(m_thread == nullptr && m_stopThread == false)
   {
     m_thread = NdbThread_Create(socketServerThread_C,
 				(void**)this,
@@ -447,13 +447,13 @@ SocketServer::startServer()
 void
 SocketServer::stopServer(){
   m_threadLock.lock();
-  if(m_thread != 0){
+  if(m_thread != nullptr){
     m_stopThread = true;
     
     void * res;
     NdbThread_WaitFor(m_thread, &res);
     NdbThread_Destroy(&m_thread);
-    m_thread = 0;
+    m_thread = nullptr;
   }
   m_threadLock.unlock();
 }
@@ -537,7 +537,7 @@ SocketServer::checkSessionsImpl()
     if(m_sessions[i].m_session->m_thread_stopped &&
        (m_sessions[i].m_session->m_refCount == 0))
     {
-      if(m_sessions[i].m_thread != 0)
+      if(m_sessions[i].m_thread != nullptr)
       {
 	void* ret;
 	NdbThread_WaitFor(m_sessions[i].m_thread, &ret);
@@ -604,7 +604,7 @@ sessionThread_C(void* _sc){
   // Mark the thread as stopped to allow the
   // session resources to be released
   si->m_thread_stopped = true;
-  return 0;
+  return nullptr;
 }
 
 template class MutexVector<SocketServer::ServiceInstance>;

@@ -1922,7 +1922,6 @@ Lgman::execFSOPENREF(Signal* signal)
 void
 Lgman::execFSOPENCONF(Signal* signal)
 {
-  LOCAL_SIGNAL(signal);
   jamEntry();
   Ptr<Undofile> file_ptr;
 

@@ -88,7 +88,7 @@ Config::print(const char* section_filter, NodeId nodeid_filter,
       if(it.get(CFG_TYPE_OF_SECTION, &section_type) != 0)
         continue;
 
-      const ConfigInfo::ParamInfo* pinfo= NULL;
+      const ConfigInfo::ParamInfo* pinfo= nullptr;
       ConfigInfo::ParamInfoIter param_iter(default_info, section, section_type);
 
       const char* section_name =
@@ -120,7 +120,7 @@ Config::print(const char* section_filter, NodeId nodeid_filter,
         if (section_name) // Print section name only first time
         {
           out << "[" << section_name << "]" << endl;
-          section_name= NULL;
+          section_name= nullptr;
         }
 
         if (!it.get(pinfo->_paramId, &val))
@@ -169,7 +169,7 @@ Config::getName() const
   ConfigIter iter(this, CFG_SECTION_SYSTEM);
 
   if (iter.get(CFG_SYS_NAME, &name))
-    return 0;
+    return nullptr;
 
   return name;
 }
@@ -431,7 +431,7 @@ diff_system(const Config* a, const Config* b, Properties& diff)
 
   // Check each possible configuration value
   const ConfigInfo& default_info = ConfigInfo::default_instance();
-  const ConfigInfo::ParamInfo* pinfo= NULL;
+  const ConfigInfo::ParamInfo* pinfo= nullptr;
   ConfigInfo::ParamInfoIter param_iter(
       default_info, CFG_SECTION_SYSTEM, CFG_SECTION_SYSTEM);
   while((pinfo= param_iter.next())) {
@@ -495,7 +495,7 @@ diff_nodes(const Config* a, const Config* b, Properties& diff)
     }
 
     // Check each possible configuration value
-    const ConfigInfo::ParamInfo* pinfo= NULL;
+    const ConfigInfo::ParamInfo* pinfo= nullptr;
     ConfigInfo::ParamInfoIter param_iter(
         default_info, CFG_SECTION_NODE, nodeType);
     while((pinfo= param_iter.next())) {
@@ -579,7 +579,7 @@ diff_connections(const Config* a, const Config* b, Properties& diff)
     require(nodeId1_A == nodeId1_B && nodeId2_A == nodeId2_B);
 
     // Check each possible configuration value
-    const ConfigInfo::ParamInfo* pinfo= NULL;
+    const ConfigInfo::ParamInfo* pinfo= nullptr;
     ConfigInfo::ParamInfoIter param_iter(
         default_info, CFG_SECTION_CONNECTION, connectionType);
     while((pinfo= param_iter.next())) {
@@ -592,7 +592,7 @@ diff_connections(const Config* a, const Config* b, Properties& diff)
 
 static bool
 include_section(const unsigned* exclude, unsigned section){
-  if (exclude == NULL)
+  if (exclude == nullptr)
     return true;
 
   while(*exclude){
