@@ -781,10 +781,16 @@ void Trix::execUTIL_PREPARE_REF(Signal* signal)
   subRec->errorCode = (BuildIndxRef::ErrorCode)utilPrepareRef->errorCode;
   switch (utilPrepareRef->errorCode) {
   case UtilPrepareRef::PREPARE_SEIZE_ERROR:
+    subRec->errorCode = BuildIndxRef::UtilBusy1;
+    break;
   case UtilPrepareRef::PREPARE_PAGES_SEIZE_ERROR:
+    subRec->errorCode = BuildIndxRef::UtilBusy2;
+    break;
   case UtilPrepareRef::PREPARED_OPERATION_SEIZE_ERROR:
+    subRec->errorCode = BuildIndxRef::UtilBusy3;
+    break;
   case UtilPrepareRef::DICT_TAB_INFO_ERROR:
-    subRec->errorCode = BuildIndxRef::UtilBusy;
+    subRec->errorCode = BuildIndxRef::InvalidPrimaryTable;
     break;
   case UtilPrepareRef::MISSING_PROPERTIES_SECTION:
     subRec->errorCode = BuildIndxRef::BadRequestType;
@@ -2453,9 +2459,13 @@ Trix::statUtilPrepareRef(Signal* signal, Uint32 statPtrI)
 
   switch (errorCode) {
   case UtilPrepareRef::PREPARE_SEIZE_ERROR:
+    errorCode = IndexStatRef::BusyUtilPrepare1;
+    break;
   case UtilPrepareRef::PREPARE_PAGES_SEIZE_ERROR:
+    errorCode = IndexStatRef::BusyUtilPrepare2;
+    break;
   case UtilPrepareRef::PREPARED_OPERATION_SEIZE_ERROR:
-    errorCode = IndexStatRef::BusyUtilPrepare;
+    errorCode = IndexStatRef::BusyUtilPrepare3;
     break;
   case UtilPrepareRef::DICT_TAB_INFO_ERROR:
     errorCode = IndexStatRef::InvalidSysTable;

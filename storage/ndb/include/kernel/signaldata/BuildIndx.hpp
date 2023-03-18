@@ -84,7 +84,9 @@ struct BuildIndxRef {
     InternalError = 4346,
     IndexNotFound = 4243,
     DeadlockError = 4351,
-    UtilBusy = 748
+    UtilBusy1 = 730,
+    UtilBusy2 = 731,
+    UtilBusy3 = 748,
   };
 
   static constexpr Uint32 SignalLength = 10;

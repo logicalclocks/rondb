@@ -18,7 +18,7 @@
 package common
 
 /*
-#include "./../../../data-access-rondb/src/error-strs.h"
+#include "./../../../data-access-rondb/src/error-strings.h"
 */
 import "C"
 

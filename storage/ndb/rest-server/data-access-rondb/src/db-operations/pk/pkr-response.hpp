@@ -24,7 +24,7 @@
 #include <string>
 #include "src/rdrs-dal.h"
 #include "src/status.hpp"
-#include "src/error-strs.h"
+#include "src/error-strings.h"
 
 class PKRResponse {
  private:
@@ -47,7 +47,7 @@ class PKRResponse {
   RS_Status SetStatus(Uint32 value);
 
   /**
-   * Close response and set the data lenght. 
+   * Close response and set the data lenght.
    */
   RS_Status Close();
 
@@ -62,7 +62,7 @@ class PKRResponse {
   RS_Status SetTable(const char *table);
 
   /**
-   * Set Operation ID 
+   * Set Operation ID
    */
   RS_Status SetOperationID(const char *opID);
 
@@ -130,12 +130,12 @@ class PKRResponse {
   /**
    * Append to response buffer
    */
-  RS_Status Append_i8(const char *colName, char num);
+  RS_Status Append_i8(const char *colName, Int8 num);
 
   /**
    * Append to response buffer
    */
-  RS_Status Append_iu8(const char *colName, unsigned char num);
+  RS_Status Append_iu8(const char *colName, Uint8 num);
 
   /**
    * Append to response buffer
@@ -168,13 +168,13 @@ class PKRResponse {
   RS_Status Append_d64(const char *colName, double num);
 
   /**
-   * Append to response buffer. Append
+   * Append to response buffer
    */
   RS_Status Append_char(const char *colName, const char *from_buffer, Uint32 from_length,
                         CHARSET_INFO *from_cs);
 
   /**
-   * Append to response buffer. Append
+   * Append to response buffer
    */
   RS_Status Append_string(const char *colName, std::string value, Uint32 type);
 
@@ -204,7 +204,7 @@ class PKRResponse {
   RS_Status Append_cstring(const char *str);
 
   /**
-   * write header field with string value 
+   * write header field with string value
    *
    */
   RS_Status WriteStringHeaderField(Uint32 index, const char *str);

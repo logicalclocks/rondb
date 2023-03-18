@@ -24,11 +24,9 @@
 
 package com.mysql.clusterj.core.dtocache;
 
-import java.util.Iterator;
-import java.util.Map;
+import java.util.*;
 import java.util.Map.Entry;
-import java.util.Set;
-import java.util.HashMap;
+
 import com.mysql.clusterj.Session;
 import com.mysql.clusterj.core.SessionImpl;
 import com.mysql.clusterj.ClusterJUserException;
@@ -192,10 +190,10 @@ public class DTOCache {
             new HashMap<Class, CacheEntry>();
 
     private final Map<Object, CacheObject> inCacheMap =
-            new HashMap<Object, CacheObject>();
+            new IdentityHashMap<>();
 
     private final Map<Object, CacheObject> inUseMap =
-            new HashMap<Object, CacheObject>();
+            new IdentityHashMap<>();
 
     CacheEntry unusedCacheObjects;
 

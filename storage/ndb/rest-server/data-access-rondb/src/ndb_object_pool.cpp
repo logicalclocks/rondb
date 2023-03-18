@@ -21,7 +21,7 @@
 #include <iostream>
 #include <string>
 #include "src/status.hpp"
-#include "src/error-strs.h"
+#include "src/error-strings.h"
 #include "src/logger.hpp"
 
 NdbObjectPool *NdbObjectPool::__instance = nullptr;

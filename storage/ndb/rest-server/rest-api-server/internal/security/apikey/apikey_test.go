@@ -17,160 +17,166 @@
 package apikey
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
-	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/security/apikey/authcache"
+	"hopsworks.ai/rdrs/internal/testutils"
+	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 func TestAPIKey(t *testing.T) {
+	if !*testutils.WithRonDB {
+		t.Skip("skipping test without RonDB")
+	}
 
-	conString := fmt.Sprintf("%s:%d", config.Configuration().RonDBConfig.IP,
-		config.Configuration().RonDBConfig.Port)
+	conf := config.GetAll()
+	if !conf.Security.UseHopsworksAPIKeys {
+		t.Log("tests may fail because Hopsworks API keys are deactivated")
+	}
+	log.InitLogger(conf.Log)
 
-	dal.InitRonDBConnection(conString, true)
+	connectString := config.GenerateMgmdConnectString(conf)
+	dalErr := dal.InitRonDBConnection(connectString, true)
+	if dalErr != nil {
+		t.Fatalf("failed to initialise RonDB connection; error: %s", dalErr.VerboseError())
+	}
 	defer dal.ShutdownConnection()
 
-	common.CreateDatabases(t, []string{"DB001", "DB002"}...)
-	defer common.DropDatabases(t, []string{"DB001", "DB002"}...)
+	existentDB := testdbs.DB001
+	existentDB2 := testdbs.DB002
+	fakeDB := "test3"
 
 	apiKey := "bkYjEz6OTZyevbqT.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
-	err := ValidateAPIKey(&apiKey, nil)
+	err := ValidateAPIKey(&apiKey, &existentDB)
 	if err == nil {
-		t.Fatalf("Supplied wrong prefix. This should have failed. ")
+		t.Fatal("Wrong prefix was falsely validated")
 	}
 
 	apiKey = "bkYjEz6OTZyevbqT."
 	err = ValidateAPIKey(&apiKey)
 	if err == nil {
-		t.Fatalf("No secret. This should have failed")
+		t.Fatal("Missing secret was falsely validated")
 	}
 
 	apiKey = "bkYjEz6OTZyevbq.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
 	err = ValidateAPIKey(&apiKey)
 	if err == nil {
-		t.Fatalf("Wrong length prefix. This should have failed")
+		t.Fatal("Wrong length prefix was falsely validated")
 	}
 
 	// correct api key but wrong db. this api key can not access test3 db
-	apiKey = common.HOPSWORKS_TEST_API_KEY
-	db1 := "test3"
-	err = ValidateAPIKey(&apiKey, &db1)
+	apiKey = testutils.HOPSWORKS_TEST_API_KEY
+	err = ValidateAPIKey(&apiKey, &fakeDB)
 	if err == nil {
-		t.Fatalf("This should have failed")
+		t.Fatal("Inexistent database was falsely validated")
 	}
 
 	// correct api key
-	apiKey = common.HOPSWORKS_TEST_API_KEY
-	db1 = "DB001"
-	err = ValidateAPIKey(&apiKey, &db1)
+	apiKey = testutils.HOPSWORKS_TEST_API_KEY
+	err = ValidateAPIKey(&apiKey, &existentDB)
 	if err != nil {
-		t.Fatalf("No error expected")
-	}
-
-	// valid api key but no db
-	apiKey = common.HOPSWORKS_TEST_API_KEY
-	err = ValidateAPIKey(&apiKey, nil)
-	if err == nil {
-		t.Fatalf("This should have failed")
+		t.Fatalf("No error expected; error: %v", err)
 	}
 
 	// no errors
-	apiKey = common.HOPSWORKS_TEST_API_KEY
-	db1 = "DB001"
-	db2 := "DB002"
-	err = ValidateAPIKey(&apiKey, &db1, &db2)
+	apiKey = testutils.HOPSWORKS_TEST_API_KEY
+	err = ValidateAPIKey(&apiKey, &existentDB, &existentDB2)
 	if err != nil {
-		t.Fatalf("No error expected")
+		t.Fatalf("No error expected; err: %v", err)
 	}
 }
 
 // check that cache is updated every N secs
 func TestAPIKeyCache1(t *testing.T) {
+	if !*testutils.WithRonDB {
+		t.Skip("skipping test without RonDB")
+	}
 
-	conString := fmt.Sprintf("%s:%d", config.Configuration().RonDBConfig.IP,
-		config.Configuration().RonDBConfig.Port)
+	conf := config.GetAll()
+	if !conf.Security.UseHopsworksAPIKeys {
+		t.Log("tests may fail because Hopsworks API keys are deactivated")
+	}
 
-	dal.InitRonDBConnection(conString, true)
+	connectString := config.GenerateMgmdConnectString(conf)
+	dalErr := dal.InitRonDBConnection(connectString, true)
+	if dalErr != nil {
+		t.Fatalf("failed to initialise RonDB connection; error: %s", dalErr.VerboseError())
+	}
 	defer dal.ShutdownConnection()
 
-	common.CreateDatabases(t, []string{"DB001", "DB002"}...)
-	defer common.DropDatabases(t, []string{"DB001", "DB002"}...)
+	apiKey := testutils.HOPSWORKS_TEST_API_KEY
+	databases := []string{testdbs.DB001, testdbs.DB002}
 
-	apiKey := common.HOPSWORKS_TEST_API_KEY
-	db1 := "DB001"
-	err := ValidateAPIKey(&apiKey, &db1)
+	err := ValidateAPIKey(&apiKey, &databases[0])
 	if err != nil {
-		t.Fatalf("No error expected")
+		t.Fatalf("No error expected; error: %v", err)
 	}
+	lastUpdated1 := authcache.RefreshExpiration(testutils.HOPSWORKS_TEST_API_KEY)
 
-	lastUpdated1 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
-
-	apiKey = common.HOPSWORKS_TEST_API_KEY
-	db1 = "DB001"
-	err = ValidateAPIKey(&apiKey, &db1)
+	err = ValidateAPIKey(&apiKey, &databases[0])
 	if err != nil {
-		t.Fatalf("No error expected")
+		t.Fatalf("No error expected; error: %v", err)
 	}
-
-	lastUpdated2 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
+	lastUpdated2 := authcache.RefreshExpiration(testutils.HOPSWORKS_TEST_API_KEY)
 
 	if lastUpdated1 != lastUpdated2 {
-		t.Fatalf("Cache update time is expected to be the same")
+		t.Fatalf("Cache update time is expected to be the same; error: %v", err)
 	}
 
-	time.Sleep(time.Duration(config.Configuration().Security.HopsWorksAPIKeysCacheValiditySec))
+	time.Sleep(time.Duration(conf.Security.HopsworksAPIKeysCacheValiditySec))
 
-	apiKey = common.HOPSWORKS_TEST_API_KEY
-	db1 = "DB001"
-	err = ValidateAPIKey(&apiKey, &db1)
+	err = ValidateAPIKey(&apiKey, &databases[0])
 	if err != nil {
-		t.Fatalf("No error expected")
+		t.Fatalf("No error expected; error: %v", err)
 	}
 
-	lastUpdated3 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
+	lastUpdated3 := authcache.RefreshExpiration(testutils.HOPSWORKS_TEST_API_KEY)
 
-	lastUpdated2p := lastUpdated2.Add(time.Duration(config.Configuration().Security.HopsWorksAPIKeysCacheValiditySec))
+	lastUpdated2p := lastUpdated2.Add(time.Duration(conf.Security.HopsworksAPIKeysCacheValiditySec))
 	if lastUpdated2 != lastUpdated3 && lastUpdated2p.Before(lastUpdated3) {
-		t.Fatalf("Cache time is not updated properly")
+		t.Fatalf("Cache time is not updated properly; error: %v", err)
 	}
-
 }
 
 // check that cache is updated every N secs even if the user is not authorized to access a DB
 func TestAPIKeyCache2(t *testing.T) {
+	if !*testutils.WithRonDB {
+		t.Skip("skipping test without RonDB")
+	}
 
-	conString := fmt.Sprintf("%s:%d", config.Configuration().RonDBConfig.IP,
-		config.Configuration().RonDBConfig.Port)
+	conf := config.GetAll()
+	if !conf.Security.UseHopsworksAPIKeys {
+		t.Log("tests may fail because Hopsworks API keys are deactivated")
+	}
 
-	dal.InitRonDBConnection(conString, true)
+	connectString := config.GenerateMgmdConnectString(conf)
+	dalErr := dal.InitRonDBConnection(connectString, true)
+	if dalErr != nil {
+		t.Fatalf("failed to initialise RonDB connection; error: %s", dalErr.VerboseError())
+	}
 	defer dal.ShutdownConnection()
 
-	common.CreateDatabases(t, []string{"DB001", "DB002"}...)
-	defer common.DropDatabases(t, []string{"DB001", "DB002"}...)
+	databases := []string{testdbs.DB001, testdbs.DB002}
+	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 
-	apiKey := common.HOPSWORKS_TEST_API_KEY
-	db3 := "DB003"
+	db3 := "dbxxx"
 	err := ValidateAPIKey(&apiKey, &db3)
 	if err == nil {
-		t.Fatalf("Expected it to fail")
+		t.Fatal("Database should not exist. Expected test to fail")
 	}
+	lastUpdated1 := authcache.RefreshExpiration(apiKey)
 
-	lastUpdated1 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
-
-	apiKey = common.HOPSWORKS_TEST_API_KEY
-	db1 := "DB001"
-	err = ValidateAPIKey(&apiKey, &db1)
+	err = ValidateAPIKey(&apiKey, &databases[0])
 	if err != nil {
-		t.Fatalf("No error expected")
+		t.Fatalf("No error expected; error: %v", err)
 	}
-
-	lastUpdated2 := cacheUpdateTime(common.HOPSWORKS_TEST_API_KEY)
+	lastUpdated2 := authcache.RefreshExpiration(apiKey)
 
 	if lastUpdated1 != lastUpdated2 {
-		t.Fatalf("Cache update time is expected to be the same")
+		t.Fatalf("Cache update time is expected to be the same; error: %v", err)
 	}
 }

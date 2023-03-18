@@ -7,7 +7,7 @@
 
 FROM ubuntu:22.04 as rondb-build-dependencies
 
-ARG CMAKE_VERSION=3.23.2
+ARG CMAKE_VERSION=3.25.1
 ARG OPEN_SSL_VERSION=1.1.1s
 ARG BOOST_VERSION_MAJOR=1
 ARG BOOST_VERSION_MINOR=77
@@ -21,7 +21,8 @@ RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
     --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
     apt-get update && apt-get -y install wget pkg-config patchelf \
     libncurses5-dev default-jdk bison golang-go autoconf pigz \
-    openssh-client maven
+    openssh-client maven libsasl2-dev libldap-dev libaio-dev \
+    git vim protobuf-compiler nano
 
 # RonDB 22.10 requires gcc/g++ 9
 # Ubuntu 22.04 comes with gcc/g++ 11.3 by default
@@ -110,6 +111,8 @@ COPY <<-"EOF" /root/.m2/settings.xml
 </settings>
 EOF
 
+RUN mkdir rondb-src rondb-bin rondb-tarball
+
 # See https://stackoverflow.com/a/51264575/9068781 for conditional envs
 FROM rondb-build-dependencies as build-all
 
@@ -125,9 +128,9 @@ ENV RELEASE_ARG=${RELEASE_TARBALL:+-r}
 ARG RELEASE_FINAL_CLUSTERJ
 ENV RELEASE_FINAL_CLUSTERJ_ARG=${RELEASE_FINAL_CLUSTERJ:+-f}
 
-RUN mkdir rondb-src rondb-bin rondb-tarball
 RUN --mount=type=bind,source=.,target=rondb-src \
     --mount=type=cache,target=rondb-bin,id=ubuntu22-rondb2210-bin \
+    --mount=type=cache,target=/root/.cache/go-build,id=ubuntu22-rondb2210-golang \
     rondb-src/build_scripts/release_scripts/build_all.sh \
     -s rondb-src \
     -b rondb-bin \

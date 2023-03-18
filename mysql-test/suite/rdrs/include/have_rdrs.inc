@@ -146,41 +146,43 @@ $grpc_server = undef;
 
 my $CONF = IO::File->new("$vardir/tmp/rdrs_config.json", 'w') or die;
 printf $CONF "{\n";
-printf $CONF "        \"RestServer\": {\n";
-printf $CONF "                \"RESTServerIP\": \"localhost\",\n";
-printf $CONF "                \"RESTServerPort\": $rest_server_port,\n";
-printf $CONF "                \"GRPCServerIP\": \"localhost\",\n";
-printf $CONF "                \"GRPCServerPort\": $grpc_server_port,\n";
-printf $CONF "                \"BufferSize\": 327680,\n";
-printf $CONF "                \"PreAllocatedBuffers\": 1024,\n";
-printf $CONF "                \"GOMAXPROCS\": -1\n";
+
+printf $CONF "        \"REST\": {\n";
+printf $CONF "                \"ServerIP\": \"localhost\",\n";
+printf $CONF "                \"ServerPort\": $rest_server_port\n";
 printf $CONF "        },\n";
-printf $CONF "        \"RonDBConfig\": {\n";
-printf $CONF "                \"IP\": \"localhost\",\n";
-printf $CONF "                \"Port\": $ENV{'NDB_MGMD_PORT'}\n";
+
+printf $CONF "        \"GRPC\": {\n";
+printf $CONF "                \"ServerIP\": \"localhost\",\n";
+printf $CONF "                \"ServerPort\": $grpc_server_port\n";
 printf $CONF "        },\n";
-printf $CONF "        \"MySQLServer\": {\n";
-printf $CONF "                \"IP\": \"localhost\",\n";
-printf $CONF "                \"Port\": $ENV{MASTER_MYPORT},\n";
+
+printf $CONF "        \"RonDB\": {\n";
+printf $CONF "                \"Mgmds\": [\n";
+printf $CONF "                    {\n";
+printf $CONF "                        \"IP\": \"localhost\",\n";
+printf $CONF "                        \"Port\": $ENV{'NDB_MGMD_PORT'}\n";
+printf $CONF "                    }\n";
+printf $CONF "                ]\n";
+printf $CONF "        },\n";
+
+printf $CONF "        \"MySQL\": {\n";
+printf $CONF "                \"Servers\": [\n";
+printf $CONF "                    {\n";
+printf $CONF "                        \"IP\": \"localhost\",\n";
+printf $CONF "                        \"Port\": $ENV{MASTER_MYPORT}\n";
+printf $CONF "                    }\n";
+printf $CONF "                ],\n";
 printf $CONF "                \"User\": \"rondb\",\n";
 printf $CONF "                \"Password\": \"rondb\"\n";
 printf $CONF "        },\n";
+
 printf $CONF "        \"Security\": {\n";
 printf $CONF "                \"EnableTLS\": true,\n";
 printf $CONF "                \"RequireAndVerifyClientCert\": true,\n";
-printf $CONF "                \"CertificateFile\": \"\",\n";
-printf $CONF "                \"PrivateKeyFile\": \"\",\n";
-printf $CONF "                \"RootCACertFile\": \"\",\n";
-printf $CONF "                \"UseHopsWorksAPIKeys\": true,\n";
-printf $CONF "                \"HopsWorksAPIKeysCacheValiditySec\": 3\n";
-printf $CONF "        },\n";
-printf $CONF "        \"Log\": {\n";
-printf $CONF "                \"Level\": \"WARN\",\n";
-printf $CONF "                \"FilePath\": \"\",\n";
-printf $CONF "                \"MaxSizeMB\": 100,\n";
-printf $CONF "                \"MaxBackups\": 10,\n";
-printf $CONF "                \"MaxAge\": 30\n";
+printf $CONF "                \"UseHopsWorksAPIKeys\": true\n";
 printf $CONF "        }\n";
+
 printf $CONF "}\n";
 
 $CONF->close();

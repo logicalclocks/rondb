@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -59,20 +59,30 @@ SocketClient::init(bool use_only_ipv4)
   m_use_only_ipv4 = use_only_ipv4;
 
   if (ndb_socket_valid(m_sockfd))
+  {
     ndb_socket_close(m_sockfd);
-
-  if (m_use_only_ipv4)
-  {
-    m_sockfd= ndb_socket_create_ipv4(SOCK_STREAM, 0);
+    ndb_socket_invalidate(&m_sockfd);
   }
-  else
+
+  if (!m_use_only_ipv4)
   {
-    m_sockfd= ndb_socket_create_dual_stack(SOCK_STREAM, 0);
+    DEBUG_FPRINTF((stderr, "Create dual stack NDB_SOCKET: %s\n",
+                   ndb_socket_to_string(m_sockfd).c_str()));
+    ndb_socket_create_dual_stack(m_sockfd, SOCK_STREAM, 0);
+  }
+  if (!ndb_socket_valid(m_sockfd))
+  {
+    m_use_only_ipv4 = true;
+    ndb_socket_create_ipv4(m_sockfd, SOCK_STREAM, 0);
+    DEBUG_FPRINTF((stderr, "Create IPv4 NDB_SOCKET: %s\n",
+                   ndb_socket_to_string(m_sockfd).c_str()));
   }
   if (!ndb_socket_valid(m_sockfd)) {
     return false;
   }
   DBUG_PRINT("info",("NDB_SOCKET: %s", ndb_socket_to_string(m_sockfd).c_str()));
+  DEBUG_FPRINTF((stderr, "client init NDB_SOCKET: %s\n",
+                 ndb_socket_to_string(m_sockfd).c_str()));
   return true;
 }
 
@@ -80,6 +90,8 @@ int
 SocketClient::bind(const char* local_hostname,
                    unsigned short local_port)
 {
+  DEBUG_FPRINTF((stderr, "SocketClient::bind, port: %u, host: %s\n",
+                 (unsigned int)local_port, local_hostname));
   if (!ndb_socket_valid(m_sockfd))
     return -1;
 
@@ -100,12 +112,14 @@ SocketClient::bind(const char* local_hostname,
     // Resolve local address
     if (Ndb_getInAddr6(&local.sin6_addr, local_hostname))
     {
+      DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr6, errno: %d\n", errno));
       return errno ? errno : EINVAL;
     }
 
     if (ndb_socket_reuseaddr(m_sockfd, true) == -1)
     {
       int ret = ndb_socket_errno();
+      DEBUG_FPRINTF((stderr, "Failed call to reuse address, errno: %d\n", ret));
       ndb_socket_close(m_sockfd);
       ndb_socket_invalidate(&m_sockfd);
       return ret;
@@ -124,10 +138,13 @@ SocketClient::bind(const char* local_hostname,
       }
 
       int ret = ndb_socket_errno();
+      DEBUG_FPRINTF((stderr, "Failed call to bind address, errno: %d\n", ret));
       ndb_socket_close(m_sockfd);
       ndb_socket_invalidate(&m_sockfd);
       return ret;
     }
+    DEBUG_FPRINTF((stderr, "client bind IPv6 on NDB_SOCKET: %s\n",
+                   ndb_socket_to_string(m_sockfd).c_str()));
   }
   else
   {
@@ -146,12 +163,14 @@ SocketClient::bind(const char* local_hostname,
     // Resolve local address
     if (Ndb_getInAddr(&local.sin_addr, local_hostname))
     {
+      DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr, errno: %d\n", errno));
       return errno ? errno : EINVAL;
     }
 
     if (ndb_socket_reuseaddr(m_sockfd, true) == -1)
     {
       int ret = ndb_socket_errno();
+      DEBUG_FPRINTF((stderr, "Failed call to reuse address, errno: %d\n", ret));
       ndb_socket_close(m_sockfd);
       ndb_socket_invalidate(&m_sockfd);
       return ret;
@@ -170,10 +189,14 @@ SocketClient::bind(const char* local_hostname,
       }
 
       int ret = ndb_socket_errno();
+      DEBUG_FPRINTF((stderr, "Failed call to bind IPv4 address, errno: %d\n",
+                     ret));
       ndb_socket_close(m_sockfd);
       ndb_socket_invalidate(&m_sockfd);
       return ret;
     }
+    DEBUG_FPRINTF((stderr, "client bind IPv4 on NDB_SOCKET: %s\n",
+                   ndb_socket_to_string(m_sockfd).c_str()));
   }
   return 0;
 }
@@ -190,6 +213,8 @@ SocketClient::connect(const char* server_hostname,
                       unsigned short server_port)
 {
   // Reset last used port(in case connect fails)
+  DEBUG_FPRINTF((stderr, "SocketClient::connect, port: %u, server: %s\n",
+                 (unsigned int)server_port, server_hostname));
   m_last_used_port = 0;
 
   if (!ndb_socket_valid(m_sockfd))
@@ -199,6 +224,10 @@ SocketClient::connect(const char* server_hostname,
       DEBUG_FPRINTF((stderr, "Failed init in connect\n"));
       return m_sockfd;
     }
+  }
+  else
+  {
+    DEBUG_FPRINTF((stderr, "Socket already value in connect\n"));
   }
   int r;
   if (!m_use_only_ipv4)
@@ -312,13 +341,30 @@ done:
 
   // Remember the local port used for this connection
   assert(m_last_used_port == 0);
+  int ret;
   if (!m_use_only_ipv4)
   {
-    ndb_socket_get_port(m_sockfd, &m_last_used_port);
+    DEBUG_FPRINTF((stderr, "Connected to %s:%u using IPv6\n",
+                           server_hostname, server_port));
+    ret = ndb_socket_get_port(m_sockfd, &m_last_used_port);
   }
   else
   {
-    ndb_socket_get_port4(m_sockfd, &m_last_used_port);
+    DEBUG_FPRINTF((stderr, "Connected to %s:%u using IPv4\n",
+                           server_hostname, server_port));
+    ret = ndb_socket_get_port4(m_sockfd, &m_last_used_port);
+  }
+  if (ret != 0)
+  {
+    DEBUG_FPRINTF((stderr, "Failed in ndb_socket_get_port %s:%u\n",
+                   server_hostname, server_port));
+    ndb_socket_close(m_sockfd);
+    ndb_socket_invalidate(&m_sockfd);
+  }
+  else
+  {
+    DEBUG_FPRINTF((stderr, "Succ in ndb_socket_get_port %s:%u\n",
+                   server_hostname, m_last_used_port));
   }
 
   if (m_auth) {
@@ -335,5 +381,7 @@ done:
 
   ndb_socket_invalidate(&m_sockfd);
 
+  DEBUG_FPRINTF((stderr, "Connected to %s:%u\n",
+                         server_hostname, m_last_used_port));
   return sockfd;
 }

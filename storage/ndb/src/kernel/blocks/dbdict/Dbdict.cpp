@@ -18444,12 +18444,12 @@ void interpretUtilPrepareErrorCode(UtilPrepareRef::ErrorCode errorCode,
     DBUG_VOID_RETURN;
   case UtilPrepareRef::PREPARE_SEIZE_ERROR:
     jamBlock(dict);
-    error = 748;
+    error = 730;
     line = __LINE__;
     DBUG_VOID_RETURN;
   case UtilPrepareRef::PREPARE_PAGES_SEIZE_ERROR:
     jamBlock(dict);
-    error = 748;
+    error = 731;
     line = __LINE__;
     DBUG_VOID_RETURN;
   case UtilPrepareRef::PREPARED_OPERATION_SEIZE_ERROR:
@@ -18459,7 +18459,7 @@ void interpretUtilPrepareErrorCode(UtilPrepareRef::ErrorCode errorCode,
     DBUG_VOID_RETURN;
   case UtilPrepareRef::DICT_TAB_INFO_ERROR:
     jamBlock(dict);
-    error = 748;
+    error = 4249; 
     line = __LINE__;
     DBUG_VOID_RETURN;
   case UtilPrepareRef::MISSING_PROPERTIES_SECTION:

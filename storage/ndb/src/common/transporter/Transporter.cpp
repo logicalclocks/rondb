@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -79,7 +79,6 @@ Transporter::Transporter(TransporterRegistry &t_reg,
     m_bytes_sent(0), m_bytes_received(0),
     m_connect_count(0),
     m_overload_count(0), m_slowdown_count(0),
-    m_connect_address(IN6ADDR_ANY_INIT),
     isMgmConnection(_isMgmConnection),
     m_connected(false),
     m_type(_type),
@@ -93,7 +92,8 @@ Transporter::Transporter(TransporterRegistry &t_reg,
   DBUG_ENTER("Transporter::Transporter");
 
   // Initialize member variables
-  m_connect_address4.s_addr = 0;
+  memset(&m_connect_address, 0, sizeof(struct sockaddr_in6));
+  m_connect_address.sin6_addr = IN6ADDR_ANY_INIT;
   ndb_socket_initialize(&theSocket);
   m_multi_transporter_instance = 0;
   m_recv_thread_idx = 0;
@@ -239,14 +239,7 @@ Transporter::connect_server(ndb_socket_t sockfd,
   }
 
   // Cache the connect address
-  if (m_use_only_ipv4)
-  {
-    ndb_socket_connect_address4(sockfd, &m_connect_address4);
-  }
-  else
-  {
-    ndb_socket_connect_address(sockfd, &m_connect_address);
-  }
+  ndb_socket_connect_address(sockfd, &m_connect_address);
 
   if (!connect_server_impl(sockfd))
   {
@@ -368,6 +361,8 @@ Transporter::connect_client(ndb_socket_t sockfd)
 
   DBUG_PRINT("info",("server port: %d, isMgmConnection: %d",
                      m_s_port, isMgmConnection));
+  DEBUG_FPRINTF((stderr, "server port: %d, isMgmConnection: %d\n",
+                 m_s_port, isMgmConnection));
 
   /**
    * Send "hello"
@@ -482,14 +477,7 @@ Transporter::connect_client(ndb_socket_t sockfd)
     DBUG_RETURN(false);
   }
   // Cache the connect address
-  if (m_use_only_ipv4)
-  {
-    ndb_socket_connect_address4(sockfd, &m_connect_address4);
-  }
-  else
-  {
-    ndb_socket_connect_address(sockfd, &m_connect_address);
-  }
+  ndb_socket_connect_address(sockfd, &m_connect_address);
 
   if (!connect_client_impl(sockfd))
   {

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -135,7 +135,7 @@ CPCDAPISession::CPCDAPISession(ndb_socket_t sock, CPCD &cpcd)
 }
 
 CPCDAPISession::CPCDAPISession(FILE *f, CPCD &cpcd)
-    : SocketServer::Session(ndb_socket_create()),
+    : SocketServer::Session(ndb_socket_create_return(m_create_socket)),
       m_cpcd(cpcd),
       m_protocol_version(1) {
   m_input = new FileInputStream(f);
