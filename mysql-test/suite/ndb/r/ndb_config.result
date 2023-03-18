@@ -88,12 +88,11 @@ CONFIG_PARAMETER,ACTUAL_VALUE,DEFAULT_VALUE
 NodeId,1,(mandatory)
 Arbitration,Disabled,Default
 BackupDataDir,.,(null)
-DataMemory,45M,98M
+DataMemory,45M,0
 FileSystemPath,.,(null)
 LockExecuteThreadToCPU,0-65535,(null)
 Nodegroup,0,(null)
 NoOfReplicas,1,2
-ThreadConfig,,(null)
 
 == 31 == ndb_config --config-binary-file=ndb_3_config.bin.1 --system
 3
