@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2020, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -34,6 +35,7 @@ LocalDnsCache::~LocalDnsCache() {
 
 bool LocalDnsCache::getCachedOrResolveAddress(in6_addr *result,
                                               const char *hostname) {
+  memset(result, 0, sizeof(in6_addr));
   const auto pair = m_resolver_cache.find(hostname);
 
   if (pair != m_resolver_cache.end()) {
@@ -42,8 +44,12 @@ bool LocalDnsCache::getCachedOrResolveAddress(in6_addr *result,
     return true; /* Usable cache hit */
   }
 
-  if (Ndb_getInAddr6(result, hostname) != 0) {
-    return false;  // hostname not found in DNS
+  if (Ndb_getInAddr6(result, hostname) != 0)
+  {
+    if (Ndb_getInAddr((struct in_addr*)result, hostname) != 0)
+    {
+      return false;   // hostname not found in DNS
+    }
   }
 
   // Hostname found, create a cache entry

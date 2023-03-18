@@ -90,7 +90,9 @@ struct IndexStatRef {
     NoFreeStatOp = 915,
     InvalidSysTable = 916,
     InvalidSysTableData = 917,
-    BusyUtilPrepare = 918,
+    BusyUtilPrepare1 = 930,
+    BusyUtilPrepare2 = 931,
+    BusyUtilPrepare3 = 918,
     BusyUtilExecute = 919
   };
   static constexpr Uint32 SignalLength = 7;

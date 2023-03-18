@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -552,8 +552,7 @@ public:
     (void)nodeId;
     return m_use_only_ipv4;
   }
-  struct in6_addr get_connect_address(NodeId node_id) const;
-  struct in_addr get_connect_address4(NodeId node_id) const;
+  struct sockaddr_in6 get_connect_address(NodeId node_id) const;
   bool is_server(NodeId) const;
 
   Uint64 get_bytes_sent(NodeId nodeId) const;

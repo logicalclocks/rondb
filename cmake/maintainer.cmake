@@ -1,4 +1,5 @@
 # Copyright (c) 2010, 2022, Oracle and/or its affiliates.
+# Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -102,6 +103,7 @@ IF(MY_COMPILER_IS_CLANG)
 
   STRING_APPEND(MY_CXX_WARNING_FLAGS " -Wconditional-uninitialized")
   STRING_APPEND(MY_CXX_WARNING_FLAGS " -Wdeprecated")
+  STRING_APPEND(MY_CXX_WARNING_FLAGS " -Wno-deprecated-declarations")
   STRING_APPEND(MY_CXX_WARNING_FLAGS " -Wextra-semi")
   STRING_APPEND(MY_CXX_WARNING_FLAGS " -Wheader-hygiene")
   STRING_APPEND(MY_CXX_WARNING_FLAGS " -Wnon-virtual-dtor")

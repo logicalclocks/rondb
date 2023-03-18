@@ -22,10 +22,11 @@
 #include <string>
 #include <iostream>
 #include <vector>
-#include "src/error-strs.h"
+#include "src/error-strings.h"
 #include "src/logger.hpp"
 #include "src/ndb_object_pool.hpp"
 #include "src/db-operations/pk/common.hpp"
+#include "src/rdrs-const.h"
 
 extern Ndb_cluster_connection *ndb_connection;
 RS_Status closeNDBObject(Ndb *ndb_object);
@@ -116,17 +117,19 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
 
   int col_id      = table_dict->getColumn("prefix")->getColumnNo();
   Uint32 col_size = (Uint32)table_dict->getColumn("prefix")->getSizeInBytes();
+  assert(col_size == API_KEY_PREFIX_SIZE);
   if (strlen(prefix) > col_size) {
     return RS_CLIENT_ERROR("Wrong length of the search key");
   }
 
-  char cmp_str[col_size];
-  memcpy(cmp_str + 1, prefix, col_size - 1);
+  char cmp_str[API_KEY_PREFIX_SIZE];
+  memcpy(cmp_str + 1, prefix, API_KEY_PREFIX_SIZE - 1);
   cmp_str[0] = static_cast<char>(strlen(prefix));
 
   NdbScanFilter filter(scanOp);
   if (filter.begin(NdbScanFilter::AND) < 0 ||
-      filter.cmp(NdbScanFilter::COND_EQ, col_id, cmp_str, col_size) < 0 || filter.end() < 0) {
+      filter.cmp(NdbScanFilter::COND_EQ, col_id, cmp_str, API_KEY_PREFIX_SIZE) < 0 ||
+      filter.end() < 0) {
     err = ndb_object->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_031);
@@ -344,17 +347,19 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
 
   int col_id      = table_dict->getColumn("team_member")->getColumnNo();
   Uint32 col_size = (Uint32)table_dict->getColumn("team_member")->getSizeInBytes();
+  assert(col_size == PROJECT_TEAM_TEAM_MEMBER_SIZE);
   if (strlen(users->email) > col_size) {
     return RS_CLIENT_ERROR("Wrong length of the search key");
   }
 
-  char cmp_str[col_size];
+  char cmp_str[PROJECT_TEAM_TEAM_MEMBER_SIZE];
   memcpy(cmp_str + 1, users->email, strlen(users->email));
   cmp_str[0] = static_cast<char>(strlen(users->email));
 
   NdbScanFilter filter(scanOp);
   if (filter.begin(NdbScanFilter::AND) < 0 ||
-      filter.cmp(NdbScanFilter::COND_EQ, col_id, cmp_str, col_size) < 0 || filter.end() < 0) {
+      filter.cmp(NdbScanFilter::COND_EQ, col_id, cmp_str, PROJECT_TEAM_TEAM_MEMBER_SIZE) < 0 ||
+      filter.end() < 0) {
     err = ndb_object->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_031);
@@ -549,7 +554,7 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
 /**
  * only for testing
  */
-int main(int argc, char **argv) {
+int main() {
   std::cout << "size of is " << sizeof(HopsworksAPIKey) << std::endl;
 
   char connection_string[] = "localhost:1186";

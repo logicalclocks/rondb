@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -453,7 +453,7 @@ int SimpleCpcClient::open_connection() {
   struct sockaddr_in6 sa;
 
   /* Create socket */
-  cpc_sock = ndb_socket_create_dual_stack(SOCK_STREAM, IPPROTO_TCP);
+  ndb_socket_create_dual_stack(cpc_sock, SOCK_STREAM, IPPROTO_TCP);
   if (!ndb_socket_valid(cpc_sock)) return -1;
 
   memset(&sa, 0, sizeof(sa));

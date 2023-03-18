@@ -18,137 +18,88 @@ package apikey
 
 import (
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"strings"
-	"sync"
-	"time"
 
-	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/security/apikey/authcache"
 )
 
-type UserDBs struct {
-	uDBs    map[string]bool
-	expires time.Time
-}
-
-var key2UserDBs = make(map[string]UserDBs)
-var key2UserDBsMutex sync.Mutex
-
+/*
+	Checking whether the API key can access the given databases
+*/
 func ValidateAPIKey(apiKey *string, dbs ...*string) error {
-
-	if len(dbs) == 0 {
-		return fmt.Errorf("Unauthorized")
+	err := validateApiKeyFormat(apiKey)
+	if err != nil {
+		return err
 	}
 
-	keyFoundInCache, allowedAccess := findAndValidateCache(apiKey, dbs...)
+	if len(dbs) < 1 || dbs == nil {
+		return nil
+	}
 
+	keyFoundInCache, allowedAccess := authcache.FindAndValidateCache(apiKey, dbs...)
 	if keyFoundInCache {
 		if !allowedAccess {
-			return fmt.Errorf("Unauthorized")
-		} else {
-			return nil
+			return errors.New("unauthorized: no access to db registered in cache")
 		}
-	} else {
-
-		_, err := GetUserDatabases(apiKey) // this fetches the updates from DB and updates the cache
-		if err != nil {
-			return err
-		}
-
-		keyFoundInCache, allowedAccess = findAndValidateCache(apiKey, dbs...)
-		if keyFoundInCache && allowedAccess {
-			return nil
-		} else {
-			return fmt.Errorf("Unauthorized")
-		}
+		return nil
 	}
+
+	hopsKey, err := authenticateUserRemote(apiKey)
+	if err != nil {
+		return err
+	}
+
+	_, err = getUserDatabasesRemote(apiKey, hopsKey)
+	if err != nil {
+		return err
+	}
+
+	keyFoundInCache, allowedAccess = authcache.FindAndValidateCache(apiKey, dbs...)
+	if !keyFoundInCache || !allowedAccess {
+		return errors.New("unauthorized: no access to db registered")
+	}
+	return nil
 }
 
-func findAndValidateCache(apiKey *string, dbs ...*string) (keyFoundInCache, allowedAccess bool) {
-
-	keyFoundInCache = false
-	allowedAccess = false
-
-	key2UserDBsMutex.Lock()
-	userDBs, ok := key2UserDBs[*apiKey]
-	key2UserDBsMutex.Unlock()
-
-	// found in cache
-	if ok && time.Now().Before(userDBs.expires) {
-		keyFoundInCache = true
-
-		for _, db := range dbs {
-			if db == nil {
-				allowedAccess = false
-				return
-			}
-
-			if _, found := userDBs.uDBs[*db]; !found {
-				allowedAccess = false
-				return
-			}
-		}
-		allowedAccess = true
+func validateApiKeyFormat(apiKey *string) error {
+	if apiKey == nil {
+		return errors.New("the apikey is nil")
 	}
-	return
-}
-
-func GetUserDatabases(apiKey *string) ([]string, error) {
-
 	splits := strings.Split(*apiKey, ".")
-	if len(splits) != 2 || len(splits[0]) != 16 {
-		return []string{}, fmt.Errorf("Wrong API Key")
+	if len(splits) != 2 || len(splits[0]) != 16 || len(splits[1]) < 1 {
+		return errors.New("the apikey has an incorrect format")
 	}
+	return nil
+}
 
+func authenticateUserRemote(apiKey *string) (*dal.HopsworksAPIKey, error) {
+	splits := strings.Split(*apiKey, ".")
 	prefix := splits[0]
 	secret := splits[1]
 
 	key, err := dal.GetAPIKey(prefix)
 	if err != nil {
-		return []string{}, err
+		return nil, err
 	}
 
 	//sha256(client.secret + db.salt) = db.secret
 	newSecret := sha256.Sum256([]byte(secret + key.Salt))
 	newSecretHex := fmt.Sprintf("%x", newSecret)
 	if strings.Compare(string(newSecretHex), key.Secret) != 0 {
-		return []string{}, fmt.Errorf("Wrong API Key")
+		return nil, errors.New("wrong API Key")
 	}
+	return key, nil
+}
 
-	dbs, err := dal.GetUserProjects(key.UserID)
+// This fetches the databases from the DB and updates the cache
+func getUserDatabasesRemote(apikey *string, hopsworksKey *dal.HopsworksAPIKey) ([]string, error) {
+	dbs, err := dal.GetUserProjects(hopsworksKey.UserID)
 	if err != nil {
-		return dbs, err
+		return nil, err
 	}
-
-	dbsMap := make(map[string]bool)
-	for _, db := range dbs {
-		dbsMap[db] = true
-	}
-
-	userDBs := UserDBs{uDBs: dbsMap,
-		expires: time.Now().Add(time.Duration(config.Configuration().Security.HopsWorksAPIKeysCacheValiditySec) * time.Second)}
-
-	key2UserDBsMutex.Lock()
-	key2UserDBs[*apiKey] = userDBs
-	key2UserDBsMutex.Unlock()
-
+	authcache.Set(*apikey, dbs)
 	return dbs, nil
-}
-
-func Reset() {
-	key2UserDBsMutex.Lock()
-	key2UserDBs = make(map[string]UserDBs)
-	key2UserDBsMutex.Unlock()
-}
-
-func cacheUpdateTime(apiKey string) time.Time {
-	key2UserDBsMutex.Lock()
-	defer key2UserDBsMutex.Unlock()
-	val, ok := key2UserDBs[apiKey]
-	if ok {
-		return val.expires.Add(time.Duration(-config.Configuration().Security.HopsWorksAPIKeysCacheValiditySec) * time.Second)
-	} else {
-		return time.Unix(0, 0)
-	}
 }

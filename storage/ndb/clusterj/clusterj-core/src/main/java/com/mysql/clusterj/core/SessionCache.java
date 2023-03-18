@@ -31,11 +31,8 @@ public class SessionCache {
       return;
     }
 
-    Iterator<Map.Entry<String, Queue<Session>>> iterator =
-            cachedSessions.entrySet().iterator();
-    while (iterator.hasNext()) {
-      Map.Entry<String, Queue<Session>> entry = iterator.next();
-      String databaseName = entry.getKey();
+    while (cachedSessions.keySet().size() > 0) {
+      String databaseName = (String)cachedSessions.keySet().toArray()[0];
       while (true) {
         Session db_session = getCachedSession(databaseName);
         if (db_session == null) {
@@ -45,7 +42,6 @@ public class SessionCache {
         db_ses.setCached(false);
         db_session.close();
       }
-      iterator.remove();
     }
   }
 
@@ -58,12 +54,18 @@ public class SessionCache {
     if (db_queue == null) {
       return null;
     }
+
     Session cached_session = db_queue.poll();
     if (cached_session == null) {
+      cachedSessions.remove(databaseName);
       return null;
     }
 
     totalCachedSessions--;
+
+    if (totalCachedSessions == 0){
+      cachedSessions.remove(databaseName);
+    }
 
     SessionImpl ses = (SessionImpl) cached_session;
     ses.setCached(false);
@@ -109,6 +111,7 @@ public class SessionCache {
           Session session = db_queue.poll();
           session.close();
         }
+        cachedSessions.remove(databaseName);
         totalCachedSessions -= size;
       }
     }

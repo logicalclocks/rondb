@@ -1,0 +1,50 @@
+{
+        "Internal": {
+                "APIVersion": "0.1.0",
+                "BufferSize": 327680,
+                "PreAllocatedBuffers": 1024,
+                "GOMAXPROCS": -1
+        },
+        "REST": {
+                "ServerIP": "localhost",
+                "ServerPort": 4406
+        },
+        "GRPC": {
+                "ServerIP": "localhost",
+                "ServerPort": 5406
+        },
+        "RonDB": {
+                "Mgmds": [
+                        {
+                                "IP": "mgmd_1",
+                                "Port": 1186
+                        }
+                ]
+        },
+        "MySQL": {
+                "Servers": [
+                        {
+                                "IP": "mysqld_1",
+                                "Port": 3306
+                        }
+                ],
+                "User": "mysql",
+                "Password": "Abc123?e"
+        },
+        "Security": {
+                "EnableTLS": true,
+                "RequireAndVerifyClientCert": true,
+                "CertificateFile": "",
+                "PrivateKeyFile": "",
+                "RootCACertFile": "",
+                "UseHopsworksAPIKeys": true,
+                "HopsworksAPIKeysCacheValiditySec": 3
+        },
+        "Log": {
+                "Level": "info",
+                "FilePath": "",
+                "MaxSizeMB": 100,
+                "MaxBackups": 10,
+                "MaxAge": 30
+        }
+}

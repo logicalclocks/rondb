@@ -17,30 +17,20 @@
 
 package handlers
 
-import (
-	"github.com/gin-gonic/gin"
-	"hopsworks.ai/rdrs/pkg/api"
-)
+import "net/http"
 
-type RegisterHandlers func(*gin.Engine)
-
-type PKReader interface {
-	PkReadHttpHandler(c *gin.Context)
-	PkReadHandler(pkReadParams *api.PKReadParams, apiKey *string, response api.PKReadResponse) (int, error)
+type Handler interface {
+	Validate(request interface{}) error
+	Authenticate(apiKey *string, request interface{}) error
+	Execute(request interface{}, response interface{}) (int, error)
 }
 
-type Batcher interface {
-	BatchOpsHttpHandler(c *gin.Context)
-	BatchOpsHandler(pkOperations *[]*api.PKReadParams, apiKey *string, response api.BatchOpResponse) (int, error)
-}
-
-type Stater interface {
-	StatOpsHttpHandler(c *gin.Context)
-	StatOpsHandler(response *api.StatResponse) (int, error)
-}
-
-type AllHandlers struct {
-	PKReader PKReader
-	Batcher  Batcher
-	Stater   Stater
+func Handle(h Handler, apiKey *string, request interface{}, response interface{}) (int, error) {
+	if err := h.Validate(request); err != nil {
+		return http.StatusBadRequest, err
+	}
+	if err := h.Authenticate(apiKey, request); err != nil {
+		return http.StatusUnauthorized, err
+	}
+	return h.Execute(request, response)
 }

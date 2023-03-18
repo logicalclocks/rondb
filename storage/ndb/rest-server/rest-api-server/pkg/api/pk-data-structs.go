@@ -24,15 +24,16 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Request
 type PKReadParams struct {
-	DB          *string       `json:"db" `
+	DB          *string       `json:"db"`
 	Table       *string       `json:"table"`
 	Filters     *[]Filter     `json:"filters"`
-	ReadColumns *[]ReadColumn `json:"readColumns"`
-	OperationID *string       `json:"operationId"`
+	ReadColumns *[]ReadColumn `json:"readColumns" binding:"omitempty"`
+	OperationID *string       `json:"operationId" binding:"omitempty"`
 }
 
 // Path parameters
@@ -50,6 +51,22 @@ type PKReadBody struct {
 type Filter struct {
 	Column *string          `json:"column"   form:"column"   binding:"required,min=1,max=64"`
 	Value  *json.RawMessage `json:"value"    form:"value"    binding:"required"`
+}
+
+func (f Filter) String() string {
+	var stringify strings.Builder
+	if f.Column != nil {
+		stringify.WriteString(fmt.Sprintf("Column: %s\n", *f.Column))
+	}
+	if f.Value != nil {
+		j, err := json.Marshal(f.Value)
+		if err != nil {
+			stringify.WriteString(fmt.Sprintf("Error marshaling Value: %s\n", err.Error()))
+		} else {
+			stringify.WriteString(fmt.Sprintf("Value: %s\n", j))
+		}
+	}
+	return stringify.String()
 }
 
 const (

@@ -18,6 +18,7 @@
  */
 
 #include "src/mystring.hpp"
+#include <ndb_types.h>
 #include <stdint.h>
 #include <cstring>
 #include <string>
@@ -32,7 +33,8 @@ std::size_t extra_space(const std::string &s) noexcept {
   std::size_t result = 0;
 
   for (const auto &c : s) {
-    switch (c) {
+    Int8 ci = (Int8)c;
+    switch (ci) {
     case '"':
     case '\\':
     case '\b':
@@ -46,7 +48,7 @@ std::size_t extra_space(const std::string &s) noexcept {
     }
 
     default: {
-      if (c >= 0x00 && c <= 0x1f) {
+      if (ci >= 0x00 && ci <= 0x1f) {
         // from c (1 byte) to \uxxxx (6 bytes)
         result += 5;
       }
@@ -80,7 +82,8 @@ std::string escape_string(const std::string &s) noexcept {
   std::size_t pos = 0;
 
   for (const auto &c : s) {
-    switch (c) {
+    Int8 ci = (Int8)c;
+    switch (ci) {
     // quotation mark (0x22)
     case '"': {
       result[pos + 1] = '"';
@@ -131,7 +134,7 @@ std::string escape_string(const std::string &s) noexcept {
     }
 
     default: {
-      if (c >= 0x00 && c <= 0x1f) {
+      if (ci >= 0x00 && ci <= 0x1f) {
         int len = 7;  // print character c as \uxxxx. +1 or null character
         snprintf(&result[pos + 1], len, "u%04x", static_cast<int>(c));
         pos += 6;

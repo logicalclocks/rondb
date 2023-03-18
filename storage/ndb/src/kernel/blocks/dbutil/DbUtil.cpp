@@ -206,8 +206,8 @@ DbUtil::execREAD_CONFIG_REQ(Signal* signal)
     
     /* Based on existing setting, probably excessive */
     const Uint32 MaxNonSchemaBuildOps = 48;
-    const Uint32 MaxPreparedOps = 6;  //  three hardcoded, one for setval, two for test
-    const Uint32 NumConcurrentPrepares = 1;  /* One parallel prepare */
+    const Uint32 MaxPreparedOps = 12; //  three hardcoded, one for setval, two for test
+    const Uint32 NumConcurrentPrepares = 2;  /* One parallel prepare */
     
     const Uint32 SparePages = 5;             /* Arbitrary */    
     const Uint32 PagesPerPreparingOp = 5;    /* Arbitrary */

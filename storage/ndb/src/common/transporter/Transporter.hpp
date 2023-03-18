@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -311,11 +311,7 @@ protected:
   ndb_socket_t theSocket;
 private:
   SocketClient *m_socket_client;
-  union
-  {
-    struct in6_addr m_connect_address;
-    struct in_addr m_connect_address4;
-  };
+  struct sockaddr_in6 m_connect_address;
 
   virtual bool send_is_possible(int timeout_millisec) const = 0;
   virtual bool send_limit_reached(int bufsize) = 0;

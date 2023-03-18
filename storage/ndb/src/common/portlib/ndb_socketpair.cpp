@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2009, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -36,7 +37,8 @@ int ndb_socketpair(ndb_socket_t s[2])
 {
   struct sockaddr_in6 addr;
 
-  ndb_socket_t listener = ndb_socket_create_dual_stack(SOCK_STREAM, 0);
+  ndb_socket_t listener;
+  ndb_socket_create_dual_stack(listener, SOCK_STREAM, 0);
   if (!ndb_socket_valid(listener))
     return -1;
 
@@ -56,7 +58,7 @@ int ndb_socketpair(ndb_socket_t s[2])
   if (ndb_listen(listener, 1) == -1)
     goto err;
 
-  s[0] = ndb_socket_create_dual_stack(SOCK_STREAM, 0);
+  ndb_socket_create_dual_stack(s[0], SOCK_STREAM, 0);
 
   if (!ndb_socket_valid(s[0]))
     goto err;
@@ -98,8 +100,8 @@ int ndb_socketpair(ndb_socket_t s[2])
   ret= socketpair(AF_UNIX, SOCK_STREAM, 0, sock);
   if (ret == 0)
   {
-    s[0] = ndb_socket_create_from_native(sock[0]);
-    s[1] = ndb_socket_create_from_native(sock[1]);
+    ndb_socket_create_from_native(s[0], sock[0]);
+    ndb_socket_create_from_native(s[1], sock[1]);
   }
   return ret;
 }

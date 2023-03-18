@@ -24,6 +24,7 @@
 #include <iostream>
 #include <sstream>
 #include <cassert>
+#include <ndb_limits.h>
 #include "src/mystring.hpp"
 #include "src/rdrs-const.h"
 
@@ -193,11 +194,11 @@ RS_Status PKRResponse::Append_string(const char *colName, std::string value, Uin
   return SetColumnData(colName, value.c_str(), type);
 }
 
-RS_Status PKRResponse::Append_i8(const char *colName, char num) {
+RS_Status PKRResponse::Append_i8(const char *colName, Int8 num) {
   return Append_i64(colName, num);
 }
 
-RS_Status PKRResponse::Append_iu8(const char *colName, unsigned char num) {
+RS_Status PKRResponse::Append_iu8(const char *colName, Uint8 num) {
   return Append_iu64(colName, num);
 }
 
@@ -267,17 +268,18 @@ RS_Status PKRResponse::Append_char(const char *colName, const char *fromBuff, Ui
                            std::to_string(GetRemainingCapacity()) + std::string(" Required: ") +
                            std::to_string(estimatedBytes));
   }
-  // from_buffer -> printable string  -> escaped string
-  char tempBuff[estimatedBytes];
+  // TODO JIRA - RONDB-281, RONDB-277
+  //  from_buffer -> printable string  -> escaped string
+  char tempBuff[MAX_TUPLE_SIZE_IN_BYTES_ESCAPED];
   const char *well_formed_error_pos;
   const char *cannot_convert_error_pos;
   const char *from_end_pos;
   const char *error_pos;
 
   /* convert_to_printable(tempBuff, tempBuffLen, fromBuffer, fromLength, fromCS, 0); */
-  int bytesFormed = well_formed_copy_nchars(fromCS, tempBuff, estimatedBytes, fromCS, fromBuff,
-                                            fromBuffLen, UINT32_MAX, &well_formed_error_pos,
-                                            &cannot_convert_error_pos, &from_end_pos);
+  int bytesFormed = well_formed_copy_nchars(
+      fromCS, tempBuff, MAX_TUPLE_SIZE_IN_BYTES_ESCAPED, fromCS, fromBuff, fromBuffLen, UINT32_MAX,
+      &well_formed_error_pos, &cannot_convert_error_pos, &from_end_pos);
 
   error_pos = well_formed_error_pos ? well_formed_error_pos : cannot_convert_error_pos;
   if (error_pos) {
@@ -291,7 +293,8 @@ RS_Status PKRResponse::Append_char(const char *colName, const char *fromBuff, Ui
       result is longer than UINT_MAX32 and doesn't fit into String
     */
     return RS_SERVER_ERROR(ERROR_021 + std::string(" Buffer size: ") +
-                           std::to_string(estimatedBytes) + std::string(". Bytes left to copy: ") +
+                           std::to_string(MAX_TUPLE_SIZE_IN_BYTES_ESCAPED) +
+                           std::string(". Bytes left to copy: ") +
                            std::to_string((fromBuff + fromBuffLen) - from_end_pos));
   }
   std::string wellFormedString = std::string(tempBuff, bytesFormed);

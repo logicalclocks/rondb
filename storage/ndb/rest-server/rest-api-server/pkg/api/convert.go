@@ -21,11 +21,11 @@ import (
 	"encoding/json"
 
 	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/dal/heap"
 )
 
 // Converters for PK Read Request
-func ConvertPKReadParams(req *PKReadParams, apiKey *string) *PKReadRequestProto {
-
+func ConvertPKReadParams(req *PKReadParams) *PKReadRequestProto {
 	pkReadRequestProto := PKReadRequestProto{}
 
 	var filtersProto []*FilterProto
@@ -63,12 +63,11 @@ func ConvertPKReadParams(req *PKReadParams, apiKey *string) *PKReadRequestProto 
 	pkReadRequestProto.DB = req.DB
 	pkReadRequestProto.Table = req.Table
 	pkReadRequestProto.OperationID = req.OperationID
-	pkReadRequestProto.APIKey = apiKey
 
 	return &pkReadRequestProto
 }
 
-func ConvertPKReadRequestProto(reqProto *PKReadRequestProto) (*PKReadParams, string) {
+func ConvertPKReadRequestProto(reqProto *PKReadRequestProto) *PKReadParams {
 	pkReadParams := PKReadParams{}
 
 	pkReadParams.DB = reqProto.DB
@@ -110,7 +109,7 @@ func ConvertPKReadRequestProto(reqProto *PKReadRequestProto) (*PKReadParams, str
 		pkReadParams.Filters = nil
 	}
 
-	return &pkReadParams, reqProto.GetAPIKey() /*may return empty string*/
+	return &pkReadParams
 }
 
 // Converters for PK Read Response
@@ -154,23 +153,22 @@ func ConvertPKReadResponse(resp *PKReadResponseGRPC) *PKReadResponseProto {
 	return &respProto
 }
 
-func ConvertBatchRequestProto(reqProto *BatchRequestProto) (*[]*PKReadParams, string) {
+func ConvertBatchRequestProto(reqProto *BatchRequestProto) *[]*PKReadParams {
 	operations := make([]*PKReadParams, len(reqProto.Operations))
 	for i, operation := range reqProto.Operations {
-		operations[i], _ = ConvertPKReadRequestProto(operation)
+		operations[i] = ConvertPKReadRequestProto(operation)
 	}
-	return &operations, reqProto.GetAPIKey()
+	return &operations
 }
 
-func ConvertBatchOpRequest(readParams []*PKReadParams, apiKey *string) *BatchRequestProto {
+func ConvertBatchOpRequest(readParams []*PKReadParams) *BatchRequestProto {
 	readParamsProto := make([]*PKReadRequestProto, len(readParams))
 
 	for i, readParam := range readParams {
-		readParamsProto[i] = ConvertPKReadParams(readParam, nil) // no need to set api key here
+		readParamsProto[i] = ConvertPKReadParams(readParam)
 	}
 
 	var batchRequestProto BatchRequestProto
-	batchRequestProto.APIKey = apiKey
 	batchRequestProto.Operations = readParamsProto
 
 	return &batchRequestProto
@@ -228,7 +226,7 @@ func ConvertStatResponse(resp *StatResponse) *StatResponseProto {
 
 func ConvertStatResponseProto(resp *StatResponseProto) *StatResponse {
 	statResponse := StatResponse{}
-	memoryStats := dal.MemoryStats{}
+	memoryStats := heap.MemoryStats{}
 	ronDBStats := dal.RonDBStats{}
 
 	memoryStats.AllocationsCount = *resp.MemoryStats.AllocationsCount

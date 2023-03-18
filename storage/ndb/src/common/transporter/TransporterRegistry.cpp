@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -112,7 +112,7 @@ TransporterRegistry::is_server(NodeId node_id) const
 }
 
 
-struct in6_addr
+struct sockaddr_in6
 TransporterRegistry::get_connect_address(NodeId node_id) const
 {
   if (theNodeIdTransporters[node_id]->isMultiTransporter())
@@ -126,22 +126,6 @@ TransporterRegistry::get_connect_address(NodeId node_id) const
     }
   }
   return theNodeIdTransporters[node_id]->m_connect_address;
-}
-
-struct in_addr
-TransporterRegistry::get_connect_address4(NodeId node_id) const
-{
-  if (theNodeIdTransporters[node_id]->isMultiTransporter())
-  {
-    Multi_Transporter *multi_trp =
-      (Multi_Transporter*)theNodeIdTransporters[node_id];
-    if (multi_trp->get_num_active_transporters() > 0)
-    {
-      Transporter *trp = multi_trp->get_active_transporter(0);
-      return trp->m_connect_address4;
-    }
-  }
-  return theNodeIdTransporters[node_id]->m_connect_address4;
 }
 
 Uint64
@@ -4208,7 +4192,8 @@ bool TransporterRegistry::report_dynamic_ports(NdbMgmHandle h) const
  */
 ndb_socket_t TransporterRegistry::connect_ndb_mgmd(NdbMgmHandle *h)
 {
-  ndb_socket_t sockfd = ndb_socket_create();
+  ndb_socket_t sockfd;
+  ndb_socket_create(sockfd);
 
   DBUG_ENTER("TransporterRegistry::connect_ndb_mgmd(NdbMgmHandle)");
 
@@ -4248,7 +4233,8 @@ TransporterRegistry::connect_ndb_mgmd(const char* server_name,
                                       unsigned short server_port)
 {
   NdbMgmHandle h= ndb_mgm_create_handle();
-  ndb_socket_t s= ndb_socket_create();
+  ndb_socket_t s;
+  ndb_socket_create(s);
 
   DBUG_ENTER("TransporterRegistry::connect_ndb_mgmd(SocketClient)");
 

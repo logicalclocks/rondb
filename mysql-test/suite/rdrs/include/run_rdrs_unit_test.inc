@@ -30,7 +30,7 @@ if (!$res)
 }
 
 
-my $cmd="LD_LIBRARY_PATH=$ENV{LD_LIBRARY_PATH}; CGO_LDFLAGS=$ENV{CGO_LDFLAGS} $rdrs_test_cmd";
+my $cmd="export DYLD_LIBRARY_PATH=$ENV{LD_LIBRARY_PATH}; export LD_LIBRARY_PATH=$ENV{LD_LIBRARY_PATH}; export CGO_LDFLAGS=$ENV{CGO_LDFLAGS}; $rdrs_test_cmd";
 my $res = exec_print_on_error($cmd, 1000);
 if ($res)
 {

@@ -16,12 +16,15 @@
  */
 package api
 
-import "hopsworks.ai/rdrs/internal/dal"
+import (
+	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/dal/heap"
+)
 
 type StatRequest struct {
 }
 
 type StatResponse struct {
-	MemoryStats dal.MemoryStats
+	MemoryStats heap.MemoryStats
 	RonDBStats  dal.RonDBStats
 }

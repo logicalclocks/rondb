@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2008, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -437,7 +438,9 @@ public:
       0
     };
 
-    m_event_socket = ndb_socket_create_from_native(ndb_mgm_listen_event(m_handle, filter));
+    ndb_socket_create_from_native(
+      m_event_socket,
+      ndb_mgm_listen_event(m_handle, filter));
     
     return ndb_socket_valid(m_event_socket);
   }
