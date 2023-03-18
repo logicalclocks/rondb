@@ -403,7 +403,7 @@ id=4	LOCALHOST  (NDB_VERSION, Nodegroup: 1)
 ndb_mgmd(s)
 id=5	LOCALHOST  (NDB_VERSION)
 mysqld(s)
-id=16	LOCALHOST  (MYSQL_VERSION NDB_VERSION)
+id=16	LOCALHOST  (NDB_VERSION)
 drop table t1,t2,t3,t4,t5,t6,t10;
 Drop Node Group 1 done
 ndbd(s)

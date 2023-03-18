@@ -1,6 +1,7 @@
 !include suite/ndb/my.cnf
 
 [cluster_config.1]
+PartitionsPerNode=2
 NoOfReplicas=2
 ClassicFragmentation=false
 ndbd=,,,

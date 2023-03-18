@@ -681,10 +681,8 @@ node_id	fragment_num
 select count(*) as cnt from ndbinfo.memory_per_fragment
 where fq_name = 'test/def/t1' group by node_id, block_instance order by cnt desc;
 cnt
-1
-1
-1
-1
+2
+2
 select count(*) into @cnt_t1_5
 from information_schema.partitions
 where table_schema = 'test' and table_name = 't1';
@@ -716,10 +714,8 @@ node_id	fragment_num
 select count(*) as cnt from ndbinfo.memory_per_fragment
 where fq_name = 'test/def/t1' group by node_id, block_instance order by cnt desc;
 cnt
-1
-1
-1
-1
+2
+2
 1
 1
 1
@@ -763,14 +759,14 @@ node_id	fragment_num
 select count(*) as cnt from ndbinfo.memory_per_fragment
 where fq_name = 'test/def/t1' group by node_id, block_instance order by cnt desc;
 cnt
+3
+3
 2
 2
 2
 2
-2
-2
-2
-2
+1
+1
 select count(*) into @cnt_t1_7
 from information_schema.partitions
 where table_schema = 'test' and table_name = 't1';
