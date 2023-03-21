@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2022 Hopsworks AB
+ * Copyright (c) 2023 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -39,8 +39,7 @@ func TestAPIKey(t *testing.T) {
 	}
 	log.InitLogger(conf.Log)
 
-	connectString := config.GenerateMgmdConnectString(conf)
-	dalErr := dal.InitRonDBConnection(connectString, true)
+	dalErr := dal.InitRonDBConnection(conf.RonDB)
 	if dalErr != nil {
 		t.Fatalf("failed to initialise RonDB connection; error: %s", dalErr.VerboseError())
 	}
@@ -101,8 +100,7 @@ func TestAPIKeyCache1(t *testing.T) {
 		t.Log("tests may fail because Hopsworks API keys are deactivated")
 	}
 
-	connectString := config.GenerateMgmdConnectString(conf)
-	dalErr := dal.InitRonDBConnection(connectString, true)
+	dalErr := dal.InitRonDBConnection(conf.RonDB)
 	if dalErr != nil {
 		t.Fatalf("failed to initialise RonDB connection; error: %s", dalErr.VerboseError())
 	}
@@ -153,8 +151,7 @@ func TestAPIKeyCache2(t *testing.T) {
 		t.Log("tests may fail because Hopsworks API keys are deactivated")
 	}
 
-	connectString := config.GenerateMgmdConnectString(conf)
-	dalErr := dal.InitRonDBConnection(connectString, true)
+	dalErr := dal.InitRonDBConnection(conf.RonDB)
 	if dalErr != nil {
 		t.Fatalf("failed to initialise RonDB connection; error: %s", dalErr.VerboseError())
 	}

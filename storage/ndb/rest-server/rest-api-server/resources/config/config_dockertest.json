@@ -19,17 +19,11 @@
                                 "IP": "mgmd_1",
                                 "Port": 1186
                         }
-                ]
-        },
-        "MySQL": {
-                "Servers": [
-                        {
-                                "IP": "mysqld_1",
-                                "Port": 3306
-                        }
                 ],
-                "User": "mysql",
-                "Password": "Abc123?e"
+                "ConnectionPoolSize": 1,
+                "NodeIDs": [0],
+                "ConnectionRetries": 3,
+                "ConnectionRetryDelayInSec": 3
         },
         "Security": {
                 "EnableTLS": true,
@@ -46,5 +40,17 @@
                 "MaxSizeMB": 100,
                 "MaxBackups": 10,
                 "MaxAge": 30
+        },
+        "Testing": {
+                "MySQL": {
+                        "Servers": [
+                                {
+                                        "IP": "mysqld_1",
+                                        "Port": 3306
+                                }
+                        ],
+                        "User": "mysql",
+                        "Password": "Abc123?e"
+                }
         }
 }

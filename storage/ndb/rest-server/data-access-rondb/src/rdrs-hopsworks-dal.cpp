@@ -555,10 +555,9 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
  * only for testing
  */
 int main() {
-  std::cout << "size of is " << sizeof(HopsworksAPIKey) << std::endl;
-
   char connection_string[] = "localhost:1186";
-  init(connection_string, true);
+  unsigned int node_ids[] = {0};
+  init(connection_string, 1, node_ids, 1, 3, 3);
 
   Ndb *ndb_object  = nullptr;
   RS_Status status = NdbObjectPool::GetInstance()->GetNdbObject(ndb_connection, &ndb_object);

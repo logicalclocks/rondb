@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2022 Hopsworks AB
+ * Copyright (c) 2023 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -28,13 +28,13 @@ var globalConfig AllConfigs
 var mutex sync.Mutex
 
 /*
-	Order:
-	1. Read from ENV
-		if no ENV:
-			2. Set to defaults
-	3. Read CLI arguments
-		if no CLI:
-			4. Set to defaults
+Order:
+ 1. Read from ENV
+    if no ENV:
+ 2. Set to defaults
+ 3. Read CLI arguments
+    if no CLI:
+ 4. Set to defaults
 */
 func init() {
 	configFile := os.Getenv(CONFIG_FILE_PATH)
@@ -67,16 +67,6 @@ func newWithDefaults() AllConfigs {
 				},
 			},
 		},
-		MySQL: MySQL{
-			Servers: []MySQLServer{
-				{
-					IP:   "localhost",
-					Port: 3306,
-				},
-			},
-			User:     "rondb",
-			Password: "rondb",
-		},
 		Security: Security{
 			EnableTLS:                        false,
 			RequireAndVerifyClientCert:       false,
@@ -92,6 +82,18 @@ func newWithDefaults() AllConfigs {
 			MaxSizeMB:  100,
 			MaxBackups: 10,
 			MaxAge:     30,
+		},
+		Testing: Testing{
+			MySQL: MySQL{
+				Servers: []MySQLServer{
+					{
+						IP:   "localhost",
+						Port: 3306,
+					},
+				},
+				User:     "rondb",
+				Password: "rondb",
+			},
 		},
 	}
 }

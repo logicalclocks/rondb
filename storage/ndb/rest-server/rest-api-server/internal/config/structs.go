@@ -1,3 +1,20 @@
+/*
+ * This file is part of the RonDB REST API Server
+ * Copyright (c) 2023 Hopsworks AB
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package config
 
 import (
@@ -56,24 +73,38 @@ func (m MySQLServer) Validate() error {
 	return nil
 }
 
+type Testing struct {
+	MySQL MySQL
+}
+
 type MySQL struct {
 	Servers  []MySQLServer
 	User     string
 	Password string
 }
 
-func (m MySQL) Validate() error {
-	if len(m.Servers) < 1 {
+func (t Testing) GenerateMysqldConnectString() string {
+	server := t.MySQL.Servers[0]
+	// user:password@tcp(IP:Port)/
+	return fmt.Sprintf("%s:%s@tcp(%s:%d)/",
+		t.MySQL.User,
+		t.MySQL.Password,
+		server.IP,
+		server.Port)
+}
+
+func (t Testing) Validate() error {
+	if len(t.MySQL.Servers) < 1 {
 		return errors.New("at least one MySQL server has to be defined")
-	} else if len(m.Servers) > 1 {
+	} else if len(t.MySQL.Servers) > 1 {
 		return errors.New("we do not support specifying more than one MySQL server yet")
 	}
-	for _, server := range m.Servers {
+	for _, server := range t.MySQL.Servers {
 		if err := server.Validate(); err != nil {
 			return err
 		}
 	}
-	if m.User == "" {
+	if t.MySQL.User == "" {
 		return errors.New("the MySQL user cannot be empty")
 	}
 	return nil
@@ -95,6 +126,20 @@ func (m Mgmd) Validate() error {
 
 type RonDB struct {
 	Mgmds []Mgmd
+
+	// Connection pool size. Default 1
+	// Note current implementation only supports 1 connection
+	// TODO JIRA RonDB-245
+	ConnectionPoolSize uint32
+
+	// This is the list of node ids to force the connections to be assigned to specific node ids.
+	// If this property is specified and connection pool size is not the default,
+	// the number of node ids must match the connection pool size
+	NodeIDs []uint32
+
+	// Connection retry attempts.
+	ConnectionRetries         uint32
+	ConnectionRetryDelayInSec uint32
 }
 
 func (r RonDB) Validate() error {
@@ -108,7 +153,24 @@ func (r RonDB) Validate() error {
 			return err
 		}
 	}
+
+	if r.ConnectionPoolSize < 1 || r.ConnectionPoolSize > 1 {
+		return errors.New("wrong connection pool size. Currently only single RonDB connection is supported")
+	}
+
+	if len(r.NodeIDs) != 0 && len(r.NodeIDs) != int(r.ConnectionPoolSize) {
+		return errors.New("wrong number of NodeIDs. The number of node ids must match the connection pool size")
+	}
+
 	return nil
+}
+
+func (r RonDB) GenerateMgmdConnectString() string {
+	mgmd := r.Mgmds[0]
+	return fmt.Sprintf("%s:%d",
+		mgmd.IP,
+		mgmd.Port,
+	)
 }
 
 type TestParameters struct {
@@ -145,20 +207,20 @@ func (c Security) Validate() error {
 }
 
 /*
-	The RDRS is tested on a regular basis by RonDB's MTR tests. These MTR tests
-	have a config file defined for the RDRS in `mysql-test/suite/rdrs/include/have_rdrs.inc`.
+The RDRS is tested on a regular basis by RonDB's MTR tests. These MTR tests
+have a config file defined for the RDRS in `mysql-test/suite/rdrs/include/have_rdrs.inc`.
 
-	Therefore, when committing a change to this struct or its defaults, change
-	the corresponding file for the MTR tests as well.
+Therefore, when committing a change to this struct or its defaults, change
+the corresponding file for the MTR tests as well.
 */
 type AllConfigs struct {
 	Internal Internal
 	REST     REST
 	GRPC     GRPC
 	RonDB    RonDB
-	MySQL    MySQL
 	Security Security
 	Log      log.LogConfig
+	Testing  Testing
 }
 
 func (c AllConfigs) Validate() error {
@@ -169,7 +231,7 @@ func (c AllConfigs) Validate() error {
 		return err
 	} else if err = c.RonDB.Validate(); err != nil {
 		return err
-	} else if err = c.MySQL.Validate(); err != nil {
+	} else if err = c.Testing.Validate(); err != nil {
 		return err
 	} else if err = c.Security.Validate(); err != nil {
 		return err

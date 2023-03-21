@@ -1,3 +1,20 @@
+/*
+ * This file is part of the RonDB REST API Server
+ * Copyright (c) 2023 Hopsworks AB
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package testdbs
 
 import (
@@ -43,7 +60,7 @@ var databaseCreateSchemes = map[string]string{
 }
 
 /*
-	Here we are adding dynamic schema to databaseCreateSchemes;
+Here we are adding dynamic schema to databaseCreateSchemes;
 */
 func init() {
 	benchSchema := createBenchmarkSchema()
@@ -113,7 +130,7 @@ func createTextualColumnsSchema(dbName string, columnType string, columnLength i
 }
 
 /*
-	Simply export databaseCreateSchemes as slice
+Simply export databaseCreateSchemes as slice
 */
 func GetAllDBs() []string {
 	allDBs := []string{}
@@ -124,9 +141,9 @@ func GetAllDBs() []string {
 }
 
 /*
-	This function can be used to export the embedded schemata of different databases. In case
-	it is wished to use the databases in conjunction with Hopsworks as an authentication layer,
-	this function also supplies the required Hopsworks schemata.
+This function can be used to export the embedded schemata of different databases. In case
+it is wished to use the databases in conjunction with Hopsworks as an authentication layer,
+this function also supplies the required Hopsworks schemata.
 */
 func GetCreationSchemaPerDB(registerAsHopsworksProjects bool, dbs ...string) (map[string]string, error) {
 	createSchemata := make(map[string]string)
@@ -144,9 +161,9 @@ func GetCreationSchemaPerDB(registerAsHopsworksProjects bool, dbs ...string) (ma
 }
 
 /*
-	If we require a Hopsworks API key, the databases the client wants to access need to be
-	registered as projects in the Hopsworks database. This function creates the standard Hopsworks
-	scheme and inserts the databases as projects.
+If we require a Hopsworks API key, the databases the client wants to access need to be
+registered as projects in the Hopsworks database. This function creates the standard Hopsworks
+scheme and inserts the databases as projects.
 */
 func createHopsworksSchema(dbsToRegister ...string) string {
 	hopsworksScheme := HopsworksScheme

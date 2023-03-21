@@ -1,8 +1,26 @@
+/*
+ * This file is part of the RonDB REST API Server
+ * Copyright (c) 2023 Hopsworks AB
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package testutils
 
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -64,7 +82,15 @@ func runQueries(sqlQueries string, dbConnection *sql.DB) error {
 	if sqlQueries == "" {
 		return nil
 	}
+
+	//remove comments
+	regex, err := regexp.Compile("--.*")
+	if err != nil {
+		return err
+	}
+	sqlQueries = regex.ReplaceAllString(sqlQueries, "")
 	splitQueries := strings.Split(sqlQueries, ";")
+
 	if len(splitQueries) == 0 {
 		return nil
 	}
