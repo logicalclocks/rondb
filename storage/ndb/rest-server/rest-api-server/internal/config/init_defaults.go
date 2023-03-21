@@ -66,6 +66,10 @@ func newWithDefaults() AllConfigs {
 					Port: 1186,
 				},
 			},
+			ConnectionPoolSize:        1,
+			NodeIDs:                   []uint32{0},
+			ConnectionRetries:         3,
+			ConnectionRetryDelayInSec: 3,
 		},
 		Security: Security{
 			EnableTLS:                        false,
