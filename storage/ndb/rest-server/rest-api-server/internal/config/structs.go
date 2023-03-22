@@ -36,7 +36,7 @@ type GRPC struct {
 	ServerPort uint16
 }
 
-func (g GRPC) Validate() error {
+func (g *GRPC) Validate() error {
 	if g.ServerIP == "" {
 		return errors.New("the gRPC server IP cannot be empty")
 	} else if g.ServerPort == 0 {
@@ -50,7 +50,7 @@ type REST struct {
 	ServerPort uint16
 }
 
-func (g REST) Validate() error {
+func (g *REST) Validate() error {
 	if g.ServerIP == "" {
 		return errors.New("the REST server IP cannot be empty")
 	} else if g.ServerPort == 0 {
@@ -64,7 +64,7 @@ type MySQLServer struct {
 	Port uint16
 }
 
-func (m MySQLServer) Validate() error {
+func (m *MySQLServer) Validate() error {
 	if m.IP == "" {
 		return errors.New("MySQL server IP cannot be empty")
 	} else if m.Port == 0 {
@@ -93,7 +93,7 @@ func (t Testing) GenerateMysqldConnectString() string {
 		server.Port)
 }
 
-func (t Testing) Validate() error {
+func (t *Testing) Validate() error {
 	if len(t.MySQL.Servers) < 1 {
 		return errors.New("at least one MySQL server has to be defined")
 	} else if len(t.MySQL.Servers) > 1 {
@@ -115,7 +115,7 @@ type Mgmd struct {
 	Port uint16
 }
 
-func (m Mgmd) Validate() error {
+func (m *Mgmd) Validate() error {
 	if m.IP == "" {
 		return errors.New("the Management server IP cannot be empty")
 	} else if m.Port == 0 {
@@ -142,7 +142,7 @@ type RonDB struct {
 	ConnectionRetryDelayInSec uint32
 }
 
-func (r RonDB) Validate() error {
+func (r *RonDB) Validate() error {
 	if len(r.Mgmds) < 1 {
 		return errors.New("at least one Management server has to be defined")
 	} else if len(r.Mgmds) > 1 {
@@ -158,8 +158,10 @@ func (r RonDB) Validate() error {
 		return errors.New("wrong connection pool size. Currently only single RonDB connection is supported")
 	}
 
-	if len(r.NodeIDs) != 0 && len(r.NodeIDs) != int(r.ConnectionPoolSize) {
+	if r.NodeIDs != nil && len(r.NodeIDs) != 0 && len(r.NodeIDs) != int(r.ConnectionPoolSize) {
 		return errors.New("wrong number of NodeIDs. The number of node ids must match the connection pool size")
+	} else if r.NodeIDs == nil || len(r.NodeIDs) == 0 {
+		r.NodeIDs = []uint32{uint32(0)}
 	}
 
 	return nil
@@ -189,7 +191,7 @@ type Security struct {
 	TestParameters                   TestParameters
 }
 
-func (c Security) Validate() error {
+func (c *Security) Validate() error {
 	if IsUnitTest() {
 		// In case of unit tests, we create dummy certificates
 		return nil
@@ -223,7 +225,7 @@ type AllConfigs struct {
 	Testing  Testing
 }
 
-func (c AllConfigs) Validate() error {
+func (c *AllConfigs) Validate() error {
 	var err error
 	if err = c.GRPC.Validate(); err != nil {
 		return err
