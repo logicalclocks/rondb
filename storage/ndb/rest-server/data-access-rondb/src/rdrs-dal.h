@@ -82,7 +82,9 @@ typedef struct RonDB_Stats {
 /**
  * Initialize connection to the database
  */
-RS_Status init(const char *connection_string, unsigned int find_available_node_id);
+RS_Status init(const char *connection_string, unsigned int connection_pool_size,
+               unsigned int *node_ids, unsigned int node_ids_len, unsigned int connection_retries,
+               unsigned int connection_retry_delay_in_sec);
 
 /**
  * Shutdown connection
