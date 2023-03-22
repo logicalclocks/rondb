@@ -262,17 +262,13 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
     - **Port:** RonDB management node port. The default value is *1186*.
 
-- **MySQL:** MySQL server is only used for testing
+  - **ConnectionPoolSize:**  Connection pool size. Default 1. Note current implementation only supports 1 cluster connection
 
-  - **User:** MySQL Server user. The default value is *rondb*.
-  
-  - **Password:** MySQL Server user password. The default value is *rondb*.
-  
-  - **Servers:**
+  - **NodeIDs:** This is an optional list of node ids to force the connections to be assigned to specific node ids. If this property is specified and connection pool size is not the default, the number of node ids must match the connection pool size
 
-    - **IP:** MySQL Server IP. The default value is *localhost*.
-    
-    - **Port:** MySQL Server port. The default value is *3306*.
+  - **ConnectionRetries:** Connection retries
+
+  - **ConnectionRetryDelayInSec:** Connection retry delay in sec
 
 - **Security:** REST server security settings 
 
@@ -297,3 +293,18 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
   - **MaxBackups:** max number of log files to store. The default value is *10*.
   
   - **MaxAge:** max-age of log files in days. The default value is *30*.
+
+- **Testing:** MySQL server is only used for testing
+
+  - **MySQL:** MySQL server is only used for testing
+  
+    - **User:** MySQL Server user. The default value is *rondb*.
+    
+    - **Password:** MySQL Server user password. The default value is *rondb*.
+    
+    - **Servers:**
+  
+      - **IP:** MySQL Server IP. The default value is *localhost*.
+      
+      - **Port:** MySQL Server port. The default value is *3306*.
+
