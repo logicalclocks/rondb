@@ -68,8 +68,8 @@ func newWithDefaults() AllConfigs {
 			},
 			ConnectionPoolSize:        1,
 			NodeIDs:                   []uint32{0},
-			ConnectionRetries:         3,
-			ConnectionRetryDelayInSec: 3,
+			ConnectionRetries:         5,
+			ConnectionRetryDelayInSec: 5,
 		},
 		Security: Security{
 			EnableTLS:                        false,

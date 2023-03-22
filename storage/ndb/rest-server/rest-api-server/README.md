@@ -201,17 +201,11 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
                                 "IP": "localhost",
                                 "Port": 1186
                         }
-                ]
-        },
-        "MySQL": {
-                "User": "rondb",
-                "Password": "rondb",
-                "Servers": [
-                        {
-                                "IP": "localhost",
-                                "Port": 3306
-                        }
                 ],
+	            "ConnectionPoolSize": 1,
+	            "NodeIDs": [],
+	            "ConnectionRetries": 5,
+	            "ConnectionRetryDelayInSec": 5
         },
         "Security": {
                 "EnableTLS": true,
@@ -228,7 +222,19 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
                 "MaxSizeMB": 100,
                 "MaxBackups": 10,
                 "MaxAge": 30
-        }
+        },
+        "Testing": {
+                "MySQL": {
+                        "User": "rondb",
+                        "Password": "rondb",
+                        "Servers": [
+                                {
+                                        "IP": "localhost",
+                                        "Port": 3306
+                                }
+                        ],
+                }
+        },
 }
 ```
 

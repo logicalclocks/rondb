@@ -21,9 +21,9 @@
                         }
                 ],
                 "ConnectionPoolSize": 1,
-                "NodeIDs": [0],
-                "ConnectionRetries": 3,
-                "ConnectionRetryDelayInSec": 3
+                "NodeIDs": [],
+                "ConnectionRetries": 5,
+                "ConnectionRetryDelayInSec": 5
         },
         "Security": {
                 "EnableTLS": true,
