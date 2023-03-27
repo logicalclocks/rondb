@@ -31,7 +31,7 @@ import (
 func TestBatchSimple(t *testing.T) {
 	tests := map[string]api.BatchOperationTestInfo{
 		"simple1": { // single operation batch
-			HttpCode: http.StatusOK,
+			HttpCode: []int{http.StatusOK},
 			Operations: []api.BatchSubOperationTestInfo{
 				{
 					SubOperation: api.BatchSubOp{
@@ -52,7 +52,7 @@ func TestBatchSimple(t *testing.T) {
 			ErrMsgContains: "",
 		},
 		"simple2": { // small batch operation
-			HttpCode: http.StatusOK,
+			HttpCode: []int{http.StatusOK},
 			Operations: []api.BatchSubOperationTestInfo{
 				{
 					SubOperation: api.BatchSubOp{
@@ -88,7 +88,7 @@ func TestBatchSimple(t *testing.T) {
 			ErrMsgContains: "",
 		},
 		"simple3": { // bigger batch of numbers table
-			HttpCode: http.StatusOK,
+			HttpCode: []int{http.StatusOK},
 			Operations: []api.BatchSubOperationTestInfo{
 				{
 					SubOperation: api.BatchSubOp{
@@ -169,7 +169,7 @@ func TestBatchSimple(t *testing.T) {
 			ErrMsgContains: "",
 		},
 		"notfound": { // a batch operation with operations throwing 404
-			HttpCode: http.StatusOK,
+			HttpCode: []int{http.StatusOK},
 			Operations: []api.BatchSubOperationTestInfo{
 				{
 					SubOperation: api.BatchSubOp{
@@ -211,7 +211,7 @@ func TestBatchSimple(t *testing.T) {
 func TestBatchDate(t *testing.T) {
 	tests := map[string]api.BatchOperationTestInfo{
 		"date": {
-			HttpCode: http.StatusOK,
+			HttpCode: []int{http.StatusOK},
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "date_table", testdbs.DB019, "1111-11-11", http.StatusOK),
 				createSubOperation(t, "date_table", testdbs.DB019, "1111-11-11 00:00:00", http.StatusOK),
@@ -219,7 +219,7 @@ func TestBatchDate(t *testing.T) {
 			},
 		},
 		"wrong_sub_op": {
-			HttpCode: http.StatusBadRequest,
+			HttpCode: []int{http.StatusBadRequest},
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "date_table", testdbs.DB019, "1111-11-11", http.StatusOK),
 				createSubOperation(t, "date_table", testdbs.DB019, "1111-11-11 00:00:00", http.StatusOK),
@@ -234,7 +234,7 @@ func TestBatchDate(t *testing.T) {
 func TestBatchDateTime(t *testing.T) {
 	tests := map[string]api.BatchOperationTestInfo{
 		"date": {
-			HttpCode: http.StatusOK,
+			HttpCode: []int{http.StatusOK},
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "date_table0", testdbs.DB020, "1111-11-11 11:11:11", http.StatusOK),
 				createSubOperation(t, "date_table3", testdbs.DB020, "1111-11-11 11:11:11.123", http.StatusOK),
@@ -249,7 +249,7 @@ func TestBatchDateTime(t *testing.T) {
 			ErrMsgContains: "",
 		},
 		"wrong_sub_op": {
-			HttpCode: http.StatusBadRequest,
+			HttpCode: []int{http.StatusBadRequest},
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "date_table0", testdbs.DB020, "1111-11-11 11:11:11", http.StatusOK),
 				createSubOperation(t, "date_table3", testdbs.DB020, "1111-11-11 11:11:11.123", http.StatusOK),
@@ -271,7 +271,7 @@ func TestBatchDateTime(t *testing.T) {
 func TestBatchTime(t *testing.T) {
 	tests := map[string]api.BatchOperationTestInfo{
 		"date": {
-			HttpCode: http.StatusOK,
+			HttpCode: []int{http.StatusOK},
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "time_table0", testdbs.DB021, "11:11:11", http.StatusOK),
 				createSubOperation(t, "time_table3", testdbs.DB021, "11:11:11.123", http.StatusOK),
@@ -285,7 +285,7 @@ func TestBatchTime(t *testing.T) {
 			ErrMsgContains: "",
 		},
 		"wrong_sub_op": {
-			HttpCode: http.StatusBadRequest,
+			HttpCode: []int{http.StatusBadRequest},
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "time_table0", testdbs.DB021, "11:11:11", http.StatusOK),
 				createSubOperation(t, "time_table3", testdbs.DB021, "11:11:11.123", http.StatusOK),
@@ -349,7 +349,7 @@ func TestBatchArrayTableLongVarbinary(t *testing.T) {
 func ArrayColumnBatchTest(t *testing.T, table string, database string, isBinary bool, colWidth int, padding bool) {
 	tests := map[string]api.BatchOperationTestInfo{
 		"simple1": { // bigger batch of array column table
-			HttpCode: http.StatusOK,
+			HttpCode: []int{http.StatusOK},
 			Operations: []api.BatchSubOperationTestInfo{
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "-1", http.StatusNotFound),
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "1", http.StatusOK),
@@ -368,7 +368,7 @@ func ArrayColumnBatchTest(t *testing.T, table string, database string, isBinary 
 }
 
 /*
- A bad sub operation fails the entire batch
+A bad sub operation fails the entire batch
 */
 func TestBatchBadSubOp(t *testing.T) {
 	table := "table1"
@@ -379,7 +379,7 @@ func TestBatchBadSubOp(t *testing.T) {
 
 	tests := map[string]api.BatchOperationTestInfo{
 		"simple1": { // bigger batch of array column table
-			HttpCode: http.StatusBadRequest,
+			HttpCode: []int{http.StatusBadRequest},
 			Operations: []api.BatchSubOperationTestInfo{
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "-1", http.StatusNotFound),
 				// This is bad operation. data is longer than the column width
@@ -421,32 +421,32 @@ func TestBatchMissingReqField(t *testing.T) {
 	operations[1].Method = nil
 	operationsWrapper := api.BatchOpRequest{Operations: &operations}
 	body, _ := json.Marshal(operationsWrapper)
-	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
-		"Error:Field validation for 'Method' failed ")
+	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+		"Error:Field validation for 'Method' failed ", http.StatusBadRequest)
 
 	// Test missing relative URL
 	operations = NewOperationsTBD(t, 3)
 	operations[1].RelativeURL = nil
 	operationsWrapper = api.BatchOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
-	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
-		"Error:Field validation for 'RelativeURL' failed ")
+	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+		"Error:Field validation for 'RelativeURL' failed ", http.StatusBadRequest)
 
 	// Test missing body
 	operations = NewOperationsTBD(t, 3)
 	operations[1].Body = nil
 	operationsWrapper = api.BatchOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
-	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
-		"Error:Field validation for 'Body' failed ")
+	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+		"Error:Field validation for 'Body' failed ", http.StatusBadRequest)
 
 	// Test missing filter in an operation
 	operations = NewOperationsTBD(t, 3)
 	*&operations[1].Body.Filters = nil
 	operationsWrapper = api.BatchOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
-	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body), http.StatusBadRequest,
-		"Error:Field validation for 'Filters' failed")
+	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+		"Error:Field validation for 'Filters' failed", http.StatusBadRequest)
 }
 
 func NewOperationsTBD(t *testing.T, numOps int) []api.BatchSubOp {

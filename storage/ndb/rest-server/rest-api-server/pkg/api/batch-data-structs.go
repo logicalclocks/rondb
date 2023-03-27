@@ -17,6 +17,8 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 )
 
@@ -36,6 +38,7 @@ type BatchOpResponse interface {
 	Init()
 	CreateNewSubResponse() PKReadResponseWithCode
 	AppendSubResponse(subResp PKReadResponseWithCode) error
+	String() string
 }
 
 var _ BatchOpResponse = (*BatchResponseJSON)(nil)
@@ -71,6 +74,15 @@ func (b *BatchResponseJSON) AppendSubResponse(subResp PKReadResponseWithCode) er
 	return nil
 }
 
+func (b *BatchResponseJSON) String() string {
+	strBytes, err := json.MarshalIndent(*b, "", "\t")
+	if err != nil {
+		return fmt.Sprintf("Failed to marshar BatchResponseJSON. Error: %v", err)
+	} else {
+		return string(strBytes)
+	}
+}
+
 func (b *BatchResponseGRPC) Init() {
 	subResponses := []*PKReadResponseWithCodeGRPC{}
 	b.Result = &subResponses
@@ -93,6 +105,20 @@ func (b *BatchResponseGRPC) AppendSubResponse(subResp PKReadResponseWithCode) er
 	return nil
 }
 
+func (b *BatchResponseGRPC) String() string {
+	var str bytes.Buffer
+	str.WriteString("[ ")
+
+	if b.Result != nil {
+		for _, value := range *b.Result {
+			str.WriteString(fmt.Sprintf("%s, ", value.String()))
+		}
+	}
+
+	str.WriteString("]")
+	return str.String()
+}
+
 // data structs for testing
 type BatchSubOperationTestInfo struct {
 	SubOperation BatchSubOp
@@ -104,6 +130,6 @@ type BatchSubOperationTestInfo struct {
 
 type BatchOperationTestInfo struct {
 	Operations     []BatchSubOperationTestInfo
-	HttpCode       int
+	HttpCode       []int
 	ErrMsgContains string
 }

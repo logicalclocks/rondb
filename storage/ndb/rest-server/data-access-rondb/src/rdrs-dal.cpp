@@ -18,6 +18,7 @@
  */
 
 #include "src/rdrs-dal.h"
+#include <unistd.h>
 #include <mgmapi.h>
 #include <cstdlib>
 #include <cstring>
@@ -25,6 +26,7 @@
 #include <iostream>
 #include <iterator>
 #include <sstream>
+#include <my_base.h>
 #include <NdbApi.hpp>
 #include <storage/ndb/include/ndb_global.h>
 #include "src/error-strings.h"
@@ -35,6 +37,8 @@
 #include "src/db-operations/pk/common.hpp"
 
 Ndb_cluster_connection *ndb_connection;
+Uint32 OP_RETRY_COUNT         = 3;
+Uint32 OP_RETRY_INITIAL_DELAY = 100;
 
 /**
  * Initialize NDB connection
@@ -46,6 +50,10 @@ Ndb_cluster_connection *ndb_connection;
 RS_Status init(const char *connection_string, unsigned int connection_pool_size,
                unsigned int *node_ids, unsigned int node_ids_len, unsigned int connection_retries,
                unsigned int connection_retry_delay_in_sec) {
+
+  // disable buffered stdout
+  setbuf(stdout, NULL);
+
   require(node_ids_len == 1);
   require(connection_pool_size == 1);
   int retCode = 0;
@@ -57,7 +65,7 @@ RS_Status init(const char *connection_string, unsigned int connection_pool_size,
   }
 
   ndb_connection = new Ndb_cluster_connection(connection_string, node_ids[0]);
-  retCode = ndb_connection->connect(connection_retries, connection_retry_delay_in_sec, 0);
+  retCode        = ndb_connection->connect(connection_retries, connection_retry_delay_in_sec, 0);
   if (retCode != 0) {
     return RS_SERVER_ERROR(ERROR_002 + std::string(" RetCode: ") + std::to_string(retCode));
   }
@@ -71,6 +79,16 @@ RS_Status init(const char *connection_string, unsigned int connection_pool_size,
   NdbObjectPool::InitPool();
 
   DEBUG("Connected.");
+  return RS_OK;
+}
+
+RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int rety_initial_delay) {
+  require(retry_cont >= 0);
+  require(rety_initial_delay >= 0);
+
+  OP_RETRY_COUNT         = retry_cont;
+  OP_RETRY_INITIAL_DELAY = rety_initial_delay;
+
   return RS_OK;
 }
 
@@ -88,7 +106,7 @@ RS_Status shutdown_connection() {
 /**
  * Closes a NDB Object
  *
- * @param[int] ndb_object
+ * @param[in] ndb_object
  *
  * @return status
  */
@@ -104,15 +122,28 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
     return status;
   }
 
-  PKROperation pkread(reqBuff, respBuff, ndb_object);
+  Uint32 orid = OP_RETRY_INITIAL_DELAY;
+  Int32 orc   = OP_RETRY_COUNT;
+  do {
+    PKROperation pkread(reqBuff, respBuff, ndb_object);
+    status = pkread.PerformOperation();
+    if (OP_RETRY_COUNT != 0 && CanRetryOperation(status)) {
+      orid *= 2;
+      --orc;
+      if (orc >= 0) {
+        usleep(orid * 1000);  // time in milliseconds
+      } else {
+        //INFO("Operation failed after retires");
+        break;
+      }
+    } else {
+      break;
+    }
 
-  status = pkread.PerformOperation();
+  } while (true);
+  
   closeNDBObject(ndb_object);
-  if (status.http_code != SUCCESS) {
-    return status;
-  }
-
-  return RS_OK;
+  return status;
 }
 
 /**
@@ -126,9 +157,26 @@ RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *re
     return status;
   }
 
-  PKROperation pkread(no_req, req_buffs, resp_buffs, ndb_object);
+  Uint32 orid = OP_RETRY_INITIAL_DELAY;
+  Int32 orc   = OP_RETRY_COUNT;
+  do {
+    PKROperation pkread(no_req, req_buffs, resp_buffs, ndb_object);
+    status = pkread.PerformOperation();
+    if (OP_RETRY_COUNT != 0 && CanRetryOperation(status)) {
+      orid *= 2;
+      --orc;
+      if (orc >= 0) {
+        usleep(orid * 1000);  // time in milliseconds
+      } else {
+        //INFO("Operation failed after retires");
+        break;
+      }
+    } else {
+      break;
+    }
 
-  status = pkread.PerformOperation();
+  } while (true);
+
   closeNDBObject(ndb_object);
   if (status.http_code != SUCCESS) {
     return status;

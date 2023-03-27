@@ -22,6 +22,7 @@ package api
 */
 import "C"
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -97,7 +98,11 @@ type PKReadResponse interface {
 	Init()
 	SetOperationID(opID *string)
 	SetColumnData(column, value *string, valueType uint32)
+	String() string
 }
+
+var _ PKReadResponse = (*PKReadResponseGRPC)(nil)
+var _ PKReadResponse = (*PKReadResponseJSON)(nil)
 
 type PKReadResponseJSON struct {
 	OperationID *string                      `json:"operationId"    form:"operation-id"    binding:"omitempty,min=1,max=64"`
@@ -126,6 +131,22 @@ func (r *PKReadResponseGRPC) SetColumnData(column, value *string, valueType uint
 	}
 }
 
+func (r *PKReadResponseGRPC) String() string {
+	var str bytes.Buffer
+	str.WriteString("{ ")
+	str.WriteString(fmt.Sprintf("\"OperationID\": \"%s\",", *r.OperationID))
+	str.WriteString("\"Data\": {")
+
+	if r.Data != nil {
+		for key, value := range *r.Data {
+			str.WriteString(fmt.Sprintf("\"%s\": \"%s\",", key, *value))
+		}
+	}
+
+	str.WriteString("}")
+	return str.String()
+}
+
 func (r *PKReadResponseJSON) Init() {
 	m := make(map[string]*json.RawMessage)
 	(*r).Data = &m
@@ -150,14 +171,24 @@ func (r *PKReadResponseJSON) SetColumnData(column, value *string, dataType uint3
 	}
 }
 
-var _ PKReadResponse = (*PKReadResponseGRPC)(nil)
-var _ PKReadResponse = (*PKReadResponseJSON)(nil)
+func (r *PKReadResponseJSON) String() string {
+	strBytes, err := json.MarshalIndent(*r, "", "\t")
+	if err != nil {
+		return fmt.Sprintf("Failed to marshar PKReadResponseJSON. Error: %v", err)
+	} else {
+		return string(strBytes)
+	}
+}
 
 type PKReadResponseWithCode interface {
 	Init()
 	GetPKReadResponse() PKReadResponse
 	SetCode(code *int32)
+	String() string
 }
+
+var _ PKReadResponseWithCode = (*PKReadResponseWithCodeJSON)(nil)
+var _ PKReadResponseWithCode = (*PKReadResponseWithCodeGRPC)(nil)
 
 type PKReadResponseWithCodeJSON struct {
 	Code *int32              `json:"code"    form:"code"    binding:"required"`
@@ -182,6 +213,15 @@ func (p *PKReadResponseWithCodeJSON) SetCode(code *int32) {
 	p.Code = code
 }
 
+func (p *PKReadResponseWithCodeJSON) String() string {
+	strBytes, err := json.MarshalIndent(*p, "", "\t")
+	if err != nil {
+		return fmt.Sprintf("Failed to marshar PKReadResponseJSON. Error: %v", err)
+	} else {
+		return string(strBytes)
+	}
+}
+
 func (p *PKReadResponseWithCodeGRPC) Init() {
 	p.Body = &PKReadResponseGRPC{}
 	p.Body.Init()
@@ -195,8 +235,20 @@ func (p *PKReadResponseWithCodeGRPC) SetCode(code *int32) {
 	p.Code = code
 }
 
-var _ PKReadResponseWithCode = (*PKReadResponseWithCodeJSON)(nil)
-var _ PKReadResponseWithCode = (*PKReadResponseWithCodeGRPC)(nil)
+func (p *PKReadResponseWithCodeGRPC) String() string {
+	var str bytes.Buffer
+	str.WriteString("{ ")
+	str.WriteString(fmt.Sprintf("\"Code\": \"%d\",", *p.Code))
+
+	str.WriteString("\"Body\": { ")
+	if p.Body != nil {
+		str.WriteString(fmt.Sprintf("%s", p.Body.String()))
+	}
+	str.WriteString("} ") // Body
+
+	str.WriteString("}")
+	return str.String()
+}
 
 // For testing only
 type PKTestInfo struct {

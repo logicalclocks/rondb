@@ -5,6 +5,7 @@
 tags
 TAGS
 TAGS_sorted_by_file
+**/.DS_Store
 
 # googletest files
 source_downloads

@@ -62,7 +62,8 @@ func BenchmarkSimple(b *testing.B) {
 		reqBody := createReq(b, maxRows, opCount, operationId)
 
 		for bp.Next() {
-			integrationtests.SendHttpRequest(b, config.PK_HTTP_VERB, url, reqBody, http.StatusOK, "")
+			integrationtests.SendHttpRequest(b, config.PK_HTTP_VERB, url, reqBody,
+				"", http.StatusOK)
 		}
 	})
 	b.StopTimer()
@@ -138,7 +139,8 @@ func runner(b *testing.B, db string, table string, maxRowID int, load chan int, 
 			}
 			body, _ := json.Marshal(param)
 
-			integrationtests.SendHttpRequest(b, config.PK_HTTP_VERB, url, string(body), http.StatusOK, "")
+			integrationtests.SendHttpRequest(b, config.PK_HTTP_VERB, url, string(body),
+				"", http.StatusOK)
 		default:
 			done <- true
 		}

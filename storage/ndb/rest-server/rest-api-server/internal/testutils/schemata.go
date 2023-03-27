@@ -50,14 +50,14 @@ func CreateDatabases(
 		return func() {
 			// We need a new DB connection since this might be called after the
 			// initial connection is closed.
-			err = runQueriesWithConnection(dropDatabases)
+			err = RunQueries(dropDatabases)
 			if err != nil {
 				log.Errorf("failed cleaning up databases; error: %v", err)
 			}
 		}
 	}
 	for db, createSchema := range createSchemata {
-		err = runQueries(createSchema, dbConn)
+		err = runQueriesWithConnection(createSchema, dbConn)
 		if err != nil {
 			cleanupDbsWrapper(dropDatabases)()
 			err = fmt.Errorf("failed running createSchema for db '%s'; error: %w", db, err)
@@ -69,16 +69,16 @@ func CreateDatabases(
 	return nil, cleanupDbsWrapper(dropDatabases)
 }
 
-func runQueriesWithConnection(sqlQueries string) error {
+func RunQueries(sqlQueries string) error {
 	dbConn, err := CreateMySQLConnection()
 	if err != nil {
 		return err
 	}
 	defer dbConn.Close()
-	return runQueries(sqlQueries, dbConn)
+	return runQueriesWithConnection(sqlQueries, dbConn)
 }
 
-func runQueries(sqlQueries string, dbConnection *sql.DB) error {
+func runQueriesWithConnection(sqlQueries string, dbConnection *sql.DB) error {
 	if sqlQueries == "" {
 		return nil
 	}

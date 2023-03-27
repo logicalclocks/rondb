@@ -140,6 +140,10 @@ type RonDB struct {
 	// Connection retry attempts.
 	ConnectionRetries         uint32
 	ConnectionRetryDelayInSec uint32
+
+	// Transient error retry count and initial delay
+	OpRetryOnTransientErrorsCount uint32
+	OpRetryInitialDelayInMS       uint32
 }
 
 func (r *RonDB) Validate() error {
@@ -162,6 +166,14 @@ func (r *RonDB) Validate() error {
 		return errors.New("wrong number of NodeIDs. The number of node ids must match the connection pool size")
 	} else if r.NodeIDs == nil || len(r.NodeIDs) == 0 {
 		r.NodeIDs = []uint32{uint32(0)}
+	}
+
+	if r.OpRetryOnTransientErrorsCount < 0 {
+		return errors.New("wrong value for OpRetryOnTransientErrorsCount. Possible values >= 0")
+	}
+
+	if r.OpRetryInitialDelayInMS < 0 {
+		return errors.New("wrong value for OpRetryInitialDelayInMS. Possible values >= 0")
 	}
 
 	return nil

@@ -88,6 +88,11 @@ class PKROperation {
   void CloseTransaction();
 
   /**
+   * Handle NDB Error 
+   */
+  RS_Status HandleNDBError(RS_Status status);
+
+  /**
    * abort operation
    */
   RS_Status Abort();

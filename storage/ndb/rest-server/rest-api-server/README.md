@@ -205,7 +205,9 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 	            "ConnectionPoolSize": 1,
 	            "NodeIDs": [],
 	            "ConnectionRetries": 5,
-	            "ConnectionRetryDelayInSec": 5
+	            "ConnectionRetryDelayInSec": 5,
+	            "OpRetryOnTransientErrorsCount": 3,
+	            "OpRetryInitialDelayInMS": 400
         },
         "Security": {
                 "EnableTLS": true,
@@ -275,6 +277,10 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
   - **ConnectionRetries:** Connection retries
 
   - **ConnectionRetryDelayInSec:** Connection retry delay in sec
+
+  - **OpRetryOnTransientErrorsCount:** Number of times retry failed operations due to transient errors. 
+
+  - **OpRetryInitialDelayInMS:** Initial delay used in expoential backoff for retrying failed operations.
 
 - **Security:** REST server security settings 
 
