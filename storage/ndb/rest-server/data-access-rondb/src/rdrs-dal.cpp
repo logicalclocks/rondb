@@ -72,7 +72,9 @@ RS_Status init(const char *connection_string, unsigned int connection_pool_size,
 
   retCode = ndb_connection->wait_until_ready(30, 0);
   if (retCode != 0) {
-    return RS_SERVER_ERROR(ERROR_003 + std::string(" RetCode: ") + std::to_string(retCode));
+    return RS_SERVER_ERROR(ERROR_003 + std::string(" RetCode: ") + std::to_string(retCode)+
+        std::string(" Lastest Error: ")+std::to_string(ndb_connection->get_latest_error())+
+        std::string(" Lastest Error Msg: ")+ std::string(ndb_connection->get_latest_error_msg()));
   }
 
   // Initialize NDB Object Pool
@@ -123,25 +125,19 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
   }
 
   Uint32 orid = OP_RETRY_INITIAL_DELAY;
-  Int32 orc   = OP_RETRY_COUNT;
+  Int32 orc   = OP_RETRY_COUNT + 1;
   do {
     PKROperation pkread(reqBuff, respBuff, ndb_object);
     status = pkread.PerformOperation();
-    if (OP_RETRY_COUNT != 0 && CanRetryOperation(status)) {
+    --orc;
+    if (orc > 0 && CanRetryOperation(status)) {
       orid *= 2;
-      --orc;
-      if (orc >= 0) {
-        usleep(orid * 1000);  // time in milliseconds
-      } else {
-        //INFO("Operation failed after retires");
-        break;
-      }
+      usleep(orid * 1000);  // time in milliseconds
     } else {
       break;
     }
-
   } while (true);
-  
+
   closeNDBObject(ndb_object);
   return status;
 }
@@ -158,23 +154,17 @@ RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *re
   }
 
   Uint32 orid = OP_RETRY_INITIAL_DELAY;
-  Int32 orc   = OP_RETRY_COUNT;
+  Int32 orc   = OP_RETRY_COUNT + 1;
   do {
     PKROperation pkread(no_req, req_buffs, resp_buffs, ndb_object);
     status = pkread.PerformOperation();
-    if (OP_RETRY_COUNT != 0 && CanRetryOperation(status)) {
+    --orc;
+    if (orc > 0 && CanRetryOperation(status)) {
       orid *= 2;
-      --orc;
-      if (orc >= 0) {
-        usleep(orid * 1000);  // time in milliseconds
-      } else {
-        //INFO("Operation failed after retires");
-        break;
-      }
+      usleep(orid * 1000);  // time in milliseconds
     } else {
       break;
     }
-
   } while (true);
 
   closeNDBObject(ndb_object);

@@ -111,17 +111,7 @@ func getStatsGRPC(t *testing.T) *api.StatResponse {
 
 func sendGRPCStatRequest(t *testing.T) *api.StatResponse {
 	// Create gRPC client
-	conf := config.GetAll()
-	conn, err := testutils.CreateGrpcConn(t, conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
-	if err != nil {
-		t.Fatalf("Failed to connect to server %v", err)
-	}
-	defer conn.Close()
-
-	if err != nil {
-		t.Fatalf("Failed to connect to server %v", err)
-	}
-	client := api.NewRonDBRESTClient(conn)
+	client := api.NewRonDBRESTClient(integrationtests.GetGRPCConnction())
 
 	// Create Request
 	statRequest := api.StatRequest{}

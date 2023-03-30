@@ -168,14 +168,6 @@ func (r *RonDB) Validate() error {
 		r.NodeIDs = []uint32{uint32(0)}
 	}
 
-	if r.OpRetryOnTransientErrorsCount < 0 {
-		return errors.New("wrong value for OpRetryOnTransientErrorsCount. Possible values >= 0")
-	}
-
-	if r.OpRetryInitialDelayInMS < 0 {
-		return errors.New("wrong value for OpRetryInitialDelayInMS. Possible values >= 0")
-	}
-
 	return nil
 }
 

@@ -88,7 +88,10 @@ class PKROperation {
   void CloseTransaction();
 
   /**
-   * Handle NDB Error 
+   * It does clean up and depending on error type
+   * it may takes further actions such as unload
+   * tables from NDB::Dictionary if it encounters
+   * schema invalidation errors
    */
   RS_Status HandleNDBError(RS_Status status);
 

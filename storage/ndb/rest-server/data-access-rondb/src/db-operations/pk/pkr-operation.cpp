@@ -157,8 +157,9 @@ RS_Status PKROperation::CreateResponse() {
       resp->SetStatus(NOT_FOUND);
     } else {
       // immediately fail the entire batch
-      return RS_RONDB_SERVER_ERROR(op->getNdbError(),
-          std::string("SubOperation ")+std::string(req->OperationId())+std::string(" failed"));
+      return RS_RONDB_SERVER_ERROR(op->getNdbError(), std::string("SubOperation ") +
+                                                          std::string(req->OperationId()) +
+                                                          std::string(" failed"));
     }
 
     resp->SetDB(req->DB());
@@ -198,15 +199,15 @@ RS_Status PKROperation::Init() {
     std::unordered_map<std::string, const NdbDictionary::Column *> pk_cols;
     std::unordered_map<std::string, const NdbDictionary::Column *> non_pk_cols;
     if (ndb_object->setCatalogName(req->DB()) != 0) {
-      return RS_CLIENT_404_WITH_MSG_ERROR(ERROR_011 + std::string(" Database: ") + std::string(req->DB()) +
-                             " Table: " + req->Table());
+      return RS_CLIENT_404_WITH_MSG_ERROR(ERROR_011 + std::string(" Database: ") +
+                                          std::string(req->DB()) + " Table: " + req->Table());
     }
     const NdbDictionary::Dictionary *dict  = ndb_object->getDictionary();
     const NdbDictionary::Table *table_dict = dict->getTable(req->Table());
 
     if (table_dict == nullptr) {
-      return RS_CLIENT_404_WITH_MSG_ERROR(ERROR_011 + std::string(" Database: ") + std::string(req->DB()) +
-                             " Table: " + req->Table());
+      return RS_CLIENT_404_WITH_MSG_ERROR(ERROR_011 + std::string(" Database: ") +
+                                          std::string(req->DB()) + " Table: " + req->Table());
     }
     all_table_dicts.push_back(table_dict);
 
@@ -308,37 +309,37 @@ void PKROperation::CloseTransaction() {
 RS_Status PKROperation::PerformOperation() {
   RS_Status status = Init();
   if (status.http_code != SUCCESS) {
+    this->HandleNDBError(status);
     return status;
   }
 
   status = ValidateRequest();
   if (status.http_code != SUCCESS) {
+    this->HandleNDBError(status);
     return status;
   }
 
   status = SetupTransaction();
   if (status.http_code != SUCCESS) {
-    this->Abort();
+    this->HandleNDBError(status);
     return status;
   }
 
   status = SetupReadOperation();
   if (status.http_code != SUCCESS) {
-    this->Abort();
+    this->HandleNDBError(status);
     return status;
   }
 
   status = Execute();
   if (status.http_code != SUCCESS) {
     this->HandleNDBError(status);
-    this->Abort();
     return status;
   }
 
   status = CreateResponse();
   if (status.http_code != SUCCESS) {
     this->HandleNDBError(status);
-    this->Abort();
     return status;
   }
 
@@ -359,20 +360,20 @@ RS_Status PKROperation::Abort() {
 }
 
 RS_Status PKROperation::HandleNDBError(RS_Status status) {
-  if (status.http_code != SUCCESS) {
-    if (UnloadSchema(status)) {
-      // no idea which sub-operation threw the error
-      // unload all tables used in this operation
-      for (size_t i = 0; i < no_ops; i++) {
-        PKRRequest *req = requests[i];
-        ndb_object->setCatalogName(req->DB());
-        NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
-        dict->invalidateTable(req->Table());
-        dict->removeCachedTable(req->Table());
-        INFO("Unloading schema " + std::string(req->DB()) + "/" + std::string(req->Table()));
-      }
+  if (UnloadSchema(status)) {
+    // no idea which sub-operation threw the error
+    // unload all tables used in this operation
+    for (size_t i = 0; i < no_ops; i++) {
+      PKRRequest *req = requests[i];
+      ndb_object->setCatalogName(req->DB());
+      NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
+      dict->invalidateTable(req->Table());
+      dict->removeCachedTable(req->Table());
+      INFO("Unloading schema " + std::string(req->DB()) + "/" + std::string(req->Table()));
     }
   }
+
+  this->Abort();
 
   return RS_OK;
 }

@@ -19,14 +19,12 @@ package testutils
 
 import (
 	"crypto/tls"
-	"testing"
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/security/tlsutils"
 )
 
-func GetClientTLSConfig(t testing.TB) *tls.Config {
-	t.Helper()
+func GetClientTLSConfig() (*tls.Config, error) {
 	conf := config.GetAll()
 
 	clientTLSConfig := &tls.Config{}
@@ -40,9 +38,9 @@ func GetClientTLSConfig(t testing.TB) *tls.Config {
 			conf.Security.TestParameters.ClientKeyFile,
 		)
 		if err != nil {
-			t.Fatal(err)
+			return nil, err
 		}
 		clientTLSConfig.Certificates = []tls.Certificate{clientCert}
 	}
-	return clientTLSConfig
+	return clientTLSConfig, nil
 }

@@ -19,6 +19,7 @@ package testutils
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -34,7 +35,10 @@ import (
 //////////////////////
 
 func SetupHttpClient(t testing.TB) *http.Client {
-	tlsConfig := GetClientTLSConfig(t)
+	tlsConfig, err := GetClientTLSConfig()
+	if err != nil {
+		t.Fatalf("failed to get TLS config for HTTP client. Error: %v", err)
+	}
 	return &http.Client{
 		Transport: &http.Transport{TLSClientConfig: tlsConfig},
 	}
@@ -44,15 +48,16 @@ func SetupHttpClient(t testing.TB) *http.Client {
 //////// gRPC ////////
 //////////////////////
 
-func CreateGrpcConn(t testing.TB, withAuth, withTLS bool) (*grpc.ClientConn, error) {
-	t.Helper()
-
+func CreateGrpcConn(withAuth, withTLS bool) (*grpc.ClientConn, error) {
 	grpcDialOptions := []grpc.DialOption{}
 	if withAuth {
 		grpcDialOptions = append(grpcDialOptions, grpc.WithUnaryInterceptor(clientAuthInterceptor))
 	}
 	if withTLS {
-		tlsConfig := GetClientTLSConfig(t)
+		tlsConfig, err := GetClientTLSConfig()
+		if err != nil {
+			return nil, errors.New(fmt.Sprintf("failed to get TLS config for GRPC client. Error: %v", err))
+		}
 		grpcDialOptions = append(grpcDialOptions, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
 	}
 

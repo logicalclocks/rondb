@@ -28,7 +28,9 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"google.golang.org/grpc"
@@ -371,6 +373,7 @@ var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01
 
 func RandString(n int) string {
 	b := make([]rune, n)
+	rand.Seed(int64(time.Now().Nanosecond()))
 	for i := range b {
 		b[i] = letterRunes[rand.Intn(len(letterRunes))]
 	}
@@ -398,15 +401,7 @@ func sendGRPCPKReadRequest(
 	testInfo api.PKTestInfo,
 ) (int, *api.PKReadResponseGRPC) {
 
-	// Create gRPC client
-	conf := config.GetAll()
-	conn, err := testutils.CreateGrpcConn(t, conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
-	if err != nil {
-		t.Fatalf("Failed to connect to server %v", err)
-	}
-	defer conn.Close()
-
-	client := api.NewRonDBRESTClient(conn)
+	client := api.NewRonDBRESTClient(GetGRPCConnction())
 
 	// Create Request
 	pkReadParams := api.PKReadParams{
@@ -484,22 +479,35 @@ func BatchGRPCTest(t *testing.T, testInfo api.BatchOperationTestInfo, isBinaryDa
 }
 
 var grpcConn *grpc.ClientConn
+var grpcConnLock sync.Mutex
+
+// Create only one gRPC connection.
+// Tests start to fail if too many connections are opened and closed in a short time
+func InitGRPCConnction() (*grpc.ClientConn, error) {
+	if grpcConn != nil {
+		return grpcConn, nil
+	}
+
+	grpcConnLock.Lock()
+	grpcConnLock.Unlock()
+	var err error
+	if grpcConn == nil {
+		conf := config.GetAll()
+		grpcConn, err = testutils.CreateGrpcConn(conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return grpcConn, nil
+}
+
+func GetGRPCConnction() *grpc.ClientConn {
+	return grpcConn
+}
 
 func sendGRPCBatchRequest(t *testing.T, testInfo api.BatchOperationTestInfo) (int, *api.BatchResponseGRPC) {
 
-	// Create only one gRPC connection.
-	// Tests start to fail if too many connections are opened and closed in a short time
-	if grpcConn == nil {
-		conf := config.GetAll()
-		conn, err := testutils.CreateGrpcConn(t, conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
-		if err != nil {
-			t.Fatalf("Failed to connect to server %v", err)
-		}
-		grpcConn = conn
-		//defer conn.Close() // connection will close by the os when tests finish
-	}
-
-	gRPCClient := api.NewRonDBRESTClient(grpcConn)
+	gRPCClient := api.NewRonDBRESTClient(GetGRPCConnction())
 
 	// Create request
 	batchOpRequest := make([]*api.PKReadParams, len(testInfo.Operations))

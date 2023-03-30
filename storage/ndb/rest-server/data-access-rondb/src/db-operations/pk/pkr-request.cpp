@@ -94,7 +94,7 @@ Uint16 PKRRequest::PKValueLen(Uint32 index) {
 
 /*
  * First two bytes are immutable containing the size of the string
- * next two bytes are mutalbe that also contain the size of the string.
+ * next two bytes are mutable that also contain the size of the string.
  * Depending on the type of the column one or two bytes will be used for
  * storing size in the mutable size section
  *
