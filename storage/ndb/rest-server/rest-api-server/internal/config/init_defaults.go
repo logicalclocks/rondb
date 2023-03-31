@@ -74,13 +74,18 @@ func newWithDefaults() AllConfigs {
 			OpRetryInitialDelayInMS:       500,
 		},
 		Security: Security{
-			EnableTLS:                        false,
-			RequireAndVerifyClientCert:       false,
-			CertificateFile:                  "",
-			PrivateKeyFile:                   "",
-			RootCACertFile:                   "",
-			UseHopsworksAPIKeys:              true,
-			HopsworksAPIKeysCacheValiditySec: 3,
+			TLS: TLS{
+				EnableTLS:                  false,
+				RequireAndVerifyClientCert: false,
+				CertificateFile:            "",
+				PrivateKeyFile:             "",
+				RootCACertFile:             "",
+			},
+			APIKeyParameters: APIKeyParameters{
+				UseHopsworksAPIKeys:           true,
+				CacheRefreshIntervalSec:       5,
+				CacheUnusedEntriesEvictionSec: 60,
+			},
 		},
 		Log: log.LogConfig{
 			Level:      "warn",

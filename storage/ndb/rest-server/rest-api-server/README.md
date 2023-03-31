@@ -210,13 +210,18 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 	            "OpRetryInitialDelayInMS": 500
         },
         "Security": {
-                "EnableTLS": true,
-                "RequireAndVerifyClientCert": false,
-                "CertificateFile": "",
-                "PrivateKeyFile": "",
-                "RootCACertFile": "",
-                "UseHopsworksAPIKeys": true,
-                "HopsworksAPIKeysCacheValiditySec": 3
+                 "TLS": {
+                         "EnableTLS": true,
+                         "RequireAndVerifyClientCert": false,
+                         "CertificateFile": "",
+                         "PrivateKeyFile": "",
+                         "RootCACertFile": ""
+                 }
+                 "APIKeyParameters": {
+                         "UseHopsworksAPIKeys": true,
+                         "CacheRefreshIntervalSec": 5,
+                         "CacheUnusedEntriesEvictionSec": 60
+                 }
         },
         "Log": {
                 "Level": "info",
@@ -284,15 +289,25 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
 - **Security:** REST server security settings 
 
-  - **EnableTLS:** Enable/Disable TLS. The default value is *true*.
+  - **TLS:** Enable/Disable TLS. The default value is *true*.
+      - **EnableTLS:** Enable/Disable TLS. The default value is *true*.
   
-  - **RequireAndVerifyClientCert:**  Enable/Disable TLS client certificate requirement. The default value is *true*.
+      - **RequireAndVerifyClientCert:**  Enable/Disable TLS client certificate requirement. The default value is *true*.
 
-  - **RootCACertFile:**  Root CA file. Used in testing that use self-signed certificates. The default value is not set.
+      - **RootCACertFile:**  Root CA file. Used in testing that use self-signed certificates. The default value is not set.
   
-  - **CertificateFile:** Server certificate file. The default value is not set.
+      - **CertificateFile:** Server certificate file. The default value is not set.
   
-  - **PrivateKeyFile:** Server private key file. The default value is not set.
+      - **PrivateKeyFile:** Server private key file. The default value is not set.
+
+  - **APIKeyParameters:**
+
+      - **UseHopsworksAPIKeys:**  Enable/Disable Hopsworks API Key for authentication
+
+      - **CacheRefreshIntervalSec:** The API Keys are cached and refreshed periodically. You can not set the refresh period to zero.
+
+      - **CacheUnusedEntriesEvictionSec:** Unused API Keys are automatically evicted from the cache. Eviction time can not be less than cache refersh time (CacheRefreshIntervalSec) 
+
 
 - **Log:** REST Server logging settings 
 

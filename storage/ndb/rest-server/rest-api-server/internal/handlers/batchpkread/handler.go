@@ -18,28 +18,34 @@ package batchpkread
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/dal/heap"
+	"hopsworks.ai/rdrs/internal/handlers"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
 type Handler struct {
-	heap *heap.Heap
+	heap        *heap.Heap
+	apiKeyCache apikey.APIKeyCacher
 }
 
-func New(heap *heap.Heap) Handler {
-	return Handler{heap}
+// ensure all interface methods are implemented
+var _ handlers.Handler = (*Handler)(nil)
+
+func New(heap *heap.Heap, apiKeyCache apikey.APIKeyCacher) Handler {
+	return Handler{heap, apiKeyCache}
 }
 
 // TODO: This might have to be instantiated properly
 var pkReadHandler pkread.Handler
 
-func (h Handler) Validate(request interface{}) error {
+func (h *Handler) Validate(request interface{}) error {
 	pkOperations := request.(*[]*api.PKReadParams)
 	if pkOperations == nil {
 		return errors.New("operations is missing in payload")
@@ -55,9 +61,9 @@ func (h Handler) Validate(request interface{}) error {
 	return nil
 }
 
-func (h Handler) Authenticate(apiKey *string, request interface{}) error {
+func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	conf := config.GetAll()
-	if !conf.Security.UseHopsworksAPIKeys {
+	if !conf.Security.APIKeyParameters.UseHopsworksAPIKeys {
 		return nil
 	}
 
@@ -74,10 +80,14 @@ func (h Handler) Authenticate(apiKey *string, request interface{}) error {
 		dbArr = append(dbArr, &dbKey)
 	}
 
-	return apikey.ValidateAPIKey(apiKey, dbArr...)
+	err := h.apiKeyCache.ValidateAPIKey(apiKey, dbArr...)
+	if err != nil {
+		fmt.Printf("Validation failed. key %s, error  %v \n", *apiKey, err)
+	}
+	return err
 }
 
-func (h Handler) Execute(request interface{}, response interface{}) (int, error) {
+func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
 	pkOperations := request.(*[]*api.PKReadParams)
 
 	noOps := uint32(len(*pkOperations))

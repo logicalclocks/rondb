@@ -15,24 +15,15 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-package rest
+package apikey_cache
 
-import (
-	"net/http"
+import "time"
 
-	"github.com/gin-gonic/gin"
-	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/handlers"
-	"hopsworks.ai/rdrs/pkg/api"
-)
-
-func (h *RouteHandler) Stat(c *gin.Context) {
-	apiKey := c.GetHeader(config.API_KEY_NAME)
-	statResp := api.StatResponse{}
-	status, err := handlers.Handle(&h.statsHandler, &apiKey, nil, &statResp)
-	if err != nil {
-		c.AbortWithError(http.StatusInternalServerError, err)
-		return
-	}
-	c.JSON(status, statResp)
+type HWAPIKeyCache interface {
+	UpdateCache(apiKey *string) error
+	FindAndValidate(apiKey *string, dbs ...*string) (keyFoundInCache, allowedAccess bool)
+	Cleanup() error
+	LastUpdated(apiKey *string) time.Time
+	LastUsed(apiKey *string) time.Time
+	Size() int
 }

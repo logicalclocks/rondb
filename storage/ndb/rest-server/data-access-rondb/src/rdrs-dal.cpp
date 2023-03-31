@@ -97,6 +97,7 @@ RS_Status shutdown_connection() {
     // ndb_end(0); // causes seg faults when called repeated from unit tests*/
     NdbObjectPool::GetInstance()->Close();
     delete ndb_connection;
+    ndb_connection = nullptr;
   } catch (...) {
     WARN("Exception in Shutdown");
   }
@@ -168,7 +169,7 @@ RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *re
 }
 
 /**
- * Deallocate pointer array
+ * Returns statistis about RonDB connection
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats) {
   RonDB_Stats ret              = NdbObjectPool::GetInstance()->GetStats();

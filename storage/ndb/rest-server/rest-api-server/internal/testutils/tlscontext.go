@@ -28,14 +28,14 @@ func GetClientTLSConfig() (*tls.Config, error) {
 	conf := config.GetAll()
 
 	clientTLSConfig := &tls.Config{}
-	if conf.Security.RootCACertFile != "" {
-		clientTLSConfig.RootCAs = tlsutils.TrustedCAs(conf.Security.RootCACertFile)
+	if conf.Security.TLS.RootCACertFile != "" {
+		clientTLSConfig.RootCAs = tlsutils.TrustedCAs(conf.Security.TLS.RootCACertFile)
 	}
 
-	if conf.Security.RequireAndVerifyClientCert {
+	if conf.Security.TLS.RequireAndVerifyClientCert {
 		clientCert, err := tls.LoadX509KeyPair(
-			conf.Security.TestParameters.ClientCertFile,
-			conf.Security.TestParameters.ClientKeyFile,
+			conf.Security.TLS.TestParameters.ClientCertFile,
+			conf.Security.TLS.TestParameters.ClientKeyFile,
 		)
 		if err != nil {
 			return nil, err

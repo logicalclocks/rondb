@@ -25,10 +25,41 @@ import (
 	"hopsworks.ai/rdrs/internal/log"
 )
 
+type Validater interface {
+	Validate() error
+}
+
+// make sure all structs implement Validater
+var _ Validater = (*AllConfigs)(nil)
+var _ Validater = (*Internal)(nil)
+var _ Validater = (*GRPC)(nil)
+var _ Validater = (*REST)(nil)
+var _ Validater = (*MySQLServer)(nil)
+var _ Validater = (*Testing)(nil)
+var _ Validater = (*MySQL)(nil)
+var _ Validater = (*Mgmd)(nil)
+var _ Validater = (*RonDB)(nil)
+var _ Validater = (*TestParameters)(nil)
+var _ Validater = (*APIKeyParameters)(nil)
+var _ Validater = (*Security)(nil)
+var _ Validater = (*TLS)(nil)
+
 type Internal struct {
-	BufferSize          int
+	BufferSize          uint32
 	PreAllocatedBuffers uint32
 	GOMAXPROCS          int
+}
+
+func (i *Internal) Validate() error {
+	if i.PreAllocatedBuffers == 0 {
+		log.Warnf("PreAllocatedBuffers are set to 0. It may impact performance")
+	}
+
+	if i.BufferSize < 256 {
+		return errors.New("BufferSize is too low")
+	}
+
+	return nil
 }
 
 type GRPC struct {
@@ -77,6 +108,10 @@ type Testing struct {
 	MySQL MySQL
 }
 
+func (t *Testing) Validate() error {
+	return t.MySQL.Validate()
+}
+
 type MySQL struct {
 	Servers  []MySQLServer
 	User     string
@@ -93,18 +128,21 @@ func (t Testing) GenerateMysqldConnectString() string {
 		server.Port)
 }
 
-func (t *Testing) Validate() error {
-	if len(t.MySQL.Servers) < 1 {
+func (m *MySQL) Validate() error {
+
+	if len(m.Servers) < 1 {
 		return errors.New("at least one MySQL server has to be defined")
-	} else if len(t.MySQL.Servers) > 1 {
+	} else if len(m.Servers) > 1 {
 		return errors.New("we do not support specifying more than one MySQL server yet")
 	}
-	for _, server := range t.MySQL.Servers {
+
+	for _, server := range m.Servers {
 		if err := server.Validate(); err != nil {
 			return err
 		}
 	}
-	if t.MySQL.User == "" {
+
+	if m.User == "" {
 		return errors.New("the MySQL user cannot be empty")
 	}
 	return nil
@@ -184,31 +222,77 @@ type TestParameters struct {
 	ClientKeyFile  string
 }
 
-type Security struct {
-	EnableTLS                        bool
-	RequireAndVerifyClientCert       bool
-	CertificateFile                  string
-	PrivateKeyFile                   string
-	RootCACertFile                   string
-	UseHopsworksAPIKeys              bool
-	HopsworksAPIKeysCacheValiditySec int
-	TestParameters                   TestParameters
+func (t *TestParameters) Validate() error {
+	// TODO
+	return nil
 }
 
-func (c *Security) Validate() error {
+type APIKeyParameters struct {
+	UseHopsworksAPIKeys           bool
+	CacheRefreshIntervalSec       uint32
+	CacheUnusedEntriesEvictionSec uint32
+}
+
+func (a *APIKeyParameters) Validate() error {
+	if a.CacheRefreshIntervalSec == 0 {
+		return errors.New("HopsworksAPIKeysCacheRefreshIntervalSec can be 0. Possible values >= 1")
+	}
+
+	if a.CacheUnusedEntriesEvictionSec == 0 {
+		return errors.New("CacheUnusedEntriesEvictionSec can be 0.")
+	}
+
+	if a.CacheRefreshIntervalSec > a.CacheUnusedEntriesEvictionSec {
+		return errors.New("CacheRefreshIntervalSec can not be more that CacheUnusedEntriesEvictionSec")
+	}
+
+	return nil
+}
+
+type TLS struct {
+	EnableTLS                  bool
+	RequireAndVerifyClientCert bool
+	CertificateFile            string
+	PrivateKeyFile             string
+	RootCACertFile             string
+	TestParameters             TestParameters
+}
+
+func (t *TLS) Validate() error {
 	if IsUnitTest() {
 		// In case of unit tests, we create dummy certificates
 		return nil
 	}
-	if c.EnableTLS {
-		if c.CertificateFile == "" || c.PrivateKeyFile == "" {
+
+	if t.EnableTLS {
+		if t.CertificateFile == "" || t.PrivateKeyFile == "" {
 			return errors.New("cannot enable TLS if `CertificateFile` or `PrivateKeyFile` is not set")
 		}
 	} else {
-		if c.RequireAndVerifyClientCert {
+		if t.RequireAndVerifyClientCert {
 			return errors.New("cannot require client certs if TLS is not enabled")
 		}
 	}
+
+	return t.TestParameters.Validate()
+}
+
+type Security struct {
+	TLS              TLS
+	APIKeyParameters APIKeyParameters
+}
+
+func (c *Security) Validate() error {
+	err := c.TLS.Validate()
+	if err != nil {
+		return err
+	}
+
+	err = c.APIKeyParameters.Validate()
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 

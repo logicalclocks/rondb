@@ -69,9 +69,9 @@ func compare(t *testing.T, stats *api.StatResponse, expectedAllocations int64, n
 		t.Fatalf("Native buffer stats do not match Got: %v", stats)
 	}
 
-	if stats.RonDBStats.NdbObjectsCreationCount != numOps ||
-		stats.RonDBStats.NdbObjectsTotalCount != numOps ||
-		stats.RonDBStats.NdbObjectsFreeCount != numOps {
+	// Number of NDB objects created must be equal to number of NDB
+	// objects freed
+	if stats.RonDBStats.NdbObjectsTotalCount != stats.RonDBStats.NdbObjectsFreeCount {
 		t.Fatalf("RonDB stats do not match. %#v", stats.RonDBStats)
 	}
 }

@@ -181,5 +181,14 @@ func createHopsworksSchema(dbsToRegister ...string) string {
 		addNewProject = strings.ReplaceAll(addNewProject, hopsworksAddProject_PROJECT_NUMBER, strconv.Itoa(idx+1))
 		hopsworksScheme += addNewProject
 	}
+
+	// register additional API Keys
+	for i := 2; i <= HopsworksAPIKey_ADDITIONAL_KEYS+1; i++ {
+		addAPIKey := strings.ReplaceAll(HopsworksAPIKey, HopsworksAPIKey_KEY_ID, fmt.Sprintf("%d", i))
+		addAPIKey = strings.ReplaceAll(addAPIKey, HopsworksAPIKey_KEY_PREFIX, fmt.Sprintf("%016d", i))
+		addAPIKey = strings.ReplaceAll(addAPIKey, HopsworksAPIKey_KEY_NAME, fmt.Sprintf("name%d", i))
+		hopsworksScheme += addAPIKey
+	}
+
 	return hopsworksScheme
 }

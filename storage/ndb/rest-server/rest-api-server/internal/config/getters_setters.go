@@ -23,8 +23,8 @@ import (
 	"io/ioutil"
 )
 
-func GetAll() AllConfigs {
-	return globalConfig
+func GetAll() *AllConfigs {
+	return &globalConfig
 }
 
 // TODO: Add test with embedded config_template.json

@@ -23,31 +23,35 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/dal/heap"
+	"hopsworks.ai/rdrs/internal/handlers"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
 type Handler struct {
-	heap *heap.Heap
+	heap        *heap.Heap
+	apiKeyCache apikey.APIKeyCacher
 }
 
-func New(heap *heap.Heap) Handler {
-	return Handler{heap}
+var _ handlers.Handler = (*Handler)(nil)
+
+func New(heap *heap.Heap, apiKeyCache apikey.APIKeyCacher) Handler {
+	return Handler{heap, apiKeyCache}
 }
 
-func (h Handler) Validate(request interface{}) error {
+func (h *Handler) Validate(request interface{}) error {
 	return nil
 }
 
-func (h Handler) Authenticate(apiKey *string, request interface{}) error {
+func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	conf := config.GetAll()
-	if !conf.Security.UseHopsworksAPIKeys {
+	if !conf.Security.APIKeyParameters.UseHopsworksAPIKeys {
 		return nil
 	}
-	return apikey.ValidateAPIKey(apiKey)
+	return h.apiKeyCache.ValidateAPIKey(apiKey)
 }
 
-func (h Handler) Execute(request interface{}, response interface{}) (int, error) {
+func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
 	rondbStats, dalErr := dal.GetRonDBStats()
 	if dalErr != nil {
 		return http.StatusInternalServerError, dalErr

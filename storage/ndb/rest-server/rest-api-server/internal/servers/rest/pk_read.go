@@ -37,7 +37,7 @@ func (h *RouteHandler) PkRead(c *gin.Context) {
 	var responseIntf api.PKReadResponse = (api.PKReadResponse)(&api.PKReadResponseJSON{})
 	responseIntf.Init()
 
-	status, err := handlers.Handle(h.pkReadHandler, &apiKey, pkReadParams, responseIntf)
+	status, err := handlers.Handle(&h.pkReadHandler, &apiKey, pkReadParams, responseIntf)
 	if err != nil {
 		c.AbortWithError(status, err)
 		return

@@ -17,54 +17,72 @@
 package apikey
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
-	"hopsworks.ai/rdrs/internal/dal"
-	"hopsworks.ai/rdrs/internal/security/apikey/authcache"
+	"hopsworks.ai/rdrs/internal/security/apikey/apikey_cache"
+	"hopsworks.ai/rdrs/internal/security/apikey/apikey_cache/hw_apikey_cache"
 )
 
+type APIKeyCacher interface {
+	ValidateAPIKey(apiKey *string, dbs ...*string) error
+	Cleanup() error
+	LastUpdated(apiKey *string) time.Time
+	LastUsed(apiKey *string) time.Time
+	Size() int
+}
+
+type APIKeyCache struct {
+	HWAPIKeyCache apikey_cache.HWAPIKeyCache
+}
+
+var _ APIKeyCacher = (*APIKeyCache)(nil)
+
+func NewAPIKeyCache() (APIKeyCacher, error) {
+	cache := APIKeyCache{HWAPIKeyCache: hw_apikey_cache.NewAPIKeyCache()}
+	return &cache, nil
+}
+
 /*
-	Checking whether the API key can access the given databases
+Checking whether the API key can access the given databases
 */
-func ValidateAPIKey(apiKey *string, dbs ...*string) error {
-	err := validateApiKeyFormat(apiKey)
+func (apic *APIKeyCache) ValidateAPIKey(apiKey *string, dbs ...*string) error {
+	err := apic.validateApiKeyFormat(apiKey)
 	if err != nil {
 		return err
 	}
 
-	if len(dbs) < 1 || dbs == nil {
+	if dbs == nil || len(dbs) == 0 {
 		return nil
 	}
 
-	keyFoundInCache, allowedAccess := authcache.FindAndValidateCache(apiKey, dbs...)
+	// Authenticates only using the the cache. No request sent to backend
+	keyFoundInCache, allowedAccess := apic.HWAPIKeyCache.FindAndValidate(apiKey, dbs...)
 	if keyFoundInCache {
 		if !allowedAccess {
-			return errors.New("unauthorized: no access to db registered in cache")
+			return errors.New(fmt.Sprintf("unauthorized. Found in cache: %v, allowed access %v",
+				keyFoundInCache, allowedAccess))
 		}
 		return nil
 	}
 
-	hopsKey, err := authenticateUserRemote(apiKey)
-	if err != nil {
+	// update the cache by fetching the API key from backend
+	if err = apic.HWAPIKeyCache.UpdateCache(apiKey); err != nil {
 		return err
 	}
 
-	_, err = getUserDatabasesRemote(apiKey, hopsKey)
-	if err != nil {
-		return err
-	}
-
-	keyFoundInCache, allowedAccess = authcache.FindAndValidateCache(apiKey, dbs...)
+	// Authenticates only using the the cache. No request sent to backend
+	keyFoundInCache, allowedAccess = apic.HWAPIKeyCache.FindAndValidate(apiKey, dbs...)
 	if !keyFoundInCache || !allowedAccess {
-		return errors.New("unauthorized: no access to db registered")
+		return errors.New(fmt.Sprintf("unauthorized. After cache update. Found in cache: %v, allowed access %v",
+			keyFoundInCache, allowedAccess))
 	}
 	return nil
 }
 
-func validateApiKeyFormat(apiKey *string) error {
+func (apic *APIKeyCache) validateApiKeyFormat(apiKey *string) error {
 	if apiKey == nil {
 		return errors.New("the apikey is nil")
 	}
@@ -75,31 +93,19 @@ func validateApiKeyFormat(apiKey *string) error {
 	return nil
 }
 
-func authenticateUserRemote(apiKey *string) (*dal.HopsworksAPIKey, error) {
-	splits := strings.Split(*apiKey, ".")
-	prefix := splits[0]
-	secret := splits[1]
-
-	key, err := dal.GetAPIKey(prefix)
-	if err != nil {
-		return nil, err
-	}
-
-	//sha256(client.secret + db.salt) = db.secret
-	newSecret := sha256.Sum256([]byte(secret + key.Salt))
-	newSecretHex := fmt.Sprintf("%x", newSecret)
-	if strings.Compare(string(newSecretHex), key.Secret) != 0 {
-		return nil, errors.New("wrong API Key")
-	}
-	return key, nil
+func (apic *APIKeyCache) Cleanup() error {
+	return apic.HWAPIKeyCache.Cleanup()
 }
 
-// This fetches the databases from the DB and updates the cache
-func getUserDatabasesRemote(apikey *string, hopsworksKey *dal.HopsworksAPIKey) ([]string, error) {
-	dbs, err := dal.GetUserProjects(hopsworksKey.UserID)
-	if err != nil {
-		return nil, err
-	}
-	authcache.Set(*apikey, dbs)
-	return dbs, nil
+// only for testing
+func (apic *APIKeyCache) LastUpdated(apiKey *string) time.Time {
+	return apic.HWAPIKeyCache.LastUpdated(apiKey)
+}
+
+func (apic *APIKeyCache) LastUsed(apiKey *string) time.Time {
+	return apic.HWAPIKeyCache.LastUsed(apiKey)
+}
+
+func (apic *APIKeyCache) Size() int {
+	return apic.HWAPIKeyCache.Size()
 }

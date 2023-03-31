@@ -28,6 +28,7 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/internal/servers"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/resources/testdbs"
@@ -42,10 +43,7 @@ func profilingEnabled() bool {
 /*
 Wraps all unit tests in this package
 */
-func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cleanup func(), err error) {
-	if !*testutils.WithRonDB {
-		return
-	}
+func InitialiseTesting(conf *config.AllConfigs, createOnlyTheseDBs ...string) (func(), error) {
 
 	/*
 		This tends to deliver better benchmarking results
@@ -54,14 +52,32 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 	*/
 	runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
 
-	cleanupTLSCerts := func() {}
-	if conf.Security.EnableTLS {
-		cleanupTLSCerts, err = testutils.CreateAllTLSCerts()
-		if err != nil {
-			return cleanup, err
+	index := 0
+	cleanupFNs := make([]*func(), 10)
+	cleanupFN := func() {
+		//clean up in reverse order
+		for i := len(cleanupFNs) - 1; i >= 0; i-- {
+			if cleanupFNs[i] != nil {
+				(*cleanupFNs[i])()
+			}
 		}
 	}
 
+	if !*testutils.WithRonDB {
+		return nil, nil
+	}
+
+	//---------------------------- TLS ----------------------------------------
+	if conf.Security.TLS.EnableTLS {
+		cleanupTLSCerts, err := testutils.CreateAllTLSCerts()
+		if err != nil {
+			return nil, err
+		}
+		cleanupFNs[index] = &cleanupTLSCerts
+		index++
+	}
+
+	//---------------------------- DATABASES ----------------------------------
 	var dbsToCreate []string
 	if len(createOnlyTheseDBs) > 0 {
 		dbsToCreate = createOnlyTheseDBs
@@ -74,61 +90,68 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 	//drop the "sentinel" DB if you want to recreate all the databases.
 	//for MTR the cleanup is done in mysql-test/suite/rdrs/include/rdrs_cleanup.inc
 	if !testutils.SentinelDBExists() {
-		err, _ := testutils.CreateDatabases(conf.Security.UseHopsworksAPIKeys, dbsToCreate...)
+		err, _ := testutils.CreateDatabases(conf.Security.APIKeyParameters.UseHopsworksAPIKeys, dbsToCreate...)
 		if err != nil {
-			cleanupTLSCerts()
-			return cleanup, fmt.Errorf("failed creating databases; error: %v", err)
+			cleanupFN()
+			return nil, fmt.Errorf("failed creating databases; error: %v", err)
 		}
 	}
 
+	//---------------------------- HEAP ---------------------------------------
 	newHeap, releaseBuffers, err := heap.New()
 	if err != nil {
-		cleanupTLSCerts()
-		return cleanup, fmt.Errorf("failed creating new heap; error: %v ", err)
+		cleanupFN()
+		return nil, fmt.Errorf("failed creating new heap; error: %v ", err)
 	}
+	cleanupFNs[index] = &releaseBuffers
+	index++
 
+	//---------------------------- API KEY Cache ------------------------------
+	apiKeyCache, err := apikey.NewAPIKeyCache()
+	if err != nil {
+		cleanupFN()
+		return nil, fmt.Errorf("failed creating new API Key Cache; error: %v ", err)
+	}
+	apiKeyCleanup := func() {
+
+		fmt.Printf("Cleaner integration test api key cleaner\n")
+		apiKeyCache.Cleanup()
+	}
+	cleanupFNs[index] = &apiKeyCleanup
+	index++
+
+	//---------------------------- Servers ------------------------------------
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)
-	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, quit)
+	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache, quit)
 	if err != nil {
-		releaseBuffers()
-		cleanupTLSCerts()
-		return cleanup, fmt.Errorf("failed creating default servers; error: %v ", err)
+		cleanupFN()
+		return nil, fmt.Errorf("failed creating default servers; error: %v ", err)
 	}
+	cleanupFNs[index] = &cleanupServers
+	index++
 
-	log.Info("Successfully started up default servers")
+	// some times the servers take some time to start and units tests fail due to connection failures
 	time.Sleep(500 * time.Millisecond)
+	log.Debug("Successfully started up servers")
 
 	// Check if profiling is enabled
 	if profilingEnabled() {
-		// Start profiling
 		f, err := os.Create("profile.out")
 		if err != nil {
-			cleanupServers()
-			releaseBuffers()
-			cleanupTLSCerts()
-			return cleanup, fmt.Errorf("could not create profile.out; error: %w ", err)
+			cleanupFN()
+			return nil, fmt.Errorf("could not create profile.out; error: %w ", err)
 		}
-		defer f.Close()
+		fileCloser := func() { f.Close() }
+		cleanupFNs[index] = &fileCloser
+		index++
+
+		// Start profiling
 		if err := pprof.StartCPUProfile(f); err != nil {
-			cleanupServers()
-			releaseBuffers()
-			cleanupTLSCerts()
-			return cleanup, fmt.Errorf("could not start CPU profile; error: %w ", err)
+			cleanupFN()
+			return nil, fmt.Errorf("could not start CPU profile; error: %w ", err)
 		}
 	}
 
-	return func() {
-		// Running defer here in case checking the heap fails
-		defer cleanupTLSCerts()
-		defer releaseBuffers()
-		defer cleanupServers()
-		defer pprof.StopCPUProfile()
-
-		stats := newHeap.GetNativeBuffersStats()
-		if stats.BuffersCount != stats.FreeBuffers {
-			log.Errorf("Number of free buffers do not match. Expecting: %d, Got: %d",
-				stats.BuffersCount, stats.FreeBuffers)
-		}
-	}, nil
+	return cleanupFN, nil
 }

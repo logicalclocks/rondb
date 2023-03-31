@@ -173,7 +173,7 @@ INSERT INTO
     `api_key`
 VALUES
     (
-        2049,
+        1,
         'bkYjEz6OTZyevbqt',
         '709faa77accc3f30394cfb53b67253ba64881528cb3056eea110703ca430cce4',
         '1/1TxiaiIB01rIcY2E36iuwKP6fm2GzBaNaQqOVGMhH0AvcIlIzaUIw0fMDjKNLa0OWxAOrfTSPqAolpI/n+ug==',

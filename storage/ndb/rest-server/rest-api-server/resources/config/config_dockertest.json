@@ -28,13 +28,16 @@
                 "OpRetryInitialDelayInMS": 500
         },
         "Security": {
-                "EnableTLS": true,
-                "RequireAndVerifyClientCert": true,
-                "CertificateFile": "",
-                "PrivateKeyFile": "",
-                "RootCACertFile": "",
-                "UseHopsworksAPIKeys": true,
-                "HopsworksAPIKeysCacheValiditySec": 3
+                "TLS": {
+                        "EnableTLS": true,
+                        "RequireAndVerifyClientCert": true,
+                        "CertificateFile": "",
+                        "PrivateKeyFile": "",
+                        "RootCACertFile": ""
+                }, 
+                "APIKeyParameters": {
+                        "UseHopsworksAPIKeys": true
+                }
         },
         "Log": {
                 "Level": "info",

@@ -28,6 +28,7 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/internal/servers"
 	"hopsworks.ai/rdrs/version"
 )
@@ -65,7 +66,13 @@ func main() {
 	}
 	defer releaseBuffers()
 
-	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, quit)
+	apiKeyCache, err := apikey.NewAPIKeyCache()
+	if err != nil {
+		panic(err)
+	}
+	defer apiKeyCache.Cleanup()
+
+	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache, quit)
 	if err != nil {
 		panic(err)
 	}

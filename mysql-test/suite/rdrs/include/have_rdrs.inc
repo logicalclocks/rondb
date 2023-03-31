@@ -177,10 +177,14 @@ printf $CONF "                  \"Password\": \"\"\n";
 printf $CONF "          }\n";
 printf $CONF "        },\n";
 
-printf $CONF "        \"Security\": {\n";
-printf $CONF "                \"EnableTLS\": true,\n";
-printf $CONF "                \"RequireAndVerifyClientCert\": true,\n";
-printf $CONF "                \"UseHopsWorksAPIKeys\": true\n";
+printf $CONF "        \"Security\": {\n"
+printf $CONF "            \"TLS\": {\n"
+printf $CONF "                \"EnableTLS\": true,\n"
+printf $CONF "                \"RequireAndVerifyClientCert\": true,\n"
+printf $CONF "            },\n"
+printf $CONF "            \"APIKeyParameters\": {\n"
+printf $CONF "                 \"UseHopsworksAPIKeys\": true,\n"
+printf $CONF "            } \n"
 printf $CONF "        }\n";
 
 printf $CONF "}\n";

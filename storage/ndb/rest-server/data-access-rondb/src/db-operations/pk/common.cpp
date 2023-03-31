@@ -943,14 +943,16 @@ bool CanRetryOperation(RS_Status status) {
   if (status.http_code != SUCCESS) {
     if (status.classification == NdbError::TemporaryError) {
       retry = true;
+    } else if(status.code == 245 /* many active scans */) {
+      retry = true;
     } else if (UnloadSchema(status)) {
       retry = true;
     }
   }
 
   if (retry) {
-    DEBUG(std::string("Transient error. MySQL Code: ") + std::to_string(status.mysql_code) +
-          " Code: " + std::to_string(status.code));
+    INFO(std::string("Transient error. MySQL Code: ") + std::to_string(status.mysql_code) +
+          " Code: " + std::to_string(status.code)+" Message: "+status.message);
   }
   return retry;
 }

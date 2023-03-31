@@ -107,7 +107,7 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff);
 RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *resp_buffs);
 
 /**
- * Deallocate pointer array
+ * Returns statistis about RonDB connection 
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats);
 
