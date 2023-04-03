@@ -266,3 +266,5 @@ honnef.co/go/tools v0.0.0-20190523083050-ea95bdfd59fc/go.mod h1:rf3lG4BRIbNafJWh
 rsc.io/pdf v0.1.1/go.mod h1:n8OzWcQ6Sp37PL01nO98y4iUCRdTGarVfzxY20ICaU4=
 zappem.net/pub/debug/xxd v0.5.0 h1:JHFIpEfiouaVn5EeH4739UBGULLPmBhs7tQDbDbucjU=
 zappem.net/pub/debug/xxd v0.5.0/go.mod h1:7m1I+mBsdwBWcaVp8P0w0YQP9UWRsJEkrXB4OwF6b/o=
+zappem.net/pub/debug/xxd v1.0.0 h1:weitvkgR0yOBP4QfGTPyQDD25rxAJxYw6+Dy2wrA3Zs=
+zappem.net/pub/debug/xxd v1.0.0/go.mod h1:7m1I+mBsdwBWcaVp8P0w0YQP9UWRsJEkrXB4OwF6b/o=

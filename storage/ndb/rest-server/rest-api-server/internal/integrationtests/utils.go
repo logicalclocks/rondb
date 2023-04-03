@@ -28,9 +28,12 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
@@ -44,8 +47,8 @@ func SendHttpRequest(
 	httpVerb string,
 	url string,
 	body string,
-	expectedStatus int,
 	expectedErrMsg string,
+	expectedStatus ...int,
 ) (int, string) {
 	t.Helper()
 
@@ -87,9 +90,17 @@ func SendHttpRequest(
 	}
 	respBody := string(respBodyBtyes)
 
-	if respCode != expectedStatus {
-		t.Fatalf("received unexpected status '%d'\nexpected status: '%d'\nurl: '%s'\nbody: '%s'\nresponse body: %v ", respCode, expectedStatus, url, body, respBody)
-	} else if respCode != http.StatusOK && !strings.Contains(respBody, expectedErrMsg) {
+	idx := -1
+	for i, c := range expectedStatus {
+		if c == respCode {
+			idx = i
+		}
+	}
+	if idx == -1 {
+		t.Fatalf("received unexpected status '%d'\nexpected status: '%v'\nurl: '%s'\nbody: '%s'\nresponse body: %v ", respCode, expectedStatus, url, body, respBody)
+	}
+
+	if respCode != http.StatusOK && !strings.Contains(respBody, expectedErrMsg) {
 		t.Fatalf("response error body does not contain '%s'; received response body: '%s'", expectedErrMsg, respBody)
 	}
 
@@ -358,10 +369,11 @@ func NewFiltersKVs(vals ...interface{}) *[]api.Filter {
 	return &filters
 }
 
-var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$")
+var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
 func RandString(n int) string {
 	b := make([]rune, n)
+	rand.Seed(int64(time.Now().Nanosecond()))
 	for i := range b {
 		b[i] = letterRunes[rand.Intn(len(letterRunes))]
 	}
@@ -389,15 +401,7 @@ func sendGRPCPKReadRequest(
 	testInfo api.PKTestInfo,
 ) (int, *api.PKReadResponseGRPC) {
 
-	// Create gRPC client
-	conf := config.GetAll()
-	conn, err := testutils.CreateGrpcConn(t, conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
-	if err != nil {
-		t.Fatalf("Failed to connect to server %v", err)
-	}
-	defer conn.Close()
-
-	client := api.NewRonDBRESTClient(conn)
+	client := api.NewRonDBRESTClient(GetGRPCConnction())
 
 	// Create Request
 	pkReadParams := api.PKReadParams{
@@ -452,7 +456,7 @@ func pkRESTTest(t *testing.T, testInfo api.PKTestInfo, isBinaryData bool) {
 	}
 
 	httpCode, res := SendHttpRequest(t, config.PK_HTTP_VERB, url,
-		string(body), testInfo.HttpCode, testInfo.ErrMsgContains)
+		string(body), testInfo.ErrMsgContains, testInfo.HttpCode)
 	if httpCode == http.StatusOK {
 		ValidateResHttp(t, testInfo, res, isBinaryData)
 	}
@@ -461,30 +465,49 @@ func pkRESTTest(t *testing.T, testInfo api.PKTestInfo, isBinaryData bool) {
 func BatchTest(t *testing.T, tests map[string]api.BatchOperationTestInfo, isBinaryData bool) {
 	for name, testInfo := range tests {
 		t.Run(name, func(t *testing.T) {
-			batchRESTTest(t, testInfo, isBinaryData)
-			batchGRPCTest(t, testInfo, isBinaryData)
+			BatchRESTTest(t, testInfo, isBinaryData, true)
+			BatchGRPCTest(t, testInfo, isBinaryData, true)
 		})
 	}
 }
 
-func batchGRPCTest(t *testing.T, testInfo api.BatchOperationTestInfo, isBinaryData bool) {
+func BatchGRPCTest(t *testing.T, testInfo api.BatchOperationTestInfo, isBinaryData bool, validateData bool) {
 	httpCode, res := sendGRPCBatchRequest(t, testInfo)
 	if httpCode == http.StatusOK {
-		validateBatchResponseGRPC(t, testInfo, res, isBinaryData)
+		validateBatchResponseGRPC(t, testInfo, res, isBinaryData, validateData)
 	}
+}
+
+var grpcConn *grpc.ClientConn
+var grpcConnLock sync.Mutex
+
+// Create only one gRPC connection.
+// Tests start to fail if too many connections are opened and closed in a short time
+func InitGRPCConnction() (*grpc.ClientConn, error) {
+	if grpcConn != nil {
+		return grpcConn, nil
+	}
+
+	grpcConnLock.Lock()
+	grpcConnLock.Unlock()
+	var err error
+	if grpcConn == nil {
+		conf := config.GetAll()
+		grpcConn, err = testutils.CreateGrpcConn(conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return grpcConn, nil
+}
+
+func GetGRPCConnction() *grpc.ClientConn {
+	return grpcConn
 }
 
 func sendGRPCBatchRequest(t *testing.T, testInfo api.BatchOperationTestInfo) (int, *api.BatchResponseGRPC) {
 
-	// Create gRPC client
-	conf := config.GetAll()
-	conn, err := testutils.CreateGrpcConn(t, conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
-	if err != nil {
-		t.Fatalf("Failed to connect to server %v", err)
-	}
-	defer conn.Close()
-
-	client := api.NewRonDBRESTClient(conn)
+	gRPCClient := api.NewRonDBRESTClient(GetGRPCConnction())
 
 	// Create request
 	batchOpRequest := make([]*api.PKReadParams, len(testInfo.Operations))
@@ -502,17 +525,23 @@ func sendGRPCBatchRequest(t *testing.T, testInfo api.BatchOperationTestInfo) (in
 
 	batchRequestProto := api.ConvertBatchOpRequest(batchOpRequest)
 
-	expectedStatus := testInfo.HttpCode
 	respCode := 200
 	var errStr string
-	respProto, err := client.Batch(context.Background(), batchRequestProto)
+	respProto, err := gRPCClient.Batch(context.Background(), batchRequestProto)
 	if err != nil {
 		respCode = GetStatusCodeFromError(t, err)
 		errStr = fmt.Sprintf("%v", err)
 	}
 
-	if respCode != expectedStatus {
-		t.Fatalf("Received unexpected status; Expected: %d, Got: %d; Complete Error Message: '%s'", expectedStatus, respCode, errStr)
+	idx := -1
+	for i, expCode := range testInfo.HttpCode {
+		if expCode == respCode {
+			idx = i
+		}
+	}
+
+	if idx == -1 {
+		t.Fatalf("Received unexpected status; Expected: %v, Got: %d; Complete Error Message: '%s'", testInfo.HttpCode, respCode, errStr)
 	}
 
 	if respCode != http.StatusOK && !strings.Contains(errStr, testInfo.ErrMsgContains) {
@@ -527,8 +556,14 @@ func sendGRPCBatchRequest(t *testing.T, testInfo api.BatchOperationTestInfo) (in
 	}
 }
 
-func batchRESTTest(t *testing.T, testInfo api.BatchOperationTestInfo, isBinaryData bool) {
-	// batch operation
+func BatchRESTTest(t *testing.T, testInfo api.BatchOperationTestInfo, isBinaryData bool, validateData bool) {
+	httpCode, res := sendHttpBatchRequest(t, testInfo, isBinaryData)
+	if httpCode == http.StatusOK {
+		validateBatchResponseHttp(t, testInfo, res, isBinaryData, validateData)
+	}
+}
+
+func sendHttpBatchRequest(t *testing.T, testInfo api.BatchOperationTestInfo, isBinaryData bool) (httpCode int, res string) {
 	subOps := []api.BatchSubOp{}
 	for _, op := range testInfo.Operations {
 		subOps = append(subOps, op.SubOperation)
@@ -540,23 +575,26 @@ func batchRESTTest(t *testing.T, testInfo api.BatchOperationTestInfo, isBinaryDa
 	if err != nil {
 		t.Fatalf("Failed to marshall test request %v", err)
 	}
-	httpCode, res := SendHttpRequest(t, config.BATCH_HTTP_VERB, url,
-		string(body), testInfo.HttpCode, testInfo.ErrMsgContains)
-	if httpCode == http.StatusOK {
-		validateBatchResponseHttp(t, testInfo, res, isBinaryData)
+	httpCode, res = SendHttpRequest(t, config.BATCH_HTTP_VERB, url,
+		string(body), testInfo.ErrMsgContains, testInfo.HttpCode[:]...)
+	return
+}
+
+func validateBatchResponseHttp(t testing.TB, testInfo api.BatchOperationTestInfo, resp string, isBinaryData bool, validateData bool) {
+	t.Helper()
+	validateBatchResponseOpIdsNCodeHttp(t, testInfo, resp)
+	if validateData {
+		validateBatchResponseValuesHttp(t, testInfo, resp, isBinaryData)
 	}
 }
 
-func validateBatchResponseHttp(t testing.TB, testInfo api.BatchOperationTestInfo, resp string, isBinaryData bool) {
-	t.Helper()
-	validateBatchResponseOpIdsNCodeHttp(t, testInfo, resp)
-	validateBatchResponseValuesHttp(t, testInfo, resp, isBinaryData)
-}
-
-func validateBatchResponseGRPC(t testing.TB, testInfo api.BatchOperationTestInfo, resp *api.BatchResponseGRPC, isBinaryData bool) {
+func validateBatchResponseGRPC(t testing.TB, testInfo api.BatchOperationTestInfo, resp *api.BatchResponseGRPC,
+	isBinaryData bool, validateData bool) {
 	t.Helper()
 	validateBatchResponseOpIdsNCodeGRPC(t, testInfo, resp)
-	validateBatchResponseValuesGRPC(t, testInfo, resp, isBinaryData)
+	if validateData {
+		validateBatchResponseValuesGRPC(t, testInfo, resp, isBinaryData)
+	}
 }
 
 func validateBatchResponseOpIdsNCodeGRPC(t testing.TB, testInfo api.BatchOperationTestInfo, resp *api.BatchResponseGRPC) {
@@ -566,7 +604,7 @@ func validateBatchResponseOpIdsNCodeGRPC(t testing.TB, testInfo api.BatchOperati
 
 	for i, subResp := range *resp.Result {
 		checkOpIDandStatus(t, testInfo.Operations[i], subResp.Body.OperationID,
-			int(*subResp.Code))
+			int(*subResp.Code), subResp)
 	}
 }
 
@@ -575,6 +613,7 @@ func checkOpIDandStatus(
 	testInfo api.BatchSubOperationTestInfo,
 	opIDGot *string,
 	statusGot int,
+	subResponse api.PKReadResponseWithCode,
 ) {
 	expectingOpID := testInfo.SubOperation.Body.OperationID
 	expectingStatus := testInfo.HttpCode
@@ -586,9 +625,15 @@ func checkOpIDandStatus(
 		}
 	}
 
-	if expectingStatus != statusGot {
-		t.Fatalf("Return code does not match. Expecting: %d, Got: %d. TestInfo: %v",
-			expectingStatus, statusGot, testInfo)
+	idx := -1
+	for i, c := range expectingStatus {
+		if c == statusGot {
+			idx = i
+		}
+	}
+	if idx == -1 {
+		t.Fatalf("Return code does not match. Expecting: %v, Got: %d. TestInfo: %v. Body: %v.",
+			expectingStatus, statusGot, testInfo, subResponse.String())
 	}
 }
 
@@ -606,7 +651,7 @@ func validateBatchResponseOpIdsNCodeHttp(t testing.TB,
 
 	for i, subResp := range *res.Result {
 		checkOpIDandStatus(t, testInfo.Operations[i], subResp.Body.OperationID,
-			int(*subResp.Code))
+			int(*subResp.Code), subResp)
 	}
 }
 

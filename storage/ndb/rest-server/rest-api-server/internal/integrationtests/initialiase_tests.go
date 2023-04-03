@@ -19,7 +19,6 @@ package integrationtests
 
 import (
 	"fmt"
-	"math/rand"
 	"os"
 	"time"
 
@@ -46,9 +45,6 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 			return cleanup, err
 		}
 	}
-
-	// TODO: Explain why?
-	rand.Seed(int64(time.Now().Nanosecond()))
 
 	var dbsToCreate []string
 	if len(createOnlyTheseDBs) > 0 {
@@ -87,11 +83,20 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 	log.Info("Successfully started up default servers")
 	time.Sleep(500 * time.Millisecond)
 
+	conn, err := InitGRPCConnction()
+	if err != nil {
+		return cleanup, err
+	}
+	cleanupGRPCConn := func() {
+		conn.Close()
+	}
+
 	return func() {
 		// Running defer here in case checking the heap fails
 		defer cleanupTLSCerts()
 		defer releaseBuffers()
 		defer cleanupServers()
+		defer cleanupGRPCConn()
 
 		stats := newHeap.GetNativeBuffersStats()
 		if stats.BuffersCount != stats.FreeBuffers {

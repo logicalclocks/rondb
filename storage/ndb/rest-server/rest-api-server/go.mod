@@ -57,5 +57,5 @@ require (
 	golang.org/x/text v0.7.0 // indirect
 	google.golang.org/genproto v0.0.0-20230301171018-9ab4bdc49ad5 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	zappem.net/pub/debug/xxd v0.5.0 // indirect
+	zappem.net/pub/debug/xxd v1.0.0 // indirect
 )

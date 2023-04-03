@@ -54,6 +54,16 @@ func InitRonDBConnection(rondb config.RonDB) *DalError {
 		return cToGoRet(&ret)
 	}
 
+	// set failed ops retry properties
+	return SetOpRetryProps(rondb.OpRetryOnTransientErrorsCount, rondb.OpRetryInitialDelayInMS)
+}
+
+func SetOpRetryProps(opRetryOnTransientErrorsCount, opRetryInitialDelayInMS uint32) *DalError {
+	ret := C.set_op_retry_props(C.uint(opRetryOnTransientErrorsCount),
+		C.uint(opRetryInitialDelayInMS))
+	if ret.http_code != http.StatusOK {
+		return cToGoRet(&ret)
+	}
 	return nil
 }
 

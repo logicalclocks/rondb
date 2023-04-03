@@ -56,6 +56,7 @@ var databaseCreateSchemes = map[string]string{
 	DB022:      DB022Scheme,
 	DB023:      DB023Scheme,
 	DB024:      DB024Scheme,
+	DB025:      DB025Scheme,
 	SentinelDB: SentinelDBScheme,
 }
 

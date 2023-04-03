@@ -87,6 +87,11 @@ RS_Status init(const char *connection_string, unsigned int connection_pool_size,
                unsigned int connection_retry_delay_in_sec);
 
 /**
+ * Set operation retry properties
+ */
+RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int rety_initial_delay);
+
+/**
  * Shutdown connection
  */
 RS_Status shutdown_connection();

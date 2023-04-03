@@ -75,7 +75,7 @@ func (h Handler) Execute(request interface{}, response interface{}) (int, error)
 	}
 
 	dalErr := dal.RonDBPKRead(reqBuff, respBuff)
-	if dalErr != nil && dalErr.HttpCode != http.StatusNotFound { // any other error return immediately
+	if dalErr != nil && dalErr.HttpCode != http.StatusOK { // any other error return immediately
 		return dalErr.HttpCode, dalErr
 	}
 

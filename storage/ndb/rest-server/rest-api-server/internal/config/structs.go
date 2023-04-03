@@ -140,6 +140,10 @@ type RonDB struct {
 	// Connection retry attempts.
 	ConnectionRetries         uint32
 	ConnectionRetryDelayInSec uint32
+
+	// Transient error retry count and initial delay
+	OpRetryOnTransientErrorsCount uint32
+	OpRetryInitialDelayInMS       uint32
 }
 
 func (r *RonDB) Validate() error {

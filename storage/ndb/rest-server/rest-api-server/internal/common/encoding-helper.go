@@ -45,15 +45,19 @@ func CopyGoStrToCStr(src []byte, dst *heap.NativeBuffer, offset uint32) (uint32,
 
 /*
  Copy a go string to the buffer at the specified location.
- first two bytes store the size of the string
- and NULL is appended to the string for c/c++ compatibility.
+ As a failed operation may be tried multiple times we have separated
+ mutable and immutable spaces for string length.
+ The First two bytes are immutable and it stores the size of the string
+ the next two bytes are mutalbe and it also store the size of the string.
 
- Note: at this moment we do not know the column type.
+ Depending on the types of the column the length will be written to the
+ byte(s) preceeding the string in the C layer.
+
  NdbDictionary::Column::ArrayTypeFixed uses 0 bytes for length
  NdbDictionary::Column::ArrayTypeShortVar uses 1 byte for length
  NdbDictionary::Column::ArrayTypeMediumVar uses 2 bytes for length
- for now we store the length in 2 bytes. Later in the native layer
- we adjust the size accordingly.
+
+ NULL is appended to the string for c/c++ compatibility.
 */
 
 func CopyGoStrToNDBStr(src []byte, dst *heap.NativeBuffer, offset uint32) (uint32, error) {
@@ -70,12 +74,20 @@ func CopyGoStrToNDBStr(src []byte, dst *heap.NativeBuffer, offset uint32) (uint3
 		src = []byte(uqSrc)
 	}
 
-	if offset+uint32(len(src))+1+2 > dst.Size {
+	if offset+uint32(len(src))+1+2+2 > dst.Size {
 		return 0, errors.New("trying to write more data than the buffer capacity")
 	}
 
+	// immutable length of the string
 	dstBuf[offset] = byte(len(src) % 256)
 	dstBuf[offset+1] = byte(len(src) / 256)
+	offset += 2
+
+	// mutable, manipulated by the c layer
+	// the c layer may write the size in one or two bytes
+	// depending on the type of the column
+	dstBuf[offset] = byte(0)
+	dstBuf[offset+1] = byte(0)
 	offset += 2
 
 	for i, j := offset, 0; i < (offset + uint32(len(src))); i, j = i+1, j+1 {
