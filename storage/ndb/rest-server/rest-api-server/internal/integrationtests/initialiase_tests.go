@@ -111,7 +111,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 			cleanupServers()
 			releaseBuffers()
 			cleanupTLSCerts()
-			return cleanup, fmt.Errorf("could not create profile.out; error: %v ", err)
+			return cleanup, fmt.Errorf("could not create profile.out; error: %w ", err)
 		}
 		defer f.Close()
 		if err := pprof.StartCPUProfile(f); err != nil {
@@ -119,7 +119,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 			cleanupServers()
 			releaseBuffers()
 			cleanupTLSCerts()
-			return cleanup, fmt.Errorf("could not start CPU profile; error: %v ", err)
+			return cleanup, fmt.Errorf("could not start CPU profile; error: %w ", err)
 		}
 	}
 
