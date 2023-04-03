@@ -52,7 +52,7 @@ func TestUnloadSchema(t *testing.T) {
 		},
 	}
 
-	integrationtests.PkTest(t, tests, false)
+	integrationtests.PkTestWrapper(t, tests, false)
 
 	err = testutils.RunQueries(testdbs.DB025UpdateScheme)
 	if err != nil {
@@ -72,5 +72,5 @@ func TestUnloadSchema(t *testing.T) {
 			RespKVs:        validateColumns,
 		},
 	}
-	integrationtests.PkTest(t, tests, false)
+	integrationtests.PkTestWrapper(t, tests, false)
 }

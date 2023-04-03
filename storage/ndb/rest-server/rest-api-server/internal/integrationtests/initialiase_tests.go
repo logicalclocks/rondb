@@ -18,8 +18,10 @@
 package integrationtests
 
 import (
+	"flag"
 	"fmt"
 	"os"
+	"runtime/pprof"
 	"time"
 
 	"hopsworks.ai/rdrs/internal/config"
@@ -29,6 +31,12 @@ import (
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
+
+var enableProfiling = flag.Bool("profile", false, "enable CPU profiling")
+
+func profilingEnabled() bool {
+	return *enableProfiling || (os.Getenv("PROFILE_CPU") == "1")
+}
 
 /*
 Wraps all unit tests in this package
@@ -85,10 +93,34 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 
 	conn, err := InitGRPCConnction()
 	if err != nil {
+		cleanupServers()
+		releaseBuffers()
+		cleanupTLSCerts()
 		return cleanup, err
 	}
 	cleanupGRPCConn := func() {
 		conn.Close()
+	}
+
+	// Check if profiling is enabled
+	if profilingEnabled() {
+		// Start profiling
+		f, err := os.Create("profile.out")
+		if err != nil {
+			cleanupGRPCConn()
+			cleanupServers()
+			releaseBuffers()
+			cleanupTLSCerts()
+			return cleanup, fmt.Errorf("could not create profile.out; error: %w ", err)
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			cleanupGRPCConn()
+			cleanupServers()
+			releaseBuffers()
+			cleanupTLSCerts()
+			return cleanup, fmt.Errorf("could not start CPU profile; error: %w ", err)
+		}
 	}
 
 	return func() {
@@ -97,6 +129,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 		defer releaseBuffers()
 		defer cleanupServers()
 		defer cleanupGRPCConn()
+		defer pprof.StopCPUProfile()
 
 		stats := newHeap.GetNativeBuffersStats()
 		if stats.BuffersCount != stats.FreeBuffers {
