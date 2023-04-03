@@ -18,28 +18,25 @@
 package pkread
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
 	"time"
 
-	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/integrationtests"
-	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 /*
-	 go test \
-		 -test.bench BenchmarkSimple \
-		 -test.run=thisexpressionwontmatchanytest \
-		 -cpu 1,2,4,8 \
-		 -benchmem \
-		 -benchtime=100x \ 		// 100 times
-		 -benchtime=10s \ 		// 10 sec
-		 ./internal/router/handler/pkread/
+	go test \
+		-test.bench BenchmarkSimple \
+		-test.run=thisexpressionwontmatchanytest \
+		-cpu 1,2,4,8 \
+		-benchmem \
+		-benchtime=100x \ 		// 100 times
+		-benchtime=10s \ 		// 10 sec
+		./internal/router/handler/pkread/
 */
 func BenchmarkSimple(b *testing.B) {
 	numOps := b.N
@@ -54,16 +51,29 @@ func BenchmarkSimple(b *testing.B) {
 	start := time.Now()
 
 	b.RunParallel(func(bp *testing.PB) {
-		url := testutils.NewPKReadURL(testdbs.Benchmark, table)
+		col := "id0"
+
+		rowId := opCount % maxRows
+		opCount++
+
 		operationId := fmt.Sprintf("operation_%d", threadId)
 		threadId++
 
-		opCount++
-		reqBody := createReq(b, maxRows, opCount, operationId)
-
+		validateColumns := []interface{}{"col_0"}
+		testInfo := api.PKTestInfo{
+			PkReq: api.PKReadBody{
+				Filters:     integrationtests.NewFilter(&col, rowId),
+				ReadColumns: integrationtests.NewReadColumns("col_", 1),
+				OperationID: &operationId,
+			},
+			Table:          table,
+			Db:             testdbs.Benchmark,
+			HttpCode:       http.StatusOK,
+			ErrMsgContains: "",
+			RespKVs:        validateColumns,
+		}
 		for bp.Next() {
-			integrationtests.SendHttpRequest(b, config.PK_HTTP_VERB, url, reqBody,
-				"", http.StatusOK)
+			integrationtests.PkTest(b, testInfo, false, false)
 		}
 	})
 	b.StopTimer()
@@ -72,21 +82,6 @@ func BenchmarkSimple(b *testing.B) {
 	nanoSecondsPerOp := float64(time.Since(start).Nanoseconds()) / float64(numOps)
 	b.Logf("Throughput: %f operations/second", opsPerSecond)
 	b.Logf("Latency: 	%f nanoseconds/operation", nanoSecondsPerOp)
-}
-
-func createReq(b *testing.B, maxRows, opCount int, operationId string) string {
-	rowId := opCount % maxRows
-	col := "id0"
-	param := api.PKReadBody{
-		Filters:     integrationtests.NewFilter(&col, rowId),
-		ReadColumns: integrationtests.NewReadColumns("col_", 1),
-		OperationID: &operationId,
-	}
-	body, err := json.Marshal(param)
-	if err != nil {
-		b.Fatalf("failed marshaling body; error: %v", err)
-	}
-	return string(body)
 }
 
 func BenchmarkMT(b *testing.B) {
@@ -126,21 +121,26 @@ func BenchmarkMT(b *testing.B) {
 }
 
 func runner(b *testing.B, db string, table string, maxRowID int, load chan int, done chan bool) {
+	testInfo := api.PKTestInfo{}
 	for {
 		select {
 		case opId := <-load:
 			rowId := opId % maxRowID
-			url := testutils.NewPKReadURL(db, table)
 			col := "id0"
-			param := api.PKReadBody{
-				Filters:     integrationtests.NewFilter(&col, rowId),
-				ReadColumns: integrationtests.NewReadColumns("col_", 1),
-				OperationID: integrationtests.NewOperationID(5),
+			validateColumns := []interface{}{"col_0"}
+			testInfo = api.PKTestInfo{
+				PkReq: api.PKReadBody{
+					Filters:     integrationtests.NewFilter(&col, rowId),
+					ReadColumns: integrationtests.NewReadColumns("col_", 1),
+					OperationID: integrationtests.NewOperationID(5),
+				},
+				Table:          table,
+				Db:             db,
+				HttpCode:       http.StatusOK,
+				ErrMsgContains: "",
+				RespKVs:        validateColumns,
 			}
-			body, _ := json.Marshal(param)
-
-			integrationtests.SendHttpRequest(b, config.PK_HTTP_VERB, url, string(body),
-				"", http.StatusOK)
+			integrationtests.PkTest(b, testInfo, false, false)
 		default:
 			done <- true
 		}

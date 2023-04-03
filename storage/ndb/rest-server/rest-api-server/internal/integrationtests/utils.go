@@ -380,24 +380,28 @@ func RandString(n int) string {
 	return string(b)
 }
 
-func PkTest(t *testing.T, tests map[string]api.PKTestInfo, isBinaryData bool) {
+func PkTestWrapper(t *testing.T, tests map[string]api.PKTestInfo, isBinaryData bool) {
 	for name, testInfo := range tests {
 		t.Run(name, func(t *testing.T) {
-			pkRESTTest(t, testInfo, isBinaryData)
-			pkGRPCTest(t, testInfo, isBinaryData)
+			PkTest(t, testInfo, isBinaryData, true)
 		})
 	}
 }
 
-func pkGRPCTest(t *testing.T, testInfo api.PKTestInfo, isBinaryData bool) {
+func PkTest(t testing.TB, testInfo api.PKTestInfo, isBinaryData bool, validate bool) {
+	pkRESTTest(t, testInfo, isBinaryData, validate)
+	pkGRPCTest(t, testInfo, isBinaryData, validate)
+}
+
+func pkGRPCTest(t testing.TB, testInfo api.PKTestInfo, isBinaryData bool, validate bool) {
 	respCode, resp := sendGRPCPKReadRequest(t, testInfo)
-	if respCode == http.StatusOK {
+	if respCode == http.StatusOK && validate {
 		ValidateResGRPC(t, testInfo, resp, isBinaryData)
 	}
 }
 
 func sendGRPCPKReadRequest(
-	t *testing.T,
+	t testing.TB,
 	testInfo api.PKTestInfo,
 ) (int, *api.PKReadResponseGRPC) {
 
@@ -439,7 +443,7 @@ func sendGRPCPKReadRequest(
 	}
 }
 
-func GetStatusCodeFromError(t *testing.T, err error) int {
+func GetStatusCodeFromError(t testing.TB, err error) int {
 	status, ok := status.FromError(err)
 	if !ok {
 		t.Fatalf("could not find gRPC status in error: %v", err)
@@ -448,7 +452,7 @@ func GetStatusCodeFromError(t *testing.T, err error) int {
 	return common.GrpcCodeToHttpStatus(status.Code())
 }
 
-func pkRESTTest(t *testing.T, testInfo api.PKTestInfo, isBinaryData bool) {
+func pkRESTTest(t testing.TB, testInfo api.PKTestInfo, isBinaryData bool, validate bool) {
 	url := testutils.NewPKReadURL(testInfo.Db, testInfo.Table)
 	body, err := json.MarshalIndent(testInfo.PkReq, "", "\t")
 	if err != nil {
@@ -457,7 +461,7 @@ func pkRESTTest(t *testing.T, testInfo api.PKTestInfo, isBinaryData bool) {
 
 	httpCode, res := SendHttpRequest(t, config.PK_HTTP_VERB, url,
 		string(body), testInfo.ErrMsgContains, testInfo.HttpCode)
-	if httpCode == http.StatusOK {
+	if httpCode == http.StatusOK && validate {
 		ValidateResHttp(t, testInfo, res, isBinaryData)
 	}
 }
