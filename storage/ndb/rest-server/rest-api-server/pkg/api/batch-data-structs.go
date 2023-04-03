@@ -124,12 +124,12 @@ type BatchSubOperationTestInfo struct {
 	SubOperation BatchSubOp
 	Table        string
 	DB           string
-	HttpCode     int
+	HttpCode     []int // for some operation there are multiple valied return codes
 	RespKVs      []interface{}
 }
 
 type BatchOperationTestInfo struct {
 	Operations     []BatchSubOperationTestInfo
-	HttpCode       []int
+	HttpCode       []int // for some operation there are multiple valied return codes
 	ErrMsgContains string
 }

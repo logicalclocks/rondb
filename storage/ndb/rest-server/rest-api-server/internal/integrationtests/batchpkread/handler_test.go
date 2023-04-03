@@ -45,7 +45,7 @@ func TestBatchSimple(t *testing.T) {
 					},
 					Table:    "int_table",
 					DB:       testdbs.DB004,
-					HttpCode: http.StatusOK,
+					HttpCode: []int{http.StatusOK},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 			},
@@ -66,7 +66,7 @@ func TestBatchSimple(t *testing.T) {
 					},
 					Table:    "int_table",
 					DB:       testdbs.DB004,
-					HttpCode: http.StatusOK,
+					HttpCode: []int{http.StatusOK},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 				{
@@ -81,7 +81,7 @@ func TestBatchSimple(t *testing.T) {
 					},
 					Table:    "bigint_table",
 					DB:       testdbs.DB005,
-					HttpCode: http.StatusOK,
+					HttpCode: []int{http.StatusOK},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 			},
@@ -102,7 +102,7 @@ func TestBatchSimple(t *testing.T) {
 					},
 					Table:    "int_table",
 					DB:       testdbs.DB004,
-					HttpCode: http.StatusOK,
+					HttpCode: []int{http.StatusOK},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 				{
@@ -117,7 +117,7 @@ func TestBatchSimple(t *testing.T) {
 					},
 					Table:    "bigint_table",
 					DB:       testdbs.DB005,
-					HttpCode: http.StatusOK,
+					HttpCode: []int{http.StatusOK},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 				{
@@ -132,7 +132,7 @@ func TestBatchSimple(t *testing.T) {
 					},
 					Table:    "tinyint_table",
 					DB:       testdbs.DB006,
-					HttpCode: http.StatusOK,
+					HttpCode: []int{http.StatusOK},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 				{
@@ -147,7 +147,7 @@ func TestBatchSimple(t *testing.T) {
 					},
 					Table:    "smallint_table",
 					DB:       testdbs.DB007,
-					HttpCode: http.StatusOK,
+					HttpCode: []int{http.StatusOK},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 				{
@@ -162,7 +162,7 @@ func TestBatchSimple(t *testing.T) {
 					},
 					Table:    "smallint_table",
 					DB:       testdbs.DB007,
-					HttpCode: http.StatusOK,
+					HttpCode: []int{http.StatusOK},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 			},
@@ -183,7 +183,7 @@ func TestBatchSimple(t *testing.T) {
 					},
 					Table:    "int_table",
 					DB:       testdbs.DB004,
-					HttpCode: http.StatusNotFound,
+					HttpCode: []int{http.StatusNotFound},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 				{
@@ -198,7 +198,7 @@ func TestBatchSimple(t *testing.T) {
 					},
 					Table:    "bigint_table",
 					DB:       testdbs.DB005,
-					HttpCode: http.StatusNotFound,
+					HttpCode: []int{http.StatusNotFound},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 			},
@@ -317,7 +317,7 @@ func createSubOperation(t *testing.T, table string, database string, pk string, 
 		},
 		Table:    table,
 		DB:       database,
-		HttpCode: expectedStatus,
+		HttpCode: []int{expectedStatus},
 		RespKVs:  respKVs,
 	}
 }
@@ -409,7 +409,7 @@ func arrayColumnBatchTestSubOp(t *testing.T, table string, database string, isBi
 		},
 		Table:    table,
 		DB:       database,
-		HttpCode: expectedStatus,
+		HttpCode: []int{expectedStatus},
 		RespKVs:  respKVs,
 	}
 }

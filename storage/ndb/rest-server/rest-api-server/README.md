@@ -207,7 +207,7 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 	            "ConnectionRetries": 5,
 	            "ConnectionRetryDelayInSec": 5,
 	            "OpRetryOnTransientErrorsCount": 3,
-	            "OpRetryInitialDelayInMS": 400
+	            "OpRetryInitialDelayInMS": 500
         },
         "Security": {
                 "EnableTLS": true,

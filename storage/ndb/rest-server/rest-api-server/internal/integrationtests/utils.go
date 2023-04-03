@@ -625,8 +625,14 @@ func checkOpIDandStatus(
 		}
 	}
 
-	if expectingStatus != statusGot {
-		t.Fatalf("Return code does not match. Expecting: %d, Got: %d. TestInfo: %v. Body: %v.",
+	idx := -1
+	for i, c := range expectingStatus {
+		if c == statusGot {
+			idx = i
+		}
+	}
+	if idx == -1 {
+		t.Fatalf("Return code does not match. Expecting: %v, Got: %d. TestInfo: %v. Body: %v.",
 			expectingStatus, statusGot, testInfo, subResponse.String())
 	}
 }

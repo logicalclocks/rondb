@@ -48,7 +48,7 @@ func TestUnloadSchema(t *testing.T) {
 					},
 					Table:    "int_table",
 					DB:       testdbs.DB004,
-					HttpCode: http.StatusOK,
+					HttpCode: []int{http.StatusOK},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 				{ // operation on a DB that will change when the test is running
@@ -62,7 +62,7 @@ func TestUnloadSchema(t *testing.T) {
 					},
 					Table:    "table_1",
 					DB:       testdbs.DB025,
-					HttpCode: http.StatusOK,
+					HttpCode: []int{http.StatusOK, http.StatusNotFound},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 				{
@@ -77,7 +77,7 @@ func TestUnloadSchema(t *testing.T) {
 					},
 					Table:    "bigint_table",
 					DB:       testdbs.DB005,
-					HttpCode: http.StatusOK,
+					HttpCode: []int{http.StatusOK},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 				{
@@ -92,7 +92,7 @@ func TestUnloadSchema(t *testing.T) {
 					},
 					Table:    "tinyint_table",
 					DB:       testdbs.DB006,
-					HttpCode: http.StatusOK,
+					HttpCode: []int{http.StatusOK},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 				{
@@ -107,7 +107,7 @@ func TestUnloadSchema(t *testing.T) {
 					},
 					Table:    "smallint_table",
 					DB:       testdbs.DB007,
-					HttpCode: http.StatusOK,
+					HttpCode: []int{http.StatusOK},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 				{
@@ -122,7 +122,7 @@ func TestUnloadSchema(t *testing.T) {
 					},
 					Table:    "smallint_table",
 					DB:       testdbs.DB007,
-					HttpCode: http.StatusOK,
+					HttpCode: []int{http.StatusOK},
 					RespKVs:  []interface{}{"col0", "col1"},
 				},
 			},

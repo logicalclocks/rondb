@@ -71,7 +71,7 @@ func newWithDefaults() AllConfigs {
 			ConnectionRetries:             5,
 			ConnectionRetryDelayInSec:     5,
 			OpRetryOnTransientErrorsCount: 3,
-			OpRetryInitialDelayInMS:       400,
+			OpRetryInitialDelayInMS:       500,
 		},
 		Security: Security{
 			EnableTLS:                        false,
