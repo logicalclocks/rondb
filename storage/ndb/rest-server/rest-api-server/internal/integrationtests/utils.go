@@ -465,6 +465,7 @@ func pkRESTTest(t *testing.T, testInfo api.PKTestInfo, isBinaryData bool) {
 func BatchTest(t *testing.T, tests map[string]api.BatchOperationTestInfo, isBinaryData bool) {
 	for name, testInfo := range tests {
 		t.Run(name, func(t *testing.T) {
+			// This will mean that REST calls to Handler will be slightly faster
 			BatchRESTTest(t, testInfo, isBinaryData, true)
 			BatchGRPCTest(t, testInfo, isBinaryData, true)
 		})
