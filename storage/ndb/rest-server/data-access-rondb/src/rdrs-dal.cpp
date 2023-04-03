@@ -86,9 +86,6 @@ RS_Status init(const char *connection_string, unsigned int connection_pool_size,
 }
 
 RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int rety_initial_delay) {
-  require(retry_cont >= 0);
-  require(rety_initial_delay >= 0);
-
   OP_RETRY_COUNT         = retry_cont;
   OP_RETRY_INITIAL_DELAY = rety_initial_delay;
 
