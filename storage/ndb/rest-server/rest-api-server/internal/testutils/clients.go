@@ -26,6 +26,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"hopsworks.ai/rdrs/internal/config"
 )
@@ -59,6 +60,8 @@ func CreateGrpcConn(withAuth, withTLS bool) (*grpc.ClientConn, error) {
 			return nil, errors.New(fmt.Sprintf("failed to get TLS config for GRPC client. Error: %v", err))
 		}
 		grpcDialOptions = append(grpcDialOptions, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
+	} else {
+		grpcDialOptions = append(grpcDialOptions, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
 	// Set up a connection to the server
