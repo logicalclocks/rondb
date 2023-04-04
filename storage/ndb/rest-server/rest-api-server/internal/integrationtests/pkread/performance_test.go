@@ -19,6 +19,7 @@ package pkread
 
 import (
 	"fmt"
+	"math/rand"
 	"net/http"
 	"testing"
 	"time"
@@ -29,6 +30,9 @@ import (
 )
 
 /*
+	IMPORTANT: This will every request against both the REST & the gRPC server.
+		Check pkTest() to comment out either of the server requests.
+
 	go test \
 		-test.bench BenchmarkSimple \
 		-test.run=thisexpressionwontmatchanytest \
@@ -60,7 +64,6 @@ func BenchmarkSimple(b *testing.B) {
 		col := "id0"
 
 		// Every go-routine will always query the same row
-		rowId := threadId % maxRows
 		operationId := fmt.Sprintf("operation_%d", threadId)
 		threadId++
 
@@ -69,7 +72,7 @@ func BenchmarkSimple(b *testing.B) {
 		validateColumns := []interface{}{"col_0"}
 		testInfo := api.PKTestInfo{
 			PkReq: api.PKReadBody{
-				Filters:     testclient.NewFilter(&col, rowId),
+				// Fill out Filters later
 				ReadColumns: testclient.NewReadColumns("col_", 1),
 				OperationID: &operationId,
 			},
@@ -85,6 +88,10 @@ func BenchmarkSimple(b *testing.B) {
 			will run this 5 times.
 		*/
 		for bp.Next() {
+			// Every request queries a random row
+			filter := testclient.NewFilter(&col, rand.Intn(maxRows))
+			testInfo.PkReq.Filters = filter
+
 			pkTest(b, testInfo, false, false)
 		}
 	})
