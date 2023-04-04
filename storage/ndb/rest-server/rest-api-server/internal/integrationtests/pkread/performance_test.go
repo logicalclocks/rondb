@@ -39,25 +39,32 @@ import (
 		./internal/router/handler/pkread/
 */
 func BenchmarkSimple(b *testing.B) {
+	// Number of total operations
 	numOps := b.N
 	b.Logf("numOps: %d", numOps)
 
 	table := "table_1"
 	maxRows := testdbs.BENCH_DB_NUM_ROWS
-	opCount := 0
 	threadId := 0
 
 	b.ResetTimer()
 	start := time.Now()
 
+	/*
+		With 10-core CPU, this will run 10 Go-routines.
+		These 10 Go-routines will split up b.N requests
+		amongst each other. RunParallel() will only be
+		run 10 times then (in contrast to bp.Next()).
+	*/
 	b.RunParallel(func(bp *testing.PB) {
 		col := "id0"
 
-		rowId := opCount % maxRows
-		opCount++
-
+		// Every go-routine will always query the same row
+		rowId := threadId % maxRows
 		operationId := fmt.Sprintf("operation_%d", threadId)
 		threadId++
+
+		b.Logf("threadId: %d", threadId)
 
 		validateColumns := []interface{}{"col_0"}
 		testInfo := api.PKTestInfo{
@@ -72,6 +79,11 @@ func BenchmarkSimple(b *testing.B) {
 			ErrMsgContains: "",
 			RespKVs:        validateColumns,
 		}
+
+		/*
+			Given 10 go-routines and b.N==50, each go-routine
+			will run this 5 times.
+		*/
 		for bp.Next() {
 			integrationtests.PkTest(b, testInfo, false, false)
 		}
