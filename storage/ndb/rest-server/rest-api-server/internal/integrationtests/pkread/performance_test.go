@@ -40,7 +40,7 @@ import (
 		-benchmem \
 		-benchtime=100x \ 		// 100 times
 		-benchtime=10s \ 		// 10 sec
-		./internal/router/handler/pkread/
+		./internal/integrationtests/pkread/
 */
 func BenchmarkSimple(b *testing.B) {
 	// Number of total operations
