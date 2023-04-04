@@ -26,6 +26,7 @@ import (
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
+	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/servers"
 	"hopsworks.ai/rdrs/internal/testutils"
@@ -91,7 +92,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 	log.Info("Successfully started up default servers")
 	time.Sleep(500 * time.Millisecond)
 
-	conn, err := InitGRPCConnction()
+	conn, err := testclient.InitGRPCConnction()
 	if err != nil {
 		cleanupServers()
 		releaseBuffers()

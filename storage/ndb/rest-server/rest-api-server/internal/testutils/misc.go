@@ -21,6 +21,8 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
+	"math/rand"
+	"time"
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/log"
@@ -39,4 +41,15 @@ func CreateMySQLConnection() (*sql.DB, error) {
 		err = fmt.Errorf("failed to connect to db; error: %w", err)
 	}
 	return dbConnection, err
+}
+
+var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+func RandString(n int) string {
+	b := make([]rune, n)
+	rand.Seed(int64(time.Now().Nanosecond()))
+	for i := range b {
+		b[i] = letterRunes[rand.Intn(len(letterRunes))]
+	}
+	return string(b)
 }

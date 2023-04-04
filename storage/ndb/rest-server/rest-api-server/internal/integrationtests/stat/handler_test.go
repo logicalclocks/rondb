@@ -25,7 +25,7 @@ import (
 	"testing"
 
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/integrationtests"
+	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/resources/testdbs"
@@ -78,13 +78,13 @@ func compare(t *testing.T, stats *api.StatResponse, expectedAllocations int64, n
 
 func performPkOp(t *testing.T, db string, table string, ch chan int) {
 	param := api.PKReadBody{
-		Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
-		ReadColumns: integrationtests.NewReadColumn("col0"),
+		Filters:     testclient.NewFiltersKVs("id0", 0, "id1", 0),
+		ReadColumns: testclient.NewReadColumn("col0"),
 	}
 	body, _ := json.MarshalIndent(param, "", "\t")
 
 	url := testutils.NewPKReadURL(db, table)
-	integrationtests.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
+	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		"", http.StatusOK)
 
 	ch <- 0
@@ -93,7 +93,7 @@ func performPkOp(t *testing.T, db string, table string, ch chan int) {
 func getStatsHttp(t *testing.T) *api.StatResponse {
 	body := ""
 	url := testutils.NewStatURL()
-	_, respBody := integrationtests.SendHttpRequest(t, config.STAT_HTTP_VERB, url, string(body),
+	_, respBody := testclient.SendHttpRequest(t, config.STAT_HTTP_VERB, url, string(body),
 		"", http.StatusOK)
 
 	var stats api.StatResponse
@@ -111,7 +111,7 @@ func getStatsGRPC(t *testing.T) *api.StatResponse {
 
 func sendGRPCStatRequest(t *testing.T) *api.StatResponse {
 	// Create gRPC client
-	client := api.NewRonDBRESTClient(integrationtests.GetGRPCConnction())
+	client := api.NewRonDBRESTClient(testclient.GetGRPCConnction())
 
 	// Create Request
 	statRequest := api.StatRequest{}
@@ -123,7 +123,7 @@ func sendGRPCStatRequest(t *testing.T) *api.StatResponse {
 	var errStr string
 	respProto, err := client.Stat(context.Background(), reqProto)
 	if err != nil {
-		respCode = integrationtests.GetStatusCodeFromError(t, err)
+		respCode = testclient.GetStatusCodeFromError(t, err)
 		errStr = fmt.Sprintf("%v", err)
 	}
 

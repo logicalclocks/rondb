@@ -30,13 +30,13 @@ func ConvertPKReadParams(req *PKReadParams) *PKReadRequestProto {
 
 	var filtersProto []*FilterProto
 	if req.Filters != nil {
-		for _, fillter := range *req.Filters {
+		for _, filter := range *req.Filters {
 			filterProto := FilterProto{}
-			filterProto.Column = fillter.Column
+			filterProto.Column = filter.Column
 
 			// remove quotes if any
-			if *fillter.Value != nil {
-				valueStr := string([]byte(*fillter.Value))
+			if *filter.Value != nil {
+				valueStr := string([]byte(*filter.Value))
 				filterProto.Value = &valueStr
 			}
 

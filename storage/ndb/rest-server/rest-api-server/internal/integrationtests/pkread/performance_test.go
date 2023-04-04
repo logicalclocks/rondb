@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"hopsworks.ai/rdrs/internal/integrationtests"
+	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
@@ -69,8 +69,8 @@ func BenchmarkSimple(b *testing.B) {
 		validateColumns := []interface{}{"col_0"}
 		testInfo := api.PKTestInfo{
 			PkReq: api.PKReadBody{
-				Filters:     integrationtests.NewFilter(&col, rowId),
-				ReadColumns: integrationtests.NewReadColumns("col_", 1),
+				Filters:     testclient.NewFilter(&col, rowId),
+				ReadColumns: testclient.NewReadColumns("col_", 1),
 				OperationID: &operationId,
 			},
 			Table:          table,
@@ -85,7 +85,7 @@ func BenchmarkSimple(b *testing.B) {
 			will run this 5 times.
 		*/
 		for bp.Next() {
-			integrationtests.PkTest(b, testInfo, false, false)
+			pkTest(b, testInfo, false, false)
 		}
 	})
 	b.StopTimer()
@@ -142,9 +142,9 @@ func runner(b *testing.B, db string, table string, maxRowID int, load chan int, 
 			validateColumns := []interface{}{"col_0"}
 			testInfo = api.PKTestInfo{
 				PkReq: api.PKReadBody{
-					Filters:     integrationtests.NewFilter(&col, rowId),
-					ReadColumns: integrationtests.NewReadColumns("col_", 1),
-					OperationID: integrationtests.NewOperationID(5),
+					Filters:     testclient.NewFilter(&col, rowId),
+					ReadColumns: testclient.NewReadColumns("col_", 1),
+					OperationID: testclient.NewOperationID(5),
 				},
 				Table:          table,
 				Db:             db,
@@ -152,7 +152,7 @@ func runner(b *testing.B, db string, table string, maxRowID int, load chan int, 
 				ErrMsgContains: "",
 				RespKVs:        validateColumns,
 			}
-			integrationtests.PkTest(b, testInfo, false, false)
+			pkTest(b, testInfo, false, false)
 		default:
 			done <- true
 		}

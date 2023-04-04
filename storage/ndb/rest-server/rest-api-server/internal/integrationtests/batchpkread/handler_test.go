@@ -22,7 +22,7 @@ import (
 	"testing"
 
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/integrationtests"
+	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/resources/testdbs"
@@ -38,9 +38,9 @@ func TestBatchSimple(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB004 + "/int_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", 0, "id1", 0),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "int_table",
@@ -59,9 +59,9 @@ func TestBatchSimple(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB004 + "/int_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", 0, "id1", 0),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "int_table",
@@ -74,9 +74,9 @@ func TestBatchSimple(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB005 + "/bigint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", 0, "id1", 0),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "bigint_table",
@@ -95,9 +95,9 @@ func TestBatchSimple(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB004 + "/int_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", 0, "id1", 0),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "int_table",
@@ -110,9 +110,9 @@ func TestBatchSimple(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB005 + "/bigint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", 0, "id1", 0),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "bigint_table",
@@ -125,9 +125,9 @@ func TestBatchSimple(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB006 + "/tinyint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", -128, "id1", 0),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", -128, "id1", 0),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "tinyint_table",
@@ -140,9 +140,9 @@ func TestBatchSimple(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB007 + "/smallint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", 32767, "id1", 65535),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", 32767, "id1", 65535),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "smallint_table",
@@ -155,9 +155,9 @@ func TestBatchSimple(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB007 + "/smallint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", 1, "id1", 1),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", 1, "id1", 1),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "smallint_table",
@@ -176,9 +176,9 @@ func TestBatchSimple(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB004 + "/int_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", 100, "id1", 100),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", 100, "id1", 100),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "int_table",
@@ -191,9 +191,9 @@ func TestBatchSimple(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB005 + "/bigint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", 100, "id1", 100),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", 100, "id1", 100),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "bigint_table",
@@ -205,7 +205,7 @@ func TestBatchSimple(t *testing.T) {
 			ErrMsgContains: "",
 		},
 	}
-	integrationtests.BatchTest(t, tests, false)
+	batchTest(t, tests, false)
 }
 
 func TestBatchDate(t *testing.T) {
@@ -228,7 +228,7 @@ func TestBatchDate(t *testing.T) {
 			},
 		},
 	}
-	integrationtests.BatchTest(t, tests, false)
+	batchTest(t, tests, false)
 }
 
 func TestBatchDateTime(t *testing.T) {
@@ -265,7 +265,7 @@ func TestBatchDateTime(t *testing.T) {
 			ErrMsgContains: "",
 		},
 	}
-	integrationtests.BatchTest(t, tests, false)
+	batchTest(t, tests, false)
 }
 
 func TestBatchTime(t *testing.T) {
@@ -300,7 +300,7 @@ func TestBatchTime(t *testing.T) {
 			ErrMsgContains: "",
 		},
 	}
-	integrationtests.BatchTest(t, tests, false)
+	batchTest(t, tests, false)
 }
 
 func createSubOperation(t *testing.T, table string, database string, pk string, expectedStatus int) api.BatchSubOperationTestInfo {
@@ -310,9 +310,9 @@ func createSubOperation(t *testing.T, table string, database string, pk string, 
 			Method:      &[]string{config.PK_HTTP_VERB}[0],
 			RelativeURL: &[]string{string(database + "/" + table + "/" + config.PK_DB_OPERATION)}[0],
 			Body: &api.PKReadBody{
-				Filters:     integrationtests.NewFiltersKVs("id0", pk),
-				ReadColumns: integrationtests.NewReadColumns("col", 1),
-				OperationID: integrationtests.NewOperationID(5),
+				Filters:     testclient.NewFiltersKVs("id0", pk),
+				ReadColumns: testclient.NewReadColumns("col", 1),
+				OperationID: testclient.NewOperationID(5),
 			},
 		},
 		Table:    table,
@@ -364,7 +364,7 @@ func ArrayColumnBatchTest(t *testing.T, table string, database string, isBinary 
 		},
 	}
 
-	integrationtests.BatchTest(t, tests, isBinary)
+	batchTest(t, tests, isBinary)
 }
 
 /*
@@ -383,7 +383,7 @@ func TestBatchBadSubOp(t *testing.T) {
 			Operations: []api.BatchSubOperationTestInfo{
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "-1", http.StatusNotFound),
 				// This is bad operation. data is longer than the column width
-				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, *integrationtests.NewOperationID(colWidth*4 + 1), http.StatusNotFound),
+				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, *testclient.NewOperationID(colWidth*4 + 1), http.StatusNotFound),
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "1", http.StatusOK),
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "2", http.StatusOK),
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "3", http.StatusOK),
@@ -392,7 +392,7 @@ func TestBatchBadSubOp(t *testing.T) {
 		},
 	}
 
-	integrationtests.BatchTest(t, tests, isBinary)
+	batchTest(t, tests, isBinary)
 }
 
 func arrayColumnBatchTestSubOp(t *testing.T, table string, database string, isBinary bool, colWidth int, padding bool, pk string, expectedStatus int) api.BatchSubOperationTestInfo {
@@ -402,9 +402,9 @@ func arrayColumnBatchTestSubOp(t *testing.T, table string, database string, isBi
 			Method:      &[]string{config.PK_HTTP_VERB}[0],
 			RelativeURL: &[]string{string(database + "/" + table + "/" + config.PK_DB_OPERATION)}[0],
 			Body: &api.PKReadBody{
-				Filters:     integrationtests.NewFiltersKVs("id0", integrationtests.Encode(pk, isBinary, colWidth, padding)),
-				ReadColumns: integrationtests.NewReadColumns("col", 1),
-				OperationID: integrationtests.NewOperationID(5),
+				Filters:     testclient.NewFiltersKVs("id0", testclient.EncodePkValue(pk, isBinary, colWidth, padding)),
+				ReadColumns: testclient.NewReadColumns("col", 1),
+				OperationID: testclient.NewOperationID(5),
 			},
 		},
 		Table:    table,
@@ -421,7 +421,7 @@ func TestBatchMissingReqField(t *testing.T) {
 	operations[1].Method = nil
 	operationsWrapper := api.BatchOpRequest{Operations: &operations}
 	body, _ := json.Marshal(operationsWrapper)
-	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
 		"Error:Field validation for 'Method' failed ", http.StatusBadRequest)
 
 	// Test missing relative URL
@@ -429,7 +429,7 @@ func TestBatchMissingReqField(t *testing.T) {
 	operations[1].RelativeURL = nil
 	operationsWrapper = api.BatchOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
-	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
 		"Error:Field validation for 'RelativeURL' failed ", http.StatusBadRequest)
 
 	// Test missing body
@@ -437,7 +437,7 @@ func TestBatchMissingReqField(t *testing.T) {
 	operations[1].Body = nil
 	operationsWrapper = api.BatchOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
-	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
 		"Error:Field validation for 'Body' failed ", http.StatusBadRequest)
 
 	// Test missing filter in an operation
@@ -445,7 +445,7 @@ func TestBatchMissingReqField(t *testing.T) {
 	*&operations[1].Body.Filters = nil
 	operationsWrapper = api.BatchOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
-	integrationtests.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
+	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),
 		"Error:Field validation for 'Filters' failed", http.StatusBadRequest)
 }
 
@@ -458,7 +458,7 @@ func NewOperationsTBD(t *testing.T, numOps int) []api.BatchSubOp {
 }
 
 func NewOperationTBD(t *testing.T) api.BatchSubOp {
-	pkOp := integrationtests.NewPKReadReqBodyTBD()
+	pkOp := testclient.NewPKReadReqBodyTBD()
 	method := "POST"
 	relativeURL := testutils.NewPKReadURL("db", "table")
 

@@ -23,7 +23,7 @@ import (
 	"testing"
 
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/integrationtests"
+	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 )
@@ -32,7 +32,7 @@ func TestPing(t *testing.T) {
 	conf := config.GetAll()
 
 	// gRPC
-	grpcClient := api.NewRonDBRESTClient(integrationtests.GetGRPCConnction())
+	grpcClient := api.NewRonDBRESTClient(testclient.GetGRPCConnction())
 
 	_, err := grpcClient.Ping(context.Background(), &api.Empty{})
 	if err != nil {
