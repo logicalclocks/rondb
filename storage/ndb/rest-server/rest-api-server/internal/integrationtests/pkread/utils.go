@@ -28,7 +28,7 @@ func pkTest(t testing.TB, testInfo api.PKTestInfo, isBinaryData bool, validate b
 }
 
 func pkGRPCTest(t testing.TB, testInfo api.PKTestInfo, isBinaryData bool, validate bool) {
-	respCode, resp := sendGRPCPKReadRequest(t, testInfo)
+	respCode, resp := handleGrpcRequest(t, testInfo)
 	if respCode == http.StatusOK && validate {
 		validateResGRPC(t, testInfo, resp, isBinaryData)
 	}
@@ -54,14 +54,12 @@ func pkRESTTest(t testing.TB, testInfo api.PKTestInfo, isBinaryData bool, valida
 	}
 }
 
-func sendGRPCPKReadRequest(
+func handleGrpcRequest(
 	t testing.TB,
 	testInfo api.PKTestInfo,
 ) (int, *api.PKReadResponseGRPC) {
 
-	client := api.NewRonDBRESTClient(testclient.GetGRPCConnction())
-
-	// Create Request
+	// Create Proto Request
 	pkReadParams := api.PKReadParams{
 		DB:          &testInfo.Db,
 		Table:       &testInfo.Table,
@@ -69,10 +67,37 @@ func sendGRPCPKReadRequest(
 		OperationID: testInfo.PkReq.OperationID,
 		ReadColumns: testInfo.PkReq.ReadColumns,
 	}
-
 	reqProto := api.ConvertPKReadParams(&pkReadParams)
 
-	expectedStatus := testInfo.HttpCode
+	respCode, respProto := sendGrpcRequestAndCheckStatus(
+		t,
+		testInfo.HttpCode,
+		testInfo.ErrMsgContains,
+		reqProto,
+	)
+
+	// Parse Proto response
+	if respCode == http.StatusOK {
+		resp := api.ConvertPKReadResponseProto(respProto)
+		return respCode, resp
+	} else {
+		return respCode, nil
+	}
+}
+
+/*
+	Extracted this in case we want to reuse the Proto request struct and
+	avoid parsing the response, even though this does not make a noticeable
+	difference in performance tests.
+*/
+func sendGrpcRequestAndCheckStatus(
+	t testing.TB,
+	expectedStatus int,
+	expectedErrMsg string,
+	reqProto *api.PKReadRequestProto,
+) (int, *api.PKReadResponseProto) {
+	client := api.NewRonDBRESTClient(testclient.GetGRPCConnction())
+
 	respCode := 200
 	var errStr string
 	respProto, err := client.PKRead(context.Background(), reqProto)
@@ -85,14 +110,9 @@ func sendGRPCPKReadRequest(
 		t.Fatalf("Received unexpected status; Expected: %d, Got: %d; Complete Error Message: '%s'", expectedStatus, respCode, errStr)
 	}
 
-	if respCode != http.StatusOK && !strings.Contains(errStr, testInfo.ErrMsgContains) {
-		t.Fatalf("Received unexpected error message; It does not contain string: '%s'; Complete Error Message: '%s'", testInfo.ErrMsgContains, errStr)
+	if respCode != http.StatusOK && !strings.Contains(errStr, expectedErrMsg) {
+		t.Fatalf("Received unexpected error message; It does not contain string: '%s'; Complete Error Message: '%s'", expectedErrMsg, errStr)
 	}
 
-	if respCode == http.StatusOK {
-		resp := api.ConvertPKReadResponseProto(respProto)
-		return respCode, resp
-	} else {
-		return respCode, nil
-	}
+	return respCode, respProto
 }
