@@ -380,7 +380,7 @@ func RandString(n int) string {
 	return string(b)
 }
 
-func PkTestWrapper(t *testing.T, tests map[string]api.PKTestInfo, isBinaryData bool) {
+func PkTestMultiple(t *testing.T, tests map[string]api.PKTestInfo, isBinaryData bool) {
 	for name, testInfo := range tests {
 		t.Run(name, func(t *testing.T) {
 			PkTest(t, testInfo, isBinaryData, true)
@@ -459,8 +459,14 @@ func pkRESTTest(t testing.TB, testInfo api.PKTestInfo, isBinaryData bool, valida
 		t.Fatalf("Failed to marshall test request %v", err)
 	}
 
-	httpCode, res := SendHttpRequest(t, config.PK_HTTP_VERB, url,
-		string(body), testInfo.ErrMsgContains, testInfo.HttpCode)
+	httpCode, res := SendHttpRequest(
+		t,
+		config.PK_HTTP_VERB,
+		url,
+		string(body),
+		testInfo.ErrMsgContains,
+		testInfo.HttpCode,
+	)
 	if httpCode == http.StatusOK && validate {
 		ValidateResHttp(t, testInfo, res, isBinaryData)
 	}
