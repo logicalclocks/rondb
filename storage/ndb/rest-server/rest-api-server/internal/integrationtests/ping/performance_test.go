@@ -18,12 +18,8 @@
 package ping
 
 import (
-	"context"
 	"testing"
 	"time"
-
-	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
-	"hopsworks.ai/rdrs/pkg/api"
 )
 
 /*
@@ -40,6 +36,8 @@ func BenchmarkSimple(b *testing.B) {
 	// Number of total operations
 	numOps := b.N
 	b.Logf("numOps: %d", numOps)
+
+	runAgainstGrpcServer := false
 
 	threadId := 0
 
@@ -61,10 +59,10 @@ func BenchmarkSimple(b *testing.B) {
 			will run this 5 times.
 		*/
 		for bp.Next() {
-			client := api.NewRonDBRESTClient(testclient.GetGRPCConnction())
-			_, err := client.Ping(context.Background(), &api.Empty{})
-			if err != nil {
-				b.Fatal(err.Error())
+			if runAgainstGrpcServer {
+				sendGrpcPingRequest(b)
+			} else {
+				sendRestPingRequest(b)
 			}
 		}
 	})
