@@ -33,6 +33,12 @@ import (
 )
 
 /*
+	The number of parallel client go-routines spawned can be influenced by setting
+	runtime.GOMAXPROCS(). It defaults to the number of CPUs.
+
+	This tends to deliver best results for pkread:
+		`runtime.GOMAXPROCS(runtime.NumCPU() * 2)`
+
 	go test \
 		-test.bench BenchmarkSimple \
 		-test.run=thisexpressionwontmatchanytest \
@@ -61,7 +67,8 @@ func BenchmarkSimple(b *testing.B) {
 	start := time.Now()
 
 	/*
-		With 10-core CPU, this will run 10 Go-routines.
+		Assuming GOMAXPROCS is not set, a 10-core CPU
+		will run 10 Go-routines here.
 		These 10 Go-routines will split up b.N requests
 		amongst each other. RunParallel() will only be
 		run 10 times then (in contrast to bp.Next()).
@@ -122,67 +129,4 @@ func BenchmarkSimple(b *testing.B) {
 	nanoSecondsPerOp := float64(time.Since(start).Nanoseconds()) / float64(numOps)
 	b.Logf("Throughput: %f operations/second", opsPerSecond)
 	b.Logf("Latency: 	%f nanoseconds/operation", nanoSecondsPerOp)
-}
-
-func BenchmarkMT(b *testing.B) {
-	numOps := b.N
-	b.Logf("numOps: %d", numOps)
-
-	table := "table_1"
-	maxRows := 1000
-
-	numThreads := 1 // this is for experimentation
-	donePerThread := make([]chan bool, numThreads)
-	for i := 0; i < numThreads; i++ {
-		donePerThread[i] = make(chan bool)
-	}
-
-	sharedLoad := make(chan int, numOps)
-	for operationId := 0; operationId < numOps; operationId++ {
-		sharedLoad <- operationId
-	}
-
-	b.ResetTimer()
-	start := time.Now()
-
-	for _, done := range donePerThread {
-		go runner(b, testdbs.Benchmark, table, maxRows, sharedLoad, done)
-	}
-
-	for _, done := range donePerThread {
-		<-done
-	}
-
-	b.StopTimer()
-	opsPerSecond := float64(numOps) / time.Since(start).Seconds()
-	nanoSecondsPerOp := float64(time.Since(start).Nanoseconds()) / float64(b.N)
-	b.Logf("Throughput: %f operations/second", opsPerSecond)
-	b.Logf("Latency: 	%f nanoseconds/operation", nanoSecondsPerOp)
-}
-
-func runner(b *testing.B, db string, table string, maxRowID int, load chan int, done chan bool) {
-	testInfo := api.PKTestInfo{}
-	for {
-		select {
-		case opId := <-load:
-			rowId := opId % maxRowID
-			col := "id0"
-			validateColumns := []interface{}{"col_0"}
-			testInfo = api.PKTestInfo{
-				PkReq: api.PKReadBody{
-					Filters:     testclient.NewFilter(&col, rowId),
-					ReadColumns: testclient.NewReadColumns("col_", 1),
-					OperationID: testclient.NewOperationID(5),
-				},
-				Table:          table,
-				Db:             db,
-				HttpCode:       http.StatusOK,
-				ErrMsgContains: "",
-				RespKVs:        validateColumns,
-			}
-			pkTest(b, testInfo, false, false)
-		default:
-			done <- true
-		}
-	}
 }

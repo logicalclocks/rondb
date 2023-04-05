@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"runtime/pprof"
 	"time"
 
@@ -45,6 +46,13 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 	if !*testutils.WithRonDB {
 		return
 	}
+
+	/*
+		This tends to deliver better benchmarking results
+		e.g. pkreads (but not ping):
+		runtime.GOMAXPROCS(runtime.NumCPU() * 2)
+	*/
+	runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
 
 	cleanupTLSCerts := func() {}
 	if conf.Security.EnableTLS {

@@ -26,6 +26,9 @@ import (
 )
 
 /*
+	The number of parallel client go-routines spawned can be influenced by setting
+	runtime.GOMAXPROCS(). It defaults to the number of CPUs.
+
 	go test \
 		-test.bench BenchmarkSimple \
 		-test.run=thisexpressionwontmatchanytest \
