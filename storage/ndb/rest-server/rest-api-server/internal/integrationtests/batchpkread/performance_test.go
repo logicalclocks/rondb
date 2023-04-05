@@ -62,8 +62,6 @@ func BenchmarkSimple(b *testing.B) {
 	maxRows := testdbs.BENCH_DB_NUM_ROWS
 	threadId := 0
 
-	// Initialize the slice for storing the latencies.
-	latencies := make([]time.Duration, numOps)
 	latenciesChannel := make(chan time.Duration, numOps)
 
 	b.ResetTimer()
@@ -127,14 +125,12 @@ func BenchmarkSimple(b *testing.B) {
 	b.StopTimer()
 
 	numTotalOps := numOps * batchSize
-
 	opsPerSecond := float64(numTotalOps) / time.Since(start).Seconds()
 
+	latencies := make([]time.Duration, numOps)
 	for i := 0; i < numOps; i++ {
 		latencies[i] = <-latenciesChannel
 	}
-
-	// Calculate the 50th and 99th percentile latencies.
 	sort.Slice(latencies, func(i, j int) bool {
 		return latencies[i] < latencies[j]
 	})
