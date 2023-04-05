@@ -20,6 +20,7 @@ package batchpkread
 import (
 	"math/rand"
 	"net/http"
+	"sort"
 	"testing"
 	"time"
 
@@ -62,6 +63,10 @@ func BenchmarkSimple(b *testing.B) {
 	table := "table_1"
 	maxRows := testdbs.BENCH_DB_NUM_ROWS
 	threadId := 0
+
+	// Initialize the slice for storing the latencies.
+	latencies := make([]time.Duration, numOps)
+	latenciesChannel := make(chan time.Duration, numOps)
 
 	b.ResetTimer()
 	start := time.Now()
@@ -113,11 +118,13 @@ func BenchmarkSimple(b *testing.B) {
 				op.SubOperation.Body.Filters = testclient.NewFilter(&col, rand.Intn(maxRows))
 			}
 
+			requestStartTime := time.Now()
 			if runAgainstGrpcServer {
 				batchGRPCTestWithConn(b, batchTestInfo, false, false, grpcConn)
 			} else {
 				batchRESTTest(b, batchTestInfo, false, false)
 			}
+			latenciesChannel <- time.Since(requestStartTime)
 		}
 	})
 	b.StopTimer()
@@ -127,7 +134,18 @@ func BenchmarkSimple(b *testing.B) {
 	b.Logf("Number total pk lookups: %d", numTotalOps)
 
 	opsPerSecond := float64(numTotalOps) / time.Since(start).Seconds()
-	nanoSecondsPerOp := float64(time.Since(start).Nanoseconds()) / float64(numTotalOps)
 	b.Logf("Throughput: %f pk lookups/second", opsPerSecond)
-	b.Logf("Latency: 	%f nanoseconds/pk lookup", nanoSecondsPerOp)
+
+	for i := 0; i < numOps; i++ {
+		latencies[i] = <-latenciesChannel
+	}
+
+	// Calculate the 50th and 99th percentile latencies.
+	sort.Slice(latencies, func(i, j int) bool {
+		return latencies[i] < latencies[j]
+	})
+	p50 := latencies[int(float64(numOps)*0.5)]
+	p99 := latencies[int(float64(numOps)*0.99)]
+	b.Logf("50th percentile latency: %vms\n", p50.Milliseconds())
+	b.Logf("99th percentile latency: %vms\n", p99.Milliseconds())
 }
