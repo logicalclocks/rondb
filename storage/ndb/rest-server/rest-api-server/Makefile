@@ -66,6 +66,12 @@ test:
 	export CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" && \
 	go test -p 1 -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg ./... `go list ./... | grep -v cmd`
 
+# Benchmarks:	
+# go test -v -bench BenchmarkSimple -run=^$ -benchmem -benchtime=10s hopsworks.ai/rdrs/internal/integrationtests/ping
+
+# Single tests:
+# go test -cpuprofile cpu.out -memprofile mem.out -run TestPing hopsworks.ai/rdrs/internal/integrationtests/ping
+
 print-func-coverage: test
 	go tool cover -func $(COVERAGE_OUTPUT_FILE) > $(COVERAGE_FUNC_OUTPUT_FILE)
 
