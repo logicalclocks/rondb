@@ -60,7 +60,7 @@ func CreateDatabases(
 		err = runQueriesWithConnection(createSchema, dbConn)
 		if err != nil {
 			cleanupDbsWrapper(dropDatabases)()
-			err = fmt.Errorf("failed running createSchema for db '%s'; error: %v", db, err)
+			err = fmt.Errorf("failed running createSchema for db '%s'; error: %w", db, err)
 			return err, func() {}
 		}
 		log.Debugf("successfully ran all queries to instantiate db '%s'", db)

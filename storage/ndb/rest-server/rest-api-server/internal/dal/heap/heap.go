@@ -30,6 +30,7 @@ import (
 	"unsafe"
 
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/log"
 )
 
 type Heap struct {
@@ -93,11 +94,10 @@ func (heap *Heap) releaseAllBuffers() {
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
 
-	// stats := heap.GetNativeBuffersStats()
-	// if stats.AllocationsCount != stats.FreeBuffers {
-	// log.Errorf("Shutting down heap. Number of free buffers do not match. Expecting: %d, Got: %d. %#v",
-	// stats.AllocationsCount, stats.FreeBuffers, heap.buffersStats)
-	// }
+	if heap.buffersStats.AllocationsCount != int64(len(heap.buffers)) {
+		log.Errorf("Shutting down heap. Number of free buffers do not match. Expecting: %d, Got: %d.",
+			heap.buffersStats.AllocationsCount, int64(len(heap.buffers)))
+	}
 
 	for _, buffer := range heap.buffers {
 		C.free(buffer.Buffer)
@@ -139,7 +139,7 @@ func (heap *Heap) returnBuffer(buffer *NativeBuffer) {
 }
 
 func (heap *Heap) GetNativeBuffersStats() MemoryStats {
-	// update the free buffers cound
+	// update the free buffers count
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
 

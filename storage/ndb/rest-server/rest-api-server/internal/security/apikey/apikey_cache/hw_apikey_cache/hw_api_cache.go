@@ -40,22 +40,19 @@ func NewAPIKeyCache() apikey_cache.HWAPIKeyCache {
 }
 
 type HWAPIKeyCache struct {
-	// Hopsworks API Key Cache
-	// API Key -> User Databases
-	//key2UserDBsCache  make(map[string]*UserDBs)
-	key2UserDBsCache     map[string]*UserDBs
+	key2UserDBsCache     map[string]*UserDBs // API Key -> User Databases
 	key2UserDBsCacheLock sync.RWMutex
 }
 
 // Cache Entry
 type UserDBs struct {
-	userDBs         map[string]bool
-	lastUsed        time.Time     // for removing unused entries
-	lastUpdated     time.Time     // for removing unused entries
-	rowLock         sync.RWMutex  // this is used to prevent concurrent updates
-	ticker          *time.Ticker  // ticker is used to keep the cache entry updated
-	evicted         bool          // is evicted or deleted
-	refreshInterval time.Duration // Cache refresh interval
+	userDBs         map[string]bool // DBs
+	lastUsed        time.Time       // for removing unused entries
+	lastUpdated     time.Time       // last updated TS
+	rowLock         sync.RWMutex    // this is used to prevent concurrent updates
+	ticker          *time.Ticker    // ticker is used to keep the cache entry updated
+	evicted         bool            // is evicted or deleted
+	refreshInterval time.Duration   // Cache refresh interval
 }
 
 func (hwc *HWAPIKeyCache) Cleanup() error {
@@ -63,7 +60,7 @@ func (hwc *HWAPIKeyCache) Cleanup() error {
 	defer hwc.key2UserDBsCacheLock.Unlock()
 
 	if log.IsInfo() {
-		log.Info("---------------> Shutting down API Key Cache")
+		log.Info("Shutting down API Key Cache")
 	}
 
 	for _, udbs := range hwc.key2UserDBsCache {
@@ -80,8 +77,8 @@ func (hwc *HWAPIKeyCache) Cleanup() error {
 func (hwc *HWAPIKeyCache) UpdateCache(apiKey *string) error {
 
 	// if the entry does not already exist in the
-	// cache then multiple clients will try to read the
-	// API key from the backend simultaneously.
+	// cache then multiple clients will try to read and
+	// update the API key from the backend simultaneously.
 	// Trying to prevent multiple writers here
 
 	// first check using read lock
@@ -90,7 +87,6 @@ func (hwc *HWAPIKeyCache) UpdateCache(apiKey *string) error {
 	hwc.key2UserDBsCacheLock.RUnlock()
 
 	if !ok {
-
 		// Continue with write lock
 		hwc.key2UserDBsCacheLock.Lock()
 
@@ -234,6 +230,7 @@ func (hwc *HWAPIKeyCache) FindAndValidate(apiKey *string, dbs ...*string) (keyFo
 }
 
 func (hwc *HWAPIKeyCache) updateRecord(apikey *string, dbs []string, udbs *UserDBs) error {
+	// caller holds the lock
 	if udbs.evicted {
 		return nil
 	}
@@ -251,8 +248,8 @@ func (hwc *HWAPIKeyCache) updateRecord(apikey *string, dbs []string, udbs *UserD
 
 // Just for testing..
 func (hwc *HWAPIKeyCache) LastUsed(apiKey *string) time.Time {
-	hwc.key2UserDBsCacheLock.Lock()
-	defer hwc.key2UserDBsCacheLock.Unlock()
+	hwc.key2UserDBsCacheLock.RLock()
+	defer hwc.key2UserDBsCacheLock.RUnlock()
 	entry, ok := hwc.key2UserDBsCache[*apiKey]
 	if ok {
 		return entry.lastUsed
@@ -262,8 +259,8 @@ func (hwc *HWAPIKeyCache) LastUsed(apiKey *string) time.Time {
 }
 
 func (hwc *HWAPIKeyCache) LastUpdated(apiKey *string) time.Time {
-	hwc.key2UserDBsCacheLock.Lock()
-	defer hwc.key2UserDBsCacheLock.Unlock()
+	hwc.key2UserDBsCacheLock.RLock()
+	defer hwc.key2UserDBsCacheLock.RUnlock()
 	entry, ok := hwc.key2UserDBsCache[*apiKey]
 	if ok {
 		return entry.lastUpdated
@@ -273,6 +270,7 @@ func (hwc *HWAPIKeyCache) LastUpdated(apiKey *string) time.Time {
 }
 
 func (hwc *HWAPIKeyCache) authenticateUser(apiKey *string) (*dal.HopsworksAPIKey, error) {
+	// caller holds the lock
 	splits := strings.Split(*apiKey, ".")
 	prefix := splits[0]
 	clientSecret := splits[1]
@@ -293,6 +291,8 @@ func (hwc *HWAPIKeyCache) authenticateUser(apiKey *string) (*dal.HopsworksAPIKey
 
 // This fetches the databases from the DB and updates the cache
 func (hwc *HWAPIKeyCache) getUserDatabases(apikey *string, hopsworksKey *dal.HopsworksAPIKey) ([]string, error) {
+
+	// caller holds the lock
 	dbs, err := dal.GetUserProjects(hopsworksKey.UserID)
 	if err != nil {
 		return nil, err
@@ -302,6 +302,8 @@ func (hwc *HWAPIKeyCache) getUserDatabases(apikey *string, hopsworksKey *dal.Hop
 }
 
 func (hwc *HWAPIKeyCache) Size() int {
+	hwc.key2UserDBsCacheLock.RLock()
+	defer hwc.key2UserDBsCacheLock.RUnlock()
 	return len(hwc.key2UserDBsCache)
 }
 
@@ -312,7 +314,6 @@ func (hwc *HWAPIKeyCache) refreshIntervalWithJitter() time.Duration {
 	if jitter%2 == 0 {
 		jitter = -jitter
 	}
-	//assert.GreaterOrEqual(jitter, 0, "Bad jitter value in API Cache")
 	refreshInterval = refreshInterval + uint32(jitter)
 	return time.Duration(refreshInterval) * time.Millisecond
 }

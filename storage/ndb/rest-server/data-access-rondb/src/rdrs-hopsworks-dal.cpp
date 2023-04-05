@@ -226,15 +226,16 @@ RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key) {
   if (status.http_code != SUCCESS) {
     return status;
   }
-  
-  Uint32 orc   = 0;
+
+  Uint32 orc = 0;
   do {
     status = find_api_key_int(ndb_object, prefix, api_key);
     orc++;
     if (status.http_code == SUCCESS || orc > OP_RETRY_COUNT || !CanRetryOperation(status)) {
       break;
     }
-    usleep(ExponentialDelayWithJitter(orc, OP_RETRY_INITIAL_DELAY_IN_MS, OP_RETRY_JITTER_IN_MS) * 1000);  
+    usleep(ExponentialDelayWithJitter(orc, OP_RETRY_INITIAL_DELAY_IN_MS, OP_RETRY_JITTER_IN_MS) *
+           1000);
   } while (true);
 
   closeNDBObject(ndb_object);
@@ -434,7 +435,7 @@ RS_Status find_project_team(HopsworksUsers *users,
   status = find_project_team_int(ndb_object, users, project_team_vec);
   closeNDBObject(ndb_object);
 
-    return status;
+  return status;
 }
 
 RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *project_team_vec,
@@ -550,7 +551,7 @@ RS_Status find_projects_vec(std::vector<HopsworksProjectTeam> *project_team_vec,
   status = find_projects_int(ndb_object, project_team_vec, project_vec);
   closeNDBObject(ndb_object);
 
-    return status;
+  return status;
 }
 
 RS_Status find_all_projects_int(int uid, std::vector<HopsworksProject> *project_vec) {
@@ -578,8 +579,7 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
   RS_Status status;
   std::vector<HopsworksProject> project_vec;
 
-
-  Uint32 orc   = 0;
+  Uint32 orc = 0;
   do {
     project_vec.clear();
     status = find_all_projects_int(uid, &project_vec);
@@ -587,9 +587,9 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
     if (status.http_code == SUCCESS || orc > OP_RETRY_COUNT || !CanRetryOperation(status)) {
       break;
     }
-    usleep(ExponentialDelayWithJitter(orc, OP_RETRY_INITIAL_DELAY_IN_MS, OP_RETRY_JITTER_IN_MS) * 1000);  
+    usleep(ExponentialDelayWithJitter(orc, OP_RETRY_INITIAL_DELAY_IN_MS, OP_RETRY_JITTER_IN_MS) *
+           1000);
   } while (true);
-
 
   if (status.http_code != SUCCESS) {
     return status;
@@ -597,11 +597,11 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
 
   *count = project_vec.size();
   HopsworksProject dummy;
-  *projects = (char **)malloc(*count * sizeof(char *)); // freed by CGO
+  *projects = (char **)malloc(*count * sizeof(char *));  // freed by CGO
 
   char **ease = *projects;
   for (Uint32 i = 0; i < project_vec.size(); i++) {
-    ease[i] = (char *)malloc(sizeof(dummy.porjectname) * sizeof(char)); //freed by CGO
+    ease[i] = (char *)malloc(sizeof(dummy.porjectname) * sizeof(char));  // freed by CGO
     memcpy(ease[i], project_vec[i].porjectname, strlen(project_vec[i].porjectname) + 1);
   }
   return RS_OK;

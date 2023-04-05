@@ -52,7 +52,7 @@ type Internal struct {
 
 func (i *Internal) Validate() error {
 	if i.PreAllocatedBuffers == 0 {
-		log.Warnf("PreAllocatedBuffers are set to 0. It may impact performance")
+		log.Warnf("PreAllocatedBuffers is set to 0. It may impact performance")
 	}
 
 	if i.BufferSize < 256 {
@@ -224,7 +224,6 @@ type TestParameters struct {
 }
 
 func (t *TestParameters) Validate() error {
-	// TODO
 	return nil
 }
 
@@ -237,7 +236,7 @@ type APIKeyParameters struct {
 
 func (a *APIKeyParameters) Validate() error {
 	if a.CacheRefreshIntervalMS == 0 {
-		return errors.New("HopsworksAPIKeysCacheRefreshIntervalMS can be 0. Possible values >= 1")
+		return errors.New("CacheRefreshIntervalMS cannot be 0.")
 	}
 
 	if a.CacheUnusedEntriesEvictionMS == 0 {

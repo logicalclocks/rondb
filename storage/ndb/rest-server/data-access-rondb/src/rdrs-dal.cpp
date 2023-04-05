@@ -39,7 +39,7 @@
 Ndb_cluster_connection *ndb_connection;
 Uint32 OP_RETRY_COUNT               = 3;
 Uint32 OP_RETRY_INITIAL_DELAY_IN_MS = 500;
-Uint32 OP_RETRY_JITTER_IN_MS        = 500;
+Uint32 OP_RETRY_JITTER_IN_MS        = 100;
 
 /**
  * Initialize NDB connection

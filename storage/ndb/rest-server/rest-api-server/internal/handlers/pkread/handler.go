@@ -36,6 +36,7 @@ type Handler struct {
 	apiKeyCache apikey.APIKeyCacher
 }
 
+// ensure all the interface methods are implemented
 var _ handlers.Handler = (*Handler)(nil)
 
 func New(heap *heap.Heap, apiKeyCache apikey.APIKeyCacher) Handler {

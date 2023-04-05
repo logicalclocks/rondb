@@ -113,8 +113,6 @@ func InitialiseTesting(conf *config.AllConfigs, createOnlyTheseDBs ...string) (f
 		return nil, fmt.Errorf("failed creating new API Key Cache; error: %v ", err)
 	}
 	apiKeyCleanup := func() {
-
-		fmt.Printf("Cleaner integration test api key cleaner\n")
 		apiKeyCache.Cleanup()
 	}
 	cleanupFNs[index] = &apiKeyCleanup

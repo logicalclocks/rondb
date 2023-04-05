@@ -208,7 +208,7 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 	            "ConnectionRetryDelayInSec": 5,
 	            "OpRetryOnTransientErrorsCount": 3,
 	            "OpRetryInitialDelayInMS": 500,
-	            "OpRetryJitterInMS": 500
+	            "OpRetryJitterInMS": 100
         },
         "Security": {
                  "TLS": {
@@ -220,8 +220,9 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
                  }
                  "APIKeyParameters": {
                          "UseHopsworksAPIKeys": true,
-                         "CacheRefreshIntervalMS": 5000,
-                         "CacheUnusedEntriesEvictionMS": 60000
+                         "CacheRefreshIntervalMS": 10000,
+                         "CacheUnusedEntriesEvictionMS": 60000,
+                         "CacheRefreshIntervalJitterMS": 1000
                  }
         },
         "Log": {
@@ -288,7 +289,7 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
   - **OpRetryInitialDelayInMS:** Initial delay used in expoential backoff for retrying failed operations.
 
-  - **OpRetryJitterInMS:** Jitter is added (or subtracted) from the retry delay to prevent failed operations from being retried at the same time 
+  - **OpRetryJitterInMS:** Jitter is added (or subtracted) from the retry delay to prevent multiple failed operations from being retried at the same time 
 
 - **Security:** REST server security settings 
 
@@ -307,10 +308,11 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
       - **UseHopsworksAPIKeys:**  Enable/Disable Hopsworks API Key for authentication
 
-      - **CacheRefreshIntervalMS:** The API Keys are cached and refreshed periodically. You can not set the refresh period to zero.
+      - **CacheRefreshIntervalMS:** The API Keys are cached and refreshed periodically. CacheRefreshIntervalMS can not be set to zero.
 
-      - **CacheUnusedEntriesEvictionMS:** Unused API Keys are automatically evicted from the cache. Eviction time can not be less than cache refersh time (CacheRefreshIntervalMS) 
+      - **CacheUnusedEntriesEvictionMS:** Unused API Keys are automatically evicted from the cache. Eviction time can not be less than cache refersh time (CacheRefreshIntervalMS).
 
+      - **CacheRefreshIntervalJitterMS:** It prevents simultaneously updates to the cached API Keys if the keys were added to the cache in a very short interval 
 
 - **Log:** REST Server logging settings 
 

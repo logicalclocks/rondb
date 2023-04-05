@@ -99,7 +99,7 @@ func TestAPIKeyCache1(t *testing.T) {
 
 	// To speed up the tests
 	conf.Security.APIKeyParameters.CacheRefreshIntervalMS = 1000
-	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS = 2000
+	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS = conf.Security.APIKeyParameters.CacheRefreshIntervalMS * 2
 
 	apiKeyCache, _ := NewAPIKeyCache()
 	defer apiKeyCache.Cleanup()
@@ -120,7 +120,7 @@ func TestAPIKeyCache1(t *testing.T) {
 	lastUpdated2 := apiKeyCache.LastUpdated(&[]string{testutils.HOPSWORKS_TEST_API_KEY}[0])
 
 	if lastUpdated1 == lastUpdated2 {
-		t.Fatalf("Cache was not updated")
+		t.Fatalf("Cache entry was not updated")
 	}
 
 	err = apiKeyCache.ValidateAPIKey(&apiKey, &databases[0])
@@ -143,7 +143,7 @@ func TestAPIKeyCache2(t *testing.T) {
 
 	// To speed up the tests
 	conf.Security.APIKeyParameters.CacheRefreshIntervalMS = 1000
-	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS = 2000
+	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS = conf.Security.APIKeyParameters.CacheRefreshIntervalMS * 2
 
 	apiKeyCache, _ := NewAPIKeyCache()
 	defer apiKeyCache.Cleanup()
@@ -158,7 +158,8 @@ func TestAPIKeyCache2(t *testing.T) {
 
 	lastUpdated1 := apiKeyCache.LastUpdated(&apiKey)
 
-	time.Sleep(time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS) * time.Millisecond)
+	time.Sleep((time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS) +
+		time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalJitterMS)) * time.Millisecond)
 
 	lastUpdated2 := apiKeyCache.LastUpdated(&apiKey)
 
@@ -187,7 +188,7 @@ func TestAPIKeyCache3(t *testing.T) {
 	apiKeyCache, _ := NewAPIKeyCache()
 	defer apiKeyCache.Cleanup()
 
-	numOps := 320
+	numOps := 512
 	dal.SetOpRetryProps(5, 1000, 1000)
 
 	rand.Seed(time.Now().Unix())
@@ -222,7 +223,9 @@ func TestAPIKeyCache3(t *testing.T) {
 		t.Fatalf(fmt.Sprintf("%d key validations failed", failCount))
 	}
 
-	time.Sleep(time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS*3) * time.Millisecond)
+	time.Sleep((time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS) +
+		time.Duration(conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS) +
+		time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalJitterMS)) * time.Millisecond)
 
 	// wait for eviction time to pass
 	if apiKeyCache.Size() != 0 {
@@ -337,7 +340,9 @@ func TestAPIKeyCache4(t *testing.T) {
 		}
 	}
 
-	time.Sleep(time.Duration(conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS*2) * time.Millisecond)
+	time.Sleep((time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS) +
+		time.Duration(conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS) +
+		time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalJitterMS)) * time.Millisecond)
 
 	// wait for eviction time to pass
 	if apiKeyCache.Size() != 0 {
