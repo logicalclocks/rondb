@@ -183,8 +183,8 @@ func createHopsworksSchema(dbsToRegister ...string) string {
 	}
 
 	// register additional API Keys
-	for i := 2; i <= HopsworksAPIKey_ADDITIONAL_KEYS+1; i++ {
-		addAPIKey := strings.ReplaceAll(HopsworksAPIKey, HopsworksAPIKey_KEY_ID, fmt.Sprintf("%d", i))
+	for i := 0; i < HopsworksAPIKey_ADDITIONAL_KEYS; i++ {
+		addAPIKey := strings.ReplaceAll(HopsworksAPIKey, HopsworksAPIKey_KEY_ID, fmt.Sprintf("%d", i+2 /* id 1 is already taken*/))
 		addAPIKey = strings.ReplaceAll(addAPIKey, HopsworksAPIKey_KEY_PREFIX, fmt.Sprintf("%016d", i))
 		addAPIKey = strings.ReplaceAll(addAPIKey, HopsworksAPIKey_KEY_NAME, fmt.Sprintf("name%d", i))
 		hopsworksScheme += addAPIKey

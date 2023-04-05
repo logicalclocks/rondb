@@ -186,8 +186,9 @@ func TestAPIKeyCache3(t *testing.T) {
 	apiKeyCache, _ := NewAPIKeyCache()
 	defer apiKeyCache.Cleanup()
 
-	numOps := 64
+	numOps := 320
 	dal.SetOpRetryProps(5, 1000, 1000)
+
 	rand.Seed(time.Now().Unix())
 	for i := 0; i < numOps; i++ {
 		go func(ch chan bool, id int) {
