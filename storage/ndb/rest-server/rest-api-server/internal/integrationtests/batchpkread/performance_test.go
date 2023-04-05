@@ -50,15 +50,13 @@ import (
 func BenchmarkSimple(b *testing.B) {
 	// Number of total operations
 	numOps := b.N
-	b.Logf("numOps: %d", numOps)
+	const batchSize = 100
 
 	/*
 		IMPORTANT: This benchmark will run requests against EITHER the REST or
 		the gRPC server, depending on this flag.
 	*/
 	runAgainstGrpcServer := true
-
-	const batchSize = 100
 
 	table := "table_1"
 	maxRows := testdbs.BENCH_DB_NUM_ROWS
@@ -83,7 +81,6 @@ func BenchmarkSimple(b *testing.B) {
 
 		// Every go-routine will always query the same row
 		threadId++
-		b.Logf("threadId: %d", threadId)
 
 		operations := []api.BatchSubOperationTestInfo{}
 		for i := 0; i < batchSize; i++ {
@@ -130,11 +127,8 @@ func BenchmarkSimple(b *testing.B) {
 	b.StopTimer()
 
 	numTotalOps := numOps * batchSize
-	b.Logf("Batch size: %d", batchSize)
-	b.Logf("Number total pk lookups: %d", numTotalOps)
 
 	opsPerSecond := float64(numTotalOps) / time.Since(start).Seconds()
-	b.Logf("Throughput: %f pk lookups/second", opsPerSecond)
 
 	for i := 0; i < numOps; i++ {
 		latencies[i] = <-latenciesChannel
@@ -146,6 +140,12 @@ func BenchmarkSimple(b *testing.B) {
 	})
 	p50 := latencies[int(float64(numOps)*0.5)]
 	p99 := latencies[int(float64(numOps)*0.99)]
-	b.Logf("50th percentile latency: %vms\n", p50.Milliseconds())
-	b.Logf("99th percentile latency: %vms\n", p99.Milliseconds())
+
+	b.Logf("Number of operations:       %d", numOps)
+	b.Logf("Batch size (per operation): %d", batchSize)
+	b.Logf("Number of threads:          %d", threadId)
+	b.Logf("Throughput:                 %f pk lookups/second", opsPerSecond)
+	b.Logf("50th percentile latency:    %v ms", p50.Milliseconds())
+	b.Logf("99th percentile latency:    %v ms", p99.Milliseconds())
+	b.Log("-------------------------------------------------")
 }
