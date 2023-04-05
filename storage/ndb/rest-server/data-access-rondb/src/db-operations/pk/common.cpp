@@ -994,6 +994,5 @@ Uint32 ExponentialDelayWithJitter(Uint32 retry, Uint32 initial_delay_in_ms, Uint
   } else {
     delay = expoDelay - randJitter;
   }
-  printf("Expo delay is %d. iteration %d\n", delay, retry);
   return delay;
 }

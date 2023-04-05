@@ -214,7 +214,6 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
   }
 
   if (count == 0) {
-    printf("----------> Got 404 for no reason. error code %d\n", error.code);
     return RS_CLIENT_404_ERROR();
   }
 

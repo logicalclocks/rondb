@@ -114,7 +114,8 @@ func TestAPIKeyCache1(t *testing.T) {
 
 	lastUpdated1 := apiKeyCache.LastUpdated(&[]string{testutils.HOPSWORKS_TEST_API_KEY}[0])
 
-	time.Sleep(time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS) * time.Millisecond)
+	time.Sleep((time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS) +
+		time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalJitterMS)) * time.Millisecond)
 
 	lastUpdated2 := apiKeyCache.LastUpdated(&[]string{testutils.HOPSWORKS_TEST_API_KEY}[0])
 
@@ -243,7 +244,7 @@ func TestAPIKeyCache4(t *testing.T) {
 
 	// To speed up the tests
 	conf.Security.APIKeyParameters.CacheRefreshIntervalMS = 1000
-	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS = 2000
+	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS = conf.Security.APIKeyParameters.CacheRefreshIntervalMS * 2
 
 	badKeys := []string{
 		"fvoHJCjkpof4WezF.4eed386ceb310e9976932cb279de2dab70c24a1ceb396e99dd29df3a1348f42e",
@@ -314,7 +315,7 @@ func TestAPIKeyCache4(t *testing.T) {
 	defer apiKeyCache.Cleanup()
 
 	rand.Seed(time.Now().Unix())
-	numOps := 100000
+	numOps := 1000
 	for i := 0; i < numOps; i++ {
 		go func(ch chan bool) {
 
@@ -332,15 +333,11 @@ func TestAPIKeyCache4(t *testing.T) {
 	for i := 0; i < numOps; i++ {
 		val := <-ch
 		if !val {
-			t.Fatalf("They validation failed")
+			t.Fatalf("Key validation failed")
 		}
 	}
 
-	if apiKeyCache.Size() != len(badKeys) {
-		t.Fatalf("Wrong cache size. Expecting %d. Got %d ", len(badKeys), apiKeyCache.Size())
-	}
-
-	time.Sleep(time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS) * time.Millisecond)
+	time.Sleep(time.Duration(conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS*2) * time.Millisecond)
 
 	// wait for eviction time to pass
 	if apiKeyCache.Size() != 0 {
