@@ -66,11 +66,27 @@ test:
 	export CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" && \
 	go test -p 1 -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg ./... `go list ./... | grep -v cmd`
 
-# Benchmarks:	
-# go test -v -bench BenchmarkSimple -run=^$ -benchmem -benchtime=10s hopsworks.ai/rdrs/internal/integrationtests/ping
+# Run specific benchmark:
+# go test -v \
+# 	-bench BenchmarkSimple \
+# 	-run=^$ \
+# 	-benchmem \
+# 	-benchtime=10s \
+# 	-cpuprofile cpu.out \
+# 	-memprofile mem.out \
+# 	hopsworks.ai/rdrs/internal/integrationtests/ping
 
-# Single tests:
-# go test -cpuprofile cpu.out -memprofile mem.out -run TestPing hopsworks.ai/rdrs/internal/integrationtests/ping
+# Run specific unit test:
+# go test \
+# 	-run TestPing \
+# 	-cpuprofile cpu.out \
+# 	-memprofile mem.out \
+# 	hopsworks.ai/rdrs/internal/integrationtests/ping
+
+# Otherwise use e.g. `go tool pprof cpu.out` for an interactive CLI
+create-profiling-pdfs:
+	go tool pprof -pdf cpu.out > cpu_profile.pdf
+	go tool pprof -pdf mem.out > mem_profile.pdf
 
 print-func-coverage: test
 	go tool cover -func $(COVERAGE_OUTPUT_FILE) > $(COVERAGE_FUNC_OUTPUT_FILE)
