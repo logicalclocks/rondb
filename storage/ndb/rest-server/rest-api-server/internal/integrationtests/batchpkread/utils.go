@@ -6,14 +6,18 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func batchTest(t *testing.T, tests map[string]api.BatchOperationTestInfo, isBinaryData bool) {
+func batchTestMultiple(t *testing.T, tests map[string]api.BatchOperationTestInfo, isBinaryData bool, validate bool) {
 	for name, testInfo := range tests {
 		t.Run(name, func(t *testing.T) {
-			// This will mean that REST calls to Handler will be slightly faster
-			batchRESTTest(t, testInfo, isBinaryData, true)
-			batchGRPCTest(t, testInfo, isBinaryData, true)
+			batchTest(t, testInfo, isBinaryData, validate)
 		})
 	}
+}
+
+func batchTest(t testing.TB, testInfo api.BatchOperationTestInfo, isBinaryData bool, validate bool) {
+	// This will mean that REST calls to Handler will be slightly faster
+	batchRESTTest(t, testInfo, isBinaryData, validate)
+	batchGRPCTest(t, testInfo, isBinaryData, validate)
 }
 
 func checkOpIDandStatus(

@@ -14,7 +14,7 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func batchGRPCTest(t *testing.T, testInfo api.BatchOperationTestInfo, isBinaryData bool, validateData bool) {
+func batchGRPCTest(t testing.TB, testInfo api.BatchOperationTestInfo, isBinaryData bool, validateData bool) {
 	conn, err := testclient.InitGRPCConnction()
 	if err != nil {
 		t.Fatal(err.Error())
@@ -23,7 +23,7 @@ func batchGRPCTest(t *testing.T, testInfo api.BatchOperationTestInfo, isBinaryDa
 }
 
 func batchGRPCTestWithConn(
-	t *testing.T,
+	t testing.TB,
 	testInfo api.BatchOperationTestInfo,
 	isBinaryData bool,
 	validateData bool,
@@ -36,7 +36,7 @@ func batchGRPCTestWithConn(
 }
 
 func sendGRPCBatchRequest(
-	t *testing.T,
+	t testing.TB,
 	testInfo api.BatchOperationTestInfo,
 	conn *grpc.ClientConn,
 ) (int, *api.BatchResponseGRPC) {

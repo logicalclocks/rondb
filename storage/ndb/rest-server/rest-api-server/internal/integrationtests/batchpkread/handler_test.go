@@ -205,7 +205,7 @@ func TestBatchSimple(t *testing.T) {
 			ErrMsgContains: "",
 		},
 	}
-	batchTest(t, tests, false)
+	batchTestMultiple(t, tests, false, true)
 }
 
 func TestBatchDate(t *testing.T) {
@@ -228,7 +228,7 @@ func TestBatchDate(t *testing.T) {
 			},
 		},
 	}
-	batchTest(t, tests, false)
+	batchTestMultiple(t, tests, false, true)
 }
 
 func TestBatchDateTime(t *testing.T) {
@@ -265,7 +265,7 @@ func TestBatchDateTime(t *testing.T) {
 			ErrMsgContains: "",
 		},
 	}
-	batchTest(t, tests, false)
+	batchTestMultiple(t, tests, false, true)
 }
 
 func TestBatchTime(t *testing.T) {
@@ -300,10 +300,10 @@ func TestBatchTime(t *testing.T) {
 			ErrMsgContains: "",
 		},
 	}
-	batchTest(t, tests, false)
+	batchTestMultiple(t, tests, false, true)
 }
 
-func createSubOperation(t *testing.T, table string, database string, pk string, expectedStatus int) api.BatchSubOperationTestInfo {
+func createSubOperation(t testing.TB, table string, database string, pk string, expectedStatus int) api.BatchSubOperationTestInfo {
 	respKVs := []interface{}{"col0"}
 	return api.BatchSubOperationTestInfo{
 		SubOperation: api.BatchSubOp{
@@ -364,7 +364,7 @@ func ArrayColumnBatchTest(t *testing.T, table string, database string, isBinary 
 		},
 	}
 
-	batchTest(t, tests, isBinary)
+	batchTestMultiple(t, tests, isBinary, true)
 }
 
 /*
@@ -392,7 +392,7 @@ func TestBatchBadSubOp(t *testing.T) {
 		},
 	}
 
-	batchTest(t, tests, isBinary)
+	batchTestMultiple(t, tests, isBinary, true)
 }
 
 func arrayColumnBatchTestSubOp(t *testing.T, table string, database string, isBinary bool, colWidth int, padding bool, pk string, expectedStatus int) api.BatchSubOperationTestInfo {

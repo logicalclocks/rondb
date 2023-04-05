@@ -12,14 +12,14 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func batchRESTTest(t *testing.T, testInfo api.BatchOperationTestInfo, isBinaryData bool, validateData bool) {
+func batchRESTTest(t testing.TB, testInfo api.BatchOperationTestInfo, isBinaryData bool, validateData bool) {
 	httpCode, res := sendHttpBatchRequest(t, testInfo, isBinaryData)
 	if httpCode == http.StatusOK {
 		validateBatchResponseHttp(t, testInfo, res, isBinaryData, validateData)
 	}
 }
 
-func sendHttpBatchRequest(t *testing.T, testInfo api.BatchOperationTestInfo, isBinaryData bool) (httpCode int, res string) {
+func sendHttpBatchRequest(t testing.TB, testInfo api.BatchOperationTestInfo, isBinaryData bool) (httpCode int, res string) {
 	subOps := []api.BatchSubOp{}
 	for _, op := range testInfo.Operations {
 		subOps = append(subOps, op.SubOperation)
