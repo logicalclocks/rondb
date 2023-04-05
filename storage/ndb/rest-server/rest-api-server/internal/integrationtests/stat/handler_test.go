@@ -58,7 +58,7 @@ func TestStat(t *testing.T) {
 	statsHttp := getStatsHttp(t)
 	compare(t, statsHttp, int64(expectedAllocations), int64(numOps))
 
-	statsGRPC := getStatsGRPC(t)
+	statsGRPC := sendGRPCStatRequest(t)
 	compare(t, statsGRPC, int64(expectedAllocations), int64(numOps))
 }
 
@@ -104,14 +104,13 @@ func getStatsHttp(t *testing.T) *api.StatResponse {
 	return &stats
 }
 
-func getStatsGRPC(t *testing.T) *api.StatResponse {
-	stats := sendGRPCStatRequest(t)
-	return stats
-}
-
 func sendGRPCStatRequest(t *testing.T) *api.StatResponse {
 	// Create gRPC client
-	client := api.NewRonDBRESTClient(testclient.GetGRPCConnction())
+	conn, err := testclient.InitGRPCConnction()
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	client := api.NewRonDBRESTClient(conn)
 
 	// Create Request
 	statRequest := api.StatRequest{}

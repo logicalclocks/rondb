@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"google.golang.org/grpc"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/testutils"
@@ -12,8 +13,15 @@ import (
 )
 
 func sendGrpcPingRequest(t testing.TB) {
-	grpcClient := api.NewRonDBRESTClient(testclient.GetGRPCConnction())
+	conn, err := testclient.InitGRPCConnction()
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	sendGrpcPingRequestWithConnection(t, conn)
+}
 
+func sendGrpcPingRequestWithConnection(t testing.TB, connection *grpc.ClientConn) {
+	grpcClient := api.NewRonDBRESTClient(connection)
 	_, err := grpcClient.Ping(context.Background(), &api.Empty{})
 	if err != nil {
 		t.Fatal(err)

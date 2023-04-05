@@ -2,14 +2,35 @@ package pkread
 
 import (
 	"encoding/json"
-	"fmt"
-	"strconv"
+	"net/http"
 	"testing"
 
+	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/integrationtests"
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
+	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 )
+
+func pkRESTTest(t testing.TB, testInfo api.PKTestInfo, isBinaryData bool, validate bool) {
+	url := testutils.NewPKReadURL(testInfo.Db, testInfo.Table)
+	body, err := json.MarshalIndent(testInfo.PkReq, "", "\t")
+	if err != nil {
+		t.Fatalf("Failed to marshall test request %v", err)
+	}
+
+	httpCode, res := testclient.SendHttpRequest(
+		t,
+		config.PK_HTTP_VERB,
+		url,
+		string(body),
+		testInfo.ErrMsgContains,
+		testInfo.HttpCode,
+	)
+	if httpCode == http.StatusOK && validate {
+		validateResHttp(t, testInfo, res, isBinaryData)
+	}
+}
 
 func validateResHttp(t testing.TB, testInfo api.PKTestInfo, resp string, isBinaryData bool) {
 	t.Helper()
@@ -29,34 +50,5 @@ func validateResHttp(t testing.TB, testInfo api.PKTestInfo, resp string, isBinar
 
 		integrationtests.CompareDataWithDB(t, testInfo.Db, testInfo.Table, testInfo.PkReq.Filters,
 			&key, jsonVal, isBinaryData)
-	}
-}
-
-func validateResGRPC(
-	t testing.TB,
-	testInfo api.PKTestInfo,
-	resp *api.PKReadResponseGRPC,
-	isBinaryData bool,
-) {
-	t.Helper()
-	for i := 0; i < len(testInfo.RespKVs); i++ {
-		key := string(testInfo.RespKVs[i].(string))
-
-		val, found := testclient.GetColumnDataFromGRPC(t, key, resp)
-		if !found {
-			t.Fatalf("Key not found in the response. Key %s", key)
-		}
-
-		var err error
-		if val != nil {
-			quotedVal := fmt.Sprintf("\"%s\"", *val) // you have to surround the string with "s
-			*val, err = strconv.Unquote(quotedVal)
-			if err != nil {
-				t.Fatalf("Unquote failed %v\n", err)
-			}
-		}
-
-		integrationtests.CompareDataWithDB(t, testInfo.Db, testInfo.Table, testInfo.PkReq.Filters,
-			&key, val, isBinaryData)
 	}
 }

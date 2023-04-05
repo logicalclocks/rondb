@@ -20,6 +20,9 @@ package ping
 import (
 	"testing"
 	"time"
+
+	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/testutils"
 )
 
 /*
@@ -37,7 +40,7 @@ func BenchmarkSimple(b *testing.B) {
 	numOps := b.N
 	b.Logf("numOps: %d", numOps)
 
-	runAgainstGrpcServer := false
+	runAgainstGrpcServer := true
 
 	threadId := 0
 
@@ -54,13 +57,20 @@ func BenchmarkSimple(b *testing.B) {
 		threadId++
 		b.Logf("threadId: %d", threadId)
 
+		// One connection per go-routine
+		conf := config.GetAll()
+		grpcConn, err := testutils.CreateGrpcConn(conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
+		if err != nil {
+			b.Fatal(err.Error())
+		}
+
 		/*
 			Given 10 go-routines and b.N==50, each go-routine
 			will run this 5 times.
 		*/
 		for bp.Next() {
 			if runAgainstGrpcServer {
-				sendGrpcPingRequest(b)
+				sendGrpcPingRequestWithConnection(b, grpcConn)
 			} else {
 				sendRestPingRequest(b)
 			}

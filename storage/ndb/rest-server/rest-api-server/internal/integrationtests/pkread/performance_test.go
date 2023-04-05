@@ -24,15 +24,14 @@ import (
 	"testing"
 	"time"
 
+	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
+	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 /*
-	IMPORTANT: This will every request against both the REST & the gRPC server.
-		Check pkTest() to comment out either of the server requests.
-
 	go test \
 		-test.bench BenchmarkSimple \
 		-test.run=thisexpressionwontmatchanytest \
@@ -83,6 +82,13 @@ func BenchmarkSimple(b *testing.B) {
 			RespKVs:        validateColumns,
 		}
 
+		// One connection per go-routine
+		conf := config.GetAll()
+		grpcConn, err := testutils.CreateGrpcConn(conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
+		if err != nil {
+			b.Fatal(err.Error())
+		}
+
 		/*
 			Given 10 go-routines and b.N==50, each go-routine
 			will run this 5 times.
@@ -92,7 +98,12 @@ func BenchmarkSimple(b *testing.B) {
 			filter := testclient.NewFilter(&col, rand.Intn(maxRows))
 			testInfo.PkReq.Filters = filter
 
-			pkTest(b, testInfo, false, false)
+			/*
+				IMPORTANT: This will every request against both the REST & the gRPC server.
+					Comment out one or the other for better result granularity.
+			*/
+			pkRESTTest(b, testInfo, false, false)
+			pkGRPCTestWithConn(b, testInfo, false, false, grpcConn)
 		}
 	})
 	b.StopTimer()

@@ -26,7 +26,6 @@ import (
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
-	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/servers"
 	"hopsworks.ai/rdrs/internal/testutils"
@@ -92,23 +91,11 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 	log.Info("Successfully started up default servers")
 	time.Sleep(500 * time.Millisecond)
 
-	conn, err := testclient.InitGRPCConnction()
-	if err != nil {
-		cleanupServers()
-		releaseBuffers()
-		cleanupTLSCerts()
-		return cleanup, err
-	}
-	cleanupGRPCConn := func() {
-		conn.Close()
-	}
-
 	// Check if profiling is enabled
 	if profilingEnabled() {
 		// Start profiling
 		f, err := os.Create("profile.out")
 		if err != nil {
-			cleanupGRPCConn()
 			cleanupServers()
 			releaseBuffers()
 			cleanupTLSCerts()
@@ -116,7 +103,6 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 		}
 		defer f.Close()
 		if err := pprof.StartCPUProfile(f); err != nil {
-			cleanupGRPCConn()
 			cleanupServers()
 			releaseBuffers()
 			cleanupTLSCerts()
@@ -129,7 +115,6 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 		defer cleanupTLSCerts()
 		defer releaseBuffers()
 		defer cleanupServers()
-		defer cleanupGRPCConn()
 		defer pprof.StopCPUProfile()
 
 		stats := newHeap.GetNativeBuffersStats()
