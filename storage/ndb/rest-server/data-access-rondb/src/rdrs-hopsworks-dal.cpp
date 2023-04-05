@@ -30,8 +30,9 @@
 #include "src/rdrs-const.h"
 
 extern Ndb_cluster_connection *ndb_connection;
-extern Uint32 OP_RETRY_INITIAL_DELAY;
+extern Uint32 OP_RETRY_INITIAL_DELAY_IN_MS;
 extern Uint32 OP_RETRY_COUNT;
+extern Uint32 OP_RETRY_JITTER_IN_MS;
 
 RS_Status closeNDBObject(Ndb *ndb_object);
 
@@ -209,10 +210,11 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
 
   // storage/ndb/src/ndbapi/ndberror.cpp
   if (error.code != 4120 /*Scan already complete*/) {
-    return RS_RONDB_SERVER_ERROR(error, "Failed Reading API Key");
+    return RS_RONDB_SERVER_ERROR(error, "Failed Reading API Key. Fn find_api_key_int");
   }
 
   if (count == 0) {
+    printf("----------> Got 404 for no reason. error code %d\n", error.code);
     return RS_CLIENT_404_ERROR();
   }
 
@@ -225,18 +227,15 @@ RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key) {
   if (status.http_code != SUCCESS) {
     return status;
   }
-
-  Uint32 orid = OP_RETRY_INITIAL_DELAY;
-  Int32 orc   = OP_RETRY_COUNT + 1;
+  
+  Uint32 orc   = 0;
   do {
     status = find_api_key_int(ndb_object, prefix, api_key);
-    --orc;
-    if (orc > 0 && CanRetryOperation(status)) {
-      orid *= 2;
-      usleep(orid * 1000);  // time in milliseconds
-    } else {
+    orc++;
+    if (status.http_code == SUCCESS || orc > OP_RETRY_COUNT || !CanRetryOperation(status)) {
       break;
     }
+    usleep(ExponentialDelayWithJitter(orc, OP_RETRY_INITIAL_DELAY_IN_MS, OP_RETRY_JITTER_IN_MS) * 1000);  
   } while (true);
 
   closeNDBObject(ndb_object);
@@ -321,7 +320,7 @@ RS_Status find_user_int(Ndb *ndb_object, Uint32 uid, HopsworksUsers *users) {
 
   // storage/ndb/src/ndbapi/ndberror.cpp
   if (error.code != 4120 /*Scan already complete*/) {
-    return RS_RONDB_SERVER_ERROR(error, "Failed Reading API Key");
+    return RS_RONDB_SERVER_ERROR(error, "Failed Reading API Key. Fn find_user_int");
   }
 
   return RS_OK;
@@ -419,7 +418,7 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
 
   // storage/ndb/src/ndbapi/ndberror.cpp
   if (error.code != 4120 /*Scan already complete*/) {
-    return RS_RONDB_SERVER_ERROR(error, "Failed Reading API Key");
+    return RS_RONDB_SERVER_ERROR(error, "Failed Reading API Key. Fn find_project_team_int");
   }
 
   return RS_OK;
@@ -535,7 +534,7 @@ RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *
 
   // storage/ndb/src/ndbapi/ndberror.cpp
   if (error.code != 4120 /*Scan already complete*/) {
-    return RS_RONDB_SERVER_ERROR(error, "Failed Reading API Key");
+    return RS_RONDB_SERVER_ERROR(error, "Failed Reading API Key. Fn find_projects_int");
   }
 
   return RS_OK;
@@ -579,19 +578,19 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
 
   RS_Status status;
   std::vector<HopsworksProject> project_vec;
-  Uint32 orid = OP_RETRY_INITIAL_DELAY;
-  Int32 orc   = OP_RETRY_COUNT + 1;
+
+
+  Uint32 orc   = 0;
   do {
     project_vec.clear();
     status = find_all_projects_int(uid, &project_vec);
-    --orc;
-    if (orc > 0 && CanRetryOperation(status)) {
-      orid *= 2;
-      usleep(orid * 1000);  // time in milliseconds
-    } else {
+    orc++;
+    if (status.http_code == SUCCESS || orc > OP_RETRY_COUNT || !CanRetryOperation(status)) {
       break;
     }
+    usleep(ExponentialDelayWithJitter(orc, OP_RETRY_INITIAL_DELAY_IN_MS, OP_RETRY_JITTER_IN_MS) * 1000);  
   } while (true);
+
 
   if (status.http_code != SUCCESS) {
     return status;

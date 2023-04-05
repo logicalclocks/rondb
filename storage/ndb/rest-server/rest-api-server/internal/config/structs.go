@@ -182,6 +182,7 @@ type RonDB struct {
 	// Transient error retry count and initial delay
 	OpRetryOnTransientErrorsCount uint32
 	OpRetryInitialDelayInMS       uint32
+	OpRetryJitterInMS             uint32
 }
 
 func (r *RonDB) Validate() error {
@@ -228,22 +229,27 @@ func (t *TestParameters) Validate() error {
 }
 
 type APIKeyParameters struct {
-	UseHopsworksAPIKeys           bool
-	CacheRefreshIntervalSec       uint32
-	CacheUnusedEntriesEvictionSec uint32
+	UseHopsworksAPIKeys          bool
+	CacheRefreshIntervalMS       uint32
+	CacheUnusedEntriesEvictionMS uint32
+	CacheRefreshIntervalJitterMS uint32
 }
 
 func (a *APIKeyParameters) Validate() error {
-	if a.CacheRefreshIntervalSec == 0 {
-		return errors.New("HopsworksAPIKeysCacheRefreshIntervalSec can be 0. Possible values >= 1")
+	if a.CacheRefreshIntervalMS == 0 {
+		return errors.New("HopsworksAPIKeysCacheRefreshIntervalMS can be 0. Possible values >= 1")
 	}
 
-	if a.CacheUnusedEntriesEvictionSec == 0 {
-		return errors.New("CacheUnusedEntriesEvictionSec can be 0.")
+	if a.CacheUnusedEntriesEvictionMS == 0 {
+		return errors.New("CacheUnusedEntriesEvictionMS can be 0.")
 	}
 
-	if a.CacheRefreshIntervalSec > a.CacheUnusedEntriesEvictionSec {
-		return errors.New("CacheRefreshIntervalSec can not be more that CacheUnusedEntriesEvictionSec")
+	if a.CacheRefreshIntervalMS > a.CacheUnusedEntriesEvictionMS {
+		return errors.New("CacheRefreshIntervalMS can not be more that CacheUnusedEntriesEvictionMS")
+	}
+
+	if a.CacheRefreshIntervalJitterMS >= a.CacheRefreshIntervalMS {
+		return errors.New("CacheRefreshIntervalJitterMS must be smaller than CacheRefreshIntervalMS")
 	}
 
 	return nil

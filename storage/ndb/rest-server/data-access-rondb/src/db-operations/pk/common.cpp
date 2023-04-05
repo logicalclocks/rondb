@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <utility>
 #include <my_base.h>
+#include "ndb_types.h"
 #include "storage/ndb/include/ndb_global.h"
 #include "decimal.h"
 #include "my_compiler.h"
@@ -943,7 +944,7 @@ bool CanRetryOperation(RS_Status status) {
   if (status.http_code != SUCCESS) {
     if (status.classification == NdbError::TemporaryError) {
       retry = true;
-    } else if(status.code == 245 /* many active scans */) {
+    } else if (status.code == 245 /* many active scans */) {
       retry = true;
     } else if (UnloadSchema(status)) {
       retry = true;
@@ -951,8 +952,7 @@ bool CanRetryOperation(RS_Status status) {
   }
 
   if (retry) {
-    INFO(std::string("Transient error. MySQL Code: ") + std::to_string(status.mysql_code) +
-          " Code: " + std::to_string(status.code)+" Message: "+status.message);
+    DEBUG(std::string("Transient error. ") + status.message);
   }
   return retry;
 }
@@ -983,3 +983,17 @@ bool UnloadSchema(RS_Status status) {
   return unload;
 }
 
+Uint32 ExponentialDelayWithJitter(Uint32 retry, Uint32 initial_delay_in_ms, Uint32 jitter_in_ms) {
+  Uint32 expoDelay  = initial_delay_in_ms * pow(2, retry);
+  jitter_in_ms      = std::min(jitter_in_ms, initial_delay_in_ms);
+  Uint32 randJitter = rand() % jitter_in_ms;
+
+  Uint32 delay = 0;
+  if (rand() % 2 == 0) {
+    delay = expoDelay + randJitter;
+  } else {
+    delay = expoDelay - randJitter;
+  }
+  printf("Expo delay is %d. iteration %d\n", delay, retry);
+  return delay;
+}

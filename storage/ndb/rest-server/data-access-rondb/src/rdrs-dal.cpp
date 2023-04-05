@@ -37,8 +37,9 @@
 #include "src/db-operations/pk/common.hpp"
 
 Ndb_cluster_connection *ndb_connection;
-Uint32 OP_RETRY_COUNT         = 3;
-Uint32 OP_RETRY_INITIAL_DELAY = 100;
+Uint32 OP_RETRY_COUNT               = 3;
+Uint32 OP_RETRY_INITIAL_DELAY_IN_MS = 500;
+Uint32 OP_RETRY_JITTER_IN_MS        = 500;
 
 /**
  * Initialize NDB connection
@@ -85,9 +86,11 @@ RS_Status init(const char *connection_string, unsigned int connection_pool_size,
   return RS_OK;
 }
 
-RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int rety_initial_delay) {
-  OP_RETRY_COUNT         = retry_cont;
-  OP_RETRY_INITIAL_DELAY = rety_initial_delay;
+RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int rety_initial_delay,
+                             const unsigned int jitter) {
+  OP_RETRY_COUNT               = retry_cont;
+  OP_RETRY_INITIAL_DELAY_IN_MS = rety_initial_delay;
+  OP_RETRY_JITTER_IN_MS        = jitter;
 
   return RS_OK;
 }
@@ -123,17 +126,15 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
     return status;
   }
 
-  Uint32 orid = OP_RETRY_INITIAL_DELAY;
-  Int32 orc   = OP_RETRY_COUNT + 1;
+  Uint32 orc   = 0;
   do {
     PKROperation pkread(reqBuff, respBuff, ndb_object);
     status = pkread.PerformOperation();
-    --orc;
-    if (status.http_code == SUCCESS || orc <= 0 || !CanRetryOperation(status)) {
+    orc++;
+    if (status.http_code == SUCCESS || orc > OP_RETRY_COUNT || !CanRetryOperation(status)) {
       break;
     }
-    usleep(orid * 1000);  // orid is in milliseconds
-    orid *= 2;
+    usleep(ExponentialDelayWithJitter(orc, OP_RETRY_INITIAL_DELAY_IN_MS, OP_RETRY_JITTER_IN_MS) * 1000); 
   } while (true);
 
   closeNDBObject(ndb_object);
@@ -151,17 +152,15 @@ RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *re
     return status;
   }
 
-  Uint32 orid = OP_RETRY_INITIAL_DELAY;
-  Int32 orc   = OP_RETRY_COUNT + 1;
+  Uint32 orc   = 0;
   do {
     PKROperation pkread(no_req, req_buffs, resp_buffs, ndb_object);
     status = pkread.PerformOperation();
-    --orc;
-    if (status.http_code == SUCCESS || orc <= 0 || !CanRetryOperation(status)) {
+    orc++;
+    if (status.http_code == SUCCESS || orc > OP_RETRY_COUNT || !CanRetryOperation(status)) {
       break;
     }
-    usleep(orid * 1000);  // orid is in milliseconds
-    orid *= 2;
+    usleep(ExponentialDelayWithJitter(orc, OP_RETRY_INITIAL_DELAY_IN_MS, OP_RETRY_JITTER_IN_MS) * 1000);  
   } while (true);
 
   closeNDBObject(ndb_object);

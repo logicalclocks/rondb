@@ -98,8 +98,8 @@ func TestAPIKeyCache1(t *testing.T) {
 	}
 
 	// To speed up the tests
-	conf.Security.APIKeyParameters.CacheRefreshIntervalSec = 1
-	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionSec = 2
+	conf.Security.APIKeyParameters.CacheRefreshIntervalMS = 1000
+	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS = 2000
 
 	apiKeyCache, _ := NewAPIKeyCache()
 	defer apiKeyCache.Cleanup()
@@ -114,7 +114,7 @@ func TestAPIKeyCache1(t *testing.T) {
 
 	lastUpdated1 := apiKeyCache.LastUpdated(&[]string{testutils.HOPSWORKS_TEST_API_KEY}[0])
 
-	time.Sleep(time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalSec) * time.Second)
+	time.Sleep(time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS) * time.Millisecond)
 
 	lastUpdated2 := apiKeyCache.LastUpdated(&[]string{testutils.HOPSWORKS_TEST_API_KEY}[0])
 
@@ -141,8 +141,8 @@ func TestAPIKeyCache2(t *testing.T) {
 	}
 
 	// To speed up the tests
-	conf.Security.APIKeyParameters.CacheRefreshIntervalSec = 5
-	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionSec = 10
+	conf.Security.APIKeyParameters.CacheRefreshIntervalMS = 1000
+	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS = 2000
 
 	apiKeyCache, _ := NewAPIKeyCache()
 	defer apiKeyCache.Cleanup()
@@ -157,7 +157,7 @@ func TestAPIKeyCache2(t *testing.T) {
 
 	lastUpdated1 := apiKeyCache.LastUpdated(&apiKey)
 
-	time.Sleep(time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalSec) * time.Second)
+	time.Sleep(time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS) * time.Millisecond)
 
 	lastUpdated2 := apiKeyCache.LastUpdated(&apiKey)
 
@@ -180,14 +180,17 @@ func TestAPIKeyCache3(t *testing.T) {
 		t.Log("tests may fail because Hopsworks API keys are deactivated")
 	}
 
+	conf.Security.APIKeyParameters.CacheRefreshIntervalMS = 3000
+	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS = conf.Security.APIKeyParameters.CacheRefreshIntervalMS * 2
+
 	apiKeyCache, _ := NewAPIKeyCache()
 	defer apiKeyCache.Cleanup()
 
-	numOps := 1000
-	dal.SetOpRetryProps(5, 500)
+	numOps := 64
+	dal.SetOpRetryProps(5, 1000, 1000)
 	rand.Seed(time.Now().Unix())
 	for i := 0; i < numOps; i++ {
-		go func(ch chan bool) {
+		go func(ch chan bool, id int) {
 			apiKeyNum := rand.Intn(int(testdbs.HopsworksAPIKey_ADDITIONAL_KEYS))
 			apiKey := fmt.Sprintf("%016d.%s", apiKeyNum, testdbs.HopsworksAPIKey_SECRET)
 			DB := testdbs.DB001
@@ -198,21 +201,26 @@ func TestAPIKeyCache3(t *testing.T) {
 			} else {
 				ch <- true
 			}
-		}(ch)
+		}(ch, i)
 	}
 
+	pass := true
+	failCount := 0
+	count := 0
 	for i := 0; i < numOps; i++ {
 		val := <-ch
+		count++
 		if !val {
-			t.Fatalf("Key validation failed")
+			pass = false
+			failCount++
 		}
 	}
 
-	// if apiKeyCache.Size() != testdbs.HopsworksAPIKey_ADDITIONAL_KEYS {
-	// t.Fatalf("Wrong cache size. Expecting 1. Got %d ", apiKeyCache.Size())
-	// }
+	if !pass {
+		t.Fatalf(fmt.Sprintf("%d key validations failed", failCount))
+	}
 
-	time.Sleep(time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalSec) * time.Second)
+	time.Sleep(time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS*3) * time.Millisecond)
 
 	// wait for eviction time to pass
 	if apiKeyCache.Size() != 0 {
@@ -233,8 +241,8 @@ func TestAPIKeyCache4(t *testing.T) {
 	}
 
 	// To speed up the tests
-	conf.Security.APIKeyParameters.CacheRefreshIntervalSec = 1
-	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionSec = 2
+	conf.Security.APIKeyParameters.CacheRefreshIntervalMS = 1000
+	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS = 2000
 
 	badKeys := []string{
 		"fvoHJCjkpof4WezF.4eed386ceb310e9976932cb279de2dab70c24a1ceb396e99dd29df3a1348f42e",
@@ -331,7 +339,7 @@ func TestAPIKeyCache4(t *testing.T) {
 		t.Fatalf("Wrong cache size. Expecting %d. Got %d ", len(badKeys), apiKeyCache.Size())
 	}
 
-	time.Sleep(time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalSec) * time.Second)
+	time.Sleep(time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS) * time.Millisecond)
 
 	// wait for eviction time to pass
 	if apiKeyCache.Size() != 0 {

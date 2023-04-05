@@ -72,6 +72,7 @@ func newWithDefaults() AllConfigs {
 			ConnectionRetryDelayInSec:     5,
 			OpRetryOnTransientErrorsCount: 3,
 			OpRetryInitialDelayInMS:       500,
+			OpRetryJitterInMS:             500,
 		},
 		Security: Security{
 			TLS: TLS{
@@ -82,9 +83,10 @@ func newWithDefaults() AllConfigs {
 				RootCACertFile:             "",
 			},
 			APIKeyParameters: APIKeyParameters{
-				UseHopsworksAPIKeys:           true,
-				CacheRefreshIntervalSec:       5,
-				CacheUnusedEntriesEvictionSec: 60,
+				UseHopsworksAPIKeys:          true,
+				CacheRefreshIntervalMS:       5000,
+				CacheUnusedEntriesEvictionMS: 60000,
+				CacheRefreshIntervalJitterMS: 1000,
 			},
 		},
 		Log: log.LogConfig{

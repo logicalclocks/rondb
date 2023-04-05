@@ -25,7 +25,8 @@
                 "ConnectionRetries": 5,
                 "ConnectionRetryDelayInSec": 5,
                 "OpRetryOnTransientErrorsCount": 3,
-                "OpRetryInitialDelayInMS": 500
+                "OpRetryInitialDelayInMS": 500,
+                "OpRetryJitterInMS": 500
         },
         "Security": {
                 "TLS": {

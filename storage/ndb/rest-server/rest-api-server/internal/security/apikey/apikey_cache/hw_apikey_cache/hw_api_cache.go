@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,7 @@ import (
 var _ apikey_cache.HWAPIKeyCache = (*HWAPIKeyCache)(nil)
 
 func NewAPIKeyCache() apikey_cache.HWAPIKeyCache {
+	rand.Seed(time.Now().Unix())
 	return &HWAPIKeyCache{key2UserDBsCache: make(map[string]*UserDBs)}
 }
 
@@ -47,12 +49,13 @@ type HWAPIKeyCache struct {
 
 // Cache Entry
 type UserDBs struct {
-	userDBs     map[string]bool
-	lastUsed    time.Time    // for removing unused entries
-	lastUpdated time.Time    // for removing unused entries
-	rowLock     sync.RWMutex // this is used to prevent concurrent updates
-	ticker      *time.Ticker // ticker is used to keep the cache entry updated
-	evicted     bool         // is evicted or deleted
+	userDBs         map[string]bool
+	lastUsed        time.Time     // for removing unused entries
+	lastUpdated     time.Time     // for removing unused entries
+	rowLock         sync.RWMutex  // this is used to prevent concurrent updates
+	ticker          *time.Ticker  // ticker is used to keep the cache entry updated
+	evicted         bool          // is evicted or deleted
+	refreshInterval time.Duration // Cache refresh interval
 }
 
 func (hwc *HWAPIKeyCache) Cleanup() error {
@@ -94,8 +97,9 @@ func (hwc *HWAPIKeyCache) UpdateCache(apiKey *string) error {
 		udbs, ok := hwc.key2UserDBsCache[*apiKey]
 		if !ok { // the entry still does not exists. insert a new row
 			udbs = &UserDBs{}
+			udbs.refreshInterval = hwc.refreshIntervalWithJitter()
 			hwc.key2UserDBsCache[*apiKey] = udbs
-			hwc.startUpdateTicker(apiKey)
+			hwc.startUpdateTicker(apiKey, udbs)
 		}
 		hwc.key2UserDBsCacheLock.Unlock()
 	}
@@ -104,7 +108,7 @@ func (hwc *HWAPIKeyCache) UpdateCache(apiKey *string) error {
 	return nil
 }
 
-func (hwc *HWAPIKeyCache) startUpdateTicker(apiKey *string) error {
+func (hwc *HWAPIKeyCache) startUpdateTicker(apiKey *string, udbs *UserDBs) error {
 	started := false
 	go hwc.cacheEntryUpdater(apiKey, &started)
 
@@ -112,11 +116,11 @@ func (hwc *HWAPIKeyCache) startUpdateTicker(apiKey *string) error {
 	for {
 		if started {
 			if log.IsDebug() {
-				log.Debugf("API Key cache updater is started for %s ", *apiKey)
+				log.Debugf("API Key cache updater is started for %s. Refresh Interval: %v ", *apiKey, udbs.refreshInterval)
 			}
 			return nil
 		} else {
-			time.Sleep(1 * time.Microsecond)
+			time.Sleep(50 * time.Microsecond)
 		}
 	}
 }
@@ -129,7 +133,7 @@ func (hwc *HWAPIKeyCache) cacheEntryUpdater(apiKey *string, started *bool) {
 		return
 	}
 
-	udbs.ticker = time.NewTicker(time.Duration(config.GetAll().Security.APIKeyParameters.CacheRefreshIntervalSec) * time.Second)
+	udbs.ticker = time.NewTicker(udbs.refreshInterval)
 
 	cleaner := func() {
 		//clean up on eviction
@@ -184,7 +188,9 @@ func (hwc *HWAPIKeyCache) cacheEntryUpdater(apiKey *string, started *bool) {
 		udbs.rowLock.RLock()
 		lastUsed := udbs.lastUsed
 		udbs.rowLock.RUnlock()
-		if lastUsed.Add(time.Duration(config.GetAll().Security.APIKeyParameters.CacheUnusedEntriesEvictionSec)).Before(time.Now()) {
+
+		evictTime := time.Duration(config.GetAll().Security.APIKeyParameters.CacheUnusedEntriesEvictionMS) * time.Duration(time.Millisecond)
+		if lastUsed.Add(evictTime).Before(time.Now()) {
 			cleaner()
 			return
 		}
@@ -236,9 +242,6 @@ func (hwc *HWAPIKeyCache) updateRecord(apikey *string, dbs []string, udbs *UserD
 	for _, db := range dbs {
 		dbsMap[db] = true
 	}
-
-	udbs.rowLock.Lock()
-	defer udbs.rowLock.Unlock()
 
 	udbs.userDBs = dbsMap
 	udbs.lastUpdated = time.Now()
@@ -300,4 +303,16 @@ func (hwc *HWAPIKeyCache) getUserDatabases(apikey *string, hopsworksKey *dal.Hop
 
 func (hwc *HWAPIKeyCache) Size() int {
 	return len(hwc.key2UserDBsCache)
+}
+
+func (hwc *HWAPIKeyCache) refreshIntervalWithJitter() time.Duration {
+	refreshInterval := config.GetAll().Security.APIKeyParameters.CacheRefreshIntervalMS
+	jitter := int32(config.GetAll().Security.APIKeyParameters.CacheRefreshIntervalJitterMS)
+	jitter = rand.Int31n(jitter)
+	if jitter%2 == 0 {
+		jitter = -jitter
+	}
+	//assert.GreaterOrEqual(jitter, 0, "Bad jitter value in API Cache")
+	refreshInterval = refreshInterval + uint32(jitter)
+	return time.Duration(refreshInterval) * time.Millisecond
 }

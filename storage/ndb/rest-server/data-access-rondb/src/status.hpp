@@ -61,7 +61,7 @@ inline RS_Status __RS_ERROR(const HTTP_CODE http_code, int status, int classific
 
 inline RS_Status __RS_ERROR_RONDB(const struct NdbError &error, std::string msg, int lineNo,
                                   std::string file_name) {
-  std::string userMsg = "Error: " + msg + " Error: code:" + std::to_string(error.code) +
+  std::string userMsg = "Error: " + msg + " Error: code: " + std::to_string(error.code) +
                         " MySQL Code: " + std::to_string(error.mysql_code) +
                         " Message: " + error.message;
   return __RS_ERROR(SERVER_ERROR, error.status, error.classification, error.code, error.mysql_code,
