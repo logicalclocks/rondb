@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/testutils"
@@ -45,6 +46,12 @@ func BenchmarkSimple(b *testing.B) {
 	// Number of total operations
 	numOps := b.N
 	b.Logf("numOps: %d", numOps)
+
+	/*
+		IMPORTANT: This benchmark will run requests against EITHER the REST or
+		the gRPC server, depending on this flag.
+	*/
+	runAgainstGrpcServer := true
 
 	table := "table_1"
 	maxRows := testdbs.BENCH_DB_NUM_ROWS
@@ -83,10 +90,14 @@ func BenchmarkSimple(b *testing.B) {
 		}
 
 		// One connection per go-routine
-		conf := config.GetAll()
-		grpcConn, err := testutils.CreateGrpcConn(conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
-		if err != nil {
-			b.Fatal(err.Error())
+		var err error
+		var grpcConn *grpc.ClientConn
+		if runAgainstGrpcServer {
+			conf := config.GetAll()
+			grpcConn, err = testutils.CreateGrpcConn(conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
+			if err != nil {
+				b.Fatal(err.Error())
+			}
 		}
 
 		/*
@@ -98,12 +109,11 @@ func BenchmarkSimple(b *testing.B) {
 			filter := testclient.NewFilter(&col, rand.Intn(maxRows))
 			testInfo.PkReq.Filters = filter
 
-			/*
-				IMPORTANT: This will every request against both the REST & the gRPC server.
-					Comment out one or the other for better result granularity.
-			*/
-			pkRESTTest(b, testInfo, false, false)
-			pkGRPCTestWithConn(b, testInfo, false, false, grpcConn)
+			if runAgainstGrpcServer {
+				pkGRPCTestWithConn(b, testInfo, false, false, grpcConn)
+			} else {
+				pkRESTTest(b, testInfo, false, false)
+			}
 		}
 	})
 	b.StopTimer()
