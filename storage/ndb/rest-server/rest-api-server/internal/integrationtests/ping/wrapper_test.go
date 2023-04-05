@@ -20,6 +20,7 @@ package ping
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"runtime/debug"
 	"testing"
 
@@ -51,6 +52,9 @@ func TestMain(m *testing.M) {
 		log.Fatalf(err.Error())
 	}
 	defer cleanup()
+
+	// Less than NumCPUs seemed to work well here:
+	runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
 
 	retcode = m.Run()
 }

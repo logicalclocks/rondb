@@ -18,6 +18,7 @@
 package ping
 
 import (
+	"sort"
 	"testing"
 	"time"
 
@@ -41,11 +42,12 @@ import (
 func BenchmarkSimple(b *testing.B) {
 	// Number of total operations
 	numOps := b.N
-	b.Logf("numOps: %d", numOps)
 
 	runAgainstGrpcServer := true
 
 	threadId := 0
+
+	latenciesChannel := make(chan time.Duration, numOps)
 
 	b.ResetTimer()
 	start := time.Now()
@@ -58,7 +60,6 @@ func BenchmarkSimple(b *testing.B) {
 	*/
 	b.RunParallel(func(bp *testing.PB) {
 		threadId++
-		b.Logf("threadId: %d", threadId)
 
 		// One connection per go-routine
 		conf := config.GetAll()
@@ -72,17 +73,33 @@ func BenchmarkSimple(b *testing.B) {
 			will run this 5 times.
 		*/
 		for bp.Next() {
+			requestStartTime := time.Now()
 			if runAgainstGrpcServer {
 				sendGrpcPingRequestWithConnection(b, grpcConn)
 			} else {
 				sendRestPingRequest(b)
 			}
+			latenciesChannel <- time.Since(requestStartTime)
 		}
 	})
 	b.StopTimer()
 
 	opsPerSecond := float64(numOps) / time.Since(start).Seconds()
-	nanoSecondsPerOp := float64(time.Since(start).Nanoseconds()) / float64(numOps)
-	b.Logf("Throughput: %f operations/second", opsPerSecond)
-	b.Logf("Latency: 	%f nanoseconds/operation", nanoSecondsPerOp)
+
+	latencies := make([]time.Duration, numOps)
+	for i := 0; i < numOps; i++ {
+		latencies[i] = <-latenciesChannel
+	}
+	sort.Slice(latencies, func(i, j int) bool {
+		return latencies[i] < latencies[j]
+	})
+	p50 := latencies[int(float64(numOps)*0.5)]
+	p99 := latencies[int(float64(numOps)*0.99)]
+
+	b.Logf("Number of operations:       %d", numOps)
+	b.Logf("Number of threads:          %d", threadId)
+	b.Logf("Throughput:                 %f ops/second", opsPerSecond)
+	b.Logf("50th percentile latency:    %v μs", p50.Microseconds())
+	b.Logf("99th percentile latency:    %v μs", p99.Microseconds())
+	b.Log("-------------------------------------------------")
 }
