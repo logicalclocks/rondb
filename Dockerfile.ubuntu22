@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
     apt-get update && apt-get -y install wget pkg-config patchelf \
     libncurses5-dev default-jdk bison golang-go autoconf pigz \
     openssh-client maven libsasl2-dev libldap-dev libaio-dev \
-    git vim protobuf-compiler nano
+    git vim nano protobuf-compiler graphviz
 
 # RonDB 21.04 requires gcc/g++ 9
 # Ubuntu 22.04 comes with gcc/g++ 11.3 by default
