@@ -82,11 +82,11 @@ func BenchmarkSimple(b *testing.B) {
 
 		b.Logf("threadId: %d", threadId)
 
-		validateColumns := []interface{}{"col_0"}
+		validateColumns := []interface{}{"col0"}
 		testInfo := api.PKTestInfo{
 			PkReq: api.PKReadBody{
 				// Fill out Filters later
-				ReadColumns: testclient.NewReadColumns("col_", 1),
+				ReadColumns: testclient.NewReadColumns("col", 1),
 				OperationID: &operationId,
 			},
 			Table:          table,

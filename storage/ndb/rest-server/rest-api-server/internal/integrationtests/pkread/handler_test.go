@@ -199,7 +199,7 @@ func TestPKERROR_011(t *testing.T) {
 	pkVal := "1"
 	param := api.PKReadBody{
 		Filters:     testclient.NewFilter(&pkCol, pkVal),
-		ReadColumns: testclient.NewReadColumn("col_0"),
+		ReadColumns: testclient.NewReadColumn("col0"),
 		OperationID: testclient.NewOperationID(64),
 	}
 
@@ -220,7 +220,7 @@ func TestPKERROR_012(t *testing.T) {
 	pkVal := "1"
 	param := api.PKReadBody{
 		Filters:     testclient.NewFilter(&pkCol, pkVal),
-		ReadColumns: testclient.NewReadColumn("col_0_XXX"),
+		ReadColumns: testclient.NewReadColumn("col0_XXX"),
 		OperationID: testclient.NewOperationID(64),
 	}
 
@@ -237,7 +237,7 @@ func TestPKERROR_013_ERROR_014(t *testing.T) {
 	// //		// one PK col is missing
 	param := api.PKReadBody{
 		Filters:     testclient.NewFilters("id", 1), // PK has two cols. should thow an exception as we have define only one col in PK
-		ReadColumns: testclient.NewReadColumn("col_0"),
+		ReadColumns: testclient.NewReadColumn("col0"),
 		OperationID: testclient.NewOperationID(64),
 	}
 	body, _ := json.MarshalIndent(param, "", "\t")
@@ -248,7 +248,7 @@ func TestPKERROR_013_ERROR_014(t *testing.T) {
 	// send an other request with two pk cols but wrong names
 	param = api.PKReadBody{
 		Filters:     testclient.NewFilters("idx", 2),
-		ReadColumns: testclient.NewReadColumn("col_0"),
+		ReadColumns: testclient.NewReadColumn("col0"),
 		OperationID: testclient.NewOperationID(64),
 	}
 	body, _ = json.MarshalIndent(param, "", "\t")
