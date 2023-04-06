@@ -25,7 +25,6 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/dal/heap"
-	"hopsworks.ai/rdrs/internal/handlers"
 	"hopsworks.ai/rdrs/internal/handlers/validators"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
@@ -35,9 +34,6 @@ type Handler struct {
 	heap        *heap.Heap
 	apiKeyCache apikey.APIKeyCacher
 }
-
-// ensure all the interface methods are implemented
-var _ handlers.Handler = (*Handler)(nil)
 
 func New(heap *heap.Heap, apiKeyCache apikey.APIKeyCacher) Handler {
 	return Handler{heap, apiKeyCache}

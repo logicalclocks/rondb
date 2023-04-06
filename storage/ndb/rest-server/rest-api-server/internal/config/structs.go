@@ -25,25 +25,6 @@ import (
 	"hopsworks.ai/rdrs/internal/log"
 )
 
-type Validater interface {
-	Validate() error
-}
-
-// make sure all structs implement Validater
-var _ Validater = (*AllConfigs)(nil)
-var _ Validater = (*Internal)(nil)
-var _ Validater = (*GRPC)(nil)
-var _ Validater = (*REST)(nil)
-var _ Validater = (*MySQLServer)(nil)
-var _ Validater = (*Testing)(nil)
-var _ Validater = (*MySQL)(nil)
-var _ Validater = (*Mgmd)(nil)
-var _ Validater = (*RonDB)(nil)
-var _ Validater = (*TestParameters)(nil)
-var _ Validater = (*APIKey)(nil)
-var _ Validater = (*Security)(nil)
-var _ Validater = (*TLS)(nil)
-
 type Internal struct {
 	BufferSize          uint32
 	PreAllocatedBuffers uint32
@@ -316,6 +297,10 @@ type AllConfigs struct {
 	Security Security
 	Log      log.LogConfig
 	Testing  Testing
+}
+
+func (c *AllConfigs) xalidate() error {
+	return nil
 }
 
 func (c *AllConfigs) Validate() error {
