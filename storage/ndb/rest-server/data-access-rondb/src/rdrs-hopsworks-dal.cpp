@@ -28,6 +28,7 @@
 #include "src/ndb_object_pool.hpp"
 #include "src/db-operations/pk/common.hpp"
 #include "src/rdrs-const.h"
+#include "src/retry_handler.hpp"
 
 extern Ndb_cluster_connection *ndb_connection;
 extern Uint32 OP_RETRY_INITIAL_DELAY_IN_MS;
@@ -227,16 +228,11 @@ RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key) {
     return status;
   }
 
-  Uint32 orc = 0;
-  do {
-    status = find_api_key_int(ndb_object, prefix, api_key);
-    orc++;
-    if (status.http_code == SUCCESS || orc > OP_RETRY_COUNT || !CanRetryOperation(status)) {
-      break;
-    }
-    usleep(ExponentialDelayWithJitter(orc, OP_RETRY_INITIAL_DELAY_IN_MS, OP_RETRY_JITTER_IN_MS) *
-           1000);
-  } while (true);
+  /* clang-format off */
+  RETRY_HANDLER(
+     status = find_api_key_int(ndb_object, prefix, api_key);
+  )
+  /* clang-format on */
 
   closeNDBObject(ndb_object);
   return status;
@@ -579,17 +575,12 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
   RS_Status status;
   std::vector<HopsworksProject> project_vec;
 
-  Uint32 orc = 0;
-  do {
+  /* clang-format off */
+  RETRY_HANDLER(
     project_vec.clear();
     status = find_all_projects_int(uid, &project_vec);
-    orc++;
-    if (status.http_code == SUCCESS || orc > OP_RETRY_COUNT || !CanRetryOperation(status)) {
-      break;
-    }
-    usleep(ExponentialDelayWithJitter(orc, OP_RETRY_INITIAL_DELAY_IN_MS, OP_RETRY_JITTER_IN_MS) *
-           1000);
-  } while (true);
+  )
+  /* clang-format on */
 
   if (status.http_code != SUCCESS) {
     return status;

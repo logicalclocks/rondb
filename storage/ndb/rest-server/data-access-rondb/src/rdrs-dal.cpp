@@ -33,6 +33,7 @@
 #include "src/logger.hpp"
 #include "src/db-operations/pk/pkr-operation.hpp"
 #include "src/status.hpp"
+#include "src/retry_handler.hpp"
 #include "src/ndb_object_pool.hpp"
 #include "src/db-operations/pk/common.hpp"
 
@@ -119,6 +120,7 @@ RS_Status closeNDBObject(Ndb *ndb_object) {
   return RS_OK;
 }
 
+
 RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
   Ndb *ndb_object  = nullptr;
   RS_Status status = NdbObjectPool::GetInstance()->GetNdbObject(ndb_connection, &ndb_object);
@@ -126,16 +128,12 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
     return status;
   }
 
-  Uint32 orc   = 0;
-  do {
-    PKROperation pkread(reqBuff, respBuff, ndb_object);
-    status = pkread.PerformOperation();
-    orc++;
-    if (status.http_code == SUCCESS || orc > OP_RETRY_COUNT || !CanRetryOperation(status)) {
-      break;
-    }
-    usleep(ExponentialDelayWithJitter(orc, OP_RETRY_INITIAL_DELAY_IN_MS, OP_RETRY_JITTER_IN_MS) * 1000); 
-  } while (true);
+  /* clang-format off */
+  RETRY_HANDLER(
+      PKROperation pkread(reqBuff, respBuff, ndb_object);
+      status = pkread.PerformOperation();
+  )
+  /* clang-format on */
 
   closeNDBObject(ndb_object);
   return status;
@@ -152,16 +150,12 @@ RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *re
     return status;
   }
 
-  Uint32 orc   = 0;
-  do {
-    PKROperation pkread(no_req, req_buffs, resp_buffs, ndb_object);
-    status = pkread.PerformOperation();
-    orc++;
-    if (status.http_code == SUCCESS || orc > OP_RETRY_COUNT || !CanRetryOperation(status)) {
-      break;
-    }
-    usleep(ExponentialDelayWithJitter(orc, OP_RETRY_INITIAL_DELAY_IN_MS, OP_RETRY_JITTER_IN_MS) * 1000);  
-  } while (true);
+  /* clang-format off */
+  RETRY_HANDLER(
+      PKROperation pkread(no_req, req_buffs, resp_buffs, ndb_object);
+      status = pkread.PerformOperation();
+  )
+  /* clang-format on */
 
   closeNDBObject(ndb_object);
   return status;
