@@ -43,7 +43,7 @@ func profilingEnabled() bool {
 /*
 Wraps all unit tests in this package
 */
-func InitialiseTesting(conf *config.AllConfigs, createOnlyTheseDBs ...string) (func(), error) {
+func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (func(), error) {
 
 	/*
 		This tends to deliver better benchmarking results
