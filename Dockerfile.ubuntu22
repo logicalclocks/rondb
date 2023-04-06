@@ -7,11 +7,15 @@
 
 FROM ubuntu:22.04 as rondb-build-dependencies
 
+# Same as BUILDARCH
+ARG TARGETARCH
+
 ARG CMAKE_VERSION=3.25.1
 ARG OPEN_SSL_VERSION=1.1.1s
 ARG BOOST_VERSION_MAJOR=1
 ARG BOOST_VERSION_MINOR=73
 ARG BOOST_VERSION_PATCH=0
+ARG GO_VERSION=1.20.3
 
 # Default build threads to 1; max is defined in Docker config (run `nproc` in Docker container)
 ARG BUILD_THREADS
@@ -20,7 +24,7 @@ ENV THREADS_ARG=${BUILD_THREADS:-1}
 RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
     --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
     apt-get update && apt-get -y install wget pkg-config patchelf \
-    libncurses5-dev default-jdk bison golang-go autoconf pigz \
+    libncurses5-dev default-jdk bison autoconf pigz \
     openssh-client maven libsasl2-dev libldap-dev libaio-dev \
     git vim nano protobuf-compiler graphviz
 
@@ -89,6 +93,14 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     && make install \
     && cd .. \
     && rm -r cmake-$CMAKE_VERSION
+
+# Install specific Go version
+ENV GO_TAR_NAME=go$GO_VERSION.linux-$TARGETARCH.tar.gz
+RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
+    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR https://golang.org/dl/$GO_TAR_NAME && \
+    tar -C /usr/local -xzf $DOWNLOADS_CACHE_DIR/$GO_TAR_NAME
+
+ENV PATH=$PATH:/usr/local/go/bin
 
 WORKDIR /root
 
