@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"sort"
 	"testing"
 	"time"
 
@@ -52,7 +53,6 @@ import (
 func BenchmarkSimple(b *testing.B) {
 	// Number of total requests
 	numRequests := b.N
-	b.Logf("numRequests: %d", numRequests)
 
 	/*
 		IMPORTANT: This benchmark will run requests against EITHER the REST or
@@ -63,6 +63,8 @@ func BenchmarkSimple(b *testing.B) {
 	table := "table_1"
 	maxRows := testdbs.BENCH_DB_NUM_ROWS
 	threadId := 0
+
+	latenciesChannel := make(chan time.Duration, numRequests)
 
 	b.ResetTimer()
 	start := time.Now()
@@ -80,8 +82,6 @@ func BenchmarkSimple(b *testing.B) {
 		// Every go-routine will always use the same operation id
 		operationId := fmt.Sprintf("operation_%d", threadId)
 		threadId++
-
-		b.Logf("threadId: %d", threadId)
 
 		validateColumns := []interface{}{"col0"}
 		testInfo := api.PKTestInfo{
@@ -117,17 +117,33 @@ func BenchmarkSimple(b *testing.B) {
 			filter := testclient.NewFilter(&col, rand.Intn(maxRows))
 			testInfo.PkReq.Filters = filter
 
+			requestStartTime := time.Now()
 			if runAgainstGrpcServer {
 				pkGRPCTestWithConn(b, testInfo, false, false, grpcConn)
 			} else {
 				pkRESTTest(b, testInfo, false, false)
 			}
+			latenciesChannel <- time.Since(requestStartTime)
 		}
 	})
 	b.StopTimer()
 
 	requestsPerSecond := float64(numRequests) / time.Since(start).Seconds()
-	nanoSecondsPerRequest := float64(time.Since(start).Nanoseconds()) / float64(numRequests)
-	b.Logf("Throughput: %f requests/second", requestsPerSecond)
-	b.Logf("Latency: 	%f nanoseconds/request", nanoSecondsPerRequest)
+
+	latencies := make([]time.Duration, numRequests)
+	for i := 0; i < numRequests; i++ {
+		latencies[i] = <-latenciesChannel
+	}
+	sort.Slice(latencies, func(i, j int) bool {
+		return latencies[i] < latencies[j]
+	})
+	p50 := latencies[int(float64(numRequests)*0.5)]
+	p99 := latencies[int(float64(numRequests)*0.99)]
+
+	b.Logf("Number of requests:         %d", numRequests)
+	b.Logf("Number of threads:          %d", threadId)
+	b.Logf("Throughput:                 %f pk lookups/second", requestsPerSecond)
+	b.Logf("50th percentile latency:    %v μs", p50.Microseconds())
+	b.Logf("99th percentile latency:    %v μs", p99.Microseconds())
+	b.Log("-------------------------------------------------")
 }
