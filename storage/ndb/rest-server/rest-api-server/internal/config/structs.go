@@ -40,7 +40,7 @@ var _ Validater = (*MySQL)(nil)
 var _ Validater = (*Mgmd)(nil)
 var _ Validater = (*RonDB)(nil)
 var _ Validater = (*TestParameters)(nil)
-var _ Validater = (*APIKeyParameters)(nil)
+var _ Validater = (*APIKey)(nil)
 var _ Validater = (*Security)(nil)
 var _ Validater = (*TLS)(nil)
 
@@ -227,14 +227,14 @@ func (t *TestParameters) Validate() error {
 	return nil
 }
 
-type APIKeyParameters struct {
+type APIKey struct {
 	UseHopsworksAPIKeys          bool
 	CacheRefreshIntervalMS       uint32
 	CacheUnusedEntriesEvictionMS uint32
 	CacheRefreshIntervalJitterMS uint32
 }
 
-func (a *APIKeyParameters) Validate() error {
+func (a *APIKey) Validate() error {
 	if a.CacheRefreshIntervalMS == 0 {
 		return errors.New("CacheRefreshIntervalMS cannot be 0.")
 	}
@@ -284,7 +284,7 @@ func (t *TLS) Validate() error {
 
 type Security struct {
 	TLS              TLS
-	APIKeyParameters APIKeyParameters
+	APIKeyParameters APIKey
 }
 
 func (c *Security) Validate() error {

@@ -218,7 +218,7 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
                          "PrivateKeyFile": "",
                          "RootCACertFile": ""
                  }
-                 "APIKeyParameters": {
+                 "APIKey": {
                          "UseHopsworksAPIKeys": true,
                          "CacheRefreshIntervalMS": 10000,
                          "CacheUnusedEntriesEvictionMS": 60000,
@@ -304,7 +304,7 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
   
       - **PrivateKeyFile:** Server private key file. The default value is not set.
 
-  - **APIKeyParameters:**
+  - **APIKey:**
 
       - **UseHopsworksAPIKeys:**  Enable/Disable Hopsworks API Key for authentication
 
