@@ -48,8 +48,8 @@ import (
 		./internal/integrationtests/batchpkread/
 */
 func BenchmarkSimple(b *testing.B) {
-	// Number of total operations
-	numOps := b.N
+	// Number of total requests
+	numRequests := b.N
 	const batchSize = 100
 
 	/*
@@ -62,7 +62,7 @@ func BenchmarkSimple(b *testing.B) {
 	maxRows := testdbs.BENCH_DB_NUM_ROWS
 	threadId := 0
 
-	latenciesChannel := make(chan time.Duration, numOps)
+	latenciesChannel := make(chan time.Duration, numRequests)
 
 	b.ResetTimer()
 	start := time.Now()
@@ -124,23 +124,23 @@ func BenchmarkSimple(b *testing.B) {
 	})
 	b.StopTimer()
 
-	numTotalOps := numOps * batchSize
-	opsPerSecond := float64(numTotalOps) / time.Since(start).Seconds()
+	numTotalOps := numRequests * batchSize
+	requestsPerSecond := float64(numTotalOps) / time.Since(start).Seconds()
 
-	latencies := make([]time.Duration, numOps)
-	for i := 0; i < numOps; i++ {
+	latencies := make([]time.Duration, numRequests)
+	for i := 0; i < numRequests; i++ {
 		latencies[i] = <-latenciesChannel
 	}
 	sort.Slice(latencies, func(i, j int) bool {
 		return latencies[i] < latencies[j]
 	})
-	p50 := latencies[int(float64(numOps)*0.5)]
-	p99 := latencies[int(float64(numOps)*0.99)]
+	p50 := latencies[int(float64(numRequests)*0.5)]
+	p99 := latencies[int(float64(numRequests)*0.99)]
 
-	b.Logf("Number of operations:       %d", numOps)
-	b.Logf("Batch size (per operation): %d", batchSize)
+	b.Logf("Number of requests:         %d", numRequests)
+	b.Logf("Batch size (per requests):  %d", batchSize)
 	b.Logf("Number of threads:          %d", threadId)
-	b.Logf("Throughput:                 %f pk lookups/second", opsPerSecond)
+	b.Logf("Throughput:                 %f pk lookups/second", requestsPerSecond)
 	b.Logf("50th percentile latency:    %v ms", p50.Milliseconds())
 	b.Logf("99th percentile latency:    %v ms", p99.Milliseconds())
 	b.Log("-------------------------------------------------")

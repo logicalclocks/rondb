@@ -40,14 +40,14 @@ import (
 		./internal/integrationtests/ping/
 */
 func BenchmarkSimple(b *testing.B) {
-	// Number of total operations
-	numOps := b.N
+	// Number of total requests
+	numRequests := b.N
 
 	runAgainstGrpcServer := true
 
 	threadId := 0
 
-	latenciesChannel := make(chan time.Duration, numOps)
+	latenciesChannel := make(chan time.Duration, numRequests)
 
 	b.ResetTimer()
 	start := time.Now()
@@ -84,21 +84,21 @@ func BenchmarkSimple(b *testing.B) {
 	})
 	b.StopTimer()
 
-	opsPerSecond := float64(numOps) / time.Since(start).Seconds()
+	requestsPerSecond := float64(numRequests) / time.Since(start).Seconds()
 
-	latencies := make([]time.Duration, numOps)
-	for i := 0; i < numOps; i++ {
+	latencies := make([]time.Duration, numRequests)
+	for i := 0; i < numRequests; i++ {
 		latencies[i] = <-latenciesChannel
 	}
 	sort.Slice(latencies, func(i, j int) bool {
 		return latencies[i] < latencies[j]
 	})
-	p50 := latencies[int(float64(numOps)*0.5)]
-	p99 := latencies[int(float64(numOps)*0.99)]
+	p50 := latencies[int(float64(numRequests)*0.5)]
+	p99 := latencies[int(float64(numRequests)*0.99)]
 
-	b.Logf("Number of operations:       %d", numOps)
+	b.Logf("Number of requests:         %d", numRequests)
 	b.Logf("Number of threads:          %d", threadId)
-	b.Logf("Throughput:                 %f ops/second", opsPerSecond)
+	b.Logf("Throughput:                 %f requests/second", requestsPerSecond)
 	b.Logf("50th percentile latency:    %v μs", p50.Microseconds())
 	b.Logf("99th percentile latency:    %v μs", p99.Microseconds())
 	b.Log("-------------------------------------------------")

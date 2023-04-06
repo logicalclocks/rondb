@@ -49,9 +49,9 @@ import (
 		./internal/integrationtests/pkread/
 */
 func BenchmarkSimple(b *testing.B) {
-	// Number of total operations
-	numOps := b.N
-	b.Logf("numOps: %d", numOps)
+	// Number of total requests
+	numRequests := b.N
+	b.Logf("numRequests: %d", numRequests)
 
 	/*
 		IMPORTANT: This benchmark will run requests against EITHER the REST or
@@ -125,8 +125,8 @@ func BenchmarkSimple(b *testing.B) {
 	})
 	b.StopTimer()
 
-	opsPerSecond := float64(numOps) / time.Since(start).Seconds()
-	nanoSecondsPerOp := float64(time.Since(start).Nanoseconds()) / float64(numOps)
-	b.Logf("Throughput: %f operations/second", opsPerSecond)
-	b.Logf("Latency: 	%f nanoseconds/operation", nanoSecondsPerOp)
+	requestsPerSecond := float64(numRequests) / time.Since(start).Seconds()
+	nanoSecondsPerRequest := float64(time.Since(start).Nanoseconds()) / float64(numRequests)
+	b.Logf("Throughput: %f requests/second", requestsPerSecond)
+	b.Logf("Latency: 	%f nanoseconds/request", nanoSecondsPerRequest)
 }
