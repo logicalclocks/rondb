@@ -35,7 +35,6 @@ import (
 var _ apikey_cache.HWAPIKeyCache = (*HWAPIKeyCache)(nil)
 
 func NewAPIKeyCache() apikey_cache.HWAPIKeyCache {
-	rand.Seed(time.Now().Unix())
 	return &HWAPIKeyCache{key2UserDBsCache: make(map[string]*UserDBs)}
 }
 

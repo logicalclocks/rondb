@@ -19,9 +19,11 @@ package apikey
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"runtime/debug"
 	"testing"
+	"time"
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
@@ -64,6 +66,9 @@ func TestMain(m *testing.M) {
 		log.Panicf("failed to initialise RonDB connection; error: %s", dalErr.VerboseError())
 	}
 	defer dal.ShutdownConnection()
+
+	//init rand
+	rand.Seed(time.Now().Unix())
 
 	retcode = m.Run()
 }
