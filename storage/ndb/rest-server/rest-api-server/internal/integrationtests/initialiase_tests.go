@@ -21,6 +21,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"runtime/pprof"
 	"time"
 
@@ -45,6 +46,13 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 	if !*testutils.WithRonDB {
 		return
 	}
+
+	/*
+		This tends to deliver better benchmarking results
+		e.g. pkreads (but not ping):
+		runtime.GOMAXPROCS(runtime.NumCPU() * 2)
+	*/
+	runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
 
 	cleanupTLSCerts := func() {}
 	if conf.Security.EnableTLS {
@@ -91,23 +99,11 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 	log.Info("Successfully started up default servers")
 	time.Sleep(500 * time.Millisecond)
 
-	conn, err := InitGRPCConnction()
-	if err != nil {
-		cleanupServers()
-		releaseBuffers()
-		cleanupTLSCerts()
-		return cleanup, err
-	}
-	cleanupGRPCConn := func() {
-		conn.Close()
-	}
-
 	// Check if profiling is enabled
 	if profilingEnabled() {
 		// Start profiling
 		f, err := os.Create("profile.out")
 		if err != nil {
-			cleanupGRPCConn()
 			cleanupServers()
 			releaseBuffers()
 			cleanupTLSCerts()
@@ -115,7 +111,6 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 		}
 		defer f.Close()
 		if err := pprof.StartCPUProfile(f); err != nil {
-			cleanupGRPCConn()
 			cleanupServers()
 			releaseBuffers()
 			cleanupTLSCerts()
@@ -128,7 +123,6 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (cl
 		defer cleanupTLSCerts()
 		defer releaseBuffers()
 		defer cleanupServers()
-		defer cleanupGRPCConn()
 		defer pprof.StopCPUProfile()
 
 		stats := newHeap.GetNativeBuffersStats()

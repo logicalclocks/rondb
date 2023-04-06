@@ -23,7 +23,7 @@ import (
 	"time"
 
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/integrationtests"
+	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
@@ -41,9 +41,9 @@ func TestUnloadSchema(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB004 + "/int_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", 0, "id1", 0),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "int_table",
@@ -56,7 +56,7 @@ func TestUnloadSchema(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB025 + "/table_1/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", "1"),
+							Filters:     testclient.NewFiltersKVs("id0", "1"),
 							OperationID: &id,
 						},
 					},
@@ -70,9 +70,9 @@ func TestUnloadSchema(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB005 + "/bigint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", 0, "id1", 0),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "bigint_table",
@@ -85,9 +85,9 @@ func TestUnloadSchema(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB006 + "/tinyint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", -128, "id1", 0),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", -128, "id1", 0),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "tinyint_table",
@@ -100,9 +100,9 @@ func TestUnloadSchema(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB007 + "/smallint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", 32767, "id1", 65535),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", 32767, "id1", 65535),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "smallint_table",
@@ -115,9 +115,9 @@ func TestUnloadSchema(t *testing.T) {
 						Method:      &[]string{config.PK_HTTP_VERB}[0],
 						RelativeURL: &[]string{string(testdbs.DB007 + "/smallint_table/" + config.PK_DB_OPERATION)}[0],
 						Body: &api.PKReadBody{
-							Filters:     integrationtests.NewFiltersKVs("id0", 1, "id1", 1),
-							ReadColumns: integrationtests.NewReadColumns("col", 2),
-							OperationID: integrationtests.NewOperationID(64),
+							Filters:     testclient.NewFiltersKVs("id0", 1, "id1", 1),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(64),
 						},
 					},
 					Table:    "smallint_table",
@@ -176,8 +176,8 @@ func somework(t *testing.T, id int, tests map[string]api.BatchOperationTestInfo,
 
 	for {
 		for _, testInfo := range tests {
-			integrationtests.BatchRESTTest(t, testInfo, false /*is binary*/, false /*validate data*/)
-			integrationtests.BatchGRPCTest(t, testInfo, false /*is binary*/, false /*validate data*/)
+			batchRESTTest(t, testInfo, false /*is binary*/, false /*validate data*/)
+			batchGRPCTest(t, testInfo, false /*is binary*/, false /*validate data*/)
 		}
 		opCount++
 

@@ -64,32 +64,35 @@ var databaseCreateSchemes = map[string]string{
 Here we are adding dynamic schema to databaseCreateSchemes;
 */
 func init() {
-	benchSchema := createBenchmarkSchema()
-	databaseCreateSchemes[Benchmark] = benchSchema
+	if true {
 
-	// char
-	DB012Scheme := createTextualColumnsSchema(DB012, "char", 100)
-	databaseCreateSchemes[DB012] = DB012Scheme
+		benchSchema := createBenchmarkSchema()
+		databaseCreateSchemes[Benchmark] = benchSchema
 
-	// varchar
-	DB014Scheme := createTextualColumnsSchema(DB014, "VARCHAR", 50)
-	databaseCreateSchemes[DB014] = DB014Scheme
+		// char
+		DB012Scheme := createTextualColumnsSchema(DB012, "char", 100)
+		databaseCreateSchemes[DB012] = DB012Scheme
 
-	// long varchar
-	DB015Scheme := createTextualColumnsSchema(DB015, "VARCHAR", 256)
-	databaseCreateSchemes[DB015] = DB015Scheme
+		// varchar
+		DB014Scheme := createTextualColumnsSchema(DB014, "VARCHAR", 50)
+		databaseCreateSchemes[DB014] = DB014Scheme
 
-	// binary fix size
-	DB016Scheme := createTextualColumnsSchema(DB016, "BINARY", 100)
-	databaseCreateSchemes[DB016] = DB016Scheme
+		// long varchar
+		DB015Scheme := createTextualColumnsSchema(DB015, "VARCHAR", 256)
+		databaseCreateSchemes[DB015] = DB015Scheme
 
-	// varbinary
-	DB017Scheme := createTextualColumnsSchema(DB017, "VARBINARY", 100)
-	databaseCreateSchemes[DB017] = DB017Scheme
+		// binary fix size
+		DB016Scheme := createTextualColumnsSchema(DB016, "BINARY", 100)
+		databaseCreateSchemes[DB016] = DB016Scheme
 
-	// long varbinary
-	DB018Scheme := createTextualColumnsSchema(DB018, "VARBINARY", 256)
-	databaseCreateSchemes[DB018] = DB018Scheme
+		// varbinary
+		DB017Scheme := createTextualColumnsSchema(DB017, "VARBINARY", 100)
+		databaseCreateSchemes[DB017] = DB017Scheme
+
+		// long varbinary
+		DB018Scheme := createTextualColumnsSchema(DB018, "VARBINARY", 256)
+		databaseCreateSchemes[DB018] = DB018Scheme
+	}
 }
 
 func createBenchmarkSchema() string {

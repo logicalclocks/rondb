@@ -15,31 +15,21 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-package pkread
+package ping
 
 import (
-	"fmt"
-	"math/rand"
-	"net/http"
 	"sort"
 	"testing"
 	"time"
 
-	"google.golang.org/grpc"
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/testutils"
-	"hopsworks.ai/rdrs/pkg/api"
-	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 /*
 	The number of parallel client go-routines spawned in RunParallel()
 	can be influenced by setting runtime.GOMAXPROCS(). It defaults to the
 	number of CPUs.
-
-	This tends to deliver best results for pkread:
-		`runtime.GOMAXPROCS(runtime.NumCPU() * 2)`
 
 	go test \
 		-test.bench BenchmarkSimple \
@@ -48,20 +38,14 @@ import (
 		-benchmem \
 		-benchtime=100x \ 		// 100 times
 		-benchtime=10s \ 		// 10 sec
-		./internal/integrationtests/pkread/
+		./internal/integrationtests/ping/
 */
 func BenchmarkSimple(b *testing.B) {
 	// Number of total requests
 	numRequests := b.N
 
-	/*
-		IMPORTANT: This benchmark will run requests against EITHER the REST or
-		the gRPC server, depending on this flag.
-	*/
 	runAgainstGrpcServer := true
 
-	table := "table_1"
-	maxRows := testdbs.BENCH_DB_NUM_ROWS
 	threadId := 0
 
 	latenciesChannel := make(chan time.Duration, numRequests)
@@ -70,42 +54,19 @@ func BenchmarkSimple(b *testing.B) {
 	start := time.Now()
 
 	/*
-		Assuming GOMAXPROCS is not set, a 10-core CPU
-		will run 10 Go-routines here.
+		With 10-core CPU, this will run 10 Go-routines.
 		These 10 Go-routines will split up b.N requests
 		amongst each other. RunParallel() will only be
 		run 10 times then (in contrast to bp.Next()).
 	*/
 	b.RunParallel(func(bp *testing.PB) {
-		col := "id0"
-
-		// Every go-routine will always use the same operation id
-		operationId := fmt.Sprintf("operation_%d", threadId)
 		threadId++
 
-		validateColumns := []interface{}{"col0"}
-		testInfo := api.PKTestInfo{
-			PkReq: api.PKReadBody{
-				// Fill out Filters later
-				ReadColumns: testclient.NewReadColumns("col", 1),
-				OperationID: &operationId,
-			},
-			Table:          table,
-			Db:             testdbs.Benchmark,
-			HttpCode:       http.StatusOK,
-			ErrMsgContains: "",
-			RespKVs:        validateColumns,
-		}
-
 		// One connection per go-routine
-		var err error
-		var grpcConn *grpc.ClientConn
-		if runAgainstGrpcServer {
-			conf := config.GetAll()
-			grpcConn, err = testutils.CreateGrpcConn(conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
-			if err != nil {
-				b.Fatal(err.Error())
-			}
+		conf := config.GetAll()
+		grpcConn, err := testutils.CreateGrpcConn(conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
+		if err != nil {
+			b.Fatal(err.Error())
 		}
 
 		/*
@@ -113,15 +74,11 @@ func BenchmarkSimple(b *testing.B) {
 			will run this 5 times.
 		*/
 		for bp.Next() {
-			// Every request queries a random row
-			filter := testclient.NewFilter(&col, rand.Intn(maxRows))
-			testInfo.PkReq.Filters = filter
-
 			requestStartTime := time.Now()
 			if runAgainstGrpcServer {
-				pkGRPCTestWithConn(b, testInfo, false, false, grpcConn)
+				sendGrpcPingRequestWithConnection(b, grpcConn)
 			} else {
-				pkRESTTest(b, testInfo, false, false)
+				sendRestPingRequest(b)
 			}
 			latenciesChannel <- time.Since(requestStartTime)
 		}
@@ -142,7 +99,7 @@ func BenchmarkSimple(b *testing.B) {
 
 	b.Logf("Number of requests:         %d", numRequests)
 	b.Logf("Number of threads:          %d", threadId)
-	b.Logf("Throughput:                 %f pk lookups/second", requestsPerSecond)
+	b.Logf("Throughput:                 %f requests/second", requestsPerSecond)
 	b.Logf("50th percentile latency:    %v μs", p50.Microseconds())
 	b.Logf("99th percentile latency:    %v μs", p99.Microseconds())
 	b.Log("-------------------------------------------------")

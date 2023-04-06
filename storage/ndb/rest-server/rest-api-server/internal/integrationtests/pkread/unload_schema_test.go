@@ -23,7 +23,7 @@ import (
 
 	// _ "github.com/ianlancetaylor/cgosymbolizer"
 
-	"hopsworks.ai/rdrs/internal/integrationtests"
+	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/resources/testdbs"
@@ -41,8 +41,8 @@ func TestUnloadSchema(t *testing.T) {
 	validateColumns := []interface{}{"col0", "col1", "col2"}
 	tests := map[string]api.PKTestInfo{
 		"simple": {
-			PkReq: api.PKReadBody{Filters: integrationtests.NewFiltersKVs("id0", "1"),
-				OperationID: integrationtests.NewOperationID(64),
+			PkReq: api.PKReadBody{Filters: testclient.NewFiltersKVs("id0", "1"),
+				OperationID: testclient.NewOperationID(64),
 			},
 			Table:          testTable,
 			Db:             testDb,
@@ -52,7 +52,7 @@ func TestUnloadSchema(t *testing.T) {
 		},
 	}
 
-	integrationtests.PkTestWrapper(t, tests, false)
+	pkTestMultiple(t, tests, false)
 
 	err = testutils.RunQueries(testdbs.DB025UpdateScheme)
 	if err != nil {
@@ -62,8 +62,8 @@ func TestUnloadSchema(t *testing.T) {
 	validateColumns = []interface{}{"new_col0", "new_col1", "new_col2"}
 	tests = map[string]api.PKTestInfo{
 		"simple": {
-			PkReq: api.PKReadBody{Filters: integrationtests.NewFiltersKVs("id0", "1"),
-				OperationID: integrationtests.NewOperationID(64),
+			PkReq: api.PKReadBody{Filters: testclient.NewFiltersKVs("id0", "1"),
+				OperationID: testclient.NewOperationID(64),
 			},
 			Table:          testTable,
 			Db:             testDb,
@@ -72,5 +72,5 @@ func TestUnloadSchema(t *testing.T) {
 			RespKVs:        validateColumns,
 		},
 	}
-	integrationtests.PkTestWrapper(t, tests, false)
+	pkTestMultiple(t, tests, false)
 }

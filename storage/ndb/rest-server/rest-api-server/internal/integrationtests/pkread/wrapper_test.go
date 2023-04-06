@@ -20,6 +20,7 @@ package pkread
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"runtime/debug"
 	"testing"
 
@@ -51,6 +52,14 @@ func TestMain(m *testing.M) {
 		log.Fatalf(err.Error())
 	}
 	defer cleanup()
+
+	// Benchmarking pkreads tends to perform better with more client-side go-routines
+	if conf.Internal.GOMAXPROCS == -1 {
+		// This tends to deliver best benchmarking results for throughput (less for latency)
+		runtime.GOMAXPROCS(runtime.NumCPU() * 2)
+	} else {
+		runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
+	}
 
 	retcode = m.Run()
 }

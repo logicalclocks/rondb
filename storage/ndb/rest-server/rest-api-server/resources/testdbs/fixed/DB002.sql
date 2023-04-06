@@ -22,9 +22,9 @@ USE db002;
 CREATE TABLE table_1(
     id0 VARCHAR(10),
     id1 VARCHAR(10),
-    col_0 VARCHAR(100),
-    col_1 VARCHAR(100),
-    col_2 VARCHAR(100),
+    col0 VARCHAR(100),
+    col1 VARCHAR(100),
+    col2 VARCHAR(100),
     PRIMARY KEY(id0, id1)
 ) ENGINE = ndbcluster;
 
