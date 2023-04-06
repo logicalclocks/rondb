@@ -66,10 +66,10 @@ test:
 	export CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" && \
 	go test -p 1 -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg ./... `go list ./... | grep -v cmd`
 
-# Run specific benchmark:
+# Run specific benchmark (remove profiling for better performance):
 # go test -v \
 # 	-bench BenchmarkSimple \
-# 	-run=^$ \
+# 	-run=xxx \
 # 	-benchmem \
 # 	-benchtime=10s \
 # 	-cpuprofile cpu.out \
