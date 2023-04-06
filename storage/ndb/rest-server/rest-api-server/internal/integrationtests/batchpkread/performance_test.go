@@ -125,8 +125,8 @@ func BenchmarkSimple(b *testing.B) {
 	})
 	b.StopTimer()
 
-	numTotalOps := numRequests * batchSize
-	requestsPerSecond := float64(numTotalOps) / time.Since(start).Seconds()
+	numTotalPkLookups := numRequests * batchSize
+	PkLookupsPerSecond := float64(numTotalPkLookups) / time.Since(start).Seconds()
 
 	latencies := make([]time.Duration, numRequests)
 	for i := 0; i < numRequests; i++ {
@@ -141,7 +141,7 @@ func BenchmarkSimple(b *testing.B) {
 	b.Logf("Number of requests:         %d", numRequests)
 	b.Logf("Batch size (per requests):  %d", batchSize)
 	b.Logf("Number of threads:          %d", threadId)
-	b.Logf("Throughput:                 %f pk lookups/second", requestsPerSecond)
+	b.Logf("Throughput:                 %f pk lookups/second", PkLookupsPerSecond)
 	b.Logf("50th percentile latency:    %v ms", p50.Milliseconds())
 	b.Logf("99th percentile latency:    %v ms", p99.Milliseconds())
 	b.Log("-------------------------------------------------")
