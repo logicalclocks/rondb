@@ -29,7 +29,7 @@ to fail if too many connections are opened and closed in a short time.
 */
 func InitGRPCConnction() (*grpc.ClientConn, error) {
 	conf := config.GetAll()
-	grpcConn, err := testutils.CreateGrpcConn(conf.Security.APIKeyParameters.UseHopsworksAPIKeys, conf.Security.TLS.EnableTLS)
+	grpcConn, err := testutils.CreateGrpcConn(conf.Security.APIKey.UseHopsworksAPIKeys, conf.Security.TLS.EnableTLS)
 	if err != nil {
 		return nil, err
 	}

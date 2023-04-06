@@ -35,7 +35,7 @@ func TestAPIKey1(t *testing.T) {
 	}
 
 	conf := config.GetAll()
-	if !conf.Security.APIKeyParameters.UseHopsworksAPIKeys {
+	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		t.Log("tests may fail because Hopsworks API keys are deactivated")
 	}
 
@@ -93,13 +93,15 @@ func TestAPIKeyCache1(t *testing.T) {
 	}
 
 	conf := config.GetAll()
-	if !conf.Security.APIKeyParameters.UseHopsworksAPIKeys {
+	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		t.Log("tests may fail because Hopsworks API keys are deactivated")
 	}
 
 	// To speed up the tests
-	conf.Security.APIKeyParameters.CacheRefreshIntervalMS = 1000
-	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS = conf.Security.APIKeyParameters.CacheRefreshIntervalMS * 2
+	conf.Security.APIKey.CacheRefreshIntervalMS = 1000
+	conf.Security.APIKey.CacheRefreshIntervalJitterMS = 100
+	conf.Security.APIKey.CacheUnusedEntriesEvictionMS = conf.Security.APIKey.CacheRefreshIntervalMS * 2
+	config.SetAll(conf)
 
 	apiKeyCache, _ := NewAPIKeyCache()
 	defer apiKeyCache.Cleanup()
@@ -114,8 +116,8 @@ func TestAPIKeyCache1(t *testing.T) {
 
 	lastUpdated1 := apiKeyCache.LastUpdated(&[]string{testutils.HOPSWORKS_TEST_API_KEY}[0])
 
-	time.Sleep((time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS) +
-		time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalJitterMS)) * time.Millisecond)
+	time.Sleep((time.Duration(conf.Security.APIKey.CacheRefreshIntervalMS) +
+		time.Duration(conf.Security.APIKey.CacheRefreshIntervalJitterMS)) * time.Millisecond)
 
 	lastUpdated2 := apiKeyCache.LastUpdated(&[]string{testutils.HOPSWORKS_TEST_API_KEY}[0])
 
@@ -137,13 +139,15 @@ func TestAPIKeyCache2(t *testing.T) {
 	}
 
 	conf := config.GetAll()
-	if !conf.Security.APIKeyParameters.UseHopsworksAPIKeys {
+	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		t.Log("tests may fail because Hopsworks API keys are deactivated")
 	}
 
 	// To speed up the tests
-	conf.Security.APIKeyParameters.CacheRefreshIntervalMS = 1000
-	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS = conf.Security.APIKeyParameters.CacheRefreshIntervalMS * 2
+	conf.Security.APIKey.CacheRefreshIntervalMS = 1000
+	conf.Security.APIKey.CacheRefreshIntervalJitterMS = 100
+	conf.Security.APIKey.CacheUnusedEntriesEvictionMS = conf.Security.APIKey.CacheRefreshIntervalMS * 2
+	config.SetAll(conf)
 
 	apiKeyCache, _ := NewAPIKeyCache()
 	defer apiKeyCache.Cleanup()
@@ -158,8 +162,8 @@ func TestAPIKeyCache2(t *testing.T) {
 
 	lastUpdated1 := apiKeyCache.LastUpdated(&apiKey)
 
-	time.Sleep((time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS) +
-		time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalJitterMS)) * time.Millisecond)
+	time.Sleep((time.Duration(conf.Security.APIKey.CacheRefreshIntervalMS) +
+		time.Duration(conf.Security.APIKey.CacheRefreshIntervalJitterMS)) * time.Millisecond)
 
 	lastUpdated2 := apiKeyCache.LastUpdated(&apiKey)
 
@@ -178,12 +182,12 @@ func TestAPIKeyCache3(t *testing.T) {
 	ch := make(chan bool)
 
 	conf := config.GetAll()
-	if !conf.Security.APIKeyParameters.UseHopsworksAPIKeys {
+	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		t.Log("tests may fail because Hopsworks API keys are deactivated")
 	}
 
-	conf.Security.APIKeyParameters.CacheRefreshIntervalMS = 3000
-	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS = conf.Security.APIKeyParameters.CacheRefreshIntervalMS * 2
+	conf.Security.APIKey.CacheRefreshIntervalMS = 3000
+	conf.Security.APIKey.CacheUnusedEntriesEvictionMS = conf.Security.APIKey.CacheRefreshIntervalMS * 2
 
 	apiKeyCache, _ := NewAPIKeyCache()
 	defer apiKeyCache.Cleanup()
@@ -223,9 +227,9 @@ func TestAPIKeyCache3(t *testing.T) {
 		t.Fatalf(fmt.Sprintf("%d key validations failed", failCount))
 	}
 
-	time.Sleep((time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS) +
-		time.Duration(conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS) +
-		time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalJitterMS)) * time.Millisecond)
+	time.Sleep((time.Duration(conf.Security.APIKey.CacheRefreshIntervalMS) +
+		time.Duration(conf.Security.APIKey.CacheUnusedEntriesEvictionMS) +
+		time.Duration(conf.Security.APIKey.CacheRefreshIntervalJitterMS)) * time.Millisecond)
 
 	// wait for eviction time to pass
 	if apiKeyCache.Size() != 0 {
@@ -241,13 +245,15 @@ func TestAPIKeyCache4(t *testing.T) {
 	}
 
 	conf := config.GetAll()
-	if !conf.Security.APIKeyParameters.UseHopsworksAPIKeys {
+	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		t.Log("tests may fail because Hopsworks API keys are deactivated")
 	}
 
 	// To speed up the tests
-	conf.Security.APIKeyParameters.CacheRefreshIntervalMS = 1000
-	conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS = conf.Security.APIKeyParameters.CacheRefreshIntervalMS * 2
+	conf.Security.APIKey.CacheRefreshIntervalMS = 1000
+	conf.Security.APIKey.CacheRefreshIntervalJitterMS = 100
+	conf.Security.APIKey.CacheUnusedEntriesEvictionMS = conf.Security.APIKey.CacheRefreshIntervalMS * 2
+	config.SetAll(conf)
 
 	badKeys := []string{
 		"fvoHJCjkpof4WezF.4eed386ceb310e9976932cb279de2dab70c24a1ceb396e99dd29df3a1348f42e",
@@ -340,9 +346,9 @@ func TestAPIKeyCache4(t *testing.T) {
 		}
 	}
 
-	time.Sleep((time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalMS) +
-		time.Duration(conf.Security.APIKeyParameters.CacheUnusedEntriesEvictionMS) +
-		time.Duration(conf.Security.APIKeyParameters.CacheRefreshIntervalJitterMS)) * time.Millisecond)
+	time.Sleep((time.Duration(conf.Security.APIKey.CacheRefreshIntervalMS) +
+		time.Duration(conf.Security.APIKey.CacheUnusedEntriesEvictionMS) +
+		time.Duration(conf.Security.APIKey.CacheRefreshIntervalJitterMS)) * time.Millisecond)
 
 	// wait for eviction time to pass
 	if apiKeyCache.Size() != 0 {

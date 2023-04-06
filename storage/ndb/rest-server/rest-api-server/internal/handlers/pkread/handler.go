@@ -59,7 +59,7 @@ func (h *Handler) Validate(request interface{}) error {
 
 func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	conf := config.GetAll()
-	if !conf.Security.APIKeyParameters.UseHopsworksAPIKeys {
+	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		return nil
 	}
 	pkReadParams := request.(*api.PKReadParams)

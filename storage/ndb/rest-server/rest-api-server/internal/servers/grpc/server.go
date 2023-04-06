@@ -94,7 +94,7 @@ func NewRonDBServer(heap *heap.Heap, apiKeyCache apikey.APIKeyCacher) *RonDBServ
 
 func (s *RonDBServer) getApiKey(ctx context.Context) (string, error) {
 	conf := config.GetAll()
-	if !conf.Security.APIKeyParameters.UseHopsworksAPIKeys {
+	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		return "", nil
 	}
 

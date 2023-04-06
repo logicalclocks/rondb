@@ -185,7 +185,7 @@ func (hwc *HWAPIKeyCache) cacheEntryUpdater(apiKey *string, started *bool) {
 		lastUsed := udbs.lastUsed
 		udbs.rowLock.RUnlock()
 
-		evictTime := time.Duration(config.GetAll().Security.APIKeyParameters.CacheUnusedEntriesEvictionMS) * time.Duration(time.Millisecond)
+		evictTime := time.Duration(config.GetAll().Security.APIKey.CacheUnusedEntriesEvictionMS) * time.Duration(time.Millisecond)
 		if lastUsed.Add(evictTime).Before(time.Now()) {
 			cleaner()
 			return
@@ -308,8 +308,8 @@ func (hwc *HWAPIKeyCache) Size() int {
 }
 
 func (hwc *HWAPIKeyCache) refreshIntervalWithJitter() time.Duration {
-	refreshInterval := config.GetAll().Security.APIKeyParameters.CacheRefreshIntervalMS
-	jitter := int32(config.GetAll().Security.APIKeyParameters.CacheRefreshIntervalJitterMS)
+	refreshInterval := config.GetAll().Security.APIKey.CacheRefreshIntervalMS
+	jitter := int32(config.GetAll().Security.APIKey.CacheRefreshIntervalJitterMS)
 	jitter = rand.Int31n(jitter)
 	if jitter%2 == 0 {
 		jitter = -jitter

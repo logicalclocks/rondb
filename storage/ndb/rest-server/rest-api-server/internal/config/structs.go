@@ -283,8 +283,8 @@ func (t *TLS) Validate() error {
 }
 
 type Security struct {
-	TLS              TLS
-	APIKeyParameters APIKey
+	TLS    TLS
+	APIKey APIKey
 }
 
 func (c *Security) Validate() error {
@@ -293,7 +293,7 @@ func (c *Security) Validate() error {
 		return err
 	}
 
-	err = c.APIKeyParameters.Validate()
+	err = c.APIKey.Validate()
 	if err != nil {
 		return err
 	}

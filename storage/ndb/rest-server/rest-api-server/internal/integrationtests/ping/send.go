@@ -56,7 +56,7 @@ func sendRestPingRequest(t testing.TB) {
 		t.Fatal(err)
 	}
 
-	if conf.Security.APIKeyParameters.UseHopsworksAPIKeys {
+	if conf.Security.APIKey.UseHopsworksAPIKeys {
 		req.Header.Set(config.API_KEY_NAME, testutils.HOPSWORKS_TEST_API_KEY)
 	}
 

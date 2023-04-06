@@ -23,8 +23,8 @@ import (
 	"io/ioutil"
 )
 
-func GetAll() *AllConfigs {
-	return &globalConfig
+func GetAll() AllConfigs {
+	return globalConfig
 }
 
 // TODO: Add test with embedded config_template.json
@@ -63,6 +63,7 @@ func SetAll(newConfig AllConfigs) error {
 	if err := newConfig.Validate(); err != nil {
 		return err
 	}
+
 	globalConfig = newConfig
 	return nil
 }

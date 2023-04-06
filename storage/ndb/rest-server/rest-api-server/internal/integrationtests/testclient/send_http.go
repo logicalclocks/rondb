@@ -57,7 +57,7 @@ func SendHttpRequest(
 	}
 
 	conf := config.GetAll()
-	if conf.Security.APIKeyParameters.UseHopsworksAPIKeys {
+	if conf.Security.APIKey.UseHopsworksAPIKeys {
 		req.Header.Set(config.API_KEY_NAME, testutils.HOPSWORKS_TEST_API_KEY)
 	}
 

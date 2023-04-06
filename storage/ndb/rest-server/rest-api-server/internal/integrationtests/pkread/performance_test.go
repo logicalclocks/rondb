@@ -103,7 +103,7 @@ func BenchmarkSimple(b *testing.B) {
 		var grpcConn *grpc.ClientConn
 		if runAgainstGrpcServer {
 			conf := config.GetAll()
-			grpcConn, err = testutils.CreateGrpcConn(conf.Security.APIKeyParameters.UseHopsworksAPIKeys, conf.Security.TLS.EnableTLS)
+			grpcConn, err = testutils.CreateGrpcConn(conf.Security.APIKey.UseHopsworksAPIKeys, conf.Security.TLS.EnableTLS)
 			if err != nil {
 				b.Fatal(err.Error())
 			}

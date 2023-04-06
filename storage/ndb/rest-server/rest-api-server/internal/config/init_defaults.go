@@ -82,7 +82,7 @@ func newWithDefaults() AllConfigs {
 				PrivateKeyFile:             "",
 				RootCACertFile:             "",
 			},
-			APIKeyParameters: APIKey{
+			APIKey: APIKey{
 				UseHopsworksAPIKeys:          true,
 				CacheRefreshIntervalMS:       10000,
 				CacheUnusedEntriesEvictionMS: 60000,

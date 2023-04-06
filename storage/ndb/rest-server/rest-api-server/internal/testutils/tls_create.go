@@ -66,7 +66,7 @@ func CreateAllTLSCerts() (cleanup func(), err error) {
 			log.Error(err.Error())
 		}
 		// Undo all upcoming changes made to conf
-		err = config.SetAll(*conf)
+		err = config.SetAll(conf)
 		if err != nil {
 			log.Error(err.Error())
 		}
@@ -95,7 +95,7 @@ func CreateAllTLSCerts() (cleanup func(), err error) {
 		conf.Security.TLS.TestParameters.ClientKeyFile = clientKeyFilepath
 	}
 
-	err = config.SetAll(*conf)
+	err = config.SetAll(conf)
 	return
 }
 
