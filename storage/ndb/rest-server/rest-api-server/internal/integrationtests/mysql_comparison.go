@@ -50,7 +50,12 @@ func getColumnDataFromDB(
 	if err != nil {
 		t.Fatalf("failed to connect to db. %v", err)
 	}
-	defer dbConn.Close()
+	defer func() {
+		err = dbConn.Close()
+		if err != nil {
+			t.Log(err.Error())
+		}
+	}()
 
 	command := "use " + db
 	_, err = dbConn.Exec(command)
@@ -77,7 +82,12 @@ func getColumnDataFromDB(
 
 	command = fmt.Sprintf(" %s %s\n ", command, where)
 	rows, err := dbConn.Query(command)
-	defer rows.Close()
+	defer func() {
+		err = rows.Close()
+		if err != nil {
+			t.Log(err.Error())
+		}
+	}()
 	if err != nil {
 		return nil, err
 	}
@@ -107,5 +117,5 @@ func getColumnDataFromDB(
 		}
 	}
 
-	return nil, fmt.Errorf("Did not find data in the database %s", command)
+	return nil, fmt.Errorf("did not find data in the database %s", command)
 }

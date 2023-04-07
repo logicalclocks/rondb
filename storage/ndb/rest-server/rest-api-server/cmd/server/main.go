@@ -39,7 +39,7 @@ func main() {
 	versionArg := flag.Bool("version", false, "Print API and application version")
 	flag.Parse()
 
-	if *versionArg == true {
+	if *versionArg {
 		fmt.Printf("App version %s, API version %s\n", version.VERSION, version.API_VERSION)
 		return
 	}
@@ -70,7 +70,7 @@ func main() {
 	apiKeyCache := hopsworkscache.New()
 	defer apiKeyCache.Cleanup()
 
-	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache, quit)
+	cleanupServers, err := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache, quit)
 	if err != nil {
 		panic(err)
 	}

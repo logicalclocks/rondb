@@ -21,7 +21,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"os"
 )
 
 func TrustedCAs(rootCACertFile string) *x509.CertPool {
@@ -38,7 +38,7 @@ func TrustedCAs(rootCACertFile string) *x509.CertPool {
 }
 
 func appendCertToPool(certFile string, pool *x509.CertPool) error {
-	certs, err := ioutil.ReadFile(certFile)
+	certs, err := os.ReadFile(certFile)
 	if err != nil {
 		return fmt.Errorf("failed to append %q to RootCAs: %v", certFile, err)
 	}

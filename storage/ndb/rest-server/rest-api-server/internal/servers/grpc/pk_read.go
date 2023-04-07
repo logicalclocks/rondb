@@ -21,6 +21,7 @@ import (
 	"context"
 	"net/http"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/handlers"
@@ -28,7 +29,10 @@ import (
 )
 
 func (s *RonDBServer) PKRead(ctx context.Context, reqProto *api.PKReadRequestProto) (*api.PKReadResponseProto, error) {
-	apiKey, _ := s.getApiKey(ctx)
+	apiKey, err := s.getApiKey(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
 
 	request := api.ConvertPKReadRequestProto(reqProto)
 

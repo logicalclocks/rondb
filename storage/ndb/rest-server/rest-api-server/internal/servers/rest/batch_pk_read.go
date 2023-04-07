@@ -93,7 +93,7 @@ func makePKReadParams(operation *api.BatchSubOp, pkReadarams *api.PKReadParams) 
 	// split the relative url to extract path parameters
 	splits := strings.Split(*operation.RelativeURL, "/")
 	if len(splits) != 3 {
-		return errors.New("Failed to extract database and table information from relative url")
+		return errors.New("failed to extract database and table information from relative url")
 	}
 
 	pkReadarams.DB = &splits[0]

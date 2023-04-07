@@ -33,17 +33,18 @@ import (
 	"hopsworks.ai/rdrs/internal/servers/rest"
 )
 
-func CreateAndStartDefaultServers(heap *heap.Heap,
+func CreateAndStartDefaultServers(
+	heap *heap.Heap,
 	apiKeyCache apikey.Cache,
-	quit chan os.Signal) (err error, cleanup func()) {
-
+	quit chan os.Signal,
+) (cleanup func(), err error) {
 	cleanup = func() {}
 
 	// Connect to RonDB
 	conf := config.GetAll()
 	dalErr := dal.InitRonDBConnection(conf.RonDB)
 	if dalErr != nil {
-		return fmt.Errorf("failed to connect to RonDB. error: %w", dalErr), cleanup
+		return cleanup, fmt.Errorf("failed to connect to RonDB. error: %w", dalErr)
 	}
 	cleanupRonDB := func() {
 		dalErr = dal.ShutdownConnection()
@@ -62,12 +63,12 @@ func CreateAndStartDefaultServers(heap *heap.Heap,
 		)
 		if err != nil {
 			cleanupRonDB()
-			return fmt.Errorf("failed generating tls configuration; error: %w", err), cleanup
+			return cleanup, fmt.Errorf("failed generating tls configuration; error: %w", err)
 		}
 	}
 
 	grpcServer := grpc.New(tlsConfig, heap, apiKeyCache)
-	err, cleanupGRPCServer := grpc.Start(
+	cleanupGrpc, err := grpc.Start(
 		grpcServer,
 		conf.GRPC.ServerIP,
 		conf.GRPC.ServerPort,
@@ -75,7 +76,7 @@ func CreateAndStartDefaultServers(heap *heap.Heap,
 	)
 	if err != nil {
 		cleanupRonDB()
-		return fmt.Errorf("failed starting gRPC server; error: %w", err), cleanup
+		return cleanup, fmt.Errorf("failed starting gRPC server; error: %w", err)
 	}
 
 	restServer := rest.New(
@@ -86,10 +87,10 @@ func CreateAndStartDefaultServers(heap *heap.Heap,
 		apiKeyCache,
 	)
 
-	cleanupRESTServer := restServer.Start(quit)
-	return nil, func() {
+	cleanupRest := restServer.Start(quit)
+	return func() {
 		cleanupRonDB()
-		cleanupGRPCServer()
-		cleanupRESTServer()
-	}
+		cleanupGrpc()
+		cleanupRest()
+	}, nil
 }

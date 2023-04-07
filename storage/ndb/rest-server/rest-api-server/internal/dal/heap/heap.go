@@ -104,7 +104,6 @@ func (heap *Heap) releaseAllBuffers() {
 	}
 	heap.buffers = make([]*NativeBuffer, 0)
 	heap.buffersStats = MemoryStats{}
-	return
 }
 
 func (heap *Heap) GetBuffer() (buff *NativeBuffer, returnBuff func()) {
@@ -135,7 +134,6 @@ func (heap *Heap) returnBuffer(buffer *NativeBuffer) {
 	// TODO: Also, shouldn't we only return if we're beneath #preAllocatedBuffers?
 
 	heap.buffers = append(heap.buffers, buffer)
-	return
 }
 
 func (heap *Heap) GetNativeBuffersStats() MemoryStats {

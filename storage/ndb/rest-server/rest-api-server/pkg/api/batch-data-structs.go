@@ -19,6 +19,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -63,7 +64,7 @@ func (b *BatchResponseJSON) CreateNewSubResponse() PKReadResponseWithCode {
 func (b *BatchResponseJSON) AppendSubResponse(subResp PKReadResponseWithCode) error {
 	subRespJson, ok := subResp.(*PKReadResponseWithCodeJSON)
 	if !ok {
-		return fmt.Errorf("Wrong object type. Expecting PKReadResponseWithCodeJSON ")
+		return errors.New("wrong object type. Expecting PKReadResponseWithCodeJSON")
 	}
 
 	newList := append(*b.Result, subRespJson)
@@ -94,7 +95,7 @@ func (b *BatchResponseGRPC) CreateNewSubResponse() PKReadResponseWithCode {
 func (b *BatchResponseGRPC) AppendSubResponse(subResp PKReadResponseWithCode) error {
 	subRespGRPC, ok := subResp.(*PKReadResponseWithCodeGRPC)
 	if !ok {
-		return fmt.Errorf("Wrong object type. Expecting PKReadResponseWithCodeGRPC ")
+		return errors.New("wrong object type. Expecting PKReadResponseWithCodeGRPC")
 	}
 
 	newList := append(*b.Result, subRespGRPC)

@@ -47,9 +47,9 @@ var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01
 
 func RandString(n int) string {
 	b := make([]rune, n)
-	rand.Seed(int64(time.Now().Nanosecond()))
+	ra := rand.New(rand.NewSource(int64(time.Now().Nanosecond())))
 	for i := range b {
-		b[i] = letterRunes[rand.Intn(len(letterRunes))]
+		b[i] = letterRunes[ra.Intn(len(letterRunes))]
 	}
 	return string(b)
 }
