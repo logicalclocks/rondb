@@ -53,16 +53,17 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	*/
 	runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
 
-	index := 0
-	cleanupFNs := make([]*func(), 10)
-	cleanupFN := func() {
-		//clean up in reverse order
-		for i := len(cleanupFNs) - 1; i >= 0; i-- {
-			if cleanupFNs[i] != nil {
-				(*cleanupFNs[i])()
+	cleanupWrapper := func(cleanupFNs []func()) func() {
+		return func() {
+			//clean up in reverse order
+			for i := len(cleanupFNs) - 1; i >= 0; i-- {
+				if cleanupFNs[i] != nil {
+					(cleanupFNs[i])()
+				}
 			}
 		}
 	}
+	cleanupFNs := []func(){}
 
 	if !*testutils.WithRonDB {
 		return nil, nil
@@ -74,8 +75,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 		if err != nil {
 			return nil, err
 		}
-		cleanupFNs[index] = &cleanupTLSCerts
-		index++
+		cleanupFNs = append(cleanupFNs, cleanupTLSCerts)
 	}
 
 	//---------------------------- DATABASES ----------------------------------
@@ -93,7 +93,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	if !testutils.SentinelDBExists() {
 		err, _ := testutils.CreateDatabases(conf.Security.APIKey.UseHopsworksAPIKeys, dbsToCreate...)
 		if err != nil {
-			cleanupFN()
+			cleanupWrapper(cleanupFNs)()
 			return nil, fmt.Errorf("failed creating databases; error: %v", err)
 		}
 	}
@@ -101,34 +101,29 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	//---------------------------- HEAP ---------------------------------------
 	newHeap, releaseBuffers, err := heap.New()
 	if err != nil {
-		cleanupFN()
+		cleanupWrapper(cleanupFNs)()
 		return nil, fmt.Errorf("failed creating new heap; error: %v ", err)
 	}
-	cleanupFNs[index] = &releaseBuffers
-	index++
+	cleanupFNs = append(cleanupFNs, releaseBuffers)
 
 	//---------------------------- API KEY Cache ------------------------------
 	apiKeyCache := hopsworkscache.New()
-	if err != nil {
-		cleanupFN()
-		return nil, fmt.Errorf("failed creating new API Key Cache; error: %v ", err)
-	}
-	apiKeyCleanup := func() {
-		apiKeyCache.Cleanup()
-	}
-	cleanupFNs[index] = &apiKeyCleanup
-	index++
+	cleanupFNs = append(cleanupFNs, func() {
+		err = apiKeyCache.Cleanup()
+		if err != nil {
+			log.Errorf("failed cleaning up api key cache; error: %v", err)
+		}
+	})
 
 	//---------------------------- Servers ------------------------------------
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)
 	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache, quit)
 	if err != nil {
-		cleanupFN()
+		cleanupWrapper(cleanupFNs)()
 		return nil, fmt.Errorf("failed creating default servers; error: %v ", err)
 	}
-	cleanupFNs[index] = &cleanupServers
-	index++
+	cleanupFNs = append(cleanupFNs, cleanupServers)
 
 	// some times the servers take some time to start and units tests fail due to connection failures
 	time.Sleep(500 * time.Millisecond)
@@ -138,19 +133,18 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	if profilingEnabled() {
 		f, err := os.Create("profile.out")
 		if err != nil {
-			cleanupFN()
+			cleanupWrapper(cleanupFNs)()
 			return nil, fmt.Errorf("could not create profile.out; error: %w ", err)
 		}
 		fileCloser := func() { f.Close() }
-		cleanupFNs[index] = &fileCloser
-		index++
+		cleanupFNs = append(cleanupFNs, fileCloser)
 
 		// Start profiling
 		if err := pprof.StartCPUProfile(f); err != nil {
-			cleanupFN()
+			cleanupWrapper(cleanupFNs)()
 			return nil, fmt.Errorf("could not start CPU profile; error: %w ", err)
 		}
 	}
 
-	return cleanupFN, nil
+	return cleanupWrapper(cleanupFNs), nil
 }
