@@ -138,7 +138,7 @@ $grpc_server = undef;
 
 my $CONF = IO::File->new("$vardir/tmp/rdrs_config.json", 'w') or die;
 my $jsonStr = <<"END_TXT";
-        {
+{
         "REST": {
                 "ServerIP": "localhost",
                 "ServerPort": $rest_server_port
@@ -153,19 +153,19 @@ my $jsonStr = <<"END_TXT";
                                 "IP": "localhost",
                                 "Port": $ENV{'NDB_MGMD_PORT'}
                         }
-                ],
+                ]
         },
         "Security": {
                 "TLS": {
                         "EnableTLS": true,
-                        "RequireAndVerifyClientCert": true,
+                        "RequireAndVerifyClientCert": true
                 }, 
                 "APIKey": {
                         "UseHopsworksAPIKeys": true
                 }
         },
         "Log": {
-                "Level": "info",
+                "Level": "info"
         },
         "Testing": {
                 "MySQL": {
