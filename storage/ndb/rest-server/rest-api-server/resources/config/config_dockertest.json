@@ -23,7 +23,7 @@
                         "EnableTLS": true,
                         "RequireAndVerifyClientCert": true
                 }, 
-                "APIKeyParameters": {
+                "APIKey": {
                         "UseHopsworksAPIKeys": true
                 }
         },
