@@ -28,7 +28,8 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
-	"hopsworks.ai/rdrs/internal/security/apikey"
+	"hopsworks.ai/rdrs/internal/security/apikey/hopsworkscache"
+
 	"hopsworks.ai/rdrs/internal/servers"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/resources/testdbs"
@@ -107,7 +108,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	index++
 
 	//---------------------------- API KEY Cache ------------------------------
-	apiKeyCache, err := apikey.NewAPIKeyCache()
+	apiKeyCache := hopsworkscache.New()
 	if err != nil {
 		cleanupFN()
 		return nil, fmt.Errorf("failed creating new API Key Cache; error: %v ", err)

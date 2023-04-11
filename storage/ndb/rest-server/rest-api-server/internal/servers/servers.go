@@ -34,7 +34,7 @@ import (
 )
 
 func CreateAndStartDefaultServers(heap *heap.Heap,
-	apiKeyCache apikey.APIKeyCacher,
+	apiKeyCache apikey.Cache,
 	quit chan os.Signal) (err error, cleanup func()) {
 
 	cleanup = func() {}

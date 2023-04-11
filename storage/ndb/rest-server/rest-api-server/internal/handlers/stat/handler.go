@@ -29,10 +29,10 @@ import (
 
 type Handler struct {
 	heap        *heap.Heap
-	apiKeyCache apikey.APIKeyCacher
+	apiKeyCache apikey.Cache
 }
 
-func New(heap *heap.Heap, apiKeyCache apikey.APIKeyCacher) Handler {
+func New(heap *heap.Heap, apiKeyCache apikey.Cache) Handler {
 	return Handler{heap, apiKeyCache}
 }
 

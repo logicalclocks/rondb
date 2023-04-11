@@ -42,8 +42,13 @@ type RonDBRestServer struct {
 	server *http.Server
 }
 
-func New(host string, port uint16, tlsConfig *tls.Config, heap *heap.Heap,
-	apiKeyCache apikey.APIKeyCacher) *RonDBRestServer {
+func New(
+	host string,
+	port uint16,
+	tlsConfig *tls.Config,
+	heap *heap.Heap,
+	apiKeyCache apikey.Cache,
+) *RonDBRestServer {
 	restApiAddress := fmt.Sprintf("%s:%d", host, port)
 	log.Infof("Initialising REST API server with network address: '%s'", restApiAddress)
 	gin.SetMode(gin.ReleaseMode)
@@ -94,7 +99,7 @@ type RouteHandler struct {
 	batchPkReadHandler batchpkread.Handler
 }
 
-func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.APIKeyCacher) {
+func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache) {
 	router.Use(ErrorHandler)
 
 	versionGroup := router.Group(config.VERSION_GROUP)

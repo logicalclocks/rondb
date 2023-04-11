@@ -39,7 +39,7 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func New(serverTLS *tls.Config, heap *heap.Heap, apiKeyCache apikey.APIKeyCacher) *grpc.Server {
+func New(serverTLS *tls.Config, heap *heap.Heap, apiKeyCache apikey.Cache) *grpc.Server {
 	var grpcServer *grpc.Server
 	if serverTLS != nil {
 		grpcServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
@@ -84,7 +84,7 @@ type RonDBServer struct {
 	batchPkReadHandler batchpkread.Handler
 }
 
-func NewRonDBServer(heap *heap.Heap, apiKeyCache apikey.APIKeyCacher) *RonDBServer {
+func NewRonDBServer(heap *heap.Heap, apiKeyCache apikey.Cache) *RonDBServer {
 	return &RonDBServer{
 		statsHandler:       stat.New(heap, apiKeyCache),
 		pkReadHandler:      pkread.New(heap, apiKeyCache),

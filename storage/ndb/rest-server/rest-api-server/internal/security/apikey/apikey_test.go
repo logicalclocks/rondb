@@ -25,6 +25,8 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/security/apikey/hopsworkscache"
+
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
@@ -39,54 +41,61 @@ func TestAPIKey1(t *testing.T) {
 		t.Log("tests may fail because Hopsworks API keys are deactivated")
 	}
 
-	apiKeyCache, _ := NewAPIKeyCache()
+	caches := []Cache{}
+	apiKeyCache := hopsworkscache.New()
 	defer apiKeyCache.Cleanup()
+	caches = append(caches, apiKeyCache)
+	for _, cache := range caches {
+		testKey(t, cache, conf)
+	}
+}
 
+func testKey(t *testing.T, cache Cache, conf config.AllConfigs) {
 	existentDB := testdbs.DB001
 	existentDB2 := testdbs.DB002
 	fakeDB := "test3"
 
 	apiKey := "bkYjEz6OTZyevbqT.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
-	err := apiKeyCache.ValidateAPIKey(&apiKey, &existentDB)
+	err := cache.ValidateAPIKey(&apiKey, &existentDB)
 	if err == nil {
 		t.Fatal("Wrong prefix was falsely validated")
 	}
 
 	apiKey = "bkYjEz6OTZyevbqT."
-	err = apiKeyCache.ValidateAPIKey(&apiKey)
+	err = cache.ValidateAPIKey(&apiKey)
 	if err == nil {
 		t.Fatal("Missing secret was falsely validated")
 	}
 
 	apiKey = "bkYjEz6OTZyevbq.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
-	err = apiKeyCache.ValidateAPIKey(&apiKey)
+	err = cache.ValidateAPIKey(&apiKey)
 	if err == nil {
 		t.Fatal("Wrong length prefix was falsely validated")
 	}
 
 	// correct api key but wrong db. this api key can not access test3 db
 	apiKey = testutils.HOPSWORKS_TEST_API_KEY
-	err = apiKeyCache.ValidateAPIKey(&apiKey, &fakeDB)
+	err = cache.ValidateAPIKey(&apiKey, &fakeDB)
 	if err == nil {
 		t.Fatal("Inexistent database was falsely validated")
 	}
 
 	// correct api key
 	apiKey = testutils.HOPSWORKS_TEST_API_KEY
-	err = apiKeyCache.ValidateAPIKey(&apiKey, &existentDB)
+	err = cache.ValidateAPIKey(&apiKey, &existentDB)
 	if err != nil {
 		t.Fatalf("No error expected; error: %v", err)
 	}
 
 	// no errors
 	apiKey = testutils.HOPSWORKS_TEST_API_KEY
-	err = apiKeyCache.ValidateAPIKey(&apiKey, &existentDB, &existentDB2)
+	err = cache.ValidateAPIKey(&apiKey, &existentDB, &existentDB2)
 	if err != nil {
 		t.Fatalf("No error expected; err: %v", err)
 	}
 }
 
-// check that cache is updated every N secs
+// Check that cache is updated every N secs
 func TestAPIKeyCache1(t *testing.T) {
 	if !*testutils.WithRonDB {
 		t.Skip("skipping test without RonDB")
@@ -103,29 +112,36 @@ func TestAPIKeyCache1(t *testing.T) {
 	conf.Security.APIKey.CacheUnusedEntriesEvictionMS = conf.Security.APIKey.CacheRefreshIntervalMS * 2
 	config.SetAll(conf)
 
-	apiKeyCache, _ := NewAPIKeyCache()
+	caches := []Cache{}
+	apiKeyCache := hopsworkscache.New()
 	defer apiKeyCache.Cleanup()
+	caches = append(caches, apiKeyCache)
+	for _, cache := range caches {
+		testUpdateCacheEveryNSeconds(t, cache, conf)
+	}
+}
 
+func testUpdateCacheEveryNSeconds(t *testing.T, cache Cache, conf config.AllConfigs) {
 	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 	databases := []string{testdbs.DB001, testdbs.DB002}
 
-	err := apiKeyCache.ValidateAPIKey(&apiKey, &databases[0])
+	err := cache.ValidateAPIKey(&apiKey, &databases[0])
 	if err != nil {
 		t.Fatalf("No error expected; error: %v", err)
 	}
 
-	lastUpdated1 := apiKeyCache.LastUpdated(&[]string{testutils.HOPSWORKS_TEST_API_KEY}[0])
+	lastUpdated1 := cache.LastUpdated(&[]string{testutils.HOPSWORKS_TEST_API_KEY}[0])
 
 	time.Sleep((time.Duration(conf.Security.APIKey.CacheRefreshIntervalMS) +
 		time.Duration(conf.Security.APIKey.CacheRefreshIntervalJitterMS)) * time.Millisecond)
 
-	lastUpdated2 := apiKeyCache.LastUpdated(&[]string{testutils.HOPSWORKS_TEST_API_KEY}[0])
+	lastUpdated2 := cache.LastUpdated(&[]string{testutils.HOPSWORKS_TEST_API_KEY}[0])
 
 	if lastUpdated1 == lastUpdated2 {
 		t.Fatalf("Cache entry was not updated")
 	}
 
-	err = apiKeyCache.ValidateAPIKey(&apiKey, &databases[0])
+	err = cache.ValidateAPIKey(&apiKey, &databases[0])
 	if err != nil {
 		t.Fatalf("No error expected; error: %v", err)
 	}
@@ -149,23 +165,30 @@ func TestAPIKeyCache2(t *testing.T) {
 	conf.Security.APIKey.CacheUnusedEntriesEvictionMS = conf.Security.APIKey.CacheRefreshIntervalMS * 2
 	config.SetAll(conf)
 
-	apiKeyCache, _ := NewAPIKeyCache()
+	caches := []Cache{}
+	apiKeyCache := hopsworkscache.New()
 	defer apiKeyCache.Cleanup()
+	caches = append(caches, apiKeyCache)
+	for _, cache := range caches {
+		testUpdateCacheEveryNSecondsUnauthorized(t, cache, conf)
+	}
+}
 
+func testUpdateCacheEveryNSecondsUnauthorized(t *testing.T, cache Cache, conf config.AllConfigs) {
 	apiKey := testutils.HOPSWORKS_TEST_API_KEY
 	db3 := "dbxxx"
 
-	err := apiKeyCache.ValidateAPIKey(&apiKey, &db3)
+	err := cache.ValidateAPIKey(&apiKey, &db3)
 	if err == nil {
 		t.Fatal("Database should not exist. Expected test to fail")
 	}
 
-	lastUpdated1 := apiKeyCache.LastUpdated(&apiKey)
+	lastUpdated1 := cache.LastUpdated(&apiKey)
 
 	time.Sleep((time.Duration(conf.Security.APIKey.CacheRefreshIntervalMS) +
 		time.Duration(conf.Security.APIKey.CacheRefreshIntervalJitterMS)) * time.Millisecond)
 
-	lastUpdated2 := apiKeyCache.LastUpdated(&apiKey)
+	lastUpdated2 := cache.LastUpdated(&apiKey)
 
 	if lastUpdated1 == lastUpdated2 {
 		t.Fatalf("Cache entry was not updated")
@@ -179,8 +202,6 @@ func TestAPIKeyCache3(t *testing.T) {
 		t.Skip("skipping test without RonDB")
 	}
 
-	ch := make(chan bool)
-
 	conf := config.GetAll()
 	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		t.Log("tests may fail because Hopsworks API keys are deactivated")
@@ -189,8 +210,18 @@ func TestAPIKeyCache3(t *testing.T) {
 	conf.Security.APIKey.CacheRefreshIntervalMS = 3000
 	conf.Security.APIKey.CacheUnusedEntriesEvictionMS = conf.Security.APIKey.CacheRefreshIntervalMS * 2
 
-	apiKeyCache, _ := NewAPIKeyCache()
+	caches := []Cache{}
+	apiKeyCache := hopsworkscache.New()
 	defer apiKeyCache.Cleanup()
+	caches = append(caches, apiKeyCache)
+	for _, cache := range caches {
+		testLoad(t, cache, conf)
+	}
+}
+
+// Test load. Generate lots of api key requests
+func testLoad(t *testing.T, cache Cache, conf config.AllConfigs) {
+	ch := make(chan bool)
 
 	numOps := 512
 	dal.SetOpRetryProps(5, 1000, 1000)
@@ -201,9 +232,9 @@ func TestAPIKeyCache3(t *testing.T) {
 			apiKeyNum := rand.Intn(int(testdbs.HopsworksAPIKey_ADDITIONAL_KEYS))
 			apiKey := fmt.Sprintf("%016d.%s", apiKeyNum, testdbs.HopsworksAPIKey_SECRET)
 			DB := testdbs.DB001
-			err := apiKeyCache.ValidateAPIKey(&apiKey, &DB)
+			err := cache.ValidateAPIKey(&apiKey, &DB)
 			if err != nil {
-				log.Errorf("validation failed %v", err)
+				log.Errorf("validation failed; error: %v", err)
 				ch <- false
 			} else {
 				ch <- true
@@ -232,8 +263,8 @@ func TestAPIKeyCache3(t *testing.T) {
 		time.Duration(conf.Security.APIKey.CacheRefreshIntervalJitterMS)) * time.Millisecond)
 
 	// wait for eviction time to pass
-	if apiKeyCache.Size() != 0 {
-		t.Fatalf("Cache was not cleared. Expected 0. Got %d entries in the cache ", apiKeyCache.Size())
+	if cache.Size() != 0 {
+		t.Fatalf("Cache was not cleared. Expected 0. Got %d entries in the cache ", cache.Size())
 	}
 }
 
@@ -255,6 +286,17 @@ func TestAPIKeyCache4(t *testing.T) {
 	conf.Security.APIKey.CacheUnusedEntriesEvictionMS = conf.Security.APIKey.CacheRefreshIntervalMS * 2
 	config.SetAll(conf)
 
+	caches := []Cache{}
+	apiKeyCache := hopsworkscache.New()
+	defer apiKeyCache.Cleanup()
+	caches = append(caches, apiKeyCache)
+	for _, cache := range caches {
+		testLoadWithBadKeys(t, cache, conf)
+	}
+}
+
+// Test load. Generate lots of bad request for API Keys
+func testLoadWithBadKeys(t *testing.T, cache Cache, conf config.AllConfigs) {
 	badKeys := []string{
 		"fvoHJCjkpof4WezF.4eed386ceb310e9976932cb279de2dab70c24a1ceb396e99dd29df3a1348f42e",
 		"vNizYZEsK7Ip1AEt.3eb997b041460f59b90094bd7d07b30e385c1c72961a440b74f9dccf5dd467b2",
@@ -320,17 +362,13 @@ func TestAPIKeyCache4(t *testing.T) {
 
 	ch := make(chan bool)
 
-	apiKeyCache, _ := NewAPIKeyCache()
-	defer apiKeyCache.Cleanup()
-
 	rand.Seed(time.Now().Unix())
 	numOps := 1000
 	for i := 0; i < numOps; i++ {
 		go func(ch chan bool) {
-
 			badAPIKey := badKeys[rand.Intn(len(badKeys))]
 			DB := testdbs.DB001
-			err := apiKeyCache.ValidateAPIKey(&badAPIKey, &DB)
+			err := cache.ValidateAPIKey(&badAPIKey, &DB)
 			if err != nil {
 				ch <- true
 			} else {
@@ -351,7 +389,7 @@ func TestAPIKeyCache4(t *testing.T) {
 		time.Duration(conf.Security.APIKey.CacheRefreshIntervalJitterMS)) * time.Millisecond)
 
 	// wait for eviction time to pass
-	if apiKeyCache.Size() != 0 {
-		t.Fatalf("Cache was not cleared. Expected 0. Got %d entries in the cache ", apiKeyCache.Size())
+	if cache.Size() != 0 {
+		t.Fatalf("Cache was not cleared. Expected 0. Got %d entries in the cache ", cache.Size())
 	}
 }

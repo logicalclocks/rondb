@@ -15,7 +15,7 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-package hw_apikey_cache
+package hopsworkscache
 
 import (
 	"crypto/sha256"
@@ -29,16 +29,14 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/log"
-	"hopsworks.ai/rdrs/internal/security/apikey/apikey_cache"
+	"hopsworks.ai/rdrs/internal/security/apikey/basecache"
 )
 
-var _ apikey_cache.HWAPIKeyCache = (*HWAPIKeyCache)(nil)
-
-func NewAPIKeyCache() apikey_cache.HWAPIKeyCache {
-	return &HWAPIKeyCache{key2UserDBsCache: make(map[string]*UserDBs)}
+func New() *Cache {
+	return &Cache{key2UserDBsCache: make(map[string]*UserDBs)}
 }
 
-type HWAPIKeyCache struct {
+type Cache struct {
 	key2UserDBsCache     map[string]*UserDBs // API Key -> User Databases
 	key2UserDBsCacheLock sync.RWMutex
 }
@@ -54,7 +52,7 @@ type UserDBs struct {
 	refreshInterval time.Duration   // Cache refresh interval
 }
 
-func (hwc *HWAPIKeyCache) Cleanup() error {
+func (hwc *Cache) Cleanup() error {
 	hwc.key2UserDBsCacheLock.Lock()
 	defer hwc.key2UserDBsCacheLock.Unlock()
 
@@ -73,7 +71,7 @@ func (hwc *HWAPIKeyCache) Cleanup() error {
 }
 
 // update the cache entry by fetching the API key from backend
-func (hwc *HWAPIKeyCache) UpdateCache(apiKey *string) error {
+func (hwc *Cache) UpdateCache(apiKey *string) error {
 
 	// if the entry does not already exist in the
 	// cache then multiple clients will try to read and
@@ -89,9 +87,9 @@ func (hwc *HWAPIKeyCache) UpdateCache(apiKey *string) error {
 		// Continue with write lock
 		hwc.key2UserDBsCacheLock.Lock()
 
-		udbs, ok := hwc.key2UserDBsCache[*apiKey]
+		_, ok := hwc.key2UserDBsCache[*apiKey]
 		if !ok { // the entry still does not exists. insert a new row
-			udbs = &UserDBs{}
+			udbs := &UserDBs{}
 			udbs.refreshInterval = hwc.refreshIntervalWithJitter()
 			hwc.key2UserDBsCache[*apiKey] = udbs
 			hwc.startUpdateTicker(apiKey, udbs)
@@ -103,7 +101,7 @@ func (hwc *HWAPIKeyCache) UpdateCache(apiKey *string) error {
 	return nil
 }
 
-func (hwc *HWAPIKeyCache) startUpdateTicker(apiKey *string, udbs *UserDBs) error {
+func (hwc *Cache) startUpdateTicker(apiKey *string, udbs *UserDBs) error {
 	started := false
 	go hwc.cacheEntryUpdater(apiKey, &started)
 
@@ -120,7 +118,7 @@ func (hwc *HWAPIKeyCache) startUpdateTicker(apiKey *string, udbs *UserDBs) error
 	}
 }
 
-func (hwc *HWAPIKeyCache) cacheEntryUpdater(apiKey *string, started *bool) {
+func (hwc *Cache) cacheEntryUpdater(apiKey *string, started *bool) {
 
 	udbs, ok := hwc.key2UserDBsCache[*apiKey] // not need for read lock here as the caller holds write lock
 	if !ok {
@@ -193,7 +191,7 @@ func (hwc *HWAPIKeyCache) cacheEntryUpdater(apiKey *string, started *bool) {
 }
 
 // Authenticates only using the the cache. No request sent to backend
-func (hwc *HWAPIKeyCache) FindAndValidate(apiKey *string, dbs ...*string) (keyFoundInCache, allowedAccess bool) {
+func (hwc *Cache) FindAndValidate(apiKey *string, dbs ...*string) (keyFoundInCache, allowedAccess bool) {
 	keyFoundInCache = false
 	allowedAccess = false
 
@@ -228,7 +226,44 @@ func (hwc *HWAPIKeyCache) FindAndValidate(apiKey *string, dbs ...*string) (keyFo
 	return
 }
 
-func (hwc *HWAPIKeyCache) updateRecord(apikey *string, dbs []string, udbs *UserDBs) error {
+/*
+Checking whether the API key can access the given databases
+*/
+func (hwc *Cache) ValidateAPIKey(apiKey *string, dbs ...*string) error {
+	err := basecache.ValidateApiKeyFormat(apiKey)
+	if err != nil {
+		return err
+	}
+
+	if len(dbs) == 0 {
+		return nil
+	}
+
+	// Authenticates only using the the cache. No request sent to backend
+	keyFoundInCache, allowedAccess := hwc.FindAndValidate(apiKey, dbs...)
+	if keyFoundInCache {
+		if !allowedAccess {
+			return fmt.Errorf("unauthorized. Found in cache: %v, allowed access %v",
+				keyFoundInCache, allowedAccess)
+		}
+		return nil
+	}
+
+	// Update the cache by fetching the API key from backend
+	if err = hwc.UpdateCache(apiKey); err != nil {
+		return err
+	}
+
+	// Authenticates only using the the cache. No request sent to backend
+	keyFoundInCache, allowedAccess = hwc.FindAndValidate(apiKey, dbs...)
+	if !keyFoundInCache || !allowedAccess {
+		return fmt.Errorf("api key is unauthorized; updated cache - found in cache: %v, allowed access %v",
+			keyFoundInCache, allowedAccess)
+	}
+	return nil
+}
+
+func (hwc *Cache) updateRecord(apikey *string, dbs []string, udbs *UserDBs) error {
 	// caller holds the lock
 	if udbs.evicted {
 		return nil
@@ -246,7 +281,7 @@ func (hwc *HWAPIKeyCache) updateRecord(apikey *string, dbs []string, udbs *UserD
 }
 
 // Just for testing..
-func (hwc *HWAPIKeyCache) LastUsed(apiKey *string) time.Time {
+func (hwc *Cache) LastUsed(apiKey *string) time.Time {
 	hwc.key2UserDBsCacheLock.RLock()
 	defer hwc.key2UserDBsCacheLock.RUnlock()
 	entry, ok := hwc.key2UserDBsCache[*apiKey]
@@ -257,7 +292,7 @@ func (hwc *HWAPIKeyCache) LastUsed(apiKey *string) time.Time {
 	}
 }
 
-func (hwc *HWAPIKeyCache) LastUpdated(apiKey *string) time.Time {
+func (hwc *Cache) LastUpdated(apiKey *string) time.Time {
 	hwc.key2UserDBsCacheLock.RLock()
 	defer hwc.key2UserDBsCacheLock.RUnlock()
 	entry, ok := hwc.key2UserDBsCache[*apiKey]
@@ -268,7 +303,7 @@ func (hwc *HWAPIKeyCache) LastUpdated(apiKey *string) time.Time {
 	}
 }
 
-func (hwc *HWAPIKeyCache) authenticateUser(apiKey *string) (*dal.HopsworksAPIKey, error) {
+func (hwc *Cache) authenticateUser(apiKey *string) (*dal.HopsworksAPIKey, error) {
 	// caller holds the lock
 	splits := strings.Split(*apiKey, ".")
 	prefix := splits[0]
@@ -289,7 +324,7 @@ func (hwc *HWAPIKeyCache) authenticateUser(apiKey *string) (*dal.HopsworksAPIKey
 }
 
 // This fetches the databases from the DB and updates the cache
-func (hwc *HWAPIKeyCache) getUserDatabases(apikey *string, hopsworksKey *dal.HopsworksAPIKey) ([]string, error) {
+func (hwc *Cache) getUserDatabases(apikey *string, hopsworksKey *dal.HopsworksAPIKey) ([]string, error) {
 
 	// caller holds the lock
 	dbs, err := dal.GetUserProjects(hopsworksKey.UserID)
@@ -300,13 +335,13 @@ func (hwc *HWAPIKeyCache) getUserDatabases(apikey *string, hopsworksKey *dal.Hop
 	return dbs, nil
 }
 
-func (hwc *HWAPIKeyCache) Size() int {
+func (hwc *Cache) Size() int {
 	hwc.key2UserDBsCacheLock.RLock()
 	defer hwc.key2UserDBsCacheLock.RUnlock()
 	return len(hwc.key2UserDBsCache)
 }
 
-func (hwc *HWAPIKeyCache) refreshIntervalWithJitter() time.Duration {
+func (hwc *Cache) refreshIntervalWithJitter() time.Duration {
 	refreshInterval := config.GetAll().Security.APIKey.CacheRefreshIntervalMS
 	jitter := int32(config.GetAll().Security.APIKey.CacheRefreshIntervalJitterMS)
 	jitter = rand.Int31n(jitter)
