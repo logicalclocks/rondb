@@ -20,7 +20,13 @@
 #ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RETRY_HANDLER_HPP_
 #define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RETRY_HANDLER_HPP_
 
-// expects one or more lines or code that set a variable "status" of type RS_STATUS
+#include <ndb_types.h>
+
+extern Uint32 OP_RETRY_COUNT;
+extern Uint32 OP_RETRY_INITIAL_DELAY_IN_MS; 
+extern Uint32 OP_RETRY_JITTER_IN_MS;
+
+// expects one or more lines of code that set a variable "status" of type RS_STATUS
 
 #define RETRY_HANDLER(my_src)                                                                      \
   Uint32 orc = 0;                                                                                  \

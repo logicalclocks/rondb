@@ -17,22 +17,24 @@
  * USA.
  */
 
-#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_NDB_OBJECT_POOL_HPP_
-#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_NDB_OBJECT_POOL_HPP_
+#ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_RONDB_CONNECTION_
+#define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_RONDB_CONNECTION_
 
 #include <list>
 #include <mutex>
 #include <NdbApi.hpp>
 #include "src/rdrs-dal.h"
 
-class NdbObjectPool {
+class RDRSRonDBConnection {
  private:
   std::list<Ndb *> __ndb_objects;
   std::mutex __mutex;
   RonDB_Stats stats;
+  Ndb_cluster_connection *ndb_connection;
 
-  static NdbObjectPool *__instance;
-  NdbObjectPool() {
+  static RDRSRonDBConnection *__instance;
+
+  RDRSRonDBConnection() {
   }
 
  public:
@@ -41,14 +43,17 @@ class NdbObjectPool {
    *
    * @return ObjectPool instance.
    */
-  static void InitPool();
+  static RS_Status InitPool(const char *connection_string, unsigned int connection_pool_size,
+                            unsigned int *node_ids, unsigned int node_ids_len,
+                            unsigned int connection_retries,
+                            unsigned int connection_retry_delay_in_sec);
 
   /**
    * Static method for accessing class instance.
    *
    * @return ObjectPool instance.
    */
-  static NdbObjectPool *GetInstance();
+  static RDRSRonDBConnection *GetInstance();
 
   /**
    * Returns Ndb object
@@ -58,7 +63,7 @@ class NdbObjectPool {
    *
    * @return Status and Resource instance.
    */
-  RS_Status GetNdbObject(Ndb_cluster_connection *ndb_connection, Ndb **ndb_object);
+  RS_Status GetNdbObject(Ndb **ndb_object);
 
   /**
    * Return resource back to the pool.
@@ -66,7 +71,7 @@ class NdbObjectPool {
    * @param object Resource instance.
    * @return void
    */
-  void ReturnResource(Ndb *object);
+  void ReturnNDBObjectToPool(Ndb *object);
 
   /**
    * Get status
@@ -79,6 +84,7 @@ class NdbObjectPool {
    * Purge. Delete all Ndb objects
    *
    */
-  RS_Status Close();
+  RS_Status Shutdown();
 };
-#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_NDB_OBJECT_POOL_HPP_
+#endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_RONDB_CONNECTION_
+
