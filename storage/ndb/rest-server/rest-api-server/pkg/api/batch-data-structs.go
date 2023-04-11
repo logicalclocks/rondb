@@ -41,9 +41,6 @@ type BatchOpResponse interface {
 	String() string
 }
 
-var _ BatchOpResponse = (*BatchResponseJSON)(nil)
-var _ BatchOpResponse = (*BatchResponseGRPC)(nil)
-
 type BatchResponseJSON struct {
 	Result *[]*PKReadResponseWithCodeJSON `json:"result" binding:"required"`
 }

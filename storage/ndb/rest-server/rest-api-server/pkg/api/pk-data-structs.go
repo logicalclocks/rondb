@@ -101,9 +101,6 @@ type PKReadResponse interface {
 	String() string
 }
 
-var _ PKReadResponse = (*PKReadResponseGRPC)(nil)
-var _ PKReadResponse = (*PKReadResponseJSON)(nil)
-
 type PKReadResponseJSON struct {
 	OperationID *string                      `json:"operationId"    form:"operation-id"    binding:"omitempty,min=1,max=64"`
 	Data        *map[string]*json.RawMessage `json:"data"           form:"data"            binding:"omitempty"`
@@ -186,9 +183,6 @@ type PKReadResponseWithCode interface {
 	SetCode(code *int32)
 	String() string
 }
-
-var _ PKReadResponseWithCode = (*PKReadResponseWithCodeJSON)(nil)
-var _ PKReadResponseWithCode = (*PKReadResponseWithCodeGRPC)(nil)
 
 type PKReadResponseWithCodeJSON struct {
 	Code *int32              `json:"code"    form:"code"    binding:"required"`
