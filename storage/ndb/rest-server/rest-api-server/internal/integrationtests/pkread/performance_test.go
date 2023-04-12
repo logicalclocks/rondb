@@ -38,9 +38,7 @@ The number of parallel client go-routines spawned in RunParallel()
 can be influenced by setting runtime.GOMAXPROCS(). It defaults to the
 number of CPUs.
 
-This tends to deliver best results for pkread:
-
-	`runtime.GOMAXPROCS(runtime.NumCPU() * 2)`
+This test can be run as follows:
 
 	go test \
 		-test.bench BenchmarkSimple \

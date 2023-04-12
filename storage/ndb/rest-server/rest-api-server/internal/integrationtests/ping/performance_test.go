@@ -31,6 +31,8 @@ The number of parallel client go-routines spawned in RunParallel()
 can be influenced by setting runtime.GOMAXPROCS(). It defaults to the
 number of CPUs.
 
+This test can be run as follows:
+
 	go test \
 		-test.bench BenchmarkSimple \
 		-test.run=thisexpressionwontmatchanytest \

@@ -33,12 +33,17 @@ import (
 )
 
 func New() *Cache {
-	return &Cache{key2UserDBsCache: make(map[string]*UserDBs)}
+	someRand := rand.New(rand.NewSource(time.Now().Unix()))
+	return &Cache{
+		key2UserDBsCache: make(map[string]*UserDBs),
+		randomGenerator:  someRand,
+	}
 }
 
 type Cache struct {
 	key2UserDBsCache     map[string]*UserDBs // API Key -> User Databases
 	key2UserDBsCacheLock sync.RWMutex
+	randomGenerator      *rand.Rand
 }
 
 // Cache Entry
@@ -344,7 +349,7 @@ func (hwc *Cache) Size() int {
 func (hwc *Cache) refreshIntervalWithJitter() time.Duration {
 	refreshInterval := config.GetAll().Security.APIKey.CacheRefreshIntervalMS
 	jitter := int32(config.GetAll().Security.APIKey.CacheRefreshIntervalJitterMS)
-	jitter = rand.Int31n(jitter)
+	jitter = hwc.randomGenerator.Int31n(jitter)
 	if jitter%2 == 0 {
 		jitter = -jitter
 	}

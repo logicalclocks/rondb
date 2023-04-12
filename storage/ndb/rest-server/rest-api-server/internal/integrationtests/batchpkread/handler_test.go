@@ -442,7 +442,7 @@ func TestBatchMissingReqField(t *testing.T) {
 
 	// Test missing filter in an operation
 	operations = NewOperationsTBD(t, 3)
-	*&operations[1].Body.Filters = nil
+	operations[1].Body.Filters = nil
 	operationsWrapper = api.BatchOpRequest{Operations: &operations}
 	body, _ = json.Marshal(operationsWrapper)
 	testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url, string(body),

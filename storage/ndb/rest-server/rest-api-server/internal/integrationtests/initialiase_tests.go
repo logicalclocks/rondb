@@ -91,7 +91,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	//drop the "sentinel" DB if you want to recreate all the databases.
 	//for MTR the cleanup is done in mysql-test/suite/rdrs/include/rdrs_cleanup.inc
 	if !testutils.SentinelDBExists() {
-		err, _ := testutils.CreateDatabases(conf.Security.APIKey.UseHopsworksAPIKeys, dbsToCreate...)
+		_, err := testutils.CreateDatabases(conf.Security.APIKey.UseHopsworksAPIKeys, dbsToCreate...)
 		if err != nil {
 			cleanupWrapper(cleanupFNs)()
 			return nil, fmt.Errorf("failed creating databases; error: %v", err)
@@ -118,7 +118,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	//---------------------------- Servers ------------------------------------
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)
-	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache, quit)
+	cleanupServers, err := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache, quit)
 	if err != nil {
 		cleanupWrapper(cleanupFNs)()
 		return nil, fmt.Errorf("failed creating default servers; error: %v ", err)

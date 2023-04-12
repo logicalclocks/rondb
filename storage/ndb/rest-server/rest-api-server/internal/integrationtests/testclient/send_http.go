@@ -17,7 +17,7 @@
 package testclient
 
 import (
-	"io/ioutil"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -68,7 +68,7 @@ func SendHttpRequest(
 	defer resp.Body.Close()
 
 	respCode := resp.StatusCode
-	respBodyBtyes, err := ioutil.ReadAll(resp.Body)
+	respBodyBtyes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("failed to read HTTP response body for url: '%s'\nrequest body: '%s'\nresponse code: %d\nerror: %v", url, body, respCode, err)
 	}

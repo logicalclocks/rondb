@@ -26,7 +26,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
 	"math/big"
 	"net"
 	"os"
@@ -305,30 +304,30 @@ func createClientCerts(certsDir, rootCaCertFile, rootCaKeyFile string) (
 }
 
 func readCACert(rootCACertFile string) (*x509.Certificate, error) {
-	bytes, err := ioutil.ReadFile(rootCACertFile)
+	bytes, err := os.ReadFile(rootCACertFile)
 	if err != nil {
-		return nil, fmt.Errorf("Failed read certificate %q. Error: %w", rootCACertFile, err)
+		return nil, fmt.Errorf("failed read certificate %q. Error: %w", rootCACertFile, err)
 	}
 
 	block, _ := pem.Decode(bytes)
 	rootCACert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse cert %w", err)
+		return nil, fmt.Errorf("failed to parse cert %w", err)
 	}
 
 	return rootCACert, nil
 }
 
 func readCAKey(rootCAKeyFile string) (interface{}, error) {
-	bytes, err := ioutil.ReadFile(rootCAKeyFile)
+	bytes, err := os.ReadFile(rootCAKeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("Failed read key %q. Error: %w", rootCAKeyFile, err)
+		return nil, fmt.Errorf("failed read key %q. Error: %w", rootCAKeyFile, err)
 	}
 
 	block, _ := pem.Decode(bytes)
 	rootCAKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse cert. Error: %w", err)
+		return nil, fmt.Errorf("failed to parse cert. Error: %w", err)
 	}
 	return rootCAKey, nil
 }

@@ -236,7 +236,7 @@ func (p *PKReadResponseWithCodeGRPC) String() string {
 
 	str.WriteString("\"Body\": { ")
 	if p.Body != nil {
-		str.WriteString(fmt.Sprintf("%s", p.Body.String()))
+		str.WriteString(p.Body.String())
 	}
 	str.WriteString("} ") // Body
 

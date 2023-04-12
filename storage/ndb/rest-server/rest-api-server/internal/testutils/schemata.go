@@ -31,11 +31,11 @@ import (
 func CreateDatabases(
 	registerAsHopsworksProjects bool,
 	dbNames ...string,
-) (err error, cleanupDbs func()) {
+) (cleanupDbs func(), err error) {
 
 	createSchemata, err := testdbs.GetCreationSchemaPerDB(registerAsHopsworksProjects, dbNames...)
 	if err != nil {
-		return err, cleanupDbs
+		return cleanupDbs, err
 	}
 	cleanupDbs = func() {}
 
@@ -61,12 +61,12 @@ func CreateDatabases(
 		if err != nil {
 			cleanupDbsWrapper(dropDatabases)()
 			err = fmt.Errorf("failed running createSchema for db '%s'; error: %w", db, err)
-			return err, func() {}
+			return func() {}, err
 		}
 		log.Debugf("successfully ran all queries to instantiate db '%s'", db)
 		dropDatabases += fmt.Sprintf("DROP DATABASE %s;\n", db)
 	}
-	return nil, cleanupDbsWrapper(dropDatabases)
+	return cleanupDbsWrapper(dropDatabases), nil
 }
 
 func RunQueries(sqlQueries string) error {

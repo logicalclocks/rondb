@@ -21,6 +21,7 @@ import (
 	"context"
 	"net/http"
 
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/handlers"
@@ -29,6 +30,9 @@ import (
 
 func (s *RonDBServer) Batch(ctx context.Context, reqProto *api.BatchRequestProto) (*api.BatchResponseProto, error) {
 	apiKey, err := s.getApiKey(ctx)
+	if err != nil {
+		return nil, status.Error(codes.Internal, err.Error())
+	}
 	request := api.ConvertBatchRequestProto(reqProto)
 
 	var responseIntf api.BatchOpResponse = (api.BatchOpResponse)(&api.BatchResponseGRPC{})

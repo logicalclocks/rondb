@@ -19,7 +19,6 @@ package testutils
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"testing"
@@ -57,7 +56,7 @@ func CreateGrpcConn(withAuth, withTLS bool) (*grpc.ClientConn, error) {
 	if withTLS {
 		tlsConfig, err := GetClientTLSConfig()
 		if err != nil {
-			return nil, errors.New(fmt.Sprintf("failed to get TLS config for GRPC client. Error: %v", err))
+			return nil, fmt.Errorf("failed to get TLS config for GRPC client. Error: %v", err)
 		}
 		grpcDialOptions = append(grpcDialOptions, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
 	} else {

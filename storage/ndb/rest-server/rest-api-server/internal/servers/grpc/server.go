@@ -56,11 +56,11 @@ func Start(
 	host string,
 	port uint16,
 	quit chan os.Signal,
-) (err error, cleanupFunc func()) {
+) (cleanupFunc func(), err error) {
 	grpcAddress := fmt.Sprintf("%s:%d", host, port)
 	grpcListener, err := net.Listen("tcp", grpcAddress)
 	if err != nil {
-		return fmt.Errorf("failed listening to gRPC server address '%s'; error: %v", grpcAddress, err), func() {}
+		return func() {}, fmt.Errorf("failed listening to gRPC server address '%s'; error: %v", grpcAddress, err)
 	}
 	log.Infof("Listening at %s for gRPC server", grpcListener.Addr())
 	go func() {
@@ -70,10 +70,10 @@ func Start(
 			quit <- syscall.SIGINT
 		}
 	}()
-	return nil, func() {
+	return func() {
 		log.Info("Gracefully stopping gRPC server")
 		grpcServer.GracefulStop()
-	}
+	}, nil
 }
 
 // TODO: Add thread-safe logger here

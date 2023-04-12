@@ -25,12 +25,11 @@ func sendHttpBatchRequest(t testing.TB, testInfo api.BatchOperationTestInfo, isB
 		subOps = append(subOps, op.SubOperation)
 	}
 	batch := api.BatchOpRequest{Operations: &subOps}
-
-	url := testutils.NewBatchReadURL()
 	body, err := json.MarshalIndent(batch, "", "\t")
 	if err != nil {
 		t.Fatalf("Failed to marshall test request %v", err)
 	}
+	url := testutils.NewBatchReadURL()
 	httpCode, res = testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url,
 		string(body), testInfo.ErrMsgContains, testInfo.HttpCode[:]...)
 	return

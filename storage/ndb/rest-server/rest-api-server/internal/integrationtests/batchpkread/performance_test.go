@@ -37,7 +37,9 @@ The number of parallel client go-routines spawned in RunParallel()
 can be influenced by setting runtime.GOMAXPROCS(). It defaults to the
 number of CPUs.
 
-The higher batch size, the higher the GOMAXPROCS can be set to deliver best results.
+The higher the batch size, the higher the GOMAXPROCS can be set to deliver best results.
+
+This test can be run as follows:
 
 	go test \
 		-test.bench BenchmarkSimple \

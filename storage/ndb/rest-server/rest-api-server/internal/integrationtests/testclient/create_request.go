@@ -17,13 +17,13 @@ func rawBytes(a interface{}) json.RawMessage {
 		return []byte("null")
 	}
 
-	switch a.(type) {
+	switch v := a.(type) {
 	case int8, int16, int32, int64, int, uint8, uint16, uint32, uint64, uint, float32, float64:
-		value = []byte(fmt.Sprintf("%v", a))
+		value = []byte(fmt.Sprintf("%v", v))
 	case string:
-		value = []byte(strconv.Quote(a.(string)))
+		value = []byte(strconv.Quote(v))
 	default:
-		panic(fmt.Errorf("Unsupported data type. Type: %v", reflect.TypeOf(a)))
+		panic(fmt.Errorf("unsupported data type. Type: %v", reflect.TypeOf(a)))
 	}
 	return value
 }

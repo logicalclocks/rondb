@@ -20,7 +20,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"os"
 )
 
 func GetAll() AllConfigs {
@@ -41,7 +41,7 @@ func SetFromFileIfExists(configFile string) error {
 
 func SetFromFile(configFile string) error {
 	newConfigs := newWithDefaults()
-	file, err := ioutil.ReadFile(configFile)
+	file, err := os.ReadFile(configFile)
 	if err != nil {
 		return fmt.Errorf("failed reading config file; error: %v", err)
 	}
