@@ -1,5 +1,5 @@
 # This file is part of the RonDB REST API Server
-# Copyright (c) 2022 Hopsworks AB
+# Copyright (c) 2023 Hopsworks AB
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -18,17 +18,30 @@ BUILDTIME=`date +%FT%T%z`
 HOSTNAME=`hostname`
 BRANCH=`git rev-parse --abbrev-ref HEAD`
 SERVER_BIN="rdrs"
-RDRS_LIB_DIR?=./../data-access-rondb/build
-RDRS_CONFIG_FILE=$(PWD)/resources/config/config_dockertest.json
+
+# config params
+
+# location of the generated binary file
 OUTPUT_DIR?=./bin/server/${SERVER_BIN}
 
+# RonDB build dir that contains libs needed for the API serer
+RDRS_LIB_DIR?=$(PWD)/../../../../build/library_output_directory
+
+# Configuration to use for testing
+# testing using mtr: $(PWD)/resources/config/config_mtr.json
+RDRS_CONFIG_FILE?=$(PWD)/resources/config/config_dockertest.json
+
+# Testing. Override this to run a single test. e.g.
+# make test RDRS_CONFIG_FILE=`pwd`/resources/config/config_mtr.json TEST_PACKAGE=hopsworks.ai/rdrs/internal/integrationtests/pkread TEST=TestDataTypesBlobs/blob1 
+TEST?=Test
+TEST_PACKAGE?=./...
+
+# code coverage 
 COVERAGE_OUTPUT_FILE?=./coverage.out
 COVERAGE_HTML_OUTPUT_FILE?=./coverage.html
 COVERAGE_FUNC_OUTPUT_FILE?=/dev/stdout
 
 all: rdrs
-#static linking https://ragoragino.github.io/softwareengineering/miscellaneous/2021/03/23/cgo-static.html
-#-tags osusergo,netgo
 
 BUILD_COMMAND=go build -ldflags="-w \
      -X hopsworks.ai/rdrs/version.GITCOMMIT=${GITCOMMIT} \
@@ -64,7 +77,7 @@ test:
 	export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
 	export RDRS_CONFIG_FILE=$(RDRS_CONFIG_FILE) && \
 	export CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" && \
-	go test -p 1 -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg ./... `go list ./... | grep -v cmd`
+	go test -v -p 1 -run $(TEST) -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg  $(TEST_PACKAGE) `go list $(TEST_PACKAGE) | grep -v cmd`
 
 # Run specific benchmark (remove profiling for better performance):
 # go test -v \
