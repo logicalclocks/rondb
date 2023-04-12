@@ -58,6 +58,8 @@ RS_Status init(const char *connection_string, unsigned int connection_pool_size,
                                  connection_retries, connection_retry_delay_in_sec);
 }
 
+//--------------------------------------------------------------------------------------------------
+
 RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int rety_initial_delay,
                              const unsigned int jitter) {
   OP_RETRY_COUNT               = retry_cont;
@@ -67,9 +69,19 @@ RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int r
   return RS_OK;
 }
 
+//--------------------------------------------------------------------------------------------------
+
 RS_Status shutdown_connection() {
   return RDRSRonDBConnection::GetInstance()->Shutdown();
 }
+
+//--------------------------------------------------------------------------------------------------
+
+RS_Status reconnect() {
+  return RDRSRonDBConnection::GetInstance()->Reconnect();
+}
+
+//--------------------------------------------------------------------------------------------------
 
 RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
   Ndb *ndb_object  = nullptr;
@@ -85,9 +97,11 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
   )
   /* clang-format on */
 
-  RDRSRonDBConnection::GetInstance()->ReturnNDBObjectToPool(ndb_object);
+  RDRSRonDBConnection::GetInstance()->ReturnNDBObjectToPool(ndb_object, &status);
   return status;
 }
+
+//--------------------------------------------------------------------------------------------------
 
 /**
  * Batched primary key read operation
@@ -107,9 +121,11 @@ RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *re
   )
   /* clang-format on */
 
-  RDRSRonDBConnection::GetInstance()->ReturnNDBObjectToPool(ndb_object);
+  RDRSRonDBConnection::GetInstance()->ReturnNDBObjectToPool(ndb_object, &status);
   return status;
 }
+
+//--------------------------------------------------------------------------------------------------
 
 /**
  * Returns statistis about RonDB connection
@@ -123,6 +139,8 @@ RS_Status get_rondb_stats(RonDB_Stats *stats) {
 
   return RS_OK;
 }
+
+//--------------------------------------------------------------------------------------------------
 
 /**
  * Register callbacks

@@ -100,7 +100,7 @@ RS_Status PKROperation::SetupReadOperation() {
     }
 
     if (op->readTuple(NdbOperation::LM_CommittedRead) != 0) {
-      return RS_SERVER_ERROR(ERROR_022)
+      return RS_SERVER_ERROR(ERROR_022);
     }
 
     for (Uint32 i = 0; i < req->PKColumnsCount(); i++) {

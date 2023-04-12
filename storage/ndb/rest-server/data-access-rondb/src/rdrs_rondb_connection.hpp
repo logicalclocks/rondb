@@ -26,11 +26,15 @@
 #include "src/rdrs-dal.h"
 
 class RDRSRonDBConnection {
+
+  enum STATE { CONNECTED, CONNECTING, DISCONNECTED };
+
  private:
   std::list<Ndb *> __ndb_objects;
   std::mutex __mutex;
   RonDB_Stats stats;
   Ndb_cluster_connection *ndb_connection;
+  STATE state = DISCONNECTED;
 
   static RDRSRonDBConnection *__instance;
 
@@ -68,10 +72,11 @@ class RDRSRonDBConnection {
   /**
    * Return resource back to the pool.
    *
-   * @param object Resource instance.
+   * @param object ndb objct
+   * @param stauts of last operation performed using this ndb object. it can be null
    * @return void
    */
-  void ReturnNDBObjectToPool(Ndb *object);
+  void ReturnNDBObjectToPool(Ndb *object, RS_Status *status);
 
   /**
    * Get status
@@ -85,6 +90,12 @@ class RDRSRonDBConnection {
    *
    */
   RS_Status Shutdown();
+
+  /**
+   * Reconnects. Closes existing connection 
+   *
+   */
+  RS_Status Reconnect();
 };
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_RONDB_CONNECTION_
 

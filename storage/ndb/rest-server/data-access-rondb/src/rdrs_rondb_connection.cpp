@@ -27,6 +27,8 @@
 
 RDRSRonDBConnection *RDRSRonDBConnection::__instance = nullptr;
 
+//--------------------------------------------------------------------------------------------------
+
 RS_Status RDRSRonDBConnection::InitPool(const char *connection_string, unsigned int connection_pool_size,
                unsigned int *node_ids, unsigned int node_ids_len, unsigned int connection_retries,
                unsigned int connection_retry_delay_in_sec) {
@@ -60,8 +62,12 @@ RS_Status RDRSRonDBConnection::InitPool(const char *connection_string, unsigned 
         std::string(" Lastest Error Msg: ") + std::string(__instance->ndb_connection->get_latest_error_msg()));
   }
 
+  __instance->state = CONNECTED;
+
   return RS_OK;
 }
+
+//--------------------------------------------------------------------------------------------------
 
 RDRSRonDBConnection *RDRSRonDBConnection::GetInstance() {
   if (__instance == nullptr) {
@@ -70,6 +76,8 @@ RDRSRonDBConnection *RDRSRonDBConnection::GetInstance() {
 
   return __instance;
 }
+
+//--------------------------------------------------------------------------------------------------
 
 RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
   if (ndb_connection == nullptr) {
@@ -94,11 +102,19 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
   return ret_status;
 }
 
-void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *object) {
+//--------------------------------------------------------------------------------------------------
+
+void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *object, RS_Status *status) {
   std::lock_guard<std::mutex> guard(__mutex);
-  // reset transaction and cleanup
   __ndb_objects.push_back(object);
+
+  // check for errors
+  if ( status != nullptr  && status->http_code != SUCCESS) {
+    printf("----> returning ndbobject errors occured \n");
+  }
 }
+
+//--------------------------------------------------------------------------------------------------
 
 RonDB_Stats RDRSRonDBConnection::GetStats() {
   std::lock_guard<std::mutex> guard(__mutex);
@@ -107,6 +123,8 @@ RonDB_Stats RDRSRonDBConnection::GetStats() {
 
   return stats;
 }
+
+//--------------------------------------------------------------------------------------------------
 
 RS_Status RDRSRonDBConnection::Shutdown() {
   std::lock_guard<std::mutex> guard(__mutex);
@@ -135,3 +153,13 @@ RS_Status RDRSRonDBConnection::Shutdown() {
 
   return RS_OK;
 }
+
+//--------------------------------------------------------------------------------------------------
+
+RS_Status RDRSRonDBConnection::Reconnect() {
+    printf("----> reconnection requested \n");
+  return RS_OK;
+}
+
+
+//--------------------------------------------------------------------------------------------------

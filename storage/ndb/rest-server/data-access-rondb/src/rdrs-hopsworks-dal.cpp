@@ -227,7 +227,7 @@ RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key) {
   )
   /* clang-format on */
 
-  RDRSRonDBConnection::GetInstance()->ReturnNDBObjectToPool(ndb_object);
+  RDRSRonDBConnection::GetInstance()->ReturnNDBObjectToPool(ndb_object, &status);
   return status;
 }
 
@@ -323,7 +323,7 @@ RS_Status find_user(Uint32 uid, HopsworksUsers *users) {
   }
 
   status = find_user_int(ndb_object, uid, users);
-  RDRSRonDBConnection::GetInstance()->ReturnNDBObjectToPool(ndb_object);
+  RDRSRonDBConnection::GetInstance()->ReturnNDBObjectToPool(ndb_object, &status);
 
   return status;
 }
@@ -422,7 +422,7 @@ RS_Status find_project_team(HopsworksUsers *users,
   }
 
   status = find_project_team_int(ndb_object, users, project_team_vec);
-  RDRSRonDBConnection::GetInstance()->ReturnNDBObjectToPool(ndb_object);
+  RDRSRonDBConnection::GetInstance()->ReturnNDBObjectToPool(ndb_object, &status);
 
   return status;
 }
@@ -538,7 +538,7 @@ RS_Status find_projects_vec(std::vector<HopsworksProjectTeam> *project_team_vec,
   }
 
   status = find_projects_int(ndb_object, project_team_vec, project_vec);
-  RDRSRonDBConnection::GetInstance()->ReturnNDBObjectToPool(ndb_object);
+  RDRSRonDBConnection::GetInstance()->ReturnNDBObjectToPool(ndb_object, &status);
 
   return status;
 }
@@ -624,6 +624,6 @@ int main() {
     std::cout << "Porject name " << projects[i] << std::endl;
   }
 
-  RDRSRonDBConnection::GetInstance()->ReturnNDBObjectToPool(ndb_object);
+  RDRSRonDBConnection::GetInstance()->ReturnNDBObjectToPool(ndb_object, &status);
   ndb_end(0);
 }

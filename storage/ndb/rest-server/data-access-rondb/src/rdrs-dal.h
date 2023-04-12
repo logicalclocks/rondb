@@ -98,6 +98,11 @@ RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int r
 RS_Status shutdown_connection();
 
 /**
+ * Reconnect. Closes the existing connection and then reconnects   
+ */
+RS_Status reconnect();
+
+/**
  * Primary key read operation
  */
 RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff);
