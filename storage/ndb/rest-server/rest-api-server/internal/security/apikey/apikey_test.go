@@ -207,8 +207,10 @@ func TestAPIKeyCache3(t *testing.T) {
 		t.Log("tests may fail because Hopsworks API keys are deactivated")
 	}
 
-	conf.Security.APIKey.CacheRefreshIntervalMS = 3000
+	conf.Security.APIKey.CacheRefreshIntervalMS = 1000
+	conf.Security.APIKey.CacheRefreshIntervalJitterMS = 100
 	conf.Security.APIKey.CacheUnusedEntriesEvictionMS = conf.Security.APIKey.CacheRefreshIntervalMS * 2
+	config.SetAll(conf)
 
 	caches := []Cache{}
 	apiKeyCache := hopsworkscache.New()
