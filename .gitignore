@@ -25,3 +25,6 @@ source_downloads
 .ccls/
 .cache/
 compile_commands.json
+
+# build
+build
