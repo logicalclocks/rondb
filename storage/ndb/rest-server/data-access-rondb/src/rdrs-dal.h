@@ -89,7 +89,8 @@ RS_Status init(const char *connection_string, unsigned int connection_pool_size,
 /**
  * Set operation retry properties
  */
-RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int rety_initial_delay);
+RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int rety_initial_delay,
+    const unsigned int jitter);
 
 /**
  * Shutdown connection
@@ -107,7 +108,7 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff);
 RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *resp_buffs);
 
 /**
- * Deallocate pointer array
+ * Returns statistis about RonDB connection 
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats);
 

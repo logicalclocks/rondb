@@ -33,11 +33,11 @@ import (
 )
 
 /*
-	The number of parallel client go-routines spawned in RunParallel()
-	can be influenced by setting runtime.GOMAXPROCS(). It defaults to the
-	number of CPUs.
+The number of parallel client go-routines spawned in RunParallel()
+can be influenced by setting runtime.GOMAXPROCS(). It defaults to the
+number of CPUs.
 
-	The higher batch size, the higher the GOMAXPROCS can be set to deliver best results.
+The higher batch size, the higher the GOMAXPROCS can be set to deliver best results.
 
 	go test \
 		-test.bench BenchmarkSimple \
@@ -98,7 +98,7 @@ func BenchmarkSimple(b *testing.B) {
 		var grpcConn *grpc.ClientConn
 		if runAgainstGrpcServer {
 			conf := config.GetAll()
-			grpcConn, err = testutils.CreateGrpcConn(conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
+			grpcConn, err = testutils.CreateGrpcConn(conf.Security.APIKey.UseHopsworksAPIKeys, conf.Security.TLS.EnableTLS)
 			if err != nil {
 				b.Fatal(err.Error())
 			}

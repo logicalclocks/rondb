@@ -77,7 +77,7 @@ func NewBatchReadURL() string {
 
 func appendURLProtocol(url *string) {
 	conf := config.GetAll()
-	if conf.Security.EnableTLS {
+	if conf.Security.TLS.EnableTLS {
 		*url = fmt.Sprintf("https://%s", *url)
 	} else {
 		*url = fmt.Sprintf("http://%s", *url)

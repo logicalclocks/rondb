@@ -33,12 +33,14 @@
 #include "src/logger.hpp"
 #include "src/db-operations/pk/pkr-operation.hpp"
 #include "src/status.hpp"
+#include "src/retry_handler.hpp"
 #include "src/ndb_object_pool.hpp"
 #include "src/db-operations/pk/common.hpp"
 
 Ndb_cluster_connection *ndb_connection;
-Uint32 OP_RETRY_COUNT         = 3;
-Uint32 OP_RETRY_INITIAL_DELAY = 100;
+Uint32 OP_RETRY_COUNT               = 3;
+Uint32 OP_RETRY_INITIAL_DELAY_IN_MS = 500;
+Uint32 OP_RETRY_JITTER_IN_MS        = 100;
 
 /**
  * Initialize NDB connection
@@ -85,9 +87,11 @@ RS_Status init(const char *connection_string, unsigned int connection_pool_size,
   return RS_OK;
 }
 
-RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int rety_initial_delay) {
-  OP_RETRY_COUNT         = retry_cont;
-  OP_RETRY_INITIAL_DELAY = rety_initial_delay;
+RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int rety_initial_delay,
+                             const unsigned int jitter) {
+  OP_RETRY_COUNT               = retry_cont;
+  OP_RETRY_INITIAL_DELAY_IN_MS = rety_initial_delay;
+  OP_RETRY_JITTER_IN_MS        = jitter;
 
   return RS_OK;
 }
@@ -97,6 +101,7 @@ RS_Status shutdown_connection() {
     // ndb_end(0); // causes seg faults when called repeated from unit tests*/
     NdbObjectPool::GetInstance()->Close();
     delete ndb_connection;
+    ndb_connection = nullptr;
   } catch (...) {
     WARN("Exception in Shutdown");
   }
@@ -115,6 +120,7 @@ RS_Status closeNDBObject(Ndb *ndb_object) {
   return RS_OK;
 }
 
+
 RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
   Ndb *ndb_object  = nullptr;
   RS_Status status = NdbObjectPool::GetInstance()->GetNdbObject(ndb_connection, &ndb_object);
@@ -122,18 +128,12 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
     return status;
   }
 
-  Uint32 orid = OP_RETRY_INITIAL_DELAY;
-  Int32 orc   = OP_RETRY_COUNT + 1;
-  do {
-    PKROperation pkread(reqBuff, respBuff, ndb_object);
-    status = pkread.PerformOperation();
-    --orc;
-    if (status.http_code == SUCCESS || orc <= 0 || !CanRetryOperation(status)) {
-      break;
-    }
-    usleep(orid * 1000);  // orid is in milliseconds
-    orid *= 2;
-  } while (true);
+  /* clang-format off */
+  RETRY_HANDLER(
+      PKROperation pkread(reqBuff, respBuff, ndb_object);
+      status = pkread.PerformOperation();
+  )
+  /* clang-format on */
 
   closeNDBObject(ndb_object);
   return status;
@@ -150,25 +150,19 @@ RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *re
     return status;
   }
 
-  Uint32 orid = OP_RETRY_INITIAL_DELAY;
-  Int32 orc   = OP_RETRY_COUNT + 1;
-  do {
-    PKROperation pkread(no_req, req_buffs, resp_buffs, ndb_object);
-    status = pkread.PerformOperation();
-    --orc;
-    if (status.http_code == SUCCESS || orc <= 0 || !CanRetryOperation(status)) {
-      break;
-    }
-    usleep(orid * 1000);  // orid is in milliseconds
-    orid *= 2;
-  } while (true);
+  /* clang-format off */
+  RETRY_HANDLER(
+      PKROperation pkread(no_req, req_buffs, resp_buffs, ndb_object);
+      status = pkread.PerformOperation();
+  )
+  /* clang-format on */
 
   closeNDBObject(ndb_object);
   return status;
 }
 
 /**
- * Deallocate pointer array
+ * Returns statistis about RonDB connection
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats) {
   RonDB_Stats ret              = NdbObjectPool::GetInstance()->GetStats();

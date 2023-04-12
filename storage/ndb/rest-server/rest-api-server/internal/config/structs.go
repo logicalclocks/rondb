@@ -26,9 +26,21 @@ import (
 )
 
 type Internal struct {
-	BufferSize          int
+	BufferSize          uint32
 	PreAllocatedBuffers uint32
 	GOMAXPROCS          int
+}
+
+func (i *Internal) Validate() error {
+	if i.PreAllocatedBuffers == 0 {
+		log.Warnf("PreAllocatedBuffers is set to 0. It may impact performance")
+	}
+
+	if i.BufferSize < 256 {
+		return errors.New("BufferSize is too low")
+	}
+
+	return nil
 }
 
 type GRPC struct {
@@ -77,6 +89,10 @@ type Testing struct {
 	MySQL MySQL
 }
 
+func (t *Testing) Validate() error {
+	return t.MySQL.Validate()
+}
+
 type MySQL struct {
 	Servers  []MySQLServer
 	User     string
@@ -93,18 +109,21 @@ func (t Testing) GenerateMysqldConnectString() string {
 		server.Port)
 }
 
-func (t *Testing) Validate() error {
-	if len(t.MySQL.Servers) < 1 {
+func (m *MySQL) Validate() error {
+
+	if len(m.Servers) < 1 {
 		return errors.New("at least one MySQL server has to be defined")
-	} else if len(t.MySQL.Servers) > 1 {
+	} else if len(m.Servers) > 1 {
 		return errors.New("we do not support specifying more than one MySQL server yet")
 	}
-	for _, server := range t.MySQL.Servers {
+
+	for _, server := range m.Servers {
 		if err := server.Validate(); err != nil {
 			return err
 		}
 	}
-	if t.MySQL.User == "" {
+
+	if m.User == "" {
 		return errors.New("the MySQL user cannot be empty")
 	}
 	return nil
@@ -144,6 +163,7 @@ type RonDB struct {
 	// Transient error retry count and initial delay
 	OpRetryOnTransientErrorsCount uint32
 	OpRetryInitialDelayInMS       uint32
+	OpRetryJitterInMS             uint32
 }
 
 func (r *RonDB) Validate() error {
@@ -184,31 +204,81 @@ type TestParameters struct {
 	ClientKeyFile  string
 }
 
-type Security struct {
-	EnableTLS                        bool
-	RequireAndVerifyClientCert       bool
-	CertificateFile                  string
-	PrivateKeyFile                   string
-	RootCACertFile                   string
-	UseHopsworksAPIKeys              bool
-	HopsworksAPIKeysCacheValiditySec int
-	TestParameters                   TestParameters
+func (t *TestParameters) Validate() error {
+	return nil
 }
 
-func (c *Security) Validate() error {
+type APIKey struct {
+	UseHopsworksAPIKeys          bool
+	CacheRefreshIntervalMS       uint32
+	CacheUnusedEntriesEvictionMS uint32
+	CacheRefreshIntervalJitterMS uint32
+}
+
+func (a *APIKey) Validate() error {
+	if a.CacheRefreshIntervalMS == 0 {
+		return errors.New("CacheRefreshIntervalMS cannot be 0.")
+	}
+
+	if a.CacheUnusedEntriesEvictionMS == 0 {
+		return errors.New("CacheUnusedEntriesEvictionMS can be 0.")
+	}
+
+	if a.CacheRefreshIntervalMS > a.CacheUnusedEntriesEvictionMS {
+		return errors.New("CacheRefreshIntervalMS can not be more that CacheUnusedEntriesEvictionMS")
+	}
+
+	if a.CacheRefreshIntervalJitterMS >= a.CacheRefreshIntervalMS {
+		return errors.New("CacheRefreshIntervalJitterMS must be smaller than CacheRefreshIntervalMS")
+	}
+
+	return nil
+}
+
+type TLS struct {
+	EnableTLS                  bool
+	RequireAndVerifyClientCert bool
+	CertificateFile            string
+	PrivateKeyFile             string
+	RootCACertFile             string
+	TestParameters             TestParameters
+}
+
+func (t *TLS) Validate() error {
 	if IsUnitTest() {
 		// In case of unit tests, we create dummy certificates
 		return nil
 	}
-	if c.EnableTLS {
-		if c.CertificateFile == "" || c.PrivateKeyFile == "" {
+
+	if t.EnableTLS {
+		if t.CertificateFile == "" || t.PrivateKeyFile == "" {
 			return errors.New("cannot enable TLS if `CertificateFile` or `PrivateKeyFile` is not set")
 		}
 	} else {
-		if c.RequireAndVerifyClientCert {
+		if t.RequireAndVerifyClientCert {
 			return errors.New("cannot require client certs if TLS is not enabled")
 		}
 	}
+
+	return t.TestParameters.Validate()
+}
+
+type Security struct {
+	TLS    TLS
+	APIKey APIKey
+}
+
+func (c *Security) Validate() error {
+	err := c.TLS.Validate()
+	if err != nil {
+		return err
+	}
+
+	err = c.APIKey.Validate()
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 

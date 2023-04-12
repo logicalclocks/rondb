@@ -28,26 +28,27 @@ import (
 )
 
 type Handler struct {
-	heap *heap.Heap
+	heap        *heap.Heap
+	apiKeyCache apikey.Cache
 }
 
-func New(heap *heap.Heap) Handler {
-	return Handler{heap}
+func New(heap *heap.Heap, apiKeyCache apikey.Cache) Handler {
+	return Handler{heap, apiKeyCache}
 }
 
-func (h Handler) Validate(request interface{}) error {
+func (h *Handler) Validate(request interface{}) error {
 	return nil
 }
 
-func (h Handler) Authenticate(apiKey *string, request interface{}) error {
+func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	conf := config.GetAll()
-	if !conf.Security.UseHopsworksAPIKeys {
+	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		return nil
 	}
-	return apikey.ValidateAPIKey(apiKey)
+	return h.apiKeyCache.ValidateAPIKey(apiKey)
 }
 
-func (h Handler) Execute(request interface{}, response interface{}) (int, error) {
+func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
 	rondbStats, dalErr := dal.GetRonDBStats()
 	if dalErr != nil {
 		return http.StatusInternalServerError, dalErr

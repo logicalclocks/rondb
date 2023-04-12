@@ -34,12 +34,13 @@ import (
 )
 
 /*
-	The number of parallel client go-routines spawned in RunParallel()
-	can be influenced by setting runtime.GOMAXPROCS(). It defaults to the
-	number of CPUs.
+The number of parallel client go-routines spawned in RunParallel()
+can be influenced by setting runtime.GOMAXPROCS(). It defaults to the
+number of CPUs.
 
-	This tends to deliver best results for pkread:
-		`runtime.GOMAXPROCS(runtime.NumCPU() * 2)`
+This tends to deliver best results for pkread:
+
+	`runtime.GOMAXPROCS(runtime.NumCPU() * 2)`
 
 	go test \
 		-test.bench BenchmarkSimple \
@@ -102,7 +103,7 @@ func BenchmarkSimple(b *testing.B) {
 		var grpcConn *grpc.ClientConn
 		if runAgainstGrpcServer {
 			conf := config.GetAll()
-			grpcConn, err = testutils.CreateGrpcConn(conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
+			grpcConn, err = testutils.CreateGrpcConn(conf.Security.APIKey.UseHopsworksAPIKeys, conf.Security.TLS.EnableTLS)
 			if err != nil {
 				b.Fatal(err.Error())
 			}

@@ -63,6 +63,7 @@ func SetAll(newConfig AllConfigs) error {
 	if err := newConfig.Validate(); err != nil {
 		return err
 	}
+
 	globalConfig = newConfig
 	return nil
 }

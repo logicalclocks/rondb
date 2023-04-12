@@ -35,17 +35,18 @@ import (
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	"hopsworks.ai/rdrs/internal/handlers/stat"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func New(serverTLS *tls.Config, heap *heap.Heap) *grpc.Server {
+func New(serverTLS *tls.Config, heap *heap.Heap, apiKeyCache apikey.Cache) *grpc.Server {
 	var grpcServer *grpc.Server
 	if serverTLS != nil {
 		grpcServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
 	} else {
 		grpcServer = grpc.NewServer()
 	}
-	RonDBServer := NewRonDBServer(heap)
+	RonDBServer := NewRonDBServer(heap, apiKeyCache)
 	api.RegisterRonDBRESTServer(grpcServer, RonDBServer)
 	return grpcServer
 }
@@ -83,17 +84,17 @@ type RonDBServer struct {
 	batchPkReadHandler batchpkread.Handler
 }
 
-func NewRonDBServer(heap *heap.Heap) *RonDBServer {
+func NewRonDBServer(heap *heap.Heap, apiKeyCache apikey.Cache) *RonDBServer {
 	return &RonDBServer{
-		statsHandler:       stat.New(heap),
-		pkReadHandler:      pkread.New(heap),
-		batchPkReadHandler: batchpkread.New(heap),
+		statsHandler:       stat.New(heap, apiKeyCache),
+		pkReadHandler:      pkread.New(heap, apiKeyCache),
+		batchPkReadHandler: batchpkread.New(heap, apiKeyCache),
 	}
 }
 
 func (s *RonDBServer) getApiKey(ctx context.Context) (string, error) {
 	conf := config.GetAll()
-	if !conf.Security.UseHopsworksAPIKeys {
+	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		return "", nil
 	}
 

@@ -136,54 +136,53 @@ $rest_server = undef;
 $grpc_server = undef;
 
 
-#----------------------------- create config file -------------------------------
-
 my $CONF = IO::File->new("$vardir/tmp/rdrs_config.json", 'w') or die;
-printf $CONF "{\n";
+my $jsonStr = <<"END_TXT";
+{
+        "REST": {
+                "ServerIP": "localhost",
+                "ServerPort": $rest_server_port
+        },
+        "GRPC": {
+                "ServerIP": "localhost",
+                "ServerPort": $grpc_server_port
+        },
+        "RonDB": {
+                "Mgmds": [
+                        {
+                                "IP": "localhost",
+                                "Port": $ENV{'NDB_MGMD_PORT'}
+                        }
+                ]
+        },
+        "Security": {
+                "TLS": {
+                        "EnableTLS": true,
+                        "RequireAndVerifyClientCert": true
+                }, 
+                "APIKey": {
+                        "UseHopsworksAPIKeys": true
+                }
+        },
+        "Log": {
+                "Level": "info"
+        },
+        "Testing": {
+                "MySQL": {
+                        "Servers": [
+                                {
+                                        "IP": "localhost",
+                                        "Port": $ENV{MASTER_MYPORT}
+                                }
+                        ],
+                        "User": "rondb",
+                        "Password": "rondb"
+                }
+        }
+}
+END_TXT
 
-printf $CONF "        \"REST\": {\n";
-printf $CONF "                \"ServerIP\": \"localhost\",\n";
-printf $CONF "                \"ServerPort\": $rest_server_port\n";
-printf $CONF "        },\n";
-
-printf $CONF "        \"GRPC\": {\n";
-printf $CONF "                \"ServerIP\": \"localhost\",\n";
-printf $CONF "                \"ServerPort\": $grpc_server_port\n";
-printf $CONF "        },\n";
-
-printf $CONF "        \"RonDB\": {\n";
-printf $CONF "                \"Mgmds\": [\n";
-printf $CONF "                    {\n";
-printf $CONF "                        \"IP\": \"localhost\",\n";
-printf $CONF "                        \"Port\": $ENV{'NDB_MGMD_PORT'}\n";
-printf $CONF "                    }\n";
-printf $CONF "                ],\n";
-printf $CONF "                \"ConnectionPoolSize\": 1,\n";
-printf $CONF "                \"NodeIDs\": [0],\n";
-printf $CONF "                \"ConnectionRetries\": 3,\n";
-printf $CONF "                \"ConnectionRetryDelayInSec\": 3\n";
-printf $CONF "        },\n";
-
-printf $CONF "        \"Testing\": {\n";
-printf $CONF "          \"MySQL\": {\n";
-printf $CONF "                  \"Servers\": [\n";
-printf $CONF "                      {\n";
-printf $CONF "                          \"IP\": \"localhost\",\n";
-printf $CONF "                          \"Port\": $ENV{MASTER_MYPORT}\n";
-printf $CONF "                      }\n";
-printf $CONF "                  ],\n";
-printf $CONF "                  \"User\": \"root\",\n";
-printf $CONF "                  \"Password\": \"\"\n";
-printf $CONF "          }\n";
-printf $CONF "        },\n";
-
-printf $CONF "        \"Security\": {\n";
-printf $CONF "                \"EnableTLS\": true,\n";
-printf $CONF "                \"RequireAndVerifyClientCert\": true,\n";
-printf $CONF "                \"UseHopsWorksAPIKeys\": true\n";
-printf $CONF "        }\n";
-
-printf $CONF "}\n";
+printf $CONF $jsonStr;
 
 $CONF->close();
 

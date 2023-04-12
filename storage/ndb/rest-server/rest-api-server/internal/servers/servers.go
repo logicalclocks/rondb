@@ -27,13 +27,16 @@ import (
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
 
-	"hopsworks.ai/rdrs/internal/security/apikey/authcache"
+	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/internal/security/tlsutils"
 	"hopsworks.ai/rdrs/internal/servers/grpc"
 	"hopsworks.ai/rdrs/internal/servers/rest"
 )
 
-func CreateAndStartDefaultServers(heap *heap.Heap, quit chan os.Signal) (err error, cleanup func()) {
+func CreateAndStartDefaultServers(heap *heap.Heap,
+	apiKeyCache apikey.Cache,
+	quit chan os.Signal) (err error, cleanup func()) {
+
 	cleanup = func() {}
 
 	// Connect to RonDB
@@ -50,12 +53,12 @@ func CreateAndStartDefaultServers(heap *heap.Heap, quit chan os.Signal) (err err
 	}
 
 	var tlsConfig *tls.Config
-	if conf.Security.EnableTLS {
+	if conf.Security.TLS.EnableTLS {
 		tlsConfig, err = tlsutils.GenerateTLSConfig(
-			conf.Security.RequireAndVerifyClientCert,
-			conf.Security.RootCACertFile,
-			conf.Security.CertificateFile,
-			conf.Security.PrivateKeyFile,
+			conf.Security.TLS.RequireAndVerifyClientCert,
+			conf.Security.TLS.RootCACertFile,
+			conf.Security.TLS.CertificateFile,
+			conf.Security.TLS.PrivateKeyFile,
 		)
 		if err != nil {
 			cleanupRonDB()
@@ -63,8 +66,8 @@ func CreateAndStartDefaultServers(heap *heap.Heap, quit chan os.Signal) (err err
 		}
 	}
 
-	grpcServer := grpc.New(tlsConfig, heap)
-	err, cleanupGrpc := grpc.Start(
+	grpcServer := grpc.New(tlsConfig, heap, apiKeyCache)
+	err, cleanupGRPCServer := grpc.Start(
 		grpcServer,
 		conf.GRPC.ServerIP,
 		conf.GRPC.ServerPort,
@@ -80,14 +83,13 @@ func CreateAndStartDefaultServers(heap *heap.Heap, quit chan os.Signal) (err err
 		conf.REST.ServerPort,
 		tlsConfig,
 		heap,
+		apiKeyCache,
 	)
-	cleanupRest := restServer.Start(quit)
+
+	cleanupRESTServer := restServer.Start(quit)
 	return nil, func() {
 		cleanupRonDB()
-		cleanupGrpc()
-		cleanupRest()
-
-		// Clean API Key Cache
-		authcache.Reset()
+		cleanupGRPCServer()
+		cleanupRESTServer()
 	}
 }

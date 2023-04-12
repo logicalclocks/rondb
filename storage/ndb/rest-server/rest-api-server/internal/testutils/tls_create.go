@@ -82,17 +82,17 @@ func CreateAllTLSCerts() (cleanup func(), err error) {
 		return
 	}
 
-	conf.Security.RootCACertFile = rootCACertFilepath
-	conf.Security.CertificateFile = serverCertFilepath
-	conf.Security.PrivateKeyFile = serverKeyFilepath
+	conf.Security.TLS.RootCACertFile = rootCACertFilepath
+	conf.Security.TLS.CertificateFile = serverCertFilepath
+	conf.Security.TLS.PrivateKeyFile = serverKeyFilepath
 
-	if conf.Security.RequireAndVerifyClientCert {
+	if conf.Security.TLS.RequireAndVerifyClientCert {
 		clientCertFilepath, clientKeyFilepath, err := createClientCerts(certsDir, rootCACertFilepath, rootCAKeyFilepath)
 		if err != nil {
 			return cleanup, err
 		}
-		conf.Security.TestParameters.ClientCertFile = clientCertFilepath
-		conf.Security.TestParameters.ClientKeyFile = clientKeyFilepath
+		conf.Security.TLS.TestParameters.ClientCertFile = clientCertFilepath
+		conf.Security.TLS.TestParameters.ClientKeyFile = clientKeyFilepath
 	}
 
 	err = config.SetAll(conf)

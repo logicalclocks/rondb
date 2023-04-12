@@ -56,6 +56,11 @@ int GetByteArray(const NdbRecAttr *attr, const char **first_byte, Uint32 *bytes)
 bool CanRetryOperation(RS_Status status); 
 
 /**
+ * Returns exponentially increasing delay with jitter 
+ */
+Uint32 ExponentialDelayWithJitter(Uint32 retry, Uint32 initial_delay_in_ms, Uint32 jitter_in_ms);
+
+/**
  * Check error if unload schema is needed 
  */
 bool UnloadSchema(RS_Status status);

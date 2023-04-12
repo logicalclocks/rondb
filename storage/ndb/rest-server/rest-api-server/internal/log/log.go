@@ -155,29 +155,30 @@ func Panic(msg string) {
 }
 
 func IsTrace() bool {
-	return currentLevel == log.TraceLevel
+	return currentLevel >= log.TraceLevel
 }
 
 func IsDebug() bool {
-	return currentLevel == log.DebugLevel
+	return currentLevel >= log.DebugLevel
 }
 
 func IsInfo() bool {
-	return currentLevel == log.InfoLevel
+	return currentLevel >= log.InfoLevel
 }
 
 func IsWarn() bool {
-	return currentLevel == log.WarnLevel
+	return currentLevel >= log.WarnLevel
 }
 
 func IsError() bool {
-	return currentLevel == log.ErrorLevel
+	return currentLevel >= log.ErrorLevel
 }
 
 func IsFatal() bool {
-	return currentLevel == log.FatalLevel
+	return currentLevel >= log.FatalLevel
 }
 
 func IsPanic() bool {
-	return currentLevel == log.PanicLevel
+	return currentLevel >= log.PanicLevel
+
 }

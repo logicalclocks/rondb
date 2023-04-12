@@ -41,6 +41,15 @@ var HopsworksAddProject string
 const hopsworksAddProject_PROJECT_NAME = "PROJECT_NAME"
 const hopsworksAddProject_PROJECT_NUMBER = "PROJECT_NUMBER"
 
+//go:embed dynamic/hopsworks_api_key.sql
+var HopsworksAPIKey string
+
+const HopsworksAPIKey_KEY_ID = "KEY_ID"
+const HopsworksAPIKey_KEY_PREFIX = "KEY_PREFIX"
+const HopsworksAPIKey_KEY_NAME = "KEY_NAME"
+const HopsworksAPIKey_ADDITIONAL_KEYS = 512
+const HopsworksAPIKey_SECRET = "ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
+
 //go:embed dynamic/textual_columns.sql
 var TextualColumns string
 

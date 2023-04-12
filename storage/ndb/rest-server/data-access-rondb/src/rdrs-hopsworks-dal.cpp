@@ -22,13 +22,19 @@
 #include <string>
 #include <iostream>
 #include <vector>
+#include <unistd.h>
 #include "src/error-strings.h"
 #include "src/logger.hpp"
 #include "src/ndb_object_pool.hpp"
 #include "src/db-operations/pk/common.hpp"
 #include "src/rdrs-const.h"
+#include "src/retry_handler.hpp"
 
 extern Ndb_cluster_connection *ndb_connection;
+extern Uint32 OP_RETRY_INITIAL_DELAY_IN_MS;
+extern Uint32 OP_RETRY_COUNT;
+extern Uint32 OP_RETRY_JITTER_IN_MS;
+
 RS_Status closeNDBObject(Ndb *ndb_object);
 
 RS_Status select_table(Ndb *ndb_object, const char *database_str, const char *table_str,
@@ -135,7 +141,6 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
     return RS_RONDB_SERVER_ERROR(err, ERROR_031);
   }
 
-  bool check;
   NdbRecAttr *user_id = scanOp->getValue("user_id");
   NdbRecAttr *secret  = scanOp->getValue("secret");
   NdbRecAttr *salt    = scanOp->getValue("salt");
@@ -151,7 +156,8 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
     return RS_RONDB_SERVER_ERROR(err, ERROR_009);
   }
 
-  int count = 0;
+  int count  = 0;
+  bool check = 0;
   while ((check = scanOp->nextResult(true)) == 0) {
     do {
       count++;
@@ -197,7 +203,16 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
     } while ((check = scanOp->nextResult(false)) == 0);
   }
 
+  // check for errors happened during the reading process
+  NdbError error = scanOp->getNdbError();
+
+  // As we are at the end we will first close the transaction and then deal with the error
   ndb_object->closeTransaction(tx);
+
+  // storage/ndb/src/ndbapi/ndberror.cpp
+  if (error.code != 4120 /*Scan already complete*/) {
+    return RS_RONDB_SERVER_ERROR(error, "Failed Reading API Key. Fn find_api_key_int");
+  }
 
   if (count == 0) {
     return RS_CLIENT_404_ERROR();
@@ -213,14 +228,14 @@ RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key) {
     return status;
   }
 
-  status = find_api_key_int(ndb_object, prefix, api_key);
+  /* clang-format off */
+  RETRY_HANDLER(
+     status = find_api_key_int(ndb_object, prefix, api_key);
+  )
+  /* clang-format on */
+
   closeNDBObject(ndb_object);
-
-  if (status.http_code != SUCCESS) {
-    return status;
-  }
-
-  return RS_OK;
+  return status;
 }
 
 RS_Status find_user_int(Ndb *ndb_object, Uint32 uid, HopsworksUsers *users) {
@@ -263,7 +278,6 @@ RS_Status find_user_int(Ndb *ndb_object, Uint32 uid, HopsworksUsers *users) {
     return RS_RONDB_SERVER_ERROR(err, ERROR_031);
   }
 
-  bool check;
   NdbRecAttr *email = scanOp->getValue("email");
 
   if (email == nullptr) {
@@ -276,6 +290,7 @@ RS_Status find_user_int(Ndb *ndb_object, Uint32 uid, HopsworksUsers *users) {
     return RS_RONDB_SERVER_ERROR(err, ERROR_009);
   }
 
+  bool check = 0;
   while ((check = scanOp->nextResult(true)) == 0) {
     do {
       Uint32 email_attr_bytes;
@@ -293,7 +308,16 @@ RS_Status find_user_int(Ndb *ndb_object, Uint32 uid, HopsworksUsers *users) {
     } while ((check = scanOp->nextResult(false)) == 0);
   }
 
+  // check for errors happened during the reading process
+  NdbError error = scanOp->getNdbError();
+
+  // As we are at the end we will first close the transaction and then deal with the error
   ndb_object->closeTransaction(tx);
+
+  // storage/ndb/src/ndbapi/ndberror.cpp
+  if (error.code != 4120 /*Scan already complete*/) {
+    return RS_RONDB_SERVER_ERROR(error, "Failed Reading API Key. Fn find_user_int");
+  }
 
   return RS_OK;
 }
@@ -308,11 +332,7 @@ RS_Status find_user(Uint32 uid, HopsworksUsers *users) {
   status = find_user_int(ndb_object, uid, users);
   closeNDBObject(ndb_object);
 
-  if (status.http_code != SUCCESS) {
-    return status;
-  }
-
-  return RS_OK;
+  return status;
 }
 
 RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
@@ -365,7 +385,6 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
     return RS_RONDB_SERVER_ERROR(err, ERROR_031);
   }
 
-  bool check;
   NdbRecAttr *project_id = scanOp->getValue("project_id");
 
   if (project_id == nullptr) {
@@ -378,6 +397,7 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
     return RS_RONDB_SERVER_ERROR(err, ERROR_009);
   }
 
+  bool check;
   while ((check = scanOp->nextResult(true)) == 0) {
     do {
       HopsworksProjectTeam project_team;
@@ -386,7 +406,16 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
     } while ((check = scanOp->nextResult(false)) == 0);
   }
 
+  // check for errors happened during the reading process
+  NdbError error = scanOp->getNdbError();
+
+  // As we are at the end we will first close the transaction and then deal with the error
   ndb_object->closeTransaction(tx);
+
+  // storage/ndb/src/ndbapi/ndberror.cpp
+  if (error.code != 4120 /*Scan already complete*/) {
+    return RS_RONDB_SERVER_ERROR(error, "Failed Reading API Key. Fn find_project_team_int");
+  }
 
   return RS_OK;
 }
@@ -402,11 +431,7 @@ RS_Status find_project_team(HopsworksUsers *users,
   status = find_project_team_int(ndb_object, users, project_team_vec);
   closeNDBObject(ndb_object);
 
-  if (status.http_code != SUCCESS) {
-    return status;
-  }
-
-  return RS_OK;
+  return status;
 }
 
 RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *project_team_vec,
@@ -464,7 +489,6 @@ RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *
     return RS_RONDB_SERVER_ERROR(err, ERROR_031);
   }
 
-  bool check;
   NdbRecAttr *projectname = scanOp->getValue("projectname");
 
   if (projectname == nullptr) {
@@ -477,6 +501,7 @@ RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *
     return RS_RONDB_SERVER_ERROR(err, ERROR_009);
   }
 
+  bool check = 0;
   while ((check = scanOp->nextResult(true)) == 0) {
     do {
       HopsworksProject project;
@@ -497,7 +522,16 @@ RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *
     } while ((check = scanOp->nextResult(false)) == 0);
   }
 
+  // check for errors happened during the reading process
+  NdbError error = scanOp->getNdbError();
+
+  // As we are at the end we will first close the transaction and then deal with the error
   ndb_object->closeTransaction(tx);
+
+  // storage/ndb/src/ndbapi/ndberror.cpp
+  if (error.code != 4120 /*Scan already complete*/) {
+    return RS_RONDB_SERVER_ERROR(error, "Failed Reading API Key. Fn find_projects_int");
+  }
 
   return RS_OK;
 }
@@ -513,14 +547,10 @@ RS_Status find_projects_vec(std::vector<HopsworksProjectTeam> *project_team_vec,
   status = find_projects_int(ndb_object, project_team_vec, project_vec);
   closeNDBObject(ndb_object);
 
-  if (status.http_code != SUCCESS) {
-    return status;
-  }
-
-  return RS_OK;
+  return status;
 }
 
-RS_Status find_all_projects(int uid, char ***projects, int *count) {
+RS_Status find_all_projects_int(int uid, std::vector<HopsworksProject> *project_vec) {
   HopsworksUsers user;
   RS_Status status = find_user((Uint32)uid, &user);
   if (status.http_code != SUCCESS) {
@@ -533,19 +563,36 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
     return status;
   }
 
+  status = find_projects_vec(&project_team_vec, project_vec);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+  return RS_OK;
+}
+
+RS_Status find_all_projects(int uid, char ***projects, int *count) {
+
+  RS_Status status;
   std::vector<HopsworksProject> project_vec;
-  status = find_projects_vec(&project_team_vec, &project_vec);
+
+  /* clang-format off */
+  RETRY_HANDLER(
+    project_vec.clear();
+    status = find_all_projects_int(uid, &project_vec);
+  )
+  /* clang-format on */
+
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   *count = project_vec.size();
   HopsworksProject dummy;
-  *projects = (char **)malloc(*count * sizeof(char *));
+  *projects = (char **)malloc(*count * sizeof(char *));  // freed by CGO
 
   char **ease = *projects;
   for (Uint32 i = 0; i < project_vec.size(); i++) {
-    ease[i] = (char *)malloc(sizeof(dummy.porjectname) * sizeof(char));
+    ease[i] = (char *)malloc(sizeof(dummy.porjectname) * sizeof(char));  // freed by CGO
     memcpy(ease[i], project_vec[i].porjectname, strlen(project_vec[i].porjectname) + 1);
   }
   return RS_OK;
@@ -556,7 +603,7 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
  */
 int main() {
   char connection_string[] = "localhost:1186";
-  unsigned int node_ids[] = {0};
+  unsigned int node_ids[]  = {0};
   init(connection_string, 1, node_ids, 1, 3, 3);
 
   Ndb *ndb_object  = nullptr;
@@ -584,5 +631,6 @@ int main() {
     std::cout << "Porject name " << projects[i] << std::endl;
   }
 
+  closeNDBObject(ndb_object);
   ndb_end(0);
 }

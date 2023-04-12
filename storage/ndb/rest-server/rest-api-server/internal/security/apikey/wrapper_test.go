@@ -19,11 +19,14 @@ package apikey
 
 import (
 	"fmt"
+	"math/rand"
 	"os"
 	"runtime/debug"
 	"testing"
+	"time"
 
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/resources/testdbs"
@@ -52,11 +55,20 @@ func TestMain(m *testing.M) {
 	//drop the "sentinel" DB if you want to recreate all the databases.
 	//for MTR the cleanup is done in mysql-test/suite/rdrs/include/rdrs_cleanup.inc
 	if !testutils.SentinelDBExists() {
-		err, _ := testutils.CreateDatabases(conf.Security.UseHopsworksAPIKeys, testdbs.GetAllDBs()...)
+		err, _ := testutils.CreateDatabases(conf.Security.APIKey.UseHopsworksAPIKeys, testdbs.GetAllDBs()...)
 		if err != nil {
 			log.Panicf("failed creating databases; error: %v", err)
 		}
 	}
+
+	dalErr := dal.InitRonDBConnection(conf.RonDB)
+	if dalErr != nil {
+		log.Panicf("failed to initialise RonDB connection; error: %s", dalErr.VerboseError())
+	}
+	defer dal.ShutdownConnection()
+
+	//init rand
+	rand.Seed(time.Now().Unix())
 
 	retcode = m.Run()
 }
