@@ -299,10 +299,6 @@ type AllConfigs struct {
 	Testing  Testing
 }
 
-func (c *AllConfigs) xalidate() error {
-	return nil
-}
-
 func (c *AllConfigs) Validate() error {
 	var err error
 	if err = c.GRPC.Validate(); err != nil {

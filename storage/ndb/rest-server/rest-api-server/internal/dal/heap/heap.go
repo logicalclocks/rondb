@@ -95,7 +95,7 @@ func (heap *Heap) releaseAllBuffers() {
 	defer heap.mutex.Unlock()
 
 	if heap.buffersStats.AllocationsCount != int64(len(heap.buffers)) {
-		log.Errorf("Shutting down heap. Number of free buffers do not match. Expecting: %d, Got: %d.",
+		log.Warnf("Shutting down heap. Number of free buffers do not match. Expecting: %d, Got: %d.",
 			heap.buffersStats.AllocationsCount, int64(len(heap.buffers)))
 	}
 
