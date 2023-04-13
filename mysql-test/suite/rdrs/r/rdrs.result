@@ -1,8 +1,6 @@
 Found RonDB client library
 Found RonDB REST server client library
 Found ndbclient library
-CREATE USER IF NOT EXISTS 'rondb'@'localhost' IDENTIFIED BY 'rondb';
-GRANT ALL PRIVILEGES ON *.* TO 'rondb'@'localhost';
 Running command
 Result of command: 0
 Running command

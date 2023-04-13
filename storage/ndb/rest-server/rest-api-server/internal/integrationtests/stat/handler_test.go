@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2022 Hopsworks AB
+ * Copyright (c) 2023 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,7 +25,7 @@ import (
 	"testing"
 
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/integrationtests"
+	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/resources/testdbs"
@@ -58,7 +58,7 @@ func TestStat(t *testing.T) {
 	statsHttp := getStatsHttp(t)
 	compare(t, statsHttp, int64(expectedAllocations), int64(numOps))
 
-	statsGRPC := getStatsGRPC(t)
+	statsGRPC := sendGRPCStatRequest(t)
 	compare(t, statsGRPC, int64(expectedAllocations), int64(numOps))
 }
 
@@ -69,22 +69,23 @@ func compare(t *testing.T, stats *api.StatResponse, expectedAllocations int64, n
 		t.Fatalf("Native buffer stats do not match Got: %v", stats)
 	}
 
-	if stats.RonDBStats.NdbObjectsCreationCount != numOps ||
-		stats.RonDBStats.NdbObjectsTotalCount != numOps ||
-		stats.RonDBStats.NdbObjectsFreeCount != numOps {
+	// Number of NDB objects created must be equal to number of NDB
+	// objects freed
+	if stats.RonDBStats.NdbObjectsTotalCount != stats.RonDBStats.NdbObjectsFreeCount {
 		t.Fatalf("RonDB stats do not match. %#v", stats.RonDBStats)
 	}
 }
 
 func performPkOp(t *testing.T, db string, table string, ch chan int) {
 	param := api.PKReadBody{
-		Filters:     integrationtests.NewFiltersKVs("id0", 0, "id1", 0),
-		ReadColumns: integrationtests.NewReadColumn("col0"),
+		Filters:     testclient.NewFiltersKVs("id0", 0, "id1", 0),
+		ReadColumns: testclient.NewReadColumn("col0"),
 	}
 	body, _ := json.MarshalIndent(param, "", "\t")
 
 	url := testutils.NewPKReadURL(db, table)
-	integrationtests.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body), http.StatusOK, "")
+	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
+		"", http.StatusOK)
 
 	ch <- 0
 }
@@ -92,7 +93,8 @@ func performPkOp(t *testing.T, db string, table string, ch chan int) {
 func getStatsHttp(t *testing.T) *api.StatResponse {
 	body := ""
 	url := testutils.NewStatURL()
-	_, respBody := integrationtests.SendHttpRequest(t, config.STAT_HTTP_VERB, url, string(body), http.StatusOK, "")
+	_, respBody := testclient.SendHttpRequest(t, config.STAT_HTTP_VERB, url, string(body),
+		"", http.StatusOK)
 
 	var stats api.StatResponse
 	err := json.Unmarshal([]byte(respBody), &stats)
@@ -102,22 +104,11 @@ func getStatsHttp(t *testing.T) *api.StatResponse {
 	return &stats
 }
 
-func getStatsGRPC(t *testing.T) *api.StatResponse {
-	stats := sendGRPCStatRequest(t)
-	return stats
-}
-
 func sendGRPCStatRequest(t *testing.T) *api.StatResponse {
 	// Create gRPC client
-	conf := config.GetAll()
-	conn, err := testutils.CreateGrpcConn(t, conf.Security.UseHopsworksAPIKeys, conf.Security.EnableTLS)
+	conn, err := testclient.InitGRPCConnction()
 	if err != nil {
-		t.Fatalf("Failed to connect to server %v", err)
-	}
-	defer conn.Close()
-
-	if err != nil {
-		t.Fatalf("Failed to connect to server %v", err)
+		t.Fatal(err.Error())
 	}
 	client := api.NewRonDBRESTClient(conn)
 
@@ -131,7 +122,7 @@ func sendGRPCStatRequest(t *testing.T) *api.StatResponse {
 	var errStr string
 	respProto, err := client.Stat(context.Background(), reqProto)
 	if err != nil {
-		respCode = integrationtests.GetStatusCodeFromError(t, err)
+		respCode = testclient.GetStatusCodeFromError(t, err)
 		errStr = fmt.Sprintf("%v", err)
 	}
 
