@@ -43,6 +43,10 @@ NdbObjectPool *NdbObjectPool::GetInstance() {
 }
 
 RS_Status NdbObjectPool::GetNdbObject(Ndb_cluster_connection *ndb_connection, Ndb **ndb_object) {
+  if (ndb_connection == nullptr) {
+    return RS_SERVER_ERROR("Failed to get NDB Object. Cluster connection is closed");
+  }
+
   std::lock_guard<std::mutex> guard(__mutex);
   RS_Status ret_status = RS_OK;
   if (__ndb_objects.empty()) {

@@ -10,8 +10,6 @@
 --disable_query_log
 --disable_warnings
 
-DROP USER IF EXISTS 'rondb'@'localhost'; 
-
 DROP DATABASE IF EXISTS hopsworks;
 DROP DATABASE IF EXISTS db000; 
 DROP DATABASE IF EXISTS db001; 

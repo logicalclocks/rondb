@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2011, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -29,6 +29,7 @@
 #include <signaldata/Sync.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/LoadOrd.hpp>
+#include <signaldata/GetCpuUsage.hpp>
 
 #include <EventLogger.hpp>
 #include <NdbSpin.h>
@@ -194,7 +195,7 @@ Thrman::set_configured_spintime(Uint32 val, bool specific)
                        instance(),
                        val);
 
-  m_configured_spintime = val;
+  m_configured_spintime_us = val;
   if (val == 0)
   {
     jam();
@@ -276,7 +277,7 @@ void
 Thrman::set_enable_adaptive_spinning(bool val)
 {
   m_enable_adaptive_spinning = val;
-  setSpintime(m_configured_spintime);
+  setSpintime(m_configured_spintime_us);
   if (instance() == m_main_thrman_instance)
   {
     g_eventLogger->info("(%u) %s adaptive spinning",
@@ -360,7 +361,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
         }
         val = 200;
         m_enable_adaptive_spinning = true;
-        m_configured_spintime = 100;
+        m_configured_spintime_us = 100;
       }
       else if (native_strcasecmp(conf, "latencyoptimisedspinning") == 0)
       {
@@ -372,7 +373,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
         }
         val = 1000;
         m_enable_adaptive_spinning = true;
-        m_configured_spintime = 200;
+        m_configured_spintime_us = 200;
       }
       else if (native_strcasecmp(conf, "databasemachinespinning") == 0)
       {
@@ -384,7 +385,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
         }
         val = 10000;
         m_enable_adaptive_spinning = true;
-        m_configured_spintime = MAX_SPIN_TIME;
+        m_configured_spintime_us = MAX_SPIN_TIME;
       }
       else
       {
@@ -638,11 +639,11 @@ Thrman::execSTTOR(Signal *signal)
     prev_1sec_tick = prev_50ms_tick;
     if (!m_enable_adaptive_spinning)
     {
-      m_configured_spintime = getConfiguredSpintime();
+      m_configured_spintime_us = getConfiguredSpintime();
       g_eventLogger->info("Using StaticSpinning with spintime %u us",
-                          m_configured_spintime);
+                          m_configured_spintime_us);
     }
-    m_current_spintime = 0;
+    m_current_spintime_us = 0;
     m_gain_spintime_in_us = 25;
 
     /* Initialise overload control variables */
@@ -1578,6 +1579,7 @@ Thrman::set_spin_stat(Uint32 spin_time, bool local_call)
    * efficiently measure stepping up or stepping down spinning in
    * steps of 50% at a time.
    */
+  used_spin_time *= 1000; // Nanoseconds
   Uint32 midpoint = (NUM_SPIN_INTERVALS / 2) - 1;
   for (Uint32 i = 0; i < NUM_SPIN_INTERVALS; i++)
   {
@@ -1612,7 +1614,8 @@ Thrman::set_spin_stat(Uint32 spin_time, bool local_call)
     {
       ndbrequire(i == midpoint);
     }
-    spin_stat.m_spin_interval[i] = Uint32(spin_time_limit);
+    /* Convert spin check intervals to nanoseconds */
+    spin_stat.m_spin_interval_ns[i] = Uint32(spin_time_limit);
   }
   mt_set_spin_stat(this, &spin_stat);
 }
@@ -1634,8 +1637,8 @@ Uint32 Thrman::calc_new_spin(ndb_spin_stat *spin_stat)
   {
     Uint32 events_in_this_slot = spin_stat->m_micros_sleep_times[i];
     if (events_in_this_slot == 0 ||
-        spin_stat->m_spin_interval[i] == 0 ||
-        spin_stat->m_spin_interval[i] > m_configured_spintime)
+        spin_stat->m_spin_interval_ns[i] == 0 ||
+        spin_stat->m_spin_interval_ns[i] > (m_configured_spintime_us * 1000))
     {
       /**
        * Ignore empty slots, they will not be chosen for sure.
@@ -1651,25 +1654,25 @@ Uint32 Thrman::calc_new_spin(ndb_spin_stat *spin_stat)
     remaining_events -= events_in_this_slot;
     Uint32 num_gained_spins = num_events - remaining_events;
 
-    Uint32 this_spin_cost = spin_stat->m_spin_interval[i];
-    Uint64 gained_time_in_us = Uint64(num_gained_spins) *
+    Uint32 this_spin_cost_ns = spin_stat->m_spin_interval_ns[i];
+    Uint64 gained_time_in_ns = Uint64(num_gained_spins) * Uint64(1000) *
                                  Uint64(m_gain_spintime_in_us);
 
     Uint64 spin_cost = 0;
-    Uint32 avg_spin_cost = spin_stat->m_spin_interval[0] / 2;
+    Uint32 avg_spin_cost = spin_stat->m_spin_interval_ns[0] / 2;
     spin_cost += Uint64(avg_spin_cost * spin_stat->m_micros_sleep_times[0]);
     for (Uint32 j = 1; j <= i; j++)
     {
-      Uint32 diff_time = spin_stat->m_spin_interval[j] -
-                           spin_stat->m_spin_interval[j - 1];
+      Uint32 diff_time = spin_stat->m_spin_interval_ns[j] -
+                           spin_stat->m_spin_interval_ns[j - 1];
       diff_time /= 2;
-      avg_spin_cost = diff_time + spin_stat->m_spin_interval[j - 1];
+      avg_spin_cost = diff_time + spin_stat->m_spin_interval_ns[j - 1];
       spin_cost += Uint64(avg_spin_cost * spin_stat->m_micros_sleep_times[j]);
     }
 
-    spin_cost += Uint64(this_spin_cost * remaining_events);
-    ndbrequire(gained_time_in_us);
-    Uint64 spin_overhead = Uint64(1000) * spin_cost / gained_time_in_us;
+    spin_cost += Uint64(this_spin_cost_ns * remaining_events);
+    ndbrequire(gained_time_in_ns);
+    Uint64 spin_overhead = (Uint64(1000) * spin_cost) / gained_time_in_ns;
     spin_overhead += 5;
     spin_overhead /= 10;
 
@@ -1700,12 +1703,13 @@ Uint32 Thrman::calc_new_spin(ndb_spin_stat *spin_stat)
        *
        * This means that we calculate the time estimated to continue spinning
        * before an event occurs based on that we know that we spent already
-       * this time spinning (m_spin_interval[i - 1]). We know that i >= 1 here.
+       * this time spinning (m_spin_interval_ns[i - 1]). We know that i >= 1
+       * here.
        *
-       * The extra gain we get by continuing to spin until m_spin_interval[i] is
-       * sum of gains from found + 1 to i. The extra cost is the added extra
-       * spin time imposed on all remaining_events. The added cost is
-       * m_spin_interval[i] - m_spin_interval[found].
+       * The extra gain we get by continuing to spin until
+       * m_spin_interval_ns[i] is sum of gains from found + 1 to i. The extra
+       * cost is the added extra spin time imposed on all remaining_events.
+       * The added cost is m_spin_interval_ns[i] - m_spin_interval_ns[found].
        *
        * We will ignore this check if there is only a single event in this
        * slot. This represents a too high risk of spinning for too long if the
@@ -1718,21 +1722,22 @@ Uint32 Thrman::calc_new_spin(ndb_spin_stat *spin_stat)
       {
         Uint64 events_in_slot = Uint64(spin_stat->m_micros_sleep_times[j]);
         extra_gain += events_in_slot;
-        Uint32 diff_time = spin_stat->m_spin_interval[j] -
-                             spin_stat->m_spin_interval[j - 1];
+        Uint32 diff_time = spin_stat->m_spin_interval_ns[j] -
+                             spin_stat->m_spin_interval_ns[j - 1];
         diff_time /= 2;
         Uint64 avg_spin_cost = Uint64(diff_time) +
-          Uint64(spin_stat->m_spin_interval[j - 1] -
-             spin_stat->m_spin_interval[found]);
+          Uint64(spin_stat->m_spin_interval_ns[j - 1] -
+             spin_stat->m_spin_interval_ns[found]);
         extra_cost += Uint64(avg_spin_cost *
                         spin_stat->m_micros_sleep_times[j]);
       }
-      extra_gain *= Uint64(m_gain_spintime_in_us);
+      /* Calculate in nanoseconds */
+      extra_gain *= Uint64(m_gain_spintime_in_us) * Uint64(1000);
       extra_gain *= Uint64(m_allowed_spin_overhead);
       extra_gain /= Uint64(100);
       extra_cost += Uint64(remaining_events) *
-                      Uint64(this_spin_cost -
-                             spin_stat->m_spin_interval[found]);
+                      Uint64(this_spin_cost_ns -
+                             spin_stat->m_spin_interval_ns[found]);
       if (extra_gain > extra_cost)
       {
         found = i;
@@ -1756,21 +1761,21 @@ Uint32 Thrman::calc_new_spin(ndb_spin_stat *spin_stat)
   Uint32 midpoint = (NUM_SPIN_INTERVALS / 2) - 1;
   if (num_events <= 3 ||
       (min_overhead > Uint64(m_allowed_spin_overhead) &&
-       (m_current_spintime == 0 ||
+       (m_current_spintime_us == 0 ||
         min_overhead >
          Uint64(m_allowed_spin_overhead +
                 EXTRA_OVERHEAD_ALLOWED_WHEN_ALREADY_SPINNING))))
   {
     /* Quickly shut down spin environment when no longer beneficial. */
-    if (m_current_spintime != 0)
+    if (m_current_spintime_us != 0)
     {
       DEB_SPIN(("(%u)New spintime = 0", instance()));
     }
-    m_current_spintime = 0;
+    m_current_spintime_us = 0;
   }
-  else if (m_current_spintime == 0 ||
-           m_current_spintime !=
-             spin_stat->m_spin_interval[midpoint])
+  else if (m_current_spintime_us == 0 ||
+           (m_current_spintime_us * 1000) !=
+             spin_stat->m_spin_interval_ns[midpoint])
   {
     /**
      * Immediately adjust to new spin environment when activity starts up
@@ -1779,8 +1784,8 @@ Uint32 Thrman::calc_new_spin(ndb_spin_stat *spin_stat)
      * the spintime, but still haven't changed the spin intervals, so
      * set it directly to the found spintime.
      */
-    m_current_spintime = spin_stat->m_spin_interval[found];
-    DEB_SPIN(("(%u)New spintime = %u", instance(), m_current_spintime));
+    m_current_spintime_us = spin_stat->m_spin_interval_ns[found] / 1000;
+    DEB_SPIN(("(%u)New spintime = %u", instance(), m_current_spintime_us));
   }
   else
   {
@@ -1792,13 +1797,15 @@ Uint32 Thrman::calc_new_spin(ndb_spin_stat *spin_stat)
      */
     if (found < midpoint)
     {
-      m_current_spintime = spin_stat->m_spin_interval[midpoint - 1];
+      m_current_spintime_us =
+        spin_stat->m_spin_interval_ns[midpoint - 1] / 1000;
     }
     else if (found > midpoint)
     {
-      m_current_spintime = spin_stat->m_spin_interval[midpoint + 1];
+      m_current_spintime_us =
+        spin_stat->m_spin_interval_ns[midpoint + 1] / 1000;
     }
-    DEB_SPIN(("(%u)2:New spintime = %u", instance(), m_current_spintime));
+    DEB_SPIN(("(%u)2:New spintime = %u", instance(), m_current_spintime_us));
   }
   if (num_events > MIN_EVENTS_TO_BE_NOT_IDLE)
   {
@@ -1811,15 +1818,15 @@ Uint32 Thrman::calc_new_spin(ndb_spin_stat *spin_stat)
     m_is_idle = true;
   }
   /* Never select a spintime less than 2 microseconds. */
-  if (m_current_spintime != 0 && m_current_spintime < 2)
+  if (m_current_spintime_us != 0 && m_current_spintime_us < 2)
   {
-    m_current_spintime = 2;
+    m_current_spintime_us = 2;
   }
   /**
    * Never go beyond the configured spin time. The adaptive part can only
    * decrease the spinning, not increase it.
    */
-  Uint32 max_spintime = m_configured_spintime;
+  Uint32 max_spintime = m_configured_spintime_us;
   if (m_current_cpu_usage > 90)
   {
     jam();
@@ -1855,9 +1862,9 @@ Uint32 Thrman::calc_new_spin(ndb_spin_stat *spin_stat)
     max_spintime /= 100; // 90%
   }
     
-  if (m_current_spintime > max_spintime)
+  if (m_current_spintime_us > max_spintime)
   {
-    m_current_spintime = max_spintime;
+    m_current_spintime_us = max_spintime;
   }
   if (num_events >= 3)
   {
@@ -1879,7 +1886,7 @@ Uint32 Thrman::calc_new_spin(ndb_spin_stat *spin_stat)
             ":ovh[14]=%llu,cost[14]=%llu",
             instance(),
             num_events,
-            m_current_spintime,
+            m_current_spintime_us,
             calc_spin_overhead[0],
             calc_spin_cost[0],
             calc_spin_overhead[1],
@@ -1911,7 +1918,7 @@ Uint32 Thrman::calc_new_spin(ndb_spin_stat *spin_stat)
             calc_spin_overhead[14],
             calc_spin_cost[14]));
   }
-  return m_current_spintime;
+  return m_current_spintime_us;
 }
 
 void
@@ -1932,7 +1939,7 @@ Thrman::check_spintime(bool local_call)
     jam();
     return;
   }
-  if (m_configured_spintime == 0)
+  if (m_configured_spintime_us == 0)
   {
     /* No configured spinning on the thread, so ignore check of spin time. */
     jam();
@@ -1968,35 +1975,35 @@ Thrman::check_spintime(bool local_call)
             " <= %u: %u, <= %u: %u, <= %u: %u, <= %u: %u"
             " <= %u: %u, <= %u: %u, <= %u: %u, <= MAX: %u",
             instance(),
-            spin_stat.m_spin_interval[0],
+            spin_stat.m_spin_interval_ns[0],
             spin_stat.m_micros_sleep_times[0],
-            spin_stat.m_spin_interval[1],
+            spin_stat.m_spin_interval_ns[1],
             spin_stat.m_micros_sleep_times[1],
-            spin_stat.m_spin_interval[2],
+            spin_stat.m_spin_interval_ns[2],
             spin_stat.m_micros_sleep_times[2],
-            spin_stat.m_spin_interval[3],
+            spin_stat.m_spin_interval_ns[3],
             spin_stat.m_micros_sleep_times[3],
-            spin_stat.m_spin_interval[4],
+            spin_stat.m_spin_interval_ns[4],
             spin_stat.m_micros_sleep_times[4],
-            spin_stat.m_spin_interval[5],
+            spin_stat.m_spin_interval_ns[5],
             spin_stat.m_micros_sleep_times[5],
-            spin_stat.m_spin_interval[6],
+            spin_stat.m_spin_interval_ns[6],
             spin_stat.m_micros_sleep_times[6],
-            spin_stat.m_spin_interval[7],
+            spin_stat.m_spin_interval_ns[7],
             spin_stat.m_micros_sleep_times[7],
-            spin_stat.m_spin_interval[8],
+            spin_stat.m_spin_interval_ns[8],
             spin_stat.m_micros_sleep_times[8],
-            spin_stat.m_spin_interval[9],
+            spin_stat.m_spin_interval_ns[9],
             spin_stat.m_micros_sleep_times[9],
-            spin_stat.m_spin_interval[10],
+            spin_stat.m_spin_interval_ns[10],
             spin_stat.m_micros_sleep_times[10],
-            spin_stat.m_spin_interval[11],
+            spin_stat.m_spin_interval_ns[11],
             spin_stat.m_micros_sleep_times[11],
-            spin_stat.m_spin_interval[12],
+            spin_stat.m_spin_interval_ns[12],
             spin_stat.m_micros_sleep_times[12],
-            spin_stat.m_spin_interval[13],
+            spin_stat.m_spin_interval_ns[13],
             spin_stat.m_micros_sleep_times[13],
-            spin_stat.m_spin_interval[14],
+            spin_stat.m_spin_interval_ns[14],
             spin_stat.m_micros_sleep_times[14],
             spin_stat.m_micros_sleep_times[15]));
   }
@@ -3203,6 +3210,24 @@ Thrman::sum_measures(MeasurementRecord *dest,
 }
 
 bool
+Thrman::calculate_cpu_load_last_measurement(MeasurementRecord *measure)
+{
+  MeasurementRecordPtr measurePtr;
+
+  memset(measure, 0, sizeof(MeasurementRecord));
+
+  c_next_50ms_measure.first(measurePtr);
+  if (measurePtr.p->m_first_measure_done)
+  {
+    jam();
+    sum_measures(measure, measurePtr.p);
+    return true;
+  }
+  jam();
+  return false;
+}
+
+bool
 Thrman::calculate_cpu_load_last_second(MeasurementRecord *measure)
 {
   MeasurementRecordPtr measurePtr;
@@ -3680,6 +3705,20 @@ Thrman::calculate_mean_send_thread_load(Uint32 num_milliseconds)
 }
 
 Uint64
+Thrman::get_os_measured_exec_time(MeasurementRecord *measurePtrP)
+{
+  Uint64 os_measured_exec_time = measurePtrP->m_user_time_os;
+  os_measured_exec_time += measurePtrP->m_kernel_time_os;
+  return os_measured_exec_time;
+}
+
+Uint64
+Thrman::get_measured_exec_time(MeasurementRecord *measurePtrP)
+{
+  return measurePtrP->m_exec_time_thread;
+}
+
+Uint64
 Thrman::get_real_exec_time(MeasurementRecord *measurePtrP)
 {
   /**
@@ -3696,23 +3735,91 @@ Thrman::get_real_exec_time(MeasurementRecord *measurePtrP)
   return (exec_time - spin_time);
 }
 
+Uint64
+Thrman::get_measured_block_exec_time(MeasurementRecord *measurePtrP)
+{
+  /**
+   * We count buffer full time as real execution time here
+   */
+  Uint64 real_exec_time = get_real_exec_time(measurePtrP);
+  Uint64 send_time = measurePtrP->m_send_time_thread;
+  if (real_exec_time < send_time)
+  {
+    jam();
+    return 0;
+  }
+  return (real_exec_time - send_time);
+}
+
 void
 Thrman::execGET_CPU_USAGE_REQ(Signal *signal)
 {
   MeasurementRecord curr_measure;
-  if (calculate_cpu_load_last_second(&curr_measure))
+  GetCpuUsageConf *conf = (GetCpuUsageConf*)signal->getDataPtrSend();
+  if (signal->theData[0] == 0)
   {
-    jam();
-    Uint64 real_exec_time = get_real_exec_time(&curr_measure);
-    Uint64 percentage = (Uint64(100) * real_exec_time) /
-                          curr_measure.m_elapsed_time;
-    signal->theData[0] = Uint32(percentage);
+    /**
+     * Backup block wants per second measure
+     */
+    if (calculate_cpu_load_last_second(&curr_measure))
+    {
+      jam();
+      if (curr_measure.m_elapsed_time != 0)
+      {
+        Uint64 real_exec_time = get_real_exec_time(&curr_measure);
+        Uint64 os_exec_time = get_os_measured_exec_time(&curr_measure);
+        Uint64 exec_time = get_measured_exec_time(&curr_measure);
+        Uint64 block_exec_time = get_measured_block_exec_time(&curr_measure);
+        Uint64 percentage = (Uint64(100) * real_exec_time) /
+                              curr_measure.m_elapsed_time;
+        conf->real_exec_time = Uint32(percentage);
+        percentage = (Uint64(100) * os_exec_time) /
+                      curr_measure.m_elapsed_time;
+        conf->os_exec_time = Uint32(percentage);
+        percentage = (Uint64(100) * exec_time) /
+                      curr_measure.m_elapsed_time;
+        conf->exec_time = Uint32(percentage);
+        percentage = (Uint64(100) * block_exec_time) /
+                      curr_measure.m_elapsed_time;
+        conf->block_exec_time = Uint32(percentage);
+        return;
+      }
+    }
   }
-  else
+  else if (signal->theData[0] == 1)
   {
-    jam();
-    signal->theData[0] = default_cpu_load;
+    /**
+     * LQH block wants the latest CPU measurement
+     */
+    if (calculate_cpu_load_last_measurement(&curr_measure))
+    {
+      if (curr_measure.m_elapsed_time != 0)
+      {
+        Uint64 real_exec_time = get_real_exec_time(&curr_measure);
+        Uint64 os_exec_time = get_os_measured_exec_time(&curr_measure);
+        Uint64 exec_time = get_measured_exec_time(&curr_measure);
+        Uint64 block_exec_time = get_measured_block_exec_time(&curr_measure);
+        Uint64 percentage = (Uint64(100) * real_exec_time) /
+                              curr_measure.m_elapsed_time;
+        conf->real_exec_time = Uint32(percentage);
+        percentage = (Uint64(100) * os_exec_time) /
+                      curr_measure.m_elapsed_time;
+        conf->os_exec_time = Uint32(percentage);
+        percentage = (Uint64(100) * exec_time) /
+                      curr_measure.m_elapsed_time;
+        conf->exec_time = Uint32(percentage);
+        percentage = (Uint64(100) * block_exec_time) /
+                      curr_measure.m_elapsed_time;
+        conf->block_exec_time = Uint32(percentage);
+        return;
+      }
+    }
   }
+  jam();
+  conf->real_exec_time = default_cpu_load;
+  conf->os_exec_time = 0;
+  conf->exec_time = default_cpu_load;
+  conf->block_exec_time = default_cpu_load;
 }
 
 void

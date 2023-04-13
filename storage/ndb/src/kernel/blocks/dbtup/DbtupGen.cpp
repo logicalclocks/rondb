@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -73,11 +73,6 @@ void Dbtup::initData()
   c_maxTriggersPerTable = ZDEFAULT_MAX_NO_TRIGGERS_PER_TABLE;
   c_noOfBuildIndexRec = 32;
 
-  cCopyProcedure = RNIL;
-  cCopyLastSeg = RNIL;
-  cCopyOverwrite = 0;
-  cCopyOverwriteLen = 0;
-
   c_debug_count = 0;
 
   // Records with constant sizes
@@ -97,8 +92,11 @@ Dbtup::Dbtup(Block_context& ctx,
     c_acc(0),
     c_tux(0),
     c_suma(0),
+    m_reserved_copy_frag_lock(c_scanLockPool),
+    m_reserved_copy_frag(c_scanOpPool),
     c_extent_hash(c_extent_pool),
     c_storedProcPool(),
+    m_reserved_stored_proc_copy_frag(c_storedProcPool),
     c_buildIndexList(c_buildIndexPool),
     c_undo_buffer(&ctx.m_mm),
     m_pages_allocated(0),
@@ -664,10 +662,14 @@ void Dbtup::execREAD_CONFIG_REQ(Signal* signal)
   ndbrequire(c_scanOpPool.seize(lcp));
   c_lcp_scan_op = lcp.i;
 
-  ScanOpPtr copy_frag;
-  ndbrequire(c_scanOpPool.seize(copy_frag));
-  c_copy_frag_scan_op = copy_frag.i;
-  copy_frag.p->m_state = ScanOp::First;
+  for (Uint32 i = 0; i < ZMAX_PARALLEL_COPY_FRAGMENT_OPS; i++)
+  {
+    ScanOpPtr copy_frag;
+    ndbrequire(c_scanOpPool.seize(copy_frag));
+    m_reserved_copy_frag.addFirst(copy_frag);
+    copy_frag.p->m_state = ScanOp::First;
+    copy_frag.p->m_bits = 0;
+  }
 
   czero = 0;
   cminusOne = czero - 1;
@@ -825,13 +827,15 @@ void Dbtup::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
   {
     refresh_watch_dog();
   }
+  for (Uint32 i = 0; i < ZMAX_PARALLEL_COPY_FRAGMENT_OPS; i++)
   {
     ScanLockPtr lockPtr;
     ndbrequire(c_scanLockPool.seize(lockPtr));
     lockPtr.p->m_accLockOp = RNIL;
     lockPtr.p->prevList = RNIL;
     lockPtr.p->nextList = RNIL;
-    c_copy_frag_scan_lock = lockPtr.i;
+    lockPtr.p->m_reserved = 1;
+    m_reserved_copy_frag_lock.addFirst(lockPtr);
   }
 
   c_scanOpPool.init(

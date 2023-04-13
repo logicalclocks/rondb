@@ -1,7 +1,7 @@
 /*
 
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2022 Hopsworks AB
+ * Copyright (c) 2023 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -31,14 +31,15 @@ import (
 )
 
 type Handler struct {
-	heap *heap.Heap
+	heap        *heap.Heap
+	apiKeyCache apikey.Cache
 }
 
-func New(heap *heap.Heap) Handler {
-	return Handler{heap}
+func New(heap *heap.Heap, apiKeyCache apikey.Cache) Handler {
+	return Handler{heap, apiKeyCache}
 }
 
-func (h Handler) Validate(request interface{}) error {
+func (h *Handler) Validate(request interface{}) error {
 	pkReadParams := request.(*api.PKReadParams)
 
 	if err := validators.ValidateDBIdentifier(pkReadParams.DB); err != nil {
@@ -52,16 +53,16 @@ func (h Handler) Validate(request interface{}) error {
 	return ValidateBody(pkReadParams)
 }
 
-func (h Handler) Authenticate(apiKey *string, request interface{}) error {
+func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	conf := config.GetAll()
-	if !conf.Security.UseHopsworksAPIKeys {
+	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		return nil
 	}
 	pkReadParams := request.(*api.PKReadParams)
-	return apikey.ValidateAPIKey(apiKey, pkReadParams.DB)
+	return h.apiKeyCache.ValidateAPIKey(apiKey, pkReadParams.DB)
 }
 
-func (h Handler) Execute(request interface{}, response interface{}) (int, error) {
+func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
 	pkReadParams := request.(*api.PKReadParams)
 
 	reqBuff, releaseReqBuff := h.heap.GetBuffer()
@@ -75,7 +76,7 @@ func (h Handler) Execute(request interface{}, response interface{}) (int, error)
 	}
 
 	dalErr := dal.RonDBPKRead(reqBuff, respBuff)
-	if dalErr != nil && dalErr.HttpCode != http.StatusNotFound { // any other error return immediately
+	if dalErr != nil && dalErr.HttpCode != http.StatusOK { // any other error return immediately
 		return dalErr.HttpCode, dalErr
 	}
 

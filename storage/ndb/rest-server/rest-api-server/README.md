@@ -201,26 +201,29 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
                                 "IP": "localhost",
                                 "Port": 1186
                         }
-                ]
-        },
-        "MySQL": {
-                "User": "rondb",
-                "Password": "rondb",
-                "Servers": [
-                        {
-                                "IP": "localhost",
-                                "Port": 3306
-                        }
                 ],
+	            "ConnectionPoolSize": 1,
+	            "NodeIDs": [],
+	            "ConnectionRetries": 5,
+	            "ConnectionRetryDelayInSec": 5,
+	            "OpRetryOnTransientErrorsCount": 3,
+	            "OpRetryInitialDelayInMS": 500,
+	            "OpRetryJitterInMS": 100
         },
         "Security": {
-                "EnableTLS": true,
-                "RequireAndVerifyClientCert": false,
-                "CertificateFile": "",
-                "PrivateKeyFile": "",
-                "RootCACertFile": "",
-                "UseHopsworksAPIKeys": true,
-                "HopsworksAPIKeysCacheValiditySec": 3
+                 "TLS": {
+                         "EnableTLS": true,
+                         "RequireAndVerifyClientCert": false,
+                         "CertificateFile": "",
+                         "PrivateKeyFile": "",
+                         "RootCACertFile": ""
+                 }
+                 "APIKey": {
+                         "UseHopsworksAPIKeys": true,
+                         "CacheRefreshIntervalMS": 10000,
+                         "CacheUnusedEntriesEvictionMS": 60000,
+                         "CacheRefreshIntervalJitterMS": 1000
+                 }
         },
         "Log": {
                 "Level": "info",
@@ -228,7 +231,19 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
                 "MaxSizeMB": 100,
                 "MaxBackups": 10,
                 "MaxAge": 30
-        }
+        },
+        "Testing": {
+                "MySQL": {
+                        "User": "rondb",
+                        "Password": "rondb",
+                        "Servers": [
+                                {
+                                        "IP": "localhost",
+                                        "Port": 3306
+                                }
+                        ],
+                }
+        },
 }
 ```
 
@@ -262,29 +277,42 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
     - **Port:** RonDB management node port. The default value is *1186*.
 
-- **MySQL:** MySQL server is only used for testing
+  - **ConnectionPoolSize:**  Connection pool size. Default 1. Note current implementation only supports 1 cluster connection
 
-  - **User:** MySQL Server user. The default value is *rondb*.
-  
-  - **Password:** MySQL Server user password. The default value is *rondb*.
-  
-  - **Servers:**
+  - **NodeIDs:** This is an optional list of node ids to force the connections to be assigned to specific node ids. If this property is specified and connection pool size is not the default, the number of node ids must match the connection pool size
 
-    - **IP:** MySQL Server IP. The default value is *localhost*.
-    
-    - **Port:** MySQL Server port. The default value is *3306*.
+  - **ConnectionRetries:** Connection retries
+
+  - **ConnectionRetryDelayInSec:** Connection retry delay in sec
+
+  - **OpRetryOnTransientErrorsCount:** Number of times retry failed operations due to transient errors. 
+
+  - **OpRetryInitialDelayInMS:** Initial delay used in expoential backoff for retrying failed operations.
+
+  - **OpRetryJitterInMS:** Jitter is added (or subtracted) from the retry delay to prevent multiple failed operations from being retried at the same time 
 
 - **Security:** REST server security settings 
 
-  - **EnableTLS:** Enable/Disable TLS. The default value is *true*.
+  - **TLS:** Enable/Disable TLS. The default value is *true*.
+      - **EnableTLS:** Enable/Disable TLS. The default value is *true*.
   
-  - **RequireAndVerifyClientCert:**  Enable/Disable TLS client certificate requirement. The default value is *true*.
+      - **RequireAndVerifyClientCert:**  Enable/Disable TLS client certificate requirement. The default value is *true*.
 
-  - **RootCACertFile:**  Root CA file. Used in testing that use self-signed certificates. The default value is not set.
+      - **RootCACertFile:**  Root CA file. Used in testing that use self-signed certificates. The default value is not set.
   
-  - **CertificateFile:** Server certificate file. The default value is not set.
+      - **CertificateFile:** Server certificate file. The default value is not set.
   
-  - **PrivateKeyFile:** Server private key file. The default value is not set.
+      - **PrivateKeyFile:** Server private key file. The default value is not set.
+
+  - **APIKey:**
+
+      - **UseHopsworksAPIKeys:**  Enable/Disable Hopsworks API Key for authentication
+
+      - **CacheRefreshIntervalMS:** The API Keys are cached and refreshed periodically. CacheRefreshIntervalMS can not be set to zero.
+
+      - **CacheUnusedEntriesEvictionMS:** Unused API Keys are automatically evicted from the cache. Eviction time can not be less than cache refersh time (CacheRefreshIntervalMS).
+
+      - **CacheRefreshIntervalJitterMS:** It prevents simultaneously updates to the cached API Keys if the keys were added to the cache in a very short interval 
 
 - **Log:** REST Server logging settings 
 
@@ -297,3 +325,18 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
   - **MaxBackups:** max number of log files to store. The default value is *10*.
   
   - **MaxAge:** max-age of log files in days. The default value is *30*.
+
+- **Testing:** MySQL server is only used for testing
+
+  - **MySQL:** MySQL server is only used for testing
+  
+    - **User:** MySQL Server user. The default value is *rondb*.
+    
+    - **Password:** MySQL Server user password. The default value is *rondb*.
+    
+    - **Servers:**
+  
+      - **IP:** MySQL Server IP. The default value is *localhost*.
+      
+      - **Port:** MySQL Server port. The default value is *3306*.
+

@@ -1,7 +1,7 @@
 /*
 
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2022 Hopsworks AB
+ * Copyright (c) 2023 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,6 +30,7 @@ import (
 	"unsafe"
 
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/log"
 )
 
 type Heap struct {
@@ -93,12 +94,16 @@ func (heap *Heap) releaseAllBuffers() {
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
 
+	if heap.buffersStats.AllocationsCount != int64(len(heap.buffers)) {
+		log.Warnf("Shutting down heap. Number of free buffers do not match. Expecting: %d, Got: %d.",
+			heap.buffersStats.AllocationsCount, int64(len(heap.buffers)))
+	}
+
 	for _, buffer := range heap.buffers {
 		C.free(buffer.Buffer)
 	}
 	heap.buffers = make([]*NativeBuffer, 0)
 	heap.buffersStats = MemoryStats{}
-	return
 }
 
 func (heap *Heap) GetBuffer() (buff *NativeBuffer, returnBuff func()) {
@@ -129,11 +134,10 @@ func (heap *Heap) returnBuffer(buffer *NativeBuffer) {
 	// TODO: Also, shouldn't we only return if we're beneath #preAllocatedBuffers?
 
 	heap.buffers = append(heap.buffers, buffer)
-	return
 }
 
 func (heap *Heap) GetNativeBuffersStats() MemoryStats {
-	// update the free buffers cound
+	// update the free buffers count
 	heap.mutex.Lock()
 	defer heap.mutex.Unlock()
 

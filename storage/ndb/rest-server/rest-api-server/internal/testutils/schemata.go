@@ -1,8 +1,26 @@
+/*
+ * This file is part of the RonDB REST API Server
+ * Copyright (c) 2023 Hopsworks AB
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package testutils
 
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -13,11 +31,11 @@ import (
 func CreateDatabases(
 	registerAsHopsworksProjects bool,
 	dbNames ...string,
-) (err error, cleanupDbs func()) {
+) (cleanupDbs func(), err error) {
 
 	createSchemata, err := testdbs.GetCreationSchemaPerDB(registerAsHopsworksProjects, dbNames...)
 	if err != nil {
-		return err, cleanupDbs
+		return cleanupDbs, err
 	}
 	cleanupDbs = func() {}
 
@@ -32,39 +50,47 @@ func CreateDatabases(
 		return func() {
 			// We need a new DB connection since this might be called after the
 			// initial connection is closed.
-			err = runQueriesWithConnection(dropDatabases)
+			err = RunQueries(dropDatabases)
 			if err != nil {
 				log.Errorf("failed cleaning up databases; error: %v", err)
 			}
 		}
 	}
 	for db, createSchema := range createSchemata {
-		err = runQueries(createSchema, dbConn)
+		err = runQueriesWithConnection(createSchema, dbConn)
 		if err != nil {
 			cleanupDbsWrapper(dropDatabases)()
 			err = fmt.Errorf("failed running createSchema for db '%s'; error: %w", db, err)
-			return err, func() {}
+			return func() {}, err
 		}
 		log.Debugf("successfully ran all queries to instantiate db '%s'", db)
 		dropDatabases += fmt.Sprintf("DROP DATABASE %s;\n", db)
 	}
-	return nil, cleanupDbsWrapper(dropDatabases)
+	return cleanupDbsWrapper(dropDatabases), nil
 }
 
-func runQueriesWithConnection(sqlQueries string) error {
+func RunQueries(sqlQueries string) error {
 	dbConn, err := CreateMySQLConnection()
 	if err != nil {
 		return err
 	}
 	defer dbConn.Close()
-	return runQueries(sqlQueries, dbConn)
+	return runQueriesWithConnection(sqlQueries, dbConn)
 }
 
-func runQueries(sqlQueries string, dbConnection *sql.DB) error {
+func runQueriesWithConnection(sqlQueries string, dbConnection *sql.DB) error {
 	if sqlQueries == "" {
 		return nil
 	}
+
+	//remove comments
+	regex, err := regexp.Compile("--.*")
+	if err != nil {
+		return err
+	}
+	sqlQueries = regex.ReplaceAllString(sqlQueries, "")
 	splitQueries := strings.Split(sqlQueries, ";")
+
 	if len(splitQueries) == 0 {
 		return nil
 	}

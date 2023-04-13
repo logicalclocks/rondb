@@ -21,7 +21,9 @@
 #include <mysql_time.h>
 #include <algorithm>
 #include <utility>
-#include <NdbDictionary.hpp>
+#include <my_base.h>
+#include <storage/ndb/include/ndbapi/NdbDictionary.hpp>
+#include "src/db-operations/pk/common.hpp"
 #include "src/db-operations/pk/pkr-request.hpp"
 #include "src/db-operations/pk/pkr-response.hpp"
 #include "src/db-operations/pk/common.hpp"
@@ -38,6 +40,7 @@ PKROperation::PKROperation(RS_Buffer *req_buff, RS_Buffer *resp_buff, Ndb *ndb_o
   this->responses.push_back(new PKRResponse(resp_buff));
   this->ndb_object = ndb_object;
   this->no_ops     = 1;
+  this->isBatch    = false;
 }
 
 PKROperation::PKROperation(Uint32 no_ops, RS_Buffer *req_buffs, RS_Buffer *resp_buffs,
@@ -153,8 +156,10 @@ RS_Status PKROperation::CreateResponse() {
       found = false;
       resp->SetStatus(NOT_FOUND);
     } else {
-      found = false;
-      resp->SetStatus(SERVER_ERROR);
+      // immediately fail the entire batch
+      return RS_RONDB_SERVER_ERROR(op->getNdbError(), std::string("SubOperation ") +
+                                                          std::string(req->OperationId()) +
+                                                          std::string(" failed"));
     }
 
     resp->SetDB(req->DB());
@@ -194,15 +199,15 @@ RS_Status PKROperation::Init() {
     std::unordered_map<std::string, const NdbDictionary::Column *> pk_cols;
     std::unordered_map<std::string, const NdbDictionary::Column *> non_pk_cols;
     if (ndb_object->setCatalogName(req->DB()) != 0) {
-      return RS_CLIENT_ERROR(ERROR_011 + std::string(" Database: ") + std::string(req->DB()) +
-                             " Table: " + req->Table());
+      return RS_CLIENT_404_WITH_MSG_ERROR(ERROR_011 + std::string(" Database: ") +
+                                          std::string(req->DB()) + " Table: " + req->Table());
     }
     const NdbDictionary::Dictionary *dict  = ndb_object->getDictionary();
     const NdbDictionary::Table *table_dict = dict->getTable(req->Table());
 
     if (table_dict == nullptr) {
-      return RS_CLIENT_ERROR(ERROR_011 + std::string(" Database: ") + std::string(req->DB()) +
-                             " Table: " + req->Table());
+      return RS_CLIENT_404_WITH_MSG_ERROR(ERROR_011 + std::string(" Database: ") +
+                                          std::string(req->DB()) + " Table: " + req->Table());
     }
     all_table_dicts.push_back(table_dict);
 
@@ -304,35 +309,37 @@ void PKROperation::CloseTransaction() {
 RS_Status PKROperation::PerformOperation() {
   RS_Status status = Init();
   if (status.http_code != SUCCESS) {
+    this->HandleNDBError(status);
     return status;
   }
 
   status = ValidateRequest();
   if (status.http_code != SUCCESS) {
+    this->HandleNDBError(status);
     return status;
   }
 
   status = SetupTransaction();
   if (status.http_code != SUCCESS) {
-    this->Abort();
+    this->HandleNDBError(status);
     return status;
   }
 
   status = SetupReadOperation();
   if (status.http_code != SUCCESS) {
-    this->Abort();
+    this->HandleNDBError(status);
     return status;
   }
 
   status = Execute();
   if (status.http_code != SUCCESS) {
-    this->Abort();
+    this->HandleNDBError(status);
     return status;
   }
 
   status = CreateResponse();
   if (status.http_code != SUCCESS) {
-    this->Abort();
+    this->HandleNDBError(status);
     return status;
   }
 
@@ -348,6 +355,25 @@ RS_Status PKROperation::Abort() {
     }
     ndb_object->closeTransaction(transaction);
   }
+
+  return RS_OK;
+}
+
+RS_Status PKROperation::HandleNDBError(RS_Status status) {
+  if (UnloadSchema(status)) {
+    // no idea which sub-operation threw the error
+    // unload all tables used in this operation
+    for (size_t i = 0; i < no_ops; i++) {
+      PKRRequest *req = requests[i];
+      ndb_object->setCatalogName(req->DB());
+      NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
+      dict->invalidateTable(req->Table());
+      dict->removeCachedTable(req->Table());
+      INFO("Unloading schema " + std::string(req->DB()) + "/" + std::string(req->Table()));
+    }
+  }
+
+  this->Abort();
 
   return RS_OK;
 }
