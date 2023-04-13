@@ -5,3 +5,4 @@ MaxNoOfLocalOperations=225K
 MaxNoOfConcurrentOperations=225K
 LongMessageBuffer=384M
 DataMemory=128M
+TransactionDeadlockDetectionTimeout=20000
