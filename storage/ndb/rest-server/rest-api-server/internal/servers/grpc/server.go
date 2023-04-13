@@ -82,6 +82,7 @@ type RonDBServer struct {
 	statsHandler       stat.Handler
 	pkReadHandler      pkread.Handler
 	batchPkReadHandler batchpkread.Handler
+	//TODO FeatureStore
 }
 
 func NewRonDBServer(heap *heap.Heap, apiKeyCache apikey.Cache) *RonDBServer {
@@ -89,12 +90,14 @@ func NewRonDBServer(heap *heap.Heap, apiKeyCache apikey.Cache) *RonDBServer {
 		statsHandler:       stat.New(heap, apiKeyCache),
 		pkReadHandler:      pkread.New(heap, apiKeyCache),
 		batchPkReadHandler: batchpkread.New(heap, apiKeyCache),
+		//TODO FeatureStore
 	}
 }
 
 func (s *RonDBServer) getApiKey(ctx context.Context) (string, error) {
 	conf := config.GetAll()
 	if !conf.Security.APIKey.UseHopsworksAPIKeys {
+		//TODO FeatureStore
 		return "", nil
 	}
 
