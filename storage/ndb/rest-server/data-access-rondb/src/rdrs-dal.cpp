@@ -30,6 +30,7 @@
 #include <NdbApi.hpp>
 #include <util/require.h>
 #include <storage/ndb/include/ndb_global.h>
+#include <util/require.h>
 #include "src/error-strings.h"
 #include "src/logger.hpp"
 #include "src/db-operations/pk/pkr-operation.hpp"
