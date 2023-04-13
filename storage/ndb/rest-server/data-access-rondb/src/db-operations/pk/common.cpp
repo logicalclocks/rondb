@@ -952,7 +952,7 @@ bool CanRetryOperation(RS_Status status) {
   }
 
   if (retry) {
-    DEBUG(std::string("Transient error. ") + status.message);
+    LOG_DEBUG(std::string("Transient error. ") + status.message);
   }
   return retry;
 }

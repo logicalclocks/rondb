@@ -30,11 +30,11 @@ class RDRSRonDBConnection {
   enum STATE { CONNECTED, CONNECTING, DISCONNECTED };
 
  private:
-  std::list<Ndb *> __ndb_objects;
+  std::list<Ndb *> __ndbObjects;
   std::mutex __mutex;
   RonDB_Stats stats;
-  Ndb_cluster_connection *ndb_connection;
-  STATE state = DISCONNECTED;
+  Ndb_cluster_connection *ndbConnection;
+  STATE connectionState = DISCONNECTED;
 
   static RDRSRonDBConnection *__instance;
 
@@ -43,11 +43,11 @@ class RDRSRonDBConnection {
 
  public:
   /**
-   * Static method for initializing instance pool
+   * Static method for initializing connection and NDB Object pool 
    *
    * @return ObjectPool instance.
    */
-  static RS_Status InitPool(const char *connection_string, unsigned int connection_pool_size,
+  static RS_Status Init(const char *connection_string, unsigned int connection_pool_size,
                             unsigned int *node_ids, unsigned int node_ids_len,
                             unsigned int connection_retries,
                             unsigned int connection_retry_delay_in_sec);
@@ -57,7 +57,7 @@ class RDRSRonDBConnection {
    *
    * @return ObjectPool instance.
    */
-  static RDRSRonDBConnection *GetInstance();
+  static RS_Status GetInstance(RDRSRonDBConnection **);
 
   /**
    * Returns Ndb object

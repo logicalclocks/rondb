@@ -369,7 +369,7 @@ RS_Status PKROperation::HandleNDBError(RS_Status status) {
       NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
       dict->invalidateTable(req->Table());
       dict->removeCachedTable(req->Table());
-      INFO("Unloading schema " + std::string(req->DB()) + "/" + std::string(req->Table()));
+      LOG_INFO("Unloading schema " + std::string(req->DB()) + "/" + std::string(req->Table()));
     }
   }
 
