@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -70,12 +70,14 @@ void Dbtup::execSTORED_PROCREQ(Signal* signal)
     storedProcCountNonAPI(apiBlockref, +1);
 #endif
     SectionHandle handle(this);
+    StoredProcPtr storedPtr;
     handle.m_ptr[0].i = signal->theData[6];
     handle.m_cnt = 1;
     getSections(handle.m_cnt, handle.m_ptr);
 
     scanProcedure(signal,
                   regOperPtr.p,
+                  storedPtr,
                   &handle,
                   false); // Not copy
     break;
@@ -131,18 +133,18 @@ void Dbtup::deleteScanProcedure(Signal* signal,
     ndbrequire(storedPtr.p->storedCode != ZSTORED_PROCEDURE_FREE);
     if (unlikely(storedPtr.p->storedCode == ZCOPY_PROCEDURE))
     {
-      releaseCopyProcedure();
+      releaseCopyProcedure(storedPtr);
     }
     else
     {
       /* ZSCAN_PROCEDURE */
       releaseSection(storedPtr.p->storedProcIVal);
+      storedPtr.p->storedCode = ZSTORED_PROCEDURE_FREE;
+      storedPtr.p->storedProcIVal = RNIL;
+      c_storedProcPool.release(storedPtr);
+      checkPoolShrinkNeed(DBTUP_STORED_PROCEDURE_TRANSIENT_POOL_INDEX,
+                          c_storedProcPool);
     }
-    storedPtr.p->storedCode = ZSTORED_PROCEDURE_FREE;
-    storedPtr.p->storedProcIVal= RNIL;
-    c_storedProcPool.release(storedPtr);
-    checkPoolShrinkNeed(DBTUP_STORED_PROCEDURE_TRANSIENT_POOL_INDEX,
-                        c_storedProcPool);
   }
   set_trans_state(regOperPtr, TRANS_IDLE);
   signal->theData[0] = 0; /* Success */
@@ -151,29 +153,32 @@ void Dbtup::deleteScanProcedure(Signal* signal,
 
 void Dbtup::scanProcedure(Signal* signal,
                           Operationrec* regOperPtr,
+                          StoredProcPtr & storedPtr,
                           SectionHandle* handle,
                           bool isCopy)
 {
-  /* Size a stored procedure record, and link the
+  /* Seize a stored procedure record, and link the
    * stored procedure AttrInfo section from it
    */
   ndbrequire( handle->m_cnt == 1 );
   ndbrequire( handle->m_ptr[0].p->m_sz > 0 );
 
-  StoredProcPtr storedPtr;
-  if (unlikely(!c_storedProcPool.seize(storedPtr)))
+  if (!isCopy)
   {
-    jam();
-    handle->clear();
-    storedProcBufferSeizeErrorLab(signal, 
-                                  regOperPtr,
-                                  RNIL,
-                                  ZOUT_OF_STORED_PROC_MEMORY_ERROR);
-    return;
+    if (unlikely(!c_storedProcPool.seize(storedPtr)))
+    {
+      jam();
+      handle->clear();
+      storedProcBufferSeizeErrorLab(signal, 
+                                    regOperPtr,
+                                    RNIL,
+                                    ZOUT_OF_STORED_PROC_MEMORY_ERROR);
+      return;
+    }
   }
-  Uint32 lenAttrInfo= handle->m_ptr[0].p->m_sz;
+  Uint32 lenAttrInfo = handle->m_ptr[0].p->m_sz;
   handle->clear();
-  storedPtr.p->storedCode = (isCopy)? ZCOPY_PROCEDURE : ZSCAN_PROCEDURE;
+  storedPtr.p->storedCode = (isCopy) ? ZCOPY_PROCEDURE : ZSCAN_PROCEDURE;
   storedPtr.p->storedProcIVal= handle->m_ptr[0].i;
   storedPtr.p->storedParamNo = 0;
 
@@ -202,50 +207,66 @@ void Dbtup::allocCopyProcedure()
    * TODO : Consider using read packed 'read all columns' word once
    * updatePacked supported.
    */
-  Uint32 iVal= RNIL;
-  Uint32 ahWord;
-
-  for (Uint32 attrNum=0; attrNum < MAX_ATTRIBUTES_IN_TABLE; attrNum++)
+  for (Uint32 i = 0; i < ZMAX_PARALLEL_COPY_FRAGMENT_OPS; i++)
   {
-    AttributeHeader::init(&ahWord, attrNum, 0);
-    ndbrequire(appendToSection(iVal, &ahWord, 1));
+    Uint32 iVal= RNIL;
+    Uint32 ahWord;
+
+    StoredProcPtr storedPtr;
+    ndbrequire(c_storedProcPool.seize(storedPtr));
+    for (Uint32 attrNum=0; attrNum < MAX_ATTRIBUTES_IN_TABLE; attrNum++)
+    {
+      AttributeHeader::init(&ahWord, attrNum, 0);
+      ndbrequire(appendToSection(iVal, &ahWord, 1));
+    }
+
+    /* Add space for extra attrs */
+    ahWord = 0;
+    for (Uint32 extra=0; extra < EXTRA_COPY_PROC_WORDS; extra++)
+      ndbrequire(appendToSection(iVal, &ahWord, 1));
+    storedPtr.p->storedProcIVal = iVal;
+    storedPtr.p->lastSegment = RNIL;
+    storedPtr.p->copyOverwrite = 0;
+    storedPtr.p->copyOverwriteLen = 0;
+    m_reserved_stored_proc_copy_frag.addFirst(storedPtr);
   }
-
-  /* Add space for extra attrs */
-  ahWord = 0;
-  for (Uint32 extra=0; extra < EXTRA_COPY_PROC_WORDS; extra++)
-    ndbrequire(appendToSection(iVal, &ahWord, 1));
-
-  cCopyProcedure= iVal;
-  cCopyLastSeg= RNIL;
-  cCopyOverwrite= 0;
-  cCopyOverwriteLen= 0;
 }
 
 void Dbtup::freeCopyProcedure()
 {
   /* Should only be called when shutting down node.
    */
-  releaseSection(cCopyProcedure);
-  cCopyProcedure=RNIL;
+  for (Uint32 i = 0; i < ZMAX_PARALLEL_COPY_FRAGMENT_OPS; i++)
+  {
+    StoredProcPtr storedPtr;
+    m_reserved_stored_proc_copy_frag.first(storedPtr);
+    if (storedPtr.p != nullptr)
+    {
+      releaseSection(storedPtr.p->storedProcIVal);
+      m_reserved_stored_proc_copy_frag.remove(storedPtr);
+    }
+  }
 }
 
 void Dbtup::prepareCopyProcedure(Uint32 numAttrs,
-                                 Uint16 tableBits)
+                                 Uint16 tableBits,
+                                 StoredProcPtr & storedPtr)
 {
   /* Set length of copy procedure section to the
    * number of attributes supplied
    */
+  ndbrequire(m_reserved_stored_proc_copy_frag.first(storedPtr));
+  m_reserved_stored_proc_copy_frag.remove(storedPtr);
   ndbassert(numAttrs <= MAX_ATTRIBUTES_IN_TABLE);
-  ndbassert(cCopyProcedure != RNIL);
-  ndbassert(cCopyLastSeg == RNIL);
-  ndbassert(cCopyOverwrite == 0);
-  ndbassert(cCopyOverwriteLen == 0);
+  ndbassert(storedPtr.p->storedProcIVal != RNIL);
+  ndbassert(storedPtr.p->lastSegment == RNIL);
+  ndbassert(storedPtr.p->copyOverwrite == 0);
+  ndbassert(storedPtr.p->copyOverwriteLen == 0);
   Ptr<SectionSegment> first;
-  ndbrequire(g_sectionSegmentPool.getPtr(first, cCopyProcedure));
+  ndbrequire(g_sectionSegmentPool.getPtr(first, storedPtr.p->storedProcIVal));
 
   /* Record original 'last segment' of section */
-  cCopyLastSeg= first.p->m_lastSegment;
+  storedPtr.p->lastSegment = first.p->m_lastSegment;
 
   /* Check table bits to see if we need to do extra reads */
   Uint32 extraAttrIds[EXTRA_COPY_PROC_WORDS];
@@ -270,14 +291,13 @@ void Dbtup::prepareCopyProcedure(Uint32 numAttrs,
 
   if (extraReads)
   {
-    cCopyOverwrite= numAttrs;
-    cCopyOverwriteLen = extraReads;
-
+    storedPtr.p->copyOverwrite = numAttrs;
+    storedPtr.p->copyOverwriteLen = extraReads;
     ndbrequire(writeToSection(first.i, numAttrs, extraAttrIds, extraReads));
   }
 
    /* Trim section size and lastSegment */
-  Ptr<SectionSegment> curr= first;  
+  Ptr<SectionSegment> curr = first;  
   while(newSize > SectionSegment::DataLength)
   {
     ndbrequire(g_sectionSegmentPool.getPtr(curr, curr.p->m_nextSegment));
@@ -286,34 +306,37 @@ void Dbtup::prepareCopyProcedure(Uint32 numAttrs,
   first.p->m_lastSegment= curr.i;
 }
 
-void Dbtup::releaseCopyProcedure()
+void Dbtup::releaseCopyProcedure(StoredProcPtr storedPtr)
 {
   /* Return Copy Procedure section to original length */
-  ndbassert(cCopyProcedure != RNIL);
-  ndbassert(cCopyLastSeg != RNIL);
+  ndbassert(storedPtr.p->storedProcIVal != RNIL);
+  ndbassert(storedPtr.p->lastSegment != RNIL);
   
   Ptr<SectionSegment> first;
-  ndbrequire(g_sectionSegmentPool.getPtr(first, cCopyProcedure));
+  ndbrequire(g_sectionSegmentPool.getPtr(first, storedPtr.p->storedProcIVal));
   
   ndbassert(first.p->m_sz <= MAX_COPY_PROC_LEN);
-  first.p->m_sz= MAX_COPY_PROC_LEN;
-  first.p->m_lastSegment= cCopyLastSeg;
+  first.p->m_sz = MAX_COPY_PROC_LEN;
+  first.p->m_lastSegment = storedPtr.p->lastSegment;
   
-  if (cCopyOverwriteLen)
+  if (storedPtr.p->copyOverwriteLen)
   {
-    ndbassert(cCopyOverwriteLen <= EXTRA_COPY_PROC_WORDS);
+    ndbassert(storedPtr.p->copyOverwriteLen <= EXTRA_COPY_PROC_WORDS);
     Uint32 attrids[EXTRA_COPY_PROC_WORDS];
-    for (Uint32 i=0; i < cCopyOverwriteLen; i++)
+    for (Uint32 i=0; i < storedPtr.p->copyOverwriteLen; i++)
     {
-      AttributeHeader ah(cCopyOverwrite + i, 0);
+      AttributeHeader ah(storedPtr.p->copyOverwrite + i, 0);
       attrids[i] = ah.m_value;
     }
-    ndbrequire(writeToSection(first.i, cCopyOverwrite, attrids, cCopyOverwriteLen));
-    cCopyOverwriteLen= 0;
-    cCopyOverwrite= 0;
+    ndbrequire(writeToSection(first.i,
+                              storedPtr.p->copyOverwrite,
+                              attrids,
+                              storedPtr.p->copyOverwriteLen));
+    storedPtr.p->copyOverwriteLen = 0;
+    storedPtr.p->copyOverwrite = 0;
   }
-
-  cCopyLastSeg= RNIL;
+  storedPtr.p->lastSegment = RNIL;
+  m_reserved_stored_proc_copy_frag.addFirst(storedPtr);
 }
   
 
@@ -333,20 +356,23 @@ void Dbtup::copyProcedure(Signal* signal,
    * needs copied then we add that to the copy procedure
    * as well.
    */
+  StoredProcPtr storedPtr;
   prepareCopyProcedure(regTabPtr.p->m_no_of_attributes,
-                       regTabPtr.p->m_bits);
+                       regTabPtr.p->m_bits,
+                       storedPtr);
 
   SectionHandle handle(this);
   handle.m_cnt=1;
-  handle.m_ptr[0].i= cCopyProcedure;
+  handle.m_ptr[0].i = storedPtr.p->storedProcIVal;
   getSections(handle.m_cnt, handle.m_ptr);
 
   scanProcedure(signal,
                 regOperPtr,
+                storedPtr,
                 &handle,
                 true); // isCopy
   Ptr<SectionSegment> first;
-  ndbrequire(g_sectionSegmentPool.getPtr(first, cCopyProcedure));
+  ndbrequire(g_sectionSegmentPool.getPtr(first, storedPtr.p->storedProcIVal));
   signal->theData[2] = first.p->m_sz;
 }//Dbtup::copyProcedure()
 
@@ -361,4 +387,3 @@ void Dbtup::storedProcBufferSeizeErrorLab(Signal* signal,
   signal->theData[1] = errorCode;
   signal->theData[2] = storedProcPtr;
 }//Dbtup::storedSeizeAttrinbufrecErrorLab()
-

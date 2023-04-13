@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -8207,6 +8207,7 @@ Dbdih::nr_start_logging(Signal* signal, TakeOverRecordPtr takeOverPtr)
     Uint32 instanceKey = dihGetInstanceKey(fragPtr);
     if (!check_takeover_thread(takeOverPtr,
                                fragPtr,
+                               tabPtr.i,
                                instanceKey))
     {
       jam();
@@ -8556,6 +8557,7 @@ Dbdih::execSTART_TOCONF(Signal* signal)
 bool
 Dbdih::check_takeover_thread(TakeOverRecordPtr takeOverPtr,
                              FragmentstorePtr fragPtr,
+                             Uint32 tableId,
                              Uint32 fragmentReplicaInstanceKey)
 {
   ndbassert(fragmentReplicaInstanceKey != 0);
@@ -8568,18 +8570,23 @@ Dbdih::check_takeover_thread(TakeOverRecordPtr takeOverPtr,
    * of LDM instances. So we take the instance key modulo the number
    * of LDM instances to get the thread id to handle this takeover
    * thread.
-   *
-   * For safety we will never run more parallelism than we have in the
-   * minimum node of the starting node and the copying node.
    */
   Uint32 nodes[MAX_REPLICAS];
   extractNodeInfo(jamBuffer(), fragPtr.p, nodes);
-  Uint32 lqhWorkers = getNodeInfo(takeOverPtr.p->toStartingNode).m_lqh_workers;
-  lqhWorkers = MIN(lqhWorkers,
-                   getNodeInfo(nodes[0]).m_lqh_workers);
-  lqhWorkers = MAX(lqhWorkers, 1);
-  Uint32 instanceId = fragmentReplicaInstanceKey % lqhWorkers;
-
+  Uint32 instanceId;
+  if (ndbd_support_parallel_copy_fragment(
+      getNodeInfo(takeOverPtr.p->toStartingNode).m_version))
+  {
+    instanceId = fragmentReplicaInstanceKey ^ tableId;
+  }
+  else
+  {
+    Uint32 lqhWorkers = getNodeInfo(takeOverPtr.p->toStartingNode).m_lqh_workers;
+    lqhWorkers = MIN(lqhWorkers,
+                     getNodeInfo(nodes[0]).m_lqh_workers);
+    lqhWorkers = MAX(lqhWorkers, 1);
+    instanceId = fragmentReplicaInstanceKey % lqhWorkers;
+  }
   if ((instanceId % takeOverPtr.p->m_number_of_copy_threads) ==
       takeOverPtr.p->m_copy_thread_id)
   {
@@ -8652,6 +8659,7 @@ void Dbdih::startNextCopyFragment(Signal* signal, Uint32 takeOverPtrI)
     Uint32 instanceKey = dihGetInstanceKey(fragPtr);
     if (!check_takeover_thread(takeOverPtr,
                                fragPtr,
+                               tabPtr.i,
                                instanceKey))
     {
       /**
