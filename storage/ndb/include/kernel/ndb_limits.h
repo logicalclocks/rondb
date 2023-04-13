@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2023, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -192,10 +192,6 @@
 * This parameter is configurable, this is the default value.
 */
 #define MAX_SCAN_BATCH_SIZE 262144
-/*
- * Maximum number of Parallel Scan queries on one hash index fragment
- */
-#define MAX_PARALLEL_SCANS_PER_FRAG 12
 
 /**
  * Computed defines
