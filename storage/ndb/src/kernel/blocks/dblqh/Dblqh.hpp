@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -290,6 +290,8 @@ class FsReadWriteReq;
 #define ZPRINT_MUTEX_STATS 40
 #define ZPRINT_CONNECT_DEBUG 41
 #define ZHANDLE_TC_FAILED_SCANS 42
+#define ZRESUME_BLOCKED_COPY_FRAGMENT 43
+#define ZUPDATE_CPU_USAGE 44
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -716,7 +718,7 @@ public:
 
 // Configurable
   ScanRecord_pool c_scanRecordPool;
-  ScanRecord_list m_reserved_scans; // LCP + NR
+  ScanRecord_list m_reserved_scans; // LCP + NR + Backup
   ScanRecord_hash c_scanTakeOverHash;
   NdbMutex c_scanTakeOverMutex;
 
@@ -1104,18 +1106,31 @@ public:
       // Number of words returned to client due to key operations.
       Uint64 m_keyReqWordsReturned;
 
+      /**
+       * There are no scans during node restarts, thus we reuse these
+       * variables to track progress on node restart for a fragment.
+       */
       // Number of fragment scans requested.
-      Uint64 m_scanFragReqCount;
+      union {
+        Uint64 m_scanFragReqCount;
+        Uint64 m_fragCopyRowsIns;
+      };
 
       /*
         The number of rows examined during scans. Some of these may have been
         rejected by the interpreted program (i.e. a pushed condition), and 
         thus not been returned to the client.
       */
-      Uint64 m_scanRowsExamined;
+      union {
+        Uint64 m_scanRowsExamined;
+        Uint64 m_fragCopyRowsDel;
+      };
 
       // Number of scan rows returned to the client.
-      Uint64 m_scanRowsReturned;
+      union {
+        Uint64 m_scanRowsReturned;
+        Uint64 m_fragBytesCopied;
+      };
 
       // Number of words returned to client due to scans.
       Uint64 m_scanWordsReturned;
@@ -3233,8 +3248,6 @@ private:
 
   void send_halt_copy_frag(Signal*);
   void send_resume_copy_frag(Signal*);
-  void send_halt_copy_frag_conf(Signal*, bool);
-  void send_resume_copy_frag_conf(Signal*);
 
   void sendLOCAL_RECOVERY_COMPLETE_REP(Signal *signal,
                 LocalRecoveryCompleteRep::PhaseIds);
@@ -4252,11 +4265,6 @@ private:
 
   Uint32 c_max_scan_direct_count;
 /* ------------------------------------------------------------------------- */
-// cmaxWordsAtNodeRec keeps track of how many words that currently are
-// outstanding in a node recovery situation.
-/* ------------------------------------------------------------------------- */
-  UintR cmaxWordsAtNodeRec;
-/* ------------------------------------------------------------------------- */
 /*THIS STATE VARIABLE IS ZTRUE IF AN ADD NODE IS ONGOING. ADD NODE MEANS     */
 /*THAT CONNECTIONS ARE SET-UP TO THE NEW NODE.                               */
 /* ------------------------------------------------------------------------- */
@@ -4326,7 +4334,6 @@ private:
   Fragrecord_fifo c_lcp_complete_fragments;  // Restored
   Fragrecord_fifo c_queued_lcp_frag_ord;     //Queue for LCP_FRAG_ORDs
 
-  bool c_copy_fragment_ongoing;
   CopyFragRecord_fifo c_copy_fragment_queue;
   bool c_copy_active_ongoing;
   CopyActiveRecord_fifo c_copy_active_queue;
@@ -4366,11 +4373,6 @@ private:
 /*NOT A GCP SAVE IS ONGOING.                                                 */
 /* ------------------------------------------------------------------------- */
   UintR ccurrentGcprec;
-/* ------------------------------------------------------------------------- */
-/*THESE VARIABLES ARE USED TO KEEP TRACK OF ALL ACTIVE COPY FRAGMENTS IN LQH.*/
-/* ------------------------------------------------------------------------- */
-  Uint8 cnoActiveCopy;
-  Uint64 cactiveCopy[4];
 /* ------------------------------------------------------------------------- */
 /* These variable is used to keep track of what time we have reported so far */
 /* in the TIME_SIGNAL handling.                                              */
@@ -4592,16 +4594,6 @@ public:
      c_fragmentsStartedWithCopy:
        Number of fragments started by complete copy where no useful LCP was
        accessible for the fragment.
-     c_fragCopyFrag:
-       The current fragment id copied
-     c_fragCopyTable:
-       The current table id copied
-     c_fragCopyRowsIns:
-       The number of rows inserted in current fragment
-     c_fragCopyRowsDel:
-       The number of rows deleted in current fragment
-     c_fragBytesCopied:
-       The number of bytes sent over the wire to copy the current fragment
 
      c_fragmentCopyStart:
        Time of start of copy fragment
@@ -4616,12 +4608,6 @@ public:
   */
   Uint32 c_fragmentsStarted;
   Uint32 c_fragmentsStartedWithCopy;  /* Non trans -> 2PINR */
-
-  Uint32 c_fragCopyFrag;
-  Uint32 c_fragCopyTable;
-  Uint64 c_fragCopyRowsIns;
-  Uint64 c_fragCopyRowsDel;
-  Uint64 c_fragBytesCopied;
 
   Uint64 c_fragmentCopyStart;
   Uint32 c_fragmentsCopied;
@@ -4714,29 +4700,21 @@ public:
    * ------------------------------------------
    */
 
-  /* Copy fragment process have been halted indicator */
-  bool c_copy_frag_halted;
-
-  /* Halt process is locked while waiting for response from live node */
-  bool c_copy_frag_halt_process_locked;
-
-  /* Is UNDO log currently overloaded */
+  /**
+   * Is UNDO log currently overloaded
+   * Going from false to true triggers sending HALT messages to
+   * live node(s).
+   * Going from true to false triggers sending RESUME messages to
+   * live node(s).
+   */
+#define ZLCP_CHECK_INDEX 0
+#define ZBACKUP_CHECK_INDEX 1
+#define ZCOPY_FRAGREQ_CHECK_INDEX 2
   bool c_undo_log_overloaded;
 
-  enum COPY_FRAG_HALT_STATE_TYPE
-  {
-    COPY_FRAG_HALT_STATE_IDLE = 0,
-    COPY_FRAG_HALT_WAIT_FIRST_LQHKEYREQ = 1,
-    PREPARE_COPY_FRAG_IS_HALTED = 2,
-    WAIT_RESUME_COPY_FRAG_CONF = 3,
-    WAIT_HALT_COPY_FRAG_CONF = 4,
-    COPY_FRAG_IS_HALTED = 5
-  };
-  /* State of halt copy fragment process */
-  COPY_FRAG_HALT_STATE_TYPE c_copy_frag_halt_state;
-
-  /* Save of PREPARE_COPY_FRAGREQ signal */
-  PrepareCopyFragReq c_prepare_copy_fragreq_save;
+  Uint32 c_num_nodes_in_our_nodegroup;
+  Uint32 c_nodes_in_our_nodegroup[MAX_REPLICAS - 1];
+  void setup_nodegroup_info();
 
   void send_prepare_copy_frag_conf(Signal*,
                                    PrepareCopyFragReq&,
@@ -4746,10 +4724,49 @@ public:
    * Variables tracking state of Halt/Resume Copy Fragment process on
    * Server side (live node).
    */
-  Uint32 c_tc_connect_rec_copy_frag;
   bool c_copy_frag_live_node_halted;
-  bool c_copy_frag_live_node_performing_halt;
-  HaltCopyFragReq c_halt_copy_fragreq_save;
+  Uint32 c_num_blocked_copy_fragment_processes;
+  Uint32 c_blocked_copy_fragment_processes[ZMAX_PARALLEL_COPY_FRAGMENT_OPS];
+  void block_copy_fragment_process(ScanRecord*, Uint32);
+  void resume_one_copy_fragment_process(Signal*);
+  void send_resume_copy_frag_conf(Signal*);
+  void start_new_copyFragReq(Signal*);
+
+  /**
+   * Track CPU usage to adaptively change speed of live node copying to
+   * starting nodes.
+   *
+   * cmaxWordsAtNodeRec keeps track of how many words that currently are
+   * outstanding in a node recovery situation.
+   *
+   * cmaxParallelCopyFragment keeps track of the maximum number of parallel
+   * copy fragments.
+   *
+   * c_active_copyFragReq tracks the current number of copy fragment
+   * processes.
+   *
+   * ctotalMaxWordsAtNodeRec is the total amount of outstanding words we
+   * are allowed to handle in all copy fragment processes combined at this
+   * point in time.
+   */
+  Uint32 cmaxWordsAtNodeRec;
+  Uint32 ctotalMaxWordsAtNodeRec;
+  Uint32 cmaxParallelCopyFragment;
+  Uint32 c_active_copyFragReq;
+//#define STATS_PARALLEL_COPY_FRAGMENT
+#ifdef STATS_PARALLEL_COPY_FRAGMENT
+  Uint32 c_outstanding_words_copy_fragreq;
+  Uint32 c_outstanding_rows_copy_fragreq;
+  Uint32 c_rows_copy_fragreq;
+  Uint32 c_words_copy_fragreq;
+  Uint64 c_total_rows_copy_fragreq;
+  Uint64 c_total_words_copy_fragreq;
+#endif
+
+  void update_cpu_usage(Signal*);
+  void adjust_copyFragReq_rates(bool);
+  void set_max_words_copy_fragreq();
+  bool is_ok_to_start_copyFragReq();
 
   inline bool getAllowRead() const {
     return getNodeState().startLevel < NodeState::SL_STOPPING_3;
@@ -4782,12 +4799,9 @@ public:
   bool is_disk_columns_in_table(Uint32 tableId);
   void sendSTART_FRAGCONF(Signal*);
   void handle_check_system_scans(Signal*);
-#define ZLCP_CHECK_INDEX 0
-#define ZBACKUP_CHECK_INDEX 1
-#define ZCOPY_FRAGREQ_CHECK_INDEX 2
-  Uint32 c_check_scanptr_i[3];
-  Uint32 c_check_scanptr_save_line[3];
-  Uint32 c_check_scanptr_save_timer[3];
+  Uint32 c_check_scanptr_i[ZMAX_PARALLEL_COPY_FRAGMENT_OPS + 2];
+  Uint32 c_check_scanptr_save_line[ZMAX_PARALLEL_COPY_FRAGMENT_OPS + 2];
+  Uint32 c_check_scanptr_save_timer[ZMAX_PARALLEL_COPY_FRAGMENT_OPS + 2];
 
   AlterTabReq c_keep_alter_tab_req;
   Uint32 c_keep_alter_tab_req_len;
@@ -5204,6 +5218,9 @@ public:
   void get_tc_ref(Uint32 tcPtrI,
                   Uint32 & tcOprec,
                   Uint32 & tcRef);
+
+  bool is_ok_to_send_next_record(const TcConnectionrec *tcConPtrP);
+
 #ifdef DEBUG_USAGE_COUNT
   void insert_usage_count(Tablerec *tabPtrP,
                           TcConnectionrecPtr tcPtr)
@@ -5874,5 +5891,16 @@ inline void Dblqh::unlock_log_part(LogPartRecord *logPartPtrP,
     NdbMutex_Unlock(&logPartPtrP->m_log_part_mutex);
   }
 }
+
+inline bool
+Dblqh::is_ok_to_send_next_record(const TcConnectionrec *tcConPtrP)
+{
+  if (tcConPtrP->copyCountWords < cmaxWordsAtNodeRec)
+  {
+    return true;
+  }
+  return false;
+}
+
 #endif
 #undef JAM_FILE_ID

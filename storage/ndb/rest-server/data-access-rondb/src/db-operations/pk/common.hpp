@@ -49,4 +49,20 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response);
  */
 int GetByteArray(const NdbRecAttr *attr, const char **first_byte, Uint32 *bytes);
 
+
+/**
+ * Check if and operation can be retried
+ */
+bool CanRetryOperation(RS_Status status); 
+
+/**
+ * Returns exponentially increasing delay with jitter 
+ */
+Uint32 ExponentialDelayWithJitter(Uint32 retry, Uint32 initial_delay_in_ms, Uint32 jitter_in_ms);
+
+/**
+ * Check error if unload schema is needed 
+ */
+bool UnloadSchema(RS_Status status);
+
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_COMMON_HPP_

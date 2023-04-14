@@ -24,7 +24,7 @@ extern "C" {
 #ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_HOPSWORKS_DAL_H_
 #define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_HOPSWORKS_DAL_H_
 
-typedef struct RS_Status RS_Status;
+#include "rdrs-dal.h"
 
 // API Key table
 typedef struct HopsworksAPIKey {

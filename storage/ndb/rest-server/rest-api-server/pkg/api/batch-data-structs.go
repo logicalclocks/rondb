@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2022 Hopsworks AB
+ * Copyright (c) 2023 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -17,6 +17,9 @@
 package api
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -36,10 +39,8 @@ type BatchOpResponse interface {
 	Init()
 	CreateNewSubResponse() PKReadResponseWithCode
 	AppendSubResponse(subResp PKReadResponseWithCode) error
+	String() string
 }
-
-var _ BatchOpResponse = (*BatchResponseJSON)(nil)
-var _ BatchOpResponse = (*BatchResponseGRPC)(nil)
 
 type BatchResponseJSON struct {
 	Result *[]*PKReadResponseWithCodeJSON `json:"result" binding:"required"`
@@ -63,12 +64,21 @@ func (b *BatchResponseJSON) CreateNewSubResponse() PKReadResponseWithCode {
 func (b *BatchResponseJSON) AppendSubResponse(subResp PKReadResponseWithCode) error {
 	subRespJson, ok := subResp.(*PKReadResponseWithCodeJSON)
 	if !ok {
-		return fmt.Errorf("Wrong object type. Expecting PKReadResponseWithCodeJSON ")
+		return errors.New("wrong object type. Expecting PKReadResponseWithCodeJSON")
 	}
 
 	newList := append(*b.Result, subRespJson)
 	b.Result = &newList
 	return nil
+}
+
+func (b *BatchResponseJSON) String() string {
+	strBytes, err := json.MarshalIndent(*b, "", "\t")
+	if err != nil {
+		return fmt.Sprintf("Failed to marshar BatchResponseJSON. Error: %v", err)
+	} else {
+		return string(strBytes)
+	}
 }
 
 func (b *BatchResponseGRPC) Init() {
@@ -85,7 +95,7 @@ func (b *BatchResponseGRPC) CreateNewSubResponse() PKReadResponseWithCode {
 func (b *BatchResponseGRPC) AppendSubResponse(subResp PKReadResponseWithCode) error {
 	subRespGRPC, ok := subResp.(*PKReadResponseWithCodeGRPC)
 	if !ok {
-		return fmt.Errorf("Wrong object type. Expecting PKReadResponseWithCodeGRPC ")
+		return errors.New("wrong object type. Expecting PKReadResponseWithCodeGRPC")
 	}
 
 	newList := append(*b.Result, subRespGRPC)
@@ -93,17 +103,31 @@ func (b *BatchResponseGRPC) AppendSubResponse(subResp PKReadResponseWithCode) er
 	return nil
 }
 
+func (b *BatchResponseGRPC) String() string {
+	var str bytes.Buffer
+	str.WriteString("[ ")
+
+	if b.Result != nil {
+		for _, value := range *b.Result {
+			str.WriteString(fmt.Sprintf("%s, ", value.String()))
+		}
+	}
+
+	str.WriteString("]")
+	return str.String()
+}
+
 // data structs for testing
 type BatchSubOperationTestInfo struct {
 	SubOperation BatchSubOp
 	Table        string
 	DB           string
-	HttpCode     int
+	HttpCode     []int // for some operations there are multiple valid return codes
 	RespKVs      []interface{}
 }
 
 type BatchOperationTestInfo struct {
 	Operations     []BatchSubOperationTestInfo
-	HttpCode       int
+	HttpCode       []int // for some operations there are multiple valid return codes
 	ErrMsgContains string
 }

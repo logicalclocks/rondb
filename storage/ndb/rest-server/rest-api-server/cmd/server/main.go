@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2022 Hopsworks AB
+ * Copyright (c) 2023 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -28,6 +28,8 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/security/apikey/hopsworkscache"
+
 	"hopsworks.ai/rdrs/internal/servers"
 	"hopsworks.ai/rdrs/version"
 )
@@ -37,7 +39,7 @@ func main() {
 	versionArg := flag.Bool("version", false, "Print API and application version")
 	flag.Parse()
 
-	if *versionArg == true {
+	if *versionArg {
 		fmt.Printf("App version %s, API version %s\n", version.VERSION, version.API_VERSION)
 		return
 	}
@@ -65,7 +67,10 @@ func main() {
 	}
 	defer releaseBuffers()
 
-	err, cleanupServers := servers.CreateAndStartDefaultServers(newHeap, quit)
+	apiKeyCache := hopsworkscache.New()
+	defer apiKeyCache.Cleanup()
+
+	cleanupServers, err := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache, quit)
 	if err != nil {
 		panic(err)
 	}

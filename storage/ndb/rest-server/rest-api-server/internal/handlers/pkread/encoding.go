@@ -1,7 +1,7 @@
 /*
 
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2022 Hopsworks AB
+ * Copyright (c) 2023 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -36,42 +36,8 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-// Also checkout internal/router/handler/pkread/encoding-scheme.png
-
-/*
-	PK READ Request
-	===============
-
-	HEADER
-	======
-	[   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ][   4B   ] ....
-	Type     Capacity  Length     DB         Table      PK     Read Cols    Op_ID    TX_ID
-								Offset      Offset    Offset     Offset     Offset   Offset
-	BODY
-	====
-	[ bytes ... ]
-	Null terminated DB Name
-
-	[ bytes ... ]
-	Null terminated Table Name
-
-	[   4B   ][   4B   ]...[   4B   ][   4B   ][   4B   ][   bytes ...  ][ 2B ] [ bytes... ][   4B   ][   4B   ] ....
-	Count     kv 1          kv n       key       value     key          val     val
-			offset        offset     offset     offset                 size
-										^
-				________________________|                                                     ^
-							_________________________________________________________________|
-
-
-	[   4B   ] [  4B     ] [  4B     ] ...
-	Count   col1 offset   col2 offset
-
-	[  4B ] [   bytes ... ] [  4B ] [   bytes ... ] ...
-	type     null terminated column names
-
-	[ bytes ... ] ...
-	null terminated  operation Id
-*/
+// See internal/router/handler/pkread/encoding-scheme.png
+// for encoding details
 
 func CreateNativeRequest(
 	pkrParams *api.PKReadParams,
@@ -179,13 +145,16 @@ func CreateNativeRequest(
 	iBuf[C.PK_REQ_OP_TYPE_IDX] = uint32(C.RDRS_PK_REQ_ID)
 	iBuf[C.PK_REQ_CAPACITY_IDX] = uint32(request.Size)
 	iBuf[C.PK_REQ_LENGTH_IDX] = uint32(head)
+	iBuf[C.PK_REQ_FLAGS_IDX] = uint32(0) // TODO fill in. is_grpc, is_http ...
 	iBuf[C.PK_REQ_DB_IDX] = uint32(dbOffSet)
 	iBuf[C.PK_REQ_TABLE_IDX] = uint32(tableOffSet)
 	iBuf[C.PK_REQ_PK_COLS_IDX] = uint32(pkOffset)
 	iBuf[C.PK_REQ_READ_COLS_IDX] = uint32(readColsOffset)
 	iBuf[C.PK_REQ_OP_ID_IDX] = uint32(opIdOffset)
 
-	//xxd.Print(0, bBuf[:])
+	// only for debugging.
+	// bBuf := unsafe.Slice((*byte)(request.Buffer), request.Size/C.ADDRESS_SIZE)
+	// xxd.Print(0, bBuf[:512])
 	return
 }
 

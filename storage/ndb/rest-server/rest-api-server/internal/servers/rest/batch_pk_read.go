@@ -1,3 +1,20 @@
+/*
+ * This file is part of the RonDB REST API Server
+ * Copyright (c) 2023 Hopsworks AB
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package rest
 
 import (
@@ -42,7 +59,7 @@ func (h *RouteHandler) BatchPkRead(c *gin.Context) {
 	var responseIntf api.BatchOpResponse = (api.BatchOpResponse)(&api.BatchResponseJSON{})
 	responseIntf.Init()
 
-	status, err := handlers.Handle(h.batchPkReadHandler, &apiKey, &pkOperations, responseIntf)
+	status, err := handlers.Handle(&h.batchPkReadHandler, &apiKey, &pkOperations, responseIntf)
 	if err != nil {
 		c.AbortWithError(status, err)
 		return
@@ -76,7 +93,7 @@ func makePKReadParams(operation *api.BatchSubOp, pkReadarams *api.PKReadParams) 
 	// split the relative url to extract path parameters
 	splits := strings.Split(*operation.RelativeURL, "/")
 	if len(splits) != 3 {
-		return errors.New("Failed to extract database and table information from relative url")
+		return errors.New("failed to extract database and table information from relative url")
 	}
 
 	pkReadarams.DB = &splits[0]

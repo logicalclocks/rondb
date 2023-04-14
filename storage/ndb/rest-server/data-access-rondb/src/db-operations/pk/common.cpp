@@ -21,6 +21,7 @@
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/beast/core/detail/base64.hpp>
 #include <decimal_utils.hpp>
+#include <NdbError.hpp>
 #include <my_time.h>
 #include <sql_string.h>
 #include <ndb_limits.h>
@@ -28,6 +29,8 @@
 #include <algorithm>
 #include <utility>
 #include <util/require.h>
+#include <my_base.h>
+#include "ndb_types.h"
 #include "storage/ndb/include/ndb_global.h"
 #include "decimal.h"
 #include "my_compiler.h"
@@ -35,6 +38,7 @@
 #include "src/status.hpp"
 #include "src/mystring.hpp"
 #include "src/rdrs-const.h"
+#include "src/logger.hpp"
 
 typedef unsigned char uchar;
 typedef Uint32 uint32;
@@ -311,9 +315,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     ///< Length bytes: 2, little-endian
     const int data_len = request->PKValueLen(colIdx);
     if (unlikely(data_len > col->getLength())) {
-      return RS_CLIENT_ERROR(
-          std::string(ERROR_008) +
-          " Data length is greater than column length. Column: " + std::string(col->getName()));
+      return RS_CLIENT_ERROR(std::string(ERROR_008) +
+                             " Data length is greater than column length. Data length:" +
+                             std::to_string(data_len) + "Column: " + std::string(col->getName()) +
+                             " Column length: " + std::to_string(col->getLength()));
     }
     char *charStr;
     if (unlikely(request->PKValueNDBStr(colIdx, col, &charStr) != 0)) {
@@ -430,7 +435,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                              std::string(col->getName()))
     }
 
-    if (unlikely(l_time.hour != 0 || l_time.minute != 0 || l_time.second != 0 || l_time.second_part != 0)) {
+    if (unlikely(l_time.hour != 0 || l_time.minute != 0 || l_time.second != 0 ||
+                 l_time.second_part != 0)) {
       return RS_CLIENT_ERROR(std::string(ERROR_008) +
                              " Expecting only date data. Column: " + std::string(col->getName()));
     }
@@ -439,7 +445,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     my_date_to_binary(&l_time, packed);
 
     if (unlikely(operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed),
-                         col->getSizeInBytes()) != 0)) {
+                                  col->getSizeInBytes()) != 0)) {
       return RS_SERVER_ERROR(ERROR_023);
     }
     return RS_OK;
@@ -524,8 +530,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     longlong numeric_date_time = TIME_to_longlong_time_packed(l_time);
     my_time_packed_to_binary(numeric_date_time, packed, precision);
 
-    if (unlikely(operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), col_size) !=
-        0)) {
+    if (unlikely(operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed),
+                                  col_size) != 0)) {
       return RS_SERVER_ERROR(ERROR_023);
     }
     return RS_OK;
@@ -560,8 +566,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     unsigned char packed[DATETIME_MAX_SIZE_IN_BYTES];
     my_datetime_packed_to_binary(numeric_date_time, packed, precision);
 
-    if (unlikely(operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), col_size) !=
-        0)) {
+    if (unlikely(operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed),
+                                  col_size) != 0)) {
       return RS_SERVER_ERROR(ERROR_023);
     }
     return RS_OK;
@@ -932,4 +938,62 @@ int GetByteArray(const NdbRecAttr *attr, const char **first_byte, Uint32 *bytes)
     *bytes     = 0;
     return -1;
   }
+}
+
+bool CanRetryOperation(RS_Status status) {
+  bool retry = false;
+  if (status.http_code != SUCCESS) {
+    if (status.classification == NdbError::TemporaryError) {
+      retry = true;
+    } else if (status.code == 245 /* many active scans */) {
+      retry = true;
+    } else if (UnloadSchema(status)) {
+      retry = true;
+    }
+  }
+
+  if (retry) {
+    DEBUG(std::string("Transient error. ") + status.message);
+  }
+  return retry;
+}
+
+bool UnloadSchema(RS_Status status) {
+  bool unload = false;
+  if (status.http_code != SUCCESS) {
+    if (/*Invalid schema object version*/
+        (status.mysql_code == HA_ERR_TABLE_DEF_CHANGED && status.code == 241)) {
+      unload = true;
+    } else if (/*Table is being dropped*/
+               (status.mysql_code == HA_ERR_NO_SUCH_TABLE && status.code == 283)) {
+      unload = true;
+    } else if (/*Table not defined in transaction coordinator*/
+               (status.mysql_code == HA_ERR_TABLE_DEF_CHANGED && status.code == 284)) {
+      unload = true;
+    } else if (/*No such table existed*/
+               (status.mysql_code == HA_ERR_NO_SUCH_TABLE && status.code == 709)) {
+      unload = true;
+    } else if (/*No such table existed*/
+               (status.mysql_code == HA_ERR_NO_SUCH_TABLE && status.code == 723)) {
+      unload = true;
+    } else if (/*Table is being dropped*/
+               (status.mysql_code == HA_ERR_NO_SUCH_TABLE && status.code == 1226)) {
+      unload = true;
+    }
+  }
+  return unload;
+}
+
+Uint32 ExponentialDelayWithJitter(Uint32 retry, Uint32 initial_delay_in_ms, Uint32 jitter_in_ms) {
+  Uint32 expoDelay  = initial_delay_in_ms * pow(2, retry);
+  jitter_in_ms      = std::min(jitter_in_ms, initial_delay_in_ms);
+  Uint32 randJitter = rand() % jitter_in_ms;
+
+  Uint32 delay = 0;
+  if (rand() % 2 == 0) {
+    delay = expoDelay + randJitter;
+  } else {
+    delay = expoDelay - randJitter;
+  }
+  return delay;
 }

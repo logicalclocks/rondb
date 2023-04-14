@@ -51,6 +51,8 @@
 #include <signaldata/FsRemoveReq.hpp>
 #include <signaldata/FsReadWriteReq.hpp>
 
+#include <signaldata/GetCpuUsage.hpp>
+
 #include <signaldata/BackupImpl.hpp>
 #include <signaldata/BackupSignalData.hpp>
 #include <signaldata/BackupContinueB.hpp>
@@ -2022,10 +2024,13 @@ Backup::calculate_disk_write_speed(Signal *signal)
 
   /**
    * Get CPU usage for the thread */
+  GetCpuUsageReq* req = (GetCpuUsageReq*)signal->getDataPtrSend();
+  req->requestType = GetCpuUsageReq::PerSecond;
   EXECUTE_DIRECT_MT(THRMAN, GSN_GET_CPU_USAGE_REQ, signal,
                     1,
                     getThrmanInstance());
-  Uint32 cpu_usage = signal->theData[0];
+  GetCpuUsageConf *conf = (GetCpuUsageConf*)signal->getDataPtr();
+  Uint32 cpu_usage = conf->real_exec_time;
 
   /**
    * It is possible that the limits (max + min) have moved so that

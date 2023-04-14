@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -233,7 +233,7 @@ struct ndb_spin_stat
   Uint32 m_sleep_shorter_spin_time;
   Uint32 m_num_waits;
   Uint32 m_micros_sleep_times[NUM_SPIN_INTERVALS];
-  Uint32 m_spin_interval[NUM_SPIN_INTERVALS];
+  Uint32 m_spin_interval_ns[NUM_SPIN_INTERVALS];
 };
 
 void

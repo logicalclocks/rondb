@@ -77,7 +77,7 @@ const char *PKRRequest::PKValueCStr(Uint32 index) {
   Uint32 kvOffset = PKTupleOffset(index);
   Uint32 vOffset  = (reinterpret_cast<Uint32 *>(req->buffer))[(kvOffset / 4) + 1];
 
-  return req->buffer + vOffset + 2;  // skip first 2 bytes that contain size of string
+  return req->buffer + vOffset + 4;  // skip first 4 bytes that contain size of string
 }
 
 /*
@@ -92,6 +92,13 @@ Uint16 PKRRequest::PKValueLen(Uint32 index) {
   return len;
 }
 
+/*
+ * First two bytes are immutable containing the size of the string
+ * next two bytes are mutable that also contain the size of the string.
+ * Depending on the type of the column one or two bytes will be used for
+ * storing size in the mutable size section
+ *
+ */
 int PKRRequest::PKValueNDBStr(Uint32 index, const NdbDictionary::Column *col, char **data) {
   Uint32 kvOffset  = PKTupleOffset(index);
   Uint32 vOffset   = (reinterpret_cast<Uint32 *>(req->buffer))[(kvOffset / 4) + 1];
@@ -100,7 +107,7 @@ int PKRRequest::PKValueNDBStr(Uint32 index, const NdbDictionary::Column *col, ch
   // The Go layer sets the length of the string in the first two bytes of the string
   const NdbDictionary::Column::ArrayType array_type = col->getArrayType();
   const size_t max_size                             = col->getSizeInBytes();
-  const size_t user_size                            = data_start[1] * 256 + data_start[0];
+  const size_t user_size                            = this->PKValueLen(index);
 
   if (user_size > max_size) {
     *data = nullptr;
@@ -110,17 +117,20 @@ int PKRRequest::PKValueNDBStr(Uint32 index, const NdbDictionary::Column *col, ch
   switch (array_type) {
   case NdbDictionary::Column::ArrayTypeFixed:
     // No prefix length is stored in string
-    *data = data_start + 2;  // skip the first two bytes that contain the length of the string
+    *data = data_start + 4;  // skip the first four bytes that contain the length of the string
     return 0;
   case NdbDictionary::Column::ArrayTypeShortVar:
-    data_start[1] = data_start[0];
-    *data         = data_start + 1;
+    // one byte length
+    data_start[3] = data_start[0];
+    *data         = data_start + 3;
     return 0;
   case NdbDictionary::Column::ArrayTypeMediumVar:
-    // First two bytes of str has the length of data stored
+    // two bytes length
+    data_start[2] = data_start[0];
+    data_start[3] = data_start[1];
 
-    // the length of the string is already set in the first two bytes of the string
-    *data = data_start;
+    // skip the first two immuable length bytes 
+    *data = data_start+2;
     return 0;
   default:
     *data = nullptr;

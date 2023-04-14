@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -171,8 +171,8 @@ Dbtup::execACC_SCANREQ(Signal* signal)
     {
       jam();
       bits |= ScanOp::SCAN_COPY_FRAG;
-      scanPtr.i = c_copy_frag_scan_op;
-      ndbrequire(c_scanOpPool.getValidPtr(scanPtr));
+      ndbrequire(m_reserved_copy_frag.first(scanPtr));
+      m_reserved_copy_frag.remove(scanPtr);
       ndbrequire(scanPtr.p->m_state == ScanOp::First);
       ndbrequire(scanPtr.p->m_bits == 0);
     }
@@ -415,7 +415,10 @@ Dbtup::execACC_CHECK_SCAN(Signal* signal)
        * Copy fragment scans use a preallocated scan lock record to avoid
        * risk of not getting a scan lock record.
        */
-      c_freeScanLock = c_copy_frag_scan_lock;
+      ScanLockPtr lockPtr;
+      ndbrequire(m_reserved_copy_frag_lock.first(lockPtr));
+      m_reserved_copy_frag_lock.remove(lockPtr);
+      c_freeScanLock = lockPtr.i;
     }
   }
   if (req->checkLcpStop == AccCheckScan::ZCHECK_LCP_STOP &&
@@ -3480,7 +3483,7 @@ Dbtup::scanClose(Signal* signal, ScanOpPtr scanPtr)
 
 void Dbtup::release_scan_lock(ScanLockPtr releasePtr)
 {
-  if (likely(releasePtr.i != c_copy_frag_scan_lock))
+  if (likely(releasePtr.p->m_reserved == 0))
   {
     c_scanLockPool.release(releasePtr);
   }
@@ -3490,6 +3493,7 @@ void Dbtup::release_scan_lock(ScanLockPtr releasePtr)
     releasePtr.p->m_accLockOp = RNIL;
     releasePtr.p->prevList = RNIL;
     releasePtr.p->nextList = RNIL;
+    m_reserved_copy_frag_lock.addFirst(releasePtr);
   }
 }
 
@@ -3586,9 +3590,9 @@ Dbtup::releaseScanOp(ScanOpPtr& scanPtr)
   else if ((scanPtr.p->m_bits & ScanOp::SCAN_COPY_FRAG) != 0)
   {
     jam();
-    ndbrequire(c_copy_frag_scan_op == scanPtr.i);
     scanPtr.p->m_state = ScanOp::First;
     scanPtr.p->m_bits = 0;
+    m_reserved_copy_frag.addFirst(scanPtr);
   }
   else
   {
