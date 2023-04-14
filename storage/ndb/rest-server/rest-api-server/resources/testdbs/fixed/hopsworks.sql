@@ -171,7 +171,6 @@ VALUES
         0
     );
 
--- TODO add more hopsworks tables and corresponding data here
 CREATE TABLE `feature_store` (
                                  `id` int(11) NOT NULL AUTO_INCREMENT,
                                  `name` varchar(100) COLLATE latin1_general_cs NOT NULL,
