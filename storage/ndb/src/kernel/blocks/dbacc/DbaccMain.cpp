@@ -6822,7 +6822,7 @@ Uint32 Dbacc::checkScanExpand(Uint32 splitBucket)
   TSplit = splitBucket;
 #if MAX_PARALLEL_SCANS_PER_FRAG > 0
   Uint32 Ti;
-  for (Ti = 0; Ti < 0; Ti++)
+  //for (Ti = 0; Ti < 0; Ti++)
   {
     ndbabort(); //ACC scans no longer used
     if (fragrecptr.p->scan[Ti] != RNIL)
@@ -7532,7 +7532,7 @@ Uint32 Dbacc::checkScanShrink(Uint32 sourceBucket, Uint32 destBucket)
 #if MAX_PARALLEL_SCANS_PER_FRAG > 0
   Uint32 Ti;
   Bitmask<1> actions[MAX_PARALLEL_SCANS_PER_FRAG];
-  for (Ti = 0; Ti < 0; Ti++)
+  //for (Ti = 0; Ti < 0; Ti++)
   {
     ndbabort(); //ACC scans no longer used
     actions[Ti].clear();
@@ -7640,7 +7640,8 @@ Uint32 Dbacc::checkScanShrink(Uint32 sourceBucket, Uint32 destBucket)
   if (TreleaseInd == 1) {
     jam();
 #if MAX_PARALLEL_SCANS_PER_FRAG > 0
-    for (Ti = 0; Ti < 0; Ti++) {
+    //for (Ti = 0; Ti < 0; Ti++)
+    {
       ndbabort(); //ACC scans no longer used
       if (!actions[Ti].isclear())
       {
@@ -8303,20 +8304,20 @@ void Dbacc::execACC_SCANREQ(Signal* signal) //Direct Executed
   Uint32 scanFlag = req->requestInfo;
   Uint32 scanTrid1 = req->transId1;
   Uint32 scanTrid2 = req->transId2;
-  ndbabort();
+  ndbabort(); //ACC scans no longer used
   getFragPtr(fragrecptr, req->tableId, fid, false);
   
   Uint32 i = 0;
 #if MAX_PARALLEL_SCANS_PER_FRAG > 0
-  for (i = 0; i < 0; i++) {
+  for (i = 0; i == 0; i++)
     jam();
     if (fragrecptr.p->scan[i] == RNIL) {
       jam();
       break;
     }
   }
-#endif
   ndbrequire(i != 0);
+#endif
   if (unlikely(!scanRec_pool.seize(scanPtr)))
   {
     signal->theData[8] = AccScanRef::AccNoFreeScanOp;

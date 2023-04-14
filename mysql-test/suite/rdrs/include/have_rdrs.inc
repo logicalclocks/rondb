@@ -114,7 +114,7 @@ if ($rdrs_string_lib) {
 print $F "--let RDRS_CONFIG_FILE=$vardir/tmp/rdrs_config.json\n";
 print $F "--let RDRS_LIB_DIR=$bindir/library_output_directory\n";
 print $F "--let LD_LIBRARY_PATH=$bindir/library_output_directory\n";
-print $F "--let CGO_LDFLAGS=\"-g -O2 -L$bindir/lib -lrdrclient\"\n";
+print $F "--let CGO_LDFLAGS=\"-g -O2 -L$bindir/lib -Wl,-rpath,$bindir/lib -lrdrclient\"\n";
 print $F "--let RDRS_SRC_DIR=$ENV{'MYSQL_BASEDIR'}/storage/ndb/rest-server/rest-api-server\n";
 
 $F->close();
@@ -175,8 +175,8 @@ my $jsonStr = <<"END_TXT";
                                         "Port": $ENV{MASTER_MYPORT}
                                 }
                         ],
-                        "User": "rondb",
-                        "Password": "rondb"
+                        "User": "root",
+                        "Password": ""
                 }
         }
 }
