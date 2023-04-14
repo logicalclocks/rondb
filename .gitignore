@@ -5,6 +5,7 @@
 tags
 TAGS
 TAGS_sorted_by_file
+**/.DS_Store
 
 # googletest files
 source_downloads
@@ -33,3 +34,6 @@ scalability_jobs_*
 .ccls/
 .cache/
 compile_commands.json
+
+# build
+build

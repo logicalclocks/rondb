@@ -1,29 +1,27 @@
+/*
+ * This file is part of the RonDB REST API Server
+ * Copyright (c) 2023 Hopsworks AB
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package config
 
 import (
-	"fmt"
 	"os"
 	"strings"
 )
 
 func IsUnitTest() bool {
 	return strings.HasSuffix(os.Args[0], ".test")
-}
-
-func GenerateMysqldConnectString(conf AllConfigs) string {
-	server := conf.MySQL.Servers[0]
-	// user:password@tcp(IP:Port)/
-	return fmt.Sprintf("%s:%s@tcp(%s:%d)/",
-		conf.MySQL.User,
-		conf.MySQL.Password,
-		server.IP,
-		server.Port)
-}
-
-func GenerateMgmdConnectString(conf AllConfigs) string {
-	mgmd := conf.RonDB.Mgmds[0]
-	return fmt.Sprintf("%s:%d",
-		mgmd.IP,
-		mgmd.Port,
-	)
 }

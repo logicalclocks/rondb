@@ -359,6 +359,11 @@ public:
    *
    * After that, call nextResult(true) which will fetch new records and
    * cache them in the NdbApi. 
+   *
+   * @note  use getNdbError to find errors that happened during read even if
+   *        this function return 0. For example when a scan operation fails 
+   *        due to cluster overload then nextResult() return 0 but the 
+   *        error code is 245
    * 
    * @note  If you don't take over the records to another transaction the 
    *        locks on those records will be released the next time NDB Kernel

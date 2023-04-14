@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2020, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -425,6 +425,7 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
     ScanLock() :
       m_magic(Magic::make(TYPE_ID))
     {
+      m_reserved = 0;
     }
 
     ~ScanLock()
@@ -432,6 +433,7 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
     }
 
     Uint32 m_accLockOp;
+    Uint32 m_reserved;
     union {
       Uint32 nextPool;
       Uint32 nextList;
@@ -442,8 +444,11 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
   typedef Ptr<ScanLock> ScanLockPtr;
   typedef TransientPool<ScanLock> ScanLock_pool;
   typedef DLFifoList<ScanLock_pool> ScanLock_fifo;
+  typedef DLList<ScanLock_pool> ScanLock_list;
   typedef LocalDLFifoList<ScanLock_pool> Local_ScanLock_fifo;
   ScanLock_pool c_scanLockPool;
+  ScanLock_list m_reserved_copy_frag_lock;
+
   /**
    * To ensure that we have a lock resource before we scan a row
    * in lock mode, we grab it before the scan and store the
@@ -534,6 +539,7 @@ typedef Ptr<Fragoperrec> FragoperrecPtr;
   typedef DLList<ScanOp_pool> ScanOp_list;
   typedef LocalDLList<ScanOp_pool> Local_ScanOp_list;
   ScanOp_pool c_scanOpPool;
+  ScanOp_list m_reserved_copy_frag;
 
   void scanReply(Signal*, ScanOpPtr scanPtr);
   void scanFirst(Signal*, ScanOpPtr scanPtr);
@@ -1557,14 +1563,23 @@ TupTriggerData_pool c_triggerPool;
 
     Uint32 storedProcIVal;
     Uint32 storedParamNo; // Current attrInfo param being used
-    Uint32 nextPool;
+    Uint32 lastSegment;
     Uint16 storedCode;
+    Uint8 copyOverwrite;
+    Uint8 copyOverwriteLen;
+    union {
+      Uint32 nextPool;
+      Uint32 nextList;
+    };
+    Uint32 prevList;
   };
   typedef Ptr<storedProc> StoredProcPtr;
   typedef TransientPool<storedProc> StoredProc_pool;
   static constexpr Uint32 DBTUP_STORED_PROCEDURE_TRANSIENT_POOL_INDEX = 1;
+  typedef DLList<StoredProc_pool> StoredProc_list;
 
   StoredProc_pool c_storedProcPool;
+  StoredProc_list m_reserved_stored_proc_copy_frag;
   RSS_AP_SNAPSHOT(c_storedProcPool);
   Uint32 c_storedProcCountNonAPI;
   void storedProcCountNonAPI(BlockReference apiBlockref, int add_del);
@@ -3713,13 +3728,16 @@ private:
   void deleteScanProcedure(Signal* signal, Operationrec* regOperPtr);
   void allocCopyProcedure();
   void freeCopyProcedure();
-  void prepareCopyProcedure(Uint32 numAttrs, Uint16 tableBits);
-  void releaseCopyProcedure();
+  void prepareCopyProcedure(Uint32 numAttrs,
+                            Uint16 tableBits,
+                            StoredProcPtr & storedPtr);
+  void releaseCopyProcedure(StoredProcPtr storedPtr);
   void copyProcedure(Signal* signal,
                      TablerecPtr regTabPtr,
                      Operationrec* regOperPtr);
   void scanProcedure(Signal* signal,
                      Operationrec* regOperPtr,
+                     StoredProcPtr & storedPtr,
                      SectionHandle* handle,
                      bool isCopy);
   void storedProcBufferSeizeErrorLab(Signal* signal,
@@ -3930,7 +3948,6 @@ private:
 //---------------------------------------------------------------
 
   Uint32 c_lcp_scan_op;
-  Uint32 c_copy_frag_scan_op;
 
 // readAttributes and updateAttributes module
 //------------------------------------------------------------------------------------------------------
@@ -4010,10 +4027,6 @@ private:
   BlockReference cownref;
   Uint32 cownNodeId;
   Uint32 czero;
-  Uint32 cCopyProcedure;
-  Uint32 cCopyLastSeg;
-  Uint32 cCopyOverwrite;
-  Uint32 cCopyOverwriteLen;
 
  // A little bit bigger to cover overwrites in copy algorithms (16384 real size).
 #define ZATTR_BUFFER_SIZE 16384
@@ -4511,7 +4524,6 @@ private:
   TransientFastSlotPool* c_transient_pools[c_transient_pool_count];
   Bitmask<1> c_transient_pools_shrinking;
 
-  Uint32 c_copy_frag_scan_lock;
   void release_scan_lock(ScanLockPtr);
 
 public:

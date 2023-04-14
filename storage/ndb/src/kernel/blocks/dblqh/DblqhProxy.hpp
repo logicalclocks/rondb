@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -156,6 +156,10 @@ protected:
 
   // GSN_UNDO_LOG_LEVEL_REP
   void execUNDO_LOG_LEVEL_REP(Signal*);
+
+  // GSN_HALT_COPY_FRAG_REQ, GSN_RESUME_COPY_FRAG_REQ
+  void execHALT_COPY_FRAG_REQ(Signal*);
+  void execRESUME_COPY_FRAG_REQ(Signal*);
 
   // GSN_PREP_DROP_TAB_REQ
   struct Ss_PREP_DROP_TAB_REQ : SsParallel {

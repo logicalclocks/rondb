@@ -1,3 +1,20 @@
+/*
+ * This file is part of the RonDB REST API Server
+ * Copyright (c) 2023 Hopsworks AB
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package testutils
 
 import (
@@ -9,7 +26,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
 	"math/big"
 	"net"
 	"os"
@@ -29,8 +45,8 @@ func init() {
 }
 
 /*
-	Create and save both client and server TLS certificates and also saves
-	them to configuration.
+Create and save both client and server TLS certificates and also saves
+them to configuration.
 */
 func CreateAllTLSCerts() (cleanup func(), err error) {
 	cleanup = func() {}
@@ -65,17 +81,17 @@ func CreateAllTLSCerts() (cleanup func(), err error) {
 		return
 	}
 
-	conf.Security.RootCACertFile = rootCACertFilepath
-	conf.Security.CertificateFile = serverCertFilepath
-	conf.Security.PrivateKeyFile = serverKeyFilepath
+	conf.Security.TLS.RootCACertFile = rootCACertFilepath
+	conf.Security.TLS.CertificateFile = serverCertFilepath
+	conf.Security.TLS.PrivateKeyFile = serverKeyFilepath
 
-	if conf.Security.RequireAndVerifyClientCert {
+	if conf.Security.TLS.RequireAndVerifyClientCert {
 		clientCertFilepath, clientKeyFilepath, err := createClientCerts(certsDir, rootCACertFilepath, rootCAKeyFilepath)
 		if err != nil {
 			return cleanup, err
 		}
-		conf.Security.TestParameters.ClientCertFile = clientCertFilepath
-		conf.Security.TestParameters.ClientKeyFile = clientKeyFilepath
+		conf.Security.TLS.TestParameters.ClientCertFile = clientCertFilepath
+		conf.Security.TLS.TestParameters.ClientKeyFile = clientKeyFilepath
 	}
 
 	err = config.SetAll(conf)
@@ -288,30 +304,30 @@ func createClientCerts(certsDir, rootCaCertFile, rootCaKeyFile string) (
 }
 
 func readCACert(rootCACertFile string) (*x509.Certificate, error) {
-	bytes, err := ioutil.ReadFile(rootCACertFile)
+	bytes, err := os.ReadFile(rootCACertFile)
 	if err != nil {
-		return nil, fmt.Errorf("Failed read certificate %q. Error: %w", rootCACertFile, err)
+		return nil, fmt.Errorf("failed read certificate %q. Error: %w", rootCACertFile, err)
 	}
 
 	block, _ := pem.Decode(bytes)
 	rootCACert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse cert %w", err)
+		return nil, fmt.Errorf("failed to parse cert %w", err)
 	}
 
 	return rootCACert, nil
 }
 
 func readCAKey(rootCAKeyFile string) (interface{}, error) {
-	bytes, err := ioutil.ReadFile(rootCAKeyFile)
+	bytes, err := os.ReadFile(rootCAKeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("Failed read key %q. Error: %w", rootCAKeyFile, err)
+		return nil, fmt.Errorf("failed read key %q. Error: %w", rootCAKeyFile, err)
 	}
 
 	block, _ := pem.Decode(bytes)
 	rootCAKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to parse cert. Error: %w", err)
+		return nil, fmt.Errorf("failed to parse cert. Error: %w", err)
 	}
 	return rootCAKey, nil
 }

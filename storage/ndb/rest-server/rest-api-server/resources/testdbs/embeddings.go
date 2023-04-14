@@ -1,3 +1,20 @@
+/*
+ * This file is part of the RonDB REST API Server
+ * Copyright (c) 2023 Hopsworks AB
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package testdbs
 
 import _ "embed"
@@ -23,6 +40,15 @@ var HopsworksAddProject string
 
 const hopsworksAddProject_PROJECT_NAME = "PROJECT_NAME"
 const hopsworksAddProject_PROJECT_NUMBER = "PROJECT_NUMBER"
+
+//go:embed dynamic/hopsworks_api_key.sql
+var HopsworksAPIKey string
+
+const HopsworksAPIKey_KEY_ID = "KEY_ID"
+const HopsworksAPIKey_KEY_PREFIX = "KEY_PREFIX"
+const HopsworksAPIKey_KEY_NAME = "KEY_NAME"
+const HopsworksAPIKey_ADDITIONAL_KEYS = 512
+const HopsworksAPIKey_SECRET = "ocHajJhnE0ytBh8zbYj3IXupyMqeMZp8PW464eTxzxqP5afBjodEQUgY0lmL33ub"
 
 //go:embed dynamic/textual_columns.sql
 var TextualColumns string
@@ -148,8 +174,17 @@ var DB024Scheme string
 
 const DB024 = "db024"
 
-//This is sentinel DB
-//If this exists then we have successfully initialized all the DBs
+//go:embed fixed/DB025.sql
+var DB025Scheme string
+
+const DB025 = "db025"
+
+//go:embed fixed/DB025-Update.sql
+var DB025UpdateScheme string
+
+// This is sentinel DB
+// If this exists then we have successfully initialized all the DBs
+//
 //go:embed fixed/sentinel.sql
 var SentinelDBScheme string
 

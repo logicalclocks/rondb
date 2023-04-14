@@ -61,7 +61,7 @@ inline RS_Status __RS_ERROR(const HTTP_CODE http_code, int status, int classific
 
 inline RS_Status __RS_ERROR_RONDB(const struct NdbError &error, std::string msg, int lineNo,
                                   std::string file_name) {
-  std::string userMsg = "Error: " + msg + " Error: code:" + std::to_string(error.code) +
+  std::string userMsg = "Error: " + msg + " Error: code: " + std::to_string(error.code) +
                         " MySQL Code: " + std::to_string(error.mysql_code) +
                         " Message: " + error.message;
   return __RS_ERROR(SERVER_ERROR, error.status, error.classification, error.code, error.mysql_code,
@@ -71,12 +71,19 @@ inline RS_Status __RS_ERROR_RONDB(const struct NdbError &error, std::string msg,
 #define __MYFILENAME__ __FILE__
 
 #define RS_OK __RS_ERROR(SUCCESS, -1, -1, -1, -1, "", 0, "");
+
 #define RS_CLIENT_ERROR(msg)                                                                       \
   __RS_ERROR(CLIENT_ERROR, -1, -1, -1, -1, msg, __LINE__, __MYFILENAME__);
+
 #define RS_CLIENT_404_ERROR()                                                                      \
   __RS_ERROR(NOT_FOUND, -1, -1, -1, -1, "Not Found", __LINE__, __MYFILENAME__);
+
+#define RS_CLIENT_404_WITH_MSG_ERROR(msg)                                                          \
+  __RS_ERROR(NOT_FOUND, -1, -1, -1, -1, msg, __LINE__, __MYFILENAME__);
+
 #define RS_SERVER_ERROR(msg)                                                                       \
   __RS_ERROR(SERVER_ERROR, -1, -1, -1, -1, msg, __LINE__, __MYFILENAME__);
+
 #define RS_RONDB_SERVER_ERROR(ndberror, msg)                                                       \
   __RS_ERROR_RONDB(ndberror, msg, __LINE__, __MYFILENAME__);
 

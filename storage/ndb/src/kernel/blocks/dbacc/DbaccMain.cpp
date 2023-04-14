@@ -1,5 +1,5 @@
 /* Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -3374,8 +3374,9 @@ void Dbacc::execACC_LOCKREQ(Signal* signal)
     if (unlikely(req->isCopyFragScan))
     {
       jam();
-      operationRecPtr.i = c_copy_frag_oprec;
-      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(operationRecPtr));
+      ndbrequire(m_reserved_copy_frag_lock.first(operationRecPtr));
+      m_reserved_copy_frag_lock.remove(operationRecPtr);
+      operationRecPtr.p->m_reserved = 1;
       ndbrequire(operationRecPtr.p->m_op_bits == Operationrec::OP_INITIAL);
     }
     else
@@ -4899,6 +4900,7 @@ void Dbacc::commitdelete(Signal* signal)
        * completely scanned the container.  Then check which scan actually
        * currently scan the container.
        */
+      ndbabort(); //ACC scans no longer used
       Uint16 scansInProgress =
           fragrecptr.p->activeScanMask & ~conhead.getScanBits();
       scansInProgress = delPageptr.p->checkScans(scansInProgress, delConptr);
@@ -4946,6 +4948,7 @@ void Dbacc::commitdelete(Signal* signal)
        * completely scanned the container.  Then check which scan actually
        * currently scan the container.
        */
+      ndbabort(); //ACC scans no longer used
       Uint16 scansInProgress = fragrecptr.p->activeScanMask & ~conhead.getScanBits();
       scansInProgress = delPageptr.p->checkScans(scansInProgress, delConptr);
       for(int i = 0; scansInProgress != 0; i++, scansInProgress >>= 1)
@@ -5242,6 +5245,7 @@ void Dbacc::getLastAndRemove(Page8Ptr lastPrevpageptr,
 #if MAX_PARALLEL_SCANS_PER_FRAG > 0
       if (containerhead.isScanInProgress())
       {
+        ndbabort(); //ACC scans no longer used
         Uint16 scansInProgress =
             fragrecptr.p->activeScanMask & ~containerhead.getScanBits();
         scansInProgress = lastPageptr.p->checkScans(scansInProgress,
@@ -6813,12 +6817,14 @@ Uint32 Dbacc::checkScanExpand(Uint32 splitBucket)
   Page8Ptr TPageptr;
   ScanRecPtr TscanPtr;
   Uint16 releaseScanMask = 0;
+  return 0;
 
   TSplit = splitBucket;
 #if MAX_PARALLEL_SCANS_PER_FRAG > 0
   Uint32 Ti;
-  for (Ti = 0; Ti < MAX_PARALLEL_SCANS_PER_FRAG; Ti++)
+  for (Ti = 0; Ti < 0; Ti++)
   {
+    ndbabort(); //ACC scans no longer used
     if (fragrecptr.p->scan[Ti] != RNIL)
     {
       //-------------------------------------------------------------
@@ -7514,18 +7520,21 @@ Uint32 Dbacc::checkScanShrink(Uint32 sourceBucket, Uint32 destBucket)
   Uint32 TreleaseScanBucket;
   Uint32 TreleaseInd = 0;
   enum Actions { ExtendRescan, ReduceUndefined };
+  Bitmask<1> actions[1];
   Uint16 releaseDestScanMask = 0;
   Uint16 releaseSourceScanMask = 0;
   Page8Ptr TPageptr;
   ScanRecPtr scanPtr;
+  return 0;
 
   TmergeDest = destBucket;
   TmergeSource = sourceBucket;
 #if MAX_PARALLEL_SCANS_PER_FRAG > 0
   Uint32 Ti;
   Bitmask<1> actions[MAX_PARALLEL_SCANS_PER_FRAG];
-  for (Ti = 0; Ti < MAX_PARALLEL_SCANS_PER_FRAG; Ti++)
+  for (Ti = 0; Ti < 0; Ti++)
   {
+    ndbabort(); //ACC scans no longer used
     actions[Ti].clear();
     if (fragrecptr.p->scan[Ti] != RNIL) {
       scanPtr.i = fragrecptr.p->scan[Ti];
@@ -7631,7 +7640,8 @@ Uint32 Dbacc::checkScanShrink(Uint32 sourceBucket, Uint32 destBucket)
   if (TreleaseInd == 1) {
     jam();
 #if MAX_PARALLEL_SCANS_PER_FRAG > 0
-    for (Ti = 0; Ti < MAX_PARALLEL_SCANS_PER_FRAG; Ti++) {
+    for (Ti = 0; Ti < 0; Ti++) {
+      ndbabort(); //ACC scans no longer used
       if (!actions[Ti].isclear())
       {
         jam();
@@ -8241,6 +8251,7 @@ void Dbacc::initFragAdd(Signal* signal,
   regFragPtr.p->roothashcheck = req->kValue + req->lhFragBits;
   regFragPtr.p->m_commit_count = 0; // stable results
 #if MAX_PARALLEL_SCANS_PER_FRAG > 0
+  //ACC scans no longer used
   for (Uint32 i = 0; i < MAX_PARALLEL_SCANS_PER_FRAG; i++) {
     regFragPtr.p->scan[i] = RNIL;
   }//for
@@ -8292,19 +8303,20 @@ void Dbacc::execACC_SCANREQ(Signal* signal) //Direct Executed
   Uint32 scanFlag = req->requestInfo;
   Uint32 scanTrid1 = req->transId1;
   Uint32 scanTrid2 = req->transId2;
+  ndbabort();
   getFragPtr(fragrecptr, req->tableId, fid, false);
   
   Uint32 i = 0;
 #if MAX_PARALLEL_SCANS_PER_FRAG > 0
-  for (i = 0; i < MAX_PARALLEL_SCANS_PER_FRAG; i++) {
+  for (i = 0; i < 0; i++) {
     jam();
     if (fragrecptr.p->scan[i] == RNIL) {
       jam();
       break;
     }
   }
-  ndbrequire(i != MAX_PARALLEL_SCANS_PER_FRAG);
 #endif
+  ndbrequire(i != 0);
   if (unlikely(!scanRec_pool.seize(scanPtr)))
   {
     signal->theData[8] = AccScanRef::AccNoFreeScanOp;
@@ -8714,6 +8726,7 @@ void Dbacc::initScanFragmentPart()
  * ------------------------------------------------------------------------ */
 void Dbacc::releaseScanLab(Signal* signal)
 {
+  ndbabort(); //ACC scan no longer used
   releaseAndCommitActiveOps(signal);
   releaseAndCommitQueuedOps(signal);
   releaseAndAbortLockedOps(signal);
@@ -9128,6 +9141,7 @@ bool Dbacc::getScanElement(Page8Ptr& pageptr,
   /* Check if scan is already active in a container */
   Uint32 inPageI;
   Uint32 inConptr;
+  ndbabort(); //ACC scan no longer used
   if (scanPtr.p->getContainer(inPageI, inConptr))
   {
     // TODO: in VM_TRACE double check container is in bucket!
@@ -9402,8 +9416,9 @@ void Dbacc::releaseScanBucket(Page8Ptr pageptr,
                               Uint32 conidx,
                               Uint16 scanMask) const
 {
+  ndbabort(); //ACC scans no longer used
   scanMask |= (~fragrecptr.p->activeScanMask &
-               ((1 << MAX_PARALLEL_SCANS_PER_FRAG) - 1));
+               ((1 << 0) - 1));
   bool isforward = true;
  NEXTRELEASESCANLOOP:
   Uint32 conptr = getContainerPtr(conidx, isforward);
@@ -9937,7 +9952,7 @@ void Dbacc::releaseOpRec()
    * to use locked reads in query threads.
    */
   ndbrequire(operationRecPtr.p->m_op_bits == Operationrec::OP_INITIAL);
-  if (likely(operationRecPtr.i != c_copy_frag_oprec))
+  if (operationRecPtr.p->m_reserved == 0)
   {
     c_lqh->lock_alloc_operation();
     oprec_pool.release(operationRecPtr);
@@ -9948,6 +9963,7 @@ void Dbacc::releaseOpRec()
   else
   {
     operationRecPtr.p = new (operationRecPtr.p) Operationrec;
+    m_reserved_copy_frag_lock.addFirst(operationRecPtr);
   }
 }
 

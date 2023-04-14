@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Logical Clocks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -406,7 +406,7 @@ struct Fragmentrec {
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   Uint32 acc_frag_mutex_count[NUM_ACC_FRAGMENT_MUTEXES];
 #endif
-  Uint32 scan[MAX_PARALLEL_SCANS_PER_FRAG];
+  Uint32 scan[0];
   Uint16 activeScanMask;
   union {
     Uint32 mytabptr;
@@ -733,7 +733,8 @@ struct Operationrec {
   Operationrec() :
     m_magic(Magic::make(TYPE_ID)),
     m_op_bits(OP_INITIAL),
-    prevOp(RNIL)
+    prevOp(RNIL),
+    m_reserved(false)
   {
   }
 
@@ -762,7 +763,10 @@ struct Operationrec {
     Uint32 nextSerialQue;      
     Uint32 m_lock_owner_ptr_i; // if nextParallelQue = RNIL, else undefined
   };
-  Uint32 prevOp;
+  union {
+    Uint32 prevOp;
+    Uint32 prevList;
+  };
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   Uint32 prevLockOwnerOp;
   Uint32 nextLockOwnerOp;
@@ -783,6 +787,7 @@ struct Operationrec {
   Uint16 tupkeylen;
   Uint32 m_scanOpDeleteCountOpRef;
   Uint32 userblockref;
+  bool m_reserved;
   enum { ANY_SCANBITS = Uint16(0xffff) };
   LHBits16 reducedHashValue;
   NDB_TICKS m_lockTime;
@@ -795,8 +800,10 @@ struct Operationrec {
 
   typedef Ptr<Operationrec> OperationrecPtr;
   typedef TransientPool<Operationrec> Operationrec_pool;
+  typedef DLList<Operationrec_pool> Operationrec_list;
   static constexpr Uint32 DBACC_OPERATION_RECORD_TRANSIENT_POOL_INDEX = 1;
   Operationrec_pool oprec_pool;
+  Operationrec_list m_reserved_copy_frag_lock;
   OperationrecPtr operationRecPtr;
   OperationrecPtr queOperPtr;
   Uint32 cfreeopRec;
@@ -1267,7 +1274,6 @@ private:
   static const Uint32 c_transient_pool_count = 2;
   TransientFastSlotPool* c_transient_pools[c_transient_pool_count];
   Bitmask<1> c_transient_pools_shrinking;
-  Uint32 c_copy_frag_oprec;
 
 public:
   Dbacc *m_curr_acc;
@@ -1482,7 +1488,7 @@ inline Uint8 Dbacc::Page8::getContainerShortIndex(Uint32 pointer) const
 inline void Dbacc::Page8::setScanContainer(Uint16 scanbit, Uint32 conptr)
 {
   assert(scanbit != 0);
-  assert(scanbit < (1U << MAX_PARALLEL_SCANS_PER_FRAG));
+  assert(scanbit < (1U << 0));
   Uint8* p = reinterpret_cast<Uint8*>(&word32[SCAN_CON_0_3]);
   int i = BitmaskImpl::ffs(scanbit);
   assert(p[i] == 0);
@@ -1496,7 +1502,7 @@ inline void Dbacc::Page8::clearScanContainer(Uint16 scanbit, Uint32 conptr)
 #endif
 {
   assert(scanbit != 0);
-  assert(scanbit < (1U << MAX_PARALLEL_SCANS_PER_FRAG));
+  assert(scanbit < (1U << 0));
   Uint8* p = reinterpret_cast<Uint8*>(&word32[SCAN_CON_0_3]);
   int i = BitmaskImpl::ffs(scanbit);
   assert(p[i] == getContainerShortIndex(conptr));
@@ -1506,7 +1512,7 @@ inline void Dbacc::Page8::clearScanContainer(Uint16 scanbit, Uint32 conptr)
 inline bool Dbacc::Page8::checkScanContainer(Uint32 conptr) const
 {
   const Uint8* p = reinterpret_cast<const Uint8*>(&word32[SCAN_CON_0_3]);
-  return memchr(p, getContainerShortIndex(conptr), MAX_PARALLEL_SCANS_PER_FRAG);
+  return memchr(p, getContainerShortIndex(conptr), 0);
 }
 
 inline Uint16 Dbacc::Page8::checkScans(Uint16 scanmask, Uint32 conptr) const

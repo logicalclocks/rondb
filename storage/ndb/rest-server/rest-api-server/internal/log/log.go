@@ -1,3 +1,20 @@
+/*
+ * This file is part of the RonDB REST API Server
+ * Copyright (c) 2023 Hopsworks AB
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package log
 
 import (
@@ -138,29 +155,30 @@ func Panic(msg string) {
 }
 
 func IsTrace() bool {
-	return currentLevel == log.TraceLevel
+	return currentLevel >= log.TraceLevel
 }
 
 func IsDebug() bool {
-	return currentLevel == log.DebugLevel
+	return currentLevel >= log.DebugLevel
 }
 
 func IsInfo() bool {
-	return currentLevel == log.InfoLevel
+	return currentLevel >= log.InfoLevel
 }
 
 func IsWarn() bool {
-	return currentLevel == log.WarnLevel
+	return currentLevel >= log.WarnLevel
 }
 
 func IsError() bool {
-	return currentLevel == log.ErrorLevel
+	return currentLevel >= log.ErrorLevel
 }
 
 func IsFatal() bool {
-	return currentLevel == log.FatalLevel
+	return currentLevel >= log.FatalLevel
 }
 
 func IsPanic() bool {
-	return currentLevel == log.PanicLevel
+	return currentLevel >= log.PanicLevel
+
 }

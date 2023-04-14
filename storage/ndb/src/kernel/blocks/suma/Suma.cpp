@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2948,11 +2948,13 @@ Suma::execSUB_SYNC_REQ(Signal* signal)
     if (req->requestInfo & SubSyncReq::RangeScan)
     {
       jam();
-      ndbrequire(handle.m_cnt > 1)
-      SegmentedSectionPtr ptr;
-      ndbrequire(handle.getSection(ptr, SubSyncReq::TUX_BOUND_INFO));
-      LocalSyncRecordBuffer boundBuf(c_dataBufferPool, syncPtr.p->m_boundInfo);
-      append(boundBuf, ptr, getSectionSegmentPool());
+      if (handle.m_cnt > 1)
+      {
+        SegmentedSectionPtr ptr;
+        ndbrequire(handle.getSection(ptr, SubSyncReq::TUX_BOUND_INFO));
+        LocalSyncRecordBuffer boundBuf(c_dataBufferPool, syncPtr.p->m_boundInfo);
+        append(boundBuf, ptr, getSectionSegmentPool());
+      }
     }
     releaseSections(handle);
   }
@@ -3546,9 +3548,12 @@ Suma::SyncRecord::nextScan(Signal* signal)
     {
       attrInfo[pos++] = *it.data;
     }
-    ptr[1].p = &attrInfo[oldpos];
-    ptr[1].sz = pos - oldpos;
-    noOfSections = 2;
+    if (pos > oldpos)
+    {
+      ptr[1].p = &attrInfo[oldpos];
+      ptr[1].sz = pos - oldpos;
+      noOfSections = 2;
+    }
   }
   suma.sendSignal(lqhRef, GSN_SCAN_FRAGREQ, signal, 
 		  ScanFragReq::SignalLength, JBB, ptr, noOfSections);

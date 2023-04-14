@@ -1,3 +1,20 @@
+/*
+ * This file is part of the RonDB REST API Server
+ * Copyright (c) 2023 Hopsworks AB
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package rest
 
 import (
@@ -17,6 +34,7 @@ import (
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	"hopsworks.ai/rdrs/internal/handlers/stat"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/security/apikey"
 )
 
 type RonDBRestServer struct {
@@ -24,12 +42,18 @@ type RonDBRestServer struct {
 	server *http.Server
 }
 
-func New(host string, port uint16, tlsConfig *tls.Config, heap *heap.Heap) *RonDBRestServer {
+func New(
+	host string,
+	port uint16,
+	tlsConfig *tls.Config,
+	heap *heap.Heap,
+	apiKeyCache apikey.Cache,
+) *RonDBRestServer {
 	restApiAddress := fmt.Sprintf("%s:%d", host, port)
 	log.Infof("Initialising REST API server with network address: '%s'", restApiAddress)
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New() // gin.Default() for better logging
-	registerHandlers(router, heap)
+	registerHandlers(router, heap, apiKeyCache)
 	return &RonDBRestServer{
 		server: &http.Server{
 			Addr:      restApiAddress,
@@ -43,10 +67,10 @@ func (s *RonDBRestServer) Start(quit chan os.Signal) (cleanupFunc func()) {
 	go func() {
 		var err error
 		conf := config.GetAll()
-		if conf.Security.EnableTLS {
+		if conf.Security.TLS.EnableTLS {
 			err = s.server.ListenAndServeTLS(
-				conf.Security.CertificateFile,
-				conf.Security.PrivateKeyFile,
+				conf.Security.TLS.CertificateFile,
+				conf.Security.TLS.PrivateKeyFile,
 			)
 		} else {
 			err = s.server.ListenAndServe()
@@ -75,15 +99,15 @@ type RouteHandler struct {
 	batchPkReadHandler batchpkread.Handler
 }
 
-func registerHandlers(router *gin.Engine, heap *heap.Heap) {
+func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache) {
 	router.Use(ErrorHandler)
 
 	versionGroup := router.Group(config.VERSION_GROUP)
 
 	routeHandler := &RouteHandler{
-		statsHandler:       stat.New(heap),
-		pkReadHandler:      pkread.New(heap),
-		batchPkReadHandler: batchpkread.New(heap),
+		statsHandler:       stat.New(heap, apiKeyCache),
+		pkReadHandler:      pkread.New(heap, apiKeyCache),
+		batchPkReadHandler: batchpkread.New(heap, apiKeyCache),
 	}
 
 	// ping
@@ -104,8 +128,10 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap) {
 func ErrorHandler(c *gin.Context) {
 	c.Next()
 
-	for i, ginErr := range c.Errors {
-		log.Errorf("GIN error nr %d: %s", i, ginErr.Error())
+	if log.IsDebug() {
+		for i, ginErr := range c.Errors {
+			log.Debugf("GIN error nr %d: %s", i, ginErr.Error())
+		}
 	}
 
 	if len(c.Errors) > 0 {
