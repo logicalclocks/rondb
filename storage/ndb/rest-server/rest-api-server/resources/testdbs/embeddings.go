@@ -195,6 +195,11 @@ var DB027Scheme string
 
 const DB027 = "db027"
 
+//go:embed fixed/FSDB001.sql
+var FSDB001Scheme string
+
+const FSDB001 = "fsdb001"
+
 // This is sentinel DB
 // If this exists then we have successfully initialized all the DBs
 //

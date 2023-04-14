@@ -31,6 +31,7 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
+	"hopsworks.ai/rdrs/internal/handlers/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	"hopsworks.ai/rdrs/internal/handlers/stat"
 	"hopsworks.ai/rdrs/internal/log"
@@ -97,10 +98,11 @@ func (s *RonDBRestServer) Start(quit chan os.Signal) (cleanupFunc func()) {
 
 type RouteHandler struct {
 	// TODO: Add thread-safe logger
-	statsHandler       stat.Handler
-	pkReadHandler      pkread.Handler
-	batchPkReadHandler batchpkread.Handler
-	rdrsMetrics        *metrics.RDRSMetrics
+	statsHandler        stat.Handler
+	pkReadHandler       pkread.Handler
+	batchPkReadHandler  batchpkread.Handler
+	rdrsMetrics         *metrics.RDRSMetrics
+	featureStoreHandler feature_store.Handler
 }
 
 func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache, rdrsMetrics *metrics.RDRSMetrics) {
@@ -108,11 +110,13 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 
 	versionGroup := router.Group(config.VERSION_GROUP)
 
+	batchPkReadHandler := batchpkread.New(heap, apiKeyCache)
 	routeHandler := &RouteHandler{
-		statsHandler:       stat.New(heap, apiKeyCache),
-		pkReadHandler:      pkread.New(heap, apiKeyCache),
-		batchPkReadHandler: batchpkread.New(heap, apiKeyCache),
-		rdrsMetrics:        rdrsMetrics,
+		statsHandler:        stat.New(heap, apiKeyCache),
+		pkReadHandler:       pkread.New(heap, apiKeyCache),
+		batchPkReadHandler:  batchpkread.New(heap, apiKeyCache),
+		rdrsMetrics:         rdrsMetrics,
+		featureStoreHandler: feature_store.New(apiKeyCache, batchPkReadHandler),
 	}
 
 	// ping
@@ -130,6 +134,9 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 
 	// prometheus
 	router.GET("/metrics", routeHandler.Metrics)
+
+	// feature store
+	versionGroup.POST("/"+config.FEATURE_STORE_OPERATION, routeHandler.FeatureStore)
 }
 
 // TODO: Pass logger to this like in https://stackoverflow.com/a/69948929/9068781
