@@ -23,7 +23,6 @@ import (
 	"net/http"
 
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/security/apikey"
@@ -32,13 +31,12 @@ import (
 )
 
 type Handler struct {
-	heap          *heap.Heap // FIXME. I may not need this
 	apiKeyCache   apikey.Cache
 	dbBatchReader batchpkread.Handler
 }
 
-func New(heap *heap.Heap, apiKeyCache apikey.Cache, batchPkReadHandler batchpkread.Handler) Handler {
-	return Handler{heap, apiKeyCache, batchPkReadHandler}
+func New(apiKeyCache apikey.Cache, batchPkReadHandler batchpkread.Handler) Handler {
+	return Handler{apiKeyCache, batchPkReadHandler}
 }
 
 func (h *Handler) Validate(request interface{}) error {

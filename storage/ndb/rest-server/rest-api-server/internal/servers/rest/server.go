@@ -111,7 +111,7 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 		statsHandler:        stat.New(heap, apiKeyCache),
 		pkReadHandler:       pkread.New(heap, apiKeyCache),
 		batchPkReadHandler:  batchPkReadHandler,
-		featureStoreHandler: feature_store.New(heap, apiKeyCache, batchPkReadHandler),
+		featureStoreHandler: feature_store.New(apiKeyCache, batchPkReadHandler),
 	}
 
 	// ping
