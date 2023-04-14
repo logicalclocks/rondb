@@ -41,6 +41,9 @@ COVERAGE_OUTPUT_FILE?=./coverage.out
 COVERAGE_HTML_OUTPUT_FILE?=./coverage.html
 COVERAGE_FUNC_OUTPUT_FILE?=/dev/stdout
 
+#CGO_LDFLAGS
+MY_CGO_LDFLAGS?="-g -O3 -L${RDRS_LIB_DIR}/ -Wl,-rpath,../lib -Wl,-rpath,${RDRS_LIB_DIR}  -lrdrclient"
+
 all: rdrs
 
 BUILD_COMMAND=go build -ldflags="-w \
@@ -53,7 +56,7 @@ BUILD_COMMAND=go build -ldflags="-w \
 rdrs:
 	export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
 	export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
-	CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" ${BUILD_COMMAND}
+	CGO_LDFLAGS=${MY_CGO_LDFLAGS} ${BUILD_COMMAND}
 
 clean:
 	go clean -cache
@@ -76,7 +79,7 @@ test:
 	export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
 	export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
 	export RDRS_CONFIG_FILE=$(RDRS_CONFIG_FILE) && \
-	export CGO_LDFLAGS="-g -O3 -L${RDRS_LIB_DIR} -lrdrclient" && \
+	export CGO_LDFLAGS=${MY_CGO_LDFLAGS} && \
 	go test -v -p 1 -run $(TEST) -coverprofile $(COVERAGE_OUTPUT_FILE) -coverpkg  $(TEST_PACKAGE) `go list $(TEST_PACKAGE) | grep -v cmd`
 
 # Run specific benchmark (remove profiling for better performance):
