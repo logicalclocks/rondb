@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -872,6 +873,11 @@ public:
      * Check if table is equal to some other table
      */
     bool equal(const Table&) const;
+
+    /**
+     * Check if new hash function used in this table
+     */
+    bool use_new_hash_function() const;
 
 #ifndef DOXYGEN_SHOULD_SKIP_DEPRECATED
     /**

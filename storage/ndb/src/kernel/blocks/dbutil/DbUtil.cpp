@@ -2601,11 +2601,11 @@ DbUtil::execTRANSID_AI(Signal* signal){
      * transaction was aborted and the TRANSID_AI was delayed
      */
     OperationPtr opPtr;
-    ndbrequire(c_operationPool.getPtr(opPtr, opI));
+    bool ret_code = c_operationPool.getPtr(opPtr, opI);
     opP = opPtr.p;
     
     /* Use transPtrI == RNIL as test of op record validity */
-    if (opP->transPtrI == RNIL)
+    if (!ret_code || opP->transPtrI == RNIL)
     {
       jam();
       break;

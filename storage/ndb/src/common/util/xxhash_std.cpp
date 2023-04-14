@@ -1,7 +1,5 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
-
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
    as published by the Free Software Foundation.
@@ -23,83 +21,14 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#ifndef ACC_FRAG_HPP
-#define ACC_FRAG_HPP
+#include <ndb_global.h>
 
-#include "SignalData.hpp"
+/* XXH hash function */
+#define XXH_INLINE_ALL
+#include <util/ndb_xxhash.h>
 
-#define JAM_FILE_ID 166
-
-
-class AccFragReq {
-  /**
-   * Sender(s)
-   */
-  friend class Dblqh;
-
-  /**
-   * Receiver(s)
-   */
-  friend class Dbacc;
-public:
-  static constexpr Uint32 SignalLength = 13;
-
-private:
-  Uint32 userPtr;
-  Uint32 userRef;
-  Uint32 tableId;
-  Uint32 reqInfo;
-  Uint32 fragId;
-  Uint32 localKeyLen;
-  Uint32 maxLoadFactor;
-  Uint32 minLoadFactor;
-  Uint32 kValue;
-  Uint32 lhFragBits;
-  Uint32 lhDirBits;
-  Uint32 keyLength;
-  Uint32 hashFunctionFlag;
-};
-
-class AccFragConf {
-  /**
-   * Sender(s)
-   */
-  friend class Dbacc;
-
-  /**
-   * Receiver(s)
-   */
-  friend class Dblqh;
-public:
-  static constexpr Uint32 SignalLength = 7;
-
-private:
-  Uint32 userPtr;
-  Uint32 rootFragPtr;
-  Uint32 fragId[2];
-  Uint32 fragPtr[2];
-  Uint32 rootHashCheck;
-};
-
-class AccFragRef {
-  /**
-   * Sender(s)
-   */
-  friend class Dbacc;
-
-  /**
-   * Receiver(s)
-   */
-  friend class Dblqh;
-public:
-  static constexpr Uint32 SignalLength = 2;
-
-private:
-  Uint32 userPtr;
-  Uint32 errorCode;
-};
-
-
-#undef JAM_FILE_ID
-
-#endif
+Uint64
+rondb_xxhash_std(const Uint64* keybuf, Uint32 keylen_words)
+{
+  return XXH3_64bits(keybuf, 4*keylen_words);
+}

@@ -1,5 +1,6 @@
 /* Copyright (c) 2007, 2023, Oracle and/or its affiliates.
    Use is subject to license terms
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -48,18 +49,24 @@ printCREATE_TAB_REQ(FILE* output, const Uint32* theData, Uint32 len, Uint16)
     fprintf(output, " tableType: %u", sig->tableType);
     fprintf(output, " primaryTableId: %u", sig->primaryTableId);
     fprintf(output, " tablespace_id: %u", sig->tablespace_id);
+    fprintf(output, "\n");
     fprintf(output, " forceVarPartFlag: %u", sig->forceVarPartFlag);
     fprintf(output, " noOfAttributes: %u", sig->noOfAttributes);
-    fprintf(output, "\n");
     fprintf(output, " noOfNullAttributes: %u", sig->noOfNullAttributes);
+    fprintf(output, "\n");
     fprintf(output, " noOfKeyAttr: %u", sig->noOfKeyAttr);
     fprintf(output, " checksumIndicator: %u", sig->checksumIndicator);
     fprintf(output, " GCPIndicator: %u", sig->GCPIndicator);
+    fprintf(output, "\n");
     fprintf(output, " extraRowAuthorBits: %u", sig->extraRowAuthorBits);
   }
   if (len > 17)
   {
     fprintf(output, " useVarSizedDiskData: %u", sig->useVarSizedDiskData);
+  }
+  if (len > 18)
+  {
+    fprintf(output, " hashFunctionFlag: %u", sig->hashFunctionFlag);
   }
   fprintf(output, "\n");
   return true;

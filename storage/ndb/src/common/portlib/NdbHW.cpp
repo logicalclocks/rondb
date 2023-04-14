@@ -47,6 +47,7 @@ static int initres = 0;
 
 static Uint32 ncpu = 0;
 static Uint64 ticks_per_us = 0;
+static Uint32 avx2_supported = 0;
 
 static struct ndb_hwinfo *g_ndb_hwinfo = nullptr;
 
@@ -67,6 +68,11 @@ static int Ndb_ReloadCPUData(struct ndb_hwinfo *);
 static int Ndb_ReloadHWInfo(struct ndb_hwinfo *);
 static int NdbHW_Init_platform();
 static void NdbHW_End_platform();
+
+Uint32 is_avx2_supported()
+{
+  return avx2_supported;
+}
 
 int NdbHW_Init()
 {

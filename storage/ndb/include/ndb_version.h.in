@@ -885,4 +885,47 @@ ndbd_support_parallel_copy_fragment(Uint32 x)
   }
   return false;
 }
+
+static
+inline
+bool
+ndbd_support_new_hash_function(Uint32 x)
+{
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  const Uint32 rel = x & 0xFF;
+  if (major > 22)
+  {
+    return true;
+  }
+  if ((major == 22) && (minor == 10) && (rel >= 1))
+  {
+    return true;
+  }
+  return false;
+}
+
+static
+inline
+bool
+ndbd_handle_new_hash_function(Uint32 x)
+{
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  const Uint32 rel = x & 0xFF;
+  if (major > 22)
+  {
+    return true;
+  }
+  if ((major == 22) && (minor == 10) && (rel >= 1))
+  {
+    return true;
+  }
+  if ((major == 21) && (minor == 04) && (rel >= 15))
+  {
+    return true;
+  }
+  return false;
+}
+
 #endif

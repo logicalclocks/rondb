@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2012, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -32,7 +33,7 @@
 
 #include <NdbTap.hpp>
 
-#include "md5_hash.hpp"
+#include "rondb_hash.hpp"
 #include "random.h"
 #include "LHLevel.hpp"
 
@@ -44,6 +45,7 @@ struct elem
   Uint16 head;
   static LHBits32 hash(Uint32 val)
   {
+    //Only used for unit test
     return LHBits32(md5_hash((Uint64*)&val, 1));
   }
 };

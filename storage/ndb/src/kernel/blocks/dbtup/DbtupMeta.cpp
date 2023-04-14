@@ -64,6 +64,13 @@
 //#define DEBUG_TUP_META_EXTRA 1
 //#define DEBUG_DROP_TAB 1
 //#define DEBUG_DYN_META 1
+#define DEBUG_HASH 1
+#endif
+
+#ifdef DEBUG_HASH
+#define DEB_HASH(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_HASH(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_DYN_META
@@ -135,11 +142,6 @@ Dbtup::execCREATE_TAB_REQ(Signal* signal)
     req->GCPIndicator > 1 ? req->GCPIndicator - 1 : 0;
   fragOperPtr.p->m_extra_row_author_bits = req->extraRowAuthorBits;
 
-  if (signal->length() < CreateTabReq::SignalLengthLDM)
-  {
-    jam();
-    req->useVarSizedDiskData = 0;
-  }
   regTabPtr.p->m_createTable.m_fragOpPtrI = fragOperPtr.i;
   regTabPtr.p->m_createTable.defValSectionI = RNIL;
   regTabPtr.p->tableStatus= DEFINING;
@@ -156,6 +158,13 @@ Dbtup::execCREATE_TAB_REQ(Signal* signal)
     (req->extraRowAuthorBits ? Tablerec::TR_ExtraRowAuthorBits : 0);
   regTabPtr.p->m_bits |=
     (req->useVarSizedDiskData ? Tablerec::TR_UseVarSizedDiskData : 0);
+  regTabPtr.p->m_bits |=
+    (req->hashFunctionFlag ? Tablerec::TR_HashFunction : 0);
+
+  DEB_HASH(("(%u) tab(%u) hashFunctionFlag: %u",
+            instance(),
+            regTabPtr.i,
+            req->hashFunctionFlag));
 
   regTabPtr.p->m_offsets[MM].m_disk_ref_offset= 0;
   regTabPtr.p->m_offsets[MM].m_null_words= 0;

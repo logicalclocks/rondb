@@ -28,7 +28,7 @@
 #include <algorithm>
 #include <cstring>
 #include <ndb_limits.h>
-#include <md5_hash.hpp>
+#include <util/rondb_hash.hpp>
 
 #include <ndb_version.h>
 #include <signaldata/GetCpuUsage.hpp>
@@ -144,6 +144,13 @@
 //#define DEBUG_LOG_QUEUE 1
 //#define DEBUG_PARALLEL_COPY_EXTRA 1
 //#define DEBUG_PARALLEL_COPY 1
+//#define DEBUG_HASH 1
+#endif
+
+#ifdef DEBUG_HASH
+#define DEB_HASH(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_HASH(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_PARALLEL_COPY
@@ -2708,9 +2715,25 @@ Dblqh::execCREATE_TAB_REQ(Signal* signal)
     return;
   }
 
+  if (signal->length() < CreateTabReq::SignalLengthLDM)
+  {
+    jam();
+    req->useVarSizedDiskData = 0;
+  }
+  if (signal->length() < CreateTabReq::NewSignalLengthLDM)
+  {
+    jam();
+    req->hashFunctionFlag = 0;
+  }
+
+  DEB_HASH(("(%u) lqh_tab(%u) hashFunctionFlag: %u",
+            instance(),
+            tabptr.i,
+            req->hashFunctionFlag));
+
   seizeAddfragrec(signal);
   addfragptr.p->m_createTabReq = *req;
-  addfragptr.p->m_createTabReq_len = signal->length();
+  addfragptr.p->m_createTabReq_len = CreateTabReq::NewSignalLengthLDM;
   req = &addfragptr.p->m_createTabReq;
 
   DEB_SCHEMA_VERSION(("(%u)tab: %u tableStatus = ADD_TABLE_ONGOING",
@@ -2721,13 +2744,32 @@ Dblqh::execCREATE_TAB_REQ(Signal* signal)
   tabptr.p->m_addfragptr_i = RNIL;
   tabptr.p->primaryTableId = (req->primaryTableId == RNIL ? tabptr.i :
                               req->primaryTableId);
+
   tabptr.p->schemaVersion = req->tableVersion;
   DEB_SCHEMA_VERSION(("(%u)tab(%u): %u tableStatus = ADD_TABLE_ONGOING",
                       instance(),
                       tabptr.p->schemaVersion,
                       tabptr.i));
   tabptr.p->m_disk_table= 0;
+  tabptr.p->m_use_new_hash_function = (req->hashFunctionFlag != 0);
 
+  if (req->primaryTableId != RNIL)
+  {
+    TablerecPtr primaryTabPtr;
+    primaryTabPtr.i = req->primaryTableId;
+    ptrCheckGuard(primaryTabPtr, ctabrecFileSize, tablerec);
+    DEB_HASH(("(%u) tab(%u) m_use_new_hash_function: %u, primary: (%u):%u",
+              instance(),
+              tabptr.i,
+              tabptr.p->m_use_new_hash_function,
+              primaryTabPtr.i,
+              primaryTabPtr.p->m_use_new_hash_function));
+    ndbrequire(primaryTabPtr.p->m_use_new_hash_function ==
+               tabptr.p->m_use_new_hash_function);
+    tabptr.p->m_use_new_hash_function =
+      primaryTabPtr.p->m_use_new_hash_function;
+
+  }
   addfragptr.p->addfragStatus = AddFragRecord::WAIT_TUP;
   if (tabptr.i == tabptr.p->primaryTableId ||
       !DictTabInfo::isOrderedIndex(tabptr.p->tableType))
@@ -3438,6 +3480,7 @@ void Dblqh::execLQHFRAGREQ(Signal* signal)
     accreq->lhFragBits = addfragptr.p->m_lqhFragReq.lh3DistrBits;
     accreq->lhDirBits = addfragptr.p->m_lqhFragReq.lh3PageBits;
     accreq->keyLength = addfragptr.p->m_lqhFragReq.keyLength;
+    accreq->hashFunctionFlag = tabptr.p->m_use_new_hash_function;
     /* --------------------------------------------------------------------- */
     /* Send ACCFRAGREQ, when confirmation is received send 2 * TUPFRAGREQ to */
     /* create 2 tuple fragments on this node.                                */
@@ -10815,6 +10858,9 @@ Dblqh::nr_copy_delete_row(Signal* signal,
   
   prefetch_op_record_3((Uint32*)regTcPtr.p->accConnectPtrP);
 
+  tabptr.i = tableId;
+  ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
+
   Uint32 accreq = 0;
   accreq = AccKeyReq::setOperation(accreq, ZDELETE);
   accreq = AccKeyReq::setLockType(accreq, ZDELETE);
@@ -10823,6 +10869,7 @@ Dblqh::nr_copy_delete_row(Signal* signal,
   accreq = AccKeyReq::setTakeOver(accreq, false);
   accreq = AccKeyReq::setLockReq(accreq, false);
 
+  bool use_new_hash_function = tabptr.p->m_use_new_hash_function;
   AccKeyReq * const req = reinterpret_cast<AccKeyReq*>(&signal->theData[0]);
   req->requestInfo = accreq;
   req->transId1 = regTcPtr.p->transid[0];
@@ -10834,11 +10881,15 @@ Dblqh::nr_copy_delete_row(Signal* signal,
     jam();
     if (g_key_descriptor_pool.getPtr(tableId)->hasCharAttr)
     {
-      req->hashValue = calculateHash(tableId, signal->theData+24);
+      req->hashValue = calculateHash(tableId,
+                                     signal->theData+24,
+                                     use_new_hash_function);
     }
     else
     {
-      req->hashValue = md5_hash((Uint64*)(signal->theData+24), len);
+      req->hashValue = rondb_calc_hash_val((Uint64*)(signal->theData+24),
+                                           len,
+                                           use_new_hash_function);
     }
     req->keyLen = 0; // search by local key
     req->localKey[0] = rowid->m_page_no;
@@ -20980,7 +21031,9 @@ void Dblqh::sendScanFragConf(Signal* signal,
 /*   CONNECTIONS TO THE FAILED NODE.                                         */
 /*---------------------------------------------------------------------------*/
 Uint32 
-Dblqh::calculateHash(Uint32 tableId, const Uint32* src) 
+Dblqh::calculateHash(Uint32 tableId,
+                     const Uint32* src,
+                     bool use_new_hash_function)
 {
   jam();
   Uint64 Tmp[(MAX_KEY_SIZE_IN_WORDS*MAX_XFRM_MULTIPLY) >> 1];
@@ -20990,7 +21043,7 @@ Dblqh::calculateHash(Uint32 tableId, const Uint32* src)
                                 keyPartLen);
   ndbrequire(keyLen);
   
-  return md5_hash(Tmp, keyLen);
+  return rondb_calc_hash_val(Tmp, keyLen, use_new_hash_function);
 }//Dblqh::calculateHash()
 
 /**
@@ -21841,6 +21894,8 @@ void Dblqh::copyTupkeyConfLab(Signal* signal,
     closeCopyLab(signal, tcConnectptr.p);
     return;
   }//if
+  tabptr.i = tableId;
+  ptrCheckGuard(tabptr, ctabrecFileSize, tablerec);
   TcConnectionrec * tcConP = tcConnectptr.p;
   tcConnectptr.p->totSendlenAi = readLength;
   tcConnectptr.p->connectState = TcConnectionrec::COPY_CONNECTED;
@@ -21850,6 +21905,7 @@ void Dblqh::copyTupkeyConfLab(Signal* signal,
    */
   Uint32* tmp = signal->getDataPtrSend()+24;
   Uint32 len= tcConnectptr.p->primKeyLen = readPrimaryKeys(scanP, tcConP, tmp);
+  bool use_new_hash_function = tabptr.p->m_use_new_hash_function;
   
   ndbassert(!m_is_in_query_thread);
   tcConP->gci_hi = tmp[len];
@@ -21857,11 +21913,13 @@ void Dblqh::copyTupkeyConfLab(Signal* signal,
   // Calculate hash (no need to linearise key)
   if (g_key_descriptor_pool.getPtr(tableId)->hasCharAttr)
   {
-    tcConnectptr.p->hashValue = calculateHash(tableId, tmp);
+    tcConnectptr.p->hashValue =
+      calculateHash(tableId, tmp, use_new_hash_function);
   }
   else
   {
-    tcConnectptr.p->hashValue = md5_hash((Uint64*)tmp, len);
+    tcConnectptr.p->hashValue = 
+      rondb_calc_hash_val((Uint64*)tmp, len, use_new_hash_function);
   }
 
   // Copy keyinfo into long section for LQHKEYREQ below
@@ -29291,6 +29349,7 @@ Dblqh::send_restore_lcp(Signal * signal)
       req->tableId = fragptr.p->tabRef;
       req->fragmentId = fragptr.p->fragId;
       req->lcpNo = fragptr.p->srChkpnr;
+      req->hashFunctionFlag = tabPtr.p->m_use_new_hash_function;
       if (fragptr.p->srChkpnr == ZNIL)
       {
         jam();

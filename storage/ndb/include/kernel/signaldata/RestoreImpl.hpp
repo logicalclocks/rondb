@@ -43,7 +43,8 @@ struct RestoreLcpReq
   Uint32 maxGciCompleted;
   Uint32 createGci;
   Uint32 cnewestGci;
-  static constexpr Uint32 SignalLength = 10;
+  Uint32 hashFunctionFlag;
+  static constexpr Uint32 SignalLength = 11;
 };
 
 struct RestoreLcpRef

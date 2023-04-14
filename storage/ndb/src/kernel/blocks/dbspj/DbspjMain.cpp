@@ -47,7 +47,6 @@
 #include <AttributeHeader.hpp>
 #include <AttributeDescriptor.hpp>
 #include <KeyDescriptor.hpp>
-#include <md5_hash.hpp>
 #include <signaldata/TcKeyConf.hpp>
 
 #include <signaldata/NodeFailRep.hpp>
@@ -55,8 +54,19 @@
 #include <signaldata/SignalDroppedRep.hpp>
 #include <EventLogger.hpp>
 #include <Bitmask.hpp>
+#include <util/rondb_hash.hpp>
 
 #define JAM_FILE_ID 479
+
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_HASH 1
+#endif
+
+#ifdef DEBUG_HASH
+#define DEB_HASH(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_HASH(arglist) do { } while (0)
+#endif
 
 extern Uint32 ErrorSignalReceive;
 extern Uint32 ErrorMaxSegmentsToSeize;
@@ -332,6 +342,17 @@ void Dbspj::execTC_SCHVERREQ(Signal* signal)
     jam();
     tablePtr.p->m_flags |= TableRecord::TR_FULLY_REPLICATED;
   }
+
+  if (req->hashFunctionFlag)
+  {
+    jam();
+    tablePtr.p->m_flags |= TableRecord::TR_HASH_FUNCTION;
+  }
+
+  DEB_HASH(("(%u) spj_index(%u) hashFunctionFlag: %u",
+            instance(),
+            tableId,
+            req->hashFunctionFlag));
 
   /**
    * NOTE: Even if there are more information, like 
@@ -5984,7 +6005,8 @@ Uint32
 Dbspj::handle_special_hash(Uint32 tableId, Uint32 dstHash[4],
                            const Uint64* src,
                            Uint32 srcLen,       // Len in #32bit words
-                           const KeyDescriptor* desc)
+                           const KeyDescriptor* desc,
+                           bool use_new_hash_function)
 {
   const Uint32 MAX_KEY_SIZE_IN_LONG_WORDS=
     (MAX_KEY_SIZE_IN_WORDS + 1) / 2;
@@ -6022,7 +6044,7 @@ Dbspj::handle_special_hash(Uint32 tableId, Uint32 dstHash[4],
   }
 
   /* Calculate primary key hash */
-  md5_hash(dstHash, hashInput, inputLen);
+  rondb_calc_hash(dstHash, hashInput, inputLen, use_new_hash_function);
 
   /* If the distribution key != primary key then we have to
    * form a distribution key from the primary key and calculate
@@ -6034,9 +6056,15 @@ Dbspj::handle_special_hash(Uint32 tableId, Uint32 dstHash[4],
 
     Uint32 distrKeyHash[4];
     /* Reshuffle primary key columns to get just distribution key */
-    Uint32 len = create_distr_key(tableId, (Uint32*)hashInput, (Uint32*)alignedWorkspace, keyPartLenPtr);
+    Uint32 len = create_distr_key(tableId,
+                                  (Uint32*)hashInput,
+                                  (Uint32*)alignedWorkspace,
+                                  keyPartLenPtr);
     /* Calculate distribution key hash */
-    md5_hash(distrKeyHash, alignedWorkspace, len);
+    rondb_calc_hash(distrKeyHash,
+                    alignedWorkspace,
+                    len,
+                    use_new_hash_function);
 
     /* Just one word used for distribution */
     dstHash[1] = distrKeyHash[1];
@@ -6048,6 +6076,9 @@ Uint32
 Dbspj::computeHash(Signal* signal,
                    BuildKeyReq& dst, Uint32 tableId, Uint32 ptrI)
 {
+  TableRecordPtr tablePtr;
+  tablePtr.i = tableId;
+  ptrCheckGuard(tablePtr, c_tabrecFilesize, m_tableRecord);
   /**
    * Essentially the same code as in Dbtc::hash().
    * The code for user defined partitioning has been removed though.
@@ -6055,8 +6086,11 @@ Dbspj::computeHash(Signal* signal,
   SegmentedSectionPtr ptr;
   getSection(ptr, ptrI);
 
-  /* NOTE:  md5_hash below require 64-bit alignment
+  /* NOTE:  rondb_calc_hash below require 64-bit alignment
    */
+
+  bool use_new_hash_function =
+    ((tablePtr.p->m_flags & TableRecord::TR_HASH_FUNCTION) != 0);
   const Uint32 MAX_KEY_SIZE_IN_LONG_WORDS=
     (MAX_KEY_SIZE_IN_WORDS + 1) / 2;
   Uint64 tmp64[MAX_KEY_SIZE_IN_LONG_WORDS];
@@ -6071,12 +6105,17 @@ Dbspj::computeHash(Signal* signal,
   if (need_special_hash)
   {
     jam();
-    return handle_special_hash(tableId, dst.hashInfo, tmp64, ptr.sz, desc);
+    return handle_special_hash(tableId,
+                               dst.hashInfo,
+                               tmp64,
+                               ptr.sz,
+                               desc,
+                               use_new_hash_function);
   }
   else
   {
     jam();
-    md5_hash(dst.hashInfo, tmp64, ptr.sz);
+    rondb_calc_hash(dst.hashInfo, tmp64, ptr.sz, use_new_hash_function);
     return 0;
   }
 }
@@ -6089,10 +6128,13 @@ Uint32
 Dbspj::computePartitionHash(Signal* signal,
                             BuildKeyReq& dst, Uint32 tableId, Uint32 ptrI)
 {
+  TableRecordPtr tablePtr;
+  tablePtr.i = tableId;
   SegmentedSectionPtr ptr;
   getSection(ptr, ptrI);
+  ptrCheckGuard(tablePtr, c_tabrecFilesize, m_tableRecord);
 
-  /* NOTE:  md5_hash below require 64-bit alignment
+  /* NOTE:  rondb_calc_hash below require 64-bit alignment
    */
   const Uint32 MAX_KEY_SIZE_IN_LONG_WORDS=
     (MAX_KEY_SIZE_IN_WORDS + 1) / 2;
@@ -6101,6 +6143,8 @@ Dbspj::computePartitionHash(Signal* signal,
   Uint32 *tmp32 = (Uint32*)tmp64;
   Uint32 sz = ptr.sz;
   ndbassert(ptr.sz <= MAX_KEY_SIZE_IN_WORDS);
+  bool use_new_hash_function =
+    ((tablePtr.p->m_flags & TableRecord::TR_HASH_FUNCTION) != 0);
   copy(tmp32, ptr);
 
   const KeyDescriptor* desc = g_key_descriptor_pool.getPtr(tableId);
@@ -6137,7 +6181,7 @@ Dbspj::computePartitionHash(Signal* signal,
     sz = dstPos;
   }
 
-  md5_hash(dst.hashInfo, tmp64, sz);
+  rondb_calc_hash(dst.hashInfo, tmp64, sz, use_new_hash_function);
   return 0;
 }
 

@@ -124,6 +124,13 @@
 //#define DEBUG_API_FAIL
 //#define DEBUG_STRING_MEMORY 1
 //#define DO_TRANSIENT_POOL_STAT 1
+#define DEBUG_HASH 1
+#endif
+
+#ifdef DEBUG_HASH
+#define DEB_HASH(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_HASH(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_API_FAIL
@@ -1052,8 +1059,14 @@ Dbdict::packTableIntoPages(SimpleProperties::Writer & w,
 	!!(tablePtr.p->m_bits & TableRecord::TR_ReadBackup));
   w.add(DictTabInfo::FullyReplicatedFlag,
         !!(tablePtr.p->m_bits & TableRecord::TR_FullyReplicated));
+  w.add(DictTabInfo::HashFunctionFlag,
+        ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) != 0));
   w.add(DictTabInfo::UseVarSizedDiskDataFlag,
         !!(tablePtr.p->m_bits & TableRecord::TR_UseVarSizedDiskData));
+
+  DEB_HASH(("dict_tab(%u) HashFunctionFlag: %u",
+            tablePtr.p->tableId,
+            ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) != 0)));
 
   D("packTableIntoPages: tableId: " << tablePtr.p->tableId
     << " tablePtr.i = " << tablePtr.i << " tableVersion = "
@@ -6003,24 +6016,65 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
   case DictTabInfo::CreateTableFromAPI:
   {
     jam();
-    bool support = true;
+    bool support_varsized_diskdata = true;
+    bool support_new_hash_function = true;
     for (Uint32 node = 1; node < MAX_NDB_NODES; node++)
     {
       if (getNodeInfo(node).getType() == NodeInfo::DB)
       {
-        jam();
-        jamData(Uint16(node));
-        if ((!ndbd_support_varsized_diskdata(getNodeInfo(node).m_version)) &&
-            getNodeInfo(node).m_version != 0)
+        if (getNodeInfo(node).m_version != 0)
         {
           jam();
-          jamDataDebug(getNodeInfo(node).m_version);
-          support = false;
-          break;
+          jamData(Uint16(node));
+          if ((!ndbd_support_varsized_diskdata(getNodeInfo(node).m_version)))
+          {
+            jam();
+            jamDataDebug(getNodeInfo(node).m_version);
+            support_varsized_diskdata = false;
+            break;
+          }
+          if ((!ndbd_support_new_hash_function(getNodeInfo(node).m_version)))
+          {
+            jam();
+            jamDataDebug(getNodeInfo(node).m_version);
+            support_new_hash_function = false;
+            break;
+          }
         }
       }
     }
-    if (support)
+    if (support_new_hash_function)
+    {
+      for (Uint32 node = 1; node < MAX_NODES; node++)
+      {
+        if (getNodeInfo(node).getType() == NodeInfo::API)
+        {
+          if (getNodeInfo(node).m_version != 0)
+          {
+            jam();
+            jamData(Uint16(node));
+            if ((!ndbd_handle_new_hash_function(getNodeInfo(node).m_version)))
+            {
+              jam();
+              jamDataDebug(getNodeInfo(node).m_version);
+              support_new_hash_function = false;
+              break;
+            }
+          }
+        }
+      }
+    }
+    if (support_new_hash_function && (c_tableDesc.HashFunctionFlag != 0))
+    {
+      jam();
+      c_tableDesc.HashFunctionFlag = 1;
+    }
+    else
+    {
+      jam();
+      c_tableDesc.HashFunctionFlag = 0;
+    }
+    if (support_varsized_diskdata)
     {
       jam();
       c_tableDesc.UseVarSizedDiskDataFlag = ZTRUE;
@@ -6030,6 +6084,8 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
       jam();
       c_tableDesc.UseVarSizedDiskDataFlag = ZFALSE;
     }
+    D("CreateTableFromApi: tableName = " << c_tableDesc.TableName
+      << " HashFunctionFlag = " << c_tableDesc.HashFunctionFlag);
   }
   [[fallthrough]];
   case DictTabInfo::AlterTableFromAPI:{
@@ -6211,6 +6267,9 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
     (c_tableDesc.ReadBackupFlag ? TableRecord::TR_ReadBackup : 0);
   tablePtr.p->m_bits |=
     (c_tableDesc.FullyReplicatedFlag ? TableRecord::TR_FullyReplicated : 0);
+  tablePtr.p->m_bits |=
+    (c_tableDesc.HashFunctionFlag ?
+      TableRecord::TR_HashFunction : 0);
   tablePtr.p->m_bits |=
     (c_tableDesc.UseVarSizedDiskDataFlag ?
       TableRecord::TR_UseVarSizedDiskData : 0);
@@ -7859,8 +7918,10 @@ Dbdict::createTab_local(Signal* signal,
   req->extraRowAuthorBits = tabPtr.p->m_extra_row_author_bits;
   req->useVarSizedDiskData =
     ((tabPtr.p->m_bits & TableRecord::TR_UseVarSizedDiskData) == 0) ? 0 : 1;
+  req->hashFunctionFlag =
+    ((tabPtr.p->m_bits & TableRecord::TR_HashFunction) == 0) ? 0 : 1;
   sendSignal(DBLQH_REF, GSN_CREATE_TAB_REQ, signal,
-             CreateTabReq::SignalLengthLDM, JBB);
+             CreateTabReq::NewSignalLengthLDM, JBB);
 
 
   /**
@@ -8486,6 +8547,9 @@ Dbdict::execTAB_COMMITCONF(Signal* signal)
     req->noOfPrimaryKeys = (Uint32)tabPtr.p->noOfPrimkey;
     req->singleUserMode = (Uint32)tabPtr.p->singleUserMode;
     req->userDefinedPartition = (tabPtr.p->fragmentType == DictTabInfo::UserDefined);
+    req->hashFunctionFlag =
+      (Uint32)(((tabPtr.p->m_bits &
+                 TableRecord::TR_HashFunction) == 0) ? 0 : 1);
 
     if (!DictTabInfo::isOrderedIndex(tabPtr.p->tableType))
     {
@@ -8661,6 +8725,9 @@ Dbdict::execTC_SCHVERCONF(Signal* signal)
     req->noOfPrimaryKeys = (Uint32)tabPtr.p->noOfPrimkey;
     req->singleUserMode = (Uint32)tabPtr.p->singleUserMode;
     req->userDefinedPartition = (tabPtr.p->fragmentType == DictTabInfo::UserDefined);
+    req->hashFunctionFlag =
+      (Uint32)(((tabPtr.p->m_bits &
+                 TableRecord::TR_HashFunction) == 0) ? 0 : 1);
 
     if (DictTabInfo::isOrderedIndex(tabPtr.p->tableType))
     {
@@ -10887,6 +10954,11 @@ Dbdict::alterTable_toReadBackup(Signal* signal,
     w.add(DictTabInfo::TableTemporaryFlag, (Uint32)flag);
   }
   {
+    bool flag = ((indexPtr.p->m_bits & TableRecord::TR_HashFunction) != 0);
+    w.add(DictTabInfo::HashFunctionFlag, (Uint32)flag);
+    D("HashFunctionFlag: " << flag);
+  }
+  {
     bool flag = indexPtr.p->m_bits & TableRecord::TR_UseVarSizedDiskData;
     w.add(DictTabInfo::UseVarSizedDiskDataFlag, (Uint32)flag);
   }
@@ -11029,6 +11101,11 @@ Dbdict::alterTable_toAlterUniqueIndex(Signal* signal,
   {
     bool flag = indexPtr.p->m_bits & TableRecord::TR_Temporary;
     w.add(DictTabInfo::TableTemporaryFlag, (Uint32)flag);
+  }
+  {
+    bool flag = ((indexPtr.p->m_bits & TableRecord::TR_HashFunction) != 0);
+    w.add(DictTabInfo::HashFunctionFlag, (Uint32)flag);
+    D("HashFunctionFlag: " << flag);
   }
   {
     bool flag = indexPtr.p->m_bits & TableRecord::TR_UseVarSizedDiskData;
@@ -13437,6 +13514,11 @@ Dbdict::createIndex_parse(Signal* signal, bool master,
       jam();
       bits |= TableRecord::TR_Temporary;
     }
+    if (tableDesc.HashFunctionFlag)
+    {
+      jam();
+      bits |= TableRecord::TR_HashFunction;
+    }
     if (tableDesc.UseVarSizedDiskDataFlag)
     {
       jam();
@@ -13702,6 +13784,11 @@ Dbdict::createIndex_toCreateTable(Signal* signal, SchemaOpPtr op_ptr)
   { bool flag = createIndexPtr.p->m_bits & TableRecord::TR_ReadBackup;
     w.add(DictTabInfo::ReadBackupFlag, (Uint32)flag);
     D("ReadBackupFlag: " << flag);
+  }
+  { bool flag =
+    ((createIndexPtr.p->m_bits & TableRecord::TR_HashFunction) != 0);
+    w.add(DictTabInfo::HashFunctionFlag, (Uint32)flag);
+    D("HashFunctionFlag: " << flag);
   }
   { bool flag = createIndexPtr.p->m_bits & TableRecord::TR_UseVarSizedDiskData;
     w.add(DictTabInfo::UseVarSizedDiskDataFlag, (Uint32)flag);
