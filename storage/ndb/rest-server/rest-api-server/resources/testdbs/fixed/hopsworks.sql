@@ -183,3 +183,5 @@ VALUES
         999,
         0
     );
+
+-- TODO add more hopsworks tables and corresponding data here
