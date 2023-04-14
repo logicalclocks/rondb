@@ -92,6 +92,8 @@ message StatResponseProto {
   required RonDBStatsProto RonDBStats = 2;
 }
 
+// TODO Feature Store messages
+
 // TODO: Rename service; REST is misleading
 //__________________  Service ______________________________
 service RonDBREST {
@@ -99,4 +101,5 @@ service RonDBREST {
   rpc PKRead(PKReadRequestProto) returns (PKReadResponseProto);
   rpc Batch(BatchRequestProto) returns (BatchResponseProto);
   rpc Stat(StatRequestProto) returns (StatResponseProto);
+  // TODO Feature Store RPCs
 }
