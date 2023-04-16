@@ -59,6 +59,7 @@ extern "C" {
 #define ERROR_033 "RonDB connection is not open."
 #define ERROR_034 "RonDB reconnection is already inprogress"
 #define ERROR_035 "RonNDB connection and object pool is not initialized"
+#define ERROR_036 "RonNDB reconnection already in progress"
 
 #ifdef __cplusplus
 }

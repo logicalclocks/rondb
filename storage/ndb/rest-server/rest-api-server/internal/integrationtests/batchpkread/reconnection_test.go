@@ -19,9 +19,11 @@ package batchpkread
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
@@ -31,7 +33,7 @@ import (
 )
 
 func TestReconnection(t *testing.T) {
-	tests := map[string]api.BatchOperationTestInfo{
+	tests := map[string]*api.BatchOperationTestInfo{
 		"batch": { // bigger batch of numbers table
 			HttpCode: []int{http.StatusOK, http.StatusInternalServerError},
 			Operations: []api.BatchSubOperationTestInfo{
@@ -85,21 +87,48 @@ func TestReconnection(t *testing.T) {
 		},
 	}
 
-	numThreads := int(1)
+	reconnectTestInt(t, 1, tests)
+	reconnectTestInt(t, 10, tests)
+}
+
+func reconnectTestInt(t *testing.T, numThreads int,
+	tests map[string]*api.BatchOperationTestInfo) {
+
 	stop := false
 	doneCh := make(chan int, numThreads)
 
+	tests["batch"].HttpCode = []int{http.StatusOK, http.StatusInternalServerError}
 	for i := 0; i < numThreads; i++ {
-		go somework(t, i, tests, &stop, &doneCh)
+		go worker(t, i, tests, &stop, &doneCh)
 	}
-	time.Sleep(2 * time.Second)
 
-	dal.Reconnect()
+	// do some work
+	time.Sleep(1 * time.Second)
 
-	log.Info("Reconnection request sent")
+	// send multiple reconnection request.
+	// only the first request should return OK
+	for i := 0; i < 5; i++ {
+		if i == 0 {
+			//first reconnection request is supposed to succeed
+			err := dal.Reconnect()
+			if err != nil {
+				t.Fatalf("Reconnection request failed")
+			}
+		} else {
+			//subsequent reconnection requests are supposed to fail
+			err := dal.Reconnect()
+			if err == nil {
+				t.Fatalf("was expection reconnection request to fail")
+			}
+
+			if !strings.Contains(err.Message, common.ERROR_036()) {
+				t.Fatalf("Unexpected error message . Expecting: %s, Got: %s ", common.ERROR_036(), err.Message)
+			}
+		}
+	}
 
 	// Stop after some time
-	time.Sleep(2 * time.Second)
+	time.Sleep(5 * time.Second)
 	stop = true
 	opCount := 0
 	for i := 0; i < numThreads; i++ {
@@ -107,5 +136,34 @@ func TestReconnection(t *testing.T) {
 		opCount += c
 	}
 
-	log.Infof("Total Ops: %d\n", opCount)
+	//do some synchronous work. no error expected this time
+	tests["batch"].HttpCode = []int{http.StatusOK}
+	worker(t, 0, tests, &stop, &doneCh)
+
+	log.Infof("Total Ops performed: %d\n", opCount)
+}
+
+func worker(t *testing.T, id int,
+	tests map[string]*api.BatchOperationTestInfo,
+	stop *bool, done *chan int) {
+	opCount := 0
+	// need to do this if an operation fails
+	defer func(t *testing.T, opCount *int) {
+		*done <- *opCount
+	}(t, &opCount)
+
+	for {
+		for _, testInfo := range tests {
+			batchRESTTest(t, *testInfo, false /*is binary*/, false /*validate data*/)
+			batchGRPCTest(t, *testInfo, false /*is binary*/, false /*validate data*/)
+		}
+		opCount++
+
+		//TODO remve this before the final PR
+		time.Sleep(500 * time.Millisecond)
+
+		if *stop {
+			return
+		}
+	}
 }

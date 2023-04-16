@@ -30,27 +30,44 @@ class RDRSRonDBConnection {
   enum STATE { CONNECTED, CONNECTING, DISCONNECTED };
 
  private:
-  std::list<Ndb *> __ndbObjects;
+  static RDRSRonDBConnection *__instance;
+  STATE connectionState = DISCONNECTED;
+
   std::mutex __mutex;
   RonDB_Stats stats;
   Ndb_cluster_connection *ndbConnection;
-  STATE connectionState = DISCONNECTED;
+  bool reconnectionInProgress;
+  char *connection_string;
+  Uint32 connection_pool_size;
+  Uint32 *node_ids;
+  Uint32 node_ids_len;
+  Uint32 connection_retries;
+  Uint32 connection_retry_delay_in_sec;
+  struct NdbThread *reconnectionThread;
 
-  static RDRSRonDBConnection *__instance;
+  // This is a list of NDB objects that are available for use.
+  // When a  user request an NDB object we return an 
+  // NDB object from this list, and the NDB object is then 
+  // removed from this list. When a user returns the
+  // NDB object then we put it back in this list
+  std::list<Ndb *> availableNdbObjects;
+
+  // This a list of all the NDB objects whether the objects
+  // are in use or not
+  std::list<Ndb *> allAvailableNdbObjects;
 
   RDRSRonDBConnection() {
   }
 
  public:
   /**
-   * Static method for initializing connection and NDB Object pool 
+   * Static method for initializing connection and NDB Object pool
    *
    * @return ObjectPool instance.
    */
-  static RS_Status Init(const char *connection_string, unsigned int connection_pool_size,
-                            unsigned int *node_ids, unsigned int node_ids_len,
-                            unsigned int connection_retries,
-                            unsigned int connection_retry_delay_in_sec);
+  static RS_Status Init(const char *connection_string, Uint32 connection_pool_size,
+                        Uint32 *node_ids, Uint32 node_ids_len, Uint32 connection_retries,
+                        Uint32 connection_retry_delay_in_sec);
 
   /**
    * Static method for accessing class instance.
@@ -58,6 +75,13 @@ class RDRSRonDBConnection {
    * @return ObjectPool instance.
    */
   static RS_Status GetInstance(RDRSRonDBConnection **);
+
+  /**
+   * Connect to RonDB
+   *
+   * @return Status
+   */
+  RS_Status Connect();
 
   /**
    * Returns Ndb object
@@ -72,11 +96,11 @@ class RDRSRonDBConnection {
   /**
    * Return resource back to the pool.
    *
-   * @param object ndb objct
+   * @param ndb_object ndb objct
    * @param stauts of last operation performed using this ndb object. it can be null
    * @return void
    */
-  void ReturnNDBObjectToPool(Ndb *object, RS_Status *status);
+  void ReturnNDBObjectToPool(Ndb *ndb_object, RS_Status *status);
 
   /**
    * Get status
@@ -92,10 +116,33 @@ class RDRSRonDBConnection {
   RS_Status Shutdown();
 
   /**
-   * Reconnects. Closes existing connection 
+   * Starts reconnection therad which calls the ReconnectHandler
+   * Note: This is only made public for testing. 
    *
    */
   RS_Status Reconnect();
+
+  /**
+   * Reconnects. Closes existing connection
+   *
+   */
+  RS_Status ReconnectHandler();
+
+ private:
+  /**
+   * Purge. Delete all Ndb objects and shutdown connection
+   * @paran end. If true then it will also free the memory
+   * used to store nodeIds and connection string
+   *
+   */
+  RS_Status Shutdown(bool end);
+
+  /**
+   * Internal Reconnection method. 
+   *
+   */
+  RS_Status ReconnectInt(bool internal);
+
 };
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_RONDB_CONNECTION_
 
