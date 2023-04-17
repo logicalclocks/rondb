@@ -209,10 +209,10 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
   // delete connection
   try {
     delete ndbConnection;
-    ndbConnection = nullptr;
   } catch (...) {
     LOG_WARN("Exception in Shutdown");
   }
+  ndbConnection = nullptr;
 
   LOG_INFO("RonDB connection and object pool shutdown");
 
