@@ -18,6 +18,7 @@
 package batchpkread
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -28,6 +29,7 @@ import (
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
@@ -99,7 +101,8 @@ func reconnectTestInt(t *testing.T, numThreads int,
 
 	tests["batch"].HttpCode = []int{http.StatusOK, http.StatusInternalServerError}
 	for i := 0; i < numThreads; i++ {
-		go worker(t, i, tests, &stop, &doneCh)
+		go batchPKWorker(t, i, tests, &stop, &doneCh)
+		go statWorker(t, &stop)
 	}
 
 	// do some work
@@ -138,12 +141,12 @@ func reconnectTestInt(t *testing.T, numThreads int,
 
 	//do some synchronous work. no error expected this time
 	tests["batch"].HttpCode = []int{http.StatusOK}
-	worker(t, 0, tests, &stop, &doneCh)
+	batchPKWorker(t, 0, tests, &stop, &doneCh)
 
 	log.Infof("Total Ops performed: %d\n", opCount)
 }
 
-func worker(t *testing.T, id int,
+func batchPKWorker(t *testing.T, id int,
 	tests map[string]*api.BatchOperationTestInfo,
 	stop *bool, done *chan int) {
 	opCount := 0
@@ -165,5 +168,27 @@ func worker(t *testing.T, id int,
 		if *stop {
 			return
 		}
+	}
+}
+
+func statWorker(t *testing.T, stop *bool) {
+	for {
+		stat(t)
+		if *stop {
+			return
+		}
+	}
+}
+
+func stat(t *testing.T) {
+	body := ""
+	url := testutils.NewStatURL()
+	_, respBody := testclient.SendHttpRequest(t, config.STAT_HTTP_VERB, url, string(body),
+		"", http.StatusOK)
+
+	var stats api.StatResponse
+	err := json.Unmarshal([]byte(respBody), &stats)
+	if err != nil {
+		t.Fatalf("%v", err)
 	}
 }
