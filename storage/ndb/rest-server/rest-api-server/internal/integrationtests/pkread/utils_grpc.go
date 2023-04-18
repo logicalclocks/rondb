@@ -69,9 +69,9 @@ func handleGrpcRequest(
 }
 
 /*
-	Extracted this in case we want to reuse the Proto request struct and
-	avoid parsing the response, even though this does not make a noticeable
-	difference in performance tests.
+Extracted this in case we want to reuse the Proto request struct and
+avoid parsing the response, even though this does not make a noticeable
+difference in performance tests.
 */
 func sendGrpcRequestAndCheckStatus(
 	t testing.TB,
@@ -118,7 +118,7 @@ func validateResGRPC(
 
 		var err error
 		if val != nil {
-			quotedVal := fmt.Sprintf("\"%s\"", *val) // you have to surround the string with "s
+			quotedVal := "\"" + *val + "\"" // you have to surround the string with "s
 			*val, err = strconv.Unquote(quotedVal)
 			if err != nil {
 				t.Fatalf("Unquote failed %v\n", err)
