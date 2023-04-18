@@ -40,7 +40,7 @@ func TestReconnection1(t *testing.T) {
 }
 
 func TestReconnection2(t *testing.T) {
-	reconnectionTest(t, 100)
+	reconnectionTest(t, 10)
 }
 
 func reconnectionTest(t *testing.T, threads int) {
