@@ -71,12 +71,17 @@ typedef struct RS_Buffer {
 
 typedef RS_Buffer *pRS_Buffer;
 
+typedef enum STATE { CONNECTED, CONNECTING, DISCONNECTED } STATE;
+
 // RonDB stats
 typedef struct RonDB_Stats {
   volatile unsigned int ndb_objects_created;
   volatile unsigned int ndb_objects_deleted;
   volatile unsigned int ndb_objects_count;
   volatile unsigned int ndb_objects_available;
+  volatile unsigned char is_shutdown;
+  volatile unsigned char is_reconnection_in_progress;
+  volatile STATE connection_state; 
 } RonDB_Stats;
 
 /**
@@ -90,7 +95,7 @@ RS_Status init(const char *connection_string, unsigned int connection_pool_size,
  * Set operation retry properties
  */
 RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int rety_initial_delay,
-    const unsigned int jitter);
+                             const unsigned int jitter);
 
 /**
  * Shutdown connection
@@ -98,7 +103,7 @@ RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int r
 RS_Status shutdown_connection();
 
 /**
- * Reconnect. Closes the existing connection and then reconnects   
+ * Reconnect. Closes the existing connection and then reconnects
  */
 RS_Status reconnect();
 
@@ -113,7 +118,7 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff);
 RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *resp_buffs);
 
 /**
- * Returns statistis about RonDB connection 
+ * Returns statistis about RonDB connection
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats);
 

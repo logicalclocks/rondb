@@ -27,17 +27,19 @@
 
 class RDRSRonDBConnection {
 
-  enum STATE { CONNECTED, CONNECTING, DISCONNECTED };
 
  private:
   static RDRSRonDBConnection *__instance;
-  STATE connectionState = DISCONNECTED;
 
-  std::mutex __mutex;
+  // this is used when we update the connection, NDB objects etc.
+  std::mutex connectionMutex;
+  //  this is used togather with connectionMutex to quickly
+  //  access simple information such as if the connection is
+  //  open or not, if it is in reconnection phase, etc.
+  std::mutex connectionInfoMutex;
   RonDB_Stats stats;
+
   Ndb_cluster_connection *ndbConnection;
-  volatile bool isShutdown;
-  volatile bool reconnectionInProgress;
   char *connection_string;
   Uint32 connection_pool_size;
   Uint32 *node_ids;
@@ -45,6 +47,7 @@ class RDRSRonDBConnection {
   Uint32 connection_retries;
   Uint32 connection_retry_delay_in_sec;
   struct NdbThread *reconnectionThread;
+
 
   // This is a list of NDB objects that are available for use.
   // When a  user request an NDB object then we return an
@@ -136,12 +139,6 @@ class RDRSRonDBConnection {
    *
    */
   RS_Status Shutdown(bool end);
-
-  /**
-   * Internal Reconnection method.
-   *
-   */
-  RS_Status ReconnectInt(bool internal);
 };
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_RONDB_CONNECTION_
 

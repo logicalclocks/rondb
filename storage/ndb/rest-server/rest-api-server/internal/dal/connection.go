@@ -79,7 +79,7 @@ func ShutdownConnection() *DalError {
 }
 
 func Reconnect() *DalError {
-	log.Info("Shutting down RonDB connection")
+	log.Info("Restarting RonDB connection")
 	ret := C.reconnect()
 
 	if ret.http_code != http.StatusOK {

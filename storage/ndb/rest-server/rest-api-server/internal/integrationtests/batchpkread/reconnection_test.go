@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/ianlancetaylor/cgosymbolizer"
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
@@ -39,7 +40,7 @@ func TestReconnection1(t *testing.T) {
 }
 
 func TestReconnection2(t *testing.T) {
-	reconnectionTest(t, 10)
+	reconnectionTest(t, 100)
 }
 
 func reconnectionTest(t *testing.T, threads int) {
@@ -139,7 +140,7 @@ func reconnectTestInt(t *testing.T, numThreads int,
 	}
 
 	// Stop after some time
-	time.Sleep(5 * time.Second)
+	time.Sleep(10 * time.Second)
 	stop = true
 	opCount := 0
 	for i := 0; i < numThreads; i++ {
@@ -170,8 +171,7 @@ func batchPKWorker(t *testing.T, id int,
 		}
 		opCount++
 
-		//TODO remve this before the final PR
-		time.Sleep(100 * time.Millisecond)
+		// time.Sleep(50 * time.Millisecond)
 
 		if *stop {
 			return
