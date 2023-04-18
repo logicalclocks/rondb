@@ -54,13 +54,15 @@ RS_Status init(const char *connection_string, unsigned int connection_pool_size,
   // disable buffered stdout
   setbuf(stdout, NULL);
 
-  LOG_INFO(std::string("Connecting to ") + connection_string);
-
   // Initialize NDB Connection and Object Pool
-  RS_Status status = RDRSRonDBConnection::Init(connection_string, connection_pool_size, node_ids, node_ids_len,
-                                 connection_retries, connection_retry_delay_in_sec);
+  RS_Status status =
+      RDRSRonDBConnection::Init(connection_string, connection_pool_size, node_ids, node_ids_len,
+                                connection_retries, connection_retry_delay_in_sec);
   if (status.http_code == SUCCESS) {
-    RDRSRonDBConnection::GetInstance(&rdrsRonDBConnection);
+    status = RDRSRonDBConnection::GetInstance(&rdrsRonDBConnection);
+    if (status.http_code != SUCCESS) {
+      return RS_SERVER_ERROR(ERROR_002);
+    }
   }
   return RS_OK;
 }

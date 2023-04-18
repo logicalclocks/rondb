@@ -34,7 +34,16 @@ import (
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
-func TestReconnection(t *testing.T) {
+func TestReconnection1(t *testing.T) {
+	reconnectionTest(t, 1)
+}
+
+func TestReconnection2(t *testing.T) {
+	reconnectionTest(t, 10)
+}
+
+func reconnectionTest(t *testing.T, threads int) {
+	log.Debugf("Starting Reconnection test with %d threads ", threads)
 	tests := map[string]*api.BatchOperationTestInfo{
 		"batch": { // bigger batch of numbers table
 			HttpCode: []int{http.StatusOK, http.StatusInternalServerError},
@@ -89,8 +98,7 @@ func TestReconnection(t *testing.T) {
 		},
 	}
 
-	reconnectTestInt(t, 1, tests)
-	reconnectTestInt(t, 10, tests)
+	reconnectTestInt(t, threads, tests)
 }
 
 func reconnectTestInt(t *testing.T, numThreads int,
@@ -163,7 +171,7 @@ func batchPKWorker(t *testing.T, id int,
 		opCount++
 
 		//TODO remve this before the final PR
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 
 		if *stop {
 			return

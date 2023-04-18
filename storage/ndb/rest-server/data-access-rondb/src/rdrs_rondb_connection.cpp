@@ -62,6 +62,10 @@ RS_Status RDRSRonDBConnection::Init(const char *connection_string, Uint32 connec
   __instance->connection_retry_delay_in_sec = connection_retry_delay_in_sec;
 
   __instance->connectionState = DISCONNECTED;
+  __instance->isShutdown      = false;
+  __instance->ndbConnection   = nullptr;
+
+  LOG_INFO(std::string("Connecting to ") + connection_string);
 
   int retCode = 0;
   retCode     = ndb_init();
@@ -75,6 +79,11 @@ RS_Status RDRSRonDBConnection::Init(const char *connection_string, Uint32 connec
 //--------------------------------------------------------------------------------------------------
 
 RS_Status RDRSRonDBConnection::Connect() {
+  std::lock_guard<std::mutex> guard(__mutex);
+
+  if (isShutdown) {
+    return RS_SERVER_ERROR(ERROR_037);
+  }
 
   require(connectionState != CONNECTED);
   require(ndbConnection == nullptr);
@@ -94,7 +103,6 @@ RS_Status RDRSRonDBConnection::Connect() {
                            std::string(" Lastest Error Msg: ") +
                            std::string(__instance->ndbConnection->get_latest_error_msg()));
   }
-
   connectionState = CONNECTED;
 
   LOG_INFO("RonDB connection and object pool initialized");
@@ -109,7 +117,8 @@ RS_Status RDRSRonDBConnection::GetInstance(RDRSRonDBConnection **rdrsRonDBConnec
     return RS_SERVER_ERROR(ERROR_035);
   }
 
-  if (__instance->ndbConnection == nullptr || __instance->connectionState != CONNECTED) {
+  if (__instance->ndbConnection == nullptr || __instance->connectionState != CONNECTED ||
+      __instance->isShutdown) {
     LOG_ERROR(ERROR_033);
     return RS_SERVER_ERROR(ERROR_033);
   }
@@ -121,20 +130,27 @@ RS_Status RDRSRonDBConnection::GetInstance(RDRSRonDBConnection **rdrsRonDBConnec
 //--------------------------------------------------------------------------------------------------
 
 RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
-  if (__instance->ndbConnection == nullptr || __instance->connectionState != CONNECTED) {
 
-    // If previous reconnection attempts have failed then 
-    // restart the reconnection process
-    std::lock_guard<std::mutex> guard(__mutex);
-    if (!reconnectionInProgress) {
-      ReconnectInt(true);
-    }
-
-    LOG_ERROR(ERROR_033);
-    return RS_SERVER_ERROR(ERROR_033);
+  if (isShutdown) {
+    LOG_ERROR(ERROR_037);
+    return RS_SERVER_ERROR(ERROR_037);
   }
 
   std::lock_guard<std::mutex> guard(__mutex);
+
+  if (connectionState != CONNECTED) {
+    if (!reconnectionInProgress) {
+      // If previous reconnection attempts have failed then
+      // restart the reconnection process
+      LOG_DEBUG("GetNdbObject triggered reconnection");
+      ReconnectInt(true);
+    }
+
+    LOG_ERROR(ERROR_033 + std::string(" Connection State: ") + std::to_string(connectionState) +
+              std::string(" Reconnection State: ") + std::to_string(reconnectionInProgress));
+    return RS_SERVER_ERROR(ERROR_033);
+  }
+
   RS_Status ret_status = RS_OK;
   if (availableNdbObjects.empty()) {
     *ndb_object = new Ndb(ndbConnection);
@@ -159,12 +175,11 @@ void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object, RS_Status *stat
   std::lock_guard<std::mutex> guard(__mutex);
   availableNdbObjects.push_back(ndb_object);
 
-  // check for errors
-  if (status != nullptr && status->http_code != SUCCESS) {
+  if (status != nullptr && status->http_code != SUCCESS) {  // check for errors
     // Classification.UnknownResultError is the classification
     // for loss of connectivity to the cluster
     if (status->classification == NdbError::UnknownResultError) {
-      LOG_ERROR("Detected connection loss. Restarting RonDB connection\n");
+      LOG_ERROR("Detected connection loss. Triggering reconnection.");
       ReconnectInt(true);
     }
   }
@@ -214,16 +229,17 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
   }
   ndbConnection = nullptr;
 
-  LOG_INFO("RonDB connection and object pool shutdown");
-
   if (end) {
-    ndb_end(1);  // sometimes causes seg faults when called repeatedly from unit tests*/
+    isShutdown = true;
+    ndb_end(1);  // sometimes causes seg faults when called repeatedly from unit tests
     delete connection_string;
     delete node_ids;
     if (reconnectionThread != nullptr) {
       NdbThread_Destroy(&reconnectionThread);
     }
   }
+
+  LOG_INFO("RonDB connection and object pool shutdown");
   return RS_OK;
 }
 
@@ -238,9 +254,18 @@ RS_Status RDRSRonDBConnection::ReconnectHandler() {
 
   bool allNDBObjectsCountedFor = false;
   do {
-    std::lock_guard<std::mutex> guard(__mutex);
-    if (stats.ndb_objects_created != availableNdbObjects.size()) {
-      LOG_INFO("Waiting to all NDB objects to return before shutdown");
+
+    size_t sizeExpected = 0;
+    Uint32 sizeGot      = 0;
+    {
+      std::lock_guard<std::mutex> guard(__mutex);
+      sizeExpected = availableNdbObjects.size();
+      sizeGot      = stats.ndb_objects_created;
+    }
+
+    if (sizeExpected != sizeGot) {
+      LOG_WARN("Waiting to all NDB objects to return before shutdown. Want: " +
+               std::to_string(sizeExpected) + " Have: " + std::to_string(sizeGot));
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
     } else {
       allNDBObjectsCountedFor = true;
@@ -251,12 +276,26 @@ RS_Status RDRSRonDBConnection::ReconnectHandler() {
   } while (timeElapsed < 60 * 1000);
 
   if (!allNDBObjectsCountedFor) {
-    LOG_ERROR("Timeout waiting for all NDB objects");
+    LOG_ERROR("Timedout waiting for all NDB objects.");
   }
 
-  Shutdown(false);
-  Connect();
-  LOG_INFO("RonDB reconnection completed");
+  RS_Status status = Shutdown(false);
+  if (status.http_code != SUCCESS) {
+    reconnectionInProgress = false;
+    return RS_SERVER_ERROR("Reconnection. Shutdown failed. " + std::string("code: ") +
+                           std::to_string(status.code) + std::string(" Classification: ") +
+                           std::to_string(status.classification) + std::string(" Msg: ") +
+                           std::string(status.message));
+  }
+
+  status = Connect();
+  if (status.http_code != SUCCESS) {
+    reconnectionInProgress = false;
+    return RS_SERVER_ERROR("Reconnection. Connection failed. " + std::string("code: ") +
+                           std::to_string(status.code) + std::string(" Classification: ") +
+                           std::to_string(status.classification) + std::string(" Msg: ") +
+                           std::string(status.message));
+  }
 
   reconnectionInProgress = false;
   return RS_OK;
@@ -265,7 +304,6 @@ RS_Status RDRSRonDBConnection::ReconnectHandler() {
 //--------------------------------------------------------------------------------------------------
 
 static void *reconnect_thread_wrapper(void *arg) {
-  LOG_INFO("Started RonDB reconnection thread");
   RDRSRonDBConnection *rdrsRonDBConnection = (RDRSRonDBConnection *)arg;
   rdrsRonDBConnection->ReconnectHandler();
   return NULL;
@@ -281,19 +319,28 @@ RS_Status RDRSRonDBConnection::Reconnect() {
 //--------------------------------------------------------------------------------------------------
 
 RS_Status RDRSRonDBConnection::ReconnectInt(bool internal) {
-  if (!internal) {
-    std::lock_guard<std::mutex> guard(__mutex);
-  }
+
   if (reconnectionInProgress) {
     LOG_INFO("Ignoring RonDB reconnection request. A reconnection request is already in progress");
     return RS_SERVER_ERROR(ERROR_036);
   }
 
+  std::lock_guard<std::mutex> *guard = nullptr;
+  if (!internal) {
+    guard = new std::lock_guard<std::mutex>(__mutex);
+  }
+
+  if (reconnectionInProgress) {
+    LOG_INFO("Ignoring RonDB reconnection request. A reconnection request is already in progress");
+    if (!internal) {
+      delete guard;
+    }
+    return RS_SERVER_ERROR(ERROR_036);
+  }
+
   reconnectionInProgress = true;
 
-  LOG_INFO("Sarting a reconnection thread");
-
-  if (reconnectionThread != nullptr) {
+  if (reconnectionThread != nullptr) { // clean previous failed/completed reconnection thread
     NdbThread_Destroy(&reconnectionThread);
   }
 
@@ -303,6 +350,10 @@ RS_Status RDRSRonDBConnection::ReconnectInt(bool internal) {
 
   if (reconnectionThread == nullptr) {
     LOG_PANIC("Failed to start reconnection thread");
+  }
+
+  if (!internal) {
+    delete guard;
   }
 
   return RS_OK;

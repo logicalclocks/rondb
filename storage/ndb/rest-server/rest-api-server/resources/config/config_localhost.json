@@ -14,7 +14,7 @@
                 "Mgmds": [
                         {
                                 "IP": "localhost",
-                                "Port": 13000 
+                                "Port": 1186
                         }
                 ]
         },
@@ -28,18 +28,18 @@
                 }
         },
         "Log": {
-                "Level": "warn"
+                "Level": "info"
         },
         "Testing": {
                 "MySQL": {
                         "Servers": [
                                 {
                                         "IP": "localhost",
-                                        "Port": 13001 
+                                        "Port": 3306
                                 }
                         ],
-                        "User": "root",
-                        "Password": ""
+                        "User": "rondb",
+                        "Password": "rondb"
                 }
         }
 }

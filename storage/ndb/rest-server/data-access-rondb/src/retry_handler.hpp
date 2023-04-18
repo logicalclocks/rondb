@@ -38,6 +38,7 @@ extern Uint32 OP_RETRY_JITTER_IN_MS;
     }                                                                                              \
     usleep(ExponentialDelayWithJitter(orc, OP_RETRY_INITIAL_DELAY_IN_MS, OP_RETRY_JITTER_IN_MS) *  \
            1000);                                                                                  \
+    LOG_DEBUG("Retrying failed operation. Code: "+std::to_string(status.code));                    \
   } while (true);
 
 #endif  //STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RETRY_HANDLER_HPP_

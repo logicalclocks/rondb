@@ -57,9 +57,10 @@ extern "C" {
 #define ERROR_031 "Failed to set filter."
 #define ERROR_032 "Failed to load index."
 #define ERROR_033 "RonDB connection is not open."
-#define ERROR_034 "RonDB reconnection is already inprogress"
-#define ERROR_035 "RonNDB connection and object pool is not initialized"
-#define ERROR_036 "RonNDB reconnection already in progress"
+#define ERROR_034 "RonDB reconnection is already inprogress."
+#define ERROR_035 "RonNDB connection and object pool is not initialized."
+#define ERROR_036 "RonNDB reconnection already in progress."
+#define ERROR_037 "Programming error. RonDB connection has been shutdown. Use Init() fn."
 
 #ifdef __cplusplus
 }

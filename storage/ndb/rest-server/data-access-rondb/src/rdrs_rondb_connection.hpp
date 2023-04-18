@@ -36,7 +36,8 @@ class RDRSRonDBConnection {
   std::mutex __mutex;
   RonDB_Stats stats;
   Ndb_cluster_connection *ndbConnection;
-  bool reconnectionInProgress;
+  volatile bool isShutdown;
+  volatile bool reconnectionInProgress;
   char *connection_string;
   Uint32 connection_pool_size;
   Uint32 *node_ids;
@@ -46,9 +47,8 @@ class RDRSRonDBConnection {
   struct NdbThread *reconnectionThread;
 
   // This is a list of NDB objects that are available for use.
-  // When a  user request an NDB object we return an 
-  // NDB object from this list, and the NDB object is then 
-  // removed from this list. When a user returns the
+  // When a  user request an NDB object then we return an
+  // NDB object from this list. When a user returns the
   // NDB object then we put it back in this list
   std::list<Ndb *> availableNdbObjects;
 
@@ -117,7 +117,7 @@ class RDRSRonDBConnection {
 
   /**
    * Starts reconnection therad which calls the ReconnectHandler
-   * Note: This is only made public for testing. 
+   * Note: This is only made public for testing.
    *
    */
   RS_Status Reconnect();
@@ -138,11 +138,10 @@ class RDRSRonDBConnection {
   RS_Status Shutdown(bool end);
 
   /**
-   * Internal Reconnection method. 
+   * Internal Reconnection method.
    *
    */
   RS_Status ReconnectInt(bool internal);
-
 };
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_RONDB_CONNECTION_
 
