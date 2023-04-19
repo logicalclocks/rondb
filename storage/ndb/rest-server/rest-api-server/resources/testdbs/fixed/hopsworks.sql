@@ -185,3 +185,197 @@ VALUES
     );
 
 -- TODO add more hopsworks tables and corresponding data here
+CREATE TABLE `feature_store` (
+                                 `id` int(11) NOT NULL AUTO_INCREMENT,
+                                 `project_id` int(11) NOT NULL,
+                                 `created` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+                                 `hive_db_id` bigint(20) NOT NULL,
+                                 PRIMARY KEY (`id`),
+                                 KEY `project_id` (`project_id`),
+                                 KEY `hive_db_id` (`hive_db_id`),
+                                --  CONSTRAINT `FK_368_663` FOREIGN KEY (`hive_db_id`) REFERENCES `metastore`.`DBS` (`DB_ID`) ON DELETE CASCADE ON UPDATE NO ACTION,
+                                 CONSTRAINT `FK_883_662` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE=ndbcluster AUTO_INCREMENT=67 DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
+
+-- CREATE TABLE `on_demand_feature_group` (
+--                                                          `id`                      INT(11)         NOT NULL AUTO_INCREMENT,
+--                                                          `query`                   VARCHAR(26000),
+--                                                          `connector_id`            INT(11)         NOT NULL,
+--                                                          `description`             VARCHAR(1000)   NULL,
+--                                                          `inode_pid`               BIGINT(20)      NOT NULL,
+--                                                          `inode_name`              VARCHAR(255)    NOT NULL,
+--                                                          `partition_id`            BIGINT(20)      NOT NULL,
+--                                                          `data_format`             VARCHAR(10),
+--                                                          `path`                    VARCHAR(1000),
+--                                                          PRIMARY KEY (`id`)
+--                                                         --  CONSTRAINT `on_demand_conn_fk` FOREIGN KEY (`connector_id`) REFERENCES `feature_store_connector` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+--                                                         --  CONSTRAINT `on_demand_inode_fk` FOREIGN KEY (`inode_pid`, `inode_name`, `partition_id`) REFERENCES `hops`.`hdfs_inodes` (`parent_id`, `name`, `partition_id`) ON DELETE CASCADE ON UPDATE NO ACTION
+-- ) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
+
+-- CREATE TABLE `cached_feature_group` (
+--                                                       `id`                             INT(11)         NOT NULL AUTO_INCREMENT,
+--                                                       `offline_feature_group`          BIGINT(20)      NOT NULL,
+--                                                       `timetravel_format`              INT NOT NULL DEFAULT 1,
+--                                                       PRIMARY KEY (`id`)
+--                                                     --   CONSTRAINT `cached_fg_hive_fk` FOREIGN KEY (`offline_feature_group`) REFERENCES `metastore`.`TBLS` (`TBL_ID`) ON DELETE CASCADE ON UPDATE NO ACTION
+-- ) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
+
+-- CREATE TABLE `stream_feature_group` (
+--                                                       `id`                             INT(11) NOT NULL AUTO_INCREMENT,
+--                                                       `offline_feature_group`          BIGINT(20) NOT NULL,
+--                                                       PRIMARY KEY (`id`)
+--                                                     --   CONSTRAINT `stream_fg_hive_fk` FOREIGN KEY (`offline_feature_group`) REFERENCES `metastore`.`TBLS` (`TBL_ID`) ON DELETE CASCADE ON UPDATE NO ACTION
+-- ) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
+
+-- CREATE TABLE `cached_feature` (
+--   `id` int(11) NOT NULL AUTO_INCREMENT,
+--   `cached_feature_group_id` int(11) NULL,
+--   `stream_feature_group_id` int(11) NULL,
+--   `name` varchar(63) COLLATE latin1_general_cs NOT NULL,
+--   `description` varchar(256) NOT NULL DEFAULT '',
+--   PRIMARY KEY (`id`),
+--   KEY `cached_feature_group_fk` (`cached_feature_group_id`),
+--   KEY `stream_feature_group_fk` (`stream_feature_group_id`),
+--   CONSTRAINT `cached_feature_group_fk2` FOREIGN KEY (`cached_feature_group_id`) REFERENCES `cached_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+--   CONSTRAINT `stream_feature_group_fk2` FOREIGN KEY (`stream_feature_group_id`) REFERENCES `stream_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+-- ) ENGINE=ndbcluster DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
+
+-- CREATE TABLE `on_demand_feature` (
+--                                      `id` int(11) NOT NULL AUTO_INCREMENT,
+--                                      `on_demand_feature_group_id` int(11) NULL,
+--                                      `name` varchar(1000) COLLATE latin1_general_cs NOT NULL,
+--                                      `primary_column` tinyint(1) NOT NULL DEFAULT '0',
+--                                      `description` varchar(10000) COLLATE latin1_general_cs,
+--                                      `type` varchar(1000) COLLATE latin1_general_cs NOT NULL,
+--                                      `idx` int(11) NOT NULL DEFAULT 0,
+--                                      `default_value` VARCHAR(400) NULL,
+--                                      PRIMARY KEY (`id`),
+--                                      KEY `on_demand_feature_group_fk` (`on_demand_feature_group_id`),
+--                                      CONSTRAINT `on_demand_feature_group_fk1` FOREIGN KEY (`on_demand_feature_group_id`) REFERENCES `on_demand_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+-- ) ENGINE=ndbcluster DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
+
+CREATE TABLE `feature_group` (
+                                 `id` int(11) NOT NULL AUTO_INCREMENT,
+                                 `name` varchar(63) NOT NULL,
+                                 `feature_store_id` int(11) NOT NULL,
+                                 `created` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+                                 `creator` int(11) NOT NULL,
+                                 `version` int(11) NOT NULL,
+                                 `feature_group_type` INT(11) NOT NULL DEFAULT '0',
+                                 `on_demand_feature_group_id` INT(11) NULL,
+                                 `cached_feature_group_id` INT(11) NULL,
+                                 `stream_feature_group_id` INT(11) NULL,
+                                 `event_time` VARCHAR(63) DEFAULT NULL,
+                                 `online_enabled` TINYINT(1) NULL,
+                                 PRIMARY KEY (`id`),
+                                 UNIQUE KEY `name_version` (`feature_store_id`, `name`, `version`),
+                                 KEY `feature_store_id` (`feature_store_id`),
+                                 KEY `creator` (`creator`),
+                                 KEY `on_demand_feature_group_fk` (`on_demand_feature_group_id`),
+                                 KEY `cached_feature_group_fk` (`cached_feature_group_id`),
+                                 KEY `stream_feature_group_fk` (`stream_feature_group_id`),
+                                 CONSTRAINT `FK_1012_790` FOREIGN KEY (`creator`) REFERENCES `users` (`uid`) ON DELETE NO ACTION ON UPDATE NO ACTION,
+                                 CONSTRAINT `FK_656_740` FOREIGN KEY (`feature_store_id`) REFERENCES `feature_store` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+                                --  CONSTRAINT `on_demand_feature_group_fk2` FOREIGN KEY (`on_demand_feature_group_id`) REFERENCES `on_demand_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+                                --  CONSTRAINT `cached_feature_group_fk` FOREIGN KEY (`cached_feature_group_id`) REFERENCES `cached_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+                                --  CONSTRAINT `stream_feature_group_fk` FOREIGN KEY (`stream_feature_group_id`) REFERENCES `stream_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE=ndbcluster AUTO_INCREMENT=13 DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
+
+CREATE TABLE `feature_view` (
+                                 `id` int(11) NOT NULL AUTO_INCREMENT,
+                                 `name` varchar(63) NOT NULL,
+                                 `feature_store_id` int(11) NOT NULL,
+                                 `created` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+                                 `creator` int(11) NOT NULL,
+                                 `version` int(11) NOT NULL,
+                                 `description` varchar(10000) COLLATE latin1_general_cs DEFAULT NULL,
+                                 `inode_pid` BIGINT(20) NOT NULL,
+                                 `inode_name` VARCHAR(255) NOT NULL,
+                                 `partition_id` BIGINT(20) NOT NULL,
+                                 PRIMARY KEY (`id`),
+                                 UNIQUE KEY `name_version` (`feature_store_id`, `name`, `version`),
+                                 KEY `feature_store_id` (`feature_store_id`),
+                                 KEY `creator` (`creator`),
+                                 CONSTRAINT `fv_creator_fk` FOREIGN KEY (`creator`) REFERENCES `users` (`uid`) ON
+                                     DELETE NO ACTION ON UPDATE NO ACTION,
+                                 CONSTRAINT `fv_feature_store_id_fk` FOREIGN KEY (`feature_store_id`) REFERENCES
+                                     `feature_store` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+                                --  CONSTRAINT `fv_inode_fk` FOREIGN KEY (`inode_pid`, `inode_name`, `partition_id`) REFERENCES
+                                    --  `hops`.`hdfs_inodes` (`parent_id`, `name`, `partition_id`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE=ndbcluster AUTO_INCREMENT=9 DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
+
+-- CREATE TABLE `training_dataset_join` (
+--                                          `id` int(11) NOT NULL AUTO_INCREMENT,
+--                                          `training_dataset` int(11) NULL,
+--                                          `feature_group` int(11) NULL,
+--                                          `feature_group_commit_id` BIGINT(20) NULL,
+--                                          `type` tinyint(5) NOT NULL DEFAULT 0,
+--                                          `idx` int(11) NOT NULL DEFAULT 0,
+--                                          `prefix` VARCHAR(63) NULL,
+--                                          `feature_view_id` INT(11) NULL,
+--                                          PRIMARY KEY (`id`),
+--                                          KEY `fg_key` (`feature_group`),
+--                                          CONSTRAINT `tdj_feature_view_fk` FOREIGN KEY  (`feature_view_id`) REFERENCES
+--                                              `feature_view` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+--                                         --  CONSTRAINT `td_fk_tdj` FOREIGN KEY (`training_dataset`) REFERENCES `training_dataset` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+--                                          CONSTRAINT `fg_left` FOREIGN KEY (`feature_group`) REFERENCES `feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+-- ) ENGINE=ndbcluster DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
+
+CREATE TABLE `training_dataset_feature` (
+                                            `id` int(11) NOT NULL AUTO_INCREMENT,
+                                            `training_dataset` int(11) NULL,
+                                            `feature_group` int(11) NULL,
+                                            `name` varchar(1000) COLLATE latin1_general_cs NOT NULL,
+                                            `type` varchar(1000) COLLATE latin1_general_cs,
+                                            `td_join`int(11) NULL,
+                                            `idx` int(11) NULL,
+                                            `label` tinyint(1) NOT NULL DEFAULT '0',
+                                            `transformation_function`  int(11) NULL,
+                                            `feature_view_id` INT(11) NULL,
+                                            PRIMARY KEY (`id`),
+                                            KEY `td_key` (`training_dataset`),
+                                            KEY `fg_key` (`feature_group`),
+                                            CONSTRAINT `tdf_feature_view_fk` FOREIGN KEY  (`feature_view_id`)
+                                                REFERENCES `feature_view` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+                                            -- CONSTRAINT `join_fk_tdf` FOREIGN KEY (`td_join`) REFERENCES `training_dataset_join` (`id`) ON DELETE SET NULL ON UPDATE NO ACTION,
+                                            -- CONSTRAINT `td_fk_tdf` FOREIGN KEY (`training_dataset`) REFERENCES `training_dataset` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+                                            CONSTRAINT `fg_fk_tdf` FOREIGN KEY (`feature_group`) REFERENCES `feature_group` (`id`) ON DELETE SET NULL ON UPDATE NO ACTION
+                                            -- CONSTRAINT `tfn_fk_tdf` FOREIGN KEY (`transformation_function`) REFERENCES `transformation_function` (`id`) ON DELETE SET NULL ON UPDATE NO ACTION
+) ENGINE=ndbcluster DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
+
+INSERT INTO
+    `feature_store`
+VALUES
+    (
+        67, 999, "2023-03-16 14:27:29", 3
+    );
+
+INSERT INTO
+    `feature_group`
+VALUES
+    (
+        29, "test_3", 67, "2023-03-20 12:30:51", 999, 1, 0, NULL, 1, NULL, "ts", 1
+    );
+
+INSERT INTO
+    `feature_view`
+VALUES
+    (
+        11, "test_3", 67, "2023-03-16 16:42:49", 999, 1, "", 250, "test_3_1", 250
+    );
+
+INSERT INTO
+    `training_dataset_feature`
+VALUES
+    (
+        9, NULL, 29, "id1", "int", NULL, 0, 0, NULL, 11
+    ),
+    (
+        10, NULL, 29, "col0", "int", NULL, 2, 0, NULL, 11
+    ),
+    (
+        11, NULL, 29, "col1", "int", NULL, 3, 0, NULL, 11
+    ),
+    (
+        12, NULL, 29, "ts", "bigint", NULL, 1, 0, NULL, 11
+    );
