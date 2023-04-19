@@ -36,14 +36,14 @@ import (
 )
 
 func TestReconnection1(t *testing.T) {
-	reconnectionTest(t, 1)
+	reconnectionTest(t, 1, 5)
 }
 
 func TestReconnection2(t *testing.T) {
-	reconnectionTest(t, 10)
+	reconnectionTest(t, 10, 10)
 }
 
-func reconnectionTest(t *testing.T, threads int) {
+func reconnectionTest(t *testing.T, threads int, durationSec int) {
 	log.Debugf("Starting Reconnection test with %d threads ", threads)
 	tests := map[string]*api.BatchOperationTestInfo{
 		"batch": { // bigger batch of numbers table
@@ -99,10 +99,10 @@ func reconnectionTest(t *testing.T, threads int) {
 		},
 	}
 
-	reconnectTestInt(t, threads, tests)
+	reconnectTestInt(t, threads, durationSec, tests)
 }
 
-func reconnectTestInt(t *testing.T, numThreads int,
+func reconnectTestInt(t *testing.T, numThreads int, durationSec int,
 	tests map[string]*api.BatchOperationTestInfo) {
 
 	stop := false
@@ -140,7 +140,7 @@ func reconnectTestInt(t *testing.T, numThreads int,
 	}
 
 	// Stop after some time
-	time.Sleep(10 * time.Second)
+	time.Sleep(time.Duration(durationSec) * time.Second)
 	stop = true
 	opCount := 0
 	for i := 0; i < numThreads; i++ {
@@ -171,7 +171,7 @@ func batchPKWorker(t *testing.T, id int,
 		}
 		opCount++
 
-		// time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 
 		if *stop {
 			return
@@ -182,6 +182,8 @@ func batchPKWorker(t *testing.T, id int,
 func statWorker(t *testing.T, stop *bool) {
 	for {
 		stat(t)
+		time.Sleep(100 * time.Millisecond)
+
 		if *stop {
 			return
 		}

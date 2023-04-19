@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Hopsworks AB
+ * Copyright (C) 2022, 2023 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -84,7 +84,7 @@ RS_Status RDRSRonDBConnection::Connect() {
   {
     std::lock_guard<std::mutex> guardInfo(connectionInfoMutex);
     if (stats.is_shutdown) {
-      return RS_SERVER_ERROR(ERROR_037);
+      return RS_SERVER_ERROR(ERROR_034);
     }
     require(stats.connection_state != CONNECTED);
   }
@@ -154,8 +154,8 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
     }
 
     if (is_shutdown) {
-      LOG_ERROR(ERROR_037);
-      return RS_SERVER_ERROR(ERROR_037);
+      LOG_ERROR(ERROR_034);
+      return RS_SERVER_ERROR(ERROR_034);
     }
 
     if (connection_state != CONNECTED) {
@@ -166,7 +166,7 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
         Reconnect();
       }
 
-      LOG_ERROR(ERROR_033 + std::string(" Connection State: ") + std::to_string(connection_state) +
+      LOG_WARN(ERROR_033 + std::string(" Connection State: ") + std::to_string(connection_state) +
                 std::string(" Reconnection State: ") + std::to_string(reconnection_in_progress));
       return RS_SERVER_ERROR(ERROR_033);
     }
@@ -242,6 +242,7 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
   }
 
   {
+    std::lock_guard<std::mutex> guardInfo(connectionInfoMutex);
     std::lock_guard<std::mutex> guard(connectionMutex);
     // delete all ndb objects
     while (allAvailableNdbObjects.size() > 0) {
@@ -251,11 +252,7 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
     }
     availableNdbObjects.clear();
     allAvailableNdbObjects.clear();
-  }
 
-  {
-    std::lock_guard<std::mutex> guardInfo(connectionInfoMutex);
-    std::lock_guard<std::mutex> guard(connectionMutex);
     // clean up stats
     stats.ndb_objects_available = 0;
     stats.ndb_objects_count     = 0;
@@ -333,7 +330,7 @@ RS_Status RDRSRonDBConnection::ReconnectHandler() {
   if (!allNDBObjectsCountedFor) {
     LOG_ERROR("Timedout waiting for all NDB objects.");
   } else {
-    LOG_DEBUG("All NDB objects are accounted for");
+    LOG_INFO("All NDB objects are accounted for. Total objects: "+std::to_string(stats.ndb_objects_created));
   }
 
   RS_Status status = Shutdown(false);

@@ -26,8 +26,6 @@ extern void loggerCToGo(RS_LOG_MSG log);
 */
 import "C"
 import (
-	"fmt"
-
 	log "github.com/sirupsen/logrus"
 )
 
@@ -42,7 +40,7 @@ func RegisterLogCallBack() {
 //export goLog
 func goLog(logMsg C.RS_LOG_MSG) {
 	level := log.Level(logMsg.level)
-	msg := fmt.Sprintf("RDRS native layer: %s", C.GoString(&logMsg.message[0]))
+	msg := "RDRS native layer: " + C.GoString(&logMsg.message[0])
 
 	switch level {
 	case log.PanicLevel:
