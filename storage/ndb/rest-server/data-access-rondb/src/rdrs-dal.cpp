@@ -34,13 +34,11 @@
 #include "src/db-operations/pk/pkr-operation.hpp"
 #include "src/status.hpp"
 #include "src/retry_handler.hpp"
-#include "src/ndb_object_pool.hpp"
+#include "src/rdrs_rondb_connection.hpp"
 #include "src/db-operations/pk/common.hpp"
 
-Ndb_cluster_connection *ndb_connection;
-Uint32 OP_RETRY_COUNT               = 3;
-Uint32 OP_RETRY_INITIAL_DELAY_IN_MS = 500;
-Uint32 OP_RETRY_JITTER_IN_MS        = 100;
+// RonDB connection
+RDRSRonDBConnection *rdrsRonDBConnection = nullptr;
 
 /**
  * Initialize NDB connection
@@ -56,36 +54,20 @@ RS_Status init(const char *connection_string, unsigned int connection_pool_size,
   // disable buffered stdout
   setbuf(stdout, NULL);
 
-  require(node_ids_len == 1);
-  require(connection_pool_size == 1);
-  int retCode = 0;
-  INFO(std::string("Connecting to ") + connection_string);
-
-  retCode = ndb_init();
-  if (retCode != 0) {
-    return RS_SERVER_ERROR(ERROR_001 + std::string(" RetCode: ") + std::to_string(retCode));
+  // Initialize NDB Connection and Object Pool
+  RS_Status status =
+      RDRSRonDBConnection::Init(connection_string, connection_pool_size, node_ids, node_ids_len,
+                                connection_retries, connection_retry_delay_in_sec);
+  if (status.http_code == SUCCESS) {
+    status = RDRSRonDBConnection::GetInstance(&rdrsRonDBConnection);
+    if (status.http_code != SUCCESS) {
+      return RS_SERVER_ERROR(ERROR_002);
+    }
   }
-
-  ndb_connection = new Ndb_cluster_connection(connection_string, node_ids[0]);
-  retCode        = ndb_connection->connect(connection_retries, connection_retry_delay_in_sec, 0);
-  if (retCode != 0) {
-    return RS_SERVER_ERROR(ERROR_002 + std::string(" RetCode: ") + std::to_string(retCode));
-  }
-
-  retCode = ndb_connection->wait_until_ready(30, 0);
-  if (retCode != 0) {
-    return RS_SERVER_ERROR(
-        ERROR_003 + std::string(" RetCode: ") + std::to_string(retCode) +
-        std::string(" Lastest Error: ") + std::to_string(ndb_connection->get_latest_error()) +
-        std::string(" Lastest Error Msg: ") + std::string(ndb_connection->get_latest_error_msg()));
-  }
-
-  // Initialize NDB Object Pool
-  NdbObjectPool::InitPool();
-
-  DEBUG("Connected.");
   return RS_OK;
 }
+
+//--------------------------------------------------------------------------------------------------
 
 RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int rety_initial_delay,
                              const unsigned int jitter) {
@@ -96,34 +78,23 @@ RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int r
   return RS_OK;
 }
 
+//--------------------------------------------------------------------------------------------------
+
 RS_Status shutdown_connection() {
-  try {
-    // ndb_end(0); // causes seg faults when called repeated from unit tests*/
-    NdbObjectPool::GetInstance()->Close();
-    delete ndb_connection;
-    ndb_connection = nullptr;
-  } catch (...) {
-    WARN("Exception in Shutdown");
-  }
-  return RS_OK;
+  return rdrsRonDBConnection->Shutdown();
 }
 
-/**
- * Closes a NDB Object
- *
- * @param[in] ndb_object
- *
- * @return status
- */
-RS_Status closeNDBObject(Ndb *ndb_object) {
-  NdbObjectPool::GetInstance()->ReturnResource(ndb_object);
-  return RS_OK;
+//--------------------------------------------------------------------------------------------------
+
+RS_Status reconnect() {
+  return rdrsRonDBConnection->Reconnect();
 }
 
+//--------------------------------------------------------------------------------------------------
 
 RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = NdbObjectPool::GetInstance()->GetNdbObject(ndb_connection, &ndb_object);
+  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -135,9 +106,11 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
   )
   /* clang-format on */
 
-  closeNDBObject(ndb_object);
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
   return status;
 }
+
+//--------------------------------------------------------------------------------------------------
 
 /**
  * Batched primary key read operation
@@ -145,7 +118,7 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
 
 RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *resp_buffs) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = NdbObjectPool::GetInstance()->GetNdbObject(ndb_connection, &ndb_object);
+  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -157,15 +130,17 @@ RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *re
   )
   /* clang-format on */
 
-  closeNDBObject(ndb_object);
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
   return status;
 }
+
+//--------------------------------------------------------------------------------------------------
 
 /**
  * Returns statistis about RonDB connection
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats) {
-  RonDB_Stats ret              = NdbObjectPool::GetInstance()->GetStats();
+  RonDB_Stats ret              = rdrsRonDBConnection->GetStats();
   stats->ndb_objects_created   = ret.ndb_objects_created;
   stats->ndb_objects_deleted   = ret.ndb_objects_deleted;
   stats->ndb_objects_count     = ret.ndb_objects_count;
@@ -173,6 +148,8 @@ RS_Status get_rondb_stats(RonDB_Stats *stats) {
 
   return RS_OK;
 }
+
+//--------------------------------------------------------------------------------------------------
 
 /**
  * Register callbacks

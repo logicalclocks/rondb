@@ -39,54 +39,54 @@ void log(const int level, const char *msg) {
   }
 }
 
-void PANIC(const char *msg) {
+void LOG_PANIC(const char *msg) {
   log(PanicLevel, msg);
 }
 
-void PANIC(const std::string msg) {
+void LOG_PANIC(const std::string msg) {
   log(PanicLevel, msg.c_str());
 }
 
-void FATAL(const char *msg) {
+void LOG_FATAL(const char *msg) {
   log(FatalLevel, msg);
 }
 
-void FATAL(const std::string msg) {
+void LOG_FATAL(const std::string msg) {
   log(FatalLevel, msg.c_str());
 }
 
-void ERROR(const char *msg) {
+void LOG_ERROR(const char *msg) {
   log(ErrorLevel, msg);
 }
 
-void ERROR(const std::string msg) {
+void LOG_ERROR(const std::string msg) {
   log(ErrorLevel, msg.c_str());
 }
 
-void WARN(const char *msg) {
+void LOG_WARN(const char *msg) {
   log(WarnLevel, msg);
 }
 
-void WARN(const std::string msg) {
+void LOG_WARN(const std::string msg) {
   log(WarnLevel, msg.c_str());
 }
 
-void INFO(const char *msg) {
+void LOG_INFO(const char *msg) {
   log(InfoLevel, msg);
 }
 
-void INFO(const std::string msg) {
+void LOG_INFO(const std::string msg) {
   log(InfoLevel, msg.c_str());
 }
 
-void DEBUG(const char *msg) {
+void LOG_DEBUG(const char *msg) {
   log(DebugLevel, msg);
 }
 
-void DEBUG(const std::string msg) {
+void LOG_DEBUG(const std::string msg) {
   log(DebugLevel, msg.c_str());
 }
 
-void TRACE(char *msg) {
+void LOG_TRACE(char *msg) {
   log(TraceLevel, msg);
 }
