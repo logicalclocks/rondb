@@ -184,8 +184,8 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
         ret_status =
             RS_SERVER_ERROR(ERROR_004 + std::string(" RetCode: ") + std::to_string(retCode));
       }
-      __atomic_fetch_add(&stats.ndb_objects_created, 1, __ATOMIC_SEQ_CST);
-      __atomic_fetch_add(&stats.ndb_objects_count, 1, __ATOMIC_SEQ_CST);
+      stats.ndb_objects_created++;
+      stats.ndb_objects_count++;
       allAvailableNdbObjects.push_back(*ndb_object);
     } else {
       *ndb_object = availableNdbObjects.front();
