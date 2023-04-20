@@ -24,5 +24,9 @@ import (
 )
 
 func (s *RonDBServer) Ping(ctx context.Context, reqProto *api.Empty) (*api.Empty, error) {
+
+	// metrics
+	s.grpcMetrics.PingCounter.Inc()
+
 	return &api.Empty{}, nil
 }

@@ -33,6 +33,10 @@ import (
 var operationUrl = regexp.MustCompile("^[a-zA-Z0-9$_]+/[a-zA-Z0-9$_]+/pk-read")
 
 func (h *RouteHandler) BatchPkRead(c *gin.Context) {
+
+	// metrics
+	h.httpMetrics.BatchPkReadCounter.Inc()
+
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 
 	operations := api.BatchOpRequest{}

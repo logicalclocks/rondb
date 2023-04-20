@@ -27,6 +27,10 @@ import (
 )
 
 func (h *RouteHandler) PkRead(c *gin.Context) {
+
+	// metrics
+	h.httpMetrics.PkReadCounter.Inc()
+
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 	pkReadParams, err := parsePkReadRequest(c)
 	if err != nil {

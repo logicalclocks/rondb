@@ -27,6 +27,10 @@ import (
 )
 
 func (h *RouteHandler) Stat(c *gin.Context) {
+
+	// metrics
+	h.httpMetrics.StatCounter.Inc()
+
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 	statResp := api.StatResponse{}
 	status, err := handlers.Handle(&h.statsHandler, &apiKey, nil, &statResp)

@@ -28,6 +28,7 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/metrics"
 	"hopsworks.ai/rdrs/internal/security/apikey/hopsworkscache"
 
 	"hopsworks.ai/rdrs/internal/servers"
@@ -70,7 +71,18 @@ func main() {
 	apiKeyCache := hopsworkscache.New()
 	defer apiKeyCache.Cleanup()
 
-	cleanupServers, err := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache, quit)
+	// Prometheus metrics
+	httpMetrics, httpMetricsCleanup := metrics.NewHTTPMetrics()
+	defer httpMetricsCleanup()
+	grpcMetrics, grpcMetricsCleanup := metrics.NewGRPCMetrics()
+	defer grpcMetricsCleanup()
+
+	cleanupServers, err := servers.CreateAndStartDefaultServers(
+		newHeap,
+		apiKeyCache,
+		httpMetrics,
+		grpcMetrics,
+		quit)
 	if err != nil {
 		panic(err)
 	}

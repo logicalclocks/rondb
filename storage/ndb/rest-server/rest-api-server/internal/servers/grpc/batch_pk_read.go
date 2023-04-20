@@ -29,6 +29,10 @@ import (
 )
 
 func (s *RonDBServer) Batch(ctx context.Context, reqProto *api.BatchRequestProto) (*api.BatchResponseProto, error) {
+
+	// metrics
+	s.grpcMetrics.BatchPkReadCounter.Inc()
+
 	apiKey, err := s.getApiKey(ctx)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())

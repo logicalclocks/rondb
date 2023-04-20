@@ -24,7 +24,6 @@ import (
 	"testing"
 	"time"
 
-	// _ "github.com/ianlancetaylor/cgosymbolizer"
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
@@ -36,7 +35,7 @@ import (
 )
 
 func TestReconnection1(t *testing.T) {
-	reconnectionTest(t, 1, 5)
+	reconnectionTest(t, 1, 500)
 }
 
 func TestReconnection2(t *testing.T) {
@@ -124,7 +123,7 @@ func reconnectTestInt(t *testing.T, numThreads int, durationSec int,
 			//first reconnection request is supposed to succeed
 			err := dal.Reconnect()
 			if err != nil {
-				t.Fatalf("Reconnection request failed")
+				t.Fatalf("Reconnection request failed %v ", err)
 			}
 		} else {
 			//subsequent reconnection requests are supposed to fail

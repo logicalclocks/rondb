@@ -29,6 +29,10 @@ import (
 )
 
 func (s *RonDBServer) Stat(ctx context.Context, reqProto *api.StatRequestProto) (*api.StatResponseProto, error) {
+
+	// metrics
+	s.grpcMetrics.StatCounter.Inc()
+
 	apiKey, err := s.getApiKey(ctx)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())

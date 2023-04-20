@@ -26,6 +26,7 @@ import (
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/metrics"
 
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/internal/security/tlsutils"
@@ -36,6 +37,8 @@ import (
 func CreateAndStartDefaultServers(
 	heap *heap.Heap,
 	apiKeyCache apikey.Cache,
+	httpMetrics *metrics.HTTPMetrics,
+	grpcMetrics *metrics.GRPCMetrics,
 	quit chan os.Signal,
 ) (cleanup func(), err error) {
 	cleanup = func() {}
@@ -67,7 +70,7 @@ func CreateAndStartDefaultServers(
 		}
 	}
 
-	grpcServer := grpc.New(tlsConfig, heap, apiKeyCache)
+	grpcServer := grpc.New(tlsConfig, heap, apiKeyCache, grpcMetrics)
 	cleanupGrpc, err := grpc.Start(
 		grpcServer,
 		conf.GRPC.ServerIP,
@@ -85,6 +88,7 @@ func CreateAndStartDefaultServers(
 		tlsConfig,
 		heap,
 		apiKeyCache,
+		httpMetrics,
 	)
 
 	cleanupRest := restServer.Start(quit)

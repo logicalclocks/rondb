@@ -21,4 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func (h *RouteHandler) Ping(c *gin.Context) {}
+func (h *RouteHandler) Ping(c *gin.Context) {
+	// metrics
+	h.httpMetrics.PingCounter.Inc()
+}

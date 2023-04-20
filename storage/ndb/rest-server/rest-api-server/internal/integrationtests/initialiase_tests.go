@@ -28,6 +28,7 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/metrics"
 	"hopsworks.ai/rdrs/internal/security/apikey/hopsworkscache"
 
 	"hopsworks.ai/rdrs/internal/servers"
@@ -115,10 +116,17 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 		}
 	})
 
+	//---------------------------- Prometheus metrics -------------------------
+	httpMetrics, httpMetricsCleanup := metrics.NewHTTPMetrics()
+	cleanupFNs = append(cleanupFNs, httpMetricsCleanup)
+	grpcMetrics, grpcMetricsCleanup := metrics.NewGRPCMetrics()
+	cleanupFNs = append(cleanupFNs, grpcMetricsCleanup)
+
 	//---------------------------- Servers ------------------------------------
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)
-	cleanupServers, err := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache, quit)
+	cleanupServers, err := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache,
+		httpMetrics, grpcMetrics, quit)
 	if err != nil {
 		cleanupWrapper(cleanupFNs)()
 		return nil, fmt.Errorf("failed creating default servers; error: %v ", err)

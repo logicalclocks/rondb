@@ -29,6 +29,10 @@ import (
 )
 
 func (s *RonDBServer) PKRead(ctx context.Context, reqProto *api.PKReadRequestProto) (*api.PKReadResponseProto, error) {
+
+	// metrics
+	s.grpcMetrics.PkReadCounter.Inc()
+
 	apiKey, err := s.getApiKey(ctx)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
