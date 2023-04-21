@@ -2,6 +2,7 @@ package pkread
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -109,11 +110,16 @@ func validateResGRPC(
 ) {
 	t.Helper()
 	for i := 0; i < len(testInfo.RespKVs); i++ {
-		key := string(testInfo.RespKVs[i].(string))
+		colName := string(testInfo.RespKVs[i].(string))
 
-		val, found := testclient.GetColumnDataFromGRPC(t, key, resp)
-		if !found {
-			t.Fatalf("Key not found in the response. Key %s", key)
+		val, ok := (*resp.Data)[colName]
+		if !ok {
+			t.Fatalf("Column not found in the response. colName: %s", colName)
+		}
+
+		if isBinaryData && val != nil {
+			base64String := base64.StdEncoding.EncodeToString([]byte(*val))
+			val = &base64String
 		}
 
 		var err error
@@ -129,7 +135,7 @@ func validateResGRPC(
 			testInfo.Db,
 			testInfo.Table,
 			testInfo.PkReq.Filters,
-			&key,
+			&colName,
 			val,
 			isBinaryData,
 		)

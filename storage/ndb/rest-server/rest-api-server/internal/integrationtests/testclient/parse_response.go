@@ -1,6 +1,7 @@
 package testclient
 
 import (
+	"encoding/base64"
 	"strconv"
 	"testing"
 
@@ -18,7 +19,7 @@ func GetColumnDataFromGRPC(t testing.TB, colName string, pkResponse *api.PKReadR
 	return val, ok
 }
 
-func GetColumnDataFromJson(t testing.TB, colName string, pkResponse *api.PKReadResponseJSON) (*string, bool) {
+func ParseColumnDataFromJson(t testing.TB, pkResponse api.PKReadResponseJSON, isBinaryData bool) map[string]*string {
 	t.Helper()
 
 	kvMap := make(map[string]*string)
@@ -27,22 +28,23 @@ func GetColumnDataFromJson(t testing.TB, colName string, pkResponse *api.PKReadR
 			kvMap[colName] = nil
 			continue
 		}
-		value := string([]byte(*colValue))
-		if value[0] == '"' {
-			var err error
-			value, err = strconv.Unquote(value)
-			if err != nil {
-				t.Fatal(err)
+		var value string
+		if isBinaryData {
+			value = base64.StdEncoding.EncodeToString(*colValue)
+		} else {
+			value = string([]byte(*colValue))
+			if value[0] == '"' {
+				var err error
+				value, err = strconv.Unquote(value)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 		kvMap[colName] = &value
 	}
 
-	val, ok := kvMap[colName]
-	if !ok {
-		return nil, ok
-	}
-	return val, ok
+	return kvMap
 }
 
 func GetStatusCodeFromError(t testing.TB, err error) int {

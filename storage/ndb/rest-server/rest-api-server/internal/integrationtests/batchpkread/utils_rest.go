@@ -13,13 +13,13 @@ import (
 )
 
 func batchRESTTest(t testing.TB, testInfo api.BatchOperationTestInfo, isBinaryData bool, validateData bool) {
-	httpCode, res := sendHttpBatchRequest(t, testInfo, isBinaryData)
+	httpCode, response := sendHttpBatchRequest(t, testInfo, isBinaryData)
 	if httpCode == http.StatusOK {
-		validateBatchResponseHttp(t, testInfo, res, isBinaryData, validateData)
+		validateBatchResponseHttp(t, testInfo, response, isBinaryData, validateData)
 	}
 }
 
-func sendHttpBatchRequest(t testing.TB, testInfo api.BatchOperationTestInfo, isBinaryData bool) (httpCode int, res string) {
+func sendHttpBatchRequest(t testing.TB, testInfo api.BatchOperationTestInfo, isBinaryData bool) (httpCode int, response []byte) {
 	subOps := []api.BatchSubOp{}
 	for _, op := range testInfo.Operations {
 		subOps = append(subOps, op.SubOperation)
@@ -30,23 +30,32 @@ func sendHttpBatchRequest(t testing.TB, testInfo api.BatchOperationTestInfo, isB
 		t.Fatalf("Failed to marshall test request %v", err)
 	}
 	url := testutils.NewBatchReadURL()
-	httpCode, res = testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url,
+	httpCode, response = testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url,
 		string(body), testInfo.ErrMsgContains, testInfo.HttpCode[:]...)
 	return
 }
 
-func validateBatchResponseHttp(t testing.TB, testInfo api.BatchOperationTestInfo, resp string, isBinaryData bool, validateData bool) {
+func validateBatchResponseHttp(
+	t testing.TB,
+	testInfo api.BatchOperationTestInfo,
+	response []byte,
+	isBinaryData bool,
+	validateData bool,
+) {
 	t.Helper()
-	validateBatchResponseOpIdsNCodeHttp(t, testInfo, resp)
+	validateBatchResponseOpIdsNCodeHttp(t, testInfo, response)
 	if validateData {
-		validateBatchResponseValuesHttp(t, testInfo, resp, isBinaryData)
+		validateBatchResponseValuesHttp(t, testInfo, response, isBinaryData)
 	}
 }
 
-func validateBatchResponseOpIdsNCodeHttp(t testing.TB,
-	testInfo api.BatchOperationTestInfo, resp string) {
+func validateBatchResponseOpIdsNCodeHttp(
+	t testing.TB,
+	testInfo api.BatchOperationTestInfo,
+	resp []byte,
+) {
 	var res api.BatchResponseJSON
-	err := json.Unmarshal([]byte(resp), &res)
+	err := json.Unmarshal(resp, &res)
 	if err != nil {
 		t.Fatalf("Failed to unmarshal batch response. Error %v", err)
 	}
@@ -61,10 +70,14 @@ func validateBatchResponseOpIdsNCodeHttp(t testing.TB,
 	}
 }
 
-func validateBatchResponseValuesHttp(t testing.TB, testInfo api.BatchOperationTestInfo,
-	resp string, isBinaryData bool) {
+func validateBatchResponseValuesHttp(
+	t testing.TB,
+	testInfo api.BatchOperationTestInfo,
+	resp []byte,
+	isBinaryData bool,
+) {
 	var res api.BatchResponseJSON
-	err := json.Unmarshal([]byte(resp), &res)
+	err := json.Unmarshal(resp, &res)
 	if err != nil {
 		t.Fatalf("Failed to unmarshal batch response. Error %v", err)
 	}
@@ -75,16 +88,18 @@ func validateBatchResponseValuesHttp(t testing.TB, testInfo api.BatchOperationTe
 		}
 
 		operation := testInfo.Operations[o]
-		pkresponse := (*res.Result)[o].Body
+		pkresponse := *((*res.Result)[o].Body)
+		parsedData := testclient.ParseColumnDataFromJson(t, pkresponse, isBinaryData)
 		for i := 0; i < len(operation.RespKVs); i++ {
 			key := string(operation.RespKVs[i].(string))
-			val, found := testclient.GetColumnDataFromJson(t, key, pkresponse)
+
+			jsonVal, found := parsedData[key]
 			if !found {
 				t.Fatalf("Key not found in the response. Key %s", key)
 			}
 
 			integrationtests.CompareDataWithDB(t, operation.DB, operation.Table, operation.SubOperation.Body.Filters,
-				&key, val, isBinaryData)
+				&key, jsonVal, isBinaryData)
 		}
 	}
 }
