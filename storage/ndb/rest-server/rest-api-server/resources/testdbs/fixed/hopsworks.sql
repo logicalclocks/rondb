@@ -50,26 +50,23 @@ CREATE TABLE `users` (
 ) ENGINE = ndbcluster;
 
 CREATE TABLE `project` (
-    `id` int NOT NULL AUTO_INCREMENT,
-    `inode_pid` bigint NOT NULL,
-    `inode_name` varchar(255) CHARACTER SET latin1 COLLATE latin1_general_cs NOT NULL,
-    `partition_id` bigint NOT NULL,
-    `projectname` varchar(100) CHARACTER SET latin1 COLLATE latin1_general_cs NOT NULL,
-    `username` varchar(150) CHARACTER SET latin1 COLLATE latin1_general_cs NOT NULL,
+    `id` int(11) NOT NULL AUTO_INCREMENT,
+    `inode_pid` bigint(20) NOT NULL,
+    `inode_name` varchar(255) COLLATE latin1_general_cs NOT NULL,
+    `partition_id` bigint(20) NOT NULL,
+    `projectname` varchar(100) COLLATE latin1_general_cs NOT NULL,
+    `username` varchar(150) COLLATE latin1_general_cs NOT NULL,
     `created` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    `retention_period` date DEFAULT NULL,
-    `archived` tinyint(1) DEFAULT '0',
-    `logs` tinyint(1) DEFAULT '0',
-    `deleted` tinyint(1) DEFAULT '0',
-    `description` varchar(2000) CHARACTER SET latin1 COLLATE latin1_general_cs DEFAULT NULL,
-    `payment_type` varchar(255) CHARACTER SET latin1 COLLATE latin1_general_cs NOT NULL DEFAULT 'PREPAID',
+    `description` varchar(2000) COLLATE latin1_general_cs DEFAULT NULL,
+    `payment_type` varchar(255) COLLATE latin1_general_cs NOT NULL DEFAULT 'PREPAID',
     `last_quota_update` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    `kafka_max_num_topics` int NOT NULL DEFAULT '100',
-    `docker_image` varchar(255) CHARACTER SET latin1 COLLATE latin1_general_cs DEFAULT NULL,
-    `python_env_id` int DEFAULT NULL,
+    `kafka_max_num_topics` int(11) NOT NULL DEFAULT '100',
+    `docker_image` varchar(255) COLLATE latin1_general_cs DEFAULT NULL,
+    `python_env_id` int(11) DEFAULT NULL,
+    `creation_status` tinyint(1) NOT NULL DEFAULT '0',
     PRIMARY KEY (`id`),
     UNIQUE KEY `projectname` (`projectname`),
-    UNIQUE KEY `inode_pid` (`inode_pid`, `inode_name`, `partition_id`),
+    UNIQUE KEY `inode_pid` (`inode_pid`,`inode_name`,`partition_id`),
     KEY `user_idx` (`username`),
     -- "CONSTRAINT `FK_149_289` FOREIGN KEY (`inode_pid`, `inode_name`, `partition_id`) REFERENCES `hops`.`hdfs_inodes` (`parent_id`, `name`, `partition_id`) ON DELETE CASCADE,
     CONSTRAINT `FK_262_290` FOREIGN KEY (`username`) REFERENCES `users` (`email`)
@@ -107,7 +104,7 @@ INSERT INTO
     `users`
 VALUES
     (
-        999,
+        10000,
         'macho',
         '12fa520ec8f65d3a6feacfa97a705e622e1fea95b80b521ec016e43874dfed5a',
         'macho@hopsworks.ai',
@@ -137,23 +134,13 @@ INSERT INTO
     `project`
 VALUES
     (
-        999,
-        322,
-        'demo0',
-        322,
-        'demo0',
-        'macho@hopsworks.ai',
-        '2022-05-30 14:17:22',
-        '2032-05-30',
-        0,
-        0,
-        NULL,
-        'A demo project for getting started with featurestore',
-        'NOLIMIT',
-        '2022-05-30 14:17:38',
-        100,
-        'demo_fs_meb10000:1653921933268-2.6.0-SNAPSHOT.1',
-        1
+        999, 322, 'demo0', 322, 'demo0', 'macho@hopsworks.ai', '2022-05-30 14:17:22', 'A demo project for getting started with featurestore', 'NOLIMIT', '2022-05-30 14:17:38', 100, 'demo_fs_meb10000:1653921933268-2.6.0-SNAPSHOT.1', 1, 0
+    ),
+    (
+        119, 155, 'test1', 155, 'test1', 'macho@hopsworks.ai', Timestamp('2023-03-16 14:27:17'), '', 'NOLIMIT', Timestamp('2023-03-16 14:27:18'), 100, 'python38:3.2.0-SNAPSHOT', 14.0, 0
+    ),
+    (
+        1143, 155, 'test2', 155, 'test2', 'macho@hopsworks.ai', Timestamp('2023-04-20 16:14:15'), '', 'NOLIMIT', Timestamp('2023-04-20 16:14:15'), 100, 'python38:3.2.0-SNAPSHOT', 1025.0, 0
     );
 
 INSERT INTO
@@ -180,13 +167,14 @@ VALUES
         '2022-06-14 10:27:03',
         '2022-06-14 10:27:03',
         'myapikey1',
-        999,
+        10000,
         0
     );
 
 -- TODO add more hopsworks tables and corresponding data here
 CREATE TABLE `feature_store` (
                                  `id` int(11) NOT NULL AUTO_INCREMENT,
+                                 `name` varchar(100) COLLATE latin1_general_cs NOT NULL,
                                  `project_id` int(11) NOT NULL,
                                  `created` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
                                  `hive_db_id` bigint(20) NOT NULL,
@@ -304,22 +292,22 @@ CREATE TABLE `feature_view` (
                                     --  `hops`.`hdfs_inodes` (`parent_id`, `name`, `partition_id`) ON DELETE CASCADE ON UPDATE NO ACTION
 ) ENGINE=ndbcluster AUTO_INCREMENT=9 DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
 
--- CREATE TABLE `training_dataset_join` (
---                                          `id` int(11) NOT NULL AUTO_INCREMENT,
---                                          `training_dataset` int(11) NULL,
---                                          `feature_group` int(11) NULL,
---                                          `feature_group_commit_id` BIGINT(20) NULL,
---                                          `type` tinyint(5) NOT NULL DEFAULT 0,
---                                          `idx` int(11) NOT NULL DEFAULT 0,
---                                          `prefix` VARCHAR(63) NULL,
---                                          `feature_view_id` INT(11) NULL,
---                                          PRIMARY KEY (`id`),
---                                          KEY `fg_key` (`feature_group`),
---                                          CONSTRAINT `tdj_feature_view_fk` FOREIGN KEY  (`feature_view_id`) REFERENCES
---                                              `feature_view` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
---                                         --  CONSTRAINT `td_fk_tdj` FOREIGN KEY (`training_dataset`) REFERENCES `training_dataset` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
---                                          CONSTRAINT `fg_left` FOREIGN KEY (`feature_group`) REFERENCES `feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
--- ) ENGINE=ndbcluster DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
+CREATE TABLE `training_dataset_join` (
+                                         `id` int(11) NOT NULL AUTO_INCREMENT,
+                                         `training_dataset` int(11) NULL,
+                                         `feature_group` int(11) NULL,
+                                         `feature_group_commit_id` BIGINT(20) NULL,
+                                         `type` tinyint(5) NOT NULL DEFAULT 0,
+                                         `idx` int(11) NOT NULL DEFAULT 0,
+                                         `prefix` VARCHAR(63) NULL,
+                                         `feature_view_id` INT(11) NULL,
+                                         PRIMARY KEY (`id`),
+                                         KEY `fg_key` (`feature_group`),
+                                         CONSTRAINT `tdj_feature_view_fk` FOREIGN KEY  (`feature_view_id`) REFERENCES
+                                             `feature_view` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+                                        --  CONSTRAINT `td_fk_tdj` FOREIGN KEY (`training_dataset`) REFERENCES `training_dataset` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+                                         CONSTRAINT `fg_left` FOREIGN KEY (`feature_group`) REFERENCES `feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE=ndbcluster DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
 
 CREATE TABLE `training_dataset_feature` (
                                             `id` int(11) NOT NULL AUTO_INCREMENT,
@@ -347,35 +335,210 @@ INSERT INTO
     `feature_store`
 VALUES
     (
-        67, 999, "2023-03-16 14:27:29", 3
+        67, "test2", 119, "2023-03-16 14:27:29", 3
+    ),
+    (
+        1091, "test3", 1143, "2023-03-16 14:27:29", 4
     );
 
 INSERT INTO
     `feature_group`
 VALUES
     (
-        29, "test_3", 67, "2023-03-20 12:30:51", 999, 1, 0, NULL, 1, NULL, "ts", 1
+        2068, 'sample_2', 1091, Timestamp('2023-04-21 09:32:38'), 10000, 1, 2, NULL, NULL, 2056, 'ts', 1
+    ),
+    (
+        2069, 'sample_1', 67, Timestamp('2023-04-21 09:33:40'), 10000, 1, 2, NULL, NULL, 2057, 'ts', 1
+    ),
+    (
+        2071, 'sample_2', 67, Timestamp('2023-04-21 09:37:25'), 10000, 1, 2, NULL, NULL, 2059, 'ts', 1
+    ),
+    (
+        2072, 'sample_1', 1091, Timestamp('2023-04-21 10:00:40'), 10000, 1, 2, NULL, NULL, 2060, 'ts', 1
+    ),
+    (
+        2070, 'sample_1', 67, Timestamp('2023-04-21 09:35:38'), 10000, 2, 2, NULL, NULL, 2058, 'ts', 1
     );
 
 INSERT INTO
     `feature_view`
 VALUES
     (
-        11, "test_3", 67, "2023-03-16 16:42:49", 999, 1, "", 250, "test_3_1", 250
+        2059, 'sample_1', 67, Timestamp('2023-04-21 09:52:51'), 10000, 1, '', 250, 'sample_1_1', 250
+    ),
+    (
+        2060, 'sample_2', 67, Timestamp('2023-04-21 09:52:52'), 10000, 1, '', 250, 'sample_2_1', 250
+    ),
+    (
+        2061, 'sample_1n2', 67, Timestamp('2023-04-21 09:52:53'), 10000, 1, '', 250, 'sample_1n2_1', 250
+    ),
+    (
+        2064, 'sample_2', 1091, Timestamp('2023-04-21 10:03:49'), 10000, 1, '', 30509, 'sample_2_1', 30509
+    ),
+    (
+        2065, 'sample_1n2', 1091, Timestamp('2023-04-21 10:03:51'), 10000, 1, '', 30509, 'sample_1n2_1', 30509
+    ),
+    (
+        2066, 'sample_share_1n2', 67, Timestamp('2023-04-21 11:10:32'), 10000, 1, '', 250, 'sample_share_1n2_1', 250
+    ),
+    (
+        2063, 'sample_1', 1091, Timestamp('2023-04-21 10:03:48'), 10000, 2, '', 30509, 'sample_1_2', 30509
+    );
+
+INSERT INTO 
+    `training_dataset_join`
+VALUES
+    (
+        2053, NULL, 2071, NULL, 0, 1, 'fg2_', 2061
+    ),
+    (
+        2056, NULL, 2072, NULL, 0, 0, NULL, 2063
+    ),
+    (
+        2058, NULL, 2068, NULL, 0, 1, 'fg2_', 2065
+    ),
+    (
+        2059, NULL, 2072, NULL, 0, 0, NULL, 2065
+    ),
+    (
+        2060, NULL, 2069, NULL, 0, 0, NULL, 2066
+    ),
+    (
+        2061, NULL, 2068, NULL, 0, 1, 'fg2_', 2066
+    ),
+    (
+        2051, NULL, 2069, NULL, 0, 0, NULL, 2059
+    ),
+    (
+        2052, NULL, 2071, NULL, 0, 0, NULL, 2060
+    ),
+    (
+        2054, NULL, 2069, NULL, 0, 0, NULL, 2061
+    ),
+    (
+        2057, NULL, 2068, NULL, 0, 0, NULL, 2064
     );
 
 INSERT INTO
     `training_dataset_feature`
 VALUES
     (
-        9, NULL, 29, "id1", "int", NULL, 0, 0, NULL, 11
+        2058, NULL, 2069, 'id1', 'bigint', 2051, 0, 0, NULL, 2059
     ),
     (
-        10, NULL, 29, "col0", "int", NULL, 2, 0, NULL, 11
+        2059, NULL, 2069, 'ts', 'timestamp', 2051, 1, 0, NULL, 2059
     ),
     (
-        11, NULL, 29, "col1", "int", NULL, 3, 0, NULL, 11
+        2060, NULL, 2069, 'data2', 'bigint', 2051, 3, 0, NULL, 2059
     ),
     (
-        12, NULL, 29, "ts", "bigint", NULL, 1, 0, NULL, 11
+        2061, NULL, 2071, 'data2', 'string', 2052, 3, 0, NULL, 2060
+    ),
+    (
+        2062, NULL, 2071, 'data1', 'string', 2052, 2, 0, NULL, 2060
+    ),
+    (
+        2064, NULL, 2071, 'id1', 'bigint', 2052, 0, 0, NULL, 2060
+    ),
+    (
+        2065, NULL, 2069, 'ts', 'timestamp', 2054, 1, 0, NULL, 2061
+    ),
+    (
+        2066, NULL, 2071, 'id1', 'bigint', 2053, 4, 0, NULL, 2061
+    ),
+    (
+        2067, NULL, 2071, 'data1', 'string', 2053, 6, 0, NULL, 2061
+    ),
+    (
+        2070, NULL, 2069, 'data1', 'bigint', 2054, 2, 0, NULL, 2061
+    ),
+    (
+        2072, NULL, 2069, 'data2', 'bigint', 2054, 3, 0, NULL, 2061
+    ),
+    (
+        2077, NULL, 2072, 'data1', 'bigint', 2056, 2, 0, NULL, 2063
+    ),
+    (
+        2079, NULL, 2072, 'id1', 'bigint', 2056, 0, 0, NULL, 2063
+    ),
+    (
+        2080, NULL, 2072, 'ts', 'timestamp', 2056, 1, 0, NULL, 2063
+    ),
+    (
+        2082, NULL, 2068, 'id1', 'bigint', 2057, 0, 0, NULL, 2064
+    ),
+    (
+        2083, NULL, 2068, 'ts', 'date', 2057, 1, 0, NULL, 2064
+    ),
+    (
+        2084, NULL, 2068, 'data2', 'string', 2057, 3, 0, NULL, 2064
+    ),
+    (
+        2085, NULL, 2068, 'data2', 'string', 2058, 7, 0, NULL, 2065
+    ),
+    (
+        2086, NULL, 2068, 'ts', 'date', 2058, 5, 0, NULL, 2065
+    ),
+    (
+        2094, NULL, 2069, 'data1', 'bigint', 2060, 2, 0, NULL, 2066
+    ),
+    (
+        2097, NULL, 2068, 'id1', 'bigint', 2061, 4, 0, NULL, 2066
+    ),
+    (
+        2098, NULL, 2068, 'data2', 'string', 2061, 7, 0, NULL, 2066
+    ),
+    (
+        2100, NULL, 2068, 'data1', 'string', 2061, 6, 0, NULL, 2066
+    ),
+    (
+        2057, NULL, 2069, 'data1', 'bigint', 2051, 2, 0, NULL, 2059
+    ),
+    (
+        2063, NULL, 2071, 'ts', 'date', 2052, 1, 0, NULL, 2060
+    ),
+    (
+        2068, NULL, 2071, 'ts', 'date', 2053, 5, 0, NULL, 2061
+    ),
+    (
+        2069, NULL, 2071, 'data2', 'string', 2053, 7, 0, NULL, 2061
+    ),
+    (
+        2071, NULL, 2069, 'id1', 'bigint', 2054, 0, 0, NULL, 2061
+    ),
+    (
+        2078, NULL, 2072, 'data2', 'bigint', 2056, 3, 0, NULL, 2063
+    ),
+    (
+        2081, NULL, 2068, 'data1', 'string', 2057, 2, 0, NULL, 2064
+    ),
+    (
+        2087, NULL, 2072, 'id1', 'bigint', 2059, 0, 0, NULL, 2065
+    ),
+    (
+        2088, NULL, 2072, 'data2', 'bigint', 2059, 3, 0, NULL, 2065
+    ),
+    (
+        2089, NULL, 2072, 'ts', 'timestamp', 2059, 1, 0, NULL, 2065
+    ),
+    (
+        2090, NULL, 2072, 'data1', 'bigint', 2059, 2, 0, NULL, 2065
+    ),
+    (
+        2091, NULL, 2068, 'id1', 'bigint', 2058, 4, 0, NULL, 2065
+    ),
+    (
+        2092, NULL, 2068, 'data1', 'string', 2058, 6, 0, NULL, 2065
+    ),
+    (
+        2093, NULL, 2069, 'id1', 'bigint', 2060, 0, 0, NULL, 2066
+    ),
+    (
+        2095, NULL, 2069, 'data2', 'bigint', 2060, 3, 0, NULL, 2066
+    ),
+    (
+        2096, NULL, 2069, 'ts', 'timestamp', 2060, 1, 0, NULL, 2066
+    ),
+    (
+        2099, NULL, 2068, 'ts', 'date', 2061, 5, 0, NULL, 2066
     );
