@@ -20,19 +20,6 @@ CREATE DATABASE fsdb001;
 
 USE fsdb001;
 
-CREATE TABLE test_3_1 (
-    id0 INT,
-    ts BIGINT,
-    col0 INT,
-    col1 INT UNSIGNED,
-    PRIMARY KEY (id0)
-) ENGINE = ndbcluster;
-
-INSERT INTO
-    test_3_1
-VALUES
-    (0, 10, 20, 30);
-
 CREATE TABLE fs_table(
     id0 INT,
     id1 INT UNSIGNED,
