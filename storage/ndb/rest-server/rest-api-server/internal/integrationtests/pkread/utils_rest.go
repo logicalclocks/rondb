@@ -42,12 +42,6 @@ func validateResHttp(t testing.TB, testInfo api.PKTestInfo, response []byte, isB
 		t.Fatalf("Failed to unmarshal response object %v", err)
 	}
 
-	for col, val := range *pkResponse.Data {
-		if val != nil {
-			t.Logf("col: %v; response: %v", col, *val)
-		}
-	}
-
 	parsedData := testclient.ParseColumnDataFromJson(t, pkResponse, isBinaryData)
 
 	for i := 0; i < len(testInfo.RespKVs); i++ {

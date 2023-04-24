@@ -120,11 +120,16 @@ func (r *PKReadResponseGRPC) SetOperationID(opID *string) {
 	r.OperationID = opID
 }
 
-func (r *PKReadResponseGRPC) SetColumnData(column, value *string, valueType uint32) {
+func (r *PKReadResponseGRPC) SetColumnData(column, value *string, dataType uint32) {
 	if value == nil {
 		(*(*r).Data)[*column] = nil
 	} else {
-		(*(*r).Data)[*column] = value
+		if dataType == C.RDRS_INTEGER_DATATYPE || dataType == C.RDRS_FLOAT_DATATYPE {
+			(*(*r).Data)[*column] = value
+		} else {
+			quotedString := "\"" + *value + "\""
+			(*(*r).Data)[*column] = &quotedString
+		}
 	}
 }
 

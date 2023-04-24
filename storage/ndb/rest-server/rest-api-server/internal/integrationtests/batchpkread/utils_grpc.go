@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -109,32 +108,37 @@ func validateBatchResponseOpIdsNCodeGRPC(t testing.TB, testInfo api.BatchOperati
 	}
 }
 
-func validateBatchResponseValuesGRPC(t testing.TB, testInfo api.BatchOperationTestInfo, resp *api.BatchResponseGRPC, isBinaryData bool) {
-	for o := 0; o < len(testInfo.Operations); o++ {
+func validateBatchResponseValuesGRPC(
+	t testing.TB,
+	testInfo api.BatchOperationTestInfo,
+	resp *api.BatchResponseGRPC,
+	isBinaryData bool,
+) {
+	for o, operation := range testInfo.Operations {
 		if *(*resp.Result)[o].Code != http.StatusOK {
 			continue // data is null if the status is not OK
 		}
 
-		operation := testInfo.Operations[o]
 		pkresponse := (*resp.Result)[o].Body
-		for i := 0; i < len(operation.RespKVs); i++ {
-			key := string(operation.RespKVs[i].(string))
-			val, found := testclient.GetColumnDataFromGRPC(t, key, pkresponse)
+		parsedData := testclient.ParseColumnDataFromGRPC(t, pkresponse, isBinaryData)
+
+		for _, keyIntf := range operation.RespKVs {
+			key := string(keyIntf.(string))
+
+			grpcVal, found := parsedData[key]
 			if !found {
 				t.Fatalf("Key not found in the response. Key %s", key)
 			}
 
-			var err error
-			if val != nil {
-				quotedVal := "\"" + *val + "\"" // you have to surround the string with "s
-				*val, err = strconv.Unquote(quotedVal)
-				if err != nil {
-					t.Fatalf("Unquote failed %v\n", err)
-				}
-			}
-
-			integrationtests.CompareDataWithDB(t, operation.DB, operation.Table, operation.SubOperation.Body.Filters,
-				&key, val, isBinaryData)
+			integrationtests.CompareDataWithDB(
+				t,
+				operation.DB,
+				operation.Table,
+				operation.SubOperation.Body.Filters,
+				&key,
+				grpcVal,
+				isBinaryData,
+			)
 		}
 	}
 }
