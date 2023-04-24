@@ -24,7 +24,6 @@ package pkread
 */
 import "C"
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -204,7 +203,8 @@ func ProcessPKReadResponse(respBuff *heap.NativeBuffer, response api.PKReadRespo
 
 			if isNull == 0 {
 				value := C.GoString((*C.char)(unsafe.Pointer(uintptr(respBuff.Buffer) + uintptr(valueAdd))))
-				response.SetColumnData(&name, &value, dataType)
+				quotedValue := quoteIfString(dataType, &value)
+				response.SetColumnData(&name, &quotedValue, dataType)
 			} else {
 				response.SetColumnData(&name, nil, dataType)
 			}
@@ -214,14 +214,12 @@ func ProcessPKReadResponse(respBuff *heap.NativeBuffer, response api.PKReadRespo
 	return status, nil
 }
 
-func convertToJsonRaw(dataType uint32, value *string) *json.RawMessage {
+func quoteIfString(dataType uint32, value *string) string {
 	if dataType == C.RDRS_INTEGER_DATATYPE || dataType == C.RDRS_FLOAT_DATATYPE {
-		valueBytes := json.RawMessage(*value)
-		return &valueBytes
+		return *value
 	} else {
 		quotedString := "\"" + *value + "\""
-		valueBytes := json.RawMessage(quotedString)
-		return &valueBytes
+		return quotedString
 	}
 }
 
