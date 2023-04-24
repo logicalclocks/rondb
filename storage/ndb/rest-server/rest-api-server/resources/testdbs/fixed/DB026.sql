@@ -24,7 +24,7 @@ USE db026;
 -- Maxing out the primary key column size
 CREATE TABLE table_1 (
     id VARBINARY(3070),
-    col0 VARBINARY,
+    col0 VARBINARY(10),
     PRIMARY KEY(id)
 ) ENGINE = ndbcluster;
 
