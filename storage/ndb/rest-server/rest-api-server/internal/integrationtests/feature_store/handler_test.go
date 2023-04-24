@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/testutils"
@@ -43,4 +44,12 @@ func TestFeatureStore(t *testing.T) {
 	}
 
 	log.Infof("Response data is %s", fsResp.RespData)
+}
+
+func TestFeatureStoreMetaData(t *testing.T) {
+	err := dal.GetProjectID("test")
+	if err != nil {
+		t.Fatalf(" failed %s ", err)
+	}
+
 }
