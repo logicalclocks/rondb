@@ -1,7 +1,6 @@
 package testclient
 
 import (
-	"encoding/base64"
 	"strconv"
 	"testing"
 
@@ -28,17 +27,13 @@ func ParseColumnDataFromJson(t testing.TB, pkResponse api.PKReadResponseJSON, is
 			kvMap[colName] = nil
 			continue
 		}
-		var value string
-		if isBinaryData {
-			value = base64.StdEncoding.EncodeToString(*colValue)
-		} else {
-			value = string([]byte(*colValue))
-			if value[0] == '"' {
-				var err error
-				value, err = strconv.Unquote(value)
-				if err != nil {
-					t.Fatal(err)
-				}
+
+		value := string([]byte(*colValue))
+		if value[0] == '"' {
+			var err error
+			value, err = strconv.Unquote(value)
+			if err != nil {
+				t.Fatal(err)
 			}
 		}
 		kvMap[colName] = &value
