@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/ianlancetaylor/cgosymbolizer"
+	// _ "github.com/ianlancetaylor/cgosymbolizer"
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
