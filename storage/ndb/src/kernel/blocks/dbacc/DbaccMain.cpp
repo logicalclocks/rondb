@@ -6123,7 +6123,7 @@ Uint32 Dbacc::checkScanExpand(Uint32 splitBucket)
   return 0;
 
   TSplit = splitBucket;
-  for (Ti = 0; Ti < 0; Ti++)
+  //for (Ti = 0; Ti < 0; Ti++)
   {
     ndbabort(); //ACC scans no longer used
     if (fragrecptr.p->scan[Ti] != RNIL)
@@ -6828,7 +6828,7 @@ Uint32 Dbacc::checkScanShrink(Uint32 sourceBucket, Uint32 destBucket)
 
   TmergeDest = destBucket;
   TmergeSource = sourceBucket;
-  for (Ti = 0; Ti < 0; Ti++)
+  //for (Ti = 0; Ti < 0; Ti++)
   {
     ndbabort(); //ACC scans no longer used
     actions[Ti].clear();
@@ -6934,7 +6934,8 @@ Uint32 Dbacc::checkScanShrink(Uint32 sourceBucket, Uint32 destBucket)
 
   if (TreleaseInd == 1) {
     jam();
-    for (Ti = 0; Ti < 0; Ti++) {
+    //for (Ti = 0; Ti < 0; Ti++)
+    {
       ndbabort(); //ACC scans no longer used
       if (!actions[Ti].isclear())
       {
@@ -7591,7 +7592,8 @@ void Dbacc::execACC_SCANREQ(Signal* signal) //Direct Executed
   
   Uint32 i;
   ndbabort(); //ACC scans no longer used
-  for (i = 0; i < 0; i++) {
+  for (i = 0; i == 0; i++)
+  {
     jam();
     if (fragrecptr.p->scan[i] == RNIL) {
       jam();

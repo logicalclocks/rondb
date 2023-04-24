@@ -189,8 +189,8 @@ Dbacc::Dbacc(Block_context& ctx,
              Uint32 instanceNumber,
              Uint32 blockNo):
   SimulatedBlock(blockNo, ctx, instanceNumber),
-  c_tup(0),
   m_reserved_copy_frag_lock(oprec_pool),
+  c_tup(0),
   c_page8_pool(c_page_pool)
 {
   BLOCK_CONSTRUCTOR(Dbacc);
