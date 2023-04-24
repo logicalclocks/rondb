@@ -214,6 +214,15 @@ func ProcessPKReadResponse(respBuff *heap.NativeBuffer, response api.PKReadRespo
 	return status, nil
 }
 
+/*
+For both JSON and gRPC we need a way of letting the client know the datatype.
+
+In JSON, strings are generally represented by using paranthesis (for numbers they are omitted).
+For gRPC, we fixed our datatype to strings. So we pretend to have a JSON setup and also add
+paranthesis when we are actually dealing with strings.
+
+Since binary data is encoded as base64 strings, we also add paranthesis for these.
+*/
 func quoteIfString(dataType uint32, value *string) string {
 	if dataType == C.RDRS_INTEGER_DATATYPE || dataType == C.RDRS_FLOAT_DATATYPE {
 		return *value
