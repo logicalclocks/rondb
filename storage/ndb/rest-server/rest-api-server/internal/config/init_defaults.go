@@ -104,8 +104,8 @@ func newWithDefaults() AllConfigs {
 						Port: 3306,
 					},
 				},
-				User:     "rondb",
-				Password: "rondb",
+				User:     "root",
+				Password: "",
 			},
 		},
 	}
