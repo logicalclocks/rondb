@@ -21,6 +21,7 @@ package dal
 /*
  #include <stdlib.h>
  #include "./../../../data-access-rondb/src/rdrs-dal.h"
+ #include "./../../../data-access-rondb/src/rdrs-const.h"
  #include "./../../../data-access-rondb/src/feature_store/feature_store.h"
 */
 import "C"
@@ -78,4 +79,26 @@ func GetFeatureViewID(featureStoreID int, featureViewName string, featureViewVer
 	}
 
 	return int(fsViewID), nil
+}
+
+func GetTrainingDatasetJoinData(featureViewID int) (int, int, string, *DalError) {
+	prefixBuff := C.malloc(C.size_t(C.TRAINING_DATASET_JOIN_PREFIX_SIZE))
+	defer C.free(prefixBuff)
+
+	var tdJoinID C.int
+	tdJoinIDPtr := (*C.int)(unsafe.Pointer(&tdJoinID))
+
+	var featureGroupID C.int
+	featureGroupIDPtr := (*C.int)(unsafe.Pointer(&featureGroupID))
+
+	ret := C.find_training_dataset_join_data(C.int(featureViewID),
+		tdJoinIDPtr,
+		featureGroupIDPtr,
+		(*C.char)(unsafe.Pointer(prefixBuff)))
+
+	if ret.http_code != http.StatusOK {
+		return 0, 0, "", cToGoRet(&ret)
+	}
+
+	return int(tdJoinID), int(featureGroupID), C.GoString((*C.char)(unsafe.Pointer(prefixBuff))), nil
 }

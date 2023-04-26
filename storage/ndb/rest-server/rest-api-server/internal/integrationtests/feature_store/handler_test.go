@@ -67,4 +67,11 @@ func TestFeatureStoreMetaData(t *testing.T) {
 	}
 
 	log.Infof("Feature View ID %d \n", fvID)
+
+	tdJoinID, featureGroupID, prefix, err := dal.GetTrainingDatasetJoinData(fvID)
+	if err != nil {
+		t.Fatalf("Reading Training Dataset Join failed %s ", err.VerboseError())
+	}
+
+	log.Infof("Training Dataset Join, td_id: %d, feature_group_id: %d, prefix %s \n", tdJoinID, featureGroupID, prefix)
 }

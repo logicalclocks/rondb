@@ -321,7 +321,8 @@ RS_Status find_feature_view_id_int(Ndb *ndb_object, int feature_store_id,
   int version_col_id      = table_dict->getColumn("version")->getColumnNo();
   Uint32 version_col_size = (Uint32)table_dict->getColumn("version")->getSizeInBytes();
 
-  if (filter.cmp(NdbScanFilter::COND_EQ, version_col_id, &feature_view_version, version_col_size) < 0 ) {
+  if (filter.cmp(NdbScanFilter::COND_EQ, version_col_id, &feature_view_version, version_col_size) <
+      0) {
     err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_031);
@@ -331,7 +332,7 @@ RS_Status find_feature_view_id_int(Ndb *ndb_object, int feature_store_id,
   int fs_id_col_id      = table_dict->getColumn("feature_store_id")->getColumnNo();
   Uint32 fs_id_col_size = (Uint32)table_dict->getColumn("feature_store_id")->getSizeInBytes();
 
-  if ( filter.cmp(NdbScanFilter::COND_EQ, fs_id_col_id, &feature_store_id, fs_id_col_size) < 0 ||
+  if (filter.cmp(NdbScanFilter::COND_EQ, fs_id_col_id, &feature_store_id, fs_id_col_size) < 0 ||
       filter.end() < 0) {
     err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
@@ -380,8 +381,10 @@ RS_Status find_feature_view_id_int(Ndb *ndb_object, int feature_store_id,
   return RS_OK;
 }
 
+//-------------------------------------------------------------------------------------------------
+
 /**
- * Find feature store ID using the feature store name
+ * Find feature view ID using the feature store id
  * SELECT id AS feature_view_id FROM feature_view WHERE name = {feature_view_name} AND version =
  * {feature_view_version} AND feature_store_id = {feature_store_id}
  */
@@ -402,3 +405,133 @@ RS_Status find_feature_view_id(int feature_store_id, const char *feature_view_na
 
   return status;
 }
+
+//-------------------------------------------------------------------------------------------------
+
+RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_id, int *td_join_id,
+                                              int *feature_group_id, char *prefix) {
+  NdbError err;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbScanOperation *scanOp;
+
+  RS_Status status = select_table(ndb_object, "hopsworks", "training_dataset_join", &table_dict);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  status = start_transaction(ndb_object, &tx);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  std::string index_name = "tdj_feature_view_fk";
+  status = get_index_scan_op(ndb_object, tx, table_dict, index_name.c_str(), &scanOp);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  status = read_tuples(ndb_object, scanOp);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  int fv_id_col_id      = table_dict->getColumn("feature_view_id")->getColumnNo();
+  Uint32 fv_id_col_size = (Uint32)table_dict->getColumn("feature_view_id")->getSizeInBytes();
+
+  NdbScanFilter filter(scanOp);
+  if (filter.begin(NdbScanFilter::AND) < 0 ||
+      filter.cmp(NdbScanFilter::COND_EQ, fv_id_col_id, &feature_view_id, fv_id_col_size) < 0 ||
+      filter.end() < 0) {
+    err = filter.getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, ERROR_031);
+  }
+
+  NdbRecAttr *td_join_id_attr       = scanOp->getValue("id");
+  NdbRecAttr *feature_group_id_attr = scanOp->getValue("feature_group");
+  NdbRecAttr *prefix_attr           = scanOp->getValue("prefix");
+  assert(TRAINING_DATASET_JOIN_PREFIX_SIZE ==
+         (Uint32)table_dict->getColumn("prefix")->getSizeInBytes());
+
+  if (td_join_id_attr == nullptr || feature_group_id_attr == nullptr || prefix_attr == nullptr) {
+    return RS_RONDB_SERVER_ERROR(err, ERROR_019);
+  }
+
+  if (tx->execute(NdbTransaction::NoCommit) != 0) {
+    err = ndb_object->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, ERROR_009);
+  }
+
+  bool check   = 0;
+  Uint32 count = 0;
+  while ((check = scanOp->nextResult(true)) == 0) {
+    do {
+      if (count > 1) {
+        return RS_SERVER_ERROR(ERROR_028 + std::string(" Expecting single row of data"));
+      }
+
+      count++;
+      *td_join_id       = td_join_id_attr->int32_value();
+      *feature_group_id = feature_group_id_attr->int32_value();
+
+      // memory for "prefix" is allocated and freed by the go layer
+      Uint32 prefix_attr_bytes;
+      const char *prefix_data_start = nullptr;
+      if (GetByteArray(prefix_attr, &prefix_data_start, &prefix_attr_bytes) != 0) {
+        return RS_CLIENT_ERROR(ERROR_019);
+      }
+
+      memcpy(prefix, prefix_data_start, prefix_attr_bytes);
+      prefix[prefix_attr_bytes] = 0;
+    } while ((check = scanOp->nextResult(false)) == 0);
+  }
+
+  // check for errors happened during the reading process
+  NdbError error = scanOp->getNdbError();
+
+  // As we are at the end we will first close the transaction and then deal with the error
+  ndb_object->closeTransaction(tx);
+
+  // storage/ndb/src/ndbapi/ndberror.cpp
+  if (error.code != 4120 /*Scan already complete*/) {
+    return RS_RONDB_SERVER_ERROR(error, "Failed Reading Project ID. Fn find_project_id_int");
+  }
+
+  if (count == 0) {
+    return RS_CLIENT_404_ERROR();
+  }
+
+  return RS_OK;
+}
+
+//-------------------------------------------------------------------------------------------------
+
+/**
+ * Find training dataset join data
+ * SELECT id AS td_join_id, feature_group AS feature_group_id, prefix FROM training_dataset_join
+ * WHERE feature_view_id = {feature_view_id}
+ */
+RS_Status find_training_dataset_join_data(int feature_view_id, int *td_join_id,
+                                          int *feature_group_id, char *prefix) {
+
+  Ndb *ndb_object  = nullptr;
+  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  /* clang-format off */
+  RETRY_HANDLER(
+    status = find_training_dataset_join_data_int(ndb_object,
+      feature_view_id, td_join_id, feature_group_id, prefix);
+  )
+  /* clang-format on */
+
+  return status;
+}
+
+//-------------------------------------------------------------------------------------------------
