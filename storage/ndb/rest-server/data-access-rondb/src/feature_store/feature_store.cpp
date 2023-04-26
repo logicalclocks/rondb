@@ -81,7 +81,7 @@ RS_Status find_project_id_int(Ndb *ndb_object, const char *feature_store_name, I
   if (filter.begin(NdbScanFilter::AND) < 0 ||
       filter.cmp(NdbScanFilter::COND_EQ, col_id, cmp_str, PROJECT_PROJECTNAME_SIZE) < 0 ||
       filter.end() < 0) {
-    err = ndb_object->getNdbError();
+    err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_031);
   }
@@ -145,7 +145,6 @@ RS_Status find_project_id(const char *feature_store_name, Int32 *project_id) {
   )
   /* clang-format on */
 
-  // printf("feature store name is %s", feature_store_name, project_id);
   return status;
 }
 
@@ -168,13 +167,11 @@ RS_Status find_feature_store_id_int(Ndb *ndb_object, const char *feature_store_n
     return status;
   }
 
-  //TODO FIXME create an index on "name" column
-  // std::string index_name = "name_idx";
-  // status = get_index_scan_op(ndb_object, tx, table_dict, index_name.c_str(), &scanOp);
-  // if (status.http_code != SUCCESS) {
-  //  ndb_object->closeTransaction(tx);
-  //  return status;
-  // }
+  status = get_scan_op(ndb_object, tx, "feature_store", &scanOp);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
 
   status = read_tuples(ndb_object, scanOp);
   if (status.http_code != SUCCESS) {
@@ -197,7 +194,7 @@ RS_Status find_feature_store_id_int(Ndb *ndb_object, const char *feature_store_n
   if (filter.begin(NdbScanFilter::AND) < 0 ||
       filter.cmp(NdbScanFilter::COND_EQ, col_id, cmp_str, FEATURE_STORE_NAME_SIZE) < 0 ||
       filter.end() < 0) {
-    err = ndb_object->getNdbError();
+    err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_031);
   }
@@ -264,8 +261,144 @@ RS_Status find_feature_store_id(const char *feature_store_name, int *feature_sto
   )
   /* clang-format on */
 
-  // printf("feature store name is %s", feature_store_name, project_id);
   return status;
 }
 
 //-------------------------------------------------------------------------------------------------
+
+RS_Status find_feature_view_id_int(Ndb *ndb_object, int feature_store_id,
+                                   const char *feature_view_name, int feature_view_version,
+                                   int *feature_view_id) {
+  NdbError err;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbScanOperation *scanOp;
+
+  RS_Status status = select_table(ndb_object, "hopsworks", "feature_view", &table_dict);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  status = start_transaction(ndb_object, &tx);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  status = get_scan_op(ndb_object, tx, "feature_view", &scanOp);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  status = read_tuples(ndb_object, scanOp);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  int name_col_id      = table_dict->getColumn("name")->getColumnNo();
+  Uint32 name_col_size = (Uint32)table_dict->getColumn("name")->getSizeInBytes();
+  assert(name_col_size == FEATURE_VIEW_NAME_SIZE);
+  if (strlen(feature_view_name) >= name_col_size) {  // col_size include length byte(s)
+    return RS_CLIENT_ERROR("Wrong length of column name");
+  }
+
+  char cmp_str[FEATURE_VIEW_NAME_SIZE];
+  memcpy(cmp_str + 1, feature_view_name, FEATURE_VIEW_NAME_SIZE - 1);
+  cmp_str[0] = static_cast<char>(strlen(feature_view_name));
+
+  NdbScanFilter filter(scanOp);
+
+  // name
+  if (filter.begin(NdbScanFilter::AND) < 0 ||
+      filter.cmp(NdbScanFilter::COND_EQ, name_col_id, cmp_str, FEATURE_VIEW_NAME_SIZE) < 0) {
+    err = filter.getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, ERROR_031);
+  }
+
+  // version
+  int version_col_id      = table_dict->getColumn("version")->getColumnNo();
+  Uint32 version_col_size = (Uint32)table_dict->getColumn("version")->getSizeInBytes();
+
+  if (filter.cmp(NdbScanFilter::COND_EQ, version_col_id, &feature_view_version, version_col_size) < 0 ) {
+    err = filter.getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, ERROR_031);
+  }
+
+  // feature store id
+  int fs_id_col_id      = table_dict->getColumn("feature_store_id")->getColumnNo();
+  Uint32 fs_id_col_size = (Uint32)table_dict->getColumn("feature_store_id")->getSizeInBytes();
+
+  if ( filter.cmp(NdbScanFilter::COND_EQ, fs_id_col_id, &feature_store_id, fs_id_col_size) < 0 ||
+      filter.end() < 0) {
+    err = filter.getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, ERROR_031);
+  }
+
+  NdbRecAttr *id = scanOp->getValue("id");
+  if (id == nullptr) {
+    return RS_RONDB_SERVER_ERROR(err, ERROR_019);
+  }
+
+  if (tx->execute(NdbTransaction::NoCommit) != 0) {
+    err = ndb_object->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, ERROR_009);
+  }
+
+  bool check   = 0;
+  Uint32 count = 0;
+  while ((check = scanOp->nextResult(true)) == 0) {
+    do {
+      if (count > 1) {
+        return RS_SERVER_ERROR(ERROR_028 + std::string(" Expecting single ID"));
+      }
+
+      count++;
+      *feature_view_id = id->int32_value();
+    } while ((check = scanOp->nextResult(false)) == 0);
+  }
+
+  // check for errors happened during the reading process
+  NdbError error = scanOp->getNdbError();
+
+  // As we are at the end we will first close the transaction and then deal with the error
+  ndb_object->closeTransaction(tx);
+
+  // storage/ndb/src/ndbapi/ndberror.cpp
+  if (error.code != 4120 /*Scan already complete*/) {
+    return RS_RONDB_SERVER_ERROR(error, "Failed Reading Project ID. Fn find_feature_store_id_int");
+  }
+
+  if (count == 0) {
+    return RS_CLIENT_404_ERROR();
+  }
+
+  return RS_OK;
+}
+
+/**
+ * Find feature store ID using the feature store name
+ * SELECT id AS feature_view_id FROM feature_view WHERE name = {feature_view_name} AND version =
+ * {feature_view_version} AND feature_store_id = {feature_store_id}
+ */
+RS_Status find_feature_view_id(int feature_store_id, const char *feature_view_name,
+                               int feature_view_version, int *feature_view_id) {
+  Ndb *ndb_object  = nullptr;
+  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  /* clang-format off */
+  RETRY_HANDLER(
+    status = find_feature_view_id_int(ndb_object, feature_store_id,
+      feature_view_name, feature_view_version, feature_view_id);
+  )
+  /* clang-format on */
+
+  return status;
+}

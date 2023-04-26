@@ -47,17 +47,24 @@ func TestFeatureStore(t *testing.T) {
 }
 
 func TestFeatureStoreMetaData(t *testing.T) {
-	id, err := dal.GetProjectID("test2")
+	projID, err := dal.GetProjectID("test2")
 	if err != nil {
-		t.Fatalf(" failed %s ", err)
+		t.Fatalf("Reading Project ID failed %s ", err)
 	}
 
-	log.Infof("Project ID %d \n", id)
+	log.Infof("Project ID %d \n", projID)
 
-	id, err = dal.GetProjectID("test2")
+	fsID, err := dal.GetFeatureStorID("test2")
 	if err != nil {
-		t.Fatalf(" failed %s ", err)
+		t.Fatalf("Reading Feature Store ID failed %s ", err)
 	}
 
-	log.Infof("Feature store ID %d \n", id)
+	log.Infof("Feature store ID %d \n", fsID)
+
+	fvID, err := dal.GetFeatureViewID(fsID, "sample_2", 1)
+	if err != nil {
+		t.Fatalf("Reading Feature View ID failed %s ", err.VerboseError())
+	}
+
+	log.Infof("Feature View ID %d \n", fvID)
 }

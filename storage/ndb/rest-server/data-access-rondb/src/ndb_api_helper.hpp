@@ -32,6 +32,10 @@ RS_Status get_index_scan_op(Ndb *ndb_object, NdbTransaction *tx,
                             const NdbDictionary::Table *table_dict, const char *index_name,
                             NdbScanOperation **scanOp);
 
+RS_Status get_scan_op(Ndb *ndb_object, NdbTransaction *tx,
+                            const char *table_name,
+                            NdbScanOperation **scanOp);
+
 RS_Status read_tuples(Ndb *ndb_object, NdbScanOperation *scanOp);
 
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_NDB_API_HELPER_H_

@@ -37,12 +37,17 @@ typedef struct FSKey {
  */
 RS_Status find_project_id(const char *feature_store_name, int *project_id);
 
-
 /**
  * Find feature store ID using the feature store name
  * SELECT id AS feature_store_id FROM feature_store WHERE _name = {feature_store_name}
  */
 RS_Status find_feature_store_id(const char *feature_store_name, int *feature_store_id);
+
+/**
+ * Find feature store ID using the feature store name
+ * SELECT id AS feature_view_id FROM feature_view WHERE name = {feature_view_name} AND version = {feature_view_version} AND feature_store_id = {feature_store_id}
+ */
+RS_Status find_feature_view_id(int feature_store_id, const char *feature_view_name, int feature_view_version, int *feature_view_id);
 
 #endif
 #ifdef __cplusplus

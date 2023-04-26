@@ -60,3 +60,22 @@ func GetFeatureStorID(featureStoreName string) (int, *DalError) {
 
 	return int(projectID), nil
 }
+
+func GetFeatureViewID(featureStoreID int, featureViewName string, featureViewVersion int) (int, *DalError) {
+	cFeatureViewName := C.CString(featureViewName)
+	defer C.free(unsafe.Pointer(cFeatureViewName))
+
+	var fsViewID C.int
+	fsViewIDPtr := (*C.int)(unsafe.Pointer(&fsViewID))
+
+	ret := C.find_feature_view_id(C.int(featureStoreID),
+		cFeatureViewName,
+		C.int(featureViewVersion),
+		fsViewIDPtr)
+
+	if ret.http_code != http.StatusOK {
+		return 0, cToGoRet(&ret)
+	}
+
+	return int(fsViewID), nil
+}
