@@ -1,5 +1,5 @@
 /* Copyright (c) 2008, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -110,7 +110,8 @@ DblqhProxy::DblqhProxy(Block_context& ctx) :
   addRecSignal(GSN_LQH_TRANSCONF, &DblqhProxy::execLQH_TRANSCONF);
 
   // GSN_SUB_GCP_COMPLETE_REP
-  addRecSignal(GSN_SUB_GCP_COMPLETE_REP, &DblqhProxy::execSUB_GCP_COMPLETE_REP);
+  addRecSignal(GSN_SUB_GCP_COMPLETE_REP,
+               &DblqhProxy::execSUB_GCP_COMPLETE_REP);
 
   // GSN_UNDO_LOG_LEVEL_REP
   addRecSignal(GSN_UNDO_LOG_LEVEL_REP, &DblqhProxy::execUNDO_LOG_LEVEL_REP);
@@ -136,6 +137,11 @@ DblqhProxy::DblqhProxy(Block_context& ctx) :
 
   // GSN_INFO_GCP_STOP_TIMER
   addRecSignal(GSN_INFO_GCP_STOP_TIMER, &DblqhProxy::execINFO_GCP_STOP_TIMER);
+
+  // GSN_HALT_COPY_FRAG_REQ, GSN_RESUME_COPY_FRAG_REQ
+  addRecSignal(GSN_HALT_COPY_FRAG_REQ, &DblqhProxy::execHALT_COPY_FRAG_REQ);
+  addRecSignal(GSN_RESUME_COPY_FRAG_REQ,
+               &DblqhProxy::execRESUME_COPY_FRAG_REQ);
 }
 
 DblqhProxy::~DblqhProxy()
@@ -898,6 +904,32 @@ DblqhProxy::execUNDO_LOG_LEVEL_REP(Signal *signal)
   {
     jam();
     sendSignal(workerRef(i), GSN_UNDO_LOG_LEVEL_REP, signal,
+               signal->getLength(), JBB);
+  }
+}
+
+// GSN_HALT_COPY_FRAG_REQ
+void
+DblqhProxy::execHALT_COPY_FRAG_REQ(Signal *signal)
+{
+  jamEntry();
+  for (Uint32 i = 0; i < c_workers; i++)
+  {
+    jam();
+    sendSignal(workerRef(i), GSN_HALT_COPY_FRAG_REQ, signal,
+               signal->getLength(), JBB);
+  }
+}
+
+// GSN_RESUME_COPY_FRAG_REQ
+void
+DblqhProxy::execRESUME_COPY_FRAG_REQ(Signal *signal)
+{
+  jamEntry();
+  for (Uint32 i = 0; i < c_workers; i++)
+  {
+    jam();
+    sendSignal(workerRef(i), GSN_RESUME_COPY_FRAG_REQ, signal,
                signal->getLength(), JBB);
   }
 }

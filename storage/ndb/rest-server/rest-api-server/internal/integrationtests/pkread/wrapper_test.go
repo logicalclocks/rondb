@@ -1,8 +1,26 @@
+/*
+ * This file is part of the RonDB REST API Server
+ * Copyright (c) 2023 Hopsworks AB
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package pkread
 
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"runtime/debug"
 	"testing"
 
@@ -12,7 +30,7 @@ import (
 )
 
 /*
-	Wraps all unit tests in this package
+Wraps all unit tests in this package
 */
 func TestMain(m *testing.M) {
 
@@ -34,6 +52,14 @@ func TestMain(m *testing.M) {
 		log.Fatalf(err.Error())
 	}
 	defer cleanup()
+
+	// Benchmarking pkreads tends to perform better with more client-side go-routines
+	if conf.Internal.GOMAXPROCS == -1 {
+		// This tends to deliver best benchmarking results for throughput (less for latency)
+		runtime.GOMAXPROCS(runtime.NumCPU() * 2)
+	} else {
+		runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
+	}
 
 	retcode = m.Run()
 }

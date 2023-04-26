@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -70,6 +70,18 @@ Uint64 Dblqh::getTransactionMemoryNeed(
 
 void Dblqh::initData() 
 {
+#ifdef STATS_PARALLEL_COPY_FRAGMENT
+  c_outstanding_words_copy_fragreq = 0;
+  c_outstanding_rows_copy_fragreq = 0;
+  c_rows_copy_fragreq = 0;
+  c_words_copy_fragreq = 0;
+  c_total_words_copy_fragreq = 0;
+  c_total_rows_copy_fragreq = 0;
+#endif
+  c_active_copyFragReq = 0;
+  c_num_nodes_in_our_nodegroup = 0;
+  c_num_blocked_copy_fragment_processes = 0;
+
 #ifdef ERROR_INSERT
   c_master_node_id = RNIL;
 #endif
@@ -99,7 +111,6 @@ void Dblqh::initData()
   m_insert_size = 0;
   m_delete_size = 0;
 
-  c_copy_fragment_ongoing = false;
   c_copy_active_ongoing = false;
 
   c_gcp_stop_timer = 0;
@@ -210,12 +221,6 @@ void Dblqh::initData()
   c_fragmentsStarted = 0;
   c_fragmentsStartedWithCopy = 0;
 
-  c_fragCopyTable = RNIL;
-  c_fragCopyFrag = RNIL;
-  c_fragCopyRowsIns = 0;
-  c_fragCopyRowsDel = 0;
-  c_fragBytesCopied = 0;
-
   c_fragmentCopyStart = 0;
   c_fragmentsCopied = 0;
   c_totalCopyRowsIns = 0;
@@ -233,21 +238,8 @@ void Dblqh::initData()
   c_full_local_lcp_started = false;
   c_current_local_lcp_table_id = 0;
   c_copy_frag_live_node_halted = false;
-  c_copy_frag_live_node_performing_halt = false;
-  c_tc_connect_rec_copy_frag = RNIL;
-  memset(&c_halt_copy_fragreq_save,
-         0xFF,
-         sizeof(c_halt_copy_fragreq_save));
-
-  c_copy_frag_halted = false;
-  c_copy_frag_halt_process_locked = false;
   c_undo_log_overloaded = false;
   c_copy_fragment_in_progress = false;
-  c_copy_frag_halt_state = COPY_FRAG_HALT_STATE_IDLE;
-  memset(&c_prepare_copy_fragreq_save,
-         0xFF,
-         sizeof(c_prepare_copy_fragreq_save));
-
   m_node_restart_first_local_lcp_started = false;
   m_node_restart_lcp_second_phase_started = false;
   m_first_activate_fragment_ptr_i = RNIL64;
@@ -817,12 +809,8 @@ Dblqh::Dblqh(Block_context& ctx,
                  &Dblqh::execSTART_FULL_LOCAL_LCP_ORD);
     addRecSignal(GSN_HALT_COPY_FRAG_REQ,
                  &Dblqh::execHALT_COPY_FRAG_REQ);
-    addRecSignal(GSN_HALT_COPY_FRAG_CONF,
-                 &Dblqh::execHALT_COPY_FRAG_CONF);
     addRecSignal(GSN_RESUME_COPY_FRAG_REQ,
                  &Dblqh::execRESUME_COPY_FRAG_REQ);
-    addRecSignal(GSN_RESUME_COPY_FRAG_CONF,
-                 &Dblqh::execRESUME_COPY_FRAG_CONF);
     m_is_query_block = false;
     m_is_in_query_thread = false;
     m_ldm_instance_used = this;

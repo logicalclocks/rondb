@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2022 Hopsworks AB
+ * Copyright (c) 2023 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -35,17 +35,18 @@ import (
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	"hopsworks.ai/rdrs/internal/handlers/stat"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func New(serverTLS *tls.Config, heap *heap.Heap) *grpc.Server {
+func New(serverTLS *tls.Config, heap *heap.Heap, apiKeyCache apikey.Cache) *grpc.Server {
 	var grpcServer *grpc.Server
 	if serverTLS != nil {
 		grpcServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
 	} else {
 		grpcServer = grpc.NewServer()
 	}
-	RonDBServer := NewRonDBServer(heap)
+	RonDBServer := NewRonDBServer(heap, apiKeyCache)
 	api.RegisterRonDBRESTServer(grpcServer, RonDBServer)
 	return grpcServer
 }
@@ -55,11 +56,11 @@ func Start(
 	host string,
 	port uint16,
 	quit chan os.Signal,
-) (err error, cleanupFunc func()) {
+) (cleanupFunc func(), err error) {
 	grpcAddress := fmt.Sprintf("%s:%d", host, port)
 	grpcListener, err := net.Listen("tcp", grpcAddress)
 	if err != nil {
-		return fmt.Errorf("failed listening to gRPC server address '%s'; error: %v", grpcAddress, err), func() {}
+		return func() {}, fmt.Errorf("failed listening to gRPC server address '%s'; error: %v", grpcAddress, err)
 	}
 	log.Infof("Listening at %s for gRPC server", grpcListener.Addr())
 	go func() {
@@ -69,10 +70,10 @@ func Start(
 			quit <- syscall.SIGINT
 		}
 	}()
-	return nil, func() {
+	return func() {
 		log.Info("Gracefully stopping gRPC server")
 		grpcServer.GracefulStop()
-	}
+	}, nil
 }
 
 // TODO: Add thread-safe logger here
@@ -83,17 +84,17 @@ type RonDBServer struct {
 	batchPkReadHandler batchpkread.Handler
 }
 
-func NewRonDBServer(heap *heap.Heap) *RonDBServer {
+func NewRonDBServer(heap *heap.Heap, apiKeyCache apikey.Cache) *RonDBServer {
 	return &RonDBServer{
-		statsHandler:       stat.New(heap),
-		pkReadHandler:      pkread.New(heap),
-		batchPkReadHandler: batchpkread.New(heap),
+		statsHandler:       stat.New(heap, apiKeyCache),
+		pkReadHandler:      pkread.New(heap, apiKeyCache),
+		batchPkReadHandler: batchpkread.New(heap, apiKeyCache),
 	}
 }
 
 func (s *RonDBServer) getApiKey(ctx context.Context) (string, error) {
 	conf := config.GetAll()
-	if !conf.Security.UseHopsworksAPIKeys {
+	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		return "", nil
 	}
 

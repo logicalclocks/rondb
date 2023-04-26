@@ -114,14 +114,8 @@ if ($rdrs_string_lib) {
 print $F "--let RDRS_CONFIG_FILE=$vardir/tmp/rdrs_config.json\n";
 print $F "--let RDRS_LIB_DIR=$bindir/library_output_directory\n";
 print $F "--let LD_LIBRARY_PATH=$bindir/library_output_directory\n";
-print $F "--let CGO_LDFLAGS=\"-g -O2 -L$bindir/lib -lrdrclient\"\n";
+print $F "--let CGO_LDFLAGS=\"-g -O2 -L$bindir/lib -Wl,-rpath,$bindir/lib -lrdrclient\"\n";
 print $F "--let RDRS_SRC_DIR=$ENV{'MYSQL_BASEDIR'}/storage/ndb/rest-server/rest-api-server\n";
-
-
-#----------------------------- database changes ---------------------------------
-
-print $F "CREATE USER IF NOT EXISTS 'rondb'\@'localhost' IDENTIFIED BY 'rondb';\n";
-print $F "GRANT ALL PRIVILEGES ON *.* TO 'rondb'\@'localhost';\n";
 
 $F->close();
 
@@ -142,48 +136,53 @@ $rest_server = undef;
 $grpc_server = undef;
 
 
-#----------------------------- create config file -------------------------------
-
 my $CONF = IO::File->new("$vardir/tmp/rdrs_config.json", 'w') or die;
-printf $CONF "{\n";
+my $jsonStr = <<"END_TXT";
+{
+        "REST": {
+                "ServerIP": "localhost",
+                "ServerPort": $rest_server_port
+        },
+        "GRPC": {
+                "ServerIP": "localhost",
+                "ServerPort": $grpc_server_port
+        },
+        "RonDB": {
+                "Mgmds": [
+                        {
+                                "IP": "localhost",
+                                "Port": $ENV{'NDB_MGMD_PORT'}
+                        }
+                ]
+        },
+        "Security": {
+                "TLS": {
+                        "EnableTLS": true,
+                        "RequireAndVerifyClientCert": true
+                }, 
+                "APIKey": {
+                        "UseHopsworksAPIKeys": true
+                }
+        },
+        "Log": {
+                "Level": "info"
+        },
+        "Testing": {
+                "MySQL": {
+                        "Servers": [
+                                {
+                                        "IP": "localhost",
+                                        "Port": $ENV{MASTER_MYPORT}
+                                }
+                        ],
+                        "User": "root",
+                        "Password": ""
+                }
+        }
+}
+END_TXT
 
-printf $CONF "        \"REST\": {\n";
-printf $CONF "                \"ServerIP\": \"localhost\",\n";
-printf $CONF "                \"ServerPort\": $rest_server_port\n";
-printf $CONF "        },\n";
-
-printf $CONF "        \"GRPC\": {\n";
-printf $CONF "                \"ServerIP\": \"localhost\",\n";
-printf $CONF "                \"ServerPort\": $grpc_server_port\n";
-printf $CONF "        },\n";
-
-printf $CONF "        \"RonDB\": {\n";
-printf $CONF "                \"Mgmds\": [\n";
-printf $CONF "                    {\n";
-printf $CONF "                        \"IP\": \"localhost\",\n";
-printf $CONF "                        \"Port\": $ENV{'NDB_MGMD_PORT'}\n";
-printf $CONF "                    }\n";
-printf $CONF "                ]\n";
-printf $CONF "        },\n";
-
-printf $CONF "        \"MySQL\": {\n";
-printf $CONF "                \"Servers\": [\n";
-printf $CONF "                    {\n";
-printf $CONF "                        \"IP\": \"localhost\",\n";
-printf $CONF "                        \"Port\": $ENV{MASTER_MYPORT}\n";
-printf $CONF "                    }\n";
-printf $CONF "                ],\n";
-printf $CONF "                \"User\": \"rondb\",\n";
-printf $CONF "                \"Password\": \"rondb\"\n";
-printf $CONF "        },\n";
-
-printf $CONF "        \"Security\": {\n";
-printf $CONF "                \"EnableTLS\": true,\n";
-printf $CONF "                \"RequireAndVerifyClientCert\": true,\n";
-printf $CONF "                \"UseHopsWorksAPIKeys\": true\n";
-printf $CONF "        }\n";
-
-printf $CONF "}\n";
+printf $CONF $jsonStr;
 
 $CONF->close();
 

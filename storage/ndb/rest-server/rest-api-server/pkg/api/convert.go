@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2022 Hopsworks AB
+ * Copyright (c) 2023 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,13 +30,13 @@ func ConvertPKReadParams(req *PKReadParams) *PKReadRequestProto {
 
 	var filtersProto []*FilterProto
 	if req.Filters != nil {
-		for _, fillter := range *req.Filters {
+		for _, filter := range *req.Filters {
 			filterProto := FilterProto{}
-			filterProto.Column = fillter.Column
+			filterProto.Column = filter.Column
 
 			// remove quotes if any
-			if *fillter.Value != nil {
-				valueStr := string([]byte(*fillter.Value))
+			if *filter.Value != nil {
+				valueStr := string([]byte(*filter.Value))
 				filterProto.Value = &valueStr
 			}
 

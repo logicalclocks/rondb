@@ -1,6 +1,6 @@
 /*
  * This file is part of the RonDB REST API Server
- * Copyright (c) 2022 Hopsworks AB
+ * Copyright (c) 2023 Hopsworks AB
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,129 +18,131 @@
 package pkread
 
 import (
-	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net/http"
+	"sort"
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/integrationtests"
+	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 /*
-	 go test \
-		 -test.bench BenchmarkSimple \
-		 -test.run=thisexpressionwontmatchanytest \
-		 -cpu 1,2,4,8 \
-		 -benchmem \
-		 -benchtime=100x \ 		// 100 times
-		 -benchtime=10s \ 		// 10 sec
-		 ./internal/router/handler/pkread/
+The number of parallel client go-routines spawned in RunParallel()
+can be influenced by setting runtime.GOMAXPROCS(). It defaults to the
+number of CPUs.
+
+This test can be run as follows:
+
+	go test \
+		-test.bench BenchmarkSimple \
+		-test.run=thisexpressionwontmatchanytest \
+		-cpu 1,2,4,8 \
+		-benchmem \
+		-benchtime=100x \ 		// 100 times
+		-benchtime=10s \ 		// 10 sec
+		./internal/integrationtests/pkread/
 */
 func BenchmarkSimple(b *testing.B) {
-	numOps := b.N
-	b.Logf("numOps: %d", numOps)
+	// Number of total requests
+	numRequests := b.N
+
+	/*
+		IMPORTANT: This benchmark will run requests against EITHER the REST or
+		the gRPC server, depending on this flag.
+	*/
+	runAgainstGrpcServer := true
 
 	table := "table_1"
 	maxRows := testdbs.BENCH_DB_NUM_ROWS
-	opCount := 0
 	threadId := 0
+
+	latenciesChannel := make(chan time.Duration, numRequests)
 
 	b.ResetTimer()
 	start := time.Now()
 
+	/*
+		Assuming GOMAXPROCS is not set, a 10-core CPU
+		will run 10 Go-routines here.
+		These 10 Go-routines will split up b.N requests
+		amongst each other. RunParallel() will only be
+		run 10 times then (in contrast to bp.Next()).
+	*/
 	b.RunParallel(func(bp *testing.PB) {
-		url := testutils.NewPKReadURL(testdbs.Benchmark, table)
+		col := "id0"
+
+		// Every go-routine will always use the same operation id
 		operationId := fmt.Sprintf("operation_%d", threadId)
 		threadId++
 
-		opCount++
-		reqBody := createReq(b, maxRows, opCount, operationId)
+		validateColumns := []interface{}{"col0"}
+		testInfo := api.PKTestInfo{
+			PkReq: api.PKReadBody{
+				// Fill out Filters later
+				ReadColumns: testclient.NewReadColumns("col", 1),
+				OperationID: &operationId,
+			},
+			Table:          table,
+			Db:             testdbs.Benchmark,
+			HttpCode:       http.StatusOK,
+			ErrMsgContains: "",
+			RespKVs:        validateColumns,
+		}
 
+		// One connection per go-routine
+		var err error
+		var grpcConn *grpc.ClientConn
+		if runAgainstGrpcServer {
+			conf := config.GetAll()
+			grpcConn, err = testutils.CreateGrpcConn(conf.Security.APIKey.UseHopsworksAPIKeys, conf.Security.TLS.EnableTLS)
+			if err != nil {
+				b.Fatal(err.Error())
+			}
+		}
+
+		/*
+			Given 10 go-routines and b.N==50, each go-routine
+			will run this 5 times.
+		*/
 		for bp.Next() {
-			integrationtests.SendHttpRequest(b, config.PK_HTTP_VERB, url, reqBody, http.StatusOK, "")
+			// Every request queries a random row
+			filter := testclient.NewFilter(&col, rand.Intn(maxRows))
+			testInfo.PkReq.Filters = filter
+
+			requestStartTime := time.Now()
+			if runAgainstGrpcServer {
+				pkGRPCTestWithConn(b, testInfo, false, false, grpcConn)
+			} else {
+				pkRESTTest(b, testInfo, false, false)
+			}
+			latenciesChannel <- time.Since(requestStartTime)
 		}
 	})
 	b.StopTimer()
 
-	opsPerSecond := float64(numOps) / time.Since(start).Seconds()
-	nanoSecondsPerOp := float64(time.Since(start).Nanoseconds()) / float64(numOps)
-	b.Logf("Throughput: %f operations/second", opsPerSecond)
-	b.Logf("Latency: 	%f nanoseconds/operation", nanoSecondsPerOp)
-}
+	requestsPerSecond := float64(numRequests) / time.Since(start).Seconds()
 
-func createReq(b *testing.B, maxRows, opCount int, operationId string) string {
-	rowId := opCount % maxRows
-	col := "id0"
-	param := api.PKReadBody{
-		Filters:     integrationtests.NewFilter(&col, rowId),
-		ReadColumns: integrationtests.NewReadColumns("col_", 1),
-		OperationID: &operationId,
+	latencies := make([]time.Duration, numRequests)
+	for i := 0; i < numRequests; i++ {
+		latencies[i] = <-latenciesChannel
 	}
-	body, err := json.Marshal(param)
-	if err != nil {
-		b.Fatalf("failed marshaling body; error: %v", err)
-	}
-	return string(body)
-}
+	sort.Slice(latencies, func(i, j int) bool {
+		return latencies[i] < latencies[j]
+	})
+	p50 := latencies[int(float64(numRequests)*0.5)]
+	p99 := latencies[int(float64(numRequests)*0.99)]
 
-func BenchmarkMT(b *testing.B) {
-	numOps := b.N
-	b.Logf("numOps: %d", numOps)
-
-	table := "table_1"
-	maxRows := 1000
-
-	numThreads := 1 // this is for experimentation
-	donePerThread := make([]chan bool, numThreads)
-	for i := 0; i < numThreads; i++ {
-		donePerThread[i] = make(chan bool)
-	}
-
-	sharedLoad := make(chan int, numOps)
-	for operationId := 0; operationId < numOps; operationId++ {
-		sharedLoad <- operationId
-	}
-
-	b.ResetTimer()
-	start := time.Now()
-
-	for _, done := range donePerThread {
-		go runner(b, testdbs.Benchmark, table, maxRows, sharedLoad, done)
-	}
-
-	for _, done := range donePerThread {
-		<-done
-	}
-
-	b.StopTimer()
-	opsPerSecond := float64(numOps) / time.Since(start).Seconds()
-	nanoSecondsPerOp := float64(time.Since(start).Nanoseconds()) / float64(b.N)
-	b.Logf("Throughput: %f operations/second", opsPerSecond)
-	b.Logf("Latency: 	%f nanoseconds/operation", nanoSecondsPerOp)
-}
-
-func runner(b *testing.B, db string, table string, maxRowID int, load chan int, done chan bool) {
-	for {
-		select {
-		case opId := <-load:
-			rowId := opId % maxRowID
-			url := testutils.NewPKReadURL(db, table)
-			col := "id0"
-			param := api.PKReadBody{
-				Filters:     integrationtests.NewFilter(&col, rowId),
-				ReadColumns: integrationtests.NewReadColumns("col_", 1),
-				OperationID: integrationtests.NewOperationID(5),
-			}
-			body, _ := json.Marshal(param)
-
-			integrationtests.SendHttpRequest(b, config.PK_HTTP_VERB, url, string(body), http.StatusOK, "")
-		default:
-			done <- true
-		}
-	}
+	b.Logf("Number of requests:         %d", numRequests)
+	b.Logf("Number of threads:          %d", threadId)
+	b.Logf("Throughput:                 %f pk lookups/second", requestsPerSecond)
+	b.Logf("50th percentile latency:    %v μs", p50.Microseconds())
+	b.Logf("99th percentile latency:    %v μs", p99.Microseconds())
+	b.Log("-------------------------------------------------")
 }

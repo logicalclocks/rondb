@@ -82,7 +82,15 @@ typedef struct RonDB_Stats {
 /**
  * Initialize connection to the database
  */
-RS_Status init(const char *connection_string, unsigned int find_available_node_id);
+RS_Status init(const char *connection_string, unsigned int connection_pool_size,
+               unsigned int *node_ids, unsigned int node_ids_len, unsigned int connection_retries,
+               unsigned int connection_retry_delay_in_sec);
+
+/**
+ * Set operation retry properties
+ */
+RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int rety_initial_delay,
+    const unsigned int jitter);
 
 /**
  * Shutdown connection
@@ -100,7 +108,7 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff);
 RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *resp_buffs);
 
 /**
- * Deallocate pointer array
+ * Returns statistis about RonDB connection 
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats);
 

@@ -1,3 +1,20 @@
+/*
+ * This file is part of the RonDB REST API Server
+ * Copyright (c) 2023 Hopsworks AB
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, version 3.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ */
+
 package testdbs
 
 import (
@@ -39,39 +56,43 @@ var databaseCreateSchemes = map[string]string{
 	DB022:      DB022Scheme,
 	DB023:      DB023Scheme,
 	DB024:      DB024Scheme,
+	DB025:      DB025Scheme,
 	SentinelDB: SentinelDBScheme,
 }
 
 /*
-	Here we are adding dynamic schema to databaseCreateSchemes;
+Here we are adding dynamic schema to databaseCreateSchemes;
 */
 func init() {
-	benchSchema := createBenchmarkSchema()
-	databaseCreateSchemes[Benchmark] = benchSchema
+	if true {
 
-	// char
-	DB012Scheme := createTextualColumnsSchema(DB012, "char", 100)
-	databaseCreateSchemes[DB012] = DB012Scheme
+		benchSchema := createBenchmarkSchema()
+		databaseCreateSchemes[Benchmark] = benchSchema
 
-	// varchar
-	DB014Scheme := createTextualColumnsSchema(DB014, "VARCHAR", 50)
-	databaseCreateSchemes[DB014] = DB014Scheme
+		// char
+		DB012Scheme := createTextualColumnsSchema(DB012, "char", 100)
+		databaseCreateSchemes[DB012] = DB012Scheme
 
-	// long varchar
-	DB015Scheme := createTextualColumnsSchema(DB015, "VARCHAR", 256)
-	databaseCreateSchemes[DB015] = DB015Scheme
+		// varchar
+		DB014Scheme := createTextualColumnsSchema(DB014, "VARCHAR", 50)
+		databaseCreateSchemes[DB014] = DB014Scheme
 
-	// binary fix size
-	DB016Scheme := createTextualColumnsSchema(DB016, "BINARY", 100)
-	databaseCreateSchemes[DB016] = DB016Scheme
+		// long varchar
+		DB015Scheme := createTextualColumnsSchema(DB015, "VARCHAR", 256)
+		databaseCreateSchemes[DB015] = DB015Scheme
 
-	// varbinary
-	DB017Scheme := createTextualColumnsSchema(DB017, "VARBINARY", 100)
-	databaseCreateSchemes[DB017] = DB017Scheme
+		// binary fix size
+		DB016Scheme := createTextualColumnsSchema(DB016, "BINARY", 100)
+		databaseCreateSchemes[DB016] = DB016Scheme
 
-	// long varbinary
-	DB018Scheme := createTextualColumnsSchema(DB018, "VARBINARY", 256)
-	databaseCreateSchemes[DB018] = DB018Scheme
+		// varbinary
+		DB017Scheme := createTextualColumnsSchema(DB017, "VARBINARY", 100)
+		databaseCreateSchemes[DB017] = DB017Scheme
+
+		// long varbinary
+		DB018Scheme := createTextualColumnsSchema(DB018, "VARBINARY", 256)
+		databaseCreateSchemes[DB018] = DB018Scheme
+	}
 }
 
 func createBenchmarkSchema() string {
@@ -113,7 +134,7 @@ func createTextualColumnsSchema(dbName string, columnType string, columnLength i
 }
 
 /*
-	Simply export databaseCreateSchemes as slice
+Simply export databaseCreateSchemes as slice
 */
 func GetAllDBs() []string {
 	allDBs := []string{}
@@ -124,9 +145,9 @@ func GetAllDBs() []string {
 }
 
 /*
-	This function can be used to export the embedded schemata of different databases. In case
-	it is wished to use the databases in conjunction with Hopsworks as an authentication layer,
-	this function also supplies the required Hopsworks schemata.
+This function can be used to export the embedded schemata of different databases. In case
+it is wished to use the databases in conjunction with Hopsworks as an authentication layer,
+this function also supplies the required Hopsworks schemata.
 */
 func GetCreationSchemaPerDB(registerAsHopsworksProjects bool, dbs ...string) (map[string]string, error) {
 	createSchemata := make(map[string]string)
@@ -144,9 +165,9 @@ func GetCreationSchemaPerDB(registerAsHopsworksProjects bool, dbs ...string) (ma
 }
 
 /*
-	If we require a Hopsworks API key, the databases the client wants to access need to be
-	registered as projects in the Hopsworks database. This function creates the standard Hopsworks
-	scheme and inserts the databases as projects.
+If we require a Hopsworks API key, the databases the client wants to access need to be
+registered as projects in the Hopsworks database. This function creates the standard Hopsworks
+scheme and inserts the databases as projects.
 */
 func createHopsworksSchema(dbsToRegister ...string) string {
 	hopsworksScheme := HopsworksScheme
@@ -160,5 +181,14 @@ func createHopsworksSchema(dbsToRegister ...string) string {
 		addNewProject = strings.ReplaceAll(addNewProject, hopsworksAddProject_PROJECT_NUMBER, strconv.Itoa(idx+1))
 		hopsworksScheme += addNewProject
 	}
+
+	// register additional API Keys
+	for i := 0; i < HopsworksAPIKey_ADDITIONAL_KEYS; i++ {
+		addAPIKey := strings.ReplaceAll(HopsworksAPIKey, HopsworksAPIKey_KEY_ID, fmt.Sprintf("%d", i+2 /* id 1 is already taken*/))
+		addAPIKey = strings.ReplaceAll(addAPIKey, HopsworksAPIKey_KEY_PREFIX, fmt.Sprintf("%016d", i))
+		addAPIKey = strings.ReplaceAll(addAPIKey, HopsworksAPIKey_KEY_NAME, fmt.Sprintf("name%d", i))
+		hopsworksScheme += addAPIKey
+	}
+
 	return hopsworksScheme
 }
