@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,6 +26,7 @@
 #include <ndb_global.h>
 #include <ndb_opts.h>
 #include <kernel/NodeBitmask.hpp>
+#include <NdbConfig.h>
 #include <portlib/ndb_daemon.h>
 #include "util/ndb_openssl_evp.h"
 
@@ -46,6 +47,7 @@ static int opt_daemon, opt_no_daemon, opt_foreground,
   opt_initialstart, opt_verbose;
 static const char* opt_nowait_nodes = 0;
 static const char* opt_bind_address = 0;
+static const char* opt_service_name = 0;
 static int opt_report_fd;
 static int opt_initial;
 static int opt_no_start;
@@ -91,6 +93,10 @@ static struct my_option my_long_options[] =
     "Each node should be started with this option, as well as --nowait-nodes",
     (uchar**) &opt_initialstart, (uchar**) &opt_initialstart, 0,
     GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
+  { "service-name", NDB_OPT_NOSHORT,
+    "Service name sets the file prefix on various files and directories",
+    (uchar**) &opt_service_name, (uchar**) &opt_service_name, 0,
+    GET_STR, REQUIRED_ARG, 0, 0, 0, 0, 0, 0 },
   { "bind-address", NDB_OPT_NOSHORT,
     "Local bind address",
     (uchar**) &opt_bind_address, (uchar**) &opt_bind_address, 0,
@@ -210,6 +216,11 @@ real_main(int argc, char** argv)
                            opt_nowait_nodes);
       exit(-1);
     }
+  }
+
+  if (opt_service_name)
+  {
+    NdbConfig_SetServiceName(opt_service_name);
   }
 
  if(opt_angel_pid)
