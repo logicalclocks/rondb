@@ -73,6 +73,7 @@ extern "C" {
 #define API_KEY_PREFIX_SIZE           45 + 1
 #define PROJECT_TEAM_TEAM_MEMBER_SIZE 150 + 1
 #define PROJECT_PROJECTNAME_SIZE      100 + 1
+#define FEATURE_STORE_NAME_SIZE      100 + 1
 
 // Data types
 #define DECIMAL_MAX_SIZE_IN_BYTES           9 * 4   /*4 bytes per 9 digits. 65/9 + 1 * 4*/

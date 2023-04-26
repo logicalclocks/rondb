@@ -47,11 +47,17 @@ func TestFeatureStore(t *testing.T) {
 }
 
 func TestFeatureStoreMetaData(t *testing.T) {
-	id, err := dal.GetProjectID("db005")
+	id, err := dal.GetProjectID("test2")
 	if err != nil {
 		t.Fatalf(" failed %s ", err)
 	}
 
 	log.Infof("Project ID %d \n", id)
 
+	id, err = dal.GetProjectID("test2")
+	if err != nil {
+		t.Fatalf(" failed %s ", err)
+	}
+
+	log.Infof("Feature store ID %d \n", id)
 }

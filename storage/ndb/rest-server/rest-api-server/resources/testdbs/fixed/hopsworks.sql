@@ -137,10 +137,10 @@ VALUES
         999, 322, 'demo0', 322, 'demo0', 'macho@hopsworks.ai', '2022-05-30 14:17:22', 'A demo project for getting started with featurestore', 'NOLIMIT', '2022-05-30 14:17:38', 100, 'demo_fs_meb10000:1653921933268-2.6.0-SNAPSHOT.1', 1, 0
     ),
     (
-        119, 155, 'test1', 155, 'test1', 'macho@hopsworks.ai', Timestamp('2023-03-16 14:27:17'), '', 'NOLIMIT', Timestamp('2023-03-16 14:27:18'), 100, 'python38:3.2.0-SNAPSHOT', 14.0, 0
+        1000, 155, 'test1', 155, 'test1', 'macho@hopsworks.ai', Timestamp('2023-03-16 14:27:17'), '', 'NOLIMIT', Timestamp('2023-03-16 14:27:18'), 100, 'python38:3.2.0-SNAPSHOT', 14.0, 0
     ),
     (
-        1143, 155, 'test2', 155, 'test2', 'macho@hopsworks.ai', Timestamp('2023-04-20 16:14:15'), '', 'NOLIMIT', Timestamp('2023-04-20 16:14:15'), 100, 'python38:3.2.0-SNAPSHOT', 1025.0, 0
+        1001, 155, 'test2', 155, 'test2', 'macho@hopsworks.ai', Timestamp('2023-04-20 16:14:15'), '', 'NOLIMIT', Timestamp('2023-04-20 16:14:15'), 100, 'python38:3.2.0-SNAPSHOT', 1025.0, 0
     );
 
 INSERT INTO
@@ -334,10 +334,10 @@ INSERT INTO
     `feature_store`
 VALUES
     (
-        67, "test2", 119, "2023-03-16 14:27:29", 3
+        67, "test2", 1000, "2023-03-16 14:27:29", 3
     ),
     (
-        1091, "test3", 1143, "2023-03-16 14:27:29", 4
+        1091, "test3", 1001, "2023-03-16 14:27:29", 4
     );
 
 INSERT INTO

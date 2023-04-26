@@ -44,3 +44,19 @@ func GetProjectID(featureStoreName string) (int, *DalError) {
 
 	return int(projectID), nil
 }
+
+func GetFeatureStorID(featureStoreName string) (int, *DalError) {
+	cFeatureStoreName := C.CString(featureStoreName)
+	defer C.free(unsafe.Pointer(cFeatureStoreName))
+
+	var projectID C.int
+	projectIDPtr := (*C.int)(unsafe.Pointer(&projectID))
+
+	ret := C.find_feature_store_id(cFeatureStoreName, projectIDPtr)
+
+	if ret.http_code != http.StatusOK {
+		return 0, cToGoRet(&ret)
+	}
+
+	return int(projectID), nil
+}
