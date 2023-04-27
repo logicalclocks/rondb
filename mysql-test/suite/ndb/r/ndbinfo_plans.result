@@ -275,16 +275,16 @@ EXPLAIN	-> Nested loop left join  (rows=200)
 
 ## The plan for memory_per_fragment
 explain format=tree select * from memory_per_fragment;
-EXPLAIN	-> Left hash join (parent_name.`type` = `name`.parent_obj_type), (parent_name.id = `name`.parent_obj_id)  (rows=21200)
-    -> Inner hash join (space.table_id = `name`.id)  (rows=493)
-        -> Table scan on space  (rows=344)
+EXPLAIN	-> Left hash join (parent_name.`type` = `name`.parent_obj_type), (parent_name.id = `name`.parent_obj_id)  (rows=133320)
+    -> Inner hash join (space.table_id = `name`.id)  (rows=1333)
+        -> Table scan on space  (rows=400)
         -> Hash
-            -> Nested loop inner join  (rows=14.3)
-                -> Filter: ((`name`.`type` <= 6) and (`name`.`type` is not null))  (rows=14.3)
-                    -> Table scan on name  (rows=43)
+            -> Nested loop inner join  (rows=33.3)
+                -> Filter: ((`name`.`type` <= 6) and (`name`.`type` is not null))  (rows=33.3)
+                    -> Table scan on name  (rows=100)
                 -> Single-row index lookup on types using PRIMARY (type_id=`name`.`type`)  (rows=1)
     -> Hash
-        -> Table scan on parent_name  (rows=43)
+        -> Table scan on parent_name  (rows=100)
 
 
 ## WL#11968 tables and views
