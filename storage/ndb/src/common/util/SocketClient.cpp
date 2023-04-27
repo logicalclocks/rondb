@@ -252,7 +252,7 @@ SocketClient::connect(NdbSocket & secureSocket,
       DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr in connect\n"));
       ndb_socket_close(m_sockfd);
       ndb_socket_invalidate(&m_sockfd);
-      return m_sockfd;
+      return;
     }
     // Set socket non blocking
     if (ndb_socket_nonblock(m_sockfd, true) < 0)
@@ -260,7 +260,7 @@ SocketClient::connect(NdbSocket & secureSocket,
       DEBUG_FPRINTF((stderr, "Failed to set socket nonblocking in connect\n"));
       ndb_socket_close(m_sockfd);
       ndb_socket_invalidate(&m_sockfd);
-      return m_sockfd;
+      return;
     }
     // Start non blocking connect
     DEBUG_FPRINTF((stderr, "Connect to %s:%u\n",
@@ -280,7 +280,7 @@ SocketClient::connect(NdbSocket & secureSocket,
       DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr in connect\n"));
       ndb_socket_close(m_sockfd);
       ndb_socket_invalidate(&m_sockfd);
-      return m_sockfd;
+      return;
     }
     // Set socket non blocking
     if (ndb_socket_nonblock(m_sockfd, true) < 0)
@@ -288,7 +288,7 @@ SocketClient::connect(NdbSocket & secureSocket,
       DEBUG_FPRINTF((stderr, "Failed to set socket nonblocking in connect\n"));
       ndb_socket_close(m_sockfd);
       ndb_socket_invalidate(&m_sockfd);
-      return m_sockfd;
+      return;
     }
     // Start non blocking connect
     DEBUG_FPRINTF((stderr, "Connect to %s:%u\n",
@@ -369,6 +369,7 @@ done:
                    server_hostname, server_port));
     ndb_socket_close(m_sockfd);
     ndb_socket_invalidate(&m_sockfd);
+    return;
   }
   else
   {
@@ -391,5 +392,4 @@ done:
 
   DEBUG_FPRINTF((stderr, "Connected to %s:%u\n",
                          server_hostname, m_last_used_port));
-  return sockfd;
 }

@@ -474,7 +474,7 @@ Transporter::connect_client(NdbSocket & socket)
   {
     g_eventLogger->error("Connection to node: %d refused since node"
                          " is not active", remoteNodeId);
-    ndb_socket_close(sockfd);
+    socket.close();
     DBUG_RETURN(false);
   }
   // Cache the connect address

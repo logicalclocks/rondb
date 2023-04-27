@@ -3719,7 +3719,7 @@ check_yield(thr_data *selfptr,
    * -> We should never attempt to spin in this function before yielding.
    */
   assert(NdbSpin_is_supported());
-  assert(min_spin_timer > 0);
+  assert(min_spin_timer_us > 0);
   do
   {
     for (Uint32 i = 0; i < 50; i++)
@@ -3826,7 +3826,7 @@ check_recv_yield(thr_data *selfptr,
    * -> We should never attempt to spin in this function before yielding.
    */
   assert(NdbSpin_is_supported());
-  assert(min_spin_timer > 0);
+  assert(min_spin_timer_us > 0);
   do
   {
     for (Uint32 i = 0; i < 60; i++)

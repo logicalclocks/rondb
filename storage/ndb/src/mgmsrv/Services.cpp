@@ -598,7 +598,7 @@ MgmApiSession::get_nodeid(Parser_t::Context &,
 
   struct sockaddr_storage addr;
   {
-    int r = ndb_getpeername(m_secure_socket.ndb_socket,
+    int r = ndb_getpeername(m_secure_socket.ndb_socket(),
                             (struct sockaddr*)&addr);
     if (r != 0 )
     {

@@ -805,7 +805,7 @@ angel_run(const char* progname,
      */
     g_eventLogger->info("Angel pid: %d started child: %jd",
                         getpid(), child_pid);
-    if (write_real_pid(child) != 0)
+    if (write_real_pid(child_pid) != 0)
     {
       g_eventLogger->error("Failed to write real data node PID into pidfile %s",
                            get_pidfile_name());
