@@ -826,9 +826,12 @@ func TestLargeColumn(t *testing.T) {
 	testTable := "table_1"
 	testDb := testdbs.DB027
 
+	decoded := []byte("1")
+	pkDataEncoded := base64.StdEncoding.EncodeToString(decoded)
+
 	test := api.PKTestInfo{
 		PkReq: api.PKReadBody{
-			Filters:     testclient.NewFiltersKVs("id", "1"),
+			Filters:     testclient.NewFiltersKVs("id", pkDataEncoded),
 			ReadColumns: testclient.NewReadColumns("col", 1),
 			OperationID: testclient.NewOperationID(64),
 		},
