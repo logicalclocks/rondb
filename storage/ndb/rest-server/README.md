@@ -27,4 +27,4 @@ export LD_LIBRARY_PATH=/root/rondb-bin/lib
 ldconfig
 ```
 
-Finally, you can run the unit tests by entering the [rest-api-server](/storage/ndb/rest-server/rest-api-server) directory and running `make test`.
+Finally, you can run the unit tests by entering the [rest-api-server](/storage/ndb/rest-server/rest-api-server) directory and running `make test RDRS_LIB_DIR=/root/rondb-bin/lib`.
