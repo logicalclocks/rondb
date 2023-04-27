@@ -28,7 +28,7 @@ CREATE TABLE table_1 (
     PRIMARY KEY(id)
 ) ENGINE = ndbcluster;
 
--- pk: 'A' in ASCII 3070 times; col0: 'B' in ASCII
+-- col0: 'A' in ASCII 29990 times; col0: 'B' in ASCII
 -- Will be returned as base64 string in any case
 INSERT INTO
     table_1 (id, col0)
