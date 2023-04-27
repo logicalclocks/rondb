@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -29,6 +29,7 @@
 #include <InputStream.hpp>
 #include <Parser.hpp>
 #include <SocketServer.hpp>
+#include "util/NdbSocket.h"
 
 class CPCD;
 
@@ -36,6 +37,7 @@ class CPCDAPISession : public SocketServer::Session {
   typedef Parser<CPCDAPISession> Parser_t;
 
   class CPCD &m_cpcd;
+  NdbSocket m_secure_socket;
   InputStream *m_input;
   OutputStream *m_output;
   Parser_t *m_parser;

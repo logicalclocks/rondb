@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -344,6 +344,9 @@ SignalDataPrintFunctions[] = {
   ,{ GSN_PROCESSINFO_REP, printPROCESSINFO_REP }
 
   ,{ GSN_TRP_KEEP_ALIVE, printTRP_KEEP_ALIVE }
+  ,{ GSN_CREATE_EVNT_REQ, printCREATE_EVNT_REQ}
+  ,{ GSN_CREATE_EVNT_CONF, printCREATE_EVNT_CONF}
+  ,{ GSN_CREATE_EVNT_REF, printCREATE_EVNT_REF}
   ,{ 0, nullptr }
 };
 

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -593,19 +593,25 @@ SignalLoggerManager::printSignalHeader(FILE * output,
   fprintf(output, "r.bn: %d%s \"%s\", r.nodeId: %d, "
           , receiverBlockNo, rInstanceText, rBlockName, receiverProcessor);
   if (printReceiversSignalId)
-    fprintf(output, "r.sigId: H\'%.8x, ", rSigId);
-  fprintf(output,
-          "r.gsn: %d, r.sn: \"%s\"\n",
-          gsn, signalName);
-  fprintf(output,
-	  "s.bn: %d%s \"%s\", s.nodeId: %d, s.sigId: H\'%.8x",
-	  senderBlockNo, sInstanceText, sBlockName, senderProcessor, sSigId);
+    fprintf(output, 
+	    "r.bn: %d%s \"%s\", r.proc: %d, r.sigId: %u gsn: %d \"%s\" prio: %s\n"
+	    ,receiverBlockNo, rInstanceText, rBlockName, receiverProcessor,
+            rSigId, gsn, signalName, (prio == 1) ? "JBB" : "JBA");
+  else 
+    fprintf(output,
+	    "r.bn: %d%s \"%s\", r.proc: %d, gsn: %d \"%s\" prio: %s\n",
+	    receiverBlockNo, rInstanceText, rBlockName, receiverProcessor,
+            gsn, signalName, (prio == 1) ? "JBB" : "JBA");
+  
   if (receiverProcessor == senderProcessor)
     fprintf(output, ", s.threadId: %u, s.threadSigId: H\'%.8x",
             send_thread_id, send_thread_signal_id);
-  fprintf(output, "\nprio: %s, length: %d, trace: %d, #sec: %d, fragInfo: %d\n",
-          prio == 1 ? "JBB" : "JBA", length, trace, sh.m_noOfSections,
-          sh.m_fragmentInfo);
+
+  fprintf(output, 
+	  "s.bn: %d%s \"%s\", s.proc: %d, s.sigId: %u length: %d trace: %d "
+	  "#sec: %d fragInf: %d\n",
+	  senderBlockNo, sInstanceText, sBlockName, senderProcessor,
+          sSigId, length, trace, sh.m_noOfSections, sh.m_fragmentInfo);
 
   //assert(strcmp(rBlockName, dummy_block_name) != 0);
   //assert(strcmp(sBlockName, dummy_block_name) != 0);

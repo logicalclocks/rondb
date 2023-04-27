@@ -1,5 +1,5 @@
--- Copyright (c) 2009, 2022, Oracle and/or its affiliates.
--- Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+-- Copyright (c) 2009, 2023, Oracle and/or its affiliates.
+-- Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 --
 -- This program is free software; you can redistribute it and/or modify
 -- it under the terms of the GNU General Public License, version 2.0,
@@ -145,13 +145,13 @@ create table varbinarytypes (
 
 drop table if exists dynamicstringpks;
 create table dynamicstringpks (
-  key1 VARCHAR(100) collate utf8_unicode_ci NOT NULL,
-  key2 VARCHAR(100) collate utf8_unicode_ci NOT NULL,
-  key3 VARCHAR(100) collate utf8_unicode_ci NOT NULL,
+  key1 VARCHAR(85) collate utf8_unicode_ci NOT NULL,
+  key2 VARCHAR(85) collate utf8_unicode_ci NOT NULL,
+  key3 VARCHAR(85) collate utf8_unicode_ci NOT NULL,
   key4 INT NOT NULL,
-  key5 VARCHAR(100) collate utf8_unicode_ci NOT NULL,
+  key5 VARCHAR(85) collate utf8_unicode_ci NOT NULL,
   key6 INT NOT NULL,
-  key7 VARCHAR(100) collate utf8_unicode_ci NOT NULL,
+  key7 VARCHAR(85) collate utf8_unicode_ci NOT NULL,
   number INT NOT NULL,
   name VARCHAR(10) NOT NULL,
   PRIMARY KEY (key1, key2, key3, key4, key5, key6, key7)

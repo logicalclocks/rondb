@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -278,11 +278,7 @@ Dbtux::execACC_CHECK_SCAN(Signal* signal)
     {
       jamEntryDebug();
       release_c_free_scan_lock();
-      relinkScan(scan,
-                 m_my_scan_instance,
-                 frag,
-                 true,
-                 __LINE__);
+      relinkScan(scan, m_my_scan_instance, frag, true, __LINE__);
       /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
       return;
     }
@@ -707,11 +703,7 @@ Dbtux::execNEXT_SCANREQ(Signal* signal)
     {
       jam();
       scan.m_scanPos.m_loc = NullTupLoc;
-      relinkScan(scan,
-                 m_my_scan_instance,
-                 frag,
-                 true,
-                 __LINE__);
+      relinkScan(scan, m_my_scan_instance, frag, true, __LINE__);
       ndbassert(scan.m_scanLinkedPos == NullTupLoc);
     }
     if (unlikely(scan.m_lockwait))
@@ -781,11 +773,7 @@ Dbtux::continue_scan(Signal *signal,
      */
     release_c_free_scan_lock();
     jamLine(Uint16(scanPtr.i));
-    relinkScan(*scanPtr.p,
-               m_my_scan_instance,
-               frag,
-               true,
-               __LINE__);
+    relinkScan(*scanPtr.p, m_my_scan_instance, frag, true, __LINE__);
     NextScanConf* const conf = (NextScanConf*)signal->getDataPtrSend();
     conf->scanPtr = scan.m_userPtr;
     conf->accOperationPtr = RNIL;       // no tuple returned
@@ -913,11 +901,7 @@ Dbtux::continue_scan(Signal *signal,
           jamEntryDebug();
           /* Normal path */
           release_c_free_scan_lock();
-          relinkScan(scan,
-                     m_my_scan_instance,
-                     frag,
-                     true,
-                     __LINE__);
+          relinkScan(scan, m_my_scan_instance, frag, true, __LINE__);
           /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
           return; // stop for a while
         }
@@ -950,11 +934,7 @@ Dbtux::continue_scan(Signal *signal,
           jamEntryDebug();
           /* Normal path */
           release_c_free_scan_lock();
-          relinkScan(scan,
-                     m_my_scan_instance,
-                     frag,
-                     true,
-                     __LINE__);
+          relinkScan(scan, m_my_scan_instance, frag, true, __LINE__);
           /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
           return; // stop for a while
         }
@@ -979,11 +959,7 @@ Dbtux::continue_scan(Signal *signal,
           jamEntryDebug();
           /* Normal path */
           release_c_free_scan_lock();
-          relinkScan(scan,
-                     m_my_scan_instance,
-                     frag,
-                     true,
-                     __LINE__);
+          relinkScan(scan, m_my_scan_instance, frag, true, __LINE__);
           /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
           return; // stop for a while
         }
@@ -1013,11 +989,7 @@ Dbtux::continue_scan(Signal *signal,
     c_lqh->execCHECK_LCP_STOP(signal);
     jamEntryDebug();
     ndbrequire(signal->theData[0] == CheckLcpStop::ZTAKE_A_BREAK);
-    relinkScan(scan,
-               m_my_scan_instance,
-               frag,
-               true,
-               __LINE__);
+    relinkScan(scan, m_my_scan_instance, frag, true, __LINE__);
     /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
     return;
   }
@@ -1621,6 +1593,7 @@ Dbtux::checkScanInstance(Uint32 scanInstance)
   return true;
 }
 
+
 void
 Dbtux::relinkScan(ScanOp& scan,
                   Uint32 scanInstance,
@@ -1653,6 +1626,7 @@ Dbtux::relinkScan(ScanOp& scan,
    * done by writers and these have already acquired exclusive access to
    * the index (and the whole table for that matter).
    */
+  ndbassert(checkScanInstance(scanInstance));
   if (scan.m_scanLinkedPos == scan.m_scanPos.m_loc)
   {
     jamDebug();

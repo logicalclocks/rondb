@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2013, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2013, 2023, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -1712,10 +1712,7 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
 {
   int res;
   Int32 active_cpu;
-  Int32 cpu_cores;
-  Int32 cpu_sockets;
   Int64 memory_size;
-  char brand_buf[128];
 
   size_t size_var = sizeof(active_cpu);
   res = sysctlbyname("hw.ncpu",
@@ -1738,7 +1735,7 @@ static int Ndb_ReloadHWInfo(struct ndb_hwinfo * hwinfo)
   if (res != 0)
     goto error_exit;
 
-  for (Uint32 i = 0; i < active_cpu; i++)
+  for (Int32 i = 0; i < active_cpu; i++)
   {
     hwinfo->cpu_info[i].online = true;
   }

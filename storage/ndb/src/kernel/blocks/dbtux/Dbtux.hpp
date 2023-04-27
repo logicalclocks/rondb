@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1809,11 +1809,7 @@ Dbtux::relinkScan(Uint32 line)
   ndbrequire(c_ctx.scanPtr.p != nullptr);
   ScanOp& scan = *c_ctx.scanPtr.p;
   Frag& frag = *c_ctx.fragPtr.p;
-  relinkScan(scan,
-             m_my_scan_instance,
-             frag,
-             true,
-             line);
+  relinkScan(scan, m_my_scan_instance, frag, true, line);
 }
 #undef JAM_FILE_ID
 

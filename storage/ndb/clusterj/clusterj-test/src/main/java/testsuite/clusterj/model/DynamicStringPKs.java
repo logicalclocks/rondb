@@ -1,6 +1,6 @@
 /*
- *  Copyright (c) 2011, Oracle and/or its affiliates. All rights reserved.
- *  Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+ *  Copyright (c) 2023, Oracle and/or its affiliates.
+ *  Copyright (c) 2021, 2023, Logical Clocks and/or its affiliates.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License, version 2.0,
@@ -31,13 +31,13 @@ import com.mysql.clusterj.DynamicObject;
  *
 drop table if exists dynamicstringpks;
 create table dynamicstringpks (
- key1 varchar(100) collate utf8_unicode_ci not null,
- key2 varchar(100) collate utf8_unicode_ci not null,
- key3 varchar(100) collate utf8_unicode_ci not null,
+ key1 varchar(85) collate utf8_unicode_ci not null,
+ key2 varchar(85) collate utf8_unicode_ci not null,
+ key3 varchar(85) collate utf8_unicode_ci not null,
  key4 bigint not null,
- key5 varchar(100) collate utf8_unicode_ci not null,
+ key5 varchar(85) collate utf8_unicode_ci not null,
  key6 bigint not null,
- key7 varchar(100) collate utf8_unicode_ci not null,
+ key7 varchar(85) collate utf8_unicode_ci not null,
  number int not null,
  name varchar(10) not null,
  primary key (key1, key2, key3, key4, key5, key6, key7)

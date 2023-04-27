@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2016, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2016, 2023, Oracle and/or its affiliates.
    Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -83,8 +83,12 @@ void getNameFromEnvironment()
 {
   HANDLE handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ,
                               false, singletonInfo.getPid());
+  if (!handle)
+    return;
+
   GetModuleFileNameEx(handle, 0, singletonInfo.process_name,
                       singletonInfo.ProcessNameLength);
+  CloseHandle(handle);
 }
 #else
 void getNameFromEnvironment()

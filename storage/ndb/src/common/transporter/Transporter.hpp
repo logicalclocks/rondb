@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -40,7 +40,7 @@
 #include <NdbThread.h>
 
 #include "portlib/ndb_socket.h"
-
+#include "util/NdbSocket.h"
 
 #define DISCONNECT_ERRNO(e, sz) ( \
                 (sz == 0) || \
@@ -128,8 +128,12 @@ public:
    *    Use isConnected() to check status
    */
   virtual bool connect_client(bool);
-  bool connect_client(ndb_socket_t sockfd);
-  bool connect_server(ndb_socket_t socket, BaseString& errormsg);
+  bool connect_client(NdbSocket &);
+  bool connect_client(ndb_socket_t fd) {
+    NdbSocket socket(fd, NdbSocket::From::Existing);
+    return connect_client(socket);
+  }
+  bool connect_server(NdbSocket & socket, BaseString& errormsg);
 
   /**
    * Returns socket used (sockets are used for all transporters to ensure
@@ -251,8 +255,8 @@ protected:
    * Blocking, for max timeOut milli seconds
    *   Returns true if connect succeeded
    */
-  virtual bool connect_server_impl(ndb_socket_t) = 0;
-  virtual bool connect_client_impl(ndb_socket_t) = 0;
+  virtual bool connect_server_impl(NdbSocket &) = 0;
+  virtual bool connect_client_impl(NdbSocket &) = 0;
   virtual int pre_connect_options(ndb_socket_t) { return 0;}
   
   /**
@@ -308,7 +312,7 @@ protected:
   Uint32 m_slowdown_count;
 
   // Sending/Receiving socket used by both client and server
-  ndb_socket_t theSocket;
+  NdbSocket theSocket;
 private:
   SocketClient *m_socket_client;
   struct sockaddr_in6 m_connect_address;
@@ -394,7 +398,7 @@ protected:
 inline
 ndb_socket_t
 Transporter::getSocket() const {
-  return theSocket;
+  return theSocket.ndb_socket();
 }
 
 inline
