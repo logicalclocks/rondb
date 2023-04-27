@@ -822,6 +822,25 @@ func TestLargePks(t *testing.T) {
 	pkTest(t, test, true, true)
 }
 
+func TestLargeColumn(t *testing.T) {
+	testTable := "table_1"
+	testDb := testdbs.DB027
+
+	test := api.PKTestInfo{
+		PkReq: api.PKReadBody{
+			Filters:     testclient.NewFiltersKVs("id", "1"),
+			ReadColumns: testclient.NewReadColumns("col", 1),
+			OperationID: testclient.NewOperationID(64),
+		},
+		Table:          testTable,
+		Db:             testDb,
+		HttpCode:       http.StatusOK,
+		ErrMsgContains: "",
+		RespKVs:        []interface{}{"col0"},
+	}
+	pkTest(t, test, true, true)
+}
+
 func TestDataTypesChar(t *testing.T) {
 	ArrayColumnTest(t, "table1", testdbs.DB012, false, 100, true)
 }
