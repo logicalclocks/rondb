@@ -23,6 +23,8 @@
 #include <iostream>
 #include <vector>
 #include <unistd.h>
+#include "NdbOut.hpp"
+#include "NdbRecAttr.hpp"
 #include "src/error-strings.h"
 #include "src/logger.hpp"
 #include "src/rdrs_rondb_connection.hpp"
@@ -528,6 +530,100 @@ RS_Status find_training_dataset_join_data(int feature_view_id, int *td_join_id,
   RETRY_HANDLER(
     status = find_training_dataset_join_data_int(ndb_object,
       feature_view_id, td_join_id, feature_group_id, prefix);
+  )
+  /* clang-format on */
+
+  return status;
+}
+
+//-------------------------------------------------------------------------------------------------
+
+RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, char *name,
+                                      int *online_enabled, int *feature_store_id) {
+
+  NdbError err;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbOperation *ndbOp;
+
+  RS_Status status = select_table(ndb_object, "hopsworks", "feature_group", &table_dict);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  status = start_transaction(ndb_object, &tx);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  status = get_op(ndb_object, tx, "feature_group", &ndbOp);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  status = read_tuple(ndb_object, ndbOp);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  if (ndbOp->equal("id", feature_group_id) != 0) {
+    return RS_SERVER_ERROR(ERROR_023);
+  }
+
+  NdbRecAttr *nameAttr           = ndbOp->getValue("name", nullptr);
+  NdbRecAttr *onlineEnabledAttr  = ndbOp->getValue("online_enabled", nullptr);
+  NdbRecAttr *featureStoreIDAttr = ndbOp->getValue("feature_store_id", nullptr);
+  assert(FEATURE_GROUP_NAME_SIZE == (Uint32)table_dict->getColumn("name")->getSizeInBytes());
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    err = ndb_object->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(err, ERROR_009);
+  }
+
+  if (ndbOp->getNdbError().classification == NdbError::NoDataFound) {
+    ndb_object->closeTransaction(tx);
+    return RS_CLIENT_404_ERROR();
+  }
+
+  *online_enabled   = onlineEnabledAttr->u_8_value();
+  *feature_store_id = featureStoreIDAttr->int32_value();
+
+  Uint32 name_attr_bytes;
+  const char *name_attr_start = nullptr;
+  if (GetByteArray(nameAttr, &name_attr_start, &name_attr_bytes) != 0) {
+    return RS_CLIENT_ERROR(ERROR_019);
+  }
+
+  memcpy(name, name_attr_start, name_attr_bytes);
+  name[name_attr_bytes] = 0;
+
+  // As we are at the end we will first close the transaction and then deal with the error
+  ndb_object->closeTransaction(tx);
+
+  return RS_OK;
+}
+
+//-------------------------------------------------------------------------------------------------
+
+/**
+ * Find feature group data
+ * SELECT name, online_enabled, feature_store_id FROM feature_group WHERE id = {feature_group_id}
+ */
+RS_Status find_feature_group_data(int feature_group_id, char *name, int *online_enabled,
+                                  int *feature_store_id) {
+  Ndb *ndb_object  = nullptr;
+  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  /* clang-format off */
+  RETRY_HANDLER(
+    status = find_feature_group_data_int(ndb_object,
+      feature_group_id, name, online_enabled, feature_store_id);
   )
   /* clang-format on */
 

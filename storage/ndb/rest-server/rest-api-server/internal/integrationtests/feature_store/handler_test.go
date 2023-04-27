@@ -74,4 +74,12 @@ func TestFeatureStoreMetaData(t *testing.T) {
 	}
 
 	log.Infof("Training Dataset Join, td_id: %d, feature_group_id: %d, prefix %s \n", tdJoinID, featureGroupID, prefix)
+
+	name, onlineEnabled, featureGroupID, err := dal.GetFeatureGroupData(featureGroupID)
+	if err != nil {
+		t.Fatalf("Reading feature group failed %s ", err.VerboseError())
+	}
+
+	log.Infof("Freature group. Name: %s, onlineEnabled: %t, featureGroupID: %d\n", name, onlineEnabled, featureGroupID)
+
 }

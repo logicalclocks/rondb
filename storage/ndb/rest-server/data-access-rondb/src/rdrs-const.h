@@ -76,6 +76,7 @@ extern "C" {
 #define FEATURE_STORE_NAME_SIZE           100 + 1
 #define FEATURE_VIEW_NAME_SIZE            63 + 1
 #define TRAINING_DATASET_JOIN_PREFIX_SIZE 63 + 1
+#define FEATURE_GROUP_NAME_SIZE           63 + 1
 
 // Data types
 #define DECIMAL_MAX_SIZE_IN_BYTES           9 * 4   /*4 bytes per 9 digits. 65/9 + 1 * 4*/

@@ -59,6 +59,12 @@ RS_Status find_feature_view_id(int feature_store_id, const char *feature_view_na
 RS_Status find_training_dataset_join_data(int feature_view_id, int *td_join_id,
                                           int *feature_group_id, char *prefix);
 
+/**
+ * Find feature group data
+ * SELECT name, online_enabled, feature_store_id FROM feature_group WHERE id = {feature_group_id}
+ */
+RS_Status find_feature_group_data(int feature_group_id, char *name, int *online_enabled, int *feature_store_id);
+
 #endif
 #ifdef __cplusplus
 }

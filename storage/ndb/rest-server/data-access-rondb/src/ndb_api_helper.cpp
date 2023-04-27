@@ -89,3 +89,22 @@ RS_Status read_tuples(Ndb *ndb_object, NdbScanOperation *scanOp) {
   return RS_OK;
 }
 
+RS_Status read_tuple(Ndb *ndb_object, NdbOperation *ndbOp) {
+  NdbError err;
+  if (ndbOp->readTuple(NdbOperation::LM_Exclusive) != 0) {
+    err = ndb_object->getNdbError();
+    return RS_RONDB_SERVER_ERROR(err, ERROR_022);
+  }
+  return RS_OK;
+}
+
+RS_Status get_op(Ndb *ndb_object, NdbTransaction *tx,
+                            const char *table_name,
+                            NdbOperation **ndbOp) {
+  *ndbOp = tx->getNdbOperation(table_name);
+  if (*ndbOp == nullptr) {
+    NdbError err = ndb_object->getNdbError();
+    return RS_RONDB_SERVER_ERROR(err, ERROR_007);
+  }
+  return RS_OK;
+}

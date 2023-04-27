@@ -102,3 +102,23 @@ func GetTrainingDatasetJoinData(featureViewID int) (int, int, string, *DalError)
 
 	return int(tdJoinID), int(featureGroupID), C.GoString((*C.char)(unsafe.Pointer(prefixBuff))), nil
 }
+
+func GetFeatureGroupData(featureGroupID int) (string, bool, int, *DalError) {
+	nameBuff := C.malloc(C.size_t(C.FEATURE_GROUP_NAME_SIZE))
+	defer C.free(nameBuff)
+
+	var onlineEnabled C.int
+	onlineEnabledPtr := (*C.int)(unsafe.Pointer(&onlineEnabled))
+
+	var featureStoreID C.int
+	featureStoreIDPtr := (*C.int)(unsafe.Pointer(&featureStoreID))
+
+	ret := C.find_feature_group_data(C.int(featureGroupID),
+		(*C.char)(unsafe.Pointer(nameBuff)), onlineEnabledPtr, featureStoreIDPtr)
+
+	if ret.http_code != http.StatusOK {
+		return "", false, 0, cToGoRet(&ret)
+	}
+
+	return C.GoString((*C.char)(unsafe.Pointer(nameBuff))), int(onlineEnabled) != 0, int(featureGroupID), nil
+}
