@@ -6,10 +6,6 @@
 ##  MESSAGE IS NOT PRINTED WHEN ONE MGMD IS WAITING FOR ANOTHER MGMD TO START
 ##
 
---echo Bug32339789
---replace_regex /RonDB-[0-9][0-9]\.[0-9][0-9]\.[0-9]+/RonDB-VERSION/ /MySQL Cluster Management Server.*/MySQL Cluster Management Server/ /.*\[MgmtSrvr\]//
---exec $NDB_MGMD_EXE --defaults-group-suffix=.bug32339789 --defaults-file=$MYSQL_TEST_DIR/suite/ndb/ndb_config_mycnf1.cnf --configdir=$MYSQLTEST_VARDIR --ndb-nodeid=1 --mycnf 2>&1
---exec $NDB_MGM -c localhost:6000 -e "shutdown" >/dev/null
 --let $assert_text=Verified that "Cluster configuration has multiple Management nodes. Please start the other mgmd nodes if not started yet." is emitted when two mgmd configured.
 --let $assert_select=Cluster configuration has multiple Management nodes. Please start the other mgmd nodes if not started yet.
 --let $assert_file=$MYSQLTEST_VARDIR/mysql_cluster.1/ndb_mgmd.1/ndb_mgmd.log
