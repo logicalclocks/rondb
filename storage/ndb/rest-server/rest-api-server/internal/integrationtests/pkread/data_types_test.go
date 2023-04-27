@@ -797,7 +797,7 @@ func TestDataTypesBlobs(t *testing.T) {
 	pkTestMultiple(t, tests, false)
 }
 
-func TestDataTypesLargePks(t *testing.T) {
+func TestLargePks(t *testing.T) {
 	testTable := "table_1"
 	testDb := testdbs.DB026
 
@@ -807,21 +807,19 @@ func TestDataTypesLargePks(t *testing.T) {
 	}
 	pkDataEncoded := base64.StdEncoding.EncodeToString(pkData)
 
-	tests := map[string]api.PKTestInfo{
-		"maxPk": {
-			PkReq: api.PKReadBody{
-				Filters:     testclient.NewFiltersKVs("id", pkDataEncoded),
-				ReadColumns: testclient.NewReadColumns("col", 1),
-				OperationID: testclient.NewOperationID(64),
-			},
-			Table:          testTable,
-			Db:             testDb,
-			HttpCode:       http.StatusOK,
-			ErrMsgContains: "",
-			RespKVs:        []interface{}{"col0"},
+	test := api.PKTestInfo{
+		PkReq: api.PKReadBody{
+			Filters:     testclient.NewFiltersKVs("id", pkDataEncoded),
+			ReadColumns: testclient.NewReadColumns("col", 1),
+			OperationID: testclient.NewOperationID(64),
 		},
+		Table:          testTable,
+		Db:             testDb,
+		HttpCode:       http.StatusOK,
+		ErrMsgContains: "",
+		RespKVs:        []interface{}{"col0"},
 	}
-	pkTestMultiple(t, tests, true)
+	pkTest(t, test, true, true)
 }
 
 func TestDataTypesChar(t *testing.T) {
