@@ -829,19 +829,34 @@ func TestLargeColumn(t *testing.T) {
 	decoded := []byte("1")
 	pkDataEncoded := base64.StdEncoding.EncodeToString(decoded)
 
-	test := api.PKTestInfo{
-		PkReq: api.PKReadBody{
-			Filters:     testclient.NewFiltersKVs("id", pkDataEncoded),
-			ReadColumns: testclient.NewReadColumns("col", 1),
-			OperationID: testclient.NewOperationID(64),
+	tests := map[string]api.PKTestInfo{
+		"ok": {
+			PkReq: api.PKReadBody{
+				Filters:     testclient.NewFiltersKVs("id", pkDataEncoded),
+				ReadColumns: testclient.NewReadColumns("col", 1),
+				OperationID: testclient.NewOperationID(64),
+			},
+			Table:          testTable,
+			Db:             testDb,
+			HttpCode:       http.StatusOK,
+			ErrMsgContains: "",
+			RespKVs:        []interface{}{"col0"},
 		},
-		Table:          testTable,
-		Db:             testDb,
-		HttpCode:       http.StatusOK,
-		ErrMsgContains: "",
-		RespKVs:        []interface{}{"col0"},
+		"notBase64String": {
+			PkReq: api.PKReadBody{
+				Filters:     testclient.NewFiltersKVs("id", "1"),
+				ReadColumns: testclient.NewReadColumns("col", 1),
+				OperationID: testclient.NewOperationID(64),
+			},
+			Table:          testTable,
+			Db:             testDb,
+			HttpCode:       http.StatusBadRequest,
+			ErrMsgContains: "",
+			RespKVs:        []interface{}{"col0"},
+		},
 	}
-	pkTest(t, test, true, true)
+
+	pkTestMultiple(t, tests, true)
 }
 
 func TestDataTypesChar(t *testing.T) {
