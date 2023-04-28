@@ -29,64 +29,10 @@
 #include "src/db-operations/pk/common.hpp"
 #include "src/rdrs-const.h"
 #include "src/retry_handler.hpp"
+#include "src/ndb_api_helper.hpp"
 
 // RonDB connection
 extern RDRSRonDBConnection *rdrsRonDBConnection;
-
-RS_Status select_table(Ndb *ndb_object, const char *database_str, const char *table_str,
-                       const NdbDictionary::Table **table_dict) {
-  if (ndb_object->setCatalogName(database_str) != 0) {
-    return RS_CLIENT_ERROR(ERROR_011 + std::string(" Database: ") + std::string(database_str) +
-                           std::string(". Table: ") + std::string(table_str));
-  }
-
-  const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
-  *table_dict                           = dict->getTable(table_str);
-
-  if (*table_dict == nullptr) {
-    return RS_CLIENT_ERROR(ERROR_011 + std::string(" Database: ") + std::string(database_str) +
-                           std::string(". Table: ") + std::string(table_str));
-  }
-  return RS_OK;
-}
-
-RS_Status start_transaction(Ndb *ndb_object, NdbTransaction **tx) {
-  NdbError err;
-  *tx = ndb_object->startTransaction();
-  if (*tx == nullptr) {
-    err = ndb_object->getNdbError();
-    return RS_RONDB_SERVER_ERROR(err, ERROR_005);
-  }
-  return RS_OK;
-}
-
-RS_Status get_index_scan_op(Ndb *ndb_object, NdbTransaction *tx,
-                            const NdbDictionary::Table *table_dict, const char *index_name,
-                            NdbScanOperation **scanOp) {
-  NdbError err;
-  const NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
-  const NdbDictionary::Index *index     = dict->getIndex(index_name, table_dict->getName());
-
-  if (index == nullptr) {
-    return RS_SERVER_ERROR(ERROR_032 + std::string(" Index: ") + std::string(index_name));
-  }
-
-  *scanOp = tx->getNdbIndexScanOperation(index);
-  if (*scanOp == nullptr) {
-    err = ndb_object->getNdbError();
-    return RS_RONDB_SERVER_ERROR(err, ERROR_029);
-  }
-  return RS_OK;
-}
-
-RS_Status read_tuples(Ndb *ndb_object, NdbScanOperation *scanOp) {
-  NdbError err;
-  if (scanOp->readTuples(NdbOperation::LM_Exclusive) != 0) {
-    err = ndb_object->getNdbError();
-    return RS_RONDB_SERVER_ERROR(err, ERROR_030);
-  }
-  return RS_OK;
-}
 
 RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey *api_key) {
   NdbError err;
@@ -132,7 +78,7 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
   if (filter.begin(NdbScanFilter::AND) < 0 ||
       filter.cmp(NdbScanFilter::COND_EQ, col_id, cmp_str, API_KEY_PREFIX_SIZE) < 0 ||
       filter.end() < 0) {
-    err = ndb_object->getNdbError();
+    err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_031);
   }
@@ -269,7 +215,7 @@ RS_Status find_user_int(Ndb *ndb_object, Uint32 uid, HopsworksUsers *users) {
   int col_id = table_dict->getColumn("uid")->getColumnNo();
   NdbScanFilter filter(scanOp);
   if (filter.begin(NdbScanFilter::AND) < 0 || filter.eq(col_id, uid) < 0 || filter.end() < 0) {
-    err = ndb_object->getNdbError();
+    err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_031);
   }
@@ -376,7 +322,7 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
   if (filter.begin(NdbScanFilter::AND) < 0 ||
       filter.cmp(NdbScanFilter::COND_EQ, col_id, cmp_str, PROJECT_TEAM_TEAM_MEMBER_SIZE) < 0 ||
       filter.end() < 0) {
-    err = ndb_object->getNdbError();
+    err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_031);
   }
@@ -466,21 +412,21 @@ RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *
 
   NdbScanFilter filter(scanOp);
   if (filter.begin(NdbScanFilter::OR) < 0) {
-    err = ndb_object->getNdbError();
+    err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_031);
   }
 
   for (Uint32 i = 0; i < project_team_vec->size(); i++) {
     if (filter.eq(col_id, (Uint32)(*project_team_vec)[i].project_id) < 0) {
-      err = ndb_object->getNdbError();
+      err = filter.getNdbError();
       ndb_object->closeTransaction(tx);
       return RS_RONDB_SERVER_ERROR(err, ERROR_031);
     }
   }
 
   if (filter.end() < 0) {
-    err = ndb_object->getNdbError();
+    err = filter.getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_031);
   }
@@ -535,7 +481,7 @@ RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *
 RS_Status find_projects_vec(std::vector<HopsworksProjectTeam> *project_team_vec,
                             std::vector<HopsworksProject> *project_vec) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsRonDBConnection->GetNdbObject( &ndb_object);
+  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
