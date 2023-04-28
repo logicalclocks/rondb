@@ -19,17 +19,17 @@ package api
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"sort"
+	"strings"
 )
 
 type FeatureStoreRequest struct {
-	FeatureStoreName	*string		`json:"featureStoreName"`
-	FeatureViewName     *string    	`json:"featureViewName"`
-	FeatureViewVersion  *int		  	`json:"featureViewVersion"`
-	PassedFeatures		*map[string]*json.RawMessage		`json:"passedFeatures"`
-	Entries				*map[string]*json.RawMessage		`json:"entries"`
-	RequestId			*string		`json:"requestId"`
+	FeatureStoreName   *string                      `json:"featureStoreName"`
+	FeatureViewName    *string                      `json:"featureViewName"`
+	FeatureViewVersion *int                         `json:"featureViewVersion"`
+	PassedFeatures     *map[string]*json.RawMessage `json:"passedFeatures"`
+	Entries            *map[string]*json.RawMessage `json:"entries"`
+	RequestId          *string                      `json:"requestId"`
 }
 
 func (freq FeatureStoreRequest) String() string {
@@ -42,18 +42,18 @@ func (freq FeatureStoreRequest) String() string {
 }
 
 type FeatureViewMetadata struct {
-	FeatureStoreName	*string		`json:"featureStoreName"`
-	FeatureStoreId  *int		  	`json:"featureStoreId"`
-	FeatureViewName     *string    	`json:"featureViewName"`
-	FeatureViewId  *int		  	`json:"featureViewId"`
-	FeatureViewVersion  *int		  	`json:"featureViewVersion"`
-	PrefixPrimaryKeyLookup				*map[string]*FeatureMetadata
-	PrefixFeaturesLookup		*map[string]*FeatureMetadata
-	FeatureGroupFeatures	*[]*FeatureGroupFeatures
-	NumOfFeatureExPk			*int
-	NumOfFeatures			*int
-	FeatureIndexLookup				*map[string]int
-	FeatureExPkIndexLookup				*map[string]int
+	FeatureStoreName       *string `json:"featureStoreName"`
+	FeatureStoreId         *int    `json:"featureStoreId"`
+	FeatureViewName        *string `json:"featureViewName"`
+	FeatureViewId          *int    `json:"featureViewId"`
+	FeatureViewVersion     *int    `json:"featureViewVersion"`
+	PrefixPrimaryKeyLookup *map[string]*FeatureMetadata
+	PrefixFeaturesLookup   *map[string]*FeatureMetadata
+	FeatureGroupFeatures   *[]*FeatureGroupFeatures
+	NumOfFeatureExPk       *int
+	NumOfFeatures          *int
+	FeatureIndexLookup     *map[string]int
+	FeatureExPkIndexLookup *map[string]int
 }
 
 func (freq FeatureViewMetadata) String() string {
@@ -66,9 +66,9 @@ func (freq FeatureViewMetadata) String() string {
 }
 
 type FeatureGroupFeatures struct {
-	FeatureStoreName		*string
-	FeatureGroupName		*string
-	Features				*[]*FeatureMetadata
+	FeatureStoreName *string
+	FeatureGroupName *string
+	Features         *[]*FeatureMetadata
 }
 
 func (freq FeatureGroupFeatures) String() string {
@@ -81,16 +81,16 @@ func (freq FeatureGroupFeatures) String() string {
 }
 
 type FeatureMetadata struct {
-	FeatureStoreName	string
-	FeatureGroupName	string
-	id					int
-	Name				string
-	Type				string
-	Index				int
-	Label				bool
-	Prefix				string
-	TransformationFunctionId	int
-	PrimaryKey			bool
+	FeatureStoreName         string
+	FeatureGroupName         string
+	id                       int
+	Name                     string
+	Type                     string
+	Index                    int
+	Label                    bool
+	Prefix                   string
+	TransformationFunctionId int
+	PrimaryKey               bool
 }
 
 func (freq FeatureMetadata) String() string {
@@ -104,18 +104,18 @@ func (freq FeatureMetadata) String() string {
 
 func NewFeatureViewMetadata(
 	featureStoreName *string,
-	featureStoreId *int, 
+	featureStoreId *int,
 	featureViewName *string,
-	featureViewId *int, 
-	featureViewVersion *int, 
+	featureViewId *int,
+	featureViewVersion *int,
 	features *[]*FeatureMetadata,
-	) *FeatureViewMetadata {
+) *FeatureViewMetadata {
 	pk := make(map[string]*FeatureMetadata)
 	prefixColumns := make(map[string]*FeatureMetadata)
 	fgFeatures := make(map[string][]*FeatureMetadata)
-	for _, feature:= range *features {
+	for _, feature := range *features {
 		prefixFeatureName := feature.Prefix + feature.Name
-		if (feature.PrimaryKey) {
+		if feature.PrimaryKey {
 			pk[prefixFeatureName] = feature
 		}
 		prefixColumns[prefixFeatureName] = feature
@@ -142,8 +142,8 @@ func NewFeatureViewMetadata(
 	var numOfPk = len(pk)
 
 	for _, feature := range *features {
-		featureIndexKey := GetFeatureIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.Name) 
-		if (feature.PrimaryKey) {
+		featureIndexKey := GetFeatureIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.Name)
+		if feature.PrimaryKey {
 			featureIndex[*featureIndexKey] = pkIndex
 			pkIndex += 1
 		} else {
@@ -160,13 +160,13 @@ func NewFeatureViewMetadata(
 }
 
 func GetFeatureIndexKey(fs string, fg string, f string) *string {
-	featureIndexKey := fs + "|" + fg + "|" + f 
+	featureIndexKey := fs + "|" + fg + "|" + f
 	return &featureIndexKey
 }
 
 type FeatureStoreResponse struct {
-	Features *[]interface{}			`json:"features"`
-	Metadata *map[string]string		`json:"metadata"	binding:"omitempty"`
+	Features *[]interface{}     `json:"features"`
+	Metadata *map[string]string `json:"metadata"	binding:"omitempty"`
 }
 
 func (r *FeatureStoreResponse) String() string {
