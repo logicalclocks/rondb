@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -75,12 +75,15 @@ SectionReader::reset(){
 }
 
 bool
-SectionReader::step(Uint32 len){
-  if(m_pos + len >= m_len) {
-    m_pos++;
+SectionReader::step(Uint32 len)
+{
+  if(m_pos + len >= m_len)
+  {
+    m_pos = m_len;
     return false;
   }
-  while(len > SectionSegment::DataLength){
+  while(len > SectionSegment::DataLength)
+  {
     m_currI= m_currentSegment->m_nextSegment;
     m_currentSegment = m_pool.getPtr(m_currI);
 
@@ -89,7 +92,8 @@ SectionReader::step(Uint32 len){
   }
 
   Uint32 ind = m_pos % SectionSegment::DataLength;
-  while(len > 0){
+  while(len > 0)
+  {
     len--;
     m_pos++;
 

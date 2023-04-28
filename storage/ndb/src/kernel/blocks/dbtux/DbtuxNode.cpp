@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -765,11 +765,7 @@ Dbtux::moveScanList(NodeHandle& node, unsigned pos)
       scan.m_scanLinkedPos = scan.m_scanPos.m_loc;
       scanNext(scanPtr, true, frag);
       /* Relink scan in new pos, passing in its instance (can be a QTUX scan) */
-      relinkScan(scan,
-                 scanInstance,
-                 frag,
-                 false,
-                 __LINE__);
+      relinkScan(scan, scanInstance, frag, false, __LINE__);
       ndbassert(scanPtr.p->m_scanLinkedPos == NullTupLoc);
       ndbrequire(! (scanPos.m_loc == node.m_loc && scanPos.m_pos == pos));
     }

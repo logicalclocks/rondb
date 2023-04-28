@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -2771,7 +2771,7 @@ LogEntry::printSqlLog() const {
   ndbout << ";";
 }
 
-RestoreLogger::RestoreLogger()
+RestoreLogger::RestoreLogger():print_timestamp(true)
 {
   m_mutex = NdbMutex_Create();
 }
@@ -2790,6 +2790,11 @@ void RestoreLogger::log_error(const char* fmt, ...)
   va_end(ap);
 
   NdbMutex_Lock(m_mutex);
+  if (print_timestamp) {
+    Logger::format_timestamp(time(NULL), timestamp, sizeof(timestamp));
+    err << timestamp << " ";
+  }
+
   err << getThreadPrefix() << buf << endl;
   NdbMutex_Unlock(m_mutex);
 }
@@ -2803,6 +2808,11 @@ void RestoreLogger::log_info(const char* fmt, ...)
   va_end(ap);
 
   NdbMutex_Lock(m_mutex);
+  if (print_timestamp) {
+    Logger::format_timestamp(time(NULL), timestamp, sizeof(timestamp));
+    info << timestamp << " ";
+  }
+
   info << getThreadPrefix() << buf << endl;
   NdbMutex_Unlock(m_mutex);
 }
@@ -2816,6 +2826,11 @@ void RestoreLogger::log_debug(const char* fmt, ...)
   va_end(ap);
 
   NdbMutex_Lock(m_mutex);
+  if (print_timestamp) {
+    Logger::format_timestamp(time(NULL), timestamp, sizeof(timestamp));
+    debug << timestamp << " ";
+  }
+
   debug << getThreadPrefix() << buf << endl;
   NdbMutex_Unlock(m_mutex);
 }
@@ -2836,6 +2851,16 @@ RestoreLogger::getThreadPrefix() const
       prefix =  "";
     }
    return prefix;
+}
+
+void
+RestoreLogger::set_print_timestamp(bool print_TS) {
+  print_timestamp = print_TS;
+}
+
+bool
+RestoreLogger::get_print_timestamp() {
+  return print_timestamp;
 }
 
 NdbOut &

@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2004, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2004, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,6 +27,7 @@
 #define SOCKET_CLIENT_HPP
 
 #include "portlib/ndb_socket.h"
+#include "util/NdbSocket.h"
 
 class SocketAuthenticator;
 
@@ -47,6 +48,7 @@ public:
            unsigned short local_port);
   ndb_socket_t connect(const char* server_hostname,
                        unsigned short server_port);
+  void connect(NdbSocket &, const char *hostname, unsigned short port);
 
   ndb_socket_t m_sockfd;
 };

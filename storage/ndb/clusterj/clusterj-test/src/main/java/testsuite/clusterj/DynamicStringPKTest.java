@@ -1,6 +1,6 @@
 /*
- *  Copyright (c) 2011, Oracle and/or its affiliates. All rights reserved.
- *  Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+ *  Copyright (c) 2023, Oracle and/or its affiliates.
+ *  Copyright (c) 2021, 2023, Logical Clocks and/or its affiliates.
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License, version 2.0,
@@ -88,15 +88,15 @@ public class DynamicStringPKTest extends AbstractClusterJTest {
             tx.begin();
             String key = getPK(i);
             DynamicStringPKs dynObj = (DynamicStringPKs) session.newInstance(cls);
-	    dynObj.setKey1(key);
-	    dynObj.setKey2(key);
-	    dynObj.setKey3(key);
-	    dynObj.setKey4(i);
-	    dynObj.setKey5(key);
-	    dynObj.setKey6(i);
-	    dynObj.setKey7(key);
+            dynObj.setKey1(key);
+            dynObj.setKey2(key);
+            dynObj.setKey3(key);
+            dynObj.setKey4(i);
+            dynObj.setKey5(key);
+            dynObj.setKey6(i);
+            dynObj.setKey7(key);
             DynamicStringPKs result = session.load(dynObj);
-	    session.flush();
+            session.flush();
             tx.commit();
             verify(where, result, i, false);
         }
@@ -122,15 +122,15 @@ public class DynamicStringPKTest extends AbstractClusterJTest {
                 tx.begin();
                 String key = getPK(i);
                 DynamicStringPKs dynObj = (DynamicStringPKs) session.newInstance(cls);
-	        dynObj.setKey1(key);
-	        dynObj.setKey2(key);
-	        dynObj.setKey3(key);
-	        dynObj.setKey4(i);
-	        dynObj.setKey5(key);
-	        dynObj.setKey6(i);
-	        dynObj.setKey7(key);
+                dynObj.setKey1(key);
+                dynObj.setKey2(key);
+                dynObj.setKey3(key);
+                dynObj.setKey4(i);
+                dynObj.setKey5(key);
+                dynObj.setKey6(i);
+                dynObj.setKey7(key);
                 DynamicStringPKs result = session.load(dynObj);
-	        session.flush();
+                session.flush();
                 tx.commit();
                 verify(where, result, i, true);
             }
@@ -153,21 +153,21 @@ public class DynamicStringPKTest extends AbstractClusterJTest {
                 tx.begin();
                 String key = getPK(i);
                 DynamicStringPKs dynObj = (DynamicStringPKs) session.newInstance(cls);
-	        dynObj.setKey1(key);
-	        dynObj.setKey2(key);
-	        dynObj.setKey3(key);
-	        dynObj.setKey4(i);
-	        dynObj.setKey5(key);
-	        dynObj.setKey6(i);
-	        dynObj.setKey7(key);
+                dynObj.setKey1(key);
+                dynObj.setKey2(key);
+                dynObj.setKey3(key);
+                dynObj.setKey4(i);
+                dynObj.setKey5(key);
+                dynObj.setKey6(i);
+                dynObj.setKey7(key);
                 DynamicStringPKs result = session.load(dynObj);
-	        session.flush();
+                session.flush();
                 tx.commit();
-		Boolean found_object = session.found(dynObj);
-		if (!found_object || found_object == null)
-		{
-		  result = null;
-		}
+                Boolean found_object = session.found(dynObj);
+                if (!found_object || found_object == null)
+                {
+                  result = null;
+                }
                 errorIfNotEqual("Failed to delete instance: " + i, null, result);
             }
         }
@@ -225,7 +225,7 @@ public class DynamicStringPKTest extends AbstractClusterJTest {
     }
 
     protected String getPK(int index) {
-	String result = "Text............. " + index;
+        String result = "Text............. " + index;
         return result;
     }
 

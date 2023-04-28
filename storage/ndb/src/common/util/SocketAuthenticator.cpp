@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2004, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2004, 2023, Oracle and/or its affiliates.
    Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -55,10 +55,10 @@ SocketAuthSimple::~SocketAuthSimple()
     free(m_username);
 }
 
-bool SocketAuthSimple::client_authenticate(ndb_socket_t sockfd)
+bool SocketAuthSimple::client_authenticate(NdbSocket & sockfd)
 {
-  SocketOutputStream s_output(sockfd);
-  SocketInputStream  s_input(sockfd);
+  SecureSocketOutputStream s_output(sockfd);
+  SecureSocketInputStream  s_input(sockfd);
 
   DEBUG_FPRINTF((stderr, "send client authenticate on NDB_SOCKET: %s\n",
                  ndb_socket_to_string(sockfd).c_str()));
@@ -90,10 +90,10 @@ bool SocketAuthSimple::client_authenticate(ndb_socket_t sockfd)
   return false;
 }
 
-bool SocketAuthSimple::server_authenticate(ndb_socket_t sockfd)
+bool SocketAuthSimple::server_authenticate(NdbSocket & sockfd)
 {
-  SocketOutputStream s_output(sockfd);
-  SocketInputStream  s_input(sockfd);
+  SecureSocketOutputStream s_output(sockfd);
+  SecureSocketInputStream  s_input(sockfd);
 
   char buf[256];
 

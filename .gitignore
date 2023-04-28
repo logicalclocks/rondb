@@ -37,3 +37,7 @@ compile_commands.json
 
 # build
 build
+# Configuration files for Eclipse
+.cproject
+.project
+.settings/

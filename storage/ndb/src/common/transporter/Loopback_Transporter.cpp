@@ -1,6 +1,6 @@
 /*
-   Copyright (c) 2010, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2010, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -61,7 +61,7 @@ Loopback_Transporter::connect_client(bool multi_connection)
     goto err;
   }
 
-  theSocket = pair[0];
+  theSocket.init_from_new(pair[0]);
   m_send_socket = pair[1];
 
   m_connected = true;
@@ -76,11 +76,11 @@ err:
 void
 Loopback_Transporter::disconnectImpl()
 {
-  ndb_socket_t pair[] = { theSocket, m_send_socket };
+  ndb_socket_t pair[] = { theSocket.ndb_socket(), m_send_socket };
 
   get_callback_obj()->lock_transporter(remoteNodeId, m_transporter_index);
 
-  ndb_socket_invalidate(&theSocket);
+  theSocket.invalidate();
   ndb_socket_invalidate(&m_send_socket);
 
   get_callback_obj()->unlock_transporter(remoteNodeId, m_transporter_index);

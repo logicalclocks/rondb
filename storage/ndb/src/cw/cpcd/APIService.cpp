@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
    Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -129,8 +129,9 @@ const ParserRow<CPCDAPISession> commands[] = {
     CPCD_END()};
 CPCDAPISession::CPCDAPISession(ndb_socket_t sock, CPCD &cpcd)
     : SocketServer::Session(sock), m_cpcd(cpcd), m_protocol_version(1) {
-  m_input = new SocketInputStream(sock, 7 * 24 * 60 * 60000);
-  m_output = new SocketOutputStream(sock);
+  m_secure_socket.init_from_new(sock);
+  m_input = new SecureSocketInputStream(m_secure_socket, 7 * 24 * 60 * 60000);
+  m_output = new SecureSocketOutputStream(m_secure_socket);
   m_parser = new Parser<CPCDAPISession>(commands, *m_input);
 }
 
@@ -171,8 +172,8 @@ void CPCDAPISession::runSession() {
         break;
     }
   }
-  ndb_socket_close(m_socket);
-  ndb_socket_invalidate(&m_socket);
+  m_secure_socket.close();
+  m_secure_socket.invalidate();
 }
 
 void CPCDAPISession::stopSession() {
