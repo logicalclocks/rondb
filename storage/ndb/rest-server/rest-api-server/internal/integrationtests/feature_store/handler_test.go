@@ -24,7 +24,7 @@ import (
 	"testing"
 
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/dal"
+	fsmetadata "hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/testutils"
@@ -48,7 +48,7 @@ func TestFeatureStore(t *testing.T) {
 
 func TestFeatureStoreMetaData(t *testing.T) {
 
-	md, err := dal.GetFeatureStoreMetadata("test2", "sample_2", 1)
+	md, err := fsmetadata.GetFeatureStoreMetadata("test2", "sample_2", 1)
 	if err != nil {
 		t.Fatalf("Reading FS Metadata failed %v ", err)
 	}

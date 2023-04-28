@@ -26,7 +26,6 @@ package dal
 */
 import "C"
 import (
-	"fmt"
 	"net/http"
 	"sort"
 	"unsafe"
@@ -189,46 +188,4 @@ func GetTrainingDatasetFeature(featureViewID int) ([]TrainingDatasetFeature, *Da
 		return retTdfs[i].IDX < retTdfs[j].IDX
 	})
 	return retTdfs[:], nil
-}
-
-func GetFeatureStoreMetadata(featureStoreName, featureViewName string, featureViewVersion int) (*FeatureStoreMetadata, error) {
-
-	featureStoreMetadata := FeatureStoreMetadata{}
-	fsID, err := GetFeatureStorID(featureStoreName)
-	if err != nil {
-		return nil, fmt.Errorf("reading feature store ID failed. Error: %s ", err)
-	}
-
-	fvID, err := GetFeatureViewID(fsID, featureViewName, featureViewVersion)
-	if err != nil {
-		return nil, fmt.Errorf("reading feature view ID failed. Error: %s ", err.VerboseError())
-	}
-
-	tdJoinID, featureGroupID, prefix, err := GetTrainingDatasetJoinData(fvID)
-	if err != nil {
-		return nil, fmt.Errorf("reading training dataset join failed. Error: %s ", err.VerboseError())
-	}
-
-	name, onlineEnabled, _, err := GetFeatureGroupData(featureGroupID)
-	if err != nil {
-		return nil, fmt.Errorf("reading feature group failed. Error: %s ", err.VerboseError())
-	}
-
-	tdfs, err := GetTrainingDatasetFeature(fvID)
-	if err != nil {
-		return nil, fmt.Errorf("reading training dataset feature failed %s ", err.VerboseError())
-	}
-
-	featureStoreMetadata.FeatureStoreID = fsID
-	featureStoreMetadata.FeatureViewID = fvID
-	featureStoreMetadata.FeatureStoreName = featureStoreName
-	featureStoreMetadata.FeatureViewName = featureViewName
-	featureStoreMetadata.FeatureViewVersion = featureViewVersion
-	featureStoreMetadata.TDJoinID = tdJoinID
-	featureStoreMetadata.TDJoinPrefix = prefix
-	featureStoreMetadata.FeatureGroupName = name
-	featureStoreMetadata.FeatureGroupOnlineEnabled = onlineEnabled
-	featureStoreMetadata.TrainingDatasetFeatures = tdfs
-
-	return &featureStoreMetadata, nil
 }
