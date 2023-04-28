@@ -47,39 +47,12 @@ func TestFeatureStore(t *testing.T) {
 }
 
 func TestFeatureStoreMetaData(t *testing.T) {
-	projID, err := dal.GetProjectID("test2")
+
+	md, err := dal.GetFeatureStoreMetadata("test2", "sample_2", 1)
 	if err != nil {
-		t.Fatalf("Reading Project ID failed %s ", err)
+		t.Fatalf("Reading FS Metadata failed %v ", err)
 	}
 
-	log.Infof("Project ID %d \n", projID)
-
-	fsID, err := dal.GetFeatureStorID("test2")
-	if err != nil {
-		t.Fatalf("Reading Feature Store ID failed %s ", err)
-	}
-
-	log.Infof("Feature store ID %d \n", fsID)
-
-	fvID, err := dal.GetFeatureViewID(fsID, "sample_2", 1)
-	if err != nil {
-		t.Fatalf("Reading Feature View ID failed %s ", err.VerboseError())
-	}
-
-	log.Infof("Feature View ID %d \n", fvID)
-
-	tdJoinID, featureGroupID, prefix, err := dal.GetTrainingDatasetJoinData(fvID)
-	if err != nil {
-		t.Fatalf("Reading Training Dataset Join failed %s ", err.VerboseError())
-	}
-
-	log.Infof("Training Dataset Join, td_id: %d, feature_group_id: %d, prefix %s \n", tdJoinID, featureGroupID, prefix)
-
-	name, onlineEnabled, featureGroupID, err := dal.GetFeatureGroupData(featureGroupID)
-	if err != nil {
-		t.Fatalf("Reading feature group failed %s ", err.VerboseError())
-	}
-
-	log.Infof("Freature group. Name: %s, onlineEnabled: %t, featureGroupID: %d\n", name, onlineEnabled, featureGroupID)
-
+	mdJson, _ := json.MarshalIndent(md, "", "  ")
+	log.Infof("Feature store metadata is %s", mdJson)
 }

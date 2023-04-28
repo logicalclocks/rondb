@@ -26,9 +26,37 @@ package dal
 */
 import "C"
 import (
+	"fmt"
 	"net/http"
+	"sort"
 	"unsafe"
 )
+
+type FeatureStoreMetadata struct {
+	FeatureStoreID            int    //       # query 1
+	FeatureViewID             int    //      # query 1 -> 2
+	FeatureStoreName          string //,     # REST path param -> Cache Key
+	FeatureViewName           string //      # REST path param -> Cache Key
+	FeatureViewVersion        int    //   # REST path param -> Cache Key
+	TDJoinID                  int
+	TDJoinPrefix              string
+	FeatureGroupName          string
+	FeatureGroupOnlineEnabled bool
+	TrainingDatasetFeatures   []TrainingDatasetFeature
+}
+
+type TrainingDatasetFeature struct {
+	FeatureID                int
+	TrainingDataset          int
+	featureGroupID           int
+	Name                     string
+	Type                     string
+	TDJoinID                 int
+	IDX                      int
+	Label                    int
+	TransformationFunctionID int
+	FeatureViewID            int
+}
 
 func GetProjectID(featureStoreName string) (int, *DalError) {
 	cFeatureStoreName := C.CString(featureStoreName)
@@ -121,4 +149,86 @@ func GetFeatureGroupData(featureGroupID int) (string, bool, int, *DalError) {
 	}
 
 	return C.GoString((*C.char)(unsafe.Pointer(nameBuff))), int(onlineEnabled) != 0, int(featureGroupID), nil
+}
+
+func GetTrainingDatasetFeature(featureViewID int) ([]TrainingDatasetFeature, *DalError) {
+
+	var tdfsSize C.int
+	tdfsSizePtr := (*C.int)(unsafe.Pointer(&tdfsSize))
+
+	var tdfs *C.Training_Dataset_Feature
+	tdfsPtr := (**C.Training_Dataset_Feature)(unsafe.Pointer(&tdfs))
+
+	ret := C.find_training_dataset_data(C.int(featureViewID), tdfsPtr, tdfsSizePtr)
+
+	if ret.http_code != http.StatusOK {
+		return nil, cToGoRet(&ret)
+	}
+
+	tdfsSlice := unsafe.Slice((*C.Training_Dataset_Feature)(unsafe.Pointer(tdfs)), tdfsSize)
+
+	retTdfs := make([]TrainingDatasetFeature, int(tdfsSize))
+	for i, tdf := range tdfsSlice {
+		retTdf := TrainingDatasetFeature{
+			FeatureID:                int(tdf.feature_id),
+			TrainingDataset:          int(tdf.training_dataset),
+			featureGroupID:           int(tdf.feature_group_id),
+			Name:                     C.GoString(&tdf.name[0]),
+			Type:                     C.GoString(&tdf.data_type[0]),
+			TDJoinID:                 int(tdf.td_join_id),
+			IDX:                      int(tdf.idx),
+			Label:                    int(tdf.label),
+			TransformationFunctionID: int(tdf.transformation_function_id),
+			FeatureViewID:            int(tdf.feature_view_id),
+		}
+		retTdfs[i] = retTdf
+	}
+
+	C.free(unsafe.Pointer(tdfs))
+	sort.Slice(retTdfs, func(i, j int) bool {
+		return retTdfs[i].IDX < retTdfs[j].IDX
+	})
+	return retTdfs[:], nil
+}
+
+func GetFeatureStoreMetadata(featureStoreName, featureViewName string, featureViewVersion int) (*FeatureStoreMetadata, error) {
+
+	featureStoreMetadata := FeatureStoreMetadata{}
+	fsID, err := GetFeatureStorID(featureStoreName)
+	if err != nil {
+		return nil, fmt.Errorf("reading feature store ID failed. Error: %s ", err)
+	}
+
+	fvID, err := GetFeatureViewID(fsID, featureViewName, featureViewVersion)
+	if err != nil {
+		return nil, fmt.Errorf("reading feature view ID failed. Error: %s ", err.VerboseError())
+	}
+
+	tdJoinID, featureGroupID, prefix, err := GetTrainingDatasetJoinData(fvID)
+	if err != nil {
+		return nil, fmt.Errorf("reading training dataset join failed. Error: %s ", err.VerboseError())
+	}
+
+	name, onlineEnabled, _, err := GetFeatureGroupData(featureGroupID)
+	if err != nil {
+		return nil, fmt.Errorf("reading feature group failed. Error: %s ", err.VerboseError())
+	}
+
+	tdfs, err := GetTrainingDatasetFeature(fvID)
+	if err != nil {
+		return nil, fmt.Errorf("reading training dataset feature failed %s ", err.VerboseError())
+	}
+
+	featureStoreMetadata.FeatureStoreID = fsID
+	featureStoreMetadata.FeatureViewID = fvID
+	featureStoreMetadata.FeatureStoreName = featureStoreName
+	featureStoreMetadata.FeatureViewName = featureViewName
+	featureStoreMetadata.FeatureViewVersion = featureViewVersion
+	featureStoreMetadata.TDJoinID = tdJoinID
+	featureStoreMetadata.TDJoinPrefix = prefix
+	featureStoreMetadata.FeatureGroupName = name
+	featureStoreMetadata.FeatureGroupOnlineEnabled = onlineEnabled
+	featureStoreMetadata.TrainingDatasetFeatures = tdfs
+
+	return &featureStoreMetadata, nil
 }

@@ -27,9 +27,18 @@ extern "C" {
 #include "../rdrs-dal.h"
 
 // some DS
-typedef struct FSKey {
-  char secret[513];
-} FSKey;
+typedef struct Training_Dataset_Feature {
+  int feature_id;
+  int training_dataset;
+  int feature_group_id;
+  char name[1000+1];
+  char data_type[1000+1] ;
+  int td_join_id;
+  int idx;
+  int label;
+  int transformation_function_id;
+  int feature_view_id;
+} Training_Dataset_Feature;
 
 /**
  * Find project ID using the feature store name
@@ -64,6 +73,12 @@ RS_Status find_training_dataset_join_data(int feature_view_id, int *td_join_id,
  * SELECT name, online_enabled, feature_store_id FROM feature_group WHERE id = {feature_group_id}
  */
 RS_Status find_feature_group_data(int feature_group_id, char *name, int *online_enabled, int *feature_store_id);
+
+/**
+ * Find training_dataset_feature
+ * SELECT * from training_dataset_feature  WHERE feature_view_id = {feature_view_id}
+ */
+RS_Status find_training_dataset_data(int feature_view_id, Training_Dataset_Feature **tdf, int *tdf_size);
 
 #endif
 #ifdef __cplusplus
