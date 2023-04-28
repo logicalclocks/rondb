@@ -33,7 +33,7 @@ func SendHttpRequest(
 	body string,
 	expectedErrMsg string,
 	expectedStatus ...int,
-) (int, string) {
+) (int, []byte) {
 	t.Helper()
 
 	client := testutils.SetupHttpClient(t)
@@ -88,5 +88,5 @@ func SendHttpRequest(
 		t.Fatalf("response error body does not contain '%s'; received response body: '%s'", expectedErrMsg, respBody)
 	}
 
-	return respCode, respBody
+	return respCode, respBodyBtyes
 }

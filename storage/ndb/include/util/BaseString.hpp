@@ -286,7 +286,7 @@ public:
 
   static size_t hexdump(char * buf, size_t len, const Uint32 * wordbuf, size_t numwords);
 private:
-  char* m_chr;
+  char* m_chr = nullptr;
   unsigned m_len;
   friend bool operator!(const BaseString& str);
 };

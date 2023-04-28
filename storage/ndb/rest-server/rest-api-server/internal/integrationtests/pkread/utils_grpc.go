@@ -69,9 +69,9 @@ func handleGrpcRequest(
 }
 
 /*
-	Extracted this in case we want to reuse the Proto request struct and
-	avoid parsing the response, even though this does not make a noticeable
-	difference in performance tests.
+Extracted this in case we want to reuse the Proto request struct and
+avoid parsing the response, even though this does not make a noticeable
+difference in performance tests.
 */
 func sendGrpcRequestAndCheckStatus(
 	t testing.TB,
@@ -109,16 +109,16 @@ func validateResGRPC(
 ) {
 	t.Helper()
 	for i := 0; i < len(testInfo.RespKVs); i++ {
-		key := string(testInfo.RespKVs[i].(string))
+		colName := string(testInfo.RespKVs[i].(string))
 
-		val, found := testclient.GetColumnDataFromGRPC(t, key, resp)
-		if !found {
-			t.Fatalf("Key not found in the response. Key %s", key)
+		val, ok := (*resp.Data)[colName]
+		if !ok {
+			t.Fatalf("Column not found in the response. colName: %s", colName)
 		}
 
 		var err error
 		if val != nil {
-			quotedVal := fmt.Sprintf("\"%s\"", *val) // you have to surround the string with "s
+			quotedVal := "\"" + *val + "\"" // you have to surround the string with "s
 			*val, err = strconv.Unquote(quotedVal)
 			if err != nil {
 				t.Fatalf("Unquote failed %v\n", err)
@@ -129,7 +129,7 @@ func validateResGRPC(
 			testInfo.Db,
 			testInfo.Table,
 			testInfo.PkReq.Filters,
-			&key,
+			&colName,
 			val,
 			isBinaryData,
 		)

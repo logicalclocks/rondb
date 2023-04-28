@@ -219,7 +219,7 @@ func convertToJsonRaw(dataType uint32, value *string) *json.RawMessage {
 		valueBytes := json.RawMessage(*value)
 		return &valueBytes
 	} else {
-		quotedString := fmt.Sprintf("\"%s\"", *value)
+		quotedString := "\"" + *value + "\""
 		valueBytes := json.RawMessage(quotedString)
 		return &valueBytes
 	}

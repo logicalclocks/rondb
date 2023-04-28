@@ -38,30 +38,30 @@ void setLogCallBackFns(const Callbacks cbs);
 
 void log(const int level, const char *msg);
 
-void PANIC(const char *msg);
+void LOG_PANIC(const char *msg);
 
-void PANIC(const std::string msg);
+void LOG_PANIC(const std::string msg);
 
-void FATAL(const char *msg);
+void LOG_FATAL(const char *msg);
 
-void FATAL(const std::string msg);
+void LOG_FATAL(const std::string msg);
 
-void ERROR(const char *msg);
+void LOG_ERROR(const char *msg);
 
-void ERROR(const std::string msg);
+void LOG_ERROR(const std::string msg);
 
-void WARN(const char *msg);
+void LOG_WARN(const char *msg);
 
-void WARN(const std::string msg);
+void LOG_WARN(const std::string msg);
 
-void INFO(const char *msg);
+void LOG_INFO(const char *msg);
 
-void INFO(const std::string msg);
+void LOG_INFO(const std::string msg);
 
-void DEBUG(const char *msg);
+void LOG_DEBUG(const char *msg);
 
-void DEBUG(const std::string msg);
+void LOG_DEBUG(const std::string msg);
 
-void TRACE(char *msg);
+void LOG_TRACE(char *msg);
 
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_LOGGER_HPP_
