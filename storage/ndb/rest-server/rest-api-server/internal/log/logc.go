@@ -40,7 +40,7 @@ func RegisterLogCallBack() {
 //export goLog
 func goLog(logMsg C.RS_LOG_MSG) {
 	level := log.Level(logMsg.level)
-	msg := C.GoString(&logMsg.message[0])
+	msg := "RDRS native layer: " + C.GoString(&logMsg.message[0])
 
 	switch level {
 	case log.PanicLevel:

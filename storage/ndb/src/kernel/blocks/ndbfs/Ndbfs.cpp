@@ -55,6 +55,7 @@
 #include <portlib/NdbDir.hpp>
 #include <NdbOut.hpp>
 #include <Configuration.hpp>
+#include <NdbConfig.h>
 
 #include <EventLogger.hpp>
 
@@ -299,7 +300,15 @@ Ndbfs::execREAD_CONFIG_REQ(Signal* signal)
     m_ctx.m_config.getOwnConfigIterator();
   ndbrequire(p != 0);
   BaseString tmp;
-  tmp.assfmt("ndb_%u_fs%s", getOwnNodeId(), DIR_SEPARATOR);
+  char *service_name = NdbConfig_GetServiceName();
+  if (service_name == 0)
+  {
+    tmp.assfmt("ndb_%u_fs%s", getOwnNodeId(), DIR_SEPARATOR);
+  }
+  else
+  {
+    tmp.assfmt("%s_fs%s", service_name, DIR_SEPARATOR);
+  }
   m_base_path[FsOpenReq::BP_FS].assfmt("%s%s",
                                        m_ctx.m_config.fileSystemPath(),
                                        tmp.c_str());

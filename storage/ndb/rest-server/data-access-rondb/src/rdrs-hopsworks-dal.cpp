@@ -25,17 +25,13 @@
 #include <unistd.h>
 #include "src/error-strings.h"
 #include "src/logger.hpp"
-#include "src/ndb_object_pool.hpp"
+#include "src/rdrs_rondb_connection.hpp"
 #include "src/db-operations/pk/common.hpp"
 #include "src/rdrs-const.h"
 #include "src/retry_handler.hpp"
 
-extern Ndb_cluster_connection *ndb_connection;
-extern Uint32 OP_RETRY_INITIAL_DELAY_IN_MS;
-extern Uint32 OP_RETRY_COUNT;
-extern Uint32 OP_RETRY_JITTER_IN_MS;
-
-RS_Status closeNDBObject(Ndb *ndb_object);
+// RonDB connection
+extern RDRSRonDBConnection *rdrsRonDBConnection;
 
 RS_Status select_table(Ndb *ndb_object, const char *database_str, const char *table_str,
                        const NdbDictionary::Table **table_dict) {
@@ -223,7 +219,7 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
 
 RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = NdbObjectPool::GetInstance()->GetNdbObject(ndb_connection, &ndb_object);
+  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -234,7 +230,7 @@ RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key) {
   )
   /* clang-format on */
 
-  closeNDBObject(ndb_object);
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
   return status;
 }
 
@@ -324,13 +320,13 @@ RS_Status find_user_int(Ndb *ndb_object, Uint32 uid, HopsworksUsers *users) {
 
 RS_Status find_user(Uint32 uid, HopsworksUsers *users) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = NdbObjectPool::GetInstance()->GetNdbObject(ndb_connection, &ndb_object);
+  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   status = find_user_int(ndb_object, uid, users);
-  closeNDBObject(ndb_object);
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
 
   return status;
 }
@@ -423,13 +419,13 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
 RS_Status find_project_team(HopsworksUsers *users,
                             std::vector<HopsworksProjectTeam> *project_team_vec) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = NdbObjectPool::GetInstance()->GetNdbObject(ndb_connection, &ndb_object);
+  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   status = find_project_team_int(ndb_object, users, project_team_vec);
-  closeNDBObject(ndb_object);
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
 
   return status;
 }
@@ -539,13 +535,13 @@ RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *
 RS_Status find_projects_vec(std::vector<HopsworksProjectTeam> *project_team_vec,
                             std::vector<HopsworksProject> *project_vec) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = NdbObjectPool::GetInstance()->GetNdbObject(ndb_connection, &ndb_object);
+  RS_Status status = rdrsRonDBConnection->GetNdbObject( &ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   status = find_projects_int(ndb_object, project_team_vec, project_vec);
-  closeNDBObject(ndb_object);
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
 
   return status;
 }
@@ -598,39 +594,3 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
   return RS_OK;
 }
 
-/**
- * only for testing
- */
-int main() {
-  char connection_string[] = "localhost:1186";
-  unsigned int node_ids[]  = {0};
-  init(connection_string, 1, node_ids, 1, 3, 3);
-
-  Ndb *ndb_object  = nullptr;
-  RS_Status status = NdbObjectPool::GetInstance()->GetNdbObject(ndb_connection, &ndb_object);
-  if (status.http_code != SUCCESS) {
-    INFO("Failed to get the NDB object");
-    return 1;
-  }
-
-  HopsworksAPIKey api_key;
-  status = find_api_key("ZaCRiVfQOxuOIXZk", &api_key);
-  if (status.http_code != SUCCESS) {
-    ERROR(status.message);
-  }
-  std::cout << "User ID: " << api_key.user_id << std::endl;
-  std::cout << "name: " << api_key.name << std::endl;
-  std::cout << "secret: " << api_key.secret << std::endl;
-  std::cout << "salt: " << api_key.salt << std::endl;
-
-  char **projects;
-  int count;
-  status = find_all_projects(api_key.user_id, &projects, &count);
-
-  for (int i = 0; i < count; i++) {
-    std::cout << "Porject name " << projects[i] << std::endl;
-  }
-
-  closeNDBObject(ndb_object);
-  ndb_end(0);
-}

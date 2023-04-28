@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,6 +26,7 @@
 #include <ndb_global.h>
 #include <ndb_opts.h>
 #include <kernel/NodeBitmask.hpp>
+#include <NdbConfig.h>
 #include <portlib/ndb_daemon.h>
 #include "util/ndb_openssl_evp.h"
 
@@ -51,6 +52,7 @@ static int opt_daemon, opt_no_daemon, opt_foreground,
   opt_initialstart, opt_verbose;
 static const char* opt_nowait_nodes = 0;
 static const char* opt_bind_address = 0;
+static const char* opt_service_name = 0;
 static int opt_report_fd;
 static int opt_initial;
 static int opt_no_start;
@@ -114,6 +116,10 @@ static struct my_option my_long_options[] =
     "Each node should be started with this option, as well as --nowait-nodes",
     &opt_initialstart, nullptr, nullptr, GET_BOOL, NO_ARG,
     0, 0, 0, nullptr, 0, nullptr },
+  { "service-name", NDB_OPT_NOSHORT,
+    "Service name sets the file prefix on various files and directories",
+    &opt_service_name, nullptr, nullptr,
+    GET_STR, REQUIRED_ARG, 0, 0, 0, nullptr, 0, nullptr },
   { "bind-address", NDB_OPT_NOSHORT, "Local bind address",
     &opt_bind_address, nullptr, nullptr, GET_STR, REQUIRED_ARG,
     0, 0, 0, nullptr, 0, nullptr },
@@ -249,6 +255,11 @@ real_main(int argc, char** argv)
     }
   }
 
+  if (opt_service_name)
+  {
+    NdbConfig_SetServiceName(opt_service_name);
+  }
+
   bool failed = ndb_option::post_process_options();
   if (failed)
   {
@@ -260,7 +271,7 @@ real_main(int argc, char** argv)
     }
   }
 
-  if(opt_angel_pid)
+ if(opt_angel_pid)
   {
     setOwnProcessInfoAngelPid(opt_angel_pid);
   }

@@ -432,7 +432,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     bool ret = str_to_datetime(date_str, date_str_len, &l_time, 0, &status);
     if (unlikely(ret != 0)) {
       return RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
-                             std::string(col->getName()))
+                             std::string(col->getName()));
     }
 
     if (unlikely(l_time.hour != 0 || l_time.minute != 0 || l_time.second != 0 ||
@@ -513,7 +513,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     bool ret = str_to_time(time_str, time_str_len, &l_time, &status, 0);
     if (unlikely(ret != 0)) {
       return RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
-                             std::string(col->getName()))
+                             std::string(col->getName()));
     }
 
     size_t col_size = col->getSizeInBytes();
@@ -524,7 +524,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     my_datetime_adjust_frac(&l_time, precision, &warnings, true);
     if (unlikely(warnings != 0)) {
       return RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
-                             std::string(col->getName()))
+                             std::string(col->getName()));
     }
 
     longlong numeric_date_time = TIME_to_longlong_time_packed(l_time);
@@ -548,7 +548,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     bool ret = str_to_datetime(date_str, date_str_len, &l_time, 0, &status);
     if (unlikely(ret != 0)) {
       return RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
-                             std::string(col->getName()))
+                             std::string(col->getName()));
     }
 
     size_t col_size = col->getSizeInBytes();
@@ -558,7 +558,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     my_datetime_adjust_frac(&l_time, precision, &warnings, true);
     if (unlikely(warnings != 0)) {
       return RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
-                             std::string(col->getName()))
+                             std::string(col->getName()));
     }
 
     longlong numeric_date_time = TIME_to_longlong_datetime_packed(l_time);
@@ -586,7 +586,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     bool ret = str_to_datetime(ts_str, ts_str_len, &l_time, 0, &status);
     if (unlikely(ret != 0)) {
       return RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
-                             std::string(col->getName()))
+                             std::string(col->getName()));
     }
 
     time_t epoch = 0;
@@ -601,13 +601,13 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
       epoch                                = dur.total_seconds();
     } catch (...) {
       return RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
-                             std::string(col->getName()))
+                             std::string(col->getName()));
     }
 
     // 1970-01-01 00:00:01' UTC to '2038-01-19 03:14:07' UTC.
     if (unlikely(epoch <= 0 || epoch > 2147483647)) {
       return RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
-                             std::string(col->getName()))
+                             std::string(col->getName()));
     }
 
     // TODO(salman) 1 apply timezone changes
@@ -629,7 +629,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     my_datetime_adjust_frac(&l_time, precision, &warnings, true);
     if (unlikely(warnings != 0)) {
       return RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
-                             std::string(col->getName()))
+                             std::string(col->getName()));
     }
 
     // On Mac my_timeval.tv_usec is Int32 and on linux it is Int64.
@@ -953,7 +953,7 @@ bool CanRetryOperation(RS_Status status) {
   }
 
   if (retry) {
-    DEBUG(std::string("Transient error. ") + status.message);
+    LOG_DEBUG(std::string("Transient error. ") + status.message);
   }
   return retry;
 }

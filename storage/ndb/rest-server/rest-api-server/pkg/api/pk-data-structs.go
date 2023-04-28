@@ -161,7 +161,7 @@ func (r *PKReadResponseJSON) SetColumnData(column, value *string, dataType uint3
 			valueBytes := json.RawMessage(*value)
 			(*(*r).Data)[*column] = &valueBytes
 		} else {
-			quotedString := fmt.Sprintf("\"%s\"", *value)
+			quotedString := "\"" + *value + "\""
 			valueBytes := json.RawMessage(quotedString)
 			(*(*r).Data)[*column] = &valueBytes
 		}

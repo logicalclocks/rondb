@@ -126,7 +126,7 @@ func validateBatchResponseValuesGRPC(t testing.TB, testInfo api.BatchOperationTe
 
 			var err error
 			if val != nil {
-				quotedVal := fmt.Sprintf("\"%s\"", *val) // you have to surround the string with "s
+				quotedVal := "\"" + *val + "\"" // you have to surround the string with "s
 				*val, err = strconv.Unquote(quotedVal)
 				if err != nil {
 					t.Fatalf("Unquote failed %v\n", err)

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2022, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -31,6 +31,7 @@
 
 static const char *datadir_path= 0;
 static const char *pid_file_dir_path= 0;
+static char *glob_service_name= 0;
 
 const char *
 NdbConfig_get_path(int *_len)
@@ -124,12 +125,33 @@ NdbConfig_NdbCfgName(int with_ndb_home){
   return buf;
 }
 
+void
+NdbConfig_SetServiceName(const char *service_name)
+{
+  int len = strlen(service_name);
+  if (len > 127)
+  {
+    len = 127;
+  }
+  glob_service_name = (char*)malloc(len + 1);
+  strncpy(glob_service_name, service_name, size_t(len + 1));
+  glob_service_name[len] = 0;
+}
+
+char*
+NdbConfig_GetServiceName()
+{
+  return glob_service_name;
+}
+
 static
 char *get_prefix_buf(int len, int node_id, bool pidfile)
 {
-  char tmp_buf[sizeof("ndb_pid#############")+1];
+  char tmp_buf[128];
   char *buf;
-  if (node_id > 0)
+  if (glob_service_name != 0)
+    strncpy(tmp_buf, glob_service_name, sizeof(tmp_buf));
+  else if (node_id > 0)
     snprintf(tmp_buf, sizeof(tmp_buf), "ndb_%u", node_id);
   else
     snprintf(tmp_buf, sizeof(tmp_buf), "ndb_pid%u",
