@@ -332,7 +332,7 @@ IF(CMAKE_HOST_UNIX AND NOT FORCE_UNSUPPORTED_COMPILER
           SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-9")
         ENDIF()
       ELSEIF(LINUX_RHEL8 OR LINUX_RHEL9)
-        SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-12")
+        SET(ALTERNATIVE_PATHS "/opt/rh/gcc-toolset-12")
       ENDIF()
 
       FOREACH(OPT_PATH ${ALTERNATIVE_PATHS})
