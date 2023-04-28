@@ -56,7 +56,7 @@ extern "C" {
 #define PK_REQ_PK_COLS_IDX   6
 #define PK_REQ_READ_COLS_IDX 7
 #define PK_REQ_OP_ID_IDX     8
-#define PK_REQ_HEADER_END    36 // NOTE: Update this when you add / remove fields from  header 
+#define PK_REQ_HEADER_END    36  // NOTE: Update this when you add / remove fields from  header
 
 // Primary Key Read Response Header Indexes
 #define PK_RESP_OP_TYPE_IDX   0
@@ -67,11 +67,18 @@ extern "C" {
 #define PK_RESP_TABLE_IDX     5
 #define PK_RESP_COLS_IDX      6
 #define PK_RESP_OP_ID_IDX     7
-#define PK_RESP_HEADER_END    32 // NOTE: Update this when you add / remove fields from  header 
+#define PK_RESP_HEADER_END    32  // NOTE: Update this when you add / remove fields from  header
 
 // Hopsworks
-#define API_KEY_PREFIX_SIZE           45 + 1
-#define PROJECT_TEAM_TEAM_MEMBER_SIZE 150 + 1
+#define API_KEY_PREFIX_SIZE                45 + 1
+#define PROJECT_TEAM_TEAM_MEMBER_SIZE      150 + 1
+#define PROJECT_PROJECTNAME_SIZE           100 + 1
+#define FEATURE_STORE_NAME_SIZE            100 + 1
+#define FEATURE_VIEW_NAME_SIZE             63 + 1
+#define TRAINING_DATASET_JOIN_PREFIX_SIZE  63 + 1
+#define FEATURE_GROUP_NAME_SIZE            63 + 1
+#define TRAINING_DATASET_FEATURE_NAME_SIZE 1000 + 2
+#define TRAINING_DATASET_FEATURE_TYPE_SIZE 1000 + 2
 
 // Data types
 #define DECIMAL_MAX_SIZE_IN_BYTES           9 * 4   /*4 bytes per 9 digits. 65/9 + 1 * 4*/
