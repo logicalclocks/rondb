@@ -14,11 +14,11 @@
 -- along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 -- Signed and unsigned number data types
-DROP DATABASE IF EXISTS test2;
+DROP DATABASE IF EXISTS fsdb002;
 
-CREATE DATABASE test2;
+CREATE DATABASE fsdb002;
 
-USE test2;
+USE fsdb002;
 
 CREATE TABLE `sample_1_1` (
   `id1` bigint NOT NULL,
