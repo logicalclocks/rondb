@@ -28,6 +28,8 @@
 #include "src/status.hpp"
 #include "src/error-strings.h"
 #include "src/logger.hpp"
+#include <util/require.h>
+
 
 RDRSRonDBConnection *RDRSRonDBConnection::__instance = nullptr;
 
