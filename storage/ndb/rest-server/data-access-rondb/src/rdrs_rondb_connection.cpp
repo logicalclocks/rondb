@@ -235,6 +235,7 @@ RS_Status RDRSRonDBConnection::Shutdown() {
 
 //--------------------------------------------------------------------------------------------------
 
+// TODO: Call this class in the class's destructor
 RS_Status RDRSRonDBConnection::Shutdown(bool end) {
 
   LOG_DEBUG("Shutting down RonDB connection and NDB object pool");
