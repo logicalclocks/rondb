@@ -54,7 +54,7 @@ RS_Status RDRSRonDBConnection::Init(const char *connection_string, Uint32 connec
   __instance->stats.is_shutdown                 = false;
   __instance->stats.connection_state            = DISCONNECTED;
 
-  connectLength = strnlen(connection_string, 1024) + 1;
+  size_t connectLength = strnlen(connection_string, 1024) + 1;
   __instance->connection_string = reinterpret_cast<char *>(malloc(connectLength));
   std::strncpy(__instance->connection_string, connection_string, connectLength);
   __instance->connection_pool_size = connection_pool_size;
