@@ -47,7 +47,7 @@ type FeatureStoreMetadata struct {
 type TrainingDatasetFeature struct {
 	FeatureID                int
 	TrainingDataset          int
-	featureGroupID           int
+	FeatureGroupID           int
 	Name                     string
 	Type                     string
 	TDJoinID                 int
@@ -73,7 +73,7 @@ func GetProjectID(featureStoreName string) (int, *DalError) {
 	return int(projectID), nil
 }
 
-func GetFeatureStorID(featureStoreName string) (int, *DalError) {
+func GetFeatureStoreID(featureStoreName string) (int, *DalError) {
 	cFeatureStoreName := C.CString(featureStoreName)
 	defer C.free(unsafe.Pointer(cFeatureStoreName))
 
@@ -171,7 +171,7 @@ func GetTrainingDatasetFeature(featureViewID int) ([]TrainingDatasetFeature, *Da
 		retTdf := TrainingDatasetFeature{
 			FeatureID:                int(tdf.feature_id),
 			TrainingDataset:          int(tdf.training_dataset),
-			featureGroupID:           int(tdf.feature_group_id),
+			FeatureGroupID:           int(tdf.feature_group_id),
 			Name:                     C.GoString(&tdf.name[0]),
 			Type:                     C.GoString(&tdf.data_type[0]),
 			TDJoinID:                 int(tdf.td_join_id),
