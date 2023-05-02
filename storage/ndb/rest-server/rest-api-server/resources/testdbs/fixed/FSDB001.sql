@@ -20,15 +20,86 @@ CREATE DATABASE fsdb001;
 
 USE fsdb001;
 
-CREATE TABLE fs_table(
-    id0 INT,
-    id1 INT UNSIGNED,
-    col0 INT,
-    col1 INT UNSIGNED,
-    PRIMARY KEY(id0, id1)
-) ENGINE = ndbcluster;
+CREATE TABLE `sample_1_1` (
+  `id1` bigint NOT NULL,
+  `ts` timestamp NULL DEFAULT NULL,
+  `data1` bigint DEFAULT NULL,
+  `data2` bigint DEFAULT NULL,
+  PRIMARY KEY (`id1`)
+) ENGINE=ndbcluster;
 
 INSERT INTO
-    fs_table
+    sample_1_1
 VALUES
-    (0, 0, 0, 0);
+    (
+        73, Timestamp('2022-01-16 00:00:00'), 17, 28
+    ),
+    (
+        56, Timestamp('2022-01-13 00:00:00'), 12, 67
+    ),
+    (
+        12, Timestamp('2022-01-23 00:00:00'), 61, 12
+    ),
+    (
+        51, Timestamp('2022-01-22 00:00:00'), 70, 35
+    ),
+    (
+        9, Timestamp('2022-01-01 00:00:00'), 2, 62
+    ),
+    (
+        87, Timestamp('2022-01-04 00:00:00'), 16, 50
+    ),
+    (
+        47, Timestamp('2022-01-20 00:00:00'), 51, 73
+    ),
+    (
+        41, Timestamp('2022-01-16 00:00:00'), 26, 30
+    ),
+    (
+        23, Timestamp('2022-01-18 00:00:00'), 14, 93
+    ),
+    (
+        80, Timestamp('2022-01-11 00:00:00'), 20, 52
+    );
+
+CREATE TABLE `sample_2_1` (
+  `id1` bigint NOT NULL,
+  `ts` date DEFAULT NULL,
+  `data1` varchar(100) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `data2` varchar(100) COLLATE utf8_unicode_ci DEFAULT NULL,
+  PRIMARY KEY (`id1`)
+) ENGINE=ndbcluster;
+
+INSERT INTO
+    sample_2_1
+VALUES
+    (
+        87, '2022-01-09', 'int1', 'str19'
+    ),
+    (
+        74, '2022-01-23', 'int25', 'str44'
+    ),
+    (
+        70, '2022-01-17', 'int98', 'str72'
+    ),
+    (
+        16, '2022-01-27', 'int31', 'str24'
+    ),
+    (
+        36, '2022-01-24', 'int24', 'str14'
+    ),
+    (
+        71, '2022-01-22', 'int3', 'str97'
+    ),
+    (
+        48, '2022-01-26', 'int92', 'str31'
+    ),
+    (
+        29, '2022-01-03', 'int53', 'str91'
+    ),
+    (
+        73, '2022-01-21', 'int37', 'str97'
+    ),
+    (
+        53, '2022-01-25', 'int83', 'str79'
+    );

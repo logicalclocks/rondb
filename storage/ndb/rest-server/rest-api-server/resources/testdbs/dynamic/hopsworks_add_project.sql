@@ -19,7 +19,7 @@ INSERT INTO
     `project`
 VALUES
     (
-        PROJECT_NUMBER, 322, 'PROJECT_NAME', 322, 'PROJECT_NAME', 'macho@hopsworks.ai', '2022-05-30 14:17:22', 'A demo project for getting started with featurestore', 'NOLIMIT', '2022-05-30 14:17:38', 100, 'demo_fs_meb10000:1653921933268-2.6.0-SNAPSHOT.1', 1, 0
+        PROJECT_NUMBER, 322, 'PROJECT_NAME', 322, 'PROJECT_NAME', 'macho@hopsworks.ai', '2022-05-30 14:17:22', 'Some desc', 'NOLIMIT', '2022-05-30 14:17:38', 100, 'SomeDockerImage', 1, 0
     );
 
 INSERT INTO
