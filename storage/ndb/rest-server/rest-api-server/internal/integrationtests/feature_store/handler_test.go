@@ -88,7 +88,7 @@ func TestFeatureStore(t *testing.T) {
 
 func TestFeatureStoreMetaData(t *testing.T) {
 
-	md, err := fsmetadata.GetFeatureStoreMetadata("fsdb002", "sample_2", 1)
+	md, err := fsmetadata.GetFeatureViewMetadata("fsdb002", "sample_2", 1)
 	if err != nil {
 		t.Fatalf("Reading FS Metadata failed %v ", err)
 	}
