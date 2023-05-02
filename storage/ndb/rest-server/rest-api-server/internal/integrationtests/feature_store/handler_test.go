@@ -31,10 +31,50 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func TestFeatureStore(t *testing.T) {
-	req := api.FeatureStoreRequest{ReqData: "data sent by client"}
-	reqBody := fmt.Sprintf("%s", req)
+func createFeatureStoreRequest(
+	fsName	string,
+	fvName	string,
+	fvVersion	int,
+	pk	[]string,
+	values	[]interface{},
+	passedFeaturesKey	[]string,
+	passedFeaturesValue	[]interface{},
+) *api.FeatureStoreRequest {
+	var entries = make(map[string]*json.RawMessage)
+	for i, key := range pk {
+		val := json.RawMessage(values[i].([]byte))
+		entries[key] = &val
+	}
+	var passedFeatures = make(map[string]*json.RawMessage)
+	for i, key := range passedFeaturesKey {
+		val := json.RawMessage(passedFeaturesValue[i].([]byte))
+		passedFeatures[key] = &val
+	}
+	req := api.FeatureStoreRequest{
+		FeatureStoreName: &fsName,
+		FeatureViewName: &fvName, 
+		FeatureViewVersion: &fvVersion, 
+		Entries: &entries, 
+		PassedFeatures: &passedFeatures,
+	}
+	return &req
+}
 
+func TestFeatureStore(t *testing.T) {
+	var fvName = "adb"
+	var fvVersion = 0
+	key := string("id1")
+	value1 := json.RawMessage(`"12"`)
+	value2 := json.RawMessage(`"2022-01-09"`)
+	var entries = make(map[string]*json.RawMessage)
+	entries[key] = &value1
+	entries[string("fg2_id1")] = &value2
+	var passedFeatures = make(map[string]*json.RawMessage)
+	pfValue := json.RawMessage(`999`)
+	passedFeatures["data1"] = &pfValue
+	req := api.FeatureStoreRequest{FeatureViewName: &fvName, FeatureViewVersion: &fvVersion, Entries: &entries, PassedFeatures: &passedFeatures}
+	reqBody := fmt.Sprintf("%s", req)
+	log.Debugf("Request body: %s", reqBody)
 	_, respBody := testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, testutils.NewFeatureStoreURL(), reqBody, "", http.StatusOK)
 
 	fsResp := api.FeatureStoreResponse{}
@@ -43,7 +83,7 @@ func TestFeatureStore(t *testing.T) {
 		t.Fatalf("Unmarshal failed %s ", err)
 	}
 
-	log.Infof("Response data is %s", fsResp.RespData)
+	log.Infof("Response data is %s", fsResp.String())
 }
 
 func TestFeatureStoreMetaData(t *testing.T) {
@@ -55,4 +95,81 @@ func TestFeatureStoreMetaData(t *testing.T) {
 
 	mdJson, _ := json.MarshalIndent(md, "", "  ")
 	log.Infof("Feature store metadata is %s", mdJson)
+}
+
+func getFeatureStoreResponse(t *testing.T, req *api.FeatureStoreRequest) *api.FeatureStoreResponse {
+	reqBody := fmt.Sprintf("%s", req)
+	_, respBody := testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, testutils.NewFeatureStoreURL(), reqBody, "", http.StatusOK)
+	fsResp := api.FeatureStoreResponse{}
+	err := json.Unmarshal([]byte(respBody), &fsResp)
+	if err != nil {
+		t.Fatalf("Unmarshal failed %s ", err)
+	}
+	return &fsResp
+}
+
+func Metadata_success(t *testing.T) {
+	// req := createFeatureStoreRequest(
+	// 	"",
+	// 	"",
+	// 	0,
+	// 	[]string{},
+	// 	[]interface{}{},
+	// 	nil,
+	// 	nil,
+	// )
+	// rep := getFeatureStoreResponse(req)
+}
+
+func MetadataNotExist(t *testing.T) {
+
+}
+
+func PrimaryKey_success(t *testing.T) {
+	// req := createFeatureStoreRequest(
+	// 	"",
+	// 	"",
+	// 	0,
+	// 	[]string{},
+	// 	[]interface{}{},
+	// 	nil,
+	// 	nil,
+	// )
+	// rep := getFeatureStoreResponse(req)
+}
+
+func PrimaryKey_wrongKey(t *testing.T) {
+
+}
+
+func PrimaryKey_wrongValue(t *testing.T) {
+
+}
+
+func PrimaryKey_missingKey(t *testing.T) {
+
+}
+
+func PrimaryKey_wrongType(t *testing.T) {
+
+}
+
+func PassedFeatures_success(t *testing.T) {
+
+}
+
+func PassedFeatures_wrongKey(t *testing.T) {
+
+}
+
+func PassedFeatures_wrongType(t *testing.T) {
+
+}
+
+func GetFeatures_Join(t *testing.T) {
+
+}
+
+func GetFeatures_ReturnMixedDataType(t *testing.T) {
+
 }
