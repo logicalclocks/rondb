@@ -77,14 +77,11 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	// what ever the request is I will read some dummy data from the DB
 	//
 	testDb := testdbs.FSDB001
-	testTable := "fs_table"
-	candidateKey1Name := string("id0")
-	candidateKey1Value := json.RawMessage([]byte("0"))
-	candidateKey2Name := "id1"
-	candidateKey2Value := json.RawMessage([]byte("0"))
+	testTable := "sample_1_1"
+	candidateKey1Name := string("id1")
+	candidateKey1Value := json.RawMessage([]byte("80"))
 	filters := []api.Filter{
 		{Column: &candidateKey1Name, Value: &candidateKey1Value},
-		{Column: &candidateKey2Name, Value: &candidateKey2Value},
 	}
 	opID := "some_op_id"
 
