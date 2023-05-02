@@ -54,8 +54,9 @@ RS_Status RDRSRonDBConnection::Init(const char *connection_string, Uint32 connec
   __instance->stats.is_shutdown                 = false;
   __instance->stats.connection_state            = DISCONNECTED;
 
-  __instance->connection_string = reinterpret_cast<char *>(malloc(strlen(connection_string)));
-  std::strncpy(__instance->connection_string, connection_string, strlen(connection_string));
+  connectLength = strnlen(connection_string, 1024) + 1;
+  __instance->connection_string = reinterpret_cast<char *>(malloc(connectLength));
+  std::strncpy(__instance->connection_string, connection_string, connectLength);
   __instance->connection_pool_size = connection_pool_size;
 
   __instance->node_ids = reinterpret_cast<Uint32 *>(malloc(node_ids_len * sizeof(Uint32)));
@@ -281,7 +282,9 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
       stats.is_shutdown = true;
       ndb_end(1);  // sometimes causes seg faults when called repeatedly from unit tests
       delete connection_string;
+      connection_string = nullptr;
       delete node_ids;
+      node_ids = nullptr;
       if (reconnectionThread != nullptr) {
         NdbThread_Destroy(&reconnectionThread);
         reconnectionThread = nullptr;
