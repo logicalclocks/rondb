@@ -120,12 +120,8 @@ func (r *PKReadResponseGRPC) SetOperationID(opID *string) {
 	r.OperationID = opID
 }
 
-func (r *PKReadResponseGRPC) SetColumnData(column, value *string, valueType uint32) {
-	if value == nil {
-		(*(*r).Data)[*column] = nil
-	} else {
-		(*(*r).Data)[*column] = value
-	}
+func (r *PKReadResponseGRPC) SetColumnData(column, value *string, dataType uint32) {
+	(*(*r).Data)[*column] = value
 }
 
 func (r *PKReadResponseGRPC) String() string {
@@ -157,14 +153,8 @@ func (r *PKReadResponseJSON) SetColumnData(column, value *string, dataType uint3
 	if value == nil {
 		(*(*r).Data)[*column] = nil
 	} else {
-		if dataType == C.RDRS_INTEGER_DATATYPE || dataType == C.RDRS_FLOAT_DATATYPE {
-			valueBytes := json.RawMessage(*value)
-			(*(*r).Data)[*column] = &valueBytes
-		} else {
-			quotedString := "\"" + *value + "\""
-			valueBytes := json.RawMessage(quotedString)
-			(*(*r).Data)[*column] = &valueBytes
-		}
+		valueBytes := json.RawMessage(*value)
+		(*(*r).Data)[*column] = &valueBytes
 	}
 }
 
