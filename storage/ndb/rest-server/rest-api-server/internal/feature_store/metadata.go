@@ -19,30 +19,30 @@ package feature_store
 
 import (
 	"fmt"
-	"strings"
 	"sort"
 	"strconv"
+	"strings"
 
 	"hopsworks.ai/rdrs/internal/dal"
 )
 
 type FeatureViewMetadata struct {
-	FeatureStoreName       *string `json:"featureStoreName"`
-	FeatureStoreId         *int    `json:"featureStoreId"`
-	FeatureViewName        *string `json:"featureViewName"`
-	FeatureViewId          *int    `json:"featureViewId"`
-	FeatureViewVersion     *int    `json:"featureViewVersion"`
-	PrefixFeaturesLookup   *map[string]*FeatureMetadata // key: prefix + fName
-	FeatureGroupFeatures   *[]*FeatureGroupFeatures
-	NumOfFeatures          *int
-	FeatureIndexLookup     *map[string]int // key: fsName + fgName + fName
+	FeatureStoreName     *string                      `json:"featureStoreName"`
+	FeatureStoreId       *int                         `json:"featureStoreId"`
+	FeatureViewName      *string                      `json:"featureViewName"`
+	FeatureViewId        *int                         `json:"featureViewId"`
+	FeatureViewVersion   *int                         `json:"featureViewVersion"`
+	PrefixFeaturesLookup *map[string]*FeatureMetadata // key: prefix + fName
+	FeatureGroupFeatures *[]*FeatureGroupFeatures
+	NumOfFeatures        *int
+	FeatureIndexLookup   *map[string]int // key: fsName + fgName + fName
 }
 
 type FeatureGroupFeatures struct {
-	FeatureStoreName *string
-	FeatureGroupName *string
+	FeatureStoreName    *string
+	FeatureGroupName    *string
 	FeatureGroupVersion *int
-	Features         *[]*FeatureMetadata
+	Features            *[]*FeatureMetadata
 }
 
 type FeatureMetadata struct {
@@ -97,14 +97,14 @@ func NewFeatureViewMetadata(
 
 	var numOfFeature = len(featureIndex)
 	var metadata = FeatureViewMetadata{
-		&featureStoreName, 
-		&featureStoreId, 
-		&featureViewName, 
-		&featureViewId, 
-		&featureViewVersion, 
-		&prefixColumns, 
-		&fgFeaturesArray, 
-		&numOfFeature, 
+		&featureStoreName,
+		&featureStoreId,
+		&featureViewName,
+		&featureViewId,
+		&featureViewVersion,
+		&prefixColumns,
+		&fgFeaturesArray,
+		&numOfFeature,
 		&featureIndex}
 	return &metadata
 }
@@ -118,7 +118,7 @@ func GetFeatureIndexKey(fs string, fg string, f string) *string {
 	return &featureIndexKey
 }
 
-//TODO cache this medata
+// TODO cache this medata
 func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureViewVersion int) (*FeatureViewMetadata, error) {
 
 	fsID, err := dal.GetFeatureStoreID(featureStoreName)
@@ -149,15 +149,15 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 			return nil, fmt.Errorf("reading feature group failed. Error: %s ", err.VerboseError())
 		}
 		feature := FeatureMetadata{}
-		feature.FeatureStoreName = featureStoreName // FIXME: get name from ID 
-		feature.FeatureGroupName = featureGroupName
-		feature.FeatureGroupVersion = 1 // FIXME: get fg version
+		feature.FeatureStoreName = featureStoreName // FIXME: get fs name from fg ID
+		feature.FeatureGroupName = featureGroupName // FIXME: get fg name from fg ID
+		feature.FeatureGroupVersion = 1             // FIXME: get fg version from
 		feature.Id = tdf.FeatureID
 		feature.Name = tdf.Name
 		feature.Type = tdf.Type
 		feature.Index = tdf.IDX
 		feature.Label = tdf.Label == 1
-		feature.Prefix = "" // FIXME: 
+		feature.Prefix = "" // FIXME:
 		feature.TransformationFunctionId = tdf.TransformationFunctionID
 		features[i] = &feature
 	}
