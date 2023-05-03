@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"strings"
 	"sort"
+	"strconv"
 
 	"hopsworks.ai/rdrs/internal/dal"
 )
@@ -31,24 +32,23 @@ type FeatureViewMetadata struct {
 	FeatureViewName        *string `json:"featureViewName"`
 	FeatureViewId          *int    `json:"featureViewId"`
 	FeatureViewVersion     *int    `json:"featureViewVersion"`
-	PrefixPrimaryKeyLookup *map[string]*FeatureMetadata
-	PrefixFeaturesLookup   *map[string]*FeatureMetadata
+	PrefixFeaturesLookup   *map[string]*FeatureMetadata // key: prefix + fName
 	FeatureGroupFeatures   *[]*FeatureGroupFeatures
-	NumOfFeatureExPk       *int
 	NumOfFeatures          *int
-	FeatureIndexLookup     *map[string]int
-	FeatureExPkIndexLookup *map[string]int
+	FeatureIndexLookup     *map[string]int // key: fsName + fgName + fName
 }
 
 type FeatureGroupFeatures struct {
 	FeatureStoreName *string
 	FeatureGroupName *string
+	FeatureGroupVersion *int
 	Features         *[]*FeatureMetadata
 }
 
 type FeatureMetadata struct {
 	FeatureStoreName         string
 	FeatureGroupName         string
+	FeatureGroupVersion      int
 	Id                       int
 	Name                     string
 	Type                     string
@@ -56,7 +56,6 @@ type FeatureMetadata struct {
 	Label                    bool
 	Prefix                   string
 	TransformationFunctionId int
-	PrimaryKey				 bool
 }
 
 func NewFeatureViewMetadata(
@@ -67,16 +66,12 @@ func NewFeatureViewMetadata(
 	featureViewVersion int,
 	features *[]*FeatureMetadata,
 ) *FeatureViewMetadata {
-	pk := make(map[string]*FeatureMetadata)
 	prefixColumns := make(map[string]*FeatureMetadata)
 	fgFeatures := make(map[string][]*FeatureMetadata)
 	for _, feature := range *features {
 		prefixFeatureName := feature.Prefix + feature.Name
-		if feature.PrimaryKey {
-			pk[prefixFeatureName] = feature
-		}
 		prefixColumns[prefixFeatureName] = feature
-		var featureKey = feature.FeatureStoreName + "|" + feature.FeatureGroupName
+		var featureKey = feature.FeatureStoreName + "|" + feature.FeatureGroupName + "|" + strconv.Itoa(feature.FeatureGroupVersion)
 		fgFeatures[featureKey] = append(fgFeatures[featureKey], feature)
 	}
 
@@ -84,8 +79,9 @@ func NewFeatureViewMetadata(
 	for key, value := range fgFeatures {
 		fsName := strings.Split(key, "|")[0]
 		fgName := strings.Split(key, "|")[1]
+		fgVersion, _ := strconv.Atoi(strings.Split(key, "|")[2])
 		var featureValue = value
-		var fgFeature = FeatureGroupFeatures{&fsName, &fgName, &featureValue}
+		var fgFeature = FeatureGroupFeatures{&fsName, &fgName, &fgVersion, &featureValue}
 		fgFeaturesArray = append(fgFeaturesArray, &fgFeature)
 	}
 	less := func(i, j int) bool {
@@ -93,27 +89,28 @@ func NewFeatureViewMetadata(
 	}
 	sort.Slice(*features, less)
 	featureIndex := make(map[string]int)
-	featureExPkIndex := make(map[string]int)
-	var nonPkIndex = 0
-	var pkIndex = 0
-	var numOfPk = len(pk)
 
 	for _, feature := range *features {
 		featureIndexKey := GetFeatureIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.Name)
-		if feature.PrimaryKey {
-			featureIndex[*featureIndexKey] = pkIndex
-			pkIndex += 1
-		} else {
-			featureExPkIndex[*featureIndexKey] = nonPkIndex
-			featureIndex[*featureIndexKey] = nonPkIndex + numOfPk
-			nonPkIndex += 1
-		}
+		featureIndex[*featureIndexKey] = feature.Index
 	}
 
-	var numOfFeatureExPk = len(featureExPkIndex)
 	var numOfFeature = len(featureIndex)
-	var metadata = FeatureViewMetadata{&featureStoreName, &featureStoreId, &featureViewName, &featureViewId, &featureViewVersion, &pk, &prefixColumns, &fgFeaturesArray, &numOfFeatureExPk, &numOfFeature, &featureIndex, &featureExPkIndex}
+	var metadata = FeatureViewMetadata{
+		&featureStoreName, 
+		&featureStoreId, 
+		&featureViewName, 
+		&featureViewId, 
+		&featureViewVersion, 
+		&prefixColumns, 
+		&fgFeaturesArray, 
+		&numOfFeature, 
+		&featureIndex}
 	return &metadata
+}
+
+func GetFeatureIndexKeyByFeature(feature *FeatureMetadata) *string {
+	return GetFeatureIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.Name)
 }
 
 func GetFeatureIndexKey(fs string, fg string, f string) *string {
@@ -152,8 +149,9 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 			return nil, fmt.Errorf("reading feature group failed. Error: %s ", err.VerboseError())
 		}
 		feature := FeatureMetadata{}
-		feature.FeatureStoreName = "" // FIXME: get name from ID 
+		feature.FeatureStoreName = featureStoreName // FIXME: get name from ID 
 		feature.FeatureGroupName = featureGroupName
+		feature.FeatureGroupVersion = 1 // FIXME: get fg version
 		feature.Id = tdf.FeatureID
 		feature.Name = tdf.Name
 		feature.Type = tdf.Type

@@ -29,6 +29,7 @@ import (
 	"hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
+	fsmetadata "hopsworks.ai/rdrs/internal/feature_store"
 )
 
 type Handler struct {
@@ -42,9 +43,13 @@ func New(apiKeyCache apikey.Cache, batchPkReadHandler batchpkread.Handler) Handl
 
 func (h *Handler) Validate(request interface{}) error {
 	fsReq := request.(*api.FeatureStoreRequest)
-	metadata := getMetadata()
-	validatePrimaryKey(fsReq.Entries, metadata.PrefixPrimaryKeyLookup)
-	err1 := validatePrimaryKey(fsReq.Entries, metadata.PrefixPrimaryKeyLookup)
+	metadata, err := fsmetadata.GetFeatureViewMetadata(
+		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
+	if err != nil {
+		return err
+	}
+	validatePrimaryKey(fsReq.Entries)
+	err1 := validatePrimaryKey(fsReq.Entries)
 	if err1 != nil {
 		return err1
 	}
@@ -56,15 +61,10 @@ func (h *Handler) Validate(request interface{}) error {
 
 }
 
-func validatePrimaryKey(entries *map[string]*json.RawMessage, primaryKey *map[string]*feature_store.FeatureMetadata) error {
+func validatePrimaryKey(entries *map[string]*json.RawMessage) error {
 	// Data type check of primary key will be delegated to rondb.
-	if (len(*entries) != len(*primaryKey)) {
-		return errors.New(fmt.Sprintf("Size of given primary key is not correct, expecting  %d, but got %d", len(*primaryKey), len(*entries)))
-	}
-	for pk, _ := range *primaryKey {
-		if _, ok := (*entries)[pk]; !ok {
-			return errors.New(fmt.Sprintf("Require primary key `%s` does not exist.", pk))
-		}
+	if (len(*entries) == 0) {
+		return errors.New(fmt.Sprintf("No primary key is given"))
 	}
 	return nil
 }
@@ -98,9 +98,17 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	if log.IsDebug() {
 		log.Debugf("Feature store request received %v", fsReq)
 	}
-	metadata := getMetadata()
+	metadata, err := fsmetadata.GetFeatureViewMetadata(
+		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
+	if err != nil {
+		return http.StatusInternalServerError, err
+	}
+	if log.IsDebug() {
+		mdJson, _ := json.MarshalIndent(metadata, "", "  ")
+		log.Debugf("Feature store metadata is %s", mdJson)
+	}
 	var readParams = getBatchPkReadParams(metadata, fsReq.Entries)
-	err := h.dbBatchReader.Validate(readParams)
+	err = h.dbBatchReader.Validate(readParams)
 	if err != nil {
 		return http.StatusInternalServerError, err
 	}
@@ -110,34 +118,29 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		return http.StatusInternalServerError, err
 	}
 	fsResp := response.(*api.FeatureStoreResponse)
-	features := getFeatureValues(dbResponseIntf, metadata)
-	fillPassedFeatures(features, fsReq.PassedFeatures, metadata.PrefixFeaturesLookup, metadata.FeatureExPkIndexLookup)
+	features := getFeatureValues(dbResponseIntf, fsReq.Entries, metadata)
+	fillPassedFeatures(features, fsReq.PassedFeatures, metadata.PrefixFeaturesLookup, metadata.FeatureIndexLookup)
 	fsResp.Features = features
 
 	return code, nil
 }
 
-func getMetadata() *feature_store.FeatureViewMetadata {
-	var f1 = feature_store.FeatureMetadata{FeatureStoreName: "test2", FeatureGroupName: "sample_1_1", Name: "id1", Type: "int", PrimaryKey: true, Index: 1}
-	var f2 = feature_store.FeatureMetadata{FeatureStoreName: "test2", FeatureGroupName: "sample_1_1", Name: "data1", Type: "int", PrimaryKey: false, Index: 2}
-	var f3 = feature_store.FeatureMetadata{FeatureStoreName: "test2", FeatureGroupName: "sample_1_1", Name: "data2", Type: "int", PrimaryKey: false, Index: 3}
-	var f4 = feature_store.FeatureMetadata{FeatureStoreName: "test2", FeatureGroupName: "sample_3_1", Name: "id1", Type: "int", PrimaryKey: true, Prefix: "fg2_", Index: 4}
-	var f5 = feature_store.FeatureMetadata{FeatureStoreName: "test2", FeatureGroupName: "sample_3_1", Name: "data2", Type: "int", PrimaryKey: false, Prefix: "fg2_", Index: 0}
-
-	var features = []*feature_store.FeatureMetadata{&f1, &f2, &f3, &f4, &f5}
-	// FIXME: 
-	return feature_store.NewFeatureViewMetadata("", 0, "", 0, 0, &features)
-}
-
-func getFeatureValues(batchResponse *api.BatchOpResponse, featureView *feature_store.FeatureViewMetadata) *[]interface{} {
+func getFeatureValues(batchResponse *api.BatchOpResponse, entries *map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata) *[]interface{} {
 	jsonResponse := (*batchResponse).String()
 	fsResp := api.BatchResponseJSON{}
 	json.Unmarshal([]byte(jsonResponse), &fsResp)
-	featureValues := make([]interface{}, *featureView.NumOfFeatureExPk, *featureView.NumOfFeatureExPk)
+	featureValues := make([]interface{}, *featureView.NumOfFeatures, *featureView.NumOfFeatures)
 	for _, response:= range *fsResp.Result {
 		for featureName, value := range *response.Body.Data {
 			featureIndexKey := *response.Body.OperationID + "|" + featureName
-			featureValues[(*featureView.FeatureExPkIndexLookup)[featureIndexKey]] = value
+			featureValues[(*featureView.FeatureIndexLookup)[featureIndexKey]] = value
+		}
+	}
+	// Fill in primary key into the vector
+	for featureName, value := range *entries {
+		indexKey := feature_store.GetFeatureIndexKeyByFeature((*featureView.PrefixFeaturesLookup)[featureName])
+		if index, ok := (*featureView.FeatureIndexLookup)[*indexKey]; ok {
+			featureValues[index] = value
 		}
 	}
 	return &featureValues
@@ -148,12 +151,12 @@ func getBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 	var batchReadParams = make([]*api.PKReadParams, 0, 0)
 	for _, fgFeature := range *metadata.FeatureGroupFeatures {
 		testDb := fgFeature.FeatureStoreName
-		testTable := fgFeature.FeatureGroupName
+		testTable := fmt.Sprintf("%s_%d", *fgFeature.FeatureGroupName, *fgFeature.FeatureGroupVersion)
 		var filters = make([]api.Filter, 0, 0)
 		var columns = make([]api.ReadColumn, 0, 0)
 		for _, feature := range *fgFeature.Features {
-			if (feature.PrimaryKey) {
-				var filter = api.Filter{&feature.Name, (*entries)[feature.Prefix + feature.Name]}
+			if value, ok := (*entries)[feature.Prefix + feature.Name]; ok {
+				var filter = api.Filter{&feature.Name, value}
 				filters = append(filters, filter)
 				if log.IsDebug() {
 					log.Debugf("Add to filter: %s", feature.Name)
@@ -169,7 +172,7 @@ func getBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 			}
 		}
 		var opId = *fgFeature.FeatureStoreName + "|" + *fgFeature.FeatureGroupName
-		param := api.PKReadParams{testDb, testTable, &filters, &columns, &opId}
+		param := api.PKReadParams{testDb, &testTable, &filters, &columns, &opId}
 		batchReadParams = append(batchReadParams, &param)
 	}
 	return &batchReadParams
