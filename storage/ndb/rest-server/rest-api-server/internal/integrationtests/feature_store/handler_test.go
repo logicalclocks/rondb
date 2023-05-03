@@ -32,13 +32,13 @@ import (
 )
 
 func createFeatureStoreRequest(
-	fsName	string,
-	fvName	string,
-	fvVersion	int,
-	pk	[]string,
-	values	[]interface{},
-	passedFeaturesKey	[]string,
-	passedFeaturesValue	[]interface{},
+	fsName string,
+	fvName string,
+	fvVersion int,
+	pk []string,
+	values []interface{},
+	passedFeaturesKey []string,
+	passedFeaturesValue []interface{},
 ) *api.FeatureStoreRequest {
 	var entries = make(map[string]*json.RawMessage)
 	for i, key := range pk {
@@ -51,11 +51,11 @@ func createFeatureStoreRequest(
 		passedFeatures[key] = &val
 	}
 	req := api.FeatureStoreRequest{
-		FeatureStoreName: &fsName,
-		FeatureViewName: &fvName, 
-		FeatureViewVersion: &fvVersion, 
-		Entries: &entries, 
-		PassedFeatures: &passedFeatures,
+		FeatureStoreName:   &fsName,
+		FeatureViewName:    &fvName,
+		FeatureViewVersion: &fvVersion,
+		Entries:            &entries,
+		PassedFeatures:     &passedFeatures,
 	}
 	return &req
 }
@@ -74,11 +74,11 @@ func TestFeatureStore(t *testing.T) {
 	pfValue := json.RawMessage(`999`)
 	passedFeatures["data1"] = &pfValue
 	req := api.FeatureStoreRequest{
-		FeatureStoreName: &fsName,
-		FeatureViewName: &fvName, 
-		FeatureViewVersion: &fvVersion, 
-		Entries: &entries, 
-		PassedFeatures: &passedFeatures}
+		FeatureStoreName:   &fsName,
+		FeatureViewName:    &fvName,
+		FeatureViewVersion: &fvVersion,
+		Entries:            &entries,
+		PassedFeatures:     &passedFeatures}
 	reqBody := fmt.Sprintf("%s", req)
 	log.Debugf("Request body: %s", reqBody)
 	_, respBody := testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, testutils.NewFeatureStoreURL(), reqBody, "", http.StatusOK)

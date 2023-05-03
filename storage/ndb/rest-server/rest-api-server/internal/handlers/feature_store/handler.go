@@ -19,17 +19,17 @@ package feature_store
 
 import (
 	"encoding/json"
-	"net/http"
-	"fmt"
 	"errors"
+	"fmt"
+	"net/http"
 
 	"hopsworks.ai/rdrs/internal/config"
+	"hopsworks.ai/rdrs/internal/feature_store"
+	fsmetadata "hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
 	"hopsworks.ai/rdrs/internal/log"
-	"hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
-	fsmetadata "hopsworks.ai/rdrs/internal/feature_store"
 )
 
 type Handler struct {
@@ -63,8 +63,8 @@ func (h *Handler) Validate(request interface{}) error {
 
 func validatePrimaryKey(entries *map[string]*json.RawMessage) error {
 	// Data type check of primary key will be delegated to rondb.
-	if (len(*entries) == 0) {
-		return errors.New(fmt.Sprintf("No primary key is given"))
+	if len(*entries) == 0 {
+		return errors.New(fmt.Sprintf("No primary key is given."))
 	}
 	return nil
 }
@@ -72,7 +72,7 @@ func validatePrimaryKey(entries *map[string]*json.RawMessage) error {
 func validatePassedFeatures(passedFeatures *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) error {
 	for featureName, value := range *passedFeatures {
 		feature, ok := (*features)[featureName]
-		if (!ok) {
+		if !ok {
 			return errors.New(fmt.Sprintf("Feature `%s` does not exist in the feature view.", featureName))
 		}
 		validateFeatureType(value, feature.Type)
@@ -93,7 +93,7 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 }
 
 func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
-	
+
 	fsReq := request.(*api.FeatureStoreRequest)
 	if log.IsDebug() {
 		log.Debugf("Feature store request received %v", fsReq)
@@ -130,7 +130,7 @@ func getFeatureValues(batchResponse *api.BatchOpResponse, entries *map[string]*j
 	fsResp := api.BatchResponseJSON{}
 	json.Unmarshal([]byte(jsonResponse), &fsResp)
 	featureValues := make([]interface{}, *featureView.NumOfFeatures, *featureView.NumOfFeatures)
-	for _, response:= range *fsResp.Result {
+	for _, response := range *fsResp.Result {
 		for featureName, value := range *response.Body.Data {
 			featureIndexKey := *response.Body.OperationID + "|" + featureName
 			featureValues[(*featureView.FeatureIndexLookup)[featureIndexKey]] = value
@@ -155,7 +155,7 @@ func getBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 		var filters = make([]api.Filter, 0, 0)
 		var columns = make([]api.ReadColumn, 0, 0)
 		for _, feature := range *fgFeature.Features {
-			if value, ok := (*entries)[feature.Prefix + feature.Name]; ok {
+			if value, ok := (*entries)[feature.Prefix+feature.Name]; ok {
 				var filter = api.Filter{&feature.Name, value}
 				filters = append(filters, filter)
 				if log.IsDebug() {
@@ -188,7 +188,7 @@ func fillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*jso
 	for featureName, passFeature := range *passedFeatures {
 		var feature = (*featureMetadata)[featureName]
 		var lookupKey = feature_store.GetFeatureIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.Name)
-		(*features)[(*indexLookup)[*lookupKey]] = passFeature	
+		(*features)[(*indexLookup)[*lookupKey]] = passFeature
 	}
 
 }
