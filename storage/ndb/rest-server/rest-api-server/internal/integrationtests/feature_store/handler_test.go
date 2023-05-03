@@ -61,18 +61,24 @@ func createFeatureStoreRequest(
 }
 
 func TestFeatureStore(t *testing.T) {
-	var fvName = "adb"
-	var fvVersion = 0
+	var fsName = "fsdb002"
+	var fvName = "sample_2"
+	var fvVersion = 1
 	key := string("id1")
-	value1 := json.RawMessage(`"12"`)
-	value2 := json.RawMessage(`"2022-01-09"`)
+	value1 := json.RawMessage(`87`)
+	// value2 := json.RawMessage(`"2022-01-09"`)
 	var entries = make(map[string]*json.RawMessage)
 	entries[key] = &value1
-	entries[string("fg2_id1")] = &value2
+	// entries[string("fg2_id1")] = &value2
 	var passedFeatures = make(map[string]*json.RawMessage)
 	pfValue := json.RawMessage(`999`)
 	passedFeatures["data1"] = &pfValue
-	req := api.FeatureStoreRequest{FeatureViewName: &fvName, FeatureViewVersion: &fvVersion, Entries: &entries, PassedFeatures: &passedFeatures}
+	req := api.FeatureStoreRequest{
+		FeatureStoreName: &fsName,
+		FeatureViewName: &fvName, 
+		FeatureViewVersion: &fvVersion, 
+		Entries: &entries, 
+		PassedFeatures: &passedFeatures}
 	reqBody := fmt.Sprintf("%s", req)
 	log.Debugf("Request body: %s", reqBody)
 	_, respBody := testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, testutils.NewFeatureStoreURL(), reqBody, "", http.StatusOK)
