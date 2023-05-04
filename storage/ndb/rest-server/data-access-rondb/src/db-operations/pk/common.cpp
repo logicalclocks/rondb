@@ -25,6 +25,7 @@
 #include <my_time.h>
 #include <sql_string.h>
 #include <ndb_limits.h>
+#include <libbase64.h>
 #include <string>
 #include <algorithm>
 #include <utility>
@@ -336,26 +337,34 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     const size_t encoded_str_len = request->PKValueLen(colIdx);
     size_t col_len               = col->getLength();
 
-    size_t decoded_size = boost::beast::detail::base64::decoded_size(encoded_str_len);
-    if (unlikely(decoded_size > BINARY_MAX_SIZE_IN_BYTES_DECODED)) {
-      return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
-                             "Decoded data length is greater than column length. " +
-                             "Column: " + std::string(col->getName()) +
-                             " Length: " + std::to_string(col->getLength()));
+    // The buffer in out has been allocated by the caller and is at least 3/4 the size of the input.
+    const int maxEncodedSize = (4/3) * BINARY_MAX_SIZE_IN_BYTES_DECODED;
+    if (unlikely(encoded_str_len > maxEncodedSize)) {
+        return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
+                        "Encoded data length is greater than 4/3 of maximum binary size." +
+                        " Column: " + std::string(col->getName()) +
+                        " Maximum binary size: " + std::to_string(BINARY_MAX_SIZE_IN_BYTES_DECODED));
     }
 
     char pk[BINARY_MAX_SIZE_IN_BYTES_DECODED];
     memset(pk, 0, col->getLength());
 
-    std::pair<std::size_t, std::size_t> ret =
-        boost::beast::detail::base64::decode(pk, encoded_str, encoded_str_len);
-    // make sure everything was decoded. 1 or 2 bytes of padding is not included in ret.second
-    require(ret.second >= encoded_str_len - 2 && ret.second <= encoded_str_len);
-    if (unlikely(ret.first > col_len)) {
+    size_t outlen = 0;
+    int result = base64_decode(encoded_str, encoded_str_len, (char *)&pk, &outlen, 0);
+
+    if (unlikely(result == 0)) {
+        return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
+            "Encountered error decoding base64. Column: " + std::string(col->getName()));
+    } else if (unlikely(result == -1)) {
+        return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
+            "Encountered error decoding base64; Chosen codec is not part of current build. Column: " + std::string(col->getName()));
+    }
+
+    if (unlikely(outlen > col_len)) {
       return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
-                             "Decoded data length is greater than column length. " +
-                             "Column: " + std::string(col->getName()) +
-                             " Length: " + std::to_string(col->getLength()));
+                        "Decoded data length is greater than column length." +
+                        " Column: " + std::string(col->getName()) +
+                        " Length: " + std::to_string(col->getLength()));
     }
 
     if (unlikely(operation->equal(request->PKName(colIdx), pk, col->getLength()) != 0)) {
@@ -374,13 +383,13 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     const char *encoded_str      = request->PKValueCStr(colIdx);
     const size_t encoded_str_len = request->PKValueLen(colIdx);
 
-    size_t decoded_size = boost::beast::detail::base64::decoded_size(encoded_str_len);
-
-    if (unlikely(decoded_size > KEY_MAX_SIZE_IN_BYTES_DECODED)) {
-      return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
-                             "Decoded data length is greater than column length. " +
-                             "Column: " + std::string(col->getName()) +
-                             " Length: " + std::to_string(col->getLength()));
+    // The buffer in out has been allocated by the caller and is at least 3/4 the size of the input.
+    const int maxEncodedSize = (4/3) * KEY_MAX_SIZE_IN_BYTES_DECODED;
+    if (unlikely(encoded_str_len > maxEncodedSize)) {
+        return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
+                        "Encoded data length is greater than 4/3 of maximum binary size." +
+                        " Column: " + std::string(col->getName()) +
+                        " Maximum binary size: " + std::to_string(KEY_MAX_SIZE_IN_BYTES_DECODED));
     }
 
     char pk[KEY_MAX_SIZE_IN_BYTES_DECODED];
@@ -389,36 +398,36 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
       additional_len = 2;
     }
 
+    size_t outlen = 0;
     // leave first 1-2 bytes free for saving length bytes
-    std::pair<std::size_t, std::size_t> ret =
-        boost::beast::detail::base64::decode(pk + additional_len, encoded_str, encoded_str_len);
-    
-    // Make sure everything was decoded. 1 or 2 bytes of padding which is not included in ret.second
-    if (unlikely((ret.second < encoded_str_len - 2) || (ret.second > encoded_str_len))) {
+    int result = base64_decode(encoded_str, encoded_str_len, (char *)(&pk + additional_len), &outlen, 0);
+
+    if (unlikely(result == 0)) {
         return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
-                        "The value for the primary key filter does not seem to be base64 encoded." +
-                        " Number of characters read from 'encoded' input string: " + std::to_string(ret.second) +
-                        " 'Encoded' string length: " + std::to_string(encoded_str_len));
+            "Encountered error decoding base64. Column: " + std::string(col->getName()));
+    } else if (unlikely(result == -1)) {
+        return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
+            "Encountered error decoding base64; Chosen codec is not part of current build. Column: " + std::string(col->getName()));
     }
 
-    if (unlikely(ret.first > col_len)) {
+    if (unlikely(outlen > col_len)) {
       return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
-                             "Decoded data length is greater than column length. " +
-                             "Column: " + std::string(col->getName()) +
-                             " Length: " + std::to_string(col->getLength()));
+                        "Decoded data length is greater than column length." +
+                        " Column: " + std::string(col->getName()) +
+                        " Length: " + std::to_string(col->getLength()));
     }
 
     // insert the length at the beginning of the array
     if (col->getType() == NdbDictionary::Column::Varbinary) {
-      pk[0] = (Uint8)ret.first;
+      pk[0] = (Uint8)(outlen);
     } else if (col->getType() == NdbDictionary::Column::Longvarbinary) {
-      pk[0] = (Uint8)(ret.first % 256);
-      pk[1] = (Uint8)(ret.first / 256);
+      pk[0] = (Uint8)(outlen % 256);
+      pk[1] = (Uint8)(outlen / 256);
     } else {
       return RS_SERVER_ERROR(ERROR_015);
     }
 
-    if (unlikely(operation->equal(request->PKName(colIdx), pk, ret.first + additional_len) != 0)) {
+    if (unlikely(operation->equal(request->PKName(colIdx), pk, outlen + additional_len) != 0)) {
       return RS_SERVER_ERROR(ERROR_023);
     }
     return RS_OK;
@@ -770,9 +779,11 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     } else {
       require(attr_bytes <= MAX_TUPLE_SIZE_IN_BYTES);
       char buffer[MAX_TUPLE_SIZE_IN_BYTES_ENCODED];
-      size_t ret = boost::beast::detail::base64::encode(reinterpret_cast<void *>(buffer),
-                                                        data_start, attr_bytes);
-      return response->Append_string(attr->getColumn()->getName(), std::string(buffer, ret),
+
+      size_t outlen = 0;
+      base64_encode(data_start, attr_bytes, (char *)buffer, &outlen, 0);
+    
+      return response->Append_string(attr->getColumn()->getName(), std::string(buffer, outlen),
                                      RDRS_BINARY_DATATYPE);
     }
   }
@@ -816,9 +827,11 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     }
 
     char buffer[BIT_MAX_SIZE_IN_BYTES_ENCODED];
-    size_t ret =
-        boost::beast::detail::base64::encode(reinterpret_cast<void *>(buffer), reversed, words);
-    return response->Append_string(attr->getColumn()->getName(), std::string(buffer, ret),
+
+    size_t outlen = 0;
+    base64_encode(reversed, words, (char *)buffer, &outlen, 0);
+
+    return response->Append_string(attr->getColumn()->getName(), std::string(buffer, outlen),
                                    RDRS_BIT_DATATYPE);
   }
   case NdbDictionary::Column::Time: {
