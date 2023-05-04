@@ -225,7 +225,7 @@ elseif (_TARGET_ARCH STREQUAL "arm")
 
 endif()
 
-configure_file("${CMAKE_CURRENT_LIST_DIR}/cmake/config.h.in" "${CMAKE_CURRENT_BINARY_DIR}/config.h" @ONLY)
+configure_file("${CMAKE_CURRENT_LIST_DIR}/cmake/config_base64.h.in" "${CMAKE_CURRENT_BINARY_DIR}/config_base64.h" @ONLY)
 
 ########################################################################
 # OpenMP Settings

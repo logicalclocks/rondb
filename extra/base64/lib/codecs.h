@@ -2,7 +2,7 @@
 #include <stddef.h>
 
 #include "../include/libbase64.h"
-#include "config.h"
+#include "config_base64.h"
 
 // Function parameters for encoding functions:
 #define BASE64_ENC_PARAMS			\

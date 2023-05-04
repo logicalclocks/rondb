@@ -68,7 +68,7 @@ lib/libbase64.o: $(OBJS)
 	$(LD) -r -o $@ $^
 	$(OBJCOPY) --keep-global-symbols=lib/exports.txt $@
 
-lib/config.h:
+lib/config_base64.h:
 	@echo "#define HAVE_AVX512 $(HAVE_AVX512)"  > $@
 	@echo "#define HAVE_AVX2   $(HAVE_AVX2)"   >> $@
 	@echo "#define HAVE_NEON32 $(HAVE_NEON32)" >> $@
@@ -78,7 +78,7 @@ lib/config.h:
 	@echo "#define HAVE_SSE42  $(HAVE_SSE42)"  >> $@
 	@echo "#define HAVE_AVX    $(HAVE_AVX)"    >> $@
 
-$(OBJS): lib/config.h
+$(OBJS): lib/config_base64.h
 $(OBJS): CFLAGS += -Ilib
 
 lib/arch/avx512/codec.o: CFLAGS += $(AVX512_CFLAGS)
@@ -97,4 +97,4 @@ analyze: clean
 	scan-build --use-analyzer=`which clang` --status-bugs make
 
 clean:
-	rm -f bin/base64 bin/base64.o lib/libbase64.o lib/config.h $(OBJS)
+	rm -f bin/base64 bin/base64.o lib/libbase64.o lib/config_base64.h $(OBJS)
