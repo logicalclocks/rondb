@@ -40,6 +40,11 @@ typedef struct Training_Dataset_Feature {
   int feature_view_id;
 } Training_Dataset_Feature;
 
+typedef struct Training_Dataset_Join {
+  int id;
+  char prefix[63+1];
+} Training_Dataset_Join;
+
 /**
  * Find project ID using the feature store name
  * SELECT id AS project_id FROM project WHERE projectname = feature_store_name
@@ -65,14 +70,19 @@ RS_Status find_feature_view_id(int feature_store_id, const char *feature_view_na
  * SELECT id AS td_join_id, feature_group AS feature_group_id, prefix FROM training_dataset_join
  * WHERE feature_view_id = {feature_view_id}
  */
-RS_Status find_training_dataset_join_data(int feature_view_id, int *td_join_id,
-                                          int *feature_group_id, char *prefix);
+RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_Join **tdjs, int *tdjs_size);
 
 /**
  * Find feature group data
- * SELECT name, online_enabled, feature_store_id FROM feature_group WHERE id = {feature_group_id}
+ * SELECT name, online_enabled, feature_store_id, version FROM feature_group WHERE id = {feature_group_id}
  */
-RS_Status find_feature_group_data(int feature_group_id, char *name, int *online_enabled, int *feature_store_id);
+RS_Status find_feature_group_data(int feature_group_id, char *name, int *online_enabled, int *feature_store_id, int *feature_group_version);
+
+/**
+ * Find feature store data
+ * SELECT name FROM feature_store WHERE id = {feature_store_id}
+ */
+RS_Status find_feature_store_data(int feature_store_id, char *name);
 
 /**
  * Find training_dataset_feature

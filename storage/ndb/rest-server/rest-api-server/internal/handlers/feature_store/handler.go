@@ -48,6 +48,10 @@ func (h *Handler) Validate(request interface{}) error {
 	if err != nil {
 		return err
 	}
+	if log.IsDebug() {
+		metadata, _ := json.MarshalIndent(metadata, "", "  ")
+		log.Debugf("Feature store metadata is %s", metadata)
+	}
 	validatePrimaryKey(fsReq.Entries)
 	err1 := validatePrimaryKey(fsReq.Entries)
 	if err1 != nil {
@@ -102,10 +106,6 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
 	if err != nil {
 		return http.StatusInternalServerError, err
-	}
-	if log.IsDebug() {
-		mdJson, _ := json.MarshalIndent(metadata, "", "  ")
-		log.Debugf("Feature store metadata is %s", mdJson)
 	}
 	var readParams = getBatchPkReadParams(metadata, fsReq.Entries)
 	err = h.dbBatchReader.Validate(readParams)

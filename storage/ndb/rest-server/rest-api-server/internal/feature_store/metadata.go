@@ -56,6 +56,7 @@ type FeatureMetadata struct {
 	Label                    bool
 	Prefix                   string
 	TransformationFunctionId int
+	JoinId	int
 }
 
 func NewFeatureViewMetadata(
@@ -132,10 +133,14 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 	}
 
 	// FIXME: this should return a list of joinId etc
-	// tdJoinID, featureGroupID, prefix, err := dal.GetTrainingDatasetJoinData(fvID)
-	// if err != nil {
-	// 	return nil, fmt.Errorf("reading training dataset join failed. Error: %s ", err.VerboseError())
-	// }
+	joinIdToPrefix := make(map[int]string)
+	tdJoins, err := dal.GetTrainingDatasetJoinData(fvID)
+	if err != nil {
+		return nil, fmt.Errorf("reading training dataset join failed. Error: %s ", err.VerboseError())
+	}
+	for _, tdj := range tdJoins {
+		joinIdToPrefix[tdj.Id] = tdj.Prefix
+	}
 
 	tdfs, err := dal.GetTrainingDatasetFeature(fvID)
 	if err != nil {
@@ -143,21 +148,30 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 	}
 
 	features := make([]*FeatureMetadata, len(tdfs), len(tdfs))
+	fsIdToName := make(map[int]string)
+
 	for i, tdf := range tdfs {
-		featureGroupName, _, _, err := dal.GetFeatureGroupData(tdf.FeatureGroupID)
+		featureGroupName, _, fsId, fgVersion, err := dal.GetFeatureGroupData(tdf.FeatureGroupID)
 		if err != nil {
-			return nil, fmt.Errorf("reading feature group failed. Error: %s ", err.VerboseError())
+			return nil, fmt.Errorf("reading feature store failed. Error: %s ", err.VerboseError())
 		}
 		feature := FeatureMetadata{}
-		feature.FeatureStoreName = featureStoreName // FIXME: get fs name from fg ID
-		feature.FeatureGroupName = featureGroupName // FIXME: get fg name from fg ID
-		feature.FeatureGroupVersion = 1             // FIXME: get fg version from
+		if featureStoreName, exist := fsIdToName[fsId]; exist {
+			feature.FeatureStoreName = featureStoreName
+		} else {
+			featureStoreName, err = dal.GetFeatureStoreName(fsId)
+			fsIdToName[fsId] = featureStoreName
+			feature.FeatureStoreName = featureStoreName
+		}
+		feature.FeatureGroupName = featureGroupName
+		feature.FeatureGroupVersion = fgVersion
 		feature.Id = tdf.FeatureID
 		feature.Name = tdf.Name
 		feature.Type = tdf.Type
 		feature.Index = tdf.IDX
 		feature.Label = tdf.Label == 1
-		feature.Prefix = "" // FIXME:
+		feature.JoinId = tdf.TDJoinID
+		feature.Prefix = joinIdToPrefix[tdf.TDJoinID]
 		feature.TransformationFunctionId = tdf.TransformationFunctionID
 		features[i] = &feature
 	}

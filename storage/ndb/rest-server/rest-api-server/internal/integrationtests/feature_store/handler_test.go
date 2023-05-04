@@ -62,7 +62,7 @@ func createFeatureStoreRequest(
 
 func TestFeatureStore(t *testing.T) {
 	var fsName = "fsdb002"
-	var fvName = "sample_2"
+	var fvName = "sample_1n2"
 	var fvVersion = 1
 	key := string("id1")
 	value1 := json.RawMessage(`87`)
