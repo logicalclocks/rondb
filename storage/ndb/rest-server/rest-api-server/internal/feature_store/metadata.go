@@ -58,7 +58,7 @@ type FeatureMetadata struct {
 	TransformationFunctionId int
 }
 
-func NewFeatureViewMetadata(
+func newFeatureViewMetadata(
 	featureStoreName string,
 	featureStoreId int,
 	featureViewName string,
@@ -173,7 +173,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		feature.TransformationFunctionId = tdf.TransformationFunctionID
 		features[i] = &feature
 	}
-	featureViewMetadata := NewFeatureViewMetadata(
+	featureViewMetadata := newFeatureViewMetadata(
 		featureStoreName,
 		fsID,
 		featureViewName,
