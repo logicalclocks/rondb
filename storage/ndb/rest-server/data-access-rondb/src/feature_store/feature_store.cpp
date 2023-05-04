@@ -453,8 +453,8 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
     return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_031);
   }
 
-  NdbRecAttr *td_join_id_attr       = scan_op->getValue("id");
-  NdbRecAttr *prefix_attr           = scan_op->getValue("prefix");
+  NdbRecAttr *td_join_id_attr       = scan_op->getValue("id", nullptr);
+  NdbRecAttr *prefix_attr           = scan_op->getValue("prefix", nullptr);
 
   if (td_join_id_attr == nullptr || prefix_attr == nullptr) {
     return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_019);
@@ -471,25 +471,27 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
 
   bool check   = 0;
   std::vector<Training_Dataset_Join> tdjsv;
-  while ((check = scan_op->nextResult(true)) == 0) {
-    do {
-      Training_Dataset_Join tdj;
-      tdj.id       = td_join_id_attr->int32_value();
-
-      // memory for "prefix" is allocated and freed by the go layer
+while ((check = scan_op->nextResult(true)) == 0) {
+  do {
+    Training_Dataset_Join tdj;
+    tdj.id = td_join_id_attr->int32_value();
+    
+    if (prefix_attr->isNULL()) {
+      tdj.prefix[0] = 0;
+    } else {
       Uint32 prefix_attr_bytes;
       const char *prefix_data_start = nullptr;
       if (GetByteArray(prefix_attr, &prefix_data_start, &prefix_attr_bytes) != 0) {
         return RS_CLIENT_ERROR(ERROR_019);
       }
 
-      // this memory is created and freed by the go layer
       memcpy(tdj.prefix, prefix_data_start, prefix_attr_bytes);
       tdj.prefix[prefix_attr_bytes] = 0;
-
-      tdjsv.push_back(tdj);
-    } while ((check = scan_op->nextResult(false)) == 0);
-  }
+    }
+    
+    tdjsv.push_back(tdj);
+  } while ((check = scan_op->nextResult(false)) == 0);
+} 
 
   // check for errors happened during the reading process
   NdbError error = scan_op->getNdbError();
@@ -511,7 +513,8 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
   void *ptr  = (Training_Dataset_Join *)malloc(tdjsv.size() * sizeof(Training_Dataset_Join));
   *tdjs      = (Training_Dataset_Join *)ptr;
   for (Uint64 i = 0; i < tdjsv.size(); i++) {
-    *(*tdjs + i) = tdjsv[i];
+    (*tdjs + i)->id = tdjsv[i].id; 
+    memcpy((*tdjs + i)->prefix , tdjsv[i].prefix, strlen(tdjsv[i].prefix)+1);
   }
   tdjsv.clear();
 
@@ -774,7 +777,16 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
   void *ptr  = (Training_Dataset_Feature *)malloc(tdfsv.size() * sizeof(Training_Dataset_Feature));
   *tdfs      = (Training_Dataset_Feature *)ptr;
   for (Uint64 i = 0; i < tdfsv.size(); i++) {
-    *(*tdfs + i) = tdfsv[i];
+    (*tdfs + i)->feature_id = tdfsv[i].feature_id; 
+    (*tdfs + i)->training_dataset = tdfsv[i].training_dataset; 
+    (*tdfs + i)->feature_group_id = tdfsv[i].feature_group_id; 
+    (*tdfs + i)->td_join_id = tdfsv[i].td_join_id; 
+    (*tdfs + i)->idx = tdfsv[i].idx; 
+    (*tdfs + i)->label = tdfsv[i].label; 
+    (*tdfs + i)->transformation_function_id = tdfsv[i].transformation_function_id; 
+    (*tdfs + i)->feature_view_id = tdfsv[i].feature_view_id; 
+    memcpy((*tdfs + i)->name , tdfsv[i].name, strlen(tdfsv[i].name)+1);
+    memcpy((*tdfs + i)->data_type , tdfsv[i].data_type, strlen(tdfsv[i].data_type)+1);
   }
   tdfsv.clear();
 
