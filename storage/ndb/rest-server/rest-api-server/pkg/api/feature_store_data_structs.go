@@ -40,8 +40,11 @@ func (freq FeatureStoreRequest) String() string {
 }
 
 type FeatureStoreResponse struct {
-	Features *[]interface{}     `json:"features"`
-	Metadata *map[string]string `json:"metadata"	binding:"omitempty"`
+	Features []interface{}       `json:"features"`
+	Metadata []*FeatureMeatadata `json:"metadata"`
+}
+
+type FeatureMeatadata struct {
 }
 
 func (r *FeatureStoreResponse) String() string {
