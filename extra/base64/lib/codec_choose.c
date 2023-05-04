@@ -9,7 +9,7 @@
 #include "config_base64.h"
 #include "env.h"
 
-#if (__x86_64__ || __i386__ || _M_X86 || _M_X64)
+#if (defined(__x86_64__) || defined(__i386__) || defined(_M_X86) || defined(_M_X64))
   #define BASE64_X86
   #if (HAVE_SSSE3 || HAVE_SSE41 || HAVE_SSE42 || HAVE_AVX || HAVE_AVX2 || HAVE_AVX512)
     #define BASE64_X86_SIMD
@@ -154,7 +154,7 @@ codec_choose_forced (struct codec *codec, int flags)
 static bool
 codec_choose_arm (struct codec *codec)
 {
-#if (defined(__ARM_NEON__) || defined(__ARM_NEON)) && ((defined(__aarch64__) && HAVE_NEON64) || HAVE_NEON32)
+#if (defined(__ARM_NEON__) || defined(__ARM_NEON)) && ((defined(__aarch64__) && defined(HAVE_NEON64)) || defined(HAVE_NEON32))
 
 	// Unfortunately there is no portable way to check for NEON
 	// support at runtime from userland in the same way that x86
