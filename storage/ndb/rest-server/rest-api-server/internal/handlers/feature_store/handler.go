@@ -119,7 +119,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	fsResp := response.(*api.FeatureStoreResponse)
 	features := getFeatureValues(dbResponseIntf, fsReq.Entries, metadata)
 	fillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
-	fsResp.Features = features
+	fsResp.Features = *features
 
 	return code, nil
 }
@@ -155,7 +155,7 @@ func getBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 		var columns = make([]api.ReadColumn, 0, 0)
 		for _, feature := range fgFeature.Features {
 			if value, ok := (*entries)[feature.Prefix+feature.Name]; ok {
-				var filter = api.Filter{&feature.Name, value}
+				var filter = api.Filter{Column: &feature.Name, Value: value}
 				filters = append(filters, filter)
 				if log.IsDebug() {
 					log.Debugf("Add to filter: %s", feature.Name)
@@ -163,7 +163,7 @@ func getBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 			} else {
 				var colName = feature.Name
 				var colType = "default"
-				readCol := api.ReadColumn{&colName, &colType}
+				readCol := api.ReadColumn{Column: &colName, DataReturnType: &colType}
 				columns = append(columns, readCol)
 				if log.IsDebug() {
 					log.Debugf("Add to column: %s", feature.Name)
@@ -171,7 +171,7 @@ func getBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 			}
 		}
 		var opId = fgFeature.FeatureStoreName + "|" + fgFeature.FeatureGroupName
-		param := api.PKReadParams{&testDb, &testTable, &filters, &columns, &opId}
+		param := api.PKReadParams{DB: &testDb, Table: &testTable, Filters: &filters, ReadColumns: &columns, OperationID: &opId}
 		batchReadParams = append(batchReadParams, &param)
 	}
 	return &batchReadParams
