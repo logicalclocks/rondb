@@ -31,19 +31,6 @@ import (
 	"unsafe"
 )
 
-type FeatureStoreMetadata struct {
-	FeatureStoreID            int    //       # query 1
-	FeatureViewID             int    //      # query 1 -> 2
-	FeatureStoreName          string //,     # REST path param -> Cache Key
-	FeatureViewName           string //      # REST path param -> Cache Key
-	FeatureViewVersion        int    //   # REST path param -> Cache Key
-	TDJoinID                  int
-	TDJoinPrefix              string
-	FeatureGroupName          string
-	FeatureGroupOnlineEnabled bool
-	TrainingDatasetFeatures   []TrainingDatasetFeature
-}
-
 type TrainingDatasetFeature struct {
 	FeatureID                int
 	TrainingDataset          int
@@ -55,6 +42,11 @@ type TrainingDatasetFeature struct {
 	Label                    int
 	TransformationFunctionID int
 	FeatureViewID            int
+}
+
+type TrainingDatasetJoin struct {
+	Id     int
+	Prefix string
 }
 
 func GetProjectID(featureStoreName string) (int, *DalError) {
@@ -108,29 +100,35 @@ func GetFeatureViewID(featureStoreID int, featureViewName string, featureViewVer
 	return int(fsViewID), nil
 }
 
-func GetTrainingDatasetJoinData(featureViewID int) (int, int, string, *DalError) {
-	prefixBuff := C.malloc(C.size_t(C.TRAINING_DATASET_JOIN_PREFIX_SIZE))
-	defer C.free(prefixBuff)
+func GetTrainingDatasetJoinData(featureViewID int) ([]TrainingDatasetJoin, *DalError) {
+	var tdjsSize C.int
+	tdjsSizePtr := (*C.int)(unsafe.Pointer(&tdjsSize))
 
-	var tdJoinID C.int
-	tdJoinIDPtr := (*C.int)(unsafe.Pointer(&tdJoinID))
+	var tdjs *C.Training_Dataset_Join
+	tdjsPtr := (**C.Training_Dataset_Join)(unsafe.Pointer(&tdjs))
 
-	var featureGroupID C.int
-	featureGroupIDPtr := (*C.int)(unsafe.Pointer(&featureGroupID))
-
-	ret := C.find_training_dataset_join_data(C.int(featureViewID),
-		tdJoinIDPtr,
-		featureGroupIDPtr,
-		(*C.char)(unsafe.Pointer(prefixBuff)))
+	ret := C.find_training_dataset_join_data(C.int(featureViewID), tdjsPtr, tdjsSizePtr)
 
 	if ret.http_code != http.StatusOK {
-		return 0, 0, "", cToGoRet(&ret)
+		return nil, cToGoRet(&ret)
 	}
 
-	return int(tdJoinID), int(featureGroupID), C.GoString((*C.char)(unsafe.Pointer(prefixBuff))), nil
+	tdjsSlice := unsafe.Slice((*C.Training_Dataset_Join)(unsafe.Pointer(tdjs)), tdjsSize)
+
+	retTdjs := make([]TrainingDatasetJoin, int(tdjsSize))
+	for i, tdj := range tdjsSlice {
+		retTdj := TrainingDatasetJoin{
+			Id:     int(tdj.id),
+			Prefix: C.GoString(&tdj.prefix[0]),
+		}
+		retTdjs[i] = retTdj
+	}
+
+	C.free(unsafe.Pointer(tdjs))
+	return retTdjs[:], nil
 }
 
-func GetFeatureGroupData(featureGroupID int) (string, bool, int, *DalError) {
+func GetFeatureGroupData(featureGroupID int) (string, bool, int, int, *DalError) {
 	nameBuff := C.malloc(C.size_t(C.FEATURE_GROUP_NAME_SIZE))
 	defer C.free(nameBuff)
 
@@ -140,14 +138,17 @@ func GetFeatureGroupData(featureGroupID int) (string, bool, int, *DalError) {
 	var featureStoreID C.int
 	featureStoreIDPtr := (*C.int)(unsafe.Pointer(&featureStoreID))
 
+	var featureGroupVersion C.int
+	featureGroupVersionPtr := (*C.int)(unsafe.Pointer(&featureGroupVersion))
+
 	ret := C.find_feature_group_data(C.int(featureGroupID),
-		(*C.char)(unsafe.Pointer(nameBuff)), onlineEnabledPtr, featureStoreIDPtr)
+		(*C.char)(unsafe.Pointer(nameBuff)), onlineEnabledPtr, featureStoreIDPtr, featureGroupVersionPtr)
 
 	if ret.http_code != http.StatusOK {
-		return "", false, 0, cToGoRet(&ret)
+		return "", false, 0, 0, cToGoRet(&ret)
 	}
 
-	return C.GoString((*C.char)(unsafe.Pointer(nameBuff))), int(onlineEnabled) != 0, int(featureGroupID), nil
+	return C.GoString((*C.char)(unsafe.Pointer(nameBuff))), int(onlineEnabled) != 0, int(featureStoreID), int(featureGroupVersion), nil
 }
 
 func GetTrainingDatasetFeature(featureViewID int) ([]TrainingDatasetFeature, *DalError) {
@@ -188,4 +189,17 @@ func GetTrainingDatasetFeature(featureViewID int) ([]TrainingDatasetFeature, *Da
 		return retTdfs[i].IDX < retTdfs[j].IDX
 	})
 	return retTdfs[:], nil
+}
+
+func GetFeatureStoreName(fsId int) (string, *DalError) {
+	nameBuff := C.malloc(C.size_t(C.FEATURE_STORE_NAME_SIZE))
+	defer C.free(nameBuff)
+
+	ret := C.find_feature_store_data(C.int(fsId), (*C.char)(unsafe.Pointer(nameBuff)))
+
+	if ret.http_code != http.StatusOK {
+		return "", cToGoRet(&ret)
+	}
+
+	return C.GoString((*C.char)(unsafe.Pointer(nameBuff))), nil
 }
