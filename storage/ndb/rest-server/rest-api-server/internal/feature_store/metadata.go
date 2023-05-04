@@ -27,22 +27,22 @@ import (
 )
 
 type FeatureViewMetadata struct {
-	FeatureStoreName     *string                      `json:"featureStoreName"`
-	FeatureStoreId       *int                         `json:"featureStoreId"`
-	FeatureViewName      *string                      `json:"featureViewName"`
-	FeatureViewId        *int                         `json:"featureViewId"`
-	FeatureViewVersion   *int                         `json:"featureViewVersion"`
-	PrefixFeaturesLookup *map[string]*FeatureMetadata // key: prefix + fName
-	FeatureGroupFeatures *[]*FeatureGroupFeatures
-	NumOfFeatures        *int
-	FeatureIndexLookup   *map[string]int // key: fsName + fgName + fName
+	FeatureStoreName     string
+	FeatureStoreId       int
+	FeatureViewName      string
+	FeatureViewId        int
+	FeatureViewVersion   int
+	PrefixFeaturesLookup map[string]*FeatureMetadata // key: prefix + fName
+	FeatureGroupFeatures []*FeatureGroupFeatures
+	NumOfFeatures        int
+	FeatureIndexLookup   map[string]int // key: fsName + fgName + fName
 }
 
 type FeatureGroupFeatures struct {
-	FeatureStoreName    *string
-	FeatureGroupName    *string
-	FeatureGroupVersion *int
-	Features            *[]*FeatureMetadata
+	FeatureStoreName    string
+	FeatureGroupName    string
+	FeatureGroupVersion int
+	Features            []*FeatureMetadata
 }
 
 type FeatureMetadata struct {
@@ -56,7 +56,6 @@ type FeatureMetadata struct {
 	Label                    bool
 	Prefix                   string
 	TransformationFunctionId int
-	JoinId	int
 }
 
 func NewFeatureViewMetadata(
@@ -82,7 +81,7 @@ func NewFeatureViewMetadata(
 		fgName := strings.Split(key, "|")[1]
 		fgVersion, _ := strconv.Atoi(strings.Split(key, "|")[2])
 		var featureValue = value
-		var fgFeature = FeatureGroupFeatures{&fsName, &fgName, &fgVersion, &featureValue}
+		var fgFeature = FeatureGroupFeatures{fsName, fgName, fgVersion, featureValue}
 		fgFeaturesArray = append(fgFeaturesArray, &fgFeature)
 	}
 	less := func(i, j int) bool {
@@ -98,15 +97,15 @@ func NewFeatureViewMetadata(
 
 	var numOfFeature = len(featureIndex)
 	var metadata = FeatureViewMetadata{
-		&featureStoreName,
-		&featureStoreId,
-		&featureViewName,
-		&featureViewId,
-		&featureViewVersion,
-		&prefixColumns,
-		&fgFeaturesArray,
-		&numOfFeature,
-		&featureIndex}
+		featureStoreName,
+		featureStoreId,
+		featureViewName,
+		featureViewId,
+		featureViewVersion,
+		prefixColumns,
+		fgFeaturesArray,
+		numOfFeature,
+		featureIndex}
 	return &metadata
 }
 
@@ -170,7 +169,6 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		feature.Type = tdf.Type
 		feature.Index = tdf.IDX
 		feature.Label = tdf.Label == 1
-		feature.JoinId = tdf.TDJoinID
 		feature.Prefix = joinIdToPrefix[tdf.TDJoinID]
 		feature.TransformationFunctionId = tdf.TransformationFunctionID
 		features[i] = &feature
