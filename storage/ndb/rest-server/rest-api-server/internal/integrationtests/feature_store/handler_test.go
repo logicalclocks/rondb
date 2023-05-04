@@ -66,10 +66,10 @@ func TestFeatureStore(t *testing.T) {
 	var fvVersion = 1
 	key := string("id1")
 	value1 := json.RawMessage(`87`)
-	// value2 := json.RawMessage(`"2022-01-09"`)
+	value2 := json.RawMessage(`730`)
 	var entries = make(map[string]*json.RawMessage)
 	entries[key] = &value1
-	// entries[string("fg2_id1")] = &value2
+	entries[string("fg2_id1")] = &value2
 	var passedFeatures = make(map[string]*json.RawMessage)
 	pfValue := json.RawMessage(`999`)
 	passedFeatures["data1"] = &pfValue
