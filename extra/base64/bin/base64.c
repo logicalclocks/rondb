@@ -213,7 +213,10 @@ write_wrapped (const struct config *config, char *buf, size_t len)
 
 		// If the line is full, append a newline.
 		if (col == config->wrap) {
-			if (iov_append(config, iov, &nvec, "\n", 1) == false) {
+            char newline[2];
+            newline[0] = '\n';
+            newline[1] = 0;
+			if (iov_append(config, iov, &nvec, (char *)&newline, 1) == false) {
 				return false;
 			}
 			col = 0;
