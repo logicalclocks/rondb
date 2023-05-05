@@ -350,7 +350,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     memset(pk, 0, col->getLength());
 
     size_t outlen = 0;
-    int result = base64_decode(encoded_str, encoded_str_len, (char *)&pk, &outlen, 0);
+    int result = base64_decode(encoded_str, encoded_str_len, (char *)&pk[0], &outlen, 0);
 
     if (unlikely(result == 0)) {
         return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
@@ -386,8 +386,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     // The buffer in out has been allocated by the caller and is at least 3/4 the size of the input.
     const int maxEncodedSize = (4/3) * KEY_MAX_SIZE_IN_BYTES_DECODED;
     if (unlikely(encoded_str_len > maxEncodedSize)) {
-        return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
-                        "Encoded data length is greater than 4/3 of maximum binary size." +
+        return RS_CLIENT_ERROR(std::string(ERROR_008) +
+                        " Encoded data length is greater than 4/3 of maximum binary size." +
                         " Column: " + std::string(col->getName()) +
                         " Maximum binary size: " + std::to_string(KEY_MAX_SIZE_IN_BYTES_DECODED));
     }
@@ -400,7 +400,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
 
     size_t outlen = 0;
     // leave first 1-2 bytes free for saving length bytes
-    int result = base64_decode(encoded_str, encoded_str_len, (char *)(&pk + additional_len), &outlen, 0);
+    int result = base64_decode(encoded_str, encoded_str_len, (char *)(&pk[0] + additional_len), &outlen, 0);
 
     if (unlikely(result == 0)) {
         return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
@@ -781,7 +781,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
       char buffer[MAX_TUPLE_SIZE_IN_BYTES_ENCODED];
 
       size_t outlen = 0;
-      base64_encode(data_start, attr_bytes, (char *)buffer, &outlen, 0);
+      base64_encode(data_start, attr_bytes, (char *)&buffer[0], &outlen, 0);
     
       return response->Append_string(attr->getColumn()->getName(), std::string(buffer, outlen),
                                      RDRS_BINARY_DATATYPE);
@@ -829,7 +829,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     char buffer[BIT_MAX_SIZE_IN_BYTES_ENCODED];
 
     size_t outlen = 0;
-    base64_encode(reversed, words, (char *)buffer, &outlen, 0);
+    base64_encode(reversed, words, (char *)&buffer[0], &outlen, 0);
 
     return response->Append_string(attr->getColumn()->getName(), std::string(buffer, outlen),
                                    RDRS_BIT_DATATYPE);
