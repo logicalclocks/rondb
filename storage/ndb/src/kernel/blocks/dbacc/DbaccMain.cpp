@@ -7544,7 +7544,6 @@ Uint32 Dbacc::checkScanShrink(Uint32 sourceBucket, Uint32 destBucket)
   Uint32 TreleaseScanBucket;
   Uint32 TreleaseInd = 0;
   enum Actions { ExtendRescan, ReduceUndefined };
-  //Bitmask<1> actions[1];
   Uint16 releaseDestScanMask = 0;
   Uint16 releaseSourceScanMask = 0;
   Page8Ptr TPageptr;

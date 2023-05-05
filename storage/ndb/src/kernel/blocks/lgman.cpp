@@ -1769,7 +1769,7 @@ Lgman::open_file(Signal* signal,
  * NDBFS from the DataMemory in DBTUP. So these pages we are allowed to
  * change since they are owned at this moment by the NDB file system thread.
  */
-void
+Uint32
 Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross threads from Ndbfs */
 {
   jamNoBlock();
@@ -1781,6 +1781,7 @@ Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
                req->fsFormatSharedPage);
   ndbrequire(m_shared_page_pool.getPtr(page_ptr,
                                        req->data.sharedPage.pageNumber));
+  Uint32 init_zero = req->data.zeroPageIndicator.initZero;
   /**
    * This code is executed when creating a new UNDO logfile group.
    * In this case we always use the new v2 format.
@@ -1808,6 +1809,7 @@ Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
         (File_formats::Undofile::Zero_page_v2*)page;
       page_v2->m_checksum = 0;
     }
+    return 0;
   }
   else if (req->varIndex == 1)
   {
@@ -1847,9 +1849,14 @@ Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
       page->m_data[0] = (File_formats::Undofile::UNDO_END << 16) | 1 ;
       page->m_page_header.m_page_type = File_formats::PT_Undopage;
     }
+    return 0;
   }
   else
   {
+    if (init_zero == 0)
+    {
+      return 2;
+    }
     memset(page_ptr.p, 0, sizeof(File_formats::Undofile::Undo_page_v2));
     if (v2)
     {
@@ -1878,6 +1885,7 @@ Lgman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
       page->m_words_used = 0;
     }
   }
+  return 0;
 }
 
 void
@@ -4438,7 +4446,13 @@ Lgman::execFSREADCONF(Signal* signal)
     client_unlock(number(), __LINE__, this);
     return;
   }
-  else if ((file_ptr.p->m_state & Undofile::FS_EXECUTING) ==
+
+  /**
+   * Handle possible zero pages read and ensure they are correctly initialised
+   * Should never happen with Page Zero.
+   */
+  jam();
+  if ((file_ptr.p->m_state & Undofile::FS_EXECUTING) ==
            Undofile::FS_EXECUTING)
   {
     jam();
@@ -4479,13 +4493,31 @@ Lgman::execFSREADCONF(Signal* signal)
   Ptr<GlobalPage> page_ptr;
   ndbrequire(m_shared_page_pool.getPtr(page_ptr,
                                        file_ptr.p->m_online.m_outstanding));
+  File_formats::Undofile::Undo_page_v2* page = 
+    (File_formats::Undofile::Undo_page_v2*)page_ptr.p;
+  if (page->m_page_header.m_page_type == File_formats::PT_Unallocated)
+  {
+    jam();
+    page->m_page_header.m_page_lsn_hi = 0;
+    page->m_page_header.m_page_lsn_lo = 0;
+    page->m_words_used = 1;
+    page->m_checksum = 0;
+    page->m_ndb_version = NDB_DISK_V2;
+    page->m_unused[0] = 0;
+    page->m_unused[1] = 0;
+    page->m_unused[2] = 0;
+    page->m_unused[3] = 0;
+    page->m_unused[4] = 0;
+    page->m_unused[5] = 0;
+    page->m_data[0] = (File_formats::Undofile::UNDO_END << 16) | 1 ;
+    page->m_page_header.m_page_type = File_formats::PT_Undopage;
+  }
+
   file_ptr.p->m_online.m_outstanding= 0;
   
-  File_formats::Undofile::Undo_page* page = 
-    (File_formats::Undofile::Undo_page*)page_ptr.p;
-  
   Uint64 lsn = 0;
-  lsn += page->m_page_header.m_page_lsn_hi; lsn <<= 32;
+  lsn += page->m_page_header.m_page_lsn_hi;
+  lsn <<= 32;
   lsn += page->m_page_header.m_page_lsn_lo;
 
   switch(file_ptr.p->m_state){

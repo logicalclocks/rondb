@@ -24,7 +24,8 @@
 #include <string>
 #include <thread>
 #include <NdbThread.h>
-#include <storage/ndb/include/ndb_global.h>
+#include <ndb_global.h>
+#include <util/require.h>
 #include "src/status.hpp"
 #include "src/error-strings.h"
 #include "src/logger.hpp"
