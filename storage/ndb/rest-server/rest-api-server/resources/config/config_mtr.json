@@ -16,7 +16,12 @@
                                 "IP": "localhost",
                                 "Port": 13000 
                         }
-                ]
+                ],
+                    "ConnectionRetries": 1,
+                        "ConnectionRetryDelayInSec": 1,
+                            "OpRetryOnTransientErrorsCount": 3,
+                                "OpRetryInitialDelayInMS": 500,
+                                    "OpRetryJitterInMS": 100
         },
         "Security": {
                 "TLS": {
@@ -28,7 +33,7 @@
                 }
         },
         "Log": {
-                "Level": "warn"
+                "Level": "debug"
         },
         "Testing": {
                 "MySQL": {

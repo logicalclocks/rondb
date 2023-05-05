@@ -43,9 +43,9 @@ import (
 func New(serverTLS *tls.Config, heap *heap.Heap, apiKeyCache apikey.Cache, grpcMetrics *metrics.GRPCMetrics) *grpc.Server {
 	var grpcServer *grpc.Server
 	if serverTLS != nil {
-		grpcServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
+		grpcServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)), grpc.StatsHandler(&grpcMetrics.GRPCStatistics))
 	} else {
-		grpcServer = grpc.NewServer()
+		grpcServer = grpc.NewServer(grpc.StatsHandler(&grpcMetrics.GRPCStatistics))
 	}
 	RonDBServer := NewRonDBServer(heap, apiKeyCache, grpcMetrics)
 	api.RegisterRonDBRESTServer(grpcServer, RonDBServer)

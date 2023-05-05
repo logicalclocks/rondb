@@ -61,6 +61,7 @@ func New(
 			Addr:      restApiAddress,
 			Handler:   router,
 			TLSConfig: tlsConfig,
+			ConnState: httpMetrics.HttpConnectionGauge.OnStateChange,
 		},
 	}
 }

@@ -47,7 +47,7 @@ func CreateAndStartDefaultServers(
 	conf := config.GetAll()
 	dalErr := dal.InitRonDBConnection(conf.RonDB)
 	if dalErr != nil {
-		return cleanup, fmt.Errorf("failed to connect to RonDB. error: %w", dalErr)
+		return cleanup, dalErr
 	}
 	cleanupRonDB := func() {
 		dalErr = dal.ShutdownConnection()

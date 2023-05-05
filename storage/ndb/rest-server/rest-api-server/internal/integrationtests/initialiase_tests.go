@@ -110,8 +110,8 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	//---------------------------- API KEY Cache ------------------------------
 	apiKeyCache := hopsworkscache.New()
 	cleanupFNs = append(cleanupFNs, func() {
-		err = apiKeyCache.Cleanup()
-		if err != nil {
+		cleanUpError := apiKeyCache.Cleanup()
+		if cleanUpError != nil {
 			log.Errorf("failed cleaning up api key cache; error: %v", err)
 		}
 	})
@@ -129,7 +129,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 		httpMetrics, grpcMetrics, quit)
 	if err != nil {
 		cleanupWrapper(cleanupFNs)()
-		return nil, fmt.Errorf("failed creating default servers; error: %v ", err)
+		return nil, err
 	}
 	cleanupFNs = append(cleanupFNs, cleanupServers)
 

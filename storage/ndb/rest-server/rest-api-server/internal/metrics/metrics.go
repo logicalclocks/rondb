@@ -22,10 +22,11 @@ import (
 )
 
 type HTTPMetrics struct {
-	PingCounter        prometheus.Counter
-	PkReadCounter      prometheus.Counter
-	BatchPkReadCounter prometheus.Counter
-	StatCounter        prometheus.Counter
+	PingCounter         prometheus.Counter
+	PkReadCounter       prometheus.Counter
+	BatchPkReadCounter  prometheus.Counter
+	StatCounter         prometheus.Counter
+	HttpConnectionGauge HttpConnectionGauge
 }
 
 type GRPCMetrics struct {
@@ -33,6 +34,9 @@ type GRPCMetrics struct {
 	PkReadCounter      prometheus.Counter
 	BatchPkReadCounter prometheus.Counter
 	StatCounter        prometheus.Counter
+	GRPCStatistics     GRPCStatistics
+
+	//TODO connection count
 }
 
 func NewHTTPMetrics() (*HTTPMetrics, func()) {
@@ -71,16 +75,26 @@ func NewHTTPMetrics() (*HTTPMetrics, func()) {
 			},
 		)
 
+	metrics.HttpConnectionGauge = HttpConnectionGauge{}
+	metrics.HttpConnectionGauge.ConnectionGauge = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: protocol + "_connection_count",
+			Help: "No of open " + protocol + " connections",
+		},
+	)
+
 	prometheus.MustRegister(metrics.PingCounter)
 	prometheus.MustRegister(metrics.PkReadCounter)
 	prometheus.MustRegister(metrics.BatchPkReadCounter)
 	prometheus.MustRegister(metrics.StatCounter)
+	prometheus.MustRegister(metrics.HttpConnectionGauge.ConnectionGauge)
 
 	cleanup := func() {
 		prometheus.Unregister(metrics.PingCounter)
 		prometheus.Unregister(metrics.PkReadCounter)
 		prometheus.Unregister(metrics.BatchPkReadCounter)
 		prometheus.Unregister(metrics.StatCounter)
+		prometheus.Unregister(metrics.HttpConnectionGauge.ConnectionGauge)
 	}
 	return &metrics, cleanup
 }
@@ -121,16 +135,26 @@ func NewGRPCMetrics() (*GRPCMetrics, func()) {
 			},
 		)
 
+	metrics.GRPCStatistics = GRPCStatistics{}
+	metrics.GRPCStatistics.ConnectionGauge = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: protocol + "_connection_count",
+			Help: "No of open " + protocol + " connections",
+		},
+	)
+
 	prometheus.MustRegister(metrics.PingCounter)
 	prometheus.MustRegister(metrics.PkReadCounter)
 	prometheus.MustRegister(metrics.BatchPkReadCounter)
 	prometheus.MustRegister(metrics.StatCounter)
+	prometheus.MustRegister(metrics.GRPCStatistics.ConnectionGauge)
 
 	cleanup := func() {
 		prometheus.Unregister(metrics.PingCounter)
 		prometheus.Unregister(metrics.PkReadCounter)
 		prometheus.Unregister(metrics.BatchPkReadCounter)
 		prometheus.Unregister(metrics.StatCounter)
+		prometheus.Unregister(metrics.GRPCStatistics.ConnectionGauge)
 	}
 	return &metrics, cleanup
 }

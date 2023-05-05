@@ -19,6 +19,7 @@ func batchGRPCTest(t testing.TB, testInfo api.BatchOperationTestInfo, isBinaryDa
 	if err != nil {
 		t.Fatal(err.Error())
 	}
+	defer conn.Close()
 	batchGRPCTestWithConn(t, testInfo, isBinaryData, validateData, conn)
 }
 
