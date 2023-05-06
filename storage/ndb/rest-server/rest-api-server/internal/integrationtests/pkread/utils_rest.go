@@ -19,7 +19,7 @@ func pkRESTTest(t testing.TB, testInfo api.PKTestInfo, isBinaryData bool, valida
 		t.Fatalf("Failed to marshall test request %v", err)
 	}
 
-	httpCode, res := testclient.SendHttpRequest(
+	httpCode, response := testclient.SendHttpRequest(
 		t,
 		config.PK_HTTP_VERB,
 		url,
@@ -28,22 +28,26 @@ func pkRESTTest(t testing.TB, testInfo api.PKTestInfo, isBinaryData bool, valida
 		testInfo.HttpCode,
 	)
 	if httpCode == http.StatusOK && validate {
-		validateResHttp(t, testInfo, res, isBinaryData)
+		validateResHttp(t, testInfo, response, isBinaryData)
 	}
 }
 
-func validateResHttp(t testing.TB, testInfo api.PKTestInfo, resp string, isBinaryData bool) {
+// This only works if all columns are binary data
+func validateResHttp(t testing.TB, testInfo api.PKTestInfo, response []byte, isBinaryData bool) {
 	t.Helper()
+
+	var pkResponse api.PKReadResponseJSON
+	err := json.Unmarshal(response, &pkResponse)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal response object %v", err)
+	}
+
+	parsedData := testclient.ParseColumnDataFromJson(t, pkResponse, isBinaryData)
+
 	for i := 0; i < len(testInfo.RespKVs); i++ {
 		key := string(testInfo.RespKVs[i].(string))
 
-		var pkResponse api.PKReadResponseJSON
-		err := json.Unmarshal([]byte(resp), &pkResponse)
-		if err != nil {
-			t.Fatalf("Failed to unmarshal response object %v", err)
-		}
-
-		jsonVal, found := testclient.GetColumnDataFromJson(t, key, &pkResponse)
+		jsonVal, found := parsedData[key]
 		if !found {
 			t.Fatalf("Key not found in the response. Key %s", key)
 		}

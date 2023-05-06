@@ -52,6 +52,16 @@
 
 //#define DEBUG_ODIRECT
 
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_FSWRITEREQ 1
+#endif
+
+#ifdef DEBUG_FSWRITEREQ
+#define DEB_FSWRITEREQ(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_FSWRITEREQ(arglist) do { } while (0)
+#endif
+
 AsyncFile::AsyncFile(Ndbfs& fs) : theFileName(), m_thread_bound(false), m_fs(fs)
 {
   m_thread = 0;
@@ -321,6 +331,9 @@ AsyncFile::openReq(Request * request)
     if (ndbxfrm_file::is_definite_size(data_size) && !is_data_size_estimated &&
         size_t(m_xfile.get_data_size()) != data_size)
     {
+      g_eventLogger->info("AsyncFile.cpp wrong size: data_size: %llu"
+                          ", file size: %llu",
+                          data_size, m_xfile.get_data_size());
       NDBFS_SET_REQUEST_ERROR(request, FsRef::fsErrInvalidFileSize);
       m_file.close();
       goto remove_if_created;
@@ -378,9 +391,22 @@ AsyncFile::openReq(Request * request)
     m_file.set_autosync(16 * 1024 * 1024);
 
     // Reserve disk blocks for whole file
+    Uint32 init_zero = 1;
     if (m_file.allocate() == -1)
     {
-      // If fail, ignore, will try to write file anyway.
+      /**
+       * If fail, ignore, will try to write file anyway.
+       * Since we were not able to allocate it there is no
+       * reason to try to initialise it to zero.
+       */
+    }
+    else if (m_file.init_zero() != -1)
+    {
+      init_zero = 0;
+    }
+    else
+    {
+      ;// If fail to zero, ignore, will try to write file anyway.
     }
 
     // Initialise blocks
@@ -410,17 +436,20 @@ AsyncFile::openReq(Request * request)
     Uint32 page_cnt =
         (!m_xfile.is_transformed()) ? m_page_cnt : (m_page_cnt - 1);
     require(page_cnt > 0);
-    while (off < file_data_size)
+    int ret_code = 0;
+    while ((ret_code < 1) && off < file_data_size)
     {
       ndb_off_t size = 0;
       Uint32 cnt = 0;
-      while (cnt < page_cnt && (off + size) < file_data_size)
+      ndb_off_t start_offset = off;
+      while (cnt < page_cnt && (start_offset + size) < file_data_size)
       {
         req->filePointer = 0;          // DATA 0
         req->userPointer = request->theUserPointer;          // DATA 2
         req->numberOfPages = 1;        // DATA 5
         req->varIndex = index++;
         req->operationFlag = 0;
+        req->data.zeroPageIndicator.initZero = init_zero;
         FsReadWriteReq::setFormatFlag(req->operationFlag,
                                       FsReadWriteReq::fsFormatSharedPage);
         if (!m_xfile.is_transformed())
@@ -428,8 +457,19 @@ AsyncFile::openReq(Request * request)
         else
           req->data.sharedPage.pageNumber = m_page_ptr.i + page_cnt;
 
-        m_fs.callFSWRITEREQ(request->theUserReference, req);
+        ret_code = m_fs.callFSWRITEREQ(request->theUserReference, req);
 
+        DEB_FSWRITEREQ(("FSWRITEREQ page %u, ret_code: %u, ref: %x",
+                        index - 1,
+                        ret_code,
+                        request->theUserReference));
+ 
+        off += request->par.open.page_size;
+        if (ret_code == 2 ||
+            (ret_code == 1 && !m_xfile.is_transformed()))
+        {
+          break;
+        }
         if (m_xfile.is_transformed())
         {
           const GlobalPage* src = m_page_ptr.p + page_cnt;
@@ -444,11 +484,12 @@ AsyncFile::openReq(Request * request)
             abort();
           }
         }
-
         cnt++;
         size += request->par.open.page_size;
       }
-      ndb_off_t save_size = size;
+      DEB_FSWRITEREQ(("FSWRITEREQ write_size %llu, ref: %x",
+                      size,
+                      request->theUserReference));
       byte* buf = (byte*)m_page_ptr.p;
       while (size > 0)
       {
@@ -457,7 +498,7 @@ AsyncFile::openReq(Request * request)
 #endif
         int n;
         ndbxfrm_input_iterator in = {buf, buf + size, false};
-        int rc = m_xfile.write_transformed_pages(off, &in);
+        int rc = m_xfile.write_transformed_pages(start_offset, &in);
         if (rc == -1)
           n = -1;
         else
@@ -470,6 +511,7 @@ AsyncFile::openReq(Request * request)
         }
         size -= n;
         buf += n;
+        start_offset += n;
         /**
          * Ensure that we call sync at regular intervals set by
          * autosync frequency, now handled by m_file object itself.
@@ -481,8 +523,6 @@ AsyncFile::openReq(Request * request)
         m_file.close();
         goto remove_if_created;
       }
-      require(save_size > 0);
-      off += save_size;
     }
     if (m_file.sync() == -1)
     {

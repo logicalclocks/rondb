@@ -30,6 +30,8 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
+var operationUrl = regexp.MustCompile("^[a-zA-Z0-9$_]+/[a-zA-Z0-9$_]+/pk-read")
+
 func (h *RouteHandler) BatchPkRead(c *gin.Context) {
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 
@@ -74,11 +76,8 @@ func parseOperation(operation *api.BatchSubOp, pkReadarams *api.PKReadParams) er
 		operation.RelativeURL = &trimmed
 	}
 
-	match, err := regexp.MatchString("^[a-zA-Z0-9$_]+/[a-zA-Z0-9$_]+/pk-read",
-		*operation.RelativeURL)
-	if err != nil {
-		return fmt.Errorf("error parsing relative URL: %w", err)
-	} else if !match {
+	match := operationUrl.MatchString(*operation.RelativeURL)
+	if !match {
 		return fmt.Errorf("invalid relative URL: %s", *operation.RelativeURL)
 	}
 	return makePKReadParams(operation, pkReadarams)

@@ -182,6 +182,16 @@ const DB025 = "db025"
 //go:embed fixed/DB025-Update.sql
 var DB025UpdateScheme string
 
+//go:embed fixed/DB026.sql
+var DB026Scheme string
+
+const DB026 = "db026"
+
+//go:embed fixed/DB027.sql
+var DB027Scheme string
+
+const DB027 = "db027"
+
 // This is sentinel DB
 // If this exists then we have successfully initialized all the DBs
 //

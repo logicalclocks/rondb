@@ -707,8 +707,8 @@ ndbd_support_sql_compare_semantics(Uint32 x)
   return x >= NDBD_SUPPORT_SQL_COMPARE_SEMANTICS;
 }
 
-#define NDBD_SUPPORT_TRP_KEEP_ALIVE NDB_MAKE_VERSION(8,0,27)
-#define NDBD_SUPPORT_PARAM_CMP NDB_MAKE_VERSION(8,0,27)
+#define NDBD_SUPPORT_TRP_KEEP_ALIVE NDB_MAKE_VERSION(22,10,0)
+#define NDBD_SUPPORT_PARAM_CMP NDB_MAKE_VERSION(22,10,0)
 static
 inline bool
 support_8027(Uint32 x)
@@ -854,7 +854,7 @@ ndbd_support_encryption_key_material(Uint32 x)
  * Along with the newly added conflict detection and resolution algorithms
  * for INSERTs, support for Interpreted write is also added from 8.0.30.
  */
-#define NDBD_INTERPRETED_WRITE NDB_MAKE_VERSION(8, 0, 30)
+#define NDBD_INTERPRETED_WRITE NDB_MAKE_VERSION(22, 10, 0)
 static
 inline
 bool

@@ -103,6 +103,7 @@ bool g_RestartServer= false;
 static MgmtSrvr* mgm;
 static MgmtSrvr::MgmtOpts opts;
 static const char* opt_logname = "MgmtSrvr";
+static const char* opt_service_name = 0;
 static const char* opt_nowait_nodes = 0;
 
 static struct my_option my_long_options[] =
@@ -168,6 +169,10 @@ static struct my_option my_long_options[] =
     "Delete all binary config files and start from config.ini or my.cnf",
     &opts.initial, nullptr, nullptr, GET_BOOL, NO_ARG,
     0, 0, 1, 0, 0, 0 },
+  { "service-name", NDB_OPT_NOSHORT,
+    "Service name sets the file prefix on various files and directories",
+    &opt_service_name, nullptr, nullptr,
+    GET_STR, REQUIRED_ARG, 0, 0, 0, nullptr, 0, nullptr },
   { "log-name", NDB_OPT_NOSHORT,
     "Name to use when logging messages for this node",
     &opt_logname, nullptr, nullptr, GET_STR, REQUIRED_ARG,
@@ -444,6 +449,10 @@ static int mgmd_main(int argc, char** argv)
     }
   }
 
+  if (opt_service_name)
+  {
+    NdbConfig_SetServiceName(opt_service_name);
+  }
   if (opts.bind_address)
   {
     int len = strlen(opts.bind_address);

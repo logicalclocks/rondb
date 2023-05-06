@@ -55,6 +55,7 @@
 #include <portlib/NdbDir.hpp>
 #include <NdbOut.hpp>
 #include <Configuration.hpp>
+#include <NdbConfig.h>
 
 #include <EventLogger.hpp>
 
@@ -298,7 +299,15 @@ Ndbfs::execREAD_CONFIG_REQ(Signal* signal)
     m_ctx.m_config.getOwnConfigIterator();
   ndbrequire(p != 0);
   BaseString tmp;
-  tmp.assfmt("ndb_%u_fs%s", getOwnNodeId(), DIR_SEPARATOR);
+  char *service_name = NdbConfig_GetServiceName();
+  if (service_name == 0)
+  {
+    tmp.assfmt("ndb_%u_fs%s", getOwnNodeId(), DIR_SEPARATOR);
+  }
+  else
+  {
+    tmp.assfmt("%s_fs%s", service_name, DIR_SEPARATOR);
+  }
   m_base_path[FsOpenReq::BP_FS].assfmt("%s%s",
                                        m_ctx.m_config.fileSystemPath(),
                                        tmp.c_str());
@@ -2008,7 +2017,7 @@ Ndbfs::get_filename(Uint32 fd) const
   return "";
 }
 
-void Ndbfs::callFSWRITEREQ(BlockReference ref, FsReadWriteReq* req) const
+Uint32 Ndbfs::callFSWRITEREQ(BlockReference ref, FsReadWriteReq* req) const
 {
   Uint32 block = refToMain(ref);
   Uint32 instance = refToInstance(ref);
@@ -2023,17 +2032,18 @@ void Ndbfs::callFSWRITEREQ(BlockReference ref, FsReadWriteReq* req) const
   switch (block)
   {
   case DBLQH:
-    static_cast<Dblqh*>(rec_block)->execFSWRITEREQ(req);
+    return static_cast<Dblqh*>(rec_block)->execFSWRITEREQ(req);
     break;
   case TSMAN:
-    static_cast<Tsman*>(rec_block)->execFSWRITEREQ(req);
+    return static_cast<Tsman*>(rec_block)->execFSWRITEREQ(req);
     break;
   case LGMAN:
-    static_cast<Lgman*>(rec_block)->execFSWRITEREQ(req);
+    return static_cast<Lgman*>(rec_block)->execFSWRITEREQ(req);
     break;
   default:
     ndbabort();
   }
+  return 0;
 }
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT) || !defined(NDEBUG)

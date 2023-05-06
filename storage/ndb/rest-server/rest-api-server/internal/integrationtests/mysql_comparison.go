@@ -21,7 +21,7 @@ func CompareDataWithDB(
 	table string,
 	filters *[]api.Filter,
 	colName *string,
-	colDataFromRestServer *string,
+	colDataFromRestServer *string, // REST and MySQL
 	isBinaryData bool,
 ) {
 	dbVal, err := getColumnDataFromDB(t, db, table, filters, *colName, isBinaryData)
@@ -34,7 +34,7 @@ func CompareDataWithDB(
 	}
 
 	if !((colDataFromRestServer == nil && dbVal == nil) || (*colDataFromRestServer == *dbVal)) {
-		t.Fatalf("The read value for key %s does not match. Got from REST Server: %s, Got from MYSQL Server: %s", *colName, *colDataFromRestServer, *dbVal)
+		t.Fatalf("The read value for key %s does not match. Got from our server: %s, Got from MYSQL Server: %s", *colName, *colDataFromRestServer, *dbVal)
 	}
 }
 
@@ -69,14 +69,14 @@ func getColumnDataFromDB(
 		command = fmt.Sprintf("select %s from %s where ", col, table)
 	}
 	where := ""
-	for i := 0; i < len(*filters); i++ {
+	for _, filter := range *filters {
 		if where != "" {
 			where += " and "
 		}
 		if isBinary {
-			where = fmt.Sprintf("%s %s = from_base64(%s)", where, *(*filters)[i].Column, string(*(*filters)[i].Value))
+			where = fmt.Sprintf("%s %s = from_base64(%s)", where, *filter.Column, string(*filter.Value))
 		} else {
-			where = fmt.Sprintf("%s %s = %s", where, *(*filters)[i].Column, string(*(*filters)[i].Value))
+			where = fmt.Sprintf("%s %s = %s", where, *filter.Column, string(*filter.Value))
 		}
 	}
 

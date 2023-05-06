@@ -1,4 +1,5 @@
 /*
+<<<<<<< HEAD
    Copyright (c) 2005, 2023, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
@@ -52,7 +53,8 @@ public:
   BLOCK_DEFINES(Lgman);
   
 public:
-  void execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross threads from Ndbfs */;
+  /* called direct cross threads from Ndbfs */
+  Uint32 execFSWRITEREQ(const FsReadWriteReq* req) const;
 protected:
   void execSTTOR(Signal* signal);
   void sendSTTORRY(Signal*);
