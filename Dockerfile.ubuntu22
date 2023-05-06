@@ -28,17 +28,6 @@ RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
     openssh-client maven libsasl2-dev libldap-dev libaio-dev \
     git vim nano protobuf-compiler graphviz
 
-# RonDB 22.10 requires gcc/g++ 9
-# Ubuntu 22.04 comes with gcc/g++ 11.3 by default
-# We will not remove the default installation, but change the default
-# one using `update-alternatives`
-# See https://askubuntu.com/a/26518/1646182 for reference
-RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
-    --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
-    apt-get update && apt-get install -y gcc-9 g++-9 \
-    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-9 10 \
-    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-9 10
-
 # Creating a cache dir for downloads to avoid redownloading
 ENV DOWNLOADS_CACHE_DIR=/tmp/downloads
 RUN mkdir $DOWNLOADS_CACHE_DIR
@@ -79,6 +68,9 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     && rm -r openssl-$OPEN_SSL_VERSION
     # Could also run `make test`
     # `make install` places shared libraries into $OPENSSL_ROOT
+
+# For some reason installing OpenSSL changes gcc/g++ to 11
+RUN update-alternatives --config gcc && update-alternatives --config g++
 
 # Installing CMake
 # CMake will look for $OPENSSL_ROOT_DIR

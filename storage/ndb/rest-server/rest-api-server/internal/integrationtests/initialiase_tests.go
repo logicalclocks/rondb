@@ -126,7 +126,7 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	cleanupFNs = append(cleanupFNs, cleanupServers)
 
 	// some times the servers take some time to start and units tests fail due to connection failures
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond) // need to find a more reliable way to determine if every thing is up
 	log.Debug("Successfully started up servers")
 
 	// Check if profiling is enabled

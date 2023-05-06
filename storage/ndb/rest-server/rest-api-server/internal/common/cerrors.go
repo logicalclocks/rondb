@@ -65,3 +65,7 @@ func ERROR_026() string {
 func ERROR_027() string {
 	return C.ERROR_027
 }
+
+func ERROR_036() string {
+	return C.ERROR_036
+}

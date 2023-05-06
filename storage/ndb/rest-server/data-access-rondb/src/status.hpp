@@ -70,21 +70,21 @@ inline RS_Status __RS_ERROR_RONDB(const struct NdbError &error, std::string msg,
 
 #define __MYFILENAME__ __FILE__
 
-#define RS_OK __RS_ERROR(SUCCESS, -1, -1, -1, -1, "", 0, "");
+#define RS_OK __RS_ERROR(SUCCESS, -1, -1, -1, -1, "", 0, "")
 
 #define RS_CLIENT_ERROR(msg)                                                                       \
-  __RS_ERROR(CLIENT_ERROR, -1, -1, -1, -1, msg, __LINE__, __MYFILENAME__);
+  __RS_ERROR(CLIENT_ERROR, -1, -1, -1, -1, msg, __LINE__, __MYFILENAME__)
 
 #define RS_CLIENT_404_ERROR()                                                                      \
-  __RS_ERROR(NOT_FOUND, -1, -1, -1, -1, "Not Found", __LINE__, __MYFILENAME__);
+  __RS_ERROR(NOT_FOUND, -1, -1, -1, -1, "Not Found", __LINE__, __MYFILENAME__)
 
 #define RS_CLIENT_404_WITH_MSG_ERROR(msg)                                                          \
-  __RS_ERROR(NOT_FOUND, -1, -1, -1, -1, msg, __LINE__, __MYFILENAME__);
+  __RS_ERROR(NOT_FOUND, -1, -1, -1, -1, msg, __LINE__, __MYFILENAME__)
 
 #define RS_SERVER_ERROR(msg)                                                                       \
-  __RS_ERROR(SERVER_ERROR, -1, -1, -1, -1, msg, __LINE__, __MYFILENAME__);
+  __RS_ERROR(SERVER_ERROR, -1, -1, -1, -1, msg, __LINE__, __MYFILENAME__)
 
 #define RS_RONDB_SERVER_ERROR(ndberror, msg)                                                       \
-  __RS_ERROR_RONDB(ndberror, msg, __LINE__, __MYFILENAME__);
+  __RS_ERROR_RONDB(ndberror, msg, __LINE__, __MYFILENAME__)
 
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_STATUS_HPP_

@@ -9,40 +9,60 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func GetColumnDataFromGRPC(t testing.TB, colName string, pkResponse *api.PKReadResponseGRPC) (*string, bool) {
-	t.Helper()
-	val, ok := (*pkResponse.Data)[colName]
-	if !ok {
-		return nil, ok
-	}
-	return val, ok
-}
-
-func GetColumnDataFromJson(t testing.TB, colName string, pkResponse *api.PKReadResponseJSON) (*string, bool) {
+func ParseColumnDataFromGRPC(t testing.TB, pkResponse *api.PKReadResponseGRPC, isBinaryData bool) map[string]*string {
 	t.Helper()
 
 	kvMap := make(map[string]*string)
+	if pkResponse == nil || pkResponse.Data == nil {
+		return kvMap
+	}
+
 	for colName, colValue := range *pkResponse.Data {
 		if colValue == nil {
 			kvMap[colName] = nil
 			continue
 		}
-		value := string([]byte(*colValue))
-		if value[0] == '"' {
-			var err error
-			value, err = strconv.Unquote(value)
-			if err != nil {
-				t.Fatal(err)
-			}
+
+		value, err := unquoteIfQuoted(*colValue)
+		if err != nil {
+			t.Fatal(err)
 		}
 		kvMap[colName] = &value
 	}
 
-	val, ok := kvMap[colName]
-	if !ok {
-		return nil, ok
+	return kvMap
+}
+
+func ParseColumnDataFromJson(t testing.TB, pkResponse api.PKReadResponseJSON, isBinaryData bool) map[string]*string {
+	t.Helper()
+
+	kvMap := make(map[string]*string)
+	if pkResponse.Data == nil {
+		return kvMap
 	}
-	return val, ok
+
+	for colName, colValue := range *pkResponse.Data {
+		if colValue == nil {
+			kvMap[colName] = nil
+			continue
+		}
+
+		value := string([]byte(*colValue))
+		value, err := unquoteIfQuoted(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		kvMap[colName] = &value
+	}
+
+	return kvMap
+}
+
+func unquoteIfQuoted(value string) (string, error) {
+	if value[0] != '"' {
+		return value, nil
+	}
+	return strconv.Unquote(value)
 }
 
 func GetStatusCodeFromError(t testing.TB, err error) int {

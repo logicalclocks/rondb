@@ -130,7 +130,8 @@ BaseString::assign(const char* s)
       errno = ENOMEM;
       n = 0;
     }
-    delete[] m_chr;
+    if (m_chr != nullptr)
+      delete[] m_chr;
     m_chr = t;
     m_len = (unsigned)n;
     return *this;

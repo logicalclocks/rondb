@@ -1,7 +1,7 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
-    Use is subject to license terms.
+   Use is subject to license terms.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -42,6 +42,8 @@ char* NdbConfig_TraceFileName(int node_id, int file_no);
 char* NdbConfig_NextTraceFileName(int node_id);
 char* NdbConfig_PidFileName(int node_id);
 char* NdbConfig_StdoutFileName(int node_id);
+void NdbConfig_SetServiceName(const char *service_name);
+char* NdbConfig_GetServiceName();
 
 #ifdef	__cplusplus
 }
