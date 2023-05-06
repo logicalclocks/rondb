@@ -69,6 +69,9 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     # Could also run `make test`
     # `make install` places shared libraries into $OPENSSL_ROOT
 
+# For some reason installing OpenSSL changes gcc/g++ to 11
+RUN update-alternatives --config gcc && update-alternatives --config g++
+
 # Installing CMake
 # CMake will look for $OPENSSL_ROOT_DIR
 ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT

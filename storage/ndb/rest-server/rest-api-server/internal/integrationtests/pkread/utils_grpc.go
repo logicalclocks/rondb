@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -108,29 +107,23 @@ func validateResGRPC(
 	isBinaryData bool,
 ) {
 	t.Helper()
-	for i := 0; i < len(testInfo.RespKVs); i++ {
-		colName := string(testInfo.RespKVs[i].(string))
 
-		val, ok := (*resp.Data)[colName]
-		if !ok {
-			t.Fatalf("Column not found in the response. colName: %s", colName)
-		}
+	parsedData := testclient.ParseColumnDataFromGRPC(t, resp, isBinaryData)
 
-		var err error
-		if val != nil {
-			quotedVal := "\"" + *val + "\"" // you have to surround the string with "s
-			*val, err = strconv.Unquote(quotedVal)
-			if err != nil {
-				t.Fatalf("Unquote failed %v\n", err)
-			}
+	for _, keyIntf := range testInfo.RespKVs {
+		key := string(keyIntf.(string))
+
+		grpcVal, found := parsedData[key]
+		if !found {
+			t.Fatalf("Key not found in the response. Key %s", key)
 		}
 
 		integrationtests.CompareDataWithDB(t,
 			testInfo.Db,
 			testInfo.Table,
 			testInfo.PkReq.Filters,
-			&colName,
-			val,
+			&key,
+			grpcVal,
 			isBinaryData,
 		)
 	}

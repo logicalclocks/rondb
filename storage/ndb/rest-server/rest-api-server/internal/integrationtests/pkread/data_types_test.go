@@ -797,7 +797,7 @@ func TestDataTypesBlobs(t *testing.T) {
 	pkTestMultiple(t, tests, false)
 }
 
-func TestDataTypesLargePks(t *testing.T) {
+func TestLargePks(t *testing.T) {
 	testTable := "table_1"
 	testDb := testdbs.DB026
 
@@ -807,8 +807,30 @@ func TestDataTypesLargePks(t *testing.T) {
 	}
 	pkDataEncoded := base64.StdEncoding.EncodeToString(pkData)
 
+	test := api.PKTestInfo{
+		PkReq: api.PKReadBody{
+			Filters:     testclient.NewFiltersKVs("id", pkDataEncoded),
+			ReadColumns: testclient.NewReadColumns("col", 1),
+			OperationID: testclient.NewOperationID(64),
+		},
+		Table:          testTable,
+		Db:             testDb,
+		HttpCode:       http.StatusOK,
+		ErrMsgContains: "",
+		RespKVs:        []interface{}{"col0"},
+	}
+	pkTest(t, test, true, true)
+}
+
+func TestLargeColumn(t *testing.T) {
+	testTable := "table_1"
+	testDb := testdbs.DB027
+
+	decoded := []byte("1")
+	pkDataEncoded := base64.StdEncoding.EncodeToString(decoded)
+
 	tests := map[string]api.PKTestInfo{
-		"maxPk": {
+		"ok": {
 			PkReq: api.PKReadBody{
 				Filters:     testclient.NewFiltersKVs("id", pkDataEncoded),
 				ReadColumns: testclient.NewReadColumns("col", 1),
@@ -820,7 +842,20 @@ func TestDataTypesLargePks(t *testing.T) {
 			ErrMsgContains: "",
 			RespKVs:        []interface{}{"col0"},
 		},
+		"notBase64String": {
+			PkReq: api.PKReadBody{
+				Filters:     testclient.NewFiltersKVs("id", "1"),
+				ReadColumns: testclient.NewReadColumns("col", 1),
+				OperationID: testclient.NewOperationID(64),
+			},
+			Table:          testTable,
+			Db:             testDb,
+			HttpCode:       http.StatusBadRequest,
+			ErrMsgContains: "",
+			RespKVs:        []interface{}{"col0"},
+		},
 	}
+
 	pkTestMultiple(t, tests, true)
 }
 
