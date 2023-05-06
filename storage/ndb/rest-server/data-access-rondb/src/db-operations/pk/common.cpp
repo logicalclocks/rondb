@@ -393,8 +393,15 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     // leave first 1-2 bytes free for saving length bytes
     std::pair<std::size_t, std::size_t> ret =
         boost::beast::detail::base64::decode(pk + additional_len, encoded_str, encoded_str_len);
-    // make sure everything was decoded. 1 or 2 bytes of padding which is not included in ret.second
-    require(ret.second >= encoded_str_len - 2 && ret.second <= encoded_str_len);
+    
+    // Make sure everything was decoded. 1 or 2 bytes of padding which is not included in ret.second
+    if (unlikely((ret.second < encoded_str_len - 2) || (ret.second > encoded_str_len))) {
+        return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
+                        "The value for the primary key filter does not seem to be base64 encoded." +
+                        " Number of characters read from 'encoded' input string: " + std::to_string(ret.second) +
+                        " 'Encoded' string length: " + std::to_string(encoded_str_len));
+    }
+
     if (unlikely(ret.first > col_len)) {
       return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
                              "Decoded data length is greater than column length. " +

@@ -82,24 +82,31 @@ func validateBatchResponseValuesHttp(
 		t.Fatalf("Failed to unmarshal batch response. Error %v", err)
 	}
 
-	for o := 0; o < len(testInfo.Operations); o++ {
+	for o, operation := range testInfo.Operations {
 		if *(*res.Result)[o].Code != http.StatusOK {
 			continue // data is null if the status is not OK
 		}
 
-		operation := testInfo.Operations[o]
 		pkresponse := *((*res.Result)[o].Body)
 		parsedData := testclient.ParseColumnDataFromJson(t, pkresponse, isBinaryData)
-		for i := 0; i < len(operation.RespKVs); i++ {
-			key := string(operation.RespKVs[i].(string))
+
+		for _, keyIntf := range operation.RespKVs {
+			key := string(keyIntf.(string))
 
 			jsonVal, found := parsedData[key]
 			if !found {
 				t.Fatalf("Key not found in the response. Key %s", key)
 			}
 
-			integrationtests.CompareDataWithDB(t, operation.DB, operation.Table, operation.SubOperation.Body.Filters,
-				&key, jsonVal, isBinaryData)
+			integrationtests.CompareDataWithDB(
+				t,
+				operation.DB,
+				operation.Table,
+				operation.SubOperation.Body.Filters,
+				&key,
+				jsonVal,
+				isBinaryData,
+			)
 		}
 	}
 }
