@@ -22,7 +22,7 @@ BenchmarkSimple-8          12621           1373531 ns/op         2041700 B/op   
     performance_test.go:254: -------------------------------------------------
 BenchmarkBinary-8           7989           1440547 ns/op         2461386 B/op      10152 allocs/op
 
-// Varchar, Fasthttp
+// Varchar, Fasthttp, Schema: `id0 INT, col0 VARCHAR(1000)`
     performance_test.go:149: -------------------------------------------------
     performance_test.go:143: Number of requests:         7879
     performance_test.go:144: Batch size (per requests):  100
