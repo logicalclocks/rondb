@@ -1,0 +1,25 @@
+//////////
+// gRPC //
+//////////
+
+// Apple M1 Pro, 32GB, using RonDB-Docker
+    performance_test.go:149: -------------------------------------------------
+    performance_test.go:143: Number of requests:         18157
+    performance_test.go:144: Batch size (per requests):  100
+    performance_test.go:145: Number of threads:          8
+    performance_test.go:146: Throughput:                 154147.614024 pk lookups/second
+    performance_test.go:147: 50th percentile latency:    5 ms
+    performance_test.go:148: 99th percentile latency:    8 ms
+    performance_test.go:149: -------------------------------------------------
+BenchmarkSimple-8          18157            648726 ns/op          767345 B/op       8434 allocs/op
+
+// Apple M1 Pro, 32GB, using RonDB-Docker, proto3
+    performance_test.go:149: -------------------------------------------------
+    performance_test.go:143: Number of requests:         16200
+    performance_test.go:144: Batch size (per requests):  100
+    performance_test.go:145: Number of threads:          8
+    performance_test.go:146: Throughput:                 145901.954036 pk lookups/second
+    performance_test.go:147: 50th percentile latency:    5 ms
+    performance_test.go:148: 99th percentile latency:    10 ms
+    performance_test.go:149: -------------------------------------------------
+BenchmarkSimple-8          16200            685387 ns/op          771574 B/op       7435 allocs/op

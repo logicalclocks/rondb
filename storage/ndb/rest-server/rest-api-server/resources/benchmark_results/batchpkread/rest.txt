@@ -1,0 +1,24 @@
+//////////
+// REST //
+//////////
+
+// Apple M1 Pro, 32GB, using RonDB-Docker
+    performance_test.go:143: Number of requests:         8016
+    performance_test.go:144: Batch size (per requests):  100
+    performance_test.go:145: Number of threads:          7
+    performance_test.go:146: Throughput:                 92915.990723 pk lookups/second
+    performance_test.go:147: 50th percentile latency:    7 ms
+    performance_test.go:148: 99th percentile latency:    29 ms
+    performance_test.go:149: -------------------------------------------------
+BenchmarkSimple-8          11149           1320736 ns/op         2147834 B/op      10115 allocs/op
+
+// Apple M1 Pro, 32GB, using RonDB-Docker, Fasthttp
+    performance_test.go:149: -------------------------------------------------
+    performance_test.go:143: Number of requests:         7879
+    performance_test.go:144: Batch size (per requests):  100
+    performance_test.go:145: Number of threads:          8
+    performance_test.go:146: Throughput:                 88555.487732 pk lookups/second
+    performance_test.go:147: 50th percentile latency:    7 ms
+    performance_test.go:148: 99th percentile latency:    32 ms
+    performance_test.go:149: -------------------------------------------------
+BenchmarkSimple-8          10626           1706215 ns/op         2179115 B/op       9182 allocs/op
