@@ -26,6 +26,10 @@ type HTTPMetrics struct {
 	PkReadCounter       prometheus.Counter
 	BatchPkReadCounter  prometheus.Counter
 	StatCounter         prometheus.Counter
+	PingSummary         prometheus.Summary
+	PkReadSummary       prometheus.Summary
+	BatchPkReadSummary  prometheus.Summary
+	StatSummary         prometheus.Summary
 	HttpConnectionGauge HttpConnectionGauge
 }
 
@@ -34,6 +38,10 @@ type GRPCMetrics struct {
 	PkReadCounter      prometheus.Counter
 	BatchPkReadCounter prometheus.Counter
 	StatCounter        prometheus.Counter
+	PingSummary        prometheus.Summary
+	PkReadSummary      prometheus.Summary
+	BatchPkReadSummary prometheus.Summary
+	StatSummary        prometheus.Summary
 	GRPCStatistics     GRPCStatistics
 
 	//TODO connection count
@@ -51,11 +59,29 @@ func NewHTTPMetrics() (*HTTPMetrics, func()) {
 			},
 		)
 
+	metrics.PingSummary =
+		prometheus.NewSummary(
+			prometheus.SummaryOpts{
+				Name:       protocol + "_ping_request_summary",
+				Help:       "Summary for ping " + protocol + " handler. Time is in nanoseconds",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
+			},
+		)
+
 	metrics.PkReadCounter =
 		prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: protocol + "_pk_read_request_count",
 				Help: "No of request handled by " + protocol + " pkread handler",
+			},
+		)
+
+	metrics.PkReadSummary =
+		prometheus.NewSummary(
+			prometheus.SummaryOpts{
+				Name:       protocol + "_pk_read_request_summary",
+				Help:       "Summary for pk read " + protocol + " handler. Time is in nanoseconds",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
 			},
 		)
 
@@ -67,11 +93,29 @@ func NewHTTPMetrics() (*HTTPMetrics, func()) {
 			},
 		)
 
+	metrics.BatchPkReadSummary =
+		prometheus.NewSummary(
+			prometheus.SummaryOpts{
+				Name:       protocol + "_pk_batch_read_request_summary",
+				Help:       "Summary for pk batch read " + protocol + " handler. Time is in nanoseconds",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
+			},
+		)
+
 	metrics.StatCounter =
 		prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: protocol + "_stat_request_count",
 				Help: "No of request handled by " + protocol + " stat handler",
+			},
+		)
+
+	metrics.StatSummary =
+		prometheus.NewSummary(
+			prometheus.SummaryOpts{
+				Name:       protocol + "_stat_request_summary",
+				Help:       "Summary for stat " + protocol + " handler",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
 			},
 		)
 
@@ -84,16 +128,24 @@ func NewHTTPMetrics() (*HTTPMetrics, func()) {
 	)
 
 	prometheus.MustRegister(metrics.PingCounter)
+	prometheus.MustRegister(metrics.PingSummary)
 	prometheus.MustRegister(metrics.PkReadCounter)
+	prometheus.MustRegister(metrics.PkReadSummary)
 	prometheus.MustRegister(metrics.BatchPkReadCounter)
+	prometheus.MustRegister(metrics.BatchPkReadSummary)
 	prometheus.MustRegister(metrics.StatCounter)
+	prometheus.MustRegister(metrics.StatSummary)
 	prometheus.MustRegister(metrics.HttpConnectionGauge.ConnectionGauge)
 
 	cleanup := func() {
 		prometheus.Unregister(metrics.PingCounter)
+		prometheus.Unregister(metrics.PingSummary)
 		prometheus.Unregister(metrics.PkReadCounter)
+		prometheus.Unregister(metrics.PkReadSummary)
 		prometheus.Unregister(metrics.BatchPkReadCounter)
+		prometheus.Unregister(metrics.BatchPkReadSummary)
 		prometheus.Unregister(metrics.StatCounter)
+		prometheus.Unregister(metrics.StatSummary)
 		prometheus.Unregister(metrics.HttpConnectionGauge.ConnectionGauge)
 	}
 	return &metrics, cleanup
@@ -111,11 +163,29 @@ func NewGRPCMetrics() (*GRPCMetrics, func()) {
 			},
 		)
 
+	metrics.PingSummary =
+		prometheus.NewSummary(
+			prometheus.SummaryOpts{
+				Name:       protocol + "_ping_request_summary",
+				Help:       "Summary for ping " + protocol + " handler. Time is in nanoseconds",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
+			},
+		)
+
 	metrics.PkReadCounter =
 		prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: protocol + "_pk_read_request_count",
 				Help: "No of request handled by " + protocol + " pkread handler",
+			},
+		)
+
+	metrics.PkReadSummary =
+		prometheus.NewSummary(
+			prometheus.SummaryOpts{
+				Name:       protocol + "_pk_read_request_summary",
+				Help:       "Summary for pk read " + protocol + " handler. Time is in nanoseconds",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
 			},
 		)
 
@@ -127,11 +197,29 @@ func NewGRPCMetrics() (*GRPCMetrics, func()) {
 			},
 		)
 
+	metrics.BatchPkReadSummary =
+		prometheus.NewSummary(
+			prometheus.SummaryOpts{
+				Name:       protocol + "_pk_batch_read_request_summary",
+				Help:       "Summary for pk batch read " + protocol + " handler. Time is in nanoseconds",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
+			},
+		)
+
 	metrics.StatCounter =
 		prometheus.NewCounter(
 			prometheus.CounterOpts{
 				Name: protocol + "_stat_request_count",
 				Help: "No of request handled by " + protocol + " stat handler",
+			},
+		)
+
+	metrics.StatSummary =
+		prometheus.NewSummary(
+			prometheus.SummaryOpts{
+				Name:       protocol + "_stat_request_summary",
+				Help:       "Summary for stat " + protocol + " handler. Time is in nanoseconds",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
 			},
 		)
 
@@ -144,16 +232,24 @@ func NewGRPCMetrics() (*GRPCMetrics, func()) {
 	)
 
 	prometheus.MustRegister(metrics.PingCounter)
+	prometheus.MustRegister(metrics.PingSummary)
 	prometheus.MustRegister(metrics.PkReadCounter)
+	prometheus.MustRegister(metrics.PkReadSummary)
 	prometheus.MustRegister(metrics.BatchPkReadCounter)
+	prometheus.MustRegister(metrics.BatchPkReadSummary)
 	prometheus.MustRegister(metrics.StatCounter)
+	prometheus.MustRegister(metrics.StatSummary)
 	prometheus.MustRegister(metrics.GRPCStatistics.ConnectionGauge)
 
 	cleanup := func() {
 		prometheus.Unregister(metrics.PingCounter)
+		prometheus.Unregister(metrics.PingSummary)
 		prometheus.Unregister(metrics.PkReadCounter)
+		prometheus.Unregister(metrics.PkReadSummary)
 		prometheus.Unregister(metrics.BatchPkReadCounter)
+		prometheus.Unregister(metrics.BatchPkReadSummary)
 		prometheus.Unregister(metrics.StatCounter)
+		prometheus.Unregister(metrics.StatSummary)
 		prometheus.Unregister(metrics.GRPCStatistics.ConnectionGauge)
 	}
 	return &metrics, cleanup

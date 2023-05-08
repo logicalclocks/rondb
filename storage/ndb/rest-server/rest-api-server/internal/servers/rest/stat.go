@@ -19,6 +19,7 @@ package rest
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"hopsworks.ai/rdrs/internal/config"
@@ -29,6 +30,8 @@ import (
 func (h *RouteHandler) Stat(c *gin.Context) {
 
 	// metrics
+	start := time.Now().UnixNano()
+	defer h.httpMetrics.StatSummary.Observe(float64(time.Now().UnixNano() - start))
 	h.httpMetrics.StatCounter.Inc()
 
 	apiKey := c.GetHeader(config.API_KEY_NAME)

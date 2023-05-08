@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"hopsworks.ai/rdrs/internal/config"
@@ -35,6 +36,8 @@ var operationUrl = regexp.MustCompile("^[a-zA-Z0-9$_]+/[a-zA-Z0-9$_]+/pk-read")
 func (h *RouteHandler) BatchPkRead(c *gin.Context) {
 
 	// metrics
+	start := time.Now().UnixNano()
+	defer h.httpMetrics.BatchPkReadSummary.Observe(float64(time.Now().UnixNano() - start))
 	h.httpMetrics.BatchPkReadCounter.Inc()
 
 	apiKey := c.GetHeader(config.API_KEY_NAME)
