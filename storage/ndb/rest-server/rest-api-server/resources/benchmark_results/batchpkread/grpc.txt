@@ -24,6 +24,17 @@ BenchmarkSimple-8          18157            648726 ns/op          767345 B/op   
     performance_test.go:254: -------------------------------------------------
 BenchmarkBinary-8          14486            754077 ns/op         1063519 B/op       8695 allocs/op
 
+// Varbinary, Schema: `id0 VARBINARY(100), col0 VARBINARY(10000)`
+    performance_test.go:254: -------------------------------------------------
+    performance_test.go:248: Number of requests:         7633
+    performance_test.go:249: Batch size (per requests):  100
+    performance_test.go:250: Number of threads:          8
+    performance_test.go:251: Throughput:                 74159.327711 pk lookups/second
+    performance_test.go:252: 50th percentile latency:    10 ms
+    performance_test.go:253: 99th percentile latency:    18 ms
+    performance_test.go:254: -------------------------------------------------
+BenchmarkBinary-8           7633           1348440 ns/op         7331772 B/op       8828 allocs/op
+
 // Varchar, proto3
     performance_test.go:149: -------------------------------------------------
     performance_test.go:143: Number of requests:         16200
