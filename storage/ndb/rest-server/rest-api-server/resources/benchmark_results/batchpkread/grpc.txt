@@ -4,14 +4,25 @@
 
 // Varchar, Schema: `id0 INT, col0 VARCHAR(1000) CHARSET latin1`
     performance_test.go:149: -------------------------------------------------
-    performance_test.go:143: Number of requests:         18157
-    performance_test.go:144: Batch size (per requests):  100
-    performance_test.go:145: Number of threads:          8
-    performance_test.go:146: Throughput:                 154147.614024 pk lookups/second
-    performance_test.go:147: 50th percentile latency:    5 ms
-    performance_test.go:148: 99th percentile latency:    8 ms
+    performance_test.go:146: Number of requests:         16698
+    performance_test.go:147: Batch size (per requests):  100
+    performance_test.go:148: Number of threads:          8
+    performance_test.go:149: Throughput:                 156471.519989 pk lookups/second
+    performance_test.go:150: 50th percentile latency:    5 ms
+    performance_test.go:151: 99th percentile latency:    7 ms
+    performance_test.go:152: -------------------------------------------------
+BenchmarkSimple-8          16698            639089 ns/op          873143 B/op       8648 allocs/op
+
+// Varchar, Schema: `id0 INT, col0 VARCHAR(10000) CHARSET latin1`
     performance_test.go:149: -------------------------------------------------
-BenchmarkSimple-8          18157            648726 ns/op          767345 B/op       8434 allocs/op
+    performance_test.go:146: Number of requests:         6114
+    performance_test.go:147: Batch size (per requests):  100
+    performance_test.go:148: Number of threads:          8
+    performance_test.go:149: Throughput:                 54905.254192 pk lookups/second
+    performance_test.go:150: 50th percentile latency:    13 ms
+    performance_test.go:151: 99th percentile latency:    23 ms
+    performance_test.go:152: -------------------------------------------------
+BenchmarkSimple-8           6114           1821309 ns/op         5587904 B/op       8766 allocs/op
 
 // Varbinary, Schema: `id0 VARBINARY(100), col0 VARBINARY(1000)`
     performance_test.go:254: -------------------------------------------------

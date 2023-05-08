@@ -25,7 +25,7 @@ CREATE TABLE table_1(
     id0 INT,
     col0 VARCHAR(COLUMN_LENGTH),
     PRIMARY KEY(id0)
-) ENGINE = ndbcluster;
+) ENGINE = ndbcluster CHARSET latin1;
 
 CREATE TABLE table_2(
     id0 VARBINARY(100),
