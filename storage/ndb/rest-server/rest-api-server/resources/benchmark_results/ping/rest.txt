@@ -1,8 +1,8 @@
-//////////
-// REST //
-//////////
+////////////////////////////////////////////
+// Apple M1 Pro, 32GB, using RonDB-Docker //
+////////////////////////////////////////////
 
-// Apple M1 Pro, 32GB, using RonDB-Docker
+// Baseline
     performance_test.go:102: Number of requests:         1449172
     performance_test.go:103: Number of threads:          10
     performance_test.go:104: Throughput:                 133220.655114 requests/second
@@ -11,7 +11,7 @@
     performance_test.go:107: -------------------------------------------------
 BenchmarkSimple-10       1449172              7506 ns/op            9371 B/op        172 allocs/op
 
-// Apple M1 Pro, 32GB, using RonDB-Docker, Fasthttp
+// Fasthttp
     performance_test.go:149: -------------------------------------------------
     performance_test.go:102: Number of requests:         1498130
     performance_test.go:103: Number of threads:          10
