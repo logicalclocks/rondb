@@ -4,7 +4,7 @@
 Make sure that ndb_mgmd creates ndb_<nodeid>_cluster.log file
 Make sure that ndb_mgmd does _not_ create logger.log file
 Bug32045786
-RonDB Management Server RonDB-23.04.0
+RonDB Management Server RonDB-22.10.1
  ERROR    -- Mgmd node is started on port that is already in use. Attempt to bind '*:NDB_MGMD_PORT' failed with error: ERROR_CODE ERROR_MESSAGE
 Bug32706682
 # verify that mgmd fails to start when config-file

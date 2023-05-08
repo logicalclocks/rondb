@@ -53,7 +53,7 @@
 //#define DEBUG_ODIRECT
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_FSWRITEREQ 1
+//#define DEBUG_FSWRITEREQ 1
 #endif
 
 #ifdef DEBUG_FSWRITEREQ
