@@ -22,8 +22,12 @@ import (
 )
 
 type FeatureStoreRequest struct {
-	//TODO Fix me
-	ReqData string
+	FeatureStoreName   *string                      `json:"featureStoreName"`
+	FeatureViewName    *string                      `json:"featureViewName"`
+	FeatureViewVersion *int                         `json:"featureViewVersion"`
+	PassedFeatures     *map[string]*json.RawMessage `json:"passedFeatures"`
+	Entries            *map[string]*json.RawMessage `json:"entries"`
+	RequestId          *string                      `json:"requestId"`
 }
 
 func (freq FeatureStoreRequest) String() string {
@@ -36,6 +40,18 @@ func (freq FeatureStoreRequest) String() string {
 }
 
 type FeatureStoreResponse struct {
-	//TODO Fix me
-	RespData string
+	Features []interface{}       `json:"features"`
+	Metadata []*FeatureMeatadata `json:"metadata"`
+}
+
+type FeatureMeatadata struct {
+}
+
+func (r *FeatureStoreResponse) String() string {
+	strBytes, err := json.MarshalIndent(*r, "", "\t")
+	if err != nil {
+		return fmt.Sprintf("Failed to marshar PKReadResponseJSON. Error: %v", err)
+	} else {
+		return string(strBytes)
+	}
 }

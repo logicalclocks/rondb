@@ -19,16 +19,109 @@ package feature_store
 
 import (
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 
 	"hopsworks.ai/rdrs/internal/dal"
 )
 
-//TODO cache this medata
+type FeatureViewMetadata struct {
+	FeatureStoreName     string
+	FeatureStoreId       int
+	FeatureViewName      string
+	FeatureViewId        int
+	FeatureViewVersion   int
+	PrefixFeaturesLookup map[string]*FeatureMetadata // key: prefix + fName
+	FeatureGroupFeatures []*FeatureGroupFeatures
+	NumOfFeatures        int
+	FeatureIndexLookup   map[string]int // key: fsName + fgName + fName
+}
 
-func GetFeatureStoreMetadata(featureStoreName, featureViewName string, featureViewVersion int) (*dal.FeatureStoreMetadata, error) {
+type FeatureGroupFeatures struct {
+	FeatureStoreName    string
+	FeatureGroupName    string
+	FeatureGroupVersion int
+	Features            []*FeatureMetadata
+}
 
-	featureStoreMetadata := dal.FeatureStoreMetadata{}
-	fsID, err := dal.GetFeatureStorID(featureStoreName)
+type FeatureMetadata struct {
+	FeatureStoreName         string
+	FeatureGroupName         string
+	FeatureGroupVersion      int
+	Id                       int
+	Name                     string
+	Type                     string
+	Index                    int
+	Label                    bool
+	Prefix                   string
+	TransformationFunctionId int
+}
+
+func newFeatureViewMetadata(
+	featureStoreName string,
+	featureStoreId int,
+	featureViewName string,
+	featureViewId int,
+	featureViewVersion int,
+	features *[]*FeatureMetadata,
+) *FeatureViewMetadata {
+	prefixColumns := make(map[string]*FeatureMetadata)
+	fgFeatures := make(map[string][]*FeatureMetadata)
+	for _, feature := range *features {
+		prefixFeatureName := feature.Prefix + feature.Name
+		prefixColumns[prefixFeatureName] = feature
+		var featureKey = feature.FeatureStoreName + "|" + feature.FeatureGroupName + "|" + strconv.Itoa(feature.FeatureGroupVersion)
+		fgFeatures[featureKey] = append(fgFeatures[featureKey], feature)
+	}
+
+	var fgFeaturesArray = make([]*FeatureGroupFeatures, 0)
+	for key, value := range fgFeatures {
+		fsName := strings.Split(key, "|")[0]
+		fgName := strings.Split(key, "|")[1]
+		fgVersion, _ := strconv.Atoi(strings.Split(key, "|")[2])
+		var featureValue = value
+		var fgFeature = FeatureGroupFeatures{fsName, fgName, fgVersion, featureValue}
+		fgFeaturesArray = append(fgFeaturesArray, &fgFeature)
+	}
+	less := func(i, j int) bool {
+		return (*features)[i].Index < (*features)[j].Index
+	}
+	sort.Slice(*features, less)
+	featureIndex := make(map[string]int)
+
+	for _, feature := range *features {
+		featureIndexKey := GetFeatureIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.Name)
+		featureIndex[*featureIndexKey] = feature.Index
+	}
+
+	var numOfFeature = len(featureIndex)
+	var metadata = FeatureViewMetadata{
+		featureStoreName,
+		featureStoreId,
+		featureViewName,
+		featureViewId,
+		featureViewVersion,
+		prefixColumns,
+		fgFeaturesArray,
+		numOfFeature,
+		featureIndex}
+	return &metadata
+}
+
+func GetFeatureIndexKeyByFeature(feature *FeatureMetadata) *string {
+	return GetFeatureIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.Name)
+}
+
+func GetFeatureIndexKey(fs string, fg string, f string) *string {
+	featureIndexKey := fs + "|" + fg + "|" + f
+	return &featureIndexKey
+}
+
+// TODO cache this medata
+func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureViewVersion int) (*FeatureViewMetadata, error) {
+
+	fsID, err := dal.GetFeatureStoreID(featureStoreName)
 	if err != nil {
 		return nil, fmt.Errorf("reading feature store ID failed. Error: %s ", err)
 	}
@@ -38,14 +131,14 @@ func GetFeatureStoreMetadata(featureStoreName, featureViewName string, featureVi
 		return nil, fmt.Errorf("reading feature view ID failed. Error: %s ", err.VerboseError())
 	}
 
-	tdJoinID, featureGroupID, prefix, err := dal.GetTrainingDatasetJoinData(fvID)
+	// FIXME: this should return a list of joinId etc
+	joinIdToPrefix := make(map[int]string)
+	tdJoins, err := dal.GetTrainingDatasetJoinData(fvID)
 	if err != nil {
 		return nil, fmt.Errorf("reading training dataset join failed. Error: %s ", err.VerboseError())
 	}
-
-	name, onlineEnabled, _, err := dal.GetFeatureGroupData(featureGroupID)
-	if err != nil {
-		return nil, fmt.Errorf("reading feature group failed. Error: %s ", err.VerboseError())
+	for _, tdj := range tdJoins {
+		joinIdToPrefix[tdj.Id] = tdj.Prefix
 	}
 
 	tdfs, err := dal.GetTrainingDatasetFeature(fvID)
@@ -53,16 +146,43 @@ func GetFeatureStoreMetadata(featureStoreName, featureViewName string, featureVi
 		return nil, fmt.Errorf("reading training dataset feature failed %s ", err.VerboseError())
 	}
 
-	featureStoreMetadata.FeatureStoreID = fsID
-	featureStoreMetadata.FeatureViewID = fvID
-	featureStoreMetadata.FeatureStoreName = featureStoreName
-	featureStoreMetadata.FeatureViewName = featureViewName
-	featureStoreMetadata.FeatureViewVersion = featureViewVersion
-	featureStoreMetadata.TDJoinID = tdJoinID
-	featureStoreMetadata.TDJoinPrefix = prefix
-	featureStoreMetadata.FeatureGroupName = name
-	featureStoreMetadata.FeatureGroupOnlineEnabled = onlineEnabled
-	featureStoreMetadata.TrainingDatasetFeatures = tdfs
+	features := make([]*FeatureMetadata, len(tdfs))
+	fsIdToName := make(map[int]string)
 
-	return &featureStoreMetadata, nil
+	for i, tdf := range tdfs {
+		featureGroupName, _, fsId, fgVersion, err := dal.GetFeatureGroupData(tdf.FeatureGroupID)
+		if err != nil {
+			return nil, fmt.Errorf("reading feature group failed. Error: %s ", err.VerboseError())
+		}
+		feature := FeatureMetadata{}
+		if featureStoreName, exist := fsIdToName[fsId]; exist {
+			feature.FeatureStoreName = featureStoreName
+		} else {
+			featureStoreName, err = dal.GetFeatureStoreName(fsId)
+			if err != nil {
+				return nil, fmt.Errorf("reading feature store failed. Error: %s ", err.VerboseError())
+			}
+			fsIdToName[fsId] = featureStoreName
+			feature.FeatureStoreName = featureStoreName
+		}
+		feature.FeatureGroupName = featureGroupName
+		feature.FeatureGroupVersion = fgVersion
+		feature.Id = tdf.FeatureID
+		feature.Name = tdf.Name
+		feature.Type = tdf.Type
+		feature.Index = tdf.IDX
+		feature.Label = tdf.Label == 1
+		feature.Prefix = joinIdToPrefix[tdf.TDJoinID]
+		feature.TransformationFunctionId = tdf.TransformationFunctionID
+		features[i] = &feature
+	}
+	featureViewMetadata := newFeatureViewMetadata(
+		featureStoreName,
+		fsID,
+		featureViewName,
+		fvID,
+		featureViewVersion,
+		&features,
+	)
+	return featureViewMetadata, nil
 }
