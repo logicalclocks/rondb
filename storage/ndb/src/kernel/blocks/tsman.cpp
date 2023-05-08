@@ -1141,7 +1141,7 @@ Tsman::execFSWRITEREQ(const FsReadWriteReq* req) const /* called direct cross th
   Uint32 per_page = File_formats::Datafile::extent_page_words(v2) / header_words;
   Uint32 extents = datapages/size;
 
-  if (init_zero == 0 &&
+  if ((init_zero == 0) &&
       page_no > 0 &&
       ((page_no - 1) >= extent_pages))
   {

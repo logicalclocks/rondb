@@ -53,7 +53,7 @@
 //#define DEBUG_ODIRECT
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-//#define DEBUG_FSWRITEREQ 1
+#define DEBUG_FSWRITEREQ 1
 #endif
 
 #ifdef DEBUG_FSWRITEREQ
@@ -304,6 +304,12 @@ AsyncFile::openReq(Request * request)
       {
         kdf_iter_count = -1; // Use PBKDF2 let ndb_ndbxfrm decide iter count
       }
+      DEB_FSWRITEREQ(("File %s data_size: %llu, get_data_size: %llu,"
+                      " file_block_size: %lu",
+		      theFileName.c_str(),
+		      data_size,
+		      m_file.get_size(),
+		      file_block_size));
       rc = m_xfile.create(
           m_file,
           use_gz,
@@ -320,6 +326,7 @@ AsyncFile::openReq(Request * request)
     }
     else
     {
+      DEB_FSWRITEREQ(("File %s opened", theFileName.c_str()));
       rc = m_xfile.open(m_file, pwd, pwd_len);
       if (rc < 0) NDBFS_SET_REQUEST_ERROR(request, get_last_os_error());
     }
@@ -328,6 +335,10 @@ AsyncFile::openReq(Request * request)
       m_file.close();
       goto remove_if_created;
     }
+    DEB_FSWRITEREQ(("File %s, get_size: %llu, get_data_size() = %llu",
+		    theFileName.c_str(),
+		    m_file.get_size(),
+		    m_xfile.get_data_size()));
     if (ndbxfrm_file::is_definite_size(data_size) && !is_data_size_estimated &&
         size_t(m_xfile.get_data_size()) != data_size)
     {
@@ -400,7 +411,7 @@ AsyncFile::openReq(Request * request)
        * reason to try to initialise it to zero.
        */
     }
-    else if (m_file.init_zero() != -1)
+    else if (m_file.init_zero(data_size, m_xfile.get_payload_start()) != -1)
     {
       init_zero = 0;
     }
@@ -437,7 +448,7 @@ AsyncFile::openReq(Request * request)
         (!m_xfile.is_transformed()) ? m_page_cnt : (m_page_cnt - 1);
     require(page_cnt > 0);
     int ret_code = 0;
-    while ((ret_code < 1) && off < file_data_size)
+    while ((ret_code < 2) && off < file_data_size)
     {
       ndb_off_t size = 0;
       Uint32 cnt = 0;
@@ -465,8 +476,7 @@ AsyncFile::openReq(Request * request)
                         request->theUserReference));
  
         off += request->par.open.page_size;
-        if (ret_code == 2 ||
-            (ret_code == 1 && !m_xfile.is_transformed()))
+        if (ret_code > 0)
         {
           break;
         }
