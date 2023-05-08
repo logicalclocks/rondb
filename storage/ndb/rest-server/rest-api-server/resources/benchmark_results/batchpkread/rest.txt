@@ -2,7 +2,7 @@
 // Apple M1 Pro, 32GB, using RonDB-Docker //
 ////////////////////////////////////////////
 
-// Varchar
+// Varchar, Schema: `id0 INT, col0 VARCHAR(1000) CHARSET latin1`
     performance_test.go:143: Number of requests:         8016
     performance_test.go:144: Batch size (per requests):  100
     performance_test.go:145: Number of threads:          7
@@ -12,7 +12,7 @@
     performance_test.go:149: -------------------------------------------------
 BenchmarkSimple-8          11149           1320736 ns/op         2147834 B/op      10115 allocs/op
 
-// Varbinary
+// Varbinary, Schema: `id0 VARBINARY(100), col0 VARBINARY(1000)`
     performance_test.go:248: Number of requests:         100
     performance_test.go:249: Batch size (per requests):  100
     performance_test.go:250: Number of threads:          8
