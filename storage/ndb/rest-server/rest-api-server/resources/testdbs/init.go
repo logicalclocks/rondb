@@ -103,13 +103,21 @@ func createBenchmarkSchema() string {
 
 	// Create an amount of INSERT statements for the benchmark scheme
 	benchAddRows := ""
-	col2DummyData := strings.Repeat("$", BENCH_DB_COLUMN_LENGTH)
+	col2DummyData := strings.Repeat("a", BENCH_DB_COLUMN_LENGTH)
 	for rowId := 0; rowId < BENCH_DB_NUM_ROWS; rowId++ {
 		addNewRow := strings.ReplaceAll(BenchmarkAddRow, BenchmarkAddRowSed_VALUE_COLUMN_1, strconv.Itoa(rowId))
 		addNewRow = strings.ReplaceAll(addNewRow, BenchmarkAddRowSed_VALUE_COLUMN_2, col2DummyData)
 		benchAddRows += addNewRow
 	}
+
+	col2DummyData = fmt.Sprintf("REPEAT(X'41', %d)", BENCH_DB_COLUMN_LENGTH)
+	for rowId := 0; rowId < BENCH_DB_NUM_ROWS; rowId++ {
+		addNewRow := strings.ReplaceAll(BenchmarkAddBinaryRow, BenchmarkAddRowSed_VALUE_COLUMN_1, strconv.Itoa(rowId))
+		addNewRow = strings.ReplaceAll(addNewRow, BenchmarkAddRowSed_VALUE_COLUMN_2, col2DummyData)
+		benchAddRows += addNewRow
+	}
 	benchScheme += benchAddRows
+
 	return benchScheme
 }
 
