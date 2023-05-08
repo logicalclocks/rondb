@@ -75,7 +75,7 @@ func newFeatureViewMetadata(
 		fgFeatures[featureKey] = append(fgFeatures[featureKey], feature)
 	}
 
-	var fgFeaturesArray = make([]*FeatureGroupFeatures, 0, 0)
+	var fgFeaturesArray = make([]*FeatureGroupFeatures, 0)
 	for key, value := range fgFeatures {
 		fsName := strings.Split(key, "|")[0]
 		fgName := strings.Split(key, "|")[1]
@@ -146,19 +146,22 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		return nil, fmt.Errorf("reading training dataset feature failed %s ", err.VerboseError())
 	}
 
-	features := make([]*FeatureMetadata, len(tdfs), len(tdfs))
+	features := make([]*FeatureMetadata, len(tdfs))
 	fsIdToName := make(map[int]string)
 
 	for i, tdf := range tdfs {
 		featureGroupName, _, fsId, fgVersion, err := dal.GetFeatureGroupData(tdf.FeatureGroupID)
 		if err != nil {
-			return nil, fmt.Errorf("reading feature store failed. Error: %s ", err.VerboseError())
+			return nil, fmt.Errorf("reading feature group failed. Error: %s ", err.VerboseError())
 		}
 		feature := FeatureMetadata{}
 		if featureStoreName, exist := fsIdToName[fsId]; exist {
 			feature.FeatureStoreName = featureStoreName
 		} else {
 			featureStoreName, err = dal.GetFeatureStoreName(fsId)
+			if err != nil {
+				return nil, fmt.Errorf("reading feature store failed. Error: %s ", err.VerboseError())
+			}
 			fsIdToName[fsId] = featureStoreName
 			feature.FeatureStoreName = featureStoreName
 		}
