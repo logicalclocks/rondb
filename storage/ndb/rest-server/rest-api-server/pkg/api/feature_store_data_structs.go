@@ -45,6 +45,7 @@ type FeatureStoreResponse struct {
 }
 
 type FeatureMeatadata struct {
+	Name	string
 }
 
 func (r *FeatureStoreResponse) String() string {

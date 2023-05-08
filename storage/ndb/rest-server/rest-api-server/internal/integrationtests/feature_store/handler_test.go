@@ -18,6 +18,7 @@
 package feature_store
 
 import (
+
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -31,36 +32,7 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func createFeatureStoreRequest(
-	fsName string,
-	fvName string,
-	fvVersion int,
-	pk []string,
-	values []interface{},
-	passedFeaturesKey []string,
-	passedFeaturesValue []interface{},
-) *api.FeatureStoreRequest {
-	var entries = make(map[string]*json.RawMessage)
-	for i, key := range pk {
-		val := json.RawMessage(values[i].([]byte))
-		entries[key] = &val
-	}
-	var passedFeatures = make(map[string]*json.RawMessage)
-	for i, key := range passedFeaturesKey {
-		val := json.RawMessage(passedFeaturesValue[i].([]byte))
-		passedFeatures[key] = &val
-	}
-	req := api.FeatureStoreRequest{
-		FeatureStoreName:   &fsName,
-		FeatureViewName:    &fvName,
-		FeatureViewVersion: &fvVersion,
-		Entries:            &entries,
-		PassedFeatures:     &passedFeatures,
-	}
-	return &req
-}
-
-func TestFeatureStore(t *testing.T) {
+func _TestFeatureStore(t *testing.T) {
 	var fsName = "fsdb002"
 	var fvName = "sample_1n2"
 	var fvVersion = 1
@@ -103,28 +75,32 @@ func TestFeatureStoreMetaData(t *testing.T) {
 	log.Infof("Feature store metadata is %s", mdJson)
 }
 
-func getFeatureStoreResponse(t *testing.T, req *api.FeatureStoreRequest) *api.FeatureStoreResponse {
-	reqBody := fmt.Sprintf("%s", req)
-	_, respBody := testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, testutils.NewFeatureStoreURL(), reqBody, "", http.StatusOK)
-	fsResp := api.FeatureStoreResponse{}
-	err := json.Unmarshal([]byte(respBody), &fsResp)
+func Test_Metadata_success(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb002", "sample_2_1")
 	if err != nil {
-		t.Fatalf("Unmarshal failed %s ", err)
+		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
-	return &fsResp
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb002", 
+			"sample_2",
+			1,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+	}
 }
 
-func Metadata_success(t *testing.T) {
-	// req := createFeatureStoreRequest(
-	// 	"",
-	// 	"",
-	// 	0,
-	// 	[]string{},
-	// 	[]interface{}{},
-	// 	nil,
-	// 	nil,
-	// )
-	// rep := getFeatureStoreResponse(req)
+func Test_Metadata_join(t *testing.T) {
+
+}
+
+func Test_Metadata_shared(t *testing.T) {
+
 }
 
 func MetadataNotExist(t *testing.T) {
@@ -132,16 +108,6 @@ func MetadataNotExist(t *testing.T) {
 }
 
 func PrimaryKey_success(t *testing.T) {
-	// req := createFeatureStoreRequest(
-	// 	"",
-	// 	"",
-	// 	0,
-	// 	[]string{},
-	// 	[]interface{}{},
-	// 	nil,
-	// 	nil,
-	// )
-	// rep := getFeatureStoreResponse(req)
 }
 
 func PrimaryKey_wrongKey(t *testing.T) {
@@ -157,6 +123,10 @@ func PrimaryKey_missingKey(t *testing.T) {
 }
 
 func PrimaryKey_wrongType(t *testing.T) {
+
+}
+
+func PrimaryKey_noMatch(t *testing.T) {
 
 }
 

@@ -120,7 +120,13 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	features := getFeatureValues(dbResponseIntf, fsReq.Entries, metadata)
 	fillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
 	fsResp.Features = *features
-
+	featureMetadatas := make([]*api.FeatureMeatadata, metadata.NumOfFeatures, metadata.NumOfFeatures)
+	for featureKey, metadata := range metadata.PrefixFeaturesLookup {
+		featureMetadata := api.FeatureMeatadata{}
+		featureMetadata.Name = featureKey
+		featureMetadatas[metadata.Index] = &featureMetadata
+	}
+	fsResp.Metadata = featureMetadatas
 	return code, nil
 }
 
