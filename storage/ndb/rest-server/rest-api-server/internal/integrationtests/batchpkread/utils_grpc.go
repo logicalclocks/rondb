@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"hopsworks.ai/rdrs/internal/integrationtests"
@@ -59,7 +60,11 @@ func sendGRPCBatchRequest(
 
 	respCode := 200
 	var errStr string
-	respProto, err := gRPCClient.Batch(context.Background(), batchRequestProto)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	respProto, err := gRPCClient.Batch(ctx, batchRequestProto)
 	if err != nil {
 		respCode = testclient.GetStatusCodeFromError(t, err)
 		errStr = fmt.Sprintf("%v", err)
