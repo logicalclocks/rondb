@@ -338,15 +338,15 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     size_t col_len               = col->getLength();
 
     // The buffer in out has been allocated by the caller and is at least 3/4 the size of the input.
-    const int maxEncodedSize = ((4 * BINARY_MAX_SIZE_IN_BYTES_DECODED) / 3);
+    const int maxEncodedSize = ((4 * BINARY_MAX_SIZE_IN_BYTES) / 3);
     if (unlikely(encoded_str_len > maxEncodedSize)) {
         return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
                         "Encoded data length is greater than 4/3 of maximum binary size." +
                         " Column: " + std::string(col->getName()) +
-                        " Maximum binary size: " + std::to_string(BINARY_MAX_SIZE_IN_BYTES_DECODED));
+                        " Maximum binary size: " + std::to_string(BINARY_MAX_SIZE_IN_BYTES));
     }
 
-    char pk[BINARY_MAX_SIZE_IN_BYTES_DECODED];
+    char pk[BINARY_MAX_SIZE_IN_BYTES];
     memset(pk, 0, col->getLength());
 
     size_t outlen = 0;
@@ -384,15 +384,15 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     const size_t encoded_str_len = request->PKValueLen(colIdx);
 
     // The buffer in out has been allocated by the caller and is at least 3/4 the size of the input.
-    const int maxEncodedSize = ((4 * KEY_MAX_SIZE_IN_BYTES_DECODED) / 3);
+    const int maxEncodedSize = ((4 * KEY_MAX_SIZE_IN_BYTES) / 3);
     if (unlikely(encoded_str_len > maxEncodedSize)) {
         return RS_CLIENT_ERROR(std::string(ERROR_008) +
                         " Encoded data length is greater than 4/3 of maximum binary size." +
                         " Column: " + std::string(col->getName()) +
-                        " Maximum binary size: " + std::to_string(KEY_MAX_SIZE_IN_BYTES_DECODED));
+                        " Maximum binary size: " + std::to_string(KEY_MAX_SIZE_IN_BYTES));
     }
 
-    char pk[KEY_MAX_SIZE_IN_BYTES_DECODED];
+    char pk[KEY_MAX_SIZE_IN_BYTES];
     int additional_len = 1;
     if (col->getType() == NdbDictionary::Column::Longvarbinary) {
       additional_len = 2;
