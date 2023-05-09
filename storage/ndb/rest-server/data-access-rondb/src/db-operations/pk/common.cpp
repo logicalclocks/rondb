@@ -937,7 +937,7 @@ int GetByteArray(const NdbRecAttr *attr, const char **first_byte, Uint32 *bytes)
        Data starts from third byte of aRef
        */
     *first_byte = aRef + 2;
-    *bytes      = static_cast<size_t>(aRef[1]) * 256 + static_cast<size_t>(aRef[0]);
+    *bytes      = static_cast<Uint8>(aRef[1]) * 256 + static_cast<Uint8>(aRef[0]);
     return 0;
   default:
     first_byte = nullptr;
