@@ -37,25 +37,25 @@ BenchmarkManyColumns-8             11085           1016684 ns/op          339850
 
 // Varbinary, Schema: `id0 VARBINARY(100), col0 VARBINARY(1000)`
     performance_test.go:254: -------------------------------------------------
-    performance_test.go:248: Number of requests:         14486
+    performance_test.go:248: Number of requests:         15297
     performance_test.go:249: Batch size (per requests):  100
     performance_test.go:250: Number of threads:          8
-    performance_test.go:251: Throughput:                 132610.623986 pk lookups/second
+    performance_test.go:251: Throughput:                 134145.760245 pk lookups/second
     performance_test.go:252: 50th percentile latency:    5 ms
-    performance_test.go:253: 99th percentile latency:    11 ms
+    performance_test.go:253: 99th percentile latency:    10 ms
     performance_test.go:254: -------------------------------------------------
-BenchmarkBinary-8          14486            754077 ns/op         1063519 B/op       8695 allocs/op
+BenchmarkBinary-8          15297            745453 ns/op         1063451 B/op       8695 allocs/op
 
 // Varbinary, Schema: `id0 VARBINARY(100), col0 VARBINARY(10000)`
     performance_test.go:254: -------------------------------------------------
-    performance_test.go:248: Number of requests:         7633
+    performance_test.go:248: Number of requests:         9039
     performance_test.go:249: Batch size (per requests):  100
     performance_test.go:250: Number of threads:          8
-    performance_test.go:251: Throughput:                 74159.327711 pk lookups/second
-    performance_test.go:252: 50th percentile latency:    10 ms
-    performance_test.go:253: 99th percentile latency:    18 ms
+    performance_test.go:251: Throughput:                 81499.709113 pk lookups/second
+    performance_test.go:252: 50th percentile latency:    9 ms
+    performance_test.go:253: 99th percentile latency:    19 ms
     performance_test.go:254: -------------------------------------------------
-BenchmarkBinary-8           7633           1348440 ns/op         7331772 B/op       8828 allocs/op
+BenchmarkBinary-8           9039           1226993 ns/op         7333169 B/op       8826 allocs/op
 
 // Varbinary, Schema: `id0 VARBINARY(3000), col0 VARBINARY(100)`
     performance_test.go:261: -------------------------------------------------
