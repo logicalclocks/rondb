@@ -346,31 +346,34 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     const int maxEncodedSize = 4 * maxConversions;
 
     if (unlikely(encoded_str_len > maxEncodedSize)) {
-        return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
-                        "Encoded data length is greater than 4/3 of maximum binary size." +
-                        " Column: " + std::string(col->getName()) +
-                        " Maximum binary size: " + std::to_string(BINARY_MAX_SIZE_IN_BYTES));
+      return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
+                             "Encoded data length is greater than 4/3 of maximum binary size." +
+                             " Column: " + std::string(col->getName()) +
+                             " Maximum binary size: " + std::to_string(BINARY_MAX_SIZE_IN_BYTES));
     }
 
     char pk[BINARY_MAX_SIZE_IN_BYTES];
     memset(pk, 0, col->getLength());
 
     size_t outlen = 0;
-    int result = base64_decode(encoded_str, encoded_str_len, (char *)&pk[0], &outlen, 0);
+    int result    = base64_decode(encoded_str, encoded_str_len, (char *)&pk[0], &outlen, 0);
 
     if (unlikely(result == 0)) {
-        return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
-            "Encountered error decoding base64. Column: " + std::string(col->getName()));
+      return RS_CLIENT_ERROR(
+          std::string(ERROR_008) + " " +
+          "Encountered error decoding base64. Column: " + std::string(col->getName()));
     } else if (unlikely(result == -1)) {
-        return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
-            "Encountered error decoding base64; Chosen codec is not part of current build. Column: " + std::string(col->getName()));
+      return RS_CLIENT_ERROR(
+          std::string(ERROR_008) + " " +
+          "Encountered error decoding base64; Chosen codec is not part of current build. Column: " +
+          std::string(col->getName()));
     }
 
     if (unlikely(outlen > col_len)) {
       return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
-                        "Decoded data length is greater than column length." +
-                        " Column: " + std::string(col->getName()) +
-                        " Length: " + std::to_string(col->getLength()));
+                             "Decoded data length is greater than column length." +
+                             " Column: " + std::string(col->getName()) +
+                             " Length: " + std::to_string(col->getLength()));
     }
 
     if (unlikely(operation->equal(request->PKName(colIdx), pk, col->getLength()) != 0)) {
@@ -396,10 +399,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     const int maxEncodedSize = 4 * maxConversions;
 
     if (unlikely(encoded_str_len > maxEncodedSize)) {
-        return RS_CLIENT_ERROR(std::string(ERROR_008) +
-                        " Encoded data length is greater than 4/3 of maximum binary size." +
-                        " Column: " + std::string(col->getName()) +
-                        " Maximum binary size: " + std::to_string(KEY_MAX_SIZE_IN_BYTES));
+      return RS_CLIENT_ERROR(std::string(ERROR_008) +
+                             " Encoded data length is greater than 4/3 of maximum binary size." +
+                             " Column: " + std::string(col->getName()) +
+                             " Maximum binary size: " + std::to_string(KEY_MAX_SIZE_IN_BYTES));
     }
 
     char pk[KEY_MAX_SIZE_IN_BYTES];
@@ -410,21 +413,25 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
 
     size_t outlen = 0;
     // leave first 1-2 bytes free for saving length bytes
-    int result = base64_decode(encoded_str, encoded_str_len, (char *)(&pk[0] + additional_len), &outlen, 0);
+    int result =
+        base64_decode(encoded_str, encoded_str_len, (char *)(&pk[0] + additional_len), &outlen, 0);
 
     if (unlikely(result == 0)) {
-        return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
-            "Encountered error decoding base64. Column: " + std::string(col->getName()));
+      return RS_CLIENT_ERROR(
+          std::string(ERROR_008) + " " +
+          "Encountered error decoding base64. Column: " + std::string(col->getName()));
     } else if (unlikely(result == -1)) {
-        return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
-            "Encountered error decoding base64; Chosen codec is not part of current build. Column: " + std::string(col->getName()));
+      return RS_CLIENT_ERROR(
+          std::string(ERROR_008) + " " +
+          "Encountered error decoding base64; Chosen codec is not part of current build. Column: " +
+          std::string(col->getName()));
     }
 
     if (unlikely(outlen > col_len)) {
       return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
-                        "Decoded data length is greater than column length." +
-                        " Column: " + std::string(col->getName()) +
-                        " Length: " + std::to_string(col->getLength()));
+                             "Decoded data length is greater than column length." +
+                             " Column: " + std::string(col->getName()) +
+                             " Length: " + std::to_string(col->getLength()));
     }
 
     // insert the length at the beginning of the array
@@ -792,7 +799,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
 
       size_t outlen = 0;
       base64_encode(data_start, attr_bytes, (char *)&buffer[0], &outlen, 0);
-    
+
       return response->Append_string(attr->getColumn()->getName(), std::string(buffer, outlen),
                                      RDRS_BINARY_DATATYPE);
     }
