@@ -244,7 +244,7 @@ func getFeatureValues(batchResponse *api.BatchOpResponse, entries *map[string]*j
 	featureValues := make([]interface{}, featureView.NumOfFeatures)
 	for _, response := range *fsResp.Result {
 		for featureName, value := range *response.Body.Data {
-			featureIndexKey := *response.Body.OperationID + "|" + featureName
+			featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
 			if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
 				featureValues[index] = value
 			} else {

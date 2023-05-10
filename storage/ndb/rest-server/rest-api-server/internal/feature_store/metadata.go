@@ -141,13 +141,17 @@ func GetFeatureIndexKeyByFeature(feature *FeatureMetadata) string {
 	return *getFeatureIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.FeatureGroupVersion, feature.Name)
 }
 
+func GetFeatureIndexKeyByFgIndexKey(fgKey string, featureName string) string {
+	return fmt.Sprintf("%s|%s", fgKey, featureName) 
+}
+
 func getFeatureGroupIndexKey(fs string, fg string, fgVersion int) *string {
 	featureIndexKey := fmt.Sprintf("%s|%s|%d", fs, fg, fgVersion)
 	return &featureIndexKey
 }
 
 func getFeatureIndexKey(fs string, fg string, fgVersion int, f string) *string {
-	featureIndexKey := fmt.Sprintf("%s|%s", *getFeatureGroupIndexKey(fs, fg, fgVersion), f)
+	var featureIndexKey = GetFeatureIndexKeyByFgIndexKey(*getFeatureGroupIndexKey(fs, fg, fgVersion), f)
 	return &featureIndexKey
 }
 
