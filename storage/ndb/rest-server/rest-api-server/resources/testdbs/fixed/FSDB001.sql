@@ -103,3 +103,51 @@ VALUES
     (
         53, '2022-01-25', 'int83', 'str79'
     );
+
+CREATE TABLE `sample_3_1` (
+  `id1` bigint NOT NULL,
+  `id2` varchar(100) COLLATE utf8_unicode_ci NOT NULL,
+  `ts` timestamp NULL DEFAULT NULL,
+  `bigint` bigint DEFAULT NULL,
+  `string` varchar(100) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `date` date DEFAULT NULL,
+  `bool` tinyint DEFAULT NULL,
+  `float` float DEFAULT NULL,
+  `double` double DEFAULT NULL,
+  `binary` varbinary(100) DEFAULT NULL,
+  PRIMARY KEY (`id1`,`id2`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+INSERT INTO
+    sample_3_1
+VALUES
+    (
+        93, 'id93', Timestamp('2022-01-05 00:00:00'), 34, '58', '2022-01-03', True, 91.0, 72.5, '0'
+    ),
+    (
+        53, 'id53', Timestamp('2022-01-05 00:00:00'), 48, '16', '2022-01-16', True, 89.0, 60.0, '0'
+    ),
+    (
+        45, 'id45', Timestamp('2022-01-09 00:00:00'), 48, '42', '2022-01-15', False, 82.0, 120.0, '0'
+    ),
+    (
+        81, 'id81', Timestamp('2022-01-29 00:00:00'), 6, '90', '2022-01-07', True, 48.0, 147.5, '0'
+    ),
+    (
+        20, 'id20', Timestamp('2022-01-04 00:00:00'), 58, '54', '2022-01-28', False, 16.0, 162.5, '0'
+    ),
+    (
+        50, 'id50', Timestamp('2022-01-25 00:00:00'), 75, '19', '2022-01-02', True, 9.0, 200.0, '0'
+    ),
+    (
+        23, 'id23', Timestamp('2022-01-04 00:00:00'), 49, '56', '2022-01-20', True, 14.0, 145.0, '0'
+    ),
+    (
+        51, 'id51', Timestamp('2022-01-10 00:00:00'), 49, '2', '2022-01-21', False, 66.0, 102.5, '0'
+    ),
+    (
+        95, 'id95', Timestamp('2022-01-09 00:00:00'), 51, '76', '2022-01-19', False, 12.0, 105.0, '0'
+    ),
+    (
+        77, 'id77', Timestamp('2022-01-04 00:00:00'), 47, '93', '2022-01-20', True, 27.0, 45.0, '0'
+    );

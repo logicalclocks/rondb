@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"hopsworks.ai/rdrs/internal/config"
@@ -33,7 +34,7 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
- func CreateFeatureStoreRequest(
+func CreateFeatureStoreRequest(
 	fsName string,
 	fvName string,
 	fvVersion int,
@@ -65,7 +66,7 @@ import (
 func GetSampleData(database string, table string) ([][]interface{}, []string, []string, error) {
 	dbConn, err := testutils.CreateMySQLConnection()
 	if err != nil {
-		return nil, nil, nil,err
+		return nil, nil, nil, err
 	}
 	defer dbConn.Close()
 
@@ -74,17 +75,25 @@ func GetSampleData(database string, table string) ([][]interface{}, []string, []
 	query := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d", database, table, nResult)
 	rows, err := dbConn.Query(query)
 	if err != nil {
-		return nil, nil, nil,err
+		return nil, nil, nil, err
 	}
 	defer rows.Close()
 
 	columns, err := rows.Columns()
 	if err != nil {
-		return nil, nil, nil,err
+		return nil, nil, nil, err
 	}
 
 	valueBatch := make([][]interface{}, 0)
+	columnName, pks, colTypes, err := getColumnInfo(database, table)
+	if log.IsDebug() {
+		var colDebug []string
+		for i := range columnName {
+			colDebug = append(colDebug, fmt.Sprintf("%s (type: %s)", columnName[i], colTypes[i]))
+		}
+		log.Debugf("Read columns: %s", strings.Join(colDebug, ", "))
 
+	}
 	for rows.Next() {
 		values := make([]interface{}, len(columns))
 		for i := range values {
@@ -93,12 +102,12 @@ func GetSampleData(database string, table string) ([][]interface{}, []string, []
 
 		err := rows.Scan(values...)
 		if err != nil {
-			return nil, nil, nil,err
+			return nil, nil, nil, err
 		}
 		rawValue := make([]interface{}, len(columns))
 		for i := range values {
 			rawBytes := values[i].(*sql.RawBytes)
-			if isRawBytesNumerical(rawBytes) {
+			if isColNumerical(colTypes[i]) {
 				rawValue[i] = []byte(*rawBytes)
 			} else {
 				rawValue[i] = []byte("\"" + string(*rawBytes) + "\"")
@@ -106,11 +115,54 @@ func GetSampleData(database string, table string) ([][]interface{}, []string, []
 			valueBatch = append(valueBatch, rawValue)
 		}
 	}
-	columnName, pks, err := getColumnName(database, table)
+	if len(valueBatch) == 0 {
+		return nil, nil, nil, fmt.Errorf("No sample data is fetched.\n")
+	}
 	if err != nil {
-		return nil, nil, nil,err
+		return nil, nil, nil, err
 	}
 	return valueBatch, pks, columnName, nil
+}
+
+func GetSampleDataWithJoin(database string, table string, rightDatabase string, rightTable string, rightPrefix string) ([][]interface{}, []string, []string, error) {
+	fg1Rows, fg1Pks, fg1Cols, err := GetSampleData(database, table)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	fg2Rows, fg2Pks, fg2Cols, err := GetSampleData(rightDatabase, rightTable)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var numFeatures = len(fg1Rows[0]) + len(fg2Rows[0])
+	var rows = make([][]interface{}, numFeatures)
+	var pks, cols []string
+	for i, fg1Row := range fg1Rows {
+		rows[i] = append(fg1Row, fg2Rows[i]...)
+	}
+	pks = fg1Pks
+	for _, pk := range fg2Pks {
+		pks = append(pks, rightPrefix+pk)
+	}
+	cols = fg1Cols
+	for _, col := range fg2Cols {
+		cols = append(cols, rightPrefix+col)
+	}
+	return rows, pks, cols, nil
+}
+
+func isColNumerical(colType string) bool {
+	var numericalType = make(map[string]bool)
+	numericalType["TINYINT"] = true
+	numericalType["SMALLINT"] = true
+	numericalType["MEDIUMINT"] = true
+	numericalType["INT"] = true
+	numericalType["INTEGER"] = true
+	numericalType["BIGINT"] = true
+	numericalType["DECIMAL"] = true
+	numericalType["FLOAT"] = true
+	numericalType["DOUBLE"] = true
+	numericalType["REAL"] = true
+	return numericalType[strings.ToUpper(colType)]
 }
 
 func isRawBytesNumerical(v *sql.RawBytes) bool {
@@ -123,51 +175,62 @@ func isRawBytesNumerical(v *sql.RawBytes) bool {
 	}
 }
 
-func getColumnName(dbName string, tableName string) ([]string, []string, error){
+func getColumnInfo(dbName string, tableName string) ([]string, []string, []string, error) {
 	dbConn, err := testutils.CreateMySQLConnection()
 
+	var colTypes []string
 	var columns []string
 	var pks []string
 
-	query := fmt.Sprintf("SELECT COLUMN_NAME, COLUMN_KEY FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s'", dbName, tableName)
+	query := fmt.Sprintf("SELECT DATA_TYPE, COLUMN_NAME, COLUMN_KEY FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s'", dbName, tableName)
 	rows, err := dbConn.Query(query)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var columnName, columnKey string
-		err := rows.Scan(&columnName, &columnKey)
+		var columnType, columnName, columnKey string
+		err := rows.Scan(&columnType, &columnName, &columnKey)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if columnKey == "PRI" {
 			pks = append(pks, columnName)
 		}
 		columns = append(columns, columnName)
+		colTypes = append(colTypes, columnType)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return columns, pks, nil
+	return columns, pks, colTypes, nil
 }
 
 func GetFeatureStoreResponse(t *testing.T, req *api.FeatureStoreRequest) *api.FeatureStoreResponse {
+	return GetFeatureStoreResponseWithDetail(t, req, "", http.StatusOK)
+}
+
+func GetFeatureStoreResponseWithDetail(t *testing.T, req *api.FeatureStoreRequest, message string, status int) *api.FeatureStoreResponse {
 	reqBody := fmt.Sprintf("%s", req)
-	_, respBody := testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, testutils.NewFeatureStoreURL(), reqBody, "", http.StatusOK)
-	fsResp := api.FeatureStoreResponse{}
-	err := json.Unmarshal([]byte(respBody), &fsResp)
-	if err != nil {
-		t.Fatalf("Unmarshal failed %s ", err)
+	_, respBody := testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, testutils.NewFeatureStoreURL(), reqBody, message, status)
+	if int(status/100) == 2 {
+		fsResp := api.FeatureStoreResponse{}
+		err := json.Unmarshal([]byte(respBody), &fsResp)
+		if err != nil {
+			t.Fatalf("Unmarshal failed %s ", err)
+		}
+		log.Debugf("Response data is %s", fsResp.String())
+		return &fsResp
+	} else {
+		return nil
 	}
-	return &fsResp
 }
 
 func getPkValues(row *[]interface{}, pks *[]string, cols *[]string) *[]interface{} {
 	pkSet := make(map[string]bool)
-	
+
 	for _, pk := range *pks {
 		pkSet[pk] = true
 	}
@@ -175,7 +238,7 @@ func getPkValues(row *[]interface{}, pks *[]string, cols *[]string) *[]interface
 	var pkValue = make([]interface{}, 0)
 	for i, col := range *cols {
 		if _, ok := pkSet[col]; ok {
-			fmt.Printf("Primary key type sent to API: %s, value %s\n", reflect.TypeOf((*row)[i]), (*row)[i])
+			log.Debugf("Primary key type sent to API: %s, value %s\n", reflect.TypeOf((*row)[i]), (*row)[i])
 			pkValue = append(pkValue, (*row)[i])
 		}
 	}
@@ -183,31 +246,30 @@ func getPkValues(row *[]interface{}, pks *[]string, cols *[]string) *[]interface
 }
 
 func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string, resp *api.FeatureStoreResponse) {
-	log.Debugf("Response data is %s", resp.String())
 	colToIndex := make(map[string]int)
 	for i, col := range *cols {
 		colToIndex[col] = i
- 	}
+	}
 	for i, metadata := range (*resp).Metadata {
 		got := ((*resp).Features)[i]
-		if metadata.Name == "ts" {
-			continue
-		}
 		expected := ((*data)[colToIndex[metadata.Name]]).([]byte)
 		var expectedJson interface{}
 		err := json.Unmarshal(expected, &expectedJson)
 		if err != nil {
 			t.Errorf("Cannot unmarshal %s, got error: %s\n", expected, err)
 		}
+		// Decode binary data got from feature vector
+		if metadata.Type == "binary" {
+			var binary []byte
+			err := json.Unmarshal([]byte(fmt.Sprintf(`"%s"`, got.(string))), &binary)
+			if err != nil {
+				t.Errorf("Cannot unmarshal %s, got error: %s\n", []byte(fmt.Sprintf(`"%s"`, got.(string))), err)
+			}
+			got = string(binary)
+		}
 		if !reflect.DeepEqual(got, expectedJson) {
 			t.Errorf("Got %s (%s) but expect %s (%s)\n", got, reflect.TypeOf(got), expectedJson, reflect.TypeOf(expectedJson))
 			break
 		}
 	}
-}
-
-func checkJsonType(value *json.RawMessage) {
-	var v interface{}
-	json.Unmarshal(*value, &v)
-	fmt.Printf("Primary key type: %s, value %s\n", reflect.TypeOf(v), value)
 }
