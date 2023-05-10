@@ -32,6 +32,9 @@ const benchmarkSed_COLUMN_LENGTH = "COLUMN_LENGTH"
 //go:embed dynamic/benchmark_add_row.sql
 var BenchmarkAddRow string
 
+//go:embed dynamic/benchmark_add_row_binary.sql
+var BenchmarkAddBinaryRow string
+
 const BenchmarkAddRowSed_VALUE_COLUMN_1 = "VALUE_COLUMN_1"
 const BenchmarkAddRowSed_VALUE_COLUMN_2 = "VALUE_COLUMN_2"
 

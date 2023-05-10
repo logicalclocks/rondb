@@ -1,0 +1,58 @@
+////////////////////////////////////////////
+// Apple M1 Pro, 32GB, using RonDB-Docker //
+////////////////////////////////////////////
+
+// Varchar, Schema: `id0 INT, col0 VARCHAR(1000) CHARSET latin1`
+    performance_test.go:149: -------------------------------------------------
+    performance_test.go:146: Number of requests:         16698
+    performance_test.go:147: Batch size (per requests):  100
+    performance_test.go:148: Number of threads:          8
+    performance_test.go:149: Throughput:                 156471.519989 pk lookups/second
+    performance_test.go:150: 50th percentile latency:    5 ms
+    performance_test.go:151: 99th percentile latency:    7 ms
+    performance_test.go:152: -------------------------------------------------
+BenchmarkSimple-8          16698            639089 ns/op          873143 B/op       8648 allocs/op
+
+// Varchar, Schema: `id0 INT, col0 VARCHAR(10000) CHARSET latin1`
+    performance_test.go:149: -------------------------------------------------
+    performance_test.go:146: Number of requests:         6114
+    performance_test.go:147: Batch size (per requests):  100
+    performance_test.go:148: Number of threads:          8
+    performance_test.go:149: Throughput:                 54905.254192 pk lookups/second
+    performance_test.go:150: 50th percentile latency:    13 ms
+    performance_test.go:151: 99th percentile latency:    23 ms
+    performance_test.go:152: -------------------------------------------------
+BenchmarkSimple-8           6114           1821309 ns/op         5587904 B/op       8766 allocs/op
+
+// Varbinary, Schema: `id0 VARBINARY(100), col0 VARBINARY(1000)`
+    performance_test.go:254: -------------------------------------------------
+    performance_test.go:248: Number of requests:         14486
+    performance_test.go:249: Batch size (per requests):  100
+    performance_test.go:250: Number of threads:          8
+    performance_test.go:251: Throughput:                 132610.623986 pk lookups/second
+    performance_test.go:252: 50th percentile latency:    5 ms
+    performance_test.go:253: 99th percentile latency:    11 ms
+    performance_test.go:254: -------------------------------------------------
+BenchmarkBinary-8          14486            754077 ns/op         1063519 B/op       8695 allocs/op
+
+// Varbinary, Schema: `id0 VARBINARY(100), col0 VARBINARY(10000)`
+    performance_test.go:254: -------------------------------------------------
+    performance_test.go:248: Number of requests:         7633
+    performance_test.go:249: Batch size (per requests):  100
+    performance_test.go:250: Number of threads:          8
+    performance_test.go:251: Throughput:                 74159.327711 pk lookups/second
+    performance_test.go:252: 50th percentile latency:    10 ms
+    performance_test.go:253: 99th percentile latency:    18 ms
+    performance_test.go:254: -------------------------------------------------
+BenchmarkBinary-8           7633           1348440 ns/op         7331772 B/op       8828 allocs/op
+
+// Varchar, proto3
+    performance_test.go:149: -------------------------------------------------
+    performance_test.go:143: Number of requests:         16200
+    performance_test.go:144: Batch size (per requests):  100
+    performance_test.go:145: Number of threads:          8
+    performance_test.go:146: Throughput:                 145901.954036 pk lookups/second
+    performance_test.go:147: 50th percentile latency:    5 ms
+    performance_test.go:148: 99th percentile latency:    10 ms
+    performance_test.go:149: -------------------------------------------------
+BenchmarkSimple-8          16200            685387 ns/op          771574 B/op       7435 allocs/op

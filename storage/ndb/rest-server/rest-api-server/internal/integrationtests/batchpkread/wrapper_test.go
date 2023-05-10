@@ -53,10 +53,10 @@ func TestMain(m *testing.M) {
 	}
 	defer cleanup()
 
-	// Benchmarking pkreads tends to perform better with more client-side go-routines
+	// Increasing this increases throughput, but can reduce latency if it is too high
 	if conf.Internal.GOMAXPROCS == -1 {
 		// The optimal number here tends to grow with higher batch sizes
-		runtime.GOMAXPROCS(runtime.NumCPU() * 5)
+		runtime.GOMAXPROCS(8)
 	} else {
 		runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
 	}
