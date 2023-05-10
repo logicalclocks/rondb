@@ -338,7 +338,13 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     size_t col_len               = col->getLength();
 
     // The buffer in out has been allocated by the caller and is at least 3/4 the size of the input.
-    const int maxEncodedSize = ((4 * BINARY_MAX_SIZE_IN_BYTES) / 3);
+
+    // Encoding takes 3 decoded bytes at a time and turns them into 4 encoded bytes.
+    // The encoded string is therefore always a multiple of 4.
+    const int maxConversions =
+        BINARY_MAX_SIZE_IN_BYTES / 3 + (BINARY_MAX_SIZE_IN_BYTES % 3 != 0);  // basically ceiling()
+    const int maxEncodedSize = 4 * maxConversions;
+
     if (unlikely(encoded_str_len > maxEncodedSize)) {
         return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
                         "Encoded data length is greater than 4/3 of maximum binary size." +
@@ -383,8 +389,12 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     const char *encoded_str      = request->PKValueCStr(colIdx);
     const size_t encoded_str_len = request->PKValueLen(colIdx);
 
-    // The buffer in out has been allocated by the caller and is at least 3/4 the size of the input.
-    const int maxEncodedSize = ((4 * KEY_MAX_SIZE_IN_BYTES) / 3);
+    // Encoding takes 3 decoded bytes at a time and turns them into 4 encoded bytes.
+    // The encoded string is therefore always a multiple of 4.
+    const int maxConversions =
+        KEY_MAX_SIZE_IN_BYTES / 3 + (KEY_MAX_SIZE_IN_BYTES % 3 != 0);  // basically ceiling()
+    const int maxEncodedSize = 4 * maxConversions;
+
     if (unlikely(encoded_str_len > maxEncodedSize)) {
         return RS_CLIENT_ERROR(std::string(ERROR_008) +
                         " Encoded data length is greater than 4/3 of maximum binary size." +
