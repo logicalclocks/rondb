@@ -202,7 +202,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	features := getFeatureValues(dbResponseIntf, fsReq.Entries, metadata)
 	fillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
 	fsResp.Features = *features
-	featureMetadatas := make([]*api.FeatureMeatadata, metadata.NumOfFeatures, metadata.NumOfFeatures)
+	featureMetadatas := make([]*api.FeatureMeatadata, metadata.NumOfFeatures)
 	for featureKey, metadata := range metadata.PrefixFeaturesLookup {
 		featureMetadata := api.FeatureMeatadata{}
 		featureMetadata.Name = featureKey
@@ -236,19 +236,26 @@ func translateRonDbError(code int, err error) (fsCode int, fsError error) {
 
 func getFeatureValues(batchResponse *api.BatchOpResponse, entries *map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata) *[]interface{} {
 	jsonResponse := (*batchResponse).String()
+	if log.IsDebug() {
+		log.Debugf("Received response from rondb: %s", jsonResponse)
+	}
 	fsResp := api.BatchResponseJSON{}
 	json.Unmarshal([]byte(jsonResponse), &fsResp)
-	featureValues := make([]interface{}, featureView.NumOfFeatures, featureView.NumOfFeatures)
+	featureValues := make([]interface{}, featureView.NumOfFeatures)
 	for _, response := range *fsResp.Result {
 		for featureName, value := range *response.Body.Data {
 			featureIndexKey := *response.Body.OperationID + "|" + featureName
-			featureValues[(featureView.FeatureIndexLookup)[featureIndexKey]] = value
+			if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
+				featureValues[index] = value
+			} else {
+				panic(fmt.Sprintf("Index cannot be found by the key '%s'", featureIndexKey))
+			}
 		}
 	}
-	// Fill in primary key into the vector
+	// Fill in primary key value from request into the vector
 	for featureName, value := range *entries {
 		indexKey := feature_store.GetFeatureIndexKeyByFeature((featureView.PrefixFeaturesLookup)[featureName])
-		if index, ok := (featureView.FeatureIndexLookup)[*indexKey]; ok {
+		if index, ok := (featureView.FeatureIndexLookup)[indexKey]; ok {
 			featureValues[index] = value
 		}
 	}
@@ -280,7 +287,7 @@ func getBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 				}
 			}
 		}
-		var opId = fgFeature.FeatureStoreName + "|" + fgFeature.FeatureGroupName
+		var opId = feature_store.GetFeatureGroupKeyByTDFeature(fgFeature)
 		param := api.PKReadParams{DB: &testDb, Table: &testTable, Filters: &filters, ReadColumns: &columns, OperationID: &opId}
 		batchReadParams = append(batchReadParams, &param)
 	}
@@ -296,8 +303,8 @@ func getPkReadResponseJSON() *api.BatchOpResponse {
 func fillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*json.RawMessage, featureMetadata *map[string]*feature_store.FeatureMetadata, indexLookup *map[string]int) {
 	for featureName, passFeature := range *passedFeatures {
 		var feature = (*featureMetadata)[featureName]
-		var lookupKey = feature_store.GetFeatureIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.Name)
-		(*features)[(*indexLookup)[*lookupKey]] = passFeature
+		var lookupKey = feature_store.GetFeatureIndexKeyByFeature(feature)
+		(*features)[(*indexLookup)[lookupKey]] = passFeature
 	}
 
 }

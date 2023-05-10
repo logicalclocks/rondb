@@ -176,6 +176,26 @@ func Test_GetFeatureVector_join(t *testing.T) {
 	}
 }
 
+func Test_GetFeatureVector_joinSameFg(t *testing.T) {
+	rows, pks, cols, err := GetSampleDataWithJoin("fsdb001", "sample_1_1", "fsdb001", "sample_1_2", "fg1_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_1n1",
+			1,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+	}
+}
+
 func Test_GetFeatureVector_shared(t *testing.T) {
 	rows, pks, cols, err := GetSampleDataWithJoin("fsdb001", "sample_1_1", "fsdb002", "sample_2_1", "fg2_")
 	if err != nil {

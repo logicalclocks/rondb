@@ -46,7 +46,7 @@ type FeatureViewMetadata struct {
 	PrefixFeaturesLookup map[string]*FeatureMetadata // key: prefix + fName
 	FeatureGroupFeatures []*FeatureGroupFeatures
 	NumOfFeatures        int
-	FeatureIndexLookup   map[string]int // key: fsName + fgName + fName
+	FeatureIndexLookup   map[string]int // key: fsName + fgName + fgVersion + fName
 }
 
 type FeatureGroupFeatures struct {
@@ -82,15 +82,13 @@ func newFeatureViewMetadata(
 	for _, feature := range *features {
 		prefixFeatureName := feature.Prefix + feature.Name
 		prefixColumns[prefixFeatureName] = feature
-		var featureKey = feature.FeatureStoreName + "|" + feature.FeatureGroupName + "|" + strconv.Itoa(feature.FeatureGroupVersion)
+		var featureKey = GetFeatureGroupKeyByFeature(feature)
 		fgFeatures[featureKey] = append(fgFeatures[featureKey], feature)
 	}
 
 	var fgFeaturesArray = make([]*FeatureGroupFeatures, 0)
 	for key, value := range fgFeatures {
-		fsName := strings.Split(key, "|")[0]
-		fgName := strings.Split(key, "|")[1]
-		fgVersion, _ := strconv.Atoi(strings.Split(key, "|")[2])
+		var fsName, fgName, fgVersion = GetFeatureGroupDetailByKey(key)
 		var featureValue = value
 		var fgFeature = FeatureGroupFeatures{fsName, fgName, fgVersion, featureValue}
 		fgFeaturesArray = append(fgFeaturesArray, &fgFeature)
@@ -102,8 +100,8 @@ func newFeatureViewMetadata(
 	featureIndex := make(map[string]int)
 
 	for _, feature := range *features {
-		featureIndexKey := GetFeatureIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.Name)
-		featureIndex[*featureIndexKey] = feature.Index
+		featureIndexKey := GetFeatureIndexKeyByFeature(feature)
+		featureIndex[featureIndexKey] = feature.Index
 	}
 
 	var numOfFeature = len(featureIndex)
@@ -120,12 +118,36 @@ func newFeatureViewMetadata(
 	return &metadata
 }
 
-func GetFeatureIndexKeyByFeature(feature *FeatureMetadata) *string {
-	return GetFeatureIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.Name)
+func GetFeatureGroupDetailByKey(key string) (string, string, int) {
+	var splitedKey = strings.Split(key, "|")
+	fsName := splitedKey[0]
+	fgName := splitedKey[1]
+	fgVersion, err := strconv.Atoi(splitedKey[2])
+	if err != nil {
+		panic(fmt.Sprintf("Invalid feature group version '%s' in feature group key.", splitedKey[2]))
+	}
+	return fsName, fgName, fgVersion
 }
 
-func GetFeatureIndexKey(fs string, fg string, f string) *string {
-	featureIndexKey := fs + "|" + fg + "|" + f
+func GetFeatureGroupKeyByFeature(feature *FeatureMetadata) string {
+	return *getFeatureGroupIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.FeatureGroupVersion)
+}
+
+func GetFeatureGroupKeyByTDFeature(feature *FeatureGroupFeatures) string {
+	return *getFeatureGroupIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.FeatureGroupVersion)
+}
+
+func GetFeatureIndexKeyByFeature(feature *FeatureMetadata) string {
+	return *getFeatureIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.FeatureGroupVersion, feature.Name)
+}
+
+func getFeatureGroupIndexKey(fs string, fg string, fgVersion int) *string {
+	featureIndexKey := fmt.Sprintf("%s|%s|%d", fs, fg, fgVersion)
+	return &featureIndexKey
+}
+
+func getFeatureIndexKey(fs string, fg string, fgVersion int, f string) *string {
+	featureIndexKey := fmt.Sprintf("%s|%s", *getFeatureGroupIndexKey(fs, fg, fgVersion), f)
 	return &featureIndexKey
 }
 

@@ -62,6 +62,48 @@ VALUES
         80, Timestamp('2022-01-11 00:00:00'), 20, 52
     );
 
+CREATE TABLE `sample_1_2` (
+  `id1` bigint NOT NULL,
+  `ts` timestamp NULL DEFAULT NULL,
+  `data1` bigint DEFAULT NULL,
+  `data2` bigint DEFAULT NULL,
+  PRIMARY KEY (`id1`)
+) ENGINE=ndbcluster;
+
+INSERT INTO
+    sample_1_2
+VALUES
+    (
+        73, Timestamp('2022-01-16 00:00:00'), 17, 28
+    ),
+    (
+        56, Timestamp('2022-01-13 00:00:00'), 12, 67
+    ),
+    (
+        12, Timestamp('2022-01-23 00:00:00'), 61, 12
+    ),
+    (
+        51, Timestamp('2022-01-22 00:00:00'), 70, 35
+    ),
+    (
+        9, Timestamp('2022-01-01 00:00:00'), 2, 62
+    ),
+    (
+        87, Timestamp('2022-01-04 00:00:00'), 16, 50
+    ),
+    (
+        47, Timestamp('2022-01-20 00:00:00'), 51, 73
+    ),
+    (
+        41, Timestamp('2022-01-16 00:00:00'), 26, 30
+    ),
+    (
+        23, Timestamp('2022-01-18 00:00:00'), 14, 93
+    ),
+    (
+        80, Timestamp('2022-01-11 00:00:00'), 20, 52
+    );
+
 CREATE TABLE `sample_2_1` (
   `id1` bigint NOT NULL,
   `ts` date DEFAULT NULL,
