@@ -107,8 +107,8 @@ func init() {
 	}
 }
 
+// Create custom benchmark scheme
 func createBenchmarkSchema() string {
-	// Create custom benchmark scheme
 	benchScheme := strings.ReplaceAll(BenchmarkScheme, benchmarkSed_COLUMN_LENGTH, strconv.Itoa(BENCH_DB_COLUMN_LENGTH))
 	benchScheme = strings.ReplaceAll(benchScheme, benchmarkSed_VARBINARY_PK_LENGTH_LENGTH, strconv.Itoa(BENCH_DB_VARBINARY_PK_LENGTH))
 
