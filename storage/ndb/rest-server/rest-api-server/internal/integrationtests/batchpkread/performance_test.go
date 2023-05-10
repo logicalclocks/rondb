@@ -19,10 +19,10 @@ package batchpkread
 
 import (
 	"encoding/base64"
+	"encoding/binary"
 	"math/rand"
 	"net/http"
 	"sort"
-	"strconv"
 	"testing"
 	"time"
 
@@ -65,7 +65,7 @@ func BenchmarkSimple(b *testing.B) {
 	runAgainstGrpcServer := true
 
 	table := "table_1"
-	maxRows := testdbs.BENCH_DB_NUM_ROWS
+	numRows := testdbs.BENCH_DB_NUM_ROWS
 	threadId := 0
 
 	latenciesChannel := make(chan time.Duration, numRequests)
@@ -116,7 +116,7 @@ func BenchmarkSimple(b *testing.B) {
 		for bp.Next() {
 			// Every request queries a random rows
 			for _, op := range batchTestInfo.Operations {
-				op.SubOperation.Body.Filters = testclient.NewFilter(&col, rand.Intn(maxRows))
+				op.SubOperation.Body.Filters = testclient.NewFilter(&col, rand.Intn(numRows))
 			}
 
 			requestStartTime := time.Now()
@@ -164,7 +164,7 @@ func BenchmarkBinary(b *testing.B) {
 	runAgainstGrpcServer := true
 
 	table := "table_2"
-	maxRows := testdbs.BENCH_DB_NUM_ROWS
+	numRows := testdbs.BENCH_DB_NUM_ROWS
 	threadId := 0
 
 	latenciesChannel := make(chan time.Duration, numRequests)
@@ -214,7 +214,14 @@ func BenchmarkBinary(b *testing.B) {
 			will run this 5 times.
 		*/
 		for bp.Next() {
-			rowIdByte := base64.StdEncoding.EncodeToString([]byte(strconv.Itoa(rand.Intn(maxRows))))
+			rowId := rand.Intn(numRows)
+
+			totalLength := testdbs.BENCH_DB_VARBINARY_PK_LENGTH
+			emptySlice := make([]byte, totalLength-8)
+			actualData := make([]byte, 8)
+			binary.LittleEndian.PutUint64(actualData, uint64(rowId))
+			allData := append(emptySlice, actualData...)
+			rowIdByte := base64.StdEncoding.EncodeToString(allData)
 
 			// Every request queries a random rows
 			for _, op := range batchTestInfo.Operations {
@@ -223,9 +230,9 @@ func BenchmarkBinary(b *testing.B) {
 
 			requestStartTime := time.Now()
 			if runAgainstGrpcServer {
-				batchGRPCTestWithConn(b, batchTestInfo, false, false, grpcConn)
+				batchGRPCTestWithConn(b, batchTestInfo, true, true, grpcConn)
 			} else {
-				batchRESTTest(b, batchTestInfo, false, false)
+				batchRESTTest(b, batchTestInfo, true, true)
 			}
 			latenciesChannel <- time.Since(requestStartTime)
 		}

@@ -18,6 +18,8 @@
 package testdbs
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"strconv"
 	"strings"
@@ -29,8 +31,15 @@ import (
 	the variables in this package can essentially be seen as constants.
 */
 
-const BENCH_DB_COLUMN_LENGTH = 1000
 const BENCH_DB_NUM_ROWS = 1000
+
+/*
+The total row size adds up to 30k bytes; however, the max pk size is 3070.
+Larger binary PKs will require more decoding on the server side, larger
+read columns will require more encoding.
+*/
+const BENCH_DB_VARBINARY_PK_LENGTH = 3000
+const BENCH_DB_COLUMN_LENGTH = 100
 
 // Mapping database names to their schemes
 var databaseCreateSchemes = map[string]string{
@@ -100,6 +109,7 @@ func init() {
 func createBenchmarkSchema() string {
 	// Create custom benchmark scheme
 	benchScheme := strings.ReplaceAll(BenchmarkScheme, benchmarkSed_COLUMN_LENGTH, strconv.Itoa(BENCH_DB_COLUMN_LENGTH))
+	benchScheme = strings.ReplaceAll(benchScheme, benchmarkSed_VARBINARY_PK_LENGTH_LENGTH, strconv.Itoa(BENCH_DB_VARBINARY_PK_LENGTH))
 
 	// Create an amount of INSERT statements for the benchmark scheme
 	benchAddRows := ""
@@ -112,8 +122,16 @@ func createBenchmarkSchema() string {
 
 	col2DummyData = fmt.Sprintf("REPEAT(X'41', %d)", BENCH_DB_COLUMN_LENGTH)
 	for rowId := 0; rowId < BENCH_DB_NUM_ROWS; rowId++ {
-		addNewRow := strings.ReplaceAll(BenchmarkAddBinaryRow, BenchmarkAddRowSed_VALUE_COLUMN_1, strconv.Itoa(rowId))
+		emptySlice := make([]byte, BENCH_DB_VARBINARY_PK_LENGTH-8)
+		actualData := make([]byte, 8)
+		binary.LittleEndian.PutUint64(actualData, uint64(rowId))
+		allData := append(emptySlice, actualData...)
+		rowIdBase64 := base64.StdEncoding.EncodeToString(allData)
+		pkDummyData := fmt.Sprintf("FROM_BASE64('%s')", rowIdBase64)
+
+		addNewRow := strings.ReplaceAll(BenchmarkAddBinaryRow, BenchmarkAddRowSed_VALUE_COLUMN_1, pkDummyData)
 		addNewRow = strings.ReplaceAll(addNewRow, BenchmarkAddRowSed_VALUE_COLUMN_2, col2DummyData)
+
 		benchAddRows += addNewRow
 	}
 	benchScheme += benchAddRows

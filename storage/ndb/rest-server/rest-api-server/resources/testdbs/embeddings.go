@@ -28,6 +28,7 @@ var BenchmarkScheme string
 
 const Benchmark = "rdrs_bench"
 const benchmarkSed_COLUMN_LENGTH = "COLUMN_LENGTH"
+const benchmarkSed_VARBINARY_PK_LENGTH_LENGTH = "VARBINARY_PK_LENGTH"
 
 //go:embed dynamic/benchmark_add_row.sql
 var BenchmarkAddRow string

@@ -18,5 +18,5 @@
 INSERT INTO
     table_2
 VALUES
-    -- Will sed REPEAT() function into VALUE_COLUMN_2
-    ("VALUE_COLUMN_1", VALUE_COLUMN_2);
+    -- Will sed FROM_BASE64() and REPEAT() function into VALUE_COLUMN_2
+    (VALUE_COLUMN_1, VALUE_COLUMN_2);
