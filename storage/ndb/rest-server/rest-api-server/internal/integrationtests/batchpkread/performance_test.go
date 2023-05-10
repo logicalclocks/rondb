@@ -230,9 +230,9 @@ func BenchmarkBinary(b *testing.B) {
 
 			requestStartTime := time.Now()
 			if runAgainstGrpcServer {
-				batchGRPCTestWithConn(b, batchTestInfo, true, true, grpcConn)
+				batchGRPCTestWithConn(b, batchTestInfo, true, false, grpcConn)
 			} else {
-				batchRESTTest(b, batchTestInfo, true, true)
+				batchRESTTest(b, batchTestInfo, true, false)
 			}
 			latenciesChannel <- time.Since(requestStartTime)
 		}
