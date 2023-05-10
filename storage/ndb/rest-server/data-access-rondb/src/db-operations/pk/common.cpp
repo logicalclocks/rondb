@@ -768,7 +768,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     if (unlikely(GetByteArray(attr, &data_start, &attr_bytes) != 0)) {
       return RS_CLIENT_ERROR(ERROR_019);
     } else {
-      require(attr_bytes <= MAX_TUPLE_SIZE_IN_BYTES_ENCODED);
+      require(attr_bytes <= MAX_TUPLE_SIZE_IN_BYTES);
       char buffer[MAX_TUPLE_SIZE_IN_BYTES_ENCODED];
       size_t ret = boost::beast::detail::base64::encode(reinterpret_cast<void *>(buffer),
                                                         data_start, attr_bytes);
@@ -929,7 +929,7 @@ int GetByteArray(const NdbRecAttr *attr, const char **first_byte, Uint32 *bytes)
        Data starts from second byte of aRef
        */
     *first_byte = aRef + 1;
-    *bytes      = static_cast<size_t>(aRef[0]);
+    *bytes      = static_cast<Uint8>(aRef[0]);
     return 0;
   case NdbDictionary::Column::ArrayTypeMediumVar:
     /*
