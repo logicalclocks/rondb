@@ -63,13 +63,13 @@ func CreateNativeRequest(
 	// PK Filters
 	head = common.AlignWord(head)
 	pkOffset := head
-	iBuf[head/C.ADDRESS_SIZE] = uint32(len(*pkrParams.Filters))
+	iBuf[head/C.ADDRESS_SIZE] = uint32(len(pkrParams.Filters))
 	head += C.ADDRESS_SIZE
 
 	kvi := head / C.ADDRESS_SIZE // index for storing offsets for each key/value pair
 	// skip for N number of offsets one for each key/value pair
-	head = head + (uint32(len(*pkrParams.Filters)) * C.ADDRESS_SIZE)
-	for _, filter := range *pkrParams.Filters {
+	head = head + (uint32(len(pkrParams.Filters)) * C.ADDRESS_SIZE)
+	for _, filter := range pkrParams.Filters {
 		head = common.AlignWord(head)
 
 		tupleOffset := head
@@ -97,14 +97,14 @@ func CreateNativeRequest(
 	var readColsOffset uint32 = 0
 	if pkrParams.ReadColumns != nil {
 		readColsOffset = head
-		iBuf[head/C.ADDRESS_SIZE] = uint32(len(*pkrParams.ReadColumns))
+		iBuf[head/C.ADDRESS_SIZE] = uint32(len(pkrParams.ReadColumns))
 		head += C.ADDRESS_SIZE
 
 		rci := head / C.ADDRESS_SIZE // index for storing ofsets for each read column
 		// skip for N number of offsets one for each column name
-		head = head + (uint32(len(*pkrParams.ReadColumns)) * C.ADDRESS_SIZE)
+		head = head + (uint32(len(pkrParams.ReadColumns)) * C.ADDRESS_SIZE)
 
-		for _, col := range *pkrParams.ReadColumns {
+		for _, col := range pkrParams.ReadColumns {
 			head = common.AlignWord(head)
 
 			iBuf[rci] = head

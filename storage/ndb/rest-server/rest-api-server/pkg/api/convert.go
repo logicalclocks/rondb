@@ -30,7 +30,7 @@ func ConvertPKReadParams(req *PKReadParams) *PKReadRequestProto {
 
 	var filtersProto []*FilterProto
 	if req.Filters != nil {
-		for _, filter := range *req.Filters {
+		for _, filter := range req.Filters {
 			filterProto := FilterProto{}
 			filterProto.Column = filter.Column
 
@@ -47,7 +47,7 @@ func ConvertPKReadParams(req *PKReadParams) *PKReadRequestProto {
 
 	var readColumnsProto []*ReadColumnProto
 	if req.ReadColumns != nil {
-		for _, readColumn := range *req.ReadColumns {
+		for _, readColumn := range req.ReadColumns {
 			readColumnProto := ReadColumnProto{}
 			readColumnProto.Column = readColumn.Column
 
@@ -86,7 +86,7 @@ func ConvertPKReadRequestProto(reqProto *PKReadRequestProto) *PKReadParams {
 		}
 	}
 	if len(readColumns) > 0 {
-		pkReadParams.ReadColumns = &readColumns
+		pkReadParams.ReadColumns = readColumns
 	} else {
 		pkReadParams.ReadColumns = nil
 	}
@@ -104,7 +104,7 @@ func ConvertPKReadRequestProto(reqProto *PKReadRequestProto) *PKReadParams {
 		}
 	}
 	if len(filters) > 0 {
-		pkReadParams.Filters = &filters
+		pkReadParams.Filters = filters
 	} else {
 		pkReadParams.Filters = nil
 	}

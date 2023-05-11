@@ -13,7 +13,7 @@ func ParseColumnDataFromGRPC(t testing.TB, pkResponse *api.PKReadResponseGRPC, i
 	t.Helper()
 
 	kvMap := make(map[string]*string)
-	if pkResponse == nil || pkResponse.Data == nil {
+	if pkResponse == nil || len(pkResponse.Data) < 1 {
 		return kvMap
 	}
 

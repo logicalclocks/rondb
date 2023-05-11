@@ -157,7 +157,7 @@ func TestPKUniqueParams(t *testing.T) {
 	readColumns[1].Column = &col
 	param := api.PKReadBody{
 		Filters:     testclient.NewFilters("col", 1),
-		ReadColumns: &readColumns,
+		ReadColumns: readColumns,
 		OperationID: testclient.NewOperationID(64),
 	}
 	url := testutils.NewPKReadURL("db", "table")
@@ -169,11 +169,11 @@ func TestPKUniqueParams(t *testing.T) {
 	col = "col"
 	val := "val"
 	filters := make([]api.Filter, 2)
-	filters[0] = (*(testclient.NewFilter(&col, val)))[0]
-	filters[1] = (*(testclient.NewFilter(&col, val)))[0]
+	filters[0] = (testclient.NewFilter(&col, val))[0]
+	filters[1] = (testclient.NewFilter(&col, val))[0]
 
 	param = api.PKReadBody{
-		Filters:     &filters,
+		Filters:     filters,
 		ReadColumns: testclient.NewReadColumns("read_col_", 5),
 		OperationID: testclient.NewOperationID(64),
 	}

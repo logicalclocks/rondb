@@ -19,7 +19,7 @@ func CompareDataWithDB(
 	t testing.TB,
 	db string,
 	table string,
-	filters *[]api.Filter,
+	filters []api.Filter,
 	colName *string,
 	colDataFromRestServer *string, // REST and MySQL
 	isBinaryData bool,
@@ -42,7 +42,7 @@ func getColumnDataFromDB(
 	t testing.TB,
 	db string,
 	table string,
-	filters *[]api.Filter,
+	filters []api.Filter,
 	col string,
 	isBinary bool,
 ) (*string, error) {
@@ -69,7 +69,7 @@ func getColumnDataFromDB(
 		command = fmt.Sprintf("select %s from %s where ", col, table)
 	}
 	where := ""
-	for _, filter := range *filters {
+	for _, filter := range filters {
 		if where != "" {
 			where += " and "
 		}

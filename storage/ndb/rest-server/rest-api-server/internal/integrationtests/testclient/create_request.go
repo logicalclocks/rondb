@@ -28,7 +28,7 @@ func rawBytes(a interface{}) json.RawMessage {
 	return value
 }
 
-func NewReadColumns(prefix string, numReadColumns int) *[]api.ReadColumn {
+func NewReadColumns(prefix string, numReadColumns int) []api.ReadColumn {
 	readColumns := make([]api.ReadColumn, numReadColumns)
 	for i := 0; i < numReadColumns; i++ {
 		col := prefix + fmt.Sprintf("%d", i)
@@ -36,15 +36,15 @@ func NewReadColumns(prefix string, numReadColumns int) *[]api.ReadColumn {
 		readColumns[i].Column = &col
 		readColumns[i].DataReturnType = &drt
 	}
-	return &readColumns
+	return readColumns
 }
 
-func NewReadColumn(col string) *[]api.ReadColumn {
+func NewReadColumn(col string) []api.ReadColumn {
 	readColumns := make([]api.ReadColumn, 1)
 	drt := string(api.DRT_DEFAULT)
 	readColumns[0].Column = &col
 	readColumns[0].DataReturnType = &drt
-	return &readColumns
+	return readColumns
 }
 
 func NewOperationID(size int) *string {
@@ -62,7 +62,7 @@ func NewPKReadReqBodyTBD() api.PKReadBody {
 }
 
 // Creates dummy filter columns of type string
-func NewFilters(prefix string, numFilters int) *[]api.Filter {
+func NewFilters(prefix string, numFilters int) []api.Filter {
 	filters := make([]api.Filter, numFilters)
 	for i := 0; i < numFilters; i++ {
 		col := prefix + fmt.Sprintf("%d", i)
@@ -70,19 +70,19 @@ func NewFilters(prefix string, numFilters int) *[]api.Filter {
 		v := rawBytes(val)
 		filters[i] = api.Filter{Column: &col, Value: &v}
 	}
-	return &filters
+	return filters
 }
 
-func NewFilter(column *string, a interface{}) *[]api.Filter {
+func NewFilter(column *string, a interface{}) []api.Filter {
 	filter := make([]api.Filter, 1)
 
 	filter[0] = api.Filter{Column: column}
 	v := rawBytes(a)
 	filter[0].Value = &v
-	return &filter
+	return filter
 }
 
-func NewFiltersKVs(vals ...interface{}) *[]api.Filter {
+func NewFiltersKVs(vals ...interface{}) []api.Filter {
 	if len(vals)%2 != 0 {
 		log.Panic("Expecting key value pairs")
 	}
@@ -96,5 +96,5 @@ func NewFiltersKVs(vals ...interface{}) *[]api.Filter {
 		fidx++
 		i += 2
 	}
-	return &filters
+	return filters
 }
