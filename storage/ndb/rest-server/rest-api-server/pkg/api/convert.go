@@ -125,6 +125,7 @@ func ConvertPKReadResponseProto(respProto *PKReadResponseProto) *PKReadResponseG
 				data[colName] = nil
 			}
 		}
+		resp.Data = data
 	}
 
 	resp.OperationID = respProto.OperationID
