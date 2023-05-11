@@ -3,6 +3,7 @@
 ////////////////////////////////////////////
 
 // Varchar, Schema: `id0 INT, col0 VARCHAR(1000) CHARSET latin1`
+    performance_test.go:261: -------------------------------------------------
     performance_test.go:146: Number of requests:         8313
     performance_test.go:147: Batch size (per requests):  100
     performance_test.go:148: Number of threads:          8
@@ -13,6 +14,7 @@
 BenchmarkSimple-8          12621           1373531 ns/op         2041700 B/op      10114 allocs/op
 
 // Varbinary, Schema: `id0 VARBINARY(100), col0 VARBINARY(1000)`
+    performance_test.go:261: -------------------------------------------------
     performance_test.go:248: Number of requests:         100
     performance_test.go:249: Batch size (per requests):  100
     performance_test.go:250: Number of threads:          8
@@ -21,6 +23,39 @@ BenchmarkSimple-8          12621           1373531 ns/op         2041700 B/op   
     performance_test.go:253: 99th percentile latency:    24 ms
     performance_test.go:254: -------------------------------------------------
 BenchmarkBinary-8           7989           1440547 ns/op         2461386 B/op      10152 allocs/op
+
+// Varchar, Schema: `id0 INT, (col0 VARCHAR(100))*100 CHARSET latin1`
+    performance_test.go:251: -------------------------------------------------
+    performance_test.go:245: Number of requests:         6368
+    performance_test.go:246: Batch size (per requests):  100
+    performance_test.go:247: Number of threads:          8
+    performance_test.go:248: Throughput:                 73319.043522 pk lookups/second
+    performance_test.go:249: 50th percentile latency:    10 ms
+    performance_test.go:250: 99th percentile latency:    22 ms
+    performance_test.go:251: -------------------------------------------------
+BenchmarkManyColumns-8              8798           1534651 ns/op          877681 B/op      10097 allocs/op
+
+// Varbinary, Schema: `id0 VARBINARY(100), col0 VARBINARY(10000)`
+    performance_test.go:261: -------------------------------------------------
+    performance_test.go:255: Number of requests:         3396
+    performance_test.go:256: Batch size (per requests):  100
+    performance_test.go:257: Number of threads:          8
+    performance_test.go:258: Throughput:                 30173.948449 pk lookups/second
+    performance_test.go:259: 50th percentile latency:    23 ms
+    performance_test.go:260: 99th percentile latency:    64 ms
+    performance_test.go:261: -------------------------------------------------
+BenchmarkBinary-8           3396           3314097 ns/op        16780127 B/op      10644 allocs/op
+
+// Varbinary, Schema: `id0 VARBINARY(3000), col0 VARBINARY(100)`
+    performance_test.go:261: -------------------------------------------------
+    performance_test.go:255: Number of requests:         3632
+    performance_test.go:256: Batch size (per requests):  100
+    performance_test.go:257: Number of threads:          8
+    performance_test.go:258: Throughput:                 33009.061298 pk lookups/second
+    performance_test.go:259: 50th percentile latency:    18 ms
+    performance_test.go:260: 99th percentile latency:    48 ms
+    performance_test.go:261: -------------------------------------------------
+BenchmarkBinary-8           3632           3029419 ns/op         7077710 B/op      10585 allocs/op
 
 // Varchar, Fasthttp, Schema: `id0 INT, col0 VARCHAR(1000)`
     performance_test.go:149: -------------------------------------------------

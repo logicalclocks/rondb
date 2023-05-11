@@ -24,6 +24,17 @@ BenchmarkSimple-8          16698            639089 ns/op          873143 B/op   
     performance_test.go:152: -------------------------------------------------
 BenchmarkSimple-8           6114           1821309 ns/op         5587904 B/op       8766 allocs/op
 
+// Varchar, Schema: `id0 INT, (col0 VARCHAR(100))*100 CHARSET latin1`
+    performance_test.go:251: -------------------------------------------------
+    performance_test.go:245: Number of requests:         10620
+    performance_test.go:246: Batch size (per requests):  100
+    performance_test.go:247: Number of threads:          8
+    performance_test.go:248: Throughput:                 93371.421762 pk lookups/second
+    performance_test.go:249: 50th percentile latency:    8 ms
+    performance_test.go:250: 99th percentile latency:    14 ms
+    performance_test.go:251: -------------------------------------------------
+BenchmarkManyColumns-8             10620           1070987 ns/op          344076 B/op       8622 allocs/op
+
 // Varbinary, Schema: `id0 VARBINARY(100), col0 VARBINARY(1000)`
     performance_test.go:254: -------------------------------------------------
     performance_test.go:248: Number of requests:         14486
@@ -45,6 +56,17 @@ BenchmarkBinary-8          14486            754077 ns/op         1063519 B/op   
     performance_test.go:253: 99th percentile latency:    18 ms
     performance_test.go:254: -------------------------------------------------
 BenchmarkBinary-8           7633           1348440 ns/op         7331772 B/op       8828 allocs/op
+
+// Varbinary, Schema: `id0 VARBINARY(3000), col0 VARBINARY(100)`
+    performance_test.go:261: -------------------------------------------------
+    performance_test.go:255: Number of requests:         4998
+    performance_test.go:256: Batch size (per requests):  100
+    performance_test.go:257: Number of threads:          8
+    performance_test.go:258: Throughput:                 42654.747518 pk lookups/second
+    performance_test.go:259: 50th percentile latency:    13 ms
+    performance_test.go:260: 99th percentile latency:    38 ms
+    performance_test.go:261: -------------------------------------------------
+BenchmarkBinary-8           4998           2344396 ns/op         5288716 B/op       9181 allocs/op
 
 // Varchar, proto3
     performance_test.go:149: -------------------------------------------------
