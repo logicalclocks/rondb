@@ -54,8 +54,6 @@ func sendRestPingRequest(
 func sendRestPingRequestWithClient(t testing.TB, client *http.Client) {
 	conf := config.GetAll()
 
-	httpClient := testutils.SetupHttpClient(t)
-
 	url := testutils.NewPingURL()
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 
@@ -67,7 +65,7 @@ func sendRestPingRequestWithClient(t testing.TB, client *http.Client) {
 		req.Header.Set(config.API_KEY_NAME, testutils.HOPSWORKS_TEST_API_KEY)
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
