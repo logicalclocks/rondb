@@ -127,7 +127,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 }
 
 func processResponses(respBuffs *[]*heap.NativeBuffer, response api.BatchOpResponse) (int, error) {
-	for _, respBuff := range *respBuffs {
+	for idx, respBuff := range *respBuffs {
 		pkReadResponseWithCode := response.CreateNewSubResponse()
 		pkReadResponse := pkReadResponseWithCode.GetPKReadResponse()
 
@@ -137,7 +137,7 @@ func processResponses(respBuffs *[]*heap.NativeBuffer, response api.BatchOpRespo
 		}
 
 		pkReadResponseWithCode.SetCode(&subRespCode)
-		err = response.AppendSubResponse(pkReadResponseWithCode)
+		err = response.AddSubResponse(idx, pkReadResponseWithCode)
 		if err != nil {
 			return http.StatusInternalServerError, err
 		}

@@ -36,7 +36,7 @@ func (s *RonDBServer) Batch(ctx context.Context, reqProto *api.BatchRequestProto
 	request := api.ConvertBatchRequestProto(reqProto)
 
 	var responseIntf api.BatchOpResponse = (api.BatchOpResponse)(&api.BatchResponseGRPC{})
-	responseIntf.Init()
+	responseIntf.Init(len(*request))
 
 	httpStatus, err := handlers.Handle(&s.batchPkReadHandler, &apiKey, request, responseIntf)
 	statusCode := common.HttpStatusToGrpcCode(httpStatus)
