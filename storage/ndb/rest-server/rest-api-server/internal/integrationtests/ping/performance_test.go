@@ -18,10 +18,12 @@
 package ping
 
 import (
+	"net/http"
 	"sort"
 	"testing"
 	"time"
 
+	"google.golang.org/grpc"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/testutils"
 )
@@ -66,9 +68,16 @@ func BenchmarkSimple(b *testing.B) {
 
 		// One connection per go-routine
 		conf := config.GetAll()
-		grpcConn, err := testutils.CreateGrpcConn(conf.Security.APIKey.UseHopsworksAPIKeys, conf.Security.TLS.EnableTLS)
-		if err != nil {
-			b.Fatal(err.Error())
+		var err error
+		var grpcConn *grpc.ClientConn
+		var httpClient *http.Client
+		if runAgainstGrpcServer {
+			grpcConn, err = testutils.CreateGrpcConn(conf.Security.APIKey.UseHopsworksAPIKeys, conf.Security.TLS.EnableTLS)
+			if err != nil {
+				b.Fatal(err.Error())
+			}
+		} else {
+			httpClient = testutils.SetupHttpClient(b)
 		}
 
 		/*
@@ -80,7 +89,7 @@ func BenchmarkSimple(b *testing.B) {
 			if runAgainstGrpcServer {
 				sendGrpcPingRequestWithConnection(b, grpcConn)
 			} else {
-				sendRestPingRequest(b)
+				sendRestPingRequestWithClient(b, httpClient)
 			}
 			latenciesChannel <- time.Since(requestStartTime)
 		}

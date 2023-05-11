@@ -99,12 +99,15 @@ func BenchmarkSimple(b *testing.B) {
 		// One connection per go-routine
 		var err error
 		var grpcConn *grpc.ClientConn
+		var httpClient *http.Client
 		if runAgainstGrpcServer {
 			conf := config.GetAll()
 			grpcConn, err = testutils.CreateGrpcConn(conf.Security.APIKey.UseHopsworksAPIKeys, conf.Security.TLS.EnableTLS)
 			if err != nil {
 				b.Fatal(err.Error())
 			}
+		} else {
+			httpClient = testutils.SetupHttpClient(b)
 		}
 
 		/*
@@ -120,7 +123,7 @@ func BenchmarkSimple(b *testing.B) {
 			if runAgainstGrpcServer {
 				pkGRPCTestWithConn(b, testInfo, false, false, grpcConn)
 			} else {
-				pkRESTTest(b, testInfo, false, false)
+				pkRESTTestWithClient(b, httpClient, testInfo, false, false)
 			}
 			latenciesChannel <- time.Since(requestStartTime)
 		}

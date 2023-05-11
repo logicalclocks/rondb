@@ -44,7 +44,14 @@ func sendGrpcPingRequestWithConnection(t testing.TB, connection *grpc.ClientConn
 	}
 }
 
-func sendRestPingRequest(t testing.TB) {
+func sendRestPingRequest(
+	t testing.TB,
+) {
+	client := testutils.SetupHttpClient(t)
+	sendRestPingRequestWithClient(t, client)
+}
+
+func sendRestPingRequestWithClient(t testing.TB, client *http.Client) {
 	conf := config.GetAll()
 
 	httpClient := testutils.SetupHttpClient(t)
