@@ -137,10 +137,7 @@ func processResponses(respBuffs *[]*heap.NativeBuffer, response api.BatchOpRespo
 		}
 
 		pkReadResponseWithCode.SetCode(&subRespCode)
-		err = response.AddSubResponse(idx, pkReadResponseWithCode)
-		if err != nil {
-			return http.StatusInternalServerError, err
-		}
+		response.AddSubResponse(idx, pkReadResponseWithCode)
 	}
 	return http.StatusOK, nil
 }

@@ -19,7 +19,6 @@ package api
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 )
 
@@ -38,7 +37,7 @@ type BatchSubOp struct {
 type BatchOpResponse interface {
 	Init(numSubResponses int)
 	CreateNewSubResponse() PKReadResponseWithCode
-	AddSubResponse(index int, subResp PKReadResponseWithCode) error
+	AddSubResponse(index int, subResp PKReadResponseWithCode)
 	String() string
 }
 
@@ -62,14 +61,9 @@ func (b *BatchResponseJSON) CreateNewSubResponse() PKReadResponseWithCode {
 	return &subResponse
 }
 
-func (b *BatchResponseJSON) AddSubResponse(index int, subResp PKReadResponseWithCode) error {
-	subRespJson, ok := subResp.(*PKReadResponseWithCodeJSON)
-	if !ok {
-		return errors.New("wrong object type. Expecting PKReadResponseWithCodeJSON")
-	}
-
+func (b *BatchResponseJSON) AddSubResponse(index int, subResp PKReadResponseWithCode) {
+	subRespJson := subResp.(*PKReadResponseWithCodeJSON)
 	(*b.Result)[index] = subRespJson
-	return nil
 }
 
 func (b *BatchResponseJSON) String() string {
@@ -92,14 +86,9 @@ func (b *BatchResponseGRPC) CreateNewSubResponse() PKReadResponseWithCode {
 	return &subResponse
 }
 
-func (b *BatchResponseGRPC) AddSubResponse(index int, subResp PKReadResponseWithCode) error {
-	subRespGRPC, ok := subResp.(*PKReadResponseWithCodeGRPC)
-	if !ok {
-		return errors.New("wrong object type. Expecting PKReadResponseWithCodeGRPC")
-	}
-
+func (b *BatchResponseGRPC) AddSubResponse(index int, subResp PKReadResponseWithCode) {
+	subRespGRPC := subResp.(*PKReadResponseWithCodeGRPC)
 	(*b.Result)[index] = subRespGRPC
-	return nil
 }
 
 func (b *BatchResponseGRPC) String() string {
