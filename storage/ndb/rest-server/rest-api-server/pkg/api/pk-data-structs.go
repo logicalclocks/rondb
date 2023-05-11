@@ -102,18 +102,17 @@ type PKReadResponse interface {
 }
 
 type PKReadResponseJSON struct {
-	OperationID *string                      `json:"operationId"    form:"operation-id"    binding:"omitempty,min=1,max=64"`
-	Data        *map[string]*json.RawMessage `json:"data"           form:"data"            binding:"omitempty"`
+	OperationID *string                     `json:"operationId"    form:"operation-id"    binding:"omitempty,min=1,max=64"`
+	Data        map[string]*json.RawMessage `json:"data"           form:"data"            binding:"omitempty"`
 }
 
 type PKReadResponseGRPC struct {
-	OperationID *string             `json:"operationId"    form:"operation-id"    binding:"omitempty,min=1,max=64"`
-	Data        *map[string]*string `json:"data"           form:"data"            binding:"omitempty"`
+	OperationID *string            `json:"operationId"    form:"operation-id"    binding:"omitempty,min=1,max=64"`
+	Data        map[string]*string `json:"data"           form:"data"            binding:"omitempty"`
 }
 
 func (r *PKReadResponseGRPC) Init(numReadColumns uint32) {
-	m := make(map[string]*string, numReadColumns)
-	(*r).Data = &m
+	r.Data = make(map[string]*string, numReadColumns)
 }
 
 func (r *PKReadResponseGRPC) SetOperationID(opID *string) {
@@ -121,7 +120,7 @@ func (r *PKReadResponseGRPC) SetOperationID(opID *string) {
 }
 
 func (r *PKReadResponseGRPC) SetColumnData(column, value *string, dataType uint32) {
-	(*(*r).Data)[*column] = value
+	r.Data[*column] = value
 }
 
 func (r *PKReadResponseGRPC) String() string {
@@ -131,7 +130,7 @@ func (r *PKReadResponseGRPC) String() string {
 	str.WriteString("\"Data\": {")
 
 	if r.Data != nil {
-		for key, value := range *r.Data {
+		for key, value := range r.Data {
 			str.WriteString(fmt.Sprintf("\"%s\": \"%s\",", key, *value))
 		}
 	}
@@ -141,8 +140,7 @@ func (r *PKReadResponseGRPC) String() string {
 }
 
 func (r *PKReadResponseJSON) Init(numReadColumns uint32) {
-	m := make(map[string]*json.RawMessage, numReadColumns)
-	(*r).Data = &m
+	r.Data = make(map[string]*json.RawMessage, numReadColumns)
 }
 
 func (r *PKReadResponseJSON) SetOperationID(opID *string) {
@@ -151,10 +149,10 @@ func (r *PKReadResponseJSON) SetOperationID(opID *string) {
 
 func (r *PKReadResponseJSON) SetColumnData(column, value *string, dataType uint32) {
 	if value == nil {
-		(*(*r).Data)[*column] = nil
+		r.Data[*column] = nil
 	} else {
 		valueBytes := json.RawMessage(*value)
-		(*(*r).Data)[*column] = &valueBytes
+		r.Data[*column] = &valueBytes
 	}
 }
 

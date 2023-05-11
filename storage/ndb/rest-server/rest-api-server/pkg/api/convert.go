@@ -116,8 +116,8 @@ func ConvertPKReadRequestProto(reqProto *PKReadRequestProto) *PKReadParams {
 func ConvertPKReadResponseProto(respProto *PKReadResponseProto) *PKReadResponseGRPC {
 	resp := PKReadResponseGRPC{}
 
-	data := make(map[string]*string)
-	if respProto.Data != nil {
+	if len(respProto.Data) > 0 {
+		data := make(map[string]*string, len(respProto.Data))
 		for colName, colVal := range respProto.Data {
 			if colVal != nil {
 				data[colName] = colVal.Name
@@ -126,11 +126,6 @@ func ConvertPKReadResponseProto(respProto *PKReadResponseProto) *PKReadResponseG
 			}
 		}
 	}
-	if len(data) > 0 {
-		resp.Data = &data
-	} else {
-		resp.Data = nil
-	}
 
 	resp.OperationID = respProto.OperationID
 	return &resp
@@ -138,9 +133,10 @@ func ConvertPKReadResponseProto(respProto *PKReadResponseProto) *PKReadResponseG
 
 func ConvertPKReadResponse(resp *PKReadResponseGRPC) *PKReadResponseProto {
 	respProto := PKReadResponseProto{}
-	respProto.Data = make(map[string]*ColumnValueProto)
-	if resp.Data != nil {
-		for colName, colVal := range *resp.Data {
+	numReadCols := len(resp.Data)
+	if numReadCols > 0 {
+		respProto.Data = make(map[string]*ColumnValueProto, numReadCols)
+		for colName, colVal := range resp.Data {
 			if colVal != nil {
 				respProto.Data[colName] = &ColumnValueProto{Name: colVal}
 			} else {

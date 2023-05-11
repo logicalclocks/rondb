@@ -17,7 +17,7 @@ func ParseColumnDataFromGRPC(t testing.TB, pkResponse *api.PKReadResponseGRPC, i
 		return kvMap
 	}
 
-	for colName, colValue := range *pkResponse.Data {
+	for colName, colValue := range pkResponse.Data {
 		if colValue == nil {
 			kvMap[colName] = nil
 			continue
@@ -37,11 +37,11 @@ func ParseColumnDataFromJson(t testing.TB, pkResponse api.PKReadResponseJSON, is
 	t.Helper()
 
 	kvMap := make(map[string]*string)
-	if pkResponse.Data == nil {
+	if len(pkResponse.Data) < 1 {
 		return kvMap
 	}
 
-	for colName, colValue := range *pkResponse.Data {
+	for colName, colValue := range pkResponse.Data {
 		if colValue == nil {
 			kvMap[colName] = nil
 			continue
