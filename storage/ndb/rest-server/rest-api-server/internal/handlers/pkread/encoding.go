@@ -184,6 +184,7 @@ func ProcessPKReadResponse(respBuff *heap.NativeBuffer, response api.PKReadRespo
 		colIDX := iBuf[C.PK_RESP_COLS_IDX]
 		colCount := *(*uint32)(unsafe.Pointer(uintptr(respBuff.Buffer) + uintptr(colIDX)))
 
+		response.Init(colCount)
 		for i := uint32(0); i < colCount; i++ {
 			colHeaderStart := (*uint32)(unsafe.Pointer(
 				uintptr(respBuff.Buffer) +

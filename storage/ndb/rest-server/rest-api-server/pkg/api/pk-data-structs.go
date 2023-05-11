@@ -95,7 +95,7 @@ type Column struct {
 }
 
 type PKReadResponse interface {
-	Init()
+	Init(numReadColumns uint32)
 	SetOperationID(opID *string)
 	SetColumnData(column, value *string, valueType uint32)
 	String() string
@@ -111,8 +111,8 @@ type PKReadResponseGRPC struct {
 	Data        *map[string]*string `json:"data"           form:"data"            binding:"omitempty"`
 }
 
-func (r *PKReadResponseGRPC) Init() {
-	m := make(map[string]*string)
+func (r *PKReadResponseGRPC) Init(numReadColumns uint32) {
+	m := make(map[string]*string, numReadColumns)
 	(*r).Data = &m
 }
 
@@ -140,8 +140,8 @@ func (r *PKReadResponseGRPC) String() string {
 	return str.String()
 }
 
-func (r *PKReadResponseJSON) Init() {
-	m := make(map[string]*json.RawMessage)
+func (r *PKReadResponseJSON) Init(numReadColumns uint32) {
+	m := make(map[string]*json.RawMessage, numReadColumns)
 	(*r).Data = &m
 }
 
@@ -168,7 +168,6 @@ func (r *PKReadResponseJSON) String() string {
 }
 
 type PKReadResponseWithCode interface {
-	Init()
 	GetPKReadResponse() PKReadResponse
 	SetCode(code *int32)
 	String() string
@@ -186,7 +185,6 @@ type PKReadResponseWithCodeGRPC struct {
 
 func (p *PKReadResponseWithCodeJSON) Init() {
 	p.Body = &PKReadResponseJSON{}
-	p.Body.Init()
 }
 
 func (p *PKReadResponseWithCodeJSON) GetPKReadResponse() PKReadResponse {
@@ -208,7 +206,6 @@ func (p *PKReadResponseWithCodeJSON) String() string {
 
 func (p *PKReadResponseWithCodeGRPC) Init() {
 	p.Body = &PKReadResponseGRPC{}
-	p.Body.Init()
 }
 
 func (p *PKReadResponseWithCodeGRPC) GetPKReadResponse() PKReadResponse {
