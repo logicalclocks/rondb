@@ -56,14 +56,3 @@ BenchmarkBinary-8           3396           3314097 ns/op        16780127 B/op   
     performance_test.go:260: 99th percentile latency:    48 ms
     performance_test.go:261: -------------------------------------------------
 BenchmarkBinary-8           3632           3029419 ns/op         7077710 B/op      10585 allocs/op
-
-// Varchar, Fasthttp, Schema: `id0 INT, col0 VARCHAR(1000)`
-    performance_test.go:149: -------------------------------------------------
-    performance_test.go:143: Number of requests:         7879
-    performance_test.go:144: Batch size (per requests):  100
-    performance_test.go:145: Number of threads:          8
-    performance_test.go:146: Throughput:                 88555.487732 pk lookups/second
-    performance_test.go:147: 50th percentile latency:    7 ms
-    performance_test.go:148: 99th percentile latency:    32 ms
-    performance_test.go:149: -------------------------------------------------
-BenchmarkSimple-8          10626           1706215 ns/op         2179115 B/op       9182 allocs/op
