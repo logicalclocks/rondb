@@ -34,9 +34,21 @@ func SendHttpRequest(
 	expectedErrMsg string,
 	expectedStatus ...int,
 ) (int, []byte) {
+	client := testutils.SetupHttpClient(t)
+	return SendHttpRequestWithClient(t, client, httpVerb, url, body, expectedErrMsg, expectedStatus...)
+}
+
+func SendHttpRequestWithClient(
+	t testing.TB,
+	client *http.Client,
+	httpVerb string,
+	url string,
+	body string,
+	expectedErrMsg string,
+	expectedStatus ...int,
+) (int, []byte) {
 	t.Helper()
 
-	client := testutils.SetupHttpClient(t)
 	var req *http.Request
 	var resp *http.Response
 	var err error

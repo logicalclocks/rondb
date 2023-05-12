@@ -12,14 +12,35 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func batchRESTTest(t testing.TB, testInfo api.BatchOperationTestInfo, isBinaryData bool, validateData bool) {
-	httpCode, response := sendHttpBatchRequest(t, testInfo, isBinaryData)
+func batchRESTTest(
+	t testing.TB,
+	testInfo api.BatchOperationTestInfo,
+	isBinaryData bool,
+	validateData bool,
+) {
+	client := testutils.SetupHttpClient(t)
+	batchRESTTestWithClient(t, client, testInfo, isBinaryData, validateData)
+}
+
+func batchRESTTestWithClient(
+	t testing.TB,
+	client *http.Client,
+	testInfo api.BatchOperationTestInfo,
+	isBinaryData bool,
+	validateData bool,
+) {
+	httpCode, response := sendHttpBatchRequest(t, client, testInfo, isBinaryData)
 	if httpCode == http.StatusOK {
 		validateBatchResponseHttp(t, testInfo, response, isBinaryData, validateData)
 	}
 }
 
-func sendHttpBatchRequest(t testing.TB, testInfo api.BatchOperationTestInfo, isBinaryData bool) (httpCode int, response []byte) {
+func sendHttpBatchRequest(
+	t testing.TB,
+	client *http.Client,
+	testInfo api.BatchOperationTestInfo,
+	isBinaryData bool,
+) (httpCode int, response []byte) {
 	subOps := []api.BatchSubOp{}
 	for _, op := range testInfo.Operations {
 		subOps = append(subOps, op.SubOperation)
@@ -30,8 +51,15 @@ func sendHttpBatchRequest(t testing.TB, testInfo api.BatchOperationTestInfo, isB
 		t.Fatalf("Failed to marshall test request %v", err)
 	}
 	url := testutils.NewBatchReadURL()
-	httpCode, response = testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, url,
-		string(body), testInfo.ErrMsgContains, testInfo.HttpCode[:]...)
+	httpCode, response = testclient.SendHttpRequestWithClient(
+		t,
+		client,
+		config.BATCH_HTTP_VERB,
+		url,
+		string(body),
+		testInfo.ErrMsgContains,
+		testInfo.HttpCode[:]...,
+	)
 	return
 }
 

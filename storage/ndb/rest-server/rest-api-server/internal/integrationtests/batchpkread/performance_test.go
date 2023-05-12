@@ -101,12 +101,15 @@ func BenchmarkSimple(b *testing.B) {
 		// One connection per go-routine
 		var err error
 		var grpcConn *grpc.ClientConn
+		var httpClient *http.Client
 		if runAgainstGrpcServer {
 			conf := config.GetAll()
 			grpcConn, err = testutils.CreateGrpcConn(conf.Security.APIKey.UseHopsworksAPIKeys, conf.Security.TLS.EnableTLS)
 			if err != nil {
 				b.Fatal(err.Error())
 			}
+		} else {
+			httpClient = testutils.SetupHttpClient(b)
 		}
 
 		/*
@@ -123,7 +126,7 @@ func BenchmarkSimple(b *testing.B) {
 			if runAgainstGrpcServer {
 				batchGRPCTestWithConn(b, batchTestInfo, false, false, grpcConn)
 			} else {
-				batchRESTTest(b, batchTestInfo, false, false)
+				batchRESTTestWithClient(b, httpClient, batchTestInfo, false, false)
 			}
 			latenciesChannel <- time.Since(requestStartTime)
 		}
@@ -161,7 +164,7 @@ func BenchmarkManyColumns(b *testing.B) {
 		IMPORTANT: This benchmark will run requests against EITHER the REST or
 		the gRPC server, depending on this flag.
 	*/
-	runAgainstGrpcServer := false
+	runAgainstGrpcServer := true
 
 	table := "table_3"
 	numRows := testdbs.BENCH_DB_NUM_ROWS
@@ -200,12 +203,15 @@ func BenchmarkManyColumns(b *testing.B) {
 		// One connection per go-routine
 		var err error
 		var grpcConn *grpc.ClientConn
+		var httpClient *http.Client
 		if runAgainstGrpcServer {
 			conf := config.GetAll()
 			grpcConn, err = testutils.CreateGrpcConn(conf.Security.APIKey.UseHopsworksAPIKeys, conf.Security.TLS.EnableTLS)
 			if err != nil {
 				b.Fatal(err.Error())
 			}
+		} else {
+			httpClient = testutils.SetupHttpClient(b)
 		}
 
 		/*
@@ -222,7 +228,7 @@ func BenchmarkManyColumns(b *testing.B) {
 			if runAgainstGrpcServer {
 				batchGRPCTestWithConn(b, batchTestInfo, false, false, grpcConn)
 			} else {
-				batchRESTTest(b, batchTestInfo, false, false)
+				batchRESTTestWithClient(b, httpClient, batchTestInfo, false, false)
 			}
 			latenciesChannel <- time.Since(requestStartTime)
 		}
@@ -300,12 +306,15 @@ func BenchmarkBinary(b *testing.B) {
 		// One connection per go-routine
 		var err error
 		var grpcConn *grpc.ClientConn
+		var httpClient *http.Client
 		if runAgainstGrpcServer {
 			conf := config.GetAll()
 			grpcConn, err = testutils.CreateGrpcConn(conf.Security.APIKey.UseHopsworksAPIKeys, conf.Security.TLS.EnableTLS)
 			if err != nil {
 				b.Fatal(err.Error())
 			}
+		} else {
+			httpClient = testutils.SetupHttpClient(b)
 		}
 
 		/*
@@ -331,7 +340,7 @@ func BenchmarkBinary(b *testing.B) {
 			if runAgainstGrpcServer {
 				batchGRPCTestWithConn(b, batchTestInfo, true, false, grpcConn)
 			} else {
-				batchRESTTest(b, batchTestInfo, true, false)
+				batchRESTTestWithClient(b, httpClient, batchTestInfo, false, false)
 			}
 			latenciesChannel <- time.Since(requestStartTime)
 		}
