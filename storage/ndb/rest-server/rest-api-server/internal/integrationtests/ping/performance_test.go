@@ -47,6 +47,7 @@ func BenchmarkSimple(b *testing.B) {
 	numRequests := b.N
 
 	runAgainstGrpcServer := true
+	b.Logf("RUNNING gRPC: %v", runAgainstGrpcServer)
 
 	threadId := 0
 

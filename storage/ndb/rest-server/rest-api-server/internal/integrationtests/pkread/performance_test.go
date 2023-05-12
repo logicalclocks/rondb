@@ -58,6 +58,7 @@ func BenchmarkSimple(b *testing.B) {
 		the gRPC server, depending on this flag.
 	*/
 	runAgainstGrpcServer := true
+	b.Logf("RUNNING gRPC: %v", runAgainstGrpcServer)
 
 	table := "table_1"
 	maxRows := testdbs.BENCH_DB_NUM_ROWS

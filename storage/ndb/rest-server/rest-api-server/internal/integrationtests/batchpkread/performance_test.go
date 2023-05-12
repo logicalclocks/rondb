@@ -63,6 +63,7 @@ func BenchmarkSimple(b *testing.B) {
 		the gRPC server, depending on this flag.
 	*/
 	runAgainstGrpcServer := true
+	b.Logf("RUNNING gRPC: %v", runAgainstGrpcServer)
 
 	table := "table_1"
 	numRows := testdbs.BENCH_DB_NUM_ROWS
@@ -161,7 +162,8 @@ func BenchmarkManyColumns(b *testing.B) {
 		IMPORTANT: This benchmark will run requests against EITHER the REST or
 		the gRPC server, depending on this flag.
 	*/
-	runAgainstGrpcServer := false
+	runAgainstGrpcServer := true
+	b.Logf("RUNNING gRPC: %v", runAgainstGrpcServer)
 
 	table := "table_3"
 	numRows := testdbs.BENCH_DB_NUM_ROWS
@@ -261,6 +263,7 @@ func BenchmarkBinary(b *testing.B) {
 		the gRPC server, depending on this flag.
 	*/
 	runAgainstGrpcServer := true
+	b.Logf("RUNNING gRPC: %v", runAgainstGrpcServer)
 
 	table := "table_2"
 	numRows := testdbs.BENCH_DB_NUM_ROWS
