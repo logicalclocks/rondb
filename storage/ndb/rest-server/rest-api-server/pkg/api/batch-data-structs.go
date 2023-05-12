@@ -19,7 +19,6 @@ package api
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 )
 
@@ -36,9 +35,9 @@ type BatchSubOp struct {
 
 // Response
 type BatchOpResponse interface {
-	Init()
+	Init(numSubResponses int)
 	CreateNewSubResponse() PKReadResponseWithCode
-	AppendSubResponse(subResp PKReadResponseWithCode) error
+	AddSubResponse(index int, subResp PKReadResponseWithCode)
 	String() string
 }
 
@@ -50,8 +49,9 @@ type BatchResponseGRPC struct {
 	Result *[]*PKReadResponseWithCodeGRPC `json:"result" binding:"required"`
 }
 
-func (b *BatchResponseJSON) Init() {
-	subResponses := []*PKReadResponseWithCodeJSON{}
+// TODO: Why not include number of elements here?
+func (b *BatchResponseJSON) Init(numSubResponses int) {
+	subResponses := make([]*PKReadResponseWithCodeJSON, numSubResponses)
 	b.Result = &subResponses
 }
 
@@ -61,15 +61,9 @@ func (b *BatchResponseJSON) CreateNewSubResponse() PKReadResponseWithCode {
 	return &subResponse
 }
 
-func (b *BatchResponseJSON) AppendSubResponse(subResp PKReadResponseWithCode) error {
-	subRespJson, ok := subResp.(*PKReadResponseWithCodeJSON)
-	if !ok {
-		return errors.New("wrong object type. Expecting PKReadResponseWithCodeJSON")
-	}
-
-	newList := append(*b.Result, subRespJson)
-	b.Result = &newList
-	return nil
+func (b *BatchResponseJSON) AddSubResponse(index int, subResp PKReadResponseWithCode) {
+	subRespJson := subResp.(*PKReadResponseWithCodeJSON)
+	(*b.Result)[index] = subRespJson
 }
 
 func (b *BatchResponseJSON) String() string {
@@ -81,8 +75,8 @@ func (b *BatchResponseJSON) String() string {
 	}
 }
 
-func (b *BatchResponseGRPC) Init() {
-	subResponses := []*PKReadResponseWithCodeGRPC{}
+func (b *BatchResponseGRPC) Init(numSubResponses int) {
+	subResponses := make([]*PKReadResponseWithCodeGRPC, numSubResponses)
 	b.Result = &subResponses
 }
 
@@ -92,15 +86,9 @@ func (b *BatchResponseGRPC) CreateNewSubResponse() PKReadResponseWithCode {
 	return &subResponse
 }
 
-func (b *BatchResponseGRPC) AppendSubResponse(subResp PKReadResponseWithCode) error {
-	subRespGRPC, ok := subResp.(*PKReadResponseWithCodeGRPC)
-	if !ok {
-		return errors.New("wrong object type. Expecting PKReadResponseWithCodeGRPC")
-	}
-
-	newList := append(*b.Result, subRespGRPC)
-	b.Result = &newList
-	return nil
+func (b *BatchResponseGRPC) AddSubResponse(index int, subResp PKReadResponseWithCode) {
+	subRespGRPC := subResp.(*PKReadResponseWithCodeGRPC)
+	(*b.Result)[index] = subRespGRPC
 }
 
 func (b *BatchResponseGRPC) String() string {
