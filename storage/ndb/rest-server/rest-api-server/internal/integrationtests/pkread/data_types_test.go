@@ -937,7 +937,7 @@ func ArrayColumnTest(t *testing.T, table string, database string, isBinary bool,
 			RespKVs:        validateColumns,
 		},
 
-		"notfound2": {
+		"badRequest1": {
 			PkReq: api.PKReadBody{
 				Filters:     testclient.NewFiltersKVs("id0", testclient.EncodePkValue(*testclient.NewOperationID(colWidth*4 + 1), isBinary, colWidth, padding)),
 				ReadColumns: testclient.NewReadColumns("col", 1),

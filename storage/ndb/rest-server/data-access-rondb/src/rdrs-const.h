@@ -78,14 +78,8 @@ extern "C" {
 #define CHAR_MAX_SIZE_IN_BYTES              255 * 4 /*MAX 255 chars. *4 for char set*/
 #define DECIMAL_MAX_PRECISION_SIZE_IN_BYTES 65
 #define DECIMAL_MAX_STR_LEN_IN_BYTES        DECIMAL_MAX_PRECISION_SIZE_IN_BYTES + 3
-#define BINARY_MAX_SIZE_IN_BYTES            255
-#define BINARY_MAX_SIZE_IN_BYTES_DECODED                                                           \
-  BINARY_MAX_SIZE_IN_BYTES + 3 /*encoding 255 bytes takes max 343 bytes.*/
-                               /*decoding 343 bytes takes max 258 bytes */
-#define KEY_MAX_SIZE_IN_BYTES 1023 * 4
-#define KEY_MAX_SIZE_IN_BYTES_DECODED                                                              \
-  KEY_MAX_SIZE_IN_BYTES + 3 + 2 /*encoding 4092 bytes takes max 5458 bytes */
-                                /*decoding 5458 bytes takes max 4095 bytes. +2 for length */
+#define BINARY_MAX_SIZE_IN_BYTES            255 /*encoding 255 bytes takes max 340 bytes (255*4/3) */
+#define KEY_MAX_SIZE_IN_BYTES 1023 * 4 /*encoding 4092 bytes takes max 5456 bytes (4092*4/3) */
 #define DATE_MAX_SIZE_IN_BYTES          3
 #define TIME2_MAX_SIZE_IN_BYTES         6
 #define DATETIME_MAX_SIZE_IN_BYTES      8
