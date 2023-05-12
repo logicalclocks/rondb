@@ -36,44 +36,34 @@ BenchmarkSimple-8           3680           3167492 ns/op        13562051 B/op   
 BenchmarkManyColumns-8              8408           1194508 ns/op          494896 B/op       7830 allocs/op
 
 // Varbinary, Schema: `id0 VARBINARY(100), col0 VARBINARY(1000)`
-    performance_test.go:261: -------------------------------------------------
-    performance_test.go:248: Number of requests:         6955
-    performance_test.go:249: Batch size (per requests):  100
-    performance_test.go:250: Number of threads:          8
-    performance_test.go:251: Throughput:                 80022.837825 pk lookups/second
-    performance_test.go:252: 50th percentile latency:    8 ms
-    performance_test.go:253: 99th percentile latency:    31 ms
-    performance_test.go:254: -------------------------------------------------
-BenchmarkBinary-8           9602           1295898 ns/op         2451751 B/op      10146 allocs/op
+    performance_test.go:369: -------------------------------------------------
+    performance_test.go:363: Number of requests:         10000
+    performance_test.go:364: Batch size (per requests):  100
+    performance_test.go:365: Number of threads:          8
+    performance_test.go:366: Throughput:                 98064.425579 pk lookups/second
+    performance_test.go:367: 50th percentile latency:    7 ms
+    performance_test.go:368: 99th percentile latency:    16 ms
+    performance_test.go:369: -------------------------------------------------
+BenchmarkBinary-8          10000           1019732 ns/op         2519535 B/op       8249 allocs/op
 
 // Varbinary, Schema: `id0 VARBINARY(100), col0 VARBINARY(10000)`
-    performance_test.go:248: Number of requests:         3496
-    performance_test.go:249: Batch size (per requests):  100
-    performance_test.go:250: Number of threads:          8
-    performance_test.go:251: Throughput:                 33595.981576 pk lookups/second
-    performance_test.go:252: 50th percentile latency:    21 ms
-    performance_test.go:253: 99th percentile latency:    57 ms
-    performance_test.go:254: -------------------------------------------------
-BenchmarkBinary-8           3496           2976500 ns/op        16392938 B/op      10236 allocs/op
-
-// Varbinary, Schema: `id0 VARBINARY(100), col0 VARBINARY(10000)`
-    performance_test.go:261: -------------------------------------------------
-    performance_test.go:255: Number of requests:         3396
-    performance_test.go:256: Batch size (per requests):  100
-    performance_test.go:257: Number of threads:          8
-    performance_test.go:258: Throughput:                 30173.948449 pk lookups/second
-    performance_test.go:259: 50th percentile latency:    23 ms
-    performance_test.go:260: 99th percentile latency:    64 ms
-    performance_test.go:261: -------------------------------------------------
-BenchmarkBinary-8           3396           3314097 ns/op        16780127 B/op      10644 allocs/op
+    performance_test.go:369: -------------------------------------------------
+    performance_test.go:363: Number of requests:         3315
+    performance_test.go:364: Batch size (per requests):  100
+    performance_test.go:365: Number of threads:          8
+    performance_test.go:366: Throughput:                 31006.639662 pk lookups/second
+    performance_test.go:367: 50th percentile latency:    24 ms
+    performance_test.go:368: 99th percentile latency:    47 ms
+    performance_test.go:369: -------------------------------------------------
+BenchmarkBinary-8           3315           3225099 ns/op        18486583 B/op       8350 allocs/op
 
 // Varbinary, Schema: `id0 VARBINARY(3000), col0 VARBINARY(100)`
-    performance_test.go:261: -------------------------------------------------
-    performance_test.go:255: Number of requests:         3632
-    performance_test.go:256: Batch size (per requests):  100
-    performance_test.go:257: Number of threads:          8
-    performance_test.go:258: Throughput:                 33009.061298 pk lookups/second
-    performance_test.go:259: 50th percentile latency:    18 ms
-    performance_test.go:260: 99th percentile latency:    48 ms
-    performance_test.go:261: -------------------------------------------------
-BenchmarkBinary-8           3632           3029419 ns/op         7077710 B/op      10585 allocs/op
+    performance_test.go:369: -------------------------------------------------
+    performance_test.go:363: Number of requests:         5218
+    performance_test.go:364: Batch size (per requests):  100
+    performance_test.go:365: Number of threads:          8
+    performance_test.go:366: Throughput:                 50766.616958 pk lookups/second
+    performance_test.go:367: 50th percentile latency:    11 ms
+    performance_test.go:368: 99th percentile latency:    25 ms
+    performance_test.go:369: -------------------------------------------------
+BenchmarkBinary-8           5218           1969785 ns/op         5318412 B/op       9078 allocs/op
