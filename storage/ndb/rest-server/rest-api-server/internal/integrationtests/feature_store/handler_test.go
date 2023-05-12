@@ -68,7 +68,7 @@ func Test_GetFeatureVector_success(t *testing.T) {
 			"sample_2",
 			1,
 			pks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			nil,
 			nil,
 		)
@@ -88,7 +88,7 @@ func Test_GetFeatureVector_FsNotExist(t *testing.T) {
 			"sample_2",
 			1,
 			pks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			nil,
 			nil,
 		)
@@ -108,7 +108,7 @@ func Test_GetFeatureVector_FvNotExist(t *testing.T) {
 			"NA",
 			1,
 			pks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			nil,
 			nil,
 		)
@@ -127,7 +127,7 @@ func Test_GetFeatureVector_CompositePrimaryKey(t *testing.T) {
 			"sample_3",
 			1,
 			pks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			nil,
 			nil,
 		)
@@ -147,7 +147,7 @@ func Test_GetFeatureVector_ReturnMixedDataType(t *testing.T) {
 			"sample_3",
 			2,
 			pks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			nil,
 			nil,
 		)
@@ -167,7 +167,7 @@ func Test_GetFeatureVector_join(t *testing.T) {
 			"sample_1n2",
 			1,
 			pks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			nil,
 			nil,
 		)
@@ -187,7 +187,7 @@ func Test_GetFeatureVector_joinSameFg(t *testing.T) {
 			"sample_1n1",
 			1,
 			pks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			nil,
 			nil,
 		)
@@ -207,7 +207,7 @@ func Test_GetFeatureVector_shared(t *testing.T) {
 			"sample_share_1n2",
 			1,
 			pks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			nil,
 			nil,
 		)
@@ -237,7 +237,7 @@ func Test_GetFeatureVector_wrongPrimaryKey_notExist(t *testing.T) {
 			"sample_2",
 			1,
 			wrongPks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			nil,
 			nil,
 		)
@@ -254,7 +254,7 @@ func Test_GetFeatureVector_primaryKeyNoMatch(t *testing.T) {
 
 	for _, row := range rows {
 		// Make wrong primary key value
-		var pkValues = *getPkValues(&row, &pks, &cols)
+		var pkValues = *GetPkValues(&row, &pks, &cols)
 		for i := range pkValues {
 			pkValues[i] = []byte(strconv.Itoa(9876543 + i))
 		}
@@ -292,7 +292,7 @@ func Test_GetFeatureVector_incompletePrimaryKey(t *testing.T) {
 	}
 
 	for _, row := range rows {
-		var pkValues = *getPkValues(&row, &pks, &cols)
+		var pkValues = *GetPkValues(&row, &pks, &cols)
 		var fsReq = CreateFeatureStoreRequest(
 			"fsdb001",
 			"sample_3",
@@ -315,7 +315,7 @@ func Test_GetFeatureVector_wrongPrimaryKey_featureNotPk(t *testing.T) {
 	}
 
 	for _, row := range rows {
-		var pkValues = *getPkValues(&row, &pks, &cols)
+		var pkValues = *GetPkValues(&row, &pks, &cols)
 		pks[0] = "ts"
 		var fsReq = CreateFeatureStoreRequest(
 			"fsdb001",
@@ -339,7 +339,7 @@ func Test_GetFeatureVector_wrongPkType_int(t *testing.T) {
 
 	for _, row := range rows {
 		// Make wrong primary key value
-		var pkValues = *getPkValues(&row, &pks, &cols)
+		var pkValues = *GetPkValues(&row, &pks, &cols)
 		for i, pkv := range pkValues {
 			// rondb can convert int in string quote to int
 			pkValues[i] = []byte("\"" + string(pkv.([]byte)) + "\"")
@@ -366,7 +366,7 @@ func Test_GetFeatureVector_wrongPkType_str(t *testing.T) {
 
 	for _, row := range rows {
 		// Make wrong primary key value
-		var pkValues = *getPkValues(&row, &pks, &cols)
+		var pkValues = *GetPkValues(&row, &pks, &cols)
 		for i := range pkValues {
 			// rondb can convert int to string
 			pkValues[i] = []byte(fmt.Sprintf("%d", i))
@@ -393,7 +393,7 @@ func Test_GetFeatureVector_wrongPkValue(t *testing.T) {
 
 	for _, row := range rows {
 		// Make wrong primary key value
-		var pkValues = *getPkValues(&row, &pks, &cols)
+		var pkValues = *GetPkValues(&row, &pks, &cols)
 		for i := range pkValues {
 			// rondb can convert int to string
 			pkValues[i] = []byte(fmt.Sprintf("\"abc%d\"", i))
@@ -423,7 +423,7 @@ func Test_PassedFeatures_success(t *testing.T) {
 			"sample_2",
 			1,
 			pks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			[]string{"data1"},
 			[]interface{}{[]byte(`"999"`)},
 		)
@@ -459,7 +459,7 @@ func Test_PassedFeatures_success_allTypes(t *testing.T) {
 			"sample_3",
 			2,
 			pks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			cols,
 			passedFeatures,
 		)
@@ -480,7 +480,7 @@ func Test_PassedFeatures_wrongKey_featureNotExist(t *testing.T) {
 			"sample_2",
 			1,
 			pks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			[]string{"invalide_key"},
 			[]interface{}{[]byte("999")},
 		)
@@ -499,7 +499,7 @@ func Test_PassedFeatures_wrongType_notString(t *testing.T) {
 			"sample_3",
 			2,
 			pks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			[]string{"string"},
 			[]interface{}{[]byte(`999`)},
 		)
@@ -518,7 +518,7 @@ func Test_PassedFeatures_wrongType_notNumber(t *testing.T) {
 			"sample_3",
 			2,
 			pks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			[]string{"bigint"},
 			[]interface{}{[]byte(`"int"`)},
 		)
@@ -537,7 +537,7 @@ func Test_PassedFeatures_wrongType_notBoolean(t *testing.T) {
 			"sample_3",
 			2,
 			pks,
-			*getPkValues(&row, &pks, &cols),
+			*GetPkValues(&row, &pks, &cols),
 			[]string{"bool"},
 			[]interface{}{[]byte(`"int"`)},
 		)

@@ -30,6 +30,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
+	"hopsworks.ai/rdrs/internal/handlers/batchfeaturestore"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
 	"hopsworks.ai/rdrs/internal/handlers/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
@@ -99,6 +100,7 @@ type RouteHandler struct {
 	pkReadHandler       pkread.Handler
 	batchPkReadHandler  batchpkread.Handler
 	featureStoreHandler feature_store.Handler
+	batchFeatureStoreHandler batchfeaturestore.Handler
 }
 
 func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache) {
@@ -107,11 +109,14 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 	versionGroup := router.Group(config.VERSION_GROUP)
 
 	batchPkReadHandler := batchpkread.New(heap, apiKeyCache)
+	featureStoreHandler := feature_store.New(apiKeyCache, batchPkReadHandler)
+
 	routeHandler := &RouteHandler{
 		statsHandler:        stat.New(heap, apiKeyCache),
 		pkReadHandler:       pkread.New(heap, apiKeyCache),
 		batchPkReadHandler:  batchPkReadHandler,
-		featureStoreHandler: feature_store.New(apiKeyCache, batchPkReadHandler),
+		featureStoreHandler: featureStoreHandler,
+		batchFeatureStoreHandler: batchfeaturestore.New(apiKeyCache, featureStoreHandler),
 	}
 
 	// ping
@@ -129,6 +134,8 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 
 	// feature store
 	versionGroup.POST("/"+config.FEATURE_STORE_OPERATION, routeHandler.FeatureStore)
+	versionGroup.POST("/"+config.BATCH_FEATURE_STORE_OPERATION, routeHandler.BatchFeatureStore)
+
 }
 
 // TODO: Pass logger to this like in https://stackoverflow.com/a/69948929/9068781

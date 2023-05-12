@@ -64,15 +64,17 @@ func CreateFeatureStoreRequest(
 }
 
 func GetSampleData(database string, table string) ([][]interface{}, []string, []string, error) {
+	return GetNSampleData(database, table, 2)
+}
+
+func GetNSampleData(database string, table string, n int) ([][]interface{}, []string, []string, error) {
 	dbConn, err := testutils.CreateMySQLConnection()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, fmt.Errorf("Cannot create MYSQLConnection" + err.Error())
 	}
 	defer dbConn.Close()
-
-	nResult := 2
-
-	query := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d", database, table, nResult)
+	// Max number of rows can be retrieved is 10.
+	query := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d", database, table, n)
 	rows, err := dbConn.Query(query)
 	if err != nil {
 		return nil, nil, nil, err
@@ -112,8 +114,8 @@ func GetSampleData(database string, table string) ([][]interface{}, []string, []
 			} else {
 				rawValue[i] = []byte("\"" + string(*rawBytes) + "\"")
 			}
-			valueBatch = append(valueBatch, rawValue)
 		}
+		valueBatch = append(valueBatch, rawValue)
 	}
 	if len(valueBatch) == 0 {
 		return nil, nil, nil, fmt.Errorf("No sample data is fetched.\n")
@@ -130,11 +132,11 @@ func GetSampleDataWithJoin(database string, table string, rightDatabase string, 
 		return nil, nil, nil, err
 	}
 	fg2Rows, fg2Pks, fg2Cols, err := GetSampleData(rightDatabase, rightTable)
+
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	var numFeatures = len(fg1Rows[0]) + len(fg2Rows[0])
-	var rows = make([][]interface{}, numFeatures)
+	var rows = make([][]interface{}, len(fg1Rows))
 	var pks, cols []string
 	for i, fg1Row := range fg1Rows {
 		rows[i] = append(fg1Row, fg2Rows[i]...)
@@ -228,7 +230,7 @@ func GetFeatureStoreResponseWithDetail(t *testing.T, req *api.FeatureStoreReques
 	}
 }
 
-func getPkValues(row *[]interface{}, pks *[]string, cols *[]string) *[]interface{} {
+func GetPkValues(row *[]interface{}, pks *[]string, cols *[]string) *[]interface{} {
 	pkSet := make(map[string]bool)
 
 	for _, pk := range *pks {
@@ -238,7 +240,6 @@ func getPkValues(row *[]interface{}, pks *[]string, cols *[]string) *[]interface
 	var pkValue = make([]interface{}, 0)
 	for i, col := range *cols {
 		if _, ok := pkSet[col]; ok {
-			log.Debugf("Primary key type sent to API: %s, value %s\n", reflect.TypeOf((*row)[i]), (*row)[i])
 			pkValue = append(pkValue, (*row)[i])
 		}
 	}
@@ -251,7 +252,16 @@ func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string,
 		colToIndex[col] = i
 	}
 	for i, metadata := range (*resp).Metadata {
-		got := ((*resp).Features)[i]
+		gotRaw := ((*resp).Features)[i]
+		var got interface{}
+		if reflect.TypeOf(gotRaw) == reflect.TypeOf([]byte{}) {
+			err := json.Unmarshal(gotRaw.([]byte), &got)
+			if err != nil {
+				t.Errorf("Cannot unmarshal %s, got error: %s\n", gotRaw, err)
+			}
+		} else {
+			got = gotRaw
+		}
 		expected := ((*data)[colToIndex[metadata.Name]]).([]byte)
 		var expectedJson interface{}
 		err := json.Unmarshal(expected, &expectedJson)
@@ -267,6 +277,7 @@ func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string,
 			}
 			got = string(binary)
 		}
+		log.Debugf("comparing got: %s, expected: %s", got, expectedJson)
 		if !reflect.DeepEqual(got, expectedJson) {
 			t.Errorf("Got %s (%s) but expect %s (%s)\n", got, reflect.TypeOf(got), expectedJson, reflect.TypeOf(expectedJson))
 			break

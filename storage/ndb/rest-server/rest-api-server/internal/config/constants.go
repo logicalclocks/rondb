@@ -35,6 +35,7 @@ const STAT_OPERATION = "stat"
 const PK_DB_OPERATION = "pk-read"
 const BATCH_OPERATION = "batch"
 const FEATURE_STORE_OPERATION = "feature_store"
+const BATCH_FEATURE_STORE_OPERATION = "batch_feature_store"
 
 const PK_HTTP_VERB = "POST"
 const BATCH_HTTP_VERB = "POST"

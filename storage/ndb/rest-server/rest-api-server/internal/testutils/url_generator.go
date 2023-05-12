@@ -87,6 +87,18 @@ func NewFeatureStoreURL() string {
 	return url
 }
 
+func NewBatchFeatureStoreURL() string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION,
+		config.BATCH_FEATURE_STORE_OPERATION,
+	)
+	appendURLProtocol(&url)
+	return url
+}
+
 func appendURLProtocol(url *string) {
 	conf := config.GetAll()
 	if conf.Security.TLS.EnableTLS {
