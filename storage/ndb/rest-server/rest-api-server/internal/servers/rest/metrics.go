@@ -18,11 +18,30 @@
 package rest
 
 import (
+	"runtime"
+
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/log"
 )
 
 func (h *RouteHandler) Metrics(c *gin.Context) {
+	//update the RonDB metrics
+	rondbStats, dalErr := dal.GetRonDBStats()
+	if dalErr != nil {
+		log.Warnf("Failed to collect stats from RonDB %v", dalErr.VerboseError())
+	} else {
+		h.rdrsMetrics.RonDBMetrics.NdbObjectsTotalCountGauge.Set(float64(rondbStats.NdbObjectsTotalCount))
+		h.rdrsMetrics.RonDBMetrics.RonDBConnectionStateGauge.Set(float64(rondbStats.NdbConnectionState))
+	}
+
+	// Runtime stats
+	h.rdrsMetrics.GoRuntimeMetrics.GoRoutinesGauge.Set(float64(runtime.NumGoroutine()))
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+	h.rdrsMetrics.GoRuntimeMetrics.MemoryAllocatedGauge.Set(float64(memStats.Alloc))
+
 	p := promhttp.Handler()
 	p.ServeHTTP(c.Writer, c.Request)
 }

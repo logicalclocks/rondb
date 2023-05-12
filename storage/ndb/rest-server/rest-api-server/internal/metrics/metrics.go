@@ -22,14 +22,20 @@ import (
 )
 
 type RDRSMetrics struct {
-	RonDBMetrics *RonDBMetrics
-	HTTPMetrics  *HTTPMetrics
-	GRPCMetrics  *GRPCMetrics
+	RonDBMetrics     *RonDBMetrics
+	HTTPMetrics      *HTTPMetrics
+	GRPCMetrics      *GRPCMetrics
+	GoRuntimeMetrics *GoRuntimeMetrics
+}
+
+type GoRuntimeMetrics struct {
+	MemoryAllocatedGauge prometheus.Gauge
+	GoRoutinesGauge      prometheus.Gauge
 }
 
 type RonDBMetrics struct {
-	NdbObjectsTotalCount prometheus.GaugeVec
-	RonDBConnectionState prometheus.GaugeVec
+	NdbObjectsTotalCountGauge prometheus.Gauge
+	RonDBConnectionStateGauge prometheus.Gauge
 }
 
 type HTTPMetrics struct {
@@ -62,40 +68,70 @@ func NewRDRSMetrics() (*RDRSMetrics, func()) {
 	rondbMetrics, rondbMetricsCleanup := newRonDBMetrics()
 	httpMetrics, httpMetricsCleanup := newHTTPMetrics()
 	grpcMetrics, grpcMetricsCleanup := newGRPCMetrics()
+	runtimeMetrics, runtimeMetricsCleanup := newGoRuntimeMetrics()
 	metrics.RonDBMetrics = rondbMetrics
 	metrics.HTTPMetrics = httpMetrics
 	metrics.GRPCMetrics = grpcMetrics
+	metrics.GoRuntimeMetrics = runtimeMetrics
 
 	return &metrics, func() {
 		rondbMetricsCleanup()
 		httpMetricsCleanup()
 		grpcMetricsCleanup()
+		runtimeMetricsCleanup()
 	}
+}
+
+func newGoRuntimeMetrics() (*GoRuntimeMetrics, func()) {
+	protocol := "rdrs_go_runtime"
+	metrics := GoRuntimeMetrics{}
+
+	metrics.GoRoutinesGauge =
+		prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: protocol + "_number_of_go_routines",
+				Help: "Number of active go routines",
+			})
+
+	metrics.MemoryAllocatedGauge =
+		prometheus.NewGauge(
+			prometheus.GaugeOpts{
+				Name: protocol + "_allocated_memory",
+				Help: "Total memory allocated to the process",
+			})
+
+	prometheus.MustRegister(metrics.GoRoutinesGauge)
+	prometheus.MustRegister(metrics.MemoryAllocatedGauge)
+	cleanup := func() {
+		prometheus.Unregister(metrics.GoRoutinesGauge)
+		prometheus.Unregister(metrics.MemoryAllocatedGauge)
+	}
+	return &metrics, cleanup
 }
 
 func newRonDBMetrics() (*RonDBMetrics, func()) {
 	protocol := "rdrs_rondb"
 	metrics := RonDBMetrics{}
 
-	metrics.RonDBConnectionState =
-		*prometheus.NewGaugeVec(
+	metrics.RonDBConnectionStateGauge =
+		prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: protocol + "_connection_state",
 				Help: "Connection state (0: disconnected, 1: connected)",
-			}, []string{"connection"})
+			})
 
-	metrics.NdbObjectsTotalCount =
-		*prometheus.NewGaugeVec(
+	metrics.NdbObjectsTotalCountGauge =
+		prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: protocol + "_total_ndb_objects",
 				Help: "Total NDB objects",
-			}, []string{"total_ndb_objects"})
+			})
 
-	prometheus.MustRegister(metrics.RonDBConnectionState)
-	prometheus.MustRegister(metrics.NdbObjectsTotalCount)
+	prometheus.MustRegister(metrics.RonDBConnectionStateGauge)
+	prometheus.MustRegister(metrics.NdbObjectsTotalCountGauge)
 	cleanup := func() {
-		prometheus.Unregister(metrics.RonDBConnectionState)
-		prometheus.Unregister(metrics.NdbObjectsTotalCount)
+		prometheus.Unregister(metrics.RonDBConnectionStateGauge)
+		prometheus.Unregister(metrics.NdbObjectsTotalCountGauge)
 	}
 	return &metrics, cleanup
 }

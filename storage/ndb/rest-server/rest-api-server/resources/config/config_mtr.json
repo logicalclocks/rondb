@@ -33,7 +33,7 @@
                 }
         },
         "Log": {
-                "Level": "debug"
+                "Level": "info"
         },
         "Testing": {
                 "MySQL": {
