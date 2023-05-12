@@ -117,16 +117,14 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	})
 
 	//---------------------------- Prometheus metrics -------------------------
-	httpMetrics, httpMetricsCleanup := metrics.NewHTTPMetrics()
-	cleanupFNs = append(cleanupFNs, httpMetricsCleanup)
-	grpcMetrics, grpcMetricsCleanup := metrics.NewGRPCMetrics()
-	cleanupFNs = append(cleanupFNs, grpcMetricsCleanup)
+	rdrsMetrics, rdrsMetricsCleanup := metrics.NewRDRSMetrics()
+	cleanupFNs = append(cleanupFNs, rdrsMetricsCleanup)
 
 	//---------------------------- Servers ------------------------------------
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)
 	cleanupServers, err := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache,
-		httpMetrics, grpcMetrics, quit)
+		rdrsMetrics, quit)
 	if err != nil {
 		cleanupWrapper(cleanupFNs)()
 		return nil, err

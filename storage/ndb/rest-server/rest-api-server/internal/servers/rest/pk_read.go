@@ -31,8 +31,8 @@ func (h *RouteHandler) PkRead(c *gin.Context) {
 
 	// metrics
 	start := time.Now().UnixNano()
-	defer h.httpMetrics.PkReadSummary.Observe(float64(time.Now().UnixNano() - start))
-	h.httpMetrics.PkReadCounter.Inc()
+	defer h.rdrsMetrics.HTTPMetrics.PkReadSummary.Observe(float64(time.Now().UnixNano() - start))
+	h.rdrsMetrics.HTTPMetrics.PkReadCounter.Inc()
 
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 	pkReadParams, err := parsePkReadRequest(c)

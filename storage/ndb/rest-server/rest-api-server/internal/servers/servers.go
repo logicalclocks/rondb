@@ -37,8 +37,7 @@ import (
 func CreateAndStartDefaultServers(
 	heap *heap.Heap,
 	apiKeyCache apikey.Cache,
-	httpMetrics *metrics.HTTPMetrics,
-	grpcMetrics *metrics.GRPCMetrics,
+	rdrsMetrics *metrics.RDRSMetrics,
 	quit chan os.Signal,
 ) (cleanup func(), err error) {
 	cleanup = func() {}
@@ -70,7 +69,7 @@ func CreateAndStartDefaultServers(
 		}
 	}
 
-	grpcServer := grpc.New(tlsConfig, heap, apiKeyCache, grpcMetrics)
+	grpcServer := grpc.New(tlsConfig, heap, apiKeyCache, rdrsMetrics)
 	cleanupGrpc, err := grpc.Start(
 		grpcServer,
 		conf.GRPC.ServerIP,
@@ -88,7 +87,7 @@ func CreateAndStartDefaultServers(
 		tlsConfig,
 		heap,
 		apiKeyCache,
-		httpMetrics,
+		rdrsMetrics,
 	)
 
 	cleanupRest := restServer.Start(quit)

@@ -49,19 +49,19 @@ func New(
 	tlsConfig *tls.Config,
 	heap *heap.Heap,
 	apiKeyCache apikey.Cache,
-	httpMetrics *metrics.HTTPMetrics,
+	rdrsMetrics *metrics.RDRSMetrics,
 ) *RonDBRestServer {
 	restApiAddress := fmt.Sprintf("%s:%d", host, port)
 	log.Infof("Initialising REST API server with network address: '%s'", restApiAddress)
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New() // gin.Default() for better logging
-	registerHandlers(router, heap, apiKeyCache, httpMetrics)
+	registerHandlers(router, heap, apiKeyCache, rdrsMetrics)
 	return &RonDBRestServer{
 		server: &http.Server{
 			Addr:      restApiAddress,
 			Handler:   router,
 			TLSConfig: tlsConfig,
-			ConnState: httpMetrics.HttpConnectionGauge.OnStateChange,
+			ConnState: rdrsMetrics.HTTPMetrics.HttpConnectionGauge.OnStateChange,
 		},
 	}
 }
@@ -100,10 +100,10 @@ type RouteHandler struct {
 	statsHandler       stat.Handler
 	pkReadHandler      pkread.Handler
 	batchPkReadHandler batchpkread.Handler
-	httpMetrics        *metrics.HTTPMetrics
+	rdrsMetrics        *metrics.RDRSMetrics
 }
 
-func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache, httpMetrics *metrics.HTTPMetrics) {
+func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache, rdrsMetrics *metrics.RDRSMetrics) {
 	router.Use(ErrorHandler)
 
 	versionGroup := router.Group(config.VERSION_GROUP)
@@ -112,7 +112,7 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 		statsHandler:       stat.New(heap, apiKeyCache),
 		pkReadHandler:      pkread.New(heap, apiKeyCache),
 		batchPkReadHandler: batchpkread.New(heap, apiKeyCache),
-		httpMetrics:        httpMetrics,
+		rdrsMetrics:        rdrsMetrics,
 	}
 
 	// ping

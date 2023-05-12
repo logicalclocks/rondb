@@ -40,14 +40,14 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func New(serverTLS *tls.Config, heap *heap.Heap, apiKeyCache apikey.Cache, grpcMetrics *metrics.GRPCMetrics) *grpc.Server {
+func New(serverTLS *tls.Config, heap *heap.Heap, apiKeyCache apikey.Cache, rdrsMetrics *metrics.RDRSMetrics) *grpc.Server {
 	var grpcServer *grpc.Server
 	if serverTLS != nil {
-		grpcServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)), grpc.StatsHandler(&grpcMetrics.GRPCStatistics))
+		grpcServer = grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)), grpc.StatsHandler(&rdrsMetrics.GRPCMetrics.GRPCStatistics))
 	} else {
-		grpcServer = grpc.NewServer(grpc.StatsHandler(&grpcMetrics.GRPCStatistics))
+		grpcServer = grpc.NewServer(grpc.StatsHandler(&rdrsMetrics.GRPCMetrics.GRPCStatistics))
 	}
-	RonDBServer := NewRonDBServer(heap, apiKeyCache, grpcMetrics)
+	RonDBServer := NewRonDBServer(heap, apiKeyCache, rdrsMetrics)
 	api.RegisterRonDBRESTServer(grpcServer, RonDBServer)
 	return grpcServer
 }
@@ -83,15 +83,15 @@ type RonDBServer struct {
 	statsHandler       stat.Handler
 	pkReadHandler      pkread.Handler
 	batchPkReadHandler batchpkread.Handler
-	grpcMetrics        *metrics.GRPCMetrics
+	rdrsMetrics        *metrics.RDRSMetrics
 }
 
-func NewRonDBServer(heap *heap.Heap, apiKeyCache apikey.Cache, grpcMetrics *metrics.GRPCMetrics) *RonDBServer {
+func NewRonDBServer(heap *heap.Heap, apiKeyCache apikey.Cache, rdrsMetrics *metrics.RDRSMetrics) *RonDBServer {
 	return &RonDBServer{
 		statsHandler:       stat.New(heap, apiKeyCache),
 		pkReadHandler:      pkread.New(heap, apiKeyCache),
 		batchPkReadHandler: batchpkread.New(heap, apiKeyCache),
-		grpcMetrics:        grpcMetrics,
+		rdrsMetrics:        rdrsMetrics,
 	}
 }
 

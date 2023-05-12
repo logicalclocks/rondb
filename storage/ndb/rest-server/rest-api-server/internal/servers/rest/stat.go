@@ -31,8 +31,8 @@ func (h *RouteHandler) Stat(c *gin.Context) {
 
 	// metrics
 	start := time.Now().UnixNano()
-	defer h.httpMetrics.StatSummary.Observe(float64(time.Now().UnixNano() - start))
-	h.httpMetrics.StatCounter.Inc()
+	defer h.rdrsMetrics.HTTPMetrics.StatSummary.Observe(float64(time.Now().UnixNano() - start))
+	h.rdrsMetrics.HTTPMetrics.StatCounter.Inc()
 
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 	statResp := api.StatResponse{}

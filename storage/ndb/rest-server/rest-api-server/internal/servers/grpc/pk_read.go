@@ -33,8 +33,8 @@ func (s *RonDBServer) PKRead(ctx context.Context, reqProto *api.PKReadRequestPro
 
 	// metrics
 	start := time.Now().UnixNano()
-	defer s.grpcMetrics.PkReadSummary.Observe(float64(time.Now().UnixNano() - start))
-	s.grpcMetrics.PkReadCounter.Inc()
+	defer s.rdrsMetrics.GRPCMetrics.PkReadSummary.Observe(float64(time.Now().UnixNano() - start))
+	s.rdrsMetrics.GRPCMetrics.PkReadCounter.Inc()
 
 	apiKey, err := s.getApiKey(ctx)
 	if err != nil {

@@ -37,8 +37,8 @@ func (h *RouteHandler) BatchPkRead(c *gin.Context) {
 
 	// metrics
 	start := time.Now().UnixNano()
-	defer h.httpMetrics.BatchPkReadSummary.Observe(float64(time.Now().UnixNano() - start))
-	h.httpMetrics.BatchPkReadCounter.Inc()
+	defer h.rdrsMetrics.HTTPMetrics.BatchPkReadSummary.Observe(float64(time.Now().UnixNano() - start))
+	h.rdrsMetrics.HTTPMetrics.BatchPkReadCounter.Inc()
 
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 

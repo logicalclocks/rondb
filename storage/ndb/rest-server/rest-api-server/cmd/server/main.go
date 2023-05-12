@@ -72,16 +72,13 @@ func main() {
 	defer apiKeyCache.Cleanup()
 
 	// Prometheus metrics
-	httpMetrics, httpMetricsCleanup := metrics.NewHTTPMetrics()
-	defer httpMetricsCleanup()
-	grpcMetrics, grpcMetricsCleanup := metrics.NewGRPCMetrics()
-	defer grpcMetricsCleanup()
+	rdrsMetrics, rdrsMetricsCleanup := metrics.NewRDRSMetrics()
+	defer rdrsMetricsCleanup()
 
 	cleanupServers, err := servers.CreateAndStartDefaultServers(
 		newHeap,
 		apiKeyCache,
-		httpMetrics,
-		grpcMetrics,
+		rdrsMetrics,
 		quit)
 	if err != nil {
 		panic(err)

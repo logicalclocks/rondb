@@ -33,8 +33,8 @@ func (s *RonDBServer) Stat(ctx context.Context, reqProto *api.StatRequestProto) 
 
 	// metrics
 	start := time.Now().UnixNano()
-	defer s.grpcMetrics.StatSummary.Observe(float64(time.Now().UnixNano() - start))
-	s.grpcMetrics.StatCounter.Inc()
+	defer s.rdrsMetrics.GRPCMetrics.StatSummary.Observe(float64(time.Now().UnixNano() - start))
+	s.rdrsMetrics.GRPCMetrics.StatCounter.Inc()
 
 	apiKey, err := s.getApiKey(ctx)
 	if err != nil {

@@ -21,6 +21,17 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+type RDRSMetrics struct {
+	RonDBMetrics *RonDBMetrics
+	HTTPMetrics  *HTTPMetrics
+	GRPCMetrics  *GRPCMetrics
+}
+
+type RonDBMetrics struct {
+	NdbObjectsTotalCount prometheus.GaugeVec
+	RonDBConnectionState prometheus.GaugeVec
+}
+
 type HTTPMetrics struct {
 	PingCounter         prometheus.Counter
 	PkReadCounter       prometheus.Counter
@@ -43,12 +54,54 @@ type GRPCMetrics struct {
 	BatchPkReadSummary prometheus.Summary
 	StatSummary        prometheus.Summary
 	GRPCStatistics     GRPCStatistics
-
-	//TODO connection count
 }
 
-func NewHTTPMetrics() (*HTTPMetrics, func()) {
-	protocol := "http"
+func NewRDRSMetrics() (*RDRSMetrics, func()) {
+
+	metrics := RDRSMetrics{}
+	rondbMetrics, rondbMetricsCleanup := newRonDBMetrics()
+	httpMetrics, httpMetricsCleanup := newHTTPMetrics()
+	grpcMetrics, grpcMetricsCleanup := newGRPCMetrics()
+	metrics.RonDBMetrics = rondbMetrics
+	metrics.HTTPMetrics = httpMetrics
+	metrics.GRPCMetrics = grpcMetrics
+
+	return &metrics, func() {
+		rondbMetricsCleanup()
+		httpMetricsCleanup()
+		grpcMetricsCleanup()
+	}
+}
+
+func newRonDBMetrics() (*RonDBMetrics, func()) {
+	protocol := "rdrs_rondb"
+	metrics := RonDBMetrics{}
+
+	metrics.RonDBConnectionState =
+		*prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: protocol + "_connection_state",
+				Help: "Connection state (0: disconnected, 1: connected)",
+			}, []string{"connection"})
+
+	metrics.NdbObjectsTotalCount =
+		*prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: protocol + "_total_ndb_objects",
+				Help: "Total NDB objects",
+			}, []string{"total_ndb_objects"})
+
+	prometheus.MustRegister(metrics.RonDBConnectionState)
+	prometheus.MustRegister(metrics.NdbObjectsTotalCount)
+	cleanup := func() {
+		prometheus.Unregister(metrics.RonDBConnectionState)
+		prometheus.Unregister(metrics.NdbObjectsTotalCount)
+	}
+	return &metrics, cleanup
+}
+
+func newHTTPMetrics() (*HTTPMetrics, func()) {
+	protocol := "rdrs_http"
 	metrics := HTTPMetrics{}
 
 	metrics.PingCounter =
@@ -151,8 +204,8 @@ func NewHTTPMetrics() (*HTTPMetrics, func()) {
 	return &metrics, cleanup
 }
 
-func NewGRPCMetrics() (*GRPCMetrics, func()) {
-	protocol := "gRPC"
+func newGRPCMetrics() (*GRPCMetrics, func()) {
+	protocol := "rdrs_grpc"
 	metrics := GRPCMetrics{}
 
 	metrics.PingCounter =

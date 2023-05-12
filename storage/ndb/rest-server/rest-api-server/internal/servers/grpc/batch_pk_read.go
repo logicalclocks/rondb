@@ -33,8 +33,8 @@ func (s *RonDBServer) Batch(ctx context.Context, reqProto *api.BatchRequestProto
 
 	// metrics
 	start := time.Now().UnixNano()
-	defer s.grpcMetrics.BatchPkReadSummary.Observe(float64(time.Now().UnixNano() - start))
-	s.grpcMetrics.BatchPkReadCounter.Inc()
+	defer s.rdrsMetrics.GRPCMetrics.BatchPkReadSummary.Observe(float64(time.Now().UnixNano() - start))
+	s.rdrsMetrics.GRPCMetrics.BatchPkReadCounter.Inc()
 
 	apiKey, err := s.getApiKey(ctx)
 	if err != nil {

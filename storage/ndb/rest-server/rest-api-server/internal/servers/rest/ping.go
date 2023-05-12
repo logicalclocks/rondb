@@ -26,7 +26,7 @@ import (
 func (h *RouteHandler) Ping(c *gin.Context) {
 	// metrics
 	start := time.Now().UnixNano()
-	defer h.httpMetrics.PingSummary.Observe(float64(time.Now().UnixNano() - start))
-	h.httpMetrics.PingCounter.Inc()
+	defer h.rdrsMetrics.HTTPMetrics.PingSummary.Observe(float64(time.Now().UnixNano() - start))
+	h.rdrsMetrics.HTTPMetrics.PingCounter.Inc()
 
 }
