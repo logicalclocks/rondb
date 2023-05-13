@@ -279,12 +279,11 @@ IF(CMAKE_HOST_UNIX AND NOT FORCE_UNSUPPORTED_COMPILER
       IF(LINUX_RHEL6)
         SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-8")
       ELSEIF(LINUX_RHEL7)
-        # ARM requires GCC 10, but we still build releases for
-        # x86_64 on GCC 8.
+        # ARM requires GCC 10. GCC 10 is faster than GCC 9
         IF(MY_HOST_MACHINE_NAME MATCHES "aarch64")
           SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-10")
         ELSE()
-          SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-9")
+          SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-10")
         ENDIF()
       ELSEIF(LINUX_RHEL8)
         SET(ALTERNATIVE_PATHS "/opt/rh/gcc-toolset-10")
@@ -341,12 +340,12 @@ ENDIF()
 
 # Optionally set project name, e.g.
 # foo.xcodeproj (mac) or foo.sln (windows)
-SET(MYSQL_PROJECT_NAME_DOCSTRING "MySQL project name")
+SET(MYSQL_PROJECT_NAME_DOCSTRING "RonDB project name")
 IF(DEFINED MYSQL_PROJECT_NAME)
   SET(MYSQL_PROJECT_NAME ${MYSQL_PROJECT_NAME} CACHE STRING
       ${MYSQL_PROJECT_NAME_DOCSTRING} FORCE)
 ELSE()
-  SET(MYSQL_PROJECT_NAME "MySQL" CACHE STRING
+  SET(MYSQL_PROJECT_NAME "RonDB" CACHE STRING
       ${MYSQL_PROJECT_NAME_DOCSTRING} FORCE)
   MARK_AS_ADVANCED(MYSQL_PROJECT_NAME)
 ENDIF()
@@ -355,7 +354,7 @@ ENDIF()
 IF(DEFINED WITH_NDBCLUSTER)
   SET(HAVE_WITH_NDBCLUSTER 1)
 ENDIF()
-OPTION(WITH_NDBCLUSTER "Build MySQL Cluster" OFF)
+OPTION(WITH_NDBCLUSTER "Build RonDB" OFF)
 OPTION(WITH_NDBCLUSTER_STORAGE_ENGINE
   "Legacy and deprecated alias for WITH_NDBCLUSTER" OFF)
 OPTION(WITH_PLUGIN_NDBCLUSTER
@@ -377,7 +376,7 @@ IF(NOT HAVE_WITH_NDBCLUSTER)
   ENDIF()
 ENDIF()
 IF(WITH_NDBCLUSTER)
-  MESSAGE(STATUS "Building MySQL Cluster")
+  MESSAGE(STATUS "Building RonDB")
 ENDIF()
 
 INCLUDE(mysql_version)
@@ -622,7 +621,7 @@ IF(WIN32)
   OPTION(WITH_MSCRT_DEBUG "MS Visual Studio Debug CRT instrumentation" OFF)
 ENDIF()
 IF(NOT WITHOUT_SERVER)
-  OPTION(WITH_UNIT_TESTS "Compile MySQL with unit tests" ON)
+  OPTION(WITH_UNIT_TESTS "Compile RonDB with unit tests" ON)
   OPTION(WITH_ROUTER "Build MySQL Router" ON)
 ENDIF()
 
@@ -1557,7 +1556,7 @@ ENDIF()
 # Because things may already have been included with ADD_SUBDIRECTORY
 #
 OPTION(MYSQL_MAINTAINER_MODE
-       "MySQL maintainer-specific development environment" OFF)
+       "RonDB maintainer-specific development environment" OFF)
 
 INCLUDE(maintainer)
 
