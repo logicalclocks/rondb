@@ -50,7 +50,9 @@ It is brought to you by the MySQL team at Oracle.
 
 There are no existing managed databases available today with these attributes. Would you like to be part of it? Feel free to contribute!
 
+The main development branches to track is currently 21.04 (Stable branch) and 22.10.1 (New stable branch).
+
 ---
 
 Copyright (c) 2000, 2021, Oracle and/or its affiliates.   
-Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
