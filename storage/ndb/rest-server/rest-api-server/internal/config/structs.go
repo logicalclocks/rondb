@@ -26,9 +26,11 @@ import (
 )
 
 type Internal struct {
-	BufferSize          uint32
-	PreAllocatedBuffers uint32
-	GOMAXPROCS          int
+	BufferSize               uint32
+	PreAllocatedBuffers      uint32
+	GOMAXPROCS               int
+	SplitLargeBatchThreshold uint32
+	LargeBatchSplitSize      uint32
 }
 
 func (i *Internal) Validate() error {
@@ -38,6 +40,18 @@ func (i *Internal) Validate() error {
 
 	if i.BufferSize < 256 {
 		return errors.New("BufferSize is too low")
+	}
+
+	if i.SplitLargeBatchThreshold < 2 {
+		return errors.New("SplitLargeBatchThreshold has to be >= 2")
+	}
+
+	if i.LargeBatchSplitSize == 0 {
+		return errors.New("LargeBatchSplitSize has to be >= 1")
+	}
+
+	if i.LargeBatchSplitSize >= i.SplitLargeBatchThreshold {
+		return errors.New("LargeBatchSplitSize should be less than SplitLargeBatchThreshold")
 	}
 
 	return nil

@@ -47,9 +47,11 @@ func init() {
 func newWithDefaults() AllConfigs {
 	return AllConfigs{
 		Internal: Internal{
-			BufferSize:          320 * 1024,
-			GOMAXPROCS:          -1,
-			PreAllocatedBuffers: 1024,
+			BufferSize:               320 * 1024,
+			GOMAXPROCS:               -1,
+			PreAllocatedBuffers:      1024,
+			SplitLargeBatchThreshold: 100,
+			LargeBatchSplitSize:      20,
 		},
 		GRPC: GRPC{
 			ServerIP:   "localhost",

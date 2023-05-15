@@ -1,6 +1,8 @@
 {
         "Internal": {
-                "APIVersion": "0.1.0"
+                "APIVersion": "0.1.0",
+                "SplitLargeBatchThreshold": 100,
+                "LargeBatchSplitSize":      20
         },
         "REST": {
                 "ServerIP": "localhost",

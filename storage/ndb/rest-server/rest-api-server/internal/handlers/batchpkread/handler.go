@@ -19,6 +19,7 @@ package batchpkread
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 
 	"hopsworks.ai/rdrs/internal/config"
@@ -106,7 +107,13 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		}
 	}
 
-	dalErr := dal.RonDBBatchedPKRead(noOps, reqPtrs, respPtrs)
+	var dalErr *dal.DalError
+	if noOps >= config.GetAll().Internal.SplitLargeBatchThreshold {
+		dalErr = h.executeInSmallerBatches(noOps, reqPtrs, respPtrs)
+	} else {
+		dalErr = dal.RonDBBatchedPKRead(noOps, reqPtrs, respPtrs)
+	}
+
 	if dalErr != nil {
 		var message string
 		if dalErr.HttpCode >= http.StatusInternalServerError {
@@ -124,6 +131,56 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	}
 
 	return http.StatusOK, nil
+}
+
+func (h *Handler) executeInSmallerBatches(noOps uint32,
+	reqPtrs []*heap.NativeBuffer, respPtrs []*heap.NativeBuffer) *dal.DalError {
+
+	respCh := make(chan *dal.DalError)
+
+	sliceSize := uint32(config.GetAll().Internal.LargeBatchSplitSize)
+	numOfSlices := uint32(0)
+	if noOps <= sliceSize {
+		numOfSlices = 1
+	} else {
+		numOfSlices = uint32(math.Ceil(float64(noOps) / float64(sliceSize)))
+	}
+
+	for slice := uint32(0); slice < numOfSlices; slice++ {
+		start := uint32(slice * sliceSize)
+		end := uint32(math.Min(float64(((slice + 1) * sliceSize)), float64(noOps)))
+
+		go h.executeInSmallerBatchesInternal(end-start, reqPtrs[start:end], respPtrs[start:end], respCh)
+	}
+
+	//wait for responses
+	errors := make([]*dal.DalError, numOfSlices)
+	for slice := uint32(0); slice < numOfSlices; slice++ {
+		errors[slice] = <-respCh
+	}
+
+	for slice := uint32(0); slice < numOfSlices; slice++ {
+		//return the first error
+		if errors[slice] != nil {
+			return errors[slice]
+		}
+	}
+
+	return nil
+}
+
+func (h *Handler) executeInSmallerBatchesInternal(noOps uint32,
+	reqPtrs []*heap.NativeBuffer, respPtrs []*heap.NativeBuffer,
+	respCh chan *dal.DalError) {
+	dalErr := dal.RonDBBatchedPKRead(noOps, reqPtrs, respPtrs)
+	if dalErr != nil {
+		if dalErr.HttpCode != http.StatusOK {
+			respCh <- dalErr
+			fmt.Printf("Returinign error %v\n", dalErr.VerboseError())
+			return
+		}
+	}
+	respCh <- nil
 }
 
 func processResponses(respBuffs *[]*heap.NativeBuffer, response api.BatchOpResponse) (int, error) {
