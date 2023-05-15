@@ -281,9 +281,9 @@ IF(CMAKE_HOST_UNIX AND NOT FORCE_UNSUPPORTED_COMPILER
       ELSEIF(LINUX_RHEL7)
         # ARM requires GCC 10. GCC 10 is faster than GCC 9
         IF(MY_HOST_MACHINE_NAME MATCHES "aarch64")
-          SET(ALTERNATIVE_PATHS "/opt/rh/gcc-toolset-10")
+          SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-10")
         ELSE()
-          SET(ALTERNATIVE_PATHS "/opt/rh/gcc-toolset-10")
+          SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-10")
         ENDIF()
       ELSEIF(LINUX_RHEL8)
         SET(ALTERNATIVE_PATHS "/opt/rh/gcc-toolset-10")
