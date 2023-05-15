@@ -33,6 +33,16 @@ type Handler struct {
 	fshandler   feature_store.Handler
 }
 
+type FeatureStoreResponseWithOrder struct {
+	FsResponse *api.FeatureStoreResponse
+	Order int
+}
+
+type FeatureStoreRequestWithOrder struct {
+	FsResponse *api.FeatureStoreRequest
+	Order int
+}
+
 func New(apiKeyCache apikey.Cache, fshandler feature_store.Handler) Handler {
 	return Handler{apiKeyCache, fshandler}
 }
@@ -49,18 +59,8 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	return h.apiKeyCache.ValidateAPIKey(apiKey)
 }
 
-type FeatureStoreResponseWithOrder struct {
-	FsResponse *api.FeatureStoreResponse
-	Order int
-}
-
-type FeatureStoreRequestWithOrder struct {
-	FsResponse *api.FeatureStoreRequest
-	Order int
-}
-
 func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
-
+	// FIXME: make this configurable
 	numThread := 3
 	batchFsReq := request.(*api.BatchFeatureStoreRequest)
 	fvReqs := make(chan *FeatureStoreRequestWithOrder)
@@ -94,7 +94,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	close(fvReqs)
 	wg.Wait()
 	wgResp.Wait()
-	close(fvResps)
+	defer close(fvResps)
 	return http.StatusOK, nil
 
 }
@@ -105,12 +105,12 @@ func processFsRequest(
 	responses chan *FeatureStoreResponseWithOrder,
 	wg *sync.WaitGroup,
 ) {
+	defer wg.Done()
 	for req := range requests {
 		response := api.FeatureStoreResponse{}
 		fshandler.Execute(req.FsResponse, &response)
 		responses <- &FeatureStoreResponseWithOrder{&response, req.Order}
 	}
-	wg.Done()
 }
 
 func processFsResp(
@@ -119,6 +119,7 @@ func processFsResp(
 	responses chan *FeatureStoreResponseWithOrder,
 	wg *sync.WaitGroup,
 ) {
+	defer wg.Done()
 	batchResponse.Features = make([][]interface{}, numFeatures)
 	for i := 0; i < numFeatures; i++ {
 		var fvResp = <-responses
@@ -127,5 +128,4 @@ func processFsResp(
 		}
 		batchResponse.Features[fvResp.Order] = fvResp.FsResponse.Features
 	}
-	wg.Done()
 }

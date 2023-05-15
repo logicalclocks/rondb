@@ -184,7 +184,7 @@ func getColumnInfo(dbName string, tableName string) ([]string, []string, []strin
 	var columns []string
 	var pks []string
 
-	query := fmt.Sprintf("SELECT DATA_TYPE, COLUMN_NAME, COLUMN_KEY FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s'", dbName, tableName)
+	query := fmt.Sprintf("SELECT DATA_TYPE, COLUMN_NAME, COLUMN_KEY FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '%s' AND TABLE_NAME = '%s' ORDER BY ORDINAL_POSITION", dbName, tableName)
 	rows, err := dbConn.Query(query)
 	if err != nil {
 		return nil, nil, nil, err
@@ -207,6 +207,11 @@ func getColumnInfo(dbName string, tableName string) ([]string, []string, []strin
 	if err := rows.Err(); err != nil {
 		return nil, nil, nil, err
 	}
+	log.Debugf(
+		"data type: %s, column name: %s",
+		strings.Join(colTypes, ", "),
+		strings.Join(columns, ", "),
+	)
 	return columns, pks, colTypes, nil
 }
 
