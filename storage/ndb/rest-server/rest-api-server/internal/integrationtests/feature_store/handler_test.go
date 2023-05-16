@@ -18,164 +18,529 @@
 package feature_store
 
 import (
-	"encoding/json"
+	"encoding/base64"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"testing"
 
-	"hopsworks.ai/rdrs/internal/config"
 	fsmetadata "hopsworks.ai/rdrs/internal/feature_store"
-	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
-	"hopsworks.ai/rdrs/internal/log"
-	"hopsworks.ai/rdrs/internal/testutils"
-	"hopsworks.ai/rdrs/pkg/api"
+	fshandler "hopsworks.ai/rdrs/internal/handlers/feature_store"
 )
-
-func createFeatureStoreRequest(
-	fsName string,
-	fvName string,
-	fvVersion int,
-	pk []string,
-	values []interface{},
-	passedFeaturesKey []string,
-	passedFeaturesValue []interface{},
-) *api.FeatureStoreRequest {
-	var entries = make(map[string]*json.RawMessage)
-	for i, key := range pk {
-		val := json.RawMessage(values[i].([]byte))
-		entries[key] = &val
-	}
-	var passedFeatures = make(map[string]*json.RawMessage)
-	for i, key := range passedFeaturesKey {
-		val := json.RawMessage(passedFeaturesValue[i].([]byte))
-		passedFeatures[key] = &val
-	}
-	req := api.FeatureStoreRequest{
-		FeatureStoreName:   &fsName,
-		FeatureViewName:    &fvName,
-		FeatureViewVersion: &fvVersion,
-		Entries:            &entries,
-		PassedFeatures:     &passedFeatures,
-	}
-	return &req
-}
-
-func TestFeatureStore(t *testing.T) {
-	var fsName = "fsdb002"
-	var fvName = "sample_1n2"
-	var fvVersion = 1
-	key := string("id1")
-	value1 := json.RawMessage(`87`)
-	value2 := json.RawMessage(`730`)
-	var entries = make(map[string]*json.RawMessage)
-	entries[key] = &value1
-	entries[string("fg2_id1")] = &value2
-	var passedFeatures = make(map[string]*json.RawMessage)
-	pfValue := json.RawMessage(`999`)
-	passedFeatures["data1"] = &pfValue
-	req := api.FeatureStoreRequest{
-		FeatureStoreName:   &fsName,
-		FeatureViewName:    &fvName,
-		FeatureViewVersion: &fvVersion,
-		Entries:            &entries,
-		PassedFeatures:     &passedFeatures}
-	reqBody := fmt.Sprintf("%s", req)
-	log.Debugf("Request body: %s", reqBody)
-	_, respBody := testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, testutils.NewFeatureStoreURL(), reqBody, "", http.StatusOK)
-
-	fsResp := api.FeatureStoreResponse{}
-	err := json.Unmarshal([]byte(respBody), &fsResp)
-	if err != nil {
-		t.Fatalf("Unmarshal failed %s ", err)
-	}
-
-	log.Infof("Response data is %s", fsResp.String())
-}
 
 func TestFeatureStoreMetaData(t *testing.T) {
 
-	md, err := fsmetadata.GetFeatureViewMetadata("fsdb002", "sample_2", 1)
+	_, err := fsmetadata.GetFeatureViewMetadata("fsdb002", "sample_2", 1)
 	if err != nil {
 		t.Fatalf("Reading FS Metadata failed %v ", err)
 	}
-
-	mdJson, _ := json.MarshalIndent(md, "", "  ")
-	log.Infof("Feature store metadata is %s", mdJson)
 }
 
-func getFeatureStoreResponse(t *testing.T, req *api.FeatureStoreRequest) *api.FeatureStoreResponse {
-	reqBody := fmt.Sprintf("%s", req)
-	_, respBody := testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, testutils.NewFeatureStoreURL(), reqBody, "", http.StatusOK)
-	fsResp := api.FeatureStoreResponse{}
-	err := json.Unmarshal([]byte(respBody), &fsResp)
-	if err != nil {
-		t.Fatalf("Unmarshal failed %s ", err)
+func TestMetadata_FsNotExist(t *testing.T) {
+	_, err := fsmetadata.GetFeatureViewMetadata("NA", "sample_2", 1)
+	if err == nil {
+		t.Fatalf("This should fail.")
 	}
-	return &fsResp
+	if !strings.Contains(err.Error(), fsmetadata.FS_NOT_EXIST) {
+		t.Fatalf("This should fail with error message: %s.", fsmetadata.FS_NOT_EXIST)
+	}
 }
 
-func Metadata_success(t *testing.T) {
-	// req := createFeatureStoreRequest(
-	// 	"",
-	// 	"",
-	// 	0,
-	// 	[]string{},
-	// 	[]interface{}{},
-	// 	nil,
-	// 	nil,
-	// )
-	// rep := getFeatureStoreResponse(req)
+func TestMetadata_FvNotExist(t *testing.T) {
+	_, err := fsmetadata.GetFeatureViewMetadata("fsdb002", "NA", 1)
+	if err == nil {
+		t.Fatalf("This should fail.")
+	}
+	if !strings.Contains(err.Error(), fsmetadata.FV_NOT_EXIST) {
+		t.Fatalf("This should fail with error message: %s.", fsmetadata.FV_NOT_EXIST)
+	}
 }
 
-func MetadataNotExist(t *testing.T) {
+func Test_GetFeatureVector_success(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb002", "sample_2_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb002",
+			"sample_2",
+			1,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+	}
+}
+
+func Test_GetFeatureVector_FsNotExist(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb002", "sample_2_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"NA",
+			"sample_2",
+			1,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FS_NOT_EXIST, http.StatusBadRequest)
+
+	}
+}
+
+func Test_GetFeatureVector_FvNotExist(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb002", "sample_2_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb002",
+			"NA",
+			1,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FV_NOT_EXIST, http.StatusBadRequest)
+	}
+}
+
+func Test_GetFeatureVector_CompositePrimaryKey(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb001", "sample_3_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_3",
+			1,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+	}
+}
+
+func Test_GetFeatureVector_ReturnMixedDataType(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb001", "sample_3_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_3",
+			2,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+	}
+}
+
+func Test_GetFeatureVector_join(t *testing.T) {
+	rows, pks, cols, err := GetSampleDataWithJoin("fsdb002", "sample_1_1", "fsdb002", "sample_2_1", "fg2_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb002",
+			"sample_1n2",
+			1,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+	}
+}
+
+func Test_GetFeatureVector_joinSameFg(t *testing.T) {
+	rows, pks, cols, err := GetSampleDataWithJoin("fsdb001", "sample_1_1", "fsdb001", "sample_1_2", "fg1_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_1n1",
+			1,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+	}
+}
+
+func Test_GetFeatureVector_shared(t *testing.T) {
+	rows, pks, cols, err := GetSampleDataWithJoin("fsdb001", "sample_1_1", "fsdb002", "sample_2_1", "fg2_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_share_1n2",
+			1,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+	}
+}
+
+func Test_GetFeatureVector_shareRevoked(t *testing.T) {
 
 }
 
-func PrimaryKey_success(t *testing.T) {
-	// req := createFeatureStoreRequest(
-	// 	"",
-	// 	"",
-	// 	0,
-	// 	[]string{},
-	// 	[]interface{}{},
-	// 	nil,
-	// 	nil,
-	// )
-	// rep := getFeatureStoreResponse(req)
+func Test_GetFeatureVector_wrongPrimaryKey_notExist(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb002", "sample_2_1")
+
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	// Make wrong primary key
+	var wrongPks = make([]string, len(pks))
+	for i, pk := range pks {
+		wrongPks[i] = pk + "abcd"
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb002",
+			"sample_2",
+			1,
+			wrongPks,
+			*getPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.FEATURE_NOT_EXIST, http.StatusBadRequest)
+	}
 }
 
-func PrimaryKey_wrongKey(t *testing.T) {
+func Test_GetFeatureVector_primaryKeyNoMatch(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb002", "sample_2_1")
 
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	for _, row := range rows {
+		// Make wrong primary key value
+		var pkValues = *getPkValues(&row, &pks, &cols)
+		for i := range pkValues {
+			pkValues[i] = []byte(strconv.Itoa(9876543 + i))
+		}
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb002",
+			"sample_2",
+			1,
+			pks,
+			pkValues,
+			nil,
+			nil,
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+	}
 }
 
-func PrimaryKey_wrongValue(t *testing.T) {
-
+func Test_GetFeatureVector_noPrimaryKey(t *testing.T) {
+	var fsReq = CreateFeatureStoreRequest(
+		"fsdb002",
+		"sample_2",
+		1,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.INCORRECT_PRIMARY_KEY, http.StatusBadRequest)
 }
 
-func PrimaryKey_missingKey(t *testing.T) {
+func Test_GetFeatureVector_incompletePrimaryKey(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb001", "sample_3_1")
 
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	for _, row := range rows {
+		var pkValues = *getPkValues(&row, &pks, &cols)
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_3",
+			1,
+			// Remove one pk
+			[]string{pks[0]},
+			[]interface{}{pkValues[0]},
+			nil,
+			nil,
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.INCORRECT_PRIMARY_KEY, http.StatusBadRequest)
+	}
 }
 
-func PrimaryKey_wrongType(t *testing.T) {
+func Test_GetFeatureVector_wrongPrimaryKey_featureNotPk(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb001", "sample_3_1")
 
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	for _, row := range rows {
+		var pkValues = *getPkValues(&row, &pks, &cols)
+		pks[0] = "ts"
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_3",
+			1,
+			pks,
+			pkValues,
+			nil,
+			nil,
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.INCORRECT_PRIMARY_KEY, http.StatusBadRequest)
+	}
 }
 
-func PassedFeatures_success(t *testing.T) {
+func Test_GetFeatureVector_wrongPkType_int(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb002", "sample_2_1")
 
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	for _, row := range rows {
+		// Make wrong primary key value
+		var pkValues = *getPkValues(&row, &pks, &cols)
+		for i, pkv := range pkValues {
+			// rondb can convert int in string quote to int
+			pkValues[i] = []byte("\"" + string(pkv.([]byte)) + "\"")
+		}
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb002",
+			"sample_2",
+			1,
+			pks,
+			pkValues,
+			nil,
+			nil,
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+	}
 }
 
-func PassedFeatures_wrongKey(t *testing.T) {
+func Test_GetFeatureVector_wrongPkType_str(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb001", "sample_3_1")
 
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	for _, row := range rows {
+		// Make wrong primary key value
+		var pkValues = *getPkValues(&row, &pks, &cols)
+		for i := range pkValues {
+			// rondb can convert int to string
+			pkValues[i] = []byte(fmt.Sprintf("%d", i))
+		}
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_3",
+			1,
+			pks,
+			pkValues,
+			nil,
+			nil,
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+	}
 }
 
-func PassedFeatures_wrongType(t *testing.T) {
+func Test_GetFeatureVector_wrongPkValue(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb001", "sample_3_1")
 
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	for _, row := range rows {
+		// Make wrong primary key value
+		var pkValues = *getPkValues(&row, &pks, &cols)
+		for i := range pkValues {
+			// rondb can convert int to string
+			pkValues[i] = []byte(fmt.Sprintf("\"abc%d\"", i))
+		}
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_3",
+			1,
+			pks,
+			pkValues,
+			nil,
+			nil,
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.WRONG_DATA_TYPE, http.StatusBadRequest)
+	}
 }
 
-func GetFeatures_Join(t *testing.T) {
-
+func Test_PassedFeatures_success(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb002", "sample_2_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		row[2] = []byte(`"999"`)
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb002",
+			"sample_2",
+			1,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			[]string{"data1"},
+			[]interface{}{[]byte(`"999"`)},
+		)
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+	}
 }
 
-func GetFeatures_ReturnMixedDataType(t *testing.T) {
+func Test_PassedFeatures_success_allTypes(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb001", "sample_3_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var passedFeatures = []interface{}{
+			[]byte(`990`),          // id1
+			[]byte(`"991"`),        // id2
+			[]byte(`992`),          // ts
+			[]byte(`993`),          // bigint
+			[]byte(`"994"`),        // string
+			[]byte(`"2022-01-01"`), // date
+			[]byte(`true`),         // bool
+			[]byte(`1.5`),          // float
+			[]byte(`2.5`),          // double
+			[]byte(fmt.Sprintf(`"%s"`, base64.StdEncoding.EncodeToString([]byte("EEFF")))), // binary
+		}
+		for i, pf := range passedFeatures {
+			row[i] = pf
+		}
+		row[len(passedFeatures)-1] = []byte(`"EEFF"`)
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_3",
+			2,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			cols,
+			passedFeatures,
+		)
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+	}
+}
 
+func Test_PassedFeatures_wrongKey_featureNotExist(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb002", "sample_2_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		row[2] = []byte("999")
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb002",
+			"sample_2",
+			1,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			[]string{"invalide_key"},
+			[]interface{}{[]byte("999")},
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.FEATURE_NOT_EXIST, http.StatusBadRequest)
+	}
+}
+
+func Test_PassedFeatures_wrongType_notString(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb001", "sample_3_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_3",
+			2,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			[]string{"string"},
+			[]interface{}{[]byte(`999`)},
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.WRONG_DATA_TYPE, http.StatusBadRequest)
+	}
+}
+
+func Test_PassedFeatures_wrongType_notNumber(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb001", "sample_3_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_3",
+			2,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			[]string{"bigint"},
+			[]interface{}{[]byte(`"int"`)},
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.WRONG_DATA_TYPE, http.StatusBadRequest)
+	}
+}
+
+func Test_PassedFeatures_wrongType_notBoolean(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb001", "sample_3_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_3",
+			2,
+			pks,
+			*getPkValues(&row, &pks, &cols),
+			[]string{"bool"},
+			[]interface{}{[]byte(`"int"`)},
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.WRONG_DATA_TYPE, http.StatusBadRequest)
+	}
 }

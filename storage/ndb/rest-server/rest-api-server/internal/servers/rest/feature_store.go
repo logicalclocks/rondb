@@ -36,7 +36,7 @@ func (h *RouteHandler) FeatureStore(c *gin.Context) {
 	fsResp := api.FeatureStoreResponse{}
 	status, err := handlers.Handle(&h.featureStoreHandler, &apiKey, fsReq, &fsResp)
 	if err != nil {
-		c.AbortWithError(http.StatusInternalServerError, err)
+		c.AbortWithError(status, err)
 		return
 	}
 	c.JSON(status, fsResp)
