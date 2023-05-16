@@ -282,7 +282,6 @@ func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string,
 			}
 			got = string(binary)
 		}
-		log.Debugf("comparing got: %s, expected: %s", got, expectedJson)
 		if !reflect.DeepEqual(got, expectedJson) {
 			t.Errorf("Got %s (%s) but expect %s (%s)\n", got, reflect.TypeOf(got), expectedJson, reflect.TypeOf(expectedJson))
 			break

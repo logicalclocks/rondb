@@ -19,6 +19,7 @@ package batchfeaturestore
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sync"
 
@@ -35,12 +36,20 @@ type Handler struct {
 
 type FeatureStoreResponseWithOrder struct {
 	FsResponse *api.FeatureStoreResponse
-	Order int
+	Order      int
+	Status     int
+	Error      error
 }
 
 type FeatureStoreRequestWithOrder struct {
 	FsResponse *api.FeatureStoreRequest
-	Order int
+	Order      int
+}
+
+type FeatureStoreBatchResponseWithStatus struct {
+	FsResponse *api.BatchFeatureStoreResponse
+	Status     int
+	Error      error
 }
 
 func New(apiKeyCache apikey.Cache, fshandler feature_store.Handler) Handler {
@@ -48,6 +57,11 @@ func New(apiKeyCache apikey.Cache, fshandler feature_store.Handler) Handler {
 }
 
 func (h *Handler) Validate(request interface{}) error {
+	// Complete validation is delegated to feature store single read handler
+	fsReq := request.(*api.BatchFeatureStoreRequest)
+	if len(*fsReq.Entries) == 0 {
+		return fmt.Errorf("%s Error: No primary key is given.", feature_store.INCORRECT_PRIMARY_KEY)
+	}
 	return nil
 }
 
@@ -76,7 +90,9 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		go processFsRequest(h.fshandler, fvReqs, fvResps, &wg)
 	}
 	var batchResponse = response.(*api.BatchFeatureStoreResponse)
-	go processFsResp(len(*batchFsReq.Entries), batchResponse, fvResps, &wgResp)
+	var batchResponseWithStatus = FeatureStoreBatchResponseWithStatus{}
+	batchResponseWithStatus.FsResponse = batchResponse
+	go processFsResp(len(*batchFsReq.Entries), &batchResponseWithStatus, fvResps, &wgResp)
 
 	for i, entry := range *batchFsReq.Entries {
 		var pf map[string]*json.RawMessage
@@ -95,8 +111,11 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	wg.Wait()
 	wgResp.Wait()
 	defer close(fvResps)
+	if batchResponseWithStatus.Error != nil {
+		batchResponse = nil
+		return batchResponseWithStatus.Status, batchResponseWithStatus.Error
+	}
 	return http.StatusOK, nil
-
 }
 
 func processFsRequest(
@@ -108,24 +127,38 @@ func processFsRequest(
 	defer wg.Done()
 	for req := range requests {
 		response := api.FeatureStoreResponse{}
-		fshandler.Execute(req.FsResponse, &response)
-		responses <- &FeatureStoreResponseWithOrder{&response, req.Order}
+		var valErr = fshandler.Validate(req.FsResponse)
+		if valErr != nil {
+			responses <- &FeatureStoreResponseWithOrder{
+				&response, req.Order, http.StatusBadRequest, valErr,
+			}
+			continue
+		}
+		var status, err = fshandler.Execute(req.FsResponse, &response)
+		responses <- &FeatureStoreResponseWithOrder{
+			&response, req.Order, status, err,
+		}
 	}
 }
 
 func processFsResp(
-	numFeatures int,
-	batchResponse *api.BatchFeatureStoreResponse,
+	numReq int,
+	batchResponse *FeatureStoreBatchResponseWithStatus,
 	responses chan *FeatureStoreResponseWithOrder,
 	wg *sync.WaitGroup,
 ) {
 	defer wg.Done()
-	batchResponse.Features = make([][]interface{}, numFeatures)
-	for i := 0; i < numFeatures; i++ {
+	batchResponse.FsResponse.Features = make([][]interface{}, numReq)
+	for i := 0; i < numReq; i++ {
 		var fvResp = <-responses
-		if i == 0 {
-			batchResponse.Metadata = fvResp.FsResponse.Metadata
+		if fvResp.Error != nil {
+			batchResponse.Status = fvResp.Status
+			batchResponse.Error = fvResp.Error
+			continue
 		}
-		batchResponse.Features[fvResp.Order] = fvResp.FsResponse.Features
+		if i == 0 {
+			batchResponse.FsResponse.Metadata = fvResp.FsResponse.Metadata
+		}
+		batchResponse.FsResponse.Features[fvResp.Order] = fvResp.FsResponse.Features
 	}
 }

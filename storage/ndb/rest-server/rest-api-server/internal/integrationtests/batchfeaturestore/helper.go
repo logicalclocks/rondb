@@ -91,10 +91,11 @@ func GetFeatureStoreResponseWithDetail(t *testing.T, req *api.BatchFeatureStoreR
 }
 
 func ValidateResponseWithData(t *testing.T, data *[][]interface{}, cols *[]string, resp *api.BatchFeatureStoreResponse) {
-	for _, row := range *data {
+	for i, row := range *data {
 		var fsResp = &api.FeatureStoreResponse{}
 		fsResp.Metadata = resp.Metadata
-		fsResp.Features = row
+		fsResp.Features = resp.Features[i]
+		log.Debugf("Single response: %s", fsResp.String())
 		fshelper.ValidateResponseWithData(t, &row, cols, fsResp)
 	}
 }
