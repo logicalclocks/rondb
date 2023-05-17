@@ -23,10 +23,13 @@ import (
 )
 
 // Request
+//
+//easyjson:json
 type BatchOpRequest struct {
 	Operations *[]BatchSubOp `json:"operations" binding:"required,min=1,max=4096,unique,dive"`
 }
 
+//easyjson:json
 type BatchSubOp struct {
 	Method      *string     `json:"method"        binding:"required,oneof=POST"`
 	RelativeURL *string     `json:"relative-url"  binding:"required,min=1"`

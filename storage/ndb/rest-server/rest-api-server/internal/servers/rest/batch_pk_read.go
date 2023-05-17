@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mailru/easyjson"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/handlers"
 	"hopsworks.ai/rdrs/pkg/api"
@@ -36,7 +37,13 @@ func (h *RouteHandler) BatchPkRead(c *gin.Context) {
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 
 	operations := api.BatchOpRequest{}
-	err := c.ShouldBindJSON(&operations)
+
+	jsonData, err := c.GetRawData()
+	if err != nil {
+		c.AbortWithError(http.StatusBadRequest, err)
+		return
+	}
+	err = easyjson.Unmarshal(jsonData, &operations)
 	if err != nil {
 		c.AbortWithError(http.StatusBadRequest, err)
 		return

@@ -21,6 +21,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mailru/easyjson"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/handlers"
 	"hopsworks.ai/rdrs/pkg/api"
@@ -55,7 +56,15 @@ func parsePkReadRequest(c *gin.Context) (*api.PKReadParams, error) {
 	}
 
 	postParams := api.PKReadBody{}
-	if err := c.BindJSON(&postParams); err != nil {
+
+	jsonData, err := c.GetRawData()
+	if err != nil {
+		c.AbortWithError(http.StatusBadRequest, err)
+		return nil, err
+	}
+	err = easyjson.Unmarshal(jsonData, &postParams)
+	if err != nil {
+		c.AbortWithError(http.StatusBadRequest, err)
 		return nil, err
 	}
 

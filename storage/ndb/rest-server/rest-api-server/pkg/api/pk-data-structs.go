@@ -43,12 +43,14 @@ type PKReadPP struct {
 	Table *string `json:"table" uri:"table"  binding:"required,min=1,max=64"`
 }
 
+//easyjson:json
 type PKReadBody struct {
 	Filters     *[]Filter     `json:"filters"         form:"filters"         binding:"required,min=1,max=4096,dive"`
 	ReadColumns *[]ReadColumn `json:"readColumns"    form:"read-columns"    binding:"omitempty,min=1,max=4096,unique"`
 	OperationID *string       `json:"operationId"    form:"operation-id"    binding:"omitempty,min=1,max=64"`
 }
 
+//easyjson:json
 type Filter struct {
 	Column *string          `json:"column"   form:"column"   binding:"required,min=1,max=64"`
 	Value  *json.RawMessage `json:"value"    form:"value"    binding:"required"`
@@ -76,6 +78,7 @@ const (
 	DRT_HEX     = "hex"    // not implemented yet
 )
 
+//easyjson:json
 type ReadColumn struct {
 	Column *string `json:"column"    form:"column"    binding:"required,min=1,max=64"`
 
