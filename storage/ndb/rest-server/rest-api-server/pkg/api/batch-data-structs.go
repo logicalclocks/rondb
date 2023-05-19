@@ -31,9 +31,9 @@ type BatchOpRequest struct {
 
 //easyjson:json
 type BatchSubOp struct {
-	Method      *string     `json:"method"        binding:"required,oneof=POST"`
-	RelativeURL *string     `json:"relative-url"  binding:"required,min=1"`
-	Body        *PKReadBody `json:"body"          binding:"required,min=1"`
+	Method      *string     `json:"method,required"`
+	RelativeURL *string     `json:"relative-url,required,min=1"`
+	Body        *PKReadBody `json:"body,required,min=1"`
 }
 
 // Response

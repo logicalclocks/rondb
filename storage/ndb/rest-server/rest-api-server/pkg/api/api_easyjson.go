@@ -4,6 +4,7 @@ package api
 
 import (
 	json "encoding/json"
+	fmt "fmt"
 	easyjson "github.com/mailru/easyjson"
 	jlexer "github.com/mailru/easyjson/jlexer"
 	jwriter "github.com/mailru/easyjson/jwriter"
@@ -788,6 +789,7 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi8(in *jlexer.Lexer, out *ReadCol
 		in.Skip()
 		return
 	}
+	var ColumnSet bool
 	in.Delim('{')
 	for !in.IsDelim('}') {
 		key := in.UnsafeFieldName(false)
@@ -808,6 +810,7 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi8(in *jlexer.Lexer, out *ReadCol
 				}
 				*out.Column = string(in.String())
 			}
+			ColumnSet = true
 		case "dataReturnType":
 			if in.IsNull() {
 				in.Skip()
@@ -826,6 +829,9 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi8(in *jlexer.Lexer, out *ReadCol
 	in.Delim('}')
 	if isTopLevel {
 		in.Consumed()
+	}
+	if !ColumnSet {
+		in.AddError(fmt.Errorf("key 'column' is required"))
 	}
 }
 func easyjsonC1cedd36EncodeHopsworksAiRdrsPkgApi8(out *jwriter.Writer, in ReadColumn) {
@@ -2193,6 +2199,7 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi18(in *jlexer.Lexer, out *PKRead
 		in.Skip()
 		return
 	}
+	var FiltersSet bool
 	in.Delim('{')
 	for !in.IsDelim('}') {
 		key := in.UnsafeFieldName(false)
@@ -2234,6 +2241,7 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi18(in *jlexer.Lexer, out *PKRead
 					in.Delim(']')
 				}
 			}
+			FiltersSet = true
 		case "readColumns":
 			if in.IsNull() {
 				in.Skip()
@@ -2284,6 +2292,9 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi18(in *jlexer.Lexer, out *PKRead
 	if isTopLevel {
 		in.Consumed()
 	}
+	if !FiltersSet {
+		in.AddError(fmt.Errorf("key 'filters' is required"))
+	}
 }
 func easyjsonC1cedd36EncodeHopsworksAiRdrsPkgApi18(out *jwriter.Writer, in PKReadBody) {
 	out.RawByte('{')
@@ -2309,34 +2320,26 @@ func easyjsonC1cedd36EncodeHopsworksAiRdrsPkgApi18(out *jwriter.Writer, in PKRea
 			}
 		}
 	}
-	{
+	if in.ReadColumns != nil {
 		const prefix string = ",\"readColumns\":"
 		out.RawString(prefix)
-		if in.ReadColumns == nil {
+		if *in.ReadColumns == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
 			out.RawString("null")
 		} else {
-			if *in.ReadColumns == nil && (out.Flags&jwriter.NilSliceAsEmpty) == 0 {
-				out.RawString("null")
-			} else {
-				out.RawByte('[')
-				for v26, v27 := range *in.ReadColumns {
-					if v26 > 0 {
-						out.RawByte(',')
-					}
-					(v27).MarshalEasyJSON(out)
+			out.RawByte('[')
+			for v26, v27 := range *in.ReadColumns {
+				if v26 > 0 {
+					out.RawByte(',')
 				}
-				out.RawByte(']')
+				(v27).MarshalEasyJSON(out)
 			}
+			out.RawByte(']')
 		}
 	}
-	{
+	if in.OperationID != nil {
 		const prefix string = ",\"operationId\":"
 		out.RawString(prefix)
-		if in.OperationID == nil {
-			out.RawString("null")
-		} else {
-			out.String(string(*in.OperationID))
-		}
+		out.String(string(*in.OperationID))
 	}
 	out.RawByte('}')
 }
@@ -2603,6 +2606,8 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi21(in *jlexer.Lexer, out *Filter
 		in.Skip()
 		return
 	}
+	var ColumnSet bool
+	var ValueSet bool
 	in.Delim('{')
 	for !in.IsDelim('}') {
 		key := in.UnsafeFieldName(false)
@@ -2623,6 +2628,7 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi21(in *jlexer.Lexer, out *Filter
 				}
 				*out.Column = string(in.String())
 			}
+			ColumnSet = true
 		case "value":
 			if in.IsNull() {
 				in.Skip()
@@ -2635,6 +2641,7 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi21(in *jlexer.Lexer, out *Filter
 					in.AddError((*out.Value).UnmarshalJSON(data))
 				}
 			}
+			ValueSet = true
 		default:
 			in.SkipRecursive()
 		}
@@ -2643,6 +2650,12 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi21(in *jlexer.Lexer, out *Filter
 	in.Delim('}')
 	if isTopLevel {
 		in.Consumed()
+	}
+	if !ColumnSet {
+		in.AddError(fmt.Errorf("key 'column' is required"))
+	}
+	if !ValueSet {
+		in.AddError(fmt.Errorf("key 'value' is required"))
 	}
 }
 func easyjsonC1cedd36EncodeHopsworksAiRdrsPkgApi21(out *jwriter.Writer, in Filter) {
@@ -3105,6 +3118,9 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi26(in *jlexer.Lexer, out *BatchS
 		in.Skip()
 		return
 	}
+	var MethodSet bool
+	var RelativeURLSet bool
+	var BodySet bool
 	in.Delim('{')
 	for !in.IsDelim('}') {
 		key := in.UnsafeFieldName(false)
@@ -3125,6 +3141,7 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi26(in *jlexer.Lexer, out *BatchS
 				}
 				*out.Method = string(in.String())
 			}
+			MethodSet = true
 		case "relative-url":
 			if in.IsNull() {
 				in.Skip()
@@ -3135,6 +3152,7 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi26(in *jlexer.Lexer, out *BatchS
 				}
 				*out.RelativeURL = string(in.String())
 			}
+			RelativeURLSet = true
 		case "body":
 			if in.IsNull() {
 				in.Skip()
@@ -3145,6 +3163,7 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi26(in *jlexer.Lexer, out *BatchS
 				}
 				(*out.Body).UnmarshalEasyJSON(in)
 			}
+			BodySet = true
 		default:
 			in.SkipRecursive()
 		}
@@ -3153,6 +3172,15 @@ func easyjsonC1cedd36DecodeHopsworksAiRdrsPkgApi26(in *jlexer.Lexer, out *BatchS
 	in.Delim('}')
 	if isTopLevel {
 		in.Consumed()
+	}
+	if !MethodSet {
+		in.AddError(fmt.Errorf("key 'method' is required"))
+	}
+	if !RelativeURLSet {
+		in.AddError(fmt.Errorf("key 'relative-url' is required"))
+	}
+	if !BodySet {
+		in.AddError(fmt.Errorf("key 'body' is required"))
 	}
 }
 func easyjsonC1cedd36EncodeHopsworksAiRdrsPkgApi26(out *jwriter.Writer, in BatchSubOp) {

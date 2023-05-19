@@ -45,15 +45,15 @@ type PKReadPP struct {
 
 //easyjson:json
 type PKReadBody struct {
-	Filters     *[]Filter     `json:"filters"         form:"filters"         binding:"required,min=1,max=4096,dive"`
-	ReadColumns *[]ReadColumn `json:"readColumns"    form:"read-columns"    binding:"omitempty,min=1,max=4096,unique"`
-	OperationID *string       `json:"operationId"    form:"operation-id"    binding:"omitempty,min=1,max=64"`
+	Filters     *[]Filter     `json:"filters,required"`
+	ReadColumns *[]ReadColumn `json:"readColumns,omitempty"`
+	OperationID *string       `json:"operationId,omitempty"`
 }
 
 //easyjson:json
 type Filter struct {
-	Column *string          `json:"column"   form:"column"   binding:"required,min=1,max=64"`
-	Value  *json.RawMessage `json:"value"    form:"value"    binding:"required"`
+	Column *string          `json:"column,required"`
+	Value  *json.RawMessage `json:"value,required"`
 }
 
 func (f Filter) String() string {
@@ -80,13 +80,13 @@ const (
 
 //easyjson:json
 type ReadColumn struct {
-	Column *string `json:"column"    form:"column"    binding:"required,min=1,max=64"`
+	Column *string `json:"column,required"`
 
 	// You can change the return type for the column data
 	// int/floats/decimal are returned as JSON Number type (default),
 	// varchar/char are returned as strings (default) and varbinary as base64 (default)
 	// Right now only default return type is supported
-	DataReturnType *string `json:"dataReturnType"    form:"column"    binding:"Enum=default,min=1,max=64"`
+	DataReturnType *string `json:"dataReturnType"`
 
 	// more parameter can be added later.
 }
