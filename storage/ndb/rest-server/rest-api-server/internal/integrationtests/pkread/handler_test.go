@@ -40,7 +40,7 @@ func TestPKReadOmitRequired(t *testing.T) {
 		OperationID: testclient.NewOperationID(64),
 	}
 
-	url := testutils.NewPKReadURL("db", "table")
+	url := testutils.NewPKReadURL(true, "db", "table")
 
 	body, _ := json.MarshalIndent(param, "", "\t")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
@@ -72,7 +72,7 @@ func TestPKReadLargeColumns(t *testing.T) {
 		OperationID: testclient.NewOperationID(64),
 	}
 	body, _ := json.MarshalIndent(param, "", "\t")
-	url := testutils.NewPKReadURL("db", "table")
+	url := testutils.NewPKReadURL(true, "db", "table")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		"Field validation for 'Column' failed on the 'max' tag", http.StatusBadRequest)
 
@@ -93,16 +93,16 @@ func TestPKReadLargeColumns(t *testing.T) {
 		OperationID: testclient.NewOperationID(64),
 	}
 	body, _ = json.MarshalIndent(param, "", "\t")
-	url1 := testutils.NewPKReadURL(testutils.RandString(65), "table")
+	url1 := testutils.NewPKReadURL(true, testutils.RandString(65), "table")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url1, string(body),
 		"Field validation for 'DB' failed on the 'max' tag", http.StatusBadRequest)
-	url2 := testutils.NewPKReadURL("db", testutils.RandString(65))
+	url2 := testutils.NewPKReadURL(true, "db", testutils.RandString(65))
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url2, string(body),
 		"Field validation for 'Table' failed on the 'max' tag", http.StatusBadRequest)
-	url3 := testutils.NewPKReadURL("", "table")
+	url3 := testutils.NewPKReadURL(true, "", "table")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url3, string(body),
 		"Field validation for 'DB' failed on the 'min' tag", http.StatusBadRequest)
-	url4 := testutils.NewPKReadURL("db", "")
+	url4 := testutils.NewPKReadURL(true, "db", "")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url4, string(body),
 		"Field validation for 'Table' failed on the 'min' tag", http.StatusBadRequest)
 }
@@ -118,7 +118,7 @@ func TestPKInvalidIdentifier(t *testing.T) {
 		OperationID: testclient.NewOperationID(64),
 	}
 	body, _ := json.MarshalIndent(param, "", "\t")
-	url := testutils.NewPKReadURL("db", "table")
+	url := testutils.NewPKReadURL(true, "db", "table")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		fmt.Sprintf("invalid character '%U' ", rune(0x0000)), http.StatusBadRequest)
 
@@ -141,10 +141,10 @@ func TestPKInvalidIdentifier(t *testing.T) {
 		OperationID: testclient.NewOperationID(64),
 	}
 	body, _ = json.MarshalIndent(param, "", "\t")
-	url1 := testutils.NewPKReadURL("db"+string(rune(0x10000)), "table")
+	url1 := testutils.NewPKReadURL(true, "db"+string(rune(0x10000)), "table")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url1, string(body),
 		fmt.Sprintf("invalid character '%U'", rune(0x10000)), http.StatusBadRequest)
-	url2 := testutils.NewPKReadURL("db", "table"+string(rune(0x10000)))
+	url2 := testutils.NewPKReadURL(true, "db", "table"+string(rune(0x10000)))
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url2, string(body),
 		fmt.Sprintf("invalid character '%U'", rune(0x10000)), http.StatusBadRequest)
 }
@@ -160,7 +160,7 @@ func TestPKUniqueParams(t *testing.T) {
 		ReadColumns: &readColumns,
 		OperationID: testclient.NewOperationID(64),
 	}
-	url := testutils.NewPKReadURL("db", "table")
+	url := testutils.NewPKReadURL(true, "db", "table")
 	body, _ := json.MarshalIndent(param, "", "\t")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		"field validation for 'ReadColumns' failed on the 'unique' tag", http.StatusBadRequest)
@@ -206,11 +206,11 @@ func TestPKERROR_011(t *testing.T) {
 	body, _ := json.MarshalIndent(param, "", "\t")
 
 	// Only works if API key is enabled
-	url := testutils.NewPKReadURL("DB001_XXX", "table_1")
+	url := testutils.NewPKReadURL(true, "DB001_XXX", "table_1")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		"", http.StatusUnauthorized)
 
-	url = testutils.NewPKReadURL(testdbs.DB001, "table_1_XXX")
+	url = testutils.NewPKReadURL(true, testdbs.DB001, "table_1_XXX")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		common.ERROR_011(), http.StatusNotFound)
 }
@@ -227,7 +227,7 @@ func TestPKERROR_012(t *testing.T) {
 
 	body, _ := json.MarshalIndent(param, "", "\t")
 
-	url := testutils.NewPKReadURL(testdbs.DB001, "table_1")
+	url := testutils.NewPKReadURL(true, testdbs.DB001, "table_1")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		common.ERROR_012(), http.StatusBadRequest)
 }
@@ -242,7 +242,7 @@ func TestPKERROR_013_ERROR_014(t *testing.T) {
 		OperationID: testclient.NewOperationID(64),
 	}
 	body, _ := json.MarshalIndent(param, "", "\t")
-	url := testutils.NewPKReadURL(testdbs.DB002, "table_1")
+	url := testutils.NewPKReadURL(true, testdbs.DB002, "table_1")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		common.ERROR_013(), http.StatusBadRequest)
 
@@ -253,7 +253,7 @@ func TestPKERROR_013_ERROR_014(t *testing.T) {
 		OperationID: testclient.NewOperationID(64),
 	}
 	body, _ = json.MarshalIndent(param, "", "\t")
-	url = testutils.NewPKReadURL(testdbs.DB002, "table_1")
+	url = testutils.NewPKReadURL(true, testdbs.DB002, "table_1")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		common.ERROR_014(), http.StatusBadRequest)
 }

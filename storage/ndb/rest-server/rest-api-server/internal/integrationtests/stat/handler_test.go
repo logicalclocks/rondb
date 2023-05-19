@@ -83,7 +83,7 @@ func performPkOp(t *testing.T, db string, table string, ch chan int) {
 	}
 	body, _ := json.MarshalIndent(param, "", "\t")
 
-	url := testutils.NewPKReadURL(db, table)
+	url := testutils.NewPKReadURL(true, db, table)
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		"", http.StatusOK)
 

@@ -49,17 +49,26 @@ func NewStatURL() string {
 	return url
 }
 
-func NewPKReadURL(db string, table string) string {
+func NewPKReadURL(absolute bool, db string, table string) (url string) {
 	conf := config.GetAll()
-	url := fmt.Sprintf("%s:%d%s%s",
-		conf.REST.ServerIP,
-		conf.REST.ServerPort,
-		config.DB_OPS_EP_GROUP,
-		config.PK_DB_OPERATION,
-	)
+	if absolute {
+		url = fmt.Sprintf("%s:%d%s%s",
+			conf.REST.ServerIP,
+			conf.REST.ServerPort,
+			config.DB_OPS_EP_GROUP,
+			config.PK_DB_OPERATION,
+		)
+	} else {
+		url = fmt.Sprintf("%s%s",
+			config.DB_TABLE_PP,
+			config.PK_DB_OPERATION,
+		)
+	}
 	url = strings.Replace(url, ":"+config.DB_PP, db, 1)
 	url = strings.Replace(url, ":"+config.TABLE_PP, table, 1)
-	appendURLProtocol(&url)
+	if absolute {
+		appendURLProtocol(&url)
+	}
 	return url
 }
 

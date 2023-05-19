@@ -29,7 +29,7 @@ func pkRESTTestWithClient(
 	isBinaryData bool,
 	validate bool,
 ) {
-	url := testutils.NewPKReadURL(testInfo.Db, testInfo.Table)
+	url := testutils.NewPKReadURL(true, testInfo.Db, testInfo.Table)
 	body, err := json.MarshalIndent(testInfo.PkReq, "", "\t")
 	if err != nil {
 		t.Fatalf("Failed to marshall test request %v", err)
