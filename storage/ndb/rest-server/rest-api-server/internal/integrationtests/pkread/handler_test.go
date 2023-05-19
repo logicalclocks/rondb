@@ -44,7 +44,7 @@ func TestPKReadOmitRequired(t *testing.T) {
 
 	body, _ := json.MarshalIndent(param, "", "\t")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-		"Error:Field validation for 'Filters'", http.StatusBadRequest)
+		"key 'filters' is required", http.StatusBadRequest)
 
 	// Test. unset filter values should result in 400 error
 	col := "col"
@@ -52,14 +52,14 @@ func TestPKReadOmitRequired(t *testing.T) {
 	param.Filters = filter
 	body, _ = json.MarshalIndent(param, "", "\t")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-		"Field validation for 'Value' failed on the 'required' tag", http.StatusBadRequest)
+		"key 'value' is required", http.StatusBadRequest)
 
 	val := "val"
 	filter = testclient.NewFilter(nil, val)
 	param.Filters = filter
 	body, _ = json.MarshalIndent(param, "", "\t")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-		"Field validation for 'Column' failed on the 'required' tag", http.StatusBadRequest)
+		"key 'column' is required", http.StatusBadRequest)
 }
 
 func TestPKReadLargeColumns(t *testing.T) {
@@ -74,7 +74,7 @@ func TestPKReadLargeColumns(t *testing.T) {
 	body, _ := json.MarshalIndent(param, "", "\t")
 	url := testutils.NewPKReadURL(true, "db", "table")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-		"Field validation for 'Column' failed on the 'max' tag", http.StatusBadRequest)
+		"identifier is too large", http.StatusBadRequest)
 
 	// Test. Large read column names.
 	param = api.PKReadBody{
