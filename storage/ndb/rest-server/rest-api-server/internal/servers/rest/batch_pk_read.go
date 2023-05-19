@@ -92,9 +92,6 @@ func parseOperation(operation *api.BatchSubOp, pkReadarams *api.PKReadParams) er
 }
 
 func makePKReadParams(operation *api.BatchSubOp, pkReadarams *api.PKReadParams) error {
-	if operation.Body == nil {
-		return errors.New("body of operation is nil")
-	}
 	params := *operation.Body
 
 	// split the relative url to extract path parameters
