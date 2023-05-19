@@ -30,6 +30,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
+	fsmeta "hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/batchfeaturestore"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
 	"hopsworks.ai/rdrs/internal/handlers/feature_store"
@@ -37,7 +38,6 @@ import (
 	"hopsworks.ai/rdrs/internal/handlers/stat"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/security/apikey"
-	fsmeta "hopsworks.ai/rdrs/internal/feature_store"
 )
 
 type RonDBRestServer struct {
@@ -97,10 +97,10 @@ func (s *RonDBRestServer) Start(quit chan os.Signal) (cleanupFunc func()) {
 
 type RouteHandler struct {
 	// TODO: Add thread-safe logger
-	statsHandler        stat.Handler
-	pkReadHandler       pkread.Handler
-	batchPkReadHandler  batchpkread.Handler
-	featureStoreHandler feature_store.Handler
+	statsHandler             stat.Handler
+	pkReadHandler            pkread.Handler
+	batchPkReadHandler       batchpkread.Handler
+	featureStoreHandler      feature_store.Handler
 	batchFeatureStoreHandler batchfeaturestore.Handler
 }
 
@@ -110,14 +110,15 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 	versionGroup := router.Group(config.VERSION_GROUP)
 
 	batchPkReadHandler := batchpkread.New(heap, apiKeyCache)
-	featureStoreHandler := feature_store.New(*fsmeta.NewFeatureViewMetaDataCache(), apiKeyCache, batchPkReadHandler)
+	var fvMeta = fsmeta.NewFeatureViewMetaDataCache()
+	featureStoreHandler := feature_store.New(fvMeta, apiKeyCache, batchPkReadHandler)
 
 	routeHandler := &RouteHandler{
-		statsHandler:        stat.New(heap, apiKeyCache),
-		pkReadHandler:       pkread.New(heap, apiKeyCache),
-		batchPkReadHandler:  batchPkReadHandler,
-		featureStoreHandler: featureStoreHandler,
-		batchFeatureStoreHandler: batchfeaturestore.New(apiKeyCache, featureStoreHandler),
+		statsHandler:             stat.New(heap, apiKeyCache),
+		pkReadHandler:            pkread.New(heap, apiKeyCache),
+		batchPkReadHandler:       batchPkReadHandler,
+		featureStoreHandler:      featureStoreHandler,
+		batchFeatureStoreHandler: batchfeaturestore.New(fvMeta, apiKeyCache, &featureStoreHandler),
 	}
 
 	// ping

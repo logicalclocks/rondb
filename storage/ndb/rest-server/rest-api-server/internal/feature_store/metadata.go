@@ -27,7 +27,6 @@ import (
 	"github.com/patrickmn/go-cache"
 
 	"hopsworks.ai/rdrs/internal/dal"
-	"hopsworks.ai/rdrs/internal/log"
 )
 
 const (
@@ -49,6 +48,7 @@ type FeatureViewMetadata struct {
 	FeatureViewVersion   int
 	PrefixFeaturesLookup map[string]*FeatureMetadata // key: prefix + fName
 	FeatureGroupFeatures []*FeatureGroupFeatures
+	FeatureStoreNames    []*string
 	NumOfFeatures        int
 	FeatureIndexLookup   map[string]int // key: fsName + fgName + fgVersion + fName
 }
@@ -107,18 +107,27 @@ func newFeatureViewMetadata(
 		featureIndexKey := GetFeatureIndexKeyByFeature(feature)
 		featureIndex[featureIndexKey] = feature.Index
 	}
-
+	var fsNames = []*string{}
+	var fsNameMap = make(map[string]bool)
+	for _, fgf := range fgFeaturesArray {
+		var fgName = fgf.FeatureStoreName
+		if !fsNameMap[fgName] {
+			fsNames = append(fsNames, &fgName)
+			fsNameMap[fgName] = true
+		}
+	}
 	var numOfFeature = len(featureIndex)
-	var metadata = FeatureViewMetadata{
-		featureStoreName,
-		featureStoreId,
-		featureViewName,
-		featureViewId,
-		featureViewVersion,
-		prefixColumns,
-		fgFeaturesArray,
-		numOfFeature,
-		featureIndex}
+	var metadata = FeatureViewMetadata{}
+	metadata.FeatureStoreName = featureStoreName
+	metadata.FeatureStoreId = featureStoreId
+	metadata.FeatureViewName = featureViewName
+	metadata.FeatureViewId = featureViewId
+	metadata.FeatureViewVersion = featureViewVersion
+	metadata.PrefixFeaturesLookup = prefixColumns
+	metadata.FeatureGroupFeatures = fgFeaturesArray
+	metadata.NumOfFeatures = numOfFeature
+	metadata.FeatureIndexLookup = featureIndex
+	metadata.FeatureStoreNames = fsNames
 	return &metadata
 }
 

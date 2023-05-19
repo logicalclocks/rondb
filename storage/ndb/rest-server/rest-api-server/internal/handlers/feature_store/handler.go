@@ -48,12 +48,12 @@ const (
 )
 
 type Handler struct {
-	fvMetaCache   feature_store.FeatureViewMetaDataCache
+	fvMetaCache   *feature_store.FeatureViewMetaDataCache
 	apiKeyCache   apikey.Cache
 	dbBatchReader batchpkread.Handler
 }
 
-func New(fvMetaCache feature_store.FeatureViewMetaDataCache, apiKeyCache apikey.Cache, batchPkReadHandler batchpkread.Handler) Handler {
+func New(fvMetaCache *feature_store.FeatureViewMetaDataCache, apiKeyCache apikey.Cache, batchPkReadHandler batchpkread.Handler) Handler {
 	return Handler{fvMetaCache, apiKeyCache, batchPkReadHandler}
 }
 
@@ -178,7 +178,13 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		return nil
 	}
-	return h.apiKeyCache.ValidateAPIKey(apiKey)
+	fsReq := request.(*api.FeatureStoreRequest)
+	metadata, err := h.fvMetaCache.Get(
+		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
+	if err != nil {
+		return err
+	}
+	return h.apiKeyCache.ValidateAPIKey(apiKey, metadata.FeatureStoreNames...)
 }
 
 func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {

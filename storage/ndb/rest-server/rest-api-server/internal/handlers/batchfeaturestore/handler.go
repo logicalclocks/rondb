@@ -24,6 +24,7 @@ import (
 	"sync"
 
 	"hopsworks.ai/rdrs/internal/config"
+	fsmeta "hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/feature_store"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
@@ -31,7 +32,8 @@ import (
 
 type Handler struct {
 	apiKeyCache apikey.Cache
-	fshandler   feature_store.Handler
+	fvMetaCache *fsmeta.FeatureViewMetaDataCache
+	fshandler   *feature_store.Handler
 }
 
 type FeatureStoreResponseWithOrder struct {
@@ -52,8 +54,8 @@ type FeatureStoreBatchResponseWithStatus struct {
 	Error      error
 }
 
-func New(apiKeyCache apikey.Cache, fshandler feature_store.Handler) Handler {
-	return Handler{apiKeyCache, fshandler}
+func New(fvMeta *fsmeta.FeatureViewMetaDataCache, apiKeyCache apikey.Cache, fshandler *feature_store.Handler) Handler {
+	return Handler{apiKeyCache, fvMeta, fshandler}
 }
 
 func (h *Handler) Validate(request interface{}) error {
@@ -70,7 +72,13 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		return nil
 	}
-	return h.apiKeyCache.ValidateAPIKey(apiKey)
+	fsReq := request.(*api.BatchFeatureStoreRequest)
+	metadata, err := h.fvMetaCache.Get(
+		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
+	if err != nil {
+		return err
+	}
+	return h.apiKeyCache.ValidateAPIKey(apiKey, metadata.FeatureStoreNames...)
 }
 
 func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
@@ -87,7 +95,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	wgResp.Add(1)
 
 	for i := 0; i < numThread; i++ {
-		go processFsRequest(h.fshandler, fvReqs, fvResps, &wg)
+		go processFsRequest(*h.fshandler, fvReqs, fvResps, &wg)
 	}
 	var batchResponse = response.(*api.BatchFeatureStoreResponse)
 	var batchResponseWithStatus = FeatureStoreBatchResponseWithStatus{}
