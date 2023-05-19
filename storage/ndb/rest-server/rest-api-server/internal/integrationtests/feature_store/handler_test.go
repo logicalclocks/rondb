@@ -26,7 +26,6 @@ import (
 	"testing"
 
 	fsmetadata "hopsworks.ai/rdrs/internal/feature_store"
-	fshandler "hopsworks.ai/rdrs/internal/handlers/feature_store"
 )
 
 func TestFeatureStoreMetaData(t *testing.T) {
@@ -42,8 +41,8 @@ func TestMetadata_FsNotExist(t *testing.T) {
 	if err == nil {
 		t.Fatalf("This should fail.")
 	}
-	if !strings.Contains(err.Error(), fsmetadata.FS_NOT_EXIST) {
-		t.Fatalf("This should fail with error message: %s.", fsmetadata.FS_NOT_EXIST)
+	if !strings.Contains(err.Error().Error(), fsmetadata.FS_NOT_EXIST.GetReason()) {
+		t.Fatalf("This should fail with error message: %s.", fsmetadata.FS_NOT_EXIST.GetReason())
 	}
 }
 
@@ -52,8 +51,8 @@ func TestMetadata_FvNotExist(t *testing.T) {
 	if err == nil {
 		t.Fatalf("This should fail.")
 	}
-	if !strings.Contains(err.Error(), fsmetadata.FV_NOT_EXIST) {
-		t.Fatalf("This should fail with error message: %s.", fsmetadata.FV_NOT_EXIST)
+	if !strings.Contains(err.Error().Error(), fsmetadata.FV_NOT_EXIST.GetReason()) {
+		t.Fatalf("This should fail with error message: %s.", fsmetadata.FV_NOT_EXIST.GetReason())
 	}
 }
 
@@ -92,7 +91,7 @@ func Test_GetFeatureVector_FsNotExist(t *testing.T) {
 			nil,
 			nil,
 		)
-		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FS_NOT_EXIST, http.StatusBadRequest)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FS_NOT_EXIST.GetReason(), http.StatusBadRequest)
 
 	}
 }
@@ -112,7 +111,7 @@ func Test_GetFeatureVector_FvNotExist(t *testing.T) {
 			nil,
 			nil,
 		)
-		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FV_NOT_EXIST, http.StatusBadRequest)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FV_NOT_EXIST.GetReason(), http.StatusBadRequest)
 	}
 }
 
@@ -241,7 +240,7 @@ func Test_GetFeatureVector_wrongPrimaryKey_notExist(t *testing.T) {
 			nil,
 			nil,
 		)
-		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.FEATURE_NOT_EXIST, http.StatusBadRequest)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FEATURE_NOT_EXIST.GetReason(), http.StatusBadRequest)
 	}
 }
 
@@ -281,7 +280,7 @@ func Test_GetFeatureVector_noPrimaryKey(t *testing.T) {
 		nil,
 		nil,
 	)
-	GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.INCORRECT_PRIMARY_KEY, http.StatusBadRequest)
+	GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.INCORRECT_PRIMARY_KEY.GetReason(), http.StatusBadRequest)
 }
 
 func Test_GetFeatureVector_incompletePrimaryKey(t *testing.T) {
@@ -303,7 +302,7 @@ func Test_GetFeatureVector_incompletePrimaryKey(t *testing.T) {
 			nil,
 			nil,
 		)
-		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.INCORRECT_PRIMARY_KEY, http.StatusBadRequest)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.INCORRECT_PRIMARY_KEY.GetReason(), http.StatusBadRequest)
 	}
 }
 
@@ -326,7 +325,7 @@ func Test_GetFeatureVector_wrongPrimaryKey_featureNotPk(t *testing.T) {
 			nil,
 			nil,
 		)
-		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.INCORRECT_PRIMARY_KEY, http.StatusBadRequest)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.INCORRECT_PRIMARY_KEY.GetReason(), http.StatusBadRequest)
 	}
 }
 
@@ -407,7 +406,7 @@ func Test_GetFeatureVector_wrongPkValue(t *testing.T) {
 			nil,
 			nil,
 		)
-		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.WRONG_DATA_TYPE, http.StatusBadRequest)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.WRONG_DATA_TYPE.GetReason(), http.StatusUnsupportedMediaType)
 	}
 }
 
@@ -484,7 +483,7 @@ func Test_PassedFeatures_wrongKey_featureNotExist(t *testing.T) {
 			[]string{"invalide_key"},
 			[]interface{}{[]byte("999")},
 		)
-		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.FEATURE_NOT_EXIST, http.StatusBadRequest)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FEATURE_NOT_EXIST.GetReason(), http.StatusBadRequest)
 	}
 }
 
@@ -503,7 +502,7 @@ func Test_PassedFeatures_wrongType_notString(t *testing.T) {
 			[]string{"string"},
 			[]interface{}{[]byte(`999`)},
 		)
-		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.WRONG_DATA_TYPE, http.StatusBadRequest)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.WRONG_DATA_TYPE.GetReason(), http.StatusBadRequest)
 	}
 }
 
@@ -522,7 +521,7 @@ func Test_PassedFeatures_wrongType_notNumber(t *testing.T) {
 			[]string{"bigint"},
 			[]interface{}{[]byte(`"int"`)},
 		)
-		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.WRONG_DATA_TYPE, http.StatusBadRequest)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.WRONG_DATA_TYPE.GetReason(), http.StatusBadRequest)
 	}
 }
 
@@ -541,6 +540,6 @@ func Test_PassedFeatures_wrongType_notBoolean(t *testing.T) {
 			[]string{"bool"},
 			[]interface{}{[]byte(`"int"`)},
 		)
-		GetFeatureStoreResponseWithDetail(t, fsReq, fshandler.WRONG_DATA_TYPE, http.StatusBadRequest)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.WRONG_DATA_TYPE.GetReason(), http.StatusBadRequest)
 	}
 }

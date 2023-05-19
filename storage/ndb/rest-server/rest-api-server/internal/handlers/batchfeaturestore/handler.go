@@ -19,12 +19,11 @@ package batchfeaturestore
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"sync"
 
 	"hopsworks.ai/rdrs/internal/config"
-	fsmeta "hopsworks.ai/rdrs/internal/feature_store"
+	fs "hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/feature_store"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
@@ -32,7 +31,7 @@ import (
 
 type Handler struct {
 	apiKeyCache apikey.Cache
-	fvMetaCache *fsmeta.FeatureViewMetaDataCache
+	fvMetaCache *fs.FeatureViewMetaDataCache
 	fshandler   *feature_store.Handler
 }
 
@@ -54,15 +53,21 @@ type FeatureStoreBatchResponseWithStatus struct {
 	Error      error
 }
 
-func New(fvMeta *fsmeta.FeatureViewMetaDataCache, apiKeyCache apikey.Cache, fshandler *feature_store.Handler) Handler {
+func New(fvMeta *fs.FeatureViewMetaDataCache, apiKeyCache apikey.Cache, fshandler *feature_store.Handler) Handler {
 	return Handler{apiKeyCache, fvMeta, fshandler}
 }
 
 func (h *Handler) Validate(request interface{}) error {
 	// Complete validation is delegated to feature store single read handler
 	fsReq := request.(*api.BatchFeatureStoreRequest)
+	// check if requested fv and fs exist
+	_, err := h.fvMetaCache.Get(
+		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
+	if err != nil {
+		return err.Error()
+	}
 	if len(*fsReq.Entries) == 0 {
-		return fmt.Errorf("%s Error: No primary key is given.", feature_store.INCORRECT_PRIMARY_KEY)
+		return fs.NO_PRIMARY_KEY_GIVEN.Error()
 	}
 	return nil
 }
@@ -76,7 +81,7 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	metadata, err := h.fvMetaCache.Get(
 		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
 	if err != nil {
-		return err
+		return err.Error()
 	}
 	return h.apiKeyCache.ValidateAPIKey(apiKey, metadata.FeatureStoreNames...)
 }

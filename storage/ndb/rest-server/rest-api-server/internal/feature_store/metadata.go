@@ -29,17 +29,6 @@ import (
 	"hopsworks.ai/rdrs/internal/dal"
 )
 
-const (
-	FV_NOT_EXIST         = "Feature view does not exist."
-	FS_NOT_EXIST         = "Feature store does not exist."
-	FG_NOT_EXIST         = "Feature group does not exist."
-	FG_READ_FAIL         = "Reading feature group failed."
-	FS_READ_FAIL         = "Reading feature store failed."
-	FV_READ_FAIL         = "Reading feature view failed."
-	TD_JOIN_READ_FAIL    = "Reading training dataset join failed."
-	TD_FEATURE_READ_FAIL = "Reading training dataset feature failed."
-)
-
 type FeatureViewMetadata struct {
 	FeatureStoreName     string
 	FeatureStoreId       int
@@ -177,7 +166,7 @@ func NewFeatureViewMetaDataCache() *FeatureViewMetaDataCache {
 	return &FeatureViewMetaDataCache{*c}
 }
 
-func (fvmeta *FeatureViewMetaDataCache) Get(featureStoreName, featureViewName string, featureViewVersion int) (*FeatureViewMetadata, error) {
+func (fvmeta *FeatureViewMetaDataCache) Get(featureStoreName, featureViewName string, featureViewVersion int) (*FeatureViewMetadata, *RestErrorCode) {
 	var fvCacheKey = getFeatureViewCacheKey(featureStoreName, featureViewName, featureViewVersion)
 	var metadataInf, exist = fvmeta.metadataCache.Get(fvCacheKey)
 	if !exist {
@@ -191,7 +180,7 @@ func (fvmeta *FeatureViewMetaDataCache) Get(featureStoreName, featureViewName st
 	} else {
 		var metadata, ok = metadataInf.(*FeatureViewMetadata)
 		if !ok {
-			return nil, fmt.Errorf("Cannot retrive feature view metadata from cache.")
+			return nil, FETCH_METADATA_FROM_CACHE_FAIL
 		}
 		return metadata, nil
 	}
@@ -201,28 +190,28 @@ func getFeatureViewCacheKey(featureStoreName, featureViewName string, featureVie
 	return fmt.Sprintf("%s|%s|%d", featureStoreName, featureViewName, featureViewVersion)
 }
 
-func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureViewVersion int) (*FeatureViewMetadata, error) {
+func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureViewVersion int) (*FeatureViewMetadata, *RestErrorCode) {
 
 	fsID, err := dal.GetFeatureStoreID(featureStoreName)
 	if err != nil {
 		if strings.Contains(err.Error(), "Not Found") {
-			return nil, fmt.Errorf(FS_NOT_EXIST)
+			return nil, FS_NOT_EXIST
 		}
-		return nil, fmt.Errorf("%s Error: %s ", FS_READ_FAIL, err)
+		return nil, (*FS_NOT_EXIST).NewMessage(err.Error())
 	}
 
 	fvID, err := dal.GetFeatureViewID(fsID, featureViewName, featureViewVersion)
 	if err != nil {
 		if strings.Contains(err.Error(), "Not Found") {
-			return nil, fmt.Errorf(FV_NOT_EXIST)
+			return nil, FV_NOT_EXIST
 		}
-		return nil, fmt.Errorf("%s Error: %s ", FV_READ_FAIL, err)
+		return nil, (*&FV_READ_FAIL).NewMessage(err.VerboseError())
 	}
 
 	joinIdToPrefix := make(map[int]string)
 	tdJoins, err := dal.GetTrainingDatasetJoinData(fvID)
 	if err != nil {
-		return nil, fmt.Errorf("%s Error: %s ", TD_JOIN_READ_FAIL, err.VerboseError())
+		return nil, (*TD_JOIN_READ_FAIL).NewMessage(err.VerboseError())
 	}
 	for _, tdj := range tdJoins {
 		joinIdToPrefix[tdj.Id] = tdj.Prefix
@@ -230,7 +219,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 
 	tdfs, err := dal.GetTrainingDatasetFeature(fvID)
 	if err != nil {
-		return nil, fmt.Errorf("%s Error: %s ", TD_FEATURE_READ_FAIL, err.VerboseError())
+		return nil, (*TD_FEATURE_READ_FAIL).NewMessage(err.VerboseError())
 	}
 
 	features := make([]*FeatureMetadata, len(tdfs))
@@ -240,9 +229,9 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		featureGroupName, _, fsId, fgVersion, err := dal.GetFeatureGroupData(tdf.FeatureGroupID)
 		if err != nil {
 			if strings.Contains(err.Error(), "Not Found") {
-				return nil, fmt.Errorf(FG_NOT_EXIST)
+				return nil, FG_NOT_EXIST
 			}
-			return nil, fmt.Errorf("%s Error: %s ", FG_READ_FAIL, err)
+			return nil, (*FG_READ_FAIL).NewMessage(err.VerboseError())
 		}
 		feature := FeatureMetadata{}
 		if featureStoreName, exist := fsIdToName[fsId]; exist {
@@ -251,9 +240,9 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 			featureStoreName, err = dal.GetFeatureStoreName(fsId)
 			if err != nil {
 				if strings.Contains(err.Error(), "Not Found") {
-					return nil, fmt.Errorf(FS_NOT_EXIST)
+					return nil, FS_NOT_EXIST
 				}
-				return nil, fmt.Errorf("%s Error: %s ", FS_READ_FAIL, err)
+				return nil, (*FS_READ_FAIL).NewMessage(err.VerboseError())
 			}
 			fsIdToName[fsId] = featureStoreName
 			feature.FeatureStoreName = featureStoreName

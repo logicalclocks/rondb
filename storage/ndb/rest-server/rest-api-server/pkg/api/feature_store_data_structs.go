@@ -22,12 +22,12 @@ import (
 )
 
 type BatchFeatureStoreRequest struct {
-	FeatureStoreName   *string                        `json:"featureStoreName"`
-	FeatureViewName    *string                        `json:"featureViewName"`
-	FeatureViewVersion *int                           `json:"featureViewVersion"`
+	FeatureStoreName   *string                         `json:"featureStoreName"`
+	FeatureViewName    *string                         `json:"featureViewName"`
+	FeatureViewVersion *int                            `json:"featureViewVersion"`
 	PassedFeatures     *[]*map[string]*json.RawMessage `json:"passedFeatures"`
 	Entries            *[]*map[string]*json.RawMessage `json:"entries"`
-	RequestId          *string                        `json:"requestId"`
+	RequestId          *string                         `json:"requestId"`
 }
 
 func (freq BatchFeatureStoreRequest) String() string {
@@ -84,8 +84,22 @@ type FeatureMeatadata struct {
 func (r *FeatureStoreResponse) String() string {
 	strBytes, err := json.MarshalIndent(*r, "", "\t")
 	if err != nil {
-		return fmt.Sprintf("Failed to marshar PKReadResponseJSON. Error: %v", err)
+		return fmt.Sprintf("Failed to marshal PKReadResponseJSON. Error: %v", err)
 	} else {
 		return string(strBytes)
 	}
 }
+
+// type FeatureStoreErrorResponse struct {
+// 	Code    int    `json:"code"`
+// 	Message string `json:"message"`
+// }
+
+// func (r *FeatureStoreErrorResponse) String() string {
+// 	strBytes, err := json.MarshalIndent(*r, "", "\t")
+// 	if err != nil {
+// 		return fmt.Sprintf("Failed to marshal FeatureStoreErrorResponse. Error: %v", err)
+// 	} else {
+// 		return string(strBytes)
+// 	}
+// }

@@ -33,13 +33,6 @@ import (
 )
 
 const (
-	WRONG_DATA_TYPE          = "Wrong data type."
-	FEATURE_NOT_EXIST        = "Feature does not exist."
-	INCORRECT_PRIMARY_KEY    = "Incorrect primary key."
-	INCORRECT_PASSED_FEATURE = "Incorrect passed feature."
-)
-
-const (
 	JSON_NUMBER  = "NUMBER"
 	JSON_STRING  = "STRING"
 	JSON_BOOLEAN = "BOOLEAN"
@@ -62,7 +55,7 @@ func (h *Handler) Validate(request interface{}) error {
 	metadata, err := h.fvMetaCache.Get(
 		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
 	if err != nil {
-		return err
+		return err.Error()
 	}
 	if log.IsDebug() {
 		metadata, _ := json.MarshalIndent(metadata, "", "  ")
@@ -71,53 +64,53 @@ func (h *Handler) Validate(request interface{}) error {
 	}
 	err1 := validatePrimaryKey(fsReq.Entries, &metadata.PrefixFeaturesLookup)
 	if err1 != nil {
-		return err1
+		return err1.Error()
 	}
 	err2 := validatePassedFeatures(fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup)
 	if err2 != nil {
-		return err2
+		return err2.Error()
 	}
 	return nil
 
 }
 
-func validatePrimaryKey(entries *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) error {
+func validatePrimaryKey(entries *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) *feature_store.RestErrorCode {
 	// Data type check of primary key will be delegated to rondb.
 	if len(*entries) == 0 {
-		return fmt.Errorf("%s Error: No primary key is given.", INCORRECT_PRIMARY_KEY)
+		return feature_store.INCORRECT_PRIMARY_KEY
 	}
 	for featureName := range *entries {
 		_, ok := (*features)[featureName]
 		if !ok {
-			return fmt.Errorf("%s. Provided primary key `%s` does not exist in the feature view.", FEATURE_NOT_EXIST, featureName)
+			return feature_store.FEATURE_NOT_EXIST.NewMessage(fmt.Sprintf("Provided primary key `%s` does not exist in the feature view.", featureName))
 		}
 	}
 	return nil
 }
 
-func validatePassedFeatures(passedFeatures *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) error {
+func validatePassedFeatures(passedFeatures *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) *feature_store.RestErrorCode {
 	for featureName, value := range *passedFeatures {
 		feature, ok := (*features)[featureName]
 		if !ok {
-			return fmt.Errorf("%s. Feature `%s` does not exist in the feature view.", FEATURE_NOT_EXIST, featureName)
+			return feature_store.FEATURE_NOT_EXIST.NewMessage(fmt.Sprintf("Feature `%s` does not exist in the feature view.", featureName))
 		}
 		err := validateFeatureType(value, feature.Type)
 		if err != nil {
-			return fmt.Errorf("%s feature: %s (value: %s); Error:  %s", INCORRECT_PASSED_FEATURE, feature.Name, *value, err.Error())
+			return feature_store.INCORRECT_PASSED_FEATURE.NewMessage(fmt.Sprintf("feature: %s (value: %s); Error:  %s", feature.Name, *value, err.Error()))
 		}
 	}
 	return nil
 }
 
-func validateFeatureType(feature *json.RawMessage, featureType string) error {
+func validateFeatureType(feature *json.RawMessage, featureType string) *feature_store.RestErrorCode {
 	var got, err = getJsonType(feature)
 
 	if err != nil {
-		return fmt.Errorf("Provided value %s is not in correct JSON format. %s", feature, err)
+		return feature_store.INCORRECT_FEATURE_VALUE.NewMessage(fmt.Sprintf("Provided value %s is not in correct JSON format. %s", feature, err))
 	}
 	var expected = mapFeatureTypeToJsonType(featureType)
 	if got != expected {
-		return fmt.Errorf("%s Got: '%s', expected: '%s' (offline type: %s)", WRONG_DATA_TYPE, got, expected, featureType)
+		return feature_store.WRONG_DATA_TYPE.NewMessage(fmt.Sprintf("Got: '%s', expected: '%s' (offline type: %s)", got, expected, featureType))
 	}
 	return nil
 }
@@ -182,7 +175,7 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	metadata, err := h.fvMetaCache.Get(
 		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
 	if err != nil {
-		return err
+		return err.Error()
 	}
 	return h.apiKeyCache.ValidateAPIKey(apiKey, metadata.FeatureStoreNames...)
 }
@@ -193,17 +186,19 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	metadata, err := h.fvMetaCache.Get(
 		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
 	if err != nil {
-		return http.StatusInternalServerError, err
+		return err.GetStatus(), err.Error()
 	}
 	var readParams = getBatchPkReadParams(metadata, fsReq.Entries)
-	err = h.dbBatchReader.Validate(readParams)
-	if err != nil {
-		return http.StatusBadRequest, err
+	ronDbErr := h.dbBatchReader.Validate(readParams)
+	if ronDbErr != nil {
+		var fsError = translateRonDbError(http.StatusBadRequest, ronDbErr)
+		return fsError.GetStatus(), fsError.Error()
 	}
 	var dbResponseIntf = getPkReadResponseJSON()
-	code, err := h.dbBatchReader.Execute(readParams, *dbResponseIntf)
-	if err != nil {
-		return translateRonDbError(code, err)
+	code, ronDbErr := h.dbBatchReader.Execute(readParams, *dbResponseIntf)
+	if ronDbErr != nil {
+		var fsError = translateRonDbError(code, ronDbErr)
+		return fsError.GetStatus(), fsError.Error()
 	}
 	fsResp := response.(*api.FeatureStoreResponse)
 	features := getFeatureValues(dbResponseIntf, fsReq.Entries, metadata)
@@ -217,28 +212,31 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		featureMetadatas[metadata.Index] = &featureMetadata
 	}
 	fsResp.Metadata = featureMetadatas
-	return code, nil
+	return http.StatusOK, nil
 }
 
-func translateRonDbError(code int, err error) (fsCode int, fsError error) {
+func translateRonDbError(code int, err error) *feature_store.RestErrorCode {
+	var fsError *feature_store.RestErrorCode
 	if strings.Contains(err.Error(), "Wrong data type.") {
 		regex := regexp.MustCompile(`Expecting (\w+)\. Column: (\w+)`)
 		match := regex.FindStringSubmatch(err.Error())
-		var errorMessage string
 		if match != nil {
 			dataType := match[1]
 			columnName := match[2]
-			errorMessage = fmt.Sprintf("%s Primary key '%s' should be in '%s' format.", WRONG_DATA_TYPE, columnName, dataType)
+			fsError = feature_store.WRONG_DATA_TYPE.NewMessage(
+				fmt.Sprintf("Primary key '%s' should be in '%s' format.", columnName, dataType),
+			)
 		} else {
-			errorMessage = WRONG_DATA_TYPE
+			fsError = feature_store.WRONG_DATA_TYPE
 		}
-		return http.StatusBadRequest, fmt.Errorf(errorMessage)
-	}
-	if strings.Contains(err.Error(), "Wrong number of primary-key columns.") ||
+
+	} else if strings.Contains(err.Error(), "Wrong number of primary-key columns.") ||
 		strings.Contains(err.Error(), "Wrong primay-key column.") {
-		return http.StatusBadRequest, fmt.Errorf("%s Error: %s", INCORRECT_PRIMARY_KEY, err.Error())
+		fsError = feature_store.INCORRECT_PRIMARY_KEY.NewMessage(err.Error())
+	} else {
+		fsError = feature_store.READ_FROM_DB_FAIL
 	}
-	return code, err
+	return fsError
 }
 
 func getFeatureValues(batchResponse *api.BatchOpResponse, entries *map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata) *[]interface{} {
