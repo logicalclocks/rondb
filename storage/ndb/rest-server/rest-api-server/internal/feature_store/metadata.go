@@ -22,8 +22,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/patrickmn/go-cache"
 
 	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/log"
 )
 
 const (
@@ -142,7 +146,7 @@ func GetFeatureIndexKeyByFeature(feature *FeatureMetadata) string {
 }
 
 func GetFeatureIndexKeyByFgIndexKey(fgKey string, featureName string) string {
-	return fmt.Sprintf("%s|%s", fgKey, featureName) 
+	return fmt.Sprintf("%s|%s", fgKey, featureName)
 }
 
 func getFeatureGroupIndexKey(fs string, fg string, fgVersion int) *string {
@@ -155,7 +159,39 @@ func getFeatureIndexKey(fs string, fg string, fgVersion int, f string) *string {
 	return &featureIndexKey
 }
 
-// TODO cache this medata
+type FeatureViewMetaDataCache struct {
+	metadataCache cache.Cache
+}
+
+func NewFeatureViewMetaDataCache() *FeatureViewMetaDataCache {
+	var c = cache.New(15*time.Minute, 15*time.Minute)
+	return &FeatureViewMetaDataCache{*c}
+}
+
+func (fvmeta *FeatureViewMetaDataCache) Get(featureStoreName, featureViewName string, featureViewVersion int) (*FeatureViewMetadata, error) {
+	var fvCacheKey = getFeatureViewCacheKey(featureStoreName, featureViewName, featureViewVersion)
+	var metadataInf, exist = fvmeta.metadataCache.Get(fvCacheKey)
+	if !exist {
+		var metadata, err = GetFeatureViewMetadata(featureStoreName, featureViewName, featureViewVersion)
+		if err != nil {
+			return nil, err
+		} else {
+			fvmeta.metadataCache.SetDefault(fvCacheKey, metadata)
+			return metadata, nil
+		}
+	} else {
+		var metadata, ok = metadataInf.(*FeatureViewMetadata)
+		if !ok {
+			return nil, fmt.Errorf("Cannot retrive feature view metadata from cache.")
+		}
+		return metadata, nil
+	}
+}
+
+func getFeatureViewCacheKey(featureStoreName, featureViewName string, featureViewVersion int) string {
+	return fmt.Sprintf("%s|%s|%d", featureStoreName, featureViewName, featureViewVersion)
+}
+
 func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureViewVersion int) (*FeatureViewMetadata, error) {
 
 	fsID, err := dal.GetFeatureStoreID(featureStoreName)

@@ -48,6 +48,7 @@ require (
 	github.com/goccy/go-json v0.10.0 // indirect
 	github.com/ianlancetaylor/cgosymbolizer v0.0.0-20230328201059-365e72989107
 	github.com/klauspost/cpuid/v2 v2.2.4 // indirect
+	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pelletier/go-toml/v2 v2.0.7 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	golang.org/x/arch v0.2.0 // indirect

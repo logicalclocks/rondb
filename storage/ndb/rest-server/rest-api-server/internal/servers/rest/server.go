@@ -37,6 +37,7 @@ import (
 	"hopsworks.ai/rdrs/internal/handlers/stat"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/security/apikey"
+	fsmeta "hopsworks.ai/rdrs/internal/feature_store"
 )
 
 type RonDBRestServer struct {
@@ -109,7 +110,7 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 	versionGroup := router.Group(config.VERSION_GROUP)
 
 	batchPkReadHandler := batchpkread.New(heap, apiKeyCache)
-	featureStoreHandler := feature_store.New(apiKeyCache, batchPkReadHandler)
+	featureStoreHandler := feature_store.New(*fsmeta.NewFeatureViewMetaDataCache(), apiKeyCache, batchPkReadHandler)
 
 	routeHandler := &RouteHandler{
 		statsHandler:        stat.New(heap, apiKeyCache),
