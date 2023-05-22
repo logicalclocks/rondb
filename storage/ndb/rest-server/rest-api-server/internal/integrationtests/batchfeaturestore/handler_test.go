@@ -172,7 +172,7 @@ func Test_GetFeatureVector_FvNotExist(t *testing.T) {
 }
 
 func Test_GetFeatureVector_CompositePrimaryKey(t *testing.T) {
-	rows, pks, cols, err := fshelper.GetSampleData("fsdb001", "sample_3_1")
+	rows, pks, cols, err := fshelper.GetNSampleDataColumns("fsdb001", "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`"})
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
@@ -359,7 +359,32 @@ func Test_GetFeatureVector_primaryKeyNoMatch(t *testing.T) {
 		nil,
 	)
 	GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+}
 
+func Test_GetFeatureVector_primaryKeyNoMatch_partial(t *testing.T) {
+	rows, pks, cols, err := fshelper.GetNSampleData("fsdb002", "sample_2_1", 4)
+
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	var pkValues = GetPkValues(&rows, &pks, &cols)
+	for _, pkv := range (*pkValues)[0:2] {
+		// Make wrong primary key value
+		for i := range pkv {
+			pkv[i] = []byte(strconv.Itoa(9876543 + i))
+		}
+
+	}
+	var fsReq = CreateFeatureStoreRequest(
+		"fsdb002",
+		"sample_2",
+		1,
+		pks,
+		*pkValues,
+		nil,
+		nil,
+	)
+	GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
 }
 
 func Test_GetFeatureVector_noPrimaryKey(t *testing.T) {
@@ -581,8 +606,8 @@ func Test_PassedFeatures_success_allTypes(t *testing.T) {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
 	var passedFeatures = []interface{}{
-		[]byte(`990`),          // id1
-		[]byte(`"991"`),        // id2
+		rows[0][0],             // id1
+		rows[0][1],             // id2
 		[]byte(`992`),          // ts
 		[]byte(`993`),          // bigint
 		[]byte(`"994"`),        // string
@@ -639,7 +664,7 @@ func Test_PassedFeatures_wrongKey_featureNotExist_partialFail(t *testing.T) {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
 	for i, row := range rows {
-		if i >= 1{
+		if i >= 1 {
 			break
 		}
 		row[2] = []byte("999")
@@ -653,6 +678,7 @@ func Test_PassedFeatures_wrongKey_featureNotExist_partialFail(t *testing.T) {
 		[]string{"invalide_key"},
 		[][]interface{}{{[]byte("999")}, {[]byte("999")}},
 	)
+	(*fsReq.PassedFeatures)[0] = nil
 	GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FEATURE_NOT_EXIST.GetReason(), http.StatusBadRequest)
 }
 

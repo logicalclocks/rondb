@@ -95,7 +95,8 @@ func ValidateResponseWithData(t *testing.T, data *[][]interface{}, cols *[]strin
 		var fsResp = &api.FeatureStoreResponse{}
 		fsResp.Metadata = resp.Metadata
 		fsResp.Features = resp.Features[i]
-		log.Debugf("Single response: %s", fsResp.String())
+		fsResp.Status = resp.Status[i]
+		// log.Debugf("Single response: %s", fsResp.String())
 		fshelper.ValidateResponseWithData(t, &row, cols, fsResp)
 	}
 }

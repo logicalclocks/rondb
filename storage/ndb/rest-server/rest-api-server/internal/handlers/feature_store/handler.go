@@ -199,7 +199,8 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		return fsError.GetStatus(), fsError.Error()
 	}
 	fsResp := response.(*api.FeatureStoreResponse)
-	features := getFeatureValues(dbResponseIntf, fsReq.Entries, metadata)
+	features, status := getFeatureValues(dbResponseIntf, fsReq.Entries, metadata)
+	fsResp.Status = status
 	fillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
 	fsResp.Features = *features
 	if fsReq.MetadataRequest != nil {
@@ -245,15 +246,19 @@ func translateRonDbError(code int, err error) *feature_store.RestErrorCode {
 	return fsError
 }
 
-func getFeatureValues(batchResponse *api.BatchOpResponse, entries *map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata) *[]interface{} {
+func getFeatureValues(batchResponse *api.BatchOpResponse, entries *map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata) (*[]interface{}, api.FeatureStatus) {
 	jsonResponse := (*batchResponse).String()
 	if log.IsDebug() {
 		log.Debugf("Received response from rondb: %s", jsonResponse)
 	}
-	fsResp := api.BatchResponseJSON{}
-	json.Unmarshal([]byte(jsonResponse), &fsResp)
+	rondbResp := api.BatchResponseJSON{}
+	json.Unmarshal([]byte(jsonResponse), &rondbResp)
 	featureValues := make([]interface{}, featureView.NumOfFeatures)
-	for _, response := range *fsResp.Result {
+	var status = api.FEATURE_STATUS_COMPLETE
+	for _, response := range *rondbResp.Result {
+		if *response.Code != 200 {
+			status = api.FEATURE_STATUS_MISSING
+		}
 		for featureName, value := range *response.Body.Data {
 			featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
 			if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
@@ -270,7 +275,7 @@ func getFeatureValues(batchResponse *api.BatchOpResponse, entries *map[string]*j
 			featureValues[index] = value
 		}
 	}
-	return &featureValues
+	return &featureValues, status
 }
 
 func getBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *map[string]*json.RawMessage) *[]*api.PKReadParams {

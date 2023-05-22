@@ -167,7 +167,7 @@ func Test_GetFeatureVector_FvNotExist(t *testing.T) {
 }
 
 func Test_GetFeatureVector_CompositePrimaryKey(t *testing.T) {
-	rows, pks, cols, err := GetSampleData("fsdb001", "sample_3_1")
+	rows, pks, cols, err := GetNSampleDataColumns("fsdb001", "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`", })
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
@@ -353,10 +353,14 @@ func Test_GetFeatureVector_primaryKeyNoMatch(t *testing.T) {
 	}
 
 	for _, row := range rows {
-		// Make wrong primary key value
 		var pkValues = *GetPkValues(&row, &pks, &cols)
 		for i := range pkValues {
-			pkValues[i] = []byte(strconv.Itoa(9876543 + i))
+			pkv := []byte(strconv.Itoa(9876543 + i))
+			pkValues[i] = pkv
+			for j := range row {
+				row[j] = nil
+			}
+			row[0] = pkv
 		}
 		var fsReq = CreateFeatureStoreRequest(
 			"fsdb002",
@@ -367,7 +371,8 @@ func Test_GetFeatureVector_primaryKeyNoMatch(t *testing.T) {
 			nil,
 			nil,
 		)
-		GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+		fsResp := GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
 	}
 }
 
@@ -539,8 +544,8 @@ func Test_PassedFeatures_success_allTypes(t *testing.T) {
 	}
 	for _, row := range rows {
 		var passedFeatures = []interface{}{
-			[]byte(`990`),          // id1
-			[]byte(`"991"`),        // id2
+			row[0],          // id1
+			row[1],        // id2
 			[]byte(`992`),          // ts
 			[]byte(`993`),          // bigint
 			[]byte(`"994"`),        // string

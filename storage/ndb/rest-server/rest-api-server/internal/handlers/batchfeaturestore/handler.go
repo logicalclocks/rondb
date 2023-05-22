@@ -111,7 +111,9 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		var fsReq = api.FeatureStoreRequest{}
 		var pf map[string]*json.RawMessage
 		if len(*batchFsReq.PassedFeatures) > 0 {
-			pf = *(*batchFsReq.PassedFeatures)[i]
+			if (*batchFsReq.PassedFeatures)[i] != nil {
+				pf = *(*batchFsReq.PassedFeatures)[i]
+			}
 		}
 		// Request metadata in the first single request only
 		if i == 0 && batchFsReq.MetadataRequest != nil {
@@ -166,6 +168,7 @@ func processFsResp(
 ) {
 	defer wg.Done()
 	batchResponse.FsResponse.Features = make([][]interface{}, numReq)
+	batchResponse.FsResponse.Status = make([]api.FeatureStatus, numReq)
 	for i := 0; i < numReq; i++ {
 		var fvResp = <-responses
 		if fvResp.Error != nil {
@@ -177,5 +180,6 @@ func processFsResp(
 			batchResponse.FsResponse.Metadata = fvResp.FsResponse.Metadata
 		}
 		batchResponse.FsResponse.Features[fvResp.Order] = fvResp.FsResponse.Features
+		batchResponse.FsResponse.Status[fvResp.Order] = fvResp.FsResponse.Status
 	}
 }

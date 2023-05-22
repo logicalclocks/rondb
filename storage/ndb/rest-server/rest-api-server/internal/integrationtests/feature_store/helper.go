@@ -82,6 +82,21 @@ func GetNSampleData(database string, table string, n int) ([][]interface{}, []st
 	return *valueBatch, pks, columnName, nil
 }
 
+func GetNSampleDataColumns(database string, table string, n int, cols []string) ([][]interface{}, []string, []string, error) {
+
+	columnName, pks, colTypes, err := getColumnInfo(database, table)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	// Max number of rows can be retrieved is 10.
+	query := fmt.Sprintf("SELECT %s FROM `%s`.`%s` LIMIT %d", strings.Join(cols, ", "), database, table, n)
+	var valueBatch, err1 = fetchRows(query, colTypes)
+	if err1 != nil {
+		return nil, nil, nil, err1
+	}
+	return *valueBatch, pks, columnName, nil
+}
+
 func fetchRows(query string, colTypes []string) (*[][]interface{}, error) {
 	dbConn, err := testutils.CreateMySQLConnection()
 	if err != nil {
@@ -263,8 +278,17 @@ func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string,
 	for i, col := range *cols {
 		colToIndex[col] = i
 	}
-	for i, metadata := range (*resp).Metadata {
+	var status = api.FEATURE_STATUS_COMPLETE
+	for i, _data := range *data {
 		gotRaw := ((*resp).Features)[i]
+		if gotRaw == nil && _data != nil {
+			t.Errorf("Got nil but expect %s \n", (_data).([]byte))
+		} else if gotRaw != nil && _data == nil {
+			t.Errorf("Got %s but expect nil \n", gotRaw.([]byte))
+		} else if gotRaw == nil && _data == nil {
+			status = api.FEATURE_STATUS_MISSING
+			continue
+		}
 		var got interface{}
 		if reflect.TypeOf(gotRaw) == reflect.TypeOf([]byte{}) {
 			err := json.Unmarshal(gotRaw.([]byte), &got)
@@ -274,14 +298,14 @@ func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string,
 		} else {
 			got = gotRaw
 		}
-		expected := ((*data)[colToIndex[*metadata.Name]]).([]byte)
+		expected := (_data).([]byte)
 		var expectedJson interface{}
 		err := json.Unmarshal(expected, &expectedJson)
 		if err != nil {
 			t.Errorf("Cannot unmarshal %s, got error: %s\n", expected, err)
 		}
 		// Decode binary data got from feature vector
-		if metadata.Type != nil && *metadata.Type == "binary" {
+		if strings.Contains((*cols)[i], "binary") {
 			var binary []byte
 			err := json.Unmarshal([]byte(fmt.Sprintf(`"%s"`, got.(string))), &binary)
 			if err != nil {
@@ -293,6 +317,9 @@ func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string,
 			t.Errorf("Got %s (%s) but expect %s (%s)\n", got, reflect.TypeOf(got), expectedJson, reflect.TypeOf(expectedJson))
 			break
 		}
+	}
+	if resp.Status != status {
+		t.Errorf("Got status %s but expect %s", resp.Status, status)
 	}
 }
 

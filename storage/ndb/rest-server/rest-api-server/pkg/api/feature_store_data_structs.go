@@ -67,6 +67,7 @@ func (freq FeatureStoreRequest) String() string {
 type BatchFeatureStoreResponse struct {
 	Features [][]interface{}     `json:"features"`
 	Metadata []*FeatureMeatadata `json:"metadata"`
+	Status   []FeatureStatus     `json:"status"`
 }
 
 func (r *BatchFeatureStoreResponse) String() string {
@@ -78,9 +79,17 @@ func (r *BatchFeatureStoreResponse) String() string {
 	}
 }
 
+type FeatureStatus string
+
+const (
+	FEATURE_STATUS_COMPLETE FeatureStatus = "COMPLETE"
+	FEATURE_STATUS_MISSING  FeatureStatus = "MISSING"
+)
+
 type FeatureStoreResponse struct {
 	Features []interface{}       `json:"features"`
 	Metadata []*FeatureMeatadata `json:"metadata"`
+	Status   FeatureStatus       `json:"status"`
 }
 
 func (r *FeatureStoreResponse) String() string {
