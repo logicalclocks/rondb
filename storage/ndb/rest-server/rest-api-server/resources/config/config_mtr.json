@@ -18,22 +18,18 @@
                         }
                 ],
                     "ConnectionRetries": 1,
-                        "ConnectionRetryDelayInSec": 1,
-                            "OpRetryOnTransientErrorsCount": 3,
-                                "OpRetryInitialDelayInMS": 500,
-                                    "OpRetryJitterInMS": 100
-        },
+        ,
         "Security": {
                 "TLS": {
                         "EnableTLS": true,
-                        "RequireAndVerifyClientCert": false
+                        "RequireAndVerifyClientCert": true
                 }, 
                 "APIKey": {
                         "UseHopsworksAPIKeys": true
                 }
         },
         "Log": {
-                "Level": "info"
+                "Level": "warn"
         },
         "Testing": {
                 "MySQL": {
