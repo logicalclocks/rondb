@@ -34,6 +34,7 @@ import (
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	"hopsworks.ai/rdrs/internal/handlers/stat"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/metrics"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 )
 
@@ -48,17 +49,19 @@ func New(
 	tlsConfig *tls.Config,
 	heap *heap.Heap,
 	apiKeyCache apikey.Cache,
+	rdrsMetrics *metrics.RDRSMetrics,
 ) *RonDBRestServer {
 	restApiAddress := fmt.Sprintf("%s:%d", host, port)
 	log.Infof("Initialising REST API server with network address: '%s'", restApiAddress)
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New() // gin.Default() for better logging
-	registerHandlers(router, heap, apiKeyCache)
+	registerHandlers(router, heap, apiKeyCache, rdrsMetrics)
 	return &RonDBRestServer{
 		server: &http.Server{
 			Addr:      restApiAddress,
 			Handler:   router,
 			TLSConfig: tlsConfig,
+			ConnState: rdrsMetrics.HTTPMetrics.HttpConnectionGauge.OnStateChange,
 		},
 	}
 }
@@ -97,9 +100,10 @@ type RouteHandler struct {
 	statsHandler       stat.Handler
 	pkReadHandler      pkread.Handler
 	batchPkReadHandler batchpkread.Handler
+	rdrsMetrics        *metrics.RDRSMetrics
 }
 
-func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache) {
+func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache, rdrsMetrics *metrics.RDRSMetrics) {
 	router.Use(ErrorHandler)
 
 	versionGroup := router.Group(config.VERSION_GROUP)
@@ -108,6 +112,7 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 		statsHandler:       stat.New(heap, apiKeyCache),
 		pkReadHandler:      pkread.New(heap, apiKeyCache),
 		batchPkReadHandler: batchpkread.New(heap, apiKeyCache),
+		rdrsMetrics:        rdrsMetrics,
 	}
 
 	// ping
@@ -122,6 +127,9 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 	// pk read
 	tableSpecificGroup := versionGroup.Group(config.DB_TABLE_PP)
 	tableSpecificGroup.POST(config.PK_DB_OPERATION, routeHandler.PkRead)
+
+	// prometheus
+	router.GET("/metrics", routeHandler.Metrics)
 }
 
 // TODO: Pass logger to this like in https://stackoverflow.com/a/69948929/9068781

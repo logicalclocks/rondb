@@ -28,6 +28,7 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/metrics"
 	"hopsworks.ai/rdrs/internal/security/apikey/hopsworkscache"
 
 	"hopsworks.ai/rdrs/internal/servers"
@@ -109,19 +110,24 @@ func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (fu
 	//---------------------------- API KEY Cache ------------------------------
 	apiKeyCache := hopsworkscache.New()
 	cleanupFNs = append(cleanupFNs, func() {
-		err = apiKeyCache.Cleanup()
-		if err != nil {
+		cleanUpError := apiKeyCache.Cleanup()
+		if cleanUpError != nil {
 			log.Errorf("failed cleaning up api key cache; error: %v", err)
 		}
 	})
 
+	//---------------------------- Prometheus metrics -------------------------
+	rdrsMetrics, rdrsMetricsCleanup := metrics.NewRDRSMetrics()
+	cleanupFNs = append(cleanupFNs, rdrsMetricsCleanup)
+
 	//---------------------------- Servers ------------------------------------
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal)
-	cleanupServers, err := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache, quit)
+	cleanupServers, err := servers.CreateAndStartDefaultServers(newHeap, apiKeyCache,
+		rdrsMetrics, quit)
 	if err != nil {
 		cleanupWrapper(cleanupFNs)()
-		return nil, fmt.Errorf("failed creating default servers; error: %v ", err)
+		return nil, err
 	}
 	cleanupFNs = append(cleanupFNs, cleanupServers)
 

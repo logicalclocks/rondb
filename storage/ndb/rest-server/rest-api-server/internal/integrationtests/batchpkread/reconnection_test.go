@@ -124,7 +124,7 @@ func reconnectTestInt(t *testing.T, numThreads int, durationSec int,
 			//first reconnection request is supposed to succeed
 			err := dal.Reconnect()
 			if err != nil {
-				t.Fatalf("Reconnection request failed")
+				t.Fatalf("Reconnection request failed %v ", err)
 			}
 		} else {
 			//subsequent reconnection requests are supposed to fail

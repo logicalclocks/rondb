@@ -58,12 +58,15 @@ RS_Status init(const char *connection_string, unsigned int connection_pool_size,
   RS_Status status =
       RDRSRonDBConnection::Init(connection_string, connection_pool_size, node_ids, node_ids_len,
                                 connection_retries, connection_retry_delay_in_sec);
-  if (status.http_code == SUCCESS) {
-    status = RDRSRonDBConnection::GetInstance(&rdrsRonDBConnection);
-    if (status.http_code != SUCCESS) {
-      return RS_SERVER_ERROR(ERROR_002);
-    }
+  if (status.http_code != SUCCESS) {
+    return status;
   }
+
+  status = RDRSRonDBConnection::GetInstance(&rdrsRonDBConnection);
+  if (status.http_code != SUCCESS) {
+    return RS_SERVER_ERROR(ERROR_002);
+  }
+
   return RS_OK;
 }
 
@@ -145,6 +148,7 @@ RS_Status get_rondb_stats(RonDB_Stats *stats) {
   stats->ndb_objects_deleted   = ret.ndb_objects_deleted;
   stats->ndb_objects_count     = ret.ndb_objects_count;
   stats->ndb_objects_available = ret.ndb_objects_available;
+  stats->connection_state = ret.connection_state;
 
   return RS_OK;
 }

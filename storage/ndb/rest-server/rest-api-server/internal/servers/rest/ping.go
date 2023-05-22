@@ -18,7 +18,15 @@
 package rest
 
 import (
+	"time"
+
 	"github.com/gin-gonic/gin"
 )
 
-func (h *RouteHandler) Ping(c *gin.Context) {}
+func (h *RouteHandler) Ping(c *gin.Context) {
+	// metrics
+	start := time.Now().UnixNano()
+	defer h.rdrsMetrics.HTTPMetrics.PingSummary.Observe(float64(time.Now().UnixNano() - start))
+	h.rdrsMetrics.HTTPMetrics.PingCounter.Inc()
+
+}
