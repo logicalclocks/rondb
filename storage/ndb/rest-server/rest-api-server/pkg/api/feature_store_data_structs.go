@@ -28,6 +28,12 @@ type BatchFeatureStoreRequest struct {
 	PassedFeatures     *[]*map[string]*json.RawMessage `json:"passedFeatures"`
 	Entries            *[]*map[string]*json.RawMessage `json:"entries"`
 	RequestId          *string                         `json:"requestId"`
+	MetadataRequest    *MetadataRequest                `json:"metadata_options"`
+}
+
+type MetadataRequest struct {
+	FeatureName bool `json:"feature_name"`
+	FeatureType bool `json:"feature_type"`
 }
 
 func (freq BatchFeatureStoreRequest) String() string {
@@ -46,6 +52,7 @@ type FeatureStoreRequest struct {
 	PassedFeatures     *map[string]*json.RawMessage `json:"passedFeatures"`
 	Entries            *map[string]*json.RawMessage `json:"entries"`
 	RequestId          *string                      `json:"requestId"`
+	MetadataRequest    *MetadataRequest             `json:"metadata_options"`
 }
 
 func (freq FeatureStoreRequest) String() string {
@@ -76,30 +83,25 @@ type FeatureStoreResponse struct {
 	Metadata []*FeatureMeatadata `json:"metadata"`
 }
 
-type FeatureMeatadata struct {
-	Name string
-	Type string
-}
-
 func (r *FeatureStoreResponse) String() string {
 	strBytes, err := json.MarshalIndent(*r, "", "\t")
 	if err != nil {
-		return fmt.Sprintf("Failed to marshal PKReadResponseJSON. Error: %v", err)
+		return fmt.Sprintf("Failed to marshal FeatureStoreResponse. Error: %v", err)
 	} else {
 		return string(strBytes)
 	}
 }
 
-// type FeatureStoreErrorResponse struct {
-// 	Code    int    `json:"code"`
-// 	Message string `json:"message"`
-// }
+type FeatureMeatadata struct { // use pointer because fields below are nullable
+	Name *string `json:"feature_name"`
+	Type *string `json:"feature_type"`
+}
 
-// func (r *FeatureStoreErrorResponse) String() string {
-// 	strBytes, err := json.MarshalIndent(*r, "", "\t")
-// 	if err != nil {
-// 		return fmt.Sprintf("Failed to marshal FeatureStoreErrorResponse. Error: %v", err)
-// 	} else {
-// 		return string(strBytes)
-// 	}
-// }
+func (r *FeatureMeatadata) String() string {
+	strBytes, err := json.MarshalIndent(*r, "", "\t")
+	if err != nil {
+		return fmt.Sprintf("Failed to marshal FeatureMeatadata. Error: %v", err)
+	} else {
+		return string(strBytes)
+	}
+}

@@ -68,45 +68,52 @@ func GetSampleData(database string, table string) ([][]interface{}, []string, []
 }
 
 func GetNSampleData(database string, table string, n int) ([][]interface{}, []string, []string, error) {
-	dbConn, err := testutils.CreateMySQLConnection()
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("Cannot create MYSQLConnection" + err.Error())
-	}
-	defer dbConn.Close()
-	// Max number of rows can be retrieved is 10.
-	query := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d", database, table, n)
-	rows, err := dbConn.Query(query)
+
+	columnName, pks, colTypes, err := getColumnInfo(database, table)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	// Max number of rows can be retrieved is 10.
+	query := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d", database, table, n)
+	var valueBatch, err1 = fetchRows(query, colTypes)
+	if err1 != nil {
+		return nil, nil, nil, err1
+	}
+	return *valueBatch, pks, columnName, nil
+}
+
+func fetchRows(query string, colTypes []string) (*[][]interface{}, error) {
+	dbConn, err := testutils.CreateMySQLConnection()
+	if err != nil {
+		return nil, fmt.Errorf("Cannot create MYSQLConnection" + err.Error())
+	}
+	defer dbConn.Close()
+
+	rows, err := dbConn.Query(query)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 
 	columns, err := rows.Columns()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
+	var nCol = len(columns)
 
 	valueBatch := make([][]interface{}, 0)
-	columnName, pks, colTypes, err := getColumnInfo(database, table)
-	if log.IsDebug() {
-		var colDebug []string
-		for i := range columnName {
-			colDebug = append(colDebug, fmt.Sprintf("%s (type: %s)", columnName[i], colTypes[i]))
-		}
-		log.Debugf("Read columns: %s", strings.Join(colDebug, ", "))
 
-	}
 	for rows.Next() {
-		values := make([]interface{}, len(columns))
+		values := make([]interface{}, nCol)
 		for i := range values {
 			values[i] = new(sql.RawBytes)
 		}
 
 		err := rows.Scan(values...)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
-		rawValue := make([]interface{}, len(columns))
+		rawValue := make([]interface{}, nCol)
 		for i := range values {
 			rawBytes := values[i].(*sql.RawBytes)
 			if isColNumerical(colTypes[i]) {
@@ -118,12 +125,9 @@ func GetNSampleData(database string, table string, n int) ([][]interface{}, []st
 		valueBatch = append(valueBatch, rawValue)
 	}
 	if len(valueBatch) == 0 {
-		return nil, nil, nil, fmt.Errorf("No sample data is fetched.\n")
+		return nil, fmt.Errorf("No sample data is fetched.\n")
 	}
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return valueBatch, pks, columnName, nil
+	return &valueBatch, nil
 }
 
 func GetSampleDataWithJoin(database string, table string, rightDatabase string, rightTable string, rightPrefix string) ([][]interface{}, []string, []string, error) {
@@ -207,11 +211,14 @@ func getColumnInfo(dbName string, tableName string) ([]string, []string, []strin
 	if err := rows.Err(); err != nil {
 		return nil, nil, nil, err
 	}
-	log.Debugf(
-		"data type: %s, column name: %s",
-		strings.Join(colTypes, ", "),
-		strings.Join(columns, ", "),
-	)
+	if log.IsDebug() {
+		var colDebug []string
+		for i := range columns {
+			colDebug = append(colDebug, fmt.Sprintf("%s (type: %s)", columns[i], colTypes[i]))
+		}
+		log.Debugf("Read columns: %s", strings.Join(colDebug, ", "))
+
+	}
 	return columns, pks, colTypes, nil
 }
 
@@ -267,14 +274,14 @@ func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string,
 		} else {
 			got = gotRaw
 		}
-		expected := ((*data)[colToIndex[metadata.Name]]).([]byte)
+		expected := ((*data)[colToIndex[*metadata.Name]]).([]byte)
 		var expectedJson interface{}
 		err := json.Unmarshal(expected, &expectedJson)
 		if err != nil {
 			t.Errorf("Cannot unmarshal %s, got error: %s\n", expected, err)
 		}
 		// Decode binary data got from feature vector
-		if metadata.Type == "binary" {
+		if metadata.Type != nil && *metadata.Type == "binary" {
 			var binary []byte
 			err := json.Unmarshal([]byte(fmt.Sprintf(`"%s"`, got.(string))), &binary)
 			if err != nil {
@@ -286,5 +293,55 @@ func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string,
 			t.Errorf("Got %s (%s) but expect %s (%s)\n", got, reflect.TypeOf(got), expectedJson, reflect.TypeOf(expectedJson))
 			break
 		}
+	}
+}
+
+func ValidateResponseMetadata(t *testing.T, metadata *[]*api.FeatureMeatadata, metadataRequest *api.MetadataRequest, fsName, fvName string, fvVersion int) {
+	var rows, err = fetchRows(fmt.Sprintf(`SELECT id from hopsworks.feature_store where name = "%s"`, fsName), []string{"bigint"})
+	if err != nil {
+		t.Errorf("Fetch rows failed with error: %s\n", err)
+	}
+	var fsIdStr = string((*rows)[0][0].([]byte))
+	var fsId, strErr = strconv.Atoi(fsIdStr)
+	if strErr != nil {
+		t.Errorf("Cannot convert %s to integer with error: %s\n", fsIdStr, err)
+	}
+	rows, err = fetchRows(fmt.Sprintf(`SELECT id from hopsworks.feature_view where feature_store_id = %d and name = "%s" and version = %d`, fsId, fvName, fvVersion), []string{"bigint"})
+	if err != nil {
+		t.Errorf("Fetch rows failed with error: %s\n", err)
+	}
+	var fvIdStr = string((*rows)[0][0].([]byte))
+	var fvId, strErr1 = strconv.Atoi(fvIdStr)
+	if strErr1 != nil {
+		t.Errorf("Cannot convert %s to integer with error: %s\n", fvIdStr, err)
+	}
+
+	rows, err = fetchRows(fmt.Sprintf(`SELECT tdf.name, tdf.type, tdj.prefix from hopsworks.training_dataset_feature tdf inner join hopsworks.training_dataset_join tdj on tdf.td_join = tdj.id where tdf.feature_view_id = %d order by tdf.idx`, fvId), []string{"varchar", "varchar", "varchar"})
+	if err != nil {
+		t.Errorf("Fetch rows failed with error: %s\n", err)
+	}
+	var expected = make([]api.FeatureMeatadata, 0)
+	for _, row := range *rows {
+		var meta = api.FeatureMeatadata{}
+		if metadataRequest.FeatureName {
+			var prefix = strings.Replace(string(row[2].([]byte)), `"`, "", -1)
+			var name = prefix + strings.Replace(string(row[0].([]byte)), `"`, "", -1)
+			meta.Name = &name
+		}
+		if metadataRequest.FeatureType {
+			var typ = strings.Replace(string(row[1].([]byte)), `"`, "", -1)
+			meta.Type = &typ
+		}
+
+		expected = append(expected, meta)
+	}
+	for i := range *metadata {
+		var got = *(*metadata)[i]
+		var expect = expected[i]
+		if !reflect.DeepEqual(got, expect) {
+			t.Errorf("Got: %s, Expected: %s", got.String(), expect.String())
+			break
+		}
+		log.Debugf("Validated metadata. %s", got.String())
 	}
 }

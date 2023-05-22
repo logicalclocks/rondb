@@ -18,6 +18,7 @@
 package feature_store
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -27,6 +28,7 @@ import (
 	"github.com/patrickmn/go-cache"
 
 	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/log"
 )
 
 type FeatureViewMetadata struct {
@@ -175,6 +177,10 @@ func (fvmeta *FeatureViewMetaDataCache) Get(featureStoreName, featureViewName st
 			return nil, err
 		} else {
 			fvmeta.metadataCache.SetDefault(fvCacheKey, metadata)
+			if log.IsDebug() {
+				metadataJson, _ := json.MarshalIndent(metadata, "", "  ")
+				log.Debugf("Feature store metadata is %s", metadataJson)
+			}
 			return metadata, nil
 		}
 	} else {

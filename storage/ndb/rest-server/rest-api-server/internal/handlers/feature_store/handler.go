@@ -58,9 +58,7 @@ func (h *Handler) Validate(request interface{}) error {
 		return err.Error()
 	}
 	if log.IsDebug() {
-		metadata, _ := json.MarshalIndent(metadata, "", "  ")
 		log.Debugf("Feature store request is %s", fsReq.String())
-		log.Debugf("Feature store metadata is %s", metadata)
 	}
 	err1 := validatePrimaryKey(fsReq.Entries, &metadata.PrefixFeaturesLookup)
 	if err1 != nil {
@@ -96,7 +94,7 @@ func validatePassedFeatures(passedFeatures *map[string]*json.RawMessage, feature
 		}
 		err := validateFeatureType(value, feature.Type)
 		if err != nil {
-			return feature_store.INCORRECT_PASSED_FEATURE.NewMessage(fmt.Sprintf("feature: %s (value: %s); Error:  %s", feature.Name, *value, err.Error()))
+			return err
 		}
 	}
 	return nil
@@ -204,14 +202,22 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	features := getFeatureValues(dbResponseIntf, fsReq.Entries, metadata)
 	fillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
 	fsResp.Features = *features
-	featureMetadatas := make([]*api.FeatureMeatadata, metadata.NumOfFeatures)
-	for featureKey, metadata := range metadata.PrefixFeaturesLookup {
-		featureMetadata := api.FeatureMeatadata{}
-		featureMetadata.Name = featureKey
-		featureMetadata.Type = metadata.Type
-		featureMetadatas[metadata.Index] = &featureMetadata
+	if fsReq.MetadataRequest != nil {
+		featureMetadatas := make([]*api.FeatureMeatadata, metadata.NumOfFeatures)
+		for featureKey, metadata := range metadata.PrefixFeaturesLookup {
+			featureMetadata := api.FeatureMeatadata{}
+			if fsReq.MetadataRequest.FeatureName {
+				var fk = featureKey
+				featureMetadata.Name = &fk
+			}
+			if fsReq.MetadataRequest.FeatureType {
+				var ft = metadata.Type
+				featureMetadata.Type = &ft
+			}
+			featureMetadatas[metadata.Index] = &featureMetadata
+		}
+		fsResp.Metadata = featureMetadatas
 	}
-	fsResp.Metadata = featureMetadatas
 	return http.StatusOK, nil
 }
 

@@ -108,11 +108,15 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	go processFsResp(len(*batchFsReq.Entries), &batchResponseWithStatus, fvResps, &wgResp)
 
 	for i, entry := range *batchFsReq.Entries {
+		var fsReq = api.FeatureStoreRequest{}
 		var pf map[string]*json.RawMessage
 		if len(*batchFsReq.PassedFeatures) > 0 {
 			pf = *(*batchFsReq.PassedFeatures)[i]
 		}
-		var fsReq = api.FeatureStoreRequest{}
+		// Request metadata in the first single request only
+		if i == 0 && batchFsReq.MetadataRequest != nil {
+			fsReq.MetadataRequest = batchFsReq.MetadataRequest
+		}
 		fsReq.FeatureStoreName = batchFsReq.FeatureStoreName
 		fsReq.FeatureViewName = batchFsReq.FeatureViewName
 		fsReq.FeatureViewVersion = batchFsReq.FeatureViewVersion

@@ -143,7 +143,7 @@ VALUES
         1001, 3, 'fsdb002', 0, 'fsdb002', 'macho@hopsworks.ai', Timestamp('2023-04-20 16:14:15'), 'Some desc', 'NOLIMIT', Timestamp('2023-04-20 16:14:15'), 100, 'SomeDockerImage', 1025.0, 0
     ),
     (
-        1002, 4 'fsdb_isolate', 0, 'fsdb_isolate', 'macho@hopsworks.ai', Timestamp('2023-04-20 16:14:15'), 'Some desc', 'NOLIMIT', Timestamp('2023-04-20 16:14:15'), 100, 'SomeDockerImage', 1025.0, 0
+        1002, 4, 'fsdb_isolate', 0, 'fsdb_isolate', 'macho@hopsworks.ai', Timestamp('2023-04-20 16:14:15'), 'Some desc', 'NOLIMIT', Timestamp('2023-04-20 16:14:15'), 100, 'SomeDockerImage', 1025.0, 0
     );
 
 INSERT INTO

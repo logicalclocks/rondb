@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	fsmetadata "hopsworks.ai/rdrs/internal/feature_store"
+	"hopsworks.ai/rdrs/pkg/api"
 )
 
 func TestFeatureStoreMetaData(t *testing.T) {
@@ -73,6 +74,56 @@ func Test_GetFeatureVector_success(t *testing.T) {
 		)
 		fsResp := GetFeatureStoreResponse(t, fsReq)
 		ValidateResponseWithData(t, &row, &cols, fsResp)
+	}
+}
+
+func Test_GetFeatureVector_withMetadata_All_success(t *testing.T) {
+	var fsName = "fsdb002"
+	var fvName = "sample_2"
+	var fvVersion = 1
+	rows, pks, cols, err := GetSampleData(fsName, fmt.Sprintf("%s_%d", fvName, fvVersion))
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			fsName,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
+	}
+}
+
+func Test_GetFeatureVector_withMetadata_Name_success(t *testing.T) {
+	var fsName = "fsdb002"
+	var fvName = "sample_2"
+	var fvVersion = 1
+	rows, pks, cols, err := GetSampleData(fsName, fmt.Sprintf("%s_%d", fvName, fvVersion))
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			fsName,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: false}
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
 	}
 }
 
@@ -172,6 +223,56 @@ func Test_GetFeatureVector_join(t *testing.T) {
 		)
 		fsResp := GetFeatureStoreResponse(t, fsReq)
 		ValidateResponseWithData(t, &row, &cols, fsResp)
+	}
+}
+
+func Test_GetFeatureVector_join_Metadata_all(t *testing.T) {
+	var fsName = "fsdb002"
+	var fvName = "sample_1n2"
+	var fvVersion = 1
+	rows, pks, cols, err := GetSampleDataWithJoin(fsName, "sample_1_1", fsName, "sample_2_1", "fg2_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			fsName,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
+	}
+}
+
+func Test_GetFeatureVector_join_Metadata_name(t *testing.T) {
+	var fsName = "fsdb002"
+	var fvName = "sample_1n2"
+	var fvVersion = 1
+	rows, pks, cols, err := GetSampleDataWithJoin(fsName, "sample_1_1", fsName, "sample_2_1", "fg2_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			fsName,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: false}
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
 	}
 }
 
