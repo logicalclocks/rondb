@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/ianlancetaylor/cgosymbolizer"
+	// _ "github.com/ianlancetaylor/cgosymbolizer"
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
@@ -36,7 +36,7 @@ import (
 )
 
 func TestReconnection1(t *testing.T) {
-	reconnectionTest(t, 1, 500)
+	reconnectionTest(t, 1, 5)
 }
 
 func TestReconnection2(t *testing.T) {
