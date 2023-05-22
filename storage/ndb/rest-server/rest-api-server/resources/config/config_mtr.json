@@ -17,7 +17,6 @@
                                 "Port": 13000 
                         }
                 ],
-                    "ConnectionRetries": 1,
         ,
         "Security": {
                 "TLS": {
