@@ -16,8 +16,8 @@
                                 "IP": "localhost",
                                 "Port": 13000 
                         }
-                ],
-        ,
+                ]
+        },
         "Security": {
                 "TLS": {
                         "EnableTLS": true,
