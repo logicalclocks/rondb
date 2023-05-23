@@ -84,3 +84,4 @@ var INCORRECT_PASSED_FEATURE = &RestErrorCode{13, "Incorrect passed feature.", h
 var READ_FROM_DB_FAIL = &RestErrorCode{14, "Reading from db failed.", http.StatusInternalServerError, ""}
 var NO_PRIMARY_KEY_GIVEN = &RestErrorCode{15, "No primary key is given.", http.StatusBadRequest, ""}
 var INCORRECT_FEATURE_VALUE = &RestErrorCode{16, "Incorrect feature value.", http.StatusBadRequest, ""}
+var FEATURE_STORE_NOT_SHARED = &RestErrorCode{17, "Accessing unshared feature store failed", http.StatusUnauthorized, ""}

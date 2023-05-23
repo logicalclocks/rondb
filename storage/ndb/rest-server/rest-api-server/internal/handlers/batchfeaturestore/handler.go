@@ -83,7 +83,11 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	if err != nil {
 		return err.Error()
 	}
-	return h.apiKeyCache.ValidateAPIKey(apiKey, metadata.FeatureStoreNames...)
+	valErr := h.apiKeyCache.ValidateAPIKey(apiKey, metadata.FeatureStoreNames...)
+	if valErr != nil {
+		return fs.FEATURE_STORE_NOT_SHARED.Error()
+	}
+	return nil
 }
 
 func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {

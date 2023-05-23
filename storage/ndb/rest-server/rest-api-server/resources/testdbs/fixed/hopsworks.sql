@@ -349,6 +349,9 @@ INSERT INTO
     `feature_store`
 VALUES
     (
+        66, "fsdb_isolate", 1002, "2023-03-16 14:27:29", 4
+    ),
+    (
         67, "fsdb001", 1000, "2023-03-16 14:27:29", 4
     ),
     (
@@ -375,6 +378,9 @@ VALUES
     ),
     (
         2076, 'sample_3', 67, Timestamp('2023-05-08 15:20:51'), 10000, 1, 2, NULL, NULL, 2064, 'ts', 1
+    ),
+    (
+        2067, 'sample_4', 66, Timestamp('2023-05-08 15:20:51'), 10000, 1, 2, NULL, NULL, 2055, 'ts', 1
     );
 
 INSERT INTO
@@ -421,7 +427,10 @@ VALUES
     INNER JOIN `test_ken_featurestore`.`sample_1_2` `fg1` ON `fg0`.`id1` = `fg1`.`id1`
     */
     (
-	2080, 'sample_1n1', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, '', 250, 'sample_1n1_1', 250
+	    2080, 'sample_1n1', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, '', 250, 'sample_1n1_1', 250
+    ),
+    (
+        2085, 'sample_4', 66, Timestamp('2023-05-23 15:31:53'), 10000, 1, '', 250, 'sample_4_1', 250
     );
 
 INSERT INTO 
@@ -468,6 +477,9 @@ VALUES
     ),
     (
         2087, NULL, 2070, NULL, 0, 1, 'fg1_', 2080
+    ),
+    (
+	    2096, NULL, 2067, NULL, 0, 0, NULL, 2085
     );
 
 INSERT INTO
@@ -658,4 +670,16 @@ VALUES
     ),
     (
         2206, NULL, 2069, 'data2', 'bigint', 2086, 3, 0, NULL, 2080
+    ),
+    (
+	    2253, NULL, 2067, 'bigint', 'bigint', 2096, 3, 0, NULL, 2085
+    ),
+    (
+        2254, NULL, 2067, 'ts', 'timestamp', 2096, 2, 0, NULL, 2085
+    ),
+    (
+        2260, NULL, 2067, 'id1', 'bigint', 2096, 0, 0, NULL, 2085
+    ),
+    (
+        2261, NULL, 2067, 'id2', 'string', 2096, 1, 0, NULL, 2085
     );

@@ -307,8 +307,22 @@ func Test_GetFeatureVector_shared(t *testing.T) {
 	ValidateResponseWithData(t, &rows, &cols, fsResp)
 }
 
-func Test_GetFeatureVector_shareRevoked(t *testing.T) {
+func Test_GetFeatureVector_notShared(t *testing.T) {
+	rows, pks, cols, err := fshelper.GetNSampleDataColumns("fsdb001", "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`", })
 
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	var fsReq = CreateFeatureStoreRequest(
+		"fsdb_isolate",
+		"sample_4",
+		1,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		nil,
+		nil,
+	)
+	GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FEATURE_STORE_NOT_SHARED.GetMessage(), http.StatusUnauthorized)
 }
 
 func Test_GetFeatureVector_wrongPrimaryKey_notExist(t *testing.T) {
