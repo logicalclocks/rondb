@@ -279,6 +279,9 @@ func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string,
 		colToIndex[col] = i
 	}
 	var status = api.FEATURE_STATUS_COMPLETE
+	if len(*data) == 0 {
+		status = api.FEATURE_STATUS_ERROR
+	}
 	for i, _data := range *data {
 		gotRaw := ((*resp).Features)[i]
 		if gotRaw == nil && _data != nil {

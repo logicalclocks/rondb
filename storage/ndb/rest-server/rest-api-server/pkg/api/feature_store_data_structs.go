@@ -84,6 +84,7 @@ type FeatureStatus string
 const (
 	FEATURE_STATUS_COMPLETE FeatureStatus = "COMPLETE"
 	FEATURE_STATUS_MISSING  FeatureStatus = "MISSING"
+	FEATURE_STATUS_ERROR    FeatureStatus = "ERROR"
 )
 
 type FeatureStoreResponse struct {

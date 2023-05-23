@@ -256,8 +256,10 @@ func getFeatureValues(batchResponse *api.BatchOpResponse, entries *map[string]*j
 	featureValues := make([]interface{}, featureView.NumOfFeatures)
 	var status = api.FEATURE_STATUS_COMPLETE
 	for _, response := range *rondbResp.Result {
-		if *response.Code != 200 {
+		if *response.Code == 404 {
 			status = api.FEATURE_STATUS_MISSING
+		} else if *response.Code != 200 {
+			status = api.FEATURE_STATUS_ERROR
 		}
 		for featureName, value := range *response.Body.Data {
 			featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)

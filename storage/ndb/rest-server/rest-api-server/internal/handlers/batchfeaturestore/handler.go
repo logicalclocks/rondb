@@ -172,14 +172,15 @@ func processFsResp(
 	for i := 0; i < numReq; i++ {
 		var fvResp = <-responses
 		if fvResp.Error != nil {
-			batchResponse.Status = fvResp.Status
-			batchResponse.Error = fvResp.Error
+			batchResponse.FsResponse.Features[fvResp.Order] = nil
+			batchResponse.FsResponse.Status[fvResp.Order] = api.FEATURE_STATUS_ERROR
 			continue
+		} else {
+			batchResponse.FsResponse.Features[fvResp.Order] = fvResp.FsResponse.Features
+			batchResponse.FsResponse.Status[fvResp.Order] = fvResp.FsResponse.Status
 		}
-		if i == 0 {
+		if 0 == fvResp.Order {
 			batchResponse.FsResponse.Metadata = fvResp.FsResponse.Metadata
 		}
-		batchResponse.FsResponse.Features[fvResp.Order] = fvResp.FsResponse.Features
-		batchResponse.FsResponse.Status[fvResp.Order] = fvResp.FsResponse.Status
 	}
 }
