@@ -87,11 +87,11 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 }
 
 func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
-	// FIXME: make this configurable
-	numThread := 3
+
 	batchFsReq := request.(*api.BatchFeatureStoreRequest)
 	fvReqs := make(chan *FeatureStoreRequestWithOrder)
 	fvResps := make(chan *FeatureStoreResponseWithOrder)
+	numThread := len(*batchFsReq.Entries)
 
 	var wg sync.WaitGroup
 	var wgResp sync.WaitGroup
