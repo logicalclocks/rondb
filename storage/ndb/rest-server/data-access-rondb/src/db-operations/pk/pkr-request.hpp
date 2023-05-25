@@ -27,6 +27,11 @@ class PKRRequest {
  private:
   const RS_Buffer *req;
 
+  // Is the request bad
+  bool isInvalidOp;
+  // if the request is bad then `error` contains the details
+  RS_Status error;
+
   /**
    * Get offset of nth primary key/value pair
    *
@@ -136,6 +141,21 @@ class PKRRequest {
    * @return operation ID
    */
   const char *OperationId();
+
+  /**
+   * The operation is invalid. set the error
+   */
+  void MarkInvalidOp(RS_Status error);
+
+  /**
+   * Get the error
+   */
+  RS_Status GetError(RS_Status error);
+
+  /**
+   * Is the operation invalid
+   */
+  bool IsInvalidOp();
 };
 
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_PKR_REQUEST_HPP_

@@ -23,7 +23,8 @@
 #include "src/status.hpp"
 
 PKRRequest::PKRRequest(const RS_Buffer *request) {
-  this->req = request;
+  this->req         = request;
+  this->isInvalidOp = false;
 }
 
 Uint32 PKRRequest::OperationType() {
@@ -129,8 +130,8 @@ int PKRRequest::PKValueNDBStr(Uint32 index, const NdbDictionary::Column *col, ch
     data_start[2] = data_start[0];
     data_start[3] = data_start[1];
 
-    // skip the first two immuable length bytes 
-    *data = data_start+2;
+    // skip the first two immuable length bytes
+    *data = data_start + 2;
     return 0;
   default:
     *data = nullptr;
@@ -180,4 +181,17 @@ const char *PKRRequest::OperationId() {
   } else {
     return nullptr;
   }
+}
+
+void PKRRequest::MarkInvalidOp(RS_Status error) {
+  this->error = error;
+  this->isInvalidOp = true;
+}
+
+RS_Status PKRRequest::GetError(RS_Status error) {
+  return this->error;
+}
+
+bool PKRRequest::IsInvalidOp() {
+  return this->isInvalidOp;
 }

@@ -27,12 +27,12 @@ type Handler interface {
 
 func Handle(h Handler, apiKey *string, request interface{}, response interface{}) (int, error) {
 
-	if err := h.Authenticate(apiKey, request); err != nil {
-		return http.StatusUnauthorized, err
-	}
-
 	if err := h.Validate(request); err != nil {
 		return http.StatusBadRequest, err
+	}
+
+	if err := h.Authenticate(apiKey, request); err != nil {
+		return http.StatusUnauthorized, err
 	}
 
 	return h.Execute(request, response)

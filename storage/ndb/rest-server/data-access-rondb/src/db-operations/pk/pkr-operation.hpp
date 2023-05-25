@@ -28,20 +28,23 @@
 #include "src/db-operations/pk/pkr-response.hpp"
 #include "src/rdrs-dal.h"
 
+typedef struct SubOpTuple {
+  PKRRequest *pkRequest;
+  PKRResponse *pkResponse;
+  NdbOperation *ndbOperation;
+  const NdbDictionary::Table *tableDict;
+  std::vector<NdbRecAttr *> recs;
+  std::unordered_map<std::string, const NdbDictionary::Column *> allNonPKCols;
+  std::unordered_map<std::string, const NdbDictionary::Column *> allPKCols;
+} ReqRespTuple;
+
 class PKROperation {
  private:
-  Uint32 no_ops;
+  Uint32 noOps;
   NdbTransaction *transaction = nullptr;
-  Ndb *ndb_object             = nullptr;
+  Ndb *ndbObject              = nullptr;
   bool isBatch                = false;
-
-  std::vector<PKRRequest *> requests;
-  std::vector<PKRResponse *> responses;
-  std::vector<NdbOperation *> operations;
-  std::vector<std::vector<NdbRecAttr *>> all_recs;  // records that will be read from DB
-  std::vector<const NdbDictionary::Table *> all_table_dicts;
-  std::vector<std::unordered_map<std::string, const NdbDictionary::Column *>> all_non_pk_cols;
-  std::vector<std::unordered_map<std::string, const NdbDictionary::Column *>> all_pk_cols;
+  std::vector<SubOpTuple> subOpTuples;
 
  public:
   PKROperation(RS_Buffer *req_buff, RS_Buffer *resp_buff, Ndb *ndb_object);

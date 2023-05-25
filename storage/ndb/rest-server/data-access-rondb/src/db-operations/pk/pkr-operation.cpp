@@ -23,6 +23,7 @@
 #include <utility>
 #include <my_base.h>
 #include <storage/ndb/include/ndbapi/NdbDictionary.hpp>
+#include "NdbTransaction.hpp"
 #include "src/db-operations/pk/common.hpp"
 #include "src/db-operations/pk/pkr-request.hpp"
 #include "src/db-operations/pk/pkr-response.hpp"
@@ -36,31 +37,38 @@
 #include <boost/beast/core/detail/base64.hpp>
 
 PKROperation::PKROperation(RS_Buffer *req_buff, RS_Buffer *resp_buff, Ndb *ndb_object) {
-  this->requests.push_back(new PKRRequest(req_buff));
-  this->responses.push_back(new PKRResponse(resp_buff));
-  this->ndb_object = ndb_object;
-  this->no_ops     = 1;
-  this->isBatch    = false;
+  SubOpTuple pkOpTuple   = SubOpTuple{};
+  pkOpTuple.pkRequest    = new PKRRequest(req_buff);
+  pkOpTuple.pkResponse   = new PKRResponse(resp_buff);
+  pkOpTuple.ndbOperation = nullptr;
+  pkOpTuple.tableDict    = nullptr;
+  this->subOpTuples.push_back(pkOpTuple);
+
+  this->ndbObject = ndb_object;
+  this->noOps     = 1;
+  this->isBatch   = false;
 }
 
 PKROperation::PKROperation(Uint32 no_ops, RS_Buffer *req_buffs, RS_Buffer *resp_buffs,
                            Ndb *ndb_object) {
-  this->no_ops = no_ops;
   for (Uint32 i = 0; i < no_ops; i++) {
-    this->requests.push_back(new PKRRequest(&req_buffs[i]));
-    this->responses.push_back(new PKRResponse(&resp_buffs[i]));
+    SubOpTuple pkOpTuple   = SubOpTuple{};
+    pkOpTuple.pkRequest    = new PKRRequest(&req_buffs[i]);
+    pkOpTuple.pkResponse   = new PKRResponse(&resp_buffs[i]);
+    pkOpTuple.ndbOperation = nullptr;
+    pkOpTuple.tableDict    = nullptr;
+    this->subOpTuples.push_back(pkOpTuple);
   }
-  this->ndb_object = ndb_object;
-  this->isBatch    = true;
+
+  this->ndbObject = ndb_object;
+  this->noOps     = no_ops;
+  this->isBatch   = true;
 }
 
 PKROperation::~PKROperation() {
-  for (size_t i = 0; i < no_ops; i++) {
-    delete requests[i];
-  }
-
-  for (size_t i = 0; i < responses.size(); i++) {
-    delete responses[i];
+  for (size_t i = 0; i < subOpTuples.size(); i++) {
+    delete subOpTuples[i].pkRequest;
+    delete subOpTuples[i].pkResponse;
   }
 }
 
@@ -71,10 +79,10 @@ PKROperation::~PKROperation() {
  */
 
 RS_Status PKROperation::SetupTransaction() {
-  const NdbDictionary::Table *table_dict = all_table_dicts[0];
-  transaction                            = ndb_object->startTransaction(table_dict);
+  const NdbDictionary::Table *table_dict = subOpTuples[0].tableDict;
+  transaction                            = ndbObject->startTransaction(table_dict);
   if (transaction == nullptr) {
-    return RS_RONDB_SERVER_ERROR(ndb_object->getNdbError(), ERROR_005);
+    return RS_RONDB_SERVER_ERROR(ndbObject->getNdbError(), ERROR_005);
   }
   return RS_OK;
 }
@@ -85,49 +93,60 @@ RS_Status PKROperation::SetupTransaction() {
  * @return status
  */
 RS_Status PKROperation::SetupReadOperation() {
-  if (operations.size() != 0) {
-    return RS_CLIENT_ERROR(ERROR_006);
-  }
 
-  for (size_t i = 0; i < no_ops; i++) {
-    PKRRequest *req                        = requests[i];
-    const NdbDictionary::Table *table_dict = all_table_dicts[i];
-    NdbOperation *op                       = transaction->getNdbOperation(table_dict);
+  for (size_t opIdx = 0; opIdx < noOps; opIdx++) {
+    if (subOpTuples[opIdx].pkRequest->IsInvalidOp()) {
+      // this sub operation can not be processed
+          printf("Ignoring operation here1\n");
+      continue;
+    }
+
+    PKRRequest *req                        = subOpTuples[opIdx].pkRequest;
+    const NdbDictionary::Table *table_dict = subOpTuples[opIdx].tableDict;
+    std::vector<NdbRecAttr *> *recs        = &subOpTuples[opIdx].recs;
+
+    NdbOperation *op = transaction->getNdbOperation(table_dict);
     if (op == nullptr) {
       return RS_RONDB_SERVER_ERROR(transaction->getNdbError(), ERROR_007);
     } else {
-      operations.push_back(op);
+      subOpTuples[opIdx].ndbOperation = op;
     }
 
     if (op->readTuple(NdbOperation::LM_CommittedRead) != 0) {
       return RS_SERVER_ERROR(ERROR_022);
     }
 
-    for (Uint32 i = 0; i < req->PKColumnsCount(); i++) {
-      RS_Status status = SetOperationPKCol(table_dict->getColumn(req->PKName(i)), op, req, i);
+    for (Uint32 colIdx = 0; colIdx < req->PKColumnsCount(); colIdx++) {
+      RS_Status status = SetOperationPKCol(table_dict->getColumn(req->PKName(colIdx)), op, req, colIdx);
       if (status.http_code != SUCCESS) {
-        return status;
+        if (isBatch) {
+          printf("Ignoring operation here2\n");
+          subOpTuples[opIdx].pkRequest->MarkInvalidOp(status);
+          op->equal((Uint32)0,0);
+          continue;
+        } else {
+          return status;
+        }
       }
+          printf(" operation set\n");
     }
 
-    std::vector<NdbRecAttr *> recs;
     if (req->ReadColumnsCount() > 0) {
       for (Uint32 i = 0; i < req->ReadColumnsCount(); i++) {
         NdbRecAttr *rec = op->getValue(req->ReadColumnName(i), nullptr);
-        recs.push_back(rec);
+        recs->push_back(rec);
       }
     } else {
-      std::unordered_map<std::string, const NdbDictionary::Column *> non_pk_cols =
-          all_non_pk_cols[i];
+      std::unordered_map<std::string, const NdbDictionary::Column *> *nonPKCols =
+          &subOpTuples[opIdx].allNonPKCols;
       std::unordered_map<std::string, const NdbDictionary::Column *>::const_iterator it =
-          non_pk_cols.begin();
-      while (it != non_pk_cols.end()) {
+          nonPKCols->begin();
+      while (it != nonPKCols->end()) {
         NdbRecAttr *rec = op->getValue(it->first.c_str(), nullptr);
         it++;
-        recs.push_back(rec);
+        recs->push_back(rec);
       }
     }
-    all_recs.push_back(recs);
   }
 
   return RS_OK;
@@ -143,12 +162,13 @@ RS_Status PKROperation::Execute() {
 
 RS_Status PKROperation::CreateResponse() {
   bool found = true;
-  for (size_t i = 0; i < no_ops; i++) {
-    PKRRequest *req                = requests[i];
-    PKRResponse *resp              = responses[i];
-    const NdbOperation *op         = operations[i];
-    std::vector<NdbRecAttr *> recs = all_recs[i];
+  for (size_t i = 0; i < noOps; i++) {
+    PKRRequest *req                 = subOpTuples[i].pkRequest;
+    PKRResponse *resp               = subOpTuples[i].pkResponse;
+    const NdbOperation *op          = subOpTuples[i].ndbOperation;
+    std::vector<NdbRecAttr *> *recs = &subOpTuples[i].recs;
 
+    //todo fix me here
     found = true;
     if (op->getNdbError().classification == NdbError::NoError) {
       resp->SetStatus(SUCCESS);
@@ -156,6 +176,7 @@ RS_Status PKROperation::CreateResponse() {
       found = false;
       resp->SetStatus(NOT_FOUND);
     } else {
+      //TODO Fixme
       // immediately fail the entire batch
       return RS_RONDB_SERVER_ERROR(op->getNdbError(), std::string("SubOperation ") +
                                                           std::string(req->OperationId()) +
@@ -165,11 +186,11 @@ RS_Status PKROperation::CreateResponse() {
     resp->SetDB(req->DB());
     resp->SetTable(req->Table());
     resp->SetOperationID(req->OperationId());
-    resp->SetNoOfColumns(recs.size());
+    resp->SetNoOfColumns(recs->size());
 
     if (found) {
       // iterate over all columns
-      RS_Status ret = AppendOpRecs(resp, &recs);
+      RS_Status ret = AppendOpRecs(resp, recs);
       if (ret.http_code != SUCCESS) {
         return ret;
       }
@@ -194,41 +215,56 @@ RS_Status PKROperation::AppendOpRecs(PKRResponse *resp, std::vector<NdbRecAttr *
 }
 
 RS_Status PKROperation::Init() {
-  for (size_t i = 0; i < no_ops; i++) {
-    PKRRequest *req = requests[i];
-    std::unordered_map<std::string, const NdbDictionary::Column *> pk_cols;
-    std::unordered_map<std::string, const NdbDictionary::Column *> non_pk_cols;
-    if (ndb_object->setCatalogName(req->DB()) != 0) {
-      return RS_CLIENT_404_WITH_MSG_ERROR(ERROR_011 + std::string(" Database: ") +
-                                          std::string(req->DB()) + " Table: " + req->Table());
-    }
-    const NdbDictionary::Dictionary *dict  = ndb_object->getDictionary();
-    const NdbDictionary::Table *table_dict = dict->getTable(req->Table());
+  for (size_t i = 0; i < noOps; i++) {
+    PKRRequest *req = subOpTuples[i].pkRequest;
+    std::unordered_map<std::string, const NdbDictionary::Column *> *pkCols =
+        &subOpTuples[i].allPKCols;
+    std::unordered_map<std::string, const NdbDictionary::Column *> *nonPKCols =
+        &subOpTuples[i].allNonPKCols;
 
-    if (table_dict == nullptr) {
-      return RS_CLIENT_404_WITH_MSG_ERROR(ERROR_011 + std::string(" Database: ") +
-                                          std::string(req->DB()) + " Table: " + req->Table());
+    if (ndbObject->setCatalogName(req->DB()) != 0) {
+      RS_Status error =
+          RS_CLIENT_404_WITH_MSG_ERROR(ERROR_011 + std::string(" Database: ") +
+                                       std::string(req->DB()) + " Table: " + req->Table());
+      if (isBatch) {  // ignore this sub-operation and continue with the rest
+        req->MarkInvalidOp(error);
+        continue;
+      } else {
+        return error;
+      }
     }
-    all_table_dicts.push_back(table_dict);
+    const NdbDictionary::Dictionary *dict = ndbObject->getDictionary();
+    const NdbDictionary::Table *tableDict = dict->getTable(req->Table());
+
+    if (tableDict == nullptr) {
+      RS_Status error =
+          RS_CLIENT_404_WITH_MSG_ERROR(ERROR_011 + std::string(" Database: ") +
+                                       std::string(req->DB()) + " Table: " + req->Table());
+      if (isBatch) {  // ignore this sub-operation and continue with the rest
+        req->MarkInvalidOp(error);
+        continue;
+      } else {
+        return error;
+      }
+    }
+    subOpTuples[i].tableDict = tableDict;
 
     // get all primary key columnns
-    for (int i = 0; i < table_dict->getNoOfPrimaryKeys(); i++) {
-      const char *priName           = table_dict->getPrimaryKey(i);
-      pk_cols[std::string(priName)] = table_dict->getColumn(priName);
+    for (int i = 0; i < tableDict->getNoOfPrimaryKeys(); i++) {
+      const char *priName             = tableDict->getPrimaryKey(i);
+      (*pkCols)[std::string(priName)] = tableDict->getColumn(priName);
     }
 
     // get all non primary key columnns
-    for (int i = 0; i < table_dict->getNoOfColumns(); i++) {
-      const NdbDictionary::Column *col = table_dict->getColumn(i);
+    for (int i = 0; i < tableDict->getNoOfColumns(); i++) {
+      const NdbDictionary::Column *col = tableDict->getColumn(i);
       std::string colNameStr(col->getName());
       std::unordered_map<std::string, const NdbDictionary::Column *>::const_iterator got =
-          pk_cols.find(colNameStr);
-      if (got == pk_cols.end()) {  // not found
-        non_pk_cols[std::string(col->getName())] = table_dict->getColumn(col->getName());
+          (*pkCols).find(colNameStr);
+      if (got == pkCols->end()) {  // not found
+        (*nonPKCols)[std::string(col->getName())] = tableDict->getColumn(col->getName());
       }
     }
-    all_non_pk_cols.push_back(non_pk_cols);
-    all_pk_cols.push_back(pk_cols);
   }
   return RS_OK;
 }
@@ -236,23 +272,43 @@ RS_Status PKROperation::Init() {
 RS_Status PKROperation::ValidateRequest() {
   // Check primary key columns
 
-  for (size_t i = 0; i < no_ops; i++) {
-    PKRRequest *req                                                            = requests[i];
-    std::unordered_map<std::string, const NdbDictionary::Column *> pk_cols     = all_pk_cols[i];
-    std::unordered_map<std::string, const NdbDictionary::Column *> non_pk_cols = all_non_pk_cols[i];
-    const NdbDictionary::Table *table_dict                                     = all_table_dicts[i];
+  for (size_t i = 0; i < noOps; i++) {
+    PKRRequest *req = subOpTuples[i].pkRequest;
+    if (req->IsInvalidOp()) {
+      // this sub-operation was previously marked invalid.
+      continue;
+    }
 
-    if (req->PKColumnsCount() != pk_cols.size()) {
-      return RS_CLIENT_ERROR(ERROR_013 + std::string(" Expecting: ") +
-                             std::to_string(pk_cols.size()) +
-                             " Got: " + std::to_string(req->PKColumnsCount()));
+    std::unordered_map<std::string, const NdbDictionary::Column *> *pkCols =
+        &subOpTuples[i].allPKCols;
+    std::unordered_map<std::string, const NdbDictionary::Column *> *nonPKCols =
+        &subOpTuples[i].allNonPKCols;
+    const NdbDictionary::Table *table_dict = subOpTuples[i].tableDict;
+
+    if (req->PKColumnsCount() != pkCols->size()) {
+      RS_Status error =
+          RS_CLIENT_ERROR(ERROR_013 + std::string(" Expecting: ") + std::to_string(pkCols->size()) +
+                          " Got: " + std::to_string(req->PKColumnsCount()));
+      if (isBatch) {  // mark bad sub-operation
+        req->MarkInvalidOp(error);
+        continue;
+      } else {
+        return error;
+      }
     }
 
     for (Uint32 i = 0; i < req->PKColumnsCount(); i++) {
       std::unordered_map<std::string, const NdbDictionary::Column *>::const_iterator got =
-          pk_cols.find(std::string(req->PKName(i)));
-      if (got == pk_cols.end()) {  // not found
-        return RS_CLIENT_ERROR(ERROR_014 + std::string(" Column: ") + std::string(req->PKName(i)));
+          pkCols->find(std::string(req->PKName(i)));
+      if (got == pkCols->end()) {  // not found
+        RS_Status error =
+            RS_CLIENT_ERROR(ERROR_014 + std::string(" Column: ") + std::string(req->PKName(i)));
+        if (isBatch) {  // mark bad sub-operation
+          req->MarkInvalidOp(error);
+          continue;
+        } else {
+          return error;
+        }
       }
     }
 
@@ -263,36 +319,60 @@ RS_Status PKROperation::ValidateRequest() {
     if (req->ReadColumnsCount() > 0) {
       for (Uint32 i = 0; i < req->ReadColumnsCount(); i++) {
         std::unordered_map<std::string, const NdbDictionary::Column *>::const_iterator got =
-            non_pk_cols.find(std::string(req->ReadColumnName(i)));
-        if (got == non_pk_cols.end()) {  // not found
-          return RS_CLIENT_ERROR(ERROR_012 + std::string(" Column: ") +
-                                 std::string(req->ReadColumnName(i)));
+            nonPKCols->find(std::string(req->ReadColumnName(i)));
+        if (got == nonPKCols->end()) {  // not found
+          RS_Status error = RS_CLIENT_ERROR(ERROR_012 + std::string(" Column: ") +
+                                            std::string(req->ReadColumnName(i)));
+          if (isBatch) {  // mark bad sub-operation
+            req->MarkInvalidOp(error);
+            continue;
+          } else {
+            return error;
+          }
         }
 
         // check that the data return type is supported
         // for now we only support DataReturnType.DEFAULT
         if (req->ReadColumnReturnType(i) > __MAX_TYPE_NOT_A_DRT ||
             DEFAULT_DRT != req->ReadColumnReturnType(i)) {
-          return RS_SERVER_ERROR(ERROR_025 + std::string(" Column: ") +
-                                 std::string(req->ReadColumnName(i)));
+          RS_Status error = RS_SERVER_ERROR(ERROR_025 + std::string(" Column: ") +
+                                            std::string(req->ReadColumnName(i)));
+          if (isBatch) {  // mark bad sub-operation
+            req->MarkInvalidOp(error);
+            continue;
+          } else {
+            return error;
+          }
         }
 
         if (table_dict->getColumn(req->ReadColumnName(i))->getType() ==
                 NdbDictionary::Column::Blob ||
             table_dict->getColumn(req->ReadColumnName(i))->getType() ==
                 NdbDictionary::Column::Text) {
-          return RS_SERVER_ERROR(ERROR_026 + std::string(" Column: ") +
-                                 std::string(req->ReadColumnName(i)));
+          RS_Status error = RS_SERVER_ERROR(ERROR_026 + std::string(" Column: ") +
+                                            std::string(req->ReadColumnName(i)));
+          if (isBatch) {  // mark bad sub-operation
+            req->MarkInvalidOp(error);
+            continue;
+          } else {
+            return error;
+          }
         }
       }
     } else {
       // user wants to read all columns. make sure that we are not reading Blobs
       std::unordered_map<std::string, const NdbDictionary::Column *>::const_iterator it =
-          non_pk_cols.begin();
-      while (it != non_pk_cols.end()) {
+          nonPKCols->begin();
+      while (it != nonPKCols->end()) {
         NdbDictionary::Column::Type type = it->second->getType();
         if (type == NdbDictionary::Column::Blob || type == NdbDictionary::Column::Text) {
-          return RS_SERVER_ERROR(ERROR_026 + std::string(" Column: ") + it->first);
+          RS_Status error = RS_SERVER_ERROR(ERROR_026 + std::string(" Column: ") + it->first);
+          if (isBatch) {  // mark bad sub-operation
+            req->MarkInvalidOp(error);
+            continue;
+          } else {
+            return error;
+          }
         }
         it++;
       }
@@ -303,7 +383,7 @@ RS_Status PKROperation::ValidateRequest() {
 }
 
 void PKROperation::CloseTransaction() {
-  ndb_object->closeTransaction(transaction);
+  ndbObject->closeTransaction(transaction);
 }
 
 RS_Status PKROperation::PerformOperation() {
@@ -327,12 +407,14 @@ RS_Status PKROperation::PerformOperation() {
 
   status = SetupReadOperation();
   if (status.http_code != SUCCESS) {
+    printf("here handle erro after SetupReadOperation\n");
     this->HandleNDBError(status);
     return status;
   }
 
   status = Execute();
   if (status.http_code != SUCCESS) {
+  printf("Execute filed error %d , %s\n", status.code, status.message);
     this->HandleNDBError(status);
     return status;
   }
@@ -348,12 +430,13 @@ RS_Status PKROperation::PerformOperation() {
 }
 
 RS_Status PKROperation::Abort() {
+  printf("Aboring tx\n");
   if (transaction != nullptr) {
     NdbTransaction::CommitStatusType status = transaction->commitStatus();
     if (status == NdbTransaction::CommitStatusType::Started) {
       transaction->execute(NdbTransaction::Rollback);
     }
-    ndb_object->closeTransaction(transaction);
+    ndbObject->closeTransaction(transaction);
   }
 
   return RS_OK;
@@ -363,10 +446,10 @@ RS_Status PKROperation::HandleNDBError(RS_Status status) {
   if (UnloadSchema(status)) {
     // no idea which sub-operation threw the error
     // unload all tables used in this operation
-    for (size_t i = 0; i < no_ops; i++) {
-      PKRRequest *req = requests[i];
-      ndb_object->setCatalogName(req->DB());
-      NdbDictionary::Dictionary *dict = ndb_object->getDictionary();
+    for (size_t i = 0; i < noOps; i++) {
+      PKRRequest *req = subOpTuples[i].pkRequest;
+      ndbObject->setCatalogName(req->DB());
+      NdbDictionary::Dictionary *dict = ndbObject->getDictionary();
       dict->invalidateTable(req->Table());
       dict->removeCachedTable(req->Table());
       LOG_INFO("Unloading schema " + std::string(req->DB()) + "/" + std::string(req->Table()));

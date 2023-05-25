@@ -8,6 +8,7 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/integrationtests"
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
+	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
 )
@@ -30,6 +31,11 @@ func batchRESTTestWithClient(
 	validateData bool,
 ) {
 	httpCode, response := sendHttpBatchRequest(t, client, testInfo, isBinaryData)
+
+	if log.IsTrace() {
+		log.Tracef("Http Response %s\n", string(response))
+	}
+
 	if httpCode == http.StatusOK {
 		validateBatchResponseHttp(t, testInfo, response, isBinaryData, validateData)
 	}
@@ -71,6 +77,7 @@ func validateBatchResponseHttp(
 	validateData bool,
 ) {
 	t.Helper()
+
 	validateBatchResponseOpIdsNCodeHttp(t, testInfo, response)
 	if validateData {
 		validateBatchResponseValuesHttp(t, testInfo, response, isBinaryData)
