@@ -95,9 +95,7 @@ RS_Status PKROperation::SetupTransaction() {
 RS_Status PKROperation::SetupReadOperation() {
 
   for (size_t opIdx = 0; opIdx < noOps; opIdx++) {
-    if (subOpTuples[opIdx].pkRequest->IsInvalidOp()) {
-      // this sub operation can not be processed
-      printf("Ignoring operation here1\n");
+    if (subOpTuples[opIdx].pkRequest->IsInvalidOp()) { // this sub operation can not be processed
       continue;
     }
 
@@ -111,15 +109,12 @@ RS_Status PKROperation::SetupReadOperation() {
                                            tableDict, req, colIdx, &op);
       if (status.http_code != SUCCESS) {
         if (isBatch) {
-          printf("Ignoring operation here2\n");
           subOpTuples[opIdx].pkRequest->MarkInvalidOp(status);
           continue;
         } else {
           return status;
         }
       }
-      printf(" operation set\n");
-
       subOpTuples[opIdx].ndbOperation = op;
     }
 
