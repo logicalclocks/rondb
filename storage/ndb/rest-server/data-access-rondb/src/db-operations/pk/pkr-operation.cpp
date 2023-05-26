@@ -155,7 +155,17 @@ RS_Status PKROperation::CreateResponse() {
     const NdbOperation *op          = subOpTuples[i].ndbOperation;
     std::vector<NdbRecAttr *> *recs = &subOpTuples[i].recs;
 
-    // todo fix me here
+    resp->SetDB(req->DB());
+    resp->SetTable(req->Table());
+    resp->SetOperationID(req->OperationId());
+    resp->SetNoOfColumns(recs->size());
+
+    if (req->IsInvalidOp()){
+      resp->SetStatus(CLIENT_ERROR);
+      resp->Close();
+      continue;
+    }
+
     found = true;
     if (op->getNdbError().classification == NdbError::NoError) {
       resp->SetStatus(SUCCESS);
@@ -163,17 +173,13 @@ RS_Status PKROperation::CreateResponse() {
       found = false;
       resp->SetStatus(NOT_FOUND);
     } else {
-      // TODO Fixme
       //  immediately fail the entire batch
+      resp->SetStatus(SERVER_ERROR);
+      resp->Close();
       return RS_RONDB_SERVER_ERROR(op->getNdbError(), std::string("SubOperation ") +
                                                           std::string(req->OperationId()) +
                                                           std::string(" failed"));
     }
-
-    resp->SetDB(req->DB());
-    resp->SetTable(req->Table());
-    resp->SetOperationID(req->OperationId());
-    resp->SetNoOfColumns(recs->size());
 
     if (found) {
       // iterate over all columns
