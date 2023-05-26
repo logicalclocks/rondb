@@ -100,7 +100,7 @@ Uint16 PKRRequest::PKValueLen(Uint32 index) {
  * storing size in the mutable size section
  *
  */
-int PKRRequest::PKValueNDBStr(Uint32 index, const NdbDictionary::Column *col, char **data) {
+int PKRRequest::PKValueNDBStr(Uint32 index, const NdbDictionary::Column *col, void **data) {
   Uint32 kvOffset  = PKTupleOffset(index);
   Uint32 vOffset   = (reinterpret_cast<Uint32 *>(req->buffer))[(kvOffset / 4) + 1];
   char *data_start = req->buffer + vOffset;
@@ -188,7 +188,7 @@ void PKRRequest::MarkInvalidOp(RS_Status error) {
   this->isInvalidOp = true;
 }
 
-RS_Status PKRRequest::GetError(RS_Status error) {
+RS_Status PKRRequest::GetError() {
   return this->error;
 }
 

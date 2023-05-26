@@ -111,7 +111,7 @@ class PKRRequest {
    * @param data[out]. data
    * @return 0 if successfull
    */
-  int PKValueNDBStr(Uint32 index, const NdbDictionary::Column *col, char **data);
+  int PKValueNDBStr(Uint32 index, const NdbDictionary::Column *col, void **data);
 
   /**
    * Get number of read columns
@@ -150,7 +150,7 @@ class PKRRequest {
   /**
    * Get the error
    */
-  RS_Status GetError(RS_Status error);
+  RS_Status GetError();
 
   /**
    * Is the operation invalid

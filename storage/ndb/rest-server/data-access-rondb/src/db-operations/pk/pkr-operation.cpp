@@ -97,38 +97,30 @@ RS_Status PKROperation::SetupReadOperation() {
   for (size_t opIdx = 0; opIdx < noOps; opIdx++) {
     if (subOpTuples[opIdx].pkRequest->IsInvalidOp()) {
       // this sub operation can not be processed
-          printf("Ignoring operation here1\n");
+      printf("Ignoring operation here1\n");
       continue;
     }
 
     PKRRequest *req                        = subOpTuples[opIdx].pkRequest;
-    const NdbDictionary::Table *table_dict = subOpTuples[opIdx].tableDict;
+    const NdbDictionary::Table *tableDict = subOpTuples[opIdx].tableDict;
     std::vector<NdbRecAttr *> *recs        = &subOpTuples[opIdx].recs;
 
-    NdbOperation *op = transaction->getNdbOperation(table_dict);
-    if (op == nullptr) {
-      return RS_RONDB_SERVER_ERROR(transaction->getNdbError(), ERROR_007);
-    } else {
-      subOpTuples[opIdx].ndbOperation = op;
-    }
-
-    if (op->readTuple(NdbOperation::LM_CommittedRead) != 0) {
-      return RS_SERVER_ERROR(ERROR_022);
-    }
-
+    NdbOperation *op = nullptr;
     for (Uint32 colIdx = 0; colIdx < req->PKColumnsCount(); colIdx++) {
-      RS_Status status = SetOperationPKCol(table_dict->getColumn(req->PKName(colIdx)), op, req, colIdx);
+      RS_Status status = SetOperationPKCol(tableDict->getColumn(req->PKName(colIdx)), transaction,
+                                           tableDict, req, colIdx, &op);
       if (status.http_code != SUCCESS) {
         if (isBatch) {
           printf("Ignoring operation here2\n");
           subOpTuples[opIdx].pkRequest->MarkInvalidOp(status);
-          op->equal((Uint32)0,0);
           continue;
         } else {
           return status;
         }
       }
-          printf(" operation set\n");
+      printf(" operation set\n");
+
+      subOpTuples[opIdx].ndbOperation = op;
     }
 
     if (req->ReadColumnsCount() > 0) {
@@ -168,7 +160,7 @@ RS_Status PKROperation::CreateResponse() {
     const NdbOperation *op          = subOpTuples[i].ndbOperation;
     std::vector<NdbRecAttr *> *recs = &subOpTuples[i].recs;
 
-    //todo fix me here
+    // todo fix me here
     found = true;
     if (op->getNdbError().classification == NdbError::NoError) {
       resp->SetStatus(SUCCESS);
@@ -176,8 +168,8 @@ RS_Status PKROperation::CreateResponse() {
       found = false;
       resp->SetStatus(NOT_FOUND);
     } else {
-      //TODO Fixme
-      // immediately fail the entire batch
+      // TODO Fixme
+      //  immediately fail the entire batch
       return RS_RONDB_SERVER_ERROR(op->getNdbError(), std::string("SubOperation ") +
                                                           std::string(req->OperationId()) +
                                                           std::string(" failed"));
@@ -414,7 +406,7 @@ RS_Status PKROperation::PerformOperation() {
 
   status = Execute();
   if (status.http_code != SUCCESS) {
-  printf("Execute filed error %d , %s\n", status.code, status.message);
+    printf("Execute filed error %d , %s\n", status.code, status.message);
     this->HandleNDBError(status);
     return status;
   }

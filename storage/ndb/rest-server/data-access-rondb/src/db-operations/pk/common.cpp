@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <utility>
 #include <my_base.h>
+#include "NdbOut.hpp"
 #include "ndb_types.h"
 #include "storage/ndb/include/ndb_global.h"
 #include "decimal.h"
@@ -60,16 +61,11 @@ inline void my_unpack_date(MYSQL_TIME *l_time, const void *d) {
   l_time->time_type = MYSQL_TIMESTAMP_DATE;
 }
 
-/** Prepare the Operation object by setting the PK value that we are querying for
- *
- * @param col information of column that we're querying
- * @param operation the RonDB operation that we wish to prepare
- * @param request the incoming request from the REST API server
- * @param colIdx the scale
- * @return the REST API status of performing the operation
- */
-RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *operation,
-                            PKRRequest *request, Uint32 colIdx) {
+RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *transaction,
+                            const NdbDictionary::Table *table_dict, PKRRequest *request,
+                            Uint32 colIdx, NdbOperation **operation) {
+  void *primary_key;
+  Uint32 primary_key_size = 0;
   switch (col->getType()) {
   case NdbDictionary::Column::Undefined: {
     ///< 4 bytes + 0-3 fraction
@@ -87,11 +83,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                  !(parsed_number >= -128 && parsed_number <= 127))) {
       return RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting TINYINT. Column: ") +
                              std::string(request->PKName(colIdx)));
-    } else if (unlikely(operation->equal(request->PKName(colIdx),
-                                         static_cast<Int8>(parsed_number)) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
     }
-    return RS_OK;
+    primary_key      = &parsed_number;
+    primary_key_size = 4;
+    break;
   }
   case NdbDictionary::Column::Tinyunsigned: {
     ///< 8 bit. 1 byte unsigned integer, can be used in array
@@ -102,11 +97,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     if (unlikely(*parsed != '\0' || errno != 0 || !(parsed_number >= 0 && parsed_number <= 255))) {
       return RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting TINYINT UNSIGNED. Column: ") +
                              std::string(request->PKName(colIdx)));
-    } else if (unlikely(operation->equal(request->PKName(colIdx),
-                                         static_cast<Uint8>(parsed_number)) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
     }
-    return RS_OK;
+    primary_key      = &parsed_number;
+    primary_key_size = 4;
+    break;
   }
   case NdbDictionary::Column::Smallint: {
     ///< 16 bit. 2 byte signed integer, can be used in array
@@ -118,10 +112,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                  !(parsed_number >= -32768 && parsed_number <= 32767))) {
       return RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting SMALLINT. Column: ") +
                              std::string(request->PKName(colIdx)));
-    } else if (unlikely(operation->equal(request->PKName(colIdx), (Int16)parsed_number) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
     }
-    return RS_OK;
+    primary_key      = &parsed_number;
+    primary_key_size = 4;
+    break;
   }
   case NdbDictionary::Column::Smallunsigned: {
     ///< 16 bit. 2 byte unsigned integer, can be used in array
@@ -134,11 +128,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                  !(parsed_number >= 0 && parsed_number <= 65535))) {
       return RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting SMALLINT UNSIGNED. Column: ") +
                              std::string(request->PKName(colIdx)));
-    } else if (unlikely(operation->equal(request->PKName(colIdx), (Uint16)parsed_number) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
     }
-
-    return RS_OK;
+    primary_key      = &parsed_number;
+    primary_key_size = 4;
+    break;
   }
   case NdbDictionary::Column::Mediumint: {
     ///< 24 bit. 3 byte signed integer, can be used in array
@@ -151,11 +144,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                  !(parsed_number >= -8388608 && parsed_number <= 8388607))) {
       return RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting MEDIUMINT. Column: ") +
                              std::string(request->PKName(colIdx)));
-    } else if (unlikely(operation->equal(request->PKName(colIdx),
-                                         static_cast<Int32>(parsed_number)) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
     }
-    return RS_OK;
+    primary_key      = &parsed_number;
+    primary_key_size = 4;
+    break;
   }
   case NdbDictionary::Column::Mediumunsigned: {
     ///< 24 bit. 3 byte unsigned integer, can be used in array
@@ -168,11 +160,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                  !(parsed_number >= 0 && parsed_number <= 16777215))) {
       return RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting MEDIUMINT UNSIGNED. Column: ") +
                              std::string(request->PKName(colIdx)));
-    } else if (unlikely(operation->equal(request->PKName(colIdx),
-                                         static_cast<Uint32>(parsed_number)) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
     }
-    return RS_OK;
+    primary_key      = &parsed_number;
+    primary_key_size = 4;
+    break;
   }
   case NdbDictionary::Column::Int: {
     ///< 32 bit. 4 byte signed integer, can be used in array
@@ -184,11 +175,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                  !(parsed_number >= -2147483648 && parsed_number <= 2147483647))) {
       return RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting INT. Column: ") +
                              std::string(request->PKName(colIdx)));
-    } else if (unlikely(operation->equal(request->PKName(colIdx),
-                                         static_cast<Int32>(parsed_number)) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
     }
-    return RS_OK;
+    primary_key      = &parsed_number;
+    primary_key_size = 4;
+    break;
   }
   case NdbDictionary::Column::Unsigned: {
     ///< 32 bit. 4 byte unsigned integer, can be used in array
@@ -201,11 +191,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                  !(parsed_number >= 0 && parsed_number <= 4294967295))) {
       return RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting INT UNSIGNED. Column: ") +
                              std::string(request->PKName(colIdx)));
-    } else if (unlikely(operation->equal(request->PKName(colIdx),
-                                         static_cast<Uint32>(parsed_number)) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
     }
-    return RS_OK;
+    primary_key      = &parsed_number;
+    primary_key_size = 4;
+    break;
   }
   case NdbDictionary::Column::Bigint: {
     ///< 64 bit. 8 byte signed integer, can be used in array
@@ -217,10 +206,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     if (unlikely(*parsed != '\0' || errno != 0)) {
       return RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting BIGINT. Column: ") +
                              std::string(request->PKName(colIdx)));
-    } else if (unlikely(operation->equal(request->PKName(colIdx), parsed_number) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
     }
-    return RS_OK;
+    primary_key      = &parsed_number;
+    primary_key_size = 8;
+    break;
   }
   case NdbDictionary::Column::Bigunsigned: {
     ///< 64 Bit. 8 byte signed integer, can be used in array
@@ -232,10 +221,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     if (unlikely(*parsed != '\0' || errno != 0 || numStr.find('-') != std::string::npos)) {
       return RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting BIGINT UNSIGNED. Column: ") +
                              std::string(request->PKName(colIdx)));
-    } else if (unlikely(operation->equal(request->PKName(colIdx), parsed_number) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
     }
-    return RS_OK;
+    primary_key      = &parsed_number;
+    primary_key_size = 8;
+    break;
   }
   case NdbDictionary::Column::Float: {
     ///< 32-bit float. 4 bytes float, can be used in array
@@ -270,19 +259,15 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     int scale          = col->getScale();
     const char *decStr = request->PKValueCStr(colIdx);
 
-    char decBin[DECIMAL_MAX_SIZE_IN_BYTES];
-    if (unlikely(decimal_str2bin(decStr, strlen(decStr), precision, scale, decBin,
-                                 DECIMAL_MAX_SIZE_IN_BYTES) != 0)) {
+    primary_key      = new char[DECIMAL_MAX_SIZE_IN_BYTES];
+    primary_key_size = DECIMAL_MAX_SIZE_IN_BYTES;
+    if (unlikely(decimal_str2bin(decStr, strlen(decStr), precision, scale, primary_key,
+                                 primary_key_size) != 0)) {
       return RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting Decimal with Precision: ") +
                              std::to_string(precision) + std::string(" and Scale: ") +
                              std::to_string(scale));
     }
-
-    if (unlikely(operation->equal(request->PKName(colIdx), decBin, DECIMAL_MAX_SIZE_IN_BYTES) !=
-                 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
-    }
-    return RS_OK;
+    break;
   }
   case NdbDictionary::Column::Char: {
     /// A fix sized array of characters
@@ -296,46 +281,41 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     }
 
     // operation->equal expects a zero-padded char string
-    char pk[CHAR_MAX_SIZE_IN_BYTES];
+    primary_key      = new char[CHAR_MAX_SIZE_IN_BYTES];
+    primary_key_size = CHAR_MAX_SIZE_IN_BYTES;
     require(col->getLength() <= CHAR_MAX_SIZE_IN_BYTES);
-    memset(pk, 0, col->getLength());
+    memset(primary_key, 0, col->getLength());
 
     const char *data_str = request->PKValueCStr(colIdx);
-    memcpy(pk, data_str, data_len);
+    memcpy(primary_key, data_str, data_len);
 
-    if (unlikely(operation->equal(request->PKName(colIdx), pk, data_len) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
-    }
-    return RS_OK;
+    break;
   }
   case NdbDictionary::Column::Varchar:
     ///< Length bytes: 1, Max: 255
     [[fallthrough]];
   case NdbDictionary::Column::Longvarchar: {
     ///< Length bytes: 2, little-endian
-    const int data_len = request->PKValueLen(colIdx);
-    if (unlikely(data_len > col->getLength())) {
-      return RS_CLIENT_ERROR(std::string(ERROR_008) +
-                             " Data length is greater than column length. Data length:" +
-                             std::to_string(data_len) + "Column: " + std::string(col->getName()) +
-                             " Column length: " + std::to_string(col->getLength()));
+    primary_key_size = request->PKValueLen(colIdx);
+    if (unlikely(primary_key_size > (Uint32)col->getLength())) {
+      return RS_CLIENT_ERROR(
+          std::string(ERROR_008) + " Data length is greater than column length. Data length:" +
+          std::to_string(primary_key_size) + "Column: " + std::string(col->getName()) +
+          " Column length: " + std::to_string(col->getLength()));
     }
-    char *charStr;
-    if (unlikely(request->PKValueNDBStr(colIdx, col, &charStr) != 0)) {
+
+    if (unlikely(request->PKValueNDBStr(colIdx, col, &primary_key) != 0)) {
       return RS_CLIENT_ERROR(ERROR_019);
     }
 
-    if (unlikely(operation->equal(request->PKName(colIdx), charStr, data_len) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
-    }
-    return RS_OK;
+    break;
   }
   case NdbDictionary::Column::Binary: {
     /// Binary data is sent as base64 string
     require(col->getLength() <= BINARY_MAX_SIZE_IN_BYTES);
     const char *encoded_str      = request->PKValueCStr(colIdx);
     const size_t encoded_str_len = request->PKValueLen(colIdx);
-    size_t col_len               = col->getLength();
+    primary_key_size             = col->getLength();
 
     // The buffer in out has been allocated by the caller and is at least 3/4 the size of the input.
 
@@ -352,11 +332,11 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                              " Maximum binary size: " + std::to_string(BINARY_MAX_SIZE_IN_BYTES));
     }
 
-    char pk[BINARY_MAX_SIZE_IN_BYTES];
-    memset(pk, 0, col->getLength());
+    primary_key = new char[BINARY_MAX_SIZE_IN_BYTES];
+    memset(primary_key, 0, primary_key_size);
 
     size_t outlen = 0;
-    int result    = base64_decode(encoded_str, encoded_str_len, (char *)&pk[0], &outlen, 0);
+    int result    = base64_decode(encoded_str, encoded_str_len, (char *)primary_key, &outlen, 0);
 
     if (unlikely(result == 0)) {
       return RS_CLIENT_ERROR(
@@ -369,17 +349,14 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
           std::string(col->getName()));
     }
 
-    if (unlikely(outlen > col_len)) {
+    if (unlikely(outlen > primary_key_size)) {
       return RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
                              "Decoded data length is greater than column length." +
                              " Column: " + std::string(col->getName()) +
                              " Length: " + std::to_string(col->getLength()));
     }
 
-    if (unlikely(operation->equal(request->PKName(colIdx), pk, col->getLength()) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
-    }
-    return RS_OK;
+    break;
   }
   case NdbDictionary::Column::Varbinary:
     ///< Length bytes: 1, Max: 255
@@ -405,7 +382,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                              " Maximum binary size: " + std::to_string(KEY_MAX_SIZE_IN_BYTES));
     }
 
-    char pk[KEY_MAX_SIZE_IN_BYTES];
+    primary_key        = new char[KEY_MAX_SIZE_IN_BYTES];
     int additional_len = 1;
     if (col->getType() == NdbDictionary::Column::Longvarbinary) {
       additional_len = 2;
@@ -413,8 +390,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
 
     size_t outlen = 0;
     // leave first 1-2 bytes free for saving length bytes
-    int result =
-        base64_decode(encoded_str, encoded_str_len, (char *)(&pk[0] + additional_len), &outlen, 0);
+    int result = base64_decode(encoded_str, encoded_str_len, ((char *)primary_key + additional_len),
+                               &outlen, 0);
 
     if (unlikely(result == 0)) {
       return RS_CLIENT_ERROR(
@@ -436,18 +413,16 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
 
     // insert the length at the beginning of the array
     if (col->getType() == NdbDictionary::Column::Varbinary) {
-      pk[0] = (Uint8)(outlen);
+      ((char *)primary_key)[0] = (Uint8)(outlen);
     } else if (col->getType() == NdbDictionary::Column::Longvarbinary) {
-      pk[0] = (Uint8)(outlen % 256);
-      pk[1] = (Uint8)(outlen / 256);
+      ((char *)primary_key)[0] = (Uint8)(outlen % 256);
+      ((char *)primary_key)[1] = (Uint8)(outlen / 256);
     } else {
       return RS_SERVER_ERROR(ERROR_015);
     }
 
-    if (unlikely(operation->equal(request->PKName(colIdx), pk, outlen + additional_len) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
-    }
-    return RS_OK;
+    primary_key_size = outlen + additional_len;
+    break;
   }
   case NdbDictionary::Column::Datetime: {
     ///< Precision down to 1 sec (sizeof(Datetime) == 8 bytes )
@@ -473,14 +448,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                              " Expecting only date data. Column: " + std::string(col->getName()));
     }
 
-    unsigned char packed[DATE_MAX_SIZE_IN_BYTES];
-    my_date_to_binary(&l_time, packed);
-
-    if (unlikely(operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed),
-                                  col->getSizeInBytes()) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
-    }
-    return RS_OK;
+    primary_key = new char[DATE_MAX_SIZE_IN_BYTES];
+    my_date_to_binary(&l_time, (uchar *)primary_key);
+    primary_key_size = col->getSizeInBytes();
+    break;
   }
   case NdbDictionary::Column::Blob: {
     ///< Binary large object (see NdbBlob)
@@ -516,11 +487,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
           std::string(request->PKName(colIdx)));
     }
 
-    Uint8 year = static_cast<Uint8>((parsed_number - 1900));
-    if (unlikely(operation->equal(request->PKName(colIdx), year) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
-    }
-    return RS_OK;
+    Int32 year       = static_cast<Int32>((parsed_number - 1900));
+    primary_key      = &year;
+    primary_key_size = 4;
+    break;
   }
   case NdbDictionary::Column::Timestamp: {
     ///< Unix time
@@ -548,9 +518,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                              std::string(col->getName()));
     }
 
-    size_t col_size = col->getSizeInBytes();
-    int precision   = col->getPrecision();
-    unsigned char packed[TIME2_MAX_SIZE_IN_BYTES];
+    primary_key      = new char[TIME2_MAX_SIZE_IN_BYTES];
+    primary_key_size = col->getSizeInBytes();
+    int precision    = col->getPrecision();
 
     int warnings = 0;
     my_datetime_adjust_frac(&l_time, precision, &warnings, true);
@@ -560,13 +530,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     }
 
     longlong numeric_date_time = TIME_to_longlong_time_packed(l_time);
-    my_time_packed_to_binary(numeric_date_time, packed, precision);
+    my_time_packed_to_binary(numeric_date_time, (uchar *)primary_key, precision);
 
-    if (unlikely(operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed),
-                                  col_size) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
-    }
-    return RS_OK;
+    break;
   }
   case NdbDictionary::Column::Datetime2: {
     ///< 5 bytes plus 0-3 fraction
@@ -583,10 +549,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                              std::string(col->getName()));
     }
 
-    size_t col_size = col->getSizeInBytes();
-    int precision   = col->getPrecision();
-
-    int warnings = 0;
+    int precision = col->getPrecision();
+    int warnings  = 0;
     my_datetime_adjust_frac(&l_time, precision, &warnings, true);
     if (unlikely(warnings != 0)) {
       return RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
@@ -595,14 +559,11 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
 
     longlong numeric_date_time = TIME_to_longlong_datetime_packed(l_time);
 
-    unsigned char packed[DATETIME_MAX_SIZE_IN_BYTES];
-    my_datetime_packed_to_binary(numeric_date_time, packed, precision);
+    primary_key      = new char[DATETIME_MAX_SIZE_IN_BYTES];
+    primary_key_size = col->getSizeInBytes();
+    my_datetime_packed_to_binary(numeric_date_time, (uchar *)primary_key, precision);
 
-    if (unlikely(operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed),
-                                  col_size) != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
-    }
-    return RS_OK;
+    break;
   }
   case NdbDictionary::Column::Timestamp2: {
     // epoch range 0 , 2147483647
@@ -610,8 +571,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
     require(col->getSizeInBytes() <= TIMESTAMP2_MAX_SIZE_IN_BYTES);
     const char *ts_str = request->PKValueCStr(colIdx);
     size_t ts_str_len  = request->PKValueLen(colIdx);
-    unsigned char packed[TIMESTAMP2_MAX_SIZE_IN_BYTES];
-    uint precision = col->getPrecision();
+    uint precision     = col->getPrecision();
 
     MYSQL_TIME l_time;
     MYSQL_TIME_STATUS status;
@@ -664,21 +624,33 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *oper
                              std::string(col->getName()));
     }
 
+    primary_key      = new char[TIMESTAMP2_MAX_SIZE_IN_BYTES];
+    primary_key_size = col->getSizeInBytes();
+
     // On Mac timeval.tv_usec is Int32 and on linux it is Int64.
     // Inorder to be compatible we cast l_time.second_part to Int32
     // This will not create problems as only six digit nanoseconds
     // are stored in Timestamp2
     timeval my_tv{epoch, (Int32)l_time.second_part};
-    my_timestamp_to_binary(&my_tv, packed, precision);
+    my_timestamp_to_binary(&my_tv, (uchar *)primary_key, precision);
 
-    size_t col_size = col->getSizeInBytes();
-    int exitCode =
-        operation->equal(request->PKName(colIdx), reinterpret_cast<char *>(packed), col_size);
-    if (unlikely(exitCode != 0)) {
-      return RS_SERVER_ERROR(ERROR_023);
-    }
-    return RS_OK;
+    break;
   }
+  }
+
+  *operation = transaction->getNdbOperation(table_dict);
+  if (*operation == nullptr) {
+    return RS_RONDB_SERVER_ERROR(transaction->getNdbError(), ERROR_007);
+  }
+
+  if ((*operation)->readTuple(NdbOperation::LM_CommittedRead) != 0) {
+    return RS_SERVER_ERROR(ERROR_022);
+  }
+
+  if ((*operation)
+          ->equal(request->PKName(colIdx), reinterpret_cast<char *>(primary_key),
+                  primary_key_size) != 0) {
+    return RS_SERVER_ERROR(ERROR_023);
   }
   return RS_OK;
 }
