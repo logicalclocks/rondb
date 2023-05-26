@@ -94,7 +94,7 @@ RS_Status PKROperation::SetupTransaction() {
  */
 RS_Status PKROperation::SetupReadOperation() {
 
-  for (size_t opIdx = 0; opIdx < noOps; opIdx++) {
+start:  for (size_t opIdx = 0; opIdx < noOps; opIdx++) {
     if (subOpTuples[opIdx].pkRequest->IsInvalidOp()) { // this sub operation can not be processed
       continue;
     }
@@ -110,7 +110,7 @@ RS_Status PKROperation::SetupReadOperation() {
       if (status.http_code != SUCCESS) {
         if (isBatch) {
           subOpTuples[opIdx].pkRequest->MarkInvalidOp(status);
-          continue;
+          goto start;
         } else {
           return status;
         }

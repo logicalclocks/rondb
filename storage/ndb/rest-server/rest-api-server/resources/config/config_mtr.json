@@ -28,7 +28,7 @@
                 }
         },
         "Log": {
-                "Level": "trace"
+                "Level": "warn"
         },
         "Testing": {
                 "MySQL": {
