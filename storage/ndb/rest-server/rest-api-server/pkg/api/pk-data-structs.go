@@ -170,18 +170,20 @@ func (r *PKReadResponseJSON) String() string {
 type PKReadResponseWithCode interface {
 	Init()
 	GetPKReadResponse() PKReadResponse
-	SetCode(code *int32)
+	SetStatus(code *int32, message *string)
 	String() string
 }
 
 type PKReadResponseWithCodeJSON struct {
-	Code *int32              `json:"code"    form:"code"    binding:"required"`
-	Body *PKReadResponseJSON `json:"body"    form:"body"    binding:"required"`
+	Code    *int32              `json:"code"    form:"code"    binding:"required"`
+	Message *string             `json:"message" form:"message" binding:"required"`
+	Body    *PKReadResponseJSON `json:"body"    form:"body"    binding:"required"`
 }
 
 type PKReadResponseWithCodeGRPC struct {
-	Code *int32              `json:"code"    form:"code"    binding:"required"`
-	Body *PKReadResponseGRPC `json:"body"    form:"body"    binding:"required"`
+	Code    *int32              `json:"code"    form:"code"    binding:"required"`
+	Message *string             `json:"message" form:"message" binding:"required"`
+	Body    *PKReadResponseGRPC `json:"body"    form:"body"    binding:"required"`
 }
 
 func (p *PKReadResponseWithCodeJSON) Init() {
@@ -193,8 +195,9 @@ func (p *PKReadResponseWithCodeJSON) GetPKReadResponse() PKReadResponse {
 	return p.Body
 }
 
-func (p *PKReadResponseWithCodeJSON) SetCode(code *int32) {
+func (p *PKReadResponseWithCodeJSON) SetStatus(code *int32, message *string) {
 	p.Code = code
+	p.Message = message
 }
 
 func (p *PKReadResponseWithCodeJSON) String() string {
@@ -215,14 +218,16 @@ func (p *PKReadResponseWithCodeGRPC) GetPKReadResponse() PKReadResponse {
 	return p.Body
 }
 
-func (p *PKReadResponseWithCodeGRPC) SetCode(code *int32) {
+func (p *PKReadResponseWithCodeGRPC) SetStatus(code *int32, message *string) {
 	p.Code = code
+	p.Message = message
 }
 
 func (p *PKReadResponseWithCodeGRPC) String() string {
 	var str bytes.Buffer
 	str.WriteString("{ ")
 	str.WriteString(fmt.Sprintf("\"Code\": \"%d\",", *p.Code))
+	str.WriteString(fmt.Sprintf("\"Message\": \"%s\",", *p.Message))
 
 	str.WriteString("\"Body\": { ")
 	if p.Body != nil {

@@ -161,20 +161,20 @@ RS_Status PKROperation::CreateResponse() {
     resp->SetNoOfColumns(recs->size());
 
     if (req->IsInvalidOp()){
-      resp->SetStatus(CLIENT_ERROR);
+      resp->SetStatus(CLIENT_ERROR, req->GetError().message);
       resp->Close();
       continue;
     }
 
     found = true;
     if (op->getNdbError().classification == NdbError::NoError) {
-      resp->SetStatus(SUCCESS);
+      resp->SetStatus(SUCCESS, "OK");
     } else if (op->getNdbError().classification == NdbError::NoDataFound) {
       found = false;
-      resp->SetStatus(NOT_FOUND);
+      resp->SetStatus(NOT_FOUND, "NOT Found");
     } else {
       //  immediately fail the entire batch
-      resp->SetStatus(SERVER_ERROR);
+      resp->SetStatus(SERVER_ERROR, op->getNdbError().message);
       resp->Close();
       return RS_RONDB_SERVER_ERROR(op->getNdbError(), std::string("SubOperation ") +
                                                           std::string(req->OperationId()) +

@@ -131,12 +131,12 @@ func processResponses(respBuffs *[]*heap.NativeBuffer, response api.BatchOpRespo
 		pkReadResponseWithCode := response.CreateNewSubResponse()
 		pkReadResponse := pkReadResponseWithCode.GetPKReadResponse()
 
-		subRespCode, err := pkread.ProcessPKReadResponse(respBuff, pkReadResponse)
+		subRespCode, subRespMessage, err := pkread.ProcessPKReadResponse(respBuff, pkReadResponse)
 		if err != nil {
 			return int(subRespCode), err
 		}
 
-		pkReadResponseWithCode.SetCode(&subRespCode)
+		pkReadResponseWithCode.SetStatus(&subRespCode, &subRespMessage)
 		response.AddSubResponse(idx, pkReadResponseWithCode)
 	}
 	return http.StatusOK, nil

@@ -42,9 +42,9 @@ class PKRResponse {
   RS_Status WriteHeaderField(Uint32 index, Uint32 value);
 
   /**
-   =* Set status
+   * Set status
    */
-  RS_Status SetStatus(Uint32 value);
+  RS_Status SetStatus(Uint32 value, const char* message);
 
   /**
    * Close response and set the data lenght.
