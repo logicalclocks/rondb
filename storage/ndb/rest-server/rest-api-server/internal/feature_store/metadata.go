@@ -107,6 +107,9 @@ func newFeatureViewMetadata(
 			fsNameMap[fgName] = true
 		}
 	}
+	if !fsNameMap[featureStoreName] {
+		fsNames = append(fsNames, &featureStoreName)
+	}
 	var numOfFeature = len(featureIndex)
 	var metadata = FeatureViewMetadata{}
 	metadata.FeatureStoreName = featureStoreName
