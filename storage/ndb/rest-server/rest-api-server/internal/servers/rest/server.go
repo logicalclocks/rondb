@@ -121,6 +121,7 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 		statsHandler:             stat.New(heap, apiKeyCache),
 		pkReadHandler:            pkread.New(heap, apiKeyCache),
 		batchPkReadHandler:       batchPkReadHandler,
+		rdrsMetrics:              rdrsMetrics,
 		featureStoreHandler:      featureStoreHandler,
 		batchFeatureStoreHandler: batchfeaturestore.New(fvMeta, apiKeyCache, &featureStoreHandler),
 	}
