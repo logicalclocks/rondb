@@ -400,14 +400,12 @@ RS_Status PKROperation::PerformOperation() {
 
   status = SetupReadOperation();
   if (status.http_code != SUCCESS) {
-    printf("here handle erro after SetupReadOperation\n");
     this->HandleNDBError(status);
     return status;
   }
 
   status = Execute();
   if (status.http_code != SUCCESS) {
-    printf("Execute filed error %d , %s\n", status.code, status.message);
     this->HandleNDBError(status);
     return status;
   }
@@ -423,7 +421,6 @@ RS_Status PKROperation::PerformOperation() {
 }
 
 RS_Status PKROperation::Abort() {
-  printf("Aboring tx\n");
   if (transaction != nullptr) {
     NdbTransaction::CommitStatusType status = transaction->commitStatus();
     if (status == NdbTransaction::CommitStatusType::Started) {
