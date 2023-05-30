@@ -17,7 +17,7 @@ func batchTestMultiple(t *testing.T, tests map[string]api.BatchOperationTestInfo
 func batchTest(t testing.TB, testInfo api.BatchOperationTestInfo, isBinaryData bool, validate bool) {
 	// This will mean that REST calls to Handler will be slightly faster
 	batchRESTTest(t, testInfo, isBinaryData, validate)
-	// batchGRPCTest(t, testInfo, isBinaryData, validate)
+	batchGRPCTest(t, testInfo, isBinaryData, validate)
 }
 
 func checkOpIDandStatus(

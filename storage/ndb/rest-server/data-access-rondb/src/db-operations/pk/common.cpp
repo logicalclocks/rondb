@@ -668,7 +668,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
 
   int retVal = (*operation)->equal(request->PKName(colIdx), (char *)primary_key, primary_key_size);
 
-  if (free_primary_key) {
+  if (free_primary_key && primary_key != nullptr) {
     free(primary_key);
   }
 
