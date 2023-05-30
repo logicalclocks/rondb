@@ -141,6 +141,9 @@ VALUES
     ),
     (
         1001, 3, 'fsdb002', 0, 'fsdb002', 'macho@hopsworks.ai', Timestamp('2023-04-20 16:14:15'), 'Some desc', 'NOLIMIT', Timestamp('2023-04-20 16:14:15'), 100, 'SomeDockerImage', 1025.0, 0
+    ),
+    (
+        1002, 4, 'fsdb_isolate', 0, 'fsdb_isolate', 'macho@hopsworks.ai', Timestamp('2023-04-20 16:14:15'), 'Some desc', 'NOLIMIT', Timestamp('2023-04-20 16:14:15'), 100, 'SomeDockerImage', 1025.0, 0
     );
 
 INSERT INTO
@@ -148,6 +151,18 @@ INSERT INTO
 VALUES
     (
         999,
+        'macho@hopsworks.ai',
+        'Data scientist',
+        '2022-06-01 13:28:05'
+    ),
+    (
+        1000,
+        'macho@hopsworks.ai',
+        'Data scientist',
+        '2022-06-01 13:28:05'
+    ),
+    (
+        1001,
         'macho@hopsworks.ai',
         'Data scientist',
         '2022-06-01 13:28:05'
@@ -334,6 +349,9 @@ INSERT INTO
     `feature_store`
 VALUES
     (
+        66, "fsdb_isolate", 1002, "2023-03-16 14:27:29", 4
+    ),
+    (
         67, "fsdb001", 1000, "2023-03-16 14:27:29", 4
     ),
     (
@@ -357,6 +375,12 @@ VALUES
     ),
     (
         2070, 'sample_1', 67, Timestamp('2023-04-21 09:35:38'), 10000, 2, 2, NULL, NULL, 2058, 'ts', 1
+    ),
+    (
+        2076, 'sample_3', 67, Timestamp('2023-05-08 15:20:51'), 10000, 1, 2, NULL, NULL, 2064, 'ts', 1
+    ),
+    (
+        2067, 'sample_4', 66, Timestamp('2023-05-08 15:20:51'), 10000, 1, 2, NULL, NULL, 2055, 'ts', 1
     );
 
 INSERT INTO
@@ -382,6 +406,31 @@ VALUES
     ),
     (
         2063, 'sample_1', 1091, Timestamp('2023-04-21 10:03:48'), 10000, 2, '', 30509, 'sample_1_2', 30509
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`id2` `id2`, `fg0`.`ts` `ts`, `fg0`.`bigint` `bigint`
+    FROM `test_ken_featurestore`.`sample_3_1` `fg0`
+    */
+    (
+        2078, 'sample_3', 67, Timestamp('2023-05-09 06:59:06'), 10000, 1, '', 250, 'sample_3_1', 250
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`id2` `id2`, `fg0`.`ts` `ts`, `fg0`.`bigint` `bigint`, `fg0`.`string` `string`, `fg0`.`date` `date`, `fg0`.`bool` `bool`, `fg0`.`float` `float`, `fg0`.`double` `double`, `fg0`.`binary` `binary`
+    FROM `test_ken_featurestore`.`sample_3_1` `fg0`
+    */
+    (
+	    2079, 'sample_3', 67, Timestamp('2023-05-09 12:10:53'), 10000, 2, '', 250, 'sample_3_2', 250
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `fg1_id1`, `fg1`.`ts` `fg1_ts`, `fg1`.`data1` `fg1_data1`, `fg1`.`data2` `fg1_data2`
+    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_1_2` `fg1` ON `fg0`.`id1` = `fg1`.`id1`
+    */
+    (
+	    2080, 'sample_1n1', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, '', 250, 'sample_1n1_1', 250
+    ),
+    (
+        2085, 'sample_4', 66, Timestamp('2023-05-23 15:31:53'), 10000, 1, '', 250, 'sample_4_1', 250
     );
 
 INSERT INTO 
@@ -416,6 +465,21 @@ VALUES
     ),
     (
         2057, NULL, 2068, NULL, 0, 0, NULL, 2064
+    ),
+    (
+	    2085, NULL, 2076, NULL, 0, 0, NULL, 2079
+    ),
+    (
+	    2084, NULL, 2076, NULL, 0, 0, NULL, 2078
+    ),
+    (
+	    2086, NULL, 2069, NULL, 0, 0, NULL, 2080
+    ),
+    (
+        2087, NULL, 2070, NULL, 0, 1, 'fg1_', 2080
+    ),
+    (
+	    2096, NULL, 2067, NULL, 0, 0, NULL, 2085
     );
 
 INSERT INTO
@@ -540,4 +604,82 @@ VALUES
     ),
     (
         2099, NULL, 2068, 'ts', 'date', 2061, 5, 0, NULL, 2066
+    ),
+    (
+        2182, NULL, 2076, 'id2', 'string', 2084, 1, 0, NULL, 2078
+    ),
+    (
+        2188, NULL, 2076, 'bigint', 'bigint', 2084, 3, 0, NULL, 2078
+    ),
+    (
+        2183, NULL, 2076, 'ts', 'timestamp', 2084, 2, 0, NULL, 2078
+    ),
+    (
+        2189, NULL, 2076, 'id1', 'bigint', 2084, 0, 0, NULL, 2078
+    ),
+    (
+	    2192, NULL, 2076, 'bigint', 'bigint', 2085, 3, 0, NULL, 2079
+    ),
+    (
+        2193, NULL, 2076, 'bool', 'boolean', 2085, 6, 0, NULL, 2079
+    ),
+    (
+        2194, NULL, 2076, 'ts', 'timestamp', 2085, 2, 0, NULL, 2079
+    ),
+    (
+        2195, NULL, 2076, 'date', 'date', 2085, 5, 0, NULL, 2079
+    ),
+    (
+        2198, NULL, 2076, 'binary', 'binary', 2085, 9, 0, NULL, 2079
+    ),
+    (
+        2199, NULL, 2076, 'id2', 'string', 2085, 1, 0, NULL, 2079
+    ),
+    (
+        2190, NULL, 2076, 'double', 'double', 2085, 8, 0, NULL, 2079
+    ),
+    (
+        2191, NULL, 2076, 'string', 'string', 2085, 4, 0, NULL, 2079
+    ),
+    (
+        2196, NULL, 2076, 'id1', 'bigint', 2085, 0, 0, NULL, 2079
+    ),
+    (
+        2197, NULL, 2076, 'float', 'float', 2085, 7, 0, NULL, 2079
+    ),
+    (
+	    2202, NULL, 2070, 'data1', 'bigint', 2087, 6, 0, NULL, 2080
+    ),
+    (
+        2203, NULL, 2069, 'id1', 'bigint', 2086, 0, 0, NULL, 2080
+    ),
+    (
+        2207, NULL, 2070, 'ts', 'timestamp', 2087, 5, 0, NULL, 2080
+    ),
+    (
+        2200, NULL, 2069, 'data1', 'bigint', 2086, 2, 0, NULL, 2080
+    ),
+    (
+        2201, NULL, 2070, 'id1', 'bigint', 2087, 4, 0, NULL, 2080
+    ),
+    (
+        2204, NULL, 2069, 'ts', 'timestamp', 2086, 1, 0, NULL, 2080
+    ),
+    (
+        2205, NULL, 2070, 'data2', 'bigint', 2087, 7, 0, NULL, 2080
+    ),
+    (
+        2206, NULL, 2069, 'data2', 'bigint', 2086, 3, 0, NULL, 2080
+    ),
+    (
+	    2253, NULL, 2067, 'bigint', 'bigint', 2096, 3, 0, NULL, 2085
+    ),
+    (
+        2254, NULL, 2067, 'ts', 'timestamp', 2096, 2, 0, NULL, 2085
+    ),
+    (
+        2260, NULL, 2067, 'id1', 'bigint', 2096, 0, 0, NULL, 2085
+    ),
+    (
+        2261, NULL, 2067, 'id2', 'string', 2096, 1, 0, NULL, 2085
     );

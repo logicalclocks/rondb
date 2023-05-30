@@ -19,9 +19,10 @@ package feature_store
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/feature_store"
@@ -31,60 +32,136 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
+const (
+	JSON_NUMBER  = "NUMBER"
+	JSON_STRING  = "STRING"
+	JSON_BOOLEAN = "BOOLEAN"
+	JSON_NIL     = "NIL"
+	JSON_OTHER   = "OTHER"
+)
+
 type Handler struct {
+	fvMetaCache   *feature_store.FeatureViewMetaDataCache
 	apiKeyCache   apikey.Cache
 	dbBatchReader batchpkread.Handler
 }
 
-func New(apiKeyCache apikey.Cache, batchPkReadHandler batchpkread.Handler) Handler {
-	return Handler{apiKeyCache, batchPkReadHandler}
+func New(fvMetaCache *feature_store.FeatureViewMetaDataCache, apiKeyCache apikey.Cache, batchPkReadHandler batchpkread.Handler) Handler {
+	return Handler{fvMetaCache, apiKeyCache, batchPkReadHandler}
 }
 
 func (h *Handler) Validate(request interface{}) error {
 	fsReq := request.(*api.FeatureStoreRequest)
-	metadata, err := feature_store.GetFeatureViewMetadata(
+	metadata, err := h.fvMetaCache.Get(
 		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
 	if err != nil {
-		return err
+		return err.Error()
 	}
 	if log.IsDebug() {
-		metadata, _ := json.MarshalIndent(metadata, "", "  ")
-		log.Debugf("Feature store metadata is %s", metadata)
+		log.Debugf("Feature store request is %s", fsReq.String())
 	}
-	validatePrimaryKey(fsReq.Entries)
-	err1 := validatePrimaryKey(fsReq.Entries)
+	err1 := validatePrimaryKey(fsReq.Entries, &metadata.PrefixFeaturesLookup)
 	if err1 != nil {
-		return err1
+		return err1.Error()
 	}
-	err2 := validatePassedFeatures(fsReq.Entries, &metadata.PrefixFeaturesLookup)
+	err2 := validatePassedFeatures(fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup)
 	if err2 != nil {
-		return err2
+		return err2.Error()
 	}
 	return nil
 
 }
 
-func validatePrimaryKey(entries *map[string]*json.RawMessage) error {
+func validatePrimaryKey(entries *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) *feature_store.RestErrorCode {
 	// Data type check of primary key will be delegated to rondb.
 	if len(*entries) == 0 {
-		return errors.New(fmt.Sprintf("No primary key is given."))
+		return feature_store.INCORRECT_PRIMARY_KEY
+	}
+	for featureName := range *entries {
+		_, ok := (*features)[featureName]
+		if !ok {
+			return feature_store.FEATURE_NOT_EXIST.NewMessage(fmt.Sprintf("Provided primary key `%s` does not exist in the feature view.", featureName))
+		}
 	}
 	return nil
 }
 
-func validatePassedFeatures(passedFeatures *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) error {
+func validatePassedFeatures(passedFeatures *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) *feature_store.RestErrorCode {
 	for featureName, value := range *passedFeatures {
 		feature, ok := (*features)[featureName]
 		if !ok {
-			return errors.New(fmt.Sprintf("Feature `%s` does not exist in the feature view.", featureName))
+			return feature_store.FEATURE_NOT_EXIST.NewMessage(fmt.Sprintf("Feature `%s` does not exist in the feature view.", featureName))
 		}
-		validateFeatureType(value, feature.Type)
+		err := validateFeatureType(value, feature.Type)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func validateFeatureType(feature *json.RawMessage, featureType string) {
-	// TODO: do simple number/string check?
+func validateFeatureType(feature *json.RawMessage, featureType string) *feature_store.RestErrorCode {
+	var got, err = getJsonType(feature)
+
+	if err != nil {
+		return feature_store.INCORRECT_FEATURE_VALUE.NewMessage(fmt.Sprintf("Provided value %s is not in correct JSON format. %s", feature, err))
+	}
+	var expected = mapFeatureTypeToJsonType(featureType)
+	if got != expected {
+		return feature_store.WRONG_DATA_TYPE.NewMessage(fmt.Sprintf("Got: '%s', expected: '%s' (offline type: %s)", got, expected, featureType))
+	}
+	return nil
+}
+
+func mapFeatureTypeToJsonType(featureType string) string {
+	switch featureType {
+	case "boolean":
+		return JSON_BOOLEAN
+	case "tinyint":
+		return JSON_NUMBER
+	case "int":
+		return JSON_NUMBER
+	case "smallint":
+		return JSON_NUMBER
+	case "bigint":
+		return JSON_NUMBER
+	case "float":
+		return JSON_NUMBER
+	case "double":
+		return JSON_NUMBER
+	case "decimal":
+		return JSON_NUMBER
+	case "timestamp":
+		return JSON_NUMBER
+	case "date":
+		return JSON_STRING
+	case "string":
+		return JSON_STRING
+	case "binary":
+		return JSON_STRING
+	default:
+		return JSON_OTHER
+	}
+}
+
+func getJsonType(jsonString *json.RawMessage) (string, error) {
+	var value interface{}
+	if err := json.Unmarshal(*jsonString, &value); err != nil {
+		return "", err
+	}
+
+	switch value.(type) {
+	case float64:
+		return JSON_NUMBER, nil
+	case string:
+		return JSON_STRING, nil
+	case bool:
+		return JSON_BOOLEAN, nil
+	case nil:
+		return JSON_NIL, nil
+	default:
+		return JSON_OTHER, nil
+	}
 }
 
 func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
@@ -92,57 +169,119 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	if !conf.Security.APIKey.UseHopsworksAPIKeys {
 		return nil
 	}
-	return h.apiKeyCache.ValidateAPIKey(apiKey)
+	fsReq := request.(*api.FeatureStoreRequest)
+	metadata, err := h.fvMetaCache.Get(
+		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
+	if err != nil {
+		return err.Error()
+	}
+	valErr := h.apiKeyCache.ValidateAPIKey(apiKey, metadata.FeatureStoreNames...)
+	if valErr != nil {
+		return feature_store.FEATURE_STORE_NOT_SHARED.Error()
+	}
+	return nil
 }
 
 func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
 
 	fsReq := request.(*api.FeatureStoreRequest)
-	if log.IsDebug() {
-		log.Debugf("Feature store request received %v", fsReq)
-	}
-	metadata, err := feature_store.GetFeatureViewMetadata(
+	metadata, err := h.fvMetaCache.Get(
 		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
 	if err != nil {
-		return http.StatusInternalServerError, err
+		return err.GetStatus(), err.Error()
 	}
 	var readParams = getBatchPkReadParams(metadata, fsReq.Entries)
-	err = h.dbBatchReader.Validate(readParams)
-	if err != nil {
-		return http.StatusInternalServerError, err
+	ronDbErr := h.dbBatchReader.Validate(readParams)
+	if ronDbErr != nil {
+		var fsError = translateRonDbError(http.StatusBadRequest, ronDbErr)
+		return fsError.GetStatus(), fsError.Error()
 	}
-	var dbResponseIntf = getPkReadResponseJSON()
-	code, err := h.dbBatchReader.Execute(readParams, *dbResponseIntf)
-	if err != nil {
-		return http.StatusInternalServerError, err
+	var dbResponseIntf = getPkReadResponseJSON(*metadata)
+	code, ronDbErr := h.dbBatchReader.Execute(readParams, *dbResponseIntf)
+	if ronDbErr != nil {
+		var fsError = translateRonDbError(code, ronDbErr)
+		return fsError.GetStatus(), fsError.Error()
 	}
 	fsResp := response.(*api.FeatureStoreResponse)
-	features := getFeatureValues(dbResponseIntf, fsReq.Entries, metadata)
+	features, status := getFeatureValues(dbResponseIntf, fsReq.Entries, metadata)
+	fsResp.Status = status
 	fillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
 	fsResp.Features = *features
-
-	return code, nil
+	if fsReq.MetadataRequest != nil {
+		featureMetadatas := make([]*api.FeatureMeatadata, metadata.NumOfFeatures)
+		for featureKey, metadata := range metadata.PrefixFeaturesLookup {
+			featureMetadata := api.FeatureMeatadata{}
+			if fsReq.MetadataRequest.FeatureName {
+				var fk = featureKey
+				featureMetadata.Name = &fk
+			}
+			if fsReq.MetadataRequest.FeatureType {
+				var ft = metadata.Type
+				featureMetadata.Type = &ft
+			}
+			featureMetadatas[metadata.Index] = &featureMetadata
+		}
+		fsResp.Metadata = featureMetadatas
+	}
+	return http.StatusOK, nil
 }
 
-func getFeatureValues(batchResponse *api.BatchOpResponse, entries *map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata) *[]interface{} {
+func translateRonDbError(code int, err error) *feature_store.RestErrorCode {
+	var fsError *feature_store.RestErrorCode
+	if strings.Contains(err.Error(), "Wrong data type.") {
+		regex := regexp.MustCompile(`Expecting (\w+)\. Column: (\w+)`)
+		match := regex.FindStringSubmatch(err.Error())
+		if match != nil {
+			dataType := match[1]
+			columnName := match[2]
+			fsError = feature_store.WRONG_DATA_TYPE.NewMessage(
+				fmt.Sprintf("Primary key '%s' should be in '%s' format.", columnName, dataType),
+			)
+		} else {
+			fsError = feature_store.WRONG_DATA_TYPE
+		}
+
+	} else if strings.Contains(err.Error(), "Wrong number of primary-key columns.") ||
+		strings.Contains(err.Error(), "Wrong primay-key column.") {
+		fsError = feature_store.INCORRECT_PRIMARY_KEY.NewMessage(err.Error())
+	} else {
+		fsError = feature_store.READ_FROM_DB_FAIL
+	}
+	return fsError
+}
+
+func getFeatureValues(batchResponse *api.BatchOpResponse, entries *map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata) (*[]interface{}, api.FeatureStatus) {
 	jsonResponse := (*batchResponse).String()
-	fsResp := api.BatchResponseJSON{}
-	json.Unmarshal([]byte(jsonResponse), &fsResp)
-	featureValues := make([]interface{}, featureView.NumOfFeatures, featureView.NumOfFeatures)
-	for _, response := range *fsResp.Result {
+	if log.IsDebug() {
+		log.Debugf("Received response from rondb: %s", jsonResponse)
+	}
+	rondbResp := api.BatchResponseJSON{}
+	json.Unmarshal([]byte(jsonResponse), &rondbResp)
+	featureValues := make([]interface{}, featureView.NumOfFeatures)
+	var status = api.FEATURE_STATUS_COMPLETE
+	for _, response := range *rondbResp.Result {
+		if *response.Code == 404 {
+			status = api.FEATURE_STATUS_MISSING
+		} else if *response.Code != 200 {
+			status = api.FEATURE_STATUS_ERROR
+		}
 		for featureName, value := range *response.Body.Data {
-			featureIndexKey := *response.Body.OperationID + "|" + featureName
-			featureValues[(featureView.FeatureIndexLookup)[featureIndexKey]] = value
+			featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
+			if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
+				featureValues[index] = value
+			} else {
+				panic(fmt.Sprintf("Index cannot be found by the key '%s'", featureIndexKey))
+			}
 		}
 	}
-	// Fill in primary key into the vector
+	// Fill in primary key value from request into the vector
 	for featureName, value := range *entries {
 		indexKey := feature_store.GetFeatureIndexKeyByFeature((featureView.PrefixFeaturesLookup)[featureName])
-		if index, ok := (featureView.FeatureIndexLookup)[*indexKey]; ok {
+		if index, ok := (featureView.FeatureIndexLookup)[indexKey]; ok {
 			featureValues[index] = value
 		}
 	}
-	return &featureValues
+	return &featureValues, status
 }
 
 func getBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *map[string]*json.RawMessage) *[]*api.PKReadParams {
@@ -170,24 +309,24 @@ func getBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 				}
 			}
 		}
-		var opId = fgFeature.FeatureStoreName + "|" + fgFeature.FeatureGroupName
+		var opId = feature_store.GetFeatureGroupKeyByTDFeature(fgFeature)
 		param := api.PKReadParams{DB: &testDb, Table: &testTable, Filters: &filters, ReadColumns: &columns, OperationID: &opId}
 		batchReadParams = append(batchReadParams, &param)
 	}
 	return &batchReadParams
 }
 
-func getPkReadResponseJSON() *api.BatchOpResponse {
+func getPkReadResponseJSON(metadata feature_store.FeatureViewMetadata) *api.BatchOpResponse {
 	response := (api.BatchOpResponse)(&api.BatchResponseJSON{})
-	response.Init()
+	response.Init(len(metadata.FeatureGroupFeatures))
 	return &response
 }
 
 func fillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*json.RawMessage, featureMetadata *map[string]*feature_store.FeatureMetadata, indexLookup *map[string]int) {
 	for featureName, passFeature := range *passedFeatures {
 		var feature = (*featureMetadata)[featureName]
-		var lookupKey = feature_store.GetFeatureIndexKey(feature.FeatureStoreName, feature.FeatureGroupName, feature.Name)
-		(*features)[(*indexLookup)[*lookupKey]] = passFeature
+		var lookupKey = feature_store.GetFeatureIndexKeyByFeature(feature)
+		(*features)[(*indexLookup)[lookupKey]] = passFeature
 	}
 
 }

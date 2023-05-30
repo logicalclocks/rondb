@@ -30,6 +30,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
+	fsmeta "hopsworks.ai/rdrs/internal/feature_store"
+	"hopsworks.ai/rdrs/internal/handlers/batchfeaturestore"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
 	"hopsworks.ai/rdrs/internal/handlers/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
@@ -98,11 +100,12 @@ func (s *RonDBRestServer) Start(quit chan os.Signal) (cleanupFunc func()) {
 
 type RouteHandler struct {
 	// TODO: Add thread-safe logger
-	statsHandler        stat.Handler
-	pkReadHandler       pkread.Handler
-	batchPkReadHandler  batchpkread.Handler
-	rdrsMetrics         *metrics.RDRSMetrics
-	featureStoreHandler feature_store.Handler
+	statsHandler             stat.Handler
+	pkReadHandler            pkread.Handler
+	batchPkReadHandler       batchpkread.Handler
+	rdrsMetrics              *metrics.RDRSMetrics
+	featureStoreHandler      feature_store.Handler
+	batchFeatureStoreHandler batchfeaturestore.Handler
 }
 
 func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache, rdrsMetrics *metrics.RDRSMetrics) {
@@ -111,12 +114,15 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 	versionGroup := router.Group(config.VERSION_GROUP)
 
 	batchPkReadHandler := batchpkread.New(heap, apiKeyCache)
+	var fvMeta = fsmeta.NewFeatureViewMetaDataCache()
+	featureStoreHandler := feature_store.New(fvMeta, apiKeyCache, batchPkReadHandler)
+
 	routeHandler := &RouteHandler{
-		statsHandler:        stat.New(heap, apiKeyCache),
-		pkReadHandler:       pkread.New(heap, apiKeyCache),
-		batchPkReadHandler:  batchpkread.New(heap, apiKeyCache),
-		rdrsMetrics:         rdrsMetrics,
-		featureStoreHandler: feature_store.New(apiKeyCache, batchPkReadHandler),
+		statsHandler:             stat.New(heap, apiKeyCache),
+		pkReadHandler:            pkread.New(heap, apiKeyCache),
+		batchPkReadHandler:       batchPkReadHandler,
+		featureStoreHandler:      featureStoreHandler,
+		batchFeatureStoreHandler: batchfeaturestore.New(fvMeta, apiKeyCache, &featureStoreHandler),
 	}
 
 	// ping
@@ -137,6 +143,8 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 
 	// feature store
 	versionGroup.POST("/"+config.FEATURE_STORE_OPERATION, routeHandler.FeatureStore)
+	versionGroup.POST("/"+config.BATCH_FEATURE_STORE_OPERATION, routeHandler.BatchFeatureStore)
+
 }
 
 // TODO: Pass logger to this like in https://stackoverflow.com/a/69948929/9068781

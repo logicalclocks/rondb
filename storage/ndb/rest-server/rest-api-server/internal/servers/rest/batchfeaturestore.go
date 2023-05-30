@@ -24,17 +24,17 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func (h *RouteHandler) FeatureStore(c *gin.Context) {
+func (h *RouteHandler) BatchFeatureStore(c *gin.Context) {
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 
-	fsReq, err := parseFeatureStoreRequest(c)
+	fsReq, err := parseBatchFeatureStoreRequest(c)
 	if err != nil {
 		c.AbortWithError(http.StatusBadRequest, err)
 		return
 	}
 
-	fsResp := api.FeatureStoreResponse{}
-	status, err := handlers.Handle(&h.featureStoreHandler, &apiKey, fsReq, &fsResp)
+	fsResp := api.BatchFeatureStoreResponse{}
+	status, err := handlers.Handle(&h.batchFeatureStoreHandler, &apiKey, fsReq, &fsResp)
 	if err != nil {
 		c.AbortWithError(status, err)
 		return
@@ -42,9 +42,9 @@ func (h *RouteHandler) FeatureStore(c *gin.Context) {
 	c.JSON(status, fsResp)
 }
 
-func parseFeatureStoreRequest(c *gin.Context) (*api.FeatureStoreRequest, error) {
+func parseBatchFeatureStoreRequest(c *gin.Context) (*api.BatchFeatureStoreRequest, error) {
 
-	postParams := api.FeatureStoreRequest{}
+	postParams := api.BatchFeatureStoreRequest{}
 	if err := c.BindJSON(&postParams); err != nil {
 		return nil, err
 	}
