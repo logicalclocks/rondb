@@ -103,21 +103,3 @@ VALUES
     (
         53, '2022-01-25', 'int83', 'str79'
     );
-
-CREATE TABLE `sample_3_1` (
-  `id1` date NOT NULL,
-  `ts` date DEFAULT NULL,
-  `data1` varchar(100) COLLATE utf8_unicode_ci DEFAULT NULL,
-  `data2` varchar(100) COLLATE utf8_unicode_ci DEFAULT NULL,
-  PRIMARY KEY (`id1`)
-) ENGINE=ndbcluster;
-
-INSERT INTO
-    sample_3_1
-VALUES
-    (
-        '2022-01-09', '2022-01-09', 'int1', 'str19'
-    ),
-    (
-        '2022-01-10', '2022-01-23', 'int25', 'str44'
-    );
