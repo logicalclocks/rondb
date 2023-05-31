@@ -120,13 +120,14 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
   int col_id      = table_dict->getColumn("prefix")->getColumnNo();
   Uint32 col_size = (Uint32)table_dict->getColumn("prefix")->getSizeInBytes();
   assert(col_size == API_KEY_PREFIX_SIZE);
-  if (strlen(prefix) > col_size) {
+  size_t prefix_len = strlen(prefix);
+  if (prefix_len > col_size) {
     return RS_CLIENT_ERROR("Wrong length of the search key");
   }
 
   char cmp_str[API_KEY_PREFIX_SIZE];
-  memcpy(cmp_str + 1, prefix, strlen(prefix) + 1); //+1 copy null terminator too
-  cmp_str[0] = static_cast<char>(strlen(prefix));
+  memcpy(cmp_str + 1, prefix, prefix_len + 1); //+1 copy null terminator too
+  cmp_str[0] = static_cast<char>(prefix_len);
 
   NdbScanFilter filter(scanOp);
   if (filter.begin(NdbScanFilter::AND) < 0 ||
@@ -364,13 +365,14 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
   int col_id      = table_dict->getColumn("team_member")->getColumnNo();
   Uint32 col_size = (Uint32)table_dict->getColumn("team_member")->getSizeInBytes();
   assert(col_size == PROJECT_TEAM_TEAM_MEMBER_SIZE);
-  if (strlen(users->email) > col_size) {
+  size_t email_len = strlen(users->email);
+  if (email_len > col_size) {
     return RS_CLIENT_ERROR("Wrong length of the search key");
   }
 
   char cmp_str[PROJECT_TEAM_TEAM_MEMBER_SIZE];
-  memcpy(cmp_str + 1, users->email, strlen(users->email) + 1);  //+1 for null terminator
-  cmp_str[0] = static_cast<char>(strlen(users->email));
+  memcpy(cmp_str + 1, users->email, email_len + 1);  //+1 for null terminator
+  cmp_str[0] = static_cast<char>(email_len);
 
   NdbScanFilter filter(scanOp);
   if (filter.begin(NdbScanFilter::AND) < 0 ||
