@@ -60,11 +60,11 @@ func (h *Handler) Validate(request interface{}) error {
 	if log.IsDebug() {
 		log.Debugf("Feature store request is %s", fsReq.String())
 	}
-	err1 := validatePrimaryKey(fsReq.Entries, &metadata.PrefixFeaturesLookup)
+	err1 := ValidatePrimaryKey(fsReq.Entries, &metadata.PrefixFeaturesLookup)
 	if err1 != nil {
 		return err1.Error()
 	}
-	err2 := validatePassedFeatures(fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup)
+	err2 := ValidatePassedFeatures(fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup)
 	if err2 != nil {
 		return err2.Error()
 	}
@@ -72,7 +72,7 @@ func (h *Handler) Validate(request interface{}) error {
 
 }
 
-func validatePrimaryKey(entries *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) *feature_store.RestErrorCode {
+func ValidatePrimaryKey(entries *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) *feature_store.RestErrorCode {
 	// Data type check of primary key will be delegated to rondb.
 	if len(*entries) == 0 {
 		return feature_store.INCORRECT_PRIMARY_KEY
@@ -86,13 +86,13 @@ func validatePrimaryKey(entries *map[string]*json.RawMessage, features *map[stri
 	return nil
 }
 
-func validatePassedFeatures(passedFeatures *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) *feature_store.RestErrorCode {
+func ValidatePassedFeatures(passedFeatures *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) *feature_store.RestErrorCode {
 	for featureName, value := range *passedFeatures {
 		feature, ok := (*features)[featureName]
 		if !ok {
 			return feature_store.FEATURE_NOT_EXIST.NewMessage(fmt.Sprintf("Feature `%s` does not exist in the feature view.", featureName))
 		}
-		err := validateFeatureType(value, feature.Type)
+		err := ValidateFeatureType(value, feature.Type)
 		if err != nil {
 			return err
 		}
@@ -100,7 +100,7 @@ func validatePassedFeatures(passedFeatures *map[string]*json.RawMessage, feature
 	return nil
 }
 
-func validateFeatureType(feature *json.RawMessage, featureType string) *feature_store.RestErrorCode {
+func ValidateFeatureType(feature *json.RawMessage, featureType string) *feature_store.RestErrorCode {
 	var got, err = getJsonType(feature)
 
 	if err != nil {
@@ -190,22 +190,28 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	if err != nil {
 		return err.GetStatus(), err.Error()
 	}
-	var readParams = getBatchPkReadParams(metadata, fsReq.Entries)
+	var readParams = GetBatchPkReadParams(metadata, fsReq.Entries)
 	ronDbErr := h.dbBatchReader.Validate(readParams)
 	if ronDbErr != nil {
-		var fsError = translateRonDbError(http.StatusBadRequest, ronDbErr)
+		var fsError = TranslateRonDbError(http.StatusBadRequest, ronDbErr)
 		return fsError.GetStatus(), fsError.Error()
 	}
 	var dbResponseIntf = getPkReadResponseJSON(*metadata)
 	code, ronDbErr := h.dbBatchReader.Execute(readParams, *dbResponseIntf)
 	if ronDbErr != nil {
-		var fsError = translateRonDbError(code, ronDbErr)
+		var fsError = TranslateRonDbError(code, ronDbErr)
 		return fsError.GetStatus(), fsError.Error()
 	}
 	fsResp := response.(*api.FeatureStoreResponse)
-	features, status := getFeatureValues(dbResponseIntf, fsReq.Entries, metadata)
+	jsonResponse := (*dbResponseIntf).String()
+	if log.IsDebug() {
+		log.Debugf("Received response from rondb: %s", jsonResponse)
+	}
+	rondbResp := api.BatchResponseJSON{}
+	json.Unmarshal([]byte(jsonResponse), &rondbResp)
+	features, status := GetFeatureValues(rondbResp.Result, fsReq.Entries, metadata)
 	fsResp.Status = status
-	fillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
+	FillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
 	fsResp.Features = *features
 	if fsReq.MetadataRequest != nil {
 		featureMetadatas := make([]*api.FeatureMeatadata, metadata.NumOfFeatures)
@@ -226,7 +232,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	return http.StatusOK, nil
 }
 
-func translateRonDbError(code int, err error) *feature_store.RestErrorCode {
+func TranslateRonDbError(code int, err error) *feature_store.RestErrorCode {
 	var fsError *feature_store.RestErrorCode
 	if strings.Contains(err.Error(), "Wrong data type.") {
 		regex := regexp.MustCompile(`Expecting (\w+)\. Column: (\w+)`)
@@ -250,16 +256,10 @@ func translateRonDbError(code int, err error) *feature_store.RestErrorCode {
 	return fsError
 }
 
-func getFeatureValues(batchResponse *api.BatchOpResponse, entries *map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata) (*[]interface{}, api.FeatureStatus) {
-	jsonResponse := (*batchResponse).String()
-	if log.IsDebug() {
-		log.Debugf("Received response from rondb: %s", jsonResponse)
-	}
-	rondbResp := api.BatchResponseJSON{}
-	json.Unmarshal([]byte(jsonResponse), &rondbResp)
+func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata) (*[]interface{}, api.FeatureStatus) {
 	featureValues := make([]interface{}, featureView.NumOfFeatures)
 	var status = api.FEATURE_STATUS_COMPLETE
-	for _, response := range *rondbResp.Result {
+	for _, response := range *ronDbResult {
 		if *response.Code == 404 {
 			status = api.FEATURE_STATUS_MISSING
 		} else if *response.Code != 200 {
@@ -284,7 +284,7 @@ func getFeatureValues(batchResponse *api.BatchOpResponse, entries *map[string]*j
 	return &featureValues, status
 }
 
-func getBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *map[string]*json.RawMessage) *[]*api.PKReadParams {
+func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *map[string]*json.RawMessage) *[]*api.PKReadParams {
 
 	var batchReadParams = make([]*api.PKReadParams, 0, 0)
 	for _, fgFeature := range metadata.FeatureGroupFeatures {
@@ -322,7 +322,7 @@ func getPkReadResponseJSON(metadata feature_store.FeatureViewMetadata) *api.Batc
 	return &response
 }
 
-func fillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*json.RawMessage, featureMetadata *map[string]*feature_store.FeatureMetadata, indexLookup *map[string]int) {
+func FillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*json.RawMessage, featureMetadata *map[string]*feature_store.FeatureMetadata, indexLookup *map[string]int) {
 	for featureName, passFeature := range *passedFeatures {
 		var feature = (*featureMetadata)[featureName]
 		var lookupKey = feature_store.GetFeatureIndexKeyByFeature(feature)

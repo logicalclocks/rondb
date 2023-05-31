@@ -19,47 +19,49 @@ package batchfeaturestore
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
-	"sync"
+	"regexp"
+	"strconv"
+	"strings"
 
 	"hopsworks.ai/rdrs/internal/config"
-	fs "hopsworks.ai/rdrs/internal/feature_store"
-	"hopsworks.ai/rdrs/internal/handlers/feature_store"
+	"hopsworks.ai/rdrs/internal/feature_store"
+	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
+	fshanlder "hopsworks.ai/rdrs/internal/handlers/feature_store"
+	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
+const (
+	JSON_NUMBER  = "NUMBER"
+	JSON_STRING  = "STRING"
+	JSON_BOOLEAN = "BOOLEAN"
+	JSON_NIL     = "NIL"
+	JSON_OTHER   = "OTHER"
+)
+
+const (
+	SEQUENCE_SEPARATOR = "#"
+)
+
 type Handler struct {
-	apiKeyCache apikey.Cache
-	fvMetaCache *fs.FeatureViewMetaDataCache
-	fshandler   *feature_store.Handler
+	fvMetaCache   *feature_store.FeatureViewMetaDataCache
+	apiKeyCache   apikey.Cache
+	dbBatchReader batchpkread.Handler
 }
 
-type FeatureStoreResponseWithOrder struct {
-	FsResponse *api.FeatureStoreResponse
-	Order      int
-	Status     int
-	Error      error
-}
-
-type FeatureStoreRequestWithOrder struct {
-	FsResponse *api.FeatureStoreRequest
-	Order      int
-}
-
-type FeatureStoreBatchResponseWithStatus struct {
-	FsResponse *api.BatchFeatureStoreResponse
-	Status     int
-	Error      error
-}
-
-func New(fvMeta *fs.FeatureViewMetaDataCache, apiKeyCache apikey.Cache, fshandler *feature_store.Handler) Handler {
-	return Handler{apiKeyCache, fvMeta, fshandler}
+func New(fvMetaCache *feature_store.FeatureViewMetaDataCache, apiKeyCache apikey.Cache, batchPkReadHandler batchpkread.Handler) Handler {
+	return Handler{fvMetaCache, apiKeyCache, batchPkReadHandler}
 }
 
 func (h *Handler) Validate(request interface{}) error {
-	// Complete validation is delegated to feature store single read handler
+	// Complete validation is delegated to Execute()
 	fsReq := request.(*api.BatchFeatureStoreRequest)
+	if log.IsDebug() {
+		log.Debugf("Feature store request is %s", fsReq.String())
+	}
 	// check if requested fv and fs exist
 	_, err := h.fvMetaCache.Get(
 		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
@@ -67,9 +69,29 @@ func (h *Handler) Validate(request interface{}) error {
 		return err.Error()
 	}
 	if len(*fsReq.Entries) == 0 {
-		return fs.NO_PRIMARY_KEY_GIVEN.Error()
+		return feature_store.NO_PRIMARY_KEY_GIVEN.Error()
+	}
+	if len(*fsReq.PassedFeatures) != 0 && len(*fsReq.Entries) != len(*fsReq.PassedFeatures) {
+		return feature_store.INCORRECT_PASSED_FEATURE.Error()
 	}
 	return nil
+}
+
+func checkStatus(fsReq *api.BatchFeatureStoreRequest, metadata *feature_store.FeatureViewMetadata, status *[]api.FeatureStatus) int {
+	var cnt = make(map[int]bool)
+	for i, entry := range *fsReq.Entries {
+		if fshanlder.ValidatePrimaryKey(entry, &metadata.PrefixFeaturesLookup) != nil {
+			(*status)[i] = api.FEATURE_STATUS_ERROR
+			cnt[i] = true
+		}
+	}
+	for i, passedFeature := range *fsReq.PassedFeatures {
+		if fshanlder.ValidatePassedFeatures(passedFeature, &metadata.PrefixFeaturesLookup) != nil {
+			(*status)[i] = api.FEATURE_STATUS_ERROR
+			cnt[i] = true
+		}
+	}
+	return len(*status) - len(cnt)
 }
 
 func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
@@ -85,106 +107,183 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	}
 	valErr := h.apiKeyCache.ValidateAPIKey(apiKey, metadata.FeatureStoreNames...)
 	if valErr != nil {
-		return fs.FEATURE_STORE_NOT_SHARED.Error()
+		return feature_store.FEATURE_STORE_NOT_SHARED.Error()
 	}
 	return nil
 }
 
 func (h *Handler) Execute(request interface{}, response interface{}) (int, error) {
-
-	batchFsReq := request.(*api.BatchFeatureStoreRequest)
-	fvReqs := make(chan *FeatureStoreRequestWithOrder)
-	fvResps := make(chan *FeatureStoreResponseWithOrder)
-	numThread := len(*batchFsReq.Entries)
-
-	var wg sync.WaitGroup
-	var wgResp sync.WaitGroup
-
-	wg.Add(numThread)
-	wgResp.Add(1)
-
-	for i := 0; i < numThread; i++ {
-		go processFsRequest(*h.fshandler, fvReqs, fvResps, &wg)
+	fsReq := request.(*api.BatchFeatureStoreRequest)
+	metadata, err := h.fvMetaCache.Get(
+		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
+	if err != nil {
+		return err.GetStatus(), err.Error()
 	}
-	var batchResponse = response.(*api.BatchFeatureStoreResponse)
-	var batchResponseWithStatus = FeatureStoreBatchResponseWithStatus{}
-	batchResponseWithStatus.FsResponse = batchResponse
-	go processFsResp(len(*batchFsReq.Entries), &batchResponseWithStatus, fvResps, &wgResp)
-
-	for i, entry := range *batchFsReq.Entries {
-		var fsReq = api.FeatureStoreRequest{}
-		var pf map[string]*json.RawMessage
-		if len(*batchFsReq.PassedFeatures) > 0 {
-			if (*batchFsReq.PassedFeatures)[i] != nil {
-				pf = *(*batchFsReq.PassedFeatures)[i]
+	var featureStatus = make([]api.FeatureStatus, len(*fsReq.Entries))
+	var numPassed = checkStatus(fsReq, metadata, &featureStatus)
+	var readParams = getBatchPkReadParamsMutipleEntries(metadata, fsReq.Entries, &featureStatus)
+	ronDbErr := h.dbBatchReader.Validate(readParams)
+	if ronDbErr != nil {
+		var fsError = translateRonDbError(http.StatusBadRequest, ronDbErr)
+		return fsError.GetStatus(), fsError.Error()
+	}
+	var dbResponseIntf = getPkReadResponseJSON(numPassed, *metadata)
+	code, ronDbErr := h.dbBatchReader.Execute(readParams, *dbResponseIntf)
+	if log.IsDebug() {
+		log.Debugf("Rondb response: %s", (*dbResponseIntf).String())
+	}
+	// FIXME: depends on rondb response
+	if ronDbErr != nil {
+		var fsError = translateRonDbError(code, ronDbErr)
+		return fsError.GetStatus(), fsError.Error()
+	}
+	fsResp := response.(*api.BatchFeatureStoreResponse)
+	features := getFeatureValuesMultipleEntries(dbResponseIntf, fsReq.Entries, metadata, &featureStatus)
+	fsResp.Status = featureStatus
+	fillPassedFeaturesMultipleEntries(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup, &featureStatus)
+	fsResp.Features = *features
+	if fsReq.MetadataRequest != nil {
+		featureMetadatas := make([]*api.FeatureMeatadata, metadata.NumOfFeatures)
+		for featureKey, metadata := range metadata.PrefixFeaturesLookup {
+			featureMetadata := api.FeatureMeatadata{}
+			if fsReq.MetadataRequest.FeatureName {
+				var fk = featureKey
+				featureMetadata.Name = &fk
 			}
+			if fsReq.MetadataRequest.FeatureType {
+				var ft = metadata.Type
+				featureMetadata.Type = &ft
+			}
+			featureMetadatas[metadata.Index] = &featureMetadata
 		}
-		// Request metadata in the first single request only
-		if i == 0 && batchFsReq.MetadataRequest != nil {
-			fsReq.MetadataRequest = batchFsReq.MetadataRequest
-		}
-		fsReq.FeatureStoreName = batchFsReq.FeatureStoreName
-		fsReq.FeatureViewName = batchFsReq.FeatureViewName
-		fsReq.FeatureViewVersion = batchFsReq.FeatureViewVersion
-		fsReq.Entries = entry
-		fsReq.PassedFeatures = &pf
-		fvReqs <- &FeatureStoreRequestWithOrder{&fsReq, i}
-	}
-	close(fvReqs)
-	wg.Wait()
-	wgResp.Wait()
-	defer close(fvResps)
-	if batchResponseWithStatus.Error != nil {
-		batchResponse = nil
-		return batchResponseWithStatus.Status, batchResponseWithStatus.Error
+		fsResp.Metadata = featureMetadatas
 	}
 	return http.StatusOK, nil
 }
 
-func processFsRequest(
-	fshandler feature_store.Handler,
-	requests chan *FeatureStoreRequestWithOrder,
-	responses chan *FeatureStoreResponseWithOrder,
-	wg *sync.WaitGroup,
-) {
-	defer wg.Done()
-	for req := range requests {
-		response := api.FeatureStoreResponse{}
-		var valErr = fshandler.Validate(req.FsResponse)
-		if valErr != nil {
-			responses <- &FeatureStoreResponseWithOrder{
-				&response, req.Order, http.StatusBadRequest, valErr,
-			}
-			continue
+func translateRonDbError(code int, err error) *feature_store.RestErrorCode {
+	var fsError *feature_store.RestErrorCode
+	if strings.Contains(err.Error(), "Wrong data type.") {
+		regex := regexp.MustCompile(`Expecting (\w+)\. Column: (\w+)`)
+		match := regex.FindStringSubmatch(err.Error())
+		if match != nil {
+			dataType := match[1]
+			columnName := match[2]
+			fsError = feature_store.WRONG_DATA_TYPE.NewMessage(
+				fmt.Sprintf("Primary key '%s' should be in '%s' format.", columnName, dataType),
+			)
+		} else {
+			fsError = feature_store.WRONG_DATA_TYPE
 		}
-		var status, err = fshandler.Execute(req.FsResponse, &response)
-		responses <- &FeatureStoreResponseWithOrder{
-			&response, req.Order, status, err,
+
+	} else if strings.Contains(err.Error(), "Wrong number of primary-key columns.") ||
+		strings.Contains(err.Error(), "Wrong primay-key column.") {
+		fsError = feature_store.INCORRECT_PRIMARY_KEY.NewMessage(err.Error())
+	} else {
+		fsError = feature_store.READ_FROM_DB_FAIL
+	}
+	return fsError
+}
+
+func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries *[]*map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata, batchStatus *[]api.FeatureStatus) *[][]interface{} {
+	jsonResponse := (*batchResponse).String()
+	if log.IsDebug() {
+		log.Debugf("Received response from rondb: %s", jsonResponse)
+	}
+	rondbResp := api.BatchResponseJSON{}
+	json.Unmarshal([]byte(jsonResponse), &rondbResp)
+	ronDbBatchResult := make([][]*api.PKReadResponseWithCodeJSON, len(*batchStatus))
+	batchResult := make([][]interface{}, len(*batchStatus))
+	for _, response := range *rondbResp.Result {
+		splitOperationId := strings.Split(*response.Body.OperationID, SEQUENCE_SEPARATOR)
+		seqNum, _ := strconv.Atoi(splitOperationId[0])
+		*response.Body.OperationID = splitOperationId[1]
+		ronDbBatchResult[seqNum] = append(ronDbBatchResult[seqNum], response)
+	}
+	for i, ronDbResult := range ronDbBatchResult {
+		if len(ronDbResult) != 0 {
+			result, status := fshanlder.GetFeatureValues(&ronDbResult, (*entries)[i], featureView)
+			batchResult[i] = *result
+			(*batchStatus)[i] = status
+		}
+	}
+	return &batchResult
+}
+
+func getBatchPkReadParamsMutipleEntries(metadata *feature_store.FeatureViewMetadata, entries *[]*map[string]*json.RawMessage, status *[]api.FeatureStatus) *[]*api.PKReadParams {
+	var batchReadParams = make([]*api.PKReadParams, 0, metadata.NumOfFeatures*len(*entries))
+	for i, entry := range *entries {
+		if (*status)[i] != api.FEATURE_STATUS_ERROR {
+			batchReadParams = append(batchReadParams, *getBatchPkReadParams(metadata, entry, i)...)
+		}
+	}
+	return &batchReadParams
+}
+
+func getBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *map[string]*json.RawMessage, seqNum int) *[]*api.PKReadParams {
+
+	var batchReadParams = make([]*api.PKReadParams, 0, metadata.NumOfFeatures)
+	for _, fgFeature := range metadata.FeatureGroupFeatures {
+		testDb := fgFeature.FeatureStoreName
+		testTable := fmt.Sprintf("%s_%d", fgFeature.FeatureGroupName, fgFeature.FeatureGroupVersion)
+		var filters = make([]api.Filter, 0, 0)
+		var columns = make([]api.ReadColumn, 0, 0)
+		for _, feature := range fgFeature.Features {
+			if value, ok := (*entries)[feature.Prefix+feature.Name]; ok {
+				var filter = api.Filter{Column: &feature.Name, Value: value}
+				filters = append(filters, filter)
+				if log.IsDebug() {
+					log.Debugf("Add to filter: %s", feature.Name)
+				}
+			} else {
+				var colName = feature.Name
+				var colType = "default"
+				readCol := api.ReadColumn{Column: &colName, DataReturnType: &colType}
+				columns = append(columns, readCol)
+				if log.IsDebug() {
+					log.Debugf("Add to column: %s", feature.Name)
+				}
+			}
+		}
+		var opId = fmt.Sprintf("%d#%s", seqNum, feature_store.GetFeatureGroupKeyByTDFeature(fgFeature))
+		param := api.PKReadParams{DB: &testDb, Table: &testTable, Filters: &filters, ReadColumns: &columns, OperationID: &opId}
+		if log.IsDebug() {
+			strBytes, err := json.MarshalIndent(param, "", "\t")
+			if err != nil {
+				log.Debugf("Failed to marshal PKReadParams. Error: %v", err)
+			} else {
+				log.Debugf(string(strBytes))
+			}
+
+		}
+		batchReadParams = append(batchReadParams, &param)
+	}
+	return &batchReadParams
+}
+
+func getPkReadResponseJSON(numEntries int, metadata feature_store.FeatureViewMetadata) *api.BatchOpResponse {
+	response := (api.BatchOpResponse)(&api.BatchResponseJSON{})
+	response.Init(len(metadata.FeatureGroupFeatures) * numEntries)
+	log.Debugf("total number of entries: %d", len(metadata.FeatureGroupFeatures)*numEntries)
+	return &response
+}
+
+func fillPassedFeaturesMultipleEntries(features *[][]interface{}, passedFeatures *[]*map[string]*json.RawMessage, featureMetadata *map[string]*feature_store.FeatureMetadata, indexLookup *map[string]int, status *[]api.FeatureStatus) {
+	if len(*passedFeatures) != 0 {
+		for i, feature := range *features {
+			// TODO: validate length of pass features
+			if (*status)[i] != api.FEATURE_STATUS_ERROR {
+				fillPassedFeatures(&feature, (*passedFeatures)[i], featureMetadata, indexLookup)
+			}
 		}
 	}
 }
 
-func processFsResp(
-	numReq int,
-	batchResponse *FeatureStoreBatchResponseWithStatus,
-	responses chan *FeatureStoreResponseWithOrder,
-	wg *sync.WaitGroup,
-) {
-	defer wg.Done()
-	batchResponse.FsResponse.Features = make([][]interface{}, numReq)
-	batchResponse.FsResponse.Status = make([]api.FeatureStatus, numReq)
-	for i := 0; i < numReq; i++ {
-		var fvResp = <-responses
-		if fvResp.Error != nil {
-			batchResponse.FsResponse.Features[fvResp.Order] = nil
-			batchResponse.FsResponse.Status[fvResp.Order] = api.FEATURE_STATUS_ERROR
-			continue
-		} else {
-			batchResponse.FsResponse.Features[fvResp.Order] = fvResp.FsResponse.Features
-			batchResponse.FsResponse.Status[fvResp.Order] = fvResp.FsResponse.Status
-		}
-		if 0 == fvResp.Order {
-			batchResponse.FsResponse.Metadata = fvResp.FsResponse.Metadata
-		}
+func fillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*json.RawMessage, featureMetadata *map[string]*feature_store.FeatureMetadata, indexLookup *map[string]int) {
+	for featureName, passFeature := range *passedFeatures {
+		var feature = (*featureMetadata)[featureName]
+		var lookupKey = feature_store.GetFeatureIndexKeyByFeature(feature)
+		(*features)[(*indexLookup)[lookupKey]] = passFeature
 	}
+
 }
