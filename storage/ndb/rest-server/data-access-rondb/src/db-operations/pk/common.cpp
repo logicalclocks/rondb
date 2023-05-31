@@ -304,8 +304,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
     /// A fix sized array of characters
     /// size of a character depends on encoding scheme
 
-    const int data_len = request->PKValueLen(colIdx);
-    if (unlikely(data_len > col->getLength())) {
+    const int dataLen = request->PKValueLen(colIdx);
+    if (unlikely(dataLen > col->getLength())) {
       error = RS_CLIENT_ERROR(
           std::string(ERROR_008) +
           " Data length is greater than column length. Column: " + std::string(col->getName()));
@@ -314,12 +314,12 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
 
     // operation->equal expects a zero-padded char string
     primaryKey     = (Int8 *)malloc(CHAR_MAX_SIZE_IN_BYTES);
-    primaryKeySize = data_len;
+    primaryKeySize = dataLen;
     require(col->getLength() <= CHAR_MAX_SIZE_IN_BYTES);
     memset(primaryKey, 0, col->getLength());
 
     const char *data_str = request->PKValueCStr(colIdx);
-    memcpy(primaryKey, data_str, data_len);
+    memcpy(primaryKey, data_str, dataLen);
 
     break;
   }
@@ -695,8 +695,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
     // Inorder to be compatible we cast l_time.second_part to Int32
     // This will not create problems as only six digit nanoseconds
     // are stored in Timestamp2
-    timeval my_tv{epoch, (Int32)lTime.second_part};
-    my_timestamp_to_binary(&my_tv, (uchar *)primaryKey, precision);
+    timeval myTV{epoch, (Int32)lTime.second_part};
+    my_timestamp_to_binary(&myTV, (uchar *)primaryKey, precision);
 
     break;
   }
@@ -845,16 +845,16 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     [[fallthrough]];
   case NdbDictionary::Column::Longvarbinary: {
     ///< Length bytes: 2, little-endian
-    Uint32 attr_bytes;
-    const char *data_start = nullptr;
-    if (unlikely(GetByteArray(attr, &data_start, &attr_bytes) != 0)) {
+    Uint32 attrBytes;
+    const char *dataStart = nullptr;
+    if (unlikely(GetByteArray(attr, &dataStart, &attrBytes) != 0)) {
       return RS_CLIENT_ERROR(ERROR_019);
     } else {
-      require(attr_bytes <= MAX_TUPLE_SIZE_IN_BYTES);
+      require(attrBytes <= MAX_TUPLE_SIZE_IN_BYTES);
       char buffer[MAX_TUPLE_SIZE_IN_BYTES_ENCODED];
 
       size_t outlen = 0;
-      base64_encode(data_start, attr_bytes, (char *)&buffer[0], &outlen, 0);
+      base64_encode(dataStart, attrBytes, (char *)&buffer[0], &outlen, 0);
 
       return response->Append_string(attr->getColumn()->getName(), std::string(buffer, outlen),
                                      RDRS_BINARY_DATATYPE);
@@ -867,10 +867,10 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
   }
   case NdbDictionary::Column::Date: {
     ///< Precision down to 1 day(sizeof(Date) == 4 bytes )
-    MYSQL_TIME l_time;
-    my_unpack_date(&l_time, attr->aRef());
+    MYSQL_TIME lTime;
+    my_unpack_date(&lTime, attr->aRef());
     char to[MAX_DATE_STRING_REP_LENGTH];
-    my_date_to_str(l_time, to);
+    my_date_to_str(lTime, to);
     return response->Append_string(attr->getColumn()->getName(), std::string(to),
                                    RDRS_DATETIME_DATATYPE);
   }
@@ -933,14 +933,14 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     ///< 3 bytes + 0-3 fraction
     uint precision = col->getPrecision();
 
-    longlong numeric_time =
+    longlong numericTime =
         my_time_packed_from_binary((const unsigned char *)attr->aRef(), precision);
 
-    MYSQL_TIME l_time;
-    TIME_from_longlong_time_packed(&l_time, numeric_time);
+    MYSQL_TIME lTime;
+    TIME_from_longlong_time_packed(&lTime, numericTime);
 
     char to[MAX_DATE_STRING_REP_LENGTH];
-    my_TIME_to_str(l_time, to, precision);
+    my_TIME_to_str(lTime, to, precision);
 
     return response->Append_string(attr->getColumn()->getName(), std::string(to),
                                    RDRS_DATETIME_DATATYPE);
@@ -949,14 +949,14 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     ///< 5 bytes plus 0-3 fraction
     uint precision = col->getPrecision();
 
-    longlong numeric_date =
+    longlong numericDate =
         my_datetime_packed_from_binary((const unsigned char *)attr->aRef(), precision);
 
-    MYSQL_TIME l_time;
-    TIME_from_longlong_datetime_packed(&l_time, numeric_date);
+    MYSQL_TIME lTime;
+    TIME_from_longlong_datetime_packed(&lTime, numericDate);
 
     char to[MAX_DATE_STRING_REP_LENGTH];
-    my_TIME_to_str(l_time, to, precision);
+    my_TIME_to_str(lTime, to, precision);
 
     return response->Append_string(attr->getColumn()->getName(), std::string(to),
                                    RDRS_DATETIME_DATATYPE);
@@ -965,10 +965,10 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     ///< 4 bytes + 0-3 fraction
     uint precision = col->getPrecision();
 
-    timeval my_tv{};
-    my_timestamp_from_binary(&my_tv, (const unsigned char *)attr->aRef(), precision);
+    timeval myTV{};
+    my_timestamp_from_binary(&myTV, (const unsigned char *)attr->aRef(), precision);
 
-    Int64 epoch_in = my_tv.tv_sec;
+    Int64 epoch_in = myTV.tv_sec;
     std::time_t stdtime(epoch_in);
     boost::posix_time::ptime ts = boost::posix_time::from_time_t(stdtime);
 
@@ -979,7 +979,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     l_time.hour        = ts.time_of_day().hours();
     l_time.minute      = ts.time_of_day().minutes();
     l_time.second      = ts.time_of_day().seconds();
-    l_time.second_part = my_tv.tv_usec;
+    l_time.second_part = myTV.tv_usec;
     l_time.time_type   = MYSQL_TIMESTAMP_DATETIME;
 
     char to[MAX_DATE_STRING_REP_LENGTH];
@@ -994,9 +994,9 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
                          " Type: " + std::to_string(col->getType()));
 }
 
-int GetByteArray(const NdbRecAttr *attr, const char **first_byte, Uint32 *bytes) {
+int GetByteArray(const NdbRecAttr *attr, const char **firstByte, Uint32 *bytes) {
   const NdbDictionary::Column::ArrayType array_type = attr->getColumn()->getArrayType();
-  const size_t attr_bytes                           = attr->get_size_in_bytes();
+  const size_t attrBytes                            = attr->get_size_in_bytes();
   const char *aRef                                  = attr->aRef();
   std::string result;
 
@@ -1006,28 +1006,28 @@ int GetByteArray(const NdbRecAttr *attr, const char **first_byte, Uint32 *bytes)
        No prefix length is stored in aRef. Data starts from aRef's first byte
        data might be padded with blank or null bytes to fill the whole column
        */
-    *first_byte = aRef;
-    *bytes      = attr_bytes;
+    *firstByte = aRef;
+    *bytes     = attrBytes;
     return 0;
   case NdbDictionary::Column::ArrayTypeShortVar:
     /*
        First byte of aRef has the length of data stored
        Data starts from second byte of aRef
        */
-    *first_byte = aRef + 1;
-    *bytes      = static_cast<Uint8>(aRef[0]);
+    *firstByte = aRef + 1;
+    *bytes     = static_cast<Uint8>(aRef[0]);
     return 0;
   case NdbDictionary::Column::ArrayTypeMediumVar:
     /*
        First two bytes of aRef has the length of data stored
        Data starts from third byte of aRef
        */
-    *first_byte = aRef + 2;
-    *bytes      = static_cast<Uint8>(aRef[1]) * 256 + static_cast<Uint8>(aRef[0]);
+    *firstByte = aRef + 2;
+    *bytes     = static_cast<Uint8>(aRef[1]) * 256 + static_cast<Uint8>(aRef[0]);
     return 0;
   default:
-    first_byte = nullptr;
-    *bytes     = 0;
+    firstByte = nullptr;
+    *bytes    = 0;
     return -1;
   }
 }
