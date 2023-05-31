@@ -36,32 +36,32 @@
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/beast/core/detail/base64.hpp>
 
-PKROperation::PKROperation(RS_Buffer *req_buff, RS_Buffer *resp_buff, Ndb *ndb_object) {
+PKROperation::PKROperation(RS_Buffer *reqBuff, RS_Buffer *respBuff, Ndb *ndbObject) {
   SubOpTuple pkOpTuple   = SubOpTuple{};
-  pkOpTuple.pkRequest    = new PKRRequest(req_buff);
-  pkOpTuple.pkResponse   = new PKRResponse(resp_buff);
+  pkOpTuple.pkRequest    = new PKRRequest(reqBuff);
+  pkOpTuple.pkResponse   = new PKRResponse(respBuff);
   pkOpTuple.ndbOperation = nullptr;
   pkOpTuple.tableDict    = nullptr;
   this->subOpTuples.push_back(pkOpTuple);
 
-  this->ndbObject = ndb_object;
+  this->ndbObject = ndbObject;
   this->noOps     = 1;
   this->isBatch   = false;
 }
 
-PKROperation::PKROperation(Uint32 no_ops, RS_Buffer *req_buffs, RS_Buffer *resp_buffs,
-                           Ndb *ndb_object) {
-  for (Uint32 i = 0; i < no_ops; i++) {
+PKROperation::PKROperation(Uint32 noOps, RS_Buffer *reqBuffs, RS_Buffer *respBuffs,
+                           Ndb *ndbObject) {
+  for (Uint32 i = 0; i < noOps; i++) {
     SubOpTuple pkOpTuple   = SubOpTuple{};
-    pkOpTuple.pkRequest    = new PKRRequest(&req_buffs[i]);
-    pkOpTuple.pkResponse   = new PKRResponse(&resp_buffs[i]);
+    pkOpTuple.pkRequest    = new PKRRequest(&reqBuffs[i]);
+    pkOpTuple.pkResponse   = new PKRResponse(&respBuffs[i]);
     pkOpTuple.ndbOperation = nullptr;
     pkOpTuple.tableDict    = nullptr;
     this->subOpTuples.push_back(pkOpTuple);
   }
 
-  this->ndbObject = ndb_object;
-  this->noOps     = no_ops;
+  this->ndbObject = ndbObject;
+  this->noOps     = noOps;
   this->isBatch   = true;
 }
 

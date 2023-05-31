@@ -38,7 +38,7 @@
  * @return status
  */
 RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *transaction,
-                            const NdbDictionary::Table *table_dict, PKRRequest *request,
+                            const NdbDictionary::Table *tableDict, PKRRequest *request,
                             Uint32 colIdx, NdbOperation **operation);
 
 /**
@@ -50,7 +50,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response);
  * return data for array columns
  *
  */
-int GetByteArray(const NdbRecAttr *attr, const char **first_byte, Uint32 *bytes);
+int GetByteArray(const NdbRecAttr *attr, const char **firstByte, Uint32 *bytes);
 
 /**
  * Check if and operation can be retried
@@ -60,7 +60,7 @@ bool CanRetryOperation(RS_Status status);
 /**
  * Returns exponentially increasing delay with jitter
  */
-Uint32 ExponentialDelayWithJitter(Uint32 retry, Uint32 initial_delay_in_ms, Uint32 jitter_in_ms);
+Uint32 ExponentialDelayWithJitter(Uint32 retry, Uint32 initialDelayInMS, Uint32 jitterInMS);
 
 /**
  * Check error if unload schema is needed

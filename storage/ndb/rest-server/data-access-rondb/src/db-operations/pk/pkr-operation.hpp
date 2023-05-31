@@ -47,9 +47,9 @@ class PKROperation {
   std::vector<SubOpTuple> subOpTuples;
 
  public:
-  PKROperation(RS_Buffer *req_buff, RS_Buffer *resp_buff, Ndb *ndb_object);
+  PKROperation(RS_Buffer *reqBuff, RS_Buffer *respBuff, Ndb *ndbObject);
 
-  PKROperation(Uint32 noOps, RS_Buffer *req_buffs, RS_Buffer *resp_buffs, Ndb *ndb_object);
+  PKROperation(Uint32 noOps, RS_Buffer *reqBuffs, RS_Buffer *respBuffs, Ndb *ndbObject);
 
   ~PKROperation();
 
