@@ -125,7 +125,7 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
   }
 
   char cmp_str[API_KEY_PREFIX_SIZE];
-  memcpy(cmp_str + 1, prefix, API_KEY_PREFIX_SIZE - 1);
+  memcpy(cmp_str + 1, prefix, strlen(prefix) + 1); //+1 copy null terminator too
   cmp_str[0] = static_cast<char>(strlen(prefix));
 
   NdbScanFilter filter(scanOp);
@@ -369,7 +369,7 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
   }
 
   char cmp_str[PROJECT_TEAM_TEAM_MEMBER_SIZE];
-  memcpy(cmp_str + 1, users->email, strlen(users->email));
+  memcpy(cmp_str + 1, users->email, strlen(users->email) + 1);  //+1 for null terminator
   cmp_str[0] = static_cast<char>(strlen(users->email));
 
   NdbScanFilter filter(scanOp);
@@ -535,7 +535,7 @@ RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *
 RS_Status find_projects_vec(std::vector<HopsworksProjectTeam> *project_team_vec,
                             std::vector<HopsworksProject> *project_vec) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsRonDBConnection->GetNdbObject( &ndb_object);
+  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
