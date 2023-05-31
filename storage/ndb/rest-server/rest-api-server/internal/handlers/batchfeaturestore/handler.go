@@ -124,7 +124,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	var readParams = getBatchPkReadParamsMutipleEntries(metadata, fsReq.Entries, &featureStatus)
 	ronDbErr := h.dbBatchReader.Validate(readParams)
 	if ronDbErr != nil {
-		var fsError = translateRonDbError(http.StatusBadRequest, ronDbErr)
+		var fsError = fshanlder.TranslateRonDbError(http.StatusBadRequest, ronDbErr)
 		return fsError.GetStatus(), fsError.Error()
 	}
 	var dbResponseIntf = getPkReadResponseJSON(numPassed, *metadata)
@@ -134,7 +134,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	}
 	// FIXME: depends on rondb response
 	if ronDbErr != nil {
-		var fsError = translateRonDbError(code, ronDbErr)
+		var fsError = fshanlder.TranslateRonDbError(code, ronDbErr)
 		return fsError.GetStatus(), fsError.Error()
 	}
 	fsResp := response.(*api.BatchFeatureStoreResponse)
@@ -159,30 +159,6 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		fsResp.Metadata = featureMetadatas
 	}
 	return http.StatusOK, nil
-}
-
-func translateRonDbError(code int, err error) *feature_store.RestErrorCode {
-	var fsError *feature_store.RestErrorCode
-	if strings.Contains(err.Error(), "Wrong data type.") {
-		regex := regexp.MustCompile(`Expecting (\w+)\. Column: (\w+)`)
-		match := regex.FindStringSubmatch(err.Error())
-		if match != nil {
-			dataType := match[1]
-			columnName := match[2]
-			fsError = feature_store.WRONG_DATA_TYPE.NewMessage(
-				fmt.Sprintf("Primary key '%s' should be in '%s' format.", columnName, dataType),
-			)
-		} else {
-			fsError = feature_store.WRONG_DATA_TYPE
-		}
-
-	} else if strings.Contains(err.Error(), "Wrong number of primary-key columns.") ||
-		strings.Contains(err.Error(), "Wrong primay-key column.") {
-		fsError = feature_store.INCORRECT_PRIMARY_KEY.NewMessage(err.Error())
-	} else {
-		fsError = feature_store.READ_FROM_DB_FAIL
-	}
-	return fsError
 }
 
 func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries *[]*map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata, batchStatus *[]api.FeatureStatus) *[][]interface{} {
@@ -214,49 +190,12 @@ func getBatchPkReadParamsMutipleEntries(metadata *feature_store.FeatureViewMetad
 	var batchReadParams = make([]*api.PKReadParams, 0, metadata.NumOfFeatures*len(*entries))
 	for i, entry := range *entries {
 		if (*status)[i] != api.FEATURE_STATUS_ERROR {
-			batchReadParams = append(batchReadParams, *getBatchPkReadParams(metadata, entry, i)...)
-		}
-	}
-	return &batchReadParams
-}
-
-func getBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *map[string]*json.RawMessage, seqNum int) *[]*api.PKReadParams {
-
-	var batchReadParams = make([]*api.PKReadParams, 0, metadata.NumOfFeatures)
-	for _, fgFeature := range metadata.FeatureGroupFeatures {
-		testDb := fgFeature.FeatureStoreName
-		testTable := fmt.Sprintf("%s_%d", fgFeature.FeatureGroupName, fgFeature.FeatureGroupVersion)
-		var filters = make([]api.Filter, 0, 0)
-		var columns = make([]api.ReadColumn, 0, 0)
-		for _, feature := range fgFeature.Features {
-			if value, ok := (*entries)[feature.Prefix+feature.Name]; ok {
-				var filter = api.Filter{Column: &feature.Name, Value: value}
-				filters = append(filters, filter)
-				if log.IsDebug() {
-					log.Debugf("Add to filter: %s", feature.Name)
-				}
-			} else {
-				var colName = feature.Name
-				var colType = "default"
-				readCol := api.ReadColumn{Column: &colName, DataReturnType: &colType}
-				columns = append(columns, readCol)
-				if log.IsDebug() {
-					log.Debugf("Add to column: %s", feature.Name)
-				}
+			for _, param := range(*fshanlder.GetBatchPkReadParams(metadata, entry)) {
+				var oid = fmt.Sprintf("%d%s%s", i, SEQUENCE_SEPARATOR, *(*param).OperationID)
+				(*param).OperationID = &oid
+				batchReadParams = append(batchReadParams, param)
 			}
 		}
-		var opId = fmt.Sprintf("%d#%s", seqNum, feature_store.GetFeatureGroupKeyByTDFeature(fgFeature))
-		param := api.PKReadParams{DB: &testDb, Table: &testTable, Filters: &filters, ReadColumns: &columns, OperationID: &opId}
-		if log.IsDebug() {
-			strBytes, err := json.MarshalIndent(param, "", "\t")
-			if err != nil {
-				log.Debugf("Failed to marshal PKReadParams. Error: %v", err)
-			} else {
-				log.Debugf(string(strBytes))
-			}
-
-		}
-		batchReadParams = append(batchReadParams, &param)
 	}
 	return &batchReadParams
 }
@@ -273,17 +212,8 @@ func fillPassedFeaturesMultipleEntries(features *[][]interface{}, passedFeatures
 		for i, feature := range *features {
 			// TODO: validate length of pass features
 			if (*status)[i] != api.FEATURE_STATUS_ERROR {
-				fillPassedFeatures(&feature, (*passedFeatures)[i], featureMetadata, indexLookup)
+				fshanlder.FillPassedFeatures(&feature, (*passedFeatures)[i], featureMetadata, indexLookup)
 			}
 		}
 	}
-}
-
-func fillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*json.RawMessage, featureMetadata *map[string]*feature_store.FeatureMetadata, indexLookup *map[string]int) {
-	for featureName, passFeature := range *passedFeatures {
-		var feature = (*featureMetadata)[featureName]
-		var lookupKey = feature_store.GetFeatureIndexKeyByFeature(feature)
-		(*features)[(*indexLookup)[lookupKey]] = passFeature
-	}
-
 }
