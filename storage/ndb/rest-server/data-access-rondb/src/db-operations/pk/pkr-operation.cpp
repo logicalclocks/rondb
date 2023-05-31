@@ -94,14 +94,15 @@ RS_Status PKROperation::SetupTransaction() {
  */
 RS_Status PKROperation::SetupReadOperation() {
 
-start:  for (size_t opIdx = 0; opIdx < noOps; opIdx++) {
-    if (subOpTuples[opIdx].pkRequest->IsInvalidOp()) { // this sub operation can not be processed
+start:
+  for (size_t opIdx = 0; opIdx < noOps; opIdx++) {
+    if (subOpTuples[opIdx].pkRequest->IsInvalidOp()) {  // this sub operation can not be processed
       continue;
     }
 
-    PKRRequest *req                        = subOpTuples[opIdx].pkRequest;
+    PKRRequest *req                       = subOpTuples[opIdx].pkRequest;
     const NdbDictionary::Table *tableDict = subOpTuples[opIdx].tableDict;
-    std::vector<NdbRecAttr *> *recs        = &subOpTuples[opIdx].recs;
+    std::vector<NdbRecAttr *> *recs       = &subOpTuples[opIdx].recs;
 
     NdbOperation *op = nullptr;
     for (Uint32 colIdx = 0; colIdx < req->PKColumnsCount(); colIdx++) {
@@ -160,7 +161,7 @@ RS_Status PKROperation::CreateResponse() {
     resp->SetOperationID(req->OperationId());
     resp->SetNoOfColumns(recs->size());
 
-    if (req->IsInvalidOp()){
+    if (req->IsInvalidOp()) {
       resp->SetStatus(CLIENT_ERROR, req->GetError().message);
       resp->Close();
       continue;

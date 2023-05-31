@@ -64,7 +64,7 @@ inline void my_unpack_date(MYSQL_TIME *l_time, const void *d) {
 RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *transaction,
                             const NdbDictionary::Table *tableDict, PKRRequest *request,
                             Uint32 colIdx, NdbOperation **operation) {
-  Int8 *primaryKey       = nullptr;
+  Int8 *primaryKey      = nullptr;
   Uint32 primaryKeySize = 0;
   bool freePrimaryKey   = true;
   RS_Status error;
@@ -80,10 +80,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
   case NdbDictionary::Column::Tinyint: {
     ///< 8 bit. 1 byte signed integer, can be used in array
 
-    char *parsed         = nullptr;
-    errno                = 0;
+    char *parsed        = nullptr;
+    errno               = 0;
     primaryKey          = (Int8 *)malloc(8);
-    primaryKeySize     = 8;
+    primaryKeySize      = 8;
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(primaryKey);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -97,15 +97,14 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
   }
   case NdbDictionary::Column::Tinyunsigned: {
     ///< 8 bit. 1 byte unsigned integer, can be used in array
-    char *parsed         = nullptr;
-    errno                = 0;
+    char *parsed        = nullptr;
+    errno               = 0;
     primaryKey          = (Int8 *)malloc(8);
-    primaryKeySize     = 8;
+    primaryKeySize      = 8;
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(primaryKey);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
-    if (unlikely(*parsed != '\0' || errno != 0 ||
-                 !(*parsedNumber >= 0 && *parsedNumber <= 255))) {
+    if (unlikely(*parsed != '\0' || errno != 0 || !(*parsedNumber >= 0 && *parsedNumber <= 255))) {
       error = RS_CLIENT_ERROR(ERROR_015 + std::string(" Expecting TINYINT UNSIGNED. Column: ") +
                               std::string(request->PKName(colIdx)));
       break;
@@ -114,10 +113,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
   }
   case NdbDictionary::Column::Smallint: {
     ///< 16 bit. 2 byte signed integer, can be used in array
-    char *parsed         = nullptr;
-    errno                = 0;
+    char *parsed        = nullptr;
+    errno               = 0;
     primaryKey          = (Int8 *)malloc(8);
-    primaryKeySize     = 8;
+    primaryKeySize      = 8;
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(primaryKey);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -132,10 +131,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
   case NdbDictionary::Column::Smallunsigned: {
     ///< 16 bit. 2 byte unsigned integer, can be used in array
 
-    char *parsed         = nullptr;
-    errno                = 0;
+    char *parsed        = nullptr;
+    errno               = 0;
     primaryKey          = (Int8 *)malloc(8);
-    primaryKeySize     = 8;
+    primaryKeySize      = 8;
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(primaryKey);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -150,10 +149,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
   case NdbDictionary::Column::Mediumint: {
     ///< 24 bit. 3 byte signed integer, can be used in array
 
-    char *parsed         = nullptr;
-    errno                = 0;
+    char *parsed        = nullptr;
+    errno               = 0;
     primaryKey          = (Int8 *)malloc(8);
-    primaryKeySize     = 8;
+    primaryKeySize      = 8;
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(primaryKey);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -168,10 +167,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
   case NdbDictionary::Column::Mediumunsigned: {
     ///< 24 bit. 3 byte unsigned integer, can be used in array
 
-    char *parsed         = nullptr;
-    errno                = 0;
+    char *parsed        = nullptr;
+    errno               = 0;
     primaryKey          = (Int8 *)malloc(8);
-    primaryKeySize     = 8;
+    primaryKeySize      = 8;
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(primaryKey);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -185,10 +184,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
   }
   case NdbDictionary::Column::Int: {
     ///< 32 bit. 4 byte signed integer, can be used in array
-    char *parsed         = nullptr;
-    errno                = 0;
+    char *parsed        = nullptr;
+    errno               = 0;
     primaryKey          = (Int8 *)malloc(8);
-    primaryKeySize     = 8;
+    primaryKeySize      = 8;
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(primaryKey);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -203,10 +202,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
   case NdbDictionary::Column::Unsigned: {
     ///< 32 bit. 4 byte unsigned integer, can be used in array
 
-    char *parsed         = nullptr;
-    errno                = 0;
+    char *parsed        = nullptr;
+    errno               = 0;
     primaryKey          = (Int8 *)malloc(8);
-    primaryKeySize     = 8;
+    primaryKeySize      = 8;
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(primaryKey);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -221,10 +220,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
   case NdbDictionary::Column::Bigint: {
     ///< 64 bit. 8 byte signed integer, can be used in array
 
-    char *parsed         = nullptr;
-    errno                = 0;
+    char *parsed        = nullptr;
+    errno               = 0;
     primaryKey          = (Int8 *)malloc(8);
-    primaryKeySize     = 8;
+    primaryKeySize      = 8;
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(primaryKey);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -237,10 +236,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
   }
   case NdbDictionary::Column::Bigunsigned: {
     ///< 64 Bit. 8 byte signed integer, can be used in array
-    char *parsed          = nullptr;
-    errno                 = 0;
+    char *parsed         = nullptr;
+    errno                = 0;
     primaryKey           = (Int8 *)malloc(8);
-    primaryKeySize      = 8;
+    primaryKeySize       = 8;
     Uint64 *parsedNumber = reinterpret_cast<Uint64 *>(primaryKey);
     *parsedNumber        = strtoull(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -290,7 +289,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
     int scale          = col->getScale();
     const char *decStr = request->PKValueCStr(colIdx);
 
-    primaryKey      = (Int8 *)malloc(DECIMAL_MAX_SIZE_IN_BYTES);
+    primaryKey     = (Int8 *)malloc(DECIMAL_MAX_SIZE_IN_BYTES);
     primaryKeySize = DECIMAL_MAX_SIZE_IN_BYTES;
     if (unlikely(decimal_str2bin(decStr, strlen(decStr), precision, scale, primaryKey,
                                  primaryKeySize) != 0)) {
@@ -314,7 +313,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
     }
 
     // operation->equal expects a zero-padded char string
-    primaryKey      = (Int8 *)malloc(CHAR_MAX_SIZE_IN_BYTES);
+    primaryKey     = (Int8 *)malloc(CHAR_MAX_SIZE_IN_BYTES);
     primaryKeySize = data_len;
     require(col->getLength() <= CHAR_MAX_SIZE_IN_BYTES);
     memset(primaryKey, 0, col->getLength());
@@ -345,7 +344,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
     }
 
     freePrimaryKey = false;  // primaryKey points to memory in the request buffer which should
-                               // not be free'd
+                             // not be free'd
     break;
   }
   case NdbDictionary::Column::Binary: {
@@ -370,7 +369,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
       break;
     }
 
-    primaryKey      = (Int8 *)malloc(BINARY_MAX_SIZE_IN_BYTES);
+    primaryKey     = (Int8 *)malloc(BINARY_MAX_SIZE_IN_BYTES);
     primaryKeySize = col->getLength();
     memset(primaryKey, 0, primaryKeySize);
 
@@ -425,7 +424,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
       break;
     }
 
-    primaryKey        = (Int8 *)malloc(KEY_MAX_SIZE_IN_BYTES);
+    primaryKey         = (Int8 *)malloc(KEY_MAX_SIZE_IN_BYTES);
     int additional_len = 1;
     if (col->getType() == NdbDictionary::Column::Longvarbinary) {
       additional_len = 2;
@@ -498,7 +497,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
       break;
     }
 
-    primaryKey      = (Int8 *)malloc(DATE_MAX_SIZE_IN_BYTES);
+    primaryKey     = (Int8 *)malloc(DATE_MAX_SIZE_IN_BYTES);
     primaryKeySize = col->getSizeInBytes();
     my_date_to_binary(&l_time, (uchar *)primaryKey);
     break;
@@ -530,8 +529,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
   case NdbDictionary::Column::Year: {
     ///< Year 1901-2155 (1 byte)
 
-    char *parsed        = nullptr;
-    errno               = 0;
+    char *parsed       = nullptr;
+    errno              = 0;
     Int64 parsedNumber = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
     if (unlikely(*parsed != '\0' || errno != 0 ||
@@ -542,10 +541,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
       break;
     }
 
-    primaryKey      = (Int8 *)malloc(4);
+    primaryKey     = (Int8 *)malloc(4);
     primaryKeySize = 4;
-    Int32 *year      = reinterpret_cast<Int32 *>(primaryKey);
-    *year            = static_cast<Int32>((parsedNumber - 1900));
+    Int32 *year    = reinterpret_cast<Int32 *>(primaryKey);
+    *year          = static_cast<Int32>((parsedNumber - 1900));
     break;
   }
   case NdbDictionary::Column::Timestamp: {
@@ -576,9 +575,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
       break;
     }
 
-    primaryKey      = (Int8 *)malloc(TIME2_MAX_SIZE_IN_BYTES);
+    primaryKey     = (Int8 *)malloc(TIME2_MAX_SIZE_IN_BYTES);
     primaryKeySize = col->getSizeInBytes();
-    int precision    = col->getPrecision();
+    int precision  = col->getPrecision();
 
     int warnings = 0;
     my_datetime_adjust_frac(&l_time, precision, &warnings, true);
@@ -600,9 +599,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
     const char *date_str = request->PKValueCStr(colIdx);
     size_t date_str_len  = request->PKValueLen(colIdx);
 
-    MYSQL_TIME l_time;
+    MYSQL_TIME lTime;
     MYSQL_TIME_STATUS status;
-    bool ret = str_to_datetime(date_str, date_str_len, &l_time, 0, &status);
+    bool ret = str_to_datetime(date_str, date_str_len, &lTime, 0, &status);
     if (unlikely(ret != 0)) {
       error = RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
                               std::string(col->getName()));
@@ -611,18 +610,18 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
 
     int precision = col->getPrecision();
     int warnings  = 0;
-    my_datetime_adjust_frac(&l_time, precision, &warnings, true);
+    my_datetime_adjust_frac(&lTime, precision, &warnings, true);
     if (unlikely(warnings != 0)) {
       error = RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
                               std::string(col->getName()));
       break;
     }
 
-    longlong numeric_date_time = TIME_to_longlong_datetime_packed(l_time);
+    longlong numericDateTime = TIME_to_longlong_datetime_packed(lTime);
 
-    primaryKey      = (Int8 *)malloc(DATETIME_MAX_SIZE_IN_BYTES);
+    primaryKey     = (Int8 *)malloc(DATETIME_MAX_SIZE_IN_BYTES);
     primaryKeySize = col->getSizeInBytes();
-    my_datetime_packed_to_binary(numeric_date_time, (uchar *)primaryKey, precision);
+    my_datetime_packed_to_binary(numericDateTime, (uchar *)primaryKey, precision);
 
     break;
   }
@@ -630,13 +629,13 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
     // epoch range 0 , 2147483647
     /// < 4 bytes + 0-3 fraction
     require(col->getSizeInBytes() <= TIMESTAMP2_MAX_SIZE_IN_BYTES);
-    const char *ts_str = request->PKValueCStr(colIdx);
-    size_t ts_str_len  = request->PKValueLen(colIdx);
-    uint precision     = col->getPrecision();
+    const char *tsStr = request->PKValueCStr(colIdx);
+    size_t tsStrLen   = request->PKValueLen(colIdx);
+    uint precision    = col->getPrecision();
 
-    MYSQL_TIME l_time;
+    MYSQL_TIME lTime;
     MYSQL_TIME_STATUS status;
-    bool ret = str_to_datetime(ts_str, ts_str_len, &l_time, 0, &status);
+    bool ret = str_to_datetime(tsStr, tsStrLen, &lTime, 0, &status);
     if (unlikely(ret != 0)) {
       error = RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
                               std::string(col->getName()));
@@ -646,10 +645,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
     time_t epoch = 0;
     errno        = 0;
     try {
-      char bts_str[MAX_DATE_STRING_REP_LENGTH];
-      snprintf(bts_str, MAX_DATE_STRING_REP_LENGTH, "%d-%d-%d %d:%d:%d", l_time.year, l_time.month,
-               l_time.day, l_time.hour, l_time.minute, l_time.second);
-      boost::posix_time::ptime bt(boost::posix_time::time_from_string(std::string(bts_str)));
+      char btsStr[MAX_DATE_STRING_REP_LENGTH];
+      snprintf(btsStr, MAX_DATE_STRING_REP_LENGTH, "%d-%d-%d %d:%d:%d", lTime.year, lTime.month,
+               lTime.day, lTime.hour, lTime.minute, lTime.second);
+      boost::posix_time::ptime bt(boost::posix_time::time_from_string(std::string(btsStr)));
       boost::posix_time::ptime start(boost::gregorian::date(1970, 1, 1));
       boost::posix_time::time_duration dur = bt - start;
       epoch                                = dur.total_seconds();
@@ -682,21 +681,21 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *tr
     //
 
     int warnings = 0;
-    my_datetime_adjust_frac(&l_time, precision, &warnings, true);
+    my_datetime_adjust_frac(&lTime, precision, &warnings, true);
     if (unlikely(warnings != 0)) {
       error = RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
                               std::string(col->getName()));
       break;
     }
 
-    primaryKey      = (Int8 *)malloc(TIMESTAMP2_MAX_SIZE_IN_BYTES);
+    primaryKey     = (Int8 *)malloc(TIMESTAMP2_MAX_SIZE_IN_BYTES);
     primaryKeySize = col->getSizeInBytes();
 
     // On Mac timeval.tv_usec is Int32 and on linux it is Int64.
     // Inorder to be compatible we cast l_time.second_part to Int32
     // This will not create problems as only six digit nanoseconds
     // are stored in Timestamp2
-    timeval my_tv{epoch, (Int32)l_time.second_part};
+    timeval my_tv{epoch, (Int32)lTime.second_part};
     my_timestamp_to_binary(&my_tv, (uchar *)primaryKey, precision);
 
     break;
@@ -1079,7 +1078,7 @@ bool UnloadSchema(RS_Status status) {
 
 Uint32 ExponentialDelayWithJitter(Uint32 retry, Uint32 initialDelayInMS, Uint32 jitterInMS) {
   Uint32 expoDelay  = initialDelayInMS * pow(2, retry);
-  jitterInMS      = std::min(jitterInMS, initialDelayInMS);
+  jitterInMS        = std::min(jitterInMS, initialDelayInMS);
   Uint32 randJitter = rand() % jitterInMS;
 
   Uint32 delay = 0;
