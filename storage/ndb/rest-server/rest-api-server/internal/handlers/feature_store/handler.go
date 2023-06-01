@@ -87,6 +87,9 @@ func ValidatePrimaryKey(entries *map[string]*json.RawMessage, features *map[stri
 }
 
 func ValidatePassedFeatures(passedFeatures *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) *feature_store.RestErrorCode {
+	if passedFeatures == nil {
+		return nil
+	}
 	for featureName, value := range *passedFeatures {
 		feature, ok := (*features)[featureName]
 		if !ok {
@@ -193,23 +196,27 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	var readParams = GetBatchPkReadParams(metadata, fsReq.Entries)
 	ronDbErr := h.dbBatchReader.Validate(readParams)
 	if ronDbErr != nil {
-		var fsError = TranslateRonDbError(http.StatusBadRequest, ronDbErr)
+		var fsError = TranslateRonDbError(http.StatusBadRequest, ronDbErr.Error())
 		return fsError.GetStatus(), fsError.Error()
 	}
 	var dbResponseIntf = getPkReadResponseJSON(*metadata)
 	code, ronDbErr := h.dbBatchReader.Execute(readParams, *dbResponseIntf)
 	if ronDbErr != nil {
-		var fsError = TranslateRonDbError(code, ronDbErr)
+		var fsError = TranslateRonDbError(code, ronDbErr.Error())
 		return fsError.GetStatus(), fsError.Error()
 	}
-	fsResp := response.(*api.FeatureStoreResponse)
 	jsonResponse := (*dbResponseIntf).String()
 	if log.IsDebug() {
-		log.Debugf("Received response from rondb: %s", jsonResponse)
+		log.Debugf("Rondb response: code: %d, error: %s, body: %s", code, ronDbErr, jsonResponse)
 	}
 	rondbResp := api.BatchResponseJSON{}
 	json.Unmarshal([]byte(jsonResponse), &rondbResp)
+	fsError := checkRondbResponse(&rondbResp)
+	if fsError != nil {
+		return fsError.GetStatus(), fsError.Error()
+	}
 	features, status := GetFeatureValues(rondbResp.Result, fsReq.Entries, metadata)
+	fsResp := response.(*api.FeatureStoreResponse)
 	fsResp.Status = status
 	FillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
 	fsResp.Features = *features
@@ -217,6 +224,15 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		fsResp.Metadata = *GetFeatureMetadata(metadata, fsReq.MetadataRequest)
 	}
 	return http.StatusOK, nil
+}
+
+func checkRondbResponse(rondbResp *api.BatchResponseJSON) *feature_store.RestErrorCode {
+	for _, result := range *rondbResp.Result {
+		if *result.Code != 200 && *result.Code != 404 {
+			return TranslateRonDbError(int(*result.Code), *result.Message)
+		}
+	}
+	return nil
 }
 
 func GetFeatureMetadata(metadata *feature_store.FeatureViewMetadata, metaRequest *api.MetadataRequest) *[]*api.FeatureMeatadata {
@@ -236,11 +252,11 @@ func GetFeatureMetadata(metadata *feature_store.FeatureViewMetadata, metaRequest
 	return &featureMetadataArray
 }
 
-func TranslateRonDbError(code int, err error) *feature_store.RestErrorCode {
+func TranslateRonDbError(code int, err string) *feature_store.RestErrorCode {
 	var fsError *feature_store.RestErrorCode
-	if strings.Contains(err.Error(), "Wrong data type.") {
+	if strings.Contains(err, "Wrong data type.") {
 		regex := regexp.MustCompile(`Expecting (\w+)\. Column: (\w+)`)
-		match := regex.FindStringSubmatch(err.Error())
+		match := regex.FindStringSubmatch(err)
 		if match != nil {
 			dataType := match[1]
 			columnName := match[2]
@@ -251,11 +267,16 @@ func TranslateRonDbError(code int, err error) *feature_store.RestErrorCode {
 			fsError = feature_store.WRONG_DATA_TYPE
 		}
 
-	} else if strings.Contains(err.Error(), "Wrong number of primary-key columns.") ||
-		strings.Contains(err.Error(), "Wrong primay-key column.") {
-		fsError = feature_store.INCORRECT_PRIMARY_KEY.NewMessage(err.Error())
+	} else if strings.Contains(err, "Wrong number of primary-key columns.") ||
+		strings.Contains(err, "Wrong primay-key column.") ||
+		strings.Contains(err, "Column does not exist.") {
+		fsError = feature_store.INCORRECT_PRIMARY_KEY.NewMessage(err)
 	} else {
-		fsError = feature_store.READ_FROM_DB_FAIL
+		if code == 400 {
+			fsError = feature_store.READ_FROM_DB_FAIL_BAD_INPUT.NewMessage(err)
+		} else {
+			fsError = feature_store.READ_FROM_DB_FAIL
+		}
 	}
 	return fsError
 }
@@ -327,10 +348,11 @@ func getPkReadResponseJSON(metadata feature_store.FeatureViewMetadata) *api.Batc
 }
 
 func FillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*json.RawMessage, featureMetadata *map[string]*feature_store.FeatureMetadata, indexLookup *map[string]int) {
-	for featureName, passFeature := range *passedFeatures {
-		var feature = (*featureMetadata)[featureName]
-		var lookupKey = feature_store.GetFeatureIndexKeyByFeature(feature)
-		(*features)[(*indexLookup)[lookupKey]] = passFeature
+	if passedFeatures != nil {
+		for featureName, passFeature := range *passedFeatures {
+			var feature = (*featureMetadata)[featureName]
+			var lookupKey = feature_store.GetFeatureIndexKeyByFeature(feature)
+			(*features)[(*indexLookup)[lookupKey]] = passFeature
+		}
 	}
-
 }

@@ -150,7 +150,7 @@ func Test_GetFeatureVector_FsNotExist(t *testing.T) {
 		nil,
 		nil,
 	)
-	GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FS_NOT_EXIST.GetReason(), http.StatusUnauthorized)
+	GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FS_NOT_EXIST.GetReason(), http.StatusBadRequest)
 }
 
 func Test_GetFeatureVector_FvNotExist(t *testing.T) {
@@ -167,7 +167,7 @@ func Test_GetFeatureVector_FvNotExist(t *testing.T) {
 		nil,
 		nil,
 	)
-	GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FV_NOT_EXIST.GetReason(), http.StatusUnauthorized)
+	GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FV_NOT_EXIST.GetReason(), http.StatusBadRequest)
 
 }
 
@@ -655,7 +655,7 @@ func Test_GetFeatureVector_wrongPkValue_partialFail(t *testing.T) {
 }
 
 func Test_PassedFeatures_success_allTypes(t *testing.T) {
-	rows, pks, cols, err := fshelper.GetNSampleData("fsdb001", "sample_3_1", 1)
+	rows, pks, cols, err := fshelper.GetNSampleData("fsdb001", "sample_3_1", 2)
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}

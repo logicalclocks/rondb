@@ -142,7 +142,7 @@ func Test_GetFeatureVector_FsNotExist(t *testing.T) {
 			nil,
 			nil,
 		)
-		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FS_NOT_EXIST.GetReason(), http.StatusUnauthorized)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FS_NOT_EXIST.GetReason(), http.StatusBadRequest)
 
 	}
 }
@@ -162,7 +162,7 @@ func Test_GetFeatureVector_FvNotExist(t *testing.T) {
 			nil,
 			nil,
 		)
-		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FV_NOT_EXIST.GetReason(), http.StatusUnauthorized)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FV_NOT_EXIST.GetReason(), http.StatusBadRequest)
 	}
 }
 

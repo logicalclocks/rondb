@@ -63,7 +63,7 @@ func (h *Handler) Validate(request interface{}) error {
 		return feature_store.NO_PRIMARY_KEY_GIVEN.Error()
 	}
 	if len(*fsReq.PassedFeatures) != 0 && len(*fsReq.Entries) != len(*fsReq.PassedFeatures) {
-		return feature_store.INCORRECT_PASSED_FEATURE.Error()
+		return feature_store.INCORRECT_PASSED_FEATURE.NewMessage("Length of passed feature does not equal to that of entries.").Error()
 	}
 	return nil
 }
@@ -113,23 +113,35 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	var featureStatus = make([]api.FeatureStatus, len(*fsReq.Entries))
 	var numPassed = checkStatus(fsReq, metadata, &featureStatus)
 	var readParams = getBatchPkReadParamsMutipleEntries(metadata, fsReq.Entries, &featureStatus)
-	ronDbErr := h.dbBatchReader.Validate(readParams)
-	if ronDbErr != nil {
-		var fsError = fshandler.TranslateRonDbError(http.StatusBadRequest, ronDbErr)
-		return fsError.GetStatus(), fsError.Error()
-	}
-	var dbResponseIntf = getPkReadResponseJSON(numPassed, *metadata)
-	code, ronDbErr := h.dbBatchReader.Execute(readParams, *dbResponseIntf)
-	if log.IsDebug() {
-		log.Debugf("Rondb response: %s", (*dbResponseIntf).String())
-	}
-	// FIXME: depends on rondb response
-	if ronDbErr != nil {
-		var fsError = fshandler.TranslateRonDbError(code, ronDbErr)
-		return fsError.GetStatus(), fsError.Error()
-	}
 	fsResp := response.(*api.BatchFeatureStoreResponse)
-	features := getFeatureValuesMultipleEntries(dbResponseIntf, fsReq.Entries, metadata, &featureStatus)
+	var features *[][]interface{}
+	if len(*readParams) > 0 {
+		ronDbErr := h.dbBatchReader.Validate(readParams)
+		if ronDbErr != nil {
+			if log.IsDebug() {
+				log.Debugf("Rondb validation failed: %s", ronDbErr.Error())
+			}
+			var fsError = fshandler.TranslateRonDbError(http.StatusBadRequest, ronDbErr.Error())
+			return fsError.GetStatus(), fsError.Error()
+		}
+		var dbResponseIntf = getPkReadResponseJSON(numPassed, *metadata)
+		code, ronDbErr := h.dbBatchReader.Execute(readParams, *dbResponseIntf)
+		if log.IsDebug() {
+			log.Debugf("Rondb response: code: %d, error: %s, body: %s", code, ronDbErr, (*dbResponseIntf).String())
+		}
+		// FIXME: depends on rondb response
+		if ronDbErr != nil {
+			var fsError = fshandler.TranslateRonDbError(code, ronDbErr.Error())
+			return fsError.GetStatus(), fsError.Error()
+		}
+		features = getFeatureValuesMultipleEntries(dbResponseIntf, fsReq.Entries, metadata, &featureStatus)
+	} else {
+		var emptyFeatures = make([][]interface{}, len(*fsReq.Entries))
+		for i := range(emptyFeatures) {
+			emptyFeatures[i] = make([]interface{}, metadata.NumOfFeatures)
+		}
+		features = &emptyFeatures
+	}
 	fsResp.Status = featureStatus
 	fillPassedFeaturesMultipleEntries(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup, &featureStatus)
 	fsResp.Features = *features
@@ -141,9 +153,6 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 
 func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries *[]*map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata, batchStatus *[]api.FeatureStatus) *[][]interface{} {
 	jsonResponse := (*batchResponse).String()
-	if log.IsDebug() {
-		log.Debugf("Received response from rondb: %s", jsonResponse)
-	}
 	rondbResp := api.BatchResponseJSON{}
 	json.Unmarshal([]byte(jsonResponse), &rondbResp)
 	ronDbBatchResult := make([][]*api.PKReadResponseWithCodeJSON, len(*batchStatus))
