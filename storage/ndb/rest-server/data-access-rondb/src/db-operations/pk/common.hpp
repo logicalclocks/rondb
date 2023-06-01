@@ -28,15 +28,18 @@
 
 /**
  * Set up read operation
- *
- * @param[in] table
- * @param[in] transaction
- * @param[out] operation
+ * @param col information of column that we're querying
+ * @param transaction
+ * @param request the incoming request from the REST API server
+ * @param colIdx the scale
+ * @param[out] operation the RonDB operation that we wish to prepare
+ * @return the REST API status of performing the operation
  *
  * @return status
  */
-RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbOperation *operation,
-                            PKRRequest *request, Uint32 colIdx);
+RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *transaction,
+                            const NdbDictionary::Table *tableDict, PKRRequest *request,
+                            Uint32 colIdx, NdbOperation **operation);
 
 /**
  * it stores the data read from the DB into the response buffer
@@ -47,21 +50,20 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response);
  * return data for array columns
  *
  */
-int GetByteArray(const NdbRecAttr *attr, const char **first_byte, Uint32 *bytes);
-
+int GetByteArray(const NdbRecAttr *attr, const char **firstByte, Uint32 *bytes);
 
 /**
  * Check if and operation can be retried
  */
-bool CanRetryOperation(RS_Status status); 
+bool CanRetryOperation(RS_Status status);
 
 /**
- * Returns exponentially increasing delay with jitter 
+ * Returns exponentially increasing delay with jitter
  */
-Uint32 ExponentialDelayWithJitter(Uint32 retry, Uint32 initial_delay_in_ms, Uint32 jitter_in_ms);
+Uint32 ExponentialDelayWithJitter(Uint32 retry, Uint32 initialDelayInMS, Uint32 jitterInMS);
 
 /**
- * Check error if unload schema is needed 
+ * Check error if unload schema is needed
  */
 bool UnloadSchema(RS_Status status);
 

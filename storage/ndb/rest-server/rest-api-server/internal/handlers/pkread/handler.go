@@ -81,7 +81,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	}
 
 	pkReadResponse := response.(api.PKReadResponse)
-	status, err := ProcessPKReadResponse(respBuff, pkReadResponse)
+	status, _, err := ProcessPKReadResponse(respBuff, pkReadResponse)
 	if err != nil {
 		return http.StatusInternalServerError, err
 	}

@@ -52,9 +52,11 @@ RS_Status RDRSRonDBConnection::Init(const char *connection_string, Uint32 connec
   __instance->stats.is_shutdown                 = false;
   __instance->stats.connection_state            = DISCONNECTED;
 
-  __instance->connection_string = reinterpret_cast<char *>(malloc(strlen(connection_string)));
-  std::strncpy(__instance->connection_string, connection_string, strlen(connection_string));
-  __instance->connection_pool_size = connection_pool_size;
+  size_t connection_string_len  = strlen(connection_string);
+  __instance->connection_string = reinterpret_cast<char *>(malloc(connection_string_len + 1));
+  std::strncpy(__instance->connection_string, connection_string, connection_string_len);
+  __instance->connection_string[connection_string_len] = 0;
+  __instance->connection_pool_size                     = connection_pool_size;
 
   __instance->node_ids = reinterpret_cast<Uint32 *>(malloc(node_ids_len * sizeof(Uint32)));
   memcpy(__instance->node_ids, node_ids, node_ids_len * sizeof(Uint32));
@@ -167,7 +169,7 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
       }
 
       LOG_WARN(ERROR_033 + std::string(" Connection State: ") + std::to_string(connection_state) +
-                std::string(" Reconnection State: ") + std::to_string(reconnection_in_progress));
+               std::string(" Reconnection State: ") + std::to_string(reconnection_in_progress));
       return RS_SERVER_ERROR(ERROR_033);
     }
   }
@@ -330,7 +332,8 @@ RS_Status RDRSRonDBConnection::ReconnectHandler() {
   if (!allNDBObjectsCountedFor) {
     LOG_ERROR("Timedout waiting for all NDB objects.");
   } else {
-    LOG_INFO("All NDB objects are accounted for. Total objects: "+std::to_string(stats.ndb_objects_created));
+    LOG_INFO("All NDB objects are accounted for. Total objects: " +
+             std::to_string(stats.ndb_objects_created));
   }
 
   RS_Status status = Shutdown(false);
