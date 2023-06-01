@@ -21,25 +21,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
-	fshanlder "hopsworks.ai/rdrs/internal/handlers/feature_store"
+	fshandler "hopsworks.ai/rdrs/internal/handlers/feature_store"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
-)
-
-const (
-	JSON_NUMBER  = "NUMBER"
-	JSON_STRING  = "STRING"
-	JSON_BOOLEAN = "BOOLEAN"
-	JSON_NIL     = "NIL"
-	JSON_OTHER   = "OTHER"
 )
 
 const (
@@ -80,13 +71,13 @@ func (h *Handler) Validate(request interface{}) error {
 func checkStatus(fsReq *api.BatchFeatureStoreRequest, metadata *feature_store.FeatureViewMetadata, status *[]api.FeatureStatus) int {
 	var cnt = make(map[int]bool)
 	for i, entry := range *fsReq.Entries {
-		if fshanlder.ValidatePrimaryKey(entry, &metadata.PrefixFeaturesLookup) != nil {
+		if fshandler.ValidatePrimaryKey(entry, &metadata.PrefixFeaturesLookup) != nil {
 			(*status)[i] = api.FEATURE_STATUS_ERROR
 			cnt[i] = true
 		}
 	}
 	for i, passedFeature := range *fsReq.PassedFeatures {
-		if fshanlder.ValidatePassedFeatures(passedFeature, &metadata.PrefixFeaturesLookup) != nil {
+		if fshandler.ValidatePassedFeatures(passedFeature, &metadata.PrefixFeaturesLookup) != nil {
 			(*status)[i] = api.FEATURE_STATUS_ERROR
 			cnt[i] = true
 		}
@@ -124,7 +115,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	var readParams = getBatchPkReadParamsMutipleEntries(metadata, fsReq.Entries, &featureStatus)
 	ronDbErr := h.dbBatchReader.Validate(readParams)
 	if ronDbErr != nil {
-		var fsError = fshanlder.TranslateRonDbError(http.StatusBadRequest, ronDbErr)
+		var fsError = fshandler.TranslateRonDbError(http.StatusBadRequest, ronDbErr)
 		return fsError.GetStatus(), fsError.Error()
 	}
 	var dbResponseIntf = getPkReadResponseJSON(numPassed, *metadata)
@@ -134,7 +125,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	}
 	// FIXME: depends on rondb response
 	if ronDbErr != nil {
-		var fsError = fshanlder.TranslateRonDbError(code, ronDbErr)
+		var fsError = fshandler.TranslateRonDbError(code, ronDbErr)
 		return fsError.GetStatus(), fsError.Error()
 	}
 	fsResp := response.(*api.BatchFeatureStoreResponse)
@@ -143,20 +134,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	fillPassedFeaturesMultipleEntries(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup, &featureStatus)
 	fsResp.Features = *features
 	if fsReq.MetadataRequest != nil {
-		featureMetadatas := make([]*api.FeatureMeatadata, metadata.NumOfFeatures)
-		for featureKey, metadata := range metadata.PrefixFeaturesLookup {
-			featureMetadata := api.FeatureMeatadata{}
-			if fsReq.MetadataRequest.FeatureName {
-				var fk = featureKey
-				featureMetadata.Name = &fk
-			}
-			if fsReq.MetadataRequest.FeatureType {
-				var ft = metadata.Type
-				featureMetadata.Type = &ft
-			}
-			featureMetadatas[metadata.Index] = &featureMetadata
-		}
-		fsResp.Metadata = featureMetadatas
+		fsResp.Metadata = *fshandler.GetFeatureMetadata(metadata, fsReq.MetadataRequest)
 	}
 	return http.StatusOK, nil
 }
@@ -178,7 +156,7 @@ func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries
 	}
 	for i, ronDbResult := range ronDbBatchResult {
 		if len(ronDbResult) != 0 {
-			result, status := fshanlder.GetFeatureValues(&ronDbResult, (*entries)[i], featureView)
+			result, status := fshandler.GetFeatureValues(&ronDbResult, (*entries)[i], featureView)
 			batchResult[i] = *result
 			(*batchStatus)[i] = status
 		}
@@ -190,7 +168,7 @@ func getBatchPkReadParamsMutipleEntries(metadata *feature_store.FeatureViewMetad
 	var batchReadParams = make([]*api.PKReadParams, 0, metadata.NumOfFeatures*len(*entries))
 	for i, entry := range *entries {
 		if (*status)[i] != api.FEATURE_STATUS_ERROR {
-			for _, param := range(*fshanlder.GetBatchPkReadParams(metadata, entry)) {
+			for _, param := range *fshandler.GetBatchPkReadParams(metadata, entry) {
 				var oid = fmt.Sprintf("%d%s%s", i, SEQUENCE_SEPARATOR, *(*param).OperationID)
 				(*param).OperationID = &oid
 				batchReadParams = append(batchReadParams, param)
@@ -203,7 +181,6 @@ func getBatchPkReadParamsMutipleEntries(metadata *feature_store.FeatureViewMetad
 func getPkReadResponseJSON(numEntries int, metadata feature_store.FeatureViewMetadata) *api.BatchOpResponse {
 	response := (api.BatchOpResponse)(&api.BatchResponseJSON{})
 	response.Init(len(metadata.FeatureGroupFeatures) * numEntries)
-	log.Debugf("total number of entries: %d", len(metadata.FeatureGroupFeatures)*numEntries)
 	return &response
 }
 
@@ -212,7 +189,7 @@ func fillPassedFeaturesMultipleEntries(features *[][]interface{}, passedFeatures
 		for i, feature := range *features {
 			// TODO: validate length of pass features
 			if (*status)[i] != api.FEATURE_STATUS_ERROR {
-				fshanlder.FillPassedFeatures(&feature, (*passedFeatures)[i], featureMetadata, indexLookup)
+				fshandler.FillPassedFeatures(&feature, (*passedFeatures)[i], featureMetadata, indexLookup)
 			}
 		}
 	}

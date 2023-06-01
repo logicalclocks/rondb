@@ -214,22 +214,26 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	FillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
 	fsResp.Features = *features
 	if fsReq.MetadataRequest != nil {
-		featureMetadatas := make([]*api.FeatureMeatadata, metadata.NumOfFeatures)
-		for featureKey, metadata := range metadata.PrefixFeaturesLookup {
-			featureMetadata := api.FeatureMeatadata{}
-			if fsReq.MetadataRequest.FeatureName {
-				var fk = featureKey
-				featureMetadata.Name = &fk
-			}
-			if fsReq.MetadataRequest.FeatureType {
-				var ft = metadata.Type
-				featureMetadata.Type = &ft
-			}
-			featureMetadatas[metadata.Index] = &featureMetadata
-		}
-		fsResp.Metadata = featureMetadatas
+		fsResp.Metadata = *GetFeatureMetadata(metadata, fsReq.MetadataRequest)
 	}
 	return http.StatusOK, nil
+}
+
+func GetFeatureMetadata(metadata *feature_store.FeatureViewMetadata, metaRequest *api.MetadataRequest) *[]*api.FeatureMeatadata {
+	featureMetadataArray := make([]*api.FeatureMeatadata, metadata.NumOfFeatures)
+	for featureKey, metadata := range metadata.PrefixFeaturesLookup {
+		featureMetadata := api.FeatureMeatadata{}
+		if metaRequest.FeatureName {
+			var fk = featureKey
+			featureMetadata.Name = &fk
+		}
+		if metaRequest.FeatureType {
+			var ft = metadata.Type
+			featureMetadata.Type = &ft
+		}
+		featureMetadataArray[metadata.Index] = &featureMetadata
+	}
+	return &featureMetadataArray
 }
 
 func TranslateRonDbError(code int, err error) *feature_store.RestErrorCode {
