@@ -197,7 +197,7 @@ func isRawBytesNumerical(v *sql.RawBytes) bool {
 }
 
 func getColumnInfo(dbName string, tableName string) ([]string, []string, []string, error) {
-	dbConn, err := testutils.CreateMySQLConnection()
+	dbConn, _ := testutils.CreateMySQLConnection()
 
 	var colTypes []string
 	var columns []string

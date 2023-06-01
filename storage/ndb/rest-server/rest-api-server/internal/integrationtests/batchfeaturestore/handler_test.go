@@ -308,7 +308,7 @@ func Test_GetFeatureVector_shared(t *testing.T) {
 }
 
 func Test_GetFeatureVector_notShared(t *testing.T) {
-	rows, pks, cols, err := fshelper.GetNSampleDataColumns("fsdb001", "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`", })
+	rows, pks, cols, err := fshelper.GetNSampleDataColumns("fsdb001", "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`"})
 
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
@@ -453,7 +453,7 @@ func Test_GetFeatureVector_incompletePrimaryKey(t *testing.T) {
 }
 
 func Test_GetFeatureVector_incompletePrimaryKey_partialFail(t *testing.T) {
-	rows, pks, cols, err := fshelper.GetNSampleDataColumns("fsdb001", "sample_3_1", 3, []string{"`id1`", "`id2`", "`ts`", "`bigint`", })
+	rows, pks, cols, err := fshelper.GetNSampleDataColumns("fsdb001", "sample_3_1", 3, []string{"`id1`", "`id2`", "`ts`", "`bigint`"})
 
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
@@ -507,7 +507,7 @@ func Test_GetFeatureVector_wrongPrimaryKey_featureNotPk(t *testing.T) {
 }
 
 func Test_GetFeatureVector_wrongPrimaryKey_featureNotPk_partialFail(t *testing.T) {
-	rows, pks, cols, err := fshelper.GetNSampleDataColumns("fsdb001", "sample_3_1", 3, []string{"`id1`", "`id2`", "`ts`", "`bigint`", })
+	rows, pks, cols, err := fshelper.GetNSampleDataColumns("fsdb001", "sample_3_1", 3, []string{"`id1`", "`id2`", "`ts`", "`bigint`"})
 
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
@@ -570,7 +570,7 @@ func Test_GetFeatureVector_wrongPkType_int(t *testing.T) {
 }
 
 func Test_GetFeatureVector_wrongPkType_str(t *testing.T) {
-	rows, pks, cols, err := fshelper.GetNSampleDataColumns("fsdb001", "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`", })
+	rows, pks, cols, err := fshelper.GetNSampleDataColumns("fsdb001", "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`"})
 
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
@@ -629,7 +629,7 @@ func Test_GetFeatureVector_wrongPkValue(t *testing.T) {
 }
 
 func Test_GetFeatureVector_wrongPkValue_partialFail(t *testing.T) {
-	rows, pks, cols, err := fshelper.GetNSampleDataColumns("fsdb001", "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`", })
+	rows, pks, cols, err := fshelper.GetNSampleDataColumns("fsdb001", "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`"})
 
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)

@@ -167,7 +167,7 @@ func Test_GetFeatureVector_FvNotExist(t *testing.T) {
 }
 
 func Test_GetFeatureVector_CompositePrimaryKey(t *testing.T) {
-	rows, pks, cols, err := GetNSampleDataColumns("fsdb001", "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`", })
+	rows, pks, cols, err := GetNSampleDataColumns("fsdb001", "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`"})
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
@@ -317,7 +317,7 @@ func Test_GetFeatureVector_shared(t *testing.T) {
 }
 
 func Test_GetFeatureVector_notShared(t *testing.T) {
-	rows, pks, cols, err := GetNSampleDataColumns("fsdb001", "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`", })
+	rows, pks, cols, err := GetNSampleDataColumns("fsdb001", "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`"})
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
@@ -559,8 +559,8 @@ func Test_PassedFeatures_success_allTypes(t *testing.T) {
 	}
 	for _, row := range rows {
 		var passedFeatures = []interface{}{
-			row[0],          // id1
-			row[1],        // id2
+			row[0],                 // id1
+			row[1],                 // id2
 			[]byte(`992`),          // ts
 			[]byte(`993`),          // bigint
 			[]byte(`"994"`),        // string
