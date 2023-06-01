@@ -42,7 +42,7 @@ func TestMetadata_FsNotExist(t *testing.T) {
 	if err == nil {
 		t.Fatalf("This should fail.")
 	}
-	if !strings.Contains(err.Error().Error(), fsmetadata.FS_NOT_EXIST.GetReason()) {
+	if !strings.Contains(err.Error(), fsmetadata.FS_NOT_EXIST.GetReason()) {
 		t.Fatalf("This should fail with error message: %s.", fsmetadata.FS_NOT_EXIST.GetReason())
 	}
 }
@@ -52,7 +52,7 @@ func TestMetadata_FvNotExist(t *testing.T) {
 	if err == nil {
 		t.Fatalf("This should fail.")
 	}
-	if !strings.Contains(err.Error().Error(), fsmetadata.FV_NOT_EXIST.GetReason()) {
+	if !strings.Contains(err.Error(), fsmetadata.FV_NOT_EXIST.GetReason()) {
 		t.Fatalf("This should fail with error message: %s.", fsmetadata.FV_NOT_EXIST.GetReason())
 	}
 }
@@ -437,6 +437,30 @@ func Test_GetFeatureVector_wrongPrimaryKey_featureNotPk(t *testing.T) {
 	for _, row := range rows {
 		var pkValues = *GetPkValues(&row, &pks, &cols)
 		pks[0] = "ts"
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_3",
+			1,
+			pks,
+			pkValues,
+			nil,
+			nil,
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.INCORRECT_PRIMARY_KEY.GetReason(), http.StatusBadRequest)
+	}
+}
+
+func Test_GetFeatureVector_wrongPrimaryKey_tooManyPk(t *testing.T) {
+	rows, pks, cols, err := GetSampleData("fsdb001", "sample_3_1")
+
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	for _, row := range rows {
+		var pkValues = *GetPkValues(&row, &pks, &cols)
+		pks = append(pks, "ts")
+		pkValues = append(pkValues, []byte(`"2022-01-01"`))
 		var fsReq = CreateFeatureStoreRequest(
 			"fsdb001",
 			"sample_3",

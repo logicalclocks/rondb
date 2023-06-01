@@ -537,6 +537,35 @@ func Test_GetFeatureVector_wrongPrimaryKey_featureNotPk_partialFail(t *testing.T
 	ValidateResponseWithData(t, &rows, &cols, fsResp)
 }
 
+func Test_GetFeatureVector_wrongPrimaryKey_tooManyPk(t *testing.T) {
+	rows, pks, cols, err := fshelper.GetNSampleData("fsdb001", "sample_3_1", 2)
+
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	var pkValues = *GetPkValues(&rows, &pks, &cols)
+	pks = append(pks, "ts")
+	for i := range(pkValues) {
+		pkValues[i] = append(pkValues[i], []byte(`"2022-01-01"`))
+	}
+	var fsReq = CreateFeatureStoreRequest(
+		"fsdb001",
+		"sample_3",
+		1,
+		pks,
+		pkValues,
+		nil,
+		nil,
+	)
+	rows = [][]interface{}{
+		nil,
+		nil,
+	}
+	var fsResp = GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
+}
+
 func Test_GetFeatureVector_wrongPkType_int(t *testing.T) {
 	rows, pks, cols, err := fshelper.GetNSampleData("fsdb002", "sample_2_1", 2)
 
