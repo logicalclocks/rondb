@@ -55,18 +55,18 @@ func (h *Handler) Validate(request interface{}) error {
 	metadata, err := h.fvMetaCache.Get(
 		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
 	if err != nil {
-		return err.Error()
+		return err.GetError()
 	}
 	if log.IsDebug() {
 		log.Debugf("Feature store request is %s", fsReq.String())
 	}
 	err1 := ValidatePrimaryKey(fsReq.Entries, &metadata.PrefixFeaturesLookup)
 	if err1 != nil {
-		return err1.Error()
+		return err1.GetError()
 	}
 	err2 := ValidatePassedFeatures(fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup)
 	if err2 != nil {
-		return err2.Error()
+		return err2.GetError()
 	}
 	return nil
 
@@ -176,11 +176,11 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	metadata, err := h.fvMetaCache.Get(
 		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
 	if err != nil {
-		return err.Error()
+		return err.GetError()
 	}
 	valErr := h.apiKeyCache.ValidateAPIKey(apiKey, metadata.FeatureStoreNames...)
 	if valErr != nil {
-		return feature_store.FEATURE_STORE_NOT_SHARED.Error()
+		return feature_store.FEATURE_STORE_NOT_SHARED.GetError()
 	}
 	return nil
 }
@@ -191,19 +191,19 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	metadata, err := h.fvMetaCache.Get(
 		*fsReq.FeatureStoreName, *fsReq.FeatureViewName, *fsReq.FeatureViewVersion)
 	if err != nil {
-		return err.GetStatus(), err.Error()
+		return err.GetStatus(), err.GetError()
 	}
 	var readParams = GetBatchPkReadParams(metadata, fsReq.Entries)
 	ronDbErr := h.dbBatchReader.Validate(readParams)
 	if ronDbErr != nil {
 		var fsError = TranslateRonDbError(http.StatusBadRequest, ronDbErr.Error())
-		return fsError.GetStatus(), fsError.Error()
+		return fsError.GetStatus(), fsError.GetError()
 	}
 	var dbResponseIntf = getPkReadResponseJSON(*metadata)
 	code, ronDbErr := h.dbBatchReader.Execute(readParams, *dbResponseIntf)
 	if ronDbErr != nil {
 		var fsError = TranslateRonDbError(code, ronDbErr.Error())
-		return fsError.GetStatus(), fsError.Error()
+		return fsError.GetStatus(), fsError.GetError()
 	}
 	jsonResponse := (*dbResponseIntf).String()
 	if log.IsDebug() {
@@ -213,7 +213,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	json.Unmarshal([]byte(jsonResponse), &rondbResp)
 	fsError := checkRondbResponse(&rondbResp)
 	if fsError != nil {
-		return fsError.GetStatus(), fsError.Error()
+		return fsError.GetStatus(), fsError.GetError()
 	}
 	features, status := GetFeatureValues(rondbResp.Result, fsReq.Entries, metadata)
 	fsResp := response.(*api.FeatureStoreResponse)

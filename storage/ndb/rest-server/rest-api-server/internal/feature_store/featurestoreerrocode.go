@@ -64,8 +64,12 @@ func (err *RestErrorCode) String() string {
 	}
 }
 
-func (err *RestErrorCode) Error() error {
-	return fmt.Errorf(err.String())
+func (err *RestErrorCode) Error() string {
+	return err.String()
+}
+
+func (err *RestErrorCode) GetError() error {
+	return fmt.Errorf(err.Error())
 }
 
 var FV_NOT_EXIST = &RestErrorCode{1, "Feature view does not exist.", http.StatusNotFound, ""}
