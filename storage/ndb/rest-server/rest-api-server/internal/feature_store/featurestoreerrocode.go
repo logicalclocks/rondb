@@ -29,9 +29,9 @@ type RestErrorCode struct {
 }
 
 func (err *RestErrorCode) NewMessage(msg string) *RestErrorCode {
-	var errCopy = err
+	var errCopy = *err
 	errCopy.message = msg
-	return errCopy
+	return &errCopy
 }
 
 func (err *RestErrorCode) GetCode() int {
