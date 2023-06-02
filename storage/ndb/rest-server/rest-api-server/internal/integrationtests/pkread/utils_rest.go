@@ -12,7 +12,23 @@ import (
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
-func pkRESTTest(t testing.TB, testInfo api.PKTestInfo, isBinaryData bool, validate bool) {
+func pkRESTTest(
+	t testing.TB,
+	testInfo api.PKTestInfo,
+	isBinaryData bool,
+	validate bool,
+) {
+	client := testutils.SetupHttpClient(t)
+	pkRESTTestWithClient(t, client, testInfo, isBinaryData, validate)
+}
+
+func pkRESTTestWithClient(
+	t testing.TB,
+	client *http.Client,
+	testInfo api.PKTestInfo,
+	isBinaryData bool,
+	validate bool,
+) {
 	url := testutils.NewPKReadURL(testInfo.Db, testInfo.Table)
 	body, err := json.MarshalIndent(testInfo.PkReq, "", "\t")
 	if err != nil {

@@ -44,10 +44,15 @@ func sendGrpcPingRequestWithConnection(t testing.TB, connection *grpc.ClientConn
 	}
 }
 
-func sendRestPingRequest(t testing.TB) {
-	conf := config.GetAll()
+func sendRestPingRequest(
+	t testing.TB,
+) {
+	client := testutils.SetupHttpClient(t)
+	sendRestPingRequestWithClient(t, client)
+}
 
-	httpClient := testutils.SetupHttpClient(t)
+func sendRestPingRequestWithClient(t testing.TB, client *http.Client) {
+	conf := config.GetAll()
 
 	url := testutils.NewPingURL()
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -60,7 +65,7 @@ func sendRestPingRequest(t testing.TB) {
 		req.Header.Set(config.API_KEY_NAME, testutils.HOPSWORKS_TEST_API_KEY)
 	}
 
-	resp, err := httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}

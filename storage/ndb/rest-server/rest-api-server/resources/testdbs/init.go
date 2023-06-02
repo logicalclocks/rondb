@@ -18,6 +18,8 @@
 package testdbs
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"strconv"
 	"strings"
@@ -29,8 +31,16 @@ import (
 	the variables in this package can essentially be seen as constants.
 */
 
-const BENCH_DB_COLUMN_LENGTH = 1000
 const BENCH_DB_NUM_ROWS = 1000
+const BENCH_DB_NUM_IDENTICAL_COLUMNS = 100
+
+/*
+The total row size adds up to 30k bytes; however, the max pk size is 3070.
+Larger binary PKs will require more decoding on the server side, larger
+read columns will require more encoding.
+*/
+const BENCH_DB_VARBINARY_PK_LENGTH = 3000
+const BENCH_DB_COLUMN_LENGTH = 100
 
 // Mapping database names to their schemes
 var databaseCreateSchemes = map[string]string{
@@ -97,19 +107,87 @@ func init() {
 	}
 }
 
+// Create custom benchmark scheme
 func createBenchmarkSchema() string {
-	// Create custom benchmark scheme
 	benchScheme := strings.ReplaceAll(BenchmarkScheme, benchmarkSed_COLUMN_LENGTH, strconv.Itoa(BENCH_DB_COLUMN_LENGTH))
+	benchScheme = strings.ReplaceAll(benchScheme, benchmarkSed_VARBINARY_PK_LENGTH_LENGTH, strconv.Itoa(BENCH_DB_VARBINARY_PK_LENGTH))
 
 	// Create an amount of INSERT statements for the benchmark scheme
+
+	/*
+		Varchar columns
+	*/
+
 	benchAddRows := ""
-	col2DummyData := strings.Repeat("$", BENCH_DB_COLUMN_LENGTH)
+	colDummyData := "\"" + strings.Repeat("a", BENCH_DB_COLUMN_LENGTH) + "\""
 	for rowId := 0; rowId < BENCH_DB_NUM_ROWS; rowId++ {
-		addNewRow := strings.ReplaceAll(BenchmarkAddRow, BenchmarkAddRowSed_VALUE_COLUMN_1, strconv.Itoa(rowId))
-		addNewRow = strings.ReplaceAll(addNewRow, BenchmarkAddRowSed_VALUE_COLUMN_2, col2DummyData)
+		addNewRow := strings.ReplaceAll(
+			BenchmarkAddRow,
+			BenchAddRow_TABLE_NAME,
+			"table_1",
+		)
+		addNewRow = strings.ReplaceAll(
+			addNewRow,
+			BenchAddRow_COLUMN_VALUES_TO_INSERT,
+			fmt.Sprintf("%s, %s", strconv.Itoa(rowId), colDummyData),
+		)
 		benchAddRows += addNewRow
 	}
+
+	/*
+		Varbinary columns
+	*/
+
+	colDummyData = fmt.Sprintf("REPEAT(X'41', %d)", BENCH_DB_COLUMN_LENGTH)
+	for rowId := 0; rowId < BENCH_DB_NUM_ROWS; rowId++ {
+		emptySlice := make([]byte, BENCH_DB_VARBINARY_PK_LENGTH-8)
+		actualData := make([]byte, 8)
+		binary.LittleEndian.PutUint64(actualData, uint64(rowId))
+		allData := append(emptySlice, actualData...)
+		rowIdBase64 := base64.StdEncoding.EncodeToString(allData)
+		pkDummyData := fmt.Sprintf("FROM_BASE64('%s')", rowIdBase64)
+
+		addNewRow := strings.ReplaceAll(
+			BenchmarkAddRow,
+			BenchAddRow_TABLE_NAME,
+			"table_2",
+		)
+		addNewRow = strings.ReplaceAll(
+			addNewRow,
+			BenchAddRow_COLUMN_VALUES_TO_INSERT,
+			fmt.Sprintf("%s, %s", pkDummyData, colDummyData),
+		)
+
+		benchAddRows += addNewRow
+	}
+
+	/*
+		Many varchar columns
+	*/
+
+	identicalColumns := ""
+	for i := 0; i < BENCH_DB_NUM_IDENTICAL_COLUMNS; i++ {
+		identicalColumns += fmt.Sprintf("col%d VARCHAR(100), ", i)
+	}
+	benchScheme = strings.ReplaceAll(benchScheme, benchmarkSed_MANY_IDENTICAL_COLUMNS, identicalColumns)
+
+	colDummyData = strings.TrimSuffix(strings.Repeat("\"abcd\",", BENCH_DB_NUM_IDENTICAL_COLUMNS), ",")
+	for rowId := 0; rowId < BENCH_DB_NUM_ROWS; rowId++ {
+		addNewRow := strings.ReplaceAll(
+			BenchmarkAddRow,
+			BenchAddRow_TABLE_NAME,
+			"table_3",
+		)
+		addNewRow = strings.ReplaceAll(
+			addNewRow,
+			BenchAddRow_COLUMN_VALUES_TO_INSERT,
+			fmt.Sprintf("%s, %s", strconv.Itoa(rowId), colDummyData),
+		)
+		benchAddRows += addNewRow
+	}
+
 	benchScheme += benchAddRows
+
 	return benchScheme
 }
 

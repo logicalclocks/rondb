@@ -20,6 +20,7 @@ package grpc
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -29,6 +30,12 @@ import (
 )
 
 func (s *RonDBServer) Stat(ctx context.Context, reqProto *api.StatRequestProto) (*api.StatResponseProto, error) {
+
+	// metrics
+	start := time.Now().UnixNano()
+	defer s.rdrsMetrics.GRPCMetrics.StatSummary.Observe(float64(time.Now().UnixNano() - start))
+	s.rdrsMetrics.GRPCMetrics.StatCounter.Inc()
+
 	apiKey, err := s.getApiKey(ctx)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())

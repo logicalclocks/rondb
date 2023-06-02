@@ -19,10 +19,17 @@ package grpc
 
 import (
 	"context"
+	"time"
 
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
 func (s *RonDBServer) Ping(ctx context.Context, reqProto *api.Empty) (*api.Empty, error) {
+
+	// metrics
+	start := time.Now().UnixNano()
+	defer s.rdrsMetrics.GRPCMetrics.PingSummary.Observe(float64(time.Now().UnixNano() - start))
+	s.rdrsMetrics.GRPCMetrics.PingCounter.Inc()
+
 	return &api.Empty{}, nil
 }

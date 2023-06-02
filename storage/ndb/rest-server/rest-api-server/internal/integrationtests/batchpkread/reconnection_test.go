@@ -124,7 +124,7 @@ func reconnectTestInt(t *testing.T, numThreads int, durationSec int,
 			//first reconnection request is supposed to succeed
 			err := dal.Reconnect()
 			if err != nil {
-				t.Fatalf("Reconnection request failed")
+				t.Fatalf("Reconnection request failed %v ", err)
 			}
 		} else {
 			//subsequent reconnection requests are supposed to fail
@@ -155,9 +155,21 @@ func reconnectTestInt(t *testing.T, numThreads int, durationSec int,
 	log.Infof("Total Ops performed: %d\n", opCount)
 }
 
-func batchPKWorker(t *testing.T, id int,
+func batchPKWorker(
+	t *testing.T,
+	id int,
 	tests map[string]*api.BatchOperationTestInfo,
-	stop *bool, done *chan int) {
+	stop *bool,
+	done *chan int,
+) {
+	httpClient := testutils.SetupHttpClient(t)
+	grpcConn, err := testclient.InitGRPCConnction()
+	if err != nil {
+		// Cannot fail a test case in a go-routine
+		t.Log(err.Error())
+		return
+	}
+
 	opCount := 0
 	// need to do this if an operation fails
 	defer func(t *testing.T, opCount *int) {
@@ -166,8 +178,8 @@ func batchPKWorker(t *testing.T, id int,
 
 	for {
 		for _, testInfo := range tests {
-			batchRESTTest(t, *testInfo, false /*is binary*/, false /*validate data*/)
-			batchGRPCTest(t, *testInfo, false /*is binary*/, false /*validate data*/)
+			batchRESTTestWithClient(t, httpClient, *testInfo, false, false)
+			batchGRPCTestWithConn(t, *testInfo, false, false, grpcConn)
 		}
 		opCount++
 
@@ -180,8 +192,10 @@ func batchPKWorker(t *testing.T, id int,
 }
 
 func statWorker(t *testing.T, stop *bool) {
+	httpClient := testutils.SetupHttpClient(t)
+
 	for {
-		stat(t)
+		stat(t, httpClient)
 		time.Sleep(100 * time.Millisecond)
 
 		if *stop {
@@ -190,10 +204,10 @@ func statWorker(t *testing.T, stop *bool) {
 	}
 }
 
-func stat(t *testing.T) {
+func stat(t *testing.T, client *http.Client) {
 	body := ""
 	url := testutils.NewStatURL()
-	_, respBody := testclient.SendHttpRequest(t, config.STAT_HTTP_VERB, url, string(body),
+	_, respBody := testclient.SendHttpRequestWithClient(t, client, config.STAT_HTTP_VERB, url, string(body),
 		"", http.StatusOK)
 
 	var stats api.StatResponse

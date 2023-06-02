@@ -39,6 +39,7 @@ type RonDBStats struct {
 	NdbObjectsDeletionCount int64
 	NdbObjectsTotalCount    int64
 	NdbObjectsFreeCount     int64
+	NdbConnectionState      int64
 }
 
 func RonDBPKRead(request *heap.NativeBuffer, response *heap.NativeBuffer) *DalError {
@@ -101,6 +102,7 @@ func GetRonDBStats() (*RonDBStats, *DalError) {
 	rstats.NdbObjectsDeletionCount = int64(p.ndb_objects_deleted)
 	rstats.NdbObjectsTotalCount = int64(p.ndb_objects_count)
 	rstats.NdbObjectsFreeCount = int64(p.ndb_objects_available)
+	rstats.NdbConnectionState = int64(p.connection_state)
 
 	return &rstats, nil
 }

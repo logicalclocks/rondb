@@ -22,6 +22,7 @@ if(WITH_RDRS)
 
   INCLUDE_DIRECTORIES(
     ${PROJECT_SOURCE_DIR}
+    ${BASE64_INCLUDE_DIR}
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi
     ${CMAKE_SOURCE_DIR}/storage/ndb/src/mgmapi
@@ -33,7 +34,7 @@ if(WITH_RDRS)
   
   ADD_LIBRARY(rdrclient SHARED ${RDRS_LIB_SOURCE})
   
-  TARGET_LINK_LIBRARIES(rdrclient ndbclient_so rdrs_string pthread)
+  TARGET_LINK_LIBRARIES(rdrclient ndbclient_so rdrs_string pthread base64)
 
   SET_TARGET_PROPERTIES(rdrclient PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/library_output_directory)

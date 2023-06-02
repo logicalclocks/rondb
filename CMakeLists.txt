@@ -322,14 +322,11 @@ IF(CMAKE_HOST_UNIX AND NOT FORCE_UNSUPPORTED_COMPILER
       IF(LINUX_RHEL6)
         SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-8")
       ELSEIF(LINUX_RHEL7)
-        # ARM requires GCC 10, but we still build releases for
-        # x86_64 on GCC 8.
-        # gcc11 not available yet on ARM
-        # gcc11 available on x86_64 but we don't use it yet
+        # ARM requires GCC 10. GCC 10 is faster than GCC 9
         IF(MY_HOST_MACHINE_NAME MATCHES "aarch64")
           SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-10")
         ELSE()
-          SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-9")
+          SET(ALTERNATIVE_PATHS "/opt/rh/devtoolset-10")
         ENDIF()
       ELSEIF(LINUX_RHEL8 OR LINUX_RHEL9)
         SET(ALTERNATIVE_PATHS "/opt/rh/gcc-toolset-12")
@@ -516,12 +513,12 @@ ENDIF()
 
 # Optionally set project name, e.g.
 # foo.xcodeproj (mac) or foo.sln (windows)
-SET(MYSQL_PROJECT_NAME_DOCSTRING "MySQL project name")
+SET(MYSQL_PROJECT_NAME_DOCSTRING "RonDB project name")
 IF(DEFINED MYSQL_PROJECT_NAME)
   SET(MYSQL_PROJECT_NAME ${MYSQL_PROJECT_NAME} CACHE STRING
       ${MYSQL_PROJECT_NAME_DOCSTRING} FORCE)
 ELSE()
-  SET(MYSQL_PROJECT_NAME "MySQL" CACHE STRING
+  SET(MYSQL_PROJECT_NAME "RonDB" CACHE STRING
       ${MYSQL_PROJECT_NAME_DOCSTRING} FORCE)
   MARK_AS_ADVANCED(MYSQL_PROJECT_NAME)
 ENDIF()
@@ -532,7 +529,7 @@ IF(DEFINED WITH_PLUGIN_NDBCLUSTER)
     IF(WITH_PLUGIN_NDBCLUSTER OR WITH_NDBCLUSTER_STORAGE_ENGINE)
       MESSAGE(FATAL_ERROR
         "Old broken config, WITH_NDBCLUSTER_STORAGE_ENGINE have changed "
-        "meaning, to build MySQL Cluster please add -DWITH_NDB=ON and "
+        "meaning, to build RonDB please add -DWITH_NDB=ON and "
         "-UWITH_PLUGIN_NDBCLUSTER")
     ENDIF()
   ENDIF()
@@ -833,6 +830,7 @@ INCLUDE(gloves)
 INCLUDE(fido2)
 INCLUDE(win_jemalloc)
 INCLUDE(msvc_cppcheck)
+INCLUDE(base64)
 
 MSVC_CPPCHECK()
 
@@ -871,9 +869,9 @@ ENDIF()
 IF(NOT WITHOUT_SERVER)
   IF(FPROFILE_GENERATE OR FPROFILE_USE)
     # Do not use data from unit testing when optimizing.
-    OPTION(WITH_UNIT_TESTS "Compile MySQL with unit tests" OFF)
+    OPTION(WITH_UNIT_TESTS "Compile RonDB with unit tests" OFF)
   ELSE()
-    OPTION(WITH_UNIT_TESTS "Compile MySQL with unit tests" ON)
+    OPTION(WITH_UNIT_TESTS "Compile RonDB with unit tests" ON)
   ENDIF()
   OPTION(WITH_ROUTER "Build MySQL Router" ON)
 ENDIF()
@@ -2050,7 +2048,7 @@ ENDIF()
 # Because things may already have been included with ADD_SUBDIRECTORY
 #
 OPTION(MYSQL_MAINTAINER_MODE
-       "MySQL maintainer-specific development environment" OFF)
+       "RonDB maintainer-specific development environment" OFF)
 
 INCLUDE(maintainer)
 
@@ -2629,5 +2627,6 @@ MESSAGE(STATUS "CMAKE_SHARED_LINKER_FLAGS ${CMAKE_SHARED_LINKER_FLAGS}")
 # If user provided WITH_NDBCLUSTER keep it in cache
 IF(HAVE_WITH_NDBCLUSTER)
   SET(WITH_NDBCLUSTER ${WITH_NDB} CACHE BOOL
-    "Deprecated legacy option for MySQL Cluster")
+    "Deprecated legacy option for RonDB")
 ENDIF()
+CHECK_BASE64()

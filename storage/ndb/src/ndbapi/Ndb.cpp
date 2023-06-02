@@ -1050,7 +1050,7 @@ Ndb::hupp(NdbTransaction* pBuddyTrans)
       // release the connection and return NULL
       closeTransaction(pCon);
       theImpl->decClientStat( TransStartCount, 1 ); /* Correct stats */
-      theError.code = 4006;
+      theError.code = 4042;
       DBUG_RETURN(NULL);
     }
     pCon->setTransactionId(pBuddyTrans->getTransactionId());

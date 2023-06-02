@@ -537,6 +537,8 @@ int ndb_file::reopen_with_sync(const char name[])
 
 int ndb_file::init_zero(ndb_off_t data_size, ndb_off_t offset) const
 {
+  (void)data_size;
+  (void)offset;
 #ifdef HAVE_XFS_XFS_H
   if (::platform_test_xfs_fd(m_handle))
   {

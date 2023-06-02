@@ -56,7 +56,8 @@ message ColumnValueProto {
 message PKReadResponseProto {
   optional string OperationID = 1;
   optional int32 code = 2;
-  map<string, ColumnValueProto> Data = 3;
+  optional string message = 3;
+  map<string, ColumnValueProto> Data = 4;
 }
 
 //__________________  Batch Operation ________________________

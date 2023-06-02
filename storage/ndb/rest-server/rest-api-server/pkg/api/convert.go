@@ -190,6 +190,7 @@ func ConvertBatchOpResponse(responses *BatchResponseGRPC) *BatchResponseProto {
 		for i, response := range *responses.Result {
 			pkReadResponseProto := ConvertPKReadResponse(response.Body)
 			pkReadResponseProto.Code = response.Code
+			pkReadResponseProto.Message = response.Message
 			pkReadResponsesProto[i] = pkReadResponseProto
 		}
 		batchResponse.Responses = pkReadResponsesProto

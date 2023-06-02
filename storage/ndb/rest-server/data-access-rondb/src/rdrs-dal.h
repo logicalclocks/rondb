@@ -75,13 +75,13 @@ typedef enum STATE { CONNECTED, CONNECTING, DISCONNECTED } STATE;
 
 // RonDB stats
 typedef struct RonDB_Stats {
-  volatile unsigned int ndb_objects_created;
-  volatile unsigned int ndb_objects_deleted;
-  volatile unsigned int ndb_objects_count;
-  volatile unsigned int ndb_objects_available;
-  volatile unsigned char is_shutdown;
-  volatile unsigned char is_reconnection_in_progress;
-  volatile STATE connection_state; 
+  unsigned int ndb_objects_created;
+  unsigned int ndb_objects_deleted;
+  unsigned int ndb_objects_count;
+  unsigned int ndb_objects_available;
+  STATE connection_state;
+  unsigned char is_shutdown;
+  unsigned char is_reconnection_in_progress;
 } RonDB_Stats;
 
 /**

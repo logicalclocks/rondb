@@ -18,13 +18,13 @@ package batchpkread
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
+	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
 )
@@ -77,8 +77,8 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	}
 
 	err := h.apiKeyCache.ValidateAPIKey(apiKey, dbArr...)
-	if err != nil {
-		fmt.Printf("Validation failed. key %s, error  %v \n", *apiKey, err)
+	if err != nil && log.IsDebug() {
+		log.Debugf("Validation failed. key %s, error  %v \n", *apiKey, err)
 	}
 	return err
 }
@@ -127,20 +127,17 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 }
 
 func processResponses(respBuffs *[]*heap.NativeBuffer, response api.BatchOpResponse) (int, error) {
-	for _, respBuff := range *respBuffs {
+	for idx, respBuff := range *respBuffs {
 		pkReadResponseWithCode := response.CreateNewSubResponse()
 		pkReadResponse := pkReadResponseWithCode.GetPKReadResponse()
 
-		subRespCode, err := pkread.ProcessPKReadResponse(respBuff, pkReadResponse)
+		subRespCode, subRespMessage, err := pkread.ProcessPKReadResponse(respBuff, pkReadResponse)
 		if err != nil {
 			return int(subRespCode), err
 		}
 
-		pkReadResponseWithCode.SetCode(&subRespCode)
-		err = response.AppendSubResponse(pkReadResponseWithCode)
-		if err != nil {
-			return http.StatusInternalServerError, err
-		}
+		pkReadResponseWithCode.SetStatus(&subRespCode, &subRespMessage)
+		response.AddSubResponse(idx, pkReadResponseWithCode)
 	}
 	return http.StatusOK, nil
 }

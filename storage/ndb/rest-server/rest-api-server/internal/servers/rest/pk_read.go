@@ -19,6 +19,7 @@ package rest
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"hopsworks.ai/rdrs/internal/config"
@@ -27,6 +28,12 @@ import (
 )
 
 func (h *RouteHandler) PkRead(c *gin.Context) {
+
+	// metrics
+	start := time.Now().UnixNano()
+	defer h.rdrsMetrics.HTTPMetrics.PkReadSummary.Observe(float64(time.Now().UnixNano() - start))
+	h.rdrsMetrics.HTTPMetrics.PkReadCounter.Inc()
+
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 	pkReadParams, err := parsePkReadRequest(c)
 	if err != nil {

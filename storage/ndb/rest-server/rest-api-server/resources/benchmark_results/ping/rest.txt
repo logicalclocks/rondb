@@ -1,0 +1,13 @@
+////////////////////////////////////////////
+// Apple M1 Pro, 32GB, using RonDB-Docker //
+////////////////////////////////////////////
+
+// Baseline
+    performance_test.go:116: -------------------------------------------------
+    performance_test.go:111: Number of requests:         2140219
+    performance_test.go:112: Number of threads:          8
+    performance_test.go:113: Throughput:                 175357.840710 requests/second
+    performance_test.go:114: 50th percentile latency:    37 μs
+    performance_test.go:115: 99th percentile latency:    154 μs
+    performance_test.go:116: -------------------------------------------------
+BenchmarkSimple-8        2140219              5703 ns/op            5123 B/op         64 allocs/op
