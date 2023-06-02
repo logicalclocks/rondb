@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1006,7 +1007,7 @@ Ndb::hupp(NdbTransaction* pBuddyTrans)
       // release the connection and return NULL
       closeTransaction(pCon);
       theImpl->decClientStat( TransStartCount, 1 ); /* Correct stats */
-      theError.code = 4006;
+      theError.code = 4042;
       DBUG_RETURN(NULL);
     }
     pCon->setTransactionId(pBuddyTrans->getTransactionId());
