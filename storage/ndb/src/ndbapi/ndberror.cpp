@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2021, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -179,7 +179,7 @@ ErrorBundle ErrorCodes[] = {
   { 20013, DMEC, IE, "Query aborted due to invalid tree parameter specification: Incorrect key parameter count" },
   { 20014, DMEC, IE, "Query aborted due to internal error" },
   { 20015, DMEC, TR, "Query aborted due to out of row memory" },
-  { 20016, DMEC, NR, "Query aborted due to node failure" },
+  { 20016, HA_ERR_LOCK_WAIT_TIMEOUT, NR, "Query aborted due to node failure" },
   { 20017, DMEC, IE, "Query aborted due to invalid node count" },
   { 20018, DMEC, IE, "Query aborted due to index fragment not found" },
   { 20019, HA_ERR_NO_SUCH_TABLE, SE, "Query table not defined" },
@@ -363,6 +363,7 @@ ErrorBundle ErrorCodes[] = {
   { 410,  DMEC, OL, "REDO log files overloaded (decrease TimeBetweenLocalCheckpoints or increase NoOfFragmentLogFiles)" },
   { 1221, HA_ERR_LOCK_WAIT_TIMEOUT, OL, "REDO buffers overloaded (increase RedoBuffer)" },
   { 4006, DMEC, OL, "Connect failure - out of connection objects (increase MaxNoOfConcurrentTransactions)" }, 
+  { 4042, HA_ERR_LOCK_WAIT_TIMEOUT, NR, "Connect failure in scan - most likely a node failure" }, 
 
 
   /*
