@@ -793,6 +793,7 @@ MgmApiSession::setClientVersion(Parser<MgmApiSession>::Context &,
   args.get("minor", &m_vMinor);
   args.get("build", &m_vBuild);
 
+#ifdef VM_TRACE
   if (m_vMinor < 10)
   {
     fprintf(stderr, "MGMD set client %p version to %u.0%u.%u\n",
@@ -809,6 +810,7 @@ MgmApiSession::setClientVersion(Parser<MgmApiSession>::Context &,
             m_vMinor,
             m_vBuild);
   }
+#endif
 
   m_output->println("set clientversion reply");
   m_output->println("result: Ok");

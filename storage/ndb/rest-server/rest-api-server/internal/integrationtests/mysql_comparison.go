@@ -60,7 +60,7 @@ func getColumnDataFromDB(
 	command := "use " + db
 	_, err = dbConn.Exec(command)
 	if err != nil {
-		t.Fatalf("failed to run command. %s. Error: %v", command, err)
+		t.Fatalf("failed to run command '%s'. Error: %v", command, err)
 	}
 
 	if isBinary {

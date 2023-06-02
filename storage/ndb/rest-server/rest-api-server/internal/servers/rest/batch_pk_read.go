@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"hopsworks.ai/rdrs/internal/config"
@@ -33,6 +34,12 @@ import (
 var operationUrl = regexp.MustCompile("^[a-zA-Z0-9$_]+/[a-zA-Z0-9$_]+/pk-read")
 
 func (h *RouteHandler) BatchPkRead(c *gin.Context) {
+
+	// metrics
+	start := time.Now().UnixNano()
+	defer h.rdrsMetrics.HTTPMetrics.BatchPkReadSummary.Observe(float64(time.Now().UnixNano() - start))
+	h.rdrsMetrics.HTTPMetrics.BatchPkReadCounter.Inc()
+
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 
 	operations := api.BatchOpRequest{}
@@ -48,7 +55,8 @@ func (h *RouteHandler) BatchPkRead(c *gin.Context) {
 	}
 
 	// TODO: Place this into Validate() of batchPkReadHandler
-	pkOperations := make([]*api.PKReadParams, len(*operations.Operations))
+	numOperations := len(*operations.Operations)
+	pkOperations := make([]*api.PKReadParams, numOperations)
 	for i, operation := range *operations.Operations {
 		pkOperations[i] = &api.PKReadParams{}
 		err := parseOperation(&operation, pkOperations[i])
@@ -59,7 +67,7 @@ func (h *RouteHandler) BatchPkRead(c *gin.Context) {
 	}
 
 	var responseIntf api.BatchOpResponse = (api.BatchOpResponse)(&api.BatchResponseJSON{})
-	responseIntf.Init()
+	responseIntf.Init(numOperations)
 
 	status, err := handlers.Handle(&h.batchPkReadHandler, &apiKey, &pkOperations, responseIntf)
 	if err != nil {

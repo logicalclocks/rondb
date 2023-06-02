@@ -205,6 +205,7 @@ func TestPKERROR_011(t *testing.T) {
 
 	body, _ := json.MarshalIndent(param, "", "\t")
 
+	// Only works if API key is enabled
 	url := testutils.NewPKReadURL("DB001_XXX", "table_1")
 	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
 		"", http.StatusUnauthorized)

@@ -14,8 +14,8 @@
 -- You should have received a copy of the GNU General Public License
 -- along with this program. If not, see <http://www.gnu.org/licenses/>.
 
--- Sed keywords VALUE_COLUMN_1, VALUE_COLUMN_2
+-- Sed keywords TABLE_NAME, VALUE_COLUMN_1, VALUE_COLUMN_2
 INSERT INTO
-    table_1
+    TABLE_NAME
 VALUES
-    (VALUE_COLUMN_1, "VALUE_COLUMN_2");
+    (COLUMN_VALUES_TO_INSERT);

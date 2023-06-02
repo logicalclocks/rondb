@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"testing"
 
+	//_ "github.com/ianlancetaylor/cgosymbolizer"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/testutils"
@@ -219,12 +220,12 @@ func TestBatchDate(t *testing.T) {
 			},
 		},
 		"wrong_sub_op": {
-			HttpCode: []int{http.StatusBadRequest},
+			HttpCode: []int{http.StatusOK},
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "date_table", testdbs.DB019, "1111-11-11", http.StatusOK),
 				createSubOperation(t, "date_table", testdbs.DB019, "1111-11-11 00:00:00", http.StatusOK),
 				createSubOperation(t, "date_table", testdbs.DB019, "1111-11-12", http.StatusOK),
-				createSubOperation(t, "date_table", testdbs.DB019, "1111-13-12", http.StatusOK),
+				createSubOperation(t, "date_table", testdbs.DB019, "1111-13-12", http.StatusBadRequest),
 			},
 		},
 	}
@@ -249,7 +250,7 @@ func TestBatchDateTime(t *testing.T) {
 			ErrMsgContains: "",
 		},
 		"wrong_sub_op": {
-			HttpCode: []int{http.StatusBadRequest},
+			HttpCode: []int{http.StatusOK},
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "date_table0", testdbs.DB020, "1111-11-11 11:11:11", http.StatusOK),
 				createSubOperation(t, "date_table3", testdbs.DB020, "1111-11-11 11:11:11.123", http.StatusOK),
@@ -260,7 +261,7 @@ func TestBatchDateTime(t *testing.T) {
 				createSubOperation(t, "date_table0", testdbs.DB020, "1111-11-12 11:11:11", http.StatusOK),
 				createSubOperation(t, "date_table3", testdbs.DB020, "1111-11-12 11:11:11.123", http.StatusOK),
 				createSubOperation(t, "date_table6", testdbs.DB020, "1111-11-12 11:11:11.123456", http.StatusOK),
-				createSubOperation(t, "date_table6", testdbs.DB020, "1111-13-11 11:11:11", http.StatusOK), // wrong op
+				createSubOperation(t, "date_table6", testdbs.DB020, "1111-13-11 11:11:11", http.StatusBadRequest), // wrong op
 			},
 			ErrMsgContains: "",
 		},
@@ -285,7 +286,7 @@ func TestBatchTime(t *testing.T) {
 			ErrMsgContains: "",
 		},
 		"wrong_sub_op": {
-			HttpCode: []int{http.StatusBadRequest},
+			HttpCode: []int{http.StatusOK},
 			Operations: []api.BatchSubOperationTestInfo{
 				createSubOperation(t, "time_table0", testdbs.DB021, "11:11:11", http.StatusOK),
 				createSubOperation(t, "time_table3", testdbs.DB021, "11:11:11.123", http.StatusOK),
@@ -295,7 +296,7 @@ func TestBatchTime(t *testing.T) {
 				createSubOperation(t, "time_table0", testdbs.DB021, "12:11:11", http.StatusOK),
 				createSubOperation(t, "time_table3", testdbs.DB021, "12:11:11.123", http.StatusOK),
 				createSubOperation(t, "time_table6", testdbs.DB021, "12:11:11.123456", http.StatusOK),
-				createSubOperation(t, "time_table6", testdbs.DB021, "11:61:11", http.StatusOK),
+				createSubOperation(t, "time_table6", testdbs.DB021, "11:61:11", http.StatusBadRequest),
 			},
 			ErrMsgContains: "",
 		},
@@ -378,12 +379,24 @@ func TestBatchBadSubOp(t *testing.T) {
 	colWidth := 256
 
 	tests := map[string]api.BatchOperationTestInfo{
-		"simple1": { // bigger batch of array column table
-			HttpCode: []int{http.StatusBadRequest},
+		"test1": { // bigger batch of array column table
+			HttpCode: []int{http.StatusOK},
 			Operations: []api.BatchSubOperationTestInfo{
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "-1", http.StatusNotFound),
 				// This is bad operation. data is longer than the column width
-				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, *testclient.NewOperationID(colWidth*4 + 1), http.StatusNotFound),
+				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, *testclient.NewOperationID(colWidth*4 + 1), http.StatusBadRequest),
+				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "1", http.StatusOK),
+				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "2", http.StatusOK),
+				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "3", http.StatusOK),
+			},
+			ErrMsgContains: "",
+		},
+		"test2": { // bigger batch of array column table
+			HttpCode: []int{http.StatusOK},
+			Operations: []api.BatchSubOperationTestInfo{
+				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "-1", http.StatusNotFound),
+				// This is bad operation. table does not exists
+				arrayColumnBatchTestSubOp(t, "dummy", database, isBinary, colWidth, padding, "1", http.StatusBadRequest),
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "1", http.StatusOK),
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "2", http.StatusOK),
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "3", http.StatusOK),

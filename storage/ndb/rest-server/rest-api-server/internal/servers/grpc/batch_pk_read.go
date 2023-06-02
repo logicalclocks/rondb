@@ -20,6 +20,7 @@ package grpc
 import (
 	"context"
 	"net/http"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -29,6 +30,12 @@ import (
 )
 
 func (s *RonDBServer) Batch(ctx context.Context, reqProto *api.BatchRequestProto) (*api.BatchResponseProto, error) {
+
+	// metrics
+	start := time.Now().UnixNano()
+	defer s.rdrsMetrics.GRPCMetrics.BatchPkReadSummary.Observe(float64(time.Now().UnixNano() - start))
+	s.rdrsMetrics.GRPCMetrics.BatchPkReadCounter.Inc()
+
 	apiKey, err := s.getApiKey(ctx)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -36,7 +43,7 @@ func (s *RonDBServer) Batch(ctx context.Context, reqProto *api.BatchRequestProto
 	request := api.ConvertBatchRequestProto(reqProto)
 
 	var responseIntf api.BatchOpResponse = (api.BatchOpResponse)(&api.BatchResponseGRPC{})
-	responseIntf.Init()
+	responseIntf.Init(len(*request))
 
 	httpStatus, err := handlers.Handle(&s.batchPkReadHandler, &apiKey, request, responseIntf)
 	statusCode := common.HttpStatusToGrpcCode(httpStatus)

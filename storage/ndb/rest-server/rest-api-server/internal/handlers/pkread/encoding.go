@@ -157,20 +157,22 @@ func CreateNativeRequest(
 	return
 }
 
-func ProcessPKReadResponse(respBuff *heap.NativeBuffer, response api.PKReadResponse) (int32, error) {
+func ProcessPKReadResponse(respBuff *heap.NativeBuffer, response api.PKReadResponse) (int32, string, error) {
 	iBuf := unsafe.Slice((*uint32)(respBuff.Buffer), respBuff.Size)
 
 	responseType := iBuf[C.PK_RESP_OP_TYPE_IDX]
 	if responseType != C.RDRS_PK_RESP_ID {
-		return http.StatusInternalServerError, errors.New("wrong response type")
+		msg := "internal server error. Wrong response type"
+		return http.StatusInternalServerError, msg, errors.New(msg)
 	}
 
 	// some sanity checks
 	capacity := iBuf[C.PK_RESP_CAPACITY_IDX]
 	dataLength := iBuf[C.PK_RESP_LENGTH_IDX]
 	if respBuff.Size != capacity || !(dataLength < capacity) {
-		return http.StatusInternalServerError,
-			fmt.Errorf("response buffer may be corrupt. Buffer capacity: %d, Buffer data length: %d", capacity, dataLength)
+		msg := fmt.Sprintf("internal server error. response buffer may be corrupt. "+
+			"Buffer capacity: %d, Buffer data length: %d", capacity, dataLength)
+		return http.StatusInternalServerError, msg, fmt.Errorf(msg)
 	}
 
 	opIDX := iBuf[C.PK_RESP_OP_ID_IDX]
@@ -180,7 +182,7 @@ func ProcessPKReadResponse(respBuff *heap.NativeBuffer, response api.PKReadRespo
 	}
 
 	status := int32(iBuf[C.PK_RESP_OP_STATUS_IDX])
-	if status == http.StatusOK { //
+	if status == http.StatusOK {
 		colIDX := iBuf[C.PK_RESP_COLS_IDX]
 		colCount := *(*uint32)(unsafe.Pointer(uintptr(respBuff.Buffer) + uintptr(colIDX)))
 
@@ -211,7 +213,13 @@ func ProcessPKReadResponse(respBuff *heap.NativeBuffer, response api.PKReadRespo
 		}
 	}
 
-	return status, nil
+	message := ""
+	messageIDX := iBuf[C.PK_RESP_OP_MESSAGE_IDX]
+	if messageIDX != 0 {
+		message = C.GoString((*C.char)(unsafe.Pointer(uintptr(respBuff.Buffer) + uintptr(messageIDX))))
+	}
+
+	return status, message, nil
 }
 
 /*

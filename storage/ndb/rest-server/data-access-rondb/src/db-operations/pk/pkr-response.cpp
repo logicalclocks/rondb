@@ -41,9 +41,9 @@ RS_Status PKRResponse::WriteHeaderField(Uint32 index, Uint32 value) {
   return RS_OK;
 }
 
-RS_Status PKRResponse::SetStatus(Uint32 value) {
+RS_Status PKRResponse::SetStatus(Uint32 value, const char *message) {
   this->WriteHeaderField(PK_RESP_OP_STATUS_IDX, value);
-  return RS_OK;
+  return WriteStringHeaderField(PK_RESP_OP_MESSAGE_IDX, message);
 }
 
 RS_Status PKRResponse::Close() {

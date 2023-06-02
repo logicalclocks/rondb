@@ -27,6 +27,11 @@ class PKRRequest {
  private:
   const RS_Buffer *req;
 
+  // Is the request bad
+  bool isInvalidOp;
+  // if the request is bad then `error` contains the details
+  RS_Status error;
+
   /**
    * Get offset of nth primary key/value pair
    *
@@ -106,7 +111,7 @@ class PKRRequest {
    * @param data[out]. data
    * @return 0 if successfull
    */
-  int PKValueNDBStr(Uint32 index, const NdbDictionary::Column *col, char **data);
+  int PKValueNDBStr(Uint32 index, const NdbDictionary::Column *col, void **data);
 
   /**
    * Get number of read columns
@@ -136,6 +141,21 @@ class PKRRequest {
    * @return operation ID
    */
   const char *OperationId();
+
+  /**
+   * The operation is invalid. set the error
+   */
+  void MarkInvalidOp(RS_Status error);
+
+  /**
+   * Get the error
+   */
+  RS_Status GetError();
+
+  /**
+   * Is the operation invalid
+   */
+  bool IsInvalidOp();
 };
 
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_PKR_REQUEST_HPP_

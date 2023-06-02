@@ -74,6 +74,10 @@ IF(MY_COMPILER_IS_GNU)
   MY_ADD_CXX_WARNING_FLAG("Wmissing-include-dirs")
 
   MY_ADD_CXX_WARNING_FLAG("Wextra-semi") # For gcc8 and up
+  MY_ADD_C_WARNING_FLAG("Wno-unused-label")
+  MY_ADD_CXX_WARNING_FLAG("Wno-unused-label")
+  MY_ADD_C_WARNING_FLAG("Wno-missing-profile")
+  MY_ADD_CXX_WARNING_FLAG("Wno-missing-profile")
 ENDIF()
 
 #

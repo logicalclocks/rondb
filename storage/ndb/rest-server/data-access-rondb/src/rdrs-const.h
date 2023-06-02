@@ -56,18 +56,19 @@ extern "C" {
 #define PK_REQ_PK_COLS_IDX   6
 #define PK_REQ_READ_COLS_IDX 7
 #define PK_REQ_OP_ID_IDX     8
-#define PK_REQ_HEADER_END    36 // NOTE: Update this when you add / remove fields from  header 
+#define PK_REQ_HEADER_END    36  // NOTE: Update this when you add / remove fields from  header
 
 // Primary Key Read Response Header Indexes
-#define PK_RESP_OP_TYPE_IDX   0
-#define PK_RESP_OP_STATUS_IDX 1
-#define PK_RESP_CAPACITY_IDX  2
-#define PK_RESP_LENGTH_IDX    3
-#define PK_RESP_DB_IDX        4
-#define PK_RESP_TABLE_IDX     5
-#define PK_RESP_COLS_IDX      6
-#define PK_RESP_OP_ID_IDX     7
-#define PK_RESP_HEADER_END    32 // NOTE: Update this when you add / remove fields from  header 
+#define PK_RESP_OP_TYPE_IDX    0
+#define PK_RESP_OP_STATUS_IDX  1
+#define PK_RESP_OP_MESSAGE_IDX 2
+#define PK_RESP_CAPACITY_IDX   3
+#define PK_RESP_LENGTH_IDX     4
+#define PK_RESP_DB_IDX         5
+#define PK_RESP_TABLE_IDX      6
+#define PK_RESP_COLS_IDX       7
+#define PK_RESP_OP_ID_IDX      8
+#define PK_RESP_HEADER_END     36  // NOTE: Update this when you add / remove fields from  header
 
 // Hopsworks
 #define API_KEY_PREFIX_SIZE           45 + 1
@@ -78,20 +79,14 @@ extern "C" {
 #define CHAR_MAX_SIZE_IN_BYTES              255 * 4 /*MAX 255 chars. *4 for char set*/
 #define DECIMAL_MAX_PRECISION_SIZE_IN_BYTES 65
 #define DECIMAL_MAX_STR_LEN_IN_BYTES        DECIMAL_MAX_PRECISION_SIZE_IN_BYTES + 3
-#define BINARY_MAX_SIZE_IN_BYTES            255
-#define BINARY_MAX_SIZE_IN_BYTES_DECODED                                                           \
-  BINARY_MAX_SIZE_IN_BYTES + 3 /*encoding 255 bytes takes max 343 bytes.*/
-                               /*decoding 343 bytes takes max 258 bytes */
-#define KEY_MAX_SIZE_IN_BYTES 1023 * 4
-#define KEY_MAX_SIZE_IN_BYTES_DECODED                                                              \
-  KEY_MAX_SIZE_IN_BYTES + 3 + 2 /*encoding 4092 bytes takes max 5458 bytes */
-                                /*decoding 5458 bytes takes max 4095 bytes. +2 for length */
-#define DATE_MAX_SIZE_IN_BYTES          3
-#define TIME2_MAX_SIZE_IN_BYTES         6
-#define DATETIME_MAX_SIZE_IN_BYTES      8
-#define TIMESTAMP2_MAX_SIZE_IN_BYTES    7
-#define MAX_TUPLE_SIZE_IN_BYTES         7501 * 4
-#define MAX_TUPLE_SIZE_IN_BYTES_ENCODED 40008
+#define BINARY_MAX_SIZE_IN_BYTES            255 /*encoding 255 bytes takes max 340 bytes (255*4/3) */
+#define KEY_MAX_SIZE_IN_BYTES               1023 * 4 /*encoding 4092 bytes takes max 5456 bytes (4092*4/3) */
+#define DATE_MAX_SIZE_IN_BYTES              3
+#define TIME2_MAX_SIZE_IN_BYTES             6
+#define DATETIME_MAX_SIZE_IN_BYTES          8
+#define TIMESTAMP2_MAX_SIZE_IN_BYTES        7
+#define MAX_TUPLE_SIZE_IN_BYTES             7501 * 4
+#define MAX_TUPLE_SIZE_IN_BYTES_ENCODED     40008
 #define MAX_TUPLE_SIZE_IN_BYTES_ESCAPED                                                            \
   MAX_TUPLE_SIZE_IN_BYTES * 2 /*worst cast every character needs to be escaped*/
 #define BIT_MAX_SIZE_IN_BYTES         4096 / 8

@@ -63,7 +63,7 @@ void ndb_socket_create(ndb_socket_t &sock)
 }
 
 static inline
-ndb_socket_t ndb_socket_create_return(ndb_socket_t sock)
+ndb_socket_t ndb_socket_create_return(ndb_socket_t & sock)
 {
   sock.s = INVALID_SOCKET;
   return sock;

@@ -28,12 +28,15 @@ var BenchmarkScheme string
 
 const Benchmark = "rdrs_bench"
 const benchmarkSed_COLUMN_LENGTH = "COLUMN_LENGTH"
+const benchmarkSed_VARBINARY_PK_LENGTH_LENGTH = "VARBINARY_PK_LENGTH"
+const benchmarkSed_MANY_IDENTICAL_COLUMNS = "MANY_IDENTICAL_COLUMNS"
 
 //go:embed dynamic/benchmark_add_row.sql
 var BenchmarkAddRow string
 
-const BenchmarkAddRowSed_VALUE_COLUMN_1 = "VALUE_COLUMN_1"
-const BenchmarkAddRowSed_VALUE_COLUMN_2 = "VALUE_COLUMN_2"
+// Seding values
+const BenchAddRow_TABLE_NAME = "TABLE_NAME"
+const BenchAddRow_COLUMN_VALUES_TO_INSERT = "COLUMN_VALUES_TO_INSERT"
 
 //go:embed dynamic/hopsworks_add_project.sql
 var HopsworksAddProject string
