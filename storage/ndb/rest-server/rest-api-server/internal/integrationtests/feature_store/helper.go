@@ -146,11 +146,15 @@ func fetchRows(query string, colTypes []string) (*[][]interface{}, error) {
 }
 
 func GetSampleDataWithJoin(database string, table string, rightDatabase string, rightTable string, rightPrefix string) ([][]interface{}, []string, []string, error) {
-	fg1Rows, fg1Pks, fg1Cols, err := GetSampleData(database, table)
+	return GetNSampleDataWithJoin(2, database, table, rightDatabase, rightTable, rightPrefix)
+}
+
+func GetNSampleDataWithJoin(n int, database string, table string, rightDatabase string, rightTable string, rightPrefix string) ([][]interface{}, []string, []string, error) {
+	fg1Rows, fg1Pks, fg1Cols, err := GetNSampleData(database, table, n)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	fg2Rows, fg2Pks, fg2Cols, err := GetSampleData(rightDatabase, rightTable)
+	fg2Rows, fg2Pks, fg2Cols, err := GetNSampleData(rightDatabase, rightTable, n)
 
 	if err != nil {
 		return nil, nil, nil, err
@@ -198,7 +202,7 @@ func isRawBytesNumerical(v *sql.RawBytes) bool {
 
 func getColumnInfo(dbName string, tableName string) ([]string, []string, []string, error) {
 	dbConn, _ := testutils.CreateMySQLConnection()
-
+	defer dbConn.Close()
 	var colTypes []string
 	var columns []string
 	var pks []string

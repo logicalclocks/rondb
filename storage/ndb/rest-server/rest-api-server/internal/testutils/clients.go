@@ -40,8 +40,10 @@ func SetupHttpClient(t testing.TB) *http.Client {
 		t.Fatalf("failed to get TLS config for HTTP client. Error: %v", err)
 	}
 	return &http.Client{
-		Transport: &http.Transport{TLSClientConfig: tlsConfig},
-	}
+		Transport: &http.Transport{
+			TLSClientConfig:   tlsConfig,
+			ForceAttemptHTTP2: true,
+		}}
 }
 
 //////////////////////
