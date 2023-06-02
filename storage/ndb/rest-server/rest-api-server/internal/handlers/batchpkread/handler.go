@@ -18,6 +18,7 @@ package batchpkread
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"hopsworks.ai/rdrs/internal/config"
@@ -47,6 +48,12 @@ func (h *Handler) Validate(request interface{}) error {
 		return errors.New("operations is missing in payload")
 	} else if len(*pkOperations) == 0 {
 		return errors.New("list of operations is empty")
+	}
+
+	batchMaxSize := config.GetAll().Internal.BatchMaxSize
+	if uint32(len(*pkOperations)) > batchMaxSize {
+		return fmt.Errorf("batch is too big. Maximum of %d sub operations "+
+			"are allowd in a batch operation", batchMaxSize)
 	}
 
 	for _, op := range *pkOperations {

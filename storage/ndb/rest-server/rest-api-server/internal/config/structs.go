@@ -29,6 +29,8 @@ type Internal struct {
 	BufferSize          uint32
 	PreAllocatedBuffers uint32
 	GOMAXPROCS          int
+	BatchMaxSize        uint32
+	OperationIDMaxSize  uint32
 }
 
 func (i *Internal) Validate() error {
