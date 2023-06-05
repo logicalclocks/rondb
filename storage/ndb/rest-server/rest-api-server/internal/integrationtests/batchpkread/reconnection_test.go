@@ -148,6 +148,23 @@ func reconnectTestInt(t *testing.T, numThreads int, durationSec int,
 		opCount += c
 	}
 
+	//some times reconnection may take some time.
+	connected := false
+	waitSec := 60
+	for i := 0; i < waitSec; i++ {
+		time.Sleep(time.Second * 1)
+		stat, _ := dal.GetRonDBStats()
+		if stat.NdbConnectionState == 0 {
+			connected = true
+			break
+		}
+		log.Warnf("Waiting for reconnection to complete. Current state %d  ", stat.NdbConnectionState)
+	}
+
+	if !connected {
+		t.Fatalf("Reconnection failed, waited %d seconds", waitSec)
+	}
+
 	//do some synchronous work. no error expected this time
 	tests["batch"].HttpCode = []int{http.StatusOK}
 	batchPKWorker(t, 0, tests, &stop, &doneCh)

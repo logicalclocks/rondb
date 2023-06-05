@@ -185,7 +185,9 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
                 "APIVersion": "0.1.0",
                 "BufferSize": 327680,
                 "PreAllocatedBuffers": 1024,
-                "GOMAXPROCS": -1
+                "GOMAXPROCS": -1,
+                "BatchMaxSize": 256,
+                "OperationIDMaxSize": 256
         },
         "REST": {
                 "ServerIP": "localhost",
@@ -256,6 +258,10 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
   - **PreAllocatedBuffers:** Numbers of buffers to preallocate. The default value is *1024*.
 
   - **GOMAXPROCS:** The GOMAXPROCS variable limits the number of operating system threads that can execute user-level Go code simultaneously.  The default value is -1, that is it does not change the current settings.
+
+  - **BatchMaxSize:** Max number of suboperations in a batch operation. Default is 256.
+
+  - **OperationIDMaxSize:** Max length of operation ID. Default is 256 characters.
 
 - **REST** 
 

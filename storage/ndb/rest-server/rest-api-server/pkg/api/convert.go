@@ -177,7 +177,7 @@ func ConvertBatchOpRequest(readParams []*PKReadParams) *BatchRequestProto {
 func ConvertBatchResponseProto(responsesProto *BatchResponseProto) *BatchResponseGRPC {
 	pkResponsesWCode := make([]*PKReadResponseWithCodeGRPC, len(responsesProto.Responses))
 	for i, respProto := range responsesProto.Responses {
-		pkResponsesWCode[i] = &PKReadResponseWithCodeGRPC{Code: respProto.Code, Body: ConvertPKReadResponseProto(respProto)}
+		pkResponsesWCode[i] = &PKReadResponseWithCodeGRPC{Code: respProto.Code, Message: respProto.Message, Body: ConvertPKReadResponseProto(respProto)}
 	}
 	batchResponse := BatchResponseGRPC{Result: &pkResponsesWCode}
 	return &batchResponse
