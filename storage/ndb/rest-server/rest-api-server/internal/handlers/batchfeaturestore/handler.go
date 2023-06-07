@@ -154,9 +154,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 }
 
 func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries *[]*map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata, batchStatus *[]api.FeatureStatus) (*[][]interface{}, *feature_store.RestErrorCode) {
-	jsonResponse := (*batchResponse).String()
-	rondbResp := api.BatchResponseJSON{}
-	json.Unmarshal([]byte(jsonResponse), &rondbResp)
+	rondbResp := (*batchResponse).(*api.BatchResponseJSON)
 	ronDbBatchResult := make([][]*api.PKReadResponseWithCodeJSON, len(*batchStatus))
 	batchResult := make([][]interface{}, len(*batchStatus))
 	for _, response := range *rondbResp.Result {
