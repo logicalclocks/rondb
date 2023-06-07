@@ -74,7 +74,7 @@ func GetFeatureStoreResponse(t *testing.T, req *api.BatchFeatureStoreRequest) *a
 }
 
 func GetFeatureStoreResponseWithDetail(t *testing.T, req *api.BatchFeatureStoreRequest, message string, status int) *api.BatchFeatureStoreResponse {
-	reqBody := fmt.Sprintf("%s", req)
+	reqBody := req.String()
 	log.Debugf("Request data is %s", reqBody)
 	_, respBody := testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, testutils.NewBatchFeatureStoreURL(), reqBody, message, status)
 	if int(status/100) == 2 {

@@ -36,7 +36,7 @@ func RunRestTemplate(b *testing.B, method, url string, reqs *[]string, numReques
 	var nReq = len(*reqs)
 	maxProcs := runtime.GOMAXPROCS(0)
 	log.Infof("GOMAXPROCS: %d", maxProcs)
-	b.N = numRequests
+	numRequests = b.N
 
 	latenciesChannel := make(chan time.Duration, numRequests)
 	var threadId int32 = 0

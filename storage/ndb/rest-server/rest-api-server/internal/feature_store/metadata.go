@@ -206,13 +206,13 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		if strings.Contains(err.Error(), "Not Found") {
 			return nil, FV_NOT_EXIST
 		}
-		return nil, (*&FV_READ_FAIL).NewMessage(err.VerboseError())
+		return nil, FV_READ_FAIL.NewMessage(err.VerboseError())
 	}
 
 	joinIdToPrefix := make(map[int]string)
 	tdJoins, err := dal.GetTrainingDatasetJoinData(fvID)
 	if err != nil {
-		return nil, (*TD_JOIN_READ_FAIL).NewMessage(err.VerboseError())
+		return nil, TD_JOIN_READ_FAIL.NewMessage(err.VerboseError())
 	}
 	for _, tdj := range tdJoins {
 		joinIdToPrefix[tdj.Id] = tdj.Prefix
@@ -232,18 +232,18 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 			if strings.Contains(err.Error(), "Not Found") {
 				return nil, FG_NOT_EXIST
 			}
-			return nil, (*FG_READ_FAIL).NewMessage(err.VerboseError())
+			return nil, FG_READ_FAIL.NewMessage(err.VerboseError())
 		}
 		feature := FeatureMetadata{}
 		if featureStoreName, exist := fsIdToName[fsId]; exist {
-			feature.FeatureStoreName = fsIdToName[fsId]
+			feature.FeatureStoreName = featureStoreName
 		} else {
 			featureStoreName, err = dal.GetFeatureStoreName(fsId)
 			if err != nil {
 				if strings.Contains(err.Error(), "Not Found") {
 					return nil, FS_NOT_EXIST
 				}
-				return nil, (*FS_READ_FAIL).NewMessage(err.VerboseError())
+				return nil, FS_READ_FAIL.NewMessage(err.VerboseError())
 			}
 			fsIdToName[fsId] = featureStoreName
 			feature.FeatureStoreName = featureStoreName

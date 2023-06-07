@@ -594,9 +594,7 @@ func Test_PassedFeatures_success_allTypes(t *testing.T) {
 			[]byte(`2.5`),          // double
 			[]byte(fmt.Sprintf(`"%s"`, base64.StdEncoding.EncodeToString([]byte("EEFF")))), // binary
 		}
-		for i, pf := range passedFeatures {
-			row[i] = pf
-		}
+		copy(row, passedFeatures)
 		row[len(passedFeatures)-1] = []byte(`"EEFF"`)
 		var fsReq = CreateFeatureStoreRequest(
 			"fsdb001",

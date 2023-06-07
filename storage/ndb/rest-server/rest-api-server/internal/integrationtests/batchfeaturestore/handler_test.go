@@ -702,9 +702,7 @@ func Test_PassedFeatures_success_allTypes(t *testing.T) {
 	}
 	for _, row := range rows {
 
-		for i, pf := range passedFeatures {
-			row[i] = pf
-		}
+		copy(row, passedFeatures)
 		row[len(passedFeatures)-1] = []byte(`"EEFF"`)
 	}
 	var fsReq = CreateFeatureStoreRequest(

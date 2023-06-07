@@ -109,7 +109,7 @@ func run(b *testing.B, fsName string, fvName string, fvVersion int, batchSize in
 			nil,
 			nil,
 		)
-		reqBody := fmt.Sprintf("%s", fsReq)
+		reqBody := fsReq.String()
 		fsReqs = append(fsReqs, reqBody)
 
 	}

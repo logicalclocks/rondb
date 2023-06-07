@@ -107,7 +107,7 @@ func ValidateFeatureType(feature *json.RawMessage, featureType string) *feature_
 	var got, err = getJsonType(feature)
 
 	if err != nil {
-		return feature_store.INCORRECT_FEATURE_VALUE.NewMessage(fmt.Sprintf("Provided value %s is not in correct JSON format. %s", feature, err))
+		return feature_store.INCORRECT_FEATURE_VALUE.NewMessage(fmt.Sprintf("Provided value %v is not in correct JSON format. %s", feature, err))
 	}
 	var expected = mapFeatureTypeToJsonType(featureType)
 	if got != expected {
@@ -311,12 +311,12 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 
 func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *map[string]*json.RawMessage) *[]*api.PKReadParams {
 
-	var batchReadParams = make([]*api.PKReadParams, 0, 0)
+	var batchReadParams = make([]*api.PKReadParams, 0)
 	for _, fgFeature := range metadata.FeatureGroupFeatures {
 		testDb := fgFeature.FeatureStoreName
 		testTable := fmt.Sprintf("%s_%d", fgFeature.FeatureGroupName, fgFeature.FeatureGroupVersion)
-		var filters = make([]api.Filter, 0, 0)
-		var columns = make([]api.ReadColumn, 0, 0)
+		var filters = make([]api.Filter, 0)
+		var columns = make([]api.ReadColumn, 0)
 		for _, feature := range fgFeature.Features {
 			if value, ok := (*entries)[feature.Prefix+feature.Name]; ok {
 				var filter = api.Filter{Column: &feature.Name, Value: value}

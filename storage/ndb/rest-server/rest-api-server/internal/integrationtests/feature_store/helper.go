@@ -73,7 +73,6 @@ func GetNSampleData(database string, table string, n int) ([][]interface{}, []st
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	// Max number of rows can be retrieved is 10.
 	query := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d", database, table, n)
 	var valueBatch, err1 = fetchRows(query, colTypes)
 	if err1 != nil {
@@ -140,7 +139,7 @@ func fetchRows(query string, colTypes []string) (*[][]interface{}, error) {
 		valueBatch = append(valueBatch, rawValue)
 	}
 	if len(valueBatch) == 0 {
-		return nil, fmt.Errorf("No sample data is fetched.\n")
+		return nil, fmt.Errorf("no sample data is fetched")
 	}
 	return &valueBatch, nil
 }
@@ -190,16 +189,6 @@ func isColNumerical(colType string) bool {
 	return numericalType[strings.ToUpper(colType)]
 }
 
-func isRawBytesNumerical(v *sql.RawBytes) bool {
-	if _, err := strconv.ParseFloat(string(*v), 64); err == nil {
-		return true
-	} else if _, err := strconv.ParseInt(string(*v), 10, 64); err == nil {
-		return true
-	} else {
-		return false
-	}
-}
-
 func getColumnInfo(dbName string, tableName string) ([]string, []string, []string, error) {
 	dbConn, _ := testutils.CreateMySQLConnection()
 	defer dbConn.Close()
@@ -246,7 +235,7 @@ func GetFeatureStoreResponse(t *testing.T, req *api.FeatureStoreRequest) *api.Fe
 }
 
 func GetFeatureStoreResponseWithDetail(t *testing.T, req *api.FeatureStoreRequest, message string, status int) *api.FeatureStoreResponse {
-	reqBody := fmt.Sprintf("%s", req)
+	reqBody := req.String()
 	_, respBody := testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, testutils.NewFeatureStoreURL(), reqBody, message, status)
 	if int(status/100) == 2 {
 		fsResp := api.FeatureStoreResponse{}
@@ -300,7 +289,7 @@ func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string,
 		if reflect.TypeOf(gotRaw) == reflect.TypeOf([]byte{}) {
 			err := json.Unmarshal(gotRaw.([]byte), &got)
 			if err != nil {
-				t.Errorf("Cannot unmarshal %s, got error: %s\n", gotRaw, err)
+				t.Errorf("cannot unmarshal %s, got error: %s", gotRaw, err)
 			}
 		} else {
 			got = gotRaw

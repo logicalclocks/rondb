@@ -60,7 +60,7 @@ func (err *RestErrorCode) String() string {
 	if jsonErr != nil {
 		return fmt.Sprintf("Failed to marshal FeatureStoreErrorResponse. Error: %s", jsonErr)
 	} else {
-		return fmt.Sprintf("%s", strBytes)
+		return string(strBytes)
 	}
 }
 
