@@ -71,13 +71,13 @@ RS_Status find_project_id_int(Ndb *ndb_object, const char *feature_store_name, I
   int projectname_col_id      = table_dict->getColumn("projectname")->getColumnNo();
   Uint32 projectname_col_size = (Uint32)table_dict->getColumn("projectname")->getSizeInBytes();
   assert(projectname_col_size == PROJECT_PROJECTNAME_SIZE);
-  if (strlen(feature_store_name) >=
-      PROJECT_PROJECTNAME_SIZE - 1) {  // col_size include length byte(s)
+  int feature_store_name_len = strlen(feature_store_name);
+  if (feature_store_name_len >= PROJECT_PROJECTNAME_SIZE - 1) {  // col_size include length byte(s)
     return RS_CLIENT_ERROR("Wrong length of the projectname");
   }
 
   char cmp_str[PROJECT_PROJECTNAME_SIZE];
-  memcpy(cmp_str + 1, feature_store_name, PROJECT_PROJECTNAME_SIZE - 1);
+  memcpy(cmp_str + 1, feature_store_name, feature_store_name_len + 1);  //+1 for null
   cmp_str[0] = static_cast<char>(strlen(feature_store_name));
 
   NdbScanFilter filter(scan_op);
@@ -185,13 +185,13 @@ RS_Status find_feature_store_id_int(Ndb *ndb_object, const char *feature_store_n
   int name_col_id      = table_dict->getColumn("name")->getColumnNo();
   Uint32 name_col_size = (Uint32)table_dict->getColumn("name")->getSizeInBytes();
   assert(name_col_size == FEATURE_STORE_NAME_SIZE);
-  if (strlen(feature_store_name) >=
-      FEATURE_STORE_NAME_SIZE - 1) {  // col_size include length byte(s)
+  int feature_store_name_len = strlen(feature_store_name);
+  if (feature_store_name_len >= FEATURE_STORE_NAME_SIZE - 1) {  // col_size include length byte(s)
     return RS_CLIENT_ERROR("Wrong length of column name");
   }
 
   char cmp_str[FEATURE_STORE_NAME_SIZE];
-  memcpy(cmp_str + 1, feature_store_name, FEATURE_STORE_NAME_SIZE - 1);
+  memcpy(cmp_str + 1, feature_store_name, feature_store_name_len + 1);  // +1 for null
   cmp_str[0] = static_cast<char>(strlen(feature_store_name));
 
   NdbScanFilter filter(scan_op);
@@ -303,12 +303,13 @@ RS_Status find_feature_view_id_int(Ndb *ndb_object, int feature_store_id,
   int name_col_id      = table_dict->getColumn("name")->getColumnNo();
   Uint32 name_col_size = (Uint32)table_dict->getColumn("name")->getSizeInBytes();
   assert(name_col_size == FEATURE_VIEW_NAME_SIZE);
-  if (strlen(feature_view_name) >= FEATURE_VIEW_NAME_SIZE - 1) {  // col_size include length byte(s)
+  int feature_view_name_len = strlen(feature_view_name);
+  if (feature_view_name_len >= FEATURE_VIEW_NAME_SIZE - 1) {  // col_size include length byte(s)
     return RS_CLIENT_ERROR("Wrong length of column name");
   }
 
   char cmp_str[FEATURE_VIEW_NAME_SIZE];
-  memcpy(cmp_str + 1, feature_view_name, FEATURE_VIEW_NAME_SIZE - 1);
+  memcpy(cmp_str + 1, feature_view_name, feature_view_name_len + 1);  // +1 for null
   cmp_str[0] = static_cast<char>(strlen(feature_view_name));
 
   NdbScanFilter filter(scan_op);
@@ -412,7 +413,8 @@ RS_Status find_feature_view_id(int feature_store_id, const char *feature_view_na
 
 //-------------------------------------------------------------------------------------------------
 
-RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_id, Training_Dataset_Join **tdjs, int *tdjs_size) {
+RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_id,
+                                              Training_Dataset_Join **tdjs, int *tdjs_size) {
   NdbError ndb_err;
   const NdbDictionary::Table *table_dict;
   NdbTransaction *tx;
@@ -453,15 +455,15 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
     return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_031);
   }
 
-  NdbRecAttr *td_join_id_attr       = scan_op->getValue("id", nullptr);
-  NdbRecAttr *prefix_attr           = scan_op->getValue("prefix", nullptr);
+  NdbRecAttr *td_join_id_attr = scan_op->getValue("id", nullptr);
+  NdbRecAttr *prefix_attr     = scan_op->getValue("prefix", nullptr);
 
   if (td_join_id_attr == nullptr || prefix_attr == nullptr) {
     return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_019);
   }
 
   assert(TRAINING_DATASET_JOIN_PREFIX_SIZE ==
-        (Uint32)table_dict->getColumn("prefix")->getSizeInBytes());
+         (Uint32)table_dict->getColumn("prefix")->getSizeInBytes());
 
   if (tx->execute(NdbTransaction::NoCommit) != 0) {
     ndb_err = ndb_object->getNdbError();
@@ -469,29 +471,29 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
     return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_009);
   }
 
-  bool check   = 0;
+  bool check = 0;
   std::vector<Training_Dataset_Join> tdjsv;
-while ((check = scan_op->nextResult(true)) == 0) {
-  do {
-    Training_Dataset_Join tdj;
-    tdj.id = td_join_id_attr->int32_value();
-    
-    if (prefix_attr->isNULL()) {
-      tdj.prefix[0] = 0;
-    } else {
-      Uint32 prefix_attr_bytes;
-      const char *prefix_data_start = nullptr;
-      if (GetByteArray(prefix_attr, &prefix_data_start, &prefix_attr_bytes) != 0) {
-        return RS_CLIENT_ERROR(ERROR_019);
+  while ((check = scan_op->nextResult(true)) == 0) {
+    do {
+      Training_Dataset_Join tdj;
+      tdj.id = td_join_id_attr->int32_value();
+
+      if (prefix_attr->isNULL()) {
+        tdj.prefix[0] = 0;
+      } else {
+        Uint32 prefix_attr_bytes;
+        const char *prefix_data_start = nullptr;
+        if (GetByteArray(prefix_attr, &prefix_data_start, &prefix_attr_bytes) != 0) {
+          return RS_CLIENT_ERROR(ERROR_019);
+        }
+
+        memcpy(tdj.prefix, prefix_data_start, prefix_attr_bytes);
+        tdj.prefix[prefix_attr_bytes] = 0;
       }
 
-      memcpy(tdj.prefix, prefix_data_start, prefix_attr_bytes);
-      tdj.prefix[prefix_attr_bytes] = 0;
-    }
-    
-    tdjsv.push_back(tdj);
-  } while ((check = scan_op->nextResult(false)) == 0);
-} 
+      tdjsv.push_back(tdj);
+    } while ((check = scan_op->nextResult(false)) == 0);
+  }
 
   // check for errors happened during the reading process
   NdbError error = scan_op->getNdbError();
@@ -508,13 +510,13 @@ while ((check = scan_op->nextResult(true)) == 0) {
     return RS_CLIENT_404_ERROR();
   }
 
-    // freed by CGO
+  // freed by CGO
   *tdjs_size = tdjsv.size();
   void *ptr  = (Training_Dataset_Join *)malloc(tdjsv.size() * sizeof(Training_Dataset_Join));
   *tdjs      = (Training_Dataset_Join *)ptr;
   for (Uint64 i = 0; i < tdjsv.size(); i++) {
-    (*tdjs + i)->id = tdjsv[i].id; 
-    memcpy((*tdjs + i)->prefix , tdjsv[i].prefix, strlen(tdjsv[i].prefix)+1);
+    (*tdjs + i)->id = tdjsv[i].id;
+    memcpy((*tdjs + i)->prefix, tdjsv[i].prefix, strlen(tdjsv[i].prefix) + 1);
   }
   tdjsv.clear();
 
@@ -528,7 +530,8 @@ while ((check = scan_op->nextResult(true)) == 0) {
  * SELECT id AS td_join_id, feature_group AS feature_group_id, prefix FROM training_dataset_join
  * WHERE feature_view_id = {feature_view_id}
  */
-RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_Join **tdjs, int *tdjs_size) {
+RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_Join **tdjs,
+                                          int *tdjs_size) {
 
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
@@ -549,7 +552,8 @@ RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_
 //-------------------------------------------------------------------------------------------------
 
 RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, char *name,
-                                      int *online_enabled, int *feature_store_id, int *feature_group_version) {
+                                      int *online_enabled, int *feature_store_id,
+                                      int *feature_group_version) {
 
   NdbError ndb_error;
   const NdbDictionary::Table *table_dict;
@@ -582,13 +586,14 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, cha
     return RS_SERVER_ERROR(ERROR_023);
   }
 
-  NdbRecAttr *name_attr           = ndb_op->getValue("name", nullptr);
-  NdbRecAttr *online_enabled_attr  = ndb_op->getValue("online_enabled", nullptr);
-  NdbRecAttr *feature_store_id_attr = ndb_op->getValue("feature_store_id", nullptr);
+  NdbRecAttr *name_attr                  = ndb_op->getValue("name", nullptr);
+  NdbRecAttr *online_enabled_attr        = ndb_op->getValue("online_enabled", nullptr);
+  NdbRecAttr *feature_store_id_attr      = ndb_op->getValue("feature_store_id", nullptr);
   NdbRecAttr *feature_group_version_attr = ndb_op->getValue("version", nullptr);
   assert(FEATURE_GROUP_NAME_SIZE == (Uint32)table_dict->getColumn("name")->getSizeInBytes());
 
-  if (name_attr == nullptr || online_enabled_attr == nullptr || feature_store_id_attr == nullptr || feature_group_version_attr == nullptr) {
+  if (name_attr == nullptr || online_enabled_attr == nullptr || feature_store_id_attr == nullptr ||
+      feature_group_version_attr == nullptr) {
     return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
   }
 
@@ -603,8 +608,8 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, cha
     return RS_CLIENT_404_ERROR();
   }
 
-  *online_enabled   = online_enabled_attr->u_8_value();
-  *feature_store_id = feature_store_id_attr->int32_value();
+  *online_enabled        = online_enabled_attr->u_8_value();
+  *feature_store_id      = feature_store_id_attr->int32_value();
   *feature_group_version = feature_group_version_attr->int32_value();
 
   Uint32 name_attr_bytes;
@@ -777,16 +782,16 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
   void *ptr  = (Training_Dataset_Feature *)malloc(tdfsv.size() * sizeof(Training_Dataset_Feature));
   *tdfs      = (Training_Dataset_Feature *)ptr;
   for (Uint64 i = 0; i < tdfsv.size(); i++) {
-    (*tdfs + i)->feature_id = tdfsv[i].feature_id; 
-    (*tdfs + i)->training_dataset = tdfsv[i].training_dataset; 
-    (*tdfs + i)->feature_group_id = tdfsv[i].feature_group_id; 
-    (*tdfs + i)->td_join_id = tdfsv[i].td_join_id; 
-    (*tdfs + i)->idx = tdfsv[i].idx; 
-    (*tdfs + i)->label = tdfsv[i].label; 
-    (*tdfs + i)->transformation_function_id = tdfsv[i].transformation_function_id; 
-    (*tdfs + i)->feature_view_id = tdfsv[i].feature_view_id; 
-    memcpy((*tdfs + i)->name , tdfsv[i].name, strlen(tdfsv[i].name)+1);
-    memcpy((*tdfs + i)->data_type , tdfsv[i].data_type, strlen(tdfsv[i].data_type)+1);
+    (*tdfs + i)->feature_id                 = tdfsv[i].feature_id;
+    (*tdfs + i)->training_dataset           = tdfsv[i].training_dataset;
+    (*tdfs + i)->feature_group_id           = tdfsv[i].feature_group_id;
+    (*tdfs + i)->td_join_id                 = tdfsv[i].td_join_id;
+    (*tdfs + i)->idx                        = tdfsv[i].idx;
+    (*tdfs + i)->label                      = tdfsv[i].label;
+    (*tdfs + i)->transformation_function_id = tdfsv[i].transformation_function_id;
+    (*tdfs + i)->feature_view_id            = tdfsv[i].feature_view_id;
+    memcpy((*tdfs + i)->name, tdfsv[i].name, strlen(tdfsv[i].name) + 1);
+    memcpy((*tdfs + i)->data_type, tdfsv[i].data_type, strlen(tdfsv[i].data_type) + 1);
   }
   tdfsv.clear();
 
@@ -851,7 +856,7 @@ RS_Status find_feature_store_data_int(Ndb *ndb_object, int feature_store_id, cha
     return RS_SERVER_ERROR(ERROR_023);
   }
 
-  NdbRecAttr *name_attr           = ndb_op->getValue("name", nullptr);
+  NdbRecAttr *name_attr = ndb_op->getValue("name", nullptr);
   assert(FEATURE_STORE_NAME_SIZE == (Uint32)table_dict->getColumn("name")->getSizeInBytes());
 
   if (name_attr == nullptr) {
