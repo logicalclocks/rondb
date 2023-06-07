@@ -26,6 +26,7 @@ import (
 	"hopsworks.ai/rdrs/internal/integrationtests"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/testutils"
+	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 /*
@@ -42,17 +43,17 @@ import (
 			 -benchmem \
 			 -benchtime=100x \ 		// 100 times
 			 -benchtime=10s \ 		// 10 sec
-			 ./internal/integrationtests/pkread/
+			 ./internal/integrationtests/feature_store/
 */
 
 const totalNumRequest = 100000
 
 func Benchmark(b *testing.B) {
-	run(b, "fsdb001", "sample_1", 1)
+	run(b, testdbs.FSDB001, "sample_1", 1)
 }
 
 func Benchmark_join(b *testing.B) {
-	run(b, "fsdb001", "sample_1n2", 1)
+	run(b, testdbs.FSDB001, "sample_1n2", 1)
 }
 
 const nrows = 100
@@ -60,11 +61,11 @@ const nrows = 100
 func getSampleData(fsName string, fvName string, fvVersion int) ([][]interface{}, []string, []string, error) {
 	switch fmt.Sprintf("%s|%s|%d", fsName, fvName, fvVersion) {
 	case "fsdb001|sample_1|1":
-		return GetNSampleData("fsdb001", "sample_1_1", nrows)
+		return GetNSampleData(testdbs.FSDB001, "sample_1_1", nrows)
 	case "fsdb001|sample_3|1":
-		return GetNSampleData("fsdb001", "sample_3_1", nrows)
+		return GetNSampleData(testdbs.FSDB001, "sample_3_1", nrows)
 	case "fsdb001|sample_1n2|1":
-		return GetNSampleDataWithJoin(nrows, "fsdb001", "sample_1_1", "fsdb001", "sample_2_1", "fg2_")
+		return GetNSampleDataWithJoin(nrows, testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
 	default:
 		return nil, nil, nil, nil
 	}

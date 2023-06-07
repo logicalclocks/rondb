@@ -19,16 +19,15 @@ package batchfeaturestore
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"testing"
 
 	"hopsworks.ai/rdrs/internal/config"
+	fshelper "hopsworks.ai/rdrs/internal/integrationtests/feature_store"
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/testutils"
 	"hopsworks.ai/rdrs/pkg/api"
-	fshelper "hopsworks.ai/rdrs/internal/integrationtests/feature_store"
 )
 
 func CreateFeatureStoreRequest(

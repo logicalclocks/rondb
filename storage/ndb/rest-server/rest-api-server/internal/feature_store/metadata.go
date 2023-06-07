@@ -198,7 +198,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		if strings.Contains(err.Error(), "Not Found") {
 			return nil, FS_NOT_EXIST
 		}
-		return nil, (*FS_NOT_EXIST).NewMessage(err.Error())
+		return nil, FS_NOT_EXIST.NewMessage(err.Error())
 	}
 
 	fvID, err := dal.GetFeatureViewID(fsID, featureViewName, featureViewVersion)
@@ -220,7 +220,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 
 	tdfs, err := dal.GetTrainingDatasetFeature(fvID)
 	if err != nil {
-		return nil, (*TD_FEATURE_READ_FAIL).NewMessage(err.VerboseError())
+		return nil, TD_FEATURE_READ_FAIL.NewMessage(err.VerboseError())
 	}
 
 	features := make([]*FeatureMetadata, len(tdfs))

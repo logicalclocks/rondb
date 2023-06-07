@@ -28,6 +28,7 @@ import (
 	"hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
 	"hopsworks.ai/rdrs/internal/log"
+	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
 )
@@ -205,13 +206,12 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		var fsError = TranslateRonDbError(code, ronDbErr.Error())
 		return fsError.GetStatus(), fsError.GetError()
 	}
-	jsonResponse := (*dbResponseIntf).String()
 	if log.IsDebug() {
+		jsonResponse := (*dbResponseIntf).String()
 		log.Debugf("Rondb response: code: %d, error: %s, body: %s", code, ronDbErr, jsonResponse)
 	}
-	rondbResp := api.BatchResponseJSON{}
-	json.Unmarshal([]byte(jsonResponse), &rondbResp)
-	fsError := checkRondbResponse(&rondbResp)
+	rondbResp := (*dbResponseIntf).(*api.BatchResponseJSON) 
+	fsError := checkRondbResponse(rondbResp)
 	if fsError != nil {
 		return fsError.GetStatus(), fsError.GetError()
 	}
@@ -228,7 +228,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 
 func checkRondbResponse(rondbResp *api.BatchResponseJSON) *feature_store.RestErrorCode {
 	for _, result := range *rondbResp.Result {
-		if *result.Code != 200 && *result.Code != 404 {
+		if *result.Code != http.StatusOK && *result.Code != http.StatusNotFound {
 			return TranslateRonDbError(int(*result.Code), *result.Message)
 		}
 	}
@@ -254,7 +254,7 @@ func GetFeatureMetadata(metadata *feature_store.FeatureViewMetadata, metaRequest
 
 func TranslateRonDbError(code int, err string) *feature_store.RestErrorCode {
 	var fsError *feature_store.RestErrorCode
-	if strings.Contains(err, "Wrong data type.") {
+	if strings.Contains(err, common.ERROR_015()) { // Wrong data type.
 		regex := regexp.MustCompile(`Expecting (\w+)\. Column: (\w+)`)
 		match := regex.FindStringSubmatch(err)
 		if match != nil {
@@ -267,12 +267,12 @@ func TranslateRonDbError(code int, err string) *feature_store.RestErrorCode {
 			fsError = feature_store.WRONG_DATA_TYPE
 		}
 
-	} else if strings.Contains(err, "Wrong number of primary-key columns.") ||
-		strings.Contains(err, "Wrong primay-key column.") ||
-		strings.Contains(err, "Column does not exist.") {
+	} else if strings.Contains(err, common.ERROR_013()) || // "Wrong number of primary-key columns."
+		strings.Contains(err, common.ERROR_014()) || // "Wrong primay-key column."
+		strings.Contains(err, common.ERROR_012()) { // "Column does not exist."
 		fsError = feature_store.INCORRECT_PRIMARY_KEY.NewMessage(err)
 	} else {
-		if code == 400 {
+		if code == http.StatusBadRequest {
 			fsError = feature_store.READ_FROM_DB_FAIL_BAD_INPUT.NewMessage(err)
 		} else {
 			fsError = feature_store.READ_FROM_DB_FAIL
@@ -285,9 +285,9 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 	featureValues := make([]interface{}, featureView.NumOfFeatures)
 	var status = api.FEATURE_STATUS_COMPLETE
 	for _, response := range *ronDbResult {
-		if *response.Code == 404 {
+		if *response.Code == http.StatusNotFound {
 			status = api.FEATURE_STATUS_MISSING
-		} else if *response.Code != 200 {
+		} else if *response.Code != http.StatusOK {
 			status = api.FEATURE_STATUS_ERROR
 		}
 		for featureName, value := range *response.Body.Data {
@@ -311,12 +311,12 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 
 func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *map[string]*json.RawMessage) *[]*api.PKReadParams {
 
-	var batchReadParams = make([]*api.PKReadParams, 0)
+	var batchReadParams = make([]*api.PKReadParams, 0, len(metadata.FeatureGroupFeatures))
 	for _, fgFeature := range metadata.FeatureGroupFeatures {
 		testDb := fgFeature.FeatureStoreName
 		testTable := fmt.Sprintf("%s_%d", fgFeature.FeatureGroupName, fgFeature.FeatureGroupVersion)
-		var filters = make([]api.Filter, 0)
-		var columns = make([]api.ReadColumn, 0)
+		var filters = make([]api.Filter, 0, len(fgFeature.Features))
+		var columns = make([]api.ReadColumn, 0, len(fgFeature.Features))
 		for _, feature := range fgFeature.Features {
 			if value, ok := (*entries)[feature.Prefix+feature.Name]; ok {
 				var filter = api.Filter{Column: &feature.Name, Value: value}
@@ -326,7 +326,7 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 				}
 			} else {
 				var colName = feature.Name
-				var colType = "default"
+				var colType = api.DRT_DEFAULT
 				readCol := api.ReadColumn{Column: &colName, DataReturnType: &colType}
 				columns = append(columns, readCol)
 				if log.IsDebug() {

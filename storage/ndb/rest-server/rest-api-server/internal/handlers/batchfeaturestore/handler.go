@@ -63,7 +63,7 @@ func (h *Handler) Validate(request interface{}) error {
 		return feature_store.NO_PRIMARY_KEY_GIVEN.GetError()
 	}
 	if len(*fsReq.PassedFeatures) != 0 && len(*fsReq.Entries) != len(*fsReq.PassedFeatures) {
-		return feature_store.INCORRECT_PASSED_FEATURE.NewMessage("Length of passed feature does not equal to that of entries.").GetError()
+		return feature_store.INCORRECT_PASSED_FEATURE.NewMessage("Length of passed feature does not equal to that of the entries provided in the request.").GetError()
 	}
 	return nil
 }
@@ -119,7 +119,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		ronDbErr := h.dbBatchReader.Validate(readParams)
 		if ronDbErr != nil {
 			if log.IsDebug() {
-				log.Debugf("Rondb validation failed: %s", ronDbErr.Error())
+				log.Debugf("RonDB validation failed: %s", ronDbErr.Error())
 			}
 			var fsError = fshandler.TranslateRonDbError(http.StatusBadRequest, ronDbErr.Error())
 			return fsError.GetStatus(), fsError.GetError()
@@ -127,13 +127,16 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		var dbResponseIntf = getPkReadResponseJSON(numPassed, *metadata)
 		code, ronDbErr := h.dbBatchReader.Execute(readParams, *dbResponseIntf)
 		if log.IsDebug() {
-			log.Debugf("Rondb response: code: %d, error: %s, body: %s", code, ronDbErr, (*dbResponseIntf).String())
+			log.Debugf("RonDB response: code: %d, error: %s, body: %s", code, ronDbErr, (*dbResponseIntf).String())
 		}
 		if ronDbErr != nil {
 			var fsError = fshandler.TranslateRonDbError(code, ronDbErr.Error())
 			return fsError.GetStatus(), fsError.GetError()
 		}
-		features = getFeatureValuesMultipleEntries(dbResponseIntf, fsReq.Entries, metadata, &featureStatus)
+		features, err  = getFeatureValuesMultipleEntries(dbResponseIntf, fsReq.Entries, metadata, &featureStatus)
+		if err != nil {
+			return err.GetStatus(), err.GetError()
+		}
 	} else {
 		var emptyFeatures = make([][]interface{}, len(*fsReq.Entries))
 		for i := range(emptyFeatures) {
@@ -150,7 +153,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	return http.StatusOK, nil
 }
 
-func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries *[]*map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata, batchStatus *[]api.FeatureStatus) *[][]interface{} {
+func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries *[]*map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata, batchStatus *[]api.FeatureStatus) (*[][]interface{}, *feature_store.RestErrorCode) {
 	jsonResponse := (*batchResponse).String()
 	rondbResp := api.BatchResponseJSON{}
 	json.Unmarshal([]byte(jsonResponse), &rondbResp)
@@ -158,7 +161,10 @@ func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries
 	batchResult := make([][]interface{}, len(*batchStatus))
 	for _, response := range *rondbResp.Result {
 		splitOperationId := strings.Split(*response.Body.OperationID, SEQUENCE_SEPARATOR)
-		seqNum, _ := strconv.Atoi(splitOperationId[0])
+		seqNum, err := strconv.Atoi(splitOperationId[0])
+		if err != nil {
+			return nil, feature_store.READ_FROM_DB_FAIL
+		}
 		*response.Body.OperationID = splitOperationId[1]
 		ronDbBatchResult[seqNum] = append(ronDbBatchResult[seqNum], response)
 	}
@@ -169,7 +175,7 @@ func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries
 			(*batchStatus)[i] = status
 		}
 	}
-	return &batchResult
+	return &batchResult, nil
 }
 
 func getBatchPkReadParamsMutipleEntries(metadata *feature_store.FeatureViewMetadata, entries *[]*map[string]*json.RawMessage, status *[]api.FeatureStatus) *[]*api.PKReadParams {
@@ -195,7 +201,6 @@ func getPkReadResponseJSON(numEntries int, metadata feature_store.FeatureViewMet
 func fillPassedFeaturesMultipleEntries(features *[][]interface{}, passedFeatures *[]*map[string]*json.RawMessage, featureMetadata *map[string]*feature_store.FeatureMetadata, indexLookup *map[string]int, status *[]api.FeatureStatus) {
 	if len(*passedFeatures) != 0 {
 		for i, feature := range *features {
-			// TODO: validate length of pass features
 			if (*status)[i] != api.FEATURE_STATUS_ERROR {
 				fshandler.FillPassedFeatures(&feature, (*passedFeatures)[i], featureMetadata, indexLookup)
 			}

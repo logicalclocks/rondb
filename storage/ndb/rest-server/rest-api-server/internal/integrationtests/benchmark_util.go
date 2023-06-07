@@ -34,7 +34,7 @@ import (
 
 func RunRestTemplate(b *testing.B, method, url string, reqs *[]string, numRequests int) {
 	var nReq = len(*reqs)
-	maxProcs := runtime.GOMAXPROCS(0)
+	maxProcs := runtime.GOMAXPROCS(0) // Calling it with "0" does not change anything, it only returns current value for GOMAXPROCS
 	log.Infof("GOMAXPROCS: %d", maxProcs)
 	numRequests = b.N
 
@@ -62,7 +62,7 @@ func RunRestTemplate(b *testing.B, method, url string, reqs *[]string, numReques
 			requestStartTime := time.Now()
 			resp, err := httpClient.Do(req)
 			latenciesChannel <- time.Since(requestStartTime)
-			if resp == nil || resp.StatusCode != 200 {
+			if resp == nil || resp.StatusCode != http.StatusOK {
 				atomic.AddInt32(&numError, 1)
 				log.Infof("Error status code: %d", resp.StatusCode)
 				if err != nil {

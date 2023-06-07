@@ -50,31 +50,31 @@ import (
 			 -benchmem \
 			 -benchtime=100x \ 		// 100 times
 			 -benchtime=10s \ 		// 10 sec
-			 ./internal/integrationtests/pkread/
+			 ./internal/integrationtests/batchfeaturestore/
 */
 
 const totalNumRequest = 100000
 
 func Benchmark(b *testing.B) {
 	for _, n := range []int{10, 50, 100} {
-		run(b, "fsdb001", "sample_1", 1, n)
+		run(b, testdbs.FSDB001, "sample_1", 1, n)
 	}
 }
 
 func Benchmark_join(b *testing.B) {
 	for _, n := range []int{5, 25, 50} {
-		run(b, "fsdb001", "sample_1n2", 1, n)
+		run(b, testdbs.FSDB001, "sample_1n2", 1, n)
 	}
 }
 
 func getSampleData(n int, fsName string, fvName string, fvVersion int) ([][]interface{}, []string, []string, error) {
 	switch fmt.Sprintf("%s|%s|%d", fsName, fvName, fvVersion) {
 	case "fsdb001|sample_1|1":
-		return fshelper.GetNSampleData("fsdb001", "sample_1_1", n)
+		return fshelper.GetNSampleData(testdbs.FSDB001, "sample_1_1", n)
 	case "fsdb001|sample_3|1":
-		return fshelper.GetNSampleData("fsdb001", "sample_3_1", n)
+		return fshelper.GetNSampleData(testdbs.FSDB001, "sample_3_1", n)
 	case "fsdb001|sample_1n2|1":
-		return fshelper.GetNSampleDataWithJoin(n, "fsdb001", "sample_1_1", "fsdb001", "sample_2_1", "fg2_")
+		return fshelper.GetNSampleDataWithJoin(n, testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
 	default:
 		panic("No sample data for given feature view")
 	}
