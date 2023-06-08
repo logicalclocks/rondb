@@ -8191,31 +8191,31 @@ calculate_max_signals_parameters(thr_data *selfptr)
   switch (selfptr->m_sched_responsiveness)
   {
     case 0:
-      selfptr->m_max_send_wakeups = 62;
+      selfptr->m_max_send_wakeups = 82;
       break;
     case 1:
-      selfptr->m_max_send_wakeups = 60;
+      selfptr->m_max_send_wakeups = 78;
       break;
     case 2:
-      selfptr->m_max_send_wakeups = 58;
+      selfptr->m_max_send_wakeups = 72;
       break;
     case 3:
-      selfptr->m_max_send_wakeups = 56;
+      selfptr->m_max_send_wakeups = 68;
       break;
     case 4:
-      selfptr->m_max_send_wakeups = 54;
+      selfptr->m_max_send_wakeups = 64;
       break;
     case 5:
-      selfptr->m_max_send_wakeups = 52;
+      selfptr->m_max_send_wakeups = 60;
       break;
     case 6:
-      selfptr->m_max_send_wakeups = 50;
+      selfptr->m_max_send_wakeups = 56;
       break;
     case 7:
-      selfptr->m_max_send_wakeups = 48;
+      selfptr->m_max_send_wakeups = 52;
       break;
     case 8:
-      selfptr->m_max_send_wakeups = 46;
+      selfptr->m_max_send_wakeups = 48;
       break;
     case 9:
       selfptr->m_max_send_wakeups = 44;
@@ -8603,7 +8603,7 @@ mt_receiver_thread_main(void *thr_arg)
                            num_events,
                            before))))
     {
-      delay = 10; // 10 ms
+      delay = 1; // 1 ms
     }
 
     has_received = false;
