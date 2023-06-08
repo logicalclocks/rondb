@@ -235,10 +235,10 @@ func checkRondbResponse(rondbResp *api.BatchResponseJSON) *feature_store.RestErr
 	return nil
 }
 
-func GetFeatureMetadata(metadata *feature_store.FeatureViewMetadata, metaRequest *api.MetadataRequest) *[]*api.FeatureMeatadata {
-	featureMetadataArray := make([]*api.FeatureMeatadata, metadata.NumOfFeatures)
+func GetFeatureMetadata(metadata *feature_store.FeatureViewMetadata, metaRequest *api.MetadataRequest) *[]*api.FeatureMetadata {
+	featureMetadataArray := make([]*api.FeatureMetadata, metadata.NumOfFeatures)
 	for featureKey, metadata := range metadata.PrefixFeaturesLookup {
-		featureMetadata := api.FeatureMeatadata{}
+		featureMetadata := api.FeatureMetadata{}
 		if metaRequest.FeatureName {
 			var fk = featureKey
 			featureMetadata.Name = &fk

@@ -40,7 +40,7 @@ const (
 type Handler struct {
 	fvMetaCache   *feature_store.FeatureViewMetaDataCache
 	apiKeyCache   apikey.Cache
-	dbBatchReader batchpkread.Handler
+	dbBatchHandler batchpkread.Handler
 }
 
 func New(fvMetaCache *feature_store.FeatureViewMetaDataCache, apiKeyCache apikey.Cache, batchPkReadHandler batchpkread.Handler) Handler {
@@ -68,7 +68,7 @@ func (h *Handler) Validate(request interface{}) error {
 	return nil
 }
 
-func checkStatus(fsReq *api.BatchFeatureStoreRequest, metadata *feature_store.FeatureViewMetadata, status *[]api.FeatureStatus) int {
+func checkFeatureStatus(fsReq *api.BatchFeatureStoreRequest, metadata *feature_store.FeatureViewMetadata, status *[]api.FeatureStatus) int {
 	var cnt = make(map[int]bool)
 	for i, entry := range *fsReq.Entries {
 		if fshandler.ValidatePrimaryKey(entry, &metadata.PrefixFeaturesLookup) != nil {
@@ -111,12 +111,12 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		return err.GetStatus(), err.GetError()
 	}
 	var featureStatus = make([]api.FeatureStatus, len(*fsReq.Entries))
-	var numPassed = checkStatus(fsReq, metadata, &featureStatus)
+	var numPassed = checkFeatureStatus(fsReq, metadata, &featureStatus)
 	var readParams = getBatchPkReadParamsMutipleEntries(metadata, fsReq.Entries, &featureStatus)
 	fsResp := response.(*api.BatchFeatureStoreResponse)
 	var features *[][]interface{}
 	if len(*readParams) > 0 {
-		ronDbErr := h.dbBatchReader.Validate(readParams)
+		ronDbErr := h.dbBatchHandler.Validate(readParams)
 		if ronDbErr != nil {
 			if log.IsDebug() {
 				log.Debugf("RonDB validation failed: %s", ronDbErr.Error())
@@ -125,7 +125,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 			return fsError.GetStatus(), fsError.GetError()
 		}
 		var dbResponseIntf = getPkReadResponseJSON(numPassed, *metadata)
-		code, ronDbErr := h.dbBatchReader.Execute(readParams, *dbResponseIntf)
+		code, ronDbErr := h.dbBatchHandler.Execute(readParams, *dbResponseIntf)
 		if log.IsDebug() {
 			log.Debugf("RonDB response: code: %d, error: %s, body: %s", code, ronDbErr, (*dbResponseIntf).String())
 		}

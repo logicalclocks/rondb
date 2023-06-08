@@ -22,12 +22,11 @@ import (
 )
 
 type BatchFeatureStoreRequest struct {
-	FeatureStoreName   *string                         `json:"featureStoreName"`
-	FeatureViewName    *string                         `json:"featureViewName"`
-	FeatureViewVersion *int                            `json:"featureViewVersion"`
+	FeatureStoreName   *string                         `json:"featureStoreName" binding:"required"`
+	FeatureViewName    *string                         `json:"featureViewName" binding:"required"`
+	FeatureViewVersion *int                            `json:"featureViewVersion" binding:"required"`
 	PassedFeatures     *[]*map[string]*json.RawMessage `json:"passedFeatures"`
-	Entries            *[]*map[string]*json.RawMessage `json:"entries"`
-	RequestId          *string                         `json:"requestId"`
+	Entries            *[]*map[string]*json.RawMessage `json:"entries" binding:"required"`
 	MetadataRequest    *MetadataRequest                `json:"metadata_options"`
 }
 
@@ -46,12 +45,11 @@ func (freq BatchFeatureStoreRequest) String() string {
 }
 
 type FeatureStoreRequest struct {
-	FeatureStoreName   *string                      `json:"featureStoreName"`
-	FeatureViewName    *string                      `json:"featureViewName"`
-	FeatureViewVersion *int                         `json:"featureViewVersion"`
+	FeatureStoreName   *string                      `json:"featureStoreName" binding:"required"`
+	FeatureViewName    *string                      `json:"featureViewName" binding:"required"`
+	FeatureViewVersion *int                         `json:"featureViewVersion" binding:"required"`
 	PassedFeatures     *map[string]*json.RawMessage `json:"passedFeatures"`
-	Entries            *map[string]*json.RawMessage `json:"entries"`
-	RequestId          *string                      `json:"requestId"`
+	Entries            *map[string]*json.RawMessage `json:"entries" binding:"required"`
 	MetadataRequest    *MetadataRequest             `json:"metadata_options"`
 }
 
@@ -65,9 +63,9 @@ func (freq FeatureStoreRequest) String() string {
 }
 
 type BatchFeatureStoreResponse struct {
-	Features [][]interface{}     `json:"features"`
-	Metadata []*FeatureMeatadata `json:"metadata"`
-	Status   []FeatureStatus     `json:"status"`
+	Features [][]interface{}    `json:"features"`
+	Metadata []*FeatureMetadata `json:"metadata"`
+	Status   []FeatureStatus    `json:"status"`
 }
 
 func (r *BatchFeatureStoreResponse) String() string {
@@ -88,9 +86,9 @@ const (
 )
 
 type FeatureStoreResponse struct {
-	Features []interface{}       `json:"features"`
-	Metadata []*FeatureMeatadata `json:"metadata"`
-	Status   FeatureStatus       `json:"status"`
+	Features []interface{}      `json:"features"`
+	Metadata []*FeatureMetadata `json:"metadata"`
+	Status   FeatureStatus      `json:"status"`
 }
 
 func (r *FeatureStoreResponse) String() string {
@@ -102,15 +100,15 @@ func (r *FeatureStoreResponse) String() string {
 	}
 }
 
-type FeatureMeatadata struct { // use pointer because fields below are nullable
+type FeatureMetadata struct { // use pointer because fields below are nullable
 	Name *string `json:"feature_name"`
 	Type *string `json:"feature_type"`
 }
 
-func (r *FeatureMeatadata) String() string {
+func (r *FeatureMetadata) String() string {
 	strBytes, err := json.MarshalIndent(*r, "", "\t")
 	if err != nil {
-		return fmt.Sprintf("Failed to marshal FeatureMeatadata. Error: %v", err)
+		return fmt.Sprintf("Failed to marshal FeatureMetadata. Error: %v", err)
 	} else {
 		return string(strBytes)
 	}

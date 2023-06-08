@@ -17,6 +17,7 @@ package feature_store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -69,7 +70,7 @@ func (err *RestErrorCode) Error() string {
 }
 
 func (err *RestErrorCode) GetError() error {
-	return fmt.Errorf(err.Error())
+	return errors.New(err.Error())
 }
 
 var FV_NOT_EXIST = &RestErrorCode{1, "Feature view does not exist.", http.StatusNotFound, ""}
