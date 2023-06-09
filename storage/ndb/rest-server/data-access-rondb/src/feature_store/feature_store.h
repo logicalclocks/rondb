@@ -45,6 +45,15 @@ typedef struct Training_Dataset_Join {
   char prefix[63+1];
 } Training_Dataset_Join;
 
+typedef struct Feature_Group {
+  int feature_store_id;
+  char name[1000+1];
+  int version;
+  int online_enabled;
+  int num_pk;
+  char** primary_key;
+} Feature_Group;
+
 /**
  * Find project ID using the feature store name
  * SELECT id AS project_id FROM project WHERE projectname = feature_store_name
@@ -76,7 +85,7 @@ RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_
  * Find feature group data
  * SELECT name, online_enabled, feature_store_id, version FROM feature_group WHERE id = {feature_group_id}
  */
-RS_Status find_feature_group_data(int feature_group_id, char *name, int *online_enabled, int *feature_store_id, int *feature_group_version);
+RS_Status find_feature_group_data(int feature_group_id, Feature_Group *fg);
 
 /**
  * Find feature store data

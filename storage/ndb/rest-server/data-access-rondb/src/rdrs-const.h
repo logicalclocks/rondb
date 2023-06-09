@@ -80,6 +80,8 @@ extern "C" {
 #define FEATURE_GROUP_NAME_SIZE            63 + 1
 #define TRAINING_DATASET_FEATURE_NAME_SIZE 1000 + 2
 #define TRAINING_DATASET_FEATURE_TYPE_SIZE 1000 + 2
+#define ON_DEMAND_FEATURE_SIZE 1000 + 1
+#define CACHE_FEATURE_SIZE 63 + 1
 
 // Data types
 #define DECIMAL_MAX_SIZE_IN_BYTES           9 * 4   /*4 bytes per 9 digits. 65/9 + 1 * 4*/

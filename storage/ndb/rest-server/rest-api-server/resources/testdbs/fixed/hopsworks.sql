@@ -199,62 +199,125 @@ CREATE TABLE `feature_store` (
                                  CONSTRAINT `FK_883_662` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
 ) ENGINE=ndbcluster AUTO_INCREMENT=67 DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
 
--- CREATE TABLE `on_demand_feature_group` (
---                                                          `id`                      INT(11)         NOT NULL AUTO_INCREMENT,
---                                                          `query`                   VARCHAR(26000),
---                                                          `connector_id`            INT(11)         NOT NULL,
---                                                          `description`             VARCHAR(1000)   NULL,
---                                                          `inode_pid`               BIGINT(20)      NOT NULL,
---                                                          `inode_name`              VARCHAR(255)    NOT NULL,
---                                                          `partition_id`            BIGINT(20)      NOT NULL,
---                                                          `data_format`             VARCHAR(10),
---                                                          `path`                    VARCHAR(1000),
---                                                          PRIMARY KEY (`id`)
---                                                         --  CONSTRAINT `on_demand_conn_fk` FOREIGN KEY (`connector_id`) REFERENCES `feature_store_connector` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
---                                                         --  CONSTRAINT `on_demand_inode_fk` FOREIGN KEY (`inode_pid`, `inode_name`, `partition_id`) REFERENCES `hops`.`hdfs_inodes` (`parent_id`, `name`, `partition_id`) ON DELETE CASCADE ON UPDATE NO ACTION
--- ) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
+CREATE TABLE `on_demand_feature_group` (
+                                                         `id`                      INT(11)         NOT NULL AUTO_INCREMENT,
+                                                         `query`                   VARCHAR(26000),
+                                                         `connector_id`            INT(11)         NOT NULL,
+                                                         `description`             VARCHAR(1000)   NULL,
+                                                         `inode_pid`               BIGINT(20)      NOT NULL,
+                                                         `inode_name`              VARCHAR(255)    NOT NULL,
+                                                         `partition_id`            BIGINT(20)      NOT NULL,
+                                                         `data_format`             VARCHAR(10),
+                                                         `path`                    VARCHAR(1000),
+                                                         PRIMARY KEY (`id`)
+                                                        --  CONSTRAINT `on_demand_conn_fk` FOREIGN KEY (`connector_id`) REFERENCES `feature_store_connector` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+                                                        --  CONSTRAINT `on_demand_inode_fk` FOREIGN KEY (`inode_pid`, `inode_name`, `partition_id`) REFERENCES `hops`.`hdfs_inodes` (`parent_id`, `name`, `partition_id`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
 
--- CREATE TABLE `cached_feature_group` (
---                                                       `id`                             INT(11)         NOT NULL AUTO_INCREMENT,
---                                                       `offline_feature_group`          BIGINT(20)      NOT NULL,
---                                                       `timetravel_format`              INT NOT NULL DEFAULT 1,
---                                                       PRIMARY KEY (`id`)
---                                                     --   CONSTRAINT `cached_fg_hive_fk` FOREIGN KEY (`offline_feature_group`) REFERENCES `metastore`.`TBLS` (`TBL_ID`) ON DELETE CASCADE ON UPDATE NO ACTION
--- ) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
+CREATE TABLE `cached_feature_group` (
+                                                      `id`                             INT(11)         NOT NULL AUTO_INCREMENT,
+                                                      `offline_feature_group`          BIGINT(20)      NOT NULL,
+                                                      `timetravel_format`              INT NOT NULL DEFAULT 1,
+                                                      PRIMARY KEY (`id`)
+                                                    --   CONSTRAINT `cached_fg_hive_fk` FOREIGN KEY (`offline_feature_group`) REFERENCES `metastore`.`TBLS` (`TBL_ID`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
 
--- CREATE TABLE `stream_feature_group` (
---                                                       `id`                             INT(11) NOT NULL AUTO_INCREMENT,
---                                                       `offline_feature_group`          BIGINT(20) NOT NULL,
---                                                       PRIMARY KEY (`id`)
---                                                     --   CONSTRAINT `stream_fg_hive_fk` FOREIGN KEY (`offline_feature_group`) REFERENCES `metastore`.`TBLS` (`TBL_ID`) ON DELETE CASCADE ON UPDATE NO ACTION
--- ) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
+CREATE TABLE `stream_feature_group` (
+                                                      `id`                             INT(11) NOT NULL AUTO_INCREMENT,
+                                                      `offline_feature_group`          BIGINT(20) NOT NULL,
+                                                      PRIMARY KEY (`id`)
+                                                    --   CONSTRAINT `stream_fg_hive_fk` FOREIGN KEY (`offline_feature_group`) REFERENCES `metastore`.`TBLS` (`TBL_ID`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE = ndbcluster DEFAULT CHARSET = latin1 COLLATE = latin1_general_cs;
 
--- CREATE TABLE `cached_feature` (
---   `id` int(11) NOT NULL AUTO_INCREMENT,
---   `cached_feature_group_id` int(11) NULL,
---   `stream_feature_group_id` int(11) NULL,
---   `name` varchar(63) COLLATE latin1_general_cs NOT NULL,
---   `description` varchar(256) NOT NULL DEFAULT '',
---   PRIMARY KEY (`id`),
---   KEY `cached_feature_group_fk` (`cached_feature_group_id`),
---   KEY `stream_feature_group_fk` (`stream_feature_group_id`),
---   CONSTRAINT `cached_feature_group_fk2` FOREIGN KEY (`cached_feature_group_id`) REFERENCES `cached_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
---   CONSTRAINT `stream_feature_group_fk2` FOREIGN KEY (`stream_feature_group_id`) REFERENCES `stream_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
--- ) ENGINE=ndbcluster DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
+INSERT INTO
+    `stream_feature_group`
+VALUES
+    (
+        2055, 148
+    ),
+    (
+        2056, 148
+    ),
+    (
+        2057, 149
+    ),
+    (
+        2058, 150
+    ),
+    (
+        2059, 151
+    ),
+    (
+        2060, 152
+    ),
+    (
+        2064, 156
+    ),
+    (
+        2065, 157
+    );
 
--- CREATE TABLE `on_demand_feature` (
---                                      `id` int(11) NOT NULL AUTO_INCREMENT,
---                                      `on_demand_feature_group_id` int(11) NULL,
---                                      `name` varchar(1000) COLLATE latin1_general_cs NOT NULL,
---                                      `primary_column` tinyint(1) NOT NULL DEFAULT '0',
---                                      `description` varchar(10000) COLLATE latin1_general_cs,
---                                      `type` varchar(1000) COLLATE latin1_general_cs NOT NULL,
---                                      `idx` int(11) NOT NULL DEFAULT 0,
---                                      `default_value` VARCHAR(400) NULL,
---                                      PRIMARY KEY (`id`),
---                                      KEY `on_demand_feature_group_fk` (`on_demand_feature_group_id`),
---                                      CONSTRAINT `on_demand_feature_group_fk1` FOREIGN KEY (`on_demand_feature_group_id`) REFERENCES `on_demand_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
--- ) ENGINE=ndbcluster DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
+CREATE TABLE `on_demand_feature` (
+                                     `id` int(11) NOT NULL AUTO_INCREMENT,
+                                     `on_demand_feature_group_id` int(11) NULL,
+                                     `name` varchar(1000) COLLATE latin1_general_cs NOT NULL,
+                                     `primary_column` tinyint(1) NOT NULL DEFAULT '0',
+                                     `description` varchar(10000) COLLATE latin1_general_cs,
+                                     `type` varchar(1000) COLLATE latin1_general_cs NOT NULL,
+                                     `idx` int(11) NOT NULL DEFAULT 0,
+                                     `default_value` VARCHAR(400) NULL,
+                                     PRIMARY KEY (`id`),
+                                     KEY `on_demand_feature_group_fk` (`on_demand_feature_group_id`),
+                                     CONSTRAINT `on_demand_feature_group_fk1` FOREIGN KEY (`on_demand_feature_group_id`) REFERENCES `on_demand_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE=ndbcluster DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
+
+CREATE TABLE `cached_feature_extra_constraints` (
+                                                    `id` int(11) NOT NULL AUTO_INCREMENT,
+                                                    `cached_feature_group_id` int(11) NULL,
+                                                    `stream_feature_group_id` int(11) NULL,
+                                                    `name` varchar(63) COLLATE latin1_general_cs NOT NULL,
+                                                    `primary_column` tinyint(1) NOT NULL DEFAULT '0',
+                                                    `hudi_precombine_key` tinyint(1) NOT NULL DEFAULT '0',
+                                                    PRIMARY KEY (`id`),
+                                                    KEY `stream_feature_group_fk` (`stream_feature_group_id`),
+                                                    KEY `cached_feature_group_fk` (`cached_feature_group_id`),
+                                                    CONSTRAINT `stream_feature_group_fk1` FOREIGN KEY (`stream_feature_group_id`) REFERENCES `stream_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+                                                    CONSTRAINT `cached_feature_group_fk1` FOREIGN KEY (`cached_feature_group_id`) REFERENCES `cached_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE=ndbcluster DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
+
+INSERT INTO
+    `cached_feature_extra_constraints`
+VALUES
+    (
+        2054, NULL, 2055, 'id1', 1, 1
+    ),
+    (
+        2055, NULL, 2055, 'id2', 1, 0
+    ),
+    (
+        2056, NULL, 2056, 'id1', 1, 1
+    ),
+    (
+        2058, NULL, 2058, 'id1', 1, 1
+    ),
+    (
+        2059, NULL, 2059, 'id1', 1, 1
+    ),
+    (
+        2060, NULL, 2060, 'id1', 1, 1
+    ),
+    (
+        2064, NULL, 2064, 'id1', 1, 1
+    ),
+    (
+        2065, NULL, 2064, 'id2', 1, 0
+    ),
+    (
+        2066, NULL, 2065, 'id1', 1, 1
+    ),
+    (
+        2057, NULL, 2057, 'id1', 1, 1
+    );
 
 CREATE TABLE `feature_group` (
                                  `id` int(11) NOT NULL AUTO_INCREMENT,
@@ -277,10 +340,10 @@ CREATE TABLE `feature_group` (
                                  KEY `cached_feature_group_fk` (`cached_feature_group_id`),
                                  KEY `stream_feature_group_fk` (`stream_feature_group_id`),
                                  CONSTRAINT `FK_1012_790` FOREIGN KEY (`creator`) REFERENCES `users` (`uid`) ON DELETE NO ACTION ON UPDATE NO ACTION,
-                                 CONSTRAINT `FK_656_740` FOREIGN KEY (`feature_store_id`) REFERENCES `feature_store` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
-                                --  CONSTRAINT `on_demand_feature_group_fk2` FOREIGN KEY (`on_demand_feature_group_id`) REFERENCES `on_demand_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
-                                --  CONSTRAINT `cached_feature_group_fk` FOREIGN KEY (`cached_feature_group_id`) REFERENCES `cached_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
-                                --  CONSTRAINT `stream_feature_group_fk` FOREIGN KEY (`stream_feature_group_id`) REFERENCES `stream_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+                                 CONSTRAINT `FK_656_740` FOREIGN KEY (`feature_store_id`) REFERENCES `feature_store` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+                                 CONSTRAINT `on_demand_feature_group_fk2` FOREIGN KEY (`on_demand_feature_group_id`) REFERENCES `on_demand_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+                                 CONSTRAINT `cached_feature_group_fk` FOREIGN KEY (`cached_feature_group_id`) REFERENCES `cached_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+                                 CONSTRAINT `stream_feature_group_fk` FOREIGN KEY (`stream_feature_group_id`) REFERENCES `stream_feature_group` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
 ) ENGINE=ndbcluster AUTO_INCREMENT=13 DEFAULT CHARSET=latin1 COLLATE=latin1_general_cs;
 
 CREATE TABLE `feature_view` (
@@ -431,6 +494,22 @@ VALUES
     ),
     (
         2085, 'sample_4', 66, Timestamp('2023-05-23 15:31:53'), 10000, 1, '', 250, 'sample_4_1', 250
+    ),
+    /**
+    SELECT `fg1`.`id1` `id1`, `fg1`.`ts` `ts`, `fg1`.`data1` `data1`, `fg1`.`data2` `data2`, `fg0`.`id1` `fg2_id1`, `fg0`.`ts` `fg2_ts`, `fg0`.`data1` `fg2_data1`, `fg0`.`data2` `fg2_data2`
+    FROM `test_ken`.`sample_1_1` `fg1`
+    INNER JOIN `test_ken`.`sample_2_1` `fg0` ON `fg1`.`id1` = `fg0`.`id1`
+    */
+    (
+	    3082, 'sample_1n2_label', 67, Timestamp('2023-06-05 13:13:35'), 10000, 1, '', 250, 'sample_1n2_label_1', 250
+    ),
+    /**
+    SELECT `fg1`.`data1` `data1`, `fg0`.`id1` `fg2_id1`, `fg0`.`ts` `fg2_ts`, `fg0`.`data1` `fg2_data1`, `fg0`.`data2` `fg2_data2`
+    FROM `test_ken`.`sample_1_1` `fg1`
+    INNER JOIN `test_ken`.`sample_2_1` `fg0` ON `fg1`.`id1` = `fg0`.`id1`
+    */
+    (
+        3083, 'sample_1n2_labelonly', 67, Timestamp('2023-06-05 13:15:14'), 10000, 1, '', 250, 'sample_1n2_labelonly_1', 250
     );
 
 INSERT INTO 
@@ -480,6 +559,18 @@ VALUES
     ),
     (
 	    2096, NULL, 2067, NULL, 0, 0, NULL, 2085
+    ),
+    (
+        3074, NULL, 2071, NULL, 0, 1, 'fg2_', 3082
+    ),
+    (
+        3075, NULL, 2069, NULL, 0, 0, NULL, 3082
+    ),
+    (
+        3076, NULL, 2069, NULL, 0, 0, NULL, 3083
+    ),
+    (
+        3077, NULL, 2071, NULL, 0, 1, 'fg2_', 3083
     );
 
 INSERT INTO
@@ -682,4 +773,43 @@ VALUES
     ),
     (
         2261, NULL, 2067, 'id2', 'string', 2096, 1, 0, NULL, 2085
+    ),
+    (
+        3077, NULL, 2069, 'data1', 'bigint', 3075, 2, 1, NULL, 3082
+    ),
+    (
+        3078, NULL, 2071, 'data2', 'string', 3074, 7, 0, NULL, 3082
+    ),
+    (
+        3080, NULL, 2069, 'ts', 'timestamp', 3075, 1, 0, NULL, 3082
+    ),
+    (
+        3081, NULL, 2069, 'data2', 'bigint', 3075, 3, 0, NULL, 3082
+    ),
+    (
+        3084, NULL, 2069, 'id1', 'bigint', 3075, 0, 0, NULL, 3082
+    ),
+    (
+        3087, NULL, 2071, 'data1', 'string', 3077, 3, 0, NULL, 3083
+    ),
+    (
+        3089, NULL, 2071, 'ts', 'date', 3077, 2, 0, NULL, 3083
+    ),
+    (
+        3079, NULL, 2071, 'ts', 'date', 3074, 5, 0, NULL, 3082
+    ),
+    (
+        3082, NULL, 2071, 'id1', 'bigint', 3074, 4, 0, NULL, 3082
+    ),
+    (
+        3083, NULL, 2071, 'data1', 'string', 3074, 6, 0, NULL, 3082
+    ),
+    (
+        3085, NULL, 2071, 'data2', 'string', 3077, 4, 0, NULL, 3083
+    ),
+    (
+        3086, NULL, 2071, 'id1', 'bigint', 3077, 1, 0, NULL, 3083
+    ),
+    (
+        3088, NULL, 2069, 'data1', 'bigint', 3076, 0, 1, NULL, 3083
     );

@@ -24,11 +24,11 @@ import (
 	"regexp"
 	"strings"
 
+	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
 	"hopsworks.ai/rdrs/internal/log"
-	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/security/apikey"
 	"hopsworks.ai/rdrs/pkg/api"
 )
@@ -61,7 +61,7 @@ func (h *Handler) Validate(request interface{}) error {
 	if log.IsDebug() {
 		log.Debugf("Feature store request is %s", fsReq.String())
 	}
-	err1 := ValidatePrimaryKey(fsReq.Entries, &metadata.PrefixFeaturesLookup)
+	err1 := ValidatePrimaryKey(fsReq.Entries, &metadata.PrimaryKeyMap)
 	if err1 != nil {
 		return err1.GetError()
 	}
@@ -73,15 +73,18 @@ func (h *Handler) Validate(request interface{}) error {
 
 }
 
-func ValidatePrimaryKey(entries *map[string]*json.RawMessage, features *map[string]*feature_store.FeatureMetadata) *feature_store.RestErrorCode {
+func ValidatePrimaryKey(entries *map[string]*json.RawMessage, features *map[string]string) *feature_store.RestErrorCode {
 	// Data type check of primary key will be delegated to rondb.
 	if len(*entries) == 0 {
-		return feature_store.INCORRECT_PRIMARY_KEY
+		return feature_store.INCORRECT_PRIMARY_KEY.NewMessage(fmt.Sprintf("No entries found"))
+	}
+	if len(*entries) != len((*features)) {
+		return feature_store.INCORRECT_PRIMARY_KEY.NewMessage(fmt.Sprintf("Excepting size of entries to be %d but it is %d.", len(*features), len(*entries)))
 	}
 	for featureName := range *entries {
 		_, ok := (*features)[featureName]
 		if !ok {
-			return feature_store.FEATURE_NOT_EXIST.NewMessage(fmt.Sprintf("Provided primary key `%s` does not exist in the feature view.", featureName))
+			return feature_store.INCORRECT_PRIMARY_KEY.NewMessage(fmt.Sprintf("Provided primary key `%s` does not belong to the set of primary key.", featureName))
 		}
 	}
 	return nil
@@ -210,7 +213,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 		jsonResponse := (*dbResponseIntf).String()
 		log.Debugf("Rondb response: code: %d, error: %s, body: %s", code, ronDbErr, jsonResponse)
 	}
-	rondbResp := (*dbResponseIntf).(*api.BatchResponseJSON) 
+	rondbResp := (*dbResponseIntf).(*api.BatchResponseJSON)
 	fsError := checkRondbResponse(rondbResp)
 	if fsError != nil {
 		return fsError.GetStatus(), fsError.GetError()
@@ -275,7 +278,7 @@ func TranslateRonDbError(code int, err string) *feature_store.RestErrorCode {
 		if code == http.StatusBadRequest {
 			fsError = feature_store.READ_FROM_DB_FAIL_BAD_INPUT.NewMessage(err)
 		} else {
-			fsError = feature_store.READ_FROM_DB_FAIL
+			fsError = feature_store.READ_FROM_DB_FAIL.NewMessage(err)
 		}
 	}
 	return fsError
@@ -301,7 +304,10 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 	}
 	// Fill in primary key value from request into the vector
 	for featureName, value := range *entries {
-		indexKey := feature_store.GetFeatureIndexKeyByFeature((featureView.PrefixFeaturesLookup)[featureName])
+		var indexKey string
+		if _, ok := featureView.PrefixFeaturesLookup[featureName]; ok {
+			indexKey = feature_store.GetFeatureIndexKeyByFeature((featureView.PrefixFeaturesLookup)[featureName])
+		}
 		if index, ok := (featureView.FeatureIndexLookup)[indexKey]; ok {
 			featureValues[index] = value
 		}
@@ -318,13 +324,7 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 		var filters = make([]api.Filter, 0, len(fgFeature.Features))
 		var columns = make([]api.ReadColumn, 0, len(fgFeature.Features))
 		for _, feature := range fgFeature.Features {
-			if value, ok := (*entries)[feature.Prefix+feature.Name]; ok {
-				var filter = api.Filter{Column: &feature.Name, Value: value}
-				filters = append(filters, filter)
-				if log.IsDebug() {
-					log.Debugf("Add to filter: %s", feature.Name)
-				}
-			} else {
+			if _, ok := fgFeature.PrimaryKeyMap[feature.Prefix+feature.Name]; !ok {
 				var colName = feature.Name
 				var colType = api.DRT_DEFAULT
 				readCol := api.ReadColumn{Column: &colName, DataReturnType: &colType}
@@ -332,6 +332,14 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 				if log.IsDebug() {
 					log.Debugf("Add to column: %s", feature.Name)
 				}
+			}
+		}
+		for prefixPk, rawPk := range fgFeature.PrimaryKeyMap {
+			var pkCol = rawPk
+			var filter = api.Filter{Column: &pkCol, Value: (*entries)[prefixPk]}
+			filters = append(filters, filter)
+			if log.IsDebug() {
+				log.Debugf("Add to filter: %s", pkCol)
 			}
 		}
 		var opId = feature_store.GetFeatureGroupKeyByTDFeature(fgFeature)
