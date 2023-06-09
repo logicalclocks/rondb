@@ -29,6 +29,8 @@ import (
 	"net/http"
 	"sort"
 	"unsafe"
+
+	"hopsworks.ai/rdrs/internal/log"
 )
 
 type TrainingDatasetFeature struct {
@@ -128,27 +130,50 @@ func GetTrainingDatasetJoinData(featureViewID int) ([]TrainingDatasetJoin, *DalE
 	return retTdjs[:], nil
 }
 
-func GetFeatureGroupData(featureGroupID int) (string, bool, int, int, *DalError) {
-	nameBuff := C.malloc(C.size_t(C.FEATURE_GROUP_NAME_SIZE))
-	defer C.free(nameBuff)
+type FeatureGroup struct {
+	Name           string
+	FeatureStoreId int
+	Version        int
+	OnlineEnabled  bool
+	NumOfPk        int
+	PrimaryKey     []string
+}
 
-	var onlineEnabled C.int
-	onlineEnabledPtr := (*C.int)(unsafe.Pointer(&onlineEnabled))
+func GetFeatureGroupData(featureGroupID int) (*FeatureGroup, *DalError) {
 
-	var featureStoreID C.int
-	featureStoreIDPtr := (*C.int)(unsafe.Pointer(&featureStoreID))
+	var fg C.Feature_Group
+	fgPtr := (*C.Feature_Group)(unsafe.Pointer(&fg))
 
-	var featureGroupVersion C.int
-	featureGroupVersionPtr := (*C.int)(unsafe.Pointer(&featureGroupVersion))
-
-	ret := C.find_feature_group_data(C.int(featureGroupID),
-		(*C.char)(unsafe.Pointer(nameBuff)), onlineEnabledPtr, featureStoreIDPtr, featureGroupVersionPtr)
+	ret := C.find_feature_group_data(C.int(featureGroupID), fgPtr)
 
 	if ret.http_code != http.StatusOK {
-		return "", false, 0, 0, cToGoRet(&ret)
+		return nil, cToGoRet(&ret)
 	}
 
-	return C.GoString((*C.char)(unsafe.Pointer(nameBuff))), int(onlineEnabled) != 0, int(featureStoreID), int(featureGroupVersion), nil
+	var n_pk = int(fg.num_pk)
+	var pks = make([]string, n_pk)
+	pkSlice := unsafe.Slice((**C.char)(unsafe.Pointer(fg.primary_key)), n_pk)
+	for i, buff := range pkSlice {
+		pk := C.GoString(buff)
+		pks[i] = pk
+		C.free(unsafe.Pointer(buff))
+	}
+	C.free(unsafe.Pointer(fg.primary_key))
+
+	if log.IsDebug() {
+		log.Debugf("Size of pk is %d", n_pk)
+		for _, pk := range(pks) {
+			log.Debugf("primary key: %s", pk)
+		}
+	}
+	var fgGo = FeatureGroup{
+		Name:           C.GoString(&fg.name[0]),
+		FeatureStoreId: int(fg.feature_store_id),
+		Version:        int(fg.version),
+		OnlineEnabled:  int(fg.online_enabled) != 0,
+		PrimaryKey:     pks,
+	}
+	return &fgGo, nil
 }
 
 func GetTrainingDatasetFeature(featureViewID int) ([]TrainingDatasetFeature, *DalError) {

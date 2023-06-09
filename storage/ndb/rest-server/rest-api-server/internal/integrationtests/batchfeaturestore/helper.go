@@ -90,12 +90,20 @@ func GetFeatureStoreResponseWithDetail(t *testing.T, req *api.BatchFeatureStoreR
 }
 
 func ValidateResponseWithData(t *testing.T, data *[][]interface{}, cols *[]string, resp *api.BatchFeatureStoreResponse) {
+	ValidateResponseWithDataExcludeCols(t, data, cols, nil, resp)
+}
+
+func ValidateResponseWithDataExcludeCols(t *testing.T, data *[][]interface{}, cols *[]string, exCols *map[string]bool, resp *api.BatchFeatureStoreResponse) {
 	for i, row := range *data {
 		var fsResp = &api.FeatureStoreResponse{}
 		fsResp.Metadata = resp.Metadata
 		fsResp.Features = resp.Features[i]
 		fsResp.Status = resp.Status[i]
-		fshelper.ValidateResponseWithData(t, &row, cols, fsResp)
+		if exCols == nil {
+			fshelper.ValidateResponseWithData(t, &row, cols, fsResp)
+		} else {
+			fshelper.ValidateResponseWithDataExcludeCols(t, &row, cols, exCols, fsResp)
+		}
 	}
 }
 

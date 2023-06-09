@@ -297,6 +297,54 @@ func Test_GetFeatureVector_JoinSameFg(t *testing.T) {
 	}
 }
 
+func Test_GetFeatureVector_excludeLabelColumn(t *testing.T) {
+	rows, pks, cols, err := GetSampleDataWithJoin("fsdb001", "sample_1_1", "fsdb001", "sample_2_1", "fg2_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	var exCols = make(map[string]bool)
+	exCols["data1"] = true
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_1n2_label",
+			1,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithDataExcludeCols(t, &row, &cols, &exCols, fsResp)
+	}
+}
+
+func Test_GetFeatureVector_excludeLabelFg(t *testing.T) {
+	rows, pks, cols, err := GetSampleDataWithJoin("fsdb001", "sample_1_1", "fsdb001", "sample_2_1", "fg2_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	var exCols = make(map[string]bool)
+	exCols["data1"] = true
+	exCols["id1"] = true
+	exCols["data2"] = true
+	exCols["ts"] = true
+
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			"fsdb001",
+			"sample_1n2_labelonly",
+			1,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithDataExcludeCols(t, &row, &cols, &exCols, fsResp)
+	}
+}
+
 func Test_GetFeatureVector_Shared(t *testing.T) {
 	rows, pks, cols, err := GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB002, "sample_2_1", "fg2_")
 	if err != nil {
@@ -357,7 +405,7 @@ func Test_GetFeatureVector_WrongPrimaryKey_NotExist(t *testing.T) {
 			nil,
 			nil,
 		)
-		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FEATURE_NOT_EXIST.GetReason(), http.StatusBadRequest)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.INCORRECT_PRIMARY_KEY.GetReason(), http.StatusBadRequest)
 	}
 }
 

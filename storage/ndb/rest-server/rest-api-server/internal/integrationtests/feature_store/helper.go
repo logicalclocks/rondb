@@ -87,7 +87,6 @@ func GetNSampleDataColumns(database string, table string, n int, cols []string) 
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	// Max number of rows can be retrieved is 10.
 	query := fmt.Sprintf("SELECT %s FROM `%s`.`%s` LIMIT %d", strings.Join(cols, ", "), database, table, n)
 	var valueBatch, err1 = fetchRows(query, colTypes)
 	if err1 != nil {
@@ -267,15 +266,21 @@ func GetPkValues(row *[]interface{}, pks *[]string, cols *[]string) *[]interface
 }
 
 func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string, resp *api.FeatureStoreResponse) {
-	colToIndex := make(map[string]int)
-	for i, col := range *cols {
-		colToIndex[col] = i
-	}
+	var exCols = make(map[string]bool)
+	ValidateResponseWithDataExcludeCols(t, data, cols, &exCols, resp)
+}
+
+func ValidateResponseWithDataExcludeCols(t *testing.T, data *[]interface{}, cols *[]string, exCols *map[string]bool, resp *api.FeatureStoreResponse) {
 	var status = api.FEATURE_STATUS_COMPLETE
 	if len(*data) == 0 {
 		status = api.FEATURE_STATUS_ERROR
 	}
-	for i, _data := range *data {
+	var i = -1
+	for k, _data := range *data {
+		if (*exCols)[(*cols)[k]] {
+			continue
+		}
+		i++
 		gotRaw := ((*resp).Features)[i]
 		if gotRaw == nil && _data != nil {
 			t.Errorf("Got nil but expect %s \n", (_data).([]byte))

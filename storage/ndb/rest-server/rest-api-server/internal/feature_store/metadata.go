@@ -29,6 +29,7 @@ import (
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/log"
 )
+const ERROR_NOT_FOUND = "Not Found"
 
 type FeatureViewMetadata struct {
 	FeatureStoreName     string
@@ -40,7 +41,8 @@ type FeatureViewMetadata struct {
 	FeatureGroupFeatures []*FeatureGroupFeatures
 	FeatureStoreNames    []*string // List of all feature store including shared feature store
 	NumOfFeatures        int
-	FeatureIndexLookup   map[string]int // key: fgId + fName
+	FeatureIndexLookup   map[string]int    // key: fgId + fName
+	PrimaryKeyMap        map[string]string // key: prefix + fName
 }
 
 type FeatureGroupFeatures struct {
@@ -49,6 +51,7 @@ type FeatureGroupFeatures struct {
 	FeatureGroupVersion int
 	FeatureGroupId      int
 	Features            []*FeatureMetadata
+	PrimaryKeyMap       map[string]string // key: prefix + fName
 }
 
 type FeatureMetadata struct {
@@ -72,10 +75,19 @@ func newFeatureViewMetadata(
 	featureViewId int,
 	featureViewVersion int,
 	features *[]*FeatureMetadata,
+	featureGroupPk *map[int][]string,
 ) *FeatureViewMetadata {
 	prefixColumns := make(map[string]*FeatureMetadata)
 	fgFeatures := make(map[int][]*FeatureMetadata)
+	var primaryKeyMap = make(map[string]string)
 	for _, feature := range *features {
+		// primary key has to be added before skipping label
+		for _, pk := range (*featureGroupPk)[feature.FeatureGroupId] {
+			primaryKeyMap[feature.Prefix+pk] = pk
+		}
+		if feature.Label {
+			continue
+		}
 		prefixFeatureName := feature.Prefix + feature.Name
 		prefixColumns[prefixFeatureName] = feature
 		var featureKey = feature.FeatureGroupId
@@ -83,12 +95,17 @@ func newFeatureViewMetadata(
 	}
 
 	var fgFeaturesArray = make([]*FeatureGroupFeatures, 0)
+
 	for _, value := range fgFeatures {
+		var fgPrimaryKeyMap = make(map[string]string)
 		var featureValue = value
 		var feature = featureValue[0]
+		for _, pk := range (*featureGroupPk)[feature.FeatureGroupId] {
+			fgPrimaryKeyMap[feature.Prefix+pk] = pk
+		}
 		var fgFeature = FeatureGroupFeatures{
 			feature.FeatureStoreName, feature.FeatureGroupName, feature.FeatureGroupVersion,
-			feature.FeatureGroupId, featureValue}
+			feature.FeatureGroupId, featureValue, fgPrimaryKeyMap}
 		fgFeaturesArray = append(fgFeaturesArray, &fgFeature)
 	}
 	less := func(i, j int) bool {
@@ -96,10 +113,14 @@ func newFeatureViewMetadata(
 	}
 	sort.Slice(*features, less)
 	featureIndex := make(map[string]int)
-
+	var featureCount = 0
 	for _, feature := range *features {
+		if feature.Label {
+			continue
+		}
 		featureIndexKey := GetFeatureIndexKeyByFeature(feature)
-		featureIndex[featureIndexKey] = feature.Index
+		featureIndex[featureIndexKey] = featureCount
+		featureCount++
 	}
 	var fsNames = []*string{}
 	var fsNameMap = make(map[string]bool)
@@ -125,6 +146,7 @@ func newFeatureViewMetadata(
 	metadata.NumOfFeatures = numOfFeature
 	metadata.FeatureIndexLookup = featureIndex
 	metadata.FeatureStoreNames = fsNames
+	metadata.PrimaryKeyMap = primaryKeyMap
 	return &metadata
 }
 
@@ -195,7 +217,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 
 	fsID, err := dal.GetFeatureStoreID(featureStoreName)
 	if err != nil {
-		if strings.Contains(err.Error(), "Not Found") {
+		if strings.Contains(err.Error(), ERROR_NOT_FOUND) {
 			return nil, FS_NOT_EXIST
 		}
 		return nil, FS_NOT_EXIST.NewMessage(err.Error())
@@ -203,7 +225,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 
 	fvID, err := dal.GetFeatureViewID(fsID, featureViewName, featureViewVersion)
 	if err != nil {
-		if strings.Contains(err.Error(), "Not Found") {
+		if strings.Contains(err.Error(), ERROR_NOT_FOUND) {
 			return nil, FV_NOT_EXIST
 		}
 		return nil, FV_READ_FAIL.NewMessage(err.VerboseError())
@@ -225,31 +247,39 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 
 	features := make([]*FeatureMetadata, len(tdfs))
 	fsIdToName := make(map[int]string)
-
+	var featureGroupPk = make(map[int][]string)
+	var fgCache = make(map[int]*dal.FeatureGroup)
 	for i, tdf := range tdfs {
-		featureGroupName, _, fsId, fgVersion, err := dal.GetFeatureGroupData(tdf.FeatureGroupID)
-		if err != nil {
-			if strings.Contains(err.Error(), "Not Found") {
-				return nil, FG_NOT_EXIST
+		var featureGroup *dal.FeatureGroup
+		if fg, ok := fgCache[tdf.FeatureGroupID]; ok {
+			featureGroup = fg
+		} else {
+			featureGroup, err = dal.GetFeatureGroupData(tdf.FeatureGroupID)
+			if err != nil {
+				if strings.Contains(err.Error(), ERROR_NOT_FOUND) {
+					return nil, FG_NOT_EXIST
+				}
+				return nil, FG_READ_FAIL.NewMessage(err.VerboseError())
 			}
-			return nil, FG_READ_FAIL.NewMessage(err.VerboseError())
+			fgCache[tdf.FeatureGroupID] = featureGroup
+			featureGroupPk[tdf.FeatureGroupID] = featureGroup.PrimaryKey
 		}
 		feature := FeatureMetadata{}
-		if featureStoreName, exist := fsIdToName[fsId]; exist {
+		if featureStoreName, exist := fsIdToName[featureGroup.FeatureStoreId]; exist {
 			feature.FeatureStoreName = featureStoreName
 		} else {
-			featureStoreName, err = dal.GetFeatureStoreName(fsId)
+			featureStoreName, err = dal.GetFeatureStoreName(featureGroup.FeatureStoreId)
 			if err != nil {
-				if strings.Contains(err.Error(), "Not Found") {
+				if strings.Contains(err.Error(), ERROR_NOT_FOUND) {
 					return nil, FS_NOT_EXIST
 				}
 				return nil, FS_READ_FAIL.NewMessage(err.VerboseError())
 			}
-			fsIdToName[fsId] = featureStoreName
+			fsIdToName[featureGroup.FeatureStoreId] = featureStoreName
 			feature.FeatureStoreName = featureStoreName
 		}
-		feature.FeatureGroupName = featureGroupName
-		feature.FeatureGroupVersion = fgVersion
+		feature.FeatureGroupName = featureGroup.Name
+		feature.FeatureGroupVersion = featureGroup.Version
 		feature.FeatureGroupId = tdf.FeatureGroupID
 		feature.Id = tdf.FeatureID
 		feature.Name = tdf.Name
@@ -267,6 +297,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		fvID,
 		featureViewVersion,
 		&features,
+		&featureGroupPk,
 	)
 	return featureViewMetadata, nil
 }
