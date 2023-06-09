@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (c) 2021, 2022, Logical Clocks and/or its affiliates.
+# Copyright (c) 2021, 2023, Hopsworks AB and/or its affiliates.
 
 set -e
 
@@ -20,7 +20,7 @@ mkscript() {
     echo
 }
 
-mkscript .git/hooks/pre-commit "A hook to check copyright for Logical Clocks" <<"EOF"
+mkscript .git/hooks/pre-commit "A hook to check copyright for Hopsworks" <<"EOF"
 #!/bin/bash
 set -e
 year=`date +%Y`
@@ -42,13 +42,13 @@ git diff --cached --name-only --diff-filter=d |
                 tac;
         } |
             # Check that a correct copyright notice is present
-            grep -Eq '^[ #*-]*Copyright (\(c\)|\\\(co) ('"$(seq -s '|' 2020 $year)), $year, "'Logical Clocks and\/or its affiliates\.$' ||
+            grep -Eq '^[ #*<!-]*Copyright (\(c\)|\\\(co) ('"$(seq -s '|' 2020 $year)), $year, "'Hopsworks AB and\/or its affiliates\.[ >-]*$' ||
             # If not, fail with instructions
             {
                 echo "$filename:";
-                echo "  Can't find a correct copyright notice for Logical Clocks.";
+                echo "  Can't find a correct copyright notice for Hopsworks AB.";
                 echo "  If one exists, correct it, otherwise add the following to the header comment:";
-                echo "   Copyright (c) $year, $year, Logical Clocks and/or its affiliates.";
+                echo "   Copyright (c) $year, $year, Hopsworks AB and/or its affiliates.";
                 exitcode=1;
             }
         done
@@ -57,13 +57,18 @@ git diff --cached --name-only --diff-filter=d |
 EOF
 
 git config merge.conflictstyle diff3
-echo This repository is now configured to use the diff3 merge conflictstyle
+echo This repository is now configured to use the diff3 merge conflictstyle.
 echo ""
 
-git config user.email | grep -Eq "@logicalclocks\.com$" || {
-    echo Warning: Git is not configured to identify you as an employee of Logical Clocks.
-    echo You can do so by running:
-    echo "    git config --global user.name 'Firstname Lastname'"
-    echo "    git config --global user.email yourname@logicalclocks.com"
-    echo
+git config user.email | grep -Eq "@hopsworks.ai$" || {
+    cat <<EOF
+Warning: Git is not configured to identify you as an employee of Hopsworks AB for operations in this repository.
+If you want to use your Hopsworks identity for all repositories on this machine, run:
+    git config --global user.name 'Firstname Lastname'
+    git config --global user.email yourname@hopsworks.ai
+
+If you want to use your Hopsworks identity for this repository only, run:
+    git config user.name 'Firstname Lastname'
+    git config user.email yourname@hopsworks.ai
+EOF
 }
