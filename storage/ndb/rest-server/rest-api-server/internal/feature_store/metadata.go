@@ -29,6 +29,7 @@ import (
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/log"
 )
+const ERROR_NOT_FOUND = "Not Found"
 
 type FeatureViewMetadata struct {
 	FeatureStoreName     string
@@ -216,7 +217,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 
 	fsID, err := dal.GetFeatureStoreID(featureStoreName)
 	if err != nil {
-		if strings.Contains(err.Error(), "Not Found") {
+		if strings.Contains(err.Error(), ERROR_NOT_FOUND) {
 			return nil, FS_NOT_EXIST
 		}
 		return nil, FS_NOT_EXIST.NewMessage(err.Error())
@@ -224,7 +225,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 
 	fvID, err := dal.GetFeatureViewID(fsID, featureViewName, featureViewVersion)
 	if err != nil {
-		if strings.Contains(err.Error(), "Not Found") {
+		if strings.Contains(err.Error(), ERROR_NOT_FOUND) {
 			return nil, FV_NOT_EXIST
 		}
 		return nil, FV_READ_FAIL.NewMessage(err.VerboseError())
@@ -255,8 +256,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		} else {
 			featureGroup, err = dal.GetFeatureGroupData(tdf.FeatureGroupID)
 			if err != nil {
-				// FIXME: FS
-				if strings.Contains(err.Error(), "Not Found") {
+				if strings.Contains(err.Error(), ERROR_NOT_FOUND) {
 					return nil, FG_NOT_EXIST
 				}
 				return nil, FG_READ_FAIL.NewMessage(err.VerboseError())
@@ -270,7 +270,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		} else {
 			featureStoreName, err = dal.GetFeatureStoreName(featureGroup.FeatureStoreId)
 			if err != nil {
-				if strings.Contains(err.Error(), "Not Found") {
+				if strings.Contains(err.Error(), ERROR_NOT_FOUND) {
 					return nil, FS_NOT_EXIST
 				}
 				return nil, FS_READ_FAIL.NewMessage(err.VerboseError())
