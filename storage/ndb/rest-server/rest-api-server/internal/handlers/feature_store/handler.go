@@ -182,6 +182,7 @@ func (h *Handler) Authenticate(apiKey *string, request interface{}) error {
 	if err != nil {
 		return err.GetError()
 	}
+	// Validate access right to ALL feature stores including shared feature
 	valErr := h.apiKeyCache.ValidateAPIKey(apiKey, metadata.FeatureStoreNames...)
 	if valErr != nil {
 		return feature_store.FEATURE_STORE_NOT_SHARED.GetError()

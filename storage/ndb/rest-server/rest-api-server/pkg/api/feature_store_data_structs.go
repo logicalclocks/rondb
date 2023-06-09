@@ -21,18 +21,22 @@ import (
 	"fmt"
 )
 
+// Request of multiple feature vectors and optional metadata
 type BatchFeatureStoreRequest struct {
 	FeatureStoreName   *string                         `json:"featureStoreName" binding:"required"`
 	FeatureViewName    *string                         `json:"featureViewName" binding:"required"`
 	FeatureViewVersion *int                            `json:"featureViewVersion" binding:"required"`
+	// Client provided feature map for overwriting feature value
 	PassedFeatures     *[]*map[string]*json.RawMessage `json:"passedFeatures"`
+	// Serving key of feature view
 	Entries            *[]*map[string]*json.RawMessage `json:"entries" binding:"required"`
-	MetadataRequest    *MetadataRequest                `json:"metadata_options"`
+	// Client requested metadata
+	MetadataRequest    *MetadataRequest                `json:"metadataOptions"`
 }
 
 type MetadataRequest struct {
-	FeatureName bool `json:"feature_name"`
-	FeatureType bool `json:"feature_type"`
+	FeatureName bool `json:"featurName"`
+	FeatureType bool `json:"featureType"`
 }
 
 func (freq BatchFeatureStoreRequest) String() string {
@@ -44,13 +48,14 @@ func (freq BatchFeatureStoreRequest) String() string {
 	}
 }
 
+// Request of a signle feature vector and optional metadata
 type FeatureStoreRequest struct {
 	FeatureStoreName   *string                      `json:"featureStoreName" binding:"required"`
 	FeatureViewName    *string                      `json:"featureViewName" binding:"required"`
 	FeatureViewVersion *int                         `json:"featureViewVersion" binding:"required"`
 	PassedFeatures     *map[string]*json.RawMessage `json:"passedFeatures"`
 	Entries            *map[string]*json.RawMessage `json:"entries" binding:"required"`
-	MetadataRequest    *MetadataRequest             `json:"metadata_options"`
+	MetadataRequest    *MetadataRequest             `json:"metadataOptions"`
 }
 
 func (freq FeatureStoreRequest) String() string {
@@ -101,8 +106,8 @@ func (r *FeatureStoreResponse) String() string {
 }
 
 type FeatureMetadata struct { // use pointer because fields below are nullable
-	Name *string `json:"feature_name"`
-	Type *string `json:"feature_type"`
+	Name *string `json:"featureName"`
+	Type *string `json:"featureType"`
 }
 
 func (r *FeatureMetadata) String() string {

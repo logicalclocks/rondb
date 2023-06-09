@@ -38,8 +38,8 @@ const (
 )
 
 type Handler struct {
-	fvMetaCache   *feature_store.FeatureViewMetaDataCache
-	apiKeyCache   apikey.Cache
+	fvMetaCache    *feature_store.FeatureViewMetaDataCache
+	apiKeyCache    apikey.Cache
 	dbBatchHandler batchpkread.Handler
 }
 
@@ -62,7 +62,7 @@ func (h *Handler) Validate(request interface{}) error {
 	if len(*fsReq.Entries) == 0 {
 		return feature_store.NO_PRIMARY_KEY_GIVEN.GetError()
 	}
-	if len(*fsReq.PassedFeatures) != 0 && len(*fsReq.Entries) != len(*fsReq.PassedFeatures) {
+	if fsReq.PassedFeatures != nil && len(*fsReq.PassedFeatures) != 0 && len(*fsReq.Entries) != len(*fsReq.PassedFeatures) {
 		return feature_store.INCORRECT_PASSED_FEATURE.NewMessage("Length of passed feature does not equal to that of the entries provided in the request.").GetError()
 	}
 	return nil
@@ -76,10 +76,12 @@ func checkFeatureStatus(fsReq *api.BatchFeatureStoreRequest, metadata *feature_s
 			cnt[i] = true
 		}
 	}
-	for i, passedFeature := range *fsReq.PassedFeatures {
-		if fshandler.ValidatePassedFeatures(passedFeature, &metadata.PrefixFeaturesLookup) != nil {
-			(*status)[i] = api.FEATURE_STATUS_ERROR
-			cnt[i] = true
+	if fsReq.PassedFeatures != nil {
+		for i, passedFeature := range *fsReq.PassedFeatures {
+			if fshandler.ValidatePassedFeatures(passedFeature, &metadata.PrefixFeaturesLookup) != nil {
+				(*status)[i] = api.FEATURE_STATUS_ERROR
+				cnt[i] = true
+			}
 		}
 	}
 	return len(*status) - len(cnt)
@@ -133,13 +135,13 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 			var fsError = fshandler.TranslateRonDbError(code, ronDbErr.Error())
 			return fsError.GetStatus(), fsError.GetError()
 		}
-		features, err  = getFeatureValuesMultipleEntries(dbResponseIntf, fsReq.Entries, metadata, &featureStatus)
+		features, err = getFeatureValuesMultipleEntries(dbResponseIntf, fsReq.Entries, metadata, &featureStatus)
 		if err != nil {
 			return err.GetStatus(), err.GetError()
 		}
 	} else {
 		var emptyFeatures = make([][]interface{}, len(*fsReq.Entries))
-		for i := range(emptyFeatures) {
+		for i := range emptyFeatures {
 			emptyFeatures[i] = make([]interface{}, metadata.NumOfFeatures)
 		}
 		features = &emptyFeatures
@@ -197,7 +199,7 @@ func getPkReadResponseJSON(numEntries int, metadata feature_store.FeatureViewMet
 }
 
 func fillPassedFeaturesMultipleEntries(features *[][]interface{}, passedFeatures *[]*map[string]*json.RawMessage, featureMetadata *map[string]*feature_store.FeatureMetadata, indexLookup *map[string]int, status *[]api.FeatureStatus) {
-	if len(*passedFeatures) != 0 {
+	if passedFeatures != nil && len(*passedFeatures) != 0 {
 		for i, feature := range *features {
 			if (*status)[i] != api.FEATURE_STATUS_ERROR {
 				fshandler.FillPassedFeatures(&feature, (*passedFeatures)[i], featureMetadata, indexLookup)

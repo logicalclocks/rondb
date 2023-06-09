@@ -137,6 +137,49 @@ func Test_GetFeatureVector_Success_10entries(t *testing.T) {
 	ValidateResponseWithData(t, &rows, &cols, fsResp)
 }
 
+func Test_GetFeatureVector_RequiredParametersAreNil(t *testing.T) {
+	rows, pks, cols, err := fshelper.GetSampleData(testdbs.FSDB002, "sample_2_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB002,
+		"sample_2",
+		1,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		nil,
+		nil,
+	)
+	fsReq.FeatureStoreName = nil
+	fsReq.FeatureViewName = nil
+	fsReq.FeatureViewVersion = nil
+	fsReq.Entries = nil
+	GetFeatureStoreResponseWithDetail(t, fsReq, "Error:Field validation", http.StatusBadRequest)
+
+}
+
+func Test_GetFeatureVector_OptionalParametersAreNil(t *testing.T) {
+	rows, pks, cols, err := fshelper.GetSampleData(testdbs.FSDB002, "sample_2_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB002,
+		"sample_2",
+		1,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		nil,
+		nil,
+	)
+	fsReq.PassedFeatures = nil
+	fsReq.MetadataRequest = nil
+	GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+}
+
 func Test_GetFeatureVector_FsNotExist(t *testing.T) {
 	rows, pks, cols, err := fshelper.GetSampleData(testdbs.FSDB002, "sample_2_1")
 	if err != nil {

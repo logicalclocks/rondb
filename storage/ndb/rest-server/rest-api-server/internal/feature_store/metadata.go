@@ -39,7 +39,7 @@ type FeatureViewMetadata struct {
 	FeatureViewVersion   int
 	PrefixFeaturesLookup map[string]*FeatureMetadata // key: prefix + fName
 	FeatureGroupFeatures []*FeatureGroupFeatures
-	FeatureStoreNames    []*string // List of all feature store including shared feature store
+	FeatureStoreNames    []*string // List of all feature store used by feature view including shared feature store
 	NumOfFeatures        int
 	FeatureIndexLookup   map[string]int    // key: fgId + fName
 	PrimaryKeyMap        map[string]string // key: prefix + fName
