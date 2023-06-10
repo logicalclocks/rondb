@@ -7767,7 +7767,7 @@ run_job_buffers(thr_data *selfptr,
                                          send_sum,
                                          flush_sum);
 
-    if (likely(num_signals > 0))
+    if (num_signals > 0)
     {
 #ifdef DEBUG_SCHED_STATS
       selfptr->m_jbb_total_signals+= num_signals;
