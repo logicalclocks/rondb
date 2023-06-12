@@ -1649,7 +1649,6 @@ struct alignas(NDB_CL) thr_data
   Uint64 m_jbb_total_signals;
 #endif
   Uint32 m_outstanding_send_wakeups;
-  Uint32 m_outstanding_send_wakeups_assist;
   bool m_read_jbb_state_consumed;
   bool m_cpu_percentage_changed;
   /* Last read of current ticks */
@@ -7341,8 +7340,8 @@ void handle_scheduling_decisions(thr_data *selfptr,
                                  Uint32 & flush_sum,
                                  bool & pending_send)
 {
-  if (selfptr->m_outstanding_send_wakeups_assist >=
-      selfptr->m_max_send_wakeups_before_assist)
+  if (selfptr->m_outstanding_send_wakeups >=
+      selfptr->m_max_send_wakeups)
   {
     /* Try to send, but skip for now in case of lock contention. */
     sendpacked(selfptr, signal);
@@ -7351,7 +7350,6 @@ void handle_scheduling_decisions(thr_data *selfptr,
     pending_send = do_send(selfptr, false, true);
     selfptr->m_stat.m_send_wakeups_assist++;
     selfptr->m_outstanding_send_wakeups = 0;
-    selfptr->m_outstanding_send_wakeups_assist = 0;
     selfptr->m_watchdog_counter = 20;
     send_sum = 0;
     flush_sum = 0;
@@ -7591,25 +7589,11 @@ execute_signals(thr_data *selfptr,
     block->executeFunction_async(gsn, sig);
     extra_signals += sig->m_extra_signals;
     selfptr->m_outstanding_send_wakeups += sig->m_send_wakeups;
-    selfptr->m_outstanding_send_wakeups_assist += sig->m_send_wakeups;
     if (likely(priob_signal))
     {
       wmb();
       assert(sender_thr_no < NDB_MAX_BLOCK_THREADS);
       selfptr->m_exec_thread_signal_id[sender_thr_no] = thread_signal_id;
-    }
-    if (unlikely((selfptr->m_outstanding_send_wakeups >=
-                  selfptr->m_max_send_wakeups)))
-    {
-      selfptr->m_stat.m_send_wakeups++;
-      sendpacked(selfptr, sig);
-      selfptr->m_watchdog_counter = 6;
-      flush_all_local_signals_and_wakeup(selfptr);
-      do_send(selfptr, false, false);
-      selfptr->m_outstanding_send_wakeups = 0;
-      selfptr->m_watchdog_counter = 20;
-      send_sum = 0;
-      flush_sum = 0;
     }
   }
   /**
@@ -7783,7 +7767,7 @@ run_job_buffers(thr_data *selfptr,
                                          send_sum,
                                          flush_sum);
 
-    if (likely(num_signals > 0))
+    if (num_signals > 0)
     {
 #ifdef DEBUG_SCHED_STATS
       selfptr->m_jbb_total_signals+= num_signals;
@@ -8207,48 +8191,37 @@ calculate_max_signals_parameters(thr_data *selfptr)
   switch (selfptr->m_sched_responsiveness)
   {
     case 0:
-      selfptr->m_max_send_wakeups = 4;
-      selfptr->m_max_send_wakeups_before_assist = 8;
+      selfptr->m_max_send_wakeups = 82;
       break;
     case 1:
-      selfptr->m_max_send_wakeups = 3;
-      selfptr->m_max_send_wakeups_before_assist = 6;
+      selfptr->m_max_send_wakeups = 78;
       break;
     case 2:
-      selfptr->m_max_send_wakeups = 3;
-      selfptr->m_max_send_wakeups_before_assist = 4;
+      selfptr->m_max_send_wakeups = 72;
       break;
     case 3:
-      selfptr->m_max_send_wakeups = 2;
-      selfptr->m_max_send_wakeups_before_assist = 6;
+      selfptr->m_max_send_wakeups = 68;
       break;
     case 4:
-      selfptr->m_max_send_wakeups = 2;
-      selfptr->m_max_send_wakeups_before_assist = 5;
+      selfptr->m_max_send_wakeups = 64;
       break;
     case 5:
-      selfptr->m_max_send_wakeups = 2;
-      selfptr->m_max_send_wakeups_before_assist = 4;
+      selfptr->m_max_send_wakeups = 60;
       break;
     case 6:
-      selfptr->m_max_send_wakeups = 2;
-      selfptr->m_max_send_wakeups_before_assist = 3;
+      selfptr->m_max_send_wakeups = 56;
       break;
     case 7:
-      selfptr->m_max_send_wakeups = 1;
-      selfptr->m_max_send_wakeups_before_assist = 5;
+      selfptr->m_max_send_wakeups = 52;
       break;
     case 8:
-      selfptr->m_max_send_wakeups = 1;
-      selfptr->m_max_send_wakeups_before_assist = 4;
+      selfptr->m_max_send_wakeups = 48;
       break;
     case 9:
-      selfptr->m_max_send_wakeups = 1;
-      selfptr->m_max_send_wakeups_before_assist = 3;
+      selfptr->m_max_send_wakeups = 44;
       break;
     case 10:
-      selfptr->m_max_send_wakeups = 1;
-      selfptr->m_max_send_wakeups_before_assist = 2;
+      selfptr->m_max_send_wakeups = 40;
       break;
     default:
       assert(false);
@@ -8581,13 +8554,12 @@ mt_receiver_thread_main(void *thr_arg)
         flush_sum = 0;
       }
     }
-    else if (send_sum > 0 || pending_send == true)
+    else
     {
       watchDogCounter = 6;
       flush_all_local_signals_and_wakeup(selfptr);
       pending_send = do_send(selfptr, true, false);
       selfptr->m_outstanding_send_wakeups = 0;
-      selfptr->m_outstanding_send_wakeups_assist = 0;
       send_sum = 0;
       flush_sum = 0;
     }
@@ -8631,7 +8603,7 @@ mt_receiver_thread_main(void *thr_arg)
                            num_events,
                            before))))
     {
-      delay = 10; // 10 ms
+      delay = 1; // 1 ms
     }
 
     has_received = false;
@@ -8841,7 +8813,6 @@ handle_full_job_buffers(struct thr_data* selfptr,
     /* About to sleep, _must_ send now. */
     do_send(selfptr, true, true);
     selfptr->m_outstanding_send_wakeups = 0;
-    selfptr->m_outstanding_send_wakeups_assist = 0;
     send_sum = 0;
     flush_sum = 0;
     thr_job_queue *congested_queue = &congested->m_jbb[self_jbb];
@@ -9066,7 +9037,6 @@ mt_job_thread_main(void *thr_arg)
       flush_all_local_signals_and_wakeup(selfptr);
       pending_send = do_send(selfptr, true, true);
       selfptr->m_outstanding_send_wakeups = 0;
-      selfptr->m_outstanding_send_wakeups_assist = 0;
       send_sum = 0;
       flush_sum = 0;
     }
