@@ -241,17 +241,19 @@ func checkRondbResponse(rondbResp *api.BatchResponseJSON) *feature_store.RestErr
 
 func GetFeatureMetadata(metadata *feature_store.FeatureViewMetadata, metaRequest *api.MetadataRequest) *[]*api.FeatureMetadata {
 	featureMetadataArray := make([]*api.FeatureMetadata, metadata.NumOfFeatures)
-	for featureKey, metadata := range metadata.PrefixFeaturesLookup {
-		featureMetadata := api.FeatureMetadata{}
-		if metaRequest.FeatureName {
-			var fk = featureKey
-			featureMetadata.Name = &fk
+	for featureKey, featureMetadata := range metadata.PrefixFeaturesLookup {
+		if featureIndex, ok := metadata.FeatureIndexLookup[feature_store.GetFeatureIndexKeyByFeature(featureMetadata)]; ok {
+			featureMetadataResp := api.FeatureMetadata{}
+			if metaRequest.FeatureName {
+				var fk = featureKey
+				featureMetadataResp.Name = &fk
+			}
+			if metaRequest.FeatureType {
+				var ft = featureMetadata.Type
+				featureMetadataResp.Type = &ft
+			}
+			featureMetadataArray[featureIndex] = &featureMetadataResp
 		}
-		if metaRequest.FeatureType {
-			var ft = metadata.Type
-			featureMetadata.Type = &ft
-		}
-		featureMetadataArray[metadata.Index] = &featureMetadata
 	}
 	return &featureMetadataArray
 }

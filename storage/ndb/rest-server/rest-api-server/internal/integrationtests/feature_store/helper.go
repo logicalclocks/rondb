@@ -325,6 +325,11 @@ func ValidateResponseWithDataExcludeCols(t *testing.T, data *[]interface{}, cols
 }
 
 func ValidateResponseMetadata(t *testing.T, metadata *[]*api.FeatureMetadata, metadataRequest *api.MetadataRequest, fsName, fvName string, fvVersion int) {
+	var exCol = make(map[string]bool)
+	ValidateResponseMetadataExCol(t, metadata, metadataRequest, &exCol, fsName, fvName, fvVersion)
+}
+
+func ValidateResponseMetadataExCol(t *testing.T, metadata *[]*api.FeatureMetadata, metadataRequest *api.MetadataRequest, exCol *map[string]bool, fsName, fvName string, fvVersion int) {
 	var rows, err = fetchRows(fmt.Sprintf(`SELECT id from hopsworks.feature_store where name = "%s"`, fsName), []string{"bigint"})
 	if err != nil {
 		t.Errorf("Fetch rows failed with error: %s\n", err)
@@ -351,9 +356,12 @@ func ValidateResponseMetadata(t *testing.T, metadata *[]*api.FeatureMetadata, me
 	var expected = make([]api.FeatureMetadata, 0)
 	for _, row := range *rows {
 		var meta = api.FeatureMetadata{}
+		var prefix = strings.Replace(string(row[2].([]byte)), `"`, "", -1)
+		var name = prefix + strings.Replace(string(row[0].([]byte)), `"`, "", -1)
+		if (*exCol)[name] {
+			continue
+		}
 		if metadataRequest.FeatureName {
-			var prefix = strings.Replace(string(row[2].([]byte)), `"`, "", -1)
-			var name = prefix + strings.Replace(string(row[0].([]byte)), `"`, "", -1)
 			meta.Name = &name
 		}
 		if metadataRequest.FeatureType {

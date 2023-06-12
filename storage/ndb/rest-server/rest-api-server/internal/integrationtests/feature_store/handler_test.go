@@ -341,30 +341,34 @@ func Test_GetFeatureVector_JoinSameFg(t *testing.T) {
 	}
 }
 
-func Test_GetFeatureVector_excludeLabelColumn(t *testing.T) {
-	rows, pks, cols, err := GetSampleDataWithJoin("fsdb001", "sample_1_1", "fsdb001", "sample_2_1", "fg2_")
+func Test_GetFeatureVector_ExcludeLabelColumn(t *testing.T) {
+	rows, pks, cols, err := GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
 	var exCols = make(map[string]bool)
 	exCols["data1"] = true
+	var fvName = "sample_1n2_label"
+	var fvVersion = 1
 	for _, row := range rows {
 		var fsReq = CreateFeatureStoreRequest(
-			"fsdb001",
-			"sample_1n2_label",
-			1,
+			testdbs.FSDB001,
+			fvName,
+			fvVersion,
 			pks,
 			*GetPkValues(&row, &pks, &cols),
 			nil,
 			nil,
 		)
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
 		fsResp := GetFeatureStoreResponse(t, fsReq)
 		ValidateResponseWithDataExcludeCols(t, &row, &cols, &exCols, fsResp)
+		ValidateResponseMetadataExCol(t, &fsResp.Metadata, fsReq.MetadataRequest, &exCols, testdbs.FSDB001, fvName, fvVersion)
 	}
 }
 
-func Test_GetFeatureVector_excludeLabelFg(t *testing.T) {
-	rows, pks, cols, err := GetSampleDataWithJoin("fsdb001", "sample_1_1", "fsdb001", "sample_2_1", "fg2_")
+func Test_GetFeatureVector_ExcludeLabelFg(t *testing.T) {
+	rows, pks, cols, err := GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
@@ -373,19 +377,22 @@ func Test_GetFeatureVector_excludeLabelFg(t *testing.T) {
 	exCols["id1"] = true
 	exCols["data2"] = true
 	exCols["ts"] = true
-
+	var fvName = "sample_1n2_labelonly"
+	var fvVersion = 1
 	for _, row := range rows {
 		var fsReq = CreateFeatureStoreRequest(
-			"fsdb001",
-			"sample_1n2_labelonly",
-			1,
+			testdbs.FSDB001,
+			fvName,
+			fvVersion,
 			pks,
 			*GetPkValues(&row, &pks, &cols),
 			nil,
 			nil,
 		)
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: false}
 		fsResp := GetFeatureStoreResponse(t, fsReq)
 		ValidateResponseWithDataExcludeCols(t, &row, &cols, &exCols, fsResp)
+		ValidateResponseMetadataExCol(t, &fsResp.Metadata, fsReq.MetadataRequest, &exCols, testdbs.FSDB001, fvName, fvVersion)
 	}
 }
 

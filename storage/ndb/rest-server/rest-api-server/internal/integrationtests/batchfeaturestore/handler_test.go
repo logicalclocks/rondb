@@ -340,19 +340,21 @@ func Test_GetFeatureVector_excludeLabelColumn(t *testing.T) {
 	}
 	var exCols = make(map[string]bool)
 	exCols["data1"] = true
-
+	var fvName = "sample_1n2_label"
+	var fvVersion = 1
 	var fsReq = CreateFeatureStoreRequest(
-		"fsdb001",
-		"sample_1n2_label",
-		1,
+		testdbs.FSDB001,
+		fvName,
+		fvVersion,
 		pks,
 		*GetPkValues(&rows, &pks, &cols),
 		nil,
 		nil,
 	)
+	fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: false, FeatureType: true}
 	fsResp := GetFeatureStoreResponse(t, fsReq)
 	ValidateResponseWithDataExcludeCols(t, &rows, &cols, &exCols, fsResp)
-
+	fshelper.ValidateResponseMetadataExCol(t, &fsResp.Metadata, fsReq.MetadataRequest, &exCols, testdbs.FSDB001, fvName, fvVersion)
 }
 
 func Test_GetFeatureVector_excludeLabelFg(t *testing.T) {
@@ -365,18 +367,21 @@ func Test_GetFeatureVector_excludeLabelFg(t *testing.T) {
 	exCols["id1"] = true
 	exCols["data2"] = true
 	exCols["ts"] = true
-
+	var fvName = "sample_1n2_labelonly"
+	var fvVersion = 1
 	var fsReq = CreateFeatureStoreRequest(
-		"fsdb001",
-		"sample_1n2_labelonly",
-		1,
+		testdbs.FSDB001,
+		fvName,
+		fvVersion,
 		pks,
 		*GetPkValues(&rows, &pks, &cols),
 		nil,
 		nil,
 	)
+	fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
 	fsResp := GetFeatureStoreResponse(t, fsReq)
 	ValidateResponseWithDataExcludeCols(t, &rows, &cols, &exCols, fsResp)
+	fshelper.ValidateResponseMetadataExCol(t, &fsResp.Metadata, fsReq.MetadataRequest, &exCols, testdbs.FSDB001, fvName, fvVersion)
 
 }
 
