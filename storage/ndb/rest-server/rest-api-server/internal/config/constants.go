@@ -21,7 +21,7 @@ import "hopsworks.ai/rdrs/version"
 
 const API_KEY_NAME = "X-API-KEY"
 
-// PP: Path prefix
+// Path Prefixes (PP)
 const DB_PP = "db"
 const TABLE_PP = "table"
 const DB_TABLE_PP = "/:" + DB_PP + "/:" + TABLE_PP + "/"
@@ -34,10 +34,13 @@ const PING_OPERATION = "ping"
 const STAT_OPERATION = "stat"
 const PK_DB_OPERATION = "pk-read"
 const BATCH_OPERATION = "batch"
+const FEATURE_STORE_OPERATION = "feature_store"
+const BATCH_FEATURE_STORE_OPERATION = "batch_feature_store"
 
 const PK_HTTP_VERB = "POST"
 const BATCH_HTTP_VERB = "POST"
 const STAT_HTTP_VERB = "GET"
+const FEATURE_STORE_HTTP_VERB = "POST"
 
 /*
  Env variables
