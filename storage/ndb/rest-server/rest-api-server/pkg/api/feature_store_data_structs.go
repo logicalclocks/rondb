@@ -35,7 +35,7 @@ type BatchFeatureStoreRequest struct {
 }
 
 type MetadataRequest struct {
-	FeatureName bool `json:"featurName"`
+	FeatureName bool `json:"featureName"`
 	FeatureType bool `json:"featureType"`
 }
 
