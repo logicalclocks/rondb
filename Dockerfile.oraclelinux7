@@ -39,7 +39,9 @@ gpgcheck=1
 enabled=1
 EOF
 
+#https://github.com/docker/buildx/issues/379
 RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
+    ulimit -n 1024000 && \ 
     yum -y update \
     && yum -y install \
     wget make git which perl-core openldap-devel \
@@ -50,6 +52,7 @@ RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
     vim pigz
 
 RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
+    ulimit -n 1024000 && \ 
     yum -y update \
     && yum-config-manager -y --enable "ol7_optional_latest" \
     && yum -y install devtoolset-10 maven
@@ -161,3 +164,38 @@ RUN --mount=type=bind,source=.,target=rondb-src \
 # run with --output <output-folder>
 FROM scratch AS get-package-all
 COPY --from=build-all /root/rondb-tarball .
+
+##################################
+# Intermediate Image for RDRS ####
+##################################
+
+FROM ubuntu:22.04 AS rdrs-intermediate
+
+WORKDIR /root
+COPY --from=build-all /root/rondb-tarball .
+
+RUN mkdir -p /srv/hops/mysql/bin /srv/hops/mysql/lib /srv/hops/mysql/lib/private /srv/hops/mysql-cluster /srv/hops/mysql-cluster/log
+
+RUN --mount=type=bind,source=.,target=rondb-src \
+   mkdir /root/distro && \
+   tar xf *.tar.gz -C distro --strip-components=1 && \
+   cp distro/bin/rdrs /srv/hops/mysql/bin && \
+   cp distro/lib/libndbclient.so.6.1.0 /srv/hops/mysql/lib/ && \
+   cp distro/lib/librdrclient.so /srv/hops/mysql/lib/ && \
+   cp distro/lib/private/libcrypto.so.1.1 /srv/hops/mysql/lib/private && \
+   cp distro/lib/private/libssl.so.1.1 /srv/hops/mysql/lib/private && \
+   cp rondb-src/storage/ndb/rest-server/rest-api-server/resources/config/config_for_docker_image.json /srv/hops/mysql-cluster/rdrs_config.json
+
+##################################
+#       RDRS Image               #
+##################################
+
+FROM ubuntu:22.04 AS rdrs
+
+COPY --from=rdrs-intermediate /srv /srv
+
+ENV LD_LIBRARY_PATH=/srv/hops/mysql/lib:/srv/hops/mysql/lib/private
+CMD ["/srv/hops/mysql/bin/rdrs", "-config", "/srv/hops/mysql-cluster/rdrs_config.json"]
+
+
+
