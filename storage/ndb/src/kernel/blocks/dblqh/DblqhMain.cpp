@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2021, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks AB and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -18595,10 +18595,12 @@ Uint32 Dblqh::initScanrec(const ScanFragReq* scanFragReq,
   ExecFunction f;
   if (accScan)
   {
+    // ACC Scan no longer supported. Use TUP scan instead.
     blockRef = ctupBlockref;
     block = c_tup;
     f = c_tup->getExecuteFunction(GSN_NEXT_SCANREQ);
     tupScan = 1;
+    scanPtr->tupScan = tupScan;
   }
   else if (! tupScan)
   {
