@@ -97,7 +97,8 @@ func ValidatePassedFeatures(passedFeatures *map[string]*json.RawMessage, feature
 	for featureName, value := range *passedFeatures {
 		feature, ok := (*features)[featureName]
 		if !ok {
-			return feature_store.FEATURE_NOT_EXIST.NewMessage(fmt.Sprintf("Feature `%s` does not exist in the feature view.", featureName))
+			return feature_store.FEATURE_NOT_EXIST.NewMessage(
+				fmt.Sprintf("Feature `%s` does not exist in the feature view or it is a label which cannot be a passed feature.", featureName))
 		}
 		err := ValidateFeatureType(value, feature.Type)
 		if err != nil {
@@ -363,7 +364,9 @@ func FillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*jso
 		for featureName, passFeature := range *passedFeatures {
 			var feature = (*featureMetadata)[featureName]
 			var lookupKey = feature_store.GetFeatureIndexKeyByFeature(feature)
-			(*features)[(*indexLookup)[lookupKey]] = passFeature
+			if index, ok := (*indexLookup)[lookupKey]; ok {
+				(*features)[index] = passFeature
+			}
 		}
 	}
 }

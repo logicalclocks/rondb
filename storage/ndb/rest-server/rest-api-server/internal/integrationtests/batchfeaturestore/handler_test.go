@@ -1078,3 +1078,31 @@ func Test_PassedFeature_Success_10entries(t *testing.T) {
 	fsResp := GetFeatureStoreResponse(t, fsReq)
 	ValidateResponseWithData(t, &rows, &cols, fsResp)
 }
+
+func Test_PassedFeatures_LabelShouldFail(t *testing.T) {
+	rows, pks, cols, err := fshelper.GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	var exCols = make(map[string]bool)
+	exCols["data1"] = true
+	var fvName = "sample_1n2_label"
+	var fvVersion = 1
+
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB001,
+		fvName,
+		fvVersion,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		[]string{"data1"},
+		[][]interface{}{{[]byte(`300`)}, {[]byte(`300`)}},
+	)
+	fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+	var fsResp = GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+	rows = [][]interface{}{
+		nil,
+		nil,
+	}
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
+}

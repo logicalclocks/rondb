@@ -142,7 +142,7 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	} else {
 		var emptyFeatures = make([][]interface{}, len(*fsReq.Entries))
 		for i := range emptyFeatures {
-			emptyFeatures[i] = make([]interface{}, metadata.NumOfFeatures)
+			emptyFeatures[i] = nil
 		}
 		features = &emptyFeatures
 	}
