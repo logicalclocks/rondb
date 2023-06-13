@@ -5,11 +5,7 @@
 # Glibc tends to be backwards compatible, but not forwards compatible.
 # Using this file for arm64 requires too many modifications.
 
-ARG BASE_IMAGE=oraclelinux
-ARG BASE_IMAGE_TAG_DEV=7
-ARG BASE_IMAGE_TAG_DEPLOY=7-slim
-
-FROM $BASE_IMAGE:$BASE_IMAGE_TAG_DEV as rondb-build-dependencies
+FROM oraclelinux:7 as rondb-build-dependencies
 
 ARG CMAKE_VERSION=3.23.2
 ARG OPEN_SSL_VERSION=1.1.1t
@@ -173,7 +169,7 @@ COPY --from=build-all /root/rondb-tarball .
 # Intermediate Image for RDRS ####
 ##################################
 
-FROM $BASE_IMAGE:$BASE_IMAGE_TAG_DEV AS rdrs-intermediate
+FROM oraclelinux:7 AS rdrs-intermediate
 
 ENV MYSQL_HOME=/srv/hops/mysql
 ENV MYSQL_CONF=/srv/hops/mysql-cluster
@@ -202,7 +198,7 @@ RUN --mount=type=bind,source=.,target=rondb-src \
 #       RDRS Image               #
 ##################################
 
-FROM $BASE_IMAGE:$BASE_IMAGE_TAG_DEPLOY AS rdrs
+FROM oraclelinux:7-slim AS rdrs
 
 COPY --from=rdrs-intermediate /srv /srv
 
@@ -211,10 +207,6 @@ COPY <<-"EOF" /etc/ld.so.conf.d/rondb.conf
 /srv/hops/mysql/lib
 /srv/hops/mysql/lib/private
 EOF
-
-# Something is off with oraclelinux
-# libs in /srv/hops/mysql/lib/private are not properly loaded 
-# however, it works fine on ubuntu 
 RUN ldconfig -v
 
 # Also setting LD_LIBRARY_PATH
