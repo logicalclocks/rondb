@@ -97,7 +97,8 @@ func ValidatePassedFeatures(passedFeatures *map[string]*json.RawMessage, feature
 	for featureName, value := range *passedFeatures {
 		feature, ok := (*features)[featureName]
 		if !ok {
-			return feature_store.FEATURE_NOT_EXIST.NewMessage(fmt.Sprintf("Feature `%s` does not exist in the feature view.", featureName))
+			return feature_store.FEATURE_NOT_EXIST.NewMessage(
+				fmt.Sprintf("Feature `%s` does not exist in the feature view or it is a label which cannot be a passed feature.", featureName))
 		}
 		err := ValidateFeatureType(value, feature.Type)
 		if err != nil {
@@ -241,17 +242,19 @@ func checkRondbResponse(rondbResp *api.BatchResponseJSON) *feature_store.RestErr
 
 func GetFeatureMetadata(metadata *feature_store.FeatureViewMetadata, metaRequest *api.MetadataRequest) *[]*api.FeatureMetadata {
 	featureMetadataArray := make([]*api.FeatureMetadata, metadata.NumOfFeatures)
-	for featureKey, metadata := range metadata.PrefixFeaturesLookup {
-		featureMetadata := api.FeatureMetadata{}
-		if metaRequest.FeatureName {
-			var fk = featureKey
-			featureMetadata.Name = &fk
+	for featureKey, featureMetadata := range metadata.PrefixFeaturesLookup {
+		if featureIndex, ok := metadata.FeatureIndexLookup[feature_store.GetFeatureIndexKeyByFeature(featureMetadata)]; ok {
+			featureMetadataResp := api.FeatureMetadata{}
+			if metaRequest.FeatureName {
+				var fk = featureKey
+				featureMetadataResp.Name = &fk
+			}
+			if metaRequest.FeatureType {
+				var ft = featureMetadata.Type
+				featureMetadataResp.Type = &ft
+			}
+			featureMetadataArray[featureIndex] = &featureMetadataResp
 		}
-		if metaRequest.FeatureType {
-			var ft = metadata.Type
-			featureMetadata.Type = &ft
-		}
-		featureMetadataArray[metadata.Index] = &featureMetadata
 	}
 	return &featureMetadataArray
 }
@@ -361,7 +364,9 @@ func FillPassedFeatures(features *[]interface{}, passedFeatures *map[string]*jso
 		for featureName, passFeature := range *passedFeatures {
 			var feature = (*featureMetadata)[featureName]
 			var lookupKey = feature_store.GetFeatureIndexKeyByFeature(feature)
-			(*features)[(*indexLookup)[lookupKey]] = passFeature
+			if index, ok := (*indexLookup)[lookupKey]; ok {
+				(*features)[index] = passFeature
+			}
 		}
 	}
 }
