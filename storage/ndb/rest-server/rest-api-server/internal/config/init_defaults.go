@@ -54,11 +54,11 @@ func newWithDefaults() AllConfigs {
 			OperationIDMaxSize:  256,
 		},
 		GRPC: GRPC{
-			ServerIP:   "localhost",
+			ServerIP:   "0.0.0.0",
 			ServerPort: 4406,
 		},
 		REST: REST{
-			ServerIP:   "localhost",
+			ServerIP:   "0.0.0.0",
 			ServerPort: 5406,
 		},
 		RonDB: RonDB{

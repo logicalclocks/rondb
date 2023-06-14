@@ -68,7 +68,7 @@ func CreateGrpcConn(withAuth, withTLS bool) (*grpc.ClientConn, error) {
 	// Set up a connection to the server
 	conf := config.GetAll()
 	return grpc.Dial(
-		fmt.Sprintf("%s:%d", "localhost", conf.GRPC.ServerPort),
+		fmt.Sprintf("%s:%d", conf.GRPC.ServerIP, conf.GRPC.ServerPort),
 		grpcDialOptions...,
 	)
 }
