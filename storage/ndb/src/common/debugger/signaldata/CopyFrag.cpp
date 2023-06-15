@@ -27,22 +27,22 @@
 bool
 printCOPY_FRAGREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 recB)
 {
-  CopyFragReq* sig = (CopyFragReq*)theData;
+  const CopyFragReq* sig = (const CopyFragReq*)theData;
   
-  fprintf(output, " userPtr: %u userRef: %x",
+  fprintf(output, "userPtr: %u userRef: %x",
 	  sig->userPtr, sig->userRef);
-  fprintf(output, " tableId: %u fragtId: %u", sig->tableId, sig->fragId);
+  fprintf(output, " tableId: %u fragId: %u", sig->tableId, sig->fragId);
   fprintf(output, " schemaVersion: %u, distributionKey: %u\n",
 	  sig->schemaVersion, sig->distributionKey);
-  fprintf(output, " gci: %u, nodeCount: %u\n",
+  fprintf(output, "gci: %u, nodeCount: %u\n",
 	  sig->gci, sig->nodeCount);
   for (Uint32 i = 0; i < sig->nodeCount; i++)
   {
     fprintf(output, " node[%u]: %u",
-	    sig->nodeList[i]);
+	    i, sig->nodeList[i]);
   }
   fprintf(output, "\n");
-  fprintf(output, " maxPage: %u, requestInfo: %x\n",
+  fprintf(output, "maxPage: %u, requestInfo: %x\n",
 	  sig->nodeList[sig->nodeCount],
 	  sig->nodeList[sig->nodeCount+1]);
   return true;
@@ -51,12 +51,12 @@ printCOPY_FRAGREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 recB
 bool
 printCOPY_FRAGCONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 recB)
 {
-  CopyFragConf* sig = (CopyFragConf*)theData;
+  const CopyFragConf* sig = (const CopyFragConf*)theData;
   
   fprintf(output, " userPtr: %u sendingNodeId: %u, startingNodeId: %u",
 	  sig->userPtr, sig->sendingNodeId, sig->startingNodeId);
   fprintf(output, " tableId: %u fragId: %u\n", sig->tableId, sig->fragId);
-  fprintf(output, " rows_lo: %u, bytes_lo: %u\n",
+  fprintf(output, "rows_lo: %u, bytes_lo: %u\n",
 	  sig->rows_lo, sig->bytes_lo);
   return true;
 }
@@ -64,12 +64,12 @@ printCOPY_FRAGCONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 rec
 bool
 printCOPY_FRAGREF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 recB)
 {
-  CopyFragRef* sig = (CopyFragRef*)theData;
+  const CopyFragRef* sig = (const CopyFragRef*)theData;
   
   fprintf(output, " userPtr: %u sendingNodeId: %u, startingNodeId: %u",
 	  sig->userPtr, sig->sendingNodeId, sig->startingNodeId);
   fprintf(output, " tableId: %u fragId: %u\n", sig->tableId, sig->fragId);
-  fprintf(output, " errorCode: %u\n",
+  fprintf(output, "errorCode: %u\n",
 	  sig->errorCode);
   return true;
 }

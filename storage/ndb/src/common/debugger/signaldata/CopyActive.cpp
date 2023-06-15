@@ -27,11 +27,11 @@
 bool
 printCOPY_ACTIVEREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 recB)
 {
-  CopyActiveReq* sig = (CopyActiveReq*)theData;
+  const CopyActiveReq* sig = (const CopyActiveReq*)theData;
   
-  fprintf(output, " userPtr: %u userRef: %x",
+  fprintf(output, "userPtr: %u userRef: %x",
 	  sig->userPtr, sig->userRef);
-  fprintf(output, " tableId: %u fragtId: %u", sig->tableId, sig->fragId);
+  fprintf(output, " tableId: %u fragId: %u", sig->tableId, sig->fragId);
   fprintf(output, " distributionKey: %u flags: %x\n",
 	  sig->distributionKey, sig->flags);
   return true;
@@ -40,9 +40,9 @@ printCOPY_ACTIVEREQ(FILE * output, const Uint32 * theData, Uint32 len, Uint16 re
 bool
 printCOPY_ACTIVECONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 recB)
 {
-  CopyActiveConf* sig = (CopyActiveConf*)theData;
+  const CopyActiveConf* sig = (const CopyActiveConf*)theData;
   
-  fprintf(output, " userPtr: %u startingNodeId: %u",
+  fprintf(output, "userPtr: %u startingNodeId: %u",
 	  sig->userPtr, sig->startingNodeId);
   fprintf(output, " tableId: %u fragId: %u", sig->tableId, sig->fragId);
   fprintf(output, " startGci: %u\n",
@@ -53,9 +53,9 @@ printCOPY_ACTIVECONF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 r
 bool
 printCOPY_ACTIVEREF(FILE * output, const Uint32 * theData, Uint32 len, Uint16 recB)
 {
-  CopyActiveRef* sig = (CopyActiveRef*)theData;
+  const CopyActiveRef* sig = (const CopyActiveRef*)theData;
   
-  fprintf(output, " userPtr: %u startingNodeId: %u",
+  fprintf(output, "userPtr: %u startingNodeId: %u",
 	  sig->userPtr, sig->startingNodeId);
   fprintf(output, " tableId: %u fragId: %u", sig->tableId, sig->fragId);
   fprintf(output, " errorCode: %u\n",
