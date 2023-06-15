@@ -190,10 +190,12 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
                 "OperationIDMaxSize": 256
         },
         "REST": {
+                "Enable": true,
                 "ServerIP": "localhost",
                 "ServerPort": 4406
         },
         "GRPC": {
+                "Enable": true,
                 "ServerIP": "localhost",
                 "ServerPort": 5406
         },
@@ -265,11 +267,15 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
 - **REST** 
 
+  - **Enable:** Enable/Disable REST Server Interface 
+
   - **ServerIP:** Binds the REST server to this IP. The default value is *localhost*
 
   - **ServerPort:** REST server port. The default port is *4406*
 
 - **GRPC** 
+
+  - **Enable:** Enable/Disable GRPC Server Interface 
 
   - **ServerIP:** Binds the GRPC server to this IP. The default value is *localhost*
 

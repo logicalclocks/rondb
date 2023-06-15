@@ -76,7 +76,7 @@ func (h *Handler) Validate(request interface{}) error {
 func ValidatePrimaryKey(entries *map[string]*json.RawMessage, features *map[string]string) *feature_store.RestErrorCode {
 	// Data type check of primary key will be delegated to rondb.
 	if len(*entries) == 0 {
-		return feature_store.INCORRECT_PRIMARY_KEY.NewMessage(fmt.Sprintf("No entries found"))
+		return feature_store.INCORRECT_PRIMARY_KEY.NewMessage("No entries found")
 	}
 	if len(*entries) != len((*features)) {
 		return feature_store.INCORRECT_PRIMARY_KEY.NewMessage(fmt.Sprintf("Excepting size of entries to be %d but it is %d.", len(*features), len(*entries)))
