@@ -693,8 +693,9 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
   }
 
   if (ndb_op->equal("id", feature_group_id) != 0) {
-    return RS_SERVER_ERROR(ERROR_023);
-  
+    ndb_error = ndb_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_023);
   }
   NdbRecAttr *name_attr = ndb_op->getValue("name", nullptr);
   NdbRecAttr *online_enabled_attr = nullptr;
