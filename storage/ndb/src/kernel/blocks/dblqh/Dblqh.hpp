@@ -529,14 +529,24 @@ public:
 
   struct CopyActiveRecord
   {
+    STATIC_CONST( TYPE_ID = RT_DBLQH_COPY_ACTIVE_RECORD );
+    Uint32 m_magic;
+
+    CopyActiveRecord() :
+      m_magic(Magic::make(TYPE_ID))
+    {}
+
+    ~CopyActiveRecord()
+    {}
+ 
     CopyActiveReq m_copy_activereq;
     Uint32 nextPool;
     Uint32 nextList;
     Uint32 prevList;
   };
+  STATIC_CONST(DBLQH_COPY_ACTIVE_RECORD_TRANSIENT_POOL_INDEX = 3);
   typedef Ptr<CopyActiveRecord> CopyActiveRecordPtr;
-#define ZCOPYACTIVEREC_FILE_SIZE MAX_NDBMT_LQH_THREADS
-  typedef ArrayPool<CopyActiveRecord> CopyActiveRecord_pool;
+  typedef TransientPool<CopyActiveRecord> CopyActiveRecord_pool;
   typedef DLFifoList<CopyActiveRecord_pool> CopyActiveRecord_fifo;
 
   struct AddFragRecord {
@@ -4704,7 +4714,7 @@ private:
   void sendPoolShrink(Uint32 pool_index);
   void shrinkTransientPools(Uint32 pool_index);
 
-  static const Uint32 c_transient_pool_count = 3;
+  static const Uint32 c_transient_pool_count = 4;
   TransientFastSlotPool* c_transient_pools[c_transient_pool_count];
   Bitmask<1> c_transient_pools_shrinking;
 

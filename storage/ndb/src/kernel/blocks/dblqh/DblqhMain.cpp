@@ -2383,7 +2383,6 @@ void Dblqh::execREAD_CONFIG_REQ(Signal* signal)
   if (!m_is_query_block)
   {
     c_copy_fragment_pool.setSize(ZCOPYFRAGREC_FILE_SIZE);
-    c_copy_active_pool.setSize(ZCOPYACTIVEREC_FILE_SIZE);
   }
 
   if (!ndb_mgm_get_int_parameter(p, CFG_DB_REDOLOG_FILE_SIZE,
@@ -19792,7 +19791,7 @@ void Dblqh::execCOPY_FRAGREQ(Signal* signal)
                          instance(),
                          c_active_copyFragReq));
       CopyFragRecordPtr copy_fragptr;
-      c_copy_fragment_pool.seize(copy_fragptr);
+      ndbrequire(c_copy_fragment_pool.seize(copy_fragptr));
       copy_fragptr.p->m_copy_fragreq = *copyFragReq;
       Uint32 nodeCount = copyFragReq->nodeCount;
       copy_fragptr.p->m_copy_fragreq.nodeCount = 0;
@@ -20816,6 +20815,7 @@ void Dblqh::start_new_copyFragReq(Signal *signal)
     sendSignal(reference(), GSN_COPY_FRAGREQ, signal,
                CopyFragReq::SignalLength, JBB);
     c_copy_fragment_queue.removeFirst(copy_fragptr);
+    c_copy_fragment_pool.release(copy_fragptr);
   }
 }
 
@@ -20918,7 +20918,7 @@ void Dblqh::execCOPY_ACTIVEREQ(Signal* signal)
   {
     jam();
     CopyActiveRecordPtr copy_activeptr;
-    c_copy_active_pool.seize(copy_activeptr);
+    ndbrequire(c_copy_active_pool.seize(copy_activeptr));
     copy_activeptr.p->m_copy_activereq = *req;
     copy_activeptr.p->m_copy_activereq.flags =
       flags | CopyActiveReq::CAR_LOCAL_SEND;
@@ -21826,6 +21826,9 @@ void Dblqh::sendCopyActiveConf(Signal* signal, Uint32 tableId)
     sendSignal(reference(), GSN_COPY_ACTIVEREQ, signal,
                CopyActiveReq::SignalLength, JBB);
     c_copy_active_queue.removeFirst(copy_activeptr);
+    c_copy_active_pool.release(copy_activeptr);
+    checkPoolShrinkNeed(DBLQH_COPY_ACTIVE_RECORD_TRANSIENT_POOL_INDEX,
+                        c_copy_active_pool);
   }
 }//Dblqh::sendCopyActiveConf()
 
