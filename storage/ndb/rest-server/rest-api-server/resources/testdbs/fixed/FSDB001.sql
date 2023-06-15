@@ -1273,3 +1273,11 @@ VALUES
     (
         46, 'id46', Timestamp('2022-01-13 00:00:00'), 11, '91', '2022-01-02', True, 27.0, 75.0, '0'
     );
+
+CREATE TABLE `sample_cache_1` (
+  `id1` bigint NOT NULL,
+  `data` bigint DEFAULT NULL,
+  PRIMARY KEY (`id1`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+INSERT INTO `sample_cache_1` (`id1`, `data`) SELECT `id1`, `bigint` FROM `sample_3_1`;

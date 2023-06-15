@@ -103,6 +103,31 @@ func Test_GetFeatureVector_WithMetadata_All_Success(t *testing.T) {
 	}
 }
 
+func Test_GetFeatureVector_CachedFG_WithMetadata_All_Success(t *testing.T) {
+	var fsName = testdbs.FSDB001
+	var fvName = "sample_cache"
+	var fvVersion = 1
+	rows, pks, cols, err := GetSampleData(fsName, fmt.Sprintf("%s_%d", fvName, fvVersion))
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			fsName,
+			fvName,
+			fvVersion,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+		fsResp := GetFeatureStoreResponse(t, fsReq)
+		ValidateResponseWithData(t, &row, &cols, fsResp)
+		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
+	}
+}
+
 func Test_GetFeatureVector_WithMetadata_Name_Success(t *testing.T) {
 	var fsName = testdbs.FSDB002
 	var fvName = "sample_2"
