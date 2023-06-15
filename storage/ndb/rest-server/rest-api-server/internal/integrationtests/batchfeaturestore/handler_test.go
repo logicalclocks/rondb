@@ -31,6 +31,30 @@ import (
 	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
+func Test_GetFeatureVector_CacheFG_5entries_Metadata_Success(t *testing.T) {
+	var fsName = testdbs.FSDB001
+	var fvName = "sample_cache"
+	var fvVersion = 1
+	rows, pks, cols, err := fshelper.GetNSampleData(fsName, fmt.Sprintf("%s_%d", fvName, fvVersion), 5)
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	var fsReq = CreateFeatureStoreRequest(
+		fsName,
+		fvName,
+		fvVersion,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		nil,
+		nil,
+	)
+	fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
+	fshelper.ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
+}
+
 func Test_GetFeatureVector_Success_1entries(t *testing.T) {
 	rows, pks, cols, err := fshelper.GetNSampleData(testdbs.FSDB002, "sample_2_1", 1)
 	if err != nil {

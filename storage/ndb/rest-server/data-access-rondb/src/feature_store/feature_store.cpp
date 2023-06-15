@@ -92,6 +92,8 @@ RS_Status find_project_id_int(Ndb *ndb_object, const char *feature_store_name, I
 
   NdbRecAttr *id_attr = scan_op->getValue("id");
   if (id_attr == nullptr) {
+    ndb_error = scan_op->getNdbError();
+    ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
   }
 
@@ -206,6 +208,8 @@ RS_Status find_feature_store_id_int(Ndb *ndb_object, const char *feature_store_n
   NdbRecAttr *id = scan_op->getValue("id");
 
   if (id == nullptr) {
+    ndb_err = scan_op->getNdbError();
+    ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_019);
   }
 
@@ -346,6 +350,8 @@ RS_Status find_feature_view_id_int(Ndb *ndb_object, int feature_store_id,
 
   NdbRecAttr *id_attr = scan_op->getValue("id");
   if (id_attr == nullptr) {
+    ndb_error = scan_op->getNdbError();
+    ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
   }
 
@@ -459,6 +465,8 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
   NdbRecAttr *prefix_attr     = scan_op->getValue("prefix", nullptr);
 
   if (td_join_id_attr == nullptr || prefix_attr == nullptr) {
+    ndb_err = scan_op->getNdbError();
+    ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_019);
   }
 
@@ -597,6 +605,8 @@ RS_Status find_primary_key_data_int(Ndb *ndb_object, std::string table_name, std
   NdbRecAttr *name_attr = scan_op->getValue("name", nullptr);
 
   if (name_attr == nullptr) {
+    ndb_err = scan_op->getNdbError();
+    ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_019);
   }
   int feature_name_size;
@@ -683,11 +693,21 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
   }
 
   if (ndb_op->equal("id", feature_group_id) != 0) {
-    return RS_SERVER_ERROR(ERROR_023);
+    ndb_error = ndb_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_023);
   }
-
-  NdbRecAttr *name_attr                  = ndb_op->getValue("name", nullptr);
-  NdbRecAttr *online_enabled_attr        = ndb_op->getValue("online_enabled", nullptr);
+  NdbRecAttr *name_attr = ndb_op->getValue("name", nullptr);
+  NdbRecAttr *online_enabled_attr = nullptr;
+  // In hopsworks 3.1, there is no column `online_enabled`. This is a workaround for customer using hopsworks 3.1.
+  if (table_dict->getColumn("online_enabled") != nullptr ) {
+    online_enabled_attr = ndb_op->getValue("online_enabled", nullptr);
+    if (online_enabled_attr == nullptr) {
+      ndb_error = ndb_op->getNdbError();
+      ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+    }
+  }
   NdbRecAttr *feature_store_id_attr      = ndb_op->getValue("feature_store_id", nullptr);
   NdbRecAttr *feature_group_version_attr = ndb_op->getValue("version", nullptr);
   NdbRecAttr *on_demand_feature_group_id_attr = ndb_op->getValue("on_demand_feature_group_id", nullptr);
@@ -696,9 +716,11 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
   
   assert(FEATURE_GROUP_NAME_SIZE == (Uint32)table_dict->getColumn("name")->getSizeInBytes());
 
-  if (name_attr == nullptr || online_enabled_attr == nullptr || feature_store_id_attr == nullptr ||
+  if (name_attr == nullptr || feature_store_id_attr == nullptr ||
       feature_group_version_attr == nullptr || on_demand_feature_group_id_attr == nullptr ||
       cached_feature_group_id_attr == nullptr || stream_feature_group_id_attr == nullptr) {
+    ndb_error = ndb_op->getNdbError();
+    ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
   }
 
@@ -720,12 +742,12 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
 
   if (!on_demand_feature_group_id_attr->isNULL()) {
     feature_table = "on_demand_feature";
-    fg_fk_name = "on_demand_feature_group_fk1";
+    fg_fk_name = "on_demand_feature_group_fk";
     fg_id_col_name = "on_demand_feature_group_id";
     sub_fg_id = on_demand_feature_group_id_attr->int32_value();
   } else if (!cached_feature_group_id_attr->isNULL()) {
     feature_table = "cached_feature_extra_constraints";
-    fg_fk_name = "cached_feature_group_fk1";
+    fg_fk_name = "cached_feature_group_fk";
     fg_id_col_name = "cached_feature_group_id";
     sub_fg_id = cached_feature_group_id_attr->int32_value();
   } else if (!stream_feature_group_id_attr->isNULL()) {
@@ -745,7 +767,13 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
   }
   fg->num_pk = n_pk;
   fg->primary_key = primary_key;
-  fg->online_enabled        = online_enabled_attr->u_8_value();
+  if (online_enabled_attr == nullptr || online_enabled_attr->isNULL()) {
+    // This is due to incompatible schema, assume online enabled.
+    fg->online_enabled = 1;
+  } else {
+    fg->online_enabled = online_enabled_attr->u_8_value();
+  }
+
   fg->feature_store_id      = feature_store_id_attr->int32_value();
   fg->version = feature_group_version_attr->int32_value();
 
@@ -845,6 +873,8 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
       feature_group_id_attr == nullptr || name_attr == nullptr || type_attr == nullptr ||
       td_join_id_attr == nullptr || idx_attr == nullptr || label_attr == nullptr ||
       transformation_function_id_attr == nullptr || feature_view_id_attr == nullptr) {
+    ndb_error = scan_op->getNdbError();
+    ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
   }
 
@@ -993,6 +1023,8 @@ RS_Status find_feature_store_data_int(Ndb *ndb_object, int feature_store_id, cha
   assert(FEATURE_STORE_NAME_SIZE == (Uint32)table_dict->getColumn("name")->getSizeInBytes());
 
   if (name_attr == nullptr) {
+    ndb_error = ndb_op->getNdbError();
+    ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
   }
 
