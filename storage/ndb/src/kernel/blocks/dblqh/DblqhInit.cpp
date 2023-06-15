@@ -399,6 +399,12 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg)
   Pool_context pc;
   pc.m_block = this;
 
+  c_copy_active_pool.init(
+    CopyActiveRecord::TYPE_ID,
+    pc,
+    Uint32(1),
+    UINT32_MAX);
+
   Uint32 reserveTcConnRecs = 0;
   ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg,
               CFG_LDM_RESERVED_OPERATIONS, &reserveTcConnRecs));
@@ -799,7 +805,9 @@ Dblqh::Dblqh(Block_context& ctx,
     &c_scanRecordPool;
   c_transient_pools[DBLQH_COMMIT_ACK_MARKER_TRANSIENT_POOL_INDEX] =
     &m_commitAckMarkerPool;
-  NDB_STATIC_ASSERT(c_transient_pool_count == 3);
+  c_transient_pools[DBLQH_COPY_ACTIVE_RECORD_TRANSIENT_POOL_INDEX] =
+    &c_copy_active_pool;
+  NDB_STATIC_ASSERT(c_transient_pool_count == 4);
   c_transient_pools_shrinking.clear();
 }//Dblqh::Dblqh()
 

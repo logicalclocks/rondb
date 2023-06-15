@@ -40,6 +40,9 @@ class CopyActiveReq {
    * Receiver(s)
    */
   friend class Dblqh;
+
+  friend bool printCOPY_ACTIVEREQ(FILE *, const Uint32 *, Uint32, Uint16);
+
 public:
   STATIC_CONST( SignalLength = 6 );
 
@@ -69,6 +72,9 @@ class CopyActiveConf {
    * Receiver(s)
    */
   friend class Dbdih;
+
+  friend bool printCOPY_ACTIVECONF(FILE *, const Uint32 *, Uint32, Uint16);
+
 public:
   STATIC_CONST( SignalLength = 5 );
 
@@ -89,6 +95,9 @@ class CopyActiveRef {
    * Receiver(s)
    */
   friend class Dbdih;
+
+  friend bool printCOPY_ACTIVEREF(FILE *, const Uint32 *, Uint32, Uint16);
+
 public:
   STATIC_CONST( SignalLength = 5 );
 
