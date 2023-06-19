@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (c) 2021, 2023, Hopsworks AB and/or its affiliates.
+# Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
 set -e
 
@@ -42,13 +42,13 @@ git diff --cached --name-only --diff-filter=d |
                 tac;
         } |
             # Check that a correct copyright notice is present
-            grep -Eq '^[ #*<!-]*Copyright (\(c\)|\\\(co) ('"$(seq -s '|' 2020 $year)), $year, "'Hopsworks AB and\/or its affiliates\.[ >-]*$' ||
+            grep -Eq '^[ #*<!-]*Copyright (\(c\)|\\\(co) ('"$(seq -s '|' 2020 $year)), $year, "'Hopsworks and\/or its affiliates\.[ >-]*$' ||
             # If not, fail with instructions
             {
                 echo "$filename:";
-                echo "  Can't find a correct copyright notice for Hopsworks AB.";
+                echo "  Can't find a correct copyright notice for Hopsworks.";
                 echo "  If one exists, correct it, otherwise add the following to the header comment:";
-                echo "   Copyright (c) $year, $year, Hopsworks AB and/or its affiliates.";
+                echo "   Copyright (c) $year, $year, Hopsworks and/or its affiliates.";
                 exitcode=1;
             }
         done
@@ -62,7 +62,7 @@ echo ""
 
 git config user.email | grep -Eq "@hopsworks.ai$" || {
     cat <<EOF
-Warning: Git is not configured to identify you as an employee of Hopsworks AB for operations in this repository.
+Warning: Git is not configured to identify you as an employee of Hopsworks for operations in this repository.
 If you want to use your Hopsworks identity for all repositories on this machine, run:
     git config --global user.name 'Firstname Lastname'
     git config --global user.email yourname@hopsworks.ai
