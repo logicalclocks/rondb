@@ -648,7 +648,7 @@ RS_Status find_primary_key_data_int(Ndb *ndb_object, std::string table_name, std
         ndb_object->closeTransaction(tx);
         return RS_CLIENT_ERROR(ERROR_019);
       }
-      char *feature_name = new char[feature_name_size];
+      char *feature_name = (char *)malloc(feature_name_size * sizeof(char));
       memcpy(feature_name, name_data_start, name_attr_bytes);
       feature_name[name_attr_bytes] = 0;
       feature_names.push_back(feature_name);
@@ -656,10 +656,8 @@ RS_Status find_primary_key_data_int(Ndb *ndb_object, std::string table_name, std
   }
 
   size        = feature_names.size();
-  primary_key = new char *[size];
-  // memcpy(primary_key, feature_names.data(), size);
+  primary_key = (char **)malloc(size * sizeof(char *));
   std::copy(feature_names.data(), feature_names.data() + size, primary_key);
-  // feature_names.data();
 
   // check for errors happened during the reading process
   NdbError error = scan_op->getNdbError();

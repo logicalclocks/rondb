@@ -63,6 +63,9 @@ class RDRSRonDBConnection {
   }
 
  public:
+
+  ~RDRSRonDBConnection();
+
   /**
    * Static method for initializing connection and NDB Object pool
    *
@@ -89,10 +92,10 @@ class RDRSRonDBConnection {
   /**
    * Returns Ndb object
    *
-   * New resource will be created if all the resources
-   * were used at the time of the request.
+   * New NDB object will be created if all 
+   * existing NDB Objects are in use
    *
-   * @return Status and Resource instance.
+   * @return Status and NDB object  
    */
   RS_Status GetNdbObject(Ndb **ndb_object);
 
@@ -111,12 +114,6 @@ class RDRSRonDBConnection {
    * @return RonDB_Stats
    */
   RonDB_Stats GetStats();
-
-  /**
-   * Purge. Delete all Ndb objects
-   *
-   */
-  RS_Status Shutdown();
 
   /**
    * Starts reconnection therad which calls the ReconnectHandler

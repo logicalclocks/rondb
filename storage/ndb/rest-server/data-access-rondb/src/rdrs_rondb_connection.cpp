@@ -122,6 +122,11 @@ RS_Status RDRSRonDBConnection::Connect() {
 }
 
 //--------------------------------------------------------------------------------------------------
+RDRSRonDBConnection::~RDRSRonDBConnection() {
+  Shutdown(false);
+}
+
+//--------------------------------------------------------------------------------------------------
 
 RS_Status RDRSRonDBConnection::GetInstance(RDRSRonDBConnection **rdrsRonDBConnection) {
   if (__instance == nullptr) {
@@ -205,7 +210,7 @@ void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object, RS_Status *stat
     availableNdbObjects.push_back(ndb_object);
   }
 
-  // Note there are not unit test for this
+  // Note there are no unit test for this
   // Inorder to test this run the  TestReconnection1 for longer duration
   // and then drop the ndbconnection  using iptables or by disconnection the network
   if (status != nullptr && status->http_code != SUCCESS) {  // check for errors
@@ -228,13 +233,43 @@ RonDB_Stats RDRSRonDBConnection::GetStats() {
 }
 
 //--------------------------------------------------------------------------------------------------
-RS_Status RDRSRonDBConnection::Shutdown() {
-  return Shutdown(false);
-}
-
-//--------------------------------------------------------------------------------------------------
 
 RS_Status RDRSRonDBConnection::Shutdown(bool end) {
+
+  // wait for all NDB objects to return
+  using namespace std::chrono;
+  Int64 startTime   = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+  Int64 timeElapsed = 0;
+
+  bool allNDBObjectsCountedFor = false;
+  do {
+
+    size_t expectedSize = 0;
+    Uint32 sizeGot      = 0;
+    {
+      std::lock_guard<std::mutex> guard(connectionMutex);
+      sizeGot      = availableNdbObjects.size();
+      expectedSize = stats.ndb_objects_created;
+    }
+
+    if (expectedSize != sizeGot) {
+      LOG_WARN("Waiting to all NDB objects to return before shutdown. Expected Size: " +
+               std::to_string(expectedSize) + " Have: " + std::to_string(sizeGot));
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    } else {
+      allNDBObjectsCountedFor = true;
+      break;
+    }
+    timeElapsed =
+        duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count() - startTime;
+  } while (timeElapsed < 120 * 1000);
+
+  if (!allNDBObjectsCountedFor) {
+    LOG_ERROR("Timedout waiting for all NDB objects.");
+  } else {
+    LOG_INFO("All NDB objects are accounted for. Total objects: " +
+             std::to_string(stats.ndb_objects_created));
+  }
 
   LOG_DEBUG("Shutting down RonDB connection and NDB object pool");
 
@@ -280,8 +315,8 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
     if (end) {
       stats.is_shutdown = true;
       ndb_end(1);  // sometimes causes seg faults when called repeatedly from unit tests
-      delete connection_string;
-      delete node_ids;
+      free(connection_string);
+      free(node_ids);
       if (reconnectionThread != nullptr) {
         NdbThread_Destroy(&reconnectionThread);
         reconnectionThread = nullptr;
@@ -299,41 +334,6 @@ RS_Status RDRSRonDBConnection::ReconnectHandler() {
   {
     std::lock_guard<std::mutex> guardInfo(connectionInfoMutex);
     require(stats.is_reconnection_in_progress);
-  }
-
-  // stop all the NDB objects
-  using namespace std::chrono;
-  Int64 startTime   = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
-  Int64 timeElapsed = 0;
-
-  bool allNDBObjectsCountedFor = false;
-  do {
-
-    size_t expectedSize = 0;
-    Uint32 sizeGot      = 0;
-    {
-      std::lock_guard<std::mutex> guard(connectionMutex);
-      sizeGot      = availableNdbObjects.size();
-      expectedSize = stats.ndb_objects_created;
-    }
-
-    if (expectedSize != sizeGot) {
-      LOG_WARN("Waiting to all NDB objects to return before shutdown. Expected Size: " +
-               std::to_string(expectedSize) + " Have: " + std::to_string(sizeGot));
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    } else {
-      allNDBObjectsCountedFor = true;
-      break;
-    }
-    timeElapsed =
-        duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count() - startTime;
-  } while (timeElapsed < 120 * 1000);
-
-  if (!allNDBObjectsCountedFor) {
-    LOG_ERROR("Timedout waiting for all NDB objects.");
-  } else {
-    LOG_INFO("All NDB objects are accounted for. Total objects: " +
-             std::to_string(stats.ndb_objects_created));
   }
 
   RS_Status status = Shutdown(false);

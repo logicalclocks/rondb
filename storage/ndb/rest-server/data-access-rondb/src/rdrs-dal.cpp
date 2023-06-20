@@ -41,11 +41,7 @@
 RDRSRonDBConnection *rdrsRonDBConnection = nullptr;
 
 /**
- * Initialize NDB connection
- * @param connection_string NDB connection string {url}:{port}
- * @param find_available_node_ID if set to 1 then we will first find an available node id to
- * connect to
- * @return status
+ * Initialize RonDB connection
  */
 RS_Status init(const char *connection_string, unsigned int connection_pool_size,
                unsigned int *node_ids, unsigned int node_ids_len, unsigned int connection_retries,
@@ -84,7 +80,8 @@ RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int r
 //--------------------------------------------------------------------------------------------------
 
 RS_Status shutdown_connection() {
-  return rdrsRonDBConnection->Shutdown();
+  delete rdrsRonDBConnection;
+  return RS_OK;
 }
 
 //--------------------------------------------------------------------------------------------------
