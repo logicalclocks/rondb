@@ -25,14 +25,15 @@ extern "C" {
 #define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_FEATURE_STORE_FEATURE_STORE_H_
 
 #include "../rdrs-dal.h"
+#include "../rdrs-const.h"
 
 // some DS
 typedef struct Training_Dataset_Feature {
   int feature_id;
   int training_dataset;
   int feature_group_id;
-  char name[1000+1];
-  char data_type[1000+1] ;
+  char name[TRAINING_DATASET_FEATURE_NAME_SIZE];
+  char data_type[TRAINING_DATASET_FEATURE_TYPE_SIZE];
   int td_join_id;
   int idx;
   int label;
@@ -42,16 +43,19 @@ typedef struct Training_Dataset_Feature {
 
 typedef struct Training_Dataset_Join {
   int id;
-  char prefix[63+1];
+  char prefix[TRAINING_DATASET_JOIN_PREFIX_SIZE];
 } Training_Dataset_Join;
 
 typedef struct Feature_Group {
   int feature_store_id;
-  char name[1000+1];
+
+  // this is used to store the name of on_demand_feature or feature_view.
+  char name[FEATURE_VIEW_NAME_SIZE > ON_DEMAND_FEATURE_NAME_SIZE ? FEATURE_VIEW_NAME_SIZE
+                                                                 : ON_DEMAND_FEATURE_NAME_SIZE];
   int version;
   int online_enabled;
   int num_pk;
-  char** primary_key;
+  char **primary_key;
 } Feature_Group;
 
 /**
@@ -79,11 +83,13 @@ RS_Status find_feature_view_id(int feature_store_id, const char *feature_view_na
  * SELECT id AS td_join_id, feature_group AS feature_group_id, prefix FROM training_dataset_join
  * WHERE feature_view_id = {feature_view_id}
  */
-RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_Join **tdjs, int *tdjs_size);
+RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_Join **tdjs,
+                                          int *tdjs_size);
 
 /**
  * Find feature group data
- * SELECT name, online_enabled, feature_store_id, version FROM feature_group WHERE id = {feature_group_id}
+ * SELECT name, online_enabled, feature_store_id, version FROM feature_group WHERE id =
+ * {feature_group_id}
  */
 RS_Status find_feature_group_data(int feature_group_id, Feature_Group *fg);
 
@@ -97,7 +103,8 @@ RS_Status find_feature_store_data(int feature_store_id, char *name);
  * Find training_dataset_feature
  * SELECT * from training_dataset_feature  WHERE feature_view_id = {feature_view_id}
  */
-RS_Status find_training_dataset_data(int feature_view_id, Training_Dataset_Feature **tdf, int *tdf_size);
+RS_Status find_training_dataset_data(int feature_view_id, Training_Dataset_Feature **tdf,
+                                     int *tdf_size);
 
 #endif
 #ifdef __cplusplus

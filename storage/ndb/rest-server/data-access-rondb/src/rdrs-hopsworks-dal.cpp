@@ -67,13 +67,14 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
   Uint32 col_size = (Uint32)table_dict->getColumn("prefix")->getSizeInBytes();
   assert(col_size == API_KEY_PREFIX_SIZE);
   size_t prefix_len = strlen(prefix);
-  if (prefix_len > col_size) {
+  if (prefix_len > (col_size - bytes_for_ndb_str_len(API_KEY_PREFIX_SIZE))) {  
     ndb_object->closeTransaction(tx);
     return RS_CLIENT_ERROR("Wrong length of the search key");
   }
 
+  // Note: api_key is varchar col.
   char cmp_str[API_KEY_PREFIX_SIZE];
-  memcpy(cmp_str + 1, prefix, prefix_len + 1);  //+1 copy null terminator too
+  memcpy(cmp_str + bytes_for_ndb_str_len(API_KEY_PREFIX_SIZE), prefix, prefix_len);
   cmp_str[0] = static_cast<char>(prefix_len);
 
   NdbScanFilter filter(scanOp);
@@ -320,14 +321,16 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
   int col_id      = table_dict->getColumn("team_member")->getColumnNo();
   Uint32 col_size = (Uint32)table_dict->getColumn("team_member")->getSizeInBytes();
   assert(col_size == PROJECT_TEAM_TEAM_MEMBER_SIZE);
+
   size_t email_len = strlen(users->email);
-  if (email_len > col_size) {
+  if (email_len > (col_size - bytes_for_ndb_str_len(PROJECT_TEAM_TEAM_MEMBER_SIZE))) {
     ndb_object->closeTransaction(tx);
     return RS_CLIENT_ERROR("Wrong length of the search key");
   }
 
+  // Note: project_team is varchar col.
   char cmp_str[PROJECT_TEAM_TEAM_MEMBER_SIZE];
-  memcpy(cmp_str + 1, users->email, email_len + 1);  //+1 for null terminator
+  memcpy(cmp_str + bytes_for_ndb_str_len(PROJECT_TEAM_TEAM_MEMBER_SIZE), users->email, email_len);
   cmp_str[0] = static_cast<char>(email_len);
 
   NdbScanFilter filter(scanOp);
@@ -452,7 +455,7 @@ RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *
   }
 
   if (tx->execute(NdbTransaction::NoCommit) != 0) {
-    err = ndb_object->getNdbError();
+    err = tx->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_009);
   }
