@@ -44,6 +44,7 @@ typedef struct Training_Dataset_Feature {
 typedef struct Training_Dataset_Join {
   int id;
   char prefix[TRAINING_DATASET_JOIN_PREFIX_SIZE];
+  int idx;
 } Training_Dataset_Join;
 
 typedef struct Feature_Group {
