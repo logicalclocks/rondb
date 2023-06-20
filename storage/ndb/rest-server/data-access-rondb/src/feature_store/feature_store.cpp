@@ -152,6 +152,8 @@ RS_Status find_project_id(const char *feature_store_name, Int32 *project_id) {
   )
   /* clang-format on */
 
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+
   return status;
 }
 
@@ -271,6 +273,8 @@ RS_Status find_feature_store_id(const char *feature_store_name, int *feature_sto
     status = find_feature_store_id_int(ndb_object, feature_store_name, feature_store_id);
   )
   /* clang-format on */
+
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
 
   return status;
 }
@@ -419,6 +423,8 @@ RS_Status find_feature_view_id(int feature_store_id, const char *feature_view_na
   )
   /* clang-format on */
 
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+
   return status;
 }
 
@@ -559,6 +565,8 @@ RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_
       feature_view_id, tdjs, tdjs_size);
   )
   /* clang-format on */
+
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
 
   return status;
 }
@@ -828,6 +836,8 @@ RS_Status find_feature_group_data(int feature_group_id, Feature_Group *fg) {
   )
   /* clang-format on */
 
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+
   return status;
 }
 
@@ -1001,6 +1011,8 @@ RS_Status find_training_dataset_data(int feature_view_id, Training_Dataset_Featu
   )
   /* clang-format on */
 
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+
   return status;
 }
 
@@ -1093,6 +1105,8 @@ RS_Status find_feature_store_data(int feature_store_id, char *name) {
     status = find_feature_store_data_int(ndb_object, feature_store_id, name);
   )
   /* clang-format on */
+
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
 
   return status;
 }
