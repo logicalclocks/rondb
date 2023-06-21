@@ -547,7 +547,7 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
   *tdjs      = (Training_Dataset_Join *)ptr;
   for (Uint64 i = 0; i < tdjsv.size(); i++) {
     (*tdjs + i)->id = tdjsv[i].id;
-    memcpy((*tdjs + i)->prefix, tdjsv[i].prefix, strlen(tdjsv[i].prefix) + 1);
+    memcpy((*tdjs + i)->prefix, tdjsv[i].prefix, strlen(tdjsv[i].prefix) + 1); // +1 or '\0'
   }
   tdjsv.clear();
 
@@ -1000,8 +1000,9 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
     (*tdfs + i)->label                      = tdfsv[i].label;
     (*tdfs + i)->transformation_function_id = tdfsv[i].transformation_function_id;
     (*tdfs + i)->feature_view_id            = tdfsv[i].feature_view_id;
-    memcpy((*tdfs + i)->name, tdfsv[i].name, strlen(tdfsv[i].name) + 1);
-    memcpy((*tdfs + i)->data_type, tdfsv[i].data_type, strlen(tdfsv[i].data_type) + 1);
+    memcpy((*tdfs + i)->name, tdfsv[i].name, strlen(tdfsv[i].name) + 1); // +1 for '\0'
+    memcpy((*tdfs + i)->data_type, tdfsv[i].data_type, strlen(tdfsv[i].data_type) + 1); // +1 for '\0'
+
   }
   tdfsv.clear();
 

@@ -25,18 +25,19 @@ extern "C" {
 #define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_HOPSWORKS_DAL_H_
 
 #include "rdrs-dal.h"
+#include "rdrs-const.h"
 
 // API Key table
 typedef struct HopsworksAPIKey {
-  char secret[513];
-  char salt[257];
-  char name[46];
+  char secret[API_KEY_SECRET_SIZE];
+  char salt[API_KEY_SALT_SIZE];
+  char name[API_KEY_NAME_SIZE];
   int user_id;
 } HopsworksAPIKey;
 
 // User table
 typedef struct HopsworksUsers {
-  char email[151];
+  char email[USERS_EMAIL_SIZE];
 } HopsworksUsers;
 
 // project_team table
@@ -46,7 +47,7 @@ typedef struct HopsworksProjectTeam {
 
 // project_team table
 typedef struct HopsworksProject {
-  char porjectname[101];
+  char porjectname[PROJECT_PROJECTNAME_SIZE];
 } HopsworksProject;
 
 /**

@@ -81,18 +81,22 @@ inline int bytes_for_ndb_str_len(int ndb_str_len) {
 
 // Hopsworks
 // Update the following constants if there are changes in the hopsworks schema
-#define API_KEY_PREFIX_SIZE                45 + 1   /* +1 for ndb len*/
-#define PROJECT_TEAM_TEAM_MEMBER_SIZE      150 + 1  /* +1 for ndb len*/
-#define PROJECT_PROJECTNAME_SIZE           100 + 1  /* +1 for ndb len*/
-#define FEATURE_STORE_NAME_SIZE            100 + 1  /* +1 for ndb len*/
-#define FEATURE_VIEW_NAME_SIZE             63 + 1   /* +1 for ndb len*/
-#define TRAINING_DATASET_JOIN_PREFIX_SIZE  63 + 1   /* +1 for ndb len*/
-#define FEATURE_GROUP_NAME_SIZE            63 + 1   /* +1 for ndb len*/
-#define TRAINING_DATASET_FEATURE_NAME_SIZE 1000 + 2 /* +2 for ndb len*/
-#define TRAINING_DATASET_FEATURE_TYPE_SIZE 1000 + 2 /* +2 for ndb len*/
-#define TRAINING_DATASET_JOIN_PREFIX_SIZE  63 + 1   /* +1 for ndb len*/
-#define ON_DEMAND_FEATURE_NAME_SIZE        1000 + 2 /* +2 for ndb len*/
-#define CACHE_FEATURE_SIZE                 63 + 1   /* +1 for ndb len*/
+#define API_KEY_PREFIX_SIZE                45 + 1   /* +1 for ndb len or '\0'*/
+#define API_KEY_NAME_SIZE                  45 + 1   /* +1 for ndb len or '\0'*/
+#define API_KEY_SECRET_SIZE                512 + 2  /* +2 for ndb len or '\0'*/
+#define API_KEY_SALT_SIZE                  256 + 2  /* +2 for ndb len or '\0'*/
+#define USERS_EMAIL_SIZE                   150 + 1  /* +1 for ndb len or '\0'*/
+#define PROJECT_TEAM_TEAM_MEMBER_SIZE      150 + 1  /* +1 for ndb len or '\0'*/
+#define PROJECT_PROJECTNAME_SIZE           100 + 1  /* +1 for ndb len or '\0'*/
+#define FEATURE_STORE_NAME_SIZE            100 + 1  /* +1 for ndb len or '\0'*/
+#define FEATURE_VIEW_NAME_SIZE             63 + 1   /* +1 for ndb len or '\0'*/
+#define TRAINING_DATASET_JOIN_PREFIX_SIZE  63 + 1   /* +1 for ndb len or '\0'*/
+#define FEATURE_GROUP_NAME_SIZE            63 + 1   /* +1 for ndb len or '\0'*/
+#define TRAINING_DATASET_FEATURE_NAME_SIZE 1000 + 2 /* +2 for ndb len or '\0'*/
+#define TRAINING_DATASET_FEATURE_TYPE_SIZE 1000 + 2 /* +2 for ndb len or '\0'*/
+#define TRAINING_DATASET_JOIN_PREFIX_SIZE  63 + 1   /* +1 for ndb len or '\0'*/
+#define ON_DEMAND_FEATURE_NAME_SIZE        1000 + 2 /* +2 for ndb len or '\0'*/
+#define CACHE_FEATURE_SIZE                 63 + 1   /* +1 for ndb len or '\0'*/
 
 // Data types
 #define DECIMAL_MAX_SIZE_IN_BYTES           9 * 4   /*4 bytes per 9 digits. 65/9 + 1 * 4*/
