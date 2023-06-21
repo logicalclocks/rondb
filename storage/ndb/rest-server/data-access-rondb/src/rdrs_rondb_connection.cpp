@@ -55,7 +55,7 @@ RS_Status RDRSRonDBConnection::Init(const char *connection_string, Uint32 connec
   size_t connection_string_len  = strlen(connection_string);
   __instance->connection_string = reinterpret_cast<char *>(malloc(connection_string_len + 1));
   std::strncpy(__instance->connection_string, connection_string, connection_string_len);
-  __instance->connection_string[connection_string_len] = 0;
+  __instance->connection_string[connection_string_len] = '\0';
   __instance->connection_pool_size                     = connection_pool_size;
 
   __instance->node_ids = reinterpret_cast<Uint32 *>(malloc(node_ids_len * sizeof(Uint32)));

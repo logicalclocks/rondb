@@ -547,7 +547,7 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
   *tdjs      = (Training_Dataset_Join *)ptr;
   for (Uint64 i = 0; i < tdjsv.size(); i++) {
     (*tdjs + i)->id = tdjsv[i].id;
-    memcpy((*tdjs + i)->prefix, tdjsv[i].prefix, strlen(tdjsv[i].prefix) + 1); // +1 or '\0'
+    memcpy((*tdjs + i)->prefix, tdjsv[i].prefix, strlen(tdjsv[i].prefix) + 1);  // +1 or '\0'
   }
   tdjsv.clear();
 
@@ -665,20 +665,23 @@ RS_Status find_primary_key_data_int(Ndb *ndb_object, std::string table_name, std
       const char *name_data_start = nullptr;
       if (GetByteArray(name_attr, &name_data_start, &name_attr_bytes) != 0) {
         ndb_object->closeTransaction(tx);
+
+        // free the memory if any
+        for (Uint64 i = 0; i < feature_names.size(); i++) {
+          free(feature_names[i]);
+        }
+
         return RS_CLIENT_ERROR(ERROR_019);
       }
 
-      char *feature_name = (char *)malloc(feature_name_size * sizeof(char));
+      char *feature_name =
+          (char *)malloc(feature_name_size * sizeof(char));  // freed by CGO if no err
       memcpy(feature_name, name_data_start, name_attr_bytes);
       feature_name[name_attr_bytes] = '\0';
 
       feature_names.push_back(feature_name);
     } while ((check = scan_op->nextResult(false)) == 0);
   }
-
-  size        = feature_names.size();
-  primary_key = (char **)malloc(size * sizeof(char *));
-  std::copy(feature_names.data(), feature_names.data() + size, primary_key);
 
   // check for errors happened during the reading process
   NdbError error = scan_op->getNdbError();
@@ -688,8 +691,18 @@ RS_Status find_primary_key_data_int(Ndb *ndb_object, std::string table_name, std
 
   // storage/ndb/src/ndbapi/ndberror.cpp
   if (error.code != 4120 /*Scan already complete*/) {
+
+    // free the memory if any
+    for (Uint64 i = 0; i < feature_names.size(); i++) {
+      free(feature_names[i]);
+    }
+
     return RS_RONDB_SERVER_ERROR(error, "Failed Reading Project ID. Fn find_project_id_int");
   }
+
+  size        = feature_names.size();
+  primary_key = (char **)malloc(size * sizeof(char *));  // freed by CGO
+  std::copy(feature_names.data(), feature_names.data() + size, primary_key);
 
   return RS_OK;
 }
@@ -797,17 +810,6 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
     return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
   }
 
-  char **primary_key  = nullptr;
-  size_t n_pk         = 0;
-  RS_Status pk_status = find_primary_key_data_int(ndb_object, feature_table, fg_fk_name,
-                                                  fg_id_col_name, sub_fg_id, primary_key, n_pk);
-  if (pk_status.http_code != SUCCESS) {
-    ndb_object->closeTransaction(tx);
-    return pk_status;
-  }
-
-  fg->num_pk      = n_pk;
-  fg->primary_key = primary_key;
   if (online_enabled_attr == nullptr || online_enabled_attr->isNULL()) {
     // This is due to incompatible schema, assume online enabled.
     fg->online_enabled = 1;
@@ -829,6 +831,25 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
   fg->name[name_attr_bytes] = '\0';
 
   ndb_object->closeTransaction(tx);
+
+  char **primary_key  = nullptr;
+  size_t n_pk         = 0;
+  RS_Status pk_status = find_primary_key_data_int(ndb_object, feature_table, fg_fk_name,
+                                                  fg_id_col_name, sub_fg_id, primary_key, n_pk);
+  if (pk_status.http_code != SUCCESS) {
+
+    if (n_pk > 0) {  // free memory
+      for (size_t i = 0; i < n_pk; i++) {
+        free(primary_key[i]);
+      }
+    }
+
+    ndb_object->closeTransaction(tx);
+    return pk_status;
+  }
+
+  fg->num_pk      = n_pk;
+  fg->primary_key = primary_key;
 
   return RS_OK;
 }
@@ -1000,9 +1021,9 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
     (*tdfs + i)->label                      = tdfsv[i].label;
     (*tdfs + i)->transformation_function_id = tdfsv[i].transformation_function_id;
     (*tdfs + i)->feature_view_id            = tdfsv[i].feature_view_id;
-    memcpy((*tdfs + i)->name, tdfsv[i].name, strlen(tdfsv[i].name) + 1); // +1 for '\0'
-    memcpy((*tdfs + i)->data_type, tdfsv[i].data_type, strlen(tdfsv[i].data_type) + 1); // +1 for '\0'
-
+    memcpy((*tdfs + i)->name, tdfsv[i].name, strlen(tdfsv[i].name) + 1);  // +1 for '\0'
+    memcpy((*tdfs + i)->data_type, tdfsv[i].data_type,
+           strlen(tdfsv[i].data_type) + 1);  // +1 for '\0'
   }
   tdfsv.clear();
 

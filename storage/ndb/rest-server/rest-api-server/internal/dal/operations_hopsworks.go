@@ -70,6 +70,10 @@ func GetUserProjects(uid int) ([]string, *DalError) {
 
 	ret := C.find_all_projects(C.int(uid), projectsPtr, countptr)
 
+	if ret.http_code != http.StatusOK {
+		return nil, cToGoRet(&ret)
+	}
+
 	dstBuf := unsafe.Slice((**C.char)(unsafe.Pointer(projects)), count)
 
 	for _, buff := range dstBuf {
@@ -78,10 +82,6 @@ func GetUserProjects(uid int) ([]string, *DalError) {
 		C.free(unsafe.Pointer(buff))
 	}
 	C.free(unsafe.Pointer(projects))
-
-	if ret.http_code != http.StatusOK {
-		return nil, cToGoRet(&ret)
-	}
 
 	return dbs, nil
 }
