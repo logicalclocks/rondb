@@ -47,7 +47,7 @@ typedef struct HopsworksProjectTeam {
 
 // project_team table
 typedef struct HopsworksProject {
-  char porjectname[PROJECT_PROJECTNAME_SIZE];
+  char projectname[PROJECT_PROJECTNAME_SIZE];
 } HopsworksProject;
 
 /**

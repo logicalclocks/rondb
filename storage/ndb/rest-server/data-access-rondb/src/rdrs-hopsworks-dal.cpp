@@ -480,13 +480,13 @@ RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *
         return RS_CLIENT_ERROR(ERROR_019);
       }
 
-      if (sizeof(project.porjectname) < projectname_attr_bytes) {
+      if (sizeof(project.projectname) < projectname_attr_bytes) {
         ndb_object->closeTransaction(tx);
         return RS_CLIENT_ERROR(ERROR_021);
       }
 
-      memcpy(project.porjectname, projectname_data_start, projectname_attr_bytes);
-      project.porjectname[projectname_attr_bytes] = '\0';
+      memcpy(project.projectname, projectname_data_start, projectname_attr_bytes);
+      project.projectname[projectname_attr_bytes] = '\0';
       project_vec->push_back(project);
 
     } while ((check = scanOp->nextResult(false)) == 0);
@@ -563,8 +563,8 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
 
   char **ease = *projects;
   for (Uint32 i = 0; i < project_vec.size(); i++) {
-    ease[i] = (char *)malloc(sizeof(dummy.porjectname) * sizeof(char));  // freed by CGO
-    memcpy(ease[i], project_vec[i].porjectname, strlen(project_vec[i].porjectname) + 1);
+    ease[i] = (char *)malloc(sizeof(dummy.projectname) * sizeof(char));  // freed by CGO
+    memcpy(ease[i], project_vec[i].projectname, strlen(project_vec[i].projectname) + 1);
   }
   return RS_OK;
 }
