@@ -17,7 +17,13 @@
 
 package handlers
 
-import "net/http"
+import (
+	"errors"
+	"net/http"
+	"runtime/debug"
+
+	"hopsworks.ai/rdrs/internal/log"
+)
 
 type Handler interface {
 	Validate(request interface{}) error
@@ -25,8 +31,17 @@ type Handler interface {
 	Execute(request interface{}, response interface{}) (int, error)
 }
 
-func Handle(h Handler, apiKey *string, request interface{}, response interface{}) (int, error) {
-
+func Handle(h Handler, apiKey *string, request interface{}, response interface{}) (statusCode int, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			statusCode = http.StatusInternalServerError
+			err = errors.New(`{"message": "Internal server error."}`)
+			if log.IsDebug() {
+				log.Debug(r.(error).Error())
+				log.Debug(string(debug.Stack()))
+			}
+		}
+	}()
 	if err := h.Validate(request); err != nil {
 		return http.StatusBadRequest, err
 	}
@@ -35,5 +50,6 @@ func Handle(h Handler, apiKey *string, request interface{}, response interface{}
 		return http.StatusUnauthorized, err
 	}
 
-	return h.Execute(request, response)
+	statusCode, err = h.Execute(request, response)
+	return statusCode, err
 }
