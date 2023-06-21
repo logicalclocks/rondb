@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 Hopsworks AB
+ * Copyright (C) 2022, 2023 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -67,12 +67,14 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
   Uint32 col_size = (Uint32)table_dict->getColumn("prefix")->getSizeInBytes();
   assert(col_size == API_KEY_PREFIX_SIZE);
   size_t prefix_len = strlen(prefix);
-  if (prefix_len > col_size) {
+  if (prefix_len > (col_size - bytes_for_ndb_str_len(API_KEY_PREFIX_SIZE))) {
+    ndb_object->closeTransaction(tx);
     return RS_CLIENT_ERROR("Wrong length of the search key");
   }
 
+  // Note: api_key is varchar col.
   char cmp_str[API_KEY_PREFIX_SIZE];
-  memcpy(cmp_str + 1, prefix, prefix_len + 1); //+1 copy null terminator too
+  memcpy(cmp_str + bytes_for_ndb_str_len(API_KEY_PREFIX_SIZE), prefix, prefix_len);
   cmp_str[0] = static_cast<char>(prefix_len);
 
   NdbScanFilter filter(scanOp);
@@ -89,12 +91,18 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
   NdbRecAttr *salt    = scanOp->getValue("salt");
   NdbRecAttr *name    = scanOp->getValue("name");
 
+  assert(API_KEY_SECRET_SIZE == (Uint32)table_dict->getColumn("secret")->getSizeInBytes());
+  assert(API_KEY_SALT_SIZE == (Uint32)table_dict->getColumn("salt")->getSizeInBytes());
+  assert(API_KEY_NAME_SIZE == (Uint32)table_dict->getColumn("name")->getSizeInBytes());
+
   if (user_id == nullptr || secret == nullptr || salt == nullptr || name == nullptr) {
+    err = scanOp->getNdbError();
+    ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_019);
   }
 
   if (tx->execute(NdbTransaction::NoCommit) != 0) {
-    err = ndb_object->getNdbError();
+    err = tx->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_009);
   }
@@ -113,34 +121,40 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
       Uint32 name_attr_bytes;
       const char *name_data_start = nullptr;
       if (GetByteArray(name, &name_data_start, &name_attr_bytes) != 0) {
+        ndb_object->closeTransaction(tx);
         return RS_CLIENT_ERROR(ERROR_019);
       }
 
       Uint32 salt_attr_bytes;
       const char *salt_data_start = nullptr;
       if (GetByteArray(salt, &salt_data_start, &salt_attr_bytes) != 0) {
+        ndb_object->closeTransaction(tx);
         return RS_CLIENT_ERROR(ERROR_019);
       }
 
       Uint32 secret_attr_bytes;
       const char *secret_data_start = nullptr;
       if (GetByteArray(secret, &secret_data_start, &secret_attr_bytes) != 0) {
+        ndb_object->closeTransaction(tx);
         return RS_CLIENT_ERROR(ERROR_019);
       }
 
-      if (sizeof(api_key->secret) < secret_attr_bytes || sizeof(api_key->name) < name_attr_bytes ||
-          sizeof(api_key->salt) < salt_attr_bytes) {
+      // <= because we want to leave one byte for '\0' 
+      // sizes of char arrays are set to accommodate additional '\0'
+      if (sizeof(api_key->secret) <= secret_attr_bytes || sizeof(api_key->name) <= name_attr_bytes ||
+          sizeof(api_key->salt) <= salt_attr_bytes) {
+        ndb_object->closeTransaction(tx);
         return RS_CLIENT_ERROR(ERROR_021);
       }
 
       memcpy(api_key->name, name_data_start, name_attr_bytes);
-      api_key->name[name_attr_bytes] = 0;
+      api_key->name[name_attr_bytes] = '\0';
 
       memcpy(api_key->secret, secret_data_start, secret_attr_bytes);
-      api_key->secret[secret_attr_bytes] = 0;
+      api_key->secret[secret_attr_bytes] = '\0';
 
       memcpy(api_key->salt, salt_data_start, salt_attr_bytes);
-      api_key->salt[salt_attr_bytes] = 0;
+      api_key->salt[salt_attr_bytes] = '\0';
 
       api_key->user_id = user_id->int32_value();
     } while ((check = scanOp->nextResult(false)) == 0);
@@ -222,13 +236,13 @@ RS_Status find_user_int(Ndb *ndb_object, Uint32 uid, HopsworksUsers *users) {
   }
 
   NdbRecAttr *email = scanOp->getValue("email");
-
   if (email == nullptr) {
     return RS_RONDB_SERVER_ERROR(err, ERROR_019);
   }
+  assert(USERS_EMAIL_SIZE == (Uint32)table_dict->getColumn("email")->getSizeInBytes());
 
   if (tx->execute(NdbTransaction::NoCommit) != 0) {
-    err = ndb_object->getNdbError();
+    err = tx->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_009);
   }
@@ -239,10 +253,12 @@ RS_Status find_user_int(Ndb *ndb_object, Uint32 uid, HopsworksUsers *users) {
       Uint32 email_attr_bytes;
       const char *email_data_start = nullptr;
       if (GetByteArray(email, &email_data_start, &email_attr_bytes) != 0) {
+        ndb_object->closeTransaction(tx);
         return RS_CLIENT_ERROR(ERROR_019);
       }
 
       if (sizeof(users->email) < email_attr_bytes) {
+        ndb_object->closeTransaction(tx);
         return RS_CLIENT_ERROR(ERROR_021);
       }
 
@@ -273,6 +289,7 @@ RS_Status find_user(Uint32 uid, HopsworksUsers *users) {
   }
 
   status = find_user_int(ndb_object, uid, users);
+
   rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
 
   return status;
@@ -311,13 +328,16 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
   int col_id      = table_dict->getColumn("team_member")->getColumnNo();
   Uint32 col_size = (Uint32)table_dict->getColumn("team_member")->getSizeInBytes();
   assert(col_size == PROJECT_TEAM_TEAM_MEMBER_SIZE);
+
   size_t email_len = strlen(users->email);
-  if (email_len > col_size) {
+  if (email_len > (col_size - bytes_for_ndb_str_len(PROJECT_TEAM_TEAM_MEMBER_SIZE))) {
+    ndb_object->closeTransaction(tx);
     return RS_CLIENT_ERROR("Wrong length of the search key");
   }
 
+  // Note: project_team is varchar col.
   char cmp_str[PROJECT_TEAM_TEAM_MEMBER_SIZE];
-  memcpy(cmp_str + 1, users->email, email_len + 1);  //+1 for null terminator
+  memcpy(cmp_str + bytes_for_ndb_str_len(PROJECT_TEAM_TEAM_MEMBER_SIZE), users->email, email_len);
   cmp_str[0] = static_cast<char>(email_len);
 
   NdbScanFilter filter(scanOp);
@@ -332,11 +352,12 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
   NdbRecAttr *project_id = scanOp->getValue("project_id");
 
   if (project_id == nullptr) {
+    ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_019);
   }
 
   if (tx->execute(NdbTransaction::NoCommit) != 0) {
-    err = ndb_object->getNdbError();
+    err = tx->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_009);
   }
@@ -373,6 +394,7 @@ RS_Status find_project_team(HopsworksUsers *users,
   }
 
   status = find_project_team_int(ndb_object, users, project_team_vec);
+  
   rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
 
   return status;
@@ -436,11 +458,13 @@ RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *
   NdbRecAttr *projectname = scanOp->getValue("projectname");
 
   if (projectname == nullptr) {
+    ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_019);
   }
+  assert(PROJECT_PROJECTNAME_SIZE == (Uint32)table_dict->getColumn("projectname")->getSizeInBytes());
 
   if (tx->execute(NdbTransaction::NoCommit) != 0) {
-    err = ndb_object->getNdbError();
+    err = tx->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(err, ERROR_009);
   }
@@ -452,15 +476,17 @@ RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *
       Uint32 projectname_attr_bytes;
       const char *projectname_data_start = nullptr;
       if (GetByteArray(projectname, &projectname_data_start, &projectname_attr_bytes) != 0) {
+        ndb_object->closeTransaction(tx);
         return RS_CLIENT_ERROR(ERROR_019);
       }
 
-      if (sizeof(project.porjectname) < projectname_attr_bytes) {
+      if (sizeof(project.projectname) < projectname_attr_bytes) {
+        ndb_object->closeTransaction(tx);
         return RS_CLIENT_ERROR(ERROR_021);
       }
 
-      memcpy(project.porjectname, projectname_data_start, projectname_attr_bytes);
-      project.porjectname[projectname_attr_bytes] = 0;
+      memcpy(project.projectname, projectname_data_start, projectname_attr_bytes);
+      project.projectname[projectname_attr_bytes] = '\0';
       project_vec->push_back(project);
 
     } while ((check = scanOp->nextResult(false)) == 0);
@@ -489,6 +515,7 @@ RS_Status find_projects_vec(std::vector<HopsworksProjectTeam> *project_team_vec,
   }
 
   status = find_projects_int(ndb_object, project_team_vec, project_vec);
+
   rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
 
   return status;
@@ -536,8 +563,8 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
 
   char **ease = *projects;
   for (Uint32 i = 0; i < project_vec.size(); i++) {
-    ease[i] = (char *)malloc(sizeof(dummy.porjectname) * sizeof(char));  // freed by CGO
-    memcpy(ease[i], project_vec[i].porjectname, strlen(project_vec[i].porjectname) + 1);
+    ease[i] = (char *)malloc(sizeof(dummy.projectname) * sizeof(char));  // freed by CGO
+    memcpy(ease[i], project_vec[i].projectname, strlen(project_vec[i].projectname) + 1);
   }
   return RS_OK;
 }

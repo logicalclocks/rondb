@@ -162,7 +162,7 @@ func GetFeatureGroupData(featureGroupID int) (*FeatureGroup, *DalError) {
 
 	if log.IsDebug() {
 		log.Debugf("Size of pk is %d", n_pk)
-		for _, pk := range(pks) {
+		for _, pk := range pks {
 			log.Debugf("primary key: %s", pk)
 		}
 	}
