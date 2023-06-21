@@ -293,6 +293,26 @@ func Test_GetFeatureVector_Join(t *testing.T) {
 	ValidateResponseWithData(t, &rows, &cols, fsResp)
 }
 
+func Test_GetFeatureVector_JoinItself(t *testing.T) {
+	rows, pks, cols, err := fshelper.GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_1_1", "fg1_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB001,
+		"sample_1n1_self",
+		1,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		nil,
+		nil,
+	)
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
+
+}
+
 func Test_GetFeatureVector_Join_Metadata(t *testing.T) {
 	var fsName = testdbs.FSDB002
 	var fvName = "sample_1n2"

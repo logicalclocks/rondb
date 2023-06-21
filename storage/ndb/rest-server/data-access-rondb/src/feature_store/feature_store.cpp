@@ -488,8 +488,9 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
   NdbRecAttr *prefix_attr     = scan_op->getValue("prefix", nullptr);
   assert(TRAINING_DATASET_JOIN_PREFIX_SIZE ==
          (Uint32)table_dict->getColumn("prefix")->getSizeInBytes());
+  NdbRecAttr *idx_attr     = scan_op->getValue("idx", nullptr);
 
-  if (td_join_id_attr == nullptr || prefix_attr == nullptr) {
+  if (td_join_id_attr == nullptr || prefix_attr == nullptr || idx_attr == nullptr) {
     ndb_err = scan_op->getNdbError();
     ndb_object->closeTransaction(tx);
     return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_019);
@@ -507,6 +508,7 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
     do {
       Training_Dataset_Join tdj;
       tdj.id = td_join_id_attr->int32_value();
+      tdj.idx = idx_attr->int32_value();
 
       if (prefix_attr->isNULL()) {
         tdj.prefix[0] = '\0';
@@ -547,6 +549,7 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
   *tdjs      = (Training_Dataset_Join *)ptr;
   for (Uint64 i = 0; i < tdjsv.size(); i++) {
     (*tdjs + i)->id = tdjsv[i].id;
+    (*tdjs + i)->idx = tdjsv[i].idx;
     memcpy((*tdjs + i)->prefix, tdjsv[i].prefix, strlen(tdjsv[i].prefix) + 1);  // +1 or '\0'
   }
   tdjsv.clear();
@@ -606,7 +609,6 @@ RS_Status find_primary_key_data_int(Ndb *ndb_object, std::string table_name, std
     ndb_object->closeTransaction(tx);
     return status;
   }
-
   status = read_tuples(ndb_object, scan_op);
   if (status.http_code != SUCCESS) {
     ndb_object->closeTransaction(tx);

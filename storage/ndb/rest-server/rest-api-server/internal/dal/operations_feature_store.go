@@ -49,6 +49,7 @@ type TrainingDatasetFeature struct {
 type TrainingDatasetJoin struct {
 	Id     int
 	Prefix string
+	Index  int
 }
 
 func GetProjectID(featureStoreName string) (int, *DalError) {
@@ -122,6 +123,7 @@ func GetTrainingDatasetJoinData(featureViewID int) ([]TrainingDatasetJoin, *DalE
 		retTdj := TrainingDatasetJoin{
 			Id:     int(tdj.id),
 			Prefix: C.GoString(&tdj.prefix[0]),
+			Index: int(tdj.idx),
 		}
 		retTdjs[i] = retTdj
 	}

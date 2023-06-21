@@ -535,6 +535,14 @@ VALUES
     -- SELECT `fg0`.`id1` `id1`, `fg0`.`data` `data`\nFROM `test_ken`.`sample_cache_1` `fg0`
     (
 	    3086, 'sample_cache', 67, Timestamp('2023-06-15 11:49:52'), 10000, 1, '', 250, 'sample_cache_1', 250
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`id1` `fg1_id1`, `fg1`.`ts` `fg1_ts`, `fg1`.`data1` `fg1_data1`, `fg1`.`data2` `fg1_data2`
+    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_1_1` `fg1` ON `fg0`.`id1` = `fg1`.`id1`
+    */
+    (
+	    3087, 'sample_1n1_self', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, '', 250, 'sample_1n1_self_1', 250
     );
 
 INSERT INTO 
@@ -599,6 +607,12 @@ VALUES
     ),
     (
 	    3082, NULL, 3089, NULL, 0, 0, NULL, 3086
+    ),
+    (
+	    3083, NULL, 2069, NULL, 0, 0, NULL, 3087
+    ),
+    (
+        3084, NULL, 2069, NULL, 0, 1, 'fg1_', 3087
     );
 
 INSERT INTO
@@ -846,4 +860,28 @@ VALUES
     ),
     (
         3107, NULL, 3089, 'id1', 'bigint', 3082, 0, 0, NULL, 3086
+    ),
+    (
+	    3108, NULL, 2069, 'data1', 'bigint', 3084, 6, 0, NULL, 3087
+    ),
+    (
+        3109, NULL, 2069, 'id1', 'bigint', 3083, 0, 0, NULL, 3087
+    ),
+    (
+        3110, NULL, 2069, 'ts', 'timestamp', 3084, 5, 0, NULL, 3087
+    ),
+    (
+        3111, NULL, 2069, 'data1', 'bigint', 3083, 2, 0, NULL, 3087
+    ),
+    (
+        3112, NULL, 2069, 'id1', 'bigint', 3084, 4, 0, NULL, 3087
+    ),
+    (
+        3113, NULL, 2069, 'ts', 'timestamp', 3083, 1, 0, NULL, 3087
+    ),
+    (
+        3114, NULL, 2069, 'data2', 'bigint', 3084, 7, 0, NULL, 3087
+    ),
+    (
+        3115, NULL, 2069, 'data2', 'bigint', 3083, 3, 0, NULL, 3087
     );
