@@ -49,10 +49,7 @@ typedef struct Training_Dataset_Join {
 
 typedef struct Feature_Group {
   int feature_store_id;
-
-  // this is used to store the name of on_demand_feature or feature_view.
-  char name[FEATURE_VIEW_NAME_SIZE > ON_DEMAND_FEATURE_NAME_SIZE ? FEATURE_VIEW_NAME_SIZE
-                                                                 : ON_DEMAND_FEATURE_NAME_SIZE];
+  char name[FEATURE_GROUP_NAME_SIZE];
   int version;
   int online_enabled;
   int num_pk;
