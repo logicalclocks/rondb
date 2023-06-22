@@ -64,6 +64,8 @@ inline void my_unpack_date(MYSQL_TIME *l_time, const void *d) {
 
 RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *request, Uint32 colIdx,
                             Int8 **primaryKeyCol, Uint32 *primaryKeySize) {
+  fix all malloc. do not allocate fixed rized large arrayys now as that was need when we careted the arrays on stack 
+    now that we use malloc only allocate what is needed
   RS_Status error = RS_OK;
 
   switch (col->getType()) {
