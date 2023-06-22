@@ -36,7 +36,7 @@ func Handle(h Handler, apiKey *string, request interface{}, response interface{}
 		if r := recover(); r != nil {
 			statusCode = http.StatusInternalServerError
 			err = errors.New(`{"message": "Internal server error."}`)
-			log.Error(r.(error).Error())
+			log.Errorf("%v", r)
 			log.Error(string(debug.Stack()))
 		}
 	}()
