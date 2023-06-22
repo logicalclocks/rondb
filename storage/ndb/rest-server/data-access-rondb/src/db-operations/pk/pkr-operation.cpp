@@ -128,7 +128,7 @@ start:
     std::vector<NdbRecAttr *> *recs       = &subOpTuples[opIdx].recs;
 
     // cleaned by destrctor
-    Int8 **primaryKeysCols  = (Int8 **)malloc(req->PKColumnsCount() * sizeof(Int8 *)); 
+    Int8 **primaryKeysCols  = (Int8 **)malloc(req->PKColumnsCount() * sizeof(Int8 *));
     Uint32 *primaryKeySizes = (Uint32 *)malloc(req->PKColumnsCount() * sizeof(Uint32));
     memset(primaryKeysCols, 0, req->PKColumnsCount() * sizeof(Int8 *));
     memset(primaryKeySizes, 0, req->PKColumnsCount() * sizeof(Uint32));
