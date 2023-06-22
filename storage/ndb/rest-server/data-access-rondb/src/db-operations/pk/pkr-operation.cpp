@@ -37,11 +37,14 @@
 #include <boost/beast/core/detail/base64.hpp>
 
 PKROperation::PKROperation(RS_Buffer *reqBuff, RS_Buffer *respBuff, Ndb *ndbObject) {
-  SubOpTuple pkOpTuple   = SubOpTuple{};
-  pkOpTuple.pkRequest    = new PKRRequest(reqBuff);
-  pkOpTuple.pkResponse   = new PKRResponse(respBuff);
-  pkOpTuple.ndbOperation = nullptr;
-  pkOpTuple.tableDict    = nullptr;
+  SubOpTuple pkOpTuple      = SubOpTuple{};
+  pkOpTuple.pkRequest       = new PKRRequest(reqBuff);
+  pkOpTuple.pkResponse      = new PKRResponse(respBuff);
+  pkOpTuple.ndbOperation    = nullptr;
+  pkOpTuple.tableDict       = nullptr;
+  pkOpTuple.primaryKeysCols = nullptr;
+  pkOpTuple.primaryKeySizes = nullptr;
+
   this->subOpTuples.push_back(pkOpTuple);
 
   this->ndbObject = ndbObject;
@@ -52,11 +55,13 @@ PKROperation::PKROperation(RS_Buffer *reqBuff, RS_Buffer *respBuff, Ndb *ndbObje
 PKROperation::PKROperation(Uint32 noOps, RS_Buffer *reqBuffs, RS_Buffer *respBuffs,
                            Ndb *ndbObject) {
   for (Uint32 i = 0; i < noOps; i++) {
-    SubOpTuple pkOpTuple   = SubOpTuple{};
-    pkOpTuple.pkRequest    = new PKRRequest(&reqBuffs[i]);
-    pkOpTuple.pkResponse   = new PKRResponse(&respBuffs[i]);
-    pkOpTuple.ndbOperation = nullptr;
-    pkOpTuple.tableDict    = nullptr;
+    SubOpTuple pkOpTuple      = SubOpTuple{};
+    pkOpTuple.pkRequest       = new PKRRequest(&reqBuffs[i]);
+    pkOpTuple.pkResponse      = new PKRResponse(&respBuffs[i]);
+    pkOpTuple.ndbOperation    = nullptr;
+    pkOpTuple.tableDict       = nullptr;
+    pkOpTuple.primaryKeysCols = nullptr;
+    pkOpTuple.primaryKeySizes = nullptr;
     this->subOpTuples.push_back(pkOpTuple);
   }
 
@@ -66,9 +71,27 @@ PKROperation::PKROperation(Uint32 noOps, RS_Buffer *reqBuffs, RS_Buffer *respBuf
 }
 
 PKROperation::~PKROperation() {
-  for (size_t i = 0; i < subOpTuples.size(); i++) {
-    delete subOpTuples[i].pkRequest;
-    delete subOpTuples[i].pkResponse;
+  for (size_t subOpIdx = 0; subOpIdx < subOpTuples.size(); subOpIdx++) {
+
+    int pkColsCount = subOpTuples[subOpIdx].pkRequest->PKColumnsCount();
+    if (subOpTuples[subOpIdx].primaryKeysCols != nullptr) {
+
+      for (int ptrIdx = 0; ptrIdx < pkColsCount; ptrIdx++) {
+        if (subOpTuples[subOpIdx].primaryKeysCols[subOpIdx] == nullptr) {
+          break;
+        } else {
+          free(subOpTuples[subOpIdx].primaryKeysCols[ptrIdx]);
+        }
+      }
+      free(subOpTuples[subOpIdx].primaryKeysCols);
+    }
+
+    if (subOpTuples[subOpIdx].primaryKeySizes != nullptr) {
+      free(subOpTuples[subOpIdx].primaryKeySizes);
+    }
+
+    delete subOpTuples[subOpIdx].pkRequest;
+    delete subOpTuples[subOpIdx].pkResponse;
   }
 }
 
@@ -104,10 +127,17 @@ start:
     const NdbDictionary::Table *tableDict = subOpTuples[opIdx].tableDict;
     std::vector<NdbRecAttr *> *recs       = &subOpTuples[opIdx].recs;
 
-    NdbOperation *op = nullptr;
+    // cleaned by destrctor
+    Int8 **primaryKeysCols  = (Int8 **)malloc(req->PKColumnsCount() * sizeof(Int8 *)); 
+    Uint32 *primaryKeySizes = (Uint32 *)malloc(req->PKColumnsCount() * sizeof(Uint32));
+    memset(primaryKeysCols, 0, req->PKColumnsCount() * sizeof(Int8 *));
+    memset(primaryKeySizes, 0, req->PKColumnsCount() * sizeof(Uint32));
+    subOpTuples[opIdx].primaryKeysCols = primaryKeysCols;
+    subOpTuples[opIdx].primaryKeySizes = primaryKeySizes;
+
     for (Uint32 colIdx = 0; colIdx < req->PKColumnsCount(); colIdx++) {
-      RS_Status status = SetOperationPKCol(tableDict->getColumn(req->PKName(colIdx)), transaction,
-                                           tableDict, req, colIdx, &op);
+      RS_Status status = SetOperationPKCol(tableDict->getColumn(req->PKName(colIdx)), req, colIdx,
+                                           &primaryKeysCols[colIdx], &primaryKeySizes[colIdx]);
       if (status.http_code != SUCCESS) {
         if (isBatch) {
           subOpTuples[opIdx].pkRequest->MarkInvalidOp(status);
@@ -116,12 +146,29 @@ start:
           return status;
         }
       }
-      subOpTuples[opIdx].ndbOperation = op;
+    }
+
+    NdbOperation *operation = transaction->getNdbOperation(tableDict);
+    if (operation == nullptr) {
+      return RS_RONDB_SERVER_ERROR(transaction->getNdbError(), ERROR_007);
+    }
+    subOpTuples[opIdx].ndbOperation = operation;
+
+    if (operation->readTuple(NdbOperation::LM_CommittedRead) != 0) {
+      return RS_SERVER_ERROR(ERROR_022);
+    }
+
+    for (Uint32 colIdx = 0; colIdx < req->PKColumnsCount(); colIdx++) {
+      int retVal = operation->equal(req->PKName(colIdx), (char *)primaryKeysCols[colIdx],
+                                    primaryKeySizes[colIdx]);
+      if (retVal != 0) {
+        return RS_SERVER_ERROR(ERROR_023);
+      }
     }
 
     if (req->ReadColumnsCount() > 0) {
       for (Uint32 i = 0; i < req->ReadColumnsCount(); i++) {
-        NdbRecAttr *rec = op->getValue(req->ReadColumnName(i), nullptr);
+        NdbRecAttr *rec = operation->getValue(req->ReadColumnName(i), nullptr);
         recs->push_back(rec);
       }
     } else {
@@ -130,7 +177,7 @@ start:
       std::unordered_map<std::string, const NdbDictionary::Column *>::const_iterator it =
           nonPKCols->begin();
       while (it != nonPKCols->end()) {
-        NdbRecAttr *rec = op->getValue(it->first.c_str(), nullptr);
+        NdbRecAttr *rec = operation->getValue(it->first.c_str(), nullptr);
         it++;
         recs->push_back(rec);
       }

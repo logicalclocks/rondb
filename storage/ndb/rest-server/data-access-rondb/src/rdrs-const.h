@@ -101,6 +101,7 @@ inline int bytes_for_ndb_str_len(int ndb_str_len) {
 // Data types
 #define DECIMAL_MAX_SIZE_IN_BYTES           9 * 4   /*4 bytes per 9 digits. 65/9 + 1 * 4*/
 #define CHAR_MAX_SIZE_IN_BYTES              255 * 4 /*MAX 255 chars. *4 for char set*/
+#define VARCHAR_MAX_SIZE_IN_BYTES              255 * 4 /*MAX 255 chars. *4 for char set*/
 #define DECIMAL_MAX_PRECISION_SIZE_IN_BYTES 65
 #define DECIMAL_MAX_STR_LEN_IN_BYTES        DECIMAL_MAX_PRECISION_SIZE_IN_BYTES + 3
 #define BINARY_MAX_SIZE_IN_BYTES            255 /*encoding 255 bytes takes max 340 bytes (255*4/3) */
