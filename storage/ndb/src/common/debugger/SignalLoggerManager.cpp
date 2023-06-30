@@ -594,22 +594,22 @@ SignalLoggerManager::printSignalHeader(FILE * output,
           , receiverBlockNo, rInstanceText, rBlockName, receiverProcessor);
   if (printReceiversSignalId)
     fprintf(output, 
-	    "r.bn: %d%s \"%s\", r.proc: %d, r.sigId: %u gsn: %d \"%s\" prio: %s\n"
+	    "r.bn: %d%s \"%s\", r.proc: %d, r.sigId: %u, gsn: %d \"%s\", prio: %s\n"
 	    ,receiverBlockNo, rInstanceText, rBlockName, receiverProcessor,
             rSigId, gsn, signalName, (prio == 1) ? "JBB" : "JBA");
   else 
     fprintf(output,
-	    "r.bn: %d%s \"%s\", r.proc: %d, gsn: %d \"%s\" prio: %s\n",
+	    "r.bn: %d%s \"%s\", r.proc: %d, gsn: %d \"%s\", prio: %s\n",
 	    receiverBlockNo, rInstanceText, rBlockName, receiverProcessor,
             gsn, signalName, (prio == 1) ? "JBB" : "JBA");
   
   if (receiverProcessor == senderProcessor)
-    fprintf(output, ", s.threadId: %u, s.threadSigId: H\'%.8x",
+    fprintf(output, "s.threadId: %u, s.threadSigId: H\'%.8x, ",
             send_thread_id, send_thread_signal_id);
 
   fprintf(output, 
-	  "s.bn: %d%s \"%s\", s.proc: %d, s.sigId: %u length: %d trace: %d "
-	  "#sec: %d fragInf: %d\n",
+	  "s.bn: %d%s \"%s\", s.proc: %d, s.sigId: %u, length: %d, trace: %d, "
+	  "#sec: %d, fragInf: %d\n",
 	  senderBlockNo, sInstanceText, sBlockName, senderProcessor,
           sSigId, length, trace, sh.m_noOfSections, sh.m_fragmentInfo);
 
