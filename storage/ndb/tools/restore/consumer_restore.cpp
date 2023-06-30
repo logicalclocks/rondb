@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2004, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -4034,15 +4035,19 @@ void BackupRestore::cback(int result, restore_callback_t *cb)
       tuple_a(cb); // retry
     else
     {
-      restoreLogger.log_error("Restore: Failed to restore data due to a unrecoverable error. Exiting...");
+      restoreLogger.log_error("Restore: Failed to restore data due to an "
+                              "unrecoverable error. Exiting...");
       cb->next = m_free_callback;
       m_free_callback = cb;
+      set_fatal_error(true);
       return;
     }
   }
   else if (get_fatal_error()) // fatal error in other restore-thread
   {
-    restoreLogger.log_error("Restore: Failed to restore data due to a unrecoverable error. Exiting...");
+    restoreLogger.log_error("Restore: Failed to restore data due to an "
+                            "unrecoverable error in another restore thread. "
+                            "Exiting...");
     cb->next = m_free_callback;
     m_free_callback = cb;
     return;
