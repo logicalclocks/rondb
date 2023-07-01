@@ -19914,10 +19914,12 @@ Dbtc::execDUMP_STATE_ORD(Signal* signal)
 	      tc.p->tcConnectstate,
 	      tc.p->apiConnect,
 	      tc.p->commitAckMarker);
-    g_eventLogger->info(" special flags=%x, noOfNodes=%d, operation=%d",
+    g_eventLogger->info(" special flags=%x, noOfNodes=%d, operation=%d"
+                        ", tcOprec: %u",
 	      tc.p->m_special_op_flags,
 	      tc.p->noOfNodes,
-	      tc.p->operation);
+	      tc.p->operation,
+              tc.p->tcOprec);
     g_eventLogger->info(" clientData=%d, savePointId=%d, nodes(%d,%d,%d,%d), ",
 	      tc.p->clientData,
 	      tc.p->savePointId,
@@ -20071,10 +20073,12 @@ Dbtc::execDUMP_STATE_ORD(Signal* signal)
 	      ap.p->returncode,
 	      ap.p->returnsignal);
     g_eventLogger->info(" lqhkeyconfrec=%d, lqhkeyreqrec=%d, "
-	      "tckeyrec=%d",
+	      "tckeyrec=%d, tcBlockref: %x, myRef: %x",
 	      ap.p->lqhkeyconfrec,
 	      ap.p->lqhkeyreqrec,
-	      ap.p->tckeyrec);
+	      ap.p->tckeyrec,
+              ap.p->tcBlockref,
+              cownref);
     Uint64 gci = ap.p->globalcheckpointid;
     Uint32 gci_lo = Uint32(gci & 0xFFFFFFFF);
     Uint32 gci_hi = Uint32(gci >> 32);
