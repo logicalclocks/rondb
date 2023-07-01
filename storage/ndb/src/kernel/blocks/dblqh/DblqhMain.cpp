@@ -13893,7 +13893,7 @@ void Dblqh::execCOMPLETEREQ(Signal* signal)
 /*       A TIME OUT. THE TRANSACTION IS GONE. WE NEED TO   */
 /*       REPORT COMPLETION ANYWAY.                         */
 /*---------------------------------------------------------*/
-    DEB_COMPLETECONF(("(%u):%u from 0x%x GONE, trans(%u,%u):%u",
+    DEB_COMPLETECONF(("(%u):%u from 0x%x GONE, trans(%x,%x):%u",
                       instance(),
                       reqPtr,
                       reqBlockref,
@@ -13921,7 +13921,7 @@ void Dblqh::execCOMPLETEREQ(Signal* signal)
     regTcPtr->reqBlockref = reqBlockref;
     regTcPtr->reqRef = reqPtr;
     regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC_COMPLETE;
-    DEB_COMPLETECONF(("(%u):%u from 0x%x COMMITTED, trans(%u,%u):%u",
+    DEB_COMPLETECONF(("(%u):%u from 0x%x COMMITTED, trans(%x,%x):%u",
                       instance(),
                       reqPtr,
                       reqBlockref,
@@ -13944,7 +13944,7 @@ void Dblqh::execCOMPLETEREQ(Signal* signal)
     regTcPtr->reqBlockref = reqBlockref;
     regTcPtr->reqRef = reqPtr;
     regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC_COMPLETE;
-    DEB_COMPLETECONF(("(%u):%u from 0x%x WAIT_TUP_COMMIT, trans(%u,%u):%u",
+    DEB_COMPLETECONF(("(%u):%u from 0x%x WAIT_TUP_COMMIT, trans(%x,%x):%u",
                       instance(),
                       reqPtr,
                       reqBlockref,
@@ -14329,7 +14329,7 @@ void Dblqh::commitContinueAfterBlockedLab(
          * It might even be that the operation is fully released when
          * we arrive here, so not safe to do any checks here.
          */
-        DEB_COMPLETECONF(("(%u):%u from 0x%x ZTUP_WAIT_COMMIT, trans(%u,%u):%u",
+        DEB_COMPLETECONF(("(%u):%u from 0x%x ZTUP_WAIT_COMMIT, trans(%x,%x):%u",
                           instance(),
                           regTcPtr.p->reqRef,
                           regTcPtr.p->reqBlockref,
@@ -14543,7 +14543,7 @@ void Dblqh::commitReplyLab(Signal* signal,
   else if (regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC_COMPLETE)
   {
     jam();
-    DEB_COMPLETECONF(("(%u):%u from 0x%x CommitReply, trans(%u,%u):%u",
+    DEB_COMPLETECONF(("(%u):%u from 0x%x CommitReply, trans(%x,%x):%u",
                       instance(),
                       regTcPtr->reqRef,
                       regTcPtr->reqBlockref,
@@ -14631,7 +14631,7 @@ void Dblqh::completeUnusualLab(Signal* signal,
     ndbrequire(regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC_COMPLETE);
     jam();
 
-    DEB_COMPLETECONF(("(%u):%u from 0x%x CompleteUnusual, trans(%u,%u):%u",
+    DEB_COMPLETECONF(("(%u):%u from 0x%x CompleteUnusual, trans(%x,%x):%u",
                       instance(),
                       regTcPtr->reqRef,
                       regTcPtr->reqBlockref,

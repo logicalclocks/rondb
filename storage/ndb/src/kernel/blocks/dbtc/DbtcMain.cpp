@@ -133,6 +133,7 @@
 //#define DEBUG_EXEC_WRITE_COUNT 1
 //#define DEBUG_TCGETOPSIZE 1
 //#define DEBUG_HASH 1
+#define DEBUG_COMPLETEREQ 1
 #endif
 
 #define TC_TIME_SIGNAL_DELAY 50
@@ -144,6 +145,12 @@
 #define DEBUG(x) ndbout << "DBTC: "<< x << endl;
 #else
 #define DEBUG(x)
+#endif
+
+#ifdef DEBUG_COMPLETEREQ
+#define DEB_COMPLETEREQ(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_COMPLETEREQ(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_HASH
@@ -15029,6 +15036,11 @@ void Dbtc::toCompleteHandlingLab(Signal* signal,
       {
         jam();
         tcConnectptr.p->failData[replicaNo] = LqhTransConf::InvalidStatus;
+        DEB_COMPLETEREQ(("(%u)COMPLETEREQ InvalidStatus trans(%x,%x):%u",
+                         instance(),
+                         apiConnectptr.p->transid[0],
+                         apiConnectptr.p->transid[1],
+                         tcConnectptr.i));
       }
       else
       {
@@ -15040,6 +15052,20 @@ void Dbtc::toCompleteHandlingLab(Signal* signal,
         BlockReference blockRef = numberToRef(DBLQH, instanceNo, hostptr.i);
         tcConnectptr.p->tcConnectstate = OS_WAIT_COMPLETE_CONF;
         tcConnectptr.p->apiConnect = apiConnectptr.i;
+
+        DEB_COMPLETEREQ(("(%u)COMPLETEREQ from 0x%x to 0x%x,trans(%x,%x):%u,"
+                         " tcOprec: %u, tcBlockref: 0x%x, replicaNo: %u, loop: %u",
+                         instance(),
+                         cownref,
+                         blockRef,
+                         apiConnectptr.p->transid[0],
+                         apiConnectptr.p->transid[1],
+                         tcConnectptr.i,
+                         tcConnectptr.p->tcOprec,
+                         apiConnectptr.p->tcBlockref,
+                         replicaNo,
+                         loop_count));
+
         CompleteReq* req = (CompleteReq*)signal->theData;
         if (hostptr.i != getOwnNodeId())
         {
