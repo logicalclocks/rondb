@@ -2624,7 +2624,8 @@ public:
       REQ_FROM_TC_ABORT = 4,
       ABORT_FROM_TC = 5,
       ABORT_FROM_LQH = 6,
-      ABORT_FROM_LQH_REPLICA = 7
+      ABORT_FROM_LQH_REPLICA = 7,
+      REQ_FROM_TC_COMPLETE = 8
     };
     /*
      * TransactionState is exposed in Ndbinfo::OPERATIONS_TABLEID, values must

@@ -20075,13 +20075,20 @@ Dbtc::execDUMP_STATE_ORD(Signal* signal)
 	      ap.p->lqhkeyconfrec,
 	      ap.p->lqhkeyreqrec,
 	      ap.p->tckeyrec);
+    Uint64 gci = ap.p->globalcheckpointid;
+    Uint32 gci_lo = Uint32(gci & 0xFFFFFFFF);
+    Uint32 gci_hi = Uint32(gci >> 32);
     g_eventLogger->info("send_fail_data_processing: %u,"
-                        " check_fail_data_process_ongoing: %u",
+                        " check_fail_data_process_ongoing: %u"
+                        ", gci(%u,%u)",
                         ap.p->send_fail_data_process_ongoing,
-                        ap.p->check_fail_data_process_ongoing);
-    g_eventLogger->info("finish_trans_counter: %u, nextTcOperation: %u",
+                        ap.p->check_fail_data_process_ongoing,
+                        gci_hi,gci_lo);
+    g_eventLogger->info("finish_trans_counter: %u, nextTcOperation: %u"
+                        ", timeOutCounter: %u",
                         ap.p->finish_trans_counter,
-                        ap.p->nextTcOperation);
+                        ap.p->nextTcOperation,
+                        ap.p->timeOutCounter);
     g_eventLogger->info(" next=%d, instance=%u, firstTc=%d ",
 	      ap.p->nextApiConnect,
               instance(),

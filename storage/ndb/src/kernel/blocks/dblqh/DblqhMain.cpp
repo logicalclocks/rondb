@@ -145,6 +145,13 @@
 //#define DEBUG_PARALLEL_COPY_EXTRA 1
 //#define DEBUG_PARALLEL_COPY 1
 //#define DEBUG_HASH 1
+#define DEBUG_COMPLETECONF 1
+#endif
+
+#ifdef DEBUG_COMPLETECONF
+#define DEB_COMPLETECONF(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_COMPLETECONF(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_HASH
@@ -13906,7 +13913,7 @@ void Dblqh::execCOMPLETEREQ(Signal* signal)
     jam();
     regTcPtr->reqBlockref = reqBlockref;
     regTcPtr->reqRef = reqPtr;
-    regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC_COMMIT;
+    regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC_COMPLETE;
     /*empty*/;
     break;
 /*---------------------------------------------------------*/
@@ -13922,7 +13929,12 @@ void Dblqh::execCOMPLETEREQ(Signal* signal)
 /*---------------------------------------------------------*/
     regTcPtr->reqBlockref = reqBlockref;
     regTcPtr->reqRef = reqPtr;
-    regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC_COMMIT;
+    regTcPtr->abortState = TcConnectionrec::REQ_FROM_TC_COMPLETE;
+    DEB_COMPLETECONF(("(%u) WAIT_TUP_COMMIT, trans(%u,%u):%u",
+                      instance(),
+                      transid1,
+                      transid2,
+                      tcOprec));
     return;
   default:
     jam();
@@ -14301,6 +14313,12 @@ void Dblqh::commitContinueAfterBlockedLab(
          * It might even be that the operation is fully released when
          * we arrive here, so not safe to do any checks here.
          */
+        DEB_COMPLETECONF(("(%u) ZTUP_WAIT_COMMIT, trans(%u,%u):%u",
+                          instance(),
+                          regTcPtr.p->transid[0],
+                          regTcPtr.p->transid[1],
+                          regTcPtr.p->tcOprec));
+
         return;
       }
       else
@@ -14498,7 +14516,25 @@ void Dblqh::commitReplyLab(Signal* signal,
     conf->senderNodeId = cownNodeid;
     conf->transid1 = regTcPtr->transid[0];
     conf->transid2 = regTcPtr->transid[1];
-    sendSignal(regTcPtr->reqBlockref, GSN_COMMITCONF, signal, 4, JBB);
+    sendSignal(regTcPtr->reqBlockref,
+               GSN_COMMITCONF,
+               signal,
+               CommitConf::SignalLength,
+               JBB);
+  }
+  else if (regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC_COMPLETE)
+  {
+    jam();
+    CompleteConf* conf = (CompleteConf*)signal->theData;
+    conf->tcConnectPtr = regTcPtr->reqRef;
+    conf->senderNodeId = cownNodeid;
+    conf->transid1 = regTcPtr->transid[0];
+    conf->transid2 = regTcPtr->transid[1];
+    sendSignal(regTcPtr->reqBlockref,
+               GSN_COMPLETECONF,
+               signal,
+               CompleteConf::SignalLength,
+               JBB);
   }
   else
   {
@@ -14566,7 +14602,7 @@ void Dblqh::completeUnusualLab(Signal* signal,
   }
   else
   {
-    ndbrequire(regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC_COMMIT);
+    ndbrequire(regTcPtr->abortState == TcConnectionrec::REQ_FROM_TC_COMPLETE);
     jam();
     CompleteConf* conf = (CompleteConf*)signal->theData;
     conf->tcConnectPtr = regTcPtr->reqRef;
