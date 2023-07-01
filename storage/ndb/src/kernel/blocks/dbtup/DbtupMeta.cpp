@@ -64,7 +64,7 @@
 //#define DEBUG_TUP_META_EXTRA 1
 //#define DEBUG_DROP_TAB 1
 //#define DEBUG_DYN_META 1
-#define DEBUG_HASH 1
+//#define DEBUG_HASH 1
 #endif
 
 #ifdef DEBUG_HASH

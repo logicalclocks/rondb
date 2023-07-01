@@ -124,7 +124,7 @@
 //#define DEBUG_API_FAIL
 //#define DEBUG_STRING_MEMORY 1
 //#define DO_TRANSIENT_POOL_STAT 1
-#define DEBUG_HASH 1
+//#define DEBUG_HASH 1
 #endif
 
 #ifdef DEBUG_HASH
