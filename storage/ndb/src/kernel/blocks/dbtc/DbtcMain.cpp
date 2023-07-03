@@ -23,8 +23,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-//#define DBTC_MAIN
 #define DBTC_C
+//#define DBTC_MAIN
 
 #include "Dbtc.hpp"
 #include <cstring>
@@ -133,7 +133,6 @@
 //#define DEBUG_EXEC_WRITE_COUNT 1
 //#define DEBUG_TCGETOPSIZE 1
 //#define DEBUG_HASH 1
-#define DEBUG_COMPLETEREQ 1
 #endif
 
 #define TC_TIME_SIGNAL_DELAY 50
@@ -15036,11 +15035,6 @@ void Dbtc::toCompleteHandlingLab(Signal* signal,
       {
         jam();
         tcConnectptr.p->failData[replicaNo] = LqhTransConf::InvalidStatus;
-        DEB_COMPLETEREQ(("(%u)COMPLETEREQ InvalidStatus trans(%x,%x):%u",
-                         instance(),
-                         apiConnectptr.p->transid[0],
-                         apiConnectptr.p->transid[1],
-                         tcConnectptr.i));
       }
       else
       {
@@ -15053,19 +15047,11 @@ void Dbtc::toCompleteHandlingLab(Signal* signal,
         tcConnectptr.p->tcConnectstate = OS_WAIT_COMPLETE_CONF;
         tcConnectptr.p->apiConnect = apiConnectptr.i;
 
-        DEB_COMPLETEREQ(("(%u)COMPLETEREQ from 0x%x to 0x%x,trans(%x,%x):%u,"
-                         " tcOprec: %u, tcBlockref: 0x%x, replicaNo: %u, loop: %u",
-                         instance(),
-                         cownref,
-                         blockRef,
-                         apiConnectptr.p->transid[0],
-                         apiConnectptr.p->transid[1],
-                         tcConnectptr.i,
-                         tcConnectptr.p->tcOprec,
-                         apiConnectptr.p->tcBlockref,
-                         replicaNo,
-                         loop_count));
-
+#ifdef DEBUG_COMPLETEREQ
+        tcConnectptr.p->m_instance_key_complete[replicaNo] = instanceKey;
+        tcConnectptr.p->m_instance_no_complete[replicaNo] = instanceNo;
+        tcConnectptr.p->m_blockref_complete[replicaNo] = blockRef;
+#endif
         CompleteReq* req = (CompleteReq*)signal->theData;
         if (hostptr.i != getOwnNodeId())
         {
@@ -19959,6 +19945,23 @@ Dbtc::execDUMP_STATE_ORD(Signal* signal)
                         tc.p->failData[2],
                         tc.p->failData[3],
                         tc.p->lastReplicaNo);
+#ifdef DEBUG_COMPLETEREQ
+    g_eventLogger->info("instance_key_complete(%u,%u,%u,%u)",
+                        tc.p->m_instance_key_complete[0],
+                        tc.p->m_instance_key_complete[1],
+                        tc.p->m_instance_key_complete[2],
+                        tc.p->m_instance_key_complete[3]);
+    g_eventLogger->info("instance_no_complete(%u,%u,%u,%u)",
+                        tc.p->m_instance_no_complete[0],
+                        tc.p->m_instance_no_complete[1],
+                        tc.p->m_instance_no_complete[2],
+                        tc.p->m_instance_no_complete[3]);
+    g_eventLogger->info("blockref_complete(%u,%u,%u,%u)",
+                        tc.p->m_blockref_complete[0],
+                        tc.p->m_blockref_complete[1],
+                        tc.p->m_blockref_complete[2],
+                        tc.p->m_blockref_complete[3]);
+#endif
     g_eventLogger->info(" next=%d, instance=%u ",
               tc.p->nextList,
               instance());

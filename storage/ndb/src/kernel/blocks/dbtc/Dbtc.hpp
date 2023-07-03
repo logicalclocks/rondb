@@ -54,6 +54,9 @@
 #include "TransientPool.hpp"
 #include "TransientSlotPool.hpp"
 
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+#define DEBUG_COMPLETEREQ 1
+#endif
 
 #define JAM_FILE_ID 350
 
@@ -1023,6 +1026,11 @@ public:
       Uint32 triggerErrorCode;
     };
     NDB_TICKS m_start_ticks;
+#ifdef DEBUG_COMPLETEREQ
+    Uint32 m_instance_key_complete[4];
+    Uint32 m_instance_no_complete[4];
+    Uint32 m_blockref_complete[4];
+#endif
   };
 
   typedef Ptr<TcConnectRecord> TcConnectRecordPtr;
