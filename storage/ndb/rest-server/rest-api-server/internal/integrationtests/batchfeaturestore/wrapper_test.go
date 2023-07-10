@@ -57,6 +57,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		retcode = 1
 		log.Fatalf(err.Error())
+		return
 	}
 	defer cleanup()
 
