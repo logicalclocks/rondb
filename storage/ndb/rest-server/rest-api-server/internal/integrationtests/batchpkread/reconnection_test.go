@@ -18,7 +18,9 @@
 package batchpkread
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -195,8 +197,12 @@ func batchPKWorker(
 
 	for {
 		for _, testInfo := range tests {
-			batchRESTTestWithClient(t, httpClient, *testInfo, false, false)
-			batchGRPCTestWithConn(t, *testInfo, false, false, grpcConn)
+			if config.GetAll().REST.Enable {
+				batchRESTTestWithClient(t, httpClient, *testInfo, false, false)
+			}
+			if config.GetAll().GRPC.Enable {
+				batchGRPCTestWithConn(t, *testInfo, false, false, grpcConn)
+			}
 		}
 		opCount++
 
@@ -222,6 +228,15 @@ func statWorker(t *testing.T, stop *bool) {
 }
 
 func stat(t *testing.T, client *http.Client) {
+	if config.GetAll().REST.Enable {
+		statREST(t, client)
+	}
+	if config.GetAll().GRPC.Enable {
+		statGRPC(t)
+	}
+}
+
+func statREST(t *testing.T, client *http.Client) {
 	body := ""
 	url := testutils.NewStatURL()
 	_, respBody := testclient.SendHttpRequestWithClient(t, client, config.STAT_HTTP_VERB, url, string(body),
@@ -231,5 +246,30 @@ func stat(t *testing.T, client *http.Client) {
 	err := json.Unmarshal([]byte(respBody), &stats)
 	if err != nil {
 		t.Fatalf("%v", err)
+	}
+}
+
+func statGRPC(t *testing.T) {
+	conn, err := testclient.InitGRPCConnction()
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	client := api.NewRonDBRESTClient(conn)
+
+	// Create Request
+	statRequest := api.StatRequest{}
+	reqProto := api.ConvertStatRequest(&statRequest)
+
+	expectedStatus := http.StatusOK
+	respCode := 200
+	var errStr string
+	_, err = client.Stat(context.Background(), reqProto)
+	if err != nil {
+		respCode = testclient.GetStatusCodeFromError(t, err)
+		errStr = fmt.Sprintf("%v", err)
+	}
+
+	if respCode != expectedStatus {
+		t.Fatalf("Received unexpected status; Expected: %d, Got: %d; Complete Error Message: %v ", expectedStatus, respCode, errStr)
 	}
 }

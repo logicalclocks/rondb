@@ -44,10 +44,18 @@ func TestMain(m *testing.M) {
 	}()
 
 	conf := config.GetAll()
+
+	if !conf.REST.Enable {
+		retcode = 0
+		fmt.Println("--- SKIP: Unable to run tests for featurestore as REST interface is not enabled")
+		return
+	}
+
 	log.InitLogger(conf.Log)
 
 	cleanup, err := integrationtests.InitialiseTesting(conf)
 	if err != nil {
+		retcode = 1
 		log.Fatalf(err.Error())
 	}
 	defer cleanup()

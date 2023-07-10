@@ -184,8 +184,12 @@ func somework(t *testing.T, id int, tests map[string]api.BatchOperationTestInfo,
 
 	for {
 		for _, testInfo := range tests {
-			batchRESTTestWithClient(t, httpClient, testInfo, false, false)
-			batchGRPCTestWithConn(t, testInfo, false, false, grpcConn)
+			if config.GetAll().REST.Enable {
+				batchRESTTestWithClient(t, httpClient, testInfo, false, false)
+			}
+			if config.GetAll().GRPC.Enable {
+				batchGRPCTestWithConn(t, testInfo, false, false, grpcConn)
+			}
 		}
 		opCount++
 

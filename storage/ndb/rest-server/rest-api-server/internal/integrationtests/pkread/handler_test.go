@@ -33,6 +33,9 @@ import (
 )
 
 func TestPKReadOmitRequired(t *testing.T) {
+	if !config.GetAll().REST.Enable {
+		t.Skip("Skiping test as it requires REST interface and REST is disabled")
+	}
 	// Test. Omitting filter should result in 400 error
 	param := api.PKReadBody{
 		Filters:     nil,
@@ -63,6 +66,9 @@ func TestPKReadOmitRequired(t *testing.T) {
 }
 
 func TestPKReadLargeColumns(t *testing.T) {
+	if !config.GetAll().REST.Enable {
+		t.Skip("Skiping test as it requires REST interface and REST is disabled")
+	}
 	// Test. Large filter column names.
 	col := testutils.RandString(65)
 	val := "val"
@@ -108,6 +114,9 @@ func TestPKReadLargeColumns(t *testing.T) {
 }
 
 func TestPKInvalidIdentifier(t *testing.T) {
+	if !config.GetAll().REST.Enable {
+		t.Skip("Skiping test as it requires REST interface and REST is disabled")
+	}
 	//Valid chars [ U+0001 .. U+007F] and [ U+0080 .. U+FFFF]
 	// Test. invalid filter
 	col := "col" + string(rune(0x0000))
@@ -150,6 +159,9 @@ func TestPKInvalidIdentifier(t *testing.T) {
 }
 
 func TestPKUniqueParams(t *testing.T) {
+	if !config.GetAll().REST.Enable {
+		t.Skip("Skiping test as it requires REST interface and REST is disabled")
+	}
 	// Test. unique read columns
 	readColumns := make([]api.ReadColumn, 2)
 	col := "col1"
@@ -195,6 +207,9 @@ func TestPKUniqueParams(t *testing.T) {
 
 // DB/Table does not exist
 func TestPKERROR_011(t *testing.T) {
+	if !config.GetAll().REST.Enable {
+		t.Skip("Skiping test as it requires REST interface and REST is disabled")
+	}
 	pkCol := "id0"
 	pkVal := "1"
 	param := api.PKReadBody{
@@ -217,6 +232,9 @@ func TestPKERROR_011(t *testing.T) {
 
 // column does not exist
 func TestPKERROR_012(t *testing.T) {
+	if !config.GetAll().REST.Enable {
+		t.Skip("Skiping test as it requires REST interface and REST is disabled")
+	}
 	pkCol := "id0"
 	pkVal := "1"
 	param := api.PKReadBody{
@@ -234,6 +252,9 @@ func TestPKERROR_012(t *testing.T) {
 
 // Primary key test.
 func TestPKERROR_013_ERROR_014(t *testing.T) {
+	if !config.GetAll().REST.Enable {
+		t.Skip("Skiping test as it requires REST interface and REST is disabled")
+	}
 	// send an other request with one column missing from def
 	// //		// one PK col is missing
 	param := api.PKReadBody{

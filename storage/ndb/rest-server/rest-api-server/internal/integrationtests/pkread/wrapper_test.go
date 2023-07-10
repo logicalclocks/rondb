@@ -49,6 +49,7 @@ func TestMain(m *testing.M) {
 
 	cleanup, err := integrationtests.InitialiseTesting(conf)
 	if err != nil {
+		retcode = 1
 		log.Fatalf(err.Error())
 	}
 	defer cleanup()
