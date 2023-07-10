@@ -54,10 +54,12 @@ func newWithDefaults() AllConfigs {
 			OperationIDMaxSize:  256,
 		},
 		GRPC: GRPC{
+			Enable:     true,
 			ServerIP:   "0.0.0.0",
 			ServerPort: 4406,
 		},
 		REST: REST{
+			Enable:     true,
 			ServerIP:   "0.0.0.0",
 			ServerPort: 5406,
 		},

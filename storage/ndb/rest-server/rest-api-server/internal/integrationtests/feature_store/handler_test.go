@@ -31,7 +31,6 @@ import (
 )
 
 func TestFeatureStoreMetaData(t *testing.T) {
-
 	_, err := fsmetadata.GetFeatureViewMetadata(testdbs.FSDB002, "sample_2", 1)
 	if err != nil {
 		t.Fatalf("Reading FS Metadata failed %v ", err)

@@ -396,7 +396,7 @@ func TestBatchBadSubOp(t *testing.T) {
 			Operations: []api.BatchSubOperationTestInfo{
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "-1", http.StatusNotFound),
 				// This is bad operation. table does not exists
-				arrayColumnBatchTestSubOp(t, "dummy", database, isBinary, colWidth, padding, "1", http.StatusBadRequest),
+				arrayColumnBatchTestSubOp(t, "dummy", database, isBinary, colWidth, padding, "1", http.StatusNotFound),
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "1", http.StatusOK),
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "2", http.StatusOK),
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "3", http.StatusOK),
@@ -428,6 +428,9 @@ func arrayColumnBatchTestSubOp(t *testing.T, table string, database string, isBi
 }
 
 func TestBatchMissingReqField(t *testing.T) {
+	if !config.GetAll().REST.Enable {
+		t.Skip("Skipping test as REST interface is disabled")
+	}
 	url := testutils.NewBatchReadURL()
 	// Test missing method
 	operations := NewOperationsTBD(t, 3)

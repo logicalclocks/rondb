@@ -46,29 +46,35 @@ func (i *Internal) Validate() error {
 }
 
 type GRPC struct {
+	Enable     bool
 	ServerIP   string
 	ServerPort uint16
 }
 
 func (g *GRPC) Validate() error {
-	if g.ServerIP == "" {
-		return errors.New("the gRPC server IP cannot be empty")
-	} else if g.ServerPort == 0 {
-		return errors.New("the gRPC server port cannot be empty")
+	if g.Enable {
+		if g.ServerIP == "" {
+			return errors.New("the gRPC server IP cannot be empty")
+		} else if g.ServerPort == 0 {
+			return errors.New("the gRPC server port cannot be empty")
+		}
 	}
 	return nil
 }
 
 type REST struct {
+	Enable     bool
 	ServerIP   string
 	ServerPort uint16
 }
 
 func (g *REST) Validate() error {
-	if g.ServerIP == "" {
-		return errors.New("the REST server IP cannot be empty")
-	} else if g.ServerPort == 0 {
-		return errors.New("the REST server port cannot be empty")
+	if g.Enable {
+		if g.ServerIP == "" {
+			return errors.New("the REST server IP cannot be empty")
+		} else if g.ServerPort == 0 {
+			return errors.New("the REST server port cannot be empty")
+		}
 	}
 	return nil
 }
@@ -219,11 +225,11 @@ type APIKey struct {
 
 func (a *APIKey) Validate() error {
 	if a.CacheRefreshIntervalMS == 0 {
-		return errors.New("CacheRefreshIntervalMS cannot be 0.")
+		return errors.New("CacheRefreshIntervalMS cannot be 0")
 	}
 
 	if a.CacheUnusedEntriesEvictionMS == 0 {
-		return errors.New("CacheUnusedEntriesEvictionMS can be 0.")
+		return errors.New("CacheUnusedEntriesEvictionMS cannot be 0")
 	}
 
 	if a.CacheRefreshIntervalMS > a.CacheUnusedEntriesEvictionMS {

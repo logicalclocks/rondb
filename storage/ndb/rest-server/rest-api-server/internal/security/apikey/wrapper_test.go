@@ -57,13 +57,17 @@ func TestMain(m *testing.M) {
 	if !testutils.SentinelDBExists() {
 		_, err := testutils.CreateDatabases(conf.Security.APIKey.UseHopsworksAPIKeys, testdbs.GetAllDBs()...)
 		if err != nil {
-			log.Panicf("failed creating databases; error: %v", err)
+			retcode = 1
+			log.Errorf("failed creating databases; error: %v", err)
+			return
 		}
 	}
 
 	dalErr := dal.InitRonDBConnection(conf.RonDB)
 	if dalErr != nil {
-		log.Panicf("failed to initialise RonDB connection; error: %s", dalErr.VerboseError())
+		retcode = 1
+		log.Errorf("failed to initialise RonDB connection; error: %s", dalErr.VerboseError())
+		return
 	}
 	defer dal.ShutdownConnection()
 
