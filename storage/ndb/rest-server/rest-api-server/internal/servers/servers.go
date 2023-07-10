@@ -54,13 +54,12 @@ func CreateAndStartDefaultServers(
 	}
 	cleanupFNs := []func(){}
 
-	// Connect to RonDB
 	conf := config.GetAll()
-
 	if !conf.GRPC.Enable && !conf.REST.Enable {
 		return nil, errors.New("both REST and gRPC interfaces are disabled")
 	}
 
+	// Connect to RonDB
 	dalErr := dal.InitRonDBConnection(conf.RonDB)
 	if dalErr != nil {
 		return nil, dalErr
