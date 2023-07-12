@@ -5,7 +5,7 @@ pipeline {
         }
     }
     parameters{
-      choice(name: 'BRANCH', choices: ['21.04', '21.04.7', '22.10.1', '23.04', 'feature_store'], description: 'RonDB branch to build.')
+      choice(name: 'BRANCH', choices: ['21.04', '21.04.14', '22.10.1', '23.04', 'feature_store'], description: 'RonDB branch to build.')
       choice(name: 'BUILD_CORES', choices: ['8', '1', '16', '24', '32', '48'],  description: 'No of build threads. This is passed to make -j. Note jenkins machine is shared with other build process.')
       booleanParam(name: 'RELEASE_BUILD', defaultValue: true, description: 'Enable this for release build. It uses PGO (profile guided optimization) and it take ~ 3 hrs to build')
       booleanParam(name: 'RELEASE_FINAL_CLUSTERJ', defaultValue: false, description: "By default clusterj jar is uploaded as a 'SNAPSHOT' version. Enable this parameter to release final JARs")
