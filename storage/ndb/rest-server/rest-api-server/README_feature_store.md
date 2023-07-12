@@ -1,14 +1,14 @@
-# Feature Store REST API Server 
+# Feature Store REST API Server
 
 This API server allows users to retrieve single/batch feature vectors from a feature view.
 
 ## Single feature vector
 
-### request
+### Request
 
 `POST /{api-version}/feature_store`
 
-Body:
+**Body**
 
 ```
 {
@@ -26,7 +26,7 @@ Body:
 }
 ```
 
-Parameters
+**Parameters**
 
 **parameter**      | **type**    | **note**
 ------------------ | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -35,13 +35,9 @@ featureViewName    | string      |
 featureViewVersion | number(int) |
 entries            | objects     | Map of serving key of feature view as key and value of serving key as value. Serving key are a set of the primary key of feature groups which are included in the feature view query. If feature groups are joint with prefix, the primary key needs to be attached with prefix.
 passedFeatures     | objects     | Optional. Map of feature name as key and feature value as value. This overwrites feature values in the response.
-metadataOptions    | objects     | Optional. Map of metadataoption as key and boolean as value. Default metadata option is false. Metadata is returned on request.<br>
+metadataOptions    | objects     | Optional. Map of metadataoption as key and boolean as value. Default metadata option is false. Metadata is returned on request. Metadata options available: 1\. featureName 2\. featureType  |
 
-metadata options available:<br>
-1\. featureName<br>
-2\. featureType
-
-### response
+### Response
 
 ```
 {
@@ -73,7 +69,7 @@ metadata options available:<br>
 }
 ```
 
-### error handling
+### Error handling
 
 **Code** | **reason**                            | **response**
 -------- | ------------------------------------- | ------------------------------------
@@ -83,7 +79,7 @@ metadata options available:<br>
 401      | Access denied                         | Access unshared feature store failed
 500      | Failed to read feature store metadata |
 
-Response with pk/pass feature error
+**Response with pk/pass feature error**
 
 ```
 {
@@ -93,7 +89,7 @@ Response with pk/pass feature error
 }
 ```
 
-Response with metadata error
+**Response with metadata error**
 
 ```
 {
@@ -103,7 +99,7 @@ Response with metadata error
 }
 ```
 
-Pk value no match
+**Pk value no match**
 
 ```
 {
@@ -118,11 +114,13 @@ Pk value no match
 }
 ```
 
-## Batch
+## Batch feature vectors
+
+### Request
 
 `POST /{api-version}/batch_feature_store`
 
-### request
+**Body**
 
 ```
 {
@@ -155,7 +153,7 @@ Pk value no match
 }
 ```
 
-Parameters
+**Parameters**
 
 **parameter**      | **type**         | **note**
 ------------------ | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -164,13 +162,9 @@ featureViewName    | string           |
 featureViewVersion | number(int)      |
 entries            | `array<objects>` | Each items is a map of serving key as key and value of serving key as value. Serving key of feature view.
 passedFeatures     | `array<objects>` | Optional. Each items is a map of feature name as key and feature value as value. This overwrites feature values in the response. If provided, its size and order has to be equal to the size of entries. Item can be null.
-metadataOptions    | objects          | Optional. Map of metadataoption as key and boolean as value. Default metadata option is false. Metadata is returned on request.<br>
+metadataOptions    | objects          | Optional. Map of metadataoption as key and boolean as value. Default metadata option is false. Metadata is returned on request. Metadata options available: 1\. featureName 2\. featureType
 
-metadata options available:<br>
-1\. featureName<br>
-2\. featureType
-
-### response
+### Response
 
 ```
 {
@@ -234,7 +228,7 @@ metadata options available:<br>
 }
 ```
 
-note: Order of the returned features are the same as the order in the request.
+note: Order of the returned features are the same as the order of entries in the request.
 
 ### Error handling
 
@@ -245,7 +239,7 @@ note: Order of the returned features are the same as the order in the request.
 401      | Access denied                         | Access unshared feature store failed
 500      | Failed to read feature store metadata |
 
-Response with partial failure
+**Response with partial failure**
 
 ```
 {
