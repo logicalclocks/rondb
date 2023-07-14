@@ -64,8 +64,6 @@ inline void my_unpack_date(MYSQL_TIME *l_time, const void *d) {
 
 RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *request, Uint32 colIdx,
                             Int8 **primaryKeyCol, Uint32 *primaryKeySize) {
-  fix all malloc. do not allocate fixed rized large arrayys now as that was need when we careted the arrays on stack 
-    now that we use malloc only allocate what is needed
   RS_Status error = RS_OK;
 
   switch (col->getType()) {
@@ -80,8 +78,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
 
     char *parsed        = nullptr;
     errno               = 0;
-    *primaryKeyCol      = (Int8 *)malloc(8);
-    *primaryKeySize     = 8;
+    *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -97,8 +95,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     ///< 8 bit. 1 byte unsigned integer, can be used in array
     char *parsed        = nullptr;
     errno               = 0;
-    *primaryKeyCol      = (Int8 *)malloc(8);
-    *primaryKeySize     = 8;
+    *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -113,8 +111,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     ///< 16 bit. 2 byte signed integer, can be used in array
     char *parsed        = nullptr;
     errno               = 0;
-    *primaryKeyCol      = (Int8 *)malloc(8);
-    *primaryKeySize     = 8;
+    *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -131,8 +129,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
 
     char *parsed        = nullptr;
     errno               = 0;
-    *primaryKeyCol      = (Int8 *)malloc(8);
-    *primaryKeySize     = 8;
+    *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -149,8 +147,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
 
     char *parsed        = nullptr;
     errno               = 0;
-    *primaryKeyCol      = (Int8 *)malloc(8);
-    *primaryKeySize     = 8;
+    *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -167,8 +165,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
 
     char *parsed        = nullptr;
     errno               = 0;
-    *primaryKeyCol      = (Int8 *)malloc(8);
-    *primaryKeySize     = 8;
+    *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -184,8 +182,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     ///< 32 bit. 4 byte signed integer, can be used in array
     char *parsed        = nullptr;
     errno               = 0;
-    *primaryKeyCol      = (Int8 *)malloc(8);
-    *primaryKeySize     = 8;
+    *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -202,8 +200,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
 
     char *parsed        = nullptr;
     errno               = 0;
-    *primaryKeyCol      = (Int8 *)malloc(8);
-    *primaryKeySize     = 8;
+    *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -220,8 +218,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
 
     char *parsed        = nullptr;
     errno               = 0;
-    *primaryKeyCol      = (Int8 *)malloc(8);
-    *primaryKeySize     = 8;
+    *primaryKeyCol      = (Int8 *)malloc(sizeof(Int64));
+    *primaryKeySize     = sizeof(Int64);
     Int64 *parsedNumber = reinterpret_cast<Int64 *>(*primaryKeyCol);
     *parsedNumber       = strtoll(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -236,8 +234,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     ///< 64 Bit. 8 byte signed integer, can be used in array
     char *parsed         = nullptr;
     errno                = 0;
-    *primaryKeyCol       = (Int8 *)malloc(8);
-    *primaryKeySize      = 8;
+    *primaryKeyCol       = (Int8 *)malloc(sizeof(Int64));
+    *primaryKeySize      = sizeof(Int64);
     Uint64 *parsedNumber = reinterpret_cast<Uint64 *>(*primaryKeyCol);
     *parsedNumber        = strtoull(request->PKValueCStr(colIdx), &parsed, 10);
 
@@ -311,7 +309,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     }
 
     // operation->equal expects a zero-padded char string
-    *primaryKeyCol  = (Int8 *)malloc(CHAR_MAX_SIZE_IN_BYTES);
+    *primaryKeyCol  = (Int8 *)malloc(dataLen);
     *primaryKeySize = dataLen;
     require(col->getLength() <= CHAR_MAX_SIZE_IN_BYTES);
     memset(*primaryKeyCol, 0, col->getLength());
@@ -333,7 +331,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     }
 
     *primaryKeySize = request->PKValueLen(colIdx);
-    *primaryKeyCol  = (Int8 *)malloc((request->PKValueLen(colIdx) + additional_len) * sizeof(Int8));
+    *primaryKeyCol  = (Int8 *)malloc((*primaryKeySize + additional_len) * sizeof(Int8));
     memcpy(*primaryKeyCol + additional_len, request->PKValueCStr(colIdx), *primaryKeySize);
 
     if (col->getType() == NdbDictionary::Column::Varchar) {
@@ -378,8 +376,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
       break;
     }
 
-    *primaryKeyCol  = (Int8 *)malloc(BINARY_MAX_SIZE_IN_BYTES);
     *primaryKeySize = col->getLength();
+    *primaryKeyCol  = (Int8 *)malloc(*primaryKeySize);
     memset(*primaryKeyCol, 0, *primaryKeySize);
 
     size_t outlen = 0;
@@ -415,29 +413,38 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     // Length bytes: 2, little-endian
     // Note: col->getLength() does not include the length bytes.
 
-    const size_t col_len         = col->getLength();
+    const size_t col_len         = col->getLength();  // this includes size prefix
+    size_t col_data_len          = col->getLength();  // this is without size prefix
     const char *encoded_str      = request->PKValueCStr(colIdx);
     const size_t encoded_str_len = request->PKValueLen(colIdx);
 
+    if (col->getType() == NdbDictionary::Column::Varbinary) {
+      col_data_len = col_len - 1;
+    } else if (col->getType() == NdbDictionary::Column::Longvarbinary) {
+      col_data_len = col_len - 2;
+    } else {
+      error = RS_SERVER_ERROR(ERROR_015);
+      break;
+    }
+
     // Encoding takes 3 decoded bytes at a time and turns them into 4 encoded bytes.
     // The encoded string is therefore always a multiple of 4.
-    const int maxConversions =
-        KEY_MAX_SIZE_IN_BYTES / 3 + (KEY_MAX_SIZE_IN_BYTES % 3 != 0);  // basically ceiling()
-    const int maxEncodedSize = 4 * maxConversions;
+    const size_t maxConversions = col_data_len / 3 + (col_data_len % 3 != 0);  // basically ceiling()
+    const size_t maxEncodedSize = 4 * maxConversions;
 
     if (unlikely(encoded_str_len > maxEncodedSize)) {
       error = RS_CLIENT_ERROR(std::string(ERROR_008) +
                               " Encoded data length is greater than 4/3 of maximum binary size." +
                               " Column: " + std::string(col->getName()) +
-                              " Maximum binary size: " + std::to_string(KEY_MAX_SIZE_IN_BYTES));
+                              " Maximum binary size: " + std::to_string(col_data_len));
       break;
     }
 
-    *primaryKeyCol     = (Int8 *)malloc(KEY_MAX_SIZE_IN_BYTES);
     int additional_len = 1;
     if (col->getType() == NdbDictionary::Column::Longvarbinary) {
       additional_len = 2;
     }
+    *primaryKeyCol = (Int8 *)malloc(col_len);
 
     size_t outlen = 0;
     // leave first 1-2 bytes free for saving length bytes
@@ -457,11 +464,16 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
       break;
     }
 
-    if (unlikely(outlen > col_len)) {
-      error = RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
-                              "Decoded data length is greater than column length." +
+    if (unlikely(outlen > col_data_len)) {
+      // We should not get here as there is a check for it above.
+      // This check is here just in case we get here due to
+      // programming error.
+      error = RS_CLIENT_ERROR(std::string(ERROR_008) + " " + "Programming Error. Report Bug." +
+                              " Decoded data length is greater than column length." +
                               " Column: " + std::string(col->getName()) +
                               " Length: " + std::to_string(col->getLength()));
+
+      LOG_PANIC(error.message);
       break;
     }
 
