@@ -620,7 +620,7 @@ Dbtux::addScanList(NodeHandle& node,
   scanPtr.i = scanList;
   do {
     jam();
-    ndbrequire(checkScanInstance(scanInstance));
+    ndbassert(checkScanInstance(scanInstance));
     scanPtr.p = getScanOpPtrP(scanPtr.i, scanInstance);
 #ifdef VM_TRACE
       if (debugFlags & DebugScan) {
@@ -662,7 +662,7 @@ Dbtux::removeScanList(NodeHandle& node,
   node.getNodeScan(scanPtr.i, loc_scanInstance);
   do {
     jam();
-    ndbrequire(checkScanInstance(loc_scanInstance));
+    ndbassert(checkScanInstance(loc_scanInstance));
     scanPtr.p = getScanOpPtrP(scanPtr.i, loc_scanInstance);
     const Uint32 nextPtrI = scanPtr.p->m_nodeScanPtrI;
     const Uint32 nextScanInstance = scanPtr.p->m_nodeScanInstance;

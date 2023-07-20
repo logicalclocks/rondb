@@ -26,6 +26,7 @@
 #ifndef SOCKET_CLIENT_HPP
 #define SOCKET_CLIENT_HPP
 
+#include "portlib/ndb_sockaddr.h"
 #include "portlib/ndb_socket.h"
 #include "util/NdbSocket.h"
 
@@ -40,6 +41,7 @@ class SocketClient
 public:
   SocketClient(SocketAuthenticator *sa = nullptr);
   ~SocketClient();
+<<<<<<< HEAD
   bool init(bool use_only_ipv4);
   void set_connect_timeout(unsigned int timeout_millisec) {
     m_connect_timeout_millisec = timeout_millisec;
@@ -49,6 +51,15 @@ public:
   ndb_socket_t connect(const char* server_hostname,
                        unsigned short server_port);
   void connect(NdbSocket &, const char *hostname, unsigned short port);
+=======
+  bool init(int af);
+  void set_connect_timeout(unsigned int timeout_millisec) {
+    m_connect_timeout_millisec = timeout_millisec;
+  }
+  int bind(ndb_sockaddr local);
+  ndb_socket_t connect(ndb_sockaddr server_addr);
+  void connect(NdbSocket &, ndb_sockaddr server_addr);
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
 
   ndb_socket_t m_sockfd;
 };

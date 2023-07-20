@@ -50,6 +50,12 @@ IF(MY_COMPILER_IS_GNU_OR_CLANG)
     COMPILE_FLAGS "-Wno-undef -Wno-conversion")
 ENDIF()
 
+IF(MSVC AND MSVC_CPPCHECK)
+  # Function ... should be marked with 'override'
+  TARGET_COMPILE_OPTIONS(gmock PRIVATE "/wd26433")
+  TARGET_COMPILE_OPTIONS(gtest PRIVATE "/wd26433")
+ENDIF()
+
 MY_CHECK_CXX_COMPILER_WARNING("-Wmissing-profile" HAS_MISSING_PROFILE)
 
 FOREACH(googletest_library

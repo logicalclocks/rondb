@@ -25,12 +25,14 @@
 
 #include "util/require.h"
 #include <ndb_global.h>
+#include "ndb_config.h"
 
 #include <TransporterRegistry.hpp>
 #include "Configuration.hpp"
 #include <ErrorHandlingMacros.hpp>
 #include "GlobalData.hpp"
 #include "portlib/NdbTCP.h"
+#include "transporter/TransporterCallback.hpp"
 
 #include <ConfigRetriever.hpp>
 #include <IPCConfig.hpp>

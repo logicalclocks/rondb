@@ -821,6 +821,7 @@ angel_run(const char* progname,
     {
       g_eventLogger->info("Not using pid file for ndbmtd");
     }
+
     ignore_signals();
 
     if(have_password_option)

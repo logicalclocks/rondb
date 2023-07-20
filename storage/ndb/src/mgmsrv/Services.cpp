@@ -43,6 +43,7 @@
 #include <ndb_base64.h>
 #include <ndberror.h>
 #include "portlib/NdbTCP.h"
+#include "portlib/ndb_sockaddr.h"
 
 extern bool g_StopServer;
 extern bool g_RestartServer;
@@ -384,6 +385,7 @@ MgmApiSession::MgmApiSession(class MgmtSrvr & mgm, ndb_socket_t sock,
   m_errorInsert= 0;
   m_vMajor = m_vMinor = m_vBuild = 0;
 
+<<<<<<< HEAD
   struct sockaddr_storage addr;
   char buf[512];
   char addr_buf[NDB_ADDR_STRLEN];
@@ -422,6 +424,20 @@ MgmApiSession::MgmApiSession(class MgmtSrvr & mgm, ndb_socket_t sock,
   else
   {
     DEBUG_FPRINTF((stderr, "new connection failed\n"));
+=======
+  ndb_sockaddr addr;
+  if (ndb_getpeername(sock, &addr) == 0)
+  {
+    char addr_buf[NDB_ADDR_STRLEN];
+    char *addr_str = Ndb_inet_ntop(&addr,
+                                   addr_buf,
+                                   sizeof(addr_buf));
+    char buf[512];
+    char *sockaddr_string = Ndb_combine_address_port(buf, sizeof(buf),
+                                                     addr_str,
+                                                     addr.get_port());
+    m_name.assfmt("%s", sockaddr_string);
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   }
   DBUG_VOID_RETURN;
 }
@@ -596,10 +612,16 @@ MgmApiSession::get_nodeid(Parser_t::Context &,
     return;
   }
 
+<<<<<<< HEAD
   struct sockaddr_storage addr;
   {
     int r = ndb_getpeername(m_secure_socket.ndb_socket(),
                             (struct sockaddr*)&addr);
+=======
+  ndb_sockaddr client_addr;
+  {
+    int r = ndb_getpeername(m_secure_socket.ndb_socket(), &client_addr);
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
     if (r != 0 )
     {
       m_output->println("result: getpeername() failed, err= %d",

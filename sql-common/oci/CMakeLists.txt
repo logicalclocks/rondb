@@ -1,4 +1,8 @@
+<<<<<<<< HEAD:sql-common/oci/CMakeLists.txt
 # Copyright (c) 2023, Oracle and/or its affiliates.
+========
+# Copyright (c) 2015, 2023, Oracle and/or its affiliates.
+>>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:storage/ndb/test/run-test/conf-mikael3-daily-basic--15.cnf
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,

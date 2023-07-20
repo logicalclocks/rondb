@@ -71,6 +71,7 @@
 #endif
 
 #include "portlib/NdbTCP.h"
+#include "portlib/ndb_sockaddr.h"
 
 #include <TransporterRegistry.hpp> // Get connect address
 
@@ -5253,6 +5254,14 @@ void Qmgr::execAPI_REGREQ(Signal* signal)
      * should be able to discover what nodes that it is able to actually use.
      */
   }
+  if (apiNodePtr.p->phase == ZAPI_ACTIVATION_ONGOING)
+  {
+    jam();
+    /* Waiting for TRPMAN to finish enabling communication
+     * Must not send conf before then.
+     */
+    return;
+  }
 
   sendApiRegConf(signal, apiNodePtr.i);
 }//Qmgr::execAPI_REGREQ()
@@ -5349,6 +5358,17 @@ Qmgr::sendApiRegConf(Signal *signal, Uint32 node)
   const BlockReference ref = apiNodePtr.p->blockRef;
   ndbassert(ref != 0);
 
+  /* No Conf to be sent unless :
+   * - API node is ACTIVE
+   * - MGM node is ACTIVE | INACTIVE
+   * - Data node is shutting down
+   */
+  ndbassert(apiNodePtr.p->phase == ZAPI_ACTIVE ||
+            (apiNodePtr.p->phase == ZAPI_INACTIVE &&
+             getNodeInfo(apiNodePtr.i).getType() == NodeInfo::MGM) ||
+            (apiNodePtr.p->phase == ZAPI_INACTIVE &&
+             getNodeState().startLevel >= NodeState::SL_STOPPING_1));
+
   ApiRegConf * const apiRegConf = (ApiRegConf *)&signal->theData[0];
   apiRegConf->qmgrRef = reference();
   apiRegConf->apiHeartbeatFrequency = (chbApiDelay / 10);
@@ -5422,11 +5442,16 @@ Qmgr::execAPI_VERSION_REQ(Signal * signal) {
                 "Cannot fit in6_inaddr into ApiVersionConf:m_inet6_addr");
   NodeInfo nodeInfo = getNodeInfo(nodeId);
   conf->m_inet_addr = 0;
+<<<<<<< HEAD
   Uint32 len;
+=======
+  Uint32 siglen = ApiVersionConf::SignalLengthIPv4;
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   if(nodeInfo.m_connected)
   {
     conf->version = nodeInfo.m_version;
     conf->mysql_version = nodeInfo.m_mysql_version;
+<<<<<<< HEAD
     if (use_ipv4_socket(nodeId))
     {
       struct sockaddr_in6 in =
@@ -5460,6 +5485,12 @@ Qmgr::execAPI_VERSION_REQ(Signal * signal) {
         len = ApiVersionConf::SignalLengthIPv4;
       }
     }
+=======
+    ndb_sockaddr in= globalTransporterRegistry.get_connect_address(nodeId);
+    if (in.get_in6_addr((in6_addr*)&conf->m_inet6_addr) == 0)
+      siglen = ApiVersionConf::SignalLength;
+    (void) in.get_in_addr((in_addr*)&conf->m_inet_addr);
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   }
   else
   {
@@ -5473,8 +5504,12 @@ Qmgr::execAPI_VERSION_REQ(Signal * signal) {
   sendSignal(senderRef,
 	     GSN_API_VERSION_CONF,
 	     signal,
+<<<<<<< HEAD
 	     len,
              JBB);
+=======
+	     siglen, JBB);
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
 }
 
 void
@@ -9643,6 +9678,7 @@ Qmgr::execDBINFO_SCANREQ(Signal *signal)
           /* MGM/API node is too old to send ProcessInfoRep, so create a
              fallback-style report */
 
+<<<<<<< HEAD
           char service_uri[INET6_ADDRSTRLEN + 6];
           strcpy(service_uri, "ndb://");
           if (use_ipv4_socket(i))
@@ -9669,6 +9705,12 @@ Qmgr::execDBINFO_SCANREQ(Signal *signal)
               Ndb_inet_ntop(AF_INET, addr, service_uri + 6, 46);
             }
           }
+=======
+          ndb_sockaddr addr= globalTransporterRegistry.get_connect_address(i);
+          char service_uri[INET6_ADDRSTRLEN + 6];
+          strcpy(service_uri, "ndb://");
+          Ndb_inet_ntop(&addr, service_uri + 6, 46);
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
 
           Ndbinfo::Row row(signal, req);
           row.write_uint32(getOwnNodeId());                 // reporting_node_id
@@ -9726,8 +9768,12 @@ Qmgr::execPROCESSINFO_REP(Signal *signal)
          of ProcessInfo::setHostAddress() is also available, which
          takes a struct sockaddr * and length.
       */
+<<<<<<< HEAD
 
       struct sockaddr_in6 in6 =
+=======
+      ndb_sockaddr addr=
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
         globalTransporterRegistry.get_connect_address(report->node_id);
       processInfo->setHostAddress((struct sockaddr *)&in6);
     }

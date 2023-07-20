@@ -38,6 +38,8 @@
 #include <signaldata/NodeFailRep.hpp>
 #include <signaldata/ApiRegSignalData.hpp>
 #include <ndb_version.h>
+#include "portlib/ndb_sockaddr.h"
+#include "portlib/NdbTCP.h"
 
 #include <EventLogger.hpp>
 
@@ -121,7 +123,18 @@ alone_on_host(Config* conf,
       continue;
     }
 
+<<<<<<< HEAD
     if (SocketServer::tryBind(0, false, hostname))
+=======
+    ndb_sockaddr addr;
+    if (Ndb_getAddr(&addr, hostname) == -1)
+    {
+      g_eventLogger->debug("Failed resolve %s, node %d",
+                           hostname, nodeid);
+      continue;
+    }
+    if (SocketServer::tryBind(addr))
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
     {
       // Another MGM node was also setup on this host
       g_eventLogger->debug("Not alone on host %s, node %d "     \
@@ -243,7 +256,12 @@ find_own_nodeid(Config* conf)
       continue;
     }
 
+<<<<<<< HEAD
     if (SocketServer::tryBind(0, false, hostname))
+=======
+    ndb_sockaddr addr;
+    if (Ndb_getAddr(&addr, hostname) == 0 && SocketServer::tryBind(addr))
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
     {
       // This node is setup to run on this host
       if (found_nodeid == 0)
@@ -2023,7 +2041,17 @@ ConfigManager::run()
   }
 
   ss.lock();
+<<<<<<< HEAD
   update_mgm_nodemask(true);
+=======
+
+  // Build bitmaks of all mgm nodes in config
+  m_config->get_nodemask(m_all_mgm, NDB_MGM_NODE_TYPE_MGM);
+
+  // exclude nowait-nodes from config change protocol
+  m_all_mgm.bitANDC(m_opts.nowait_nodes);
+  m_all_mgm.set(m_facade->ownId()); // Never exclude own node
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
 
   while (!is_stopped())
   {

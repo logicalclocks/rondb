@@ -26,6 +26,7 @@
 
 #include <ndb_global.h>
 
+#include <cassert>
 #include "SocketClient.hpp"
 #include "SocketAuthenticator.hpp"
 #include "portlib/ndb_socket_poller.h"
@@ -54,6 +55,7 @@ SocketClient::~SocketClient()
 }
 
 bool
+<<<<<<< HEAD
 SocketClient::init(bool use_only_ipv4)
 {
   m_use_only_ipv4 = use_only_ipv4;
@@ -77,6 +79,15 @@ SocketClient::init(bool use_only_ipv4)
     DEBUG_FPRINTF((stderr, "Create IPv4 NDB_SOCKET: %s\n",
                    ndb_socket_to_string(m_sockfd).c_str()));
   }
+=======
+SocketClient::init(int af)
+{
+  assert(!ndb_socket_valid(m_sockfd));
+  if (ndb_socket_valid(m_sockfd))
+    ndb_socket_close(m_sockfd);
+
+  m_sockfd= ndb_socket_create(af);
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   if (!ndb_socket_valid(m_sockfd)) {
     return false;
   }
@@ -87,9 +98,9 @@ SocketClient::init(bool use_only_ipv4)
 }
 
 int
-SocketClient::bind(const char* local_hostname,
-                   unsigned short local_port)
+SocketClient::bind(ndb_sockaddr local)
 {
+<<<<<<< HEAD
   DEBUG_FPRINTF((stderr, "SocketClient::bind, port: %u, host: %s\n",
                  (unsigned int)local_port, local_hostname));
   if (!ndb_socket_valid(m_sockfd))
@@ -107,6 +118,36 @@ SocketClient::bind(const char* local_hostname,
       // Try to bind to the same port as last successful connect instead of
       // any ephemeral port. Intention is to reuse any previous TIME_WAIT TCB
       local.sin6_port = htons(m_last_used_port);
+=======
+  const bool no_local_port = (local.get_port() == 0);
+
+  if (!ndb_socket_valid(m_sockfd))
+    return -1;
+
+  {
+    // Try to bind to the same port as last successful connect instead of
+    // any ephemeral port. Intention is to reuse any previous TIME_WAIT TCB
+    local.set_port(m_last_used_port);
+  }
+
+  if (ndb_socket_reuseaddr(m_sockfd, true) == -1)
+  {
+    int ret = ndb_socket_errno();
+    ndb_socket_close(m_sockfd);
+    ndb_socket_invalidate(&m_sockfd);
+    return ret;
+  }
+
+  while (ndb_bind(m_sockfd, &local) == -1)
+  {
+    if (no_local_port && m_last_used_port != 0)
+    {
+      // Failed to bind same port as last, retry with any
+      // ephemeral port(as originally requested)
+      m_last_used_port = 0; // Reset last used port
+      local.set_port(0); // Try bind with any port
+      continue;
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
     }
 
     // Resolve local address
@@ -208,24 +249,38 @@ SocketClient::bind(const char* local_hostname,
 #endif
 
 ndb_socket_t
-SocketClient::connect(const char* server_hostname,
-                      unsigned short server_port)
+SocketClient::connect(ndb_sockaddr server_addr)
 {
+<<<<<<< HEAD
   NdbSocket sock;
   connect(sock, server_hostname, server_port);
+=======
+  assert(ndb_socket_valid(m_sockfd));
+  NdbSocket sock;
+  connect(sock, server_addr);
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   return sock.ndb_socket();
 }
 
 void
 SocketClient::connect(NdbSocket & secureSocket,
+<<<<<<< HEAD
                       const char* server_hostname,
                       unsigned short server_port)
 {
+=======
+                      ndb_sockaddr server_addr)
+{
+  if (!ndb_socket_valid(m_sockfd))
+    return;
+
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   // Reset last used port(in case connect fails)
   DEBUG_FPRINTF((stderr, "SocketClient::connect, port: %u, server: %s\n",
                  (unsigned int)server_port, server_hostname));
   m_last_used_port = 0;
 
+<<<<<<< HEAD
   if (!ndb_socket_valid(m_sockfd))
   {
     if (!init(m_use_only_ipv4))
@@ -295,6 +350,25 @@ SocketClient::connect(NdbSocket & secureSocket,
                            server_hostname, server_port));
     r = ndb_connect_inet(m_sockfd, &server_addr);
   }
+=======
+  // Set socket non blocking
+  if (ndb_socket_nonblock(m_sockfd, true) < 0)
+  {
+    DEBUG_FPRINTF((stderr, "Failed to set socket nonblocking in connect\n"));
+    ndb_socket_close(m_sockfd);
+    ndb_socket_invalidate(&m_sockfd);
+    return;
+  }
+
+  if (server_addr.need_dual_stack())
+  {
+    [[maybe_unused]] bool ok = ndb_socket_dual_stack(m_sockfd, 1);
+  }
+
+  // Start non blocking connect
+  DEBUG_FPRINTF((stderr, "Connect to %s:%u\n", server_hostname, server_port));
+  int r = ndb_connect(m_sockfd, &server_addr);
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   if (r == 0)
     goto done; // connected immediately.
 
@@ -379,6 +453,8 @@ done:
 
   secureSocket.init_from_new(m_sockfd);
 
+  secureSocket.init_from_new(m_sockfd);
+
   if (m_auth) {
     if (!m_auth->client_authenticate(secureSocket))
     {
@@ -389,7 +465,10 @@ done:
   }
 
   ndb_socket_invalidate(&m_sockfd);
+<<<<<<< HEAD
 
   DEBUG_FPRINTF((stderr, "Connected to %s:%u\n",
                          server_hostname, m_last_used_port));
+=======
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
 }

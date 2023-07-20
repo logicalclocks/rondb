@@ -78,6 +78,7 @@
 
 #include <NdbTick.h>
 #include <dbtup/Dbtup.hpp>
+#include "dblqh/Dblqh.hpp"
 
 #include <EventLogger.hpp>
 

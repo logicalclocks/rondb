@@ -22,12 +22,12 @@
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
-#ifndef ROUTING_CLASSIC_INIT_SCHEMA_FORWARDER_INCLUDED
-#define ROUTING_CLASSIC_INIT_SCHEMA_FORWARDER_INCLUDED
+#ifndef ROUTING_CLASSIC_RELOAD_FORWARDER_INCLUDED
+#define ROUTING_CLASSIC_RELOAD_FORWARDER_INCLUDED
 
 #include "forwarding_processor.h"
 
-class InitSchemaForwarder : public ForwardingProcessor {
+class ReloadForwarder : public ForwardingProcessor {
  public:
   using ForwardingProcessor::ForwardingProcessor;
 

@@ -24,6 +24,7 @@
 */
 
 
+#include "ndb_config.h"
 #include "util/require.h"
 #include <TransporterRegistry.hpp>
 #include <TransporterCallback.hpp>
@@ -34,6 +35,8 @@
 #include <InputStream.hpp>
 #include <OutputStream.hpp>
 #include "util/cstrbuf.h"
+#include "portlib/ndb_sockaddr.h"
+#include "portlib/NdbTCP.h"
 
 #include <EventLogger.hpp>
 
@@ -92,8 +95,6 @@ Transporter::Transporter(TransporterRegistry &t_reg,
   DBUG_ENTER("Transporter::Transporter");
 
   // Initialize member variables
-  memset(&m_connect_address, 0, sizeof(struct sockaddr_in6));
-  m_connect_address.sin6_addr = IN6ADDR_ANY_INIT;
   m_multi_transporter_instance = 0;
   m_recv_thread_idx = 0;
   m_is_active = true;
@@ -299,8 +300,7 @@ Transporter::connect_client(bool multi_connection)
   if(isMgmConnection)
   {
     require(!isPartOfMultiTransporter());
-    sockfd= m_transporter_registry.connect_ndb_mgmd(remoteHostName,
-                                                    port);
+    sockfd= m_transporter_registry.connect_ndb_mgmd(remoteHostName, port);
     DEBUG_FPRINTF((stderr, "connect_ndb_mgmd to host: %s on port: %d\n",
                    remoteHostName,
                    port));
@@ -308,7 +308,26 @@ Transporter::connect_client(bool multi_connection)
   }
   else
   {
-    if (!m_socket_client->init(m_use_only_ipv4))
+    ndb_sockaddr local;
+    if (strlen(localHostName) > 0)
+    {
+      if (Ndb_getAddr(&local, localHostName))
+      {
+        DEBUG_FPRINTF((stderr, "connect_client lookup '%s' failed, node: %u\n",
+                       localHostName, getRemoteNodeId()));
+        DBUG_RETURN(false);
+      }
+    }
+
+    ndb_sockaddr remote_addr;
+    if (Ndb_getAddr(&remote_addr, remoteHostName))
+    {
+      DEBUG_FPRINTF((stderr, "connect_client lookup remote '%s' failed, node: %u\n",
+                     remoteHostName, getRemoteNodeId()));
+      DBUG_RETURN(false);
+    }
+    remote_addr.set_port(port);
+    if (!m_socket_client->init(m_use_only_ipv4, remote_addr.get_address_family()))
     {
       DEBUG_FPRINTF((stderr, "m_socket_client->init failed, node: %u\n",
                              getRemoteNodeId()));
@@ -324,7 +343,7 @@ Transporter::connect_client(bool multi_connection)
 
     if (strlen(localHostName) > 0)
     {
-      if (m_socket_client->bind(localHostName, 0) != 0)
+      if (m_socket_client->bind(local) != 0)
       {
         DEBUG_FPRINTF((stderr, "m_socket_client->bind failed, node: %u\n",
                                getRemoteNodeId()));
@@ -334,7 +353,7 @@ Transporter::connect_client(bool multi_connection)
     DEBUG_FPRINTF((stderr, "m_socket_client->connect to %s\n",
                    remoteHostName));
 
-    m_socket_client->connect(secureSocket, remoteHostName, port);
+    m_socket_client->connect(secureSocket, remote_addr);
   }
 
   DBUG_RETURN(connect_client(secureSocket));

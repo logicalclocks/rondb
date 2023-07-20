@@ -26,11 +26,13 @@
 #ifndef NDB_OWNPROCESSINFO_HPP
 #define NDB_OWNPROCESSINFO_HPP
 
+#include "ndb_types.h"
+
 class ProcessInfo;
+class ndb_sockaddr;
 
 void setOwnProcessInfoAngelPid(Uint32);
-void setOwnProcessInfoServerAddress(struct sockaddr * addr);
-void setOwnProcessInfoServerAddress4(struct sockaddr * addr);
+void setOwnProcessInfoServerAddress(ndb_sockaddr * addr);
 void setOwnProcessInfoPort(Uint16);
 
 ProcessInfo * getOwnProcessInfo(Uint16 nodeId);

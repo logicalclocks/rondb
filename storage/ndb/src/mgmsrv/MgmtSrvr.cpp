@@ -61,6 +61,7 @@
 #include <signaldata/SetHostname.hpp>
 #include <NdbSleep.h>
 #include <portlib/NdbDir.hpp>
+#include "portlib/ndb_sockaddr.h"
 #include <EventLogger.hpp>
 #include <logger/FileLogHandler.hpp>
 #include <logger/ConsoleLogHandler.hpp>
@@ -522,8 +523,16 @@ MgmtSrvr::start_mgm_service(const Config* config)
                                                    port);
   {
     int count= 5; // no of retries for tryBind
+<<<<<<< HEAD
     while(!m_socket_server.tryBind(port, false, m_opts.bind_address))
+=======
+
+    ndb_sockaddr addr;
+    while(Ndb_getAddr(&addr, m_opts.bind_address) == 0)
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
     {
+      addr.set_port(port);
+      if (m_socket_server.tryBind(addr)) break;
       if (--count > 0)
       {
 	NdbSleep_SecSleep(1);
@@ -546,7 +555,16 @@ MgmtSrvr::start_mgm_service(const Config* config)
       DBUG_RETURN(false);
     }
 
-    if(!m_socket_server.setup(mapi, &port, m_opts.bind_address))
+    ndb_sockaddr addr;
+    if (m_opts.bind_address && Ndb_getAddr(&addr, m_opts.bind_address))
+    {
+      delete mapi; // Will be deleted by SocketServer in all other cases
+      g_eventLogger->error("Unable to resolve management service address: %s!\n",
+                           m_opts.bind_address);
+      DBUG_RETURN(false);
+    }
+    addr.set_port(port);
+    if(!m_socket_server.setup(mapi, &addr))
     {
       delete mapi; // Will be deleted by SocketServer in all other cases
       g_eventLogger->error("Unable to setup management service port: %s!\n"
@@ -556,6 +574,7 @@ MgmtSrvr::start_mgm_service(const Config* config)
                            sockaddr_string);
       DBUG_RETURN(false);
     }
+    port = addr.get_port();
 
     if (port != m_port)
     {
@@ -1215,21 +1234,13 @@ MgmtSrvr::sendVersionReq(int v_nodeId,
       mysql_version = conf->mysql_version;
       if (signal->getLength() <= ApiVersionConf::SignalLengthIPv4)
       {
-        struct in_addr in;
-        in.s_addr = conf->m_inet_addr;
-        *address= Ndb_inet_ntop(AF_INET,
-                                static_cast<void*>(&in),
-                                addr_buf,
-                                addr_buf_size);
+        ndb_sockaddr in((const in_addr*)&conf->m_inet_addr, 0);
+        *address= Ndb_inet_ntop(&in, addr_buf, addr_buf_size);
       }
       else
       {
-        struct in6_addr in;
-        memcpy(in.s6_addr, conf->m_inet6_addr, sizeof(in.s6_addr));
-        *address= Ndb_inet_ntop(AF_INET6,
-                                static_cast<void*>(&in),
-                                addr_buf,
-                                addr_buf_size);
+        ndb_sockaddr in((const in6_addr*)&conf->m_inet6_addr, 0);
+        *address= Ndb_inet_ntop( &in, addr_buf, addr_buf_size);
       }
       is_single_user = false;
       if (signal->getLength() > ApiVersionConf::SignalLengthWithoutSingleUser) {
@@ -2929,13 +2940,10 @@ MgmtSrvr::status_mgmd(NodeId node_id,
         Try to convert HostName to numerical ip address
         (to get same output as if ndbd had replied)
       */
-      struct in6_addr addr;
-      if (Ndb_getInAddr6(&addr, *address) == 0)
+      ndb_sockaddr addr;
+      if (Ndb_getAddr(&addr, *address) == 0)
       {
-        *address = Ndb_inet_ntop(AF_INET6,
-                                 static_cast<void*>(&addr),
-                                 addr_buf,
-                                 addr_buf_size);
+        *address = Ndb_inet_ntop(&addr, addr_buf, addr_buf_size);
       }
       else if (Ndb_getInAddr((struct in_addr*)&addr, *address) == 0)
       {
@@ -4120,7 +4128,11 @@ MgmtSrvr::get_connect_address(NodeId node_id,
 {
   assert(node_id < NDB_ARRAY_SIZE(m_connect_address));
 
+<<<<<<< HEAD
   if (!is_m_connect_address_set[node_id])
+=======
+  if (m_connect_address[node_id].is_unspecified())
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   {
     // No cached connect address available
     const trp_node &node= getNodeInfo(node_id);
@@ -4140,6 +4152,7 @@ MgmtSrvr::get_connect_address(NodeId node_id,
   }
 
   // Return the cached connect address
+<<<<<<< HEAD
   if (m_connect_address[node_id].sin6_family == AF_INET6)
   {
     struct in6_addr *addr = &m_connect_address[node_id].sin6_addr;
@@ -4157,6 +4170,9 @@ MgmtSrvr::get_connect_address(NodeId node_id,
                          addr_buf,
                          addr_buf_size);
   }
+=======
+  return Ndb_inet_ntop(&m_connect_address[node_id], addr_buf, addr_buf_size);
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
 }
 
 
@@ -4166,8 +4182,12 @@ MgmtSrvr::clear_connect_address_cache(NodeId nodeid)
   assert(nodeid < NDB_ARRAY_SIZE(m_connect_address));
   if (nodeid < NDB_ARRAY_SIZE(m_connect_address))
   {
+<<<<<<< HEAD
     memset(&m_connect_address[nodeid], 0, sizeof(struct sockaddr_in6));
     is_m_connect_address_set[nodeid] = false;
+=======
+    m_connect_address[nodeid] = ndb_sockaddr();
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   }
 }
 
@@ -4465,6 +4485,7 @@ MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
   return 0;
 }
 
+<<<<<<< HEAD
 inline const struct in6_addr * get_in6_addr(const struct sockaddr *clnt_addr) {
   return clnt_addr ?
     &((const struct sockaddr_in6*)clnt_addr)->sin6_addr :
@@ -4480,6 +4501,8 @@ static inline bool is_loopback(const struct in6_addr *addr) {
          (IN6_IS_ADDR_V4MAPPED(addr) && addr->s6_addr[12] == 0x7f));
 }
 
+=======
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
 enum class HostnameMatch
 {
    no_resolve,       // failure: could not resolve hostname
@@ -4489,13 +4512,18 @@ enum class HostnameMatch
 };
 
 static HostnameMatch
+<<<<<<< HEAD
 match_hostname(const struct sockaddr *clnt_addr,
+=======
+match_hostname(const ndb_sockaddr *client_addr,
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
                const char *config_hostname)
 {
   if (config_hostname == nullptr || config_hostname[0] == 0) {
     return HostnameMatch::ok_wildcard;
   }
 
+<<<<<<< HEAD
   if (clnt_addr->sa_family == AF_INET6)
   {
     // Check if the configured hostname can be resolved.
@@ -4517,6 +4545,24 @@ match_hostname(const struct sockaddr *clnt_addr,
         return HostnameMatch::ok_exact_match;
       }
       return HostnameMatch::no_match;
+=======
+  // Check if the configured hostname can be resolved.
+  // NOTE! Without this step it's not possible to:
+  // - try to bind() the socket (since that requires resolve)
+  // - compare the resolved address with the clients.
+  ndb_sockaddr resolved_addr;
+  if (Ndb_getAddr(&resolved_addr, config_hostname) != 0)
+    return HostnameMatch::no_resolve;
+
+  // Special case for client connecting on loopback address, check if it
+  // can use this hostname by trying to bind the configured hostname. If this
+  // process can bind it also means the client can use it (is on same machine).
+  if (client_addr->is_loopback()) {
+    if (SocketServer::tryBind(resolved_addr)) {
+      // Match clients connecting on loopback address by trying to bind the
+      // configured hostname, if it binds the client could use it as well.
+      return HostnameMatch::ok_exact_match;
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
     }
     // Bitwise comparison of the two IPv6 addresses
     if (memcmp(&resolved_addr, clnt_in6_addr, sizeof(resolved_addr)) != 0)
@@ -4538,6 +4584,15 @@ match_hostname(const struct sockaddr *clnt_addr,
       return HostnameMatch::no_match;
     return HostnameMatch::ok_exact_match;
   }
+<<<<<<< HEAD
+=======
+
+  // Bitwise comparison of the two IPv6 addresses
+  if (!client_addr->has_same_addr(resolved_addr))
+    return HostnameMatch::no_match;
+
+  return HostnameMatch::ok_exact_match;
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
 }
 
 /**
@@ -4612,7 +4667,11 @@ MgmtSrvr::build_node_list_from_config(NodeId node_id,
 int
 MgmtSrvr::find_node_type(NodeId node_id,
                          ndb_mgm_node_type type,
+<<<<<<< HEAD
                          const struct sockaddr* client_addr,
+=======
+                         const ndb_sockaddr* client_addr,
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
                          const Vector<ConfigNode>& config_nodes,
                          Vector<PossibleNode>& nodes,
                          int& error_code, BaseString& error_string)
@@ -4706,6 +4765,11 @@ MgmtSrvr::find_node_type(NodeId node_id,
     alias= ndb_mgm_get_node_type_alias_string(type, &str);
     type_string.assfmt("%s(%s)", alias, str);
 
+<<<<<<< HEAD
+=======
+    char* addr_str = Ndb_inet_ntop(client_addr, addr_buf, sizeof(addr_buf));
+
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
     error_string.appfmt("No configured host found of node type %s for "
                         "connection from ip %s. Some hostnames are currently "
                         "unresolvable. Can be retried.",
@@ -4740,11 +4804,17 @@ MgmtSrvr::find_node_type(NodeId node_id,
       char addr_buf[NDB_ADDR_STRLEN];
       {
         // Append error describing which host the faulty connection was from
+<<<<<<< HEAD
+=======
+        char* addr_str =
+            Ndb_inet_ntop(client_addr, addr_buf, sizeof(addr_buf));
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
         error_string.appfmt("Connection with id %d done from wrong host ip %s,",
                             node_id, addr_str);
       }
       {
         // Append error describing which was the expected host
+<<<<<<< HEAD
         int r_config_addr;
         if (use_ipv6)
         {
@@ -4764,6 +4834,12 @@ MgmtSrvr::find_node_type(NodeId node_id,
                                        addr_buf,
                                        sizeof(addr_buf));
         }
+=======
+        ndb_sockaddr config_addr;
+        int r_config_addr= Ndb_getAddr(&config_addr, found_config_hostname);
+        char* addr_str =
+            Ndb_inet_ntop(&config_addr, addr_buf, sizeof(addr_buf));
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
         error_string.appfmt(" expected %s(%s).", found_config_hostname,
                             r_config_addr ?
                             "lookup failed" : loc_addr_str);
@@ -4777,6 +4853,11 @@ MgmtSrvr::find_node_type(NodeId node_id,
   // node_id == 0 and nodes.size() == 0
   if (found_config_hostname)
   {
+<<<<<<< HEAD
+=======
+    char addr_buf[NDB_ADDR_STRLEN];
+    char *addr_str = Ndb_inet_ntop(client_addr, addr_buf, sizeof(addr_buf));
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
     error_string.appfmt("Connection done from wrong host ip %s.",
                         (client_addr) ? addr_str : "");
     return -1;
@@ -4949,7 +5030,11 @@ MgmtSrvr::try_alloc_from_list(NodeId& nodeid,
 bool
 MgmtSrvr::alloc_node_id_impl(NodeId& nodeid,
                              enum ndb_mgm_node_type type,
+<<<<<<< HEAD
                              const sockaddr* client_addr,
+=======
+                             const ndb_sockaddr* client_addr,
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
                              int& error_code, BaseString& error_string,
                              Uint32 timeout_s)
 {
@@ -5159,13 +5244,18 @@ MgmtSrvr::alloc_node_id_impl(NodeId& nodeid,
 bool
 MgmtSrvr::alloc_node_id(NodeId& nodeid,
                         enum ndb_mgm_node_type type,
+<<<<<<< HEAD
                         const struct sockaddr* client_addr,
+=======
+                        const ndb_sockaddr* client_addr,
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
                         int& error_code, BaseString& error_string,
                         bool log_event,
                         Uint32 timeout_s)
 {
   char addr_buf[NDB_ADDR_STRLEN];
   const char* type_str = ndb_mgm_get_node_type_string(type);
+<<<<<<< HEAD
   char *addr_str;
   if (client_addr->sa_family == AF_INET6)
   {
@@ -5185,6 +5275,9 @@ MgmtSrvr::alloc_node_id(NodeId& nodeid,
                              addr_buf,
                              sizeof(addr_buf));
   }
+=======
+  char* addr_str = Ndb_inet_ntop(client_addr, addr_buf, sizeof(addr_buf));
+>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
 
   error_code = 0;
   g_eventLogger->debug("Trying to allocate nodeid for %s" \

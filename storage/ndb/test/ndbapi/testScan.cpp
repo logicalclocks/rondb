@@ -2770,9 +2770,9 @@ runScanApiDisconnect(NDBT_Context* ctx, NDBT_Step* step)
    * check cluster does not fail
    */
   Ndb_cluster_connection* pCC = &ctx->m_cluster_connection;
-  int cases[] = {8120,  // TC ZSTART_FRAG_SCANS
-                 8121,  // TC ZSEND_FRAG_SCANS Early
-                 8122,  // TC ZSEND_FRAG_SCANS Later
+  int cases[] = {8129,  // TC ZSTART_FRAG_SCANS
+                 8130,  // TC ZSEND_FRAG_SCANS Early
+                 8131,  // TC ZSEND_FRAG_SCANS Later
                  0};
   int c = 0;
 

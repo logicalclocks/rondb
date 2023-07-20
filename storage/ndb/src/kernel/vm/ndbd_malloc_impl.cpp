@@ -24,6 +24,7 @@
 */
 
 
+#include "my_config.h"
 #include "util/require.h"
 #include "ndbd_malloc.hpp"
 #include "ndbd_malloc_impl.hpp"

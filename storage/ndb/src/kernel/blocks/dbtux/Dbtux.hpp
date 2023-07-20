@@ -38,7 +38,6 @@
 
 // big brother
 #include <dbtup/Dbtup.hpp>
-#include <dblqh/Dblqh.hpp>
 #include <dbacc/Dbacc.hpp>
 
 // packed index keys and bounds
@@ -73,6 +72,7 @@
 
 class Configuration;
 struct mt_BuildIndxCtx;
+class Dblqh;
 
 class Dbtux : public SimulatedBlock {
   friend class Dbqtux;
@@ -667,7 +667,7 @@ private:
                     TreeEnt ent,
                     Uint32 count,
                     Uint32 *outputBuffer);
-  void readTablePk(TreeEnt ent, Uint32* pkData, unsigned& pkSize);
+  void readTableHashKey(TreeEnt ent, Uint32* pkData, unsigned& pkSize);
   void unpackBound(Uint32* const outputBuffer,
                    const ScanBound& bound,
                    KeyBoundC& searchBound);

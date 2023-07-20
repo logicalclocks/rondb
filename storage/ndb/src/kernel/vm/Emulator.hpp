@@ -456,7 +456,7 @@ static constexpr const char* const jamFileNames[] =
   NULL,                                 // 321
   "SimBlockList.hpp",                   // 322
   "mt-lock.hpp",                        // 323
-  "rr.cpp",                             // 324
+  "rr.cpp",                             // 324 DELETED FILE
   "testCopy.cpp",                       // 325
   "Ndbinfo.cpp",                        // 326
   "SectionReader.cpp",                  // 327
@@ -510,7 +510,7 @@ static constexpr const char* const jamFileNames[] =
   "DbtuxTree.cpp",                      // 375
   "DbtuxProxy.hpp",                     // 376
   "DbtuxMeta.cpp",                      // 377
-  "DbtuxCmp.cpp",                       // 378
+  "DbtuxCmp.cpp",                       // 378 DELETED FILE
   "Cmvmi.hpp",                          // 379
   "Cmvmi.cpp",                          // 380
   "AsyncIoThread.hpp",                  // 381
@@ -522,7 +522,7 @@ static constexpr const char* const jamFileNames[] =
   "AsyncFile.cpp",                      // 387
   "AsyncIoThread.cpp",                  // 388
   NULL,                                 // 389
-  "MemoryChannel.cpp",                  // 390
+  "MemoryChannel.cpp",                  // 390 DELETED FILE
   "AsyncFile.hpp",                      // 391
   "Filename.hpp",                       // 392
   "Ndbfs.cpp",                          // 393

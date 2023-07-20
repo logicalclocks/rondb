@@ -29,8 +29,9 @@ Next DBTUP 4040
 Next DBLQH 5109
 Next DBDICT 6223
 Next DBDIH 7249
-Next DBTC 8129
+Next DBTC 8132
 Next CMVMI 9000
+Next TRPMAN 9501
 Next BACKUP 10055
 Next PGMAN 11010
 Next DBTUX 12010
@@ -504,9 +505,9 @@ DBTC Partitioning testing
 
 DBTC Api failure testing
 ------------------------
-8120: Api disconnect during SCAN ZSTART_FRAG_SCANS CONTINUEB
-8121: Api disconnect early during SCAN ZSEND_FRAG_SCANS CONTINUEB
-8122: Api disconnect later during SCAN ZSEND_FRAG_SCANS CONTINUEB
+8129: Api disconnect during SCAN ZSTART_FRAG_SCANS CONTINUEB
+8130: Api disconnect early during SCAN ZSEND_FRAG_SCANS CONTINUEB
+8131: Api disconnect later during SCAN ZSEND_FRAG_SCANS CONTINUEB
 
 
 CMVMI

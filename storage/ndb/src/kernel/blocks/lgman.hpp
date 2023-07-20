@@ -1,5 +1,4 @@
 /*
-<<<<<<< HEAD
    Copyright (c) 2005, 2023, Oracle and/or its affiliates.
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist SYSTEM "file://localhost/System/Library/DTDs/PropertyList.dtd">
+<plist version="0.9">
+<dict>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+
+	<key>CFBundleDevelopmentRegion</key>
+	<string>English</string>
+
+	<key>CFBundleExecutable</key>
+	<string>curl</string>
+
+	<key>CFBundleIdentifier</key>
+	<string>se.curl.libcurl</string>
+
+	<key>CFBundleVersion</key>
+<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/libcurl.plist
+	<string>7.88.1</string>
+========
+	<string>8.1.2</string>
+>>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/libcurl.plist
+
+	<key>CFBundleName</key>
+	<string>libcurl</string>
+
+	<key>CFBundlePackageType</key>
+	<string>FMWK</string>
+
+	<key>CFBundleSignature</key>
+	<string>????</string>
+
+	<key>CFBundleShortVersionString</key>
+<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/libcurl.plist
+	<string>libcurl 7.88.1</string>
+
+	<key>CFBundleGetInfoString</key>
+	<string>libcurl.plist 7.88.1</string>
+========
+	<string>libcurl 8.1.2</string>
+
+	<key>CFBundleGetInfoString</key>
+	<string>libcurl.plist 8.1.2</string>
+>>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/libcurl.plist
+</dict>
+</plist>
