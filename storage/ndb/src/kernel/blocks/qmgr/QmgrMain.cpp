@@ -5442,74 +5442,29 @@ Qmgr::execAPI_VERSION_REQ(Signal * signal) {
                 "Cannot fit in6_inaddr into ApiVersionConf:m_inet6_addr");
   NodeInfo nodeInfo = getNodeInfo(nodeId);
   conf->m_inet_addr = 0;
-<<<<<<< HEAD
-  Uint32 len;
-=======
   Uint32 siglen = ApiVersionConf::SignalLengthIPv4;
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   if(nodeInfo.m_connected)
   {
     conf->version = nodeInfo.m_version;
     conf->mysql_version = nodeInfo.m_mysql_version;
-<<<<<<< HEAD
-    if (use_ipv4_socket(nodeId))
-    {
-      struct sockaddr_in6 in =
-        globalTransporterRegistry.get_connect_address(nodeId);
-      require(in.sin6_family == AF_INET);
-      struct sockaddr_in *in4 = (struct sockaddr_in*)&in;
-      conf->m_inet_addr = in4->sin_addr.s_addr;
-      len = ApiVersionConf::SignalLengthIPv4;
-    }
-    else
-    {
-      struct sockaddr_in6 in =
-        globalTransporterRegistry.get_connect_address(nodeId);
-      if (in.sin6_family == AF_INET6)
-      {
-        memcpy(&conf->m_inet6_addr, &in.sin6_addr, sizeof(conf->m_inet6_addr));
-        if (IN6_IS_ADDR_V4MAPPED(&in.sin6_addr))
-        {
-          memcpy(&conf->m_inet_addr, &conf->m_inet6_addr[12], sizeof(in_addr));
-          len = ApiVersionConf::SignalLengthIPv4;
-        }
-        else
-        {
-          len = ApiVersionConf::SignalLength;
-        }
-      }
-      else
-      {
-        struct sockaddr_in *in4 = (struct sockaddr_in*)&in;
-        conf->m_inet_addr = in4->sin_addr.s_addr;
-        len = ApiVersionConf::SignalLengthIPv4;
-      }
-    }
-=======
     ndb_sockaddr in= globalTransporterRegistry.get_connect_address(nodeId);
     if (in.get_in6_addr((in6_addr*)&conf->m_inet6_addr) == 0)
       siglen = ApiVersionConf::SignalLength;
     (void) in.get_in_addr((in_addr*)&conf->m_inet_addr);
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   }
   else
   {
     conf->version =  0;
     conf->mysql_version =  0;
     memset(conf->m_inet6_addr, 0, sizeof(conf->m_inet6_addr));
-    len = ApiVersionConf::SignalLength;
   }
   conf->nodeId = nodeId;
   conf->isSingleUser = (nodeId == getNodeState().getSingleUserApi());
   sendSignal(senderRef,
 	     GSN_API_VERSION_CONF,
 	     signal,
-<<<<<<< HEAD
-	     len,
+	     siglen,
              JBB);
-=======
-	     siglen, JBB);
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
 }
 
 void
@@ -9678,39 +9633,10 @@ Qmgr::execDBINFO_SCANREQ(Signal *signal)
           /* MGM/API node is too old to send ProcessInfoRep, so create a
              fallback-style report */
 
-<<<<<<< HEAD
-          char service_uri[INET6_ADDRSTRLEN + 6];
-          strcpy(service_uri, "ndb://");
-          if (use_ipv4_socket(i))
-          {
-            struct sockaddr_in6 in6 =
-              globalTransporterRegistry.get_connect_address(i);
-            require(in6.sin6_family == AF_INET);
-            struct sockaddr_in *in4 = (struct sockaddr_in*)&in6;
-            Ndb_inet_ntop(AF_INET, &in4->sin_addr, service_uri + 6, 46);
-          }
-          else
-          {
-            struct sockaddr_in6 in6 =
-              globalTransporterRegistry.get_connect_address(i);
-            if (in6.sin6_family == AF_INET6)
-            {
-              struct in6_addr *addr = &in6.sin6_addr;
-              Ndb_inet_ntop(AF_INET6, addr, service_uri + 6, 46);
-            }
-            else
-            {
-              struct sockaddr_in *in4 = (struct sockaddr_in*)&in6;
-              struct in_addr *addr = &in4->sin_addr;
-              Ndb_inet_ntop(AF_INET, addr, service_uri + 6, 46);
-            }
-          }
-=======
           ndb_sockaddr addr= globalTransporterRegistry.get_connect_address(i);
           char service_uri[INET6_ADDRSTRLEN + 6];
           strcpy(service_uri, "ndb://");
           Ndb_inet_ntop(&addr, service_uri + 6, 46);
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
 
           Ndbinfo::Row row(signal, req);
           row.write_uint32(getOwnNodeId());                 // reporting_node_id
@@ -9768,14 +9694,9 @@ Qmgr::execPROCESSINFO_REP(Signal *signal)
          of ProcessInfo::setHostAddress() is also available, which
          takes a struct sockaddr * and length.
       */
-<<<<<<< HEAD
-
-      struct sockaddr_in6 in6 =
-=======
-      ndb_sockaddr addr=
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
+      ndb_sockaddr addr =
         globalTransporterRegistry.get_connect_address(report->node_id);
-      processInfo->setHostAddress((struct sockaddr *)&in6);
+      processInfo->setHostAddress(& addr);
     }
   }
   releaseSections(handle);

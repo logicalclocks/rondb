@@ -821,10 +821,6 @@ ndb_mgm_connect(NdbMgmHandle handle, int no_retries,
    */
   LocalConfig &cfg= handle->cfg;
   ndb_socket_t sockfd;
-<<<<<<< HEAD
-  ndb_socket_create(sockfd);
-=======
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   Uint32 i = Uint32(~0);
   while (!ndb_socket_valid(sockfd))
   {
@@ -837,10 +833,6 @@ ndb_mgm_connect(NdbMgmHandle handle, int no_retries,
 
       const char *bind_address= nullptr;
       unsigned short bind_address_port= 0;
-<<<<<<< HEAD
-      s.set_connect_timeout(handle->connect_timeout);
-      if (!s.init(false))
-=======
       if (handle->m_bindaddress)
       {
         bind_address= handle->m_bindaddress;
@@ -894,8 +886,7 @@ ndb_mgm_connect(NdbMgmHandle handle, int no_retries,
       addr.set_port(cfg.ids[i].port);
       SocketClient s;
       s.set_connect_timeout(handle->timeout);
-      if (!s.init(addr.get_address_family()))
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
+      if (!s.init(addr.get_address_family(), false))
       {
         fprintf(handle->errstream, 
                 "Unable to create socket, "
@@ -2486,13 +2477,8 @@ ndb_mgm_listen_event_internal(NdbMgmHandle handle, const int filter[],
   }
   addr.set_port(port);
   SocketClient s;
-<<<<<<< HEAD
-  s.set_connect_timeout(handle->connect_timeout);
-  if (!s.init(false))
-=======
   s.set_connect_timeout(handle->timeout);
-  if (!s.init(addr.get_address_family()))
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
+  if (!s.init(addr.get_address_family(), false))
   {
     fprintf(handle->errstream, "Unable to create socket");
     setError(handle, NDB_MGM_COULD_NOT_CONNECT_TO_SOCKET, __LINE__,

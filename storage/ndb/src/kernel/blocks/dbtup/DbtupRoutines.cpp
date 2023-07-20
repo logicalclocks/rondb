@@ -379,7 +379,7 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct,
   Uint32 attributeId, descr_index, tmpAttrBufIndex, tmpAttrBufBits, inBufIndex;
   AttributeHeader* ahOut;
 
-  const TableDescriptor* attr_descr = req_struct->attr_descr;
+  const Uint32* attr_descr = req_struct->attr_descr;
   Tablerec* const regTabPtr = req_struct->tablePtrP;
   Uint32 numAttributes= regTabPtr->m_no_of_attributes;
 
@@ -470,16 +470,16 @@ int Dbtup::readAttributes(KeyReqStruct *req_struct,
  *  that non-equal keys will generate non-equal xfrm'ed keys.
  */
 int Dbtup::readKeyAttributes(KeyReqStruct *req_struct,
-                          const Uint32* inBuffer,
-                          Uint32  inBufLen,
-                          Uint32* outBuf,
-                          Uint32  maxRead,
-                          bool    xfrm_hash)
+                             const Uint32* inBuffer,
+                             Uint32  inBufLen,
+                             Uint32* outBuf,
+                             Uint32  maxRead,
+                             bool    xfrm_hash)
 {
   Uint32 attributeId, descr_index, tmpAttrBufIndex, inBufIndex;
   AttributeHeader ahOutDummy;
 
-  const TableDescriptor* attr_descr = req_struct->attr_descr;
+  const Uint32* attr_descr = req_struct->attr_descr;
   Tablerec* const regTabPtr = req_struct->tablePtrP;
   Uint32 numAttributes= regTabPtr->m_no_of_attributes;
 
@@ -496,14 +496,14 @@ int Dbtup::readKeyAttributes(KeyReqStruct *req_struct,
     tmpAttrBufIndex= req_struct->out_buf_index;
     AttributeHeader ahIn(inBuffer[inBufIndex++]);
     attributeId= ahIn.getAttributeId();
-    descr_index= attributeId << ZAD_LOG_SIZE;
+    descr_index= attributeId * ZAD_SIZE;
 
     tmpAttrBufIndex = pad32(tmpAttrBufIndex,0);
     req_struct->out_buf_index= tmpAttrBufIndex;
     if (likely(attributeId < numAttributes))
     {
-      Uint32 attrDescriptor = attr_descr[descr_index].tabDescr;
-      Uint32 attrDes2 = attr_descr[descr_index + 1].tabDescr;
+      Uint32 attrDescriptor = attr_descr[descr_index];
+      Uint32 attrDes2 = attr_descr[descr_index + 1];
       Uint64 attrDes = (Uint64(attrDes2) << 32) +
                         Uint64(attrDescriptor);
 

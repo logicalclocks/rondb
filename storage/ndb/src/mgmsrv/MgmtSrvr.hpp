@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2023, Logical Clocks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -485,13 +485,7 @@ private:
 
   bool m_need_restart;
 
-<<<<<<< HEAD
-  /* sockaddr_in6 is large enough to also fit IPv4 addresses */
-  struct sockaddr_in6 m_connect_address[MAX_NODES];
-  bool is_m_connect_address_set[MAX_NODES];
-=======
   ndb_sockaddr m_connect_address[MAX_NODES];
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   const char *get_connect_address(NodeId node_id,
                                   char *addr_buf,
                                   size_t addr_buf_size);
@@ -612,21 +606,13 @@ private:
                                    BaseString& error_string) const;
   int find_node_type(NodeId nodeid,
                      ndb_mgm_node_type type,
-<<<<<<< HEAD
-                     const sockaddr* client_addr,
-=======
                      const ndb_sockaddr* client_addr,
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
                      const Vector<ConfigNode>& config_nodes,
                      Vector<PossibleNode>& nodes,
                      int& error_code, BaseString& error_string);
   bool alloc_node_id_impl(NodeId& nodeid,
                           ndb_mgm_node_type type,
-<<<<<<< HEAD
-                          const sockaddr* client_addr,
-=======
                           const ndb_sockaddr* client_addr,
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
                           int& error_code, BaseString& error_string,
                           Uint32 timeout_s = 20);
   bool check_node_support_activate();
@@ -650,11 +636,7 @@ public:
    */
   bool alloc_node_id(NodeId& nodeid,
                      ndb_mgm_node_type type,
-<<<<<<< HEAD
-                     const sockaddr* client_addr,
-=======
                      const ndb_sockaddr* client_addr,
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
 		     int& error_code, BaseString& error_string,
                      bool log_event = true,
 		     Uint32 timeout_s = 20);

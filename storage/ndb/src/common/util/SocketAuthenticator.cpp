@@ -27,7 +27,6 @@
 #include <SocketAuthenticator.hpp>
 #include <InputStream.hpp>
 #include <OutputStream.hpp>
-#include <portlib/ndb_socket.h>
 
 #if 0
 #define DEBUG_FPRINTF(arglist) do { fprintf arglist ; } while (0)

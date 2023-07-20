@@ -56,15 +56,6 @@ void setOwnProcessInfoServerAddress(ndb_sockaddr * addr)
   theApiMutex.unlock();
 }
 
-void setOwnProcessInfoServerAddress4(struct sockaddr * addr)
-{
-  theApiMutex.lock();
-  sockaddr_in *addr_in = (sockaddr_in *)addr;
-  singletonInfo.setHostAddress(&addr_in->sin_addr);
-  theApiMutex.unlock();
-}
-
-
 void setOwnProcessInfoPort(Uint16 port)
 {
   theApiMutex.lock();

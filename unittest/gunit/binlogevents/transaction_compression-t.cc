@@ -29,6 +29,9 @@
 #include "libbinlogevents/include/compression/none_dec.h"
 #include "libbinlogevents/include/compression/zstd_comp.h"
 #include "libbinlogevents/include/compression/zstd_dec.h"
+#include "libbinlogevents/include/string/concat.h"
+
+using mysqlns::string::concat;
 
 namespace binary_log {
 namespace transaction {

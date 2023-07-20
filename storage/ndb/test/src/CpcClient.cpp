@@ -463,7 +463,7 @@ int SimpleCpcClient::open_connection() {
   sa.set_port(port);
 
   /* Create socket */
-  cpc_sock = ndb_socket_create(sa.get_address_family());
+  cpc_sock = ndb_socket_create(sa.get_address_family(), false);
   if (!ndb_socket_valid(cpc_sock)) return -1;
 
   if (sa.need_dual_stack())

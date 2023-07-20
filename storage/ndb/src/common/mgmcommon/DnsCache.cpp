@@ -1,6 +1,5 @@
 /*
    Copyright (c) 2020, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -36,7 +35,6 @@ LocalDnsCache::~LocalDnsCache() {
 
 bool LocalDnsCache::getCachedOrResolveAddress(ndb_sockaddr *result,
                                               const char *hostname) {
-  memset(result, 0, sizeof(in6_addr));
   const auto pair = m_resolver_cache.find(hostname);
 
   if (pair != m_resolver_cache.end()) {

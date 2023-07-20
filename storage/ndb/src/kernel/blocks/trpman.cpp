@@ -588,12 +588,6 @@ Trpman::execDBINFO_SCANREQ(Signal *signal)
         row.write_uint32(getOwnNodeId()); // Node id
         row.write_uint32(rnode); // Remote node id
         row.write_uint32(globalTransporterRegistry.getPerformState(rnode)); // State
-<<<<<<< HEAD
-        struct sockaddr_in6 conn_addr =
-            globalTransporterRegistry.get_connect_address(rnode);
-        struct in6_addr addr = conn_addr.sin6_addr;
-        if (IN6_IS_ADDR_UNSPECIFIED(&addr))
-=======
 
         ndb_sockaddr conn_addr = globalTransporterRegistry.get_connect_address(rnode);
         /* Connect address */
@@ -605,34 +599,9 @@ Trpman::execDBINFO_SCANREQ(Signal *signal)
           row.write_string(addr_str);
         }
         else
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
         {
           jam();
           row.write_string("-");
-        }
-        else
-        {
-          if (use_ipv4_socket(rnode) || conn_addr.sin6_family == AF_INET)
-          {
-            /* Connect address */
-            jam();
-            struct sockaddr_in *in4 = (struct sockaddr_in*)&conn_addr;
-            char *addr_str = Ndb_inet_ntop(AF_INET,
-                                           static_cast<void*>(&in4->sin_addr),
-                                           addr_buf,
-                                           sizeof(addr_buf));
-            row.write_string(addr_str);
-          }
-          else
-          {
-          /* Connect address */
-            jam();
-            char *addr_str = Ndb_inet_ntop(AF_INET6,
-                                           static_cast<void*>(&conn_addr.sin6_addr),
-                                           addr_buf,
-                                           sizeof(addr_buf));
-            row.write_string(addr_str);
-          }
         }
 
         /* Bytes sent/received */

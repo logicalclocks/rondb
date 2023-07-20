@@ -34,7 +34,7 @@ int ndb_sockaddr::probe_address_family()
   [[maybe_unused]] ndb_sockaddr dummy(&in6addr_any, 0);
   if (Ndb_getAddr(&dummy, "::") != 0) return AF_INET;
 
-  ndb_socket_t sock = ndb_socket_create(AF_INET6);
+  ndb_socket_t sock = ndb_socket_create(AF_INET6, false);
   // Assume failure creating socket is due to AF_INET6 not supported.
   if (!ndb_socket_valid(sock)) return AF_INET;
   ndb_socket_close(sock);

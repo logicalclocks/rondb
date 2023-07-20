@@ -6705,11 +6705,6 @@ std::pair<size_t, size_t> CountTreesAndPlans(
           ++num_trees;
           num_plans += receiver.count(TablesBetween(0, num_relations));
         });
-
-    // Clean up allocated memory.
-    for (TABLE *table : tables) {
-      destroy(pointer_cast<Fake_TABLE *>(table));
-    }
   }
 
   return {num_trees, num_plans};

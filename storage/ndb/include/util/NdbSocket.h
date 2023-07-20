@@ -56,11 +56,7 @@ public:
   static NdbSocket copy(const NdbSocket &s) { return s; }
 
   void init_from_new(ndb_socket_t);
-<<<<<<< HEAD
-  void init_from_native(socket_t fd) { ndb_socket_create_from_native(s, fd); }
-=======
   void init_from_native(socket_t fd) { ndb_socket_init_from_native(s, fd); }
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   void invalidate();
   int is_valid() const               { return ndb_socket_valid(s); }
   bool has_tls() const               { return ssl; }

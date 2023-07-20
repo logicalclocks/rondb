@@ -385,46 +385,6 @@ MgmApiSession::MgmApiSession(class MgmtSrvr & mgm, ndb_socket_t sock,
   m_errorInsert= 0;
   m_vMajor = m_vMinor = m_vBuild = 0;
 
-<<<<<<< HEAD
-  struct sockaddr_storage addr;
-  char buf[512];
-  char addr_buf[NDB_ADDR_STRLEN];
-  if (ndb_getpeername(sock, (struct sockaddr*)&addr) == 0)
-  {
-    if (addr.ss_family == AF_INET6)
-    {
-      DEBUG_FPRINTF((stderr, "new connection from IPv6\n"));
-      struct sockaddr_in6 *addr6 = (struct sockaddr_in6*)&addr;
-      char *addr_str = Ndb_inet_ntop(AF_INET6,
-                                     static_cast<void*>(&addr6->sin6_addr),
-                                     addr_buf,
-                                     sizeof(addr_buf));
-      char *sockaddr_string = Ndb_combine_address_port(buf, sizeof(buf),
-                                                       addr_str,
-                                                       ntohs((*addr6).sin6_port));
-      m_name.assfmt("%s", sockaddr_string);
-    }
-    else
-    {
-      DEBUG_FPRINTF((stderr, "new connection from IPv4\n"));
-      require(addr.ss_family == AF_INET);
-      struct sockaddr_in *addr4 = (struct sockaddr_in*)&addr;
-      char *addr_str = Ndb_inet_ntop(AF_INET,
-                                     static_cast<void*>(&addr4->sin_addr),
-                                     addr_buf,
-                                     sizeof(addr_buf));
-      char *sockaddr_string = Ndb_combine_address_port(buf, sizeof(buf),
-                                                       addr_str,
-                                                       ntohs((*addr4).sin_port));
-      m_name.assfmt("%s", sockaddr_string);
-    }
-    DBUG_PRINT("info", ("new connection from: %s", m_name.c_str()));
-    DEBUG_FPRINTF((stderr, "new connection from: %s\n", m_name.c_str()));
-  }
-  else
-  {
-    DEBUG_FPRINTF((stderr, "new connection failed\n"));
-=======
   ndb_sockaddr addr;
   if (ndb_getpeername(sock, &addr) == 0)
   {
@@ -437,7 +397,6 @@ MgmApiSession::MgmApiSession(class MgmtSrvr & mgm, ndb_socket_t sock,
                                                      addr_str,
                                                      addr.get_port());
     m_name.assfmt("%s", sockaddr_string);
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
   }
   DBUG_VOID_RETURN;
 }
@@ -612,16 +571,9 @@ MgmApiSession::get_nodeid(Parser_t::Context &,
     return;
   }
 
-<<<<<<< HEAD
-  struct sockaddr_storage addr;
-  {
-    int r = ndb_getpeername(m_secure_socket.ndb_socket(),
-                            (struct sockaddr*)&addr);
-=======
   ndb_sockaddr client_addr;
   {
     int r = ndb_getpeername(m_secure_socket.ndb_socket(), &client_addr);
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
     if (r != 0 )
     {
       m_output->println("result: getpeername() failed, err= %d",
@@ -644,7 +596,7 @@ MgmApiSession::get_nodeid(Parser_t::Context &,
   int error_code = 0;
   if (!m_mgmsrv.alloc_node_id(tmp,
                               (ndb_mgm_node_type)nodetype,
-                              (struct sockaddr*)&addr,
+                              &client_addr,
                               error_code, error_string,
                               log_event,
                               timeout))

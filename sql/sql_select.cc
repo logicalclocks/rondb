@@ -901,17 +901,6 @@ void accumulate_statement_cost(const LEX *lex) {
   lex->thd->m_current_query_cost = total_cost;
 }
 
-static bool has_external_table(Table_ref *query_tables) {
-  for (Table_ref *ref = query_tables; ref != nullptr; ref = ref->next_global) {
-    if (ref->table != nullptr &&
-        (ref->table->file->ht->flags & HTON_SUPPORTS_EXTERNAL_SOURCE) != 0 &&
-        ref->table->s->has_secondary_engine()) {
-      return true;
-    }
-  }
-  return false;
-}
-
 /**
   Checks if a query should be retried using a secondary storage engine.
 

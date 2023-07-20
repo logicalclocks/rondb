@@ -136,11 +136,7 @@ CPCDAPISession::CPCDAPISession(ndb_socket_t sock, CPCD &cpcd)
 }
 
 CPCDAPISession::CPCDAPISession(FILE *f, CPCD &cpcd)
-<<<<<<< HEAD
-    : SocketServer::Session(ndb_socket_create_return(m_create_socket)),
-=======
     : SocketServer::Session(ndb_socket_t{}),
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
       m_cpcd(cpcd),
       m_protocol_version(1) {
   m_input = new FileInputStream(f);

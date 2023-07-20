@@ -183,41 +183,14 @@ void ProcessInfo::setHostAddress(const char * address_string) {
   }
 }
 
-void ProcessInfo::setHostAddress(const struct sockaddr *addr)
-{
-  const struct sockaddr_in6 *in6 = (const struct sockaddr_in6*)addr;
-  if (IN6_IS_ADDR_UNSPECIFIED(&in6->sin6_addr))
-  {
-    return;
-  }
-  if (addr->sa_family == AF_INET6)
-  {
-    setHostAddress(&in6->sin6_addr);
-  }
-  else
-  {
-    const struct sockaddr_in *in = (const struct sockaddr_in*)addr;
-    setHostAddress(&in->sin_addr);
-  }
-}
-
 void ProcessInfo::setHostAddress(Uint32 * signal_data) {
   setHostAddress((const char *) signal_data);
 }
 
 void ProcessInfo::setHostAddress(const ndb_sockaddr * addr) {
   /* If address passed in is a wildcard address, do not use it. */
-<<<<<<< HEAD
-  Ndb_inet_ntop(AF_INET6, addr, host_address, AddressStringLength);
-}
-
-void ProcessInfo::setHostAddress(const struct in_addr * addr) {
-  /* If address passed in is a wildcard address, do not use it. */
-  Ndb_inet_ntop(AF_INET, addr, host_address, AddressStringLength);
-=======
   if (!addr->is_unspecified())
     Ndb_inet_ntop(addr, host_address, AddressStringLength);
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
 }
 
 void ProcessInfo::setAngelPid(Uint32 pid) {

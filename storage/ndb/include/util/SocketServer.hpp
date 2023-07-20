@@ -98,16 +98,10 @@ public:
    *  then  close the socket
    * Returns true if succeeding in binding
    */
-<<<<<<< HEAD
-  static bool tryBind(unsigned short port,
+  static bool tryBind(ndb_sockaddr serv_addr,
                       bool use_only_ipv4 = false,
-                      const char* intface = 0,
                       char* error = nullptr,
                       size_t error_size = 0);
-=======
-  static bool tryBind(ndb_sockaddr serv_addr,
-                      char* error = nullptr, size_t error_size = 0);
->>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6
 
   /**
    * Setup socket

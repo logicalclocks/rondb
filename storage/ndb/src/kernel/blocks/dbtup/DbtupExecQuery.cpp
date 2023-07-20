@@ -104,7 +104,7 @@
 // #define TRACE_INTERPRETER
 
 /* For debugging */
-  static void
+static void
 dump_hex(const Uint32 *p, Uint32 len)
 {
   if(len > 2560)
@@ -129,7 +129,7 @@ dump_hex(const Uint32 *p, Uint32 len)
 }
 
 void Dbtup::copyAttrinfo(Uint32 expectedLen,
-    Uint32 attrInfoIVal)
+                         Uint32 attrInfoIVal)
 {
   ndbassert( expectedLen > 0 || attrInfoIVal == RNIL );
 
@@ -152,7 +152,7 @@ void Dbtup::copyAttrinfo(Uint32 expectedLen,
 }
 
 Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
-    bool interpretedFlag)
+                           bool interpretedFlag)
 {
   /* Get stored procedure */
   StoredProcPtr storedPtr;
@@ -238,9 +238,9 @@ void Dbtup::nextAttrInfoParam(Uint32 storedProcId)
   storedPtr.p->storedParamNo++;
 }
 
-  void
+void
 Dbtup::setInvalidChecksum(Tuple_header *tuple_ptr,
-    const Tablerec * regTabPtr)
+                          const Tablerec * regTabPtr)
 {
   if (regTabPtr->m_bits & Tablerec::TR_Checksum)
   {
@@ -252,11 +252,11 @@ Dbtup::setInvalidChecksum(Tuple_header *tuple_ptr,
   }
 }
 
-  void
+void
 Dbtup::updateChecksum(Tuple_header *tuple_ptr,
-    const Tablerec *regTabPtr,
-    Uint32 old_header,
-    Uint32 new_header)
+                      const Tablerec *regTabPtr,
+                      Uint32 old_header,
+                      Uint32 new_header)
 {
   /**
    * This function is used when only updating the header bits in row.
@@ -274,9 +274,9 @@ Dbtup::updateChecksum(Tuple_header *tuple_ptr,
   }
 }
 
-  void
+void
 Dbtup::setChecksum(Tuple_header* tuple_ptr,
-    const Tablerec* regTabPtr)
+                   const Tablerec* regTabPtr)
 {
   if (regTabPtr->m_bits & Tablerec::TR_Checksum)
   {
@@ -286,9 +286,9 @@ Dbtup::setChecksum(Tuple_header* tuple_ptr,
   }
 }
 
-  Uint32
+Uint32
 Dbtup::calculateChecksum(Tuple_header* tuple_ptr,
-    const Tablerec* regTabPtr)
+                         const Tablerec* regTabPtr)
 {
   Uint32 checksum;
   Uint32 rec_size, *tuple_header;
@@ -326,7 +326,7 @@ Dbtup::calculateChecksum(Tuple_header* tuple_ptr,
   return checksum;
 }
 
-  int
+int
 Dbtup::corruptedTupleDetected(KeyReqStruct *req_struct, Tablerec *regTabPtr)
 {
   Uint32 checksum = calculateChecksum(req_struct->m_tuple_ptr, regTabPtr);
@@ -356,9 +356,9 @@ Dbtup::corruptedTupleDetected(KeyReqStruct *req_struct, Tablerec *regTabPtr)
 /* ----------------------------------------------------------------- */
 /* -----------       INSERT_ACTIVE_OP_LIST            -------------- */
 /* ----------------------------------------------------------------- */
-  bool 
+bool 
 Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
-    KeyReqStruct* req_struct)
+                           KeyReqStruct* req_struct)
 {
   /**
    * We are executing in the LDM thread since this is a write operation.
@@ -468,11 +468,10 @@ Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
   }
 }
 
-  void
+void
 Dbtup::insertActiveOpList(OperationrecPtr regOperPtr,
-    KeyReqStruct* req_struct,
-    Tuple_header *tuple_ptr)
-
+                          KeyReqStruct* req_struct,
+                          Tuple_header *tuple_ptr)
 {
   /**
    * We have already prepared inserting ourselves into the list by
@@ -494,11 +493,11 @@ Dbtup::insertActiveOpList(OperationrecPtr regOperPtr,
   }
 }
 
-  bool
+bool
 Dbtup::setup_read(KeyReqStruct *req_struct,
-    Operationrec* regOperPtr,
-    Tablerec* regTabPtr,
-    bool disk)
+                  Operationrec* regOperPtr,
+                  Tablerec* regTabPtr,
+                  bool disk)
 {
   OperationrecPtr currOpPtr;
   currOpPtr.i= req_struct->m_tuple_ptr->m_operation_ptr_i;
@@ -623,12 +622,12 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
   return false;
 }
 
-  int
+int
 Dbtup::load_diskpage(Signal* signal,
-    Uint32 opRec,
-    Uint32 lkey1,
-    Uint32 lkey2,
-    Uint32 flags)
+                     Uint32 opRec,
+                     Uint32 lkey1,
+                     Uint32 lkey2,
+                     Uint32 flags)
 {
   Ptr<Operationrec> operPtr;
 
@@ -762,7 +761,7 @@ Dbtup::load_diskpage(Signal* signal,
   return res;
 }
 
-  int
+int
 Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec, Uint32 flags)
 {
   Fragrecord * regFragPtr = prepare_fragptr.p;
@@ -804,11 +803,11 @@ Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec, Uint32 flags)
   return res;
 }
 
-  void
+void
 Dbtup::deref_disk_page(Signal *signal,
-    OperationrecPtr operPtr,
-    Fragrecord *regFragPtr,
-    Tablerec *regTabPtr)
+                       OperationrecPtr operPtr,
+                       Fragrecord *regFragPtr,
+                       Tablerec *regTabPtr)
 {
   PagePtr page_ptr;
   Tuple_header* ptr;
@@ -828,7 +827,7 @@ Dbtup::deref_disk_page(Signal *signal,
   ndbrequire(res > 0);
 }
 
-  void
+void
 Dbtup::deref_disk_page_callback(Signal *signal, Uint32 opRec, Uint32 page_id)
 {
   (void)signal;
@@ -837,7 +836,7 @@ Dbtup::deref_disk_page_callback(Signal *signal, Uint32 opRec, Uint32 page_id)
   ndbabort();
 }
 
-  void
+void
 Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
 {
   Ptr<Operationrec> operPtr;
@@ -874,10 +873,10 @@ Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
       page_id);
 }
 
-  void
+void
 Dbtup::disk_page_load_extra_callback(Signal* signal,
-    Uint32 opRec,
-    Uint32 extra_page_id)
+                                     Uint32 opRec,
+                                     Uint32 extra_page_id)
 {
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
@@ -899,13 +898,13 @@ Dbtup::disk_page_load_extra_callback(Signal* signal,
       operPtr.p->m_disk_callback_page);
 }
 
-  int
+int
 Dbtup::load_diskpage_scan(Signal* signal,
-    Uint32 opRec,
-    Uint32 lkey1,
-    Uint32 lkey2,
-    Uint32 tux_flag,
-    Uint32 disk_flag)
+                          Uint32 opRec,
+                          Uint32 lkey1,
+                          Uint32 lkey2,
+                          Uint32 tux_flag,
+                          Uint32 disk_flag)
 {
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
@@ -982,9 +981,10 @@ Dbtup::load_diskpage_scan(Signal* signal,
   return res;
 }
 
-  void
+void
 Dbtup::disk_page_load_scan_callback(Signal* signal, 
-    Uint32 opRec, Uint32 page_id)
+                                    Uint32 opRec,
+                                    Uint32 page_id)
 {
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
@@ -1119,8 +1119,8 @@ void Dbtup::prepare_scan_tux_TUPKEYREQ(Uint32 page_id, Uint32 page_idx)
 }
 
 bool Dbtup::execTUPKEYREQ(Signal* signal,
-    void *_lqhOpPtrP,
-    void *_lqhScanPtrP)
+                          void *_lqhOpPtrP,
+                          void *_lqhScanPtrP)
 {
   Dblqh::TcConnectionrec *lqhOpPtrP = (Dblqh::TcConnectionrec*)_lqhOpPtrP;
   Dblqh::ScanRecord *lqhScanPtrP = (Dblqh::ScanRecord*)_lqhScanPtrP;
@@ -1918,10 +1918,10 @@ do_refresh:
   return false;
 }
 
-  void
+void
 Dbtup::setup_fixed_part(KeyReqStruct* req_struct,
-    Operationrec* regOperPtr,
-    Tablerec* regTabPtr)
+                        Operationrec* regOperPtr,
+                        Tablerec* regTabPtr)
 {
   ndbassert(regOperPtr->op_type == ZINSERT ||
       (! (req_struct->m_tuple_ptr->m_header_bits & Tuple_header::FREE)));
@@ -1936,10 +1936,10 @@ Dbtup::setup_fixed_part(KeyReqStruct* req_struct,
   NDB_PREFETCH_READ((char*)tab_descr);
 }
 
-  void
+void
 Dbtup::setup_lcp_read_copy_tuple(KeyReqStruct* req_struct,
-    Operationrec* regOperPtr,
-    Tablerec* regTabPtr)
+                                 Operationrec* regOperPtr,
+                                 Tablerec* regTabPtr)
 {
   Local_key tmp;
   tmp.m_page_no = req_struct->frag_page_id;
@@ -1973,11 +1973,11 @@ Dbtup::setup_lcp_read_copy_tuple(KeyReqStruct* req_struct,
 /* ---------------------------------------------------------------- */
 /* ------------------------ CONFIRM REQUEST ----------------------- */
 /* ---------------------------------------------------------------- */
-  inline
+inline
 void Dbtup::returnTUPKEYCONF(Signal* signal,
-    KeyReqStruct *req_struct,
-    Operationrec * regOperPtr,
-    TransState trans_state)
+                             KeyReqStruct *req_struct,
+                             Operationrec * regOperPtr,
+                             TransState trans_state)
 {
   /**
    * When we arrive here we have been executing read code and/or write
@@ -2015,9 +2015,10 @@ void Dbtup::returnTUPKEYCONF(Signal* signal,
 /* ----------------------------- READ  ---------------------------- */
 /* ---------------------------------------------------------------- */
 int Dbtup::handleReadReq(Signal* signal,
-    Operationrec* _regOperPtr, // UNUSED, is member of req_struct
-    Tablerec* regTabPtr,
-    KeyReqStruct* req_struct)
+                         // UNUSED, is member of req_struct
+                         Operationrec* _regOperPtr,
+                         Tablerec* regTabPtr,
+                         KeyReqStruct* req_struct)
 {
   Uint32 *dst;
   Uint32 dstLen, start_index;
@@ -2071,9 +2072,9 @@ int Dbtup::handleReadReq(Signal* signal,
 }
 
 static
-  void
+void
 handle_reorg(Dbtup::KeyReqStruct * req_struct,
-    Dbtup::Fragrecord::FragState state)
+             Dbtup::Fragrecord::FragState state)
 {
   Uint32 reorg = req_struct->m_reorg;
   switch(state){
@@ -2101,11 +2102,11 @@ handle_reorg(Dbtup::KeyReqStruct * req_struct,
 /* ---------------------------- UPDATE ---------------------------- */
 /* ---------------------------------------------------------------- */
 int Dbtup::handleUpdateReq(Signal* signal,
-    Operationrec* operPtrP,
-    Fragrecord* regFragPtr,
-    Tablerec* regTabPtr,
-    KeyReqStruct* req_struct,
-    bool disk) 
+                           Operationrec* operPtrP,
+                           Fragrecord* regFragPtr,
+                           Tablerec* regTabPtr,
+                           KeyReqStruct* req_struct,
+                           bool disk) 
 {
   Tuple_header *dst;
   Tuple_header *base= req_struct->m_tuple_ptr, *org;
@@ -2307,15 +2308,15 @@ error:
    order       Array of indexes into tabDesc, dynfix followed by dynvar
  */
 static
-  Uint32*
+Uint32*
 expand_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
-    const Uint32* src,
-    Uint32 row_len,
-    const Uint32 * tabDesc,
-    const Uint16* order,
-    Uint32 dynvar,
-    Uint32 dynfix,
-    Uint32 max_bmlen)
+                const Uint32* src,
+                Uint32 row_len,
+                const Uint32 * tabDesc,
+                const Uint16* order,
+                Uint32 dynvar,
+                Uint32 dynfix,
+                Uint32 max_bmlen)
 {
   /* Copy the bitmap, zeroing out any words not stored in the row. */
   Uint32 *dst_bm_ptr= (Uint32*)dst->m_dyn_data_ptr;
@@ -2407,15 +2408,15 @@ expand_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
 }
 
 static
-  Uint32*
+Uint32*
 shrink_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
-    Uint32 *dst_ptr,
-    const Dbtup::Tablerec* tabPtrP,
-    const Uint32 * tabDesc,
-    const Uint16* order,
-    Uint32 dynvar,
-    Uint32 dynfix,
-    Uint32 ind)
+                Uint32 *dst_ptr,
+                const Dbtup::Tablerec* tabPtrP,
+                const Uint32 * tabDesc,
+                const Uint16* order,
+                Uint32 dynvar,
+                Uint32 dynfix,
+                Uint32 ind)
 {
   /**
    * Now build the dynamic part, if any.
@@ -2549,11 +2550,11 @@ shrink_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
 /* ---------------------------------------------------------------- */
 /* ----------------------------- INSERT --------------------------- */
 /* ---------------------------------------------------------------- */
-  void
+void
 Dbtup::prepare_initial_insert(KeyReqStruct *req_struct, 
-    Operationrec* regOperPtr,
-    Tablerec* regTabPtr,
-    bool is_refresh)
+                              Operationrec* regOperPtr,
+                              Tablerec* regTabPtr,
+                              bool is_refresh)
 {
   Uint32 disk_undo = ((regTabPtr->m_no_of_disk_attributes > 0) &&
       !is_refresh) ? 
@@ -3286,11 +3287,11 @@ disk_prealloc_error:
 /* ---------------------------- DELETE ---------------------------- */
 /* ---------------------------------------------------------------- */
 int Dbtup::handleDeleteReq(Signal* signal,
-    Operationrec* regOperPtr,
-    Fragrecord* regFragPtr,
-    Tablerec* regTabPtr,
-    KeyReqStruct *req_struct,
-    bool disk)
+                           Operationrec* regOperPtr,
+                           Fragrecord* regFragPtr,
+                           Tablerec* regTabPtr,
+                           KeyReqStruct *req_struct,
+                           bool disk)
 {
   Uint32 copy_bits = 0;
   Tuple_header* dst = alloc_copy_tuple(regTabPtr,
@@ -3453,13 +3454,13 @@ error:
   return -1;
 }
 
-  int
+int
 Dbtup::handleRefreshReq(Signal* signal,
-    Ptr<Operationrec> regOperPtr,
-    FragrecordPtr regFragPtr,
-    Tablerec* regTabPtr,
-    KeyReqStruct *req_struct,
-    bool disk)
+                        Ptr<Operationrec> regOperPtr,
+                        FragrecordPtr regFragPtr,
+                        Tablerec* regTabPtr,
+                        KeyReqStruct *req_struct,
+                        bool disk)
 {
   /* Here we setup the tuple so that a transition to its current
    * state can be observed by SUMA's detached triggers.
@@ -3636,10 +3637,10 @@ Dbtup::handleRefreshReq(Signal* signal,
   return 0;
 }
 
-  bool
+bool
 Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
-    Tablerec* regTabPtr,
-    bool is_refresh)
+                           Tablerec* regTabPtr,
+                           bool is_refresh)
 {
   // Implement checking of updating all not null attributes in an insert here.
   Bitmask<MAXNROFATTRIBUTESINWORDS> attributeMask;  
@@ -3741,7 +3742,7 @@ Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
 /* ----------------- INTERPRETED EXECUTION  ----------------------- */
 /* ---------------------------------------------------------------- */
 int Dbtup::interpreterStartLab(Signal* signal,
-    KeyReqStruct *req_struct)
+                               KeyReqStruct *req_struct)
 {
   Operationrec * const regOperPtr = req_struct->operPtrP;
   int TnoDataRW;
@@ -4004,10 +4005,9 @@ int Dbtup::interpreterStartLab(Signal* signal,
 /*               TLOG_END                LAST INDEX + 1 TO LOG      */
 /* ---------------------------------------------------------------- */
 int Dbtup::sendLogAttrinfo(Signal* signal,
-    KeyReqStruct * req_struct,
-    Uint32 TlogSize,
-    Operationrec *  const regOperPtr)
-
+                           KeyReqStruct * req_struct,
+                           Uint32 TlogSize,
+                           Operationrec *  const regOperPtr)
 {
   /* Copy from Log buffer to segmented section,
    * then attach to ATTRINFO and execute direct
@@ -4040,7 +4040,7 @@ int Dbtup::sendLogAttrinfo(Signal* signal,
 }
 
 inline
-  Uint32 
+Uint32 
 Dbtup::brancher(Uint32 TheInstruction, Uint32 TprogramCounter)
 {         
   Uint32 TbranchDirection= TheInstruction >> 31;
@@ -4066,7 +4066,7 @@ Dbtup::brancher(Uint32 TheInstruction, Uint32 TprogramCounter)
 
 const Uint32 *
 Dbtup::lookupInterpreterParameter(Uint32 paramNo,
-    const Uint32 *subptr) const
+                                  const Uint32 *subptr) const
 {
   /**
    * The parameters...are stored in the subroutine section
@@ -4099,14 +4099,14 @@ Dbtup::lookupInterpreterParameter(Uint32 paramNo,
 }
 
 int Dbtup::interpreterNextLab(Signal* signal,
-    KeyReqStruct* req_struct,
-    Uint32* logMemory,
-    Uint32* mainProgram,
-    Uint32 TmainProgLen,
-    Uint32* subroutineProg,
-    Uint32 TsubroutineLen,
-    Uint32 * tmpArea,
-    Uint32 tmpAreaSz)
+                              KeyReqStruct* req_struct,
+                              Uint32* logMemory,
+                              Uint32* mainProgram,
+                              Uint32 TmainProgLen,
+                              Uint32* subroutineProg,
+                              Uint32 TsubroutineLen,
+                              Uint32 * tmpArea,
+                              Uint32 tmpAreaSz)
 {
   Uint32 theRegister;
   Uint32 theInstruction;
@@ -4588,10 +4588,10 @@ int Dbtup::interpreterNextLab(Signal* signal,
 
         // get type
 	attrId >>= 16;
-	const Uint32 TattrDescrIndex = req_struct->tablePtrP->tabDescriptor +
-	  (attrId << ZAD_LOG_SIZE);
-	const Uint32 TattrDesc1 = tableDescriptor[TattrDescrIndex].tabDescr;
-	const Uint32 TattrDesc2 = tableDescriptor[TattrDescrIndex+1].tabDescr;
+	const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
+	  (attrId * ZAD_SIZE);
+	const Uint32 TattrDesc1 = attrDescriptor[0];
+	const Uint32 TattrDesc2 = attrDescriptor[1];
 	const Uint32 typeId = AttributeDescriptor::getType(TattrDesc1);
 	const CHARSET_INFO *cs = nullptr;
 	if (AttributeOffset::getCharsetFlag(TattrDesc2))
@@ -4678,9 +4678,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
           {
             // Get type
             attr2Id >>= 16;
-            const Uint32 Tattr2DescrIndex = req_struct->tablePtrP->tabDescriptor +
-              (attr2Id << ZAD_LOG_SIZE);
-            const Uint32 Tattr2Desc1 = tableDescriptor[Tattr2DescrIndex].tabDescr;
+            const Uint32* attr2Descriptor = req_struct->tablePtrP->tabDescriptor +
+              (attr2Id * ZAD_SIZE);
+            const Uint32 Tattr2Desc1 = attr2Descriptor[0];
             const Uint32 type2Id = AttributeDescriptor::getType(Tattr2Desc1);
 
             argLen = AttributeDescriptor::getSizeInBytes(Tattr2Desc1);
@@ -5018,12 +5018,12 @@ int Dbtup::interpreterNextLab(Signal* signal,
  * num_vars    no of atributes to expand
  */
 static
-  Uint32*
+Uint32*
 expand_var_part(Dbtup::KeyReqStruct::Var_data *dst, 
-    const Uint32* src, 
-    const Uint32 * tabDesc, 
-    const Uint16* order,
-    EmulatedJamBuffer *jamBuf)
+                const Uint32* src, 
+                const Uint32 * tabDesc, 
+                const Uint16* order,
+                EmulatedJamBuffer *jamBuf)
 {
   char* dst_ptr= dst->m_data_ptr;
   Uint32 num_vars = dst->m_var_len_offset;
@@ -5055,13 +5055,13 @@ expand_var_part(Dbtup::KeyReqStruct::Var_data *dst,
   return ALIGN_WORD(dst_ptr);
 }
 
-  void
+void
 Dbtup::expand_tuple(KeyReqStruct* req_struct, 
-    Uint32 sizes[2],
-    Tuple_header* src, 
-    const Tablerec* tabPtrP,
-    bool disk,
-    bool from_lcp_keep)
+                    Uint32 sizes[2],
+                    Tuple_header* src, 
+                    const Tablerec* tabPtrP,
+                    bool disk,
+                    bool from_lcp_keep)
 {
   /**
    * The source tuple only touches the header parts. The updates of the

@@ -843,8 +843,6 @@ INCLUDE(win_jemalloc)
 INCLUDE(msvc_cppcheck)
 INCLUDE(base64)
 
-MSVC_CPPCHECK()
-
 IF(UNIX)
   OPTION(WITH_VALGRIND "Valgrind instrumentation" OFF)
 ENDIF()
