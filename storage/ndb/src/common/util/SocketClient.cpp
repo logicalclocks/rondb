@@ -62,7 +62,11 @@ SocketClient::init(int af, bool use_only_ipv4)
   if (ndb_socket_valid(m_sockfd))
     ndb_socket_close(m_sockfd);
 
-  m_sockfd= ndb_socket_create(af, use_only_ipv4);
+  if (use_only_ipv4)
+  {
+    af = AF_INET;
+  }
+  m_sockfd= ndb_socket_create(af);
   if (!ndb_socket_valid(m_sockfd)) {
     return false;
   }
@@ -154,7 +158,7 @@ SocketClient::connect(NdbSocket & secureSocket,
   }
 
   // Start non blocking connect
-  DEBUG_FPRINTF((stderr, "Connect to %s:%u\n", server_hostname, server_port));
+  DEBUG_FPRINTF((stderr, "Connect TCP\n"));
   int r = ndb_connect(m_sockfd, &server_addr);
   if (r == 0)
     goto done; // connected immediately.

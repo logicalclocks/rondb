@@ -390,7 +390,7 @@ ConfigRetriever::verifyConfig(const ndb_mgm_configuration *conf,
 
     ndb_sockaddr addr(port);
     char msg[150];
-    if (!SocketServer::tryBind(addr, false, msg, sizeof(msg))) {
+    if (!SocketServer::tryBind(addr, msg, sizeof(msg))) {
       BaseString::snprintf(buf, 255,
                            "Mgmd node is started on port that is "
                            "already in use. Attempt to bind '*:%d' "

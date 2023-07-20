@@ -92,14 +92,13 @@ public:
    */
   SocketServer(unsigned maxSessions = ~(unsigned)0);
   ~SocketServer();
-  
+
   /**
    * Set up socket and bind it
    *  then  close the socket
    * Returns true if succeeding in binding
    */
   static bool tryBind(ndb_sockaddr serv_addr,
-                      bool use_only_ipv4 = false,
                       char* error = nullptr,
                       size_t error_size = 0);
 

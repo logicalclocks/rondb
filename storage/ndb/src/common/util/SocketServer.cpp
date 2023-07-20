@@ -69,12 +69,11 @@ SocketServer::~SocketServer() {
 }
 
 bool SocketServer::tryBind(ndb_sockaddr servaddr,
-                           bool use_only_ipv4,
                            char* error,
                            size_t error_size)
 {
-  const ndb_socket_t sock = ndb_socket_create(servaddr.get_address_family(),
-                                              use_only_ipv4);
+  int af = servaddr.get_address_family();
+  const ndb_socket_t sock = ndb_socket_create(af);
 
   if (!ndb_socket_valid(sock))
     return false;
@@ -112,8 +111,12 @@ SocketServer::setup(SocketServer::Service * service, ndb_sockaddr* servaddr)
 {
   DBUG_ENTER("SocketServer::setup");
 
-  const ndb_socket_t sock = ndb_socket_create(servaddr->get_address_family(),
-                                              m_use_only_ipv4);
+  int af = servaddr->get_address_family();
+  if (m_use_only_ipv4)
+  {
+    af = AF_INET;
+  }
+  const ndb_socket_t sock = ndb_socket_create(af);
 
   if (!ndb_socket_valid(sock))
   {
@@ -122,7 +125,7 @@ SocketServer::setup(SocketServer::Service * service, ndb_sockaddr* servaddr)
     DBUG_RETURN(false);
   }
 
-  if (servaddr->need_dual_stack())
+  if (!m_use_only_ipv4 && servaddr->need_dual_stack())
   {
     [[maybe_unused]] bool ok = ndb_socket_dual_stack(sock, 1);
   }
@@ -170,8 +173,7 @@ SocketServer::setup(SocketServer::Service * service, ndb_sockaddr* servaddr)
     DBUG_RETURN(false);
   }
 
-  DEBUG_FPRINTF((stderr, "Listening on port: %u\n",
-                (Uint32)*port));
+  DEBUG_FPRINTF((stderr, "Listening on port\n"));
 
   ServiceInstance i;
   i.m_socket = sock;

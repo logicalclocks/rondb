@@ -55,15 +55,8 @@ ndb_socket_create_from_native(ndb_socket_t &s,
 }
 
 static inline
-void ndb_socket_create(ndb_socket_t &sock)
+ndb_socket_t ndb_socket_create(int af)
 {
-  sock.s = INVALID_SOCKET;
-}
-
-static inline
-ndb_socket_t ndb_socket_create(int af, bool use_only_ipv4)
-{
-  (void)use_only_ipv4;
   return ndb_socket_t{socket(af, SOCK_STREAM, IPPROTO_TCP)};
 }
 
@@ -97,7 +90,7 @@ int ndb_getsockopt(ndb_socket_t s, int level, int optname, int *optval)
 {
   socklen_t optlen = sizeof(int);
   int r = getsockopt(s.s, level, optname, (char*)optval, &optlen);
-  return (r == -1) ? -1 : 0;
+  return r ? -1 : 0;
 }
 
 // Returns 0 on success, -1 on error
@@ -105,7 +98,7 @@ static inline
 int ndb_setsockopt(ndb_socket_t s, int level, int optname, const int *optval)
 {
   int r = setsockopt(s.s, level, optname, (const char*)optval, sizeof(int));
-  return (r == -1) ? -1 : 0;
+  return r ? -1 : 0;
 }
 
 // Returns 0 on success, -1 on error
@@ -131,13 +124,6 @@ static inline
 int ndb_bind(ndb_socket_t s, const ndb_sockaddr *addr)
 {
   int r = bind(s.s, addr->get_sockaddr(), addr->get_sockaddr_len());
-  return r ? -1 : 0;
-}
-
-static inline
-int ndb_bind_inet4(ndb_socket_t s, const struct sockaddr_in *addr)
-{
-  int r = bind(s.s, (const struct sockaddr*)addr, sizeof(struct sockaddr_in));
   return r ? -1 : 0;
 }
 
@@ -201,17 +187,6 @@ int ndb_getsockname(ndb_socket_t s, ndb_sockaddr *addr)
   return 0;
 }
 
-// Returns 0 on success, 1 on error
-static inline
-int ndb_getsockname4(ndb_socket_t s, struct sockaddr_in *addr)
-{
-  socklen_t len = sizeof(struct sockaddr_in);
-  if(getsockname(s.s, (struct sockaddr*) addr, &len))
-    return 1;
-
-  return 0;
-}
-
 // Returns 0 on success or ndb_socket_errno() on failure
 static inline
 int ndb_socket_connect_address(ndb_socket_t s, ndb_sockaddr *a)
@@ -229,19 +204,6 @@ int ndb_socket_get_port(ndb_socket_t s, unsigned short *port)
   if(ndb_getsockname(s, &servaddr) < 0) return 1;
 
   *port= servaddr.get_port();
-  return 0;
-}
-
-static inline
-int ndb_socket_get_port4(ndb_socket_t s, unsigned short *port)
-{
-  struct sockaddr_in servaddr;
-  socklen_t sock_len = sizeof(servaddr);
-  if(getsockname(s.s, (struct sockaddr*)&servaddr, &sock_len) < 0) {
-    return 1;
-  }
-
-  *port= ntohs(servaddr.sin_port);
   return 0;
 }
 
