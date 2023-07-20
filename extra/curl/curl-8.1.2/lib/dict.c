@@ -312,11 +312,7 @@ static CURLcode dict_do(struct Curl_easy *data, bool *done)
     }
   }
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/dict.c
-  error:
-========
 error:
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/dict.c
   free(eword);
   free(path);
   return result;

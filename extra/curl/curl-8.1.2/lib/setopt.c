@@ -901,11 +901,7 @@ CURLcode Curl_vsetopt(struct Curl_easy *data, CURLoption option, va_list param)
     case CURL_HTTP_VERSION_NONE:
 #ifdef USE_HTTP2
       /* TODO: this seems an undesirable quirk to force a behaviour on
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/setopt.c
-       * lower implementations that they should recognize independantly? */
-========
        * lower implementations that they should recognize independently? */
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/setopt.c
       arg = CURL_HTTP_VERSION_2TLS;
 #endif
       /* accepted */

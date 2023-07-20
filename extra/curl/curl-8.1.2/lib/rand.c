@@ -30,13 +30,10 @@
 #ifdef HAVE_ARPA_INET_H
 #include <arpa/inet.h>
 #endif
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/rand.c
-========
 #ifdef HAVE_ARC4RANDOM
 /* Some platforms might have the prototype missing (ubuntu + libressl) */
 uint32_t arc4random(void);
 #endif
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/rand.c
 
 #include <curl/curl.h>
 #include "vtls/vtls.h"

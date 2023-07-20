@@ -22,14 +22,14 @@
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 
-#ifndef ROUTING_CLASSIC_STMT_PARAM_APPEND_DATA_FORWARDER_INCLUDED
-#define ROUTING_CLASSIC_STMT_PARAM_APPEND_DATA_FORWARDER_INCLUDED
+#ifndef ROUTING_CLASSIC_QUIT_SENDER_INCLUDED
+#define ROUTING_CLASSIC_QUIT_SENDER_INCLUDED
 
-#include "forwarding_processor.h"
+#include "processor.h"
 
-class StmtParamAppendDataForwarder : public ForwardingProcessor {
+class QuitSender : public Processor {
  public:
-  using ForwardingProcessor::ForwardingProcessor;
+  using Processor::Processor;
 
   enum class Stage {
     Command,

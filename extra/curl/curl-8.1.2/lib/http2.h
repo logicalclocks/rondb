@@ -38,11 +38,6 @@
  */
 void Curl_http2_ver(char *p, size_t len);
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/http2.h
-const char *Curl_http2_strerror(uint32_t err);
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/http2.h
 CURLcode Curl_http2_request_upgrade(struct dynbuf *req,
                                     struct Curl_easy *data);
 
@@ -52,11 +47,6 @@ bool Curl_h2_http_1_1_error(struct Curl_easy *data);
 bool Curl_conn_is_http2(const struct Curl_easy *data,
                         const struct connectdata *conn,
                         int sockindex);
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/http2.h
-bool Curl_cf_is_http2(struct Curl_cfilter *cf, const struct Curl_easy *data);
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/http2.h
 bool Curl_http2_may_switch(struct Curl_easy *data,
                            struct connectdata *conn,
                            int sockindex);

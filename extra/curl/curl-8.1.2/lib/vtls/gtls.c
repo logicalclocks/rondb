@@ -1252,11 +1252,7 @@ static CURLcode gtls_verifyserver(struct Curl_cfilter *cf,
   if(result)
     goto out;
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/gtls.c
-  if(cf->conn->bits.tls_enable_alpn) {
-========
   if(connssl->alpn) {
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/gtls.c
     gnutls_datum_t proto;
     int rc;
 

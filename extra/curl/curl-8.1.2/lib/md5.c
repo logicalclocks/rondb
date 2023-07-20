@@ -66,19 +66,12 @@
 #include <mbedtls/md5.h>
 #elif (defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && \
               (__MAC_OS_X_VERSION_MAX_ALLOWED >= 1040) && \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/md5.c
-       defined(__MAC_OS_X_VERSION_MIN_ALLOWED) && \
-              (__MAC_OS_X_VERSION_MIN_ALLOWED < 101500)) || \
-      (defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && \
-              (__IPHONE_OS_VERSION_MAX_ALLOWED >= 20000))
-========
        defined(__MAC_OS_X_VERSION_MIN_REQUIRED) && \
               (__MAC_OS_X_VERSION_MIN_REQUIRED < 101500)) || \
       (defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && \
               (__IPHONE_OS_VERSION_MAX_ALLOWED >= 20000) && \
        defined(__IPHONE_OS_VERSION_MIN_REQUIRED) && \
               (__IPHONE_OS_VERSION_MIN_REQUIRED < 130000))
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/md5.c
 #define AN_APPLE_OS
 #include <CommonCrypto/CommonDigest.h>
 #elif defined(USE_WIN32_CRYPTO)

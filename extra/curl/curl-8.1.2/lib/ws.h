@@ -41,22 +41,6 @@ enum ws_dec_state {
   WS_DEC_PAYLOAD
 };
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/ws.h
-/* part of 'struct HTTP', when used in the 'struct SingleRequest' in the
-   Curl_easy struct */
-struct websocket {
-  bool contfragment; /* set TRUE if the previous fragment sent was not final */
-  unsigned char mask[4]; /* 32 bit mask for this connection */
-  struct Curl_easy *data; /* used for write callback handling */
-  struct dynbuf buf;
-  size_t usedbuf; /* number of leading bytes in 'buf' the most recent complete
-                     websocket frame uses */
-  struct curl_ws_frame frame; /* the struct used for frame state */
-  size_t stillblen; /* number of bytes left in the buffer to deliver in
-                         the next curl_ws_recv() call */
-  const char *stillb; /* the stillblen pending bytes are here */
-  curl_off_t sleft; /* outstanding number of payload bytes left to send */
-========
 struct ws_decoder {
   int frame_age;        /* zero */
   int frame_flags;      /* See the CURLWS_* defines */
@@ -72,7 +56,6 @@ struct ws_decoder {
 struct ws_encoder {
   curl_off_t payload_len;  /* payload length of current frame */
   curl_off_t payload_remain;  /* remaining payload of current */
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/ws.h
   unsigned int xori; /* xor index */
   unsigned char mask[4]; /* 32 bit mask for this connection */
   unsigned char firstbyte; /* first byte of frame we encode */
@@ -90,13 +73,6 @@ struct websocket {
   struct curl_ws_frame frame;  /* the current WS FRAME received */
 };
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/ws.h
-struct ws_conn {
-  struct dynbuf early; /* data already read when switching to ws */
-};
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/ws.h
 CURLcode Curl_ws_request(struct Curl_easy *data, REQTYPE *req);
 CURLcode Curl_ws_accept(struct Curl_easy *data, const char *mem, size_t len);
 size_t Curl_ws_writecb(char *buffer, size_t size, size_t nitems, void *userp);

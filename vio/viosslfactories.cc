@@ -42,10 +42,6 @@
 
 #include <dh_ecdh_config.h>
 
-#if OPENSSL_VERSION_NUMBER < 0x30000000L
-#include <dh_keys.h>
-#endif /* OPENSSL_VERSION_NUMBER < 0x30000000L */
-
 #include "my_openssl_fips.h"
 #define TLS_VERSION_OPTION_SIZE 256
 

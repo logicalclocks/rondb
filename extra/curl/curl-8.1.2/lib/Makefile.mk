@@ -103,13 +103,8 @@ endif
 ### Optional features
 
 ifneq ($(findstring -debug,$(CFG)),)
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.mk
-  CPPFLAGS += -DDEBUGBUILD
-  LDFLAGS += -g
-========
   CFLAGS += -g
   CPPFLAGS += -DDEBUGBUILD
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.mk
 else
   CPPFLAGS += -DNDEBUG
 endif
@@ -323,14 +318,6 @@ ifneq ($(findstring -watt,$(CFG))$(MSDOS),)
   _LIBS += -lwatt
 endif
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.mk
-ifneq ($(findstring -watt,$(CFG))$(MSDOS),)
-  WATT_PATH ?= $(PROOT)/../watt
-  CPPFLAGS += -I"$(WATT_PATH)/inc"
-  _LDFLAGS += -L"$(WATT_PATH)/lib"
-  _LIBS += -lwatt
-endif
-
 ifdef WIN32
   ifeq ($(findstring -lldap,$(LIBS)),)
     _LIBS += -lwldap32
@@ -338,15 +325,6 @@ ifdef WIN32
   _LIBS += -lws2_32 -lcrypt32 -lbcrypt
 endif
 
-========
-ifdef WIN32
-  ifeq ($(findstring -lldap,$(LIBS)),)
-    _LIBS += -lwldap32
-  endif
-  _LIBS += -lws2_32 -lcrypt32 -lbcrypt
-endif
-
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.mk
 ifneq ($(findstring 11,$(subst $(subst ,, ),,$(SSLLIBS))),)
   CPPFLAGS += -DCURL_WITH_MULTI_SSL
 endif

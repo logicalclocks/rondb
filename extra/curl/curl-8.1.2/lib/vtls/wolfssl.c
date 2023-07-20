@@ -280,22 +280,16 @@ static long bio_cf_ctrl(WOLFSSL_BIO *bio, int cmd, long num, void *ptr)
 static int bio_cf_out_write(WOLFSSL_BIO *bio, const char *buf, int blen)
 {
   struct Curl_cfilter *cf = wolfSSL_BIO_get_data(bio);
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/wolfssl.c
-========
   struct ssl_connect_data *connssl = cf->ctx;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/wolfssl.c
   struct Curl_easy *data = CF_DATA_CURRENT(cf);
   ssize_t nwritten;
   CURLcode result = CURLE_OK;
 
   DEBUGASSERT(data);
   nwritten = Curl_conn_cf_send(cf->next, data, buf, blen, &result);
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/wolfssl.c
-========
   connssl->backend->io_result = result;
   DEBUGF(LOG_CF(data, cf, "bio_write(len=%d) -> %zd, %d",
                 blen, nwritten, result));
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/wolfssl.c
   wolfSSL_BIO_clear_retry_flags(bio);
   if(nwritten < 0 && CURLE_AGAIN == result)
     BIO_set_retry_read(bio);
@@ -305,10 +299,7 @@ static int bio_cf_out_write(WOLFSSL_BIO *bio, const char *buf, int blen)
 static int bio_cf_in_read(WOLFSSL_BIO *bio, char *buf, int blen)
 {
   struct Curl_cfilter *cf = wolfSSL_BIO_get_data(bio);
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/wolfssl.c
-========
   struct ssl_connect_data *connssl = cf->ctx;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/wolfssl.c
   struct Curl_easy *data = CF_DATA_CURRENT(cf);
   ssize_t nread;
   CURLcode result = CURLE_OK;
@@ -319,12 +310,9 @@ static int bio_cf_in_read(WOLFSSL_BIO *bio, char *buf, int blen)
     return 0;
 
   nread = Curl_conn_cf_recv(cf->next, data, buf, blen, &result);
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/wolfssl.c
-========
   connssl->backend->io_result = result;
   DEBUGF(LOG_CF(data, cf, "bio_read(len=%d) -> %zd, %d",
                 blen, nread, result));
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/wolfssl.c
   wolfSSL_BIO_clear_retry_flags(bio);
   if(nread < 0 && CURLE_AGAIN == result)
     BIO_set_retry_read(bio);
@@ -866,11 +854,7 @@ wolfssl_connect_step2(struct Curl_cfilter *cf, struct Curl_easy *data)
   }
 
 #ifdef HAVE_ALPN
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/wolfssl.c
-  if(cf->conn->bits.tls_enable_alpn) {
-========
   if(connssl->alpn) {
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/wolfssl.c
     int rc;
     char *protocol = NULL;
     unsigned short protocol_len = 0;
@@ -1031,12 +1015,7 @@ static void wolfssl_close(struct Curl_cfilter *cf, struct Curl_easy *data)
 
 static ssize_t wolfssl_recv(struct Curl_cfilter *cf,
                             struct Curl_easy *data,
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/wolfssl.c
-                            char *buf,
-                            size_t buffersize,
-========
                             char *buf, size_t blen,
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/wolfssl.c
                             CURLcode *curlcode)
 {
   struct ssl_connect_data *connssl = cf->ctx;

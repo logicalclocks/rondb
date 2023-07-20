@@ -122,10 +122,7 @@ enum nametype {
 bool Curl_check_noproxy(const char *name, const char *no_proxy,
                         bool *spacesep)
 {
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/noproxy.c
-========
   char hostip[128];
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/noproxy.c
   *spacesep = FALSE;
   /*
    * If we don't have a hostname at all, like for example with a FILE

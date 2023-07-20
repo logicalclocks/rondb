@@ -129,15 +129,11 @@
 #define ARRAYSIZE(A) (sizeof(A)/sizeof((A)[0]))
 #endif
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/url.c
-static void conn_free(struct Curl_easy *data, struct connectdata *conn);
-========
 #ifdef USE_NGHTTP2
 static void data_priority_cleanup(struct Curl_easy *data);
 #else
 #define data_priority_cleanup(x)
 #endif
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/url.c
 
 /* Some parts of the code (e.g. chunked encoding) assume this buffer has at
  * more than just a few bytes to play with. Don't let it become too small or
@@ -410,9 +406,6 @@ CURLcode Curl_close(struct Curl_easy **datap)
   Curl_dyn_free(&data->state.headerb);
   Curl_safefree(data->state.ulbuf);
   Curl_flush_cookies(data, TRUE);
-#ifndef CURL_DISABLE_COOKIES
-  curl_slist_free_all(data->set.cookielist); /* clean up list */
-#endif
   Curl_altsvc_save(data, data->asi, data->set.str[STRING_ALTSVC]);
   Curl_altsvc_cleanup(&data->asi);
   Curl_hsts_save(data, data->hsts, data->set.str[STRING_HSTS]);
@@ -431,11 +424,7 @@ CURLcode Curl_close(struct Curl_easy **datap)
   Curl_resolver_cancel(data);
   Curl_resolver_cleanup(data->state.async.resolver);
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/url.c
-  Curl_data_priority_cleanup(data);
-========
   data_priority_cleanup(data);
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/url.c
 
   /* No longer a dirty share, if it exists */
   if(data->share) {
@@ -735,11 +724,6 @@ static void conn_free(struct Curl_easy *data, struct connectdata *conn)
   Curl_safefree(conn->conn_to_host.rawalloc); /* host name buffer */
   Curl_safefree(conn->hostname_resolve);
   Curl_safefree(conn->secondaryhostname);
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/url.c
-
-  Curl_llist_destroy(&conn->easyq, NULL);
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/url.c
   Curl_safefree(conn->localdev);
   Curl_free_primary_ssl_config(&conn->ssl_config);
 
@@ -951,9 +935,6 @@ static bool extract_if_dead(struct connectdata *conn,
 
     }
     else {
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/url.c
-      dead = !Curl_conn_is_alive(data, conn);
-========
       bool input_pending;
 
       dead = !Curl_conn_is_alive(data, conn, &input_pending);
@@ -968,7 +949,6 @@ static bool extract_if_dead(struct connectdata *conn,
          */
         dead = TRUE;
       }
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/url.c
     }
 
     if(dead) {
@@ -1175,22 +1155,12 @@ ConnectionExists(struct Curl_easy *data,
         }
       }
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/url.c
-        if(!Curl_conn_is_connected(check, FIRSTSOCKET)) {
-          foundPendingCandidate = TRUE;
-          /* Don't pick a connection that hasn't connected yet */
-          infof(data, "Connection #%ld isn't open enough, can't reuse",
-                check->connection_id);
-          continue;
-        }
-========
       if(!Curl_conn_is_connected(check, FIRSTSOCKET)) {
         foundPendingCandidate = TRUE;
         /* Don't pick a connection that hasn't connected yet */
         infof(data, "Connection #%ld isn't open enough, can't reuse",
               check->connection_id);
         continue;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/url.c
       }
 
 #ifdef USE_UNIX_SOCKETS
@@ -1254,14 +1224,8 @@ ConnectionExists(struct Curl_easy *data,
                                         &check->proxy_ssl_config))
               continue;
           }
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/url.c
-
-          if(!Curl_ssl_config_matches(&needle->ssl_config,
-                                      &check->ssl_config))
-========
           else if(!Curl_ssl_config_matches(&needle->ssl_config,
                                            &check->ssl_config))
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/url.c
             continue;
         }
       }
@@ -1533,13 +1497,6 @@ static struct connectdata *allocate_conn(struct Curl_easy *data)
   if(!conn)
     return NULL;
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/url.c
-  conn->handler = &Curl_handler_dummy;  /* Be sure we have a handler defined
-                                           already from start to avoid NULL
-                                           situations and checks */
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/url.c
   /* and we setup a few fields in case we end up actually using this struct */
 
   conn->sock[FIRSTSOCKET] = CURL_SOCKET_BAD;     /* no file descriptor */
@@ -1862,14 +1819,6 @@ static CURLcode parseurlandfillconn(struct Curl_easy *data,
   result = Curl_idnconvert_hostname(&conn->host);
   if(result)
     return result;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/url.c
-  if(conn->bits.conn_to_host) {
-    result = Curl_idnconvert_hostname(&conn->conn_to_host);
-    if(result)
-      return result;
-  }
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/url.c
 
 #ifndef CURL_DISABLE_HSTS
   /* HSTS upgrade */
@@ -3530,14 +3479,11 @@ static CURLcode create_conn(struct Curl_easy *data,
       return result;
   }
 #endif
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/url.c
-========
   if(conn->bits.conn_to_host) {
     result = Curl_idnconvert_hostname(&conn->conn_to_host);
     if(result)
       return result;
   }
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/url.c
 
   /*************************************************************
    * Check whether the host and the "connect to host" are equal.
@@ -4085,15 +4031,9 @@ CURLcode Curl_data_priority_add_child(struct Curl_easy *parent,
 
 #endif /* USE_NGHTTP2 */
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/url.c
-void Curl_data_priority_cleanup(struct Curl_easy *data)
-{
-#ifdef USE_NGHTTP2
-========
 #ifdef USE_NGHTTP2
 static void data_priority_cleanup(struct Curl_easy *data)
 {
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/url.c
   while(data->set.priority.children) {
     struct Curl_easy *tmp = data->set.priority.children->data;
     priority_remove_child(data, tmp);
@@ -4103,14 +4043,8 @@ static void data_priority_cleanup(struct Curl_easy *data)
 
   if(data->set.priority.parent)
     priority_remove_child(data->set.priority.parent, data);
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/url.c
-#endif
-  (void)data;
-}
-========
 }
 #endif
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/url.c
 
 void Curl_data_priority_clear_state(struct Curl_easy *data)
 {

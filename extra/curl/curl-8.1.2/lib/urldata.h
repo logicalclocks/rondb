@@ -1030,11 +1030,7 @@ struct connectdata {
     struct mqtt_conn mqtt;
 #endif
 #ifdef USE_WEBSOCKETS
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/urldata.h
-    struct ws_conn ws;
-========
     struct websocket *ws;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/urldata.h
 #endif
   } proto;
 
@@ -1053,10 +1049,6 @@ struct connectdata {
      wrong connections. */
   char *localdev;
   unsigned short localportrange;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/urldata.h
-  int cselect_bits; /* bitmask of socket events */
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/urldata.h
   int waitfor;      /* current READ/WRITE bits to wait for */
 #if defined(HAVE_GSSAPI) || defined(USE_WINDOWS_SSPI)
   int socks5_gssapi_enctype;
@@ -1377,12 +1369,6 @@ struct UrlState {
   curl_off_t infilesize; /* size of file to upload, -1 means unknown.
                             Copied from set.filesize at start of operation */
 #if defined(USE_HTTP2) || defined(USE_HTTP3)
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/urldata.h
-  size_t drain; /* Increased when this stream has data to read, even if its
-                   socket is not necessarily is readable. Decreased when
-                   checked. */
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/urldata.h
   struct Curl_data_priority priority; /* shallow copy of data->set */
 #endif
 
@@ -1475,10 +1461,7 @@ struct UrlState {
   BIT(rewindbeforesend);/* TRUE when the sending couldn't be stopped even
                            though it will be discarded. We must call the data
                            rewind callback before trying to send again. */
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/urldata.h
-========
   BIT(upload);         /* upload request */
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/urldata.h
 };
 
 /*

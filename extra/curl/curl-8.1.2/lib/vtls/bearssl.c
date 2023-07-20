@@ -849,11 +849,7 @@ static CURLcode bearssl_connect_step3(struct Curl_cfilter *cf,
   DEBUGASSERT(ssl_connect_3 == connssl->connecting_state);
   DEBUGASSERT(backend);
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/bearssl.c
-  if(cf->conn->bits.tls_enable_alpn) {
-========
   if(connssl->alpn) {
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/bearssl.c
     const char *proto;
 
     proto = br_ssl_engine_get_selected_protocol(&backend->ctx.eng);
@@ -901,11 +897,7 @@ static ssize_t bearssl_send(struct Curl_cfilter *cf, struct Curl_easy *data,
 
   for(;;) {
     *err = bearssl_run_until(cf, data, BR_SSL_SENDAPP);
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/bearssl.c
-    if (*err != CURLE_OK)
-========
     if(*err)
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/bearssl.c
       return -1;
     app = br_ssl_engine_sendapp_buf(&backend->ctx.eng, &applen);
     if(!app) {

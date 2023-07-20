@@ -511,12 +511,8 @@ static void close_async_handshake(struct ssl_connect_data *connssl)
   BACKEND->iocport = -1;
 }
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/gskit.c
-static int pipe_ssloverssl(struct Curl_cfilter *cf, int directions)
-========
 static int pipe_ssloverssl(struct Curl_cfilter *cf, struct Curl_easy *data,
                            int directions)
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/gskit.c
 {
   struct ssl_connect_data *connssl = cf->ctx;
   struct Curl_cfilter *cf_ssl_next = Curl_ssl_cf_get_ssl(cf->next);
@@ -599,11 +595,7 @@ static void close_one(struct Curl_cfilter *cf, struct Curl_easy *data)
     gskit_status(data, gsk_secure_soc_close(&BACKEND->handle),
               "gsk_secure_soc_close()", 0);
     /* Last chance to drain output. */
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/gskit.c
-    while(pipe_ssloverssl(cf, SOS_WRITE) > 0)
-========
     while(pipe_ssloverssl(cf, data, SOS_WRITE) > 0)
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/gskit.c
       ;
     BACKEND->handle = (gsk_handle) NULL;
     if(BACKEND->localfd >= 0) {
@@ -630,21 +622,13 @@ static ssize_t gskit_send(struct Curl_cfilter *cf, struct Curl_easy *data,
 
   DEBUGASSERT(BACKEND);
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/gskit.c
-  if(pipe_ssloverssl(cf, SOS_WRITE) >= 0) {
-========
   if(pipe_ssloverssl(cf, data, SOS_WRITE) >= 0) {
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/gskit.c
     cc = gskit_status(data,
                       gsk_secure_soc_write(BACKEND->handle,
                                            (char *) mem, (int) len, &written),
                       "gsk_secure_soc_write()", CURLE_SEND_ERROR);
     if(cc == CURLE_OK)
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/gskit.c
-      if(pipe_ssloverssl(cf, SOS_WRITE) < 0)
-========
       if(pipe_ssloverssl(cf, data, SOS_WRITE) < 0)
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/gskit.c
         cc = CURLE_SEND_ERROR;
   }
   if(cc != CURLE_OK) {
@@ -666,11 +650,7 @@ static ssize_t gskit_recv(struct Curl_cfilter *cf, struct Curl_easy *data,
   (void)data;
   DEBUGASSERT(BACKEND);
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/gskit.c
-  if(pipe_ssloverssl(cf, SOS_READ) >= 0) {
-========
   if(pipe_ssloverssl(cf, data, SOS_READ) >= 0) {
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/gskit.c
     int buffsize = buffersize > (size_t) INT_MAX? INT_MAX: (int) buffersize;
     cc = gskit_status(data, gsk_secure_soc_read(BACKEND->handle,
                                                 buf, buffsize, &nread),
@@ -737,11 +717,7 @@ static CURLcode gskit_connect_step1(struct Curl_cfilter *cf,
   gsk_handle envir;
   CURLcode result;
   const char * const keyringfile = conn_config->CAfile;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/gskit.c
-  const char * const keyringpwd = conn_config->key_passwd;
-========
   const char * const keyringpwd = ssl_config->key_passwd;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/gskit.c
   const char * const keyringlabel = ssl_config->primary.clientcert;
   const long int ssl_version = conn_config->version;
   const bool verifypeer = conn_config->verifypeer;
@@ -1136,11 +1112,7 @@ static CURLcode gskit_connect_common(struct Curl_cfilter *cf,
 
   /* Handle handshake pipelining. */
   if(!result)
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/gskit.c
-    if(pipe_ssloverssl(cf, SOS_READ | SOS_WRITE) < 0)
-========
     if(pipe_ssloverssl(cf, data, SOS_READ | SOS_WRITE) < 0)
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/gskit.c
       result = CURLE_SSL_CONNECT_ERROR;
 
   /* Step 2: check if handshake is over. */
@@ -1159,11 +1131,7 @@ static CURLcode gskit_connect_common(struct Curl_cfilter *cf,
 
   /* Handle handshake pipelining. */
   if(!result)
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/gskit.c
-    if(pipe_ssloverssl(cf, SOS_READ | SOS_WRITE) < 0)
-========
     if(pipe_ssloverssl(cf, data, SOS_READ | SOS_WRITE) < 0)
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/gskit.c
       result = CURLE_SSL_CONNECT_ERROR;
 
   /* Step 3: gather certificate info, verify host. */

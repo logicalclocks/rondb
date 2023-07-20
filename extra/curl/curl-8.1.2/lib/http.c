@@ -237,21 +237,10 @@ static CURLcode http_setup_conn(struct Curl_easy *data,
   data->req.p.http = http;
   connkeep(conn, "HTTP default");
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/http.c
-  if((data->state.httpwant == CURL_HTTP_VERSION_3)
-     || (data->state.httpwant == CURL_HTTP_VERSION_3ONLY)) {
-    CURLcode result = Curl_conn_may_http3(data, conn);
-    if(result)
-      return result;
-
-     /* TODO: HTTP lower version eyeballing */
-    conn->transport = TRNSPRT_QUIC;
-========
   if(data->state.httpwant == CURL_HTTP_VERSION_3ONLY) {
     CURLcode result = Curl_conn_may_http3(data, conn);
     if(result)
       return result;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/http.c
   }
 
   return CURLE_OK;
@@ -3147,28 +3136,14 @@ CURLcode Curl_http(struct Curl_easy *data, bool *done)
     DEBUGASSERT(Curl_conn_is_http3(data, conn, FIRSTSOCKET));
     break;
   case CURL_HTTP_VERSION_2:
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/http.c
-    DEBUGASSERT(Curl_conn_is_http2(data, conn, FIRSTSOCKET));
-    break;
-  case CURL_HTTP_VERSION_1_1:
-    /* continue with HTTP/1.1 when explicitly requested */
-    break;
-  default:
-    /* Check if user wants to use HTTP/2 with clear TCP */
-    if(Curl_http2_may_switch(data, conn, FIRSTSOCKET)) {
-      DEBUGF(infof(data, "HTTP/2 over clean TCP"));
-========
 #ifndef CURL_DISABLE_PROXY
     if(!Curl_conn_is_http2(data, conn, FIRSTSOCKET) &&
        conn->bits.proxy && !conn->bits.tunnel_proxy
       ) {
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/http.c
       result = Curl_http2_switch(data, conn, FIRSTSOCKET);
       if(result)
         return result;
     }
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/http.c
-========
     else
 #endif
       DEBUGASSERT(Curl_conn_is_http2(data, conn, FIRSTSOCKET));
@@ -3184,7 +3159,6 @@ CURLcode Curl_http(struct Curl_easy *data, bool *done)
       if(result)
         return result;
     }
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/http.c
     break;
   }
 

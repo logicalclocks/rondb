@@ -28,12 +28,6 @@
 #include "forwarding_processor.h"
 
 class SetOptionForwarder : public ForwardingProcessor {
-#ifndef ROUTING_CLASSIC_INIT_SCHEMA_FORWARDER_INCLUDED
-#define ROUTING_CLASSIC_INIT_SCHEMA_FORWARDER_INCLUDED
-
-#include "forwarding_processor.h"
-
-class InitSchemaForwarder : public ForwardingProcessor {
  public:
   using ForwardingProcessor::ForwardingProcessor;
 

@@ -277,12 +277,9 @@ fail:
 }
 
 #define CONTENT_SHA256_KEY_LEN (MAX_SIGV4_LEN + sizeof("X--Content-Sha256"))
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/http_aws_sigv4.c
-========
 /* add 2 for ": " between header name and value */
 #define CONTENT_SHA256_HDR_LEN (CONTENT_SHA256_KEY_LEN + 2 + \
                                 SHA256_HEX_LENGTH)
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/http_aws_sigv4.c
 
 /* try to parse a payload hash from the content-sha256 header */
 static char *parse_content_sha_hdr(struct Curl_easy *data,
@@ -316,8 +313,6 @@ static char *parse_content_sha_hdr(struct Curl_easy *data,
   return value;
 }
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/http_aws_sigv4.c
-========
 static CURLcode calc_payload_hash(struct Curl_easy *data,
                                   unsigned char *sha_hash, char *sha_hex)
 {
@@ -375,7 +370,6 @@ fail:
   return ret;
 }
 
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/http_aws_sigv4.c
 CURLcode Curl_output_aws_sigv4(struct Curl_easy *data, bool proxy)
 {
   CURLcode ret = CURLE_OUT_OF_MEMORY;
@@ -395,14 +389,6 @@ CURLcode Curl_output_aws_sigv4(struct Curl_easy *data, bool proxy)
   struct dynbuf canonical_headers;
   struct dynbuf signed_headers;
   char *date_header = NULL;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/http_aws_sigv4.c
-  char *payload_hash = NULL;
-  size_t payload_hash_len = 0;
-  const char *post_data = data->set.postfields;
-  size_t post_data_len = 0;
-  unsigned char sha_hash[32];
-  char sha_hex[65];
-========
   Curl_HttpReq httpreq;
   const char *method = NULL;
   char *payload_hash = NULL;
@@ -410,7 +396,6 @@ CURLcode Curl_output_aws_sigv4(struct Curl_easy *data, bool proxy)
   unsigned char sha_hash[SHA256_DIGEST_LENGTH];
   char sha_hex[SHA256_HEX_LENGTH];
   char content_sha256_hdr[CONTENT_SHA256_HDR_LEN + 2] = ""; /* add \r\n */
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/http_aws_sigv4.c
   char *canonical_request = NULL;
   char *request_type = NULL;
   char *credential_scope = NULL;
@@ -555,49 +540,6 @@ CURLcode Curl_output_aws_sigv4(struct Curl_easy *data, bool proxy)
   memcpy(date, timestamp, sizeof(date));
   date[sizeof(date) - 1] = 0;
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/http_aws_sigv4.c
-  payload_hash = parse_content_sha_hdr(data, provider1, &payload_hash_len);
-
-  if(!payload_hash) {
-    if(post_data) {
-      if(data->set.postfieldsize < 0)
-        post_data_len = strlen(post_data);
-      else
-        post_data_len = (size_t)data->set.postfieldsize;
-    }
-    if(Curl_sha256it(sha_hash, (const unsigned char *) post_data,
-                     post_data_len))
-      goto fail;
-
-    sha256_to_hex(sha_hex, sha_hash, sizeof(sha_hex));
-    payload_hash = sha_hex;
-    payload_hash_len = strlen(sha_hex);
-  }
-
-  {
-    Curl_HttpReq httpreq;
-    const char *method;
-
-    Curl_http_method(data, conn, &method, &httpreq);
-
-    canonical_request =
-      curl_maprintf("%s\n" /* HTTPRequestMethod */
-                    "%s\n" /* CanonicalURI */
-                    "%s\n" /* CanonicalQueryString */
-                    "%s\n" /* CanonicalHeaders */
-                    "%s\n" /* SignedHeaders */
-                    "%.*s",  /* HashedRequestPayload in hex */
-                    method,
-                    data->state.up.path,
-                    data->state.up.query ? data->state.up.query : "",
-                    Curl_dyn_ptr(&canonical_headers),
-                    Curl_dyn_ptr(&signed_headers),
-                    (int)payload_hash_len, payload_hash);
-    if(!canonical_request)
-      goto fail;
-  }
-
-========
   canonical_request =
     curl_maprintf("%s\n" /* HTTPRequestMethod */
                   "%s\n" /* CanonicalURI */
@@ -614,7 +556,6 @@ CURLcode Curl_output_aws_sigv4(struct Curl_easy *data, bool proxy)
   if(!canonical_request)
     goto fail;
 
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/http_aws_sigv4.c
   /* provider 0 lowercase */
   Curl_strntolower(provider0, provider0, strlen(provider0));
   request_type = curl_maprintf("%s4_request", provider0);

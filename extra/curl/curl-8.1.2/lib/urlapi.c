@@ -34,10 +34,7 @@
 #include "inet_ntop.h"
 #include "strdup.h"
 #include "idn.h"
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/urlapi.c
-========
 #include "curl_memrchr.h"
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/urlapi.c
 
 /* The last 3 #include files should be in this order */
 #include "curl_printf.h"
@@ -628,71 +625,11 @@ static CURLUcode hostname_check(struct Curl_URL *u, char *hostname,
 
   if(!hlen)
     return CURLUE_NO_HOST;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/urlapi.c
-  else if(hostname[0] == '[') {
-    const char *l = "0123456789abcdefABCDEF:.";
-    if(hlen < 4) /* '[::]' is the shortest possible valid string */
-      return CURLUE_BAD_IPV6;
-    hostname++;
-    hlen -= 2;
-
-    /* only valid IPv6 letters are ok */
-    len = strspn(hostname, l);
-
-    if(hlen != len) {
-      hlen = len;
-      if(hostname[len] == '%') {
-        /* this could now be '%[zone id]' */
-        char zoneid[16];
-        int i = 0;
-        char *h = &hostname[len + 1];
-        /* pass '25' if present and is a url encoded percent sign */
-        if(!strncmp(h, "25", 2) && h[2] && (h[2] != ']'))
-          h += 2;
-        while(*h && (*h != ']') && (i < 15))
-          zoneid[i++] = *h++;
-        if(!i || (']' != *h))
-          return CURLUE_BAD_IPV6;
-        zoneid[i] = 0;
-        u->zoneid = strdup(zoneid);
-        if(!u->zoneid)
-          return CURLUE_OUT_OF_MEMORY;
-        hostname[len] = ']'; /* insert end bracket */
-        hostname[len + 1] = 0; /* terminate the hostname */
-      }
-      else
-        return CURLUE_BAD_IPV6;
-      /* hostname is fine */
-    }
-#ifdef ENABLE_IPV6
-    {
-      char dest[16]; /* fits a binary IPv6 address */
-      char norm[MAX_IPADR_LEN];
-      hostname[hlen] = 0; /* end the address there */
-      if(1 != Curl_inet_pton(AF_INET6, hostname, dest))
-        return CURLUE_BAD_IPV6;
-
-      /* check if it can be done shorter */
-      if(Curl_inet_ntop(AF_INET6, dest, norm, sizeof(norm)) &&
-         (strlen(norm) < hlen)) {
-        strcpy(hostname, norm);
-        hlen = strlen(norm);
-        hostname[hlen + 1] = 0;
-      }
-      hostname[hlen] = ']'; /* restore ending bracket */
-    }
-#endif
-  }
-  else {
-    /* letters from the second string are not ok */
-    len = strcspn(hostname, " \r\n\t/:#?!@{}[]\\$\'\"^`*<>=;,+&()");
-========
   else if(hostname[0] == '[')
     return ipv6_parse(u, hostname, hlen);
   else {
     /* letters from the second string are not ok */
     len = strcspn(hostname, " \r\n\t/:#?!@{}[]\\$\'\"^`*<>=;,+&()%");
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/urlapi.c
     if(hlen != len)
       /* hostname with bad content */
       return CURLUE_BAD_HOSTNAME;
@@ -930,12 +867,7 @@ UNITTEST int dedotdotify(const char *input, size_t clen, char **outp);
 UNITTEST int dedotdotify(const char *input, size_t clen, char **outp)
 {
   char *outptr;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/urlapi.c
-  const char *orginput = input;
-  char *queryp;
-========
   const char *endp = &input[clen];
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/urlapi.c
   char *out;
 
   *outp = NULL;
@@ -950,16 +882,6 @@ UNITTEST int dedotdotify(const char *input, size_t clen, char **outp)
   *out = 0; /* null-terminates, for inputs like "./" */
   outptr = out;
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/urlapi.c
-  /*
-   * To handle query-parts properly, we must find it and remove it during the
-   * dotdot-operation and then append it again at the end to the output
-   * string.
-   */
-  queryp = strchr(input, '?');
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/urlapi.c
   do {
     bool dotdot = TRUE;
     if(*input == '.') {
@@ -1048,17 +970,6 @@ UNITTEST int dedotdotify(const char *input, size_t clen, char **outp)
     /* continue until end of path */
   } while(input < endp);
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/urlapi.c
-  if(queryp) {
-    size_t qlen;
-    /* There was a query part, append that to the output. */
-    size_t oindex = queryp - orginput;
-    qlen = strlen(&orginput[oindex]);
-    memcpy(outptr, &orginput[oindex], qlen + 1); /* include zero byte */
-  }
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/urlapi.c
   *outp = out;
   return 0; /* success */
 }
@@ -1405,36 +1316,6 @@ static CURLUcode parseurl(const char *url, CURLU *u, unsigned int flags)
       if(dedot) {
         free(u->path);
         u->path = dedot;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/urlapi.c
-      }
-    }
-  }
-
-  if(Curl_dyn_len(&host)) {
-    char normalized_ipv4[sizeof("255.255.255.255") + 1];
-
-    /*
-     * Parse the login details and strip them out of the host name.
-     */
-    result = parse_hostname_login(u, &host, flags);
-    if(!result)
-      result = Curl_parse_port(u, &host, schemelen);
-    if(result)
-      goto fail;
-
-    if(junkscan(Curl_dyn_ptr(&host), flags)) {
-      result = CURLUE_BAD_HOSTNAME;
-      goto fail;
-    }
-
-    if(ipv4_normalize(Curl_dyn_ptr(&host),
-                      normalized_ipv4, sizeof(normalized_ipv4))) {
-      Curl_dyn_reset(&host);
-      if(Curl_dyn_add(&host, normalized_ipv4)) {
-        result = CURLUE_OUT_OF_MEMORY;
-        goto fail;
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/urlapi.c
       }
     }
   }
@@ -1662,40 +1543,6 @@ CURLUcode curl_url_get(const CURLU *u, CURLUPart what,
           if(!allochost)
             return CURLUE_OUT_OF_MEMORY;
 #endif
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/urlapi.c
-        }
-      }
-      else {
-        /* only encode '%' in output host name */
-        char *host = u->host;
-        bool percent = FALSE;
-        /* first, count number of percents present in the name */
-        while(*host) {
-          if(*host == '%') {
-            percent = TRUE;
-            break;
-          }
-          host++;
-        }
-        /* if there were percent(s), encode the host name */
-        if(percent) {
-          struct dynbuf enc;
-          CURLcode result;
-          Curl_dyn_init(&enc, CURL_MAX_INPUT_LENGTH);
-          host = u->host;
-          while(*host) {
-            if(*host == '%')
-              result = Curl_dyn_addn(&enc, "%25", 3);
-            else
-              result = Curl_dyn_addn(&enc, host, 1);
-            if(result)
-              return CURLUE_OUT_OF_MEMORY;
-            host++;
-          }
-          free(u->host);
-          u->host = Curl_dyn_ptr(&enc);
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/urlapi.c
         }
       }
 

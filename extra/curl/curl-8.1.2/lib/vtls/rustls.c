@@ -102,13 +102,10 @@ read_cb(void *userdata, uint8_t *buf, uintptr_t len, uintptr_t *out_n)
       ret = EINVAL;
   }
   *out_n = (int)nread;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/rustls.c
-========
   /*
   DEBUGF(LOG_CF(io_ctx->data, io_ctx->cf, "cf->next recv(len=%zu) -> %zd, %d",
                 len, nread, result));
   */
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/rustls.c
   return ret;
 }
 
@@ -128,9 +125,6 @@ write_cb(void *userdata, const uint8_t *buf, uintptr_t len, uintptr_t *out_n)
       ret = EINVAL;
   }
   *out_n = (int)nwritten;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/rustls.c
-  return ret;
-========
   /*
   DEBUGF(LOG_CF(io_ctx->data, io_ctx->cf, "cf->next send(len=%zu) -> %zd, %d",
                 len, nwritten, result));
@@ -178,7 +172,6 @@ static ssize_t tls_recv_more(struct Curl_cfilter *cf,
   backend->data_pending = TRUE;
   *err = CURLE_OK;
   return (ssize_t)tls_bytes_read;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/rustls.c
 }
 
 /*
@@ -200,58 +193,15 @@ cr_recv(struct Curl_cfilter *cf, struct Curl_easy *data,
   struct ssl_connect_data *const connssl = cf->ctx;
   struct ssl_backend_data *const backend = connssl->backend;
   struct rustls_connection *rconn = NULL;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/rustls.c
-  struct io_ctx io_ctx;
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/rustls.c
   size_t n = 0;
   size_t plain_bytes_copied = 0;
   rustls_result rresult = 0;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/rustls.c
-  char errorbuf[255];
-  size_t errorlen;
-  rustls_io_result io_error;
-========
   ssize_t nread;
   bool eof = FALSE;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/rustls.c
 
   DEBUGASSERT(backend);
   rconn = backend->conn;
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/rustls.c
-  io_ctx.cf = cf;
-  io_ctx.data = data;
-
-  io_error = rustls_connection_read_tls(rconn, read_cb, &io_ctx,
-                                        &tls_bytes_read);
-  if(io_error == EAGAIN || io_error == EWOULDBLOCK) {
-    DEBUGF(LOG_CF(data, cf, "cr_recv: EAGAIN or EWOULDBLOCK"));
-  }
-  else if(io_error) {
-    char buffer[STRERROR_LEN];
-    failf(data, "reading from socket: %s",
-          Curl_strerror(io_error, buffer, sizeof(buffer)));
-    *err = CURLE_READ_ERROR;
-    return -1;
-  }
-
-  DEBUGF(LOG_CF(data, cf, "cr_recv: read %ld TLS bytes", tls_bytes_read));
-
-  rresult = rustls_connection_process_new_packets(rconn);
-  if(rresult != RUSTLS_RESULT_OK) {
-    rustls_error(rresult, errorbuf, sizeof(errorbuf), &errorlen);
-    failf(data, "rustls_connection_process_new_packets: %.*s",
-      errorlen, errorbuf);
-    *err = map_error(rresult);
-    return -1;
-  }
-
-  backend->data_pending = TRUE;
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/rustls.c
   while(plain_bytes_copied < plainlen) {
     if(!backend->data_pending) {
       if(tls_recv_more(cf, data, err) < 0) {
@@ -268,11 +218,6 @@ cr_recv(struct Curl_cfilter *cf, struct Curl_easy *data,
       plainlen - plain_bytes_copied,
       &n);
     if(rresult == RUSTLS_RESULT_PLAINTEXT_EMPTY) {
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/rustls.c
-      DEBUGF(LOG_CF(data, cf, "cr_recv: got PLAINTEXT_EMPTY. "
-                    "will try again later."));
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/rustls.c
       backend->data_pending = FALSE;
     }
     else if(rresult == RUSTLS_RESULT_UNEXPECTED_EOF) {
@@ -282,19 +227,10 @@ cr_recv(struct Curl_cfilter *cf, struct Curl_easy *data,
       nread = -1;
       goto out;
     }
-    else if(rresult == RUSTLS_RESULT_UNEXPECTED_EOF) {
-      failf(data, "rustls: peer closed TCP connection "
-        "without first closing TLS connection");
-      *err = CURLE_READ_ERROR;
-      return -1;
-    }
     else if(rresult != RUSTLS_RESULT_OK) {
       /* n always equals 0 in this case, don't need to check it */
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/rustls.c
-========
       char errorbuf[255];
       size_t errorlen;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/rustls.c
       rustls_error(rresult, errorbuf, sizeof(errorbuf), &errorlen);
       failf(data, "rustls_connection_read: %.*s", errorlen, errorbuf);
       *err = CURLE_READ_ERROR;
@@ -309,10 +245,6 @@ cr_recv(struct Curl_cfilter *cf, struct Curl_easy *data,
       break;
     }
     else {
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/rustls.c
-      DEBUGF(LOG_CF(data, cf, "cr_recv: got %ld plain bytes", n));
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/rustls.c
       plain_bytes_copied += n;
     }
   }
@@ -365,14 +297,10 @@ cr_send(struct Curl_cfilter *cf, struct Curl_easy *data,
   DEBUGASSERT(backend);
   rconn = backend->conn;
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/rustls.c
-  DEBUGF(LOG_CF(data, cf, "cr_send: %ld plain bytes", plainlen));
-========
   DEBUGF(LOG_CF(data, cf, "cf_send: %ld plain bytes", plainlen));
 
   io_ctx.cf = cf;
   io_ctx.data = data;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/rustls.c
 
   if(plainlen > 0) {
     rresult = rustls_connection_write(rconn, plainbuf, plainlen,
@@ -390,18 +318,11 @@ cr_send(struct Curl_cfilter *cf, struct Curl_easy *data,
     }
   }
 
-  io_ctx.cf = cf;
-  io_ctx.data = data;
-
   while(rustls_connection_wants_write(rconn)) {
     io_error = rustls_connection_write_tls(rconn, write_cb, &io_ctx,
                                            &tlswritten);
     if(io_error == EAGAIN || io_error == EWOULDBLOCK) {
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/rustls.c
-      DEBUGF(LOG_CF(data, cf, "cr_send: EAGAIN after %zu bytes",
-========
       DEBUGF(LOG_CF(data, cf, "cf_send: EAGAIN after %zu bytes",
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/rustls.c
                     tlswritten_total));
       *err = CURLE_AGAIN;
       return -1;
@@ -418,11 +339,7 @@ cr_send(struct Curl_cfilter *cf, struct Curl_easy *data,
       *err = CURLE_WRITE_ERROR;
       return -1;
     }
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/rustls.c
-    DEBUGF(LOG_CF(data, cf, "cr_send: wrote %zu TLS bytes", tlswritten));
-========
     DEBUGF(LOG_CF(data, cf, "cf_send: wrote %zu TLS bytes", tlswritten));
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/rustls.c
     tlswritten_total += tlswritten;
   }
 
@@ -649,22 +566,12 @@ cr_connect_nonblocking(struct Curl_cfilter *cf,
     if(wants_read) {
       infof(data, "rustls_connection wants us to read_tls.");
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/rustls.c
-      cr_recv(cf, data, NULL, 0, &tmperr);
-      if(tmperr == CURLE_AGAIN) {
-        infof(data, "reading would block");
-        /* fall through */
-      }
-      else if(tmperr != CURLE_OK) {
-        if(tmperr == CURLE_READ_ERROR) {
-========
       if(tls_recv_more(cf, data, &tmperr) < 0) {
         if(tmperr == CURLE_AGAIN) {
           infof(data, "reading would block");
           /* fall through */
         }
         else if(tmperr == CURLE_READ_ERROR) {
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/rustls.c
           return CURLE_SSL_CONNECT_ERROR;
         }
         else {

@@ -59,13 +59,7 @@
 
 #if defined(USE_OPENSSL_SHA256)
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/sha256.c
-/* When OpenSSL or wolfSSL is available is available we use their
- * SHA256-functions.
- */
-========
 /* When OpenSSL or wolfSSL is available we use their SHA256-functions. */
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/sha256.c
 #if defined(USE_OPENSSL)
 #include <openssl/evp.h>
 #elif defined(USE_WOLFSSL)

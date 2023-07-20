@@ -60,15 +60,8 @@ void Curl_verboseconnect(struct Curl_easy *data, struct connectdata *conn);
 #endif
 
 #if defined(USE_HTTP2) || defined(USE_HTTP3)
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/url.h
-void Curl_data_priority_cleanup(struct Curl_easy *data);
 void Curl_data_priority_clear_state(struct Curl_easy *data);
 #else
-#define Curl_data_priority_cleanup(x)
-========
-void Curl_data_priority_clear_state(struct Curl_easy *data);
-#else
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/url.h
 #define Curl_data_priority_clear_state(x)
 #endif /* !(defined(USE_HTTP2) || defined(USE_HTTP3)) */
 

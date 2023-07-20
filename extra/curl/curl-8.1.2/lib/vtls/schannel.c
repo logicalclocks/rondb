@@ -386,125 +386,11 @@ get_alg_id_by_name(char *name)
   size_t n = nameEnd ? (size_t)(nameEnd - name) : strlen(name);
   int i;
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/schannel.c
-  /* reject too-long alg names */
-  if(n > (LONGEST_ALG_ID - 1))
-    return 0;
-
-  strncpy(tmp, name, n);
-  tmp[n] = 0;
-  CIPHEROPTION(CALG_MD2);
-  CIPHEROPTION(CALG_MD4);
-  CIPHEROPTION(CALG_MD5);
-  CIPHEROPTION(CALG_SHA);
-  CIPHEROPTION(CALG_SHA1);
-  CIPHEROPTION(CALG_MAC);
-  CIPHEROPTION(CALG_RSA_SIGN);
-  CIPHEROPTION(CALG_DSS_SIGN);
-/* ifdefs for the options that are defined conditionally in wincrypt.h */
-#ifdef CALG_NO_SIGN
-  CIPHEROPTION(CALG_NO_SIGN);
-#endif
-  CIPHEROPTION(CALG_RSA_KEYX);
-  CIPHEROPTION(CALG_DES);
-#ifdef CALG_3DES_112
-  CIPHEROPTION(CALG_3DES_112);
-#endif
-  CIPHEROPTION(CALG_3DES);
-  CIPHEROPTION(CALG_DESX);
-  CIPHEROPTION(CALG_RC2);
-  CIPHEROPTION(CALG_RC4);
-  CIPHEROPTION(CALG_SEAL);
-#ifdef CALG_DH_SF
-  CIPHEROPTION(CALG_DH_SF);
-#endif
-  CIPHEROPTION(CALG_DH_EPHEM);
-#ifdef CALG_AGREEDKEY_ANY
-  CIPHEROPTION(CALG_AGREEDKEY_ANY);
-#endif
-#ifdef CALG_HUGHES_MD5
-  CIPHEROPTION(CALG_HUGHES_MD5);
-#endif
-  CIPHEROPTION(CALG_SKIPJACK);
-#ifdef CALG_TEK
-  CIPHEROPTION(CALG_TEK);
-#endif
-  CIPHEROPTION(CALG_CYLINK_MEK);
-  CIPHEROPTION(CALG_SSL3_SHAMD5);
-#ifdef CALG_SSL3_MASTER
-  CIPHEROPTION(CALG_SSL3_MASTER);
-#endif
-#ifdef CALG_SCHANNEL_MASTER_HASH
-  CIPHEROPTION(CALG_SCHANNEL_MASTER_HASH);
-#endif
-#ifdef CALG_SCHANNEL_MAC_KEY
-  CIPHEROPTION(CALG_SCHANNEL_MAC_KEY);
-#endif
-#ifdef CALG_SCHANNEL_ENC_KEY
-  CIPHEROPTION(CALG_SCHANNEL_ENC_KEY);
-#endif
-#ifdef CALG_PCT1_MASTER
-  CIPHEROPTION(CALG_PCT1_MASTER);
-#endif
-#ifdef CALG_SSL2_MASTER
-  CIPHEROPTION(CALG_SSL2_MASTER);
-#endif
-#ifdef CALG_TLS1_MASTER
-  CIPHEROPTION(CALG_TLS1_MASTER);
-#endif
-#ifdef CALG_RC5
-  CIPHEROPTION(CALG_RC5);
-#endif
-#ifdef CALG_HMAC
-  CIPHEROPTION(CALG_HMAC);
-#endif
-#ifdef CALG_TLS1PRF
-  CIPHEROPTION(CALG_TLS1PRF);
-#endif
-#ifdef CALG_HASH_REPLACE_OWF
-  CIPHEROPTION(CALG_HASH_REPLACE_OWF);
-#endif
-#ifdef CALG_AES_128
-  CIPHEROPTION(CALG_AES_128);
-#endif
-#ifdef CALG_AES_192
-  CIPHEROPTION(CALG_AES_192);
-#endif
-#ifdef CALG_AES_256
-  CIPHEROPTION(CALG_AES_256);
-#endif
-#ifdef CALG_AES
-  CIPHEROPTION(CALG_AES);
-#endif
-#ifdef CALG_SHA_256
-  CIPHEROPTION(CALG_SHA_256);
-#endif
-#ifdef CALG_SHA_384
-  CIPHEROPTION(CALG_SHA_384);
-#endif
-#ifdef CALG_SHA_512
-  CIPHEROPTION(CALG_SHA_512);
-#endif
-#ifdef CALG_ECDH
-  CIPHEROPTION(CALG_ECDH);
-#endif
-#ifdef CALG_ECMQV
-  CIPHEROPTION(CALG_ECMQV);
-#endif
-#ifdef CALG_ECDSA
-  CIPHEROPTION(CALG_ECDSA);
-#endif
-#ifdef CALG_ECDH_EPHEM
-  CIPHEROPTION(CALG_ECDH_EPHEM);
-#endif
-  return 0;
-========
   for(i = 0; algs[i].name; i++) {
     if((n == strlen(algs[i].name) && !strncmp(algs[i].name, name, n)))
       return algs[i].id;
   }
   return 0; /* not found */
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/schannel.c
 }
 
 #define NUM_CIPHERS 47 /* There are 47 options listed above */
@@ -1285,11 +1171,7 @@ schannel_connect_step1(struct Curl_cfilter *cf, struct Curl_easy *data)
   if(!backend->cred) {
     char *snihost;
     result = schannel_acquire_credential_handle(cf, data);
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/schannel.c
-    if(result != CURLE_OK) {
-========
     if(result)
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/schannel.c
       return result;
     /* schannel_acquire_credential_handle() sets backend->cred accordingly or
        it returns error otherwise. */
@@ -1326,11 +1208,7 @@ schannel_connect_step1(struct Curl_cfilter *cf, struct Curl_easy *data)
     /* The first four bytes will be an unsigned int indicating number
        of bytes of data in the rest of the buffer. */
     extension_len = (unsigned int *)(void *)(&alpn_buffer[cur]);
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/schannel.c
-    cur += sizeof(unsigned int);
-========
     cur += (int)sizeof(unsigned int);
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/schannel.c
 
     /* The next four bytes are an indicator that this buffer will contain
        ALPN data, as opposed to NPN, for example. */
@@ -1341,11 +1219,7 @@ schannel_connect_step1(struct Curl_cfilter *cf, struct Curl_easy *data)
     /* The next two bytes will be an unsigned short indicating the number
        of bytes used to list the preferred protocols. */
     list_len = (unsigned short*)(void *)(&alpn_buffer[cur]);
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/schannel.c
-    cur += sizeof(unsigned short);
-========
     cur += (int)sizeof(unsigned short);
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/schannel.c
 
     list_start_index = cur;
 

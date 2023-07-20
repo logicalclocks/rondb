@@ -1218,9 +1218,6 @@ CURLcode curl_easy_recv(struct Curl_easy *data, void *buffer, size_t buflen,
     return result;
 
   *n = (size_t)n1;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/easy.c
-  infof(data, "reached %s:%d", __FILE__, __LINE__);
-========
   return CURLE_OK;
 }
 
@@ -1240,7 +1237,6 @@ CURLcode Curl_connect_only_attach(struct Curl_easy *data)
        needs to be reattached */
     Curl_attach_connection(data, c);
 
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/easy.c
   return CURLE_OK;
 }
 #endif /* USE_WEBSOCKETS */

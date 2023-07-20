@@ -32,15 +32,6 @@
 
 /* This is the version number of the libcurl package from which this header
    file origins: */
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/include/curl/curlver.h
-#define LIBCURL_VERSION "7.88.1"
-
-/* The numeric version number is also available "in parts" by using these
-   defines: */
-#define LIBCURL_VERSION_MAJOR 7
-#define LIBCURL_VERSION_MINOR 88
-#define LIBCURL_VERSION_PATCH 1
-========
 #define LIBCURL_VERSION "8.1.2"
 
 /* The numeric version number is also available "in parts" by using these
@@ -48,7 +39,6 @@
 #define LIBCURL_VERSION_MAJOR 8
 #define LIBCURL_VERSION_MINOR 1
 #define LIBCURL_VERSION_PATCH 2
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/include/curl/curlver.h
 
 /* This is the numeric version of the libcurl version number, meant for easier
    parsing and comparisons by programs. The LIBCURL_VERSION_NUM define will
@@ -69,11 +59,7 @@
    CURL_VERSION_BITS() macro since curl's own configure script greps for it
    and needs it to contain the full number.
 */
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/include/curl/curlver.h
-#define LIBCURL_VERSION_NUM 0x075801
-========
 #define LIBCURL_VERSION_NUM 0x080102
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/include/curl/curlver.h
 
 /*
  * This is the date and time when the full source package was created. The
@@ -84,11 +70,7 @@
  *
  * "2007-11-23"
  */
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/include/curl/curlver.h
-#define LIBCURL_TIMESTAMP "2023-02-20"
-========
 #define LIBCURL_TIMESTAMP "2023-05-30"
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/include/curl/curlver.h
 
 #define CURL_VERSION_BITS(x,y,z) ((x)<<16|(y)<<8|(z))
 #define CURL_AT_LEAST_VERSION(x,y,z) \

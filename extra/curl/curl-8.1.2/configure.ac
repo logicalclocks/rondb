@@ -338,31 +338,19 @@ AC_SUBST(CADDY)
 
 dnl we'd like a httpd+apachectl as test server
 dnl
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/configure.ac
-AC_ARG_WITH(test-httpd, [AS_HELP_STRING([--with-test-httpd=PATH],
-                         [where to find httpd/apache2 for testing])],
-  [request_httpd=$withval], [request_httpd=check])
-if test x"$request_httpd" = "xcheck"; then
-========
 HTTPD_ENABLED="maybe"
 AC_ARG_WITH(test-httpd, [AS_HELP_STRING([--with-test-httpd=PATH],
                          [where to find httpd/apache2 for testing])],
   [request_httpd=$withval], [request_httpd=check])
 if test x"$request_httpd" = "xcheck" -o x"$request_httpd" = "xyes"; then
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/configure.ac
   if test -x "/usr/sbin/apache2" -a -x "/usr/sbin/apache2ctl"; then
     # common location on distros (debian/ubuntu)
     HTTPD="/usr/sbin/apache2"
     APACHECTL="/usr/sbin/apache2ctl"
     AC_PATH_PROG([APXS], [apxs])
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/configure.ac
-    if test "x$APXS" != "x"; then
-      AC_MSG_NOTICE([apache2-dev not installed, httpd tests disabled])
-========
     if test "x$APXS" = "x"; then
       AC_MSG_NOTICE([apache2-dev not installed, httpd tests disabled])
       HTTPD_ENABLED="no"
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/configure.ac
     fi
   else
     AC_PATH_PROG([HTTPD], [httpd])
@@ -372,15 +360,6 @@ if test x"$request_httpd" = "xcheck" -o x"$request_httpd" = "xyes"; then
     AC_PATH_PROG([APACHECTL], [apachectl])
     AC_PATH_PROG([APXS], [apxs])
     if test "x$HTTPD" = "x" -o "x$APACHECTL" = "x"; then
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/configure.ac
-      AC_MSG_NOTICE([httpd/apache2 not in PATH, httpd tests disabled])
-    fi
-    if test "x$APXS" = "x"; then
-      AC_MSG_NOTICE([apxs not in PATH, httpd tests disabled])
-    fi
-  fi
-else
-========
       AC_MSG_NOTICE([httpd/apache2 not in PATH, http tests disabled])
       HTTPD_ENABLED="no"
     fi
@@ -390,18 +369,10 @@ else
     fi
   fi
 elif test x"$request_httpd" != "xno"; then
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/configure.ac
   HTTPD="${request_httpd}/bin/httpd"
   APACHECTL="${request_httpd}/bin/apachectl"
   APXS="${request_httpd}/bin/apxs"
   if test ! -x "${HTTPD}"; then
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/configure.ac
-    AC_MSG_NOTICE([httpd not found as ${HTTPD}, httpd tests disabled])
-  elif test ! -x "${APACHECTL}"; then
-    AC_MSG_NOTICE([apachectl not found as ${APACHECTL}, httpd tests disabled])
-  elif test ! -x "${APXS}"; then
-    AC_MSG_NOTICE([apxs not found as ${APXS}, httpd tests disabled])
-========
     AC_MSG_NOTICE([httpd not found as ${HTTPD}, http tests disabled])
     HTTPD_ENABLED="no"
   elif test ! -x "${APACHECTL}"; then
@@ -410,39 +381,26 @@ elif test x"$request_httpd" != "xno"; then
   elif test ! -x "${APXS}"; then
     AC_MSG_NOTICE([apxs not found as ${APXS}, http tests disabled])
     HTTPD_ENABLED="no"
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/configure.ac
   else
     AC_MSG_NOTICE([using HTTPD=$HTTPD for tests])
   fi
 fi
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/configure.ac
-========
 if test x"$HTTPD_ENABLED" = "xno"; then
   HTTPD=""
   APACHECTL=""
   APXS=""
 fi
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/configure.ac
 AC_SUBST(HTTPD)
 AC_SUBST(APACHECTL)
 AC_SUBST(APXS)
 
 dnl the nghttpx we might use in httpd testing
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/configure.ac
-if test "x$TEST_NGHTTPX" != "x"; then
-  HTTPD_NGHTTPX="$TEST_NGHTTPX"
-else
-  AC_PATH_PROG([HTTPD_NGHTTPX], [nghttpx])
-fi
-    AC_PATH_PROG([APXS], [apxs])
-========
 if test "x$TEST_NGHTTPX" != "x" -a "x$TEST_NGHTTPX" != "xnghttpx"; then
   HTTPD_NGHTTPX="$TEST_NGHTTPX"
 else
   AC_PATH_PROG([HTTPD_NGHTTPX], [nghttpx], [],
     [$PATH:/usr/bin:/usr/local/bin])
 fi
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/configure.ac
 AC_SUBST(HTTPD_NGHTTPX)
 
 dnl the Caddy server we might use in testing
@@ -4749,14 +4707,9 @@ AC_CONFIG_FILES([Makefile \
            tests/server/Makefile \
            tests/libtest/Makefile \
            tests/unit/Makefile \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/configure.ac
-           tests/tests-httpd/config.ini \
-           tests/tests-httpd/Makefile \
-========
            tests/http/config.ini \
            tests/http/Makefile \
            tests/http/clients/Makefile \
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/configure.ac
            packages/Makefile \
            packages/vms/Makefile \
            curl-config \

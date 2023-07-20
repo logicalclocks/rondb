@@ -83,30 +83,6 @@ CURLcode Curl_getworkingpath(struct Curl_easy *data,
         free(working_path);
         return CURLE_OUT_OF_MEMORY;
       }
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/curl_path.c
-      /* It is referenced to the home directory, so strip the
-         leading '/' */
-      memcpy(real_path, homedir, homelen);
-      /* Only add a trailing '/' if homedir does not end with one */
-      if(homelen == 0 || real_path[homelen - 1] != '/') {
-        real_path[homelen] = '/';
-        homelen++;
-        real_path[homelen] = '\0';
-      }
-      if(working_path_len > 3) {
-        memcpy(real_path + homelen, working_path + 3,
-               1 + working_path_len -3);
-      }
-    }
-    else {
-      real_path = malloc(working_path_len + 1);
-      if(!real_path) {
-        free(working_path);
-        return CURLE_OUT_OF_MEMORY;
-      }
-      memcpy(real_path, working_path, 1 + working_path_len);
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/curl_path.c
     }
   }
 

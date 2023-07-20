@@ -108,14 +108,10 @@ LIB_CFILES =         \
   bufq.c             \
   bufref.c           \
   c-hyper.c          \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.inc
-  cf-http.c          \
-========
   cf-h1-proxy.c      \
   cf-h2-proxy.c      \
   cf-haproxy.c       \
   cf-https-connect.c \
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.inc
   cf-socket.c        \
   cfilters.c         \
   conncache.c        \
@@ -242,14 +238,10 @@ LIB_HFILES =         \
   bufq.h             \
   bufref.h           \
   c-hyper.h          \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.inc
-  cf-http.h          \
-========
   cf-h1-proxy.h      \
   cf-h2-proxy.h      \
   cf-haproxy.h       \
   cf-https-connect.h \
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.inc
   cf-socket.h        \
   cfilters.h         \
   conncache.h        \

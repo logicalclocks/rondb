@@ -5615,9 +5615,8 @@ Prealloced_array<AccessPath *, 4> ApplyDistinctAndOrder(
         if (sort_ahead_ordering.ordering_idx == distinct_ordering_idx) {
           // The ordering derived from DISTINCT. Always propose this one,
           // regardless of whether it also satisfies the ORDER BY ordering.
-        } else if (grouping.GetElements().size() <
+        } else if (grouping.size() <
                    orderings.ordering(sort_ahead_ordering.ordering_idx)
-                       .GetElements()
                        .size()) {
           // This sort-ahead ordering is too wide and may cause duplicates to be
           // returned. Don't propose it.

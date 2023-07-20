@@ -852,21 +852,13 @@ static void HandshakeCallback(PRFileDesc *sock, void *arg)
   struct Curl_cfilter *cf = (struct Curl_cfilter *)arg;
   struct ssl_connect_data *connssl = cf->ctx;
   struct Curl_easy *data = connssl->backend->data;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/nss.c
-  struct connectdata *conn = cf->conn;
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/nss.c
   unsigned int buflenmax = 50;
   unsigned char buf[50];
   unsigned int buflen;
   SSLNextProtoState state;
 
   DEBUGASSERT(data);
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/nss.c
-  if(!conn->bits.tls_enable_alpn) {
-========
   if(!connssl->alpn) {
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/nss.c
     return;
   }
 
@@ -1543,39 +1535,6 @@ static void nss_cleanup(void)
   initialized = 0;
 }
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/nss.c
-/*
- * This function uses SSL_peek to determine connection status.
- *
- * Return codes:
- *     1 means the connection is still in place
- *     0 means the connection has been closed
- *    -1 means the connection status is unknown
- */
-static int nss_check_cxn(struct Curl_cfilter *cf, struct Curl_easy *data)
-{
-  struct ssl_connect_data *connssl = cf->ctx;
-  struct ssl_backend_data *backend = connssl->backend;
-  int rc;
-  char buf;
-
-  (void)data;
-  DEBUGASSERT(backend);
-
-  rc =
-    PR_Recv(backend->handle, (void *)&buf, 1, PR_MSG_PEEK,
-            PR_SecondsToInterval(1));
-  if(rc > 0)
-    return 1; /* connection still in place */
-
-  if(rc == 0)
-    return 0; /* connection has been closed */
-
-  return -1;  /* connection status unknown */
-}
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/nss.c
 static void close_one(struct ssl_connect_data *connssl)
 {
   /* before the cleanup, check whether we are using a client certificate */
@@ -2136,11 +2095,7 @@ static CURLcode nss_setup_connect(struct Curl_cfilter *cf,
 
 #ifdef SSL_ENABLE_ALPN
   if(SSL_OptionSet(backend->handle, SSL_ENABLE_ALPN,
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/nss.c
-                   cf->conn->bits.tls_enable_alpn ? PR_TRUE : PR_FALSE)
-========
                    connssl->alpn ? PR_TRUE : PR_FALSE)
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/nss.c
       != SECSuccess)
     goto error;
 #endif

@@ -26,44 +26,7 @@
 
 #include "curl_setup.h"
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vquic/vquic.h
-#ifdef ENABLE_QUIC
-struct Curl_cfilter;
-struct Curl_easy;
-struct connectdata;
-struct Curl_addrinfo;
-
-void Curl_quic_ver(char *p, size_t len);
-
-CURLcode Curl_qlogdir(struct Curl_easy *data,
-                      unsigned char *scid,
-                      size_t scidlen,
-                      int *qlogfdp);
-
-
-CURLcode Curl_cf_quic_create(struct Curl_cfilter **pcf,
-                             struct Curl_easy *data,
-                             struct connectdata *conn,
-                             const struct Curl_addrinfo *ai,
-                             int transport);
-
-bool Curl_conn_is_http3(const struct Curl_easy *data,
-                        const struct connectdata *conn,
-                        int sockindex);
-
-extern struct Curl_cftype Curl_cft_http3;
-
-#else /* ENABLE_QUIC */
-
-#define Curl_conn_is_http3(a,b,c)   FALSE
-
-#endif /* !ENABLE_QUIC */
-
-CURLcode Curl_conn_may_http3(struct Curl_easy *data,
-                             const struct connectdata *conn);
-========
 #if !defined(CURL_DISABLE_PROXY) && !defined(CURL_DISABLE_HTTP)
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/cf-h1-proxy.h
 
 CURLcode Curl_cf_h1_proxy_insert_after(struct Curl_cfilter *cf,
                                        struct Curl_easy *data);

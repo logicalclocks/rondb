@@ -34,20 +34,12 @@
 #endif
 
 /* Compile-time deprecation macros. */
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/include/curl/curl.h
-#if defined(__GNUC__) && (__GNUC__ >= 6) &&                             \
-  !defined(__INTEL_COMPILER) &&                                         \
-  !defined(CURL_DISABLE_DEPRECATION) && !defined(BUILDING_LIBCURL)
-#define CURL_DEPRECATED(version, message) \
-    __attribute__((deprecated("since " # version ". " message)))
-========
 #if defined(__GNUC__) &&                                                \
   ((__GNUC__ > 12) || ((__GNUC__ == 12) && (__GNUC_MINOR__ >= 1 ))) &&  \
   !defined(__INTEL_COMPILER) &&                                         \
   !defined(CURL_DISABLE_DEPRECATION) && !defined(BUILDING_LIBCURL)
 #define CURL_DEPRECATED(version, message)                       \
   __attribute__((deprecated("since " # version ". " message)))
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/include/curl/curl.h
 #define CURL_IGNORE_DEPRECATION(statements) \
       _Pragma("GCC diagnostic push") \
       _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"") \

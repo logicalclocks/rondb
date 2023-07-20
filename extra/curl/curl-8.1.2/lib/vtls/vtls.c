@@ -318,11 +318,7 @@ static bool ssl_prefs_check(struct Curl_easy *data)
 }
 
 static struct ssl_connect_data *cf_ctx_new(struct Curl_easy *data,
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-                                           const struct alpn_spec *alpn)
-========
                                      const struct alpn_spec *alpn)
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
 {
   struct ssl_connect_data *ctx;
 
@@ -1598,10 +1594,6 @@ static ssize_t ssl_cf_recv(struct Curl_cfilter *cf,
   ssize_t nread;
 
   CF_DATA_SAVE(save, cf, data);
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-  *err = CURLE_OK;
-  nread = Curl_ssl->recv_plain(cf, data, buf, len, err);
-========
   nread = Curl_ssl->recv_plain(cf, data, buf, len, err);
   if(nread > 0) {
     DEBUGASSERT((size_t)nread <= len);
@@ -1611,7 +1603,6 @@ static ssize_t ssl_cf_recv(struct Curl_cfilter *cf,
     *err = CURLE_OK;
   }
   DEBUGF(LOG_CF(data, cf, "cf_recv(len=%zu) -> %zd, %d", len, nread, *err));
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
   CF_DATA_RESTORE(cf, save);
   return nread;
 }
@@ -1633,22 +1624,11 @@ static CURLcode ssl_cf_cntrl(struct Curl_cfilter *cf,
                              struct Curl_easy *data,
                              int event, int arg1, void *arg2)
 {
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-  struct ssl_connect_data *connssl = cf->ctx;
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
   struct cf_call_data save;
 
   (void)arg1;
   (void)arg2;
   switch(event) {
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-  case CF_CTRL_CONN_REPORT_STATS:
-    if(cf->sockindex == FIRSTSOCKET && !Curl_ssl_cf_is_proxy(cf))
-      Curl_pgrsTimeWas(data, TIMER_APPCONNECT, connssl->handshake_done);
-    break;
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
   case CF_CTRL_DATA_ATTACH:
     if(Curl_ssl->attach_data) {
       CF_DATA_SAVE(save, cf, data);
@@ -1669,12 +1649,6 @@ static CURLcode ssl_cf_cntrl(struct Curl_cfilter *cf,
   return CURLE_OK;
 }
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-static bool cf_ssl_is_alive(struct Curl_cfilter *cf, struct Curl_easy *data)
-{
-  struct cf_call_data save;
-  bool result;
-========
 static CURLcode ssl_cf_query(struct Curl_cfilter *cf,
                              struct Curl_easy *data,
                              int query, int *pres1, void *pres2)
@@ -1701,7 +1675,6 @@ static bool cf_ssl_is_alive(struct Curl_cfilter *cf, struct Curl_easy *data,
 {
   struct cf_call_data save;
   int result;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
   /*
    * This function tries to determine connection status.
    *
@@ -1711,11 +1684,6 @@ static bool cf_ssl_is_alive(struct Curl_cfilter *cf, struct Curl_easy *data,
    *    -1 means the connection status is unknown
    */
   CF_DATA_SAVE(save, cf, data);
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-  result = Curl_ssl->check_cxn(cf, data) != 0;
-  CF_DATA_RESTORE(cf, save);
-  return result;
-========
   result = Curl_ssl->check_cxn(cf, data);
   CF_DATA_RESTORE(cf, save);
   if(result > 0) {
@@ -1730,7 +1698,6 @@ static bool cf_ssl_is_alive(struct Curl_cfilter *cf, struct Curl_easy *data,
   return cf->next?
     cf->next->cft->is_alive(cf->next, data, input_pending) :
     FALSE; /* pessimistic in absence of data */
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
 }
 
 struct Curl_cftype Curl_cft_ssl = {
@@ -1748,11 +1715,7 @@ struct Curl_cftype Curl_cft_ssl = {
   ssl_cf_cntrl,
   cf_ssl_is_alive,
   Curl_cf_def_conn_keep_alive,
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-  Curl_cf_def_query,
-========
   ssl_cf_query,
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
 };
 
 struct Curl_cftype Curl_cft_ssl_proxy = {
@@ -1783,12 +1746,8 @@ static CURLcode cf_ssl_create(struct Curl_cfilter **pcf,
 
   DEBUGASSERT(data->conn);
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-  ctx = cf_ctx_new(data, Curl_alpn_get_spec(data, conn));
-========
   ctx = cf_ctx_new(data, alpn_get_spec(data->state.httpwant,
                                        conn->bits.tls_enable_alpn));
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
   if(!ctx) {
     result = CURLE_OUT_OF_MEMORY;
     goto out;
@@ -1829,10 +1788,7 @@ CURLcode Curl_cf_ssl_insert_after(struct Curl_cfilter *cf_at,
 }
 
 #ifndef CURL_DISABLE_PROXY
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-========
 
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
 static CURLcode cf_ssl_proxy_create(struct Curl_cfilter **pcf,
                                     struct Curl_easy *data,
                                     struct connectdata *conn)
@@ -1840,10 +1796,6 @@ static CURLcode cf_ssl_proxy_create(struct Curl_cfilter **pcf,
   struct Curl_cfilter *cf = NULL;
   struct ssl_connect_data *ctx;
   CURLcode result;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-
-  ctx = cf_ctx_new(data, Curl_alpn_get_proxy_spec(data, conn));
-========
   bool use_alpn = conn->bits.tls_enable_alpn;
   int httpwant = CURL_HTTP_VERSION_1_1;
 
@@ -1855,7 +1807,6 @@ static CURLcode cf_ssl_proxy_create(struct Curl_cfilter **pcf,
 #endif
 
   ctx = cf_ctx_new(data, alpn_get_spec(httpwant, use_alpn));
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
   if(!ctx) {
     result = CURLE_OUT_OF_MEMORY;
     goto out;
@@ -1869,22 +1820,6 @@ out:
   return result;
 }
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-CURLcode Curl_ssl_cfilter_proxy_add(struct Curl_easy *data,
-                                    struct connectdata *conn,
-                                    int sockindex)
-{
-  struct Curl_cfilter *cf;
-  CURLcode result;
-
-  result = cf_ssl_proxy_create(&cf, data, conn);
-  if(!result)
-    Curl_conn_cf_add(data, conn, sockindex, cf);
-  return result;
-}
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
 CURLcode Curl_cf_ssl_proxy_insert_after(struct Curl_cfilter *cf_at,
                                         struct Curl_easy *data)
 {
@@ -1927,17 +1862,6 @@ void *Curl_ssl_get_internals(struct Curl_easy *data, int sockindex,
 CURLcode Curl_ssl_cfilter_remove(struct Curl_easy *data,
                                  int sockindex)
 {
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-  struct Curl_cfilter *cf = data->conn? data->conn->cfilter[sockindex] : NULL;
-  CURLcode result = CURLE_OK;
-
-  (void)data;
-  for(; cf; cf = cf->next) {
-    if(cf->cft == &Curl_cft_ssl) {
-      if(Curl_ssl->shut_down(cf, data))
-        result = CURLE_SSL_SHUTDOWN_FAILED;
-      Curl_conn_cf_discard(cf, data);
-========
   struct Curl_cfilter *cf, *head;
   CURLcode result = CURLE_OK;
 
@@ -1948,7 +1872,6 @@ CURLcode Curl_ssl_cfilter_remove(struct Curl_easy *data,
       if(Curl_ssl->shut_down(cf, data))
         result = CURLE_SSL_SHUTDOWN_FAILED;
       Curl_conn_cf_discard_sub(head, cf, data, FALSE);
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
       break;
     }
   }
@@ -2010,22 +1933,6 @@ Curl_ssl_cf_get_primary_config(struct Curl_cfilter *cf)
 #endif
 }
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-struct ssl_primary_config *
-Curl_ssl_get_primary_config(struct Curl_easy *data,
-                            struct connectdata *conn,
-                            int sockindex)
-{
-  struct Curl_cfilter *cf;
-
-  (void)data;
-  DEBUGASSERT(conn);
-  cf = get_ssl_cf_engaged(conn, sockindex);
-  return cf? Curl_ssl_cf_get_primary_config(cf) : NULL;
-}
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
 struct Curl_cfilter *Curl_ssl_cf_get_ssl(struct Curl_cfilter *cf)
 {
   for(; cf; cf = cf->next) {
@@ -2035,45 +1942,6 @@ struct Curl_cfilter *Curl_ssl_cf_get_ssl(struct Curl_cfilter *cf)
   return NULL;
 }
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-static const struct alpn_spec ALPN_SPEC_H10 = {
-  { ALPN_HTTP_1_0 }, 1
-};
-static const struct alpn_spec ALPN_SPEC_H11 = {
-  { ALPN_HTTP_1_1 }, 1
-};
-#ifdef USE_HTTP2
-static const struct alpn_spec ALPN_SPEC_H2_H11 = {
-  { ALPN_H2, ALPN_HTTP_1_1 }, 2
-};
-#endif
-
-const struct alpn_spec *
-Curl_alpn_get_spec(struct Curl_easy *data, struct connectdata *conn)
-{
-  if(!conn->bits.tls_enable_alpn)
-    return NULL;
-  if(data->state.httpwant == CURL_HTTP_VERSION_1_0)
-    return &ALPN_SPEC_H10;
-#ifdef USE_HTTP2
-  if(data->state.httpwant >= CURL_HTTP_VERSION_2)
-    return &ALPN_SPEC_H2_H11;
-#endif
-  return &ALPN_SPEC_H11;
-}
-
-const struct alpn_spec *
-Curl_alpn_get_proxy_spec(struct Curl_easy *data, struct connectdata *conn)
-{
-  if(!conn->bits.tls_enable_alpn)
-    return NULL;
-  if(data->state.httpwant == CURL_HTTP_VERSION_1_0)
-    return &ALPN_SPEC_H10;
-  return &ALPN_SPEC_H11;
-}
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
 CURLcode Curl_alpn_to_proto_buf(struct alpn_proto_buf *buf,
                                 const struct alpn_spec *spec)
 {
@@ -2108,11 +1976,7 @@ CURLcode Curl_alpn_to_proto_str(struct alpn_proto_buf *buf,
     len = strlen(spec->entries[i]);
     if(len >= ALPN_NAME_MAX)
       return CURLE_FAILED_INIT;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-    if(off + len + 2 >= (int)sizeof(buf->data))
-========
     if(off + len + 2 >= sizeof(buf->data))
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
       return CURLE_FAILED_INIT;
     if(off)
       buf->data[off++] = ',';
@@ -2130,17 +1994,6 @@ CURLcode Curl_alpn_set_negotiated(struct Curl_cfilter *cf,
                                   size_t proto_len)
 {
   int can_multi = 0;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-
-  if(proto && proto_len) {
-    if(proto_len == ALPN_HTTP_1_1_LENGTH &&
-            !memcmp(ALPN_HTTP_1_1, proto, ALPN_HTTP_1_1_LENGTH)) {
-      cf->conn->alpn = CURL_HTTP_VERSION_1_1;
-    }
-    else if(proto_len == ALPN_HTTP_1_0_LENGTH &&
-            !memcmp(ALPN_HTTP_1_0, proto, ALPN_HTTP_1_0_LENGTH)) {
-      cf->conn->alpn = CURL_HTTP_VERSION_1_0;
-========
   unsigned char *palpn =
 #ifndef CURL_DISABLE_PROXY
     (cf->conn->bits.tunnel_proxy && Curl_ssl_cf_is_proxy(cf))?
@@ -2158,37 +2011,23 @@ CURLcode Curl_alpn_set_negotiated(struct Curl_cfilter *cf,
     else if(proto_len == ALPN_HTTP_1_0_LENGTH &&
             !memcmp(ALPN_HTTP_1_0, proto, ALPN_HTTP_1_0_LENGTH)) {
       *palpn = CURL_HTTP_VERSION_1_0;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
     }
 #ifdef USE_HTTP2
     else if(proto_len == ALPN_H2_LENGTH &&
             !memcmp(ALPN_H2, proto, ALPN_H2_LENGTH)) {
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-      cf->conn->alpn = CURL_HTTP_VERSION_2;
-========
       *palpn = CURL_HTTP_VERSION_2;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
       can_multi = 1;
     }
 #endif
 #ifdef USE_HTTP3
     else if(proto_len == ALPN_H3_LENGTH &&
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-       !memcmp(ALPN_H3, proto, ALPN_H3_LENGTH)) {
-      cf->conn->alpn = CURL_HTTP_VERSION_3;
-========
             !memcmp(ALPN_H3, proto, ALPN_H3_LENGTH)) {
       *palpn = CURL_HTTP_VERSION_3;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
       can_multi = 1;
     }
 #endif
     else {
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-      cf->conn->alpn = CURL_HTTP_VERSION_NONE;
-========
       *palpn = CURL_HTTP_VERSION_NONE;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
       failf(data, "unsupported ALPN protocol: '%.*s'", (int)proto_len, proto);
       /* TODO: do we want to fail this? Previous code just ignored it and
        * some vtls backends even ignore the return code of this function. */
@@ -2198,22 +2037,14 @@ CURLcode Curl_alpn_set_negotiated(struct Curl_cfilter *cf,
     infof(data, VTLS_INFOF_ALPN_ACCEPTED_LEN_1STR, (int)proto_len, proto);
   }
   else {
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-    cf->conn->alpn = CURL_HTTP_VERSION_NONE;
-========
     *palpn = CURL_HTTP_VERSION_NONE;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
     infof(data, VTLS_INFOF_NO_ALPN);
   }
 
 out:
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/vtls.c
-  Curl_multiuse_state(data, can_multi? BUNDLE_MULTIPLEX : BUNDLE_NO_MULTIUSE);
-========
   if(!Curl_ssl_cf_is_proxy(cf))
     Curl_multiuse_state(data, can_multi?
                         BUNDLE_MULTIPLEX : BUNDLE_NO_MULTIUSE);
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/vtls.c
   return CURLE_OK;
 }
 

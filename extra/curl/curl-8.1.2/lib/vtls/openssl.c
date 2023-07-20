@@ -920,19 +920,6 @@ static char *ossl_strerror(unsigned long error, char *buf, size_t size)
   size_t len;
   DEBUGASSERT(size);
   *buf = '\0';
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/openssl.c
-
-  len = ossl_version(buf, size);
-  DEBUGASSERT(len < (size - 2));
-  if(len < (size - 2)) {
-    buf += len;
-    size -= (len + 2);
-    *buf++ = ':';
-    *buf++ = ' ';
-    *buf = '\0';
-  }
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/openssl.c
 
   len = ossl_version(buf, size);
   DEBUGASSERT(len < (size - 2));
@@ -1798,66 +1785,6 @@ static void ossl_cleanup(void)
   Curl_tls_keylog_close();
 }
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/openssl.c
-/*
- * This function is used to determine connection status.
- *
- * Return codes:
- *     1 means the connection is still in place
- *     0 means the connection has been closed
- *    -1 means the connection status is unknown
- */
-static int ossl_check_cxn(struct Curl_cfilter *cf, struct Curl_easy *data)
-{
-  /* SSL_peek takes data out of the raw recv buffer without peeking so we use
-     recv MSG_PEEK instead. Bug #795 */
-#ifdef MSG_PEEK
-  char buf;
-  ssize_t nread;
-  curl_socket_t sock = Curl_conn_cf_get_socket(cf, data);
-  if(sock == CURL_SOCKET_BAD)
-    return 0; /* no socket, consider closed */
-  nread = recv((RECV_TYPE_ARG1)sock,
-               (RECV_TYPE_ARG2)&buf, (RECV_TYPE_ARG3)1,
-               (RECV_TYPE_ARG4)MSG_PEEK);
-  if(nread == 0)
-    return 0; /* connection has been closed */
-  if(nread == 1)
-    return 1; /* connection still in place */
-  else if(nread == -1) {
-      int err = SOCKERRNO;
-      if(err == EINPROGRESS ||
-#if defined(EAGAIN) && (EAGAIN != EWOULDBLOCK)
-         err == EAGAIN ||
-#endif
-         err == EWOULDBLOCK)
-        return 1; /* connection still in place */
-      if(err == ECONNRESET ||
-#ifdef ECONNABORTED
-         err == ECONNABORTED ||
-#endif
-#ifdef ENETDOWN
-         err == ENETDOWN ||
-#endif
-#ifdef ENETRESET
-         err == ENETRESET ||
-#endif
-#ifdef ESHUTDOWN
-         err == ESHUTDOWN ||
-#endif
-#ifdef ETIMEDOUT
-         err == ETIMEDOUT ||
-#endif
-         err == ENOTCONN)
-        return 0; /* connection has been closed */
-  }
-#endif
-  (void)data;
-  return -1; /* connection status unknown */
-}
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/openssl.c
 /* Selects an OpenSSL crypto engine
  */
 static CURLcode ossl_set_engine(struct Curl_easy *data, const char *engine)
@@ -2381,11 +2308,7 @@ ossl_verifyhost(struct Curl_easy *data, struct connectdata *conn,
 }
 
 #if (OPENSSL_VERSION_NUMBER >= 0x0090808fL) && !defined(OPENSSL_NO_TLSEXT) && \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/openssl.c
-    !defined(OPENSSL_NO_OCSP)
-========
   !defined(OPENSSL_NO_OCSP)
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/openssl.c
 static CURLcode verifystatus(struct Curl_cfilter *cf,
                              struct Curl_easy *data)
 {
@@ -2678,7 +2601,7 @@ static void ossl_trace(int direction, int ssl_ver, int content_type,
   if(!data || !data->set.fdebug || (direction && direction != 1))
     return;
 
- switch(ssl_ver) {
+  switch(ssl_ver) {
 #ifdef SSL2_VERSION /* removed in recent versions */
   case SSL2_VERSION:
     verstr = "SSLv2";
@@ -2900,18 +2823,6 @@ set_ssl_version_min_max_legacy(ctx_option_t *ctx_options,
   switch(ssl_version) {
   case CURL_SSLVERSION_TLSv1_3:
 #ifdef TLS1_3_VERSION
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/openssl.c
-    {
-      struct ssl_connect_data *connssl = cf->ctx;
-      DEBUGASSERT(connssl->backend);
-      SSL_CTX_set_max_proto_version(connssl->backend->ctx, TLS1_3_VERSION);
-      *ctx_options |= SSL_OP_NO_TLSv1_2;
-    }
-#else
-      (void)ctx_options;
-      failf(data, OSSL_PACKAGE " was built without TLS 1.3 support");
-      return CURLE_NOT_BUILT_IN;
-========
   {
     struct ssl_connect_data *connssl = cf->ctx;
     DEBUGASSERT(connssl->backend);
@@ -2922,7 +2833,6 @@ set_ssl_version_min_max_legacy(ctx_option_t *ctx_options,
   (void)ctx_options;
   failf(data, OSSL_PACKAGE " was built without TLS 1.3 support");
   return CURLE_NOT_BUILT_IN;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/openssl.c
 #endif
   /* FALLTHROUGH */
   case CURL_SSLVERSION_TLSv1_2:
@@ -3460,19 +3370,11 @@ CURLcode Curl_ssl_setup_x509_store(struct Curl_cfilter *cf,
      or no source is provided and we are falling back to openssl's built-in
      default. */
   cache_criteria_met = (data->set.general_ssl.ca_cache_timeout != 0) &&
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/openssl.c
-                       conn_config->verifypeer &&
-                       !conn_config->CApath &&
-                       !conn_config->ca_info_blob &&
-                       !ssl_config->primary.CRLfile &&
-                       !ssl_config->native_ca_store;
-========
     conn_config->verifypeer &&
     !conn_config->CApath &&
     !conn_config->ca_info_blob &&
     !ssl_config->primary.CRLfile &&
     !ssl_config->native_ca_store;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/openssl.c
 
   cached_store = get_cached_x509_store(cf, data);
   if(cached_store && cache_criteria_met && X509_STORE_up_ref(cached_store)) {
@@ -3671,15 +3573,9 @@ static CURLcode ossl_connect_step1(struct Curl_cfilter *cf,
     ctx_options |= SSL_OP_NO_SSLv3;
 
 #if (OPENSSL_VERSION_NUMBER >= 0x10100000L) /* 1.1.0 */
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/openssl.c
-      result = set_ssl_version_min_max(cf, backend->ctx);
-#else
-      result = set_ssl_version_min_max_legacy(&ctx_options, cf, data);
-========
     result = set_ssl_version_min_max(cf, backend->ctx);
 #else
     result = set_ssl_version_min_max_legacy(&ctx_options, cf, data);
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/openssl.c
 #endif
     if(result != CURLE_OK)
       return result;
@@ -3832,11 +3728,7 @@ static CURLcode ossl_connect_step1(struct Curl_cfilter *cf,
   SSL_set_app_data(backend->handle, cf);
 
 #if (OPENSSL_VERSION_NUMBER >= 0x0090808fL) && !defined(OPENSSL_NO_TLSEXT) && \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/openssl.c
-    !defined(OPENSSL_NO_OCSP)
-========
   !defined(OPENSSL_NO_OCSP)
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/openssl.c
   if(conn_config->verifystatus)
     SSL_set_tlsext_status_type(backend->handle, TLSEXT_STATUSTYPE_ocsp);
 #endif
@@ -4058,11 +3950,7 @@ static CURLcode ossl_connect_step2(struct Curl_cfilter *cf,
     /* Sets data and len to negotiated protocol, len is 0 if no protocol was
      * negotiated
      */
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/openssl.c
-    if(cf->conn->bits.tls_enable_alpn) {
-========
     if(connssl->alpn) {
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/openssl.c
       const unsigned char *neg_protocol;
       unsigned int len;
       SSL_get0_alpn_selected(backend->handle, &neg_protocol, &len);
@@ -4322,11 +4210,7 @@ static CURLcode servercert(struct Curl_cfilter *cf,
   }
 
 #if (OPENSSL_VERSION_NUMBER >= 0x0090808fL) && !defined(OPENSSL_NO_TLSEXT) && \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/openssl.c
-    !defined(OPENSSL_NO_OCSP)
-========
   !defined(OPENSSL_NO_OCSP)
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/openssl.c
   if(conn_config->verifystatus) {
     result = verifystatus(cf, data);
     if(result) {
@@ -4374,11 +4258,7 @@ static CURLcode ossl_connect_step3(struct Curl_cfilter *cf,
    */
 
   result = servercert(cf, data, conn_config->verifypeer ||
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/openssl.c
-                                conn_config->verifyhost);
-========
                       conn_config->verifyhost);
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/openssl.c
 
   if(!result)
     connssl->connecting_state = ssl_connect_done;
@@ -4564,31 +4444,6 @@ static ssize_t ossl_send(struct Curl_cfilter *cf,
       rc = -1;
       goto out;
     case SSL_ERROR_SYSCALL:
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/openssl.c
-      {
-        int sockerr = SOCKERRNO;
-
-        if(backend->io_result == CURLE_AGAIN) {
-          *curlcode = CURLE_AGAIN;
-          rc = -1;
-          goto out;
-        }
-        sslerror = ERR_get_error();
-        if(sslerror)
-          ossl_strerror(sslerror, error_buffer, sizeof(error_buffer));
-        else if(sockerr)
-          Curl_strerror(sockerr, error_buffer, sizeof(error_buffer));
-        else {
-          strncpy(error_buffer, SSL_ERROR_to_str(err), sizeof(error_buffer));
-          error_buffer[sizeof(error_buffer) - 1] = '\0';
-        }
-        failf(data, OSSL_PACKAGE " SSL_write: %s, errno %d",
-              error_buffer, sockerr);
-        *curlcode = CURLE_SEND_ERROR;
-        rc = -1;
-        goto out;
-      }
-========
     {
       int sockerr = SOCKERRNO;
 
@@ -4612,17 +4467,12 @@ static ssize_t ossl_send(struct Curl_cfilter *cf,
       rc = -1;
       goto out;
     }
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/openssl.c
     case SSL_ERROR_SSL: {
       /*  A failure in the SSL library occurred, usually a protocol error.
           The OpenSSL error queue contains more information on the error. */
       struct Curl_cfilter *cf_ssl_next = Curl_ssl_cf_get_ssl(cf->next);
       struct ssl_connect_data *connssl_next = cf_ssl_next?
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/vtls/openssl.c
-                                                cf_ssl_next->ctx : NULL;
-========
         cf_ssl_next->ctx : NULL;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/vtls/openssl.c
       sslerror = ERR_get_error();
       if(ERR_GET_LIB(sslerror) == ERR_LIB_SSL &&
          ERR_GET_REASON(sslerror) == SSL_R_BIO_NOT_SET &&

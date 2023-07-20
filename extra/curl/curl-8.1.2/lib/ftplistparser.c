@@ -371,11 +371,6 @@ size_t Curl_ftp_parselist(char *buffer, size_t size, size_t nmemb,
   struct Curl_easy *data = (struct Curl_easy *)connptr;
   struct ftp_wc *ftpwc = data->wildcard->ftpwc;
   struct ftp_parselist_data *parser = ftpwc->parser;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/ftplistparser.c
-  struct fileinfo *infop;
-  struct curl_fileinfo *finfo;
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/ftplistparser.c
   size_t i = 0;
   CURLcode result;
   size_t retsize = bufflen;

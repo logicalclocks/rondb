@@ -147,12 +147,8 @@ static unsigned int rtsp_conncheck(struct Curl_easy *data,
   (void)data;
 
   if(checks_to_perform & CONNCHECK_ISDEAD) {
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/rtsp.c
-    if(!Curl_conn_is_alive(data, conn))
-========
     bool input_pending;
     if(!Curl_conn_is_alive(data, conn, &input_pending))
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/rtsp.c
       ret_val |= CONNRESULT_DEAD;
   }
 
@@ -647,10 +643,6 @@ static CURLcode rtsp_rtp_readwrite(struct Curl_easy *data,
         /* The length is two bytes */
         rtp_length = RTP_PKT_LENGTH(rtp);
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/rtsp.c
-      if(rtp_dataleft < rtp_length + 4) {
-        /* Need more - incomplete payload */
-========
         if(rtp_dataleft < rtp_length + 4) {
           /* Need more - incomplete payload */
           *readmore = TRUE;
@@ -680,7 +672,6 @@ static CURLcode rtsp_rtp_readwrite(struct Curl_easy *data,
       }
       else {
         /* Need more - incomplete header */
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/rtsp.c
         *readmore = TRUE;
         break;
       }

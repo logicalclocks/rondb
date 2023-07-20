@@ -145,12 +145,9 @@ struct ftp_conn {
   ftpstate state; /* always use ftp.c:state() to change state! */
   ftpstate state_saved; /* transfer type saved to be reloaded after data
                            connection is established */
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/ftp.h
-========
   unsigned char use_ssl;   /* if AUTH TLS is to be attempted etc, for FTP or
                               IMAP or POP3 or others! (type: curl_usessl)*/
   unsigned char ccc;       /* ccc level for this connection */
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/ftp.h
   BIT(ftp_trying_alternative);
   BIT(dont_check);  /* Set to TRUE to prevent the final (post-transfer)
                        file size and 226/250 status check. It should still

@@ -212,32 +212,6 @@ am__installdirs = "$(DESTDIR)$(libdir)"
 LTLIBRARIES = $(lib_LTLIBRARIES) $(noinst_LTLIBRARIES)
 libcurl_la_LIBADD =
 am__libcurl_la_SOURCES_DIST = altsvc.c amigaos.c asyn-ares.c \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-	asyn-thread.c base64.c bufref.c c-hyper.c cf-http.c \
-	cf-socket.c cfilters.c conncache.c connect.c \
-	content_encoding.c cookie.c curl_addrinfo.c curl_des.c \
-	curl_endian.c curl_fnmatch.c curl_get_line.c \
-	curl_gethostname.c curl_gssapi.c curl_log.c curl_memrchr.c \
-	curl_multibyte.c curl_ntlm_core.c curl_ntlm_wb.c curl_path.c \
-	curl_range.c curl_rtmp.c curl_sasl.c curl_sspi.c \
-	curl_threads.c dict.c doh.c dynbuf.c easy.c easygetopt.c \
-	easyoptions.c escape.c file.c fileinfo.c fopen.c formdata.c \
-	ftp.c ftplistparser.c getenv.c getinfo.c gopher.c h2h3.c \
-	hash.c headers.c hmac.c hostasyn.c hostip.c hostip4.c \
-	hostip6.c hostsyn.c hsts.c http.c http2.c http_chunks.c \
-	http_digest.c http_negotiate.c http_ntlm.c http_proxy.c \
-	http_aws_sigv4.c idn.c if2ip.c imap.c inet_ntop.c inet_pton.c \
-	krb5.c ldap.c llist.c md4.c md5.c memdebug.c mime.c mprintf.c \
-	mqtt.c multi.c netrc.c nonblock.c noproxy.c openldap.c \
-	parsedate.c pingpong.c pop3.c progress.c psl.c rand.c rename.c \
-	rtsp.c select.c sendf.c setopt.c sha256.c share.c slist.c \
-	smb.c smtp.c socketpair.c socks.c socks_gssapi.c socks_sspi.c \
-	speedcheck.c splay.c strcase.c strdup.c strerror.c strtok.c \
-	strtoofft.c system_win32.c telnet.c tftp.c timediff.c \
-	timeval.c transfer.c url.c urlapi.c version.c version_win32.c \
-	warnless.c wildcard.c ws.c vauth/cleartext.c vauth/cram.c \
-	vauth/digest.c vauth/digest_sspi.c vauth/gsasl.c \
-========
 	asyn-thread.c base64.c bufq.c bufref.c c-hyper.c cf-h1-proxy.c \
 	cf-h2-proxy.c cf-haproxy.c cf-https-connect.c cf-socket.c \
 	cfilters.c conncache.c connect.c content_encoding.c cookie.c \
@@ -262,7 +236,6 @@ am__libcurl_la_SOURCES_DIST = altsvc.c amigaos.c asyn-ares.c \
 	telnet.c tftp.c timediff.c timeval.c transfer.c url.c urlapi.c \
 	version.c version_win32.c warnless.c ws.c vauth/cleartext.c \
 	vauth/cram.c vauth/digest.c vauth/digest_sspi.c vauth/gsasl.c \
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 	vauth/krb5_gssapi.c vauth/krb5_sspi.c vauth/ntlm.c \
 	vauth/ntlm_sspi.c vauth/oauth2.c vauth/spnego_gssapi.c \
 	vauth/spnego_sspi.c vauth/vauth.c vtls/bearssl.c vtls/gskit.c \
@@ -272,34 +245,6 @@ am__libcurl_la_SOURCES_DIST = altsvc.c amigaos.c asyn-ares.c \
 	vtls/sectransp.c vtls/vtls.c vtls/wolfssl.c vtls/x509asn1.c \
 	vquic/curl_msh3.c vquic/curl_ngtcp2.c vquic/curl_quiche.c \
 	vquic/vquic.c vssh/libssh.c vssh/libssh2.c vssh/wolfssh.c \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-	altsvc.h amigaos.h arpa_telnet.h asyn.h bufref.h c-hyper.h \
-	cf-http.h cf-socket.h cfilters.h conncache.h connect.h \
-	content_encoding.h cookie.h curl_addrinfo.h curl_base64.h \
-	curl_ctype.h curl_des.h curl_endian.h curl_fnmatch.h \
-	curl_get_line.h curl_gethostname.h curl_gssapi.h curl_hmac.h \
-	curl_krb5.h curl_ldap.h curl_log.h curl_md4.h curl_md5.h \
-	curl_memory.h curl_memrchr.h curl_multibyte.h curl_ntlm_core.h \
-	curl_ntlm_wb.h curl_path.h curl_printf.h curl_range.h \
-	curl_rtmp.h curl_sasl.h curl_setup.h curl_setup_once.h \
-	curl_sha256.h curl_sspi.h curl_threads.h curlx.h dict.h doh.h \
-	dynbuf.h easy_lock.h easyif.h easyoptions.h escape.h file.h \
-	fileinfo.h fopen.h formdata.h functypes.h ftp.h \
-	ftplistparser.h getinfo.h gopher.h h2h3.h hash.h headers.h \
-	hostip.h hsts.h http.h http2.h http_chunks.h http_digest.h \
-	http_negotiate.h http_ntlm.h http_proxy.h http_aws_sigv4.h \
-	idn.h if2ip.h imap.h inet_ntop.h inet_pton.h llist.h \
-	memdebug.h mime.h mqtt.h multihandle.h multiif.h netrc.h \
-	nonblock.h noproxy.h parsedate.h pingpong.h pop3.h progress.h \
-	psl.h rand.h rename.h rtsp.h select.h sendf.h setopt.h \
-	setup-vms.h share.h sigpipe.h slist.h smb.h smtp.h sockaddr.h \
-	socketpair.h socks.h speedcheck.h splay.h strcase.h strdup.h \
-	strerror.h strtok.h strtoofft.h system_win32.h telnet.h tftp.h \
-	timediff.h timeval.h transfer.h url.h urlapi-int.h urldata.h \
-	version_win32.h warnless.h wildcard.h ws.h vauth/digest.h \
-	vauth/ntlm.h vauth/vauth.h vtls/bearssl.h vtls/gskit.h \
-	vtls/gtls.h vtls/hostcheck.h vtls/keylog.h vtls/mbedtls.h \
-========
 	altsvc.h amigaos.h arpa_telnet.h asyn.h bufq.h bufref.h \
 	c-hyper.h cf-h1-proxy.h cf-h2-proxy.h cf-haproxy.h \
 	cf-https-connect.h cf-socket.h cfilters.h conncache.h \
@@ -328,7 +273,6 @@ am__libcurl_la_SOURCES_DIST = altsvc.c amigaos.c asyn-ares.c \
 	version_win32.h warnless.h ws.h vauth/digest.h vauth/ntlm.h \
 	vauth/vauth.h vtls/bearssl.h vtls/gskit.h vtls/gtls.h \
 	vtls/hostcheck.h vtls/keylog.h vtls/mbedtls.h \
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 	vtls/mbedtls_threadlock.h vtls/nssg.h vtls/openssl.h \
 	vtls/rustls.h vtls/schannel.h vtls/sectransp.h vtls/vtls.h \
 	vtls/vtls_int.h vtls/wolfssl.h vtls/x509asn1.h \
@@ -336,23 +280,6 @@ am__libcurl_la_SOURCES_DIST = altsvc.c amigaos.c asyn-ares.c \
 	vquic/vquic.h vquic/vquic_int.h vssh/ssh.h libcurl.rc
 am__objects_1 = libcurl_la-altsvc.lo libcurl_la-amigaos.lo \
 	libcurl_la-asyn-ares.lo libcurl_la-asyn-thread.lo \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-	libcurl_la-base64.lo libcurl_la-bufref.lo \
-	libcurl_la-c-hyper.lo libcurl_la-cf-http.lo \
-	libcurl_la-cf-socket.lo libcurl_la-cfilters.lo \
-	libcurl_la-conncache.lo libcurl_la-connect.lo \
-	libcurl_la-content_encoding.lo libcurl_la-cookie.lo \
-	libcurl_la-curl_addrinfo.lo libcurl_la-curl_des.lo \
-	libcurl_la-curl_endian.lo libcurl_la-curl_fnmatch.lo \
-	libcurl_la-curl_get_line.lo libcurl_la-curl_gethostname.lo \
-	libcurl_la-curl_gssapi.lo libcurl_la-curl_log.lo \
-	libcurl_la-curl_memrchr.lo libcurl_la-curl_multibyte.lo \
-	libcurl_la-curl_ntlm_core.lo libcurl_la-curl_ntlm_wb.lo \
-	libcurl_la-curl_path.lo libcurl_la-curl_range.lo \
-	libcurl_la-curl_rtmp.lo libcurl_la-curl_sasl.lo \
-	libcurl_la-curl_sspi.lo libcurl_la-curl_threads.lo \
-	libcurl_la-dict.lo libcurl_la-doh.lo libcurl_la-dynbuf.lo \
-========
 	libcurl_la-base64.lo libcurl_la-bufq.lo libcurl_la-bufref.lo \
 	libcurl_la-c-hyper.lo libcurl_la-cf-h1-proxy.lo \
 	libcurl_la-cf-h2-proxy.lo libcurl_la-cf-haproxy.lo \
@@ -370,7 +297,6 @@ am__objects_1 = libcurl_la-altsvc.lo libcurl_la-amigaos.lo \
 	libcurl_la-curl_sasl.lo libcurl_la-curl_sspi.lo \
 	libcurl_la-curl_threads.lo libcurl_la-dict.lo \
 	libcurl_la-doh.lo libcurl_la-dynbuf.lo libcurl_la-dynhds.lo \
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 	libcurl_la-easy.lo libcurl_la-easygetopt.lo \
 	libcurl_la-easyoptions.lo libcurl_la-escape.lo \
 	libcurl_la-file.lo libcurl_la-fileinfo.lo libcurl_la-fopen.lo \
@@ -381,18 +307,6 @@ am__objects_1 = libcurl_la-altsvc.lo libcurl_la-amigaos.lo \
 	libcurl_la-hostasyn.lo libcurl_la-hostip.lo \
 	libcurl_la-hostip4.lo libcurl_la-hostip6.lo \
 	libcurl_la-hostsyn.lo libcurl_la-hsts.lo libcurl_la-http.lo \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-	libcurl_la-http2.lo libcurl_la-http_chunks.lo \
-	libcurl_la-http_digest.lo libcurl_la-http_negotiate.lo \
-	libcurl_la-http_ntlm.lo libcurl_la-http_proxy.lo \
-	libcurl_la-http_aws_sigv4.lo libcurl_la-idn.lo \
-	libcurl_la-if2ip.lo libcurl_la-imap.lo libcurl_la-inet_ntop.lo \
-	libcurl_la-inet_pton.lo libcurl_la-krb5.lo libcurl_la-ldap.lo \
-	libcurl_la-llist.lo libcurl_la-md4.lo libcurl_la-md5.lo \
-	libcurl_la-memdebug.lo libcurl_la-mime.lo \
-	libcurl_la-mprintf.lo libcurl_la-mqtt.lo libcurl_la-multi.lo \
-	libcurl_la-netrc.lo libcurl_la-nonblock.lo \
-========
 	libcurl_la-http1.lo libcurl_la-http2.lo \
 	libcurl_la-http_chunks.lo libcurl_la-http_digest.lo \
 	libcurl_la-http_negotiate.lo libcurl_la-http_ntlm.lo \
@@ -403,7 +317,6 @@ am__objects_1 = libcurl_la-altsvc.lo libcurl_la-amigaos.lo \
 	libcurl_la-md4.lo libcurl_la-md5.lo libcurl_la-memdebug.lo \
 	libcurl_la-mime.lo libcurl_la-mprintf.lo libcurl_la-mqtt.lo \
 	libcurl_la-multi.lo libcurl_la-netrc.lo libcurl_la-nonblock.lo \
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 	libcurl_la-noproxy.lo libcurl_la-openldap.lo \
 	libcurl_la-parsedate.lo libcurl_la-pingpong.lo \
 	libcurl_la-pop3.lo libcurl_la-progress.lo libcurl_la-psl.lo \
@@ -462,15 +375,10 @@ libcurl_la_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
 libcurlu_la_LIBADD =
 am__objects_11 = libcurlu_la-altsvc.lo libcurlu_la-amigaos.lo \
 	libcurlu_la-asyn-ares.lo libcurlu_la-asyn-thread.lo \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-	libcurlu_la-base64.lo libcurlu_la-bufref.lo \
-	libcurlu_la-c-hyper.lo libcurlu_la-cf-http.lo \
-========
 	libcurlu_la-base64.lo libcurlu_la-bufq.lo \
 	libcurlu_la-bufref.lo libcurlu_la-c-hyper.lo \
 	libcurlu_la-cf-h1-proxy.lo libcurlu_la-cf-h2-proxy.lo \
 	libcurlu_la-cf-haproxy.lo libcurlu_la-cf-https-connect.lo \
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 	libcurlu_la-cf-socket.lo libcurlu_la-cfilters.lo \
 	libcurlu_la-conncache.lo libcurlu_la-connect.lo \
 	libcurlu_la-content_encoding.lo libcurlu_la-cookie.lo \
@@ -495,19 +403,11 @@ am__objects_11 = libcurlu_la-altsvc.lo libcurlu_la-amigaos.lo \
 	libcurlu_la-hostasyn.lo libcurlu_la-hostip.lo \
 	libcurlu_la-hostip4.lo libcurlu_la-hostip6.lo \
 	libcurlu_la-hostsyn.lo libcurlu_la-hsts.lo libcurlu_la-http.lo \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-	libcurlu_la-http2.lo libcurlu_la-http_chunks.lo \
-	libcurlu_la-http_digest.lo libcurlu_la-http_negotiate.lo \
-	libcurlu_la-http_ntlm.lo libcurlu_la-http_proxy.lo \
-	libcurlu_la-http_aws_sigv4.lo libcurlu_la-idn.lo \
-	libcurlu_la-if2ip.lo libcurlu_la-imap.lo \
-========
 	libcurlu_la-http1.lo libcurlu_la-http2.lo \
 	libcurlu_la-http_chunks.lo libcurlu_la-http_digest.lo \
 	libcurlu_la-http_negotiate.lo libcurlu_la-http_ntlm.lo \
 	libcurlu_la-http_proxy.lo libcurlu_la-http_aws_sigv4.lo \
 	libcurlu_la-idn.lo libcurlu_la-if2ip.lo libcurlu_la-imap.lo \
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 	libcurlu_la-inet_ntop.lo libcurlu_la-inet_pton.lo \
 	libcurlu_la-krb5.lo libcurlu_la-ldap.lo libcurlu_la-llist.lo \
 	libcurlu_la-md4.lo libcurlu_la-md5.lo libcurlu_la-memdebug.lo \
@@ -586,14 +486,10 @@ am__depfiles_remade = ./$(DEPDIR)/libcurl_la-altsvc.Plo \
 	./$(DEPDIR)/libcurl_la-bufq.Plo \
 	./$(DEPDIR)/libcurl_la-bufref.Plo \
 	./$(DEPDIR)/libcurl_la-c-hyper.Plo \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-	./$(DEPDIR)/libcurl_la-cf-http.Plo \
-========
 	./$(DEPDIR)/libcurl_la-cf-h1-proxy.Plo \
 	./$(DEPDIR)/libcurl_la-cf-h2-proxy.Plo \
 	./$(DEPDIR)/libcurl_la-cf-haproxy.Plo \
 	./$(DEPDIR)/libcurl_la-cf-https-connect.Plo \
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 	./$(DEPDIR)/libcurl_la-cf-socket.Plo \
 	./$(DEPDIR)/libcurl_la-cfilters.Plo \
 	./$(DEPDIR)/libcurl_la-conncache.Plo \
@@ -715,14 +611,10 @@ am__depfiles_remade = ./$(DEPDIR)/libcurl_la-altsvc.Plo \
 	./$(DEPDIR)/libcurlu_la-bufq.Plo \
 	./$(DEPDIR)/libcurlu_la-bufref.Plo \
 	./$(DEPDIR)/libcurlu_la-c-hyper.Plo \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-	./$(DEPDIR)/libcurlu_la-cf-http.Plo \
-========
 	./$(DEPDIR)/libcurlu_la-cf-h1-proxy.Plo \
 	./$(DEPDIR)/libcurlu_la-cf-h2-proxy.Plo \
 	./$(DEPDIR)/libcurlu_la-cf-haproxy.Plo \
 	./$(DEPDIR)/libcurlu_la-cf-https-connect.Plo \
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 	./$(DEPDIR)/libcurlu_la-cf-socket.Plo \
 	./$(DEPDIR)/libcurlu_la-cfilters.Plo \
 	./$(DEPDIR)/libcurlu_la-conncache.Plo \
@@ -1327,14 +1219,10 @@ LIB_CFILES = \
   bufq.c             \
   bufref.c           \
   c-hyper.c          \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-  cf-http.c          \
-========
   cf-h1-proxy.c      \
   cf-h2-proxy.c      \
   cf-haproxy.c       \
   cf-https-connect.c \
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
   cf-socket.c        \
   cfilters.c         \
   conncache.c        \
@@ -1461,14 +1349,10 @@ LIB_HFILES = \
   bufq.h             \
   bufref.h           \
   c-hyper.h          \
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-  cf-http.h          \
-========
   cf-h1-proxy.h      \
   cf-h2-proxy.h      \
   cf-haproxy.h       \
   cf-https-connect.h \
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
   cf-socket.h        \
   cfilters.h         \
   conncache.h        \
@@ -1916,14 +1800,10 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurl_la-bufq.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurl_la-bufref.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurl_la-c-hyper.Plo@am__quote@ # am--include-marker
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurl_la-cf-http.Plo@am__quote@ # am--include-marker
-========
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurl_la-cf-h1-proxy.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurl_la-cf-h2-proxy.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurl_la-cf-haproxy.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurl_la-cf-https-connect.Plo@am__quote@ # am--include-marker
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurl_la-cf-socket.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurl_la-cfilters.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurl_la-conncache.Plo@am__quote@ # am--include-marker
@@ -2049,14 +1929,10 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurlu_la-bufq.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurlu_la-bufref.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurlu_la-c-hyper.Plo@am__quote@ # am--include-marker
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurlu_la-cf-http.Plo@am__quote@ # am--include-marker
-========
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurlu_la-cf-h1-proxy.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurlu_la-cf-h2-proxy.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurlu_la-cf-haproxy.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurlu_la-cf-https-connect.Plo@am__quote@ # am--include-marker
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurlu_la-cf-socket.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurlu_la-cfilters.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/libcurlu_la-conncache.Plo@am__quote@ # am--include-marker
@@ -2333,14 +2209,6 @@ libcurl_la-c-hyper.lo: c-hyper.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurl_la_CPPFLAGS) $(CPPFLAGS) $(libcurl_la_CFLAGS) $(CFLAGS) -c -o libcurl_la-c-hyper.lo `test -f 'c-hyper.c' || echo '$(srcdir)/'`c-hyper.c
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-libcurl_la-cf-http.lo: cf-http.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurl_la_CPPFLAGS) $(CPPFLAGS) $(libcurl_la_CFLAGS) $(CFLAGS) -MT libcurl_la-cf-http.lo -MD -MP -MF $(DEPDIR)/libcurl_la-cf-http.Tpo -c -o libcurl_la-cf-http.lo `test -f 'cf-http.c' || echo '$(srcdir)/'`cf-http.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libcurl_la-cf-http.Tpo $(DEPDIR)/libcurl_la-cf-http.Plo
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='cf-http.c' object='libcurl_la-cf-http.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurl_la_CPPFLAGS) $(CPPFLAGS) $(libcurl_la_CFLAGS) $(CFLAGS) -c -o libcurl_la-cf-http.lo `test -f 'cf-http.c' || echo '$(srcdir)/'`cf-http.c
-========
 libcurl_la-cf-h1-proxy.lo: cf-h1-proxy.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurl_la_CPPFLAGS) $(CPPFLAGS) $(libcurl_la_CFLAGS) $(CFLAGS) -MT libcurl_la-cf-h1-proxy.lo -MD -MP -MF $(DEPDIR)/libcurl_la-cf-h1-proxy.Tpo -c -o libcurl_la-cf-h1-proxy.lo `test -f 'cf-h1-proxy.c' || echo '$(srcdir)/'`cf-h1-proxy.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libcurl_la-cf-h1-proxy.Tpo $(DEPDIR)/libcurl_la-cf-h1-proxy.Plo
@@ -2368,7 +2236,6 @@ libcurl_la-cf-https-connect.lo: cf-https-connect.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='cf-https-connect.c' object='libcurl_la-cf-https-connect.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurl_la_CPPFLAGS) $(CPPFLAGS) $(libcurl_la_CFLAGS) $(CFLAGS) -c -o libcurl_la-cf-https-connect.lo `test -f 'cf-https-connect.c' || echo '$(srcdir)/'`cf-https-connect.c
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 
 libcurl_la-cf-socket.lo: cf-socket.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurl_la_CPPFLAGS) $(CPPFLAGS) $(libcurl_la_CFLAGS) $(CFLAGS) -MT libcurl_la-cf-socket.lo -MD -MP -MF $(DEPDIR)/libcurl_la-cf-socket.Tpo -c -o libcurl_la-cf-socket.lo `test -f 'cf-socket.c' || echo '$(srcdir)/'`cf-socket.c
@@ -3497,14 +3364,6 @@ libcurlu_la-c-hyper.lo: c-hyper.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurlu_la_CPPFLAGS) $(CPPFLAGS) $(libcurlu_la_CFLAGS) $(CFLAGS) -c -o libcurlu_la-c-hyper.lo `test -f 'c-hyper.c' || echo '$(srcdir)/'`c-hyper.c
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-libcurlu_la-cf-http.lo: cf-http.c
-@am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurlu_la_CPPFLAGS) $(CPPFLAGS) $(libcurlu_la_CFLAGS) $(CFLAGS) -MT libcurlu_la-cf-http.lo -MD -MP -MF $(DEPDIR)/libcurlu_la-cf-http.Tpo -c -o libcurlu_la-cf-http.lo `test -f 'cf-http.c' || echo '$(srcdir)/'`cf-http.c
-@am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libcurlu_la-cf-http.Tpo $(DEPDIR)/libcurlu_la-cf-http.Plo
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='cf-http.c' object='libcurlu_la-cf-http.lo' libtool=yes @AMDEPBACKSLASH@
-@AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
-@am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurlu_la_CPPFLAGS) $(CPPFLAGS) $(libcurlu_la_CFLAGS) $(CFLAGS) -c -o libcurlu_la-cf-http.lo `test -f 'cf-http.c' || echo '$(srcdir)/'`cf-http.c
-========
 libcurlu_la-cf-h1-proxy.lo: cf-h1-proxy.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurlu_la_CPPFLAGS) $(CPPFLAGS) $(libcurlu_la_CFLAGS) $(CFLAGS) -MT libcurlu_la-cf-h1-proxy.lo -MD -MP -MF $(DEPDIR)/libcurlu_la-cf-h1-proxy.Tpo -c -o libcurlu_la-cf-h1-proxy.lo `test -f 'cf-h1-proxy.c' || echo '$(srcdir)/'`cf-h1-proxy.c
 @am__fastdepCC_TRUE@	$(AM_V_at)$(am__mv) $(DEPDIR)/libcurlu_la-cf-h1-proxy.Tpo $(DEPDIR)/libcurlu_la-cf-h1-proxy.Plo
@@ -3532,7 +3391,6 @@ libcurlu_la-cf-https-connect.lo: cf-https-connect.c
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	$(AM_V_CC)source='cf-https-connect.c' object='libcurlu_la-cf-https-connect.lo' libtool=yes @AMDEPBACKSLASH@
 @AMDEP_TRUE@@am__fastdepCC_FALSE@	DEPDIR=$(DEPDIR) $(CCDEPMODE) $(depcomp) @AMDEPBACKSLASH@
 @am__fastdepCC_FALSE@	$(AM_V_CC@am__nodep@)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurlu_la_CPPFLAGS) $(CPPFLAGS) $(libcurlu_la_CFLAGS) $(CFLAGS) -c -o libcurlu_la-cf-https-connect.lo `test -f 'cf-https-connect.c' || echo '$(srcdir)/'`cf-https-connect.c
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 
 libcurlu_la-cf-socket.lo: cf-socket.c
 @am__fastdepCC_TRUE@	$(AM_V_CC)$(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=compile $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(libcurlu_la_CPPFLAGS) $(CPPFLAGS) $(libcurlu_la_CFLAGS) $(CFLAGS) -MT libcurlu_la-cf-socket.lo -MD -MP -MF $(DEPDIR)/libcurlu_la-cf-socket.Tpo -c -o libcurlu_la-cf-socket.lo `test -f 'cf-socket.c' || echo '$(srcdir)/'`cf-socket.c
@@ -4759,14 +4617,10 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/libcurl_la-bufq.Plo
 	-rm -f ./$(DEPDIR)/libcurl_la-bufref.Plo
 	-rm -f ./$(DEPDIR)/libcurl_la-c-hyper.Plo
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-	-rm -f ./$(DEPDIR)/libcurl_la-cf-http.Plo
-========
 	-rm -f ./$(DEPDIR)/libcurl_la-cf-h1-proxy.Plo
 	-rm -f ./$(DEPDIR)/libcurl_la-cf-h2-proxy.Plo
 	-rm -f ./$(DEPDIR)/libcurl_la-cf-haproxy.Plo
 	-rm -f ./$(DEPDIR)/libcurl_la-cf-https-connect.Plo
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 	-rm -f ./$(DEPDIR)/libcurl_la-cf-socket.Plo
 	-rm -f ./$(DEPDIR)/libcurl_la-cfilters.Plo
 	-rm -f ./$(DEPDIR)/libcurl_la-conncache.Plo
@@ -4892,14 +4746,10 @@ distclean: distclean-am
 	-rm -f ./$(DEPDIR)/libcurlu_la-bufq.Plo
 	-rm -f ./$(DEPDIR)/libcurlu_la-bufref.Plo
 	-rm -f ./$(DEPDIR)/libcurlu_la-c-hyper.Plo
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-	-rm -f ./$(DEPDIR)/libcurlu_la-cf-http.Plo
-========
 	-rm -f ./$(DEPDIR)/libcurlu_la-cf-h1-proxy.Plo
 	-rm -f ./$(DEPDIR)/libcurlu_la-cf-h2-proxy.Plo
 	-rm -f ./$(DEPDIR)/libcurlu_la-cf-haproxy.Plo
 	-rm -f ./$(DEPDIR)/libcurlu_la-cf-https-connect.Plo
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 	-rm -f ./$(DEPDIR)/libcurlu_la-cf-socket.Plo
 	-rm -f ./$(DEPDIR)/libcurlu_la-cfilters.Plo
 	-rm -f ./$(DEPDIR)/libcurlu_la-conncache.Plo
@@ -5142,14 +4992,10 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/libcurl_la-bufq.Plo
 	-rm -f ./$(DEPDIR)/libcurl_la-bufref.Plo
 	-rm -f ./$(DEPDIR)/libcurl_la-c-hyper.Plo
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-	-rm -f ./$(DEPDIR)/libcurl_la-cf-http.Plo
-========
 	-rm -f ./$(DEPDIR)/libcurl_la-cf-h1-proxy.Plo
 	-rm -f ./$(DEPDIR)/libcurl_la-cf-h2-proxy.Plo
 	-rm -f ./$(DEPDIR)/libcurl_la-cf-haproxy.Plo
 	-rm -f ./$(DEPDIR)/libcurl_la-cf-https-connect.Plo
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 	-rm -f ./$(DEPDIR)/libcurl_la-cf-socket.Plo
 	-rm -f ./$(DEPDIR)/libcurl_la-cfilters.Plo
 	-rm -f ./$(DEPDIR)/libcurl_la-conncache.Plo
@@ -5275,14 +5121,10 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ./$(DEPDIR)/libcurlu_la-bufq.Plo
 	-rm -f ./$(DEPDIR)/libcurlu_la-bufref.Plo
 	-rm -f ./$(DEPDIR)/libcurlu_la-c-hyper.Plo
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/Makefile.in
-	-rm -f ./$(DEPDIR)/libcurlu_la-cf-http.Plo
-========
 	-rm -f ./$(DEPDIR)/libcurlu_la-cf-h1-proxy.Plo
 	-rm -f ./$(DEPDIR)/libcurlu_la-cf-h2-proxy.Plo
 	-rm -f ./$(DEPDIR)/libcurlu_la-cf-haproxy.Plo
 	-rm -f ./$(DEPDIR)/libcurlu_la-cf-https-connect.Plo
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/Makefile.in
 	-rm -f ./$(DEPDIR)/libcurlu_la-cf-socket.Plo
 	-rm -f ./$(DEPDIR)/libcurlu_la-cfilters.Plo
 	-rm -f ./$(DEPDIR)/libcurlu_la-conncache.Plo

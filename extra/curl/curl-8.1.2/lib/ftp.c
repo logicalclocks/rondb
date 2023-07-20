@@ -436,15 +436,12 @@ static CURLcode InitiateTransfer(struct Curl_easy *data)
   bool connected;
 
   DEBUGF(infof(data, "ftp InitiateTransfer()"));
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/ftp.c
-========
   if(conn->bits.ftp_use_data_ssl && data->set.ftp_use_port &&
      !Curl_conn_is_ssl(conn, SECONDARYSOCKET)) {
     result = Curl_ssl_cfilter_add(data, conn, SECONDARYSOCKET);
     if(result)
       return result;
   }
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/ftp.c
   result = Curl_conn_connect(data, SECONDARYSOCKET, TRUE, &connected);
   if(result || !connected)
     return result;
@@ -4360,10 +4357,7 @@ static CURLcode ftp_setup_connection(struct Curl_easy *data,
   char *type;
   struct FTP *ftp;
   CURLcode result = CURLE_OK;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/ftp.c
-========
   struct ftp_conn *ftpc = &conn->proto.ftpc;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/ftp.c
 
   ftp = calloc(sizeof(struct FTP), 1);
   if(!ftp)

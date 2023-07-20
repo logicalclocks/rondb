@@ -75,10 +75,7 @@ my %warnings = (
     'INCLUDEDUP',      => 'same file is included again',
     'INDENTATION'      => 'wrong start column for code',
     'LONGLINE'         => "Line longer than $max_column",
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/scripts/checksrc.pl
-========
     'SPACEBEFORELABEL' => 'labels not at the start of the line',
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/scripts/checksrc.pl
     'MULTISPACE'       => 'multiple spaces used when not suitable',
     'NOSPACEEQUALS'    => 'equals sign without preceding space',
     'NOTEQUALSZERO',   => 'if/while comparison with != 0',
@@ -94,10 +91,7 @@ my %warnings = (
     'SPACEBEFORECOMMA' => 'space before a comma',
     'SPACEBEFOREPAREN' => 'space before an open parenthesis',
     'SPACESEMICOLON'   => 'space before semicolon',
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/scripts/checksrc.pl
-========
     'SPACESWITCHCOLON' => 'space before colon of switch label',
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/scripts/checksrc.pl
     'TABS'             => 'TAB characters not allowed',
     'TRAILINGSPACE'    => 'Trailing whitespace on the line',
     'TYPEDEFSTRUCT'    => 'typedefed struct',

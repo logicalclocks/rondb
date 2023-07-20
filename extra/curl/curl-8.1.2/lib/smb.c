@@ -762,11 +762,7 @@ static CURLcode smb_request_state(struct Curl_easy *data, bool *done)
   void *msg = NULL;
   const struct smb_nt_create_response *smb_m;
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/smb.c
-  if(data->set.upload && (data->state.infilesize < 0)) {
-========
   if(data->state.upload && (data->state.infilesize < 0)) {
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/smb.c
     failf(data, "SMB upload needs to know the size up front");
     return CURLE_SEND_ERROR;
   }

@@ -515,11 +515,6 @@ Curl_cookie_add(struct Curl_easy *data,
 
   if(httpheader) {
     /* This line was read off an HTTP-header */
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/cookie.c
-    char name[MAX_NAME];
-    char what[MAX_NAME];
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/cookie.c
     const char *ptr;
 
     size_t linelength = strlen(lineptr);
@@ -598,17 +593,10 @@ Curl_cookie_add(struct Curl_easy *data,
          * "the rest". Prefixes must start with '__' and end with a '-', so
          * only test for names where that can possibly be true.
          */
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/cookie.c
-        if(nlen > 3 && name[0] == '_' && name[1] == '_') {
-          if(strncasecompare("__Secure-", name, 9))
-            co->prefix |= COOKIE_PREFIX__SECURE;
-          else if(strncasecompare("__Host-", name, 7))
-========
         if(nlen >= 7 && namep[0] == '_' && namep[1] == '_') {
           if(strncasecompare("__Secure-", namep, 9))
             co->prefix |= COOKIE_PREFIX__SECURE;
           else if(strncasecompare("__Host-", namep, 7))
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/cookie.c
             co->prefix |= COOKIE_PREFIX__HOST;
         }
 
@@ -1248,25 +1236,6 @@ struct CookieInfo *Curl_cookie_init(struct Curl_easy *data,
     /* we got an already existing one, use that */
     c = inc;
   }
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/cookie.c
-  c->running = FALSE; /* this is not running, this is init */
-
-  if(file && !strcmp(file, "-")) {
-    fp = stdin;
-    fromfile = FALSE;
-  }
-  else if(!file || !*file) {
-    /* points to an empty string or NULL */
-    fp = NULL;
-  }
-  else {
-    fp = fopen(file, "rb");
-    if(!fp)
-      infof(data, "WARNING: failed to open cookie file \"%s\"", file);
-  }
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/cookie.c
   c->newsession = newsession; /* new session? */
 
   if(data) {
@@ -1288,11 +1257,6 @@ struct CookieInfo *Curl_cookie_init(struct Curl_easy *data,
       char *lineptr;
       bool headerline;
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/cookie.c
-    if(fromfile)
-      fclose(fp);
-  }
-========
       line = malloc(MAX_COOKIE_LINE);
       if(!line)
         goto fail;
@@ -1308,7 +1272,6 @@ struct CookieInfo *Curl_cookie_init(struct Curl_easy *data,
         }
         while(*lineptr && ISBLANK(*lineptr))
           lineptr++;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/cookie.c
 
         Curl_cookie_add(data, c, headerline, TRUE, lineptr, NULL, NULL, TRUE);
       }
@@ -1819,14 +1782,6 @@ void Curl_flush_cookies(struct Curl_easy *data, bool cleanup)
   CURLcode res;
 
   if(data->set.str[STRING_COOKIEJAR]) {
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/cookie.c
-    /* If there is a list of cookie files to read, do it first so that
-       we have all the told files read before we write the new jar.
-       Curl_cookie_loadfiles() LOCKS and UNLOCKS the share itself! */
-    Curl_cookie_loadfiles(data);
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/cookie.c
     Curl_share_lock(data, CURL_LOCK_DATA_COOKIE, CURL_LOCK_ACCESS_SINGLE);
 
     /* if we have a destination file for all the cookies to get dumped to */

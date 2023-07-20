@@ -178,11 +178,7 @@ CURLcode Curl_base64_decode(const char *src,
   *outlen = rawlen;
 
   return CURLE_OK;
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/base64.c
-  bad:
-========
 bad:
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/base64.c
   free(newstr);
   return CURLE_BAD_CONTENT_ENCODING;
 }

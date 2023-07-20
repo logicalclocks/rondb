@@ -1123,11 +1123,6 @@ stdx::expected<Processor::Result, std::error_code> ServerGreetor::auth_error() {
 
   discard_current_msg(src_channel, src_protocol);
 
-  on_error_({msg.error_code(), std::string(msg.message()),
-             std::string(msg.sql_state())});
-
-  discard_current_msg(src_channel, src_protocol);
-
   return Result::Again;
 }
 

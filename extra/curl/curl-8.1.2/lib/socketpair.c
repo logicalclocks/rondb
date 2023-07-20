@@ -127,15 +127,6 @@ int Curl_socketpair(int domain, int type, int protocol,
   if(socks[1] == CURL_SOCKET_BAD)
     goto error;
   else {
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/socketpair.c
-    struct curltime check;
-    struct curltime start = Curl_now();
-    char *p = (char *)&check;
-    size_t s = sizeof(check);
-
-    /* write data to the socket */
-    swrite(socks[0], &start, sizeof(start));
-========
     struct curltime start = Curl_now();
     char rnd[9];
     char check[sizeof(rnd)];
@@ -147,7 +138,6 @@ int Curl_socketpair(int domain, int type, int protocol,
 
     /* write data to the socket */
     swrite(socks[0], rnd, sizeof(rnd));
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/socketpair.c
     /* verify that we read the correct data */
     do {
       ssize_t nread;
@@ -184,11 +174,7 @@ int Curl_socketpair(int domain, int type, int protocol,
         p += nread;
         continue;
       }
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/socketpair.c
-      if(memcmp(&start, &check, sizeof(check)))
-========
       if(memcmp(rnd, check, sizeof(check)))
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/socketpair.c
         goto error;
       break;
     } while(1);

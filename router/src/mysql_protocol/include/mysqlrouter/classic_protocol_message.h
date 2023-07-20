@@ -1107,6 +1107,7 @@ class StmtExecute {
 
     uint16_t type_and_flags{};
     string_type name;
+  };
 
   /**
    * construct a ExecuteStmt message.

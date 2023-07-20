@@ -2211,12 +2211,6 @@ class Codec<borrowable::message::client::StmtExecute<Borrowed>>
         if (supports_query_attributes) {
           accu.step(borrowed::wire::VarString(param_def.name));
         }
-
-        if (!v) {
-          nullbits[byte_pos] |= 1 << bit_pos;
-        }
-
-        ++bit_pos;
       }
     }
 
@@ -2224,48 +2218,6 @@ class Codec<borrowable::message::client::StmtExecute<Borrowed>>
       // add all the values that aren't NULL
       if (!v.has_value()) continue;
 
-      // write length of the type is a variable length
-      switch (v_.types()[n].type_and_flags & 0xff) {
-        case field_type::Bit:
-        case field_type::Blob:
-        case field_type::Varchar:
-        case field_type::VarString:
-        case field_type::Set:
-        case field_type::String:
-        case field_type::Enum:
-        case field_type::TinyBlob:
-        case field_type::MediumBlob:
-        case field_type::LongBlob:
-        case field_type::Decimal:
-        case field_type::NewDecimal:
-        case field_type::Geometry:
-          accu.step(bw::VarInt(v->size()));
-          break;
-        case field_type::Date:
-        case field_type::DateTime:
-        case field_type::Timestamp:
-        case field_type::Time:
-          accu.step(bw::FixedInt<1>(v->size()));
-          break;
-        case field_type::LongLong:
-        case field_type::Double:
-        case field_type::Long:
-        case field_type::Int24:
-        case field_type::Float:
-        case field_type::Short:
-        case field_type::Year:
-        case field_type::Tiny:
-          // fixed size
-          break;
-        default:
-          assert(false || "Unknown Type");
-      }
-      accu.step(borrowed::wire::String(v.value()));
-    }
-
-    for (auto [n, v] : stdx::views::enumerate(v_.values())) {
-      // add all the values that aren't NULL
-      if (!v.has_value()) continue;
       // write length of the type is a variable length
       switch (v_.types()[n].type_and_flags & 0xff) {
         case field_type::Bit:
@@ -2443,10 +2395,6 @@ class Codec<borrowable::message::client::StmtExecute<Borrowed>>
             make_error_code(codec_errc::invalid_input));
       }
 
-    auto new_params_bound = new_params_bound_res->value();
-    if (new_params_bound == 0) {
-      types = *metadata_res;
-    } else if (new_params_bound == 1) {
       types.reserve(param_count);
 
       for (size_t n{}; n < param_count; ++n) {
@@ -2462,16 +2410,6 @@ class Codec<borrowable::message::client::StmtExecute<Borrowed>>
         } else {
           types.emplace_back(type_res->value());
         }
-
-        auto value_res =
-            accu.template step<bw::String<Borrowed>>(field_size_res.value());
-        if (!accu.result()) {
-          return stdx::make_unexpected(accu.result().error());
-        }
-
-        values.push_back(value_res->value());
-      } else {
-        values.emplace_back(std::nullopt);
       }
     } else {
       return stdx::make_unexpected(make_error_code(codec_errc::invalid_input));

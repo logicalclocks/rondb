@@ -1068,33 +1068,9 @@ CURLcode Curl_readwrite(struct connectdata *conn,
   int select_bits;
 
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/transfer.c
-  conn->cselect_bits = 0;
-
-  /* only use the proper socket if the *_HOLD bit is not set simultaneously as
-     then we are in rate limiting state in that transfer direction */
-
-  if((k->keepon & KEEP_RECVBITS) == KEEP_RECV)
-    fd_read = conn->sockfd;
-  else
-    fd_read = CURL_SOCKET_BAD;
-
-  if((k->keepon & KEEP_SENDBITS) == KEEP_SEND)
-    fd_write = conn->writesockfd;
-  else
-    fd_write = CURL_SOCKET_BAD;
-
-#if defined(USE_HTTP2) || defined(USE_HTTP3)
-  if(data->state.drain) {
-    select_res |= CURL_CSELECT_IN;
-    DEBUGF(infof(data, "Curl_readwrite: forcibly told to drain data"));
-    if((k->keepon & KEEP_SENDBITS) == KEEP_SEND)
-      select_res |= CURL_CSELECT_OUT;
-========
   if(data->state.dselect_bits) {
     select_bits = data->state.dselect_bits;
     data->state.dselect_bits = 0;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/transfer.c
   }
   else if(conn->cselect_bits) {
     select_bits = conn->cselect_bits;
@@ -1254,13 +1230,7 @@ CURLcode Curl_readwrite(struct connectdata *conn,
   }
 
   /* Now update the "done" boolean we return */
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/transfer.c
-  *done = (0 == (k->keepon&(KEEP_RECV|KEEP_SEND|
-                            KEEP_RECV_PAUSE|KEEP_SEND_PAUSE))) ? TRUE : FALSE;
-  result = CURLE_OK;
-========
   *done = (0 == (k->keepon&(KEEP_RECVBITS|KEEP_SENDBITS))) ? TRUE : FALSE;
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/transfer.c
 out:
   if(result)
     DEBUGF(infof(data, DMSG(data, "Curl_readwrite() -> %d"), result));

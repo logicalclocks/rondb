@@ -1238,22 +1238,6 @@ struct Curl_cftype Curl_cft_socks_proxy = {
   Curl_cf_def_query,
 };
 
-<<<<<<<< HEAD:extra/curl/curl-7.88.1/lib/socks.c
-CURLcode Curl_conn_socks_proxy_add(struct Curl_easy *data,
-                                   struct connectdata *conn,
-                                   int sockindex)
-{
-  struct Curl_cfilter *cf;
-  CURLcode result;
-
-  result = Curl_cf_create(&cf, &Curl_cft_socks_proxy, NULL);
-  if(!result)
-    Curl_conn_cf_add(data, conn, sockindex, cf);
-  return result;
-}
-
-========
->>>>>>>> 057f5c9509c6c9ea3ce3acdc619f3353c09e6ec6:extra/curl/curl-8.1.2/lib/socks.c
 CURLcode Curl_cf_socks_proxy_insert_after(struct Curl_cfilter *cf_at,
                                           struct Curl_easy *data)
 {
