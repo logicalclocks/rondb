@@ -543,6 +543,12 @@ VALUES
     */
     (
 	    3087, 'sample_1n1_self', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, '', 250, 'sample_1n1_self_1', 250
+    ),
+    (
+	    3088, 'test_deleted_fg', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, '', 250, 'test_deleted_fg_1', 250
+    ),
+    (
+	    3089, 'test_deleted_joint_fg', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, '', 250, 'test_deleted_joint_fg_1', 250
     );
 
 INSERT INTO 
@@ -613,6 +619,9 @@ VALUES
     ),
     (
         3084, NULL, 2069, NULL, 0, 1, 'fg1_', 3087
+    ),
+    (
+        3085, NULL, 2069, NULL, 0, 1, 'fg1_', 3089
     );
 
 INSERT INTO
@@ -884,4 +893,10 @@ VALUES
     ),
     (
         3115, NULL, 2069, 'data2', 'bigint', 3083, 3, 0, NULL, 3087
+    ),
+    (
+        3116, NULL, NULL, 'id1', 'bigint', NULL, 0, 0, NULL, 3088
+    ),
+    (
+        3117, NULL, NULL, 'id1', 'bigint', 3085, 0, 0, NULL, 3089
     );
