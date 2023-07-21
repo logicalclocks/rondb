@@ -494,7 +494,7 @@ Ndb::computeHash(Uint32 *retval,
       if (unlikely(buf == nullptr))
         return 4000;
       malloced_buf = buf; /* Remember to free */
-      assert(bufLen > sumlen);
+      assert(bufLen >= sumlen);
     }
 
     assert(bufLen != 0);
