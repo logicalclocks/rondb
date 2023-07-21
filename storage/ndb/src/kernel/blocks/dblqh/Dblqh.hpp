@@ -566,6 +566,7 @@ public:
     UintR tupConnectptr;
     UintR tuxConnectptr;
 
+    Uint32 m_createTabReq_len;
     CreateTabReq m_createTabReq;
     LqhFragReq m_lqhFragReq;
     LqhAddAttrReq m_addAttrReq;
@@ -2535,6 +2536,7 @@ public:
     Uint16 tableType;
     Uint8 m_disk_table;
     bool  m_informed_backup_drop_tab;
+    bool m_use_new_hash_function;
 
     std::atomic<unsigned int> usageCountR; // readers
     std::atomic<unsigned int> usageCountW; // writers
@@ -3187,7 +3189,9 @@ private:
   void LQHKEY_abort(Signal* signal, int errortype, TcConnectionrecPtr);
   void LQHKEY_error(Signal* signal, int errortype, TcConnectionrecPtr);
   void nextRecordCopy(Signal* signal, TcConnectionrecPtr);
-  Uint32 calculateHash(Uint32 tableId, const Uint32* src);
+  Uint32 calculateHash(Uint32 tableId,
+                       const Uint32* src,
+                       bool use_new_hash_function);
   void sendCommittedTc(Signal* signal,
                        BlockReference atcBlockref,
                        const TcConnectionrec*);

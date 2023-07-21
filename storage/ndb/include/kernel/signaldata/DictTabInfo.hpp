@@ -171,6 +171,10 @@ public:
      */
     FullyReplicatedTriggerId = 161,
 
+    UseVarSizedDiskDataFlag = 162,
+
+    HashFunctionFlag   = 163,
+
     TableEnd           = 999,
     
     AttributeName          = 1000, // String, Mandatory
@@ -425,6 +429,9 @@ public:
     Uint32 FullyReplicatedFlag;
     Uint32 FullyReplicatedTriggerId;
     Uint32 PartitionCount;
+
+    Uint32 UseVarSizedDiskDataFlag;
+    Uint32 HashFunctionFlag;
 
     Table() {}
     void init();

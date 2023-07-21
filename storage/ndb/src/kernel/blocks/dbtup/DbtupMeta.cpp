@@ -64,6 +64,13 @@ extern EventLogger * g_eventLogger;
 //#define DEBUG_TUP_META 1
 //#define DEBUG_TUP_META_EXTRA 1
 //#define DEBUG_DROP_TAB 1
+//#define DEBUG_HASH 1
+#endif
+
+#ifdef DEBUG_HASH
+#define DEB_HASH(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_HASH(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_DROP_TAB
@@ -138,6 +145,13 @@ Dbtup::execCREATE_TAB_REQ(Signal* signal)
   regTabPtr.p->m_bits |=
     (req->GCPIndicator > 1 ? Tablerec::TR_ExtraRowGCIBits : 0);
   regTabPtr.p->m_bits |= (req->extraRowAuthorBits ? Tablerec::TR_ExtraRowAuthorBits : 0);
+  regTabPtr.p->m_bits |=
+    (req->hashFunctionFlag ? Tablerec::TR_HashFunction : 0);
+
+  DEB_HASH(("(%u) tab(%u) hashFunctionFlag: %u",
+            instance(),
+            regTabPtr.i,
+            req->hashFunctionFlag));
 
   regTabPtr.p->m_offsets[MM].m_disk_ref_offset= 0;
   regTabPtr.p->m_offsets[MM].m_null_words= 0;

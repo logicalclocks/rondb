@@ -522,6 +522,9 @@ struct Fragmentrec {
 //-----------------------------------------------------------------------------
   Uint8 dirRangeFull;
 
+  //Use new hash function or not
+  Uint8 m_use_new_hash_function;
+
   // Number of Page8 pages allocated for the hash index.
   Int32 m_noOfAllocatedPages;
 

@@ -33,7 +33,8 @@ Name:          Ndb.cpp
 #include <ndb_global.h>
 
 #include "API.hpp"
-#include <md5_hash.hpp>
+#include <rondb_hash.hpp>
+
 #include <NdbSleep.h>
 #include <NdbOut.hpp>
 #include <ndb_limits.h>
@@ -41,6 +42,7 @@ Name:          Ndb.cpp
 #include <BaseString.hpp>
 #include <NdbSqlUtil.hpp>
 #include <NdbTick.h>
+#include <util/rondb_hash.hpp>
 
 /****************************************************************************
 void doConnect();
@@ -553,7 +555,10 @@ Ndb::computeHash(Uint32 *retval,
   assert((len & 3) == 0);
 
   Uint32 values[4];
-  md5_hash(values, (const Uint64*)buf, len >> 2);
+  rondb_calc_hash(values,
+                  (const Uint64*)buf,
+                  len >> 2,
+                  table->use_new_hash_function());
   
   if (retval)
   {
@@ -718,7 +723,10 @@ Ndb::computeHash(Uint32 *retval,
   assert((len & 3) == 0);
 
   Uint32 values[4];
-  md5_hash(values, (const Uint64*)buf, len >> 2);
+  rondb_calc_hash(values,
+                  (const Uint64*)buf,
+                  len >> 2,
+                  keyRec->table->m_use_new_hash_function);
   
   if (retval)
   {
@@ -928,13 +936,19 @@ Ndb::startTransaction(const NdbDictionary::Table *table,
         }
 	if((UintPtr(keyData) & 7) == 0 && (keyLen & 3) == 0)
 	{
-	  md5_hash(buf, (const Uint64*)keyData, keyLen >> 2);
+	  rondb_calc_hash(buf,
+                          (const Uint64*)keyData,
+                          keyLen >> 2,
+                          impl->m_use_new_hash_function);
 	}
 	else
 	{
           tmp[keyLen/8] = 0;    // Zero out any 64-bit padding
 	  memcpy(tmp, keyData, keyLen);
-	  md5_hash(buf, tmp, (keyLen+3) >> 2);	  
+	  rondb_calc_hash(buf,
+                          tmp,
+                          (keyLen+3) >> 2,
+                          impl->m_use_new_hash_function);
 	}
 	hashValue= buf[1];
       }

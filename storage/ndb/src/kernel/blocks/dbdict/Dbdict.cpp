@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -120,11 +120,20 @@ extern EventLogger * g_eventLogger;
 #define ZRESTART_OPS_PER_TRANS 25
 #define ZRESTART_NO_WRITE_AFTER_READ 1
 
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define EVENT_PH2_DEBUG
 //#define EVENT_PH3_DEBUG
 //#define EVENT_DEBUG
 //#define DEBUG_API_FAIL
 //#define DEBUG_STRING_MEMORY 1
+//#define DEBUG_HASH 1
+#endif
+
+#ifdef DEBUG_HASH
+#define DEB_HASH(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_HASH(arglist) do { } while (0)
+#endif
 
 #ifdef DEBUG_API_FAIL
 #define DEB_API_FAIL(arglist) do { g_eventLogger->info arglist ; } while (0)
@@ -1011,6 +1020,12 @@ Dbdict::packTableIntoPages(SimpleProperties::Writer & w,
 	!!(tablePtr.p->m_bits & TableRecord::TR_ReadBackup));
   w.add(DictTabInfo::FullyReplicatedFlag,
         !!(tablePtr.p->m_bits & TableRecord::TR_FullyReplicated));
+  w.add(DictTabInfo::HashFunctionFlag,
+        ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) != 0));
+
+  DEB_HASH(("dict_tab(%u) HashFunctionFlag: %u",
+            tablePtr.p->tableId,
+            ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) != 0)));
 
   D("packTableIntoPages: tableId: " << tablePtr.p->tableId
     << " tablePtr.i = " << tablePtr.i << " tableVersion = "
@@ -5880,6 +5895,9 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
   case DictTabInfo::CreateTableFromAPI:
   {
     jam();
+    c_tableDesc.HashFunctionFlag = 0;
+    D("CreateTableFromApi: tableName = " << c_tableDesc.TableName
+      << " HashFunctionFlag = " << c_tableDesc.HashFunctionFlag);
   }
   // Fall through
   case DictTabInfo::AlterTableFromAPI:{
@@ -6046,6 +6064,9 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
     (c_tableDesc.ReadBackupFlag ? TableRecord::TR_ReadBackup : 0);
   tablePtr.p->m_bits |=
     (c_tableDesc.FullyReplicatedFlag ? TableRecord::TR_FullyReplicated : 0);
+  tablePtr.p->m_bits |=
+    (c_tableDesc.HashFunctionFlag ?
+      TableRecord::TR_HashFunction : 0);
 
   D("handleTabInfoInit: tableId = " << tablePtr.p->tableId
     << " tabPtr.i = " << tablePtr.i << " tableVersion = "
@@ -6110,6 +6131,8 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
       jam();
       tablePtr.p->partitionBalance = NDB_PARTITION_BALANCE_SPECIFIC;
     }
+    D("CreateTableFromApi: tableName = " << c_tableDesc.TableName
+      << " HashFunctionFlag = " << c_tableDesc.HashFunctionFlag);
   }
 
   /**
@@ -7679,8 +7702,10 @@ Dbdict::createTab_local(Signal* signal,
   req->GCPIndicator = 1 + tabPtr.p->m_extra_row_gci_bits;
   req->noOfAttributes = tabPtr.p->noOfAttributes;
   req->extraRowAuthorBits = tabPtr.p->m_extra_row_author_bits;
+  req->useVarSizedDiskData = 0;
+  req->hashFunctionFlag = 0;
   sendSignal(DBLQH_REF, GSN_CREATE_TAB_REQ, signal,
-             CreateTabReq::SignalLengthLDM, JBB);
+             CreateTabReq::NewSignalLengthLDM, JBB);
 
 
   /**
@@ -8319,6 +8344,9 @@ Dbdict::execTAB_COMMITCONF(Signal* signal)
     req->noOfPrimaryKeys = (Uint32)tabPtr.p->noOfPrimkey;
     req->singleUserMode = (Uint32)tabPtr.p->singleUserMode;
     req->userDefinedPartition = (tabPtr.p->fragmentType == DictTabInfo::UserDefined);
+    req->hashFunctionFlag =
+      (Uint32)(((tabPtr.p->m_bits &
+                 TableRecord::TR_HashFunction) == 0) ? 0 : 1);
 
     if (!DictTabInfo::isOrderedIndex(tabPtr.p->tableType))
     {
@@ -8496,6 +8524,9 @@ Dbdict::execTC_SCHVERCONF(Signal* signal)
     req->noOfPrimaryKeys = (Uint32)tabPtr.p->noOfPrimkey;
     req->singleUserMode = (Uint32)tabPtr.p->singleUserMode;
     req->userDefinedPartition = (tabPtr.p->fragmentType == DictTabInfo::UserDefined);
+    req->hashFunctionFlag =
+      (Uint32)(((tabPtr.p->m_bits &
+                 TableRecord::TR_HashFunction) == 0) ? 0 : 1);
 
     if (DictTabInfo::isOrderedIndex(tabPtr.p->tableType))
     {
@@ -10724,6 +10755,11 @@ Dbdict::alterTable_toReadBackup(Signal* signal,
     bool flag = indexPtr.p->m_bits & TableRecord::TR_Temporary;
     w.add(DictTabInfo::TableTemporaryFlag, (Uint32)flag);
   }
+  {
+    bool flag = ((indexPtr.p->m_bits & TableRecord::TR_HashFunction) != 0);
+    w.add(DictTabInfo::HashFunctionFlag, (Uint32)flag);
+    D("HashFunctionFlag: " << flag);
+  }
   /* Toggle read backup flag since this is changed */
   {
     bool flag = ((indexPtr.p->m_bits & TableRecord::TR_ReadBackup) == 0);
@@ -10866,6 +10902,11 @@ Dbdict::alterTable_toAlterUniqueIndex(Signal* signal,
   {
     bool flag = indexPtr.p->m_bits & TableRecord::TR_ReadBackup;
     w.add(DictTabInfo::ReadBackupFlag, (Uint32)flag);
+  }
+  {
+    bool flag = ((indexPtr.p->m_bits & TableRecord::TR_HashFunction) != 0);
+    w.add(DictTabInfo::HashFunctionFlag, (Uint32)flag);
+    D("HashFunctionFlag: " << flag);
   }
   {
     bool flag = indexPtr.p->m_bits & TableRecord::TR_FullyReplicated;
@@ -13337,6 +13378,11 @@ Dbdict::createIndex_parse(Signal* signal, bool master,
       jam();
       bits |= TableRecord::TR_Temporary;
     }
+    if (tableDesc.HashFunctionFlag)
+    {
+      jam();
+      bits |= TableRecord::TR_HashFunction;
+    }
     if (tableDesc.ReadBackupFlag)
     {
       jam();
@@ -13597,6 +13643,11 @@ Dbdict::createIndex_toCreateTable(Signal* signal, SchemaOpPtr op_ptr)
   { bool flag = createIndexPtr.p->m_bits & TableRecord::TR_ReadBackup;
     w.add(DictTabInfo::ReadBackupFlag, (Uint32)flag);
     D("ReadBackupFlag: " << flag);
+  }
+  { bool flag =
+    ((createIndexPtr.p->m_bits & TableRecord::TR_HashFunction) != 0);
+    w.add(DictTabInfo::HashFunctionFlag, (Uint32)flag);
+    D("HashFunctionFlag: " << flag);
   }
   { bool flag = createIndexPtr.p->m_bits & TableRecord::TR_FullyReplicated;
     w.add(DictTabInfo::FullyReplicatedFlag, (Uint32)flag);

@@ -33,7 +33,6 @@
 #include <ArrayPool.hpp>
 #include <DataBuffer.hpp>
 #include <IntrusiveList.hpp>
-#include <md5_hash.hpp>
 
 // big brother
 #include <dbtup/Dbtup.hpp>
@@ -445,7 +444,8 @@ private:
     State m_state;
     DictTabInfo::TableType m_tableType;
     Uint32 m_tableId;
-    Uint16 unused;
+    Uint8 m_use_new_hash_function;
+    Uint8 unused;
     Uint16 m_numFrags;
     Uint32 m_fragId[MaxIndexFragments];
     Uint32 m_fragPtrI[MaxIndexFragments];
@@ -481,8 +481,9 @@ private:
   struct Frag {
     Uint32 m_tableId;           // copy from index level
     Uint32 m_indexId;
-    Uint16 unused;
     Uint16 m_fragId;
+    Uint8 m_use_new_hash_function;
+    Uint8 unused;
     TreeHead m_tree;
     TupLoc m_freeLoc;           // one free node for next op
     Uint32 m_tupIndexFragPtrI;

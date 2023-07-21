@@ -1,4 +1,5 @@
 /* Copyright (c) 2003, 2018, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -21,13 +22,40 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
-
-#include "md5_hash.hpp"
+#include "rondb_hash.hpp"
 
 #ifdef WORDS_BIGENDIAN
 #define HIGHFIRST 1
 #endif
+
+void
+rondb_calc_hash(Uint32 hash_val[4],
+                const Uint64 *key,
+                Uint32 keylen,
+                bool use_new)
+{
+  if (likely(use_new))
+  {
+    Uint64 hash;
+    hash = rondb_xxhash_std(key, keylen);
+    hash_val[0] = hash & 0xFFFFFFFF;
+    hash_val[1] = hash >> 32;
+  }
+  else
+  {
+    md5_hash(hash_val, key, keylen);
+  }
+}
+
+Uint32
+rondb_calc_hash_val(const Uint64 *key,
+                    Uint32 keylen,
+                    bool use_new)
+{
+  Uint32 hash_val[4];
+  rondb_calc_hash(hash_val, key, keylen, use_new);
+  return hash_val[0];
+}
 
 /*
  * This code implements the MD5 message-digest algorithm.

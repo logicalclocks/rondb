@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -47,6 +48,15 @@
 
 #define JAM_FILE_ID 377
 
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_HASH 1
+#endif
+
+#ifdef DEBUG_HASH
+#define DEB_HASH(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_HASH(arglist) do { } while (0)
+#endif
 
 void
 Dbtux::execCREATE_TAB_REQ(Signal* signal)
@@ -100,11 +110,17 @@ Dbtux::execCREATE_TAB_REQ(Signal* signal)
                req->noOfAttributes <= MaxIndexAttributes &&
                indexPtr.p->m_descPage == RNIL);
 
+    indexPtr.p->m_use_new_hash_function = (req->hashFunctionFlag != 0);
     indexPtr.p->m_state = Index::Defining;
     indexPtr.p->m_tableType = (DictTabInfo::TableType)req->tableType;
     indexPtr.p->m_tableId = req->primaryTableId;
     indexPtr.p->m_numAttrs = req->noOfAttributes;
     indexPtr.p->m_storeNullKey = true;  // not yet configurable
+
+    DEB_HASH(("(%u) tux_index(%u) m_use_new_hash_function: %u",
+              instance(),
+              indexPtr.p->m_tableId,
+              indexPtr.p->m_use_new_hash_function));
     // allocate attribute descriptors
     if (! allocDescEnt(indexPtr)) {
       jam();
@@ -327,6 +343,13 @@ Dbtux::execTUXFRAGREQ(Signal* signal)
     fragPtr.p->m_tableId = req->primaryTableId;
     fragPtr.p->m_indexId = req->tableId;
     fragPtr.p->m_fragId = req->fragId;
+    fragPtr.p->m_use_new_hash_function =
+      indexPtr.p->m_use_new_hash_function;
+    DEB_HASH(("(%u) tux_index(%u,%u) m_use_new_hash_function: %u",
+              instance(),
+              req->tableId,
+              req->fragId,
+              indexPtr.p->m_use_new_hash_function));
     fragPtr.p->m_tupIndexFragPtrI = req->tupIndexFragPtrI;
     fragPtr.p->m_tupTableFragPtrI = req->tupTableFragPtrI;
     fragPtr.p->m_accTableFragPtrI = req->accTableFragPtrI;

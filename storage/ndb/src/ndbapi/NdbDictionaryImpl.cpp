@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -735,6 +736,7 @@ NdbTableImpl::init(){
   m_extra_row_author_bits = 0;
   m_read_backup = 0;
   m_fully_replicated = false;
+  m_use_new_hash_function = ndbd_support_new_hash_function(NDB_VERSION_D);
 
 #ifdef VM_TRACE
   {
@@ -1066,6 +1068,12 @@ NdbTableImpl::assign(const NdbTableImpl& org)
   m_extra_row_author_bits = org.m_extra_row_author_bits;
   m_read_backup = org.m_read_backup;
   m_fully_replicated = org.m_fully_replicated;
+  m_use_new_hash_function = org.m_use_new_hash_function;
+
+  DBUG_PRINT("info", ("NdbTableImpl::assign %u, m_use_new_hash_function: %u",
+                       m_primaryTableId,
+                       m_use_new_hash_function));
+
 
   if (m_index != 0)
     delete m_index;
@@ -2018,6 +2026,7 @@ void NdbIndexImpl::init()
   m_logging= true;
   m_temporary= false;
   m_table= NULL;
+  m_use_new_hash_function = ndbd_support_new_hash_function(NDB_VERSION_D);
 }
 
 NdbIndexImpl::~NdbIndexImpl(){
@@ -3597,14 +3606,19 @@ NdbDictInterface::parseTableInfo(NdbTableImpl ** ret,
   impl->m_partitionCount = tableDesc->PartitionCount;
   impl->m_fully_replicated =
     tableDesc->FullyReplicatedFlag == 0 ? false : true;
+  impl->m_use_new_hash_function =
+    tableDesc->HashFunctionFlag == 0 ? false : true;
 
 
-  DBUG_PRINT("info", ("m_logging: %u, partitionBalance: %d"
-                      " m_read_backup %u, tableVersion: %u",
+  DBUG_PRINT("info", ("parseTableInfo(%u): m_logging: %u, partitionBalance: %d"
+                      " m_read_backup %u, tableVersion: %u"
+                      ", m_use_new_hash_function: %u",
+                      impl->m_id,
                       impl->m_logging,
                       impl->m_partitionBalance,
                       impl->m_read_backup,
-                      impl->m_version));
+                      impl->m_version,
+                      impl->m_use_new_hash_function));
 
   impl->m_indexType = (NdbDictionary::Object::Type)
     getApiConstant(tableDesc->TableType,
@@ -4579,10 +4593,15 @@ NdbDictInterface::serializeTableDesc(Ndb & ndb,
   tmpTab->ExtraRowAuthorBits = impl.m_extra_row_author_bits;
   tmpTab->FullyReplicatedFlag = !!impl.m_fully_replicated;
   tmpTab->ReadBackupFlag = !!impl.m_read_backup;
+  tmpTab->HashFunctionFlag = (impl.m_use_new_hash_function ? 1 : 0);
   tmpTab->FragmentType = getKernelConstant(impl.m_fragmentType,
  					   fragmentTypeMapping,
 					   DictTabInfo::AllNodesSmallTable);
   tmpTab->TableVersion = rand();
+
+  DBUG_PRINT("info", ("SerializeTableDesc %s, m_use_new_hash_function/HashFunctionFlag: %u",
+                       impl.m_internalName.c_str(),
+                       tmpTab->HashFunctionFlag));
 
   tmpTab->HashMapObjectId = impl.m_hash_map_id;
   tmpTab->HashMapVersion = impl.m_hash_map_version;
@@ -5336,6 +5355,10 @@ NdbDictInterface::create_index_obj_from_table(NdbIndexImpl** dst,
   NdbDictionary::Object::Type type = idx->m_type = tab->m_indexType;
   idx->m_logging = tab->m_logging;
   idx->m_temporary = tab->m_temporary;
+  idx->m_use_new_hash_function = tab->m_use_new_hash_function;
+  DBUG_PRINT("info", ("create_index_obj_from_table %s, m_use_new_hash_function: %u",
+                       tab->getName(),
+                       tab->m_use_new_hash_function));
 
   const Uint32 distKeys = prim->m_noOfDistributionKeys;
   Uint32 keyCount =
@@ -5457,6 +5480,12 @@ NdbDictInterface::createIndex(Ndb & ndb,
   w.add(DictTabInfo::TableName, internalName.c_str());
   w.add(DictTabInfo::TableLoggedFlag, impl.m_logging);
   w.add(DictTabInfo::TableTemporaryFlag, impl.m_temporary);
+  w.add(DictTabInfo::UseVarSizedDiskDataFlag, Uint32(0));
+  w.add(DictTabInfo::HashFunctionFlag,
+        impl.m_use_new_hash_function ? Uint32(1) : Uint32(0));
+  DBUG_PRINT("info", ("createIndex %s, m_use_new_hash_function: %u",
+                       internalName.c_str(),
+                       impl.m_use_new_hash_function));
 
   /**
    * DICT ensures that the table gets the same partitioning
