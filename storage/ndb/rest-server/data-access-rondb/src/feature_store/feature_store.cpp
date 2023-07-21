@@ -641,15 +641,17 @@ RS_Status find_primary_key_data_int(Ndb *ndb_object, std::string table_name, std
     return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_019);
   }
 
-  int feature_name_size;
+  int feature_name_size = 0;
   if ("on_demand_feature" == table_name) {
     assert(ON_DEMAND_FEATURE_NAME_SIZE == (Uint32)table_dict->getColumn("name")->getSizeInBytes());
     feature_name_size = ON_DEMAND_FEATURE_NAME_SIZE;
-  }
-
-  if ("cached_feature_extra_constraints" == table_name) {
+  } else if ("cached_feature_extra_constraints" == table_name) {
     assert(CACHE_FEATURE_SIZE == (Uint32)table_dict->getColumn("name")->getSizeInBytes());
     feature_name_size = CACHE_FEATURE_SIZE;
+  } else {
+    ndb_object->closeTransaction(tx);
+    return RS_SERVER_ERROR(
+      ERROR_028 + std::string("Expected feature tables are `on_demand_feature` or `cached_feature_extra_constraints`."));
   }
 
   if (tx->execute(NdbTransaction::NoCommit) != 0) {
@@ -968,7 +970,7 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
       tdf.idx                        = idx_attr->int32_value();
       tdf.label                      = label_attr->int32_value();
       tdf.transformation_function_id = transformation_function_id_attr->int32_value();
-      tdf.feature_view_id            = feature_group_id_attr->int32_value();
+      tdf.feature_view_id            = feature_view_id_attr->int32_value();
 
       // name
       Uint32 name_attr_bytes;
