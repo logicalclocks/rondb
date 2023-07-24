@@ -239,6 +239,40 @@ func Test_GetFeatureVector_FvNotExist(t *testing.T) {
 
 }
 
+func Test_GetFeatureVector_ReadDeletedFg(t *testing.T) {
+	rows, pks, cols, err := fshelper.GetSampleData(testdbs.FSDB002, "sample_2_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB001,
+		"test_deleted_fg",
+		1,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		nil,
+		nil,
+	)
+	GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FG_NOT_EXIST.GetReason(), http.StatusBadRequest)
+}
+
+func Test_GetFeatureVector_ReadDeletedJointFg(t *testing.T) {
+	rows, pks, cols, err := fshelper.GetSampleData(testdbs.FSDB002, "sample_2_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB001,
+		"test_deleted_joint_fg",
+		1,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		nil,
+		nil,
+	)
+	GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FG_NOT_EXIST.GetReason(), http.StatusBadRequest)
+}
+
 func Test_GetFeatureVector_CompositePrimaryKey(t *testing.T) {
 	rows, pks, cols, err := fshelper.GetNSampleDataColumns(testdbs.FSDB001, "sample_3_1", 2, []string{"`id1`", "`id2`", "`ts`", "`bigint`"})
 	if err != nil {
