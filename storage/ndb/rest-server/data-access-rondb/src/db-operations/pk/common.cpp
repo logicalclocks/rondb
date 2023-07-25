@@ -301,9 +301,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     /// A fix sized array of characters
     /// size of a character depends on encoding scheme
 
-    const int data_len = request->PKValueLen(colIdx);
-    const int col_len  = col->getSizeInBytes();
-    if (unlikely(data_len > col_len)) {
+    const int dataLen = request->PKValueLen(colIdx);
+    const int colLen  = col->getSizeInBytes();
+    if (unlikely(dataLen > colLen)) {
       error = RS_CLIENT_ERROR(
           std::string(ERROR_008) +
           " Data length is greater than column length. Column: " + std::string(col->getName()));
@@ -311,11 +311,11 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     }
 
     // operation->equal expects a zero-padded char string
-    *primaryKeyCol  = (Int8 *)malloc(col_len);
-    *primaryKeySize = col_len;
-    memset(*primaryKeyCol, 0, col_len);
-    const char *data_str = request->PKValueCStr(colIdx);
-    memcpy(*primaryKeyCol, data_str, data_len);
+    *primaryKeyCol  = (Int8 *)malloc(colLen);
+    *primaryKeySize = colLen;
+    memset(*primaryKeyCol, 0, colLen);
+    const char *dataStr = request->PKValueCStr(colIdx);
+    memcpy(*primaryKeyCol, dataStr, dataLen);
 
     break;
   }
@@ -325,9 +325,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
   case NdbDictionary::Column::Longvarchar: {
     ///< Length bytes: 2, little-endian
 
-    int additional_len = 1;
+    int additionalLen = 1;
     if (col->getType() == NdbDictionary::Column::Longvarchar) {
-      additional_len = 2;
+      additionalLen = 2;
     }
 
     *primaryKeySize = request->PKValueLen(colIdx);
@@ -339,8 +339,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
       break;
     }
 
-    *primaryKeyCol  = (Int8 *)malloc((*primaryKeySize + additional_len) * sizeof(Int8));
-    memcpy(*primaryKeyCol + additional_len, request->PKValueCStr(colIdx), *primaryKeySize);
+    *primaryKeyCol  = (Int8 *)malloc((*primaryKeySize + additionalLen) * sizeof(Int8));
+    memcpy(*primaryKeyCol + additionalLen, request->PKValueCStr(colIdx), *primaryKeySize);
 
     if (col->getType() == NdbDictionary::Column::Varchar) {
       ((Uint8 *)*primaryKeyCol)[0] = (Uint8)(*primaryKeySize);
@@ -358,17 +358,17 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
   case NdbDictionary::Column::Binary: {
     /// Binary data is sent as base64 string
     require(col->getLength() <= BINARY_MAX_SIZE_IN_BYTES);
-    const char *encoded_str      = request->PKValueCStr(colIdx);
-    const size_t encoded_str_len = request->PKValueLen(colIdx);
+    const char *encodedStr      = request->PKValueCStr(colIdx);
+    const size_t encodedStrLen = request->PKValueLen(colIdx);
 
     // The buffer in out has been allocated by the caller and is at least 3/4 the size of the input.
 
     // Encoding takes 3 decoded bytes at a time and turns them into 4 encoded bytes.
     // The encoded string is therefore always a multiple of 4.
-    const size_t max_conversions = BINARY_MAX_SIZE_IN_BYTES / 3 + (BINARY_MAX_SIZE_IN_BYTES % 3 != 0);  // basically ceiling()
-    const size_t max_encoded_size = 4 * max_conversions;
+    const size_t maxConversions = BINARY_MAX_SIZE_IN_BYTES / 3 + (BINARY_MAX_SIZE_IN_BYTES % 3 != 0);  // basically ceiling()
+    const size_t maxEncodedSize = 4 * maxConversions;
 
-    if (unlikely(encoded_str_len > max_encoded_size)) {
+    if (unlikely(encodedStrLen > maxEncodedSize)) {
       error = RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
                               "Encoded data length is greater than 4/3 of maximum binary size." +
                               " Column: " + std::string(col->getName()) +
@@ -381,7 +381,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     memset(*primaryKeyCol, 0, *primaryKeySize);
 
     size_t outlen = 0;
-    int result    = base64_decode(encoded_str, encoded_str_len, (char *)*primaryKeyCol, &outlen, 0);
+    int result    = base64_decode(encodedStr, encodedStrLen, (char *)*primaryKeyCol, &outlen, 0);
 
     if (unlikely(result == 0)) {
       error = RS_CLIENT_ERROR(
@@ -413,34 +413,34 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     // Length bytes: 2, little-endian
     // Note: col->getLength() does not include the length bytes.
 
-    const size_t col_len         = col->getSizeInBytes();  // this includes size prefix
-    size_t col_data_len          = col->getLength();       // this is without size prefix
-    const char *encoded_str      = request->PKValueCStr(colIdx);
-    const size_t encoded_str_len = request->PKValueLen(colIdx);
+    const size_t colLen         = col->getSizeInBytes();  // this includes size prefix
+    size_t colDataLen          = col->getLength();       // this is without size prefix
+    const char *encodedStr      = request->PKValueCStr(colIdx);
+    const size_t encodedStrLen = request->PKValueLen(colIdx);
 
     // Encoding takes 3 decoded bytes at a time and turns them into 4 encoded bytes.
     // The encoded string is therefore always a multiple of 4.
-    const size_t max_conversions = col_data_len / 3 + (col_data_len % 3 != 0);  // basically ceiling()
-    const size_t max_encoded_size = 4 * max_conversions;
+    const size_t maxConversions = colDataLen / 3 + (colDataLen % 3 != 0);  // basically ceiling()
+    const size_t maxEncodedSize = 4 * maxConversions;
 
-    if (unlikely(encoded_str_len > max_encoded_size)) {
+    if (unlikely(encodedStrLen > maxEncodedSize)) {
       error = RS_CLIENT_ERROR(std::string(ERROR_008) +
                               " Encoded data length is greater than 4/3 of maximum binary size." +
                               " Column: " + std::string(col->getName()) +
-                              " Maximum binary size: " + std::to_string(col_data_len));
+                              " Maximum binary size: " + std::to_string(colDataLen));
       break;
     }
 
-    int additional_len = 1;
+    int additionalLen = 1;
     if (col->getType() == NdbDictionary::Column::Longvarbinary) {
-      additional_len = 2;
+      additionalLen = 2;
     }
-    *primaryKeyCol = (Int8 *)malloc(col_len);
+    *primaryKeyCol = (Int8 *)malloc(colLen);
 
     size_t outlen = 0;
     // leave first 1-2 bytes free for saving length bytes
-    int result = base64_decode(encoded_str, encoded_str_len,
-                               (char *)(*primaryKeyCol + additional_len), &outlen, 0);
+    int result = base64_decode(encodedStr, encodedStrLen,
+                               (char *)(*primaryKeyCol + additionalLen), &outlen, 0);
 
     if (unlikely(result == 0)) {
       error = RS_CLIENT_ERROR(
@@ -455,7 +455,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
       break;
     }
 
-    if (unlikely(outlen > col_data_len)) {
+    if (unlikely(outlen > colDataLen)) {
       // We should not get here as there is a check for it above.
       // This check is here just in case we get here due to
       // programming error.
@@ -480,7 +480,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
       break;
     }
 
-    *primaryKeySize = outlen + additional_len;
+    *primaryKeySize = outlen + additionalLen;
     break;
   }
   case NdbDictionary::Column::Datetime: {
@@ -491,20 +491,20 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
   }
   case NdbDictionary::Column::Date: {
     ///< Precision down to 1 day(sizeof(Date) == 4 bytes )
-    const char *date_str = request->PKValueCStr(colIdx);
-    size_t date_str_len  = request->PKValueLen(colIdx);
+    const char *dateStr = request->PKValueCStr(colIdx);
+    size_t dateStrLen  = request->PKValueLen(colIdx);
 
-    MYSQL_TIME l_time;
+    MYSQL_TIME lTime;
     MYSQL_TIME_STATUS status;
-    bool ret = str_to_datetime(date_str, date_str_len, &l_time, 0, &status);
+    bool ret = str_to_datetime(dateStr, dateStrLen, &lTime, 0, &status);
     if (unlikely(ret != 0)) {
       error = RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
                               std::string(col->getName()));
       break;
     }
 
-    if (unlikely(l_time.hour != 0 || l_time.minute != 0 || l_time.second != 0 ||
-                 l_time.second_part != 0)) {
+    if (unlikely(lTime.hour != 0 || lTime.minute != 0 || lTime.second != 0 ||
+                 lTime.second_part != 0)) {
       error = RS_CLIENT_ERROR(std::string(ERROR_008) +
                               " Expecting only date data. Column: " + std::string(col->getName()));
       break;
@@ -512,7 +512,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
 
     *primaryKeyCol  = (Int8 *)malloc(DATE_MAX_SIZE_IN_BYTES);
     *primaryKeySize = col->getSizeInBytes();
-    my_date_to_binary(&l_time, (uchar *)*primaryKeyCol);
+    my_date_to_binary(&lTime, (uchar *)*primaryKeyCol);
     break;
   }
   case NdbDictionary::Column::Blob: {
@@ -576,12 +576,12 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
   case NdbDictionary::Column::Time2: {
     ///< 3 bytes + 0-3 fraction
     require(col->getSizeInBytes() <= TIME2_MAX_SIZE_IN_BYTES);
-    const char *time_str = request->PKValueCStr(colIdx);
-    size_t time_str_len  = request->PKValueLen(colIdx);
+    const char *timeStr = request->PKValueCStr(colIdx);
+    size_t timeStrLen  = request->PKValueLen(colIdx);
 
-    MYSQL_TIME l_time;
+    MYSQL_TIME lTime;
     MYSQL_TIME_STATUS status;
-    bool ret = str_to_time(time_str, time_str_len, &l_time, &status, 0);
+    bool ret = str_to_time(timeStr, timeStrLen, &lTime, &status, 0);
     if (unlikely(ret != 0)) {
       error = RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
                               std::string(col->getName()));
@@ -593,14 +593,14 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     int precision   = col->getPrecision();
 
     int warnings = 0;
-    my_datetime_adjust_frac(&l_time, precision, &warnings, true);
+    my_datetime_adjust_frac(&lTime, precision, &warnings, true);
     if (unlikely(warnings != 0)) {
       error = RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
                               std::string(col->getName()));
       break;
     }
 
-    longlong numeric_date_time = TIME_to_longlong_time_packed(l_time);
+    longlong numeric_date_time = TIME_to_longlong_time_packed(lTime);
     my_time_packed_to_binary(numeric_date_time, (uchar *)*primaryKeyCol, precision);
 
     break;
@@ -609,12 +609,12 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     ///< 5 bytes plus 0-3 fraction
     require(col->getSizeInBytes() <= DATETIME_MAX_SIZE_IN_BYTES);
 
-    const char *date_str = request->PKValueCStr(colIdx);
-    size_t date_str_len  = request->PKValueLen(colIdx);
+    const char *dateStr = request->PKValueCStr(colIdx);
+    size_t dateStrLen  = request->PKValueLen(colIdx);
 
     MYSQL_TIME lTime;
     MYSQL_TIME_STATUS status;
-    bool ret = str_to_datetime(date_str, date_str_len, &lTime, 0, &status);
+    bool ret = str_to_datetime(dateStr, dateStrLen, &lTime, 0, &status);
     if (unlikely(ret != 0)) {
       error = RS_CLIENT_ERROR(std::string(ERROR_027) + std::string(" Column: ") +
                               std::string(col->getName()));
@@ -795,8 +795,8 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     int precision = attr->getColumn()->getPrecision();
     int scale     = attr->getColumn()->getScale();
     void *bin     = attr->aRef();
-    int bin_len   = attr->get_size_in_bytes();
-    decimal_bin2str(bin, bin_len, precision, scale, decStr, DECIMAL_MAX_STR_LEN_IN_BYTES);
+    int binLen   = attr->get_size_in_bytes();
+    decimal_bin2str(bin, binLen, precision, scale, decStr, DECIMAL_MAX_STR_LEN_IN_BYTES);
     return response->Append_string(attr->getColumn()->getName(), std::string(decStr),
                                    RDRS_FLOAT_DATATYPE);
   }
@@ -808,12 +808,12 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     [[fallthrough]];
   case NdbDictionary::Column::Longvarchar: {
     ///< Length bytes: 2, little-endian
-    Uint32 attr_bytes;
-    const char *data_start = nullptr;
-    if (unlikely(GetByteArray(attr, &data_start, &attr_bytes) != 0)) {
+    Uint32 attrBytes;
+    const char *dataStart = nullptr;
+    if (unlikely(GetByteArray(attr, &dataStart, &attrBytes) != 0)) {
       return RS_CLIENT_ERROR(ERROR_019);
     } else {
-      return response->Append_char(attr->getColumn()->getName(), data_start, attr_bytes,
+      return response->Append_char(attr->getColumn()->getName(), dataStart, attrBytes,
                                    attr->getColumn()->getCharset());
     }
   }
@@ -947,22 +947,22 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     timeval myTV{};
     my_timestamp_from_binary(&myTV, (const unsigned char *)attr->aRef(), precision);
 
-    Int64 epoch_in = myTV.tv_sec;
-    std::time_t stdtime(epoch_in);
+    Int64 epochIn = myTV.tv_sec;
+    std::time_t stdtime(epochIn);
     boost::posix_time::ptime ts = boost::posix_time::from_time_t(stdtime);
 
-    MYSQL_TIME l_time  = {};
-    l_time.year        = ts.date().year();
-    l_time.month       = ts.date().month();
-    l_time.day         = ts.date().day();
-    l_time.hour        = ts.time_of_day().hours();
-    l_time.minute      = ts.time_of_day().minutes();
-    l_time.second      = ts.time_of_day().seconds();
-    l_time.second_part = myTV.tv_usec;
-    l_time.time_type   = MYSQL_TIMESTAMP_DATETIME;
+    MYSQL_TIME lTime  = {};
+    lTime.year        = ts.date().year();
+    lTime.month       = ts.date().month();
+    lTime.day         = ts.date().day();
+    lTime.hour        = ts.time_of_day().hours();
+    lTime.minute      = ts.time_of_day().minutes();
+    lTime.second      = ts.time_of_day().seconds();
+    lTime.second_part = myTV.tv_usec;
+    lTime.time_type   = MYSQL_TIMESTAMP_DATETIME;
 
     char to[MAX_DATE_STRING_REP_LENGTH];
-    my_TIME_to_str(l_time, to, precision);
+    my_TIME_to_str(lTime, to, precision);
 
     return response->Append_string(attr->getColumn()->getName(), std::string(to),
                                    RDRS_DATETIME_DATATYPE);
@@ -974,12 +974,12 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
 }
 
 int GetByteArray(const NdbRecAttr *attr, const char **firstByte, Uint32 *bytes) {
-  const NdbDictionary::Column::ArrayType array_type = attr->getColumn()->getArrayType();
+  const NdbDictionary::Column::ArrayType arrayType = attr->getColumn()->getArrayType();
   const size_t attrBytes                            = attr->get_size_in_bytes();
   const char *aRef                                  = attr->aRef();
   std::string result;
 
-  switch (array_type) {
+  switch (arrayType) {
   case NdbDictionary::Column::ArrayTypeFixed:
     /*
        No prefix length is stored in aRef. Data starts from aRef's first byte

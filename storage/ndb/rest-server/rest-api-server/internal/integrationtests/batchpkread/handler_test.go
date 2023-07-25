@@ -21,7 +21,7 @@ import (
 	"net/http"
 	"testing"
 
-	_ "github.com/ianlancetaylor/cgosymbolizer"
+	//_ "github.com/ianlancetaylor/cgosymbolizer"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/internal/testutils"
