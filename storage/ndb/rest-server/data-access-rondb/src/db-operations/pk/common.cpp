@@ -302,7 +302,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     /// size of a character depends on encoding scheme
 
     const int data_len = request->PKValueLen(colIdx);
-    const int col_len  = col->getLength();
+    const int col_len  = col->getSizeInBytes();
     if (unlikely(data_len > col_len)) {
       error = RS_CLIENT_ERROR(
           std::string(ERROR_008) +
@@ -331,6 +331,14 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     }
 
     *primaryKeySize = request->PKValueLen(colIdx);
+    if (unlikely(*primaryKeySize > (Uint32)col->getLength())) {
+      error = RS_CLIENT_ERROR(
+          std::string(ERROR_008) + " Data length is greater than column length. Data length:" +
+          std::to_string(*primaryKeySize) + "Column: " + std::string(col->getName()) +
+          " Column length: " + std::to_string(col->getLength()));
+      break;
+    }
+
     *primaryKeyCol  = (Int8 *)malloc((*primaryKeySize + additional_len) * sizeof(Int8));
     memcpy(*primaryKeyCol + additional_len, request->PKValueCStr(colIdx), *primaryKeySize);
 
@@ -344,13 +352,6 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
       break;
     }
 
-    if (unlikely(*primaryKeySize > (Uint32)col->getLength())) {
-      error = RS_CLIENT_ERROR(
-          std::string(ERROR_008) + " Data length is greater than column length. Data length:" +
-          std::to_string(*primaryKeySize) + "Column: " + std::string(col->getName()) +
-          " Column length: " + std::to_string(col->getLength()));
-      break;
-    }
 
     break;
   }
@@ -375,7 +376,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
       break;
     }
 
-    *primaryKeySize = col->getLength();
+    *primaryKeySize = col->getSizeInBytes();
     *primaryKeyCol  = (Int8 *)malloc(*primaryKeySize);
     memset(*primaryKeyCol, 0, *primaryKeySize);
 
