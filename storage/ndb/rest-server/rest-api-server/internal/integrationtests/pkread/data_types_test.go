@@ -20,7 +20,6 @@ package pkread
 import (
 	"encoding/base64"
 	"encoding/binary"
-	"fmt"
 	"net/http"
 	"testing"
 
@@ -808,7 +807,6 @@ func TestLargePks(t *testing.T) {
 		pkData[i] = 0x41
 	}
 	pkDataEncoded := base64.StdEncoding.EncodeToString(pkData)
-	fmt.Printf("go: len of encoded str: %d\n", len(pkDataEncoded))
 
 	test := api.PKTestInfo{
 		PkReq: api.PKReadBody{
