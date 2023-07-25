@@ -20,6 +20,7 @@
 #include "src/db-operations/pk/common.hpp"
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/beast/core/detail/base64.hpp>
+#include <cmath>
 #include <cstring>
 #include <decimal_utils.hpp>
 #include <NdbError.hpp>
@@ -300,8 +301,9 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     /// A fix sized array of characters
     /// size of a character depends on encoding scheme
 
-    const int dataLen = request->PKValueLen(colIdx);
-    if (unlikely(dataLen > col->getLength())) {
+    const int data_len = request->PKValueLen(colIdx);
+    const int col_len  = col->getLength();
+    if (unlikely(data_len > col_len)) {
       error = RS_CLIENT_ERROR(
           std::string(ERROR_008) +
           " Data length is greater than column length. Column: " + std::string(col->getName()));
@@ -309,13 +311,11 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     }
 
     // operation->equal expects a zero-padded char string
-    *primaryKeyCol  = (Int8 *)malloc(dataLen);
-    *primaryKeySize = dataLen;
-    require(col->getLength() <= CHAR_MAX_SIZE_IN_BYTES);
-    memset(*primaryKeyCol, 0, col->getLength());
-
+    *primaryKeyCol  = (Int8 *)malloc(col_len);
+    *primaryKeySize = col_len;
+    memset(*primaryKeyCol, 0, col_len);
     const char *data_str = request->PKValueCStr(colIdx);
-    memcpy(*primaryKeyCol, data_str, dataLen);
+    memcpy(*primaryKeyCol, data_str, data_len);
 
     break;
   }
@@ -364,11 +364,10 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
 
     // Encoding takes 3 decoded bytes at a time and turns them into 4 encoded bytes.
     // The encoded string is therefore always a multiple of 4.
-    const int maxConversions =
-        BINARY_MAX_SIZE_IN_BYTES / 3 + (BINARY_MAX_SIZE_IN_BYTES % 3 != 0);  // basically ceiling()
-    const int maxEncodedSize = 4 * maxConversions;
+    const size_t max_conversions = BINARY_MAX_SIZE_IN_BYTES / 3 + (BINARY_MAX_SIZE_IN_BYTES % 3 != 0);  // basically ceiling()
+    const size_t max_encoded_size = 4 * max_conversions;
 
-    if (unlikely(encoded_str_len > maxEncodedSize)) {
+    if (unlikely(encoded_str_len > max_encoded_size)) {
       error = RS_CLIENT_ERROR(std::string(ERROR_008) + " " +
                               "Encoded data length is greater than 4/3 of maximum binary size." +
                               " Column: " + std::string(col->getName()) +
@@ -413,26 +412,17 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     // Length bytes: 2, little-endian
     // Note: col->getLength() does not include the length bytes.
 
-    const size_t col_len         = col->getLength();  // this includes size prefix
-    size_t col_data_len          = col->getLength();  // this is without size prefix
+    const size_t col_len         = col->getSizeInBytes();  // this includes size prefix
+    size_t col_data_len          = col->getLength();       // this is without size prefix
     const char *encoded_str      = request->PKValueCStr(colIdx);
     const size_t encoded_str_len = request->PKValueLen(colIdx);
 
-    if (col->getType() == NdbDictionary::Column::Varbinary) {
-      col_data_len = col_len - 1;
-    } else if (col->getType() == NdbDictionary::Column::Longvarbinary) {
-      col_data_len = col_len - 2;
-    } else {
-      error = RS_SERVER_ERROR(ERROR_015);
-      break;
-    }
-
     // Encoding takes 3 decoded bytes at a time and turns them into 4 encoded bytes.
     // The encoded string is therefore always a multiple of 4.
-    const size_t maxConversions = col_data_len / 3 + (col_data_len % 3 != 0);  // basically ceiling()
-    const size_t maxEncodedSize = 4 * maxConversions;
+    const size_t max_conversions = col_data_len / 3 + (col_data_len % 3 != 0);  // basically ceiling()
+    const size_t max_encoded_size = 4 * max_conversions;
 
-    if (unlikely(encoded_str_len > maxEncodedSize)) {
+    if (unlikely(encoded_str_len > max_encoded_size)) {
       error = RS_CLIENT_ERROR(std::string(ERROR_008) +
                               " Encoded data length is greater than 4/3 of maximum binary size." +
                               " Column: " + std::string(col->getName()) +
@@ -468,12 +458,13 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
       // We should not get here as there is a check for it above.
       // This check is here just in case we get here due to
       // programming error.
-      error = RS_CLIENT_ERROR(std::string(ERROR_008) + " " + "Programming Error. Report Bug." +
-                              " Decoded data length is greater than column length." +
-                              " Column: " + std::string(col->getName()) +
-                              " Length: " + std::to_string(col->getLength()));
+      error =
+          RS_CLIENT_ERROR(std::string(ERROR_008) + std::string(" Programming Error. Report Bug.") +
+                          " Decoded data length is greater than column length." +
+                          " Column: " + std::string(col->getName()) +
+                          " Length: " + std::to_string(col->getLength()));
 
-      LOG_PANIC(error.message);
+      LOG_ERROR(error.message);
       break;
     }
 

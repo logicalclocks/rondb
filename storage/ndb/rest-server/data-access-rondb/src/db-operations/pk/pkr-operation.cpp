@@ -73,25 +73,27 @@ PKROperation::PKROperation(Uint32 noOps, RS_Buffer *reqBuffs, RS_Buffer *respBuf
 PKROperation::~PKROperation() {
   for (size_t subOpIdx = 0; subOpIdx < subOpTuples.size(); subOpIdx++) {
 
-    int pkColsCount = subOpTuples[subOpIdx].pkRequest->PKColumnsCount();
-    if (subOpTuples[subOpIdx].primaryKeysCols != nullptr) {
+    SubOpTuple subOp = subOpTuples[subOpIdx];
+    int pkColsCount  = subOp.pkRequest->PKColumnsCount();
 
-      for (int ptrIdx = 0; ptrIdx < pkColsCount; ptrIdx++) {
-        if (subOpTuples[subOpIdx].primaryKeysCols[subOpIdx] == nullptr) {
+    if (subOp.primaryKeysCols != nullptr) {
+
+      for (int pkPtrIdx = 0; pkPtrIdx < pkColsCount; pkPtrIdx++) {
+        if (subOp.primaryKeysCols[pkPtrIdx] == nullptr) {
           break;
         } else {
-          free(subOpTuples[subOpIdx].primaryKeysCols[ptrIdx]);
+          free(subOp.primaryKeysCols[pkPtrIdx]);
         }
       }
-      free(subOpTuples[subOpIdx].primaryKeysCols);
+      free(subOp.primaryKeysCols);
     }
 
-    if (subOpTuples[subOpIdx].primaryKeySizes != nullptr) {
-      free(subOpTuples[subOpIdx].primaryKeySizes);
+    if (subOp.primaryKeySizes != nullptr) {
+      free(subOp.primaryKeySizes);
     }
 
-    delete subOpTuples[subOpIdx].pkRequest;
-    delete subOpTuples[subOpIdx].pkResponse;
+    delete subOp.pkRequest;
+    delete subOp.pkResponse;
   }
 }
 
