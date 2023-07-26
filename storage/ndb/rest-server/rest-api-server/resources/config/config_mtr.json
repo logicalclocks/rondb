@@ -18,8 +18,8 @@
         },
         "Security": {
                 "TLS": {
-                        "EnableTLS": false,
-                        "RequireAndVerifyClientCert": false
+                        "EnableTLS": true,
+                        "RequireAndVerifyClientCert": true
                 }, 
                 "APIKey": {
                         "UseHopsworksAPIKeys": true
