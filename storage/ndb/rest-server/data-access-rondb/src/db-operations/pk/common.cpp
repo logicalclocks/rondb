@@ -20,8 +20,6 @@
 #include "src/db-operations/pk/common.hpp"
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/beast/core/detail/base64.hpp>
-#include <cmath>
-#include <cstring>
 #include <decimal_utils.hpp>
 #include <NdbError.hpp>
 #include <my_time.h>
