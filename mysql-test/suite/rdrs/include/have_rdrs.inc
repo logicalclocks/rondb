@@ -140,11 +140,9 @@ my $CONF = IO::File->new("$vardir/tmp/rdrs_config.json", 'w') or die;
 my $jsonStr = <<"END_TXT";
 {
         "REST": {
-                "ServerIP": "localhost",
                 "ServerPort": $rest_server_port
         },
         "GRPC": {
-                "ServerIP": "localhost",
                 "ServerPort": $grpc_server_port
         },
         "RonDB": {
