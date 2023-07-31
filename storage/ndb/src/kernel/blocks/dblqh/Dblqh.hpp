@@ -5566,6 +5566,10 @@ Dblqh::release_frag_access(Fragrecord *fragPtrP)
     jamDebug();
     handle_release_frag_access(fragPtrP);
   }
+  else
+  {
+    jamDebug();
+  }
 }
 
 inline

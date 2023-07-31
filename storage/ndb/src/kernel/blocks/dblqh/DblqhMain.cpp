@@ -9457,6 +9457,7 @@ void Dblqh::execLQHKEYREQ(Signal* signal)
   case Fragrecord::CRASH_RECOVERING:
   case Fragrecord::ACTIVE_CREATION:
     prepareContinueAfterBlockedLab(signal, tcConnectptr);
+    jamDebug();
     release_frag_access(fragptr.p);
     return;
   case Fragrecord::FREE:
@@ -10886,6 +10887,7 @@ void Dblqh::execACCKEYCONF(Signal* signal)
   }
   else
   {
+    jamDebug();
     c_tup->prepareTUPKEYREQ(localKey1, localKey2, fragptr.p->tupFragptr);
     continueACCKEYCONF(signal, localKey1, localKey2, m_tc_connect_ptr);
   }
@@ -11122,6 +11124,7 @@ Dblqh::acckeyconf_load_diskpage_callback(Signal* signal,
   }
   else if (state != TcConnectionrec::WAIT_TUP)
   {
+    jam();
     ndbrequire(state == TcConnectionrec::WAIT_TUP_TO_ABORT);
     TupKeyRef * ref = (TupKeyRef *)signal->getDataPtr();
     ref->userRef= callbackData;
@@ -11130,6 +11133,7 @@ Dblqh::acckeyconf_load_diskpage_callback(Signal* signal,
   }
   else
   {
+    jam();
     TupKeyRef * ref = (TupKeyRef *)signal->getDataPtr();
     ref->userRef= callbackData;
     ref->errorCode= disk_page;
@@ -15769,6 +15773,7 @@ void Dblqh::checkLcpStopBlockedLab(Signal* signal, Uint32 scanPtrI)
   signal->theData[1] = AccCheckScan::ZNOT_CHECK_LCP_STOP;
   ndbrequire(is_scan_ok(scanPtr, fragstatus));
   block->EXECUTE_DIRECT_FN(f, signal);
+  jamDebug();
   release_frag_access(prim_tab_fragptr.p);
 }//Dblqh::checkLcpStopBlockedLab()
 
@@ -15808,6 +15813,7 @@ void Dblqh::execACC_CHECK_SCAN(Signal *signal)
     signal->theData[1] = signal->theData[2];
     block->EXECUTE_DIRECT_FN(f, signal);
   }
+  jamDebug();
   release_frag_access(prim_tab_fragptr.p);
 }
 
@@ -15834,6 +15840,7 @@ void Dblqh::execNEXT_SCANCONF(Signal* signal)
   continue_next_scan_conf(signal,
                           scanPtr->scanState,
                           scanPtr);
+  jamDebug();
   release_frag_access(prim_tab_fragptr.p);
 }
 
@@ -16054,6 +16061,7 @@ void Dblqh::execSCAN_NEXTREQ(Signal* signal)
     {
       tcConnectptr.p->errorCode = get_table_state_error(tabPtr);
       closeScanRequestLab(signal, tcConnectptr);
+      jamDebug();
       release_frag_access(prim_tab_fragptr.p);
       return;
     }
@@ -16107,6 +16115,7 @@ void Dblqh::execSCAN_NEXTREQ(Signal* signal)
    * Simply continue scanning.
    * ----------------------------------------------------------------------- */
   continueScanNextReqLab(signal, tcConnectptr.p);
+  jamDebug();
   release_frag_access(prim_tab_fragptr.p);
 }//Dblqh::execSCAN_NEXTREQ()
 
@@ -17138,6 +17147,7 @@ void Dblqh::execSCAN_FRAGREQ(Signal* signal)
       nextHashptr.p->prevHashRec = tcConnectptr.i;
     }//if
     continueAfterReceivingAllAiLab(signal, tcConnectptr);
+    jamDebug();
     release_frag_access(prim_tab_fragptr.p);
     return;
   }
@@ -18569,6 +18579,7 @@ void Dblqh::restart_queued_scan(Signal* signal, Uint32 scanPtrI)
   m_scan_direct_count = ZMAX_SCAN_DIRECT_COUNT - 8;
   // Hiding read only version in outer scope
   continueAfterReceivingAllAiLab(signal, m_tc_connect_ptr);
+  jamDebug();
   release_frag_access(prim_tab_fragptr.p);
   return;
 }
@@ -19437,6 +19448,7 @@ void Dblqh::send_next_NEXT_SCANREQ(Signal* signal,
           c_tux->relinkScan(__LINE__);
         }
         /* Early release to ensure waiters can quickly get started */
+        jamDebug();
         release_frag_access(prim_tab_fragptr.p);
         /* WE ARE ENTERING A REAL-TIME BREAK FOR A SCAN HERE */
         signal->theData[3] = signal->theData[2];
@@ -22231,6 +22243,7 @@ void Dblqh::resume_one_copy_fragment_process(Signal *signal)
         nextRecordCopy(signal, tcConnectptr);
       }
     }
+    jamDebug();
     release_frag_access(prim_tab_fragptr.p);
     num_blocked--;
     c_num_blocked_copy_fragment_processes = num_blocked;
