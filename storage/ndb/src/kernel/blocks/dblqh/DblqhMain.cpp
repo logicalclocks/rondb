@@ -18446,8 +18446,13 @@ void Dblqh::accScanCloseConfLab(Signal* signal,
     jam();
     /* Start next range scan...*/
     m_scan_direct_count++;
+    /**
+     * Setup new bounds for the next range to scan
+     * The next scan is started from the caller of this method.
+     * Thus important to not release fragment lock here, releasing
+     * lock will be handled when returning from the scan signal.
+     */
     continueAfterReceivingAllAiLab(signal, tcConnectptr);
-    release_frag_access(prim_tab_fragptr.p);
     return;
   }
   TcConnectionrec * const regTcPtr = tcConnectptr.p;
