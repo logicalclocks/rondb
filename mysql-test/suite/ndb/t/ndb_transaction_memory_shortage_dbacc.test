@@ -22,7 +22,7 @@ insert into num value (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
 # DBACC_SCAN_RECORD_TRANSIENT_POOL_INDEX = 0
 # DBACC_OPERATION_RECORD_TRANSIENT_POOL_INDEX = 1
 set @pool = 2;
-while (`select @pool > 0`)
+while (`select @pool > 1`)
 {
   set @pool = @pool - 1;
 
