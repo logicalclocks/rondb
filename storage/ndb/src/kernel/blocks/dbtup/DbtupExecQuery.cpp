@@ -104,7 +104,7 @@
 // #define TRACE_INTERPRETER
 
 /* For debugging */
-  static void
+static void
 dump_hex(const Uint32 *p, Uint32 len)
 {
   if(len > 2560)
@@ -129,7 +129,7 @@ dump_hex(const Uint32 *p, Uint32 len)
 }
 
 void Dbtup::copyAttrinfo(Uint32 expectedLen,
-    Uint32 attrInfoIVal)
+                         Uint32 attrInfoIVal)
 {
   ndbassert( expectedLen > 0 || attrInfoIVal == RNIL );
 
@@ -152,7 +152,7 @@ void Dbtup::copyAttrinfo(Uint32 expectedLen,
 }
 
 Uint32 Dbtup::copyAttrinfo(Uint32 storedProcId,
-    bool interpretedFlag)
+                           bool interpretedFlag)
 {
   /* Get stored procedure */
   StoredProcPtr storedPtr;
@@ -238,9 +238,9 @@ void Dbtup::nextAttrInfoParam(Uint32 storedProcId)
   storedPtr.p->storedParamNo++;
 }
 
-  void
+void
 Dbtup::setInvalidChecksum(Tuple_header *tuple_ptr,
-    const Tablerec * regTabPtr)
+                          const Tablerec * regTabPtr)
 {
   if (regTabPtr->m_bits & Tablerec::TR_Checksum)
   {
@@ -252,11 +252,11 @@ Dbtup::setInvalidChecksum(Tuple_header *tuple_ptr,
   }
 }
 
-  void
+void
 Dbtup::updateChecksum(Tuple_header *tuple_ptr,
-    const Tablerec *regTabPtr,
-    Uint32 old_header,
-    Uint32 new_header)
+                      const Tablerec *regTabPtr,
+                      Uint32 old_header,
+                      Uint32 new_header)
 {
   /**
    * This function is used when only updating the header bits in row.
@@ -274,9 +274,9 @@ Dbtup::updateChecksum(Tuple_header *tuple_ptr,
   }
 }
 
-  void
+void
 Dbtup::setChecksum(Tuple_header* tuple_ptr,
-    const Tablerec* regTabPtr)
+                   const Tablerec* regTabPtr)
 {
   if (regTabPtr->m_bits & Tablerec::TR_Checksum)
   {
@@ -286,9 +286,9 @@ Dbtup::setChecksum(Tuple_header* tuple_ptr,
   }
 }
 
-  Uint32
+Uint32
 Dbtup::calculateChecksum(Tuple_header* tuple_ptr,
-    const Tablerec* regTabPtr)
+                         const Tablerec* regTabPtr)
 {
   Uint32 checksum;
   Uint32 rec_size, *tuple_header;
@@ -326,7 +326,7 @@ Dbtup::calculateChecksum(Tuple_header* tuple_ptr,
   return checksum;
 }
 
-  int
+int
 Dbtup::corruptedTupleDetected(KeyReqStruct *req_struct, Tablerec *regTabPtr)
 {
   Uint32 checksum = calculateChecksum(req_struct->m_tuple_ptr, regTabPtr);
@@ -356,9 +356,9 @@ Dbtup::corruptedTupleDetected(KeyReqStruct *req_struct, Tablerec *regTabPtr)
 /* ----------------------------------------------------------------- */
 /* -----------       INSERT_ACTIVE_OP_LIST            -------------- */
 /* ----------------------------------------------------------------- */
-  bool 
+bool 
 Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
-    KeyReqStruct* req_struct)
+                           KeyReqStruct* req_struct)
 {
   /**
    * We are executing in the LDM thread since this is a write operation.
@@ -468,11 +468,10 @@ Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
   }
 }
 
-  void
+void
 Dbtup::insertActiveOpList(OperationrecPtr regOperPtr,
-    KeyReqStruct* req_struct,
-    Tuple_header *tuple_ptr)
-
+                          KeyReqStruct* req_struct,
+                          Tuple_header *tuple_ptr)
 {
   /**
    * We have already prepared inserting ourselves into the list by
@@ -494,11 +493,11 @@ Dbtup::insertActiveOpList(OperationrecPtr regOperPtr,
   }
 }
 
-  bool
+bool
 Dbtup::setup_read(KeyReqStruct *req_struct,
-    Operationrec* regOperPtr,
-    Tablerec* regTabPtr,
-    bool disk)
+                  Operationrec* regOperPtr,
+                  Tablerec* regTabPtr,
+                  bool disk)
 {
   OperationrecPtr currOpPtr;
   currOpPtr.i= req_struct->m_tuple_ptr->m_operation_ptr_i;
@@ -623,12 +622,12 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
   return false;
 }
 
-  int
+int
 Dbtup::load_diskpage(Signal* signal,
-    Uint32 opRec,
-    Uint32 lkey1,
-    Uint32 lkey2,
-    Uint32 flags)
+                     Uint32 opRec,
+                     Uint32 lkey1,
+                     Uint32 lkey2,
+                     Uint32 flags)
 {
   Ptr<Operationrec> operPtr;
 
@@ -762,7 +761,7 @@ Dbtup::load_diskpage(Signal* signal,
   return res;
 }
 
-  int
+int
 Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec, Uint32 flags)
 {
   Fragrecord * regFragPtr = prepare_fragptr.p;
@@ -804,11 +803,11 @@ Dbtup::load_extra_diskpage(Signal *signal, Uint32 opRec, Uint32 flags)
   return res;
 }
 
-  void
+void
 Dbtup::deref_disk_page(Signal *signal,
-    OperationrecPtr operPtr,
-    Fragrecord *regFragPtr,
-    Tablerec *regTabPtr)
+                       OperationrecPtr operPtr,
+                       Fragrecord *regFragPtr,
+                       Tablerec *regTabPtr)
 {
   PagePtr page_ptr;
   Tuple_header* ptr;
@@ -828,7 +827,7 @@ Dbtup::deref_disk_page(Signal *signal,
   ndbrequire(res > 0);
 }
 
-  void
+void
 Dbtup::deref_disk_page_callback(Signal *signal, Uint32 opRec, Uint32 page_id)
 {
   (void)signal;
@@ -837,7 +836,7 @@ Dbtup::deref_disk_page_callback(Signal *signal, Uint32 opRec, Uint32 page_id)
   ndbabort();
 }
 
-  void
+void
 Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
 {
   Ptr<Operationrec> operPtr;
@@ -874,10 +873,10 @@ Dbtup::disk_page_load_callback(Signal* signal, Uint32 opRec, Uint32 page_id)
       page_id);
 }
 
-  void
+void
 Dbtup::disk_page_load_extra_callback(Signal* signal,
-    Uint32 opRec,
-    Uint32 extra_page_id)
+                                     Uint32 opRec,
+                                     Uint32 extra_page_id)
 {
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
@@ -899,13 +898,13 @@ Dbtup::disk_page_load_extra_callback(Signal* signal,
       operPtr.p->m_disk_callback_page);
 }
 
-  int
+int
 Dbtup::load_diskpage_scan(Signal* signal,
-    Uint32 opRec,
-    Uint32 lkey1,
-    Uint32 lkey2,
-    Uint32 tux_flag,
-    Uint32 disk_flag)
+                          Uint32 opRec,
+                          Uint32 lkey1,
+                          Uint32 lkey2,
+                          Uint32 tux_flag,
+                          Uint32 disk_flag)
 {
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
@@ -982,9 +981,10 @@ Dbtup::load_diskpage_scan(Signal* signal,
   return res;
 }
 
-  void
+void
 Dbtup::disk_page_load_scan_callback(Signal* signal, 
-    Uint32 opRec, Uint32 page_id)
+                                    Uint32 opRec,
+                                    Uint32 page_id)
 {
   Ptr<Operationrec> operPtr;
   operPtr.i = opRec;
@@ -1119,8 +1119,8 @@ void Dbtup::prepare_scan_tux_TUPKEYREQ(Uint32 page_id, Uint32 page_idx)
 }
 
 bool Dbtup::execTUPKEYREQ(Signal* signal,
-    void *_lqhOpPtrP,
-    void *_lqhScanPtrP)
+                          void *_lqhOpPtrP,
+                          void *_lqhScanPtrP)
 {
   Dblqh::TcConnectionrec *lqhOpPtrP = (Dblqh::TcConnectionrec*)_lqhOpPtrP;
   Dblqh::ScanRecord *lqhScanPtrP = (Dblqh::ScanRecord*)_lqhScanPtrP;
@@ -1918,10 +1918,10 @@ do_refresh:
   return false;
 }
 
-  void
+void
 Dbtup::setup_fixed_part(KeyReqStruct* req_struct,
-    Operationrec* regOperPtr,
-    Tablerec* regTabPtr)
+                        Operationrec* regOperPtr,
+                        Tablerec* regTabPtr)
 {
   ndbassert(regOperPtr->op_type == ZINSERT ||
       (! (req_struct->m_tuple_ptr->m_header_bits & Tuple_header::FREE)));
@@ -1936,10 +1936,10 @@ Dbtup::setup_fixed_part(KeyReqStruct* req_struct,
   NDB_PREFETCH_READ((char*)tab_descr);
 }
 
-  void
+void
 Dbtup::setup_lcp_read_copy_tuple(KeyReqStruct* req_struct,
-    Operationrec* regOperPtr,
-    Tablerec* regTabPtr)
+                                 Operationrec* regOperPtr,
+                                 Tablerec* regTabPtr)
 {
   Local_key tmp;
   tmp.m_page_no = req_struct->frag_page_id;
@@ -1973,11 +1973,11 @@ Dbtup::setup_lcp_read_copy_tuple(KeyReqStruct* req_struct,
 /* ---------------------------------------------------------------- */
 /* ------------------------ CONFIRM REQUEST ----------------------- */
 /* ---------------------------------------------------------------- */
-  inline
+inline
 void Dbtup::returnTUPKEYCONF(Signal* signal,
-    KeyReqStruct *req_struct,
-    Operationrec * regOperPtr,
-    TransState trans_state)
+                             KeyReqStruct *req_struct,
+                             Operationrec * regOperPtr,
+                             TransState trans_state)
 {
   /**
    * When we arrive here we have been executing read code and/or write
@@ -2015,9 +2015,10 @@ void Dbtup::returnTUPKEYCONF(Signal* signal,
 /* ----------------------------- READ  ---------------------------- */
 /* ---------------------------------------------------------------- */
 int Dbtup::handleReadReq(Signal* signal,
-    Operationrec* _regOperPtr, // UNUSED, is member of req_struct
-    Tablerec* regTabPtr,
-    KeyReqStruct* req_struct)
+                         // UNUSED, is member of req_struct
+                         Operationrec* _regOperPtr,
+                         Tablerec* regTabPtr,
+                         KeyReqStruct* req_struct)
 {
   Uint32 *dst;
   Uint32 dstLen, start_index;
@@ -2041,11 +2042,10 @@ int Dbtup::handleReadReq(Signal* signal,
   {
     jamDebug();
     int ret = readAttributes(req_struct,
-        &cinBuffer[0],
-        req_struct->attrinfo_len,
-        dst,
-        dstLen,
-        false);
+                             &cinBuffer[0],
+                             req_struct->attrinfo_len,
+                             dst,
+                             dstLen);
     if (likely(ret >= 0))
     {
       /* ------------------------------------------------------------------------- */
@@ -2072,9 +2072,9 @@ int Dbtup::handleReadReq(Signal* signal,
 }
 
 static
-  void
+void
 handle_reorg(Dbtup::KeyReqStruct * req_struct,
-    Dbtup::Fragrecord::FragState state)
+             Dbtup::Fragrecord::FragState state)
 {
   Uint32 reorg = req_struct->m_reorg;
   switch(state){
@@ -2102,11 +2102,11 @@ handle_reorg(Dbtup::KeyReqStruct * req_struct,
 /* ---------------------------- UPDATE ---------------------------- */
 /* ---------------------------------------------------------------- */
 int Dbtup::handleUpdateReq(Signal* signal,
-    Operationrec* operPtrP,
-    Fragrecord* regFragPtr,
-    Tablerec* regTabPtr,
-    KeyReqStruct* req_struct,
-    bool disk) 
+                           Operationrec* operPtrP,
+                           Fragrecord* regFragPtr,
+                           Tablerec* regTabPtr,
+                           KeyReqStruct* req_struct,
+                           bool disk) 
 {
   Tuple_header *dst;
   Tuple_header *base= req_struct->m_tuple_ptr, *org;
@@ -2308,15 +2308,15 @@ error:
    order       Array of indexes into tabDesc, dynfix followed by dynvar
  */
 static
-  Uint32*
+Uint32*
 expand_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
-    const Uint32* src,
-    Uint32 row_len,
-    const Uint32 * tabDesc,
-    const Uint16* order,
-    Uint32 dynvar,
-    Uint32 dynfix,
-    Uint32 max_bmlen)
+                const Uint32* src,
+                Uint32 row_len,
+                const Uint32 * tabDesc,
+                const Uint16* order,
+                Uint32 dynvar,
+                Uint32 dynfix,
+                Uint32 max_bmlen)
 {
   /* Copy the bitmap, zeroing out any words not stored in the row. */
   Uint32 *dst_bm_ptr= (Uint32*)dst->m_dyn_data_ptr;
@@ -2408,15 +2408,15 @@ expand_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
 }
 
 static
-  Uint32*
+Uint32*
 shrink_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
-    Uint32 *dst_ptr,
-    const Dbtup::Tablerec* tabPtrP,
-    const Uint32 * tabDesc,
-    const Uint16* order,
-    Uint32 dynvar,
-    Uint32 dynfix,
-    Uint32 ind)
+                Uint32 *dst_ptr,
+                const Dbtup::Tablerec* tabPtrP,
+                const Uint32 * tabDesc,
+                const Uint16* order,
+                Uint32 dynvar,
+                Uint32 dynfix,
+                Uint32 ind)
 {
   /**
    * Now build the dynamic part, if any.
@@ -2550,11 +2550,11 @@ shrink_dyn_part(Dbtup::KeyReqStruct::Var_data *dst,
 /* ---------------------------------------------------------------- */
 /* ----------------------------- INSERT --------------------------- */
 /* ---------------------------------------------------------------- */
-  void
+void
 Dbtup::prepare_initial_insert(KeyReqStruct *req_struct, 
-    Operationrec* regOperPtr,
-    Tablerec* regTabPtr,
-    bool is_refresh)
+                              Operationrec* regOperPtr,
+                              Tablerec* regTabPtr,
+                              bool is_refresh)
 {
   Uint32 disk_undo = ((regTabPtr->m_no_of_disk_attributes > 0) &&
       !is_refresh) ? 
@@ -3287,11 +3287,11 @@ disk_prealloc_error:
 /* ---------------------------- DELETE ---------------------------- */
 /* ---------------------------------------------------------------- */
 int Dbtup::handleDeleteReq(Signal* signal,
-    Operationrec* regOperPtr,
-    Fragrecord* regFragPtr,
-    Tablerec* regTabPtr,
-    KeyReqStruct *req_struct,
-    bool disk)
+                           Operationrec* regOperPtr,
+                           Fragrecord* regFragPtr,
+                           Tablerec* regTabPtr,
+                           KeyReqStruct *req_struct,
+                           bool disk)
 {
   Uint32 copy_bits = 0;
   Tuple_header* dst = alloc_copy_tuple(regTabPtr,
@@ -3454,13 +3454,13 @@ error:
   return -1;
 }
 
-  int
+int
 Dbtup::handleRefreshReq(Signal* signal,
-    Ptr<Operationrec> regOperPtr,
-    FragrecordPtr regFragPtr,
-    Tablerec* regTabPtr,
-    KeyReqStruct *req_struct,
-    bool disk)
+                        Ptr<Operationrec> regOperPtr,
+                        FragrecordPtr regFragPtr,
+                        Tablerec* regTabPtr,
+                        KeyReqStruct *req_struct,
+                        bool disk)
 {
   /* Here we setup the tuple so that a transition to its current
    * state can be observed by SUMA's detached triggers.
@@ -3637,10 +3637,10 @@ Dbtup::handleRefreshReq(Signal* signal,
   return 0;
 }
 
-  bool
+bool
 Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
-    Tablerec* regTabPtr,
-    bool is_refresh)
+                           Tablerec* regTabPtr,
+                           bool is_refresh)
 {
   // Implement checking of updating all not null attributes in an insert here.
   Bitmask<MAXNROFATTRIBUTESINWORDS> attributeMask;  
@@ -3742,7 +3742,7 @@ Dbtup::checkNullAttributes(KeyReqStruct * req_struct,
 /* ----------------- INTERPRETED EXECUTION  ----------------------- */
 /* ---------------------------------------------------------------- */
 int Dbtup::interpreterStartLab(Signal* signal,
-    KeyReqStruct *req_struct)
+                               KeyReqStruct *req_struct)
 {
   Operationrec * const regOperPtr = req_struct->operPtrP;
   int TnoDataRW;
@@ -3819,11 +3819,10 @@ int Dbtup::interpreterStartLab(Signal* signal,
         // data of the tuple before any updates have been applied.
         /* ---------------------------------------------------------------- */
         TnoDataRW= readAttributes(req_struct,
-            &cinBuffer[5],
-            RinitReadLen,
-            &dst[0],
-            dstLen,
-            false);
+                                  &cinBuffer[5],
+                                  RinitReadLen,
+                                  &dst[0],
+                                  dstLen);
         if (TnoDataRW >= 0)
         {
           jamDebug();
@@ -3936,11 +3935,10 @@ int Dbtup::interpreterStartLab(Signal* signal,
     {
       jamDebug();
       TnoDataRW= readAttributes(req_struct,
-          &cinBuffer[5],
-          RinitReadLen,
-          &dst[0],
-          dstLen,
-          false);
+                                &cinBuffer[5],
+                                RinitReadLen,
+                                &dst[0],
+                                dstLen);
       if (TnoDataRW >= 0)
       {
         jamDebug();
@@ -3962,11 +3960,10 @@ int Dbtup::interpreterStartLab(Signal* signal,
       // been updated.
       /* ---------------------------------------------------------------- */
       TnoDataRW= readAttributes(req_struct,
-          &cinBuffer[RinstructionCounter],
-          RfinalRLen,
-          &dst[RattroutCounter],
-          (dstLen - RattroutCounter),
-          false);
+                                &cinBuffer[RinstructionCounter],
+                                RfinalRLen,
+                                &dst[RattroutCounter],
+                                (dstLen - RattroutCounter));
       if (TnoDataRW >= 0)
       {
         jamDebug();
@@ -4008,10 +4005,9 @@ int Dbtup::interpreterStartLab(Signal* signal,
 /*               TLOG_END                LAST INDEX + 1 TO LOG      */
 /* ---------------------------------------------------------------- */
 int Dbtup::sendLogAttrinfo(Signal* signal,
-    KeyReqStruct * req_struct,
-    Uint32 TlogSize,
-    Operationrec *  const regOperPtr)
-
+                           KeyReqStruct * req_struct,
+                           Uint32 TlogSize,
+                           Operationrec *  const regOperPtr)
 {
   /* Copy from Log buffer to segmented section,
    * then attach to ATTRINFO and execute direct
@@ -4044,7 +4040,7 @@ int Dbtup::sendLogAttrinfo(Signal* signal,
 }
 
 inline
-  Uint32 
+Uint32 
 Dbtup::brancher(Uint32 TheInstruction, Uint32 TprogramCounter)
 {         
   Uint32 TbranchDirection= TheInstruction >> 31;
@@ -4070,7 +4066,7 @@ Dbtup::brancher(Uint32 TheInstruction, Uint32 TprogramCounter)
 
 const Uint32 *
 Dbtup::lookupInterpreterParameter(Uint32 paramNo,
-    const Uint32 *subptr) const
+                                  const Uint32 *subptr) const
 {
   /**
    * The parameters...are stored in the subroutine section
@@ -4103,14 +4099,14 @@ Dbtup::lookupInterpreterParameter(Uint32 paramNo,
 }
 
 int Dbtup::interpreterNextLab(Signal* signal,
-    KeyReqStruct* req_struct,
-    Uint32* logMemory,
-    Uint32* mainProgram,
-    Uint32 TmainProgLen,
-    Uint32* subroutineProg,
-    Uint32 TsubroutineLen,
-    Uint32 * tmpArea,
-    Uint32 tmpAreaSz)
+                              KeyReqStruct* req_struct,
+                              Uint32* logMemory,
+                              Uint32* mainProgram,
+                              Uint32 TmainProgLen,
+                              Uint32* subroutineProg,
+                              Uint32 TsubroutineLen,
+                              Uint32 * tmpArea,
+                              Uint32 tmpAreaSz)
 {
   Uint32 theRegister;
   Uint32 theInstruction;
@@ -4162,68 +4158,67 @@ int Dbtup::interpreterNextLab(Signal* signal,
     {
       TprogramCounter++;
       switch (Interpreter::getOpCode(theInstruction)) {
-        case Interpreter::READ_ATTR_INTO_REG:
-          jamDebug();
-          /* ---------------------------------------------------------------- */
-          // Read an attribute from the tuple into a register.
-          // While reading an attribute we allow the attribute to be an array
-          // as long as it fits in the 64 bits of the register.
-          /* ---------------------------------------------------------------- */
+      case Interpreter::READ_ATTR_INTO_REG:
+	jamDebug();
+	/* ---------------------------------------------------------------- */
+	// Read an attribute from the tuple into a register.
+	// While reading an attribute we allow the attribute to be an array
+	// as long as it fits in the 64 bits of the register.
+	/* ---------------------------------------------------------------- */
+	{
+	  Uint32 theAttrinfo= theInstruction;
+	  int TnoDataRW= readAttributes(req_struct,
+				     &theAttrinfo,
+				     (Uint32)1,
+				     &TregMemBuffer[theRegister],
+				     (Uint32)3);
+	  if (TnoDataRW == 2)
           {
-            Uint32 theAttrinfo= theInstruction;
-            int TnoDataRW= readAttributes(req_struct,
-                &theAttrinfo,
-                (Uint32)1,
-                &TregMemBuffer[theRegister],
-                (Uint32)3,
-                false);
-            if (TnoDataRW == 2)
-            {
-              /* ------------------------------------------------------------- */
-              // Two words read means that we get the instruction plus one 32 
-              // word read. Thus we set the register to be a 32 bit register.
-              /* ------------------------------------------------------------- */
-              TregMemBuffer[theRegister]= 0x50;
-              // arithmetic conversion if big-endian
-              * (Int64*)(TregMemBuffer+theRegister+2)= TregMemBuffer[theRegister+1];
-            }
-            else if (TnoDataRW == 3)
-            {
-              /* ------------------------------------------------------------- */
-              // Three words read means that we get the instruction plus two 
-              // 32 words read. Thus we set the register to be a 64 bit register.
-              /* ------------------------------------------------------------- */
-              TregMemBuffer[theRegister]= 0x60;
-              TregMemBuffer[theRegister+3]= TregMemBuffer[theRegister+2];
-              TregMemBuffer[theRegister+2]= TregMemBuffer[theRegister+1];
-            }
-            else if (TnoDataRW == 1)
-            {
-              /* ------------------------------------------------------------- */
-              // One word read means that we must have read a NULL value. We set
-              // the register to indicate a NULL value.
-              /* ------------------------------------------------------------- */
-              TregMemBuffer[theRegister]= 0;
-              TregMemBuffer[theRegister + 2]= 0;
-              TregMemBuffer[theRegister + 3]= 0;
-            }
-            else if (TnoDataRW < 0)
-            {
-              jamDebug();
-              terrorCode = Uint32(-TnoDataRW);
-              tupkeyErrorLab(req_struct);
-              return -1;
-            }
-            else
-            {
-              /* ------------------------------------------------------------- */
-              // Any other return value from the read attribute here is not 
-              // allowed and will lead to a system crash.
-              /* ------------------------------------------------------------- */
-              ndbabort();
-            }
-            break;
+            /* ------------------------------------------------------------- */
+            // Two words read means that we get the instruction plus one 32 
+            // word read. Thus we set the register to be a 32 bit register.
+            /* ------------------------------------------------------------- */
+            TregMemBuffer[theRegister]= 0x50;
+            // arithmetic conversion if big-endian
+            * (Int64*)(TregMemBuffer+theRegister+2)= TregMemBuffer[theRegister+1];
           }
+          else if (TnoDataRW == 3)
+          {
+            /* ------------------------------------------------------------- */
+            // Three words read means that we get the instruction plus two 
+            // 32 words read. Thus we set the register to be a 64 bit register.
+            /* ------------------------------------------------------------- */
+            TregMemBuffer[theRegister]= 0x60;
+            TregMemBuffer[theRegister+3]= TregMemBuffer[theRegister+2];
+            TregMemBuffer[theRegister+2]= TregMemBuffer[theRegister+1];
+          }
+          else if (TnoDataRW == 1)
+          {
+            /* ------------------------------------------------------------- */
+            // One word read means that we must have read a NULL value. We set
+            // the register to indicate a NULL value.
+            /* ------------------------------------------------------------- */
+            TregMemBuffer[theRegister]= 0;
+            TregMemBuffer[theRegister + 2]= 0;
+            TregMemBuffer[theRegister + 3]= 0;
+          }
+          else if (TnoDataRW < 0)
+          {
+            jamDebug();
+            terrorCode = Uint32(-TnoDataRW);
+            tupkeyErrorLab(req_struct);
+            return -1;
+          }
+          else
+          {
+            /* ------------------------------------------------------------- */
+            // Any other return value from the read attribute here is not 
+            // allowed and will lead to a system crash.
+            /* ------------------------------------------------------------- */
+            ndbabort();
+          }
+          break;
+        }
 
         case Interpreter::WRITE_ATTR_FROM_REG:
           {
@@ -4293,720 +4288,715 @@ int Dbtup::interpreterNextLab(Signal* signal,
               else
               {
                 return TUPKEY_abort(req_struct, 15);
-              }
-            }
+	      }
+	    }
             else
             {
-              return TUPKEY_abort(req_struct, 16);
-            }
-            break;
+	      return TUPKEY_abort(req_struct, 16);
+	    }
+	    break;
+          }
+      case Interpreter::LOAD_CONST_NULL:
+	jamDebug();
+	TregMemBuffer[theRegister]= 0;	/* NULL INDICATOR */
+	break;
+
+      case Interpreter::LOAD_CONST16:
+	jamDebug();
+	TregMemBuffer[theRegister]= 0x50;	/* 32 BIT UNSIGNED CONSTANT */
+	* (Int64*)(TregMemBuffer+theRegister+2)= theInstruction >> 16;
+	break;
+
+      case Interpreter::LOAD_CONST32:
+	jamDebug();
+	TregMemBuffer[theRegister]= 0x50;	/* 32 BIT UNSIGNED CONSTANT */
+	* (Int64*)(TregMemBuffer+theRegister+2)= * 
+	  (TcurrentProgram+TprogramCounter);
+	TprogramCounter++;
+	break;
+
+      case Interpreter::LOAD_CONST64:
+	jamDebug();
+	TregMemBuffer[theRegister]= 0x60;	/* 64 BIT UNSIGNED CONSTANT */
+        TregMemBuffer[theRegister + 2 ]= * (TcurrentProgram +
+                                             TprogramCounter++);
+        TregMemBuffer[theRegister + 3 ]= * (TcurrentProgram +
+                                             TprogramCounter++);
+	break;
+
+      case Interpreter::ADD_REG_REG:
+	jamDebug();
+	{
+	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
+	  Uint32 TdestRegister= Interpreter::getReg3(theInstruction) << 2;
+
+	  Uint32 TrightType= TregMemBuffer[TrightRegister];
+	  Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
+	  
+
+	  Uint32 TleftType= TregMemBuffer[theRegister];
+	  Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
+         
+	  if ((TleftType | TrightType) != 0)
+          {
+	    Uint64 Tdest0= Tleft0 + Tright0;
+	    * (Int64*)(TregMemBuffer+TdestRegister+2)= Tdest0;
+	    TregMemBuffer[TdestRegister]= 0x60;
+	  }
+          else
+          {
+	    return TUPKEY_abort(req_struct, 20);
+	  }
+	  break;
+	}
+
+      case Interpreter::SUB_REG_REG:
+	jamDebug();
+	{
+	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
+	  Uint32 TdestRegister= Interpreter::getReg3(theInstruction) << 2;
+
+	  Uint32 TrightType= TregMemBuffer[TrightRegister];
+	  Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
+	  
+	  Uint32 TleftType= TregMemBuffer[theRegister];
+	  Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
+         
+	  if ((TleftType | TrightType) != 0)
+          {
+	    Int64 Tdest0= Tleft0 - Tright0;
+	    * (Int64*)(TregMemBuffer+TdestRegister+2)= Tdest0;
+	    TregMemBuffer[TdestRegister]= 0x60;
+	  }
+          else
+          {
+	    return TUPKEY_abort(req_struct, 20);
+	  }
+	  break;
+	}
+
+      case Interpreter::BRANCH:
+	TprogramCounter= brancher(theInstruction, TprogramCounter);
+	break;
+
+      case Interpreter::BRANCH_REG_EQ_NULL:
+	if (TregMemBuffer[theRegister] != 0)
+        {
+	  jamDebug();
+	  continue;
+	}
+        else
+        {
+	  jamDebug();
+	  TprogramCounter= brancher(theInstruction, TprogramCounter);
+	}
+	break;
+
+      case Interpreter::BRANCH_REG_NE_NULL:
+	if (TregMemBuffer[theRegister] == 0)
+        {
+	  jamDebug();
+	  continue;
+	}
+        else
+        {
+	  jamDebug();
+	  TprogramCounter= brancher(theInstruction, TprogramCounter);
+	}
+	break;
+
+
+      case Interpreter::BRANCH_EQ_REG_REG:
+	{
+	  jamDebug();
+	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
+
+	  Uint32 TleftType= TregMemBuffer[theRegister];
+	  Uint32 Tleft0= TregMemBuffer[theRegister + 2];
+	  Uint32 Tleft1= TregMemBuffer[theRegister + 3];
+
+	  Uint32 TrightType= TregMemBuffer[TrightRegister];
+	  Uint32 Tright0= TregMemBuffer[TrightRegister + 2];
+	  Uint32 Tright1= TregMemBuffer[TrightRegister + 3];
+	  if ((TrightType | TleftType) != 0)
+          {
+	    jamDebug();
+	    if ((Tleft0 == Tright0) && (Tleft1 == Tright1))
+            {
+	      TprogramCounter= brancher(theInstruction, TprogramCounter);
+	    }
+	  }
+          else
+          {
+	    return TUPKEY_abort(req_struct, 23);
+	  }
+	  break;
+	}
+
+      case Interpreter::BRANCH_NE_REG_REG:
+	{
+	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
+
+	  Uint32 TleftType= TregMemBuffer[theRegister];
+	  Uint32 Tleft0= TregMemBuffer[theRegister + 2];
+	  Uint32 Tleft1= TregMemBuffer[theRegister + 3];
+
+	  Uint32 TrightType= TregMemBuffer[TrightRegister];
+	  Uint32 Tright0= TregMemBuffer[TrightRegister + 2];
+	  Uint32 Tright1= TregMemBuffer[TrightRegister + 3];
+	  if ((TrightType | TleftType) != 0)
+          {
+	    jamDebug();
+	    if ((Tleft0 != Tright0) || (Tleft1 != Tright1))
+            {
+	      TprogramCounter= brancher(theInstruction, TprogramCounter);
+	    }
+	  }
+          else
+          {
+	    return TUPKEY_abort(req_struct, 24);
+	  }
+	  break;
+	}
+
+      case Interpreter::BRANCH_LT_REG_REG:
+	{
+	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
+
+	  Uint32 TrightType= TregMemBuffer[TrightRegister];
+	  Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
+	  
+	  Uint32 TleftType= TregMemBuffer[theRegister];
+	  Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
+         
+
+	  if ((TrightType | TleftType) != 0)
+          {
+	    jamDebug();
+	    if (Tleft0 < Tright0)
+            {
+	      TprogramCounter= brancher(theInstruction, TprogramCounter);
+	    }
+	  }
+          else
+          {
+	    return TUPKEY_abort(req_struct, 24);
+	  }
+	  break;
+	}
+
+      case Interpreter::BRANCH_LE_REG_REG:
+	{
+	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
+
+	  Uint32 TrightType= TregMemBuffer[TrightRegister];
+	  Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
+	  
+	  Uint32 TleftType= TregMemBuffer[theRegister];
+	  Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
+	  
+
+	  if ((TrightType | TleftType) != 0)
+          {
+	    jamDebug();
+	    if (Tleft0 <= Tright0)
+            {
+	      TprogramCounter= brancher(theInstruction, TprogramCounter);
+	    }
+	  }
+          else
+          {
+	    return TUPKEY_abort(req_struct, 26);
+	  }
+	  break;
+	}
+
+      case Interpreter::BRANCH_GT_REG_REG:
+	{
+	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
+
+	  Uint32 TrightType= TregMemBuffer[TrightRegister];
+	  Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
+	  
+	  Uint32 TleftType= TregMemBuffer[theRegister];
+	  Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
+	  
+
+	  if ((TrightType | TleftType) != 0)
+          {
+	    jamDebug();
+	    if (Tleft0 > Tright0)
+            {
+	      TprogramCounter= brancher(theInstruction, TprogramCounter);
+	    }
+	  }
+          else
+          {
+	    return TUPKEY_abort(req_struct, 27);
+	  }
+	  break;
+	}
+
+      case Interpreter::BRANCH_GE_REG_REG:
+	{
+	  Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
+
+	  Uint32 TrightType= TregMemBuffer[TrightRegister];
+	  Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
+	  
+	  Uint32 TleftType= TregMemBuffer[theRegister];
+	  Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
+
+	  if ((TrightType | TleftType) != 0)
+          {
+	    jamDebug();
+	    if (Tleft0 >= Tright0)
+            {
+	      TprogramCounter= brancher(theInstruction, TprogramCounter);
+	    }
+	  }
+          else
+          {
+	    return TUPKEY_abort(req_struct, 28);
+	  }
+	  break;
+	}
+
+      case Interpreter::BRANCH_ATTR_OP_ATTR:
+      case Interpreter::BRANCH_ATTR_OP_PARAM:
+      case Interpreter::BRANCH_ATTR_OP_ARG:{
+        jamDebug();
+        const Uint32 ins2 = TcurrentProgram[TprogramCounter];
+        Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
+        const Uint32 opCode = Interpreter::getOpCode(theInstruction);
+
+        if (tmpHabitant != attrId)
+        {
+	  Int32 TnoDataR = readAttributes(req_struct,
+					  &attrId, 1,
+					  tmpArea, tmpAreaSz);
+	  
+	  if (unlikely(TnoDataR < 0))
+          {
+	    jam();
+            terrorCode = Uint32(-TnoDataR);
+	    tupkeyErrorLab(req_struct);
+	    return -1;
+	  }
+	  tmpHabitant= attrId;
+        }
+
+        // get type
+	attrId >>= 16;
+	const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
+	  (attrId * ZAD_SIZE);
+	const Uint32 TattrDesc1 = attrDescriptor[0];
+	const Uint32 TattrDesc2 = attrDescriptor[1];
+	const Uint32 typeId = AttributeDescriptor::getType(TattrDesc1);
+	const CHARSET_INFO *cs = nullptr;
+	if (AttributeOffset::getCharsetFlag(TattrDesc2))
+	{
+	  const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
+	  cs = req_struct->tablePtrP->charsetArray[pos];
+	}
+	const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(typeId);
+
+        // get data for 1st argument, always an ATTR.
+        const AttributeHeader ah(tmpArea[0]);
+        const char* s1 = (char*)&tmpArea[1];
+        // fixed length in 5.0
+        Uint32 attrLen = AttributeDescriptor::getSizeInBytes(TattrDesc1);
+        if (unlikely(typeId == NDB_TYPE_BIT))
+        {
+          /* Size in bytes for bit fields can be incorrect due to
+           * rounding down
+           */
+          Uint32 bitFieldAttrLen= (AttributeDescriptor::getArraySize(TattrDesc1)
+                                   + 7) / 8;
+          attrLen= bitFieldAttrLen;
+        }
+
+	// 2'nd argument, literal, parameter or another attribute
+        Uint32 argLen = 0;
+        Uint32 step = 0;
+        const char* s2 = nullptr;
+
+        if (likely(opCode == Interpreter::BRANCH_ATTR_OP_ARG))
+        {
+          // Compare ATTR with a literal value given by interpreter code
+          jamDebug();
+          argLen = Interpreter::getBranchCol_Len(ins2);
+          step = argLen;
+          s2 = (char*)&TcurrentProgram[TprogramCounter+1];
+        }
+        else if (opCode == Interpreter::BRANCH_ATTR_OP_PARAM)
+        {
+          // Compare ATTR with a parameter
+          jamDebug();
+          ndbassert(req_struct != nullptr);
+          ndbassert(req_struct->operPtrP != nullptr);
+
+          const Uint32 paramNo = Interpreter::getBranchCol_ParamNo(ins2);
+          const Uint32 *paramPos = subroutineProg;
+          const Uint32 *paramptr = lookupInterpreterParameter(paramNo,
+                                                              paramPos);
+          if (unlikely(paramptr == nullptr))
+          {
+            jam();
+            terrorCode = 99; // TODO
+            tupkeyErrorLab(req_struct);
+            return -1;
           }
 
-        case Interpreter::LOAD_CONST_NULL:
+          argLen = AttributeHeader::getByteSize(* paramptr);
+          step = 0;
+          s2 = (char*)(paramptr + 1);
+        }
+        else if (opCode == Interpreter::BRANCH_ATTR_OP_ATTR)
+        {
+          // Compare ATTR with another ATTR
           jamDebug();
-          TregMemBuffer[theRegister]= 0;	/* NULL INDICATOR */
-          break;
+          Uint32 attr2Id = Interpreter::getBranchCol_AttrId2(ins2) << 16;
 
-        case Interpreter::LOAD_CONST16:
-          jamDebug();
-          TregMemBuffer[theRegister]= 0x50;	/* 32 BIT UNSIGNED CONSTANT */
-          * (Int64*)(TregMemBuffer+theRegister+2)= theInstruction >> 16;
-          break;
-
-        case Interpreter::LOAD_CONST32:
-          jamDebug();
-          TregMemBuffer[theRegister]= 0x50;	/* 32 BIT UNSIGNED CONSTANT */
-          * (Int64*)(TregMemBuffer+theRegister+2)= * 
-            (TcurrentProgram+TprogramCounter);
-          TprogramCounter++;
-          break;
-
-        case Interpreter::LOAD_CONST64:
-          jamDebug();
-          TregMemBuffer[theRegister]= 0x60;	/* 64 BIT UNSIGNED CONSTANT */
-          TregMemBuffer[theRegister + 2 ]= * (TcurrentProgram +
-              TprogramCounter++);
-          TregMemBuffer[theRegister + 3 ]= * (TcurrentProgram +
-              TprogramCounter++);
-          break;
-
-        case Interpreter::ADD_REG_REG:
-          jamDebug();
+          // Attr2 to be read into tmpArea[] after Attr1.
+          const Uint32 firstAttrWords = attrLen+1;
+          assert(tmpAreaSz >= 2*firstAttrWords);
+          Int32 TnoDataR = readAttributes(req_struct,
+                                          &attr2Id, 1,
+                                          &tmpArea[firstAttrWords],
+                                          tmpAreaSz-firstAttrWords);
+          if (unlikely(TnoDataR < 0))
           {
-            Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-            Uint32 TdestRegister= Interpreter::getReg3(theInstruction) << 2;
-
-            Uint32 TrightType= TregMemBuffer[TrightRegister];
-            Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
-
-
-            Uint32 TleftType= TregMemBuffer[theRegister];
-            Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-
-            if ((TleftType | TrightType) != 0)
-            {
-              Uint64 Tdest0= Tleft0 + Tright0;
-              * (Int64*)(TregMemBuffer+TdestRegister+2)= Tdest0;
-              TregMemBuffer[TdestRegister]= 0x60;
-            }
-            else
-            {
-              return TUPKEY_abort(req_struct, 20);
-            }
-            break;
+            jam();
+            terrorCode = Uint32(-TnoDataR);
+            tupkeyErrorLab(req_struct);
+            return -1;
           }
 
-        case Interpreter::SUB_REG_REG:
-          jamDebug();
+          const AttributeHeader ah2(tmpArea[firstAttrWords]);
+          if (!ah2.isNULL())
           {
-            Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-            Uint32 TdestRegister= Interpreter::getReg3(theInstruction) << 2;
+            // Get type
+            attr2Id >>= 16;
+            const Uint32* attr2Descriptor = req_struct->tablePtrP->tabDescriptor +
+              (attr2Id * ZAD_SIZE);
+            const Uint32 Tattr2Desc1 = attr2Descriptor[0];
+            const Uint32 type2Id = AttributeDescriptor::getType(Tattr2Desc1);
 
-            Uint32 TrightType= TregMemBuffer[TrightRegister];
-            Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
-
-            Uint32 TleftType= TregMemBuffer[theRegister];
-            Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-
-            if ((TleftType | TrightType) != 0)
+            argLen = AttributeDescriptor::getSizeInBytes(Tattr2Desc1);
+            if (unlikely(type2Id == NDB_TYPE_BIT))
             {
-              Int64 Tdest0= Tleft0 - Tright0;
-              * (Int64*)(TregMemBuffer+TdestRegister+2)= Tdest0;
-              TregMemBuffer[TdestRegister]= 0x60;
+              /* Size in bytes for bit fields can be incorrect due to
+               * rounding down
+               */
+              Uint32 bitFieldAttrLen= (AttributeDescriptor::getArraySize(Tattr2Desc1)
+                                       + 7) / 8;
+              argLen= bitFieldAttrLen;
             }
-            else
-            {
-              return TUPKEY_abort(req_struct, 20);
-            }
+            s2 = (char*)&tmpArea[firstAttrWords+1];
+          }
+          step = 0;
+        } //!ah2.isNULL()
+
+        // Evaluate
+        const bool r1_null = ah.isNULL();
+        const bool r2_null = argLen == 0;
+        if (r1_null || r2_null)
+        {
+          // There are NULL-valued operands, check the NullSemantics
+          const Uint32 nullSemantics =
+              Interpreter::getNullSemantics(theInstruction);
+          if (nullSemantics == Interpreter::IF_NULL_BREAK_OUT)
+          {
+            // Branch out of AND conjunction
+            TprogramCounter = brancher(theInstruction, TprogramCounter);
             break;
           }
-
-        case Interpreter::BRANCH:
-          TprogramCounter= brancher(theInstruction, TprogramCounter);
-          break;
-
-        case Interpreter::BRANCH_REG_EQ_NULL:
-          if (TregMemBuffer[theRegister] != 0)
+          if (nullSemantics == Interpreter::IF_NULL_CONTINUE)
           {
-            jamDebug();
-            continue;
+            // Ignore NULL in OR conjunction,  -> next instruction
+            const Uint32 tmp = ((step + 3) >> 2) + 1;
+            TprogramCounter += tmp;
+            break;
+          }
+        }
+
+        const Uint32 cond = Interpreter::getBinaryCondition(theInstruction);
+        int res1;
+        if (cond <= Interpreter::GE)
+        {
+          /* Inequality - EQ, NE, LT, LE, GT, GE */
+          if (r1_null || r2_null)
+          {
+            // NULL==NULL and NULL<not-NULL
+            res1 = r1_null && r2_null ? 0 : r1_null ? -1 : 1;
           }
           else
           {
-            jamDebug();
-            TprogramCounter= brancher(theInstruction, TprogramCounter);
+	    jamDebug();
+	    if (unlikely(sqlType.m_cmp == 0))
+	    {
+	      return TUPKEY_abort(req_struct, 40);
+	    }
+            res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
           }
-          break;
-
-        case Interpreter::BRANCH_REG_NE_NULL:
-          if (TregMemBuffer[theRegister] == 0)
+	}
+        else
+        {
+          if ((cond == Interpreter::LIKE) ||
+              (cond == Interpreter::NOT_LIKE))
           {
-            jamDebug();
-            continue;
+            if (r1_null || r2_null)
+            {
+              // NULL like NULL is true (has no practical use)
+              res1 =  r1_null && r2_null ? 0 : -1;
+            }
+            else
+            {
+              jam();
+              if (unlikely(sqlType.m_like == 0))
+              {
+                return TUPKEY_abort(req_struct, 40);
+              }
+              res1 = (*sqlType.m_like)(cs, s1, attrLen, s2, argLen);
+            }
           }
           else
           {
-            jamDebug();
-            TprogramCounter= brancher(theInstruction, TprogramCounter);
+            /* AND_XX_MASK condition */
+            ndbassert(cond <= Interpreter::AND_NE_ZERO);
+            if (unlikely(sqlType.m_mask == 0))
+            {
+              return TUPKEY_abort(req_struct,40);
+            }
+            /* If either arg is NULL, we say COL AND MASK
+             * NE_ZERO and NE_MASK.
+             */
+            if (r1_null || r2_null)
+            {
+              res1= 1;
+            }
+            else
+            {
+              
+              bool cmpZero= 
+                (cond == Interpreter::AND_EQ_ZERO) ||
+                (cond == Interpreter::AND_NE_ZERO);
+              
+              res1 = (*sqlType.m_mask)(s1, attrLen, s2, argLen, cmpZero);
+            }
           }
+        }
+
+        int res = 0;
+        switch ((Interpreter::BinaryCondition)cond) {
+        case Interpreter::EQ:
+          res = (res1 == 0);
           break;
-
-
-        case Interpreter::BRANCH_EQ_REG_REG:
-          {
-            jamDebug();
-            Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-
-            Uint32 TleftType= TregMemBuffer[theRegister];
-            Uint32 Tleft0= TregMemBuffer[theRegister + 2];
-            Uint32 Tleft1= TregMemBuffer[theRegister + 3];
-
-            Uint32 TrightType= TregMemBuffer[TrightRegister];
-            Uint32 Tright0= TregMemBuffer[TrightRegister + 2];
-            Uint32 Tright1= TregMemBuffer[TrightRegister + 3];
-            if ((TrightType | TleftType) != 0)
-            {
-              jamDebug();
-              if ((Tleft0 == Tright0) && (Tleft1 == Tright1))
-              {
-                TprogramCounter= brancher(theInstruction, TprogramCounter);
-              }
-            }
-            else
-            {
-              return TUPKEY_abort(req_struct, 23);
-            }
-            break;
-          }
-
-        case Interpreter::BRANCH_NE_REG_REG:
-          {
-            Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-
-            Uint32 TleftType= TregMemBuffer[theRegister];
-            Uint32 Tleft0= TregMemBuffer[theRegister + 2];
-            Uint32 Tleft1= TregMemBuffer[theRegister + 3];
-
-            Uint32 TrightType= TregMemBuffer[TrightRegister];
-            Uint32 Tright0= TregMemBuffer[TrightRegister + 2];
-            Uint32 Tright1= TregMemBuffer[TrightRegister + 3];
-            if ((TrightType | TleftType) != 0)
-            {
-              jamDebug();
-              if ((Tleft0 != Tright0) || (Tleft1 != Tright1))
-              {
-                TprogramCounter= brancher(theInstruction, TprogramCounter);
-              }
-            }
-            else
-            {
-              return TUPKEY_abort(req_struct, 24);
-            }
-            break;
-          }
-
-        case Interpreter::BRANCH_LT_REG_REG:
-          {
-            Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-
-            Uint32 TrightType= TregMemBuffer[TrightRegister];
-            Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
-
-            Uint32 TleftType= TregMemBuffer[theRegister];
-            Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-
-
-            if ((TrightType | TleftType) != 0)
-            {
-              jamDebug();
-              if (Tleft0 < Tright0)
-              {
-                TprogramCounter= brancher(theInstruction, TprogramCounter);
-              }
-            }
-            else
-            {
-              return TUPKEY_abort(req_struct, 24);
-            }
-            break;
-          }
-
-        case Interpreter::BRANCH_LE_REG_REG:
-          {
-            Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-
-            Uint32 TrightType= TregMemBuffer[TrightRegister];
-            Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
-
-            Uint32 TleftType= TregMemBuffer[theRegister];
-            Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-
-
-            if ((TrightType | TleftType) != 0)
-            {
-              jamDebug();
-              if (Tleft0 <= Tright0)
-              {
-                TprogramCounter= brancher(theInstruction, TprogramCounter);
-              }
-            }
-            else
-            {
-              return TUPKEY_abort(req_struct, 26);
-            }
-            break;
-          }
-
-        case Interpreter::BRANCH_GT_REG_REG:
-          {
-            Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-
-            Uint32 TrightType= TregMemBuffer[TrightRegister];
-            Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
-
-            Uint32 TleftType= TregMemBuffer[theRegister];
-            Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-
-
-            if ((TrightType | TleftType) != 0)
-            {
-              jamDebug();
-              if (Tleft0 > Tright0)
-              {
-                TprogramCounter= brancher(theInstruction, TprogramCounter);
-              }
-            }
-            else
-            {
-              return TUPKEY_abort(req_struct, 27);
-            }
-            break;
-          }
-
-        case Interpreter::BRANCH_GE_REG_REG:
-          {
-            Uint32 TrightRegister= Interpreter::getReg2(theInstruction) << 2;
-
-            Uint32 TrightType= TregMemBuffer[TrightRegister];
-            Int64 Tright0= * (Int64*)(TregMemBuffer + TrightRegister + 2);
-
-            Uint32 TleftType= TregMemBuffer[theRegister];
-            Int64 Tleft0= * (Int64*)(TregMemBuffer + theRegister + 2);
-
-            if ((TrightType | TleftType) != 0)
-            {
-              jamDebug();
-              if (Tleft0 >= Tright0)
-              {
-                TprogramCounter= brancher(theInstruction, TprogramCounter);
-              }
-            }
-            else
-            {
-              return TUPKEY_abort(req_struct, 28);
-            }
-            break;
-          }
-
-        case Interpreter::BRANCH_ATTR_OP_ATTR:
-        case Interpreter::BRANCH_ATTR_OP_PARAM:
-        case Interpreter::BRANCH_ATTR_OP_ARG:{
-                                               jamDebug();
-                                               const Uint32 ins2 = TcurrentProgram[TprogramCounter];
-                                               Uint32 attrId = Interpreter::getBranchCol_AttrId(ins2) << 16;
-                                               const Uint32 opCode = Interpreter::getOpCode(theInstruction);
-
-                                               if (tmpHabitant != attrId)
-                                               {
-                                                 Int32 TnoDataR = readAttributes(req_struct,
-                                                     &attrId, 1,
-                                                     tmpArea, tmpAreaSz,
-                                                     false);
-
-                                                 if (unlikely(TnoDataR < 0))
-                                                 {
-                                                   jam();
-                                                   terrorCode = Uint32(-TnoDataR);
-                                                   tupkeyErrorLab(req_struct);
-                                                   return -1;
-                                                 }
-                                                 tmpHabitant= attrId;
-                                               }
-
-                                               // get type
-                                               attrId >>= 16;
-                                               const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
-                                                 (attrId * ZAD_SIZE);
-                                               const Uint32 TattrDesc1 = attrDescriptor[0];
-                                               const Uint32 TattrDesc2 = attrDescriptor[1];
-                                               const Uint32 typeId = AttributeDescriptor::getType(TattrDesc1);
-                                               const CHARSET_INFO *cs = nullptr;
-                                               if (AttributeOffset::getCharsetFlag(TattrDesc2))
-                                               {
-                                                 const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
-                                                 cs = req_struct->tablePtrP->charsetArray[pos];
-                                               }
-                                               const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(typeId);
-
-                                               // get data for 1st argument, always an ATTR.
-                                               const AttributeHeader ah(tmpArea[0]);
-                                               const char* s1 = (char*)&tmpArea[1];
-                                               // fixed length in 5.0
-                                               Uint32 attrLen = AttributeDescriptor::getSizeInBytes(TattrDesc1);
-                                               if (unlikely(typeId == NDB_TYPE_BIT))
-                                               {
-                                                 /* Size in bytes for bit fields can be incorrect due to
-                                                  * rounding down
-                                                  */
-                                                 Uint32 bitFieldAttrLen= (AttributeDescriptor::getArraySize(TattrDesc1)
-                                                     + 7) / 8;
-                                                 attrLen= bitFieldAttrLen;
-                                               }
-
-                                               // 2'nd argument, literal, parameter or another attribute
-                                               Uint32 argLen = 0;
-                                               Uint32 step = 0;
-                                               const char* s2 = nullptr;
-
-                                               if (likely(opCode == Interpreter::BRANCH_ATTR_OP_ARG))
-                                               {
-                                                 // Compare ATTR with a literal value given by interpreter code
-                                                 jamDebug();
-                                                 argLen = Interpreter::getBranchCol_Len(ins2);
-                                                 step = argLen;
-                                                 s2 = (char*)&TcurrentProgram[TprogramCounter+1];
-                                               }
-                                               else if (opCode == Interpreter::BRANCH_ATTR_OP_PARAM)
-                                               {
-                                                 // Compare ATTR with a parameter
-                                                 jamDebug();
-                                                 ndbassert(req_struct != nullptr);
-                                                 ndbassert(req_struct->operPtrP != nullptr);
-
-                                                 const Uint32 paramNo = Interpreter::getBranchCol_ParamNo(ins2);
-                                                 const Uint32 *paramPos = subroutineProg;
-                                                 const Uint32 *paramptr = lookupInterpreterParameter(paramNo,
-                                                     paramPos);
-                                                 if (unlikely(paramptr == nullptr))
-                                                 {
-                                                   jam();
-                                                   terrorCode = 99; // TODO
-                                                   tupkeyErrorLab(req_struct);
-                                                   return -1;
-                                                 }
-
-                                                 argLen = AttributeHeader::getByteSize(* paramptr);
-                                                 step = 0;
-                                                 s2 = (char*)(paramptr + 1);
-                                               }
-                                               else if (opCode == Interpreter::BRANCH_ATTR_OP_ATTR)
-                                               {
-                                                 // Compare ATTR with another ATTR
-                                                 jamDebug();
-                                                 Uint32 attr2Id = Interpreter::getBranchCol_AttrId2(ins2) << 16;
-
-                                                 // Attr2 to be read into tmpArea[] after Attr1.
-                                                 const Uint32 firstAttrWords = attrLen+1;
-                                                 assert(tmpAreaSz >= 2*firstAttrWords);
-                                                 Int32 TnoDataR = readAttributes(req_struct,
-                                                     &attr2Id, 1,
-                                                     &tmpArea[firstAttrWords],
-                                                     tmpAreaSz-firstAttrWords,
-                                                     false);
-                                                 if (unlikely(TnoDataR < 0))
-                                                 {
-                                                   jam();
-                                                   terrorCode = Uint32(-TnoDataR);
-                                                   tupkeyErrorLab(req_struct);
-                                                   return -1;
-                                                 }
-
-                                                 const AttributeHeader ah2(tmpArea[firstAttrWords]);
-                                                 if (!ah2.isNULL())
-                                                 {
-                                                   // Get type
-                                                   attr2Id >>= 16;
-                                                   const Uint32* attrDescriptor = req_struct->tablePtrP->tabDescriptor +
-                                                     (attr2Id * ZAD_SIZE);
-                                                   const Uint32 Tattr2Desc1 = attrDescriptor[0];
-                                                   const Uint32 type2Id = AttributeDescriptor::getType(Tattr2Desc1);
-
-                                                   argLen = AttributeDescriptor::getSizeInBytes(Tattr2Desc1);
-                                                   if (unlikely(type2Id == NDB_TYPE_BIT))
-                                                   {
-                                                     /* Size in bytes for bit fields can be incorrect due to
-                                                      * rounding down
-                                                      */
-                                                     Uint32 bitFieldAttrLen= (AttributeDescriptor::getArraySize(Tattr2Desc1)
-                                                         + 7) / 8;
-                                                     argLen= bitFieldAttrLen;
-                                                   }
-                                                   s2 = (char*)&tmpArea[firstAttrWords+1];
-                                                 }
-                                                 step = 0;
-                                               } //!ah2.isNULL()
-
-                                               // Evaluate
-                                               const bool r1_null = ah.isNULL();
-                                               const bool r2_null = argLen == 0;
-                                               if (r1_null || r2_null)
-                                               {
-                                                 // There are NULL-valued operands, check the NullSemantics
-                                                 const Uint32 nullSemantics =
-                                                   Interpreter::getNullSemantics(theInstruction);
-                                                 if (nullSemantics == Interpreter::IF_NULL_BREAK_OUT)
-                                                 {
-                                                   // Branch out of AND conjunction
-                                                   TprogramCounter = brancher(theInstruction, TprogramCounter);
-                                                   break;
-                                                 }
-                                                 if (nullSemantics == Interpreter::IF_NULL_CONTINUE)
-                                                 {
-                                                   // Ignore NULL in OR conjunction,  -> next instruction
-                                                   const Uint32 tmp = ((step + 3) >> 2) + 1;
-                                                   TprogramCounter += tmp;
-                                                   break;
-                                                 }
-                                               }
-
-                                               const Uint32 cond = Interpreter::getBinaryCondition(theInstruction);
-                                               int res1;
-                                               if (cond <= Interpreter::GE)
-                                               {
-                                                 /* Inequality - EQ, NE, LT, LE, GT, GE */
-                                                 if (r1_null || r2_null)
-                                                 {
-                                                   // NULL==NULL and NULL<not-NULL
-                                                   res1 = r1_null && r2_null ? 0 : r1_null ? -1 : 1;
-                                                 }
-                                                 else
-                                                 {
-                                                   jamDebug();
-                                                   if (unlikely(sqlType.m_cmp == 0))
-                                                   {
-                                                     return TUPKEY_abort(req_struct, 40);
-                                                   }
-                                                   res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
-                                                 }
-                                               }
-                                               else
-                                               {
-                                                 if ((cond == Interpreter::LIKE) ||
-                                                     (cond == Interpreter::NOT_LIKE))
-                                                 {
-                                                   if (r1_null || r2_null)
-                                                   {
-                                                     // NULL like NULL is true (has no practical use)
-                                                     res1 =  r1_null && r2_null ? 0 : -1;
-                                                   }
-                                                   else
-                                                   {
-                                                     jam();
-                                                     if (unlikely(sqlType.m_like == 0))
-                                                     {
-                                                       return TUPKEY_abort(req_struct, 40);
-                                                     }
-                                                     res1 = (*sqlType.m_like)(cs, s1, attrLen, s2, argLen);
-                                                   }
-                                                 }
-                                                 else
-                                                 {
-                                                   /* AND_XX_MASK condition */
-                                                   ndbassert(cond <= Interpreter::AND_NE_ZERO);
-                                                   if (unlikely(sqlType.m_mask == 0))
-                                                   {
-                                                     return TUPKEY_abort(req_struct,40);
-                                                   }
-                                                   /* If either arg is NULL, we say COL AND MASK
-                                                    * NE_ZERO and NE_MASK.
-                                                    */
-                                                   if (r1_null || r2_null)
-                                                   {
-                                                     res1= 1;
-                                                   }
-                                                   else
-                                                   {
-
-                                                     bool cmpZero= 
-                                                       (cond == Interpreter::AND_EQ_ZERO) ||
-                                                       (cond == Interpreter::AND_NE_ZERO);
-
-                                                     res1 = (*sqlType.m_mask)(s1, attrLen, s2, argLen, cmpZero);
-                                                   }
-                                                 }
-                                               }
-
-                                               int res = 0;
-                                               switch ((Interpreter::BinaryCondition)cond) {
-                                                 case Interpreter::EQ:
-                                                   res = (res1 == 0);
-                                                   break;
-                                                 case Interpreter::NE:
-                                                   res = (res1 != 0);
-                                                   break;
-                                                   // note the condition is backwards
-                                                 case Interpreter::LT:
-                                                   res = (res1 > 0);
-                                                   break;
-                                                 case Interpreter::LE:
-                                                   res = (res1 >= 0);
-                                                   break;
-                                                 case Interpreter::GT:
-                                                   res = (res1 < 0);
-                                                   break;
-                                                 case Interpreter::GE:
-                                                   res = (res1 <= 0);
-                                                   break;
-                                                 case Interpreter::LIKE:
-                                                   res = (res1 == 0);
-                                                   break;
-                                                 case Interpreter::NOT_LIKE:
-                                                   res = (res1 == 1);
-                                                   break;
-                                                 case Interpreter::AND_EQ_MASK:
-                                                   res = (res1 == 0);
-                                                   break;
-                                                 case Interpreter::AND_NE_MASK:
-                                                   res = (res1 != 0);
-                                                   break;
-                                                 case Interpreter::AND_EQ_ZERO:
-                                                   res = (res1 == 0);
-                                                   break;
-                                                 case Interpreter::AND_NE_ZERO:
-                                                   res = (res1 != 0);
-                                                   break;
-                                                   // XXX handle invalid value
-                                               }
+        case Interpreter::NE:
+          res = (res1 != 0);
+          break;
+        // note the condition is backwards
+        case Interpreter::LT:
+          res = (res1 > 0);
+          break;
+        case Interpreter::LE:
+          res = (res1 >= 0);
+          break;
+        case Interpreter::GT:
+          res = (res1 < 0);
+          break;
+        case Interpreter::GE:
+          res = (res1 <= 0);
+          break;
+        case Interpreter::LIKE:
+          res = (res1 == 0);
+          break;
+        case Interpreter::NOT_LIKE:
+          res = (res1 == 1);
+          break;
+        case Interpreter::AND_EQ_MASK:
+          res = (res1 == 0);
+          break;
+        case Interpreter::AND_NE_MASK:
+          res = (res1 != 0);
+          break;
+        case Interpreter::AND_EQ_ZERO:
+          res = (res1 == 0);
+          break;
+        case Interpreter::AND_NE_ZERO:
+          res = (res1 != 0);
+          break;
+	  // XXX handle invalid value
+        }
 #ifdef TRACE_INTERPRETER
-                                               g_eventLogger->info(
-                                                   "cond=%u attr(%d)='%.*s'(%d) str='%.*s'(%d) res1=%d res=%d", cond,
-                                                   attrId >> 16, attrLen, s1, attrLen, argLen, s2, argLen, res1, res);
+        g_eventLogger->info(
+            "cond=%u attr(%d)='%.*s'(%d) str='%.*s'(%d) res1=%d res=%d", cond,
+            attrId >> 16, attrLen, s1, attrLen, argLen, s2, argLen, res1, res);
 #endif
-                                               if (res)
-                                                 TprogramCounter = brancher(theInstruction, TprogramCounter);
-                                               else 
-                                               {
-                                                 Uint32 tmp = ((step + 3) >> 2) + 1;
-                                                 TprogramCounter += tmp;
-                                               }
-                                               break;
-                                             }
+        if (res)
+          TprogramCounter = brancher(theInstruction, TprogramCounter);
+        else 
+	{
+          Uint32 tmp = ((step + 3) >> 2) + 1;
+          TprogramCounter += tmp;
+        }
+	break;
+      }
+	
+      case Interpreter::BRANCH_ATTR_EQ_NULL:{
+	jamDebug();
+	Uint32 ins2= TcurrentProgram[TprogramCounter];
+	Uint32 attrId= Interpreter::getBranchCol_AttrId(ins2) << 16;
+	
+	if (tmpHabitant != attrId)
+        {
+	  Int32 TnoDataR= readAttributes(req_struct,
+					  &attrId, 1,
+					  tmpArea, tmpAreaSz);
+	  
+	  if (unlikely(TnoDataR < 0))
+          {
+	    jam();
+            terrorCode = Uint32(-TnoDataR);
+	    tupkeyErrorLab(req_struct);
+	    return -1;
+	  }
+	  tmpHabitant= attrId;
+	}
+	
+	AttributeHeader ah(tmpArea[0]);
+	if (ah.isNULL())
+        {
+	  TprogramCounter= brancher(theInstruction, TprogramCounter);
+	}
+        else
+        {
+	  TprogramCounter ++;
+	}
+	break;
+      }
 
-        case Interpreter::BRANCH_ATTR_EQ_NULL:{
-                                                jamDebug();
-                                                Uint32 ins2= TcurrentProgram[TprogramCounter];
-                                                Uint32 attrId= Interpreter::getBranchCol_AttrId(ins2) << 16;
-
-                                                if (tmpHabitant != attrId)
-                                                {
-                                                  Int32 TnoDataR= readAttributes(req_struct,
-                                                      &attrId, 1,
-                                                      tmpArea, tmpAreaSz,
-                                                      false);
-
-                                                  if (unlikely(TnoDataR < 0))
-                                                  {
-                                                    jam();
-                                                    terrorCode = Uint32(-TnoDataR);
-                                                    tupkeyErrorLab(req_struct);
-                                                    return -1;
-                                                  }
-                                                  tmpHabitant= attrId;
-                                                }
-
-                                                AttributeHeader ah(tmpArea[0]);
-                                                if (ah.isNULL())
-                                                {
-                                                  TprogramCounter= brancher(theInstruction, TprogramCounter);
-                                                }
-                                                else
-                                                {
-                                                  TprogramCounter ++;
-                                                }
-                                                break;
-                                              }
-
-        case Interpreter::BRANCH_ATTR_NE_NULL:
-                                              {
-                                                jamDebug();
-                                                Uint32 ins2= TcurrentProgram[TprogramCounter];
-                                                Uint32 attrId= Interpreter::getBranchCol_AttrId(ins2) << 16;
-
-                                                if (tmpHabitant != attrId)
-                                                {
-                                                  Int32 TnoDataR= readAttributes(req_struct,
-                                                      &attrId, 1,
-                                                      tmpArea, tmpAreaSz,
-                                                      false);
-
-                                                  if (unlikely(TnoDataR < 0))
-                                                  {
-                                                    jam();
-                                                    terrorCode = Uint32(-TnoDataR);
-                                                    tupkeyErrorLab(req_struct);
-                                                    return -1;
-                                                  }
-                                                  tmpHabitant= attrId;
-                                                }
-
-                                                AttributeHeader ah(tmpArea[0]);
-                                                if (ah.isNULL())
-                                                {
-                                                  TprogramCounter ++;
-                                                }
-                                                else
-                                                {
-                                                  TprogramCounter= brancher(theInstruction, TprogramCounter);
-                                                }
-                                                break;
-                                              }
-
-        case Interpreter::EXIT_OK:
-                                              jamDebug();
+      case Interpreter::BRANCH_ATTR_NE_NULL:
+      {
+	jamDebug();
+	Uint32 ins2= TcurrentProgram[TprogramCounter];
+	Uint32 attrId= Interpreter::getBranchCol_AttrId(ins2) << 16;
+	
+	if (tmpHabitant != attrId)
+        {
+	  Int32 TnoDataR= readAttributes(req_struct,
+					  &attrId, 1,
+					  tmpArea, tmpAreaSz);
+	  
+	  if (unlikely(TnoDataR < 0))
+          {
+	    jam();
+            terrorCode = Uint32(-TnoDataR);
+	    tupkeyErrorLab(req_struct);
+	    return -1;
+	  }
+	  tmpHabitant= attrId;
+	}
+	
+	AttributeHeader ah(tmpArea[0]);
+	if (ah.isNULL())
+        {
+	  TprogramCounter ++;
+	}
+        else
+        {
+	  TprogramCounter= brancher(theInstruction, TprogramCounter);
+	}
+	break;
+      }
+	
+      case Interpreter::EXIT_OK:
+	jamDebug();
 #ifdef TRACE_INTERPRETER
-                                              g_eventLogger->info(" - exit_ok");
+        g_eventLogger->info(" - exit_ok");
 #endif
-                                              return TdataWritten;
+	return TdataWritten;
 
-        case Interpreter::EXIT_OK_LAST:
-                                              jamDebug();
+      case Interpreter::EXIT_OK_LAST:
+	jamDebug();
 #ifdef TRACE_INTERPRETER
-                                              g_eventLogger->info(" - exit_ok_last");
+        g_eventLogger->info(" - exit_ok_last");
 #endif
-                                              req_struct->last_row= true;
-                                              return TdataWritten;
+	req_struct->last_row= true;
+	return TdataWritten;
+	
+      case Interpreter::EXIT_REFUSE:
+      {
+        /**
+         * This is a very common exit path, particularly
+         * for scans. It simply means that the row didn't
+         * fulfil the search condition.
+         */
+	jamDebug();
+#ifdef TRACE_INTERPRETER
+        g_eventLogger->info(" - exit_nok");
+#endif
+	terrorCode = theInstruction >> 16;
+        tupkeyErrorLab(req_struct);
+        return -1;
+      }
+      case Interpreter::CALL:
+	jamDebug();
+#ifdef TRACE_INTERPRETER
+        g_eventLogger->info(" - call addr=%u, subroutine len=%u ret addr=%u",
+                            theInstruction >> 16, TsubroutineLen,
+                            TprogramCounter);
+#endif
+	RstackPtr++;
+	if (RstackPtr < 32)
+        {
+          TstackMemBuffer[RstackPtr]= TprogramCounter;
+          TprogramCounter= theInstruction >> 16;
+	  if (TprogramCounter < TsubroutineLen)
+          {
+	    TcurrentProgram= subroutineProg;
+	    TcurrentSize= TsubroutineLen;
+	  }
+          else
+          {
+	    return TUPKEY_abort(req_struct, 30);
+	  }
+	}
+        else
+        {
+	  return TUPKEY_abort(req_struct, 31);
+	}
+	break;
 
-        case Interpreter::EXIT_REFUSE:
-                                              {
-                                                /**
-                                                 * This is a very common exit path, particularly
-                                                 * for scans. It simply means that the row didn't
-                                                 * fulfil the search condition.
-                                                 */
-                                                jamDebug();
+      case Interpreter::RETURN:
+	jamDebug();
 #ifdef TRACE_INTERPRETER
-                                                g_eventLogger->info(" - exit_nok");
+        g_eventLogger->info(" - return to %u from stack level %u",
+                            TstackMemBuffer[RstackPtr], RstackPtr);
 #endif
-                                                terrorCode = theInstruction >> 16;
-                                                tupkeyErrorLab(req_struct);
-                                                return -1;
-                                              }
-        case Interpreter::CALL:
-                                              jamDebug();
-#ifdef TRACE_INTERPRETER
-                                              g_eventLogger->info(" - call addr=%u, subroutine len=%u ret addr=%u",
-                                                  theInstruction >> 16, TsubroutineLen,
-                                                  TprogramCounter);
-#endif
-                                              RstackPtr++;
-                                              if (RstackPtr < 32)
-                                              {
-                                                TstackMemBuffer[RstackPtr]= TprogramCounter;
-                                                TprogramCounter= theInstruction >> 16;
-                                                if (TprogramCounter < TsubroutineLen)
-                                                {
-                                                  TcurrentProgram= subroutineProg;
-                                                  TcurrentSize= TsubroutineLen;
-                                                }
-                                                else
-                                                {
-                                                  return TUPKEY_abort(req_struct, 30);
-                                                }
-                                              }
-                                              else
-                                              {
-                                                return TUPKEY_abort(req_struct, 31);
-                                              }
-                                              break;
+	if (RstackPtr > 0)
+        {
+	  TprogramCounter= TstackMemBuffer[RstackPtr];
+	  RstackPtr--;
+	  if (RstackPtr == 0)
+          {
+	    jamDebug();
+	    /* ------------------------------------------------------------- */
+	    // We are back to the main program.
+	    /* ------------------------------------------------------------- */
+	    TcurrentProgram= mainProgram;
+	    TcurrentSize= TmainProgLen;
+	  }
+	}
+        else
+        {
+	  return TUPKEY_abort(req_struct, 32);
+	}
+	break;
 
-        case Interpreter::RETURN:
-                                              jamDebug();
-#ifdef TRACE_INTERPRETER
-                                              g_eventLogger->info(" - return to %u from stack level %u",
-                                                  TstackMemBuffer[RstackPtr], RstackPtr);
-#endif
-                                              if (RstackPtr > 0)
-                                              {
-                                                TprogramCounter= TstackMemBuffer[RstackPtr];
-                                                RstackPtr--;
-                                                if (RstackPtr == 0)
-                                                {
-                                                  jamDebug();
-                                                  /* ------------------------------------------------------------- */
-                                                  // We are back to the main program.
-                                                  /* ------------------------------------------------------------- */
-                                                  TcurrentProgram= mainProgram;
-                                                  TcurrentSize= TmainProgLen;
-                                                }
-                                              }
-                                              else
-                                              {
-                                                return TUPKEY_abort(req_struct, 32);
-                                              }
-                                              break;
-
-        default:
-                                              return TUPKEY_abort(req_struct, 33);
+      default:
+	return TUPKEY_abort(req_struct, 33);
       }
     }
     else
@@ -5028,12 +5018,12 @@ int Dbtup::interpreterNextLab(Signal* signal,
  * num_vars    no of atributes to expand
  */
 static
-  Uint32*
+Uint32*
 expand_var_part(Dbtup::KeyReqStruct::Var_data *dst, 
-    const Uint32* src, 
-    const Uint32 * tabDesc, 
-    const Uint16* order,
-    EmulatedJamBuffer *jamBuf)
+                const Uint32* src, 
+                const Uint32 * tabDesc, 
+                const Uint16* order,
+                EmulatedJamBuffer *jamBuf)
 {
   char* dst_ptr= dst->m_data_ptr;
   Uint32 num_vars = dst->m_var_len_offset;
@@ -5065,13 +5055,13 @@ expand_var_part(Dbtup::KeyReqStruct::Var_data *dst,
   return ALIGN_WORD(dst_ptr);
 }
 
-  void
+void
 Dbtup::expand_tuple(KeyReqStruct* req_struct, 
-    Uint32 sizes[2],
-    Tuple_header* src, 
-    const Tablerec* tabPtrP,
-    bool disk,
-    bool from_lcp_keep)
+                    Uint32 sizes[2],
+                    Tuple_header* src, 
+                    const Tablerec* tabPtrP,
+                    bool disk,
+                    bool from_lcp_keep)
 {
   /**
    * The source tuple only touches the header parts. The updates of the
@@ -6712,7 +6702,7 @@ Dbtup::nr_read_pk(Uint64 fragPtrI,
 			 attrIds,
 			 numAttrs,
 			 dst,
-			 ZNIL, false);
+			 ZNIL);
     
     // done
     if (likely(ret >= 0)) {

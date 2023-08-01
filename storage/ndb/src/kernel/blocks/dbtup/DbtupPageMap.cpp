@@ -32,6 +32,7 @@
 #include <pc.hpp>
 #include <signaldata/RestoreImpl.hpp>
 #include "../backup/Backup.hpp"
+#include "../dblqh/Dblqh.hpp"
 
 #define JAM_FILE_ID 415
 

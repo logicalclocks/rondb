@@ -52,13 +52,12 @@
 // primary key is stored in TUP
 #include "../dbtup/Dbtup.hpp"
 #include "../dbacc/Dbacc.hpp"
-#include "../dbtux/Dbtux.hpp"
-#include "../backup/Backup.hpp"
 #include "../restore.hpp"
 
 #include "TransientPool.hpp"
 #include "TransientSlotPool.hpp"
 
+class Backup;
 class Dbacc;
 class Dbtup;
 class Dbtux;
@@ -1498,6 +1497,7 @@ public:
     static constexpr Uint32 PollingPeriodMillis = 1000; /* 10s */
     Uint32 WarnElapsedWithNoProgressMillis; /* LCP Warn, milliseconds */
     Uint32 MaxElapsedWithNoProgressMillis;  /* LCP Fail, milliseconds */
+    Uint32 MaxGcpWaitLimitMillis; /* Extra time for GCP completion */
 
     SimulatedBlock* block;
     

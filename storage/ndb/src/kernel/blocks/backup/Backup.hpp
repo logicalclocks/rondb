@@ -38,17 +38,22 @@
 #include <IntrusiveList.hpp>
 #include <SignalCounter.hpp>
 #include <blocks/mutexes.hpp>
+#include <RWPool64.hpp>
+#include <Intrusive64List.hpp>
 
 #include <NdbTick.h>
 #include <Array.hpp>
 #include <Mutex.hpp>
 
 #include <signaldata/RedoStateRep.hpp>
-#include "../dblqh/Dblqh.hpp"
 #include <signaldata/BackupSignalData.hpp>
+#include "kernel/signaldata/FsOpenReq.hpp"
+#include "TransientPool.hpp"
+#include "TransientSlotPool.hpp"
 
 #define JAM_FILE_ID 474
 
+class Dblqh;
 
 /**
  * Backup - This block manages database backup and restore

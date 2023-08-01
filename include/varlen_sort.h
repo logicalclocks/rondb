@@ -187,7 +187,6 @@ template <>
 struct iterator_traits<varlen_iterator> : iterator_traits<varlen_element *> {
   using reference = varlen_element;
 };
-
 }  // namespace std
 
 /*

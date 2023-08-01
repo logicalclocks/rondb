@@ -24,6 +24,8 @@
 #include "util/require.h"
 #include <atomic>
 #include <ndb_global.h>
+#include "my_config.h"
+#include "ndb_config.h"
 #include "portlib/ndb_compiler.h"
 #include <cstring>
 
@@ -8542,15 +8544,18 @@ mt_receiver_thread_main(void *thr_arg)
     /**
      * Need to call sendpacked even when no signals have been executed since
      * it can be used for NDBFS communication.
+     * Always ensure that we call do_send in each loop to keep latency low.
      */
     sendpacked(selfptr, signal);
     if (sum || has_received)
     {
-      watchDogCounter = 6;
-      if (flush_sum > 0)
+      if (send_sum > 0 || flush_sum > 0)
       {
+        watchDogCounter = 6;
         flush_all_local_signals_and_wakeup(selfptr);
-        do_flush(selfptr);
+        pending_send = do_send(selfptr, false, false);
+        selfptr->m_outstanding_send_wakeups = 0;
+        send_sum = 0;
         flush_sum = 0;
       }
     }
@@ -8559,7 +8564,6 @@ mt_receiver_thread_main(void *thr_arg)
       watchDogCounter = 6;
       flush_all_local_signals_and_wakeup(selfptr);
       pending_send = do_send(selfptr, true, false);
-      selfptr->m_outstanding_send_wakeups = 0;
       send_sum = 0;
       flush_sum = 0;
     }
@@ -9006,7 +9010,7 @@ mt_job_thread_main(void *thr_arg)
      * it can be used for NDBFS communication.
      */
     sendpacked(selfptr, signal);
-    if (sum)
+    if (send_sum > 0)
     {
       /**
        * It is imperative that we flush signals within our node after
@@ -9022,23 +9026,19 @@ mt_job_thread_main(void *thr_arg)
        * last flush.
        */
       watchDogCounter = 6;
-      if (flush_sum > 0)
-      {
-        // OJA: Will not yield -> wakeup not needed yet
-        flush_all_local_signals_and_wakeup(selfptr);
-        do_flush(selfptr);
-        flush_sum = 0;
-      }
+      // OJA: Will not yield -> wakeup not needed yet
+      flush_all_local_signals_and_wakeup(selfptr);
+      pending_send = do_send(selfptr, false, false);
+      selfptr->m_outstanding_send_wakeups = 0;
+      send_sum = 0;
+      flush_sum = 0;
     }
     else
     {
       /* No signals processed, prepare to sleep to wait for more */
       /* About to sleep, _must_ send now. */
-      flush_all_local_signals_and_wakeup(selfptr);
       pending_send = do_send(selfptr, true, true);
       selfptr->m_outstanding_send_wakeups = 0;
-      send_sum = 0;
-      flush_sum = 0;
     }
 
     /**

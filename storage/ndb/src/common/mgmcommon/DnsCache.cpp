@@ -1,6 +1,5 @@
 /*
    Copyright (c) 2020, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -26,6 +25,7 @@
 #include "DnsCache.hpp"
 
 #include "NdbTCP.h"
+#include "portlib/ndb_sockaddr.h"
 
 LocalDnsCache::~LocalDnsCache() {
   for (const auto& pair : m_resolver_cache) {
@@ -33,31 +33,25 @@ LocalDnsCache::~LocalDnsCache() {
   }
 }
 
-bool LocalDnsCache::getCachedOrResolveAddress(in6_addr *result,
+bool LocalDnsCache::getCachedOrResolveAddress(ndb_sockaddr *result,
                                               const char *hostname) {
-  memset(result, 0, sizeof(in6_addr));
   const auto pair = m_resolver_cache.find(hostname);
 
   if (pair != m_resolver_cache.end()) {
-    const in6_addr *address = pair->second;
-    *result = *address;  // Copy
+    *result = *pair->second;
     return true; /* Usable cache hit */
   }
 
-  if (Ndb_getInAddr6(result, hostname) != 0)
-  {
-    if (Ndb_getInAddr((struct in_addr*)result, hostname) != 0)
-    {
-      return false;   // hostname not found in DNS
-    }
+  if (Ndb_getAddr(result, hostname) != 0) {
+    return false;  // hostname not found in DNS
   }
 
   // Hostname found, create a cache entry
-  m_resolver_cache[hostname] = new in6_addr(*result);
+  m_resolver_cache[hostname] = new ndb_sockaddr(*result);
   return true;
 }
 
-int LocalDnsCache::getAddress(in6_addr *result_address, const char *hostname) {
+int LocalDnsCache::getAddress(ndb_sockaddr *result_address, const char *hostname) {
   if (m_failed_lookups.count(hostname) != 0) {
     // Lookup failed earlier, same result now
     return -1;

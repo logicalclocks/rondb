@@ -38,6 +38,8 @@
 #include <signaldata/NodeFailRep.hpp>
 #include <signaldata/ApiRegSignalData.hpp>
 #include <ndb_version.h>
+#include "portlib/ndb_sockaddr.h"
+#include "portlib/NdbTCP.h"
 
 #include <EventLogger.hpp>
 
@@ -121,7 +123,14 @@ alone_on_host(Config* conf,
       continue;
     }
 
-    if (SocketServer::tryBind(0, false, hostname))
+    ndb_sockaddr addr;
+    if (Ndb_getAddr(&addr, hostname) == -1)
+    {
+      g_eventLogger->debug("Failed resolve %s, node %d",
+                           hostname, nodeid);
+      continue;
+    }
+    if (SocketServer::tryBind(addr))
     {
       // Another MGM node was also setup on this host
       g_eventLogger->debug("Not alone on host %s, node %d "     \
@@ -243,7 +252,8 @@ find_own_nodeid(Config* conf)
       continue;
     }
 
-    if (SocketServer::tryBind(0, false, hostname))
+    ndb_sockaddr addr;
+    if (Ndb_getAddr(&addr, hostname) == 0 && SocketServer::tryBind(addr))
     {
       // This node is setup to run on this host
       if (found_nodeid == 0)

@@ -37,6 +37,9 @@
 #ifndef TransporterRegistry_H
 #define TransporterRegistry_H
 
+#include <assert.h>
+#include "ndb_config.h"
+
 #if defined(HAVE_EPOLL_CREATE)
 #include <sys/epoll.h>
 #endif
@@ -50,6 +53,7 @@
 #include <NdbMutex.h>
 
 #include "portlib/NdbTick.h"
+#include "portlib/ndb_sockaddr.h"
 #include "util/NdbSocket.h"
 
 #ifndef _WIN32
@@ -205,7 +209,9 @@ struct TransporterReceiveData
   ndb_socket_poller m_socket_poller;
 };
 
-#include "TransporterCallback.hpp"
+class TransporterCallback;
+class TransporterReceiveHandle;
+class TransporterSendBufferHandle;
 
 /**
  * @class TransporterRegistry
@@ -559,8 +565,8 @@ public:
     (void)nodeId;
     return m_use_only_ipv4;
   }
-  struct sockaddr_in6 get_connect_address(NodeId node_id) const;
   bool is_server(NodeId) const;
+  ndb_sockaddr get_connect_address(NodeId node_id) const;
 
   Uint64 get_bytes_sent(NodeId nodeId) const;
   Uint64 get_bytes_received(NodeId nodeId) const;
@@ -766,16 +772,9 @@ public:
     assert(receiveHandle != nullptr);
     update_connections(* receiveHandle);
   }
-  inline Uint32 get_total_spintime()
-  {
-    assert(receiveHandle != nullptr);
-    return receiveHandle->m_total_spintime;
-  }
-  inline void reset_total_spintime()
-  {
-    assert(receiveHandle != nullptr);
-    receiveHandle->m_total_spintime = 0;
-  }
+
+  Uint32 get_total_spintime() const;
+  void reset_total_spintime() const;
 
   TrpId getTransporterIndex(Transporter* t);
   void set_recv_thread_idx(Transporter* t, Uint32 recv_thread_idx);

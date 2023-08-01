@@ -26,6 +26,7 @@
 
 #include <ndb_global.h>
 
+#include <cassert>
 #include "SocketClient.hpp"
 #include "SocketAuthenticator.hpp"
 #include "portlib/ndb_socket_poller.h"
@@ -54,29 +55,18 @@ SocketClient::~SocketClient()
 }
 
 bool
-SocketClient::init(bool use_only_ipv4)
+SocketClient::init(int af, bool use_only_ipv4)
 {
   m_use_only_ipv4 = use_only_ipv4;
-
+  assert(!ndb_socket_valid(m_sockfd));
   if (ndb_socket_valid(m_sockfd))
-  {
     ndb_socket_close(m_sockfd);
-    ndb_socket_invalidate(&m_sockfd);
-  }
 
-  if (!m_use_only_ipv4)
+  if (use_only_ipv4)
   {
-    DEBUG_FPRINTF((stderr, "Create dual stack NDB_SOCKET: %s\n",
-                   ndb_socket_to_string(m_sockfd).c_str()));
-    ndb_socket_create_dual_stack(m_sockfd, SOCK_STREAM, 0);
+    af = AF_INET;
   }
-  if (!ndb_socket_valid(m_sockfd))
-  {
-    m_use_only_ipv4 = true;
-    ndb_socket_create_ipv4(m_sockfd, SOCK_STREAM, 0);
-    DEBUG_FPRINTF((stderr, "Create IPv4 NDB_SOCKET: %s\n",
-                   ndb_socket_to_string(m_sockfd).c_str()));
-  }
+  m_sockfd= ndb_socket_create(af);
   if (!ndb_socket_valid(m_sockfd)) {
     return false;
   }
@@ -87,117 +77,44 @@ SocketClient::init(bool use_only_ipv4)
 }
 
 int
-SocketClient::bind(const char* local_hostname,
-                   unsigned short local_port)
+SocketClient::bind(ndb_sockaddr local)
 {
-  DEBUG_FPRINTF((stderr, "SocketClient::bind, port: %u, host: %s\n",
-                 (unsigned int)local_port, local_hostname));
+  const bool no_local_port = (local.get_port() == 0);
+
   if (!ndb_socket_valid(m_sockfd))
     return -1;
 
-  if (!m_use_only_ipv4)
   {
-    struct sockaddr_in6 local;
-    memset(&local, 0, sizeof(local));
-    local.sin6_family = AF_INET6;
-    local.sin6_port = htons(local_port);
-    if (local_port == 0 &&
-        m_last_used_port != 0)
-    {
-      // Try to bind to the same port as last successful connect instead of
-      // any ephemeral port. Intention is to reuse any previous TIME_WAIT TCB
-      local.sin6_port = htons(m_last_used_port);
-    }
-
-    // Resolve local address
-    if (Ndb_getInAddr6(&local.sin6_addr, local_hostname))
-    {
-      DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr6, errno: %d\n", errno));
-      return errno ? errno : EINVAL;
-    }
-
-    if (ndb_socket_reuseaddr(m_sockfd, true) == -1)
-    {
-      int ret = ndb_socket_errno();
-      DEBUG_FPRINTF((stderr, "Failed call to reuse address, errno: %d\n", ret));
-      ndb_socket_close(m_sockfd);
-      ndb_socket_invalidate(&m_sockfd);
-      return ret;
-    }
-
-    while (ndb_bind_inet(m_sockfd, &local) == -1)
-    {
-      if (local_port == 0 &&
-          m_last_used_port != 0)
-      {
-        // Faild to bind same port as last, retry with any
-        // ephemeral port(as originally requested)
-        m_last_used_port = 0; // Reset last used port
-        local.sin6_port = htons(0); // Try bind with any port
-        continue;
-      }
-
-      int ret = ndb_socket_errno();
-      DEBUG_FPRINTF((stderr, "Failed call to bind address, errno: %d\n", ret));
-      ndb_socket_close(m_sockfd);
-      ndb_socket_invalidate(&m_sockfd);
-      return ret;
-    }
-    DEBUG_FPRINTF((stderr, "client bind IPv6 on NDB_SOCKET: %s\n",
-                   ndb_socket_to_string(m_sockfd).c_str()));
+    // Try to bind to the same port as last successful connect instead of
+    // any ephemeral port. Intention is to reuse any previous TIME_WAIT TCB
+    local.set_port(m_last_used_port);
   }
-  else
+
+  if (ndb_socket_reuseaddr(m_sockfd, true) == -1)
   {
-    struct sockaddr_in local;
-    memset(&local, 0, sizeof(local));
-    local.sin_family = AF_INET;
-    local.sin_port = htons(local_port);
-    if (local_port == 0 &&
-        m_last_used_port != 0)
-    {
-      // Try to bind to the same port as last successful connect instead of
-      // any ephemeral port. Intention is to reuse any previous TIME_WAIT TCB
-      local.sin_port = htons(m_last_used_port);
-    }
-
-    // Resolve local address
-    if (Ndb_getInAddr(&local.sin_addr, local_hostname))
-    {
-      DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr, errno: %d\n", errno));
-      return errno ? errno : EINVAL;
-    }
-
-    if (ndb_socket_reuseaddr(m_sockfd, true) == -1)
-    {
-      int ret = ndb_socket_errno();
-      DEBUG_FPRINTF((stderr, "Failed call to reuse address, errno: %d\n", ret));
-      ndb_socket_close(m_sockfd);
-      ndb_socket_invalidate(&m_sockfd);
-      return ret;
-    }
-
-    while (ndb_bind_inet4(m_sockfd, &local) == -1)
-    {
-      if (local_port == 0 &&
-          m_last_used_port != 0)
-      {
-        // Faild to bind same port as last, retry with any
-        // ephemeral port(as originally requested)
-        m_last_used_port = 0; // Reset last used port
-        local.sin_port = htons(0); // Try bind with any port
-        continue;
-      }
-
-      int ret = ndb_socket_errno();
-      DEBUG_FPRINTF((stderr, "Failed call to bind IPv4 address, errno: %d\n",
-                     ret));
-      ndb_socket_close(m_sockfd);
-      ndb_socket_invalidate(&m_sockfd);
-      return ret;
-    }
-    DEBUG_FPRINTF((stderr, "client bind IPv4 on NDB_SOCKET: %s\n",
-                   ndb_socket_to_string(m_sockfd).c_str()));
+    int ret = ndb_socket_errno();
+    ndb_socket_close(m_sockfd);
+    ndb_socket_invalidate(&m_sockfd);
+    return ret;
   }
+
+  while (ndb_bind(m_sockfd, &local) == -1)
+  {
+    if (no_local_port && m_last_used_port != 0)
+    {
+      // Failed to bind same port as last, retry with any
+      // ephemeral port(as originally requested)
+      m_last_used_port = 0; // Reset last used port
+      local.set_port(0); // Try bind with any port
+      continue;
+    }
+
+    int ret = ndb_socket_errno();
+    ndb_socket_close(m_sockfd);
+    ndb_socket_invalidate(&m_sockfd);
+    return ret;
+  }
+
   return 0;
 }
 
@@ -208,93 +125,41 @@ SocketClient::bind(const char* local_hostname,
 #endif
 
 ndb_socket_t
-SocketClient::connect(const char* server_hostname,
-                      unsigned short server_port)
+SocketClient::connect(ndb_sockaddr server_addr)
 {
+  assert(ndb_socket_valid(m_sockfd));
   NdbSocket sock;
-  connect(sock, server_hostname, server_port);
+  connect(sock, server_addr);
   return sock.ndb_socket();
 }
 
 void
 SocketClient::connect(NdbSocket & secureSocket,
-                      const char* server_hostname,
-                      unsigned short server_port)
+                      ndb_sockaddr server_addr)
 {
+  if (!ndb_socket_valid(m_sockfd))
+    return;
+
   // Reset last used port(in case connect fails)
-  DEBUG_FPRINTF((stderr, "SocketClient::connect, port: %u, server: %s\n",
-                 (unsigned int)server_port, server_hostname));
   m_last_used_port = 0;
 
-  if (!ndb_socket_valid(m_sockfd))
+  // Set socket non blocking
+  if (ndb_socket_nonblock(m_sockfd, true) < 0)
   {
-    if (!init(m_use_only_ipv4))
-    {
-      DEBUG_FPRINTF((stderr, "Failed init in connect\n"));
-      return;
-    }
+    DEBUG_FPRINTF((stderr, "Failed to set socket nonblocking in connect\n"));
+    ndb_socket_close(m_sockfd);
+    ndb_socket_invalidate(&m_sockfd);
+    return;
   }
-  else
-  {
-    DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr in connect\n"));
-  }
-  int r;
-  if (!m_use_only_ipv4)
-  {
-    struct sockaddr_in6 server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin6_family = AF_INET6;
-    server_addr.sin6_port = htons(server_port);
 
-    // Resolve server address
-    if (Ndb_getInAddr6(&server_addr.sin6_addr, server_hostname))
-    {
-      DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr in connect\n"));
-      ndb_socket_close(m_sockfd);
-      ndb_socket_invalidate(&m_sockfd);
-      return;
-    }
-    // Set socket non blocking
-    if (ndb_socket_nonblock(m_sockfd, true) < 0)
-    {
-      DEBUG_FPRINTF((stderr, "Failed to set socket nonblocking in connect\n"));
-      ndb_socket_close(m_sockfd);
-      ndb_socket_invalidate(&m_sockfd);
-      return;
-    }
-    // Start non blocking connect
-    DEBUG_FPRINTF((stderr, "Connect to %s:%u\n",
-                           server_hostname, server_port));
-    r = ndb_connect_inet6(m_sockfd, &server_addr);
-  }
-  else
+  if (server_addr.need_dual_stack())
   {
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(server_port);
-
-    // Resolve server address
-    if (Ndb_getInAddr(&server_addr.sin_addr, server_hostname))
-    {
-      DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr in connect\n"));
-      ndb_socket_close(m_sockfd);
-      ndb_socket_invalidate(&m_sockfd);
-      return;
-    }
-    // Set socket non blocking
-    if (ndb_socket_nonblock(m_sockfd, true) < 0)
-    {
-      DEBUG_FPRINTF((stderr, "Failed to set socket nonblocking in connect\n"));
-      ndb_socket_close(m_sockfd);
-      ndb_socket_invalidate(&m_sockfd);
-      return;
-    }
-    // Start non blocking connect
-    DEBUG_FPRINTF((stderr, "Connect to %s:%u\n",
-                           server_hostname, server_port));
-    r = ndb_connect_inet(m_sockfd, &server_addr);
+    [[maybe_unused]] bool ok = ndb_socket_dual_stack(m_sockfd, 1);
   }
+
+  // Start non blocking connect
+  DEBUG_FPRINTF((stderr, "Connect TCP\n"));
+  int r = ndb_connect(m_sockfd, &server_addr);
   if (r == 0)
     goto done; // connected immediately.
 
@@ -350,32 +215,7 @@ done:
 
   // Remember the local port used for this connection
   assert(m_last_used_port == 0);
-  int ret;
-  if (!m_use_only_ipv4)
-  {
-    DEBUG_FPRINTF((stderr, "Connected to %s:%u using IPv6\n",
-                           server_hostname, server_port));
-    ret = ndb_socket_get_port(m_sockfd, &m_last_used_port);
-  }
-  else
-  {
-    DEBUG_FPRINTF((stderr, "Connected to %s:%u using IPv4\n",
-                           server_hostname, server_port));
-    ret = ndb_socket_get_port4(m_sockfd, &m_last_used_port);
-  }
-  if (ret != 0)
-  {
-    DEBUG_FPRINTF((stderr, "Failed in ndb_socket_get_port %s:%u\n",
-                   server_hostname, server_port));
-    ndb_socket_close(m_sockfd);
-    ndb_socket_invalidate(&m_sockfd);
-    return;
-  }
-  else
-  {
-    DEBUG_FPRINTF((stderr, "Succ in ndb_socket_get_port %s:%u\n",
-                   server_hostname, m_last_used_port));
-  }
+  ndb_socket_get_port(m_sockfd, &m_last_used_port);
 
   secureSocket.init_from_new(m_sockfd);
 
@@ -389,7 +229,4 @@ done:
   }
 
   ndb_socket_invalidate(&m_sockfd);
-
-  DEBUG_FPRINTF((stderr, "Connected to %s:%u\n",
-                         server_hostname, m_last_used_port));
 }

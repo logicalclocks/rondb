@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1181,7 +1182,9 @@ createeventop(Run& r)
     Data (&d)[2] = g_rec_ev->data;
     if (! c.isblob()) {
       chkdb((r.ev_ra[0][i] = r.evt_op->getValue(c.name, (char*)d[0].ptr[i].v)) != 0);
+      reqrc(r.ev_ra[0][i]->aRef() == (char*)d[0].ptr[i].v); // uses ptr
       chkdb((r.ev_ra[1][i] = r.evt_op->getPreValue(c.name, (char*)d[1].ptr[i].v)) != 0);
+      reqrc(r.ev_ra[1][i]->aRef() == (char*)d[1].ptr[i].v); // uses ptr
     } else {
       chkdb((r.ev_bh[0][i] = r.evt_op->getBlobHandle(c.name)) != 0);
       chkdb((r.ev_bh[1][i] = r.evt_op->getPreBlobHandle(c.name)) != 0);

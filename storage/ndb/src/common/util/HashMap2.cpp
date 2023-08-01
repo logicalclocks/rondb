@@ -1,5 +1,4 @@
 /* Copyright (c) 2009, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2022, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -119,7 +118,7 @@ struct IntIntKVObj
 
 TAPTEST(HashMap2)
 {
-  printf("int -> int (Static, unique)\n");
+  printf("int -> int (Static, unique) \n");
   for (int j = 1; j < 150; j ++)
   {
     HashMap2<IntIntKVPod, true, TestHeapAllocator, IntIntKVStaticMethods> hash1;
@@ -182,7 +181,7 @@ TAPTEST(HashMap2)
     OK( it.next() == nullptr );
   }
 
-  printf("int -> int (Static, !unique)\n");
+  printf("int -> int (Static, !unique) \n");
   for (int j = 1; j < 150; j ++)
   {
     HashMap2<IntIntKVPod, false, TestHeapAllocator, IntIntKVStaticMethods> hash1;
@@ -225,7 +224,7 @@ TAPTEST(HashMap2)
        (hash1.get(&pool[0]) == &pool[100]));
   }
 
-  printf("int -> int (!Static, defaults, (std alloc, unique))\n");
+  printf("int -> int (!Static, defaults, (std alloc, unique)) \n");
   for (int j = 1; j < 150; j ++)
   {
     HashMap2<IntIntKVObj> hash1;
@@ -267,7 +266,7 @@ TAPTEST(HashMap2)
     OK(hash1.get(&pool[0]) == &pool[0]);
   }
 
-  printf("int -> int (Static, unique, realloc)\n");
+  printf("int -> int (Static, unique, realloc) \n");
   {
     HashMap2<IntIntKVPod, true, TestHeapAllocator, IntIntKVStaticMethods> hash1;
     for (int j = 1; j < 150; j ++)
@@ -314,7 +313,7 @@ TAPTEST(HashMap2)
     }
   }
 
-  printf("int -> int (Static, unique, realloc, remove)\n");
+  printf("int -> int (Static, unique, realloc, remove) \n");
   {
     HashMap2<IntIntKVPod, true, TestHeapAllocator, IntIntKVStaticMethods> hash1;
     for (int j = 1; j < 150; j ++)

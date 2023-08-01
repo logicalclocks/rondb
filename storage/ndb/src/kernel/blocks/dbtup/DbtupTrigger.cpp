@@ -1995,8 +1995,7 @@ bool Dbtup::readTriggerInfo(TupTriggerData* const trigPtr,
                            regTabPtr->readKeyArray,
 			   regTabPtr->noOfKeyAttr,
 			   keyBuffer,
-			   ZATTR_BUFFER_SIZE,
-			   false);
+			   ZATTR_BUFFER_SIZE);
   ndbrequire(ret >= 0);
   noPrimKey= ret;
   
@@ -2072,8 +2071,7 @@ bool Dbtup::readTriggerInfo(TupTriggerData* const trigPtr,
 			     &readBuffer[0],
 			     numAttrsToRead,
 			     afterBuffer,
-			     ZATTR_BUFFER_SIZE,
-			     false);
+			     ZATTR_BUFFER_SIZE);
     ndbrequire(ret >= 0);
     noAfterWords= ret;
   } else {
@@ -2111,8 +2109,7 @@ bool Dbtup::readTriggerInfo(TupTriggerData* const trigPtr,
 			     &readBuffer[0],
 			     numAttrsToRead,
 			     beforeBuffer,
-			     ZATTR_BUFFER_SIZE,
-			     false);
+			     ZATTR_BUFFER_SIZE);
     req_struct->m_tuple_ptr= save;
     ndbrequire(ret >= 0);
     noBeforeWords = ret;

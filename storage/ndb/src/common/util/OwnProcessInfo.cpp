@@ -29,6 +29,8 @@
 #include <NdbMutex.h>
 #include <ndb_socket.h>
 
+class ndb_sockaddr;
+
 const char * ndb_basename(const char *path);
 
 extern const char * my_progname;
@@ -47,22 +49,12 @@ void setOwnProcessInfoAngelPid(Uint32 pid)
   theApiMutex.unlock();
 }
 
-void setOwnProcessInfoServerAddress(struct sockaddr * addr)
+void setOwnProcessInfoServerAddress(ndb_sockaddr * addr)
 {
   theApiMutex.lock();
-  sockaddr_in6 *addr_in6 = (sockaddr_in6 *)addr;
-  singletonInfo.setHostAddress(&addr_in6->sin6_addr);
+  singletonInfo.setHostAddress(addr);
   theApiMutex.unlock();
 }
-
-void setOwnProcessInfoServerAddress4(struct sockaddr * addr)
-{
-  theApiMutex.lock();
-  sockaddr_in *addr_in = (sockaddr_in *)addr;
-  singletonInfo.setHostAddress(&addr_in->sin_addr);
-  theApiMutex.unlock();
-}
-
 
 void setOwnProcessInfoPort(Uint16 port)
 {

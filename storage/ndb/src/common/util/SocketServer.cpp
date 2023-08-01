@@ -36,6 +36,7 @@
 #include "ndb_socket.h"
 #include <OwnProcessInfo.hpp>
 #include <EventLogger.hpp>
+#include "portlib/ndb_sockaddr.h"
 
 #if 0
 #define DEBUG_FPRINTF(arglist) do { fprintf arglist ; } while (0)
@@ -67,266 +68,99 @@ SocketServer::~SocketServer() {
   }
 }
 
-bool SocketServer::tryBind(unsigned short port,
-                           bool use_only_ipv4,
-                           const char* intface,
+bool SocketServer::tryBind(ndb_sockaddr servaddr,
                            char* error,
                            size_t error_size)
 {
-  DEBUG_FPRINTF((stderr, "SocketServer::tryBind, intface: %s\n", intface));
-  while (!use_only_ipv4)
+  int af = servaddr.get_address_family();
+  const ndb_socket_t sock = ndb_socket_create(af);
+
+  if (!ndb_socket_valid(sock))
+    return false;
+
+  if (servaddr.need_dual_stack())
   {
-    struct sockaddr_in6 servaddr;
-    memset(&servaddr, 0, sizeof(servaddr));
-    servaddr.sin6_family = AF_INET6;
-    servaddr.sin6_addr = in6addr_any;
-    servaddr.sin6_port = htons(port);
+    [[maybe_unused]] bool ok = ndb_socket_dual_stack(sock, 1);
+  }
 
-    if (intface != nullptr)
-    {
-      if(Ndb_getInAddr6(&servaddr.sin6_addr, intface))
-      {
-        DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr6\n"));
-        break;
-      }
-    }
+  DBUG_PRINT("info",("NDB_SOCKET: %s", ndb_socket_to_string(sock).c_str()));
 
-    ndb_socket_t sock;
-    ndb_socket_create_dual_stack(sock, SOCK_STREAM, 0);
-    if (!ndb_socket_valid(sock))
-    {
-      DEBUG_FPRINTF((stderr, "Failed to create socket\n"));
-      break;
-    }
+  if (ndb_socket_configure_reuseaddr(sock, true) == -1)
+  {
+    ndb_socket_close(sock);
+    return false;
+  }
 
-    DBUG_PRINT("info",("NDB_SOCKET: %s", ndb_socket_to_string(sock).c_str()));
-    DEBUG_FPRINTF((stderr, "NDB_SOCKET: %s\n",
-                   ndb_socket_to_string(sock).c_str()));
-
-    if (ndb_socket_configure_reuseaddr(sock, true) == -1)
-    {
-      DEBUG_FPRINTF((stderr, "Failed call to reuse address IPv6, errno: %d\n",
-                     errno));
-      ndb_socket_close(sock);
-      break;
-    }
-
-    if (ndb_bind_inet(sock, &servaddr) == -1) {
-      if (error != nullptr) {
-        int err_code = ndb_socket_errno();
-        snprintf(error, error_size, "%d '%s'", err_code,
-                 ndb_socket_err_message(err_code).c_str());
-      }
-      DEBUG_FPRINTF((stderr, "Failed call to bind address\n"));
-      ndb_socket_close(sock);
-      break;
+  if (ndb_bind(sock, &servaddr) == -1) {
+    if (error != nullptr) {
+      int err_code = ndb_socket_errno();
+      snprintf(error, error_size, "%d '%s'", err_code,
+               ndb_socket_err_message(err_code).c_str());
     }
     ndb_socket_close(sock);
-    return true;
+    return false;
   }
-  /**
-   * If configured to use IPv4 only or after failure of IPv6 socket
-   * we will also try with an IPv4 socket.
-   */
-  {
-    struct sockaddr_in servaddr;
-    memset(&servaddr, 0, sizeof(servaddr));
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    servaddr.sin_port = htons(port);
 
-    if (intface != nullptr)
-    {
-      if(Ndb_getInAddr(&servaddr.sin_addr, intface))
-      {
-        DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr\n"));
-        return false;
-      }
-    }
-
-    ndb_socket_t sock;
-    ndb_socket_create_ipv4(sock, SOCK_STREAM, 0);
-    if (!ndb_socket_valid(sock))
-    {
-      DEBUG_FPRINTF((stderr, "Failed to create socket\n"));
-      return false;
-    }
-
-    DBUG_PRINT("info",("NDB_SOCKET: %s", ndb_socket_to_string(sock).c_str()));
-
-    if (ndb_socket_configure_reuseaddr(sock, true) == -1)
-    {
-      DEBUG_FPRINTF((stderr, "Failed call to reuse address IPv4, errno: %d\n",
-                     errno));
-      ndb_socket_close(sock);
-      return false;
-    }
-
-    if (ndb_bind_inet4(sock, &servaddr) == -1) {
-      if (error != nullptr) {
-        int err_code = ndb_socket_errno();
-        snprintf(error, error_size, "%d '%s'", err_code,
-                 ndb_socket_err_message(err_code).c_str());
-      }
-      DEBUG_FPRINTF((stderr, "Failed call to bind address\n"));
-      ndb_socket_close(sock);
-      return false;
-    }
-    ndb_socket_close(sock);
-  }
+  ndb_socket_close(sock);
   return true;
 }
 
 #define MAX_SOCKET_SERVER_TCP_BACKLOG 64
 bool
-SocketServer::setup(SocketServer::Service * service,
-        unsigned short * port,
-        const char * intface){
+SocketServer::setup(SocketServer::Service * service, ndb_sockaddr* servaddr)
+{
   DBUG_ENTER("SocketServer::setup");
-  DEBUG_FPRINTF((stderr, "SocketServer::setup\n"));
-  DBUG_PRINT("enter",("interface=%s, port=%u", intface, *port));
-  DEBUG_FPRINTF((stderr, "interface=%s, port=%u\n", intface, *port));
-  ndb_socket_t sock;
-  bool use_ipv4_setup = true;
-  while (!m_use_only_ipv4)
+
+  int af = servaddr->get_address_family();
+  if (m_use_only_ipv4)
   {
-    struct sockaddr_in6 servaddr;
-    memset(&servaddr, 0, sizeof(servaddr));
-    servaddr.sin6_family = AF_INET6;
-    servaddr.sin6_addr = in6addr_any;
-    servaddr.sin6_port = htons(*port);
-
-    if(intface != nullptr)
-    {
-      if (Ndb_getInAddr6(&servaddr.sin6_addr, intface))
-      {
-        DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr6\n"));
-        break;
-      }
-    }
-
-    ndb_socket_create_dual_stack(sock, SOCK_STREAM, 0);
-    if (!ndb_socket_valid(sock))
-    {
-      DBUG_PRINT("error",("socket() - %d - %s",
-        socket_errno, strerror(socket_errno)));
-      DEBUG_FPRINTF((stderr, "socket() - %d - %s\n",
-                     socket_errno, strerror(socket_errno)));
-      break;
-    }
-
-    DBUG_PRINT("info",("NDB_SOCKET: %s", ndb_socket_to_string(sock).c_str()));
-    DEBUG_FPRINTF((stderr,"NDB_SOCKET: %s\n",
-                   ndb_socket_to_string(sock).c_str()));
-
-    if (ndb_socket_reuseaddr(sock, true) == -1)
-    {
-      DBUG_PRINT("error",("setsockopt() - %d - %s",
-        errno, strerror(errno)));
-      DEBUG_FPRINTF((stderr, "setsockopt() - %d - %s\n",
-                     errno, strerror(errno)));
-      ndb_socket_close(sock);
-      break;
-    }
-
-    if (ndb_bind_inet(sock, &servaddr) == -1) {
-      DBUG_PRINT("error",("bind() - %d - %s",
-        socket_errno, strerror(socket_errno)));
-      DEBUG_FPRINTF((stderr, "bind() - %d - %s\n",
-        socket_errno, strerror(socket_errno)));
-      ndb_socket_close(sock);
-      break;
-    }
-
-    /* Get the address and port we bound to */
-    struct sockaddr_in6 serv_addr;
-    if(ndb_getsockname(sock, &serv_addr))
-    {
-      g_eventLogger->info(
-          "An error occurred while trying to find out what port we bound to."
-          " Error: %d - %s",
-          ndb_socket_errno(), strerror(ndb_socket_errno()));
-      ndb_socket_close(sock);
-      break;
-    }
-    *port = ntohs(serv_addr.sin6_port);
-    setOwnProcessInfoServerAddress((sockaddr*)& serv_addr);
-    DEBUG_FPRINTF((stderr, "Successful setup of IPv6 setup\n"));
-    use_ipv4_setup = false;
-    break;
+    af = AF_INET;
   }
-  /**
-   * If configured to use IPv4 only or after failure of IPv6 socket
-   * we will also try with an IPv4 socket.
-   */
-  if (use_ipv4_setup)
+  const ndb_socket_t sock = ndb_socket_create(af);
+
+  if (!ndb_socket_valid(sock))
   {
-    DEBUG_FPRINTF((stderr, "Setup of IPv4 setup starting\n"));
-    struct sockaddr_in servaddr;
-    memset(&servaddr, 0, sizeof(servaddr));
-    servaddr.sin_family = AF_INET;
-    servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
-    servaddr.sin_port = htons(*port);
+    DBUG_PRINT("error",("socket() - %d - %s",
+      socket_errno, strerror(socket_errno)));
+    DBUG_RETURN(false);
+  }
 
-    if(intface != 0)
-    {
-      if (Ndb_getInAddr(&servaddr.sin_addr, intface))
-      {
-        DEBUG_FPRINTF((stderr, "Failed Ndb_getInAddr\n"));
-        DBUG_RETURN(false);
-      }
-    }
+  if (!m_use_only_ipv4 && servaddr->need_dual_stack())
+  {
+    [[maybe_unused]] bool ok = ndb_socket_dual_stack(sock, 1);
+  }
 
-    ndb_socket_create_ipv4(sock, SOCK_STREAM, 0);
-    if (!ndb_socket_valid(sock))
-    {
-      DBUG_PRINT("error",("socket() - %d - %s",
-        socket_errno, strerror(socket_errno)));
-      DEBUG_FPRINTF((stderr, "socket() - %d - %s\n",
-                     socket_errno, strerror(socket_errno)));
-      DBUG_RETURN(false);
-    }
+  DBUG_PRINT("info",("NDB_SOCKET: %s", ndb_socket_to_string(sock).c_str()));
 
-    DBUG_PRINT("info",("NDB_SOCKET: %s", ndb_socket_to_string(sock).c_str()));
-    DEBUG_FPRINTF((stderr,"NDB_SOCKET: %s\n",
-                   ndb_socket_to_string(sock).c_str()));
+  if (ndb_socket_reuseaddr(sock, true) == -1)
+  {
+    DBUG_PRINT("error",("setsockopt() - %d - %s",
+      errno, strerror(errno)));
+    ndb_socket_close(sock);
+    DBUG_RETURN(false);
+  }
 
-    if (ndb_socket_reuseaddr(sock, true) == -1)
-    {
-      DBUG_PRINT("error",("setsockopt() - %d - %s",
-        errno, strerror(errno)));
-      DEBUG_FPRINTF((stderr, "setsockopt() - %d - %s\n",
-                     errno, strerror(errno)));
-      ndb_socket_close(sock);
-      DBUG_RETURN(false);
-    }
+  if (ndb_bind(sock, servaddr) == -1) {
+    DBUG_PRINT("error",("bind() - %d - %s",
+      socket_errno, strerror(socket_errno)));
+    ndb_socket_close(sock);
+    DBUG_RETURN(false);
+  }
 
-    if (ndb_bind_inet4(sock, &servaddr) == -1) {
-      DBUG_PRINT("error",("bind() - %d - %s",
-        socket_errno, strerror(socket_errno)));
-      DEBUG_FPRINTF((stderr, "bind() - %d - %s\n",
-                     socket_errno, strerror(socket_errno)));
-      ndb_socket_close(sock);
-      DBUG_RETURN(false);
-    }
-
-    /* Get the address and port we bound to */
-    struct sockaddr_in serv_addr;
-    if(ndb_getsockname4(sock, &serv_addr))
-    {
-      g_eventLogger->info(
+  /* Get the address and port we bound to */
+  if(ndb_getsockname(sock, servaddr))
+  {
+    g_eventLogger->info(
         "An error occurred while trying to find out what port we bound to."
         " Error: %d - %s",
         ndb_socket_errno(), strerror(ndb_socket_errno()));
-      ndb_socket_close(sock);
-      DBUG_RETURN(false);
-    }
-    *port = ntohs(serv_addr.sin_port);
-    setOwnProcessInfoServerAddress4((sockaddr*)& serv_addr);
-    DEBUG_FPRINTF((stderr, "Successful setup of IPv4 setup\n"));
+    ndb_socket_close(sock);
+    DBUG_RETURN(false);
   }
-  DBUG_PRINT("info",("bound to %u", *port));
-  DEBUG_FPRINTF((stderr, "bound to %u\n", *port));
+  setOwnProcessInfoServerAddress(servaddr);
+
+  DBUG_PRINT("info",("bound to %u", servaddr->get_port()));
+  DEBUG_FPRINTF((stderr, "bound to %u\n", servaddr->get_port()));
 
   if (ndb_listen(sock, m_maxSessions > MAX_SOCKET_SERVER_TCP_BACKLOG ?
                       MAX_SOCKET_SERVER_TCP_BACKLOG : m_maxSessions) == -1)
@@ -339,8 +173,7 @@ SocketServer::setup(SocketServer::Service * service,
     DBUG_RETURN(false);
   }
 
-  DEBUG_FPRINTF((stderr, "Listening on port: %u\n",
-                (Uint32)*port));
+  DEBUG_FPRINTF((stderr, "Listening on port\n"));
 
   ServiceInstance i;
   i.m_socket = sock;
@@ -393,7 +226,7 @@ SocketServer::doAccept()
     ServiceInstance & si = m_services[i];
     assert(m_services_poller.is_socket_equal(i, si.m_socket));
 
-    const ndb_socket_t childSock = ndb_accept(si.m_socket, nullptr, nullptr);
+    const ndb_socket_t childSock = ndb_accept(si.m_socket, nullptr);
     if (!ndb_socket_valid(childSock))
     {
       DEBUG_FPRINTF((stderr,"NDB_SOCKET failed accept: %s\n",

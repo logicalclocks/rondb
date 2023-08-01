@@ -26,6 +26,7 @@
 #define DBTUX_GEN_CPP
 #include "util/require.h"
 #include "Dbtux.hpp"
+#include "../dblqh/Dblqh.hpp"
 
 #include <signaldata/NodeStateSignalData.hpp>
 
@@ -598,8 +599,7 @@ Dbtux::readKeyAttrs(TuxCtx& ctx,
                             tupVersion,
                             keyAttrs32,
                             count,
-                            outputBuffer,
-                            false);
+                            outputBuffer);
   thrjamDebug(ctx.jamBuffer);
   ndbrequire(ret > 0);
   keyData.reset();
@@ -647,14 +647,13 @@ Dbtux::readKeyAttrs(TuxCtx& ctx,
                                tupVersion,
                                keyAttrs32,
                                count,
-                               outputBuffer,
-                               false);
+                               outputBuffer);
   thrjamDebug(ctx.jamBuffer);
   ndbrequire(ret > 0);
 }
 
 void
-Dbtux::readTablePk(TreeEnt ent, Uint32* pkData, unsigned& pkSize)
+Dbtux::readTableHashKey(TreeEnt ent, Uint32* pkData, unsigned& pkSize)
 {
   const TupLoc tupLoc = ent.m_tupLoc;
   int ret = c_tup->tuxReadPk(c_ctx.tupRealFragPtr,
@@ -662,7 +661,7 @@ Dbtux::readTablePk(TreeEnt ent, Uint32* pkData, unsigned& pkSize)
                              tupLoc.getPageId(),
                              tupLoc.getPageOffset(),
                              pkData,
-                             true);
+                             /*hash=*/true);
   jamEntry();
   if (unlikely(ret <= 0))
   {

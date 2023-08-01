@@ -26,20 +26,7 @@
 #ifndef NDB_SOCKET_H
 #define NDB_SOCKET_H
 
-#ifndef IN_IS_ADDR_UNSPECIFIED
-#define IN_IS_ADDR_UNSPECIFIED(a) (((long int) (a)->s_addr) == 0x00000000)
-#endif /* IN_IS_ADDR_UNSPECIFIED */
-
-#ifdef _WIN32
-#include <winsock2.h>
-using socket_t = SOCKET;
-#else
-using socket_t = int;
-#endif
-
-struct ndb_socket_t {
-  socket_t s;
-};
+#include "portlib/ndb_sockaddr.h"
 
 /* Include platform-specific inline functions */
 #ifdef _WIN32
@@ -48,25 +35,29 @@ struct ndb_socket_t {
 #include "ndb_socket_posix.h"
 #endif
 
+// Default constructed ndb_socket_t is always invalid
+static_assert(ndb_socket_t{}.s == INVALID_SOCKET);
+
 /* Functions for creating and initializing ndb_socket_t */
 
 static inline
-void ndb_socket_create_from_native(ndb_socket_t & sock, socket_t s)
+void ndb_socket_init_from_native(ndb_socket_t & ndb_sock, socket_t s)
 {
-  sock.s = s;
+  ndb_sock.s = s;
 }
 
 static inline
-void ndb_socket_create(ndb_socket_t &sock)
+void
+ndb_socket_create_from_native(ndb_socket_t &s,
+                              socket_t native_socket)
 {
-  sock.s = INVALID_SOCKET;
+  ndb_socket_init_from_native(s, native_socket);
 }
 
 static inline
-ndb_socket_t ndb_socket_create_return(ndb_socket_t & sock)
+ndb_socket_t ndb_socket_create(int af)
 {
-  sock.s = INVALID_SOCKET;
-  return sock;
+  return ndb_socket_t{socket(af, SOCK_STREAM, IPPROTO_TCP)};
 }
 
 static inline socket_t
@@ -99,7 +90,7 @@ int ndb_getsockopt(ndb_socket_t s, int level, int optname, int *optval)
 {
   socklen_t optlen = sizeof(int);
   int r = getsockopt(s.s, level, optname, (char*)optval, &optlen);
-  return (r == -1) ? -1 : 0;
+  return r ? -1 : 0;
 }
 
 // Returns 0 on success, -1 on error
@@ -107,7 +98,7 @@ static inline
 int ndb_setsockopt(ndb_socket_t s, int level, int optname, const int *optval)
 {
   int r = setsockopt(s.s, level, optname, (const char*)optval, sizeof(int));
-  return (r == -1) ? -1 : 0;
+  return r ? -1 : 0;
 }
 
 // Returns 0 on success, -1 on error
@@ -118,49 +109,21 @@ int ndb_socket_reuseaddr(ndb_socket_t s, int enable)
   return ndb_setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &on);
 }
 
+// Returns 0 on success, -1 on error
 static inline
-void ndb_socket_create_ipv4(ndb_socket_t& s, int type, int protocol)
+int ndb_socket_dual_stack(ndb_socket_t s, int enable)
 {
-  ndb_socket_create_from_native(s, socket(AF_INET, type, protocol));
-  if (!ndb_socket_valid(s))
-    ndb_socket_invalidate(&s);
-}
-
-/* Create an IPv6 socket as used by NDB for network communications,
-   allowing mapped IPv4 addresses (socket option IPV6_V6ONLY is false).
-*/
-static inline
-void ndb_socket_create_dual_stack(ndb_socket_t& s, int type, int protocol)
-{
-  ndb_socket_create_from_native(s, socket(AF_INET6, type, protocol));
-  if (!ndb_socket_valid(s))
-  {
-    ndb_socket_invalidate(&s);
-    return;
-  }
-
-  int on = 0;
-  if (ndb_setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, &on))
-  {
-    ndb_socket_close(s);
-    ndb_socket_invalidate(&s);
-  }
+  int on = !enable;
+  return ndb_setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, &on);
 }
 
 /* Returns 0 on success, -1 on error
    Use ndb_socket_errno() to retrieve error
 */
 static inline
-int ndb_bind_inet(ndb_socket_t s, const struct sockaddr_in6 *addr)
+int ndb_bind(ndb_socket_t s, const ndb_sockaddr *addr)
 {
-  int r = bind(s.s, (const struct sockaddr*)addr, sizeof(struct sockaddr_in6));
-  return r ? -1 : 0;
-}
-
-static inline
-int ndb_bind_inet4(ndb_socket_t s, const struct sockaddr_in *addr)
-{
-  int r = bind(s.s, (const struct sockaddr*)addr, sizeof(struct sockaddr_in));
+  int r = bind(s.s, addr->get_sockaddr(), addr->get_sockaddr_len());
   return r ? -1 : 0;
 }
 
@@ -178,70 +141,58 @@ int ndb_listen(ndb_socket_t s, int backlog)
    Use ndb_socket_errno() to retrieve error
 */
 static inline
-ndb_socket_t ndb_accept(ndb_socket_t s, struct sockaddr *addr,
-                        socklen_t *addrlen)
+ndb_socket_t ndb_accept(ndb_socket_t s, ndb_sockaddr *addr)
 {
-  ndb_socket_create_from_native(s, accept(s.s, addr, addrlen) );
+  ndb_sockaddr::storage_type sa;
+  socklen_t salen = sizeof(sa);
+  socket_t sock = accept(s.s, &sa.common, &salen);
+  if (sock != -1 && addr != nullptr)
+  {
+    *addr = ndb_sockaddr(&sa.common, salen);
+  }
+  ndb_socket_create_from_native(s, sock);
   return s;
-}
-
-static inline
-int ndb_connect_inet(ndb_socket_t s, const struct sockaddr_in *addr)
-{
-  return connect(s.s, (const struct sockaddr*)addr,
-                 sizeof(struct sockaddr_in));
 }
 
 /* Returns 0 on success.
    Use ndb_socket_errno() to retrieve error
 */
 static inline
-int ndb_connect_inet6(ndb_socket_t s, const struct sockaddr_in6 *addr)
+int ndb_connect(ndb_socket_t s, const ndb_sockaddr *addr)
 {
-  return connect(s.s, (const struct sockaddr*) addr,
-                 sizeof(struct sockaddr_in6));
+  return connect(s.s, addr->get_sockaddr(), addr->get_sockaddr_len());
 }
 
 // Returns 0 on success, 1 on error
 static inline
-int ndb_getpeername(ndb_socket_t s, struct sockaddr *addr)
+int ndb_getpeername(ndb_socket_t s, ndb_sockaddr *addr)
 {
-  socklen_t len = sizeof(struct sockaddr_in6);
-  if(getpeername(s.s, (struct sockaddr*) addr, &len))
+  ndb_sockaddr::storage_type sa;
+  socklen_t salen = sizeof(sa);
+  if (getpeername(s.s, &sa.common, &salen) == -1)
     return 1;
-
+  *addr = ndb_sockaddr(&sa.common, salen);
   return 0;
 }
 
 // Returns 0 on success, 1 on error
 static inline
-int ndb_getsockname(ndb_socket_t s, struct sockaddr_in6 *addr)
+int ndb_getsockname(ndb_socket_t s, ndb_sockaddr *addr)
 {
-  socklen_t len = sizeof(struct sockaddr_in6);
-  if(getsockname(s.s, (struct sockaddr*) addr, &len))
+  ndb_sockaddr::storage_type sa;
+  socklen_t salen = sizeof(sa);
+  if (getsockname(s.s, &sa.common, &salen) == -1)
     return 1;
-
-  return 0;
-}
-
-// Returns 0 on success, 1 on error
-static inline
-int ndb_getsockname4(ndb_socket_t s, struct sockaddr_in *addr)
-{
-  socklen_t len = sizeof(struct sockaddr_in);
-  if(getsockname(s.s, (struct sockaddr*) addr, &len))
-    return 1;
-
+  *addr = ndb_sockaddr(&sa.common, salen);
   return 0;
 }
 
 // Returns 0 on success or ndb_socket_errno() on failure
 static inline
-int ndb_socket_connect_address(ndb_socket_t s, struct sockaddr_in6 *a)
+int ndb_socket_connect_address(ndb_socket_t s, ndb_sockaddr *a)
 {
-  socklen_t addrlen= sizeof(*a);
-  if(getpeername(s.s, (struct sockaddr*)a, &addrlen))
-    return ndb_socket_errno();
+  if(ndb_getpeername(s, a) == -1) return ndb_socket_errno();
+
   return 0;
 }
 
@@ -249,23 +200,10 @@ int ndb_socket_connect_address(ndb_socket_t s, struct sockaddr_in6 *a)
 static inline
 int ndb_socket_get_port(ndb_socket_t s, unsigned short *port)
 {
-  struct sockaddr_in6 servaddr;
-  if(ndb_getsockname(s, &servaddr) == 1) return 1;
+  ndb_sockaddr servaddr;
+  if(ndb_getsockname(s, &servaddr) < 0) return 1;
 
-  *port= ntohs(servaddr.sin6_port);
-  return 0;
-}
-
-static inline
-int ndb_socket_get_port4(ndb_socket_t s, unsigned short *port)
-{
-  struct sockaddr_in servaddr;
-  socklen_t sock_len = sizeof(servaddr);
-  if(getsockname(s.s, (struct sockaddr*)&servaddr, &sock_len) < 0) {
-    return 1;
-  }
-
-  *port= ntohs(servaddr.sin_port);
+  *port= servaddr.get_port();
   return 0;
 }
 

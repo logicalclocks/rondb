@@ -23,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+#include "ndb_config.h"
 #include "util/require.h"
 #include <ndb_global.h>
 
@@ -36,6 +37,7 @@
 #include "TCP_Transporter.hpp"
 #include "Multi_Transporter.hpp"
 #include "Loopback_Transporter.hpp"
+#include "portlib/ndb_sockaddr.h"
 
 #ifdef NDB_SHM_TRANSPORTER_SUPPORTED
 #include "SHM_Transporter.hpp"
@@ -110,8 +112,7 @@ TransporterRegistry::is_server(NodeId node_id) const
   return theNodeIdTransporters[node_id]->is_server();
 }
 
-
-struct sockaddr_in6
+ndb_sockaddr
 TransporterRegistry::get_connect_address(NodeId node_id) const
 {
   if (theNodeIdTransporters[node_id]->isMultiTransporter())
@@ -388,6 +389,18 @@ TransporterRegistry::TransporterRegistry(TransporterCallback *callback,
   }
   theMultiTransporterMutex = NdbMutex_Create();
   DBUG_VOID_RETURN;
+}
+
+Uint32 TransporterRegistry::get_total_spintime() const
+{
+   assert(receiveHandle != nullptr);
+   return receiveHandle->m_total_spintime;
+}
+
+void TransporterRegistry::reset_total_spintime() const
+{
+  assert(receiveHandle != nullptr);
+  receiveHandle->m_total_spintime = 0;
 }
 
 void TransporterRegistry::set_mgm_handle(NdbMgmHandle h)
@@ -4006,14 +4019,20 @@ TransporterRegistry::start_service(SocketServer& socket_server,
       port= -t.m_s_service_port; // is a dynamic port
     TransporterService *transporter_service =
       new TransporterService(new SocketAuthSimple("ndbd", "ndbd passwd"));
-    if(!socket_server.setup(transporter_service,
-			    &port, t.m_interface))
+    ndb_sockaddr addr;
+    if (t.m_interface && Ndb_getAddr(&addr, t.m_interface))
+    {
+      g_eventLogger->error("Unable to resolve transporter service address: %s!\n",
+                           t.m_interface);
+      DBUG_RETURN(false);
+    }
+    addr.set_port(port);
+    if(!socket_server.setup(transporter_service, &addr))
     {
       DBUG_PRINT("info", ("Trying new port"));
       port= 0;
       if(t.m_s_service_port>0
-	 || !socket_server.setup(transporter_service,
-				 &port, t.m_interface))
+	 || !socket_server.setup(transporter_service, &addr))
       {
 	/*
 	 * If it wasn't a dynamically allocated port, or
@@ -4035,6 +4054,7 @@ TransporterRegistry::start_service(SocketServer& socket_server,
 	DBUG_RETURN(false);
       }
     }
+    port = addr.get_port();
     t.m_s_service_port= (t.m_s_service_port<=0)?-port:port; // -`ve if dynamic
     DBUG_PRINT("info", ("t.m_s_service_port = %d",t.m_s_service_port));
     transporter_service->setTransporterRegistry(this);
@@ -4197,7 +4217,6 @@ bool TransporterRegistry::report_dynamic_ports(NdbMgmHandle h) const
 ndb_socket_t TransporterRegistry::connect_ndb_mgmd(NdbMgmHandle *h)
 {
   ndb_socket_t sockfd;
-  ndb_socket_create(sockfd);
 
   DBUG_ENTER("TransporterRegistry::connect_ndb_mgmd(NdbMgmHandle)");
 
@@ -4238,7 +4257,6 @@ TransporterRegistry::connect_ndb_mgmd(const char* server_name,
 {
   NdbMgmHandle h= ndb_mgm_create_handle();
   ndb_socket_t s;
-  ndb_socket_create(s);
 
   DBUG_ENTER("TransporterRegistry::connect_ndb_mgmd(SocketClient)");
 

@@ -407,6 +407,21 @@ Trpman::execENABLE_COMREQ(Signal* signal)
   jamEntry();
   const EnableComReq *enableComReq = (const EnableComReq *)signal->getDataPtr();
 
+  if (ERROR_INSERTED(9500) &&
+      signal->getSendersBlockRef() != reference())
+  {
+    jam();
+    g_eventLogger->info("TRPMAN %u delaying ENABLE_COMREQ %u for 5s",
+                        instance(),
+                        enableComReq->m_enableNodeId);
+    sendSignalWithDelay(reference(),
+                        GSN_ENABLE_COMREQ,
+                        signal,
+                        5000,
+                        signal->getLength());
+    return;
+  }
+
   /* Need to copy out signal data to not clobber it with sendSignal(). */
   BlockReference senderRef = enableComReq->m_senderRef;
   Uint32 senderData = enableComReq->m_senderData;
@@ -573,37 +588,20 @@ Trpman::execDBINFO_SCANREQ(Signal *signal)
         row.write_uint32(getOwnNodeId()); // Node id
         row.write_uint32(rnode); // Remote node id
         row.write_uint32(globalTransporterRegistry.getPerformState(rnode)); // State
-        struct sockaddr_in6 conn_addr =
-            globalTransporterRegistry.get_connect_address(rnode);
-        struct in6_addr addr = conn_addr.sin6_addr;
-        if (IN6_IS_ADDR_UNSPECIFIED(&addr))
+
+        ndb_sockaddr conn_addr = globalTransporterRegistry.get_connect_address(rnode);
+        /* Connect address */
+        if (!conn_addr.is_unspecified())
         {
           jam();
-          row.write_string("-");
+          char *addr_str =
+              Ndb_inet_ntop(&conn_addr, addr_buf, sizeof(addr_buf));
+          row.write_string(addr_str);
         }
         else
         {
-          if (use_ipv4_socket(rnode) || conn_addr.sin6_family == AF_INET)
-          {
-            /* Connect address */
-            jam();
-            struct sockaddr_in *in4 = (struct sockaddr_in*)&conn_addr;
-            char *addr_str = Ndb_inet_ntop(AF_INET,
-                                           static_cast<void*>(&in4->sin_addr),
-                                           addr_buf,
-                                           sizeof(addr_buf));
-            row.write_string(addr_str);
-          }
-          else
-          {
-          /* Connect address */
-            jam();
-            char *addr_str = Ndb_inet_ntop(AF_INET6,
-                                           static_cast<void*>(&conn_addr.sin6_addr),
-                                           addr_buf,
-                                           sizeof(addr_buf));
-            row.write_string(addr_str);
-          }
+          jam();
+          row.write_string("-");
         }
 
         /* Bytes sent/received */
@@ -648,6 +646,15 @@ Trpman::execNDB_TAMPER(Signal* signal)
 {
   jamEntry();
 #ifdef ERROR_INSERT
+  if (signal->getLength() == 1)
+  {
+    SET_ERROR_INSERT_VALUE(signal->theData[0]);
+  }
+  else
+  {
+    SET_ERROR_INSERT_VALUE2(signal->theData[0], signal->theData[1]);
+  }
+
   if (signal->theData[0] == 9003)
   {
     if (MAX_RECEIVED_SIGNALS < 1024)
