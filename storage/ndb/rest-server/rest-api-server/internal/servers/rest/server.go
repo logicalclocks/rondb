@@ -39,6 +39,7 @@ import (
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/metrics"
 	"hopsworks.ai/rdrs/internal/security/apikey"
+
 )
 
 type RonDBRestServer struct {
@@ -143,9 +144,18 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 	router.GET("/metrics", routeHandler.Metrics)
 
 	// feature store
+	// versionGroup.POST("/"+config.FEATURE_STORE_OPERATION, WrapHandler(routeHandler.FeatureStore, config.FEATURE_STORE_OPERATION, "POST", routeHandler.rdrsMetrics.HTTPMetrics))
 	versionGroup.POST("/"+config.FEATURE_STORE_OPERATION, routeHandler.FeatureStore)
 	versionGroup.POST("/"+config.BATCH_FEATURE_STORE_OPERATION, routeHandler.BatchFeatureStore)
 
+}
+
+func WrapHandler(handler gin.HandlerFunc, uri string, method string, m *metrics.HTTPMetrics) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now().UnixNano()
+		defer m.AddResponseTime(uri, method, float64(time.Now().UnixNano() - start))
+		handler(c)
+	}
 }
 
 // TODO: Pass logger to this like in https://stackoverflow.com/a/69948929/9068781

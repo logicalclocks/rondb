@@ -28,8 +28,6 @@ import (
 func (h *RouteHandler) BatchFeatureStore(c *gin.Context) {
 	// metrics
 	start := time.Now().UnixNano()
-	defer h.rdrsMetrics.HTTPMetrics.BatchFeatureStoreSummary.Observe(float64(time.Now().UnixNano() - start))
-	h.rdrsMetrics.HTTPMetrics.BatchFeatureStoreCounter.Inc()
 
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 
@@ -46,6 +44,8 @@ func (h *RouteHandler) BatchFeatureStore(c *gin.Context) {
 		return
 	}
 	c.JSON(status, fsResp)
+	defer h.rdrsMetrics.HTTPMetrics.AddResponseTime(c.Request.RequestURI, c.Request.Method, float64(time.Now().UnixNano() - start))
+
 }
 
 func parseBatchFeatureStoreRequest(c *gin.Context) (*api.BatchFeatureStoreRequest, error) {

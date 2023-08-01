@@ -42,16 +42,22 @@ type HTTPMetrics struct {
 	PingCounter              prometheus.Counter
 	PkReadCounter            prometheus.Counter
 	BatchPkReadCounter       prometheus.Counter
-	FeatureStoreCounter      prometheus.Counter
-	BatchFeatureStoreCounter prometheus.Counter
 	StatCounter              prometheus.Counter
 	PingSummary              prometheus.Summary
 	PkReadSummary            prometheus.Summary
 	BatchPkReadSummary       prometheus.Summary
-	FeatureStoreSummary      prometheus.Summary
-	BatchFeatureStoreSummary prometheus.Summary
+	ResponseTimeSummary      prometheus.SummaryVec
+	ResponseStatusCount	 	 prometheus.CounterVec
 	StatSummary              prometheus.Summary
 	HttpConnectionGauge      HttpConnectionGauge
+}
+
+func (h *HTTPMetrics) AddResponseTime(
+	endPoint string,
+	method string,
+	time float64,
+) {
+	h.ResponseTimeSummary.With(prometheus.Labels{"endpoint": endPoint, "method": method}).Observe(time)
 }
 
 type GRPCMetrics struct {
@@ -199,38 +205,23 @@ func newHTTPMetrics() (*HTTPMetrics, func()) {
 			},
 		)
 
-	metrics.FeatureStoreCounter =
-		prometheus.NewCounter(
-			prometheus.CounterOpts{
-				Name: protocol + "_feature_store_request_count",
-				Help: "No of request handled by " + protocol + " feature store handler",
-			},
-		)
-
-	metrics.FeatureStoreSummary =
-		prometheus.NewSummary(
+	metrics.ResponseTimeSummary =
+		*prometheus.NewSummaryVec(
 			prometheus.SummaryOpts{
 				Name:       protocol + "_feature_store_request_summary",
-				Help:       "Summary for feature stoer " + protocol + " handler. Time is in nanoseconds",
+				Help:       "Summary for response time handled by " + protocol + " handler. Time is in nanoseconds",
 				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
 			},
+			[]string{"endpoint", "method", "status"},
 		)
 
-	metrics.BatchFeatureStoreCounter =
-		prometheus.NewCounter(
+	metrics.ResponseStatusCount =
+		*prometheus.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: protocol + "_batch_feature_store_request_count",
-				Help: "No of request handled by " + protocol + " batch feature store handler",
+				Name: protocol + "_response_status_count",
+				Help: "No of response status returned by " + protocol,
 			},
-		)
-
-	metrics.BatchFeatureStoreSummary =
-		prometheus.NewSummary(
-			prometheus.SummaryOpts{
-				Name:       protocol + "_batch_feature_store_request_summary",
-				Help:       "Summary for batch feature stoer " + protocol + " handler. Time is in nanoseconds",
-				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
-			},
+			[]string{"endpoint", "method", "status"},
 		)
 
 	metrics.StatCounter =
@@ -264,10 +255,8 @@ func newHTTPMetrics() (*HTTPMetrics, func()) {
 	prometheus.MustRegister(metrics.PkReadSummary)
 	prometheus.MustRegister(metrics.BatchPkReadCounter)
 	prometheus.MustRegister(metrics.BatchPkReadSummary)
-	prometheus.MustRegister(metrics.FeatureStoreCounter)
-	prometheus.MustRegister(metrics.FeatureStoreSummary)
-	prometheus.MustRegister(metrics.BatchFeatureStoreCounter)
-	prometheus.MustRegister(metrics.BatchFeatureStoreSummary)
+	prometheus.MustRegister(metrics.ResponseTimeSummary)
+	prometheus.MustRegister(metrics.ResponseStatusCount)
 	prometheus.MustRegister(metrics.StatCounter)
 	prometheus.MustRegister(metrics.StatSummary)
 	prometheus.MustRegister(metrics.HttpConnectionGauge.ConnectionGauge)
@@ -279,10 +268,8 @@ func newHTTPMetrics() (*HTTPMetrics, func()) {
 		prometheus.Unregister(metrics.PkReadSummary)
 		prometheus.Unregister(metrics.BatchPkReadCounter)
 		prometheus.Unregister(metrics.BatchPkReadSummary)
-		prometheus.Unregister(metrics.FeatureStoreCounter)
-		prometheus.Unregister(metrics.FeatureStoreSummary)
-		prometheus.Unregister(metrics.BatchFeatureStoreCounter)
-		prometheus.Unregister(metrics.BatchFeatureStoreSummary)
+		prometheus.Unregister(metrics.ResponseTimeSummary)
+		prometheus.Unregister(metrics.ResponseStatusCount)
 		prometheus.Unregister(metrics.StatCounter)
 		prometheus.Unregister(metrics.StatSummary)
 		prometheus.Unregister(metrics.HttpConnectionGauge.ConnectionGauge)

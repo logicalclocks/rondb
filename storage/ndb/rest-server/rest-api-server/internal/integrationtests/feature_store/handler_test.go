@@ -31,10 +31,13 @@ import (
 )
 
 func TestFeatureStoreMetaData(t *testing.T) {
+	var a = make(chan string)
 	_, err := fsmetadata.GetFeatureViewMetadata(testdbs.FSDB002, "sample_2", 1)
 	if err != nil {
 		t.Fatalf("Reading FS Metadata failed %v ", err)
 	}
+	var b = <-a
+	t.Fatalf(b)
 }
 
 func TestMetadata_FsNotExist(t *testing.T) {
