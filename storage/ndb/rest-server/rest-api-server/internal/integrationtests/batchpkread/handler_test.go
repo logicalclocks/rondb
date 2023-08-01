@@ -396,7 +396,7 @@ func TestBatchBadSubOp(t *testing.T) {
 			Operations: []api.BatchSubOperationTestInfo{
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "-1", http.StatusNotFound),
 				// This is bad operation. table does not exists
-				arrayColumnBatchTestSubOp(t, "dummy", database, isBinary, colWidth, padding, "1", http.StatusBadRequest),
+				arrayColumnBatchTestSubOp(t, "dummy", database, isBinary, colWidth, padding, "1", http.StatusNotFound),
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "1", http.StatusOK),
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "2", http.StatusOK),
 				arrayColumnBatchTestSubOp(t, table, database, isBinary, colWidth, padding, "3", http.StatusOK),
@@ -428,6 +428,9 @@ func arrayColumnBatchTestSubOp(t *testing.T, table string, database string, isBi
 }
 
 func TestBatchMissingReqField(t *testing.T) {
+	if !config.GetAll().REST.Enable {
+		t.Skip("Skipping test as REST interface is disabled")
+	}
 	url := testutils.NewBatchReadURL()
 	// Test missing method
 	operations := NewOperationsTBD(t, 3)
@@ -480,4 +483,64 @@ func NewOperationTBD(t *testing.T) api.BatchSubOp {
 		RelativeURL: &relativeURL,
 		Body:        &pkOp,
 	}
+}
+
+func TestMaxOpID(t *testing.T) {
+	tests := map[string]api.BatchOperationTestInfo{
+		"subop1": { // single operation batch
+			HttpCode: []int{http.StatusBadRequest},
+			Operations: []api.BatchSubOperationTestInfo{
+				{
+					SubOperation: api.BatchSubOp{
+						Method:      &[]string{config.PK_HTTP_VERB}[0],
+						RelativeURL: &[]string{string(testdbs.DB004 + "/int_table/" + config.PK_DB_OPERATION)}[0],
+						Body: &api.PKReadBody{
+							Filters:     testclient.NewFiltersKVs("id0", 0, "id1", 0),
+							ReadColumns: testclient.NewReadColumns("col", 2),
+							OperationID: testclient.NewOperationID(int(config.GetAll().Internal.OperationIDMaxSize + 1)),
+						},
+					},
+					Table:    "int_table",
+					DB:       testdbs.DB004,
+					HttpCode: []int{http.StatusBadRequest},
+					RespKVs:  []interface{}{"col0", "col1"},
+				},
+			},
+			ErrMsgContains: "",
+		},
+	}
+	batchTestMultiple(t, tests, false, true)
+}
+
+func TestLargeBatch(t *testing.T) {
+
+	batchSize := config.GetAll().Internal.BatchMaxSize + 1
+
+	subOperations := make([]api.BatchSubOperationTestInfo, batchSize)
+	for i := uint32(0); i < batchSize; i++ {
+		subOperations[i] = api.BatchSubOperationTestInfo{
+			SubOperation: api.BatchSubOp{
+				Method:      &[]string{config.PK_HTTP_VERB}[0],
+				RelativeURL: &[]string{string(testdbs.DB004 + "/int_table/" + config.PK_DB_OPERATION)}[0],
+				Body: &api.PKReadBody{
+					Filters:     testclient.NewFiltersKVs("id0", 0, "id1", 0),
+					ReadColumns: testclient.NewReadColumns("col", 2),
+				},
+			},
+			Table:    "int_table",
+			DB:       testdbs.DB004,
+			HttpCode: []int{http.StatusBadRequest},
+			RespKVs:  []interface{}{"col0", "col1"},
+		}
+	}
+
+	tests := map[string]api.BatchOperationTestInfo{
+		"simple1": { // single operation batch
+			HttpCode:       []int{http.StatusBadRequest},
+			Operations:     subOperations,
+			ErrMsgContains: "",
+		},
+	}
+
+	batchTestMultiple(t, tests, false, true)
 }

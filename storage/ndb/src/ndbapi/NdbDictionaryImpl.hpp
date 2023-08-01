@@ -316,6 +316,7 @@ public:
   bool m_read_backup;
   bool m_fully_replicated;
   bool m_use_varsized_disk_data;
+  bool m_use_new_hash_function;
   int m_kvalue;
   int m_minLoadFactor;
   int m_maxLoadFactor;
@@ -432,6 +433,7 @@ public:
 
   bool m_logging;
   bool m_temporary;
+  bool m_use_new_hash_function;
   
   /*
     The m_table member refers to the NDB table object that holds the actual

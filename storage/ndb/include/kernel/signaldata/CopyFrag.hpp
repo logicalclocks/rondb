@@ -41,6 +41,9 @@ class CopyFragReq {
    * Receiver(s)
    */
   friend class Dblqh;
+
+  friend bool printCOPY_FRAGREQ(FILE *, const Uint32 *, Uint32, Uint16);
+
 public:
   static constexpr Uint32 SignalLength = 11;
 
@@ -81,6 +84,9 @@ class CopyFragConf {
    * Receiver(s)
    */
   friend class Dbdih;
+
+  friend bool printCOPY_FRAGCONF(FILE *, const Uint32 *, Uint32, Uint16);
+
 public:
   static constexpr Uint32 SignalLength = 7;
 
@@ -106,6 +112,9 @@ class CopyFragRef {
    * Receiver(s)
    */
   friend class Dbdih;
+
+  friend bool printCOPY_FRAGREF(FILE *, const Uint32 *, Uint32, Uint16);
+
 public:
   static constexpr Uint32 SignalLength = 6;
 

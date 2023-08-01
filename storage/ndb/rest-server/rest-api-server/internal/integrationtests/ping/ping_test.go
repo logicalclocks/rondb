@@ -19,12 +19,18 @@ package ping
 
 import (
 	"testing"
+
+	"hopsworks.ai/rdrs/internal/config"
 )
 
 func TestPing(t *testing.T) {
 	// gRPC
-	sendGrpcPingRequest(t)
+	if config.GetAll().GRPC.Enable {
+		sendGrpcPingRequest(t)
+	}
 
 	// HTTP
-	sendRestPingRequest(t)
+	if config.GetAll().REST.Enable {
+		sendRestPingRequest(t)
+	}
 }

@@ -2,14 +2,6 @@
         "Internal": {
                 "APIVersion": "0.1.0"
         },
-        "REST": {
-                "ServerIP": "localhost",
-                "ServerPort": 4406
-        },
-        "GRPC": {
-                "ServerIP": "localhost",
-                "ServerPort": 5406
-        },
         "RonDB": {
                 "Mgmds": [
                         {

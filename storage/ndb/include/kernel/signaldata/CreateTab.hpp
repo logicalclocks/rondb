@@ -36,6 +36,7 @@ struct CreateTabReq
   static constexpr Uint32 SignalLength = 6;
   static constexpr Uint32 OldSignalLengthLDM = 6 + 11;
   static constexpr Uint32 SignalLengthLDM = 6 + 12;
+  static constexpr Uint32 NewSignalLengthLDM = 6 + 13;
 
   enum RequestType {
   };
@@ -62,6 +63,7 @@ struct CreateTabReq
   Uint32 GCPIndicator;
   Uint32 extraRowAuthorBits;
   Uint32 useVarSizedDiskData;
+  Uint32 hashFunctionFlag;
 
   SECTION( DICT_TAB_INFO = 0 );
   SECTION( FRAGMENTATION = 1 );
@@ -108,7 +110,9 @@ struct TcSchVerReq
   Uint32 userDefinedPartition;
   Uint32 readBackup;
   Uint32 fullyReplicated;
-  static constexpr Uint32 SignalLength = 11;
+  Uint32 hashFunctionFlag;
+
+  static constexpr Uint32 SignalLength = 12;
 };
 
 struct TcSchVerConf

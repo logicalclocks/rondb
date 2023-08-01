@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -35,12 +36,12 @@
 #include <signaldata/AttrInfo.hpp>
 #include <signaldata/LqhKey.hpp>
 #include <AttributeHeader.hpp>
-#include <md5_hash.hpp>
 #include <backup/Backup.hpp>
 #include <dblqh/Dblqh.hpp>
 #include <dbtup/Dbtup.hpp>
 #include <KeyDescriptor.hpp>
 #include <signaldata/DumpStateOrd.hpp>
+#include <util/rondb_hash.hpp>
 
 #include <NdbTick.h>
 #include <EventLogger.hpp>
@@ -56,6 +57,13 @@
 //#define DEBUG_RES_STAT_EXTRA 1
 //#define DEBUG_RES_DEL 1
 //#define DEBUG_HIGH_RES 1
+//#define DEBUG_RES_HASH 1
+#endif
+
+#ifdef DEBUG_RES_HASH
+#define DEB_RES_HASH(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_RES_HASH(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_START_RES
@@ -1886,6 +1894,13 @@ Restore::init_file(const RestoreLcpReq* req, FilePtr file_ptr)
   new (file_ptr.p) File();
   file_ptr.p->m_sender_ref = req->senderRef;
   file_ptr.p->m_sender_data = req->senderData;
+  file_ptr.p->m_use_new_hash_function = (req->hashFunctionFlag != 0);
+
+  DEB_RES_HASH(("(%u) tab(%u,%u) m_use_new_hash_function: %u",
+                instance(),
+                req->tableId,
+                req->fragmentId,
+                file_ptr.p->m_use_new_hash_function));
 
   file_ptr.p->m_fd = RNIL;
   file_ptr.p->m_file_type = BackupFormat::LCP_FILE;
@@ -3415,11 +3430,16 @@ Restore::execute_operation(Signal *signal,
 
     if (g_key_descriptor_pool.getPtr(tableId)->hasCharAttr)
     {
-      req->hashValue = calculate_hash(tableId, key_start);
+      req->hashValue = calculate_hash(tableId,
+                                      key_start,
+                                      file_ptr.p->m_use_new_hash_function);
     }
     else
     {
-      req->hashValue = md5_hash((Uint64*)key_start, keyLen);
+      req->hashValue =
+        rondb_calc_hash_val((Uint64*)key_start,
+                            keyLen,
+                            file_ptr.p->m_use_new_hash_function);
     }
   }
   LqhKeyReq::setNoDiskFlag(tmp, 1);
@@ -3508,7 +3528,9 @@ Restore::execute_operation(Signal *signal,
 }
 
 Uint32
-Restore::calculate_hash(Uint32 tableId, const Uint32 *src)
+Restore::calculate_hash(Uint32 tableId,
+                        const Uint32 *src,
+                        bool use_new_hash_function)
 {
   jam();
   Uint64 Tmp[(MAX_KEY_SIZE_IN_WORDS*MAX_XFRM_MULTIPLY) >> 1];
@@ -3518,7 +3540,7 @@ Restore::calculate_hash(Uint32 tableId, const Uint32 *src)
 			        keyPartLen);
   ndbrequire(keyLen);
   
-  return md5_hash(Tmp, keyLen);
+  return rondb_calc_hash_val(Tmp, keyLen, use_new_hash_function);
 }
 
 void

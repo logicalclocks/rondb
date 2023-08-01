@@ -33,7 +33,6 @@
 #include <ArrayPool.hpp>
 #include <DataBuffer.hpp>
 #include <IntrusiveList.hpp>
-#include <md5_hash.hpp>
 #include <RWPool64.hpp>
 
 // big brother
@@ -461,7 +460,8 @@ private:
     KeySpec m_keySpec;
     State m_state;
     DictTabInfo::TableType m_tableType;
-    Uint16 unused;
+    Uint8 m_use_new_hash_function;
+    Uint8 unused;
     Uint16 m_descOff;           // offset within the page
     Uint16 m_numAttrs;
     Uint16 m_prefAttrs;         // attributes in min prefix
@@ -487,8 +487,9 @@ private:
     Uint32 m_magic;
     Uint32 m_tableId;           // copy from index level
     Uint32 m_indexId;
-    Uint16 unused;
     Uint16 m_fragId;
+    Uint8 m_use_new_hash_function;
+    Uint8 unused;
     TreeHead m_tree;
     TupLoc m_freeLoc;           // one free node for next op
     Uint64 m_tupIndexFragPtrI;

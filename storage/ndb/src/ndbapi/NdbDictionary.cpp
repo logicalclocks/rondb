@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1157,6 +1158,12 @@ Uint32
 NdbDictionary::Table::getRowChecksum()
 {
   return m_impl.m_row_checksum;
+}
+
+bool
+NdbDictionary::Table::use_new_hash_function() const
+{
+  return m_impl.m_use_new_hash_function;
 }
 
 /*****************************************************************

@@ -156,3 +156,55 @@ RUN --mount=type=bind,source=.,target=rondb-src \
 # run with --output <output-folder>
 FROM scratch AS get-package-all
 COPY --from=build-all /root/rondb-tarball .
+
+##################################
+# Intermediate Image for RDRS ####
+##################################
+
+FROM ubuntu:22.04 AS rdrs-intermediate
+
+ENV MYSQL_HOME=/srv/hops/mysql
+ENV MYSQL_CONF=/srv/hops/mysql-cluster
+
+RUN mkdir -p  $MYSQL_HOME && \
+    mkdir -p  $MYSQL_HOME/bin && \
+    mkdir -p  $MYSQL_HOME/lib && \
+    mkdir -p  $MYSQL_HOME/lib/private && \
+    mkdir -p  $MYSQL_CONF && \
+    mkdir -p  $MYSQL_CONF/log 
+
+WORKDIR /root
+COPY --from=build-all /root/rondb-tarball .
+
+RUN --mount=type=bind,source=.,target=rondb-src \
+   mkdir distro && \
+   tar xzf *.tar.gz -C distro --strip-components=1 && \
+   cp distro/bin/rdrs $MYSQL_HOME/bin && \
+   cp distro/lib/libndbclient.so.6.1.0 $MYSQL_HOME/lib/ && \
+   cp distro/lib/librdrclient.so $MYSQL_HOME/lib/ && \
+   cp distro/lib/private/libcrypto.so.1.1 $MYSQL_HOME/lib/private && \
+   cp distro/lib/private/libssl.so.1.1 $MYSQL_HOME/lib/private && \
+   cp rondb-src/storage/ndb/rest-server/rest-api-server/resources/config/config_for_docker_image.json $MYSQL_CONF/rdrs_config.json
+
+##################################
+#       RDRS Image               #
+##################################
+
+FROM ubuntu:22.04 AS rdrs
+
+COPY --from=rdrs-intermediate /srv /srv
+
+# Add RonDB libs to system path
+COPY <<-"EOF" /etc/ld.so.conf.d/rondb.conf
+/srv/hops/mysql/lib
+/srv/hops/mysql/lib/private
+EOF
+RUN ldconfig -v
+
+# Also setting LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/srv/hops/mysql/lib:/srv/hops/mysql/lib/private
+
+CMD ["/srv/hops/mysql/bin/rdrs", "-config", "/srv/hops/mysql-cluster/rdrs_config.json"]
+
+
+

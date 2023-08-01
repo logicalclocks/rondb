@@ -9026,8 +9026,10 @@ mt_job_thread_main(void *thr_arg)
       {
         // OJA: Will not yield -> wakeup not needed yet
         flush_all_local_signals_and_wakeup(selfptr);
-        do_flush(selfptr);
+        pending_send = do_send(selfptr, false, false);
+        selfptr->m_outstanding_send_wakeups = 0;
         flush_sum = 0;
+        send_sum = 0;
       }
     }
     else

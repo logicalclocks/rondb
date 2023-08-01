@@ -36,6 +36,8 @@ ADD_CONVENIENCE_LIBRARY(ndbsignaldata
   CntrStart.cpp
   CommitReq.cpp
   ContinueB.cpp
+  CopyActive.cpp
+  CopyFrag.cpp
   CopyGCI.cpp
   CreateEvnt.cpp
   CreateFK.cpp
