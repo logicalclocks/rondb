@@ -39,27 +39,35 @@ type RonDBMetrics struct {
 }
 
 type HTTPMetrics struct {
-	PingCounter         prometheus.Counter
-	PkReadCounter       prometheus.Counter
-	BatchPkReadCounter  prometheus.Counter
-	StatCounter         prometheus.Counter
-	PingSummary         prometheus.Summary
-	PkReadSummary       prometheus.Summary
-	BatchPkReadSummary  prometheus.Summary
-	StatSummary         prometheus.Summary
-	HttpConnectionGauge HttpConnectionGauge
+	PingCounter              prometheus.Counter
+	PkReadCounter            prometheus.Counter
+	BatchPkReadCounter       prometheus.Counter
+	FeatureStoreCounter      prometheus.Counter
+	BatchFeatureStoreCounter prometheus.Counter
+	StatCounter              prometheus.Counter
+	PingSummary              prometheus.Summary
+	PkReadSummary            prometheus.Summary
+	BatchPkReadSummary       prometheus.Summary
+	FeatureStoreSummary      prometheus.Summary
+	BatchFeatureStoreSummary prometheus.Summary
+	StatSummary              prometheus.Summary
+	HttpConnectionGauge      HttpConnectionGauge
 }
 
 type GRPCMetrics struct {
-	PingCounter        prometheus.Counter
-	PkReadCounter      prometheus.Counter
-	BatchPkReadCounter prometheus.Counter
-	StatCounter        prometheus.Counter
-	PingSummary        prometheus.Summary
-	PkReadSummary      prometheus.Summary
-	BatchPkReadSummary prometheus.Summary
-	StatSummary        prometheus.Summary
-	GRPCStatistics     GRPCStatistics
+	PingCounter              prometheus.Counter
+	PkReadCounter            prometheus.Counter
+	BatchPkReadCounter       prometheus.Counter
+	FeatureStoreCounter      prometheus.Counter
+	BatchFeatureStoreCounter prometheus.Counter
+	StatCounter              prometheus.Counter
+	PingSummary              prometheus.Summary
+	PkReadSummary            prometheus.Summary
+	BatchPkReadSummary       prometheus.Summary
+	FeatureStoreSummary      prometheus.Summary
+	BatchFeatureStoreSummary prometheus.Summary
+	StatSummary              prometheus.Summary
+	GRPCStatistics           GRPCStatistics
 }
 
 func NewRDRSMetrics() (*RDRSMetrics, func()) {
@@ -191,6 +199,40 @@ func newHTTPMetrics() (*HTTPMetrics, func()) {
 			},
 		)
 
+	metrics.FeatureStoreCounter =
+		prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: protocol + "_feature_store_request_count",
+				Help: "No of request handled by " + protocol + " feature store handler",
+			},
+		)
+
+	metrics.FeatureStoreSummary =
+		prometheus.NewSummary(
+			prometheus.SummaryOpts{
+				Name:       protocol + "_feature_store_request_summary",
+				Help:       "Summary for feature stoer " + protocol + " handler. Time is in nanoseconds",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
+			},
+		)
+
+	metrics.BatchFeatureStoreCounter =
+		prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: protocol + "_batch_feature_store_request_count",
+				Help: "No of request handled by " + protocol + " batch feature store handler",
+			},
+		)
+
+	metrics.BatchFeatureStoreSummary =
+		prometheus.NewSummary(
+			prometheus.SummaryOpts{
+				Name:       protocol + "_batch_feature_store_request_summary",
+				Help:       "Summary for batch feature stoer " + protocol + " handler. Time is in nanoseconds",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
+			},
+		)
+
 	metrics.StatCounter =
 		prometheus.NewCounter(
 			prometheus.CounterOpts{
@@ -222,6 +264,10 @@ func newHTTPMetrics() (*HTTPMetrics, func()) {
 	prometheus.MustRegister(metrics.PkReadSummary)
 	prometheus.MustRegister(metrics.BatchPkReadCounter)
 	prometheus.MustRegister(metrics.BatchPkReadSummary)
+	prometheus.MustRegister(metrics.FeatureStoreCounter)
+	prometheus.MustRegister(metrics.FeatureStoreSummary)
+	prometheus.MustRegister(metrics.BatchFeatureStoreCounter)
+	prometheus.MustRegister(metrics.BatchFeatureStoreSummary)
 	prometheus.MustRegister(metrics.StatCounter)
 	prometheus.MustRegister(metrics.StatSummary)
 	prometheus.MustRegister(metrics.HttpConnectionGauge.ConnectionGauge)
@@ -233,6 +279,10 @@ func newHTTPMetrics() (*HTTPMetrics, func()) {
 		prometheus.Unregister(metrics.PkReadSummary)
 		prometheus.Unregister(metrics.BatchPkReadCounter)
 		prometheus.Unregister(metrics.BatchPkReadSummary)
+		prometheus.Unregister(metrics.FeatureStoreCounter)
+		prometheus.Unregister(metrics.FeatureStoreSummary)
+		prometheus.Unregister(metrics.BatchFeatureStoreCounter)
+		prometheus.Unregister(metrics.BatchFeatureStoreSummary)
 		prometheus.Unregister(metrics.StatCounter)
 		prometheus.Unregister(metrics.StatSummary)
 		prometheus.Unregister(metrics.HttpConnectionGauge.ConnectionGauge)
@@ -295,6 +345,40 @@ func newGRPCMetrics() (*GRPCMetrics, func()) {
 			},
 		)
 
+		metrics.FeatureStoreCounter =
+		prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: protocol + "_feature_store_request_count",
+				Help: "No of request handled by " + protocol + " feature store handler",
+			},
+		)
+
+	metrics.FeatureStoreSummary =
+		prometheus.NewSummary(
+			prometheus.SummaryOpts{
+				Name:       protocol + "_feature_store_request_summary",
+				Help:       "Summary for feature stoer " + protocol + " handler. Time is in nanoseconds",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
+			},
+		)
+
+	metrics.BatchFeatureStoreCounter =
+		prometheus.NewCounter(
+			prometheus.CounterOpts{
+				Name: protocol + "_batch_feature_store_request_count",
+				Help: "No of request handled by " + protocol + " batch feature store handler",
+			},
+		)
+
+	metrics.BatchFeatureStoreSummary =
+		prometheus.NewSummary(
+			prometheus.SummaryOpts{
+				Name:       protocol + "_batch_feature_store_request_summary",
+				Help:       "Summary for batch feature store " + protocol + " handler. Time is in nanoseconds",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
+			},
+		)
+
 	metrics.StatCounter =
 		prometheus.NewCounter(
 			prometheus.CounterOpts{
@@ -326,6 +410,10 @@ func newGRPCMetrics() (*GRPCMetrics, func()) {
 	prometheus.MustRegister(metrics.PkReadSummary)
 	prometheus.MustRegister(metrics.BatchPkReadCounter)
 	prometheus.MustRegister(metrics.BatchPkReadSummary)
+	prometheus.MustRegister(metrics.FeatureStoreCounter)
+	prometheus.MustRegister(metrics.FeatureStoreSummary)
+	prometheus.MustRegister(metrics.BatchFeatureStoreCounter)
+	prometheus.MustRegister(metrics.BatchFeatureStoreSummary)
 	prometheus.MustRegister(metrics.StatCounter)
 	prometheus.MustRegister(metrics.StatSummary)
 	prometheus.MustRegister(metrics.GRPCStatistics.ConnectionGauge)
@@ -337,6 +425,10 @@ func newGRPCMetrics() (*GRPCMetrics, func()) {
 		prometheus.Unregister(metrics.PkReadSummary)
 		prometheus.Unregister(metrics.BatchPkReadCounter)
 		prometheus.Unregister(metrics.BatchPkReadSummary)
+		prometheus.Unregister(metrics.FeatureStoreCounter)
+		prometheus.Unregister(metrics.FeatureStoreSummary)
+		prometheus.Unregister(metrics.BatchFeatureStoreCounter)
+		prometheus.Unregister(metrics.BatchFeatureStoreSummary)
 		prometheus.Unregister(metrics.StatCounter)
 		prometheus.Unregister(metrics.StatSummary)
 		prometheus.Unregister(metrics.GRPCStatistics.ConnectionGauge)
