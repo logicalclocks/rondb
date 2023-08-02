@@ -44,7 +44,7 @@
 #include <signaldata/TransIdAI.hpp>
 #include <KeyDescriptor.hpp>
 #include <signaldata/NodeStateSignalData.hpp>
-#include <md5_hash.hpp>
+#include <util/rondb_hash.hpp>
 
 #ifdef VM_TRACE
 #define ACC_DEBUG(x) ndbout << "DBACC: "<< x << endl;
@@ -63,6 +63,13 @@
 
 #ifdef VM_TRACE
 //#define DO_TRANSIENT_POOL_STAT 1
+//#define DEBUG_HASH 1
+#endif
+
+#ifdef DEBUG_HASH
+#define DEB_HASH(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_HASH(arglist) do { } while (0)
 #endif
 
 // primary key is stored in TUP
@@ -6429,7 +6436,9 @@ LHBits32 Dbacc::getElementHash(OperationrecPtr& oprec)
        * element is in the wrong place in the hash since it won't be found
        * by anyone even if in the right place.
        */
-      oprec.p->hashValue = LHBits32(md5_hash((Uint64*)&keys[0], len));
+      oprec.p->hashValue = LHBits32(rondb_calc_hash_val((Uint64*)&keys[0],
+                                    len,
+                                    fragrecptr.p->m_use_new_hash_function));
     }
   }
   return oprec.p->hashValue;
@@ -6463,7 +6472,9 @@ LHBits32 Dbacc::getElementHash(Uint32 const* elemptr)
   if (len > 0)
   {
     jam();
-    return LHBits32(md5_hash((Uint64*)&keys[0], len));
+    return LHBits32(rondb_calc_hash_val((Uint64*)&keys[0],
+                                     len,
+                                     fragrecptr.p->m_use_new_hash_function));
   }
   else
   { // Return an invalid hash value if no data
@@ -7517,7 +7528,13 @@ void Dbacc::initFragAdd(Signal* signal,
   ndbrequire(req->kValue == 6);
   ndbrequire(req->kValue == regFragPtr.p->k);
   regFragPtr.p->expandCounter = 0;
+  regFragPtr.p->m_use_new_hash_function = (req->hashFunctionFlag != 0);
 
+  DEB_HASH(("(%u) acc_tab(%u,%u) m_use_new_hash_function: %u",
+            instance(),
+            regFragPtr.p->myTableId,
+            regFragPtr.p->myfid,
+            regFragPtr.p->m_use_new_hash_function));
   /**
    * Only allow shrink during SR
    *   - to make sure we don't run out of pages during REDO log execution

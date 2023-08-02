@@ -36,7 +36,7 @@
 #include <dbtup/tuppage.hpp>
 
 #include <DebuggerNames.hpp>
-#include <md5_hash.hpp>
+#include <rondb_hash.hpp>
 
 #include <PgmanProxy.hpp>
 

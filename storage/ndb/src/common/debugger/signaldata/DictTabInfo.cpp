@@ -88,6 +88,8 @@ DictTabInfo::TableMapping[] = {
   DTI_MAP_INT(Table, FullyReplicatedFlag, FullyReplicatedFlag),
   DTI_MAP_INT(Table, PartitionCount, PartitionCount),
   DTI_MAP_INT(Table, FullyReplicatedTriggerId, FullyReplicatedTriggerId),
+  DTI_MAP_INT(Table, UseVarSizedDiskDataFlag, UseVarSizedDiskDataFlag),
+  DTI_MAP_INT(Table, HashFunctionFlag, HashFunctionFlag),
   DTIBREAK(AttributeName)
 };
 

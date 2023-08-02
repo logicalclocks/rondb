@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -284,6 +285,7 @@ public:
   bool m_has_default_values; 
   bool m_read_backup;
   bool m_fully_replicated;
+  bool m_use_new_hash_function;
   int m_kvalue;
   int m_minLoadFactor;
   int m_maxLoadFactor;
@@ -385,6 +387,7 @@ public:
 
   bool m_logging;
   bool m_temporary;
+  bool m_use_new_hash_function;
   
   /*
     The m_table member refers to the NDB table object that holds the actual

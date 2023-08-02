@@ -1298,7 +1298,9 @@ TupTriggerData_pool c_triggerPool;
       TR_ForceVarPart = 0x4,
       TR_DiskPart  = 0x8,
       TR_ExtraRowGCIBits = 0x10,
-      TR_ExtraRowAuthorBits = 0x20
+      TR_ExtraRowAuthorBits = 0x20,
+      TR_UseVarSizedDiskData = 0x40,
+      TR_HashFunction = 0x80,
     };
     Uint16 m_bits;
     Uint16 total_rec_size; // Max total size for entire tuple in words

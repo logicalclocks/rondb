@@ -27,7 +27,6 @@
 #define DBTC_C
 
 #include "Dbtc.hpp"
-#include "md5_hash.hpp"
 #include <RefConvert.hpp>
 #include <ndb_limits.h>
 #include <ndb_rand.h>
@@ -109,6 +108,7 @@
 #include <kernel/Interpreter.hpp>
 #include <signaldata/TuxBound.hpp>
 #include "../dbdih/Dbdih.hpp"
+#include <util/rondb_hash.hpp>
 
 #define JAM_FILE_ID 353
 
@@ -118,6 +118,7 @@
 //#define DEBUG_NODE_FAILURE 1
 //#define DEBUG_RR_INIT 1
 //#define DEBUG_EXEC_WRITE_COUNT 1
+//#define DEBUG_HASH 1
 #endif
 
 
@@ -134,6 +135,11 @@ extern EventLogger * g_eventLogger;
 #define DEBUG(x)
 #endif
 
+#ifdef DEBUG_HASH
+#define DEB_HASH(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_HASH(arglist) do { } while (0)
+#endif
 
 #ifdef DEBUG_NODE_FAILURE
 #define DEB_NODE_FAILURE(arglist) do { g_eventLogger->info arglist ; } while (0)
@@ -933,6 +939,16 @@ void Dbtc::execTC_SCHVERREQ(Signal* signal)
   tabptr.p->noOfDistrKeys = desc->noOfDistrKeys;
   tabptr.p->hasVarKeys = desc->noOfVarKeys > 0;
   tabptr.p->set_user_defined_partitioning(userDefinedPartitioning);
+  if (req->hashFunctionFlag)
+  {
+    jam();
+    tabptr.p->m_flags |= TableRecord::TR_HASH_FUNCTION;
+  }
+
+  DEB_HASH(("(%u) tc_tab(%u) hashFunctionFlag: %u",
+            instance(),
+            tabptr.i,
+            req->hashFunctionFlag));
   if (req->readBackup)
   {
     jam();
@@ -3185,6 +3201,7 @@ void Dbtc::hash(Signal* signal, CacheRecord * const regCachePtr)
   SegmentedSectionPtr keyInfoSection;
   UintR keylen = (UintR)regCachePtr->keylen;
   Uint32 distKey = regCachePtr->distributionKeyIndicator;
+  const TableRecord* tabPtrP = &tableRecord[regCachePtr->tableref];
   
   getSection(keyInfoSection, regCachePtr->keyInfoSectionI);
 
@@ -3193,11 +3210,13 @@ void Dbtc::hash(Signal* signal, CacheRecord * const regCachePtr)
   /* Copy KeyInfo section from segmented storage into linear storage
    * in signal->theData
    */
+  bool use_new_hash_function =
+    ((tabPtrP->m_flags & TableRecord::TR_HASH_FUNCTION) != 0);
   if (keylen <= SectionSegment::DataLength)
   {
     /* No need to copy keyinfo into a linear space 
      * Note that we require that the data in the section is
-     * 64-bit aligned for md5_hash below
+     * 64-bit aligned for rondb_calc_hash below
      */
     ndbassert( keyInfoSection.p != NULL );
 
@@ -3211,9 +3230,9 @@ void Dbtc::hash(Signal* signal, CacheRecord * const regCachePtr)
   }
 
   Uint32 tmp[4];
-  if(!regCachePtr->m_special_hash)
+  if (!regCachePtr->m_special_hash)
   {
-    md5_hash(tmp, (Uint64*)&Tdata32[0], keylen);
+    rondb_calc_hash(tmp, (Uint64*)&Tdata32[0], keylen, use_new_hash_function);
   }
   else
   {
@@ -3226,7 +3245,12 @@ void Dbtc::hash(Signal* signal, CacheRecord * const regCachePtr)
     }
     else
     {
-      handle_special_hash(tmp, Tdata32, keylen, regCachePtr->tableref, !distKey);
+      handle_special_hash(tmp,
+                          Tdata32,
+                          keylen,
+                          regCachePtr->tableref,
+                          !distKey,
+                          use_new_hash_function);
     }
   }
   
@@ -3246,9 +3270,11 @@ void Dbtc::hash(Signal* signal, CacheRecord * const regCachePtr)
 
 bool
 Dbtc::handle_special_hash(Uint32 dstHash[4], 
-                          const Uint32* src, Uint32 srcLen, 
-			  Uint32 tabPtrI,
-			  bool distr)
+                          const Uint32* src,
+                          Uint32 srcLen,
+                          const Uint32 tabPtrI,
+			  bool distr,
+                          bool use_new_hash_function)
 {
   const Uint32 MAX_KEY_SIZE_IN_LONG_WORDS= 
     (MAX_KEY_SIZE_IN_WORDS + 1) / 2;
@@ -3287,7 +3313,10 @@ Dbtc::handle_special_hash(Uint32 dstHash[4],
   }
   
   /* Calculate primary key hash */
-  md5_hash(dstHash, (Uint64*)hashInput, inputLen);
+  rondb_calc_hash(dstHash,
+                  (Uint64*)hashInput,
+                  inputLen,
+                  use_new_hash_function);
   
   /* If the distribution key != primary key then we have to
    * form a distribution key from the primary key and calculate 
@@ -3301,7 +3330,10 @@ Dbtc::handle_special_hash(Uint32 dstHash[4],
     /* Reshuffle primary key columns to get just distribution key */
     Uint32 len = create_distr_key(tabPtrI, hashInput, workspace, keyPartLenPtr);
     /* Calculate distribution key hash */
-    md5_hash(distrKeyHash, (Uint64*) workspace, len);
+    rondb_calc_hash(distrKeyHash,
+                    (Uint64*) workspace,
+                    len,
+                    use_new_hash_function);
 
     /* Just one word used for distribution */
     dstHash[1] = distrKeyHash[1];

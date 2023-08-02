@@ -2211,7 +2211,6 @@ protected:
 
   void releaseSegmentList(Uint32 firstSegmentIVal) override;
 
-  /** End of SegmentUtils methods */
 };
 
 // outside blocks e.g. within a struct

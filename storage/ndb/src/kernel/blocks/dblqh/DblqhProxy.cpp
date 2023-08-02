@@ -223,7 +223,8 @@ DblqhProxy::execCREATE_TAB_REQ(Signal* signal)
 
   const CreateTabReq* req = (const CreateTabReq*)signal->getDataPtr();
   ss.m_req = *req;
-  ndbrequire(signal->getLength() == CreateTabReq::SignalLengthLDM);
+  ss.sig_length = signal->getLength();
+  ndbrequire(signal->getLength() >= CreateTabReq::SignalLengthLDM);
 
   sendREQ(signal, ss);
 }
@@ -239,8 +240,9 @@ DblqhProxy::sendCREATE_TAB_REQ(Signal* signal, Uint32 ssId,
   *req = ss.m_req;
   req->senderRef = reference();
   req->senderData = ssId;
+  Uint32 sig_len = ss.sig_length;
   sendSignalNoRelease(workerRef(ss.m_worker), GSN_CREATE_TAB_REQ,
-                      signal, CreateTabReq::SignalLengthLDM, JBB, handle);
+                      signal, sig_len, JBB, handle);
 }
 
 void

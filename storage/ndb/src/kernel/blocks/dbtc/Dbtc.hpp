@@ -1630,6 +1630,7 @@ public:
       ,TR_READ_BACKUP = (1 << 5)
       ,TR_FULLY_REPLICATED = (1<<6)
       ,TR_DELAY_COMMIT = (1 << 7)
+      ,TR_HASH_FUNCTION = (1 << 8)
     };
     Uint8 get_enabled()     const { return (m_flags & TR_ENABLED)      != 0; }
     Uint8 get_dropping()    const { return (m_flags & TR_DROPPING)     != 0; }
@@ -2299,8 +2300,11 @@ private:
   void handleGcp(Signal* signal, ApiConnectRecordPtr);
   void hash(Signal* signal, CacheRecord * regCachePtr);
   bool handle_special_hash(Uint32 dstHash[4], 
-                           const Uint32* src, Uint32 srcLen, 
-                           Uint32 tabPtrI, bool distr);
+                           const Uint32* src,
+                           Uint32 srcLen,
+                           const Uint32 tabPtrI,
+                           bool distr,
+                           bool use_new_hash_function);
   
   void initApiConnect(Signal* signal);
   void initApiConnectRec(Signal* signal, 

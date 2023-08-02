@@ -169,5 +169,6 @@ extern "C"
    * CPU issued.
    */
   void Ndb_GetCoreCPUIds(Uint32 cpu_id, Uint32 *cpu_ids, Uint32 &num_cpus);
+  Uint32 is_avx2_supported();
 }
 #endif
