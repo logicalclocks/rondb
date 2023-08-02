@@ -17,7 +17,6 @@ package rest
 
 import (
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"hopsworks.ai/rdrs/internal/config"
@@ -26,9 +25,7 @@ import (
 )
 
 func (h *RouteHandler) BatchFeatureStore(c *gin.Context) {
-	// metrics
-	start := time.Now().UnixNano()
-
+	
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 
 	fsReq, err := parseBatchFeatureStoreRequest(c)
@@ -44,7 +41,6 @@ func (h *RouteHandler) BatchFeatureStore(c *gin.Context) {
 		return
 	}
 	c.JSON(status, fsResp)
-	defer h.rdrsMetrics.HTTPMetrics.AddResponseTime(c.Request.RequestURI, c.Request.Method, float64(time.Now().UnixNano() - start))
 
 }
 
