@@ -36,6 +36,8 @@ typedef struct SubOpTuple {
   std::vector<NdbRecAttr *> recs;
   std::unordered_map<std::string, const NdbDictionary::Column *> allNonPKCols;
   std::unordered_map<std::string, const NdbDictionary::Column *> allPKCols;
+  Int8 **primaryKeysCols;
+  Uint32 *primaryKeySizes;
 } ReqRespTuple;
 
 class PKROperation {

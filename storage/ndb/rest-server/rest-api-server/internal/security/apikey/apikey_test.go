@@ -132,7 +132,7 @@ func testUpdateCacheEveryNSeconds(t *testing.T, cache Cache, conf config.AllConf
 
 	lastUpdated1 := cache.LastUpdated(&[]string{testutils.HOPSWORKS_TEST_API_KEY}[0])
 
-	time.Sleep((time.Duration(conf.Security.APIKey.CacheRefreshIntervalMS) +
+	time.Sleep(2 * (time.Duration(conf.Security.APIKey.CacheRefreshIntervalMS) + // waiting 2* to ensure the update trigger has run
 		time.Duration(conf.Security.APIKey.CacheRefreshIntervalJitterMS)) * time.Millisecond)
 
 	lastUpdated2 := cache.LastUpdated(&[]string{testutils.HOPSWORKS_TEST_API_KEY}[0])
@@ -185,7 +185,7 @@ func testUpdateCacheEveryNSecondsUnauthorized(t *testing.T, cache Cache, conf co
 
 	lastUpdated1 := cache.LastUpdated(&apiKey)
 
-	time.Sleep((time.Duration(conf.Security.APIKey.CacheRefreshIntervalMS) +
+	time.Sleep(2 * (time.Duration(conf.Security.APIKey.CacheRefreshIntervalMS) + // waiting 2* to ensure the update trigger has run
 		time.Duration(conf.Security.APIKey.CacheRefreshIntervalJitterMS)) * time.Millisecond)
 
 	lastUpdated2 := cache.LastUpdated(&apiKey)
