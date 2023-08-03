@@ -20,6 +20,8 @@ package validators
 import (
 	"errors"
 	"fmt"
+
+	"hopsworks.ai/rdrs/internal/config"
 )
 
 func ValidateDBIdentifier(identifier *string) error {
@@ -35,6 +37,16 @@ func ValidateDBIdentifier(identifier *string) error {
 	for _, r := range *identifier {
 		if !((r >= rune(0x0001) && r <= rune(0x007F)) || (r >= rune(0x0080) && r <= rune(0x0FFF))) {
 			return fmt.Errorf("identifier carries an invalid character '%U' ", r)
+		}
+	}
+	return nil
+}
+
+func ValidateOperationID(opID *string) error {
+	if opID != nil {
+		operationIDMaxSize := config.GetAll().Internal.OperationIDMaxSize
+		if uint32(len(*opID)) > operationIDMaxSize {
+			return fmt.Errorf("max allowd length is %d", operationIDMaxSize)
 		}
 	}
 	return nil

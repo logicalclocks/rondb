@@ -40,8 +40,10 @@ func SetupHttpClient(t testing.TB) *http.Client {
 		t.Fatalf("failed to get TLS config for HTTP client. Error: %v", err)
 	}
 	return &http.Client{
-		Transport: &http.Transport{TLSClientConfig: tlsConfig},
-	}
+		Transport: &http.Transport{
+			TLSClientConfig:   tlsConfig,
+			ForceAttemptHTTP2: true,
+		}}
 }
 
 //////////////////////
@@ -66,7 +68,7 @@ func CreateGrpcConn(withAuth, withTLS bool) (*grpc.ClientConn, error) {
 	// Set up a connection to the server
 	conf := config.GetAll()
 	return grpc.Dial(
-		fmt.Sprintf("%s:%d", "localhost", conf.GRPC.ServerPort),
+		fmt.Sprintf("%s:%d", conf.GRPC.ServerIP, conf.GRPC.ServerPort),
 		grpcDialOptions...,
 	)
 }

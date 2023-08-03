@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2005, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -135,6 +136,7 @@ private:
     Uint32 m_table_id;
     Uint32 m_table_version;
     Uint32 m_fragment_id;
+    Uint32 m_use_new_hash_function;
     
     Uint32 m_current_page_ptr_i;
     Uint32 m_current_page_pos; 
@@ -260,7 +262,9 @@ private:
   void parse_gcp_entry(Signal*, FilePtr, const Uint32*, Uint32 len);
   void close_file(Signal*, FilePtr, bool remove_flag = false);
 
-  Uint32 calculate_hash(Uint32 tableId, const Uint32 *src);
+  Uint32 calculate_hash(Uint32 tableId,
+                        const Uint32 *src,
+                        bool use_new_hash_function);
 
   void parse_error(Signal*, FilePtr, Uint32 line, Uint32 extra);
   int check_file_version(Signal*, Uint32 file_version);

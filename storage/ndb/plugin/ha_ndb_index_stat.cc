@@ -1067,6 +1067,7 @@ static void ndb_index_stat_free(Ndb_index_stat *st) {
   Ndb_index_stat *st_tail = nullptr;
   Ndb_index_stat *st_loop = share->index_stat_list;
   uint found = 0;
+  (void)found;
   while (st_loop != nullptr) {
     move_to_glob(st_loop);
     if (st == st_loop) {

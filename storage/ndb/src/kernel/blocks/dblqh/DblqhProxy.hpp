@@ -61,6 +61,7 @@ protected:
   struct Ss_CREATE_TAB_REQ : SsParallel {
     CreateTabReq m_req;
     Uint32 m_lqhConnectPtr[MaxWorkers];
+    Uint32 sig_length;
     Ss_CREATE_TAB_REQ() {
       m_sendREQ = (SsFUNCREQ)&DblqhProxy::sendCREATE_TAB_REQ;
       m_sendCONF = (SsFUNCREP)&DblqhProxy::sendCREATE_TAB_CONF;

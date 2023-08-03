@@ -162,7 +162,7 @@ RS_Status PKROperation::CreateResponse() {
     resp->SetNoOfColumns(recs->size());
 
     if (req->IsInvalidOp()) {
-      resp->SetStatus(CLIENT_ERROR, req->GetError().message);
+      resp->SetStatus(req->GetError().http_code, req->GetError().message);
       resp->Close();
       continue;
     }

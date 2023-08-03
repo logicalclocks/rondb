@@ -69,6 +69,8 @@ var databaseCreateSchemes = map[string]string{
 	DB025:      DB025Scheme,
 	DB026:      DB026Scheme,
 	DB027:      DB027Scheme,
+	FSDB001:    FSDB001Scheme,
+	FSDB002:    FSDB002Scheme,
 	SentinelDB: SentinelDBScheme,
 }
 
@@ -252,6 +254,12 @@ scheme and inserts the databases as projects.
 func createHopsworksSchema(dbsToRegister ...string) string {
 	hopsworksScheme := HopsworksScheme
 	for idx, projectName := range dbsToRegister {
+
+		// Featurestore databases are added manually in the sql files
+		if strings.HasPrefix(projectName, "fsdb") {
+			continue
+		}
+
 		/*
 			Replacing the following "magic values" in the embedded sql statements
 			PROJECT_NAME  --> project

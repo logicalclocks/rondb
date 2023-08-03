@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2023, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -30,8 +30,8 @@
 #include <signaldata/AccScan.hpp>
 #include <signaldata/NextScan.hpp>
 #include <signaldata/AccLock.hpp>
-#include <md5_hash.hpp>
 #include <portlib/ndb_prefetch.h>
+#include <util/rondb_hash.hpp>
 #include "../dblqh/Dblqh.hpp"
 
 #define JAM_FILE_ID 408
@@ -570,7 +570,10 @@ Dbtup::scanReply(Signal* signal, ScanOpPtr scanPtr)
       lockReq->userRef = reference();
       lockReq->tableId = scan.m_tableId;
       lockReq->fragId = frag.fragmentId;
-      lockReq->hashValue = md5_hash(pkData, pkSize);
+      lockReq->hashValue =
+        rondb_calc_hash_val((const char*)pkData,
+                  pkSize,
+                  ((tablePtr.p->m_bits & Tablerec::TR_HashFunction) != 0));
       lockReq->page_id = key_mm.m_page_no;
       lockReq->page_idx = key_mm.m_page_idx;
       lockReq->transId1 = scan.m_transId1;

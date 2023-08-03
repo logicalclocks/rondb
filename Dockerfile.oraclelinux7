@@ -5,7 +5,7 @@
 # Glibc tends to be backwards compatible, but not forwards compatible.
 # Using this file for arm64 requires too many modifications.
 
-FROM oraclelinux:7-slim as rondb-build-dependencies
+FROM oraclelinux:7 as rondb-build-dependencies
 
 ARG CMAKE_VERSION=3.23.2
 ARG OPEN_SSL_VERSION=1.1.1t
@@ -39,7 +39,9 @@ gpgcheck=1
 enabled=1
 EOF
 
+#https://github.com/docker/buildx/issues/379
 RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
+    ulimit -n 1024000 && \ 
     yum -y update \
     && yum -y install \
     wget make git which perl-core openldap-devel \
@@ -50,6 +52,7 @@ RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
     vim pigz
 
 RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
+    ulimit -n 1024000 && \ 
     yum -y update \
     && yum-config-manager -y --enable "ol7_optional_latest" \
     && yum -y install devtoolset-10 maven
@@ -161,3 +164,55 @@ RUN --mount=type=bind,source=.,target=rondb-src \
 # run with --output <output-folder>
 FROM scratch AS get-package-all
 COPY --from=build-all /root/rondb-tarball .
+
+##################################
+# Intermediate Image for RDRS ####
+##################################
+
+FROM oraclelinux:7 AS rdrs-intermediate
+
+ENV MYSQL_HOME=/srv/hops/mysql
+ENV MYSQL_CONF=/srv/hops/mysql-cluster
+
+RUN mkdir -p  $MYSQL_HOME && \
+    mkdir -p  $MYSQL_HOME/bin && \
+    mkdir -p  $MYSQL_HOME/lib && \
+    mkdir -p  $MYSQL_HOME/lib/private && \
+    mkdir -p  $MYSQL_CONF && \
+    mkdir -p  $MYSQL_CONF/log 
+
+WORKDIR /root
+COPY --from=build-all /root/rondb-tarball .
+
+RUN --mount=type=bind,source=.,target=rondb-src \
+   mkdir distro && \
+   tar xzf *.tar.gz -C distro --strip-components=1 && \
+   cp distro/bin/rdrs $MYSQL_HOME/bin && \
+   cp distro/lib/libndbclient.so.6.1.0 $MYSQL_HOME/lib/ && \
+   cp distro/lib/librdrclient.so $MYSQL_HOME/lib/ && \
+   cp distro/lib/private/libcrypto.so.1.1 $MYSQL_HOME/lib/private && \
+   cp distro/lib/private/libssl.so.1.1 $MYSQL_HOME/lib/private && \
+   cp rondb-src/storage/ndb/rest-server/rest-api-server/resources/config/config_for_docker_image.json $MYSQL_CONF/rdrs_config.json
+
+##################################
+#       RDRS Image               #
+##################################
+
+FROM oraclelinux:7-slim AS rdrs
+
+COPY --from=rdrs-intermediate /srv /srv
+
+# Add RonDB libs to system path
+COPY <<-"EOF" /etc/ld.so.conf.d/rondb.conf
+/srv/hops/mysql/lib
+/srv/hops/mysql/lib/private
+EOF
+RUN ldconfig -v
+
+# Also setting LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/srv/hops/mysql/lib:/srv/hops/mysql/lib/private
+
+CMD ["/srv/hops/mysql/bin/rdrs", "-config", "/srv/hops/mysql-cluster/rdrs_config.json"]
+
+
+

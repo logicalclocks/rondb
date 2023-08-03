@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
@@ -55,11 +56,15 @@ func TestStat(t *testing.T) {
 	}
 
 	// get stats
-	statsHttp := getStatsHttp(t)
-	compare(t, statsHttp, int64(expectedAllocations), int64(numOps))
+	if config.GetAll().REST.Enable {
+		statsHttp := getStatsHttp(t)
+		compare(t, statsHttp, int64(expectedAllocations), int64(numOps))
+	}
 
-	statsGRPC := sendGRPCStatRequest(t)
-	compare(t, statsGRPC, int64(expectedAllocations), int64(numOps))
+	if config.GetAll().GRPC.Enable {
+		statsGRPC := sendGRPCStatRequest(t)
+		compare(t, statsGRPC, int64(expectedAllocations), int64(numOps))
+	}
 }
 
 func compare(t *testing.T, stats *api.StatResponse, expectedAllocations int64, numOps int64) {
@@ -77,16 +82,41 @@ func compare(t *testing.T, stats *api.StatResponse, expectedAllocations int64, n
 }
 
 func performPkOp(t *testing.T, db string, table string, ch chan int) {
-	param := api.PKReadBody{
-		Filters:     testclient.NewFiltersKVs("id0", 0, "id1", 0),
-		ReadColumns: testclient.NewReadColumn("col0"),
+
+	filters := testclient.NewFiltersKVs("id0", 0, "id1", 0)
+	if config.GetAll().REST.Enable {
+		param := api.PKReadBody{
+			Filters: filters,
+		}
+		body, _ := json.MarshalIndent(param, "", "\t")
+
+		url := testutils.NewPKReadURL(db, table)
+		testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
+			"", http.StatusOK)
 	}
-	body, _ := json.MarshalIndent(param, "", "\t")
 
-	url := testutils.NewPKReadURL(db, table)
-	testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url, string(body),
-		"", http.StatusOK)
+	if config.GetAll().GRPC.Enable {
+		pkReadParams := api.PKReadParams{
+			DB:      &db,
+			Table:   &table,
+			Filters: filters,
+		}
+		reqProto := api.ConvertPKReadParams(&pkReadParams)
 
+		grpcConn, err := testclient.InitGRPCConnction()
+		if err != nil {
+			t.Fatal(err.Error())
+		}
+		defer grpcConn.Close()
+
+		gRPCClient := api.NewRonDBRESTClient(grpcConn)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err = gRPCClient.PKRead(ctx, reqProto)
+		if err != nil {
+			t.Fatal(err.Error())
+		}
+	}
 	ch <- 0
 }
 

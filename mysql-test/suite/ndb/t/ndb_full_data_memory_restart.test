@@ -1,4 +1,5 @@
 --source include/have_ndb.inc
+--source include/not_parallel.inc
 
 call mtr.add_suppression("The table 't1' is full");
 

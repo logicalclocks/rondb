@@ -31,8 +31,9 @@ Name:          Ndb.cpp
 #include <ndb_global.h>
 
 #include "API.hpp"
-#include <md5_hash.hpp>
+#include <rondb_hash.hpp>
 #include "my_config.h"
+
 #include <NdbSleep.h>
 #include <NdbOut.hpp>
 #include <ndb_limits.h>
@@ -550,7 +551,10 @@ Ndb::computeHash(Uint32 *retval,
   require(len <= bufLen);
 
   Uint32 values[4];
-  md5_hash(values, (const char*)buf, len);
+  rondb_calc_hash(values,
+                  (const char*)buf,
+                  len >> 2,
+                  table->use_new_hash_function());
   
   if (retval)
   {
@@ -722,7 +726,10 @@ Ndb::computeHash(Uint32 *retval,
   require(len <= bufLen);
 
   Uint32 values[4];
-  md5_hash(values, (const char*)buf, len);
+  rondb_calc_hash(values,
+                  (const char*)buf,
+                  len >> 2,
+                  keyRec->table->m_use_new_hash_function);
   
   if (retval)
   {
@@ -942,7 +949,10 @@ Ndb::startTransaction(const NdbDictionary::Table *table,
       Uint32 hashValue;
       {
         Uint32 values[4];
-        md5_hash(values, keyData, keyLen);
+        rondb_calc_hash(values,
+                        (const char*)keyData,
+                        keyLen,
+                        impl->m_use_new_hash_function);
         hashValue= values[1];
       }
       const Uint16 *nodes;

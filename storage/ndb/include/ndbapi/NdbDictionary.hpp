@@ -876,6 +876,11 @@ public:
 
 #ifndef DOXYGEN_SHOULD_SKIP_DEPRECATED
     /**
+     * Check if new hash function used in this table
+     */
+    bool use_new_hash_function() const;
+
+    /**
      * Get frm file stored with this table
      */
     const void* getFrmData() const;

@@ -1,6 +1,7 @@
 /*
-   Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-    Use is subject to license terms.
+   Copyright (c) 2003, 2022, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
+   Use is subject to license terms.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -23,39 +24,38 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#ifndef MD5_HASH_H
-#define MD5_HASH_H
+#ifndef RONDB_HASH_H
+#define RONDB_HASH_H
 
 #include <ndb_types.h>
+#include <portlib/NdbHW.hpp>
+#include "my_config.h"
 
-/**
- * Calculate a md5-hash of keyBuf into result. If 'no_of_bytes' in keybuf
- * is not an 32 bit aligned word, the hash is calculated as if keybuf
- * were zero-padded to the upper word aligned length.
- * Note that there is no alignment requirement on the keybuf itself.
- */
-void md5_hash(Uint32 result[4],
-              const char* keybuf,
-              Uint32 no_of_bytes);
-
-
-// Convenient variants as keys are often stored in an Uint32 array
-inline
-void md5_hash(Uint32 result[4],
-              const Uint32* keybuf,
-              Uint32 no_of_words)
-{
-  md5_hash(result, reinterpret_cast<const char*>(keybuf), no_of_words*4);
-}
+// External declaration of hash function 
+void md5_hash(Uint32 result[4], const char* keybuf, Uint32 no_of_32_words);
 
 inline
 Uint32
-md5_hash(const Uint32* keybuf,
-         Uint32 no_of_words)
+md5_hash(const Uint32* keybuf, Uint32 no_of_32_words)
 {
   Uint32 result[4];
-  md5_hash(result, reinterpret_cast<const char*>(keybuf), no_of_words*4);
+  md5_hash(result, (const char*)keybuf, no_of_32_words);
   return result[0];
 }
 
+#if defined (__AVX2__)
+Uint64 rondb_xxhash_avx2(const char* key, Uint32 keylen_words);
+#endif
+Uint64 rondb_xxhash_std(const char* key, Uint32 keylen_words);
+
+void
+rondb_calc_hash(Uint32 hash_val[4],
+                const char *key,
+                Uint32 keylen,
+                bool use_new);
+
+Uint32
+rondb_calc_hash_val(const char *key,
+                    Uint32 keylen,
+                    bool use_new);
 #endif

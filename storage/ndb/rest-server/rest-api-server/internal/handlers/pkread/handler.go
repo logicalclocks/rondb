@@ -50,6 +50,10 @@ func (h *Handler) Validate(request interface{}) error {
 		return fmt.Errorf("table name is invalid; error: %w", err)
 	}
 
+	if err := validators.ValidateOperationID(pkReadParams.OperationID); err != nil {
+		return fmt.Errorf("operation ID is invalid; error: %w", err)
+	}
+
 	return ValidateBody(pkReadParams)
 }
 

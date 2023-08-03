@@ -34,6 +34,8 @@
 #include <ndb_global.h>
 #include "portlib/ndb_compiler.h"
 
+#include <rondb_hash.hpp>
+
 #include "SimulatedBlock.hpp"
 #include <NdbOut.hpp>
 #include <OutputStream.hpp>

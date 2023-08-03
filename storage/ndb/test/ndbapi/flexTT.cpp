@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Oracle and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -27,8 +28,8 @@
 
 #include <NdbApi.hpp>
 #include <NdbSchemaCon.hpp>
-#include <md5_hash.hpp>
 
+#include <rondb_hash.hpp>
 #include <NdbThread.h>
 #include <NdbSleep.h>
 #include <NdbTick.h>
@@ -471,7 +472,6 @@ bool executeTransaction(TransNdb* transNdbRef)
   return true;
 }//executeTransaction()
 
-
 static 
 Uint32
 getKey(Uint32 aBase, Uint32 aThreadBase) {
@@ -481,7 +481,7 @@ getKey(Uint32 aBase, Uint32 aThreadBase) {
   tKey32[0] = aThreadBase;
   for (Uint32 i = aBase; i < (aBase + MAX_SEEK); i++) {
     tKey32[1] = i;
-    hash = md5_hash(tKey32, (Uint32)2);
+    hash = rondb_calc_hash_val((const char*)tKey32, (Uint32)2, true);
     hash = (hash >> 6) & (MAX_PARTS - 1);
     if (hash == (Uint32)tLocalPart) {
       Tfound = i;

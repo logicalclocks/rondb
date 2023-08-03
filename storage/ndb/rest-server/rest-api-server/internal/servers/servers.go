@@ -19,6 +19,7 @@ package servers
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"os"
 
@@ -40,13 +41,28 @@ func CreateAndStartDefaultServers(
 	rdrsMetrics *metrics.RDRSMetrics,
 	quit chan os.Signal,
 ) (cleanup func(), err error) {
-	cleanup = func() {}
+
+	cleanupWrapper := func(cleanupFNs []func()) func() {
+		return func() {
+			//clean up in reverse order
+			for i := len(cleanupFNs) - 1; i >= 0; i-- {
+				if cleanupFNs[i] != nil {
+					(cleanupFNs[i])()
+				}
+			}
+		}
+	}
+	cleanupFNs := []func(){}
+
+	conf := config.GetAll()
+	if !conf.GRPC.Enable && !conf.REST.Enable {
+		return nil, errors.New("both REST and gRPC interfaces are disabled")
+	}
 
 	// Connect to RonDB
-	conf := config.GetAll()
 	dalErr := dal.InitRonDBConnection(conf.RonDB)
 	if dalErr != nil {
-		return cleanup, dalErr
+		return nil, dalErr
 	}
 	cleanupRonDB := func() {
 		dalErr = dal.ShutdownConnection()
@@ -54,6 +70,7 @@ func CreateAndStartDefaultServers(
 			log.Error(dalErr.Error())
 		}
 	}
+	cleanupFNs = append(cleanupFNs, cleanupRonDB)
 
 	var tlsConfig *tls.Config
 	if conf.Security.TLS.EnableTLS {
@@ -64,36 +81,39 @@ func CreateAndStartDefaultServers(
 			conf.Security.TLS.PrivateKeyFile,
 		)
 		if err != nil {
-			cleanupRonDB()
-			return cleanup, fmt.Errorf("failed generating tls configuration; error: %w", err)
+			cleanupWrapper(cleanupFNs)()
+			return nil, fmt.Errorf("failed generating tls configuration; error: %w", err)
 		}
 	}
 
-	grpcServer := grpc.New(tlsConfig, heap, apiKeyCache, rdrsMetrics)
-	cleanupGrpc, err := grpc.Start(
-		grpcServer,
-		conf.GRPC.ServerIP,
-		conf.GRPC.ServerPort,
-		quit,
-	)
-	if err != nil {
-		cleanupRonDB()
-		return cleanup, fmt.Errorf("failed starting gRPC server; error: %w", err)
+	if conf.GRPC.Enable {
+		grpcServer := grpc.New(tlsConfig, heap, apiKeyCache, rdrsMetrics)
+		cleanupGrpc, err := grpc.Start(
+			grpcServer,
+			conf.GRPC.ServerIP,
+			conf.GRPC.ServerPort,
+			quit,
+		)
+		if err != nil {
+			cleanupWrapper(cleanupFNs)()
+			return nil, fmt.Errorf("failed starting gRPC server; error: %w", err)
+		}
+		cleanupFNs = append(cleanupFNs, cleanupGrpc)
 	}
 
-	restServer := rest.New(
-		conf.REST.ServerIP,
-		conf.REST.ServerPort,
-		tlsConfig,
-		heap,
-		apiKeyCache,
-		rdrsMetrics,
-	)
+	if conf.REST.Enable {
+		restServer := rest.New(
+			conf.REST.ServerIP,
+			conf.REST.ServerPort,
+			tlsConfig,
+			heap,
+			apiKeyCache,
+			rdrsMetrics,
+		)
 
-	cleanupRest := restServer.Start(quit)
-	return func() {
-		cleanupRonDB()
-		cleanupGrpc()
-		cleanupRest()
-	}, nil
+		cleanupRest := restServer.Start(quit)
+		cleanupFNs = append(cleanupFNs, cleanupRest)
+	}
+
+	return cleanupWrapper(cleanupFNs), nil
 }

@@ -37,7 +37,7 @@
 #include <dbtup/tuppage.hpp>
 
 #include <DebuggerNames.hpp>
-#include <md5_hash.hpp>
+#include <rondb_hash.hpp>
 
 #include <PgmanProxy.hpp>
 
@@ -6820,7 +6820,8 @@ operator<<(NdbOut& out, Ptr<Pgman::Page_entry> ptr)
       require(pe.m_this->m_global_page_pool.getPtr(gptr, pe.m_real_page_i));
       Uint32 hash_result[4];      
       md5_hash(hash_result,
-               gptr.p->data, sizeof(gptr.p->data)/sizeof(Uint32));
+               (const char*)gptr.p->data,
+               sizeof(gptr.p->data)/sizeof(Uint32));
       out.print(" md5=%08x%08x%08x%08x",
                 hash_result[0], hash_result[1],
                 hash_result[2], hash_result[3]);
@@ -6917,7 +6918,8 @@ print(EventLogger *logger, Ptr<Pgman::Page_entry> ptr) {
       Ptr<GlobalPage> gptr;
       require(pe.m_this->m_global_page_pool.getPtr(gptr, pe.m_real_page_i));
       Uint32 hash_result[4];
-      md5_hash(hash_result, gptr.p->data,
+      md5_hash(hash_result,
+               (const char*)gptr.p->data,
                sizeof(gptr.p->data) / sizeof(Uint32));
       BaseString::snappend(logbuf, MAX_LOG_MESSAGE_SIZE,
                            " md5=%08x%08x%08x%08x", hash_result[0],
