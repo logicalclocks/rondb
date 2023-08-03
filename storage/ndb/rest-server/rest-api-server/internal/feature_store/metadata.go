@@ -222,7 +222,6 @@ func getFeatureViewCacheKey(featureStoreName, featureViewName string, featureVie
 }
 
 func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureViewVersion int) (*FeatureViewMetadata, *RestErrorCode) {
-
 	fsID, err := dal.GetFeatureStoreID(featureStoreName)
 	if err != nil {
 		if strings.Contains(err.Error(), ERROR_NOT_FOUND) {

@@ -25,6 +25,7 @@ import (
 )
 
 func (h *RouteHandler) FeatureStore(c *gin.Context) {
+
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 
 	fsReq, err := parseFeatureStoreRequest(c)
