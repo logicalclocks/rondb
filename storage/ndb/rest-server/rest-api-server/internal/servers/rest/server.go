@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 
@@ -153,8 +154,13 @@ func LogHandler(m *metrics.HTTPMetrics) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now().UnixNano()
 		c.Next()
-		defer m.AddResponseTime(c.Request.RequestURI, c.Request.Method, float64(time.Now().UnixNano()-start))
-		defer m.AddResponseStatus(c.Request.RequestURI, c.Request.Method, c.Writer.Status())
+		// FIXME: For now, just log feature store metrics.
+		// RonDb metrics will be added https://hopsworks.atlassian.net/browse/RONDB-442
+		var endpoint = strings.Split(c.Request.RequestURI, "/")
+		if len(endpoint) > 2 && (endpoint[2] == "feature_store" || endpoint[2] == "batch_feature_store") {
+			defer m.AddResponseTime(c.Request.RequestURI, c.Request.Method, float64(time.Now().UnixNano()-start))
+			defer m.AddResponseStatus(c.Request.RequestURI, c.Request.Method, c.Writer.Status())
+		}
 	}
 }
 
