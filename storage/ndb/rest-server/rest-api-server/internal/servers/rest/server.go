@@ -110,7 +110,7 @@ type RouteHandler struct {
 
 func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache, rdrsMetrics *metrics.RDRSMetrics) {
 	router.Use(ErrorHandler)
-	router.Use(LoggedHandler(rdrsMetrics.HTTPMetrics))
+	router.Use(LogHandler(rdrsMetrics.HTTPMetrics))
 
 	versionGroup := router.Group(config.VERSION_GROUP)
 
@@ -149,7 +149,7 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 
 }
 
-func LoggedHandler(m *metrics.HTTPMetrics) gin.HandlerFunc {
+func LogHandler(m *metrics.HTTPMetrics) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now().UnixNano()
 		c.Next()

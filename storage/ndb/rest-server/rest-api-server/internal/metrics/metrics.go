@@ -41,23 +41,23 @@ type RonDBMetrics struct {
 }
 
 type HTTPMetrics struct {
-	PingCounter              prometheus.Counter
-	PkReadCounter            prometheus.Counter
-	BatchPkReadCounter       prometheus.Counter
-	StatCounter              prometheus.Counter
-	PingSummary              prometheus.Summary
-	PkReadSummary            prometheus.Summary
-	BatchPkReadSummary       prometheus.Summary
-	ResponseTimeSummary      prometheus.SummaryVec
-	ResponseStatusCount	 	 prometheus.CounterVec
-	StatSummary              prometheus.Summary
-	HttpConnectionGauge      HttpConnectionGauge
+	PingCounter         prometheus.Counter
+	PkReadCounter       prometheus.Counter
+	BatchPkReadCounter  prometheus.Counter
+	StatCounter         prometheus.Counter
+	PingSummary         prometheus.Summary
+	PkReadSummary       prometheus.Summary
+	BatchPkReadSummary  prometheus.Summary
+	ResponseTimeSummary prometheus.SummaryVec
+	ResponseStatusCount prometheus.CounterVec
+	StatSummary         prometheus.Summary
+	HttpConnectionGauge HttpConnectionGauge
 }
 
 const (
 	ENDPOINT = "endpoint"
-	METHOD = "method"
-	STATUS = "status"
+	METHOD   = "method"
+	STATUS   = "status"
 )
 
 func (h *HTTPMetrics) AddResponseTime(
@@ -77,19 +77,15 @@ func (h *HTTPMetrics) AddResponseStatus(
 }
 
 type GRPCMetrics struct {
-	PingCounter              prometheus.Counter
-	PkReadCounter            prometheus.Counter
-	BatchPkReadCounter       prometheus.Counter
-	FeatureStoreCounter      prometheus.Counter
-	BatchFeatureStoreCounter prometheus.Counter
-	StatCounter              prometheus.Counter
-	PingSummary              prometheus.Summary
-	PkReadSummary            prometheus.Summary
-	BatchPkReadSummary       prometheus.Summary
-	FeatureStoreSummary      prometheus.Summary
-	BatchFeatureStoreSummary prometheus.Summary
-	StatSummary              prometheus.Summary
-	GRPCStatistics           GRPCStatistics
+	PingCounter        prometheus.Counter
+	PkReadCounter      prometheus.Counter
+	BatchPkReadCounter prometheus.Counter
+	StatCounter        prometheus.Counter
+	PingSummary        prometheus.Summary
+	PkReadSummary      prometheus.Summary
+	BatchPkReadSummary prometheus.Summary
+	StatSummary        prometheus.Summary
+	GRPCStatistics     GRPCStatistics
 }
 
 func NewRDRSMetrics() (*RDRSMetrics, func()) {
