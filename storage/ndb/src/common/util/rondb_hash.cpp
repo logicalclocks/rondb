@@ -32,28 +32,29 @@
 void
 rondb_calc_hash(Uint32 hash_val[4],
                 const char *key,
-                Uint32 keylen,
+                Uint32 keylen_words,
                 bool use_new)
 {
+  Uint32 keylen_bytes = 4 * keylen_words;
   if (likely(use_new))
   {
     Uint64 hash;
 #if defined (__AVX2__)
     if (unlikely(is_avx2_supported()))
     {
-      hash = rondb_xxhash_avx2(key, keylen);
+      hash = rondb_xxhash_avx2(key, keylen_bytes);
     }
     else
 #endif
     {
-      hash = rondb_xxhash_std(key, keylen);
+      hash = rondb_xxhash_std(key, keylen_bytes);
     }
     hash_val[0] = hash & 0xFFFFFFFF;
     hash_val[1] = hash >> 32;
   }
   else
   {
-    md5_hash(hash_val, key, keylen);
+    md5_hash(hash_val, key, keylen_bytes);
   }
 }
 

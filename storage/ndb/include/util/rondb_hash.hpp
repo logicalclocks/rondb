@@ -32,30 +32,31 @@
 #include "my_config.h"
 
 // External declaration of hash function 
-void md5_hash(Uint32 result[4], const char* keybuf, Uint32 no_of_32_words);
+void md5_hash(Uint32 result[4], const char* keybuf, Uint32 no_of_bytes);
 
 inline
 Uint32
 md5_hash(const Uint32* keybuf, Uint32 no_of_32_words)
 {
   Uint32 result[4];
-  md5_hash(result, (const char*)keybuf, no_of_32_words);
+  Uint32 no_of_bytes = 4 * no_of_32_words;
+  md5_hash(result, (const char*)keybuf, no_of_bytes);
   return result[0];
 }
 
 #if defined (__AVX2__)
-Uint64 rondb_xxhash_avx2(const char* key, Uint32 keylen_words);
+Uint64 rondb_xxhash_avx2(const char* key, Uint32 keylen_bytes);
 #endif
-Uint64 rondb_xxhash_std(const char* key, Uint32 keylen_words);
+Uint64 rondb_xxhash_std(const char* key, Uint32 keylen_bytes);
 
 void
 rondb_calc_hash(Uint32 hash_val[4],
                 const char *key,
-                Uint32 keylen,
+                Uint32 keylen_words,
                 bool use_new);
 
 Uint32
 rondb_calc_hash_val(const char *key,
-                    Uint32 keylen,
+                    Uint32 keylen_words,
                     bool use_new);
 #endif

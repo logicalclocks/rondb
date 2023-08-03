@@ -28,7 +28,7 @@
 #include <util/ndb_xxhash.h>
 
 Uint64
-rondb_xxhash_std(const char* keybuf, Uint32 keylen_words)
+rondb_xxhash_std(const char* keybuf, Uint32 keylen_bytes)
 {
-  return XXH3_64bits(keybuf, 4*keylen_words);
+  return XXH3_64bits(keybuf, keylen_bytes);
 }

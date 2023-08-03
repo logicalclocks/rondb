@@ -3353,7 +3353,7 @@ void Dbtc::hash(Signal* signal, CacheRecord * const regCachePtr)
   Uint32 tmp[4];
   if (!regCachePtr->m_special_hash)
   {
-    rondb_calc_hash(tmp, (const char*)Tdata32, keylen, use_new_hash_function);
+    rondb_calc_hash(tmp, (const char*)&Tdata32[0], keylen, use_new_hash_function);
   }
   else
   {
@@ -3367,7 +3367,7 @@ void Dbtc::hash(Signal* signal, CacheRecord * const regCachePtr)
     else
     {
       handle_special_hash(tmp,
-                          Tdata32,
+                          &Tdata32[0],
                           keylen,
                           regCachePtr->tableref,
                           !distKey,
