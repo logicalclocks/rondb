@@ -111,7 +111,7 @@ type RouteHandler struct {
 
 func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache, rdrsMetrics *metrics.RDRSMetrics) {
 	router.Use(ErrorHandler)
-	router.Use(LogHandler(rdrsMetrics.HTTPMetrics))
+	router.Use(RestMetricsHandler(rdrsMetrics.EndPointMetrics))
 
 	versionGroup := router.Group(config.VERSION_GROUP)
 
@@ -150,17 +150,16 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 
 }
 
-func LogHandler(m *metrics.HTTPMetrics) gin.HandlerFunc {
+func RestMetricsHandler(m *metrics.EndPointMetrics) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now().UnixNano()
 		c.Next()
-		// FIXME: For now, just log feature store metrics.
-		// RonDb metrics will be added https://hopsworks.atlassian.net/browse/RONDB-442
+
 		var endpoint = strings.Split(c.Request.RequestURI, "/")
-		if len(endpoint) > 2 && (endpoint[2] == "feature_store" || endpoint[2] == "batch_feature_store") {
-			defer m.AddResponseTime(c.Request.RequestURI, c.Request.Method, float64(time.Now().UnixNano()-start))
-			defer m.AddResponseStatus(c.Request.RequestURI, c.Request.Method, c.Writer.Status())
-		}
+		metricName := fmt.Sprintf("%s%s", config.HTTP_METRIC_PREPEND, endpoint[2])
+
+		m.AddResponseTime(metricName, c.Request.Method, float64(time.Now().UnixNano()-start))
+		m.AddResponseStatus(metricName, c.Request.Method, c.Writer.Status())
 	}
 }
 
