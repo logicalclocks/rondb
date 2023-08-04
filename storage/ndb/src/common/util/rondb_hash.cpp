@@ -1,4 +1,5 @@
 /* Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -21,15 +22,51 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-
-
-#include "md5_hash.hpp"
+#include "rondb_hash.hpp"
 #include "my_config.h"
 
 #include <string.h>       // memcpy()
 #include <my_compiler.h>  // likely
 #include <my_config.h>    // big/little endian
 
+void
+rondb_calc_hash(Uint32 hash_val[4],
+                const char *key,
+                Uint32 keylen_words,
+                bool use_new)
+{
+  Uint32 keylen_bytes = 4 * keylen_words;
+  if (likely(use_new))
+  {
+    Uint64 hash;
+#if defined (__AVX2__)
+    if (unlikely(is_avx2_supported()))
+    {
+      hash = rondb_xxhash_avx2(key, keylen_bytes);
+    }
+    else
+#endif
+    {
+      hash = rondb_xxhash_std(key, keylen_bytes);
+    }
+    hash_val[0] = hash & 0xFFFFFFFF;
+    hash_val[1] = hash >> 32;
+  }
+  else
+  {
+    md5_hash(hash_val, key, keylen_bytes);
+  }
+}
+
+Uint32
+rondb_calc_hash_val(const char *key,
+                    Uint32 keylen,
+                    bool use_new)
+{
+  Uint32 hash_val[4];
+  rondb_calc_hash(hash_val, key, keylen, use_new);
+  return hash_val[0];
+}
 
 /*
  * This code implements the MD5 message-digest algorithm.
@@ -245,7 +282,7 @@ void md5_hash(Uint32 result[4],
 //////////////////////////////////////////////////
 //////////////////// Unit test ///////////////////
 
-#ifdef TEST_MD5_HASH
+#ifdef TEST_RONDB_HASH
 
 #include <util/NdbTap.hpp>
 #include <iostream>

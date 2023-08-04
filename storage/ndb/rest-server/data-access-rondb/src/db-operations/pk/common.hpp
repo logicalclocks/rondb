@@ -31,15 +31,15 @@
  * @param col information of column that we're querying
  * @param transaction
  * @param request the incoming request from the REST API server
- * @param colIdx the scale
- * @param[out] operation the RonDB operation that we wish to prepare
+ * @param colIdx
+ * @param[out] primaryKeysCols
+ * @param[out] primaryKeySizes
  * @return the REST API status of performing the operation
  *
  * @return status
  */
-RS_Status SetOperationPKCol(const NdbDictionary::Column *col, NdbTransaction *transaction,
-                            const NdbDictionary::Table *tableDict, PKRRequest *request,
-                            Uint32 colIdx, NdbOperation **operation);
+RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *request, Uint32 colIdx,
+                            Int8 **primaryKeyCol, Uint32 *primaryKeySize);
 
 /**
  * it stores the data read from the DB into the response buffer

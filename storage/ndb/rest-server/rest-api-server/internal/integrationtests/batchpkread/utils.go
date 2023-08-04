@@ -3,6 +3,7 @@ package batchpkread
 import (
 	"testing"
 
+	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
@@ -15,9 +16,12 @@ func batchTestMultiple(t *testing.T, tests map[string]api.BatchOperationTestInfo
 }
 
 func batchTest(t testing.TB, testInfo api.BatchOperationTestInfo, isBinaryData bool, validate bool) {
-	// This will mean that REST calls to Handler will be slightly faster
-	batchRESTTest(t, testInfo, isBinaryData, validate)
-	batchGRPCTest(t, testInfo, isBinaryData, validate)
+	if config.GetAll().REST.Enable {
+		batchRESTTest(t, testInfo, isBinaryData, validate)
+	}
+	if config.GetAll().GRPC.Enable {
+		batchGRPCTest(t, testInfo, isBinaryData, validate)
+	}
 }
 
 func checkOpIDandStatus(

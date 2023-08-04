@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -41,7 +42,7 @@ class AccFragReq {
    */
   friend class Dbacc;
 public:
-  static constexpr Uint32 SignalLength = 12;
+  static constexpr Uint32 SignalLength = 13;
 
 private:
   Uint32 userPtr;
@@ -56,6 +57,7 @@ private:
   Uint32 lhFragBits;
   Uint32 lhDirBits;
   Uint32 keyLength;
+  Uint32 hashFunctionFlag;
 };
 
 class AccFragConf {

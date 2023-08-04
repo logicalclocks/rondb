@@ -172,6 +172,7 @@ public:
       TR_PREPARED     = 1 << 2
       ,TR_READ_BACKUP = (1 << 5)
       ,TR_FULLY_REPLICATED = (1 << 6)
+      ,TR_HASH_FUNCTION = (1 << 7)
     };
     Uint8 get_enabled()     const { return (m_flags & TR_ENABLED)      != 0; }
     Uint8 get_dropping()    const { return (m_flags & TR_DROPPING)     != 0; }
@@ -1640,7 +1641,8 @@ private:
   Uint32 handle_special_hash(Uint32 tableId, Uint32 dstHash[4],
                              const Uint32* src,
                              Uint32 srcLen,       // Len in #32bit words
-                             const struct KeyDescriptor* desc);
+                             const struct KeyDescriptor* desc,
+                             bool use_new_hash_function);
 
   Uint32 computeHash(Signal*, BuildKeyReq&, Uint32 table, Uint32 keyInfoPtrI);
   Uint32 computePartitionHash(Signal*, BuildKeyReq&, Uint32 table, Uint32 keyInfoPtrI);

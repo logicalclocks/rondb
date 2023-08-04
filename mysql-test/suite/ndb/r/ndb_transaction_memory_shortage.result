@@ -1046,7 +1046,6 @@ Sending dump signal with data:
 0x00000968 0x00000001 
 
 delete from t0;
-set @pool = @pool - 1;
 set @pool = 3;
 set @pool = @pool - 1;
 insert into t0 (c) values (1),(2),(3),(4);

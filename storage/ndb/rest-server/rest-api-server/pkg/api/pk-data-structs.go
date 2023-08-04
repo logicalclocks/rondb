@@ -46,7 +46,7 @@ type PKReadPP struct {
 type PKReadBody struct {
 	Filters     *[]Filter     `json:"filters"         form:"filters"         binding:"required,min=1,max=4096,dive"`
 	ReadColumns *[]ReadColumn `json:"readColumns"    form:"read-columns"    binding:"omitempty,min=1,max=4096,unique"`
-	OperationID *string       `json:"operationId"    form:"operation-id"    binding:"omitempty,min=1,max=64"`
+	OperationID *string       `json:"operationId"    form:"operation-id"    binding:"omitempty"`
 }
 
 type Filter struct {
@@ -102,12 +102,12 @@ type PKReadResponse interface {
 }
 
 type PKReadResponseJSON struct {
-	OperationID *string                      `json:"operationId"    form:"operation-id"    binding:"omitempty,min=1,max=64"`
+	OperationID *string                      `json:"operationId"    form:"operation-id"    binding:"omitempty"`
 	Data        *map[string]*json.RawMessage `json:"data"           form:"data"            binding:"omitempty"`
 }
 
 type PKReadResponseGRPC struct {
-	OperationID *string             `json:"operationId"    form:"operation-id"    binding:"omitempty,min=1,max=64"`
+	OperationID *string             `json:"operationId"    form:"operation-id"    binding:"omitempty"`
 	Data        *map[string]*string `json:"data"           form:"data"            binding:"omitempty"`
 }
 

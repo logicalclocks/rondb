@@ -27,6 +27,7 @@
 #include "Dbtux.hpp"
 #include "my_sys.h"
 #include "../dblqh/Dblqh.hpp"
+#include <util/rondb_hash.hpp>
 
 #define JAM_FILE_ID 371
 
@@ -851,7 +852,10 @@ Dbtux::continue_scan(Signal *signal,
       lockReq->userRef = reference();
       lockReq->tableId = scan.m_tableId;
       lockReq->fragId = frag.m_fragId;
-      lockReq->hashValue = md5_hash(pkData, pkSize);
+      lockReq->hashValue =
+        rondb_calc_hash_val((const char*)pkData,
+                             pkSize,
+                             frag.m_use_new_hash_function);
       Uint32 lkey1, lkey2;
       getTupAddr(ent, lkey1, lkey2);
       lockReq->page_id = lkey1;

@@ -103,6 +103,5 @@ func GetRonDBStats() (*RonDBStats, *DalError) {
 	rstats.NdbObjectsTotalCount = int64(p.ndb_objects_count)
 	rstats.NdbObjectsFreeCount = int64(p.ndb_objects_available)
 	rstats.NdbConnectionState = int64(p.connection_state)
-
 	return &rstats, nil
 }

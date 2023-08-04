@@ -24,13 +24,17 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
+	fsmeta "hopsworks.ai/rdrs/internal/feature_store"
+	"hopsworks.ai/rdrs/internal/handlers/batchfeaturestore"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
+	"hopsworks.ai/rdrs/internal/handlers/feature_store"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	"hopsworks.ai/rdrs/internal/handlers/stat"
 	"hopsworks.ai/rdrs/internal/log"
@@ -97,22 +101,31 @@ func (s *RonDBRestServer) Start(quit chan os.Signal) (cleanupFunc func()) {
 
 type RouteHandler struct {
 	// TODO: Add thread-safe logger
-	statsHandler       stat.Handler
-	pkReadHandler      pkread.Handler
-	batchPkReadHandler batchpkread.Handler
-	rdrsMetrics        *metrics.RDRSMetrics
+	statsHandler             stat.Handler
+	pkReadHandler            pkread.Handler
+	batchPkReadHandler       batchpkread.Handler
+	rdrsMetrics              *metrics.RDRSMetrics
+	featureStoreHandler      feature_store.Handler
+	batchFeatureStoreHandler batchfeaturestore.Handler
 }
 
 func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Cache, rdrsMetrics *metrics.RDRSMetrics) {
 	router.Use(ErrorHandler)
+	router.Use(LogHandler(rdrsMetrics.HTTPMetrics))
 
 	versionGroup := router.Group(config.VERSION_GROUP)
 
+	batchPkReadHandler := batchpkread.New(heap, apiKeyCache)
+	var fvMeta = fsmeta.NewFeatureViewMetaDataCache()
+	featureStoreHandler := feature_store.New(fvMeta, apiKeyCache, batchPkReadHandler)
+
 	routeHandler := &RouteHandler{
-		statsHandler:       stat.New(heap, apiKeyCache),
-		pkReadHandler:      pkread.New(heap, apiKeyCache),
-		batchPkReadHandler: batchpkread.New(heap, apiKeyCache),
-		rdrsMetrics:        rdrsMetrics,
+		statsHandler:             stat.New(heap, apiKeyCache),
+		pkReadHandler:            pkread.New(heap, apiKeyCache),
+		batchPkReadHandler:       batchPkReadHandler,
+		rdrsMetrics:              rdrsMetrics,
+		featureStoreHandler:      featureStoreHandler,
+		batchFeatureStoreHandler: batchfeaturestore.New(fvMeta, apiKeyCache, batchPkReadHandler),
 	}
 
 	// ping
@@ -130,6 +143,25 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 
 	// prometheus
 	router.GET("/metrics", routeHandler.Metrics)
+
+	// feature store
+	versionGroup.POST("/"+config.FEATURE_STORE_OPERATION, routeHandler.FeatureStore)
+	versionGroup.POST("/"+config.BATCH_FEATURE_STORE_OPERATION, routeHandler.BatchFeatureStore)
+
+}
+
+func LogHandler(m *metrics.HTTPMetrics) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now().UnixNano()
+		c.Next()
+		// FIXME: For now, just log feature store metrics.
+		// RonDb metrics will be added https://hopsworks.atlassian.net/browse/RONDB-442
+		var endpoint = strings.Split(c.Request.RequestURI, "/")
+		if len(endpoint) > 2 && (endpoint[2] == "feature_store" || endpoint[2] == "batch_feature_store") {
+			defer m.AddResponseTime(c.Request.RequestURI, c.Request.Method, float64(time.Now().UnixNano()-start))
+			defer m.AddResponseStatus(c.Request.RequestURI, c.Request.Method, c.Writer.Status())
+		}
+	}
 }
 
 // TODO: Pass logger to this like in https://stackoverflow.com/a/69948929/9068781

@@ -185,13 +185,17 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
                 "APIVersion": "0.1.0",
                 "BufferSize": 327680,
                 "PreAllocatedBuffers": 1024,
-                "GOMAXPROCS": -1
+                "GOMAXPROCS": -1,
+                "BatchMaxSize": 256,
+                "OperationIDMaxSize": 256
         },
         "REST": {
+                "Enable": true,
                 "ServerIP": "localhost",
                 "ServerPort": 4406
         },
         "GRPC": {
+                "Enable": true,
                 "ServerIP": "localhost",
                 "ServerPort": 5406
         },
@@ -257,13 +261,21 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
   - **GOMAXPROCS:** The GOMAXPROCS variable limits the number of operating system threads that can execute user-level Go code simultaneously.  The default value is -1, that is it does not change the current settings.
 
+  - **BatchMaxSize:** Max number of suboperations in a batch operation. Default is 256.
+
+  - **OperationIDMaxSize:** Max length of operation ID. Default is 256 characters.
+
 - **REST** 
+
+  - **Enable:** Enable/Disable REST Server Interface 
 
   - **ServerIP:** Binds the REST server to this IP. The default value is *localhost*
 
   - **ServerPort:** REST server port. The default port is *4406*
 
 - **GRPC** 
+
+  - **Enable:** Enable/Disable GRPC Server Interface 
 
   - **ServerIP:** Binds the GRPC server to this IP. The default value is *localhost*
 

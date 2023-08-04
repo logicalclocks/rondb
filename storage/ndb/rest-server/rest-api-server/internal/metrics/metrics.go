@@ -18,6 +18,8 @@
 package metrics
 
 import (
+	"fmt"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -46,8 +48,32 @@ type HTTPMetrics struct {
 	PingSummary         prometheus.Summary
 	PkReadSummary       prometheus.Summary
 	BatchPkReadSummary  prometheus.Summary
+	ResponseTimeSummary prometheus.SummaryVec
+	ResponseStatusCount prometheus.CounterVec
 	StatSummary         prometheus.Summary
 	HttpConnectionGauge HttpConnectionGauge
+}
+
+const (
+	ENDPOINT = "endpoint"
+	METHOD   = "method"
+	STATUS   = "status"
+)
+
+func (h *HTTPMetrics) AddResponseTime(
+	endPoint string,
+	method string,
+	time float64,
+) {
+	h.ResponseTimeSummary.With(prometheus.Labels{ENDPOINT: endPoint, METHOD: method}).Observe(time)
+}
+
+func (h *HTTPMetrics) AddResponseStatus(
+	endPoint string,
+	method string,
+	status int,
+) {
+	h.ResponseStatusCount.With(prometheus.Labels{ENDPOINT: endPoint, METHOD: method, STATUS: fmt.Sprintf("%d", status)}).Inc()
 }
 
 type GRPCMetrics struct {
@@ -191,6 +217,25 @@ func newHTTPMetrics() (*HTTPMetrics, func()) {
 			},
 		)
 
+	metrics.ResponseTimeSummary =
+		*prometheus.NewSummaryVec(
+			prometheus.SummaryOpts{
+				Name:       protocol + "_response_time_summary",
+				Help:       "Summary for response time handled by " + protocol + " handler. Time is in nanoseconds",
+				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
+			},
+			[]string{"endpoint", "method"},
+		)
+
+	metrics.ResponseStatusCount =
+		*prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: protocol + "_response_status_count",
+				Help: "No of response status returned by " + protocol,
+			},
+			[]string{"endpoint", "method", "status"},
+		)
+
 	metrics.StatCounter =
 		prometheus.NewCounter(
 			prometheus.CounterOpts{
@@ -222,6 +267,8 @@ func newHTTPMetrics() (*HTTPMetrics, func()) {
 	prometheus.MustRegister(metrics.PkReadSummary)
 	prometheus.MustRegister(metrics.BatchPkReadCounter)
 	prometheus.MustRegister(metrics.BatchPkReadSummary)
+	prometheus.MustRegister(metrics.ResponseTimeSummary)
+	prometheus.MustRegister(metrics.ResponseStatusCount)
 	prometheus.MustRegister(metrics.StatCounter)
 	prometheus.MustRegister(metrics.StatSummary)
 	prometheus.MustRegister(metrics.HttpConnectionGauge.ConnectionGauge)
@@ -233,6 +280,8 @@ func newHTTPMetrics() (*HTTPMetrics, func()) {
 		prometheus.Unregister(metrics.PkReadSummary)
 		prometheus.Unregister(metrics.BatchPkReadCounter)
 		prometheus.Unregister(metrics.BatchPkReadSummary)
+		prometheus.Unregister(metrics.ResponseTimeSummary)
+		prometheus.Unregister(metrics.ResponseStatusCount)
 		prometheus.Unregister(metrics.StatCounter)
 		prometheus.Unregister(metrics.StatSummary)
 		prometheus.Unregister(metrics.HttpConnectionGauge.ConnectionGauge)

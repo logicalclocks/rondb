@@ -1160,6 +1160,12 @@ NdbDictionary::Table::getRowChecksum()
   return m_impl.m_row_checksum;
 }
 
+bool
+NdbDictionary::Table::use_new_hash_function() const
+{
+  return m_impl.m_use_new_hash_function;
+}
+
 /*****************************************************************
  * Index facade
  */

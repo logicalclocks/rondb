@@ -4,8 +4,9 @@
 ndbd=,,,
 #MaxDMLOperationsPerTransaction=4294967039
 #MaxDMLOperationsPerTransaction=4294967039
-MaxDMLOperationsPerTransaction=32
-MaxNoOfLocalOperations=1024
+MaxDMLOperationsPerTransaction=128
+#MaxNoOfLocalOperations=1024
+LowLatency=0
 # Disable auto create index stats. This ensures that
 # the error inserted in the test fails at the expected
 # place i.e. during TCCOMMITREQ and not TCKEYREQ as is
@@ -16,10 +17,10 @@ IndexStatAutoCreate=0
 
 [cluster_config.ndbd.1.1]
 NodeId=1
-MaxNoOfConcurrentOperations=32
-ReservedConcurrentOperations=32
-MaxNoOfConcurrentTransactions=32
-ReservedConcurrentTransactions=32
+MaxNoOfConcurrentOperations=128
+ReservedConcurrentOperations=128
+MaxNoOfConcurrentTransactions=64
+ReservedConcurrentTransactions=64
 
 [cluster_config.ndbd.2.1]
 NodeId=2
@@ -32,15 +33,15 @@ MaxDMLOperationsPerTransaction=92
 
 [cluster_config.ndbd.3.1]
 NodeId=3
-MaxNoOfConcurrentOperations=32
-ReservedConcurrentOperations=32
+MaxNoOfConcurrentOperations=128
+ReservedConcurrentOperations=128
 MaxNoOfConcurrentTransactions=32
 ReservedConcurrentTransactions=32
 
 [cluster_config.ndbd.4.1]
 NodeId=4
-MaxNoOfConcurrentOperations=32
-ReservedConcurrentOperations=32
+MaxNoOfConcurrentOperations=128
+ReservedConcurrentOperations=128
 MaxNoOfConcurrentTransactions=32
 ReservedConcurrentTransactions=32
 

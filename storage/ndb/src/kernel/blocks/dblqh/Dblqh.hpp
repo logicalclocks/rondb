@@ -523,14 +523,24 @@ public:
 
   struct CopyActiveRecord
   {
+    static constexpr Uint32 TYPE_ID = RT_DBLQH_COPY_ACTIVE_RECORD;
+    Uint32 m_magic;
+
+    CopyActiveRecord() :
+      m_magic(Magic::make(TYPE_ID))
+    {}
+
+    ~CopyActiveRecord()
+    {}
+ 
     CopyActiveReq m_copy_activereq;
     Uint32 nextPool;
     Uint32 nextList;
     Uint32 prevList;
   };
+  static constexpr Uint32 DBLQH_COPY_ACTIVE_RECORD_TRANSIENT_POOL_INDEX = 4;
   typedef Ptr<CopyActiveRecord> CopyActiveRecordPtr;
-#define ZCOPYACTIVEREC_FILE_SIZE MAX_NDBMT_LQH_THREADS
-  typedef ArrayPool<CopyActiveRecord> CopyActiveRecord_pool;
+  typedef TransientPool<CopyActiveRecord> CopyActiveRecord_pool;
   typedef DLFifoList<CopyActiveRecord_pool> CopyActiveRecord_fifo;
 
   struct AddFragRecord {
@@ -2581,6 +2591,7 @@ public:
     Uint16 tableType;
     Uint8 m_disk_table;
     bool  m_informed_backup_drop_tab;
+    bool m_use_new_hash_function;
 
     std::atomic<unsigned int> usageCountR; // readers
     std::atomic<unsigned int> usageCountW; // writers
@@ -3270,7 +3281,9 @@ private:
   void LQHKEY_abort(Signal* signal, int errortype, TcConnectionrecPtr);
   void LQHKEY_error(Signal* signal, int errortype, TcConnectionrecPtr);
   void nextRecordCopy(Signal* signal, TcConnectionrecPtr);
-  Uint32 calculateHash(Uint32 tableId, const Uint32* src);
+  Uint32 calculateHash(Uint32 tableId,
+                       const Uint32* src,
+                       bool use_new_hash_function);
   void sendCommittedTc(Signal* signal,
                        BlockReference atcBlockref,
                        const TcConnectionrec*);
@@ -4833,7 +4846,7 @@ private:
   void sendPoolShrink(Uint32 pool_index);
   void shrinkTransientPools(Uint32 pool_index);
 
-  static const Uint32 c_transient_pool_count = 4;
+  static const Uint32 c_transient_pool_count = 5;
   TransientFastSlotPool* c_transient_pools[c_transient_pool_count];
   Bitmask<1> c_transient_pools_shrinking;
 
@@ -5812,6 +5825,10 @@ Dblqh::release_frag_access(Fragrecord *fragPtrP)
   {
     jamDebug();
     handle_release_frag_access(fragPtrP);
+  }
+  else
+  {
+    jamDebug();
   }
 }
 

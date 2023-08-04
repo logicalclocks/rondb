@@ -40,8 +40,9 @@ var ipAddresses []net.IP
 var dnsNames []string
 
 func init() {
-	ipAddresses = []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}
-	dnsNames = []string{"localhost"}
+	conf := config.GetAll()
+	ipAddresses = []net.IP{net.ParseIP(conf.REST.ServerIP)}
+	dnsNames = []string{conf.REST.ServerIP}
 }
 
 /*
