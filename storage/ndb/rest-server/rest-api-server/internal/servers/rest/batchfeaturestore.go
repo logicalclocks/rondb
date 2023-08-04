@@ -25,6 +25,7 @@ import (
 )
 
 func (h *RouteHandler) BatchFeatureStore(c *gin.Context) {
+	
 	apiKey := c.GetHeader(config.API_KEY_NAME)
 
 	fsReq, err := parseBatchFeatureStoreRequest(c)
@@ -40,6 +41,7 @@ func (h *RouteHandler) BatchFeatureStore(c *gin.Context) {
 		return
 	}
 	c.JSON(status, fsResp)
+
 }
 
 func parseBatchFeatureStoreRequest(c *gin.Context) (*api.BatchFeatureStoreRequest, error) {

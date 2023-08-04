@@ -42,7 +42,7 @@ type FeatureViewMetadata struct {
 	FeatureGroupFeatures []*FeatureGroupFeatures     // label are excluded
 	FeatureStoreNames    []*string                   // List of all feature store used by feature view including shared feature store
 	NumOfFeatures        int
-	FeatureIndexLookup   map[string]int    // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join 
+	FeatureIndexLookup   map[string]int    // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
 	PrimaryKeyMap        map[string]string // key: prefix + fName
 }
 
@@ -222,7 +222,6 @@ func getFeatureViewCacheKey(featureStoreName, featureViewName string, featureVie
 }
 
 func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureViewVersion int) (*FeatureViewMetadata, *RestErrorCode) {
-
 	fsID, err := dal.GetFeatureStoreID(featureStoreName)
 	if err != nil {
 		if strings.Contains(err.Error(), ERROR_NOT_FOUND) {
@@ -242,6 +241,9 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 	joinIdToJoin := make(map[int]dal.TrainingDatasetJoin)
 	tdJoins, err := dal.GetTrainingDatasetJoinData(fvID)
 	if err != nil {
+		if strings.Contains(err.Error(), ERROR_NOT_FOUND) {
+			return nil, FG_NOT_EXIST.NewMessage("Feature view may contain deleted feature groups.")
+		}
 		return nil, TD_JOIN_READ_FAIL.NewMessage(err.VerboseError())
 	}
 	for _, tdj := range tdJoins {
@@ -259,6 +261,11 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 	var fgCache = make(map[int]*dal.FeatureGroup)
 
 	for i, tdf := range tdfs {
+		if tdf.FeatureGroupID == 0 {
+			// If a feature group is deleted, feature group id will be set to null in the db.
+			return nil, FG_NOT_EXIST.NewMessage(
+				fmt.Sprintf("Cannot get the feature group of feature `%s`. Check if the feature group still exists.", tdf.Name))
+		}
 		var featureGroup *dal.FeatureGroup
 		if fg, ok := fgCache[tdf.FeatureGroupID]; ok {
 			featureGroup = fg

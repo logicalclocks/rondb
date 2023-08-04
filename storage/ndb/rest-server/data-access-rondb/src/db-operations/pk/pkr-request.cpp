@@ -77,7 +77,6 @@ const char *PKRRequest::PKName(Uint32 index) {
 const char *PKRRequest::PKValueCStr(Uint32 index) {
   Uint32 kvOffset = PKTupleOffset(index);
   Uint32 vOffset  = (reinterpret_cast<Uint32 *>(req->buffer))[(kvOffset / 4) + 1];
-
   return req->buffer + vOffset + 4;  // skip first 4 bytes that contain size of string
 }
 

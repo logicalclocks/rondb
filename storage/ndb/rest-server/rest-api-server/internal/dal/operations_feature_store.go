@@ -36,7 +36,7 @@ import (
 type TrainingDatasetFeature struct {
 	FeatureID                int
 	TrainingDataset          int
-	FeatureGroupID           int
+	FeatureGroupID           int // When FG Id is null in DB, the value here is 0. Fg Id starts with 1.
 	Name                     string
 	Type                     string
 	TDJoinID                 int
@@ -123,7 +123,7 @@ func GetTrainingDatasetJoinData(featureViewID int) ([]TrainingDatasetJoin, *DalE
 		retTdj := TrainingDatasetJoin{
 			Id:     int(tdj.id),
 			Prefix: C.GoString(&tdj.prefix[0]),
-			Index: int(tdj.idx),
+			Index:  int(tdj.idx),
 		}
 		retTdjs[i] = retTdj
 	}

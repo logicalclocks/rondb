@@ -47,6 +47,26 @@ func TestMetadata_FsNotExist(t *testing.T) {
 	}
 }
 
+func TestMetadata_ReadDeletedFg(t *testing.T) {
+	_, err := fsmetadata.GetFeatureViewMetadata(testdbs.FSDB001, "test_deleted_fg", 1)
+	if err == nil {
+		t.Fatalf("This should fail.")
+	}
+	if !strings.Contains(err.Error(), fsmetadata.FG_NOT_EXIST.GetReason()) {
+		t.Fatalf("This should fail with error message: %s. But found: %s", fsmetadata.FG_NOT_EXIST.GetReason(), err.Error())
+	}
+}
+
+func TestMetadata_ReadDeletedJointFg(t *testing.T) {
+	_, err := fsmetadata.GetFeatureViewMetadata(testdbs.FSDB001, "test_deleted_joint_fg", 1)
+	if err == nil {
+		t.Fatalf("This should fail.")
+	}
+	if !strings.Contains(err.Error(), fsmetadata.FG_NOT_EXIST.GetReason()) {
+		t.Fatalf("This should fail with error message: %s. But found: %s", fsmetadata.FG_NOT_EXIST.GetReason(), err.Error())
+	}
+}
+
 func TestMetadata_FvNotExist(t *testing.T) {
 	_, err := fsmetadata.GetFeatureViewMetadata(testdbs.FSDB002, "NA", 1)
 	if err == nil {
@@ -232,6 +252,44 @@ func Test_GetFeatureVector_FvNotExist(t *testing.T) {
 			nil,
 		)
 		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FV_NOT_EXIST.GetReason(), http.StatusBadRequest)
+	}
+}
+
+func Test_GetFeatureVector_ReadDeletedFg(t *testing.T) {
+	rows, pks, cols, err := GetSampleData(testdbs.FSDB002, "sample_2_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			testdbs.FSDB001,
+			"test_deleted_fg",
+			1,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FG_NOT_EXIST.GetReason(), http.StatusBadRequest)
+	}
+}
+
+func Test_GetFeatureVector_ReadDeletedJointFg(t *testing.T) {
+	rows, pks, cols, err := GetSampleData(testdbs.FSDB002, "sample_2_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	for _, row := range rows {
+		var fsReq = CreateFeatureStoreRequest(
+			testdbs.FSDB001,
+			"test_deleted_joint_fg",
+			1,
+			pks,
+			*GetPkValues(&row, &pks, &cols),
+			nil,
+			nil,
+		)
+		GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.FG_NOT_EXIST.GetReason(), http.StatusBadRequest)
 	}
 }
 
