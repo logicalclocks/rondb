@@ -10501,7 +10501,7 @@ Dblqh::handle_nr_copy(Signal* signal, Ptr<TcConnectionrec> regTcPtr)
                                getSectionSz(regTcPtr.p->attrInfoIVal))) << 2);
 
   regTcPtr.p->m_nr_delete.m_cnt = 1; // Wait for real op as well
-  Uint32* dst = signal->theData+24;
+  Uint32* dst = &signal->theData[24];
   bool uncommitted;
   const int len = c_tup->nr_read_pk(fragPtr, &regTcPtr.p->m_row_id, dst, 
 				    uncommitted);
@@ -10853,16 +10853,17 @@ Dblqh::nr_copy_delete_row(Signal* signal,
 
   if (rowid)
   {
-    jam();
     if (g_key_descriptor_pool.getPtr(tableId)->hasCharAttr)
     {
+      jam();
       req->hashValue = calculateHash(tableId,
-                                     signal->theData+24,
+                                     &signal->theData[24],
                                      use_new_hash_function);
     }
     else
     {
-      req->hashValue = rondb_calc_hash_val((const char*)signal->theData+24,
+      jam();
+      req->hashValue = rondb_calc_hash_val((const char*)&signal->theData[24],
                                            len,
                                            use_new_hash_function);
     }
@@ -21893,7 +21894,7 @@ void Dblqh::copyTupkeyConfLab(Signal* signal,
   /* Read primary keys from TUP into signal buffer space
    * (used to get here via scan keyinfo)
    */
-  Uint32* tmp = signal->getDataPtrSend()+24;
+  Uint32* tmp = &signal->getDataPtrSend()[24];
   Uint32 len= tcConnectptr.p->primKeyLen = readPrimaryKeys(scanP, tcConP, tmp);
   bool use_new_hash_function = tabptr.p->m_use_new_hash_function;
   
