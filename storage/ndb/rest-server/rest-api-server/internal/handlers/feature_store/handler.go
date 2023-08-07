@@ -61,7 +61,7 @@ func (h *Handler) Validate(request interface{}) error {
 	if log.IsDebug() {
 		log.Debugf("Feature store request is %s", fsReq.String())
 	}
-	err1 := ValidatePrimaryKey(fsReq.Entries, &metadata.PrimaryKeyMap)
+	err1 := ValidatePrimaryKey(fsReq.Entries, &metadata.PrefixPrimaryKeyMap)
 	if err1 != nil {
 		return err1.GetError()
 	}
@@ -78,9 +78,8 @@ func ValidatePrimaryKey(entries *map[string]*json.RawMessage, features *map[stri
 	if len(*entries) == 0 {
 		return feature_store.INCORRECT_PRIMARY_KEY.NewMessage("No entries found")
 	}
-	if len(*entries) != len((*features)) {
-		return feature_store.INCORRECT_PRIMARY_KEY.NewMessage(fmt.Sprintf("Excepting size of entries to be %d but it is %d.", len(*features), len(*entries)))
-	}
+	// DO NOT check if all required serving keys exist because some keys may be missing and data are passed as passed feature
+
 	for featureName := range *entries {
 		_, ok := (*features)[featureName]
 		if !ok {
@@ -328,7 +327,7 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 		var filters = make([]api.Filter, 0, len(fgFeature.Features))
 		var columns = make([]api.ReadColumn, 0, len(fgFeature.Features))
 		for _, feature := range fgFeature.Features {
-			if _, ok := fgFeature.PrimaryKeyMap[feature.Prefix+feature.Name]; !ok {
+			if _, ok := fgFeature.PrimaryKeyMap[feature_store.GetServingKey(feature.Prefix, feature.Name)]; !ok {
 				var colName = feature.Name
 				var colType = api.DRT_DEFAULT
 				readCol := api.ReadColumn{Column: &colName, DataReturnType: &colType}
@@ -340,12 +339,15 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 		}
 		for prefixPk, rawPk := range fgFeature.PrimaryKeyMap {
 			var pkCol = rawPk
-			var filter = api.Filter{Column: &pkCol, Value: (*entries)[prefixPk]}
-			filters = append(filters, filter)
-			if log.IsDebug() {
-				log.Debugf("Add to filter: %s", pkCol)
+			if (*entries)[prefixPk] != nil {
+				var filter = api.Filter{Column: &pkCol, Value: (*entries)[prefixPk]}
+				filters = append(filters, filter)
+				if log.IsDebug() {
+					log.Debugf("Add to filter: %s", pkCol)
+				}
 			}
 		}
+
 		var opId = feature_store.GetFeatureGroupKeyByTDFeature(fgFeature)
 		param := api.PKReadParams{DB: &testDb, Table: &testTable, Filters: &filters, ReadColumns: &columns, OperationID: &opId}
 		batchReadParams = append(batchReadParams, &param)

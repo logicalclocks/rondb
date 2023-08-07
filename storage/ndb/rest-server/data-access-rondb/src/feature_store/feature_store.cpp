@@ -1155,3 +1155,186 @@ RS_Status find_feature_store_data(int feature_store_id, char *name) {
 }
 
 //-------------------------------------------------------------------------------------------------
+
+RS_Status find_serving_key_data_int(Ndb *ndb_object, int feature_view_id,
+                                         Serving_Key **serving_keys, int *sk_size) {
+  NdbError ndb_error;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbScanOperation *scan_op;
+
+  RS_Status status = select_table(ndb_object, "hopsworks", "serving_key", &table_dict);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  status = start_transaction(ndb_object, &tx);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  std::string index_name = "feature_view_id";
+  status = get_index_scan_op(ndb_object, tx, table_dict, index_name.c_str(), &scan_op);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  status = read_tuples(ndb_object, scan_op);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  int fv_id_col_id      = table_dict->getColumn("feature_view_id")->getColumnNo();
+  Uint32 fv_id_col_size = (Uint32)table_dict->getColumn("feature_view_id")->getSizeInBytes();
+
+  NdbScanFilter filter(scan_op);
+  if (filter.begin(NdbScanFilter::AND) < 0 ||
+      filter.cmp(NdbScanFilter::COND_EQ, fv_id_col_id, &feature_view_id, fv_id_col_size) < 0 ||
+      filter.end() < 0) {
+    ndb_error = filter.getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_031);
+  }
+
+  assert(TRAINING_DATASET_FEATURE_NAME_SIZE ==
+         (Uint32)table_dict->getColumn("feature_name")->getSizeInBytes());
+  assert(TRAINING_DATASET_JOIN_PREFIX_SIZE ==
+         (Uint32)table_dict->getColumn("prefix")->getSizeInBytes());
+  assert(TRAINING_DATASET_FEATURE_NAME_SIZE ==
+         (Uint32)table_dict->getColumn("join_on")->getSizeInBytes());
+
+  NdbRecAttr *feature_group_id_attr       = scan_op->getValue("feature_group_id", nullptr);
+  NdbRecAttr *feature_name_attr             = scan_op->getValue("feature_name", nullptr);
+  NdbRecAttr *prefix_attr = scan_op->getValue("prefix", nullptr);
+  NdbRecAttr *required_attr             = scan_op->getValue("required", nullptr);
+  NdbRecAttr *join_on_attr       = scan_op->getValue("join_on", nullptr);
+  NdbRecAttr *join_index_attr              = scan_op->getValue("join_index", nullptr);
+
+  if (feature_group_id_attr == nullptr || feature_name_attr == nullptr ||
+      prefix_attr == nullptr || required_attr == nullptr || join_on_attr == nullptr ||
+      join_index_attr == nullptr) {
+    ndb_error = scan_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+  }
+
+  if (tx->execute(NdbTransaction::NoCommit) != 0) {
+    ndb_error = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_009);
+  }
+
+  std::vector<Serving_Key> serving_keys_vec;
+  bool check = 0;
+  while ((check = scan_op->nextResult(true)) == 0) {
+    do {
+      Serving_Key serving_key;
+      serving_key.feature_group_id                 = feature_group_id_attr->int32_value();
+      serving_key.required           = required_attr->int32_value();
+      serving_key.join_index           = join_index_attr->int32_value();
+
+      // feature name
+      Uint32 feature_name_attr_bytes;
+      const char *feature_name_attr_start = nullptr;
+      if (GetByteArray(feature_name_attr, &feature_name_attr_start, &feature_name_attr_bytes) != 0) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(ERROR_019);
+      }
+
+      memcpy(serving_key.feature_name, feature_name_attr_start, feature_name_attr_bytes);
+      serving_key.feature_name[feature_name_attr_bytes] = '\0';
+
+      // prefix
+      if (prefix_attr->isNULL()) {
+        serving_key.prefix[0] = '\0';
+      } else {
+        Uint32 prefix_attr_bytes;
+        const char *prefix_attr_start = nullptr;
+
+        if (GetByteArray(prefix_attr, &prefix_attr_start, &prefix_attr_bytes) != 0) {
+          ndb_object->closeTransaction(tx);
+          return RS_CLIENT_ERROR(ERROR_019);
+        }
+        memcpy(serving_key.prefix, prefix_attr_start, prefix_attr_bytes);
+        serving_key.prefix[prefix_attr_bytes] = '\0';
+      }
+
+      // prefix
+      if (join_on_attr->isNULL()) {
+        serving_key.join_on[0] = '\0';
+      } else {
+        Uint32 join_on_attr_bytes;
+        const char *join_on_attr_start = nullptr;
+
+        if (GetByteArray(join_on_attr, &join_on_attr_start, &join_on_attr_bytes) != 0) {
+          ndb_object->closeTransaction(tx);
+          return RS_CLIENT_ERROR(ERROR_019);
+        }
+        memcpy(serving_key.join_on, join_on_attr_start, join_on_attr_bytes);
+        serving_key.join_on[join_on_attr_bytes] = '\0';
+      }
+
+      serving_keys_vec.push_back(serving_key);
+    } while ((check = scan_op->nextResult(false)) == 0);
+  }
+
+  // check for errors happened during the reading process
+  NdbError error = scan_op->getNdbError();
+
+  // As we are at the end we will first close the transaction and then deal with the error
+  ndb_object->closeTransaction(tx);
+
+  // storage/ndb/src/ndbapi/ndberror.cpp
+  if (error.code != 4120 /*Scan already complete*/) {
+    return RS_RONDB_SERVER_ERROR(error, "Failed Reading Serving Key. Fn find_serving_key_data_int");
+  }
+
+  if (serving_keys_vec.size() == 0) {
+    return RS_CLIENT_404_ERROR();
+  }
+
+  // freed by CGO
+  *sk_size = serving_keys_vec.size();
+  void *ptr  = (Serving_Key *)malloc(serving_keys_vec.size() * sizeof(Serving_Key));
+  *serving_keys      = (Serving_Key *)ptr;
+  for (Uint64 i = 0; i < serving_keys_vec.size(); i++) {
+    (*serving_keys + i)->feature_group_id                 = serving_keys_vec[i].feature_group_id;
+    (*serving_keys + i)->required           = serving_keys_vec[i].required;
+    (*serving_keys + i)->join_index           = serving_keys_vec[i].join_index;
+    memcpy((*serving_keys + i)->feature_name, serving_keys_vec[i].feature_name, strlen(serving_keys_vec[i].feature_name) + 1);  // +1 for '\0'
+    memcpy((*serving_keys + i)->prefix, serving_keys_vec[i].prefix, strlen(serving_keys_vec[i].prefix) + 1);  // +1 for '\0'
+    memcpy((*serving_keys + i)->join_on, serving_keys_vec[i].join_on, strlen(serving_keys_vec[i].join_on) + 1);  // +1 for '\0'
+  }
+  serving_keys_vec.clear();
+
+  return RS_OK;
+}
+
+//-------------------------------------------------------------------------------------------------
+
+/**
+ * Find serving_key_data
+ * SELECT * from serving_key  WHERE feature_view_id = {feature_view_id}
+ */
+RS_Status find_serving_key_data(int feature_view_id, Serving_Key **serving_keys,
+                                     int *sk_size) {
+  Ndb *ndb_object  = nullptr;
+  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  /* clang-format off */
+  RETRY_HANDLER(
+    status = find_serving_key_data_int(ndb_object, feature_view_id, serving_keys, sk_size); 
+  )
+  /* clang-format on */
+
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+
+  return status;
+}
+
+//-------------------------------------------------------------------------------------------------

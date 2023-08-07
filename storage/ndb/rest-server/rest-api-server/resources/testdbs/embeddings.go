@@ -77,7 +77,7 @@ const DB018 = "db018"
 	const DB002_table1 = "table_1"
 */
 
-//go:embed fixed/hopsworks.sql
+//go:embed fixed/hopsworks_34.sql
 var HopsworksScheme string
 
 const HOPSWORKS_DB_NAME = "hopsworks"

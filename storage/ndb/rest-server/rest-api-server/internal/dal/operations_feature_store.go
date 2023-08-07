@@ -230,3 +230,44 @@ func GetFeatureStoreName(fsId int) (string, *DalError) {
 
 	return C.GoString((*C.char)(unsafe.Pointer(nameBuff))), nil
 }
+
+type ServingKey struct {
+	FeatureGroupId int
+	FeatureName string
+	Prefix string
+	Required bool
+	JoinOn string
+	JoinIndex int
+}
+
+func GetServingKeys(featureViewId int) ([]ServingKey, error) {
+	var servingKeySize C.int
+	servingKeySizePtr := (*C.int)(unsafe.Pointer(&servingKeySize))
+
+	var servingKeys *C.Serving_Key
+	servingKeysPtr := (**C.Serving_Key)(unsafe.Pointer(&servingKeys))
+
+	ret := C.find_serving_key_data(C.int(featureViewId), servingKeysPtr, servingKeySizePtr)
+
+	if ret.http_code != http.StatusOK {
+		return nil, cToGoRet(&ret)
+	}
+
+	servingKeySlice := unsafe.Slice((*C.Serving_Key)(unsafe.Pointer(servingKeys)), servingKeySize)
+
+	retServingKeys := make([]ServingKey, int(servingKeySize))
+	for i, servingKey := range servingKeySlice {
+		retServingKey := ServingKey{
+			FeatureGroupId: int(servingKey.feature_group_id),
+			FeatureName: C.GoString(&servingKey.feature_name[0]),
+			Prefix: C.GoString(&servingKey.prefix[0]),
+			Required: int(servingKey.required) != 0,
+			JoinOn: C.GoString(&servingKey.join_on[0]),
+			JoinIndex: int(servingKey.join_index),
+		}
+		retServingKeys[i] = retServingKey
+	}
+
+	C.free(unsafe.Pointer(servingKeys))
+	return retServingKeys[:], nil
+}
