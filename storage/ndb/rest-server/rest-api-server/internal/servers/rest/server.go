@@ -149,6 +149,7 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 
 }
 
+// https://gin-gonic.com/docs/examples/custom-middleware/
 func RestMetricsHandler(m *metrics.EndPointMetrics) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now().UnixNano()
