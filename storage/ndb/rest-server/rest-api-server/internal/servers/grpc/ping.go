@@ -31,8 +31,8 @@ func (s *RonDBServer) Ping(ctx context.Context, reqProto *api.Empty) (*api.Empty
 	// metrics
 	var statusCode = codes.OK
 	start := time.Now().UnixNano()
-	defer s.rdrsMetrics.EndPointMetrics.AddResponseTime(config.PING_OPERATION_GRPC_METRIC, "GRPC", float64(time.Now().UnixNano()-start))
-	defer s.rdrsMetrics.EndPointMetrics.AddResponseStatus(config.PING_OPERATION_GRPC_METRIC, "GRPC", int(statusCode))
+	defer s.rdrsMetrics.EndPointMetrics.AddResponseTime(config.PING_OPERATION, "GRPC", float64(time.Now().UnixNano()-start))
+	defer s.rdrsMetrics.EndPointMetrics.AddResponseStatus(config.PING_OPERATION, "GRPC", int(statusCode))
 
 	return &api.Empty{}, nil
 }

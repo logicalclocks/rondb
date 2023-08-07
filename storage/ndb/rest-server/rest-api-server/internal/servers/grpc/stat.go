@@ -35,8 +35,8 @@ func (s *RonDBServer) Stat(ctx context.Context, reqProto *api.StatRequestProto) 
 	// metrics
 	var statusCode = codes.OK
 	start := time.Now().UnixNano()
-	defer s.rdrsMetrics.EndPointMetrics.AddResponseTime(config.STAT_OPERATION_GRPC_METRIC, "GRPC", float64(time.Now().UnixNano()-start))
-	defer s.rdrsMetrics.EndPointMetrics.AddResponseStatus(config.STAT_OPERATION_GRPC_METRIC, "GRPC", int(statusCode))
+	defer s.rdrsMetrics.EndPointMetrics.AddResponseTime(config.STAT_OPERATION, "GRPC", float64(time.Now().UnixNano()-start))
+	defer s.rdrsMetrics.EndPointMetrics.AddResponseStatus(config.STAT_OPERATION, "GRPC", int(statusCode))
 
 	apiKey, err := s.getApiKey(ctx)
 	if err != nil {

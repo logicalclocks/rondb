@@ -24,7 +24,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"syscall"
 	"time"
 
@@ -155,11 +154,8 @@ func RestMetricsHandler(m *metrics.EndPointMetrics) gin.HandlerFunc {
 		start := time.Now().UnixNano()
 		c.Next()
 
-		var endpoint = strings.Split(c.Request.RequestURI, "/")
-		metricName := fmt.Sprintf("%s%s", config.HTTP_METRIC_PREPEND, endpoint[2])
-
-		m.AddResponseTime(metricName, c.Request.Method, float64(time.Now().UnixNano()-start))
-		m.AddResponseStatus(metricName, c.Request.Method, c.Writer.Status())
+		m.AddResponseTime(c.Request.RequestURI, c.Request.Method, float64(time.Now().UnixNano()-start))
+		m.AddResponseStatus(c.Request.RequestURI, c.Request.Method, c.Writer.Status())
 	}
 }
 

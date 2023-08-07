@@ -134,7 +134,7 @@ func newRonDBMetrics() (*RonDBMetrics, func()) {
 		prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: protocol + "_connection_state",
-				Help: "Connection state (0: disconnected, 1: connected)",
+				Help: "Connection state (0: connected, > 0  not connected)",
 			})
 
 	metrics.NdbObjectsTotalCountGauge =
