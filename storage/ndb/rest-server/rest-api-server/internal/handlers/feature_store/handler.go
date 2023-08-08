@@ -327,7 +327,7 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 		var filters = make([]api.Filter, 0, len(fgFeature.Features))
 		var columns = make([]api.ReadColumn, 0, len(fgFeature.Features))
 		for _, feature := range fgFeature.Features {
-			if _, ok := fgFeature.PrimaryKeyMap[feature_store.GetServingKey(feature.Prefix, feature.Name)]; !ok {
+			if _, ok := metadata.PrimaryKeyMap[feature_store.GetServingKey(feature.JoinIndex, feature.Name)]; !ok {
 				var colName = feature.Name
 				var colType = api.DRT_DEFAULT
 				readCol := api.ReadColumn{Column: &colName, DataReturnType: &colType}
@@ -337,8 +337,9 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 				}
 			}
 		}
-		for prefixPk, rawPk := range fgFeature.PrimaryKeyMap {
-			var pkCol = rawPk
+		for _, servingKey := range fgFeature.PrimaryKeyMap {
+			var pkCol = servingKey.FeatureName
+			var prefixPk = servingKey.Prefix + pkCol
 			if (*entries)[prefixPk] != nil {
 				var filter = api.Filter{Column: &pkCol, Value: (*entries)[prefixPk]}
 				filters = append(filters, filter)

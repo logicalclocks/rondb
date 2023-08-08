@@ -587,132 +587,6 @@ RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_
 
 //-------------------------------------------------------------------------------------------------
 
-RS_Status find_primary_key_data_int(Ndb *ndb_object, std::string table_name, std::string fg_fk_name,
-                                    std::string fg_id_col_name, int fg_id, char **&primary_key,
-                                    size_t &size) {
-  NdbError ndb_err;
-  const NdbDictionary::Table *table_dict;
-  NdbTransaction *tx;
-  NdbScanOperation *scan_op;
-  RS_Status status = select_table(ndb_object, "hopsworks", table_name.c_str(), &table_dict);
-  if (status.http_code != SUCCESS) {
-    return status;
-  }
-
-  status = start_transaction(ndb_object, &tx);
-  if (status.http_code != SUCCESS) {
-    return status;
-  }
-
-  status = get_index_scan_op(ndb_object, tx, table_dict, fg_fk_name.c_str(), &scan_op);
-  if (status.http_code != SUCCESS) {
-    ndb_object->closeTransaction(tx);
-    return status;
-  }
-  status = read_tuples(ndb_object, scan_op);
-  if (status.http_code != SUCCESS) {
-    ndb_object->closeTransaction(tx);
-    return status;
-  }
-
-  int fg_id_col_id      = table_dict->getColumn(fg_id_col_name.c_str())->getColumnNo();
-  Uint32 fg_id_col_size = (Uint32)table_dict->getColumn(fg_id_col_name.c_str())->getSizeInBytes();
-  int primary_column_col_id = table_dict->getColumn("primary_column")->getColumnNo();
-  Uint32 primary_column_col_size =
-      (Uint32)table_dict->getColumn("primary_column")->getSizeInBytes();
-  int is_pk = 1;
-
-  NdbScanFilter filter(scan_op);
-
-  if (filter.begin(NdbScanFilter::AND) < 0 ||
-      filter.cmp(NdbScanFilter::COND_EQ, fg_id_col_id, &fg_id, fg_id_col_size) < 0 ||
-      filter.cmp(NdbScanFilter::COND_EQ, primary_column_col_id, &is_pk, primary_column_col_size) <
-          0 ||
-      filter.end() < 0) {
-    ndb_err = filter.getNdbError();
-    ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_031);
-  }
-
-  NdbRecAttr *name_attr = scan_op->getValue("name", nullptr);
-  if (name_attr == nullptr) {
-    ndb_err = scan_op->getNdbError();
-    ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_019);
-  }
-
-  int feature_name_size = 0;
-  if ("on_demand_feature" == table_name) {
-    assert(ON_DEMAND_FEATURE_NAME_SIZE == (Uint32)table_dict->getColumn("name")->getSizeInBytes());
-    feature_name_size = ON_DEMAND_FEATURE_NAME_SIZE;
-  } else if ("cached_feature_extra_constraints" == table_name) {
-    assert(CACHE_FEATURE_SIZE == (Uint32)table_dict->getColumn("name")->getSizeInBytes());
-    feature_name_size = CACHE_FEATURE_SIZE;
-  } else {
-    ndb_object->closeTransaction(tx);
-    return RS_SERVER_ERROR(
-      ERROR_028 + std::string("Expected feature tables are `on_demand_feature` or `cached_feature_extra_constraints`."));
-  }
-
-  if (tx->execute(NdbTransaction::NoCommit) != 0) {
-    ndb_err = tx->getNdbError();
-    ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_009);
-  }
-
-  bool check = 0;
-  std::vector<char *> feature_names;
-  while ((check = scan_op->nextResult(true)) == 0) {
-    do {
-
-      Uint32 name_attr_bytes;
-      const char *name_data_start = nullptr;
-      if (GetByteArray(name_attr, &name_data_start, &name_attr_bytes) != 0) {
-        ndb_object->closeTransaction(tx);
-
-        // free the memory if any
-        for (Uint64 i = 0; i < feature_names.size(); i++) {
-          free(feature_names[i]);
-        }
-
-        return RS_CLIENT_ERROR(ERROR_019);
-      }
-
-      char *feature_name =
-          (char *)malloc(feature_name_size * sizeof(char));  // freed by CGO if no err
-      memcpy(feature_name, name_data_start, name_attr_bytes);
-      feature_name[name_attr_bytes] = '\0';
-
-      feature_names.push_back(feature_name);
-    } while ((check = scan_op->nextResult(false)) == 0);
-  }
-
-  // check for errors happened during the reading process
-  NdbError error = scan_op->getNdbError();
-
-  // As we are at the end we will first close the transaction and then deal with the error
-  ndb_object->closeTransaction(tx);
-
-  // storage/ndb/src/ndbapi/ndberror.cpp
-  if (error.code != 4120 /*Scan already complete*/) {
-
-    // free the memory if any
-    for (Uint64 i = 0; i < feature_names.size(); i++) {
-      free(feature_names[i]);
-    }
-
-    return RS_RONDB_SERVER_ERROR(error, "Failed Reading Project ID. Fn find_project_id_int");
-  }
-
-  size        = feature_names.size();
-  primary_key = (char **)malloc(size * sizeof(char *));  // freed by CGO
-  std::copy(feature_names.data(), feature_names.data() + size, primary_key);
-
-  return RS_OK;
-}
-
-//-------------------------------------------------------------------------------------------------
-
 RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Feature_Group *fg) {
 
   NdbError ndb_error;
@@ -789,31 +663,6 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
     return RS_CLIENT_404_ERROR();
   }
 
-  std::string feature_table;
-  std::string fg_fk_name;
-  std::string fg_id_col_name;
-  int sub_fg_id;
-
-  if (!on_demand_feature_group_id_attr->isNULL()) {
-    feature_table  = "on_demand_feature";
-    fg_fk_name     = "on_demand_feature_group_fk";
-    fg_id_col_name = "on_demand_feature_group_id";
-    sub_fg_id      = on_demand_feature_group_id_attr->int32_value();
-  } else if (!cached_feature_group_id_attr->isNULL()) {
-    feature_table  = "cached_feature_extra_constraints";
-    fg_fk_name     = "cached_feature_group_fk";
-    fg_id_col_name = "cached_feature_group_id";
-    sub_fg_id      = cached_feature_group_id_attr->int32_value();
-  } else if (!stream_feature_group_id_attr->isNULL()) {
-    feature_table  = "cached_feature_extra_constraints";
-    fg_fk_name     = "stream_feature_group_fk";
-    fg_id_col_name = "stream_feature_group_id";
-    sub_fg_id      = stream_feature_group_id_attr->int32_value();
-  } else {
-    ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
-  }
-
   if (online_enabled_attr == nullptr || online_enabled_attr->isNULL()) {
     // This is due to incompatible schema, assume online enabled.
     fg->online_enabled = 1;
@@ -835,25 +684,6 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
   fg->name[name_attr_bytes] = '\0';
 
   ndb_object->closeTransaction(tx);
-
-  char **primary_key  = nullptr;
-  size_t n_pk         = 0;
-  RS_Status pk_status = find_primary_key_data_int(ndb_object, feature_table, fg_fk_name,
-                                                  fg_id_col_name, sub_fg_id, primary_key, n_pk);
-  if (pk_status.http_code != SUCCESS) {
-
-    if (n_pk > 0) {  // free memory
-      for (size_t i = 0; i < n_pk; i++) {
-        free(primary_key[i]);
-      }
-    }
-
-    ndb_object->closeTransaction(tx);
-    return pk_status;
-  }
-
-  fg->num_pk      = n_pk;
-  fg->primary_key = primary_key;
 
   return RS_OK;
 }
@@ -1298,7 +1128,7 @@ RS_Status find_serving_key_data_int(Ndb *ndb_object, int feature_view_id,
   // freed by CGO
   *sk_size = serving_keys_vec.size();
   void *ptr  = (Serving_Key *)malloc(serving_keys_vec.size() * sizeof(Serving_Key));
-  *serving_keys      = (Serving_Key *)ptr;
+  *serving_keys = (Serving_Key *)ptr;
   for (Uint64 i = 0; i < serving_keys_vec.size(); i++) {
     (*serving_keys + i)->feature_group_id                 = serving_keys_vec[i].feature_group_id;
     (*serving_keys + i)->required           = serving_keys_vec[i].required;

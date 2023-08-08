@@ -44,7 +44,7 @@ type FeatureViewMetadata struct {
 	NumOfFeatures        int
 	FeatureIndexLookup   map[string]int             // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
 	PrimaryKeyMap        map[string]*dal.ServingKey // key: join index + feature name
-	PrefixPrimaryKeyMap  map[string]string          // key: prefix + fName, value: feature name in feature group
+	PrefixPrimaryKeyMap  map[string]string          // key: prefix(collision corrected) + fName, value: feature name in feature group
 }
 
 type FeatureGroupFeatures struct {
@@ -54,7 +54,7 @@ type FeatureGroupFeatures struct {
 	FeatureGroupId      int
 	JoinIndex           int
 	Features            []*FeatureMetadata
-	PrimaryKeyMap       map[string]string // key: prefix + fName
+	PrimaryKeyMap       []*dal.ServingKey
 }
 
 type FeatureMetadata struct {
@@ -79,9 +79,19 @@ func newFeatureViewMetadata(
 	featureViewId int,
 	featureViewVersion int,
 	features *[]*FeatureMetadata,
-	featureGroupPk *map[int][]string,
 	servingKeys *[]dal.ServingKey,
 ) *FeatureViewMetadata {
+	var prefixPrimaryKeyMap = make(map[string]string)
+	var primaryKeyMap = make(map[string]*dal.ServingKey)
+	var fgPrimaryKeyMap = make(map[string][]*dal.ServingKey)
+	for _, key := range *servingKeys {
+		prefixPrimaryKeyMap[key.Prefix+key.FeatureName] = key.FeatureName
+		var newKey = key
+		primaryKeyMap[GetServingKey(key.JoinIndex, key.FeatureName)] = &newKey
+		var fgKey = getFeatureGroupServingKey(key.JoinIndex, key.FeatureGroupId)
+		fgPrimaryKeyMap[fgKey] = append(fgPrimaryKeyMap[fgKey], &newKey)
+	}
+
 	prefixColumns := make(map[string]*FeatureMetadata)
 	fgFeatures := make(map[string][]*FeatureMetadata)
 	for _, feature := range *features {
@@ -97,19 +107,18 @@ func newFeatureViewMetadata(
 	var fgFeaturesArray = make([]*FeatureGroupFeatures, 0)
 
 	for _, value := range fgFeatures {
-		var fgPrimaryKeyMap = make(map[string]string)
 		var featureValue = value
 		var feature = featureValue[0]
-		for _, pk := range (*featureGroupPk)[feature.FeatureGroupId] {
-			fgPrimaryKeyMap[feature.Prefix+pk] = pk
-		}
 		var fgFeature = FeatureGroupFeatures{}
 		fgFeature.FeatureStoreName = feature.FeatureStoreName
 		fgFeature.FeatureGroupName = feature.FeatureGroupName
 		fgFeature.FeatureGroupVersion = feature.FeatureGroupVersion
 		fgFeature.FeatureGroupId = feature.FeatureGroupId
 		fgFeature.Features = featureValue
-		fgFeature.PrimaryKeyMap = fgPrimaryKeyMap
+		var fgPk, ok = fgPrimaryKeyMap[getFeatureGroupServingKey(feature.JoinIndex, feature.FeatureGroupId)]
+		if ok {
+			fgFeature.PrimaryKeyMap = fgPk
+		}
 		fgFeature.JoinIndex = feature.JoinIndex
 		fgFeaturesArray = append(fgFeaturesArray, &fgFeature)
 	}
@@ -151,22 +160,17 @@ func newFeatureViewMetadata(
 	metadata.NumOfFeatures = numOfFeature
 	metadata.FeatureIndexLookup = featureIndex
 	metadata.FeatureStoreNames = fsNames
-
-	var prefixPrimaryKeyMap = make(map[string]string)
-	var primaryKeyMap = make(map[string]*dal.ServingKey)
-	for _, key := range *servingKeys {
-		prefixPrimaryKeyMap[GetServingKey(key.Prefix, key.FeatureName)] = key.FeatureName
-		var newKey = key
-		primaryKeyMap[key.Prefix+key.FeatureName] = &newKey
-	}
 	metadata.PrimaryKeyMap = primaryKeyMap
 	metadata.PrefixPrimaryKeyMap = prefixPrimaryKeyMap
-
 	return &metadata
 }
 
-func GetServingKey(preifx string, featureName string) string {
-	return preifx + featureName
+func getFeatureGroupServingKey(joinIndex int, featureGroupId int) string {
+	return fmt.Sprintf("%d|%d", joinIndex, featureGroupId)
+}
+
+func GetServingKey(joinIndex int, featureName string) string {
+	return fmt.Sprintf("%d|%s", joinIndex, featureName)
 }
 
 func GetFeatureGroupKeyByFeature(feature *FeatureMetadata) string {
@@ -268,7 +272,6 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 
 	features := make([]*FeatureMetadata, len(tdfs))
 	fsIdToName := make(map[int]string)
-	var featureGroupPk = make(map[int][]string)
 	var fgCache = make(map[int]*dal.FeatureGroup)
 
 	for i, tdf := range tdfs {
@@ -289,7 +292,6 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 				return nil, FG_READ_FAIL.NewMessage(err.VerboseError())
 			}
 			fgCache[tdf.FeatureGroupID] = featureGroup
-			featureGroupPk[tdf.FeatureGroupID] = featureGroup.PrimaryKey
 		}
 		feature := FeatureMetadata{}
 		if featureStoreName, exist := fsIdToName[featureGroup.FeatureStoreId]; exist {
@@ -329,7 +331,6 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		fvID,
 		featureViewVersion,
 		&features,
-		&featureGroupPk,
 		&servingKeys,
 	)
 	return featureViewMetadata, nil

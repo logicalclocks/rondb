@@ -52,7 +52,6 @@ typedef struct Feature_Group {
   int version;
   int online_enabled;
   int num_pk;
-  char **primary_key;
 } Feature_Group;
 
 typedef struct Serving_Key {

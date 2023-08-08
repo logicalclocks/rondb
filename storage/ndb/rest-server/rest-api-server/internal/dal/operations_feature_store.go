@@ -29,8 +29,6 @@ import (
 	"net/http"
 	"sort"
 	"unsafe"
-
-	"hopsworks.ai/rdrs/internal/log"
 )
 
 type TrainingDatasetFeature struct {
@@ -138,7 +136,6 @@ type FeatureGroup struct {
 	Version        int
 	OnlineEnabled  bool
 	NumOfPk        int
-	PrimaryKey     []string
 }
 
 func GetFeatureGroupData(featureGroupID int) (*FeatureGroup, *DalError) {
@@ -152,28 +149,11 @@ func GetFeatureGroupData(featureGroupID int) (*FeatureGroup, *DalError) {
 		return nil, cToGoRet(&ret)
 	}
 
-	var n_pk = int(fg.num_pk)
-	var pks = make([]string, n_pk)
-	pkSlice := unsafe.Slice((**C.char)(unsafe.Pointer(fg.primary_key)), n_pk)
-	for i, buff := range pkSlice {
-		pk := C.GoString(buff)
-		pks[i] = pk
-		C.free(unsafe.Pointer(buff))
-	}
-	C.free(unsafe.Pointer(fg.primary_key))
-
-	if log.IsDebug() {
-		log.Debugf("Size of pk is %d", n_pk)
-		for _, pk := range pks {
-			log.Debugf("primary key: %s", pk)
-		}
-	}
 	var fgGo = FeatureGroup{
 		Name:           C.GoString(&fg.name[0]),
 		FeatureStoreId: int(fg.feature_store_id),
 		Version:        int(fg.version),
 		OnlineEnabled:  int(fg.online_enabled) != 0,
-		PrimaryKey:     pks,
 	}
 	return &fgGo, nil
 }
