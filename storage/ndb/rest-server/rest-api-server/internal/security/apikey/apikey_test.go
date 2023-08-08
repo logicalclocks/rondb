@@ -228,9 +228,9 @@ func testLoad(t *testing.T, cache Cache, conf config.AllConfigs) {
 	numOps := 512
 	dal.SetOpRetryProps(5, 1000, 1000)
 
-	someRand := rand.New(rand.NewSource(time.Now().Unix()))
 	for i := 0; i < numOps; i++ {
 		go func(ch chan bool, id int) {
+			someRand := rand.New(rand.NewSource(time.Now().Unix())) //https://github.com/golang/go/issues/318#issuecomment-66049148
 			apiKeyNum := someRand.Intn(int(testdbs.HopsworksAPIKey_ADDITIONAL_KEYS))
 			apiKey := fmt.Sprintf("%016d.%s", apiKeyNum, testdbs.HopsworksAPIKey_SECRET)
 			DB := testdbs.DB001
@@ -364,10 +364,10 @@ func testLoadWithBadKeys(t *testing.T, cache Cache, conf config.AllConfigs) {
 
 	ch := make(chan bool)
 
-	someRand := rand.New(rand.NewSource(time.Now().Unix()))
 	numOps := 1000
 	for i := 0; i < numOps; i++ {
 		go func(ch chan bool) {
+			someRand := rand.New(rand.NewSource(time.Now().Unix())) //https://github.com/golang/go/issues/318#issuecomment-66049148
 			badAPIKey := badKeys[someRand.Intn(len(badKeys))]
 			DB := testdbs.DB001
 			err := cache.ValidateAPIKey(&badAPIKey, &DB)
