@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2004, 2020, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -67,6 +68,7 @@ public:
   NODE_GROUP_MAP *m_nodegroup_map;
   uint            m_nodegroup_map_len;
   virtual bool has_temp_error() {return false;}
+  virtual bool has_data_error() {return false;}
   virtual bool table_equal(const TableS &) { return true; }
   virtual bool table_compatible_check(TableS &) {return true;}
   virtual bool check_blobs(TableS &) {return true;}

@@ -58,6 +58,7 @@ static Uint32 get_part_id(const NdbDictionary::Table *table,
 extern BaseString g_options;
 extern unsigned int opt_no_binlog;
 extern bool ga_skip_broken_objects;
+extern bool ga_continue_on_data_errors;
 
 extern Properties g_rewrite_databases;
 
@@ -3703,9 +3704,19 @@ bool BackupRestore::get_fatal_error()
   return m_fatal_error;
 }
 
+bool BackupRestore::has_data_error()
+{
+  return m_data_error;
+}
+
 void BackupRestore::set_fatal_error(bool err)
 {
   m_fatal_error = err;
+}
+
+void BackupRestore::set_data_error(bool err)
+{
+  m_data_error = err;
 }
 
 bool BackupRestore::tuple(const TupleS & tup, Uint32 fragmentId)
@@ -4035,11 +4046,23 @@ void BackupRestore::cback(int result, restore_callback_t *cb)
       tuple_a(cb); // retry
     else
     {
-      restoreLogger.log_error("Restore: Failed to restore data due to an "
-                              "unrecoverable error. Exiting...");
       cb->next = m_free_callback;
       m_free_callback = cb;
-      set_fatal_error(true);
+      set_data_error(true);
+      if(ga_continue_on_data_errors)
+      {
+        restoreLogger.log_error("Restore: Failed to restore data due to an "
+                                "unrecoverable error. Will continue due to "
+                                "--continue-on-data-errors.");
+      }
+      else
+      {
+        restoreLogger.log_error("Restore: Failed to restore data due to an "
+                                "unrecoverable error. You could provide "
+                                "--continue-on-data-errors to not give up at "
+                                "this point. Exiting...");
+        set_fatal_error(true);
+      }
       return;
     }
   }
@@ -4842,7 +4865,21 @@ void BackupRestore::cback_logentry(int result, restore_callback_t *cb)
     }
     if (!ok)
     {
-      set_fatal_error(true);
+      set_data_error(true);
+      if(ga_continue_on_data_errors)
+      {
+        restoreLogger.log_error("Restore: Failed to restore data from a log "
+                                "entry due to an unrecoverable error. Will "
+                                "continue due to  --continue-on-data-errors.");
+      }
+      else
+      {
+        restoreLogger.log_error("Restore: Failed to restore data from a log "
+                                "entry due to an unrecoverable error. You "
+                                "could provide --continue-on-data-errors to "
+                                "not give up at this point. Exiting...");
+        set_fatal_error(true);
+      }
       return;
     }
   }

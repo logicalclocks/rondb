@@ -144,6 +144,7 @@ static int _no_restore_disk = 0;
 static bool _preserve_trailing_spaces = false;
 static bool ga_disable_indexes = false;
 static bool ga_rebuild_indexes = false;
+bool ga_continue_on_data_errors = false;
 bool ga_skip_unknown_objects = false;
 bool ga_skip_broken_objects = false;
 bool ga_allow_pk_changes = false;
@@ -454,6 +455,11 @@ static struct my_option my_long_options[] =
     "Rebuild indexes",
     (uchar**) &ga_rebuild_indexes,
     (uchar**) &ga_rebuild_indexes, 0,
+    GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
+  { "continue-on-data-errors", NDB_OPT_NOSHORT,
+    "Continue after failing to restore data",
+    (uchar**) &ga_continue_on_data_errors,
+    (uchar**) &ga_continue_on_data_errors, 0,
     GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0 },
   { "skip-unknown-objects", 256, "Skip unknown object when parsing backup",
     (uchar**) &ga_skip_unknown_objects, (uchar**) &ga_skip_unknown_objects, 0,
@@ -2976,6 +2982,18 @@ int do_restore(RestoreThreadData *thrdata)
       table_output[i] = NULL;
     }
   }
+
+  /* Exit code should indicate failure after data errors, even if
+     --continue-on-data-errors is given. */
+  for (Uint32 j = 0; j < g_consumers.size(); j++)
+  {
+    if (g_consumers[j]->has_data_error())
+    {
+      restoreLogger.log_error("Restore: Failed to restore some data.");
+      return NdbToolsProgramExitCode::FAILED;
+    }
+  }
+
   return NdbToolsProgramExitCode::OK;
 }  // do_restore
 
@@ -3099,6 +3117,8 @@ main(int argc, char** argv)
     g_options.append(" --exclude-missing-tables");
   if (ga_disable_indexes)
     g_options.append(" --disable-indexes");
+  if (ga_continue_on_data_errors)
+    g_options.append(" --continue-on-data-errors");
   if (ga_rebuild_indexes)
     g_options.append(" --rebuild-indexes");
   g_options.appfmt(" -p %d", ga_nParallelism);
