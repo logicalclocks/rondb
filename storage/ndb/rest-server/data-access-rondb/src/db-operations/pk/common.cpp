@@ -708,7 +708,7 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
     // This will not create problems as only six digit nanoseconds
     // are stored in Timestamp2
     my_timeval myTV{epoch, (Int32)lTime.second_part};
-    my_timestamp_to_binary(&myTV, (uchar *)primaryKey, precision);
+    my_timestamp_to_binary(&myTV, (uchar *)*primaryKeyCol, precision);
 
     break;
   }
@@ -946,7 +946,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     my_timeval myTV{};
     my_timestamp_from_binary(&myTV, (const unsigned char *)attr->aRef(), precision);
 
-    Int64 epochIn = myTV.tv_sec;
+    Int64 epochIn = myTV.m_tv_sec;
     std::time_t stdtime(epochIn);
     boost::posix_time::ptime ts = boost::posix_time::from_time_t(stdtime);
 
@@ -957,7 +957,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     lTime.hour        = ts.time_of_day().hours();
     lTime.minute      = ts.time_of_day().minutes();
     lTime.second      = ts.time_of_day().seconds();
-    lTime.second_part = myTV.tv_usec;
+    lTime.second_part = myTV.m_tv_usec;
     lTime.time_type   = MYSQL_TIMESTAMP_DATETIME;
 
     char to[MAX_DATE_STRING_REP_LENGTH];
