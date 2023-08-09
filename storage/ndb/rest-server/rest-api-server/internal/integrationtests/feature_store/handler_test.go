@@ -528,7 +528,7 @@ func Test_GetFeatureVector_TestServingKey_Join_LeftColOnRightId(t *testing.T) {
 			"sample_1n3_joinoncol",
 			1,
 			// All required primary key
-			[]string{"id1", "0_nullid1", "id2"},
+			[]string{"id1", "0_id1", "id2"},
 			[]interface{}{row[0], row[4], row[5]},
 			nil,
 			nil,
@@ -559,7 +559,7 @@ func Test_GetFeatureVector_TestServingKey_Join_ColOnCol(t *testing.T) {
 			"sample_1n3_joincoloncol",
 			1,
 			// All required primary key
-			[]string{"id1", "0_nullid1", "id2"},
+			[]string{"id1", "0_id1", "id2"},
 			[]interface{}{row[0], row[4], row[5]},
 			nil,
 			nil,
@@ -590,7 +590,7 @@ func Test_GetFeatureVector_TestServingKey_PrefixCollision(t *testing.T) {
 			"sample_1n3",
 			1,
 			// All required primary key
-			[]string{"id1", "0_nullid1", "id2"},
+			[]string{"id1", "0_id1", "id2"},
 			[]interface{}{row[0], row[4], row[5]},
 			nil,
 			nil,
@@ -804,7 +804,7 @@ func Test_GetFeatureVector_IncompletePrimaryKey_Join(t *testing.T) {
 			"sample_1n3",
 			1,
 			// Do not include primary key from left fg
-			[]string{"0_nullid1", "id2"},
+			[]string{"0_id1", "id2"},
 			[]interface{}{row[4], row[5]},
 			nil,
 			nil,
