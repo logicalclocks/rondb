@@ -35,8 +35,13 @@ func (s *RonDBServer) Batch(ctx context.Context, reqProto *api.BatchRequestProto
 	// metrics
 	var statusCode = codes.OK
 	start := time.Now().UnixNano()
-	defer s.rdrsMetrics.EndPointMetrics.AddResponseTime(config.BATCH_OPERATION, "GRPC", float64(time.Now().UnixNano()-start))
-	defer s.rdrsMetrics.EndPointMetrics.AddResponseStatus(config.BATCH_OPERATION, "GRPC", int(statusCode))
+	updateMetrics := func(opName string) {
+		s.rdrsMetrics.EndPointMetrics.AddResponseTime(opName,
+			config.GRPC_API_TYPE, config.GRPC_API_TYPE, float64(time.Now().UnixNano()-start))
+		s.rdrsMetrics.EndPointMetrics.AddResponseStatus(opName,
+			config.GRPC_API_TYPE, config.GRPC_API_TYPE, int(statusCode))
+	}
+	defer updateMetrics(config.BATCH_OPERATION)
 
 	apiKey, err := s.getApiKey(ctx)
 	if err != nil {

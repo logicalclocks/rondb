@@ -57,23 +57,26 @@ type EndPointMetrics struct {
 const (
 	ENDPOINT = "endpoint"
 	METHOD   = "method"
+	API_TYPE = "api_type"
 	STATUS   = "status"
 )
 
 func (h *EndPointMetrics) AddResponseTime(
 	endPoint string,
+	api_type string,
 	method string,
 	time float64,
 ) {
-	h.ResponseTimeSummary.With(prometheus.Labels{ENDPOINT: endPoint, METHOD: method}).Observe(time)
+	h.ResponseTimeSummary.With(prometheus.Labels{ENDPOINT: endPoint, API_TYPE: api_type, METHOD: method}).Observe(time)
 }
 
 func (h *EndPointMetrics) AddResponseStatus(
 	endPoint string,
+	api_type string,
 	method string,
 	status int,
 ) {
-	h.ResponseStatusCount.With(prometheus.Labels{ENDPOINT: endPoint, METHOD: method, STATUS: fmt.Sprintf("%d", status)}).Inc()
+	h.ResponseStatusCount.With(prometheus.Labels{ENDPOINT: endPoint, API_TYPE: api_type, METHOD: method, STATUS: fmt.Sprintf("%d", status)}).Inc()
 }
 
 func NewRDRSMetrics() (*RDRSMetrics, func()) {
@@ -154,7 +157,7 @@ func newRonDBMetrics() (*RonDBMetrics, func()) {
 }
 
 func newEndPointMetrics() (*EndPointMetrics, func()) {
-	protocol := "rdrs_http"
+	protocol := "rdrs_endpoints"
 	metrics := EndPointMetrics{}
 
 	metrics.ResponseTimeSummary =
@@ -164,7 +167,7 @@ func newEndPointMetrics() (*EndPointMetrics, func()) {
 				Help:       "Summary for response time handled by " + protocol + " handler. Time is in nanoseconds",
 				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
 			},
-			[]string{"endpoint", "method"},
+			[]string{ENDPOINT, API_TYPE, METHOD},
 		)
 
 	metrics.ResponseStatusCount =
@@ -173,7 +176,7 @@ func newEndPointMetrics() (*EndPointMetrics, func()) {
 				Name: protocol + "_response_status_count",
 				Help: "No of response status returned by " + protocol,
 			},
-			[]string{"endpoint", "method", "status"},
+			[]string{ENDPOINT, API_TYPE, METHOD, STATUS},
 		)
 
 	prometheus.MustRegister(metrics.ResponseTimeSummary)

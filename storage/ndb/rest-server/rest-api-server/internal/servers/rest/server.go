@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 
@@ -155,8 +156,12 @@ func RestMetricsHandler(m *metrics.EndPointMetrics) gin.HandlerFunc {
 		start := time.Now().UnixNano()
 		c.Next()
 
-		m.AddResponseTime(c.Request.RequestURI, c.Request.Method, float64(time.Now().UnixNano()-start))
-		m.AddResponseStatus(c.Request.RequestURI, c.Request.Method, c.Writer.Status())
+		handerNameSplit := strings.Split(c.HandlerName(), ".")
+		handerName := handerNameSplit[len(handerNameSplit)-1]
+		handerName = strings.TrimSuffix(handerName, "-fm")
+
+		m.AddResponseTime(handerName, config.REST_API_TYPE, c.Request.Method, float64(time.Now().UnixNano()-start))
+		m.AddResponseStatus(handerName, config.REST_API_TYPE, c.Request.Method, c.Writer.Status())
 	}
 }
 
