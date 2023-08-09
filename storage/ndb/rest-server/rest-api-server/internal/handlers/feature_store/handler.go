@@ -308,11 +308,15 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 	// Fill in primary key value from request into the vector
 	for featureName, value := range *entries {
 		var indexKey string
-		if _, ok := featureView.PrefixFeaturesLookup[featureName]; ok {
-			indexKey = feature_store.GetFeatureIndexKeyByFeature((featureView.PrefixFeaturesLookup)[featureName])
-		}
-		if index, ok := (featureView.FeatureIndexLookup)[indexKey]; ok {
-			featureValues[index] = value
+		if joinKeys, ok := featureView.JoinKeyMap[featureName]; ok {
+			for _, joinKey := range joinKeys {
+				if _, ok := featureView.PrefixFeaturesLookup[joinKey]; ok {
+					indexKey = feature_store.GetFeatureIndexKeyByFeature((featureView.PrefixFeaturesLookup)[joinKey])
+				}
+				if index, ok := (featureView.FeatureIndexLookup)[indexKey]; ok {
+					featureValues[index] = value
+				}
+			}
 		}
 	}
 	return &featureValues, status
@@ -339,12 +343,21 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 		}
 		for _, servingKey := range fgFeature.PrimaryKeyMap {
 			var pkCol = servingKey.FeatureName
-			var prefixPk = servingKey.Prefix + pkCol
-			if (*entries)[prefixPk] != nil {
-				var filter = api.Filter{Column: &pkCol, Value: (*entries)[prefixPk]}
+			var requiredEntry = servingKey.Prefix + pkCol
+			if !servingKey.Required {
+				requiredEntry = servingKey.JoinOn
+			}
+			if (*entries)[requiredEntry] != nil {
+				var filter = api.Filter{Column: &pkCol, Value: (*entries)[requiredEntry]}
 				filters = append(filters, filter)
 				if log.IsDebug() {
-					log.Debugf("Add to filter: %s", pkCol)
+					var entryValue interface{}
+					err := json.Unmarshal(*(*entries)[requiredEntry], &entryValue)
+					if err == nil {
+						log.Debugf("Add to filter: %s=%v", pkCol, entryValue)
+					} else {
+						log.Debugf("Add to filter: %s", pkCol)
+					}
 				}
 			}
 		}

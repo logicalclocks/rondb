@@ -45,6 +45,7 @@ type FeatureViewMetadata struct {
 	FeatureIndexLookup   map[string]int             // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
 	PrimaryKeyMap        map[string]*dal.ServingKey // key: join index + feature name
 	PrefixPrimaryKeyMap  map[string]string          // key: prefix(collision corrected) + fName, value: feature name in feature group
+	JoinKeyMap           map[string][]string        // key: prefix(collision corrected) + fName, value: list of feature which join on the key
 }
 
 type FeatureGroupFeatures struct {
@@ -84,8 +85,17 @@ func newFeatureViewMetadata(
 	var prefixPrimaryKeyMap = make(map[string]string)
 	var primaryKeyMap = make(map[string]*dal.ServingKey)
 	var fgPrimaryKeyMap = make(map[string][]*dal.ServingKey)
+	var joinKeyMap = make(map[string][]string)
 	for _, key := range *servingKeys {
-		prefixPrimaryKeyMap[key.Prefix+key.FeatureName] = key.FeatureName
+		var prefixFeatureName = key.Prefix + key.FeatureName
+		prefixPrimaryKeyMap[prefixFeatureName] = key.FeatureName
+		if key.JoinOn != "" {
+			joinKeyMap[key.JoinOn] = append(joinKeyMap[key.JoinOn], prefixFeatureName)
+		} else {
+			// if JoinOn is empty, add itself to the map, so that it is easier to loop over the value which
+			// should contain all the features associated with the join key
+			joinKeyMap[prefixFeatureName] = append(joinKeyMap[prefixFeatureName], prefixFeatureName)
+		}
 		var newKey = key
 		primaryKeyMap[GetServingKey(key.JoinIndex, key.FeatureName)] = &newKey
 		var fgKey = getFeatureGroupServingKey(key.JoinIndex, key.FeatureGroupId)
@@ -162,6 +172,7 @@ func newFeatureViewMetadata(
 	metadata.FeatureStoreNames = fsNames
 	metadata.PrimaryKeyMap = primaryKeyMap
 	metadata.PrefixPrimaryKeyMap = prefixPrimaryKeyMap
+	metadata.JoinKeyMap = joinKeyMap
 	return &metadata
 }
 

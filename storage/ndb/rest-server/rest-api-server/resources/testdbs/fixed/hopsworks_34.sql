@@ -541,6 +541,14 @@ VALUES
     ),
     (
 	    3089, 'test_deleted_joint_fg', 67, Timestamp('2023-05-10 10:45:26'), 10000, 1, '', 250, 'test_deleted_joint_fg_1', 250
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`bigint` `bigint`
+    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`id1` = `fg1`.`bigint`
+    */
+    (
+        4113, 'sample_1n3', 67, Timestamp('2023-08-08 14:00:53'), 10000, 1, '', 250, 'sample_1n3_1', 250
     );
 
 INSERT INTO 
@@ -614,6 +622,12 @@ VALUES
     ),
     (
         3085, NULL, 2069, NULL, 0, 1, 'fg1_', 3089
+    ),
+    (
+        5126, NULL, 2069, NULL, 0, 0, NULL, 4113
+    ),
+    (
+        5125, NULL, 2076, NULL, 0, 1, NULL, 4113
     );
 
 INSERT INTO
@@ -891,6 +905,21 @@ VALUES
     ),
     (
         3117, NULL, NULL, 'id1', 'bigint', 3085, 0, 0, NULL, 3089
+    ),
+    (
+        5131, NULL, 2069, 'data1', 'bigint', 5126, 2, 0, NULL, 4113
+    ),
+    (
+        5134, NULL, 2069, 'data2', 'bigint', 5126, 3, 0, NULL, 4113
+    ),
+    (
+        5133, NULL, 2076, 'bigint', 'bigint', 5125, 4, 0, NULL, 4113
+    ),
+    (
+        5132, NULL, 2069, 'id1', 'bigint', 5126, 0, 0, NULL, 4113
+    ),
+    (
+        5135, NULL, 2069, 'ts', 'timestamp', 5126, 1, 0, NULL, 4113
     );
 
 CREATE TABLE `serving_key` (
@@ -986,4 +1015,13 @@ VALUES
     ),
     (
         62, 'fg1_', 'id1', 'id1', 1, 2069, 0, 3087
+    ),
+    (
+        1033, NULL, 'id1', NULL, 0, 2069, 1, 4113
+    ),
+    (
+        1031, NULL, 'id2', NULL, 1, 2076, 1, 4113
+    ),
+    (
+        1032, '0_null', 'id1', NULL, 1, 2076, 1, 4113
     );
