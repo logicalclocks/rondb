@@ -59,6 +59,7 @@ extern BaseString g_options;
 extern unsigned int opt_no_binlog;
 extern bool ga_skip_broken_objects;
 extern bool ga_continue_on_data_errors;
+extern bool ga_allow_unique_indexes;
 
 extern Properties g_rewrite_databases;
 
@@ -2430,12 +2431,25 @@ BackupRestore::table_compatible_check(TableS & tableS)
     {
       BaseString dummy1, dummy2, indexname;
       dissect_index_name(tablename, dummy1, dummy2, indexname);
-      restoreLogger.log_error( "WARNING: Table %s contains unique index %s."
-           "This can cause ndb_restore failures with duplicate key errors "
-           "while restoring data. To avoid duplicate key errors, use "
-           "--disable-indexes before restoring data and --rebuild-indexes "
-           "after data is restored.",
-           tmptab.m_primaryTable.c_str(), indexname.c_str());
+      if(ga_allow_unique_indexes)
+      {
+        restoreLogger.log_error( "WARNING: Table %s contains unique index %s."
+             "This can cause ndb_restore failures with duplicate key errors "
+             "while restoring data. To avoid duplicate key errors, use "
+             "--disable-indexes before restoring data and --rebuild-indexes "
+             "after data is restored.",
+             tmptab.m_primaryTable.c_str(), indexname.c_str());
+      }
+      else
+      {
+        restoreLogger.log_error( "ERROR: Refusing to restore because table %s "
+             "contains unique index %s. Use --disable-indexes before "
+             "restoring data and --rebuild-indexes after data is restored. "
+             "Optionally, and with risk of causing duplicate key errors while "
+             "restoring, you can use --allow-unique-indexes instead.",
+             tmptab.m_primaryTable.c_str(), indexname.c_str());
+        return false;
+      }
     }
     return true;
   }
