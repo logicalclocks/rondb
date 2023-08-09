@@ -89,12 +89,13 @@ func newFeatureViewMetadata(
 	for _, key := range *servingKeys {
 		var prefixFeatureName = key.Prefix + key.FeatureName
 		prefixPrimaryKeyMap[prefixFeatureName] = key.FeatureName
-		if key.JoinOn != "" {
-			joinKeyMap[key.JoinOn] = append(joinKeyMap[key.JoinOn], prefixFeatureName)
-		} else {
-			// if JoinOn is empty, add itself to the map, so that it is easier to loop over the value which
-			// should contain all the features associated with the join key
+
+		if key.Required {
 			joinKeyMap[prefixFeatureName] = append(joinKeyMap[prefixFeatureName], prefixFeatureName)
+		} else {
+			if key.JoinOn != "" {
+				joinKeyMap[key.JoinOn] = append(joinKeyMap[key.JoinOn], prefixFeatureName)
+			}
 		}
 		var newKey = key
 		primaryKeyMap[GetServingKey(key.JoinIndex, key.FeatureName)] = &newKey

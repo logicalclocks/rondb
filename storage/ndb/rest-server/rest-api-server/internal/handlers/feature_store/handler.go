@@ -78,7 +78,6 @@ func ValidatePrimaryKey(entries *map[string]*json.RawMessage, features *map[stri
 	if len(*entries) == 0 {
 		return feature_store.INCORRECT_PRIMARY_KEY.NewMessage("No entries found")
 	}
-	// DO NOT check if all required serving keys exist because some keys may be missing and data are passed as passed feature
 
 	for featureName := range *entries {
 		_, ok := (*features)[featureName]

@@ -549,6 +549,22 @@ VALUES
     */
     (
         4113, 'sample_1n3', 67, Timestamp('2023-08-08 14:00:53'), 10000, 1, '', 250, 'sample_1n3_1', 250
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`bigint` `bigint`
+    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`data1` = `fg1`.`id1`
+    */
+    (
+        4114, 'sample_1n3_joinoncol', 67, Timestamp('2023-08-09 09:08:02'), 10000, 1, '', 250, 'sample_1n3_joinoncol_1', 250
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`data1` `data1`, `fg0`.`data2` `data2`, `fg1`.`bigint` `bigint`
+    FROM `test_ken_featurestore`.`sample_1_1` `fg0`
+    INNER JOIN `test_ken_featurestore`.`sample_3_1` `fg1` ON `fg0`.`data1` = `fg1`.`bigint`
+    */
+    (
+        4115, 'sample_1n3_joincoloncol', 67, Timestamp('2023-08-09 09:29:37'), 10000, 1, '', 250, 'sample_1n3_joinoncol_1', 250
     );
 
 INSERT INTO 
@@ -628,6 +644,18 @@ VALUES
     ),
     (
         5125, NULL, 2076, NULL, 0, 1, NULL, 4113
+    ),
+    (
+        5127, NULL, 2069, NULL, 0, 0, NULL, 4114
+    ),
+    (
+        5128, NULL, 2076, NULL, 0, 1, NULL, 4114
+    ),
+    (
+        5129, NULL, 2076, NULL, 0, 1, NULL, 4115
+    ),
+    (
+        5130, NULL, 2069, NULL, 0, 0, NULL, 4115
     );
 
 INSERT INTO
@@ -920,6 +948,36 @@ VALUES
     ),
     (
         5135, NULL, 2069, 'ts', 'timestamp', 5126, 1, 0, NULL, 4113
+    ),
+    (
+        5139, NULL, 2069, 'ts', 'timestamp', 5127, 1, 0, NULL, 4114
+    ),
+    (
+        5138, NULL, 2069, 'data1', 'bigint', 5127, 2, 0, NULL, 4114
+    ),
+    (
+        5136, NULL, 2069, 'id1', 'bigint', 5127, 0, 0, NULL, 4114
+    ),
+    (
+        5140, NULL, 2069, 'data2', 'bigint', 5127, 3, 0, NULL, 4114
+    ),
+    (
+        5137, NULL, 2076, 'bigint', 'bigint', 5128, 4, 0, NULL, 4114
+    ),
+    (
+        5141, NULL, 2076, 'bigint', 'bigint', 5129, 4, 0, NULL, 4115
+    ),
+    (
+        5142, NULL, 2069, 'ts', 'timestamp', 5130, 1, 0, NULL, 4115
+    ),
+    (
+        5143, NULL, 2069, 'data2', 'bigint', 5130, 3, 0, NULL, 4115
+    ),
+    (
+        5144, NULL, 2069, 'data1', 'bigint', 5130, 2, 0, NULL, 4115
+    ),
+    (
+        5145, NULL, 2069, 'id1', 'bigint', 5130, 0, 0, NULL, 4115
     );
 
 CREATE TABLE `serving_key` (
@@ -1024,4 +1082,22 @@ VALUES
     ),
     (
         1032, '0_null', 'id1', NULL, 1, 2076, 1, 4113
+    ),
+    (
+	    1034, '0_null', 'id1', 'data1', 1, 2076, 1, 4114
+    ),
+    (
+        1035, NULL, 'id2', NULL, 1, 2076, 1, 4114
+    ),
+    (
+        1036, NULL, 'id1', NULL, 0, 2069, 1, 4114
+    ),
+    (
+        1037, NULL, 'id1', NULL, 0, 2069, 1, 4115
+    ),
+    (
+        1039, '0_null', 'id1', NULL, 1, 2076, 1, 4115
+    ),
+    (
+        1038, NULL, 'id2', NULL, 1, 2076, 1, 4115
     );
