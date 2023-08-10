@@ -25,6 +25,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"hopsworks.ai/rdrs/internal/common"
+	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/handlers"
 	"hopsworks.ai/rdrs/pkg/api"
 )
@@ -32,9 +33,15 @@ import (
 func (s *RonDBServer) Batch(ctx context.Context, reqProto *api.BatchRequestProto) (*api.BatchResponseProto, error) {
 
 	// metrics
+	var statusCode = codes.OK
 	start := time.Now().UnixNano()
-	defer s.rdrsMetrics.GRPCMetrics.BatchPkReadSummary.Observe(float64(time.Now().UnixNano() - start))
-	s.rdrsMetrics.GRPCMetrics.BatchPkReadCounter.Inc()
+	updateMetrics := func(opName string) {
+		s.rdrsMetrics.EndPointMetrics.AddResponseTime(opName,
+			config.GRPC_API_TYPE, config.GRPC_API_TYPE, float64(time.Now().UnixNano()-start))
+		s.rdrsMetrics.EndPointMetrics.AddResponseStatus(opName,
+			config.GRPC_API_TYPE, config.GRPC_API_TYPE, int(statusCode))
+	}
+	defer updateMetrics(config.BATCH_OPERATION)
 
 	apiKey, err := s.getApiKey(ctx)
 	if err != nil {
@@ -46,7 +53,7 @@ func (s *RonDBServer) Batch(ctx context.Context, reqProto *api.BatchRequestProto
 	responseIntf.Init(len(*request))
 
 	httpStatus, err := handlers.Handle(&s.batchPkReadHandler, &apiKey, request, responseIntf)
-	statusCode := common.HttpStatusToGrpcCode(httpStatus)
+	statusCode = common.HttpStatusToGrpcCode(httpStatus)
 	if err != nil {
 		return nil, status.Error(statusCode, err.Error())
 	} else if httpStatus != http.StatusOK {

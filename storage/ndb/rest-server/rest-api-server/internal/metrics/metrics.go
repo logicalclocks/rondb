@@ -25,6 +25,7 @@ import (
 
 type RDRSMetrics struct {
 	RonDBMetrics     *RonDBMetrics
+	EndPointMetrics  *EndPointMetrics
 	HTTPMetrics      *HTTPMetrics
 	GRPCMetrics      *GRPCMetrics
 	GoRuntimeMetrics *GoRuntimeMetrics
@@ -40,52 +41,42 @@ type RonDBMetrics struct {
 	RonDBConnectionStateGauge prometheus.Gauge
 }
 
+type GRPCMetrics struct {
+	GRPCStatistics GRPCStatistics
+}
+
 type HTTPMetrics struct {
-	PingCounter         prometheus.Counter
-	PkReadCounter       prometheus.Counter
-	BatchPkReadCounter  prometheus.Counter
-	StatCounter         prometheus.Counter
-	PingSummary         prometheus.Summary
-	PkReadSummary       prometheus.Summary
-	BatchPkReadSummary  prometheus.Summary
+	HttpConnectionGauge HttpConnectionGauge
+}
+
+type EndPointMetrics struct {
 	ResponseTimeSummary prometheus.SummaryVec
 	ResponseStatusCount prometheus.CounterVec
-	StatSummary         prometheus.Summary
-	HttpConnectionGauge HttpConnectionGauge
 }
 
 const (
 	ENDPOINT = "endpoint"
 	METHOD   = "method"
+	API_TYPE = "api_type"
 	STATUS   = "status"
 )
 
-func (h *HTTPMetrics) AddResponseTime(
+func (h *EndPointMetrics) AddResponseTime(
 	endPoint string,
+	api_type string,
 	method string,
 	time float64,
 ) {
-	h.ResponseTimeSummary.With(prometheus.Labels{ENDPOINT: endPoint, METHOD: method}).Observe(time)
+	h.ResponseTimeSummary.With(prometheus.Labels{ENDPOINT: endPoint, API_TYPE: api_type, METHOD: method}).Observe(time)
 }
 
-func (h *HTTPMetrics) AddResponseStatus(
+func (h *EndPointMetrics) AddResponseStatus(
 	endPoint string,
+	api_type string,
 	method string,
 	status int,
 ) {
-	h.ResponseStatusCount.With(prometheus.Labels{ENDPOINT: endPoint, METHOD: method, STATUS: fmt.Sprintf("%d", status)}).Inc()
-}
-
-type GRPCMetrics struct {
-	PingCounter        prometheus.Counter
-	PkReadCounter      prometheus.Counter
-	BatchPkReadCounter prometheus.Counter
-	StatCounter        prometheus.Counter
-	PingSummary        prometheus.Summary
-	PkReadSummary      prometheus.Summary
-	BatchPkReadSummary prometheus.Summary
-	StatSummary        prometheus.Summary
-	GRPCStatistics     GRPCStatistics
+	h.ResponseStatusCount.With(prometheus.Labels{ENDPOINT: endPoint, API_TYPE: api_type, METHOD: method, STATUS: fmt.Sprintf("%d", status)}).Inc()
 }
 
 func NewRDRSMetrics() (*RDRSMetrics, func()) {
@@ -93,15 +84,18 @@ func NewRDRSMetrics() (*RDRSMetrics, func()) {
 	metrics := RDRSMetrics{}
 	rondbMetrics, rondbMetricsCleanup := newRonDBMetrics()
 	httpMetrics, httpMetricsCleanup := newHTTPMetrics()
+	endPointMetrics, endPointMetricsCleanup := newEndPointMetrics()
 	grpcMetrics, grpcMetricsCleanup := newGRPCMetrics()
 	runtimeMetrics, runtimeMetricsCleanup := newGoRuntimeMetrics()
 	metrics.RonDBMetrics = rondbMetrics
+	metrics.EndPointMetrics = endPointMetrics
 	metrics.HTTPMetrics = httpMetrics
 	metrics.GRPCMetrics = grpcMetrics
 	metrics.GoRuntimeMetrics = runtimeMetrics
 
 	return &metrics, func() {
 		rondbMetricsCleanup()
+		endPointMetricsCleanup()
 		httpMetricsCleanup()
 		grpcMetricsCleanup()
 		runtimeMetricsCleanup()
@@ -143,7 +137,7 @@ func newRonDBMetrics() (*RonDBMetrics, func()) {
 		prometheus.NewGauge(
 			prometheus.GaugeOpts{
 				Name: protocol + "_connection_state",
-				Help: "Connection state (0: disconnected, 1: connected)",
+				Help: "Connection state (0: connected, > 0  not connected)",
 			})
 
 	metrics.NdbObjectsTotalCountGauge =
@@ -162,60 +156,9 @@ func newRonDBMetrics() (*RonDBMetrics, func()) {
 	return &metrics, cleanup
 }
 
-func newHTTPMetrics() (*HTTPMetrics, func()) {
-	protocol := "rdrs_http"
-	metrics := HTTPMetrics{}
-
-	metrics.PingCounter =
-		prometheus.NewCounter(
-			prometheus.CounterOpts{
-				Name: protocol + "_ping_request_count",
-				Help: "No of request handled by " + protocol + " ping handler",
-			},
-		)
-
-	metrics.PingSummary =
-		prometheus.NewSummary(
-			prometheus.SummaryOpts{
-				Name:       protocol + "_ping_request_summary",
-				Help:       "Summary for ping " + protocol + " handler. Time is in nanoseconds",
-				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
-			},
-		)
-
-	metrics.PkReadCounter =
-		prometheus.NewCounter(
-			prometheus.CounterOpts{
-				Name: protocol + "_pk_read_request_count",
-				Help: "No of request handled by " + protocol + " pkread handler",
-			},
-		)
-
-	metrics.PkReadSummary =
-		prometheus.NewSummary(
-			prometheus.SummaryOpts{
-				Name:       protocol + "_pk_read_request_summary",
-				Help:       "Summary for pk read " + protocol + " handler. Time is in nanoseconds",
-				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
-			},
-		)
-
-	metrics.BatchPkReadCounter =
-		prometheus.NewCounter(
-			prometheus.CounterOpts{
-				Name: protocol + "_pk_batch_read_request_count",
-				Help: "No of request handled by " + protocol + " batchpk read handler",
-			},
-		)
-
-	metrics.BatchPkReadSummary =
-		prometheus.NewSummary(
-			prometheus.SummaryOpts{
-				Name:       protocol + "_pk_batch_read_request_summary",
-				Help:       "Summary for pk batch read " + protocol + " handler. Time is in nanoseconds",
-				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
-			},
-		)
+func newEndPointMetrics() (*EndPointMetrics, func()) {
+	protocol := "rdrs_endpoints"
+	metrics := EndPointMetrics{}
 
 	metrics.ResponseTimeSummary =
 		*prometheus.NewSummaryVec(
@@ -224,7 +167,7 @@ func newHTTPMetrics() (*HTTPMetrics, func()) {
 				Help:       "Summary for response time handled by " + protocol + " handler. Time is in nanoseconds",
 				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
 			},
-			[]string{"endpoint", "method"},
+			[]string{ENDPOINT, API_TYPE, METHOD},
 		)
 
 	metrics.ResponseStatusCount =
@@ -233,25 +176,22 @@ func newHTTPMetrics() (*HTTPMetrics, func()) {
 				Name: protocol + "_response_status_count",
 				Help: "No of response status returned by " + protocol,
 			},
-			[]string{"endpoint", "method", "status"},
+			[]string{ENDPOINT, API_TYPE, METHOD, STATUS},
 		)
 
-	metrics.StatCounter =
-		prometheus.NewCounter(
-			prometheus.CounterOpts{
-				Name: protocol + "_stat_request_count",
-				Help: "No of request handled by " + protocol + " stat handler",
-			},
-		)
+	prometheus.MustRegister(metrics.ResponseTimeSummary)
+	prometheus.MustRegister(metrics.ResponseStatusCount)
 
-	metrics.StatSummary =
-		prometheus.NewSummary(
-			prometheus.SummaryOpts{
-				Name:       protocol + "_stat_request_summary",
-				Help:       "Summary for stat " + protocol + " handler",
-				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
-			},
-		)
+	cleanup := func() {
+		prometheus.Unregister(metrics.ResponseTimeSummary)
+		prometheus.Unregister(metrics.ResponseStatusCount)
+	}
+	return &metrics, cleanup
+}
+
+func newHTTPMetrics() (*HTTPMetrics, func()) {
+	protocol := "rdrs_http"
+	metrics := HTTPMetrics{}
 
 	metrics.HttpConnectionGauge = HttpConnectionGauge{}
 	metrics.HttpConnectionGauge.ConnectionGauge = prometheus.NewGauge(
@@ -261,29 +201,9 @@ func newHTTPMetrics() (*HTTPMetrics, func()) {
 		},
 	)
 
-	prometheus.MustRegister(metrics.PingCounter)
-	prometheus.MustRegister(metrics.PingSummary)
-	prometheus.MustRegister(metrics.PkReadCounter)
-	prometheus.MustRegister(metrics.PkReadSummary)
-	prometheus.MustRegister(metrics.BatchPkReadCounter)
-	prometheus.MustRegister(metrics.BatchPkReadSummary)
-	prometheus.MustRegister(metrics.ResponseTimeSummary)
-	prometheus.MustRegister(metrics.ResponseStatusCount)
-	prometheus.MustRegister(metrics.StatCounter)
-	prometheus.MustRegister(metrics.StatSummary)
 	prometheus.MustRegister(metrics.HttpConnectionGauge.ConnectionGauge)
 
 	cleanup := func() {
-		prometheus.Unregister(metrics.PingCounter)
-		prometheus.Unregister(metrics.PingSummary)
-		prometheus.Unregister(metrics.PkReadCounter)
-		prometheus.Unregister(metrics.PkReadSummary)
-		prometheus.Unregister(metrics.BatchPkReadCounter)
-		prometheus.Unregister(metrics.BatchPkReadSummary)
-		prometheus.Unregister(metrics.ResponseTimeSummary)
-		prometheus.Unregister(metrics.ResponseStatusCount)
-		prometheus.Unregister(metrics.StatCounter)
-		prometheus.Unregister(metrics.StatSummary)
 		prometheus.Unregister(metrics.HttpConnectionGauge.ConnectionGauge)
 	}
 	return &metrics, cleanup
@@ -293,74 +213,6 @@ func newGRPCMetrics() (*GRPCMetrics, func()) {
 	protocol := "rdrs_grpc"
 	metrics := GRPCMetrics{}
 
-	metrics.PingCounter =
-		prometheus.NewCounter(
-			prometheus.CounterOpts{
-				Name: protocol + "_ping_request_count",
-				Help: "No of request handled by " + protocol + " ping handler",
-			},
-		)
-
-	metrics.PingSummary =
-		prometheus.NewSummary(
-			prometheus.SummaryOpts{
-				Name:       protocol + "_ping_request_summary",
-				Help:       "Summary for ping " + protocol + " handler. Time is in nanoseconds",
-				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
-			},
-		)
-
-	metrics.PkReadCounter =
-		prometheus.NewCounter(
-			prometheus.CounterOpts{
-				Name: protocol + "_pk_read_request_count",
-				Help: "No of request handled by " + protocol + " pkread handler",
-			},
-		)
-
-	metrics.PkReadSummary =
-		prometheus.NewSummary(
-			prometheus.SummaryOpts{
-				Name:       protocol + "_pk_read_request_summary",
-				Help:       "Summary for pk read " + protocol + " handler. Time is in nanoseconds",
-				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
-			},
-		)
-
-	metrics.BatchPkReadCounter =
-		prometheus.NewCounter(
-			prometheus.CounterOpts{
-				Name: protocol + "_pk_batch_read_request_count",
-				Help: "No of request handled by " + protocol + " batchpk read handler",
-			},
-		)
-
-	metrics.BatchPkReadSummary =
-		prometheus.NewSummary(
-			prometheus.SummaryOpts{
-				Name:       protocol + "_pk_batch_read_request_summary",
-				Help:       "Summary for pk batch read " + protocol + " handler. Time is in nanoseconds",
-				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
-			},
-		)
-
-	metrics.StatCounter =
-		prometheus.NewCounter(
-			prometheus.CounterOpts{
-				Name: protocol + "_stat_request_count",
-				Help: "No of request handled by " + protocol + " stat handler",
-			},
-		)
-
-	metrics.StatSummary =
-		prometheus.NewSummary(
-			prometheus.SummaryOpts{
-				Name:       protocol + "_stat_request_summary",
-				Help:       "Summary for stat " + protocol + " handler. Time is in nanoseconds",
-				Objectives: map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.95: 0.01, 0.99: 0.001},
-			},
-		)
-
 	metrics.GRPCStatistics = GRPCStatistics{}
 	metrics.GRPCStatistics.ConnectionGauge = prometheus.NewGauge(
 		prometheus.GaugeOpts{
@@ -369,25 +221,9 @@ func newGRPCMetrics() (*GRPCMetrics, func()) {
 		},
 	)
 
-	prometheus.MustRegister(metrics.PingCounter)
-	prometheus.MustRegister(metrics.PingSummary)
-	prometheus.MustRegister(metrics.PkReadCounter)
-	prometheus.MustRegister(metrics.PkReadSummary)
-	prometheus.MustRegister(metrics.BatchPkReadCounter)
-	prometheus.MustRegister(metrics.BatchPkReadSummary)
-	prometheus.MustRegister(metrics.StatCounter)
-	prometheus.MustRegister(metrics.StatSummary)
 	prometheus.MustRegister(metrics.GRPCStatistics.ConnectionGauge)
 
 	cleanup := func() {
-		prometheus.Unregister(metrics.PingCounter)
-		prometheus.Unregister(metrics.PingSummary)
-		prometheus.Unregister(metrics.PkReadCounter)
-		prometheus.Unregister(metrics.PkReadSummary)
-		prometheus.Unregister(metrics.BatchPkReadCounter)
-		prometheus.Unregister(metrics.BatchPkReadSummary)
-		prometheus.Unregister(metrics.StatCounter)
-		prometheus.Unregister(metrics.StatSummary)
 		prometheus.Unregister(metrics.GRPCStatistics.ConnectionGauge)
 	}
 	return &metrics, cleanup

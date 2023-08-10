@@ -42,6 +42,9 @@ const BATCH_HTTP_VERB = "POST"
 const STAT_HTTP_VERB = "GET"
 const FEATURE_STORE_HTTP_VERB = "POST"
 
+const GRPC_API_TYPE = "GRPC"
+const REST_API_TYPE = "REST"
+
 /*
  Env variables
 */
