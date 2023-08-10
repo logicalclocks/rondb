@@ -43,7 +43,7 @@ func (h *RouteHandler) PkRead(c *gin.Context) {
 		c.AbortWithError(status, err)
 		return
 	}
-	c.JSON(status, responseIntf.(*api.PKReadResponseJSON))
+	c.JSON(http.StatusInternalServerError, responseIntf.(*api.PKReadResponseJSON))
 }
 
 /*
