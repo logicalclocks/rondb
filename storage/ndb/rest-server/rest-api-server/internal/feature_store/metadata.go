@@ -43,9 +43,10 @@ type FeatureViewMetadata struct {
 	FeatureStoreNames    []*string                   // List of all feature store used by feature view including shared feature store
 	NumOfFeatures        int
 	FeatureIndexLookup   map[string]int             // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
-	PrimaryKeyMap        map[string]*dal.ServingKey // key: join index + feature name
-	PrefixPrimaryKeyMap  map[string]string          // key: prefix(collision corrected) + fName, value: feature name in feature group
-	JoinKeyMap           map[string][]string        // key: prefix(collision corrected) + fName, value: list of feature which join on the key
+	// serving key doc: https://hopsworks.atlassian.net/wiki/spaces/FST/pages/173342721/How+to+resolve+the+set+of+serving+key+in+get+feature+vector
+	PrimaryKeyMap        map[string]*dal.ServingKey // key: join index + feature name. Used for constructing rondb request.
+	PrefixPrimaryKeyMap  map[string]string          // key: serving-key-prefix + fName, value: feature name in feature group. Used for pk validation.
+	JoinKeyMap           map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
 }
 
 type FeatureGroupFeatures struct {
@@ -93,7 +94,7 @@ func newFeatureViewMetadata(
 		if key.Required {
 			joinKeyMap[prefixFeatureName] = append(joinKeyMap[prefixFeatureName], prefixFeatureName)
 		} else {
-			if key.JoinOn != "" {
+			if key.RequiredEntry != "" {
 				joinKeyMap[key.JoinOn] = append(joinKeyMap[key.JoinOn], prefixFeatureName)
 			}
 		}

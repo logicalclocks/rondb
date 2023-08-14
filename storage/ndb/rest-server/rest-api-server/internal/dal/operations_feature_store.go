@@ -218,6 +218,7 @@ type ServingKey struct {
 	Required bool
 	JoinOn string
 	JoinIndex int
+	RequiredEntry string
 }
 
 func GetServingKeys(featureViewId int) ([]ServingKey, error) {
@@ -244,6 +245,10 @@ func GetServingKeys(featureViewId int) ([]ServingKey, error) {
 			Required: int(servingKey.required) != 0,
 			JoinOn: C.GoString(&servingKey.join_on[0]),
 			JoinIndex: int(servingKey.join_index),
+		}
+		retServingKey.RequiredEntry = retServingKey.Prefix + retServingKey.FeatureName
+		if !retServingKey.Required {
+			retServingKey.RequiredEntry = retServingKey.JoinOn
 		}
 		retServingKeys[i] = retServingKey
 	}

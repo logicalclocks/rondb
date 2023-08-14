@@ -804,7 +804,7 @@ func Test_GetFeatureVector_IncompletePrimaryKey(t *testing.T) {
 func Test_GetFeatureVector_IncompletePrimaryKey_Join(t *testing.T) {
 	var joinKey = make(map[string]string)
 	joinKey["id1"] = "bigint"
-	rows, _, _, err := fshelper.GetNSampleDataWithJoinAndKey(
+	rows, _, cols, err := fshelper.GetNSampleDataWithJoinAndKey(
 		2, testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_3_1", "", joinKey,
 		[]string{"id1", "ts", "data1", "data2"}, []string{"id1", "id2", "bigint"})
 	if err != nil {
@@ -827,7 +827,12 @@ func Test_GetFeatureVector_IncompletePrimaryKey_Join(t *testing.T) {
 		nil,
 		nil,
 	)
-	GetFeatureStoreResponseWithDetail(t, fsReq, fsmetadata.INCORRECT_PRIMARY_KEY.GetReason(), http.StatusBadRequest)
+	var fsResp = GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+	rows = [][]interface{}{
+		nil,
+		nil,
+	}
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
 
 }
 

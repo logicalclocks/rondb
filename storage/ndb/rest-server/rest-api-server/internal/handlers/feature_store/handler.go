@@ -307,11 +307,14 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 	// Fill in primary key value from request into the vector
 	for featureName, value := range *entries {
 		var indexKey string
+		// Get all join key linked to the provided feature name
 		if joinKeys, ok := featureView.JoinKeyMap[featureName]; ok {
 			for _, joinKey := range joinKeys {
+				// Check if the join key are valid feature
 				if _, ok := featureView.PrefixFeaturesLookup[joinKey]; ok {
 					indexKey = feature_store.GetFeatureIndexKeyByFeature((featureView.PrefixFeaturesLookup)[joinKey])
 				}
+				// Get the index of the feature
 				if index, ok := (featureView.FeatureIndexLookup)[indexKey]; ok {
 					featureValues[index] = value
 				}
@@ -342,16 +345,13 @@ func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *
 		}
 		for _, servingKey := range fgFeature.PrimaryKeyMap {
 			var pkCol = servingKey.FeatureName
-			var requiredEntry = servingKey.Prefix + pkCol
-			if !servingKey.Required {
-				requiredEntry = servingKey.JoinOn
-			}
-			if (*entries)[requiredEntry] != nil {
-				var filter = api.Filter{Column: &pkCol, Value: (*entries)[requiredEntry]}
+			if (*entries)[servingKey.RequiredEntry] != nil {
+				// Fill in value of required entry as original entry may not be required.
+				var filter = api.Filter{Column: &pkCol, Value: (*entries)[servingKey.RequiredEntry]}
 				filters = append(filters, filter)
 				if log.IsDebug() {
 					var entryValue interface{}
-					err := json.Unmarshal(*(*entries)[requiredEntry], &entryValue)
+					err := json.Unmarshal(*(*entries)[servingKey.RequiredEntry], &entryValue)
 					if err == nil {
 						log.Debugf("Add to filter: %s=%v", pkCol, entryValue)
 					} else {
