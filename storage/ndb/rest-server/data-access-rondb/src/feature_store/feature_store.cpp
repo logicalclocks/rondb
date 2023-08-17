@@ -1042,7 +1042,7 @@ RS_Status find_serving_key_data_int(Ndb *ndb_object, int feature_view_id,
          (Uint32)table_dict->getColumn("feature_name")->getSizeInBytes());
   assert(SERVING_KEY_JOIN_PREFIX_SIZE ==
          (Uint32)table_dict->getColumn("prefix")->getSizeInBytes());
-  assert(SERVING_KEY_FEATURE_NAME_SIZE ==
+  assert(SERVING_KEY_JOIN_ON_SIZE ==
          (Uint32)table_dict->getColumn("join_on")->getSizeInBytes());
 
   NdbRecAttr *feature_group_id_attr = scan_op->getValue("feature_group_id", nullptr);

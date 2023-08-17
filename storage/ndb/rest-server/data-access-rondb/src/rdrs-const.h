@@ -98,6 +98,7 @@ inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define ON_DEMAND_FEATURE_NAME_SIZE        1000 + 2 /* +2 for ndb len or '\0'*/
 #define CACHE_FEATURE_SIZE                 63 + 1   /* +1 for ndb len or '\0'*/
 #define SERVING_KEY_FEATURE_NAME_SIZE      1000 + 2 /* +2 for ndb len or '\0'*/
+#define SERVING_KEY_JOIN_ON_SIZE           1000 + 2 /* +2 for ndb len or '\0'*/
 #define SERVING_KEY_JOIN_PREFIX_SIZE       63 + 1   /* +1 for ndb len or '\0'*/
 
 // Data types
