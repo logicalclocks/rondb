@@ -1101,7 +1101,7 @@ RS_Status find_serving_key_data_int(Ndb *ndb_object, int feature_view_id,
         serving_key.prefix[prefix_attr_bytes] = '\0';
       }
 
-      // prefix
+      // join on
       if (join_on_attr->isNULL()) {
         serving_key.join_on[0] = '\0';
       } else {
