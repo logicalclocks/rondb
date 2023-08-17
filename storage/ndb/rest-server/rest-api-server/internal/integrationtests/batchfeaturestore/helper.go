@@ -114,3 +114,14 @@ func GetPkValues(rows *[][]interface{}, pks *[]string, cols *[]string) *[][]inte
 	}
 	return &pkValues
 }
+
+func GetPkValuesExclude(rows *[][]interface{}, pks *[]string, cols *[]string, exclude []string) (*[]string, *[][]interface{}) {
+	var pkValues [][]interface{}
+	var pkFiltered *[]string
+	for _, row := range *rows {
+		var pks, pkValueFiltered = fshelper.GetPkValuesExclude(&row, pks, cols, exclude)
+		pkFiltered = pks
+		pkValues = append(pkValues, *pkValueFiltered)
+	}
+	return pkFiltered, &pkValues
+}

@@ -38,7 +38,12 @@ var BenchmarkAddRow string
 const BenchAddRow_TABLE_NAME = "TABLE_NAME"
 const BenchAddRow_COLUMN_VALUES_TO_INSERT = "COLUMN_VALUES_TO_INSERT"
 
-//go:embed dynamic/hopsworks_add_project.sql
+//go:embed fixed/hopsworks_34.sql
+var HopsworksScheme string
+
+const HOPSWORKS_DB_NAME = "hopsworks"
+
+//go:embed dynamic/hopsworks_34_add_project.sql
 var HopsworksAddProject string
 
 const hopsworksAddProject_PROJECT_NAME = "PROJECT_NAME"
@@ -76,11 +81,6 @@ const DB018 = "db018"
 	const DB001_table1 = "table_1"
 	const DB002_table1 = "table_1"
 */
-
-//go:embed fixed/hopsworks.sql
-var HopsworksScheme string
-
-const HOPSWORKS_DB_NAME = "hopsworks"
 
 //go:embed fixed/DB000.sql
 var DB000Scheme string

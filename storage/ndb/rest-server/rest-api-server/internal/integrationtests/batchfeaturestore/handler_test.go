@@ -411,6 +411,181 @@ func Test_GetFeatureVector_joinSameFg(t *testing.T) {
 	ValidateResponseWithData(t, &rows, &cols, fsResp)
 }
 
+func Test_GetFeatureVector_TestServingKey_Join(t *testing.T) {
+	rows, pks, cols, err := fshelper.GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	// exclude entry 'fg2_id1' from the request
+	var pkFiltered, pkValueFiltered = GetPkValuesExclude(&rows, &pks, &cols, []string{"fg2_id1"})
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB001,
+		"sample_1n2",
+		1,
+		*pkFiltered,
+		*pkValueFiltered,
+		nil,
+		nil,
+	)
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
+
+}
+
+func Test_GetFeatureVector_TestServingKey_Join_ExtraKey(t *testing.T) {
+	rows, pks, cols, err := fshelper.GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_2_1", "fg2_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	var pksExtraKey = make([][]interface{}, 0)
+	for _, row := range rows {
+		var pkValue = *fshelper.GetPkValues(&row, &pks, &cols)
+		pksExtraKey = append(pksExtraKey, []interface{}{pkValue[0], []byte(fmt.Sprintf("%d", 999999))})
+	}
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB001,
+		"sample_1n2",
+		1,
+		[]string{"id1", "fg2_id1"},
+		pksExtraKey, // `fg2_id1` should be ignored
+		nil,
+		nil,
+	)
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
+
+}
+
+func Test_GetFeatureVector_TestServingKey_SelfJoin(t *testing.T) {
+	rows, pks, cols, err := fshelper.GetSampleDataWithJoin(testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_1_1", "fg1_")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	// exclude entry 'fg1_id1' from the request
+	var pkFiltered, pkValueFiltered = GetPkValuesExclude(&rows, &pks, &cols, []string{"fg1_id1"})
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB001,
+		"sample_1n1_self",
+		1,
+		*pkFiltered,
+		*pkValueFiltered,
+		nil,
+		nil,
+	)
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
+
+}
+
+func Test_GetFeatureVector_TestServingKey_Join_LeftColOnRightId(t *testing.T) {
+	var joinKey = make(map[string]string)
+	joinKey["data1"] = "id1"
+	rows, _, cols, err := fshelper.GetNSampleDataWithJoinAndKey(
+		2, testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_3_1", "", joinKey,
+		[]string{"id1", "ts", "data1", "data2"}, []string{"id1", "id2", "bigint"})
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	// Exclude the primary key because they are not selected as features
+	var exCols = make(map[string]bool)
+	exCols["righId1"] = true
+	exCols["id2"] = true
+
+	var pkValues = make([][]interface{}, 0)
+	for _, row := range rows {
+		// All required primary key
+		pkValues = append(pkValues, []interface{}{row[0], row[4], row[5]})
+	}
+
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB001,
+		"sample_1n3_joinoncol",
+		1,
+		[]string{"id1", "0_id1", "id2"},
+		pkValues,
+		nil,
+		nil,
+	)
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+	// Change the column name because it is conflicted with col[0]
+	cols[4] = "righId1"
+	ValidateResponseWithDataExcludeCols(t, &rows, &cols, &exCols, fsResp)
+}
+
+func Test_GetFeatureVector_TestServingKey_Join_ColOnCol(t *testing.T) {
+	var joinKey = make(map[string]string)
+	joinKey["data1"] = "bigint"
+	rows, _, cols, err := fshelper.GetNSampleDataWithJoinAndKey(
+		2, testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_3_1", "", joinKey,
+		[]string{"id1", "ts", "data1", "data2"}, []string{"id1", "id2", "bigint"})
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	// Exclude the primary key because they are not selected as features
+	var exCols = make(map[string]bool)
+	exCols["righId1"] = true
+	exCols["id2"] = true
+
+	var pkValues = make([][]interface{}, 0)
+	for _, row := range rows {
+		// All required primary key
+		pkValues = append(pkValues, []interface{}{row[0], row[4], row[5]})
+	}
+
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB001,
+		"sample_1n3_joincoloncol",
+		1,
+		[]string{"id1", "0_id1", "id2"},
+		pkValues,
+		nil,
+		nil,
+	)
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+	// Change the column name because it is conflicted with col[0]
+	cols[4] = "righId1"
+	ValidateResponseWithDataExcludeCols(t, &rows, &cols, &exCols, fsResp)
+
+}
+
+func Test_GetFeatureVector_TestServingKey_PrefixCollision(t *testing.T) {
+	var joinKey = make(map[string]string)
+	joinKey["id1"] = "bigint"
+	rows, _, cols, err := fshelper.GetNSampleDataWithJoinAndKey(
+		2, testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_3_1", "", joinKey,
+		[]string{"id1", "ts", "data1", "data2"}, []string{"id1", "id2", "bigint"})
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	// Exclude the primary key because they are not selected as features
+	var exCols = make(map[string]bool)
+	exCols["righId1"] = true
+	exCols["id2"] = true
+
+	var pkValues = make([][]interface{}, 0)
+	for _, row := range rows {
+		// All required primary key
+		pkValues = append(pkValues, []interface{}{row[0], row[4], row[5]})
+	}
+
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB001,
+		"sample_1n3",
+		1,
+		[]string{"id1", "0_id1", "id2"},
+		pkValues,
+		nil,
+		nil,
+	)
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+	// Change the column name because it is conflicted with col[0]
+	cols[4] = "righId1"
+	ValidateResponseWithDataExcludeCols(t, &rows, &cols, &exCols, fsResp)
+}
+
 func Test_GetFeatureVector_excludeLabelColumn(t *testing.T) {
 	rows, pks, cols, err := fshelper.GetSampleDataWithJoin("fsdb001", "sample_1_1", "fsdb001", "sample_2_1", "fg2_")
 	if err != nil {
@@ -624,6 +799,41 @@ func Test_GetFeatureVector_IncompletePrimaryKey(t *testing.T) {
 		nil,
 	}
 	ValidateResponseWithData(t, &rows, &cols, fsResp)
+}
+
+func Test_GetFeatureVector_IncompletePrimaryKey_Join(t *testing.T) {
+	var joinKey = make(map[string]string)
+	joinKey["id1"] = "bigint"
+	rows, _, cols, err := fshelper.GetNSampleDataWithJoinAndKey(
+		2, testdbs.FSDB001, "sample_1_1", testdbs.FSDB001, "sample_3_1", "", joinKey,
+		[]string{"id1", "ts", "data1", "data2"}, []string{"id1", "id2", "bigint"})
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+
+	var pkValues = make([][]interface{}, 0)
+	for _, row := range rows {
+		// All required primary key
+		pkValues = append(pkValues, []interface{}{row[4], row[5]})
+	}
+
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB001,
+		"sample_1n3",
+		1,
+		// Do not include primary key from left fg
+		[]string{"0_id1", "id2"},
+		pkValues,
+		nil,
+		nil,
+	)
+	var fsResp = GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+	rows = [][]interface{}{
+		nil,
+		nil,
+	}
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
+
 }
 
 func Test_GetFeatureVector_IncompletePrimaryKey_PartialFail(t *testing.T) {
