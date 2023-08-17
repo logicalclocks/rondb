@@ -56,10 +56,10 @@ typedef struct Feature_Group {
 
 typedef struct Serving_Key {
   int feature_group_id;
-  char feature_name[TRAINING_DATASET_FEATURE_NAME_SIZE];
-  char prefix[TRAINING_DATASET_JOIN_PREFIX_SIZE];
+  char feature_name[SERVING_KEY_FEATURE_NAME_SIZE];
+  char prefix[SERVING_KEY_JOIN_PREFIX_SIZE];
   int required;
-  char join_on[TRAINING_DATASET_FEATURE_NAME_SIZE];
+  char join_on[SERVING_KEY_FEATURE_NAME_SIZE];
   int join_index;
 } Serving_Key;
 
