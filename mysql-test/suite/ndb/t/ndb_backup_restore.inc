@@ -149,10 +149,10 @@ if (!$serialrestore)
   --exec $NDB_RESTORE -b $the_backup_id -n 1 -m $NDB_BACKUPS-$the_backup_id/ >> $NDB_TOOLS_OUTPUT 2>&1
 
   --echo "Restoring backup on node 1"
-  --exec $NDB_RESTORE -b $the_backup_id -n 1 -r $NDB_BACKUPS-$the_backup_id/ >> $NDB_TOOLS_OUTPUT 2>&1
+  --exec $NDB_RESTORE --allow-unique-indexes -b $the_backup_id -n 1 -r $NDB_BACKUPS-$the_backup_id/ >> $NDB_TOOLS_OUTPUT 2>&1
 
   --echo "Restoring backup on node 2"
-  --exec $NDB_RESTORE -b $the_backup_id -n 2 -r $NDB_BACKUPS-$the_backup_id/ >> $NDB_TOOLS_OUTPUT 2>&1
+  --exec $NDB_RESTORE --allow-unique-indexes -b $the_backup_id -n 2 -r $NDB_BACKUPS-$the_backup_id/ >> $NDB_TOOLS_OUTPUT 2>&1
 }
 if ($serialrestore)
 {
@@ -163,7 +163,7 @@ if ($serialrestore)
   let $current_part = $backup_parts;
   while ($current_part)
   {
-    --exec $NDB_RESTORE -b $the_backup_id -n 1 -r $NDB_BACKUPS-$the_backup_id/BACKUP-$the_backup_id-PART-$current_part-OF-$backup_parts >> $NDB_TOOLS_OUTPUT 2>&1
+    --exec $NDB_RESTORE --allow-unique-indexes -b $the_backup_id -n 1 -r $NDB_BACKUPS-$the_backup_id/BACKUP-$the_backup_id-PART-$current_part-OF-$backup_parts >> $NDB_TOOLS_OUTPUT 2>&1
     dec $current_part;
   }
 
@@ -171,7 +171,7 @@ if ($serialrestore)
   let $current_part = $backup_parts;
   while ($current_part)
   {
-    --exec $NDB_RESTORE -b $the_backup_id -n 2 -r $NDB_BACKUPS-$the_backup_id/BACKUP-$the_backup_id-PART-$current_part-OF-$backup_parts >> $NDB_TOOLS_OUTPUT 2>&1
+    --exec $NDB_RESTORE --allow-unique-indexes -b $the_backup_id -n 2 -r $NDB_BACKUPS-$the_backup_id/BACKUP-$the_backup_id-PART-$current_part-OF-$backup_parts >> $NDB_TOOLS_OUTPUT 2>&1
     dec $current_part;
   }
 }
