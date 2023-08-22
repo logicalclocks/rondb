@@ -303,6 +303,8 @@ static void mgmd_run()
   }
 
   g_eventLogger->info("Shutting down server...");
+  /* Ensure that STOP command reply is sent before stop */
+  NdbSleep_MilliSleep(2000);
   delete mgm;
   g_eventLogger->info("Shutdown complete");
 
