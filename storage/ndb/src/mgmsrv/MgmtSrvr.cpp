@@ -1310,6 +1310,13 @@ int MgmtSrvr::sendStopMgmd(NodeId nodeId,
   {
     Guard g(m_local_config_mutex);
     {
+      NodeBitmask active_nodes;
+      m_local_config->get_nodemask(active_nodes);
+      if (!active_nodes.get(nodeId))
+      {
+        /* The node is deactivated, no need to shut it down */
+        return 0;
+      }
       ConfigIter iter(m_local_config, CFG_SECTION_NODE);
 
       if(iter.first())                       return SEND_OR_RECEIVE_FAILED;
