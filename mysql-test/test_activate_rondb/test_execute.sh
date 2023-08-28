@@ -1,7 +1,7 @@
 SLEEP_TIME="3"
 SLEEP_START_TIME="60"
 SLEEP_STOP_TIME="20"
-HOSTNAME_SERVER="192.168.0.101"
+HOSTNAME_SERVER="192.168.0.103"
 rm -rf $HOME/test_activate/ndb
 mkdir -p $HOME/test_activate
 mkdir -p $HOME/test_activate/ndb

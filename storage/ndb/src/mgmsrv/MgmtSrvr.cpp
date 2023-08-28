@@ -1301,7 +1301,8 @@ int MgmtSrvr::sendStopMgmd(NodeId nodeId,
 			   bool stop,
 			   bool restart,
 			   bool nostart,
-			   bool initialStart)
+			   bool initialStart,
+                           bool isShutdown)
 {
   const char* hostname;
   Uint32 port;
@@ -1310,12 +1311,15 @@ int MgmtSrvr::sendStopMgmd(NodeId nodeId,
   {
     Guard g(m_local_config_mutex);
     {
-      NodeBitmask active_nodes;
-      m_local_config->get_nodemask(active_nodes);
-      if (!active_nodes.get(nodeId))
+      if (isShutdown)
       {
-        /* The node is deactivated, no need to shut it down */
-        return 0;
+        NodeBitmask active_nodes;
+        m_local_config->get_nodemask(active_nodes);
+        if (!active_nodes.get(nodeId))
+        {
+          /* The node is deactivated, no need to shut it down */
+          return 0;
+        }
       }
       ConfigIter iter(m_local_config, CFG_SECTION_NODE);
 
@@ -2019,7 +2023,7 @@ int MgmtSrvr::sendSTOP_REQ(const Vector<NodeId> &node_ids,
     if (i != getOwnNodeId())
     {
       error= sendStopMgmd(i, abort, stop, restart,
-                          nostart, initialStart);
+                          nostart, initialStart, false);
       if (error == 0)
       {
         stoppedNodes.set(i);
@@ -2254,7 +2258,7 @@ int MgmtSrvr::shutdownMGM(int *stopCount, bool abort, int *stopSelf)
     if(nodeId==getOwnNodeId())
       continue;
     error= sendStopMgmd(nodeId, abort, true, false,
-                        false, false);
+                        false, false, true);
     if (error == 0)
       (*stopCount)++;
   }

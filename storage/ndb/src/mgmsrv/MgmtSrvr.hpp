@@ -429,7 +429,8 @@ private:
                    bool stop,
                    bool restart,
                    bool nostart,
-                   bool initialStart);
+                   bool initialStart,
+                   bool isShutdown);
 
   int sendall_STOP_REQ(NodeBitmask &stoppedNodes,
                        bool abort,
