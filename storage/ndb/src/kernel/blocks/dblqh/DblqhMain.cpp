@@ -13106,8 +13106,8 @@ void Dblqh::execLQHKEYCONF(Signal* signal)
                             signal,
                             500,
                             7);
+        return;
       }
-      return;
 #endif
     }
     setup_scan_pointers_from_tc_con(tcConnectptr, __LINE__);
