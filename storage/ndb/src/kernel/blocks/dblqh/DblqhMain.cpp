@@ -13092,13 +13092,23 @@ void Dblqh::execLQHKEYCONF(Signal* signal)
     if (ERROR_INSERTED(5106) &&
         signal->getSendersBlockRef() != reference())
     {
-      g_eventLogger->info("LQH %u delaying copy LQHKEYCONF", instance());
-      sendSignalWithDelay(reference(),
-                          GSN_LQHKEYCONF,
-                          signal,
-                          500,
-                          7);
-      return;
+#if defined(ERROR_INSERT)
+      /**
+       * Avoid overloading delay time queue by delaying only each
+       * 20th signal.
+       */
+      c_errorCounter++;
+      if (c_errorCounter % 20 == 0)
+      {
+        g_eventLogger->info("LQH %u delaying copy LQHKEYCONF", instance());
+        sendSignalWithDelay(reference(),
+                            GSN_LQHKEYCONF,
+                            signal,
+                            500,
+                            7);
+        return;
+      }
+#endif
     }
     setup_scan_pointers_from_tc_con(tcConnectptr, __LINE__);
     copyCompletedLab(signal, tcConnectptr);

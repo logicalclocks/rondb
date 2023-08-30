@@ -2361,7 +2361,7 @@ CommandInterpreter::executeStop(Vector<BaseString> &command_list,
       return -1;
     }
 
-    for (Uint32 i = 0; i < no_of_nodes; i++)
+    for (int i = 0; i < no_of_nodes; i++)
     {
       int nodeId = node_ids[i];
       ConfigValues::Iterator iter(conf->m_config);

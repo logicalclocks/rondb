@@ -509,6 +509,10 @@ public:
     LCP_CLOSE_STARTED = 2  // Completion(closing of files) has started
   };
 
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  Uint32 c_errorCounter;
+#endif
+
   enum ExecUndoLogState {
     EULS_IDLE = 0,
     EULS_STARTED = 1,
