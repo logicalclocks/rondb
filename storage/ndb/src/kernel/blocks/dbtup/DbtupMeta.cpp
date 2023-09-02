@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
-   Copyright (c) 2021, 2022, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -59,12 +59,12 @@
 
 extern EventLogger * g_eventLogger;
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
 //#define DEBUG_DISK 1
 //#define DEBUG_TUP_META 1
 //#define DEBUG_TUP_META_EXTRA 1
 //#define DEBUG_DROP_TAB 1
-//#define DEBUG_HASH 1
+#define DEBUG_HASH 1
 #endif
 
 #ifdef DEBUG_HASH
