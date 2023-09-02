@@ -1,0 +1,84 @@
+-- source include/have_multi_ndb.inc
+-- source suite/ndb/include/backup_restore_setup.inc
+
+#
+# RONDB-342: New hash function, tests for primary key and unique key that they use the correct distribution
+# before and after ndb_restore based on failures in hopsworks.hosts table.
+#
+CREATE TABLE host_test(a int PRIMARY KEY, b VARCHAR(128) UNIQUE KEY) ENGINE ndb CHARACTER SET latin1 COLLATE latin1_general_cs;
+INSERT INTO host_test VALUES (1,'10.0.0.2'); 
+INSERT INTO host_test VALUES (2,'10.0.0.3'); 
+INSERT INTO host_test VALUES (3,'10.0.0.4'); 
+INSERT INTO host_test VALUES (4,'10.0.0.5'); 
+INSERT INTO host_test VALUES (5,'10.0.0.6'); 
+INSERT INTO host_test VALUES (6,'10.0.0.7'); 
+INSERT INTO host_test VALUES (7,'10.0.0.8'); 
+INSERT INTO host_test VALUES (8,'10.0.0.9');
+
+select fq_name, fragment_num, fixed_elem_count from ndbinfo.memory_per_fragment where fq_name = 'sys/def/13/b$unique' and node_id = 2 order by fragment_num;
+select fq_name, fragment_num, fixed_elem_count from ndbinfo.memory_per_fragment where fq_name = 'test/def/host_test' and node_id = 2 order by fragment_num;
+
+select a,b from host_test where a = 1;
+select a,b from host_test where a = 2;
+select a,b from host_test where a = 3;
+select a,b from host_test where a = 4;
+select a,b from host_test where a = 5;
+select a,b from host_test where a = 6;
+select a,b from host_test where a = 7;
+select a,b from host_test where a = 8;
+
+select a,b from host_test where b = '10.0.0.2';
+select a,b from host_test where b = '10.0.0.3';
+select a,b from host_test where b = '10.0.0.4';
+select a,b from host_test where b = '10.0.0.5';
+select a,b from host_test where b = '10.0.0.6';
+select a,b from host_test where b = '10.0.0.7';
+select a,b from host_test where b = '10.0.0.8';
+select a,b from host_test where b = '10.0.0.9';
+
+# Turn off metadata check so it doesn't intefere with table discovery
+--connection server2
+SET @old_ndb_metadata_check_server2 = @@global.ndb_metadata_check;
+SET GLOBAL ndb_metadata_check = false;
+--connection server1
+SET @old_ndb_metadata_check_server1 = @@global.ndb_metadata_check;
+SET GLOBAL ndb_metadata_check = false;
+
+--source include/ndb_backup.inc
+drop table host_test;
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -m --disable-indexes --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
+--exec $NDB_RESTORE -b $the_backup_id -n 1 --rebuild-indexes --print --print_meta $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT
+
+select a,b from host_test where a = 1;
+select a,b from host_test where a = 2;
+select a,b from host_test where a = 3;
+select a,b from host_test where a = 4;
+select a,b from host_test where a = 5;
+select a,b from host_test where a = 6;
+select a,b from host_test where a = 7;
+select a,b from host_test where a = 8;
+
+select a,b from host_test where b = '10.0.0.2';
+select a,b from host_test where b = '10.0.0.3';
+select a,b from host_test where b = '10.0.0.4';
+select a,b from host_test where b = '10.0.0.5';
+select a,b from host_test where b = '10.0.0.6';
+select a,b from host_test where b = '10.0.0.7';
+select a,b from host_test where b = '10.0.0.8';
+select a,b from host_test where b = '10.0.0.9';
+
+select fq_name, fragment_num, fixed_elem_count from ndbinfo.memory_per_fragment where fq_name = 'sys/def/13/b$unique' and node_id = 2 order by fragment_num;
+select fq_name, fragment_num, fixed_elem_count from ndbinfo.memory_per_fragment where fq_name = 'test/def/host_test' and node_id = 2 order by fragment_num;
+
+drop table host_test;
+
+# Reset metadata check value
+--connection server2
+SET GLOBAL ndb_metadata_check = @old_ndb_metadata_check_server2;
+--connection server1
+SET GLOBAL ndb_metadata_check = @old_ndb_metadata_check_server1;
+
+--source suite/ndb/include/backup_restore_cleanup.inc
+--remove_file $NDB_TOOLS_OUTPUT
