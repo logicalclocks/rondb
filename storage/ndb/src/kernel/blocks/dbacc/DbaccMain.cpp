@@ -63,7 +63,7 @@
 
 #ifdef VM_TRACE
 //#define DO_TRANSIENT_POOL_STAT 1
-//#define DEBUG_HASH 1
+#define DEBUG_HASH 1
 #endif
 
 #ifdef DEBUG_HASH
