@@ -37,7 +37,7 @@ rondb_calc_hash(Uint32 hash_val[4],
   if (likely(use_new))
   {
     Uint64 hash;
-    assert(false);
+    require(false);
     hash = rondb_xxhash_std(key, keylen);
     hash_val[0] = hash & 0xFFFFFFFF;
     hash_val[1] = hash >> 32;

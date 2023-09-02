@@ -61,7 +61,7 @@
 #define dump_lock_queue(x)
 #endif
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
 //#define DO_TRANSIENT_POOL_STAT 1
 #define DEBUG_HASH 1
 #endif

@@ -59,7 +59,7 @@
 
 extern EventLogger * g_eventLogger;
 
-#ifdef VM_TRACE
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
 //#define DEBUG_DISK 1
 //#define DEBUG_TUP_META 1
 //#define DEBUG_TUP_META_EXTRA 1
