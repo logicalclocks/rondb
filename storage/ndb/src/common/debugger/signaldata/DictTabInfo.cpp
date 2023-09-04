@@ -210,6 +210,7 @@ DictTabInfo::Table::init(){
   FullyReplicatedTriggerId = RNIL;
   PartitionCount = 0;
   HashFunctionFlag = 0;
+  UseVarSizedDiskDataFlag = 0;
 }
 
 void
