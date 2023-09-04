@@ -27,10 +27,7 @@
 
 class RDRSRonDBConnection {
 
-
  private:
-  static RDRSRonDBConnection *__instance;
-
   // this is used when we update the connection, NDB objects etc.
   std::mutex connectionMutex;
   //  this is used togather with connectionMutex to quickly
@@ -48,7 +45,6 @@ class RDRSRonDBConnection {
   Uint32 connection_retry_delay_in_sec;
   struct NdbThread *reconnectionThread;
 
-
   // This is a list of NDB objects that are available for use.
   // When a  user request an NDB object then we return an
   // NDB object from this list. When a user returns the
@@ -59,43 +55,27 @@ class RDRSRonDBConnection {
   // are in use or not
   std::list<Ndb *> allAvailableNdbObjects;
 
-  RDRSRonDBConnection() {
-  }
 
  public:
+  RDRSRonDBConnection(const char *connection_string, unsigned int connection_pool_size,
+                      unsigned int *node_ids, unsigned int node_ids_len,
+                      unsigned int connection_retries, unsigned int connection_retry_delay_in_sec);
 
   ~RDRSRonDBConnection();
 
   /**
-   * Static method for initializing connection and NDB Object pool
-   *
-   * @return ObjectPool instance.
+   * Initialize the connection
+   * @return RS_Status
    */
-  static RS_Status Init(const char *connection_string, Uint32 connection_pool_size,
-                        Uint32 *node_ids, Uint32 node_ids_len, Uint32 connection_retries,
-                        Uint32 connection_retry_delay_in_sec);
-
-  /**
-   * Static method for accessing class instance.
-   *
-   * @return ObjectPool instance.
-   */
-  static RS_Status GetInstance(RDRSRonDBConnection **);
-
-  /**
-   * Connect to RonDB
-   *
-   * @return Status
-   */
-  RS_Status Connect();
+  RS_Status Init();
 
   /**
    * Returns Ndb object
    *
-   * New NDB object will be created if all 
+   * New NDB object will be created if all
    * existing NDB Objects are in use
    *
-   * @return Status and NDB object  
+   * @return Status and NDB object
    */
   RS_Status GetNdbObject(Ndb **ndb_object);
 
@@ -123,12 +103,20 @@ class RDRSRonDBConnection {
   RS_Status Reconnect();
 
   /**
-   * Reconnects. Closes existing connection
+   * Reconnection Handler 
    *
    */
   RS_Status ReconnectHandler();
 
  private:
+  /**
+   * Connect to RonDB
+   *
+   * @return Status
+   */
+  RS_Status Connect();
+
+
   /**
    * Purge. Delete all Ndb objects and shutdown connection
    * @paran end. If true then it will also free the memory

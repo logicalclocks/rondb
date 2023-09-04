@@ -29,44 +29,46 @@
 #include "src/error-strings.h"
 #include "src/logger.hpp"
 
-RDRSRonDBConnection *RDRSRonDBConnection::__instance = nullptr;
-
 //--------------------------------------------------------------------------------------------------
 
-RS_Status RDRSRonDBConnection::Init(const char *connection_string, Uint32 connection_pool_size,
+RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, Uint32 connection_pool_size,
                                     Uint32 *node_ids, Uint32 node_ids_len,
                                     Uint32 connection_retries,
                                     Uint32 connection_retry_delay_in_sec) {
 
   require(node_ids_len == 1);
   require(connection_pool_size == 1);
-  require(__instance == nullptr);
 
-  __instance = new RDRSRonDBConnection();
+  // __instance = new RDRSRonDBConnection();
 
-  __instance->stats.ndb_objects_available       = 0;
-  __instance->stats.ndb_objects_count           = 0;
-  __instance->stats.ndb_objects_created         = 0;
-  __instance->stats.ndb_objects_deleted         = 0;
-  __instance->stats.is_reconnection_in_progress = false;
-  __instance->stats.is_shutdown                 = false;
-  __instance->stats.connection_state            = DISCONNECTED;
+  stats.ndb_objects_available       = 0;
+  stats.ndb_objects_count           = 0;
+  stats.ndb_objects_created         = 0;
+  stats.ndb_objects_deleted         = 0;
+  stats.is_reconnection_in_progress = false;
+  stats.is_shutdown                 = false;
+  stats.connection_state            = DISCONNECTED;
 
   size_t connection_string_len  = strlen(connection_string);
-  __instance->connection_string = reinterpret_cast<char *>(malloc(connection_string_len + 1));
-  std::strncpy(__instance->connection_string, connection_string, connection_string_len);
-  __instance->connection_string[connection_string_len] = '\0';
-  __instance->connection_pool_size                     = connection_pool_size;
+  this->connection_string = reinterpret_cast<char *>(malloc(connection_string_len + 1));
+  std::strncpy(this->connection_string, connection_string, connection_string_len);
+  this->connection_string[connection_string_len] = '\0';
+  this->connection_pool_size                     = connection_pool_size;
 
-  __instance->node_ids = reinterpret_cast<Uint32 *>(malloc(node_ids_len * sizeof(Uint32)));
-  memcpy(__instance->node_ids, node_ids, node_ids_len * sizeof(Uint32));
-  __instance->node_ids_len = node_ids_len;
+  this->node_ids = reinterpret_cast<Uint32 *>(malloc(node_ids_len * sizeof(Uint32)));
+  memcpy(this->node_ids, node_ids, node_ids_len * sizeof(Uint32));
+  this->node_ids_len = node_ids_len;
 
-  __instance->connection_retries            = connection_retries;
-  __instance->connection_retry_delay_in_sec = connection_retry_delay_in_sec;
+  this->connection_retries            = connection_retries;
+  this->connection_retry_delay_in_sec = connection_retry_delay_in_sec;
 
-  __instance->ndbConnection      = nullptr;
-  __instance->reconnectionThread = nullptr;
+  ndbConnection      = nullptr;
+  reconnectionThread = nullptr;
+}
+
+//--------------------------------------------------------------------------------------------------
+
+RS_Status RDRSRonDBConnection::Init() {
 
   int retCode = 0;
   retCode     = ndb_init();
@@ -74,7 +76,7 @@ RS_Status RDRSRonDBConnection::Init(const char *connection_string, Uint32 connec
     return RS_SERVER_ERROR(ERROR_001 + std::string(" RetCode: ") + std::to_string(retCode));
   }
 
-  return __instance->Connect();
+  return Connect();
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -94,7 +96,6 @@ RS_Status RDRSRonDBConnection::Connect() {
   {
     std::lock_guard<std::mutex> guard(connectionMutex);
     require(ndbConnection == nullptr);
-
     int retCode   = 0;
     ndbConnection = new Ndb_cluster_connection(connection_string, node_ids[0]);
     retCode       = ndbConnection->connect(connection_retries, connection_retry_delay_in_sec, 0);
@@ -106,9 +107,9 @@ RS_Status RDRSRonDBConnection::Connect() {
     if (retCode != 0) {
       return RS_SERVER_ERROR(ERROR_003 + std::string(" RetCode: ") + std::to_string(retCode) +
                              std::string(" Lastest Error: ") +
-                             std::to_string(__instance->ndbConnection->get_latest_error()) +
+                             std::to_string(ndbConnection->get_latest_error()) +
                              std::string(" Lastest Error Msg: ") +
-                             std::string(__instance->ndbConnection->get_latest_error_msg()));
+                             std::string(ndbConnection->get_latest_error_msg()));
     }
   }
 
@@ -127,23 +128,22 @@ RDRSRonDBConnection::~RDRSRonDBConnection() {
 }
 
 //--------------------------------------------------------------------------------------------------
+// RS_Status RDRSRonDBConnection::GetInstance(RDRSRonDBConnection **rdrsRonDBConnection) {
+//   if (__instance == nullptr) {
+//     LOG_ERROR(ERROR_035);
+//     return RS_SERVER_ERROR(ERROR_035);
+//   }
 
-RS_Status RDRSRonDBConnection::GetInstance(RDRSRonDBConnection **rdrsRonDBConnection) {
-  if (__instance == nullptr) {
-    LOG_ERROR(ERROR_035);
-    return RS_SERVER_ERROR(ERROR_035);
-  }
+//   std::lock_guard<std::mutex> guardInfo(__instance->connectionInfoMutex);
+//   if (__instance->ndbConnection == nullptr || __instance->stats.connection_state != CONNECTED ||
+//       __instance->stats.is_shutdown) {
+//     LOG_ERROR(ERROR_033);
+//     return RS_SERVER_ERROR(ERROR_033);
+//   }
 
-  std::lock_guard<std::mutex> guardInfo(__instance->connectionInfoMutex);
-  if (__instance->ndbConnection == nullptr || __instance->stats.connection_state != CONNECTED ||
-      __instance->stats.is_shutdown) {
-    LOG_ERROR(ERROR_033);
-    return RS_SERVER_ERROR(ERROR_033);
-  }
-
-  *rdrsRonDBConnection = __instance;
-  return RS_OK;
-}
+//   *rdrsRonDBConnection = __instance;
+//   return RS_OK;
+// }
 
 //--------------------------------------------------------------------------------------------------
 
@@ -390,7 +390,7 @@ RS_Status RDRSRonDBConnection::Reconnect() {
     reconnectionThread = nullptr;
   }
 
-  reconnectionThread = NdbThread_Create(reconnect_thread_wrapper, (NDB_THREAD_ARG *)__instance,
+  reconnectionThread = NdbThread_Create(reconnect_thread_wrapper, (NDB_THREAD_ARG *)this,
                                         0,  // default stack size
                                         "reconnection_thread", NDB_THREAD_PRIO_MEAN);
 
