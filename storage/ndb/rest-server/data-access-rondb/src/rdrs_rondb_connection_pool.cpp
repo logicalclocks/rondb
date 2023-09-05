@@ -25,8 +25,9 @@
 RDRSRonDBConnectionPool::RDRSRonDBConnectionPool() {}
 
 RDRSRonDBConnectionPool::~RDRSRonDBConnectionPool() {
-  ndb_end(
-      1);  // sometimes causes seg faults when called repeatedly from unit tests
+  ndb_end(1);  // sometimes causes seg faults when called repeatedly from unit tests
+  delete dataConnection;
+  delete metadataConnection;
 }
 
 RS_Status RDRSRonDBConnectionPool::Init() {
@@ -95,7 +96,19 @@ RS_Status RDRSRonDBConnectionPool::ReturnMetadataNdbObject(Ndb *ndb_object,
   return RS_OK;
 }
 
-RS_Status RDRSRonDBConnectionPool::Reconnect() { return RS_OK; }
+RS_Status RDRSRonDBConnectionPool::Reconnect() {
+
+  RS_Status status = dataConnection->Reconnect();
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  status = metadataConnection->Reconnect();
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+  return RS_OK;
+}
 
 RonDB_Stats RDRSRonDBConnectionPool::GetStats() {
   // TODO FIXME Do not merge stats
@@ -108,11 +121,21 @@ RonDB_Stats RDRSRonDBConnectionPool::GetStats() {
               metadataConnectionStats.connection_state
           ? dataConnectionStats.connection_state
           : metadataConnectionStats.connection_state;
-  merged_stats.is_reconnection_in_progress = dataConnectionStats.is_reconnection_in_progress | metadataConnectionStats.is_reconnection_in_progress; 
-  merged_stats.is_shutdown = dataConnectionStats.is_shutdown | metadataConnectionStats.is_shutdown;
-  merged_stats.ndb_objects_available = dataConnectionStats.ndb_objects_available + metadataConnectionStats.ndb_objects_available;
-  merged_stats.ndb_objects_count = dataConnectionStats.ndb_objects_count + metadataConnectionStats.ndb_objects_count;
-  merged_stats.ndb_objects_deleted = dataConnectionStats.ndb_objects_deleted + metadataConnectionStats.ndb_objects_deleted;
-  merged_stats.ndb_objects_created = dataConnectionStats.ndb_objects_created + metadataConnectionStats.ndb_objects_created;
+  merged_stats.is_reconnection_in_progress =
+      dataConnectionStats.is_reconnection_in_progress |
+      metadataConnectionStats.is_reconnection_in_progress;
+  merged_stats.is_shutdown =
+      dataConnectionStats.is_shutdown | metadataConnectionStats.is_shutdown;
+  merged_stats.ndb_objects_available =
+      dataConnectionStats.ndb_objects_available +
+      metadataConnectionStats.ndb_objects_available;
+  merged_stats.ndb_objects_count = dataConnectionStats.ndb_objects_count +
+                                   metadataConnectionStats.ndb_objects_count;
+  merged_stats.ndb_objects_deleted =
+      dataConnectionStats.ndb_objects_deleted +
+      metadataConnectionStats.ndb_objects_deleted;
+  merged_stats.ndb_objects_created =
+      dataConnectionStats.ndb_objects_created +
+      metadataConnectionStats.ndb_objects_created;
   return merged_stats;
 }

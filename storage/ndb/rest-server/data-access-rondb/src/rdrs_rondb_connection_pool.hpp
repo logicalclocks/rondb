@@ -30,6 +30,7 @@ class RDRSRonDBConnectionPool {
 
  public:
   RDRSRonDBConnectionPool();
+  ~RDRSRonDBConnectionPool();
 
   /**
    * @brief Init RonDB Client API 
@@ -138,8 +139,6 @@ class RDRSRonDBConnectionPool {
    */
   RonDB_Stats GetStats();
 
-
-  ~RDRSRonDBConnectionPool();
 };
 
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_RDRS_RONDB_CONNECTION_POOL_

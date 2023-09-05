@@ -73,7 +73,6 @@ RS_Status init(const char *connection_string, unsigned int connection_pool_size,
     return status;
   }
 
-
   return RS_OK;
 }
 
