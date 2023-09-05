@@ -38,7 +38,6 @@ class RDRSRonDBConnection {
 
   Ndb_cluster_connection *ndbConnection;
   char *connection_string;
-  Uint32 connection_pool_size;
   Uint32 *node_ids;
   Uint32 node_ids_len;
   Uint32 connection_retries;
@@ -57,17 +56,18 @@ class RDRSRonDBConnection {
 
 
  public:
-  RDRSRonDBConnection(const char *connection_string, unsigned int connection_pool_size,
+  RDRSRonDBConnection(const char *connection_string,
                       unsigned int *node_ids, unsigned int node_ids_len,
                       unsigned int connection_retries, unsigned int connection_retry_delay_in_sec);
 
   ~RDRSRonDBConnection();
 
   /**
-   * Initialize the connection
-   * @return RS_Status
+   * Connect to RonDB
+   *
+   * @return Status
    */
-  RS_Status Init();
+  RS_Status Connect();
 
   /**
    * Returns Ndb object
@@ -109,13 +109,6 @@ class RDRSRonDBConnection {
   RS_Status ReconnectHandler();
 
  private:
-  /**
-   * Connect to RonDB
-   *
-   * @return Status
-   */
-  RS_Status Connect();
-
 
   /**
    * Purge. Delete all Ndb objects and shutdown connection

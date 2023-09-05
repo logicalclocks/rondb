@@ -25,14 +25,14 @@
 #include <unistd.h>
 #include "src/error-strings.h"
 #include "src/logger.hpp"
-#include "src/rdrs_rondb_connection.hpp"
+#include "src/rdrs_rondb_connection_pool.hpp"
 #include "src/db-operations/pk/common.hpp"
 #include "src/rdrs-const.h"
 #include "src/retry_handler.hpp"
 #include "src/ndb_api_helper.hpp"
 
-// RonDB connection
-extern RDRSRonDBConnection *rdrsDataRonDBConnection;
+// RonDB connection pool
+extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
 
 RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey *api_key) {
   NdbError err;
@@ -180,7 +180,7 @@ RS_Status find_api_key_int(Ndb *ndb_object, const char *prefix, HopsworksAPIKey 
 
 RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsDataRonDBConnection->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
@@ -191,7 +191,7 @@ RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key) {
   )
   /* clang-format on */
 
-  rdrsDataRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
   return status;
 }
 
@@ -283,14 +283,14 @@ RS_Status find_user_int(Ndb *ndb_object, Uint32 uid, HopsworksUsers *users) {
 
 RS_Status find_user(Uint32 uid, HopsworksUsers *users) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsDataRonDBConnection->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   status = find_user_int(ndb_object, uid, users);
 
-  rdrsDataRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
 
   return status;
 }
@@ -388,14 +388,14 @@ RS_Status find_project_team_int(Ndb *ndb_object, HopsworksUsers *users,
 RS_Status find_project_team(HopsworksUsers *users,
                             std::vector<HopsworksProjectTeam> *project_team_vec) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsDataRonDBConnection->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   status = find_project_team_int(ndb_object, users, project_team_vec);
   
-  rdrsDataRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
 
   return status;
 }
@@ -509,14 +509,14 @@ RS_Status find_projects_int(Ndb *ndb_object, std::vector<HopsworksProjectTeam> *
 RS_Status find_projects_vec(std::vector<HopsworksProjectTeam> *project_team_vec,
                             std::vector<HopsworksProject> *project_vec) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsDataRonDBConnection->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   status = find_projects_int(ndb_object, project_team_vec, project_vec);
 
-  rdrsDataRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
 
   return status;
 }

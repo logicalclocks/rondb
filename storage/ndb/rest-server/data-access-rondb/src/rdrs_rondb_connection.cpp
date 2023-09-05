@@ -31,14 +31,12 @@
 
 //--------------------------------------------------------------------------------------------------
 
-RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, Uint32 connection_pool_size,
+RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, 
                                     Uint32 *node_ids, Uint32 node_ids_len,
                                     Uint32 connection_retries,
                                     Uint32 connection_retry_delay_in_sec) {
 
   require(node_ids_len == 1);
-  require(connection_pool_size == 1);
-
   // __instance = new RDRSRonDBConnection();
 
   stats.ndb_objects_available       = 0;
@@ -53,7 +51,6 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, Uint32 c
   this->connection_string = reinterpret_cast<char *>(malloc(connection_string_len + 1));
   std::strncpy(this->connection_string, connection_string, connection_string_len);
   this->connection_string[connection_string_len] = '\0';
-  this->connection_pool_size                     = connection_pool_size;
 
   this->node_ids = reinterpret_cast<Uint32 *>(malloc(node_ids_len * sizeof(Uint32)));
   memcpy(this->node_ids, node_ids, node_ids_len * sizeof(Uint32));
@@ -64,19 +61,6 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, Uint32 c
 
   ndbConnection      = nullptr;
   reconnectionThread = nullptr;
-}
-
-//--------------------------------------------------------------------------------------------------
-
-RS_Status RDRSRonDBConnection::Init() {
-
-  int retCode = 0;
-  retCode     = ndb_init();
-  if (retCode != 0) {
-    return RS_SERVER_ERROR(ERROR_001 + std::string(" RetCode: ") + std::to_string(retCode));
-  }
-
-  return Connect();
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -126,24 +110,6 @@ RS_Status RDRSRonDBConnection::Connect() {
 RDRSRonDBConnection::~RDRSRonDBConnection() {
   Shutdown(false);
 }
-
-//--------------------------------------------------------------------------------------------------
-// RS_Status RDRSRonDBConnection::GetInstance(RDRSRonDBConnection **rdrsRonDBConnection) {
-//   if (__instance == nullptr) {
-//     LOG_ERROR(ERROR_035);
-//     return RS_SERVER_ERROR(ERROR_035);
-//   }
-
-//   std::lock_guard<std::mutex> guardInfo(__instance->connectionInfoMutex);
-//   if (__instance->ndbConnection == nullptr || __instance->stats.connection_state != CONNECTED ||
-//       __instance->stats.is_shutdown) {
-//     LOG_ERROR(ERROR_033);
-//     return RS_SERVER_ERROR(ERROR_033);
-//   }
-
-//   *rdrsRonDBConnection = __instance;
-//   return RS_OK;
-// }
 
 //--------------------------------------------------------------------------------------------------
 
@@ -314,7 +280,6 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
     std::lock_guard<std::mutex> guard(connectionMutex);
     if (end) {
       stats.is_shutdown = true;
-      ndb_end(1);  // sometimes causes seg faults when called repeatedly from unit tests
       free(connection_string);
       free(node_ids);
       if (reconnectionThread != nullptr) {
