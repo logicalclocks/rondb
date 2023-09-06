@@ -46,7 +46,8 @@ public:
   Uint64 elapsedTime() const;
   void printTransactionStatistics(const char* text, 
 				  int numTransactions, 
-				  int numOperations);
+				  int numOperations,
+                                  int numThreads);
   void printTestTimer(int numLoops, 
 		      int numRecords);
   void printTotalTime(void);
@@ -78,13 +79,14 @@ inline Uint64 NdbTimer::elapsedTime(void) const {
 
 inline void NdbTimer::printTransactionStatistics(const char* text, 
 						 int numTransactions, 
-						 int numOperations){
+						 int numOperations,
+                                                 int numThreads = 1){
 
   // Convert to Uint32 in order to be able to print it to screen
   Uint32 lapTime = (Uint32)elapsedTime();
   ndbout_c("%i transactions, %i %s total time = %d ms\nAverage %f ms/transaction, %f ms/%s.\n%f transactions/second, %f %ss/second.\n",
 	 numTransactions, numTransactions*numOperations, text, lapTime,
-         ((double)lapTime/numTransactions), ((double)lapTime/(numTransactions*numOperations)), text, 
+         ((double)lapTime*numThreads/numTransactions), ((double)lapTime/(numTransactions*numOperations)), text, 
          1000.0/((double)lapTime/numTransactions), 1000.0/((double)lapTime/(numTransactions*numOperations)), text);
 }
 
