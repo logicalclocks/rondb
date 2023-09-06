@@ -78,6 +78,16 @@ func newWithDefaults() AllConfigs {
 			OpRetryInitialDelayInMS:       500,
 			OpRetryJitterInMS:             100,
 		},
+		RonDBMetaCluster: RonDB{
+			Mgmds:                         []Mgmd{}, // if not defined then it will be copied from Config.RonDB.Mgmds
+			ConnectionPoolSize:            1,
+			NodeIDs:                       []uint32{0},
+			ConnectionRetries:             5,
+			ConnectionRetryDelayInSec:     5,
+			OpRetryOnTransientErrorsCount: 3,
+			OpRetryInitialDelayInMS:       500,
+			OpRetryJitterInMS:             100,
+		},
 		Security: Security{
 			TLS: TLS{
 				EnableTLS:                  false,

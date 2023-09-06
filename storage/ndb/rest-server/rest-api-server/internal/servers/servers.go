@@ -60,7 +60,7 @@ func CreateAndStartDefaultServers(
 	}
 
 	// Connect to RonDB
-	dalErr := dal.InitRonDBConnection(conf.RonDB)
+	dalErr := dal.InitRonDBConnection(conf.RonDB, conf.RonDBMetaCluster)
 	if dalErr != nil {
 		return nil, dalErr
 	}

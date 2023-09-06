@@ -63,7 +63,7 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	dalErr := dal.InitRonDBConnection(conf.RonDB)
+	dalErr := dal.InitRonDBConnection(conf.RonDB, conf.RonDBMetaCluster)
 	if dalErr != nil {
 		retcode = 1
 		log.Errorf("failed to initialise RonDB connection; error: %s", dalErr.VerboseError())

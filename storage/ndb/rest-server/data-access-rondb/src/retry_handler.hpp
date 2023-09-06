@@ -22,9 +22,14 @@
 
 #include <ndb_types.h>
 
-extern Uint32 OP_RETRY_COUNT;
-extern Uint32 OP_RETRY_INITIAL_DELAY_IN_MS; 
-extern Uint32 OP_RETRY_JITTER_IN_MS;
+extern Uint32 DATA_CONN_OP_RETRY_COUNT;
+extern Uint32 DATA_CONN_OP_RETRY_INITIAL_DELAY_IN_MS; 
+extern Uint32 DATA_CONN_OP_RETRY_JITTER_IN_MS;
+
+
+extern Uint32 METADATA_CONN_OP_RETRY_COUNT;
+extern Uint32 METADATA_CONN_OP_RETRY_INITIAL_DELAY_IN_MS; 
+extern Uint32 METADATA_CONN_OP_RETRY_JITTER_IN_MS;
 
 // expects one or more lines of code that set a variable "status" of type RS_STATUS
 
@@ -33,11 +38,12 @@ extern Uint32 OP_RETRY_JITTER_IN_MS;
   do {                                                                                             \
     my_src                                                                                         \
     orc++;                                                                                         \
-    if (status.http_code == SUCCESS || orc > OP_RETRY_COUNT || !CanRetryOperation(status)) {       \
+    if (status.http_code == SUCCESS || orc > DATA_CONN_OP_RETRY_COUNT                              \
+        || !CanRetryOperation(status)) {                                                           \
       break;                                                                                       \
     }                                                                                              \
-    usleep(ExponentialDelayWithJitter(orc, OP_RETRY_INITIAL_DELAY_IN_MS, OP_RETRY_JITTER_IN_MS) *  \
-           1000);                                                                                  \
+    usleep(ExponentialDelayWithJitter(orc, DATA_CONN_OP_RETRY_INITIAL_DELAY_IN_MS,                 \
+          DATA_CONN_OP_RETRY_JITTER_IN_MS) *  1000);                                               \
     LOG_DEBUG("Retrying failed operation. Code: "+std::to_string(status.code));                    \
   } while (true);
 
