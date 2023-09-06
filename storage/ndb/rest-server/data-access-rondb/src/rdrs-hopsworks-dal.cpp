@@ -186,7 +186,7 @@ RS_Status find_api_key(const char *prefix, HopsworksAPIKey *api_key) {
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
      status = find_api_key_int(ndb_object, prefix, api_key);
   )
   /* clang-format on */
@@ -547,7 +547,7 @@ RS_Status find_all_projects(int uid, char ***projects, int *count) {
   std::vector<HopsworksProject> project_vec;
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     project_vec.clear();
     status = find_all_projects_int(uid, &project_vec);
   )

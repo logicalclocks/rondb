@@ -154,7 +154,7 @@ RS_Status find_project_id(const char *feature_store_name, Int32 *project_id) {
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_project_id_int(ndb_object, feature_store_name, project_id);
   )
   /* clang-format on */
@@ -281,7 +281,7 @@ RS_Status find_feature_store_id(const char *feature_store_name, int *feature_sto
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_feature_store_id_int(ndb_object, feature_store_name, feature_store_id);
   )
   /* clang-format on */
@@ -436,7 +436,7 @@ RS_Status find_feature_view_id(int feature_store_id, const char *feature_view_na
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_feature_view_id_int(ndb_object, feature_store_id,
       feature_view_name, feature_view_version, feature_view_id);
   )
@@ -582,7 +582,7 @@ RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_training_dataset_join_data_int(ndb_object,
       feature_view_id, tdjs, tdjs_size);
   )
@@ -710,7 +710,7 @@ RS_Status find_feature_group_data(int feature_group_id, Feature_Group *fg) {
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_feature_group_data_int(ndb_object, feature_group_id, fg);
   )
   /* clang-format on */
@@ -890,7 +890,7 @@ RS_Status find_training_dataset_data(int feature_view_id, Training_Dataset_Featu
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_training_dataset_data_int(ndb_object, feature_view_id, tdf, tdf_size); 
   )
   /* clang-format on */
@@ -984,7 +984,7 @@ RS_Status find_feature_store_data(int feature_store_id, char *name) {
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_feature_store_data_int(ndb_object, feature_store_id, name);
   )
   /* clang-format on */
@@ -1170,7 +1170,7 @@ RS_Status find_serving_key_data(int feature_view_id, Serving_Key **serving_keys,
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_serving_key_data_int(ndb_object, feature_view_id, serving_keys, sk_size); 
   )
   /* clang-format on */

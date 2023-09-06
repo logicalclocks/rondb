@@ -137,7 +137,7 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  DATA_OP_RETRY_HANDLER(
       PKROperation pkread(reqBuff, respBuff, ndb_object);
       status = pkread.PerformOperation();
   )
@@ -149,10 +149,6 @@ RS_Status pk_read(RS_Buffer *reqBuff, RS_Buffer *respBuff) {
 
 //--------------------------------------------------------------------------------------------------
 
-/**
- * Batched primary key read operation
- */
-
 RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *resp_buffs) {
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnectionPool->GetNdbObject(&ndb_object);
@@ -161,7 +157,7 @@ RS_Status pk_batch_read(unsigned int no_req, RS_Buffer *req_buffs, RS_Buffer *re
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  DATA_OP_RETRY_HANDLER(
       PKROperation pkread(no_req, req_buffs, resp_buffs, ndb_object);
       status = pkread.PerformOperation();
   )
