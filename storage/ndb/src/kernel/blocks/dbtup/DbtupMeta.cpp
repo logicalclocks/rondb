@@ -1,9 +1,5 @@
 /*
-<<<<<<< HEAD
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
-=======
-   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
->>>>>>> 134c38edcd1fbdadfaed287245269d6ee445f9c9
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
