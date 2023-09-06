@@ -148,29 +148,87 @@ func GetSampleDataWithJoin(database string, table string, rightDatabase string, 
 }
 
 func GetNSampleDataWithJoin(n int, database string, table string, rightDatabase string, rightTable string, rightPrefix string) ([][]interface{}, []string, []string, error) {
-	fg1Rows, fg1Pks, fg1Cols, err := GetNSampleData(database, table, n)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	fg2Rows, fg2Pks, fg2Cols, err := GetNSampleData(rightDatabase, rightTable, n)
+	return GetNSampleDataWithJoinAndKey(n, database, table, rightDatabase, rightTable, rightPrefix, make(map[string]string), []string{}, []string{})
+}
 
+func GetNSampleDataWithJoinAndKey(n int, database string, table string, rightDatabase string,
+	rightTable string, rightPrefix string, joinKey map[string]string,
+	leftTargetCols []string, rightTargetCols []string) ([][]interface{}, []string, []string, error) {
+
+	fg1Cols, fg1Pks, fg1ColTypes, err := getColumnInfo(database, table)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	var rows = make([][]interface{}, len(fg1Rows))
-	var pks, cols []string
-	for i, fg1Row := range fg1Rows {
-		rows[i] = append(fg1Row, fg2Rows[i]...)
+	fg2Cols, fg2Pks, fg2ColTypes, err := getColumnInfo(rightDatabase, rightTable)
+	if err != nil {
+		return nil, nil, nil, err
 	}
-	pks = fg1Pks
+
+	var onClause []string
+	if len(joinKey) == 0 {
+		for _, pk := range fg1Pks {
+			onClause = append(onClause, fmt.Sprintf("fg0.%s = fg1.%s", pk, pk))
+		}
+	} else {
+		for k, v := range joinKey {
+			onClause = append(onClause, fmt.Sprintf("fg0.%s = fg1.%s", k, v))
+		}
+	}
+
+	var selectedCols string
+	var pks, cols []string
+	var colTypes []string
 	for _, pk := range fg2Pks {
 		pks = append(pks, rightPrefix+pk)
 	}
-	cols = fg1Cols
-	for _, col := range fg2Cols {
-		cols = append(cols, rightPrefix+col)
+	if (leftTargetCols == nil || len(leftTargetCols) == 0) && (rightTargetCols == nil || len(rightTargetCols) == 0) {
+		selectedCols = "fg0.*, fg1.*"
+		pks = fg1Pks
+
+		cols = fg1Cols
+		for _, col := range fg2Cols {
+			cols = append(cols, rightPrefix+col)
+		}
+		colTypes = append(fg1ColTypes, fg2ColTypes...)
+	} else {
+		for i, col := range leftTargetCols {
+			if i > 0 {
+				selectedCols = selectedCols + ", "
+			}
+			selectedCols = selectedCols + "fg0." + col
+			cols = append(cols, col)
+			for i, c := range fg1Cols {
+				if c == col {
+					colTypes = append(colTypes, fg1ColTypes[i])
+				}
+			}
+		}
+		if selectedCols != "" {
+			selectedCols = selectedCols + ", "
+		}
+		for i, col := range rightTargetCols {
+			if i > 0 {
+				selectedCols = selectedCols + ", "
+			}
+			selectedCols = selectedCols + "fg1." + col
+			cols = append(cols, rightPrefix+col)
+			for i, c := range fg2Cols {
+				if c == col {
+					colTypes = append(colTypes, fg2ColTypes[i])
+				}
+			}
+		}
 	}
-	return rows, pks, cols, nil
+
+	query := fmt.Sprintf(
+		"SELECT %s FROM `%s`.`%s` fg0 INNER JOIN `%s`.`%s` fg1 ON (%s) LIMIT %d",
+		selectedCols, database, table, rightDatabase, rightTable, strings.Join(onClause, " AND "), n)
+
+	var valueBatch, err1 = fetchRows(query, colTypes)
+	if err1 != nil {
+		return nil, nil, nil, err1
+	}
+	return *valueBatch, pks, cols, nil
 }
 
 func isColNumerical(colType string) bool {
@@ -265,6 +323,31 @@ func GetPkValues(row *[]interface{}, pks *[]string, cols *[]string) *[]interface
 	return &pkValue
 }
 
+func GetPkValuesExclude(row *[]interface{}, pks *[]string, cols *[]string, exclude []string) (*[]string, *[]interface{}) {
+	pkSet := make(map[string]bool)
+	exSet := make(map[string]bool)
+
+	for _, pk := range *pks {
+		pkSet[pk] = true
+	}
+
+	for _, ex := range exclude {
+		exSet[ex] = true
+	}
+
+	var pkValue = make([]interface{}, 0)
+	var pksFiltered = make([]string, 0)
+	for i, col := range *cols {
+		_, ok := pkSet[col]
+		_, ex := exSet[col]
+		if ok && !ex {
+			pkValue = append(pkValue, (*row)[i])
+			pksFiltered = append(pksFiltered, col)
+		}
+	}
+	return &pksFiltered, &pkValue
+}
+
 func ValidateResponseWithData(t *testing.T, data *[]interface{}, cols *[]string, resp *api.FeatureStoreResponse) {
 	var exCols = make(map[string]bool)
 	ValidateResponseWithDataExcludeCols(t, data, cols, &exCols, resp)
@@ -315,7 +398,7 @@ func ValidateResponseWithDataExcludeCols(t *testing.T, data *[]interface{}, cols
 			got = string(binary)
 		}
 		if !reflect.DeepEqual(got, expectedJson) {
-			t.Errorf("Got %s (%s) but expect %s (%s)\n", got, reflect.TypeOf(got), expectedJson, reflect.TypeOf(expectedJson))
+			t.Errorf("col: %s; Got %s (%s) but expect %s (%s)\n", (*cols)[k], got, reflect.TypeOf(got), expectedJson, reflect.TypeOf(expectedJson))
 			break
 		}
 	}

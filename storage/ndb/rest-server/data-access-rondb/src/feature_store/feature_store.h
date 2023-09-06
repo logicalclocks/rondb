@@ -27,7 +27,6 @@ extern "C" {
 #include "../rdrs-dal.h"
 #include "../rdrs-const.h"
 
-// some DS
 typedef struct Training_Dataset_Feature {
   int feature_id;
   int training_dataset;
@@ -53,8 +52,16 @@ typedef struct Feature_Group {
   int version;
   int online_enabled;
   int num_pk;
-  char **primary_key;
 } Feature_Group;
+
+typedef struct Serving_Key {
+  int feature_group_id;
+  char feature_name[SERVING_KEY_FEATURE_NAME_SIZE];
+  char prefix[SERVING_KEY_JOIN_PREFIX_SIZE];
+  int required;
+  char join_on[SERVING_KEY_JOIN_ON_SIZE];
+  int join_index;
+} Serving_Key;
 
 /**
  * Find project ID using the feature store name
@@ -103,6 +110,13 @@ RS_Status find_feature_store_data(int feature_store_id, char *name);
  */
 RS_Status find_training_dataset_data(int feature_view_id, Training_Dataset_Feature **tdf,
                                      int *tdf_size);
+
+/**
+ * Find serving_key_data
+ * SELECT * from serving_key  WHERE feature_view_id = {feature_view_id}
+ */
+RS_Status find_serving_key_data(int feature_view_id, Serving_Key **serving_keys,
+                                     int *sk_size);
 
 #endif
 #ifdef __cplusplus

@@ -42,8 +42,11 @@ type FeatureViewMetadata struct {
 	FeatureGroupFeatures []*FeatureGroupFeatures     // label are excluded
 	FeatureStoreNames    []*string                   // List of all feature store used by feature view including shared feature store
 	NumOfFeatures        int
-	FeatureIndexLookup   map[string]int    // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
-	PrimaryKeyMap        map[string]string // key: prefix + fName
+	FeatureIndexLookup   map[string]int             // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
+	// serving key doc: https://hopsworks.atlassian.net/wiki/spaces/FST/pages/173342721/How+to+resolve+the+set+of+serving+key+in+get+feature+vector
+	PrimaryKeyMap        map[string]*dal.ServingKey // key: join index + feature name. Used for constructing rondb request.
+	PrefixPrimaryKeyMap  map[string]string          // key: serving-key-prefix + fName, value: feature name in feature group. Used for pk validation.
+	JoinKeyMap           map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
 }
 
 type FeatureGroupFeatures struct {
@@ -53,7 +56,7 @@ type FeatureGroupFeatures struct {
 	FeatureGroupId      int
 	JoinIndex           int
 	Features            []*FeatureMetadata
-	PrimaryKeyMap       map[string]string // key: prefix + fName
+	PrimaryKeyMap       []*dal.ServingKey
 }
 
 type FeatureMetadata struct {
@@ -78,16 +81,32 @@ func newFeatureViewMetadata(
 	featureViewId int,
 	featureViewVersion int,
 	features *[]*FeatureMetadata,
-	featureGroupPk *map[int][]string,
+	servingKeys *[]dal.ServingKey,
 ) *FeatureViewMetadata {
+	var prefixPrimaryKeyMap = make(map[string]string)
+	var primaryKeyMap = make(map[string]*dal.ServingKey)
+	var fgPrimaryKeyMap = make(map[string][]*dal.ServingKey)
+	var joinKeyMap = make(map[string][]string)
+	for _, key := range *servingKeys {
+		var prefixFeatureName = key.Prefix + key.FeatureName
+		prefixPrimaryKeyMap[prefixFeatureName] = key.FeatureName
+
+		if key.Required {
+			joinKeyMap[prefixFeatureName] = append(joinKeyMap[prefixFeatureName], prefixFeatureName)
+		} else {
+			if key.RequiredEntry != "" {
+				joinKeyMap[key.JoinOn] = append(joinKeyMap[key.JoinOn], prefixFeatureName)
+			}
+		}
+		var newKey = key
+		primaryKeyMap[GetServingKey(key.JoinIndex, key.FeatureName)] = &newKey
+		var fgKey = getFeatureGroupServingKey(key.JoinIndex, key.FeatureGroupId)
+		fgPrimaryKeyMap[fgKey] = append(fgPrimaryKeyMap[fgKey], &newKey)
+	}
+
 	prefixColumns := make(map[string]*FeatureMetadata)
 	fgFeatures := make(map[string][]*FeatureMetadata)
-	var primaryKeyMap = make(map[string]string)
 	for _, feature := range *features {
-		// primary key has to be added before skipping label
-		for _, pk := range (*featureGroupPk)[feature.FeatureGroupId] {
-			primaryKeyMap[feature.Prefix+pk] = pk
-		}
 		if feature.Label {
 			continue
 		}
@@ -100,19 +119,18 @@ func newFeatureViewMetadata(
 	var fgFeaturesArray = make([]*FeatureGroupFeatures, 0)
 
 	for _, value := range fgFeatures {
-		var fgPrimaryKeyMap = make(map[string]string)
 		var featureValue = value
 		var feature = featureValue[0]
-		for _, pk := range (*featureGroupPk)[feature.FeatureGroupId] {
-			fgPrimaryKeyMap[feature.Prefix+pk] = pk
-		}
 		var fgFeature = FeatureGroupFeatures{}
 		fgFeature.FeatureStoreName = feature.FeatureStoreName
 		fgFeature.FeatureGroupName = feature.FeatureGroupName
 		fgFeature.FeatureGroupVersion = feature.FeatureGroupVersion
 		fgFeature.FeatureGroupId = feature.FeatureGroupId
 		fgFeature.Features = featureValue
-		fgFeature.PrimaryKeyMap = fgPrimaryKeyMap
+		var fgPk, ok = fgPrimaryKeyMap[getFeatureGroupServingKey(feature.JoinIndex, feature.FeatureGroupId)]
+		if ok {
+			fgFeature.PrimaryKeyMap = fgPk
+		}
 		fgFeature.JoinIndex = feature.JoinIndex
 		fgFeaturesArray = append(fgFeaturesArray, &fgFeature)
 	}
@@ -155,7 +173,17 @@ func newFeatureViewMetadata(
 	metadata.FeatureIndexLookup = featureIndex
 	metadata.FeatureStoreNames = fsNames
 	metadata.PrimaryKeyMap = primaryKeyMap
+	metadata.PrefixPrimaryKeyMap = prefixPrimaryKeyMap
+	metadata.JoinKeyMap = joinKeyMap
 	return &metadata
+}
+
+func getFeatureGroupServingKey(joinIndex int, featureGroupId int) string {
+	return fmt.Sprintf("%d|%d", joinIndex, featureGroupId)
+}
+
+func GetServingKey(joinIndex int, featureName string) string {
+	return fmt.Sprintf("%d|%s", joinIndex, featureName)
 }
 
 func GetFeatureGroupKeyByFeature(feature *FeatureMetadata) string {
@@ -257,7 +285,6 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 
 	features := make([]*FeatureMetadata, len(tdfs))
 	fsIdToName := make(map[int]string)
-	var featureGroupPk = make(map[int][]string)
 	var fgCache = make(map[int]*dal.FeatureGroup)
 
 	for i, tdf := range tdfs {
@@ -278,7 +305,6 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 				return nil, FG_READ_FAIL.NewMessage(err.VerboseError())
 			}
 			fgCache[tdf.FeatureGroupID] = featureGroup
-			featureGroupPk[tdf.FeatureGroupID] = featureGroup.PrimaryKey
 		}
 		feature := FeatureMetadata{}
 		if featureStoreName, exist := fsIdToName[featureGroup.FeatureStoreId]; exist {
@@ -307,6 +333,10 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		feature.TransformationFunctionId = tdf.TransformationFunctionID
 		features[i] = &feature
 	}
+	var servingKeys, err1 = dal.GetServingKeys(fvID)
+	if err1 != nil {
+		return nil, FV_READ_FAIL.NewMessage("Failed to read serving keys.")
+	}
 	featureViewMetadata := newFeatureViewMetadata(
 		featureStoreName,
 		fsID,
@@ -314,7 +344,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		fvID,
 		featureViewVersion,
 		&features,
-		&featureGroupPk,
+		&servingKeys,
 	)
 	return featureViewMetadata, nil
 }

@@ -57,7 +57,7 @@
 //#define DEBUG_RES_STAT_EXTRA 1
 //#define DEBUG_RES_DEL 1
 //#define DEBUG_HIGH_RES 1
-//#define DEBUG_RES_HASH 1
+#define DEBUG_RES_HASH 1
 #endif
 
 #ifdef DEBUG_RES_HASH

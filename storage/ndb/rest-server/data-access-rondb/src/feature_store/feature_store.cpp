@@ -18,20 +18,23 @@
  */
 
 #include "src/feature_store/feature_store.h"
-#include <cstring>
-#include <string>
-#include <iostream>
-#include <vector>
+
 #include <unistd.h>
+
+#include <cstring>
+#include <iostream>
+#include <string>
+#include <vector>
+
 #include "NdbOut.hpp"
 #include "NdbRecAttr.hpp"
+#include "src/db-operations/pk/common.hpp"
 #include "src/error-strings.h"
 #include "src/logger.hpp"
-#include "src/rdrs_rondb_connection.hpp"
-#include "src/db-operations/pk/common.hpp"
-#include "src/rdrs-const.h"
-#include "src/retry_handler.hpp"
 #include "src/ndb_api_helper.hpp"
+#include "src/rdrs-const.h"
+#include "src/rdrs_rondb_connection.hpp"
+#include "src/retry_handler.hpp"
 #include "src/status.hpp"
 
 // RonDB connection
@@ -125,7 +128,8 @@ RS_Status find_project_id_int(Ndb *ndb_object, const char *feature_store_name, I
   // check for errors happened during the reading process
   NdbError error = scan_op->getNdbError();
 
-  // As we are at the end we will first close the transaction and then deal with the error
+  // As we are at the end we will first close the transaction and then deal with
+  // the error
   ndb_object->closeTransaction(tx);
 
   // storage/ndb/src/ndbapi/ndberror.cpp
@@ -143,7 +147,6 @@ RS_Status find_project_id_int(Ndb *ndb_object, const char *feature_store_name, I
 //-------------------------------------------------------------------------------------------------
 
 RS_Status find_project_id(const char *feature_store_name, Int32 *project_id) {
-
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
@@ -247,7 +250,8 @@ RS_Status find_feature_store_id_int(Ndb *ndb_object, const char *feature_store_n
   // check for errors happened during the reading process
   NdbError error = scan_op->getNdbError();
 
-  // As we are at the end we will first close the transaction and then deal with the error
+  // As we are at the end we will first close the transaction and then deal with
+  // the error
   ndb_object->closeTransaction(tx);
 
   // storage/ndb/src/ndbapi/ndberror.cpp
@@ -266,7 +270,8 @@ RS_Status find_feature_store_id_int(Ndb *ndb_object, const char *feature_store_n
 
 /**
  * Find feature store ID using the feature store name
- * SELECT id AS feature_store_id FROM feature_store WHERE _name = {feature_store_name}
+ * SELECT id AS feature_store_id FROM feature_store WHERE _name =
+ * {feature_store_name}
  */
 RS_Status find_feature_store_id(const char *feature_store_name, int *feature_store_id) {
   Ndb *ndb_object  = nullptr;
@@ -398,7 +403,8 @@ RS_Status find_feature_view_id_int(Ndb *ndb_object, int feature_store_id,
   // check for errors happened during the reading process
   NdbError error = scan_op->getNdbError();
 
-  // As we are at the end we will first close the transaction and then deal with the error
+  // As we are at the end we will first close the transaction and then deal with
+  // the error
   ndb_object->closeTransaction(tx);
 
   // storage/ndb/src/ndbapi/ndberror.cpp
@@ -417,8 +423,9 @@ RS_Status find_feature_view_id_int(Ndb *ndb_object, int feature_store_id,
 
 /**
  * Find feature view ID using the feature store id
- * SELECT id AS feature_view_id FROM feature_view WHERE name = {feature_view_name} AND version =
- * {feature_view_version} AND feature_store_id = {feature_store_id}
+ * SELECT id AS feature_view_id FROM feature_view WHERE name =
+ * {feature_view_name} AND version = {feature_view_version} AND feature_store_id
+ * = {feature_store_id}
  */
 RS_Status find_feature_view_id(int feature_store_id, const char *feature_view_name,
                                int feature_view_version, int *feature_view_id) {
@@ -488,7 +495,7 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
   NdbRecAttr *prefix_attr     = scan_op->getValue("prefix", nullptr);
   assert(TRAINING_DATASET_JOIN_PREFIX_SIZE ==
          (Uint32)table_dict->getColumn("prefix")->getSizeInBytes());
-  NdbRecAttr *idx_attr     = scan_op->getValue("idx", nullptr);
+  NdbRecAttr *idx_attr = scan_op->getValue("idx", nullptr);
 
   if (td_join_id_attr == nullptr || prefix_attr == nullptr || idx_attr == nullptr) {
     ndb_err = scan_op->getNdbError();
@@ -507,7 +514,7 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
   while ((check = scan_op->nextResult(true)) == 0) {
     do {
       Training_Dataset_Join tdj;
-      tdj.id = td_join_id_attr->int32_value();
+      tdj.id  = td_join_id_attr->int32_value();
       tdj.idx = idx_attr->int32_value();
 
       if (prefix_attr->isNULL()) {
@@ -531,7 +538,8 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
   // check for errors happened during the reading process
   NdbError error = scan_op->getNdbError();
 
-  // As we are at the end we will first close the transaction and then deal with the error
+  // As we are at the end we will first close the transaction and then deal with
+  // the error
   ndb_object->closeTransaction(tx);
 
   // storage/ndb/src/ndbapi/ndberror.cpp
@@ -548,9 +556,10 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
   void *ptr  = (Training_Dataset_Join *)malloc(tdjsv.size() * sizeof(Training_Dataset_Join));
   *tdjs      = (Training_Dataset_Join *)ptr;
   for (Uint64 i = 0; i < tdjsv.size(); i++) {
-    (*tdjs + i)->id = tdjsv[i].id;
+    (*tdjs + i)->id  = tdjsv[i].id;
     (*tdjs + i)->idx = tdjsv[i].idx;
-    memcpy((*tdjs + i)->prefix, tdjsv[i].prefix, strlen(tdjsv[i].prefix) + 1);  // +1 or '\0'
+    memcpy((*tdjs + i)->prefix, tdjsv[i].prefix,
+           strlen(tdjsv[i].prefix) + 1);  // +1 or '\0'
   }
   tdjsv.clear();
 
@@ -561,12 +570,11 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
 
 /**
  * Find training dataset join data
- * SELECT id AS td_join_id, feature_group AS feature_group_id, prefix FROM training_dataset_join
- * WHERE feature_view_id = {feature_view_id}
+ * SELECT id AS td_join_id, feature_group AS feature_group_id, prefix FROM
+ * training_dataset_join WHERE feature_view_id = {feature_view_id}
  */
 RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_Join **tdjs,
                                           int *tdjs_size) {
-
   Ndb *ndb_object  = nullptr;
   RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
@@ -587,134 +595,7 @@ RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_
 
 //-------------------------------------------------------------------------------------------------
 
-RS_Status find_primary_key_data_int(Ndb *ndb_object, std::string table_name, std::string fg_fk_name,
-                                    std::string fg_id_col_name, int fg_id, char **&primary_key,
-                                    size_t &size) {
-  NdbError ndb_err;
-  const NdbDictionary::Table *table_dict;
-  NdbTransaction *tx;
-  NdbScanOperation *scan_op;
-  RS_Status status = select_table(ndb_object, "hopsworks", table_name.c_str(), &table_dict);
-  if (status.http_code != SUCCESS) {
-    return status;
-  }
-
-  status = start_transaction(ndb_object, &tx);
-  if (status.http_code != SUCCESS) {
-    return status;
-  }
-
-  status = get_index_scan_op(ndb_object, tx, table_dict, fg_fk_name.c_str(), &scan_op);
-  if (status.http_code != SUCCESS) {
-    ndb_object->closeTransaction(tx);
-    return status;
-  }
-  status = read_tuples(ndb_object, scan_op);
-  if (status.http_code != SUCCESS) {
-    ndb_object->closeTransaction(tx);
-    return status;
-  }
-
-  int fg_id_col_id      = table_dict->getColumn(fg_id_col_name.c_str())->getColumnNo();
-  Uint32 fg_id_col_size = (Uint32)table_dict->getColumn(fg_id_col_name.c_str())->getSizeInBytes();
-  int primary_column_col_id = table_dict->getColumn("primary_column")->getColumnNo();
-  Uint32 primary_column_col_size =
-      (Uint32)table_dict->getColumn("primary_column")->getSizeInBytes();
-  int is_pk = 1;
-
-  NdbScanFilter filter(scan_op);
-
-  if (filter.begin(NdbScanFilter::AND) < 0 ||
-      filter.cmp(NdbScanFilter::COND_EQ, fg_id_col_id, &fg_id, fg_id_col_size) < 0 ||
-      filter.cmp(NdbScanFilter::COND_EQ, primary_column_col_id, &is_pk, primary_column_col_size) <
-          0 ||
-      filter.end() < 0) {
-    ndb_err = filter.getNdbError();
-    ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_031);
-  }
-
-  NdbRecAttr *name_attr = scan_op->getValue("name", nullptr);
-  if (name_attr == nullptr) {
-    ndb_err = scan_op->getNdbError();
-    ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_019);
-  }
-
-  int feature_name_size = 0;
-  if ("on_demand_feature" == table_name) {
-    assert(ON_DEMAND_FEATURE_NAME_SIZE == (Uint32)table_dict->getColumn("name")->getSizeInBytes());
-    feature_name_size = ON_DEMAND_FEATURE_NAME_SIZE;
-  } else if ("cached_feature_extra_constraints" == table_name) {
-    assert(CACHE_FEATURE_SIZE == (Uint32)table_dict->getColumn("name")->getSizeInBytes());
-    feature_name_size = CACHE_FEATURE_SIZE;
-  } else {
-    ndb_object->closeTransaction(tx);
-    return RS_SERVER_ERROR(
-      ERROR_028 + std::string("Expected feature tables are `on_demand_feature` or `cached_feature_extra_constraints`."));
-  }
-
-  if (tx->execute(NdbTransaction::NoCommit) != 0) {
-    ndb_err = tx->getNdbError();
-    ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_err, ERROR_009);
-  }
-
-  bool check = 0;
-  std::vector<char *> feature_names;
-  while ((check = scan_op->nextResult(true)) == 0) {
-    do {
-
-      Uint32 name_attr_bytes;
-      const char *name_data_start = nullptr;
-      if (GetByteArray(name_attr, &name_data_start, &name_attr_bytes) != 0) {
-        ndb_object->closeTransaction(tx);
-
-        // free the memory if any
-        for (Uint64 i = 0; i < feature_names.size(); i++) {
-          free(feature_names[i]);
-        }
-
-        return RS_CLIENT_ERROR(ERROR_019);
-      }
-
-      char *feature_name =
-          (char *)malloc(feature_name_size * sizeof(char));  // freed by CGO if no err
-      memcpy(feature_name, name_data_start, name_attr_bytes);
-      feature_name[name_attr_bytes] = '\0';
-
-      feature_names.push_back(feature_name);
-    } while ((check = scan_op->nextResult(false)) == 0);
-  }
-
-  // check for errors happened during the reading process
-  NdbError error = scan_op->getNdbError();
-
-  // As we are at the end we will first close the transaction and then deal with the error
-  ndb_object->closeTransaction(tx);
-
-  // storage/ndb/src/ndbapi/ndberror.cpp
-  if (error.code != 4120 /*Scan already complete*/) {
-
-    // free the memory if any
-    for (Uint64 i = 0; i < feature_names.size(); i++) {
-      free(feature_names[i]);
-    }
-
-    return RS_RONDB_SERVER_ERROR(error, "Failed Reading Project ID. Fn find_project_id_int");
-  }
-
-  size        = feature_names.size();
-  primary_key = (char **)malloc(size * sizeof(char *));  // freed by CGO
-  std::copy(feature_names.data(), feature_names.data() + size, primary_key);
-
-  return RS_OK;
-}
-
-//-------------------------------------------------------------------------------------------------
-
 RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Feature_Group *fg) {
-
   NdbError ndb_error;
   const NdbDictionary::Table *table_dict;
   NdbTransaction *tx;
@@ -749,8 +630,8 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
   }
 
   NdbRecAttr *online_enabled_attr = nullptr;
-  // In hopsworks 3.1, there is no column `online_enabled`. This is a workaround for customer using
-  // hopsworks 3.1.
+  // In hopsworks 3.1, there is no column `online_enabled`. This is a workaround
+  // for customer using hopsworks 3.1.
   if (table_dict->getColumn("online_enabled") != nullptr) {
     online_enabled_attr = ndb_op->getValue("online_enabled", nullptr);
     if (online_enabled_attr == nullptr) {
@@ -789,31 +670,6 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
     return RS_CLIENT_404_ERROR();
   }
 
-  std::string feature_table;
-  std::string fg_fk_name;
-  std::string fg_id_col_name;
-  int sub_fg_id;
-
-  if (!on_demand_feature_group_id_attr->isNULL()) {
-    feature_table  = "on_demand_feature";
-    fg_fk_name     = "on_demand_feature_group_fk";
-    fg_id_col_name = "on_demand_feature_group_id";
-    sub_fg_id      = on_demand_feature_group_id_attr->int32_value();
-  } else if (!cached_feature_group_id_attr->isNULL()) {
-    feature_table  = "cached_feature_extra_constraints";
-    fg_fk_name     = "cached_feature_group_fk";
-    fg_id_col_name = "cached_feature_group_id";
-    sub_fg_id      = cached_feature_group_id_attr->int32_value();
-  } else if (!stream_feature_group_id_attr->isNULL()) {
-    feature_table  = "cached_feature_extra_constraints";
-    fg_fk_name     = "stream_feature_group_fk";
-    fg_id_col_name = "stream_feature_group_id";
-    sub_fg_id      = stream_feature_group_id_attr->int32_value();
-  } else {
-    ndb_object->closeTransaction(tx);
-    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
-  }
-
   if (online_enabled_attr == nullptr || online_enabled_attr->isNULL()) {
     // This is due to incompatible schema, assume online enabled.
     fg->online_enabled = 1;
@@ -836,25 +692,6 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
 
   ndb_object->closeTransaction(tx);
 
-  char **primary_key  = nullptr;
-  size_t n_pk         = 0;
-  RS_Status pk_status = find_primary_key_data_int(ndb_object, feature_table, fg_fk_name,
-                                                  fg_id_col_name, sub_fg_id, primary_key, n_pk);
-  if (pk_status.http_code != SUCCESS) {
-
-    if (n_pk > 0) {  // free memory
-      for (size_t i = 0; i < n_pk; i++) {
-        free(primary_key[i]);
-      }
-    }
-
-    ndb_object->closeTransaction(tx);
-    return pk_status;
-  }
-
-  fg->num_pk      = n_pk;
-  fg->primary_key = primary_key;
-
   return RS_OK;
 }
 
@@ -862,7 +699,8 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
 
 /**
  * Find feature group data
- * SELECT name, online_enabled, feature_store_id FROM feature_group WHERE id = {feature_group_id}
+ * SELECT name, online_enabled, feature_store_id FROM feature_group WHERE id =
+ * {feature_group_id}
  */
 RS_Status find_feature_group_data(int feature_group_id, Feature_Group *fg) {
   Ndb *ndb_object  = nullptr;
@@ -1000,7 +838,8 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
   // check for errors happened during the reading process
   NdbError error = scan_op->getNdbError();
 
-  // As we are at the end we will first close the transaction and then deal with the error
+  // As we are at the end we will first close the transaction and then deal with
+  // the error
   ndb_object->closeTransaction(tx);
 
   // storage/ndb/src/ndbapi/ndberror.cpp
@@ -1025,7 +864,8 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
     (*tdfs + i)->label                      = tdfsv[i].label;
     (*tdfs + i)->transformation_function_id = tdfsv[i].transformation_function_id;
     (*tdfs + i)->feature_view_id            = tdfsv[i].feature_view_id;
-    memcpy((*tdfs + i)->name, tdfsv[i].name, strlen(tdfsv[i].name) + 1);  // +1 for '\0'
+    memcpy((*tdfs + i)->name, tdfsv[i].name,
+           strlen(tdfsv[i].name) + 1);  // +1 for '\0'
     memcpy((*tdfs + i)->data_type, tdfsv[i].data_type,
            strlen(tdfsv[i].data_type) + 1);  // +1 for '\0'
   }
@@ -1038,7 +878,8 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
 
 /**
  * Find training_dataset_feature
- * SELECT * from training_dataset_feature  WHERE feature_view_id = {feature_view_id}
+ * SELECT * from training_dataset_feature  WHERE feature_view_id =
+ * {feature_view_id}
  */
 RS_Status find_training_dataset_data(int feature_view_id, Training_Dataset_Feature **tdf,
                                      int *tdf_size) {
@@ -1062,7 +903,6 @@ RS_Status find_training_dataset_data(int feature_view_id, Training_Dataset_Featu
 //-------------------------------------------------------------------------------------------------
 
 RS_Status find_feature_store_data_int(Ndb *ndb_object, int feature_store_id, char *name) {
-
   NdbError ndb_error;
   const NdbDictionary::Table *table_dict;
   NdbTransaction *tx;
@@ -1146,6 +986,192 @@ RS_Status find_feature_store_data(int feature_store_id, char *name) {
   /* clang-format off */
   RETRY_HANDLER(
     status = find_feature_store_data_int(ndb_object, feature_store_id, name);
+  )
+  /* clang-format on */
+
+  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+
+  return status;
+}
+
+//-------------------------------------------------------------------------------------------------
+
+RS_Status find_serving_key_data_int(Ndb *ndb_object, int feature_view_id,
+                                    Serving_Key **serving_keys, int *sk_size) {
+  NdbError ndb_error;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbScanOperation *scan_op;
+
+  RS_Status status = select_table(ndb_object, "hopsworks", "serving_key", &table_dict);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  status = start_transaction(ndb_object, &tx);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  std::string index_name = "feature_view_id";
+  status = get_index_scan_op(ndb_object, tx, table_dict, index_name.c_str(), &scan_op);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  status = read_tuples(ndb_object, scan_op);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  int fv_id_col_id      = table_dict->getColumn("feature_view_id")->getColumnNo();
+  Uint32 fv_id_col_size = (Uint32)table_dict->getColumn("feature_view_id")->getSizeInBytes();
+
+  NdbScanFilter filter(scan_op);
+  if (filter.begin(NdbScanFilter::AND) < 0 ||
+      filter.cmp(NdbScanFilter::COND_EQ, fv_id_col_id, &feature_view_id, fv_id_col_size) < 0 ||
+      filter.end() < 0) {
+    ndb_error = filter.getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_031);
+  }
+
+  assert(SERVING_KEY_FEATURE_NAME_SIZE ==
+         (Uint32)table_dict->getColumn("feature_name")->getSizeInBytes());
+  assert(SERVING_KEY_JOIN_PREFIX_SIZE ==
+         (Uint32)table_dict->getColumn("prefix")->getSizeInBytes());
+  assert(SERVING_KEY_JOIN_ON_SIZE ==
+         (Uint32)table_dict->getColumn("join_on")->getSizeInBytes());
+
+  NdbRecAttr *feature_group_id_attr = scan_op->getValue("feature_group_id", nullptr);
+  NdbRecAttr *feature_name_attr     = scan_op->getValue("feature_name", nullptr);
+  NdbRecAttr *prefix_attr           = scan_op->getValue("prefix", nullptr);
+  NdbRecAttr *required_attr         = scan_op->getValue("required", nullptr);
+  NdbRecAttr *join_on_attr          = scan_op->getValue("join_on", nullptr);
+  NdbRecAttr *join_index_attr       = scan_op->getValue("join_index", nullptr);
+
+  if (feature_group_id_attr == nullptr || feature_name_attr == nullptr || prefix_attr == nullptr ||
+      required_attr == nullptr || join_on_attr == nullptr || join_index_attr == nullptr) {
+    ndb_error = scan_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+  }
+
+  if (tx->execute(NdbTransaction::NoCommit) != 0) {
+    ndb_error = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_009);
+  }
+
+  std::vector<Serving_Key> serving_keys_vec;
+  bool check = 0;
+  while ((check = scan_op->nextResult(true)) == 0) {
+    do {
+      Serving_Key serving_key;
+      serving_key.feature_group_id = feature_group_id_attr->int32_value();
+      serving_key.required         = required_attr->int32_value();
+      serving_key.join_index       = join_index_attr->int32_value();
+
+      // feature name
+      Uint32 feature_name_attr_bytes;
+      const char *feature_name_attr_start = nullptr;
+      if (GetByteArray(feature_name_attr, &feature_name_attr_start, &feature_name_attr_bytes) !=
+          0) {
+        ndb_object->closeTransaction(tx);
+        return RS_CLIENT_ERROR(ERROR_019);
+      }
+
+      memcpy(serving_key.feature_name, feature_name_attr_start, feature_name_attr_bytes);
+      serving_key.feature_name[feature_name_attr_bytes] = '\0';
+
+      // prefix
+      if (prefix_attr->isNULL()) {
+        serving_key.prefix[0] = '\0';
+      } else {
+        Uint32 prefix_attr_bytes;
+        const char *prefix_attr_start = nullptr;
+
+        if (GetByteArray(prefix_attr, &prefix_attr_start, &prefix_attr_bytes) != 0) {
+          ndb_object->closeTransaction(tx);
+          return RS_CLIENT_ERROR(ERROR_019);
+        }
+        memcpy(serving_key.prefix, prefix_attr_start, prefix_attr_bytes);
+        serving_key.prefix[prefix_attr_bytes] = '\0';
+      }
+
+      // join on
+      if (join_on_attr->isNULL()) {
+        serving_key.join_on[0] = '\0';
+      } else {
+        Uint32 join_on_attr_bytes;
+        const char *join_on_attr_start = nullptr;
+
+        if (GetByteArray(join_on_attr, &join_on_attr_start, &join_on_attr_bytes) != 0) {
+          ndb_object->closeTransaction(tx);
+          return RS_CLIENT_ERROR(ERROR_019);
+        }
+        memcpy(serving_key.join_on, join_on_attr_start, join_on_attr_bytes);
+        serving_key.join_on[join_on_attr_bytes] = '\0';
+      }
+
+      serving_keys_vec.push_back(serving_key);
+    } while ((check = scan_op->nextResult(false)) == 0);
+  }
+
+  // check for errors happened during the reading process
+  NdbError error = scan_op->getNdbError();
+
+  // As we are at the end we will first close the transaction and then deal with
+  // the error
+  ndb_object->closeTransaction(tx);
+
+  // storage/ndb/src/ndbapi/ndberror.cpp
+  if (error.code != 4120 /*Scan already complete*/) {
+    return RS_RONDB_SERVER_ERROR(error, "Failed Reading Serving Key. Fn find_serving_key_data_int");
+  }
+
+  if (serving_keys_vec.size() == 0) {
+    return RS_CLIENT_404_ERROR();
+  }
+
+  // freed by CGO
+  *sk_size      = serving_keys_vec.size();
+  void *ptr     = (Serving_Key *)malloc(serving_keys_vec.size() * sizeof(Serving_Key));
+  *serving_keys = (Serving_Key *)ptr;
+  for (Uint64 i = 0; i < serving_keys_vec.size(); i++) {
+    (*serving_keys + i)->feature_group_id = serving_keys_vec[i].feature_group_id;
+    (*serving_keys + i)->required         = serving_keys_vec[i].required;
+    (*serving_keys + i)->join_index       = serving_keys_vec[i].join_index;
+    memcpy((*serving_keys + i)->feature_name, serving_keys_vec[i].feature_name,
+           strlen(serving_keys_vec[i].feature_name) + 1);  // +1 for '\0'
+    memcpy((*serving_keys + i)->prefix, serving_keys_vec[i].prefix,
+           strlen(serving_keys_vec[i].prefix) + 1);  // +1 for '\0'
+    memcpy((*serving_keys + i)->join_on, serving_keys_vec[i].join_on,
+           strlen(serving_keys_vec[i].join_on) + 1);  // +1 for '\0'
+  }
+  serving_keys_vec.clear();
+
+  return RS_OK;
+}
+
+//-------------------------------------------------------------------------------------------------
+
+/**
+ * Find serving_key_data
+ * SELECT * from serving_key  WHERE feature_view_id = {feature_view_id}
+ */
+RS_Status find_serving_key_data(int feature_view_id, Serving_Key **serving_keys, int *sk_size) {
+  Ndb *ndb_object  = nullptr;
+  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  /* clang-format off */
+  RETRY_HANDLER(
+    status = find_serving_key_data_int(ndb_object, feature_view_id, serving_keys, sk_size); 
   )
   /* clang-format on */
 

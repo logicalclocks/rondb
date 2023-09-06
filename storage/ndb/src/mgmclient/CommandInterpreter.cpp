@@ -2381,6 +2381,40 @@ CommandInterpreter::executeStop(Vector<BaseString> &command_list,
     return -1;
   }
 
+  if (no_of_nodes > 0)
+  {
+    /* Check that nodes to stop are not already deactivated */
+    ndb_mgm_configuration * conf = ndb_mgm_get_configuration(m_mgmsrv,0);
+    if (conf == 0)
+    {
+      ndbout_c("Could not get configuration");
+      printError();
+      return -1;
+    }
+
+    for (int i = 0; i < no_of_nodes; i++)
+    {
+      int nodeId = node_ids[i];
+      ConfigValues::Iterator iter(conf->m_config_values);
+      bool ret = get_node_section(iter, nodeId, 0);
+      if (!ret)
+      {
+        printError();
+        ndbout_c("Failed to get configuration of node %d", nodeId);
+        ndb_mgm_destroy_configuration(conf);
+        return -1;
+      }
+      Uint32 is_active = 1;
+      iter.get(CFG_NODE_ACTIVE, &is_active);
+      if (!is_active)
+      {
+        ndbout_c("Node %d is deactivated, is already stopped",
+                 nodeId);
+        ndb_mgm_destroy_configuration(conf);
+        return -1;
+      }
+    }
+  }
   int result= ndb_mgm_stop4(m_mgmsrv, no_of_nodes, node_ids, abort,
                             force, &need_disconnect);
   if (result < 0)

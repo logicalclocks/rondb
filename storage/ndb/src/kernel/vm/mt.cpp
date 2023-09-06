@@ -1344,9 +1344,9 @@ struct thr_jb_read_state
  */
 struct thr_tq
 {
-  static const unsigned ZQ_SIZE = 256;
-  static const unsigned SQ_SIZE = 512;
-  static const unsigned LQ_SIZE = 512;
+  static const unsigned ZQ_SIZE = 512;
+  static const unsigned SQ_SIZE = 1024;
+  static const unsigned LQ_SIZE = 1024;
   static const unsigned PAGES = (MAX_SIGNAL_SIZE *
                                 (ZQ_SIZE + SQ_SIZE + LQ_SIZE)) / 8192;
 

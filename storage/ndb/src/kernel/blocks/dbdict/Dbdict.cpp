@@ -1064,7 +1064,7 @@ Dbdict::packTableIntoPages(SimpleProperties::Writer & w,
   w.add(DictTabInfo::HashFunctionFlag,
         ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) != 0));
 
-  DEB_HASH(("dict_tab(%u) HashFunctionFlag: %u",
+  DEB_HASH(("1: dict_tab(%u) HashFunctionFlag: %u",
             tablePtr.p->tableId,
             ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) != 0)));
 
@@ -6065,6 +6065,8 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
     }
     D("CreateTableFromApi: tableName = " << c_tableDesc.TableName
       << " HashFunctionFlag = " << c_tableDesc.HashFunctionFlag);
+    DEB_HASH(("0: dict_tab(%u) HashFunctionFlag: %u",
+            c_tableDesc.TableId, 0));
   }
   [[fallthrough]];
   case DictTabInfo::AlterTableFromAPI:{
@@ -6253,6 +6255,10 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
     (c_tableDesc.HashFunctionFlag ?
       TableRecord::TR_HashFunction : 0);
 
+  DEB_HASH(("2: dict_tab(%u) HashFunctionFlag: %u",
+            tablePtr.p->tableId,
+            ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) != 0)));
+
   D("handleTabInfoInit: tableId = " << tablePtr.p->tableId
     << " tabPtr.i = " << tablePtr.i << " tableVersion = "
     << tablePtr.p->tableVersion << " m_bits = " << hex
@@ -6318,6 +6324,8 @@ void Dbdict::handleTabInfoInit(Signal * signal, SchemaTransPtr & trans_ptr,
     }
     D("CreateTableFromApi: tableName = " << c_tableDesc.TableName
       << " HashFunctionFlag = " << c_tableDesc.HashFunctionFlag);
+    DEB_HASH(("8: dict_tab(%u) HashFunctionFlag: %u",
+              tablePtr.p->tableId, c_tableDesc.HashFunctionFlag));
   }
 
   /**
@@ -8532,6 +8540,10 @@ Dbdict::execTAB_COMMITCONF(Signal* signal)
       (Uint32)(((tabPtr.p->m_bits &
                  TableRecord::TR_HashFunction) == 0) ? 0 : 1);
 
+    DEB_HASH(("3: dict_tab(%u) HashFunctionFlag: %u",
+              tabPtr.p->tableId,
+              ((tabPtr.p->m_bits & TableRecord::TR_HashFunction) != 0)));
+
     if (!DictTabInfo::isOrderedIndex(tabPtr.p->tableType))
     {
       jam();
@@ -8709,6 +8721,11 @@ Dbdict::execTC_SCHVERCONF(Signal* signal)
     req->hashFunctionFlag =
       (Uint32)(((tabPtr.p->m_bits &
                  TableRecord::TR_HashFunction) == 0) ? 0 : 1);
+
+    DEB_HASH(("4: dict_tab(%u) HashFunctionFlag: %u",
+              tabPtr.p->tableId,
+              ((tabPtr.p->m_bits & TableRecord::TR_HashFunction) != 0)));
+
 
     if (DictTabInfo::isOrderedIndex(tabPtr.p->tableType))
     {
@@ -10942,6 +10959,9 @@ Dbdict::alterTable_toReadBackup(Signal* signal,
     bool flag = ((indexPtr.p->m_bits & TableRecord::TR_HashFunction) != 0);
     w.add(DictTabInfo::HashFunctionFlag, (Uint32)flag);
     D("HashFunctionFlag: " << flag);
+    DEB_HASH(("9: dict_tab(%u) HashFunctionFlag: %u",
+              indexPtr.p->tableId,
+              ((indexPtr.p->m_bits & TableRecord::TR_HashFunction) != 0)));
   }
   /* Toggle read backup flag since this is changed */
   {
@@ -11095,6 +11115,9 @@ Dbdict::alterTable_toAlterUniqueIndex(Signal* signal,
     bool flag = ((indexPtr.p->m_bits & TableRecord::TR_HashFunction) != 0);
     w.add(DictTabInfo::HashFunctionFlag, (Uint32)flag);
     D("HashFunctionFlag: " << flag);
+    DEB_HASH(("5: dict_tab(%u) HashFunctionFlag: %u",
+              indexPtr.p->tableId,
+              ((indexPtr.p->m_bits & TableRecord::TR_HashFunction) != 0)));
   }
   {
     bool flag = indexPtr.p->m_bits & TableRecord::TR_FullyReplicated;
@@ -13504,6 +13527,11 @@ Dbdict::createIndex_parse(Signal* signal, bool master,
     {
       jam();
       bits |= TableRecord::TR_HashFunction;
+      DEB_HASH(("6: dict_tab(%u) HashFunctionFlag: %u",
+                impl_req->tableId, 1));
+    } else {
+      DEB_HASH(("6: dict_tab(%u) HashFunctionFlag: %u",
+                impl_req->tableId, 0));
     }
     if (tableDesc.ReadBackupFlag)
     {
@@ -13774,6 +13802,9 @@ Dbdict::createIndex_toCreateTable(Signal* signal, SchemaOpPtr op_ptr)
     ((createIndexPtr.p->m_bits & TableRecord::TR_HashFunction) != 0);
     w.add(DictTabInfo::HashFunctionFlag, (Uint32)flag);
     D("HashFunctionFlag: " << flag);
+    DEB_HASH(("7: dict_tab(%u) HashFunctionFlag: %u",
+              createIndexPtr.p->m_request.indexId,
+              ((createIndexPtr.p->m_bits & TableRecord::TR_HashFunction) != 0)));
   }
   { bool flag = createIndexPtr.p->m_bits & TableRecord::TR_FullyReplicated;
     w.add(DictTabInfo::FullyReplicatedFlag, (Uint32)flag);
