@@ -298,14 +298,14 @@ Therefore, when committing a change to this struct or its defaults, change
 the corresponding file for the MTR tests as well.
 */
 type AllConfigs struct {
-	Internal         Internal
-	REST             REST
-	GRPC             GRPC
-	RonDB            RonDB
-	RonDBMetaCluster RonDB
-	Security         Security
-	Log              log.LogConfig
-	Testing          Testing
+	Internal             Internal
+	REST                 REST
+	GRPC                 GRPC
+	RonDB                RonDB
+	RonDBMetadataCluster RonDB
+	Security             Security
+	Log                  log.LogConfig
+	Testing              Testing
 }
 
 func (c *AllConfigs) Validate() error {
@@ -325,12 +325,12 @@ func (c *AllConfigs) Validate() error {
 	// c.RonDBMetaCluster is optional. Copy the cluster
 	// connection information from c.RonDB if it is not
 	// set by the user
-	if len(c.RonDBMetaCluster.Mgmds) == 0 {
-		c.RonDBMetaCluster.Mgmds = c.RonDB.Mgmds
+	if len(c.RonDBMetadataCluster.Mgmds) == 0 {
+		c.RonDBMetadataCluster.Mgmds = c.RonDB.Mgmds
 	}
 
-	if err = c.RonDBMetaCluster.Validate(); err != nil {
-		return fmt.Errorf("Config.RonDBMetaCluster: %s", err)
+	if err = c.RonDBMetadataCluster.Validate(); err != nil {
+		return fmt.Errorf("Config.RonDBMetadataCluster: %s", err)
 	}
 
 	return nil

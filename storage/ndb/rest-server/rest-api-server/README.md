@@ -214,7 +214,7 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 	            "OpRetryInitialDelayInMS": 500,
 	            "OpRetryJitterInMS": 100
         },
-        "RonDBMetaCluster": {
+        "RonDBMetadataCluster": {
                 "Mgmds": [
                         {
                                 "IP": "localhost",
@@ -318,7 +318,7 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
   - **OpRetryJitterInMS:** Jitter is added (or subtracted) from the retry delay to prevent multiple failed operations from being retried at the same time 
 
-- **RonDBMetaCluster** In normal operations the user data and metadata data (API Keys) are stored in the same RonDB cluster. It is possible to store data and metadata in separate clusters. Use the *RonDBMetaCluster* parameter to configure a dedicated RonDB cluster containing user metadata. For example, if *RonDB* and *RonDBMetaCluster* parameters are set then *pk-read* and *batch* operations will be performed on a cluster defined in the *RonDB* parameter and metadata operations will be performed on a cluster defined in *RonDBMetaCluster* parameter.
+- **RonDBMetadataCluster** In normal operations the user data and metadata data (API Keys) are stored in the same RonDB cluster. It is possible to store data and metadata in separate clusters. Use the *RonDBMetadataCluster* parameter to configure a dedicated RonDB cluster containing user metadata. For example, if *RonDB* and *RonDBMetadataCluster* parameters are set then *pk-read* and *batch* operations will be performed on a cluster defined in the *RonDB* parameter and metadata operations will be performed on a cluster defined in *RonDBMetadataCluster* parameter.
 
 - **Security:** REST server security settings 
 

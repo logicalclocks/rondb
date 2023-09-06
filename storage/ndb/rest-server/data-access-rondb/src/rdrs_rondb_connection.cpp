@@ -31,10 +31,9 @@
 
 //--------------------------------------------------------------------------------------------------
 
-RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, 
-                                    Uint32 *node_ids, Uint32 node_ids_len,
-                                    Uint32 connection_retries,
-                                    Uint32 connection_retry_delay_in_sec) {
+RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, Uint32 *node_ids,
+                                         Uint32 node_ids_len, Uint32 connection_retries,
+                                         Uint32 connection_retry_delay_in_sec) {
 
   require(node_ids_len == 1);
   // __instance = new RDRSRonDBConnection();
@@ -47,8 +46,8 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string,
   stats.is_shutdown                 = false;
   stats.connection_state            = DISCONNECTED;
 
-  size_t connection_string_len  = strlen(connection_string);
-  this->connection_string = reinterpret_cast<char *>(malloc(connection_string_len + 1));
+  size_t connection_string_len = strlen(connection_string);
+  this->connection_string      = reinterpret_cast<char *>(malloc(connection_string_len + 1));
   std::strncpy(this->connection_string, connection_string, connection_string_len);
   this->connection_string[connection_string_len] = '\0';
 
@@ -89,11 +88,10 @@ RS_Status RDRSRonDBConnection::Connect() {
 
     retCode = ndbConnection->wait_until_ready(30, 0);
     if (retCode != 0) {
-      return RS_SERVER_ERROR(ERROR_003 + std::string(" RetCode: ") + std::to_string(retCode) +
-                             std::string(" Lastest Error: ") +
-                             std::to_string(ndbConnection->get_latest_error()) +
-                             std::string(" Lastest Error Msg: ") +
-                             std::string(ndbConnection->get_latest_error_msg()));
+      return RS_SERVER_ERROR(
+          ERROR_003 + std::string(" RetCode: ") + std::to_string(retCode) +
+          std::string(" Lastest Error: ") + std::to_string(ndbConnection->get_latest_error()) +
+          std::string(" Lastest Error Msg: ") + std::string(ndbConnection->get_latest_error_msg()));
     }
   }
 

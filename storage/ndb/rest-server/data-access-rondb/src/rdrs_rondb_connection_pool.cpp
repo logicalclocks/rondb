@@ -26,9 +26,9 @@ RDRSRonDBConnectionPool::RDRSRonDBConnectionPool() {
 }
 
 RDRSRonDBConnectionPool::~RDRSRonDBConnectionPool() {
-  ndb_end(1);  // sometimes causes seg faults when called repeatedly from unit tests
   delete dataConnection;
   delete metadataConnection;
+  ndb_end(1);  // sometimes causes seg faults when called repeatedly from unit tests
 }
 
 RS_Status RDRSRonDBConnectionPool::Init() {

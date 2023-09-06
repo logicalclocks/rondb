@@ -92,7 +92,7 @@ RS_Status add_metadata_connection(const char *connection_string, unsigned int co
 
 //--------------------------------------------------------------------------------------------------
 
-RS_Status set_op_retry_props_data_cluster(const unsigned int retry_cont,
+RS_Status set_data_cluster_op_retry_props(const unsigned int retry_cont,
                                           const unsigned int rety_initial_delay,
                                           const unsigned int jitter) {
   DATA_CONN_OP_RETRY_COUNT               = retry_cont;
@@ -104,7 +104,7 @@ RS_Status set_op_retry_props_data_cluster(const unsigned int retry_cont,
 
 //--------------------------------------------------------------------------------------------------
 
-RS_Status set_op_retry_props_metadata_cluster(const unsigned int retry_cont,
+RS_Status set_metadata_cluster_op_retry_props(const unsigned int retry_cont,
                                               const unsigned int rety_initial_delay,
                                               const unsigned int jitter) {
   METADATA_CONN_OP_RETRY_COUNT               = retry_cont;

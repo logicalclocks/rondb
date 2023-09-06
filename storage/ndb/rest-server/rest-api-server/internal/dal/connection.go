@@ -61,7 +61,7 @@ func InitRonDBConnection(rondbDataCluster config.RonDB,
 	}
 
 	// set failed ops retry properties for data cluster
-	ret = C.set_op_retry_props_data_cluster(
+	ret = C.set_data_cluster_op_retry_props(
 		C.uint(rondbDataCluster.OpRetryOnTransientErrorsCount),
 		C.uint(rondbDataCluster.OpRetryInitialDelayInMS),
 		C.uint(rondbDataCluster.OpRetryJitterInMS))
@@ -90,7 +90,7 @@ func InitRonDBConnection(rondbDataCluster config.RonDB,
 	}
 
 	// set failed ops retry properties for metadata cluster
-	ret = C.set_op_retry_props_metadata_cluster(
+	ret = C.set_metadata_cluster_op_retry_props(
 		C.uint(rondbMetaDataCluster.OpRetryOnTransientErrorsCount),
 		C.uint(rondbMetaDataCluster.OpRetryInitialDelayInMS),
 		C.uint(rondbMetaDataCluster.OpRetryJitterInMS))

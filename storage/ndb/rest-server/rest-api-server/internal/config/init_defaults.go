@@ -78,7 +78,7 @@ func newWithDefaults() AllConfigs {
 			OpRetryInitialDelayInMS:       500,
 			OpRetryJitterInMS:             100,
 		},
-		RonDBMetaCluster: RonDB{
+		RonDBMetadataCluster: RonDB{
 			Mgmds:                         []Mgmd{}, // if not defined then it will be copied from Config.RonDB.Mgmds
 			ConnectionPoolSize:            1,
 			NodeIDs:                       []uint32{0},
