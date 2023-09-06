@@ -214,7 +214,8 @@ static bool                     tImmediate = false;
 //Program Flags
 static int                              theTestFlag = 0;
 static int                              theSimpleFlag = 0;
-static int                              theDirtyFlag = 0;
+static int                              theDirtyWriteFlag = 0;
+static int                              theDirtyReadFlag = 1;
 static int                              theWriteFlag = 0;
 static int                              theStdTableNameFlag = 0;
 static int                              theTableCreateFlag = 0;
@@ -882,7 +883,7 @@ defineOperation(NdbConnection* localNdbConnection, StartType aType,
   }//if
   switch (aType) {
   case stInsert: {   // Insert case
-    if (theWriteFlag == 1 && theDirtyFlag == 1) {
+    if (theWriteFlag == 1 && theDirtyWriteFlag == 1) {
       localNdbOperation->dirtyWrite();
     } else if (theWriteFlag == 1) {
       localNdbOperation->writeTuple();
@@ -894,7 +895,7 @@ defineOperation(NdbConnection* localNdbConnection, StartType aType,
   case stRead: {     // Read Case
     if (theSimpleFlag == 1) {
       localNdbOperation->simpleRead();
-    } else if (theDirtyFlag == 1) {
+    } else if (theDirtyReadFlag == 1) {
       localNdbOperation->dirtyRead();
     } else {
       localNdbOperation->readTuple();
@@ -902,11 +903,11 @@ defineOperation(NdbConnection* localNdbConnection, StartType aType,
     break;
   }//case
   case stUpdate: {    // Update Case
-    if (theWriteFlag == 1 && theDirtyFlag == 1) {
+    if (theWriteFlag == 1 && theDirtyWriteFlag == 1) {
       localNdbOperation->dirtyWrite();
     } else if (theWriteFlag == 1) {
       localNdbOperation->writeTuple();
-    } else if (theDirtyFlag == 1) {
+    } else if (theDirtyWriteFlag == 1) {
       localNdbOperation->dirtyUpdate();
     } else {
       localNdbOperation->updateTuple();
@@ -2432,8 +2433,16 @@ readArguments(int argc, char** argv){
       theWriteFlag = 1;
       argc++;
       i--;
-    } else if (strcmp(argv[i], "-dirty") == 0){
-      theDirtyFlag = 1;
+    } else if (strcmp(argv[i], "-dirty_write") == 0){
+      theDirtyWriteFlag = 1;
+      argc++;
+      i--;
+    } else if (strcmp(argv[i], "-dirty_read") == 0){
+      theDirtyReadFlag = 1;
+      argc++;
+      i--;
+    } else if (strcmp(argv[i], "-locked_read") == 0){
+      theDirtyReadFlag = 0;
       argc++;
       i--;
     } else if (strcmp(argv[i], "-test") == 0){
@@ -2578,8 +2587,10 @@ input_error(){
   ndbout_c("   -c Number of operations per transaction");
   ndbout_c("   -s Size of each attribute, default 1 ");
   ndbout_c("      (PK is always of size 1, independent of this value)");
+  ndbout_c("   -dirty_write Use dirty write/update in database");
+  ndbout_c("   -dirty_read Use dirty read to read from database");
   ndbout_c("   -simple Use simple read to read from database");
-  ndbout_c("   -dirty Use dirty read to read from database");
+  ndbout_c("   -locked_read Use normal locked read to read from database");
   ndbout_c("   -write Use writeTuple in insert and update");
   ndbout_c("   -n Use standard table names");
   ndbout_c("   -no_table_create Don't create tables in db");
