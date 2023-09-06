@@ -5343,7 +5343,13 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
    * Bit 27 == 0 since TC record is the same as the client record.
    * Bit 28 == 0 since readLenAi can only be set after reading in LQH.
    * ----------------------------------------------------------------------- */
-  LqhKeyReq::setMarkerFlag(Tdata10, regTcPtr->commitAckMarker != RNIL ? 1 : 0);
+  if (regTcPtr->commitAckMarker != RNIL && regTcPtr->dirtyOp == ZFALSE) {
+    /**
+     * Important to not set marker flag for dirty write operations since
+     * the commit ack marker will be released without contacting DBLQH.
+     */
+    LqhKeyReq::setMarkerFlag(Tdata10, 1);
+  }
   
   if (unlikely(regTcPtr->m_special_op_flags &
                TcConnectRecord::SOF_FK_READ_COMMITTED))
