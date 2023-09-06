@@ -37,6 +37,8 @@
 
 #define LQH_DEBUG(x) { ndbout << "LQH::" << x << endl; }
 
+#define COMMIT_ACK_MARKER_HASH_SIZE 16384
+
 Uint64 Dblqh::getTransactionMemoryNeed(
     const Uint32 ldm_instance_count,
     const ndb_mgm_configuration_iterator * mgm_cfg)
@@ -60,7 +62,7 @@ Uint64 Dblqh::getTransactionMemoryNeed(
   op_byte_count += TcConnectionrec_pool::getMemoryNeed(lqh_op_recs);
   op_byte_count *= ldm_instance_count;
 
-  Uint32 lqh_commit_ack_markers = 4096;
+  Uint32 lqh_commit_ack_markers = COMMIT_ACK_MARKER_HASH_SIZE;
   Uint64 commit_ack_marker_byte_count = 0;
   commit_ack_marker_byte_count +=
     CommitAckMarker_pool::getMemoryNeed(lqh_commit_ack_markers);
@@ -527,7 +529,8 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator* mgm_cfg,
     refresh_watch_dog();
   }
 
-  Uint32 reserveCommitAckMarkers = 4096;
+  Uint32 reserveCommitAckMarkers = COMMIT_ACK_MARKER_HASH_SIZE;
+
   if (m_is_query_block)
   {
     reserveCommitAckMarkers = 1;
@@ -541,7 +544,7 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator* mgm_cfg,
   {
     refresh_watch_dog();
   }
-  m_commitAckMarkerHash.setSize(4096);
+  m_commitAckMarkerHash.setSize(COMMIT_ACK_MARKER_HASH_SIZE);
   
   tcNodeFailRecord = (TcNodeFailRecord*)allocRecord("TcNodeFailRecord",
 						    sizeof(TcNodeFailRecord),

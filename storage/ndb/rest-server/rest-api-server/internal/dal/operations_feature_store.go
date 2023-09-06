@@ -29,8 +29,6 @@ import (
 	"net/http"
 	"sort"
 	"unsafe"
-
-	"hopsworks.ai/rdrs/internal/log"
 )
 
 type TrainingDatasetFeature struct {
@@ -138,7 +136,6 @@ type FeatureGroup struct {
 	Version        int
 	OnlineEnabled  bool
 	NumOfPk        int
-	PrimaryKey     []string
 }
 
 func GetFeatureGroupData(featureGroupID int) (*FeatureGroup, *DalError) {
@@ -152,28 +149,11 @@ func GetFeatureGroupData(featureGroupID int) (*FeatureGroup, *DalError) {
 		return nil, cToGoRet(&ret)
 	}
 
-	var n_pk = int(fg.num_pk)
-	var pks = make([]string, n_pk)
-	pkSlice := unsafe.Slice((**C.char)(unsafe.Pointer(fg.primary_key)), n_pk)
-	for i, buff := range pkSlice {
-		pk := C.GoString(buff)
-		pks[i] = pk
-		C.free(unsafe.Pointer(buff))
-	}
-	C.free(unsafe.Pointer(fg.primary_key))
-
-	if log.IsDebug() {
-		log.Debugf("Size of pk is %d", n_pk)
-		for _, pk := range pks {
-			log.Debugf("primary key: %s", pk)
-		}
-	}
 	var fgGo = FeatureGroup{
 		Name:           C.GoString(&fg.name[0]),
 		FeatureStoreId: int(fg.feature_store_id),
 		Version:        int(fg.version),
 		OnlineEnabled:  int(fg.online_enabled) != 0,
-		PrimaryKey:     pks,
 	}
 	return &fgGo, nil
 }
@@ -229,4 +209,50 @@ func GetFeatureStoreName(fsId int) (string, *DalError) {
 	}
 
 	return C.GoString((*C.char)(unsafe.Pointer(nameBuff))), nil
+}
+
+type ServingKey struct {
+	FeatureGroupId int
+	FeatureName string
+	Prefix string
+	Required bool
+	JoinOn string
+	JoinIndex int
+	RequiredEntry string
+}
+
+func GetServingKeys(featureViewId int) ([]ServingKey, error) {
+	var servingKeySize C.int
+	servingKeySizePtr := (*C.int)(unsafe.Pointer(&servingKeySize))
+
+	var servingKeys *C.Serving_Key
+	servingKeysPtr := (**C.Serving_Key)(unsafe.Pointer(&servingKeys))
+
+	ret := C.find_serving_key_data(C.int(featureViewId), servingKeysPtr, servingKeySizePtr)
+
+	if ret.http_code != http.StatusOK {
+		return nil, cToGoRet(&ret)
+	}
+
+	servingKeySlice := unsafe.Slice((*C.Serving_Key)(unsafe.Pointer(servingKeys)), servingKeySize)
+
+	retServingKeys := make([]ServingKey, int(servingKeySize))
+	for i, servingKey := range servingKeySlice {
+		retServingKey := ServingKey{
+			FeatureGroupId: int(servingKey.feature_group_id),
+			FeatureName: C.GoString(&servingKey.feature_name[0]),
+			Prefix: C.GoString(&servingKey.prefix[0]),
+			Required: int(servingKey.required) != 0,
+			JoinOn: C.GoString(&servingKey.join_on[0]),
+			JoinIndex: int(servingKey.join_index),
+		}
+		retServingKey.RequiredEntry = retServingKey.Prefix + retServingKey.FeatureName
+		if !retServingKey.Required {
+			retServingKey.RequiredEntry = retServingKey.JoinOn
+		}
+		retServingKeys[i] = retServingKey
+	}
+
+	C.free(unsafe.Pointer(servingKeys))
+	return retServingKeys[:], nil
 }

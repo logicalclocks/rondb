@@ -1,5 +1,9 @@
 /*
+<<<<<<< HEAD
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+=======
+   Copyright (c) 2003, 2020, Oracle and/or its affiliates. All rights reserved.
+>>>>>>> 134c38edcd1fbdadfaed287245269d6ee445f9c9
    Copyright (c) 2021, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
@@ -58,7 +62,9 @@
 
 #define JAM_FILE_ID 424
 
-#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+extern EventLogger * g_eventLogger;
+
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
 //#define DEBUG_DISK 1
 //#define DEBUG_TUP_META 1
 //#define DEBUG_TUP_META_EXTRA 1

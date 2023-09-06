@@ -21,15 +21,23 @@ import (
 	"context"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/pkg/api"
 )
 
 func (s *RonDBServer) Ping(ctx context.Context, reqProto *api.Empty) (*api.Empty, error) {
 
 	// metrics
+	var statusCode = codes.OK
 	start := time.Now().UnixNano()
-	defer s.rdrsMetrics.GRPCMetrics.PingSummary.Observe(float64(time.Now().UnixNano() - start))
-	s.rdrsMetrics.GRPCMetrics.PingCounter.Inc()
+	updateMetrics := func(opName string) {
+		s.rdrsMetrics.EndPointMetrics.AddResponseTime(opName,
+			config.GRPC_API_TYPE, config.GRPC_API_TYPE, float64(time.Now().UnixNano()-start))
+		s.rdrsMetrics.EndPointMetrics.AddResponseStatus(opName,
+			config.GRPC_API_TYPE, config.GRPC_API_TYPE, int(statusCode))
+	}
+	defer updateMetrics(config.PING_OPERATION)
 
 	return &api.Empty{}, nil
 }

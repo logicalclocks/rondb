@@ -71,7 +71,7 @@ func (h *Handler) Validate(request interface{}) error {
 func checkFeatureStatus(fsReq *api.BatchFeatureStoreRequest, metadata *feature_store.FeatureViewMetadata, status *[]api.FeatureStatus) int {
 	var cnt = make(map[int]bool)
 	for i, entry := range *fsReq.Entries {
-		if fshandler.ValidatePrimaryKey(entry, &metadata.PrimaryKeyMap) != nil {
+		if fshandler.ValidatePrimaryKey(entry, &metadata.PrefixPrimaryKeyMap) != nil {
 			(*status)[i] = api.FEATURE_STATUS_ERROR
 			cnt[i] = true
 		}

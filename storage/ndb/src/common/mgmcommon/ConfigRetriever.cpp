@@ -463,7 +463,87 @@ ConfigRetriever::verifyConfig(const ndb_mgm_configuration *conf,
       }
     }
   }
+  if (!check_duplicate_hostname_port(conf, &buf[0]))
+  {
+    setError(CR_ERROR, buf);
+    return false;
+  }
+  return true;
+}
 
+bool
+ConfigRetriever::check_duplicate_hostname_port(
+  const struct ndb_mgm_configuration * conf,
+  char *buf)
+{
+  ndb_mgm_configuration_iterator iter(conf, CFG_SECTION_NODE);
+  for (iter.first(); iter.valid(); iter.next())
+  {
+    unsigned int node_active = 1;
+    const char *hostname;
+    unsigned int node_type = 0;
+    unsigned int node_id = 0;
+    unsigned node_port = 0;
+    if (iter.get(CFG_NODE_ID, &node_id)) {
+      BaseString::snprintf(buf, 255,
+                           "Missing node id in configuration");
+      return false;
+    }
+    iter.get(CFG_NODE_ACTIVE, &node_active);
+    iter.get(CFG_NODE_HOST, &hostname);
+    if (iter.get(CFG_TYPE_OF_SECTION, &node_type)) {
+      BaseString::snprintf(buf, 255,
+                           "Missing node type in configuration");
+      return false;
+    }
+    if (node_type == NODE_TYPE_MGM) {
+      if (iter.get(CFG_MGM_PORT, &node_port))
+      {
+        BaseString::snprintf(buf, 255,
+                             "Missing mgm port in configuration");
+        return false;
+      }
+    } else if (node_type == NODE_TYPE_DB) {
+      iter.get(CFG_DB_SERVER_PORT, &node_port);
+    }
+    if (!node_active || node_port == 0)
+      continue;
+    ndb_mgm_configuration_iterator iter2(conf, CFG_SECTION_NODE);
+    for (iter2.first(); iter2.valid(); iter2.next())
+    {
+      unsigned int node_id2 = 0;;
+      unsigned int node_active2 = 1;
+      unsigned int node_type2 = 0;
+      unsigned int node_port2 = 0;
+      const char *hostname2;
+      iter.get(CFG_NODE_ID, &node_id2);
+      if (node_id2 >= node_id)
+        break;
+      iter.get(CFG_NODE_ACTIVE, &node_active2);
+      if (!node_active2)
+        continue;
+      iter.get(CFG_TYPE_OF_SECTION, &node_type2);
+      if (node_type2 != NODE_TYPE_MGM && node_type2 != NODE_TYPE_DB)
+        continue;
+      if (node_type2 == NODE_TYPE_MGM) {
+        iter.get(CFG_MGM_PORT, &node_port2);
+      } else if (node_type2 == NODE_TYPE_DB) {
+        iter.get(CFG_DB_SERVER_PORT, &node_port2);
+      } else {
+        continue;
+      }
+      if (node_port2 == 0)
+        continue;
+      if (node_port != node_port2)
+        continue;
+      if (strncmp(hostname, hostname2, 511) == 0) {
+        BaseString::snprintf(buf, 255,
+                             "Node %d and %d share the same hostname and port"
+                             " in configuration", node_id, node_id2);
+        return false;
+      }
+    }
+  }
   return true;
 }
 

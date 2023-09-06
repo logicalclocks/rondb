@@ -503,6 +503,10 @@ public:
     LCP_CLOSE_STARTED = 2  // Completion(closing of files) has started
   };
 
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  Uint32 c_errorCounter;
+#endif
+
   enum ExecUndoLogState {
     EULS_IDLE = 0,
     EULS_STARTED = 1,
@@ -4517,7 +4521,7 @@ public:
     }
     
     inline Uint32 hashValue() const {
-      return transid1;
+      return transid1 ^ (transid2 >> 12);
     }
   };
   static constexpr Uint32 DBLQH_COMMIT_ACK_MARKER_TRANSIENT_POOL_INDEX = 2;
