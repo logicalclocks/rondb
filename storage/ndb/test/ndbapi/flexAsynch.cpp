@@ -707,6 +707,8 @@ executeTrans(ThreadNdb* pThread,
                                       min_execs,
                                       tSendForce);
   while (Tcomp < min_execs) {
+    fprintf(stderr, "0x%p %d out of %u executed\n",
+            aNdbObject, Tcomp, num_ops);
     int TlocalComp = aNdbObject->pollNdb(3000, min_execs - Tcomp);
     Tcomp += TlocalComp;
   }//while
@@ -2669,6 +2671,7 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
       START_TIMER;
       execute(stInsert);
       STOP_TIMER;
+      flexAsynchErrorData->printErrorCounters(ndbout);
     }
     if (tRunType == RunAll)
     {
@@ -2724,6 +2727,7 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
         START_TIMER;
         execute(stRead);
         STOP_TIMER;
+        flexAsynchErrorData->printErrorCounters(ndbout);
         if (tRunType == RunAll)
         {
           a_r.addObservation((1000ULL * noOfTransacts * tNoOfOpsPerTrans) / timer.elapsedTime());
@@ -2782,6 +2786,7 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
       START_TIMER;
       execute(stUpdate);
       STOP_TIMER;
+      flexAsynchErrorData->printErrorCounters(ndbout);
     }//if
     if (tRunType == RunAll)
     {
@@ -2837,6 +2842,7 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
         START_TIMER;
         execute(stRead);
         STOP_TIMER;
+        flexAsynchErrorData->printErrorCounters(ndbout);
         a_r.addObservation((1000ULL * noOfTransacts * tNoOfOpsPerTrans) / timer.elapsedTime());
         PRINT_TIMER("read",
           noOfTransacts/tNoOfParallelTrans,
@@ -2889,6 +2895,7 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
       START_TIMER;
       execute(stDelete);
       STOP_TIMER;
+      flexAsynchErrorData->printErrorCounters(ndbout);
     }//if
     if (tRunType == RunAll)
     {
