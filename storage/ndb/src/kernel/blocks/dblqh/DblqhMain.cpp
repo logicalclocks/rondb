@@ -137,7 +137,7 @@ extern EventLogger * g_eventLogger;
 //#define DEBUG_LOG_QUEUE 1
 //#define DEBUG_PARALLEL_COPY_EXTRA 1
 //#define DEBUG_PARALLEL_COPY 1
-#define DEBUG_HASH 1
+//#define DEBUG_HASH 1
 #endif
 
 #ifdef DEBUG_HASH

@@ -58,7 +58,7 @@
 #define JAM_FILE_ID 479
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_HASH 1
+//#define DEBUG_HASH 1
 #endif
 
 #ifdef DEBUG_HASH

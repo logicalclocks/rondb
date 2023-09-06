@@ -214,7 +214,8 @@ static bool                     tImmediate = false;
 //Program Flags
 static int                              theTestFlag = 0;
 static int                              theSimpleFlag = 0;
-static int                              theDirtyFlag = 0;
+static int                              theDirtyWriteFlag = 0;
+static int                              theDirtyReadFlag = 1;
 static int                              theWriteFlag = 0;
 static int                              theStdTableNameFlag = 0;
 static int                              theTableCreateFlag = 0;
@@ -706,6 +707,8 @@ executeTrans(ThreadNdb* pThread,
                                       min_execs,
                                       tSendForce);
   while (Tcomp < min_execs) {
+    fprintf(stderr, "0x%p %d out of %u executed\n",
+            aNdbObject, Tcomp, num_ops);
     int TlocalComp = aNdbObject->pollNdb(3000, min_execs - Tcomp);
     Tcomp += TlocalComp;
   }//while
@@ -882,7 +885,7 @@ defineOperation(NdbConnection* localNdbConnection, StartType aType,
   }//if
   switch (aType) {
   case stInsert: {   // Insert case
-    if (theWriteFlag == 1 && theDirtyFlag == 1) {
+    if (theWriteFlag == 1 && theDirtyWriteFlag == 1) {
       localNdbOperation->dirtyWrite();
     } else if (theWriteFlag == 1) {
       localNdbOperation->writeTuple();
@@ -894,7 +897,7 @@ defineOperation(NdbConnection* localNdbConnection, StartType aType,
   case stRead: {     // Read Case
     if (theSimpleFlag == 1) {
       localNdbOperation->simpleRead();
-    } else if (theDirtyFlag == 1) {
+    } else if (theDirtyReadFlag == 1) {
       localNdbOperation->dirtyRead();
     } else {
       localNdbOperation->readTuple();
@@ -902,11 +905,11 @@ defineOperation(NdbConnection* localNdbConnection, StartType aType,
     break;
   }//case
   case stUpdate: {    // Update Case
-    if (theWriteFlag == 1 && theDirtyFlag == 1) {
+    if (theWriteFlag == 1 && theDirtyWriteFlag == 1) {
       localNdbOperation->dirtyWrite();
     } else if (theWriteFlag == 1) {
       localNdbOperation->writeTuple();
-    } else if (theDirtyFlag == 1) {
+    } else if (theDirtyWriteFlag == 1) {
       localNdbOperation->dirtyUpdate();
     } else {
       localNdbOperation->updateTuple();
@@ -2432,8 +2435,16 @@ readArguments(int argc, char** argv){
       theWriteFlag = 1;
       argc++;
       i--;
-    } else if (strcmp(argv[i], "-dirty") == 0){
-      theDirtyFlag = 1;
+    } else if (strcmp(argv[i], "-dirty_write") == 0){
+      theDirtyWriteFlag = 1;
+      argc++;
+      i--;
+    } else if (strcmp(argv[i], "-dirty_read") == 0){
+      theDirtyReadFlag = 1;
+      argc++;
+      i--;
+    } else if (strcmp(argv[i], "-locked_read") == 0){
+      theDirtyReadFlag = 0;
       argc++;
       i--;
     } else if (strcmp(argv[i], "-test") == 0){
@@ -2578,8 +2589,10 @@ input_error(){
   ndbout_c("   -c Number of operations per transaction");
   ndbout_c("   -s Size of each attribute, default 1 ");
   ndbout_c("      (PK is always of size 1, independent of this value)");
+  ndbout_c("   -dirty_write Use dirty write/update in database");
+  ndbout_c("   -dirty_read Use dirty read to read from database");
   ndbout_c("   -simple Use simple read to read from database");
-  ndbout_c("   -dirty Use dirty read to read from database");
+  ndbout_c("   -locked_read Use normal locked read to read from database");
   ndbout_c("   -write Use writeTuple in insert and update");
   ndbout_c("   -n Use standard table names");
   ndbout_c("   -no_table_create Don't create tables in db");
@@ -2658,11 +2671,14 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
       START_TIMER;
       execute(stInsert);
       STOP_TIMER;
+      flexAsynchErrorData->printErrorCounters(ndbout);
     }
     if (tRunType == RunAll)
     {
       a_i.addObservation((1000ULL*noOfTransacts * tNoOfOpsPerTrans) / timer.elapsedTime());
-      PRINT_TIMER("insert", noOfTransacts, tNoOfOpsPerTrans);
+      PRINT_TIMER("insert",
+        noOfTransacts/tNoOfParallelTrans,
+        tNoOfParallelTrans * tNoOfOpsPerTrans);
 
       if (0 < failed)
       {
@@ -2680,7 +2696,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
           START_TIMER;
           execute(stInsert);
           STOP_TIMER;
-          PRINT_TIMER("insert", noOfTransacts, tNoOfOpsPerTrans);
+          PRINT_TIMER("insert",
+            noOfTransacts/tNoOfParallelTrans,
+            tNoOfParallelTrans * tNoOfOpsPerTrans);
           i-- ;
           ci++;
         }
@@ -2709,10 +2727,13 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
         START_TIMER;
         execute(stRead);
         STOP_TIMER;
+        flexAsynchErrorData->printErrorCounters(ndbout);
         if (tRunType == RunAll)
         {
           a_r.addObservation((1000ULL * noOfTransacts * tNoOfOpsPerTrans) / timer.elapsedTime());
-          PRINT_TIMER("read", noOfTransacts, tNoOfOpsPerTrans);
+          PRINT_TIMER("read",
+            noOfTransacts/tNoOfParallelTrans,
+            tNoOfParallelTrans * tNoOfOpsPerTrans);
         }//if
       }//for
     }//if
@@ -2735,7 +2756,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
           START_TIMER;
           execute(stRead);
           STOP_TIMER;
-          PRINT_TIMER("read", noOfTransacts, tNoOfOpsPerTrans);
+          PRINT_TIMER("read",
+            noOfTransacts/tNoOfParallelTrans,
+            tNoOfParallelTrans * tNoOfOpsPerTrans);
           i-- ;
           cr++ ;
         }//while
@@ -2763,11 +2786,14 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
       START_TIMER;
       execute(stUpdate);
       STOP_TIMER;
+      flexAsynchErrorData->printErrorCounters(ndbout);
     }//if
     if (tRunType == RunAll)
     {
       a_u.addObservation((1000ULL * noOfTransacts * tNoOfOpsPerTrans) / timer.elapsedTime());
-      PRINT_TIMER("update", noOfTransacts, tNoOfOpsPerTrans) ;
+      PRINT_TIMER("update",
+        noOfTransacts/tNoOfParallelTrans,
+        tNoOfParallelTrans * tNoOfOpsPerTrans);
 
       if (0 < failed)
       {
@@ -2784,7 +2810,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
           START_TIMER;
           execute(stUpdate);
           STOP_TIMER;
-          PRINT_TIMER("update", noOfTransacts, tNoOfOpsPerTrans);
+          PRINT_TIMER("update",
+            noOfTransacts/tNoOfParallelTrans,
+            tNoOfParallelTrans * tNoOfOpsPerTrans);
           i-- ;
           cu++ ;
         }//while
@@ -2814,8 +2842,11 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
         START_TIMER;
         execute(stRead);
         STOP_TIMER;
+        flexAsynchErrorData->printErrorCounters(ndbout);
         a_r.addObservation((1000ULL * noOfTransacts * tNoOfOpsPerTrans) / timer.elapsedTime());
-        PRINT_TIMER("read", noOfTransacts, tNoOfOpsPerTrans);
+        PRINT_TIMER("read",
+          noOfTransacts/tNoOfParallelTrans,
+          tNoOfParallelTrans * tNoOfOpsPerTrans);
       }
 
       if (0 < failed)
@@ -2833,7 +2864,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
           START_TIMER;
           execute(stRead);
           STOP_TIMER;
-          PRINT_TIMER("read", noOfTransacts, tNoOfOpsPerTrans);
+          PRINT_TIMER("read",
+            noOfTransacts/tNoOfParallelTrans,
+            tNoOfParallelTrans * tNoOfOpsPerTrans);
           i-- ;
           cr2++ ;
         }//while
@@ -2862,11 +2895,14 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
       START_TIMER;
       execute(stDelete);
       STOP_TIMER;
+      flexAsynchErrorData->printErrorCounters(ndbout);
     }//if
     if (tRunType == RunAll)
     {
       a_d.addObservation((1000ULL * noOfTransacts * tNoOfOpsPerTrans) / timer.elapsedTime());
-      PRINT_TIMER("delete", noOfTransacts, tNoOfOpsPerTrans);
+      PRINT_TIMER("delete",
+        noOfTransacts/tNoOfParallelTrans,
+        tNoOfParallelTrans * tNoOfOpsPerTrans);
 
       if (0 < failed) {
         int i = retry_opt ;
@@ -2882,7 +2918,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
           START_TIMER;
           execute(stDelete);
           STOP_TIMER;
-          PRINT_TIMER("read", noOfTransacts, tNoOfOpsPerTrans);
+          PRINT_TIMER("delete",
+            noOfTransacts/tNoOfParallelTrans,
+            tNoOfParallelTrans * tNoOfOpsPerTrans);
           i-- ;
           cd++ ;
         }//while

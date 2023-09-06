@@ -4317,7 +4317,7 @@ private:
 /* ACTUALLY USED FOR ALL ABORTS COMMANDED BY TC.                             */
 /* ------------------------------------------------------------------------- */
   UintR preComputedRequestInfoMask;
-#define TRANSID_HASH_SIZE 4096
+#define TRANSID_HASH_SIZE 8192
   UintR ctransidHash[TRANSID_HASH_SIZE];
   
   Uint32 c_diskless;
@@ -4395,7 +4395,7 @@ public:
     }
     
     inline Uint32 hashValue() const {
-      return transid1;
+      return transid1 ^ (transid2 >> 12);
     }
   };
   STATIC_CONST(DBLQH_COMMIT_ACK_MARKER_TRANSIENT_POOL_INDEX = 2);
