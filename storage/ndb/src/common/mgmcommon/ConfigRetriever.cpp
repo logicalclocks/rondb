@@ -431,19 +431,19 @@ ConfigRetriever::check_duplicate_hostname_port(
       unsigned int node_type2 = 0;
       unsigned int node_port2 = 0;
       const char *hostname2;
-      iter.get(CFG_NODE_ID, &node_id2);
+      iter2.get(CFG_NODE_ID, &node_id2);
       if (node_id2 >= node_id)
         break;
-      iter.get(CFG_NODE_ACTIVE, &node_active2);
+      iter2.get(CFG_NODE_ACTIVE, &node_active2);
       if (!node_active2)
         continue;
-      iter.get(CFG_TYPE_OF_SECTION, &node_type2);
+      iter2.get(CFG_TYPE_OF_SECTION, &node_type2);
       if (node_type2 != NODE_TYPE_MGM && node_type2 != NODE_TYPE_DB)
         continue;
       if (node_type2 == NODE_TYPE_MGM) {
-        iter.get(CFG_MGM_PORT, &node_port2);
+        iter2.get(CFG_MGM_PORT, &node_port2);
       } else if (node_type2 == NODE_TYPE_DB) {
-        iter.get(CFG_DB_SERVER_PORT, &node_port2);
+        iter2.get(CFG_DB_SERVER_PORT, &node_port2);
       } else {
         continue;
       }
@@ -451,6 +451,7 @@ ConfigRetriever::check_duplicate_hostname_port(
         continue;
       if (node_port != node_port2)
         continue;
+      require(iter2.get(CFG_NODE_HOST, &hostname2));
       if (strncmp(hostname, hostname2, 511) == 0) {
         BaseString::snprintf(buf, 255,
                              "Node %d and %d share the same hostname and port"
