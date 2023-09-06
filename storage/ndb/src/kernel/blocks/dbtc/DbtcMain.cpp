@@ -118,7 +118,7 @@
 //#define DEBUG_NODE_FAILURE 1
 //#define DEBUG_RR_INIT 1
 //#define DEBUG_EXEC_WRITE_COUNT 1
-#define DEBUG_HASH 1
+//#define DEBUG_HASH 1
 #endif
 
 
