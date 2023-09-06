@@ -2662,7 +2662,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
     if (tRunType == RunAll)
     {
       a_i.addObservation((1000ULL*noOfTransacts * tNoOfOpsPerTrans) / timer.elapsedTime());
-      PRINT_TIMER("insert", noOfTransacts, tNoOfOpsPerTrans);
+      PRINT_TIMER("insert",
+        noOfTransacts/tNoOfParallelTrans,
+        tNoOfParallelTrans * tNoOfOpsPerTrans);
 
       if (0 < failed)
       {
@@ -2680,7 +2682,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
           START_TIMER;
           execute(stInsert);
           STOP_TIMER;
-          PRINT_TIMER("insert", noOfTransacts, tNoOfOpsPerTrans);
+          PRINT_TIMER("insert",
+            noOfTransacts/tNoOfParallelTrans,
+            tNoOfParallelTrans * tNoOfOpsPerTrans);
           i-- ;
           ci++;
         }
@@ -2712,7 +2716,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
         if (tRunType == RunAll)
         {
           a_r.addObservation((1000ULL * noOfTransacts * tNoOfOpsPerTrans) / timer.elapsedTime());
-          PRINT_TIMER("read", noOfTransacts, tNoOfOpsPerTrans);
+          PRINT_TIMER("read",
+            noOfTransacts/tNoOfParallelTrans,
+            tNoOfParallelTrans * tNoOfOpsPerTrans);
         }//if
       }//for
     }//if
@@ -2735,7 +2741,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
           START_TIMER;
           execute(stRead);
           STOP_TIMER;
-          PRINT_TIMER("read", noOfTransacts, tNoOfOpsPerTrans);
+          PRINT_TIMER("read",
+            noOfTransacts/tNoOfParallelTrans,
+            tNoOfParallelTrans * tNoOfOpsPerTrans);
           i-- ;
           cr++ ;
         }//while
@@ -2767,7 +2775,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
     if (tRunType == RunAll)
     {
       a_u.addObservation((1000ULL * noOfTransacts * tNoOfOpsPerTrans) / timer.elapsedTime());
-      PRINT_TIMER("update", noOfTransacts, tNoOfOpsPerTrans) ;
+      PRINT_TIMER("update",
+        noOfTransacts/tNoOfParallelTrans,
+        tNoOfParallelTrans * tNoOfOpsPerTrans);
 
       if (0 < failed)
       {
@@ -2784,7 +2794,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
           START_TIMER;
           execute(stUpdate);
           STOP_TIMER;
-          PRINT_TIMER("update", noOfTransacts, tNoOfOpsPerTrans);
+          PRINT_TIMER("update",
+            noOfTransacts/tNoOfParallelTrans,
+            tNoOfParallelTrans * tNoOfOpsPerTrans);
           i-- ;
           cu++ ;
         }//while
@@ -2815,7 +2827,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
         execute(stRead);
         STOP_TIMER;
         a_r.addObservation((1000ULL * noOfTransacts * tNoOfOpsPerTrans) / timer.elapsedTime());
-        PRINT_TIMER("read", noOfTransacts, tNoOfOpsPerTrans);
+        PRINT_TIMER("read",
+          noOfTransacts/tNoOfParallelTrans,
+          tNoOfParallelTrans * tNoOfOpsPerTrans);
       }
 
       if (0 < failed)
@@ -2833,7 +2847,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
           START_TIMER;
           execute(stRead);
           STOP_TIMER;
-          PRINT_TIMER("read", noOfTransacts, tNoOfOpsPerTrans);
+          PRINT_TIMER("read",
+            noOfTransacts/tNoOfParallelTrans,
+            tNoOfParallelTrans * tNoOfOpsPerTrans);
           i-- ;
           cr2++ ;
         }//while
@@ -2866,7 +2882,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
     if (tRunType == RunAll)
     {
       a_d.addObservation((1000ULL * noOfTransacts * tNoOfOpsPerTrans) / timer.elapsedTime());
-      PRINT_TIMER("delete", noOfTransacts, tNoOfOpsPerTrans);
+      PRINT_TIMER("delete",
+        noOfTransacts/tNoOfParallelTrans,
+        tNoOfParallelTrans * tNoOfOpsPerTrans);
 
       if (0 < failed) {
         int i = retry_opt ;
@@ -2882,7 +2900,9 @@ run_old_flexAsynch(ThreadNdb *pThreadData,
           START_TIMER;
           execute(stDelete);
           STOP_TIMER;
-          PRINT_TIMER("read", noOfTransacts, tNoOfOpsPerTrans);
+          PRINT_TIMER("delete",
+            noOfTransacts/tNoOfParallelTrans,
+            tNoOfParallelTrans * tNoOfOpsPerTrans);
           i-- ;
           cd++ ;
         }//while
