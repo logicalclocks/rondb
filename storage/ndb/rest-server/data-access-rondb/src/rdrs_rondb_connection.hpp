@@ -54,11 +54,10 @@ class RDRSRonDBConnection {
   // are in use or not
   std::list<Ndb *> allAvailableNdbObjects;
 
-
  public:
-  RDRSRonDBConnection(const char *connection_string,
-                      unsigned int *node_ids, unsigned int node_ids_len,
-                      unsigned int connection_retries, unsigned int connection_retry_delay_in_sec);
+  RDRSRonDBConnection(const char *connection_string, unsigned int *node_ids,
+                      unsigned int node_ids_len, unsigned int connection_retries,
+                      unsigned int connection_retry_delay_in_sec);
 
   ~RDRSRonDBConnection();
 
@@ -103,13 +102,12 @@ class RDRSRonDBConnection {
   RS_Status Reconnect();
 
   /**
-   * Reconnection Handler 
+   * Reconnection Handler
    *
    */
   RS_Status ReconnectHandler();
 
  private:
-
   /**
    * Purge. Delete all Ndb objects and shutdown connection
    * @paran end. If true then it will also free the memory
