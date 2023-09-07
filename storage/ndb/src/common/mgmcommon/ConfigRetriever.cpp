@@ -395,7 +395,7 @@ ConfigRetriever::check_duplicate_hostname_port(
   for (iter.first(); iter.valid(); iter.next())
   {
     unsigned int node_active = 1;
-    const char *hostname;
+    const char *hostname = nullptr;
     unsigned int node_type = 0;
     unsigned int node_id = 0;
     unsigned node_port = 0;
@@ -430,7 +430,7 @@ ConfigRetriever::check_duplicate_hostname_port(
       unsigned int node_active2 = 1;
       unsigned int node_type2 = 0;
       unsigned int node_port2 = 0;
-      const char *hostname2;
+      const char *hostname2 = nullptr;
       iter2.get(CFG_NODE_ID, &node_id2);
       if (node_id2 >= node_id)
         break;
