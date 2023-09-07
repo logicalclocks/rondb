@@ -121,6 +121,11 @@ func newWithDefaults() AllConfigs {
 				User:     "root",
 				Password: "",
 			},
+			MySQLMetadataCluster: MySQL{
+				Servers:  []MySQLServer{}, // if not defined then it will be copied from Config.Testing.Mysql.Servers
+				User:     "root",
+				Password: "",
+			},
 		},
 	}
 }

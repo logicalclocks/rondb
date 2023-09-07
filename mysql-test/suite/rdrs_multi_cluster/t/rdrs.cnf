@@ -1,0 +1,4 @@
+!include suite/rdrs_multi_cluster/my.cnf
+
+[cluster_config.1]
+DataMemory=200M

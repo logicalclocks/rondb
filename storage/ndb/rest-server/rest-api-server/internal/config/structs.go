@@ -94,11 +94,23 @@ func (m *MySQLServer) Validate() error {
 }
 
 type Testing struct {
-	MySQL MySQL
+	MySQL                MySQL
+	MySQLMetadataCluster MySQL
 }
 
 func (t *Testing) Validate() error {
-	return t.MySQL.Validate()
+	if err := t.MySQL.Validate(); err != nil {
+		return err
+	}
+
+	if len(t.MySQLMetadataCluster.Servers) == 0 {
+		t.MySQLMetadataCluster.Servers = t.MySQL.Servers
+	}
+	if err := t.MySQLMetadataCluster.Validate(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 type MySQL struct {
@@ -107,14 +119,22 @@ type MySQL struct {
 	Password string
 }
 
-func (t Testing) GenerateMysqldConnectString() string {
-	server := t.MySQL.Servers[0]
+func (t Testing) GenerateMysqldConnectStringDataCluster() string {
 	// user:password@tcp(IP:Port)/
 	return fmt.Sprintf("%s:%s@tcp(%s:%d)/",
 		t.MySQL.User,
 		t.MySQL.Password,
-		server.IP,
-		server.Port)
+		t.MySQL.Servers[0].IP,
+		t.MySQL.Servers[0].Port)
+}
+
+func (t Testing) GenerateMysqldConnectStringMetadataCluster() string {
+	// user:password@tcp(IP:Port)/
+	return fmt.Sprintf("%s:%s@tcp(%s:%d)/",
+		t.MySQLMetadataCluster.User,
+		t.MySQLMetadataCluster.Password,
+		t.MySQLMetadataCluster.Servers[0].IP,
+		t.MySQLMetadataCluster.Servers[0].Port)
 }
 
 func (m *MySQL) Validate() error {
