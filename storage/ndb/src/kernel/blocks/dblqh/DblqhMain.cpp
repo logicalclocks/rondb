@@ -5878,102 +5878,66 @@ void Dblqh::execLQHKEYREF(Signal* signal)
 /* -------------------------------------------------------------------------- */
 void Dblqh::execPACKED_SIGNAL(Signal* signal) 
 {
-  Uint32 Tstep = 0;
-  Uint32 Tlength;
-  Uint32 TpackedData[28];
-  Uint32 sig0, sig1, sig2, sig3 ,sig4, sig5, sig6;
+  Uint32 length = signal->length();
+  Uint32 signalId = signal->header.theSignalId;
+  Uint32 step = 0;
+  Uint32 packedIndex = 0;
+  Uint32 packedData[28];
 
   jamEntry();
-  Tlength = signal->length();
-  Uint32 TsenderRef = signal->getSendersBlockRef();
-  Uint32 TcommitLen = 5;
-  Uint32 Tgci_lo_mask = ~(Uint32)0;
 
-#ifdef ERROR_INSERT
-  Uint32 senderBlockRef = signal->getSendersBlockRef();
-#endif
-
-  ndbrequire(Tlength <= 25);
-  MEMCOPY_NO_WORDS(&TpackedData[0], &signal->theData[0], Tlength);
+  memcpy(&packedData[0], &signal->theData[0], length * 4);
+  ndbrequire(length >= 3 && length <= 25);
 
   if (VERIFY_PACKED_RECEIVE)
   {
-    ndbrequire(PackedSignal::verify(&TpackedData[0], 
-                                    Tlength, 
+    ndbrequire(PackedSignal::verify(&packedData[0], 
+                                    length, 
                                     cownref,
                                     LQH_RECEIVE_TYPES, 
-                                    TcommitLen));
+                                    5));
   }
 
-  Uint32 packedIndex = 0;
-  while (Tlength > Tstep) {
-    switch (TpackedData[Tstep] >> 28) {
+  do
+  {
+    Uint32 firstWord = packedData[step];
+    jamBuffer()->markStartOfPackedSigExec(signalId, packedIndex);
+    memcpy(&signal->theData[0], &packedData[step], 4 * 4);
+    Uint32 connectPtr = firstWord & 0x0FFFFFFF;
+    Uint32 exec_operation = firstWord >> 28;
+    packedIndex++;
+    signal->theData[0] = connectPtr;
+    switch (exec_operation) {
     case ZCOMMIT:
-      jam();
-      sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-      sig1 = TpackedData[Tstep + 1];
-      sig2 = TpackedData[Tstep + 2];
-      sig3 = TpackedData[Tstep + 3];
-      sig4 = TpackedData[Tstep + 4];
-      signal->theData[0] = sig0;
-      signal->theData[1] = sig1;
-      signal->theData[2] = sig2;
-      signal->theData[3] = sig3;
-      signal->theData[4] = sig4 & Tgci_lo_mask;
-      signal->header.theLength = TcommitLen;
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
+    {
+      signal->theData[4] = packedData[step+4];
+      signal->header.theLength = 5;
+      step += 5;
       execCOMMIT(signal);
-      packedIndex++;
-      Tstep += TcommitLen;
       break;
+    }
     case ZCOMPLETE:
-      jam();
-      sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-      sig1 = TpackedData[Tstep + 1];
-      sig2 = TpackedData[Tstep + 2];
-      signal->theData[0] = sig0;
-      signal->theData[1] = sig1;
-      signal->theData[2] = sig2;
+    {
       signal->header.theLength = 3;
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
+      step += 3;
       execCOMPLETE(signal);
-      packedIndex++;
-      Tstep += 3;
       break;
-    case ZLQHKEYCONF: {
-      jam();
-      LqhKeyConf * lqhKeyConf = CAST_PTR(LqhKeyConf, signal->theData);
-      sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-      sig1 = TpackedData[Tstep + 1];
-      sig2 = TpackedData[Tstep + 2];
-      sig3 = TpackedData[Tstep + 3];
-      sig4 = TpackedData[Tstep + 4];
-      sig5 = TpackedData[Tstep + 5];
-      sig6 = TpackedData[Tstep + 6];
-      lqhKeyConf->connectPtr = sig0;
-      lqhKeyConf->opPtr = sig1;
-      lqhKeyConf->userRef = sig2;
-      lqhKeyConf->readLen = sig3;
-      lqhKeyConf->transId1 = sig4;
-      lqhKeyConf->transId2 = sig5;
-      lqhKeyConf->numFiredTriggers = sig6;
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
+    }
+    case ZLQHKEYCONF:
+    {
+      memcpy(&signal->theData[4],
+             &packedData[step+4],
+             (LqhKeyConf::SignalLength - 4) * 4);
+      signal->header.theLength = LqhKeyConf::SignalLength;
+      step += LqhKeyConf::SignalLength;
       execLQHKEYCONF(signal);
-      packedIndex++;
-      Tstep += LqhKeyConf::SignalLength;
       break;
     }
     case ZREMOVE_MARKER:
-      jam();
-      sig0 = TpackedData[Tstep + 1];
-      sig1 = TpackedData[Tstep + 2];
-      signal->theData[0] = sig0;
-      signal->theData[1] = sig1;
-      if ((TpackedData[Tstep] & 1) == 0)
+    {
+      if ((packedData[step] & 1) == 0)
       {
+        memcpy(&signal->theData[0], &packedData[step + 1], 2 * 4);
         /**
          * This is the normal path where we remove a marker
          * after commit.
@@ -5996,40 +5960,33 @@ void Dblqh::execPACKED_SIGNAL(Signal* signal)
          */
         signal->header.theLength = 3;
       }
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
+      step += 3;
       execREMOVE_MARKER_ORD(signal);
-      packedIndex++;
-      Tstep += 3;
       break;
+    }
     case ZFIRE_TRIG_REQ:
-      jam();
+    {
+      Uint32 senderRef = signal->getSendersBlockRef();
       ndbassert(FireTrigReq::SignalLength == 4);
-      sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-      sig1 = TpackedData[Tstep + 1];
-      sig2 = TpackedData[Tstep + 2];
-      sig3 = TpackedData[Tstep + 3];
-      signal->theData[0] = sig0;
-      signal->theData[1] = sig1;
-      signal->theData[2] = sig2;
-      signal->theData[3] = sig3;
       signal->header.theLength = FireTrigReq::SignalLength;
-      signal->header.theSendersBlockRef = TsenderRef;
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
+      signal->header.theSendersBlockRef = senderRef;
+      step += FireTrigReq::SignalLength;
       execFIRE_TRIG_REQ(signal);
-      packedIndex++;
-      Tstep += FireTrigReq::SignalLength;
       break;
+    }
     default:
       ndbabort();
       return;
     }//switch
 #ifdef ERROR_INSERT
-    signal->header.theSendersBlockRef = senderBlockRef;
+    {
+      Uint32 senderRef = signal->getSendersBlockRef();
+      signal->header.theSendersBlockRef = senderRef;
+    }
 #endif
   }//while
-  ndbrequire(Tlength == Tstep);
+  while (length > step);
+  ndbrequire(length == step);
   return;
 }//Dblqh::execPACKED_SIGNAL()
 
