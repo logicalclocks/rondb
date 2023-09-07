@@ -451,8 +451,8 @@ ConfigRetriever::check_duplicate_hostname_port(
         continue;
       if (node_port != node_port2)
         continue;
-      require(iter2.get(CFG_NODE_HOST, &hostname2));
-      if (strncmp(hostname, hostname2, 511) == 0) {
+      iter2.get(CFG_NODE_HOST, &hostname2);
+      if (hostname2 && hostname && strncmp(hostname, hostname2, 511) == 0) {
         BaseString::snprintf(buf, 255,
                              "Node %d and %d share the same hostname and port"
                              " in configuration", node_id, node_id2);
