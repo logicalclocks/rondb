@@ -421,7 +421,9 @@ ConfigRetriever::check_duplicate_hostname_port(
     } else if (node_type == NODE_TYPE_DB) {
       iter.get(CFG_DB_SERVER_PORT, &node_port);
     }
-    if (!node_active || node_port == 0)
+    if (!node_active ||
+        node_port == 0 ||
+        (node_type != NODE_TYPE_MGM && node_type != NODE_TYPE_DB))
       continue;
     ndb_mgm_configuration_iterator iter2(* conf, CFG_SECTION_NODE);
     for (iter2.first(); iter2.valid(); iter2.next())
