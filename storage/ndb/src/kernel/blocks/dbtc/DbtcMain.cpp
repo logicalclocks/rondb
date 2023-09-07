@@ -6065,107 +6065,62 @@ bool Dbtc::releaseTcCon(Signal *signal, Uint32 & loop_count, bool detach)
 
 void Dbtc::execPACKED_SIGNAL(Signal* signal) 
 {
-  LqhKeyConf * const lqhKeyConf = (LqhKeyConf *)signal->getDataPtr();
-
-  UintR Ti;
-  UintR Tstep = 0;
-  UintR Tlength;
-  UintR TpackedData[28];
-  UintR Tdata1, Tdata2, Tdata3, Tdata4;
+  Uint32 length = signal->length();
+  Uint32 signalId = signal->header.theSignalId;
+  Uint32 step = 0;
+  Uint32 packedData[28];
+  Uint32 packedIndex = 0;
 
   jamEntryDebug();
-  Tlength = signal->length();
-  if (unlikely(Tlength > 25))
-  {
-    jam();
-    systemErrorLab(signal, __LINE__);
-    return;
-  }//if
-  Uint32* TpackDataPtr;
-  for (Ti = 0; Ti < Tlength; Ti += 4) {
-    Uint32* TsigDataPtr = &signal->theData[Ti];
-    Tdata1 = TsigDataPtr[0];
-    Tdata2 = TsigDataPtr[1];
-    Tdata3 = TsigDataPtr[2];
-    Tdata4 = TsigDataPtr[3];
-
-    TpackDataPtr = &TpackedData[Ti];
-    TpackDataPtr[0] = Tdata1;
-    TpackDataPtr[1] = Tdata2;
-    TpackDataPtr[2] = Tdata3;
-    TpackDataPtr[3] = Tdata4;
-  }//for
-
+  memcpy(&packedData[0], &signal->theData[0], length * 4);
+  ndbrequire(length >= 3 && length <= 25);
   if (VERIFY_PACKED_RECEIVE)
   {
-    ndbrequire(PackedSignal::verify(&TpackedData[0],
-                                    Tlength,
+    ndbrequire(PackedSignal::verify(&packedData[0],
+                                    length,
                                     cownref,
                                     TC_RECEIVE_TYPES,
                                     0)); /* Irrelevant */
   }
-  Uint32 packedIndex = 0;
-  while (Tlength > Tstep) {
-
-    TpackDataPtr = &TpackedData[Tstep];
-    Tdata1 = TpackDataPtr[0];
-    Tdata2 = TpackDataPtr[1];
-    Tdata3 = TpackDataPtr[2];
-
-    lqhKeyConf->connectPtr = Tdata1 & 0x0FFFFFFF;
-    lqhKeyConf->opPtr = Tdata2;
-    lqhKeyConf->userRef = Tdata3;
-
-    switch (Tdata1 >> 28) {
+  do
+  {
+    Uint32 firstWord = packedData[step];
+    jamBuffer()->markStartOfPackedSigExec(signalId, packedIndex);
+    memcpy(&signal->theData[0], &packedData[step], 4 * 4);
+    Uint32 connectPtr = firstWord & 0x0FFFFFFF;
+    Uint32 exec_operation = firstWord >> 28;
+    packedIndex++;
+    step += 3;
+    signal->theData[0] = connectPtr;
+    switch (exec_operation) {
     case ZCOMMITTED:
       signal->header.theLength = 3;
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
       execCOMMITTED(signal);
-      packedIndex++;
-      Tstep += 3;
       break;
     case ZCOMPLETED:
       signal->header.theLength = 3;
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
       execCOMPLETED(signal);
-      packedIndex++;
-      Tstep += 3;
       break;
     case ZLQHKEYCONF:
       jamDebug();
-      Tdata1 = TpackDataPtr[3];
-      Tdata2 = TpackDataPtr[4];
-      Tdata3 = TpackDataPtr[5];
-      Tdata4 = TpackDataPtr[6];
-
-      lqhKeyConf->readLen = Tdata1;
-      lqhKeyConf->transId1 = Tdata2;
-      lqhKeyConf->transId2 = Tdata3;
-      lqhKeyConf->numFiredTriggers = Tdata4;
+      memcpy(&signal->theData[4],
+             &packedData[step+1],
+             (LqhKeyConf::SignalLength - 4) * 4);
       signal->header.theLength = LqhKeyConf::SignalLength;
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
+      step += (LqhKeyConf::SignalLength - 3);
       execLQHKEYCONF(signal);
-      packedIndex++;
-      Tstep += LqhKeyConf::SignalLength;
       break;
     case ZFIRE_TRIG_CONF:
       jamDebug();
       signal->header.theLength = 4;
-      signal->theData[3] = TpackDataPtr[3];
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
+      step++;
       execFIRE_TRIG_CONF(signal);
-      packedIndex++;
-      Tstep += 4;
       break;
     default:
-      systemErrorLab(signal, __LINE__);
+      ndbabort();
       return;
-    }//switch
-  }//while
+    }
+  } while (length > step);
   return;
 }//Dbtc::execPACKED_SIGNAL()
 
