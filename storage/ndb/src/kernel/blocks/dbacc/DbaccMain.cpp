@@ -1034,6 +1034,7 @@ bool Dbacc::seize_op_rec(Uint32 userptr,
 /*           INFORMATION WHICH IS RECEIVED BY ACCKEYREQ WILL BE SAVED                */
 /*           IN THE OPERATION RECORD.                                                */
 /* --------------------------------------------------------------------------------- */
+inline
 void Dbacc::initOpRec(const AccKeyReq* signal, Uint32 siglen) const
 {
   Uint32 Treqinfo;
