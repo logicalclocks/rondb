@@ -3921,7 +3921,10 @@ Dbacc::readTablePk(Uint32 localkey1,
       }
       return 0;
     }
-    ret = m_ldm_instance_used->c_lqh->readPrimaryKeys(lqhOpPtr, keys, xfrm);
+    ret = m_ldm_instance_used->c_lqh->readPrimaryKeys(jamBuffer(),
+                                                      lqhOpPtr,
+                                                      keys,
+                                                      xfrm);
   }
   jamEntryDebug();
   ndbrequire(ret >= 0);

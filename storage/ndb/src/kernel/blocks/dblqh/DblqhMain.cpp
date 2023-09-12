@@ -10319,12 +10319,15 @@ Dblqh::nr_delete_complete(Signal* signal, Nr_op_info* op)
 }
 
 Uint32
-Dblqh::readPrimaryKeys(Uint32 opPtrI, Uint32 * dst, bool xfrm)
+Dblqh::readPrimaryKeys(EmulatedJamBuffer* jamBuf,
+                       Uint32 opPtrI,
+                       Uint32 * dst,
+                       bool xfrm)
 {
   TcConnectionrecPtr regTcPtr;  
   Uint64 Tmp[MAX_KEY_SIZE_IN_WORDS >> 1];
 
-  jamEntry();
+  thrjamEntry(jamBuf);
   regTcPtr.i = opPtrI;
   ndbrequire(tcConnect_pool.getValidPtr(regTcPtr));
 
@@ -10336,7 +10339,7 @@ Dblqh::readPrimaryKeys(Uint32 opPtrI, Uint32 * dst, bool xfrm)
   
   if (xfrm)
   {
-    jam();
+    thrjam(jamBuf);
     Uint32 keyPartLen[MAX_ATTRIBUTES_IN_INDEX];
     return xfrm_key_hash(tableId, (Uint32*)Tmp, dst, ~0, keyPartLen);
   }
