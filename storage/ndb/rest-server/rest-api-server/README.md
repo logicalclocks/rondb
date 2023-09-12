@@ -379,5 +379,5 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
       
       - **Port:** MySQL Server port. The default value is *3306*.
 
-  - **MySQLMetadataCluster:**  Similar to *RonDBMetadataCluster* this is an optional parameter used to connecto to cluster containing user metadata. 
+  - **MySQLMetadataCluster:**  Similar to *RonDBMetadataCluster* this is an optional parameter used to connect to cluster containing user metadata. 
 
