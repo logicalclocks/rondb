@@ -261,6 +261,16 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
                                         "Port": 3306
                                 }
                         ],
+                },
+                "MySQLMetadataCluster": {
+                        "User": "rondb",
+                        "Password": "rondb",
+                        "Servers": [
+                                {
+                                        "IP": "localhost",
+                                        "Port": 3306
+                                }
+                        ],
                 }
         },
 }
@@ -368,4 +378,6 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
       - **IP:** MySQL Server IP. The default value is *localhost*.
       
       - **Port:** MySQL Server port. The default value is *3306*.
+
+  - **MySQLMetadataCluster:**  Similar to *RonDBMetadataCluster* this is an optional parameter used to connect to cluster containing user metadata. 
 
