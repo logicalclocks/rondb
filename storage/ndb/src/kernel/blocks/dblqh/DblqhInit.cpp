@@ -180,7 +180,7 @@ void Dblqh::initData()
   m_startup_report_frequency = 0;
 
   c_active_add_frag_ptr_i = RNIL;
-  for (Uint32 i = 0; i < 4096; i++) {
+  for (Uint32 i = 0; i < TRANSID_HASH_SIZE; i++) {
     ctransidHash[i] = RNIL;
   }//for
 
