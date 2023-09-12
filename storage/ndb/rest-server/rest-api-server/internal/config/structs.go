@@ -94,11 +94,23 @@ func (m *MySQLServer) Validate() error {
 }
 
 type Testing struct {
-	MySQL MySQL
+	MySQL                MySQL
+	MySQLMetadataCluster MySQL
 }
 
 func (t *Testing) Validate() error {
-	return t.MySQL.Validate()
+	if err := t.MySQL.Validate(); err != nil {
+		return err
+	}
+
+	if len(t.MySQLMetadataCluster.Servers) == 0 {
+		t.MySQLMetadataCluster = t.MySQL
+	}
+	if err := t.MySQLMetadataCluster.Validate(); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 type MySQL struct {
@@ -107,14 +119,22 @@ type MySQL struct {
 	Password string
 }
 
-func (t Testing) GenerateMysqldConnectString() string {
-	server := t.MySQL.Servers[0]
+func (t Testing) GenerateMysqldConnectStringDataCluster() string {
 	// user:password@tcp(IP:Port)/
 	return fmt.Sprintf("%s:%s@tcp(%s:%d)/",
 		t.MySQL.User,
 		t.MySQL.Password,
-		server.IP,
-		server.Port)
+		t.MySQL.Servers[0].IP,
+		t.MySQL.Servers[0].Port)
+}
+
+func (t Testing) GenerateMysqldConnectStringMetadataCluster() string {
+	// user:password@tcp(IP:Port)/
+	return fmt.Sprintf("%s:%s@tcp(%s:%d)/",
+		t.MySQLMetadataCluster.User,
+		t.MySQLMetadataCluster.Password,
+		t.MySQLMetadataCluster.Servers[0].IP,
+		t.MySQLMetadataCluster.Servers[0].Port)
 }
 
 func (m *MySQL) Validate() error {
@@ -298,13 +318,14 @@ Therefore, when committing a change to this struct or its defaults, change
 the corresponding file for the MTR tests as well.
 */
 type AllConfigs struct {
-	Internal Internal
-	REST     REST
-	GRPC     GRPC
-	RonDB    RonDB
-	Security Security
-	Log      log.LogConfig
-	Testing  Testing
+	Internal             Internal
+	REST                 REST
+	GRPC                 GRPC
+	RonDB                RonDB
+	RonDBMetadataCluster RonDB
+	Security             Security
+	Log                  log.LogConfig
+	Testing              Testing
 }
 
 func (c *AllConfigs) Validate() error {
@@ -314,12 +335,24 @@ func (c *AllConfigs) Validate() error {
 	} else if err = c.REST.Validate(); err != nil {
 		return err
 	} else if err = c.RonDB.Validate(); err != nil {
-		return err
+		return fmt.Errorf("Config.RonDB: %s", err)
 	} else if err = c.Testing.Validate(); err != nil {
 		return err
 	} else if err = c.Security.Validate(); err != nil {
 		return err
 	}
+
+	// c.RonDBMetaCluster is optional. Copy the cluster
+	// connection information from c.RonDB if it is not
+	// set by the user
+	if len(c.RonDBMetadataCluster.Mgmds) == 0 {
+		c.RonDBMetadataCluster = c.RonDB
+	}
+
+	if err = c.RonDBMetadataCluster.Validate(); err != nil {
+		return fmt.Errorf("Config.RonDBMetadataCluster: %s", err)
+	}
+
 	return nil
 }
 

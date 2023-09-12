@@ -85,17 +85,39 @@ typedef struct RonDB_Stats {
 } RonDB_Stats;
 
 /**
- * Initialize connection to the database
+ * Initialize RonDB Client API
  */
-RS_Status init(const char *connection_string, unsigned int connection_pool_size,
-               unsigned int *node_ids, unsigned int node_ids_len, unsigned int connection_retries,
-               unsigned int connection_retry_delay_in_sec);
+RS_Status init();
+
+/**
+ * Connect to RonDB Cluster
+ */
+RS_Status add_data_connection(const char *connection_string, unsigned int connection_pool_size,
+                              unsigned int *node_ids, unsigned int node_ids_len,
+                              unsigned int connection_retries,
+                              unsigned int connection_retry_delay_in_sec);
+
+/**
+ * Connect to RonDB Cluster containing metadata
+ */
+RS_Status add_metadata_connection(const char *connection_string, unsigned int connection_pool_size,
+                                  unsigned int *node_ids, unsigned int node_ids_len,
+                                  unsigned int connection_retries,
+                                  unsigned int connection_retry_delay_in_sec);
 
 /**
  * Set operation retry properties
  */
-RS_Status set_op_retry_props(const unsigned int retry_cont, const unsigned int rety_initial_delay,
-                             const unsigned int jitter);
+RS_Status set_data_cluster_op_retry_props(const unsigned int retry_cont,
+                                          const unsigned int rety_initial_delay,
+                                          const unsigned int jitter);
+
+/**
+ * Set operation retry properties for metadata cluster
+ */
+RS_Status set_metadata_cluster_op_retry_props(const unsigned int retry_cont,
+                                              const unsigned int rety_initial_delay,
+                                              const unsigned int jitter);
 
 /**
  * Shutdown connection

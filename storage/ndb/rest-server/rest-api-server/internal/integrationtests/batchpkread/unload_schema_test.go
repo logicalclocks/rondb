@@ -131,7 +131,7 @@ func TestUnloadSchema(t *testing.T) {
 	}
 
 	// Reset the database
-	err := testutils.RunQueries(testdbs.DB025Scheme)
+	err := testutils.RunQueriesOnDataCluster(testdbs.DB025Scheme)
 	if err != nil {
 		t.Fatalf("failed to re-create database. Error: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestUnloadSchema(t *testing.T) {
 	//change the schema
 	//dal.SetOpRetryProps(3, 400)
 	log.Info("Changing the schema for the test")
-	err = testutils.RunQueries(testdbs.DB025UpdateScheme)
+	err = testutils.RunQueriesOnDataCluster(testdbs.DB025UpdateScheme)
 	if err != nil {
 		t.Fatalf("failed to re-create database. Error: %v", err)
 	}

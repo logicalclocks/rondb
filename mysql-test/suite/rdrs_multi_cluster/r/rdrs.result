@@ -1,0 +1,16 @@
+Found RonDB client library
+Found RonDB REST server client library
+Found ndbclient library
+Running command
+Result of command: 0
+Running command
+Result of command: 0
+include/master-slave.inc
+Warnings:
+Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
+Note	####	Storing MySQL user name or password information in the master info repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START SLAVE; see the 'START SLAVE Syntax' in the MySQL Manual for more information.
+[connection master]
+Clean-up rdrs_config.json file
+Clean-up have_rdrs_result.inc file
+Clean-up run_rdrs_unit_test.result file
+include/rpl_end.inc

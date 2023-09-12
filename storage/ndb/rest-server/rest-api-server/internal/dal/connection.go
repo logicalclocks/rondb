@@ -30,38 +30,70 @@ import (
 	"hopsworks.ai/rdrs/internal/log"
 )
 
-func InitRonDBConnection(rondb config.RonDB) *DalError {
+func InitRonDBConnection(rondbDataCluster config.RonDB,
+	rondbMetaDataCluster config.RonDB) *DalError {
+
+	// init RonDB client API
 	log.Info("Initialising RonDB connection")
-
-	cs := C.CString(rondb.GenerateMgmdConnectString())
-	defer C.free(unsafe.Pointer(cs))
-
-	nodeIDMem := C.malloc(C.size_t(len(rondb.NodeIDs)) * C.size_t(C.sizeof_uint))
-	defer C.free(nodeIDMem)
-	cNodeIDMem := unsafe.Slice((*C.uint)(nodeIDMem), len(rondb.NodeIDs))
-	for i, node_id := range rondb.NodeIDs {
-		cNodeIDMem[i] = C.uint(node_id)
-	}
-
-	ret := C.init(cs,
-		C.uint(rondb.ConnectionPoolSize),
-		(*C.uint)(nodeIDMem),
-		C.uint(len(rondb.NodeIDs)),
-		C.uint(rondb.ConnectionRetries),
-		C.uint(rondb.ConnectionRetryDelayInSec))
-
+	ret := C.init()
 	if ret.http_code != http.StatusOK {
 		return cToGoRet(&ret)
 	}
 
-	// set failed ops retry properties
-	return SetOpRetryProps(rondb.OpRetryOnTransientErrorsCount,
-		rondb.OpRetryInitialDelayInMS, rondb.OpRetryJitterInMS)
-}
+	// Connect to data cluster
+	csd := C.CString(rondbDataCluster.GenerateMgmdConnectString())
+	defer C.free(unsafe.Pointer(csd))
 
-func SetOpRetryProps(opRetryOnTransientErrorsCount, opRetryInitialDelayInMS uint32, jitter uint32) *DalError {
-	ret := C.set_op_retry_props(C.uint(opRetryOnTransientErrorsCount),
-		C.uint(opRetryInitialDelayInMS), C.uint(jitter))
+	dataClusterNodeIDsMem := C.malloc(C.size_t(len(rondbDataCluster.NodeIDs)) * C.size_t(C.sizeof_uint))
+	defer C.free(dataClusterNodeIDsMem)
+	sDataClusterNodeIDsMem := unsafe.Slice((*C.uint)(dataClusterNodeIDsMem), len(rondbDataCluster.NodeIDs))
+	for i, node_id := range rondbDataCluster.NodeIDs {
+		sDataClusterNodeIDsMem[i] = C.uint(node_id)
+	}
+	ret = C.add_data_connection(csd,
+		C.uint(rondbDataCluster.ConnectionPoolSize),
+		(*C.uint)(dataClusterNodeIDsMem),
+		C.uint(len(rondbDataCluster.NodeIDs)),
+		C.uint(rondbDataCluster.ConnectionRetries),
+		C.uint(rondbDataCluster.ConnectionRetryDelayInSec))
+	if ret.http_code != http.StatusOK {
+		return cToGoRet(&ret)
+	}
+
+	// set failed ops retry properties for data cluster
+	ret = C.set_data_cluster_op_retry_props(
+		C.uint(rondbDataCluster.OpRetryOnTransientErrorsCount),
+		C.uint(rondbDataCluster.OpRetryInitialDelayInMS),
+		C.uint(rondbDataCluster.OpRetryJitterInMS))
+	if ret.http_code != http.StatusOK {
+		return cToGoRet(&ret)
+	}
+
+	// Connect to metadata cluster
+	csmd := C.CString(rondbMetaDataCluster.GenerateMgmdConnectString())
+	defer C.free(unsafe.Pointer(csmd))
+
+	metadataClusterNodeIDsMem := C.malloc(C.size_t(len(rondbMetaDataCluster.NodeIDs)) * C.size_t(C.sizeof_uint))
+	defer C.free(metadataClusterNodeIDsMem)
+	sMetadataClusterNodeIDsMem := unsafe.Slice((*C.uint)(metadataClusterNodeIDsMem), len(rondbMetaDataCluster.NodeIDs))
+	for i, node_id := range rondbMetaDataCluster.NodeIDs {
+		sMetadataClusterNodeIDsMem[i] = C.uint(node_id)
+	}
+	ret = C.add_metadata_connection(csmd,
+		C.uint(rondbMetaDataCluster.ConnectionPoolSize),
+		(*C.uint)(metadataClusterNodeIDsMem),
+		C.uint(len(rondbMetaDataCluster.NodeIDs)),
+		C.uint(rondbMetaDataCluster.ConnectionRetries),
+		C.uint(rondbMetaDataCluster.ConnectionRetryDelayInSec))
+	if ret.http_code != http.StatusOK {
+		return cToGoRet(&ret)
+	}
+
+	// set failed ops retry properties for metadata cluster
+	ret = C.set_metadata_cluster_op_retry_props(
+		C.uint(rondbMetaDataCluster.OpRetryOnTransientErrorsCount),
+		C.uint(rondbMetaDataCluster.OpRetryInitialDelayInMS),
+		C.uint(rondbMetaDataCluster.OpRetryJitterInMS))
 	if ret.http_code != http.StatusOK {
 		return cToGoRet(&ret)
 	}
@@ -81,7 +113,6 @@ func ShutdownConnection() *DalError {
 func Reconnect() *DalError {
 	log.Info("Restarting RonDB connection")
 	ret := C.reconnect()
-
 	if ret.http_code != http.StatusOK {
 		return cToGoRet(&ret)
 	}
