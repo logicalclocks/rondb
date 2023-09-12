@@ -23,12 +23,23 @@
 #include "src/status.hpp"
 
 RDRSRonDBConnectionPool::RDRSRonDBConnectionPool() {
+  is_shutdown = false;
 }
 
 RDRSRonDBConnectionPool::~RDRSRonDBConnectionPool() {
   delete dataConnection;
   delete metadataConnection;
+  dataConnection     = nullptr;
+  metadataConnection = nullptr;
+  is_shutdown = true;
   ndb_end(1);  // sometimes causes seg faults when called repeatedly from unit tests
+}
+
+RS_Status RDRSRonDBConnectionPool::Check() {
+  if (dataConnection == nullptr || metadataConnection == nullptr || is_shutdown == true) {
+    return RS_SERVER_ERROR(ERROR_034);
+  }
+  return RS_OK;
 }
 
 RS_Status RDRSRonDBConnectionPool::Init() {
@@ -76,6 +87,10 @@ RS_Status RDRSRonDBConnectionPool::AddMetaConnections(const char *connection_str
 }
 
 RS_Status RDRSRonDBConnectionPool::GetNdbObject(Ndb **ndb_object) {
+  RS_Status status = Check();
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
   return dataConnection->GetNdbObject(ndb_object);
 }
 
@@ -85,7 +100,12 @@ RS_Status RDRSRonDBConnectionPool::ReturnNdbObject(Ndb *ndb_object, RS_Status *s
 }
 
 RS_Status RDRSRonDBConnectionPool::GetMetadataNdbObject(Ndb **ndb_object) {
-  return metadataConnection->GetNdbObject(ndb_object);
+  RS_Status s = Check();
+  if (s.http_code != SUCCESS) {
+    return s;
+  }
+  RS_Status status = metadataConnection->GetNdbObject(ndb_object);
+  return status;
 }
 
 RS_Status RDRSRonDBConnectionPool::ReturnMetadataNdbObject(Ndb *ndb_object, RS_Status *status) {
@@ -94,7 +114,10 @@ RS_Status RDRSRonDBConnectionPool::ReturnMetadataNdbObject(Ndb *ndb_object, RS_S
 }
 
 RS_Status RDRSRonDBConnectionPool::Reconnect() {
-
+  RS_Status s = Check();
+  if (s.http_code != SUCCESS) {
+    return s;
+  }
   RS_Status status = dataConnection->Reconnect();
   if (status.http_code != SUCCESS) {
     return status;
