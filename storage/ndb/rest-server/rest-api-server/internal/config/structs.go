@@ -104,7 +104,7 @@ func (t *Testing) Validate() error {
 	}
 
 	if len(t.MySQLMetadataCluster.Servers) == 0 {
-		t.MySQLMetadataCluster.Servers = t.MySQL.Servers
+		t.MySQLMetadataCluster = t.MySQL
 	}
 	if err := t.MySQLMetadataCluster.Validate(); err != nil {
 		return err
