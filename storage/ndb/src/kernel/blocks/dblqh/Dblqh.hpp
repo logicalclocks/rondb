@@ -3955,7 +3955,10 @@ private:
    * Read primary key from operation
    */
 public:
-  Uint32 readPrimaryKeys(Uint32 opPtrI, Uint32 * dst, bool xfrm);
+  Uint32 readPrimaryKeys(EmulatedJamBuffer*,
+                         Uint32 opPtrI,
+                         Uint32 * dst,
+                         bool xfrm);
 private:
 
   void acckeyconf_tupkeyreq(Signal*, TcConnectionrec*, Fragrecord*,
