@@ -318,7 +318,7 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
   - **OpRetryJitterInMS:** Jitter is added (or subtracted) from the retry delay to prevent multiple failed operations from being retried at the same time 
 
-- **RonDBMetadataCluster** In normal operations the user data and metadata data (API Keys) are stored in the same RonDB cluster. It is possible to store data and metadata in separate clusters. Use the *RonDBMetadataCluster* parameter to configure a dedicated RonDB cluster containing user metadata. For example, if *RonDB* and *RonDBMetadataCluster* parameters are set then *pk-read* and *batch* operations will be performed on a cluster defined in the *RonDB* parameter and metadata operations will be performed on a cluster defined in *RonDBMetadataCluster* parameter.
+- **RonDBMetadataCluster** This is an optional parameter. In normal operations the user data and metadata data (API Keys) are stored in the same RonDB cluster. It is possible to store data and metadata in separate clusters. Use the *RonDBMetadataCluster* parameter to configure a dedicated RonDB cluster containing user metadata. For example, if *RonDB* and *RonDBMetadataCluster* parameters are set then *pk-read* and *batch* operations will be performed on a cluster defined in the *RonDB* parameter and metadata operations will be performed on a cluster defined in *RonDBMetadataCluster* parameter.
 
 - **Security:** REST server security settings 
 
@@ -355,7 +355,7 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
   
   - **MaxAge:** max-age of log files in days. The default value is *30*.
 
-- **Testing:** MySQL server is only used for testing
+- **Testing:** MySQL server is only used for testing and development
 
   - **MySQL:** MySQL server is only used for testing
   
