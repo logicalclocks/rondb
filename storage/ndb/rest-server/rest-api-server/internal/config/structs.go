@@ -346,7 +346,7 @@ func (c *AllConfigs) Validate() error {
 	// connection information from c.RonDB if it is not
 	// set by the user
 	if len(c.RonDBMetadataCluster.Mgmds) == 0 {
-		c.RonDBMetadataCluster.Mgmds = c.RonDB.Mgmds
+		c.RonDBMetadataCluster = c.RonDB
 	}
 
 	if err = c.RonDBMetadataCluster.Validate(); err != nil {
