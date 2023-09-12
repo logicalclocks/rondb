@@ -287,8 +287,19 @@ bool ThreadContext::exec_sql(const std::string &statement) {
   uint ignore_mysql_errors[1] = {0};  // Don't ignore any errors
   MYSQL_LEX_STRING sql_text = {const_cast<char *>(statement.c_str()),
                                statement.length()};
+
+  /* Many queries can be ignored if we are a slave thread. Since this query is
+     executed for internal purposes, we always want it to execute. We therefore
+     pretend to not be a slave thread. */
+  bool save_slave_thread = m_thd->slave_thread;
+  m_thd->slave_thread = false;
+
   /* execute_query_iso() returns false on success */
   m_closed = execute_query_iso(sql_text, ignore_mysql_errors, nullptr);
+
+  /* Restore the slave_thread flag */
+  m_thd->slave_thread = save_slave_thread;
+
   return m_closed;
 }
 
