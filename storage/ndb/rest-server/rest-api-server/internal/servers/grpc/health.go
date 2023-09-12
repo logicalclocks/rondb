@@ -19,7 +19,6 @@ package grpc
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -52,7 +51,7 @@ func (s *RonDBServer) Health(ctx context.Context, reqProto *api.HealthRequestPro
 	} else if httpStatus != http.StatusOK {
 		return nil, status.Error(statusCode, "")
 	}
-	fmt.Printf("Health response %v \n", healthResp)
+
 	respProto := api.ConvertHealthResponse(&healthResp)
 	return respProto, nil
 }
