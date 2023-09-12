@@ -93,6 +93,14 @@ message StatResponseProto {
   required RonDBStatsProto RonDBStats = 2;
 }
 
+//__________________  Health Operation _________________________
+message HealthRequestProto {}
+
+message HealthResponseProto {
+  required int64 RonDBHealth = 1;
+}
+
+
 // TODO Feature Store messages
 
 // TODO: Rename service; REST is misleading
@@ -102,5 +110,6 @@ service RonDBREST {
   rpc PKRead(PKReadRequestProto) returns (PKReadResponseProto);
   rpc Batch(BatchRequestProto) returns (BatchResponseProto);
   rpc Stat(StatRequestProto) returns (StatResponseProto);
+  rpc Health(HealthRequestProto) returns (HealthResponseProto);
   // TODO Feature Store RPCs
 }
