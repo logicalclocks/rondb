@@ -1838,7 +1838,10 @@ Ndbd_mem_manager::alloc_spare_page(Uint32 type,
     assert(cnt == min);
     m_resource_limits.post_alloc_resource_spare(idx, cnt, force_reserved);
     m_resource_limits.check();
-    mt_mem_manager_unlock();
+    if (!locked)
+    {
+      mt_mem_manager_unlock();
+    }
 #ifdef NDBD_RANDOM_START_PAGE
     *i += m_random_start_page_id;
     return m_base_page + *i - m_random_start_page_id;

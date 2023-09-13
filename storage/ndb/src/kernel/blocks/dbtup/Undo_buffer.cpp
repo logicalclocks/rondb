@@ -87,9 +87,16 @@ Undo_buffer::alloc_copy_tuple(Local_key* dst,
   }
   if (m_first_free == RNIL)
   {
+    bool locked = false;
+    if (allow_use_spare)
+    {
+      locked = true;
+    }
     page = (UndoPage*)m_mm->alloc_page(RT_DBTUP_COPY_PAGE,
                                        &m_first_free,
-                                       Ndbd_mem_manager::NDB_ZONE_LE_32);
+                                       Ndbd_mem_manager::NDB_ZONE_LE_32,
+                                       false,
+                                       locked);
     if (page == 0)
     {
       if (allow_use_spare)
