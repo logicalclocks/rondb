@@ -81,6 +81,7 @@ typedef struct RonDB_Stats {
   unsigned int ndb_objects_available;
   STATE connection_state;
   unsigned char is_shutdown;
+  unsigned char is_shutting_down;
   unsigned char is_reconnection_in_progress;
 } RonDB_Stats;
 

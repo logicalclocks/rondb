@@ -27,6 +27,18 @@ class RDRSRonDBConnectionPool {
  private:
   RDRSRonDBConnection *dataConnection;
   RDRSRonDBConnection *metadataConnection;
+  bool is_shutdown = true;
+
+
+
+  /**
+   * @brief Checks that the connections are initialized and 
+   * shutdown has not been called
+   *
+   * @return RS_Status A struct representing the status of the operation:
+   *
+   */
+  RS_Status Check();
 
  public:
   RDRSRonDBConnectionPool();

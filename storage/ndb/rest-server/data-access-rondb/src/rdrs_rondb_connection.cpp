@@ -44,6 +44,7 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, Uint32 *
   stats.ndb_objects_deleted         = 0;
   stats.is_reconnection_in_progress = false;
   stats.is_shutdown                 = false;
+  stats.is_shutting_down             = false;
   stats.connection_state            = DISCONNECTED;
 
   size_t connection_string_len = strlen(connection_string);
@@ -70,7 +71,7 @@ RS_Status RDRSRonDBConnection::Connect() {
 
   {
     std::lock_guard<std::mutex> guardInfo(connectionInfoMutex);
-    if (stats.is_shutdown) {
+    if (stats.is_shutdown || stats.is_shutting_down) {
       return RS_SERVER_ERROR(ERROR_034);
     }
     require(stats.connection_state != CONNECTED);
@@ -119,7 +120,7 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
     STATE connection_state = DISCONNECTED;
     {
       std::lock_guard<std::mutex> guardInfo(connectionInfoMutex);
-      is_shutdown              = stats.is_shutdown;
+      is_shutdown              = stats.is_shutdown || stats.is_shutting_down;
       reconnection_in_progress = stats.is_reconnection_in_progress;
       connection_state         = stats.connection_state;
     }
@@ -205,6 +206,11 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
   Int64 startTime   = duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
   Int64 timeElapsed = 0;
 
+  if (end) { // we are shutting down for good
+    std::lock_guard<std::mutex> guard(connectionInfoMutex);
+    stats.is_shutting_down = true;
+  }
+
   bool allNDBObjectsCountedFor = false;
   do {
 
@@ -235,7 +241,7 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
              std::to_string(stats.ndb_objects_created));
   }
 
-  LOG_DEBUG("Shutting down RonDB connection and NDB object pool");
+  LOG_INFO("Shutting down RonDB connection and NDB object pool");
 
   {
     std::lock_guard<std::mutex> guardInfo(connectionInfoMutex);
@@ -277,7 +283,8 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
     std::lock_guard<std::mutex> guardInfo(connectionInfoMutex);
     std::lock_guard<std::mutex> guard(connectionMutex);
     if (end) {
-      stats.is_shutdown = true;
+      stats.is_shutdown     = true;
+      stats.is_shutting_down = false;
       free(connection_string);
       free(node_ids);
       if (reconnectionThread != nullptr) {
