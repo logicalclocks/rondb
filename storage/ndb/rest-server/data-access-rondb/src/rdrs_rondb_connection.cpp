@@ -44,7 +44,7 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, Uint32 *
   stats.ndb_objects_deleted         = 0;
   stats.is_reconnection_in_progress = false;
   stats.is_shutdown                 = false;
-  stats.is_shuting_down             = false;
+  stats.is_shutting_down             = false;
   stats.connection_state            = DISCONNECTED;
 
   size_t connection_string_len = strlen(connection_string);
@@ -71,7 +71,7 @@ RS_Status RDRSRonDBConnection::Connect() {
 
   {
     std::lock_guard<std::mutex> guardInfo(connectionInfoMutex);
-    if (stats.is_shutdown || stats.is_shuting_down) {
+    if (stats.is_shutdown || stats.is_shutting_down) {
       return RS_SERVER_ERROR(ERROR_034);
     }
     require(stats.connection_state != CONNECTED);
@@ -120,7 +120,7 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
     STATE connection_state = DISCONNECTED;
     {
       std::lock_guard<std::mutex> guardInfo(connectionInfoMutex);
-      is_shutdown              = stats.is_shutdown || stats.is_shuting_down;
+      is_shutdown              = stats.is_shutdown || stats.is_shutting_down;
       reconnection_in_progress = stats.is_reconnection_in_progress;
       connection_state         = stats.connection_state;
     }
@@ -208,7 +208,7 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
 
   if (end) { // we are shutting down for good
     std::lock_guard<std::mutex> guard(connectionInfoMutex);
-    stats.is_shuting_down = true;
+    stats.is_shutting_down = true;
   }
 
   bool allNDBObjectsCountedFor = false;
@@ -284,7 +284,7 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
     std::lock_guard<std::mutex> guard(connectionMutex);
     if (end) {
       stats.is_shutdown     = true;
-      stats.is_shuting_down = false;
+      stats.is_shutting_down = false;
       free(connection_string);
       free(node_ids);
       if (reconnectionThread != nullptr) {
