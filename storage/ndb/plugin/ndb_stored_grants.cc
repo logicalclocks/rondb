@@ -1,5 +1,6 @@
 /*
   Copyright (c) 2019, 2023, Oracle and/or its affiliates.
+  Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -286,9 +287,19 @@ void ThreadContext::deserialize_users(std::string &str) {
 
 /* returns false on success */
 bool ThreadContext::exec_sql(const std::string &statement) {
+  /* Many queries can be ignored if we are a slave thread. Since this query is
+     executed for internal purposes, we always want it to execute. We therefore
+     pretend to not be a slave thread. */
+  bool save_slave_thread = m_thd->slave_thread;
+  m_thd->slave_thread = false;
+
   assert(m_closed);
   /* execute_query_iso() returns false on success */
   m_closed = execute_query_iso(statement, nullptr);
+
+  /* Restore the slave_thread flag */
+  m_thd->slave_thread = save_slave_thread;
+
   return m_closed;
 }
 

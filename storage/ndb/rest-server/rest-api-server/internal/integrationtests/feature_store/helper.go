@@ -74,7 +74,7 @@ func GetNSampleData(database string, table string, n int) ([][]interface{}, []st
 		return nil, nil, nil, err
 	}
 	query := fmt.Sprintf("SELECT * FROM `%s`.`%s` LIMIT %d", database, table, n)
-	var valueBatch, err1 = fetchRows(query, colTypes)
+	var valueBatch, err1 = fetchDataRows(query, colTypes)
 	if err1 != nil {
 		return nil, nil, nil, err1
 	}
@@ -88,20 +88,34 @@ func GetNSampleDataColumns(database string, table string, n int, cols []string) 
 		return nil, nil, nil, err
 	}
 	query := fmt.Sprintf("SELECT %s FROM `%s`.`%s` LIMIT %d", strings.Join(cols, ", "), database, table, n)
-	var valueBatch, err1 = fetchRows(query, colTypes)
+	var valueBatch, err1 = fetchDataRows(query, colTypes)
 	if err1 != nil {
 		return nil, nil, nil, err1
 	}
 	return *valueBatch, pks, columnName, nil
 }
 
-func fetchRows(query string, colTypes []string) (*[][]interface{}, error) {
-	dbConn, err := testutils.CreateMySQLConnection()
+func fetchDataRows(query string, colTypes []string) (*[][]interface{}, error) {
+	dbConn, err := testutils.CreateMySQLConnectionDataCluster()
 	if err != nil {
 		return nil, fmt.Errorf("Cannot create MYSQLConnection" + err.Error())
 	}
 	defer dbConn.Close()
 
+	return fetchRowsInt(query, colTypes, dbConn)
+}
+
+func fetchMetadataRows(query string, colTypes []string) (*[][]interface{}, error) {
+	dbConn, err := testutils.CreateMySQLConnectionMetadataCluster()
+	if err != nil {
+		return nil, fmt.Errorf("Cannot create MYSQLConnection" + err.Error())
+	}
+	defer dbConn.Close()
+
+	return fetchRowsInt(query, colTypes, dbConn)
+}
+
+func fetchRowsInt(query string, colTypes []string, dbConn *sql.DB) (*[][]interface{}, error) {
 	rows, err := dbConn.Query(query)
 	if err != nil {
 		return nil, err
@@ -178,13 +192,12 @@ func GetNSampleDataWithJoinAndKey(n int, database string, table string, rightDat
 	var selectedCols string
 	var pks, cols []string
 	var colTypes []string
+	pks = fg1Pks
 	for _, pk := range fg2Pks {
 		pks = append(pks, rightPrefix+pk)
 	}
 	if (leftTargetCols == nil || len(leftTargetCols) == 0) && (rightTargetCols == nil || len(rightTargetCols) == 0) {
 		selectedCols = "fg0.*, fg1.*"
-		pks = fg1Pks
-
 		cols = fg1Cols
 		for _, col := range fg2Cols {
 			cols = append(cols, rightPrefix+col)
@@ -224,7 +237,7 @@ func GetNSampleDataWithJoinAndKey(n int, database string, table string, rightDat
 		"SELECT %s FROM `%s`.`%s` fg0 INNER JOIN `%s`.`%s` fg1 ON (%s) LIMIT %d",
 		selectedCols, database, table, rightDatabase, rightTable, strings.Join(onClause, " AND "), n)
 
-	var valueBatch, err1 = fetchRows(query, colTypes)
+	var valueBatch, err1 = fetchDataRows(query, colTypes)
 	if err1 != nil {
 		return nil, nil, nil, err1
 	}
@@ -247,7 +260,7 @@ func isColNumerical(colType string) bool {
 }
 
 func getColumnInfo(dbName string, tableName string) ([]string, []string, []string, error) {
-	dbConn, _ := testutils.CreateMySQLConnection()
+	dbConn, _ := testutils.CreateMySQLConnectionDataCluster()
 	defer dbConn.Close()
 	var colTypes []string
 	var columns []string
@@ -413,7 +426,7 @@ func ValidateResponseMetadata(t *testing.T, metadata *[]*api.FeatureMetadata, me
 }
 
 func ValidateResponseMetadataExCol(t *testing.T, metadata *[]*api.FeatureMetadata, metadataRequest *api.MetadataRequest, exCol *map[string]bool, fsName, fvName string, fvVersion int) {
-	var rows, err = fetchRows(fmt.Sprintf(`SELECT id from hopsworks.feature_store where name = "%s"`, fsName), []string{"bigint"})
+	var rows, err = fetchMetadataRows(fmt.Sprintf(`SELECT id from hopsworks.feature_store where name = "%s"`, fsName), []string{"bigint"})
 	if err != nil {
 		t.Errorf("Fetch rows failed with error: %s\n", err)
 	}
@@ -422,7 +435,7 @@ func ValidateResponseMetadataExCol(t *testing.T, metadata *[]*api.FeatureMetadat
 	if strErr != nil {
 		t.Errorf("Cannot convert %s to integer with error: %s\n", fsIdStr, err)
 	}
-	rows, err = fetchRows(fmt.Sprintf(`SELECT id from hopsworks.feature_view where feature_store_id = %d and name = "%s" and version = %d`, fsId, fvName, fvVersion), []string{"bigint"})
+	rows, err = fetchMetadataRows(fmt.Sprintf(`SELECT id from hopsworks.feature_view where feature_store_id = %d and name = "%s" and version = %d`, fsId, fvName, fvVersion), []string{"bigint"})
 	if err != nil {
 		t.Errorf("Fetch rows failed with error: %s\n", err)
 	}
@@ -432,7 +445,7 @@ func ValidateResponseMetadataExCol(t *testing.T, metadata *[]*api.FeatureMetadat
 		t.Errorf("Cannot convert %s to integer with error: %s\n", fvIdStr, err)
 	}
 
-	rows, err = fetchRows(fmt.Sprintf(`SELECT tdf.name, tdf.type, tdj.prefix from hopsworks.training_dataset_feature tdf inner join hopsworks.training_dataset_join tdj on tdf.td_join = tdj.id where tdf.feature_view_id = %d order by tdf.idx`, fvId), []string{"varchar", "varchar", "varchar"})
+	rows, err = fetchMetadataRows(fmt.Sprintf(`SELECT tdf.name, tdf.type, tdj.prefix from hopsworks.training_dataset_feature tdf inner join hopsworks.training_dataset_join tdj on tdf.td_join = tdj.id where tdf.feature_view_id = %d order by tdf.idx`, fvId), []string{"varchar", "varchar", "varchar"})
 	if err != nil {
 		t.Errorf("Fetch rows failed with error: %s\n", err)
 	}

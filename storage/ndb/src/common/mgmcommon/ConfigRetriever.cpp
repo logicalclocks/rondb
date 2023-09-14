@@ -480,7 +480,7 @@ ConfigRetriever::check_duplicate_hostname_port(
   for (iter.first(); iter.valid(); iter.next())
   {
     unsigned int node_active = 1;
-    const char *hostname;
+    const char *hostname = nullptr;
     unsigned int node_type = 0;
     unsigned int node_id = 0;
     unsigned node_port = 0;
@@ -506,7 +506,9 @@ ConfigRetriever::check_duplicate_hostname_port(
     } else if (node_type == NODE_TYPE_DB) {
       iter.get(CFG_DB_SERVER_PORT, &node_port);
     }
-    if (!node_active || node_port == 0)
+    if (!node_active ||
+        node_port == 0 ||
+        (node_type != NODE_TYPE_MGM && node_type != NODE_TYPE_DB))
       continue;
     ndb_mgm_configuration_iterator iter2(conf, CFG_SECTION_NODE);
     for (iter2.first(); iter2.valid(); iter2.next())
@@ -515,10 +517,10 @@ ConfigRetriever::check_duplicate_hostname_port(
       unsigned int node_active2 = 1;
       unsigned int node_type2 = 0;
       unsigned int node_port2 = 0;
-      const char *hostname2;
+      const char *hostname2 = nullptr;
       iter2.get(CFG_NODE_ID, &node_id2);
-      if (node_id2 >= node_id)
-        break;
+      if (node_id2 == node_id)
+        continue;
       iter2.get(CFG_NODE_ACTIVE, &node_active2);
       if (!node_active2)
         continue;
@@ -536,8 +538,8 @@ ConfigRetriever::check_duplicate_hostname_port(
         continue;
       if (node_port != node_port2)
         continue;
-      require(iter2.get(CFG_NODE_HOST, &hostname2));
-      if (strncmp(hostname, hostname2, 511) == 0) {
+      iter2.get(CFG_NODE_HOST, &hostname2);
+      if (hostname2 && hostname && strncmp(hostname, hostname2, 511) == 0) {
         BaseString::snprintf(buf, 255,
                              "Node %d and %d share the same hostname and port"
                              " in configuration", node_id, node_id2);

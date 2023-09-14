@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/log"
 	"hopsworks.ai/rdrs/internal/security/apikey/hopsworkscache"
 
@@ -226,7 +225,6 @@ func testLoad(t *testing.T, cache Cache, conf config.AllConfigs) {
 	ch := make(chan bool)
 
 	numOps := 512
-	dal.SetOpRetryProps(5, 1000, 1000)
 
 	for i := 0; i < numOps; i++ {
 		go func(ch chan bool, id int) {

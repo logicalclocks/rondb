@@ -46,7 +46,7 @@ func getColumnDataFromDB(
 	col string,
 	isBinary bool,
 ) (*string, error) {
-	dbConn, err := testutils.CreateMySQLConnection()
+	dbConn, err := testutils.CreateMySQLConnectionDataCluster()
 	if err != nil {
 		t.Fatalf("failed to connect to db. %v", err)
 	}

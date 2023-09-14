@@ -15,21 +15,17 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
-package apikey
+package health
 
 import (
 	"fmt"
-	"math/rand"
 	"os"
 	"runtime/debug"
 	"testing"
-	"time"
 
 	"hopsworks.ai/rdrs/internal/config"
-	"hopsworks.ai/rdrs/internal/dal"
+	"hopsworks.ai/rdrs/internal/integrationtests"
 	"hopsworks.ai/rdrs/internal/log"
-	"hopsworks.ai/rdrs/internal/testutils"
-	"hopsworks.ai/rdrs/resources/testdbs"
 )
 
 /*
@@ -50,29 +46,13 @@ func TestMain(m *testing.M) {
 	conf := config.GetAll()
 	log.InitLogger(conf.Log)
 
-	//creating databases for each test run is very slow
-	//if sentinel DB exists then skip creating DBs
-	//drop the "sentinel" DB if you want to recreate all the databases.
-	//for MTR the cleanup is done in mysql-test/suite/rdrs/include/rdrs_cleanup.inc
-	if !testutils.SentinelDBExists() {
-		_, err := testutils.CreateDatabases(conf.Security.APIKey.UseHopsworksAPIKeys, testdbs.GetAllDBs()...)
-		if err != nil {
-			retcode = 1
-			log.Errorf("failed creating databases; error: %v", err)
-			return
-		}
-	}
-
-	dalErr := dal.InitRonDBConnection(conf.RonDB, conf.RonDBMetadataCluster)
-	if dalErr != nil {
+	cleanup, err := integrationtests.InitialiseTesting(conf)
+	if err != nil {
 		retcode = 1
-		log.Errorf("failed to initialise RonDB connection; error: %s", dalErr.VerboseError())
+		log.Fatalf(err.Error())
 		return
 	}
-	defer dal.ShutdownConnection()
-
-	//init rand
-	rand.Seed(time.Now().Unix())
+	defer cleanup()
 
 	retcode = m.Run()
 }

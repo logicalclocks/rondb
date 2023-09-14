@@ -297,10 +297,9 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 		}
 		for featureName, value := range *response.Body.Data {
 			featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
+			// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
 			if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
 				featureValues[index] = value
-			} else {
-				panic(fmt.Sprintf("Index cannot be found by the key '%s'", featureIndexKey))
 			}
 		}
 	}

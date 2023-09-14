@@ -416,6 +416,14 @@ VALUES
     */
     (
         4115, 'sample_1n3_joincoloncol', 67, Timestamp('2023-08-09 09:29:37'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg1`.`id1` `id1`, `fg0`.`id1` `fg2_id1`
+    FROM `test_ken`.`sample_1_1` `fg1`
+    INNER JOIN `test_ken`.`sample_2_1` `fg0` ON `fg1`.`id1` = `fg0`.`id1`
+    */
+    (
+        4116, 'sample_1n2_pkonly', 67, Timestamp('2023-06-05 13:13:35'), 10000, 1, ''
     );
 
 INSERT INTO 
@@ -507,6 +515,12 @@ VALUES
     ),
     (
         5130, NULL, 2069, NULL, 0, 0, NULL, 4115
+    ),
+    (
+        5131, NULL, 2071, NULL, 0, 1, 'fg2_', 4116
+    ),
+    (
+        5132, NULL, 2069, NULL, 0, 0, NULL, 4116
     );
 
 INSERT INTO
@@ -829,6 +843,12 @@ VALUES
     ),
     (
         5145, NULL, 2069, 'id1', 'bigint', 5130, 0, 0, NULL, 4115
+    ),
+    (
+        5146, NULL, 2071, 'id1', 'bigint', 5131, 1, 0, NULL, 4116
+    ),
+    (
+        5147, NULL, 2069, 'id1', 'bigint', 5132, 0, 0, NULL, 4116
     );
 
 CREATE TABLE `serving_key` (
@@ -951,4 +971,10 @@ VALUES
     ),
     (
         70, NULL, 'id1', NULL, 0, 3089, 1, 3086
+    ),
+    (
+        1506, 'fg2_', 'id1', 'id1', 1, 2071, 0, 4116
+    ),
+    (
+        1507, NULL, 'id1', NULL, 0, 2069, 1, 4116
     );
