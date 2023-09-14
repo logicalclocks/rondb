@@ -192,13 +192,12 @@ func GetNSampleDataWithJoinAndKey(n int, database string, table string, rightDat
 	var selectedCols string
 	var pks, cols []string
 	var colTypes []string
+	pks = fg1Pks
 	for _, pk := range fg2Pks {
 		pks = append(pks, rightPrefix+pk)
 	}
 	if (leftTargetCols == nil || len(leftTargetCols) == 0) && (rightTargetCols == nil || len(rightTargetCols) == 0) {
 		selectedCols = "fg0.*, fg1.*"
-		pks = fg1Pks
-
 		cols = fg1Cols
 		for _, col := range fg2Cols {
 			cols = append(cols, rightPrefix+col)
