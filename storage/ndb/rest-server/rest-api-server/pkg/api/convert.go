@@ -244,3 +244,24 @@ func ConvertStatResponseProto(resp *StatResponseProto) *StatResponse {
 	statResponse.RonDBStats = ronDBStats
 	return &statResponse
 }
+
+func ConvertHealthRequest(req *HealthRequest) *HealthRequestProto {
+	return &HealthRequestProto{}
+}
+
+func ConvertHealthRequestProto(reqProto *HealthRequestProto) *HealthRequest {
+	return &HealthRequest{}
+}
+
+func ConvertHealthResponse(resp *HealthResponse) *HealthResponseProto {
+	respProto := HealthResponseProto{}
+	healthInt64 := int64(resp.RonDBHealth)
+	respProto.RonDBHealth = &healthInt64
+	return &respProto
+}
+
+func ConvertHealthResponseProto(resp *HealthResponseProto) *HealthResponse {
+	healthResponse := HealthResponse{}
+	healthResponse.RonDBHealth = int(*resp.RonDBHealth)
+	return &healthResponse
+}

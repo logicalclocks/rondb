@@ -25,7 +25,7 @@ extern "C" {
 #endif
 
 // number of bytes need to store string length for varchar columns in NDB
-inline int bytes_for_ndb_str_len(int ndb_str_len) {
+static inline int bytes_for_ndb_str_len(int ndb_str_len) {
   if (ndb_str_len <= 255) {
     return 1;
   } else {

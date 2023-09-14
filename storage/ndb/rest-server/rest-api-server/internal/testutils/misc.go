@@ -32,13 +32,24 @@ const HOPSWORKS_TEST_API_KEY = "bkYjEz6OTZyevbqt.ocHajJhnE0ytBh8zbYj3IXupyMqeMZp
 
 var WithRonDB = flag.Bool("with-rondb", true, "test with a running RonDB instance")
 
-func CreateMySQLConnection() (*sql.DB, error) {
+func CreateMySQLConnectionDataCluster() (*sql.DB, error) {
 	conf := config.GetAll()
-	connectionString := conf.Testing.GenerateMysqldConnectString()
-	log.Debugf("Connecting to mysqld with '%s'", connectionString)
+	connectionString := conf.Testing.GenerateMysqldConnectStringDataCluster()
+	log.Debugf("Connecting to data mysqld with '%s'", connectionString)
 	dbConnection, err := sql.Open("mysql", connectionString)
 	if err != nil {
-		err = fmt.Errorf("failed to connect to db; error: %w", err)
+		err = fmt.Errorf("failed to connect to data db; error: %w", err)
+	}
+	return dbConnection, err
+}
+
+func CreateMySQLConnectionMetadataCluster() (*sql.DB, error) {
+	conf := config.GetAll()
+	connectionString := conf.Testing.GenerateMysqldConnectStringMetadataCluster()
+	log.Debugf("Connecting to metadata mysqld with '%s'", connectionString)
+	dbConnection, err := sql.Open("mysql", connectionString)
+	if err != nil {
+		err = fmt.Errorf("failed to connect to metadata db; error: %w", err)
 	}
 	return dbConnection, err
 }

@@ -40,38 +40,65 @@ func CreateDatabases(
 	}
 	cleanupDbs = func() {}
 
-	dbConn, err := CreateMySQLConnection()
+	dataDbConn, err := CreateMySQLConnectionDataCluster()
 	if err != nil {
 		return
 	}
-	defer dbConn.Close()
+	defer dataDbConn.Close()
+
+	metadataDbConn, err := CreateMySQLConnectionMetadataCluster()
+	if err != nil {
+		return
+	}
+	defer metadataDbConn.Close()
 
 	dropDatabases := ""
 	cleanupDbsWrapper := func(dropDatabases string) func() {
 		return func() {
 			// We need a new DB connection since this might be called after the
 			// initial connection is closed.
-			err = RunQueries(dropDatabases)
+
+			// delete from both clusters
+			err = RunQueriesOnDataCluster(dropDatabases)
+			if err != nil {
+				log.Errorf("failed cleaning up databases; error: %v", err)
+			}
+
+			err = RunQueriesOnMetadataCluster(dropDatabases)
 			if err != nil {
 				log.Errorf("failed cleaning up databases; error: %v", err)
 			}
 		}
 	}
 	for db, createSchema := range createSchemata {
-		err := runQueriesWithConnection(createSchema, dbConn)
+		var err error
+		if db == testdbs.HOPSWORKS_DB_NAME {
+			err = runQueriesWithConnection(createSchema, metadataDbConn)
+		} else {
+			err = runQueriesWithConnection(createSchema, dataDbConn)
+		}
 		if err != nil {
 			cleanupDbsWrapper(dropDatabases)()
 			err = errors.New(fmt.Sprintf("failed running createSchema for db '%s'; error: %v", db, err))
 			return func() {}, err
 		}
 		log.Debugf("successfully ran all queries to instantiate db '%s'", db)
-		dropDatabases += fmt.Sprintf("DROP DATABASE %s;\n", db)
+		dropDatabases += fmt.Sprintf("DROP IF NOT EXISTS DATABASE %s;\n", db)
 	}
 	return cleanupDbsWrapper(dropDatabases), nil
 }
 
-func RunQueries(sqlQueries string) error {
-	dbConn, err := CreateMySQLConnection()
+func RunQueriesOnDataCluster(sqlQueries string) error {
+	dbConn, err := CreateMySQLConnectionDataCluster()
+	if err != nil {
+		return err
+	}
+	defer dbConn.Close()
+	return runQueriesWithConnection(sqlQueries, dbConn)
+}
+
+func RunQueriesOnMetadataCluster(sqlQueries string) error {
+	dbConn, err := CreateMySQLConnectionMetadataCluster()
 	if err != nil {
 		return err
 	}
@@ -110,7 +137,7 @@ func runQueriesWithConnection(sqlQueries string, dbConnection *sql.DB) error {
 }
 
 func SentinelDBExists() bool {
-	dbConn, err := CreateMySQLConnection()
+	dbConn, err := CreateMySQLConnectionDataCluster()
 	if err != nil {
 		return false
 	}

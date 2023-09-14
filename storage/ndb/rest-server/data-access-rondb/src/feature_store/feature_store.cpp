@@ -33,12 +33,12 @@
 #include "src/logger.hpp"
 #include "src/ndb_api_helper.hpp"
 #include "src/rdrs-const.h"
-#include "src/rdrs_rondb_connection.hpp"
+#include "src/rdrs_rondb_connection_pool.hpp"
 #include "src/retry_handler.hpp"
 #include "src/status.hpp"
 
-// RonDB connection
-extern RDRSRonDBConnection *rdrsRonDBConnection;
+// RonDB connection pool
+extern RDRSRonDBConnectionPool *rdrsRonDBConnectionPool;
 
 //-------------------------------------------------------------------------------------------------
 
@@ -148,18 +148,18 @@ RS_Status find_project_id_int(Ndb *ndb_object, const char *feature_store_name, I
 
 RS_Status find_project_id(const char *feature_store_name, Int32 *project_id) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_project_id_int(ndb_object, feature_store_name, project_id);
   )
   /* clang-format on */
 
-  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
 
   return status;
 }
@@ -275,18 +275,18 @@ RS_Status find_feature_store_id_int(Ndb *ndb_object, const char *feature_store_n
  */
 RS_Status find_feature_store_id(const char *feature_store_name, int *feature_store_id) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_feature_store_id_int(ndb_object, feature_store_name, feature_store_id);
   )
   /* clang-format on */
 
-  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
 
   return status;
 }
@@ -430,19 +430,19 @@ RS_Status find_feature_view_id_int(Ndb *ndb_object, int feature_store_id,
 RS_Status find_feature_view_id(int feature_store_id, const char *feature_view_name,
                                int feature_view_version, int *feature_view_id) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_feature_view_id_int(ndb_object, feature_store_id,
       feature_view_name, feature_view_version, feature_view_id);
   )
   /* clang-format on */
 
-  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
 
   return status;
 }
@@ -576,19 +576,19 @@ RS_Status find_training_dataset_join_data_int(Ndb *ndb_object, int feature_view_
 RS_Status find_training_dataset_join_data(int feature_view_id, Training_Dataset_Join **tdjs,
                                           int *tdjs_size) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_training_dataset_join_data_int(ndb_object,
       feature_view_id, tdjs, tdjs_size);
   )
   /* clang-format on */
 
-  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
 
   return status;
 }
@@ -704,18 +704,18 @@ RS_Status find_feature_group_data_int(Ndb *ndb_object, int feature_group_id, Fea
  */
 RS_Status find_feature_group_data(int feature_group_id, Feature_Group *fg) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_feature_group_data_int(ndb_object, feature_group_id, fg);
   )
   /* clang-format on */
 
-  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
 
   return status;
 }
@@ -884,18 +884,18 @@ RS_Status find_training_dataset_data_int(Ndb *ndb_object, int feature_view_id,
 RS_Status find_training_dataset_data(int feature_view_id, Training_Dataset_Feature **tdf,
                                      int *tdf_size) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_training_dataset_data_int(ndb_object, feature_view_id, tdf, tdf_size); 
   )
   /* clang-format on */
 
-  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
 
   return status;
 }
@@ -978,18 +978,18 @@ RS_Status find_feature_store_data_int(Ndb *ndb_object, int feature_store_id, cha
  */
 RS_Status find_feature_store_data(int feature_store_id, char *name) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_feature_store_data_int(ndb_object, feature_store_id, name);
   )
   /* clang-format on */
 
-  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
 
   return status;
 }
@@ -1040,10 +1040,8 @@ RS_Status find_serving_key_data_int(Ndb *ndb_object, int feature_view_id,
 
   assert(SERVING_KEY_FEATURE_NAME_SIZE ==
          (Uint32)table_dict->getColumn("feature_name")->getSizeInBytes());
-  assert(SERVING_KEY_JOIN_PREFIX_SIZE ==
-         (Uint32)table_dict->getColumn("prefix")->getSizeInBytes());
-  assert(SERVING_KEY_JOIN_ON_SIZE ==
-         (Uint32)table_dict->getColumn("join_on")->getSizeInBytes());
+  assert(SERVING_KEY_JOIN_PREFIX_SIZE == (Uint32)table_dict->getColumn("prefix")->getSizeInBytes());
+  assert(SERVING_KEY_JOIN_ON_SIZE == (Uint32)table_dict->getColumn("join_on")->getSizeInBytes());
 
   NdbRecAttr *feature_group_id_attr = scan_op->getValue("feature_group_id", nullptr);
   NdbRecAttr *feature_name_attr     = scan_op->getValue("feature_name", nullptr);
@@ -1164,18 +1162,18 @@ RS_Status find_serving_key_data_int(Ndb *ndb_object, int feature_view_id,
  */
 RS_Status find_serving_key_data(int feature_view_id, Serving_Key **serving_keys, int *sk_size) {
   Ndb *ndb_object  = nullptr;
-  RS_Status status = rdrsRonDBConnection->GetNdbObject(&ndb_object);
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
   if (status.http_code != SUCCESS) {
     return status;
   }
 
   /* clang-format off */
-  RETRY_HANDLER(
+  METADATA_OP_RETRY_HANDLER(
     status = find_serving_key_data_int(ndb_object, feature_view_id, serving_keys, sk_size); 
   )
   /* clang-format on */
 
-  rdrsRonDBConnection->ReturnNDBObjectToPool(ndb_object, &status);
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
 
   return status;
 }

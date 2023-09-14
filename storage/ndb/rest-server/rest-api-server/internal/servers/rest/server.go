@@ -35,6 +35,7 @@ import (
 	"hopsworks.ai/rdrs/internal/handlers/batchfeaturestore"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
 	"hopsworks.ai/rdrs/internal/handlers/feature_store"
+	"hopsworks.ai/rdrs/internal/handlers/health"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	"hopsworks.ai/rdrs/internal/handlers/stat"
 	"hopsworks.ai/rdrs/internal/log"
@@ -102,6 +103,7 @@ func (s *RonDBRestServer) Start(quit chan os.Signal) (cleanupFunc func()) {
 type RouteHandler struct {
 	// TODO: Add thread-safe logger
 	statsHandler             stat.Handler
+	healthHandler            health.Handler
 	pkReadHandler            pkread.Handler
 	batchPkReadHandler       batchpkread.Handler
 	rdrsMetrics              *metrics.RDRSMetrics
@@ -121,6 +123,7 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 
 	routeHandler := &RouteHandler{
 		statsHandler:             stat.New(heap, apiKeyCache),
+		healthHandler:            health.New(),
 		pkReadHandler:            pkread.New(heap, apiKeyCache),
 		batchPkReadHandler:       batchPkReadHandler,
 		rdrsMetrics:              rdrsMetrics,
@@ -133,6 +136,9 @@ func registerHandlers(router *gin.Engine, heap *heap.Heap, apiKeyCache apikey.Ca
 
 	// stat
 	versionGroup.GET("/"+config.STAT_OPERATION, routeHandler.Stat)
+
+	// health
+	versionGroup.GET("/"+config.HEALTH_OPERATION, routeHandler.Health)
 
 	// batch
 	versionGroup.POST("/"+config.BATCH_OPERATION, routeHandler.BatchPkRead)

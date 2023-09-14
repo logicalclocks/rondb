@@ -214,6 +214,21 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 	            "OpRetryInitialDelayInMS": 500,
 	            "OpRetryJitterInMS": 100
         },
+        "RonDBMetadataCluster": {
+                "Mgmds": [
+                        {
+                                "IP": "localhost",
+                                "Port": 1186
+                        }
+                ],
+	            "ConnectionPoolSize": 1,
+	            "NodeIDs": [],
+	            "ConnectionRetries": 5,
+	            "ConnectionRetryDelayInSec": 5,
+	            "OpRetryOnTransientErrorsCount": 3,
+	            "OpRetryInitialDelayInMS": 500,
+	            "OpRetryJitterInMS": 100
+        },
         "Security": {
                  "TLS": {
                          "EnableTLS": true,
@@ -238,6 +253,16 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
         },
         "Testing": {
                 "MySQL": {
+                        "User": "rondb",
+                        "Password": "rondb",
+                        "Servers": [
+                                {
+                                        "IP": "localhost",
+                                        "Port": 3306
+                                }
+                        ],
+                },
+                "MySQLMetadataCluster": {
                         "User": "rondb",
                         "Password": "rondb",
                         "Servers": [
@@ -303,6 +328,8 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
   - **OpRetryJitterInMS:** Jitter is added (or subtracted) from the retry delay to prevent multiple failed operations from being retried at the same time 
 
+- **RonDBMetadataCluster** This is an optional parameter. In normal operations the user data and metadata data (API Keys) are stored in the same RonDB cluster. It is possible to store data and metadata in separate clusters. Use the *RonDBMetadataCluster* parameter to configure a dedicated RonDB cluster containing user metadata. For example, if *RonDB* and *RonDBMetadataCluster* parameters are set then *pk-read* and *batch* operations will be performed on a cluster defined in the *RonDB* parameter and metadata operations will be performed on a cluster defined in *RonDBMetadataCluster* parameter.
+
 - **Security:** REST server security settings 
 
   - **TLS:** Enable/Disable TLS. The default value is *true*.
@@ -338,7 +365,7 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
   
   - **MaxAge:** max-age of log files in days. The default value is *30*.
 
-- **Testing:** MySQL server is only used for testing
+- **Testing:** MySQL server is only used for testing and development
 
   - **MySQL:** MySQL server is only used for testing
   
@@ -351,4 +378,6 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
       - **IP:** MySQL Server IP. The default value is *localhost*.
       
       - **Port:** MySQL Server port. The default value is *3306*.
+
+  - **MySQLMetadataCluster:**  Similar to *RonDBMetadataCluster* this is an optional parameter used to connect to cluster containing user metadata. 
 

@@ -32,6 +32,7 @@ import (
 	"hopsworks.ai/rdrs/internal/config"
 	"hopsworks.ai/rdrs/internal/dal/heap"
 	"hopsworks.ai/rdrs/internal/handlers/batchpkread"
+	"hopsworks.ai/rdrs/internal/handlers/health"
 	"hopsworks.ai/rdrs/internal/handlers/pkread"
 	"hopsworks.ai/rdrs/internal/handlers/stat"
 	"hopsworks.ai/rdrs/internal/log"
@@ -81,6 +82,7 @@ func Start(
 type RonDBServer struct {
 	api.UnimplementedRonDBRESTServer
 	statsHandler       stat.Handler
+	healthHandler      health.Handler
 	pkReadHandler      pkread.Handler
 	batchPkReadHandler batchpkread.Handler
 	rdrsMetrics        *metrics.RDRSMetrics
@@ -90,6 +92,7 @@ type RonDBServer struct {
 func NewRonDBServer(heap *heap.Heap, apiKeyCache apikey.Cache, rdrsMetrics *metrics.RDRSMetrics) *RonDBServer {
 	return &RonDBServer{
 		statsHandler:       stat.New(heap, apiKeyCache),
+		healthHandler:      health.New(),
 		pkReadHandler:      pkread.New(heap, apiKeyCache),
 		batchPkReadHandler: batchpkread.New(heap, apiKeyCache),
 		rdrsMetrics:        rdrsMetrics,
