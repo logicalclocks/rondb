@@ -5883,6 +5883,7 @@ void Dblqh::execPACKED_SIGNAL(Signal* signal)
   Uint32 step = 0;
   Uint32 packedIndex = 0;
   Uint32 packedData[28];
+  Uint32 senderRef = signal->getSendersBlockRef();
 
   jamEntry();
 
@@ -5966,10 +5967,8 @@ void Dblqh::execPACKED_SIGNAL(Signal* signal)
     }
     case ZFIRE_TRIG_REQ:
     {
-      Uint32 senderRef = signal->getSendersBlockRef();
       ndbassert(FireTrigReq::SignalLength == 4);
       signal->header.theLength = FireTrigReq::SignalLength;
-      signal->header.theSendersBlockRef = senderRef;
       step += FireTrigReq::SignalLength;
       execFIRE_TRIG_REQ(signal);
       break;
@@ -5978,12 +5977,8 @@ void Dblqh::execPACKED_SIGNAL(Signal* signal)
       ndbabort();
       return;
     }//switch
-#ifdef ERROR_INSERT
-    {
-      Uint32 senderRef = signal->getSendersBlockRef();
-      signal->header.theSendersBlockRef = senderRef;
-    }
-#endif
+    /* Set again, in case someone changed it while executing a signal */
+    signal->header.theSendersBlockRef = senderRef;
   }//while
   while (length > step);
   ndbrequire(length == step);
