@@ -202,7 +202,6 @@ RonDB_Stats RDRSRonDBConnection::GetStats() {
 
 //--------------------------------------------------------------------------------------------------
 
-// TODO: Call this class in the class's destructor
 RS_Status RDRSRonDBConnection::Shutdown(bool end) {
 
   // wait for all NDB objects to return
@@ -289,11 +288,8 @@ RS_Status RDRSRonDBConnection::Shutdown(bool end) {
     if (end) {
       stats.is_shutdown     = true;
       stats.is_shutting_down = false;
-      delete connection_string;
-      connection_string = nullptr;
+      free(connection_string);
       free(node_ids);
-      delete node_ids;
-      node_ids = nullptr;
       if (reconnectionThread != nullptr) {
         NdbThread_Destroy(&reconnectionThread);
         reconnectionThread = nullptr;
