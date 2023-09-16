@@ -115,6 +115,13 @@ static const Uint32 WaitTableStateChangeMillis = 10;
 //#define DEBUG_LCP_COMP 1
 //#define DEBUG_COPY_ACTIVE 1
 //#define DEBUG_TCGETOPSIZE
+#define DEBUG_ACTIVE_NODES 1
+#endif
+
+#ifdef DEBUG_ACTIVE_NODES
+#define DEB_ACTIVE_NODES(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_ACTIVE_NODES(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_TCGETOPSIZE
@@ -16999,6 +17006,18 @@ Uint32 Dbdih::extractNodeInfo(EmulatedJamBuffer *jambuf,
       thrjam(jambuf);
       nodes[nodeCount] = nodePtr.i;
       nodeCount++;
+#ifdef DEBUG_ACTIVE_NODES
+      if ((nodePtr.p->nodeRecoveryStatus != NodeRecord::NODE_ACTIVE) &&
+           nodeCount == 1)
+      {
+        g_eventLogger->info("extractNodeInfo: tab(%u,%u),"
+                            " nodes[0]: %u, state: %u",
+                            fragPtr->tableId,
+                            fragPtr->fragId,
+                            nodePtr.i,
+                            nodePtr.p->nodeRecoveryStatus);
+      }
+#endif
     }//if
   }//for
   ndbrequire(nodeCount > 0 || !crash_on_error);
@@ -17511,6 +17530,10 @@ Dbdih::make_table_use_new_node_order(TabRecordPtr tabPtr,
     fragPtr.p->activeNodes[i] = newNodeOrder[i];
   }//for
   DIH_TAB_WRITE_UNLOCK(tabPtr.p);
+  DEB_ACTIVE_NODES(("make_table_use_new_node_order: tab(%u,%u), activeNodes[0] = %u",
+                    fragPtr.p->tableId,
+                    fragPtr.p->fragId,
+                    fragPtr.p->activeNodes[0]));
 }
 
 /**
@@ -27761,6 +27784,10 @@ void Dbdih::updateNodeInfo(FragmentstorePtr fragPtr)
       break;
     }//if
   }//for
+  DEB_ACTIVE_NODES(("updateNodeInfo: tab(%u,%u), activeNodes[0] = %u",
+                    fragPtr.p->tableId,
+                    fragPtr.p->fragId,
+                    fragPtr.p->activeNodes[0]));
 }//Dbdih::updateNodeInfo()
 
 void Dbdih::writeFragment(RWFragment* wf, FragmentstorePtr fragPtr) 
