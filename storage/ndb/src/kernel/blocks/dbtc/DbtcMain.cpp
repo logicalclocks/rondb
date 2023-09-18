@@ -18335,6 +18335,9 @@ bool Dbtc::sendScanFragReq(Signal* signal,
   Uint32 origNodeId = nodeId;
   if (nodeId != getOwnNodeId())
   {
+    ApiConnectRecordPtr apiPtr;
+    apiPtr.i = scanptr.p->scanApiRec;
+    ndbrequire(c_apiConnectRecordPool.getUncheckedPtrRW(apiPtr));
     Uint32 signalId = signal->header.theSignalId;
     DEB_ACTIVE_NODES(("(%u) tab(%u,%u), pref: %u, transid(%u,%u), index: %u"
                       ", signalId: %u",
@@ -18342,8 +18345,8 @@ bool Dbtc::sendScanFragReq(Signal* signal,
                       scanptr.p->scanTableref,
                       fragId,
                       nodeId,
-                      apiConnectptr.p->transid[0],
-                      apiConnectptr.p->transid[1],
+                      apiPtr.p->transid[0],
+                      apiPtr.p->transid[1],
                       fragLocationPtr.p->m_first_index,
                       signalId));
   }
