@@ -16562,6 +16562,7 @@ void Dbdih::execDIGETNODESREQ(Signal* signal)
   Uint32 newFragId = RNIL;
   Uint32 nodeCount;
   Uint32 sig2;
+  Uint32 only_readable_nodes = req->only_readable_nodes;
   Ptr<Hash2FragmentMap> ptr;
   DiGetNodesConf * const conf = (DiGetNodesConf *)&signal->theData[0];
   TabRecord* regTabDesc = tabRecord;
@@ -16778,7 +16779,11 @@ loop:
     if (unlikely(fragPtr.p == nullptr))
       goto crash_check_exit;
   }
-  nodeCount = extractNodeInfo(jambuf, fragPtr.p, conf->nodes, false);
+  nodeCount = extractNodeInfo(jambuf,
+                              fragPtr.p,
+                              conf->nodes,
+                              false,
+                              only_readable_nodes);
   if (unlikely(nodeCount == 0) || nodeCount > MAX_REPLICAS)
   {
     thrjam(jambuf);
@@ -16799,7 +16804,8 @@ loop:
     nodeCount = extractNodeInfo(jambuf,
                                fragPtr.p,
                                conf->nodes + 3 + MAX_REPLICAS,
-                               false);
+                               false,
+                               only_readable_nodes);
     if (unlikely(nodeCount == 0))
     {
       thrjam(jambuf);
@@ -16979,7 +16985,8 @@ Dbdih::check_if_local_fragment(EmulatedJamBuffer *jambuf,
 Uint32 Dbdih::extractNodeInfo(EmulatedJamBuffer *jambuf,
                               const Fragmentstore * fragPtr,
                               Uint32 nodes[],
-                              bool crash_on_error)
+                              bool crash_on_error,
+                              bool only_readable_nodes)
 {
   Uint32 nodeCount = 0;
   nodes[0] = nodes[1] = nodes[2] = nodes[3] = 0;
@@ -17000,8 +17007,22 @@ Uint32 Dbdih::extractNodeInfo(EmulatedJamBuffer *jambuf,
       ndbrequire(!crash_on_error);
       return 0;
     }
+    if (unlikely(only_readable_nodes &&
+                 fragPtr->onlineSynchOngoing &&
+                 i == 1))
+    {
+      /**
+       * The fragment is currently being synchronized with the live node
+       * on this node (we always place the starting node in position 1 to
+       * ensure that we don't have race conditions.
+       *
+       * Since we only request readable nodes we should skip any node that
+       * isn't readable yet.
+       */
+      continue;
+    }
     ptrAss(nodePtr, nodeRecord);
-    if (nodePtr.p->useInTransactions)
+    if (likely(nodePtr.p->useInTransactions))
     {
       thrjam(jambuf);
       nodes[nodeCount] = nodePtr.i;
@@ -17481,6 +17502,7 @@ Dbdih::make_table_use_new_replica(TabRecordPtr tabPtr,
     
     fragPtr.p->distributionKey++;
     fragPtr.p->distributionKey &= 255;
+    fragPtr.p->onlineSynchOngoing = 1;
     break;
   case UpdateFragStateReq::COMMIT_STORED:
     jam();
@@ -17498,6 +17520,7 @@ Dbdih::make_table_use_new_replica(TabRecordPtr tabPtr,
     removeOldStoredReplica(fragPtr, replicaPtr);
     linkStoredReplica(fragPtr, replicaPtr);
     fragPtr.p->primaryNode = primaryNode;
+    fragPtr.p->onlineSynchOngoing = 0;
     updateNodeInfo(fragPtr);
     break;
   case UpdateFragStateReq::START_LOGGING:
@@ -25516,6 +25539,7 @@ void Dbdih::initFragstore(FragmentstorePtr fragPtr,
   
   fragPtr.p->noLcpReplicas = 0;
   fragPtr.p->distributionKey = 0;
+  fragPtr.p->onlineSynchOngoing = 0;
 }//Dbdih::initFragstore()
 
 /*************************************************************************/

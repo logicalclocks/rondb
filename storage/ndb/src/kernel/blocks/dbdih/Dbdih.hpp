@@ -292,6 +292,7 @@ public:
     Uint8 noOldStoredReplicas;  /* NUMBER OF "DEAD" STORED REPLICAS */
     Uint8 noStoredReplicas;     /* NUMBER OF "ALIVE" STORED REPLICAS*/
     Uint8 noLcpReplicas;        ///< No of replicas remaining to be LCP:ed
+    Uint8 onlineSynchOngoing;
   };
   typedef Ptr64<Fragmentstore> FragmentstorePtr;
   typedef RecordPool64<RWPool64<Fragmentstore>> Fragmentstore_pool;
@@ -1685,7 +1686,8 @@ private:
   Uint32 extractNodeInfo(EmulatedJamBuffer *jambuf,
                          const Fragmentstore * fragPtr,
                          Uint32 nodes[],
-                         bool crash_on_error = true);
+                         bool crash_on_error = true,
+                         bool only_readable_nodes = false);
   Uint32 findLocalFragment(const TabRecord *,
                            FragmentstorePtr & fragPtr,
                            EmulatedJamBuffer *jambuf);

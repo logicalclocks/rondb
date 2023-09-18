@@ -73,7 +73,7 @@ class DiGetNodesReq {
    */
   friend class Dbdih;
 public:
-  static constexpr Uint32 SignalLength = 6 + (sizeof(void*) / sizeof(Uint32));
+  static constexpr Uint32 SignalLength = 7 + (sizeof(void*) / sizeof(Uint32));
   static constexpr Uint32 MAX_DIGETNODESREQS = 16;
 private:
   Uint32 tableId;
@@ -82,6 +82,7 @@ private:
   Uint32 scan_indicator;
   Uint32 get_next_fragid_indicator;
   Uint32 anyNode;
+  Uint32 only_readable_nodes;
   union {
     void * jamBufferPtr;
     Uint32 jamBufferStorage[2];

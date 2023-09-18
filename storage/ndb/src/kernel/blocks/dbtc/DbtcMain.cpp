@@ -4792,6 +4792,7 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
   req->scan_indicator = 0;
   req->anyNode = 0;
   req->get_next_fragid_indicator = 0;
+  req->only_readable_nodes = (regTcPtr->operation == ZREAD);
   req->jamBufferPtr = jamBuffer();
 
   if (localTabptr.p->m_flags & TableRecord::TR_FULLY_REPLICATED)
@@ -17044,6 +17045,7 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
   req->anyNode = scanptr.p->m_read_any_node;
   req->jamBufferPtr = jamBuffer();
   req->get_next_fragid_indicator = 0;
+  req->only_readable_nodes = 1;
 
   if (scanptr.p->m_scan_dist_key_flag) //Scan pruned to specific fragment
   {
@@ -25830,6 +25832,7 @@ Dbtc::executeFullyReplicatedTrigger(Signal* signal,
   diGetNodesReq->scan_indicator = 0;
   diGetNodesReq->get_next_fragid_indicator = 1;
   diGetNodesReq->anyNode = 0;
+  diGetNodesReq->only_readable_nodes = 0;
   diGetNodesReq->jamBufferPtr = jamBuffer();
   c_dih->execDIGETNODESREQ(signal);
   DiGetNodesConf * diGetNodesConf =  (DiGetNodesConf *)signal->getDataPtrSend();
