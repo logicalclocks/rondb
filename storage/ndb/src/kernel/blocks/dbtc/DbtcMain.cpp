@@ -132,6 +132,7 @@
 //#define DEBUG_EXEC_WRITE_COUNT 1
 //#define DEBUG_TCGETOPSIZE 1
 //#define DEBUG_HASH 1
+#define DEBUG_ACTIVE_NODES 1
 #endif
 
 #define TC_TIME_SIGNAL_DELAY 50
@@ -143,6 +144,12 @@
 #define DEBUG(x) ndbout << "DBTC: "<< x << endl;
 #else
 #define DEBUG(x)
+#endif
+
+#ifdef DEBUG_ACTIVE_NODES
+#define DEB_ACTIVE_NODES(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_ACTIVE_NODES(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_LQH_TRANS_CMA
@@ -17203,6 +17210,27 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
   {
     jam();
   }
+
+#ifdef DEBUG_ACTIVE_NODES
+  if (preferredNodeId != ownNodeId ||
+      primaryNodeId != ownNodeId)
+  {
+    Uint32 count = (conf->reqinfo & 0xFFFF) + 1;
+    DEB_ACTIVE_NODES(("(%u) tab(%u,%u), own: %u, prim: %u, pref: %u"
+                      ", nodes(%u,%u,%u), count: %u",
+                      instance(),
+                      scanptr.p->scanTableref,
+                      scanFragId,
+                      ownNodeId,
+                      primaryNodeId,
+                      preferredNodeId,
+                      conf->nodes[0],
+                      conf->nodes[1],
+                      conf->nodes[2],
+                      count));
+
+  }
+#endif
 
   BlockReference primaryBlockInstance = blockInstance;
   BlockReference preferredBlockInstance = blockInstance;
