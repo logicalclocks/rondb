@@ -17215,9 +17215,14 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
   if (preferredNodeId != ownNodeId ||
       primaryNodeId != ownNodeId)
   {
+    ApiConnectRecordPtr apiPtr;
+    apiPtr.i = scanptr.p->scanApiRec;
+    ndbrequire(c_apiConnectRecordPool.getUncheckedPtrRW(apiPtr));
     Uint32 count = (conf->reqinfo & 0xFFFF) + 1;
+    Uint32 index = fragLocationPtr.p->m_next_index;
     DEB_ACTIVE_NODES(("(%u) tab(%u,%u), own: %u, prim: %u, pref: %u"
-                      ", nodes(%u,%u,%u), count: %u",
+                      ", nodes(%u,%u,%u), count: %u, transid(%u,%u)"
+                      ", index: %u",
                       instance(),
                       scanptr.p->scanTableref,
                       scanFragId,
@@ -17227,7 +17232,10 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
                       conf->nodes[0],
                       conf->nodes[1],
                       conf->nodes[2],
-                      count));
+                      count,
+                      apiPtr.p->transid[0],
+                      apiPtr.p->transid[1],
+                      index));
 
   }
 #endif
@@ -18323,6 +18331,24 @@ bool Dbtc::sendScanFragReq(Signal* signal,
   scanFragP.p->lqhScanFragId = fragId;
   scanFragP.p->m_connectCount = getNodeInfo(nodeId).m_connectCount;
 
+#ifdef DEBUG_ACTIVE_NODES
+  Uint32 origNodeId = nodeId;
+  if (nodeId != getOwnNodeId())
+  {
+    Uint32 signalId = signal->header.theSignalId;
+    DEB_ACTIVE_NODES(("(%u) tab(%u,%u), pref: %u, transid(%u,%u), index: %u"
+                      ", signalId: %u",
+                      instance(),
+                      scanptr.p->scanTableref,
+                      fragId,
+                      nodeId,
+                      apiConnectptr.p->transid[0],
+                      apiConnectptr.p->transid[1],
+                      fragLocationPtr.p->m_first_index,
+                      signalId));
+  }
+#endif
+  
   SectionHandle sections(this);
   sections.m_ptr[0].i = scanP->scanAttrInfoPtr;
   sections.m_ptr[1].i = scanP->scanKeyInfoPtr;
@@ -18552,6 +18578,17 @@ bool Dbtc::sendScanFragReq(Signal* signal,
         }
       }
     }
+#ifdef DEBUG_ACTIVE_NODES
+    Uint32 currentNodeId = refToNode(ref);
+    Uint32 signalId = signal->header.theSignalId;
+    if (currentNodeId != origNodeId)
+    {
+      DEB_ACTIVE_NODES(("(%u) signalId: %u, new node: %u",
+                        instance(),
+                        signalId,
+                        currentNodeId));
+    }
+#endif
     sendBatchedFragmentedSignal(NodeReceiverGroup(ref),
                                 GSN_SCAN_FRAGREQ,
                                 signal,
