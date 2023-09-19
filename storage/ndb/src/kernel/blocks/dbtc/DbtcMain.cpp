@@ -17047,7 +17047,7 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
 
   req->tableId = scanptr.p->scanTableref;
   req->hashValue = scanFragId;
-  req->distr_key_indicator = ZTRUE;
+  Uint32 distr_key_indicator = ZTRUE;
   req->scan_indicator = ZTRUE;
   req->anyNode = scanptr.p->m_read_any_node;
   req->jamBufferPtr = jamBuffer();
@@ -17064,8 +17064,9 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
     tabPtr.i = scanptr.p->scanTableref;
     ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
 
-    req->distr_key_indicator = tabPtr.p->get_user_defined_partitioning();
+    distr_key_indicator = tabPtr.p->get_user_defined_partitioning();
   }
+  req->distr_key_indicator = distr_key_indicator;
   c_dih->execDIGETNODESREQ(signal);
   jamEntryDebug();
   /**
@@ -17088,7 +17089,7 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
   NodeId nodeId = conf->nodes[0];
   const NodeId ownNodeId = getOwnNodeId();
   ndbassert(scanFragId == lqhScanFragId ||
-            req->distr_key_indicator == 0);
+            distr_key_indicator == 0);
 
   arrGuard(nodeId, MAX_NDB_NODES);
   {
