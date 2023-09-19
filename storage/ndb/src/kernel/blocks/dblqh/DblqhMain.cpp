@@ -19517,8 +19517,33 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
   if (!scanPtr->lcpScan &&
       !m_is_query_block)
   {
+    /**
+     * The m_scanFragReqCount is a union with m_fragCopyRowIns that tracks
+     * the number of rows inserted during the Copy fragment process.
+     * This variable is set to 0 by the signal COPY_ACTIVEREQ after completing
+     * the copy fragment process for the fragment. Coming here we should have
+     * increased m_scanFragReqCount after receiving SCAN_FRAGREQ, however a
+     * COPY_ACTIVEREQ arriving SCAN_FRAGREQ will set this variable to 0.
+     *
+     * Normally this behaviour would never happen since COPY_ACTIVEREQ is
+     * sent long before the fragment is allowed to be used for scans.
+     * However scans on ordered index actually uses the table distribution
+     * of the primary table. This table is usually handled before the
+     * ordered index table. Thus COPY_ACTIVEREQ on an ordered index table
+     * could see a value of 0 in the execution of a SCAN_NEXTREQ or
+     * CONTINUEB signal. But for the base table it should never be 0.
+     *
+     * To understand this behaviour a number of log messages was added
+     * DEB_ACTIVE_NODES in DBTC and DBDIH.
+     */
     Fragrecord::UsageStat& useStat = fragptr.p->m_useStat;
-    ndbassert(useStat.m_scanFragReqCount > 0);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    TablerecPtr tablePtr;
+    tablePtr.i = regTcPtr->tableref;
+    ptrCheckGuard(tablePtr, ctabrecFileSize, tablerec);
+    ndbassert(useStat.m_scanFragReqCount > 0 &&
+              !DictTabInfo::isOrderedIndex(tablePtr.p->tableType));
+#endif
 
     useStat.m_scanRowsExamined++;
     useStat.m_scanInstructionCount += conf->noExecInstructions;
