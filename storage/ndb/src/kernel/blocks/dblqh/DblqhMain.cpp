@@ -19541,8 +19541,8 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
     TablerecPtr tablePtr;
     tablePtr.i = regTcPtr->tableref;
     ptrCheckGuard(tablePtr, ctabrecFileSize, tablerec);
-    ndbassert(useStat.m_scanFragReqCount > 0 &&
-              !DictTabInfo::isOrderedIndex(tablePtr.p->tableType));
+    ndbassert(useStat.m_scanFragReqCount > 0 ||
+              DictTabInfo::isOrderedIndex(tablePtr.p->tableType));
 #endif
 
     useStat.m_scanRowsExamined++;
