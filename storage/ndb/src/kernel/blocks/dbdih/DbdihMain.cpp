@@ -17408,6 +17408,18 @@ Dbdih::make_new_table_read_and_writeable(TabRecordPtr tabPtr,
       getFragstore(tabPtr.p, i, fragPtr);
       fragPtr.p->distributionKey = (fragPtr.p->distributionKey + 1) & 0xFF;
       fragPtr.p->changeNumber++;
+      DEB_ACTIVE_NODES(("make_new_table_read_and_writeable: tab(%u,%u),"
+                        " distKey: %u, senderSignalId: %u, signalId: %u"
+                        ", activeNodes[] = [%u,%u,%u] changeNumber: %u",
+                        fragPtr.p->tableId,
+                        fragPtr.p->fragId,
+                        fragPtr.p->distributionKey,
+                        signal->header.theSendersSignalId,
+                        signal->header.theSignalId,
+                        fragPtr.p->activeNodes[0],
+                        fragPtr.p->activeNodes[1],
+                        fragPtr.p->activeNodes[2],
+                        fragPtr.p->changeNumber));
     }
     DIH_TAB_WRITE_UNLOCK(tabPtr.p);
 
@@ -17515,6 +17527,18 @@ Dbdih::make_table_use_new_replica(Signal *signal,
     fragPtr.p->distributionKey &= 255;
     fragPtr.p->onlineSynchOngoing = 1;
     fragPtr.p->changeNumber++;
+    DEB_ACTIVE_NODES(("insertBackup: tab(%u,%u),"
+                      " distKey: %u, senderSignalId: %u, signalId: %u"
+                      ", activeNodes[] = [%u,%u,%u] changeNumber: %u",
+                      fragPtr.p->tableId,
+                      fragPtr.p->fragId,
+                      fragPtr.p->distributionKey,
+                      signal->header.theSendersSignalId,
+                      signal->header.theSignalId,
+                      fragPtr.p->activeNodes[0],
+                      fragPtr.p->activeNodes[1],
+                      fragPtr.p->activeNodes[2],
+                      fragPtr.p->changeNumber));
     break;
   case UpdateFragStateReq::COMMIT_STORED:
     jam();
@@ -17533,7 +17557,6 @@ Dbdih::make_table_use_new_replica(Signal *signal,
     linkStoredReplica(fragPtr, replicaPtr);
     fragPtr.p->primaryNode = primaryNode;
     fragPtr.p->onlineSynchOngoing = 0;
-    fragPtr.p->changeNumber++;
     updateNodeInfo(signal, fragPtr);
     break;
   case UpdateFragStateReq::START_LOGGING:
@@ -17568,15 +17591,19 @@ Dbdih::make_table_use_new_node_order(Signal *signal,
     fragPtr.p->activeNodes[i] = newNodeOrder[i];
   }//for
   fragPtr.p->changeNumber++;
-  DIH_TAB_WRITE_UNLOCK(tabPtr.p);
   DEB_ACTIVE_NODES(("make_table_use_new_node_order: tab(%u,%u),"
-                    " senderSignalId: %u, activeNodes[0] = %u,"
-                    " changeNumber: %u",
+                    " distKey: %u, senderSignalId: %u, signalId: %u"
+                    ", activeNodes[] = [%u,%u,%u] changeNumber: %u",
                     fragPtr.p->tableId,
                     fragPtr.p->fragId,
+                    fragPtr.p->distributionKey,
                     signal->header.theSendersSignalId,
+                    signal->header.theSignalId,
                     fragPtr.p->activeNodes[0],
+                    fragPtr.p->activeNodes[1],
+                    fragPtr.p->activeNodes[2],
                     fragPtr.p->changeNumber));
+  DIH_TAB_WRITE_UNLOCK(tabPtr.p);
 }
 
 /**
@@ -27832,12 +27859,17 @@ void Dbdih::updateNodeInfo(Signal *signal, FragmentstorePtr fragPtr)
     }//if
   }//for
   fragPtr.p->changeNumber++;
-  DEB_ACTIVE_NODES(("updateNodeInfo: tab(%u,%u), senderSignalId: %u"
-                    ", activeNodes[0] = %u, changeNumber: %u",
+  DEB_ACTIVE_NODES(("updateNodeInfo: tab(%u,%u),"
+                    " distKey: %u, senderSignalId: %u, signalId: %u"
+                    ", activeNodes[] = [%u,%u,%u] changeNumber: %u",
                     fragPtr.p->tableId,
                     fragPtr.p->fragId,
+                    fragPtr.p->distributionKey,
                     signal->header.theSendersSignalId,
+                    signal->header.theSignalId,
                     fragPtr.p->activeNodes[0],
+                    fragPtr.p->activeNodes[1],
+                    fragPtr.p->activeNodes[2],
                     fragPtr.p->changeNumber));
 }//Dbdih::updateNodeInfo()
 
