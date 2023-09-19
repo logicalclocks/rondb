@@ -17087,6 +17087,7 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
   const Uint32 lqhScanFragId = conf->fragId;
   NodeId nodeId = conf->nodes[0];
   const NodeId ownNodeId = getOwnNodeId();
+  ndbassert(scanFragId == lqhScanFragId);
 
   arrGuard(nodeId, MAX_NDB_NODES);
   {
@@ -17212,18 +17213,17 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
   }
 
 #ifdef DEBUG_ACTIVE_NODES
-  if (preferredNodeId != ownNodeId ||
-      primaryNodeId != ownNodeId)
   {
     ApiConnectRecordPtr apiPtr;
     apiPtr.i = scanptr.p->scanApiRec;
     ndbrequire(c_apiConnectRecordPool.getUncheckedPtrRW(apiPtr));
     Uint32 count = (conf->reqinfo & 0xFFFF) + 1;
     Uint32 index = fragLocationPtr.p->m_next_index;
-    DEB_ACTIVE_NODES(("(%u) tab(%u,%u), own: %u, prim: %u, pref: %u"
+    DEB_ACTIVE_NODES(("(%u) scan: %u, tab(%u,%u), own: %u, prim: %u, pref: %u"
                       ", nodes(%u,%u,%u), count: %u, transid(%u,%u)"
                       ", index: %u",
                       instance(),
+                      scanptr.i,
                       scanptr.p->scanTableref,
                       scanFragId,
                       ownNodeId,
@@ -18314,6 +18314,9 @@ bool Dbtc::sendScanFragReq(Signal* signal,
   ScanRecord* const scanP = scanptr.p;
 
   Uint32 fragId, primaryLqhBlockRef, preferredLqhBlockRef;
+#ifdef DEBUG_ACTIVE_NODES
+  Uint32 index = fragLocationPtr.p->m_first_index;
+#endif
   get_and_step_next_frag_location(fragLocationPtr,
                                   scanptr.p,
                                   fragId,
@@ -18333,20 +18336,15 @@ bool Dbtc::sendScanFragReq(Signal* signal,
 
 #ifdef DEBUG_ACTIVE_NODES
   Uint32 origNodeId = nodeId;
-  if (nodeId != getOwnNodeId())
   {
     ApiConnectRecordPtr apiPtr;
     apiPtr.i = scanptr.p->scanApiRec;
     ndbrequire(c_apiConnectRecordPool.getUncheckedPtrRW(apiPtr));
     Uint32 signalId = signal->header.theSignalId;
-    Uint32 index = 100;
-    if (fragLocationPtr.p != nullptr)
-    {
-      index = fragLocationPtr.p->m_first_index;
-    }
-    DEB_ACTIVE_NODES(("(%u) tab(%u,%u), pref: %u, transid(%u,%u), index: %u"
-                      ", signalId: %u",
+    DEB_ACTIVE_NODES(("(%u) scan: %u, tab(%u,%u), pref: %u, transid(%u,%u),"
+                      " index: %u, signalId: %u",
                       instance(),
+                      scanptr.i,
                       scanptr.p->scanTableref,
                       fragId,
                       nodeId,
