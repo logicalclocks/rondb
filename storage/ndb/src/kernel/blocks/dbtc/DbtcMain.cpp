@@ -17220,13 +17220,16 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
     ndbrequire(c_apiConnectRecordPool.getUncheckedPtrRW(apiPtr));
     Uint32 count = (conf->reqinfo & 0xFFFF) + 1;
     Uint32 index = fragLocationPtr.p->m_next_index;
-    DEB_ACTIVE_NODES(("(%u) scan: %u, tab(%u,%u), own: %u, prim: %u, pref: %u"
+    DEB_ACTIVE_NODES(("(%u) scan: %u, tab(%u,%u), fragChange: %u, tabChange: %u"
+                      ", own: %u, prim: %u, pref: %u"
                       ", nodes(%u,%u,%u), count: %u, transid(%u,%u)"
                       ", index: %u",
                       instance(),
                       scanptr.i,
                       scanptr.p->scanTableref,
                       lqhScanFragId,
+                      conf->fragChangeNumber,
+                      conf->tabChangeNumber,
                       ownNodeId,
                       primaryNodeId,
                       preferredNodeId,

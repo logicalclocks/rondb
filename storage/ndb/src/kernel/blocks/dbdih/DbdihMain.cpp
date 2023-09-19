@@ -5366,7 +5366,8 @@ void Dbdih::execUPDATE_FRAG_STATEREQ(Signal* signal)
   }
   ndbrequire(frReplicaPtr.i != RNIL64);
 
-  make_table_use_new_replica(tabPtr,
+  make_table_use_new_replica(signal,
+                             tabPtr,
                              fragPtr,
                              primaryNode,
                              frReplicaPtr,
@@ -11691,7 +11692,11 @@ void Dbdih::removeNodeFromTables(Signal* signal,
 }
 
 #define DIH_TAB_WRITE_LOCK(tabPtrP) \
-  do { assertOwnThread(); tabPtrP->m_lock.write_lock(); } while (0)
+  do { \
+    assertOwnThread(); \
+    tabPtrP->m_lock.write_lock(); \
+    tabPtr.p->changeNumber++; \
+  } while (0)
 
 #define DIH_TAB_WRITE_UNLOCK(tabPtrP) \
   do { assertOwnThread(); tabPtrP->m_lock.write_unlock(); } while (0)
@@ -11808,7 +11813,7 @@ void Dbdih::removeNodeFromTable(Signal* signal,
      *  see bug#15587
      *
      */
-    updateNodeInfo(fragPtr);
+    updateNodeInfo(signal, fragPtr);
     noOfRemainingLcpReplicas += fragPtr.p->noLcpReplicas;
   }
   DIH_TAB_WRITE_UNLOCK(tabPtr.p);
@@ -14858,7 +14863,7 @@ void Dbdih::execDIADDTABREQ(Signal* signal)
     jam();
     FragmentstorePtr fragPtr;
     getFragstore(tabPtr.p, fragId, fragPtr);
-    updateNodeInfo(fragPtr);
+    updateNodeInfo(signal, fragPtr);
   }
   initTableFile(tabPtr);
   tabPtr.p->tabCopyStatus = TabRecord::CS_ADD_TABLE_MASTER;
@@ -15706,7 +15711,8 @@ void Dbdih::execALTER_TAB_REQ(Signal * signal)
 }
 
 Uint32
-Dbdih::add_fragments_to_table(Ptr<TabRecord> tabPtr,
+Dbdih::add_fragments_to_table(Signal *signal,
+                              TabRecordPtr tabPtr,
                               const Uint16 buf[],
                               const Uint32 bufLen)
 {
@@ -15807,7 +15813,7 @@ Dbdih::add_fragments_to_table(Ptr<TabRecord> tabPtr,
     FragmentstorePtr fragPtr;
     Uint32 fragId = current + i;
     getFragstore(tabPtr.p, fragId, fragPtr);
-    updateNodeInfo(fragPtr);
+    updateNodeInfo(signal, fragPtr);
   }
   return 0;
 error:
@@ -16816,6 +16822,8 @@ loop:
       (fragPtr.p->distributionKey << 16);
     conf->nodes[MAX_REPLICAS + 2] = dihGetInstanceKey(fragPtr);
   }
+  conf->fragChangeNumber = fragPtr.p->changeNumber;
+  conf->tabChangeNumber = tabPtr.p->changeNumber;
 
 check_exit:
   if (unlikely(!tabPtr.p->m_lock.read_unlock(tab_val)))
@@ -17266,7 +17274,7 @@ Dbdih::start_add_fragments_in_new_table(TabRecordPtr tabPtr,
   DIH_TAB_WRITE_LOCK(tabPtr.p);
 
   Uint32 save = tabPtr.p->totalfragments;
-  if ((err = add_fragments_to_table(tabPtr, buf, bufLen)))
+  if ((err = add_fragments_to_table(signal, tabPtr, buf, bufLen)))
   {
     jam();
     DIH_TAB_WRITE_UNLOCK(tabPtr.p);
@@ -17399,6 +17407,7 @@ Dbdih::make_new_table_read_and_writeable(TabRecordPtr tabPtr,
       FragmentstorePtr fragPtr;
       getFragstore(tabPtr.p, i, fragPtr);
       fragPtr.p->distributionKey = (fragPtr.p->distributionKey + 1) & 0xFF;
+      fragPtr.p->changeNumber++;
     }
     DIH_TAB_WRITE_UNLOCK(tabPtr.p);
 
@@ -17476,13 +17485,15 @@ Dbdih::make_old_table_non_writeable(TabRecordPtr tabPtr,
  * the fragment replica is also readable.
  */
 void
-Dbdih::make_table_use_new_replica(TabRecordPtr tabPtr,
+Dbdih::make_table_use_new_replica(Signal *signal,
+                                  TabRecordPtr tabPtr,
                                   FragmentstorePtr fragPtr,
                                   Uint32 primaryNode,
                                   ReplicaRecordPtr replicaPtr,
                                   Uint32 replicaType,
                                   Uint32 destNodeId)
 {
+  (void)signal;
   D("make_table_use_new_replica: tableId: " << tabPtr.i <<
     " fragId = " << fragPtr.p->fragId <<
     " replicaType = " << replicaType <<
@@ -17503,6 +17514,7 @@ Dbdih::make_table_use_new_replica(TabRecordPtr tabPtr,
     fragPtr.p->distributionKey++;
     fragPtr.p->distributionKey &= 255;
     fragPtr.p->onlineSynchOngoing = 1;
+    fragPtr.p->changeNumber++;
     break;
   case UpdateFragStateReq::COMMIT_STORED:
     jam();
@@ -17521,7 +17533,8 @@ Dbdih::make_table_use_new_replica(TabRecordPtr tabPtr,
     linkStoredReplica(fragPtr, replicaPtr);
     fragPtr.p->primaryNode = primaryNode;
     fragPtr.p->onlineSynchOngoing = 0;
-    updateNodeInfo(fragPtr);
+    fragPtr.p->changeNumber++;
+    updateNodeInfo(signal, fragPtr);
     break;
   case UpdateFragStateReq::START_LOGGING:
     jam();
@@ -17537,11 +17550,13 @@ Dbdih::make_table_use_new_replica(TabRecordPtr tabPtr,
  * the primary replicas are balanced over all nodes.
  */
 void
-Dbdih::make_table_use_new_node_order(TabRecordPtr tabPtr,
+Dbdih::make_table_use_new_node_order(Signal *signal,
+                                     TabRecordPtr tabPtr,
                                      FragmentstorePtr fragPtr,
                                      Uint32 numReplicas,
                                      Uint32 *newNodeOrder)
 {
+  (void)signal;
   D("make_table_use_new_node_order: tableId = " << tabPtr.i <<
     " fragId = " << fragPtr.p->fragId);
 
@@ -17552,11 +17567,16 @@ Dbdih::make_table_use_new_node_order(TabRecordPtr tabPtr,
     ndbrequire(i < MAX_REPLICAS);
     fragPtr.p->activeNodes[i] = newNodeOrder[i];
   }//for
+  fragPtr.p->changeNumber++;
   DIH_TAB_WRITE_UNLOCK(tabPtr.p);
-  DEB_ACTIVE_NODES(("make_table_use_new_node_order: tab(%u,%u), activeNodes[0] = %u",
+  DEB_ACTIVE_NODES(("make_table_use_new_node_order: tab(%u,%u),"
+                    " senderSignalId: %u, activeNodes[0] = %u,"
+                    " changeNumber: %u",
                     fragPtr.p->tableId,
                     fragPtr.p->fragId,
-                    fragPtr.p->activeNodes[0]));
+                    signal->header.theSendersSignalId,
+                    fragPtr.p->activeNodes[0],
+                    fragPtr.p->changeNumber));
 }
 
 /**
@@ -20019,7 +20039,7 @@ void Dbdih::closingTableSrLab(Signal* signal, FileRecordPtr filePtr)
   TabRecordPtr tabPtr;
   tabPtr.i = filePtr.p->tabRef;
   ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
-  resetReplicaSr(tabPtr);
+  resetReplicaSr(signal, tabPtr);
 
   signal->theData[0] = DihContinueB::ZCOPY_TABLE;
   signal->theData[1] = filePtr.p->tabRef;
@@ -20264,7 +20284,7 @@ Dbdih::getTabInfo_sendComplete(Signal * signal,
 }
 
 void
-Dbdih::resetReplicaSr(TabRecordPtr tabPtr){
+Dbdih::resetReplicaSr(Signal *signal, TabRecordPtr tabPtr){
 
   const Uint32 newestRestorableGCI = SYSFILE->newestRestorableGCI;
   
@@ -20423,7 +20443,7 @@ Dbdih::resetReplicaSr(TabRecordPtr tabPtr){
     jam();
     FragmentstorePtr fragPtr;
     getFragstore(tabPtr.p, i, fragPtr);
-    updateNodeInfo(fragPtr);
+    updateNodeInfo(signal, fragPtr);
   }
 }
 
@@ -20669,7 +20689,7 @@ Dbdih::copyTabReq_complete(Signal* signal, TabRecordPtr tabPtr){
        * we stay in synch with older versions view on who is the primary
        * node.
        */
-      updateNodeInfo(fragPtr);
+      updateNodeInfo(signal, fragPtr);
     }//for
   }//if
   c_lcp_id_while_copy_meta_data = RNIL;
@@ -25518,6 +25538,7 @@ void Dbdih::initFragstore(FragmentstorePtr fragPtr,
                           Uint32 fragId,
                           Uint32 tableId)
 {
+  fragPtr.p->changeNumber = 0;
   fragPtr.p->nextPool = RNIL64;
   fragPtr.p->fragId = fragId;
   fragPtr.p->tableId = tableId;
@@ -25673,6 +25694,7 @@ void Dbdih::initTable(TabRecordPtr tabPtr)
 {
   new (tabPtr.p) TabRecord();
   NdbMutex_Init(&tabPtr.p->theMutex);
+  tabPtr.p->changeNumber = 0;
   tabPtr.p->method = TabRecord::NOTDEFINED;
   tabPtr.p->tabStatus = TabRecord::TS_IDLE;
   tabPtr.p->noOfWords = 0;
@@ -27761,8 +27783,9 @@ Dbdih::startGcpMonitor(Signal* signal)
  * preferredPrimary if this node is alive. The node is for sure not
  * starting when this happens.
 */
-void Dbdih::updateNodeInfo(FragmentstorePtr fragPtr)
+void Dbdih::updateNodeInfo(Signal *signal, FragmentstorePtr fragPtr)
 {
+  (void)signal;
   bool use_pref_primary = !is_dynamic_primary_replicas_supported();
   ReplicaRecordPtr replicatePtr;
   Uint32 index = 0;
@@ -27808,10 +27831,14 @@ void Dbdih::updateNodeInfo(FragmentstorePtr fragPtr)
       break;
     }//if
   }//for
-  DEB_ACTIVE_NODES(("updateNodeInfo: tab(%u,%u), activeNodes[0] = %u",
+  fragPtr.p->changeNumber++;
+  DEB_ACTIVE_NODES(("updateNodeInfo: tab(%u,%u), senderSignalId: %u"
+                    ", activeNodes[0] = %u, changeNumber: %u",
                     fragPtr.p->tableId,
                     fragPtr.p->fragId,
-                    fragPtr.p->activeNodes[0]));
+                    signal->header.theSendersSignalId,
+                    fragPtr.p->activeNodes[0],
+                    fragPtr.p->changeNumber));
 }//Dbdih::updateNodeInfo()
 
 void Dbdih::writeFragment(RWFragment* wf, FragmentstorePtr fragPtr) 
@@ -29177,7 +29204,8 @@ void Dbdih::execDIH_SWITCH_REPLICA_REQ(Signal* signal)
     return;
   }//if
 
-  make_table_use_new_node_order(tabPtr,
+  make_table_use_new_node_order(signal,
+                                tabPtr,
                                 fragPtr,
                                 noOfReplicas,
                                 &req->newNodeOrder[0]);

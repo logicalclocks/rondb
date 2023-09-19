@@ -267,6 +267,7 @@ public:
   struct Fragmentstore {
     Uint32 m_magic;
     Uint32 tableId;
+    Uint32 changeNumber;
     Uint16 activeNodes[MAX_REPLICAS];
 
     Uint64 nextPool;
@@ -771,6 +772,8 @@ public:
       Uint32 tabUserPtr;
     } m_dropTab;
     Uint32 connectrec;
+
+    Uint32 changeNumber;
 
     // set in local protocol during prepare until commit
     /**
@@ -1383,7 +1386,7 @@ private:
                       Uint32 fragId,
                       bool rcu_lock_held);
   void addTable_closeConf(Signal* signal, Uint32 tabPtrI);
-  void resetReplicaSr(TabRecordPtr tabPtr);
+  void resetReplicaSr(Signal*, TabRecordPtr tabPtr);
   void resetReplicaLcp(ReplicaRecord * replicaP, Uint32 stopGci);
   void resetReplica(ReplicaRecordPtr);
 
@@ -1409,13 +1412,15 @@ private:
                                          ConnectRecordPtr,
                                          Signal*);
   bool make_old_table_non_writeable(TabRecordPtr, ConnectRecordPtr);
-  void make_table_use_new_replica(TabRecordPtr,
+  void make_table_use_new_replica(Signal*,
+                                  TabRecordPtr,
                                   FragmentstorePtr fragPtr,
                                   Uint32 primaryNode,
                                   ReplicaRecordPtr,
                                   Uint32 replicaType,
                                   Uint32 destNodeId);
-  void make_table_use_new_node_order(TabRecordPtr,
+  void make_table_use_new_node_order(Signal*,
+                                     TabRecordPtr,
                                      FragmentstorePtr,
                                      Uint32,
                                      Uint32*);
@@ -1731,7 +1736,7 @@ private:
   void searchStoredReplicas(FragmentstorePtr regFragptr);
   bool setup_create_replica(FragmentstorePtr, CreateReplicaRecord*,
 			    ReplicaRecordPtr);
-  void updateNodeInfo(FragmentstorePtr regFragptr);
+  void updateNodeInfo(Signal *, FragmentstorePtr regFragptr);
 
 //------------------------------------
 // Fragment allocation, deallocation and
@@ -1745,7 +1750,8 @@ private:
                            FragmentstorePtr & ptr);
 
   void wait_old_scan(Signal*);
-  Uint32 add_fragments_to_table(Ptr<TabRecord>,
+  Uint32 add_fragments_to_table(Signal*,
+                                TabRecordPtr,
                                 const Uint16 buf[],
                                 const Uint32 bufLen);
   Uint32 add_fragment_to_table(Ptr<TabRecord>, Uint32, FragmentstorePtr&);
