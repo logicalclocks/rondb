@@ -17087,7 +17087,8 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
   const Uint32 lqhScanFragId = conf->fragId;
   NodeId nodeId = conf->nodes[0];
   const NodeId ownNodeId = getOwnNodeId();
-  ndbassert(scanFragId == lqhScanFragId);
+  ndbassert(scanFragId == lqhScanFragId ||
+            req->distr_key_indicator == 0);
 
   arrGuard(nodeId, MAX_NDB_NODES);
   {
@@ -17225,7 +17226,7 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
                       instance(),
                       scanptr.i,
                       scanptr.p->scanTableref,
-                      scanFragId,
+                      lqhScanFragId,
                       ownNodeId,
                       primaryNodeId,
                       preferredNodeId,
