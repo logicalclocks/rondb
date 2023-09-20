@@ -116,6 +116,13 @@ static const Uint32 WaitTableStateChangeMillis = 10;
 //#define DEBUG_COPY_ACTIVE 1
 //#define DEBUG_TCGETOPSIZE
 //#define DEBUG_ACTIVE_NODES 1
+#define DEBUG_NODE_STATUS 1
+#endif
+
+#ifdef DEBUG_NODE_STATUS
+#define DEB_NODE_STATUS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_NODE_STATUS(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_ACTIVE_NODES
@@ -1689,6 +1696,8 @@ void Dbdih::execREAD_CONFIG_REQ(Signal* signal)
       ptrAss(nodePtr, nodeRecord);
       initNodeRecord(nodePtr);
       nodePtr.p->nodeGroup = ZNIL;
+      DEB_NODE_STATUS(("node[%u].nodeGroup = ZNIL, line: %u",
+                       nodePtr.i, __LINE__));
       set_node_group_id(nodePtr.i, ZNIL);
     }
     initNodeRecoveryStatus();
@@ -1717,12 +1726,16 @@ void Dbdih::execREAD_CONFIG_REQ(Signal* signal)
           jam();
           nodePtr.p->nodeGroup = ng;
           set_node_group_id(nodePtr.i, ng);
+          DEB_NODE_STATUS(("node[%u].nodeGroup = %u, line: %u",
+                           nodePtr.i, ng, __LINE__));
         }
         else
         {
           jam();
           nodePtr.p->nodeGroup = ZNIL;
           set_node_group_id(nodePtr.i, ZNIL);
+          DEB_NODE_STATUS(("node[%u].nodeGroup = ZNIL, line: %u",
+                           nodePtr.i, __LINE__));
         }
       }
     }
@@ -2951,6 +2964,8 @@ ref:
   c_nodeStartMaster.m_outstandingGsn =  GSN_START_INFOREQ;
   
   setNodeStatus(nodeId, NodeRecord::STARTING);
+  DEB_NODE_STATUS(("Node[%u].nodeStatus = STARTING, line: %u",
+                   nodeId, __LINE__));
   /**
    * But if it's a NodeState::ST_INITIAL_NODE_RESTART
    *
@@ -3031,6 +3046,8 @@ void Dbdih::startInfoReply(Signal* signal, Uint32 nodeId)
     sendSignal(calcDihBlockRef(c_nodeStartMaster.startNode), 
 	       GSN_START_PERMREF, signal, StartPermRef::SignalLength, JBB);
     setNodeStatus(c_nodeStartMaster.startNode, NodeRecord::DEAD);
+    DEB_NODE_STATUS(("Node[%u].nodeStatus = DEAD, line: %u",
+                     nodeId, __LINE__));
     nodeResetStart(signal);
   }//if
 }//Dbdih::startInfoReply()
@@ -4746,6 +4763,8 @@ void Dbdih::execSTART_INFOREQ(Signal* signal)
     return;
   }//if
   setNodeStatus(startNode, NodeRecord::STARTING);
+  DEB_NODE_STATUS(("Node[%u].nodeStatus = STARTING, line: %u",
+                   startNode, __LINE__));
   if (req->typeStart == NodeState::ST_INITIAL_NODE_RESTART) {
     jam();
     g_eventLogger->info("Started invalidation of node %u", startNode);
@@ -4831,8 +4850,12 @@ void Dbdih::execINCL_NODEREQ(Signal* signal)
 
   initNodeRecord(nodePtr);
   nodePtr.p->nodeGroup = TnodeGroup;
+  DEB_NODE_STATUS(("node[%u].nodeGroup = %u, line: %u",
+                   nodePtr.i, TnodeGroup, __LINE__));
   nodePtr.p->activeStatus = TsaveState;
   nodePtr.p->nodeStatus = NodeRecord::ALIVE;
+  DEB_NODE_STATUS(("Node[%u].nodeStatus = ALIVE, line: %u",
+                   nodePtr.i, __LINE__));
   nodePtr.p->m_inclDihLcp = true;
   make_node_usable(nodePtr.p);
   removeDeadNode(nodePtr);
@@ -10101,6 +10124,8 @@ void Dbdih::execNODE_FAILREP(Signal* signal)
       jam();
       con_lineNodes--;
       TNodePtr.p->nodeStatus = NodeRecord::DIED_NOW;
+      DEB_NODE_STATUS(("Node[%u].nodeStatus = DIED_NOW, line: %u",
+                       TNodePtr.i, __LINE__));
       removeAlive(TNodePtr);
       insertDeadNode(TNodePtr);
     }//if
@@ -10509,6 +10534,8 @@ void Dbdih::failedNodeSynchHandling(Signal* signal,
     // node failure protocols.
     /*----------------------------------------------------*/
     failedNodePtr.p->nodeStatus = NodeRecord::DEAD;
+    DEB_NODE_STATUS(("Node[%u].nodeStatus = DEAD, line: %u",
+                     failedNodePtr.i, __LINE__));
     /**-----------------------------------------------------------------------
      * WE HAVE COMPLETED HANDLING THE NODE FAILURE IN DIH. WE CAN REPORT THIS 
      * TO DIH THAT WAIT FOR THE OTHER BLOCKS TO BE CONCLUDED AS WELL.
@@ -12849,6 +12876,8 @@ void Dbdih::nodeFailCompletedCheckLab(Signal* signal,
   /* ---------------------------------------------------------------------- */
   jam();
   failedNodePtr.p->nodeStatus = NodeRecord::DEAD;
+  DEB_NODE_STATUS(("Node[%u].nodeStatus = DEAD, line: %u",
+                   failedNodePtr.i, __LINE__));
   failedNodePtr.p->recNODE_FAILREP = ZFALSE;
   
   /* ---------------------------------------------------------------------- */
@@ -14132,6 +14161,7 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal * signal)
           {
             jam();
             jamLineDebug(i);
+            jamLineDebug(cnoOfNodeGroups);
             ndbassert(tmp_fragments_per_node[i] == 0);
             tmp_fragments_per_node[i] = ~(Uint16)0;
           }
@@ -26156,6 +26186,8 @@ void Dbdih::makeNodeGroups(Uint32 nodeArray[])
       /* nodeGroup can never be set to RNIL */
       ndbabort();
       mngNodeptr.p->nodeGroup = NGPtr.i;
+      DEB_NODE_STATUS(("node[%u].nodeGroup = %u, line: %u",
+                       mngNodeptr.i, NGPtr.i, __LINE__));
       set_node_group_id(mngNodeptr.i, NGPtr.i);
       NGPtr.p->nodesInGroup[NGPtr.p->nodeCount++] = mngNodeptr.i;
 
@@ -26516,6 +26548,8 @@ Dbdih::makePrnList(ReadNodesConf * readNodes, Uint32 nodeArray[])
     {
       jam();
       nodePtr.p->nodeStatus = NodeRecord::ALIVE;
+      DEB_NODE_STATUS(("Node[%u].nodeStatus = ALIVE, line: %u",
+                       nodePtr.i, __LINE__));
       nodePtr.p->useInTransactions = true;
       nodePtr.p->copyCompleted = 1;
       nodePtr.p->m_inclDihLcp = true;
@@ -26523,6 +26557,8 @@ Dbdih::makePrnList(ReadNodesConf * readNodes, Uint32 nodeArray[])
     } else {
       jam();
       nodePtr.p->nodeStatus = NodeRecord::DEAD;
+      DEB_NODE_STATUS(("Node[%u].nodeStatus = DEAD, line: %u",
+                       nodePtr.i, __LINE__));
       insertDeadNode(nodePtr);
     }//if
   }//for
@@ -27595,6 +27631,10 @@ void Dbdih::setNodeGroups()
     case Sysfile::NS_TakeOver:
       jam();
       sngNodeptr.p->nodeGroup = SYSFILE->getNodeGroup(sngNodeptr.i);
+      DEB_NODE_STATUS(("node[%u].nodeGroup = %u, line: %u",
+                       sngNodeptr.i,
+                       SYSFILE->getNodeGroup(sngNodeptr.i),
+                       __LINE__));
       NGPtr.i = sngNodeptr.p->nodeGroup;
       ptrCheckGuard(NGPtr, MAX_NDB_NODE_GROUPS, nodeGroupRecord);
       NGPtr.p->nodesInGroup[NGPtr.p->nodeCount] = sngNodeptr.i;
@@ -27614,6 +27654,8 @@ void Dbdih::setNodeGroups()
     case Sysfile::NS_Configured:
       jam();
       sngNodeptr.p->nodeGroup = ZNIL;
+      DEB_NODE_STATUS(("node[%u].nodeGroup = ZNIL, line: %u",
+                       sngNodeptr.i, __LINE__));
       set_node_group_id(sngNodeptr.i, ZNIL);
       break;
     default:
@@ -30273,6 +30315,7 @@ bool Dbdih::isActiveMaster()
 void Dbdih::initNodeRecord(NodeRecordPtr nodePtr)
 {
   DEB_LCP(("initNodeRecord(%u)", nodePtr.i));
+  DEB_NODE_STATUS(("initNodeRecord(%u)", nodePtr.i));
   nodePtr.p->m_nodefailSteps.clear();
 
   nodePtr.p->activeStatus = Sysfile::NS_NotDefined;
