@@ -1702,6 +1702,9 @@ void Dbdih::execREAD_CONFIG_REQ(Signal* signal)
     }
     initNodeRecoveryStatus();
 
+    Uint16 nodegroup_mapping[MAX_NDB_NODES];
+    create_nodegroup_mapping(&nodegroup_mapping[0]);
+
     ndb_mgm_configuration_iterator * iter =
       m_ctx.m_config.getClusterConfigIterator();
     for(ndb_mgm_first(iter); ndb_mgm_valid(iter); ndb_mgm_next(iter))
@@ -1724,10 +1727,15 @@ void Dbdih::execREAD_CONFIG_REQ(Signal* signal)
         if (ndb_mgm_get_int_parameter(iter, CFG_DB_NODEGROUP, &ng) == 0)
         {
           jam();
-          nodePtr.p->nodeGroup = ng;
+          nodePtr.p->nodeGroup = nodegroup_mapping[ng];
+          ndbassert(nodePtr.p->nodeGroup < MAX_NDB_NODES);
           set_node_group_id(nodePtr.i, ng);
-          DEB_NODE_STATUS(("node[%u].nodeGroup = %u, line: %u",
-                           nodePtr.i, ng, __LINE__));
+          DEB_NODE_STATUS(("node[%u].nodeGroup = %u"
+                           ", mapped to ng = %u, line: %u",
+                           nodePtr.i,
+                           ng,
+                           nodegroup_mapping[ng],
+                           __LINE__));
         }
         else
         {
@@ -30876,7 +30884,85 @@ Dbdih::getMaxStartedFragCheckpointsForNode(Uint32 nodeId) const
   return MAX_STARTED_FRAG_CHECKPOINTS_PER_NODE;
 }
   
-  
+void
+Dbdih::create_nodegroup_mapping(Uint16 *nodegroup_mapping)
+{
+  ndb_mgm_configuration_iterator * iter =
+    m_ctx.m_config.getClusterConfigIterator();
+  Uint16 num_nodes_in_group[MAX_NDB_NODES];
+  memset(num_nodes_in_group, 0, sizeof(num_nodes_in_group));
+  memset(nodegroup_mapping, 0xFF, sizeof(Uint16)*MAX_NDB_NODES);
+  Uint32 num_nodes = 0;
+  Uint32 num_nodes_with_nodegroup = 0;
+  for(ndb_mgm_first(iter); ndb_mgm_valid(iter); ndb_mgm_next(iter))
+  {
+    Uint32 nodeId;
+    Uint32 nodeType;
+    Uint32 ng;
+    ndbrequire(!ndb_mgm_get_int_parameter(iter,CFG_NODE_ID, &nodeId));
+    ndbrequire(!ndb_mgm_get_int_parameter(iter,CFG_TYPE_OF_SECTION,
+                                          &nodeType));
+    num_nodes++;
+    if (nodeType == NodeInfo::DB)
+    {
+      jam();
+      jamLine(nodeId);
+      if (ndb_mgm_get_int_parameter(iter, CFG_DB_NODEGROUP, &ng) == 0)
+      {
+        jam();
+        jamLine(ng);
+        num_nodes_with_nodegroup++;
+        if (ng >= MAX_NDB_NODES)
+        {
+           progError(__LINE__,
+                     NDBD_EXIT_INVALID_CONFIG,
+                     "Nodegroup cannot be larger than 144");
+        }
+        num_nodes_in_group[ng]++;
+      }
+    }
+  }
+  if (num_nodes_with_nodegroup == 0)
+  {
+    jam();
+    return;
+  }
+  if (num_nodes_with_nodegroup != num_nodes)
+  {
+    progError(__LINE__,
+              NDBD_EXIT_INVALID_CONFIG,
+              "Either no node or all nodes must set Nodegroup");
+  }
+  for (Uint32 i = 0; i < MAX_NDB_NODES; i++)
+  {
+    if (num_nodes_in_group[i] != cnoReplicas &&
+        num_nodes_in_group[i] != 0)
+    {
+      progError(__LINE__,
+                NDBD_EXIT_INVALID_CONFIG,
+                "Each node group must contain the same number of"
+                " nodes, and the number of nodes per node group"
+                " must be equal to NoOfReplicas");
+    }
+  }
+  /**
+   * Make sure that node group ids used internally in DBDIH
+   * start at 0 and are consecutive no matter what the user
+   * specified in the config.
+   */
+  Uint32 ng_mapping = 0;
+  for (Uint32 i = 0; i < MAX_NDB_NODES; i++)
+  {
+    if (num_nodes_in_group[i] > 0)
+    {
+      nodegroup_mapping[i] = ng_mapping;
+      g_eventLogger->info("Nodegroup %u mapped internally to %u",
+                          i, ng_mapping);
+      ng_mapping++;
+    }
+  }
+}
+
 /**
  * isolateNodes
  *

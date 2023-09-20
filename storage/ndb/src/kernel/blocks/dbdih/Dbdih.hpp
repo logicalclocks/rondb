@@ -975,6 +975,8 @@ private:
   void execLOCAL_RECOVERY_COMP_REP(Signal *signal);
 
   void sendEND_TOREP(Signal *signal, Uint32 startNodeId);
+
+  void create_nodegroup_mapping(Uint16 nodegroup_mapping[MAX_NDB_NODES]);
   bool check_stall_lcp_start(void);
   void check_node_not_restarted_yet(NodeRecordPtr nodePtr);
   void setNodeRecoveryStatus(Uint32 nodeId,
