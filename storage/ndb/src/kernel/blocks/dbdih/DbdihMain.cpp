@@ -115,7 +115,7 @@ static const Uint32 WaitTableStateChangeMillis = 10;
 //#define DEBUG_LCP_COMP 1
 //#define DEBUG_COPY_ACTIVE 1
 //#define DEBUG_TCGETOPSIZE
-#define DEBUG_ACTIVE_NODES 1
+//#define DEBUG_ACTIVE_NODES 1
 #endif
 
 #ifdef DEBUG_ACTIVE_NODES
@@ -14059,13 +14059,17 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal * signal)
 
         /* Calculate current primary replica node double array */
         NGPtr.i = getNodeGroup(fragPtr.p->preferredPrimary);
+        jamLineDebug(NGPtr.i);
         ptrCheckGuard(NGPtr, MAX_NDB_NODE_GROUPS, nodeGroupRecord);
         for(Uint32 replicaNo = 0; replicaNo < noOfReplicas; replicaNo++)
         {
           jam();
+          jamLineDebug(fragPtr.p->preferredPrimary);
+          jamLineDebug(NGPtr.p->nodesInGroup[replicaNo]);
           if (fragPtr.p->preferredPrimary ==
               NGPtr.p->nodesInGroup[replicaNo])
           {
+            jamDebug();
             Uint32 node_index = replicaNo;
             inc_node_or_group(node_index, NGPtr.p->nodeCount);
             ndbrequire(node_index < noOfReplicas);
@@ -14084,6 +14088,7 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal * signal)
           ndbrequire(c_replicaRecordPool.getPtr(replicaPtr));
           tmp_fragments_per_ldm[replicaPtr.p->procNode][log_part_id]++;
           tmp_fragments_per_node[replicaPtr.p->procNode]++;
+          jamLineDebug(replicaPtr.p->procNode);
           if (replicaPtr.p->procNode != fragPtr.p->preferredPrimary) {
             jam();
             fragments[count++]= replicaPtr.p->procNode;
@@ -14097,6 +14102,7 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal * signal)
           ndbrequire(c_replicaRecordPool.getPtr(replicaPtr));
           tmp_fragments_per_ldm[replicaPtr.p->procNode][log_part_id]++;
           tmp_fragments_per_node[replicaPtr.p->procNode]++;
+          jamLineDebug(replicaPtr.p->procNode);
           if (replicaPtr.p->procNode != fragPtr.p->preferredPrimary)
           {
             jam();
@@ -14125,6 +14131,7 @@ void Dbdih::execCREATE_FRAGMENTATION_REQ(Signal * signal)
               getNodeGroup(i) >= cnoOfNodeGroups)
           {
             jam();
+            jamLineDebug(i);
             ndbassert(tmp_fragments_per_node[i] == 0);
             tmp_fragments_per_node[i] = ~(Uint16)0;
           }
@@ -16822,10 +16829,11 @@ loop:
       (fragPtr.p->distributionKey << 16);
     conf->nodes[MAX_REPLICAS + 2] = dihGetInstanceKey(fragPtr);
   }
+
+check_exit:
   conf->fragChangeNumber = fragPtr.p->changeNumber;
   conf->tabChangeNumber = tabPtr.p->changeNumber;
 
-check_exit:
   if (unlikely(!tabPtr.p->m_lock.read_unlock(tab_val)))
     goto loop;
   if (unlikely(!m_node_view_lock.read_unlock(node_val)))

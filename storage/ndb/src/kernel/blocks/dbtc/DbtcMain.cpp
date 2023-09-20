@@ -132,7 +132,7 @@
 //#define DEBUG_EXEC_WRITE_COUNT 1
 //#define DEBUG_TCGETOPSIZE 1
 //#define DEBUG_HASH 1
-#define DEBUG_ACTIVE_NODES 1
+//#define DEBUG_ACTIVE_NODES 1
 #endif
 
 #define TC_TIME_SIGNAL_DELAY 50
