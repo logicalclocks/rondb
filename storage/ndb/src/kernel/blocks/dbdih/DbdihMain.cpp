@@ -30902,11 +30902,11 @@ Dbdih::create_nodegroup_mapping(Uint16 *nodegroup_mapping)
     ndbrequire(!ndb_mgm_get_int_parameter(iter,CFG_NODE_ID, &nodeId));
     ndbrequire(!ndb_mgm_get_int_parameter(iter,CFG_TYPE_OF_SECTION,
                                           &nodeType));
-    num_nodes++;
     if (nodeType == NodeInfo::DB)
     {
       jam();
       jamLine(nodeId);
+      num_nodes++;
       if (ndb_mgm_get_int_parameter(iter, CFG_DB_NODEGROUP, &ng) == 0)
       {
         jam();
