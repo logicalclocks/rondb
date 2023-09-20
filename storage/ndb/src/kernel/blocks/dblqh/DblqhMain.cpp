@@ -19669,8 +19669,13 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
       !m_is_query_block)
   {
     Fragrecord::UsageStat& useStat = fragptr.p->m_useStat;
-    ndbassert(useStat.m_scanFragReqCount > 0);
-
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    TablerecPtr tablePtr;
+    tablePtr.i = regTcPtr->tableref;
+    ptrCheckGuard(tablePtr, ctabrecFileSize, tablerec);
+    ndbassert(useStat.m_scanFragReqCount > 0 ||
+              DictTabInfo::isOrderedIndex(tablePtr.p->tableType));
+#endif
     useStat.m_scanRowsExamined++;
 
     const TupKeyRef* const ref =
@@ -20928,7 +20933,13 @@ void Dblqh::sendScanFragConf(Signal* signal,
   {
     jamDebug();
     Fragrecord::UsageStat& useStat = fragptr.p->m_useStat;
-    ndbassert(useStat.m_scanFragReqCount > 0);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    TablerecPtr tablePtr;
+    tablePtr.i = regTcPtr->tableref;
+    ptrCheckGuard(tablePtr, ctabrecFileSize, tablerec);
+    ndbassert(useStat.m_scanFragReqCount > 0 ||
+              DictTabInfo::isOrderedIndex(tablePtr.p->tableType));
+#endif
 
     useStat.m_scanRowsReturned += scanPtr->m_curr_batch_size_rows;
     useStat.m_scanWordsReturned += 
