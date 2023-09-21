@@ -3745,7 +3745,9 @@ int runBulkPkReads(NDBT_Context* ctx, NDBT_Step* step)
     {
       if (hugoOps.startTransaction(otherNdb) != 0)
       {
-        if (otherNdb->getNdbError().code == 4009) 
+        Uint32 error_code = otherNdb->getNdbError().code;
+        if (error_code == 4009 ||
+            (error_code >= 4035 && error_code <= 4040)) 
         {
           /* Api disconnect sometimes manifests as Cluster failure
            * from API's point of view as it cannot seize() a 
@@ -4272,7 +4274,9 @@ int runFragmentedScanOtherApi(NDBT_Context* ctx, NDBT_Step* step)
          * We treat this similarly to the
          * "Node failure caused abort of transaction" case
          */
-        if (err.code == 4009 || err.code == 4035)
+        if (err.code == 4009 ||
+            err.code == 4042 ||
+            (err.code >= 4035 && err.code <= 4040))
         {
           g_info.println("%u: Failed to start transaction from Ndb object Error : %u %s",
                    stepNo, err.code, err.message);
@@ -4292,7 +4296,9 @@ int runFragmentedScanOtherApi(NDBT_Context* ctx, NDBT_Step* step)
          * since it starts a buddy transaction for scan operations.
          */
         const NdbError err = trans->getNdbError();
-        if (err.code == 4009 || err.code == 4035)
+        if (err.code == 4009 ||
+            err.code == 4042 ||
+            (err.code >= 4035 && err.code <= 4040))
         {
           g_info.println("%u: Failed to get scan operation transaction Error : %u %s",
                    stepNo, err.code, err.message);
