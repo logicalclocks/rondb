@@ -13,14 +13,14 @@
 # You should have received a copy of the GNU General Public License
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
-# location of the generated binary file
-OUTPUT_DIR?=./bin/server/${SERVER_BIN}
+RDRS_DROGON_BINARY_DIR?=UNSET
+RDRS_DROGON_SOURCE_DIR?=UNSET
+RDRS_DROGON_INSTALL_DIR?=UNSET
 
+all: rdrs2
 
-all: rdrs
-
-
-rdrs:
-	export DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
-	export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${RDRS_LIB_DIR} && \
-	CGO_LDFLAGS=${MY_CGO_LDFLAGS} ${BUILD_COMMAND}
+rdrs2:
+	$(info "=================> Building RDRS2")
+	mkdir -p ${RDRS_DROGON_BINARY_DIR}
+	cd ${RDRS_DROGON_BINARY_DIR}
+	cmake ${RDRS_DROGON_SOURCE_DIR}
