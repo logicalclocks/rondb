@@ -63,7 +63,7 @@
 #define DEBUG_FPRINTF(a)
 #endif
 
-#if 1
+#if 0
 #define DEBUG_FPRINTF_DETAIL(arglist) do { fprintf arglist ; } while (0)
 #else
 #define DEBUG_FPRINTF_DETAIL(a)
@@ -589,7 +589,7 @@ TransporterRegistry::connect_server(NdbSocket & socket,
     msg.assfmt("Ignored connection attempt as failed to "
                "read 'hello' from client");
     DBUG_PRINT("error", ("%s", msg.c_str()));
-    DEBUG_FPRINTF((stderr, "%s", msg.c_str()));
+    DEBUG_FPRINTF((stderr, "%s\n", msg.c_str()));
     DBUG_RETURN(false);
   }
 
@@ -618,7 +618,7 @@ TransporterRegistry::connect_server(NdbSocket & socket,
     msg.assfmt("Ignored connection attempt as failed to "
                "parse 'hello' from client.  >%s<", buf);
     DBUG_PRINT("error", ("%s", msg.c_str()));
-    DEBUG_FPRINTF((stderr, "%s", msg.c_str()));
+    DEBUG_FPRINTF((stderr, "%s\n", msg.c_str()));
     DBUG_RETURN(false);
   }
 
@@ -844,7 +844,7 @@ TransporterRegistry::connect_server(NdbSocket & socket,
        */
       log_failure = (performStates[nodeId] != TransporterRegistry::DISCONNECTED);
 
-      DEBUG_FPRINTF((stderr, "%s", msg.c_str()));
+      DEBUG_FPRINTF((stderr, "%s\n", msg.c_str()));
     }
   }
   unlockMultiTransporters();
@@ -3956,8 +3956,8 @@ TransporterRegistry::start_clients_thread()
         }
         else
         {
-          DEBUG_FPRINTF((stderr, "Node %u CONNECTED\n",
-                         t->getRemoteNodeId()));
+          DEBUG_FPRINTF_DETAIL((stderr, "Node %u CONNECTED\n",
+                                t->getRemoteNodeId()));
         }
         break;
       }
