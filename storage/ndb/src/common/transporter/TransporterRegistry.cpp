@@ -57,7 +57,7 @@
 
 #include <EventLogger.hpp>
 
-#if 0
+#if 1
 #define DEBUG_FPRINTF(arglist) do { fprintf arglist ; } while (0)
 #else
 #define DEBUG_FPRINTF(a)
@@ -798,7 +798,19 @@ TransporterRegistry::connect_server(NdbSocket & socket,
       require(multi_transporter_instance <= 0);
 
       /* Continue connection setup with specific instance 0 */
-      require(multi_trp->get_num_active_transporters() == 1);
+      if (multi_trp->get_num_active_transporters() != 1)
+      {
+        g_eventLogger->info("Crash: connect_server: node: %u, state: %u,"
+                            " num active trps: %u, num inactive trps: %u"
+                            ", multi_trp_instance: %u, r: %u",
+                            nodeId,
+                            performStates[nodeId],
+                            multi_trp->get_num_active_transporters(),
+                            multi_trp->get_num_inactive_transporters(),
+                            multi_transporter_instance,
+                            r);
+        require(multi_trp->get_num_active_transporters() == 1);
+      }
       t = multi_trp->get_active_transporter(0);
     }
 
@@ -1021,6 +1033,13 @@ TransporterRegistry::createMultiTransporter(Uint32 node_id, Uint32 num_trps)
     }
   }
   multi_trp->add_active_trp(base_trp);
+  DEBUG_FPRINTF((stderr,
+                 "createMultiTrp, node %u num trps: %u"
+                 ", num active trps: %u, num inactive trps: %u\n",
+                 nodeId,
+                 num_trps,
+                 multi_trp->get_num_active_transporters(),
+                 multi_trp->get_num_inactive_transporters()));
   unlockMultiTransporters();
   return true;
 }
@@ -3240,6 +3259,12 @@ TransporterRegistry::report_disconnect(TransporterReceiveHandle& recvdata,
         require(base_node_id == node_id);
         callbackObj->disable_send_buffer(node_id, base_trp_id, false);
         base_trp->doDisconnect();
+        DEBUG_FPRINTF((stderr,
+                       "Switch active trp, node: %u, num active trp: %u"
+                       ", num inactive trp: %u\n",
+                       node_id,
+                       multi_trp->get_num_active_transporters(),
+                       multi_trp->get_num_inactive_transporters()));
       }
     }
   }

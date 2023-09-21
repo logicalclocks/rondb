@@ -116,7 +116,7 @@ static const Uint32 WaitTableStateChangeMillis = 10;
 //#define DEBUG_COPY_ACTIVE 1
 //#define DEBUG_TCGETOPSIZE
 //#define DEBUG_ACTIVE_NODES 1
-#define DEBUG_NODE_STATUS 1
+//#define DEBUG_NODE_STATUS 1
 #endif
 
 #ifdef DEBUG_NODE_STATUS
