@@ -20,7 +20,9 @@ RDRS_DROGON_INSTALL_DIR?=UNSET
 all: rdrs2
 
 rdrs2:
-	$(info "=================> Building RDRS2")
-	mkdir -p ${RDRS_DROGON_BINARY_DIR}
-	cd ${RDRS_DROGON_BINARY_DIR}
-	cmake ${RDRS_DROGON_SOURCE_DIR}
+	$(info "=================> Building RDRS2 bindir ${RDRS_DROGON_BINARY_DIR} srcdir ${RDRS_DROGON_SOURCE_DIR}")
+	mkdir -p ${RDRS_DROGON_BINARY_DIR} 
+	cd ${RDRS_DROGON_BINARY_DIR} 
+	$(info "=================> cmake -S${RDRS_DROGON_SOURCE_DIR} -B${RDRS_DROGON_BINARY_DIR}")
+	cmake -S${RDRS_DROGON_SOURCE_DIR} -B${RDRS_DROGON_BINARY_DIR}
+
