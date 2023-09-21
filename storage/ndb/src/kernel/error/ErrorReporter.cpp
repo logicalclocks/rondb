@@ -443,7 +443,7 @@ ErrorReporter::WriteMessage(int thrdMessageID,
   if (simulate_error_during_error_reporting == 1)
   {
     fprintf(stderr, "Stall during error reporting after releasing lock\n");
-    NdbSleep_MilliSleep(30000);
+    NdbSleep_MilliSleep(12000);
   }
 #endif
 

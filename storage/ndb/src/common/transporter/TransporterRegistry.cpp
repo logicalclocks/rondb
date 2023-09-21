@@ -806,8 +806,13 @@ TransporterRegistry::connect_server(NdbSocket & socket,
       /* multi_trp */
       require(multi_transporter_instance <= 0);
 
-      /* Continue connection setup with specific instance 0 */
-      if (multi_trp->get_num_active_transporters() != 1)
+      /**
+       * Continue connection setup with specific instance 0
+       * Avoid crashing if we get here in the wrong state and
+       * still have multiple active transporters.
+       */
+      if (multi_trp->get_num_active_transporters() != 1 &&
+          (performStates[nodeId] == TransporterRegistry::CONNECTING))
       {
         g_eventLogger->info("Crash: connect_server: node: %u, state: %u,"
                             " num active trps: %u, num inactive trps: %u"
@@ -818,6 +823,7 @@ TransporterRegistry::connect_server(NdbSocket & socket,
                             multi_trp->get_num_inactive_transporters(),
                             multi_transporter_instance,
                             r);
+        unlockMultiTransporters();
         require(multi_trp->get_num_active_transporters() == 1);
       }
       t = multi_trp->get_active_transporter(0);
