@@ -13506,10 +13506,14 @@ void Dblqh::execCOMMIT(Signal* signal)
     TcConnectionrec * const regTcPtr = tcConnectptr.p;
     TRACE_OP(regTcPtr, "COMMIT");
 
-    CRASH_INSERTION(5048);
-    if (ERROR_INSERTED(5049))
+#ifdef ERROR_INSERT
+    if (tcConnectptr.p->operation == ZUPDATE)
     {
-      SET_ERROR_INSERT_VALUE(5048);
+      CRASH_INSERTION(5048);
+      if (ERROR_INSERTED(5049))
+      {
+        SET_ERROR_INSERT_VALUE(5048);
+      }
     }
     if (ERROR_INSERTED(5093))
     {
@@ -13522,6 +13526,7 @@ void Dblqh::execCOMMIT(Signal* signal)
         return;
       }
     }
+#endif
     commitReqLab(signal, gci_hi, gci_lo, tcConnectptr);
     return;
   }//if
