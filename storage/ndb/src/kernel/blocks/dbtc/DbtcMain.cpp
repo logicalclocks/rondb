@@ -3733,6 +3733,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
 #endif
 
   Treqinfo = tcKeyReq->requestInfo;
+  Uint32 transId1 = tcKeyReq->transId1;
+  Uint32 transId2 = tcKeyReq->transId2;
   //--------------------------------------------------------------------------
   // Optimised version of ptrAss(tabptr, tableRecord)
   // Optimised version of ptrAss(apiConnectptr, apiConnectRecord)
@@ -3892,8 +3894,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
       // Transaction is started already. 
       // Check that the operation is on the same transaction.
       //-----------------------------------------------------------------------
-      compare_transid1 = regApiPtr->transid[0] ^ tcKeyReq->transId1;
-      compare_transid2 = regApiPtr->transid[1] ^ tcKeyReq->transId2;
+      compare_transid1 = regApiPtr->transid[0] ^ transId1;
+      compare_transid2 = regApiPtr->transid[1] ^ transId2;
       jam();
       compare_transid1 = compare_transid1 | compare_transid2;
       if (unlikely(compare_transid1 != 0))
@@ -4540,8 +4542,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
         {
           regTcPtr->commitAckMarker = tmp.i;
           regApiPtr->commitAckMarker = tmp.i;
-          tmp.p->transid1      = tcKeyReq->transId1;
-          tmp.p->transid2      = tcKeyReq->transId2;
+          tmp.p->transid1      = transId1;
+          tmp.p->transid2      = transId2;
           tmp.p->apiNodeId     = refToNode(regApiPtr->ndbapiBlockref);
           tmp.p->apiConnectPtr = TapiIndex;
 #if defined VM_TRACE || defined ERROR_INSERT
@@ -4553,8 +4555,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
           DEB_LQH_TRANS_CMA(("(%u) Insert trans(H'%.8x,H'%.8x) into "
                          "CommitAckMarker::TCKEYREQ",
                          instance(),
-                         tcKeyReq->transId1,
-                         tcKeyReq->transId2));
+                         transId1,
+                         transId2));
           m_commitAckMarkerHash.add(tmp);
         }
       }
