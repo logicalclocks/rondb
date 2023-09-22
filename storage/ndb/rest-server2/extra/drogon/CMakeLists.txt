@@ -20,13 +20,18 @@ set(RDRS_DROGON_INSTALL_DIR ${CMAKE_CURRENT_BINARY_DIR}/drogon-${DROGON_VERSION}
 
 
 if(WITH_RDRS)
-  MESSAGE( "============> Source DIR ${RDRS_DROGON_SOURCE_DIR}" ) 
-  MESSAGE( "============> Binary DIR ${RDRS_DROGON_BINARY_DIR}" ) 
-  MESSAGE( "============> Install DIR ${RDRS_DROGON_INSTALL_DIR}" ) 
 
-   add_custom_target(drogon ALL 
-                      COMMAND ${CMAKE_MAKE_PROGRAM} RDRS_DROGON_SOURCE_DIR=${RDRS_DROGON_SOURCE_DIR}  RDRS_DROGON_INSTALL_DIR=${RDRS_DROGON_INSTALL_DIR} RDRS_DROGON_BINARY_DIR=${RDRS_DROGON_BINARY_DIR}
-                      WORKING_DIRECTORY ${RDRS_DROGON_SOURCE_DIR}
+  EXECUTE_PROCESS(COMMAND cmake -S${RDRS_DROGON_SOURCE_DIR} -B${RDRS_DROGON_BINARY_DIR} -DCMAKE_INSTALL_PREFIX=${RDRS_DROGON_INSTALL_DIR}
+                      WORKING_DIRECTORY ${RDRS_DROGON_SOURCE_DIR})
+
+  FILE(WRITE "${RDRS_DROGON_BINARY_DIR}/builder.sh"  "
+  make -s -j $(nproc) 
+  make -s install"
+  )
+
+  add_custom_target(drogon ALL 
+                      COMMAND bash builder.sh 
+                      WORKING_DIRECTORY ${RDRS_DROGON_BINARY_DIR}
                       COMMENT "Building Drogon Web Framework")
     
    # INSTALL(FILES ${RDRS_OUTPUT_DIR}/rdrs 
