@@ -156,13 +156,16 @@ runBankSrValidator(NDBT_Context* ctx, NDBT_Step* step)
     Bank bank(ctx->m_cluster_connection);
     if (bank.performSumAccounts(wait, yield) != 0)
     {
-      ndbout << "runBankSrValidator: bank.performSumAccounts FAILED" << endl;
+      ndbout << "runBankSrValidator: bank.performSumAccounts FAILED"
+             << ", return NDBT_FAILED"
+             << endl;
       return NDBT_FAILED;
     }
     
     if (bank.performValidateAllGLs() != 0)
     {
-      ndbout << "runBankSrValidator: bank.performValidateAllGLs FAILED"
+      ndbout << "runBankSrValidator: bank.performValidateAllGLs FAILED,"
+             << " return NDBT_FAILED"
              << endl;
       return NDBT_FAILED;
     }
@@ -219,6 +222,7 @@ runMixRestart(NDBT_Context* ctx, NDBT_Step* step)
 
   if (res.runPeriod(ctx, step, runtime, sleeptime))
   {
+    ndbout << "runPeriod FAILED, return NDBT_FAILED" << endl;
     return NDBT_FAILED;
   }
 
@@ -240,18 +244,26 @@ runVerifyAndDropBank(NDBT_Context* ctx, NDBT_Step* step)
 
   if (bank.performSumAccounts(wait, yield) == NDBT_FAILED)
   {
-    ndbout << "runVerifyAndDropBank: bank.performSumAccounts FAILED" << endl;
+    ndbout << "runVerifyAndDropBank: bank.performSumAccounts FAILED"
+           << ", return NDBT_FAILED"
+           << endl;
     result = NDBT_FAILED;
   }
   if (bank.performValidateAllGLs() == NDBT_FAILED)
   {
     ndbout << "runVerifyAndDropBank: bank.performValidateAllGLs FAILED"
+           << ", return NDBT_FAILED"
            << endl;
     result = NDBT_FAILED;
   }
 
   if (bank.dropBank() != NDBT_OK)
+  {
+    ndbout << "runVerifyAndDropBank: dropBank FAILED,"
+           << " return NDBT_FAILED"
+           << endl;
     return NDBT_FAILED;
+  }
   return result;
 }
 
