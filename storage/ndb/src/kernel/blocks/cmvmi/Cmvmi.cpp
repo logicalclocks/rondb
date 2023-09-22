@@ -1198,6 +1198,7 @@ Cmvmi::execSTART_ORD(Signal* signal) {
     /**
      *
      */
+    g_eventLogger->info("Shutdown from START_ORD");
     NdbRestartType type = NRT_Default;
     if(StopReq::getNoStart(tmp) && StopReq::getInitialStart(tmp))
       type = NRT_NoStart_InitialStart;
@@ -1215,7 +1216,7 @@ Cmvmi::execSTART_ORD(Signal* signal) {
     /**
      * START_ORD received when already started(ignored)
      */
-    //ndbout << "START_ORD received when already started(ignored)" << endl;
+    g_eventLogger->info("START_ORD received when already started(ignored)");
     return;
   }
   
@@ -1224,7 +1225,7 @@ Cmvmi::execSTART_ORD(Signal* signal) {
     /**
      * START_ORD received when stopping(ignored)
      */
-    //ndbout << "START_ORD received when stopping(ignored)" << endl;
+    g_eventLogger->info("START_ORD received when stopping(ignored)");
     return;
   }
   
@@ -1244,7 +1245,7 @@ Cmvmi::execSTART_ORD(Signal* signal) {
 
     globalData.theStartLevel = NodeState::SL_CMVMI;
     sendSignal(QMGR_REF, GSN_START_ORD, signal, 1, JBA);
-    return ;
+    return;
   }
   
   if(globalData.theStartLevel == NodeState::SL_CMVMI)
@@ -1290,6 +1291,8 @@ Cmvmi::execSTART_ORD(Signal* signal) {
     sendSignal(NDBCNTR_REF, GSN_START_ORD, signal, 1, JBA);  
     return;
   }
+  g_eventLogger->info("Received START_ORD in unexpected startLevel: %u",
+                      globalData.theStartLevel);
 }//execSTART_ORD()
 
 void Cmvmi::execTAMPER_ORD(Signal* signal) 

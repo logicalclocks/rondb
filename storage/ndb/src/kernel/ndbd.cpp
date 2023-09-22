@@ -1198,9 +1198,11 @@ ndbd_run(bool foreground, int report_fd,
    */
   switch(globalData.theRestartFlag){
   case initial_state:
+    g_eventLogger->info("Send a START_ORD signal as part of initial state");
     globalEmulatorData.theThreadConfig->doStart(NodeState::SL_CMVMI);
     break;
   case perform_start:
+    g_eventLogger->info("Send 2 START_ORD signals to get start phases going");
     globalEmulatorData.theThreadConfig->doStart(NodeState::SL_CMVMI);
     globalEmulatorData.theThreadConfig->doStart(NodeState::SL_STARTING);
     break;

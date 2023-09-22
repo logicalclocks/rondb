@@ -1125,7 +1125,8 @@ int
 MgmtSrvr::sendSTART_ORD(int nodeId)
 {
   INIT_SIGNAL_SENDER(ss,nodeId);
-  
+
+  g_eventLogger->info("Send START_ORD to node %u", nodeId);
   SimpleSignal ssig;
   StartOrd* const startOrd = CAST_PTR(StartOrd, ssig.getDataPtrSend());
   ssig.set(ss,TestOrd::TraceAPI, CMVMI, GSN_START_ORD, StartOrd::SignalLength);

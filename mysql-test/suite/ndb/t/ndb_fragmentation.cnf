@@ -1,12 +1,26 @@
 !include ../my.cnf
 
 [cluster_config.1]
+NoOfReplicas=3
 ThreadConfig=main,rep,recv,ldm={count=4}
 ndbd=,,,,,
 ndb_mgmd=
 
+[cluster_config.ndbd.1.1]
+Nodegroup=1
+LocationDomainId=1
+[cluster_config.ndbd.2.1]
+Nodegroup=1
+LocationDomainId=2
+[cluster_config.ndbd.3.1]
+Nodegroup=1
+LocationDomainId=3
+[cluster_config.ndbd.4.1]
+Nodegroup=2
+LocationDomainId=1
 [cluster_config.ndbd.5.1]
-Nodegroup=65536
-
+Nodegroup=2
+LocationDomainId=2
 [cluster_config.ndbd.6.1]
-Nodegroup=65536
+Nodegroup=2
+LocationDomainId=3
