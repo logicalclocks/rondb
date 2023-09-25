@@ -1,0 +1,33 @@
+<%inc
+#include <drogon/HttpRequest.h>
+%>
+<!DOCTYPE html>
+<html>
+<%c++
+    auto para=@@.get<std::unordered_map<std::string,std::string, utils::internal::SafeStringHash>>("parameters");
+%>
+<head>
+    <meta charset="UTF-8">
+    <title>[[ title ]]</title>
+</head>
+<body>
+    <%view header %>
+    <%c++ if(para.size()>0){%>
+    <H1>Parameters</H1>
+    <table border="1">
+      <tr>
+        <th>name</th>
+        <th>value</th>
+      </tr>
+      <%c++ for(auto iter:para){%>
+      <tr>
+        <td>{%iter.first%}</td>
+        <td><%c++ $$<<iter.second;%></td>
+      </tr>
+      <%c++}%>
+    </table>
+    <%c++ }else{%>
+    <H1>no parameter</H1>
+    <%c++}%>
+</body>
+</html>
