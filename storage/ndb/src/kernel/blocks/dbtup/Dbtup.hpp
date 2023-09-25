@@ -2031,6 +2031,10 @@ struct KeyReqStruct {
   bool m_is_lcp;
   enum When m_when;
 
+#ifdef ERROR_INSERT
+  Uint32 instance_num;
+  bool is_query_block;
+#endif
   Tuple_header *m_disk_ptr;
   PagePtr m_page_ptr;
   PagePtr m_varpart_page_ptr[2];    // could be same as m_page_ptr_p

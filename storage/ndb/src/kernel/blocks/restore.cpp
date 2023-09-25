@@ -57,7 +57,14 @@
 //#define DEBUG_RES_STAT_EXTRA 1
 //#define DEBUG_RES_DEL 1
 //#define DEBUG_HIGH_RES 1
-#define DEBUG_RES_HASH 1
+//#define DEBUG_RES_HASH 1
+#define DEBUG_READ_KEYS 1
+#endif
+
+#ifdef DEBUG_READ_KEYS
+#define DEB_READ_KEYS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_READ_KEYS(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_RES_HASH
@@ -3045,6 +3052,13 @@ Restore::parse_record(Signal* signal,
     rowid_val.m_page_idx = data[1];
     file_ptr.p->m_rowid_page_no = rowid_val.m_page_no;
     file_ptr.p->m_rowid_page_idx = rowid_val.m_page_idx;
+    DEB_READ_KEYS(("(%u,%u) tab(%u,%u), len: %u",
+                   instance(),
+                   m_is_query_block,
+                   file_ptr.p->m_table_id,
+                   file_ptr.p->m_fragment_id,
+                   len));
+
     Uint32 keyLen = c_tup->read_lcp_keys(file_ptr.p->m_table_id,
                                          data+2,
                                          len - 3,
