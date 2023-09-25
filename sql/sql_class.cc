@@ -483,6 +483,7 @@ THD::THD(bool enable_plugins)
   utime_after_lock = 0L;
   current_linfo = nullptr;
   slave_thread = false;
+  override_slave_filtering = THD::NO_OVERRIDE_SLAVE_FILTERING;
   memset(&variables, 0, sizeof(variables));
   m_thread_id = Global_THD_manager::reserved_thread_id;
   file_id = 0;

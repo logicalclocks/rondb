@@ -50,6 +50,12 @@ Ndb *check_ndb_in_thd(THD *thd, bool validate_ndb) {
 
   DBUG_ASSERT(thd_ndb->is_slave_thread() == thd->slave_thread);
 
+  DBUG_ASSERT(thd->override_slave_filtering ==
+              THD::NO_OVERRIDE_SLAVE_FILTERING ||
+              (thd->override_slave_filtering ==
+               THD::OVERRIDE_SLAVE_FILTERING &&
+               thd->slave_thread));
+
   return thd_ndb->ndb;
 }
 

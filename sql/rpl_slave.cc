@@ -4023,6 +4023,7 @@ int init_slave_thread(THD *thd, SLAVE_THD_TYPE thd_type) {
                                  : SYSTEM_THREAD_SLAVE_IO;
   thd->get_protocol_classic()->init_net(nullptr);
   thd->slave_thread = true;
+  thd->override_slave_filtering = THD::NO_OVERRIDE_SLAVE_FILTERING;
   thd->enable_slow_log = opt_log_slow_slave_statements;
   set_slave_thread_options(thd);
 
