@@ -20,17 +20,22 @@ set(RDRS_DROGON_INSTALL_DIR ${CMAKE_CURRENT_BINARY_DIR}/drogon-${DROGON_VERSION}
 
 
 if(WITH_RDRS)
-
-  EXECUTE_PROCESS(COMMAND cmake -S${RDRS_DROGON_SOURCE_DIR} -B${RDRS_DROGON_BINARY_DIR} -DCMAKE_INSTALL_PREFIX=${RDRS_DROGON_INSTALL_DIR} -DOPENSSL_LIBRARY=${OPENSSL_LIBRARY} -DCRYPTO_LIBRARY=${CRYPTO_LIBRARY} -DOPENSSL_INCLUDE_DIR=${OPENSSL_INCLUDE_DIR} 
-   WORKING_DIRECTORY ${RDRS_DROGON_SOURCE_DIR})
-
-   FILE(WRITE "${RDRS_DROGON_BINARY_DIR}/builder.sh"  "
-   make -s -j $(nproc) 
-   make install"
+  FILE(WRITE "${RDRS_DROGON_BINARY_DIR}/builder.sh"  "
+    if ! [ -f built ]; then
+      cmake \
+        -S${RDRS_DROGON_SOURCE_DIR} \
+        -B${RDRS_DROGON_BINARY_DIR} \
+        -DCMAKE_INSTALL_PREFIX=${RDRS_DROGON_INSTALL_DIR} \
+        -DOPENSSL_LIBRARY=${OPENSSL_LIBRARY} \
+        -DCRYPTO_LIBRARY=${CRYPTO_LIBRARY} \
+        -DOPENSSL_INCLUDE_DIR=${OPENSSL_INCLUDE_DIR} 
+      make -s -j $(nproc) 
+      make install
+      touch built
+      fi"
    )
-  EXECUTE_PROCESS(COMMAND bash builder.sh 
-                      WORKING_DIRECTORY ${RDRS_DROGON_BINARY_DIR})
 
+  EXECUTE_PROCESS(COMMAND bash builder.sh WORKING_DIRECTORY ${RDRS_DROGON_BINARY_DIR})
 
   # add_custom_target(drogon ALL 
                       # COMMAND bash builder.sh 
