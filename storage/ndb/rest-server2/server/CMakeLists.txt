@@ -1,5 +1,10 @@
 project (rdrs2 LANGUAGES CXX C VERSION 1.0.0)
 
+if(NOT WITH_RDRS)
+  MESSAGE(STATUS "Skip building REST Server") 
+  RETURN()
+endif()
+
 set (CMAKE_CXX_STANDARD 17)
 set (CMAKE_CXX_STANDARD_REQUIRED ON)
 
