@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.5)
+set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
 project(drogon)
 
@@ -505,9 +506,15 @@ endif (BUILD_TESTING)
 find_package(ZLIB REQUIRED)
 target_link_libraries(${PROJECT_NAME} PRIVATE ZLIB::ZLIB)
 
-find_package(OpenSSL)
-if (OpenSSL_FOUND)
-    target_link_libraries(${PROJECT_NAME} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+# find_package(OpenSSL)
+if (OPENSSL_INCLUDE_DIR)
+    SET(OpenSSL_FOUND TRUE CACHE INTERNAL "Open SSL Found by RonDB")
+    MESSAGE(STATUS "Drogon Using OpenSSL Configured by RonDB") 
+    MESSAGE(STATUS "Drogon OPENSSL_INCLUDE_DIR ${OPENSSL_INCLUDE_DIR}") 
+    MESSAGE(STATUS "Drogon OPENSSL_LIBRARY ${OPENSSL_LIBRARY}") 
+    MESSAGE(STATUS "Drogon CRYPTO_LIBRARY ${CRYPTO_LIBRARY}") 
+    INCLUDE_DIRECTORIES(${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(${PROJECT_NAME} PRIVATE ${OPENSSL_LIBRARY} ${CRYPTO_LIBRARY})
 else (OpenSSL_FOUND)
     set(DROGON_SOURCES
         ${DROGON_SOURCES}
