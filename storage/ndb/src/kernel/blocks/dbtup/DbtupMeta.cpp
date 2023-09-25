@@ -65,9 +65,9 @@ extern EventLogger * g_eventLogger;
 //#define DEBUG_TUP_META 1
 //#define DEBUG_TUP_META_EXTRA 1
 //#define DEBUG_DROP_TAB 1
-#define DEBUG_DYN_META 1
+//#define DEBUG_DYN_META 1
 //#define DEBUG_HASH 1
-#define DEBUG_ROW_SIZE 1
+//#define DEBUG_ROW_SIZE 1
 #endif
 
 #ifdef DEBUG_ROW_SIZE

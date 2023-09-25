@@ -663,20 +663,18 @@ Dbtup::readFixedSizeTHManyWordNotNULL(Uint8* outBuffer,
   const Uint8* src = (Uint8*)(tuple_header + readOffset);
 
 #ifdef ERROR_INSERT
+  thrjamDataDebug(req_struct->jamBuffer, attrNoOfWords);
   if (!((readOffset + attrNoOfWords - 1) < req_struct->check_offset[MM]))
   {
-    g_eventLogger->info("(%u,%u) readOffset: %u, attrNoOfWords: %u"
+    g_eventLogger->info("readOffset: %u, attrNoOfWords: %u"
                         ", fix_header_size: %u",
-                        req_struct->instance_num,
-                        req_struct->is_query_block,
                         readOffset,
                         attrNoOfWords,
                         req_struct->check_offset[MM]);
     require((readOffset + attrNoOfWords - 1) < req_struct->check_offset[MM]);
   }
-#else
-  require((readOffset + attrNoOfWords - 1) < req_struct->check_offset[MM]);
 #endif
+  require((readOffset + attrNoOfWords - 1) < req_struct->check_offset[MM]);
   if (! charsetFlag || ! req_struct->xfrm_flag)
   {
     if (likely(newIndexBuf <= maxRead))
@@ -4044,10 +4042,6 @@ Dbtup::read_lcp_keys(Uint32 tableId,
   req_struct.m_tuple_ptr = ptr;
   req_struct.check_offset[MM]= len;
   req_struct.is_expanded = false;
-#ifdef ERROR_INSERT
-  req_struct.instance_num = instance();
-  req_struct.is_query_block = m_is_query_block;
-#endif
 
   /**
    * prepare_read...

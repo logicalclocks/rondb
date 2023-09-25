@@ -58,7 +58,7 @@
 //#define DEBUG_RES_DEL 1
 //#define DEBUG_HIGH_RES 1
 //#define DEBUG_RES_HASH 1
-#define DEBUG_READ_KEYS 1
+//#define DEBUG_READ_KEYS 1
 #endif
 
 #ifdef DEBUG_READ_KEYS
@@ -3052,6 +3052,9 @@ Restore::parse_record(Signal* signal,
     rowid_val.m_page_idx = data[1];
     file_ptr.p->m_rowid_page_no = rowid_val.m_page_no;
     file_ptr.p->m_rowid_page_idx = rowid_val.m_page_idx;
+    jamDataDebug(file_ptr.p->m_table_id);
+    jamDataDebug(file_ptr.p->m_fragment_id);
+    jamDataDebug(len);
     DEB_READ_KEYS(("(%u,%u) tab(%u,%u), len: %u",
                    instance(),
                    m_is_query_block,
