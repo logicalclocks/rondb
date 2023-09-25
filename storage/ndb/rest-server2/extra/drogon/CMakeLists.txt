@@ -18,7 +18,6 @@ set(RDRS_DROGON_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/drogon-${DROGON_VERSION})
 set(RDRS_DROGON_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/drogon-${DROGON_VERSION})
 set(RDRS_DROGON_INSTALL_DIR ${CMAKE_CURRENT_BINARY_DIR}/drogon-${DROGON_VERSION}/install_dir)
 
-
 if(WITH_RDRS)
   FILE(WRITE "${RDRS_DROGON_BINARY_DIR}/builder.sh"  "
     if ! [ -f built ]; then
@@ -28,19 +27,17 @@ if(WITH_RDRS)
         -DCMAKE_INSTALL_PREFIX=${RDRS_DROGON_INSTALL_DIR} \
         -DOPENSSL_LIBRARY=${OPENSSL_LIBRARY} \
         -DCRYPTO_LIBRARY=${CRYPTO_LIBRARY} \
-        -DOPENSSL_INCLUDE_DIR=${OPENSSL_INCLUDE_DIR} 
+        -DOPENSSL_INCLUDE_DIR=${OPENSSL_INCLUDE_DIR} \
+        -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
       make -s -j $(nproc) 
       make install
       touch built
-      fi"
-   )
+    else
+        echo Skipping Drogon web framework as it is already built. Delete ${RDRS_DROGON_BINARY_DIR}/built to rebuilt it
+    fi"
+  )
 
   EXECUTE_PROCESS(COMMAND bash builder.sh WORKING_DIRECTORY ${RDRS_DROGON_BINARY_DIR})
-
-  # add_custom_target(drogon ALL 
-                      # COMMAND bash builder.sh 
-                      # WORKING_DIRECTORY ${RDRS_DROGON_BINARY_DIR}
-                      # COMMENT "Building Drogon Web Framework")
 
   SET(RDRS_DROGON_CMAKE_MODULES_DIR ${RDRS_DROGON_INSTALL_DIR}/lib/cmake CACHE INTERNAL "Drogon cmake module dir" FORCE)
   SET(RDRS_DROGON_INCLUDE_DIR   ${RDRS_DROGON_INSTALL_DIR}/include  CACHE INTERNAL "(Drogon include dir" FORCE)
