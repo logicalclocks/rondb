@@ -87,7 +87,7 @@ RS_Status RDRSRonDBConnection::Connect() {
       return RS_SERVER_ERROR(ERROR_002 + std::string(" RetCode: ") + std::to_string(retCode));
     }
 
-    retCode = ndbConnection->wait_until_ready(30, 0);
+    retCode = ndbConnection->wait_until_ready(30, 30);
     if (retCode != 0) {
       return RS_SERVER_ERROR(
           ERROR_003 + std::string(" RetCode: ") + std::to_string(retCode) +
