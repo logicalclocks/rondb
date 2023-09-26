@@ -24,6 +24,7 @@ set(RDRS_DROGON_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/drogon-${DROGON_VERSION})
 set(RDRS_DROGON_INSTALL_DIR ${CMAKE_CURRENT_BINARY_DIR}/drogon-${DROGON_VERSION}/install_dir)
 
 FILE(WRITE "${RDRS_DROGON_BINARY_DIR}/builder.sh"  "
+  set -e
   if ! [ -f built ]; then
     cmake \
       -S${RDRS_DROGON_SOURCE_DIR} \

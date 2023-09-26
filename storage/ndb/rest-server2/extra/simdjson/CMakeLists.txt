@@ -25,6 +25,7 @@ SET(RDRS_SIMDJSON_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR}/simdjson-${SIMDJSON_VER
 SET(RDRS_SIMDJSON_INSTALL_DIR ${CMAKE_CURRENT_BINARY_DIR}/simdjson-${SIMDJSON_VERSION}/install_dir  CACHE INTERNAL "Simdjson install dir" FORCE)
 
 FILE(WRITE "${RDRS_SIMDJSON_BINARY_DIR}/builder.sh"  "
+  set -e
   if ! [ -f built ]; then
     cmake \
       -S${RDRS_SIMDJSON_SOURCE_DIR} \
