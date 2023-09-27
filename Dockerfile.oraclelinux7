@@ -82,7 +82,7 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
         https://www.openssl.org/source/openssl-${OPEN_SSL_VERSION}.tar.gz \
     && tar xf $DOWNLOADS_CACHE_DIR/openssl-${OPEN_SSL_VERSION}.tar.gz -C . \
     && cd openssl-${OPEN_SSL_VERSION} \
-    && ./config --prefix=$OPENSSL_ROOT --openssldir=$OPENSSL_ROOT zlib \
+    && ./config --prefix=$OPENSSL_ROOT --openssldir=$OPENSSL_ROOT shared zlib \
     && make -j$THREADS_ARG \
     && make install \
     && echo "$OPENSSL_ROOT/lib" >> /etc/ld.so.conf.d/openssl-${OPEN_SSL_VERSION}.conf \
