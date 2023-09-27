@@ -16,6 +16,7 @@ ARG BOOST_VERSION_MAJOR=1
 ARG BOOST_VERSION_MINOR=77
 ARG BOOST_VERSION_PATCH=0
 ARG GO_VERSION=1.20.3
+ARG JSONCPP_VERSION=1.9.5
 
 # Default build threads to 1; max is defined in Docker config (run `nproc` in Docker container)
 ARG BUILD_THREADS
@@ -125,6 +126,26 @@ COPY <<-"EOF" /root/.m2/settings.xml
     </servers>
 </settings>
 EOF
+
+# install updated jsoncpp
+RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
+    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
+    https://github.com/open-source-parsers/jsoncpp/archive/refs/tags/$JSONCPP_VERSION.tar.gz \
+    && tar xf $DOWNLOADS_CACHE_DIR/$JSONCPP_VERSION.tar.gz -C . \
+    && cd jsoncpp-$JSONCPP_VERSION \
+    && mkdir build \
+    && cd build \
+    && cmake -DCMAKE_BUILD_TYPE=release -DBUILD_SHARED_LIBS=ON -DARCHIVE_INSTALL_DIR=. -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_INCLUDEDIR=include/jsoncpp .. \
+    && make -j$THREADS_ARG  \
+    && make install \
+    && cd ../.. \
+    && rm -rf jsoncpp-$JSONCPP_VERSION $JSONCPP_VERSION.tar.gz
+
+RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
+    --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
+    --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
+    apt-get update -y \
+    && apt-get install -y uuid-dev libudev-dev
 
 RUN mkdir rondb-src rondb-bin rondb-tarball
 
