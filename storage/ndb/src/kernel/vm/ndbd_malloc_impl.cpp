@@ -755,14 +755,6 @@ Ndbd_mem_manager::get_resource_limit(Uint32 id, Resource_limit& rl) const
   return false;
 }
 
-void
-Ndbd_mem_manager::set_shared()
-{
-  mt_mem_manager_lock();
-  m_resource_limits.set_shared();
-  mt_mem_manager_unlock();
-}
-
 bool
 Ndbd_mem_manager::get_resource_limit_nolock(Uint32 id, Resource_limit& rl) const
 {
@@ -1744,6 +1736,14 @@ Ndbd_mem_manager::alloc_page(Uint32 type,
       return NULL;
     }
   }
+  /**
+   * alloc performs the actual memory allocation. It will try to allocate from
+   * the largest possible zone and allocate the requested number of pages if
+   * possible, but will settle for something smaller if ok by requester.
+   *
+   * All handling of memory used by different Resource groups is handled by
+   * the Resource_limits class.
+   */
   alloc(zone, i, &cnt, min);
   if (likely(cnt))
   {
@@ -1771,11 +1771,11 @@ Ndbd_mem_manager::alloc_page(Uint32 type,
 }
 
 void*
-Ndbd_mem_manager::alloc_spare_page(Uint32 type,
-                                   Uint32* i,
-                                   AllocZone zone,
-                                   bool locked,
-                                   bool force_reserved)
+Ndbd_mem_manager::alloc_emergency_page(Uint32 type,
+                                       Uint32* i,
+                                       AllocZone zone,
+                                       bool locked,
+                                       bool force_reserved)
 {
   Uint32 idx = type & RG_MASK;
   assert(idx && idx <= MM_RG_COUNT);
@@ -1836,9 +1836,12 @@ Ndbd_mem_manager::alloc_spare_page(Uint32 type,
   if (likely(cnt))
   {
     assert(cnt == min);
-    m_resource_limits.post_alloc_resource_spare(idx, cnt, force_reserved);
+    m_resource_limits.post_alloc_resource_emergency(idx, cnt, force_reserved);
     m_resource_limits.check();
-    mt_mem_manager_unlock();
+    if (!locked)
+    {
+      mt_mem_manager_unlock();
+    }
 #ifdef NDBD_RANDOM_START_PAGE
     *i += m_random_start_page_id;
     return m_base_page + *i - m_random_start_page_id;

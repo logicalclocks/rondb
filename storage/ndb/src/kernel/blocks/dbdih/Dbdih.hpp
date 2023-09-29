@@ -267,6 +267,7 @@ public:
   struct Fragmentstore {
     Uint32 m_magic;
     Uint32 tableId;
+    Uint32 changeNumber;
     Uint16 activeNodes[MAX_REPLICAS];
 
     Uint64 nextPool;
@@ -292,6 +293,7 @@ public:
     Uint8 noOldStoredReplicas;  /* NUMBER OF "DEAD" STORED REPLICAS */
     Uint8 noStoredReplicas;     /* NUMBER OF "ALIVE" STORED REPLICAS*/
     Uint8 noLcpReplicas;        ///< No of replicas remaining to be LCP:ed
+    Uint8 onlineSynchOngoing;
   };
   typedef Ptr64<Fragmentstore> FragmentstorePtr;
   typedef RecordPool64<RWPool64<Fragmentstore>> Fragmentstore_pool;
@@ -771,6 +773,8 @@ public:
     } m_dropTab;
     Uint32 connectrec;
 
+    Uint32 changeNumber;
+
     // set in local protocol during prepare until commit
     /**
      * m_scan_count is heavily updated by all TC threads as they start and
@@ -971,6 +975,8 @@ private:
   void execLOCAL_RECOVERY_COMP_REP(Signal *signal);
 
   void sendEND_TOREP(Signal *signal, Uint32 startNodeId);
+
+  void create_nodegroup_mapping(Uint16 nodegroup_mapping[MAX_NDB_NODES]);
   bool check_stall_lcp_start(void);
   void check_node_not_restarted_yet(NodeRecordPtr nodePtr);
   void setNodeRecoveryStatus(Uint32 nodeId,
@@ -1382,7 +1388,7 @@ private:
                       Uint32 fragId,
                       bool rcu_lock_held);
   void addTable_closeConf(Signal* signal, Uint32 tabPtrI);
-  void resetReplicaSr(TabRecordPtr tabPtr);
+  void resetReplicaSr(Signal*, TabRecordPtr tabPtr);
   void resetReplicaLcp(ReplicaRecord * replicaP, Uint32 stopGci);
   void resetReplica(ReplicaRecordPtr);
 
@@ -1408,13 +1414,15 @@ private:
                                          ConnectRecordPtr,
                                          Signal*);
   bool make_old_table_non_writeable(TabRecordPtr, ConnectRecordPtr);
-  void make_table_use_new_replica(TabRecordPtr,
+  void make_table_use_new_replica(Signal*,
+                                  TabRecordPtr,
                                   FragmentstorePtr fragPtr,
                                   Uint32 primaryNode,
                                   ReplicaRecordPtr,
                                   Uint32 replicaType,
                                   Uint32 destNodeId);
-  void make_table_use_new_node_order(TabRecordPtr,
+  void make_table_use_new_node_order(Signal*,
+                                     TabRecordPtr,
                                      FragmentstorePtr,
                                      Uint32,
                                      Uint32*);
@@ -1685,7 +1693,8 @@ private:
   Uint32 extractNodeInfo(EmulatedJamBuffer *jambuf,
                          const Fragmentstore * fragPtr,
                          Uint32 nodes[],
-                         bool crash_on_error = true);
+                         bool crash_on_error = true,
+                         bool only_readable_nodes = false);
   Uint32 findLocalFragment(const TabRecord *,
                            FragmentstorePtr & fragPtr,
                            EmulatedJamBuffer *jambuf);
@@ -1729,7 +1738,7 @@ private:
   void searchStoredReplicas(FragmentstorePtr regFragptr);
   bool setup_create_replica(FragmentstorePtr, CreateReplicaRecord*,
 			    ReplicaRecordPtr);
-  void updateNodeInfo(FragmentstorePtr regFragptr);
+  void updateNodeInfo(Signal *, FragmentstorePtr regFragptr);
 
 //------------------------------------
 // Fragment allocation, deallocation and
@@ -1743,7 +1752,8 @@ private:
                            FragmentstorePtr & ptr);
 
   void wait_old_scan(Signal*);
-  Uint32 add_fragments_to_table(Ptr<TabRecord>,
+  Uint32 add_fragments_to_table(Signal*,
+                                TabRecordPtr,
                                 const Uint16 buf[],
                                 const Uint32 bufLen);
   Uint32 add_fragment_to_table(Ptr<TabRecord>, Uint32, FragmentstorePtr&);

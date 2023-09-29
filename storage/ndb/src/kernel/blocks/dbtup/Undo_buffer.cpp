@@ -61,7 +61,7 @@ Undo_buffer::Undo_buffer(Ndbd_mem_manager* mm)
 Uint32 *
 Undo_buffer::alloc_copy_tuple(Local_key* dst,
                               Uint32 words,
-                              bool allow_use_spare)
+                              bool allow_use_emergency)
 {
   UndoPage* page = nullptr;
   assert(words);
@@ -87,15 +87,22 @@ Undo_buffer::alloc_copy_tuple(Local_key* dst,
   }
   if (m_first_free == RNIL)
   {
+    bool locked = false;
+    if (allow_use_emergency)
+    {
+      locked = true;
+    }
     page = (UndoPage*)m_mm->alloc_page(RT_DBTUP_COPY_PAGE,
                                        &m_first_free,
-                                       Ndbd_mem_manager::NDB_ZONE_LE_32);
+                                       Ndbd_mem_manager::NDB_ZONE_LE_32,
+                                       false,
+                                       locked);
     if (page == 0)
     {
-      if (allow_use_spare)
+      if (allow_use_emergency)
       {
-        page = (UndoPage*)m_mm->alloc_spare_page(RT_DBTUP_COPY_PAGE,
-                                                 &m_first_free,
+        page = (UndoPage*)m_mm->alloc_emergency_page(RT_DBTUP_COPY_PAGE,
+                                         &m_first_free,
                                          Ndbd_mem_manager::NDB_ZONE_LE_32,
                                          true,
                                          FORCE_RESERVED);

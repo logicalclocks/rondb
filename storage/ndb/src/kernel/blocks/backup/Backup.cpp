@@ -31,6 +31,7 @@
 #include <NdbTCP.h>
 #include "util/ndb_math.h"
 #include <Bitmask.hpp>
+#include <util/rondb_hash.hpp>
 
 #include <signaldata/NodeFailRep.hpp>
 #include <signaldata/ReadNodesConf.hpp>
@@ -8849,12 +8850,24 @@ Backup::record_deleted_pageid(Uint32 pageNo, Uint32 record_size)
   DEB_LCP_DEL(("(%u) DELETE_BY_PAGEID: page(%u)",
                 instance(),
                 pageNo));
-  *dst = htonl(Uint32(dataLen + (BackupFormat::DELETE_BY_PAGEID_TYPE << 16)));
+#ifdef ERROR_INSERT
+  /* Add checksum on all LCP records in ERROR_INSERT mode */
+  Uint32 header = dataLen + 1 + (BackupFormat::DELETE_BY_PAGEID_TYPE << 16);
+  *dst = htonl(header);
   memcpy(dst + 1, copy_array, dataLen*sizeof(Uint32));
-  ndbrequire(dataLen < zero_op.maxRecordSize);
-  zeroFilePtr.p->m_lcp_delete_by_pageids++;
-  zero_op.finished(dataLen);
+  Uint32 checksum = rondb_calc_hash_val((const char*)dst, dataLen + 1, true);
+  checksum = htonl(checksum);
+  dst[dataLen + 1] = checksum;
+  current_op.newRecord(dst + dataLen + 2);
+#else
+  Uint32 header = dataLen + (BackupFormat::DELETE_BY_PAGEID_TYPE << 16);
+  *dst = htonl(header);
+  memcpy(dst + 1, copy_array, dataLen*sizeof(Uint32));
   current_op.newRecord(dst + dataLen + 1);
+#endif
+  ndbrequire(dataLen < zero_op.maxRecordSize);
+  zero_op.finished(dataLen);
+  zeroFilePtr.p->m_lcp_delete_by_pageids++;
   ptr.p->noOfRecords++;
   ptr.p->noOfBytes += (4*(dataLen + 1));
   ptr.p->m_bytes_written += (4*(dataLen + 1));
@@ -8891,12 +8904,25 @@ Backup::record_deleted_rowid(Uint32 pageNo, Uint32 pageIndex, Uint32 gci)
                 instance(),
                 pageNo,
                 pageIndex));
-  *dst = htonl(Uint32(dataLen + (BackupFormat::DELETE_BY_ROWID_TYPE << 16)));
+  Uint32 record_len = dataLen + 1;
+#ifdef ERROR_INSERT
+  /* Add checksum on all LCP records in ERROR_INSERT mode */
+  Uint32 header = dataLen + 1 + (BackupFormat::DELETE_BY_ROWID_TYPE << 16);
+  *dst = htonl(header);
   memcpy(dst + 1, copy_array, dataLen*sizeof(Uint32));
+  Uint32 checksum = rondb_calc_hash_val((const char*)dst, dataLen + 1, true);
+  checksum = htonl(checksum);
+  dst[dataLen + 1] = checksum;
+  current_op.newRecord(dst + dataLen + 2);
+#else
+  Uint32 header = dataLen + (BackupFormat::DELETE_BY_ROWID_TYPE << 16);
+  *dst = htonl(header);
+  memcpy(dst + 1, copy_array, dataLen*sizeof(Uint32));
+  current_op.newRecord(dst + dataLen + 1);
+#endif
   ndbrequire(dataLen < zero_op.maxRecordSize);
   zeroFilePtr.p->m_lcp_delete_by_rowids++;
   zero_op.finished(dataLen);
-  current_op.newRecord(dst + dataLen + 1);
   ptr.p->noOfRecords++;
   ptr.p->noOfBytes += (4*(dataLen + 1));
   ptr.p->m_bytes_written += (4*(dataLen + 1));
@@ -8951,8 +8977,21 @@ Backup::execTRANSID_AI(Signal* signal)
 #endif
     ndbrequire(signal->getNoOfSections() == 0);
     const Uint32 * src = &signal->theData[3];
+#ifdef ERROR_INSERT
+  /* Add checksum on all LCP records in ERROR_INSERT mode */
+    header++;
     * dst = htonl(header);
     memcpy(dst + 1, src, 4*dataLen);
+    Uint32 checksum = rondb_calc_hash_val((const char*)dst, dataLen + 1, true);
+    checksum = htonl(checksum);
+    dst[dataLen + 1] = checksum;
+    current_op.newRecord(dst + dataLen + 2);
+#else
+    * dst = htonl(header);
+    memcpy(dst + 1, src, 4*dataLen);
+    current_op.newRecord(dst + dataLen + 1);
+#endif
+
 #ifdef DEBUG_LCP_ROW
     TablePtr debTabPtr;
     Fragment* fragPtrP;
@@ -8975,7 +9014,6 @@ Backup::execTRANSID_AI(Signal* signal)
       ndbabort();
     }
     op.finished(dataLen);
-    current_op.newRecord(dst + dataLen + 1);
     restore_current_page(ptr);
   }
   else

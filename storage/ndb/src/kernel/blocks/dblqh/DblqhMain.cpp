@@ -5878,102 +5878,67 @@ void Dblqh::execLQHKEYREF(Signal* signal)
 /* -------------------------------------------------------------------------- */
 void Dblqh::execPACKED_SIGNAL(Signal* signal) 
 {
-  Uint32 Tstep = 0;
-  Uint32 Tlength;
-  Uint32 TpackedData[28];
-  Uint32 sig0, sig1, sig2, sig3 ,sig4, sig5, sig6;
+  Uint32 length = signal->length();
+  Uint32 signalId = signal->header.theSignalId;
+  Uint32 step = 0;
+  Uint32 packedIndex = 0;
+  Uint32 packedData[28];
+  Uint32 senderRef = signal->getSendersBlockRef();
 
   jamEntry();
-  Tlength = signal->length();
-  Uint32 TsenderRef = signal->getSendersBlockRef();
-  Uint32 TcommitLen = 5;
-  Uint32 Tgci_lo_mask = ~(Uint32)0;
 
-#ifdef ERROR_INSERT
-  Uint32 senderBlockRef = signal->getSendersBlockRef();
-#endif
-
-  ndbrequire(Tlength <= 25);
-  MEMCOPY_NO_WORDS(&TpackedData[0], &signal->theData[0], Tlength);
+  memcpy(&packedData[0], &signal->theData[0], length * 4);
+  ndbrequire(length >= 3 && length <= 25);
 
   if (VERIFY_PACKED_RECEIVE)
   {
-    ndbrequire(PackedSignal::verify(&TpackedData[0], 
-                                    Tlength, 
+    ndbrequire(PackedSignal::verify(&packedData[0], 
+                                    length, 
                                     cownref,
                                     LQH_RECEIVE_TYPES, 
-                                    TcommitLen));
+                                    5));
   }
 
-  Uint32 packedIndex = 0;
-  while (Tlength > Tstep) {
-    switch (TpackedData[Tstep] >> 28) {
+  do
+  {
+    Uint32 firstWord = packedData[step];
+    jamBuffer()->markStartOfPackedSigExec(signalId, packedIndex);
+    memcpy(&signal->theData[0], &packedData[step], 4 * 4);
+    Uint32 connectPtr = firstWord & 0x0FFFFFFF;
+    Uint32 exec_operation = firstWord >> 28;
+    packedIndex++;
+    signal->theData[0] = connectPtr;
+    switch (exec_operation) {
     case ZCOMMIT:
-      jam();
-      sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-      sig1 = TpackedData[Tstep + 1];
-      sig2 = TpackedData[Tstep + 2];
-      sig3 = TpackedData[Tstep + 3];
-      sig4 = TpackedData[Tstep + 4];
-      signal->theData[0] = sig0;
-      signal->theData[1] = sig1;
-      signal->theData[2] = sig2;
-      signal->theData[3] = sig3;
-      signal->theData[4] = sig4 & Tgci_lo_mask;
-      signal->header.theLength = TcommitLen;
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
+    {
+      signal->theData[4] = packedData[step+4];
+      signal->header.theLength = 5;
+      step += 5;
       execCOMMIT(signal);
-      packedIndex++;
-      Tstep += TcommitLen;
       break;
+    }
     case ZCOMPLETE:
-      jam();
-      sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-      sig1 = TpackedData[Tstep + 1];
-      sig2 = TpackedData[Tstep + 2];
-      signal->theData[0] = sig0;
-      signal->theData[1] = sig1;
-      signal->theData[2] = sig2;
+    {
       signal->header.theLength = 3;
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
+      step += 3;
       execCOMPLETE(signal);
-      packedIndex++;
-      Tstep += 3;
       break;
-    case ZLQHKEYCONF: {
-      jam();
-      LqhKeyConf * lqhKeyConf = CAST_PTR(LqhKeyConf, signal->theData);
-      sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-      sig1 = TpackedData[Tstep + 1];
-      sig2 = TpackedData[Tstep + 2];
-      sig3 = TpackedData[Tstep + 3];
-      sig4 = TpackedData[Tstep + 4];
-      sig5 = TpackedData[Tstep + 5];
-      sig6 = TpackedData[Tstep + 6];
-      lqhKeyConf->connectPtr = sig0;
-      lqhKeyConf->opPtr = sig1;
-      lqhKeyConf->userRef = sig2;
-      lqhKeyConf->readLen = sig3;
-      lqhKeyConf->transId1 = sig4;
-      lqhKeyConf->transId2 = sig5;
-      lqhKeyConf->numFiredTriggers = sig6;
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
+    }
+    case ZLQHKEYCONF:
+    {
+      memcpy(&signal->theData[4],
+             &packedData[step+4],
+             (LqhKeyConf::SignalLength - 4) * 4);
+      signal->header.theLength = LqhKeyConf::SignalLength;
+      step += LqhKeyConf::SignalLength;
       execLQHKEYCONF(signal);
-      packedIndex++;
-      Tstep += LqhKeyConf::SignalLength;
       break;
     }
     case ZREMOVE_MARKER:
-      jam();
-      sig0 = TpackedData[Tstep + 1];
-      sig1 = TpackedData[Tstep + 2];
-      signal->theData[0] = sig0;
-      signal->theData[1] = sig1;
-      if ((TpackedData[Tstep] & 1) == 0)
+    {
+      if ((packedData[step] & 1) == 0)
       {
+        memcpy(&signal->theData[0], &packedData[step + 1], 2 * 4);
         /**
          * This is the normal path where we remove a marker
          * after commit.
@@ -5996,40 +5961,27 @@ void Dblqh::execPACKED_SIGNAL(Signal* signal)
          */
         signal->header.theLength = 3;
       }
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
+      step += 3;
       execREMOVE_MARKER_ORD(signal);
-      packedIndex++;
-      Tstep += 3;
       break;
+    }
     case ZFIRE_TRIG_REQ:
-      jam();
+    {
       ndbassert(FireTrigReq::SignalLength == 4);
-      sig0 = TpackedData[Tstep + 0] & 0x0FFFFFFF;
-      sig1 = TpackedData[Tstep + 1];
-      sig2 = TpackedData[Tstep + 2];
-      sig3 = TpackedData[Tstep + 3];
-      signal->theData[0] = sig0;
-      signal->theData[1] = sig1;
-      signal->theData[2] = sig2;
-      signal->theData[3] = sig3;
       signal->header.theLength = FireTrigReq::SignalLength;
-      signal->header.theSendersBlockRef = TsenderRef;
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
+      step += FireTrigReq::SignalLength;
       execFIRE_TRIG_REQ(signal);
-      packedIndex++;
-      Tstep += FireTrigReq::SignalLength;
       break;
+    }
     default:
       ndbabort();
       return;
     }//switch
-#ifdef ERROR_INSERT
-    signal->header.theSendersBlockRef = senderBlockRef;
-#endif
+    /* Set again, in case someone changed it while executing a signal */
+    signal->header.theSendersBlockRef = senderRef;
   }//while
-  ndbrequire(Tlength == Tstep);
+  while (length > step);
+  ndbrequire(length == step);
   return;
 }//Dblqh::execPACKED_SIGNAL()
 
@@ -13554,10 +13506,14 @@ void Dblqh::execCOMMIT(Signal* signal)
     TcConnectionrec * const regTcPtr = tcConnectptr.p;
     TRACE_OP(regTcPtr, "COMMIT");
 
-    CRASH_INSERTION(5048);
-    if (ERROR_INSERTED(5049))
+#ifdef ERROR_INSERT
+    if (tcConnectptr.p->operation == ZUPDATE)
     {
-      SET_ERROR_INSERT_VALUE(5048);
+      CRASH_INSERTION(5048);
+      if (ERROR_INSERTED(5049))
+      {
+        SET_ERROR_INSERT_VALUE(5048);
+      }
     }
     if (ERROR_INSERTED(5093))
     {
@@ -13570,6 +13526,7 @@ void Dblqh::execCOMMIT(Signal* signal)
         return;
       }
     }
+#endif
     commitReqLab(signal, gci_hi, gci_lo, tcConnectptr);
     return;
   }//if
@@ -19565,8 +19522,33 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
   if (!scanPtr->lcpScan &&
       !m_is_query_block)
   {
+    /**
+     * The m_scanFragReqCount is a union with m_fragCopyRowIns that tracks
+     * the number of rows inserted during the Copy fragment process.
+     * This variable is set to 0 by the signal COPY_ACTIVEREQ after completing
+     * the copy fragment process for the fragment. Coming here we should have
+     * increased m_scanFragReqCount after receiving SCAN_FRAGREQ, however a
+     * COPY_ACTIVEREQ arriving SCAN_FRAGREQ will set this variable to 0.
+     *
+     * Normally this behaviour would never happen since COPY_ACTIVEREQ is
+     * sent long before the fragment is allowed to be used for scans.
+     * However scans on ordered index actually uses the table distribution
+     * of the primary table. This table is usually handled before the
+     * ordered index table. Thus COPY_ACTIVEREQ on an ordered index table
+     * could see a value of 0 in the execution of a SCAN_NEXTREQ or
+     * CONTINUEB signal. But for the base table it should never be 0.
+     *
+     * To understand this behaviour a number of log messages was added
+     * DEB_ACTIVE_NODES in DBTC and DBDIH.
+     */
     Fragrecord::UsageStat& useStat = fragptr.p->m_useStat;
-    ndbassert(useStat.m_scanFragReqCount > 0);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    TablerecPtr tablePtr;
+    tablePtr.i = regTcPtr->tableref;
+    ptrCheckGuard(tablePtr, ctabrecFileSize, tablerec);
+    ndbassert(useStat.m_scanFragReqCount > 0 ||
+              DictTabInfo::isOrderedIndex(tablePtr.p->tableType));
+#endif
 
     useStat.m_scanRowsExamined++;
     useStat.m_scanInstructionCount += conf->noExecInstructions;
@@ -19692,8 +19674,13 @@ void Dblqh::scanTupkeyRefLab(Signal* signal,
       !m_is_query_block)
   {
     Fragrecord::UsageStat& useStat = fragptr.p->m_useStat;
-    ndbassert(useStat.m_scanFragReqCount > 0);
-
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    TablerecPtr tablePtr;
+    tablePtr.i = regTcPtr->tableref;
+    ptrCheckGuard(tablePtr, ctabrecFileSize, tablerec);
+    ndbassert(useStat.m_scanFragReqCount > 0 ||
+              DictTabInfo::isOrderedIndex(tablePtr.p->tableType));
+#endif
     useStat.m_scanRowsExamined++;
 
     const TupKeyRef* const ref =
@@ -20951,7 +20938,13 @@ void Dblqh::sendScanFragConf(Signal* signal,
   {
     jamDebug();
     Fragrecord::UsageStat& useStat = fragptr.p->m_useStat;
-    ndbassert(useStat.m_scanFragReqCount > 0);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    TablerecPtr tablePtr;
+    tablePtr.i = regTcPtr->tableref;
+    ptrCheckGuard(tablePtr, ctabrecFileSize, tablerec);
+    ndbassert(useStat.m_scanFragReqCount > 0 ||
+              DictTabInfo::isOrderedIndex(tablePtr.p->tableType));
+#endif
 
     useStat.m_scanRowsReturned += scanPtr->m_curr_batch_size_rows;
     useStat.m_scanWordsReturned += 

@@ -662,6 +662,18 @@ Dbtup::readFixedSizeTHManyWordNotNULL(Uint8* outBuffer,
   Uint8* dst = (outBuffer + indexBuf);
   const Uint8* src = (Uint8*)(tuple_header + readOffset);
 
+#ifdef ERROR_INSERT
+  thrjamDataDebug(req_struct->jamBuffer, attrNoOfWords);
+  if (!((readOffset + attrNoOfWords - 1) < req_struct->check_offset[MM]))
+  {
+    g_eventLogger->info("readOffset: %u, attrNoOfWords: %u"
+                        ", fix_header_size: %u",
+                        readOffset,
+                        attrNoOfWords,
+                        req_struct->check_offset[MM]);
+    require((readOffset + attrNoOfWords - 1) < req_struct->check_offset[MM]);
+  }
+#endif
   require((readOffset + attrNoOfWords - 1) < req_struct->check_offset[MM]);
   if (! charsetFlag || ! req_struct->xfrm_flag)
   {

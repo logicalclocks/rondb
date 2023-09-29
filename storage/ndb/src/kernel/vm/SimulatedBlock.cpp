@@ -2850,11 +2850,19 @@ SimulatedBlock::handle_execute_error(GlobalSignalNumber gsn)
    */
   char errorMsg[255];
   if (!(gsn <= MAX_GSN)) {
-    BaseString::snprintf(errorMsg, 255, "Illegal signal received (GSN %d too high)", gsn);
+    BaseString::snprintf(errorMsg, 255, "Illegal signal received (GSN %d too high)"
+      ", block: %u, instance: %u",
+      gsn,
+      number(),
+      theInstance);
     ERROR_SET(fatal, NDBD_EXIT_PRGERR, errorMsg, errorMsg);
   }
   if (!(theSignalHandlerArray[gsn].m_execFunction != nullptr)) {
-    BaseString::snprintf(errorMsg, 255, "Illegal signal received (GSN %d not added)", gsn);
+    BaseString::snprintf(errorMsg, 255, "Illegal signal received (GSN %d not added)"
+      ", block: %u, instance: %u",
+      gsn,
+      number(),
+      theInstance);
     ERROR_SET(fatal, NDBD_EXIT_PRGERR, errorMsg, errorMsg);
   }
   ndbabort();

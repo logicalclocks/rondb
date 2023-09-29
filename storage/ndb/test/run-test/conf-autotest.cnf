@@ -214,10 +214,10 @@ InitialTablespace=datafile01.dat:256M;datafile02.dat:256M
 TimeBetweenWatchDogCheckInitial=60000
 
 #
-# .6node_2ng_12cpus
+# .6node_2ng_4cpus
 #
 
-[cluster_config.6node_2ng_12cpus]
+[cluster_config.6node_2ng_4cpus]
 ndb_mgmd = CHOOSE_host1
 ndbd = CHOOSE_host2,CHOOSE_host3,CHOOSE_host4,CHOOSE_host5,CHOOSE_host6,CHOOSE_host1
 ndbapi= CHOOSE_host1,CHOOSE_host1,CHOOSE_host1
@@ -234,7 +234,7 @@ MaxNoOfAttributes=2000
 Checksum=1
 AutomaticThreadConfig=1
 AutomaticMemoryConfig=1
-NumCPUs=12
+NumCPUs=4
 TotalMemoryConfig=5500M
 MaxNoOfTables=200
 MaxNoOfOrderedIndexes=200
@@ -247,6 +247,36 @@ DiskPageBufferMemory=256M
 InitialLogfileGroup=undo_buffer_size=64M;undofile01.dat:512M;undofile02.dat:512M
 InitialTablespace=datafile01.dat:256M;datafile02.dat:256M
 TimeBetweenWatchDogCheckInitial=60000
+
+[cluster_config.ndbd.1.6node_2ng_4cpus]
+LocationDomainId=1
+NodeId=2
+Nodegroup=1
+
+[cluster_config.ndbd.2.6node_2ng_4cpus]
+LocationDomainId=2
+NodeId=3
+Nodegroup=1
+
+[cluster_config.ndbd.3.6node_2ng_4cpus]
+LocationDomainId=3
+NodeId=4
+Nodegroup=1
+
+[cluster_config.ndbd.4.6node_2ng_4cpus]
+LocationDomainId=1
+NodeId=5
+Nodegroup=2
+
+[cluster_config.ndbd.5.6node_2ng_4cpus]
+LocationDomainId=2
+NodeId=6
+Nodegroup=2
+
+[cluster_config.ndbd.6.6node_2ng_4cpus]
+LocationDomainId=3
+NodeId=7
+Nodegroup=2
 
 #
 # .8node_2ng_5cpus

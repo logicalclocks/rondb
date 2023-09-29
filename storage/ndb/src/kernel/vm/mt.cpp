@@ -3696,12 +3696,17 @@ static bool do_send(struct thr_data* selfptr,
  * We call this function only after executing no jobs and thus it is
  * safe to spin for a short time.
  */
+static Uint32 scan_zero_queue(struct thr_data* selfptr);
 static bool
 check_yield(thr_data *selfptr,
             Uint64 min_spin_timer_us, //microseconds
             Uint32 *spin_time_in_ns,
             NDB_TICKS start_spin_ticks)
 {
+  if (scan_zero_queue(selfptr) > 0)
+  {
+    return true;
+  }
 #ifndef NDB_HAVE_CPU_PAUSE
   /**
    * If cpu_pause() was not implemented, 'min_spin_timer == 0' is enforced,
@@ -4912,7 +4917,7 @@ scan_time_queues_backtick(struct thr_data* selfptr, NDB_TICKS now)
  * the run job buffers.
  */
 static inline
-void
+Uint32
 scan_zero_queue(struct thr_data* selfptr)
 {
   struct thr_tq * tq = &selfptr->m_tq;
@@ -4926,13 +4931,14 @@ scan_zero_queue(struct thr_data* selfptr)
     require(num_found == cnt);
   }
   tq->m_cnt[2] = 0;
+  return cnt;
 }
 
 static inline
 Uint32
 scan_time_queues(struct thr_data* selfptr, NDB_TICKS now)
 {
-  scan_zero_queue(selfptr);
+  (void)scan_zero_queue(selfptr);
   const NDB_TICKS last = selfptr->m_ticks;
   if (unlikely(NdbTick_Compare(now, last) < 0))
   {
@@ -7299,6 +7305,8 @@ check_queues_empty(thr_data *selfptr)
     if (check_for_input_from_ndbfs(selfptr, selfptr->m_signal))
       return false;
   }
+  if (scan_zero_queue(selfptr) > 0)
+    return false;
   bool empty = read_jba_state(selfptr);
   if (!empty)
     return false;
@@ -7800,7 +7808,7 @@ run_job_buffers(thr_data *selfptr,
          */
         signal_count_since_last_zero_time_queue = signal_count;
         selfptr->m_watchdog_counter = 14;
-        scan_zero_queue(selfptr);
+        (void)scan_zero_queue(selfptr);
         selfptr->m_watchdog_counter = 13;
       }
       /**

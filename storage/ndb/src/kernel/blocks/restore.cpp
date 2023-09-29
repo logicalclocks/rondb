@@ -57,7 +57,14 @@
 //#define DEBUG_RES_STAT_EXTRA 1
 //#define DEBUG_RES_DEL 1
 //#define DEBUG_HIGH_RES 1
-#define DEBUG_RES_HASH 1
+//#define DEBUG_RES_HASH 1
+//#define DEBUG_READ_KEYS 1
+#endif
+
+#ifdef DEBUG_READ_KEYS
+#define DEB_READ_KEYS(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_READ_KEYS(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_RES_HASH
@@ -2963,7 +2970,6 @@ Restore::parse_record(Signal* signal,
                       BackupFormat::RecordType header_type)
 {
   Uint32 page_no = data[1];
-  data += 1;
   file_ptr.p->m_error_code = 0;
   ndbrequire(file_ptr.p->m_lcp_version >= NDBD_RAW_LCP);
   if (page_no >= file_ptr.p->m_max_page_cnt)
@@ -2978,6 +2984,24 @@ Restore::parse_record(Signal* signal,
   }
   Uint32 part_id = c_backup->hash_lcp_part(page_no);
   ndbrequire(part_id < MAX_LCP_PARTS_SUPPORTED);
+#ifdef ERROR_INSERT
+  len--;
+  Uint32 record_checksum = data[len];
+  record_checksum = ntohl(record_checksum);
+  Uint32 calc_checksum = rondb_calc_hash_val((const char*)data, len, true);
+  if (record_checksum != calc_checksum)
+  {
+    g_eventLogger->info("(%u)parse_record, page_no: %u, part: %u,"
+                        " state: %s, header_type: %s",
+                        instance(),
+                        page_no,
+                        part_id,
+                get_state_string(Uint32(file_ptr.p->m_part_state[part_id])),
+                get_header_string(Uint32(header_type)));
+    ndbrequire(record_checksum == calc_checksum);
+  }
+#endif
+  data += 1;
   /*
   DEB_HIGH_RES(("(%u)parse_record, page_no: %u, part: %u,"
                 " state: %s, header_type: %s",
@@ -3045,6 +3069,16 @@ Restore::parse_record(Signal* signal,
     rowid_val.m_page_idx = data[1];
     file_ptr.p->m_rowid_page_no = rowid_val.m_page_no;
     file_ptr.p->m_rowid_page_idx = rowid_val.m_page_idx;
+    jamDataDebug(file_ptr.p->m_table_id);
+    jamDataDebug(file_ptr.p->m_fragment_id);
+    jamDataDebug(len);
+    DEB_READ_KEYS(("(%u,%u) tab(%u,%u), len: %u",
+                   instance(),
+                   m_is_query_block,
+                   file_ptr.p->m_table_id,
+                   file_ptr.p->m_fragment_id,
+                   len));
+
     Uint32 keyLen = c_tup->read_lcp_keys(file_ptr.p->m_table_id,
                                          data+2,
                                          len - 3,

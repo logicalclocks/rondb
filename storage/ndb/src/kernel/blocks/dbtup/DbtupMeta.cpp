@@ -67,6 +67,13 @@ extern EventLogger * g_eventLogger;
 //#define DEBUG_DROP_TAB 1
 //#define DEBUG_DYN_META 1
 //#define DEBUG_HASH 1
+//#define DEBUG_ROW_SIZE 1
+#endif
+
+#ifdef DEBUG_ROW_SIZE
+#define DEB_ROW_SIZE(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_ROW_SIZE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_DYN_META
@@ -1554,7 +1561,8 @@ Dbtup::handleAlterTableCommit(Signal *signal,
 
     regTabPtr->m_dyn_null_bits[MM]= regAlterTabOpPtr.p->noOfDynNullBits[MM];
     regTabPtr->m_dyn_null_bits[DD]= regAlterTabOpPtr.p->noOfDynNullBits[DD];
-    DEB_DYN_META(("(%u) set m_no_of_dynamic[MM] = %u, m_no_of_dynamic[DD]",
+    DEB_DYN_META(("(%u) set m_no_of_dynamic[MM] = %u,"
+                  " m_no_of_dynamic[DD] = %u",
                   instance(),
                   regTabPtr->m_attributes[MM].m_no_of_dynamic,
                   regTabPtr->m_attributes[DD].m_no_of_dynamic));
@@ -2008,6 +2016,16 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
 
   regTabPtr->m_offsets[MM].m_fix_header_size= 
     Tuple_header::HeaderSize + fix_size[MM] + pos[MM];
+
+  DEB_ROW_SIZE(("(%u) tab(%u) HeaderSize: %u, fix_size: %u, pos: %u,"
+                " fix_header_size: %u",
+                instance(),
+                tabPtr.i,
+                Tuple_header::HeaderSize,
+                fix_size[MM],
+                pos[MM],
+                regTabPtr->m_offsets[MM].m_fix_header_size));
+
   regTabPtr->m_offsets[DD].m_fix_header_size= 
     fix_size[DD] + pos[DD];
 
@@ -2083,7 +2101,10 @@ Dbtup::computeTableMetaData(TablerecPtr tabPtr, Uint32 line)
 
   regTabPtr->total_rec_size= total_rec_size[MM] + total_rec_size[DD];
 
-  DEB_TUP_META(("New total_rec_size set to %u", total_rec_size));
+  DEB_TUP_META(("(%u) tab(%u) New total_rec_size set to %u",
+                instance(),
+                tabPtr.i,
+                regTabPtr->total_rec_size));
 
   setUpQueryRoutines(regTabPtr);
   setUpKeyArray(regTabPtr);

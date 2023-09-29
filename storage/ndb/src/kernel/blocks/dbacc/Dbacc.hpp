@@ -1247,7 +1247,7 @@ private:
 
   Page32_pool c_page_pool;
   Page8_pool c_page8_pool;
-  bool c_allow_use_of_spare_pages;
+  bool c_allow_use_of_emergency_pages;
   bool c_restart_allow_use_spare;
 /* --------------------------------------------------------------------------------- */
 /* ROOTFRAGMENTREC                                                                   */

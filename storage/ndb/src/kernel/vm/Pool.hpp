@@ -126,8 +126,10 @@ struct Resource_limit
   Uint32 m_stolen_reserved;
 
   /**
-   * We have used all our reserved resources, but calls to alloc_spare_page
-   * have extended our set of reserved pages.
+   * We have used all our reserved resources, but calls to alloc_emergency_page
+   * have extended our set of reserved pages. These pages are either allocated
+   * from shared global memory or stolen from the reserved memory of another
+   * Resource group.
    */
   Uint32 m_overflow_reserved;
 

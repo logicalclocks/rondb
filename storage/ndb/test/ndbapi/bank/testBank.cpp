@@ -92,17 +92,20 @@ int runBankSum(NDBT_Context* ctx, NDBT_Step* step){
 
   while (ctx->isTestStopped() == false) {
     if (bank.performSumAccounts(wait, yield) != NDBT_OK){
-      ndbout << "bank.performSumAccounts FAILED" << endl;
+      ndbout << "bank.performSumAccounts FAILED, return NDBT_FAILED" << endl;
       result = NDBT_FAILED;
     }
   }
-  return result ;
+  return result;
 }
 
 int runDropBank(NDBT_Context* ctx, NDBT_Step* step){
   Bank bank(ctx->m_cluster_connection, _database);
   if (bank.dropBank() != NDBT_OK)
+  {
+    ndbout << "dropBank FAILED: return NDBT_FAILED" << endl;
     return NDBT_FAILED;
+  }
   return NDBT_OK;
 }
 

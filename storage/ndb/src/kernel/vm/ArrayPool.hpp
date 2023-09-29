@@ -34,6 +34,7 @@
 #include <ErrorReporter.hpp>
 #include <Bitmask.hpp>
 #include <mgmapi.h>
+#include <ndb_prefetch.h>
 
 #include <NdbMutex.h>
 #include <EventLogger.hpp>
@@ -1267,11 +1268,15 @@ CachedArrayPool<T>::seize(LockFun l, Cache& c, Ptr<T> & p)
   Uint32 ff = c.m_first_free;
   if (ff != RNIL)
   {
-    c.m_first_free = this->theArray[ff].nextPool;
-    c.m_free_cnt--;
+    Uint32 new_first_free = this->theArray[ff].nextPool;
+    Uint32 free_cnt = c.m_free_cnt;
     p.i = ff;
     p.p = this->theArray + ff;
     DUMP("LOCAL ", "\n");
+    c.m_first_free = new_first_free;
+    c.m_free_cnt = free_cnt - 1;
+    NDB_PREFETCH_WRITE(this->theArray + new_first_free);
+    NDB_PREFETCH_WRITE(&this->theArray[new_first_free].nextPool);
     return true;
   }
 
@@ -1282,9 +1287,12 @@ CachedArrayPool<T>::seize(LockFun l, Cache& c, Ptr<T> & p)
 
   if (ret)
   {
-    c.m_first_free = this->theArray[p.i].nextPool;
+    Uint32 new_first_free = this->theArray[p.i].nextPool;
     c.m_free_cnt = tmp - 1;
     DUMP("LOCKED", "\n");
+    c.m_first_free = new_first_free;
+    NDB_PREFETCH_WRITE(this->theArray + new_first_free);
+    NDB_PREFETCH_WRITE(&this->theArray[new_first_free].nextPool);
     return true;
   }
   this->seizeErrHand->failure();

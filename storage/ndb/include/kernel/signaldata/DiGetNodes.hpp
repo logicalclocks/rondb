@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2023, Oracle and/or its affiliates.
+   Copyright (c) 2023, 2023, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -48,13 +49,15 @@ struct DiGetNodesConf {
    */
   friend class Dbdih;
 
-  static constexpr Uint32 SignalLength = 4 + MAX_REPLICAS;
+  static constexpr Uint32 SignalLength = 6 + MAX_REPLICAS;
   static constexpr Uint32 REORG_MOVING = 0x80000000;
 
   Uint32 zero;
   Uint32 fragId;
   Uint32 reqinfo;
   Uint32 instanceKey;
+  Uint32 fragChangeNumber;
+  Uint32 tabChangeNumber;
   Uint32 nodes[MAX_REPLICAS + (3 + MAX_REPLICAS)]; //+1
 };
 /**
@@ -73,7 +76,7 @@ class DiGetNodesReq {
    */
   friend class Dbdih;
 public:
-  static constexpr Uint32 SignalLength = 6 + (sizeof(void*) / sizeof(Uint32));
+  static constexpr Uint32 SignalLength = 7 + (sizeof(void*) / sizeof(Uint32));
   static constexpr Uint32 MAX_DIGETNODESREQS = 16;
 private:
   Uint32 tableId;
@@ -82,6 +85,7 @@ private:
   Uint32 scan_indicator;
   Uint32 get_next_fragid_indicator;
   Uint32 anyNode;
+  Uint32 only_readable_nodes;
   union {
     void * jamBufferPtr;
     Uint32 jamBufferStorage[2];

@@ -94,7 +94,7 @@ void Dbacc::initData()
 
   c_fragment_pool.init(RT_DBACC_FRAGMENT, pc);
 
-  c_allow_use_of_spare_pages = false;
+  c_allow_use_of_emergency_pages = false;
   cfreeopRec = RNIL;
 
   cnoOfAllocatedPagesMax = cnoOfAllocatedPages = cpageCount = 0;

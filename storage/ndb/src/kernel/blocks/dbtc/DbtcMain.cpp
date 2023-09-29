@@ -132,6 +132,7 @@
 //#define DEBUG_EXEC_WRITE_COUNT 1
 //#define DEBUG_TCGETOPSIZE 1
 //#define DEBUG_HASH 1
+//#define DEBUG_ACTIVE_NODES 1
 #endif
 
 #define TC_TIME_SIGNAL_DELAY 50
@@ -143,6 +144,12 @@
 #define DEBUG(x) ndbout << "DBTC: "<< x << endl;
 #else
 #define DEBUG(x)
+#endif
+
+#ifdef DEBUG_ACTIVE_NODES
+#define DEB_ACTIVE_NODES(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_ACTIVE_NODES(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_LQH_TRANS_CMA
@@ -3726,6 +3733,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
 #endif
 
   Treqinfo = tcKeyReq->requestInfo;
+  Uint32 transId1 = tcKeyReq->transId1;
+  Uint32 transId2 = tcKeyReq->transId2;
   //--------------------------------------------------------------------------
   // Optimised version of ptrAss(tabptr, tableRecord)
   // Optimised version of ptrAss(apiConnectptr, apiConnectRecord)
@@ -3885,8 +3894,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
       // Transaction is started already. 
       // Check that the operation is on the same transaction.
       //-----------------------------------------------------------------------
-      compare_transid1 = regApiPtr->transid[0] ^ tcKeyReq->transId1;
-      compare_transid2 = regApiPtr->transid[1] ^ tcKeyReq->transId2;
+      compare_transid1 = regApiPtr->transid[0] ^ transId1;
+      compare_transid2 = regApiPtr->transid[1] ^ transId2;
       jam();
       compare_transid1 = compare_transid1 | compare_transid2;
       if (unlikely(compare_transid1 != 0))
@@ -4533,8 +4542,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
         {
           regTcPtr->commitAckMarker = tmp.i;
           regApiPtr->commitAckMarker = tmp.i;
-          tmp.p->transid1      = tcKeyReq->transId1;
-          tmp.p->transid2      = tcKeyReq->transId2;
+          tmp.p->transid1      = transId1;
+          tmp.p->transid2      = transId2;
           tmp.p->apiNodeId     = refToNode(regApiPtr->ndbapiBlockref);
           tmp.p->apiConnectPtr = TapiIndex;
 #if defined VM_TRACE || defined ERROR_INSERT
@@ -4546,8 +4555,8 @@ void Dbtc::execTCKEYREQ(Signal* signal)
           DEB_LQH_TRANS_CMA(("(%u) Insert trans(H'%.8x,H'%.8x) into "
                          "CommitAckMarker::TCKEYREQ",
                          instance(),
-                         tcKeyReq->transId1,
-                         tcKeyReq->transId2));
+                         transId1,
+                         transId2));
           m_commitAckMarkerHash.add(tmp);
         }
       }
@@ -4792,6 +4801,7 @@ void Dbtc::tckeyreq050Lab(Signal* signal,
   req->scan_indicator = 0;
   req->anyNode = 0;
   req->get_next_fragid_indicator = 0;
+  req->only_readable_nodes = (regTcPtr->operation == ZREAD);
   req->jamBufferPtr = jamBuffer();
 
   if (localTabptr.p->m_flags & TableRecord::TR_FULLY_REPLICATED)
@@ -6065,107 +6075,62 @@ bool Dbtc::releaseTcCon(Signal *signal, Uint32 & loop_count, bool detach)
 
 void Dbtc::execPACKED_SIGNAL(Signal* signal) 
 {
-  LqhKeyConf * const lqhKeyConf = (LqhKeyConf *)signal->getDataPtr();
-
-  UintR Ti;
-  UintR Tstep = 0;
-  UintR Tlength;
-  UintR TpackedData[28];
-  UintR Tdata1, Tdata2, Tdata3, Tdata4;
+  Uint32 length = signal->length();
+  Uint32 signalId = signal->header.theSignalId;
+  Uint32 step = 0;
+  Uint32 packedData[28];
+  Uint32 packedIndex = 0;
 
   jamEntryDebug();
-  Tlength = signal->length();
-  if (unlikely(Tlength > 25))
-  {
-    jam();
-    systemErrorLab(signal, __LINE__);
-    return;
-  }//if
-  Uint32* TpackDataPtr;
-  for (Ti = 0; Ti < Tlength; Ti += 4) {
-    Uint32* TsigDataPtr = &signal->theData[Ti];
-    Tdata1 = TsigDataPtr[0];
-    Tdata2 = TsigDataPtr[1];
-    Tdata3 = TsigDataPtr[2];
-    Tdata4 = TsigDataPtr[3];
-
-    TpackDataPtr = &TpackedData[Ti];
-    TpackDataPtr[0] = Tdata1;
-    TpackDataPtr[1] = Tdata2;
-    TpackDataPtr[2] = Tdata3;
-    TpackDataPtr[3] = Tdata4;
-  }//for
-
+  memcpy(&packedData[0], &signal->theData[0], length * 4);
+  ndbrequire(length >= 3 && length <= 25);
   if (VERIFY_PACKED_RECEIVE)
   {
-    ndbrequire(PackedSignal::verify(&TpackedData[0],
-                                    Tlength,
+    ndbrequire(PackedSignal::verify(&packedData[0],
+                                    length,
                                     cownref,
                                     TC_RECEIVE_TYPES,
                                     0)); /* Irrelevant */
   }
-  Uint32 packedIndex = 0;
-  while (Tlength > Tstep) {
-
-    TpackDataPtr = &TpackedData[Tstep];
-    Tdata1 = TpackDataPtr[0];
-    Tdata2 = TpackDataPtr[1];
-    Tdata3 = TpackDataPtr[2];
-
-    lqhKeyConf->connectPtr = Tdata1 & 0x0FFFFFFF;
-    lqhKeyConf->opPtr = Tdata2;
-    lqhKeyConf->userRef = Tdata3;
-
-    switch (Tdata1 >> 28) {
+  do
+  {
+    Uint32 firstWord = packedData[step];
+    jamBuffer()->markStartOfPackedSigExec(signalId, packedIndex);
+    memcpy(&signal->theData[0], &packedData[step], 4 * 4);
+    Uint32 connectPtr = firstWord & 0x0FFFFFFF;
+    Uint32 exec_operation = firstWord >> 28;
+    packedIndex++;
+    step += 3;
+    signal->theData[0] = connectPtr;
+    switch (exec_operation) {
     case ZCOMMITTED:
       signal->header.theLength = 3;
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
       execCOMMITTED(signal);
-      packedIndex++;
-      Tstep += 3;
       break;
     case ZCOMPLETED:
       signal->header.theLength = 3;
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
       execCOMPLETED(signal);
-      packedIndex++;
-      Tstep += 3;
       break;
     case ZLQHKEYCONF:
       jamDebug();
-      Tdata1 = TpackDataPtr[3];
-      Tdata2 = TpackDataPtr[4];
-      Tdata3 = TpackDataPtr[5];
-      Tdata4 = TpackDataPtr[6];
-
-      lqhKeyConf->readLen = Tdata1;
-      lqhKeyConf->transId1 = Tdata2;
-      lqhKeyConf->transId2 = Tdata3;
-      lqhKeyConf->numFiredTriggers = Tdata4;
+      memcpy(&signal->theData[4],
+             &packedData[step+1],
+             (LqhKeyConf::SignalLength - 4) * 4);
       signal->header.theLength = LqhKeyConf::SignalLength;
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
+      step += (LqhKeyConf::SignalLength - 3);
       execLQHKEYCONF(signal);
-      packedIndex++;
-      Tstep += LqhKeyConf::SignalLength;
       break;
     case ZFIRE_TRIG_CONF:
       jamDebug();
       signal->header.theLength = 4;
-      signal->theData[3] = TpackDataPtr[3];
-      jamBuffer()->markStartOfPackedSigExec(signal->header.theSignalId,
-                                            packedIndex);
+      step++;
       execFIRE_TRIG_CONF(signal);
-      packedIndex++;
-      Tstep += 4;
       break;
     default:
-      systemErrorLab(signal, __LINE__);
+      ndbabort();
       return;
-    }//switch
-  }//while
+    }
+  } while (length > step);
   return;
 }//Dbtc::execPACKED_SIGNAL()
 
@@ -17084,11 +17049,12 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
 
   req->tableId = scanptr.p->scanTableref;
   req->hashValue = scanFragId;
-  req->distr_key_indicator = ZTRUE;
+  Uint32 distr_key_indicator = ZTRUE;
   req->scan_indicator = ZTRUE;
   req->anyNode = scanptr.p->m_read_any_node;
   req->jamBufferPtr = jamBuffer();
   req->get_next_fragid_indicator = 0;
+  req->only_readable_nodes = 1;
 
   if (scanptr.p->m_scan_dist_key_flag) //Scan pruned to specific fragment
   {
@@ -17100,8 +17066,9 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
     tabPtr.i = scanptr.p->scanTableref;
     ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
 
-    req->distr_key_indicator = tabPtr.p->get_user_defined_partitioning();
+    distr_key_indicator = tabPtr.p->get_user_defined_partitioning();
   }
+  req->distr_key_indicator = distr_key_indicator;
   c_dih->execDIGETNODESREQ(signal);
   jamEntryDebug();
   /**
@@ -17123,6 +17090,9 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
   const Uint32 lqhScanFragId = conf->fragId;
   NodeId nodeId = conf->nodes[0];
   const NodeId ownNodeId = getOwnNodeId();
+  ndbassert(scanFragId == lqhScanFragId ||
+            scanptr.p->m_scan_dist_key == lqhScanFragId ||
+            distr_key_indicator == 0);
 
   arrGuard(nodeId, MAX_NDB_NODES);
   {
@@ -17246,6 +17216,37 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
   {
     jam();
   }
+
+#ifdef DEBUG_ACTIVE_NODES
+  {
+    ApiConnectRecordPtr apiPtr;
+    apiPtr.i = scanptr.p->scanApiRec;
+    ndbrequire(c_apiConnectRecordPool.getUncheckedPtrRW(apiPtr));
+    Uint32 count = (conf->reqinfo & 0xFFFF) + 1;
+    Uint32 index = fragLocationPtr.p->m_next_index;
+    DEB_ACTIVE_NODES(("(%u) scan: %u, tab(%u,%u), fragChange: %u, tabChange: %u"
+                      ", own: %u, prim: %u, pref: %u"
+                      ", nodes(%u,%u,%u), count: %u, transid(%u,%u)"
+                      ", index: %u",
+                      instance(),
+                      scanptr.i,
+                      scanptr.p->scanTableref,
+                      lqhScanFragId,
+                      conf->fragChangeNumber,
+                      conf->tabChangeNumber,
+                      ownNodeId,
+                      primaryNodeId,
+                      preferredNodeId,
+                      conf->nodes[0],
+                      conf->nodes[1],
+                      conf->nodes[2],
+                      count,
+                      apiPtr.p->transid[0],
+                      apiPtr.p->transid[1],
+                      index));
+
+  }
+#endif
 
   BlockReference primaryBlockInstance = blockInstance;
   BlockReference preferredBlockInstance = blockInstance;
@@ -18321,6 +18322,9 @@ bool Dbtc::sendScanFragReq(Signal* signal,
   ScanRecord* const scanP = scanptr.p;
 
   Uint32 fragId, primaryLqhBlockRef, preferredLqhBlockRef;
+#ifdef DEBUG_ACTIVE_NODES
+  Uint32 index = fragLocationPtr.p->m_first_index;
+#endif
   get_and_step_next_frag_location(fragLocationPtr,
                                   scanptr.p,
                                   fragId,
@@ -18338,6 +18342,27 @@ bool Dbtc::sendScanFragReq(Signal* signal,
   scanFragP.p->lqhScanFragId = fragId;
   scanFragP.p->m_connectCount = getNodeInfo(nodeId).m_connectCount;
 
+#ifdef DEBUG_ACTIVE_NODES
+  Uint32 origNodeId = nodeId;
+  {
+    ApiConnectRecordPtr apiPtr;
+    apiPtr.i = scanptr.p->scanApiRec;
+    ndbrequire(c_apiConnectRecordPool.getUncheckedPtrRW(apiPtr));
+    Uint32 signalId = signal->header.theSignalId;
+    DEB_ACTIVE_NODES(("(%u) scan: %u, tab(%u,%u), pref: %u, transid(%u,%u),"
+                      " index: %u, signalId: %u",
+                      instance(),
+                      scanptr.i,
+                      scanptr.p->scanTableref,
+                      fragId,
+                      nodeId,
+                      apiPtr.p->transid[0],
+                      apiPtr.p->transid[1],
+                      index,
+                      signalId));
+  }
+#endif
+  
   SectionHandle sections(this);
   sections.m_ptr[0].i = scanP->scanAttrInfoPtr;
   sections.m_ptr[1].i = scanP->scanKeyInfoPtr;
@@ -18567,6 +18592,17 @@ bool Dbtc::sendScanFragReq(Signal* signal,
         }
       }
     }
+#ifdef DEBUG_ACTIVE_NODES
+    Uint32 currentNodeId = refToNode(ref);
+    Uint32 signalId = signal->header.theSignalId;
+    if (currentNodeId != origNodeId)
+    {
+      DEB_ACTIVE_NODES(("(%u) signalId: %u, new node: %u",
+                        instance(),
+                        signalId,
+                        currentNodeId));
+    }
+#endif
     sendBatchedFragmentedSignal(NodeReceiverGroup(ref),
                                 GSN_SCAN_FRAGREQ,
                                 signal,
@@ -25875,6 +25911,7 @@ Dbtc::executeFullyReplicatedTrigger(Signal* signal,
   diGetNodesReq->scan_indicator = 0;
   diGetNodesReq->get_next_fragid_indicator = 1;
   diGetNodesReq->anyNode = 0;
+  diGetNodesReq->only_readable_nodes = 0;
   diGetNodesReq->jamBufferPtr = jamBuffer();
   c_dih->execDIGETNODESREQ(signal);
   DiGetNodesConf * diGetNodesConf =  (DiGetNodesConf *)signal->getDataPtrSend();

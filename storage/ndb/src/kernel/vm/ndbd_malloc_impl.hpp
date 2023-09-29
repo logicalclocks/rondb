@@ -116,18 +116,18 @@ struct Free_page_data
 class Resource_limits
 {
   /**
-    Number of pages reserved for specific resource groups but currently
-    not in use.
-  */
+   * Number of pages reserved for specific resource groups but currently
+   * not in use.
+   */
   Uint32 m_free_reserved;
 
   /**
-   * Number of pages currently reserved for specific resource groups.
+   * Total number of pages reserved for all resource groups.
    */
   Uint32 m_reserved;
 
   /**
-   * Number of pages in shared global memory.
+   * Total number of pages in shared global memory.
    */
   Uint32 m_shared;
 
@@ -137,13 +137,13 @@ class Resource_limits
   Uint32 m_shared_in_use;
 
   /**
-    Number of pages currently in use.
-  */
+   * Number of pages currently in use.
+   */
   Uint32 m_in_use;
 
   /**
-    Total number of pages allocated.
-  */
+   * Total number of pages allocated.
+   */
   Uint32 m_allocated;
 
   /**
@@ -215,19 +215,19 @@ class Resource_limits
 
   /**
    * Increment number of pages this resource has extended the
-   * reserved area by through calls to alloc_spare_page.
+   * reserved area by through calls to alloc_emergency_page.
    */
   void inc_overflow_reserved(Uint32 id, Uint32 cnt);
 
   /**
    * Decrement number of pages this resource has extended the
-   * reserved area by through calls to alloc_spare_page.
+   * reserved area by through calls to alloc_emergency_page.
    */
   void dec_overflow_reserved(Uint32 id, Uint32 cnt);
 
   /**
    * Get number of pages this resource has extended the
-   * reserved area by through calls to alloc_spare_page.
+   * reserved area by through calls to alloc_emergency_page.
    */
   Uint32 get_overflow_reserved(Uint32 id) const;
 
@@ -342,9 +342,14 @@ public:
    */
   void set_shared();
 
+  /**
+   * This function is called after successfully allocating a set of
+   * pages in alloc_page and alloc_pages. It updates the Global view
+   * of memory usage as well as the view per Resource group.
+   */
   void post_alloc_resource_pages(Uint32 id, Uint32 cnt);
   void post_release_resource_pages(Uint32 id, Uint32 cnt);
-  void post_alloc_resource_spare(Uint32 id, Uint32 cnt, bool);
+  void post_alloc_resource_emergency(Uint32 id, Uint32 cnt, bool);
 
   void check() const;
   void dump() const;
@@ -365,15 +370,10 @@ public:
   /**
    * This call initialize the prio free limits, this is a global setting
    * that contains the number of pages that can only be allocated from regions
-   * with ULTRA_PRIO_MEMORY set and also for calls to alloc_spare_page.
+   * with ULTRA_PRIO_MEMORY set and also for calls to alloc_emergency_page.
    * It also sets the limit of the high priority memory region.
    */
   void set_prio_free_limits(Uint32);
-
-  /**
-   * This calls set the total number of pages in the shared global memory.
-   */
-  void set_shared();
 
   /**
    * get_resource_limit is used in a number of places for debugging, to print
@@ -443,7 +443,11 @@ public:
 
   /**
    * init_resource_spare is called to ensure that Data memory is no longer
-   * using the full data memory unless calling alloc_spare_page.
+   * using the full data memory unless calling alloc_page with the spare
+   * flag set. The spare flag is set when using alloc_page during restarts.
+   * It is normal that the data memory is a bit bigger during restoring the
+   * data. To handle this we save 5% by default of DataMemory that is only
+   * available during restarts.
    */
   void init_resource_spare(Uint32 id, Uint32 pct);
 
@@ -579,6 +583,11 @@ public:
    * This ensures that those operations have a higher probaility of
    * success.
    *
+   * Page maps in DBTUP use DataMemory as well, for simplicity these are
+   * always ok with using the spare pages. Only the resource group for
+   * DataMemory have spare pages, so for other resource groups using the
+   * same underlying pools will not be affected.
+   *
    * Similarly we want to have access to those 5% during restart.
    *
    * During a local checkpoint we might be in a situation that requires
@@ -592,18 +601,19 @@ public:
    * if we are allowed to use spare pages in the resource. This is used
    * during restarts and during reorganization of the fragments.
    *
-   * In critical situations we instead use alloc_spare_page, this will
+   * In critical situations we instead use alloc_emergency_page, this will
    * allocate a page also from shared global memory if required.
-   * The FORCE_RESERVED flag below can be used to test alloc_spare_page
+   *
+   * The FORCE_RESERVED flag below can be used to test alloc_emergency_page
    * functionality where we steal pages from the reserved memory rather
    * than from the shared global memory.
    */
 #define FORCE_RESERVED false
-  void* alloc_spare_page(Uint32 type,
-                         Uint32* i,
-                         enum AllocZone,
-                         bool locked,
-                         bool force_reserved);
+  void* alloc_emergency_page(Uint32 type,
+                             Uint32* i,
+                             enum AllocZone,
+                             bool locked,
+                             bool force_reserved);
 
   /**
    * Lock/Unlock the global memory manager for multi-call
@@ -754,11 +764,15 @@ Resource_limits::post_alloc_resource_pages(Uint32 id, Uint32 cnt)
   inc_in_use(cnt);
 }
 
+/**
+ * Can only be called with cnt == 1, only called from
+ * alloc_emergency_page
+ */
 inline
 void
-Resource_limits::post_alloc_resource_spare(Uint32 id,
-                                           Uint32 cnt,
-                                           bool force_reserved)
+Resource_limits::post_alloc_resource_emergency(Uint32 id,
+                                               Uint32 cnt,
+                                               bool force_reserved)
 {
   if (m_shared > m_shared_in_use && !force_reserved)
   {
@@ -1067,6 +1081,13 @@ void Resource_limits::post_release_resource_pages(Uint32 id, Uint32 cnt)
       return;
     }
   }
+  /**
+   * In the case when some pages were returned as stolen pages but not
+   * all we need to handle the rest of with only the remaining pages
+   * not handled by the stolen pages.
+   */
+  cnt = stolen_cnt;
+
   const Uint32 inuse = get_resource_in_use(id);
   const Uint32 reserved = get_resource_reserved(id) +
                           get_resource_spare(id);

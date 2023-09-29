@@ -1034,6 +1034,7 @@ bool Dbacc::seize_op_rec(Uint32 userptr,
 /*           INFORMATION WHICH IS RECEIVED BY ACCKEYREQ WILL BE SAVED                */
 /*           IN THE OPERATION RECORD.                                                */
 /* --------------------------------------------------------------------------------- */
+inline
 void Dbacc::initOpRec(const AccKeyReq* signal, Uint32 siglen) const
 {
   Uint32 Treqinfo;
@@ -6789,7 +6790,7 @@ Dbacc::seizePage_lock(Page8Ptr& spPageptr, int sub_page_id)
   }
   Uint32 result = acc_block->seizePage(spPageptr,
                                        Page32Lists::ANY_SUB_PAGE,
-                                       c_allow_use_of_spare_pages,
+                                       c_allow_use_of_emergency_pages,
                                        use_spare,
                                        fragrecptr,
                                        jamBuffer());
@@ -7055,7 +7056,7 @@ void Dbacc::execEXPANDCHECK2(Signal* signal)
    * even after node have become started.
    * Reset to false in endofexpLab().
    */
-  c_allow_use_of_spare_pages = true;
+  c_allow_use_of_emergency_pages = true;
 
   fragrecptr.p->expReceivePageptr = expPageptr.i;
   fragrecptr.p->expReceiveIndex = fragrecptr.p->getPageIndex(receiveBucket);
@@ -7086,7 +7087,7 @@ void Dbacc::execEXPANDCHECK2(Signal* signal)
   
 void Dbacc::endofexpLab(Signal* signal)
 {
-  c_allow_use_of_spare_pages = false;
+  c_allow_use_of_emergency_pages = false;
   fragrecptr.p->slack += fragrecptr.p->maxloadfactor;
   fragrecptr.p->expandCounter++;
   fragrecptr.p->level.expand();
@@ -7803,7 +7804,7 @@ void Dbacc::execSHRINKCHECK2(Signal* signal)
    * even after node have become started.
    * Reset to false in endofshrinkbucketLab().
    */
-  c_allow_use_of_spare_pages = true;
+  c_allow_use_of_emergency_pages = true;
 
   if (ERROR_INSERTED(3002))
     debug_lh_vars("SHR");
@@ -7937,7 +7938,7 @@ void Dbacc::execSHRINKCHECK2(Signal* signal)
 
 void Dbacc::endofshrinkbucketLab(Signal* signal)
 {
-  c_allow_use_of_spare_pages = false;
+  c_allow_use_of_emergency_pages = false;
   fragrecptr.p->level.shrink();
   fragrecptr.p->expandCounter--;
   fragrecptr.p->slack -= fragrecptr.p->maxloadfactor;
@@ -10134,7 +10135,7 @@ void Dbacc::zpagesize_error(const char* where){
 /* ------------------------------------------------------------------------- */
 Uint32 Dbacc::seizePage(Page8Ptr& spPageptr,
                         int sub_page_id,
-                        bool allow_use_of_spare_pages,
+                        bool allow_use_of_emergency_pages,
                         bool use_spare,
                         FragmentrecPtr fragPtr,
                         EmulatedJamBuffer *jamBuf)
@@ -10152,14 +10153,14 @@ Uint32 Dbacc::seizePage(Page8Ptr& spPageptr,
                                      &ptr.i,
                                      Ndbd_mem_manager::NDB_ZONE_LE_30,
                                      use_spare);
-    if (p == NULL && allow_use_of_spare_pages)
+    if (p == NULL && allow_use_of_emergency_pages)
     {
       thrjam(jamBuf);
-      p = m_ctx.m_mm.alloc_spare_page(RT_DBACC_PAGE,
-                                      &ptr.i,
-                                      Ndbd_mem_manager::NDB_ZONE_LE_30,
-                                      false,
-                                      FORCE_RESERVED);
+      p = m_ctx.m_mm.alloc_emergency_page(RT_DBACC_PAGE,
+                                          &ptr.i,
+                                          Ndbd_mem_manager::NDB_ZONE_LE_30,
+                                          false,
+                                          FORCE_RESERVED);
     }
     if (p == NULL)
     {
@@ -10167,7 +10168,7 @@ Uint32 Dbacc::seizePage(Page8Ptr& spPageptr,
       zpagesize_error("Dbacc::seizePage");
       g_eventLogger->error("Global memory manager is out of memory completely,"
                           " no memory in shared global memory left and no"
-                          " memory in reserved memory either.");
+                          " memory in reserved memory that we can steal either.");
       return Uint32(ZPAGESIZE_ERROR);
     }
     ptr.p = static_cast<Page32*>(p);
