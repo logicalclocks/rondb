@@ -47,6 +47,7 @@ RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
     wget make git which perl-core openldap-devel \
     bison krb5-server krb5-workstation krb5-devel \
     numactl numactl-libs numactl-devel \
+    libudev-devel \
     patchelf ncurses-devel java-1.8.0-openjdk-devel automake \
     zlib-devel scl-utils oracle-softwarecollection-release-el7 \
     vim pigz
