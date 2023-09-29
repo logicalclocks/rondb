@@ -2970,7 +2970,6 @@ Restore::parse_record(Signal* signal,
                       BackupFormat::RecordType header_type)
 {
   Uint32 page_no = data[1];
-  data += 1;
   file_ptr.p->m_error_code = 0;
   ndbrequire(file_ptr.p->m_lcp_version >= NDBD_RAW_LCP);
   if (page_no >= file_ptr.p->m_max_page_cnt)
@@ -2985,6 +2984,24 @@ Restore::parse_record(Signal* signal,
   }
   Uint32 part_id = c_backup->hash_lcp_part(page_no);
   ndbrequire(part_id < MAX_LCP_PARTS_SUPPORTED);
+#ifdef ERROR_INSERT
+  len--;
+  Uint32 record_checksum = data[len];
+  record_checksum = ntohl(record_checksum);
+  Uint32 calc_checksum = rondb_calc_hash_val((const char*)data, len, true);
+  if (record_checksum != calc_checksum)
+  {
+    g_eventLogger->info("(%u)parse_record, page_no: %u, part: %u,"
+                        " state: %s, header_type: %s",
+                        instance(),
+                        page_no,
+                        part_id,
+                get_state_string(Uint32(file_ptr.p->m_part_state[part_id])),
+                get_header_string(Uint32(header_type)));
+    ndbrequire(record_checksum == calc_checksum);
+  }
+#endif
+  data += 1;
   /*
   DEB_HIGH_RES(("(%u)parse_record, page_no: %u, part: %u,"
                 " state: %s, header_type: %s",
