@@ -33,7 +33,7 @@ RUN if [ "$TARGETARCH" != "amd64" ]; then \
 COPY <<-"EOF" /etc/yum/repos.d/epel-yum-ol8.repo
 [ol8_epel]
 name=Oracle Linux $releasever EPEL ($basearch)
-baseurl=http://yum.oracle.com/repo/OracleLinux/OL8/developer_EPEL/$basearch/
+baseurl=http://yum.oracle.com/repo/OracleLinux/OL8/developer/EPEL/$basearch/
 gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-oracle
 gpgcheck=1
 enabled=1
