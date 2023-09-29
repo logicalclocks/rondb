@@ -19,6 +19,7 @@ package feature_store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/patrickmn/go-cache"
 
+	"github.com/linkedin/goavro/v2"
 	"hopsworks.ai/rdrs/internal/dal"
 	"hopsworks.ai/rdrs/internal/log"
 )
@@ -42,15 +44,17 @@ type FeatureViewMetadata struct {
 	FeatureGroupFeatures []*FeatureGroupFeatures     // label are excluded
 	FeatureStoreNames    []*string                   // List of all feature store used by feature view including shared feature store
 	NumOfFeatures        int
-	FeatureIndexLookup   map[string]int             // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
+	FeatureIndexLookup   map[string]int // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
 	// serving key doc: https://hopsworks.atlassian.net/wiki/spaces/FST/pages/173342721/How+to+resolve+the+set+of+serving+key+in+get+feature+vector
-	PrimaryKeyMap        map[string]*dal.ServingKey // key: join index + feature name. Used for constructing rondb request.
-	PrefixPrimaryKeyMap  map[string]string          // key: serving-key-prefix + fName, value: feature name in feature group. Used for pk validation.
-	JoinKeyMap           map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
+	PrimaryKeyMap       map[string]*dal.ServingKey // key: join index + feature name. Used for constructing rondb request.
+	PrefixPrimaryKeyMap map[string]string          // key: serving-key-prefix + fName, value: feature name in feature group. Used for pk validation.
+	JoinKeyMap          map[string][]string        // key: serving-key-prefix + fName, value: list of feature which join on the key. Used for filling in pk value.
+	ComplexFeatures     map[string]*AvroDecoder    // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed because of self-join
 }
 
 type FeatureGroupFeatures struct {
 	FeatureStoreName    string
+	FeatureStoreId	int
 	FeatureGroupName    string
 	FeatureGroupVersion int
 	FeatureGroupId      int
@@ -74,6 +78,29 @@ type FeatureMetadata struct {
 	JoinIndex                int
 }
 
+type AvroDecoder struct {
+	Codec *goavro.Codec
+}
+
+func (ad *AvroDecoder) Decode(in []byte) (interface{}, error) {
+	native, _, err := ad.Codec.NativeFromBinary(in)
+	if (err != nil) {
+		return nil, err
+	}
+	return native, nil
+}
+
+var COMPLEX_FEATURE = map[string]bool{
+	"MAP":       true,
+	"ARRAY":     true,
+	"STRUCT":    true,
+	"UNIONTYPE": true,
+}
+
+func (f *FeatureMetadata) IsComplex() bool {
+	return COMPLEX_FEATURE[strings.ToUpper(strings.Split(f.Type, "<")[0])]
+}
+
 func newFeatureViewMetadata(
 	featureStoreName string,
 	featureStoreId int,
@@ -82,7 +109,7 @@ func newFeatureViewMetadata(
 	featureViewVersion int,
 	features *[]*FeatureMetadata,
 	servingKeys *[]dal.ServingKey,
-) *FeatureViewMetadata {
+) (*FeatureViewMetadata, error) {
 	var prefixPrimaryKeyMap = make(map[string]string)
 	var primaryKeyMap = make(map[string]*dal.ServingKey)
 	var fgPrimaryKeyMap = make(map[string][]*dal.ServingKey)
@@ -123,6 +150,7 @@ func newFeatureViewMetadata(
 		var feature = featureValue[0]
 		var fgFeature = FeatureGroupFeatures{}
 		fgFeature.FeatureStoreName = feature.FeatureStoreName
+		fgFeature.FeatureStoreId = featureStoreId
 		fgFeature.FeatureGroupName = feature.FeatureGroupName
 		fgFeature.FeatureGroupVersion = feature.FeatureGroupVersion
 		fgFeature.FeatureGroupId = feature.FeatureGroupId
@@ -139,6 +167,7 @@ func newFeatureViewMetadata(
 	}
 	sort.Slice(*features, less)
 	featureIndex := make(map[string]int)
+
 	var featureCount = 0
 	for _, feature := range *features {
 		if feature.Label {
@@ -147,6 +176,34 @@ func newFeatureViewMetadata(
 		featureIndexKey := GetFeatureIndexKeyByFeature(feature)
 		featureIndex[featureIndexKey] = featureCount
 		featureCount++
+	}
+
+	var complexFeatures = make(map[string]*AvroDecoder)
+
+	for _, fgFeature := range fgFeaturesArray {
+		var fgSchema, err = dal.GetFeatureGroupAvroSchema(
+			fgFeature.FeatureGroupName, 
+			fgFeature.FeatureGroupVersion,
+			fgFeature.FeatureStoreId,
+		)
+		if err != nil {
+			return nil, errors.New("Failed to get feature schema.")
+		}
+		for _, feature := range fgFeature.Features {
+			if (*feature).IsComplex() {
+				var schema, err = fgSchema.GetSchemaByFeatureName(feature.Name)
+				if err != nil {
+					return nil, errors.New("Failed to get feature schema.")
+				}
+				codec, err := goavro.NewCodec(string(schema))
+				if err != nil {
+					return nil, errors.New("Failed to parse feature schema.")
+				}
+				featureIndexKey := GetFeatureIndexKeyByFeature(feature)
+				complexFeatures[featureIndexKey] = &AvroDecoder{codec}
+			}
+		}
+
 	}
 	var fsNames = []*string{}
 	var fsNameMap = make(map[string]bool)
@@ -175,7 +232,8 @@ func newFeatureViewMetadata(
 	metadata.PrimaryKeyMap = primaryKeyMap
 	metadata.PrefixPrimaryKeyMap = prefixPrimaryKeyMap
 	metadata.JoinKeyMap = joinKeyMap
-	return &metadata
+	metadata.ComplexFeatures = complexFeatures
+	return &metadata, nil
 }
 
 func getFeatureGroupServingKey(joinIndex int, featureGroupId int) string {
@@ -337,7 +395,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 	if err1 != nil {
 		return nil, FV_READ_FAIL.NewMessage("Failed to read serving keys.")
 	}
-	featureViewMetadata := newFeatureViewMetadata(
+	featureViewMetadata, err2 := newFeatureViewMetadata(
 		featureStoreName,
 		fsID,
 		featureViewName,
@@ -346,5 +404,8 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		&features,
 		&servingKeys,
 	)
+	if err1 != nil {
+		return nil, FV_READ_FAIL.NewMessage(err2.Error())
+	}
 	return featureViewMetadata, nil
 }

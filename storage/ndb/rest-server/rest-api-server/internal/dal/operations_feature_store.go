@@ -26,6 +26,8 @@ package dal
 */
 import "C"
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"unsafe"
@@ -213,12 +215,12 @@ func GetFeatureStoreName(fsId int) (string, *DalError) {
 
 type ServingKey struct {
 	FeatureGroupId int
-	FeatureName string
-	Prefix string
-	Required bool
-	JoinOn string
-	JoinIndex int
-	RequiredEntry string
+	FeatureName    string
+	Prefix         string
+	Required       bool
+	JoinOn         string
+	JoinIndex      int
+	RequiredEntry  string
 }
 
 func GetServingKeys(featureViewId int) ([]ServingKey, error) {
@@ -240,11 +242,11 @@ func GetServingKeys(featureViewId int) ([]ServingKey, error) {
 	for i, servingKey := range servingKeySlice {
 		retServingKey := ServingKey{
 			FeatureGroupId: int(servingKey.feature_group_id),
-			FeatureName: C.GoString(&servingKey.feature_name[0]),
-			Prefix: C.GoString(&servingKey.prefix[0]),
-			Required: int(servingKey.required) != 0,
-			JoinOn: C.GoString(&servingKey.join_on[0]),
-			JoinIndex: int(servingKey.join_index),
+			FeatureName:    C.GoString(&servingKey.feature_name[0]),
+			Prefix:         C.GoString(&servingKey.prefix[0]),
+			Required:       int(servingKey.required) != 0,
+			JoinOn:         C.GoString(&servingKey.join_on[0]),
+			JoinIndex:      int(servingKey.join_index),
 		}
 		retServingKey.RequiredEntry = retServingKey.Prefix + retServingKey.FeatureName
 		if !retServingKey.Required {
@@ -255,4 +257,35 @@ func GetServingKeys(featureViewId int) ([]ServingKey, error) {
 
 	C.free(unsafe.Pointer(servingKeys))
 	return retServingKeys[:], nil
+}
+
+type AvroField struct {
+	Name string
+	Type json.RawMessage
+}
+
+type FeatureGroupAvroSchema struct {
+	Type      string
+	Name      string
+	Namespace string
+	Fields    []*AvroField
+}
+
+func (c *FeatureGroupAvroSchema) GetSchemaByFeatureName(featureName string) (json.RawMessage, error) {
+	for _, field := range c.Fields {
+		if field.Name == featureName {
+			return field.Type, nil
+		}
+	}
+	return nil, fmt.Errorf("Cannot find schema for feature %s", featureName)
+}
+
+func GetFeatureGroupAvroSchema(fgName string, fgVersion int, porjId int) (*FeatureGroupAvroSchema, error) {
+	var schema = `{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"id1","type":["null","long"]},{"name":"ts","type":["null","long"]},{"name":"array","type":["null",{"type":"array","items":["null","long"]}]},{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}`
+	var avroSchema FeatureGroupAvroSchema
+	err := json.Unmarshal([]byte(schema), &avroSchema)
+	if err != nil {
+		return nil, err
+	}
+	return &avroSchema, nil
 }

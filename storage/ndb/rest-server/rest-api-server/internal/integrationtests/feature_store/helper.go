@@ -19,6 +19,7 @@ package feature_store
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -395,11 +396,26 @@ func ValidateResponseWithDataExcludeCols(t *testing.T, data *[]interface{}, cols
 		} else {
 			got = gotRaw
 		}
-		expected := (_data).([]byte)
 		var expectedJson interface{}
-		err := json.Unmarshal(expected, &expectedJson)
-		if err != nil {
-			t.Errorf("Cannot unmarshal %s, got error: %s\n", expected, err)
+		switch _data.(type) {
+		case []byte:
+			expected := (_data).([]byte)
+			err := json.Unmarshal(expected, &expectedJson)
+			if err != nil {
+				t.Errorf("Cannot unmarshal %s, got error: %s\n", expected, err)
+			}
+		case interface{}:
+			// Need to Marshal it first so that the data type of the interface{} is converted to json data type
+			dataJson, err := json.Marshal(_data)
+			if err != nil {
+				t.Errorf("Cannot marshal %v, got error: %s\n", dataJson, err)
+			}
+			err = json.Unmarshal(dataJson, &expectedJson)
+			if err != nil {
+				t.Errorf("Cannot unmarshal %s, got error: %s\n", dataJson, err)
+			}
+		default:
+			t.Fatal("Wrong data type.")
 		}
 		// Decode binary data got from feature vector
 		if strings.Contains((*cols)[i], "binary") {
@@ -476,4 +492,22 @@ func ValidateResponseMetadataExCol(t *testing.T, metadata *[]*api.FeatureMetadat
 		}
 		log.Debugf("Validated metadata. %s", got.String())
 	}
+}
+
+func removeQuotes(input string) string {
+	// Check if the string starts and ends with double quotes
+	if len(input) >= 2 && input[0] == '"' && input[len(input)-1] == '"' {
+		// Remove the first and last character (double quotes)
+		return input[1 : len(input)-1]
+	}
+	return input // Return unchanged if not quoted
+}
+
+func ConvertBinaryToJsonMessage(data interface{}) (*json.RawMessage, error) {
+	// string to base64string
+	log.Debug(string(data.([]byte)))
+	base64Str := base64.StdEncoding.EncodeToString([]byte(removeQuotes(string(data.([]byte)))))
+	log.Debug(base64Str)
+	out := json.RawMessage([]byte(fmt.Sprintf(`"%s"`, base64Str)))
+	return &out, nil
 }
