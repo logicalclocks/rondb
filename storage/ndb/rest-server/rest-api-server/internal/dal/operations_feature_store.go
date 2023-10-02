@@ -31,6 +31,8 @@ import (
 	"net/http"
 	"sort"
 	"unsafe"
+
+	"hopsworks.ai/rdrs/internal/log"
 )
 
 type TrainingDatasetFeature struct {
@@ -260,15 +262,15 @@ func GetServingKeys(featureViewId int) ([]ServingKey, error) {
 }
 
 type AvroField struct {
-	Name string
-	Type json.RawMessage
+	Name string          `json:"name"`
+	Type json.RawMessage `json:"type"`
 }
 
 type FeatureGroupAvroSchema struct {
-	Type      string
-	Name      string
-	Namespace string
-	Fields    []*AvroField
+	Type      string      `json:"type"`
+	Name      string      `json:"name"`
+	Namespace string      `json:"namespace"`
+	Fields    []AvroField `json:"fields"`
 }
 
 func (c *FeatureGroupAvroSchema) GetSchemaByFeatureName(featureName string) (json.RawMessage, error) {
@@ -280,8 +282,27 @@ func (c *FeatureGroupAvroSchema) GetSchemaByFeatureName(featureName string) (jso
 	return nil, fmt.Errorf("Cannot find schema for feature %s", featureName)
 }
 
-func GetFeatureGroupAvroSchema(fgName string, fgVersion int, porjId int) (*FeatureGroupAvroSchema, error) {
-	var schema = `{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"id1","type":["null","long"]},{"name":"ts","type":["null","long"]},{"name":"array","type":["null",{"type":"array","items":["null","long"]}]},{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}`
+func GetFeatureGroupAvroSchema(fgName string, fgVersion int, projectId int) (*FeatureGroupAvroSchema, error) {
+	subjectName := fmt.Sprintf("%s_%d", fgName, fgVersion)
+	log.Debugf("subject name is: %s", subjectName)
+	cSubjectName := C.CString(subjectName)
+	defer C.free(unsafe.Pointer(cSubjectName))
+
+	var schemaBuff = C.malloc(C.size_t(C.FEATURE_GROUP_SCHEMA_SIZE))
+	defer C.free(schemaBuff)
+
+	ret := C.find_feature_group_schema(
+		(*C.char)(unsafe.Pointer(cSubjectName)),
+		C.int(projectId),
+		(*C.char)(unsafe.Pointer(schemaBuff)))
+
+	if ret.http_code != http.StatusOK {
+		return nil, cToGoRet(&ret)
+	}
+
+	var schema = C.GoString((*C.char)(unsafe.Pointer(schemaBuff)))
+	fmt.Println("schema: ")
+	fmt.Println(schema)
 	var avroSchema FeatureGroupAvroSchema
 	err := json.Unmarshal([]byte(schema), &avroSchema)
 	if err != nil {

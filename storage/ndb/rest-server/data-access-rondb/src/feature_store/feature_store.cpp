@@ -335,7 +335,7 @@ RS_Status find_feature_view_id_int(Ndb *ndb_object, int feature_store_id,
     return RS_CLIENT_ERROR("Wrong length of column name");
   }
 
-  // Note: feature_view is varchar column
+  // Note: name is varchar column
   char cmp_str[FEATURE_VIEW_NAME_SIZE];
   memcpy(cmp_str + bytes_for_ndb_str_len(FEATURE_VIEW_NAME_SIZE), feature_view_name,
          feature_view_name_len);
@@ -1170,6 +1170,229 @@ RS_Status find_serving_key_data(int feature_view_id, Serving_Key **serving_keys,
   /* clang-format off */
   METADATA_OP_RETRY_HANDLER(
     status = find_serving_key_data_int(ndb_object, feature_view_id, serving_keys, sk_size); 
+  )
+  /* clang-format on */
+
+  rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
+
+  return status;
+}
+
+//-------------------------------------------------------------------------------------------------
+
+RS_Status find_feature_group_schema_id_int(Ndb *ndb_object, const char *subject_name, int project_id, int *schema_id) {
+  NdbError ndb_error;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbScanOperation *scan_op;
+
+  RS_Status status = select_table(ndb_object, "hopsworks", "subjects", &table_dict);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  status = start_transaction(ndb_object, &tx);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  status = get_scan_op(ndb_object, tx, "subjects", &scan_op);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  status = read_tuples(ndb_object, scan_op);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  int subject_col_id      = table_dict->getColumn("subject")->getColumnNo();
+  Uint32 subject_col_size = (Uint32)table_dict->getColumn("subject")->getSizeInBytes();
+  assert(subject_col_size == FEATURE_GROUP_SUBJECT_SIZE);
+
+  size_t subject_name_len = strlen(subject_name);
+  if (subject_name_len > (subject_col_size - bytes_for_ndb_str_len(FEATURE_GROUP_SUBJECT_SIZE))) {  // col_size include length byte(s)
+    ndb_object->closeTransaction(tx);
+    return RS_CLIENT_ERROR("Wrong length of column name");
+  }
+
+  char cmp_str[FEATURE_GROUP_SUBJECT_SIZE];
+  memcpy(cmp_str + 1, subject_name, subject_name_len); // +1 for string size
+  cmp_str[0] = static_cast<char>(subject_name_len);
+  NdbScanFilter filter(scan_op);
+
+  // subject
+  if (filter.begin(NdbScanFilter::AND) < 0 ||
+      filter.cmp(NdbScanFilter::COND_EQ, subject_col_id, cmp_str, subject_col_size) < 0) {
+    ndb_error = filter.getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_031);
+  }
+  // project id
+  int proj_id_col_id      = table_dict->getColumn("project_id")->getColumnNo();
+  Uint32 proj_id_col_size = (Uint32)table_dict->getColumn("project_id")->getSizeInBytes();
+
+  if (filter.cmp(NdbScanFilter::COND_EQ, proj_id_col_id, &project_id, proj_id_col_size) < 0 ||
+      filter.end() < 0) {
+    ndb_error = filter.getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_031);
+  }
+
+  NdbRecAttr *schema_id_attr = scan_op->getValue("schema_id");
+  if (schema_id_attr == nullptr) {
+    ndb_error = scan_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+  }
+  NdbRecAttr *version_attr = scan_op->getValue("version");
+  if (version_attr == nullptr) {
+    ndb_error = scan_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+  }
+
+  if (schema_id_attr == nullptr || version_attr == nullptr) {
+    ndb_error = scan_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+  }
+
+  if (tx->execute(NdbTransaction::NoCommit) != 0) {
+    ndb_error = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_009);
+  }
+
+  bool check   = 0;
+  Int32 max_version = 0;
+  Uint32 count = 0;
+  while ((check = scan_op->nextResult(true)) == 0) {
+    do {
+      // get schema id of max version number
+      count++;
+      if (version_attr->int32_value() > max_version) {
+        *schema_id = schema_id_attr->int32_value();
+        max_version = version_attr->int32_value();
+      }
+    } while ((check = scan_op->nextResult(false)) == 0);
+  }
+
+  // check for errors happened during the reading process
+  NdbError error = scan_op->getNdbError();
+
+  // As we are at the end we will first close the transaction and then deal with
+  // the error
+  ndb_object->closeTransaction(tx);
+
+  // storage/ndb/src/ndbapi/ndberror.cpp
+  if (error.code != 4120 /*Scan already complete*/) {
+    return RS_RONDB_SERVER_ERROR(error, "Failed Reading Schema ID. Fn find_feature_group_schema_id_int");
+  }
+
+  if (count == 0) {
+    return RS_CLIENT_404_ERROR();
+  }
+
+  return RS_OK;
+}
+
+//-------------------------------------------------------------------------------------------------
+
+RS_Status find_feature_group_schema_int(Ndb *ndb_object, const char *subject_name, int project_id, char *schema) {
+  int schema_id;
+  RS_Status status = find_feature_group_schema_id_int(ndb_object, subject_name, project_id, &schema_id);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  NdbError ndb_error;
+  const NdbDictionary::Table *table_dict;
+  NdbTransaction *tx;
+  NdbOperation *ndb_op;
+
+  status = select_table(ndb_object, "hopsworks", "schemas", &table_dict);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  status = start_transaction(ndb_object, &tx);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+
+  status = get_op(ndb_object, tx, "schemas", &ndb_op);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  status = read_tuple(ndb_object, ndb_op);
+  if (status.http_code != SUCCESS) {
+    ndb_object->closeTransaction(tx);
+    return status;
+  }
+
+  if (ndb_op->equal("id", schema_id) != 0) {
+    ndb_error = ndb_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_023);
+  }
+
+  NdbRecAttr *schema_attr = ndb_op->getValue("schema", nullptr);
+  assert(FEATURE_GROUP_SCHEMA_SIZE == (Uint32)table_dict->getColumn("schema")->getSizeInBytes());
+
+  if (schema_attr == nullptr) {
+    ndb_error = ndb_op->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_019);
+  }
+
+  if (tx->execute(NdbTransaction::Commit) != 0) {
+    ndb_error = tx->getNdbError();
+    ndb_object->closeTransaction(tx);
+    return RS_RONDB_SERVER_ERROR(ndb_error, ERROR_009);
+  }
+
+  if (ndb_op->getNdbError().classification == NdbError::NoDataFound) {
+    ndb_object->closeTransaction(tx);
+    return RS_CLIENT_404_ERROR();
+  }
+
+  Uint32 schema_attr_bytes;
+  const char *schema_attr_start = nullptr;
+  if (GetByteArray(schema_attr, &schema_attr_start, &schema_attr_bytes) != 0) {
+    ndb_object->closeTransaction(tx);
+    return RS_CLIENT_ERROR(ERROR_019);
+  }
+
+  memcpy(schema, schema_attr_start, schema_attr_bytes);
+  schema[schema_attr_bytes] = '\0';
+
+  ndb_object->closeTransaction(tx);
+
+  return RS_OK;
+}
+
+//-------------------------------------------------------------------------------------------------
+
+/**
+ * Find schemas
+ * SELECT schema_id, version from subjects WHERE project_id = {project_id} AND subject = "{subject_name}"
+ * get the schema id of the max version
+ * SELECT schema from schemas  WHERE id = {schema_id}
+ */
+RS_Status find_feature_group_schema(const char *subject_name, int project_id, char *schema) {
+  Ndb *ndb_object  = nullptr;
+  RS_Status status = rdrsRonDBConnectionPool->GetMetadataNdbObject(&ndb_object);
+  if (status.http_code != SUCCESS) {
+    return status;
+  }
+    /* clang-format off */
+  METADATA_OP_RETRY_HANDLER(
+    status = find_feature_group_schema_int(ndb_object, subject_name, project_id, schema);
   )
   /* clang-format on */
 

@@ -54,7 +54,7 @@ type FeatureViewMetadata struct {
 
 type FeatureGroupFeatures struct {
 	FeatureStoreName    string
-	FeatureStoreId	int
+	FeatureStoreId      int
 	FeatureGroupName    string
 	FeatureGroupVersion int
 	FeatureGroupId      int
@@ -84,7 +84,7 @@ type AvroDecoder struct {
 
 func (ad *AvroDecoder) Decode(in []byte) (interface{}, error) {
 	native, _, err := ad.Codec.NativeFromBinary(in)
-	if (err != nil) {
+	if err != nil {
 		return nil, err
 	}
 	return native, nil
@@ -181,19 +181,24 @@ func newFeatureViewMetadata(
 	var complexFeatures = make(map[string]*AvroDecoder)
 
 	for _, fgFeature := range fgFeaturesArray {
-		var fgSchema, err = dal.GetFeatureGroupAvroSchema(
-			fgFeature.FeatureGroupName, 
+		projectId, dalErr := dal.GetProjectID(fgFeature.FeatureStoreName)
+		if dalErr != nil {
+			return nil, errors.New("Failed to get project id. " + dalErr.Error())
+		}
+		log.Debugf("project id is %d", projectId)
+		fgSchema, err := dal.GetFeatureGroupAvroSchema(
+			fgFeature.FeatureGroupName,
 			fgFeature.FeatureGroupVersion,
-			fgFeature.FeatureStoreId,
+			projectId,
 		)
 		if err != nil {
-			return nil, errors.New("Failed to get feature schema.")
+			return nil, errors.New("Failed to get feature schema. " + err.Error())
 		}
 		for _, feature := range fgFeature.Features {
 			if (*feature).IsComplex() {
 				var schema, err = fgSchema.GetSchemaByFeatureName(feature.Name)
 				if err != nil {
-					return nil, errors.New("Failed to get feature schema.")
+					return nil, errors.New("Failed to get feature schema for feature: " + feature.Name)
 				}
 				codec, err := goavro.NewCodec(string(schema))
 				if err != nil {
@@ -404,7 +409,7 @@ func GetFeatureViewMetadata(featureStoreName, featureViewName string, featureVie
 		&features,
 		&servingKeys,
 	)
-	if err1 != nil {
+	if err2 != nil {
 		return nil, FV_READ_FAIL.NewMessage(err2.Error())
 	}
 	return featureViewMetadata, nil

@@ -1006,3 +1006,46 @@ VALUES
     (
         1508, NULL, 'id1', NULL, 0, 31, 1, 19
     );
+
+CREATE TABLE `schemas` (
+                           `id` int(11) NOT NULL AUTO_INCREMENT,
+                           `schema` varchar(29000) COLLATE latin1_general_cs NOT NULL,
+                           `project_id` int(11) NOT NULL,
+                           PRIMARY KEY (`id`),
+                           CONSTRAINT `project_idx_schemas` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE=ndbcluster;
+
+INSERT INTO
+    `schemas`
+VALUES
+    (
+	    20, '{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"id1","type":["null","str"]},{"name":"ts","type":["null","long"]},{"name":"array","type":["null",{"type":"array","items":["null","long"]}]},{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}', 1001
+    ),
+    (
+	    21, '{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"id1","type":["null","long"]},{"name":"ts","type":["null","long"]},{"name":"array","type":["null",{"type":"array","items":["null","long"]}]},{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}', 1001
+    );
+
+CREATE TABLE `subjects` (
+                            `id` int(11) NOT NULL AUTO_INCREMENT,
+                            `subject` varchar(255) COLLATE latin1_general_cs NOT NULL,
+                            `version` int(11) NOT NULL,
+                            `schema_id` int(11) NOT NULL,
+                            `project_id` int(11) NOT NULL,
+                            `created_on` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (`id`),
+                            KEY `project_id_idx` (`project_id`),
+                            KEY `created_on_idx` (`created_on`),
+                            CONSTRAINT `project_idx_subjects` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+                            CONSTRAINT `schema_id_idx` FOREIGN KEY (`schema_id`) REFERENCES `schemas` (`id`) ON DELETE NO ACTION ON UPDATE NO ACTION,
+                            CONSTRAINT `subjects__constraint_key` UNIQUE (`subject`, `version`, `project_id`)
+) ENGINE=ndbcluster;
+
+INSERT INTO
+    `subjects`
+VALUES
+    (
+        21, 'sample_complex_type_1', 1, 20, 1001, Timestamp('2023-09-26 10:02:58')
+    ),
+    (
+        22, 'sample_complex_type_1', 2, 21, 1001, Timestamp('2023-09-27 10:02:58')
+    );
