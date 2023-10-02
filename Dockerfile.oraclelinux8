@@ -3,7 +3,6 @@
 # This Dockerfile is used for x86 production builds. Oracle Linux 8 comes with glibc 2.28,
 # which is supported by all Linux distributions used by Hopsworks: CentOS >=8 and Ubuntu >=20.
 # Glibc tends to be backwards compatible, but not forwards compatible.
-# Using this file for arm64 requires too many modifications.
 
 FROM oraclelinux:8 as rondb-build-dependencies
 
@@ -18,7 +17,7 @@ ARG GO_VERSION=1.20.3
 ARG BUILD_THREADS
 ENV THREADS_ARG=${BUILD_THREADS:-1}
 
-# RonDB 22.10 requires gcc/g++ 11/12 for amd64/arm64 respectively.
+# RonDB 22.10 use gcc/g++ 10/11/12 for amd64/arm64 respectively.
 # We will not remove the default installation, but change the default
 # one using software collections (scl).
 # To use the required version, the command

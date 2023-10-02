@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.3-labs
+# syntax=docker/dockerfile:1.4
 
 # This Dockerfile is not used for production builds. Ubuntu 22.04 comes with glibc 2.35,
 # which is not supported by enough Linux distributions (Nov 2022). Glibc tends to be
