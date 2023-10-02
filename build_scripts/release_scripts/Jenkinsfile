@@ -5,7 +5,7 @@ pipeline {
         }
     }
     parameters{
-      choice(name: 'BRANCH', choices: ['21.04', '21.04.14', '22.10.1', '23.04', 'feature_store'], description: 'RonDB branch to build.')
+      choice(name: 'BRANCH', choices: ['21.04', '21.04.14', '22.10.1', 'feature_store'], description: 'RonDB branch to build.')
       choice(name: 'BUILD_CORES', choices: ['8', '1', '16', '24', '32', '48'],  description: 'No of build threads. This is passed to make -j. Note jenkins machine is shared with other build process.')
       booleanParam(name: 'RELEASE_BUILD', defaultValue: true, description: 'Enable this for release build. It uses PGO (profile guided optimization) and it take ~ 3 hrs to build')
       booleanParam(name: 'RELEASE_FINAL_CLUSTERJ', defaultValue: false, description: "By default clusterj jar is uploaded as a 'SNAPSHOT' version. Enable this parameter to release final JARs")
@@ -66,17 +66,31 @@ pipeline {
                 if [ "$RELEASE_FINAL_CLUSTERJ" = true ]; then
                   RELEASE_FINAL_CLUSTERJ_ARG="--build-arg RELEASE_FINAL_CLUSTERJ=1"
                 fi
-
+                DOCKER_FILE_NAME="Dockerfile.oraclelinux7"
+                if [ "$BRANCH" = "22.10.1" ]; then
+                  DOCKER_FILE_NAME="Dockerfile.oraclelinux8"
+                fi
                 export DOCKER_CLI_EXPERIMENTAL=enabled
                 export BUILDKIT_PROGRESS=plain
                 docker buildx build . \
-                  -f Dockerfile.oraclelinux7 \
+                  -f $DOCKER_FILE_NAME \
                   --tag rondb-build-all:$RONDB_VERSION \
                   --target build-all \
                   --no-cache \
                   --build-arg BUILD_THREADS=$BUILD_CORES \
                   --build-arg DEPLOY_TO_REPO=1 \
                   $RELEASE_ARG $RELEASE_FINAL_CLUSTERJ_ARG
+                if [ "$BRANCH" = "22.10.1" ]; then
+                  DOCKER_FILE_NAME="Dockerfile.oraclelinux9"
+                  docker buildx build . \
+                    -f $DOCKER_FILE_NAME \
+                    --tag rondb-build-all:$RONDB_VERSION \
+                    --target build-all \
+                    --no-cache \
+                    --build-arg BUILD_THREADS=$BUILD_CORES \
+                    --build-arg DEPLOY_TO_REPO=1 \
+                    $RELEASE_ARG
+                fi
               '''
             }
         }
