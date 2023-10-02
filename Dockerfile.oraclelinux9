@@ -7,7 +7,7 @@
 FROM oraclelinux:9 as rondb-build-dependencies
 
 ARG CMAKE_VERSION=3.23.2
-ARG OPEN_SSL_VERSION=3.0.11
+ARG OPENSSL_ROOT=system
 ARG BOOST_VERSION_MAJOR=1
 ARG BOOST_VERSION_MINOR=77
 ARG BOOST_VERSION_PATCH=0
@@ -41,28 +41,35 @@ gpgcheck=1
 enabled=1
 EOF
 
-#https://github.com/docker/buildx/issues/379
 RUN --mount=type=cache,target=/var/cache/yum,id=oracle9-yum \
     ulimit -n 1024000 && \ 
-    yum -y update \
-    && yum -y install \
-    wget make git which perl-core openldap-devel \
-    bison krb5-server krb5-workstation krb5-devel \
-    numactl numactl-libs numactl-devel \
-    libudev-devel \
-    patchelf ncurses-devel java-1.8.0-openjdk-devel automake \
-    zlib-devel scl-utils \
-    vim pigz hostname
+    yum -y update
 
 RUN --mount=type=cache,target=/var/cache/yum,id=oracle9-yum \
     ulimit -n 1024000 && \ 
-    yum -y update && \
     yum -y install gcc-toolset-12 maven rpcgen
 
+RUN --mount=type=cache,target=/var/cache/yum,id=oracle9-yum \
+    ulimit -n 1024000 && \ 
+    yum -y install make wget git which perl-core zlib-devel scl-utils
 
 # Creating a cache dir for downloads to avoid redownloading
 ENV DOWNLOADS_CACHE_DIR=/tmp/downloads
 RUN mkdir $DOWNLOADS_CACHE_DIR
+
+#https://github.com/docker/buildx/issues/379
+RUN --mount=type=cache,target=/var/cache/yum,id=oracle9-yum \
+    ulimit -n 1024000 && \ 
+    yum -y install openssl-devel openldap-devel
+
+RUN --mount=type=cache,target=/var/cache/yum,id=oracle9-yum \
+    ulimit -n 1024000 && \ 
+    yum -y install \
+    bison krb5-server krb5-workstation krb5-devel \
+    numactl numactl-libs numactl-devel \
+    libudev-devel \
+    patchelf ncurses-devel java-1.8.0-openjdk-devel automake \
+    vim pigz hostname
 
 # Installing Boost
 ENV BOOST_VERSION=${BOOST_VERSION_MAJOR}.${BOOST_VERSION_MINOR}.${BOOST_VERSION_PATCH}
@@ -76,30 +83,9 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
 # Important env variable for RonDB compilation
 ENV BOOST_ROOT="/${BOOST_LABEL}"
 
-# RonDB 22.10 requires OpenSSL version 3.0.11 and will look for 
-# it in $OPENSSL_ROOT. We will not overwrite the system's OpenSSL library, 
-# but just install the specified version.
-# Commands are from https://linuxpip.org/install-openssl-linux/
-ENV OPENSSL_ROOT=/usr/local/ssl
-RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
-    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
-        https://www.openssl.org/source/openssl-${OPEN_SSL_VERSION}.tar.gz \
-    && tar xf $DOWNLOADS_CACHE_DIR/openssl-${OPEN_SSL_VERSION}.tar.gz -C . \
-    && cd openssl-${OPEN_SSL_VERSION} \
-    && source scl_source enable gcc-toolset-12 \
-    && ./config --prefix=$OPENSSL_ROOT --openssldir=$OPENSSL_ROOT shared zlib \
-    && make -j$THREADS_ARG \
-    && make install \
-    && echo "$OPENSSL_ROOT/lib64" >> /etc/ld.so.conf.d/openssl-${OPEN_SSL_VERSION}.conf \
-    && ldconfig -v \
-    && cd .. \
-    && rm -rf openssl-${OPEN_SSL_VERSION}
-    # Could also run `make test`
-    # `make install` places shared libraries into $OPENSSL_ROOT
-
 # Installing CMake
 # CMake will look for $OPENSSL_ROOT_DIR
-ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT
+#ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
     source scl_source enable gcc-toolset-12 \
     && wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
