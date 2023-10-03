@@ -24,4 +24,16 @@ This will create the RonDB tarball as part of the Docker build process. It will 
 
 The builds in the mounted caches are however difficult to access. If you wish to access the builds themselves, it is recommended to use the script [docker-build.sh](/build_scripts/release_scripts/docker-build.sh). This will use the same Dockerfiles, but instead of building RonDB inside the Docker build process, it will build RonDB inside a running RonDB container. This makes it easier to access the builds.
 
+If you want to build RDRS docker image than run the following command
+
+# Run this from the root directory of the repository
+BUILDKIT_ENABLED=1 docker build . \
+    -f Dockerfile.oraclelinux7 \  # Or Dockerfile.ubuntu22 for ARM64
+    --target rdrs \
+    --tag rdrs:22.10 \ # Update the tag and version
+    --build-arg BUILD_THREADS=$BUILD_CORES \  # To accelerate the build
+    --build-arg RELEASE_TARBALL=1  # Omit this entirely to create a simple build
+
+Use the `docker images` and `docker save` commands to list and save docker images
+
 If you wish to build RonDB manually inside a container, you can use [docker-create-builder.sh](/build_scripts/release_scripts/docker-create-builder.sh). This can be useful if you want to try different build configurations whilst developing RonDB. The build files are persisted inside a volume and the source code is mounted into the container. The script finishes by opening a shell inside the container.
