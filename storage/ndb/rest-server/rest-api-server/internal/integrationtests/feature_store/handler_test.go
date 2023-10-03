@@ -968,7 +968,10 @@ func Test_GetFeatureVector_WrongPkValue(t *testing.T) {
 }
 
 func Test_GetFeatureVector_Success_ComplexType(t *testing.T) {
-	rows, pks, cols, err := GetSampleData(testdbs.FSDB002, "sample_complex_type_1")
+	var fsName = testdbs.FSDB002
+	var fvName = "sample_complex_type"
+	var fvVersion = 1
+	rows, pks, cols, err := GetSampleData(fsName, "sample_complex_type_1")
 	if err != nil {
 		t.Fatalf("Cannot get sample data with error %s ", err)
 	}
@@ -986,14 +989,15 @@ func Test_GetFeatureVector_Success_ComplexType(t *testing.T) {
 	}
 	for _, row := range rows {
 		var fsReq = CreateFeatureStoreRequest(
-			testdbs.FSDB002,
-			"sample_complex_type",
-			1,
+			fsName,
+			fvName,
+			fvVersion,
 			pks,
 			*GetPkValues(&row, &pks, &cols),
 			nil,
 			nil,
 		)
+		fsReq.MetadataRequest = &api.MetadataRequest{FeatureName: true, FeatureType: true}
 		fsResp := GetFeatureStoreResponse(t, fsReq)
 
 		// convert data to object in json format
@@ -1018,6 +1022,7 @@ func Test_GetFeatureVector_Success_ComplexType(t *testing.T) {
 		}
 		// validate
 		ValidateResponseWithData(t, &row, &cols, fsResp)
+		ValidateResponseMetadata(t, &fsResp.Metadata, fsReq.MetadataRequest, fsName, fvName, fvVersion)
 	}
 }
 
