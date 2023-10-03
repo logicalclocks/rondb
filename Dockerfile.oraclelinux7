@@ -1,19 +1,16 @@
-# syntax=docker/dockerfile:1.4
+# syntax=docker/dockerfile:1.3-labs
 
-# This Dockerfile is not used for production builds. Ubuntu 22.04 comes with glibc 2.35,
-# which is not supported by enough Linux distributions (Nov 2022). Glibc tends to be
-# backwards compatible, but not forwards compatible. It is however recommended to use this
-# Dockerfile for building on ARM for personal use.
+# This Dockerfile is used for x86 production builds. Oracle Linux 7 comes with glibc 2.17,
+# which is supported by all Linux distributions used by Hopsworks: CentOS >=7 and Ubuntu >=16.
+# Glibc tends to be backwards compatible, but not forwards compatible.
+# Using this file for arm64 requires too many modifications.
 
-FROM ubuntu:22.04 as rondb-build-dependencies
+FROM oraclelinux:7 as rondb-build-dependencies
 
-# Same as BUILDARCH
-ARG TARGETARCH
-
-ARG CMAKE_VERSION=3.25.1
+ARG CMAKE_VERSION=3.23.2
 ARG OPEN_SSL_VERSION=3.0.11
 ARG BOOST_VERSION_MAJOR=1
-ARG BOOST_VERSION_MINOR=77
+ARG BOOST_VERSION_MINOR=73
 ARG BOOST_VERSION_PATCH=0
 ARG GO_VERSION=1.20.3
 
@@ -21,23 +18,42 @@ ARG GO_VERSION=1.20.3
 ARG BUILD_THREADS
 ENV THREADS_ARG=${BUILD_THREADS:-1}
 
-RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
-    --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
-    apt-get update && apt-get -y install wget pkg-config patchelf \
-    libncurses5-dev default-jdk bison autoconf pigz \
-    openssh-client maven libsasl2-dev libldap-dev libaio-dev \
-    git vim nano protobuf-compiler graphviz
-
-# RonDB 22.10 requires gcc/g++ 10
-# Ubuntu 22.04 comes with gcc/g++ 11.3 by default
+# RonDB 21.04 requires gcc/g++ 9/10 for amd64/arm64 respectively.
 # We will not remove the default installation, but change the default
-# one using `update-alternatives`
-# See https://askubuntu.com/a/26518/1646182 for reference
-RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
-    --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
-    apt-get update && apt-get install -y gcc-10 g++-10 \
-    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 10 \
-    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-10 10
+# one using software collections (scl).
+# To use the required version, the command
+#   >> source scl_source enable devtoolset-10
+# is run in the given RUN statement. Unfortunately, this command
+# does not persist between RUN statements.
+ARG TARGETARCH
+
+COPY <<-"EOF" /etc/yum/repos.d/epel-yum-ol7.repo
+[ol7_epel]
+name=Oracle Linux $releasever EPEL ($basearch)
+baseurl=http://yum.oracle.com/repo/OracleLinux/OL7/developer_EPEL/$basearch/
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-oracle
+gpgcheck=1
+enabled=1
+EOF
+
+#https://github.com/docker/buildx/issues/379
+RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
+    ulimit -n 1024000 && \ 
+    yum -y update \
+    && yum -y install \
+    wget make git which perl-core openldap-devel \
+    bison krb5-server krb5-workstation krb5-devel \
+    numactl numactl-libs numactl-devel \
+    patchelf ncurses-devel java-1.8.0-openjdk-devel automake \
+    zlib-devel scl-utils oracle-softwarecollection-release-el7 \
+    vim pigz
+
+RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
+    ulimit -n 1024000 && \ 
+    yum -y update \
+    && yum-config-manager -y --enable "ol7_optional_latest" \
+    && yum -y install devtoolset-10 maven
+
 
 # Creating a cache dir for downloads to avoid redownloading
 ENV DOWNLOADS_CACHE_DIR=/tmp/downloads
@@ -55,47 +71,40 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
 # Important env variable for RonDB compilation
 ENV BOOST_ROOT="/${BOOST_LABEL}"
 
-# Ubuntu 22.04 contains openssl-3.x
-# RonDB 22.10 requires an older OpenSSL version (1.1.1t) and will look for 
+# RonDB 22.10 requires OpenSSL version 3.0 and will look for 
 # it in $OPENSSL_ROOT. We will not overwrite the system's OpenSSL library, 
 # but just install the specified version.
 # Commands are from https://linuxpip.org/install-openssl-linux/
 ENV OPENSSL_ROOT=/usr/local/ssl
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
-    --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
-    --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
-    apt-get update -y \
-    && apt-get install -y build-essential checkinstall zlib1g-dev \
-    && wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
-        https://www.openssl.org/source/openssl-$OPEN_SSL_VERSION.tar.gz \
-    && tar -xf $DOWNLOADS_CACHE_DIR/openssl-$OPEN_SSL_VERSION.tar.gz -C . \
-    && cd openssl-$OPEN_SSL_VERSION \
+    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
+        https://www.openssl.org/source/openssl-${OPEN_SSL_VERSION}.tar.gz \
+    && tar xf $DOWNLOADS_CACHE_DIR/openssl-${OPEN_SSL_VERSION}.tar.gz -C . \
+    && cd openssl-${OPEN_SSL_VERSION} \
     && ./config --prefix=$OPENSSL_ROOT --openssldir=$OPENSSL_ROOT shared zlib \
     && make -j$THREADS_ARG \
     && make install \
-    && echo "$OPENSSL_ROOT/lib" >> /etc/ld.so.conf.d/openssl-$OPEN_SSL_VERSION.conf \
+    && echo "$OPENSSL_ROOT/lib" >> /etc/ld.so.conf.d/openssl-${OPEN_SSL_VERSION}.conf \
     && ldconfig -v \
     && cd .. \
-    && rm -r openssl-$OPEN_SSL_VERSION
+    && rm -rf openssl-${OPEN_SSL_VERSION}
     # Could also run `make test`
     # `make install` places shared libraries into $OPENSSL_ROOT
-
-# For some reason installing OpenSSL changes gcc/g++ to 11
-RUN update-alternatives --config gcc && update-alternatives --config g++
 
 # Installing CMake
 # CMake will look for $OPENSSL_ROOT_DIR
 ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
-    wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
+    source scl_source enable devtoolset-10 \
+    && wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
         https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION.tar.gz \
     && tar xzf $DOWNLOADS_CACHE_DIR/cmake-$CMAKE_VERSION.tar.gz -C . \
-    && cd cmake-$CMAKE_VERSION \
+    && cd cmake-${CMAKE_VERSION} \
     && ./bootstrap --prefix=/usr/local \
     && make -j$THREADS_ARG \
     && make install \
     && cd .. \
-    && rm -r cmake-$CMAKE_VERSION
+    && rm -r cmake-${CMAKE_VERSION}
 
 # Install specific Go version
 ENV GO_TAR_NAME=go$GO_VERSION.linux-$TARGETARCH.tar.gz
@@ -107,9 +116,9 @@ ENV PATH=$PATH:/usr/local/go/bin
 
 WORKDIR /root
 
+RUN echo "source scl_source enable devtoolset-10" >> /root/.bashrc
+
 # For the deployment of Java artifacts to the Maven repository
-# This is not needed by default, since we already deploy JAR files
-# for x86 and they do not change across architectures.
 COPY <<-"EOF" /root/.m2/settings.xml
 <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -126,14 +135,9 @@ COPY <<-"EOF" /root/.m2/settings.xml
 </settings>
 EOF
 
-RUN mkdir rondb-src rondb-bin rondb-tarball
-
 # See https://stackoverflow.com/a/51264575/9068781 for conditional envs
 FROM rondb-build-dependencies as build-all
 
-# Check deploy script what exactly will be deployed for ARM.
-# JAR files should not be deployed; they do not change between
-# architectures, so we only deploy them for x86
 ARG DEPLOY_TO_REPO
 ENV DEPLOY_ARG=${DEPLOY_TO_REPO:+-d}
 
@@ -143,10 +147,11 @@ ENV RELEASE_ARG=${RELEASE_TARBALL:+-r}
 ARG RELEASE_FINAL_CLUSTERJ
 ENV RELEASE_FINAL_CLUSTERJ_ARG=${RELEASE_FINAL_CLUSTERJ:+-f}
 
+RUN mkdir rondb-src rondb-bin rondb-tarball
 RUN --mount=type=bind,source=.,target=rondb-src \
-    --mount=type=cache,target=rondb-bin,id=ubuntu22-rondb2210-bin \
-    --mount=type=cache,target=/root/.cache/go-build,id=ubuntu22-rondb2210-golang \
-    rondb-src/build_scripts/release_scripts/build_all.sh \
+    --mount=type=cache,target=rondb-bin,id=oracle7-rondb2104-bin \
+    source scl_source enable devtoolset-10 \
+    && rondb-src/build_scripts/release_scripts/build_all.sh \
     -s rondb-src \
     -b rondb-bin \
     -o rondb-tarball \
@@ -161,7 +166,7 @@ COPY --from=build-all /root/rondb-tarball .
 # Intermediate Image for RDRS ####
 ##################################
 
-FROM ubuntu:22.04 AS rdrs-intermediate
+FROM oraclelinux:7 AS rdrs-intermediate
 
 ENV MYSQL_HOME=/srv/hops/mysql
 ENV MYSQL_CONF=/srv/hops/mysql-cluster
@@ -190,7 +195,7 @@ RUN --mount=type=bind,source=.,target=rondb-src \
 #       RDRS Image               #
 ##################################
 
-FROM ubuntu:22.04 AS rdrs
+FROM oraclelinux:7-slim AS rdrs
 
 COPY --from=rdrs-intermediate /srv /srv
 
