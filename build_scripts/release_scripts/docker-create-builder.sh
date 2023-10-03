@@ -43,7 +43,7 @@ if [[ "${?}" -ne 0 ]]; then
 fi
 
 # Defaults
-DOCKERFILE="Dockerfile.oraclelinux7"
+DOCKERFILE="Dockerfile.oraclelinux8"
 CORES=1
 BUILD_VOLUME_NAME="rondb-bin"
 

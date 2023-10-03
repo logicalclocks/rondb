@@ -1726,16 +1726,27 @@ void Dbdih::execREAD_CONFIG_REQ(Signal* signal)
         setNodeRecoveryStatusInitial(nodePtr);
         if (ndb_mgm_get_int_parameter(iter, CFG_DB_NODEGROUP, &ng) == 0)
         {
-          jam();
-          nodePtr.p->nodeGroup = nodegroup_mapping[ng];
-          ndbassert(nodePtr.p->nodeGroup < MAX_NDB_NODES);
-          set_node_group_id(nodePtr.i, ng);
-          DEB_NODE_STATUS(("node[%u].nodeGroup = %u"
-                           ", mapped to ng = %u, line: %u",
-                           nodePtr.i,
-                           ng,
-                           nodegroup_mapping[ng],
-                           __LINE__));
+          if (ng == NDB_NO_NODEGROUP)
+          {
+            jam();
+            nodePtr.p->nodeGroup = NDB_NO_NODEGROUP;
+            set_node_group_id(nodePtr.i, ZNIL);
+            DEB_NODE_STATUS(("node[%u].nodeGroup = NDB_NO_NODEGROUP, line: %u",
+                           nodePtr.i, __LINE__));
+          }
+          else
+          {
+            jam();
+            nodePtr.p->nodeGroup = nodegroup_mapping[ng];
+            ndbassert(nodePtr.p->nodeGroup < MAX_NDB_NODES);
+            set_node_group_id(nodePtr.i, ng);
+            DEB_NODE_STATUS(("node[%u].nodeGroup = %u"
+                             ", mapped to ng = %u, line: %u",
+                             nodePtr.i,
+                             ng,
+                             nodegroup_mapping[ng],
+                             __LINE__));
+          }
         }
         else
         {
@@ -30889,11 +30900,12 @@ Dbdih::create_nodegroup_mapping(Uint16 *nodegroup_mapping)
 {
   ndb_mgm_configuration_iterator * iter =
     m_ctx.m_config.getClusterConfigIterator();
-  Uint16 num_nodes_in_group[MAX_NDB_NODES];
-  memset(num_nodes_in_group, 0, sizeof(num_nodes_in_group));
+  Uint16 num_data_nodes_in_group[MAX_NDB_NODES];
+  memset(num_data_nodes_in_group, 0, sizeof(num_data_nodes_in_group));
   memset(nodegroup_mapping, 0xFF, sizeof(Uint16)*MAX_NDB_NODES);
-  Uint32 num_nodes = 0;
-  Uint32 num_nodes_with_nodegroup = 0;
+  Uint32 num_data_nodes = 0;
+  Uint32 num_data_nodes_with_nodegroup = 0;
+  Uint32 num_data_nodes_no_nodegroup = 0;
   for(ndb_mgm_first(iter); ndb_mgm_valid(iter); ndb_mgm_next(iter))
   {
     Uint32 nodeId;
@@ -30906,37 +30918,52 @@ Dbdih::create_nodegroup_mapping(Uint16 *nodegroup_mapping)
     {
       jam();
       jamLine(nodeId);
-      num_nodes++;
+      num_data_nodes++;
       if (ndb_mgm_get_int_parameter(iter, CFG_DB_NODEGROUP, &ng) == 0)
       {
         jam();
         jamLine(ng);
-        num_nodes_with_nodegroup++;
-        if (ng >= MAX_NDB_NODES)
+        num_data_nodes_with_nodegroup++;
+        if (ng == NDB_NO_NODEGROUP)
         {
-           progError(__LINE__,
-                     NDBD_EXIT_INVALID_CONFIG,
-                     "Nodegroup cannot be larger than 144");
+          num_data_nodes_no_nodegroup++;
         }
-        num_nodes_in_group[ng]++;
+        else
+        {
+          if (ng >= MAX_NDB_NODES)
+          {
+             progError(__LINE__,
+                       NDBD_EXIT_INVALID_CONFIG,
+                       "Nodegroup cannot be larger than 144"
+                       " and not be equal to 65536 (== no nodegroup)");
+          }
+          num_data_nodes_in_group[ng]++;
+        }
       }
     }
   }
-  if (num_nodes_with_nodegroup == 0)
+  if (num_data_nodes_with_nodegroup == 0)
   {
     jam();
     return;
   }
-  if (num_nodes_with_nodegroup != num_nodes)
+  if (num_data_nodes_no_nodegroup == num_data_nodes_with_nodegroup)
+  {
+    jam();
+    /* All nodes with nodegroup set is equal to 65536 == NDB_NO_NODEGROUP */
+    return;
+  }
+  if (num_data_nodes_with_nodegroup != num_data_nodes)
   {
     progError(__LINE__,
               NDBD_EXIT_INVALID_CONFIG,
-              "Either no node or all nodes must set Nodegroup");
+              "Either no node must set Nodegroup to a value different than"
+              " 65536, or all nodes must set Nodegroup");
   }
   for (Uint32 i = 0; i < MAX_NDB_NODES; i++)
   {
-    if (num_nodes_in_group[i] != cnoReplicas &&
-        num_nodes_in_group[i] != 0)
+    if (num_data_nodes_in_group[i] != cnoReplicas &&
+        num_data_nodes_in_group[i] != 0)
     {
       progError(__LINE__,
                 NDBD_EXIT_INVALID_CONFIG,
@@ -30953,7 +30980,7 @@ Dbdih::create_nodegroup_mapping(Uint16 *nodegroup_mapping)
   Uint32 ng_mapping = 0;
   for (Uint32 i = 0; i < MAX_NDB_NODES; i++)
   {
-    if (num_nodes_in_group[i] > 0)
+    if (num_data_nodes_in_group[i] > 0)
     {
       nodegroup_mapping[i] = ng_mapping;
       g_eventLogger->info("Nodegroup %u mapped internally to %u",

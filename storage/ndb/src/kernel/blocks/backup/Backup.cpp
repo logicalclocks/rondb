@@ -8904,7 +8904,6 @@ Backup::record_deleted_rowid(Uint32 pageNo, Uint32 pageIndex, Uint32 gci)
                 instance(),
                 pageNo,
                 pageIndex));
-  Uint32 record_len = dataLen + 1;
 #ifdef ERROR_INSERT
   /* Add checksum on all LCP records in ERROR_INSERT mode */
   Uint32 header = dataLen + 1 + (BackupFormat::DELETE_BY_ROWID_TYPE << 16);
