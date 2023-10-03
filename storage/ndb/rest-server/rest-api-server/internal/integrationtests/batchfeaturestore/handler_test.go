@@ -1080,7 +1080,9 @@ func Test_GetFeatureVector_Success_ComplexType(t *testing.T) {
 		t.Fatal(err.Error())
 	}
 	arrayCodec, err := goavro.NewCodec(`["null",{"type":"array","items":["null","long"]}]`)
-
+	if err != nil {
+		t.Fatal(err.Error())
+	}
 	mapDecoder := fsmetadata.AvroDecoder{Codec: mapCodec}
 	arrayDecoder := fsmetadata.AvroDecoder{Codec: arrayCodec}
 
