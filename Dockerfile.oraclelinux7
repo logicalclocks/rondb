@@ -149,7 +149,7 @@ ENV RELEASE_FINAL_CLUSTERJ_ARG=${RELEASE_FINAL_CLUSTERJ:+-f}
 
 RUN mkdir rondb-src rondb-bin rondb-tarball
 RUN --mount=type=bind,source=.,target=rondb-src \
-    --mount=type=cache,target=rondb-bin,id=oracle7-rondb2104-bin \
+    --mount=type=cache,target=rondb-bin,id=oracle7-rondb2210-bin \
     source scl_source enable devtoolset-10 \
     && rondb-src/build_scripts/release_scripts/build_all.sh \
     -s rondb-src \
