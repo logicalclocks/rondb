@@ -52,7 +52,7 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string, Uint32 *
 
   size_t connection_string_len = strlen(connection_string);
   this->connection_string      = reinterpret_cast<char *>(malloc(connection_string_len + 1));
-  std::strncpy(this->connection_string, connection_string, connection_string_len);
+  std::strncpy(this->connection_string, connection_string, connection_string_len + 1);
   this->connection_string[connection_string_len] = '\0';
 
   this->node_ids = reinterpret_cast<Uint32 *>(malloc(node_ids_len * sizeof(Uint32)));

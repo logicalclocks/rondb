@@ -4471,7 +4471,7 @@ ConfigInfo::ConfigInfo()
     delete section;
     
     if(param._type != ConfigInfo::CI_SECTION){
-      Properties * p;
+      Properties * p = nullptr;
       if(!m_systemDefaults.getCopy(param._section, &p)){
 	p = new Properties(true);
       }

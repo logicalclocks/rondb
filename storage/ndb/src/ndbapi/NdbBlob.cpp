@@ -933,7 +933,8 @@ NdbBlob::getBlobKeyHash()
       if (colImpl->m_pk)
       {
         unsigned maxLen = colImpl->m_attrSize * colImpl->m_arraySize;
-        Uint32 lb, len;
+        Uint32 lb = 0;
+        Uint32 len = 0;
         const bool ok = NdbSqlUtil::get_var_length(colImpl->m_type,
                                                    dataPtr,
                                                    maxLen,
