@@ -301,8 +301,6 @@ func GetFeatureGroupAvroSchema(fgName string, fgVersion int, projectId int) (*Fe
 	}
 
 	var schema = C.GoString((*C.char)(unsafe.Pointer(schemaBuff)))
-	fmt.Println("schema: ")
-	fmt.Println(schema)
 	var avroSchema FeatureGroupAvroSchema
 	err := json.Unmarshal([]byte(schema), &avroSchema)
 	if err != nil {

@@ -179,24 +179,27 @@ func newFeatureViewMetadata(
 	}
 
 	var complexFeatures = make(map[string]*AvroDecoder)
-
+	var fgSchemaCache = make(map[int]*dal.FeatureGroupAvroSchema)
 	for _, fgFeature := range fgFeaturesArray {
-		projectId, dalErr := dal.GetProjectID(fgFeature.FeatureStoreName)
-		if dalErr != nil {
-			return nil, errors.New("Failed to get project id. " + dalErr.Error())
-		}
-		log.Debugf("project id is %d", projectId)
-		fgSchema, err := dal.GetFeatureGroupAvroSchema(
-			fgFeature.FeatureGroupName,
-			fgFeature.FeatureGroupVersion,
-			projectId,
-		)
-		if err != nil {
-			return nil, errors.New("Failed to get feature schema. " + err.Error())
-		}
 		for _, feature := range fgFeature.Features {
 			if (*feature).IsComplex() {
-				var schema, err = fgSchema.GetSchemaByFeatureName(feature.Name)
+				if _, exist := fgSchemaCache[feature.FeatureGroupId]; !exist {
+					projectId, dalErr := dal.GetProjectID(fgFeature.FeatureStoreName)
+					if dalErr != nil {
+						return nil, errors.New("Failed to get project id. " + dalErr.Error())
+					}
+					log.Debugf("project id is %d", projectId)
+					newFgSchema, err := dal.GetFeatureGroupAvroSchema(
+						fgFeature.FeatureGroupName,
+						fgFeature.FeatureGroupVersion,
+						projectId,
+					)
+					if err != nil {
+						return nil, errors.New("Failed to get feature schema. " + err.Error())
+					}
+					fgSchemaCache[feature.FeatureGroupId] = newFgSchema
+				}
+				schema, err := fgSchemaCache[feature.FeatureGroupId].GetSchemaByFeatureName(feature.Name)
 				if err != nil {
 					return nil, errors.New("Failed to get feature schema for feature: " + feature.Name)
 				}

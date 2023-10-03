@@ -25,7 +25,9 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/linkedin/goavro/v2"
 	fsmetadata "hopsworks.ai/rdrs/internal/feature_store"
+	"hopsworks.ai/rdrs/internal/handlers/feature_store"
 	fshelper "hopsworks.ai/rdrs/internal/integrationtests/feature_store"
 	"hopsworks.ai/rdrs/pkg/api"
 	"hopsworks.ai/rdrs/resources/testdbs"
@@ -1062,6 +1064,59 @@ func Test_GetFeatureVector_WrongPkValue(t *testing.T) {
 		nil,
 	}
 	var fsResp = GetFeatureStoreResponseWithDetail(t, fsReq, "", http.StatusOK)
+	ValidateResponseWithData(t, &rows, &cols, fsResp)
+}
+
+func Test_GetFeatureVector_Success_ComplexType(t *testing.T) {
+	rows, pks, cols, err := fshelper.GetSampleData(testdbs.FSDB002, "sample_complex_type_1")
+	if err != nil {
+		t.Fatalf("Cannot get sample data with error %s ", err)
+	}
+	mapCodec, err := goavro.NewCodec(`["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]`)
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	arrayCodec, err := goavro.NewCodec(`["null",{"type":"array","items":["null","long"]}]`)
+
+	mapDecoder := fsmetadata.AvroDecoder{Codec: mapCodec}
+	arrayDecoder := fsmetadata.AvroDecoder{Codec: arrayCodec}
+
+	if err != nil {
+		t.Fatal(err.Error())
+	}
+	var fsReq = CreateFeatureStoreRequest(
+		testdbs.FSDB002,
+		"sample_complex_type",
+		1,
+		pks,
+		*GetPkValues(&rows, &pks, &cols),
+		nil,
+		nil,
+	)
+	fsResp := GetFeatureStoreResponse(t, fsReq)
+	for _, row := range rows {
+		// convert data to object in json format
+		arrayJson, err := fshelper.ConvertBinaryToJsonMessage(row[2])
+		if err != nil {
+			t.Fatalf("Cannot convert to json with error %s ", err)
+		}
+		arrayPt, err := feature_store.DeserialiseComplexFeature(arrayJson, &arrayDecoder) // array
+		row[2] = *arrayPt
+		if err != nil {
+			t.Fatalf("Cannot deserailize feature with error %s ", err)
+		}
+		// convert data to object in json format
+		mapJson, err := fshelper.ConvertBinaryToJsonMessage(row[3])
+		if err != nil {
+			t.Fatalf("Cannot convert to json with error %s ", err)
+		}
+		mapPt, err := feature_store.DeserialiseComplexFeature(mapJson, &mapDecoder) // map
+		row[3] = *mapPt
+		if err != nil {
+			t.Fatalf("Cannot deserailize feature with error %s ", err)
+		}
+	}
+	// validate
 	ValidateResponseWithData(t, &rows, &cols, fsResp)
 }
 
