@@ -1,0 +1,13 @@
+Currently RonDB default branch is 22.10.1. Changes should only be pushed to the 21.04 branch if they are required for inclusion into a Hopsworks 3.4 branch or earlier Hopsworks version.
+
+Pushes to 22.10.1 that aren't required in 21.04 only needs a single PR for the 22.10.1 tree. Thus no merges are required.
+
+Anyone pushing to 21.04 also has to create a merge PR that merges the changes into 22.10.1.
+
+All changes done to RonDB intended for release into Hopsworks production systems need to be pushed to 22.10.1 branch.
+
+Major new features of RonDB should not be pushed to RonDB 22.10.1 branch. These features should be pushed to the 24.04 branch.
+
+RonDB 22.10.1 is an LTS branch of RonDB that will be maintained for a few years ahead. Major new features will be available
+in development releases and later a new LTS release will be created for use in production environments.
+
