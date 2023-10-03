@@ -183,8 +183,4 @@ docker run --rm \
   --mount type=bind,src=$OUTPUT_DIR_ABS,dst=/rondb-tarball \
   --mount type=bind,src=$BUILD_DIR_ABS,dst=/rondb-bin \
   $DOCKER_IMAGE_NAME \
-  /bin/bash -c "source /root/.bashrc && /rondb-src/build_scripts/release_scripts/build_all.sh 
-  -s /rondb-src 
-  -b /rondb-bin 
-  -o /rondb-tarball 
-  -j $CORES $RELEASE_BUILD $DEPLOY"
+  /bin/bash -c "source /root/.bashrc && /rondb-src/build_scripts/release_scripts/build_all.sh -s /rondb-src -b /rondb-bin -o /rondb-tarball -j $CORES $RELEASE_BUILD $DEPLOY"
