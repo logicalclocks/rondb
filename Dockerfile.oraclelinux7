@@ -190,8 +190,8 @@ RUN --mount=type=bind,source=.,target=rondb-src \
    cp distro/bin/rdrs $MYSQL_HOME/bin && \
    cp distro/lib/libndbclient.so.6.1.0 $MYSQL_HOME/lib/ && \
    cp distro/lib/librdrclient.so $MYSQL_HOME/lib/ && \
-   cp distro/lib/private/libcrypto.so.1.1 $MYSQL_HOME/lib/private && \
-   cp distro/lib/private/libssl.so.1.1 $MYSQL_HOME/lib/private && \
+   cp distro/lib/private/libcrypto.so.3.0 $MYSQL_HOME/lib/private && \
+   cp distro/lib/private/libssl.so.3.0 $MYSQL_HOME/lib/private && \
    cp rondb-src/storage/ndb/rest-server/rest-api-server/resources/config/config_for_docker_image.json $MYSQL_CONF/rdrs_config.json
 
 ##################################
