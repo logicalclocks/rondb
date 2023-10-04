@@ -30604,6 +30604,9 @@ Dbdih::execCREATE_NODEGROUP_IMPL_REQ(Signal* signal)
       if (getNodeActiveStatus(req->nodes[i]) != Sysfile::NS_Configured)
       {
         jam();
+        jamData(i);
+        jamData(req->nodes[i]);
+        jamData(getNodeActiveStatus(req->nodes[i]));
         err = CreateNodegroupRef::NodeAlreadyInNodegroup;
         goto error;
       }
