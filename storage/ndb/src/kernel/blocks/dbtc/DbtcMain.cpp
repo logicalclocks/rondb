@@ -17092,7 +17092,8 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
   const NodeId ownNodeId = getOwnNodeId();
   ndbassert(scanFragId == lqhScanFragId ||
             scanptr.p->m_scan_dist_key == lqhScanFragId ||
-            distr_key_indicator == 0);
+            distr_key_indicator == 0 ||
+            (tabPtr.p->m_flags & TableRecord::TR_FULLY_REPLICATED));
 
   arrGuard(nodeId, MAX_NDB_NODES);
   {
