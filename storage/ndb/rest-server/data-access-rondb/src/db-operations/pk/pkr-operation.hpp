@@ -28,12 +28,17 @@
 #include "src/db-operations/pk/pkr-response.hpp"
 #include "src/rdrs-dal.h"
 
+typedef struct ColRec {
+  NdbRecAttr *ndbRec;
+  NdbBlob *blob;
+} ColRec;
+
 typedef struct SubOpTuple {
   PKRRequest *pkRequest;
   PKRResponse *pkResponse;
   NdbOperation *ndbOperation;
   const NdbDictionary::Table *tableDict;
-  std::vector<NdbRecAttr *> recs;
+  std::vector<ColRec *> recs;
   std::unordered_map<std::string, const NdbDictionary::Column *> allNonPKCols;
   std::unordered_map<std::string, const NdbDictionary::Column *> allPKCols;
   Int8 **primaryKeysCols;
@@ -128,6 +133,7 @@ class PKROperation {
    * Append operation records to response buffer
    * @return status
    */
-  RS_Status AppendOpRecs(PKRResponse *resp, std::vector<NdbRecAttr *> *recs);
+  RS_Status AppendOpRecs(const NdbOperation *op, PKRResponse *resp,
+                         std::vector<ColRec *> *recs);
 };
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_

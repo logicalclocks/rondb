@@ -742,7 +742,7 @@ func TestDataTypesBlobs(t *testing.T) {
 	testDb := testdbs.DB013
 	tests := map[string]api.PKTestInfo{
 
-		"blob1": {
+		"blobX": {
 			PkReq: api.PKReadBody{
 				Filters:     testclient.NewFiltersKVs("id0", "1"),
 				ReadColumns: testclient.NewReadColumns("col", 2),
@@ -750,8 +750,8 @@ func TestDataTypesBlobs(t *testing.T) {
 			},
 			Table:          "blob_table",
 			Db:             testDb,
-			HttpCode:       http.StatusInternalServerError,
-			ErrMsgContains: common.ERROR_026(),
+			HttpCode:       http.StatusOK,
+			ErrMsgContains: "",
 			RespKVs:        []interface{}{},
 		},
 

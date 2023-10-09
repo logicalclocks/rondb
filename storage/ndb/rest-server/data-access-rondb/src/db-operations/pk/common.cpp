@@ -717,7 +717,8 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
   return error;
 }
 
-RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
+RS_Status WriteColToRespBuff(const NdbOperation *op, const NdbRecAttr *attr,
+                             PKRResponse *response) {
   const NdbDictionary::Column *col = attr->getColumn();
   if (attr->isNULL()) {
     return response->SetColumnDataNull(attr->getColumn()->getName());
@@ -854,8 +855,21 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
   }
   case NdbDictionary::Column::Blob: {
     ///< Binary large object (see NdbBlob)
-    return RS_SERVER_ERROR(ERROR_028 + std::string(" Column: ") + std::string(col->getName()) +
-                           " Type: " + std::to_string(col->getType()));
+    /// Treat it as binary data
+    NdbBlob *blob = op->getBlobHandle(attr->getColumn()->getName());
+    if (blob == nullptr) {  // failed to read blob column
+      return RS_SERVER_ERROR(ERROR_037 + std::string(" Column: ") + std::string(col->getName()) +
+                             " Type: " + std::to_string(col->getType()));
+    }
+    Uint64 length = 0;
+    if (blob->getLength(length) == -1) {
+      return RS_SERVER_ERROR(ERROR_037 + std::string(" Reading column length failed.") +
+                             std::string(" Column: ") + std::string(col->getName()) +
+                             " Type: " + std::to_string(col->getType()));
+    } 
+    printf("Blob column length is %llu\n", length);
+
+    return RS_OK;
   }
   case NdbDictionary::Column::Text: {
     ///< Text blob
