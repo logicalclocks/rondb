@@ -60,8 +60,7 @@ extern "C" {
 #define ERROR_034 "Programming error. RonDB connection has been shutdown. Use Init() fn."
 #define ERROR_035 "RonDB connection and object pool is not initialized."
 #define ERROR_036 "RonDB reconnection already in progress."
-#define ERROR_037 "Failed to read BLOB column."
-#define ERROR_038 "Failed to read TEXT column."
+#define ERROR_037 "Failed to read column."
 
 #ifdef __cplusplus
 }

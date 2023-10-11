@@ -186,6 +186,10 @@ void *PKRResponse::GetWritePointer() {
   return resp->buffer + writeHeader;
 }
 
+void PKRResponse::AdvanceWritePointer(Uint32 add) {
+  writeHeader += add;
+}
+
 RS_Status PKRResponse::Append_string(const char *colName, std::string value, Uint32 type) {
   if ((value.length() + 1) > GetRemainingCapacity()) {  // +1 null terminator
     return RS_SERVER_ERROR(ERROR_016);

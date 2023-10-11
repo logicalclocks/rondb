@@ -23,7 +23,7 @@ import (
 	"net/http"
 	"testing"
 
-	//_ "github.com/ianlancetaylor/cgosymbolizer"
+	_ "github.com/ianlancetaylor/cgosymbolizer"
 	"hopsworks.ai/rdrs/internal/common"
 	"hopsworks.ai/rdrs/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs/pkg/api"
@@ -737,12 +737,44 @@ func TestDataTypesDecimal(t *testing.T) {
 	pkTestMultiple(t, tests, false)
 }
 
+// TODO FIXME
+// test for reading
+// empty
+// null
+// exceeding max len
 func TestDataTypesBlobs(t *testing.T) {
 
 	testDb := testdbs.DB013
+	validateColumns := []interface{}{"col0"}
 	tests := map[string]api.PKTestInfo{
 
-		"blobX": {
+		"notfound": {
+			PkReq: api.PKReadBody{
+				Filters:     testclient.NewFiltersKVs("id0", "-1"),
+				ReadColumns: testclient.NewReadColumns("col", 2),
+				OperationID: testclient.NewOperationID(5),
+			},
+			Table:          "blob_table",
+			Db:             testDb,
+			HttpCode:       http.StatusNotFound,
+			ErrMsgContains: "",
+			RespKVs:        validateColumns,
+		},
+
+		"null": {
+			PkReq: api.PKReadBody{
+				Filters:     testclient.NewFiltersKVs("id0", "2"),
+				ReadColumns: testclient.NewReadColumns("col", 2),
+				OperationID: testclient.NewOperationID(5),
+			},
+			Table:          "blob_table",
+			Db:             testDb,
+			HttpCode:       http.StatusOK,
+			ErrMsgContains: "",
+			RespKVs:        validateColumns,
+		},
+
+		"simple": {
 			PkReq: api.PKReadBody{
 				Filters:     testclient.NewFiltersKVs("id0", "1"),
 				ReadColumns: testclient.NewReadColumns("col", 2),
@@ -752,50 +784,11 @@ func TestDataTypesBlobs(t *testing.T) {
 			Db:             testDb,
 			HttpCode:       http.StatusOK,
 			ErrMsgContains: "",
-			RespKVs:        []interface{}{},
-		},
-
-		"blob2": {
-			PkReq: api.PKReadBody{
-				Filters:     testclient.NewFiltersKVs("id0", "1"),
-				ReadColumns: testclient.NewReadColumn("col1"),
-				OperationID: testclient.NewOperationID(5),
-			},
-			Table:          "blob_table",
-			Db:             testDb,
-			HttpCode:       http.StatusOK,
-			ErrMsgContains: "",
-			RespKVs:        []interface{}{"col1"},
-		},
-
-		"text1": {
-			PkReq: api.PKReadBody{
-				Filters:     testclient.NewFiltersKVs("id0", "1"),
-				ReadColumns: testclient.NewReadColumns("col", 2),
-				OperationID: testclient.NewOperationID(5),
-			},
-			Table:          "text_table",
-			Db:             testDb,
-			HttpCode:       http.StatusInternalServerError,
-			ErrMsgContains: "",
-			RespKVs:        []interface{}{},
-		},
-
-		"text2": {
-			PkReq: api.PKReadBody{
-				Filters:     testclient.NewFiltersKVs("id0", "1"),
-				ReadColumns: testclient.NewReadColumn("col1"),
-				OperationID: testclient.NewOperationID(5),
-			},
-			Table:          "text_table",
-			Db:             testDb,
-			HttpCode:       http.StatusOK,
-			ErrMsgContains: "",
-			RespKVs:        []interface{}{"col1"},
+			RespKVs:        validateColumns,
 		},
 	}
 
-	pkTestMultiple(t, tests, false)
+	pkTestMultiple(t, tests, true)
 }
 
 func TestLargePks(t *testing.T) {

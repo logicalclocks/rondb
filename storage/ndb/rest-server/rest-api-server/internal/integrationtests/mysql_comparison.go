@@ -3,6 +3,7 @@ package integrationtests
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"testing"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -73,7 +74,7 @@ func getColumnDataFromDB(
 		if where != "" {
 			where += " and "
 		}
-		if isBinary {
+		if isBase64(string(*filter.Value)) {
 			where = fmt.Sprintf("%s %s = from_base64(%s)", where, *filter.Column, string(*filter.Value))
 		} else {
 			where = fmt.Sprintf("%s %s = %s", where, *filter.Column, string(*filter.Value))
@@ -118,4 +119,10 @@ func getColumnDataFromDB(
 	}
 
 	return nil, fmt.Errorf("did not find data in the database %s", command)
+}
+
+func isBase64(str string) bool {
+	base64Pattern := `^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$`
+	re := regexp.MustCompile(base64Pattern)
+	return re.MatchString(str)
 }
