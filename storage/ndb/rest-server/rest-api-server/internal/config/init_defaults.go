@@ -47,9 +47,9 @@ func init() {
 func newWithDefaults() AllConfigs {
 	return AllConfigs{
 		Internal: Internal{
-			BufferSize:          1024 * 1024,
+			BufferSize:          5 * 1024 * 1024,
 			GOMAXPROCS:          -1,
-			PreAllocatedBuffers: 1024,
+			PreAllocatedBuffers: 32,
 			BatchMaxSize:        256,
 			OperationIDMaxSize:  256,
 		},
