@@ -280,7 +280,7 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
   - **APIVersion:** Current version of the REST API. Current version is *0.1.0*
 
-  - **BufferSize:** Size of the buffers that are used to pass requests/responses between the Go and C++ layers. The buffers should be large enough to accommodate any request/response. The default size is *327680* (32 KB). 
+  - **BufferSize:** Size of the buffers that are used to pass requests/responses between the Go and C++ layers. The buffers should be large enough to accommodate any request/response. The default size is *327680* (320 KB). 
 
   - **PreAllocatedBuffers:** Numbers of buffers to preallocate. The default value is *1024*.
 

@@ -737,12 +737,7 @@ func TestDataTypesDecimal(t *testing.T) {
 	pkTestMultiple(t, tests, false)
 }
 
-// TODO FIXME
-// test for reading
-// empty
-// null
-// exceeding max len
-func TestDataTypesBlobs(t *testing.T) {
+func TestDataTypesText(t *testing.T) {
 
 	testDb := testdbs.DB013
 	validateColumns := []interface{}{"col0"}
@@ -754,7 +749,7 @@ func TestDataTypesBlobs(t *testing.T) {
 				ReadColumns: testclient.NewReadColumns("col", 2),
 				OperationID: testclient.NewOperationID(5),
 			},
-			Table:          "blob_table",
+			Table:          "text_table",
 			Db:             testDb,
 			HttpCode:       http.StatusNotFound,
 			ErrMsgContains: "",
@@ -767,7 +762,7 @@ func TestDataTypesBlobs(t *testing.T) {
 				ReadColumns: testclient.NewReadColumns("col", 2),
 				OperationID: testclient.NewOperationID(5),
 			},
-			Table:          "blob_table",
+			Table:          "text_table",
 			Db:             testDb,
 			HttpCode:       http.StatusOK,
 			ErrMsgContains: "",
@@ -777,6 +772,91 @@ func TestDataTypesBlobs(t *testing.T) {
 		"simple": {
 			PkReq: api.PKReadBody{
 				Filters:     testclient.NewFiltersKVs("id0", "1"),
+				ReadColumns: testclient.NewReadColumns("col", 2),
+				OperationID: testclient.NewOperationID(5),
+			},
+			Table:          "text_table",
+			Db:             testDb,
+			HttpCode:       http.StatusOK,
+			ErrMsgContains: "",
+			RespKVs:        validateColumns,
+		},
+		"simple2": { // all characters needs to be escaped. ascii char that needs escaping
+			PkReq: api.PKReadBody{
+				Filters:     testclient.NewFiltersKVs("id0", "3"),
+				ReadColumns: testclient.NewReadColumns("col", 2),
+				OperationID: testclient.NewOperationID(5),
+			},
+			Table:          "text_table",
+			Db:             testDb,
+			HttpCode:       http.StatusOK,
+			ErrMsgContains: "",
+			RespKVs:        validateColumns,
+		},
+		"simple3": { // all characters needs to be escaped. non printable ascii char for exampe 0x17
+			PkReq: api.PKReadBody{
+				Filters:     testclient.NewFiltersKVs("id0", "4"),
+				ReadColumns: testclient.NewReadColumns("col", 2),
+				OperationID: testclient.NewOperationID(5),
+			},
+			Table:          "text_table",
+			Db:             testDb,
+			HttpCode:       http.StatusOK,
+			ErrMsgContains: "",
+			RespKVs:        validateColumns,
+		},
+		"simple4": { // all characters needs to be escaped. non printable unicode
+			PkReq: api.PKReadBody{
+				Filters:     testclient.NewFiltersKVs("id0", "5"),
+				ReadColumns: testclient.NewReadColumns("col", 2),
+				OperationID: testclient.NewOperationID(5),
+			},
+			Table:          "text_table",
+			Db:             testDb,
+			HttpCode:       http.StatusOK,
+			ErrMsgContains: "",
+			RespKVs:        validateColumns,
+		},
+	}
+
+	pkTestMultiple(t, tests, false)
+}
+
+func TestDataTypesBlob(t *testing.T) {
+
+	testDb := testdbs.DB013
+	validateColumns := []interface{}{"col0"}
+	tests := map[string]api.PKTestInfo{
+
+		"notfound": {
+			PkReq: api.PKReadBody{
+				Filters:     testclient.NewFiltersKVs("id0", testclient.EncodePkValue("-1", true, 255, false)),
+				ReadColumns: testclient.NewReadColumns("col", 2),
+				OperationID: testclient.NewOperationID(5),
+			},
+			Table:          "blob_table",
+			Db:             testDb,
+			HttpCode:       http.StatusNotFound,
+			ErrMsgContains: "",
+			RespKVs:        validateColumns,
+		},
+
+		"null": {
+			PkReq: api.PKReadBody{
+				Filters:     testclient.NewFiltersKVs("id0", testclient.EncodePkValue("2", true, 255, false)),
+				ReadColumns: testclient.NewReadColumns("col", 2),
+				OperationID: testclient.NewOperationID(5),
+			},
+			Table:          "blob_table",
+			Db:             testDb,
+			HttpCode:       http.StatusOK,
+			ErrMsgContains: "",
+			RespKVs:        validateColumns,
+		},
+
+		"simple": {
+			PkReq: api.PKReadBody{
+				Filters:     testclient.NewFiltersKVs("id0", testclient.EncodePkValue("1", true, 255, false)),
 				ReadColumns: testclient.NewReadColumns("col", 2),
 				OperationID: testclient.NewOperationID(5),
 			},

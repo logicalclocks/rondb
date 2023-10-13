@@ -884,7 +884,6 @@ RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *respon
                              " Required: " + std::to_string(maxEncodedSize));
     }
 
-    printf("Blob column length is %llu\n", length);
     Uint64 chunk      = 0;
     Uint64 total_read = 0;
     char buffer[BLOB_MAX_FETCH_SIZE];
@@ -950,8 +949,66 @@ RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *respon
   }
   case NdbDictionary::Column::Text: {
     ///< Text blob
-    return RS_SERVER_ERROR(ERROR_028 + std::string(" Column: ") + std::string(col->getName()) +
-                           " Type: " + std::to_string(col->getType()));
+    Uint64 length = 0;
+    if (colRec->blob->getLength(length) == -1) {
+      return RS_SERVER_ERROR(ERROR_037 + std::string(" Reading column length failed.") +
+                             std::string(" Column: ") + std::string(col->getName()) +
+                             " Type: " + std::to_string(col->getType()));
+    }
+    if (response->GetRemainingCapacity() < length + 1) {  //+1 for null terminator
+      return RS_SERVER_ERROR(ERROR_016 + std::string(" Buffer Remaining Capacity: ") +
+                             std::to_string(response->GetRemainingCapacity()) +
+                             " Required: " + std::to_string(length + 1));
+    }
+
+    // NOTE: we not allocating a tmp buffer to hold the data
+    // Reusing the reponse buffer
+    char *tmpBuffer = static_cast<char*>(response->GetWritePointer());
+
+    Uint64 chunk      = 0;
+    Uint64 total_read = 0;
+
+    for (chunk = 0; chunk < (length / (BLOB_MAX_FETCH_SIZE)) + 1; chunk++) {
+      Uint64 pos   = chunk * BLOB_MAX_FETCH_SIZE;
+      Uint32 bytes = BLOB_MAX_FETCH_SIZE;  // NOTE this is bytes to read and also bytes read.
+      if (pos + bytes > length) {
+        bytes = length - pos;
+      }
+
+      if (bytes != 0) {
+        if (-1 == colRec->blob->setPos(pos)) {
+          return RS_RONDB_SERVER_ERROR(colRec->blob->getNdbError(),
+                                       ERROR_037 + std::string(" Failed to set read position.") +
+                                           std::string(" Column: ") + std::string(col->getName()) +
+                                           " Type: " + std::to_string(col->getType()));
+        }
+
+        if (colRec->blob->readData(tmpBuffer, bytes /*to read, also bytes read*/) == -1) {
+          return RS_RONDB_SERVER_ERROR(colRec->blob->getNdbError(),
+                                       ERROR_037 + std::string(" Read data failed .") +
+                                           std::string(" Column: ") + std::string(col->getName()) +
+                                           " Type: " + std::to_string(col->getType()) +
+                                           " Position: " + std::to_string(pos));
+        }
+
+        if (bytes > 0) {
+          tmpBuffer += bytes;  // move the pointer forward
+          total_read += bytes;
+        }
+      }
+    }
+
+    if (total_read != length) {
+      return RS_RONDB_SERVER_ERROR(colRec->blob->getNdbError(),
+                                   ERROR_037 + std::string(" Not all of the data was read.") +
+                                       std::string(" Column: ") + std::string(col->getName()) +
+                                       " Expected to read: " + std::to_string(length) +
+                                       " bytes. Read: " + std::to_string(total_read));
+    }
+    
+    return response->Append_char(colRec->ndbRec->getColumn()->getName(), static_cast<char*>(response->GetWritePointer()), length,
+                                   colRec->ndbRec->getColumn()->getCharset());
+
   }
   case NdbDictionary::Column::Bit: {
     //< Bit, length specifies no of bits

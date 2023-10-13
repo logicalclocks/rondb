@@ -50,6 +50,7 @@ require (
 	github.com/prometheus/client_model v0.3.0 // indirect
 	github.com/prometheus/common v0.42.0 // indirect
 	github.com/prometheus/procfs v0.9.0 // indirect
+	zappem.net/pub/debug/xxd v1.0.0 // indirect
 )
 
 require (
