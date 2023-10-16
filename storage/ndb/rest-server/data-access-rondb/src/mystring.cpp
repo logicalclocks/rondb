@@ -81,7 +81,8 @@ std::string escape_string(const std::string &s) noexcept {
   std::string result(s.size() + space, '\\');
   std::size_t pos = 0;
 
-  for (const auto &c : s) {
+  for (size_t i = 0; i < s.size(); i++) {
+    const char c  = s[i];
     Int8 ci = (Int8)c;
     switch (ci) {
     // quotation mark (0x22)
@@ -139,7 +140,9 @@ std::string escape_string(const std::string &s) noexcept {
         snprintf(&result[pos + 1], len, "u%04x", static_cast<int>(c));
         pos += 6;
         // overwrite trailing null character
-        result[pos] = '\\';
+        if (i + 1 != s.size()) {
+          result[pos] = '\\';
+        }
       } else {
         // all other characters are added as-is
         result[pos++] = c;
