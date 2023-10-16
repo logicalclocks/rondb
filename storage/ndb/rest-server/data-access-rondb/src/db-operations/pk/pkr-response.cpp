@@ -279,7 +279,6 @@ RS_Status PKRResponse::Append_char(const char *colName, const char *fromBuff, Ui
   std::shared_ptr<char> tempBuff(new char[estimated_bytes], [](const char *buff) {
     delete[] buff;  // Custom deleter to delete the array
   });
-  printf("Original txt size %d new buffer size %lu\n", fromBuffLen, estimated_bytes);
 
   const char *well_formed_error_pos    = nullptr;
   const char *cannot_convert_error_pos = nullptr;
