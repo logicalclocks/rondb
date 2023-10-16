@@ -717,12 +717,13 @@ RS_Status SetOperationPKCol(const NdbDictionary::Column *col, PKRRequest *reques
   return error;
 }
 
-RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
-  const NdbDictionary::Column *col = attr->getColumn();
-  if (attr->isNULL()) {
-    return response->SetColumnDataNull(attr->getColumn()->getName());
+RS_Status WriteColToRespBuff(std::shared_ptr<ColRec> colRec, PKRResponse *response) {
+
+  if (colRec->ndbRec != nullptr && colRec->ndbRec->isNULL()) {
+    return response->SetColumnDataNull(colRec->ndbRec->getColumn()->getName());
   }
 
+  const NdbDictionary::Column *col = colRec->ndbRec->getColumn();
   switch (col->getType()) {
   case NdbDictionary::Column::Undefined: {
     ///< 4 bytes + 0-3 fraction
@@ -730,51 +731,63 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
   }
   case NdbDictionary::Column::Tinyint: {
     ///< 8 bit. 1 byte signed integer, can be used in array
-    return response->Append_i8(attr->getColumn()->getName(), attr->int8_value());
+    return response->Append_i8(colRec->ndbRec->getColumn()->getName(),
+                               colRec->ndbRec->int8_value());
   }
   case NdbDictionary::Column::Tinyunsigned: {
     ///< 8 bit. 1 byte unsigned integer, can be used in array
-    return response->Append_iu8(attr->getColumn()->getName(), attr->u_8_value());
+    return response->Append_iu8(colRec->ndbRec->getColumn()->getName(),
+                                colRec->ndbRec->u_8_value());
   }
   case NdbDictionary::Column::Smallint: {
     ///< 16 bit. 2 byte signed integer, can be used in array
-    return response->Append_i16(attr->getColumn()->getName(), attr->short_value());
+    return response->Append_i16(colRec->ndbRec->getColumn()->getName(),
+                                colRec->ndbRec->short_value());
   }
   case NdbDictionary::Column::Smallunsigned: {
     ///< 16 bit. 2 byte unsigned integer, can be used in array
-    return response->Append_iu16(attr->getColumn()->getName(), attr->u_short_value());
+    return response->Append_iu16(colRec->ndbRec->getColumn()->getName(),
+                                 colRec->ndbRec->u_short_value());
   }
   case NdbDictionary::Column::Mediumint: {
     ///< 24 bit. 3 byte signed integer, can be used in array
-    return response->Append_i24(attr->getColumn()->getName(), attr->medium_value());
+    return response->Append_i24(colRec->ndbRec->getColumn()->getName(),
+                                colRec->ndbRec->medium_value());
   }
   case NdbDictionary::Column::Mediumunsigned: {
     ///< 24 bit. 3 byte unsigned integer, can be used in array
-    return response->Append_iu24(attr->getColumn()->getName(), attr->u_medium_value());
+    return response->Append_iu24(colRec->ndbRec->getColumn()->getName(),
+                                 colRec->ndbRec->u_medium_value());
   }
   case NdbDictionary::Column::Int: {
     ///< 32 bit. 4 byte signed integer, can be used in array
-    return response->Append_i32(attr->getColumn()->getName(), attr->int32_value());
+    return response->Append_i32(colRec->ndbRec->getColumn()->getName(),
+                                colRec->ndbRec->int32_value());
   }
   case NdbDictionary::Column::Unsigned: {
     ///< 32 bit. 4 byte unsigned integer, can be used in array
-    return response->Append_iu32(attr->getColumn()->getName(), attr->u_32_value());
+    return response->Append_iu32(colRec->ndbRec->getColumn()->getName(),
+                                 colRec->ndbRec->u_32_value());
   }
   case NdbDictionary::Column::Bigint: {
     ///< 64 bit. 8 byte signed integer, can be used in array
-    return response->Append_i64(attr->getColumn()->getName(), attr->int64_value());
+    return response->Append_i64(colRec->ndbRec->getColumn()->getName(),
+                                colRec->ndbRec->int64_value());
   }
   case NdbDictionary::Column::Bigunsigned: {
     ///< 64 Bit. 8 byte signed integer, can be used in array
-    return response->Append_iu64(attr->getColumn()->getName(), attr->u_64_value());
+    return response->Append_iu64(colRec->ndbRec->getColumn()->getName(),
+                                 colRec->ndbRec->u_64_value());
   }
   case NdbDictionary::Column::Float: {
     ///< 32-bit float. 4 bytes float, can be used in array
-    return response->Append_f32(attr->getColumn()->getName(), attr->float_value());
+    return response->Append_f32(colRec->ndbRec->getColumn()->getName(),
+                                colRec->ndbRec->float_value());
   }
   case NdbDictionary::Column::Double: {
     ///< 64-bit float. 8 byte float, can be used in array
-    return response->Append_d64(attr->getColumn()->getName(), attr->double_value());
+    return response->Append_d64(colRec->ndbRec->getColumn()->getName(),
+                                colRec->ndbRec->double_value());
   }
   case NdbDictionary::Column::Olddecimal: {
     ///< MySQL < 5.0 signed decimal,  Precision, Scale
@@ -791,12 +804,12 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     [[fallthrough]];
   case NdbDictionary::Column::Decimalunsigned: {
     char decStr[DECIMAL_MAX_STR_LEN_IN_BYTES];
-    int precision = attr->getColumn()->getPrecision();
-    int scale     = attr->getColumn()->getScale();
-    void *bin     = attr->aRef();
-    int binLen    = attr->get_size_in_bytes();
+    int precision = colRec->ndbRec->getColumn()->getPrecision();
+    int scale     = colRec->ndbRec->getColumn()->getScale();
+    void *bin     = colRec->ndbRec->aRef();
+    int binLen    = colRec->ndbRec->get_size_in_bytes();
     decimal_bin2str(bin, binLen, precision, scale, decStr, DECIMAL_MAX_STR_LEN_IN_BYTES);
-    return response->Append_string(attr->getColumn()->getName(), std::string(decStr),
+    return response->Append_string(colRec->ndbRec->getColumn()->getName(), std::string(decStr),
                                    RDRS_FLOAT_DATATYPE);
   }
   case NdbDictionary::Column::Char:
@@ -809,11 +822,11 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     ///< Length bytes: 2, little-endian
     Uint32 attrBytes;
     const char *dataStart = nullptr;
-    if (unlikely(GetByteArray(attr, &dataStart, &attrBytes) != 0)) {
+    if (unlikely(GetByteArray(colRec->ndbRec, &dataStart, &attrBytes) != 0)) {
       return RS_CLIENT_ERROR(ERROR_019);
     } else {
-      return response->Append_char(attr->getColumn()->getName(), dataStart, attrBytes,
-                                   attr->getColumn()->getCharset());
+      return response->Append_char(colRec->ndbRec->getColumn()->getName(), dataStart, attrBytes,
+                                   colRec->ndbRec->getColumn()->getCharset());
     }
   }
   case NdbDictionary::Column::Binary:
@@ -825,7 +838,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     ///< Length bytes: 2, little-endian
     Uint32 attrBytes;
     const char *dataStart = nullptr;
-    if (unlikely(GetByteArray(attr, &dataStart, &attrBytes) != 0)) {
+    if (unlikely(GetByteArray(colRec->ndbRec, &dataStart, &attrBytes) != 0)) {
       return RS_CLIENT_ERROR(ERROR_019);
     } else {
       require(attrBytes <= MAX_TUPLE_SIZE_IN_BYTES);
@@ -834,8 +847,8 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
       size_t outlen = 0;
       base64_encode(dataStart, attrBytes, (char *)&buffer[0], &outlen, 0);
 
-      return response->Append_string(attr->getColumn()->getName(), std::string(buffer, outlen),
-                                     RDRS_BINARY_DATATYPE);
+      return response->Append_string(colRec->ndbRec->getColumn()->getName(),
+                                     std::string(buffer, outlen), RDRS_BINARY_DATATYPE);
     }
   }
   case NdbDictionary::Column::Datetime: {
@@ -846,26 +859,161 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
   case NdbDictionary::Column::Date: {
     ///< Precision down to 1 day(sizeof(Date) == 4 bytes )
     MYSQL_TIME lTime;
-    my_unpack_date(&lTime, attr->aRef());
+    my_unpack_date(&lTime, colRec->ndbRec->aRef());
     char to[MAX_DATE_STRING_REP_LENGTH];
     my_date_to_str(lTime, to);
-    return response->Append_string(attr->getColumn()->getName(), std::string(to),
+    return response->Append_string(colRec->ndbRec->getColumn()->getName(), std::string(to),
                                    RDRS_DATETIME_DATATYPE);
   }
   case NdbDictionary::Column::Blob: {
     ///< Binary large object (see NdbBlob)
-    return RS_SERVER_ERROR(ERROR_028 + std::string(" Column: ") + std::string(col->getName()) +
-                           " Type: " + std::to_string(col->getType()));
+    /// Treat it as binary data
+    Uint64 length = 0;
+    if (colRec->blob->getLength(length) == -1) {
+      return RS_SERVER_ERROR(ERROR_037 + std::string(" Reading column length failed.") +
+                             std::string(" Column: ") + std::string(col->getName()) +
+                             " Type: " + std::to_string(col->getType()));
+    }
+
+    // check for max length
+    // (4 * ceil(input_size / 3))
+    const size_t maxEncodedSize = length / 3 + (length % 3 != 0) * 4;
+    if (response->GetRemainingCapacity() < maxEncodedSize) {
+      return RS_SERVER_ERROR(ERROR_016 + std::string(" Buffer Remaining Capacity: ") +
+                             std::to_string(response->GetRemainingCapacity()) +
+                             " Required: " + std::to_string(maxEncodedSize));
+    }
+
+    Uint64 chunk      = 0;
+    Uint64 total_read = 0;
+    char buffer[BLOB_MAX_FETCH_SIZE];
+
+    struct base64_state state;
+    size_t encodeOutlen = 0;
+    base64_stream_encode_init(&state, 0);
+
+    for (chunk = 0; chunk < (length / (BLOB_MAX_FETCH_SIZE)) + 1; chunk++) {
+      Uint64 pos   = chunk * BLOB_MAX_FETCH_SIZE;
+      Uint32 bytes = BLOB_MAX_FETCH_SIZE;  // NOTE this is bytes to read and also bytes read.
+      if (pos + bytes > length) {
+        bytes = length - pos;
+      }
+
+      if (bytes != 0) {
+        if (-1 == colRec->blob->setPos(pos)) {
+          return RS_RONDB_SERVER_ERROR(colRec->blob->getNdbError(),
+                                       ERROR_037 + std::string(" Failed to set read position.") +
+                                           std::string(" Column: ") + std::string(col->getName()) +
+                                           " Type: " + std::to_string(col->getType()));
+        }
+
+        if (colRec->blob->readData(buffer, bytes /*to read, also bytes read*/) == -1) {
+          return RS_RONDB_SERVER_ERROR(colRec->blob->getNdbError(),
+                                       ERROR_037 + std::string(" Read data failed .") +
+                                           std::string(" Column: ") + std::string(col->getName()) +
+                                           " Type: " + std::to_string(col->getType()) +
+                                           " Position: " + std::to_string(pos));
+        }
+
+        if (bytes > 0) {
+          total_read += bytes;
+          if (chunk == 0) {
+            response->Append_string(colRec->ndbRec->getColumn()->getName(), "",
+                                    RDRS_BINARY_DATATYPE);
+            // This adds a column to the response buffer. Right now the last byte of the
+            // response buffer is '\0'. Remove the last byte and start appending the
+            // base64 data
+            response->AdvanceWritePointer(-1);
+          }
+
+          base64_stream_encode(&state, (const char *)buffer, bytes,
+                               (char *)response->GetWritePointer(), &encodeOutlen);
+          response->AdvanceWritePointer(encodeOutlen);
+        }
+      }
+    }
+
+    if (total_read != length) {
+      return RS_RONDB_SERVER_ERROR(colRec->blob->getNdbError(),
+                                   ERROR_037 + std::string(" Not all of the data was read.") +
+                                       std::string(" Column: ") + std::string(col->getName()) +
+                                       " Expected to read: " + std::to_string(length) +
+                                       " bytes. Read: " + std::to_string(total_read));
+    }
+    base64_stream_encode_final(&state, (char *)response->GetWritePointer(), &encodeOutlen);
+    response->AdvanceWritePointer(encodeOutlen);
+    (response->GetResponseBuffer())[response->GetWriteHeader()] = '\0';
+    response->AdvanceWritePointer(1);
+
+    return RS_OK;
   }
   case NdbDictionary::Column::Text: {
     ///< Text blob
-    return RS_SERVER_ERROR(ERROR_028 + std::string(" Column: ") + std::string(col->getName()) +
-                           " Type: " + std::to_string(col->getType()));
+    Uint64 length = 0;
+    if (colRec->blob->getLength(length) == -1) {
+      return RS_SERVER_ERROR(ERROR_037 + std::string(" Reading column length failed.") +
+                             std::string(" Column: ") + std::string(col->getName()) +
+                             " Type: " + std::to_string(col->getType()));
+    }
+    if (response->GetRemainingCapacity() < length + 1) {  //+1 for null terminator
+      return RS_SERVER_ERROR(ERROR_016 + std::string(" Buffer Remaining Capacity: ") +
+                             std::to_string(response->GetRemainingCapacity()) +
+                             " Required: " + std::to_string(length + 1));
+    }
+
+    // NOTE: we not allocating a tmp buffer to hold the data
+    // Reusing the reponse buffer
+    char *tmpBuffer = static_cast<char*>(response->GetWritePointer());
+
+    Uint64 chunk      = 0;
+    Uint64 total_read = 0;
+
+    for (chunk = 0; chunk < (length / (BLOB_MAX_FETCH_SIZE)) + 1; chunk++) {
+      Uint64 pos   = chunk * BLOB_MAX_FETCH_SIZE;
+      Uint32 bytes = BLOB_MAX_FETCH_SIZE;  // NOTE this is bytes to read and also bytes read.
+      if (pos + bytes > length) {
+        bytes = length - pos;
+      }
+
+      if (bytes != 0) {
+        if (-1 == colRec->blob->setPos(pos)) {
+          return RS_RONDB_SERVER_ERROR(colRec->blob->getNdbError(),
+                                       ERROR_037 + std::string(" Failed to set read position.") +
+                                           std::string(" Column: ") + std::string(col->getName()) +
+                                           " Type: " + std::to_string(col->getType()));
+        }
+
+        if (colRec->blob->readData(tmpBuffer, bytes /*to read, also bytes read*/) == -1) {
+          return RS_RONDB_SERVER_ERROR(colRec->blob->getNdbError(),
+                                       ERROR_037 + std::string(" Read data failed .") +
+                                           std::string(" Column: ") + std::string(col->getName()) +
+                                           " Type: " + std::to_string(col->getType()) +
+                                           " Position: " + std::to_string(pos));
+        }
+
+        if (bytes > 0) {
+          tmpBuffer += bytes;  // move the pointer forward
+          total_read += bytes;
+        }
+      }
+    }
+
+    if (total_read != length) {
+      return RS_RONDB_SERVER_ERROR(colRec->blob->getNdbError(),
+                                   ERROR_037 + std::string(" Not all of the data was read.") +
+                                       std::string(" Column: ") + std::string(col->getName()) +
+                                       " Expected to read: " + std::to_string(length) +
+                                       " bytes. Read: " + std::to_string(total_read));
+    }
+    
+    return response->Append_char(colRec->ndbRec->getColumn()->getName(), static_cast<char*>(response->GetWritePointer()), length,
+                                   colRec->ndbRec->getColumn()->getCharset());
+
   }
   case NdbDictionary::Column::Bit: {
     //< Bit, length specifies no of bits
-    Uint32 words = attr->getColumn()->getLength() / 8;
-    if (attr->getColumn()->getLength() % 8 != 0) {
+    Uint32 words = colRec->ndbRec->getColumn()->getLength() / 8;
+    if (colRec->ndbRec->getColumn()->getLength() % 8 != 0) {
       words += 1;
     }
     require(words <= BIT_MAX_SIZE_IN_BYTES);
@@ -874,7 +1022,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     int i = 0;
     char reversed[BIT_MAX_SIZE_IN_BYTES];
     for (int j = words - 1; j >= 0; j--) {
-      reversed[i++] = attr->aRef()[j];
+      reversed[i++] = colRec->ndbRec->aRef()[j];
     }
 
     char buffer[BIT_MAX_SIZE_IN_BYTES_ENCODED];
@@ -882,8 +1030,8 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     size_t outlen = 0;
     base64_encode(reversed, words, (char *)&buffer[0], &outlen, 0);
 
-    return response->Append_string(attr->getColumn()->getName(), std::string(buffer, outlen),
-                                   RDRS_BIT_DATATYPE);
+    return response->Append_string(colRec->ndbRec->getColumn()->getName(),
+                                   std::string(buffer, outlen), RDRS_BIT_DATATYPE);
   }
   case NdbDictionary::Column::Time: {
     ///< Time without date
@@ -892,8 +1040,8 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
   }
   case NdbDictionary::Column::Year: {
     ///< Year 1901-2155 (1 byte)
-    Int32 year = (uint)(1900 + attr->aRef()[0]);
-    return response->Append_i32(attr->getColumn()->getName(), year);
+    Int32 year = (uint)(1900 + colRec->ndbRec->aRef()[0]);
+    return response->Append_i32(colRec->ndbRec->getColumn()->getName(), year);
   }
   case NdbDictionary::Column::Timestamp: {
     ///< Unix time
@@ -912,7 +1060,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     uint precision = col->getPrecision();
 
     longlong numericTime =
-        my_time_packed_from_binary((const unsigned char *)attr->aRef(), precision);
+        my_time_packed_from_binary((const unsigned char *)colRec->ndbRec->aRef(), precision);
 
     MYSQL_TIME lTime;
     TIME_from_longlong_time_packed(&lTime, numericTime);
@@ -920,7 +1068,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     char to[MAX_DATE_STRING_REP_LENGTH];
     my_TIME_to_str(lTime, to, precision);
 
-    return response->Append_string(attr->getColumn()->getName(), std::string(to),
+    return response->Append_string(colRec->ndbRec->getColumn()->getName(), std::string(to),
                                    RDRS_DATETIME_DATATYPE);
   }
   case NdbDictionary::Column::Datetime2: {
@@ -928,7 +1076,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     uint precision = col->getPrecision();
 
     longlong numericDate =
-        my_datetime_packed_from_binary((const unsigned char *)attr->aRef(), precision);
+        my_datetime_packed_from_binary((const unsigned char *)colRec->ndbRec->aRef(), precision);
 
     MYSQL_TIME lTime;
     TIME_from_longlong_datetime_packed(&lTime, numericDate);
@@ -936,7 +1084,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     char to[MAX_DATE_STRING_REP_LENGTH];
     my_TIME_to_str(lTime, to, precision);
 
-    return response->Append_string(attr->getColumn()->getName(), std::string(to),
+    return response->Append_string(colRec->ndbRec->getColumn()->getName(), std::string(to),
                                    RDRS_DATETIME_DATATYPE);
   }
   case NdbDictionary::Column::Timestamp2: {
@@ -944,7 +1092,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     uint precision = col->getPrecision();
 
     my_timeval myTV{};
-    my_timestamp_from_binary(&myTV, (const unsigned char *)attr->aRef(), precision);
+    my_timestamp_from_binary(&myTV, (const unsigned char *)colRec->ndbRec->aRef(), precision);
 
     Int64 epochIn = myTV.m_tv_sec;
     std::time_t stdtime(epochIn);
@@ -963,7 +1111,7 @@ RS_Status WriteColToRespBuff(const NdbRecAttr *attr, PKRResponse *response) {
     char to[MAX_DATE_STRING_REP_LENGTH];
     my_TIME_to_str(lTime, to, precision);
 
-    return response->Append_string(attr->getColumn()->getName(), std::string(to),
+    return response->Append_string(colRec->ndbRec->getColumn()->getName(), std::string(to),
                                    RDRS_DATETIME_DATATYPE);
   }
   }

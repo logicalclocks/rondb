@@ -118,6 +118,7 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
   MAX_TUPLE_SIZE_IN_BYTES * 2 /*worst cast every character needs to be escaped*/
 #define BIT_MAX_SIZE_IN_BYTES         4096 / 8
 #define BIT_MAX_SIZE_IN_BYTES_ENCODED 686
+#define BLOB_MAX_FETCH_SIZE           1024 * 32
 
 #ifdef __cplusplus
 }

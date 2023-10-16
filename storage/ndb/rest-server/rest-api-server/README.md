@@ -183,8 +183,8 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 {
         "Internal": {
                 "APIVersion": "0.1.0",
-                "BufferSize": 327680,
-                "PreAllocatedBuffers": 1024,
+                "BufferSize": 5242880,
+                "PreAllocatedBuffers": 32,
                 "GOMAXPROCS": -1,
                 "BatchMaxSize": 256,
                 "OperationIDMaxSize": 256
@@ -280,9 +280,9 @@ Currently, the REST API server only supports [Hopsworks API Keys](https://docs.h
 
   - **APIVersion:** Current version of the REST API. Current version is *0.1.0*
 
-  - **BufferSize:** Size of the buffers that are used to pass requests/responses between the Go and C++ layers. The buffers should be large enough to accommodate any request/response. The default size is *327680* (32 KB). 
+  - **BufferSize:** Size of the buffers that are used to pass requests/responses between the Go and C++ layers. The buffers should be large enough to accommodate any request/response. The default size is *5242880* (5 MB). 
 
-  - **PreAllocatedBuffers:** Numbers of buffers to preallocate. The default value is *1024*.
+  - **PreAllocatedBuffers:** Numbers of buffers to preallocate. The default value is *32*.
 
   - **GOMAXPROCS:** The GOMAXPROCS variable limits the number of operating system threads that can execute user-level Go code simultaneously.  The default value is -1, that is it does not change the current settings.
 

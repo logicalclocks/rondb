@@ -19,6 +19,7 @@
 #ifndef STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_
 #define STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_
 
+#include <memory>
 #include <stdint.h>
 #include <string>
 #include <unordered_map>
@@ -26,6 +27,7 @@
 #include <NdbApi.hpp>
 #include "src/db-operations/pk/pkr-request.hpp"
 #include "src/db-operations/pk/pkr-response.hpp"
+#include "src/db-operations/pk/common.hpp"
 #include "src/rdrs-dal.h"
 
 typedef struct SubOpTuple {
@@ -33,7 +35,7 @@ typedef struct SubOpTuple {
   PKRResponse *pkResponse;
   NdbOperation *ndbOperation;
   const NdbDictionary::Table *tableDict;
-  std::vector<NdbRecAttr *> recs;
+  std::vector<std::shared_ptr<ColRec>> recs;
   std::unordered_map<std::string, const NdbDictionary::Column *> allNonPKCols;
   std::unordered_map<std::string, const NdbDictionary::Column *> allPKCols;
   Int8 **primaryKeysCols;
@@ -128,6 +130,13 @@ class PKROperation {
    * Append operation records to response buffer
    * @return status
    */
-  RS_Status AppendOpRecs(PKRResponse *resp, std::vector<NdbRecAttr *> *recs);
+  RS_Status AppendOpRecs(PKRResponse *resp, std::vector<std::shared_ptr<ColRec>> *recs);
+
+  /**
+   * Store NdbRecord or Blob handler in the SubOperation.recs
+   * @return status
+   */
+  RS_Status GetColValue(const NdbDictionary::Table *tableDict, NdbOperation *ndbOperation,
+                        const char *colName, std::vector<std::shared_ptr<ColRec>> *recs);
 };
 #endif  // STORAGE_NDB_REST_SERVER_DATA_ACCESS_RONDB_SRC_DB_OPERATIONS_PK_PKR_OPERATION_HPP_
