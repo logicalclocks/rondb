@@ -18,11 +18,11 @@ ARG GO_VERSION=1.20.3
 ARG BUILD_THREADS
 ENV THREADS_ARG=${BUILD_THREADS:-1}
 
-# RonDB 21.04 requires gcc/g++ 9/10 for amd64/arm64 respectively.
+# RonDB 22.10 use gcc/g++ 11 for amd64/arm64 respectively.
 # We will not remove the default installation, but change the default
 # one using software collections (scl).
 # To use the required version, the command
-#   >> source scl_source enable devtoolset-10
+#   >> source scl_source enable devtoolset-11
 # is run in the given RUN statement. Unfortunately, this command
 # does not persist between RUN statements.
 ARG TARGETARCH
@@ -52,7 +52,7 @@ RUN --mount=type=cache,target=/var/cache/yum,id=oracle7-yum \
     ulimit -n 1024000 && \ 
     yum -y update \
     && yum-config-manager -y --enable "ol7_optional_latest" \
-    && yum -y install devtoolset-10 maven
+    && yum -y install devtoolset-11 maven
 
 
 # Creating a cache dir for downloads to avoid redownloading
@@ -95,7 +95,7 @@ RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
 # CMake will look for $OPENSSL_ROOT_DIR
 ENV OPENSSL_ROOT_DIR=$OPENSSL_ROOT
 RUN --mount=type=cache,target=$DOWNLOADS_CACHE_DIR \
-    source scl_source enable devtoolset-10 \
+    source scl_source enable devtoolset-11 \
     && wget -N --progress=bar:force -P $DOWNLOADS_CACHE_DIR \
         https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION.tar.gz \
     && tar xzf $DOWNLOADS_CACHE_DIR/cmake-$CMAKE_VERSION.tar.gz -C . \
@@ -116,7 +116,7 @@ ENV PATH=$PATH:/usr/local/go/bin
 
 WORKDIR /root
 
-RUN echo "source scl_source enable devtoolset-10" >> /root/.bashrc
+RUN echo "source scl_source enable devtoolset-11" >> /root/.bashrc
 
 # For the deployment of Java artifacts to the Maven repository
 COPY <<-"EOF" /root/.m2/settings.xml
@@ -150,7 +150,7 @@ ENV RELEASE_FINAL_CLUSTERJ_ARG=${RELEASE_FINAL_CLUSTERJ:+-f}
 RUN mkdir rondb-src rondb-bin rondb-tarball
 RUN --mount=type=bind,source=.,target=rondb-src \
     --mount=type=cache,target=rondb-bin,id=oracle7-rondb2210-bin \
-    source scl_source enable devtoolset-10 \
+    source scl_source enable devtoolset-11 \
     && rondb-src/build_scripts/release_scripts/build_all.sh \
     -s rondb-src \
     -b rondb-bin \
