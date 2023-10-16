@@ -30604,6 +30604,9 @@ Dbdih::execCREATE_NODEGROUP_IMPL_REQ(Signal* signal)
       if (getNodeActiveStatus(req->nodes[i]) != Sysfile::NS_Configured)
       {
         jam();
+        jamData(i);
+        jamData(req->nodes[i]);
+        jamData(getNodeActiveStatus(req->nodes[i]));
         err = CreateNodegroupRef::NodeAlreadyInNodegroup;
         goto error;
       }
@@ -30926,16 +30929,21 @@ Dbdih::create_nodegroup_mapping(Uint16 *nodegroup_mapping)
         num_data_nodes_with_nodegroup++;
         if (ng == NDB_NO_NODEGROUP)
         {
+          jam();
           num_data_nodes_no_nodegroup++;
         }
         else
         {
+          jam();
           if (ng >= MAX_NDB_NODES)
           {
+             g_eventLogger->error("NodeId %u cannot have nodegroup: %u larger than 144"
+                                  " and not be equal to 65536 (== no nodegroup)",
+                                  nodeId, ng);
              progError(__LINE__,
                        NDBD_EXIT_INVALID_CONFIG,
-                       "Nodegroup cannot be larger than 144"
-                       " and not be equal to 65536 (== no nodegroup)");
+                       "Nodegroup error");
+             return;
           }
           num_data_nodes_in_group[ng]++;
         }

@@ -5417,12 +5417,11 @@ MgmtSrvr::setDbParameter(int node, int param, const char * value,
     return -1;
   }
 
-  int p_type;
-  unsigned val_32;
+  int p_type = 0;
+  unsigned val_32 = 0;
   Uint64 val_64 = 0;
-  const char * val_char;
+  const char * val_char = nullptr;
   do {
-    p_type = 0;
     if(iter.get(param, &val_32) == 0){
       val_32 = atoi(value);
       break;
@@ -5450,7 +5449,7 @@ MgmtSrvr::setDbParameter(int node, int param, const char * value,
     if(type != NODE_TYPE_DB)
       continue;
 
-    Uint32 node;
+    Uint32 node = 0;
     ret = iter.get(CFG_NODE_ID, &node);
     assert(ret == 0);
 

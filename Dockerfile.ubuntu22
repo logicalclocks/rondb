@@ -24,7 +24,7 @@ ENV THREADS_ARG=${BUILD_THREADS:-1}
 RUN --mount=type=cache,target=/var/cache/apt,id=ubuntu22-apt \
     --mount=type=cache,target=/var/lib/apt/lists,id=ubuntu22-apt-lists \
     apt-get update && apt-get -y install wget pkg-config patchelf \
-    libncurses5-dev default-jdk bison autoconf pigz \
+    libncurses5-dev default-jdk libudev-dev bison autoconf pigz \
     openssh-client maven libsasl2-dev libldap-dev libaio-dev \
     git vim nano protobuf-compiler graphviz
 

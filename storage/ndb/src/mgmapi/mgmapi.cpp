@@ -1745,7 +1745,7 @@ ndb_mgm_exit_single_user(NdbMgmHandle handle, struct ndb_mgm_reply*)
   reply = ndb_mgm_call(handle, exit_single_reply, "exit single user", nullptr);
   CHECK_REPLY(handle, reply, -1);
 
-  const char * buf;
+  const char * buf = nullptr;
   reply->get("result", &buf);
   if(strcmp(buf,"Ok")!=0) {
     SET_ERROR(handle, NDB_MGM_COULD_NOT_EXIT_SINGLE_USER_MODE, buf);

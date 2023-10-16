@@ -13,28 +13,28 @@ sys/def/13/b$unique	0	1
 sys/def/13/b$unique	1	1
 sys/def/13/b$unique	2	0
 sys/def/13/b$unique	3	2
-sys/def/13/b$unique	4	1
-sys/def/13/b$unique	5	0
-sys/def/13/b$unique	6	1
-sys/def/13/b$unique	7	0
-sys/def/13/b$unique	8	1
+sys/def/13/b$unique	4	0
+sys/def/13/b$unique	5	1
+sys/def/13/b$unique	6	0
+sys/def/13/b$unique	7	2
+sys/def/13/b$unique	8	0
 sys/def/13/b$unique	9	1
 sys/def/13/b$unique	10	0
 sys/def/13/b$unique	11	0
 select fq_name, fragment_num, fixed_elem_count from ndbinfo.memory_per_fragment where fq_name = 'test/def/host_test' and node_id = 2 order by fragment_num;
 fq_name	fragment_num	fixed_elem_count
-test/def/host_test	0	0
+test/def/host_test	0	2
 test/def/host_test	1	1
-test/def/host_test	2	2
+test/def/host_test	2	1
 test/def/host_test	3	0
-test/def/host_test	4	0
-test/def/host_test	5	0
+test/def/host_test	4	1
+test/def/host_test	5	1
 test/def/host_test	6	0
-test/def/host_test	7	1
+test/def/host_test	7	0
 test/def/host_test	8	0
-test/def/host_test	9	1
-test/def/host_test	10	1
-test/def/host_test	11	2
+test/def/host_test	9	2
+test/def/host_test	10	0
+test/def/host_test	11	0
 select a,b from host_test where a = 1;
 a	b
 1	10.0.0.2
@@ -142,28 +142,28 @@ sys/def/13/b$unique	0	1
 sys/def/13/b$unique	1	1
 sys/def/13/b$unique	2	0
 sys/def/13/b$unique	3	2
-sys/def/13/b$unique	4	1
-sys/def/13/b$unique	5	0
-sys/def/13/b$unique	6	1
-sys/def/13/b$unique	7	0
-sys/def/13/b$unique	8	1
+sys/def/13/b$unique	4	0
+sys/def/13/b$unique	5	1
+sys/def/13/b$unique	6	0
+sys/def/13/b$unique	7	2
+sys/def/13/b$unique	8	0
 sys/def/13/b$unique	9	1
 sys/def/13/b$unique	10	0
 sys/def/13/b$unique	11	0
 select fq_name, fragment_num, fixed_elem_count from ndbinfo.memory_per_fragment where fq_name = 'test/def/host_test' and node_id = 2 order by fragment_num;
 fq_name	fragment_num	fixed_elem_count
-test/def/host_test	0	0
+test/def/host_test	0	2
 test/def/host_test	1	1
-test/def/host_test	2	2
+test/def/host_test	2	1
 test/def/host_test	3	0
-test/def/host_test	4	0
-test/def/host_test	5	0
+test/def/host_test	4	1
+test/def/host_test	5	1
 test/def/host_test	6	0
-test/def/host_test	7	1
+test/def/host_test	7	0
 test/def/host_test	8	0
-test/def/host_test	9	1
-test/def/host_test	10	1
-test/def/host_test	11	2
+test/def/host_test	9	2
+test/def/host_test	10	0
+test/def/host_test	11	0
 drop table host_test;
 SET GLOBAL ndb_metadata_check = @old_ndb_metadata_check_server2;
 SET GLOBAL ndb_metadata_check = @old_ndb_metadata_check_server1;

@@ -17090,10 +17090,6 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
   const Uint32 lqhScanFragId = conf->fragId;
   NodeId nodeId = conf->nodes[0];
   const NodeId ownNodeId = getOwnNodeId();
-  ndbassert(scanFragId == lqhScanFragId ||
-            scanptr.p->m_scan_dist_key == lqhScanFragId ||
-            distr_key_indicator == 0);
-
   arrGuard(nodeId, MAX_NDB_NODES);
   {
     if (ERROR_INSERTED(8050) &&
@@ -17112,6 +17108,11 @@ bool Dbtc::sendDihGetNodeReq(Signal* signal,
   TableRecordPtr tabPtr;
   tabPtr.i = scanptr.p->scanTableref;
   ptrCheckGuard(tabPtr, ctabrecFilesize, tableRecord);
+
+  ndbassert(scanFragId == lqhScanFragId ||
+            scanptr.p->m_scan_dist_key == lqhScanFragId ||
+            distr_key_indicator == 0 ||
+            (tabPtr.p->m_flags & TableRecord::TR_FULLY_REPLICATED));
 
   /**
    * This must be false as select count(*) otherwise
