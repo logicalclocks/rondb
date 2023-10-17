@@ -926,6 +926,12 @@ Configuration::get_and_set_transaction_memory(
   }
   transaction_memory = MAX(transaction_memory,
                            min_transaction_memory);
+  if (transaction_memory == min_transaction_memory)
+  {
+    g_eventLogger->info("The reserved amount of TransactionMemory"
+                        " requires us to increase the size of the "
+                        "TransactionMemory");
+  }
   globalData.theTransactionMemory = transaction_memory;
   return transaction_memory;
 }
