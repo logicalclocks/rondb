@@ -26,9 +26,13 @@ package dal
 */
 import "C"
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"unsafe"
+
+	"hopsworks.ai/rdrs/internal/log"
 )
 
 type TrainingDatasetFeature struct {
@@ -213,12 +217,12 @@ func GetFeatureStoreName(fsId int) (string, *DalError) {
 
 type ServingKey struct {
 	FeatureGroupId int
-	FeatureName string
-	Prefix string
-	Required bool
-	JoinOn string
-	JoinIndex int
-	RequiredEntry string
+	FeatureName    string
+	Prefix         string
+	Required       bool
+	JoinOn         string
+	JoinIndex      int
+	RequiredEntry  string
 }
 
 func GetServingKeys(featureViewId int) ([]ServingKey, error) {
@@ -240,11 +244,11 @@ func GetServingKeys(featureViewId int) ([]ServingKey, error) {
 	for i, servingKey := range servingKeySlice {
 		retServingKey := ServingKey{
 			FeatureGroupId: int(servingKey.feature_group_id),
-			FeatureName: C.GoString(&servingKey.feature_name[0]),
-			Prefix: C.GoString(&servingKey.prefix[0]),
-			Required: int(servingKey.required) != 0,
-			JoinOn: C.GoString(&servingKey.join_on[0]),
-			JoinIndex: int(servingKey.join_index),
+			FeatureName:    C.GoString(&servingKey.feature_name[0]),
+			Prefix:         C.GoString(&servingKey.prefix[0]),
+			Required:       int(servingKey.required) != 0,
+			JoinOn:         C.GoString(&servingKey.join_on[0]),
+			JoinIndex:      int(servingKey.join_index),
 		}
 		retServingKey.RequiredEntry = retServingKey.Prefix + retServingKey.FeatureName
 		if !retServingKey.Required {
@@ -255,4 +259,52 @@ func GetServingKeys(featureViewId int) ([]ServingKey, error) {
 
 	C.free(unsafe.Pointer(servingKeys))
 	return retServingKeys[:], nil
+}
+
+type AvroField struct {
+	Name string          `json:"name"`
+	Type json.RawMessage `json:"type"`
+}
+
+type FeatureGroupAvroSchema struct {
+	Type      string      `json:"type"`
+	Name      string      `json:"name"`
+	Namespace string      `json:"namespace"`
+	Fields    []AvroField `json:"fields"`
+}
+
+func (c *FeatureGroupAvroSchema) GetSchemaByFeatureName(featureName string) (json.RawMessage, error) {
+	for _, field := range c.Fields {
+		if field.Name == featureName {
+			return field.Type, nil
+		}
+	}
+	return nil, fmt.Errorf("Cannot find schema for feature %s", featureName)
+}
+
+func GetFeatureGroupAvroSchema(fgName string, fgVersion int, projectId int) (*FeatureGroupAvroSchema, error) {
+	subjectName := fmt.Sprintf("%s_%d", fgName, fgVersion)
+	log.Debugf("subject name is: %s", subjectName)
+	cSubjectName := C.CString(subjectName)
+	defer C.free(unsafe.Pointer(cSubjectName))
+
+	var schemaBuff = C.malloc(C.size_t(C.FEATURE_GROUP_SCHEMA_SIZE))
+	defer C.free(schemaBuff)
+
+	ret := C.find_feature_group_schema(
+		(*C.char)(unsafe.Pointer(cSubjectName)),
+		C.int(projectId),
+		(*C.char)(unsafe.Pointer(schemaBuff)))
+
+	if ret.http_code != http.StatusOK {
+		return nil, cToGoRet(&ret)
+	}
+
+	var schema = C.GoString((*C.char)(unsafe.Pointer(schemaBuff)))
+	var avroSchema FeatureGroupAvroSchema
+	err := json.Unmarshal([]byte(schema), &avroSchema)
+	if err != nil {
+		return nil, err
+	}
+	return &avroSchema, nil
 }

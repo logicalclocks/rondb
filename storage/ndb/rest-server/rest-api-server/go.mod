@@ -45,6 +45,7 @@ require (
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.2.0 // indirect
+	github.com/golang/snappy v0.0.4 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
 	github.com/prometheus/client_golang v1.15.0 // indirect
 	github.com/prometheus/client_model v0.3.0 // indirect
@@ -59,6 +60,7 @@ require (
 	github.com/goccy/go-json v0.10.0 // indirect
 	github.com/ianlancetaylor/cgosymbolizer v0.0.0-20230328201059-365e72989107
 	github.com/klauspost/cpuid/v2 v2.2.4 // indirect
+	github.com/linkedin/goavro/v2 v2.12.0
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/pelletier/go-toml/v2 v2.0.7 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect

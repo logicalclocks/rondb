@@ -218,7 +218,10 @@ func (h *Handler) Execute(request interface{}, response interface{}) (int, error
 	if fsError != nil {
 		return fsError.GetStatus(), fsError.GetError()
 	}
-	features, status := GetFeatureValues(rondbResp.Result, fsReq.Entries, metadata)
+	features, status, fsError := GetFeatureValues(rondbResp.Result, fsReq.Entries, metadata)
+	if fsError != nil {
+		return fsError.GetStatus(), fsError.GetError()
+	}
 	fsResp := response.(*api.FeatureStoreResponse)
 	fsResp.Status = status
 	FillPassedFeatures(features, fsReq.PassedFeatures, &metadata.PrefixFeaturesLookup, &metadata.FeatureIndexLookup)
@@ -286,9 +289,10 @@ func TranslateRonDbError(code int, err string) *feature_store.RestErrorCode {
 	return fsError
 }
 
-func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata) (*[]interface{}, api.FeatureStatus) {
+func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *map[string]*json.RawMessage, featureView *feature_store.FeatureViewMetadata) (*[]interface{}, api.FeatureStatus, *feature_store.RestErrorCode) {
 	featureValues := make([]interface{}, featureView.NumOfFeatures)
 	var status = api.FEATURE_STATUS_COMPLETE
+	var err *feature_store.RestErrorCode
 	for _, response := range *ronDbResult {
 		if *response.Code == http.StatusNotFound {
 			status = api.FEATURE_STATUS_MISSING
@@ -299,7 +303,17 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 			featureIndexKey := feature_store.GetFeatureIndexKeyByFgIndexKey(*response.Body.OperationID, featureName)
 			// When only primary key is selected, Rondb will return all columns, so not all value from response are needed.
 			if index, ok := (featureView.FeatureIndexLookup)[featureIndexKey]; ok {
-				featureValues[index] = value
+				if decoder, ok := (featureView.ComplexFeatures)[featureIndexKey]; ok {
+					var deser, err1 = DeserialiseComplexFeature(value, decoder)
+					if err1 != nil {
+						status = api.FEATURE_STATUS_ERROR
+						err = feature_store.DESERIALISE_FEATURE_FAIL.NewMessage(fmt.Sprintf("Feature name: %s; %s", featureName, err1.Error()))
+					} else {
+						featureValues[index] = deser
+					}
+				} else {
+					featureValues[index] = value
+				}
 			}
 		}
 	}
@@ -320,7 +334,7 @@ func GetFeatureValues(ronDbResult *[]*api.PKReadResponseWithCodeJSON, entries *m
 			}
 		}
 	}
-	return &featureValues, status
+	return &featureValues, status, err
 }
 
 func GetBatchPkReadParams(metadata *feature_store.FeatureViewMetadata, entries *map[string]*json.RawMessage) *[]*api.PKReadParams {
