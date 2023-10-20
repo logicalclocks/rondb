@@ -118,6 +118,14 @@ RS_Status find_training_dataset_data(int feature_view_id, Training_Dataset_Featu
 RS_Status find_serving_key_data(int feature_view_id, Serving_Key **serving_keys,
                                      int *sk_size);
 
+/**
+ * Find schemas
+ * SELECT schema_id, version from subjects WHERE project_id = {project_id} AND subject = "{subject_name}" 
+ * get the schema id of the max version
+ * SELECT schema from schemas  WHERE id = {schema_id}
+ */
+RS_Status find_feature_group_schema(const char *subject_name, int project_id, char *schema);
+
 #endif
 #ifdef __cplusplus
 }

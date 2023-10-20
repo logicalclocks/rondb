@@ -308,6 +308,9 @@ VALUES
     ),
     (
 	    3089, 'sample_cache', 67, Timestamp('2023-06-15 11:46:25'), 10000, 1, 0, NULL, 1025, NULL, NULL, 1
+    ),
+    (
+	    31, 'sample_complex_type', 1091, Timestamp('2023-09-26 10:02:58'), 10000, 1, 2, NULL, NULL, 18, 'ts', 1
     );
 
 INSERT INTO
@@ -424,6 +427,13 @@ VALUES
     */
     (
         4116, 'sample_1n2_pkonly', 67, Timestamp('2023-06-05 13:13:35'), 10000, 1, ''
+    ),
+    /**
+    SELECT `fg0`.`id1` `id1`, `fg0`.`ts` `ts`, `fg0`.`array` `array`, `fg0`.`struct` `struct`
+    FROM `test_ken_featurestore`.`sample_complex_type_1` `fg0`
+    */
+    (
+	    19, 'sample_complex_type', 1091, Timestamp('2023-09-26 10:03:16'), 10000, 1, ''
     );
 
 INSERT INTO 
@@ -521,6 +531,9 @@ VALUES
     ),
     (
         5132, NULL, 2069, NULL, 0, 0, NULL, 4116
+    ),
+    (
+	    25, NULL, 31, NULL, 0, 0, NULL, 19
     );
 
 INSERT INTO
@@ -849,6 +862,18 @@ VALUES
     ),
     (
         5147, NULL, 2069, 'id1', 'bigint', 5132, 0, 0, NULL, 4116
+    ),
+    (
+        57, NULL, 31, 'array', 'array<bigint>', 25, 2, 0, NULL, 19
+    ),
+    (
+        55, NULL, 31, 'struct', 'struct<int1:bigint,int2:bigint>', 25, 3, 0, NULL, 19
+    ),
+    (
+        58, NULL, 31, 'ts', 'bigint', 25, 1, 0, NULL, 19
+    ),
+    (
+        56, NULL, 31, 'id1', 'bigint', 25, 0, 0, NULL, 19
     );
 
 CREATE TABLE `serving_key` (
@@ -977,4 +1002,50 @@ VALUES
     ),
     (
         1507, NULL, 'id1', NULL, 0, 2069, 1, 4116
+    ),
+    (
+        1508, NULL, 'id1', NULL, 0, 31, 1, 19
+    );
+
+CREATE TABLE `schemas` (
+                           `id` int(11) NOT NULL AUTO_INCREMENT,
+                           `schema` varchar(29000) COLLATE latin1_general_cs NOT NULL,
+                           `project_id` int(11) NOT NULL,
+                           PRIMARY KEY (`id`),
+                           CONSTRAINT `project_idx_schemas` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION
+) ENGINE=ndbcluster;
+
+INSERT INTO
+    `schemas`
+VALUES
+    (
+	    20, '{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"id1","type":["null","str"]},{"name":"ts","type":["null","long"]},{"name":"array","type":["null",{"type":"array","items":["null","long"]}]},{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}', 1001
+    ),
+    (
+	    21, '{"type":"record","name":"sample_complex_type_1","namespace":"test_ken_featurestore.db","fields":[{"name":"id1","type":["null","long"]},{"name":"ts","type":["null","long"]},{"name":"array","type":["null",{"type":"array","items":["null","long"]}]},{"name":"struct","type":["null",{"type":"record","name":"r854762204","namespace":"struct","fields":[{"name":"int1","type":["null","long"]},{"name":"int2","type":["null","long"]}]}]}]}', 1001
+    );
+
+CREATE TABLE `subjects` (
+                            `id` int(11) NOT NULL AUTO_INCREMENT,
+                            `subject` varchar(255) COLLATE latin1_general_cs NOT NULL,
+                            `version` int(11) NOT NULL,
+                            `schema_id` int(11) NOT NULL,
+                            `project_id` int(11) NOT NULL,
+                            `created_on` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                            PRIMARY KEY (`id`),
+                            KEY `project_id_idx` (`project_id`),
+                            KEY `created_on_idx` (`created_on`),
+                            CONSTRAINT `project_idx_subjects` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`) ON DELETE CASCADE ON UPDATE NO ACTION,
+                            CONSTRAINT `schema_id_idx` FOREIGN KEY (`schema_id`) REFERENCES `schemas` (`id`) ON DELETE NO ACTION ON UPDATE NO ACTION,
+                            CONSTRAINT `subjects__constraint_key` UNIQUE (`subject`, `version`, `project_id`)
+) ENGINE=ndbcluster;
+
+INSERT INTO
+    `subjects`
+VALUES
+    (
+        21, 'sample_complex_type_1', 1, 20, 1001, Timestamp('2023-09-26 10:02:58')
+    ),
+    (
+        22, 'sample_complex_type_1', 2, 21, 1001, Timestamp('2023-09-27 10:02:58')
     );

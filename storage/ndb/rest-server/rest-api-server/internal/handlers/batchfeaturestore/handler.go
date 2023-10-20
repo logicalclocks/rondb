@@ -170,7 +170,7 @@ func getFeatureValuesMultipleEntries(batchResponse *api.BatchOpResponse, entries
 	}
 	for i, ronDbResult := range ronDbBatchResult {
 		if len(ronDbResult) != 0 {
-			result, status := fshandler.GetFeatureValues(&ronDbResult, (*entries)[i], featureView)
+			result, status, _ := fshandler.GetFeatureValues(&ronDbResult, (*entries)[i], featureView)
 			batchResult[i] = *result
 			(*batchStatus)[i] = status
 		}
