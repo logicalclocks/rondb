@@ -1094,7 +1094,7 @@ public class NdbRecordImpl {
 
     protected void releaseNdbRecord() {
         if (ndbRecord != null) {
-            if (logger.isInfoEnabled())logger.info("Releasing NdbRecord for " + tableConst.getName());
+//            if (logger.isInfoEnabled())logger.info("Releasing NdbRecord for " + tableConst.getName());
             ndbDictionary.releaseRecord(ndbRecord);
             ndbRecord = null;
             // release the buffer pool; pooled byte buffers will be garbage collected

@@ -57,7 +57,7 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
   private static final int NUM_THREADS = 10;
   private int SLEEP_TIME = 3000;
 
-  private static boolean USE_COPY_ALGO = true;
+  private static boolean USE_COPY_ALGO = false;
 
   //unloadSchema can not be used with caching
   boolean useCache = true;
@@ -119,8 +119,9 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
     try {
       preparedStatement = connection.prepareStatement(cmd);
       preparedStatement.executeUpdate();
-      //System.out.println(cmd);
+      System.out.println(cmd);
     } catch (SQLException e) {
+      System.err.println("Failed to run SQL command. "+e);
       test.error("Failed to drop table. Error: " + e.getMessage());
       throw new RuntimeException("Failed to command: ", e);
     }
@@ -129,7 +130,6 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
 
   class DataInsertWorker extends Thread {
     private boolean run = true;
-    private boolean running = false;
     private int startIndex = 0;
 
     private int maxRowsToWrite = 0;
@@ -177,7 +177,6 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
           }
         }
       }
-      running = false;
     }
 
     public void stopDataInsertion() {

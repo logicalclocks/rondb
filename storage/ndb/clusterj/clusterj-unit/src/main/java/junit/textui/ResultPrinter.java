@@ -72,7 +72,7 @@ public class ResultPrinter implements TestListener {
      */
     public void addError(Test test, Throwable t) {
         // report status immediately
-        printer.print("ERROR...");
+        printer.print("ERROR: "+t);
         // remember details
         messages.append(testNumber);
         messages.append(": ");
