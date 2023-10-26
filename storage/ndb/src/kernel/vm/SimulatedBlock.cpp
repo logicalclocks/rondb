@@ -5865,38 +5865,36 @@ SimulatedBlock::unlock_global_ssp()
 void
 SimulatedBlock::print_static_distr_info(DistributionHandler * const handle)
 {
-  Uint32 num_ldm_instances = getNumLDMInstances();
-  if (m_num_query_thread_per_ldm == 0)
-  {
-    /* No distribution information used at all */
-    return;
-  }
+  Uint32 num_query_instances = getNumQueryInstances();
   /* Print the LDM groups */
-  for (Uint32 ldm = 0; ldm < num_ldm_instances; ldm++)
+  for (Uint32 ldm = 0; ldm < num_query_instances; ldm++)
   {
-    g_eventLogger->info("LDM Group %u contains LDM thread %u",
-                        ldm, ldm + 1);
-    g_eventLogger->info("LDM Thread %u contains Query Worker",
-                        ldm + 1);
+    if (ldm < getNumLDMInstances())
+    {
+      g_eventLogger->info("LDM Group %u contains LDM thread %u",
+                          ldm, ldm + 1);
+      g_eventLogger->info("LDM Thread %u contains Query Worker",
+                          ldm + 1);
+    }
   }
   /* Print the Round Robin groups */
-  Uint32 found_ldm = 0;
+  Uint32 found_query = 0;
   Uint32 num_rr_groups = m_num_rr_groups;
   for (Uint32 rr_group = 0; rr_group < num_rr_groups; rr_group++)
   {
-    for (Uint32 ldm = 0; ldm < num_ldm_instances; ldm++)
+    for (Uint32 query = 0; query < num_query_instances; query++)
     {
-      if (m_rr_group[ldm] == rr_group)
+      if (m_rr_group[query] == rr_group)
       {
-        found_ldm++;
+        found_query++;
         /* LDM contained in this Round Robin group */
         g_eventLogger->info("LDM Group %u contained in Round Robin group %u"
                             ", RR groups only use query threads",
-                            ldm, rr_group);
+                            query, rr_group);
       }
     }
   }
-  ndbrequire(found_ldm == num_ldm_instances);
+  ndbrequire(found_query == num_query_instances);
 }
 
 #ifdef NDBD_MULTITHREADED
@@ -6429,7 +6427,6 @@ Uint32 SimulatedBlock::m_num_lqhkeyreq_counts = NUM_LQHKEYREQ_COUNTS;
 Uint32 SimulatedBlock::m_num_scan_fragreq_counts = NUM_SCAN_FRAGREQ_COUNTS;
 Uint32 SimulatedBlock::m_rr_load_refresh_count = RR_LOAD_REFRESH_COUNT;
 Uint32 SimulatedBlock::m_num_rr_groups = 0;
-Uint32 SimulatedBlock::m_num_query_thread_per_ldm = 0;
 Uint32 SimulatedBlock::m_num_distribution_threads = 0;
 bool SimulatedBlock::m_inited_rr_groups = false;
 

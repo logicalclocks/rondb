@@ -1850,7 +1850,6 @@ public:
   static Uint32 m_num_scan_fragreq_counts;
   static Uint32 m_rr_load_refresh_count;
   static Uint32 m_num_rr_groups;
-  static Uint32 m_num_query_thread_per_ldm;
   static Uint32 m_num_distribution_threads;
   static bool m_inited_rr_groups;
   struct NextRoundInfo
@@ -1914,11 +1913,11 @@ public:
      * to handle a few signals before a new call is made.
      */
     ndbassert(globalData.ndbMtQueryWorkers > 0);
-    Uint32 num_ldm_instances = getNumLDMInstances();
+    Uint32 num_query_instances = getNumQueryInstances();
     for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
     {
       Uint32 max_weight = 0;
-      for (Uint32 thr_no = 0; thr_no < num_ldm_instances; thr_no++)
+      for (Uint32 thr_no = 0; thr_no < num_query_instances; thr_no++)
       {
         if (m_rr_group[thr_no] == rr_group)
         {
@@ -1931,7 +1930,7 @@ public:
       jamDebug();
       jamDataDebug(rr_group);
       jamDataDebug(mult_weight);
-      for (Uint32 thr_no = 0; thr_no < num_ldm_instances; thr_no++)
+      for (Uint32 thr_no = 0; thr_no < num_query_instances; thr_no++)
       {
         if (m_rr_group[thr_no] == rr_group)
         {
@@ -1946,7 +1945,7 @@ public:
    */
   void calculate_distribution_signal(DistributionHandler *handle)
   {
-    Uint32 num_ldm_instances = getNumLDMInstances();
+    Uint32 num_query_instances = getNumQueryInstances();
     ndbassert(globalData.ndbMtQueryWorkers > 0);
     jam();
     jamLine(m_num_rr_groups);
@@ -2022,8 +2021,8 @@ public:
       calculate_rr_distribution(handle, rr_info);
     }
     jam();
-    jamLine(num_ldm_instances);
-    for (Uint32 i = 0; i < num_ldm_instances; i++)
+    jamLine(num_query_instances);
+    for (Uint32 i = 0; i < num_query_instances; i++)
     {
       struct QueryThreadState *q_state = &handle->m_query_state[i];
       q_state->m_current_weight = handle->m_weights[i];
@@ -2169,11 +2168,10 @@ public:
      * globalData.ndbQueryWorkers
      * globalData.ndbRRGroups
      */
-    Uint32 num_ldm_instances = globalData.ndbMtLqhWorkers;
+    Uint32 num_query_instances = globalData.ndbMtQueryWorkers;
     Uint32 num_rr_groups = globalData.ndbRRGroups;
-    Uint32 num_distr_threads = num_ldm_instances;
+    Uint32 num_distr_threads = num_query_instances;
 
-    m_num_query_thread_per_ldm = 1;
     m_num_rr_groups = num_rr_groups;
     m_num_distribution_threads = num_distr_threads;
     Uint32 rr_group = 0;
@@ -2181,7 +2179,7 @@ public:
     {
       m_rr_group[i] = 0xFFFFFFFF; //Ensure group not valid as init value
     }
-    for (Uint32 i = 0; i < num_ldm_instances; i++)
+    for (Uint32 i = 0; i < num_query_instances; i++)
     {
       m_rr_group[i] = rr_group;
       rr_group++;
@@ -2197,8 +2195,8 @@ public:
     Uint32 in_rr_group = rr_info->m_rr_group_inx;
     Uint32 total_weight = 0;
     Uint32 used_weight = 0;
-    Uint32 num_ldm_instances = getNumLDMInstances();
-    for (Uint32 i = 0; i < num_ldm_instances; i++)
+    Uint32 num_query_instances = getNumQueryInstances();
+    for (Uint32 i = 0; i < num_query_instances; i++)
     {
       Uint32 rr_group = m_rr_group[i];
       if (rr_group != in_rr_group)
@@ -2243,7 +2241,7 @@ public:
   void fill_distr_references(DistributionHandler *handle)
   {
     ndbassert(globalData.ndbMtQueryWorkers > 0);
-    Uint32 num_ldm_instances = getNumLDMInstances();
+    Uint32 num_query_instances = getNumQueryInstances();
 
     memset(handle, 0, sizeof(*handle));
 
@@ -2264,7 +2262,7 @@ public:
      * So these two arrays contain the same information, but accessed
      * in different ways.
      */
-    for (Uint32 i = 0; i < num_ldm_instances; i++)
+    for (Uint32 i = 0; i < num_query_instances; i++)
     {
       handle->m_weights[i] = 8;
       handle->m_distr_references[i] =
@@ -2277,7 +2275,7 @@ public:
       q_state->m_max_scan_fragreq_count = 0;
       q_state->m_current_stolen = 0;
     }
-    ndbrequire(num_ldm_instances <= MAX_DISTR_THREADS);
+    ndbrequire(num_query_instances <= MAX_DISTR_THREADS);
     /**
      * m_rr_info initialised to all 0s by above memset which is ok.
      * One consequence of this is that m_total_weight is set to 0,
@@ -2310,16 +2308,11 @@ public:
    */
   Uint32 getFirstLDMThreadInstance()
   {
-    if (unlikely(globalData.ndbMtLqhThreads == 0))
-    {
-      return globalData.ndbMtMainThreads +
-             globalData.ndbMtTcThreads;
-    }
-    else
-    {
-      /* Adjust for proxy instance with + 1 */
-      return globalData.ndbMtMainThreads + 1;
-    }
+    return 1;
+  }
+  Uint32 getNumQueryInstances()
+  {
+    return globalData.ndbMtQueryWorkers;
   }
   Uint32 getNumLDMInstances()
   {

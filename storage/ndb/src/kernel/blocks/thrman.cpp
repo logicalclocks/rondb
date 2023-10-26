@@ -2265,8 +2265,8 @@ Thrman::execUPD_THR_LOAD_ORD(Signal *signal)
   Uint32 send_instance = thrLoadOrd->sendInstance;
   Uint32 first_ldm_instance = getFirstLDMThreadInstance();
   Uint32 last_ldm_instance = first_ldm_instance +
-                             globalData.ndbMtLqhThreads - 1;
-  Uint32 last_query_instance = last_ldm_instance;
+                             getNumLDMInstances() - 1;
+  Uint32 last_query_instance = getNumQueryInstances();
   ndbrequire(send_instance >= first_ldm_instance);
   ndbrequire(send_instance <= last_query_instance);
   Uint32 instance_no = send_instance - first_ldm_instance;
@@ -2282,14 +2282,20 @@ Thrman::send_measure_to_rep_thrman(Signal *signal,
   Uint32 first_ldm_instance = getFirstLDMThreadInstance();
   Uint32 last_ldm_instance = first_ldm_instance +
                              globalData.ndbMtLqhThreads - 1;
-  Uint32 last_query_instance = last_ldm_instance;
+  Uint32 last_query_instance = getNumQueryInstances();
   Uint32 our_instance = instance();
   if (globalData.ndbMtLqhThreads == 0 ||
       our_instance < first_ldm_instance ||
       our_instance > last_query_instance)
   {
     jam();
-    /* Only THRMAN in LDM and query threads need to send this signal */
+    /**
+     * Only THRMAN in LDM and threads with query blocks need to send
+     * this signal.
+     * Since all block threads have query blocks this should never be
+     * true.
+     */
+    ndbassert(false);
     return;
   }
   jam();
@@ -2324,7 +2330,7 @@ Thrman::send_measure_to_rep_thrman(Signal *signal,
 void
 Thrman::initial_query_distribution(Signal *signal)
 {
-  Uint32 num_distr_threads = getNumLDMInstances();
+  Uint32 num_distr_threads = getNumQueryInstances();
   memset(m_curr_weights, 0, sizeof(m_curr_weights));
   for (Uint32 i = 0; i < num_distr_threads; i++)
   {
@@ -2493,7 +2499,7 @@ Thrman::update_query_distribution(Signal *signal)
    * weights to be used by DBTC, DBSPJ and the receive threads
    * when mapping virtual blocks to LDM and query thread instances.
    */
-  Uint32 num_distr_threads = getNumLDMInstances();
+  Uint32 num_distr_threads = getNumQueryInstances();
   Uint32 sum_cpu_load = 0;
   Uint32 sum_send_load = 0;
   Uint32 weighted_cpu_load[MAX_DISTR_THREADS];
@@ -2607,7 +2613,7 @@ Thrman::update_query_distribution(Signal *signal)
 void
 Thrman::send_query_distribution(Uint32 *weights, Signal *signal)
 {
-  Uint32 num_distr_threads = getNumLDMInstances();
+  Uint32 num_distr_threads = getNumQueryInstances();
   BlockReference ref;
 
   DEB_SCHED_WEIGHTS(("LDM/QT weights: %u %u %u %u %u %u %u %u"
