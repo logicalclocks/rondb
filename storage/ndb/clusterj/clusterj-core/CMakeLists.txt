@@ -37,6 +37,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_CORE_PREFIX}/CacheManager.java
   ${CLUSTERJ_CORE_PREFIX}/SessionFactoryImpl.java
   ${CLUSTERJ_CORE_PREFIX}/SessionFactoryServiceImpl.java
+  ${CLUSTERJ_CORE_PREFIX}/SessionCache.java
   ${CLUSTERJ_CORE_PREFIX}/SessionImpl.java
   ${CLUSTERJ_CORE_PREFIX}/StateManager.java
   ${CLUSTERJ_CORE_PREFIX}/StoreManager.java

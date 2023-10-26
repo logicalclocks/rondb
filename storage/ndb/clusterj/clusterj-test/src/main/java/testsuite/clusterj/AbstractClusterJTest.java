@@ -186,6 +186,7 @@ public abstract class AbstractClusterJTest extends TestCase {
 
     public void closeSession() {
         if (session != null && !session.isClosed()) {
+            session.dropInstanceCache();
             session.close();
             session = null;
         }

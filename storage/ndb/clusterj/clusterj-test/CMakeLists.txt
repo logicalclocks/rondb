@@ -53,6 +53,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/CoordinatedTransactionIdVariableTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/DateAsSqlDateTypesTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/DateAsUtilDateTypesTest.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/DateAsPkSqlDateTypesTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/DatetimeAsSqlTimestampTypesTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/DatetimeAsUtilDateTypesTest.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/DbugTest.java
@@ -193,6 +194,8 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/Customer.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/DateAsSqlDateTypes.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/DateAsUtilDateTypes.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/model/DateAsPkSqlDateTypes.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/model/DateIdBase.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/DatetimeAsSqlTimestampTypes.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/DatetimeAsUtilDateTypes.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/DecimalTypes.java
@@ -202,6 +205,7 @@ SET(JAVA_SOURCES
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/DynamicStringPKs.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/Employee.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/Employee2.java
+  ${CLUSTERJ_TESTSUITE_PREFIX}/model/Employee3.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/FloatTypes.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/HashOnlyLongIntStringPK.java
   ${CLUSTERJ_TESTSUITE_PREFIX}/model/IdBase.java

@@ -158,6 +158,11 @@ public class UnloadSchemaAfterDeleteWithCacheTest extends AbstractClusterJModelT
 
   public void testMT() throws Exception {
 
+    closeSession();
+    closeAllExistingSessionFactories();
+    sessionFactory = null;
+    createSessionFactory();
+
     runSQLCMD(this, DROP_TABLE_CMD);
     runSQLCMD(this, CREATE_TABLE_CMD2);
 
@@ -167,15 +172,15 @@ public class UnloadSchemaAfterDeleteWithCacheTest extends AbstractClusterJModelT
     final Future[] futures = new Future[numWorker];
     ExecutorService es = Executors.newFixedThreadPool(numWorker);
     for (int i = 0; i < numWorker; i++) {
-      writers[i] = new Writer(i);
+      writers[i] = new Writer(this, i);
       futures[i] = es.submit(writers[i]);
     }
 
     // write some stuff
     Thread.sleep(5000);
 
-    runSQLCMD(null, DROP_TABLE_CMD); // TODO: replace null
-    runSQLCMD(null, CREATE_TABLE_CMD2); //TODO: replace null
+    runSQLCMD(this, DROP_TABLE_CMD); 
+    runSQLCMD(this, CREATE_TABLE_CMD2); 
 
     // write some more
     Thread.sleep(5000);
@@ -212,14 +217,16 @@ public class UnloadSchemaAfterDeleteWithCacheTest extends AbstractClusterJModelT
   }
 
   class Writer implements Callable {
+    AbstractClusterJModelTest test;
     int id = 0;
     boolean stopWriting = false;
     boolean isWriterStopped = false;
     int failedOps = 0;
     int successfulOps = 0;
 
-    Writer(int id) {
+    Writer(AbstractClusterJModelTest test, int id) {
       this.id = id;
+      this.test = test;
     }
 
     public void stopWriting() {
@@ -235,7 +242,7 @@ public class UnloadSchemaAfterDeleteWithCacheTest extends AbstractClusterJModelT
           try {
             session = getSession(DEFAULT_DB);
             DynamicObject dto = session.newInstance(FGTest1.class);
-            setFields(null, dto, rand.nextInt()); //TODO; replace null with "this"
+            setFields(test, dto, rand.nextInt());
             session.savePersistent(dto);
             closeDTO(session, dto, FGTest1.class);
             returnSession(session);
@@ -278,7 +285,8 @@ public class UnloadSchemaAfterDeleteWithCacheTest extends AbstractClusterJModelT
       } else if (fieldName.startsWith("number")) {
         e.set(i, num);
       } else {
-        test.error("Unexpected Column");
+        System.out.println("Unexpected Column. "+fieldName);
+        test.error("Unexpected Column. "+fieldName);
       }
     }
   }

@@ -80,24 +80,30 @@ public class SessionCache {
     }
 
     Session cached_session = db_queue.poll();
-    if (cached_session == null) {
+    if (cached_session == null || db_queue.size() == 0) {
       cachedSessions.remove(databaseName);
-      return null;
     }
 
-    totalCachedSessions--;
-
-    if (totalCachedSessions == 0){
-      cachedSessions.remove(databaseName);
+    if (cached_session == null) {
+      return null;
     }
 
     SessionImpl ses = (SessionImpl) cached_session;
     ses.setCached(false);
     removeFromLRUList(ses);
+
+    if (totalCachedSessions == 0){
+      cachedSessions.remove(databaseName);
+    }
+
     return cached_session;
   }
 
   public synchronized void storeCachedSession(Session session, String databaseName) {
+    if (session == null || databaseName == null || databaseName == "") {
+      throw new IllegalArgumentException("Bad session object or database name");
+    }
+
     if (MAX_CACHED_SESSIONS == 0) {
       return;
     }
@@ -164,6 +170,7 @@ public class SessionCache {
     } else {
       next.setPrevLruList(prev);
     }
+    totalCachedSessions--;
   }
 
   private synchronized SessionImpl removeLastFromLRUList() {
