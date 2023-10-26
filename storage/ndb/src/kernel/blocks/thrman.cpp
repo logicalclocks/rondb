@@ -130,8 +130,7 @@ Thrman::Thrman(Block_context & ctx, Uint32 instanceno) :
     /* Main and rep threads are handled by first receive thread */
     m_rep_thrman_instance =
       1 + globalData.ndbMtLqhThreads +
-          globalData.ndbMtTcThreads +
-          globalData.ndbMtRecoverThreads;
+          globalData.ndbMtTcThreads;
   }
 }
 
@@ -771,8 +770,7 @@ Thrman::execSTTOR(Signal *signal)
       sendNextCONTINUEB(signal, 10, ZCONTINUEB_CHECK_SPINTIME);
       sendSTTORRY(signal, false);
     }
-    if (instance() == m_rep_thrman_instance &&
-        globalData.ndbMtQueryWorkers > 0)
+    if (instance() == m_rep_thrman_instance)
     {
       jam();
       initial_query_distribution(signal);
@@ -792,8 +790,7 @@ Thrman::execSTTOR(Signal *signal)
   }
   case 9:
   {
-    if (instance() == m_rep_thrman_instance &&
-        globalData.ndbMtQueryWorkers > 0)
+    if (instance() == m_rep_thrman_instance)
     {
       jam();
       signal->theData[0] = ZUPDATE_QUERY_DISTRIBUTION;
@@ -1149,7 +1146,7 @@ Thrman::handle_send_delay()
   Uint32 num_high_load = 0;
   Uint32 num_overload = 0;
   /* Ignore restore threads in this calculation */
-  Uint32 num_threads = m_num_threads - globalData.ndbMtRecoverThreads;
+  Uint32 num_threads = m_num_threads;
   if (num_threads < 6)
   {
     /**
@@ -1195,11 +1192,6 @@ Thrman::handle_send_delay()
        instance_no <= m_num_threads;
        instance_no++)
   {
-    if (is_recover_thread(instance_no - 1))
-    {
-      /* Ignore restore threads */
-      continue;
-    }
     if (m_thread_overload_status[instance_no].overload_status ==
         (OverloadStatus)LIGHT_LOAD_CONST)
     {

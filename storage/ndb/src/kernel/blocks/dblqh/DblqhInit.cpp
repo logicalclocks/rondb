@@ -476,14 +476,8 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator* mgm_cfg,
      */
     Uint32 reserveTcConnRecsShared = reserveTcConnRecs;
     reserveTcConnRecs /= 10;
-    if (globalData.ndbMtQueryWorkers > 0)
-    {
-      reserveTcConnRecs *= 4;
-    }
-    else
-    {
-      reserveTcConnRecs = reserveTcConnRecsShared;
-    }
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
+    reserveTcConnRecs *= 4;
     ctcConnectReserved = reserveTcConnRecs;
     ctcConnectReservedShared = reserveTcConnRecsShared;
     ctcNumFree = reserveTcConnRecs;
@@ -925,11 +919,7 @@ Dblqh::~Dblqh()
     NdbMutex_Destroy(m_lock_acc_page_mutex);
     if (!isNdbMtLqh() || instance() == 1)
     {
-      if ((globalData.ndbMtRecoverThreads +
-           globalData.ndbMtQueryWorkers) > 0)
-      {
-        NdbMutex_Destroy(m_restore_mutex);
-      }
+      NdbMutex_Destroy(m_restore_mutex);
       m_restore_mutex = 0;
       ndbd_free((void*)m_num_recover_active,
                 sizeof(Uint32) * (MAX_NDBMT_QUERY_THREADS + 1));

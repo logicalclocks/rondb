@@ -1236,7 +1236,6 @@ is_main_thread(unsigned thr_no)
   if (globalData.ndbMtMainThreads > 0)
     return (thr_no < globalData.ndbMtMainThreads);
   unsigned first_recv_thread = globalData.ndbMtLqhThreads +
-                               globalData.ndbMtRecoverThreads +
                                globalData.ndbMtTcThreads;
   return (thr_no == first_recv_thread);
 }
@@ -1251,29 +1250,11 @@ is_ldm_thread(unsigned thr_no)
 }
 
 static bool
-is_recover_thread(unsigned thr_no)
-{
-  Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
-  unsigned query_base = globalData.ndbMtMainThreads +
-                        globalData.ndbMtLqhThreads;
-  return thr_no >= query_base &&
-         thr_no <  query_base + num_recover_threads;
-}
-
-bool
-mt_is_recover_thread(Uint32 thr_no)
-{
-  return is_recover_thread(thr_no);
-}
-
-static bool
 is_tc_thread(unsigned thr_no)
 {
   if (globalData.ndbMtTcThreads == 0)
     return false;
-  Uint32 num_query_threads = globalData.ndbMtRecoverThreads;
   unsigned tc_base = globalData.ndbMtMainThreads +
-                     num_query_threads +
                      globalData.ndbMtLqhThreads;
   return thr_no >= tc_base &&
          thr_no <  tc_base+globalData.ndbMtTcThreads;
@@ -1282,10 +1263,8 @@ is_tc_thread(unsigned thr_no)
 static bool
 is_recv_thread(unsigned thr_no)
 {
-  Uint32 num_query_threads = globalData.ndbMtRecoverThreads;
   unsigned recv_base = globalData.ndbMtMainThreads +
                          globalData.ndbMtLqhThreads +
-                         num_query_threads +
                          globalData.ndbMtTcThreads;
   return thr_no >= recv_base &&
          thr_no <  recv_base + globalData.ndbMtReceiveThreads;
@@ -2788,8 +2767,7 @@ thr_send_threads::assign_threads_to_assist_send_threads()
     thr_data *selfptr = &rep->m_thread[thr_no];
     selfptr->m_nosend = conf.do_get_nosend(selfptr->m_instance_list,
                                            selfptr->m_instance_count);
-    if (is_recover_thread(thr_no) ||
-        selfptr->m_nosend == 1)
+    if (selfptr->m_nosend == 1)
     {
       selfptr->m_send_instance_no = 0;
       selfptr->m_send_instance = NULL;
@@ -7879,6 +7857,8 @@ add_thr_map(Uint32 main, Uint32 instance, Uint32 thr_no)
   /* Block number including instance. */
   Uint32 block = numberToBlock(main, instance);
 
+  g_eventLogger->info("main: %u, instance: %u, thr_no: %u",
+                      main, instance, thr_no);
   require(thr_no < glob_num_threads);
   struct thr_repository* rep = g_thr_repository;
   struct thr_data* thr_ptr = &rep->m_thread[thr_no];
@@ -7920,8 +7900,13 @@ mt_init_thr_map()
    * thr_LOCAL refers to the rep thread blocks, thus they are located
    * where the rep thread blocks are located.
    */
-  Uint32 thr_GLOBAL = 0;
-  Uint32 thr_LOCAL = 1;
+  Uint32 first_main_thread =
+    globalData.ndbMtLqhThreads +
+    globalData.ndbMtTcThreads +
+    globalData.ndbMtReceiveThreads;
+
+  Uint32 thr_GLOBAL = first_main_thread;
+  Uint32 thr_LOCAL = first_main_thread + 1;
 
   if (globalData.ndbMtMainThreads == 1)
   {
@@ -7929,15 +7914,18 @@ mt_init_thr_map()
      * No rep thread is created, this means that we will put all blocks
      * into the main thread that are not multi-threaded.
      */
-    thr_LOCAL = 0;
+    thr_LOCAL = first_main_thread;
   }
   else if (globalData.ndbMtMainThreads == 0)
   {
     Uint32 main_thread_no = globalData.ndbMtLqhThreads +
-                            globalData.ndbMtRecoverThreads +
                             globalData.ndbMtTcThreads;
     thr_LOCAL = main_thread_no;
     thr_GLOBAL = main_thread_no;
+    if (globalData.ndbMtReceiveThreads > 1)
+    {
+      thr_GLOBAL = main_thread_no + 1;
+    }
   }
 
   /**
@@ -7996,7 +7984,7 @@ mt_get_instance_count(Uint32 block)
   case DBQTUX:
   case QBACKUP:
   case QRESTORE:
-    return globalData.ndbMtQueryWorkers + globalData.ndbMtRecoverThreads;
+    return globalData.ndbMtQueryWorkers;
   case PGMAN:
     return globalData.ndbMtLqhWorkers + 1;
     break;
@@ -8014,13 +8002,28 @@ mt_get_instance_count(Uint32 block)
   return 0;
 }
 
+/**
+ * We map the blocks in the following manner.
+ * At first we have the LDM threads. Thus they start at thr_no = 0.
+ * There could be 0 LDM threads. If this is the case we have a setup
+ * with only receive threads. Thus the LDM blocks will still start
+ * from thr_no = 0.
+ *
+ * Next we have the TC threads, these are only available if they are
+ * specifically asked for in the thread configuration in config.ini.
+ *
+ * Next we have the receive threads. These are always present and they
+ * come after the LDM and tc threads.
+ *
+ * Finally at the end of the threads we have the main threads if there
+ * are any such setup.
+ */
 void
 mt_add_thr_map(Uint32 block, Uint32 instance)
 {
   Uint32 num_lqh_threads = globalData.ndbMtLqhThreads;
   Uint32 num_tc_threads = globalData.ndbMtTcThreads;
-  Uint32 thr_no = globalData.ndbMtMainThreads;
-  Uint32 num_restore_threads = globalData.ndbMtRecoverThreads;
+  Uint32 thr_no = 0;
   bool receive_threads_only = false;
 
   if (num_lqh_threads == 0 &&
@@ -8030,9 +8033,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
     /**
      * ndbd emulation, all blocks are in the receive thread.
      */
-    thr_no = 0;
     require(num_tc_threads == 0);
-    require(num_restore_threads == 0);
     add_thr_map(block, instance, thr_no);
     return;
   }
@@ -8043,13 +8044,10 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
     /**
      * Configuration optimised for 1 CPU core with 2 CPUs.
      * This has a receive thread + 1 thread for main, rep, ldm and tc
-     * And also for 3 CPUs where the number of ndbMtRecoverThreads is 2.
+     * and query.
      */
     receive_threads_only = true;
     require(num_tc_threads == 0);
-    require(globalData.ndbMtRecoverThreads == 0 ||
-            globalData.ndbMtRecoverThreads == 1 ||
-            globalData.ndbMtRecoverThreads == 2);
     num_lqh_threads = 1;
   }
   else if (num_lqh_threads == 0 &&
@@ -8068,14 +8066,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
   case DBTUX:
   case BACKUP:
   case RESTORE:
-    if (receive_threads_only)
-    {
-      thr_no += (instance - 1);
-    }
-    else
-    {
-      thr_no += (instance - 1);
-    }
+    thr_no += (instance - 1);
     break;
   case DBQLQH:
   case DBQACC:
@@ -8083,14 +8074,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
   case DBQTUX:
   case QBACKUP:
   case QRESTORE:
-    if (receive_threads_only)
-    {
-      thr_no += (instance - 1);
-    }
-    else
-    {
-      thr_no += (instance - 1);
-    }
+    thr_no += (instance - 1);
     break;
   case PGMAN:
     if (instance == num_lqh_threads + 1)
@@ -8100,7 +8084,7 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
     }
     else
     {
-      thr_no += (instance - 1) % num_lqh_threads;
+      thr_no += (instance - 1);
     }
     break;
   case DBTC:
@@ -8108,36 +8092,20 @@ mt_add_thr_map(Uint32 block, Uint32 instance)
   {
     /**
      * No TC threads, this means that TC is located in the receive threads.
-     * TC threads comes after LDM and Query threads
+     * TC threads comes after LDM threads
      * Thus same calculation in both cases, both with and without TC threads.
      */
-    if (receive_threads_only)
-    {
-      thr_no += (instance - 1);
-    }
-    else
-    {
-      thr_no += (num_lqh_threads +
-                 num_restore_threads +
-                 (instance - 1));
-    }
+    thr_no += (num_lqh_threads +
+               (instance - 1));
     break;
   }
   case THRMAN:
     thr_no = instance - 1;
     break;
   case TRPMAN:
-    if (receive_threads_only)
-    {
-      thr_no += (instance - 1);
-    }
-    else
-    {
-      thr_no += num_lqh_threads +
-                num_restore_threads +
-                num_tc_threads +
-                (instance - 1);
-    }
+    thr_no += num_lqh_threads +
+              num_tc_threads +
+              (instance - 1);
     break;
   default:
     require(false);
@@ -8442,16 +8410,48 @@ static void
 update_spin_config(struct thr_data *selfptr,
                    Uint64 & min_spin_timer_us)
 {
-  if (!is_recover_thread(selfptr->m_thr_no))
-  {
-    min_spin_timer_us = selfptr->m_spintime_us;
-  }
-  else
-  {
-    min_spin_timer_us = 0;
-  }
+  min_spin_timer_us = selfptr->m_spintime_us;
 }
 
+/**
+ * mt_receiver_thread_main is the function called to start the
+ * receive threads. This thread could also house many other
+ * threads.
+ *
+ * There are 5 block thread types:
+ * 1) recv threads
+ * 2) ldm threads
+ * 3) tc threads
+ * 4) main thread
+ * 5) rep thread
+ *
+ * All of those thread types can be integrated and executed in the
+ * receive thread. Thus it is possible to run RonDB data nodes with
+ * only receive threads.
+ *
+ * The default setup used by automatic thread config is to have around
+ * half of the CPUs execute the ldm thread. This thread is the main
+ * user of CPU. The other half will mainly be the receive threads.
+ * However in larger nodes the main and possibly also the rep thread
+ * will be separate threads. These threads can still assist in read
+ * queries since they also have a Query instance.
+ *
+ * In larger nodes we will also have send threads. These can only
+ * handle sending, they cannot act as block threads.
+ *
+ * The default setup is thus that receive thread and tc thread is
+ * colocated in the same block thread. This has the advantage that
+ * the execution of TCKEYREQ and SCAN_TABREQ can be immediately
+ * handled by the receive thread, no extra communication with
+ * other threads is required.
+ *
+ * The ldm thread is kept separated to make execution in ldm threads
+ * more efficient. Since the receive thread (and possible main threads)
+ * is likely less loaded, we make use of those threads to assist in
+ * read query execution. This means that we can get both the efficiency
+ * of a thread pipeline as well as the high utilisation of threads
+ * that does almost all activities.
+ */
 extern "C"
 void *
 mt_receiver_thread_main(void *thr_arg)
@@ -8944,6 +8944,10 @@ handle_queue_size_stats(struct thr_data *selfptr, NDB_TICKS now)
   init_jbb_estimate(selfptr, now);
 }
 
+/**
+ * mt_job_thread_main is the function called by all block threads
+ * except the recv thread.
+ */
 extern "C"
 void *
 mt_job_thread_main(void *thr_arg)
@@ -9583,10 +9587,6 @@ mt_getThreadDescription(Uint32 self)
   {
     return "ldm thread, handling a set of data partitions";
   }
-  else if (is_recover_thread(self))
-  {
-    return "recover thread, handling restore of data";
-  }
   else if (is_tc_thread(self))
   {
     return "tc thread, transaction handling, unique index and pushdown join"
@@ -9628,10 +9628,6 @@ mt_getThreadName(Uint32 self)
   else if (is_ldm_thread(self))
   {
     return "ldm";
-  }
-  else if (is_recover_thread(self))
-  {
-    return "recover";
   }
   else if (is_tc_thread(self))
   {
@@ -10158,7 +10154,6 @@ mt_getMainThrmanInstance()
   else if (globalData.ndbMtMainThreads == 0)
     return 1 +
            globalData.ndbMtLqhThreads +
-           globalData.ndbMtRecoverThreads +
            globalData.ndbMtTcThreads;
   else
     require(false);
@@ -10614,7 +10609,6 @@ get_total_number_of_block_threads(void)
 {
   return (globalData.ndbMtMainThreads +
           globalData.ndbMtLqhThreads +
-          globalData.ndbMtRecoverThreads +
           globalData.ndbMtTcThreads +
           globalData.ndbMtReceiveThreads);
 }
@@ -10878,11 +10872,10 @@ ThreadConfig::init()
   Uint32 num_lqh_threads = globalData.ndbMtLqhThreads;
   Uint32 num_tc_threads = globalData.ndbMtTcThreads;
   Uint32 num_recv_threads = globalData.ndbMtReceiveThreads;
-  Uint32 num_recover_threads = globalData.ndbMtRecoverThreads;
 
   first_receiver_thread_no =
       globalData.ndbMtMainThreads + num_lqh_threads +
-      num_recover_threads + num_tc_threads;
+      num_tc_threads;
   glob_num_threads = first_receiver_thread_no + num_recv_threads;
   glob_unused[0] = 0; //Silence compiler
   if (globalData.ndbMtMainThreads == 0)
@@ -11858,12 +11851,6 @@ may_communicate(unsigned from, unsigned to)
     // All LDM threads can communicates with TC-, main- and ldm.
     return is_tc_thread(to)   ||
            is_ldm_thread(to) ||
-           is_recover_thread(to) ||
-           (to == from);
-  }
-  else if (is_recover_thread(from))
-  {
-    return is_ldm_thread(to) ||
            (to == from);
   }
   else

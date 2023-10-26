@@ -108,7 +108,6 @@ void mt_setConfMinSendDelay(Uint32 min_send_delay);
 void mt_setMaxSendDelay(Uint32 max_send_delay);
 void mt_setMinSendDelay(Uint32 min_send_delay);
 void mt_setMaxSendBufferSizeDelay(Uint32 max_send_buffer_size_delay);
-bool mt_is_recover_thread(Uint32 thr_no);
 void mt_setOverloadStatus(Uint32 self,
                          OverloadStatus new_status);
 void mt_setNodeOverloadStatus(Uint32 self,

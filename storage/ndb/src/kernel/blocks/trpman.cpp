@@ -1029,7 +1029,7 @@ Trpman::distribute_signal(SignalHeader * const header,
 {
   DistributionHandler *handle = &m_distribution_handle;
   Uint32 gsn = header->theVerId_signalNumber;
-  ndbrequire(globalData.ndbMtQueryWorkers > 0);
+  ndbassert(globalData.ndbMtQueryWorkers > 0);
   ndbrequire(m_distribution_handler_inited);
   if (unlikely(gsn == GSN_ABORT))
   {

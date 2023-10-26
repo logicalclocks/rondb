@@ -5814,7 +5814,7 @@ void Dbtc::sendlqhkeyreq(Signal* signal,
       if (nodeId == getOwnNodeId())
       {
         Uint32 instance_no = refToInstance(TBRef);
-        ndbrequire(globalData.ndbMtQueryWorkers > 0);
+        ndbassert(globalData.ndbMtQueryWorkers > 0);
         jam();
         TBRef = get_lqhkeyreq_ref(&m_distribution_handle, instance_no);
       }
@@ -18547,7 +18547,7 @@ bool Dbtc::sendScanFragReq(Signal* signal,
         if (nodeId == getOwnNodeId())
         {
           jam();
-          ndbrequire(globalData.ndbMtQueryWorkers > 0);
+          ndbassert(globalData.ndbMtQueryWorkers > 0);
           ref = get_scan_fragreq_ref(&m_distribution_handle, instance_no);
           check_blockref(ref);
           scanFragP.p->lqhBlockref = ref;

@@ -39,8 +39,7 @@ Dbqlqh::Dbqlqh(Block_context& ctx,
 Uint64 Dbqlqh::getTransactionMemoryNeed()
 {
   Uint32 query_instance_count =
-    globalData.ndbMtQueryWorkers +
-    globalData.ndbMtRecoverThreads;
+    globalData.ndbMtQueryWorkers;
   Uint32 lqh_scan_recs = 1;
   Uint32 lqh_op_recs = 1;
   Uint64 scan_byte_count = 0;

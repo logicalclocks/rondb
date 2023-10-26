@@ -56,7 +56,6 @@ static const struct ParseEntries m_parse_entries[] =
   { "send",  THRConfig::T_SEND },
   { "idxbld",THRConfig::T_IXBLD},
   { "query", THRConfig::T_QUERY},
-  { "recover",THRConfig::T_RECOVER}
 };
 
 /**
@@ -82,7 +81,6 @@ static const struct THRConfig::Entries m_entries[] =
   { THRConfig::T_SEND,  0, MAX_NDBMT_SEND_THREADS,    true,         true,     0 },
   { THRConfig::T_IXBLD, 0, 1,                         false,        false,    0 },
   { THRConfig::T_QUERY, 0, MAX_NDBMT_QUERY_THREADS,   true,         true,     0 },
-  { THRConfig::T_RECOVER, 0, MAX_NDBMT_QUERY_THREADS, false,        false,    0 }
 };
 
 static const struct ParseParams m_params[] =
@@ -870,14 +868,6 @@ THRConfig::do_parse(unsigned realtime,
   for (Uint32 i = 0; i < tc_threads; i++)
   {
     add(T_TC, realtime, spintime);
-  }
-  if (recover_threads > query_threads)
-  {
-    Uint32 num_recover_threads_only = recover_threads - query_threads;
-    for (Uint32 i = 0; i < num_recover_threads_only; i++)
-    {
-      add(T_RECOVER, realtime, spintime);
-    }
   }
   for (Uint32 i = 0; i < send_threads; i++)
   {

@@ -39,8 +39,7 @@ Dbqtux::Dbqtux(Block_context& ctx,
 Uint64 Dbqtux::getTransactionMemoryNeed()
 {
   Uint32 query_instance_count =
-    globalData.ndbMtQueryWorkers +
-    globalData.ndbMtRecoverThreads;
+    globalData.ndbMtQueryWorkers;
   Uint64 scan_op_byte_count = 1;
   Uint32 tux_scan_recs = 1;
   Uint32 tux_scan_lock_recs = 1;

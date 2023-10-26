@@ -1562,8 +1562,7 @@ Dbtux::checkScanInstance(Uint32 scanInstance)
     (get_block_from_scan_instance(scanInstance) == DBTUX);
 
   /* Basic sanity */
-  ndbrequire((i_am_tux && scanInstance_is_tux) ||
-             (globalData.ndbMtQueryWorkers > 0));
+  ndbrequire(i_am_tux && scanInstance_is_tux);
 
   if (i_am_tux)
   {
@@ -1637,10 +1636,6 @@ Dbtux::relinkScan(ScanOp& scan,
                scan.m_scanLinkedPos == NullTupLoc);
     scan.m_scanLinkedPos = NullTupLoc;
     return;
-  }
-  if (qt_unlikely(globalData.ndbMtQueryWorkers == 0))
-  {
-    need_lock = false;
   }
   NodeHandle old_node(frag);
   NodeHandle new_node(frag);

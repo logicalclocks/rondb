@@ -750,16 +750,6 @@ SimulatedBlock::setWakeupThread(Uint32 wakeup_instance)
 #endif
 }
 
-bool
-SimulatedBlock::is_recover_thread(Uint32 thr_no)
-{
-#ifdef NDBD_MULTITHREADED
-  return mt_is_recover_thread(thr_no);
-#else
-  return false;
-#endif
-}
-
 void
 SimulatedBlock::setConfMaxSendDelay(Uint32 max_send_delay)
 {

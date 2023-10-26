@@ -98,14 +98,12 @@ struct GlobalData {
   Uint32     ndbMtTcThreads;
   Uint32     ndbMtQueryThreads;
   Uint32     ndbMtQueryWorkers;
-  Uint32     ndbMtRecoverThreads;
   Uint32     ndbMtSendThreads;
   Uint32     ndbMtReceiveThreads;
   Uint32     ndbMtMainThreads;
   Uint32     ndbLogParts;
   Uint32     ndbRRGroups;
   Uint32     num_io_laggers; // Protected by theIO_lag_mutex
-  Uint32     QueryThreadsPerLdm;
   
   Uint64     theMicrosSleep;
   Uint64     theBufferFullMicrosSleep;
@@ -155,14 +153,12 @@ struct GlobalData {
     ndbMtTcThreads = 0;
     ndbMtQueryThreads = 0;
     ndbMtQueryWorkers = 0;
-    ndbMtRecoverThreads = 0;
     ndbMtSendThreads = 0;
     ndbMtReceiveThreads = 0;
     ndbMtMainThreads = 0;
     ndbLogParts = 0;
     ndbRRGroups = 1;
     num_io_laggers = 0;
-    QueryThreadsPerLdm = 0;
     theMicrosSleep = 0;
     theBufferFullMicrosSleep = 0;
     theMicrosSend = 0;

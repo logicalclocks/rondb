@@ -75,19 +75,6 @@ THRConfigApplier::find_thread(const unsigned short instancelist[], unsigned cnt)
   {
     return &m_threads[T_LDM][instanceNo - 1]; // remove proxy...
   }
-  else if ((instanceNo = findBlock(DBQLQH, instancelist, cnt)) >= 0)
-  {
-    int num_ldm_threads = (int)getThreadCount(T_LDM);
-    if ((instanceNo - 1) < num_ldm_threads)
-    {
-      abort();
-    }
-    else
-    {
-      instanceNo -= num_ldm_threads;
-      return &m_threads[T_RECOVER][instanceNo - 1]; // remove proxy...
-    }
-  }
   else if ((instanceNo = findBlock(DBTC, instancelist, cnt)) >= 0)
   {
     return &m_threads[T_TC][instanceNo - 1]; // remove proxy
@@ -425,9 +412,6 @@ THRConfigApplier::do_bind(NdbThread* thread,
       break;
     case T_QUERY:
       type_str = "query";
-      break;
-    case T_RECOVER:
-      type_str = "recover";
       break;
     default:
       break;

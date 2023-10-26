@@ -583,8 +583,7 @@ protected:
   {
     return globalData.ndbMtLqhThreads +
            globalData.ndbMtTcThreads +
-           globalData.ndbMtMainThreads +
-           globalData.ndbMtRecoverThreads;
+           globalData.ndbMtMainThreads;
   }
 
   static
@@ -758,7 +757,6 @@ protected:
   void setMaxSendDelay(Uint32 max_send_delay);
   void setMinSendDelay(Uint32 min_send_delay);
   void setMaxSendBufferSizeDelay(Uint32 max_send_buffer_size_delay);
-  bool is_recover_thread(Uint32 thr_no);
   void setWakeupThread(Uint32 wakeup_instance);
   void setNodeOverloadStatus(OverloadStatus new_status);
   void setSendNodeOverloadStatus(OverloadStatus new_status);
@@ -1915,8 +1913,7 @@ public:
      * is even bigger than 8 since we also want each distribute call
      * to handle a few signals before a new call is made.
      */
-    if (globalData.ndbMtQueryWorkers == 0)
-      return;
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
     Uint32 num_ldm_instances = getNumLDMInstances();
     for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
     {
@@ -1950,11 +1947,7 @@ public:
   void calculate_distribution_signal(DistributionHandler *handle)
   {
     Uint32 num_ldm_instances = getNumLDMInstances();
-    if (globalData.ndbMtQueryWorkers == 0)
-    {
-      jam();
-      return;
-    }
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
     jam();
     jamLine(m_num_rr_groups);
     ndbrequire(m_inited_rr_groups);
@@ -2013,9 +2006,7 @@ public:
          * in addition they will not read them. We still have to be careful
          * with data placement to avoid false CPU cache sharing.
          */
-        if ((thr_no < num_ldm_instances &&
-             globalData.ndbMtQueryWorkers == 0) ||
-            m_rr_group[thr_no] != rr_group)
+        if (m_rr_group[thr_no] != rr_group)
         {
           /* LDM-only threads ignored and threads from other RR groups */
           handle->m_next_round[thr_no].m_next_pos = Uint32(~0);
@@ -2175,17 +2166,14 @@ public:
      *
      * The only output of the thread configuration is
      * globalData.ndbMtLqhWorkers
-     * globalData.ndbQueryThreads
      * globalData.ndbQueryWorkers
      * globalData.ndbRRGroups
-     * globalData.QueryThreadsPerLdm
      */
     Uint32 num_ldm_instances = globalData.ndbMtLqhWorkers;
     Uint32 num_rr_groups = globalData.ndbRRGroups;
-    Uint32 num_query_thread_per_ldm = globalData.QueryThreadsPerLdm;
     Uint32 num_distr_threads = num_ldm_instances;
 
-    m_num_query_thread_per_ldm = num_query_thread_per_ldm;
+    m_num_query_thread_per_ldm = 1;
     m_num_rr_groups = num_rr_groups;
     m_num_distribution_threads = num_distr_threads;
     Uint32 rr_group = 0;
@@ -2193,11 +2181,6 @@ public:
     {
       m_rr_group[i] = 0xFFFFFFFF; //Ensure group not valid as init value
     }
-    if (num_query_thread_per_ldm == 0)
-    {
-      return;
-    }
-    ndbrequire(num_query_thread_per_ldm == 1);
     for (Uint32 i = 0; i < num_ldm_instances; i++)
     {
       m_rr_group[i] = rr_group;
@@ -2259,11 +2242,7 @@ public:
   }
   void fill_distr_references(DistributionHandler *handle)
   {
-    if (globalData.ndbMtQueryWorkers == 0)
-    {
-      jam();
-      return;
-    }
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
     Uint32 num_ldm_instances = getNumLDMInstances();
 
     memset(handle, 0, sizeof(*handle));
@@ -2352,10 +2331,8 @@ public:
   }
   void query_thread_memory_barrier()
   {
-    if (globalData.ndbMtQueryWorkers > 0)
-    {
-      mb();
-    }
+    ndbassert(globalData.ndbMtQueryWorkers > 0);
+    mb();
   }
   static Uint32 get_shared_ldm_instance(Uint32 instance)
   {
