@@ -575,6 +575,8 @@ class ClusterTransactionImpl implements ClusterTransaction {
     private void performPostExecuteCallbacks() {
         // check completed operations
         StringBuilder exceptionMessages = new StringBuilder();
+        ClusterJDatastoreException firstDSException = null;
+        int noOfExceptions = 0;
         for (Operation op: operationsToCheck) {
             int code = op.getErrorCode();
             int classification = op.getClassification();
@@ -589,6 +591,10 @@ class ClusterTransactionImpl implements ClusterTransaction {
                         op.toString());
                 exceptionMessages.append(message);
                 exceptionMessages.append('\n');
+                if (firstDSException == null){
+                    firstDSException = new ClusterJDatastoreException(message, code, mysqlCode, status, classification);
+                }
+                noOfExceptions++;
             }
         }
         operationsToCheck.clear();
@@ -601,12 +607,21 @@ class ClusterTransactionImpl implements ClusterTransaction {
                     t.printStackTrace();
                     exceptionMessages.append(t.getMessage());
                     exceptionMessages.append('\n');
+                    noOfExceptions++;
                 }
             }
         } finally {
             clearPostExecuteCallbacks();
         }
-        if (exceptionMessages.length() > 0) {
+
+        if (firstDSException != null) {
+          // rewrite the message if needed
+          if (noOfExceptions > 1) {
+            firstDSException = new ClusterJDatastoreException(exceptionMessages.toString(), firstDSException.getCode(),
+                firstDSException.getMysqlCode(), firstDSException.getStatus(), firstDSException.getClassification());
+          }
+          throw firstDSException;
+        } else if (exceptionMessages.length() > 0) {
             throw new ClusterJDatastoreException(exceptionMessages.toString());
         }
     }
