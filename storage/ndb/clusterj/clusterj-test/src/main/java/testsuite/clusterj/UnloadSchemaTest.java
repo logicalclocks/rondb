@@ -119,7 +119,7 @@ public class UnloadSchemaTest extends AbstractClusterJModelTest {
     try {
       preparedStatement = connection.prepareStatement(cmd);
       preparedStatement.executeUpdate();
-      System.out.println(cmd);
+      // System.out.println(cmd);
     } catch (SQLException e) {
       System.err.println("Failed to run SQL command. "+e);
       test.error("Failed to drop table. Error: " + e.getMessage());

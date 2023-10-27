@@ -285,7 +285,6 @@ public class UnloadSchemaAfterDeleteWithCacheTest extends AbstractClusterJModelT
       } else if (fieldName.startsWith("number")) {
         e.set(i, num);
       } else {
-        System.out.println("Unexpected Column. "+fieldName);
         test.error("Unexpected Column. "+fieldName);
       }
     }
