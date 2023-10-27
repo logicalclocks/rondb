@@ -595,7 +595,7 @@ get_multithreaded_config(EmulatorData& ed)
     return 0;
 
   g_eventLogger->info("NDBMT: ldm_workers=%u ldm_threads=%u"
-                      " query_workers=%un"
+                      " query_workers=%u\n"
                       " tc_threads=%u tc_workers=%u"
                       " send=%u receive=%u main_threads=%u",
                       globalData.ndbMtLqhWorkers, globalData.ndbMtLqhThreads,

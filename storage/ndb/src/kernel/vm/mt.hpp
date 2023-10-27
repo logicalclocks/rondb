@@ -145,6 +145,7 @@ bool mt_is_recv_thread_for_new_trp(Uint32 self,
                                    NodeId node_id,
                                    TrpId trp_id);
 Uint32 mt_getMainThrmanInstance();
+Uint32 mt_getRepThrmanInstance();
 
 SendStatus mt_send_remote(Uint32 self, const SignalHeader *sh, Uint8 prio,
                           const Uint32 *data, NodeId nodeId,

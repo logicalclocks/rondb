@@ -109,29 +109,7 @@ Thrman::Thrman(Block_context & ctx, Uint32 instanceno) :
   m_allowed_spin_overhead = 130;
   m_phase2_done = false;
   m_is_idle = true;
-  if (!isNdbMtLqh())
-  {
-    jam();
-    m_rep_thrman_instance = 0;
-  }
-  else if (globalData.ndbMtMainThreads == 2)
-  {
-    jam();
-    m_rep_thrman_instance = 2;
-  }
-  else if (globalData.ndbMtMainThreads == 1)
-  {
-    jam();
-    m_rep_thrman_instance = 1;
-  }
-  else
-  {
-    jam();
-    /* Main and rep threads are handled by first receive thread */
-    m_rep_thrman_instance =
-      1 + globalData.ndbMtLqhThreads +
-          globalData.ndbMtTcThreads;
-  }
+  m_rep_thrman_instance = mt_getRepThrmanInstance();
 }
 
 Thrman::~Thrman()
@@ -310,22 +288,28 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal)
   Uint32 ref = req->senderRef;
   Uint32 senderData = req->senderData;
 
-  m_thread_name = getThreadName();
   m_recv_thread = false;
   m_ldm_thread = false;
   m_tc_thread = false;
   m_spin_time_change_count = 0;
-  if (strcmp(m_thread_name, "recv") == 0)
+  Uint32 thr_no = instance() - 1;
+  m_thread_name = getThreadName();
+  if (globalData.ndbMtLqhThreads > 0)
   {
-    m_recv_thread = true;
+    if (thr_no < globalData.ndbMtLqhThreads)
+      m_ldm_thread = true;
+    else if (thr_no < (globalData.ndbMtLqhThreads +
+                       globalData.ndbMtTcThreads))
+      m_tc_thread = true;
+    else if (thr_no < globalData.ndbMtLqhThreads +
+                      globalData.ndbMtTcThreads +
+                      globalData.ndbMtReceiveThreads)
+      m_recv_thread = true;
   }
-  if (strcmp(m_thread_name, "tc") == 0)
+  else
   {
-    m_tc_thread = true;
-  }
-  if (strcmp(m_thread_name, "ldm") == 0)
-  {
-    m_ldm_thread = true;
+    if (thr_no < globalData.ndbMtReceiveThreads)
+      m_recv_thread = true;
   }
   m_thread_description = getThreadDescription();
   m_send_thread_name = "send";
@@ -1104,14 +1088,14 @@ Thrman::get_idle_block_threads(Uint32 *thread_list,
    * We only use main threads (the main and rep thread) as idle threads. These
    * are likely to be idle a lot and to be able to assist as send threads. But
    * using other threads as assistant is likely to cause unbalanced loads that
-   * will be scalability hogs. By starting the search from 1 we will always find
-   * the main threads, the main thread and the rep thread which are
-   * instance 1 and 2 when both exist, if only one exist it will be instance 1
-   * and if none exists we will not use any idle block threads.
+   * will be scalability hogs. We will only use those if there are real main
+   * threads.
    */
+  if (globalData.ndbMtMainThreads == 0)
+    return;
   Uint32 instance_no;
-  for (instance_no = 1;
-       instance_no <= globalData.ndbMtMainThreads;
+  for (instance_no = m_main_thrman_instance;
+       instance_no <= m_rep_thrman_instance;
        instance_no++)
   {
     if (m_thread_overload_status[instance_no].overload_status ==
@@ -2481,7 +2465,7 @@ static Uint32 apply_change_query(Int32 change,
 
 void Thrman::check_weights()
 {
-  Uint32 num_distr_threads = getNumLDMInstances();
+  Uint32 num_distr_threads = getNumQueryInstances();
   for (Uint32 i = 0; i < num_distr_threads; i++)
   {
     ndbrequire(m_curr_weights[i] <= MAX_DISTRIBUTION_WEIGHT);

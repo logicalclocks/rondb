@@ -54,18 +54,32 @@ THRConfigApplier::find_thread(const unsigned short instancelist[], unsigned cnt)
   {
     Uint32 num_main_threads = getThreadCount(T_REP) +
                               getThreadCount(T_MAIN);
+    Uint32 num_recv_threads = getThreadCount(T_RECV);
+
     if (num_main_threads == 2)
       return &m_threads[T_REP][instanceNo];
     else if (num_main_threads == 1)
       return &m_threads[T_MAIN][instanceNo];
     else if (num_main_threads == 0)
-      return &m_threads[T_RECV][instanceNo];
+      if (num_recv_threads == 1)
+        return &m_threads[T_RECV][0];
+      else
+        return &m_threads[T_RECV][1];
     else
       abort();
   }
   else if ((instanceNo = findBlock(DBDIH, instancelist, cnt)) >= 0)
   {
-    return &m_threads[T_MAIN][instanceNo];
+    Uint32 num_main_threads = getThreadCount(T_REP) +
+                              getThreadCount(T_MAIN);
+    Uint32 num_recv_threads = getThreadCount(T_RECV);
+
+    if (num_main_threads == 2)
+      return &m_threads[T_MAIN][instanceNo];
+    else if (num_main_threads == 1)
+      return &m_threads[T_MAIN][instanceNo];
+    else
+      return &m_threads[T_RECV][0];
   }
   else if ((instanceNo = findBlock(TRPMAN, instancelist, cnt)) >= 0)
   {

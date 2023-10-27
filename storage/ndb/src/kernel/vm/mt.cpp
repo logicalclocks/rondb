@@ -161,7 +161,7 @@ static const Uint64 MAX_SEND_BUFFER_SIZE_TO_DELAY = (20 * 1024);
 
 static Uint32 glob_num_threads = 0;
 static Uint32 glob_num_tc_threads = 1;
-static Uint32 first_receiver_thread_no = 0;
+static Uint32 g_first_receiver_thread_no = 0;
 static Uint32 g_conf_max_send_delay = 0;
 static Uint32 g_conf_min_send_delay = 0;
 static Uint32 g_max_send_delay = 0;
@@ -1228,44 +1228,82 @@ calc_fifo_free(Uint32 ri, Uint32 wi, Uint32 sz)
 /**
  * Identify type of thread.
  * Based on assumption that threads are allocated in the order:
- *  main, ldm, query, recover, tc, recv, send
+ *  ldm, tc, recv, main, rep
  */
+
 static bool
 is_main_thread(unsigned thr_no)
 {
-  if (globalData.ndbMtMainThreads > 0)
-    return (thr_no < globalData.ndbMtMainThreads);
-  unsigned first_recv_thread = globalData.ndbMtLqhThreads +
-                               globalData.ndbMtTcThreads;
-  return (thr_no == first_recv_thread);
+  if (globalData.ndbMtMainThreads == 0)
+    return (thr_no == g_first_receiver_thread_no);
+  else
+    return (thr_no ==
+     (g_first_receiver_thread_no + globalData.ndbMtReceiveThreads));
 }
 
 static bool
+is_rep_thread(unsigned thr_no)
+{
+  if (globalData.ndbMtMainThreads == 0)
+  {
+    if (globalData.ndbMtReceiveThreads == 1)
+    {
+      return (thr_no == g_first_receiver_thread_no);
+    }
+    else
+    {
+      return (thr_no == (g_first_receiver_thread_no + 1));
+    }
+  }
+  else
+  {
+    unsigned main_base = g_first_receiver_thread_no +
+                         globalData.ndbMtReceiveThreads;
+    if (globalData.ndbMtMainThreads == 1)
+    {
+      return is_main_thread(thr_no);
+    }
+    return (thr_no == main_base + 1);
+  }
+}
+
+static bool
+is_main_or_rep_thread(unsigned thr_no)
+{
+  if (is_main_thread(thr_no) || is_rep_thread(thr_no))
+    return true;
+  return false;
+}
+static bool
 is_ldm_thread(unsigned thr_no)
 {
-  if (glob_num_threads == 1)
-    return (thr_no == 0);
-  return thr_no >= globalData.ndbMtMainThreads &&
-         thr_no <  globalData.ndbMtMainThreads + globalData.ndbMtLqhThreads;
+  if (globalData.ndbMtLqhThreads > 0)
+  {
+    return (thr_no < globalData.ndbMtLqhThreads);
+  }
+  else
+  {
+    return (thr_no < globalData.ndbMtReceiveThreads);
+  }
 }
 
 static bool
 is_tc_thread(unsigned thr_no)
 {
+  Uint32 num_tc_threads = globalData.ndbMtTcThreads;
   if (globalData.ndbMtTcThreads == 0)
-    return false;
-  unsigned tc_base = globalData.ndbMtMainThreads +
-                     globalData.ndbMtLqhThreads;
+  {
+    num_tc_threads = globalData.ndbMtReceiveThreads;
+  }
+  unsigned tc_base = globalData.ndbMtLqhThreads;
   return thr_no >= tc_base &&
-         thr_no <  tc_base+globalData.ndbMtTcThreads;
+         thr_no <  tc_base + num_tc_threads;
 }
 
 static bool
 is_recv_thread(unsigned thr_no)
 {
-  unsigned recv_base = globalData.ndbMtMainThreads +
-                         globalData.ndbMtLqhThreads +
-                         globalData.ndbMtTcThreads;
+  unsigned recv_base = g_first_receiver_thread_no;
   return thr_no >= recv_base &&
          thr_no <  recv_base + globalData.ndbMtReceiveThreads;
 }
@@ -2741,8 +2779,7 @@ thr_send_threads::assign_threads_to_assist_send_threads()
    * all send threads all the time.
    *
    * If we have configured the block thread to not provide any send thread
-   * assistance we will not assign any send thread to it, similarly receive
-   * threads don't provide send thread assistance and if no send threads
+   * assistance we will not assign any send thread to it, if no send threads
    * are around we use the old method of sending without send threads and
    * in this case the sending is done by all block threads and there are
    * no send threads around at all.
@@ -2785,10 +2822,6 @@ thr_send_threads::assign_threads_to_assist_send_threads()
       }
     }
     selfptr->m_nosend_tmp = selfptr->m_nosend;
-    if (is_main_thread(thr_no))
-    {
-      selfptr->m_nosend_tmp = 1;
-    }
   }
   for (thr_no = 0; thr_no < glob_num_threads; thr_no++)
   {
@@ -5470,7 +5503,7 @@ mt_checkDoJob(Uint32 recv_thread_idx)
 {
   struct thr_repository* rep = g_thr_repository;
   // Find the thr_data for the specified recv_thread
-  const unsigned recv_thr_no = first_receiver_thread_no + recv_thread_idx;
+  const unsigned recv_thr_no = g_first_receiver_thread_no + recv_thread_idx;
   struct thr_data *recv_thr = &rep->m_thread[recv_thr_no];
 
   /**
@@ -7900,33 +7933,8 @@ mt_init_thr_map()
    * thr_LOCAL refers to the rep thread blocks, thus they are located
    * where the rep thread blocks are located.
    */
-  Uint32 first_main_thread =
-    globalData.ndbMtLqhThreads +
-    globalData.ndbMtTcThreads +
-    globalData.ndbMtReceiveThreads;
-
-  Uint32 thr_GLOBAL = first_main_thread;
-  Uint32 thr_LOCAL = first_main_thread + 1;
-
-  if (globalData.ndbMtMainThreads == 1)
-  {
-    /**
-     * No rep thread is created, this means that we will put all blocks
-     * into the main thread that are not multi-threaded.
-     */
-    thr_LOCAL = first_main_thread;
-  }
-  else if (globalData.ndbMtMainThreads == 0)
-  {
-    Uint32 main_thread_no = globalData.ndbMtLqhThreads +
-                            globalData.ndbMtTcThreads;
-    thr_LOCAL = main_thread_no;
-    thr_GLOBAL = main_thread_no;
-    if (globalData.ndbMtReceiveThreads > 1)
-    {
-      thr_GLOBAL = main_thread_no + 1;
-    }
-  }
+  Uint32 thr_GLOBAL = mt_getMainThrmanInstance() - 1;
+  Uint32 thr_LOCAL = mt_getRepThrmanInstance() - 1;
 
   /**
    * For multithreaded blocks we will assign the
@@ -8462,7 +8470,7 @@ mt_receiver_thread_main(void *thr_arg)
   struct thr_data* selfptr = (struct thr_data *)thr_arg;
   unsigned thr_no = selfptr->m_thr_no;
   Uint32& watchDogCounter = selfptr->m_watchdog_counter;
-  const Uint32 recv_thread_idx = thr_no - first_receiver_thread_no;
+  const Uint32 recv_thread_idx = thr_no - g_first_receiver_thread_no;
   bool has_received = false;
   int cnt = 0;
   bool real_time = false;
@@ -9175,12 +9183,13 @@ mt_job_thread_main(void *thr_arg)
     now = NdbTick_getCurrentTicks();
     selfptr->m_curr_ticks = now;
 
-    if (is_ldm_thread(selfptr->m_thr_no))
     {
       /**
        * Queue sizes in LDM and Query threads is part of the load balancing
        * performed by TC threads and receive threads to schedule committed
        * read requests to the proper thread based on load indicators.
+       *
+       * Now all blocks have Query blocks, so this applies to all blocks.
        */
       if (NdbTick_Elapsed(selfptr->m_jbb_estimate_start, now).microSec() > 400)
       {
@@ -9564,84 +9573,120 @@ mt_getPerformanceTimers(Uint32 self,
 const char *
 mt_getThreadDescription(Uint32 self)
 {
-  if (is_main_thread(self))
+  if (globalData.ndbMtLqhThreads == 0)
   {
-    if (globalData.ndbMtMainThreads == 2)
+    if (globalData.ndbMtMainThreads == 0)
     {
-      if (self == 0)
-        return "main thread, schema and distribution handling";
-      else if (self == 1)
-        return "rep thread, asynch replication and proxy block handling";
+      if (is_main_thread(self))
+      {
+        if (is_rep_thread(self))
+        {
+          return "recv_ldm_tc_main_rep";
+        }
+        else
+        {
+          return "recv_ldm_tc_main";
+        }
+      }
+      else if (is_rep_thread(self))
+      {
+        return "recv_ldm_tc_rep";
+      }
+      else
+      {
+        return "recv_ldm_tc";
+      }
     }
-    else if (globalData.ndbMtMainThreads == 1)
+    if (self < globalData.ndbMtReceiveThreads)
     {
-      return "main and rep thread, schema, distribution, proxy block and asynch replication handling";
+      return "recv_ldm_tc";
     }
-    else if (globalData.ndbMtMainThreads == 0)
+    else if (is_main_thread(self))
     {
-      return "main, rep and recv thread, schema, distribution, proxy block and asynch replication handling and handling receive and polling for new receives";
+      if (is_rep_thread(self))
+      {
+        return "main_rep";
+      }
+      return "main";
     }
-    require(false);
+    else
+    {
+      return "rep";
+    }
   }
-  else if (is_ldm_thread(self))
+  if (self < globalData.ndbMtLqhThreads)
   {
-    return "ldm thread, handling a set of data partitions";
+    return "ldm";
   }
-  else if (is_tc_thread(self))
+  if (self < (globalData.ndbMtLqhThreads + globalData.ndbMtTcThreads))
   {
-    return "tc thread, transaction handling, unique index and pushdown join"
-           " handling";
+    return "tc";
   }
-  else if (is_recv_thread(self))
+  if (self < (globalData.ndbMtLqhThreads +
+              globalData.ndbMtTcThreads +
+              globalData.ndbMtReceiveThreads))
   {
-    return "receive thread, performing receieve and polling for new receives";
+    if (globalData.ndbMtTcThreads == 0)
+    {
+      if (is_main_thread(self))
+      {
+        if (is_rep_thread(self))
+        {
+          return "recv_tc_main_rep";
+        }
+        return "recv_tc_main";
+      }
+      else if (is_rep_thread(self))
+      {
+        return "recv_tc_rep";
+      }
+      else
+      {
+        return "recv_tc";
+      }
+    }
+    else
+    {
+      if (globalData.ndbMtMainThreads == 0)
+      {
+        if (is_main_thread(self))
+        {
+          if (is_rep_thread(self))
+          {
+            return "recv_main_rep";
+          }
+          return "recv_main";
+        }
+        else if (is_rep_thread(self))
+        {
+          return "recv_rep";
+        }
+        else
+        {
+          return "recv";
+        }
+      }
+      else
+      {
+        return "recv";
+      }
+    }
   }
-  else
+  else if (is_main_thread(self))
   {
-    require(false);
+    if (is_rep_thread(self))
+    {
+      return "main_rep";
+    }
+    return "main";
   }
-  return NULL;
+  return "rep";
 }
 
 const char *
 mt_getThreadName(Uint32 self)
 {
-  if (is_main_thread(self))
-  {
-    if (globalData.ndbMtMainThreads == 2)
-    {
-      if (self == 0)
-        return "main";
-      else if (self == 1)
-        return "rep";
-    }
-    else if (globalData.ndbMtMainThreads == 1)
-    {
-      return "main_rep";
-    }
-    else if (globalData.ndbMtMainThreads == 0)
-    {
-      return "main_rep_recv";
-    }
-    require(false);
-  }
-  else if (is_ldm_thread(self))
-  {
-    return "ldm";
-  }
-  else if (is_tc_thread(self))
-  {
-    return "tc";
-  }
-  else if (is_recv_thread(self))
-  {
-    return "recv";
-  }
-  else
-  {
-    require(false);
-  }
-  return NULL;
+  return mt_getThreadDescription(self);
 }
 
 void
@@ -10127,9 +10172,10 @@ insert_local_signal(struct thr_data *selfptr,
   selfptr->m_local_signals_mask.set(dst);
 
   const unsigned self = selfptr->m_thr_no;
-  const unsigned MAX_SIGNALS_BEFORE_FLUSH = (self >= first_receiver_thread_no)
-    ? MAX_SIGNALS_BEFORE_FLUSH_RECEIVER
-    : MAX_SIGNALS_BEFORE_FLUSH_OTHER;
+  const unsigned MAX_SIGNALS_BEFORE_FLUSH =
+    (self >= g_first_receiver_thread_no)
+      ? MAX_SIGNALS_BEFORE_FLUSH_RECEIVER
+      : MAX_SIGNALS_BEFORE_FLUSH_OTHER;
 
   if (unlikely(local_buffer->m_len > MAX_LOCAL_BUFFER_USAGE))
   {
@@ -10148,15 +10194,47 @@ insert_local_signal(struct thr_data *selfptr,
 Uint32
 mt_getMainThrmanInstance()
 {
+  Uint32 recv_base = globalData.ndbMtLqhThreads +
+                     globalData.ndbMtTcThreads;
+  Uint32 main_base = recv_base +
+                     globalData.ndbMtReceiveThreads;
   if (globalData.ndbMtMainThreads == 2 ||
       globalData.ndbMtMainThreads == 1)
-    return 1;
+    return main_base + 1;
   else if (globalData.ndbMtMainThreads == 0)
-    return 1 +
-           globalData.ndbMtLqhThreads +
-           globalData.ndbMtTcThreads;
+    return recv_base + 1;
+  require(false);
+  return 0;
+}
+
+Uint32
+mt_getRepThrmanInstance()
+{
+  Uint32 recv_base = globalData.ndbMtLqhThreads +
+                     globalData.ndbMtTcThreads;
+  Uint32 main_base = recv_base +
+                     globalData.ndbMtReceiveThreads;
+  if (globalData.ndbMtMainThreads == 2)
+  {
+    return main_base + 2;
+  }
+  else if (globalData.ndbMtMainThreads == 1)
+  {
+    return main_base + 1;
+  }
   else
-    require(false);
+  {
+    require(globalData.ndbMtMainThreads == 0);
+    if (globalData.ndbMtReceiveThreads == 1)
+    {
+      return recv_base + 1;
+    }
+    else
+    {
+      return recv_base + 2;
+    }
+  }
+  require(false);
   return 0;
 }
 
@@ -10873,15 +10951,14 @@ ThreadConfig::init()
   Uint32 num_tc_threads = globalData.ndbMtTcThreads;
   Uint32 num_recv_threads = globalData.ndbMtReceiveThreads;
 
-  first_receiver_thread_no =
-      globalData.ndbMtMainThreads + num_lqh_threads +
-      num_tc_threads;
-  glob_num_threads = first_receiver_thread_no + num_recv_threads;
+  g_first_receiver_thread_no = num_lqh_threads + num_tc_threads;
+  glob_num_threads =
+    g_first_receiver_thread_no +
+    num_recv_threads +
+    globalData.ndbMtMainThreads;
   glob_unused[0] = 0; //Silence compiler
-  if (globalData.ndbMtMainThreads == 0)
-    glob_ndbfs_thr_no = first_receiver_thread_no;
-  else
-    glob_ndbfs_thr_no = 0;
+  glob_ndbfs_thr_no = g_first_receiver_thread_no;
+
   require(glob_num_threads <= MAX_BLOCK_THREADS);
   glob_num_job_buffers_per_thread =
       MIN(glob_num_threads, NUM_JOB_BUFFERS_PER_THREAD);
@@ -11069,8 +11146,8 @@ mt_epoll_add_trp(Uint32 self, NodeId node_id, TrpId trp_id)
   struct thr_repository* rep = g_thr_repository;
   struct thr_data *selfptr = &rep->m_thread[self];
   unsigned thr_no = selfptr->m_thr_no;
-  require(thr_no >= first_receiver_thread_no);
-  unsigned recv_thread_idx = thr_no - first_receiver_thread_no;
+  require(thr_no >= g_first_receiver_thread_no);
+  unsigned recv_thread_idx = thr_no - g_first_receiver_thread_no;
   TransporterReceiveHandleKernel *recvdata =
     g_trp_receive_handle_ptr[recv_thread_idx];
   if (recv_thread_idx != g_trp_to_recv_thr_map[trp_id])
@@ -11095,8 +11172,8 @@ mt_is_recv_thread_for_new_trp(Uint32 self,
   struct thr_repository* rep = g_thr_repository;
   struct thr_data *selfptr = &rep->m_thread[self];
   unsigned thr_no = selfptr->m_thr_no;
-  require(thr_no >= first_receiver_thread_no);
-  Uint32 recv_thread_idx = thr_no - first_receiver_thread_no;
+  require(thr_no >= g_first_receiver_thread_no);
+  Uint32 recv_thread_idx = thr_no - g_first_receiver_thread_no;
   if (recv_thread_idx != g_trp_to_recv_thr_map[trp_id])
   {
     return false;
@@ -11110,7 +11187,7 @@ ThreadConfig::ipControlLoop(NdbThread* pThis)
   unsigned int thr_no;
   struct thr_repository* rep = g_thr_repository;
 
-  rep->m_thread[first_receiver_thread_no].m_thr_index =
+  rep->m_thread[g_first_receiver_thread_no].m_thr_index =
     globalEmulatorData.theConfiguration->addThread(pThis, ReceiveThread);
 
   /**
@@ -11176,14 +11253,14 @@ ThreadConfig::ipControlLoop(NdbThread* pThis)
     rep->m_thread[thr_no].m_ticks = now;
     rep->m_thread[thr_no].m_scan_real_ticks = now;
 
-    if (thr_no == first_receiver_thread_no)
+    if (thr_no == g_first_receiver_thread_no)
       continue;                 // Will run in the main thread.
 
     /*
      * The NdbThread_Create() takes void **, but that is cast to void * when
      * passed to the thread function. Which is kind of strange ...
      */
-    if (thr_no < first_receiver_thread_no)
+    if (thr_no < g_first_receiver_thread_no)
     {
       /* Start block threads */
       struct NdbThread *thread_ptr =
@@ -11215,13 +11292,13 @@ ThreadConfig::ipControlLoop(NdbThread* pThis)
   }
 
   /* Now run the main loop for first receiver thread directly. */
-  rep->m_thread[first_receiver_thread_no].m_thread = pThis;
-  mt_receiver_thread_main(&(rep->m_thread[first_receiver_thread_no]));
+  rep->m_thread[g_first_receiver_thread_no].m_thread = pThis;
+  mt_receiver_thread_main(&(rep->m_thread[g_first_receiver_thread_no]));
 
   /* Wait for all threads to shutdown. */
   for (thr_no = 0; thr_no < glob_num_threads; thr_no++)
   {
-    if (thr_no == first_receiver_thread_no)
+    if (thr_no == g_first_receiver_thread_no)
       continue;
     void *dummy_return_status;
     NdbThread_WaitFor(rep->m_thread[thr_no].m_thread,
@@ -11834,31 +11911,39 @@ mt_get_threads_for_blocks_no_proxy(const Uint32 blocks[],
 static bool
 may_communicate(unsigned from, unsigned to)
 {
-  if (is_main_thread(from) ||
-      is_main_thread(to))
+  bool can_communicate = false;
+  if (is_main_or_rep_thread(from) ||
+      is_main_or_rep_thread(to))
   {
     // Main threads communicates with all other threads
-    return true;
+    can_communicate = true;
   }
-  else if (is_tc_thread(from))
+  if (is_tc_thread(from))
   {
-    // TC threads can communicate with SPJ-, LQH-, main- and itself
-    return is_ldm_thread(to)  ||
-           is_tc_thread(to);      // Cover both SPJs and itself
+    /**
+     * TC threads can communicate other TC threads, with LDM
+     * threads and with all blocks containing Query blocks,
+     * thus all other threads.
+     */
+    can_communicate = true;
   }
-  else if (is_ldm_thread(from))
+  if (is_ldm_thread(from))
   {
     // All LDM threads can communicates with TC-, main- and ldm.
-    return is_tc_thread(to)   ||
-           is_ldm_thread(to) ||
-           (to == from);
+    can_communicate = can_communicate ||
+                      is_tc_thread(to)   ||
+                      is_ldm_thread(to) ||
+                      (to == from);
   }
-  else
+  if (is_recv_thread(from))
   {
-    assert(is_recv_thread(from));
-    // Receive treads communicate with all, except other receivers
-    return !is_recv_thread(to);
+    /**
+     * Receive treads communicate with all, even other receivers
+     * since they contain Query blocks.
+     */
+    can_communicate = true;
   }
+  return can_communicate;
 }
 
 Uint32

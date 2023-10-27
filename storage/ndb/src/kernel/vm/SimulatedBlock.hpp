@@ -2007,7 +2007,7 @@ public:
          */
         if (m_rr_group[thr_no] != rr_group)
         {
-          /* LDM-only threads ignored and threads from other RR groups */
+          /* Ignore threads from other RR groups */
           handle->m_next_round[thr_no].m_next_pos = Uint32(~0);
         }
         else
@@ -2160,7 +2160,7 @@ public:
      * Given that thread configuration is performed before this step,
      * and this includes also CPU locking, the thread configuration
      * will assume that this simple algorithm is used here to decide
-     * on the Round Robin groups. Thus this modules have an implicit
+     * on the Round Robin groups. Thus these modules have an implicit
      * relationship to each other that must be maintained.
      *
      * The only output of the thread configuration is
@@ -2321,11 +2321,6 @@ public:
   Uint32 getNumTCInstances()
   {
     return globalData.ndbMtTcWorkers;
-  }
-  void query_thread_memory_barrier()
-  {
-    ndbassert(globalData.ndbMtQueryWorkers > 0);
-    mb();
   }
   static Uint32 get_shared_ldm_instance(Uint32 instance)
   {
