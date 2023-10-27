@@ -7890,8 +7890,6 @@ add_thr_map(Uint32 main, Uint32 instance, Uint32 thr_no)
   /* Block number including instance. */
   Uint32 block = numberToBlock(main, instance);
 
-  g_eventLogger->info("main: %u, instance: %u, thr_no: %u",
-                      main, instance, thr_no);
   require(thr_no < glob_num_threads);
   struct thr_repository* rep = g_thr_repository;
   struct thr_data* thr_ptr = &rep->m_thread[thr_no];
@@ -10957,7 +10955,7 @@ ThreadConfig::init()
     num_recv_threads +
     globalData.ndbMtMainThreads;
   glob_unused[0] = 0; //Silence compiler
-  glob_ndbfs_thr_no = g_first_receiver_thread_no;
+  glob_ndbfs_thr_no = mt_getMainThrmanInstance() - 1;
 
   require(glob_num_threads <= MAX_BLOCK_THREADS);
   glob_num_job_buffers_per_thread =
