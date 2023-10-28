@@ -49,7 +49,7 @@
 #define MAX_USED_NUM_CPUS 1024
 #define MAX_QUERY_THREAD_PER_LDM 3
 #define MIN_RR_GROUP_SIZE 4
-#define MAX_RR_GROUP_SIZE 8
+#define MAX_RR_GROUP_SIZE 16
 
 /**************************************************************************
  * IT SHOULD BE (MAX_NDB_NODES - 1).
